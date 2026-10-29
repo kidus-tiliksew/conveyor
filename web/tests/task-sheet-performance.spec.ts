@@ -251,7 +251,7 @@ test('opening a Board sheet starts its independent reads before the detail retur
   page.on('pageerror', (error) => errors.push(error.message))
   const server = await serve(page, { board: [[sheetTask, plainTask]] })
   server.hold(`/v1/tasks/${sheetTask.id}/activity`)
-  await page.goto(`/tasks/${sheetTask.id}`)
+  await page.goto(`/w/demo/tasks/${sheetTask.id}`)
   await expect(sheet(page)).toBeVisible()
 
   // With the detail still held, every detail-independent read is already out.
@@ -283,7 +283,7 @@ test('a failed prefetch leaves its consumer to retry and never blocks the detail
   const server = await serve(page, { board: [[sheetTask, plainTask]] })
   server.fail(`/v1/tasks/${plainTask.id}/next-action`, 1)
   server.hold(`/v1/tasks/${plainTask.id}/activity`)
-  await page.goto(`/tasks/${plainTask.id}`)
+  await page.goto(`/w/demo/tasks/${plainTask.id}`)
   await expect.poll(() => server.count(reads.nextAction(plainTask.id))).toBe(1)
 
   await server.release(`/v1/tasks/${plainTask.id}/activity`)
@@ -296,7 +296,7 @@ test('a failed prefetch leaves its consumer to retry and never blocks the detail
 
 test('a task without a verify stage reads the summary only on a cold open', async ({ page }) => {
   const server = await serve(page, { board: [[sheetTask, plainTask]] })
-  await page.goto(`/tasks/${plainTask.id}`)
+  await page.goto(`/w/demo/tasks/${plainTask.id}`)
   await expect(nextActionRegion(page)).toBeVisible()
   // The cold open read the summary beside the detail; the detail then showed
   // no verify stage, so nothing reads it again.
@@ -376,13 +376,13 @@ test('Board sheet notes a later page and a task outside the page; the full route
   await expect(header.getByRole('note')).toHaveText('The next task is on a later Board page.')
   await expect(header.getByRole('button', { name: 'Next task' })).toBeDisabled()
 
-  await page.goto(`/tasks/${outside.id}`)
+  await page.goto(`/w/demo/tasks/${outside.id}`)
   await expect(sheet(page).locator('header').first()).toContainText(outside.title)
   await expect(sheet(page).locator('header').first().getByRole('note')).toHaveText(
     'This task is outside the loaded Board window.',
   )
 
-  await page.goto(`/tasks/${secondPage[0].id}/full`)
+  await page.goto(`/w/demo/tasks/${secondPage[0].id}/full`)
   await expect(page.getByRole('heading', { name: secondPage[0].title, level: 1 })).toBeVisible()
   await expect(page.getByRole('button', { name: 'Previous task' })).toBeDisabled()
   await expect(page.getByRole('button', { name: 'Next task' })).toBeDisabled()
@@ -402,7 +402,7 @@ test.describe('task stream refresh', () => {
     page.on('requestfailed', (request) => aborted.push(new URL(request.url()).pathname))
     const detailPath = `/v1/tasks/${sheetTask.id}/activity`
     server.hold(detailPath)
-    await page.goto(`/tasks/${sheetTask.id}`)
+    await page.goto(`/w/demo/tasks/${sheetTask.id}`)
     await expect.poll(() => streams.countFor(sheetTask.id)).toBeGreaterThan(0)
     await expect.poll(() => server.hits(reads.detail(sheetTask.id))).toBe(1)
 
@@ -490,7 +490,7 @@ test.describe('task stream refresh', () => {
     await page.clock.install({ time: new Date('2026-07-15T13:00:00Z') })
     const blocked: Fixture = { id: 'blocked-task', title: 'Blocked task', created: at(4), blocking: ['plain'] }
     const server = await serve(page, { board: [[blocked, plainTask]] })
-    await page.goto(`/tasks/${blocked.id}`)
+    await page.goto(`/w/demo/tasks/${blocked.id}`)
     await expect(nextActionRegion(page)).toBeVisible()
     const detail = () => server.count(reads.detail(blocked.id))
     const nextActions = () => server.count(reads.nextAction(blocked.id))
@@ -531,7 +531,7 @@ test.describe('slow reads', () => {
   test('repeated sheet opens reuse slow reads and only Blueprints routes poll blueprints', async ({ page }) => {
     await page.clock.install({ time: new Date('2026-07-15T13:00:00Z') })
     const server = await serve(page, { board: [[sheetTask, plainTask]] })
-    await page.goto(`/tasks/${sheetTask.id}`)
+    await page.goto(`/w/demo/tasks/${sheetTask.id}`)
     await expect(nextActionRegion(page)).toBeVisible()
     const slow = () => ({
       identity: server.count(reads.identity),
@@ -564,7 +564,7 @@ test.describe('slow reads', () => {
     expect(slow()).toEqual(first)
 
     // The Blueprints route polls every 15 s.
-    await page.goto('/blueprints')
+    await page.goto('/w/demo/blueprints')
     await expect.poll(() => server.count(reads.blueprints)).toBeGreaterThan(0)
     const landed = server.count(reads.blueprints)
     await page.clock.runFor(15_000)

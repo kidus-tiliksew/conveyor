@@ -12,6 +12,7 @@ import {
 import type { GroupKey } from '../../lib/contracts'
 import type { ActivitySummary } from '../../lib/types'
 import { cn } from '../../lib/utils'
+import { useWorkspaceSelection } from '../app-shell'
 import { Badge } from '../ui/badge'
 import { TaskCard } from './task-card'
 
@@ -42,6 +43,7 @@ export function BoardColumn({
   items: ActivitySummary[]
   selectedId?: string
 }) {
+  const { workspace } = useWorkspaceSelection()
   const Icon = groupIcons[groupKey]
   // The items in this column waiting on an operator, by the server's actor;
   // they are decided in the Inbox, so the count links there.
@@ -66,7 +68,8 @@ export function BoardColumn({
         <span className="font-mono text-[11px] text-faint">{items.length}</span>
         {operator > 0 && (
           <Link
-            to="/inbox"
+            to="/w/$workspaceId/inbox"
+            params={{ workspaceId: workspace }}
             className="ml-auto"
             aria-label={`${operator} waiting on an operator — open the Inbox`}
             data-operator-count

@@ -1,6 +1,6 @@
 import { Link, useParams } from '@tanstack/react-router'
 import { ArrowLeft } from 'lucide-react'
-import { useBlueprints } from '../components/app-shell'
+import { useBlueprints, useWorkspaceSelection } from '../components/app-shell'
 import { BlueprintDetail, BlueprintDetailFallback } from '../components/blueprint/blueprint-detail'
 import { useTaskDetail } from '../components/task/use-task-detail'
 import { Button } from '../components/ui/button'
@@ -17,7 +17,8 @@ import { errorMessage } from '../lib/errors'
 // (spec, children, delivery, serves, lineage) and the task detail carries the
 // events the batch timeline renders.
 export function BlueprintDetailPage() {
-  const { taskId } = useParams({ from: '/blueprints/$taskId' })
+  const { workspace } = useWorkspaceSelection()
+  const { taskId } = useParams({ from: '/w/$workspaceId/blueprints/$taskId' })
   const { data: blueprints, isLoading: blueprintsLoading, error: blueprintsError } = useBlueprints()
   const { data: item, isLoading, error } = useTaskDetail(taskId)
   const view = findBlueprint(blueprints, taskId)
@@ -25,7 +26,7 @@ export function BlueprintDetailPage() {
   return (
     <div className="flex h-full flex-col">
       <header className="flex shrink-0 items-center gap-1 border-b border-border px-4 py-2.5">
-        <Link to="/blueprints" aria-label="Back to blueprints">
+        <Link to="/w/$workspaceId/blueprints" params={{ workspaceId: workspace }} aria-label="Back to blueprints">
           <Button variant="ghost" size="icon" tabIndex={-1}>
             <ArrowLeft />
           </Button>
@@ -57,6 +58,7 @@ function BlueprintBody({
   item: ReturnType<typeof useTaskDetail>['data']
   loading: boolean
 }) {
+  const { workspace } = useWorkspaceSelection()
   if (view && item) return <BlueprintDetail view={view} item={item} />
   if (loading) {
     return (
@@ -73,7 +75,11 @@ function BlueprintBody({
       <div className="px-6 py-6">
         <p className="rounded-md border border-border bg-surface p-4 text-sm text-muted">
           This task is not a blueprint — it has no plan that fanned out into child tasks.{' '}
-          <Link to="/tasks/$taskId/full" params={{ taskId }} className="text-primary hover:underline">
+          <Link
+            to="/w/$workspaceId/tasks/$taskId/full"
+            params={{ workspaceId: workspace, taskId }}
+            className="text-primary hover:underline"
+          >
             Open the task
           </Link>
           .

@@ -235,7 +235,7 @@ test('requirements renders a document tree, one attention surface, and confirms 
     return route.fulfill({ json: [] })
   })
 
-  await page.goto('/requirements')
+  await page.goto('/w/demo/requirements')
   await expect(page.getByRole('heading', { level: 1, name: 'Requirements' })).toBeVisible()
   await expect(page.getByText('Loading requirement…')).toBeVisible()
   releaseDetail()
@@ -260,7 +260,10 @@ test('requirements renders a document tree, one attention surface, and confirms 
   await expect(attention).toContainText('Blueprint delivery may have moved past the confirmed intent')
   await expect(attention.getByTitle(/Blueprint delivery delivered/)).toContainText('merged outside factory review')
   await expect(attention).toContainText('Served v1 · current at delivery v2')
-  await expect(attention.getByRole('link', { name: 'Inspect task' })).toHaveAttribute('href', '/tasks/blueprint-task')
+  await expect(attention.getByRole('link', { name: 'Inspect task' })).toHaveAttribute(
+    'href',
+    '/w/demo/tasks/blueprint-task',
+  )
   await expect(attention.getByRole('link', { name: /Open PR/ })).toHaveAttribute('href', 'https://example.test/pull/42')
   await expect(attention.getByRole('button', { name: 'File a task' })).toBeVisible()
   const stalenessItem = attention
@@ -275,7 +278,7 @@ test('requirements renders a document tree, one attention surface, and confirms 
   const deliveryActivity = page.getByRole('region', { name: 'Delivery activity' })
   await expect(deliveryActivity.getByRole('link', { name: 'Routine delivery' })).toHaveAttribute(
     'href',
-    '/tasks/routine-delivery',
+    '/w/demo/tasks/routine-delivery',
   )
   await expect(attention).not.toContainText('Routine delivery')
 
@@ -297,7 +300,7 @@ test('requirements renders a document tree, one attention surface, and confirms 
   await page.getByRole('tab', { name: 'history', exact: true }).click()
   await expect(page.getByRole('link', { name: /Ship bounded retries/ })).toHaveAttribute(
     'href',
-    '/blueprints/blueprint-task',
+    '/w/demo/blueprints/blueprint-task',
   )
   await expect(page.getByText('gpt-plan · high')).toBeVisible()
   await expect(page.getByText('12,000 tokens/call')).toBeVisible()
@@ -370,7 +373,7 @@ test('requirements archive and restore from the canvas while preserving archived
     return route.fulfill({ json: [] })
   })
 
-  await page.goto('/requirements?requirement=req-retries')
+  await page.goto('/w/demo/requirements?requirement=req-retries')
   await page.getByRole('button', { name: 'Archive' }).click()
   await page.getByRole('dialog', { name: 'Archive Retry behavior' }).getByRole('button', { name: 'Archive' }).click()
   await expect.poll(() => archiveCalls).toBe(1)
@@ -416,7 +419,7 @@ test('requirement archive controls are absent without document confirmation capa
       return route.fulfill({ json: requirement.pending_versions })
     return route.fulfill({ json: [] })
   })
-  await page.goto('/requirements?requirement=req-retries')
+  await page.goto('/w/demo/requirements?requirement=req-retries')
   await expect(page.getByRole('button', { name: 'Archive' })).toHaveCount(0)
   await expect(page.getByRole('button', { name: 'Restore' })).toHaveCount(0)
   archived = true
@@ -466,7 +469,7 @@ for (const note of ['', '  \n  ', '  Keep the original intent.  ']) {
       return route.fulfill({ json: [] })
     })
 
-    await page.goto('/requirements')
+    await page.goto('/w/demo/requirements')
     const attention = page.getByRole('region', { name: 'Needs your attention' })
     const versionItem = attention.getByText('Version 1 is waiting for you').locator('xpath=ancestor::li')
     await versionItem.getByRole('button', { name: 'Dismiss' }).click()
@@ -501,7 +504,7 @@ test('viewer can read requirement detail without the Attach context control', as
     return route.fulfill({ json: [] })
   })
 
-  await page.goto('/requirements')
+  await page.goto('/w/demo/requirements')
   await expect(page.getByRole('heading', { level: 1, name: 'Requirements' })).toBeVisible()
   const canvas = page.getByRole('region', { name: 'Requirement document' })
   await expect(canvas.getByRole('heading', { name: 'Retry behavior' })).toBeVisible()
@@ -567,7 +570,7 @@ test('requirements proposes an attributed drift amendment inline and keeps the d
     return route.fulfill({ json: [] })
   })
 
-  await page.goto('/requirements?requirement=req-retries')
+  await page.goto('/w/demo/requirements?requirement=req-retries')
   const attention = page.getByRole('region', { name: 'Needs your attention' })
   const form = attention.getByRole('form', { name: 'Resolve drift requirement-drift-1' })
   const outcomes = form.getByLabel('Resolution outcome for requirement-drift-1')
@@ -633,7 +636,7 @@ test('requirement staleness can file one linked follow-up and be dismissed in pl
     return route.fulfill({ json: [] })
   })
 
-  await page.goto('/requirements?requirement=req-retries')
+  await page.goto('/w/demo/requirements?requirement=req-retries')
   const attention = page.getByRole('region', { name: 'Needs your attention' })
   await attention.getByRole('button', { name: 'File a task' }).click()
   await expect.poll(() => followUpRequests).toBe(1)
@@ -642,7 +645,7 @@ test('requirement staleness can file one linked follow-up and be dismissed in pl
     page
       .getByRole('region', { name: 'Delivery activity' })
       .getByRole('link', { name: 'Follow-up: Investigate retry delivery' }),
-  ).toHaveAttribute('href', '/tasks/follow-up-task')
+  ).toHaveAttribute('href', '/w/demo/tasks/follow-up-task')
   await expect(attention).toContainText('Nothing needs your attention')
 
   state = 'open'
@@ -721,7 +724,7 @@ test('requirements search and deterministic sorting preserve the selected canvas
     return route.fulfill({ json: [] })
   })
 
-  await page.goto('/requirements?requirement=req-alpha-a')
+  await page.goto('/w/demo/requirements?requirement=req-alpha-a')
   const tree = page.getByRole('navigation', { name: 'Document tree' })
   const group = tree.getByRole('heading', { name: 'Requirements' }).locator('..')
   const rowOrder = () =>
@@ -862,26 +865,26 @@ test('design drift names its subject, counts once, and clears every rendering fr
     return route.fulfill({ json: [] })
   })
 
-  await page.goto('/requirements?requirement=req-deployment')
+  await page.goto('/w/demo/requirements?requirement=req-deployment')
   const attention = page.getByRole('region', { name: 'Needs your attention' })
   await expect(attention).toContainText("Code changed in conveyor and hasn't reached System architecture")
   await expect(attention).not.toContainText('without reaching this document')
   await expect(attention.getByRole('link', { name: 'System architecture' })).toHaveAttribute(
     'href',
-    '/system-design?document=design-system-architecture',
+    '/w/demo/system-design?document=design-system-architecture',
   )
   await expect(attention).toContainText('Related attention context')
   const tree = page.getByRole('navigation', { name: 'Document tree' })
   await expect(tree.getByLabel(/attention item/)).toHaveCount(0)
 
-  await page.goto('/system-design?document=design-system-architecture')
+  await page.goto('/w/demo/system-design?document=design-system-architecture')
   await expect(
     page
       .getByRole('navigation', { name: 'Document tree' })
       .getByRole('button', { name: /System architecture/ })
       .getByLabel('1 attention item'),
   ).toBeVisible()
-  await page.goto('/requirements?requirement=req-deployment')
+  await page.goto('/w/demo/requirements?requirement=req-deployment')
 
   const form = attention.getByRole('form', { name: 'Resolve drift shared-design-drift' })
   await form.getByLabel('Resolution outcome for shared-design-drift').selectOption('conflict_resolved')
@@ -890,7 +893,7 @@ test('design drift names its subject, counts once, and clears every rendering fr
 
   await tree.getByRole('button', { name: /Task lifecycle and the work queue/ }).click()
   await expect(attention).toContainText('Nothing needs your attention on this document.')
-  await page.goto('/system-design?document=design-system-architecture')
+  await page.goto('/w/demo/system-design?document=design-system-architecture')
   await expect(page.getByRole('region', { name: 'Needs your attention' })).toContainText(
     'Nothing needs your attention on this document.',
   )
@@ -919,7 +922,7 @@ test('requirement confirmation offers explicit attachment to eligible checkpoint
     return route.fulfill({ json: [] })
   })
 
-  await page.goto('/requirements?requirement=req-retries')
+  await page.goto('/w/demo/requirements?requirement=req-retries')
   await page.getByRole('button', { name: 'Confirm version 1' }).click()
   const offer = page.getByRole('dialog', { name: 'Attach confirmed requirement' })
   await expect(offer).toContainText('Paused delivery')
@@ -976,7 +979,7 @@ test('recovery refreshes task detail after success (requirements checkpoint-cont
     return route.fulfill({ json: [] })
   })
 
-  await page.goto('/requirements?requirement=req-retries')
+  await page.goto('/w/demo/requirements?requirement=req-retries')
   await expect.poll(() => requirementReads).toBeGreaterThan(0)
   const readsBeforeConfirm = requirementReads
   await page.getByRole('button', { name: 'Confirm version 1' }).click()
@@ -1043,9 +1046,9 @@ test('planning session deep link selects the named session', async ({ page }) =>
       })
     return route.fulfill({ json: [] })
   })
-  await page.goto('/planning?session=session-linked')
+  await page.goto('/w/demo/planning?session=session-linked')
   await expect(page.getByRole('button', { name: /Linked session/ })).toHaveAttribute('aria-current', 'true')
-  await page.goto('/planning')
+  await page.goto('/w/demo/planning')
   await expect(page.getByRole('button', { name: /Restored session/ })).toHaveAttribute('aria-current', 'true')
 })
 
@@ -1079,7 +1082,7 @@ test('planning uses deployment configuration and sends no execution detail', asy
     return route.fulfill({ json: [] })
   })
 
-  await page.goto('/planning')
+  await page.goto('/w/demo/planning')
   await expect(page.getByLabel('Planning model')).toHaveCount(0)
   await page.getByLabel('Planning goal').selectOption('bundle')
   await page.getByRole('button', { name: 'New session' }).click()
@@ -1187,7 +1190,7 @@ test('finalize immediately reveals a complete bundle preview, approval, and crea
     return route.fulfill({ json: [] })
   })
 
-  await page.goto('/planning')
+  await page.goto('/w/demo/planning')
   await page.getByLabel('Planning message').fill('Finalize this delivery bundle.')
   await page.getByRole('button', { name: 'Send' }).click()
   const preview = page.getByRole('region', { name: 'Planning bundle preview' })
@@ -1268,7 +1271,7 @@ test('a viewer can read planning and a pending bundle without mutation affordanc
     return route.fulfill({ json: [] })
   })
 
-  await page.goto('/planning')
+  await page.goto('/w/demo/planning')
   await expect(page.getByRole('heading', { name: 'Planning' })).toBeVisible()
   await expect(page.getByText('Readable plan')).toBeVisible()
   const preview = page.getByRole('region', { name: 'Planning bundle preview' })
@@ -1488,7 +1491,7 @@ test('planning restores durable messages, tool markers, and streams a new turn',
     return route.fulfill({ json: [] })
   })
 
-  await page.goto('/planning')
+  await page.goto('/w/demo/planning')
   await expect(page.getByText('Plan bounded retries.')).toBeVisible()
   await expect(page.getByText('I found the approved queue contract.')).toBeVisible()
   await expect(page.getByText('read_approved_spec')).toBeVisible()
@@ -1557,7 +1560,7 @@ test('a requirement voices drift once and collapses to a quiet line when nothing
     return route.fulfill({ json: [] })
   })
 
-  await page.goto('/requirements?requirement=req-retries')
+  await page.goto('/w/demo/requirements?requirement=req-retries')
   // AC-1.1: the unreconciled change is listed with the action that opens it.
   const attention = page.getByRole('region', { name: 'Needs your attention' })
   await expect(attention).toContainText('Code changed in conveyor without reaching this document')
@@ -1606,7 +1609,7 @@ test('partial staleness is voiced and delivery is task-centric with blueprints a
     return route.fulfill({ json: [] })
   })
 
-  await page.goto('/requirements?requirement=req-retries')
+  await page.goto('/w/demo/requirements?requirement=req-retries')
   // An incomplete evaluation is never reported as alignment: it is voiced in
   // the one attention surface, like every other machinery signal (AC-1.2).
   const attention = page.getByRole('region', { name: 'Needs your attention' })
@@ -1620,12 +1623,12 @@ test('partial staleness is voiced and delivery is task-centric with blueprints a
   // Delivery counts the serving tasks; the blueprint list reads as history.
   await expect(page.getByRole('link', { name: /Scale task operations queries/ })).toHaveAttribute(
     'href',
-    '/tasks/260807-0e2bc1/full',
+    '/w/demo/tasks/260807-0e2bc1/full',
   )
   await expect(page.getByRole('heading', { name: 'Delivery before blueprints retired' })).toBeVisible()
   await expect(page.getByRole('link', { name: /Ship bounded retries/ })).toHaveAttribute(
     'href',
-    '/blueprints/blueprint-task',
+    '/w/demo/blueprints/blueprint-task',
   )
 })
 
@@ -1684,7 +1687,7 @@ test('requirements deep-link exact versions, render statements, diff pending int
     return route.fulfill({ json: [] })
   })
 
-  await page.goto('/requirements?requirement=req-retries&tab=changes&target=2')
+  await page.goto('/w/demo/requirements?requirement=req-retries&tab=changes&target=2')
   await expect(page.getByLabel('Target version', { exact: true })).toHaveValue('2')
   await expect(page.getByLabel('Base version', { exact: true })).toHaveValue('1')
   await expect(page.getByText('Written by an operator').first()).toBeVisible()
@@ -1742,7 +1745,7 @@ test('requirement confirmation explains superseded versions separately from If-M
     return route.fulfill({ json: [] })
   })
 
-  await page.goto('/requirements?requirement=req-retries')
+  await page.goto('/w/demo/requirements?requirement=req-retries')
   const attention = page.getByRole('region', { name: 'Needs your attention' })
   await attention.getByRole('button', { name: 'Confirm version 2' }).click()
   await expect(attention).toContainText(
@@ -1786,7 +1789,7 @@ test('retired requirement versions stay in history as superseded and leave atten
     return route.fulfill({ json: [] })
   })
 
-  await page.goto('/requirements?requirement=req-retries')
+  await page.goto('/w/demo/requirements?requirement=req-retries')
   const attention = page.getByRole('region', { name: 'Needs your attention' })
   await expect(attention).not.toContainText('Version 2 is waiting for you')
   await page.getByRole('tab', { name: 'history', exact: true }).click()
@@ -1848,7 +1851,7 @@ test('migrated seeds explain disabled confirmation and requirement switches rese
     if (path === '/v1/requirements/req-second/versions') return route.fulfill({ json: [secondV1, secondV2] })
     return route.fulfill({ json: [] })
   })
-  await page.goto('/requirements?requirement=req-retries')
+  await page.goto('/w/demo/requirements?requirement=req-retries')
   const attention = page.getByRole('region', { name: 'Needs your attention' })
   const disabled = attention.getByRole('button', { name: 'Confirm version 1' })
   await expect(disabled).toBeDisabled()
@@ -1908,7 +1911,7 @@ test('planning keeps partial text through malformed and error stream frames and 
     return route.fulfill({ json: [] })
   })
 
-  await page.goto('/planning')
+  await page.goto('/w/demo/planning')
   await page.getByLabel('Planning message').fill('Continue the plan.')
   await page.getByRole('button', { name: 'Send' }).click()
   await expect(page.getByText('I found part of the answer.')).toBeVisible()
@@ -1960,7 +1963,7 @@ test('planning explains run conflicts and surfaces abandon failures without conf
     return route.fulfill({ json: [] })
   })
 
-  await page.goto('/planning')
+  await page.goto('/w/demo/planning')
   await expect(page.getByLabel('Planning model')).toHaveCount(0)
 
   await page.getByRole('button', { name: 'Abandon' }).click()
@@ -2025,7 +2028,7 @@ test('planning sends attachments as file parts without smuggling them into messa
     return route.fulfill({ json: [] })
   })
 
-  await page.goto('/planning')
+  await page.goto('/w/demo/planning')
   await page.locator('input[type=file]').setInputFiles({
     name: 'context.txt',
     mimeType: 'text/plain',
@@ -2100,7 +2103,7 @@ test('planning restores the selected session independently in each workspace', a
     return route.fulfill({ json: [] })
   })
 
-  await page.goto('/planning')
+  await page.goto('/w/demo/planning')
   await expect(page.getByRole('button', { name: /Demo session/ })).toHaveAttribute('aria-current', 'true')
   await page.getByRole('button', { name: 'Switch to Beta' }).click()
   // Planning left the sidebar while its presentation is parked
@@ -2108,7 +2111,7 @@ test('planning restores the selected session independently in each workspace', a
   // reload re-runs the init script above, so the switched workspace is pinned
   // for the new load rather than reset to the seeded one.
   await page.addInitScript(() => localStorage.setItem('conveyor-workspace', 'beta'))
-  await page.goto('/planning')
+  await page.goto('/w/beta/planning')
   await expect(page.getByRole('button', { name: /Beta session/ })).toHaveAttribute('aria-current', 'true')
   expect(await page.evaluate(() => localStorage.getItem('conveyor-planning-session:demo'))).toBe('session-demo')
   expect(await page.evaluate(() => localStorage.getItem('conveyor-planning-session:beta'))).toBe('session-beta')
@@ -2132,9 +2135,9 @@ test('requirements and planning render fetch failures instead of indefinite load
       })
     return route.fulfill({ json: [] })
   })
-  await page.goto('/requirements')
+  await page.goto('/w/demo/requirements')
   await expect(page.getByText('Requirement service is unavailable.')).toBeVisible()
-  await page.goto('/planning')
+  await page.goto('/w/demo/planning')
   await expect(page.getByText('Planning history is unavailable.')).toBeVisible()
   await expect(page.getByText('Restoring sessions…')).toHaveCount(0)
 })
@@ -2162,10 +2165,13 @@ test('a historical finalized blueprint session remains readable', async ({ page 
     return route.fulfill({ json: [] })
   })
 
-  await page.goto('/planning')
+  await page.goto('/w/demo/planning')
   await expect(page.getByText('Planning artifact finalized')).toBeVisible()
   await expect(page.getByText(/authority remains with the ordinary confirmation or plan gate/)).toBeVisible()
-  await expect(page.getByRole('link', { name: 'Open plan gate' })).toHaveAttribute('href', '/tasks/blueprint-task')
+  await expect(page.getByRole('link', { name: 'Open plan gate' })).toHaveAttribute(
+    'href',
+    '/w/demo/tasks/blueprint-task',
+  )
 })
 
 test('reference documents upload safely, load history on demand, compare both sides, and confirm deletion', async ({
@@ -2229,7 +2235,7 @@ test('reference documents upload safely, load history on demand, compare both si
     return route.fulfill({ json: [] })
   })
 
-  await page.goto('/requirements')
+  await page.goto('/w/demo/requirements')
   // AC-2.1: product overviews are their own group in the tree, and opening one
   // makes it the canvas — the version history it needs loads only then.
   const tree = page.getByRole('navigation', { name: 'Document tree' })
@@ -2325,7 +2331,7 @@ test('upload then supersede uses the version endpoint and bounds oversized compa
     return route.fulfill({ json: [] })
   })
 
-  await page.goto('/requirements')
+  await page.goto('/w/demo/requirements')
   await page
     .locator('label')
     .filter({ hasText: 'Add Markdown' })
@@ -2423,7 +2429,7 @@ for (const role of ['viewer', 'executor', 'contributor', 'maintainer', 'operator
       return route.fulfill({ json: [] })
     })
 
-    await page.goto('/requirements?requirement=req-retries')
+    await page.goto('/w/demo/requirements?requirement=req-retries')
     const canvas = page.getByRole('region', { name: 'Requirement document' })
     await expect(canvas.getByRole('heading', { name: 'Retry behavior' })).toBeVisible()
     await page.getByRole('button', { name: 'Review changes · v1', exact: true }).click()
@@ -2516,7 +2522,7 @@ test('pending derivation links to its pinned source and requirement anchors scro
     return route.fulfill({ json: [] })
   })
 
-  await page.goto('/requirements?requirement=req-retries#ac-1.1')
+  await page.goto('/w/demo/requirements?requirement=req-retries#ac-1.1')
   await expect(
     page.getByText('As billing operator, I want bounded retries, so that failures remain visible.'),
   ).toBeVisible()
@@ -2585,7 +2591,7 @@ test('session lists label goals and the requirements surface has no freehand edi
     return route.fulfill({ json: [] })
   })
 
-  await page.goto('/planning')
+  await page.goto('/w/demo/planning')
   // Goal- and artifact-derived titles, never a wall of "New requirement".
   await expect(page.getByRole('button', { name: /Drafting requirement…/ })).toBeVisible()
   await expect(page.getByRole('button', { name: /Ship bounded retries/ })).toBeVisible()
@@ -2605,7 +2611,7 @@ test('session lists label goals and the requirements surface has no freehand edi
   // Requirement drafting moved beside the document, so it is not offered here.
   await expect(page.getByLabel('Planning goal').locator('option')).toHaveCount(2)
 
-  await page.goto('/requirements?requirement=req-retries')
+  await page.goto('/w/demo/requirements?requirement=req-retries')
   await expect(page.getByRole('region', { name: 'Requirement document' })).toBeVisible()
   // Freehand editing stays rejected, and with the
   // assistant column parked (component-web-document-surfaces) there is no composer either, so
@@ -2659,7 +2665,7 @@ test('a deep link opens the document the URL asked for, not the first in the cor
     return route.fulfill({ json: [] })
   })
 
-  await page.goto('/requirements?requirement=req-other&session=session-done')
+  await page.goto('/w/demo/requirements?requirement=req-other&session=session-done')
   const canvas = page.getByRole('region', { name: 'Requirement document' })
   await expect(canvas.getByRole('heading', { name: 'Other intent' })).toBeVisible()
   await expect(page).toHaveURL(/requirement=req-other/)
@@ -2712,7 +2718,7 @@ test('requirement activity pages on demand and opens the explorer independently'
     }
     return route.fulfill({ json: [] })
   })
-  await page.goto('/requirements?requirement=req-retries')
+  await page.goto('/w/demo/requirements?requirement=req-retries')
   await page.getByRole('tab', { name: 'history', exact: true }).click()
   await expect(page.getByText('Technical activity', { exact: true })).toBeVisible()
   expect(eventReads).toBe(0)
@@ -2773,7 +2779,7 @@ test('Requirement pending attention revises its first version and refreshes hist
     }
     return route.fulfill({ json: [] })
   })
-  await page.goto('/requirements?requirement=req-retries')
+  await page.goto('/w/demo/requirements?requirement=req-retries')
   await page.getByRole('button', { name: 'Revise', exact: true }).click()
   const dialog = page.getByRole('dialog')
   await expect(dialog.getByLabel('Proposal content')).toHaveValue(requirement.pending_versions[0].content)
@@ -2809,7 +2815,7 @@ for (const access of ['confirm-only', 'propose-only'] as const) {
       if (path === '/v1/requirements/req-retries/versions') return route.fulfill({ json: requirement.pending_versions })
       return route.fulfill({ json: [] })
     })
-    await page.goto('/requirements?requirement=req-retries')
+    await page.goto('/w/demo/requirements?requirement=req-retries')
     await expect(page.getByRole('region', { name: 'Needs your attention' })).toContainText(
       'Version 1 is waiting for you',
     )
@@ -2882,7 +2888,7 @@ for (const state of [
       if (path === '/v1/requirements/req-retries/versions') return route.fulfill({ json: view.versions })
       return route.fulfill({ json: [] })
     })
-    await page.goto('/requirements?requirement=req-retries')
+    await page.goto('/w/demo/requirements?requirement=req-retries')
     const header = page.getByRole('heading', { name: 'Retry behavior', exact: true }).locator('..')
     const tree = page.getByRole('navigation', { name: 'Document tree' })
     const attention = page.getByRole('region', { name: 'Needs your attention', exact: true })

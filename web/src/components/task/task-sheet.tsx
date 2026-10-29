@@ -29,6 +29,7 @@ import { taskHasVerifyStage, useTaskDetail, useTaskOrder, useTaskVerification } 
 // reviewer never loses Board context. The kanban and map views open it the
 // same way, and closing returns to whichever view the Board was showing.
 export function TaskSheet({ taskId }: { taskId: string }) {
+  const { workspace } = useWorkspaceSelection()
   const navigate = useNavigate()
   const { data: item, isLoading, error } = useTaskDetail(taskId)
   useSheetPrefetch(taskId)
@@ -40,7 +41,8 @@ export function TaskSheet({ taskId }: { taskId: string }) {
   const boardOrder = useTaskOrder(taskId)
   const previousId = boardOrder.previousId
   const nextId = boardOrder.nextId
-  const close = () => void navigate({ to: '/', search: (prev) => prev })
+  const close = () =>
+    void navigate({ to: '/w/$workspaceId/', params: { workspaceId: workspace }, search: (prev) => prev })
   // A blueprint anchor has one home, and it is not this sheet.
   const redirecting = useCanonicalBlueprintRedirect(item?.task)
 
@@ -67,7 +69,12 @@ export function TaskSheet({ taskId }: { taskId: string }) {
         )}
         <SheetNavButton targetId={previousId} label="Previous task" icon={<ChevronUp />} />
         <SheetNavButton targetId={nextId} label="Next task" icon={<ChevronDown />} />
-        <Link to="/tasks/$taskId/full" params={{ taskId }} aria-label="Open full task page" className="shrink-0">
+        <Link
+          to="/w/$workspaceId/tasks/$taskId/full"
+          params={{ workspaceId: workspace, taskId }}
+          aria-label="Open full task page"
+          className="shrink-0"
+        >
           <Button variant="ghost" size="icon" tabIndex={-1}>
             <Maximize2 />
           </Button>
@@ -113,6 +120,7 @@ function useSheetPrefetch(taskId: string) {
 }
 
 function SheetNavButton({ targetId, label, icon }: { targetId?: string; label: string; icon: React.ReactNode }) {
+  const { workspace } = useWorkspaceSelection()
   if (!targetId) {
     return (
       <Button variant="ghost" size="icon" className="shrink-0" aria-label={label} disabled>
@@ -122,8 +130,8 @@ function SheetNavButton({ targetId, label, icon }: { targetId?: string; label: s
   }
   return (
     <Link
-      to="/tasks/$taskId"
-      params={{ taskId: targetId }}
+      to="/w/$workspaceId/tasks/$taskId"
+      params={{ workspaceId: workspace, taskId: targetId }}
       search={(prev) => prev}
       aria-label={label}
       className="shrink-0"

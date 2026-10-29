@@ -132,7 +132,7 @@ async function mockAPI(page: Page, detail: () => object, action: () => NextActio
   return posts
 }
 
-for (const surface of [`/tasks/${taskId}`, `/tasks/${taskId}/full`]) {
+for (const surface of [`/w/demo/tasks/${taskId}`, `/w/demo/tasks/${taskId}/full`]) {
   test(`next-action card on ${surface} states the server's action and acts through its choices`, async ({ page }) => {
     const posts = await mockAPI(
       page,
@@ -221,8 +221,8 @@ const workingAction: NextAction = {
 }
 
 for (const surface of [
-  { name: 'Board sheet', path: `/tasks/${taskId}`, detail: 'dialog', label: 'Task detail' },
-  { name: 'full route', path: `/tasks/${taskId}/full`, detail: 'region', label: 'Task content' },
+  { name: 'Board sheet', path: `/w/demo/tasks/${taskId}`, detail: 'dialog', label: 'Task detail' },
+  { name: 'full route', path: `/w/demo/tasks/${taskId}/full`, detail: 'region', label: 'Task content' },
 ] as const) {
   test(`a running attempt on the ${surface.name} shows one next-action box above Activity at 390 px`, async ({
     page,
@@ -294,7 +294,7 @@ test('a claimed order without a mapped execution state keeps one Stop attempt in
     () => activity('running', unnamed, [reviewOrder as WorkOrder]),
     () => unnamed,
   )
-  for (const path of [`/tasks/${taskId}/full`, `/tasks/${taskId}`]) {
+  for (const path of [`/w/demo/tasks/${taskId}/full`, `/w/demo/tasks/${taskId}`]) {
     await page.goto(path)
     const card = page.getByRole('region', { name: 'Next action' })
     await expect(card.getByRole('heading', { name: 'An agent is working on this task.' })).toBeVisible()
@@ -307,7 +307,7 @@ test('a claimed order without a mapped execution state keeps one Stop attempt in
 // On the Flow tab the timeline's gate card is not mounted, so the card itself
 // carries the server's choices: still usable, and the summary still printed
 // once (component-web-task-surfaces, Activity tabs and the task flow view).
-for (const surface of [`/tasks/${taskId}`, `/tasks/${taskId}/full`]) {
+for (const surface of [`/w/demo/tasks/${taskId}`, `/w/demo/tasks/${taskId}/full`]) {
   test(`on ${surface} the Flow tab keeps the gate choices usable from the card`, async ({ page }) => {
     const posts = await mockAPI(
       page,
@@ -371,7 +371,7 @@ test('the card carries the choices of an operator action outside the human gate'
     () => activity('running', question),
     () => question,
   )
-  await page.goto(`/tasks/${taskId}`)
+  await page.goto(`/w/demo/tasks/${taskId}`)
   await expect(page.getByRole('region', { name: 'Human gate' })).toHaveCount(0)
   const card = page.getByRole('region', { name: 'Next action' })
   // Every server choice renders; one the caller may not take is disabled with
@@ -424,7 +424,7 @@ test('a server choice this page cannot send renders disabled with its reason', a
     () => activity('queued', stalled),
     () => stalled,
   )
-  await page.goto(`/tasks/${taskId}`)
+  await page.goto(`/w/demo/tasks/${taskId}`)
   const card = page.getByRole('region', { name: 'Next action' })
   const button = card.getByRole('button', { name: 'Remove dependency' })
   await expect(button).toBeDisabled()
@@ -448,7 +448,7 @@ test('a terminal next action renders no card', async ({ page }) => {
     () => activity('merged', terminal),
     () => terminal,
   )
-  await page.goto(`/tasks/${taskId}/full`)
+  await page.goto(`/w/demo/tasks/${taskId}/full`)
   await expect(page.getByRole('heading', { name: 'Card task' }).first()).toBeVisible()
   await expect(page.getByText('Card task is merged.')).toHaveCount(0)
   await expect(page.getByRole('region', { name: 'Next action' })).toHaveCount(0)
@@ -492,7 +492,7 @@ test('the human gate takes its statement and buttons from the server, not the ev
     () => activity('awaiting_human', jobFailure),
     () => jobFailure,
   )
-  await page.goto(`/tasks/${taskId}/full`)
+  await page.goto(`/w/demo/tasks/${taskId}/full`)
   const gate = page.getByRole('region', { name: 'Human gate' })
   // The gate heads with the server label; the summary stays on the card (DEC-61).
   await expect(gate.getByRole('heading', { name: jobFailure.label })).toBeVisible()
@@ -531,7 +531,7 @@ test('an approved task with the merge gate off shows the server merging summary 
     () => activity('approved', merging),
     () => merging,
   )
-  await page.goto(`/tasks/${taskId}/full`)
+  await page.goto(`/w/demo/tasks/${taskId}/full`)
   const card = page.getByRole('region', { name: 'Next action' })
   await expect(card.getByText('Conveyor is merging')).toBeVisible()
   await expect(card.getByRole('button')).toHaveCount(0)
@@ -605,7 +605,7 @@ for (const state of ['CONFLICTING', 'STALE', 'UNKNOWN']) {
       () => mergeGateActivity(state),
       () => mergeApproval(state),
     )
-    await page.goto(`/tasks/${taskId}/full`)
+    await page.goto(`/w/demo/tasks/${taskId}/full`)
     const gate = page.getByRole('region', { name: 'Human gate' })
     await expect(gate.locator('[data-choice="approve"]')).toBeEnabled()
     await expect(gate.locator('[data-merge-at-gate]')).toBeDisabled()
@@ -628,7 +628,7 @@ test('Merge at MERGEABLE confirms the reviewed head and PR, then posts the choic
     await forge.promise
     return route.fulfill({ json: {} })
   })
-  await page.goto(`/tasks/${taskId}/full`)
+  await page.goto(`/w/demo/tasks/${taskId}/full`)
   const gate = page.getByRole('region', { name: 'Human gate' })
   // Approve stays beside Merge, and the merge choice is not also a one-click button.
   await expect(gate.locator('[data-choice="approve"]')).toBeEnabled()
@@ -659,7 +659,7 @@ test('a 409 refusal shows the readiness the server names', async ({ page }) => {
   await page.route(`**${mergePath}**`, (route) =>
     route.fulfill({ status: 409, json: { error: 'merge gate not ready: CONFLICTING', readiness: 'CONFLICTING' } }),
   )
-  await page.goto(`/tasks/${taskId}/full`)
+  await page.goto(`/w/demo/tasks/${taskId}/full`)
   await page.getByRole('region', { name: 'Human gate' }).locator('[data-merge-at-gate]').click()
   const dialog = page.getByRole('dialog', { name: 'Confirm merge' })
   await dialog.locator('[data-confirm-merge]').click()
@@ -710,7 +710,7 @@ test('the recovery card follows the order the server names as current', async ({
     () => activity('queued', stalled, orders),
     () => stalled,
   )
-  await page.goto(`/tasks/${taskId}/full`)
+  await page.goto(`/w/demo/tasks/${taskId}/full`)
   // The newest order would win a client-side pick; the server named the verify order.
   await expect(page.getByText('Verification paused — recovery needed').first()).toBeVisible()
   await expect(page.getByText('The order was not claimed before its queue deadline.').first()).toBeVisible()
@@ -823,7 +823,7 @@ test('the next-action card decides task-context proposals through its compact ch
     () => contextProposalDetail(action),
     () => action,
   )
-  await page.goto(`/tasks/${taskId}`)
+  await page.goto(`/w/demo/tasks/${taskId}`)
   const sheet = page.getByRole('dialog', { name: 'Task detail' })
   const card = sheet.getByRole('region', { name: 'Next action' })
   await expect(card.getByText('A context proposal is waiting for a decision.')).toBeVisible()
@@ -859,7 +859,7 @@ test('the next-action card decides task-context proposals through its compact ch
   expect(outside).not.toContain('queue:job/dispatch_task')
   await expect(card.getByRole('link', { name: 'Review in Inbox →' })).toHaveAttribute(
     'href',
-    `/inbox?selected=${taskId}`,
+    `/w/demo/inbox?selected=${taskId}`,
   )
   // A choice naming no listed proposal stays visible with its reason.
   await expect(card.locator('[data-context-unmatched]')).toContainText(
@@ -898,7 +898,7 @@ test('task-context choices a caller may not take disable Apply and Dismiss all w
     () => contextProposalDetail(action),
     () => action,
   )
-  await page.goto(`/tasks/${taskId}`)
+  await page.goto(`/w/demo/tasks/${taskId}`)
   const card = page.getByRole('dialog', { name: 'Task detail' }).getByRole('region', { name: 'Next action' })
   await expect(card.locator('[data-context-apply]')).toBeDisabled()
   await expect(card.getByRole('button', { name: 'Dismiss all', exact: true })).toBeDisabled()
@@ -909,7 +909,7 @@ test('task-context choices a caller may not take disable Apply and Dismiss all w
 // Long titles truncate on their one line and the checklist stays inside the
 // card and the viewport on both detail surfaces. The sheet clips overflow, so
 // the document width alone would not catch this.
-for (const surface of [`/tasks/${taskId}`, `/tasks/${taskId}/full`]) {
+for (const surface of [`/w/demo/tasks/${taskId}`, `/w/demo/tasks/${taskId}/full`]) {
   test(`the compact context checklist fits the next-action card at 390 px on ${surface}`, async ({ page }) => {
     await page.setViewportSize({ width: 390, height: 844 })
     const action = contextProposalAction()
@@ -921,7 +921,7 @@ for (const surface of [`/tasks/${taskId}`, `/tasks/${taskId}/full`]) {
     await page.goto(surface)
     const card = page.getByRole('region', { name: 'Next action' })
     await expect(card.locator('[data-context-proposal]')).toHaveCount(3)
-    if (surface === `/tasks/${taskId}`) {
+    if (surface === `/w/demo/tasks/${taskId}`) {
       const sheet = page.getByRole('dialog', { name: 'Task detail' })
       await expect.poll(() => sheet.evaluate((node) => node.getAnimations().length)).toBe(0)
     }
@@ -997,14 +997,14 @@ test('switching between cached context-proposal tasks isolates the checklist and
     await page.evaluate((path) => {
       window.history.pushState(window.history.state, '', path)
       window.dispatchEvent(new PopStateEvent('popstate', { state: window.history.state }))
-    }, `/tasks/${id}/full`)
+    }, `/w/demo/tasks/${id}/full`)
     await expect(page.getByRole('heading', { name: title }).first()).toBeVisible()
   }
   const card = page.getByRole('region', { name: 'Next action' })
   const apply = card.locator('[data-context-apply]')
   const strategy = card.locator(`[data-context-check="system_design:${contextTargets[1].id}"]`)
 
-  await page.goto(`/tasks/${otherId}/full`)
+  await page.goto(`/w/demo/tasks/${otherId}/full`)
   await expect(apply).toHaveText('Attach all 3')
   await open(taskId, 'Card task')
   await expect(apply).toHaveText('Attach all 3')
@@ -1070,7 +1070,7 @@ test('a parked next action shows one choice row and Start over opens the success
     restart = route.request().postDataJSON()
     return route.fulfill({ json: { successor: { id: 'T-successor' }, cancelled_task: { id: taskId } } })
   })
-  await page.goto(`/tasks/${taskId}/full`)
+  await page.goto(`/w/demo/tasks/${taskId}/full`)
   const card = page.getByRole('region', { name: 'Next action' })
   const row = card.locator('[data-next-action-choices] > div').first()
   await expect(row.getByRole('button')).toHaveText(['Recover', 'Close', 'Start over'])
@@ -1111,7 +1111,7 @@ test('a compact row opens the document preview over the task sheet, and Escape c
       },
     }),
   )
-  await page.goto(`/tasks/${taskId}`)
+  await page.goto(`/w/demo/tasks/${taskId}`)
   const sheet = page.getByRole('dialog', { name: 'Task detail' })
   const card = sheet.getByRole('region', { name: 'Next action' })
   const opener = card.getByRole('button', { name: `Preview ${contextTargets[1].title}` })

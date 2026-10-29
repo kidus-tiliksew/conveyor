@@ -103,6 +103,7 @@ export function NextActionCard({
 // in the Inbox (feature-operator-next-action NA-6; component-web-task-surfaces
 // Next-action card).
 function ContextProposalDecision({ taskId, action }: { taskId: string; action: NextAction }) {
+  const { workspace } = useWorkspaceSelection()
   const sends = useContextProposalSends(taskId)
   const selection = useContextProposalSelection(taskId)
   return (
@@ -112,7 +113,8 @@ function ContextProposalDecision({ taskId, action }: { taskId: string; action: N
       <div className="flex min-w-0 flex-wrap items-start justify-between gap-2">
         <ContextProposalFooter action={action} selection={selection} sends={sends} />
         <Link
-          to="/inbox"
+          to="/w/$workspaceId/inbox"
+          params={{ workspaceId: workspace }}
           search={{ selected: taskId }}
           data-review-in-inbox
           className="text-xs font-medium text-primary hover:underline"

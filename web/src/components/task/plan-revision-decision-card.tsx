@@ -80,7 +80,7 @@ export function PlanRevisionDecisionCard({
       // Direction is operator instruction the backend normalizes and carries
       // into the next order, so it is sent trimmed — never with the incidental
       // whitespace a textarea collects.
-      await reviewTask(item.task.id, {
+      await reviewTask(workspace, item.task.id, {
         action: contract.action,
         reasonCode: contract.reasonCode,
         comment: direction.trim(),

@@ -454,8 +454,7 @@ test('board opens on the last month and remembers the operator adjustment per wo
   expect(await page.evaluate(() => localStorage.getItem('conveyor-task-filters:board:demo'))).toContain(
     '"updated":"any"',
   )
-  await page.evaluate(() => localStorage.setItem('conveyor-workspace', 'other'))
-  await page.reload()
+  await page.goto('/w/other/')
   await page.getByRole('button', { name: 'Filters', exact: true }).click()
   await page.getByRole('tab', { name: 'Updated' }).click()
   await expect(page.getByRole('option', { name: 'Last month' })).toHaveAttribute('aria-selected', 'true')
@@ -500,8 +499,7 @@ test('saved Created windows migrate to Updated per workspace', async ({ page }) 
   expect(stored).not.toHaveProperty('createdFrom')
 
   // The other workspace migrates its own custom range, untouched by demo's.
-  await page.evaluate(() => localStorage.setItem('conveyor-workspace', 'other'))
-  await page.reload()
+  await page.goto('/w/other/')
   await page.getByRole('button', { name: 'Filters', exact: true }).click()
   await page.getByRole('tab', { name: 'Updated' }).click()
   await expect(page.getByRole('option', { name: 'Custom range' })).toHaveAttribute('aria-selected', 'true')
@@ -685,7 +683,7 @@ test('a Board sheet adds no unfiltered activity read and the Board pass stays se
     await next()
   }
 
-  await page.goto('/tasks/task-recent')
+  await page.goto('/w/demo/tasks/task-recent')
   await expect(page.getByRole('dialog', { name: 'Task detail' })).toBeVisible()
   await expect.poll(() => urls.length).toBe(1)
   await release()
@@ -712,12 +710,12 @@ test('board opens and closes task creation without leaving the board', async ({ 
   await openBoard(page, seen)
   await page.getByRole('button', { name: 'New task' }).click()
   await expect(page.getByRole('dialog', { name: 'New task' })).toBeVisible()
-  expect(new URL(page.url()).pathname).toBe('/')
+  expect(new URL(page.url()).pathname).toBe('/w/demo/')
   await expect(page.getByRole('heading', { name: 'Board' })).toBeVisible()
 
   await page.getByRole('button', { name: 'Close', exact: true }).click()
   await expect(page.getByRole('dialog', { name: 'New task' })).toHaveCount(0)
-  expect(new URL(page.url()).pathname).toBe('/')
+  expect(new URL(page.url()).pathname).toBe('/w/demo/')
 })
 
 test('board creation opens the new task in the board detail route', async ({ page }) => {

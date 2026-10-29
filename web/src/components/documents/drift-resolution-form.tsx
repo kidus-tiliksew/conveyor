@@ -50,7 +50,7 @@ export function DriftResolutionForm({
   const requirementID = fixedRequirementID ?? selectedRequirementID
   const mutation = useMutation({
     mutationFn: () =>
-      resolveMonitorDrift(drift.id, outcome, outcome === 'requirements_amended' ? requirementID : undefined),
+      resolveMonitorDrift(workspace, drift.id, outcome, outcome === 'requirements_amended' ? requirementID : undefined),
     onSuccess: async () => {
       await Promise.all([queryClient.invalidateQueries({ queryKey: ['monitor', workspace] }), onResolved?.()])
     },

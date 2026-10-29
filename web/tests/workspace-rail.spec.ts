@@ -189,7 +189,7 @@ test('workspace operator without the creation right sees no Add workspace', asyn
       new URL(response.url()).searchParams.get('workspace_id') === 'design',
   )
   await mockShell(page, { canCreate: false })
-  await page.goto('/workspace')
+  await page.goto('/w/design/workspace')
   // The scoped projection serves the operator bundle, manage_workspace
   // included, and the unscoped read serves an explicit false.
   expect((await (await scopedRead).json()).capabilities).toContain('manage_workspace')

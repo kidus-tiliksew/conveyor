@@ -60,7 +60,7 @@ function TaskRestartDialog({
   const reasonLength = Array.from(reason.trim()).length
   const noteLength = Array.from(note).length
   const mutation = useMutation({
-    mutationFn: (input: TaskRestartInput) => restartTask(item.task.id, input),
+    mutationFn: (input: TaskRestartInput) => restartTask(workspace, item.task.id, input),
     // Fetch rejects with TypeError on network failure. Server refusals stay visible.
     retry: (count, error) => error instanceof TypeError && count < 1,
     onSuccess: async (result) => {
@@ -73,7 +73,7 @@ function TaskRestartDialog({
         return
       }
       queryClient.setQueryData(['task-restart-notice', workspace, result.successor.id], Date.now())
-      await navigate({ to: relatedTaskRoute(variant), params: { taskId: result.successor.id } })
+      await navigate({ to: relatedTaskRoute(variant), params: { workspaceId: workspace, taskId: result.successor.id } })
       onClose()
     },
   })

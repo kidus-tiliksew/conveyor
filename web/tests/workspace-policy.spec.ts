@@ -56,7 +56,7 @@ async function mockAPIs(page: Page, reject = false, workers: Record<string, unkn
 
 test('workspace edits policy only and sends no retired execution detail', async ({ page }) => {
   const submitted = await mockAPIs(page)
-  await page.goto('/workspace')
+  await page.goto('/w/demo/workspace')
 
   await expect(page.getByRole('tab', { name: 'Policy' })).toBeVisible()
   await expect(page.getByRole('tab', { name: /Harness|Execution/ })).toHaveCount(0)
@@ -79,7 +79,7 @@ test('workspace edits policy only and sends no retired execution detail', async 
 // case: FF-001
 test('fail-fast review is off by default and survives a seat change when enabled', async ({ page }) => {
   const submitted = await mockAPIs(page)
-  await page.goto('/workspace')
+  await page.goto('/w/demo/workspace')
 
   const failFast = page.getByRole('switch', { name: 'Fail-fast review' })
   await expect(failFast).not.toBeChecked()
@@ -94,7 +94,7 @@ test('fail-fast review is off by default and survives a seat change when enabled
 
 test('workspace surfaces named policy rejections verbatim', async ({ page }) => {
   await mockAPIs(page, true)
-  await page.goto('/workspace')
+  await page.goto('/w/demo/workspace')
   await page.getByLabel('Review stage timeout').fill('0s')
   await page.getByRole('button', { name: 'Save changes' }).click()
   await expect(page.getByText('stage_timeouts.review: stage_timeouts.review must be positive')).toBeVisible()
@@ -120,7 +120,7 @@ test('workspace retains operational worker health and provider limits', async ({
       },
     ],
   })
-  await page.goto('/workspace')
+  await page.goto('/w/demo/workspace')
   await page.getByRole('tab', { name: 'Workers' }).click()
 
   await expect(page.getByText('Worker available')).toBeVisible()

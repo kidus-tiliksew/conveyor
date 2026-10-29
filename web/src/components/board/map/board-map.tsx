@@ -117,8 +117,8 @@ function BoardMapView() {
   const openTask = useCallback(
     (id: string) =>
       void navigate({
-        to: '/tasks/$taskId',
-        params: { taskId: id },
+        to: '/w/$workspaceId/tasks/$taskId',
+        params: { workspaceId: workspace, taskId: id },
         search: (prev: BoardSearch) => ({ ...prev, view: 'map' as const, focus: id }),
       }),
     [navigate],
@@ -511,7 +511,8 @@ function BoardMapView() {
                     <>
                       {' · '}
                       <Link
-                        to="/requirements"
+                        to="/w/$workspaceId/requirements"
+                        params={{ workspaceId: workspace }}
                         search={{ requirement: scope }}
                         className="hover:text-foreground hover:underline"
                       >

@@ -38,8 +38,8 @@ function matchesSearch(item: InboxItem, search: InboxSearch) {
 // one compact row per item, and the selected item's question, context, change
 // and choices render only in the detail view beside it.
 export function InboxPage() {
-  const search = useSearch({ from: '/inbox' })
-  const navigate = useNavigate({ from: '/inbox' })
+  const search = useSearch({ from: '/w/$workspaceId/inbox' })
+  const navigate = useNavigate({ from: '/w/$workspaceId/inbox' })
   const { workspace } = useWorkspaceSelection()
   const inbox = useNextActions()
   const root = useRef<HTMLDivElement>(null)
@@ -122,7 +122,12 @@ export function InboxPage() {
                 ? `Showing ${search.tier === 'requirement' ? 'Requirement' : 'System Design'} proposals for ${search.document}. Confirming another version dismisses older pending versions.`
                 : `Showing decisions from task ${search.task}.`}
             </span>
-            <Link to="/inbox" search={{}} className="font-medium text-primary hover:underline">
+            <Link
+              to="/w/$workspaceId/inbox"
+              params={{ workspaceId: workspace }}
+              search={{}}
+              className="font-medium text-primary hover:underline"
+            >
               Show all
             </Link>
           </div>

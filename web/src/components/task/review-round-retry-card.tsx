@@ -19,7 +19,7 @@ export function ReviewRoundRetryCard({ item }: { item: ActivityItem }) {
   const requestId = useRef(crypto.randomUUID())
   const [reason, setReason] = useState('')
   const mutation = useMutation({
-    mutationFn: () => retryReviewRound(item.task.id, requestId.current, reason.trim()),
+    mutationFn: () => retryReviewRound(workspace, item.task.id, requestId.current, reason.trim()),
     onMutate: (): MutationWorkspace => ({ workspace }),
     onSuccess: (_data, _variables, started) => {
       if (started) void queryClient.invalidateQueries({ queryKey: taskDetailQueryKey(started.workspace, item.task.id) })

@@ -28,14 +28,14 @@ export function CreateWorkspaceForm({
   onCancel?: () => void
 }) {
   const queryClient = useQueryClient()
-  const { setWorkspace } = useWorkspaceSelection()
+  const { switchWorkspace } = useWorkspaceSelection()
   const [name, setName] = useState('')
   const id = slugify(name)
   const create = useMutation({
     mutationFn: () => createWorkspace({ id, name: name.trim() }),
     onSuccess: async (created) => {
       await queryClient.invalidateQueries({ queryKey: ['workspaces'] })
-      setWorkspace(created.id)
+      switchWorkspace(created.id)
       onCreated?.(created)
     },
   })

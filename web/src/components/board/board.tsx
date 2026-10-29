@@ -1,13 +1,11 @@
-import { useQuery } from '@tanstack/react-query'
 import { Link, useNavigate, useParams, useSearch } from '@tanstack/react-router'
 import { ChevronLeft, ChevronRight, Plus } from 'lucide-react'
 import { lazy, Suspense, useEffect, useMemo, useState } from 'react'
 import { boardColumnFor } from '../../lib/activity'
-import { fetchWorkspaces } from '../../lib/api'
 import { isBlueprintAnchor } from '../../lib/blueprint'
 import { type GroupKey, stageGroups } from '../../lib/contracts'
 import type { ActivitySummary } from '../../lib/types'
-import { useActivity, useCanCreateWorkspaces, useWorkspaceCapability, useWorkspaceSelection } from '../app-shell'
+import { useActivity, useWorkspaceCapability } from '../app-shell'
 import { MCPSetup } from '../mcp/mcp-setup-dialog'
 import { TaskCreateSheet } from '../task/task-create-sheet'
 import {
@@ -33,11 +31,9 @@ const BoardMap = lazy(() => import('./map/board-map').then((module) => ({ defaul
 // intake, and any arriving kanban filter live in the address so a reload or a
 // shared link lands on the same view.
 export function Board() {
-  const { workspace } = useWorkspaceSelection()
   const search = useSearch({ strict: false }) as BoardSearch
   // Intake follows its own capability (DEC-60); the server checks it again.
   const canCreateTasks = useWorkspaceCapability('create_tasks')
-  if (!workspace) return <Onboarding />
   const map = search.view === 'map'
   return (
     <div className="flex h-full flex-col">
@@ -206,37 +202,5 @@ function Kanban() {
             ))}
       </section>
     </>
-  )
-}
-
-// The board is the landing page, so it also owns first-run guidance when the
-// signed-in user has no workspace or needs to pick one. Creation follows the
-// caller's own unscoped right, not a workspace capability: no workspace is
-// selected here (component-web-task-surfaces).
-function Onboarding() {
-  const canCreateWorkspaces = useCanCreateWorkspaces()
-  const { data: workspaces } = useQuery({
-    queryKey: ['workspaces'],
-    queryFn: fetchWorkspaces,
-  })
-  return (
-    <div className="grid h-full place-items-center px-6">
-      <div className="max-w-md text-center">
-        <h1 className="text-lg font-semibold tracking-tight">Welcome to Conveyor</h1>
-        {(workspaces?.length ?? 0) === 0 && canCreateWorkspaces ? (
-          <>
-            <p className="mt-2 text-sm leading-6 text-muted">No workspaces yet. Create one to start the line.</p>
-            <Link to="/workspaces/new" className="mt-4 inline-block">
-              <Button tabIndex={-1}>
-                <Plus />
-                Create workspace
-              </Button>
-            </Link>
-          </>
-        ) : (
-          <p className="mt-2 text-sm leading-6 text-muted">Pick a workspace from the left rail to see its board.</p>
-        )}
-      </div>
-    </div>
   )
 }

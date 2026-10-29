@@ -23,7 +23,7 @@ test('workspace summary shows the automatic recovery bound', async ({ page }) =>
     }
     return route.fulfill({ json: [] })
   })
-  await page.goto('/workspace')
+  await page.goto('/w/demo/workspace')
   await expect(page.getByText('2 automatic recoveries / 24h')).toBeVisible()
 })
 
@@ -49,7 +49,7 @@ test('workspace summary shows off when automatic recovery is disabled', async ({
     }
     return route.fulfill({ json: [] })
   })
-  await page.goto('/workspace')
+  await page.goto('/w/demo/workspace')
   await expect(page.getByText('off / 24h')).toBeVisible()
   await expect(page.getByText('0 automatic recoveries')).toHaveCount(0)
 })

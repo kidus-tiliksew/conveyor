@@ -502,9 +502,9 @@ test('a detail refresh refreshes an opted-in card stripe', async ({ page }) => {
       return 'event: activity\ndata: {}\n\n'
     },
   })
-  await page.goto('/tasks/task-proposal')
+  await page.goto('/w/demo/tasks/task-proposal')
   // The open sheet makes the Board behind it inert, so the card is found by its link.
-  const stripe = page.locator('a[href="/tasks/task-proposal"] [data-stage="spec"]')
+  const stripe = page.locator('a[href="/w/demo/tasks/task-proposal"] [data-stage="spec"]')
   await expect(stripe).toHaveAttribute('data-status', 'needs_operator')
   const detailReads = counts.detail
   release()

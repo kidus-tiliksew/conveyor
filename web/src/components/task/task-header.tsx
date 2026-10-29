@@ -116,6 +116,7 @@ export function TaskHeader({ item, variant }: { item: ActivityItem; variant: 'sh
 
 // Status row, notices, title, and description.
 export function TaskIdentity({ item, variant }: { item: ActivityItem; variant: 'sheet' | 'full' }) {
+  const { workspace } = useWorkspaceSelection()
   const {
     restartLinks,
     closeOutcome,
@@ -151,7 +152,11 @@ export function TaskIdentity({ item, variant }: { item: ActivityItem; variant: '
           </Badge>
         </Disclosure>
         {restartLinks.to && (
-          <Link to={relatedRoute} params={{ taskId: restartLinks.to }} className="text-sm text-primary underline">
+          <Link
+            to={relatedRoute}
+            params={{ workspaceId: workspace, taskId: restartLinks.to }}
+            className="text-sm text-primary underline"
+          >
             Started over as {restartLinks.to}
           </Link>
         )}
@@ -170,7 +175,11 @@ export function TaskIdentity({ item, variant }: { item: ActivityItem; variant: '
       {restartLinks.from && (
         <p className="my-2 text-sm text-muted">
           Restarted from{' '}
-          <Link to={relatedRoute} params={{ taskId: restartLinks.from }} className="text-primary underline">
+          <Link
+            to={relatedRoute}
+            params={{ workspaceId: workspace, taskId: restartLinks.from }}
+            className="text-primary underline"
+          >
             {restartLinks.from}
           </Link>
         </p>
@@ -202,6 +211,7 @@ export function TaskFacts({
   columns: 'one' | 'two'
   className?: string
 }) {
+  const { workspace } = useWorkspaceSelection()
   const { creator, canOperate, prURL, relatedRoute, parent, blockingIDs, unsatisfiableIDs, childRollup } =
     useTaskHeaderState(item, variant)
   return (
@@ -282,7 +292,7 @@ export function TaskFacts({
                     <span key={dependency.id} className="flex min-w-0 items-center gap-2">
                       <Link
                         to={relatedRoute}
-                        params={{ taskId: dependency.id }}
+                        params={{ workspaceId: workspace, taskId: dependency.id }}
                         aria-label={`${dependency.title || dependency.id} · ${relation}`}
                         className="min-w-0 truncate hover:text-primary hover:underline"
                       >
@@ -344,8 +354,8 @@ export function TaskFacts({
               // unlike dependencies above, which are tasks.
               <span className="flex flex-wrap items-baseline gap-x-2 gap-y-1">
                 <Link
-                  to="/blueprints/$taskId"
-                  params={{ taskId: item.task.parent_task_id }}
+                  to="/w/$workspaceId/blueprints/$taskId"
+                  params={{ workspaceId: workspace, taskId: item.task.parent_task_id }}
                   className="text-primary hover:underline"
                 >
                   {parent?.title ?? item.task.parent_task_id}
@@ -354,7 +364,11 @@ export function TaskFacts({
                 {/* Blueprint history left the sidebar with the rest of the
                     parked presentation (AC-4.1), so the records reach through
                     the tasks that came from them instead. */}
-                <Link to="/blueprints" className="text-faint hover:text-primary hover:underline">
+                <Link
+                  to="/w/$workspaceId/blueprints"
+                  params={{ workspaceId: workspace }}
+                  className="text-faint hover:text-primary hover:underline"
+                >
                   Blueprint history
                 </Link>
               </span>
@@ -379,7 +393,7 @@ export function TaskFacts({
                 <Badge variant="mono">{child.origin_sub_id}</Badge>
                 <Link
                   to={relatedRoute}
-                  params={{ taskId: child.id }}
+                  params={{ workspaceId: workspace, taskId: child.id }}
                   className="min-w-0 flex-1 truncate text-primary hover:underline"
                 >
                   {child.title}
@@ -440,7 +454,7 @@ function LinkDependencyControl({ item, onClose }: { item: ActivityItem; onClose:
   const requestID = useRef(crypto.randomUUID())
   const tasks = useQuery({
     queryKey: ['tasks', workspace, 'dependency-candidates'],
-    queryFn: fetchOpenTasks,
+    queryFn: () => fetchOpenTasks(workspace),
     enabled: Boolean(workspace),
   })
   const existing = new Set(item.task.dependencies?.map((dependency) => dependency.id) ?? [])
@@ -456,7 +470,7 @@ function LinkDependencyControl({ item, onClose }: { item: ActivityItem; onClose:
   const selected =
     candidates.find((task) => task.id === selectedID) ?? tasks.data?.find((task) => task.id === selectedID)
   const mutation = useMutation({
-    mutationFn: () => addTaskDependency(item.task.id, selectedID, reason.trim(), requestID.current),
+    mutationFn: () => addTaskDependency(workspace, item.task.id, selectedID, reason.trim(), requestID.current),
     onSuccess: () => {
       onClose()
       setSearch('')
@@ -545,13 +559,14 @@ function LinkDependencyControl({ item, onClose }: { item: ActivityItem; onClose:
 }
 
 function UnlinkDependencyControl({ item, dependencyIDs }: { item: ActivityItem; dependencyIDs: string[] }) {
+  const { workspace } = useWorkspaceSelection()
   const queryClient = useQueryClient()
   const [selectedID, setSelectedID] = useState('')
   const [reason, setReason] = useState('')
   const requestID = useRef(crypto.randomUUID())
   const selected = item.task.dependencies?.find((dependency) => dependency.id === selectedID)
   const mutation = useMutation({
-    mutationFn: () => removeTaskDependency(item.task.id, selectedID, reason.trim(), requestID.current),
+    mutationFn: () => removeTaskDependency(workspace, item.task.id, selectedID, reason.trim(), requestID.current),
     onSuccess: () => {
       setSelectedID('')
       setReason('')
@@ -631,6 +646,7 @@ function UnlinkDependencyControl({ item, dependencyIDs }: { item: ActivityItem; 
 // keeps it while suppressing checkout and branch. Its
 // consequences for children are whatever the backend does today.
 export function CancelControl({ item, onClose }: { item: ActivityItem; onClose?: () => void }) {
+  const { workspace } = useWorkspaceSelection()
   const queryClient = useQueryClient()
   const [open, setLocalOpen] = useState(Boolean(onClose))
   const setOpen = (value: boolean) => {
@@ -639,7 +655,7 @@ export function CancelControl({ item, onClose }: { item: ActivityItem; onClose?:
   }
   const [reason, setReason] = useState('')
   const mutation = useMutation({
-    mutationFn: () => cancelTask(item.task.id, reason.trim()),
+    mutationFn: () => cancelTask(workspace, item.task.id, reason.trim()),
     onSuccess: () => {
       setOpen(false)
       setReason('')
@@ -774,7 +790,7 @@ function AssigneeControl({ item, onClose }: { item: ActivityItem; onClose: () =>
   const canAssign = useWorkspaceCapability('set_assignee')
   const members = useWorkspaceMembers()
   const mutation = useMutation({
-    mutationFn: (userId: string) => setTaskAssignee(item.task.id, userId),
+    mutationFn: (userId: string) => setTaskAssignee(workspace, item.task.id, userId),
     onSuccess: () => {
       onClose()
       void queryClient.invalidateQueries({ queryKey: ['activity'] })

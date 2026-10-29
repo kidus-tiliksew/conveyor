@@ -329,8 +329,8 @@ function VersionRows({ entry, workspace }: { entry: LineageEntry; workspace: str
                 {version.tasks.map((task) => (
                   <li key={task.id} className="flex items-center gap-2">
                     <Link
-                      to="/tasks/$taskId/full"
-                      params={{ taskId: task.id }}
+                      to="/w/$workspaceId/tasks/$taskId/full"
+                      params={{ workspaceId: workspace, taskId: task.id }}
                       className="min-w-0 flex-1 truncate text-foreground hover:underline"
                       title={task.id}
                     >
@@ -408,6 +408,7 @@ function ImpactView({ workspace, type, id }: { workspace: string; type: 'require
 }
 
 function ImpactItems({ impact }: { impact: LineageImpact }) {
+  const { workspace } = useWorkspaceSelection()
   const reasons = impact.exhaustion_reasons ?? []
   return (
     <>
@@ -418,8 +419,8 @@ function ImpactItems({ impact }: { impact: LineageImpact }) {
           {impact.items.map((item) => (
             <li key={`${item.task.id}:${item.version ?? ''}:${item.created_by_event_id}`} className="flex gap-2">
               <Link
-                to="/tasks/$taskId/full"
-                params={{ taskId: item.task.id }}
+                to="/w/$workspaceId/tasks/$taskId/full"
+                params={{ workspaceId: workspace, taskId: item.task.id }}
                 className="min-w-0 flex-1 truncate text-foreground hover:underline"
                 title={item.task.id}
               >
@@ -467,26 +468,40 @@ function EntryLink({
   switch (destination.type) {
     case 'task':
       return (
-        <Link to="/tasks/$taskId/full" params={{ taskId: destination.taskId }} className={className}>
+        <Link
+          to="/w/$workspaceId/tasks/$taskId/full"
+          params={{ workspaceId: workspace, taskId: destination.taskId }}
+          className={className}
+        >
           {body}
         </Link>
       )
     case 'blueprint':
       return (
-        <Link to="/blueprints/$taskId" params={{ taskId: destination.taskId }} className={className}>
+        <Link
+          to="/w/$workspaceId/blueprints/$taskId"
+          params={{ workspaceId: workspace, taskId: destination.taskId }}
+          className={className}
+        >
           {body}
         </Link>
       )
     case 'planning':
       return (
-        <Link to="/planning" search={{ session: destination.session }} className={className}>
+        <Link
+          to="/w/$workspaceId/planning"
+          params={{ workspaceId: workspace }}
+          search={{ session: destination.session }}
+          className={className}
+        >
           {body}
         </Link>
       )
     case 'requirement':
       return (
         <Link
-          to="/requirements"
+          to="/w/$workspaceId/requirements"
+          params={{ workspaceId: workspace }}
           search={{ requirement: destination.id, ...(destination.target ? { target: destination.target } : {}) }}
           className={className}
         >
@@ -496,7 +511,8 @@ function EntryLink({
     case 'design':
       return (
         <Link
-          to="/system-design"
+          to="/w/$workspaceId/system-design"
+          params={{ workspaceId: workspace }}
           search={{ document: destination.id, ...(destination.target ? { target: destination.target } : {}) }}
           className={className}
         >
@@ -505,13 +521,23 @@ function EntryLink({
       )
     case 'reference':
       return (
-        <Link to="/requirements" hash={destination.hash} className={className}>
+        <Link
+          to="/w/$workspaceId/requirements"
+          params={{ workspaceId: workspace }}
+          hash={destination.hash}
+          className={className}
+        >
           {body}
         </Link>
       )
     case 'decision':
       return (
-        <Link to="/system-design" hash={destination.hash} className={className}>
+        <Link
+          to="/w/$workspaceId/system-design"
+          params={{ workspaceId: workspace }}
+          hash={destination.hash}
+          className={className}
+        >
           {body}
         </Link>
       )

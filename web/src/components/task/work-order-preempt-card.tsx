@@ -3,6 +3,7 @@ import { OctagonX } from 'lucide-react'
 import { useId, useRef, useState } from 'react'
 import { preemptWorkOrder } from '../../lib/api'
 import type { ActivityItem, WorkOrder } from '../../lib/types'
+import { useWorkspaceSelection } from '../app-shell'
 import { Button } from '../ui/button'
 import { Textarea } from '../ui/input'
 
@@ -18,13 +19,14 @@ export function claimedWorkOrder(item: ActivityItem): WorkOrder | undefined {
 // mechanics (work-order revocation, renewal discovery, checkpoint before the
 // next claim) live in its tooltip.
 export function WorkOrderPreemptControl({ order }: { order: WorkOrder }) {
+  const { workspace } = useWorkspaceSelection()
   const queryClient = useQueryClient()
   const [expanded, setExpanded] = useState(false)
   const [reason, setReason] = useState('')
   const panelID = useId()
   const requestId = useRef(crypto.randomUUID())
   const mutation = useMutation({
-    mutationFn: () => preemptWorkOrder(order.id, reason.trim(), requestId.current),
+    mutationFn: () => preemptWorkOrder(workspace, order.id, reason.trim(), requestId.current),
     onSuccess: () => {
       void queryClient.invalidateQueries({ queryKey: ['task'] })
       void queryClient.invalidateQueries({ queryKey: ['activity'] })

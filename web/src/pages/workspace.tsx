@@ -67,12 +67,12 @@ export function WorkspacePage() {
   const { data: snapshot } = useWorkspace()
   const query = useQuery({
     queryKey: ['workspace-config', workspace],
-    queryFn: () => fetchWorkspaceConfig(),
+    queryFn: () => fetchWorkspaceConfig(workspace),
     enabled: Boolean(workspace),
   })
   const workers = useQuery({
     queryKey: ['workers', workspace],
-    queryFn: () => fetchWorkers(),
+    queryFn: () => fetchWorkers(workspace),
     enabled: Boolean(workspace),
     refetchInterval: () => (document.visibilityState === 'visible' ? 15_000 : false),
     refetchIntervalInBackground: false,
@@ -87,7 +87,7 @@ export function WorkspacePage() {
     setDraftState(query.data ? structuredClone(query.data.document) : null)
   }, [query.data, workspace])
   const save = useMutation({
-    mutationFn: () => updateWorkspaceConfig(draft!, query.data!.version),
+    mutationFn: () => updateWorkspaceConfig(workspace, draft!, query.data!.version),
     onSuccess: (receipt) => {
       queryClient.setQueryData(['workspace-config', workspace], receipt)
       void queryClient.invalidateQueries({ queryKey: ['workspace', workspace] })
@@ -96,12 +96,12 @@ export function WorkspacePage() {
     },
   })
   const pair = useMutation({
-    mutationFn: () => issueWorkerPairing(),
+    mutationFn: () => issueWorkerPairing(workspace),
     onSuccess: (result) =>
       setPairing(`${result.pairing_token} (expires ${new Date(result.expires_at).toLocaleTimeString()})`),
   })
   const revoke = useMutation({
-    mutationFn: (id: string) => revokeWorker(id),
+    mutationFn: (id: string) => revokeWorker(workspace, id),
     onSuccess: () => void queryClient.invalidateQueries({ queryKey: ['workers', workspace] }),
   })
 
@@ -321,6 +321,7 @@ function GeneralTab({
   draft: WorkspaceConfigDocument
   setDraft: (value: WorkspaceConfigDocument) => void
 }) {
+  const { workspace } = useWorkspaceSelection()
   const update = (change: Partial<WorkspaceConfigDocument>) => setDraft({ ...draft, ...change })
   const updateRepo = (index: number, change: Partial<WorkspaceConfigRepo>) => {
     const repos = [...draft.repos]
@@ -401,8 +402,8 @@ function GeneralTab({
                   >
                     <span className="text-muted">Install task</span>
                     <Link
-                      to="/tasks/$taskId"
-                      params={{ taskId: repo.install_task.id }}
+                      to="/w/$workspaceId/tasks/$taskId"
+                      params={{ workspaceId: workspace, taskId: repo.install_task.id }}
                       className="font-mono text-primary hover:underline"
                     >
                       {repo.install_task.id}

@@ -75,28 +75,29 @@ export function SystemDesignPage() {
   const { workspace } = useWorkspaceSelection()
   const navigate = useNavigate()
   const client = useQueryClient()
-  const search = useSearch({ from: '/system-design' })
+  const search = useSearch({ from: '/w/$workspaceId/system-design' })
   const [query, setQuery] = useState('')
   const [sort, setSort] = useState<DocumentSort>('updated')
   const [direction, setDirection] = useState<DocumentSortDirection>('descending')
   const designs = useQuery({
     queryKey: ['system-designs', workspace, { includeArchived: true }],
-    queryFn: () => fetchSystemDesigns({ includeArchived: true }),
+    queryFn: () => fetchSystemDesigns(workspace, { includeArchived: true }),
     enabled: Boolean(workspace),
     staleTime: 60_000,
   })
   const decisions = useQuery({
     queryKey: ['decisions', workspace],
-    queryFn: fetchDecisions,
+    queryFn: () => fetchDecisions(workspace),
     enabled: Boolean(workspace),
   })
   const resolve = useMutation({
-    mutationFn: ({ id, action }: { id: string; action: 'confirm' | 'dismiss' }) => resolveDecision(id, action),
+    mutationFn: ({ id, action }: { id: string; action: 'confirm' | 'dismiss' }) =>
+      resolveDecision(workspace, id, action),
     onSettled: () => void client.invalidateQueries({ queryKey: ['decisions', workspace] }),
   })
   const dismissSweep = useMutation({
     mutationFn: ({ decisionId, entry }: { decisionId: string; entry: DecisionSupersessionSweepEntry }) =>
-      dismissDecisionSupersessionSweep(decisionId, entry.document_tier, entry.document_id),
+      dismissDecisionSupersessionSweep(workspace, decisionId, entry.document_tier, entry.document_id),
     onSettled: () => void client.invalidateQueries({ queryKey: ['decisions', workspace] }),
   })
   const selected = designs.data?.find((item) => item.document.id === search.document)
@@ -115,7 +116,8 @@ export function SystemDesignPage() {
     if (!designs.data?.length || selected) return
     const fallback = designs.data.find((item) => !item.document.archived) ?? designs.data[0]
     void navigate({
-      to: '/system-design',
+      to: '/w/$workspaceId/system-design',
+      params: { workspaceId: workspace },
       search: { document: fallback.document.id },
       hash: window.location.hash.slice(1),
       replace: true,
@@ -241,7 +243,12 @@ export function SystemDesignPage() {
                   attentionCount={item.drift_count + item.pending_version_count}
                   selected={selected?.document.id === item.document.id}
                   onClick={() =>
-                    void navigate({ to: '/system-design', search: { document: item.document.id }, replace: true })
+                    void navigate({
+                      to: '/w/$workspaceId/system-design',
+                      params: { workspaceId: workspace },
+                      search: { document: item.document.id },
+                      replace: true,
+                    })
                   }
                 />
               ))}
@@ -275,7 +282,12 @@ export function SystemDesignPage() {
                   }
                   selected={selected?.document.id === item.document.id}
                   onClick={() =>
-                    void navigate({ to: '/system-design', search: { document: item.document.id }, replace: true })
+                    void navigate({
+                      to: '/w/$workspaceId/system-design',
+                      params: { workspaceId: workspace },
+                      search: { document: item.document.id },
+                      replace: true,
+                    })
                   }
                 />
               ))}
@@ -381,7 +393,8 @@ function DesignCanvas({
   const navigate = useNavigate()
   const onReviewChange = (next: ReviewSearch) =>
     navigate({
-      to: '/system-design',
+      to: '/w/$workspaceId/system-design',
+      params: { workspaceId: workspace },
       search: { ...search, ...next, base: next.base, target: next.target },
       hash: window.location.hash.slice(1),
     })
@@ -400,13 +413,13 @@ function DesignCanvas({
   const [archiveDialogOpen, setArchiveDialogOpen] = useState(false)
   const { data: successorRequirements = [] } = useQuery({
     queryKey: ['requirements', workspace, { includeArchived: false }],
-    queryFn: () => fetchRequirements(),
+    queryFn: () => fetchRequirements(workspace),
     enabled: Boolean(workspace),
     staleTime: 60_000,
   })
   const { data: successorDesigns = [] } = useQuery({
     queryKey: ['system-designs', workspace, { includeArchived: false }],
-    queryFn: () => fetchSystemDesigns(),
+    queryFn: () => fetchSystemDesigns(workspace),
     enabled: Boolean(workspace),
     staleTime: 60_000,
   })
@@ -431,7 +444,7 @@ function DesignCanvas({
   )
   const confirm = useMutation({
     mutationFn: (version: number) =>
-      confirmSystemDesignVersion(item.document.id, version, item.document.current_version ?? 0),
+      confirmSystemDesignVersion(workspace, item.document.id, version, item.document.current_version ?? 0),
     onSettled: () => {
       void client.invalidateQueries({ queryKey: ['pending-proposals', workspace] })
       void client.invalidateQueries({ queryKey: ['activity', workspace] })
@@ -450,7 +463,7 @@ function DesignCanvas({
   })
   const dismiss = useMutation({
     mutationFn: ({ version, note }: { version: number; note: string }) =>
-      dismissSystemDesignVersion(item.document.id, version, note),
+      dismissSystemDesignVersion(workspace, item.document.id, version, note),
     onSuccess: () => setDismissTarget(null),
     onSettled: async () => {
       await Promise.all([
@@ -465,8 +478,8 @@ function DesignCanvas({
   const archive = useMutation({
     mutationFn: (supersededBy: string[] = []) =>
       item.document.archived
-        ? restoreSystemDesign(item.document.id)
-        : archiveSystemDesign(item.document.id, supersededBy),
+        ? restoreSystemDesign(workspace, item.document.id)
+        : archiveSystemDesign(workspace, item.document.id, supersededBy),
     onSuccess: () => setArchiveDialogOpen(false),
     onSettled: async () => {
       await Promise.all([
@@ -954,21 +967,37 @@ function DecisionLink({ id }: { id: string }) {
 }
 
 function SweepDocumentLink({ entry }: { entry: DecisionSupersessionSweepEntry }) {
+  const { workspace } = useWorkspaceSelection()
   const className = 'font-medium text-primary hover:underline'
   if (entry.document_tier === 'system_design')
     return (
-      <Link to="/system-design" search={{ document: entry.document_id }} className={className}>
+      <Link
+        to="/w/$workspaceId/system-design"
+        params={{ workspaceId: workspace }}
+        search={{ document: entry.document_id }}
+        className={className}
+      >
         {entry.document_id}
       </Link>
     )
   if (entry.document_tier === 'requirement')
     return (
-      <Link to="/requirements" search={{ requirement: entry.document_id }} className={className}>
+      <Link
+        to="/w/$workspaceId/requirements"
+        params={{ workspaceId: workspace }}
+        search={{ requirement: entry.document_id }}
+        className={className}
+      >
         {entry.document_id}
       </Link>
     )
   return (
-    <Link to="/requirements" hash={`reference-${entry.document_id}-v0`} className={className}>
+    <Link
+      to="/w/$workspaceId/requirements"
+      params={{ workspaceId: workspace }}
+      hash={`reference-${entry.document_id}-v0`}
+      className={className}
+    >
       {entry.document_id}
     </Link>
   )

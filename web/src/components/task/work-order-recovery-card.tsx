@@ -68,13 +68,13 @@ export function CheckpointProposalRecoveryCard({
       const expectedByDocument = new Map<string, number>()
       for (const proposal of snapshot) {
         const expected = expectedByDocument.get(proposal.document.id) ?? proposal.expected
-        await confirmSystemDesignVersion(proposal.document.id, proposal.version.version, expected)
+        await confirmSystemDesignVersion(workspace, proposal.document.id, proposal.version.version, expected)
         expectedByDocument.set(proposal.document.id, proposal.version.version)
       }
       const direction = snapshot
         .map((proposal) => `Operator confirmed ${proposal.document.id} v${proposal.version.version}.`)
         .join(' ')
-      return recoverWorkOrder(state.order.id, requestId.current, direction)
+      return recoverWorkOrder(workspace, state.order.id, requestId.current, direction)
     },
     onMutate: (): MutationWorkspace => ({ workspace }),
     onSuccess: (_data, _variables, started) => {
@@ -125,7 +125,8 @@ export function CheckpointProposalRecoveryCard({
               <p>
                 Version {proposal.version.version} proposed by this task for{' '}
                 <Link
-                  to="/system-design"
+                  to="/w/$workspaceId/system-design"
+                  params={{ workspaceId: workspace }}
                   search={{ document: proposal.document.id, tab: 'changes', target: proposal.version.version }}
                   className="text-primary hover:underline"
                 >
@@ -142,7 +143,12 @@ export function CheckpointProposalRecoveryCard({
           <Check aria-hidden />
           {mutation.isPending ? 'Confirming and recovering…' : actionLabel}
         </Button>
-        <Link to="/inbox" search={{ task: item.task.id }} className="text-xs font-medium text-primary hover:underline">
+        <Link
+          to="/w/$workspaceId/inbox"
+          params={{ workspaceId: workspace }}
+          search={{ task: item.task.id }}
+          className="text-xs font-medium text-primary hover:underline"
+        >
           Review or dismiss proposals
         </Link>
       </div>
@@ -191,7 +197,7 @@ function VerificationCheckpointRecovery({ item, state }: { item: ActivityItem; s
   const queryClient = useQueryClient()
   const requestId = useRef(crypto.randomUUID())
   const mutation = useMutation({
-    mutationFn: () => recoverWorkOrder(order.id, requestId.current),
+    mutationFn: () => recoverWorkOrder(workspace, order.id, requestId.current),
     onMutate: (): MutationWorkspace => ({ workspace }),
     onSuccess: (_data, _variables, started) => {
       if (started) void queryClient.invalidateQueries({ queryKey: taskDetailQueryKey(started.workspace, item.task.id) })
@@ -318,7 +324,7 @@ function WorkOrderRecoveryState({ item, state }: { item: ActivityItem; state: Cu
   }, [resume, answered])
   const checkpointReleased = order.last_failure_message === 'operator checkpoint reached'
   const mutation = useMutation({
-    mutationFn: () => recoverWorkOrder(order.id, requestId.current, direction.trim() || undefined),
+    mutationFn: () => recoverWorkOrder(workspace, order.id, requestId.current, direction.trim() || undefined),
     onMutate: (): MutationWorkspace => ({ workspace }),
     onSuccess: (_data, _variables, started) => {
       if (started) void queryClient.invalidateQueries({ queryKey: taskDetailQueryKey(started.workspace, item.task.id) })
@@ -366,8 +372,18 @@ function WorkOrderRecoveryState({ item, state }: { item: ActivityItem; state: Cu
     }) => {
       if (proposal.version == null) throw new Error('This proposal did not include a version.')
       return citation.document_kind === 'requirement'
-        ? confirmRequirementVersion(citation.document_id, proposal.version, citation.current_confirmed_version)
-        : confirmSystemDesignVersion(citation.document_id, proposal.version, citation.current_confirmed_version)
+        ? confirmRequirementVersion(
+            workspace,
+            citation.document_id,
+            proposal.version,
+            citation.current_confirmed_version,
+          )
+        : confirmSystemDesignVersion(
+            workspace,
+            citation.document_id,
+            proposal.version,
+            citation.current_confirmed_version,
+          )
     },
     onMutate: () => setProjection('refreshing'),
     onSettled: refreshDocumentFamilies,
@@ -382,8 +398,8 @@ function WorkOrderRecoveryState({ item, state }: { item: ActivityItem; state: Cu
         let expected = step.expected
         for (const version of step.versions) {
           await (step.kind === 'requirement'
-            ? confirmRequirementVersion(step.id, version, expected)
-            : confirmSystemDesignVersion(step.id, version, expected))
+            ? confirmRequirementVersion(workspace, step.id, version, expected)
+            : confirmSystemDesignVersion(workspace, step.id, version, expected))
           expected = version
         }
       }
@@ -795,6 +811,7 @@ function CitedDocumentBlock({
   error: Error | null
   onConfirm: (proposal: WorkOrderCheckpointPendingProposal) => void
 }) {
+  const { workspace } = useWorkspaceSelection()
   const [first] = document.citations
   return (
     <div className="space-y-2 rounded border border-border bg-surface/60 p-2">
@@ -802,7 +819,8 @@ function CitedDocumentBlock({
         <div>
           {first.document_kind === 'requirement' ? (
             <Link
-              to="/requirements"
+              to="/w/$workspaceId/requirements"
+              params={{ workspaceId: workspace }}
               search={{ requirement: first.document_id }}
               hash={first.statement_or_section_id?.toLowerCase()}
               className="font-medium text-primary hover:underline"
@@ -811,7 +829,8 @@ function CitedDocumentBlock({
             </Link>
           ) : (
             <Link
-              to="/system-design"
+              to="/w/$workspaceId/system-design"
+              params={{ workspaceId: workspace }}
               search={{ document: first.document_id }}
               className="font-medium text-primary hover:underline"
             >
@@ -855,7 +874,8 @@ function CitedDocumentBlock({
                   </Button>
                   {canConfirm && (
                     <Link
-                      to="/inbox"
+                      to="/w/$workspaceId/inbox"
+                      params={{ workspaceId: workspace }}
                       search={{ document: first.document_id, tier: first.document_kind }}
                       className="text-xs font-medium text-primary hover:underline"
                     >

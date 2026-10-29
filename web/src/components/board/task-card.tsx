@@ -5,7 +5,7 @@ import { humanizeClaimRefusal, reviewDiagnosticBadge, taskWasRestarted } from '.
 import { useShowStageProgress } from '../../lib/board-preferences'
 import type { ActivitySummary } from '../../lib/types'
 import { cn, relativeTime } from '../../lib/utils'
-import { useWorkspaceMembers } from '../app-shell'
+import { useWorkspaceMembers, useWorkspaceSelection } from '../app-shell'
 import { AssigneeChip } from '../task/assignee-chip'
 import { Badge } from '../ui/badge'
 import { StageStripe } from './stage-stripe'
@@ -61,6 +61,7 @@ const tooltip =
 // and label carry colour; an operator item is never tinted, so a column of
 // decisions stays calm and the column header counts them.
 export function TaskCard({ item, selected }: { item: ActivitySummary; selected: boolean }) {
+  const { workspace } = useWorkspaceSelection()
   const { data: members = [] } = useWorkspaceMembers()
   const showStageProgress = useShowStageProgress()
   const summaryId = useId()
@@ -78,8 +79,8 @@ export function TaskCard({ item, selected }: { item: ActivitySummary; selected: 
   const chips = Boolean(restarted || reviewDiagnostic)
   return (
     <Link
-      to="/tasks/$taskId"
-      params={{ taskId: item.task.id }}
+      to="/w/$workspaceId/tasks/$taskId"
+      params={{ workspaceId: workspace, taskId: item.task.id }}
       aria-describedby={action?.summary ? summaryId : undefined}
       className={cn(
         'group/card relative block rounded-lg border bg-card p-3 transition-colors',

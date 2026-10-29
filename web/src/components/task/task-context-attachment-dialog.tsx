@@ -23,13 +23,13 @@ export function TaskContextAttachmentDialog({ task, onClose }: { task: Task; onC
   const [removedDesigns, setRemovedDesigns] = useState<string[]>([])
   const requirementQuery = useQuery({
     queryKey: ['requirements', workspace],
-    queryFn: fetchRequirements,
+    queryFn: () => fetchRequirements(workspace),
     enabled: Boolean(workspace),
     staleTime: 60_000,
   })
   const designQuery = useQuery({
     queryKey: ['system-designs', workspace],
-    queryFn: fetchSystemDesigns,
+    queryFn: () => fetchSystemDesigns(workspace),
     enabled: Boolean(workspace),
     staleTime: 60_000,
   })
@@ -40,7 +40,7 @@ export function TaskContextAttachmentDialog({ task, onClose }: { task: Task; onC
   const removingDesigns = removedDesigns.filter((id) => initialDesigns.includes(id))
   const mutation = useMutation({
     mutationFn: () =>
-      updateTaskContext(task.id, {
+      updateTaskContext(workspace, task.id, {
         add: {
           requirement_ids: addedRequirements,
           system_design_ids: addedDesigns,

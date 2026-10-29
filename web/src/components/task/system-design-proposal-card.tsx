@@ -137,6 +137,7 @@ export function ProposalReviewNotice({
   pending: readonly PendingProposal[]
   showLink?: boolean
 }) {
+  const { workspace } = useWorkspaceSelection()
   if (!hasProposalReviewNotice(effect)) return null
   const gate = waitingGateCopy(effect.blockers)
   const signal = signalOnlyCopy(effect.signalOnly)
@@ -180,7 +181,12 @@ export function ProposalReviewNotice({
           </div>
         )}
         {showLink && (
-          <Link to="/inbox" search={{ task: taskId }} className="inline-block font-medium text-primary hover:underline">
+          <Link
+            to="/w/$workspaceId/inbox"
+            params={{ workspaceId: workspace }}
+            search={{ task: taskId }}
+            className="inline-block font-medium text-primary hover:underline"
+          >
             {proposalLinkText(effect)}
           </Link>
         )}
@@ -230,7 +236,7 @@ export function useSystemDesignProposals(task: Task): Proposal[] {
   const { workspace } = useWorkspaceSelection()
   const designs = useQuery({
     queryKey: ['system-designs', workspace],
-    queryFn: fetchSystemDesigns,
+    queryFn: () => fetchSystemDesigns(workspace),
     enabled: Boolean(workspace),
     staleTime: slowReadStaleTime,
   })
@@ -273,7 +279,7 @@ export function SystemDesignProposalCard({
   const client = useQueryClient()
   const confirm = useMutation({
     mutationFn: (proposal: Proposal) =>
-      confirmSystemDesignVersion(proposal.document.id, proposal.version.version, proposal.expected),
+      confirmSystemDesignVersion(workspace, proposal.document.id, proposal.version.version, proposal.expected),
     // Refetching the collection is what removes the card: the confirmed
     // version is no longer pending, so it stops matching. A conflict means
     // the document moved under us, and the refreshed list is the answer to
@@ -304,7 +310,8 @@ export function SystemDesignProposalCard({
                 <p>
                   Version {proposal.version.version} proposed by this task for{' '}
                   <Link
-                    to="/system-design"
+                    to="/w/$workspaceId/system-design"
+                    params={{ workspaceId: workspace }}
                     search={{ document: proposal.document.id, tab: 'changes', target: proposal.version.version }}
                     className="text-primary hover:underline"
                   >
@@ -327,7 +334,8 @@ export function SystemDesignProposalCard({
       })}
       {notice && (
         <Link
-          to="/inbox"
+          to="/w/$workspaceId/inbox"
+          params={{ workspaceId: workspace }}
           search={{ task: task.id }}
           className="inline-block text-xs font-medium text-primary hover:underline"
         >

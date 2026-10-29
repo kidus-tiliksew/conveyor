@@ -2153,7 +2153,7 @@ test('task detail headers show the task name while routes and API lookup keep us
   const fullActivity = page.waitForRequest(
     (request) => new URL(request.url()).pathname === `/v1/tasks/${fullTaskID}/activity`,
   )
-  await page.goto(`/tasks/${fullTaskID}/full`)
+  await page.goto(`/w/demo/tasks/${fullTaskID}/full`)
   await fullActivity
   // The full route's header is a breadcrumb naming the task ID; the title
   // reads once, in the reading column.
@@ -2165,22 +2165,22 @@ test('task detail headers show the task name while routes and API lookup keep us
   // the detail surfaces carry the affordance only.
   await expect(page.getByRole('button', { name: 'Knowledge explorer' })).toBeVisible()
   await expect(page.getByText('Trace planning to delivery evidence')).toHaveCount(0)
-  expect(new URL(page.url()).pathname).toBe(`/tasks/${fullTaskID}/full`)
+  expect(new URL(page.url()).pathname).toBe(`/w/demo/tasks/${fullTaskID}/full`)
 
   const sheetTaskID = 'sheet-header-id'
   const sheetActivity = page.waitForRequest(
     (request) => new URL(request.url()).pathname === `/v1/tasks/${sheetTaskID}/activity`,
   )
-  await page.goto(`/tasks/${sheetTaskID}`)
+  await page.goto(`/w/demo/tasks/${sheetTaskID}`)
   await sheetActivity
   const sheetHeader = page.locator('header').filter({ has: page.getByRole('button', { name: 'Close panel' }) })
   await expect(sheetHeader).toContainText('Short task')
   await expect(sheetHeader).not.toContainText(sheetTaskID)
-  expect(new URL(page.url()).pathname).toBe(`/tasks/${sheetTaskID}`)
+  expect(new URL(page.url()).pathname).toBe(`/w/demo/tasks/${sheetTaskID}`)
 })
 
 test('task metadata presents stored spec versions as plan versions', async ({ page }) => {
-  await page.goto('/tasks/github-fallback/full')
+  await page.goto('/w/demo/tasks/github-fallback/full')
   await expect(page.getByText('retrying · plan v7')).toBeVisible()
   await expect(page.getByText('retrying · spec v7')).toHaveCount(0)
 })
@@ -2290,7 +2290,7 @@ test('Agent prompt shows the title and instruction and copies the same text', as
   const taskID = 'work-on-this-with-a-deliberately-long-responsive-identifier'
   await context.grantPermissions(['clipboard-read', 'clipboard-write'])
 
-  await page.goto(`/tasks/${taskID}/full`)
+  await page.goto(`/w/demo/tasks/${taskID}/full`)
   const origin = await page.evaluate(() => window.location.origin)
   const expectedPrompt = expectedAgentPrompt(origin, taskID, 'Short task')
   const group = checkoutGroup(page)
@@ -2364,7 +2364,7 @@ for (const route of ['full', 'sheet'] as const) {
     await context.grantPermissions(['clipboard-read', 'clipboard-write'])
     await routeCheckoutTask(page, taskID, { title: longTitle, body: longBody })
 
-    await page.goto(route === 'full' ? `/tasks/${taskID}/full` : `/tasks/${taskID}`)
+    await page.goto(route === 'full' ? `/w/demo/tasks/${taskID}/full` : `/w/demo/tasks/${taskID}`)
     const origin = await page.evaluate(() => window.location.origin)
     const expectedPrompt = expectedAgentPrompt(origin, taskID, longTitle)
     const sheet = page.getByRole('dialog', { name: 'Task detail' })
@@ -2414,7 +2414,7 @@ for (const route of ['full', 'sheet'] as const) {
 for (const theme of ['light', 'dark'] as const) {
   test(`Agent prompt keeps the prompt readable in the ${theme} theme`, async ({ page }) => {
     await page.addInitScript((choice) => localStorage.setItem('conveyor-theme', choice), theme)
-    await page.goto('/tasks/work-on-this-theme/full')
+    await page.goto('/w/demo/tasks/work-on-this-theme/full')
     await expect(page.locator('html')).toHaveAttribute('data-theme', theme)
     const prompt = checkoutGroup(page).locator('code')
     await expect(prompt).toContainText('Short task')
@@ -2429,7 +2429,7 @@ for (const theme of ['light', 'dark'] as const) {
 test('Agent prompt shows the agent prompt for an available checkout without a command', async ({ page }) => {
   const taskID = 'work-on-this-no-command'
   await routeCheckoutTask(page, taskID, { checkout_command: undefined })
-  await page.goto(`/tasks/${taskID}/full`)
+  await page.goto(`/w/demo/tasks/${taskID}/full`)
   const origin = await page.evaluate(() => window.location.origin)
   const group = checkoutGroup(page)
   await expect(group).toBeVisible()
@@ -2450,7 +2450,7 @@ test('Agent prompt renders nothing until the workspace resolves', async ({ page 
     }),
   )
 
-  await page.goto(`/tasks/${taskID}/full`)
+  await page.goto(`/w/demo/tasks/${taskID}/full`)
   await expect(page.getByRole('heading', { name: 'Short task' })).toBeVisible()
   await expect(checkoutGroup(page)).toHaveCount(0)
   await expect(page.getByText('Work on this locally', { exact: false })).toHaveCount(0)
@@ -2460,7 +2460,7 @@ test('Agent prompt renders nothing until the workspace resolves', async ({ page 
 })
 
 test('Work on this guidance shows the guidance without an agent prompt', async ({ page }) => {
-  await page.goto('/tasks/guidance-only/full')
+  await page.goto('/w/demo/tasks/guidance-only/full')
   await expect(page.getByText('Use the assigned worktree.')).toBeVisible()
   await expect(page.getByText('Work on this locally', { exact: true })).toBeVisible()
   await expect(checkoutGroup(page)).toHaveCount(0)
@@ -2472,22 +2472,22 @@ test('Work on this guidance shows the guidance without an agent prompt', async (
 })
 
 test('task sheet adds bottom clearance without changing full-page task spacing', async ({ page }) => {
-  await page.goto('/tasks/sheet-padding')
+  await page.goto('/w/demo/tasks/sheet-padding')
   const sheetContent = page.getByRole('dialog', { name: 'Task detail' }).locator('.overflow-y-auto')
   await expect(sheetContent).toHaveCSS('padding-bottom', '32px')
 
-  await page.goto('/tasks/full-padding/full')
+  await page.goto('/w/demo/tasks/full-padding/full')
   await expect(page.getByRole('region', { name: 'Task content' })).toHaveCSS('padding-bottom', '0px')
 })
 
 test('new task detail tolerates a null work-order list from the API', async ({ page }) => {
-  await page.goto('/tasks/no-orders/full')
+  await page.goto('/w/demo/tasks/no-orders/full')
   await expect(page.getByRole('heading', { name: 'Short task' })).toBeVisible()
   await expect(page.getByText('Something went wrong!')).toHaveCount(0)
 })
 
 test('task detail omits the frozen policy projection and retired controls', async ({ page }) => {
-  for (const path of ['/tasks/policy-projection', '/tasks/policy-projection/full']) {
+  for (const path of ['/w/demo/tasks/policy-projection', '/w/demo/tasks/policy-projection/full']) {
     await page.goto(path)
 
     await expect(page.getByText('Repository', { exact: true })).toBeVisible()
@@ -2519,7 +2519,7 @@ test('a claimed attempt exposes reasoned operator preemption with the renewal gr
       },
     })
   })
-  await page.goto('/tasks/setup-claimed/full')
+  await page.goto('/w/demo/tasks/setup-claimed/full')
   // At rest it is one quiet trigger in the next-action box — never an entry or
   // tail card inside the Activity event list.
   const trigger = page.getByRole('button', { name: 'Stop attempt' })
@@ -2557,13 +2557,13 @@ test('preemption is rendered as attributed activity rather than a failure', asyn
     at: '2026-07-15T12:05:00Z',
   })
   await page.route('**/v1/tasks/preempt-history/activity*', (route) => route.fulfill({ json: item }))
-  await page.goto('/tasks/preempt-history/full')
+  await page.goto('/w/demo/tasks/preempt-history/full')
   await expect(page.getByText('Work-order attempt preempted by operator')).toBeVisible()
   await expect(page.getByText(/Replace the setup contract · stops within one renewal interval/)).toBeVisible()
 })
 
 test('task detail tolerates null required harnesses from a legacy worker status', async ({ page }) => {
-  await page.goto('/tasks/null-worker-status/full')
+  await page.goto('/w/demo/tasks/null-worker-status/full')
   await expect(page.getByText('No healthy enrolled worker can serve this queued work')).toBeVisible()
   await expect(page.getByRole('region', { name: 'Enrolled worker unavailable' })).not.toHaveClass(/bg-attention-soft/)
   await expect(page.getByText('Required harnesses: not yet routed.')).toBeVisible()
@@ -2576,7 +2576,7 @@ test('suppressed worker order exposes failure state and audited recovery action'
     recoveryRequest = route.request().postData() ?? ''
     await route.fulfill({ json: { id: 'recovery-review-1-seat-1', state: 'queued', claimable: true } })
   })
-  await page.goto('/tasks/recovery/full')
+  await page.goto('/w/demo/tasks/recovery/full')
   await expect(page.getByText(/harness exited: status 1/)).toBeVisible()
   await expect(page.getByText('No automatic retry is pending.')).toBeVisible()
   await expect(page.getByText('Resolve the primary checkout changes first.')).toHaveCount(0)
@@ -2594,7 +2594,7 @@ test('ordinary recovery permits an empty operator direction', async ({ page }) =
     recoveryRequest = route.request().postData() ?? ''
     await route.fulfill({ json: { id: 'recovery-review-1-seat-1', state: 'queued', claimable: true } })
   })
-  await page.goto('/tasks/recovery/full')
+  await page.goto('/w/demo/tasks/recovery/full')
   await expect(page.getByLabel('Operator direction')).toHaveValue('')
   const action = page.getByRole('button', { name: 'Recover work order' })
   await expect(action).toBeEnabled()
@@ -2614,7 +2614,7 @@ test('recovery authorization refusal renders the API message instead of its JSON
     }),
   )
 
-  await page.goto('/tasks/recovery/full')
+  await page.goto('/w/demo/tasks/recovery/full')
   const action = page.getByRole('button', { name: 'Recover work order' })
   await expect(action).toBeEnabled()
   await action.click()
@@ -2628,7 +2628,7 @@ test('checkpoint recovery requires and submits operator direction', async ({ pag
     recoveryRequest = route.request().postData() ?? ''
     await route.fulfill({ json: { id: 'operator-checkpoint-implement-1', state: 'queued', claimable: true } })
   })
-  await page.goto('/tasks/operator-checkpoint/full')
+  await page.goto('/w/demo/tasks/operator-checkpoint/full')
   // A checkpoint without a decision request keeps the released wording
   // (req-260820-394cac AC-1.3).
   await expect(executionTitle(page)).toHaveText('Implementation paused — recovery needed')
@@ -2652,13 +2652,13 @@ test('checkpoint recovery keeps the generic copy when no progress report exists'
   const item = activity('operator-checkpoint', false)
   item.work_orders = item.work_orders?.map((order) => ({ ...order, progress: '' }))
   await page.route('**/v1/tasks/operator-checkpoint/activity*', (route) => route.fulfill({ json: item }))
-  await page.goto('/tasks/operator-checkpoint/full')
+  await page.goto('/w/demo/tasks/operator-checkpoint/full')
   await expect(page.getByText(/A decision is required before this work can continue/)).toBeVisible()
   await expect(page.getByText('Agent checkpoint message')).toHaveCount(0)
 })
 
 test('task timeline expands the complete agent progress report', async ({ page }) => {
-  await page.goto('/tasks/operator-checkpoint/full')
+  await page.goto('/w/demo/tasks/operator-checkpoint/full')
   const timeline = page.getByLabel('Execution event timeline')
   await expect(timeline.getByText(/Agent activity — Progress:/)).toBeVisible()
   const disclosure = timeline.getByText('Show full progress report')
@@ -2674,7 +2674,7 @@ test('checkpoint recovery summarizes attached requirement and design context', a
     designs: [{ id: 'design-1', title: 'Confirmed design', version: 3 }],
   }
   await page.route('**/v1/tasks/operator-checkpoint/activity*', (route) => route.fulfill({ json: item }))
-  await page.goto('/tasks/operator-checkpoint/full')
+  await page.goto('/w/demo/tasks/operator-checkpoint/full')
   await expect(page.getByText(/Attached context: 1 requirement\(s\), 1 design document\(s\)/)).toBeVisible()
 })
 
@@ -2820,7 +2820,7 @@ test('structured authority checkpoint leads with the decision and resolves throu
     await route.fulfill({ json: { id: 'operator-checkpoint-implement-2', state: 'queued', claimable: true } })
   })
 
-  await page.goto('/tasks/operator-checkpoint/full')
+  await page.goto('/w/demo/tasks/operator-checkpoint/full')
   const card = page.getByRole('region', { name: 'Checkpoint decision and recovery' })
   await expect(card.getByText(order.checkpoint.decision_request, { exact: true })).toBeVisible()
   // One cited document is already answered, so the row offers Respond rather
@@ -2960,7 +2960,7 @@ test('an authority-conflict checkpoint states the server question and groups sev
 }) => {
   const confirmed = new Set<string>()
   const { confirms, recoveries } = await routeSevenCitationCheckpoint(page, confirmed)
-  await page.goto('/tasks/operator-checkpoint/full')
+  await page.goto('/w/demo/tasks/operator-checkpoint/full')
 
   // The current state is the server's label, the agent's decision request, and
   // the server's question; nothing reads as a failure that needs recovery.
@@ -3041,7 +3041,7 @@ test('an authority-conflict checkpoint states the server question and groups sev
 test('an authority-conflict pre-fill never overwrites operator direction', async ({ page }) => {
   const confirmed = new Set(sevenCitationDocuments.slice(1).map((document) => document.id))
   await routeSevenCitationCheckpoint(page, confirmed)
-  await page.goto('/tasks/operator-checkpoint/full')
+  await page.goto('/w/demo/tasks/operator-checkpoint/full')
   const card = page.getByRole('region', { name: 'Checkpoint decision and recovery' })
   const direction = page.getByLabel('Operator direction')
   await card.getByRole('button', { name: 'Review' }).click()
@@ -3076,7 +3076,7 @@ test('an authority conflict without proposals asks for authorship', async ({ pag
     }
     await route.fulfill({ json: item })
   })
-  await page.goto('/tasks/operator-checkpoint/full')
+  await page.goto('/w/demo/tasks/operator-checkpoint/full')
   await expect(executionTitle(page)).toHaveText('Cited documents need a revision')
   const card = page.getByRole('region', { name: 'Checkpoint decision and recovery' })
   await expect(card.getByRole('button', { name: /& resume$/ })).toHaveCount(0)
@@ -3150,7 +3150,7 @@ test('a resumed checkpoint order follows the queued server statement', async ({ 
     await route.fulfill({ json: item })
   })
 
-  await page.goto('/tasks/operator-checkpoint/full')
+  await page.goto('/w/demo/tasks/operator-checkpoint/full')
   await expect(executionTitle(page)).toHaveText('Cited documents need a revision')
   const card = page.getByRole('region', { name: 'Checkpoint decision and recovery' })
   await expect(card.getByText('Cited documents need a revision', { exact: true })).toBeVisible()
@@ -3158,7 +3158,7 @@ test('a resumed checkpoint order follows the queued server statement', async ({ 
   await expect(page.getByRole('button', { name: 'Recover work order' })).toBeVisible()
 
   resumed = true
-  await page.goto('/tasks/operator-checkpoint/full')
+  await page.goto('/w/demo/tasks/operator-checkpoint/full')
   await expect(nextActionBox(page).getByRole('heading', { name: 'An order is waiting to be claimed.' })).toBeVisible()
   await expect(nextActionBox(page).getByText('Queued', { exact: true })).toBeVisible()
   await expect(page.getByRole('region', { name: 'Checkpoint decision and recovery' })).toHaveCount(0)
@@ -3180,7 +3180,7 @@ test('a generic decision request keeps the generic direction guidance', async ({
     recoveryBody = route.request().postDataJSON() as Record<string, unknown>
     await route.fulfill({ json: { id: 'attempt-recovery-implement-1', state: 'queued', claimable: true } })
   })
-  await page.goto('/tasks/operator-checkpoint/full')
+  await page.goto('/w/demo/tasks/operator-checkpoint/full')
   const banner = nextActionBox(page)
   await expect(executionTitle(page)).toHaveText('Agent question')
   await expect(banner.getByText('Should the migration keep the legacy column?', { exact: true })).toBeVisible()
@@ -3240,7 +3240,7 @@ test('structured authority checkpoint omits the standalone card when every propo
     }),
   )
 
-  await page.goto('/tasks/operator-checkpoint/full')
+  await page.goto('/w/demo/tasks/operator-checkpoint/full')
   await expect(page.getByRole('region', { name: 'Checkpoint decision and recovery' })).toBeVisible()
   await expect(page.getByRole('button', { name: 'Confirm v2' })).toHaveCount(1)
   await expect(page.getByRole('region', { name: 'System Design proposals from this task' })).toHaveCount(0)
@@ -3346,7 +3346,7 @@ test('a decision checkpoint renders one row with the server label, a clamped req
   page,
 }) => {
   await routeBulkCheckpoint(page, freshBulkState())
-  await page.goto('/tasks/operator-checkpoint/full')
+  await page.goto('/w/demo/tasks/operator-checkpoint/full')
   const card = page.getByRole('region', { name: 'Checkpoint decision and recovery' })
   await expect(card.getByText('Cited revisions need a decision', { exact: true })).toBeVisible()
   const request = card.getByTestId('checkpoint-decision-request')
@@ -3377,7 +3377,7 @@ test('a decision checkpoint renders one row with the server label, a clamped req
 
 test('confirm and resume confirms every cited proposal in ascending order and never recovers', async ({ page }) => {
   const { confirms, recoveries } = await routeBulkCheckpoint(page, freshBulkState())
-  await page.goto('/tasks/operator-checkpoint/full')
+  await page.goto('/w/demo/tasks/operator-checkpoint/full')
   const card = page.getByRole('region', { name: 'Checkpoint decision and recovery' })
   await card.getByRole('button', { name: 'Confirm 3 revisions & resume' }).click()
 
@@ -3400,7 +3400,7 @@ test('confirm and resume opens the recovery drawer when the refreshed checkpoint
   // carries its pending proposal: an AC-2.7 case the operator recovers.
   const state = { ...freshBulkState(), ignore: new Set(['req-beta']) }
   const { recoveries } = await routeBulkCheckpoint(page, state)
-  await page.goto('/tasks/operator-checkpoint/full')
+  await page.goto('/w/demo/tasks/operator-checkpoint/full')
   const card = page.getByRole('region', { name: 'Checkpoint decision and recovery' })
   await card.getByRole('button', { name: 'Confirm 3 revisions & resume' }).click()
   await expect(card.getByRole('button', { name: 'Review' })).toHaveAttribute('aria-expanded', 'true')
@@ -3415,7 +3415,7 @@ test('a failed confirm and resume stops, reports in the row, and retries only th
 }) => {
   const state: BulkCheckpointState = { ...freshBulkState(), failOn: 'component-alpha:5' }
   const { confirms, recoveries } = await routeBulkCheckpoint(page, state)
-  await page.goto('/tasks/operator-checkpoint/full')
+  await page.goto('/w/demo/tasks/operator-checkpoint/full')
   const card = page.getByRole('region', { name: 'Checkpoint decision and recovery' })
   await card.getByRole('button', { name: 'Confirm 3 revisions & resume' }).click()
   await expect(card.getByRole('alert')).toContainText('This design changed while you were reviewing it.')
@@ -3449,7 +3449,7 @@ test('a failed refresh after partial confirmation keeps confirmation disabled un
 }) => {
   const state: BulkCheckpointState = { ...freshBulkState(), failOn: 'component-alpha:5' }
   const { confirms, recoveries } = await routeBulkCheckpoint(page, state)
-  await page.goto('/tasks/operator-checkpoint/full')
+  await page.goto('/w/demo/tasks/operator-checkpoint/full')
   const card = page.getByRole('region', { name: 'Checkpoint decision and recovery' })
   const stale = card.getByRole('button', { name: 'Confirm 3 revisions & resume' })
   await expect(stale).toBeEnabled()
@@ -3496,7 +3496,7 @@ test('confirm and resume requires document confirmation capability', async ({ pa
     route.fulfill({ json: callerIdentity({ id: 'usr_maintainer', role: 'maintainer' }, route.request()) }),
   )
   await routeBulkCheckpoint(page, freshBulkState())
-  await page.goto('/tasks/operator-checkpoint/full')
+  await page.goto('/w/demo/tasks/operator-checkpoint/full')
   const card = page.getByRole('region', { name: 'Checkpoint decision and recovery' })
   await expect(card.getByRole('button', { name: 'Confirm 3 revisions & resume' })).toBeDisabled()
   await expect(card.getByText('Document confirmation capability is required.').first()).toBeVisible()
@@ -3535,7 +3535,7 @@ test('Show changes reads the proposal only after it opens and renders the bounde
       })
     },
   )
-  await page.goto('/tasks/operator-checkpoint/full')
+  await page.goto('/w/demo/tasks/operator-checkpoint/full')
   const card = page.getByRole('region', { name: 'Checkpoint decision and recovery' })
   await card.getByRole('button', { name: 'Review' }).click()
   await expect(card.getByText('Show changes in v4')).toBeVisible()
@@ -3551,7 +3551,7 @@ test('Show changes reads the proposal only after it opens and renders the bounde
 test('the decision row and its open drawer stay inside a 390 px viewport', async ({ page }) => {
   await page.setViewportSize({ width: 390, height: 844 })
   await routeBulkCheckpoint(page, freshBulkState())
-  await page.goto('/tasks/operator-checkpoint/full')
+  await page.goto('/w/demo/tasks/operator-checkpoint/full')
   const card = page.getByRole('region', { name: 'Checkpoint decision and recovery' })
   await expect(card.getByRole('button', { name: 'Confirm 3 revisions & resume' })).toBeVisible()
   const overflow = () =>
@@ -3698,7 +3698,7 @@ async function expectSupersededStaleHistory(scope: Page | Locator) {
 
 test('superseded stale plan orders offer Redispatch for the queued successor instead of recovery', async ({ page }) => {
   const recovered = await routeSupersession(page, observedSupersession)
-  await page.goto(`/tasks/${supersessionTaskId}/full`)
+  await page.goto(`/w/demo/tasks/${supersessionTaskId}/full`)
   await expectSupersededStaleHistory(page)
   expect(recovered).toEqual([])
 })
@@ -3790,7 +3790,7 @@ test('forge failure categories render on the board card and in task activity evi
 })
 
 test('checkout-blocked recovery explains the safe operator sequence before recovery', async ({ page }) => {
-  await page.goto('/tasks/checkout-blocked-recovery/full')
+  await page.goto('/w/demo/tasks/checkout-blocked-recovery/full')
 
   const failure = page.getByText('The primary checkout has pre-existing changes, so Conveyor left them untouched.')
   const resolveFirst = nextActionBox(page).getByText(
@@ -3812,7 +3812,7 @@ test('checkout-blocked recovery explains the safe operator sequence before recov
 test('attempt recovery keeps the later checkout blocker authoritative without a standalone attempt list', async ({
   page,
 }) => {
-  await page.goto('/tasks/attempt-recovery/full')
+  await page.goto('/w/demo/tasks/attempt-recovery/full')
 
   await expect(executionTitle(page)).toHaveText('Implementation paused — checkout needs attention')
   await expect(page.getByRole('region', { name: 'Execution attempts' })).toHaveCount(0)
@@ -3835,12 +3835,12 @@ test('attempt recovery keeps the later checkout blocker authoritative without a 
 })
 
 test('provider-limit retry states expose only the correct action', async ({ page }) => {
-  await page.goto('/tasks/usage-retry-pending/full')
+  await page.goto('/w/demo/tasks/usage-retry-pending/full')
   await expect(page.getByText(/Retrying in/)).toBeVisible()
   await expect(page.getByRole('button', { name: /Retry implementation|Recover work order/ })).toHaveCount(0)
   await expect(page.getByText('The provider usage limit paused the last attempt.')).toBeVisible()
 
-  await page.goto('/tasks/usage-suppressed/full')
+  await page.goto('/w/demo/tasks/usage-suppressed/full')
   await expect(page.getByText('The provider usage or capacity limit stopped the last attempt.')).toBeVisible()
   await expect(page.getByRole('button', { name: 'Retry implementation' })).toBeVisible()
   await expect(page.getByRole('region', { name: 'Execution attempts' })).toHaveCount(0)
@@ -3899,7 +3899,7 @@ test('a running attempt becoming paused is announced through the live region', a
     await route.fulfill({ contentType: 'text/event-stream', body: 'event: activity\ndata: {}\n\n' })
   })
 
-  await page.goto('/tasks/live-pause/full')
+  await page.goto('/w/demo/tasks/live-pause/full')
   await expect(nextActionBox(page).getByText('Implementation · Progressing')).toBeVisible()
   await expect(executionTitle(page)).toHaveCount(0)
   releaseStream()
@@ -3935,7 +3935,7 @@ test('client machine activity is collapsed, refreshes, and disappears after term
     await route.fulfill({ json: item })
   })
 
-  await page.goto('/tasks/attempt-observability/full')
+  await page.goto('/w/demo/tasks/attempt-observability/full')
   const activityRegion = page.getByRole('region', { name: 'Client machine activity' })
   const disclosure = activityRegion.locator('details')
   const toggle = activityRegion.locator('summary')
@@ -3986,7 +3986,7 @@ test('terminated attempt transcripts stay collapsed until opened and absence sta
     await route.fulfill({ json: item })
   })
 
-  await page.goto('/tasks/attempt-transcript/full')
+  await page.goto('/w/demo/tasks/attempt-transcript/full')
   const disclosure = page.getByText('Attempt attempt-ended transcript')
   await expect(disclosure).toBeVisible()
   await expect(page.getByText('captured transcript tail marker')).toHaveCount(0)
@@ -3995,7 +3995,7 @@ test('terminated attempt transcripts stay collapsed until opened and absence sta
   await expect(page.getByText('Ended: execution deadline elapsed')).toBeVisible()
   await expect(page.getByText('This transcript was truncated; the most recent output is shown.')).toBeVisible()
 
-  await page.goto('/tasks/timeout/full')
+  await page.goto('/w/demo/tasks/timeout/full')
   await expect(page.getByText(/Attempt .* transcript/)).toHaveCount(0)
 })
 
@@ -4014,7 +4014,7 @@ test('timed-out review round exposes a reasoned full-round retry and preserves h
       },
     })
   })
-  await page.goto('/tasks/review-retry/full')
+  await page.goto('/w/demo/tasks/review-retry/full')
   await expect(page.getByText('Review round 1 needs operator attention')).toBeVisible()
   await expect(page.getByRole('region', { name: 'Review round recovery' })).not.toHaveClass(/bg-attention-soft/)
   await expect(page.getByRole('region', { name: 'Human gate' })).toHaveCount(0)
@@ -4031,7 +4031,7 @@ test('timed-out review round exposes a reasoned full-round retry and preserves h
 })
 
 test('contradictory completed review round surfaces a needs-operator retry card', async ({ page }) => {
-  await page.goto('/tasks/review-wedge/full')
+  await page.goto('/w/demo/tasks/review-wedge/full')
   await expect(page.getByText('Review round 2 needs operator attention')).toBeVisible()
   await expect(page.getByText(/completed verdict with contradictory child_failure outcome/)).toBeVisible()
   await expect(page.getByRole('button', { name: 'Retry review round' })).toBeDisabled()
@@ -4051,7 +4051,7 @@ test('interrupted review round offers one same-round recovery and retains comple
       },
     })
   })
-  await page.goto('/tasks/interrupted-review/full')
+  await page.goto('/w/demo/tasks/interrupted-review/full')
   await expect(page.getByRole('region', { name: 'Interrupted review round recovery' })).not.toHaveClass(
     /bg-attention-soft/,
   )
@@ -4067,21 +4067,21 @@ test('interrupted review round offers one same-round recovery and retains comple
 })
 
 test('merged task retains historical approval without interrupted review recovery', async ({ page }) => {
-  await page.goto('/tasks/merged-retained-review/full')
+  await page.goto('/w/demo/tasks/merged-retained-review/full')
   await expect(page.getByText('Retain this verdict.')).toBeVisible()
   await expect(page.getByTitle('Completed verdict')).toHaveText('Approved')
   await expect(page.getByRole('button', { name: 'Recover interrupted review round' })).toHaveCount(0)
 })
 
 test('interrupted review recovery tolerates legacy null empty collections', async ({ page }) => {
-  await page.goto('/tasks/interrupted-review-empty/full')
+  await page.goto('/w/demo/tasks/interrupted-review-empty/full')
   await expect(page.getByText(/interrupted-review-empty-review-1-seat-1/)).toBeVisible()
   await expect(page.getByRole('button', { name: 'Recover interrupted review round' })).toHaveCount(1)
   await expect(page.getByText('Something went wrong!')).toHaveCount(0)
 })
 
 test('timeout timeline and duration use the execution deadline', async ({ page }) => {
-  await page.goto('/tasks/timeout/full')
+  await page.goto('/w/demo/tasks/timeout/full')
   const expectedDeadline = await page.evaluate(() =>
     new Date('2026-07-15T12:30:00Z').toLocaleString('en', {
       month: 'short',
@@ -4098,7 +4098,7 @@ test('timeout timeline and duration use the execution deadline', async ({ page }
 test('work-order cards use their actual stage and technical activity exposes captured failure detail', async ({
   page,
 }) => {
-  await page.goto('/tasks/stage-aware/full')
+  await page.goto('/w/demo/tasks/stage-aware/full')
   const timeline = page.getByRole('region', { name: 'Execution event timeline' })
   await expect(timeline.getByText('Plan — waiting for an operator agent', { exact: true })).toBeVisible()
   await expect(timeline.getByText('Implementation — in progress', { exact: true })).toBeVisible()
@@ -4172,7 +4172,7 @@ for (const [modelName, iconFile] of [
       await route.fulfill({ json: item })
     })
 
-    await page.goto('/tasks/implementation-card/full')
+    await page.goto('/w/demo/tasks/implementation-card/full')
     // Model and duration sit in the entry's header line; the entry has no
     // footer (component-web-task-surfaces, Work-order timeline entries).
     const card = page.locator('article').filter({ hasText: 'Implementation completed without reported usage.' })
@@ -4272,7 +4272,7 @@ test('task detail aggregates reported work-order usage and distinguishes reporte
     await route.fulfill({ json: item })
   })
 
-  await page.goto('/tasks/usage-telemetry/full')
+  await page.goto('/w/demo/tasks/usage-telemetry/full')
   const timeline = page.getByRole('region', { name: 'Execution event timeline' })
   await expect(timeline.getByText('1.2k in / 300 out · self-reported')).toBeVisible()
   await expect(timeline.getByText('0 in / 0 out', { exact: true })).toBeVisible()
@@ -4340,7 +4340,7 @@ test('in-process jobs retain provider usage when the matching work order has no 
     await route.fulfill({ json: item })
   })
 
-  await page.goto('/tasks/provider-usage/full')
+  await page.goto('/w/demo/tasks/provider-usage/full')
   const job = page.locator('article').filter({ hasText: 'Provider usage remains attached' })
   await expect(job).toContainText('gpt-spec')
   await expect(job.getByRole('tooltip')).toContainText('17 in / 3 out · provider-reported')
@@ -4349,7 +4349,7 @@ test('in-process jobs retain provider usage when the matching work order has no 
 })
 
 test('overflowing full-screen task content scrolls from top to bottom', async ({ page }) => {
-  await page.goto('/tasks/overflowing/full')
+  await page.goto('/w/demo/tasks/overflowing/full')
 
   const content = page.getByRole('region', { name: 'Task content' })
   const marker = page.getByText('Regression marker at the bottom of the task content.')
@@ -4384,7 +4384,7 @@ test('overflowing full-screen task content scrolls from top to bottom', async ({
 })
 
 test('short full-screen task content does not create a nested vertical scrollbar', async ({ page }) => {
-  await page.goto('/tasks/short/full')
+  await page.goto('/w/demo/tasks/short/full')
 
   const content = page.getByRole('region', { name: 'Task content' })
   await expect(content).toBeVisible()
@@ -4396,7 +4396,7 @@ test('short full-screen task content does not create a nested vertical scrollbar
 })
 
 test('task detail links attached product and design context', async ({ page }) => {
-  await page.goto('/tasks/attached-context/full')
+  await page.goto('/w/demo/tasks/attached-context/full')
   const context = page.getByRole('region', { name: 'Attached context' })
   await expect(context.getByRole('link', { name: 'Confirmed product outcome' })).toHaveAttribute(
     'href',
@@ -4412,7 +4412,7 @@ test('task detail links attached product and design context', async ({ page }) =
 })
 
 test('task context attachment keeps archived documents out of the picker', async ({ page }) => {
-  await page.goto('/tasks/operator-checkpoint/full')
+  await page.goto('/w/demo/tasks/operator-checkpoint/full')
   const requirementRequest = page.waitForRequest((request) => new URL(request.url()).pathname === '/v1/requirements')
   const designRequest = page.waitForRequest((request) => new URL(request.url()).pathname === '/v1/system-designs')
   await page.getByRole('button', { name: 'Attach context' }).click()
@@ -4510,7 +4510,7 @@ for (const archived of [false, true]) {
     page,
   }) => {
     const { changes } = await mockContextManagement(page, { archived })
-    await page.goto('/tasks/operator-checkpoint/full')
+    await page.goto('/w/demo/tasks/operator-checkpoint/full')
     await page.getByRole('button', { name: 'Attach context', exact: true }).click()
     const dialog = page.getByRole('dialog', { name: 'Manage task context' })
     await expect(dialog.getByRole('button', { name: 'Attach selected context' })).toBeDisabled()
@@ -4533,7 +4533,7 @@ for (const archived of [false, true]) {
 
 test('task context dialog saves disjoint additions and removals', async ({ page }) => {
   const { changes } = await mockContextManagement(page)
-  await page.goto('/tasks/operator-checkpoint/full')
+  await page.goto('/w/demo/tasks/operator-checkpoint/full')
   await page.getByRole('button', { name: 'Attach context', exact: true }).click()
   const dialog = page.getByRole('dialog', { name: 'Manage task context' })
   await dialog.getByRole('button', { name: 'Remove context Attached requirement', exact: true }).click()
@@ -4558,7 +4558,7 @@ test('task context dialog saves disjoint additions and removals', async ({ page 
 
 test('task context dialog cancels removals by keeping or reselecting attached documents', async ({ page }) => {
   const { changes } = await mockContextManagement(page)
-  await page.goto('/tasks/operator-checkpoint/full')
+  await page.goto('/w/demo/tasks/operator-checkpoint/full')
   await page.getByRole('button', { name: 'Attach context', exact: true }).click()
   const dialog = page.getByRole('dialog', { name: 'Manage task context' })
   for (const title of ['Attached requirement', 'Attached design']) {
@@ -4578,7 +4578,7 @@ test('task context dialog cancels removals by keeping or reselecting attached do
 
 test('task context dialog still saves additions alone', async ({ page }) => {
   const { changes } = await mockContextManagement(page)
-  await page.goto('/tasks/operator-checkpoint/full')
+  await page.goto('/w/demo/tasks/operator-checkpoint/full')
   await page.getByRole('button', { name: 'Attach context', exact: true }).click()
   const dialog = page.getByRole('dialog', { name: 'Manage task context' })
   await dialog.getByRole('combobox').click()
@@ -4604,7 +4604,7 @@ for (const surface of ['full', 'sheet']) {
     }) => {
       await page.setViewportSize({ width: 1100, height: 900 })
       const { changes } = await mockContextManagement(page, { archived })
-      await page.goto(`/tasks/operator-checkpoint${surface === 'full' ? '/full' : ''}`)
+      await page.goto(`/w/demo/tasks/operator-checkpoint${surface === 'full' ? '/full' : ''}`)
       const card = page.getByRole('region', { name: 'Attached context' })
       for (const [title, version] of [
         ['Attached requirement', 3],
@@ -4640,7 +4640,7 @@ for (const state of ['running', 'merged', 'closed']) {
         await page.route('**/v1/me**', (route) =>
           route.fulfill({ json: callerIdentity({ id: 'usr_viewer', role: 'viewer' }, route.request()) }),
         )
-      await page.goto(`/tasks/operator-checkpoint${surface === 'full' ? '/full' : ''}`)
+      await page.goto(`/w/demo/tasks/operator-checkpoint${surface === 'full' ? '/full' : ''}`)
       await expect(page.getByRole('region', { name: 'Attached context' })).toBeVisible()
       await expect(page.getByRole('button', { name: /^Remove context/ })).toHaveCount(0)
       // A terminal task has no current order (server next action), so no recovery card offers it.
@@ -4652,7 +4652,7 @@ for (const state of ['running', 'merged', 'closed']) {
 for (const surface of ['dialog', 'card']) {
   test(`task context ${surface} preserves attachments and reports a refused removal`, async ({ page }) => {
     const { changes } = await mockContextManagement(page, { failure: true })
-    await page.goto('/tasks/operator-checkpoint/full')
+    await page.goto('/w/demo/tasks/operator-checkpoint/full')
     const card = page.getByRole('region', { name: 'Attached context' })
     if (surface === 'dialog') {
       await page.getByRole('button', { name: 'Attach context', exact: true }).click()
@@ -4744,12 +4744,12 @@ test('task context suggestions show justification and become attachments or disa
     },
   )
 
-  await page.goto(`/tasks/${taskId}`)
+  await page.goto(`/w/demo/tasks/${taskId}`)
   const sheetSuggestions = page.getByRole('region', { name: 'Suggested context' })
   await expect(sheetSuggestions).toContainText('Task intake and triage')
   await expect(sheetSuggestions).toContainText('The dashboard interaction inventory governs this surface.')
 
-  await page.goto(`/tasks/${taskId}/full`)
+  await page.goto(`/w/demo/tasks/${taskId}/full`)
   const suggestions = page.getByRole('region', { name: 'Suggested context' })
   await expect(suggestions).toContainText('Task intake and triage')
   await expect(suggestions).toContainText('From task intake')
@@ -4808,7 +4808,7 @@ test('task context suggestions remain visible without decision controls for non-
     return route.fulfill({ json: item })
   })
 
-  await page.goto('/tasks/context-suggestion-viewer/full')
+  await page.goto('/w/demo/tasks/context-suggestion-viewer/full')
   const suggestions = page.getByRole('region', { name: 'Suggested context' })
   await expect(suggestions).toContainText('Useful context remains readable to collaborators.')
   await expect(suggestions.getByRole('button', { name: 'Attach context' })).toHaveCount(0)
@@ -4816,7 +4816,7 @@ test('task context suggestions remain visible without decision controls for non-
 })
 
 test('task sheet bounds an overflowing spec and expands and collapses it accessibly', async ({ page }) => {
-  await page.goto('/tasks/long-spec')
+  await page.goto('/w/demo/tasks/long-spec')
 
   const toggle = page.getByRole('button', { name: 'Show full plan' })
   await expect(toggle).toBeVisible()
@@ -4841,7 +4841,7 @@ test('task sheet bounds an overflowing spec and expands and collapses it accessi
 })
 
 test('task body renders safe GFM in sheet and full-page headers', async ({ page }) => {
-  for (const path of ['/tasks/markdown-body', '/tasks/markdown-body/full']) {
+  for (const path of ['/w/demo/tasks/markdown-body', '/w/demo/tasks/markdown-body/full']) {
     await page.goto(path)
     await expect(page.getByRole('heading', { name: 'Structured context' })).toBeVisible()
     await expect(page.getByText('clear', { exact: true })).toHaveCSS('font-weight', /^(600|700)$/)
@@ -4853,7 +4853,7 @@ test('task body renders safe GFM in sheet and full-page headers', async ({ page 
 })
 
 test('activity job summaries render inline code without enabling raw HTML', async ({ page }) => {
-  await page.goto('/tasks/markdown-summary/full')
+  await page.goto('/w/demo/tasks/markdown-summary/full')
 
   const timeline = page.getByRole('region', { name: 'Execution event timeline' })
   const summary = timeline.locator('article').filter({ has: page.getByRole('heading', { name: 'Validation' }) })
@@ -4869,7 +4869,7 @@ test('activity job summaries render inline code without enabling raw HTML', asyn
 
 test('long task body is constrained and expands accessibly in both header variants', async ({ page }) => {
   await showAllBoardTasks(page)
-  for (const path of ['/tasks/long-body', '/tasks/long-body/full']) {
+  for (const path of ['/w/demo/tasks/long-body', '/w/demo/tasks/long-body/full']) {
     await page.goto(path)
     const expand = page.getByRole('button', { name: 'Show full description' })
     await expect(expand).toBeVisible()
@@ -4889,14 +4889,14 @@ test('long task body is constrained and expands accessibly in both header varian
 })
 
 test('a short side-view spec stays unbounded and the full route previews a long spec', async ({ page }) => {
-  await page.goto('/tasks/short')
+  await page.goto('/w/demo/tasks/short')
   await expect(page.getByRole('button', { name: /Show (full plan|less)/ })).toHaveCount(0)
   await expect(page.locator('[data-spec-overflow-shadow]')).toHaveCount(0)
 
   // The full route's reading column shows the same six-line preview as the
   // sheet; opening it reveals the whole plan (component-web-task-surfaces,
   // Task detail composition).
-  await page.goto('/tasks/long-spec/full')
+  await page.goto('/w/demo/tasks/long-spec/full')
   const toggle = page.getByRole('button', { name: 'Show full plan' })
   await expect(toggle).toHaveAttribute('aria-expanded', 'false')
   await expect(page.locator('[data-spec-overflow-shadow]')).toBeVisible()
@@ -4909,7 +4909,7 @@ test('a short side-view spec stays unbounded and the full route previews a long 
 })
 
 test('review panel replaces duplicate review and bounce activity notes', async ({ page }) => {
-  await page.goto('/tasks/reviews/full')
+  await page.goto('/w/demo/tasks/reviews/full')
 
   // One panel card, not one card per seat.
   const panel = page.locator('article').filter({ hasText: /Panel of 2\b.*unanimous to pass/ })
@@ -4960,7 +4960,7 @@ test('review card renders authorized verification evidence with accessible previ
     await route.fulfill({ contentType: 'video/webm', body: 'downloadable recording' })
   })
 
-  await page.goto('/tasks/evidence/full')
+  await page.goto('/w/demo/tasks/evidence/full')
   const reviewCard = page.getByRole('region', { name: 'Human gate' })
   await expect(reviewCard.getByRole('heading', { name: 'Verification evidence' })).toBeVisible()
   await expect(reviewCard.getByRole('img', { name: 'proof screenshot.png' })).toBeVisible()
@@ -4991,7 +4991,7 @@ test('review card renders authorized verification evidence with accessible previ
 // The plan section shows each version, so neither versioned plan event adds a
 // timeline row (component-web-task-surfaces, Task detail composition).
 test('spec approval keeps the human marker without versioned plan events', async ({ page }) => {
-  await page.goto('/tasks/spec-approval/full')
+  await page.goto('/w/demo/tasks/spec-approval/full')
 
   const timeline = page.getByRole('region', { name: 'Execution event timeline' })
   const timelineRows = timeline.locator('ol > li')
@@ -5004,7 +5004,7 @@ test('spec approval keeps the human marker without versioned plan events', async
 test('output-validation rejections show job-specific errors with warning tone and preserve accepted narration', async ({
   page,
 }) => {
-  await page.goto('/tasks/output-invalid/full')
+  await page.goto('/w/demo/tasks/output-invalid/full')
 
   const timeline = page.getByRole('region', { name: 'Execution event timeline' })
   const rejected = timeline.locator('article').filter({ hasText: 'Output rejected by the pipeline' })
@@ -5040,7 +5040,7 @@ test('output-validation rejections show job-specific errors with warning tone an
 test('active review claim diagnostics stay in the review panel instead of standalone history rows', async ({
   page,
 }) => {
-  await page.goto('/tasks/diagnostics/full')
+  await page.goto('/w/demo/tasks/diagnostics/full')
 
   await expect(page.getByText('Review claimed without terminal verdict submission')).toHaveCount(0)
   await expect(
@@ -5064,7 +5064,7 @@ test('active review claim diagnostics stay in the review panel instead of standa
   await expect(nextActionBox(page).getByRole('button', { name: 'Stop attempt' })).toBeVisible()
 
   // The task sheet uses the same historical rendering boundary.
-  await page.goto('/tasks/diagnostics')
+  await page.goto('/w/demo/tasks/diagnostics')
   await expect(page.getByText('Review claimed without terminal verdict submission')).toHaveCount(0)
   await expect(page.locator('article').filter({ hasText: /Panel of 2\b.*unanimous to pass/ })).toHaveCount(1)
   await expect(page.getByText('Review claim expired without verdict submission')).toBeVisible()
@@ -5093,7 +5093,7 @@ test('review panel hides generated metadata while preserving reported zero usage
     await route.fulfill({ json: item })
   })
 
-  await page.goto('/tasks/review-panel-cleanup/full')
+  await page.goto('/w/demo/tasks/review-panel-cleanup/full')
   const panel = page.locator('article').filter({ hasText: /Panel of 2\b.*unanimous to pass/ })
 
   await expect(panel).toContainText('gpt-review')
@@ -5171,7 +5171,7 @@ test('external Cursor Auto claims show the Cursor logo in the job header and rev
     await route.fulfill({ json: item })
   })
 
-  await page.goto('/tasks/cursor-auto-implement/full')
+  await page.goto('/w/demo/tasks/cursor-auto-implement/full')
   const footerChip = page
     .locator('article')
     .filter({ hasText: 'Cursor implemented the change.' })
@@ -5197,7 +5197,7 @@ test('external Cursor Auto claims show the Cursor logo in the job header and rev
     await route.fulfill({ json: item })
   })
 
-  await page.goto('/tasks/cursor-auto-review/full')
+  await page.goto('/w/demo/tasks/cursor-auto-review/full')
   const panel = page.locator('article').filter({ hasText: /Panel of 2\b.*unanimous to pass/ })
   const autoSeat = panel.locator('span.group\\/model').filter({ hasText: 'auto' })
   await expect(autoSeat.getByText('auto', { exact: true })).toBeVisible()
@@ -5212,7 +5212,7 @@ test('external Cursor Auto claims show the Cursor logo in the job header and rev
 })
 
 test('human gate renders as the event timeline tail and the page opens scrolled to it', async ({ page }) => {
-  await page.goto('/tasks/gate/full')
+  await page.goto('/w/demo/tasks/gate/full')
 
   await expect(page.getByRole('heading', { name: 'Activity' })).toBeVisible()
   const gate = page.getByRole('region', { name: 'Human gate' })
@@ -5277,7 +5277,7 @@ for (const decision of [
       })
     })
 
-    await page.goto(`/tasks/${taskId}/full`)
+    await page.goto(`/w/demo/tasks/${taskId}/full`)
     const gate = page.getByRole('region', { name: 'Human gate' })
     await expect(gate.getByText('Plan revision requested')).toBeVisible()
     await expect(gate.getByText('v7', { exact: true })).toBeVisible()
@@ -5418,7 +5418,7 @@ test('the revision chain reads as request, decision, and the plan version it pro
     await route.fulfill({ json: item })
   })
 
-  await page.goto(`/tasks/${taskId}/full`)
+  await page.goto(`/w/demo/tasks/${taskId}/full`)
   const timeline = page.getByRole('region', { name: 'Execution event timeline' })
   const rows = timeline.locator('ol > li')
 
@@ -5444,7 +5444,7 @@ test('the revision chain reads as request, decision, and the plan version it pro
 })
 
 test('worker warning is scoped to actionable task-owned work at the human gate', async ({ page }) => {
-  await page.goto('/tasks/human-gate-worker-scope/full')
+  await page.goto('/w/demo/tasks/human-gate-worker-scope/full')
 
   await expect(
     page.getByRole('region', { name: 'Human gate' }).getByRole('heading', { name: 'Plan approval' }),
@@ -5453,13 +5453,13 @@ test('worker warning is scoped to actionable task-owned work at the human gate',
   await expect(page.getByRole('region', { name: 'Enrolled worker unavailable' })).toHaveCount(0)
   await expect(page.getByText('This queued work has never started.')).toHaveCount(0)
 
-  await page.goto('/tasks/queued-worker/full')
+  await page.goto('/w/demo/tasks/queued-worker/full')
   await expect(page.getByRole('region', { name: 'Enrolled worker unavailable' })).toBeVisible()
   await expect(page.getByText('This queued work has never started.')).toBeVisible()
 })
 
 test('pull-only queued work waits for an operator agent without a worker alarm or route chip', async ({ page }) => {
-  await page.goto('/tasks/pull-only-worker/full')
+  await page.goto('/w/demo/tasks/pull-only-worker/full')
 
   await expect(page.getByText('Implementation — waiting for an operator agent', { exact: true })).toBeVisible()
   await expect(page.getByRole('region', { name: 'Enrolled worker unavailable' })).toHaveCount(0)
@@ -5467,7 +5467,7 @@ test('pull-only queued work waits for an operator agent without a worker alarm o
 })
 
 test('parked task offers recovery instead of an invalid approval verdict', async ({ page }) => {
-  await page.goto('/tasks/parked/full')
+  await page.goto('/w/demo/tasks/parked/full')
 
   await expect(page.getByRole('region', { name: 'Human gate' })).toHaveCount(0)
   await expect(page.getByRole('button', { name: 'Approve' })).toHaveCount(0)
@@ -5503,7 +5503,7 @@ test('merge gate stays pending until the post-success task and activity refreshe
     await route.fulfill({ json: refreshed })
   })
 
-  await page.goto('/tasks/merge-delayed/full')
+  await page.goto('/w/demo/tasks/merge-delayed/full')
   const gate = page.getByRole('region', { name: 'Human gate' })
   const merge = gate.getByRole('button', { name: 'Merge', exact: true })
   await merge.click()
@@ -5521,7 +5521,7 @@ test('failed merge restores the existing error and retry action', async ({ page 
     await route.fulfill({ status: 502, body: 'GitHub merge failed' })
   })
 
-  await page.goto('/tasks/merge-failure/full')
+  await page.goto('/w/demo/tasks/merge-failure/full')
   const gate = page.getByRole('region', { name: 'Human gate' })
   const merge = gate.getByRole('button', { name: 'Merge', exact: true })
   await merge.click()
@@ -5536,7 +5536,7 @@ test('failed merge restores the existing error and retry action', async ({ page 
 // it was pushed to, and the verdict that resolved — from the record the
 // pipeline already wrote.
 test('the merge gate names the reviewed head, pull request, and factory verdict', async ({ page }) => {
-  await page.goto('/tasks/merge-request-changes/full')
+  await page.goto('/w/demo/tasks/merge-request-changes/full')
 
   const card = page.getByRole('region', { name: 'What you are approving' })
   await expect(card.getByText('ca7ca700', { exact: true })).toBeVisible()
@@ -5575,7 +5575,7 @@ test('merge gate sends user feedback through request changes', async ({ page }) 
     await route.fulfill({ json: { task: activity('merge-request-changes', false).task, feedback } })
   })
 
-  await page.goto('/tasks/merge-request-changes/full')
+  await page.goto('/w/demo/tasks/merge-request-changes/full')
   const gate = page.getByRole('region', { name: 'Human gate' })
   await gate.getByRole('button', { name: 'Request changes' }).click()
   // The composer will not send until something is written.
@@ -5617,7 +5617,7 @@ test('contributor assignee can request merge-gate changes without gate approval 
     await route.fulfill({ json: { task: activity('merge-request-changes', false).task, feedback } })
   })
 
-  await page.goto('/tasks/merge-request-changes/full')
+  await page.goto('/w/demo/tasks/merge-request-changes/full')
   const gate = page.getByRole('region', { name: 'Human gate' })
   await expect(gate.getByRole('button', { name: 'Approve' })).toHaveCount(0)
   await expect(gate.getByRole('button', { name: 'Merge', exact: true })).toHaveCount(0)
@@ -5651,7 +5651,7 @@ test("non-assignee contributor cannot request changes at another user's merge ga
     return route.fulfill({ json: item })
   })
 
-  await page.goto('/tasks/merge-request-changes/full')
+  await page.goto('/w/demo/tasks/merge-request-changes/full')
   await expect(page.getByRole('region', { name: 'Human gate' })).toHaveCount(0)
   await expect(page.getByRole('button', { name: 'Request changes' })).toHaveCount(0)
 })
@@ -5683,7 +5683,7 @@ test('the recorded return reads back in the timeline with its feedback', async (
     await route.fulfill({ json: { task: activity('merge-request-changes', false).task, feedback: 'ok' } })
   })
 
-  await page.goto('/tasks/merge-request-changes/full')
+  await page.goto('/w/demo/tasks/merge-request-changes/full')
   const gate = page.getByRole('region', { name: 'Human gate' })
   await gate.getByRole('button', { name: 'Request changes' }).click()
   await gate.getByLabel('Changes you want').fill('Keep this exact feedback.')
@@ -5698,7 +5698,7 @@ test('the recorded return reads back in the timeline with its feedback', async (
 })
 
 test('new task events preserve the task sheet scroll position', async ({ page }) => {
-  await page.goto('/tasks/live-scroll')
+  await page.goto('/w/demo/tasks/live-scroll')
 
   const timeline = page.getByRole('region', { name: 'Execution event timeline' })
   const container = page.getByRole('dialog', { name: 'Task detail' }).locator('.overflow-y-auto')
@@ -5748,7 +5748,7 @@ for (const decision of ['approve', 'redirect'] as const) {
       })
     })
 
-    await page.goto('/tasks/gate')
+    await page.goto('/w/demo/tasks/gate')
     const container = page.getByRole('dialog', { name: 'Task detail' }).locator('.overflow-y-auto')
     await expect.poll(() => container.evaluate((element) => element.scrollHeight > element.clientHeight)).toBe(true)
     await container.evaluate((element) => {
@@ -5785,7 +5785,7 @@ for (const decision of ['approve', 'redirect'] as const) {
 }
 
 test('task sheet opens scrolled to the human gate for reviewable tasks', async ({ page }) => {
-  await page.goto('/tasks/gate')
+  await page.goto('/w/demo/tasks/gate')
   const gate = page.getByRole('region', { name: 'Human gate' })
   await expect(gate).toBeInViewport()
   await expect.poll(() => page.evaluate(() => document.documentElement.scrollTop)).toBe(0)
@@ -5799,7 +5799,7 @@ test('board activity surfaces expired-without-verdict state', async ({ page }) =
 
 test('shared Markdown renders plan diagrams responsively in both themes and falls back to source', async ({ page }) => {
   await page.setViewportSize({ width: 720, height: 900 })
-  await page.goto('/tasks/mermaid-valid/full')
+  await page.goto('/w/demo/tasks/mermaid-valid/full')
   const diagram = page.locator('[data-mermaid]')
   await expect(diagram.locator('svg')).toBeVisible()
   await expect(diagram).toHaveCSS('overflow-x', 'auto')
@@ -5813,7 +5813,7 @@ test('shared Markdown renders plan diagrams responsively in both themes and fall
     await expect(diagram).toBeInViewport()
   }
 
-  await page.goto('/tasks/mermaid-invalid/full')
+  await page.goto('/w/demo/tasks/mermaid-invalid/full')
   await expect(page.locator('code.language-mermaid')).toContainText('this is deliberately malformed')
   await expect(page.getByRole('heading', { name: 'Execution plan' }).first()).toBeVisible()
 })
@@ -5821,7 +5821,7 @@ test('shared Markdown renders plan diagrams responsively in both themes and fall
 // The anchor lives at its own canonical route (component-web-task-surfaces), and the legacy task
 // URL is a redirect into it rather than a second door.
 test('blueprint and dependency details remain linked and read only', async ({ page }) => {
-  await page.goto('/tasks/blueprint-parent/full')
+  await page.goto('/w/demo/tasks/blueprint-parent/full')
   await expect(page).toHaveURL(/\/blueprints\/blueprint-parent$/)
   await expect(page.getByRole('heading', { name: 'Delivery' })).toBeVisible()
   await expect(page.getByText('Completed').first()).toBeVisible()
@@ -5829,19 +5829,19 @@ test('blueprint and dependency details remain linked and read only', async ({ pa
   const dashboardLinks = page.getByRole('link', { name: 'Dashboard' })
   await expect(dashboardLinks).toHaveCount(2)
   for (let index = 0; index < (await dashboardLinks.count()); index++) {
-    await expect(dashboardLinks.nth(index)).toHaveAttribute('href', '/tasks/blueprint-child/full')
+    await expect(dashboardLinks.nth(index)).toHaveAttribute('href', '/w/demo/tasks/blueprint-child/full')
   }
   await expect(page.getByText('3 tasks created from the blueprint')).toBeVisible()
   await expect(page.getByText('Blueprint completed — all child tasks are finished')).toBeVisible()
   await expect(page.getByRole('link', { name: 'Runtime' }).first()).toBeVisible()
 
-  await page.goto('/tasks/blueprint-child/full')
+  await page.goto('/w/demo/tasks/blueprint-child/full')
   const box = nextActionBox(page)
   await expect(box.getByRole('heading', { name: 'This task is waiting on another task.' })).toBeVisible()
   await expect(box.getByText('Implementation · Progressing')).toBeVisible()
   await expect(box.getByRole('link', { name: 'Runtime · Waiting' })).toHaveAttribute(
     'href',
-    '/tasks/blueprint-sub-2/full',
+    '/w/demo/tasks/blueprint-sub-2/full',
   )
   await expect(box.getByText('Not applicable.')).toBeVisible()
   // The summary is the box's one headline; the derived "Waiting on
@@ -5855,15 +5855,15 @@ test('blueprint and dependency details remain linked and read only', async ({ pa
   await expect(page.getByRole('button', { name: 'Redispatch' })).toHaveCount(0)
   await expect(page.getByRole('link', { name: 'Phase 6 blueprint · plan v1' })).toHaveAttribute(
     'href',
-    '/blueprints/blueprint-parent',
+    '/w/demo/blueprints/blueprint-parent',
   )
   await expect(page.getByRole('link', { name: 'Runtime · Waiting' }).last()).toHaveAttribute(
     'href',
-    '/tasks/blueprint-sub-2/full',
+    '/w/demo/tasks/blueprint-sub-2/full',
   )
   await expect(page.getByRole('link', { name: 'Persistence · Satisfied' })).toHaveAttribute(
     'href',
-    '/tasks/blueprint-sub-1/full',
+    '/w/demo/tasks/blueprint-sub-1/full',
   )
   await expect(page.getByText('awaiting_human')).toHaveCount(0)
   await expect(page.getByText('terminal outcome')).toHaveCount(0)
@@ -5883,14 +5883,14 @@ test('blueprint history describes a missing stored spec as a missing plan versio
     }),
   )
 
-  await page.goto('/blueprints/blueprint-parent')
+  await page.goto('/w/demo/blueprints/blueprint-parent')
   await expect(page.getByText('This blueprint has no recorded plan version.')).toBeVisible()
   await expect(page.getByText('This blueprint has no recorded spec version.')).toHaveCount(0)
 })
 
 test('blocked detail polling clears waiting state without a reload and stays off when unblocked', async ({ page }) => {
   await page.clock.install()
-  await page.goto('/tasks/blocked-refresh/full')
+  await page.goto('/w/demo/tasks/blocked-refresh/full')
   await expect(
     nextActionBox(page).getByRole('heading', { name: 'This task is waiting on another task.' }),
   ).toBeVisible()
@@ -5905,7 +5905,7 @@ test('blocked detail polling clears waiting state without a reload and stays off
   await expect(page.getByText('Implementation — waiting for an operator agent', { exact: true })).toBeVisible()
   await expect(page.getByRole('button', { name: 'Redispatch' })).toBeVisible()
 
-  await page.goto('/tasks/no-blockers/full')
+  await page.goto('/w/demo/tasks/no-blockers/full')
   await expect.poll(() => detailRequestCounts.get('no-blockers') ?? 0).toBe(1)
   const initialRequests = detailRequestCounts.get('no-blockers')
   await page.clock.fastForward(30_000)
@@ -5913,16 +5913,16 @@ test('blocked detail polling clears waiting state without a reload and stays off
 })
 
 test('dependency links follow the detail route variant and spec claiming stays available', async ({ page }) => {
-  await page.goto('/tasks/blueprint-child')
+  await page.goto('/w/demo/tasks/blueprint-child')
   await expect(
     nextActionBox(page).getByRole('heading', { name: 'This task is waiting on another task.' }),
   ).toBeVisible()
   await expect(nextActionBox(page).getByRole('link', { name: 'Runtime · Waiting' })).toHaveAttribute(
     'href',
-    '/tasks/blueprint-sub-2',
+    '/w/demo/tasks/blueprint-sub-2',
   )
 
-  await page.goto('/tasks/spec-while-blocked/full')
+  await page.goto('/w/demo/tasks/spec-while-blocked/full')
   const timeline = page.getByRole('region', { name: 'Execution event timeline' })
   await expect(
     nextActionBox(page).getByRole('heading', { name: 'This task is waiting on another task.' }),
@@ -5932,16 +5932,16 @@ test('dependency links follow the detail route variant and spec claiming stays a
 })
 
 test('a pending decision blocker links directly to its System Design decision card', async ({ page }) => {
-  await page.goto('/tasks/decision-blocker/full')
+  await page.goto('/w/demo/tasks/decision-blocker/full')
   const blocker = nextActionBox(page)
   const decision = blocker.getByRole('link', { name: 'Open DEC-2 in System Design' })
-  await expect(decision).toHaveAttribute('href', '/system-design#decision-dec-2')
+  await expect(decision).toHaveAttribute('href', '/w/demo/system-design#decision-dec-2')
   await decision.click()
   await expect(page).toHaveURL(/\/system-design#decision-dec-2$/)
 })
 
 test('recovery-needing work stays primary when dependencies are also unresolved', async ({ page }) => {
-  await page.goto('/tasks/blocked-suppressed/full')
+  await page.goto('/w/demo/tasks/blocked-suppressed/full')
   const currentState = nextActionBox(page)
   await expect(executionTitle(page)).toHaveText('Implementation paused — recovery needed')
   await expect(currentState.getByText('Schema migration · Waiting')).toBeVisible()
@@ -6096,7 +6096,7 @@ test('task header links an open dependency with one stable audited request', asy
     await route.fulfill({ json: { task: currentItem().task, request_id: linkBody?.request_id, added: true } })
   })
 
-  await page.goto('/tasks/full-header-id')
+  await page.goto('/w/demo/tasks/full-header-id')
   await page.getByRole('button', { name: 'Task actions' }).click()
   await page.getByRole('menuitem', { name: 'Link dependency' }).click()
   await page.getByPlaceholder('Task title or ID').fill('candidate')
@@ -6190,7 +6190,7 @@ test('checkpoint proposal confirmation completes before recovery with an audited
     await route.fulfill({ json: { id: 'operator-checkpoint-implement-1', state: 'queued', claimable: true } })
   })
 
-  await page.goto('/tasks/operator-checkpoint/full')
+  await page.goto('/w/demo/tasks/operator-checkpoint/full')
   const card = page.getByRole('region', { name: 'Confirm proposals and recover work order' })
   await expect(card).toHaveCount(1)
   await expect(card.getByText(checkpointProgress, { exact: true })).toBeVisible()
@@ -6229,7 +6229,7 @@ test('checkpoint proposal confirmation failure is visible and does not recover',
     return route.fulfill({ json: {} })
   })
 
-  await page.goto('/tasks/operator-checkpoint/full')
+  await page.goto('/w/demo/tasks/operator-checkpoint/full')
   const card = page.getByRole('region', { name: 'Confirm proposals and recover work order' })
   await card.getByRole('button', { name: 'Confirm v2 and recover' }).click()
   await expect(card.getByText('Confirmation rejected by operator policy.')).toBeVisible()
@@ -6266,7 +6266,7 @@ test("a task's own System Design proposal is confirmable from its detail and cle
     releaseActivityEvent()
   })
 
-  await page.goto('/tasks/design-proposal/full')
+  await page.goto('/w/demo/tasks/design-proposal/full')
   const card = page.getByRole('region', { name: 'Verification and review are waiting on a document decision' })
   await expect(card).toHaveCount(1)
   await expect(card).toContainText('Verification and review cannot be claimed until you confirm or dismiss')
@@ -6296,7 +6296,7 @@ test("a task's own System Design proposal is confirmable from its detail and cle
   // The same composition carries it on the sheet route, not just the full page.
   confirmed = false
   pendingAuthority = true
-  await page.goto('/tasks/design-proposal')
+  await page.goto('/w/demo/tasks/design-proposal')
   await expect(
     page
       .getByRole('region', { name: 'Verification and review are waiting on a document decision' })
@@ -6320,7 +6320,7 @@ test('maintainer sees a pending task System Design proposal without an enabled C
     route.fulfill({ json: designCollection('design-proposal', false) }),
   )
 
-  await page.goto('/tasks/design-proposal/full')
+  await page.goto('/w/demo/tasks/design-proposal/full')
   const card = page.getByRole('region', { name: 'Verification and review are waiting on a document decision' })
   await expect(card).toHaveCount(1)
   await expect(card).toContainText('System Design update proposed')
@@ -6332,7 +6332,7 @@ test('task detail renders no proposal card for a pending version another task ra
   await page.route('**/v1/workspaces', (route) => route.fulfill({ json: [{ id: 'demo', name: 'Demo' }] }))
   await page.route('**/v1/system-designs**', (route) => route.fulfill({ json: designCollection('other-task', false) }))
 
-  await page.goto('/tasks/design-proposal/full')
+  await page.goto('/w/demo/tasks/design-proposal/full')
   await expect(page.getByRole('region', { name: 'Activity' })).toBeVisible()
   await expect(
     page.getByRole('region', { name: 'Verification and review are waiting on a document decision' }),
@@ -6347,7 +6347,7 @@ test('task detail renders a proposal-only card without the review-gate headline'
     route.fulfill({ json: designCollection('proposal-only', false) }),
   )
 
-  await page.goto('/tasks/proposal-only/full')
+  await page.goto('/w/demo/tasks/proposal-only/full')
   const card = page.getByRole('region', { name: 'System Design proposals from this task' })
   await expect(card).toContainText('System Design update proposed')
   await expect(card.getByRole('button', { name: 'Confirm version 2' })).toBeVisible()
@@ -6425,7 +6425,7 @@ for (const withDesignCard of [false, true]) {
           },
         }),
       )
-      await page.goto(`/tasks/${taskId}/full`)
+      await page.goto(`/w/demo/tasks/${taskId}/full`)
       const card = page.getByRole('region', { name: 'Verification and review are waiting on a document decision' })
       await expect(
         card.getByText(`Verification and review are waiting on a ${noun} decision`, { exact: true }),
@@ -6471,7 +6471,7 @@ for (const stage of ['verify', 'review'] as const) {
         },
       }),
     )
-    await page.goto(`/tasks/${taskId}/full`)
+    await page.goto(`/w/demo/tasks/${taskId}/full`)
     const card = page.getByRole('region', { name: 'Pending proposals from this task' })
     await expect(
       card.getByText('Review will not include this pending decision proposal', { exact: true }),
@@ -6517,7 +6517,7 @@ test('a mixed proposal notice attributes the wait only to the requirement', asyn
       },
     }),
   )
-  await page.goto(`/tasks/${taskId}/full`)
+  await page.goto(`/w/demo/tasks/${taskId}/full`)
   const card = page.getByRole('region', { name: 'Verification and review are waiting on a document decision' })
   await expect(
     card.getByText('Verification and review are waiting on a requirement decision', { exact: true }),
@@ -6553,7 +6553,7 @@ for (const { waiting, stage } of [
         },
       }),
     )
-    await page.goto(`/tasks/${taskId}/full`)
+    await page.goto(`/w/demo/tasks/${taskId}/full`)
     await expect(page.getByRole('button', { name: 'Redispatch', exact: true })).toBeVisible()
     await expect(page.getByText('Queued — re-enqueue if dispatch stalled.')).toBeVisible()
     if (!waiting)
@@ -6574,7 +6574,7 @@ test('task detail renders no proposal card for a document the task does not carr
     route.fulfill({ json: designCollection('unattached-proposal', false) }),
   )
 
-  await page.goto('/tasks/unattached-proposal/full')
+  await page.goto('/w/demo/tasks/unattached-proposal/full')
   await expect(page.getByRole('region', { name: 'Activity' })).toBeVisible()
   await expect(page.getByRole('region', { name: 'System Design proposals from this task' })).toHaveCount(0)
   await expect(page.getByText('System Design update proposed')).toHaveCount(0)
@@ -6674,7 +6674,7 @@ type TaskEventFixture = {
 test('an operator assigns a task from the member picker and the timeline records it', async ({ page }) => {
   await routeAssignment(page, { operator: true })
 
-  await page.goto('/tasks/assignable/full')
+  await page.goto('/w/demo/tasks/assignable/full')
   await page.getByRole('button', { name: 'Task actions' }).click()
   await expect(page.getByRole('menuitem', { name: 'Assign', exact: true })).toBeVisible()
   // Nothing claims the task yet, so no chip stands in for an assignment.
@@ -6719,7 +6719,7 @@ test('assignment history resolves a prior assignee from the workspace roster', a
     await route.fulfill({ json: item })
   })
 
-  await page.goto('/tasks/assignable/full')
+  await page.goto('/w/demo/tasks/assignable/full')
   await expect(page.getByRole('region', { name: 'Activity' })).toContainText('Assigned to Bo Member')
   await expect(page.getByRole('region', { name: 'Activity' })).not.toContainText('Assigned to usr_bo')
 })
@@ -6734,7 +6734,7 @@ test('a non-operator sees the assignee but no set or clear control', async ({ pa
     await route.fulfill({ json: item })
   })
 
-  await page.goto('/tasks/assignable/full')
+  await page.goto('/w/demo/tasks/assignable/full')
   await expect(page.getByTitle('Assigned to Bo Member — bo@example.test · usr_bo')).toBeVisible()
   await expect(page.getByRole('button', { name: 'Task actions' })).toHaveCount(0)
   await expect(page.getByRole('menuitem')).toHaveCount(0)
@@ -6808,7 +6808,7 @@ for (const withNotes of [true, false]) {
         },
       }),
     )
-    await page.goto('/tasks/reviews/full')
+    await page.goto('/w/demo/tasks/reviews/full')
     const panel = page.locator('article').filter({ hasText: /Panel of 2\b.*unanimous to pass/ })
     await expect(panel).toBeVisible()
     const notes = panel.getByRole('region', { name: "Operator notes on this task's proposals" })
@@ -6877,7 +6877,7 @@ async function mockRestart(page: Page, options: { role?: string; proposals?: (ty
 }
 
 async function openRestart(page: Page) {
-  await page.goto('/tasks/restart-source/full')
+  await page.goto('/w/demo/tasks/restart-source/full')
   await page.getByRole('button', { name: 'Task actions' }).click()
   await page.getByRole('menuitem', { name: 'Start over', exact: true }).click()
   return page.getByRole('dialog', { name: 'Start over', exact: true })
@@ -6932,7 +6932,7 @@ test('start over previews orders, task-owned proposal versions and the PR, then 
   await expect(page.getByRole('status').filter({ hasText: 'Started over as restart-next' })).toBeVisible()
   await expect(page.getByRole('link', { name: 'restart-source', exact: true })).toHaveAttribute(
     'href',
-    '/tasks/restart-source/full',
+    '/w/demo/tasks/restart-source/full',
   )
   await expect(page.getByRole('region', { name: 'Operator direction', exact: true })).toContainText(
     'Keep the confirmed pins.',
@@ -6952,7 +6952,7 @@ test('start over previews orders, task-owned proposal versions and the PR, then 
 for (const role of ['viewer', 'executor', 'contributor']) {
   test(`start over is hidden without operate_gates for ${role}`, async ({ page }) => {
     await mockRestart(page, { role })
-    await page.goto('/tasks/restart-source/full')
+    await page.goto('/w/demo/tasks/restart-source/full')
     await expect(page.getByRole('heading', { name: 'Short task' })).toBeVisible()
     await expect(page.getByRole('button', { name: 'Task actions' })).toHaveCount(0)
     await expect(page.getByRole('menuitem')).toHaveCount(0)
@@ -6964,7 +6964,7 @@ for (const state of ['closed', 'merged']) {
     const item = restartFixture()
     item.task.state = state
     await page.route('**/v1/tasks/restart-source/activity*', (route) => route.fulfill({ json: item }))
-    await page.goto('/tasks/restart-source/full')
+    await page.goto('/w/demo/tasks/restart-source/full')
     await expect(page.getByRole('heading', { name: 'Short task' })).toBeVisible()
     await expect(page.getByRole('button', { name: 'Task actions' })).toHaveCount(0)
     await expect(page.getByRole('menuitem')).toHaveCount(0)
@@ -7100,10 +7100,10 @@ for (const [state, message] of [
         },
       }),
     )
-    await page.goto('/tasks/restart-source/full')
+    await page.goto('/w/demo/tasks/restart-source/full')
     await expect(page.getByRole('link', { name: 'Started over as restart-next' })).toHaveAttribute(
       'href',
-      '/tasks/restart-next/full',
+      '/w/demo/tasks/restart-next/full',
     )
     await expect(page.getByText(message, { exact: state !== 'failed' && state !== 'retrying' })).toBeVisible()
     if (state === 'failed' || state === 'retrying') await expect(page.getByText(/Forge unavailable/)).toBeVisible()
@@ -7158,12 +7158,12 @@ test('start over board cards mark both sides and sheet links use sheet routes', 
   await page.getByRole('link').filter({ hasText: 'Retired restart task' }).click()
   await expect(page.getByRole('link', { name: 'Started over as restart-next' })).toHaveAttribute(
     'href',
-    '/tasks/restart-next',
+    '/w/demo/tasks/restart-next',
   )
   await page.getByRole('link', { name: 'Started over as restart-next' }).click()
   await expect(page.getByRole('link', { name: 'restart-source', exact: true })).toHaveAttribute(
     'href',
-    '/tasks/restart-source',
+    '/w/demo/tasks/restart-source',
   )
 })
 
@@ -7209,7 +7209,7 @@ test('start over counts recoverable and submitted orders but excludes cancelled 
 
 for (const variant of ['sheet', 'full']) {
   test(`task actions menu supports keyboard navigation and dismissal in ${variant}`, async ({ page }) => {
-    await page.goto(`/tasks/full-header-id${variant === 'full' ? '/full' : ''}`)
+    await page.goto(`/w/demo/tasks/full-header-id${variant === 'full' ? '/full' : ''}`)
     const trigger = page.getByRole('button', { name: 'Task actions' })
     const menu = page.getByRole('menu', { name: 'Task actions' })
     // The trigger is the quiet overflow icon: named for assistive tech and the
@@ -7264,7 +7264,7 @@ for (const variant of ['sheet', 'full']) {
       holdRequests++
       return route.fulfill({ status: 410, json: { error: 'task_hold_retired' } })
     })
-    await page.goto(`/tasks/full-header-id${variant === 'full' ? '/full' : ''}`)
+    await page.goto(`/w/demo/tasks/full-header-id${variant === 'full' ? '/full' : ''}`)
     await expect(page.getByRole('heading', { name: 'Short task', exact: true })).toBeVisible()
     await expect(page.getByRole('button', { name: /^(Hold|Release)$/ })).toHaveCount(0)
     await expect(page.getByText('Held', { exact: true })).toHaveCount(0)
@@ -7364,7 +7364,7 @@ test('lightweight audit disclosures load on demand, retry, and stay out of SSE r
     })
   })
   const started = Date.now()
-  await page.goto('/tasks/audit-detail/full')
+  await page.goto('/w/demo/tasks/audit-detail/full')
   await expect(page.getByText('Regression marker at the bottom of the task content.')).toBeVisible()
   await expect(page.getByRole('link', { name: /Required backend/ })).toBeVisible()
   console.log(`seeded lightweight browser render: ${Date.now() - started} ms; mocked response, no live speed claim`)
@@ -7441,7 +7441,7 @@ test('seeded full and lightweight task payloads record comparable render observa
     return route.fulfill({ status: 500 })
   })
   // Warm the same route before both measured navigations.
-  await page.goto('/tasks/audit-measurement/full')
+  await page.goto('/w/demo/tasks/audit-measurement/full')
   await expect(page.getByText('Regression marker at the bottom of the task content.')).toBeVisible()
   for (const [label, data] of [
     ['full', full],
@@ -7449,7 +7449,7 @@ test('seeded full and lightweight task payloads record comparable render observa
   ] as const) {
     selected = JSON.stringify(data)
     const start = Date.now()
-    await page.goto('/tasks/audit-measurement/full')
+    await page.goto('/w/demo/tasks/audit-measurement/full')
     await expect(page.getByText('Regression marker at the bottom of the task content.')).toBeVisible()
     console.log(
       `seeded ${label}: ${Buffer.byteLength(selected)} uncompressed bytes; warm navigation-to-plan ${Date.now() - start} ms (mocked API, same browser/client)`,
@@ -7508,7 +7508,7 @@ for (const surface of ['full', 'board sheet']) {
           },
         }),
       )
-      await page.goto(`/tasks/creator${surface === 'full' ? '/full' : ''}`)
+      await page.goto(`/w/demo/tasks/creator${surface === 'full' ? '/full' : ''}`)
       const sheet = page.getByRole('dialog', { name: 'Task detail' })
       // The creator reads "by <creator>" after the Created time
       // (component-web-task-surfaces, Task detail composition).
@@ -7556,7 +7556,7 @@ test('Created by preserves a long historical identity when the workspace member 
     }),
   )
   await page.setViewportSize({ width: 390, height: 850 })
-  await page.goto('/tasks/creator-long/full')
+  await page.goto('/w/demo/tasks/creator-long/full')
   const value = page
     .locator('dt')
     .filter({ hasText: /^Created$/ })
@@ -7655,10 +7655,10 @@ for (const surface of ['full', 'sheet', 'permalink']) {
     await page.route('**/v1/tasks/failed-triage/activity*', (route) => route.fulfill({ json: item }))
     await page.goto(
       surface === 'full'
-        ? '/tasks/failed-triage/full'
+        ? '/w/demo/tasks/failed-triage/full'
         : surface === 'sheet'
-          ? '/tasks/failed-triage'
-          : '/tasks?task=failed-triage',
+          ? '/w/demo/tasks/failed-triage'
+          : '/w/demo/tasks?task=failed-triage',
     )
     const recovery = page.getByRole('region', { name: 'Triage recovery' })
     await expect(recovery).toContainText(failedTriageReason)
@@ -7687,7 +7687,7 @@ for (const [reason, guidance] of [
     await page.route('**/v1/tasks/failed-triage/activity*', (route) =>
       route.fulfill({ json: failedTriageFixture(reason) }),
     )
-    await page.goto('/tasks/failed-triage/full')
+    await page.goto('/w/demo/tasks/failed-triage/full')
     const recovery = page.getByRole('region', { name: 'Triage recovery' })
     await expect(recovery).toContainText(reason)
     await expect(recovery).toContainText(guidance)
@@ -7748,7 +7748,7 @@ test('failed triage retry waits for response and every projection refresh and pr
     accepted = true
     await route.fulfill({ json: { task: { ...item.task, state: 'queued', next_stage: 'triage' } } })
   })
-  await page.goto('/tasks?task=failed-triage')
+  await page.goto('/w/demo/tasks?task=failed-triage')
   const recovery = page.getByRole('region', { name: 'Triage recovery' })
   const retry = recovery.getByRole('button')
   await retry.evaluate((button: HTMLButtonElement) => {
@@ -7777,7 +7777,7 @@ for (const status of [500, 409]) {
     const reason = status === 409 ? 'task is not at a human gate' : 'recovery service unavailable'
     await page.route('**/v1/tasks/failed-triage/activity*', (route) => route.fulfill({ json: failedTriageFixture() }))
     await page.route('**/v1/tasks/failed-triage/review*', (route) => route.fulfill({ status, body: reason }))
-    await page.goto('/tasks/failed-triage/full')
+    await page.goto('/w/demo/tasks/failed-triage/full')
     const recovery = page.getByRole('region', { name: 'Triage recovery' })
     await recovery.getByRole('button', { name: 'Retry triage' }).click()
     await expect(recovery.getByRole('alert')).toContainText(reason)
@@ -7798,7 +7798,7 @@ test('failed triage accepted retry with stale detail refreshes status without re
     requests++
     return route.fulfill({ json: {} })
   })
-  await page.goto('/tasks/failed-triage/full')
+  await page.goto('/w/demo/tasks/failed-triage/full')
   const recovery = page.getByRole('region', { name: 'Triage recovery' })
   await recovery.getByRole('button', { name: 'Retry triage' }).click()
   await expect(recovery.getByRole('alert')).toContainText('recovery is not yet confirmed')
@@ -7813,7 +7813,7 @@ test('failed triage capability refusal keeps the reason visible without a retry 
     route.fulfill({ json: callerIdentity({ id: 'reader', role: 'viewer' }, route.request()) }),
   )
   await page.route('**/v1/tasks/failed-triage/activity*', (route) => route.fulfill({ json: failedTriageFixture() }))
-  await page.goto('/tasks/failed-triage/full')
+  await page.goto('/w/demo/tasks/failed-triage/full')
   const recovery = page.getByRole('region', { name: 'Triage recovery' })
   await expect(recovery).toContainText('upstream service unavailable')
   await expect(recovery).toContainText('An operator with permission')
@@ -7852,7 +7852,7 @@ for (const gate of ['spec', 'merge']) {
         },
       }),
     )
-    await page.goto('/tasks/failed-triage/full')
+    await page.goto('/w/demo/tasks/failed-triage/full')
     await expect(page.getByRole('region', { name: 'Triage recovery' })).toHaveCount(0)
     const humanGate = page.getByRole('region', { name: 'Human gate' })
     await expect(humanGate).toBeVisible()
@@ -7878,7 +7878,7 @@ for (const change of ['missing evidence', 'new triage attempt', 'later intervent
         at: '2026-07-15T13:00:00Z',
       })
     await page.route('**/v1/tasks/failed-triage/activity*', (route) => route.fulfill({ json: item }))
-    await page.goto('/tasks/failed-triage/full')
+    await page.goto('/w/demo/tasks/failed-triage/full')
     await expect(page.getByRole('region', { name: 'Human gate' })).toBeVisible()
     await expect(page.getByRole('region', { name: 'Triage recovery' })).toHaveCount(0)
   })
@@ -7913,7 +7913,7 @@ test('failed triage retry refreshes the Board projection before clearing the she
     accepted = true
     return route.fulfill({ json: {} })
   })
-  await page.goto('/tasks/failed-triage')
+  await page.goto('/w/demo/tasks/failed-triage')
   await page.getByRole('region', { name: 'Triage recovery' }).getByRole('button', { name: 'Retry triage' }).click()
   await expect(page.getByRole('region', { name: 'Triage recovery' })).toHaveCount(0)
   expect(boardRefreshed).toBe(true)
@@ -7939,7 +7939,7 @@ test('failed triage accepted retry exposes refresh failure and only retries the 
     submissions++
     return route.fulfill({ json: {} })
   })
-  await page.goto('/tasks/failed-triage/full')
+  await page.goto('/w/demo/tasks/failed-triage/full')
   const recovery = page.getByRole('region', { name: 'Triage recovery' })
   await recovery.getByRole('button', { name: 'Retry triage' }).click()
   await expect(recovery.getByRole('alert')).toContainText('Task refresh unavailable')
@@ -7954,7 +7954,7 @@ test('failed triage predicate tolerates absent job evidence', async ({ page }) =
   await page.route('**/v1/tasks/failed-triage/activity*', (route) =>
     route.fulfill({ json: { ...item, jobs: [], events: [] } }),
   )
-  await page.goto('/tasks/failed-triage/full')
+  await page.goto('/w/demo/tasks/failed-triage/full')
   await expect(page.getByRole('region', { name: 'Human gate' })).toBeVisible()
   await expect(page.getByRole('region', { name: 'Triage recovery' })).toHaveCount(0)
 })
@@ -7963,7 +7963,7 @@ test('failed triage predicate orders fractional-second execution timestamps chro
   const item = failedTriageFixture()
   item.jobs.push({ ...item.jobs[0], id: 'new-triage', state: 'running', started_at: '2026-07-15T12:00:00.500Z' })
   await page.route('**/v1/tasks/failed-triage/activity*', (route) => route.fulfill({ json: item }))
-  await page.goto('/tasks/failed-triage/full')
+  await page.goto('/w/demo/tasks/failed-triage/full')
   await expect(page.getByRole('region', { name: 'Human gate' })).toBeVisible()
   await expect(page.getByRole('region', { name: 'Triage recovery' })).toHaveCount(0)
 })
@@ -8004,7 +8004,7 @@ test('every task stream connection refreshes stale task detail once through its 
     await route.fallback()
   })
   await page.clock.install({ time: new Date('2026-07-15T12:30:00Z') })
-  await page.goto('/tasks/stream-gap/full')
+  await page.goto('/w/demo/tasks/stream-gap/full')
   await expect(fullTaskHeader(page)).toContainText('Before the stream gap')
   await expect.poll(() => streams.countFor('stream-gap')).toBeGreaterThan(0)
 
@@ -8056,7 +8056,7 @@ test('task stream retries errors, non-OK and bodyless responses with bounded bac
     await route.fulfill({ json: activity('stream-retry', false) })
   })
   await page.clock.install({ time: new Date('2026-07-15T12:30:00Z') })
-  await page.goto('/tasks/stream-retry/full')
+  await page.goto('/w/demo/tasks/stream-retry/full')
   await expect(fullTaskHeader(page)).toContainText('Short task')
   await expect.poll(() => streams.countFor('stream-retry')).toBeGreaterThan(0)
   await pauseClock(page)
@@ -8111,7 +8111,7 @@ test('ready and activity frames inside 250 ms join one refresh', async ({ page }
     await route.fulfill({ json: activity('stream-debounce', false) })
   })
   await page.clock.install({ time: new Date('2026-07-15T12:30:00Z') })
-  await page.goto('/tasks/stream-debounce/full')
+  await page.goto('/w/demo/tasks/stream-debounce/full')
   await expect(fullTaskHeader(page)).toContainText('Short task')
   await expect.poll(() => streams.countFor('stream-debounce')).toBeGreaterThan(0)
   await streams.open()
@@ -8161,7 +8161,7 @@ test('changing tasks stops the old stream, its retry wait, and its pending refre
   await page.clock.install({ time: new Date('2026-07-15T12:30:00Z') })
   // Navigation follows the Board page, so the move happens on the Board sheet
   // (component-web-task-surfaces, Board navigation).
-  await page.goto('/tasks/stream-owner-a')
+  await page.goto('/w/demo/tasks/stream-owner-a')
   const sheetHeader = page.getByRole('dialog', { name: 'Task detail' }).locator('header').first()
   await expect(sheetHeader).toContainText('First stream owner')
   const next = sheetHeader.getByRole('link', { name: 'Next task' })
@@ -8219,7 +8219,7 @@ test('a request-changes conflict refetches task detail and renders the current g
 
   // The Board sheet keeps an active Board page, so the activity family has an
   // entry to refetch (component-web-task-surfaces, Board navigation).
-  await page.goto('/tasks/merge-request-changes')
+  await page.goto('/w/demo/tasks/merge-request-changes')
   const gate = page.getByRole('region', { name: 'Human gate' })
   await gate.getByRole('button', { name: 'Request changes' }).click()
   await gate.getByLabel('Changes you want').fill('Keep this exact feedback.')
@@ -8250,7 +8250,7 @@ test('non-conflict gate failures keep their existing behavior without a refetch'
     route.fulfill({ status: 502, body: 'GitHub merge failed' }),
   )
 
-  await page.goto('/tasks/merge-failure/full')
+  await page.goto('/w/demo/tasks/merge-failure/full')
   const gate = page.getByRole('region', { name: 'Human gate' })
   await expect.poll(() => detailRequests).toBe(1)
   await gate.getByRole('button', { name: 'Merge', exact: true }).click()
@@ -8364,7 +8364,7 @@ for (const recovery of recoveryRefreshCases) {
       return route.fulfill({ json: recovery.respond })
     })
 
-    await page.goto(`/tasks/${recovery.taskId}/full`)
+    await page.goto(`/w/demo/tasks/${recovery.taskId}/full`)
     await expect.poll(() => calls).toEqual(['detail:demo'])
     await recovery.act(page)
     await expect(page.getByText('Refreshed after recovery').first()).toBeVisible()
@@ -8428,7 +8428,7 @@ test('recovery completion after workspace switch does not refresh the new worksp
     const url = new URL(request.url())
     if (url.pathname === '/v1/tasks/recovery/activity') completedReads.push(url.searchParams.get('workspace_id') ?? '')
   })
-  await page.goto('/tasks/recovery/full')
+  await page.goto('/w/demo/tasks/recovery/full')
   await page.getByRole('button', { name: 'Recover work order' }).click()
   await expect.poll(() => recoveryReceived).toBe(true)
 
@@ -8483,7 +8483,7 @@ test('verify order timeline labels follow stage', async ({ page }) => {
     order('stage-labels-review-1-seat-1', 'review', 'queued'),
   ]
   await page.route('**/v1/tasks/stage-labels/activity*', (route) => route.fulfill({ json: item }))
-  await page.goto('/tasks/stage-labels/full')
+  await page.goto('/w/demo/tasks/stage-labels/full')
 
   for (const title of [
     'Verification — waiting for an operator agent',
@@ -8536,7 +8536,7 @@ async function routeInspectorTask(page: Page) {
 test('the full route places the reading column and the inspector side by side from lg up', async ({ page }) => {
   await page.setViewportSize({ width: 1440, height: 900 })
   const flowReads = await routeInspectorTask(page)
-  await page.goto(`/tasks/${inspectorTaskID}/full`)
+  await page.goto(`/w/demo/tasks/${inspectorTaskID}/full`)
   const content = page.getByRole('region', { name: 'Task content' })
   const title = content.getByRole('heading', { level: 1 })
   await expect(title).toBeVisible()
@@ -8577,7 +8577,7 @@ test('the full route places the reading column and the inspector side by side fr
 test('below lg the full route is one column in reading order without horizontal scroll', async ({ page }) => {
   await page.setViewportSize({ width: 390, height: 844 })
   await routeInspectorTask(page)
-  await page.goto(`/tasks/${inspectorTaskID}/full`)
+  await page.goto(`/w/demo/tasks/${inspectorTaskID}/full`)
   const content = page.getByRole('region', { name: 'Task content' })
   await expect(content.getByRole('heading', { level: 1 })).toBeVisible()
   const order = [
@@ -8616,7 +8616,7 @@ test('below lg the full route is one column in reading order without horizontal 
 test('the board sheet keeps its stacked composition without an inspector', async ({ page }) => {
   await page.setViewportSize({ width: 1440, height: 900 })
   await routeInspectorTask(page)
-  await page.goto(`/tasks/${inspectorTaskID}`)
+  await page.goto(`/w/demo/tasks/${inspectorTaskID}`)
   const sheet = page.getByRole('dialog', { name: 'Task detail' })
   await expect(sheet.getByRole('heading', { level: 2 }).first()).toBeVisible()
   await expect(sheet.getByRole('region', { name: 'Task inspector' })).toHaveCount(0)
@@ -8832,7 +8832,7 @@ test('the merged shape fills the full-route inspector without widening it', asyn
   await page.setViewportSize({ width: 1440, height: 900 })
   const taskId = 'work-on-this-merged-shape'
   await page.route(`**/v1/tasks/${taskId}/activity*`, (route) => route.fulfill({ json: mergedShape(taskId) }))
-  await page.goto(`/tasks/${taskId}/full`)
+  await page.goto(`/w/demo/tasks/${taskId}/full`)
   const content = page.getByRole('region', { name: 'Task content' })
   const inspector = content.getByRole('region', { name: 'Task inspector' })
   await expect(content.getByRole('heading', { level: 1 })).toBeVisible()
@@ -8876,7 +8876,7 @@ for (const width of [1440, 390]) {
       posted = { path: new URL(route.request().url()).pathname, body: route.request().postData() }
       return route.fulfill({ json: {} })
     })
-    await page.goto(`/tasks/${taskId}/full`)
+    await page.goto(`/w/demo/tasks/${taskId}/full`)
     const content = page.getByRole('region', { name: 'Task content' })
     const card = content.getByRole('region', { name: 'Next action' })
     await expect(card.getByText('A context proposal is waiting for a decision.')).toBeVisible()
@@ -8913,7 +8913,7 @@ test('with a gate open the full route keeps verification evidence in the gate ca
   page,
 }) => {
   await page.setViewportSize({ width: 1440, height: 900 })
-  await page.goto('/tasks/evidence/full')
+  await page.goto('/w/demo/tasks/evidence/full')
   const content = page.getByRole('region', { name: 'Task content' })
   const gate = content.getByRole('region', { name: 'Human gate' })
   await expect(gate).toBeVisible()
@@ -9083,7 +9083,7 @@ test('review seat header shows each source and approved planned count', async ({
     },
   })
   await page.route(`**/v1/tasks/${taskId}/activity*`, (route) => route.fulfill({ json: item }))
-  await page.goto(`/tasks/${taskId}/full`)
+  await page.goto(`/w/demo/tasks/${taskId}/full`)
   for (const [model, header, title] of [
     ['declared-model', 'Panel of 1 · minimum 2', 'Seat count declared at submission · Plan: 3 seats'],
     ['planned-model', 'Panel of 1 · minimum 2', 'Seat count planned · Plan: 3 seats'],
@@ -9137,7 +9137,7 @@ test('review seat metadata stays with its historical round', async ({ page }) =>
     },
   })
   await page.route(`**/v1/tasks/${taskId}/activity*`, (route) => route.fulfill({ json: item }))
-  await page.goto(`/tasks/${taskId}/full`)
+  await page.goto(`/w/demo/tasks/${taskId}/full`)
   await expect(
     roundPanel(page, 'r1-model').getByTitle('Seat count is the workspace minimum', { exact: true }),
   ).toHaveText('Panel of 2 · minimum 2')
@@ -9161,7 +9161,7 @@ test('review seat metadata stays with its historical round', async ({ page }) =>
   // An older server without metadata prints the seat count alone.
   const legacyServer = seatPanelItem('seat-no-metadata', { orders: seatHistory.orders.slice(0, 2), summaries: {} })
   await page.route('**/v1/tasks/seat-no-metadata/activity*', (route) => route.fulfill({ json: legacyServer }))
-  await page.goto('/tasks/seat-no-metadata/full')
+  await page.goto('/w/demo/tasks/seat-no-metadata/full')
   const panel = roundPanel(page, 'r1-model')
   await expect(panel).toContainText('Panel of 2')
   await expect(panel).not.toContainText('minimum')
@@ -9184,18 +9184,18 @@ test('planned review seats appear on the displayed plan version', async ({ page 
       }),
     }),
   )
-  await page.goto(`/tasks/${taskId}/full`)
+  await page.goto(`/w/demo/tasks/${taskId}/full`)
   const plan = page.getByRole('region', { name: 'Execution plan' })
   await expect(plan.getByText('Review: 4 seats (minimum 2)', { exact: true })).toBeVisible()
   await expect(plan.getByText(/Review: 3 seats/)).toHaveCount(0)
 
   // The Board sheet shows the same line.
-  await page.goto(`/tasks/${taskId}`)
+  await page.goto(`/w/demo/tasks/${taskId}`)
   await expect(page.getByText('Review: 4 seats (minimum 2)', { exact: true })).toBeVisible()
 
   // A version without a count shows no line.
   reviewSeats = null
-  await page.goto(`/tasks/${taskId}/full`)
+  await page.goto(`/w/demo/tasks/${taskId}/full`)
   await expect(page.getByRole('region', { name: 'Execution plan' }).getByText('Execution plan')).toBeVisible()
   await expect(page.getByText(/^Review: \d+ seat/)).toHaveCount(0)
 })
@@ -9203,7 +9203,7 @@ test('planned review seats appear on the displayed plan version', async ({ page 
 test('review seat addition is visible only for the current unsettled round and operate_gates', async ({ page }) => {
   const addButton = page.getByRole('button', { name: 'Add reviewer seat' })
   await page.route('**/v1/tasks/seat-open/activity*', (route) => route.fulfill({ json: openRoundItem('seat-open') }))
-  await page.goto('/tasks/seat-open/full')
+  await page.goto('/w/demo/tasks/seat-open/full')
   await expect(roundPanel(page, 'r2-model').getByRole('button', { name: 'Add reviewer seat' })).toBeVisible()
   await expect(addButton).toHaveCount(1)
   await expect(roundPanel(page, 'r1-model').getByRole('button', { name: 'Add reviewer seat' })).toHaveCount(0)
@@ -9214,7 +9214,7 @@ test('review seat addition is visible only for the current unsettled round and o
     ['seat-superseded', openRoundItem('seat-superseded', { superseded: true })],
   ] as const) {
     await page.route(`**/v1/tasks/${taskId}/activity*`, (route) => route.fulfill({ json: item }))
-    await page.goto(`/tasks/${taskId}/full`)
+    await page.goto(`/w/demo/tasks/${taskId}/full`)
     await expect(roundPanel(page, 'r2-model')).toContainText('Panel of 3 · minimum 2')
     await expect(addButton).toHaveCount(0)
   }
@@ -9227,7 +9227,7 @@ test('review seat addition is visible only for the current unsettled round and o
     },
   }
   await page.route('**/v1/tasks/seat-settled/activity*', (route) => route.fulfill({ json: settled }))
-  await page.goto('/tasks/seat-settled/full')
+  await page.goto('/w/demo/tasks/seat-settled/full')
   await expect(roundPanel(page, 'r2-model').locator('[data-review-verdict]')).toHaveText('Approved')
   await expect(addButton).toHaveCount(0)
 
@@ -9235,7 +9235,7 @@ test('review seat addition is visible only for the current unsettled round and o
   await page.route('**/v1/me**', (route) =>
     route.fulfill({ json: callerIdentity({ id: 'usr_contributor', role: 'contributor' }, route.request()) }),
   )
-  await page.goto('/tasks/seat-open/full')
+  await page.goto('/w/demo/tasks/seat-open/full')
   await expect(roundPanel(page, 'r2-model')).toContainText('Panel of 3 · minimum 2')
   await expect(addButton).toHaveCount(0)
 })
@@ -9257,7 +9257,7 @@ test('review seat addition validates input and refreshes the panel', async ({ pa
       json: { request_id: body.request_id, task_id: taskId, review_round: 2, prior_seat_count: 3, seat_count: 5 },
     })
   })
-  await page.goto(`/tasks/${taskId}/full`)
+  await page.goto(`/w/demo/tasks/${taskId}/full`)
   const panel = roundPanel(page, 'r2-model')
   await panel.getByRole('button', { name: 'Add reviewer seat' }).click()
   const form = panel.getByRole('form', { name: 'Add reviewer seats to round 2' })
@@ -9332,7 +9332,7 @@ test('review seat addition keeps refusals and retry identity in place', async ({
     requestIds.push(String((route.request().postDataJSON() as { request_id: string }).request_id))
     return responses[requestIds.length - 1](route)
   })
-  await page.goto(`/tasks/${taskId}/full`)
+  await page.goto(`/w/demo/tasks/${taskId}/full`)
   const panel = roundPanel(page, 'r2-model')
   await panel.getByRole('button', { name: 'Add reviewer seat' }).click()
   const form = panel.getByRole('form', { name: 'Add reviewer seats to round 2' })
@@ -9367,5 +9367,5 @@ test('review seat addition keeps refusals and retry identity in place', async ({
   await expect(panel.locator('[data-review-verdict]')).toHaveText('Approved')
   await expect(panel.getByRole('button', { name: 'Add reviewer seat' })).toHaveCount(0)
   await expect(panel.getByText('review round 2 of task seat-refusal is settled')).toBeVisible()
-  await expect(page).toHaveURL(new RegExp(`/tasks/${taskId}/full$`))
+  await expect(page).toHaveURL(new RegExp(`/w/demo/tasks/${taskId}/full$`))
 })

@@ -933,7 +933,7 @@ for (const theme of ['light', 'dark'] as const) {
     await page.setViewportSize({ width: 1680, height: 1050 })
     await page.getByPlaceholder('Search tasks').fill('')
 
-    await page.goto('/tasks/task-260731-gate01')
+    await page.goto('/w/conveyor/tasks/task-260731-gate01')
     await page.getByLabel('Task detail').waitFor()
     await page.waitForTimeout(500)
     await page.screenshot({ path: `${shots}/sheet-gate-${theme}.png` })
@@ -943,7 +943,7 @@ for (const theme of ['light', 'dark'] as const) {
     await page.waitForTimeout(200)
     await page.screenshot({ path: `${shots}/sheet-head-${theme}.png` })
 
-    await page.goto('/tasks/task-260731-b31f47')
+    await page.goto('/w/conveyor/tasks/task-260731-b31f47')
     await page.getByLabel('Task detail').waitFor()
     await page.waitForTimeout(500)
     await page.screenshot({ path: `${shots}/sheet-running-${theme}.png` })
@@ -953,7 +953,7 @@ for (const theme of ['light', 'dark'] as const) {
     await page.waitForTimeout(200)
     await page.screenshot({ path: `${shots}/sheet-running-tail-${theme}.png` })
 
-    await page.goto('/tasks/task-260731-gate01/full')
+    await page.goto('/w/conveyor/tasks/task-260731-gate01/full')
     await page.getByLabel('Task content').waitFor()
     await page.waitForTimeout(500)
     await page.screenshot({ path: `${shots}/full-gate-${theme}.png`, fullPage: false })
@@ -971,7 +971,7 @@ for (const theme of ['light', 'dark'] as const) {
 test('the merged task shape keeps the Timeline tab within two sheet heights at 1440x1000', async ({ page }) => {
   await page.setViewportSize({ width: 1440, height: 1000 })
   await mockAPIs(page)
-  await page.goto(`/tasks/${mergedID}`)
+  await page.goto(`/w/conveyor/tasks/${mergedID}`)
   const sheet = page.getByRole('dialog', { name: 'Task detail' })
   await expect(sheet.getByRole('heading', { name: mergedDetail.task.title })).toBeVisible()
   await expect.poll(() => sheet.evaluate((node) => node.getAnimations().length)).toBe(0)

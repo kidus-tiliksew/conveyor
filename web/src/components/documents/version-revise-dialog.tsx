@@ -24,8 +24,8 @@ export function VersionReviseDialog({ target, onClose }: { target: ReviseTarget;
     queryKey: ['revise-version', workspace, target.tier, target.id, target.version],
     queryFn: async () => {
       const document = await (target.tier === 'requirement'
-        ? fetchRequirement(target.id)
-        : fetchSystemDesign(target.id))
+        ? fetchRequirement(target.id, workspace)
+        : fetchSystemDesign(target.id, workspace))
       const pending = document.pending_versions.find((version) => version.version === target.version)
       if (!pending)
         throw new Error('This version is no longer pending. Close this dialog and review the document again.')
@@ -80,15 +80,15 @@ function ReviseEditor({
     mutationFn: async () => {
       setPhase('Proposing…')
       const proposed = await (target.tier === 'requirement'
-        ? proposeRequirementVersion(target.id, content)
-        : proposeSystemDesignVersion(target.id, content))
+        ? proposeRequirementVersion(workspace, target.id, content)
+        : proposeSystemDesignVersion(workspace, target.id, content))
       setProposedVersion(proposed.version)
       setPhase('Confirming…')
       try {
         const expected = snapshot.current?.version ?? 0
         await (target.tier === 'requirement'
-          ? confirmRequirementVersion(target.id, proposed.version, expected, note)
-          : confirmSystemDesignVersion(target.id, proposed.version, expected, note))
+          ? confirmRequirementVersion(workspace, target.id, proposed.version, expected, note)
+          : confirmSystemDesignVersion(workspace, target.id, proposed.version, expected, note))
       } catch (error) {
         throw new Error(
           `Version ${proposed.version} was proposed, but confirmation failed. It remains pending. Close this dialog and review that version on the document or queue before confirming again. ${errorMessage(error)}`,

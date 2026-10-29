@@ -2,6 +2,7 @@ import { Link } from '@tanstack/react-router'
 import { errorMessage } from '../../lib/errors'
 import type { InboxItem, InboxPullRequest, NextActionBlocker, Task } from '../../lib/types'
 import { relativeTime } from '../../lib/utils'
+import { useWorkspaceSelection } from '../app-shell'
 import { GateChoices } from '../task/merge-at-gate'
 import { NextActionDeadline, NextActionIDs } from '../task/next-action-parts'
 import { Button } from '../ui/button'
@@ -45,6 +46,7 @@ export function pullRequestLabel(pullRequest: InboxPullRequest) {
 // detail adds only its chrome. `onActed` runs after each recorded act, so the
 // page can move the selection when the item leaves (AC-2.10).
 export function DecisionDetail({ item, task, onActed }: { item: InboxItem; task: Task; onActed: () => void }) {
+  const { workspace } = useWorkspaceSelection()
   const { data: action, isLoading, error, refetch, isFetching } = useNextAction(task.id)
   const compact = item.next_action
   const kind = action?.kind ?? compact?.kind ?? ''
@@ -78,7 +80,11 @@ export function DecisionDetail({ item, task, onActed }: { item: InboxItem; task:
             )}
           </div>
           <h2 data-detail-title className="break-words text-base font-semibold leading-6">
-            <Link to="/tasks/$taskId" params={{ taskId: task.id }} className="hover:underline">
+            <Link
+              to="/w/$workspaceId/tasks/$taskId"
+              params={{ workspaceId: workspace, taskId: task.id }}
+              className="hover:underline"
+            >
               {task.title}
             </Link>
           </h2>
@@ -115,8 +121,8 @@ export function DecisionDetail({ item, task, onActed }: { item: InboxItem; task:
               </span>
             ))}
             <Link
-              to="/tasks/$taskId/full"
-              params={{ taskId: task.id }}
+              to="/w/$workspaceId/tasks/$taskId/full"
+              params={{ workspaceId: workspace, taskId: task.id }}
               className="ml-auto font-medium text-primary hover:underline"
             >
               Open task →

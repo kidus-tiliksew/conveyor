@@ -20,6 +20,7 @@ import {
   useCallback,
   useContext,
   useEffect,
+  useRef,
   useState,
   useSyncExternalStore,
 } from 'react'
@@ -44,13 +45,58 @@ import { Badge } from './ui/badge'
 import { Button } from './ui/button'
 import { Sheet } from './ui/sheet'
 
-const WorkspaceContext = createContext<{ workspace: string; setWorkspace: (value: string) => void }>({
+// The page's workspace is the one its address names (req-workspace-addresses
+// REQ-1): `/w/<id>/…` when `<id>` is one of the caller's memberships, and ''
+// otherwise. `switchWorkspace` opens the chosen workspace's Board as an
+// ordinary history entry (AC-1.5).
+const WorkspaceContext = createContext<{ workspace: string; switchWorkspace: (id: string) => void }>({
   workspace: '',
-  setWorkspace: () => {},
+  switchWorkspace: () => {},
 })
 
 export function useWorkspaceSelection() {
   return useContext(WorkspaceContext)
+}
+
+const storedWorkspaceKey = 'conveyor-workspace'
+
+// The browser's remembered workspace: written when a member opens a scoped
+// address (AC-1.3) and read only to resolve an address that names no
+// workspace (AC-1.8, AC-1.9). No request takes its workspace from here, so a
+// tab never acts on the workspace another tab opened last (AC-1.7).
+export function readStoredWorkspace() {
+  try {
+    return localStorage.getItem(storedWorkspaceKey) ?? ''
+  } catch {
+    return ''
+  }
+}
+
+function writeStoredWorkspace(workspace: string) {
+  try {
+    localStorage.setItem(storedWorkspaceKey, workspace)
+  } catch {
+    // Storage is best effort; the address still names the workspace.
+  }
+}
+
+// The workspace segment of a `/w/<id>/…` pathname, or '' for an unscoped one.
+export function addressWorkspace(pathname: string) {
+  const match = /^\/w\/([^/]+)/.exec(pathname)
+  if (!match) return ''
+  try {
+    return decodeURIComponent(match[1])
+  } catch {
+    return ''
+  }
+}
+
+// The pathname below the workspace prefix: `/w/demo/inbox` reads `/inbox`, and
+// the Board `/w/demo/` reads `/`.
+export function workspacePagePath(pathname: string) {
+  const match = /^\/w\/[^/]+(\/.*)?$/.exec(pathname)
+  if (!match) return pathname
+  return match[1] || '/'
 }
 
 // Slow-changing shared reads stay fresh for five minutes: identity, members,
@@ -94,7 +140,7 @@ export function workspaceMembersQueryOptions(workspace: string) {
 export function blueprintsQueryOptions(workspace: string) {
   return queryOptions({
     queryKey: ['blueprints', workspace],
-    queryFn: fetchBlueprints,
+    queryFn: () => fetchBlueprints(workspace),
     enabled: Boolean(workspace),
     staleTime: slowReadStaleTime,
   })
@@ -105,7 +151,7 @@ export function blueprintsQueryOptions(workspace: string) {
 export function systemDesignsQueryOptions(workspace: string) {
   return queryOptions({
     queryKey: ['system-designs', workspace],
-    queryFn: () => fetchSystemDesigns(),
+    queryFn: () => fetchSystemDesigns(workspace),
     enabled: Boolean(workspace),
     staleTime: slowReadStaleTime,
   })
@@ -254,7 +300,8 @@ export function useBlueprints() {
 }
 
 function isBlueprintsPath(pathname: string) {
-  return pathname === '/blueprints' || pathname.startsWith('/blueprints/')
+  const path = workspacePagePath(pathname)
+  return path === '/blueprints' || path.startsWith('/blueprints/')
 }
 
 // The Board's current activity page, read from the Query cache without
@@ -291,7 +338,7 @@ export function useWorkspace() {
   const { workspace } = useWorkspaceSelection()
   return useQuery({
     queryKey: ['workspace', workspace],
-    queryFn: fetchWorkspace,
+    queryFn: () => fetchWorkspace(workspace),
     enabled: !!workspace,
     staleTime: 60_000,
     retry: 1,
@@ -302,7 +349,7 @@ export function usePendingProposals() {
   const { workspace } = useWorkspaceSelection()
   return useQuery({
     queryKey: ['pending-proposals', workspace],
-    queryFn: fetchPendingProposals,
+    queryFn: () => fetchPendingProposals(workspace),
     enabled: Boolean(workspace),
     staleTime: 15_000,
     refetchInterval: () => (document.visibilityState === 'visible' ? 15_000 : false),
@@ -381,28 +428,36 @@ function AuthenticatedAppShell() {
         </div>
       ) : (
         <WorkspaceProvider workspaces={workspaces.data}>
-          {/* Desktop keeps the two fixed navigation columns beside the
-              content. Below the lg breakpoint they would leave a phone with
-              no room to read, so the same rail and sidebar move into a
-              drawer behind a top bar (component-web-dashboard). The dynamic
-              viewport unit keeps the shell inside the visible area while a
-              mobile browser shows or hides its own chrome. */}
-          <div className="flex h-dvh flex-col overflow-hidden lg:flex-row">
-            {wide ? (
-              <>
-                <IconRail />
-                <NavSidebar />
-              </>
-            ) : (
-              <MobileNav />
-            )}
-            <main className="min-w-0 min-h-0 flex-1 overflow-hidden bg-background">
-              <Outlet />
-            </main>
-          </div>
+          <ShellFrame wide={wide} />
         </WorkspaceProvider>
       )}
     </ThemeProvider>
+  )
+}
+
+// Desktop keeps the two fixed navigation columns beside the content. Below
+// the lg breakpoint they would leave a phone with no room to read, so the same
+// rail and sidebar move into a drawer behind a top bar
+// (component-web-dashboard). The dynamic viewport unit keeps the shell inside
+// the visible area while a mobile browser shows or hides its own chrome. An
+// address without a member workspace (the chooser, a redirect, a not-found
+// page, workspace creation) shows the rail without the workspace sidebar.
+function ShellFrame({ wide }: { wide: boolean }) {
+  const { workspace } = useWorkspaceSelection()
+  return (
+    <div className="flex h-dvh flex-col overflow-hidden lg:flex-row">
+      {wide ? (
+        <>
+          <IconRail />
+          {workspace && <NavSidebar />}
+        </>
+      ) : (
+        <MobileNav />
+      )}
+      <main className="min-w-0 min-h-0 flex-1 overflow-hidden bg-background">
+        <Outlet />
+      </main>
+    </div>
   )
 }
 
@@ -414,18 +469,34 @@ function WorkspaceProvider({
   children: ReactNode
 }) {
   const queryClient = useQueryClient()
-  const [workspace, setWorkspaceState] = useState(() => localStorage.getItem('conveyor-workspace') ?? '')
-  const setWorkspace = (value: string) => {
-    void queryClient.cancelQueries()
-    if (value) localStorage.setItem('conveyor-workspace', value)
-    else localStorage.removeItem('conveyor-workspace')
-    setWorkspaceState(value)
-    queryClient.removeQueries({ predicate: (query) => query.queryKey[0] !== 'workspaces' })
-  }
+  const navigate = useNavigate()
+  // The address is the source of truth (req-workspace-addresses AC-1.3,
+  // AC-1.7). An ID outside the memberships selects nothing, so no scoped read
+  // names it and the remembered choice stays as it was (AC-1.4).
+  const addressed = useRouterState({ select: (state) => addressWorkspace(state.location.pathname) })
+  const workspace = addressed && workspaces.some((item) => item.id === addressed) ? addressed : ''
+  const switchWorkspace = useCallback(
+    (id: string) => void navigate({ to: '/w/$workspaceId/', params: { workspaceId: id } }),
+    [navigate],
+  )
   useEffect(() => {
-    if (workspaces.length === 1 && !workspaces.some((item) => item.id === workspace)) setWorkspace(workspaces[0].id)
-    else if (!workspaces.some((item) => item.id === workspace) && workspace) setWorkspace('')
-  }, [workspaces, workspace])
+    if (workspace) writeStoredWorkspace(workspace)
+  }, [workspace])
+  // Leaving a workspace, by the switcher, Back, or a typed address, removes
+  // its cached entries. Removal cancels each entry's read, which aborts its
+  // request and releases the activity queue, so the new workspace's first
+  // read never waits for the previous one. The new page's own entries carry
+  // its workspace and stay (component-web-dashboard, Shell and workspace
+  // scoping).
+  const previousWorkspace = useRef(workspace)
+  useEffect(() => {
+    const previous = previousWorkspace.current
+    previousWorkspace.current = workspace
+    if (!previous || previous === workspace) return
+    queryClient.removeQueries({
+      predicate: (query) => query.queryKey[0] !== 'workspaces' && query.queryKey[1] === previous,
+    })
+  }, [queryClient, workspace])
   useEffect(() => {
     if (!workspace) return
     let disposed = false
@@ -495,7 +566,7 @@ function WorkspaceProvider({
       document.removeEventListener('visibilitychange', visibleRefresh)
     }
   }, [queryClient, workspace])
-  return <WorkspaceContext.Provider value={{ workspace, setWorkspace }}>{children}</WorkspaceContext.Provider>
+  return <WorkspaceContext.Provider value={{ workspace, switchWorkspace }}>{children}</WorkspaceContext.Provider>
 }
 
 // Navigation inside the narrow-viewport drawer closes the drawer once it has
@@ -523,8 +594,12 @@ function MobileNav() {
           <Menu />
         </Button>
         <p className="min-w-0 flex-1 truncate text-sm font-semibold tracking-tight">{currentName}</p>
-        {operatorDecisions > 0 && (
-          <Link to="/inbox" aria-label={`${operatorDecisions} decisions waiting in the Inbox`}>
+        {selected && operatorDecisions > 0 && (
+          <Link
+            to="/w/$workspaceId/inbox"
+            params={{ workspaceId: selected }}
+            aria-label={`${operatorDecisions} decisions waiting in the Inbox`}
+          >
             <Badge variant="attention">{operatorDecisions}</Badge>
           </Link>
         )}
@@ -536,7 +611,7 @@ function MobileNav() {
           <Sheet onClose={close} label="Navigation" side="left" width="w-auto max-w-[90vw]">
             <div className="flex min-h-0 flex-1">
               <IconRail />
-              <NavSidebar className="min-w-0 shrink border-r-0" />
+              {selected && <NavSidebar className="min-w-0 shrink border-r-0" />}
             </div>
           </Sheet>
         </ShellNavContext.Provider>
@@ -551,17 +626,16 @@ function MobileNav() {
 function IconRail() {
   const { closeDrawer } = useContext(ShellNavContext)
   const canCreateWorkspaces = useCanCreateWorkspaces()
-  const navigate = useNavigate()
-  const { workspace: selected, setWorkspace } = useWorkspaceSelection()
+  const { workspace: selected, switchWorkspace } = useWorkspaceSelection()
   const { data: workspaces } = useQuery({
     queryKey: ['workspaces'],
     queryFn: fetchWorkspaces,
   })
-  // Land on the board after a switch so an open task sheet from the previous
-  // workspace can't linger pointing at a task the new context can't resolve.
+  // A switch opens the chosen workspace's Board as a new history entry, so an
+  // open task sheet cannot outlive its workspace and Back returns to the
+  // address shown before the switch (req-workspace-addresses AC-1.5).
   const switchTo = (id: string) => {
-    if (id !== selected) setWorkspace(id)
-    void navigate({ to: '/' })
+    switchWorkspace(id)
     closeDrawer()
   }
   return (
@@ -645,23 +719,23 @@ function NavSidebar({ className }: { className?: string }) {
         <p className="mt-0.5 text-[11px] text-faint">Conveyor · software factory</p>
       </div>
       <div className="flex-1 space-y-0.5 px-2">
-        <NavItem to="/" icon={Kanban} label="Board" />
-        <NavItem to="/inbox" icon={Inbox} label="Inbox">
+        <NavItem to="/w/$workspaceId/" icon={Kanban} label="Board" />
+        <NavItem to="/w/$workspaceId/inbox" icon={Inbox} label="Inbox">
           {operatorDecisions > 0 && <Badge variant="attention">{operatorDecisions}</Badge>}
         </NavItem>
-        <NavItem to="/workspace" icon={FolderGit2} label="Workspace" />
-        <NavItem to="/requirements" icon={Workflow} label="Requirements">
+        <NavItem to="/w/$workspaceId/workspace" icon={FolderGit2} label="Workspace" />
+        <NavItem to="/w/$workspaceId/requirements" icon={Workflow} label="Requirements">
           {requirementAttention > 0 && <Badge variant="attention">{requirementAttention}</Badge>}
         </NavItem>
-        <NavItem to="/system-design" icon={FileCode2} label="System Design" />
+        <NavItem to="/w/$workspaceId/system-design" icon={FileCode2} label="System Design" />
         {/* Exactly the accepted operating surfaces, and no others
             (req-document-operating-surfaces REQ-4, AC-4.1). Planning and
             Blueprint history are parked, not retired: their routes stay
             mounted for deep links, the blueprint anchor redirect
             (component-web-task-surfaces) is untouched, and blueprint history reaches through
             task detail — only these two entries left the sidebar. */}
-        <NavItem to="/monitor" icon={Activity} label="Monitor" />
-        <NavItem to="/settings" icon={Settings} label="Settings" />
+        <NavItem to="/w/$workspaceId/monitor" icon={Activity} label="Monitor" />
+        <NavItem to="/w/$workspaceId/settings" icon={Settings} label="Settings" />
       </div>
       <Button
         variant="ghost"
@@ -697,6 +771,17 @@ function ThemeSwitcher() {
   )
 }
 
+type NavTarget =
+  | '/w/$workspaceId/'
+  | '/w/$workspaceId/inbox'
+  | '/w/$workspaceId/workspace'
+  | '/w/$workspaceId/requirements'
+  | '/w/$workspaceId/system-design'
+  | '/w/$workspaceId/monitor'
+  | '/w/$workspaceId/settings'
+
+// Every entry names the workspace of the page that renders it
+// (req-workspace-addresses AC-1.2).
 function NavItem({
   to,
   icon: Icon,
@@ -704,30 +789,35 @@ function NavItem({
   exact,
   children,
 }: {
-  to: string
+  to: NavTarget
   icon: LucideIcon
   label: string
   exact?: boolean
   children?: ReactNode
 }) {
-  const pathname = useRouterState({ select: (state) => state.location.pathname })
+  const { workspace } = useWorkspaceSelection()
+  const pathname = useRouterState({ select: (state) => workspacePagePath(state.location.pathname) })
   const { closeDrawer } = useContext(ShellNavContext)
+  const page = workspacePagePath(to)
   // The board stays highlighted while any of its overlays (task sheet, full
-  // page, workspace modal) is open (req-operator-next-action AC-6.10). `/tasks`
-  // itself only redirects to the Board (AC-6.3).
+  // page) is open (req-operator-next-action AC-6.10). `/tasks` itself only
+  // redirects to the Board (AC-6.3).
   const active =
-    to === '/'
-      ? pathname === '/' || pathname.startsWith('/tasks/') || pathname === '/workspaces/new'
+    page === '/'
+      ? pathname === '/' || pathname.startsWith('/tasks/')
       : exact
-        ? pathname === to
-        : pathname === to || pathname.startsWith(`${to}/`)
+        ? pathname === page
+        : pathname === page || pathname.startsWith(`${page}/`)
   return (
     <Link
       to={to}
+      params={{ workspaceId: workspace }}
       // The router's own aria-current must agree with the highlight above:
       // without this, a prefix match could announce another entry as the
       // current page while the Board is the surface actually showing.
-      activeOptions={exact ? { exact: true } : undefined}
+      // The Board's `/w/<id>/` is a path prefix of every workspace page, so
+      // it is matched exactly, as `/` was.
+      activeOptions={exact || page === '/' ? { exact: true } : undefined}
       onClick={closeDrawer}
       className={`flex items-center gap-2.5 rounded-lg px-2.5 py-2 text-sm transition-colors pointer-coarse:py-2.5 ${
         active ? 'bg-raised font-medium text-foreground' : 'text-muted hover:bg-raised/60 hover:text-foreground'
