@@ -85,9 +85,16 @@ def _sealed_launch(observation):
 
 def _observe_launch(output, runner_pid):
     """Read the runner's manifest, child group, and inventory afresh; return (ready, observation)."""
-    observation = {"record": None, "children": None, "group": None, "resources": None, "inventory_error": None}
+    observation = {"record": None, "record_error": None, "children": None, "group": None, "resources": None,
+                   "inventory_error": None}
     if (output / "manifest.json").is_file():
-        observation["record"] = evidence.read_record(output / "manifest.json", (output / "key").read_bytes())
+        # The runner creates the key and first manifest exclusively and then
+        # writes them, so a poll can read either one partially written; that
+        # record is not observed yet.
+        try:
+            observation["record"] = evidence.read_record(output / "manifest.json", (output / "key").read_bytes())
+        except ValueError as exc:  # evidence.Refused is a ValueError
+            observation["record_error"] = repr(exc)
     record = observation["record"]
     if record and record["state"] == "running":
         observation["children"], children = _child_pids(runner_pid)
@@ -699,6 +706,7 @@ class EvidenceTests(unittest.TestCase):
         stdout, stderr = process.communicate(timeout=5)
         self.fail("runner did not launch a ready, sealed child process group within 5 seconds; "
                   f"record={observation and observation['record']!r}, "
+                  f"record_error={observation and observation['record_error']!r}, "
                   f"children={observation and observation['children']!r}, "
                   f"group={observation and observation['group']!r}, "
                   f"resources={observation and _resource_states(observation)!r}, "
