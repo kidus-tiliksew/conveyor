@@ -193,7 +193,7 @@ function WorkspaceChooser({ workspaces, suffix }: { workspaces: WorkspaceRecord[
             </Link>
           </>
         ) : (
-          <p className="mt-2 text-sm leading-6 text-muted">You do not belong to a workspace yet.</p>
+          <p className="mt-2 text-sm leading-6 text-muted">Pick a workspace from the left rail to see its board.</p>
         )}
       </div>
     </div>
