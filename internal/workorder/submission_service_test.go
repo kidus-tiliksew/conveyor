@@ -619,6 +619,54 @@ func TestSubmitForReviewIssueAssociationFollowsPublicationSetting(t *testing.T) 
 	}
 }
 
+// Both the body the executing machine opens the pull request with and the
+// body reconciled at submission link the workspace task page under the
+// injected public URL and close the same-repository source issue while issue
+// publication is off (req-delivery-and-forge AC-2.5, AC-8.6;
+// req-workspace-addresses AC-1.10; component-submission-merge).
+func TestSubmissionBodiesLinkTaskPageAndCloseSourceIssue(t *testing.T) {
+	ctx := store.WithActor(context.Background(), store.SystemActor())
+	st := store.NewMemory()
+	task := core.Task{ID: "source-linked", Workspace: "test", Repo: "app", Title: "Source change", Source: "github:acme/app#7", Branch: "conveyor/source-linked", BaseBranch: "main", State: core.TaskRunning, CreatedAt: time.Now()}
+	if err := st.CreateTask(ctx, task); err != nil {
+		t.Fatal(err)
+	}
+	job := core.Job{ID: "source-linked-implement", TaskID: task.ID, Stage: core.StageImplement, State: core.JobPending}
+	if err := st.CreateJob(ctx, job); err != nil {
+		t.Fatal(err)
+	}
+	if err := storetest.For(st).CreateWorkOrder(ctx, core.WorkOrder{ID: job.ID, TaskID: task.ID, JobID: job.ID, Stage: core.StageImplement}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := storetest.For(st).ClaimWorkOrder(ctx, job.ID, core.WorkOrderClaim{SessionID: "implementer", ClientToken: "secret", ClaimantID: core.TaskRunClaimantID("usr-executor"), OwnerUserID: "usr-executor", Lease: time.Minute}); err != nil {
+		t.Fatal(err)
+	}
+	cfg := &config.Config{Workspace: "test", Repos: []config.Repo{{Name: "app", Base: "main", GitHub: "acme/app"}}, Routing: config.Routing{Stages: map[string]config.StageRoute{"review": {Execution: config.ExecutionMCP}}}}
+	dispatcher := dispatch.New(st, cfg, nil)
+	dispatcher.DisableMemoryQueueForTest()
+	var reconciled string
+	service := &Service{Store: st, Dispatcher: dispatcher, PublicURL: "https://conveyor.example/", ConfigProvider: func(context.Context) (*config.Config, error) { return cfg, nil }, ReconcileSubmissionPR: func(_ context.Context, _ string, _ githubtrigger.SubmissionPullRequest, value string) error {
+		reconciled = value
+		return nil
+	}, ReviewTarget: func(context.Context, string, string) (githubtrigger.ReviewTarget, error) {
+		return githubtrigger.ReviewTarget{Number: 9, HeadSHA: "abc"}, nil
+	}}
+	link := "Conveyor task [`source-linked`](https://conveyor.example/w/test/tasks/source-linked)"
+	template, err := service.PullRequestTemplate(ctx, job.ID, "implementer")
+	if err != nil {
+		t.Fatal(err)
+	}
+	prepareSubmissionTest(service)
+	if _, err = service.SubmitForReview(ctx, job.ID, "implementer", submissionTestHead(service)); err != nil {
+		t.Fatalf("submission refused: %v", err)
+	}
+	for name, body := range map[string]string{"template": template.Body, "reconciled": reconciled} {
+		if !strings.Contains(body, link) || strings.Count(body, "Closes #") != 1 || !strings.Contains(body, "Closes #7") {
+			t.Fatalf("%s body=%q", name, body)
+		}
+	}
+}
+
 func TestSubmitForReviewAdvancesStaleRefreshHead(t *testing.T) {
 	t.Parallel()
 	ctx := store.WithActor(context.Background(), store.SystemActor())

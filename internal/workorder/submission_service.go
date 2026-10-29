@@ -230,7 +230,7 @@ func (s *Service) submitForReviewLocked(ctx context.Context, id, session, headSH
 				return nil, err
 			}
 		}
-		if err = reconcile(forgeCtx, repo.GitHub, target, dispatch.PRBody(task, evidence...)); err != nil {
+		if err = reconcile(forgeCtx, repo.GitHub, target, dispatch.PRBody(task, dispatch.PRBodyContext{PublicURL: s.PublicURL, Repository: repo.GitHub}, evidence...)); err != nil {
 			return nil, fmt.Errorf("reconcile pull request body: %w", err)
 		}
 		evidenceIDs := make([]string, 0, len(evidence))
@@ -785,7 +785,7 @@ func (s *Service) PullRequestTemplate(ctx context.Context, id, session string) (
 	if err != nil {
 		return result, err
 	}
-	return PullRequestTemplate{TaskID: task.ID, Repository: repo.GitHub, RepositoryURL: repo.URL, Branch: task.Branch, Base: task.BaseBranch, Title: task.Title, Body: dispatch.PRBody(task, evidence...)}, nil
+	return PullRequestTemplate{TaskID: task.ID, Repository: repo.GitHub, RepositoryURL: repo.URL, Branch: task.Branch, Base: task.BaseBranch, Title: task.Title, Body: dispatch.PRBody(task, dispatch.PRBodyContext{PublicURL: s.PublicURL, Repository: repo.GitHub}, evidence...)}, nil
 }
 
 func (s *Service) taskVerificationEvidence(ctx context.Context, taskID string) ([]core.Artifact, error) {

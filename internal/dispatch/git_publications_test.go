@@ -31,7 +31,7 @@ func TestSourceIssueNumberEnforcesConfiguredRepository(t *testing.T) {
 
 func TestPRBodyClosesDurablyAssociatedIssue(t *testing.T) {
 	task := core.Task{ID: "task-1", Source: "cli", GitHub: &core.GitHubLifecycle{IssueNumber: 42}}
-	body := PRBody(task, core.Artifact{
+	body := PRBody(task, PRBodyContext{}, core.Artifact{
 		ID: "abc123", Name: "proof `shot`.png", ContentType: "image/png", SizeBytes: 42,
 		Role: core.ArtifactRoleVerificationEvidence, TaskID: task.ID,
 		DownloadURL: "https://private.invalid/artifact?token=secret",
@@ -43,6 +43,81 @@ func TestPRBodyClosesDurablyAssociatedIssue(t *testing.T) {
 		!strings.Contains(body, "abc123") || !strings.Contains(body, "proof 'shot'.png") ||
 		strings.Contains(body, "private.invalid") || strings.Contains(body, "token=secret") {
 		t.Fatalf("unsafe or incomplete evidence body=%q", body)
+	}
+}
+
+// The managed region links the task ID to its workspace-scoped dashboard page
+// only under a valid public URL and names the plain ID otherwise
+// (req-delivery-and-forge AC-2.5; req-workspace-addresses AC-1.1, AC-1.10).
+func TestPRBodyLinksWorkspaceTaskPage(t *testing.T) {
+	task := core.Task{ID: "261029-c8c07f", Workspace: "demo", Source: "mcp"}
+	for _, publicURL := range []string{"https://conveyor.example", "https://conveyor.example/", " http://conveyor.example:8080/base/ "} {
+		base := strings.TrimRight(strings.TrimSpace(publicURL), "/")
+		want := "Conveyor task [`261029-c8c07f`](" + base + "/w/demo/tasks/261029-c8c07f)"
+		if body := PRBody(task, PRBodyContext{PublicURL: publicURL}); !strings.Contains(body, want) {
+			t.Fatalf("public URL %q body=%q, want %q", publicURL, body, want)
+		}
+	}
+	for _, publicURL := range []string{"", "conveyor.example", "ftp://conveyor.example", "https://", "https://user:pass@conveyor.example",
+		"https://conveyor.example?x=1", "https://conveyor.example/?", "https://conveyor.example#top", "https://conveyor.example/a)b", "https://conveyor.example/" + strings.Repeat("a", 600)} {
+		body := PRBody(task, PRBodyContext{PublicURL: publicURL})
+		if !strings.Contains(body, "Conveyor task `261029-c8c07f`\n") || strings.Contains(body, "](") || strings.Contains(body, "/tasks/") {
+			t.Fatalf("public URL %q body=%q, want the plain task ID", publicURL, body)
+		}
+	}
+	if body := PRBody(core.Task{ID: "no-workspace", Source: "mcp"}, PRBodyContext{PublicURL: "https://conveyor.example"}); strings.Contains(body, "](") {
+		t.Fatalf("task without a workspace linked: %q", body)
+	}
+	if got := TaskDashboardURL("https://conveyor.example", "demo", "a b"); got != "https://conveyor.example/w/demo/tasks/a%20b" {
+		t.Fatalf("escaped link=%q", got)
+	}
+}
+
+// A task filed from an issue in its own repository closes that issue with or
+// without a published association, once, and a source in another repository
+// closes nothing (req-delivery-and-forge AC-8.6).
+func TestPRBodyClosesSameRepositorySourceIssue(t *testing.T) {
+	ctx := PRBodyContext{Repository: "acme/app"}
+	for _, tc := range []struct {
+		name      string
+		source    string
+		published int
+		repo      string
+		want      []string
+	}{
+		{name: "source issue without association", source: "github:acme/app#7", want: []string{"Closes #7"}},
+		{name: "source issue url without association", source: "https://github.com/acme/app/issues/7", want: []string{"Closes #7"}},
+		{name: "source slug differs in case", source: "github:Acme/App#7", repo: "acme/APP", want: []string{"Closes #7"}},
+		{name: "source issue equals association", source: "github:acme/app#7", published: 7, want: []string{"Closes #7"}},
+		{name: "association without source issue", source: "mcp", published: 42, want: []string{"Closes #42"}},
+		{name: "source in another repository", source: "github:other/app#7"},
+		{name: "source in another repository with association", source: "github:other/app#7", published: 42, want: []string{"Closes #42"}},
+		{name: "malformed source issue", source: "github:acme/app#seven"},
+		{name: "no repository slug", source: "github:acme/app#7", repo: "-"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			task := core.Task{ID: "task-1", Workspace: "demo", Source: tc.source}
+			if tc.published > 0 {
+				task.GitHub = &core.GitHubLifecycle{IssueNumber: tc.published}
+			}
+			bodyContext := ctx
+			switch tc.repo {
+			case "":
+			case "-":
+				bodyContext.Repository = ""
+			default:
+				bodyContext.Repository = tc.repo
+			}
+			body := PRBody(task, bodyContext)
+			if got := strings.Count(body, "Closes #"); got != len(tc.want) {
+				t.Fatalf("body=%q has %d closing lines, want %v", body, got, tc.want)
+			}
+			for _, want := range tc.want {
+				if strings.Count(body, want+"\n") != 1 {
+					t.Fatalf("body=%q, want one %q", body, want)
+				}
+			}
+		})
 	}
 }
 
