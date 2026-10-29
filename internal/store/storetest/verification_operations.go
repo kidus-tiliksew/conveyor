@@ -45,6 +45,7 @@ func runVerificationOperations(t *testing.T, x Fixture) {
 	t.Run("Checkpoints", func(t *testing.T) { runVerificationCheckpoints(t, x) })
 	t.Run("SealedReviewAcceptance", func(t *testing.T) { runSealedVerificationReview(t, x) })
 	t.Run("NextActionDispositionBinding", func(t *testing.T) { runNextActionDispositionBinding(t, x) })
+	t.Run("RetryGateScopedToVerifyOrder", func(t *testing.T) { runVerificationRetryGateScope(t, x) })
 	t.Run("OperatorRecoveryBindsSuccessorAndConsumesAuthorization", func(t *testing.T) {
 		v := newVerificationFixture(t, x)
 		obligation := store.VerificationObligation{ID: "recovery-" + v.access.TaskID, Description: "Recover one external mutation", Sources: []store.VerificationCitation{{DocumentID: "req-fixture", Version: 1, SectionID: "AC-1.1"}}, Contract: verification.Exercise{ID: "recovery", Kind: "script", Argv: []string{"fixture"}, TimeoutSeconds: 30, RequiredAssertions: []verification.Assertion{}, RetryPolicy: "operator_action_required", Operations: []verification.Operation{{ID: "step", TargetBinding: "fixture"}}}}
@@ -713,4 +714,190 @@ func runNextActionDispositionBinding(t *testing.T, x Fixture) {
 			t.Fatalf("refusals = %+v, want %s refused for missing operations", unbound.Details.Refusals, id)
 		}
 	}
+}
+
+// runVerificationRetryGateScope pins the order scope of the
+// operator_action_required retry gate on every backend: the gate reads the
+// latest attempt of the subject within the starting verify order, while an
+// unresolved operation still blocks the subject anywhere in the task
+// (component-verification-service "Attempts and outcome evaluation";
+// req-verification-kits AC-3.4).
+func runVerificationRetryGateScope(t *testing.T, x Fixture) {
+	scope := []core.VerificationRevision{{Repository: "conveyor", RemoteIdentity: "https://example.test/conveyor", SHA: strings.Repeat("a", 40)}}
+	bounces := func(task *core.Task) { task.SetupContract.MaxBounces = 10 }
+	register := func(t *testing.T, v *verificationFixture, operations ...verification.Operation) store.VerificationObligation {
+		t.Helper()
+		obligation := store.VerificationObligation{ID: "gated-" + v.access.TaskID, Description: "Exercise retried only on operator authority", Sources: []store.VerificationCitation{{DocumentID: "req-fixture", Version: 1, SectionID: "AC-1.1"}}, Contract: verification.Exercise{ID: "gated", Kind: "script", Argv: []string{"fixture"}, TimeoutSeconds: 30, RequiredAssertions: []verification.Assertion{}, RetryPolicy: "operator_action_required", Operations: operations}}
+		r := v.apply(t, store.VerificationCommand{Kind: store.VerificationRegisterObligation, Obligation: &obligation})
+		v.subject = core.VerificationSubject{Kind: "ordinary", ObligationID: obligation.ID, ContractDigest: r.Digest}
+		return obligation
+	}
+	start := func(key, authorization string, subject core.VerificationSubject) store.VerificationCommand {
+		return store.VerificationCommand{Kind: store.VerificationStartAttempt, Key: key, Attempt: &store.VerificationAttempt{Subject: subject, SafeInputs: map[string]json.RawMessage{}, ReplayAuthorizationID: authorization, Environment: core.VerificationEnvironment{Target: "fixture", OS: "unknown", Architecture: "unknown", Runtime: "unknown", Deployment: "unknown"}}}
+	}
+	refused := func(t *testing.T, v *verificationFixture, c store.VerificationCommand, code string) {
+		t.Helper()
+		c.Attempt.GrantID = GrantVerificationFixture(t, x.Backend, x.Context, v.access.TaskID, v.access.WorkOrderID, v.contextID, "grant-"+c.Key, c.Attempt.Subject, nil)
+		c.Attempt.EffectiveActions = []core.VerificationPermission{}
+		before := len(v.snapshot(t).Attempts)
+		_, err := x.Backend.ApplyVerification(v.ctx, v.command(c))
+		var refusal *store.VerificationRefusal
+		if !errors.As(err, &refusal) || refusal.Code != code {
+			t.Fatalf("start %s: %v, want %s", c.Key, err, code)
+		}
+		if len(v.snapshot(t).Attempts) != before {
+			t.Fatalf("refused start %s wrote an attempt", c.Key)
+		}
+	}
+	failed := func(t *testing.T, v *verificationFixture) {
+		t.Helper()
+		v.apply(t, store.VerificationCommand{Kind: store.VerificationTerminateAttempt, Attempt: &store.VerificationAttempt{State: "failed", Explanation: "environment unavailable"}})
+	}
+
+	t.Run("NewVerifyOrderStartsClean", func(t *testing.T) {
+		v := newVerificationFixtureTask(t, x, scope, bounces, true)
+		register(t, &v)
+		v.start(t, "gated-first-order")
+		failed(t, &v)
+		v.apply(t, store.VerificationCommand{Kind: store.VerificationSeal, Submission: &store.VerificationSubmission{Outcome: "feedback", Coverage: verificationFixtureCoverage(v.snapshot(t)), Feedback: "The gated exercise failed."}})
+		next := verifyOrderAfterResubmission(t, x, v, strings.Repeat("b", 40))
+		register(t, &next)
+		r := next.apply(t, start("gated-next-order", "", next.subject))
+		if !r.LaunchAuthorized {
+			t.Fatal("a later verify order's first start was not authorized")
+		}
+		next.runID = r.ID
+		snapshot := next.snapshot(t)
+		if len(snapshot.Attempts) != 1 || snapshot.Attempts[0].ID != r.ID || snapshot.Attempts[0].Ordinal != 1 || snapshot.Attempts[0].ReplayAuthorizationID != "" {
+			t.Fatalf("later order attempt = %+v", snapshot.Attempts)
+		}
+	})
+
+	t.Run("SameOrderRetryNeedsAuthorization", func(t *testing.T) {
+		v := newVerificationFixtureTask(t, x, scope, nil, true)
+		obligation := register(t, &v)
+		v.start(t, "gated-original")
+		failed(t, &v)
+		// A retry in the same context is gated before any recovery.
+		refused(t, &v, start("gated-same-context", "", v.subject), store.VerificationCodeRetryAuthorizationRequired)
+		oldContext, oldRun := v.contextID, v.runID
+		order, err := x.Backend.GetWorkOrder(v.ctx, v.access.WorkOrderID)
+		requireOK(t, err)
+		order.State, order.LastAttemptID, order.LastAttemptOutcome, order.RetrySuppressed = core.WorkOrderQueued, order.AttemptID, "released", true
+		order.SessionID, order.AttemptID, order.ClaimantID, order.WorkerID, order.ClientTokenHash = "", "", "", "", ""
+		order.LeaseExpiresAt = time.Time{}
+		requireOK(t, UpdateWorkOrder(x.Context, x.Backend, order, core.WorkOrderCmdRelease))
+		operator, owner := bootstrapOwner(t, x)
+		operator = store.WithActor(operator, store.Actor{ID: store.UserActorID(owner.ID), Role: core.ActorUser})
+		disposition := &store.VerificationRecoveryDisposition{ContextID: oldContext, RunID: oldRun, OperationIDs: []string{}, InputDigest: verificationSHA([]byte("{}")), Disposition: "not_applied", Reason: "Operator restored the environment and authorizes one retry."}
+		_, err = RecoverWorkOrder(store.WithVerificationRecovery(operator, disposition), x.Backend, order.ID, "gate-recovery", time.Hour)
+		requireOK(t, err)
+		claim := core.WorkOrderClaim{WorkerID: "worker", ClaimantID: "worker", SessionID: "gate-successor", ClientToken: "gate-successor-token", Lease: time.Hour, ExecutionTimeout: time.Hour, Requirements: order.ServedRequirementSnapshot, Governance: order.GovernanceSnapshot}
+		order, err = ClaimWorkOrder(x.Context, x.Backend, order.ID, claim)
+		requireOK(t, err)
+		v.access = store.VerificationAccess{TaskID: order.TaskID, WorkOrderID: order.ID, WorkOrderAttemptID: order.AttemptID, Claim: core.WorkOrderClaimIdentity{WorkerID: "worker", ClaimantID: "worker", SessionID: claim.SessionID}, ClientToken: claim.ClientToken}
+		v.contextID, v.runID = "", ""
+		v.contextID = v.apply(t, store.VerificationCommand{Kind: store.VerificationCreateContext, Key: "gate-successor", Context: &store.VerificationContext{Revisions: v.revisions, GoverningPins: v.pins}}).ID
+		r := v.apply(t, store.VerificationCommand{Kind: store.VerificationRegisterObligation, Obligation: &obligation})
+		v.subject.ContractDigest = r.Digest
+		// The successor context belongs to the same order, so the gate still
+		// reads the original attempt.
+		refused(t, &v, start("gated-successor-bare", "", v.subject), store.VerificationCodeRetryAuthorizationRequired)
+		authorization := "recovery:gate-recovery"
+		started := v.apply(t, start("gated-successor", authorization, v.subject))
+		if !started.LaunchAuthorized {
+			t.Fatal("recovery authorization did not admit the successor attempt")
+		}
+		v.runID = started.ID
+		failed(t, &v)
+		refused(t, &v, start("gated-successor-reuse", authorization, v.subject), store.VerificationCodeRetryAuthorizationRequired)
+		observer := v
+		observer.ctx, observer.access = operator, store.VerificationAccess{TaskID: v.access.TaskID, UserID: owner.ID}
+		for _, attempt := range observer.snapshotFor(t, oldContext).Attempts {
+			if attempt.ID == oldRun && (len(attempt.Recovery) != 1 || attempt.Recovery[0].Successor == nil || attempt.Recovery[0].Successor.RunID != started.ID) {
+				t.Fatalf("authorization did not bind the successor once: %+v", attempt.Recovery)
+			}
+		}
+	})
+
+	t.Run("UnresolvedOperationBlocksLaterOrder", func(t *testing.T) {
+		v := newVerificationFixtureTask(t, x, scope, nil, true)
+		register(t, &v, verification.Operation{ID: "step", TargetBinding: "fixture"})
+		v.start(t, "gated-operation")
+		v.apply(t, store.VerificationCommand{Kind: store.VerificationPrepareOperation, Key: "gated-operation-" + v.runID, Operation: &store.VerificationOperation{StepID: "step", Target: "fixture", InputDigest: verificationSHA([]byte("{}"))}})
+		// The terminal report moves the registered operation to outcome_unknown.
+		failed(t, &v)
+		order, err := x.Backend.GetWorkOrder(v.ctx, v.access.WorkOrderID)
+		requireOK(t, err)
+		order.State, order.LastAttemptID, order.LastAttemptOutcome, order.RetrySuppressed = core.WorkOrderQueued, order.AttemptID, "released", true
+		order.SessionID, order.AttemptID, order.ClaimantID, order.WorkerID, order.ClientTokenHash = "", "", "", "", ""
+		order.LeaseExpiresAt = time.Time{}
+		requireOK(t, UpdateWorkOrder(x.Context, x.Backend, order, core.WorkOrderCmdRelease))
+		head := strings.Repeat("c", 40)
+		changed, err := x.Backend.MarkTaskApprovalStale(x.Context, v.access.TaskID, v.revisions[0].SHA, head, "full", "source changed during verification")
+		requireOK(t, err)
+		if !changed {
+			t.Fatal("head advance did not move the verify head")
+		}
+		next := verifyOrderAtHead(t, x, v, head)
+		register(t, &next, verification.Operation{ID: "step", TargetBinding: "fixture"})
+		refused(t, &next, start("gated-operation-next-order", "", next.subject), store.VerificationCodeOperationUnresolved)
+	})
+}
+
+// verifyOrderAfterResubmission follows a feedback seal: it claims the
+// successor implement order, submits it at head, and returns the fixture of
+// the verify order that the submission routes to.
+func verifyOrderAfterResubmission(t *testing.T, x Fixture, v verificationFixture, head string) verificationFixture {
+	t.Helper()
+	st, ctx := x.Backend, x.Context
+	task, err := st.GetTask(ctx, v.access.TaskID)
+	requireOK(t, err)
+	if task.NextStage != core.StageImplement {
+		t.Fatalf("feedback did not return the task to implement: next=%s state=%s", task.NextStage, task.State)
+	}
+	job := core.Job{ID: task.ID + "-implement-1", TaskID: task.ID, Stage: core.StageImplement, State: core.JobPending}
+	o := core.WorkOrder{ID: job.ID, JobID: job.ID, TaskID: task.ID, Stage: core.StageImplement, State: core.WorkOrderQueued, QueueEnteredAt: time.Now().UTC(), QueueDeadline: time.Now().UTC().Add(time.Hour), CreatedAt: time.Now().UTC()}
+	_, err = CreateStageWorkOrder(ctx, st, job, o)
+	requireOK(t, err)
+	o, err = ClaimWorkOrder(ctx, st, o.ID, core.WorkOrderClaim{WorkerID: "worker", ClaimantID: "worker", SessionID: "resubmit", ClientToken: "resubmit-token", Lease: time.Hour, ExecutionTimeout: time.Hour})
+	requireOK(t, err)
+	o.State, o.HeadSHA = core.WorkOrderSubmitted, head
+	requireOK(t, UpdateWorkOrder(ctx, st, o, core.WorkOrderCmdSubmitForReview))
+	_, err = taskops.New(st).Perform(ctx, task.ID, taskops.Command{Kind: core.TaskStageAdvance, NextStage: core.StageReview, ProjectStages: true})
+	requireOK(t, err)
+	return verifyOrderAtHead(t, x, v, head)
+}
+
+// verifyOrderAtHead mints and claims the task's second verify order at head,
+// which must be the task's verify head, and prepares one no-kit context there.
+func verifyOrderAtHead(t *testing.T, x Fixture, v verificationFixture, head string) verificationFixture {
+	t.Helper()
+	st, ctx := x.Backend, x.Context
+	task, err := st.GetTask(ctx, v.access.TaskID)
+	requireOK(t, err)
+	if task.State == core.TaskQueued {
+		_, err = taskops.New(st).Perform(ctx, task.ID, taskops.Command{Kind: core.TaskDispatchStart})
+		requireOK(t, err)
+		task, err = st.GetTask(ctx, task.ID)
+		requireOK(t, err)
+	}
+	if task.NextStage != core.StageVerify || core.VerifyStageHead(task) != head {
+		t.Fatalf("task did not reach verify at the new head: next=%s head=%s", task.NextStage, core.VerifyStageHead(task))
+	}
+	job := core.Job{ID: task.ID + "-verify-2", TaskID: task.ID, Stage: core.StageVerify, State: core.JobPending}
+	o := core.WorkOrder{ID: job.ID, JobID: job.ID, TaskID: task.ID, Stage: core.StageVerify, State: core.WorkOrderQueued, HeadSHA: head, ReviewScope: task.RefreshReviewScope, BaselineSHA: task.RefreshBaselineSHA, QueueEnteredAt: time.Now().UTC(), QueueDeadline: time.Now().UTC().Add(time.Hour), CreatedAt: time.Now().UTC()}
+	_, err = CreateStageWorkOrder(ctx, st, job, o)
+	requireOK(t, err)
+	claim := core.WorkOrderClaim{WorkerID: "worker", ClaimantID: "worker", SessionID: "later-verify", ClientToken: "later-verify-token", Lease: time.Hour, ExecutionTimeout: time.Hour}
+	claim.Requirements = []core.ServedRequirementContext{{ID: "req-fixture", Version: 1, Statements: []core.RequirementStatement{{ID: "REQ-1", Statement: "Observe the state", AcceptanceCriteria: []core.AcceptanceCriterion{{ID: "AC-1.1", Statement: "Retain the observation"}}}}}}
+	o, err = ClaimWorkOrder(ctx, st, o.ID, claim)
+	requireOK(t, err)
+	next := v
+	next.access = store.VerificationAccess{TaskID: o.TaskID, WorkOrderID: o.ID, WorkOrderAttemptID: o.AttemptID, ClientToken: claim.ClientToken, Claim: core.WorkOrderClaimIdentity{WorkerID: claim.WorkerID, ClaimantID: claim.ClaimantID, SessionID: claim.SessionID}}
+	next.revisions = []core.VerificationRevision{{Repository: v.revisions[0].Repository, RemoteIdentity: v.revisions[0].RemoteIdentity, SHA: head}}
+	next.contextID, next.runID = "", ""
+	next.contextID = next.apply(t, store.VerificationCommand{Kind: store.VerificationCreateContext, Key: "later-verify", Context: &store.VerificationContext{ReviewScope: o.ReviewScope, BaselineSHA: o.BaselineSHA, Revisions: next.revisions, GoverningPins: next.pins, Discovery: []json.RawMessage{core.JSONPayload(map[string]any{"repository": next.revisions[0].Repository, "revision": head, "state": "no_manifest"})}}}).ID
+	next.apply(t, store.VerificationCommand{Kind: store.VerificationRecordSelection, Selection: &store.VerificationSelection{Receipt: verification.SelectionReceipt{SchemaVersion: 1, Stage: "verify", ContextPins: []verification.Pin{{Kind: "requirement", DocumentID: "req-fixture", Version: 1}}, Kits: []verification.KitReceipt{}}, Subjects: []store.VerificationSubjectContract{}}})
+	return next
 }

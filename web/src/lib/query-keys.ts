@@ -21,6 +21,19 @@ export function taskHistoryQueryKey(workspace: string, taskId: string, selection
 }
 
 /**
+ * Placeholder data that never crosses workspaces. A query keeps its previous
+ * result on screen only when the previous query's key names the same
+ * workspace, so after a switch it shows its first-load state instead of the
+ * previous workspace's data (component-web-dashboard, Shell and workspace
+ * scoping). Each call returns a new function, so TanStack never reuses a
+ * memoized placeholder from another workspace.
+ */
+export function sameWorkspacePlaceholder(workspace: string) {
+  return <T>(previous: T | undefined, previousQuery?: { queryKey: readonly unknown[] }) =>
+    previousQuery?.queryKey[1] === workspace ? previous : undefined
+}
+
+/**
  * The context a task-detail mutation records in `onMutate`: the workspace the
  * operator acted in. Its `onSuccess` refreshes that workspace's detail even when
  * the selection changed while the request was in flight.
