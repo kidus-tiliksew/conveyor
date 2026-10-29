@@ -10,6 +10,7 @@ import {
   type LucideIcon,
   Menu,
   Plus,
+  Scale,
   Settings,
   SunMoon,
   Workflow,
@@ -730,6 +731,9 @@ function NavSidebar({ className }: { className?: string }) {
         <NavItem to="/w/$workspaceId/workspace" icon={FolderGit2} label="Workspace" />
         <NavItem to="/w/$workspaceId/requirements" icon={Workflow} label="Requirements" />
         <NavItem to="/w/$workspaceId/system-design" icon={FileCode2} label="System Design" />
+        {/* Directly after System Design (req-document-operating-surfaces
+            AC-4.2). It carries no badge: Inbox is the only badged entry. */}
+        <NavItem to="/w/$workspaceId/decisions" icon={Scale} label="Decisions" />
         {/* Exactly the accepted operating surfaces, and no others
             (req-document-operating-surfaces REQ-4, AC-4.1). Planning and
             Blueprint history are parked, not retired: their routes stay
@@ -779,6 +783,7 @@ type NavTarget =
   | '/w/$workspaceId/workspace'
   | '/w/$workspaceId/requirements'
   | '/w/$workspaceId/system-design'
+  | '/w/$workspaceId/decisions'
   | '/w/$workspaceId/monitor'
   | '/w/$workspaceId/settings'
 

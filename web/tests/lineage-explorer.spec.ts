@@ -426,9 +426,10 @@ test('lineage renders work documents delivery and evidence', async ({ page }) =>
     'href',
     '/w/demo/requirements#reference-overview-retries-v4',
   )
+  // A decision opens its own page (req-document-operating-surfaces AC-8.9).
   await expect(documents.getByRole('link', { name: /Usage telemetry is observational/ })).toHaveAttribute(
     'href',
-    '/w/demo/system-design#decision-dec-1',
+    '/w/demo/decisions/DEC-1',
   )
   // The governed path opens the governing design version the walk returned.
   await expect(documents.getByRole('link', { name: /internal\/dispatch/ })).toHaveAttribute(
@@ -1050,8 +1051,9 @@ test('the Knowledge explorer reads the context workspace explicitly', async ({ p
   await expect.poll(() => reads.map((read) => read.workspace)).toEqual(['demo'])
 })
 
-// req-document-operating-surfaces AC-4.1 first half: the navigation carries
-// exactly the accepted operating surface set.
+// req-document-operating-surfaces AC-4.1 first half and AC-4.2: the
+// navigation carries exactly the accepted operating surface set, with
+// Decisions directly after System Design.
 test('primary navigation shows exactly the accepted operating surfaces', async ({ page }) => {
   await initShell(page)
   await routeAPI(page)
@@ -1064,6 +1066,7 @@ test('primary navigation shows exactly the accepted operating surfaces', async (
     'Workspace',
     'Requirements',
     'System Design',
+    'Decisions',
     'Monitor',
     'Settings',
   ])

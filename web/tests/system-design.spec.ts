@@ -424,14 +424,13 @@ test('a System Design with nothing outstanding says so in one quiet line', async
   await expect(metadata.getByText('v1', { exact: true })).toBeVisible()
   await expect(metadata.getByText('Confirmed', { exact: true })).toBeVisible()
   await page.getByRole('tab', { name: 'history', exact: true }).click()
-  await expect(page.getByRole('region', { name: 'Settled decisions' })).toContainText('No settled decisions yet.')
+  await expect(page.getByRole('region', { name: 'Document activity' })).toBeVisible()
+  await expect(page.getByRole('region', { name: 'Settled decisions' })).toHaveCount(0)
 })
 
-test('System Design links decision supersession and dismisses an unclean sweep signal', async ({ page }) => {
+test('System Design lists no settled decision and leaves supersession flags to the decision page', async ({ page }) => {
   await initialize(page)
-  let dismissalAttempts = 0
-  let dismissed = false
-  const decisions = () => [
+  const decisions = [
     {
       id: 'DEC-1',
       statement: 'Use the retired mechanism.',
@@ -453,23 +452,14 @@ test('System Design links decision supersession and dismisses an unclean sweep s
       origin: 'operator',
       supersedes: 'DEC-1',
       sweep: {
-        clean: dismissed,
+        clean: false,
         entries: [
           {
             decision_id: 'DEC-2',
             superseded_decision_id: 'DEC-1',
             document_id: 'req-stale',
             document_tier: 'requirement',
-            status: dismissed ? 'dismissed' : 'open',
-            detected_by: 'decision.confirmed',
-            detected_at: '2026-08-26T10:00:00Z',
-          },
-          {
-            decision_id: 'DEC-2',
-            superseded_decision_id: 'DEC-1',
-            document_id: 'product-overview',
-            document_tier: 'reference_document',
-            status: 'dismissed',
+            status: 'open',
             detected_by: 'decision.confirmed',
             detected_at: '2026-08-26T10:00:00Z',
           },
@@ -478,50 +468,42 @@ test('System Design links decision supersession and dismisses an unclean sweep s
       workspace: 'demo',
       created_at: '2026-08-26T09:00:00Z',
     },
+    {
+      id: 'DEC-3',
+      statement: 'Drop the abandoned idea.',
+      context: 'Nobody wanted it.',
+      alternatives_rejected: 'Keep it.',
+      status: 'dismissed',
+      origin: 'operator',
+      workspace: 'demo',
+      created_at: '2026-08-27T09:00:00Z',
+    },
   ]
   await page.route('**/v1/**', async (route) => {
     const handled = shell(route)
     if (handled) return await handled
-    const request = route.request()
-    const url = new URL(request.url())
+    const url = new URL(route.request().url())
     if (url.pathname === '/v1/system-designs') return route.fulfill({ json: [summarizeDesign(design)] })
     if (url.pathname === '/v1/system-designs/design-dispatch') return route.fulfill({ json: design })
-    if (url.pathname === '/v1/decisions') return route.fulfill({ json: decisions() })
-    if (url.pathname === '/v1/decisions/DEC-2/sweep/requirement/req-stale/dismiss') {
-      dismissalAttempts++
-      if (dismissalAttempts === 1)
-        return route.fulfill({ status: 409, json: { message: 'This sweep signal changed; refresh and try again.' } })
-      dismissed = true
-      return route.fulfill({ json: decisions()[1].sweep.entries[0] })
-    }
+    if (url.pathname === '/v1/decisions') return route.fulfill({ json: decisions })
     return route.fulfill({ json: [] })
   })
 
-  await page.goto('/w/demo/system-design?document=design-dispatch#decision-dec-2')
+  await page.goto('/w/demo/system-design?document=design-dispatch')
+  await expect(page.getByRole('heading', { name: 'Dispatch ownership' })).toBeVisible()
+  // AC-8.10: no confirmed, superseded, or dismissed decision renders here,
+  // on the canvas or its History, and no supersession flag either.
+  const attention = page.getByRole('region', { name: 'Needs your attention' })
+  await expect(attention).toBeVisible()
   await page.getByRole('tab', { name: 'history', exact: true }).click()
-  const register = page.getByRole('region', { name: 'Settled decisions' })
-  await expect(register.getByRole('link', { name: 'DEC-2' })).toHaveAttribute('href', '#decision-dec-2')
-  await expect(register.getByRole('link', { name: 'DEC-1' })).toHaveAttribute('href', '#decision-dec-1')
-  await register.getByText('documents still citing DEC-1').click()
-  const checklist = register.getByRole('list', { name: 'Documents still citing DEC-1' })
-  await expect(checklist.getByRole('link', { name: 'req-stale' })).toHaveAttribute(
-    'href',
-    '/w/demo/requirements?requirement=req-stale',
-  )
-  await expect(checklist.getByRole('link', { name: 'product-overview' })).toHaveAttribute(
-    'href',
-    '/w/demo/requirements#reference-product-overview-v0',
-  )
-  await expect(checklist).toContainText('Requirement')
-  await expect(checklist).toContainText('open')
-  await checklist.getByRole('button', { name: 'Dismiss' }).click()
-  await expect(checklist).toContainText('This sweep signal changed; refresh and try again.')
-  await checklist.getByRole('button', { name: 'Dismiss' }).click()
-  await expect.poll(() => dismissed).toBe(true)
-  await expect(register.getByText('documents still citing DEC-1')).toHaveCount(0)
+  await expect(page.getByRole('region', { name: 'Document activity' })).toBeVisible()
+  await expect(page.getByRole('region', { name: 'Settled decisions' })).toHaveCount(0)
+  for (const id of ['DEC-1', 'DEC-2', 'DEC-3']) await expect(page.getByText(id, { exact: true })).toHaveCount(0)
+  await expect(page.getByText('documents still citing DEC-1')).toHaveCount(0)
+  await expect(page.getByRole('button', { name: 'Dismiss', exact: true })).toHaveCount(0)
 })
 
-test('System Design keeps the document visible when the decision register fails', async ({ page }) => {
+test('System Design keeps the document visible when the decision read fails', async ({ page }) => {
   await initialize(page)
   await page.route('**/v1/**', async (route) => {
     const handled = shell(route)
@@ -536,10 +518,9 @@ test('System Design keeps the document visible when the decision register fails'
 
   await page.goto('/w/demo/system-design?document=design-dispatch')
   await expect(page.getByRole('heading', { name: 'Dispatch ownership' })).toBeVisible()
+  await expect(page.getByRole('region', { name: 'Needs your attention' })).toBeVisible()
   await page.getByRole('tab', { name: 'history', exact: true }).click()
-  await expect(page.getByRole('region', { name: 'Settled decisions' })).toContainText(
-    'Decision projection unavailable.',
-  )
+  await expect(page.getByRole('region', { name: 'Document activity' })).toBeVisible()
 })
 
 test('System Design resolves drift inline, restricts outcomes, and shows the confirmed-version precondition', async ({
@@ -726,13 +707,18 @@ test('operators confirm and dismiss proposed decisions with conflict-safe refres
     return route.fulfill({ json: [] })
   })
 
-  await page.goto('/w/demo/system-design#decision-dec-2')
+  await page.goto('/w/demo/system-design')
   await expect(page.locator('#decision-dec-2')).toBeVisible()
   await page.locator('#decision-dec-1').getByRole('button', { name: 'Confirm' }).click()
-  await expect(page.locator('#decision-dec-1')).toContainText('Confirmed by user:operator-test')
+  // A confirmed decision leaves System Design for the Decisions surface
+  // (req-document-operating-surfaces AC-8.10).
+  await expect(page.locator('#decision-dec-1')).toHaveCount(0)
   await page.locator('#decision-dec-2').getByRole('button', { name: 'Dismiss' }).click()
+  // The refusal refreshes the list, which now reports another operator's
+  // dismissal, so the item leaves the attention surface too.
+  await expect(page.locator('#decision-dec-2')).toHaveCount(0)
   await page.getByRole('tab', { name: 'history', exact: true }).click()
-  await expect(page.locator('#decision-dec-2')).toContainText('Dismissed by second-operator')
+  await expect(page.getByText('Dismissed by second-operator')).toHaveCount(0)
   await expect.poll(() => decisionReads).toBeGreaterThanOrEqual(3)
 })
 

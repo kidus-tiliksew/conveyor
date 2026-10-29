@@ -1506,8 +1506,8 @@ export async function dismissSystemDesignVersion(workspace: string, id: string, 
   }>
 }
 export class SystemDesignConflictError extends Error {}
-export function fetchDecisions(workspace: string) {
-  return getJSON<import('./types').Decision[]>(workspaceURL('/v1/decisions', workspace))
+export function fetchDecisions(workspace: string, signal?: AbortSignal) {
+  return getJSON<import('./types').Decision[]>(workspaceURL('/v1/decisions', workspace), signal)
 }
 // One decision with its statement, context and rejected alternatives, for
 // the Inbox's decision-proposal detail (req-operator-next-action AC-2.9).

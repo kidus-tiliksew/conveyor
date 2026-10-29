@@ -1,5 +1,5 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { Link, useNavigate, useSearch } from '@tanstack/react-router'
+import { useNavigate, useSearch } from '@tanstack/react-router'
 import { Archive, Check, Clock, ExternalLink, History, Layers, RotateCcw, X } from 'lucide-react'
 import { useEffect, useMemo, useState } from 'react'
 import { useWorkspaceCapability, useWorkspaceSelection } from '../components/app-shell'
@@ -30,13 +30,11 @@ import { VersionReviseDialog } from '../components/documents/version-revise-dial
 import { LineageExplorer } from '../components/lineage/lineage-explorer'
 import { Badge } from '../components/ui/badge'
 import { Button } from '../components/ui/button'
-import { Card, CardContent, CardHeader, CardTitle } from '../components/ui/card'
-import { Disclosure } from '../components/ui/disclosure'
+import { Card, CardContent } from '../components/ui/card'
 import { MarkdownProse } from '../components/ui/markdown-prose'
 import {
   archiveSystemDesign,
   confirmSystemDesignVersion,
-  dismissDecisionSupersessionSweep,
   dismissSystemDesignVersion,
   fetchDecisions,
   fetchRequirements,
@@ -47,13 +45,8 @@ import {
   SystemDesignConflictError,
 } from '../lib/api'
 import { errorMessage } from '../lib/errors'
-import type {
-  Decision,
-  DecisionSupersessionSweepEntry,
-  SystemDesignSummary,
-  SystemDesignVersion,
-  SystemDesignView,
-} from '../lib/types'
+import { decisionsQueryKey } from '../lib/query-keys'
+import type { SystemDesignSummary, SystemDesignVersion, SystemDesignView } from '../lib/types'
 
 const originLabels: Record<SystemDesignVersion['origin'], string> = {
   planning_session: 'Written in a planning conversation',
@@ -85,20 +78,18 @@ export function SystemDesignPage() {
     enabled: Boolean(workspace),
     staleTime: 60_000,
   })
+  // Only proposed decisions are voiced here; confirmed, superseded, and
+  // dismissed decisions live on the Decisions surface
+  // (req-document-operating-surfaces AC-8.10).
   const decisions = useQuery({
-    queryKey: ['decisions', workspace],
-    queryFn: () => fetchDecisions(workspace),
+    queryKey: decisionsQueryKey(workspace),
+    queryFn: ({ signal }) => fetchDecisions(workspace, signal),
     enabled: Boolean(workspace),
   })
   const resolve = useMutation({
     mutationFn: ({ id, action }: { id: string; action: 'confirm' | 'dismiss' }) =>
       resolveDecision(workspace, id, action),
-    onSettled: () => void client.invalidateQueries({ queryKey: ['decisions', workspace] }),
-  })
-  const dismissSweep = useMutation({
-    mutationFn: ({ decisionId, entry }: { decisionId: string; entry: DecisionSupersessionSweepEntry }) =>
-      dismissDecisionSupersessionSweep(workspace, decisionId, entry.document_tier, entry.document_id),
-    onSettled: () => void client.invalidateQueries({ queryKey: ['decisions', workspace] }),
+    onSettled: () => void client.invalidateQueries({ queryKey: decisionsQueryKey(workspace) }),
   })
   const selected = designs.data?.find((item) => item.document.id === search.document)
   const detail = useQuery({
@@ -108,18 +99,12 @@ export function SystemDesignPage() {
     staleTime: 60_000,
   })
   useEffect(() => {
-    if (!decisions.data?.length || !window.location.hash) return
-    const anchor = window.location.hash.slice(1)
-    requestAnimationFrame(() => document.getElementById(anchor)?.scrollIntoView({ block: 'start' }))
-  }, [decisions.data])
-  useEffect(() => {
     if (!designs.data?.length || selected) return
     const fallback = designs.data.find((item) => !item.document.archived) ?? designs.data[0]
     void navigate({
       to: '/w/$workspaceId/system-design',
       params: { workspaceId: workspace },
       search: { document: fallback.document.id },
-      hash: window.location.hash.slice(1),
       replace: true,
     })
   }, [designs.data, navigate, selected])
@@ -149,7 +134,6 @@ export function SystemDesignPage() {
   }, [designs.data, direction, query, sort])
   const archivedCount = (designs.data ?? []).filter((item) => item.document.archived).length
   const liveCount = (designs.data ?? []).length - archivedCount
-  const settledDecisions = (decisions.data ?? []).filter((decision) => decision.status !== 'proposed')
   // Decisions are workspace-wide, so they are voiced on whichever document is
   // open — the same place they were surfaced before.
   const decisionItems: AttentionItem[] = (decisions.data ?? [])
@@ -309,17 +293,10 @@ export function SystemDesignPage() {
           {detail.data ? (
             <DesignCanvas
               key={`${workspace}:${detail.data.document.id}:${search.tab}:${search.base}:${search.target}`}
-              search={
-                search.tab || !window.location.hash.startsWith('#decision-') ? search : { ...search, tab: 'history' }
-              }
+              search={search}
               item={detail.data}
               workspace={workspace}
               decisionItems={decisionItems}
-              settledDecisions={settledDecisions}
-              decisionsLoading={decisions.isLoading}
-              decisionsError={decisions.error}
-              canConfirmDecisions={canConfirm}
-              dismissSweep={dismissSweep}
             />
           ) : selected && detail.isLoading ? (
             <div className="px-4 py-6 text-sm text-muted sm:px-8 sm:py-8">Loading document…</div>
@@ -359,33 +336,12 @@ function DesignCanvas({
   item,
   workspace,
   decisionItems,
-  settledDecisions,
-  decisionsLoading,
-  decisionsError,
-  canConfirmDecisions,
-  dismissSweep,
 }: {
   search: ReviewSearch & { document?: string; session?: string }
   item: SystemDesignView
   workspace: string
   decisionItems: AttentionItem[]
-  settledDecisions: Decision[]
-  decisionsLoading: boolean
-  decisionsError: Error | null
-  canConfirmDecisions: boolean
-  dismissSweep: ReturnType<
-    typeof useMutation<
-      DecisionSupersessionSweepEntry,
-      Error,
-      { decisionId: string; entry: DecisionSupersessionSweepEntry }
-    >
-  >
 }) {
-  useEffect(() => {
-    const anchor = window.location.hash.slice(1)
-    if (anchor.startsWith('decision-'))
-      requestAnimationFrame(() => window.document.getElementById(anchor)?.scrollIntoView({ block: 'start' }))
-  }, [search.tab, settledDecisions])
   const history = useDocumentEvents('system_design', item.document.id, item)
   const client = useQueryClient()
   const canManageWorkspace = useWorkspaceCapability('manage_workspace')
@@ -396,7 +352,6 @@ function DesignCanvas({
       to: '/w/$workspaceId/system-design',
       params: { workspaceId: workspace },
       search: { ...search, ...next, base: next.base, target: next.target },
-      hash: window.location.hash.slice(1),
     })
   const reviewVersions = [
     ...new Map(
@@ -814,134 +769,6 @@ function DesignCanvas({
               <span className="mr-2 text-xs text-muted">{history.total} activity events</span>
               <MoreDocumentEvents history={history} />
             </section>
-            <section className="mt-10 border-t border-border pt-8" aria-label="Settled decisions">
-              {decisionsLoading ? (
-                <p className="text-sm text-muted">Loading decisions…</p>
-              ) : decisionsError ? (
-                <p className="rounded-md bg-failure-soft px-3 py-2 text-sm text-failure">
-                  {errorMessage(decisionsError, 'Could not load decisions.')}
-                </p>
-              ) : settledDecisions.length === 0 ? (
-                <p className="text-sm text-muted">No settled decisions yet.</p>
-              ) : (
-                <Card className="rounded-lg">
-                  <CardHeader>
-                    <CardTitle className="flex items-center gap-2">
-                      <span className="flex size-5 items-center justify-center rounded-md bg-primary-soft text-primary">
-                        <Check className="size-3" />
-                      </span>
-                      Settled decisions
-                    </CardTitle>
-                    <Badge variant="mono">{settledDecisions.length}</Badge>
-                  </CardHeader>
-                  <CardContent className="space-y-2">
-                    {settledDecisions.map((decision) => (
-                      <article
-                        id={`decision-${decision.id.toLowerCase()}`}
-                        key={decision.id}
-                        className="scroll-mt-6 rounded-lg border border-border p-3"
-                      >
-                        <div className="flex gap-2">
-                          <Badge variant="mono">{decision.id}</Badge>
-                          <Badge variant={decision.status === 'confirmed' ? 'positive' : 'default'}>
-                            {decision.status}
-                          </Badge>
-                        </div>
-                        <p className="mt-2 text-sm font-medium">{decision.statement}</p>
-                        <p className="mt-1 text-xs text-muted">{decision.context}</p>
-                        {(decision.supersedes || decision.superseded_by) && (
-                          <p className="mt-2 flex flex-wrap gap-x-3 gap-y-1 text-xs text-muted">
-                            {decision.supersedes && (
-                              <span>
-                                Supersedes <DecisionLink id={decision.supersedes} />
-                              </span>
-                            )}
-                            {decision.superseded_by && (
-                              <span>
-                                Superseded by <DecisionLink id={decision.superseded_by} />
-                              </span>
-                            )}
-                          </p>
-                        )}
-                        {decision.supersedes && decision.sweep && !decision.sweep.clean && (
-                          <details className="mt-3 rounded-md border border-attention/40 bg-attention-soft/40 p-3">
-                            <summary className="flex cursor-pointer flex-wrap items-center gap-2 text-xs font-medium">
-                              <Badge variant="attention">
-                                {decision.sweep.entries.filter((entry) => entry.status === 'open').length} open
-                              </Badge>
-                              documents still citing {decision.supersedes}
-                            </summary>
-                            <p className="mt-2 text-xs text-muted">
-                              These signals manage operator attention. They do not block delivery, review, or merge.
-                            </p>
-                            <ul
-                              className="mt-2 divide-y divide-border"
-                              aria-label={`Documents still citing ${decision.supersedes}`}
-                            >
-                              {decision.sweep.entries.map((entry) => {
-                                const pending =
-                                  dismissSweep.isPending &&
-                                  dismissSweep.variables?.decisionId === decision.id &&
-                                  dismissSweep.variables.entry.document_tier === entry.document_tier &&
-                                  dismissSweep.variables.entry.document_id === entry.document_id
-                                const failed = dismissSweep.error && dismissSweep.variables?.entry === entry
-                                return (
-                                  <li key={`${entry.document_tier}:${entry.document_id}`} className="py-2 text-xs">
-                                    <div className="flex flex-wrap items-center gap-2">
-                                      <SweepDocumentLink entry={entry} />
-                                      <Badge>{sweepTierLabel(entry.document_tier)}</Badge>
-                                      <Badge variant={entry.status === 'open' ? 'attention' : 'default'}>
-                                        {entry.status}
-                                      </Badge>
-                                      <Disclosure
-                                        triggerClassName="text-faint"
-                                        content={new Date(entry.detected_at).toLocaleString()}
-                                      >
-                                        <time dateTime={entry.detected_at}>
-                                          Detected {formatDate(entry.detected_at)}
-                                        </time>
-                                      </Disclosure>
-                                      {entry.status === 'open' && canConfirmDecisions && (
-                                        <Button
-                                          className="ml-auto"
-                                          size="sm"
-                                          variant="secondary"
-                                          disabled={dismissSweep.isPending}
-                                          onClick={() => dismissSweep.mutate({ decisionId: decision.id, entry })}
-                                        >
-                                          {pending ? 'Dismissing…' : 'Dismiss'}
-                                        </Button>
-                                      )}
-                                    </div>
-                                    {failed && (
-                                      <p className="mt-1 text-failure">
-                                        {errorMessage(dismissSweep.error, 'Could not dismiss this signal.')}
-                                      </p>
-                                    )}
-                                  </li>
-                                )
-                              })}
-                            </ul>
-                          </details>
-                        )}
-                        {decision.status === 'confirmed' && decision.confirmed_by && decision.confirmed_at && (
-                          <p className="mt-2 flex items-center gap-1 text-xs text-muted">
-                            <Clock className="size-3" /> Confirmed by {decision.confirmed_by} on{' '}
-                            {formatDate(decision.confirmed_at)}
-                          </p>
-                        )}
-                        {decision.status === 'dismissed' && decision.dismissed_by && decision.dismissed_at && (
-                          <p className="mt-2 flex items-center gap-1 text-xs text-muted">
-                            <Clock className="size-3" /> Dismissed by {decision.dismissed_by} on{' '}
-                            {formatDate(decision.dismissed_at)}
-                          </p>
-                        )}
-                      </article>
-                    ))}
-                  </CardContent>
-                </Card>
-              )}
-            </section>
           </>
         }
       />
@@ -956,57 +783,6 @@ function systemDesignEventLabel(kind: string) {
     'system_design.restored': 'System Design document restored',
   }
   return labels[kind] ?? kind.replaceAll('_', ' ').replaceAll('.', ' ')
-}
-
-function DecisionLink({ id }: { id: string }) {
-  return (
-    <a href={`#decision-${id.toLowerCase()}`} className="font-medium text-primary hover:underline">
-      {id}
-    </a>
-  )
-}
-
-function SweepDocumentLink({ entry }: { entry: DecisionSupersessionSweepEntry }) {
-  const { workspace } = useWorkspaceSelection()
-  const className = 'font-medium text-primary hover:underline'
-  if (entry.document_tier === 'system_design')
-    return (
-      <Link
-        to="/w/$workspaceId/system-design"
-        params={{ workspaceId: workspace }}
-        search={{ document: entry.document_id }}
-        className={className}
-      >
-        {entry.document_id}
-      </Link>
-    )
-  if (entry.document_tier === 'requirement')
-    return (
-      <Link
-        to="/w/$workspaceId/requirements"
-        params={{ workspaceId: workspace }}
-        search={{ requirement: entry.document_id }}
-        className={className}
-      >
-        {entry.document_id}
-      </Link>
-    )
-  return (
-    <Link
-      to="/w/$workspaceId/requirements"
-      params={{ workspaceId: workspace }}
-      hash={`reference-${entry.document_id}-v0`}
-      className={className}
-    >
-      {entry.document_id}
-    </Link>
-  )
-}
-
-function sweepTierLabel(tier: DecisionSupersessionSweepEntry['document_tier']) {
-  if (tier === 'system_design') return 'System Design'
-  if (tier === 'reference_document') return 'Reference document'
-  return 'Requirement'
 }
 
 function formatDate(value: string) {

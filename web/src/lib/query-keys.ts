@@ -21,6 +21,24 @@ export function taskHistoryQueryKey(workspace: string, taskId: string, selection
 }
 
 /**
+ * The workspace's decision list, the one read behind the Decisions surface,
+ * each decision page, and the System Design attention surface's proposed
+ * decisions (component-web-decision-surfaces).
+ */
+export function decisionsQueryKey(workspace: string) {
+  return ['decisions', workspace] as const
+}
+
+/**
+ * The workspace's decision citations from `GET /v1/decision-citations`, the
+ * one read behind every citing-document count and list
+ * (component-web-decision-surfaces).
+ */
+export function decisionCitationsQueryKey(workspace: string) {
+  return ['decision-citations', workspace] as const
+}
+
+/**
  * Placeholder data that never crosses workspaces. A query keeps its previous
  * result on screen only when the previous query's key names the same
  * workspace, so after a switch it shows its first-load state instead of the

@@ -283,9 +283,8 @@ function contextLink(proposal: PendingProposal, workspace: string) {
     )
   return (
     <Link
-      to="/w/$workspaceId/system-design"
-      params={{ workspaceId: workspace }}
-      hash={`decision-${proposal.id.toLowerCase()}`}
+      to="/w/$workspaceId/decisions/$decisionId"
+      params={{ workspaceId: workspace, decisionId: proposal.id }}
       className={className}
     >
       View decision →
