@@ -47,6 +47,7 @@ import { useNextAction } from '../inbox/use-next-actions'
 import { Badge } from '../ui/badge'
 import { Disclosure } from '../ui/disclosure'
 import { MarkdownProse } from '../ui/markdown-prose'
+import { ImplementationEntry } from './implementation-entry'
 import { hasInterruptedReviewRecovery, InterruptedReviewRecoveryCard } from './interrupted-review-recovery-card'
 import { canRedispatch, FailedTriageCard, RedispatchCard } from './redispatch-card'
 import {
@@ -70,7 +71,7 @@ import {
 } from './system-design-proposal-card'
 import { useTaskAudit } from './use-task-detail'
 import { isHistoryRestart, useTaskHistory } from './use-task-history'
-import { ImplementationEntry } from './implementation-entry'
+import { useTaskTranscript } from './use-task-transcript'
 import { VerificationEntry } from './verification-entry'
 import {
   CheckpointProposalRecoveryCard,
@@ -309,18 +310,48 @@ export function Timeline({ item, executionActions = true }: { item: ActivityItem
   )
 }
 
-function TranscriptCaptures({ captures }: { captures?: WorkOrderTranscriptCapture[] }) {
+// Capture metadata comes with the bounded detail; each disclosure reads its
+// own content only once opened (component-web-task-surfaces, Transcript
+// disclosures).
+function TranscriptCaptures({
+  taskId,
+  workOrderId,
+  captures,
+}: {
+  taskId: string
+  workOrderId: string
+  captures?: WorkOrderTranscriptCapture[]
+}) {
+  const { workspace } = useWorkspaceSelection()
   if (!captures?.length) return null
   return (
     <div className="basis-full space-y-1.5 pt-1">
       {captures.map((capture) => (
-        <TranscriptDisclosure key={`${capture.attempt_id}-${capture.captured_at}`} capture={capture} />
+        // A new workspace, task, order, or attempt remounts the disclosure
+        // closed, which cancels the previous read.
+        <TranscriptDisclosure
+          key={`${workspace}:${taskId}:${workOrderId}:${capture.attempt_id}:${capture.captured_at}`}
+          workspace={workspace}
+          taskId={taskId}
+          workOrderId={workOrderId}
+          capture={capture}
+        />
       ))}
     </div>
   )
 }
 
-function TranscriptDisclosure({ capture }: { capture: WorkOrderTranscriptCapture }) {
+function TranscriptDisclosure({
+  workspace,
+  taskId,
+  workOrderId,
+  capture,
+}: {
+  workspace: string
+  taskId: string
+  workOrderId: string
+  capture: WorkOrderTranscriptCapture
+}) {
   const [open, setOpen] = useState(false)
   return (
     <details className="text-xs text-muted" onToggle={(toggle) => setOpen(toggle.currentTarget.open)}>
@@ -336,12 +367,46 @@ function TranscriptDisclosure({ capture }: { capture: WorkOrderTranscriptCapture
               This transcript was truncated; the most recent output is shown.
             </p>
           )}
-          <pre className="max-h-64 overflow-auto whitespace-pre-wrap font-mono text-[11px] leading-5 text-foreground">
-            {capture.content}
-          </pre>
+          <TranscriptContent
+            workspace={workspace}
+            taskId={taskId}
+            workOrderId={workOrderId}
+            attemptId={capture.attempt_id}
+          />
         </div>
       )}
     </details>
+  )
+}
+
+// Mounted only while its disclosure is open; unmounting cancels the read.
+function TranscriptContent({
+  workspace,
+  taskId,
+  workOrderId,
+  attemptId,
+}: {
+  workspace: string
+  taskId: string
+  workOrderId: string
+  attemptId: string
+}) {
+  const query = useTaskTranscript(workspace, taskId, workOrderId, attemptId)
+  if (query.isError)
+    return (
+      <div role="alert">
+        <p>Could not load the transcript: {query.error.message}</p>
+        <button type="button" className="text-primary underline" onClick={() => void query.refetch()}>
+          Retry
+        </button>
+      </div>
+    )
+  if (query.isPending || query.isFetching) return <p role="status">Loading transcript…</p>
+  if (!query.data.content) return <p>No transcript output was captured.</p>
+  return (
+    <pre className="max-h-64 overflow-auto whitespace-pre-wrap font-mono text-[11px] leading-5 text-foreground">
+      {query.data.content}
+    </pre>
   )
 }
 
@@ -852,7 +917,11 @@ function TimelineRow({
         }
         transcripts={
           entry.order?.transcript_captures?.length ? (
-            <TranscriptCaptures captures={entry.order.transcript_captures} />
+            <TranscriptCaptures
+              taskId={item.task.id}
+              workOrderId={entry.order.id}
+              captures={entry.order.transcript_captures}
+            />
           ) : undefined
         }
       />
@@ -893,6 +962,14 @@ function TimelineRow({
             {usageText(entry.order, usageReportedOrderIDs.has(entry.order.id))}
           </span>
           <time className="ml-auto text-[11px] text-faint">{absoluteTime(entry.at)}</time>
+          {/* A started job's entry already carries this order's captures. */}
+          {!item.jobs.some((job) => job.id === entry.order.job_id && job.started_at) && (
+            <TranscriptCaptures
+              taskId={item.task.id}
+              workOrderId={entry.order.id}
+              captures={entry.order.transcript_captures}
+            />
+          )}
         </div>
       </li>
     )
@@ -1205,7 +1282,11 @@ function SeatRow({ seat, index, usageAvailable }: { seat: PanelSeat; index: numb
       {seat.status === 'deliberating' && progress && (
         <p className="w-full line-clamp-2 text-xs leading-5 text-muted">{progress}</p>
       )}
-      <TranscriptCaptures captures={seat.order.transcript_captures} />
+      <TranscriptCaptures
+        taskId={seat.order.task_id}
+        workOrderId={seat.order.id}
+        captures={seat.order.transcript_captures}
+      />
     </div>
   )
 }
@@ -1428,7 +1509,7 @@ function JobEntry({
               {usageText(order, usageAvailable === true)}
             </span>
           )}
-          <TranscriptCaptures captures={order?.transcript_captures} />
+          {order && <TranscriptCaptures taskId={taskId} workOrderId={order.id} captures={order.transcript_captures} />}
         </div>
       </li>
     )
@@ -1469,7 +1550,7 @@ function JobEntry({
         )}
         {order?.transcript_captures?.length ? (
           <div className="px-4 pb-3">
-            <TranscriptCaptures captures={order.transcript_captures} />
+            <TranscriptCaptures taskId={taskId} workOrderId={order.id} captures={order.transcript_captures} />
           </div>
         ) : null}
       </article>

@@ -383,7 +383,7 @@ func (s *Server) boundedTaskEventSection(r *http.Request, taskID string, complet
 
 // boundedTaskDetailProjection is the bounded detail view: the complete view's
 // fields, with events replaced by the presentation page, event_page, and
-// summaries.
+// summaries, and each transcript capture replaced by its metadata.
 type boundedTaskDetailProjection struct {
 	reviewItem
 	events    []json.RawMessage
@@ -396,11 +396,15 @@ func (detail boundedTaskDetailProjection) MarshalJSON() ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
-	return json.Marshal(struct {
+	body, err := json.Marshal(struct {
 		reviewItem
 		Events     []json.RawMessage   `json:"events"`
 		EventPage  taskEventPageView   `json:"event_page"`
 		Summaries  taskDetailSummaries `json:"summaries"`
 		WorkOrders []json.RawMessage   `json:"work_orders"`
 	}{detail.reviewItem, detail.events, detail.eventPage, detail.summaries, orders})
+	if err != nil {
+		return nil, err
+	}
+	return projectBoundedDetailCaptures(body)
 }

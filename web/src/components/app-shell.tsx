@@ -699,11 +699,12 @@ function NavSidebar({ className }: { className?: string }) {
   const { data: proposals } = usePendingProposals()
   // The bounded pending-proposals projection owns the workspace's count of
   // operator decisions (AC-2.7). Reading it here avoids mounting a second
-  // unfiltered query beside the Board's filter-keyed activity request.
+  // unfiltered query beside the Board's filter-keyed activity request. Inbox
+  // is the only primary-navigation entry with a badge: a pending document
+  // proposal is already one of these decisions, and its per-document signal
+  // lives on the document's own attention surface (req-operator-next-action
+  // AC-2.7; req-document-operating-surfaces AC-1.2).
   const operatorDecisions = proposals?.attention?.operator_decisions ?? 0
-  const requirementAttention = new Set(
-    (proposals?.items ?? []).filter((item) => item.tier === 'requirement').map((item) => item.id),
-  ).size
 
   const currentName = workspaces?.find((item) => item.id === selected)?.name ?? workspace?.workspace ?? 'Conveyor'
   const signOut = useMutation({
@@ -727,9 +728,7 @@ function NavSidebar({ className }: { className?: string }) {
           {operatorDecisions > 0 && <Badge variant="attention">{operatorDecisions}</Badge>}
         </NavItem>
         <NavItem to="/w/$workspaceId/workspace" icon={FolderGit2} label="Workspace" />
-        <NavItem to="/w/$workspaceId/requirements" icon={Workflow} label="Requirements">
-          {requirementAttention > 0 && <Badge variant="attention">{requirementAttention}</Badge>}
-        </NavItem>
+        <NavItem to="/w/$workspaceId/requirements" icon={Workflow} label="Requirements" />
         <NavItem to="/w/$workspaceId/system-design" icon={FileCode2} label="System Design" />
         {/* Exactly the accepted operating surfaces, and no others
             (req-document-operating-surfaces REQ-4, AC-4.1). Planning and

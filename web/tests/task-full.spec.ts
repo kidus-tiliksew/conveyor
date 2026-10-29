@@ -3965,38 +3965,179 @@ test('client machine activity is collapsed, refreshes, and disappears after term
   await expect(activityRegion).toHaveCount(0)
 })
 
-test('terminated attempt transcripts stay collapsed until opened and absence stays silent', async ({ page }) => {
-  await page.route('**/v1/tasks/attempt-transcript/activity*', async (route) => {
-    const item = activity('timeout', false)
-    item.task.id = 'attempt-transcript'
-    item.jobs[0].task_id = 'attempt-transcript'
-    item.work_orders[0] = {
-      ...item.work_orders[0],
-      task_id: 'attempt-transcript',
-      transcript_captures: [
-        {
-          attempt_id: 'attempt-ended',
-          content: 'captured transcript tail marker',
-          termination_reason: 'execution deadline elapsed',
-          truncated: true,
-          captured_at: '2026-07-15T12:30:00Z',
-        },
-      ],
-    }
-    await route.fulfill({ json: item })
+// A task whose first work order ended two attempts: one truncated capture with
+// text and one empty capture. The fake server sends their metadata only and
+// serves each capture's content from this fixture (tests/helpers/bounded-detail).
+function transcriptActivity(taskId: string, title: string) {
+  const item = activity('timeout', false)
+  item.task = { ...item.task, id: taskId, title }
+  item.jobs = item.jobs.map((job) => ({ ...job, task_id: taskId }))
+  item.work_orders[0] = {
+    ...item.work_orders[0],
+    task_id: taskId,
+    transcript_captures: [
+      {
+        attempt_id: 'attempt-ended',
+        content: `captured transcript tail marker ${taskId}`,
+        termination_reason: 'execution deadline elapsed',
+        truncated: true,
+        captured_at: '2026-07-15T12:30:00Z',
+      },
+      {
+        attempt_id: 'attempt-empty',
+        content: '',
+        termination_reason: 'harness exited',
+        truncated: false,
+        captured_at: '2026-07-15T12:40:00Z',
+      },
+    ],
+  }
+  return item
+}
+
+// Every transcript content read the page starts, and a gate that can fail or
+// hold the next one (component-web-task-surfaces, Transcript disclosures).
+async function routeTranscriptReads(page: Page) {
+  const requests: string[] = []
+  page.on('request', (request) => {
+    const url = new URL(request.url())
+    if (url.pathname.includes('/transcript-captures/')) requests.push(`${url.pathname}${url.search}`)
   })
+  const gate = { fail: false, hold: undefined as Promise<void> | undefined }
+  await page.route(/\/transcript-captures\//, async (route) => {
+    if (gate.fail) {
+      gate.fail = false
+      await route.fulfill({ status: 500, contentType: 'text/plain', body: 'internal server error\n' })
+      return
+    }
+    if (gate.hold) await gate.hold
+    // The page may have abandoned the read while it was held.
+    await route.fallback().catch(() => {})
+  })
+  return { requests, gate }
+}
+
+test('terminated attempt transcripts load only when their disclosure opens', async ({ page }) => {
+  const streams = await controlTaskStreams(page)
+  const { requests, gate } = await routeTranscriptReads(page)
+  let detailReads = 0
+  await page.route('**/v1/tasks/attempt-transcript/activity*', async (route) => {
+    detailReads++
+    await route.fulfill({ json: transcriptActivity('attempt-transcript', 'Transcript task') })
+  })
+  const orderId = transcriptActivity('attempt-transcript', 'Transcript task').work_orders[0].id
+  const contentPath = (attempt: string) =>
+    `/v1/tasks/attempt-transcript/work-orders/${orderId}/transcript-captures/${attempt}?workspace_id=demo`
 
   await page.goto('/w/demo/tasks/attempt-transcript/full')
-  const disclosure = page.getByText('Attempt attempt-ended transcript')
-  await expect(disclosure).toBeVisible()
+  const ended = page.locator('details').filter({ hasText: 'Attempt attempt-ended transcript' })
+  const empty = page.locator('details').filter({ hasText: 'Attempt attempt-empty transcript' })
+  await expect(ended).toBeVisible()
+  await expect(empty).toBeVisible()
   await expect(page.getByText('captured transcript tail marker')).toHaveCount(0)
-  await disclosure.click()
-  await expect(page.getByText('captured transcript tail marker')).toBeVisible()
-  await expect(page.getByText('Ended: execution deadline elapsed')).toBeVisible()
-  await expect(page.getByText('This transcript was truncated; the most recent output is shown.')).toBeVisible()
 
+  // A closed disclosure sends no read, through a detail refetch and focus.
+  await expect.poll(() => streams.countFor('attempt-transcript')).toBeGreaterThan(0)
+  await streams.open()
+  await streams.send(activityFrame)
+  await expect.poll(() => detailReads).toBe(2)
+  await page.evaluate(() => {
+    window.dispatchEvent(new Event('focus'))
+    document.dispatchEvent(new Event('visibilitychange'))
+  })
+  await expect(ended).toBeVisible()
+  expect(requests).toEqual([])
+
+  // Opening reads only that attempt in the explicit workspace; the metadata
+  // lines render with it.
+  await ended.locator('summary').click()
+  await expect(ended.getByText('captured transcript tail marker attempt-transcript')).toBeVisible()
+  await expect(ended.getByText('Ended: execution deadline elapsed')).toBeVisible()
+  await expect(ended.getByText('This transcript was truncated; the most recent output is shown.')).toBeVisible()
+  expect(requests).toEqual([contentPath('attempt-ended')])
+
+  // Empty content says so, without a truncation notice.
+  await empty.locator('summary').click()
+  await expect(empty.getByText('No transcript output was captured.')).toBeVisible()
+  await expect(empty.getByText('Ended: harness exited')).toBeVisible()
+  await expect(empty.getByText('This transcript was truncated', { exact: false })).toHaveCount(0)
+  expect(requests).toEqual([contentPath('attempt-ended'), contentPath('attempt-empty')])
+
+  // Closing and reopening reads again; a failure offers Retry.
+  await ended.locator('summary').click()
+  await expect(ended.getByText('captured transcript tail marker attempt-transcript')).toHaveCount(0)
+  gate.fail = true
+  await ended.locator('summary').click()
+  await expect(ended.getByRole('alert')).toContainText('Could not load the transcript')
+  await ended.getByRole('button', { name: 'Retry' }).click()
+  await expect(ended.getByText('captured transcript tail marker attempt-transcript')).toBeVisible()
+  expect(requests.filter((path) => path === contentPath('attempt-ended'))).toHaveLength(3)
+
+  // A task with no captures renders no disclosure.
   await page.goto('/w/demo/tasks/timeout/full')
   await expect(page.getByText(/Attempt .* transcript/)).toHaveCount(0)
+})
+
+test('a task change during a pending transcript read drops the late response', async ({ page }) => {
+  const { requests, gate } = await routeTranscriptReads(page)
+  await page.route(/\/v1\/tasks\/transcript-owner-[ab]\/activity/, async (route) => {
+    const taskId = new URL(route.request().url()).pathname.split('/')[3]
+    await route.fulfill({
+      json:
+        taskId === 'transcript-owner-a'
+          ? transcriptActivity(taskId, 'First transcript owner')
+          : {
+              ...activity('timeout', false),
+              task: { ...activity('timeout', false).task, id: taskId, title: 'Second transcript owner' },
+            },
+    })
+  })
+  await page.route('**/v1/activity*', (route) => {
+    const first = transcriptActivity('transcript-owner-a', 'First transcript owner')
+    const second = activity('timeout', false)
+    return route.fulfill({
+      json: [
+        { task: first.task, latest_stage: 'implement', last_event_at: '2026-07-15T12:02:00Z', needs_attention: false },
+        {
+          task: { ...second.task, id: 'transcript-owner-b', title: 'Second transcript owner' },
+          latest_stage: 'implement',
+          last_event_at: '2026-07-15T12:01:00Z',
+          needs_attention: false,
+        },
+      ],
+    })
+  })
+  // Navigation follows the Board page, so the move happens on the Board sheet.
+  await page.goto('/w/demo/tasks/transcript-owner-a')
+  const sheet = page.getByRole('dialog', { name: 'Task detail' })
+  const ended = sheet.locator('details').filter({ hasText: 'Attempt attempt-ended transcript' })
+  await expect(ended).toBeVisible()
+  expect(requests).toEqual([])
+  const orderId = transcriptActivity('transcript-owner-a', 'First transcript owner').work_orders[0].id
+  await ended.locator('summary').click()
+  await expect(ended.getByText('captured transcript tail marker transcript-owner-a')).toBeVisible()
+  await expect(ended.getByText('This transcript was truncated; the most recent output is shown.')).toBeVisible()
+  expect(requests).toEqual([
+    `/v1/tasks/transcript-owner-a/work-orders/${orderId}/transcript-captures/attempt-ended?workspace_id=demo`,
+  ])
+  await ended.locator('summary').click()
+
+  // Reopen with the read held, then move to the next task before it answers.
+  let release = () => {}
+  gate.hold = new Promise<void>((resolve) => {
+    release = resolve
+  })
+  await ended.locator('summary').click()
+  await expect(ended.getByRole('status')).toHaveText('Loading transcript…')
+  await expect.poll(() => requests.length).toBe(2)
+
+  await sheet.locator('header').first().getByRole('link', { name: 'Next task' }).click()
+  await expect(sheet.locator('header').first()).toContainText('Second transcript owner')
+  release()
+  // The held response for the first task never renders on the second.
+  await expect(sheet.getByText('captured transcript tail marker')).toHaveCount(0)
+  await expect(sheet.getByText(/Attempt .* transcript/)).toHaveCount(0)
+  expect(requests).toHaveLength(2)
 })
 
 test('timed-out review round exposes a reasoned full-round retry and preserves history', async ({ page }) => {

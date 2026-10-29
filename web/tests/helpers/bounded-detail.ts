@@ -11,6 +11,8 @@ import type {
   TaskReviewRound,
   TaskSummaries,
   WorkOrder,
+  WorkOrderTranscriptCapture,
+  WorkOrderTranscriptCaptureContent,
 } from '../../src/lib/types'
 
 // A fake server for the bounded task-detail view and task history pages
@@ -584,6 +586,60 @@ export function isBoundedView(value: unknown): value is ActivityItem {
   return Boolean(item && typeof item === 'object' && item.summaries && item.event_page)
 }
 
+// A capture as the bounded view presents it: metadata and the stored
+// content's UTF-8 length, never the content (component-http-api, Bounded
+// detail view). Work orders also appear inside stalled and recovery states, so
+// every transcript_captures array outside the event fields is projected.
+function projectTranscriptCaptures(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(projectTranscriptCaptures)
+  if (!value || typeof value !== 'object') return value
+  const projected: Record<string, unknown> = {}
+  for (const [key, child] of Object.entries(value)) {
+    projected[key] =
+      key === 'transcript_captures' && Array.isArray(child)
+        ? child.map((capture: Partial<WorkOrderTranscriptCapture>) => ({
+            attempt_id: capture.attempt_id,
+            termination_reason: capture.termination_reason,
+            truncated: capture.truncated,
+            captured_at: capture.captured_at,
+            content_bytes: capture.content_bytes ?? Buffer.byteLength(capture.content ?? '', 'utf8'),
+          }))
+        : projectTranscriptCaptures(child)
+  }
+  return projected
+}
+
+function boundedCaptures(item: ActivityItem): ActivityItem {
+  const projected: Record<string, unknown> = {}
+  for (const [key, value] of Object.entries(item)) {
+    projected[key] =
+      key === 'events' || key === 'event_page' || key === 'summaries' ? value : projectTranscriptCaptures(value)
+  }
+  return projected as unknown as ActivityItem
+}
+
+// The content read of one capture in a complete-history fixture, or
+// undefined when the task, order, or attempt has none (component-http-api,
+// Transcript capture content read).
+export function transcriptCaptureContent(
+  item: CompleteActivity | undefined,
+  workOrderId: string,
+  attemptId: string,
+): WorkOrderTranscriptCaptureContent | undefined {
+  const order = (item?.work_orders ?? []).find((candidate) => candidate.id === workOrderId)
+  const capture = order?.transcript_captures?.find((candidate) => candidate.attempt_id === attemptId)
+  if (!capture) return undefined
+  const content = capture.content ?? ''
+  return {
+    attempt_id: capture.attempt_id,
+    content,
+    termination_reason: capture.termination_reason,
+    truncated: capture.truncated,
+    captured_at: capture.captured_at,
+    content_bytes: Buffer.byteLength(content, 'utf8'),
+  }
+}
+
 // The bounded view of a complete-history fixture.
 export function boundedView(item: CompleteActivity | ActivityItem, taskId = item.task?.id): ActivityItem {
   if (isBoundedView(item)) return item
@@ -603,7 +659,7 @@ export function boundedView(item: CompleteActivity | ActivityItem, taskId = item
     oldest = human[index]
   }
   const hasOlder = oldest ? human.indexOf(oldest) > 0 : false
-  return {
+  return boundedCaptures({
     ...(complete as unknown as ActivityItem),
     events: page,
     event_page: {
@@ -627,13 +683,14 @@ export function boundedView(item: CompleteActivity | ActivityItem, taskId = item
         : {}),
     },
     summaries: taskSummaries(complete),
-  }
+  })
 }
 
 // ---- Route installation ----------------------------------------------------
 
 const taskActivityPath = /^\/v1\/tasks\/([^/]+)\/activity$/
 const taskHistoryPath = /^\/v1\/tasks\/([^/]+)\/history$/
+const taskTranscriptPath = /^\/v1\/tasks\/([^/]+)\/work-orders\/([^/]+)\/transcript-captures\/([^/]+)$/
 const completeByPage = new WeakMap<Page, Map<string, CompleteActivity>>()
 
 // The newest complete-history fixture the page was served for a task.
@@ -641,9 +698,9 @@ export function completeActivityFor(page: Page, taskId: string): CompleteActivit
   return completeByPage.get(page)?.get(taskId)
 }
 
-function mentionsHistory(url: Parameters<Page['route']>[0]) {
-  if (typeof url === 'string') return url.includes('history')
-  if (url instanceof RegExp) return url.source.includes('history')
+function mentions(url: Parameters<Page['route']>[0], word: string) {
+  if (typeof url === 'string') return url.includes(word)
+  if (url instanceof RegExp) return url.source.includes(word)
   return false
 }
 
@@ -677,10 +734,11 @@ function boundedResponse(page: Page, taskId: string, response: FulfillOptions): 
 }
 
 // Installs the fake server on a page: every activity body any later route
-// serves for a task becomes its bounded view, and `/history` reads page the
-// newest complete fixture served for that task. A spec that routes a pattern
-// naming `history` serves history itself; broader catch-all routes fall
-// through to this fake server for history reads.
+// serves for a task becomes its bounded view, `/history` reads page the
+// newest complete fixture served for that task, and a transcript capture read
+// returns that fixture's capture content or 404. A spec that routes a pattern
+// naming `history` or `transcript` serves those reads itself; broader
+// catch-all routes fall through to this fake server for them.
 export async function installBoundedDetail(page: Page) {
   const routeHandledBy = new WeakSet<Route>()
   await page.route(/\/v1\/tasks\/[^/]+\/history(\?|$)/, async (route) => {
@@ -700,13 +758,28 @@ export async function installBoundedDetail(page: Page) {
       await route.fulfill({ status: error.status, json: { error: error.code, message: error.code } })
     }
   })
+  await page.route(/\/v1\/tasks\/[^/]+\/work-orders\/[^/]+\/transcript-captures\/[^/?]+(\?|$)/, async (route) => {
+    const match = new URL(route.request().url()).pathname.match(taskTranscriptPath)
+    const [taskId, workOrderId, attemptId] = (match?.slice(1) ?? []).map(decodeURIComponent)
+    const capture = transcriptCaptureContent(
+      completeActivityFor(page, taskId ?? ''),
+      workOrderId ?? '',
+      attemptId ?? '',
+    )
+    if (!capture) {
+      await route.fulfill({ status: 404, contentType: 'text/plain', body: '404 page not found\n' })
+      return
+    }
+    await route.fulfill({ json: capture, headers: { 'Cache-Control': 'no-store' } })
+  })
   const route = page.route.bind(page)
   page.route = ((url, handler, options) =>
     route(
       url,
       (target, request) => {
         const path = new URL(request.url()).pathname
-        if (taskHistoryPath.test(path) && !mentionsHistory(url)) return target.fallback()
+        if (taskHistoryPath.test(path) && !mentions(url, 'history')) return target.fallback()
+        if (taskTranscriptPath.test(path) && !mentions(url, 'transcript')) return target.fallback()
         const taskId = path.match(taskActivityPath)?.[1]
         if (taskId && !routeHandledBy.has(target)) {
           routeHandledBy.add(target)
