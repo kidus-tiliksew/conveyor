@@ -35,7 +35,7 @@ func Run(t *testing.T, open func(*testing.T) store.Backend) {
 	// Issue publication is on, so the re-enqueued issue row publishes rather
 	// than ending skipped (req-delivery-and-forge AC-8.4).
 	cfg := &config.Config{Workspace: workspace, Repos: []config.Repo{{Name: "app", Base: "main", GitHub: "acme/app"}},
-		IssuePublication: config.IssuePublication{Enabled: true}}
+		IssuePublication: config.IssuePublication{Enabled: true, EnabledAt: time.Now().UTC().Add(-time.Hour)}}
 	if _, err := st.CreateWorkspace(store.WithActor(root, store.Actor{ID: "test", Role: core.ActorHuman}), workspace, workspace, cfg); err != nil {
 		t.Fatal(err)
 	}

@@ -533,3 +533,54 @@ func TestIssuePublicationTurnOnAfterApprovalCommitQueuesNothing(t *testing.T) {
 		t.Fatalf("later approval lifecycle=%+v ok=%t err=%v", lifecycle, ok, getErr)
 	}
 }
+
+// A publication queued before a turn-off never publishes after a later
+// turn-on, even when no handler ran while the setting was off. A published
+// issue stays unchanged and a later approval still publishes
+// (req-delivery-and-forge AC-8.3, AC-8.4; DEC-91).
+func TestIssuePublicationReenableSkipsEarlierQueuedPublication(t *testing.T) {
+	ctx, st, d, set := issuePublicationWorkspace(t)
+	set(true)
+	queued := approveThroughGate(t, ctx, st, d, "queued-before-off")
+	published := approveThroughGate(t, ctx, st, d, "published-before-off")
+	done, _, err := st.GetGitHubLifecycle(ctx, published.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	done.State, done.IssueNumber, done.IssueURL, done.Outcome = core.GitHubPublicationPublished, 8, "https://github.com/acme/app/issues/8", "created"
+	if err = st.UpdateGitHubLifecycle(ctx, done); err != nil {
+		t.Fatal(err)
+	}
+	set(false)
+	waitPastApproval(t, ctx, st, published.ID)
+	set(true)
+	refuseForgeCalls(t, d)
+	worker := &githubIssuePublicationWorker{dispatcher: d}
+	for i, taskID := range []string{queued.ID, published.ID} {
+		if err = worker.Work(ctx, githubIssuePublicationJob(taskID, i+1)); err != nil {
+			t.Fatalf("publication of %s after the off/on cycle: %v", taskID, err)
+		}
+	}
+	skipped, _, err := st.GetGitHubLifecycle(ctx, queued.ID)
+	if err != nil || skipped.State != core.GitHubPublicationSkipped || skipped.Outcome != "skipped" || skipped.IssueNumber != 0 || skipped.Attempts != 0 {
+		t.Fatalf("earlier queued publication after the off/on cycle=%+v err=%v", skipped, err)
+	}
+	if count, countErr := st.CountEvents(ctx, queued.ID, "github_issue.publication_skipped"); countErr != nil || count != 1 {
+		t.Fatalf("skipped events=%d err=%v", count, countErr)
+	}
+	if unchanged, _, _ := st.GetGitHubLifecycle(ctx, published.ID); unchanged.State != core.GitHubPublicationPublished || unchanged.IssueNumber != 8 || unchanged.Outcome != "created" {
+		t.Fatalf("published issue changed: %+v", unchanged)
+	}
+	later := approveThroughGate(t, ctx, st, d, "approved-after-reenable")
+	publishes := 0
+	d.PublishIssue = func(context.Context, githubtrigger.IssuePublication) (githubtrigger.IssuePublicationResult, error) {
+		publishes++
+		return githubtrigger.IssuePublicationResult{Number: 9, URL: "https://github.com/acme/app/issues/9"}, nil
+	}
+	if err = worker.Work(ctx, githubIssuePublicationJob(later.ID, 3)); err != nil {
+		t.Fatal(err)
+	}
+	if lifecycle, _, _ := st.GetGitHubLifecycle(ctx, later.ID); publishes != 1 || lifecycle.State != core.GitHubPublicationPublished || lifecycle.IssueNumber != 9 {
+		t.Fatalf("later approval publishes=%d lifecycle=%+v", publishes, lifecycle)
+	}
+}

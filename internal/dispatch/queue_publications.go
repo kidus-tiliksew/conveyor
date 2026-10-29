@@ -31,12 +31,26 @@ func (w *githubIssuePublicationWorker) Work(ctx context.Context, job queue.Job) 
 	if err != nil || !ok || lifecycle.State == core.GitHubPublicationPublished || lifecycle.State == core.GitHubPublicationSkipped {
 		return err
 	}
-	// The setting is re-read before any forge call. Turned off, an open
-	// publication ends skipped with no create or edit and counts no attempt;
-	// an issue already published returned above unchanged
-	// (req-delivery-and-forge AC-8.4; component-git-delivery).
+	// The setting is re-read before any forge call. An open publication ends
+	// skipped with no create or edit, counting no attempt, while the setting
+	// is off or when its plan was approved before the setting was last turned
+	// on, so a row queued before a turn-off never publishes after a later
+	// turn-on; an issue already published returned above unchanged
+	// (req-delivery-and-forge AC-8.3, AC-8.4; component-git-delivery).
 	cfg, configErr := w.dispatcher.currentConfig(ctx)
-	if configErr == nil && !cfg.IssuePublication.Enabled {
+	skip := false
+	if configErr == nil {
+		since, on := cfg.IssuePublication.ApprovedSince()
+		skip = !on
+		if on {
+			approved, exists, specErr := w.dispatcher.Store.GetLatestSpecVersion(ctx, lifecycle.TaskID)
+			if specErr != nil {
+				return specErr
+			}
+			skip = exists && approved.Approved && approved.Version == lifecycle.SpecVersion && approved.ApprovedAt.Before(since)
+		}
+	}
+	if skip {
 		lifecycle.State = core.GitHubPublicationSkipped
 		lifecycle.Outcome = "skipped"
 		lifecycle.ForgeErrorCategory = ""
