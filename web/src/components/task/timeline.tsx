@@ -880,19 +880,24 @@ function TimelineRow({
         operatorNotes={operatorNotes}
       />
     )
+  // A work-order entry carries no usage; per-order usage stays in TaskUsage
+  // inside technical activity (component-web-task-surfaces, Work-order
+  // timeline entries).
   if (entry.type === 'order') {
     return (
-      <li className="relative pl-7">
+      <li className="relative pl-7" data-order-entry={entry.order.state}>
         <TimelineDot className={orderDots[entry.tone]} />
-        <div className="flex flex-wrap items-baseline gap-x-2 gap-y-1 px-1 py-1.5">
-          <span className={cn('text-sm font-medium', entry.tone === 'alarm' ? 'text-attention' : 'text-foreground/90')}>
-            {entry.title}
-          </span>
-          {entry.detail && <span className="text-xs text-muted">{entry.detail}</span>}
-          <span className="font-mono text-[11px] tabular-nums text-faint">
-            {usageText(entry.order, usageReportedOrderIDs.has(entry.order.id))}
-          </span>
-          <time className="ml-auto text-[11px] text-faint">{absoluteTime(entry.at)}</time>
+        <div className="min-w-0 px-1 py-1.5">
+          <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
+            <span
+              className={cn('text-sm font-medium', entry.tone === 'alarm' ? 'text-attention' : 'text-foreground/90')}
+            >
+              {entry.title}
+            </span>
+            <Badge variant={entry.badge.variant}>{entry.badge.label}</Badge>
+            <time className="ml-auto text-[11px] text-faint">{absoluteTime(entry.at)}</time>
+          </div>
+          {entry.detail && <p className="mt-0.5 break-words text-xs text-muted">{entry.detail}</p>}
         </div>
       </li>
     )

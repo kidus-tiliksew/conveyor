@@ -7,6 +7,12 @@ import { serveNextActionsFromActivity } from './helpers/next-action-stub'
 import { waitForSheetSettled } from './helpers/sheet'
 import { activityFrame, controlTaskStreams, readyFrame } from './helpers/task-streams'
 
+// A work-order timeline entry by its stage label and state badge
+// (component-web-task-surfaces, Work-order timeline entries).
+function orderEntry(scope: Page | Locator, stage: string, badge: string) {
+  return scope.locator(`li[data-order-entry]:has(span:text-is("${stage}")):has(span:text-is("${badge}"))`)
+}
+
 // Task detail opens on its Timeline tab; pin it so a persisted Flow choice
 // can never hide the activity these cases check (component-web-task-surfaces,
 // Activity tabs and the task flow view).
@@ -3689,8 +3695,8 @@ const observedSupersession: SupersessionOrder[] = [
 ]
 
 async function expectSupersededStaleHistory(scope: Page | Locator) {
-  await expect(scope.getByText('Plan — waiting for an operator agent')).toBeVisible()
-  await expect(scope.getByText('Plan — went stale in the queue')).toHaveCount(2)
+  await expect(orderEntry(scope, 'Plan', 'Waiting for an agent')).toBeVisible()
+  await expect(orderEntry(scope, 'Plan', 'Stale')).toHaveCount(2)
   await expect(scope.getByRole('button', { name: 'Redispatch', exact: true })).toBeVisible()
   await expect(scope.getByRole('button', { name: 'Recover work order' })).toHaveCount(0)
   await expect(scope.getByText('Plan paused — recovery needed')).toHaveCount(0)
@@ -4090,7 +4096,7 @@ test('timeout timeline and duration use the execution deadline', async ({ page }
       minute: '2-digit',
     }),
   )
-  const timeoutEntry = page.locator('li').filter({ hasText: 'Review — timed out' })
+  const timeoutEntry = orderEntry(page, 'Review', 'Timed out')
   await expect(timeoutEntry.getByText(expectedDeadline)).toBeVisible()
   await expect(page.locator('article').filter({ hasText: 'claude-review' }).getByText('30m 00s')).toBeVisible()
 })
@@ -4100,10 +4106,10 @@ test('work-order cards use their actual stage and technical activity exposes cap
 }) => {
   await page.goto('/tasks/stage-aware/full')
   const timeline = page.getByRole('region', { name: 'Execution event timeline' })
-  await expect(timeline.getByText('Plan — waiting for an operator agent', { exact: true })).toBeVisible()
-  await expect(timeline.getByText('Implementation — in progress', { exact: true })).toBeVisible()
-  await expect(timeline.getByText('Review — timed out', { exact: true })).toBeVisible()
-  await expect(timeline.getByText('Review — waiting for an operator agent', { exact: true })).toHaveCount(0)
+  await expect(orderEntry(timeline, 'Plan', 'Waiting for an agent')).toBeVisible()
+  await expect(orderEntry(timeline, 'Implementation', 'In progress')).toBeVisible()
+  await expect(orderEntry(timeline, 'Review', 'Timed out')).toBeVisible()
+  await expect(orderEntry(timeline, 'Review', 'Waiting for an agent')).toHaveCount(0)
   await expect(page.getByRole('region', { name: 'Execution attempts' })).toHaveCount(0)
   const technical = page.getByText('Show technical activity').locator('..')
   await technical.getByText('Show technical activity').click()
@@ -4274,9 +4280,12 @@ test('task detail aggregates reported work-order usage and distinguishes reporte
 
   await page.goto('/tasks/usage-telemetry/full')
   const timeline = page.getByRole('region', { name: 'Execution event timeline' })
-  await expect(timeline.getByText('1.2k in / 300 out · self-reported')).toBeVisible()
-  await expect(timeline.getByText('0 in / 0 out', { exact: true })).toBeVisible()
-  await expect(timeline.getByText('Usage unavailable')).toBeVisible()
+  // Work-order entries print no usage; the Task usage list in technical
+  // activity keeps it (component-web-task-surfaces, Work-order timeline entries).
+  await expect(timeline.locator('li[data-order-entry]')).toHaveCount(3)
+  await expect(timeline.getByText('1.2k in / 300 out · self-reported')).toHaveCount(0)
+  await expect(timeline.getByText('0 in / 0 out', { exact: true })).toHaveCount(0)
+  await expect(timeline.getByText('Usage unavailable')).toHaveCount(0)
   await expect(timeline.getByText(/\$\d/)).toHaveCount(0)
   await expect(timeline.getByText('worker-reported', { exact: false })).toHaveCount(0)
   const reviewPanel = timeline.locator('article').filter({ hasText: 'Panel of' })
@@ -4288,6 +4297,9 @@ test('task detail aggregates reported work-order usage and distinguishes reporte
   await technical.getByText('Show technical activity').click()
   await expect(technical.getByRole('region', { name: 'Task usage telemetry' })).toContainText(
     '1.2k in / 300 out across 2 reported work orders · 1 order unavailable',
+  )
+  await expect(technical.getByRole('list', { name: 'Work-order usage' })).toContainText(
+    '1.2k in / 300 out · self-reported',
   )
   await expect(technical.getByRole('list', { name: 'Work-order usage' })).toContainText('0 in / 0 out')
   await expect(technical.getByRole('list', { name: 'Work-order usage' })).toContainText('Usage unavailable')
@@ -5461,7 +5473,7 @@ test('worker warning is scoped to actionable task-owned work at the human gate',
 test('pull-only queued work waits for an operator agent without a worker alarm or route chip', async ({ page }) => {
   await page.goto('/tasks/pull-only-worker/full')
 
-  await expect(page.getByText('Implementation — waiting for an operator agent', { exact: true })).toBeVisible()
+  await expect(orderEntry(page, 'Implementation', 'Waiting for an agent')).toBeVisible()
   await expect(page.getByRole('region', { name: 'Enrolled worker unavailable' })).toHaveCount(0)
   await expect(page.getByText('Needs a route', { exact: true })).toHaveCount(0)
 })
@@ -5850,8 +5862,8 @@ test('blueprint and dependency details remain linked and read only', async ({ pa
   await expect(box.getByText('Waiting on dependencies', { exact: true })).toHaveCount(0)
   await expect(executionTitle(page)).toHaveCount(0)
   await expect(page.getByText('What to do next')).toHaveCount(0)
-  await expect(page.getByText('Implementation — waiting for an operator agent', { exact: true })).toHaveCount(0)
-  await expect(page.getByText('Any agent connected over MCP can claim this.', { exact: false })).toHaveCount(0)
+  await expect(orderEntry(page, 'Implementation', 'Waiting for an agent')).toHaveCount(0)
+  await expect(page.getByText('Any agent connected over MCP can claim it.', { exact: false })).toHaveCount(0)
   await expect(page.getByRole('button', { name: 'Redispatch' })).toHaveCount(0)
   await expect(page.getByRole('link', { name: 'Phase 6 blueprint · plan v1' })).toHaveAttribute(
     'href',
@@ -5902,7 +5914,7 @@ test('blocked detail polling clears waiting state without a reload and stays off
     0,
   )
   await expect(page.getByRole('link', { name: 'Backend contract · Satisfied' })).toBeVisible()
-  await expect(page.getByText('Implementation — waiting for an operator agent', { exact: true })).toBeVisible()
+  await expect(orderEntry(page, 'Implementation', 'Waiting for an agent')).toBeVisible()
   await expect(page.getByRole('button', { name: 'Redispatch' })).toBeVisible()
 
   await page.goto('/tasks/no-blockers/full')
@@ -5927,8 +5939,8 @@ test('dependency links follow the detail route variant and spec claiming stays a
   await expect(
     nextActionBox(page).getByRole('heading', { name: 'This task is waiting on another task.' }),
   ).toBeVisible()
-  await expect(timeline.getByText('Plan — waiting for an operator agent', { exact: true })).toBeVisible()
-  await expect(timeline.getByText('Implementation — waiting for an operator agent', { exact: true })).toHaveCount(0)
+  await expect(orderEntry(timeline, 'Plan', 'Waiting for an agent')).toBeVisible()
+  await expect(orderEntry(timeline, 'Implementation', 'Waiting for an agent')).toHaveCount(0)
 })
 
 test('a pending decision blocker links directly to its System Design decision card', async ({ page }) => {
@@ -8485,19 +8497,19 @@ test('verify order timeline labels follow stage', async ({ page }) => {
   await page.route('**/v1/tasks/stage-labels/activity*', (route) => route.fulfill({ json: item }))
   await page.goto('/tasks/stage-labels/full')
 
-  for (const title of [
-    'Verification — waiting for an operator agent',
-    'Verification — in progress',
-    'Verification — went stale in the queue',
-    'Verification — timed out',
-    'Plan — went stale in the queue',
-    'Implementation — timed out',
-    'Review — waiting for an operator agent',
+  for (const [stage, badge] of [
+    ['Verification', 'Waiting for an agent'],
+    ['Verification', 'In progress'],
+    ['Verification', 'Stale'],
+    ['Verification', 'Timed out'],
+    ['Plan', 'Stale'],
+    ['Implementation', 'Timed out'],
+    ['Review', 'Waiting for an agent'],
   ]) {
-    await expect(page.getByText(title, { exact: true }).first()).toBeVisible()
+    await expect(orderEntry(page, stage, badge).first()).toBeVisible()
   }
   // Only the one review order reads Review.
-  await expect(page.getByText(/^Review — /)).toHaveCount(1)
+  await expect(page.locator('li[data-order-entry]:has(span:text-is("Review"))')).toHaveCount(1)
 })
 
 // The full route arranges the shared sections into a reading column and an

@@ -56,8 +56,6 @@ export const serverHumanTimelineEventKinds = [
   'pipeline.bounced',
   'task.state_changed',
   'task.dependency_added',
-  'task.context_proposal_confirmed',
-  'task.context_proposal_dismissed',
   'work_order.child_failed',
   'work_order.stalled',
 ] as const

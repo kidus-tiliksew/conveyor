@@ -607,7 +607,8 @@ test('the context checklist lists each proposed document checked, and Apply atta
   await expect(page.locator('[data-no-decisions]')).toHaveText('No decisions are waiting for you.')
   expect(harness.posts).toHaveLength(2)
 
-  // The task detail reads the confirmed attachments as audited acts.
+  // The task detail shows the confirmed attachment under Attached context; the
+  // timeline renders no note for the recorded decision.
   fixture.activity = {
     'T-ctx': {
       task: {
@@ -639,7 +640,8 @@ test('the context checklist lists each proposed document checked, and Apply atta
     page.getByRole('region', { name: 'Attached context' }).getByLabel(`${requirement.title} (${requirement.id})`),
   ).toBeVisible()
   const timeline = page.getByRole('region', { name: 'Execution event timeline' })
-  await expect(timeline.getByText(`Context confirmed: requirement ${requirement.id}`)).toBeVisible()
+  await expect(timeline).toBeVisible()
+  await expect(timeline).not.toContainText('Context confirmed')
 })
 
 test('a mixed selection posts each row’s selected choice in the server order', async ({ page }) => {
