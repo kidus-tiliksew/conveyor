@@ -203,7 +203,7 @@ async function fixture(page: Page, options: Options = {}) {
       })
     if (path === '/v1/activity')
       return route.fulfill({ json: [{ task, latest_stage: 'verify', last_event_at: at, needs_attention: false }] })
-    if (path.endsWith('/w/demo/activity')) return route.fulfill({ json: item })
+    if (path.endsWith('/activity')) return route.fulfill({ json: item })
     if (path.endsWith('/events/stream')) return new Promise(() => {})
     if (path === '/v1/work-orders/verify-1/verification/permissions') {
       if (request.method() === 'POST') {

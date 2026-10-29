@@ -183,7 +183,7 @@ async function fixture(page: Page, options: { viewer?: boolean; active?: boolean
       })
     if (path === '/v1/activity')
       return route.fulfill({ json: [{ task, latest_stage: 'verify', last_event_at: at, needs_attention: false }] })
-    if (path.endsWith('/w/demo/activity')) return route.fulfill({ json: item })
+    if (path.endsWith('/activity')) return route.fulfill({ json: item })
     if (path.endsWith('/events/stream')) {
       await stream
       return route.fulfill({ contentType: 'text/event-stream', body: 'event: activity\ndata: {}\n\n' })

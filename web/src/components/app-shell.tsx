@@ -496,6 +496,9 @@ function WorkspaceProvider({
     queryClient.removeQueries({
       predicate: (query) => query.queryKey[0] !== 'workspaces' && query.queryKey[1] === previous,
     })
+    // The unscoped creation right is read again, never carried across a
+    // workspace change; it denies while the new read is pending.
+    void queryClient.resetQueries({ queryKey: ['caller-identity', ''], exact: true })
   }, [queryClient, workspace])
   useEffect(() => {
     if (!workspace) return

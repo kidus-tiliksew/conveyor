@@ -2437,9 +2437,10 @@ test('Agent prompt shows the agent prompt for an available checkout without a co
   await expect(page.getByRole('button', { name: 'Copy agent prompt' })).toBeVisible()
 })
 
-test('Agent prompt renders nothing until the workspace resolves', async ({ page }) => {
+test('Agent prompt names the address workspace without a stored selection', async ({ page }) => {
   const taskID = 'work-on-this-x'
-  // Two workspaces and no stored selection leave the shell's workspace unresolved.
+  // Two workspaces and no stored selection: the address alone names the
+  // workspace (req-workspace-addresses AC-1.3), so the prompt names it.
   await page.addInitScript(() => localStorage.removeItem('conveyor-workspace'))
   await page.route('**/v1/workspaces', (route) =>
     route.fulfill({
@@ -2449,14 +2450,13 @@ test('Agent prompt renders nothing until the workspace resolves', async ({ page 
       ],
     }),
   )
+  await routeCheckoutTask(page, taskID, { checkout_command: undefined })
 
   await page.goto(`/w/demo/tasks/${taskID}/full`)
-  await expect(page.getByRole('heading', { name: 'Short task' })).toBeVisible()
-  await expect(checkoutGroup(page)).toHaveCount(0)
-  await expect(page.getByText('Work on this locally', { exact: false })).toHaveCount(0)
-  await expect(page.getByText('Use the conveyor-work skill', { exact: false })).toHaveCount(0)
-  await expect(page.getByText(`conveyor run ${taskID}`, { exact: false })).toHaveCount(0)
-  await expect(page.getByRole('button', { name: 'Copy agent prompt' })).toHaveCount(0)
+  const origin = await page.evaluate(() => window.location.origin)
+  const group = checkoutGroup(page)
+  await expect(group).toBeVisible()
+  expect(await promptText(group)).toBe(expectedAgentPrompt(origin, taskID, 'Short task'))
 })
 
 test('Work on this guidance shows the guidance without an agent prompt', async ({ page }) => {

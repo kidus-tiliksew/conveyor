@@ -270,7 +270,7 @@ async function fixture(
       })
     if (path === '/v1/activity')
       return route.fulfill({ json: [{ task, latest_stage: 'verify', last_event_at: at, needs_attention: true }] })
-    if (path.endsWith('/w/demo/activity')) return route.fulfill({ json: item })
+    if (path.endsWith('/activity')) return route.fulfill({ json: item })
     if (path.endsWith('/events/stream')) return route.fulfill({ contentType: 'text/event-stream', body: '' })
     if (path === '/v1/work-orders/verify-1/recover') {
       recoveries.push({ body: route.request().postDataJSON(), key: route.request().headers()['x-idempotency-key'] })
