@@ -61,6 +61,29 @@ func (s *Store) AuthorizeWorkspace(ctx context.Context, userID, workspaceID stri
 	return core.RoleAllows(role, capability), nil
 }
 
+// AuthorizeWorkspaceCapabilities issues AuthorizeWorkspace's single binding
+// read once and answers every requested capability from that role
+// (component-identity-membership, Capability batches).
+func (s *Store) AuthorizeWorkspaceCapabilities(ctx context.Context, userID, workspaceID string, capabilities []core.Capability) (map[core.Capability]bool, error) {
+	out := make(map[core.Capability]bool, len(capabilities))
+	if len(capabilities) == 0 {
+		return out, nil
+	}
+	var role core.WorkspaceRole
+	err := s.db.QueryRowContext(ctx, `SELECT role FROM workspace_role_bindings WHERE workspace_id=? AND user_id=?`, workspaceID, userID).Scan(&role)
+	bound := true
+	if errors.Is(err, sql.ErrNoRows) {
+		bound, err = false, nil
+	}
+	if err != nil {
+		return nil, translateBackendConflict(err)
+	}
+	for _, capability := range capabilities {
+		out[capability] = bound && core.RoleAllows(role, capability)
+	}
+	return out, nil
+}
+
 func (s *Store) ListWorkspacesForUser(ctx context.Context, userID string) ([]core.Workspace, error) {
 	rows, err := s.db.QueryContext(ctx, `SELECT w.id,w.name,w.config_version,w.created_at
 		FROM workspaces w JOIN workspace_role_bindings b ON b.workspace_id=w.id

@@ -6,6 +6,7 @@ import (
 	"fmt"
 
 	"github.com/kidus-tiliksew/conveyor/internal/core"
+	"github.com/kidus-tiliksew/conveyor/internal/store"
 )
 
 // workOrderActivityView adds task-detail-only checkpoint presentation data to
@@ -56,7 +57,25 @@ type checkpointCitationActivityView struct {
 	PendingProposals        []core.PendingProposal `json:"pending_proposals"`
 }
 
+// checkpointWorkOrderViews enriches every order's checkpoint citations with
+// one ListDocumentMetadata read (component-http-api, Request-scoped detail
+// reads). The task detail shares that read with its context instead.
 func (s *Server) checkpointWorkOrderViews(ctx context.Context, orders []core.WorkOrder, proposals []core.PendingProposal) ([]workOrderActivityView, error) {
+	metadata := store.NewDocumentMetadataSet()
+	if ids := taskDetailDocumentIDs(nil, nil, orders); len(ids) > 0 {
+		var err error
+		if metadata, err = s.Store.ListDocumentMetadata(ctx, ids); err != nil {
+			return nil, err
+		}
+	}
+	return checkpointViewsFromMetadata(orders, proposals, metadata)
+}
+
+// checkpointViewsFromMetadata enriches checkpoint citations from one metadata
+// set: a citation resolves to the requirement row when
+// one exists and otherwise to the System Design row, and a citation with
+// neither fails the read.
+func checkpointViewsFromMetadata(orders []core.WorkOrder, proposals []core.PendingProposal, metadata store.DocumentMetadataSet) ([]workOrderActivityView, error) {
 	views := make([]workOrderActivityView, 0, len(orders))
 	for _, order := range orders {
 		view := workOrderActivityView{WorkOrder: order}
@@ -73,9 +92,24 @@ func (s *Server) checkpointWorkOrderViews(ctx context.Context, orders []core.Wor
 			checkpoint.Citations = make([]checkpointCitationActivityView, 0, len(order.Checkpoint.Citations))
 		}
 		for _, citation := range order.Checkpoint.Citations {
-			enriched, err := s.checkpointCitationActivityView(ctx, citation, proposals)
-			if err != nil {
-				return nil, err
+			enriched := checkpointCitationActivityView{
+				DocumentID:           citation.DocumentID,
+				CitedVersion:         citation.CitedVersion,
+				StatementOrSectionID: citation.StatementOrSectionID,
+				PendingProposals:     []core.PendingProposal{},
+			}
+			if requirement, ok := metadata.Requirements[citation.DocumentID]; ok {
+				enriched.DocumentKind, enriched.DocumentTitle, enriched.CurrentConfirmedVersion = "requirement", requirement.Title, requirement.CurrentVersion
+			} else if design, ok := metadata.Designs[citation.DocumentID]; ok {
+				enriched.DocumentKind, enriched.DocumentTitle, enriched.CurrentConfirmedVersion = "system_design", design.Title, design.CurrentVersion
+			} else {
+				return nil, fmt.Errorf("enrich checkpoint citation %s: no requirement or system design", citation.DocumentID)
+			}
+			enriched.NewerConfirmed = enriched.CurrentConfirmedVersion > enriched.CitedVersion
+			for _, proposal := range proposals {
+				if proposal.ID == citation.DocumentID && proposal.Tier == enriched.DocumentKind {
+					enriched.PendingProposals = append(enriched.PendingProposals, proposal)
+				}
 			}
 			checkpoint.Citations = append(checkpoint.Citations, enriched)
 		}
@@ -83,32 +117,4 @@ func (s *Server) checkpointWorkOrderViews(ctx context.Context, orders []core.Wor
 		views = append(views, view)
 	}
 	return views, nil
-}
-
-func (s *Server) checkpointCitationActivityView(ctx context.Context, citation core.WorkOrderAuthorityConflictCitation, proposals []core.PendingProposal) (checkpointCitationActivityView, error) {
-	view := checkpointCitationActivityView{
-		DocumentID:           citation.DocumentID,
-		CitedVersion:         citation.CitedVersion,
-		StatementOrSectionID: citation.StatementOrSectionID,
-		PendingProposals:     []core.PendingProposal{},
-	}
-	if requirement, err := s.Store.GetRequirement(ctx, citation.DocumentID); err == nil {
-		view.DocumentKind = "requirement"
-		view.DocumentTitle = requirement.Title
-		view.CurrentConfirmedVersion = requirement.CurrentVersion
-	} else if document, designErr := s.Store.GetSystemDesign(ctx, citation.DocumentID); designErr == nil {
-		view.DocumentKind = "system_design"
-		view.DocumentTitle = document.Title
-		view.CurrentConfirmedVersion = document.CurrentVersion
-	} else {
-		return checkpointCitationActivityView{}, fmt.Errorf("enrich checkpoint citation %s: requirement lookup: %v; system design lookup: %v", citation.DocumentID, err, designErr)
-	}
-	view.NewerConfirmed = view.CurrentConfirmedVersion > view.CitedVersion
-	for _, proposal := range proposals {
-		if proposal.ID != citation.DocumentID || proposal.Tier != view.DocumentKind {
-			continue
-		}
-		view.PendingProposals = append(view.PendingProposals, proposal)
-	}
-	return view, nil
 }

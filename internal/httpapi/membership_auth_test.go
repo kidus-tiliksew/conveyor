@@ -81,6 +81,17 @@ func (f *membershipFixture) AuthorizeWorkspace(_ context.Context, userID, worksp
 	}
 	return core.RoleAllows(f.roles[userID][workspaceID], capability), nil
 }
+func (f *membershipFixture) AuthorizeWorkspaceCapabilities(ctx context.Context, userID, workspaceID string, capabilities []core.Capability) (map[core.Capability]bool, error) {
+	out := make(map[core.Capability]bool, len(capabilities))
+	for _, capability := range capabilities {
+		allowed, err := f.AuthorizeWorkspace(ctx, userID, workspaceID, capability)
+		if err != nil {
+			return nil, err
+		}
+		out[capability] = allowed
+	}
+	return out, nil
+}
 func (f *membershipFixture) AuthorizeDeployment(_ context.Context, userID string, capability core.Capability) (bool, error) {
 	f.capabilityCalls = append(f.capabilityCalls, capability)
 	if err := f.authorizeErrs[capability]; err != nil {

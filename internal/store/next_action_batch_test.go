@@ -774,3 +774,64 @@ func repeatedEpisodeSteps(rounds int) []struct{ kind, payload string } {
 		struct{ kind, payload string }{"merge.conflict_fix_dispatched", `{"approved_head":"a","new_head":"b","work_order_id":"fix-terminal"}`},
 		struct{ kind, payload string }{"merge.conflict_dispatch_failed", `{"approved_head":"a","new_head":"b","next_retry_at":"2026-03-01T00:00:00.5+01:00"}`})
 }
+
+// TestReadNextActionForTaskMatchesReadNextAction projects every fixture task
+// through the preloaded entry point and through ReadNextAction with equal
+// options (component-work-orders, Next action, Preloaded single-task entry
+// point).
+func TestReadNextActionForTaskMatchesReadNextAction(t *testing.T) {
+	f := newBatchFixture(t)
+	f.add(t, true)
+	f.add(t, false)
+	opts := store.NextActionOptions{Now: f.now, Capabilities: batchCapabilities}
+	for _, task := range f.requested {
+		reference := newCountingStore(f.st)
+		want, err := store.ReadNextAction(f.ctx, reference, task.ID, opts)
+		if err != nil {
+			t.Fatal(err)
+		}
+		referenceCalls := reference.reset()
+		stored, err := f.st.GetTask(f.ctx, task.ID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		orders, err := f.st.ListTaskWorkOrders(f.ctx, task.ID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for i := range orders {
+			orders[i].ServedRequirementSnapshot, orders[i].GovernanceSnapshot = nil, nil
+		}
+		preloaded := newCountingStore(f.st)
+		got, err := store.ReadNextActionForTask(f.ctx, preloaded, stored, orders, opts)
+		if err != nil {
+			t.Fatal(err)
+		}
+		calls := preloaded.reset()
+		gotJSON, _ := json.Marshal(got)
+		wantJSON, _ := json.Marshal(want)
+		if string(gotJSON) != string(wantJSON) || !reflect.DeepEqual(nextaction.CompactFrom(got), nextaction.CompactFrom(want)) {
+			t.Fatalf("task %s preloaded=%s\nread=%s", task.ID, gotJSON, wantJSON)
+		}
+		// The preloaded read drops exactly the task read and the order read.
+		referenceCalls["GetTask"]--
+		referenceCalls["ListWorkOrdersForTasks"]--
+		for name, n := range referenceCalls {
+			if n == 0 {
+				delete(referenceCalls, name)
+			}
+		}
+		if !maps.Equal(calls, referenceCalls) {
+			t.Fatalf("task %s preloaded calls %v, want %v", task.ID, calls, referenceCalls)
+		}
+	}
+	// A loaded empty order slice is a selection, never a reason to read.
+	empty := f.requested[0]
+	counter := newCountingStore(f.st)
+	if _, err := store.ReadNextActionForTask(f.ctx, counter, empty, nil, opts); err != nil {
+		t.Fatal(err)
+	}
+	if calls := counter.reset(); calls["ListWorkOrdersForTasks"] != 0 || calls["GetTask"] != 0 {
+		t.Fatalf("empty preloaded orders read again: %v", calls)
+	}
+}

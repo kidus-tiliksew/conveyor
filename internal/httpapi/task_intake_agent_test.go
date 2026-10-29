@@ -48,6 +48,11 @@ func (l *lockedMemberships) AuthorizeWorkspace(ctx context.Context, userID, work
 	defer l.mu.Unlock()
 	return l.inner.AuthorizeWorkspace(ctx, userID, workspaceID, capability)
 }
+func (l *lockedMemberships) AuthorizeWorkspaceCapabilities(ctx context.Context, userID, workspaceID string, capabilities []core.Capability) (map[core.Capability]bool, error) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.inner.AuthorizeWorkspaceCapabilities(ctx, userID, workspaceID, capabilities)
+}
 func (l *lockedMemberships) AuthorizeDeployment(ctx context.Context, userID string, capability core.Capability) (bool, error) {
 	l.mu.Lock()
 	defer l.mu.Unlock()

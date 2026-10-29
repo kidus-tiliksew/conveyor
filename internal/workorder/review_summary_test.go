@@ -34,6 +34,13 @@ func (s *summaryAuthorityStore) GetWorkOrder(ctx context.Context, id string) (co
 func (s *summaryAuthorityStore) AuthorizeWorkspace(_ context.Context, userID, workspaceID string, capability core.Capability) (bool, error) {
 	return workspaceID == summaryWorkspace && capability == core.CapabilityClaimWork && s.claimWork[userID], nil
 }
+func (s *summaryAuthorityStore) AuthorizeWorkspaceCapabilities(ctx context.Context, userID, workspaceID string, capabilities []core.Capability) (map[core.Capability]bool, error) {
+	out := make(map[core.Capability]bool, len(capabilities))
+	for _, capability := range capabilities {
+		out[capability], _ = s.AuthorizeWorkspace(ctx, userID, workspaceID, capability)
+	}
+	return out, nil
+}
 func (s *summaryAuthorityStore) AuthorizeDeployment(context.Context, string, core.Capability) (bool, error) {
 	return false, nil
 }

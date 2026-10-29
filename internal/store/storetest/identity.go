@@ -144,6 +144,45 @@ func runMembership(t *testing.T, x Fixture) {
 	t.Run("MembershipAuditEvents", func(t *testing.T) { runMembershipAuditEvents(t, x, ctx, owner) })
 	t.Run("InstanceAdministrationOwnerOnly", func(t *testing.T) { runInstanceAdministrationOwnerOnly(t, x) })
 	t.Run("WorkspaceCreatorAuthority", func(t *testing.T) { runWorkspaceCreatorAuthority(t, x) })
+	t.Run("AuthorizeWorkspaceCapabilitiesMatchesSingleDecisions", func(t *testing.T) { runAuthorizeWorkspaceCapabilities(t, x, ctx) })
+}
+
+// runAuthorizeWorkspaceCapabilities proves every batched entry equals the
+// single decision for each role, a missing, revoked, or foreign binding, and
+// an empty request (component-identity-membership, Capability batches).
+func runAuthorizeWorkspaceCapabilities(t *testing.T, x Fixture, ctx context.Context) {
+	st := x.Backend
+	capabilities := []core.Capability{core.CapabilityOperateGates, core.CapabilityRecoverWork, core.CapabilityRequestChanges, core.CapabilityConfirmDocuments, core.CapabilityClaimWork, core.CapabilityViewWorkspace}
+	check := func(label, userID, workspaceID string) {
+		t.Helper()
+		batch, err := st.AuthorizeWorkspaceCapabilities(ctx, userID, workspaceID, capabilities)
+		requireOK(t, err)
+		if len(batch) != len(capabilities) {
+			t.Fatalf("%s: %d decisions for %d capabilities", label, len(batch), len(capabilities))
+		}
+		for _, capability := range capabilities {
+			single, singleErr := st.AuthorizeWorkspace(ctx, userID, workspaceID, capability)
+			requireOK(t, singleErr)
+			if batch[capability] != single {
+				t.Fatalf("%s %s: batch=%v single=%v", label, capability, batch[capability], single)
+			}
+		}
+	}
+	user, err := st.ProvisionIdentityUser(ctx, "capability-batch@example.test", "Capability batch")
+	requireOK(t, err)
+	check("missing binding", user.ID, x.Workspace)
+	for _, role := range []core.WorkspaceRole{core.WorkspaceRoleViewer, core.WorkspaceRoleExecutor, core.WorkspaceRoleContributor, core.WorkspaceRoleMaintainer, core.WorkspaceRoleOperator} {
+		_, err = st.GrantWorkspaceRole(ctx, user.Email, x.Workspace, role)
+		requireOK(t, err)
+		check(string(role), user.ID, x.Workspace)
+		check(string(role)+" in a foreign workspace", user.ID, "capability-batch-foreign")
+	}
+	requireOK(t, st.RevokeWorkspaceRole(ctx, user.ID, x.Workspace))
+	check("revoked binding", user.ID, x.Workspace)
+	empty, err := st.AuthorizeWorkspaceCapabilities(ctx, user.ID, x.Workspace, nil)
+	if err != nil || empty == nil || len(empty) != 0 {
+		t.Fatalf("empty request = %v, %v", empty, err)
+	}
 }
 
 func runInvitationSessions(t *testing.T, x Fixture) {

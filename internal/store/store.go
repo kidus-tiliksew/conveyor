@@ -121,6 +121,7 @@ type Store interface {
 	ReviewSummaryStore
 	RequirementInsightStore
 	ReconcileReadStore
+	TaskDetailReadStore
 }
 
 // TaskStore owns the task, dependency, job and intervention contract.

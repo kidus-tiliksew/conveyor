@@ -8,6 +8,7 @@ import (
 	"log"
 	"net/http"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -481,10 +482,14 @@ func shortTaskRunHead(sha string) string {
 
 // taskRunReadinessCache reuses successful merge-readiness reads for
 // taskRunMergeReadinessReuse. Failed reads are never cached, and a key covers
-// the task state and approved head so a transition or new approval reads again.
+// the task state, merge approval, and approved head so a transition or new
+// approval reads again. Concurrent misses for one task and key share one
+// in-flight hook call; the mutex is never held across the hook
+// (component-http-api, Request-scoped detail reads).
 type taskRunReadinessCache struct {
 	mu      sync.Mutex
 	entries map[string]taskRunReadinessEntry
+	flights map[string][]*taskRunReadinessFlight
 	clock   func() time.Time
 }
 
@@ -492,6 +497,17 @@ type taskRunReadinessEntry struct {
 	key       string
 	readiness dispatch.MergeReadiness
 	readAt    time.Time
+}
+
+// taskRunReadinessFlight is one in-flight hook call. done closes after
+// readiness and err are set. superseded marks a flight whose generation
+// forget advanced, so its result is never stored.
+type taskRunReadinessFlight struct {
+	key        string
+	done       chan struct{}
+	readiness  dispatch.MergeReadiness
+	err        error
+	superseded bool
 }
 
 func (c *taskRunReadinessCache) now() time.Time {
@@ -502,20 +518,76 @@ func (c *taskRunReadinessCache) now() time.Time {
 }
 
 func (c *taskRunReadinessCache) read(ctx context.Context, task core.Task, hook func(context.Context, core.Task) (dispatch.MergeReadiness, error)) (dispatch.MergeReadiness, error) {
+	readiness, _, err := c.readObserved(ctx, task, hook, time.Time{})
+	return readiness, err
+}
+
+// readObserved reads readiness through the cache and reports whether the
+// result came from a hook call that completed at or after since: this
+// caller's own call, a shared flight, or an entry stored at or after since.
+// Such a call may have written task state, so the caller reads the task
+// again. An entry stored before since was already observed by the caller's
+// own task read.
+func (c *taskRunReadinessCache) readObserved(ctx context.Context, task core.Task, hook func(context.Context, core.Task) (dispatch.MergeReadiness, error), since time.Time) (dispatch.MergeReadiness, bool, error) {
 	id := taskRunReadinessID(ctx, task.ID)
 	key := taskRunReadinessKey(task)
-	c.mu.Lock()
-	if entry, ok := c.entries[id]; ok && entry.key == key && c.now().Sub(entry.readAt) < taskRunMergeReadinessReuse {
+	for {
+		c.mu.Lock()
+		if entry, ok := c.entries[id]; ok && entry.key == key && c.now().Sub(entry.readAt) < taskRunMergeReadinessReuse {
+			c.mu.Unlock()
+			return entry.readiness, !entry.readAt.Before(since), nil
+		}
+		var shared *taskRunReadinessFlight
+		for _, flight := range c.flights[id] {
+			if flight.key == key && !flight.superseded {
+				shared = flight
+			}
+		}
+		if shared != nil {
+			c.mu.Unlock()
+			select {
+			case <-ctx.Done():
+				return dispatch.MergeReadiness{}, false, ctx.Err()
+			case <-shared.done:
+			}
+			if shared.err != nil && taskRunReadinessContextError(shared.err) && ctx.Err() == nil {
+				// The leader's own context ended the call; this caller is
+				// still live, so it calls the hook itself.
+				continue
+			}
+			return shared.readiness, shared.err == nil, shared.err
+		}
+		flight := &taskRunReadinessFlight{key: key, done: make(chan struct{})}
+		if c.flights == nil {
+			c.flights = map[string][]*taskRunReadinessFlight{}
+		}
+		c.flights[id] = append(c.flights[id], flight)
 		c.mu.Unlock()
-		return entry.readiness, nil
+		readiness, err := hook(ctx, task)
+		c.finish(id, flight, readiness, err)
+		return readiness, err == nil, err
 	}
-	c.mu.Unlock()
-	readiness, err := hook(ctx, task)
-	if err != nil {
-		return readiness, err
-	}
+}
+
+func (c *taskRunReadinessCache) finish(id string, flight *taskRunReadinessFlight, readiness dispatch.MergeReadiness, err error) {
 	c.mu.Lock()
+	defer close(flight.done)
 	defer c.mu.Unlock()
+	flight.readiness, flight.err = readiness, err
+	remaining := c.flights[id][:0]
+	for _, other := range c.flights[id] {
+		if other != flight {
+			remaining = append(remaining, other)
+		}
+	}
+	if len(remaining) == 0 {
+		delete(c.flights, id)
+	} else {
+		c.flights[id] = remaining
+	}
+	if err != nil || flight.superseded {
+		return
+	}
 	now := c.now()
 	if c.entries == nil {
 		c.entries = map[string]taskRunReadinessEntry{}
@@ -525,14 +597,24 @@ func (c *taskRunReadinessCache) read(ctx context.Context, task core.Task, hook f
 			delete(c.entries, cached)
 		}
 	}
-	c.entries[id] = taskRunReadinessEntry{key: key, readiness: readiness, readAt: now}
-	return readiness, nil
+	c.entries[id] = taskRunReadinessEntry{key: flight.key, readiness: readiness, readAt: now}
 }
 
+// forget drops the task's entry and advances its generation: every flight
+// already running for it is superseded, so none can store its result
+// afterward, and later readers start a new call.
 func (c *taskRunReadinessCache) forget(ctx context.Context, taskID string) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	delete(c.entries, taskRunReadinessID(ctx, taskID))
+	id := taskRunReadinessID(ctx, taskID)
+	delete(c.entries, id)
+	for _, flight := range c.flights[id] {
+		flight.superseded = true
+	}
+}
+
+func taskRunReadinessContextError(err error) bool {
+	return errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded)
 }
 
 func taskRunReadinessID(ctx context.Context, taskID string) string {
@@ -971,5 +1053,5 @@ func taskRunReadinessKey(task core.Task) string {
 	if head == "" || (task.State == core.TaskAwaiting && task.GateKind == core.GateKindMergeApproval) {
 		head = task.ReviewedHeadSHA
 	}
-	return string(task.State) + "\x00" + head
+	return string(task.State) + "\x00" + strconv.FormatBool(task.MergeApproval) + "\x00" + head
 }

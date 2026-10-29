@@ -50,6 +50,12 @@ type MembershipStore interface {
 	AuthorizeDeployment(context.Context, string, core.Capability) (bool, error)
 	AuthorizeInstanceAdministration(context.Context, string) (bool, error)
 	AuthorizeWorkspace(context.Context, string, string, core.Capability) (bool, error)
+	// AuthorizeWorkspaceCapabilities answers several capabilities with one
+	// binding read: an entry per requested capability, each equal to
+	// AuthorizeWorkspace's answer; a missing binding grants nothing and a read
+	// error returns no decisions (component-identity-membership, Capability
+	// batches).
+	AuthorizeWorkspaceCapabilities(context.Context, string, string, []core.Capability) (map[core.Capability]bool, error)
 	ListWorkspacesForUser(context.Context, string) ([]core.Workspace, error)
 	ListWorkspaceMembers(context.Context, string, string) ([]core.WorkspaceMembership, error)
 	ListWorkspaceInvitations(context.Context, string) ([]core.WorkspaceInvitation, error)

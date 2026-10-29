@@ -1004,6 +1004,21 @@ func (m *volatileMemory) AuthorizeWorkspace(_ context.Context, userID, workspace
 	return core.RoleAllows(binding.Role, capability), nil
 }
 
+// AuthorizeWorkspaceCapabilities implements MembershipStore.
+func (m *volatileMemory) AuthorizeWorkspaceCapabilities(_ context.Context, userID, workspaceID string, capabilities []core.Capability) (map[core.Capability]bool, error) {
+	if len(capabilities) == 0 {
+		return map[core.Capability]bool{}, nil
+	}
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	binding, ok := m.memberships[memoryScopedKey{workspace: workspaceID, id: userID}]
+	out := make(map[core.Capability]bool, len(capabilities))
+	for _, capability := range capabilities {
+		out[capability] = ok && core.RoleAllows(binding.Role, capability)
+	}
+	return out, nil
+}
+
 // ListWorkspacesForUser implements MembershipStore.
 func (m *volatileMemory) ListWorkspacesForUser(_ context.Context, userID string) ([]core.Workspace, error) {
 	m.mu.RLock()
