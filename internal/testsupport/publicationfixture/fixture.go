@@ -32,7 +32,10 @@ func Run(t *testing.T, open func(*testing.T) store.Backend) {
 	}
 	root := store.WithActor(t.Context(), store.SystemActor())
 	workspace := "auto-publication-" + core.NewTaskID()
-	cfg := &config.Config{Workspace: workspace, Repos: []config.Repo{{Name: "app", Base: "main", GitHub: "acme/app"}}}
+	// Issue publication is on, so the re-enqueued issue row publishes rather
+	// than ending skipped (req-delivery-and-forge AC-8.4).
+	cfg := &config.Config{Workspace: workspace, Repos: []config.Repo{{Name: "app", Base: "main", GitHub: "acme/app"}},
+		IssuePublication: config.IssuePublication{Enabled: true}}
 	if _, err := st.CreateWorkspace(store.WithActor(root, store.Actor{ID: "test", Role: core.ActorHuman}), workspace, workspace, cfg); err != nil {
 		t.Fatal(err)
 	}
