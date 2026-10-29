@@ -667,6 +667,35 @@ func (m *memory) ListDecisions(ctx context.Context) ([]core.Decision, error) {
 	return out, nil
 }
 
+// ListDecisionCitations reads the workspace's decision IDs and every live
+// requirement and System Design document's current confirmed version under one
+// read lock (component-document-corpus, Decision citations).
+func (m *memory) ListDecisionCitations(ctx context.Context) ([]core.DecisionCitation, error) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	workspace := workspaceOrDefault(ctx, "")
+	decisionIDs := []string{}
+	for key := range m.decisions {
+		if key.workspace == workspace {
+			decisionIDs = append(decisionIDs, key.id)
+		}
+	}
+	sources := []core.DecisionCitationSource{}
+	for key, document := range m.requirements {
+		if key.workspace == workspace && document.CurrentVersion > 0 && !document.Archived {
+			content := m.requirementVersions[key][document.CurrentVersion-1].Content
+			sources = append(sources, core.DecisionCitationSource{Tier: core.DecisionSweepTierRequirement, DocumentID: document.ID, Title: document.Title, Version: document.CurrentVersion, Content: content})
+		}
+	}
+	for key, document := range m.systemDesigns {
+		if key.workspace == workspace && document.CurrentVersion > 0 && !document.Archived {
+			content := m.systemDesignVersions[key][document.CurrentVersion-1].Content
+			sources = append(sources, core.DecisionCitationSource{Tier: core.DecisionSweepTierSystemDesign, DocumentID: document.ID, Title: document.Title, Version: document.CurrentVersion, Content: content})
+		}
+	}
+	return core.DeriveDecisionCitations(decisionIDs, sources), nil
+}
+
 func decisionOrdinal(id string) int { n, _ := strconv.Atoi(strings.TrimPrefix(id, "DEC-")); return n }
 
 func (m *memory) recomputeDecisionSupersessionSweepLocked(ctx context.Context, decision core.Decision) {
