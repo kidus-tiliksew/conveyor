@@ -5,7 +5,7 @@
 // workspace's dependency graph. Board loads this module lazily, so React Flow
 // and ELK stay out of the initial route chunk (DEC-76).
 import '@xyflow/react/dist/style.css'
-import { keepPreviousData, useQuery } from '@tanstack/react-query'
+import { useQuery } from '@tanstack/react-query'
 import { Link, useNavigate, useSearch } from '@tanstack/react-router'
 import {
   Background,
@@ -25,6 +25,7 @@ import { BookText, ExternalLink, Eye, EyeOff, Focus, Maximize2, RotateCw, Search
 import { type ReactNode, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { fetchTaskMap } from '../../../lib/api'
 import { errorMessage } from '../../../lib/errors'
+import { sameWorkspacePlaceholder } from '../../../lib/query-keys'
 import type { RequirementInsightTab } from '../../../lib/types'
 import { cn, relativeTime } from '../../../lib/utils'
 import { useWorkspace, useWorkspaceSelection } from '../../app-shell'
@@ -82,14 +83,15 @@ function BoardMapView() {
   const [showDone, setShowDone] = useState(false)
   const [repo, setRepo] = useState('')
   // One read, filtered by the server (AC-3.4). The last answer stays on the
-  // canvas while a changed filter loads, and when a refresh fails.
+  // canvas while a changed filter loads, and when a refresh fails. A workspace
+  // change shows the first-load state, never the previous workspace's map.
   const { data, isLoading, error, errorUpdatedAt, isFetching, refetch } = useQuery({
     queryKey: ['task-map', workspace, repo, showDone],
     queryFn: ({ signal }) =>
       fetchTaskMap(workspace, { repositories: repo ? [repo] : [], includeFinished: showDone }, signal),
     enabled: Boolean(workspace),
     refetchInterval: 60_000,
-    placeholderData: keepPreviousData,
+    placeholderData: sameWorkspacePlaceholder(workspace),
   })
   const model = useMemo(() => buildModel(data?.tasks ?? []), [data])
   // The failure a dismissed refresh notice named; a later failure shows again.

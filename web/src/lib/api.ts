@@ -205,10 +205,14 @@ export async function sendVerificationPermissionRequest(
 
 // The Board sends its whole filter family to the server, which narrows the
 // whole workspace history before paging (req-operator-next-action AC-6.12,
-// AC-6.13), so the browser never narrows a fully-loaded workspace itself.
+// AC-6.13), so the browser never narrows a fully-loaded workspace itself. A
+// caller that names its query's workspace and abort signal reads that
+// workspace and can cancel the request (component-web-dashboard).
 async function fetchActivityPage(
   path: string,
   input: {
+    workspace?: string
+    signal?: AbortSignal
     limit: number
     offset: number
     filter?: Record<string, string | string[] | undefined>
@@ -224,7 +228,7 @@ async function fetchActivityPage(
   }
   const headers = new Headers()
   if (input.etag) headers.set('If-None-Match', input.etag)
-  const response = await fetch(workspaceURL(`${path}?${query}`), { headers })
+  const response = await fetch(workspaceURL(`${path}?${query}`, input.workspace), { headers, signal: input.signal })
   if (response.status === 304 && input.previous) return input.previous
   if (response.status === 400 && input.cursor) {
     return fetchActivityPage(path, { ...input, cursor: undefined, etag: undefined, previous: undefined })
@@ -259,6 +263,8 @@ function mergeActivity(current: ActivitySummary[], incoming: ActivitySummary[]):
 }
 
 export function fetchActivity(input: {
+  workspace?: string
+  signal?: AbortSignal
   limit: number
   offset: number
   filter?: Record<string, string | string[] | undefined>
