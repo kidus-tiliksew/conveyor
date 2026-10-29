@@ -68,6 +68,19 @@ func serverTimingSchemaURL(t *testing.T) string {
 	if _, err := admin.Exec(t.Context(), "CREATE SCHEMA "+pgx.Identifier{schema}.Sanitize()); err != nil {
 		t.Fatal(err)
 	}
+	// Registered before any store opens on the schema, so it runs after
+	// those stores close.
+	t.Cleanup(func() {
+		cleanup, err := pgxpool.New(context.Background(), databaseURL)
+		if err != nil {
+			t.Errorf("drop schema %s: %v", schema, err)
+			return
+		}
+		defer cleanup.Close()
+		if _, err := cleanup.Exec(context.Background(), "DROP SCHEMA "+pgx.Identifier{schema}.Sanitize()+" CASCADE"); err != nil {
+			t.Errorf("drop schema %s: %v", schema, err)
+		}
+	})
 	parsed, err := url.Parse(databaseURL)
 	if err != nil {
 		t.Fatal(err)

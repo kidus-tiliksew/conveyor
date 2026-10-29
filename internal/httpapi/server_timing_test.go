@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -260,6 +261,10 @@ func TestServerTimingSilentHandlerThroughRealServer(t *testing.T) {
 
 func TestServerTimingStreamsHeaderAtFirstFlush(t *testing.T) {
 	release := make(chan struct{})
+	var releaseOnce sync.Once
+	// A failed assertion must not leave the handler blocked, or the deferred
+	// server.Close would wait for it.
+	releaseHandler := func() { releaseOnce.Do(func() { close(release) }) }
 	finished := make(chan struct{})
 	server := httptest.NewServer(timingServer(allMetrics).serverTiming(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		defer close(finished)
@@ -277,6 +282,7 @@ func TestServerTimingStreamsHeaderAtFirstFlush(t *testing.T) {
 		_, _ = w.Write([]byte("second\n"))
 	})))
 	defer server.Close()
+	defer releaseHandler()
 	response, err := http.Get(server.URL + "/v1/events")
 	if err != nil {
 		t.Fatal(err)
@@ -290,7 +296,7 @@ func TestServerTimingStreamsHeaderAtFirstFlush(t *testing.T) {
 	if line, err := reader.ReadString('\n'); err != nil || line != "first\n" {
 		t.Fatalf("first chunk %q %v", line, err)
 	}
-	close(release)
+	releaseHandler()
 	<-finished
 	rest, err := io.ReadAll(reader)
 	if err != nil || string(rest) != "second\n" {

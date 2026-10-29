@@ -121,8 +121,11 @@ in this order:
 
 Each value must be an integer from 1 to 2147483647. The file value and a
 present variable are validated when the deployment file loads, even when a
-higher-precedence value wins; an empty variable counts as unset. Errors name
-the setting, never its value. Thirty-two is a starting point, not a measured
+higher-precedence value wins; an empty variable counts as unset. An
+out-of-range file value and any invalid variable value are refused with an
+error that names the setting, never its value. A file value that is not an
+integer at all fails YAML decoding like any other typed key, and that parser
+error quotes the offending scalar. Thirty-two is a starting point, not a measured
 optimum: keep the total across every `conveyord` replica within your
 database's connection limit. The setting changes nothing for SingleStore,
 whose pool stays at 16 open and 4 idle connections.
