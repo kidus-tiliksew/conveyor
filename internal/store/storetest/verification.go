@@ -40,11 +40,21 @@ func newVerificationFixture(t *testing.T, x Fixture, empty ...bool) verification
 // an additional repository may precede the task's own revision.
 func newVerificationFixtureIn(t *testing.T, x Fixture, scope []core.VerificationRevision, empty ...bool) verificationFixture {
 	t.Helper()
+	return newVerificationFixtureTask(t, x, scope, nil, empty...)
+}
+
+// newVerificationFixtureTask is newVerificationFixtureIn with a hook that
+// adjusts the task before it is created, such as its bounce limit.
+func newVerificationFixtureTask(t *testing.T, x Fixture, scope []core.VerificationRevision, setup func(*core.Task), empty ...bool) verificationFixture {
+	t.Helper()
 	revisions := append([]core.VerificationRevision{}, scope...)
 	sort.SliceStable(revisions, func(i, j int) bool { return revisions[i].Repository < revisions[j].Repository })
 	id := core.NewTaskID()
 	task := core.Task{ID: id, Workspace: x.Workspace, Repo: scope[0].Repository, Title: id, BaseBranch: "main", Branch: "conveyor/task-" + id, State: core.TaskRunning, NextStage: core.StageVerify, ReviewedHeadSHA: scope[0].SHA, CreatedAt: time.Now().UTC()}
 	task.SetupContract.VerifyStage = true
+	if setup != nil {
+		setup(&task)
+	}
 	requireOK(t, x.Backend.CreateTask(x.Context, task))
 	job := core.Job{ID: id + "-verify-1", TaskID: id, Stage: core.StageVerify, State: core.JobPending}
 	o := core.WorkOrder{ID: job.ID, JobID: job.ID, TaskID: id, Stage: core.StageVerify, State: core.WorkOrderQueued, HeadSHA: task.ReviewedHeadSHA, QueueEnteredAt: task.CreatedAt, QueueDeadline: task.CreatedAt.Add(time.Hour), CreatedAt: task.CreatedAt}
