@@ -1524,12 +1524,30 @@ export interface WorkOrderActivitySnapshot {
   captured_at: string
 }
 
+/**
+ * One capture as the bounded detail presents it: metadata and the stored
+ * content's UTF-8 length (component-http-api, Bounded detail view). A
+ * complete-view-shaped response may still carry `content`; the transcript
+ * disclosure never renders it and always reads the content route
+ * (component-web-task-surfaces, Transcript disclosures).
+ */
 export interface WorkOrderTranscriptCapture {
+  attempt_id: string
+  termination_reason: string
+  truncated: boolean
+  captured_at: string
+  content_bytes?: number
+  content?: string
+}
+
+/** One capture as the content read returns it. */
+export interface WorkOrderTranscriptCaptureContent {
   attempt_id: string
   content: string
   termination_reason: string
   truncated: boolean
   captured_at: string
+  content_bytes: number
 }
 
 export interface WorkOrderCheckpoint {

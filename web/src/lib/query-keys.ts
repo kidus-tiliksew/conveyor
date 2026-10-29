@@ -34,6 +34,16 @@ export function sameWorkspacePlaceholder(workspace: string) {
 }
 
 /**
+ * One transcript capture's content (component-web-task-surfaces, Transcript
+ * disclosures). The family sits outside the task-detail and task-history
+ * prefixes, so the task stream, dependency polling, and mutations never
+ * invalidate it.
+ */
+export function taskTranscriptQueryKey(workspace: string, taskId: string, workOrderId: string, attemptId: string) {
+  return ['task-transcript', workspace, taskId, workOrderId, attemptId] as const
+}
+
+/**
  * The context a task-detail mutation records in `onMutate`: the workspace the
  * operator acted in. Its `onSuccess` refreshes that workspace's detail even when
  * the selection changed while the request was in flight.
