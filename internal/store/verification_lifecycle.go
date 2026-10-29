@@ -188,14 +188,34 @@ func verificationAttemptMutation(c VerificationCommand, rows []VerificationRow, 
 			return err
 		}
 		ordinal := 1
-		var latest *VerificationAttempt
+		// component-verification-service "Attempts and outcome evaluation":
+		// the operator_action_required retry gate reads the latest attempt of
+		// the subject within the starting verify order, across every context
+		// that order owns. Recovery binds its one-use authorization to the
+		// recovered order, so an earlier order's attempt never gates a later
+		// order (req-verification-kits AC-3.4). The attempt's context row
+		// supplies its order because the attempt records none.
+		orderContexts := map[string]bool{}
+		for _, row := range rows {
+			if row.Table == "verification_contexts" && row.TaskID == c.Access.TaskID && verificationDecode[VerificationContext](row).WorkOrderID == c.Access.WorkOrderID {
+				orderContexts[row.ID] = true
+			}
+		}
+		var latest, gated *VerificationAttempt
 		var successorAuthorization int = -1
 		for _, row := range rows {
 			if row.Table == "verification_attempts" && row.TaskID == c.Access.TaskID {
 				prior := verificationDecode[VerificationAttempt](row)
-				if verificationSubjectKey(prior.Subject) == verificationSubjectKey(v.Subject) && (latest == nil || prior.StartedAt.After(latest.StartedAt)) {
+				if verificationSubjectKey(prior.Subject) != verificationSubjectKey(v.Subject) {
+					continue
+				}
+				if latest == nil || prior.StartedAt.After(latest.StartedAt) {
 					copy := prior
 					latest = &copy
+				}
+				if orderContexts[row.ContextID] && (gated == nil || prior.StartedAt.After(gated.StartedAt)) {
+					copy := prior
+					gated = &copy
 				}
 			}
 		}
@@ -231,13 +251,13 @@ func verificationAttemptMutation(c VerificationCommand, rows []VerificationRow, 
 			}
 		}
 
-		if latest != nil {
-			if latest.EndedAt == nil {
-				return verificationRefusal(ErrVerificationState, VerificationCodeAttemptRunning, "subject", verificationRemedyAttempt, "attempt %s of %s is still %s.", latest.ID, verificationSubjectName(v.Subject), latest.State)
-			}
+		if latest != nil && latest.EndedAt == nil {
+			return verificationRefusal(ErrVerificationState, VerificationCodeAttemptRunning, "subject", verificationRemedyAttempt, "attempt %s of %s is still %s.", latest.ID, verificationSubjectName(v.Subject), latest.State)
+		}
+		if gated != nil {
 			if contract.RetryPolicy == "operator_action_required" {
 				authorized := false
-				for _, authorization := range latest.Recovery {
+				for _, authorization := range gated.Recovery {
 					if authorization.ID == v.ReplayAuthorizationID && strings.HasPrefix(authorization.Actor, "user:") {
 						if authorization.Original.ContextID == "" {
 							continue
@@ -248,7 +268,7 @@ func verificationAttemptMutation(c VerificationCommand, rows []VerificationRow, 
 						}
 						if authorization.Successor == nil && authorization.Original.WorkOrderID == c.Access.WorkOrderID && sameVerificationAuthority(authorization.Original, binding) && authorization.InputDigest == verificationHash(verificationJSON(v.SafeInputs)) && (authorization.Disposition == "not_applied" || authorization.Disposition == "applied") {
 							authorized = true
-							for i, a := range latest.Recovery {
+							for i, a := range gated.Recovery {
 								if a.ID == authorization.ID {
 									successorAuthorization = i
 								}
@@ -257,7 +277,7 @@ func verificationAttemptMutation(c VerificationCommand, rows []VerificationRow, 
 					}
 				}
 				if !authorized {
-					return verificationRefusal(ErrVerificationState, VerificationCodeRetryAuthorizationRequired, "replay_authorization_id", verificationRemedyRetry, "the latest attempt %s of %s has retry policy operator_action_required and no unused operator authorization matches.", latest.ID, verificationSubjectName(v.Subject))
+					return verificationRefusal(ErrVerificationState, VerificationCodeRetryAuthorizationRequired, "replay_authorization_id", verificationRemedyRetry, "the latest attempt %s of %s has retry policy operator_action_required and no unused operator authorization matches.", gated.ID, verificationSubjectName(v.Subject))
 				}
 				for _, row := range rows {
 					if row.Table == "verification_attempts" && verificationDecode[VerificationAttempt](row).ReplayAuthorizationID == v.ReplayAuthorizationID {
@@ -284,12 +304,12 @@ func verificationAttemptMutation(c VerificationCommand, rows []VerificationRow, 
 				return e
 			}
 			binding.RunID = v.ID
-			latest.Recovery[successorAuthorization].Successor = &binding
-			row, ok := verificationFind(rows, "verification_attempts", latest.ID)
+			gated.Recovery[successorAuthorization].Successor = &binding
+			row, ok := verificationFind(rows, "verification_attempts", gated.ID)
 			if !ok {
 				return ErrVerificationAccess
 			}
-			row.Body = verificationJSON(latest)
+			row.Body = verificationJSON(gated)
 			out.Rows = append(out.Rows, row)
 		}
 		out.Receipt.LaunchAuthorized = true
