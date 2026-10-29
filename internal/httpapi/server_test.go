@@ -3249,7 +3249,7 @@ func TestActivityConditionalDeadlines(t *testing.T) {
 	t.Run("review lease from a claim event", func(t *testing.T) {
 		f := newActivityConditionalFixture(t)
 		f.task("lease-a", core.TaskRunning)
-		f.order(core.WorkOrder{ID: "lease-review", TaskID: "lease-a", JobID: "lease-review", Stage: core.StageReview, State: core.WorkOrderQueued, QueueEnteredAt: f.now.Add(-time.Hour), QueueDeadline: f.now.Add(time.Hour)})
+		f.order(core.WorkOrder{ID: "lease-review", TaskID: "lease-a", JobID: "lease-review", Stage: core.StageReview, State: core.WorkOrderQueued, QueueEnteredAt: f.now.Add(-time.Hour), QueueDeadline: f.now.Add(time.Hour), ExecutionStartedAt: f.now.Add(-time.Minute)})
 		lease := f.now.Add(30 * time.Second)
 		if err := f.base.AppendEvent(f.ctx, core.Event{TaskID: "lease-a", JobID: "lease-review", Kind: "work_order.claimed", At: f.now.Add(-time.Minute), Payload: core.JSONPayload(map[string]any{"id": "lease-review", "lease_expires_at": lease})}); err != nil {
 			t.Fatal(err)
