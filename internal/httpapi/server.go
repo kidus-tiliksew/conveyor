@@ -1558,7 +1558,7 @@ func (s *Server) listCallerAttentionTasks(w http.ResponseWriter, r *http.Request
 	w.Header().Set("X-Conveyor-Total", strconv.Itoa(page.Total))
 	w.Header().Set("X-Conveyor-Limit", strconv.Itoa(query.Limit))
 	w.Header().Set("X-Conveyor-Offset", strconv.Itoa(query.Offset))
-	s.writeActivityItems(w, r, page.Tasks, false)
+	s.writeActivityItems(w, r, page.Tasks, false, nil)
 }
 
 // readTaskPage reads one page of the shared task filter. The no-auth
@@ -1580,7 +1580,32 @@ func (s *Server) readTaskPage(ctx context.Context, query store.TaskOperationsQue
 	return s.Store.ListTaskPage(ctx, query)
 }
 
+// listActivityPage answers an unchanged Board page with 304 before it reads
+// any marker, order, proposal, or next action (component-http-api, Activity
+// conditional admission). The validation read precedes the page read, so a
+// published tag never certifies a page read from an earlier state.
 func (s *Server) listActivityPage(w http.ResponseWriter, r *http.Request, query store.TaskOperationsQuery) {
+	since, err := decodeActivityCursor(r.URL.Query().Get("since"))
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	now := activityClock().UTC().Truncate(time.Microsecond)
+	opts, err := s.nextActionOptions(r)
+	if err != nil {
+		log.Printf("handle API request: %v", err)
+		http.Error(w, "internal server error", http.StatusInternalServerError)
+		return
+	}
+	opts.Now = now
+	validation, err := s.Store.ReadActivityValidation(r.Context(), now)
+	if err != nil {
+		log.Printf("handle API request: %v", err)
+		http.Error(w, "internal server error", http.StatusInternalServerError)
+		return
+	}
+	conditional := &activityConditional{now: now, since: since, opts: opts, scope: activityValidatorScope(r.Context(), query, opts.Capabilities), validation: validation}
+	tag, admitted := conditional.admits(r.Header.Get("If-None-Match"))
 	page, err := s.readTaskPage(r.Context(), query)
 	if err != nil {
 		log.Printf("handle API request: %v", err)
@@ -1590,7 +1615,15 @@ func (s *Server) listActivityPage(w http.ResponseWriter, r *http.Request, query 
 	w.Header().Set("X-Conveyor-Total", strconv.Itoa(page.Total))
 	w.Header().Set("X-Conveyor-Limit", strconv.Itoa(query.Limit))
 	w.Header().Set("X-Conveyor-Offset", strconv.Itoa(query.Offset))
-	s.writeActivityItems(w, r, page.Tasks, false)
+	if admitted {
+		w.Header().Set("X-Conveyor-Cursor", tag.cursor)
+		w.Header().Set("Content-Type", "application/json")
+		w.Header().Set("ETag", tag.raw)
+		w.Header().Set("Vary", "Accept-Encoding")
+		w.WriteHeader(http.StatusNotModified)
+		return
+	}
+	s.writeActivityItems(w, r, page.Tasks, false, conditional)
 }
 
 func (s *Server) listActivityFiltered(w http.ResponseWriter, r *http.Request, filter store.TaskFilter, reviewsOnly bool) {
@@ -1600,36 +1633,49 @@ func (s *Server) listActivityFiltered(w http.ResponseWriter, r *http.Request, fi
 		http.Error(w, "internal server error", http.StatusInternalServerError)
 		return
 	}
-	s.writeActivityItems(w, r, tasks, reviewsOnly)
+	s.writeActivityItems(w, r, tasks, reviewsOnly, nil)
 }
 
-func (s *Server) writeActivityItems(w http.ResponseWriter, r *http.Request, tasks []core.Task, reviewsOnly bool) {
+// writeActivityItems projects the activity rows from one marker and order
+// read. A Board read passes its conditional state, whose instant, cursor, and
+// options it reuses; Reviews and Attention pass nil and keep the full-page
+// ETag (component-http-api, Activity conditional admission).
+func (s *Server) writeActivityItems(w http.ResponseWriter, r *http.Request, tasks []core.Task, reviewsOnly bool, conditional *activityConditional) {
 	taskIDs := make([]string, 0, len(tasks))
 	for _, task := range tasks {
 		taskIDs = append(taskIDs, task.ID)
 	}
-	markers, err := s.Store.ListActivityMarkersForTasks(r.Context(), taskIDs)
+	var since activityCursor
+	var opts store.NextActionOptions
+	var err error
+	if conditional != nil {
+		since, opts = conditional.since, conditional.opts
+	} else {
+		if since, err = decodeActivityCursor(r.URL.Query().Get("since")); err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		if opts, err = s.nextActionOptions(r); err != nil {
+			log.Printf("handle API request: %v", err)
+			http.Error(w, "internal server error", http.StatusInternalServerError)
+			return
+		}
+	}
+	// One order selection feeds the markers, pending authority, the
+	// claim-wait selection, and the next action (component-persistence,
+	// Board activity validation reads).
+	inputs, err := s.Store.ReadActivityInputs(r.Context(), taskIDs, opts.Now)
 	if err != nil {
 		log.Printf("handle API request: %v", err)
 		http.Error(w, "internal server error", http.StatusInternalServerError)
 		return
 	}
+	markers, orders := inputs.Markers, inputs.Orders
 	markerByTask := make(map[string]store.ActivityMarker, len(markers))
 	for _, marker := range markers {
 		markerByTask[marker.TaskID] = marker
 	}
-	since, err := decodeActivityCursor(r.URL.Query().Get("since"))
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
-		return
-	}
 	proposals, err := s.Store.ListPendingProposals(r.Context())
-	if err != nil {
-		log.Printf("handle API request: %v", err)
-		http.Error(w, "internal server error", http.StatusInternalServerError)
-		return
-	}
-	orders, err := s.Store.ListWorkOrdersForTasks(r.Context(), taskIDs)
 	if err != nil {
 		log.Printf("handle API request: %v", err)
 		http.Error(w, "internal server error", http.StatusInternalServerError)
@@ -1651,12 +1697,6 @@ func (s *Server) writeActivityItems(w http.ResponseWriter, r *http.Request, task
 		}
 	}
 	pendingAuthority := pendingAuthorityByTask(orders, proposals)
-	opts, err := s.nextActionOptions(r)
-	if err != nil {
-		log.Printf("handle API request: %v", err)
-		http.Error(w, "internal server error", http.StatusInternalServerError)
-		return
-	}
 	opts.MarkersLoaded, opts.Markers = true, markers
 	opts.OrdersLoaded, opts.Orders = true, orders
 	opts.ClaimWaitingLoaded, opts.ClaimWaiting = true, selectedClaimWaiting
@@ -1705,8 +1745,143 @@ func (s *Server) writeActivityItems(w http.ResponseWriter, r *http.Request, task
 	// The frontier is the page's maximum (at, id) tuple, so a later event with
 	// a lower ID still enters the next delta (component-http-api;
 	// component-persistence).
-	w.Header().Set("X-Conveyor-Cursor", encodeActivityCursor(store.ActivityFrontier(markers)))
-	writeConditionalJSON(w, r, items, fullItems)
+	cursor := encodeActivityCursor(store.ActivityFrontier(markers))
+	w.Header().Set("X-Conveyor-Cursor", cursor)
+	if conditional == nil {
+		writeConditionalJSON(w, r, items, fullItems)
+		return
+	}
+	validUntil := conditional.validUntil(inputs.ValidUntil, fullItems)
+	// A write that landed between the two validation reads may be half in
+	// this body, so its tag must never admit a 304. No retry is attempted.
+	after, err := s.Store.ReadActivityValidation(r.Context(), conditional.now)
+	if err != nil {
+		log.Printf("handle API request: %v", err)
+		http.Error(w, "internal server error", http.StatusInternalServerError)
+		return
+	}
+	if after != conditional.validation {
+		validUntil = conditional.now
+	}
+	writeJSONWithETag(w, r, items, conditional.etag(validUntil, cursor))
+}
+
+// activityConditional is one Board request's validator state: the captured
+// instant, the decoded cursor and next-action options, the bound scope, and
+// the validation read that precedes the page read.
+type activityConditional struct {
+	now        time.Time
+	since      activityCursor
+	opts       store.NextActionOptions
+	scope      []byte
+	validation store.ActivityValidation
+}
+
+// activityTag is a parsed Board ETag: "a1.<valid_until micros>.<cursor>.<hex>".
+type activityTag struct {
+	raw        string
+	validUntil time.Time
+	cursor     string
+	validator  string
+}
+
+const activityTagVersion = "a1"
+
+// activityClock is the Board request clock. HTTP tests replace it to cross a
+// minute boundary and deadlines inside one minute without sleeping.
+var activityClock = time.Now
+
+// activityValidatorScope binds a tag to its workspace, caller, capabilities,
+// and parsed query, so a tag from another page, workspace, or capability set
+// never admits a 304. The cursor is deliberately not bound: a full-page tag
+// stays reusable with the returned cursor.
+func activityValidatorScope(ctx context.Context, query store.TaskOperationsQuery, capabilities map[core.Capability]bool) []byte {
+	workspaceID, _ := store.WorkspaceFromContext(ctx)
+	credential, _ := store.CredentialFromContext(ctx)
+	granted := make([]string, 0, len(nextActionCapabilities))
+	for _, capability := range nextActionCapabilities {
+		if capabilities[capability] {
+			granted = append(granted, string(capability))
+		}
+	}
+	scope, _ := json.Marshal(struct {
+		Version      string                    `json:"version"`
+		Workspace    string                    `json:"workspace"`
+		User         string                    `json:"user"`
+		Capabilities []string                  `json:"capabilities"`
+		Query        store.TaskOperationsQuery `json:"query"`
+	}{"activity-v1", workspaceID, credential.OwnerUserID, granted, query})
+	return scope
+}
+
+// validator hashes the scope, the validation read, the request's UTC minute,
+// the tag's valid_until, and the response cursor.
+func (c *activityConditional) validator(validUntil time.Time, cursor string) string {
+	hash := sha256.New()
+	field := func(value []byte) {
+		hash.Write(strconv.AppendInt(nil, int64(len(value)), 10))
+		hash.Write([]byte{':'})
+		hash.Write(value)
+	}
+	number := func(value int64) { field(strconv.AppendInt(nil, value, 10)) }
+	field(c.scope)
+	number(c.validation.EventCount)
+	number(c.validation.EventMaxID)
+	field(c.validation.Signature[:])
+	number(c.validation.PassedDeadlines)
+	number(c.now.Truncate(time.Minute).Unix())
+	number(validUntil.UnixMicro())
+	field([]byte(cursor))
+	return fmt.Sprintf("%x", hash.Sum(nil))
+}
+
+func (c *activityConditional) etag(validUntil time.Time, cursor string) string {
+	return `"` + activityTagVersion + "." + strconv.FormatInt(validUntil.UnixMicro(), 10) + "." + cursor + "." + c.validator(validUntil, cursor) + `"`
+}
+
+// admits reports whether If-None-Match carries this request's Board tag: the
+// form parses, the request instant is before its valid_until, and the
+// validator recomputed from the current state matches.
+func (c *activityConditional) admits(header string) (activityTag, bool) {
+	inner, ok := strings.CutPrefix(header, `"`)
+	if !ok {
+		return activityTag{}, false
+	}
+	if inner, ok = strings.CutSuffix(inner, `"`); !ok {
+		return activityTag{}, false
+	}
+	fields := strings.Split(inner, ".")
+	if len(fields) != 4 || fields[0] != activityTagVersion {
+		return activityTag{}, false
+	}
+	micros, err := strconv.ParseInt(fields[1], 10, 64)
+	if err != nil || micros <= 0 {
+		return activityTag{}, false
+	}
+	tag := activityTag{raw: header, validUntil: time.UnixMicro(micros).UTC(), cursor: fields[2], validator: fields[3]}
+	if !c.now.Before(tag.validUntil) || c.validator(tag.validUntil, tag.cursor) != tag.validator {
+		return activityTag{}, false
+	}
+	return tag, true
+}
+
+// validUntil is the earliest of the next UTC minute boundary, the review
+// lease horizon, and every item's compact deadline after the instant, which
+// covers a merge-conflict retry time that changes a retrying summary.
+func (c *activityConditional) validUntil(reviewLease time.Time, items []activityItem) time.Time {
+	until := c.now.Truncate(time.Minute).Add(time.Minute)
+	if reviewLease.After(c.now) && reviewLease.Before(until) {
+		until = reviewLease
+	}
+	for _, item := range items {
+		if item.NextAction == nil || item.NextAction.Deadline == nil {
+			continue
+		}
+		if deadline := *item.NextAction.Deadline; deadline.After(c.now) && deadline.Before(until) {
+			until = deadline
+		}
+	}
+	return until
 }
 
 // activityCursor is a decoded `since` value. A zero value, an empty cursor, a
@@ -1775,19 +1950,24 @@ func decodeActivityCursor(value string) (activityCursor, error) {
 }
 
 func writeConditionalJSON(w http.ResponseWriter, r *http.Request, v, etagValue any) {
-	body, err := json.Marshal(v)
-	if err != nil {
-		http.Error(w, "internal server error", http.StatusInternalServerError)
-		return
-	}
-	body = append(body, '\n')
 	etagBody, err := json.Marshal(etagValue)
 	if err != nil {
 		http.Error(w, "internal server error", http.StatusInternalServerError)
 		return
 	}
 	sum := sha256.Sum256(etagBody)
-	etag := fmt.Sprintf("\"%x\"", sum)
+	writeJSONWithETag(w, r, v, fmt.Sprintf("\"%x\"", sum))
+}
+
+// writeJSONWithETag writes v with a precomputed strong ETag, answering a
+// matching If-None-Match with 304 and negotiating gzip.
+func writeJSONWithETag(w http.ResponseWriter, r *http.Request, v any, etag string) {
+	body, err := json.Marshal(v)
+	if err != nil {
+		http.Error(w, "internal server error", http.StatusInternalServerError)
+		return
+	}
+	body = append(body, '\n')
 	w.Header().Set("Content-Type", "application/json")
 	w.Header().Set("ETag", etag)
 	w.Header().Set("Vary", "Accept-Encoding")

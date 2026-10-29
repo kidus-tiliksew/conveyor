@@ -147,14 +147,16 @@ func scanDocumentEvents(rows *documentResultSet) ([]core.Event, error) {
 }
 
 func (s *Store) ListActivityMarkers(ctx context.Context) ([]store.ActivityMarker, error) {
-	return s.listActivityMarkers(ctx, nil)
+	markers, _, _, err := s.listActivityMarkers(ctx, nil, time.Now().UTC())
+	return markers, err
 }
 
 func (s *Store) ListActivityMarkersForTasks(ctx context.Context, taskIDs []string) ([]store.ActivityMarker, error) {
 	if taskIDs != nil && len(taskIDs) == 0 {
 		return []store.ActivityMarker{}, nil
 	}
-	return s.listActivityMarkers(ctx, taskIDs)
+	markers, _, _, err := s.listActivityMarkers(ctx, taskIDs, time.Now().UTC())
+	return markers, err
 }
 
 // The event kinds each activity-marker fold reads. listActivityMarkers
@@ -165,7 +167,11 @@ var (
 	activityMarkerForgeKinds   = []string{"github_issue.publication_failed", "github_issue.publication_published", "review.publication_failed", "review.publication_published", "merge.failed", "merge.confirmed", "merge.reconciled"}
 )
 
-func (s *Store) listActivityMarkers(ctx context.Context, taskIDs []string) ([]store.ActivityMarker, error) {
+// listActivityMarkers folds the markers from one order selection projected
+// at now and returns that selection and the review lease horizon of the
+// lifecycle events it read (component-persistence, Board activity validation
+// reads).
+func (s *Store) listActivityMarkers(ctx context.Context, taskIDs []string, now time.Time) ([]store.ActivityMarker, []core.WorkOrder, time.Time, error) {
 	type markerRow struct {
 		taskID      string
 		latestStage string
@@ -183,35 +189,30 @@ func (s *Store) listActivityMarkers(ctx context.Context, taskIDs []string) ([]st
 	}
 
 	if err != nil {
-		return nil, err
+		return nil, nil, time.Time{}, err
 	}
 	for selected.Next() {
 		var row markerRow
 		if err = selected.Scan(&row.taskID, &row.latestStage, &row.lastEventAt, &row.lastEventID); err != nil {
 			selected.Close()
-			return nil, err
+			return nil, nil, time.Time{}, err
 		}
 		rows = append(rows, row)
 	}
 	if err = selected.Err(); err != nil {
 		selected.Close()
-		return nil, err
+		return nil, nil, time.Time{}, err
 	}
 	selected.Close()
 	// Scope the order read to the requested tasks. The activity feed still
 	// wants the whole workspace, but a Tasks page must not pull every
 	// workspace order in only to discard most of it.
 	if len(rows) == 0 {
-		return []store.ActivityMarker{}, nil
+		return []store.ActivityMarker{}, []core.WorkOrder{}, time.Time{}, nil
 	}
-	var orders []core.WorkOrder
-	if len(taskIDs) == 0 {
-		orders, err = s.ListWorkOrders(ctx)
-	} else {
-		orders, err = s.ListWorkOrdersForTasks(ctx, taskIDs)
-	}
+	orders, err := s.activityWorkOrdersAt(ctx, taskIDs, now)
 	if err != nil {
-		return nil, err
+		return nil, nil, time.Time{}, err
 	}
 	var dependencyTaskIDs []string
 	seenDependencyTask := map[string]bool{}
@@ -225,7 +226,7 @@ func (s *Store) listActivityMarkers(ctx context.Context, taskIDs []string) ([]st
 	if len(dependencyTaskIDs) > 0 {
 		blockersByTask, err = s.ListDependencyBlockers(ctx, dependencyTaskIDs)
 		if err != nil {
-			return nil, err
+			return nil, nil, time.Time{}, err
 		}
 	}
 	ordersByTask := make(map[string][]core.WorkOrder)
@@ -270,13 +271,13 @@ func (s *Store) listActivityMarkers(ctx context.Context, taskIDs []string) ([]st
 	markerRows, err := documentRows(ctx, s.db, markerQuery+` ORDER BY e.at,e.id`, markerArgs...)
 
 	if err != nil {
-		return nil, err
+		return nil, nil, time.Time{}, err
 	}
 	for markerRows.Next() {
 		var event core.Event
 		if scanErr := markerRows.Scan(&event.ID, &event.TaskID, &event.JobID, &event.Kind, &event.Payload, &event.At); scanErr != nil {
 			markerRows.Close()
-			return nil, scanErr
+			return nil, nil, time.Time{}, scanErr
 		}
 		if hasReviewOrders && slices.Contains(activityMarkerReviewKinds, event.Kind) {
 			eventsByTask[event.TaskID] = append(eventsByTask[event.TaskID], event)
@@ -290,7 +291,7 @@ func (s *Store) listActivityMarkers(ctx context.Context, taskIDs []string) ([]st
 	}
 	if err = markerRows.Err(); err != nil {
 		markerRows.Close()
-		return nil, err
+		return nil, nil, time.Time{}, err
 	}
 	markerRows.Close()
 	taskIDsForState := make([]string, 0, len(rows))
@@ -301,22 +302,28 @@ func (s *Store) listActivityMarkers(ctx context.Context, taskIDs []string) ([]st
 	if len(taskIDsForState) > 0 {
 		stateRows, stateErr := documentBatchRows(ctx, s.db, `SELECT id,state FROM tasks WHERE workspace_id=? AND id IN (%s)`, documentWorkspace(ctx), taskIDsForState)
 		if stateErr != nil {
-			return nil, stateErr
+			return nil, nil, time.Time{}, stateErr
 		}
 		for stateRows.Next() {
 			var taskID string
 			var state core.TaskState
 			if stateErr = stateRows.Scan(&taskID, &state); stateErr != nil {
 				stateRows.Close()
-				return nil, stateErr
+				return nil, nil, time.Time{}, stateErr
 			}
 			taskStates[taskID] = state
 		}
 		if stateErr = stateRows.Err(); stateErr != nil {
 			stateRows.Close()
-			return nil, stateErr
+			return nil, nil, time.Time{}, stateErr
 		}
 		stateRows.Close()
+	}
+	var horizon time.Time
+	for taskID, events := range eventsByTask {
+		if lease := store.ActivityReviewLeaseHorizon(ordersByTask[taskID], events, now); !lease.IsZero() && (horizon.IsZero() || lease.Before(horizon)) {
+			horizon = lease
+		}
 	}
 	result := make([]store.ActivityMarker, len(rows))
 	for i, row := range rows {
@@ -324,14 +331,14 @@ func (s *Store) listActivityMarkers(ctx context.Context, taskIDs []string) ([]st
 		result[i] = store.ActivityMarker{
 			TaskID: row.taskID, LatestStage: core.Stage(row.latestStage), LastEventAt: row.lastEventAt, LastEventID: row.lastEventID,
 			ForgeFailure:              store.LatestForgeFailure(forgeEventsByTask[row.taskID]),
-			ReviewDiagnostics:         store.ReviewVerdictDiagnostics(ordersByTask[row.taskID], eventsByTask[row.taskID], time.Now().UTC()),
+			ReviewDiagnostics:         store.ReviewVerdictDiagnostics(ordersByTask[row.taskID], eventsByTask[row.taskID], now),
 			ReviewRecovery:            store.ReviewRecoveryNeeded(ordersByTask[row.taskID], eventsByTask[row.taskID]),
 			InterruptedReviewRecovery: store.InterruptedReviewRecoveryNeeded(task, store.CurrentReviewOrders(ordersByTask[row.taskID], eventsByTask[row.taskID]), eventsByTask[row.taskID]),
 			Stalled:                   store.StalledTask(ordersByTask[row.taskID]),
 			UserChangesRequested:      store.UserRequestChangesPending(requestEventsByTask[row.taskID]),
 		}
 	}
-	return result, nil
+	return result, orders, horizon, nil
 }
 
 func (s *Store) AppendEvent(ctx context.Context, e core.Event) error {
