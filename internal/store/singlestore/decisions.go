@@ -208,6 +208,50 @@ func (s *Store) ListDecisions(ctx context.Context) ([]core.Decision, error) {
 	return out, nil
 }
 
+// ListDecisionCitations issues two workspace-scoped statements whatever the
+// corpus size: the workspace's decision IDs, then each live requirement and
+// System Design document's current confirmed version. Matching and order are
+// core.DeriveDecisionCitations's (component-document-corpus, Decision
+// citations).
+func (s *Store) ListDecisionCitations(ctx context.Context) ([]core.DecisionCitation, error) {
+	rows, err := documentRows(ctx, s.db, `SELECT id FROM decisions WHERE workspace_id=?`, documentWorkspace(ctx))
+	if err != nil {
+		return nil, err
+	}
+	decisionIDs := []string{}
+	for rows.Next() {
+		var id string
+		if err = rows.Scan(&id); err != nil {
+			rows.Close()
+			return nil, err
+		}
+		decisionIDs = append(decisionIDs, id)
+	}
+	err = rows.Err()
+	rows.Close()
+	if err != nil {
+		return nil, err
+	}
+	rows, err = documentRows(ctx, s.db, `SELECT 'requirement',r.id,r.title,r.current_version,v.content FROM requirements r JOIN requirement_versions v ON v.workspace_id=r.workspace_id AND v.requirement_id=r.id AND v.version=r.current_version WHERE r.workspace_id=? AND r.archived_at IS NULL AND v.confirmed
+ UNION ALL SELECT 'system_design',d.id,d.title,d.current_version,v.content FROM system_designs d JOIN system_design_versions v ON v.workspace_id=d.workspace_id AND v.document_id=d.id AND v.version=d.current_version WHERE d.workspace_id=? AND d.archived_at IS NULL AND v.confirmed`, documentWorkspace(ctx), documentWorkspace(ctx))
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	sources := []core.DecisionCitationSource{}
+	for rows.Next() {
+		var source core.DecisionCitationSource
+		if err = rows.Scan(&source.Tier, &source.DocumentID, &source.Title, &source.Version, &source.Content); err != nil {
+			return nil, err
+		}
+		sources = append(sources, source)
+	}
+	if err = rows.Err(); err != nil {
+		return nil, err
+	}
+	return core.DeriveDecisionCitations(decisionIDs, sources), nil
+}
+
 const decisionSupersessionSweepSelect = `SELECT decision_id,superseded_decision_id,document_tier,document_id,status,detected_by,detected_at,resolved_by,resolved_at FROM decision_supersession_sweeps`
 
 type decisionSupersessionSweepScanner interface {

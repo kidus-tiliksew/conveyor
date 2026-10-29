@@ -1454,6 +1454,12 @@ export function fetchDecisions() {
 export function fetchDecision(id: string, workspace?: string, signal?: AbortSignal) {
   return getJSON<import('./types').Decision>(workspaceURL(`/v1/decisions/${encodeURIComponent(id)}`, workspace), signal)
 }
+// Every live document whose current confirmed version cites each decision,
+// for the Decisions surface's counts and the decision page's citing documents
+// (req-document-operating-surfaces AC-7.1, AC-8.5). The workspace is explicit.
+export function fetchDecisionCitations(workspace: string, signal?: AbortSignal) {
+  return getJSON<import('./types').DecisionCitationList>(workspaceURL('/v1/decision-citations', workspace), signal)
+}
 export async function resolveDecision(id: string, action: 'confirm' | 'dismiss') {
   const response = await fetch(workspaceURL(`/v1/decisions/${encodeURIComponent(id)}/${action}`), {
     method: 'POST',

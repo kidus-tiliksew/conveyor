@@ -139,3 +139,31 @@ func TestDecisionTokensApplyTheWholeTokenRule(t *testing.T) {
 		t.Fatal("IsDecisionID accepts only DEC-n")
 	}
 }
+
+// TestDeriveDecisionCitations pins the decision citation read's derivation:
+// whole tokens only, workspace decisions only, one item per pair, and the
+// documented order (component-document-corpus, Decision citations;
+// req-document-operating-surfaces AC-8.5).
+func TestDeriveDecisionCitations(t *testing.T) {
+	sources := []DecisionCitationSource{
+		{Tier: DecisionSweepTierSystemDesign, DocumentID: "design-b", Title: "Shared", Version: 3, Content: "Cites DEC-4 and DEC-4 again, plus DEC-99."},
+		{Tier: DecisionSweepTierSystemDesign, DocumentID: "design-a", Title: "Shared", Version: 2, Content: "Cites DEC-40 and DEC-4."},
+		{Tier: DecisionSweepTierRequirement, DocumentID: "req-z", Title: "Zeta", Version: 1, Content: "Cites DEC-40 only; DEC-400x and xDEC-4 do not count."},
+		{Tier: DecisionSweepTierRequirement, DocumentID: "req-a", Title: "Alpha", Version: 5, Content: "Cites DEC-4."},
+		{Tier: DecisionSweepTierRequirement, DocumentID: "req-none", Title: "None", Version: 1, Content: "Names no decision."},
+	}
+	got := DeriveDecisionCitations([]string{"DEC-40", "DEC-4"}, sources)
+	want := []DecisionCitation{
+		{DecisionID: "DEC-4", Tier: DecisionSweepTierRequirement, DocumentID: "req-a", Title: "Alpha", Version: 5},
+		{DecisionID: "DEC-4", Tier: DecisionSweepTierSystemDesign, DocumentID: "design-a", Title: "Shared", Version: 2},
+		{DecisionID: "DEC-4", Tier: DecisionSweepTierSystemDesign, DocumentID: "design-b", Title: "Shared", Version: 3},
+		{DecisionID: "DEC-40", Tier: DecisionSweepTierRequirement, DocumentID: "req-z", Title: "Zeta", Version: 1},
+		{DecisionID: "DEC-40", Tier: DecisionSweepTierSystemDesign, DocumentID: "design-a", Title: "Shared", Version: 2},
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("DeriveDecisionCitations=%+v\nwant %+v", got, want)
+	}
+	if empty := DeriveDecisionCitations(nil, sources); empty == nil || len(empty) != 0 {
+		t.Fatalf("no decisions = %#v, want a non-nil empty list", empty)
+	}
+}

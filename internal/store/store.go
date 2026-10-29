@@ -410,6 +410,12 @@ type DocumentStore interface {
 	DismissDecision(ctx context.Context, id string) (core.Decision, error)
 	GetDecision(ctx context.Context, id string) (core.Decision, error)
 	ListDecisions(ctx context.Context) ([]core.Decision, error)
+	// ListDecisionCitations derives, in one workspace read, every pair of a
+	// workspace decision and a live requirement or System Design document whose
+	// current confirmed version names it as a whole token, ordered as
+	// core.DeriveDecisionCitations orders them (component-document-corpus,
+	// Decision citations; req-document-operating-surfaces AC-8.5).
+	ListDecisionCitations(ctx context.Context) ([]core.DecisionCitation, error)
 	DismissDecisionSupersessionSweep(ctx context.Context, decisionID, documentTier, documentID string) (core.DecisionSupersessionSweepEntry, error)
 	// ListPendingProposals normalizes unresolved proposals across the
 	// requirement, System Design, and decision tiers (REQ-1, AC-1.2).

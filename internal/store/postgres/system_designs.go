@@ -939,6 +939,55 @@ func decisionSupersessionSweep(entries []core.DecisionSupersessionSweepEntry) co
 	return core.DecisionSupersessionSweep{Clean: clean, Entries: entries}
 }
 
+// ListDecisionCitations issues two workspace-scoped statements whatever the
+// corpus size: the workspace's decision IDs, then each live requirement and
+// System Design document's current confirmed version. Matching and order are
+// core.DeriveDecisionCitations's (component-document-corpus, Decision
+// citations).
+func (s *Store) ListDecisionCitations(ctx context.Context) ([]core.DecisionCitation, error) {
+	rows, err := s.boundary.Query(ctx, `SELECT id FROM decisions WHERE workspace_id=$1`, workspace(ctx))
+	if err != nil {
+		return nil, err
+	}
+	decisionIDs := []string{}
+	for rows.Next() {
+		var id string
+		if err = rows.Scan(&id); err != nil {
+			rows.Close()
+			return nil, err
+		}
+		decisionIDs = append(decisionIDs, id)
+	}
+	rows.Close()
+	if err = rows.Err(); err != nil {
+		return nil, err
+	}
+	rows, err = s.boundary.Query(ctx, `
+SELECT 'requirement',r.id,r.title,r.current_version,v.content
+FROM requirements r JOIN requirement_versions v ON v.workspace_id=r.workspace_id AND v.requirement_id=r.id AND v.version=r.current_version
+WHERE r.workspace_id=$1 AND r.archived_at IS NULL AND v.confirmed
+UNION ALL
+SELECT 'system_design',d.id,d.title,d.current_version,v.content
+FROM system_designs d JOIN system_design_versions v ON v.workspace_id=d.workspace_id AND v.document_id=d.id AND v.version=d.current_version
+WHERE d.workspace_id=$1 AND d.archived_at IS NULL AND v.confirmed`, workspace(ctx))
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	sources := []core.DecisionCitationSource{}
+	for rows.Next() {
+		var source core.DecisionCitationSource
+		if err = rows.Scan(&source.Tier, &source.DocumentID, &source.Title, &source.Version, &source.Content); err != nil {
+			return nil, err
+		}
+		sources = append(sources, source)
+	}
+	if err = rows.Err(); err != nil {
+		return nil, err
+	}
+	return core.DeriveDecisionCitations(decisionIDs, sources), nil
+}
+
 func recomputeDecisionSupersessionSweepTx(ctx context.Context, tx pgx.Tx, q *db.Queries, decision core.Decision) error {
 	if decision.Supersedes == "" {
 		return nil
