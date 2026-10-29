@@ -1957,6 +1957,18 @@ export interface DecisionSupersessionSweepEntry {
   resolved_by?: string
   resolved_at?: string
 }
+// GET /v1/decision-citations: one item per pair of a workspace decision and a
+// live document whose current confirmed version names it as a whole token.
+export interface DecisionCitation {
+  decision_id: string
+  tier: 'requirement' | 'system_design'
+  document_id: string
+  title: string
+  version: number
+}
+export interface DecisionCitationList {
+  items: DecisionCitation[]
+}
 
 export interface DocumentEventPage {
   events: TaskEvent[]

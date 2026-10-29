@@ -424,13 +424,80 @@ func DecisionTokens(content string) []string {
 // SortDecisionIDs orders DEC-n IDs by their number, so DEC-9 sorts before
 // DEC-10.
 func SortDecisionIDs(ids []string) {
-	sort.Slice(ids, func(i, j int) bool {
-		left, right := strings.TrimPrefix(ids[i], "DEC-"), strings.TrimPrefix(ids[j], "DEC-")
-		if len(left) != len(right) {
-			return len(left) < len(right)
+	sort.Slice(ids, func(i, j int) bool { return decisionIDLess(ids[i], ids[j]) })
+}
+
+func decisionIDLess(a, b string) bool {
+	left, right := strings.TrimPrefix(a, "DEC-"), strings.TrimPrefix(b, "DEC-")
+	if len(left) != len(right) {
+		return len(left) < len(right)
+	}
+	return left < right
+}
+
+// DecisionCitation is one derived pair of a workspace decision and a live
+// requirement or System Design document whose current confirmed version names
+// it as a whole token (component-document-corpus, Decision citations;
+// req-document-operating-surfaces AC-8.5). Tier is DecisionSweepTierRequirement
+// or DecisionSweepTierSystemDesign; Version is the current confirmed version.
+type DecisionCitation struct {
+	DecisionID string `json:"decision_id"`
+	Tier       string `json:"tier"`
+	DocumentID string `json:"document_id"`
+	Title      string `json:"title"`
+	Version    int    `json:"version"`
+}
+
+// DecisionCitationSource is one live document's current confirmed version, as
+// a backend reads it for DeriveDecisionCitations.
+type DecisionCitationSource struct {
+	Tier       string
+	DocumentID string
+	Title      string
+	Version    int
+	Content    string
+}
+
+// DeriveDecisionCitations applies the corpus whole-token rule to each source
+// and keeps the tokens that name one of decisionIDs, the workspace's decision
+// records in any state. Every backend hands its rows here, so matching and
+// order never depend on SQL regular expressions or collation. Items sort by
+// decision number, then tier with requirement first, then listed title in byte
+// order, then document ID. The result is never nil.
+func DeriveDecisionCitations(decisionIDs []string, sources []DecisionCitationSource) []DecisionCitation {
+	known := make(map[string]bool, len(decisionIDs))
+	for _, id := range decisionIDs {
+		known[id] = true
+	}
+	citations := []DecisionCitation{}
+	for _, source := range sources {
+		for _, token := range DecisionTokens(source.Content) {
+			if known[token] {
+				citations = append(citations, DecisionCitation{DecisionID: token, Tier: source.Tier, DocumentID: source.DocumentID, Title: source.Title, Version: source.Version})
+			}
 		}
-		return left < right
+	}
+	sort.SliceStable(citations, func(i, j int) bool {
+		left, right := citations[i], citations[j]
+		if left.DecisionID != right.DecisionID {
+			return decisionIDLess(left.DecisionID, right.DecisionID)
+		}
+		if left.Tier != right.Tier {
+			return decisionCitationTierRank(left.Tier) < decisionCitationTierRank(right.Tier)
+		}
+		if left.Title != right.Title {
+			return left.Title < right.Title
+		}
+		return left.DocumentID < right.DocumentID
 	})
+	return citations
+}
+
+func decisionCitationTierRank(tier string) int {
+	if tier == DecisionSweepTierRequirement {
+		return 0
+	}
+	return 1
 }
 
 func ValidateDecision(decision Decision) error {
