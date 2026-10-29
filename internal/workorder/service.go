@@ -48,8 +48,12 @@ type Service struct {
 	RedactionSecrets            redact.SecretSource
 	WorkspaceGitHubApps         store.WorkspaceGitHubAppStore
 	GitHubApps                  *github.AppClient
-	consultedMu                 sync.Mutex
-	consulted                   map[string]struct{}
+	// PublicURL is the deployment's configured public dashboard origin
+	// (config.PublicURLEnv). Pull-request bodies link the task page under it
+	// (req-delivery-and-forge AC-2.5).
+	PublicURL   string
+	consultedMu sync.Mutex
+	consulted   map[string]struct{}
 }
 
 type Context struct {

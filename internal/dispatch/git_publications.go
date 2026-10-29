@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"net/url"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -11,10 +12,39 @@ import (
 	"github.com/kidus-tiliksew/conveyor/internal/core"
 )
 
-func PRBody(task core.Task, evidence ...core.Artifact) string {
-	body := fmt.Sprintf("<!-- conveyor:task-link -->\nConveyor task `%s`\n\nSource: %s\n", task.ID, task.Source)
+// PRBodyContext carries the deployment and repository facts the pull-request
+// body renders beyond the task itself.
+type PRBodyContext struct {
+	// PublicURL is the deployment's configured public dashboard origin
+	// (config.PublicURLEnv). Callers inject it; the body never reads the
+	// environment at render time.
+	PublicURL string
+	// Repository is the task repository's GitHub owner/repo slug.
+	Repository string
+}
+
+// PRBody renders the Conveyor-managed pull-request body region. The task ID
+// links to the task's workspace-scoped dashboard page when the deployment has
+// a valid public URL, and stays plain otherwise (req-delivery-and-forge
+// AC-2.5; req-workspace-addresses AC-1.1, AC-1.10). A task filed from an issue
+// in its own repository closes that issue whether or not issue publication
+// published an association, and one issue never gets two closing lines
+// (req-delivery-and-forge AC-8.6; component-git-delivery).
+func PRBody(task core.Task, bodyContext PRBodyContext, evidence ...core.Artifact) string {
+	ref := "`" + task.ID + "`"
+	if link := TaskDashboardURL(bodyContext.PublicURL, task.Workspace, task.ID); link != "" {
+		ref = "[" + ref + "](" + link + ")"
+	}
+	body := fmt.Sprintf("<!-- conveyor:task-link -->\nConveyor task %s\n\nSource: %s\n", ref, task.Source)
+	var closes []int
 	if task.GitHub != nil && task.GitHub.IssueNumber > 0 {
-		body += fmt.Sprintf("\nCloses #%d\n", task.GitHub.IssueNumber)
+		closes = append(closes, task.GitHub.IssueNumber)
+	}
+	if number := sameRepositorySourceIssue(bodyContext.Repository, task.Source); number > 0 && !slices.Contains(closes, number) {
+		closes = append(closes, number)
+	}
+	for _, number := range closes {
+		body += fmt.Sprintf("\nCloses #%d\n", number)
 	}
 	if len(evidence) > 0 {
 		body += "\n<!-- conveyor:verification-evidence -->\n### Verification evidence\n\n"
@@ -28,6 +58,45 @@ func PRBody(task core.Task, evidence ...core.Artifact) string {
 		body += "\nEvidence media remains in Conveyor's task-scoped artifact store. This PR mirror intentionally publishes durable metadata only—no control-plane credentials or private artifact URLs.\n"
 	}
 	return body
+}
+
+// TaskDashboardURL returns the task's dashboard page under its workspace,
+// <public URL>/w/<workspace>/tasks/<task-id> (req-workspace-addresses AC-1.1,
+// AC-1.10), or "" when the public URL is unset or invalid or the task names no
+// workspace. A valid public URL is http or https with a host and no user info,
+// query, or fragment, as verification delivery requires
+// (component-verification-publication).
+func TaskDashboardURL(publicURL, workspace, taskID string) string {
+	base := strings.TrimRight(strings.TrimSpace(publicURL), "/")
+	workspace, taskID = strings.TrimSpace(workspace), strings.TrimSpace(taskID)
+	if base == "" || len(base) > 512 || workspace == "" || taskID == "" {
+		return ""
+	}
+	u, err := url.Parse(base)
+	if err != nil || (u.Scheme != "https" && u.Scheme != "http") || u.Host == "" || u.User != nil || u.RawQuery != "" || u.ForceQuery || u.Fragment != "" {
+		return ""
+	}
+	link := u.JoinPath("w", workspace, "tasks", taskID).String()
+	// The link is a Markdown destination; refuse anything that could end it.
+	if strings.ContainsAny(link, " \t\r\n()<>[]`") {
+		return ""
+	}
+	return link
+}
+
+// sameRepositorySourceIssue returns the source issue number when the task was
+// filed from an issue in the task repository, compared case-insensitively as
+// GitHub compares slugs, and 0 for any other source.
+func sameRepositorySourceIssue(repository, source string) int {
+	repository = strings.ToLower(strings.TrimSpace(repository))
+	if repository == "" {
+		return 0
+	}
+	number, err := sourceIssueNumber(repository, strings.ToLower(source))
+	if err != nil {
+		return 0
+	}
+	return number
 }
 
 // queueApprovedIssue queues the approved plan's issue publication only while

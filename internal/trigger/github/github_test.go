@@ -117,6 +117,31 @@ func TestReconcilePullRequestBodyPreservesAgentContentAroundLifecycle(t *testing
 	}
 }
 
+// Reconciling an open pull request's body at its next submission adds the
+// dashboard link and source-issue closure inside the managed region and leaves
+// agent text and verification regions unchanged (req-delivery-and-forge
+// AC-2.5, AC-8.6; component-git-delivery).
+func TestReconcilePullRequestBodyAddsTaskLinkInsideManagedRegionOnly(t *testing.T) {
+	plain := "<!-- conveyor:task-link -->\nConveyor task `task-1`\n\nSource: github:acme/app#7"
+	linked := "<!-- conveyor:task-link -->\nConveyor task [`task-1`](https://conveyor.example/w/demo/tasks/task-1)\n\nSource: github:acme/app#7\n\nCloses #7"
+	key := strings.Repeat("ab", 32)
+	verification := "<!-- conveyor:verification:" + key + " -->\n### Durable verification\n<!-- /conveyor:verification:" + key + " -->"
+	before, after := "## Summary\n\nagent-authored context", "## Validation\n\nCI run 1 attempt 1: success"
+	existing := before + "\n\n" + plain + "\n" + pullRequestLifecycleEndMarker + "\n\n" + after
+	want := before + "\n\n" + linked + "\n" + pullRequestLifecycleEndMarker + "\n\n" + after
+	if updated := reconcilePullRequestBody(existing, linked); updated != want {
+		t.Fatalf("reconciled body:\n%q\nwant:\n%q", updated, want)
+	}
+	if again := reconcilePullRequestBody(want, linked); again != want {
+		t.Fatalf("second reconcile changed body: %q", again)
+	}
+	withVerification := existing + "\n\n" + verification
+	updated := reconcilePullRequestBody(withVerification, linked)
+	if !strings.HasPrefix(updated, want) || strings.Count(updated, verification) != 1 {
+		t.Fatalf("verification region not preserved: %q", updated)
+	}
+}
+
 func TestReconcilePullRequestBodyMigratesLegacyBodies(t *testing.T) {
 	lifecycle := "<!-- conveyor:task-link -->\nConveyor task `task-1`\n\nSource: mcp\n\nCloses #42"
 	tests := []struct {

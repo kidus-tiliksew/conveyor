@@ -251,6 +251,7 @@ func main() {
 		return cfg, nil
 	}}
 	workOrders.WorkspaceGitHubApps = st
+	workOrders.PublicURL = srv.InvitationDelivery.PublicURL
 	d.WorkspaceGitHubApps = st
 	workOrders.RedactionSecrets = st
 	srv.WorkOrders = workOrders
