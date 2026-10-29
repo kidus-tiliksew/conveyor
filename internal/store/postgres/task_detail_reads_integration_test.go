@@ -117,4 +117,20 @@ func TestTaskDetailReadsIssueOneBoundedQueryIntegration(t *testing.T) {
 	if afterValues != beforeValues || strings.Contains(afterValues, sentinel) {
 		t.Fatalf("unrelated growth changed returned values:\nbefore %s\nafter  %s", beforeValues, afterValues)
 	}
+	// Growing the selected output keeps one query per selection and follows
+	// the stated row bounds: one row per capture, at most one snapshot row
+	// per requested order, one metadata row per requested tier and ID.
+	storetest.GrowSelectedTaskDetail(t, st, ctx, &seed, 4)
+	grown, _ := observe()
+	snapshotRows := int64(0)
+	for _, id := range seed.OrderIDs {
+		if _, found, err := st.GetWorkOrderActivitySnapshot(ctx, id); err != nil {
+			t.Fatal(err)
+		} else if found {
+			snapshotRows++
+		}
+	}
+	if grown["captures"] != (observation{1, before["captures"].rows + 4}) || grown["snapshots"] != (observation{1, snapshotRows}) || snapshotRows > int64(len(seed.OrderIDs)) || grown["metadata"] != (observation{1, before["metadata"].rows + 4}) {
+		t.Fatalf("selected growth = %+v (before %+v, stored snapshots %d)", grown, before, snapshotRows)
+	}
 }

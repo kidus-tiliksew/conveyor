@@ -118,6 +118,48 @@ func runTaskDetailReads(t *testing.T, x Fixture) {
 		}
 	})
 
+	t.Run("SelectedGrowthFollowsTheOutputBounds", func(t *testing.T) {
+		seed := SeedTaskDetailReads(t, st, ctx, "detail-grow-"+strings.ToLower(core.NewTaskID()))
+		count := func() (int, int, int) {
+			t.Helper()
+			captures, err := st.ListTaskTranscriptCaptures(ctx, seed.TaskID)
+			requireOK(t, err)
+			snapshots, err := st.ListTaskActivitySnapshots(ctx, seed.TaskID, seed.OrderIDs)
+			requireOK(t, err)
+			metadata, err := st.ListDocumentMetadata(ctx, seed.DocumentIDs)
+			requireOK(t, err)
+			total := 0
+			for _, list := range captures {
+				total += len(list)
+			}
+			return total, len(snapshots), len(metadata.Requirements) + len(metadata.Designs)
+		}
+		captures, snapshots, documents := count()
+		GrowSelectedTaskDetail(t, st, ctx, &seed, 3)
+		grownCaptures, grownSnapshots, grownDocuments := count()
+		if grownCaptures != captures+3 || grownSnapshots != snapshots || snapshots != 1 || grownDocuments != documents+3 {
+			t.Fatalf("selected growth: captures %d->%d, snapshots %d->%d, documents %d->%d", captures, grownCaptures, snapshots, grownSnapshots, documents, grownDocuments)
+		}
+		ReadTaskDetailSelections(t, st, ctx, seed)
+	})
+
+	t.Run("SelectionsFailWithoutPartialResults", func(t *testing.T) {
+		seed := SeedTaskDetailReads(t, st, ctx, "detail-fail-"+strings.ToLower(core.NewTaskID()))
+		done, cancel := context.WithCancel(ctx)
+		cancel()
+		if captures, err := st.ListTaskTranscriptCaptures(done, seed.TaskID); err == nil || captures != nil {
+			t.Fatalf("captures with a done context = %v, %v; want no result and an error", captures, err)
+		}
+		if snapshots, err := st.ListTaskActivitySnapshots(done, seed.TaskID, seed.OrderIDs); err == nil || snapshots != nil {
+			t.Fatalf("snapshots with a done context = %v, %v; want no result and an error", snapshots, err)
+		}
+		if metadata, err := st.ListDocumentMetadata(done, seed.DocumentIDs); err == nil || metadata.Requirements != nil || metadata.Designs != nil {
+			t.Fatalf("metadata with a done context = %+v, %v; want no result and an error", metadata, err)
+		}
+		// The live context still reads every selection.
+		ReadTaskDetailSelections(t, st, ctx, seed)
+	})
+
 	t.Run("DocumentMetadataKeepsBothTiers", func(t *testing.T) {
 		suffix := core.NewTaskID()
 		requirementVersion := func(content string) core.RequirementVersion {
@@ -281,7 +323,9 @@ func ReadTaskDetailSelections(t *testing.T, st store.Store, ctx context.Context,
 	requireOK(t, err)
 	metadata, err := st.ListDocumentMetadata(ctx, seed.DocumentIDs)
 	requireOK(t, err)
-	if len(captures) != len(seed.OrderIDs) || len(snapshots) != 1 || len(metadata.Requirements) != 1 || len(metadata.Designs) != 1 {
+	// Every order but the live one has ended with a capture; the seed's
+	// live order also holds the capture of its first attempt.
+	if len(captures) < len(seed.OrderIDs)-1 || len(snapshots) != 1 || len(metadata.Requirements)+len(metadata.Designs) != len(seed.DocumentIDs) {
 		t.Fatalf("seed selections: captures=%d snapshots=%d metadata=%+v", len(captures), len(snapshots), metadata)
 	}
 	out, err := json.Marshal(struct {
@@ -291,4 +335,38 @@ func ReadTaskDetailSelections(t *testing.T, st store.Store, ctx context.Context,
 	}{captures, snapshots, metadata})
 	requireOK(t, err)
 	return string(out)
+}
+
+// GrowSelectedTaskDetail ends the seed's live attempt with a capture and
+// opens a new live order n times, and adds n confirmed requirements to the
+// requested metadata. The selections then return n more capture rows, still
+// one snapshot row, and n more metadata rows.
+func GrowSelectedTaskDetail(t *testing.T, st store.Store, ctx context.Context, seed *TaskDetailReadsSeed, n int) {
+	t.Helper()
+	human := store.WithActor(ctx, store.Actor{ID: "operator", Role: core.ActorHuman})
+	for i := 0; i < n; i++ {
+		live := seed.OrderIDs[len(seed.OrderIDs)-1]
+		order, err := st.GetWorkOrder(ctx, live)
+		requireOK(t, err)
+		_, err = ReleaseWorkerClaim(ctx, st, live, captureWorker, core.WorkOrderRelease{SessionID: order.SessionID, Outcome: core.WorkOrderOutcomeChildFailure, Reason: "harness exited", InitialRetryDelay: time.Nanosecond, MaximumRetryDelay: time.Nanosecond})
+		requireOK(t, err)
+		_, err = st.RecordWorkOrderAttemptCapture(ctx, live, workerCaptureIdentity(order.SessionID), captureOf(order, "", fmt.Sprintf("selected transcript %s %d", live, i)))
+		requireOK(t, err)
+		next := fmt.Sprintf("%s-implement-grown-%d", seed.TaskID, len(seed.OrderIDs)+1)
+		// Each grown order is created strictly after every earlier one.
+		now := time.Now().UTC().Truncate(time.Microsecond).Add(time.Duration(len(seed.OrderIDs)) * time.Minute)
+		requireOK(t, st.CreateJob(ctx, core.Job{ID: next, TaskID: seed.TaskID, Stage: core.StageImplement, State: core.JobPending}))
+		requireOK(t, CreateWorkOrder(ctx, st, core.WorkOrder{ID: next, TaskID: seed.TaskID, JobID: next, Stage: core.StageImplement, State: core.WorkOrderQueued, QueueEnteredAt: now, QueueDeadline: now.Add(time.Hour), CreatedAt: now}))
+		session := "detail-grow-" + next
+		current, err := ClaimWorkOrder(ctx, st, next, core.WorkOrderClaim{WorkerID: captureWorker, ClaimantID: captureWorker, SessionID: session, ClientToken: session, Lease: time.Hour, ExecutionTimeout: time.Hour})
+		requireOK(t, err)
+		requireOK(t, st.UpsertWorkOrderActivitySnapshot(ctx, next, workerCaptureIdentity(current.SessionID), "live tail "+next))
+		seed.OrderIDs = append(seed.OrderIDs, next)
+		id := fmt.Sprintf("%s-grown-%d", seed.DocumentIDs[0], len(seed.DocumentIDs))
+		_, version, err := st.CreateRequirement(human, core.Requirement{ID: id, Title: "Detail " + id}, core.RequirementVersion{Content: "# Detail " + id, Origin: core.RequirementOriginOperator, Statements: []core.RequirementStatement{{ID: "REQ-1", Statement: "Keep grown metadata."}}})
+		requireOK(t, err)
+		_, _, err = st.ConfirmRequirementVersion(human, id, version.Version)
+		requireOK(t, err)
+		seed.DocumentIDs = append(seed.DocumentIDs, id)
+	}
 }

@@ -483,12 +483,13 @@ func shortTaskRunHead(sha string) string {
 // taskRunReadinessCache reuses successful merge-readiness reads for
 // taskRunMergeReadinessReuse. Failed reads are never cached, and a key covers
 // the task state, merge approval, and approved head so a transition or new
-// approval reads again. Concurrent misses for one task and key share one
-// in-flight hook call; the mutex is never held across the hook
-// (component-http-api, Request-scoped detail reads).
+// approval reads again. Entries are stored per full key under the task, so a
+// completion for one key never evicts another key's entry. Concurrent misses
+// for one task and key share one in-flight hook call; the mutex is never held
+// across the hook (component-http-api, Request-scoped detail reads).
 type taskRunReadinessCache struct {
 	mu      sync.Mutex
-	entries map[string]taskRunReadinessEntry
+	entries map[string]map[string]taskRunReadinessEntry
 	flights map[string][]*taskRunReadinessFlight
 	clock   func() time.Time
 }
@@ -533,7 +534,7 @@ func (c *taskRunReadinessCache) readObserved(ctx context.Context, task core.Task
 	key := taskRunReadinessKey(task)
 	for {
 		c.mu.Lock()
-		if entry, ok := c.entries[id]; ok && entry.key == key && c.now().Sub(entry.readAt) < taskRunMergeReadinessReuse {
+		if entry, ok := c.entries[id][key]; ok && c.now().Sub(entry.readAt) < taskRunMergeReadinessReuse {
 			c.mu.Unlock()
 			return entry.readiness, !entry.readAt.Before(since), nil
 		}
@@ -590,19 +591,27 @@ func (c *taskRunReadinessCache) finish(id string, flight *taskRunReadinessFlight
 	}
 	now := c.now()
 	if c.entries == nil {
-		c.entries = map[string]taskRunReadinessEntry{}
+		c.entries = map[string]map[string]taskRunReadinessEntry{}
 	}
-	for cached, entry := range c.entries {
-		if now.Sub(entry.readAt) >= taskRunMergeReadinessReuse {
-			delete(c.entries, cached)
+	for cachedID, keys := range c.entries {
+		for cachedKey, entry := range keys {
+			if now.Sub(entry.readAt) >= taskRunMergeReadinessReuse {
+				delete(keys, cachedKey)
+			}
+		}
+		if len(keys) == 0 {
+			delete(c.entries, cachedID)
 		}
 	}
-	c.entries[id] = taskRunReadinessEntry{key: flight.key, readiness: readiness, readAt: now}
+	if c.entries[id] == nil {
+		c.entries[id] = map[string]taskRunReadinessEntry{}
+	}
+	c.entries[id][flight.key] = taskRunReadinessEntry{key: flight.key, readiness: readiness, readAt: now}
 }
 
-// forget drops the task's entry and advances its generation: every flight
-// already running for it is superseded, so none can store its result
-// afterward, and later readers start a new call.
+// forget drops every key's entry for the task and advances its generation:
+// every flight already running for it is superseded, so none can store its
+// result afterward, and later readers start a new call.
 func (c *taskRunReadinessCache) forget(ctx context.Context, taskID string) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -1037,8 +1046,8 @@ func (s *Server) checkpointTaskRunOrderAttempt(w http.ResponseWriter, r *http.Re
 func (c *taskRunReadinessCache) lastKnown(ctx context.Context, task core.Task) *nextaction.MergeReadiness {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	entry, ok := c.entries[taskRunReadinessID(ctx, task.ID)]
-	if !ok || entry.key != taskRunReadinessKey(task) || c.now().Sub(entry.readAt) >= taskRunMergeReadinessReuse {
+	entry, ok := c.entries[taskRunReadinessID(ctx, task.ID)][taskRunReadinessKey(task)]
+	if !ok || c.now().Sub(entry.readAt) >= taskRunMergeReadinessReuse {
 		return nil
 	}
 	return &nextaction.MergeReadiness{State: entry.readiness.State, HeadSHA: entry.readiness.HeadSHA, Number: entry.readiness.Number}

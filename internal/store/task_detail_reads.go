@@ -11,6 +11,7 @@ import (
 // (component-persistence, Task-detail batch reads; component-http-api,
 // Request-scoped detail reads). Each method reads the workspace from the
 // context, and an empty selection returns an empty result without a query.
+// Any error returns no result; the volatile backend refuses a done context.
 type TaskDetailReadStore interface {
 	// ListTaskTranscriptCaptures returns every stored capture of the task's
 	// work orders, keyed by work-order ID, each list in the order
@@ -62,6 +63,9 @@ func (set DocumentMetadataSet) Add(row DocumentMetadata) {
 }
 
 func (m *memory) ListTaskTranscriptCaptures(ctx context.Context, taskID string) (map[string][]core.WorkOrderTranscriptCapture, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 	out := map[string][]core.WorkOrderTranscriptCapture{}
@@ -81,6 +85,9 @@ func (m *memory) ListTaskTranscriptCaptures(ctx context.Context, taskID string) 
 }
 
 func (m *memory) ListTaskActivitySnapshots(ctx context.Context, taskID string, orderIDs []string) (map[string]core.WorkOrderActivitySnapshot, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 	out := map[string]core.WorkOrderActivitySnapshot{}
@@ -104,6 +111,9 @@ func (m *memory) ListTaskActivitySnapshots(ctx context.Context, taskID string, o
 }
 
 func (m *memory) ListDocumentMetadata(ctx context.Context, ids []string) (DocumentMetadataSet, error) {
+	if err := ctx.Err(); err != nil {
+		return DocumentMetadataSet{}, err
+	}
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 	out := NewDocumentMetadataSet()
