@@ -250,11 +250,10 @@ const absenceCases: AbsenceCase[] = [
     }),
     action: nextAction(`${taskId}-implement-2`),
     retained: async (timeline) => {
-      const title = timeline.getByText('Implementation — in progress', { exact: true })
-      await expect(title).toBeVisible()
-      await expect(
-        title.locator('..').getByText('run:usr_operator · claude-code · claude-opus-5-5', { exact: true }),
-      ).toBeVisible()
+      const entry = timeline.locator('li[data-order-entry="claimed"]')
+      await expect(entry.getByText('Implementation', { exact: true })).toBeVisible()
+      await expect(entry.getByText('In progress', { exact: true })).toBeVisible()
+      await expect(entry.getByText('run:usr_operator · claude-code · claude-opus-5-5', { exact: true })).toBeVisible()
       await expect(timeline.getByText('Agent activity — Progress: removing the facts panel')).toBeVisible()
     },
   },
@@ -371,11 +370,11 @@ test('dependency waits, automatic retries, bounces, parking, and closing read as
   await expect(timeline.getByText('Closed', { exact: true })).toHaveCount(0)
 })
 
-// A task-context decision is the operator's audited act, so it reads as a note
-// naming the document; a payload without target fields, or an omitted payload,
-// keeps a readable title and the audit disclosure (req-operator-next-action
-// AC-2.2; component-web-task-surfaces, Work-order timeline entries).
-test('task-context decisions read as Context confirmed and Context dismissed notes', async ({ page }) => {
+// A task-context decision shows as the document under Attached context, so the
+// human timeline renders no note for it, with or without target fields and
+// with an omitted payload; technical activity keeps the recorded events
+// (component-web-task-surfaces, Task detail composition).
+test('task-context decisions render no timeline note', async ({ page }) => {
   const item = activity({
     events: [
       event(1, 'task.context_proposal_confirmed', minutes(1), {
@@ -395,16 +394,16 @@ test('task-context decisions read as Context confirmed and Context dismissed not
         payload_bytes: 9000,
         audit_available: true,
       },
+      event(5, 'task.dependency_added', minutes(5), { depends_on_task_id: 'task-dependency' }),
     ],
   })
   await mockAPI(page, item, nextAction(`${taskId}-implement-1`))
   await page.goto(`/w/demo/tasks/${taskId}/full`)
   const timeline = page.getByRole('region', { name: 'Execution event timeline' })
-  await expect(timeline.getByText('Context confirmed: requirement req-review-gates-evidence')).toBeVisible()
-  await expect(timeline.getByText('Context dismissed: System Design component-web-dashboard')).toBeVisible()
-  await expect(timeline.getByText('Context confirmed', { exact: true })).toHaveCount(1)
-  await expect(timeline.getByText('Context dismissed', { exact: true })).toHaveCount(1)
-  await expect(timeline.getByText('Details omitted from this page')).toHaveCount(1)
+  await expect(timeline.getByText('Waiting on another task')).toBeVisible()
+  await expect(timeline).not.toContainText('Context confirmed')
+  await expect(timeline).not.toContainText('Context dismissed')
+  await expect(timeline.getByText('Details omitted from this page')).toHaveCount(0)
   await expect(timeline).not.toContainText('undefined')
 })
 
@@ -1020,6 +1019,68 @@ for (const scenario of implementationCases) {
   })
 }
 
+// One order per work-order entry state, plus a claimed order without a
+// claimant, agent, or model. Every order reports usage or none, and no entry
+// prints it (component-web-task-surfaces, Work-order timeline entries).
+const orderStatesItem = activity({
+  work_orders: [
+    order(`${taskId}-implement-1`, {
+      state: 'timed_out',
+      queue_entered_at: minutes(1),
+      execution_deadline: minutes(9),
+      usage_reported: true,
+      tokens_in: 12_345,
+      tokens_out: 6_789,
+    }),
+    order(`${taskId}-implement-2`, { state: 'stale', queue_entered_at: minutes(10) }),
+    order(`${taskId}-implement-3`, {
+      state: 'claimed',
+      queue_entered_at: minutes(11),
+      claimed_by: 'run:usr_operator_with_a_long_claimant_identifier',
+      agent: 'claude-code',
+      model: 'claude-opus-5-5',
+      usage_reported: true,
+      tokens_in: 45_678,
+      tokens_out: 1_234,
+    }),
+    order(`${taskId}-spec-1`, {
+      stage: 'spec',
+      job_id: `${taskId}-spec-1`,
+      state: 'claimed',
+      queue_entered_at: minutes(12),
+    }),
+    order(`${taskId}-implement-4`, { state: 'queued', claimable: true, queue_entered_at: minutes(13) }),
+  ],
+})
+
+const orderStateRows = [
+  {
+    state: 'timed_out',
+    stage: 'Implementation',
+    badge: 'Timed out',
+    detail: 'The execution deadline elapsed before the agent finished; the retry policy applies.',
+  },
+  {
+    state: 'stale',
+    stage: 'Implementation',
+    badge: 'Stale',
+    detail: 'No agent claimed it before queue retention elapsed. Redispatch to offer it again.',
+  },
+  {
+    state: 'claimed',
+    stage: 'Implementation',
+    badge: 'In progress',
+    detail: 'run:usr_operator_with_a_long_claimant_identifier · claude-code · claude-opus-5-5',
+  },
+  { state: 'claimed', stage: 'Plan', badge: 'In progress', detail: undefined },
+  {
+    state: 'queued',
+    stage: 'Implementation',
+    badge: 'Waiting for an agent',
+    detail: 'Any agent connected over MCP can claim it. The server URL is in Settings.',
+  },
+] as const
+
 // One capture of an ended attempt. Its text reaches the page only through the
 // content read (component-web-task-surfaces, Transcript disclosures).
 const transcriptCapture = (attemptId: string) => ({
@@ -1121,6 +1182,36 @@ for (const placement of transcriptPlacements) {
 
 test.describe('at 390 px', () => {
   test.use({ viewport: { width: 390, height: 844 } })
+
+  for (const surface of surfaces) {
+    test(`the ${surface.name} work-order entries read stage, badge, and detail without usage or horizontal scroll`, async ({
+      page,
+    }) => {
+      await mockAPI(page, orderStatesItem, nextAction(`${taskId}-implement-3`))
+      await page.goto(surface.url)
+      const timeline = page.getByRole('region', { name: 'Execution event timeline' })
+      const entries = timeline.locator('li[data-order-entry]')
+      await expect(entries).toHaveCount(orderStateRows.length)
+      for (const [index, row] of orderStateRows.entries()) {
+        const entry = entries.nth(index)
+        await expect(entry).toHaveAttribute('data-order-entry', row.state)
+        await expect(entry.locator(':scope > div > div > span').first()).toHaveText(row.stage)
+        await expect(entry.getByText(row.badge, { exact: true })).toBeVisible()
+        if (row.detail) await expect(entry.locator('p')).toHaveText(row.detail)
+        else await expect(entry.locator('p')).toHaveCount(0)
+        const size = await entry.evaluate((element) => [element.scrollWidth, element.clientWidth])
+        expect(size[0]).toBeLessThanOrEqual(size[1])
+      }
+      await expect(entries.filter({ hasText: 'Usage unavailable' })).toHaveCount(0)
+      await expect(entries.filter({ hasText: / in \/ .* out/ })).toHaveCount(0)
+      await expect(entries.filter({ hasText: '—' })).toHaveCount(0)
+      const viewport = await page.evaluate(() => [
+        document.documentElement.scrollWidth,
+        document.documentElement.clientWidth,
+      ])
+      expect(viewport[0]).toBeLessThanOrEqual(viewport[1])
+    })
+  }
 
   for (const surface of surfaces) {
     test(`the ${surface.name} running job entry has no horizontal scroll`, async ({ page }) => {

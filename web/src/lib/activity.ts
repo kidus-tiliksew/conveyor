@@ -339,9 +339,10 @@ export const noteEventKinds = [
 type NoteEventKind = (typeof noteEventKinds)[number]
 
 // Kinds `noteFor` never renders: the review cards, panels, the plan section,
-// and the approval intervention already tell their story, and the remaining
-// publication bookkeeping reads as noise. Technical activity keeps them all
-// (component-web-task-surfaces, Task detail composition; task 261028-5c2ae2).
+// the approval intervention, and Attached context already tell their story,
+// and the remaining publication bookkeeping reads as noise. Technical activity
+// keeps them all (component-web-task-surfaces, Task detail composition; task
+// 261028-5c2ae2).
 const hiddenNoteKinds = new Set([
   'review.completed',
   'spec.version_approved',
@@ -350,6 +351,8 @@ const hiddenNoteKinds = new Set([
   'github_issue.publication_published',
   'github_issue.associated',
   'review.publication_retry',
+  'task.context_proposal_confirmed',
+  'task.context_proposal_dismissed',
 ])
 
 // Attempt kinds that read as an entry when the factory retries the run on its
@@ -810,7 +813,9 @@ export type TimelineEntry =
       type: 'order'
       at: string
       key: string
+      // The stage label alone; the state reads from the badge.
       title: string
+      badge: { label: string; variant: 'default' | 'accent' | 'attention' }
       detail?: string
       tone: 'waiting' | 'active' | 'alarm'
       order: WorkOrder
@@ -1082,16 +1087,6 @@ function jobSummary(job: Job, results: TaskJobResult | undefined): JobSummaryTex
 
 type NoteContent = Omit<Extract<TimelineEntry, { type: 'note' }>, 'type' | 'at' | 'key'>
 
-const contextKindWords: Record<string, string> = { requirement: 'requirement', system_design: 'System Design' }
-
-function contextDecisionTitle(act: string, payload: Record<string, unknown>) {
-  const kind =
-    typeof payload.target_kind === 'string' ? (contextKindWords[payload.target_kind] ?? payload.target_kind) : ''
-  const target = typeof payload.target_id === 'string' ? payload.target_id.trim() : ''
-  const subject = [kind, target].filter(Boolean).join(' ')
-  return subject ? `${act}: ${subject}` : act
-}
-
 function humanizeKind(kind: string) {
   const text = kind.replaceAll(/[._]/g, ' ')
   return text.charAt(0).toUpperCase() + text.slice(1)
@@ -1281,14 +1276,12 @@ function noteContent(
         title: 'Waiting on another task',
         detail: typeof payload.depends_on_task_id === 'string' ? payload.depends_on_task_id : undefined,
       }
-    // A task-context decision is the operator's audited act on a proposed
-    // document, whichever surface recorded it (req-operator-next-action AC-2.2;
-    // component-web-task-surfaces, Work-order timeline entries). An omitted
-    // payload keeps no strings, so the title falls back to the act alone.
+    // A task-context decision shows as the document under Attached context;
+    // the recorded event stays in technical activity and the audit reads
+    // (component-web-task-surfaces, Task detail composition).
     case 'task.context_proposal_confirmed':
-      return { title: contextDecisionTitle('Context confirmed', payload) }
     case 'task.context_proposal_dismissed':
-      return { title: contextDecisionTitle('Context dismissed', payload) }
+      return undefined
     case 'pipeline.bounce_limit': {
       const source = typeof payload.source === 'string' ? payload.source.trim() : ''
       const sourceLabel = outputInvalidKinds.has(source)
@@ -1479,16 +1472,19 @@ const genericSummaries = new Set([
 // block: narration and attribution enrich the matching stage entry, and only
 // states a job entry cannot carry — waiting for an agent, stale, timed out —
 // become entries of their own.
+// A work-order entry's header reads the stage label, then a state badge; one
+// muted detail line follows (component-web-task-surfaces, Work-order timeline
+// entries).
 function orderEntry(order: WorkOrder, hasJobEntry: boolean): Extract<TimelineEntry, { type: 'order' }> | undefined {
   const stage = workOrderStageLabels[order.stage] ?? stageLabels[order.stage] ?? order.stage
-  const base = { type: 'order' as const, at: order.queue_entered_at, key: `order-${order.id}`, order }
+  const base = { type: 'order' as const, at: order.queue_entered_at, key: `order-${order.id}`, order, title: stage }
   switch (order.state) {
     case 'queued':
       return {
         ...base,
         tone: 'waiting',
-        title: `${stage} — waiting for an operator agent`,
-        detail: 'Any agent connected over MCP can claim this. The server URL is in Settings.',
+        badge: { label: 'Waiting for an agent', variant: 'default' },
+        detail: 'Any agent connected over MCP can claim it. The server URL is in Settings.',
       }
     case 'claimed':
       // A claimed order normally has a running job entry carrying the story.
@@ -1496,14 +1492,14 @@ function orderEntry(order: WorkOrder, hasJobEntry: boolean): Extract<TimelineEnt
       return {
         ...base,
         tone: 'active',
-        title: `${stage} — in progress`,
+        badge: { label: 'In progress', variant: 'accent' },
         detail: [order.claimed_by, order.agent, order.model].filter(Boolean).join(' · ') || undefined,
       }
     case 'stale':
       return {
         ...base,
         tone: 'alarm',
-        title: `${stage} — went stale in the queue`,
+        badge: { label: 'Stale', variant: 'attention' },
         detail: 'No agent claimed it before queue retention elapsed. Redispatch to offer it again.',
       }
     case 'timed_out':
@@ -1511,7 +1507,7 @@ function orderEntry(order: WorkOrder, hasJobEntry: boolean): Extract<TimelineEnt
         ...base,
         at: order.execution_deadline ?? order.queue_entered_at,
         tone: 'alarm',
-        title: `${stage} — timed out`,
+        badge: { label: 'Timed out', variant: 'attention' },
         detail: 'The execution deadline elapsed before the agent finished; the retry policy applies.',
       }
     default:

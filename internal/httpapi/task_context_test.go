@@ -3,6 +3,7 @@ package httpapi
 import (
 	"context"
 	"encoding/json"
+	"maps"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -200,9 +201,10 @@ func TestTaskContextProposalRESTAndTaskProjection(t *testing.T) {
 		t.Fatalf("resolved detail status=%d body=%s", detail.Code, detail.Body.String())
 	}
 
-	// Both decisions are human-timeline events: the bounded view and the human
-	// history page carry them with the target the dashboard note prints
-	// (req-operator-next-action AC-2.2; component-http-api, Bounded detail view).
+	// Both decisions leave the human timeline: the bounded view and the human
+	// history page omit them, and technical history still carries each with
+	// its target (component-http-api, Bounded detail view;
+	// component-web-task-surfaces, Task detail composition).
 	type decisionEvent struct {
 		Kind    string `json:"kind"`
 		Payload struct {
@@ -210,38 +212,47 @@ func TestTaskContextProposalRESTAndTaskProjection(t *testing.T) {
 			TargetID   string `json:"target_id"`
 		} `json:"payload"`
 	}
-	decisions := func(name string, events []decisionEvent) {
-		t.Helper()
-		want := map[string]string{
-			"task.context_proposal_confirmed": "requirement/" + requirement.ID,
-			"task.context_proposal_dismissed": "system_design/" + design.ID,
-		}
-		for _, event := range events {
-			if target, ok := want[event.Kind]; ok && target == event.Payload.TargetKind+"/"+event.Payload.TargetID {
-				delete(want, event.Kind)
-			}
-		}
-		if len(want) != 0 {
-			t.Fatalf("%s lacks decision events %v in %+v", name, want, events)
-		}
-	}
-	bounded := request(http.MethodGet, "/v1/tasks/"+task.ID+"/activity?view=bounded")
-	var boundedView struct {
-		Events []decisionEvent `json:"events"`
-	}
-	if bounded.Code != http.StatusOK || json.Unmarshal(bounded.Body.Bytes(), &boundedView) != nil {
-		t.Fatalf("bounded status=%d body=%s", bounded.Code, bounded.Body.String())
-	}
-	decisions("bounded view", boundedView.Events)
-	history := request(http.MethodGet, "/v1/tasks/"+task.ID+"/history?selection=human")
-	var historyPage struct {
+	type eventPage struct {
 		Selection string          `json:"selection"`
 		Events    []decisionEvent `json:"events"`
 	}
-	if history.Code != http.StatusOK || json.Unmarshal(history.Body.Bytes(), &historyPage) != nil || historyPage.Selection != "human" {
-		t.Fatalf("history status=%d body=%s", history.Code, history.Body.String())
+	decisionKinds := map[string]string{
+		"task.context_proposal_confirmed": "requirement/" + requirement.ID,
+		"task.context_proposal_dismissed": "system_design/" + design.ID,
 	}
-	decisions("human history", historyPage.Events)
+	read := func(name, path string) eventPage {
+		t.Helper()
+		response := request(http.MethodGet, path)
+		var page eventPage
+		if response.Code != http.StatusOK || json.Unmarshal(response.Body.Bytes(), &page) != nil {
+			t.Fatalf("%s status=%d body=%s", name, response.Code, response.Body.String())
+		}
+		return page
+	}
+	absent := func(name string, events []decisionEvent) {
+		t.Helper()
+		for _, event := range events {
+			if _, ok := decisionKinds[event.Kind]; ok {
+				t.Fatalf("%s carries decision event %+v", name, event)
+			}
+		}
+	}
+	absent("bounded view", read("bounded", "/v1/tasks/"+task.ID+"/activity?view=bounded").Events)
+	human := read("human history", "/v1/tasks/"+task.ID+"/history?selection=human")
+	if human.Selection != "human" {
+		t.Fatalf("human history selection=%q", human.Selection)
+	}
+	absent("human history", human.Events)
+	technical := read("technical history", "/v1/tasks/"+task.ID+"/history?selection=technical")
+	want := maps.Clone(decisionKinds)
+	for _, event := range technical.Events {
+		if target, ok := want[event.Kind]; ok && target == event.Payload.TargetKind+"/"+event.Payload.TargetID {
+			delete(want, event.Kind)
+		}
+	}
+	if technical.Selection != "technical" || len(want) != 0 {
+		t.Fatalf("technical history selection=%q lacks decision events %v in %+v", technical.Selection, want, technical.Events)
+	}
 }
 
 func TestArchivedContextErrorsAcrossRESTAndMCP(t *testing.T) {
