@@ -1831,7 +1831,6 @@ func TestTaskDetailStoreCallsStayFixed(t *testing.T) {
 	}
 }
 
-
 // detailPNG encodes a distinct valid PNG per task and index, so each
 // evidence artifact has its own content address.
 func detailPNG(t *testing.T, taskID string, index int) []byte {
