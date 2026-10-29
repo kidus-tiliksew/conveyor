@@ -3,6 +3,7 @@ package singlestore
 import (
 	"context"
 	"sync/atomic"
+	"time"
 
 	"github.com/kidus-tiliksew/conveyor/internal/core"
 	"github.com/kidus-tiliksew/conveyor/internal/store"
@@ -43,17 +44,24 @@ ORDER BY task_id,at,id`, args...)
 // candidate predicate in one query without correlated subqueries. The latest
 // plan version is the one GetLatestSpecVersion returns, and the order is
 // ListTasks's.
-func (s *Store) ListGitHubLifecycleReconcileTaskIDs(ctx context.Context) ([]string, error) {
+func (s *Store) ListGitHubLifecycleReconcileTaskIDs(ctx context.Context, approvedSince *time.Time) ([]string, error) {
 	ws, err := workspace(ctx)
 	if err != nil {
 		return nil, err
+	}
+	// A nil cutoff selects no approved-plan candidate. SingleStore refuses
+	// the zero time as a bound value, so that branch is left out instead.
+	approved, args := "FALSE", []any{ws, ws}
+	if approvedSince != nil {
+		approved = "(g.task_id IS NULL AND COALESCE(spec.approved,false) AND spec.approved_at >= ?)"
+		args = append(args, approvedSince.UTC())
 	}
 	rows, err := documentRows(ctx, s.db, `SELECT t.id FROM tasks t
 LEFT JOIN github_lifecycles g ON g.workspace_id=t.workspace_id AND g.task_id=t.id
 LEFT JOIN (SELECT task_id, MAX(version) AS version FROM task_specs WHERE workspace_id=? GROUP BY task_id) latest ON latest.task_id=t.id
 LEFT JOIN task_specs spec ON spec.workspace_id=t.workspace_id AND spec.task_id=t.id AND spec.version=latest.version
-WHERE t.workspace_id=? AND (COALESCE(t.superseded_by,'')<>'' OR (g.task_id IS NULL AND COALESCE(spec.approved,false)))
-ORDER BY t.created_at DESC,t.id ASC`, ws, ws)
+WHERE t.workspace_id=? AND (COALESCE(t.superseded_by,'')<>'' OR `+approved+`)
+ORDER BY t.created_at DESC,t.id ASC`, args...)
 	if err != nil {
 		return nil, err
 	}

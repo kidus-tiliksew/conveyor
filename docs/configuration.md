@@ -251,10 +251,17 @@ These are set by the launcher; you never set them yourself.
 ## Workspace config over the API
 
 The server-side workspace configuration (repos, stage timeouts, review seat
-count, gates, bounce limits, monitor) is also editable at
+count, gates, bounce limits, monitor, issue publication) is also editable at
 runtime: through the Workspace page, or round-tripped as YAML with
 `conveyor config export` and `conveyor config import`, which uses optimistic
 concurrency and rejects unknown keys.
+
+`issue_publication.enabled` decides whether plan approval publishes a GitHub
+issue for the task. It is off when the document never set it, including every
+workspace created before the setting existed. Turning it on publishes only for
+plans approved afterward; turning it off creates no further issues and leaves
+published ones unchanged. The server records `issue_publication.enabled_at`,
+the time the setting was last turned on, and ignores a value you send.
 
 ## Workspace GitHub App connection
 

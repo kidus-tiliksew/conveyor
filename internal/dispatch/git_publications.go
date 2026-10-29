@@ -6,6 +6,7 @@ import (
 	"net/url"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/kidus-tiliksew/conveyor/internal/core"
 )
@@ -29,10 +30,28 @@ func PRBody(task core.Task, evidence ...core.Artifact) string {
 	return body
 }
 
+// queueApprovedIssue queues the approved plan's issue publication only while
+// workspace issue publication is on and only for a plan approved at or after
+// the last turn-on, so an approval with the setting off creates and edits no
+// issue, including the task's source issue, even when the setting turns on
+// between the approval commit and this read (req-delivery-and-forge AC-8.2,
+// AC-8.3; DEC-91). Callers pass the pre-approval plan value, so the approval
+// time is read from the persisted version.
 func (d *Dispatcher) queueApprovedIssue(ctx context.Context, task core.Task, spec core.SpecVersion) error {
 	cfg, err := d.currentConfig(ctx)
 	if err != nil {
 		return err
+	}
+	since, on := cfg.IssuePublication.ApprovedSince()
+	if !on {
+		return nil
+	}
+	approved, exists, err := d.Store.GetLatestSpecVersion(ctx, task.ID)
+	if err != nil {
+		return err
+	}
+	if !exists || !approved.Approved || approved.Version != spec.Version || approved.ApprovedAt.Before(since) {
+		return nil
 	}
 	repo, ok := cfg.Repo(task.Repo)
 	if !ok || strings.TrimSpace(repo.GitHub) == "" {
@@ -51,6 +70,11 @@ func (d *Dispatcher) queueApprovedIssue(ctx context.Context, task core.Task, spe
 // ReconcileGitHubLifecycles repairs the narrow approval-to-outbox gap after a
 // process restart. Remote side effects remain owned by the durable queue job.
 //
+// The repair covers only a plan approved at or after the time issue
+// publication was last turned on, and none while it is off, so turning the
+// setting on never publishes for a task approved earlier
+// (req-delivery-and-forge AC-8.3; component-git-delivery).
+//
 // The store selects only the tasks the loop can act on. Its rule reads
 // terminal tasks where it needs them: a start-over retires its task, so every
 // superseded task stays a candidate for the pull-request close it queues, and
@@ -58,7 +82,15 @@ func (d *Dispatcher) queueApprovedIssue(ctx context.Context, task core.Task, spe
 // state. Every other task skipped the loop body before the store read
 // narrowed (component-runtime, Reconcile tick; component-persistence).
 func (d *Dispatcher) ReconcileGitHubLifecycles(ctx context.Context) (int, error) {
-	taskIDs, err := d.Store.ListGitHubLifecycleReconcileTaskIDs(ctx)
+	cfg, err := d.currentConfig(ctx)
+	if err != nil {
+		return 0, err
+	}
+	var approvedSince *time.Time
+	if since, on := cfg.IssuePublication.ApprovedSince(); on {
+		approvedSince = &since
+	}
+	taskIDs, err := d.Store.ListGitHubLifecycleReconcileTaskIDs(ctx, approvedSince)
 	if err != nil {
 		return 0, err
 	}
@@ -77,7 +109,7 @@ func (d *Dispatcher) ReconcileGitHubLifecycles(ctx context.Context) (int, error)
 		if getErr != nil {
 			return repaired, getErr
 		}
-		if !ok || !spec.Approved {
+		if !ok || !spec.Approved || approvedSince == nil || spec.ApprovedAt.Before(*approvedSince) {
 			continue
 		}
 		if _, exists, getErr := d.Store.GetGitHubLifecycle(ctx, task.ID); getErr != nil {

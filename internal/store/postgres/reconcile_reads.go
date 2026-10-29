@@ -3,6 +3,7 @@ package postgres
 import (
 	"context"
 	"sync/atomic"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/kidus-tiliksew/conveyor/internal/core"
@@ -41,20 +42,21 @@ ORDER BY e.task_id, e.at, e.id`, workspace(ctx), taskIDs, store.AutomaticReviewE
 // ListGitHubLifecycleReconcileTaskIDs evaluates the lifecycle reconcile's
 // candidate predicate in one query. The latest plan version is the one
 // GetLatestSpecVersion returns, and the order is ListTasks's.
-func (s *Store) ListGitHubLifecycleReconcileTaskIDs(ctx context.Context) ([]string, error) {
+func (s *Store) ListGitHubLifecycleReconcileTaskIDs(ctx context.Context, approvedSince *time.Time) ([]string, error) {
 	rows, err := s.boundary.Query(ctx, `SELECT t.id
 FROM tasks t
 LEFT JOIN github_lifecycles g ON g.workspace_id = t.workspace_id AND g.task_id = t.id
 LEFT JOIN (
-	SELECT DISTINCT ON (s.task_id) s.task_id, s.approved
+	SELECT DISTINCT ON (s.task_id) s.task_id, s.approved, s.approved_at
 	FROM task_specs s
 	JOIN tasks owner ON owner.id = s.task_id
 	WHERE owner.workspace_id = $1
 	ORDER BY s.task_id, s.version DESC
 ) latest ON latest.task_id = t.id
 WHERE t.workspace_id = $1
-  AND (COALESCE(t.superseded_by, '') <> '' OR (g.task_id IS NULL AND COALESCE(latest.approved, false)))
-ORDER BY t.created_at DESC, t.id`, workspace(ctx))
+  AND (COALESCE(t.superseded_by, '') <> '' OR (
+	$2::timestamptz IS NOT NULL AND g.task_id IS NULL AND COALESCE(latest.approved, false) AND latest.approved_at >= $2::timestamptz))
+ORDER BY t.created_at DESC, t.id`, workspace(ctx), approvedSince)
 	if err != nil {
 		return nil, err
 	}

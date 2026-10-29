@@ -1081,6 +1081,13 @@ export interface WorkspaceConfigDocument {
     startup_window: string
     merge_deferral_bound?: string
   }
+  // Absent on documents that never set it; absent reads as off. The server
+  // stamps enabled_at, the last turn-on time, and ignores a sent value
+  // (req-delivery-and-forge AC-8.1, AC-8.3).
+  issue_publication?: {
+    enabled: boolean
+    enabled_at?: string
+  }
 }
 
 export type MonitorSignalKind = 'post_merge_failure' | 'direct_push' | 'external_pr_merge' | 'lineaged_merge' | 'revert'

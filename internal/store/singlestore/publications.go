@@ -84,6 +84,8 @@ func (s *Store) UpdateGitHubLifecycle(ctx context.Context, lifecycle core.GitHub
 			kind = "github_issue.publication_published"
 		case lifecycle.State == core.GitHubPublicationFailed:
 			kind = "github_issue.publication_failed"
+		case lifecycle.State == core.GitHubPublicationSkipped:
+			kind = "github_issue.publication_skipped"
 		case lifecycle.State == core.GitHubPublicationRetrying && strings.TrimSpace(lifecycle.LastError) != "":
 			kind = "github_issue.publication_retry"
 		}
@@ -387,7 +389,7 @@ func (s *Store) QueueGitHubLifecycle(ctx context.Context, p core.GitHubLifecycle
 // equivalent. The update locks the workspace issue registry before checking.
 func validateGitHubWrite(p core.GitHubLifecycle, inserting bool) error {
 	switch p.State {
-	case core.GitHubPublicationQueued, core.GitHubPublicationRetrying, core.GitHubPublicationPublished, core.GitHubPublicationFailed:
+	case core.GitHubPublicationQueued, core.GitHubPublicationRetrying, core.GitHubPublicationPublished, core.GitHubPublicationFailed, core.GitHubPublicationSkipped:
 	default:
 		return fmt.Errorf("invalid GitHub publication state")
 	}
@@ -404,7 +406,7 @@ func validateGitHubWrite(p core.GitHubLifecycle, inserting bool) error {
 		if p.IssueNumber < 0 {
 			return fmt.Errorf("negative GitHub issue number")
 		}
-		if p.Outcome != "" && p.Outcome != "created" && p.Outcome != "reused" {
+		if p.Outcome != "" && p.Outcome != "created" && p.Outcome != "reused" && p.Outcome != "skipped" {
 			return fmt.Errorf("invalid GitHub publication outcome")
 		}
 	}

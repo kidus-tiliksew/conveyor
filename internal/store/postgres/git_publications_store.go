@@ -157,6 +157,8 @@ func (s *Store) UpdateGitHubLifecycle(ctx context.Context, lifecycle core.GitHub
 			kind = "github_issue.publication_published"
 		case lifecycle.State == core.GitHubPublicationFailed:
 			kind = "github_issue.publication_failed"
+		case lifecycle.State == core.GitHubPublicationSkipped:
+			kind = "github_issue.publication_skipped"
 		case lifecycle.State == core.GitHubPublicationRetrying && strings.TrimSpace(lifecycle.LastError) != "":
 			kind = "github_issue.publication_retry"
 		}

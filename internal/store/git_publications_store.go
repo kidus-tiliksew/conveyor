@@ -251,6 +251,9 @@ func ValidateGitHubPublicationTransition(from, to core.GitHubPublicationState) e
 		return nil
 	}
 	command := publicationCommand(string(to), string(core.GitHubPublicationRetrying), string(core.GitHubPublicationPublished), string(core.GitHubPublicationFailed))
+	if to == core.GitHubPublicationSkipped {
+		command = core.GitHubPublicationSkipCommand
+	}
 	expected, err := core.TransitionGitHubPublication(from, command)
 	if err != nil {
 		return err
@@ -410,6 +413,8 @@ func (m *memory) UpdateGitHubLifecycle(ctx context.Context, lifecycle core.GitHu
 		kind = "github_issue.publication_published"
 	case lifecycle.State == core.GitHubPublicationFailed:
 		kind = "github_issue.publication_failed"
+	case lifecycle.State == core.GitHubPublicationSkipped:
+		kind = "github_issue.publication_skipped"
 	case lifecycle.State == core.GitHubPublicationRetrying && strings.TrimSpace(lifecycle.LastError) != "":
 		kind = "github_issue.publication_retry"
 	}

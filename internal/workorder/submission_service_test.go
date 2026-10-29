@@ -487,7 +487,8 @@ func TestSubmitForReviewWaitsForIssueAndPassesClosingReference(t *testing.T) {
 	if _, err = storetest.For(st).ClaimWorkOrder(ctx, job.ID, core.WorkOrderClaim{SessionID: "implementer", ClientToken: "secret", ClaimantID: core.TaskRunClaimantID("usr-executor"), OwnerUserID: "usr-executor", Lease: time.Minute}); err != nil {
 		t.Fatal(err)
 	}
-	cfg := &config.Config{Workspace: "test", Repos: []config.Repo{{Name: "app", Base: "main", GitHub: "acme/app"}}, Routing: config.Routing{Stages: map[string]config.StageRoute{"review": {Execution: config.ExecutionMCP}}}}
+	cfg := &config.Config{Workspace: "test", Repos: []config.Repo{{Name: "app", Base: "main", GitHub: "acme/app"}}, Routing: config.Routing{Stages: map[string]config.StageRoute{"review": {Execution: config.ExecutionMCP}}},
+		IssuePublication: config.IssuePublication{Enabled: true, EnabledAt: time.Now().UTC().Add(-time.Hour)}}
 	dispatcher := dispatch.New(st, cfg, nil)
 	dispatcher.DisableMemoryQueueForTest()
 	opened := 0
@@ -527,6 +528,94 @@ func TestSubmitForReviewWaitsForIssueAndPassesClosingReference(t *testing.T) {
 	}
 	if !foundAttribution {
 		t.Fatalf("pull request attribution missing or unsafe: %+v", events)
+	}
+}
+
+// The issue association is awaited only while issue publication is on and
+// the task has an open or published lifecycle row (req-delivery-and-forge
+// AC-8.2, AC-8.4; component-submission-merge).
+func TestSubmitForReviewIssueAssociationFollowsPublicationSetting(t *testing.T) {
+	on := config.IssuePublication{Enabled: true, EnabledAt: time.Now().UTC().Add(-time.Hour)}
+	off := config.IssuePublication{EnabledAt: on.EnabledAt}
+	for _, tc := range []struct {
+		name        string
+		publication config.IssuePublication
+		lifecycle   core.GitHubPublicationState
+		admitted    bool
+	}{
+		{name: "setting off with a queued lifecycle", publication: off, lifecycle: core.GitHubPublicationQueued, admitted: true},
+		{name: "setting never set and no lifecycle", admitted: true},
+		{name: "setting on and no lifecycle", publication: on, admitted: true},
+		{name: "setting on and a skipped lifecycle", publication: on, lifecycle: core.GitHubPublicationSkipped, admitted: true},
+		{name: "setting on and a queued lifecycle", publication: on, lifecycle: core.GitHubPublicationQueued},
+		{name: "setting on and a failed lifecycle", publication: on, lifecycle: core.GitHubPublicationFailed},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx := store.WithActor(context.Background(), store.SystemActor())
+			st := store.NewMemory()
+			task := core.Task{ID: "issue-setting", Workspace: "test", Repo: "app", Title: "Setting change", Branch: "conveyor/issue-setting", BaseBranch: "main", State: core.TaskRunning, CreatedAt: time.Now()}
+			if err := st.CreateTask(ctx, task); err != nil {
+				t.Fatal(err)
+			}
+			spec, err := st.CreateSpecVersion(ctx, core.SpecVersion{TaskID: task.ID, Content: "approved"})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err = st.ApproveSpecVersion(ctx, task.ID, spec.Version); err != nil {
+				t.Fatal(err)
+			}
+			if tc.lifecycle != "" {
+				if err = st.QueueGitHubLifecycle(ctx, core.GitHubLifecycle{TaskID: task.ID, Repository: "acme/app", SpecVersion: spec.Version}); err != nil {
+					t.Fatal(err)
+				}
+				if tc.lifecycle != core.GitHubPublicationQueued {
+					lifecycle, _, _ := st.GetGitHubLifecycle(ctx, task.ID)
+					lifecycle.State = tc.lifecycle
+					if tc.lifecycle == core.GitHubPublicationSkipped {
+						lifecycle.Outcome = "skipped"
+					}
+					if err = st.UpdateGitHubLifecycle(ctx, lifecycle); err != nil {
+						t.Fatal(err)
+					}
+				}
+			}
+			job := core.Job{ID: "issue-setting-implement", TaskID: task.ID, Stage: core.StageImplement, State: core.JobPending}
+			if err = st.CreateJob(ctx, job); err != nil {
+				t.Fatal(err)
+			}
+			if err = storetest.For(st).CreateWorkOrder(ctx, core.WorkOrder{ID: job.ID, TaskID: task.ID, JobID: job.ID, Stage: core.StageImplement}); err != nil {
+				t.Fatal(err)
+			}
+			if _, err = storetest.For(st).ClaimWorkOrder(ctx, job.ID, core.WorkOrderClaim{SessionID: "implementer", ClientToken: "secret", ClaimantID: core.TaskRunClaimantID("usr-executor"), OwnerUserID: "usr-executor", Lease: time.Minute}); err != nil {
+				t.Fatal(err)
+			}
+			cfg := &config.Config{Workspace: "test", Repos: []config.Repo{{Name: "app", Base: "main", GitHub: "acme/app"}}, Routing: config.Routing{Stages: map[string]config.StageRoute{"review": {Execution: config.ExecutionMCP}}}, IssuePublication: tc.publication}
+			dispatcher := dispatch.New(st, cfg, nil)
+			dispatcher.DisableMemoryQueueForTest()
+			opened := 0
+			var body string
+			service := &Service{Store: st, Dispatcher: dispatcher, ConfigProvider: func(context.Context) (*config.Config, error) { return cfg, nil }, ReconcileSubmissionPR: func(_ context.Context, _ string, _ githubtrigger.SubmissionPullRequest, value string) error {
+				opened++
+				body = value
+				return nil
+			}, ReviewTarget: func(context.Context, string, string) (githubtrigger.ReviewTarget, error) {
+				return githubtrigger.ReviewTarget{Number: 9, HeadSHA: "abc"}, nil
+			}}
+			prepareSubmissionTest(service)
+			_, err = service.SubmitForReview(ctx, job.ID, "implementer", submissionTestHead(service))
+			if !tc.admitted {
+				if err == nil || !strings.Contains(err.Error(), "retry after publication") || opened != 0 {
+					t.Fatalf("pending publication submit err=%v opened=%d", err, opened)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("submission refused: %v", err)
+			}
+			if opened != 1 || strings.Contains(body, "Closes #") {
+				t.Fatalf("reconciled=%d body=%q", opened, body)
+			}
+		})
 	}
 }
 
