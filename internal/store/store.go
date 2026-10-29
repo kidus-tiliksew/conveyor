@@ -528,6 +528,8 @@ type ActivityStore interface {
 	CountEventsSinceHumanIntervention(ctx context.Context, taskID, kind string) (int, error)
 	ListActivityMarkers(ctx context.Context) ([]ActivityMarker, error)
 	ListActivityMarkersForTasks(ctx context.Context, taskIDs []string) ([]ActivityMarker, error)
+	ActivityValidationReader
+	ActivityInputReader
 }
 
 // StoreMetadata owns the store metadata contract.
@@ -800,10 +802,16 @@ func (m *memory) countEventsSinceHumanInterventionLocked(taskID, kind string) in
 }
 
 func (m *memory) ListActivityMarkers(ctx context.Context) ([]ActivityMarker, error) {
-	orders, err := m.ListWorkOrders(ctx)
-	if err != nil {
-		return nil, err
-	}
+	markers, _, err := m.activityMarkersAt(ctx, time.Now().UTC())
+	return markers, err
+}
+
+// activityMarkersAt folds every task's marker from one order projection at
+// now and returns that projection, so the Board's input read and the marker
+// read share one order selection and one instant (component-persistence,
+// Board activity validation reads).
+func (m *memory) activityMarkersAt(ctx context.Context, now time.Time) ([]ActivityMarker, []core.WorkOrder, error) {
+	orders := m.workOrdersAt(now)
 	var implementTaskIDs []string
 	seenImplementTask := map[string]bool{}
 	for _, order := range orders {
@@ -814,7 +822,7 @@ func (m *memory) ListActivityMarkers(ctx context.Context) ([]ActivityMarker, err
 	}
 	blockersByTask, err := m.ListDependencyBlockers(ctx, implementTaskIDs)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	ordersByTask := make(map[string][]core.WorkOrder)
 	for _, order := range orders {
@@ -838,7 +846,7 @@ func (m *memory) ListActivityMarkers(ctx context.Context) ([]ActivityMarker, err
 			marker.LastEventAt, marker.LastEventID = latest.At, latest.ID
 		}
 		marker.ForgeFailure = LatestForgeFailure(m.events[id])
-		marker.ReviewDiagnostics = ReviewVerdictDiagnostics(ordersByTask[id], m.events[id], time.Now().UTC())
+		marker.ReviewDiagnostics = ReviewVerdictDiagnostics(ordersByTask[id], m.events[id], now)
 		marker.ReviewRecovery = ReviewRecoveryNeeded(ordersByTask[id], m.events[id])
 		marker.InterruptedReviewRecovery = InterruptedReviewRecoveryNeeded(task, CurrentReviewOrders(ordersByTask[id], m.events[id]), m.events[id])
 		marker.Stalled = StalledTask(ordersByTask[id])
@@ -846,7 +854,7 @@ func (m *memory) ListActivityMarkers(ctx context.Context) ([]ActivityMarker, err
 		markers = append(markers, marker)
 	}
 	sort.Slice(markers, func(i, j int) bool { return markers[i].TaskID < markers[j].TaskID })
-	return markers, nil
+	return markers, orders, nil
 }
 
 func (m *memory) ListActivityMarkersForTasks(ctx context.Context, taskIDs []string) ([]ActivityMarker, error) {

@@ -27,6 +27,7 @@ import (
 	"github.com/kidus-tiliksew/conveyor/internal/config"
 	"github.com/kidus-tiliksew/conveyor/internal/core"
 	"github.com/kidus-tiliksew/conveyor/internal/dispatch"
+	"github.com/kidus-tiliksew/conveyor/internal/monitor"
 	"github.com/kidus-tiliksew/conveyor/internal/nextaction"
 	"github.com/kidus-tiliksew/conveyor/internal/pack"
 	"github.com/kidus-tiliksew/conveyor/internal/store"
@@ -2564,6 +2565,7 @@ type observedStore struct {
 	getLatestJobCalls        int
 	listEventsAfterCalls     int
 	readTaskEventStreamCalls int
+	activityInputTaskIDs     []string
 	afterHook                func()
 }
 
@@ -2618,6 +2620,13 @@ func (s *observedStore) ListActivityMarkers(ctx context.Context) ([]store.Activi
 func (s *observedStore) ListActivityMarkersForTasks(ctx context.Context, taskIDs []string) ([]store.ActivityMarker, error) {
 	s.listActivityMarkersCalls++
 	return s.Store.ListActivityMarkersForTasks(ctx, taskIDs)
+}
+
+// ReadActivityInputs is the activity marker read and its one order selection.
+func (s *observedStore) ReadActivityInputs(ctx context.Context, taskIDs []string, now time.Time) (store.ActivityInputs, error) {
+	s.listActivityMarkersCalls++
+	s.activityInputTaskIDs = append([]string(nil), taskIDs...)
+	return s.Store.ReadActivityInputs(ctx, taskIDs, now)
 }
 
 func (s *observedStore) GetLatestJob(ctx context.Context, taskID string) (core.Job, bool, error) {
@@ -2683,8 +2692,11 @@ func TestActivityIndexAvoidsPerTaskHistoryQueries(t *testing.T) {
 		t.Fatalf("activity query calls = markers:%d jobs:%d events:%d interventions:%d",
 			observed.listActivityMarkersCalls, observed.listJobsCalls, observed.listEventsCalls, observed.listInterventionsCalls)
 	}
-	if observed.listScopedOrdersCalls != 1 || len(observed.lastScopedOrderTaskIDs) != 3 {
-		t.Fatalf("activity order scope calls=%d task_ids=%v", observed.listScopedOrdersCalls, observed.lastScopedOrderTaskIDs)
+	// The marker read returns its one order selection, so the page's orders
+	// are never read a second time (component-http-api, Activity conditional
+	// admission).
+	if observed.listScopedOrdersCalls != 0 || len(observed.activityInputTaskIDs) != 3 {
+		t.Fatalf("activity order scope calls=%d input task_ids=%v", observed.listScopedOrdersCalls, observed.activityInputTaskIDs)
 	}
 }
 
@@ -2785,6 +2797,630 @@ func TestActivitySupportsSlimConditionalGzipDeltaReads(t *testing.T) {
 	}
 }
 
+// activityConditionalStore counts every read a Board 304 must not issue and
+// can inject a write during the input read or an error at the validation read.
+// httptest serves each request on the test goroutine, so no lock is needed.
+type activityConditionalStore struct {
+	store.Store
+	calls         map[string]int
+	duringInputs  func()
+	validationErr error
+	// eventMask, when set, reports these event fields instead of the
+	// stored ones: the state a reader sees after a row commit and before the
+	// separately appended event becomes visible.
+	eventMask *store.ActivityValidation
+}
+
+func (s *activityConditionalStore) count(name string) { s.calls[name]++ }
+
+func (s *activityConditionalStore) reset() map[string]int {
+	calls := s.calls
+	s.calls = map[string]int{}
+	return calls
+}
+
+// activityProjectionReads are the marker, order, proposal, claim-wait, and
+// next-action reads a 304 must not issue.
+var activityProjectionReads = []string{
+	"ReadActivityInputs", "ListActivityMarkers", "ListActivityMarkersForTasks", "ListWorkOrders", "ListWorkOrdersForTasks",
+	"ListPendingProposals", "ListClaimBlockingProposalsForTasks", "ListNextActionHistory", "ListOpenDependents",
+	"ListDependencyBlockers", "ListTaskHeads", "ListLatestSpecVersionNumbers", "ListTaskContextProposals",
+	"MonitorOriginsForTasks", "ListDocumentHeads", "ListTaskContextDesignPins",
+}
+
+func (s *activityConditionalStore) ReadActivityValidation(ctx context.Context, now time.Time) (store.ActivityValidation, error) {
+	s.count("ReadActivityValidation")
+	if s.validationErr != nil {
+		return store.ActivityValidation{}, s.validationErr
+	}
+	validation, err := s.Store.ReadActivityValidation(ctx, now)
+	if err == nil && s.eventMask != nil {
+		validation.EventCount, validation.EventMaxID = s.eventMask.EventCount, s.eventMask.EventMaxID
+	}
+	return validation, err
+}
+
+func (s *activityConditionalStore) ReadActivityInputs(ctx context.Context, taskIDs []string, now time.Time) (store.ActivityInputs, error) {
+	s.count("ReadActivityInputs")
+	if hook := s.duringInputs; hook != nil {
+		s.duringInputs = nil
+		hook()
+	}
+	return s.Store.ReadActivityInputs(ctx, taskIDs, now)
+}
+
+func (s *activityConditionalStore) ListActivityMarkers(ctx context.Context) ([]store.ActivityMarker, error) {
+	s.count("ListActivityMarkers")
+	return s.Store.ListActivityMarkers(ctx)
+}
+
+func (s *activityConditionalStore) ListActivityMarkersForTasks(ctx context.Context, ids []string) ([]store.ActivityMarker, error) {
+	s.count("ListActivityMarkersForTasks")
+	return s.Store.ListActivityMarkersForTasks(ctx, ids)
+}
+
+func (s *activityConditionalStore) ListWorkOrders(ctx context.Context) ([]core.WorkOrder, error) {
+	s.count("ListWorkOrders")
+	return s.Store.ListWorkOrders(ctx)
+}
+
+func (s *activityConditionalStore) ListWorkOrdersForTasks(ctx context.Context, ids []string) ([]core.WorkOrder, error) {
+	s.count("ListWorkOrdersForTasks")
+	return s.Store.ListWorkOrdersForTasks(ctx, ids)
+}
+
+func (s *activityConditionalStore) ListPendingProposals(ctx context.Context) ([]core.PendingProposal, error) {
+	s.count("ListPendingProposals")
+	return s.Store.ListPendingProposals(ctx)
+}
+
+func (s *activityConditionalStore) ListClaimBlockingProposalsForTasks(ctx context.Context, ids []string) (map[string][]store.ClaimBlockingProposal, error) {
+	s.count("ListClaimBlockingProposalsForTasks")
+	return s.Store.ListClaimBlockingProposalsForTasks(ctx, ids)
+}
+
+func (s *activityConditionalStore) ListNextActionHistory(ctx context.Context, ids []string) (map[string]store.NextActionHistory, error) {
+	s.count("ListNextActionHistory")
+	return s.Store.ListNextActionHistory(ctx, ids)
+}
+
+func (s *activityConditionalStore) ListOpenDependents(ctx context.Context, ids []string) ([]store.TaskHead, error) {
+	s.count("ListOpenDependents")
+	return s.Store.ListOpenDependents(ctx, ids)
+}
+
+func (s *activityConditionalStore) ListDependencyBlockers(ctx context.Context, ids []string) (map[string]store.DependencyBlockers, error) {
+	s.count("ListDependencyBlockers")
+	return s.Store.ListDependencyBlockers(ctx, ids)
+}
+
+func (s *activityConditionalStore) ListTaskHeads(ctx context.Context, ids []string) (map[string]store.TaskHead, error) {
+	s.count("ListTaskHeads")
+	return s.Store.ListTaskHeads(ctx, ids)
+}
+
+func (s *activityConditionalStore) ListLatestSpecVersionNumbers(ctx context.Context, ids []string) (map[string]int, error) {
+	s.count("ListLatestSpecVersionNumbers")
+	return s.Store.ListLatestSpecVersionNumbers(ctx, ids)
+}
+
+func (s *activityConditionalStore) ListTaskContextProposals(ctx context.Context, taskID string, state core.TaskContextProposalState) ([]core.TaskContextProposal, error) {
+	s.count("ListTaskContextProposals")
+	return s.Store.ListTaskContextProposals(ctx, taskID, state)
+}
+
+func (s *activityConditionalStore) MonitorOriginsForTasks(ctx context.Context, ids []string) (map[string]monitor.ObservationRecord, error) {
+	s.count("MonitorOriginsForTasks")
+	return s.Store.MonitorOriginsForTasks(ctx, ids)
+}
+
+func (s *activityConditionalStore) ListDocumentHeads(ctx context.Context, ids []string) (map[string]store.DocumentHead, error) {
+	s.count("ListDocumentHeads")
+	return s.Store.ListDocumentHeads(ctx, ids)
+}
+
+func (s *activityConditionalStore) ListTaskContextDesignPins(ctx context.Context, taskIDs, documentIDs []string) (map[string]map[string]int, error) {
+	s.count("ListTaskContextDesignPins")
+	return s.Store.ListTaskContextDesignPins(ctx, taskIDs, documentIDs)
+}
+
+// activityConditionalFixture is one Board over a counting volatile store
+// with an injected request clock.
+type activityConditionalFixture struct {
+	t         *testing.T
+	base      store.Store
+	counted   *activityConditionalStore
+	ctx       context.Context
+	server    *Server
+	handler   http.Handler
+	now       time.Time
+	authorize func(*http.Request)
+	etag      string
+}
+
+func newActivityConditionalFixture(t *testing.T) *activityConditionalFixture {
+	t.Helper()
+	base := store.NewMemory()
+	counted := &activityConditionalStore{Store: base, calls: map[string]int{}}
+	server := NewServer(counted)
+	server.Workspace = "demo"
+	f := &activityConditionalFixture{
+		t: t, base: base, counted: counted, server: server,
+		ctx: store.WithWorkspace(store.WithActor(t.Context(), store.SystemActor()), "demo"),
+		// Five seconds into the next minute. The store stamps its own writes
+		// with the wall clock, so every stamp the test makes is already
+		// before the fixture clock and no creation time passes mid-test.
+		now: time.Now().UTC().Truncate(time.Minute).Add(time.Minute + 5*time.Second),
+	}
+	previous := activityClock
+	activityClock = func() time.Time { return f.now }
+	t.Cleanup(func() { activityClock = previous })
+	f.handler = authenticatedMemoryHandler(server)
+	return f
+}
+
+func (f *activityConditionalFixture) task(id string, state core.TaskState) core.Task {
+	f.t.Helper()
+	task := core.Task{ID: id, Workspace: "demo", Title: "Title " + id, Repo: "conveyor", State: state, NextStage: core.StageImplement, CreatedAt: f.now.Add(-time.Hour)}
+	if err := f.base.CreateTask(f.ctx, task); err != nil {
+		f.t.Fatal(err)
+	}
+	if err := f.base.AppendEvent(f.ctx, core.Event{TaskID: id, Kind: "task.created", At: task.CreatedAt}); err != nil {
+		f.t.Fatal(err)
+	}
+	return task
+}
+
+func (f *activityConditionalFixture) order(order core.WorkOrder) {
+	f.t.Helper()
+	if err := f.base.CreateJob(f.ctx, core.Job{ID: order.JobID, TaskID: order.TaskID, Stage: order.Stage, State: core.JobRunning}); err != nil {
+		f.t.Fatal(err)
+	}
+	if err := storetest.For(f.base).CreateWorkOrder(f.ctx, order); err != nil {
+		f.t.Fatal(err)
+	}
+}
+
+func (f *activityConditionalFixture) read(path, etag string) *httptest.ResponseRecorder {
+	f.t.Helper()
+	response := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodGet, path, nil)
+	if etag != "" {
+		request.Header.Set("If-None-Match", etag)
+	}
+	if f.authorize != nil {
+		f.authorize(request)
+	}
+	f.handler.ServeHTTP(response, request)
+	return response
+}
+
+func projectionReadCount(calls map[string]int) map[string]int {
+	out := map[string]int{}
+	for _, name := range activityProjectionReads {
+		if calls[name] > 0 {
+			out[name] = calls[name]
+		}
+	}
+	return out
+}
+
+func TestActivityConditionalAnswersBeforeProjection(t *testing.T) {
+	f := newActivityConditionalFixture(t)
+	f.task("conditional-a", core.TaskQueued)
+	f.task("conditional-b", core.TaskQueued)
+	f.order(core.WorkOrder{ID: "conditional-order", TaskID: "conditional-a", JobID: "conditional-order", Stage: core.StageImplement, State: core.WorkOrderQueued, QueueEnteredAt: f.now.Add(-time.Minute), QueueDeadline: f.now.Add(time.Hour)})
+	full := f.read("/v1/activity", "")
+	calls := f.counted.reset()
+	etag, cursor := full.Header().Get("ETag"), full.Header().Get("X-Conveyor-Cursor")
+	if full.Code != http.StatusOK || !strings.HasPrefix(etag, `"a1.`) || cursor == "" || !bytes.Contains(full.Body.Bytes(), []byte(`"id":"conditional-a"`)) {
+		t.Fatalf("cold status=%d etag=%q cursor=%q body=%s", full.Code, etag, cursor, full.Body.String())
+	}
+	// One order selection serves the markers and the projection, and the
+	// validation is read before the page and again after projecting.
+	if calls["ReadActivityInputs"] != 1 || calls["ListWorkOrdersForTasks"] != 0 || calls["ReadActivityValidation"] != 2 {
+		t.Fatalf("cold read calls = %v", calls)
+	}
+	for _, test := range []struct {
+		name, path string
+		gzip       bool
+	}{
+		{name: "full", path: "/v1/activity"},
+		{name: "full tag with returned cursor", path: "/v1/activity?since=" + cursor},
+		{name: "gzip", path: "/v1/activity", gzip: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			response := httptest.NewRecorder()
+			request := httptest.NewRequest(http.MethodGet, test.path, nil)
+			request.Header.Set("If-None-Match", etag)
+			if test.gzip {
+				request.Header.Set("Accept-Encoding", "gzip")
+			}
+			f.handler.ServeHTTP(response, request)
+			calls := f.counted.reset()
+			if response.Code != http.StatusNotModified || response.Body.Len() != 0 {
+				t.Fatalf("status=%d body=%q", response.Code, response.Body.String())
+			}
+			if got := projectionReadCount(calls); len(got) != 0 || calls["ReadActivityValidation"] != 1 {
+				t.Fatalf("304 issued projection reads %v (validation %d)", got, calls["ReadActivityValidation"])
+			}
+			headers := response.Header()
+			if headers.Get("ETag") != etag || headers.Get("X-Conveyor-Cursor") != cursor || headers.Get("X-Conveyor-Total") != "2" ||
+				headers.Get("X-Conveyor-Limit") != "100" || headers.Get("X-Conveyor-Offset") != "0" || headers.Get("Vary") != "Accept-Encoding" ||
+				headers.Get("Content-Encoding") != "" {
+				t.Fatalf("304 headers = %v", headers)
+			}
+		})
+	}
+	// A tag for another page or a forged valid_until never admits a 304.
+	if paged := f.read("/v1/activity?limit=1", etag); paged.Code != http.StatusOK {
+		t.Fatalf("other page status=%d", paged.Code)
+	}
+	fields := strings.Split(strings.Trim(etag, `"`), ".")
+	forged := `"a1.` + strconv.FormatInt(f.now.Add(time.Hour).UnixMicro(), 10) + "." + fields[2] + "." + fields[3] + `"`
+	if response := f.read("/v1/activity", forged); response.Code != http.StatusOK {
+		t.Fatalf("forged valid_until status=%d", response.Code)
+	}
+	for _, malformed := range []string{"", "*", strings.Trim(etag, `"`), `"a1.x.y.z"`, `"a2.` + strings.TrimPrefix(etag, `"a1.`)} {
+		if response := f.read("/v1/activity", malformed); response.Code != http.StatusOK {
+			t.Fatalf("malformed tag %q status=%d", malformed, response.Code)
+		}
+	}
+}
+
+// TestActivityConditionalCursorCompatibility sends one Board tag with each
+// kind of cursor. A full read and the tag's own returned frontier ask for a
+// body the tag certifies; any other valid frontier gets the ordinary 200
+// (component-http-api, Activity conditional admission).
+func TestActivityConditionalCursorCompatibility(t *testing.T) {
+	f := newActivityConditionalFixture(t)
+	f.task("cursor-a", core.TaskQueued)
+	f.task("cursor-b", core.TaskQueued)
+	if err := f.base.AppendEvent(f.ctx, core.Event{TaskID: "cursor-b", Kind: "task.updated", At: f.now.Add(-time.Minute)}); err != nil {
+		t.Fatal(err)
+	}
+	full := f.read("/v1/activity", "")
+	etag, cursor := full.Header().Get("ETag"), full.Header().Get("X-Conveyor-Cursor")
+	raw, err := base64.RawURLEncoding.DecodeString(cursor)
+	if err != nil {
+		t.Fatal(err)
+	}
+	fields := strings.Split(strings.TrimPrefix(string(raw), "v2:"), ":")
+	micros, err := strconv.ParseInt(fields[0], 10, 64)
+	if err != nil {
+		t.Fatal(err)
+	}
+	id, err := strconv.ParseInt(fields[1], 10, 64)
+	if err != nil || micros <= 0 || id <= 0 {
+		t.Fatalf("returned cursor %q decodes to %s", cursor, raw)
+	}
+	v2 := func(micros, id int64) string {
+		return base64.RawURLEncoding.EncodeToString([]byte("v2:" + strconv.FormatInt(micros, 10) + ":" + strconv.FormatInt(id, 10)))
+	}
+	for _, test := range []struct {
+		name, since string
+		admitted    bool
+	}{
+		{name: "empty since", since: "", admitted: true},
+		{name: "zero v2 frontier", since: v2(0, 0), admitted: true},
+		{name: "legacy v1 cursor", since: base64.RawURLEncoding.EncodeToString([]byte("v1:" + strconv.FormatInt(id, 10))), admitted: true},
+		{name: "returned frontier", since: cursor, admitted: true},
+		{name: "older time", since: v2(micros-1, id)},
+		{name: "same time lower id", since: v2(micros, id-1)},
+		{name: "same time higher id", since: v2(micros, id+1)},
+		{name: "future frontier", since: v2(micros+time.Hour.Microseconds(), id)},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			path := "/v1/activity"
+			if test.since != "" {
+				path += "?since=" + test.since
+			}
+			f.counted.reset()
+			response := f.read(path, etag)
+			calls := f.counted.reset()
+			if test.admitted {
+				if response.Code != http.StatusNotModified || response.Body.Len() != 0 || len(projectionReadCount(calls)) != 0 {
+					t.Fatalf("status=%d body=%q projection reads=%v", response.Code, response.Body.String(), projectionReadCount(calls))
+				}
+				return
+			}
+			// The incompatible cursor gets the same body as an unconditional
+			// request with that cursor.
+			ordinary := f.read(path, "")
+			if response.Code != http.StatusOK || calls["ReadActivityInputs"] != 1 || response.Body.String() != ordinary.Body.String() ||
+				response.Header().Get("X-Conveyor-Cursor") != ordinary.Header().Get("X-Conveyor-Cursor") {
+				t.Fatalf("status=%d inputs=%d body=%s want %s", response.Code, calls["ReadActivityInputs"], response.Body.String(), ordinary.Body.String())
+			}
+			if again := f.read("/v1/activity?since="+cursor, etag); again.Code != http.StatusNotModified {
+				t.Fatalf("returned frontier after an incompatible cursor status=%d", again.Code)
+			}
+		})
+	}
+}
+
+func TestActivityConditionalInvalidation(t *testing.T) {
+	for _, test := range []struct {
+		name string
+		// noEvent marks a change that appends no event, so only the row
+		// fingerprint can invalidate the tag.
+		noEvent bool
+		change  func(*activityConditionalFixture)
+	}{
+		{name: "new event", change: func(f *activityConditionalFixture) {
+			if err := f.base.AppendEvent(f.ctx, core.Event{TaskID: "inv-a", Kind: "task.updated", At: f.now.Add(-time.Second)}); err != nil {
+				f.t.Fatal(err)
+			}
+		}},
+		{name: "lower id event after higher", change: func(f *activityConditionalFixture) {
+			if err := f.base.AppendEvent(f.ctx, core.Event{TaskID: "inv-a", Kind: "task.updated", At: f.now.Add(-2 * time.Hour)}); err != nil {
+				f.t.Fatal(err)
+			}
+		}},
+		{name: "task change", change: func(f *activityConditionalFixture) {
+			if err := f.base.UpdateTaskClassification(f.ctx, "inv-a", "bugfix"); err != nil {
+				f.t.Fatal(err)
+			}
+		}},
+		{name: "new page member", change: func(f *activityConditionalFixture) { f.task("inv-new", core.TaskQueued) }},
+		{name: "work-order transition", change: func(f *activityConditionalFixture) {
+			if _, err := storetest.For(f.base).ClaimWorkOrder(f.ctx, "inv-order", core.WorkOrderClaim{SessionID: "inv-session", ClientToken: "secret", ClaimantID: "worker", WorkerID: "worker", Lease: time.Hour}); err != nil {
+				f.t.Fatal(err)
+			}
+		}},
+		{name: "lease renewal before its event", change: func(f *activityConditionalFixture) {
+			claim := core.WorkOrderClaim{SessionID: "inv-session", ClientToken: "secret", ClaimantID: "worker", WorkerID: "worker", Lease: time.Hour}
+			if _, err := storetest.For(f.base).ClaimWorkOrder(f.ctx, "inv-order", claim); err != nil {
+				f.t.Fatal(err)
+			}
+			f.etag = f.read("/v1/activity", "").Header().Get("ETag")
+			before := activityValidation(f.t, f)
+			if _, err := storetest.For(f.base).RenewWorkerClaim(f.ctx, "inv-order", "worker", "inv-session", 2*time.Hour); err != nil {
+				f.t.Fatal(err)
+			}
+			f.counted.eventMask = &before
+		}},
+		{name: "work-order row update before its event", change: func(f *activityConditionalFixture) {
+			before := activityValidation(f.t, f)
+			order, err := f.base.GetWorkOrder(f.ctx, "inv-order")
+			if err != nil {
+				f.t.Fatal(err)
+			}
+			order.QueueDeadline = order.QueueDeadline.Add(time.Hour)
+			if err := storetest.For(f.base).UpdateWorkOrder(f.ctx, order); err != nil {
+				f.t.Fatal(err)
+			}
+			f.counted.eventMask = &before
+		}},
+		{name: "proposal created", noEvent: true, change: func(f *activityConditionalFixture) {
+			if _, err := f.base.ProposeRequirementVersion(f.ctx, core.RequirementVersion{RequirementID: "req-inv", Content: "# v2", Origin: core.RequirementOriginOperator, Statements: []core.RequirementStatement{{ID: "REQ-1", Statement: "Second."}}}); err != nil {
+				f.t.Fatal(err)
+			}
+		}},
+		{name: "proposal confirmed", noEvent: true, change: func(f *activityConditionalFixture) {
+			version, err := f.base.ProposeRequirementVersion(f.ctx, core.RequirementVersion{RequirementID: "req-inv", Content: "# v2", Origin: core.RequirementOriginOperator, Statements: []core.RequirementStatement{{ID: "REQ-1", Statement: "Second."}}})
+			if err != nil {
+				f.t.Fatal(err)
+			}
+			f.etag = f.read("/v1/activity", "").Header().Get("ETag")
+			if _, _, err := f.base.ConfirmRequirementVersion(f.ctx, "req-inv", version.Version); err != nil {
+				f.t.Fatal(err)
+			}
+		}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			f := newActivityConditionalFixture(t)
+			f.task("inv-a", core.TaskQueued)
+			f.order(core.WorkOrder{ID: "inv-order", TaskID: "inv-a", JobID: "inv-order", Stage: core.StageImplement, State: core.WorkOrderQueued, QueueEnteredAt: f.now.Add(-time.Minute), QueueDeadline: f.now.Add(time.Hour)})
+			if _, _, err := f.base.CreateRequirement(f.ctx, core.Requirement{ID: "req-inv", Title: "Invalidation"}, core.RequirementVersion{Content: "# v1", Origin: core.RequirementOriginOperator, Statements: []core.RequirementStatement{{ID: "REQ-1", Statement: "First."}}}); err != nil {
+				t.Fatal(err)
+			}
+			cold := f.read("/v1/activity", "")
+			f.etag = cold.Header().Get("ETag")
+			cursor := cold.Header().Get("X-Conveyor-Cursor")
+			if unchanged := f.read("/v1/activity?since="+cursor, f.etag); unchanged.Code != http.StatusNotModified {
+				t.Fatalf("unchanged status=%d", unchanged.Code)
+			}
+			eventsBefore := activityEventCount(t, f)
+			test.change(f)
+			if test.noEvent && activityEventCount(t, f) != eventsBefore {
+				t.Fatalf("change appended events: %d -> %d", eventsBefore, activityEventCount(t, f))
+			}
+			changed := f.read("/v1/activity?since="+cursor, f.etag)
+			fresh := changed.Header().Get("ETag")
+			if changed.Code != http.StatusOK || fresh == "" || fresh == f.etag {
+				t.Fatalf("changed status=%d etag %q -> %q", changed.Code, f.etag, fresh)
+			}
+			if again := f.read("/v1/activity", fresh); again.Code != http.StatusNotModified {
+				t.Fatalf("fresh tag status=%d", again.Code)
+			}
+		})
+	}
+	t.Run("capability change", activityCapabilityChange)
+}
+
+// activityValidation reads the fixture workspace's validation state from
+// the volatile store itself.
+func activityValidation(t *testing.T, f *activityConditionalFixture) store.ActivityValidation {
+	t.Helper()
+	validation, err := f.base.ReadActivityValidation(f.ctx, f.now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return validation
+}
+
+// activityEventCount counts the fixture workspace's events.
+func activityEventCount(t *testing.T, f *activityConditionalFixture) int64 {
+	t.Helper()
+	return activityValidation(t, f).EventCount
+}
+
+// activityCapabilityChange proves that a role change, which changes the
+// caller's next-action capabilities, answers a fresh 200.
+func activityCapabilityChange(t *testing.T) {
+	f := newActivityConditionalFixture(t)
+	f.task("capability-a", core.TaskAwaiting)
+	bindings := map[string]map[string]core.WorkspaceRole{"usr-cap": {"demo": core.WorkspaceRoleViewer}}
+	members := &membershipFixture{workspaces: []core.Workspace{{ID: "demo", Name: "demo"}}, roles: bindings}
+	f.server.Workspaces, f.server.Memberships = members, members
+	f.server.Credentials = staticCredentialVerifier{
+		"viewer-secret": {ID: "pat-cap", OwnerUserID: "usr-cap", Kind: core.CredentialUser, Scope: core.CredentialScopeUser},
+	}
+	f.handler = f.server.Handler()
+	f.authorize = func(r *http.Request) {
+		r.Header.Set("Authorization", "Bearer viewer-secret")
+		r.URL.RawQuery = strings.TrimPrefix(r.URL.RawQuery+"&workspace_id=demo", "&")
+	}
+	viewer := f.read("/v1/activity", "")
+	if viewer.Code != http.StatusOK {
+		t.Fatalf("viewer status=%d body=%s", viewer.Code, viewer.Body.String())
+	}
+	etag := viewer.Header().Get("ETag")
+	if again := f.read("/v1/activity", etag); again.Code != http.StatusNotModified {
+		t.Fatalf("viewer repeat status=%d", again.Code)
+	}
+	bindings["usr-cap"]["demo"] = core.WorkspaceRoleOperator
+	operator := f.read("/v1/activity", etag)
+	if operator.Code != http.StatusOK || operator.Header().Get("ETag") == etag {
+		t.Fatalf("capability change status=%d etag=%q", operator.Code, operator.Header().Get("ETag"))
+	}
+}
+
+func TestActivityConditionalDeadlines(t *testing.T) {
+	t.Run("minute rollover", func(t *testing.T) {
+		f := newActivityConditionalFixture(t)
+		f.task("minute-a", core.TaskQueued)
+		etag := f.read("/v1/activity", "").Header().Get("ETag")
+		f.now = f.now.Add(54 * time.Second)
+		if response := f.read("/v1/activity", etag); response.Code != http.StatusNotModified {
+			t.Fatalf("same minute status=%d", response.Code)
+		}
+		f.now = f.now.Add(2 * time.Second)
+		if response := f.read("/v1/activity", etag); response.Code != http.StatusOK || response.Header().Get("ETag") == etag {
+			t.Fatalf("next minute status=%d", response.Code)
+		}
+	})
+	t.Run("work-order deadline inside one minute", func(t *testing.T) {
+		f := newActivityConditionalFixture(t)
+		f.task("deadline-a", core.TaskQueued)
+		f.order(core.WorkOrder{ID: "deadline-order", TaskID: "deadline-a", JobID: "deadline-order", Stage: core.StageImplement, State: core.WorkOrderQueued, QueueEnteredAt: f.now.Add(-time.Hour), QueueDeadline: f.now.Add(20 * time.Second)})
+		cold := f.read("/v1/activity", "")
+		etag := cold.Header().Get("ETag")
+		f.now = f.now.Add(15 * time.Second)
+		if response := f.read("/v1/activity", etag); response.Code != http.StatusNotModified {
+			t.Fatalf("before deadline status=%d", response.Code)
+		}
+		f.now = f.now.Add(10 * time.Second)
+		after := f.read("/v1/activity", etag)
+		if after.Code != http.StatusOK || bytes.Equal(after.Body.Bytes(), cold.Body.Bytes()) {
+			t.Fatalf("after deadline status=%d body=%s", after.Code, after.Body.String())
+		}
+	})
+	t.Run("review lease from a claim event", func(t *testing.T) {
+		f := newActivityConditionalFixture(t)
+		f.task("lease-a", core.TaskRunning)
+		f.order(core.WorkOrder{ID: "lease-review", TaskID: "lease-a", JobID: "lease-review", Stage: core.StageReview, State: core.WorkOrderQueued, QueueEnteredAt: f.now.Add(-time.Hour), QueueDeadline: f.now.Add(time.Hour), ExecutionStartedAt: f.now.Add(-time.Minute)})
+		lease := f.now.Add(30 * time.Second)
+		if err := f.base.AppendEvent(f.ctx, core.Event{TaskID: "lease-a", JobID: "lease-review", Kind: "work_order.claimed", At: f.now.Add(-time.Minute), Payload: core.JSONPayload(map[string]any{"id": "lease-review", "lease_expires_at": lease})}); err != nil {
+			t.Fatal(err)
+		}
+		cold := f.read("/v1/activity", "")
+		etag := cold.Header().Get("ETag")
+		if bytes.Contains(cold.Body.Bytes(), []byte(store.ReviewExpiredWithoutVerdict)) {
+			t.Fatalf("lease reported expired early: %s", cold.Body.String())
+		}
+		f.now = f.now.Add(25 * time.Second)
+		if response := f.read("/v1/activity", etag); response.Code != http.StatusNotModified {
+			t.Fatalf("before lease status=%d", response.Code)
+		}
+		f.now = f.now.Add(10 * time.Second)
+		after := f.read("/v1/activity", etag)
+		if after.Code != http.StatusOK || !bytes.Contains(after.Body.Bytes(), []byte(store.ReviewExpiredWithoutVerdict)) {
+			t.Fatalf("after lease status=%d body=%s", after.Code, after.Body.String())
+		}
+	})
+	t.Run("merge-conflict retry time", func(t *testing.T) {
+		f := newActivityConditionalFixture(t)
+		task := core.Task{ID: "retry-a", Workspace: "demo", Title: "Retry", Repo: "conveyor", State: core.TaskApproved, MergeApproval: true, NextStage: core.StageImplement, CreatedAt: f.now.Add(-time.Hour)}
+		if err := f.base.CreateTask(f.ctx, task); err != nil {
+			t.Fatal(err)
+		}
+		retry := f.now.Add(40 * time.Second)
+		for _, event := range []core.Event{
+			{TaskID: task.ID, Kind: "merge.blocked", At: f.now.Add(-time.Minute), Payload: core.JSONPayload(map[string]string{"approved_head": "aaa", "new_head": "bbb"})},
+			{TaskID: task.ID, Kind: "merge.conflict_dispatch_failed", At: f.now.Add(-30 * time.Second), Payload: core.JSONPayload(map[string]any{"approved_head": "aaa", "new_head": "bbb", "next_retry_at": retry})},
+		} {
+			if err := f.base.AppendEvent(f.ctx, event); err != nil {
+				t.Fatal(err)
+			}
+		}
+		cold := f.read("/v1/activity", "")
+		etag := cold.Header().Get("ETag")
+		if !bytes.Contains(cold.Body.Bytes(), []byte("Next retry at")) {
+			t.Fatalf("retrying summary missing: %s", cold.Body.String())
+		}
+		f.now = f.now.Add(35 * time.Second)
+		if response := f.read("/v1/activity", etag); response.Code != http.StatusNotModified {
+			t.Fatalf("before retry status=%d", response.Code)
+		}
+		f.now = f.now.Add(10 * time.Second)
+		after := f.read("/v1/activity", etag)
+		if after.Code != http.StatusOK || bytes.Contains(after.Body.Bytes(), []byte("Next retry at")) {
+			t.Fatalf("after retry status=%d body=%s", after.Code, after.Body.String())
+		}
+	})
+}
+
+func TestActivityConditionalConcurrentWrite(t *testing.T) {
+	f := newActivityConditionalFixture(t)
+	f.task("race-a", core.TaskQueued)
+	// The write lands after the first validation read and before the second,
+	// as a concurrent request's commit would.
+	f.counted.duringInputs = func() {
+		if err := f.base.AppendEvent(f.ctx, core.Event{TaskID: "race-a", Kind: "task.updated", At: f.now.Add(-time.Second)}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	raced := f.read("/v1/activity", "")
+	racedTag := raced.Header().Get("ETag")
+	if raced.Code != http.StatusOK || racedTag == "" {
+		t.Fatalf("raced status=%d etag=%q", raced.Code, racedTag)
+	}
+	stable := f.read("/v1/activity", racedTag)
+	if stable.Code != http.StatusOK {
+		t.Fatalf("a tag published across a write admitted status=%d", stable.Code)
+	}
+	if again := f.read("/v1/activity", stable.Header().Get("ETag")); again.Code != http.StatusNotModified {
+		t.Fatalf("stable tag status=%d", again.Code)
+	}
+}
+
+func TestActivityConditionalErrorsNeverAnswer304(t *testing.T) {
+	f := newActivityConditionalFixture(t)
+	f.task("error-a", core.TaskQueued)
+	cold := f.read("/v1/activity", "")
+	etag := cold.Header().Get("ETag")
+	f.counted.validationErr = errors.New("validation read failed")
+	failed := f.read("/v1/activity", etag)
+	if failed.Code != http.StatusInternalServerError || strings.TrimSpace(failed.Body.String()) != "internal server error" {
+		t.Fatalf("validation error status=%d body=%q", failed.Code, failed.Body.String())
+	}
+	f.counted.validationErr = nil
+	f.counted.reset()
+	for _, cursor := range []string{"not-base64!", base64.RawURLEncoding.EncodeToString([]byte("v2:-1:0")), base64.RawURLEncoding.EncodeToString([]byte("v9:1"))} {
+		response := f.read("/v1/activity?since="+cursor, etag)
+		if response.Code != http.StatusBadRequest {
+			t.Fatalf("cursor %q status=%d", cursor, response.Code)
+		}
+	}
+	if calls := f.counted.reset(); len(calls) != 0 {
+		t.Fatalf("an invalid cursor read the store: %v", calls)
+	}
+	if response := f.read("/v1/activity", etag); response.Code != http.StatusNotModified {
+		t.Fatalf("recovered status=%d", response.Code)
+	}
+}
+
 // markerStore serves controlled activity markers so a test can model event
 // IDs that are not monotonic in commit order, as SingleStore and PostgreSQL
 // produce them.
@@ -2801,6 +3437,16 @@ func (s *markerStore) ListActivityMarkersForTasks(_ context.Context, taskIDs []s
 		}
 	}
 	return out, nil
+}
+
+// ReadActivityInputs serves the controlled markers with the stored orders.
+func (s *markerStore) ReadActivityInputs(ctx context.Context, taskIDs []string, now time.Time) (store.ActivityInputs, error) {
+	inputs, err := s.Store.ReadActivityInputs(ctx, taskIDs, now)
+	if err != nil {
+		return store.ActivityInputs{}, err
+	}
+	inputs.Markers, _ = s.ListActivityMarkersForTasks(ctx, taskIDs)
+	return inputs, nil
 }
 
 func TestActivityCursorUsesEventTupleFrontier(t *testing.T) {
