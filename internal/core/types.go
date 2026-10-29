@@ -277,6 +277,10 @@ const (
 	GitHubPublicationRetrying  GitHubPublicationState = "retrying"
 	GitHubPublicationPublished GitHubPublicationState = "published"
 	GitHubPublicationFailed    GitHubPublicationState = "failed"
+	// GitHubPublicationSkipped is terminal: issue publication was off when
+	// the handler ran, so the row ended without a create or an edit and is
+	// never published later (req-delivery-and-forge AC-8.4).
+	GitHubPublicationSkipped GitHubPublicationState = "skipped"
 )
 
 // GitHubCreateState records whether a remote create may still be attempted.

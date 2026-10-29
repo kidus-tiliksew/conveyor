@@ -197,7 +197,7 @@ func (s *Store) BootstrapConfig(ctx context.Context, cfg *config.Config) error {
 // empty. Subsequent starts reconcile only the file-owned capacity metadata
 // and report seeded=false so callers can emit the required startup notice
 func (s *Store) BootstrapWorkspaceConfig(ctx context.Context, cfg *config.Config) (bool, error) {
-	configYAML, err := config.MarshalPolicyDocument(cfg)
+	_, configYAML, err := store.StampPolicyDocument(config.IssuePublication{}, cfg)
 	if err != nil {
 		return false, err
 	}
@@ -320,7 +320,7 @@ func (s *Store) GetWorkspace(ctx context.Context, id string) (core.Workspace, er
 // CreateWorkspace commits identity, configuration, repositories, and the
 // workspace.created audit event atomically.
 func (s *Store) CreateWorkspace(ctx context.Context, id, name string, cfg *config.Config) (core.Workspace, error) {
-	data, err := config.MarshalPolicyDocument(cfg)
+	_, data, err := store.StampPolicyDocument(config.IssuePublication{}, cfg)
 	if err != nil {
 		return core.Workspace{}, err
 	}
@@ -412,16 +412,27 @@ func (s *Store) RuntimeConfig(ctx context.Context, deployment *config.Config) (*
 }
 
 func (s *Store) UpdateWorkspaceConfig(ctx context.Context, expectedVersion int64, next *config.Config) (config.UpdateReceipt, error) {
-	data, err := config.MarshalPolicyDocument(next)
-	if err != nil {
-		return config.UpdateReceipt{}, err
-	}
 	var result config.UpdateReceipt
-	err = s.inTx(ctx, func(_ pgx.Tx, q *db.Queries) error {
+	err := s.inTx(ctx, func(tx pgx.Tx, q *db.Queries) error {
+		// FOR UPDATE holds the row from this read through the versioned
+		// update, so the issue publication turn-on time is stamped from the
+		// document the update replaces (component-persistence; AC-8.3).
+		if _, err := tx.Exec(ctx, `SELECT 1 FROM workspaces WHERE id=$1 FOR UPDATE`, workspace(ctx)); err != nil {
+			return err
+		}
 		before, err := q.GetWorkspaceConfig(ctx, workspace(ctx))
 		if err != nil {
 			return notFound(err, "workspace %s", workspace(ctx))
 		}
+		var previous config.WorkspaceDocument
+		if err := yaml.Unmarshal([]byte(before.ConfigYaml), &previous); err != nil {
+			return fmt.Errorf("decode previous workspace config: %w", err)
+		}
+		stamped, data, err := store.StampPolicyDocument(previous.IssuePublication, next)
+		if err != nil {
+			return err
+		}
+		next := stamped
 		updated, err := q.UpdateWorkspaceConfig(ctx, db.UpdateWorkspaceConfigParams{
 			ID: workspace(ctx), ExpectedVersion: expectedVersion, ConfigYaml: string(data),
 		})
@@ -435,10 +446,6 @@ func (s *Store) UpdateWorkspaceConfig(ctx context.Context, expectedVersion int64
 			if err := upsertRepo(ctx, q, workspace(ctx), repo); err != nil {
 				return err
 			}
-		}
-		var previous config.WorkspaceDocument
-		if err := yaml.Unmarshal([]byte(before.ConfigYaml), &previous); err != nil {
-			return fmt.Errorf("decode previous workspace config: %w", err)
 		}
 		sections := configDiff(previous, next.PolicyDocument())
 		actor := store.ActorFromContext(ctx)
@@ -482,6 +489,9 @@ func configDiff(before, after config.WorkspaceDocument) []string {
 	}
 	if !reflect.DeepEqual(before.Monitor, after.Monitor) {
 		sections = append(sections, "monitor")
+	}
+	if before.IssuePublication.Enabled != after.IssuePublication.Enabled || !before.IssuePublication.EnabledAt.Equal(after.IssuePublication.EnabledAt) {
+		sections = append(sections, "issue_publication")
 	}
 	if !reflect.DeepEqual(before.Harnesses, after.Harnesses) {
 		sections = append(sections, "harnesses")

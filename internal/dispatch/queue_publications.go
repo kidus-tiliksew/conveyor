@@ -28,8 +28,20 @@ func (w *githubIssuePublicationWorker) Work(ctx context.Context, job queue.Job) 
 	ctx = store.WithActor(ctx, store.SystemActor(fmt.Sprintf("queue:github-issue-publication:%s", job.ID)))
 	ctx = store.WithWorkspace(ctx, args.WorkspaceID)
 	lifecycle, ok, err := w.dispatcher.Store.GetGitHubLifecycle(ctx, args.TaskID)
-	if err != nil || !ok || lifecycle.State == core.GitHubPublicationPublished {
+	if err != nil || !ok || lifecycle.State == core.GitHubPublicationPublished || lifecycle.State == core.GitHubPublicationSkipped {
 		return err
+	}
+	// The setting is re-read before any forge call. Turned off, an open
+	// publication ends skipped with no create or edit and counts no attempt;
+	// an issue already published returned above unchanged
+	// (req-delivery-and-forge AC-8.4; component-git-delivery).
+	cfg, configErr := w.dispatcher.currentConfig(ctx)
+	if configErr == nil && !cfg.IssuePublication.Enabled {
+		lifecycle.State = core.GitHubPublicationSkipped
+		lifecycle.Outcome = "skipped"
+		lifecycle.ForgeErrorCategory = ""
+		lifecycle.LastError = ""
+		return w.dispatcher.Store.UpdateGitHubLifecycle(ctx, lifecycle)
 	}
 	lifecycle.Attempts++
 	lifecycle.State = core.GitHubPublicationRetrying
@@ -57,7 +69,6 @@ func (w *githubIssuePublicationWorker) Work(ctx context.Context, job queue.Job) 
 		return err
 	}
 	var result github.IssuePublicationResult
-	cfg, configErr := w.dispatcher.currentConfig(ctx)
 	publishErr := configErr
 	if publishErr == nil {
 		configuredRepo, repoExists := cfg.Repo(task.Repo)

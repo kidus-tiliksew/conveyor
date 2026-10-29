@@ -51,7 +51,7 @@ func (s *Store) BootstrapWorkspaceConfig(ctx context.Context, cfg *config.Config
 	if cfg == nil || cfg.Workspace == "" {
 		return false, store.ErrWorkspaceRequired
 	}
-	data, err := config.MarshalPolicyDocument(cfg)
+	_, data, err := store.StampPolicyDocument(config.IssuePublication{}, cfg)
 	if err != nil {
 		return false, err
 	}
@@ -105,7 +105,7 @@ func (s *Store) CreateWorkspace(ctx context.Context, id, name string, cfg *confi
 	if id == "" || strings.TrimSpace(name) == "" || cfg == nil {
 		return core.Workspace{}, fmt.Errorf("workspace id, name and configuration are required")
 	}
-	data, err := config.MarshalPolicyDocument(cfg)
+	_, data, err := store.StampPolicyDocument(config.IssuePublication{}, cfg)
 	if err != nil {
 		return core.Workspace{}, err
 	}
@@ -200,10 +200,6 @@ func (s *Store) UpdateWorkspaceConfig(ctx context.Context, expected int64, next 
 	if next == nil {
 		return config.UpdateReceipt{}, fmt.Errorf("configuration is required")
 	}
-	data, err := config.MarshalPolicyDocument(next)
-	if err != nil {
-		return config.UpdateReceipt{}, err
-	}
 	var receipt config.UpdateReceipt
 	err = s.withTx(ctx, func(tx *sql.Tx) error {
 		var previous string
@@ -218,14 +214,20 @@ func (s *Store) UpdateWorkspaceConfig(ctx context.Context, expected int64, next 
 		if version != expected {
 			return config.ErrVersionConflict
 		}
+		var before config.WorkspaceDocument
+		if err = yaml.Unmarshal([]byte(previous), &before); err != nil {
+			return err
+		}
+		// The row lock above holds the document this update replaces, so the
+		// issue publication turn-on time is stamped from it (AC-8.3).
+		next, data, err := store.StampPolicyDocument(before.IssuePublication, next)
+		if err != nil {
+			return err
+		}
 		if _, err = tx.ExecContext(ctx, `UPDATE workspaces SET config_yaml=?,config_version=config_version+1 WHERE id=?`, string(data), ws); err != nil {
 			return err
 		}
 		if err = upsertRepos(ctx, tx, ws, next.Repos); err != nil {
-			return err
-		}
-		var before config.WorkspaceDocument
-		if err = yaml.Unmarshal([]byte(previous), &before); err != nil {
 			return err
 		}
 		sections := configDiff(before, next.PolicyDocument())
@@ -267,6 +269,9 @@ func configDiff(before, after config.WorkspaceDocument) []string {
 	}
 	if !reflect.DeepEqual(before.Monitor, after.Monitor) {
 		sections = append(sections, "monitor")
+	}
+	if before.IssuePublication.Enabled != after.IssuePublication.Enabled || !before.IssuePublication.EnabledAt.Equal(after.IssuePublication.EnabledAt) {
+		sections = append(sections, "issue_publication")
 	}
 	if !reflect.DeepEqual(before.Harnesses, after.Harnesses) {
 		sections = append(sections, "harnesses")

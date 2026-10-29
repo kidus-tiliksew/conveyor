@@ -50,7 +50,7 @@ func (m *volatileMemory) CreateWorkspace(ctx context.Context, id, name string, c
 	if _, err := RequireActor(ctx); err != nil {
 		return core.Workspace{}, err
 	}
-	data, err := config.MarshalPolicyDocument(cfg)
+	_, data, err := StampPolicyDocument(config.IssuePublication{}, cfg)
 	if err != nil {
 		return core.Workspace{}, err
 	}
@@ -95,7 +95,7 @@ func (m *volatileMemory) BootstrapConfig(ctx context.Context, cfg *config.Config
 // starts canonicalize a legacy stored document and report seeded=false so
 // the caller can say the file's workspace sections were ignored.
 func (m *volatileMemory) BootstrapWorkspaceConfig(_ context.Context, cfg *config.Config) (bool, error) {
-	configYAML, err := config.MarshalPolicyDocument(cfg)
+	_, configYAML, err := StampPolicyDocument(config.IssuePublication{}, cfg)
 	if err != nil {
 		return false, err
 	}
@@ -182,10 +182,6 @@ func (m *volatileMemory) UpdateWorkspaceConfig(ctx context.Context, expectedVers
 	if _, err := RequireActor(ctx); err != nil {
 		return config.UpdateReceipt{}, err
 	}
-	data, err := config.MarshalPolicyDocument(next)
-	if err != nil {
-		return config.UpdateReceipt{}, err
-	}
 	m.lock()
 	defer m.unlock()
 	id := workspaceOrDefault(ctx, "")
@@ -199,6 +195,12 @@ func (m *volatileMemory) UpdateWorkspaceConfig(ctx context.Context, expectedVers
 	var previous config.WorkspaceDocument
 	if err := yaml.Unmarshal([]byte(record.ConfigYAML), &previous); err != nil {
 		return config.UpdateReceipt{}, fmt.Errorf("decode previous workspace config: %w", err)
+	}
+	// The turn-on time is stamped from the stored document under the same
+	// mutex as the version check (component-persistence; AC-8.3).
+	next, data, err := StampPolicyDocument(previous.IssuePublication, next)
+	if err != nil {
+		return config.UpdateReceipt{}, err
 	}
 	from := record.ConfigVersion
 	record.ConfigYAML, record.ConfigVersion = string(data), record.ConfigVersion+1
@@ -235,6 +237,9 @@ func configDiff(before, after config.WorkspaceDocument) []string {
 	}
 	if !reflect.DeepEqual(before.Monitor, after.Monitor) {
 		sections = append(sections, "monitor")
+	}
+	if before.IssuePublication.Enabled != after.IssuePublication.Enabled || !before.IssuePublication.EnabledAt.Equal(after.IssuePublication.EnabledAt) {
+		sections = append(sections, "issue_publication")
 	}
 	if !reflect.DeepEqual(before.Harnesses, after.Harnesses) {
 		sections = append(sections, "harnesses")
@@ -283,3 +288,18 @@ func (m *volatileMemory) ReconcileBlueprintClosures(ctx context.Context) (int, e
 
 // Volatile dispatch uses the in-process queue and has no durable jobs to repair.
 func (m *volatileMemory) ReconcileQueuedTasks(context.Context) (int, error) { return 0, nil }
+
+// StampPolicyDocument returns a copy of cfg whose issue publication turn-on
+// time is stamped from the stored previous value, and that copy's marshaled
+// policy document. Every backend's workspace creation, seeding, and update
+// writes through it, so a client-sent time is never stored and cfg is never
+// mutated (req-delivery-and-forge AC-8.3; component-persistence).
+func StampPolicyDocument(previous config.IssuePublication, cfg *config.Config) (*config.Config, []byte, error) {
+	stamped := *cfg
+	config.StampIssuePublication(previous, &stamped.IssuePublication, time.Now())
+	data, err := config.MarshalPolicyDocument(&stamped)
+	if err != nil {
+		return nil, nil, err
+	}
+	return &stamped, data, nil
+}

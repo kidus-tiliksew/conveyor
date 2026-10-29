@@ -111,7 +111,7 @@ func githubIssuePublicationFixture(t *testing.T) (context.Context, store.Store, 
 	if err = st.QueueGitHubLifecycle(ctx, core.GitHubLifecycle{TaskID: task.ID, Repository: "acme/app", SpecVersion: spec.Version}); err != nil {
 		t.Fatal(err)
 	}
-	dispatcher := New(st, &config.Config{Workspace: "test", Repos: []config.Repo{{Name: "app", GitHub: "acme/app"}}}, nil)
+	dispatcher := New(st, issuePublishingConfig(), nil)
 	return ctx, st, &githubIssuePublicationWorker{dispatcher: dispatcher}, task.ID
 }
 

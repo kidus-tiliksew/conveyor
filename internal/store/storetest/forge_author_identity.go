@@ -33,6 +33,36 @@ func RunForgeAuthorIdentityConformance(t *testing.T, st store.Store, ctx context
 	assertForgeAuthorEvent(t, st, ctx, taskID, "github_issue.publication_queued", core.ForgeAuthorWorkspace, "")
 	assertForgeAuthorEvent(t, st, ctx, taskID, "github_issue.publication_retry", core.ForgeAuthorWorkspace, "")
 
+	// Issue publication turned off ends an open row skipped, terminally
+	// (req-delivery-and-forge AC-8.4; component-git-delivery).
+	skippedTaskID := taskID + "-skipped"
+	if err = st.CreateTask(ctx, core.Task{ID: skippedTaskID, Workspace: forgeWorkspaceID(ctx), Repo: "app", Title: "Skipped issue publication", BaseBranch: "main", Branch: "conveyor/" + skippedTaskID, State: core.TaskQueued, NextStage: core.StageReview}); err != nil {
+		t.Fatal(err)
+	}
+	if err = st.QueueGitHubLifecycle(ctx, core.GitHubLifecycle{TaskID: skippedTaskID, Repository: "acme/app", SpecVersion: 1}); err != nil {
+		t.Fatal(err)
+	}
+	skipped, _, err := st.GetGitHubLifecycle(ctx, skippedTaskID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	skipped.State, skipped.Outcome = core.GitHubPublicationSkipped, "skipped"
+	if err = st.UpdateGitHubLifecycle(ctx, skipped); err != nil {
+		t.Fatalf("skip queued publication: %v", err)
+	}
+	stored, ok, err := st.GetGitHubLifecycle(ctx, skippedTaskID)
+	if err != nil || !ok || stored.State != core.GitHubPublicationSkipped || stored.Outcome != "skipped" || stored.IssueNumber != 0 {
+		t.Fatalf("skipped lifecycle=%+v ok=%t err=%v", stored, ok, err)
+	}
+	assertForgeAuthorEvent(t, st, ctx, skippedTaskID, "github_issue.publication_skipped", core.ForgeAuthorWorkspace, "")
+	if task, getErr := st.GetTask(ctx, skippedTaskID); getErr != nil || task.GitHub == nil || task.GitHub.State != core.GitHubPublicationSkipped {
+		t.Fatalf("task association=%+v err=%v", task.GitHub, getErr)
+	}
+	stored.State = core.GitHubPublicationRetrying
+	if err = st.UpdateGitHubLifecycle(ctx, stored); err == nil {
+		t.Fatal("a skipped publication was reopened")
+	}
+
 	jobID := taskID + "-review"
 	if err = st.CreateJob(ctx, core.Job{ID: jobID, TaskID: taskID, Stage: core.StageReview, State: core.JobPending}); err != nil {
 		t.Fatal(err)
