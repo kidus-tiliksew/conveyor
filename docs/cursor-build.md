@@ -53,19 +53,16 @@ that behavior.
 
 ## Personal and worker registrations
 
-For a personal client, run:
-
-```sh
-conveyor auth login --server https://factory.example.com
-conveyor mcp install --server https://factory.example.com --name factory-conveyor --tool cursor
-```
-
+A personal client connects through
+`conveyor mcp install --server <server-url> --name <connection-name> --tool cursor`,
+which the [setup playbook](playbooks/conveyor-install.md) runs after sign-in.
 The installer writes a named global entry in `~/.cursor/mcp.json` with a literal
 endpoint and `${env:CONVEYOR_MCP_TOKEN_<HASH>}` authorization reference. It prints
 the exact per-server export using the saved-token bridge. Run that export in the
 client's launch environment and restart Cursor. Repeat with another `--server`
-to retain both personal connections. See [client setup](client-setup.md#6-connect-agent-sessions)
-for naming, migration, rotation, and connection checks.
+to retain both personal connections. See
+[MCP personal connections](mcp.md#personal-connections) for naming, migration,
+rotation, and connection checks.
 
 The worker harness above separately requires a `conveyor` attachment that uses
 the child credential supplied by the launcher. Configure that attachment in the

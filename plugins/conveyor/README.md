@@ -19,7 +19,7 @@ Conveyor at connection time. The generated configuration includes an absolute
 Conveyor executable path and credential-file reference, with no token value.
 Restart Codex after installation. Installation and parser acceptance do not
 prove a native MCP connection: check the named server's native status and tools.
-See [client setup](../../docs/client-setup.md#6-connect-agent-sessions) for
+See [MCP personal connections](../../docs/mcp.md#personal-connections) for
 multiple servers, other clients, rotation, migration, and troubleshooting.
 
 If an older plugin registered `conveyor-plugin` at localhost, remove or disable

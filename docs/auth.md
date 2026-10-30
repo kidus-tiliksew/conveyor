@@ -247,5 +247,5 @@ The token-print bridge always reads the selected saved entry, including after
 rotation. It does not use an unrelated environment token. After a native
 rejection, log in again for the selected server and reconnect; environment-based
 clients also need their export refreshed. Server-side revocation takes effect
-on use. See [client setup](client-setup.md#6-connect-agent-sessions) for naming,
+on use. See [MCP personal connections](mcp.md#personal-connections) for naming,
 legacy migration, client refresh behavior, and separate parser/native checks.

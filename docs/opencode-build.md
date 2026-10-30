@@ -76,11 +76,9 @@ installation uses a different registration and credential source.
 
 ## Global personal registration
 
-```sh
-conveyor auth login --server https://factory.example.com
-conveyor mcp install --server https://factory.example.com --name factory-conveyor --tool opencode
-```
-
+A personal client connects through
+`conveyor mcp install --server <server-url> --name <connection-name> --tool opencode`,
+which the [setup playbook](playbooks/conveyor-install.md) runs after sign-in.
 The installer writes the global `$XDG_CONFIG_HOME/opencode/opencode.json`,
 defaulting to `~/.config/opencode/opencode.json`. The selected name identifies a
 `type: remote` entry with a literal endpoint, `oauth: false`, and
@@ -104,7 +102,7 @@ absent binary reports skipped parser validation. Parser acceptance does not
 prove native initialization or tools-list success.
 
 After rotating a credential, refresh its printed export and restart OpenCode.
-See [client setup](client-setup.md#6-connect-agent-sessions) for complete naming,
+See [MCP personal connections](mcp.md#personal-connections) for complete naming,
 migration, two-server installation, and native connection troubleshooting.
 
 ## Readiness and installation

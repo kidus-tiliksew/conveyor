@@ -23,8 +23,12 @@ source won for each:
 | workspace | explicit `--workspace`, then `CONVEYOR_WORKSPACE`, then the stored file, then the singleton fallback |
 
 An explicitly typed flag beats the environment; an untouched flag default does
-not. An environment token is ignored when `--server` names a different server,
-and the source that won is reported by `conveyor auth status` and in 401
+not. A one-off `--server` flag saves no default server, and
+`conveyor config set workspace` saves the workspace default for the selected
+server only. Server URLs are normalized, so a `CONVEYOR_ADDR` that ends in
+`/mcp` names the same server; credentials are stored per normalized URL, so
+use one hostname for a server everywhere. An environment token is ignored
+when `--server` names a different server, and the source that won is reported by `conveyor auth status` and in 401
 errors, never the credential itself. Requests carry
 `Authorization: Bearer <token>` and `X-Workspace-ID`.
 
@@ -295,6 +299,13 @@ Requires `CONVEYOR_API_TOKEN` and a local Git credential for the repository
 (`gh auth setup-git` or `CONVEYOR_GIT_TOKEN`; see
 [Authentication](auth.md#github-app-and-local-credentials)).
 
+A run that reports `workspace_required` needs the workspace set for the
+effective server. A run that cannot resolve a primary checkout points at
+`repos[].checkout` and the clone's remote. An authentication failure belongs
+to one of four credentials that serve different operations: the Conveyor
+personal token, the workspace GitHub App, local Git credentials, and the
+agent CLI login.
+
 ## repo init
 
 ```sh
@@ -501,7 +512,7 @@ conveyor setup edit reviewers --implement-model gpt-5.6-sol --implement-effort m
 | `conveyor mcp install` | Install a named personal connection for the selected saved server. `--server <base>`, `--name <name>`, `--tool claude\|codex\|cursor\|opencode`, read-only `--list`, and endpoint-checked `--adopt` are supported. Codex/Claude use native header helpers; Cursor/OpenCode use distinct server-specific token variables and literal endpoints. OpenCode validates staged config with `debug config`. |
 | `conveyor skills install` | Install the eight embedded agent skills (`conveyor-work`, `conveyor-plan`, `conveyor-file-tasks`, `conveyor-testing-doc`, `conveyor-kit`, `conveyor-kit-verify`, `conveyor-coordinate`, `conveyor-install`) into the native roots for detected Claude Code, Codex, Cursor, and OpenCode clients. OpenCode uses `~/.config/opencode/skills` globally and `.opencode/skills` with `--project`. `--tool claude\|codex\|cursor\|opencode` narrows the detected client, and `--force` allows downgrading skills a newer release installed. |
 
-See [client setup](client-setup.md#6-connect-agent-sessions) for naming,
+See [MCP personal connections](mcp.md#personal-connections) for naming,
 two-server examples, native credential retrieval, migration, restart, and
 troubleshooting. Config publication and parser acceptance are separate from a
 native initialization/tools-list check. Installs contain no token values and
@@ -582,4 +593,6 @@ Service verbs run before flag parsing:
 
 Startup requires `CONVEYOR_DATABASE_URL`, `CONVEYOR_API_TOKEN`, and
 `CONVEYOR_LLM_API_KEY`, applies pending migrations, and creates the
-organization and first operator on a fresh database.
+organization and first operator on a fresh database. It refuses to start
+against a database that a newer release already migrated, so an upgrade
+replaces the binary before the database moves ahead of it.
