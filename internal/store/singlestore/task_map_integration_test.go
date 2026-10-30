@@ -404,12 +404,13 @@ func TestNextActionHistorySelectsBoundedRowsIntegration(t *testing.T) {
 		}
 		pad := strings.Repeat(sentinel+" ", padding)
 		at := now.Add(-time.Hour)
+		// The history goes through AppendEvent's row writer in one
+		// transaction per task; a SingleStore transaction per event made
+		// seeding most of this test's time.
+		var history []core.Event
 		appendEvent := func(kind string, payload map[string]any) {
-			t.Helper()
 			at = at.Add(time.Millisecond)
-			if err := st.AppendEvent(ctx, core.Event{TaskID: id, Kind: kind, ActorRole: core.ActorSystem, At: at, Payload: core.JSONPayload(payload)}); err != nil {
-				t.Fatal(err)
-			}
+			history = append(history, core.Event{TaskID: id, Kind: kind, ActorRole: core.ActorSystem, At: at, Payload: core.JSONPayload(payload)})
 		}
 		heads := func(extra map[string]any) map[string]any {
 			out := map[string]any{"approved_head": "a", "new_head": "b", "note": pad}
@@ -451,6 +452,16 @@ func TestNextActionHistorySelectsBoundedRowsIntegration(t *testing.T) {
 		appendEvent("pipeline.bounce_limit", map[string]any{"window": 3, "note": pad})
 		appendEvent("task.state_changed", map[string]any{"command": "triage.park", "note": pad})
 		appendEvent(store.TaskContextDesignAdded, map[string]any{"id": "design-history", "version": 4, "note": pad})
+		if err := st.documentTx(ctx, func(tx *sql.Tx) error {
+			for _, event := range history {
+				if err := insertEvent(ctx, tx, event); err != nil {
+					return err
+				}
+			}
+			return nil
+		}); err != nil {
+			t.Fatal(err)
+		}
 	}
 	seed("history-small-1", 20, 1)
 	seed("history-large-1", 200, 10)

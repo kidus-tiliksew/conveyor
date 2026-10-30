@@ -234,7 +234,7 @@ func TestAttemptCaptureAllStageEndings(t *testing.T) {
 	}
 	endings := []ending{
 		{
-			name: "successful handoff", mode: "early-output", firstActivity: time.Second, renewEvery: time.Minute,
+			name: "successful handoff", mode: "early-output-exit", firstActivity: time.Second, renewEvery: time.Minute,
 			reconcile:      terminal,
 			wantReason:     func(stage core.Stage) string { return core.AttemptHandoffTerminationReason(handoffState(stage)) },
 			wantTranscript: true, dispatches: []string{"worker", "run"},
@@ -250,7 +250,7 @@ func TestAttemptCaptureAllStageEndings(t *testing.T) {
 			wantErr: "exit", wantTranscript: true, dispatches: []string{"worker", "run"},
 		},
 		{
-			name: "zero exit without handoff", mode: "early-output", firstActivity: time.Second, renewEvery: time.Minute,
+			name: "zero exit without handoff", mode: "early-output-exit", firstActivity: time.Second, renewEvery: time.Minute,
 			wantReason: func(stage core.Stage) string {
 				if stage == core.StageReview {
 					return "harness exited without terminal verdict submission"
@@ -260,7 +260,7 @@ func TestAttemptCaptureAllStageEndings(t *testing.T) {
 			wantErr: "harness exited", wantTranscript: true, dispatches: []string{"worker", "run"},
 		},
 		{
-			name: "plan revision self release", mode: "early-output", firstActivity: time.Second, renewEvery: time.Minute,
+			name: "plan revision self release", mode: "early-output-exit", firstActivity: time.Second, renewEvery: time.Minute,
 			reconcile: func(core.Stage) func(int) (workerservice.ClaimReconciliation, int, string) {
 				return func(int) (workerservice.ClaimReconciliation, int, string) {
 					return workerservice.ClaimReconciliation{WorkOrder: core.WorkOrder{ID: "capture-order", State: core.WorkOrderQueued,
@@ -271,7 +271,7 @@ func TestAttemptCaptureAllStageEndings(t *testing.T) {
 			dispatches: []string{"worker", "run"},
 		},
 		{
-			name: "operator checkpoint self release", mode: "early-output", firstActivity: time.Second, renewEvery: time.Minute,
+			name: "operator checkpoint self release", mode: "early-output-exit", firstActivity: time.Second, renewEvery: time.Minute,
 			reconcile: func(core.Stage) func(int) (workerservice.ClaimReconciliation, int, string) {
 				return func(int) (workerservice.ClaimReconciliation, int, string) {
 					return workerservice.ClaimReconciliation{WorkOrder: core.WorkOrder{ID: "capture-order", State: core.WorkOrderQueued,
@@ -284,7 +284,7 @@ func TestAttemptCaptureAllStageEndings(t *testing.T) {
 		{
 			// An ordinary agent release_work_order: the launcher did not commit
 			// the ending, so Conveyor binds the capture to the persisted reason.
-			name: "ordinary agent self release", mode: "early-output", firstActivity: time.Second, renewEvery: time.Minute,
+			name: "ordinary agent self release", mode: "early-output-exit", firstActivity: time.Second, renewEvery: time.Minute,
 			reconcile: func(core.Stage) func(int) (workerservice.ClaimReconciliation, int, string) {
 				return func(int) (workerservice.ClaimReconciliation, int, string) {
 					return workerservice.ClaimReconciliation{WorkOrder: core.WorkOrder{ID: "capture-order", State: core.WorkOrderQueued,
