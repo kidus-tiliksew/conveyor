@@ -75,6 +75,15 @@ jobs:
           path: ~/.cache/ms-playwright
           key: ${{ runner.os }}-playwright-${{ steps.playwright-version.outputs.version }}
       - run: make test
+        if: runner.environment == 'github-hosted'
+        env:
+          PLAYWRIGHT_INSTALL_ARGS: --with-deps
+          PLAYWRIGHT_REPORT_DIR: ${{ runner.temp }}/playwright-report
+      # boat runners grant ambient CAP_DAC_READ_SEARCH, which defeats the
+      # validation tests' mode-0 directory fixtures; drop it for make test.
+      - name: Run make test without ambient capabilities
+        if: runner.environment != 'github-hosted'
+        run: setpriv --inh-caps -all --ambient-caps -all make test
         env:
           PLAYWRIGHT_INSTALL_ARGS: --with-deps
           PLAYWRIGHT_REPORT_DIR: ${{ runner.temp }}/playwright-report
