@@ -60,6 +60,35 @@ the first operator's sign-in link. `--config` names that server file; create a
 local execution config with `conveyor config init-execution`.
 `--config` picks a different output path.
 
+Each prompted answer also has a flag:
+
+| Flag | Answer | Default when the flag is absent |
+|---|---|---|
+| `--organization` | Organization name | `$CONVEYOR_ORGANIZATION_NAME`, else `Conveyor` |
+| `--operator-name` | First operator display name | `$CONVEYOR_FIRST_OPERATOR_DISPLAY_NAME`, else `Local Operator` |
+| `--operator-email` | First operator email | `$CONVEYOR_FIRST_OPERATOR_EMAIL`, else `operator@localhost` |
+| `--workspace-id` | Workspace id | `default` |
+| `--workspace-name` | Workspace name | `Default` |
+| `--repository-name` | Repository name | the working directory's name |
+| `--repository-url` | Repository URL | none; required |
+| `--default-branch` | Default branch | `main` |
+
+With no answer flag, `conveyor init` prompts for each answer and also accepts
+the eight answers piped line by line on standard input. With at least one
+answer flag, it reads nothing from standard input: each answer comes from its
+flag or, when the flag is absent, from the default above. A flag given with a
+blank value is not replaced by a default. When any answer is empty, init exits
+nonzero, names every empty answer's flag, and writes nothing. No answer flag
+carries a secret; the database URL, operator token, and LLM key stay in the
+environment variables above. `--workspace-id` names the workspace init creates
+and is separate from the global `--workspace` flag.
+
+```sh
+conveyor init --organization 'Example Org' --operator-email owner@example.com \
+  --workspace-id demo --workspace-name Demo \
+  --repository-name app --repository-url https://github.com/example/app
+```
+
 ## task
 
 Create and inspect tasks. Titles are always generated from the body.
@@ -416,7 +445,7 @@ Manage named local execution setups. Setup contents never leave your machine.
 
 | Command | What it does |
 |---|---|
-| `conveyor setup create <name>` / `edit <name>` | Interactively create or edit a named setup. |
+| `conveyor setup create <name>` / `edit <name>` | Create or edit a named setup, interactively or from field flags. |
 | `conveyor setup list` | List every named setup. |
 | `conveyor setup delete <name>` | Delete a non-default setup. |
 | `conveyor setup default <name>` | Designate the default setup. |
@@ -426,6 +455,44 @@ Manage named local execution setups. Setup contents never leave your machine.
 
 One durable review order is created per configured seat, in order, so seat
 position is review priority.
+
+`setup create` and `setup edit` take the wizard's choices as field flags.
+Flag `--<stage>-<field>` matches the `conveyor config set
+execution.<stage>.<field>` key:
+
+| Flag | Value |
+|---|---|
+| `--spec-harness`, `--implement-harness`, `--verify-harness`, `--review-harness` | `codex`, `claude`, `grok`, `cursor`, or `opencode` |
+| `--spec-model`, `--implement-model`, `--verify-model`, `--review-model` | a non-blank model name |
+| `--spec-effort`, `--implement-effort`, `--verify-effort`, `--review-effort` | `low`, `medium`, `high`, or blank |
+| `--worktree-location` | `repository`, `repository:<dir>`, `machine`, or `machine:<root>` |
+
+The `--review-*` flags set review seat 1, as `execution.review.<field>` does;
+`conveyor setup seat` manages the other seats. With no field flag, both
+commands run the terminal wizard as before. With any field flag, the command
+skips the wizard and does not prompt:
+
+- `create` starts from the wizard's detected defaults; `edit` starts from the
+  named setup and changes only the flagged fields.
+- The command runs the wizard's harness detection probe and refuses a flagged
+  harness that is unsupported, undetected, or fails its probe.
+- A harness flag that changes a stage's harness also resets that stage's model
+  to the new harness's suggested model, unless the stage's model flag is given.
+  A harness that takes no effort clears the stage's effort.
+- `--worktree-location` is required when the configuration file records no
+  worktree location.
+- Any invalid field makes the command exit nonzero, name each invalid flag,
+  and leave the file unchanged.
+- `create` refuses an existing name, and `edit` refuses a missing name or a
+  missing file.
+- A valid act writes the setup and the worktree location together through
+  the same staged write as the wizard.
+
+```sh
+conveyor setup create reviewers --review-harness claude --review-model opus \
+  --worktree-location machine
+conveyor setup edit reviewers --implement-model gpt-5.6-sol --implement-effort medium
+```
 
 ## mcp and skills
 
