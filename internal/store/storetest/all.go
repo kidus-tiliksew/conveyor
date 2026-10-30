@@ -291,6 +291,7 @@ func RunAll(t *testing.T, factory Factory) {
 		{"AttemptObservability", true, runAttemptObservability},
 		{"MergeTaskAtGate", true, runMergeTaskAtGate},
 		{"ClaimBlockingProposals", true, runClaimBlockingProposals},
+		{"LargeArgumentWrites", true, runLargeArgumentWrites},
 		{"AutomaticRecoveryAuthority", true, runAutomaticRecoveryAuthority},
 		{"WorktreeHandoff", true, runWorktreeHandoff},
 		{"ContextFreshness", true, runContextFreshness},

@@ -63,6 +63,12 @@ func connectionConfig(raw string) (*mysql.Config, error) {
 		return nil, fmt.Errorf("invalid SingleStore timestamp configuration")
 	}
 	cfg.MultiStatements = false
+	// A prepared statement sends each argument longer than the packet size
+	// divided by its parameter count plus one through COM_STMT_SEND_LONG_DATA,
+	// which SingleStore refuses with error 1706. Interpolated arguments travel
+	// inside one text query, so a pinned claim snapshot of a few MiB fits
+	// (component-persistence, Migration runners and ledgers).
+	cfg.InterpolateParams = true
 	cfg.Timeout = 10 * time.Second
 	cfg.ReadTimeout = 30 * time.Second
 	cfg.WriteTimeout = 30 * time.Second

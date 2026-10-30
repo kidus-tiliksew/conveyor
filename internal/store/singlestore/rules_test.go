@@ -89,12 +89,19 @@ func TestMigrationLedgerRefusals(t *testing.T) {
 	}
 }
 func TestConnectionSettings(t *testing.T) {
-	cfg, err := connectionConfig("singlestore://root:fixture@localhost/conveyor_test")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !cfg.ParseTime || cfg.Loc.String() != "UTC" || cfg.Params["time_zone"] != "'+00:00'" || cfg.Params["sql_mode"] != "'STRICT_ALL_TABLES'" || cfg.MultiStatements {
-		t.Fatal("unsafe connection configuration")
+	for i, raw := range []string{"singlestore://root:fixture@localhost/conveyor_test", "root:fixture@tcp(localhost:3306)/conveyor_test?interpolateParams=false"} {
+		cfg, err := connectionConfig(raw)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !cfg.ParseTime || cfg.Loc.String() != "UTC" || cfg.Params["time_zone"] != "'+00:00'" || cfg.Params["sql_mode"] != "'STRICT_ALL_TABLES'" || cfg.MultiStatements {
+			t.Fatal("unsafe connection configuration")
+		}
+		// SingleStore refuses the driver's long-data command, so arguments
+		// must be interpolated whatever the DSN asks (component-persistence).
+		if !cfg.InterpolateParams {
+			t.Fatalf("connection form %d does not interpolate parameters", i)
+		}
 	}
 }
 
