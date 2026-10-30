@@ -1,8 +1,9 @@
 # Durable worker operation
 
 A worker is a client that polls the queue and runs work without you
-attached. Before pairing one, finish [Client setup](client-setup.md) and
-confirm on this machine:
+attached. The [setup playbook](playbooks/conveyor-install.md) connects the
+machine, creates its execution setup, and enrolls the worker. A worker
+depends on these conditions on its machine:
 
 - The server and workspace are selected and `conveyor auth status` succeeds.
 - The execution config has a verified `repos[].checkout` mapping, and you
@@ -33,13 +34,8 @@ pairing token. Pair again only when the credential was revoked, removed, or is
 reported invalid.
 
 Every enabled worker also requires the client-local execution setup used by
-`conveyor run`. Create it on the worker host before starting or upgrading the
-worker:
-
-```sh
-conveyor config init-execution
-conveyor --workspace demo worker run
-```
+`conveyor run`, created on the worker host with
+`conveyor config init-execution` before the worker starts or upgrades.
 
 The worker uses the same client-side resolution chain as `conveyor run`: an
 explicit `--config` path, `CONVEYOR_CONFIG`, an existing `./conveyor.yaml`, then
@@ -59,20 +55,14 @@ children. An explicit `conveyor checkout --path` still takes precedence.
 Changing this setting does not move or remove existing registered worktrees;
 Git registration continues to locate and clean those at their original paths.
 
-Install the enrolled worker under the host's user service manager so process
+The enrolled worker runs under the host's user service manager, so process
 crashes, login, and control-plane restarts do not require operator
-intervention:
-
-```sh
-# Pair and enroll once if this workspace has no saved credential yet.
-conveyor --workspace demo worker pair
-conveyor --workspace demo worker run --pairing-token <token> --once
-
-# Install, inspect, and remove the workspace-specific user service.
-conveyor --workspace demo worker install
-conveyor --workspace demo worker status
-conveyor --workspace demo worker uninstall
-```
+intervention. `conveyor worker pair` issues the pairing token, the first
+`conveyor worker run --pairing-token <token> --once` enrolls the machine, and
+`conveyor worker install`, `status`, and `uninstall` manage the
+workspace-specific user service. The
+[setup playbook](playbooks/conveyor-install.md#10-enroll-a-worker) runs the
+enrollment without displaying the pairing token.
 
 `install` requires an existing saved enrollment and a valid local execution
 setup, resolves both the selected configuration path and Conveyor executable

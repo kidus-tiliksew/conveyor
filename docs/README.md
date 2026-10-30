@@ -2,10 +2,13 @@
 
 ## Getting started
 
-- [Server setup](server-setup.md): install the binaries, start a database, run the daemon, invite clients
-- [Client setup](client-setup.md): sign in, Git and GitHub access, execution setup, first task
-- [Getting started (solo)](getting-started-solo.md): the quick start, one person, one machine, end to end
-- [Getting started (multiplayer)](getting-started-multiplayer.md): a shared team server
+Install and configure Conveyor with the
+[setup playbook](playbooks/conveyor-install.md). Give a coding agent its raw
+URL,
+`https://raw.githubusercontent.com/kidus-tiliksew/conveyor/main/docs/playbooks/conveyor-install.md`,
+and the agent interviews you, agrees a setup with you, and carries it out. The
+pages below are reference: they describe commands, settings, and behavior, and
+hold no setup procedure (DEC-92).
 
 ## Guides
 
@@ -41,6 +44,7 @@ Agent-facing playbooks, installed as project-scoped skills for Claude Code,
 Codex, Cursor, and OpenCode by `conveyor repo init`, or user-globally by
 `conveyor skills install`:
 
+- [Setup](playbooks/conveyor-install.md): install and configure Conveyor with a person, from one instruction
 - [Planning](playbooks/conveyor-planning.md): draft and push documents from a local agent session
 - [Task filing](playbooks/conveyor-task-filing.md): file well-formed tasks and dependency chains
 - [Working a task](playbooks/conveyor-work.md): the claim, checkout, submit, review lifecycle

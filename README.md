@@ -14,6 +14,18 @@ Conveyor has used this process to build itself since July 2026.
 
 https://github.com/user-attachments/assets/f50c12bc-81ed-429c-ba10-90dd3cdb8c34
 
+## Get started
+
+First, paste this instruction into your coding agent, such as Claude Code,
+Codex, Cursor, or OpenCode:
+
+```text
+Set up Conveyor with me by following https://raw.githubusercontent.com/kidus-tiliksew/conveyor/main/docs/playbooks/conveyor-install.md
+```
+
+The agent asks about your setup, how your team works, and where you deploy,
+and then sets Conveyor up with you.
+
 ## The knowledge graph
 
 Conveyor links each change to the documents, task, review, and test evidence
@@ -82,10 +94,7 @@ Full docs live in [docs/](docs/README.md). There's no docs site yet.
 
 **Getting started**
 
-- [Server setup](docs/server-setup.md): install the binaries, start a database, run the daemon, invite clients
-- [Client setup](docs/client-setup.md): sign in, Git and GitHub access, execution setup, first task
-- [Getting started (solo)](docs/getting-started-solo.md): the quick start, one person, one machine, end to end
-- [Getting started (multiplayer)](docs/getting-started-multiplayer.md): a shared team server
+- [Setup playbook](docs/playbooks/conveyor-install.md): the procedure a coding agent follows to install and configure Conveyor with you
 
 **Guides**
 
@@ -115,6 +124,7 @@ Full docs live in [docs/](docs/README.md). There's no docs site yet.
 
 **Playbooks** (installable as agent skills with `conveyor repo init` or `conveyor skills install`)
 
+- [Setup](docs/playbooks/conveyor-install.md): install and configure Conveyor with a person, from one instruction
 - [Planning](docs/playbooks/conveyor-planning.md): draft and push documents from a local agent session
 - [Task filing](docs/playbooks/conveyor-task-filing.md): file well-formed tasks and dependency chains
 - [Working a task](docs/playbooks/conveyor-work.md): the claim, checkout, submit, review lifecycle
@@ -137,8 +147,13 @@ pick up work. Agents edit only under a live claim, in the task worktree that
 The backend is Go and the dashboard is React. `make build`, `make vet`,
 `make fmt-check`, and `make test` are the local gate. `make test` covers Go
 tests, the web typecheck, Biome, and Playwright. `make test-integration` runs
-against PostgreSQL. [Local validation evidence](docs/validation-evidence.md)
-describes scratch space and retained evidence for work on this repository.
+against PostgreSQL. Source development needs Go 1.24, Node 22 with npm,
+and Docker with Compose. `make dev` starts a health-checked development
+PostgreSQL on port 5432, builds both binaries, and runs `conveyord` on port
+8080 with `conveyor.yaml` and `.env` from the checkout, which start as copies
+of `conveyor.example.yaml` and `.env.example`.
+[Local validation evidence](docs/validation-evidence.md) describes scratch
+space and retained evidence for work on this repository.
 
 ## Acknowledgements
 
