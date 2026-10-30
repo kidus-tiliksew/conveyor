@@ -7,7 +7,11 @@ factory has all capabilities and no skipped suites.
 `Store` owns a bounded `database/sql` pool. Every connection uses `parseTime`,
 UTC, microsecond timestamp truncation and `STRICT_ALL_TABLES`. The driver
 truncates every outgoing `time.Time` to the schema's `DATETIME(6)` precision,
-including clocks that supply nanosecond fractions. SingleStore accepts but ignores the MySQL
+including clocks that supply nanosecond fractions. Every connection also
+interpolates statement arguments into one text query. SingleStore refuses the
+driver's `COM_STMT_SEND_LONG_DATA` command with error 1706, which a prepared
+statement uses for any argument longer than the packet size divided by its
+parameter count plus one, such as a pinned claim snapshot of a few MiB. SingleStore accepts but ignores the MySQL
 `time_zone` session variable. `Open` verifies that `system_time_zone` is UTC
 and refuses another server time zone rather than silently misreading timestamps. The MySQL driver stays inside this package and
 `internal/eventlog/s2log`. No SQL layer is shared with PostgreSQL.
