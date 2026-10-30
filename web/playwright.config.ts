@@ -54,6 +54,9 @@ export default defineConfig({
   outputDir,
   ...(reportDir === undefined ? {} : { reporter: [['list'], ['html', { outputFolder: reportDir, open: 'never' }]] }),
   workers,
+  // CI shards the suite with --shard=i/N. Parallel tests let a shard split a
+  // large file by test instead of taking the whole file.
+  fullyParallel: true,
   use: {
     baseURL: `http://127.0.0.1:${port}`,
     ...devices['Desktop Chrome'],
