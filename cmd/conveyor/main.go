@@ -49,6 +49,23 @@ func main() {
 		fmt.Fprintln(os.Stderr, "error: load local environment:", err)
 		os.Exit(1)
 	}
+	root := newRootCmd()
+
+	if err := root.Execute(); err != nil {
+		// conveyor task wait has already printed its timeout result; only the
+		// distinct exit status remains (req-agent-skills AC-4.3).
+		var timedOut *taskWaitTimeoutError
+		if errors.As(err, &timedOut) {
+			os.Exit(taskWaitTimeoutExitStatus)
+		}
+		fmt.Fprintln(os.Stderr, "error:", err)
+		os.Exit(1)
+	}
+}
+
+// newRootCmd builds the complete conveyor command tree. main and the setup
+// playbook's command-existence test share it (req-agent-guided-setup AC-5.3).
+func newRootCmd() *cobra.Command {
 	root := &cobra.Command{
 		Use:           "conveyor",
 		Short:         "Conveyor: a software factory platform",
@@ -88,17 +105,7 @@ func main() {
 	)
 	root.PersistentFlags().StringVar(&serverFlag, "server", "", "Conveyor server URL")
 	root.PersistentFlags().StringVar(&workspaceFlag, "workspace", "", "workspace id (required when the server has multiple workspaces)")
-
-	if err := root.Execute(); err != nil {
-		// conveyor task wait has already printed its timeout result; only the
-		// distinct exit status remains (req-agent-skills AC-4.3).
-		var timedOut *taskWaitTimeoutError
-		if errors.As(err, &timedOut) {
-			os.Exit(taskWaitTimeoutExitStatus)
-		}
-		fmt.Fprintln(os.Stderr, "error:", err)
-		os.Exit(1)
-	}
+	return root
 }
 
 func lineageCmd() *cobra.Command {

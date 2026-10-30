@@ -54,7 +54,7 @@ func TestEmbeddedSkillsMatchRepositorySources(t *testing.T) {
 		t.Fatal(err)
 	}
 	// component-cli-onboarding: these wrappers and their canonical playbooks must be released.
-	for _, name := range []string{"conveyor-kit", "conveyor-kit-verify", "conveyor-coordinate"} {
+	for _, name := range []string{"conveyor-kit", "conveyor-kit-verify", "conveyor-coordinate", "conveyor-install"} {
 		for _, required := range []string{".claude/skills/" + name + "/SKILL.md", "docs/playbooks/" + name + ".md"} {
 			count := 0
 			for _, source := range manifestSources {
