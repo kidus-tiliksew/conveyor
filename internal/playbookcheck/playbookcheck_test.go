@@ -109,3 +109,17 @@ func TestCheckFlagSurface(t *testing.T) {
 		}
 	}
 }
+
+func TestShellBlocksReturnsShellFencesVerbatim(t *testing.T) {
+	markdown := "Intro\n\n```sh\necho one \\\n  two\n```\n\n```yaml\nkey: value\n```\n\n```\nls\n```\n"
+	got := ShellBlocks([]byte(markdown))
+	want := []ShellBlock{{Line: 4, Text: "echo one \\\n  two\n"}, {Line: 13, Text: "ls\n"}}
+	if len(got) != len(want) {
+		t.Fatalf("ShellBlocks = %#v, want %#v", got, want)
+	}
+	for index := range want {
+		if got[index] != want[index] {
+			t.Errorf("block %d = %#v, want %#v", index, got[index], want[index])
+		}
+	}
+}

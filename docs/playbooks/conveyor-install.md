@@ -35,7 +35,10 @@ These rules hold in every section.
   secret: the server `.env`, the generated deployment `conveyor.yaml`, which
   records the database URL, or the CLI credentials file. Never print the
   output of `conveyor auth token`; pipe it straight into a request header as
-  section 8 shows.
+  section 8 shows. Never print a REST response body, because some carry
+  secrets: an invitation response holds the invitee's sign-in link. Save the
+  body to an owner-only file, print the HTTP status and only an allowlist of
+  nonsecret fields, and delete the file, as section 8 shows.
 - **Hand browser acts to the person.** When a step needs their browser, such
   as accepting an invitation, minting a token, or connecting the workspace
   GitHub App, give the link and the action to take there, and resume when
@@ -476,30 +479,49 @@ already created the first workspace and registered its first repository.
 
 ### 8.1 Authenticated API requests
 
-Workspace creation and invitations use the REST API. Pipe the CLI credential
-straight into the request header so it never reaches your context:
+Workspace creation and invitations use the REST API. Every request in this
+section follows one pattern, so neither the credential nor a secret in the
+response reaches your context:
+
+- Pipe the CLI credential straight into the request header.
+- Write the response body to an owner-only file with `-o`, and print only
+  the HTTP status with `-w`. `curl` without `-f` still reports a connection
+  failure, and the printed status shows an HTTP failure.
+- Print only the allowlisted fields with `grep -oE`, then delete the file.
+
+A status other than the one each step names is a failed step (AC-3.6):
+report the status and the allowlisted `error` and `message` fields, and run
+no step that depends on it.
 
 ```sh
+umask 077
 conveyor --server <server-url> auth token | sed 's/^/Authorization: Bearer /' |
-  curl -fsS -H @- -H 'Content-Type: application/json' <server-url>/v1/me
+  curl -sS -H @- -o response.json -w 'HTTP %{http_code}\n' <server-url>/v1/me
+grep -oE '"(email|display_name|error|message)":"[^"]*"|"can_create_workspaces":(true|false)' response.json
+rm -f response.json
 ```
 
-`/v1/me` reports the caller's identity and `can_create_workspaces`. The
-deployment owner and any operator of a workspace may create workspaces.
+Expect `HTTP 200`. `/v1/me` reports the caller's identity and
+`can_create_workspaces`. The deployment owner and any operator of a
+workspace may create workspaces.
 
 ### 8.2 Create a workspace
 
 For several teams on one server, create one workspace per team:
 
 ```sh
+umask 077
 conveyor --server <server-url> auth token | sed 's/^/Authorization: Bearer /' |
-  curl -fsS -H @- -H 'Content-Type: application/json' -X POST \
-  --data '{"id":"team-a","name":"Team A"}' <server-url>/v1/workspaces
+  curl -sS -H @- -H 'Content-Type: application/json' -X POST \
+  --data '{"id":"team-a","name":"Team A"}' \
+  -o response.json -w 'HTTP %{http_code}\n' <server-url>/v1/workspaces
+grep -oE '"(id|name|error|field|message)":"[^"]*"' response.json
+rm -f response.json
 ```
 
-The ID is a lowercase slug of 1 to 63 letters, digits, or hyphens. The
-creator becomes the workspace operator. A `409 workspace_conflict` means the
-ID or name is taken. Workspace creation rules are in
+Expect `HTTP 201`. The ID is a lowercase slug of 1 to 63 letters, digits,
+or hyphens. The creator becomes the workspace operator. `HTTP 409` with
+`workspace_conflict` means the ID or name is taken. Workspace creation rules are in
 [Authentication](https://github.com/kidus-tiliksew/conveyor/blob/main/docs/auth.md#instance-administration-and-workspace-creation).
 
 ### 8.3 Register repositories
@@ -538,16 +560,27 @@ Invite each member by email with a role: `viewer`, `executor`,
 ones before it; a person who runs tasks needs at least `executor`, and only
 an operator confirms documents.
 
+The response to an invitation carries the invitee's sign-in link in
+`sign_in_url`, and the link holds a token. The allowlist below prints
+`email`, `role`, and `delivery`, never `sign_in_url`:
+
 ```sh
+umask 077
 conveyor --server <server-url> auth token | sed 's/^/Authorization: Bearer /' |
-  curl -fsS -H @- -H 'Content-Type: application/json' -X POST \
+  curl -sS -H @- -H 'Content-Type: application/json' -X POST \
   --data '{"email":"teammate@example.com","role":"contributor"}' \
-  <server-url>/v1/workspaces/<workspace-id>/members
+  -o response.json -w 'HTTP %{http_code}\n' <server-url>/v1/workspaces/<workspace-id>/members
+grep -oE '"(email|role|delivery|error|field|message)":"[^"]*"' response.json
+rm -f response.json
 ```
 
-With SMTP configured, the invitation emails itself. Without it, the person
-copies the invitation link from the Workspace page in the dashboard and
-delivers it; the link holds a token, so do not fetch it yourself. Each
+Expect `HTTP 201`. A grant to an existing account reports no `delivery` and
+issues no link. For an invitation, `delivery` is `sent` when SMTP emailed
+the link, `fallback` when no SMTP is configured, and `failed` when sending
+failed. For `fallback` or `failed`, the person copies the invitation link
+from the Workspace page in the dashboard and delivers it, or resends the
+invitation there. Never read the link yourself, from the response or the
+dashboard. Each
 invitee then follows section 12 on their own machine. Roles and capabilities
 are in [Authentication](https://github.com/kidus-tiliksew/conveyor/blob/main/docs/auth.md#roles-and-capabilities).
 

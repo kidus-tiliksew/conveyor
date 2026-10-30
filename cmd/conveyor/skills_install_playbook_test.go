@@ -2,7 +2,10 @@ package main
 
 import (
 	"bytes"
+	"net/http"
+	"net/http/httptest"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strings"
@@ -193,5 +196,102 @@ func TestRepoInitInstallsSetupSkillForEveryTool(t *testing.T) {
 	}
 	if installed != 2*len(destinations) {
 		t.Fatalf("repo init installed %d setup skill files, want %d", installed, 2*len(destinations))
+	}
+}
+
+// The playbook's REST requests never print the CLI credential or a secret
+// the response carries (req-agent-guided-setup AC-3.3). Each shell block that
+// pipes `conveyor auth token` runs verbatim against a fixture server, with a
+// stub conveyor that prints a fixture token. In the hostile mode every
+// response carries a token-bearing sign_in_url, so no block's allowlist can
+// pass it through; HTTP failures still show their status and error.
+func TestInstallPlaybookRESTRequestsKeepSecretsOutOfOutput(t *testing.T) {
+	for _, tool := range []string{"sh", "curl", "grep", "sed"} {
+		if _, err := exec.LookPath(tool); err != nil {
+			t.Skipf("%s is not installed: %v", tool, err)
+		}
+	}
+	const (
+		fixtureToken  = "cv_pat_fixture_credential_secret"
+		signInSecret  = "fixture-sign-in-secret"
+		fixtureSignIn = "http://127.0.0.1/sign-in#token=" + signInSecret
+	)
+	bin := t.TempDir()
+	stub := "#!/bin/sh\ncase \"$*\" in\n  *'auth token'*) echo " + fixtureToken + " ;;\n  *) exit 2 ;;\nesac\n"
+	if err := os.WriteFile(filepath.Join(bin, "conveyor"), []byte(stub), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	var blocks []playbookcheck.ShellBlock
+	for _, block := range playbookcheck.ShellBlocks(readInstallPlaybook(t)) {
+		if strings.Contains(block.Text, "auth token |") {
+			blocks = append(blocks, block)
+		}
+	}
+	if len(blocks) != 3 {
+		t.Fatalf("found %d REST request blocks in %s, want 3 (identity, workspace, invitation)", len(blocks), installPlaybookSource)
+	}
+	respond := func(hostile bool) http.HandlerFunc {
+		return func(w http.ResponseWriter, r *http.Request) {
+			if r.Header.Get("Authorization") != "Bearer "+fixtureToken {
+				w.WriteHeader(http.StatusUnauthorized)
+				return
+			}
+			w.Header().Set("Content-Type", "application/json")
+			switch {
+			case hostile && r.URL.Path == "/v1/workspaces":
+				w.WriteHeader(http.StatusConflict)
+				_, _ = w.Write([]byte(`{"error":"workspace_conflict","message":"workspace could not be created","sign_in_url":"` + fixtureSignIn + `"}`))
+			case hostile:
+				w.WriteHeader(http.StatusCreated)
+				_, _ = w.Write([]byte(`{"email":"teammate@example.com","role":"contributor","display_name":"Ada","sign_in_url":"` + fixtureSignIn + `","token":"` + signInSecret + `","delivery":"fallback"}`))
+			case r.Method == http.MethodGet && r.URL.Path == "/v1/me":
+				_, _ = w.Write([]byte(`{"id":"usr_1","email":"ada@example.com","display_name":"Ada","can_create_workspaces":true}`))
+			case r.Method == http.MethodPost && r.URL.Path == "/v1/workspaces":
+				w.WriteHeader(http.StatusCreated)
+				_, _ = w.Write([]byte(`{"id":"team-a","name":"Team A","config_version":1}`))
+			case r.Method == http.MethodPost && r.URL.Path == "/v1/workspaces/demo/members":
+				w.WriteHeader(http.StatusCreated)
+				_, _ = w.Write([]byte(`{"email":"teammate@example.com","role":"contributor","sign_in_url":"` + fixtureSignIn + `","delivery":"fallback"}`))
+			default:
+				w.WriteHeader(http.StatusNotFound)
+			}
+		}
+	}
+	for _, mode := range []struct {
+		name    string
+		hostile bool
+		want    []string
+	}{
+		{name: "ordinary", want: []string{"HTTP 200", `"can_create_workspaces":true`, "HTTP 201", `"id":"team-a"`, `"delivery":"fallback"`, `"email":"teammate@example.com"`}},
+		{name: "hostile", hostile: true, want: []string{"HTTP 409", `"error":"workspace_conflict"`, "HTTP 201", `"delivery":"fallback"`}},
+	} {
+		server := httptest.NewServer(respond(mode.hostile))
+		var combined strings.Builder
+		for _, block := range blocks {
+			script := strings.NewReplacer("<server-url>", server.URL, "<workspace-id>", "demo").Replace(block.Text)
+			directory := t.TempDir()
+			command := exec.Command("sh", "-c", script)
+			command.Dir = directory
+			command.Env = append(os.Environ(), "PATH="+bin+string(os.PathListSeparator)+os.Getenv("PATH"))
+			output, err := command.CombinedOutput()
+			if err != nil {
+				t.Errorf("%s %s line %d: %v\n%s", mode.name, installPlaybookSource, block.Line, err, output)
+			}
+			for _, secret := range []string{fixtureToken, signInSecret, "sign_in_url"} {
+				if bytes.Contains(output, []byte(secret)) {
+					t.Errorf("%s %s line %d printed %q:\n%s", mode.name, installPlaybookSource, block.Line, secret, output)
+				}
+			}
+			if _, err := os.Stat(filepath.Join(directory, "response.json")); !os.IsNotExist(err) {
+				t.Errorf("%s %s line %d left its response file behind: %v", mode.name, installPlaybookSource, block.Line, err)
+			}
+			combined.Write(output)
+		}
+		server.Close()
+		for _, want := range mode.want {
+			if !strings.Contains(combined.String(), want) {
+				t.Errorf("%s output lacks %q:\n%s", mode.name, want, combined.String())
+			}
+		}
 	}
 }

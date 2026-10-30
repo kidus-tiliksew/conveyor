@@ -329,3 +329,43 @@ func CheckFlagSurface(surface FlagSurface, args []string) error {
 	}
 	return nil
 }
+
+// ShellBlock is the text of one shell fenced code block and the line of its
+// first command.
+type ShellBlock struct {
+	Line int
+	Text string
+}
+
+// ShellBlocks returns the shell fenced code blocks of a playbook, verbatim,
+// so a test can run the exact commands the playbook directs.
+func ShellBlocks(markdown []byte) []ShellBlock {
+	var blocks []ShellBlock
+	scanner := bufio.NewScanner(bytes.NewReader(markdown))
+	scanner.Buffer(make([]byte, 0, 64*1024), 1<<20)
+	fence, fenceShell := "", false
+	var current *ShellBlock
+	for line := 1; scanner.Scan(); line++ {
+		text := scanner.Text()
+		if fence == "" {
+			if match := fenceOpen.FindStringSubmatch(text); match != nil {
+				fence, fenceShell = match[1], shellFence[strings.ToLower(match[2])]
+				if fenceShell {
+					current = &ShellBlock{Line: line + 1}
+				}
+			}
+			continue
+		}
+		if strings.HasPrefix(strings.TrimSpace(text), fence) {
+			if current != nil {
+				blocks = append(blocks, *current)
+			}
+			fence, current = "", nil
+			continue
+		}
+		if current != nil {
+			current.Text += text + "\n"
+		}
+	}
+	return blocks
+}
