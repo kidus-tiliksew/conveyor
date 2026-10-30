@@ -3411,7 +3411,7 @@ func TestWorkerLifecycleHelper(t *testing.T) {
 	mode := ""
 	for _, arg := range os.Args {
 		switch arg {
-		case "exit", "brief", "cancel", "silent", "silent-grandchild", "early-output", "early-error", "early-then-silent", "continuous-output", "stall-deadline-race", "observability", "env-branch",
+		case "exit", "brief", "cancel", "silent", "silent-grandchild", "early-output", "early-output-exit", "early-error", "early-then-silent", "continuous-output", "stall-deadline-race", "observability", "env-branch",
 			"capture-await-exit", "capture-output-await-exit", "capture-output-await-emit-exit", "capture-flood", "crash-child":
 			mode = arg
 		}
@@ -3450,6 +3450,10 @@ func TestWorkerLifecycleHelper(t *testing.T) {
 	case "early-output":
 		fmt.Fprintln(os.Stdout, "first activity")
 		time.Sleep(400 * time.Millisecond)
+	case "early-output-exit":
+		// The first activity, then a zero exit without outlasting any
+		// first-activity timeout.
+		fmt.Fprintln(os.Stdout, "first activity")
 	case "early-error":
 		fmt.Fprintln(os.Stderr, "first activity")
 		time.Sleep(400 * time.Millisecond)

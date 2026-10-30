@@ -50,8 +50,22 @@ jobs:
       - run: make vet
       - run: make fmt-check
 
-  test:
-    name: Go, web, and Playwright tests
+  plan:
+    name: Plan CI shards
+    runs-on: ubuntu-latest
+    outputs:
+      playwright: ${{ steps.matrix.outputs.playwright }}
+      postgres: ${{ steps.matrix.outputs.postgres }}
+      singlestore: ${{ steps.matrix.outputs.singlestore }}
+    steps:
+      - uses: actions/checkout@v4
+      # The Makefile defines every shard, so each one it names runs in its
+      # own job and no shard can be left out of a matrix.
+      - id: matrix
+        run: make -s ci-shard-matrix | tee -a "$GITHUB_OUTPUT"
+
+  go-test:
+    name: Go tests and web lint
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -74,7 +88,36 @@ jobs:
         with:
           path: ~/.cache/ms-playwright
           key: ${{ runner.os }}-playwright-${{ steps.playwright-version.outputs.version }}
-      - run: make test
+      - run: make test-go
+        env:
+          PLAYWRIGHT_INSTALL_ARGS: --with-deps
+
+  playwright:
+    name: Playwright tests (shard ${{ matrix.shard }})
+    needs: plan
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: ${{ fromJSON(needs.plan.outputs.playwright) }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+      - name: Resolve Playwright version
+        id: playwright-version
+        working-directory: web
+        run: |
+          version=$(node -p "require('./package-lock.json').packages['node_modules/@playwright/test'].version")
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+      - uses: actions/cache@v4
+        with:
+          path: ~/.cache/ms-playwright
+          key: ${{ runner.os }}-playwright-${{ steps.playwright-version.outputs.version }}
+      - run: make test-playwright-shard PLAYWRIGHT_SHARD=${{ matrix.shard }}
         env:
           PLAYWRIGHT_INSTALL_ARGS: --with-deps
           PLAYWRIGHT_REPORT_DIR: ${{ runner.temp }}/playwright-report
@@ -82,14 +125,19 @@ jobs:
         if: always()
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
-          name: playwright-report
+          name: playwright-report-${{ matrix.shard }}
           path: ${{ runner.temp }}/playwright-report
           if-no-files-found: warn
           retention-days: 14
 
   postgres-integration:
-    name: PostgreSQL integration tests
+    name: PostgreSQL integration tests (${{ matrix.shard }})
+    needs: plan
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: ${{ fromJSON(needs.plan.outputs.postgres) }}
     services:
       postgres:
         image: postgres:16
@@ -106,6 +154,7 @@ jobs:
           --health-retries 15
     env:
       CONVEYOR_TEST_DATABASE_URL: postgres://conveyor:conveyor@127.0.0.1:5432/conveyor_test?sslmode=disable
+      POSTGRES_INTEGRATION_SHARD: ${{ matrix.shard }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v6
@@ -118,16 +167,34 @@ jobs:
             echo "test-integration-ci unexpectedly accepted an unset CONVEYOR_TEST_DATABASE_URL" >&2
             exit 1
           fi
+      # The probe file belongs to internal/store/postgres, so it runs in the
+      # shard that tests that package.
       - name: Verify a PostgreSQL-only regression fails the integration job
+        if: matrix.shard == 'store'
         run: |
+          set -o pipefail
           probe=internal/store/postgres/ci_regression_probe_test.go
           state="$RUNNER_TEMP/postgres-regression-fixture"
+          log="$RUNNER_TEMP/postgres-regression.log"
           trap 'rm -f "$probe"' EXIT
           printf '%s\n' 'package postgres' 'import "testing"' 'func TestCIRegressionProbe(t *testing.T) { t.Fatal("deliberate PostgreSQL regression probe") }' > "$probe"
-          if CONVEYOR_FIXTURE_STATE="$state" GOFLAGS='-run=TestCIRegressionProbe' make test-integration-ci; then
+          if CONVEYOR_FIXTURE_STATE="$state" GOFLAGS='-run=TestCIRegressionProbe' make test-integration-ci POSTGRES_INTEGRATION_RUNTIME= 2>&1 | tee "$log"; then
             echo "test-integration-ci unexpectedly passed a failing PostgreSQL-only test" >&2
             exit 1
           fi
+          grep -F 'deliberate PostgreSQL regression probe' "$log"
+          grep -F '"outcome": "success", "phase": "prepare"' "$state/phases.jsonl"
+          grep -F '"outcome": "failure", "phase": "gate"' "$state/phases.jsonl"
+      - name: Verify a shard that selects no test fails the integration job
+        run: |
+          set -o pipefail
+          state="$RUNNER_TEMP/postgres-no-tests-fixture"
+          log="$RUNNER_TEMP/postgres-no-tests.log"
+          if CONVEYOR_FIXTURE_STATE="$state" make test-integration-ci POSTGRES_INTEGRATION_RUNTIME= GO_INTEGRATION_FLAGS=-run=^TestNoSuchCIShardTest 2>&1 | tee "$log"; then
+            echo "test-integration-ci unexpectedly passed a shard that selected no test" >&2
+            exit 1
+          fi
+          grep -F 'go test selected no test in:' "$log"
           grep -F '"outcome": "success", "phase": "prepare"' "$state/phases.jsonl"
           grep -F '"outcome": "failure", "phase": "gate"' "$state/phases.jsonl"
       - run: make test-integration-ci
@@ -137,17 +204,23 @@ jobs:
         if: always()
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
-          name: postgres-fixture-phases
+          name: postgres-fixture-phases-${{ matrix.shard }}
           path: |
             ${{ runner.temp }}/postgres-regression-fixture/phases.jsonl
+            ${{ runner.temp }}/postgres-no-tests-fixture/phases.jsonl
             ${{ runner.temp }}/postgres-integration-fixture/phases.jsonl
           if-no-files-found: warn
           retention-days: 14
 
   singlestore-integration:
-    name: SingleStore integration tests
+    name: SingleStore integration tests (${{ matrix.shard }})
+    needs: plan
     runs-on: ubuntu-latest
     timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: ${{ fromJSON(needs.plan.outputs.singlestore) }}
     services:
       singlestore:
         image: ghcr.io/singlestore-labs/singlestoredb-dev:latest
@@ -160,6 +233,8 @@ jobs:
           --health-interval 5s
           --health-timeout 5s
           --health-retries 60
+    env:
+      SINGLESTORE_INTEGRATION_SHARD: ${{ matrix.shard }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v6
@@ -176,18 +251,39 @@ jobs:
             echo 'SingleStore target accepted an unset database URL' >&2
             exit 1
           fi
+      # The probe opens the integration store in internal/store/singlestore.
+      # The packages shard runs that package without its own -run pattern, so
+      # the probe's GOFLAGS selection applies there.
       - name: Verify an integration regression fails the job
+        if: matrix.shard == 'packages'
         env:
           CONVEYOR_TEST_SINGLESTORE_URL: root:${{ secrets.SINGLESTORE_ROOT_PASSWORD }}@tcp(127.0.0.1:3306)/conveyor_test
         run: |
+          set -o pipefail
           probe=internal/store/singlestore/ci_regression_probe_test.go
           state="$RUNNER_TEMP/singlestore-regression-fixture"
+          log="$RUNNER_TEMP/singlestore-regression.log"
           trap 'rm -f "$probe"' EXIT
           printf '%s\n' 'package singlestore' 'import "testing"' 'func TestCIRegressionProbe(t *testing.T) { integrationStore(t); t.Fatal("deliberate SingleStore regression") }' > "$probe"
-          if CONVEYOR_FIXTURE_STATE="$state" GOFLAGS='-run=TestCIRegressionProbe' make test-integration-singlestore-ci; then
+          if CONVEYOR_FIXTURE_STATE="$state" GOFLAGS='-run=TestCIRegressionProbe' make test-integration-singlestore-ci SINGLESTORE_INTEGRATION_RUNTIME= 2>&1 | tee "$log"; then
             echo 'SingleStore target passed a deliberate regression' >&2
             exit 1
           fi
+          grep -F 'deliberate SingleStore regression' "$log"
+          grep -F '"outcome": "success", "phase": "prepare"' "$state/phases.jsonl"
+          grep -F '"outcome": "failure", "phase": "gate"' "$state/phases.jsonl"
+      - name: Verify a shard that selects no test fails the job
+        env:
+          CONVEYOR_TEST_SINGLESTORE_URL: root:${{ secrets.SINGLESTORE_ROOT_PASSWORD }}@tcp(127.0.0.1:3306)/conveyor_test
+        run: |
+          set -o pipefail
+          state="$RUNNER_TEMP/singlestore-no-tests-fixture"
+          log="$RUNNER_TEMP/singlestore-no-tests.log"
+          if CONVEYOR_FIXTURE_STATE="$state" make test-integration-singlestore-ci SINGLESTORE_INTEGRATION_RUNTIME= GO_INTEGRATION_FLAGS=-run=^TestNoSuchCIShardTest 2>&1 | tee "$log"; then
+            echo 'SingleStore target passed a shard that selected no test' >&2
+            exit 1
+          fi
+          grep -F 'go test selected no test in:' "$log"
           grep -F '"outcome": "success", "phase": "prepare"' "$state/phases.jsonl"
           grep -F '"outcome": "failure", "phase": "gate"' "$state/phases.jsonl"
       - run: make test-integration-singlestore-ci
@@ -198,9 +294,10 @@ jobs:
         if: always()
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
-          name: singlestore-fixture-phases
+          name: singlestore-fixture-phases-${{ matrix.shard }}
           path: |
             ${{ runner.temp }}/singlestore-regression-fixture/phases.jsonl
+            ${{ runner.temp }}/singlestore-no-tests-fixture/phases.jsonl
             ${{ runner.temp }}/singlestore-integration-fixture/phases.jsonl
           if-no-files-found: warn
           retention-days: 14

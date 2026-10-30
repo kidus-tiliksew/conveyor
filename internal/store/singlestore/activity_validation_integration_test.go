@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"fmt"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -17,6 +18,9 @@ import (
 )
 
 const activityValidationSentinel = "SINGLESTORE-ACTIVITY-VALIDATION-SENTINEL"
+
+// activityValidationSeedWriters bounds the concurrent per-task seed writers.
+const activityValidationSeedWriters = 8
 
 func activityValidationWorkspace(t *testing.T, st *Store, prefix string) (string, context.Context) {
 	t.Helper()
@@ -50,18 +54,37 @@ func seedActivityValidationScale(t *testing.T, st *Store, ctx context.Context, w
 		}
 		previous = id
 		ids = append(ids, id)
-		for n := range 2 {
-			orderID := fmt.Sprintf("%s-implement-%d", id, n+1)
-			if err := st.CreateJob(ctx, core.Job{ID: orderID, TaskID: id, Stage: core.StageImplement, State: core.JobPending}); err != nil {
-				t.Fatal(err)
+	}
+	// The dependency chain fixes task creation order. Each task's orders and
+	// plan version are independent of every other task's, so a bounded set of
+	// writers seeds them instead of one SingleStore transaction at a time.
+	var writers sync.WaitGroup
+	slots := make(chan struct{}, activityValidationSeedWriters)
+	for _, id := range ids {
+		writers.Add(1)
+		go func() {
+			defer writers.Done()
+			slots <- struct{}{}
+			defer func() { <-slots }()
+			for n := range 2 {
+				orderID := fmt.Sprintf("%s-implement-%d", id, n+1)
+				if err := st.CreateJob(ctx, core.Job{ID: orderID, TaskID: id, Stage: core.StageImplement, State: core.JobPending}); err != nil {
+					t.Error(err)
+					return
+				}
+				if err := storetest.CreateWorkOrder(ctx, st, core.WorkOrder{ID: orderID, TaskID: id, JobID: orderID, Stage: core.StageImplement, State: core.WorkOrderQueued, QueueEnteredAt: now, QueueDeadline: now.Add(time.Hour)}); err != nil {
+					t.Error(err)
+					return
+				}
 			}
-			if err := storetest.CreateWorkOrder(ctx, st, core.WorkOrder{ID: orderID, TaskID: id, JobID: orderID, Stage: core.StageImplement, State: core.WorkOrderQueued, QueueEnteredAt: now, QueueDeadline: now.Add(time.Hour)}); err != nil {
-				t.Fatal(err)
+			if _, err := st.CreateSpecVersion(ctx, core.SpecVersion{TaskID: id, Content: padding, Acceptance: core.JSONPayload([]string{padding}), Decomposition: core.JSONPayload([]any{})}); err != nil {
+				t.Error(err)
 			}
-		}
-		if _, err := st.CreateSpecVersion(ctx, core.SpecVersion{TaskID: id, Content: padding, Acceptance: core.JSONPayload([]string{padding}), Decomposition: core.JSONPayload([]any{})}); err != nil {
-			t.Fatal(err)
-		}
+		}()
+	}
+	writers.Wait()
+	if t.Failed() {
+		t.FailNow()
 	}
 	if _, err := sharedDatabase.admin.ExecContext(ctx, "UPDATE `"+sharedDatabase.name+"`.work_orders SET served_requirement_snapshot=?, governance_snapshot=? WHERE workspace_id=?", core.JSONPayload([]string{padding}), core.JSONPayload(map[string]string{"pad": padding}), workspace); err != nil {
 		t.Fatal(err)

@@ -30,6 +30,9 @@ import (
 
 // DEC-39; component-runtime. Both durable selections execute real migrations,
 // identity/workspace bootstrap, startup reconciliation and ordered shutdown.
+// A SingleStore subtest that finds a database another subtest's daemon already
+// migrated reuses it with every table but the migration ledger emptied, since
+// creating and migrating a distributed database takes most of a minute.
 func TestConveyordDurableStartupIntegration(t *testing.T) {
 	if path := os.Getenv("CONVEYOR_DURABLE_STARTUP_CONFIG"); path != "" {
 		flag.CommandLine = flag.NewFlagSet("conveyord", flag.ExitOnError)
@@ -37,13 +40,35 @@ func TestConveyordDurableStartupIntegration(t *testing.T) {
 		main()
 		return
 	}
+	parent := t
 	for _, name := range []string{"postgres", "singlestore"} {
+		// migrated names the SingleStore database a daemon has migrated.
+		var migrated string
+		database := func(t *testing.T) string {
+			t.Helper()
+			if name != "singlestore" {
+				return durableStartupDatabase(t, name)
+			}
+			if migrated != "" {
+				emptyDurableStartupDatabase(t, migrated)
+				return migrated
+			}
+			return durableStartupDatabaseFor(t, parent, name)
+		}
+		start := func(t *testing.T, raw, cfgPath string, timeout time.Duration) *durableDaemon {
+			t.Helper()
+			daemon := startDurableDaemon(t, raw, cfgPath, timeout)
+			if name == "singlestore" {
+				migrated = raw
+			}
+			return daemon
+		}
 		t.Run(name, func(t *testing.T) {
-			raw := durableStartupDatabase(t, name)
+			raw := database(t)
 			dir := t.TempDir()
 			cfgPath := filepath.Join(dir, "conveyor.yaml")
 			requireStartupWrite(t, cfgPath, []byte(durableStartupConfig(name, "startup")))
-			daemon := startDurableDaemon(t, raw, cfgPath, 45*time.Second)
+			daemon := start(t, raw, cfgPath, 45*time.Second)
 			if code, body := daemon.post(t, "/v1/workspaces", durableStartupToken, `{"id":"created","name":"Created","document":{"repos":[]}}`); code != http.StatusCreated {
 				t.Fatalf("create workspace status=%d body=%s", code, body)
 			}
@@ -85,10 +110,10 @@ func TestConveyordDurableStartupIntegration(t *testing.T) {
 		// DEC-75(3), DEC-75(4): a deployment without a configured workspace
 		// serves its owner, who creates the first workspace through the API.
 		t.Run(name+"/NoConfiguredWorkspaceFirstCreation", func(t *testing.T) {
-			raw := durableStartupDatabase(t, name)
+			raw := database(t)
 			cfgPath := filepath.Join(t.TempDir(), "conveyor.yaml")
 			requireStartupWrite(t, cfgPath, []byte(durableStartupConfig(name, "")))
-			daemon := startDurableDaemon(t, raw, cfgPath, 90*time.Second)
+			daemon := start(t, raw, cfgPath, 90*time.Second)
 			if code, body := daemon.get(t, "/v1/workspaces", durableStartupToken); code != http.StatusOK || strings.Contains(body, `"id"`) {
 				t.Fatalf("owner workspaces before creation status=%d body=%s", code, body)
 			}
@@ -123,10 +148,10 @@ func TestConveyordDurableStartupIntegration(t *testing.T) {
 		})
 		// DEC-75(4): a demotion and an exclusion survive a real restart.
 		t.Run(name+"/MembershipDecisionsSurviveRestart", func(t *testing.T) {
-			raw := durableStartupDatabase(t, name)
+			raw := database(t)
 			cfgPath := filepath.Join(t.TempDir(), "conveyor.yaml")
 			requireStartupWrite(t, cfgPath, []byte(durableStartupConfig(name, "startup")))
-			daemon := startDurableDaemon(t, raw, cfgPath, 90*time.Second)
+			daemon := start(t, raw, cfgPath, 90*time.Second)
 			st, err := backend.Open(store.WithActor(t.Context(), store.SystemActor()), config.Database{Backend: name, URL: raw})
 			if err != nil {
 				t.Fatal(err)
@@ -163,7 +188,7 @@ func TestConveyordDurableStartupIntegration(t *testing.T) {
 				t.Fatalf("exclude owner status=%d body=%s", code, body)
 			}
 			daemon.stop(t)
-			restarted := startDurableDaemon(t, raw, cfgPath, 90*time.Second)
+			restarted := start(t, raw, cfgPath, 90*time.Second)
 			code, body := restarted.get(t, "/v1/workspaces", durableStartupToken)
 			if code != http.StatusOK || !strings.Contains(body, `"id":"startup"`) || strings.Contains(body, `"id":"excluded"`) {
 				t.Fatalf("owner workspaces after restart status=%d body=%s", code, body)
@@ -389,6 +414,14 @@ func requireStartupWrite(t *testing.T, path string, b []byte) {
 }
 func durableStartupDatabase(t *testing.T, name string) string {
 	t.Helper()
+	return durableStartupDatabaseFor(t, t, name)
+}
+
+// durableStartupDatabaseFor creates an isolated database for t and registers
+// a SingleStore database's removal with owner, which may be a parent test
+// that outlives t.
+func durableStartupDatabaseFor(t, owner *testing.T, name string) string {
+	t.Helper()
 	variable := "CONVEYOR_TEST_DATABASE_URL"
 	if name == "singlestore" {
 		variable = "CONVEYOR_TEST_SINGLESTORE_URL"
@@ -431,18 +464,58 @@ func durableStartupDatabase(t *testing.T, name string) string {
 		t.Fatal(err)
 	}
 	admin := sql.OpenDB(connector)
-	t.Cleanup(func() { admin.Close() })
+	owner.Cleanup(func() { admin.Close() })
 	database := fmt.Sprintf("startup_%d_test", time.Now().UnixNano())
 	if _, err = admin.ExecContext(t.Context(), "CREATE DATABASE `"+database+"` PARTITIONS 2"); err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() {
+	owner.Cleanup(func() {
 		ctx, cancel := context.WithTimeout(store.WithActor(context.Background(), store.SystemActor()), 30*time.Second)
 		defer cancel()
 		if _, err := admin.ExecContext(ctx, "DROP DATABASE `"+database+"`"); err != nil {
-			t.Error(err)
+			owner.Error(err)
 		}
 	})
 	cfg.DBName = database
 	return cfg.FormatDSN()
+}
+
+// emptyDurableStartupDatabase deletes every row of a migrated SingleStore
+// database except its migration ledger, so the next daemon starts on an empty
+// store without repeating the migrations. DELETE, not TRUNCATE: truncation is
+// distributed DDL on SingleStore.
+func emptyDurableStartupDatabase(t *testing.T, raw string) {
+	t.Helper()
+	cfg, err := mysql.ParseDSN(raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	connector, err := mysql.NewConnector(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	db := sql.OpenDB(connector)
+	defer db.Close()
+	rows, err := db.QueryContext(t.Context(), "SELECT table_name FROM information_schema.tables WHERE table_schema=? AND table_name<>'conveyor_singlestore_migrations' ORDER BY table_name", cfg.DBName)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var tables []string
+	for rows.Next() {
+		var table string
+		if err = rows.Scan(&table); err != nil {
+			rows.Close()
+			t.Fatal(err)
+		}
+		tables = append(tables, table)
+	}
+	rows.Close()
+	if err = rows.Err(); err != nil || len(tables) == 0 {
+		t.Fatalf("migrated startup database tables=%v err=%v", tables, err)
+	}
+	for _, table := range tables {
+		if _, err = db.ExecContext(t.Context(), "DELETE FROM `"+table+"`"); err != nil {
+			t.Fatalf("empty %s: %v", table, err)
+		}
+	}
 }

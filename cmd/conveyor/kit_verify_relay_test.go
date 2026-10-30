@@ -49,13 +49,15 @@ func readKitRelayLog(t *testing.T, attemptRoot string) []kitRelayLogEntry {
 	return entries
 }
 
-// A remote server that answers every call in 6–8 s must not fail an exercise
-// whose child relays evidence with a 2 s per-request timeout: the relay
+// A remote server that answers every call three to four times slower than
+// the child's per-request relay timeout must not fail the exercise: the relay
 // answers from the spool and the attempt drains every upload before it
-// reports (component-verification-runner).
+// reports (component-verification-runner). The 0.75–1 s server answers and
+// the 0.25 s child timeout keep the ratio of the 6–8 s and 2 s originals, and
+// every call stays inside the default transport ceiling.
 func TestKitRunnerSlowServerRecordsRelayedEvidence(t *testing.T) {
 	t.Parallel()
-	e := kitRelayExercise(t, "relay", "3", "2", "64", "0")
+	e := kitRelayExercise(t, "relay", "3", "0.25", "64", "0")
 	e.EvidenceOutputs = []verification.EvidenceOutput{{Type: "state_observation", SchemaVersion: 1, MinimumItems: 3}}
 	f := newKitExecutionFixture(t, e)
 	f.mu.Lock()
@@ -63,8 +65,8 @@ func TestKitRunnerSlowServerRecordsRelayedEvidence(t *testing.T) {
 	f.order.ExecutionDeadline = time.Now().Add(10 * time.Minute)
 	f.v.order = f.order
 	f.mu.Unlock()
-	f.responseDelay.Store(int64(6 * time.Second))
-	f.responseJitter.Store(int64(2 * time.Second))
+	f.responseDelay.Store(int64(750 * time.Millisecond))
+	f.responseJitter.Store(int64(250 * time.Millisecond))
 	attemptRoot := t.TempDir()
 	err := f.v.launch(t.Context(), e, f.v.root, attemptRoot, "run", "grant", f.snapshot.Attempts[0].Subject, kitRelayEnvironment(), nil)
 	f.mu.Lock()
