@@ -23,8 +23,10 @@ func setupCmd() *cobra.Command {
 	command := &cobra.Command{Use: "setup", Short: "Manage named local execution setups"}
 	command.PersistentFlags().StringVar(&configPath, "config", configPath, "local execution configuration")
 
+	createFields := namedSetupFieldFlags{}
 	create := &cobra.Command{
-		Use: "create <name>", Short: "Interactively create a named local execution setup", Args: cobra.ExactArgs(1),
+		Use: "create <name>", Short: "Create a named local execution setup interactively or from field flags", Args: cobra.ExactArgs(1),
+		Long: "Create a named local execution setup. Without field flags, a terminal wizard collects the choices. With any field flag, create skips the wizard, starts from the wizard's detected defaults, applies the flags, and writes the setup without prompting.",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			path, err := resolveLocalExecutionConfigPath(cmd, configPath)
 			if err != nil {
@@ -33,12 +35,18 @@ func setupCmd() *cobra.Command {
 			resolved, err := resolveClientConfig()
 			if err != nil {
 				return err
+			}
+			if fields := createFields.given(cmd); len(fields) > 0 {
+				return runNamedExecutionSetupFlags(cmd.Context(), cmd.OutOrStdout(), path.Path, resolved.Workspace.Value, args[0], false, fields)
 			}
 			return runNamedExecutionSetupWizard(cmd.Context(), cmd.InOrStdin(), cmd.OutOrStdout(), path.Path, resolved.Workspace.Value, args[0], false)
 		},
 	}
+	createFields.register(create)
+	editFields := namedSetupFieldFlags{}
 	edit := &cobra.Command{
-		Use: "edit <name>", Short: "Interactively edit a named local execution setup", Args: cobra.ExactArgs(1),
+		Use: "edit <name>", Short: "Edit a named local execution setup interactively or from field flags", Args: cobra.ExactArgs(1),
+		Long: "Edit a named local execution setup. Without field flags, a terminal wizard collects the choices. With any field flag, edit skips the wizard, changes only the flagged fields, and writes the setup without prompting.",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			path, err := resolveLocalExecutionConfigPath(cmd, configPath)
 			if err != nil {
@@ -48,9 +56,13 @@ func setupCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
+			if fields := editFields.given(cmd); len(fields) > 0 {
+				return runNamedExecutionSetupFlags(cmd.Context(), cmd.OutOrStdout(), path.Path, resolved.Workspace.Value, args[0], true, fields)
+			}
 			return runNamedExecutionSetupWizard(cmd.Context(), cmd.InOrStdin(), cmd.OutOrStdout(), path.Path, resolved.Workspace.Value, args[0], true)
 		},
 	}
+	editFields.register(edit)
 	list := &cobra.Command{
 		Use: "list", Short: "List every named local execution setup", Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
@@ -333,53 +345,21 @@ func writeNamedLocalExecutionConfig(path string, local *config.Config) error {
 
 func runNamedExecutionSetupWizard(ctx context.Context, input io.Reader, output io.Writer, path, workspace, name string, edit bool) error {
 	name = strings.TrimSpace(name)
-	if name == "" || strings.ContainsAny(name, `/\\`) || name == "." || name == ".." {
+	if !pathSafeSetupName(name) {
 		return fmt.Errorf("setup name must be one path-safe segment")
 	}
 	if !wizardTerminal(input) {
 		return fmt.Errorf("execution setup requires a terminal; use `conveyor config set --setup %s execution.<stage>.<field> <value> --config %s`", name, path)
 	}
-	detected := detectLocalHarnessHealth(ctx)
-	healthy := healthyDetectedHarnesses(detected)
-	if len(healthy) == 0 {
-		return noHealthyHarnessError(detected)
+	start, err := startNamedExecutionSetup(ctx, path, name, edit)
+	if err != nil {
+		return err
 	}
-	local, loadErr := config.Load(path)
-	if loadErr != nil && !errors.Is(loadErr, os.ErrNotExist) {
-		return fmt.Errorf("load existing local execution config: %w", loadErr)
-	}
-	if edit && loadErr != nil {
-		return fmt.Errorf("load named setup %q: %w", name, loadErr)
-	}
-	if !edit && loadErr == nil {
-		if _, _, lookupErr := namedSetup(local, name); lookupErr == nil {
-			return fmt.Errorf("setup %q already exists; use `conveyor setup edit %s`", name, name)
-		}
-	}
-	var initialSeats []localStageChoice
-	if edit {
-		setup, _, lookupErr := namedSetup(local, name)
-		if lookupErr != nil {
-			return lookupErr
-		}
-		for _, seat := range setup.Review.Seats {
-			initialSeats = append(initialSeats, localStageChoice{Harness: seat.Harness, Model: seat.Model, Effort: seat.Effort})
-		}
-	}
-	state := newExecutionWizardState(detected, initialSeats)
-	if edit {
-		setup, _, _ := namedSetup(local, name)
-		prefillExecutionWizard(state, setup)
-		state.acceptDefaults = false
-	}
-	if local != nil {
-		state.choices.VerifyConcurrency = strconv.Itoa(local.Execution.VerifyConcurrency)
-	}
-	state.choices.WorktreeLocation = initialWorktreeChoice(path, "")
+	detected, healthy, local, state := start.detected, start.healthy, start.local, start.state
 	for {
-		completed, err := runExecutionWizardUI(newExecutionWizardModel(state, detected), input, output)
-		if err != nil {
-			return err
+		completed, uiErr := runExecutionWizardUI(newExecutionWizardModel(state, detected), input, output)
+		if uiErr != nil {
+			return uiErr
 		}
 		if completed.cancelled || !completed.completed {
 			_, _ = fmt.Fprintln(output, "Execution setup cancelled; nothing was written.")
@@ -402,18 +382,79 @@ func runNamedExecutionSetupWizard(ctx context.Context, input io.Reader, output i
 		}
 		break
 	}
-	selected := selectedHarnesses(state.choices, healthy)
-	if workspace == "" {
-		workspace = "local"
-	}
 	if err := validateWorktreeChoice(path, state.choices.WorktreeLocation); err != nil {
 		return err
 	}
+	return saveNamedExecutionSetup(output, path, local, workspace, name, state.choices, healthy, edit)
+}
+
+func pathSafeSetupName(name string) bool {
+	return name != "" && !strings.ContainsAny(name, `/\\`) && name != "." && name != ".."
+}
+
+// namedSetupStart is the state the wizard and the field-flag path both begin
+// from: the detection probe, the loaded document, and the initial choices.
+type namedSetupStart struct {
+	detected []detectedHarness
+	healthy  []config.Harness
+	local    *config.Config
+	state    *executionWizardState
+}
+
+func startNamedExecutionSetup(ctx context.Context, path, name string, edit bool) (namedSetupStart, error) {
+	detected := detectLocalHarnessHealth(ctx)
+	healthy := healthyDetectedHarnesses(detected)
+	if len(healthy) == 0 {
+		return namedSetupStart{}, noHealthyHarnessError(detected)
+	}
+	local, loadErr := config.Load(path)
+	if loadErr != nil && !errors.Is(loadErr, os.ErrNotExist) {
+		return namedSetupStart{}, fmt.Errorf("load existing local execution config: %w", loadErr)
+	}
+	if edit && loadErr != nil {
+		return namedSetupStart{}, fmt.Errorf("load named setup %q: %w", name, loadErr)
+	}
+	if !edit && loadErr == nil {
+		if _, _, lookupErr := namedSetup(local, name); lookupErr == nil {
+			return namedSetupStart{}, fmt.Errorf("setup %q already exists; use `conveyor setup edit %s`", name, name)
+		}
+	}
+	var initialSeats []localStageChoice
+	if edit {
+		setup, _, lookupErr := namedSetup(local, name)
+		if lookupErr != nil {
+			return namedSetupStart{}, lookupErr
+		}
+		for _, seat := range setup.Review.Seats {
+			initialSeats = append(initialSeats, localStageChoice{Harness: seat.Harness, Model: seat.Model, Effort: seat.Effort})
+		}
+	}
+	state := newExecutionWizardState(detected, initialSeats)
+	if edit {
+		setup, _, _ := namedSetup(local, name)
+		prefillExecutionWizard(state, setup)
+		state.acceptDefaults = false
+	}
+	if local != nil {
+		state.choices.VerifyConcurrency = strconv.Itoa(local.Execution.VerifyConcurrency)
+	}
+	state.choices.WorktreeLocation = initialWorktreeChoice(path, "")
+	return namedSetupStart{detected: detected, healthy: healthy, local: local, state: state}, nil
+}
+
+// saveNamedExecutionSetup is the single write of the wizard and the field-flag
+// path: one staged copy, the setup and its worktree location, one rename
+// (component-harness-execution).
+func saveNamedExecutionSetup(output io.Writer, path string, local *config.Config, workspace, name string, choices localExecutionChoices, healthy []config.Harness, edit bool) error {
+	selected := selectedHarnesses(choices, healthy)
+	if workspace == "" {
+		workspace = "local"
+	}
 	err := stageLocalExecutionConfig(path, func(staged string) error {
-		if err := writeNamedExecutionSetup(staged, local, workspace, name, state.choices, selected, edit); err != nil {
+		if err := writeNamedExecutionSetup(staged, local, workspace, name, choices, selected, edit); err != nil {
 			return err
 		}
-		return persistWorktreeChoice(staged, workspace, state.choices.WorktreeLocation)
+		return persistWorktreeChoice(staged, workspace, choices.WorktreeLocation)
 	})
 	if err != nil {
 		return err

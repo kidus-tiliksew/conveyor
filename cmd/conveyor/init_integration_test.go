@@ -78,6 +78,24 @@ func TestFreshStoreInitServesAPIAndCreatesFirstTaskIntegration(t *testing.T) {
 	if !strings.Contains(rerunOutput.String(), "already initialized; issuing a fresh") || secondInitToken == "" || secondInitToken == firstInitToken {
 		t.Fatalf("rerun output=%q", rerunOutput.String())
 	}
+	// Every answer flag reruns init through the command without reading
+	// standard input (req-agent-guided-setup AC-5.1).
+	flagConfigPath := filepath.Join(t.TempDir(), "conveyor.yaml")
+	var flagOutput strings.Builder
+	flagCommand := initCmd()
+	flagCommand.SetIn(failingReader{t})
+	flagCommand.SetOut(&flagOutput)
+	flagCommand.SetArgs([]string{
+		"--organization", answers.Organization, "--operator-name", answers.OperatorName, "--operator-email", answers.OperatorEmail,
+		"--workspace-id", answers.WorkspaceID, "--workspace-name", answers.WorkspaceName, "--repository-name", answers.RepositoryName,
+		"--repository-url", answers.RepositoryURL, "--default-branch", answers.BaseBranch, "--config", flagConfigPath,
+	})
+	if err = flagCommand.Execute(); err != nil {
+		t.Fatalf("answer-flag init: %v", err)
+	}
+	if _, err = os.Stat(flagConfigPath); err != nil || strings.Contains(flagOutput.String(), "Organization name") || signInTokenFromOutput(t, flagOutput.String()) == "" {
+		t.Fatalf("answer-flag init config err=%v output=%q", err, flagOutput.String())
+	}
 	// A file in the pre-DEC-56 init shape is accepted on rerun and left
 	// unchanged (component-identity-membership).
 	legacyPath := filepath.Join(t.TempDir(), "conveyor.yaml")
