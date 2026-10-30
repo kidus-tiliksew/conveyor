@@ -221,10 +221,12 @@ test('primary navigation places Decisions directly after System Design and opens
   await serve(page)
   await page.goto('/w/demo/')
   const nav = page.getByRole('navigation', { name: 'Primary' })
+  const entryLink = nav.getByRole('link', { name: 'Decisions', exact: true })
+  // evaluateAll does not wait, so read the labels only once the entry renders.
+  await expect(entryLink).toBeVisible()
   const labels = await nav.locator('a').evaluateAll((links) => links.map((link) => link.textContent?.trim()))
   const position = labels.indexOf('System Design')
   expect(labels[position + 1]).toBe('Decisions')
-  const entryLink = nav.getByRole('link', { name: 'Decisions', exact: true })
   await expect(entryLink).toHaveAttribute('href', '/w/demo/decisions')
   await entryLink.click()
   await expect(page).toHaveURL(/\/w\/demo\/decisions$/)
