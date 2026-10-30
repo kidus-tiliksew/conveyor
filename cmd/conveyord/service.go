@@ -12,6 +12,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"strconv"
 	"strings"
 
@@ -39,21 +40,35 @@ type daemonServiceStatus struct {
 	Stderr    string `json:"stderr_log"`
 }
 
+// daemonVersionVerbs and daemonServiceVerbs are the words runServiceVerb
+// handles before daemon flag parsing. They and newDaemonServiceFlagSet are
+// shared with the setup playbook's command-existence test
+// (req-agent-guided-setup AC-5.3).
+var (
+	daemonVersionVerbs = []string{"version", "--version", "-version"}
+	daemonServiceVerbs = []string{"install", "uninstall", "status"}
+)
+
+func newDaemonServiceFlagSet(verb string) (*flag.FlagSet, *string, *string) {
+	flags := flag.NewFlagSet("conveyord "+verb, flag.ContinueOnError)
+	configPath := flags.String("config", "conveyor.yaml", "path to deployment config")
+	envFilePath := flags.String("env-file", "", "owner-only environment file (default: .env beside config)")
+	return flags, configPath, envFilePath
+}
+
 func runServiceVerb(ctx context.Context, args []string, stdout, stderr io.Writer) (bool, error) {
 	if len(args) == 0 {
 		return false, nil
 	}
-	if args[0] == "version" || args[0] == "--version" || args[0] == "-version" {
+	if slices.Contains(daemonVersionVerbs, args[0]) {
 		fmt.Fprintf(stdout, "conveyord %s\n", releaseinfo.Version)
 		return true, nil
 	}
-	if args[0] != "install" && args[0] != "uninstall" && args[0] != "status" {
+	if !slices.Contains(daemonServiceVerbs, args[0]) {
 		return false, nil
 	}
-	flags := flag.NewFlagSet("conveyord "+args[0], flag.ContinueOnError)
+	flags, configPath, envFilePath := newDaemonServiceFlagSet(args[0])
 	flags.SetOutput(stderr)
-	configPath := flags.String("config", "conveyor.yaml", "path to deployment config")
-	envFilePath := flags.String("env-file", "", "owner-only environment file (default: .env beside config)")
 	if err := flags.Parse(args[1:]); err != nil {
 		return true, err
 	}

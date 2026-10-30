@@ -499,7 +499,7 @@ conveyor setup edit reviewers --implement-model gpt-5.6-sol --implement-effort m
 | Command | What it does |
 |---|---|
 | `conveyor mcp install` | Install a named personal connection for the selected saved server. `--server <base>`, `--name <name>`, `--tool claude\|codex\|cursor\|opencode`, read-only `--list`, and endpoint-checked `--adopt` are supported. Codex/Claude use native header helpers; Cursor/OpenCode use distinct server-specific token variables and literal endpoints. OpenCode validates staged config with `debug config`. |
-| `conveyor skills install` | Install the seven embedded agent skills (`conveyor-work`, `conveyor-plan`, `conveyor-file-tasks`, `conveyor-testing-doc`, `conveyor-kit`, `conveyor-kit-verify`, `conveyor-coordinate`) into the native roots for detected Claude Code, Codex, Cursor, and OpenCode clients. OpenCode uses `~/.config/opencode/skills` globally and `.opencode/skills` with `--project`. `--tool claude\|codex\|cursor\|opencode` narrows the detected client, and `--force` allows downgrading skills a newer release installed. |
+| `conveyor skills install` | Install the eight embedded agent skills (`conveyor-work`, `conveyor-plan`, `conveyor-file-tasks`, `conveyor-testing-doc`, `conveyor-kit`, `conveyor-kit-verify`, `conveyor-coordinate`, `conveyor-install`) into the native roots for detected Claude Code, Codex, Cursor, and OpenCode clients. OpenCode uses `~/.config/opencode/skills` globally and `.opencode/skills` with `--project`. `--tool claude\|codex\|cursor\|opencode` narrows the detected client, and `--force` allows downgrading skills a newer release installed. |
 
 See [client setup](client-setup.md#6-connect-agent-sessions) for naming,
 two-server examples, native credential retrieval, migration, restart, and

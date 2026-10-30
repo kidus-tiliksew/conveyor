@@ -128,6 +128,21 @@ var embeddedSkillManifest = []embeddedSkillFile{
 		sourcePath: "docs/playbooks/conveyor-task-filing.md",
 		relative:   "conveyor-file-tasks/conveyor-task-filing.md",
 	},
+	// The setup playbook ships as a skill whose content matches the
+	// published playbook of the same release (req-agent-guided-setup AC-1.3).
+	{
+		assetPath:   "skills_assets/conveyor-install/SKILL.md",
+		sourcePath:  ".claude/skills/conveyor-install/SKILL.md",
+		relative:    "conveyor-install/SKILL.md",
+		rewriteFrom: "[docs/playbooks/conveyor-install.md](../../../docs/playbooks/conveyor-install.md)",
+		rewriteTo:   "[conveyor-install.md](conveyor-install.md)",
+		skill:       true,
+	},
+	{
+		assetPath:  "skills_assets/conveyor-install/conveyor-install.md",
+		sourcePath: "docs/playbooks/conveyor-install.md",
+		relative:   "conveyor-install/conveyor-install.md",
+	},
 }
 
 type skillInstallFile struct {

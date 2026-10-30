@@ -37,6 +37,28 @@ import (
 	"github.com/kidus-tiliksew/conveyor/internal/workorder"
 )
 
+// conveyordFlags holds the daemon's flag values. registerDaemonFlags is the
+// one definition of the daemon flag set, shared by main and the setup
+// playbook's command-existence test (req-agent-guided-setup AC-5.3).
+type conveyordFlags struct {
+	addr, configPath, debugAddr                                       *string
+	pollGitHub, workerRetryDelay, workerRetryMaximum, shutdownTimeout *time.Duration
+	debugAllowRemote                                                  *bool
+}
+
+func registerDaemonFlags(flags *flag.FlagSet) conveyordFlags {
+	return conveyordFlags{
+		addr:               flags.String("addr", "127.0.0.1:8080", "listen address"),
+		configPath:         flags.String("config", "conveyor.yaml", "path to deployment config"),
+		pollGitHub:         flags.Duration("poll-github", 0, "poll interval for conveyor:ready issues (0 disables)"),
+		workerRetryDelay:   flags.Duration("worker-retry-delay", workerservice.DefaultRetryDelay, "initial supervised-child retry delay"),
+		workerRetryMaximum: flags.Duration("worker-retry-max", workerservice.DefaultRetryMaximum, "maximum supervised-child retry delay"),
+		shutdownTimeout:    flags.Duration("shutdown-timeout", defaultConveyordShutdownTimeout, "total graceful shutdown budget"),
+		debugAddr:          flags.String(debugAddrFlag, "", "opt-in net/http/pprof listen address (loopback only unless -"+debugAllowRemoteFlag+"; empty disables)"),
+		debugAllowRemote:   flags.Bool(debugAllowRemoteFlag, false, "allow -"+debugAddrFlag+" to bind a non-loopback address"),
+	}
+}
+
 func main() {
 	if handled, err := runServiceVerb(context.Background(), os.Args[1:], os.Stdout, os.Stderr); handled {
 		if err != nil {
@@ -48,14 +70,10 @@ func main() {
 	if err := envfile.LoadDefault(); err != nil {
 		log.Fatalf("load local environment: %v", err)
 	}
-	addr := flag.String("addr", "127.0.0.1:8080", "listen address")
-	configPath := flag.String("config", "conveyor.yaml", "path to deployment config")
-	pollGitHub := flag.Duration("poll-github", 0, "poll interval for conveyor:ready issues (0 disables)")
-	workerRetryDelay := flag.Duration("worker-retry-delay", workerservice.DefaultRetryDelay, "initial supervised-child retry delay")
-	workerRetryMaximum := flag.Duration("worker-retry-max", workerservice.DefaultRetryMaximum, "maximum supervised-child retry delay")
-	shutdownTimeoutFlag := flag.Duration("shutdown-timeout", defaultConveyordShutdownTimeout, "total graceful shutdown budget")
-	debugAddrValue := flag.String(debugAddrFlag, "", "opt-in net/http/pprof listen address (loopback only unless -"+debugAllowRemoteFlag+"; empty disables)")
-	debugAllowRemote := flag.Bool(debugAllowRemoteFlag, false, "allow -"+debugAddrFlag+" to bind a non-loopback address")
+	daemonFlags := registerDaemonFlags(flag.CommandLine)
+	addr, configPath, pollGitHub := daemonFlags.addr, daemonFlags.configPath, daemonFlags.pollGitHub
+	workerRetryDelay, workerRetryMaximum := daemonFlags.workerRetryDelay, daemonFlags.workerRetryMaximum
+	shutdownTimeoutFlag, debugAddrValue, debugAllowRemote := daemonFlags.shutdownTimeout, daemonFlags.debugAddr, daemonFlags.debugAllowRemote
 	flag.Parse()
 	listenAddr, listenAddrSource, err := resolveConveyordListenAddress(*addr, flagWasSet(flag.CommandLine, "addr"), os.Getenv)
 	if err != nil {
