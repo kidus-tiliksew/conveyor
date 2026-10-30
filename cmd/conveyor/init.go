@@ -31,14 +31,45 @@ type initPrerequisites struct {
 	warnf  func(string, ...any)
 }
 
+// initAnswerField is one initialization answer. The prompt path and the
+// answer-flag path read the same table in the same order, so both feed one
+// initAnswers value (req-agent-guided-setup AC-5.1; DEC-92(4)).
+type initAnswerField struct {
+	flag, label, defaultValue, defaultHelp string
+	destination                            func(*initAnswers) *string
+}
+
+func initAnswerFields() []initAnswerField {
+	identity := config.FirstOperatorIdentityFromEnvironment()
+	current, _ := os.Getwd()
+	return []initAnswerField{
+		{"organization", "Organization name", identity.OrganizationName, "$" + config.OrganizationNameEnv + `, else "Conveyor"`, func(a *initAnswers) *string { return &a.Organization }},
+		{"operator-name", "First operator display name", identity.DisplayName, "$" + config.FirstOperatorDisplayNameEnv + `, else "Local Operator"`, func(a *initAnswers) *string { return &a.OperatorName }},
+		{"operator-email", "First operator email", identity.Email, "$" + config.FirstOperatorEmailEnv + `, else "operator@localhost"`, func(a *initAnswers) *string { return &a.OperatorEmail }},
+		{"workspace-id", "Workspace id", "default", `"default"`, func(a *initAnswers) *string { return &a.WorkspaceID }},
+		{"workspace-name", "Workspace name", "Default", `"Default"`, func(a *initAnswers) *string { return &a.WorkspaceName }},
+		{"repository-name", "Repository name", filepath.Base(current), "the working directory name", func(a *initAnswers) *string { return &a.RepositoryName }},
+		{"repository-url", "Repository URL", "", "", func(a *initAnswers) *string { return &a.RepositoryURL }},
+		{"default-branch", "Default branch", "main", `"main"`, func(a *initAnswers) *string { return &a.BaseBranch }},
+	}
+}
+
 func initCmd() *cobra.Command {
 	var configPath string
+	flagAnswers := map[string]*string{}
 	command := &cobra.Command{
 		Use:   "init",
 		Short: "Initialize a Conveyor organization and first workspace",
+		Long:  "Initialize a Conveyor organization and first workspace. Without answer flags, init prompts for each answer on standard input. With any answer flag, init takes every answer from its flags, uses the prompt default for each absent flag, reads nothing from standard input, and exits nonzero naming each required answer that is empty or given blank.",
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			answers, err := readInitAnswers(cmd.InOrStdin(), cmd.OutOrStdout())
+			var answers initAnswers
+			var err error
+			if initAnswerFlagsGiven(cmd) {
+				answers, err = initAnswersFromFlags(cmd, flagAnswers)
+			} else {
+				answers, err = readInitAnswers(cmd.InOrStdin(), cmd.OutOrStdout())
+			}
 			if err != nil {
 				return err
 			}
@@ -50,31 +81,61 @@ func initCmd() *cobra.Command {
 		},
 	}
 	command.Flags().StringVar(&configPath, "config", "conveyor.yaml", "deployment config to create")
+	for _, field := range initAnswerFields() {
+		value := new(string)
+		flagAnswers[field.flag] = value
+		usage := initAnswerName(field) + " answer; required"
+		if field.defaultHelp != "" {
+			usage = initAnswerName(field) + " answer; defaults to " + field.defaultHelp
+		}
+		command.Flags().StringVar(value, field.flag, "", usage)
+	}
 	return command
+}
+
+func initAnswerName(field initAnswerField) string {
+	return strings.ToLower(field.label[:1]) + field.label[1:]
+}
+
+func initAnswerFlagsGiven(cmd *cobra.Command) bool {
+	for _, field := range initAnswerFields() {
+		if cmd.Flags().Changed(field.flag) {
+			return true
+		}
+	}
+	return false
+}
+
+// initAnswersFromFlags takes each answer from its flag, or from the prompt
+// default when the flag is absent, and names every required answer that is
+// still empty. A flag given with a blank value stays empty, so an unset
+// variable in the caller's command is reported instead of replaced by a
+// default. It never reads standard input.
+func initAnswersFromFlags(cmd *cobra.Command, values map[string]*string) (initAnswers, error) {
+	answers := initAnswers{}
+	var missing []string
+	for _, field := range initAnswerFields() {
+		value := field.defaultValue
+		if cmd.Flags().Changed(field.flag) {
+			value = strings.TrimSpace(*values[field.flag])
+		}
+		if value == "" {
+			missing = append(missing, fmt.Sprintf("--%s (%s)", field.flag, initAnswerName(field)))
+		}
+		*field.destination(&answers) = value
+	}
+	if len(missing) > 0 {
+		return initAnswers{}, fmt.Errorf("missing required init answers: %s", strings.Join(missing, ", "))
+	}
+	return answers, nil
 }
 
 func readInitAnswers(input io.Reader, output io.Writer) (initAnswers, error) {
 	reader := bufio.NewReader(input)
-	identity := config.FirstOperatorIdentityFromEnvironment()
-	current, _ := os.Getwd()
-	fields := []struct {
-		label        string
-		defaultValue string
-		destination  *string
-	}{
-		{"Organization name", identity.OrganizationName, nil},
-		{"First operator display name", identity.DisplayName, nil},
-		{"First operator email", identity.Email, nil},
-		{"Workspace id", "default", nil},
-		{"Workspace name", "Default", nil},
-		{"Repository name", filepath.Base(current), nil},
-		{"Repository URL", "", nil},
-		{"Default branch", "main", nil},
-	}
+	fields := initAnswerFields()
 	answers := initAnswers{}
-	destinations := []*string{&answers.Organization, &answers.OperatorName, &answers.OperatorEmail, &answers.WorkspaceID, &answers.WorkspaceName, &answers.RepositoryName, &answers.RepositoryURL, &answers.BaseBranch}
 	for i := range fields {
-		fields[i].destination = destinations[i]
+		destination := fields[i].destination(&answers)
 		if fields[i].defaultValue == "" {
 			fmt.Fprintf(output, "%s: ", fields[i].label)
 		} else {
@@ -88,7 +149,7 @@ func readInitAnswers(input io.Reader, output io.Writer) (initAnswers, error) {
 		if value == "" {
 			value = fields[i].defaultValue
 		}
-		*fields[i].destination = value
+		*destination = value
 		if errors.Is(err, io.EOF) && i != len(fields)-1 {
 			return initAnswers{}, fmt.Errorf("read %s: input ended before initialization answers were complete", strings.ToLower(fields[i].label))
 		}
