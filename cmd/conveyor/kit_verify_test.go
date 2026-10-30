@@ -520,8 +520,15 @@ func TestKitRunnerUIExecutionReport(t *testing.T) {
 	}
 }
 
+// The server goes offline while the child runs, so at least one monitor tick
+// meets a transient renewal failure before the execution report exhausts its
+// upload retries. The 10 ms first retry delay keeps the five-attempt doubling
+// schedule without 15 s of real backoff (component-verification-runner).
 func TestKitRunnerOfflineEvidenceRetentionAndRetry(t *testing.T) {
-	e := verification.Exercise{ID: "offline", Kind: "script", Argv: []string{"sh", "-c", "sleep 5"}, TimeoutSeconds: 10, RequiredAssertions: []verification.Assertion{}, Operations: []verification.Operation{}}
+	backoff := kitUploadBackoff
+	kitUploadBackoff = 10 * time.Millisecond
+	t.Cleanup(func() { kitUploadBackoff = backoff })
+	e := verification.Exercise{ID: "offline", Kind: "script", Argv: []string{"sh", "-c", "sleep 2"}, TimeoutSeconds: 10, RequiredAssertions: []verification.Assertion{}, Operations: []verification.Operation{}}
 	f := newKitExecutionFixture(t, e)
 	root := t.TempDir()
 	time.AfterFunc(200*time.Millisecond, func() { f.mu.Lock(); f.offline = true; f.mu.Unlock() })
