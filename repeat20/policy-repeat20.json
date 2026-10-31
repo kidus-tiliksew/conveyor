@@ -1,0 +1,88 @@
+{
+  "schema": 1,
+  "task": "261030-8cfc34",
+  "layer": "local",
+  "command": [
+    "make",
+    "-f",
+    "/home/user/.local/state/conveyor-inputs/261030-8cfc34/evidence.mk",
+    "repeat20"
+  ],
+  "environment": [
+    "PATH",
+    "HOME",
+    "LC_ALL",
+    "LANG",
+    "CI",
+    "XDG_CACHE_HOME",
+    "XDG_STATE_HOME",
+    "CONVEYOR_TASK_CACHE",
+    "GOCACHE",
+    "GOTMPDIR",
+    "TMPDIR",
+    "PLAYWRIGHT_BROWSERS_PATH",
+    "npm_config_cache",
+    "PLAYWRIGHT_OUTPUT_DIR",
+    "PLAYWRIGHT_REPORT_DIR",
+    "PLAYWRIGHT_WORKERS",
+    "PLAYWRIGHT_PORT",
+    "PLAYWRIGHT_JSON_OUTPUT_NAME"
+  ],
+  "tools": {
+    "make": [
+      "make",
+      "--version"
+    ],
+    "git": [
+      "git",
+      "--version"
+    ],
+    "python3": [
+      "python3",
+      "--version"
+    ],
+    "sh": [
+      "sh",
+      "-c",
+      "printf POSIX-shell"
+    ],
+    "node": [
+      "node",
+      "--version"
+    ],
+    "npm": [
+      "npm",
+      "--version"
+    ],
+    "npx": [
+      "npx",
+      "--version"
+    ]
+  },
+  "external_inputs": [
+    "/home/user/.local/state/conveyor-inputs/261030-8cfc34/evidence.mk",
+    "/home/user/.local/state/conveyor-inputs/261030-8cfc34/summarize.py",
+    "/home/user/.nvm/versions/node/v24.22.1",
+    "/usr/local/bin/node",
+    "/usr/local/bin/npm",
+    "/usr/local/bin/npx",
+    "/usr/lib/python3.12",
+    "/home/user/.cache/conveyor/261030-8cfc34/playwright",
+    "/usr/lib/x86_64-linux-gnu",
+    "/usr/share/fonts",
+    "/etc/fonts",
+    "/etc/python3.12",
+    "/usr/share/fontconfig",
+    "/usr/share/poppler",
+    "/usr/lib/llvm-18/lib/libLLVM.so.1",
+    "/usr/lib/llvm-18/lib/libclang-cpp.so.18.1"
+  ],
+  "exclude": {},
+  "audit": {
+    "inputs_complete": true,
+    "input_rationale": "Local exit gate: the four flaky tests and the two new settings tests with --repeat-each=20 at the final head, with the board-map elapsed-time distribution. The recipe runs Playwright from web/ against the Vite dev server that playwright.config.ts launches through scripts/validation_resources.py, with every /v1 response mocked by page.route, so no backend, network service, or database is read. Worktree inputs (sources, specs, web/node_modules, scripts) are hashed by the helper. External inputs: the wrapper makefile and summarize.py, the Node 24.22.1 install with npm/npx and their /usr/local/bin links, the Python 3.12 standard library, the Chromium and headless-shell builds under PLAYWRIGHT_BROWSERS_PATH, the shared libraries Chromium links from /usr/lib/x86_64-linux-gnu, and the font files and fontconfig it renders with. HOME holds no .npmrc or .gitconfig. Playwright output and the JSON report go to the task cache through PLAYWRIGHT_OUTPUT_DIR and TMPDIR, so nothing is written into the worktree. Symlink targets outside those roots are inventoried too: /etc/python3.12 (sitecustomize), /usr/share/fontconfig (fontconfig conf.avail targets), the two /usr/lib/llvm-18/lib files (libLLVM.so.1 and libclang-cpp.so.18.1) that links in the shared-library directory resolve to; the whole llvm-18 tree is not listed because its build/Release and build/Debug+Asserts links point back at the tree, and /usr/share/poppler (cMap links under the fonts directory).",
+    "git_metadata": "dependent",
+    "git_rationale": "Declared dependent by default: binding is to the same pushed head, so no cross-commit reuse is claimed."
+  },
+  "backend": null
+}

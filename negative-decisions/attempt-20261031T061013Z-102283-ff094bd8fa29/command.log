@@ -1,0 +1,57 @@
+git --no-pager diff -- web/src
+diff --git a/web/src/components/app-shell.tsx b/web/src/components/app-shell.tsx
+index 3bd3b84f..40e5b7b8 100644
+--- a/web/src/components/app-shell.tsx
++++ b/web/src/components/app-shell.tsx
+@@ -733,7 +733,6 @@ function NavSidebar({ className }: { className?: string }) {
+         <NavItem to="/w/$workspaceId/system-design" icon={FileCode2} label="System Design" />
+         {/* Directly after System Design (req-document-operating-surfaces
+             AC-4.2). It carries no badge: Inbox is the only badged entry. */}
+-        <NavItem to="/w/$workspaceId/decisions" icon={Scale} label="Decisions" />
+         {/* Exactly the accepted operating surfaces, and no others
+             (req-document-operating-surfaces REQ-4, AC-4.1). Planning and
+             Blueprint history are parked, not retired: their routes stay
+@@ -741,6 +740,7 @@ function NavSidebar({ className }: { className?: string }) {
+             (component-web-task-surfaces) is untouched, and blueprint history reaches through
+             task detail — only these two entries left the sidebar. */}
+         <NavItem to="/w/$workspaceId/monitor" icon={Activity} label="Monitor" />
++        <NavItem to="/w/$workspaceId/decisions" icon={Scale} label="Decisions" />
+         <NavItem to="/w/$workspaceId/settings" icon={Settings} label="Settings" />
+       </div>
+       <Button
+cd web && status=0; PLAYWRIGHT_JSON_OUTPUT_NAME="$TMPDIR/negative-decisions.json" npx playwright test tests/decisions.spec.ts -g 'primary navigation places Decisions directly after System Design' --reporter=list,json || status=$?; python3 -I /home/user/.local/state/conveyor-inputs/261030-8cfc34/summarize.py "$TMPDIR/negative-decisions.json"; exit $status
+
+Running 1 test using 1 worker
+
+  ✘  1 tests/decisions.spec.ts:218:1 › primary navigation places Decisions directly after System Design and opens the surface (AC-4.2) (390ms)
+
+
+  1) tests/decisions.spec.ts:218:1 › primary navigation places Decisions directly after System Design and opens the surface (AC-4.2) 
+
+    Error: expect(received).toBe(expected) // Object.is equality
+
+    Expected: "Decisions"
+    Received: "Monitor"
+
+      228 |   const labels = await nav.locator('a').evaluateAll((links) => links.map((link) => link.textContent?.trim()))
+      229 |   const position = labels.indexOf('System Design')
+    > 230 |   expect(labels[position + 1]).toBe('Decisions')
+          |                                ^
+      231 |   const entryLink = nav.getByRole('link', { name: 'Decisions', exact: true })
+      232 |   await expect(entryLink).toHaveAttribute('href', '/w/demo/decisions')
+      233 |   await entryLink.click()
+        at /home/user/conveyor-worktrees/conveyor-task-261030-8cfc34/web/tests/decisions.spec.ts:230:32
+
+    Error Context: ../../../.cache/conveyor/261030-8cfc34/tmp/playwright-output/decisions-primary-navigati-35c95-d-opens-the-surface-AC-4-2-/error-context.md
+
+  1 failed
+    tests/decisions.spec.ts:218:1 › primary navigation places Decisions directly after System Design and opens the surface (AC-4.2) 
+== summary ==
+  1 failed   decisions.spec.ts:218 primary navigation places Decisions directly after System Design and opens the surface (AC-4.2)
+failure: primary navigation places Decisions directly after System Design and opens the surface (AC-4.2)
+    Error: [2mexpect([22m[31mreceived[39m[2m).[22mtoBe[2m([22m[32mexpected[39m[2m) // Object.is equality[22m
+    
+    Expected: [32m"Decisions"[39m
+    Received: [31m"Monitor"[39m
+stats: expected=0 unexpected=1 flaky=0 skipped=0
+make: *** [/home/user/.local/state/conveyor-inputs/261030-8cfc34/evidence.mk:16: negative-decisions] Error 1

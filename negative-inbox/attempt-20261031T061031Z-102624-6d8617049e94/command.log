@@ -1,0 +1,59 @@
+git --no-pager diff -- web/src
+diff --git a/web/src/components/inbox/context-proposal-rows.tsx b/web/src/components/inbox/context-proposal-rows.tsx
+index 5198ce9a..364b7234 100644
+--- a/web/src/components/inbox/context-proposal-rows.tsx
++++ b/web/src/components/inbox/context-proposal-rows.tsx
+@@ -234,7 +234,7 @@ export function ContextProposalChecklist({
+       {sharedSource && (
+         <p data-context-source className="text-xs text-muted">
+           Suggested by {sourceWord(proposals[0])}
+-          {sharedAge && proposals[0].created_at && (
++          {false && sharedAge && proposals[0].created_at && (
+             <>
+               {' · '}
+               <Age value={proposals[0].created_at} />
+cd web && status=0; PLAYWRIGHT_JSON_OUTPUT_NAME="$TMPDIR/negative-inbox.json" npx playwright test tests/inbox.spec.ts -g 'the context checklist lists each proposed document checked, and Apply attaches them all' --reporter=list,json || status=$?; python3 -I /home/user/.local/state/conveyor-inputs/261030-8cfc34/summarize.py "$TMPDIR/negative-inbox.json"; exit $status
+
+Running 1 test using 1 worker
+
+  ✘  1 tests/inbox.spec.ts:552:1 › the context checklist lists each proposed document checked, and Apply attaches them all until the item leaves (5.4s)
+
+
+  1) tests/inbox.spec.ts:552:1 › the context checklist lists each proposed document checked, and Apply attaches them all until the item leaves 
+
+    Error: expect(locator).toHaveText(expected) failed
+
+    Locator:  locator('[data-inbox-detail] [data-inbox-item]').locator('[data-context-source]')
+    Expected: "Suggested by triage · 2 hours ago"
+    Received: "Suggested by triage"
+    Timeout:  5000ms
+
+    Call log:
+      - Expect "toHaveText" with timeout 5000ms
+      - waiting for locator('[data-inbox-detail] [data-inbox-item]').locator('[data-context-source]')
+        14 × locator resolved to <p data-context-source="true" class="text-xs text-muted">Suggested by triage</p>
+           - unexpected value "Suggested by triage"
+
+
+      567 |   // the preview panel, Preview, justification. No row carries a Confirm or
+      568 |   // Dismiss button.
+    > 569 |   await expect(card.locator('[data-context-source]')).toHaveText('Suggested by triage · 2 hours ago')
+          |                                                       ^
+      570 |   await expect(card.locator('[data-context-row-meta]')).toHaveCount(0)
+      571 |   const first = rows.nth(0)
+      572 |   await expect(first).toContainText('requirement')
+        at /home/user/conveyor-worktrees/conveyor-task-261030-8cfc34/web/tests/inbox.spec.ts:569:55
+
+    Error Context: ../../../.cache/conveyor/261030-8cfc34/tmp/playwright-output/inbox-the-context-checklis-7cb76-m-all-until-the-item-leaves/error-context.md
+
+  1 failed
+    tests/inbox.spec.ts:552:1 › the context checklist lists each proposed document checked, and Apply attaches them all until the item leaves 
+== summary ==
+  1 failed   inbox.spec.ts:552 the context checklist lists each proposed document checked, and Apply attaches them all until the item leaves
+failure: the context checklist lists each proposed document checked, and Apply attaches them all until the item leaves
+    Error: [2mexpect([22m[31mlocator[39m[2m).[22mtoHaveText[2m([22m[32mexpected[39m[2m)[22m failed
+    
+    Locator:  locator('[data-inbox-detail] [data-inbox-item]').locator('[data-context-source]')
+    Expected: [32m"Suggested by triage[7m · 2 hours ago[27m"[39m
+stats: expected=0 unexpected=1 flaky=0 skipped=0
+make: *** [/home/user/.local/state/conveyor-inputs/261030-8cfc34/evidence.mk:20: negative-inbox] Error 1
