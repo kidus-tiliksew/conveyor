@@ -251,6 +251,7 @@ export function proposalAge(proposal: Pick<PendingProposal, 'proposed_at' | 'age
   if (!since) return null
   return {
     relative: relativeTime(since.toISOString()),
+    since: since.toISOString(),
     dateTime: (validAt ?? since).toISOString(),
     absolute: validAt?.toLocaleString(),
   }

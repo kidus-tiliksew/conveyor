@@ -4,7 +4,7 @@ import { cn } from '../../lib/utils'
 import { useWorkspaceSelection } from '../app-shell'
 import { pullRequestLabel } from './decision-card'
 import { Kbd } from './inbox-keyboard'
-import { compactAge, DueChip, inboxKind, itemKind, KindIcon, toneBar, UnblocksMark } from './inbox-kind'
+import { compactAge, DueChip, inboxKind, itemKind, KindIcon, toneBar, UnblocksMark, useMinuteClock } from './inbox-kind'
 import type { InboxSearch } from './inbox-search'
 import { inboxItemKey } from './inbox-selection'
 import { knownTier, originWord, proposalAge, tierLabels } from './proposal-card'
@@ -65,7 +65,8 @@ function InboxRow({
   search: InboxSearch
 }) {
   const { workspace } = useWorkspaceSelection()
-  const row = describeRow(item)
+  const now = useMinuteClock()
+  const row = describeRow(item, now)
   const kind = itemKind(item)
   const { tone } = inboxKind(kind)
   const pullRequest = item.kind === 'document_proposal' ? undefined : item.pull_request
@@ -137,7 +138,7 @@ function InboxRow({
   )
 }
 
-function describeRow(item: InboxItem) {
+function describeRow(item: InboxItem, now: number) {
   const proposal = item.proposal
   if (item.kind === 'document_proposal' && proposal) {
     const known = knownTier(proposal.tier)
@@ -150,12 +151,12 @@ function describeRow(item: InboxItem) {
       meta: `${version}${originWord(proposal)}`,
       blocks: 0,
       deadline: item.deadline,
-      age: age ? { compact: compactAge(age.dateTime), dateTime: age.dateTime, absolute: age.absolute } : null,
+      age: age ? { compact: compactAge(age.since, now), dateTime: age.dateTime, absolute: age.absolute } : null,
     }
   }
   const pullRequest = item.pull_request
   const meta = pullRequest ? (pullRequest.number != null ? `PR #${pullRequest.number}` : 'PR') : 'No PR yet'
-  const compact = compactAge(item.last_event_at)
+  const compact = compactAge(item.last_event_at, now)
   return {
     kind: item.next_action?.label ?? 'Decision',
     title: item.task?.title ?? '',

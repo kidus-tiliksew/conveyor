@@ -1935,6 +1935,40 @@ test('each kind takes its tone, and attention marks only what unblocks others or
   await expect(mid.locator('[data-due]')).toHaveAttribute('data-due', 'overdue')
 })
 
+test('a just-passed deadline reads overdue, and chips and the urgent count move with the clock', async ({ page }) => {
+  const start = new Date('2026-10-31T09:00:00Z').getTime()
+  await page.clock.install({ time: start })
+  const fixture = decisionsFixture()
+  const deadlines: Record<string, string | null> = {
+    // Passed by ten seconds: rounding must not turn it into "due in 0m".
+    'T-zeta': new Date(start - 10_000).toISOString(),
+    // Thirty seconds past the three-hour line: neutral until the clock moves.
+    'T-alpha': new Date(start + 180 * 60_000 + 30_000).toISOString(),
+    'T-mid': null,
+  }
+  for (const item of fixture.items) {
+    const id = item.task?.id ?? ''
+    if (!(id in deadlines)) continue
+    item.deadline = deadlines[id]
+    Object.assign(item.next_action as Record<string, unknown>, { deadline: deadlines[id] })
+    Object.assign(fixture.actions[id], { deadline: deadlines[id] })
+  }
+  await serve(page, fixture)
+  await page.goto('/w/demo/inbox')
+
+  const zeta = rowItems(page).nth(0).locator('[data-due]')
+  await expect(zeta).toHaveAttribute('data-due', 'overdue')
+  await expect(zeta).toHaveText('1m overdue')
+  const alpha = rowItems(page).nth(1).locator('[data-due]')
+  await expect(alpha).toHaveAttribute('data-due', 'later')
+  await expect(page.locator('[data-inbox-urgent]')).toHaveText('1 urgent')
+
+  // One minute later, with no new inbox data, the chip crosses the threshold.
+  await page.clock.fastForward(60_000)
+  await expect(alpha).toHaveAttribute('data-due', 'soon')
+  await expect(page.locator('[data-inbox-urgent]')).toHaveText('2 urgent')
+})
+
 test('with no decisions the header says nothing needs you and the band shows the empty state', async ({ page }) => {
   const fixture = decisionsFixture()
   fixture.items = fixture.items.filter((item) => item.band !== 'decisions')

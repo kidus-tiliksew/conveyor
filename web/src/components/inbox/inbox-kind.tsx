@@ -11,6 +11,7 @@ import {
   RefreshCw,
   RotateCcw,
 } from 'lucide-react'
+import { useSyncExternalStore } from 'react'
 import type { InboxItem } from '../../lib/types'
 import { cn } from '../../lib/utils'
 
@@ -104,11 +105,45 @@ export function KindPill({ kind, label, className }: { kind: string; label: stri
 // A deadline within this many minutes is urgent.
 export const URGENT_MINUTES = 180
 
-// Minutes until the deadline (negative once passed) and its countdown text:
-// "due in 1h 32m", "due in 2d", or "<x> overdue". Read from the client clock,
-// the same way in the row, the detail and the summary's urgent count.
+// The client clock, ticking once a minute while any inbox reader is mounted,
+// so countdown chips, compact ages and the urgent count move with time and
+// every reader shares one timer.
+const clockListeners = new Set<() => void>()
+let clockNow = Date.now()
+let clockTimer: number | undefined
+function subscribeClock(listener: () => void) {
+  clockListeners.add(listener)
+  if (clockTimer === undefined) {
+    clockNow = Date.now()
+    clockTimer = window.setInterval(() => {
+      clockNow = Date.now()
+      for (const notify of clockListeners) notify()
+    }, 60_000)
+  }
+  return () => {
+    clockListeners.delete(listener)
+    if (clockListeners.size === 0 && clockTimer !== undefined) {
+      window.clearInterval(clockTimer)
+      clockTimer = undefined
+    }
+  }
+}
+export function useMinuteClock() {
+  return useSyncExternalStore(
+    subscribeClock,
+    () => clockNow,
+    () => clockNow,
+  )
+}
+
+// Time until the deadline and its countdown text: "due in 1h 32m", "due in
+// 2d", or "<x> overdue". `exact` is the unrounded minutes, compared with the
+// urgency threshold; `minutes` is rounded for display and is negative once
+// the deadline has passed at all. Read from the client clock, the same way in
+// the row, the detail and the summary's urgent count.
 export function countdown(deadline: string, now = Date.now()) {
-  const minutes = Math.round((new Date(deadline).getTime() - now) / 60_000)
+  const exact = (new Date(deadline).getTime() - now) / 60_000
+  const minutes = exact < 0 ? Math.min(-1, Math.round(exact)) : Math.round(exact)
   const abs = Math.abs(minutes)
   const span =
     abs < 60
@@ -116,7 +151,7 @@ export function countdown(deadline: string, now = Date.now()) {
       : abs < 24 * 60
         ? `${Math.floor(abs / 60)}h${abs % 60 ? ` ${abs % 60}m` : ''}`
         : `${Math.round(abs / 1440)}d`
-  return { minutes, text: minutes < 0 ? `${span} overdue` : `due in ${span}` }
+  return { exact, minutes, text: minutes < 0 ? `${span} overdue` : `due in ${span}` }
 }
 
 function validDeadline(deadline: string | null | undefined): deadline is string {
@@ -126,9 +161,10 @@ function validDeadline(deadline: string | null | undefined): deadline is string 
 // The deadline countdown chip: attention under three hours, failure once
 // overdue, neutral otherwise. No deadline renders nothing.
 export function DueChip({ deadline, className }: { deadline: string | null | undefined; className?: string }) {
+  const now = useMinuteClock()
   if (!validDeadline(deadline)) return null
-  const due = countdown(deadline)
-  const tone = due.minutes < 0 ? 'overdue' : due.minutes < URGENT_MINUTES ? 'soon' : 'later'
+  const due = countdown(deadline, now)
+  const tone = due.minutes < 0 ? 'overdue' : due.exact < URGENT_MINUTES ? 'soon' : 'later'
   return (
     <time
       data-due={tone}
@@ -154,7 +190,7 @@ export function DueChip({ deadline, className }: { deadline: string | null | und
 export function isUrgent(item: InboxItem, now = Date.now()) {
   if ((item.next_action?.blocks?.length ?? 0) > 0) return true
   const deadline = item.deadline ?? item.next_action?.deadline
-  return validDeadline(deadline) && countdown(deadline, now).minutes < URGENT_MINUTES
+  return validDeadline(deadline) && countdown(deadline, now).exact < URGENT_MINUTES
 }
 
 // "14m", "3h", "2d" since the given time, or '' when it is unusable.

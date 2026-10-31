@@ -6,7 +6,7 @@ import { AutomaticBand } from '../components/inbox/automatic-band'
 import { BlockedRow } from '../components/inbox/blocked-row'
 import { InboxBandChips } from '../components/inbox/inbox-band-chips'
 import { useInboxKeyboard } from '../components/inbox/inbox-keyboard'
-import { isUrgent } from '../components/inbox/inbox-kind'
+import { isUrgent, useMinuteClock } from '../components/inbox/inbox-kind'
 import { InboxReviewDetail } from '../components/inbox/inbox-review-detail'
 import { InboxReviewList } from '../components/inbox/inbox-review-list'
 import type { InboxSearch } from '../components/inbox/inbox-search'
@@ -43,6 +43,7 @@ export function InboxPage() {
   const navigate = useNavigate({ from: '/w/$workspaceId/inbox' })
   const { workspace } = useWorkspaceSelection()
   const inbox = useNextActions()
+  const now = useMinuteClock()
   const root = useRef<HTMLDivElement>(null)
   const items = inbox.data?.items ?? []
   const allDecisions = items.filter((item) => item.band === 'decisions')
@@ -110,7 +111,7 @@ export function InboxPage() {
             {inbox.data && (
               <InboxSummary
                 decisions={allDecisions.length}
-                urgent={allDecisions.filter((item) => isUrgent(item)).length}
+                urgent={allDecisions.filter((item) => isUrgent(item, now)).length}
                 blocked={blocked.length}
                 automatic={automatic.length}
               />
