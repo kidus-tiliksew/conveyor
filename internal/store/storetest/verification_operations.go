@@ -44,6 +44,7 @@ func runVerificationOperations(t *testing.T, x Fixture) {
 	t.Run("OperatorCheckpoint", func(t *testing.T) { runVerificationCheckpoint(t, x) })
 	t.Run("Checkpoints", func(t *testing.T) { runVerificationCheckpoints(t, x) })
 	t.Run("SealedReviewAcceptance", func(t *testing.T) { runSealedVerificationReview(t, x) })
+	t.Run("SealedReviewAuthorityDrift", func(t *testing.T) { runSealedVerificationReviewDrift(t, x) })
 	t.Run("NextActionDispositionBinding", func(t *testing.T) { runNextActionDispositionBinding(t, x) })
 	t.Run("NextActionGatedAttemptBinding", func(t *testing.T) { runNextActionGatedAttemptBinding(t, x) })
 	t.Run("RetryGateScopedToVerifyOrder", func(t *testing.T) { runVerificationRetryGateScope(t, x) })
@@ -490,6 +491,49 @@ func runSealedVerificationReview(t *testing.T, x Fixture) {
 	}
 	if !found {
 		t.Fatal("accepted review was not durable")
+	}
+}
+
+// runSealedVerificationReviewDrift claims the review seat after a newer
+// version of the context's governing requirement is confirmed, so the seat
+// pins v2 while the context was sealed under v1. Each backend's acceptance
+// transaction refuses approve with verification_review_authority_drift and
+// writes nothing, then accepts changes_requested citing the same context and
+// bounces the task to implement (component-verification-service "Authority
+// drift between seal and review").
+func runSealedVerificationReviewDrift(t *testing.T, x Fixture) {
+	v := newVerificationFixture(t, x, true)
+	v.apply(t, store.VerificationCommand{Kind: store.VerificationSeal, Submission: &store.VerificationSubmission{Outcome: "succeeded", Coverage: verificationFixtureCoverage(v.snapshot(t))}})
+	verify, err := x.Backend.GetWorkOrder(v.ctx, v.access.WorkOrderID)
+	requireOK(t, err)
+	job := core.Job{ID: verify.TaskID + "-review-1", TaskID: verify.TaskID, Stage: core.StageReview, State: core.JobPending}
+	order := core.WorkOrder{ID: job.ID, JobID: job.ID, TaskID: job.TaskID, Stage: core.StageReview, State: core.WorkOrderQueued, HeadSHA: verify.HeadSHA, ReviewRound: 1, ReviewSeat: 1, CreatedAt: time.Now().UTC()}
+	requireOK(t, CreateReviewRound(x.Context, x.Backend, order.TaskID, []core.Job{job}, []core.WorkOrder{order}))
+	drifted := append([]core.ServedRequirementContext{}, verify.ServedRequirementSnapshot...)
+	if len(drifted) != 1 || drifted[0].ID != "req-fixture" || drifted[0].Version != 1 {
+		t.Fatalf("verify order pins %+v, want req-fixture v1", drifted)
+	}
+	drifted[0].Version = 2
+	order, err = ClaimWorkOrder(x.Context, x.Backend, order.ID, core.WorkOrderClaim{WorkerID: "reviewer", ClaimantID: "reviewer", SessionID: "reviewer", ClientToken: "review-token", Lease: time.Hour, ExecutionTimeout: time.Hour, Requirements: drifted})
+	requireOK(t, err)
+	ctx := store.WithActor(x.Context, store.Actor{ID: "worker:reviewer", Role: core.ActorWorker})
+	decision := core.ReviewDecision{TaskID: order.TaskID, JobID: order.JobID, ReviewWorkOrderID: order.ID, ClaimSession: "reviewer", ReviewRound: 1, ReviewSeat: 1, Verdict: "approve", ReasonCode: "verified", Summary: "Sealed empty fixture assessed", ReviewedCommitSHA: verify.HeadSHA, HeadSHA: verify.HeadSHA, Reviewer: "worker:reviewer", MaxBounces: 3, VerificationAssessment: &core.VerificationAssessment{ContextIDs: []string{v.contextID}, RunIDs: []string{}, EvidenceIDs: []string{}, Mappings: []core.VerificationAssessmentMapping{{DocumentID: "req-fixture", Version: 1, AcceptanceCriterionID: "AC-1.1", EvidenceIDs: []string{}, Assessment: "The context was sealed under v1; v2 is unverified"}}}}
+	before := verificationPublicState(t, &v)
+	err = taskops.New(x.Backend).AcceptReviewDecision(ctx, decision)
+	var refusal *store.VerificationRefusal
+	if !errors.As(err, &refusal) || refusal.Code != store.VerificationCodeReviewAuthorityDrift || !errors.Is(err, store.ErrVerificationAccess) || !strings.Contains(refusal.Rule, "req-fixture v1") || !strings.Contains(refusal.Rule, "v2") {
+		t.Fatalf("approve under drift = %v, want %s naming both versions", err, store.VerificationCodeReviewAuthorityDrift)
+	}
+	if !reflect.DeepEqual(before, verificationPublicState(t, &v)) {
+		t.Fatal("refused approval changed aggregate")
+	}
+	decision.Verdict, decision.ReasonCode = "changes_requested", "reverify"
+	decision.Feedback = "req-fixture v2 was confirmed after the seal; submit the same head again for re-verification."
+	requireOK(t, taskops.New(x.Backend).AcceptReviewDecision(ctx, decision))
+	task, err := x.Backend.GetTask(ctx, order.TaskID)
+	requireOK(t, err)
+	if task.NextStage != core.StageImplement || core.TaskTerminal(task.State) {
+		t.Fatalf("task after changes_requested = state %s next_stage %s, want a live bounce to implement", task.State, task.NextStage)
 	}
 }
 
