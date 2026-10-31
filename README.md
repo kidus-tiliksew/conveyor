@@ -89,6 +89,37 @@ breaks something, Conveyor raises a signal. It never rewrites code or
 documents on its own: an operator acknowledges the signal or sends follow-up
 work back through the same gates.
 
+## Tips
+
+Workflows that have worked well while building Conveyor with Conveyor:
+
+- **Run your agents from [T3 Code](https://github.com/pingdotgg/t3code).**
+  Conveyor gives each stage its own agent, and T3 Code lets one session start
+  and follow agents from different providers side by side. You can see every
+  stage's thread in one place and step into any of them.
+- **Use a different model to review than to implement.** Conveyor already
+  keeps agents from reviewing their own work. A reviewer from another model
+  family also catches mistakes the implementer's model tends to miss.
+- **Coordinate from one session.** Ask a single agent to move a set of tasks
+  through the queue with the `conveyor-coordinate` skill. It starts a fresh
+  agent for each stage order and brings you only the decisions that need you.
+- **Plan in conversation, then file.** Talk a feature through with an agent
+  using `conveyor-plan`, confirm the requirements and decisions, and only then
+  file tasks with `conveyor-file-tasks`. Small, dependency-ordered tasks review
+  faster than large ones.
+- **Let CI be the evidence.** Agents run quick, focused tests while they work
+  and leave full suites to CI. Reviewers check a green run on the exact commit
+  under review.
+- **Put the evidence in the pull request.** When the pull request lists what
+  was tested and links the results, reviews take minutes. When it doesn't,
+  tasks bounce back.
+- **Get gates on your phone with [AgentDesk](https://github.com/kidus-tiliksew/AgentDesk).**
+  Plan approvals, merges, and document confirmations wait on you. AgentDesk
+  sends each one to you as a question you can answer from anywhere, so the
+  queue doesn't stall while you're away.
+- **Ask for plain-language decisions.** Have agents explain each option in
+  plain words before citing requirement and decision IDs.
+
 ## Documentation
 
 Concepts, guides, references, and the agent playbooks live in
