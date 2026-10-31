@@ -774,9 +774,12 @@ test('opening a task shows the Board sheet over the map, and closing it returns 
   await waitForSheetSettled(page.getByRole('dialog'))
 })
 
-test('500 open and 2,000 finished tasks show their groups, tasks, and edges within two seconds of the read', async ({
-  page,
-}) => {
+test('500 open and 2,000 finished tasks show their groups, tasks, and edges within two seconds of the read', {
+  tag: '@built-dashboard',
+}, async ({ page }) => {
+  // This bound runs in the built-dashboard project: it times the committed
+  // production bundle users get, as the operator decided for task
+  // 261031-66d10d (component-verification-strategy, Playwright).
   test.setTimeout(60_000)
   const kinds = [working, queued, blocked, planGate, merging]
   const open: TaskMapItem[] = []
