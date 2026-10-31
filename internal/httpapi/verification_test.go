@@ -1329,6 +1329,14 @@ func TestVerificationReviewAssessmentRefusals(t *testing.T) {
 // context, run and evidence IDs (component-verification-service).
 func attemptedReviewClaimFixture(t *testing.T) (*Server, *http.Request, core.WorkOrder, string, string, string) {
 	t.Helper()
+	return attemptedReviewClaimFixtureSeatDesign(t, 3)
+}
+
+// attemptedReviewClaimFixtureSeatDesign seals the same context under
+// component-fixture v3 and claims review seat 1 with the given version of that
+// design, as a seat does whose first claim follows a newer confirmation.
+func attemptedReviewClaimFixtureSeatDesign(t *testing.T, seatDesignVersion int) (*Server, *http.Request, core.WorkOrder, string, string, string) {
+	t.Helper()
 	design := core.GovernanceDesignContext{ID: "component-fixture", Title: "Fixture", Category: "component", Version: 3, Content: "# Fixture\n\n## Fixture section\n\nThe fixture reads state.\n"}
 	governance := &core.GovernanceSnapshot{Designs: []core.GovernanceDesignContext{design}}
 	s, ctx, id := verificationHTTPFixtureWith(t, governance)
@@ -1383,11 +1391,85 @@ func attemptedReviewClaimFixture(t *testing.T) (*Server, *http.Request, core.Wor
 	if err != nil || order.VerificationContextID != contextID {
 		t.Fatalf("seal did not complete the verify order with its context: %+v %v", order, err)
 	}
-	request, review := claimReviewSeat(t, s, ctx, order, governance)
+	seatDesign := design
+	seatDesign.Version = seatDesignVersion
+	request, review := claimReviewSeat(t, s, ctx, order, &core.GovernanceSnapshot{Designs: []core.GovernanceDesignContext{seatDesign}})
 	if review.VerificationContextID != contextID {
 		t.Fatalf("review order names context %q, want %q", review.VerificationContextID, contextID)
 	}
 	return s, request, review, contextID, run, report.ID
+}
+
+// TestVerificationReviewAuthorityDrift seals a context under governing design
+// component-fixture v3 and claims the review seat after v4 is confirmed, so the
+// seat pins v4. Over MCP, approve is refused with the coded drift refusal and
+// no write; changes_requested citing the same context is accepted and bounces
+// the task to implement without a restart, so the successor submission can
+// re-verify the same head under v4 (component-verification-service "Authority
+// drift between seal and review"; req-verification-kits AC-4.2).
+func TestVerificationReviewAuthorityDrift(t *testing.T) {
+	s, request, review, contextID, run, evidence := attemptedReviewClaimFixtureSeatDesign(t, 4)
+	assessment := map[string]any{"context_ids": []any{contextID}, "run_ids": []any{run}, "evidence_ids": []any{evidence}, "mappings": []any{
+		map[string]any{"document_id": "req-fixture", "version": 1, "acceptance_criterion_id": "AC-1.1", "evidence_ids": []any{evidence}, "assessment": "The succeeded run's execution report supports the criterion."},
+		map[string]any{"document_id": "component-fixture", "version": 3, "acceptance_criterion_id": "", "evidence_ids": []any{}, "assessment": "The run observed the sealed v3 section; v4 has not been verified."},
+	}}
+	submit := func(t *testing.T, verdict string) error {
+		t.Helper()
+		args := reviewClaimVerdict(contextID)
+		args["verdict"], args["verification_assessment"] = verdict, assessment
+		if verdict == "changes_requested" {
+			args["reason_code"], args["feedback"] = "reverify", "component-fixture v4 was confirmed after the seal; submit the same head again so verification runs under v4."
+		}
+		args["governance_assessment"] = map[string]any{"design_applicable": true, "decision_citable": false, "cited_ids": []any{"component-fixture"}, "unknown_ids": []any{}, "ungoverned_ids": []any{}, "superseded_ids": []any{}, "conflicts": []any{}}
+		args["workspace_id"], args["work_order_id"], args["session_id"] = "demo", review.ID, "review-session"
+		_, err := s.callMCPTool(request, "submit_review_verdict", args)
+		return err
+	}
+	state := func(t *testing.T) string {
+		t.Helper()
+		events, err := s.Store.ListEvents(request.Context(), review.TaskID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		order, err := s.Store.GetWorkOrder(request.Context(), review.ID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return fmt.Sprintf("%d %s %s", len(events), order.State, order.UpdatedAt)
+	}
+	before := state(t)
+	err := submit(t, "approve")
+	if after := state(t); after != before {
+		t.Fatalf("refused approval wrote state: %s -> %s", before, after)
+	}
+	var refusal *store.VerificationRefusal
+	field := "verification_assessment.context_ids[0]"
+	if !errors.As(err, &refusal) || refusal.Code != store.VerificationCodeReviewAuthorityDrift || refusal.Field != field || !errors.Is(err, store.ErrVerificationAccess) {
+		t.Fatalf("approve under drift = %v, want %s at %s", err, store.VerificationCodeReviewAuthorityDrift, field)
+	}
+	if !strings.HasPrefix(err.Error(), refusal.Code+" at "+field+": ") || !strings.Contains(refusal.Rule, "component-fixture v3") || !strings.Contains(refusal.Rule, "v4") || !strings.Contains(refusal.Remedy, "changes_requested") || !strings.HasSuffix(err.Error(), refusal.Remedy) {
+		t.Fatalf("drift refusal text %q lacks both versions or the changes_requested remedy", err.Error())
+	}
+	if err := submit(t, "changes_requested"); err != nil {
+		t.Fatalf("changes_requested under drift: %v", err)
+	}
+	task, err := s.Store.GetTask(request.Context(), review.TaskID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if task.NextStage != core.StageImplement || core.TaskTerminal(task.State) {
+		t.Fatalf("task after changes_requested = state %s next_stage %s, want a live bounce to implement", task.State, task.NextStage)
+	}
+	events, err := s.Store.ListEvents(request.Context(), review.TaskID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, e := range events {
+		if e.Kind == "review.completed" && strings.Contains(string(e.Payload), contextID) && strings.Contains(string(e.Payload), "changes_requested") {
+			return
+		}
+	}
+	t.Fatal("accepted changes_requested did not record the cited context")
 }
 
 // TestVerificationReviewAssessmentOnAttemptedContext submits, over MCP, the

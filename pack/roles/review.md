@@ -34,7 +34,11 @@ Method:
   least one mapping with document ID, version, evidence IDs and a non-blank
   assessment: a requirement mapping names an AC of the served version, and a
   design mapping sends an empty `acceptance_criterion_id`. A refusal names its
-  code, field, rule and remedy; correct that field and resubmit. If
+  code, field, rule and remedy; correct that field and resubmit.
+  `verification_review_authority_drift` means a governing version was
+  confirmed after the seal and this seat pins it: approval is unavailable, so
+  submit `changes_requested` with the same assessment and feedback asking for
+  the same head to be submitted again for re-verification. If
   `verification_context_id` is empty, the order predates context naming:
   release it with a truthful reason instead of guessing a context. Keep tool
   observations, agent assertions and authenticated operator observations

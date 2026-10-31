@@ -114,11 +114,15 @@ func documentArgs(args []any) []any {
 	}
 	return out
 }
+
+// notFound names a missing row. Any other error is translated, so a read
+// outside a transaction, such as a claim's order lookup, cannot return driver
+// text (component-persistence).
 func notFound(err error, format string, args ...any) error {
 	if errors.Is(err, sql.ErrNoRows) {
 		return fmt.Errorf("%w: %s", store.ErrNotFound, fmt.Sprintf(format, args...))
 	}
-	return err
+	return translateBackendConflict(err)
 }
 func insertLineageLink(ctx context.Context, tx *sql.Tx, l core.LineageLink) error {
 	_, err := tx.ExecContext(ctx, `INSERT INTO links (workspace_id,src_type,src_id,dst_type,dst_id,kind,created_by_event_id,created_at) VALUES (?,?,?,?,?,?,?,?) ON DUPLICATE KEY UPDATE created_by_event_id=LEAST(COALESCE(created_by_event_id,VALUES(created_by_event_id)),VALUES(created_by_event_id)),created_at=LEAST(created_at,VALUES(created_at)),legacy_created_by_event=NULL`, l.Workspace, l.SrcType, l.SrcID, l.DstType, l.DstID, l.Kind, l.CreatedByEventID, l.CreatedAt)

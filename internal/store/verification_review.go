@@ -65,6 +65,7 @@ const (
 	VerificationCodeReviewCriterionUnknown    = "verification_review_criterion_unknown"
 	VerificationCodeReviewCriterionUnexpected = "verification_review_criterion_unexpected"
 	VerificationCodeReviewPinUnmapped         = "verification_review_pin_unmapped"
+	VerificationCodeReviewAuthorityDrift      = "verification_review_authority_drift"
 )
 
 // Fixed remedies of the sealed review assessment family. They carry no record data.
@@ -74,6 +75,7 @@ const (
 	verificationRemedyReviewRuns     = "Copy run_ids from get_verification_context: list the latest attempt of every subject once, or send [] when no attempt ran."
 	verificationRemedyReviewEvidence = "List in evidence_ids only accepted evidence of the listed runs, each once, and cite in a mapping only evidence listed in evidence_ids."
 	verificationRemedyReviewMapping  = "Map each governing pin of the context at least once: a requirement mapping names an acceptance criterion of the served version, and a design mapping sends an empty acceptance_criterion_id."
+	verificationRemedyReviewDrift    = "Submit changes_requested with the same assessment and ask for re-verification at the same head: the successor implementation order submits the head again, and the new verify order pins the current authority."
 )
 
 func reviewRefusal(class error, code, field, remedy, rule string, args ...any) error {
@@ -141,7 +143,19 @@ func ValidateSealedVerificationReview(task core.Task, decision *core.ReviewDecis
 	if vc.ReviewScope != state.Order.ReviewScope || vc.BaselineSHA != state.Order.BaselineSHA || !bound {
 		return notCurrent()
 	}
-	if err := VerifyVerificationAuthority(VerificationCommand{Kind: VerificationCreateContext, Context: &vc}, VerificationAuthoritySnapshot{Task: task}, state.Order); err != nil {
+	// A seat pins current authority at its first claim, so a version confirmed
+	// after the seal leaves the seat's pins ahead of the context's. Approval
+	// needs evidence gathered under the seat's authority; changes_requested
+	// stays available, and its bounce re-verifies at the same head
+	// (component-verification-service "Authority drift between seal and review").
+	authority := vc
+	if seatPins := verificationOrderPins(state.Order); !verificationEqual(seatPins, sortedVerificationPins(vc.GoverningPins)) {
+		if decision.Verdict != "changes_requested" {
+			return reviewAuthorityDrift(vc.GoverningPins, seatPins)
+		}
+		authority.GoverningPins = seatPins
+	}
+	if err := VerifyVerificationAuthority(VerificationCommand{Kind: VerificationCreateContext, Context: &authority}, VerificationAuthoritySnapshot{Task: task}, state.Order); err != nil {
 		return err
 	}
 	// Exact scope is the frozen context revision set; an assessment cannot
@@ -221,9 +235,10 @@ func ValidateSealedVerificationReview(task core.Task, decision *core.ReviewDecis
 		mapped[mappingKey] = true
 		covered[key] = true
 		if pin.Kind == "requirement" {
-			found := false
+			found, served := false, false
 			for _, r := range state.Order.ServedRequirementSnapshot {
 				if r.ID == pin.DocumentID && r.Version == pin.Version {
+					served = true
 					for _, statement := range r.Statements {
 						for _, ac := range statement.AcceptanceCriteria {
 							if ac.ID == mapping.AcceptanceCriterionID {
@@ -232,6 +247,11 @@ func ValidateSealedVerificationReview(task core.Task, decision *core.ReviewDecis
 						}
 					}
 				}
+			}
+			// Under authority drift the seat does not hold the context's version,
+			// so a changes_requested mapping needs only a named criterion.
+			if !served && strings.TrimSpace(mapping.AcceptanceCriterionID) != "" {
+				found = true
 			}
 			if !found {
 				return reviewRefusal(ErrVerificationInvalid, VerificationCodeReviewCriterionUnknown, field+".acceptance_criterion_id", verificationRemedyReviewMapping, "mappings[%d].acceptance_criterion_id is not an acceptance criterion of the served requirement %s v%d.", i, pin.DocumentID, pin.Version)
@@ -251,6 +271,35 @@ func ValidateSealedVerificationReview(task core.Task, decision *core.ReviewDecis
 		}
 	}
 	return nil
+}
+
+// reviewAuthorityDrift names the first governing pin on which the sealed
+// context and the review seat's pinned snapshot differ. Both lists are server
+// records of the caller's own task; no caller string is echoed.
+func reviewAuthorityDrift(contextPins, seatPins []core.VerificationPin) error {
+	refuse := func(rule string, args ...any) error {
+		return reviewRefusal(ErrVerificationAccess, VerificationCodeReviewAuthorityDrift, "verification_assessment.context_ids[0]", verificationRemedyReviewDrift, rule, args...)
+	}
+	seat := map[string]core.VerificationPin{}
+	for _, p := range seatPins {
+		seat[p.Kind+":"+p.DocumentID] = p
+	}
+	for _, p := range sortedVerificationPins(contextPins) {
+		current, ok := seat[p.Kind+":"+p.DocumentID]
+		if !ok {
+			return refuse("The cited context was sealed under the %s pin %s v%d, which this review seat does not pin; approval needs verification under the seat's authority.", p.Kind, p.DocumentID, p.Version)
+		}
+		if current.Version != p.Version {
+			return refuse("The cited context was sealed under the %s pin %s v%d, and this review seat pins v%d; approval needs verification under the seat's authority.", p.Kind, p.DocumentID, p.Version, current.Version)
+		}
+		delete(seat, p.Kind+":"+p.DocumentID)
+	}
+	for _, p := range seatPins {
+		if _, extra := seat[p.Kind+":"+p.DocumentID]; extra {
+			return refuse("This review seat pins the %s %s v%d, which the cited context was not sealed under; approval needs verification under the seat's authority.", p.Kind, p.DocumentID, p.Version)
+		}
+	}
+	return refuse("The cited context's governing pins differ from this review seat's pins; approval needs verification under the seat's authority.")
 }
 
 func (m *memory) verificationReviewStateLocked(task core.Task, orderID string) VerificationReviewState {

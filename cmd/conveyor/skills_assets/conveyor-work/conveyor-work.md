@@ -329,7 +329,11 @@ context that the review order names (`component-verification-service`):
 
 A refused assessment returns `<code> at <field>: <rule> <remedy>` and writes
 nothing; correct the named field and submit again under the same claim. When
-`verification_context_id` is empty on a verify-stage review order, the order
+`verification_review_authority_drift` refuses an `approve` verdict, a
+governing version was confirmed after the seal and the seat pins it: submit
+`changes_requested` with the same assessment and feedback asking for the same
+head to be submitted again, so verification reruns under the current
+authority. When `verification_context_id` is empty on a verify-stage review order, the order
 was created before review orders named their context: release it with a
 truthful reason instead of guessing a context. Kit success never grants
 acceptance or approval. The reviewer judges whether the sealed coverage and
