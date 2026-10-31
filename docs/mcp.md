@@ -411,3 +411,9 @@ A few properties hold across the whole surface:
 - Usage, transcripts, and activity snapshots are observational. They are
   never lifecycle input, and a session that reports nothing progresses
   exactly like one that reports everything.
+- Tool errors return in-band as text with `isError: true`, and the server
+  logs each one with the request ID and tool name. A server-side database
+  failure answers `<backend> database operation failed (request_id <id>)`.
+  Quote that ID when reporting the failure: it finds the server's log line
+  for the call. The backend logs the driver error just before that line, and
+  the driver error never reaches the client.
