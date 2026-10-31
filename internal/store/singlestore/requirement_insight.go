@@ -46,7 +46,7 @@ func (s *Store) ReadRequirementInsightInputs(ctx context.Context, requirementID 
 		return store.RequirementInsightInputs{}, err
 	}
 
-	attachmentEvents, err := s.requirementInsightEvents(ctx, `SELECT id, task_id, kind, payload_json, at FROM events
+	attachmentEvents, err := s.requirementInsightEvents(ctx, `SELECT id, task_id, kind, payload_json, at FROM events_columnstore
 WHERE workspace_id=? AND task_id IS NOT NULL AND kind IN (?,?) AND JSON_EXTRACT_STRING(payload_json,'id')=?
 ORDER BY task_id, at, id`, ws, store.TaskContextRequirementAdded, store.TaskContextRequirementRemoved, requirementID)
 	if err != nil {
@@ -92,7 +92,7 @@ WHERE workspace_id=? AND task_id IN (`+marks+`) ORDER BY task_id, depends_on_tas
 		return store.RequirementInsightInputs{}, err
 	}
 
-	designEvents, err := s.requirementInsightEvents(ctx, `SELECT id, task_id, kind, payload_json, at FROM events
+	designEvents, err := s.requirementInsightEvents(ctx, `SELECT id, task_id, kind, payload_json, at FROM events_columnstore
 WHERE workspace_id=? AND task_id IN (`+marks+`) AND kind IN (?,?)
 ORDER BY task_id, at, id`, scoped(store.TaskContextDesignAdded, store.TaskContextDesignRemoved)...)
 	if err != nil {
@@ -144,7 +144,7 @@ ORDER BY task_id, at, id`, scoped(store.TaskContextDesignAdded, store.TaskContex
 		}
 	}
 
-	terminalRows, err := documentRows(ctx, s.db, `SELECT task_id, JSON_EXTRACT_STRING(payload_json,'to') AS target, MIN(at) FROM events
+	terminalRows, err := documentRows(ctx, s.db, `SELECT task_id, JSON_EXTRACT_STRING(payload_json,'to') AS target, MIN(at) FROM events_columnstore
 WHERE workspace_id=? AND task_id IN (`+marks+`) AND kind='task.state_changed'
   AND JSON_EXTRACT_STRING(payload_json,'to') IN ('merged','closed')
 GROUP BY task_id, target`, scoped()...)

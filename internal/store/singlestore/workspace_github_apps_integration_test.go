@@ -22,7 +22,7 @@ func TestWorkspaceGitHubAppEncryptedLedgerIntegration(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	rows, err := st.db.QueryContext(ctx, `SELECT kind,actor_id,payload_json FROM events WHERE workspace_id=? AND kind LIKE 'workspace.github_app_%' ORDER BY id`, workspace)
+	rows, err := st.db.QueryContext(ctx, `SELECT kind,actor_id,payload_json FROM events_columnstore WHERE workspace_id=? AND kind LIKE 'workspace.github_app_%' ORDER BY id`, workspace)
 	if err != nil {
 		t.Fatal(err)
 	}

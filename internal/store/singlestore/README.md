@@ -43,15 +43,17 @@ no durable dispatch or publication jobs to reconcile.
 scratch. It uses the schema domains in component-persistence as its
 checklist. No PostgreSQL migration runs against SingleStore. JSON stores JSON
 objects and array-valued projections, timestamps use `DATETIME(6)`, and binary
-UTF-8 collation preserves case-sensitive identifiers. The initial tables are
-rowstores; migration 0027 converts the append-only `events` table to columnstore.
+UTF-8 collation preserves case-sensitive identifiers.
+The initial tables, including legacy `events`, are rowstores.
+Current event access requires the operator-created `events_columnstore`.
+Migration 0027 is immutable history; the corrected runner does not execute its retired table conversion.
 Key columns use `VARCHAR(255)`; other text is `LONGTEXT`.
 
-Workspace tables shard on `workspace_id`, except `events`, which shards on
-the non-null `event_shard_key`: the task ID when present, otherwise
-`event/<id>` for historical rows or `event/<random id>` for new rows. Each
-task's timeline stays together, while task-less events spread across partitions
-instead of concentrating a workspace's NULL task IDs on one shard.
+Workspace tables shard on `workspace_id`, except the operator-created
+`events_columnstore`, which shards on the non-null `event_shard_key`: the
+task ID when present, otherwise `event/<id>` for copied historical rows or
+`event/<random id>` for new rows.
+Each task's timeline stays together, while taskless events spread across partitions instead of concentrating a workspace's NULL task IDs on one shard.
 Jobs, transcripts, specs and interventions carry workspace scope explicitly
 rather than inheriting it from a parent join. Deployment tables shard on their
 primary key. Every unique key
@@ -75,39 +77,29 @@ in place and is retried on startup. This differs from PostgreSQL's atomic DDL
 transaction. Published migration files are immutable; corrections get a new
 number. Checksums are never rewritten to conceal a failure.
 
-### Events columnstore upgrade (0027)
+### Operator-owned events columnstore cutover
 
-Stop **all** old API/worker writers and readers before starting the upgraded binary.
-Keep all traffic stopped until migration, allocator synchronization, and post-upgrade checks complete.
-The startup lock excludes other migrators, not old processes.
-SingleStore supports only separate `ALTER TABLE ... RENAME TO` operations, so `events` is briefly absent during the swap.
-An interrupted start resumes from its staging table or rename state.
-Restart the same upgraded binary against the same database with traffic still frozen; do not reset the migration ledger or manually drop either migration table.
+Current event reads and writes use the stable `events_columnstore` table.
+They never fall back to `events`.
+The application does not copy events, rename tables, drop a backup, synchronize event allocators, or manage event staging tables at startup.
+Historical migration files and recorded checksums remain immutable.
+The old migration 0027 mechanism is retired; its SQL file is history, not an operator cutover script.
 
-The copy preserves IDs, timestamps, nullable task/job IDs and JSON payloads.
-Each server-side `INSERT SELECT` copies at most 256 candidate IDs and roughly
-8 MiB of payload (an oversized row or equal IDs across workspaces can exceed
-that budget). Go fetches only ID/length metadata, never document bodies.
-The staging columnstore is flushed every 32 batches and before promotion, so
-its row buffer does not retain a second full event log in RAM (roughly
-256 MiB of payload between flushes, plus indexes and row overhead).
-The source stays intact until counts match and promotion succeeds. All
-aggregators' AUTO_INCREMENT allocators are synchronized before the old table
-is dropped, preserving existing cursor IDs. AUTO_INCREMENT retains
-SingleStore's existing per-aggregator ordering semantics, not a new global
-commit-order guarantee.
+Follow [the ordered release checklist and cutover runbook](../../../docs/singlestore-events-cutover.md).
+It names every numbered prerequisite in this task base, the schema-only migration command, and the separate operator SQL under `docs/sql/events-columnstore/`.
+Finish all pending legacy migration helpers, including migration 0016 dismissal archives, before the final copy.
+Do not start a serving process to prepare those helpers.
 
-The sort key `(workspace_id, task_id, at, id)` supports task timelines.
-Hash indexes cover task equality and workspace/event-ID lookups; workspace
-time/kind scans aggregate across task shards. The unique hash key includes
-`event_shard_key` as required by SingleStore. Normal event writers always
-allocate IDs; no new explicit-ID write path is introduced.
-Reserve disk for both copies and keep the existing rowstore plus the staging
-buffer/index RAM available during copying. Compression and host I/O determine
-actual upgrade time and peak memory; measure a restored production backup
-before scheduling the outage.
+Stop every old and corrected reader and writer before copying and keep them stopped through exact validation and allocator preparation.
+The startup lock does not stop existing processes.
+The ordinary procedure retains `events` without dropping or renaming it.
+Restart recovery, a partially applied older automatic cutover, and rollback require operator inspection; startup does not repair them.
 
-Before scheduling the upgrade, take a compatible backup and rehearse restoration and the complete upgrade against an isolated restored database.
+The target sort key `(workspace_id, task_id, at, id)` supports task timelines.
+Hash indexes support task equality and workspace/event-ID lookups.
+Taskless events receive independent shard keys.
+AUTO_INCREMENT retains SingleStore's per-aggregator ordering semantics, not a global commit-order guarantee.
+The one-pass copy has no fixed memory or outage bound; rehearse resource use and restoration against a representative isolated backup.
 Record backup identity, restoration success, pre-upgrade event counts, migration completion, post-upgrade counts, taskless-event reads, workspace isolation, and a successful resumed write.
 Measure elapsed time and peak resources in that rehearsal; local synthetic results do not establish a production outage duration or memory bound.
 If recovery cannot converge, leave traffic frozen and restore the compatible backup with the matching old binary.

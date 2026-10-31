@@ -81,6 +81,22 @@ func connectionConfig(raw string) (*mysql.Config, error) {
 }
 
 func Open(ctx context.Context, raw string) (*Store, error) {
+	return open(ctx, raw, true)
+}
+
+// Migrate applies ordinary schema migrations and historical data helpers without
+// opening an application store. Run it with all writers stopped before copying
+// legacy events into the operator-managed events_columnstore table.
+func Migrate(ctx context.Context, raw string) error {
+	st, err := open(ctx, raw, false)
+	if err != nil {
+		return err
+	}
+	st.Close()
+	return nil
+}
+
+func open(ctx context.Context, raw string, requireEvents bool) (*Store, error) {
 	cfg, err := connectionConfig(raw)
 	if err != nil {
 		return nil, err
@@ -106,6 +122,9 @@ func Open(ctx context.Context, raw string) (*Store, error) {
 		}
 		if err == nil {
 			err = st.migrate(ctx)
+		}
+		if err == nil && requireEvents {
+			err = st.checkEventsPrerequisite(ctx)
 		}
 	}
 	if err != nil {

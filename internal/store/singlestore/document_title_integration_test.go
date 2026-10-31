@@ -147,7 +147,7 @@ func TestSingleStoreDocumentTitleRollsBackWithConfirmationIntegration(t *testing
 			// a table the confirmation writes or reads after the title UPDATE:
 			// the event table, then the decisions table that the
 			// decision-sweep hook reads after the title event.
-			for _, fault := range []struct{ name, table string }{{"event write", "events"}, {"later decision-sweep hook", "decisions"}} {
+			for _, fault := range []struct{ name, table string }{{"event write", "events_columnstore"}, {"later decision-sweep hook", "decisions"}} {
 				restore := renameTable(t, ctx, st, fault.table, fault.table+"_title_fault")
 				confirmErr := tier.confirm(version)
 				restore()
@@ -260,7 +260,7 @@ func TestSingleStoreDriftAmendmentTitleAndClosureCommitTogetherIntegration(t *te
 	x := newDriftTitleFixture(t, ctx, st)
 	// The event table is written before the drift hook; repository_drift is
 	// read by the drift hook after the title event.
-	for _, fault := range []struct{ name, table string }{{"event write", "events"}, {"later drift hook", "repository_drift"}} {
+	for _, fault := range []struct{ name, table string }{{"event write", "events_columnstore"}, {"later drift hook", "repository_drift"}} {
 		restore := renameTable(t, ctx, st, fault.table, fault.table+"_title_fault")
 		_, _, confirmErr := st.ConfirmRequirementVersion(ctx, x.requirementID, x.version)
 		restore()

@@ -7,6 +7,7 @@ import (
 	"sort"
 	"time"
 
+	"github.com/kidus-tiliksew/conveyor/internal/core"
 	"github.com/kidus-tiliksew/conveyor/internal/store"
 )
 
@@ -47,7 +48,7 @@ func repairDismissalArchives(ctx context.Context, tx *sql.Tx) (map[string][]stri
 			if err != nil {
 				return nil, err
 			}
-			changed, err := archiveDismissedDocumentTx(scoped, tx, tier.kind, c.id, time.Now().UTC())
+			changed, err := archiveDismissedDocumentWithEventTx(scoped, tx, tier.kind, c.id, time.Now().UTC(), insertLegacyMigrationEvent)
 			if err != nil {
 				return nil, err
 			}
@@ -101,4 +102,10 @@ func (s *Store) migrateDocumentDismissalArchival(ctx context.Context) error {
 	}
 	logDismissalArchiveRepair(affected)
 	return nil
+}
+
+// Migration 16 predates event_shard_key and the stable application event table.
+// These audit rows must reach the legacy table before the operator's final copy.
+func insertLegacyMigrationEvent(ctx context.Context, tx *sql.Tx, event core.Event) error {
+	return insertWorkspaceEventInto(ctx, tx, event, "events")
 }

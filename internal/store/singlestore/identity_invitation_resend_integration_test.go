@@ -26,7 +26,7 @@ func countResendRows(t *testing.T, s *Store, ctx context.Context, workspace, ema
 		(SELECT COUNT(*) FROM invitation_signin_tokens WHERE email=?),
 		(SELECT COUNT(*) FROM invitation_signin_tokens WHERE email=? AND redeemed_at IS NULL),
 		(SELECT COUNT(*) FROM deployment_events WHERE kind='identity.signin_link_issued' AND JSON_EXTRACT_STRING(payload_json,'email')=?),
-		(SELECT COUNT(*) FROM events WHERE workspace_id=? AND task_id IS NULL AND kind='workspace.invitation_resent' AND JSON_EXTRACT_STRING(payload_json,'email')=?)`,
+		(SELECT COUNT(*) FROM events_columnstore WHERE workspace_id=? AND task_id IS NULL AND kind='workspace.invitation_resent' AND JSON_EXTRACT_STRING(payload_json,'email')=?)`,
 		email, email, email, workspace, email).Scan(&rows.tokens, &rows.unredeemed, &rows.issuedEvents, &rows.resentEvents); err != nil {
 		t.Fatal(err)
 	}
@@ -80,7 +80,7 @@ func TestSingleStoreInvitationResendRowsIntegration(t *testing.T) {
 		t.Fatalf("initial link not rotated: redeemed_at=%v err=%v", redeemedAt, err)
 	}
 	var actorID, actorRole, payload string
-	if err := s.db.QueryRowContext(ctx, "SELECT actor_id,actor_role,CAST(payload_json AS CHAR) FROM events WHERE workspace_id=? AND kind='workspace.invitation_resent'", workspace).Scan(&actorID, &actorRole, &payload); err != nil {
+	if err := s.db.QueryRowContext(ctx, "SELECT actor_id,actor_role,CAST(payload_json AS CHAR) FROM events_columnstore WHERE workspace_id=? AND kind='workspace.invitation_resent'", workspace).Scan(&actorID, &actorRole, &payload); err != nil {
 		t.Fatal(err)
 	}
 	if actorID != store.UserActorID(owner.ID) || actorRole != string(core.ActorUser) {
@@ -99,7 +99,7 @@ func TestSingleStoreInvitationResendRowsIntegration(t *testing.T) {
 		t.Fatal(err)
 	}
 	var grantActor, invitedBy string
-	if err := s.db.QueryRowContext(ctx, "SELECT actor_id,JSON_EXTRACT_STRING(payload_json,'invited_by') FROM events WHERE workspace_id=? AND kind='workspace.membership_granted' AND JSON_EXTRACT_STRING(payload_json,'user_id')=?", workspace, user.ID).Scan(&grantActor, &invitedBy); err != nil {
+	if err := s.db.QueryRowContext(ctx, "SELECT actor_id,JSON_EXTRACT_STRING(payload_json,'invited_by') FROM events_columnstore WHERE workspace_id=? AND kind='workspace.membership_granted' AND JSON_EXTRACT_STRING(payload_json,'user_id')=?", workspace, user.ID).Scan(&grantActor, &invitedBy); err != nil {
 		t.Fatal(err)
 	}
 	if grantActor != store.UserActorID(user.ID) || invitedBy != owner.ID {

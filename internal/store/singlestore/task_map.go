@@ -134,7 +134,7 @@ WHERE t.workspace_id=? AND t.id IN (`+taskMapMarks(len(missing))+`) ORDER BY t.i
 // version, the documents store.TaskContextFromEvents resolves.
 func (s *Store) listTaskMapAttachments(ctx context.Context, ws string) ([]store.TaskMapAttachment, error) {
 	rows, err := documentRows(ctx, s.db, `SELECT e.id, e.task_id, e.kind, e.payload_json, e.at, t.state
-FROM events e JOIN tasks t ON t.workspace_id=e.workspace_id AND t.id=e.task_id
+FROM events_columnstore e JOIN tasks t ON t.workspace_id=e.workspace_id AND t.id=e.task_id
 WHERE e.workspace_id=? AND e.task_id IS NOT NULL AND e.kind IN (?,?)
 ORDER BY e.task_id, e.at, e.id`, ws, store.TaskContextRequirementAdded, store.TaskContextRequirementRemoved)
 	if err != nil {
@@ -219,7 +219,7 @@ func (s *Store) ListNextActionEvents(ctx context.Context, taskIDs []string) (map
 	}
 	args := append([]any{ws}, taskMapArgs(taskIDs)...)
 	args = append(args, taskMapArgs(store.NextActionEventKinds)...)
-	rows, err := documentRows(ctx, s.db, `SELECT id,COALESCE(task_id,''),COALESCE(job_id,''),kind,actor_id,actor_role,payload_json,at FROM events
+	rows, err := documentRows(ctx, s.db, `SELECT id,COALESCE(task_id,''),COALESCE(job_id,''),kind,actor_id,actor_role,payload_json,at FROM events_columnstore
 WHERE workspace_id=? AND task_id IN (`+taskMapMarks(len(taskIDs))+`) AND kind IN (`+taskMapMarks(len(store.NextActionEventKinds))+`)
 ORDER BY task_id,at,id`, args...)
 	if err != nil {
@@ -396,7 +396,7 @@ var mergeConflictSummarySQL = `WITH m AS (
 			AND ` + jsonStringOrNullSQL(`JSON_EXTRACT_JSON(payload_json,'new_head')`) + `) AS decodes,
 		COALESCE(JSON_EXTRACT_STRING(payload_json,'approved_head'),'') AS approved_head,
 		COALESCE(JSON_EXTRACT_STRING(payload_json,'new_head'),'') AS new_head
-	FROM events
+	FROM events_columnstore
 	WHERE workspace_id = ? AND task_id IN (%s) AND kind IN (%s)
 ), r AS (
 	SELECT task_id, kind, p, rn, decodes, approved_head, new_head,
@@ -476,7 +476,7 @@ func (s *Store) ListNextActionHistory(ctx context.Context, taskIDs []string) (ma
 			ELSE '0'
 		END AS value,
 		ROW_NUMBER() OVER (PARTITION BY task_id,kind ORDER BY at DESC,id DESC) AS position
-	FROM events
+	FROM events_columnstore
 	WHERE workspace_id=? AND task_id IN (`+marks+`) AND (
 		(kind='task.state_changed' AND LEFT(JSON_EXTRACT_JSON(payload_json,'command'),1)='"' AND JSON_EXTRACT_STRING(payload_json,'command')<>'')
 		OR (kind='pull_request.opened' AND `+positiveInt64SQL(`JSON_EXTRACT_JSON(payload_json,'number')`)+`)
@@ -593,7 +593,7 @@ func (s *Store) ListTaskContextDesignPins(ctx context.Context, taskIDs, document
 	SELECT task_id, kind, COALESCE(JSON_EXTRACT_STRING(payload_json,'id'),'') AS design_id,
 		CASE WHEN `+version+` IS NULL OR `+version+` = 'null' THEN 0 ELSE CAST(`+version+` AS SIGNED) END AS version,
 		ROW_NUMBER() OVER (PARTITION BY task_id, COALESCE(JSON_EXTRACT_STRING(payload_json,'id'),'') ORDER BY at DESC, id DESC) AS position
-	FROM events
+	FROM events_columnstore
 	WHERE workspace_id=? AND task_id IN (`+taskMapMarks(len(taskIDs))+`) AND kind IN (?,?)
 		AND COALESCE(JSON_EXTRACT_STRING(payload_json,'id'),'') IN (`+taskMapMarks(len(documentIDs))+`)
 		AND (LEFT(payload_json :> TEXT, 1) = '{' OR (payload_json :> TEXT) = 'null')

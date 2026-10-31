@@ -10,7 +10,7 @@ import (
 	"github.com/kidus-tiliksew/conveyor/internal/store"
 )
 
-func TestEventsAppendOnly(t *testing.T)           { checkLedgerRule(t, "events") }
+func TestEventsAppendOnly(t *testing.T)           { checkLedgerRule(t, "events_columnstore") }
 func TestDeploymentEventsAppendOnly(t *testing.T) { checkLedgerRule(t, "deployment_events") }
 func TestInterventionsAppendOnly(t *testing.T)    { checkLedgerRule(t, "interventions") }
 func checkLedgerRule(t *testing.T, table string) {

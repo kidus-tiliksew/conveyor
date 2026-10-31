@@ -14,7 +14,7 @@ import (
 
 // DEC-38, component-persistence: ledger writers must remain append-only even
 // when a new query bypasses writeRow. Runtime checks cover generated SQL.
-var ledgerMutationSQL = regexp.MustCompile(`(?i)\b(?:UPDATE\s+|DELETE\s+FROM\s+)(?:[a-z_][a-z_0-9]*\s*\.\s*)?(?:events|interventions)\b`)
+var ledgerMutationSQL = regexp.MustCompile(`(?i)\b(?:UPDATE\s+|DELETE\s+FROM\s+)(?:[a-z_][a-z_0-9]*\s*\.\s*)?(?:events|events_columnstore|interventions)\b`)
 
 func mutatesLedgerSQL(query string) bool {
 	return ledgerMutationSQL.MatchString(strings.ReplaceAll(query, "`", ""))
@@ -67,6 +67,8 @@ func TestPackageSQLPreservesAppendOnlyLedgers(t *testing.T) {
 func TestLedgerMutationSQLDetection(t *testing.T) {
 	for _, query := range []string{
 		"UPDATE events SET actor_id=?",
+		"UPDATE events_columnstore SET actor_id=?",
+		"DELETE FROM `conveyor_test`.`events_columnstore` WHERE id=?",
 		"delete\nfrom `interventions` WHERE id=?",
 		"UPDATE `conveyor_test`.`events` SET kind=?",
 		"DELETE FROM conveyor_test.interventions WHERE id=?",
@@ -76,7 +78,7 @@ func TestLedgerMutationSQLDetection(t *testing.T) {
 		}
 	}
 	for _, query := range []string{
-		"INSERT INTO events (kind) VALUES (?)",
+		"INSERT INTO events_columnstore (kind) VALUES (?)",
 		"SELECT * FROM interventions",
 		"UPDATE tasks SET state=?",
 		"DELETE FROM events_archive WHERE id=?",

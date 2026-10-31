@@ -172,13 +172,13 @@ func TestTransactionRollbackAndWorkspaceAtomicityIntegration(t *testing.T) {
 		t.Fatal(err)
 	}
 	var count int
-	if err = st.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM events WHERE workspace_id=? AND id=? AND kind='config.updated'`, "atomic", receipt.EventID).Scan(&count); err != nil || count != 1 {
+	if err = st.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM events_columnstore WHERE workspace_id=? AND id=? AND kind='config.updated'`, "atomic", receipt.EventID).Scan(&count); err != nil || count != 1 {
 		t.Fatalf("missing configuration audit: %d %v", count, err)
 	}
 	if _, err = st.UpdateWorkspaceConfig(ctx, 1, &next); !errors.Is(err, config.ErrVersionConflict) {
 		t.Fatal(err)
 	}
-	if err = st.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM events WHERE workspace_id=?`, "atomic").Scan(&count); err != nil || count != 1 {
+	if err = st.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM events_columnstore WHERE workspace_id=?`, "atomic").Scan(&count); err != nil || count != 1 {
 		t.Fatalf("stale update appended audit: %d %v", count, err)
 	}
 }

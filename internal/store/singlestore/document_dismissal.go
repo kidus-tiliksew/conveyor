@@ -14,6 +14,11 @@ import (
 // confirmation writes. Projection and ordered audit events commit together
 // (req-document-archive REQ-1; component-document-corpus).
 func archiveDismissedDocumentTx(ctx context.Context, tx *sql.Tx, kind, id string, now time.Time) (bool, error) {
+	return archiveDismissedDocumentWithEventTx(ctx, tx, kind, id, now, insertWorkspaceEvent)
+}
+
+// The migration-only writer preserves the pre-shard-key legacy event schema.
+func archiveDismissedDocumentWithEventTx(ctx context.Context, tx *sql.Tx, kind, id string, now time.Time, appendEvent func(context.Context, *sql.Tx, core.Event) error) (bool, error) {
 	table, versions, idKey, flag := "requirements", "requirement_versions", "requirement_id", "retired"
 	switch kind {
 	case "requirement":
@@ -41,6 +46,6 @@ func archiveDismissedDocumentTx(ctx context.Context, tx *sql.Tx, kind, id string
 	if _, err := documentExec(ctx, tx, "UPDATE "+table+" SET archived_at=?,archived_by=?,archive_reason=?,archive_note=?,superseded_by='[]',updated_at=? WHERE workspace_id=? AND id=?", now, actor.ID, core.ArchiveReasonOnlyProposalDismissed, store.DocumentDismissalNote(ctx), now, documentWorkspace(ctx), id); err != nil {
 		return false, err
 	}
-	err := insertWorkspaceEvent(ctx, tx, core.Event{Kind: kind + ".archived", Payload: core.JSONPayload(store.DismissalArchiveEventPayload(ctx, documentWorkspace(ctx), idKey, id, actor.ID, now))})
+	err := appendEvent(ctx, tx, core.Event{Kind: kind + ".archived", Payload: core.JSONPayload(store.DismissalArchiveEventPayload(ctx, documentWorkspace(ctx), idKey, id, actor.ID, now))})
 	return err == nil, err
 }

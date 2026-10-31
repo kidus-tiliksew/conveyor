@@ -202,7 +202,7 @@ func (f featureFixture) snapshot(t *testing.T, st *Store) map[string][]string {
 	return map[string][]string{
 		"artifacts": queryRows(t, st, f.ctx, `SELECT id,name,content_type,size_bytes,content,created_at FROM artifacts WHERE workspace_id=?`, f.workspace),
 		"owned":     queryRows(t, st, f.ctx, `SELECT artifact_id,task_id,requirement_id,planning_session_id,role FROM artifact_links WHERE workspace_id=? AND (task_id IS NOT NULL OR requirement_id IS NOT NULL OR planning_session_id IS NOT NULL)`, f.workspace),
-		"events":    queryRows(t, st, f.ctx, `SELECT id,task_id,kind,payload_json FROM events WHERE workspace_id=?`, f.workspace),
+		"events_columnstore":    queryRows(t, st, f.ctx, `SELECT id,task_id,kind,payload_json FROM events_columnstore WHERE workspace_id=?`, f.workspace),
 		"links":     queryRows(t, st, f.ctx, `SELECT src_type,src_id,dst_type,dst_id,kind,legacy_created_by_event,created_by_event_id FROM links WHERE workspace_id=?`, f.workspace),
 	}
 }

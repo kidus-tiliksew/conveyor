@@ -1312,7 +1312,7 @@ func (m *memory) settleAcceptedReviewLocked(ctx context.Context, decision core.R
 		implementation.ContinuationHarness, implementation.ContinuationLaunchEnvironment = "", ""
 		implementation.UpdatedAt = now
 		m.workOrders[id] = implementation
-		m.appendEventLocked(ctx, core.Event{TaskID: implementation.TaskID, JobID: implementation.JobID, Kind: "work_order.updated", Payload: core.JSONPayload(implementation), At: now})
+		m.appendEventLocked(ctx, core.Event{TaskID: implementation.TaskID, JobID: implementation.JobID, Kind: "work_order.updated", Payload: WorkOrderEventPayload(implementation), At: now})
 	}
 	return nil
 }

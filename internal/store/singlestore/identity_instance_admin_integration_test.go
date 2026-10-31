@@ -177,7 +177,7 @@ func TestInstanceAdministrationHTTPIntegration(t *testing.T) {
 		t.Fatalf("creator binding=%q", role)
 	}
 	var actorID string
-	if err := st.db.QueryRowContext(ctx, `SELECT actor_id FROM events WHERE workspace_id=? AND kind='workspace.created'`, created).Scan(&actorID); err != nil || actorID != store.UserActorID(owner.ID) {
+	if err := st.db.QueryRowContext(ctx, `SELECT actor_id FROM events_columnstore WHERE workspace_id=? AND kind='workspace.created'`, created).Scan(&actorID); err != nil || actorID != store.UserActorID(owner.ID) {
 		t.Fatalf("creation actor=%q err=%v", actorID, err)
 	}
 	// A nonowner operator is a workspace creator: it becomes operator of
@@ -192,7 +192,7 @@ func TestInstanceAdministrationHTTPIntegration(t *testing.T) {
 	if role := instanceRole(t, st, owner.ID, operatorCreated); role != "" {
 		t.Fatalf("nonowner creation bound the owner as %q", role)
 	}
-	if err := st.db.QueryRowContext(ctx, `SELECT actor_id FROM events WHERE workspace_id=? AND kind='workspace.created'`, operatorCreated).Scan(&actorID); err != nil || actorID != store.UserActorID(nonowner.ID) {
+	if err := st.db.QueryRowContext(ctx, `SELECT actor_id FROM events_columnstore WHERE workspace_id=? AND kind='workspace.created'`, operatorCreated).Scan(&actorID); err != nil || actorID != store.UserActorID(nonowner.ID) {
 		t.Fatalf("nonowner creation actor=%q err=%v", actorID, err)
 	}
 
@@ -203,7 +203,7 @@ func TestInstanceAdministrationHTTPIntegration(t *testing.T) {
 	conflict := "{\"error\":\"workspace_conflict\",\"message\":\"workspace could not be created\"}\n"
 	workspaces := countRows(t, st, `SELECT COUNT(*) FROM workspaces`)
 	bindings := countRows(t, st, `SELECT COUNT(*) FROM workspace_role_bindings`)
-	createdEvents := countRows(t, st, `SELECT COUNT(*) FROM events WHERE kind='workspace.created'`)
+	createdEvents := countRows(t, st, `SELECT COUNT(*) FROM events_columnstore WHERE kind='workspace.created'`)
 	for caller, token := range map[string]string{"owner": ownerPAT.Value, "nonowner operator": nonownerPAT.Value} {
 		for _, body := range []string{
 			`{"id":"` + created + `","name":"Other"}`,
@@ -216,7 +216,7 @@ func TestInstanceAdministrationHTTPIntegration(t *testing.T) {
 			}
 		}
 	}
-	if countRows(t, st, `SELECT COUNT(*) FROM workspaces`) != workspaces || countRows(t, st, `SELECT COUNT(*) FROM workspace_role_bindings`) != bindings || countRows(t, st, `SELECT COUNT(*) FROM events WHERE kind='workspace.created'`) != createdEvents {
+	if countRows(t, st, `SELECT COUNT(*) FROM workspaces`) != workspaces || countRows(t, st, `SELECT COUNT(*) FROM workspace_role_bindings`) != bindings || countRows(t, st, `SELECT COUNT(*) FROM events_columnstore WHERE kind='workspace.created'`) != createdEvents {
 		t.Fatal("a collision wrote a workspace, binding, or creation event")
 	}
 	if countRows(t, st, `SELECT COUNT(*) FROM workspaces WHERE id='name-collision-ws'`) != 0 {
@@ -294,10 +294,10 @@ func TestBootstrapMembershipPersistenceIntegration(t *testing.T) {
 		t.Fatalf("rotation owner=%+v err=%v", current, err)
 	}
 	var demotionActor, creationActor string
-	if err := rotatedStore.db.QueryRowContext(ctx, `SELECT actor_id FROM events WHERE workspace_id=? AND kind='workspace.membership_granted' AND JSON_EXTRACT_STRING(payload_json,'role')='viewer'`, first).Scan(&demotionActor); err != nil || demotionActor != store.UserActorID(second.ID) {
+	if err := rotatedStore.db.QueryRowContext(ctx, `SELECT actor_id FROM events_columnstore WHERE workspace_id=? AND kind='workspace.membership_granted' AND JSON_EXTRACT_STRING(payload_json,'role')='viewer'`, first).Scan(&demotionActor); err != nil || demotionActor != store.UserActorID(second.ID) {
 		t.Fatalf("demotion actor=%q err=%v", demotionActor, err)
 	}
-	if err := rotatedStore.db.QueryRowContext(ctx, `SELECT actor_id FROM events WHERE workspace_id=? AND kind='workspace.created'`, excluded).Scan(&creationActor); err != nil || creationActor != "system" {
+	if err := rotatedStore.db.QueryRowContext(ctx, `SELECT actor_id FROM events_columnstore WHERE workspace_id=? AND kind='workspace.created'`, excluded).Scan(&creationActor); err != nil || creationActor != "system" {
 		t.Fatalf("system creation actor=%q err=%v", creationActor, err)
 	}
 	if rotations := countRows(t, rotatedStore, `SELECT COUNT(*) FROM deployment_events WHERE kind='identity.legacy_token_rotated' AND actor_id='system' AND actor_role='system'`); rotations != 1 {

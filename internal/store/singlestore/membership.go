@@ -303,7 +303,7 @@ func clearMemberAssignments(ctx context.Context, tx *sql.Tx, ws, uid string) err
 			return translateBackendConflict(err)
 		}
 		actor := store.ActorFromContext(ctx)
-		if _, err = writeRow(ctx, tx, rowWrite{table: "events", operation: "INSERT", values: map[string]any{"workspace_id": ws, "task_id": id, "kind": "task.assignee.cleared", "actor_id": actor.ID, "actor_role": string(actor.Role), "payload_json": []byte(core.JSONPayload(map[string]any{"assignee_user_id": "", "revoked_user_id": uid}))}}); err != nil {
+		if _, err = writeRow(ctx, tx, rowWrite{table: "events_columnstore", operation: "INSERT", values: map[string]any{"workspace_id": ws, "task_id": id, "kind": "task.assignee.cleared", "actor_id": actor.ID, "actor_role": string(actor.Role), "payload_json": []byte(core.JSONPayload(map[string]any{"assignee_user_id": "", "revoked_user_id": uid}))}}); err != nil {
 			return translateBackendConflict(err)
 		}
 	}

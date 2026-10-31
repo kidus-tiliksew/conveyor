@@ -577,7 +577,7 @@ func activatePendingTaskContextTx(ctx context.Context, tx *sql.Tx, workspaceID, 
 	if design {
 		addedKind, removedKind, activeKind = store.TaskContextDesignAdded, store.TaskContextDesignRemoved, store.TaskContextDesignActive
 	}
-	rows, err := documentRows(ctx, tx, `SELECT task_id,kind,payload_json FROM events
+	rows, err := documentRows(ctx, tx, `SELECT task_id,kind,payload_json FROM events_columnstore
 		WHERE workspace_id=? AND task_id IS NOT NULL AND kind IN (?,?)
 		  AND JSON_EXTRACT_STRING(payload_json,'id')=? ORDER BY task_id,id`, workspaceID, addedKind, removedKind, documentID)
 	if err != nil {

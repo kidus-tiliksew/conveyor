@@ -188,7 +188,7 @@ func (s *Store) UpdateReviewPublication(ctx context.Context, publication core.Re
 
 func (s *Store) ReconcileReviewPublications(ctx context.Context) (int, error) {
 	rows, err := documentRows(ctx, s.db, `SELECT e.task_id, COALESCE(e.job_id,''), e.payload_json
-		FROM events e
+		FROM events_columnstore e
 		JOIN tasks t ON t.workspace_id=e.workspace_id AND t.id=e.task_id
 		LEFT JOIN review_publications p ON p.workspace_id=t.workspace_id
 			AND p.review_work_order_id=JSON_EXTRACT_STRING(e.payload_json,'review_work_order_id')

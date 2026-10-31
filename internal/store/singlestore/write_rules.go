@@ -24,7 +24,7 @@ type rowWrite struct {
 
 func checkWrite(w rowWrite) error {
 	switch w.table {
-	case "events", "deployment_events", "interventions":
+	case "events", "events_columnstore", "deployment_events", "interventions":
 		if w.operation != "INSERT" {
 			return fmt.Errorf("%s is append-only", w.table)
 		}
@@ -113,12 +113,12 @@ func writeRow(ctx context.Context, tx *sql.Tx, w rowWrite) (sql.Result, error) {
 	// Every ledger row names the explicit context actor; a row that already
 	// carries actor values does not bypass the check (component-persistence,
 	// Actor context).
-	if w.table == "events" || w.table == "deployment_events" {
+	if w.table == "events" || w.table == "events_columnstore" || w.table == "deployment_events" {
 		if _, err := store.RequireActor(ctx); err != nil {
 			return nil, fmt.Errorf("%s insert: %w", w.table, err)
 		}
 	}
-	if w.table == "events" {
+	if w.table == "events_columnstore" {
 		taskID, _ := w.values["task_id"].(string)
 		w.values["event_shard_key"] = eventShardKey(taskID)
 	}

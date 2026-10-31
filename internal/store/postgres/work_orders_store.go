@@ -2359,7 +2359,7 @@ func (s *Store) settleAcceptedReviewTx(ctx context.Context, tx pgx.Tx, q *db.Que
 		return err
 	}
 	for _, implementation := range cleared {
-		if err = insertEvent(ctx, q, core.Event{TaskID: implementation.TaskID, JobID: implementation.JobID, Kind: "work_order.updated", Payload: core.JSONPayload(implementation), At: now}); err != nil {
+		if err = insertEvent(ctx, q, core.Event{TaskID: implementation.TaskID, JobID: implementation.JobID, Kind: "work_order.updated", Payload: store.WorkOrderEventPayload(implementation), At: now}); err != nil {
 			return err
 		}
 	}

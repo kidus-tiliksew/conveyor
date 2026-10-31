@@ -16,7 +16,7 @@ func singlestoreSeedEvents(t *testing.T, st *Store, ctx context.Context, base in
 	t.Helper()
 	ws, _ := store.WorkspaceFromContext(ctx)
 	if base == 0 {
-		if err := st.db.QueryRowContext(ctx, `SELECT COALESCE(MAX(id),0)+(1<<40) FROM events`).Scan(&base); err != nil {
+		if err := st.db.QueryRowContext(ctx, `SELECT COALESCE(MAX(id),0)+(1<<40) FROM events_columnstore`).Scan(&base); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -33,7 +33,7 @@ func singlestoreSeedEvents(t *testing.T, st *Store, ctx context.Context, base in
 			e.ActorID, e.ActorRole = "system", core.ActorSystem
 		}
 		e.At = e.At.UTC().Truncate(time.Microsecond)
-		if _, err := st.db.ExecContext(ctx, `INSERT INTO events (id,task_id,job_id,kind,actor_id,actor_role,payload_json,at,workspace_id,event_shard_key) VALUES (?,NULLIF(?,''),NULLIF(?,''),?,?,?,?,?,?,?)`, e.ID, e.TaskID, e.JobID, e.Kind, e.ActorID, string(e.ActorRole), string(e.Payload), e.At, ws, eventShardKey(e.TaskID)); err != nil {
+		if _, err := st.db.ExecContext(ctx, `INSERT INTO events_columnstore (id,task_id,job_id,kind,actor_id,actor_role,payload_json,at,workspace_id,event_shard_key) VALUES (?,NULLIF(?,''),NULLIF(?,''),?,?,?,?,?,?,?)`, e.ID, e.TaskID, e.JobID, e.Kind, e.ActorID, string(e.ActorRole), string(e.Payload), e.At, ws, eventShardKey(e.TaskID)); err != nil {
 			t.Fatal(err)
 		}
 		out = append(out, e)

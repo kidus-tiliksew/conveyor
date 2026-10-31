@@ -242,7 +242,7 @@ func (s *Store) UpdateWorkspaceConfig(ctx context.Context, expected int64, next 
 }
 func appendWorkspaceEvent(ctx context.Context, tx *sql.Tx, ws, kind string, payload map[string]any) (int64, error) {
 	actor := store.ActorFromContext(ctx)
-	result, err := writeRow(ctx, tx, rowWrite{table: "events", operation: "INSERT", values: map[string]any{"workspace_id": ws, "kind": kind, "actor_id": actor.ID, "actor_role": string(actor.Role), "payload_json": []byte(core.JSONPayload(payload)), "at": time.Now().UTC().Truncate(time.Microsecond)}})
+	result, err := writeRow(ctx, tx, rowWrite{table: "events_columnstore", operation: "INSERT", values: map[string]any{"workspace_id": ws, "kind": kind, "actor_id": actor.ID, "actor_role": string(actor.Role), "payload_json": []byte(core.JSONPayload(payload)), "at": time.Now().UTC().Truncate(time.Microsecond)}})
 	if err != nil {
 		return 0, err
 	}

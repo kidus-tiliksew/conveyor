@@ -4,7 +4,6 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
-	"github.com/kidus-tiliksew/conveyor/internal/store"
 	"os"
 	"path/filepath"
 	"strings"
@@ -13,6 +12,8 @@ import (
 
 	"github.com/go-sql-driver/mysql"
 	"github.com/kidus-tiliksew/conveyor/internal/config"
+	"github.com/kidus-tiliksew/conveyor/internal/store"
+	"github.com/kidus-tiliksew/conveyor/internal/store/singlestore"
 )
 
 func TestSingleStoreInitAndUserIntegration(t *testing.T) {
@@ -42,6 +43,22 @@ func TestSingleStoreInitAndUserIntegration(t *testing.T) {
 		}
 	})
 	cfg.DBName = database
+	if err = singlestore.Migrate(t.Context(), cfg.FormatDSN()); err != nil {
+		t.Fatal(err)
+	}
+	preparationConnector, err := mysql.NewConnector(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	preparation := sql.OpenDB(preparationConnector)
+	createEvents, err := os.ReadFile("../../docs/sql/events-columnstore/01-create.sql")
+	if err == nil {
+		_, err = preparation.ExecContext(t.Context(), string(createEvents))
+	}
+	preparation.Close()
+	if err != nil {
+		t.Fatal(err)
+	}
 	t.Setenv("CONVEYOR_DATABASE_URL", cfg.FormatDSN())
 	t.Setenv("CONVEYOR_API_TOKEN", "singlestore-init-fixture-token")
 	t.Setenv(config.LLMAPIKeyEnv, "unused-fixture-key")

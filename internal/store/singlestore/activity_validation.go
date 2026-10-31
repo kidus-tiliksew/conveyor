@@ -72,7 +72,7 @@ func (s *Store) ReadActivityValidation(ctx context.Context, now time.Time) (stor
 
 func activityValidationSQL(schema *activityValidationSchema, workspace string, now time.Time) (string, []any) {
 	parts := []string{
-		"SELECT -2, 'events', COUNT(*), CAST(COALESCE(MAX(id), 0) AS CHAR) FROM events WHERE workspace_id=?",
+		"SELECT -2, 'events', COUNT(*), CAST(COALESCE(MAX(id), 0) AS CHAR) FROM events_columnstore WHERE workspace_id=?",
 	}
 	args := []any{workspace}
 	passed := make([]string, 0, len(schema.deadlines))

@@ -4,13 +4,17 @@ Set `database.backend: singlestore` and supply the connection through
 `CONVEYOR_DATABASE_URL`. Use `singlestore://user:password@host:3306/conveyor`,
 `mysql://` with the same URL shape, or a MySQL DSN such as
 `user:password@tcp(host:3306)/conveyor`. Add `?tls=true` for TLS. Percent-encode
-reserved characters in URL passwords. Create an empty database before running
-`conveyor init`; Conveyor creates its own tables and never imports PostgreSQL
-state.
+reserved characters in URL passwords.
+Create an empty database, then follow the [ordered events preparation checklist](singlestore-events-cutover.md) before running `conveyor init`.
+The operator creates `events_columnstore`; the schema-only command applies numbered prerequisites without serving or workspace bootstrap.
+Copy, validation, and allocator preparation must finish before initialization or serving starts.
+Conveyor never imports PostgreSQL state.
 
 `conveyor init`, `conveyor user issue-link`, and `conveyord` use the same
-backend factory. Startup applies migrations, ensures the event-log schema,
-and bootstraps deployment identity and the configured workspace. It logs
+backend factory.
+After operator preparation, startup applies outstanding numbered migrations, ensures the event-log schema, and bootstraps deployment identity and the configured workspace.
+It requires the prepared event target.
+It logs
 `using durable SingleStore store with the event log`. The tested local engine
 version and admission measurements are in
 [the admission report](measurements/singlestore-admission-260905-d3c03a.md).
@@ -21,9 +25,11 @@ Workspace tables shard on `workspace_id`; deployment tables shard on their
 primary key. Each SQL read and write includes its workspace scope. Unique keys
 must contain the shard key, so Go enforces deployment-wide identity, branch,
 credential and other uniqueness rules that a workspace key cannot express.
-The backend uses rowstore tables, binary UTF-8 identifier collation, JSON,
-LONGTEXT and UTC `DATETIME(6)`. Startup refuses a server whose actual system
-time zone is not UTC. Every outgoing timestamp is truncated to microseconds.
+The backend uses rowstore tables for mutable state and the operator-created
+`events_columnstore` for current audit events, with binary UTF-8 identifier
+collation, JSON, LONGTEXT and UTC `DATETIME(6)`.
+Startup refuses a server whose actual system time zone is not UTC.
+Every outgoing timestamp is truncated to microseconds.
 
 SingleStore has no PostgreSQL foreign keys, CHECK constraints, triggers or
 partial indexes. Aggregate transactions validate parents, lifecycle states,
@@ -58,6 +64,12 @@ applied time. Startup rejects a newer-than-binary version, a changed filename,
 or a changed checksum. Upgrade the binary before reopening a newer schema.
 New migrations get new numbers; published files stay immutable. The backend
 starts from its own version-one schema and does not replay PostgreSQL history.
+
+Event-table cutover is not an automatic schema migration.
+Before releasing corrected code, follow [the ordered event cutover checklist](singlestore-events-cutover.md), including its conditional numbered prerequisites, schema-only command, and manual create/copy/validate/allocator scripts.
+Current reads and writes require `events_columnstore`; there is no legacy fallback.
+Do not start a serving process before the operator has completed the final copy and allocator preparation.
+Keep legacy `events` intact; the ordinary cutover neither drops nor renames it.
 
 The event-log driver binds to the aggregate's `*sql.Tx`. Entity state, audit
 history and queue intent therefore commit together. The queue needs no second

@@ -381,7 +381,7 @@ func (s *Store) recordDependencyOutcomeTx(ctx context.Context, tx *sql.Tx, id st
 			}
 		} else if core.TaskTerminal(state) {
 			var exists bool
-			if err = tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM events WHERE workspace_id=? AND task_id=? AND kind='task.dependency_unsatisfiable' AND JSON_EXTRACT_STRING(payload_json,'depends_on_task_id')=?)`, documentWorkspace(ctx), dependent, id).Scan(&exists); err != nil {
+			if err = tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM events_columnstore WHERE workspace_id=? AND task_id=? AND kind='task.dependency_unsatisfiable' AND JSON_EXTRACT_STRING(payload_json,'depends_on_task_id')=?)`, documentWorkspace(ctx), dependent, id).Scan(&exists); err != nil {
 				return err
 			}
 			if exists {

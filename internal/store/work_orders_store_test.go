@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -329,6 +330,7 @@ func TestMemoryReviewRequeueRecordsStageAdvance(t *testing.T) {
 	t.Fatal("review requeue did not record stage.advance")
 }
 
+// case: EVC261031445A96-008
 func TestMemoryAcceptedReviewClearsSubmittedImplementationContinuation(t *testing.T) {
 	ctx := WithWorkspace(WithActor(t.Context(), SystemActor()), "demo")
 	st := NewMemory()
@@ -341,7 +343,9 @@ func TestMemoryAcceptedReviewClearsSubmittedImplementationContinuation(t *testin
 	if err := st.CreateJob(ctx, implementJob); err != nil {
 		t.Fatal(err)
 	}
-	if err := storetestFor(st).CreateWorkOrder(ctx, core.WorkOrder{ID: implementJob.ID, TaskID: task.ID, JobID: implementJob.ID, Stage: core.StageImplement, State: core.WorkOrderQueued, QueueEnteredAt: now, QueueDeadline: now.Add(time.Hour), CreatedAt: now}); err != nil {
+	requirements := []core.ServedRequirementContext{{ID: "req-continuation", Version: 3, Statements: []core.RequirementStatement{{ID: "REQ-1", Statement: "Retain original implementation authority."}}}}
+	governance := &core.GovernanceSnapshot{Designs: []core.GovernanceDesignContext{{ID: "design-continuation", Version: 4, Content: "Original claim-time design body."}}, Decisions: []core.Decision{{ID: "DEC-1", Status: core.DecisionConfirmed, Statement: "Keep claim-time authority."}}}
+	if err := storetestFor(st).CreateWorkOrder(ctx, core.WorkOrder{ID: implementJob.ID, TaskID: task.ID, JobID: implementJob.ID, Stage: core.StageImplement, State: core.WorkOrderQueued, QueueEnteredAt: now, QueueDeadline: now.Add(time.Hour), CreatedAt: now, ServedRequirementSnapshot: requirements, GovernanceSnapshot: governance}); err != nil {
 		t.Fatal(err)
 	}
 	implement, err := storetestFor(st).ClaimWorkOrder(ctx, implementJob.ID, core.WorkOrderClaim{SessionID: "implement-session", ClientToken: "implement-token", ClaimantID: "run:implementer", WorkerID: "worker-implement", Agent: "codex", Lease: time.Minute, ExecutionTimeout: time.Hour})
@@ -352,8 +356,24 @@ func TestMemoryAcceptedReviewClearsSubmittedImplementationContinuation(t *testin
 	if _, err = st.RecordWorkOrderContinuation(ctx, implement.ID, identity, core.WorkOrderContinuation{SessionID: "native-session", AttemptID: implement.AttemptID, Harness: "codex", LaunchEnvironment: "worker-implement/env"}); err != nil {
 		t.Fatal(err)
 	}
+	implement, err = st.GetWorkOrder(ctx, implement.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
 	implement.State = core.WorkOrderSubmitted
 	if err = storetestFor(st).UpdateWorkOrder(ctx, implement, core.WorkOrderCmdSubmitForReview); err != nil {
+		t.Fatal(err)
+	}
+	submitted, err := st.GetWorkOrder(ctx, implement.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if submitted.ContinuationSessionID != "native-session" || submitted.ContinuationAttemptID != implement.AttemptID ||
+		submitted.ContinuationHarness != "codex" || submitted.ContinuationLaunchEnvironment != "worker-implement/env" {
+		t.Fatalf("submitted implementation lost continuation before review acceptance: %+v", submitted)
+	}
+	before, err := st.ListEvents(ctx, task.ID)
+	if err != nil {
 		t.Fatal(err)
 	}
 
@@ -378,6 +398,50 @@ func TestMemoryAcceptedReviewClearsSubmittedImplementationContinuation(t *testin
 	}
 	if persisted.ContinuationSessionID != "" || persisted.ContinuationAttemptID != "" || persisted.ContinuationHarness != "" || persisted.ContinuationLaunchEnvironment != "" {
 		t.Fatalf("submitted implementation continuation was not cleared: %+v", persisted)
+	}
+	events, err := st.ListEvents(ctx, task.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(events) < len(before) || !reflect.DeepEqual(events[:len(before)], before) {
+		t.Fatal("review acceptance changed historical events")
+	}
+	clearingEvents := 0
+	for _, event := range events[len(before):] {
+		if event.Kind != "work_order.updated" || event.JobID != implement.JobID {
+			continue
+		}
+		clearingEvents++
+		var payload map[string]json.RawMessage
+		if err := json.Unmarshal(event.Payload, &payload); err != nil {
+			t.Fatal(err)
+		}
+		if _, exists := payload["served_requirement_snapshot"]; exists {
+			t.Fatal("continuation-clear event duplicated served requirement authority")
+		}
+		if _, exists := payload["governance_snapshot"]; exists {
+			t.Fatal("continuation-clear event duplicated governance authority")
+		}
+		var recorded core.WorkOrder
+		if err := json.Unmarshal(event.Payload, &recorded); err != nil {
+			t.Fatal(err)
+		}
+		if recorded.ID != implement.ID || recorded.TaskID != task.ID || recorded.AttemptID != implement.AttemptID ||
+			recorded.SessionID != implement.SessionID || recorded.State != core.WorkOrderSubmitted ||
+			recorded.ContinuationSessionID != "" || recorded.ContinuationAttemptID != "" ||
+			recorded.ContinuationHarness != "" || recorded.ContinuationLaunchEnvironment != "" {
+			t.Fatalf("continuation-clear event lost lifecycle identity or retained continuation: %+v", recorded)
+		}
+	}
+	if clearingEvents != 1 {
+		t.Fatalf("continuation-clear events=%d, want 1", clearingEvents)
+	}
+	persisted, err = st.GetWorkOrder(ctx, implement.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(persisted.ServedRequirementSnapshot, requirements) || !reflect.DeepEqual(persisted.GovernanceSnapshot, governance) {
+		t.Fatal("reading continuation-clear history changed canonical claim-time authority")
 	}
 }
 

@@ -104,7 +104,7 @@ func (s *Store) StartOverTaskCommand(ctx context.Context, lease taskops.TaskLeas
 		if len(proposals) > 0 && !r.CanConfirmDocuments {
 			return store.ErrStartOverConfirmDocuments
 		}
-		rows, err := tx.QueryContext(ctx, `SELECT kind,payload_json FROM events WHERE workspace_id=? AND task_id=? ORDER BY at,id`, ws, r.TaskID)
+		rows, err := tx.QueryContext(ctx, `SELECT kind,payload_json FROM events_columnstore WHERE workspace_id=? AND task_id=? ORDER BY at,id`, ws, r.TaskID)
 		if err != nil {
 			return err
 		}
@@ -219,7 +219,7 @@ func (s *Store) StartOverTaskCommand(ctx context.Context, lease taskops.TaskLeas
 }
 
 func startOverDroppedContextTx(ctx context.Context, tx *sql.Tx, workspaceID, taskID string) ([]core.TaskStartOverDroppedContext, error) {
-	rows, err := tx.QueryContext(ctx, `SELECT kind,payload_json FROM events WHERE workspace_id=? AND task_id=? ORDER BY at,id`, workspaceID, taskID)
+	rows, err := tx.QueryContext(ctx, `SELECT kind,payload_json FROM events_columnstore WHERE workspace_id=? AND task_id=? ORDER BY at,id`, workspaceID, taskID)
 	if err != nil {
 		return nil, err
 	}

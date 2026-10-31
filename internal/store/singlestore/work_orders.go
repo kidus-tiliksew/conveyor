@@ -673,7 +673,7 @@ func (s *Store) transitionWorkOrderTx(ctx context.Context, tx *sql.Tx, o core.Wo
 }
 func reviewSeatAcceptedTx(ctx context.Context, tx *sql.Tx, ws, task, id string) (bool, error) {
 	var accepted bool
-	err := tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM events WHERE workspace_id=? AND task_id=? AND kind='review.accepted' AND JSON_EXTRACT_STRING(payload_json,'review_work_order_id')=?)`, ws, task, id).Scan(&accepted)
+	err := tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM events_columnstore WHERE workspace_id=? AND task_id=? AND kind='review.accepted' AND JSON_EXTRACT_STRING(payload_json,'review_work_order_id')=?)`, ws, task, id).Scan(&accepted)
 	return accepted, err
 }
 func (s *Store) ListElapsedWorkOrderTaskIDs(ctx context.Context, now time.Time) ([]string, error) {
@@ -1529,7 +1529,7 @@ func (s *Store) RecoverWorkOrderCommand(ctx context.Context, lease taskops.TaskL
 		prior := o
 		transient := 0
 		if prior.LastFailureCategory == core.WorkOrderFailureTransientConnectivity {
-			err = tx.QueryRowContext(ctx, `SELECT COALESCE(JSON_EXTRACT_BIGINT(payload_json,'consecutive_transient_failures'),0) FROM events WHERE workspace_id=? AND task_id=? AND job_id=? AND kind IN ('work_order.child_failed','work_order.stalled') ORDER BY at DESC,id DESC LIMIT 1`, documentWorkspace(ctx), o.TaskID, o.JobID).Scan(&transient)
+			err = tx.QueryRowContext(ctx, `SELECT COALESCE(JSON_EXTRACT_BIGINT(payload_json,'consecutive_transient_failures'),0) FROM events_columnstore WHERE workspace_id=? AND task_id=? AND job_id=? AND kind IN ('work_order.child_failed','work_order.stalled') ORDER BY at DESC,id DESC LIMIT 1`, documentWorkspace(ctx), o.TaskID, o.JobID).Scan(&transient)
 			if err != nil && !errors.Is(err, sql.ErrNoRows) {
 				return err
 			}

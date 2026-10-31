@@ -2,6 +2,8 @@ package postgres
 
 import (
 	"context"
+	"encoding/json"
+	"reflect"
 	"testing"
 	"time"
 
@@ -107,6 +109,7 @@ func TestPostgresWorkOrderContinuationIntegration(t *testing.T) {
 	}
 }
 
+// case: EVC261031445A96-008
 // TestPostgresAcceptedReviewClearsSubmittedImplementationContinuationIntegration
 // submits the persisted implement order so all four continuation fields reach
 // review acceptance, which must clear them in the same transaction
@@ -137,7 +140,9 @@ func TestPostgresAcceptedReviewClearsSubmittedImplementationContinuationIntegrat
 			if err := st.CreateJob(ctx, implementJob); err != nil {
 				t.Fatal(err)
 			}
-			if err := storetest.For(st).CreateWorkOrder(ctx, core.WorkOrder{ID: implementJob.ID, TaskID: task.ID, JobID: implementJob.ID, Stage: core.StageImplement, State: core.WorkOrderQueued, QueueEnteredAt: now, QueueDeadline: now.Add(time.Hour), CreatedAt: now}); err != nil {
+			requirements := []core.ServedRequirementContext{{ID: "req-continuation", Version: 3, Statements: []core.RequirementStatement{{ID: "REQ-1", Statement: "Retain original implementation authority."}}}}
+			governance := &core.GovernanceSnapshot{Designs: []core.GovernanceDesignContext{{ID: "design-continuation", Version: 4, Content: "Original claim-time design body."}}, Decisions: []core.Decision{{ID: "DEC-1", Status: core.DecisionConfirmed, Statement: "Keep claim-time authority."}}}
+			if err := storetest.For(st).CreateWorkOrder(ctx, core.WorkOrder{ID: implementJob.ID, TaskID: task.ID, JobID: implementJob.ID, Stage: core.StageImplement, State: core.WorkOrderQueued, QueueEnteredAt: now, QueueDeadline: now.Add(time.Hour), CreatedAt: now, ServedRequirementSnapshot: requirements, GovernanceSnapshot: governance}); err != nil {
 				t.Fatal(err)
 			}
 			claimed, err := storetest.For(st).ClaimWorkOrder(ctx, implementJob.ID, core.WorkOrderClaim{SessionID: "implement-session-" + verdict, ClientToken: "implement-token-" + verdict, ClaimantID: "run:implementer", WorkerID: implementWorker, Agent: "claude", Lease: time.Minute, ExecutionTimeout: time.Hour})
@@ -167,6 +172,10 @@ func TestPostgresAcceptedReviewClearsSubmittedImplementationContinuationIntegrat
 				t.Fatalf("submitted implementation lost continuation before review acceptance: %+v", submitted)
 			}
 			before := countWorkOrderUpdates(t, st, ctx, task.ID, implement.ID)
+			beforeEvents, err := st.ListEvents(ctx, task.ID)
+			if err != nil {
+				t.Fatal(err)
+			}
 			reviewJob := core.Job{ID: task.ID + "-review-1-seat-1", TaskID: task.ID, Stage: core.StageReview, State: core.JobPending}
 			reviewOrder := core.WorkOrder{ID: reviewJob.ID, TaskID: task.ID, JobID: reviewJob.ID, Stage: core.StageReview, State: core.WorkOrderQueued, ReviewRound: 1, ReviewSeat: 1, QueueEnteredAt: now, QueueDeadline: now.Add(time.Hour), CreatedAt: now}
 			if err = st.CreateJob(ctx, reviewJob); err != nil {
@@ -195,6 +204,45 @@ func TestPostgresAcceptedReviewClearsSubmittedImplementationContinuationIntegrat
 			}
 			if after := countWorkOrderUpdates(t, st, ctx, task.ID, implement.ID); after != before+1 {
 				t.Fatalf("implementation work_order.updated events before=%d after=%d, want one clearing event", before, after)
+			}
+			events, err := st.ListEvents(ctx, task.ID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(events) < len(beforeEvents) || !reflect.DeepEqual(events[:len(beforeEvents)], beforeEvents) {
+				t.Fatal("review acceptance changed historical events")
+			}
+			for _, event := range events[len(beforeEvents):] {
+				if event.Kind != "work_order.updated" || event.JobID != implement.JobID {
+					continue
+				}
+				var payload map[string]json.RawMessage
+				if err := json.Unmarshal(event.Payload, &payload); err != nil {
+					t.Fatal(err)
+				}
+				if _, exists := payload["served_requirement_snapshot"]; exists {
+					t.Fatal("continuation-clear event duplicated served requirement authority")
+				}
+				if _, exists := payload["governance_snapshot"]; exists {
+					t.Fatal("continuation-clear event duplicated governance authority")
+				}
+				var recorded core.WorkOrder
+				if err := json.Unmarshal(event.Payload, &recorded); err != nil {
+					t.Fatal(err)
+				}
+				if recorded.ID != implement.ID || recorded.TaskID != task.ID || recorded.AttemptID != implement.AttemptID ||
+					recorded.SessionID != implement.SessionID || recorded.State != core.WorkOrderSubmitted ||
+					recorded.ContinuationSessionID != "" || recorded.ContinuationAttemptID != "" ||
+					recorded.ContinuationHarness != "" || recorded.ContinuationLaunchEnvironment != "" {
+					t.Fatalf("continuation-clear event lost lifecycle identity or retained continuation: %+v", recorded)
+				}
+			}
+			persisted, err = st.GetWorkOrder(ctx, implement.ID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !reflect.DeepEqual(persisted.ServedRequirementSnapshot, requirements) || !reflect.DeepEqual(persisted.GovernanceSnapshot, governance) {
+				t.Fatal("reading continuation-clear history changed canonical claim-time authority")
 			}
 		})
 	}

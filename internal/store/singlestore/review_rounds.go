@@ -221,7 +221,7 @@ func (s *Store) settleAcceptedReviewTx(ctx context.Context, tx *sql.Tx, o core.W
 		if err = orderWrite(ctx, tx, i); err != nil {
 			return err
 		}
-		if err = taskEvent(ctx, tx, core.Event{TaskID: i.TaskID, JobID: i.JobID, Kind: "work_order.updated", Payload: core.JSONPayload(i), At: now}); err != nil {
+		if err = taskEvent(ctx, tx, core.Event{TaskID: i.TaskID, JobID: i.JobID, Kind: "work_order.updated", Payload: store.WorkOrderEventPayload(i), At: now}); err != nil {
 			return err
 		}
 	}
@@ -335,7 +335,7 @@ func (s *Store) AcceptReviewDecisionCommand(ctx context.Context, lease taskops.T
 	}
 	return s.taskTx(ctx, decision.TaskID, func(tx *sql.Tx) error {
 		var completed, accepted bool
-		if err := tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM events WHERE workspace_id=? AND task_id=? AND kind='review.completed' AND JSON_EXTRACT_STRING(payload_json,'review_work_order_id')=?),EXISTS(SELECT 1 FROM events WHERE workspace_id=? AND task_id=? AND kind='review.accepted' AND JSON_EXTRACT_STRING(payload_json,'review_work_order_id')=?)`, documentWorkspace(ctx), decision.TaskID, decision.ReviewWorkOrderID, documentWorkspace(ctx), decision.TaskID, decision.ReviewWorkOrderID).Scan(&completed, &accepted); err != nil {
+		if err := tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM events_columnstore WHERE workspace_id=? AND task_id=? AND kind='review.completed' AND JSON_EXTRACT_STRING(payload_json,'review_work_order_id')=?),EXISTS(SELECT 1 FROM events_columnstore WHERE workspace_id=? AND task_id=? AND kind='review.accepted' AND JSON_EXTRACT_STRING(payload_json,'review_work_order_id')=?)`, documentWorkspace(ctx), decision.TaskID, decision.ReviewWorkOrderID, documentWorkspace(ctx), decision.TaskID, decision.ReviewWorkOrderID).Scan(&completed, &accepted); err != nil {
 			return err
 		}
 		before, err := getTaskRow(ctx, tx, decision.TaskID)
@@ -394,7 +394,7 @@ ORDER BY version DESC LIMIT 1`, documentWorkspace(ctx), id, version, version, ve
 		// transaction lock serializes racing verdicts.
 		if store.FailFastReviewRound(before, decision.ReviewRound) {
 			var settled bool
-			if err := tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM events WHERE workspace_id=? AND task_id=? AND kind='review.round_completed' AND JSON_EXTRACT_STRING(payload_json,'review_round')=?)`, documentWorkspace(ctx), decision.TaskID, fmt.Sprint(decision.ReviewRound)).Scan(&settled); err != nil {
+			if err := tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM events_columnstore WHERE workspace_id=? AND task_id=? AND kind='review.round_completed' AND JSON_EXTRACT_STRING(payload_json,'review_round')=?)`, documentWorkspace(ctx), decision.TaskID, fmt.Sprint(decision.ReviewRound)).Scan(&settled); err != nil {
 				return err
 			}
 			if err := store.ValidateFailFastReviewDecision(before, decision, settled); err != nil {
@@ -545,7 +545,7 @@ func bounceCountsTx(ctx context.Context, tx *sql.Tx, id string) (int, int, error
 		cutoff = last.Time
 	}
 	var count, window int
-	err := tx.QueryRowContext(ctx, `SELECT COUNT(*),COALESCE(SUM(at>?),0) FROM events WHERE workspace_id=? AND task_id=? AND kind='pipeline.bounced'`, cutoff, documentWorkspace(ctx), id).Scan(&count, &window)
+	err := tx.QueryRowContext(ctx, `SELECT COUNT(*),COALESCE(SUM(at>?),0) FROM events_columnstore WHERE workspace_id=? AND task_id=? AND kind='pipeline.bounced'`, cutoff, documentWorkspace(ctx), id).Scan(&count, &window)
 	return count, window, err
 }
 
@@ -672,7 +672,7 @@ func (s *Store) RetryReviewRoundCommand(ctx context.Context, lease taskops.TaskL
 			}
 		}
 		var resolved bool
-		if err = tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM events WHERE workspace_id=? AND task_id=? AND kind='review.round_completed' AND JSON_EXTRACT_STRING(payload_json,'review_round')=?)`, ws, r.TaskID, fmt.Sprint(latest)).Scan(&resolved); err != nil {
+		if err = tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM events_columnstore WHERE workspace_id=? AND task_id=? AND kind='review.round_completed' AND JSON_EXTRACT_STRING(payload_json,'review_round')=?)`, ws, r.TaskID, fmt.Sprint(latest)).Scan(&resolved); err != nil {
 			return err
 		}
 		if latest == 0 || latest != r.PriorRound || recoverable == 0 || active != 0 || resolved {
