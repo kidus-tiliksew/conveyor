@@ -7,15 +7,18 @@ import (
 	"errors"
 	"fmt"
 	"github.com/kidus-tiliksew/conveyor/internal/testimage"
+	"log"
 	"maps"
 	"net/http"
 	"net/http/httptest"
 	"reflect"
 	"slices"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
+	"github.com/go-chi/chi/v5/middleware"
 	"github.com/kidus-tiliksew/conveyor/internal/config"
 	"github.com/kidus-tiliksew/conveyor/internal/core"
 	"github.com/kidus-tiliksew/conveyor/internal/dispatch"
@@ -3327,5 +3330,109 @@ func TestMCPReleaseAndProposalSchemasStateCheckpointContract(t *testing.T) {
 	}
 	if len(seen) != 4 {
 		t.Fatalf("schemas checked = %v", seen)
+	}
+}
+
+// lockedLogBuffer collects standard-logger output written from any goroutine.
+type lockedLogBuffer struct {
+	mu  sync.Mutex
+	buf bytes.Buffer
+}
+
+func (l *lockedLogBuffer) Write(p []byte) (int, error) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.buf.Write(p)
+}
+
+func (l *lockedLogBuffer) String() string {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.buf.String()
+}
+
+// captureStandardLog redirects the standard logger for one test. Tests that
+// call it do not run in parallel.
+func captureStandardLog(t *testing.T) *lockedLogBuffer {
+	t.Helper()
+	captured := &lockedLogBuffer{}
+	previousWriter, previousFlags := log.Writer(), log.Flags()
+	log.SetOutput(captured)
+	log.SetFlags(0)
+	t.Cleanup(func() {
+		log.SetOutput(previousWriter)
+		log.SetFlags(previousFlags)
+	})
+	return captured
+}
+
+func decodeMCPToolText(t *testing.T, body []byte) (string, bool) {
+	t.Helper()
+	var envelope struct {
+		Result struct {
+			Content []struct {
+				Text string `json:"text"`
+			} `json:"content"`
+			IsError bool `json:"isError"`
+		} `json:"result"`
+	}
+	if err := json.Unmarshal(body, &envelope); err != nil || len(envelope.Result.Content) != 1 {
+		t.Fatalf("tool result %s: %v", body, err)
+	}
+	return envelope.Result.Content[0].Text, envelope.Result.IsError
+}
+
+func TestMCPToolErrorLogsRequestID(t *testing.T) {
+	captured := captureStandardLog(t)
+	server := NewServer(store.NewMemory())
+	server.BearerToken = "operator-token"
+	request := httptest.NewRequest(http.MethodPost, "/mcp", strings.NewReader(`{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"submit_spec","arguments":{}}}`))
+	request.Header.Set("Authorization", "Bearer operator-token")
+	request.Header.Set(middleware.RequestIDHeader, "req-mcp-refusal")
+	response := httptest.NewRecorder()
+	server.Handler().ServeHTTP(response, request)
+	if response.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
+	}
+	text, isError := decodeMCPToolText(t, response.Body.Bytes())
+	if !isError || text == "" || strings.Contains(text, "request_id") {
+		t.Fatalf("refusal result isError=%v text=%q, want the unchanged refusal text", isError, text)
+	}
+	want := fmt.Sprintf("mcp: tool call failed: request_id=%q tool=%q error=%q", "req-mcp-refusal", "submit_spec", text)
+	if logged := captured.String(); !strings.Contains(logged, want) {
+		t.Fatalf("log %q lacks %q", logged, want)
+	}
+}
+
+// backendFailingClaimStore fails the claim path's first store read the way a
+// durable backend reports an untranslated driver condition.
+type backendFailingClaimStore struct {
+	store.Store
+}
+
+func (backendFailingClaimStore) GetWorkOrder(context.Context, string) (core.WorkOrder, error) {
+	return core.WorkOrder{}, fmt.Errorf("SingleStore %w", store.ErrBackendOperation)
+}
+
+func TestMCPBackendFailureCarriesRequestIDWithoutDriverText(t *testing.T) {
+	captured := captureStandardLog(t)
+	st := backendFailingClaimStore{Store: store.NewMemory()}
+	server := NewServer(st)
+	server.Workspace = "demo"
+	server.WorkOrders = &workorder.Service{Store: st}
+	body := `{"jsonrpc":"2.0","id":7,"method":"tools/call","params":{"name":"claim_work_order","arguments":{"workspace_id":"demo","work_order_id":"wo-1","session_id":"session","client_token":"secret-client-token","agent":"codex","model":"gpt"}}}`
+	request := httptest.NewRequest(http.MethodPost, "/mcp", strings.NewReader(body))
+	ctx := withCredentialActor(request.Context(), core.AuthenticatedCredential{ID: "agent-token", OwnerUserID: "usr-owner", Kind: core.CredentialAgent, Scope: core.CredentialScopeUser})
+	request = request.WithContext(context.WithValue(ctx, middleware.RequestIDKey, "host/abc-000042"))
+	response := httptest.NewRecorder()
+	server.handleMCP(response, request)
+	text, isError := decodeMCPToolText(t, response.Body.Bytes())
+	if !isError || text != "SingleStore database operation failed (request_id host/abc-000042)" {
+		t.Fatalf("claim failure isError=%v text=%q", isError, text)
+	}
+	logged := captured.String()
+	want := fmt.Sprintf("mcp: tool call failed: request_id=%q tool=%q error=%q", "host/abc-000042", "claim_work_order", "SingleStore database operation failed")
+	if !strings.Contains(logged, want) || strings.Contains(logged, "secret-client-token") {
+		t.Fatalf("log %q, want %q without the client token", logged, want)
 	}
 }
