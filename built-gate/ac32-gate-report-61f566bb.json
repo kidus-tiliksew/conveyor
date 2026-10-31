@@ -1,0 +1,1020 @@
+{
+  "config": {
+    "argv": [
+      "/home/user/.nvm/versions/node/v24.22.1/bin/node",
+      "/home/user/conveyor-worktrees/conveyor-task-261031-66d10d/web/node_modules/.bin/playwright",
+      "test",
+      "tests/board-map.spec.ts:777",
+      "--repeat-each=20",
+      "--reporter=list,json"
+    ],
+    "configFile": "/home/user/conveyor-worktrees/conveyor-task-261031-66d10d/web/playwright.config.ts",
+    "rootDir": "/home/user/conveyor-worktrees/conveyor-task-261031-66d10d/web/tests",
+    "failOnFlakyTests": false,
+    "forbidOnly": false,
+    "fullyParallel": true,
+    "globalSetup": null,
+    "globalTeardown": null,
+    "globalTimeout": 0,
+    "grep": {},
+    "grepInvert": null,
+    "maxFailures": 0,
+    "metadata": {
+      "actualWorkers": 1
+    },
+    "preserveOutput": "always",
+    "projects": [
+      {
+        "outputDir": "/home/user/conveyor-worktrees/conveyor-task-261031-66d10d/web/test-results",
+        "repeatEach": 1,
+        "retries": 0,
+        "metadata": {
+          "actualWorkers": 1
+        },
+        "id": "dev-server",
+        "name": "dev-server",
+        "testDir": "/home/user/conveyor-worktrees/conveyor-task-261031-66d10d/web/tests",
+        "testIgnore": [],
+        "testMatch": [
+          "**/*.@(spec|test).?(c|m)[jt]s?(x)"
+        ],
+        "timeout": 30000
+      },
+      {
+        "outputDir": "/home/user/conveyor-worktrees/conveyor-task-261031-66d10d/web/test-results",
+        "repeatEach": 20,
+        "retries": 0,
+        "metadata": {
+          "actualWorkers": 1
+        },
+        "id": "built-dashboard",
+        "name": "built-dashboard",
+        "testDir": "/home/user/conveyor-worktrees/conveyor-task-261031-66d10d/web/tests",
+        "testIgnore": [],
+        "testMatch": [
+          "**/*.@(spec|test).?(c|m)[jt]s?(x)"
+        ],
+        "timeout": 30000
+      }
+    ],
+    "quiet": false,
+    "reporter": [
+      [
+        "list"
+      ],
+      [
+        "json"
+      ]
+    ],
+    "reportSlowTests": {
+      "max": 5,
+      "threshold": 300000
+    },
+    "shard": null,
+    "tags": [],
+    "updateSnapshots": "missing",
+    "updateSourceMethod": "patch",
+    "version": "1.61.1",
+    "workers": 1,
+    "webServer": null
+  },
+  "suites": [
+    {
+      "title": "board-map.spec.ts",
+      "file": "board-map.spec.ts",
+      "column": 0,
+      "line": 0,
+      "specs": [
+        {
+          "title": "500 open and 2,000 finished tasks show their groups, tasks, and edges within two seconds of the read",
+          "ok": true,
+          "tags": [
+            "built-dashboard"
+          ],
+          "tests": [
+            {
+              "timeout": 60000,
+              "annotations": [
+                {
+                  "type": "groups, tasks, and edges after read (ms)",
+                  "description": "390"
+                }
+              ],
+              "expectedStatus": "passed",
+              "projectId": "built-dashboard",
+              "projectName": "built-dashboard",
+              "results": [
+                {
+                  "workerIndex": 0,
+                  "parallelIndex": 0,
+                  "status": "passed",
+                  "duration": 1854,
+                  "errors": [],
+                  "stdout": [],
+                  "stderr": [],
+                  "retry": 0,
+                  "startTime": "2026-10-31T07:14:40.579Z",
+                  "annotations": [
+                    {
+                      "type": "groups, tasks, and edges after read (ms)",
+                      "description": "390"
+                    }
+                  ],
+                  "attachments": []
+                }
+              ],
+              "status": "expected"
+            }
+          ],
+          "id": "c8921a7df328184af306-8a10b199ed09cd912366",
+          "file": "board-map.spec.ts",
+          "line": 777,
+          "column": 1
+        },
+        {
+          "title": "500 open and 2,000 finished tasks show their groups, tasks, and edges within two seconds of the read",
+          "ok": true,
+          "tags": [
+            "built-dashboard"
+          ],
+          "tests": [
+            {
+              "timeout": 60000,
+              "annotations": [
+                {
+                  "type": "groups, tasks, and edges after read (ms)",
+                  "description": "358"
+                }
+              ],
+              "expectedStatus": "passed",
+              "projectId": "built-dashboard",
+              "projectName": "built-dashboard",
+              "results": [
+                {
+                  "workerIndex": 1,
+                  "parallelIndex": 0,
+                  "status": "passed",
+                  "duration": 1722,
+                  "errors": [],
+                  "stdout": [],
+                  "stderr": [],
+                  "retry": 0,
+                  "startTime": "2026-10-31T07:14:42.742Z",
+                  "annotations": [
+                    {
+                      "type": "groups, tasks, and edges after read (ms)",
+                      "description": "358"
+                    }
+                  ],
+                  "attachments": []
+                }
+              ],
+              "status": "expected"
+            }
+          ],
+          "id": "c8921a7df328184af306-82d6892836b0418ec6ef",
+          "file": "board-map.spec.ts",
+          "line": 777,
+          "column": 1
+        },
+        {
+          "title": "500 open and 2,000 finished tasks show their groups, tasks, and edges within two seconds of the read",
+          "ok": true,
+          "tags": [
+            "built-dashboard"
+          ],
+          "tests": [
+            {
+              "timeout": 60000,
+              "annotations": [
+                {
+                  "type": "groups, tasks, and edges after read (ms)",
+                  "description": "378"
+                }
+              ],
+              "expectedStatus": "passed",
+              "projectId": "built-dashboard",
+              "projectName": "built-dashboard",
+              "results": [
+                {
+                  "workerIndex": 2,
+                  "parallelIndex": 0,
+                  "status": "passed",
+                  "duration": 1717,
+                  "errors": [],
+                  "stdout": [],
+                  "stderr": [],
+                  "retry": 0,
+                  "startTime": "2026-10-31T07:14:44.752Z",
+                  "annotations": [
+                    {
+                      "type": "groups, tasks, and edges after read (ms)",
+                      "description": "378"
+                    }
+                  ],
+                  "attachments": []
+                }
+              ],
+              "status": "expected"
+            }
+          ],
+          "id": "c8921a7df328184af306-a1d5838691ef96e95231",
+          "file": "board-map.spec.ts",
+          "line": 777,
+          "column": 1
+        },
+        {
+          "title": "500 open and 2,000 finished tasks show their groups, tasks, and edges within two seconds of the read",
+          "ok": true,
+          "tags": [
+            "built-dashboard"
+          ],
+          "tests": [
+            {
+              "timeout": 60000,
+              "annotations": [
+                {
+                  "type": "groups, tasks, and edges after read (ms)",
+                  "description": "422"
+                }
+              ],
+              "expectedStatus": "passed",
+              "projectId": "built-dashboard",
+              "projectName": "built-dashboard",
+              "results": [
+                {
+                  "workerIndex": 3,
+                  "parallelIndex": 0,
+                  "status": "passed",
+                  "duration": 1802,
+                  "errors": [],
+                  "stdout": [],
+                  "stderr": [],
+                  "retry": 0,
+                  "startTime": "2026-10-31T07:14:46.760Z",
+                  "annotations": [
+                    {
+                      "type": "groups, tasks, and edges after read (ms)",
+                      "description": "422"
+                    }
+                  ],
+                  "attachments": []
+                }
+              ],
+              "status": "expected"
+            }
+          ],
+          "id": "c8921a7df328184af306-38c70e43c3f6fb1b7395",
+          "file": "board-map.spec.ts",
+          "line": 777,
+          "column": 1
+        },
+        {
+          "title": "500 open and 2,000 finished tasks show their groups, tasks, and edges within two seconds of the read",
+          "ok": true,
+          "tags": [
+            "built-dashboard"
+          ],
+          "tests": [
+            {
+              "timeout": 60000,
+              "annotations": [
+                {
+                  "type": "groups, tasks, and edges after read (ms)",
+                  "description": "426"
+                }
+              ],
+              "expectedStatus": "passed",
+              "projectId": "built-dashboard",
+              "projectName": "built-dashboard",
+              "results": [
+                {
+                  "workerIndex": 4,
+                  "parallelIndex": 0,
+                  "status": "passed",
+                  "duration": 2019,
+                  "errors": [],
+                  "stdout": [],
+                  "stderr": [],
+                  "retry": 0,
+                  "startTime": "2026-10-31T07:14:48.879Z",
+                  "annotations": [
+                    {
+                      "type": "groups, tasks, and edges after read (ms)",
+                      "description": "426"
+                    }
+                  ],
+                  "attachments": []
+                }
+              ],
+              "status": "expected"
+            }
+          ],
+          "id": "c8921a7df328184af306-606ae1a55bb2bfeaa28f",
+          "file": "board-map.spec.ts",
+          "line": 777,
+          "column": 1
+        },
+        {
+          "title": "500 open and 2,000 finished tasks show their groups, tasks, and edges within two seconds of the read",
+          "ok": true,
+          "tags": [
+            "built-dashboard"
+          ],
+          "tests": [
+            {
+              "timeout": 60000,
+              "annotations": [
+                {
+                  "type": "groups, tasks, and edges after read (ms)",
+                  "description": "497"
+                }
+              ],
+              "expectedStatus": "passed",
+              "projectId": "built-dashboard",
+              "projectName": "built-dashboard",
+              "results": [
+                {
+                  "workerIndex": 5,
+                  "parallelIndex": 0,
+                  "status": "passed",
+                  "duration": 2022,
+                  "errors": [],
+                  "stdout": [],
+                  "stderr": [],
+                  "retry": 0,
+                  "startTime": "2026-10-31T07:14:51.196Z",
+                  "annotations": [
+                    {
+                      "type": "groups, tasks, and edges after read (ms)",
+                      "description": "497"
+                    }
+                  ],
+                  "attachments": []
+                }
+              ],
+              "status": "expected"
+            }
+          ],
+          "id": "c8921a7df328184af306-74c79998d1cffce54f1c",
+          "file": "board-map.spec.ts",
+          "line": 777,
+          "column": 1
+        },
+        {
+          "title": "500 open and 2,000 finished tasks show their groups, tasks, and edges within two seconds of the read",
+          "ok": true,
+          "tags": [
+            "built-dashboard"
+          ],
+          "tests": [
+            {
+              "timeout": 60000,
+              "annotations": [
+                {
+                  "type": "groups, tasks, and edges after read (ms)",
+                  "description": "439"
+                }
+              ],
+              "expectedStatus": "passed",
+              "projectId": "built-dashboard",
+              "projectName": "built-dashboard",
+              "results": [
+                {
+                  "workerIndex": 6,
+                  "parallelIndex": 0,
+                  "status": "passed",
+                  "duration": 1908,
+                  "errors": [],
+                  "stdout": [],
+                  "stderr": [],
+                  "retry": 0,
+                  "startTime": "2026-10-31T07:14:53.545Z",
+                  "annotations": [
+                    {
+                      "type": "groups, tasks, and edges after read (ms)",
+                      "description": "439"
+                    }
+                  ],
+                  "attachments": []
+                }
+              ],
+              "status": "expected"
+            }
+          ],
+          "id": "c8921a7df328184af306-461116dd78de97324bd8",
+          "file": "board-map.spec.ts",
+          "line": 777,
+          "column": 1
+        },
+        {
+          "title": "500 open and 2,000 finished tasks show their groups, tasks, and edges within two seconds of the read",
+          "ok": true,
+          "tags": [
+            "built-dashboard"
+          ],
+          "tests": [
+            {
+              "timeout": 60000,
+              "annotations": [
+                {
+                  "type": "groups, tasks, and edges after read (ms)",
+                  "description": "345"
+                }
+              ],
+              "expectedStatus": "passed",
+              "projectId": "built-dashboard",
+              "projectName": "built-dashboard",
+              "results": [
+                {
+                  "workerIndex": 7,
+                  "parallelIndex": 0,
+                  "status": "passed",
+                  "duration": 2115,
+                  "errors": [],
+                  "stdout": [],
+                  "stderr": [],
+                  "retry": 0,
+                  "startTime": "2026-10-31T07:14:58.383Z",
+                  "annotations": [
+                    {
+                      "type": "groups, tasks, and edges after read (ms)",
+                      "description": "345"
+                    }
+                  ],
+                  "attachments": []
+                }
+              ],
+              "status": "expected"
+            }
+          ],
+          "id": "c8921a7df328184af306-047c732e7de743feeb5b",
+          "file": "board-map.spec.ts",
+          "line": 777,
+          "column": 1
+        },
+        {
+          "title": "500 open and 2,000 finished tasks show their groups, tasks, and edges within two seconds of the read",
+          "ok": true,
+          "tags": [
+            "built-dashboard"
+          ],
+          "tests": [
+            {
+              "timeout": 60000,
+              "annotations": [
+                {
+                  "type": "groups, tasks, and edges after read (ms)",
+                  "description": "332"
+                }
+              ],
+              "expectedStatus": "passed",
+              "projectId": "built-dashboard",
+              "projectName": "built-dashboard",
+              "results": [
+                {
+                  "workerIndex": 8,
+                  "parallelIndex": 0,
+                  "status": "passed",
+                  "duration": 1782,
+                  "errors": [],
+                  "stdout": [],
+                  "stderr": [],
+                  "retry": 0,
+                  "startTime": "2026-10-31T07:15:03.929Z",
+                  "annotations": [
+                    {
+                      "type": "groups, tasks, and edges after read (ms)",
+                      "description": "332"
+                    }
+                  ],
+                  "attachments": []
+                }
+              ],
+              "status": "expected"
+            }
+          ],
+          "id": "c8921a7df328184af306-6a38c8589ff20ddf6fd0",
+          "file": "board-map.spec.ts",
+          "line": 777,
+          "column": 1
+        },
+        {
+          "title": "500 open and 2,000 finished tasks show their groups, tasks, and edges within two seconds of the read",
+          "ok": true,
+          "tags": [
+            "built-dashboard"
+          ],
+          "tests": [
+            {
+              "timeout": 60000,
+              "annotations": [
+                {
+                  "type": "groups, tasks, and edges after read (ms)",
+                  "description": "394"
+                }
+              ],
+              "expectedStatus": "passed",
+              "projectId": "built-dashboard",
+              "projectName": "built-dashboard",
+              "results": [
+                {
+                  "workerIndex": 9,
+                  "parallelIndex": 0,
+                  "status": "passed",
+                  "duration": 1786,
+                  "errors": [],
+                  "stdout": [],
+                  "stderr": [],
+                  "retry": 0,
+                  "startTime": "2026-10-31T07:15:06.106Z",
+                  "annotations": [
+                    {
+                      "type": "groups, tasks, and edges after read (ms)",
+                      "description": "394"
+                    }
+                  ],
+                  "attachments": []
+                }
+              ],
+              "status": "expected"
+            }
+          ],
+          "id": "c8921a7df328184af306-5b6188fe11db05e56b48",
+          "file": "board-map.spec.ts",
+          "line": 777,
+          "column": 1
+        },
+        {
+          "title": "500 open and 2,000 finished tasks show their groups, tasks, and edges within two seconds of the read",
+          "ok": true,
+          "tags": [
+            "built-dashboard"
+          ],
+          "tests": [
+            {
+              "timeout": 60000,
+              "annotations": [
+                {
+                  "type": "groups, tasks, and edges after read (ms)",
+                  "description": "341"
+                }
+              ],
+              "expectedStatus": "passed",
+              "projectId": "built-dashboard",
+              "projectName": "built-dashboard",
+              "results": [
+                {
+                  "workerIndex": 10,
+                  "parallelIndex": 0,
+                  "status": "passed",
+                  "duration": 1648,
+                  "errors": [],
+                  "stdout": [],
+                  "stderr": [],
+                  "retry": 0,
+                  "startTime": "2026-10-31T07:15:08.186Z",
+                  "annotations": [
+                    {
+                      "type": "groups, tasks, and edges after read (ms)",
+                      "description": "341"
+                    }
+                  ],
+                  "attachments": []
+                }
+              ],
+              "status": "expected"
+            }
+          ],
+          "id": "c8921a7df328184af306-45d4dbe1dcfb307490cd",
+          "file": "board-map.spec.ts",
+          "line": 777,
+          "column": 1
+        },
+        {
+          "title": "500 open and 2,000 finished tasks show their groups, tasks, and edges within two seconds of the read",
+          "ok": true,
+          "tags": [
+            "built-dashboard"
+          ],
+          "tests": [
+            {
+              "timeout": 60000,
+              "annotations": [
+                {
+                  "type": "groups, tasks, and edges after read (ms)",
+                  "description": "391"
+                }
+              ],
+              "expectedStatus": "passed",
+              "projectId": "built-dashboard",
+              "projectName": "built-dashboard",
+              "results": [
+                {
+                  "workerIndex": 11,
+                  "parallelIndex": 0,
+                  "status": "passed",
+                  "duration": 1765,
+                  "errors": [],
+                  "stdout": [],
+                  "stderr": [],
+                  "retry": 0,
+                  "startTime": "2026-10-31T07:15:11.724Z",
+                  "annotations": [
+                    {
+                      "type": "groups, tasks, and edges after read (ms)",
+                      "description": "391"
+                    }
+                  ],
+                  "attachments": []
+                }
+              ],
+              "status": "expected"
+            }
+          ],
+          "id": "c8921a7df328184af306-15abf2ba1066ef42b17a",
+          "file": "board-map.spec.ts",
+          "line": 777,
+          "column": 1
+        },
+        {
+          "title": "500 open and 2,000 finished tasks show their groups, tasks, and edges within two seconds of the read",
+          "ok": true,
+          "tags": [
+            "built-dashboard"
+          ],
+          "tests": [
+            {
+              "timeout": 60000,
+              "annotations": [
+                {
+                  "type": "groups, tasks, and edges after read (ms)",
+                  "description": "395"
+                }
+              ],
+              "expectedStatus": "passed",
+              "projectId": "built-dashboard",
+              "projectName": "built-dashboard",
+              "results": [
+                {
+                  "workerIndex": 12,
+                  "parallelIndex": 0,
+                  "status": "passed",
+                  "duration": 1666,
+                  "errors": [],
+                  "stdout": [],
+                  "stderr": [],
+                  "retry": 0,
+                  "startTime": "2026-10-31T07:15:13.773Z",
+                  "annotations": [
+                    {
+                      "type": "groups, tasks, and edges after read (ms)",
+                      "description": "395"
+                    }
+                  ],
+                  "attachments": []
+                }
+              ],
+              "status": "expected"
+            }
+          ],
+          "id": "c8921a7df328184af306-94137275c1dca6f2055d",
+          "file": "board-map.spec.ts",
+          "line": 777,
+          "column": 1
+        },
+        {
+          "title": "500 open and 2,000 finished tasks show their groups, tasks, and edges within two seconds of the read",
+          "ok": true,
+          "tags": [
+            "built-dashboard"
+          ],
+          "tests": [
+            {
+              "timeout": 60000,
+              "annotations": [
+                {
+                  "type": "groups, tasks, and edges after read (ms)",
+                  "description": "360"
+                }
+              ],
+              "expectedStatus": "passed",
+              "projectId": "built-dashboard",
+              "projectName": "built-dashboard",
+              "results": [
+                {
+                  "workerIndex": 13,
+                  "parallelIndex": 0,
+                  "status": "passed",
+                  "duration": 1711,
+                  "errors": [],
+                  "stdout": [],
+                  "stderr": [],
+                  "retry": 0,
+                  "startTime": "2026-10-31T07:15:15.801Z",
+                  "annotations": [
+                    {
+                      "type": "groups, tasks, and edges after read (ms)",
+                      "description": "360"
+                    }
+                  ],
+                  "attachments": []
+                }
+              ],
+              "status": "expected"
+            }
+          ],
+          "id": "c8921a7df328184af306-76f514213980579ba02f",
+          "file": "board-map.spec.ts",
+          "line": 777,
+          "column": 1
+        },
+        {
+          "title": "500 open and 2,000 finished tasks show their groups, tasks, and edges within two seconds of the read",
+          "ok": true,
+          "tags": [
+            "built-dashboard"
+          ],
+          "tests": [
+            {
+              "timeout": 60000,
+              "annotations": [
+                {
+                  "type": "groups, tasks, and edges after read (ms)",
+                  "description": "349"
+                }
+              ],
+              "expectedStatus": "passed",
+              "projectId": "built-dashboard",
+              "projectName": "built-dashboard",
+              "results": [
+                {
+                  "workerIndex": 14,
+                  "parallelIndex": 0,
+                  "status": "passed",
+                  "duration": 1636,
+                  "errors": [],
+                  "stdout": [],
+                  "stderr": [],
+                  "retry": 0,
+                  "startTime": "2026-10-31T07:15:17.807Z",
+                  "annotations": [
+                    {
+                      "type": "groups, tasks, and edges after read (ms)",
+                      "description": "349"
+                    }
+                  ],
+                  "attachments": []
+                }
+              ],
+              "status": "expected"
+            }
+          ],
+          "id": "c8921a7df328184af306-079752c5a8a4298a2fd4",
+          "file": "board-map.spec.ts",
+          "line": 777,
+          "column": 1
+        },
+        {
+          "title": "500 open and 2,000 finished tasks show their groups, tasks, and edges within two seconds of the read",
+          "ok": true,
+          "tags": [
+            "built-dashboard"
+          ],
+          "tests": [
+            {
+              "timeout": 60000,
+              "annotations": [
+                {
+                  "type": "groups, tasks, and edges after read (ms)",
+                  "description": "377"
+                }
+              ],
+              "expectedStatus": "passed",
+              "projectId": "built-dashboard",
+              "projectName": "built-dashboard",
+              "results": [
+                {
+                  "workerIndex": 15,
+                  "parallelIndex": 0,
+                  "status": "passed",
+                  "duration": 1859,
+                  "errors": [],
+                  "stdout": [],
+                  "stderr": [],
+                  "retry": 0,
+                  "startTime": "2026-10-31T07:15:19.991Z",
+                  "annotations": [
+                    {
+                      "type": "groups, tasks, and edges after read (ms)",
+                      "description": "377"
+                    }
+                  ],
+                  "attachments": []
+                }
+              ],
+              "status": "expected"
+            }
+          ],
+          "id": "c8921a7df328184af306-e95e3fcef15fdb0cf9da",
+          "file": "board-map.spec.ts",
+          "line": 777,
+          "column": 1
+        },
+        {
+          "title": "500 open and 2,000 finished tasks show their groups, tasks, and edges within two seconds of the read",
+          "ok": true,
+          "tags": [
+            "built-dashboard"
+          ],
+          "tests": [
+            {
+              "timeout": 60000,
+              "annotations": [
+                {
+                  "type": "groups, tasks, and edges after read (ms)",
+                  "description": "354"
+                }
+              ],
+              "expectedStatus": "passed",
+              "projectId": "built-dashboard",
+              "projectName": "built-dashboard",
+              "results": [
+                {
+                  "workerIndex": 16,
+                  "parallelIndex": 0,
+                  "status": "passed",
+                  "duration": 1653,
+                  "errors": [],
+                  "stdout": [],
+                  "stderr": [],
+                  "retry": 0,
+                  "startTime": "2026-10-31T07:15:22.665Z",
+                  "annotations": [
+                    {
+                      "type": "groups, tasks, and edges after read (ms)",
+                      "description": "354"
+                    }
+                  ],
+                  "attachments": []
+                }
+              ],
+              "status": "expected"
+            }
+          ],
+          "id": "c8921a7df328184af306-36179199ca5d614b3008",
+          "file": "board-map.spec.ts",
+          "line": 777,
+          "column": 1
+        },
+        {
+          "title": "500 open and 2,000 finished tasks show their groups, tasks, and edges within two seconds of the read",
+          "ok": true,
+          "tags": [
+            "built-dashboard"
+          ],
+          "tests": [
+            {
+              "timeout": 60000,
+              "annotations": [
+                {
+                  "type": "groups, tasks, and edges after read (ms)",
+                  "description": "355"
+                }
+              ],
+              "expectedStatus": "passed",
+              "projectId": "built-dashboard",
+              "projectName": "built-dashboard",
+              "results": [
+                {
+                  "workerIndex": 17,
+                  "parallelIndex": 0,
+                  "status": "passed",
+                  "duration": 1724,
+                  "errors": [],
+                  "stdout": [],
+                  "stderr": [],
+                  "retry": 0,
+                  "startTime": "2026-10-31T07:15:24.597Z",
+                  "annotations": [
+                    {
+                      "type": "groups, tasks, and edges after read (ms)",
+                      "description": "355"
+                    }
+                  ],
+                  "attachments": []
+                }
+              ],
+              "status": "expected"
+            }
+          ],
+          "id": "c8921a7df328184af306-d7b87a4d03181cd659c6",
+          "file": "board-map.spec.ts",
+          "line": 777,
+          "column": 1
+        },
+        {
+          "title": "500 open and 2,000 finished tasks show their groups, tasks, and edges within two seconds of the read",
+          "ok": true,
+          "tags": [
+            "built-dashboard"
+          ],
+          "tests": [
+            {
+              "timeout": 60000,
+              "annotations": [
+                {
+                  "type": "groups, tasks, and edges after read (ms)",
+                  "description": "313"
+                }
+              ],
+              "expectedStatus": "passed",
+              "projectId": "built-dashboard",
+              "projectName": "built-dashboard",
+              "results": [
+                {
+                  "workerIndex": 18,
+                  "parallelIndex": 0,
+                  "status": "passed",
+                  "duration": 1563,
+                  "errors": [],
+                  "stdout": [],
+                  "stderr": [],
+                  "retry": 0,
+                  "startTime": "2026-10-31T07:15:26.611Z",
+                  "annotations": [
+                    {
+                      "type": "groups, tasks, and edges after read (ms)",
+                      "description": "313"
+                    }
+                  ],
+                  "attachments": []
+                }
+              ],
+              "status": "expected"
+            }
+          ],
+          "id": "c8921a7df328184af306-e3776d20e8502cc45571",
+          "file": "board-map.spec.ts",
+          "line": 777,
+          "column": 1
+        },
+        {
+          "title": "500 open and 2,000 finished tasks show their groups, tasks, and edges within two seconds of the read",
+          "ok": true,
+          "tags": [
+            "built-dashboard"
+          ],
+          "tests": [
+            {
+              "timeout": 60000,
+              "annotations": [
+                {
+                  "type": "groups, tasks, and edges after read (ms)",
+                  "description": "341"
+                }
+              ],
+              "expectedStatus": "passed",
+              "projectId": "built-dashboard",
+              "projectName": "built-dashboard",
+              "results": [
+                {
+                  "workerIndex": 19,
+                  "parallelIndex": 0,
+                  "status": "passed",
+                  "duration": 1623,
+                  "errors": [],
+                  "stdout": [],
+                  "stderr": [],
+                  "retry": 0,
+                  "startTime": "2026-10-31T07:15:28.446Z",
+                  "annotations": [
+                    {
+                      "type": "groups, tasks, and edges after read (ms)",
+                      "description": "341"
+                    }
+                  ],
+                  "attachments": []
+                }
+              ],
+              "status": "expected"
+            }
+          ],
+          "id": "c8921a7df328184af306-a1d0c5ae737bf23e916b",
+          "file": "board-map.spec.ts",
+          "line": 777,
+          "column": 1
+        }
+      ]
+    }
+  ],
+  "errors": [],
+  "stats": {
+    "startTime": "2026-10-31T07:14:31.349Z",
+    "duration": 59045.517,
+    "expected": 20,
+    "skipped": 0,
+    "unexpected": 0,
+    "flaky": 0
+  }
+}

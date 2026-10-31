@@ -1,0 +1,972 @@
+{
+  "config": {
+    "argv": [
+      "/home/user/.nvm/versions/node/v24.22.1/bin/node",
+      "/home/user/conveyor-worktrees/conveyor-task-261031-66d10d/web/node_modules/.bin/playwright",
+      "test",
+      "tests/board-map.spec.ts:777",
+      "--repeat-each=20",
+      "--reporter=list,json"
+    ],
+    "configFile": "/home/user/conveyor-worktrees/conveyor-task-261031-66d10d/web/playwright.config.ts",
+    "rootDir": "/home/user/conveyor-worktrees/conveyor-task-261031-66d10d/web/tests",
+    "failOnFlakyTests": false,
+    "forbidOnly": false,
+    "fullyParallel": true,
+    "globalSetup": null,
+    "globalTeardown": null,
+    "globalTimeout": 0,
+    "grep": {},
+    "grepInvert": null,
+    "maxFailures": 0,
+    "metadata": {
+      "actualWorkers": 1
+    },
+    "preserveOutput": "always",
+    "projects": [
+      {
+        "outputDir": "/home/user/conveyor-worktrees/conveyor-task-261031-66d10d/web/test-results",
+        "repeatEach": 20,
+        "retries": 0,
+        "metadata": {
+          "actualWorkers": 1
+        },
+        "id": "",
+        "name": "",
+        "testDir": "/home/user/conveyor-worktrees/conveyor-task-261031-66d10d/web/tests",
+        "testIgnore": [],
+        "testMatch": [
+          "**/*.@(spec|test).?(c|m)[jt]s?(x)"
+        ],
+        "timeout": 30000
+      }
+    ],
+    "quiet": false,
+    "reporter": [
+      [
+        "list"
+      ],
+      [
+        "json"
+      ]
+    ],
+    "reportSlowTests": {
+      "max": 5,
+      "threshold": 300000
+    },
+    "shard": null,
+    "tags": [],
+    "updateSnapshots": "missing",
+    "updateSourceMethod": "patch",
+    "version": "1.61.1",
+    "workers": 1,
+    "webServer": {
+      "command": "python3 ../scripts/validation_resources.py launch --role vite -- npm run dev -- --host 127.0.0.1 --port 54780 --strictPort",
+      "url": "http://127.0.0.1:54780",
+      "reuseExistingServer": false,
+      "gracefulShutdown": {
+        "signal": "SIGTERM",
+        "timeout": 10000
+      }
+    }
+  },
+  "suites": [
+    {
+      "title": "board-map.spec.ts",
+      "file": "board-map.spec.ts",
+      "column": 0,
+      "line": 0,
+      "specs": [
+        {
+          "title": "500 open and 2,000 finished tasks show their groups, tasks, and edges within two seconds of the read",
+          "ok": true,
+          "tags": [],
+          "tests": [
+            {
+              "timeout": 60000,
+              "annotations": [
+                {
+                  "type": "groups, tasks, and edges after read (ms)",
+                  "description": "1260"
+                }
+              ],
+              "expectedStatus": "passed",
+              "projectId": "",
+              "projectName": "",
+              "results": [
+                {
+                  "workerIndex": 0,
+                  "parallelIndex": 0,
+                  "status": "passed",
+                  "duration": 5925,
+                  "errors": [],
+                  "stdout": [],
+                  "stderr": [],
+                  "retry": 0,
+                  "startTime": "2026-10-31T06:50:09.688Z",
+                  "annotations": [
+                    {
+                      "type": "groups, tasks, and edges after read (ms)",
+                      "description": "1260"
+                    }
+                  ],
+                  "attachments": []
+                }
+              ],
+              "status": "expected"
+            }
+          ],
+          "id": "c8921a7df328184af306-8faacbda3467de354d02",
+          "file": "board-map.spec.ts",
+          "line": 777,
+          "column": 1
+        },
+        {
+          "title": "500 open and 2,000 finished tasks show their groups, tasks, and edges within two seconds of the read",
+          "ok": true,
+          "tags": [],
+          "tests": [
+            {
+              "timeout": 60000,
+              "annotations": [
+                {
+                  "type": "groups, tasks, and edges after read (ms)",
+                  "description": "1057"
+                }
+              ],
+              "expectedStatus": "passed",
+              "projectId": "",
+              "projectName": "",
+              "results": [
+                {
+                  "workerIndex": 1,
+                  "parallelIndex": 0,
+                  "status": "passed",
+                  "duration": 3693,
+                  "errors": [],
+                  "stdout": [],
+                  "stderr": [],
+                  "retry": 0,
+                  "startTime": "2026-10-31T06:50:16.035Z",
+                  "annotations": [
+                    {
+                      "type": "groups, tasks, and edges after read (ms)",
+                      "description": "1057"
+                    }
+                  ],
+                  "attachments": []
+                }
+              ],
+              "status": "expected"
+            }
+          ],
+          "id": "c8921a7df328184af306-7a7d3989f38f63a218bc",
+          "file": "board-map.spec.ts",
+          "line": 777,
+          "column": 1
+        },
+        {
+          "title": "500 open and 2,000 finished tasks show their groups, tasks, and edges within two seconds of the read",
+          "ok": true,
+          "tags": [],
+          "tests": [
+            {
+              "timeout": 60000,
+              "annotations": [
+                {
+                  "type": "groups, tasks, and edges after read (ms)",
+                  "description": "1329"
+                }
+              ],
+              "expectedStatus": "passed",
+              "projectId": "",
+              "projectName": "",
+              "results": [
+                {
+                  "workerIndex": 2,
+                  "parallelIndex": 0,
+                  "status": "passed",
+                  "duration": 3827,
+                  "errors": [],
+                  "stdout": [],
+                  "stderr": [],
+                  "retry": 0,
+                  "startTime": "2026-10-31T06:50:20.060Z",
+                  "annotations": [
+                    {
+                      "type": "groups, tasks, and edges after read (ms)",
+                      "description": "1329"
+                    }
+                  ],
+                  "attachments": []
+                }
+              ],
+              "status": "expected"
+            }
+          ],
+          "id": "c8921a7df328184af306-2e60ec9543a2397b9e53",
+          "file": "board-map.spec.ts",
+          "line": 777,
+          "column": 1
+        },
+        {
+          "title": "500 open and 2,000 finished tasks show their groups, tasks, and edges within two seconds of the read",
+          "ok": true,
+          "tags": [],
+          "tests": [
+            {
+              "timeout": 60000,
+              "annotations": [
+                {
+                  "type": "groups, tasks, and edges after read (ms)",
+                  "description": "1143"
+                }
+              ],
+              "expectedStatus": "passed",
+              "projectId": "",
+              "projectName": "",
+              "results": [
+                {
+                  "workerIndex": 3,
+                  "parallelIndex": 0,
+                  "status": "passed",
+                  "duration": 3551,
+                  "errors": [],
+                  "stdout": [],
+                  "stderr": [],
+                  "retry": 0,
+                  "startTime": "2026-10-31T06:50:29.487Z",
+                  "annotations": [
+                    {
+                      "type": "groups, tasks, and edges after read (ms)",
+                      "description": "1143"
+                    }
+                  ],
+                  "attachments": []
+                }
+              ],
+              "status": "expected"
+            }
+          ],
+          "id": "c8921a7df328184af306-c71bd21a71c729c2c4d3",
+          "file": "board-map.spec.ts",
+          "line": 777,
+          "column": 1
+        },
+        {
+          "title": "500 open and 2,000 finished tasks show their groups, tasks, and edges within two seconds of the read",
+          "ok": true,
+          "tags": [],
+          "tests": [
+            {
+              "timeout": 60000,
+              "annotations": [
+                {
+                  "type": "groups, tasks, and edges after read (ms)",
+                  "description": "945"
+                }
+              ],
+              "expectedStatus": "passed",
+              "projectId": "",
+              "projectName": "",
+              "results": [
+                {
+                  "workerIndex": 4,
+                  "parallelIndex": 0,
+                  "status": "passed",
+                  "duration": 3178,
+                  "errors": [],
+                  "stdout": [],
+                  "stderr": [],
+                  "retry": 0,
+                  "startTime": "2026-10-31T06:50:36.482Z",
+                  "annotations": [
+                    {
+                      "type": "groups, tasks, and edges after read (ms)",
+                      "description": "945"
+                    }
+                  ],
+                  "attachments": []
+                }
+              ],
+              "status": "expected"
+            }
+          ],
+          "id": "c8921a7df328184af306-2ac2c29f1fc014ed6725",
+          "file": "board-map.spec.ts",
+          "line": 777,
+          "column": 1
+        },
+        {
+          "title": "500 open and 2,000 finished tasks show their groups, tasks, and edges within two seconds of the read",
+          "ok": true,
+          "tags": [],
+          "tests": [
+            {
+              "timeout": 60000,
+              "annotations": [
+                {
+                  "type": "groups, tasks, and edges after read (ms)",
+                  "description": "966"
+                }
+              ],
+              "expectedStatus": "passed",
+              "projectId": "",
+              "projectName": "",
+              "results": [
+                {
+                  "workerIndex": 5,
+                  "parallelIndex": 0,
+                  "status": "passed",
+                  "duration": 3178,
+                  "errors": [],
+                  "stdout": [],
+                  "stderr": [],
+                  "retry": 0,
+                  "startTime": "2026-10-31T06:50:39.978Z",
+                  "annotations": [
+                    {
+                      "type": "groups, tasks, and edges after read (ms)",
+                      "description": "966"
+                    }
+                  ],
+                  "attachments": []
+                }
+              ],
+              "status": "expected"
+            }
+          ],
+          "id": "c8921a7df328184af306-9752b6060a561785ee5d",
+          "file": "board-map.spec.ts",
+          "line": 777,
+          "column": 1
+        },
+        {
+          "title": "500 open and 2,000 finished tasks show their groups, tasks, and edges within two seconds of the read",
+          "ok": true,
+          "tags": [],
+          "tests": [
+            {
+              "timeout": 60000,
+              "annotations": [
+                {
+                  "type": "groups, tasks, and edges after read (ms)",
+                  "description": "927"
+                }
+              ],
+              "expectedStatus": "passed",
+              "projectId": "",
+              "projectName": "",
+              "results": [
+                {
+                  "workerIndex": 6,
+                  "parallelIndex": 0,
+                  "status": "passed",
+                  "duration": 2991,
+                  "errors": [],
+                  "stdout": [],
+                  "stderr": [],
+                  "retry": 0,
+                  "startTime": "2026-10-31T06:50:43.430Z",
+                  "annotations": [
+                    {
+                      "type": "groups, tasks, and edges after read (ms)",
+                      "description": "927"
+                    }
+                  ],
+                  "attachments": []
+                }
+              ],
+              "status": "expected"
+            }
+          ],
+          "id": "c8921a7df328184af306-faa586d34ba020529d6e",
+          "file": "board-map.spec.ts",
+          "line": 777,
+          "column": 1
+        },
+        {
+          "title": "500 open and 2,000 finished tasks show their groups, tasks, and edges within two seconds of the read",
+          "ok": true,
+          "tags": [],
+          "tests": [
+            {
+              "timeout": 60000,
+              "annotations": [
+                {
+                  "type": "groups, tasks, and edges after read (ms)",
+                  "description": "1018"
+                }
+              ],
+              "expectedStatus": "passed",
+              "projectId": "",
+              "projectName": "",
+              "results": [
+                {
+                  "workerIndex": 7,
+                  "parallelIndex": 0,
+                  "status": "passed",
+                  "duration": 3341,
+                  "errors": [],
+                  "stdout": [],
+                  "stderr": [],
+                  "retry": 0,
+                  "startTime": "2026-10-31T06:50:46.700Z",
+                  "annotations": [
+                    {
+                      "type": "groups, tasks, and edges after read (ms)",
+                      "description": "1018"
+                    }
+                  ],
+                  "attachments": []
+                }
+              ],
+              "status": "expected"
+            }
+          ],
+          "id": "c8921a7df328184af306-724d4dcdecc6d3ab29a3",
+          "file": "board-map.spec.ts",
+          "line": 777,
+          "column": 1
+        },
+        {
+          "title": "500 open and 2,000 finished tasks show their groups, tasks, and edges within two seconds of the read",
+          "ok": true,
+          "tags": [],
+          "tests": [
+            {
+              "timeout": 60000,
+              "annotations": [
+                {
+                  "type": "groups, tasks, and edges after read (ms)",
+                  "description": "1007"
+                }
+              ],
+              "expectedStatus": "passed",
+              "projectId": "",
+              "projectName": "",
+              "results": [
+                {
+                  "workerIndex": 8,
+                  "parallelIndex": 0,
+                  "status": "passed",
+                  "duration": 3298,
+                  "errors": [],
+                  "stdout": [],
+                  "stderr": [],
+                  "retry": 0,
+                  "startTime": "2026-10-31T06:50:50.329Z",
+                  "annotations": [
+                    {
+                      "type": "groups, tasks, and edges after read (ms)",
+                      "description": "1007"
+                    }
+                  ],
+                  "attachments": []
+                }
+              ],
+              "status": "expected"
+            }
+          ],
+          "id": "c8921a7df328184af306-c9ec7e3722896e0441f9",
+          "file": "board-map.spec.ts",
+          "line": 777,
+          "column": 1
+        },
+        {
+          "title": "500 open and 2,000 finished tasks show their groups, tasks, and edges within two seconds of the read",
+          "ok": true,
+          "tags": [],
+          "tests": [
+            {
+              "timeout": 60000,
+              "annotations": [
+                {
+                  "type": "groups, tasks, and edges after read (ms)",
+                  "description": "1003"
+                }
+              ],
+              "expectedStatus": "passed",
+              "projectId": "",
+              "projectName": "",
+              "results": [
+                {
+                  "workerIndex": 9,
+                  "parallelIndex": 0,
+                  "status": "passed",
+                  "duration": 3295,
+                  "errors": [],
+                  "stdout": [],
+                  "stderr": [],
+                  "retry": 0,
+                  "startTime": "2026-10-31T06:50:53.944Z",
+                  "annotations": [
+                    {
+                      "type": "groups, tasks, and edges after read (ms)",
+                      "description": "1003"
+                    }
+                  ],
+                  "attachments": []
+                }
+              ],
+              "status": "expected"
+            }
+          ],
+          "id": "c8921a7df328184af306-037722402fab13bc97e7",
+          "file": "board-map.spec.ts",
+          "line": 777,
+          "column": 1
+        },
+        {
+          "title": "500 open and 2,000 finished tasks show their groups, tasks, and edges within two seconds of the read",
+          "ok": true,
+          "tags": [],
+          "tests": [
+            {
+              "timeout": 60000,
+              "annotations": [
+                {
+                  "type": "groups, tasks, and edges after read (ms)",
+                  "description": "1061"
+                }
+              ],
+              "expectedStatus": "passed",
+              "projectId": "",
+              "projectName": "",
+              "results": [
+                {
+                  "workerIndex": 10,
+                  "parallelIndex": 0,
+                  "status": "passed",
+                  "duration": 3867,
+                  "errors": [],
+                  "stdout": [],
+                  "stderr": [],
+                  "retry": 0,
+                  "startTime": "2026-10-31T06:50:57.587Z",
+                  "annotations": [
+                    {
+                      "type": "groups, tasks, and edges after read (ms)",
+                      "description": "1061"
+                    }
+                  ],
+                  "attachments": []
+                }
+              ],
+              "status": "expected"
+            }
+          ],
+          "id": "c8921a7df328184af306-b40ed84b30567a6b4324",
+          "file": "board-map.spec.ts",
+          "line": 777,
+          "column": 1
+        },
+        {
+          "title": "500 open and 2,000 finished tasks show their groups, tasks, and edges within two seconds of the read",
+          "ok": true,
+          "tags": [],
+          "tests": [
+            {
+              "timeout": 60000,
+              "annotations": [
+                {
+                  "type": "groups, tasks, and edges after read (ms)",
+                  "description": "1192"
+                }
+              ],
+              "expectedStatus": "passed",
+              "projectId": "",
+              "projectName": "",
+              "results": [
+                {
+                  "workerIndex": 11,
+                  "parallelIndex": 0,
+                  "status": "passed",
+                  "duration": 3584,
+                  "errors": [],
+                  "stdout": [],
+                  "stderr": [],
+                  "retry": 0,
+                  "startTime": "2026-10-31T06:51:01.822Z",
+                  "annotations": [
+                    {
+                      "type": "groups, tasks, and edges after read (ms)",
+                      "description": "1192"
+                    }
+                  ],
+                  "attachments": []
+                }
+              ],
+              "status": "expected"
+            }
+          ],
+          "id": "c8921a7df328184af306-d4db4fd4b10efd5412a0",
+          "file": "board-map.spec.ts",
+          "line": 777,
+          "column": 1
+        },
+        {
+          "title": "500 open and 2,000 finished tasks show their groups, tasks, and edges within two seconds of the read",
+          "ok": true,
+          "tags": [],
+          "tests": [
+            {
+              "timeout": 60000,
+              "annotations": [
+                {
+                  "type": "groups, tasks, and edges after read (ms)",
+                  "description": "1139"
+                }
+              ],
+              "expectedStatus": "passed",
+              "projectId": "",
+              "projectName": "",
+              "results": [
+                {
+                  "workerIndex": 12,
+                  "parallelIndex": 0,
+                  "status": "passed",
+                  "duration": 3682,
+                  "errors": [],
+                  "stdout": [],
+                  "stderr": [],
+                  "retry": 0,
+                  "startTime": "2026-10-31T06:51:05.709Z",
+                  "annotations": [
+                    {
+                      "type": "groups, tasks, and edges after read (ms)",
+                      "description": "1139"
+                    }
+                  ],
+                  "attachments": []
+                }
+              ],
+              "status": "expected"
+            }
+          ],
+          "id": "c8921a7df328184af306-2d3f4609b82babb4b340",
+          "file": "board-map.spec.ts",
+          "line": 777,
+          "column": 1
+        },
+        {
+          "title": "500 open and 2,000 finished tasks show their groups, tasks, and edges within two seconds of the read",
+          "ok": true,
+          "tags": [],
+          "tests": [
+            {
+              "timeout": 60000,
+              "annotations": [
+                {
+                  "type": "groups, tasks, and edges after read (ms)",
+                  "description": "946"
+                }
+              ],
+              "expectedStatus": "passed",
+              "projectId": "",
+              "projectName": "",
+              "results": [
+                {
+                  "workerIndex": 13,
+                  "parallelIndex": 0,
+                  "status": "passed",
+                  "duration": 3294,
+                  "errors": [],
+                  "stdout": [],
+                  "stderr": [],
+                  "retry": 0,
+                  "startTime": "2026-10-31T06:51:09.665Z",
+                  "annotations": [
+                    {
+                      "type": "groups, tasks, and edges after read (ms)",
+                      "description": "946"
+                    }
+                  ],
+                  "attachments": []
+                }
+              ],
+              "status": "expected"
+            }
+          ],
+          "id": "c8921a7df328184af306-46d359cf5368f2c67d24",
+          "file": "board-map.spec.ts",
+          "line": 777,
+          "column": 1
+        },
+        {
+          "title": "500 open and 2,000 finished tasks show their groups, tasks, and edges within two seconds of the read",
+          "ok": true,
+          "tags": [],
+          "tests": [
+            {
+              "timeout": 60000,
+              "annotations": [
+                {
+                  "type": "groups, tasks, and edges after read (ms)",
+                  "description": "1036"
+                }
+              ],
+              "expectedStatus": "passed",
+              "projectId": "",
+              "projectName": "",
+              "results": [
+                {
+                  "workerIndex": 14,
+                  "parallelIndex": 0,
+                  "status": "passed",
+                  "duration": 3593,
+                  "errors": [],
+                  "stdout": [],
+                  "stderr": [],
+                  "retry": 0,
+                  "startTime": "2026-10-31T06:51:13.266Z",
+                  "annotations": [
+                    {
+                      "type": "groups, tasks, and edges after read (ms)",
+                      "description": "1036"
+                    }
+                  ],
+                  "attachments": []
+                }
+              ],
+              "status": "expected"
+            }
+          ],
+          "id": "c8921a7df328184af306-f909cf9424f65a54009d",
+          "file": "board-map.spec.ts",
+          "line": 777,
+          "column": 1
+        },
+        {
+          "title": "500 open and 2,000 finished tasks show their groups, tasks, and edges within two seconds of the read",
+          "ok": true,
+          "tags": [],
+          "tests": [
+            {
+              "timeout": 60000,
+              "annotations": [
+                {
+                  "type": "groups, tasks, and edges after read (ms)",
+                  "description": "1245"
+                }
+              ],
+              "expectedStatus": "passed",
+              "projectId": "",
+              "projectName": "",
+              "results": [
+                {
+                  "workerIndex": 15,
+                  "parallelIndex": 0,
+                  "status": "passed",
+                  "duration": 3872,
+                  "errors": [],
+                  "stdout": [],
+                  "stderr": [],
+                  "retry": 0,
+                  "startTime": "2026-10-31T06:51:24.851Z",
+                  "annotations": [
+                    {
+                      "type": "groups, tasks, and edges after read (ms)",
+                      "description": "1245"
+                    }
+                  ],
+                  "attachments": []
+                }
+              ],
+              "status": "expected"
+            }
+          ],
+          "id": "c8921a7df328184af306-a47fded98d6434db3d46",
+          "file": "board-map.spec.ts",
+          "line": 777,
+          "column": 1
+        },
+        {
+          "title": "500 open and 2,000 finished tasks show their groups, tasks, and edges within two seconds of the read",
+          "ok": true,
+          "tags": [],
+          "tests": [
+            {
+              "timeout": 60000,
+              "annotations": [
+                {
+                  "type": "groups, tasks, and edges after read (ms)",
+                  "description": "1124"
+                }
+              ],
+              "expectedStatus": "passed",
+              "projectId": "",
+              "projectName": "",
+              "results": [
+                {
+                  "workerIndex": 16,
+                  "parallelIndex": 0,
+                  "status": "passed",
+                  "duration": 3723,
+                  "errors": [],
+                  "stdout": [],
+                  "stderr": [],
+                  "retry": 0,
+                  "startTime": "2026-10-31T06:51:29.750Z",
+                  "annotations": [
+                    {
+                      "type": "groups, tasks, and edges after read (ms)",
+                      "description": "1124"
+                    }
+                  ],
+                  "attachments": []
+                }
+              ],
+              "status": "expected"
+            }
+          ],
+          "id": "c8921a7df328184af306-bd71f0d961138f2b6d30",
+          "file": "board-map.spec.ts",
+          "line": 777,
+          "column": 1
+        },
+        {
+          "title": "500 open and 2,000 finished tasks show their groups, tasks, and edges within two seconds of the read",
+          "ok": true,
+          "tags": [],
+          "tests": [
+            {
+              "timeout": 60000,
+              "annotations": [
+                {
+                  "type": "groups, tasks, and edges after read (ms)",
+                  "description": "1273"
+                }
+              ],
+              "expectedStatus": "passed",
+              "projectId": "",
+              "projectName": "",
+              "results": [
+                {
+                  "workerIndex": 17,
+                  "parallelIndex": 0,
+                  "status": "passed",
+                  "duration": 5926,
+                  "errors": [],
+                  "stdout": [],
+                  "stderr": [],
+                  "retry": 0,
+                  "startTime": "2026-10-31T06:51:47.195Z",
+                  "annotations": [
+                    {
+                      "type": "groups, tasks, and edges after read (ms)",
+                      "description": "1273"
+                    }
+                  ],
+                  "attachments": []
+                }
+              ],
+              "status": "expected"
+            }
+          ],
+          "id": "c8921a7df328184af306-c6614dd57e2b225774f5",
+          "file": "board-map.spec.ts",
+          "line": 777,
+          "column": 1
+        },
+        {
+          "title": "500 open and 2,000 finished tasks show their groups, tasks, and edges within two seconds of the read",
+          "ok": true,
+          "tags": [],
+          "tests": [
+            {
+              "timeout": 60000,
+              "annotations": [
+                {
+                  "type": "groups, tasks, and edges after read (ms)",
+                  "description": "1359"
+                }
+              ],
+              "expectedStatus": "passed",
+              "projectId": "",
+              "projectName": "",
+              "results": [
+                {
+                  "workerIndex": 18,
+                  "parallelIndex": 0,
+                  "status": "passed",
+                  "duration": 4315,
+                  "errors": [],
+                  "stdout": [],
+                  "stderr": [],
+                  "retry": 0,
+                  "startTime": "2026-10-31T06:51:55.604Z",
+                  "annotations": [
+                    {
+                      "type": "groups, tasks, and edges after read (ms)",
+                      "description": "1359"
+                    }
+                  ],
+                  "attachments": []
+                }
+              ],
+              "status": "expected"
+            }
+          ],
+          "id": "c8921a7df328184af306-b2b9cb10e55a62b06481",
+          "file": "board-map.spec.ts",
+          "line": 777,
+          "column": 1
+        },
+        {
+          "title": "500 open and 2,000 finished tasks show their groups, tasks, and edges within two seconds of the read",
+          "ok": true,
+          "tags": [],
+          "tests": [
+            {
+              "timeout": 60000,
+              "annotations": [
+                {
+                  "type": "groups, tasks, and edges after read (ms)",
+                  "description": "1263"
+                }
+              ],
+              "expectedStatus": "passed",
+              "projectId": "",
+              "projectName": "",
+              "results": [
+                {
+                  "workerIndex": 19,
+                  "parallelIndex": 0,
+                  "status": "passed",
+                  "duration": 3955,
+                  "errors": [],
+                  "stdout": [],
+                  "stderr": [],
+                  "retry": 0,
+                  "startTime": "2026-10-31T06:52:00.491Z",
+                  "annotations": [
+                    {
+                      "type": "groups, tasks, and edges after read (ms)",
+                      "description": "1263"
+                    }
+                  ],
+                  "attachments": []
+                }
+              ],
+              "status": "expected"
+            }
+          ],
+          "id": "c8921a7df328184af306-52b60ebb9f691ff15994",
+          "file": "board-map.spec.ts",
+          "line": 777,
+          "column": 1
+        }
+      ]
+    }
+  ],
+  "errors": [],
+  "stats": {
+    "startTime": "2026-10-31T06:50:07.359Z",
+    "duration": 118212.06700000001,
+    "expected": 20,
+    "skipped": 0,
+    "unexpected": 0,
+    "flaky": 0
+  }
+}

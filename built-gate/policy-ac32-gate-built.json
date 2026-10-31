@@ -1,0 +1,71 @@
+{
+  "schema": 1,
+  "task": "261031-66d10d",
+  "layer": "local",
+  "command": [
+    "make",
+    "test-ui",
+    "PLAYWRIGHT_WORKERS=1",
+    "PLAYWRIGHT_ARGS=tests/board-map.spec.ts:777 --repeat-each=20 --reporter=list,json"
+  ],
+  "environment": [
+    "PATH",
+    "HOME",
+    "CONVEYOR_TASK_ID",
+    "CONVEYOR_TASK_CACHE",
+    "GOCACHE",
+    "GOTMPDIR",
+    "TMPDIR",
+    "PLAYWRIGHT_BROWSERS_PATH",
+    "npm_config_cache",
+    "BOARD_MAP_CPU_THROTTLE",
+    "PLAYWRIGHT_JSON_OUTPUT_NAME",
+    "PLAYWRIGHT_PREVIEW_PORT"
+  ],
+  "tools": {
+    "make": [
+      "make",
+      "--version"
+    ],
+    "git": [
+      "git",
+      "--version"
+    ],
+    "python3": [
+      "python3",
+      "--version"
+    ],
+    "sh": [
+      "sh",
+      "-c",
+      "printf POSIX-shell"
+    ],
+    "node": [
+      "node",
+      "--version"
+    ],
+    "npm": [
+      "npm",
+      "--version"
+    ],
+    "npx": [
+      "npx",
+      "--version"
+    ]
+  },
+  "external_inputs": [
+    "/home/user/.nvm/versions/node/v24.22.1",
+    "/home/user/.cache/conveyor/261031-66d10d/playwright"
+  ],
+  "exclude": {
+    "web/playwright-report": "Playwright HTML report output; not read by the command",
+    "web/test-results": "Playwright per-test output; not read by the command"
+  },
+  "audit": {
+    "inputs_complete": true,
+    "input_rationale": "make test-ui runs npm ci (resolved dependency tree in web/node_modules, hashed in the worktree, from the committed lockfile), npm run build (tsc and vite build into internal/httpapi/dashboard, tracked and committed at this head so the rebuild reproduces it), then Playwright: the selected AC-3.2 test runs in the built-dashboard project against vite preview serving the freshly built internal/httpapi/dashboard (a fresh Vite dev server also starts for the dev-server project) with the Chromium build under PLAYWRIGHT_BROWSERS_PATH (inventoried) and the Node runtime under ~/.nvm (inventoried). BOARD_MAP_CPU_THROTTLE=4 makes web/tests/board-map.spec.ts:777 apply Chrome DevTools Protocol CPU throttling to the page. No database, network service, or credential is used; the specs mock every /v1 read. Output directories web/playwright-report and web/test-results are excluded and never read. PLAYWRIGHT_JSON_OUTPUT_NAME names a JSON report file in the task's durable state directory, outside the worktree, which records each run's elapsed annotation; the command writes it and never reads it.",
+    "git_metadata": "dependent",
+    "git_rationale": "Not audited for Git independence; the record is fresh execution at the committed head and is not reused across commits."
+  },
+  "backend": null
+}

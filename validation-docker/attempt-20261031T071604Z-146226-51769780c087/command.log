@@ -1,0 +1,13 @@
+cd scripts && CONVEYOR_VALIDATION_DOCKER=1 PYTHONDONTWRITEBYTECODE=1 env -u CONVEYOR_ADDR -u CONVEYOR_API_TOKEN -u CONVEYOR_CLIENT_TOKEN -u CONVEYOR_CURRENT_ATTEMPT_ID -u CONVEYOR_PREVIOUS_ATTEMPT_ID -u CONVEYOR_PREVIOUS_ATTEMPT_REASON -u CONVEYOR_PREDECESSOR -u CONVEYOR_PREVIOUS_WORK_ORDER_ID -u CONVEYOR_SESSION_ID -u CONVEYOR_TASK_BASE_BRANCH -u CONVEYOR_TASK_BRANCH -u CONVEYOR_TASK_ID -u CONVEYOR_TASK_REPO -u CONVEYOR_TASK_REPO_URL -u CONVEYOR_WORKSPACE -u CONVEYOR_WORKTREE_ROOT -u CONVEYOR_WORK_ORDER_ID -u CONVEYOR_WRITER_GENERATION -u CONVEYOR_WRITER_PATH python3 -m unittest -v test_validation_resources.DockerLifecycleTests
+test_budget_override_is_applied (test_validation_resources.DockerLifecycleTests.test_budget_override_is_applied) ... ok
+test_fixture_lifecycle_runs_the_gate_against_its_owned_database (test_validation_resources.DockerLifecycleTests.test_fixture_lifecycle_runs_the_gate_against_its_owned_database) ... ok
+test_forced_termination_between_create_seal_and_start (test_validation_resources.DockerLifecycleTests.test_forced_termination_between_create_seal_and_start) ... ok
+test_identity_mismatch_refuses_recovery_until_the_sealed_identity_matches (test_validation_resources.DockerLifecycleTests.test_identity_mismatch_refuses_recovery_until_the_sealed_identity_matches) ... ok
+test_occupied_pinned_port_creates_nothing (test_validation_resources.DockerLifecycleTests.test_occupied_pinned_port_creates_nothing) ... ok
+test_teardown_spares_lookalike_container_and_external_network (test_validation_resources.DockerLifecycleTests.test_teardown_spares_lookalike_container_and_external_network) ... ok
+test_two_invocations_in_one_checkout_own_distinct_bounded_containers (test_validation_resources.DockerLifecycleTests.test_two_invocations_in_one_checkout_own_distinct_bounded_containers) ... ok
+
+----------------------------------------------------------------------
+Ran 7 tests in 87.970s
+
+OK

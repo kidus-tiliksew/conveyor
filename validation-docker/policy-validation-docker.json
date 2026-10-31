@@ -1,0 +1,26 @@
+{
+  "schema": 1,
+  "task": "261031-66d10d",
+  "layer": "local",
+  "command": ["make", "test-validation-docker"],
+  "environment": ["PATH", "HOME", "CONVEYOR_TASK_ID", "CONVEYOR_TASK_CACHE", "GOCACHE", "GOTMPDIR", "TMPDIR", "PLAYWRIGHT_BROWSERS_PATH", "npm_config_cache"],
+  "tools": {
+    "make": ["make", "--version"],
+    "python3": ["python3", "--version"],
+    "docker": ["docker", "--version"],
+    "git": ["git", "--version"],
+    "sh": ["sh", "-c", "printf POSIX-shell"]
+  },
+  "external_inputs": [],
+  "exclude": {
+    "web/playwright-report": "Playwright HTML report output; not read by the command",
+    "web/test-results": "Playwright per-test output; not read by the command"
+  },
+  "audit": {
+    "inputs_complete": false,
+    "input_rationale": "Runs test_validation_resources.DockerLifecycleTests against the local Docker daemon. The daemon's image store and state are external and not inventoried, so the record is fresh execution only and is not offered for reuse. Required because this change adds a second Playwright web server (vite preview, role vite-preview) to the Playwright server lifecycle.",
+    "git_metadata": "dependent",
+    "git_rationale": "Not audited for Git independence; fresh execution at the committed head."
+  },
+  "backend": null
+}

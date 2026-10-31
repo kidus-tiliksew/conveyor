@@ -1,0 +1,190 @@
+cd web && npm ci
+
+added 292 packages, and audited 293 packages in 2s
+
+108 packages are looking for funding
+  run `npm fund` for details
+
+1[REDACTED] vulnerabilities (1 low, 6 moderate, 5 high, 2 critical)
+
+To address issues that do not require attention, run:
+  npm audit fix
+
+To address all issues, run:
+  npm audit fix --force
+
+Run `npm audit` for details.
+cd web && npm run build
+
+> conveyor-dashboard@0.1.0 build
+> tsc --noEmit && vite build
+
+vite v8.1.[REDACTED] building client environment for production...
+[2Ktransforming...✓ 598[REDACTED] modules transformed.
+rendering chunks...
+computing gzip size...
+../internal/httpapi/dashboard/index.html                                                       2.50 kB │ gzip:   0.87 kB
+../internal/httpapi/dashboard/assets/ibm-plex-sans-vietnamese-[REDACTED]00-normal-fK1oJ5dG.woff         6.39 kB
+../internal/httpapi/dashboard/assets/ibm-plex-sans-vietnamese-700-normal-BV5B8Are.woff         6.[REDACTED]2 kB
+../internal/httpapi/dashboard/assets/ibm-plex-sans-vietnamese-600-normal-DgdngZtN.woff         6.58 kB
+../internal/httpapi/dashboard/assets/ibm-plex-sans-vietnamese-500-normal-BEb3_waV.woff         6.58 kB
+../internal/httpapi/dashboard/assets/ibm-plex-sans-vietnamese-[REDACTED]00-normal-DG[REDACTED]YqDda.woff2        8.20 kB
+../internal/httpapi/dashboard/assets/ibm-plex-sans-vietnamese-700-normal-CkEo6LDy.woff2        8.22 kB
+../internal/httpapi/dashboard/assets/ibm-plex-sans-vietnamese-500-normal-e[REDACTED]dixQRQ.woff2        8.[REDACTED]1 kB
+../internal/httpapi/dashboard/assets/ibm-plex-sans-vietnamese-600-normal-DpPYBSTl.woff2        8.[REDACTED]6 kB
+../internal/httpapi/dashboard/assets/ibm-plex-sans-greek-700-normal-CkZN0sRy.woff              8.7[REDACTED] kB
+../internal/httpapi/dashboard/assets/ibm-plex-sans-greek-[REDACTED]00-normal-D9ESIMu3.woff              8.76 kB
+../internal/httpapi/dashboard/assets/ibm-plex-sans-greek-500-normal-CuWXN6rf.woff              9.1[REDACTED] kB
+../internal/httpapi/dashboard/assets/ibm-plex-sans-greek-600-normal-D-CqTdkO.woff              9.22 kB
+../internal/httpapi/dashboard/assets/ibm-plex-sans-greek-700-normal-wyJ6jzdA.woff2             9.92 kB
+../internal/httpapi/dashboard/assets/ibm-plex-sans-greek-[REDACTED]00-normal-_efipK[REDACTED]i.woff2             9.9[REDACTED] kB
+../internal/httpapi/dashboard/assets/ibm-plex-sans-cyrillic-ext-700-normal-DCQwxkRk.woff      10.16 kB
+../internal/httpapi/dashboard/assets/ibm-plex-sans-cyrillic-ext-[REDACTED]00-normal-Dsrv2Tcn.woff      10.28 kB
+../internal/httpapi/dashboard/assets/ibm-plex-sans-greek-600-normal-DzTrcv_p.woff2            10.36 kB
+../internal/httpapi/dashboard/assets/ibm-plex-sans-greek-500-normal-JMMifIXV.woff2            10.37 kB
+../internal/httpapi/dashboard/assets/ibm-plex-sans-cyrillic-ext-500-normal-DB5PtV2g.woff      10.59 kB
+../internal/httpapi/dashboard/assets/ibm-plex-sans-cyrillic-ext-600-normal-Bz0x9[REDACTED]Yp.woff      10.61 kB
+../internal/httpapi/dashboard/assets/ibm-plex-sans-cyrillic-ext-700-normal-BmRLXWpJ.woff2     12.05 kB
+../internal/httpapi/dashboard/assets/ibm-plex-sans-cyrillic-ext-[REDACTED]00-normal-g30qAdWV.woff2     12.1[REDACTED] kB
+../internal/httpapi/dashboard/assets/ibm-plex-sans-cyrillic-ext-600-normal-DUMzJB7m.woff2     12.30 kB
+../internal/httpapi/dashboard/assets/ibm-plex-sans-cyrillic-ext-500-normal-Cs5J6C77.woff2     12.30 kB
+../internal/httpapi/dashboard/assets/ibm-plex-sans-cyrillic-700-normal-RFb1v-CK.woff          13.32 kB
+../internal/httpapi/dashboard/assets/ibm-plex-sans-cyrillic-[REDACTED]00-normal-BTotfTJu.woff          13.51 kB
+../internal/httpapi/dashboard/assets/ibm-plex-sans-cyrillic-500-normal-ByOcLdNv.woff          13.85 kB
+../internal/httpapi/dashboard/assets/ibm-plex-sans-cyrillic-600-normal-BGq0mW3O.woff          13.88 kB
+../internal/httpapi/dashboard/assets/ibm-plex-sans-latin-ext-[REDACTED]00-normal-RBey6euL.woff         1[REDACTED].36 kB
+../internal/httpapi/dashboard/assets/ibm-plex-sans-latin-ext-700-normal-DZH6Xh-[REDACTED].woff         1[REDACTED].[REDACTED]2 kB
+../internal/httpapi/dashboard/assets/ibm-plex-sans-cyrillic-700-normal-D_uavGvn.woff2         1[REDACTED].57 kB
+../internal/httpapi/dashboard/assets/ibm-plex-sans-latin-ext-500-normal-D0aIdm-b.woff         1[REDACTED].73 kB
+../internal/httpapi/dashboard/assets/ibm-plex-sans-latin-ext-600-normal-DIrixKbi.woff         1[REDACTED].77 kB
+../internal/httpapi/dashboard/assets/ibm-plex-sans-cyrillic-[REDACTED]00-normal-DZqxrq2p.woff2         1[REDACTED].80 kB
+../internal/httpapi/dashboard/assets/ibm-plex-sans-cyrillic-500-normal-CocWQlwt.woff2         15.00 kB
+../internal/httpapi/dashboard/assets/ibm-plex-sans-cyrillic-600-normal-71GNu3SW.woff2         15.0[REDACTED] kB
+../internal/httpapi/dashboard/assets/ibm-plex-sans-latin-ext-[REDACTED]00-normal-C5H60-Va.woff2        15.98 kB
+../internal/httpapi/dashboard/assets/ibm-plex-sans-latin-ext-700-normal-aMgXseD[REDACTED].woff2        16.18 kB
+../internal/httpapi/dashboard/assets/ibm-plex-sans-latin-ext-600-normal-DOrvGEcy.woff2        16.[REDACTED][REDACTED] kB
+../internal/httpapi/dashboard/assets/ibm-plex-sans-latin-ext-500-normal-DakdToA3.woff2        16.[REDACTED]5 kB
+../internal/httpapi/dashboard/assets/ibm-plex-sans-latin-[REDACTED]00-normal-CYLoc0-x.woff             22.10 kB
+../internal/httpapi/dashboard/assets/ibm-plex-sans-latin-700-normal-Bth3BMcD.woff             22.28 kB
+../internal/httpapi/dashboard/assets/ibm-plex-sans-latin-[REDACTED]00-normal-CDDApCn2.woff2            22.58 kB
+../internal/httpapi/dashboard/assets/ibm-plex-sans-latin-700-normal-Bxkt5Cjx.woff2            22.83 kB
+../internal/httpapi/dashboard/assets/ibm-plex-sans-latin-600-normal-Cu[REDACTED]Hd6ag.woff             23.87 kB
+../internal/httpapi/dashboard/assets/ibm-plex-sans-latin-500-normal-BgVn5rGT.woff             23.91 kB
+../internal/httpapi/dashboard/assets/ibm-plex-sans-latin-500-normal-6ng[REDACTED]2L7E.woff2            2[REDACTED].18 kB
+../internal/httpapi/dashboard/assets/ibm-plex-sans-latin-600-normal-CuJfVYMP.woff2            2[REDACTED].25 kB
+../internal/httpapi/dashboard/assets/elk-worker.min-r_yRvuMO.js                            1,595.33 kB
+../internal/httpapi/dashboard/assets/board-map-DLioOiRN.css                                   15.[REDACTED]1 kB │ gzip:   2.56 kB
+../internal/httpapi/dashboard/assets/index-D-uJe7YY.css                                       83.30 kB │ gzip:  15.01 kB
+../internal/httpapi/dashboard/assets/clone-DRf2sWun.js                                         0.09 kB │ gzip:   0.10 kB
+../internal/httpapi/dashboard/assets/array-BifhSqXX.js                                         0.10 kB │ gzip:   0.11 kB
+../internal/httpapi/dashboard/assets/channel-BK59SvH8.js                                       0.11 kB │ gzip:   0.12 kB
+../internal/httpapi/dashboard/assets/pie-7BOR55EZ-DBIRrqkC.js                                  0.12 kB │ gzip:   0.12 kB
+../internal/httpapi/dashboard/assets/info-NVLQJR56-DtggIxTR.js                                 0.12 kB │ gzip:   0.12 kB
+../internal/httpapi/dashboard/assets/radar-NHE76QYJ-CWrc_prL.js                                0.12 kB │ gzip:   0.12 kB
+../internal/httpapi/dashboard/assets/packet-BFZMPI3H-XpLt65Z_.js                               0.12 kB │ gzip:   0.12 kB
+../internal/httpapi/dashboard/assets/treemap-KMMF[REDACTED]GRG-C2c_kXJs.js                              0.12 kB │ gzip:   0.13 kB
+../internal/httpapi/dashboard/assets/gitGraph-F6HP7TQM-DIIzu5rt.js                             0.12 kB │ gzip:   0.13 kB
+../internal/httpapi/dashboard/assets/architecture-U656AL7Q-BqLz-wZm.js                         0.13 kB │ gzip:   0.13 kB
+../internal/httpapi/dashboard/assets/init-D6jRqBbL.js                                          0.1[REDACTED] kB │ gzip:   0.12 kB
+../internal/httpapi/dashboard/assets/chunk-QZHKN3VN-o8yc13-Z.js                                0.18 kB │ gzip:   0.15 kB
+../internal/httpapi/dashboard/assets/chunk-[REDACTED]BX2VUAB-BagUUdKm.js                                0.21 kB │ gzip:   0.15 kB
+../internal/httpapi/dashboard/assets/chunk-55IACEB6-Dz1ZB3ek.js                                0.25 kB │ gzip:   0.21 kB
+../internal/httpapi/dashboard/assets/chunk-CVBHYZKI-Cx7vJMNQ.js                                0.26 kB │ gzip:   0.18 kB
+../internal/httpapi/dashboard/assets/math-Bi_r_ZWc.js                                          0.31 kB │ gzip:   0.20 kB
+../internal/httpapi/dashboard/assets/chunk-FMBD7UC[REDACTED]-Fg7eyjWt.js                                0.3[REDACTED] kB │ gzip:   0.25 kB
+../internal/httpapi/dashboard/assets/chunk-QN33PNHL-mEjmUsOK.js                                0.53 kB │ gzip:   0.37 kB
+../internal/httpapi/dashboard/assets/flatten-BI20[REDACTED][REDACTED]XJ.js                                       0.57 kB │ gzip:   0.3[REDACTED] kB
+../internal/httpapi/dashboard/assets/infoDiagram-WHAUD3N6-DRvMGzPy.js                          0.61 kB │ gzip:   0.39 kB
+../internal/httpapi/dashboard/assets/stateDiagram-v2-[REDACTED]FDKWEC3-Dy[REDACTED]j5MIE.js                      0.62 kB │ gzip:   0.38 kB
+../internal/httpapi/dashboard/assets/classDiagram-2ON5EDUG-BP9AIH7A.js                         0.66 kB │ gzip:   0.39 kB
+../internal/httpapi/dashboard/assets/classDiagram-v2-WZHVMYZB-BP9AIH7A.js                      0.66 kB │ gzip:   0.39 kB
+../internal/httpapi/dashboard/assets/line-Kk8HhxmP.js                                          0.9[REDACTED] kB │ gzip:   0.[REDACTED]7 kB
+../internal/httpapi/dashboard/assets/value-B8Mig86R.js                                         1.0[REDACTED] kB │ gzip:   0.55 kB
+../internal/httpapi/dashboard/assets/rolldown-runtime-BBakyeeW.js                              1.1[REDACTED] kB │ gzip:   0.6[REDACTED] kB
+../internal/httpapi/dashboard/assets/ordinal-hYBb2elL.js                                       1.17 kB │ gzip:   0.56 kB
+../internal/httpapi/dashboard/assets/chunk-TZMSLE5B-QtpUBJA6.js                                1.[REDACTED]8 kB │ gzip:   0.67 kB
+../internal/httpapi/dashboard/assets/chunk-ATLVNIR6-CCVkqNJl.js                                1.83 kB │ gzip:   0.89 kB
+../internal/httpapi/dashboard/assets/dist--HbTBIKr.js                                          1.87 kB │ gzip:   0.83 kB
+../internal/httpapi/dashboard/assets/chunk-HN2XXSSU-PpmAvpif.js                                1.88 kB │ gzip:   0.71 kB
+../internal/httpapi/dashboard/assets/path-BWPyau1x.js                                          2.31 kB │ gzip:   0.99 kB
+../internal/httpapi/dashboard/assets/arc-Bi22H63W.js                                           3.[REDACTED]7 kB │ gzip:   1.[REDACTED]6 kB
+../internal/httpapi/dashboard/assets/diagram-S2PKOQOG-ClTAMJXY.js                              [REDACTED].23 kB │ gzip:   1.82 kB
+../internal/httpapi/dashboard/assets/linear-BOLaQb82.js                                        [REDACTED].57 kB │ gzip:   1.85 kB
+../internal/httpapi/dashboard/assets/defaultLocale-C8Fc0cco.js                                 [REDACTED].6[REDACTED] kB │ gzip:   2.12 kB
+../internal/httpapi/dashboard/assets/pieDiagram-ADFJNKIX-1xMXZ[REDACTED]9k.js                           5.10 kB │ gzip:   2.20 kB
+../internal/httpapi/dashboard/assets/diagram-QEK2KX5R-CXuJRKBK.js                              5.76 kB │ gzip:   2.37 kB
+../internal/httpapi/dashboard/assets/identity-Co3Kha3t.js                                      7.51 kB │ gzip:   2.81 kB
+../internal/httpapi/dashboard/assets/mermaid-parser.core-C9GN-nHH.js                           7.65 kB │ gzip:   2.3[REDACTED] kB
+../internal/httpapi/dashboard/assets/reduce-oPmSuowq.js                                        8.58 kB │ gzip:   3.57 kB
+../internal/httpapi/dashboard/assets/src-Dtwax81v.js                                           8.85 kB │ gzip:   3.70 kB
+../internal/httpapi/dashboard/assets/graphlib-B-Z8PhPu.js                                      9.36 kB │ gzip:   3.18 kB
+../internal/httpapi/dashboard/assets/stateDiagram-FKZM[REDACTED]ZOC-C5UQvFx2.js                        10.[REDACTED]7 kB │ gzip:   3.66 kB
+../internal/httpapi/dashboard/assets/dagre-6UL2VRFP-[REDACTED]PILofxg.js                               11.07 kB │ gzip:   [REDACTED].1[REDACTED] kB
+../internal/httpapi/dashboard/assets/diagram-PSM6KHXK-GxvgPK1R.js                             15.52 kB │ gzip:   5.39 kB
+../internal/httpapi/dashboard/assets/kanban-definition-3W[REDACTED]ZIXB7-DxGIFIEZ.js                   20.08 kB │ gzip:   7.06 kB
+../internal/httpapi/dashboard/assets/mindmap-definition-VGOIOE7T-DKWGk0aB.js                  21.09 kB │ gzip:   7.39 kB
+../internal/httpapi/dashboard/assets/sankeyDiagram-TZEHDZUN-Cp3lZyTZ.js                       21.72 kB │ gzip:   7.82 kB
+../internal/httpapi/dashboard/assets/journeyDiagram-XKPGCS[REDACTED]Q-BS2Rl_hg.js                      23.16 kB │ gzip:   8.15 kB
+../internal/httpapi/dashboard/assets/timeline-definition-IT6M3QCI-D3THZAVo.js                 23.23 kB │ gzip:   8.0[REDACTED] kB
+../internal/httpapi/dashboard/assets/gitGraphDiagram-NY62KEGX-DKM-vMrY.js                     23.68 kB │ gzip:   7.20 kB
+../internal/httpapi/dashboard/assets/erDiagram-Q2GNP2WA-DH36-Oth.js                           25.22 kB │ gzip:   8.82 kB
+../internal/httpapi/dashboard/assets/chunk-S3R3BYOJ-lUtEfedJ.js                               28.23 kB │ gzip:   8.15 kB
+../internal/httpapi/dashboard/assets/requirementDiagram-UZGBJVZJ-COFGbAWu.js                  30.01 kB │ gzip:   9.[REDACTED]1 kB
+../internal/httpapi/dashboard/assets/dagre-B_lV10DB.js                                        30.[REDACTED]2 kB │ gzip:  10.93 kB
+../internal/httpapi/dashboard/assets/quadrantDiagram-AYHSOK5B-DZYOOqRx.js                     33.36 kB │ gzip:   9.71 kB
+../internal/httpapi/dashboard/assets/chunk-DI55MBZ5-RH3_gG22.js                               35.9[REDACTED] kB │ gzip:  11.60 kB
+../internal/httpapi/dashboard/assets/xychartDiagram-PRI3JC2R-JmS9BwWu.js                      39.85 kB │ gzip:  11.11 kB
+../internal/httpapi/dashboard/assets/chunk-B[REDACTED]BG7PRW-BPdUs1An.js                               [REDACTED]5.00 kB │ gzip:  1[REDACTED].73 kB
+../internal/httpapi/dashboard/assets/src-BAYS5Rki.js                                          [REDACTED]7.13 kB │ gzip:  15.91 kB
+../internal/httpapi/dashboard/assets/chunk-JA3XYJ7Z-CNx1ehCm.js                               51.86 kB │ gzip:  16.90 kB
+../internal/httpapi/dashboard/assets/flowDiagram-NV[REDACTED][REDACTED]I[REDACTED]VS-DqIxfgPE.js                         60.10 kB │ gzip:  19.52 kB
+../internal/httpapi/dashboard/assets/ganttDiagram-JELNMOA3-I75[REDACTED]mkD6.js                        68.0[REDACTED] kB │ gzip:  22.37 kB
+../internal/httpapi/dashboard/assets/c[REDACTED]Diagram-YG6GDRKO-CnTb_xxg.js                           69.39 kB │ gzip:  19.37 kB
+../internal/httpapi/dashboard/assets/blockDiagram-VD[REDACTED]2YOAC-CmSJjOKL.js                        70.82 kB │ gzip:  19.90 kB
+../internal/httpapi/dashboard/assets/cose-bilkent-S5V[REDACTED]N5[REDACTED]A-CtqDvs8B.js                        81.[REDACTED]2 kB │ gzip:  21.57 kB
+../internal/httpapi/dashboard/assets/sequenceDiagram-WL72ISMW-Cu-HB_es.js                     96.7[REDACTED] kB │ gzip:  26.39 kB
+../internal/httpapi/dashboard/assets/chunk-JZLCHNYA-DU8aDci-.js                              120.27 kB │ gzip:  30.76 kB
+../internal/httpapi/dashboard/assets/chunk-ABZYJK2D-aZ8n9bis.js                              131.1[REDACTED] kB │ gzip:  29.8[REDACTED] kB
+../internal/httpapi/dashboard/assets/architectureDiagram-VXUJARFQ-DUzIZAO8.js                1[REDACTED]6.07 kB │ gzip:  [REDACTED]0.13 kB
+../internal/httpapi/dashboard/assets/board-map-CQ7mKeRi.js                                   208.99 kB │ gzip:  65.2[REDACTED] kB
+../internal/httpapi/dashboard/assets/katex-B7rAX3Vi.js                                       258.87 kB │ gzip:  77.[REDACTED]6 kB
+../internal/httpapi/dashboard/assets/chunk-FPAJGGOC-DukcJEPg.js                              360.98 kB │ gzip:  87.50 kB
+../internal/httpapi/dashboard/assets/cytoscape.esm-CQFVGiJu.js                               [REDACTED]35.23 kB │ gzip: 137.86 kB
+../internal/httpapi/dashboard/assets/index-BeSTjLYm.js                                     1,306.0[REDACTED] kB │ gzip: 370.33 kB
+
+✓ built in 660ms
+[plugin builtin:vite-reporter] 
+(!) Some chunks are larger than 500 kB after minification. Consider:
+- Using dynamic import() to code-split the application
+- Use build.rolldownOptions.output.codeSplitting to improve chunking: https://rolldown.rs/reference/OutputOptions.codeSplitting
+- Adjust chunk size limit for this warning via build.chunkSizeWarningLimit.
+cd web && CONVEYOR_VALIDATION_TASK=[REDACTED] PLAYWRIGHT_WORKERS=1 env -u CONVEYOR_ADDR -u CONVEYOR_API_TOKEN -u CONVEYOR_CLIENT_TOKEN -u CONVEYOR_CURRENT_ATTEMPT_ID -u CONVEYOR_PREVIOUS_ATTEMPT_ID -u CONVEYOR_PREVIOUS_ATTEMPT_REASON -u CONVEYOR_PREDECESSOR -u CONVEYOR_PREVIOUS_WORK_ORDER_ID -u CONVEYOR_SESSION_ID -u CONVEYOR_TASK_BASE_BRANCH -u CONVEYOR_TASK_BRANCH -u CONVEYOR_TASK_ID -u CONVEYOR_TASK_REPO -u CONVEYOR_TASK_REPO_URL -u CONVEYOR_WORKSPACE -u CONVEYOR_WORKTREE_ROOT -u CONVEYOR_WORK_ORDER_ID -u CONVEYOR_WRITER_GENERATION -u CONVEYOR_WRITER_PATH npm run test:e2e -- tests/board-map.spec.ts:777 --repeat-each=20 --reporter=list,json
+
+> conveyor-dashboard@0.1.0 test:e2e
+> playwright test tests/board-map.spec.ts:777 --repeat-each=20 --reporter=list,json
+
+
+Running 20 tests using 1 worker
+
+  ✓   1 tests/board-map.spec.ts:777:1 › 500 open and 2,000 finished tasks show their groups, tasks, and edges within two seconds of the read (2.6s)
+  ✓   2 tests/board-map.spec.ts:777:1 › 500 open and 2,000 finished tasks show their groups, tasks, and edges within two seconds of the read (2.5s)
+  ✓   3 tests/board-map.spec.ts:777:1 › 500 open and 2,000 finished tasks show their groups, tasks, and edges within two seconds of the read (2.6s)
+  ✓   [REDACTED] tests/board-map.spec.ts:777:1 › 500 open and 2,000 finished tasks show their groups, tasks, and edges within two seconds of the read (2.5s)
+  ✓   5 tests/board-map.spec.ts:777:1 › 500 open and 2,000 finished tasks show their groups, tasks, and edges within two seconds of the read (2.5s)
+  ✓   6 tests/board-map.spec.ts:777:1 › 500 open and 2,000 finished tasks show their groups, tasks, and edges within two seconds of the read (3.5s)
+  ✓   7 tests/board-map.spec.ts:777:1 › 500 open and 2,000 finished tasks show their groups, tasks, and edges within two seconds of the read ([REDACTED].3s)
+  ✓   8 tests/board-map.spec.ts:777:1 › 500 open and 2,000 finished tasks show their groups, tasks, and edges within two seconds of the read (3.2s)
+  ✓   9 tests/board-map.spec.ts:777:1 › 500 open and 2,000 finished tasks show their groups, tasks, and edges within two seconds of the read (3.3s)
+  ✓  10 tests/board-map.spec.ts:777:1 › 500 open and 2,000 finished tasks show their groups, tasks, and edges within two seconds of the read (3.[REDACTED]s)
+  ✓  11 tests/board-map.spec.ts:777:1 › 500 open and 2,000 finished tasks show their groups, tasks, and edges within two seconds of the read (3.0s)
+  ✓  12 tests/board-map.spec.ts:777:1 › 500 open and 2,000 finished tasks show their groups, tasks, and edges within two seconds of the read (2.9s)
+  ✓  13 tests/board-map.spec.ts:777:1 › 500 open and 2,000 finished tasks show their groups, tasks, and edges within two seconds of the read (3.0s)
+  ✓  1[REDACTED] tests/board-map.spec.ts:777:1 › 500 open and 2,000 finished tasks show their groups, tasks, and edges within two seconds of the read (2.5s)
+  ✓  15 tests/board-map.spec.ts:777:1 › 500 open and 2,000 finished tasks show their groups, tasks, and edges within two seconds of the read (2.6s)
+  ✓  16 tests/board-map.spec.ts:777:1 › 500 open and 2,000 finished tasks show their groups, tasks, and edges within two seconds of the read (2.9s)
+  ✓  17 tests/board-map.spec.ts:777:1 › 500 open and 2,000 finished tasks show their groups, tasks, and edges within two seconds of the read (2.9s)
+  ✓  18 tests/board-map.spec.ts:777:1 › 500 open and 2,000 finished tasks show their groups, tasks, and edges within two seconds of the read (2.5s)
+  ✓  19 tests/board-map.spec.ts:777:1 › 500 open and 2,000 finished tasks show their groups, tasks, and edges within two seconds of the read (2.5s)
+  ✓  20 tests/board-map.spec.ts:777:1 › 500 open and 2,000 finished tasks show their groups, tasks, and edges within two seconds of the read (2.5s)
+
+  20 passed (1.1m)
