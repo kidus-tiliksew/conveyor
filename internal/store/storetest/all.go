@@ -120,6 +120,10 @@ type Factory struct {
 	// ReviewSweep is workorder.Service.SweepAutomaticReviewRecovery. storetest
 	// cannot import workorder: workorder tests import storetest.
 	ReviewSweep ReviewSweepFunc
+	// ClaimService is workorder.Service.Claim. storetest cannot import
+	// workorder: workorder tests import storetest. The claim-failure stall
+	// case requires it and never skips.
+	ClaimService ClaimServiceFunc
 }
 
 func (f Factory) fresh(t *testing.T, repos []config.Repo) Fixture {
@@ -180,6 +184,7 @@ func RunAll(t *testing.T, factory Factory) {
 			return BlueprintFixture{x.Backend, x.Context, x.Workspace, x.SeedStoredTaskHold}
 		})
 	})
+	run("ClaimFailureStall", func(t *testing.T) { runClaimFailureStall(t, factory.fresh(t, nil), factory.ClaimService) })
 	run("TaskStartOver", func(t *testing.T) { runTaskStartOver(t, factory) })
 	run("TaskMap", func(t *testing.T) { RunTaskMapConformance(t, factory.fresh(t, nil)) })
 	run("ActivityValidation", func(t *testing.T) { RunActivityValidationConformance(t, factory.fresh(t, nil)) })

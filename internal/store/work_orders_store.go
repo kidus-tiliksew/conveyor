@@ -2413,6 +2413,9 @@ func (m *memory) ClaimWorkOrderCommand(ctx context.Context, lifecycleLease tasko
 		m.tasks[task.ID] = task
 		m.appendEventLocked(ctx, core.Event{TaskID: task.ID, JobID: order.JobID, Kind: "task.state_changed", Payload: core.JSONPayload(map[string]any{"from": from, "to": state, "command": core.TaskOrderClaim})})
 	}
+	// A successful claim clears the order's claim-failure record in the same
+	// write (component-work-orders, Claim admission).
+	delete(m.claimFailures, order.ID)
 	m.appendEventLocked(ctx, core.Event{TaskID: order.TaskID, JobID: order.JobID, Kind: "work_order.claimed", Payload: core.JSONPayload(order)})
 	return order, nil
 }

@@ -286,7 +286,31 @@ func recoverEligible(order core.WorkOrder) bool {
 	return order.State == core.WorkOrderQueued || order.State == core.WorkOrderStale || order.State == core.WorkOrderTimedOut
 }
 
+// Claim is the one entry of every claim route. A claim that fails with
+// store.ErrBackendOperation is recorded after its transaction rolled back,
+// so a persistent server-side failure reaches the order's next action; a
+// successful claim deletes the record in its own transaction
+// (component-work-orders, Claim admission; req-operator-next-action AC-1.8).
 func (s *Service) Claim(ctx context.Context, id string, claim core.WorkOrderClaim) (core.WorkOrder, error) {
+	order, err := s.claim(ctx, id, claim)
+	if err != nil && errors.Is(err, store.ErrBackendOperation) {
+		s.recordClaimFailure(ctx, id)
+	}
+	return order, err
+}
+
+// recordClaimFailure never replaces the claim's error: a record write that
+// fails is logged with the order ID and dropped.
+func (s *Service) recordClaimFailure(ctx context.Context, id string) {
+	if strings.TrimSpace(id) == "" {
+		return
+	}
+	if _, err := s.Store.RecordWorkOrderClaimFailure(context.WithoutCancel(ctx), id, core.WorkOrderClaimFailureClassBackendOperation, time.Now().UTC()); err != nil {
+		log.Printf("work order %s: record claim failure: %v", id, err)
+	}
+}
+
+func (s *Service) claim(ctx context.Context, id string, claim core.WorkOrderClaim) (core.WorkOrder, error) {
 	if strings.TrimSpace(claim.SessionID) == "" {
 		return core.WorkOrder{}, fmt.Errorf("session_id is required")
 	}

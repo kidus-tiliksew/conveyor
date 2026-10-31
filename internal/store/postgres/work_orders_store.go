@@ -1438,6 +1438,11 @@ func (s *Store) ClaimWorkOrderCommand(ctx context.Context, lifecycleLease taskop
 			return core.WorkOrder{}, err
 		}
 	}
+	// A successful claim clears the order's claim-failure record in the claim
+	// transaction (component-work-orders, Claim admission).
+	if _, err := tx.Exec(ctx, `DELETE FROM work_order_claim_failures WHERE workspace_id=$1 AND work_order_id=$2`, workspace(ctx), order.ID); err != nil {
+		return core.WorkOrder{}, err
+	}
 	if err := insertEvent(ctx, q, core.Event{TaskID: order.TaskID, JobID: order.JobID, Kind: "work_order.claimed", Payload: core.JSONPayload(order)}); err != nil {
 		return core.WorkOrder{}, err
 	}

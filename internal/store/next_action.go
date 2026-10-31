@@ -131,6 +131,10 @@ func ReadNextActions(ctx context.Context, st Store, tasks []core.Task, opts Next
 	if err != nil {
 		return nil, err
 	}
+	claimFailures, err := readClaimFailures(ctx, st, orders)
+	if err != nil {
+		return nil, err
+	}
 	ordersByTask := map[string][]core.WorkOrder{}
 	for _, order := range orders {
 		ordersByTask[order.TaskID] = append(ordersByTask[order.TaskID], withDependencyBlockers(order, dependencies.blockers[order.TaskID]))
@@ -146,6 +150,7 @@ func ReadNextActions(ctx context.Context, st Store, tasks []core.Task, opts Next
 		input.Blockers = dependencies.forward[task.ID]
 		input.Blocks = dependencies.blocks[task.ID]
 		input.ContextProposals = contexts[task.ID]
+		input.ClaimFailures = claimFailuresFor(ordersByTask[task.ID], claimFailures)
 		if origin, ok := origins[task.ID]; ok {
 			input.MonitorObservation = &nextaction.MonitorObservationRef{Kind: string(origin.Kind), SourceURL: origin.SourceURL, ObservedAt: origin.ObservedAt}
 		}
@@ -182,6 +187,44 @@ func ReadNextActions(ctx context.Context, st Store, tasks []core.Task, opts Next
 		out[tasks[i].ID] = nextaction.Project(inputs[i])
 	}
 	return out, nil
+}
+
+// readClaimFailures reads the claim-failure records of the batch's queued
+// orders with one ListWorkOrderClaimFailures call, and issues none when the
+// batch has no queued order (component-work-orders, Next action).
+func readClaimFailures(ctx context.Context, st Store, orders []core.WorkOrder) (map[string]core.WorkOrderClaimFailure, error) {
+	var ids []string
+	for _, order := range orders {
+		if order.State == core.WorkOrderQueued {
+			ids = append(ids, order.ID)
+		}
+	}
+	out := map[string]core.WorkOrderClaimFailure{}
+	if len(ids) == 0 {
+		return out, nil
+	}
+	records, err := st.ListWorkOrderClaimFailures(ctx, ids)
+	if err != nil {
+		return nil, err
+	}
+	for _, record := range records {
+		out[record.WorkOrderID] = record
+	}
+	return out, nil
+}
+
+// claimFailuresFor selects one task's records, or nil when it has none.
+func claimFailuresFor(orders []core.WorkOrder, records map[string]core.WorkOrderClaimFailure) map[string]core.WorkOrderClaimFailure {
+	var out map[string]core.WorkOrderClaimFailure
+	for _, order := range orders {
+		if record, ok := records[order.ID]; ok {
+			if out == nil {
+				out = map[string]core.WorkOrderClaimFailure{}
+			}
+			out[order.ID] = record
+		}
+	}
+	return out
 }
 
 // dependencyView is one reading of the workspace's dependency edges. Forward

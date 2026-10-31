@@ -47,7 +47,15 @@ const (
 	StallUnclaimable                = "unclaimable"
 	StallDispatchFailing            = "dispatch_failing"
 	StallAutomaticRecoveryExhausted = "automatic_recovery_exhausted"
+	// StallClaimFailing is an observed reason: the order's consecutive claims
+	// failed in the backend at least ClaimFailureStallThreshold times
+	// (feature-operator-next-action NA-3, Claim-failure stall).
+	StallClaimFailing = "claim_failing"
 )
+
+// ClaimFailureStallThreshold is the consecutive backend-failed claim count
+// at which a queued order states the claim_failing stall.
+const ClaimFailureStallThreshold = 3
 
 const (
 	ReleaseCheckpoint = "checkpoint"
@@ -103,7 +111,11 @@ type Input struct {
 	Capabilities   map[core.Capability]bool
 	LiveClaimants  *ClaimantView
 	Recovery       map[string]AutomaticRecovery
-	Now            time.Time
+	// ClaimFailures is the batch's claim-failure records, keyed by order ID.
+	// An absent entry means the order's last claim did not fail in the
+	// backend (component-work-orders, Claim admission).
+	ClaimFailures map[string]core.WorkOrderClaimFailure
+	Now           time.Time
 	// PullRequest is the recorded pull-request number, zero when none is
 	// recorded.
 	PullRequest int
@@ -331,6 +343,9 @@ type Details struct {
 	// ContextProposals and MonitorOrigin are present only on context_proposal.
 	ContextProposals []ContextProposalDetail `json:"context_proposals,omitempty"`
 	MonitorOrigin    *MonitorOrigin          `json:"monitor_origin,omitempty"`
+	// ClaimFailure is present only on the claim_failing stall. It carries
+	// the record's count, times, and class, never driver text.
+	ClaimFailure *core.WorkOrderClaimFailure `json:"claim_failure,omitempty"`
 }
 
 // Compact is the list-item shape. Label is the same catalogue entry as the full shape.

@@ -86,11 +86,11 @@ func rules() []rule {
 		{match: forgeFailure, build: func(Input) built { return built{actor: ActorOperator, kind: KindForgeFailure} }},
 		{match: reviewRecovery, build: func(Input) built { return built{actor: ActorOperator, kind: KindReviewRecovery} }},
 		{match: dependencyUnsatisfiable, build: func(in Input) built {
-			hit := Stall(in.Task, in.Orders, in.Recovery, in.LiveClaimants, in.Now)
+			hit := stallIn(in)
 			return built{actor: ActorOperator, kind: KindDependencyUnsatisfiable, judgment: true, reason: KindDependencyUnsatisfiable, order: &hit.Order, blocked: blockersFor(in, hit.Order)}
 		}},
 		{match: stalled, build: func(in Input) built {
-			hit := Stall(in.Task, in.Orders, in.Recovery, in.LiveClaimants, in.Now)
+			hit := stallIn(in)
 			return built{actor: ActorOperator, kind: KindStalled, stall: hit.Reason, reason: hit.Reason, order: &hit.Order, deadline: queueDeadline(hit.Order)}
 		}},
 		{match: contextProposal, build: func(Input) built {
@@ -212,12 +212,12 @@ func reviewRecovery(in Input) bool {
 }
 
 func dependencyUnsatisfiable(in Input) bool {
-	hit := Stall(in.Task, in.Orders, in.Recovery, in.LiveClaimants, in.Now)
+	hit := stallIn(in)
 	return hit != nil && hit.DependencyUnsatisfiable
 }
 
 func stalled(in Input) bool {
-	hit := Stall(in.Task, in.Orders, in.Recovery, in.LiveClaimants, in.Now)
+	hit := stallIn(in)
 	return hit != nil && hit.Reason != ""
 }
 
@@ -280,6 +280,11 @@ func finish(in Input, row built, secondary []Secondary) NextAction {
 	if row.kind == KindContextProposal {
 		na.Details.ContextProposals = contextProposalDetails(in.ContextProposals)
 		na.Details.MonitorOrigin = monitorOrigin(in)
+	}
+	if row.stall == StallClaimFailing && row.order != nil {
+		if failure, ok := in.ClaimFailures[row.order.ID]; ok {
+			na.Details.ClaimFailure = &failure
+		}
 	}
 	if na.Choices == nil {
 		na.Choices = []Choice{}
