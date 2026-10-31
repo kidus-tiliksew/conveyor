@@ -372,6 +372,10 @@ func (f *batchFixture) add(t *testing.T, long bool) {
 	disposition := f.task(t, "disposition", core.TaskRunning, "")
 	f.history(t, disposition.ID, long)
 	f.order(t, disposition, core.StageVerify, 1, func(order *core.WorkOrder) {
+		// A sealed operator_action_required release leaves the verify order
+		// queued, released, and retry-suppressed at its checkpoint.
+		order.LastAttemptID, order.LastAttemptOutcome = "attempt-"+disposition.ID, core.WorkOrderOutcomeReleased
+		order.RetrySuppressed, order.RetrySuppressionReason = true, core.WorkOrderReleaseReasonOperatorCheckpointReached
 		order.Checkpoint = &core.WorkOrderCheckpoint{Verification: &core.WorkOrderVerificationCheckpoint{ContextID: "context-" + disposition.ID, HeadSHA: "head", Reason: "unresolved", RequiredAction: "dispose", OperationIDs: []string{"operation-" + disposition.ID}}}
 	})
 	f.kinds[disposition.ID] = nextaction.KindVerificationDisposition
