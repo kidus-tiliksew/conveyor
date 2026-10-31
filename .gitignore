@@ -14,3 +14,5 @@ web/test-results/
 /.grok-*/
 output/
 __pycache__/
+
+graphify-out
