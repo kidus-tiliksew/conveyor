@@ -1,7 +1,8 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { UserRound } from 'lucide-react'
-import { useEffect, useState } from 'react'
+import { useState } from 'react'
 import { fetchCallerIdentity, updateOwnDisplayName } from '../../lib/api'
+import type { CallerIdentity } from '../../lib/types'
 import { useWorkspaceSelection } from '../app-shell'
 import { Button } from '../ui/button'
 import { Card, CardContent, CardHeader, CardTitle } from '../ui/card'
@@ -15,19 +16,27 @@ export function ProfileCard() {
     queryFn: () => fetchCallerIdentity(workspace),
     enabled: Boolean(workspace),
   })
-  const [displayName, setDisplayName] = useState('')
+  // The field shows the identity read's name until the user types. Typed
+  // text is a draft that a later identity read never replaces, and the field
+  // is never editable while it shows anything else (component-web-dashboard,
+  // Settings).
+  const [draft, setDraft] = useState<string | null>(null)
+  const displayName = draft ?? identity.data?.display_name ?? ''
   const [message, setMessage] = useState('')
   const [failed, setFailed] = useState(false)
 
-  useEffect(() => {
-    if (identity.data) setDisplayName(identity.data.display_name ?? '')
-  }, [identity.data])
-
   const update = useMutation({
-    mutationFn: () => updateOwnDisplayName(displayName),
-    onSuccess: async (profile) => {
+    mutationFn: (name: string) => updateOwnDisplayName(name),
+    onSuccess: async (profile, name) => {
       setFailed(false)
-      setDisplayName(profile.display_name)
+      // The identity entry carries the saved name, so the field follows it
+      // again; without a loaded identity the saved name stays as the draft.
+      const saved = queryClient.setQueryData<CallerIdentity>(
+        ['caller-identity', workspace],
+        (current) => current && { ...current, display_name: profile.display_name },
+      )
+      // Text typed while the save was in flight stays.
+      setDraft((current) => (current === name ? (saved ? null : profile.display_name) : current))
       setMessage('Display name updated.')
       await Promise.all([
         queryClient.invalidateQueries({ queryKey: ['caller-identity'] }),
@@ -54,7 +63,7 @@ export function ProfileCard() {
           onSubmit={(event) => {
             event.preventDefault()
             setMessage('')
-            update.mutate()
+            update.mutate(displayName)
           }}
         >
           <Input
@@ -62,7 +71,7 @@ export function ProfileCard() {
             autoComplete="name"
             maxLength={128}
             value={displayName}
-            onChange={(event) => setDisplayName(event.target.value)}
+            onChange={(event) => setDraft(event.target.value)}
             disabled={identity.isPending}
           />
           <Button type="submit" disabled={update.isPending || !displayName.trim()}>

@@ -802,43 +802,51 @@ test('500 open and 2,000 finished tasks show their groups, tasks, and edges with
     total_task_count: 100,
   }))
   await mockMap(page, () => ({ tasks: [...open, ...done], requirements: entries }))
-  // The read completes when its response resolves in the page.
+  // AC-3.2 bounds the time from the completed data read to the rendered map,
+  // so the window holds only the dashboard's own work. The fetch wrapper
+  // passes the original response through and stamps the read when the
+  // dashboard's own parse of that body resolves; the harness neither parses
+  // nor re-serializes it. The render observer starts with the page, so no
+  // Playwright round trip falls inside the window. Every group, hub, and
+  // default-visible open task node, with the edges between them, renders
+  // before the timer stops (AC-1.8). Each requirement's twenty tasks form one
+  // chain into its hub: 19 dependency edges and one delivery edge per group.
   await page.addInitScript(() => {
+    const timing = window as unknown as { mapReadAt?: number; mapRenderedAt?: number }
     const original = window.fetch
     window.fetch = async (...args) => {
       const response = await original(...args)
       const url = String(args[0] instanceof Request ? args[0].url : args[0])
-      if (url.includes('/v1/task-map')) {
-        const body = await response.clone().json()
-        ;(window as unknown as { mapReadAt: number }).mapReadAt = performance.now()
-        return new Response(JSON.stringify(body), { status: response.status, headers: response.headers })
+      if (url.includes('/v1/task-map') && response.ok) {
+        const parse = response.json.bind(response)
+        response.json = async () => {
+          const body = await parse()
+          timing.mapReadAt ??= performance.now()
+          return body
+        }
       }
       return response
     }
+    const count = (selector: string) => document.querySelectorAll(selector).length
+    const tick = () => {
+      if (
+        timing.mapReadAt !== undefined &&
+        count('.react-flow__node-frame') >= 25 &&
+        count('.react-flow__node-hub') >= 25 &&
+        count('.react-flow__node-task') >= 500 &&
+        count('.react-flow__edge') >= 500
+      )
+        timing.mapRenderedAt = performance.now()
+      else requestAnimationFrame(tick)
+    }
+    requestAnimationFrame(tick)
   })
   await page.goto('/?view=map')
-  // Every group, hub, and default-visible open task node, with the edges
-  // between them, renders before the timer stops (AC-1.8, AC-3.2). Each
-  // requirement's twenty tasks form one chain into its hub: 19 dependency
-  // edges and one delivery edge per group.
-  const renderedAt = await page.evaluate(
-    () =>
-      new Promise<number>((resolve) => {
-        const tick = () => {
-          const count = (selector: string) => document.querySelectorAll(selector).length
-          if (
-            count('.react-flow__node-frame') >= 25 &&
-            count('.react-flow__node-hub') >= 25 &&
-            count('.react-flow__node-task') >= 500 &&
-            count('.react-flow__edge') >= 500
-          )
-            resolve(performance.now())
-          else requestAnimationFrame(tick)
-        }
-        tick()
-      }),
-  )
-  const readAt = await page.evaluate(() => (window as unknown as { mapReadAt: number }).mapReadAt)
+  await page.waitForFunction(() => (window as unknown as { mapRenderedAt?: number }).mapRenderedAt !== undefined)
+  const { readAt, renderedAt } = await page.evaluate(() => {
+    const timing = window as unknown as { mapReadAt: number; mapRenderedAt: number }
+    return { readAt: timing.mapReadAt, renderedAt: timing.mapRenderedAt }
+  })
   expect(readAt).toBeGreaterThan(0)
   const elapsed = renderedAt - readAt
   test.info().annotations.push({

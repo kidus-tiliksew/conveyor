@@ -332,6 +332,8 @@ test('a returning user signs in with a password and resets it through an operato
 
   await page.goto('/w/demo/settings')
   const profileForm = page.getByRole('form', { name: 'Update profile' })
+  // The loaded name first, so the typed name replaces it rather than racing it.
+  await expect(profileForm.getByLabel('Display name')).toHaveValue('Returning User')
   await profileForm.getByLabel('Display name').fill('Renamed User')
   await profileForm.getByRole('button', { name: 'Save profile' }).click()
   await expect(page.getByText('Display name updated.')).toBeVisible()
@@ -354,6 +356,102 @@ test('a returning user signs in with a password and resets it through an operato
   await resetForm.getByRole('button', { name: 'Complete setup' }).click()
   await expect(page).toHaveURL('/w/demo/')
   expect(password).toBe('reset-password-value')
+})
+
+// The Settings Profile card's identity source, for the profile-field specs.
+// `profile` is what the next `GET /v1/me` serves; `saved` records each
+// `PUT /v1/me` display name.
+async function routeProfile(page: Page) {
+  const state = {
+    profile: { display_name: 'Returning User', role: 'contributor' },
+    identityReads: 0,
+    saved: [] as string[],
+  }
+  await page.addInitScript(() => localStorage.setItem('conveyor-workspace', 'demo'))
+  await page.route('**/v1/**', async (route: Route) => {
+    const request = route.request()
+    const path = new URL(request.url()).pathname
+    if (path === '/v1/workspaces') return route.fulfill({ json: [{ id: 'demo', name: 'Demo' }] })
+    if (path === '/v1/workspace')
+      return route.fulfill({ json: { workspace: 'demo', max_bounces: 2, database: 'postgres', repos: [] } })
+    if (path === '/v1/me' && request.method() === 'PUT') {
+      const body = request.postDataJSON() as { display_name: string }
+      state.saved.push(body.display_name)
+      state.profile = { ...state.profile, display_name: body.display_name }
+      return route.fulfill({
+        json: { id: 'usr_returning', email: 'returning@example.test', display_name: body.display_name },
+      })
+    }
+    if (path === '/v1/me') {
+      state.identityReads += 1
+      return route.fulfill({
+        json: callerIdentity({ id: 'usr_returning', email: 'returning@example.test', ...state.profile }, request),
+      })
+    }
+    if (path === '/v1/workspaces/demo/github-app') return route.fulfill({ json: { connected: false } })
+    if (path === '/v1/pending-proposals')
+      return route.fulfill({ json: { items: [], attention: { total: 0, pending_proposal_count: 0 } } })
+    return route.fulfill({ json: [] })
+  })
+  return state
+}
+
+test('a later identity read never overwrites a display name the user is editing', async ({ page }) => {
+  const state = await routeProfile(page)
+  await page.clock.install({ time: new Date('2026-10-30T12:00:00Z') })
+  await page.goto('/w/demo/settings')
+  const field = page.getByRole('form', { name: 'Update profile' }).getByLabel('Display name')
+  await expect(field).toHaveValue('Returning User')
+  await field.fill('Renamed User')
+
+  // The identity changes elsewhere: the next read serves another name and the
+  // operator role, whose manage_workspace capability renders the GitHub App
+  // card from the same identity entry. A window focus past the five-minute
+  // freshness refetches it.
+  state.profile = { display_name: 'Renamed Elsewhere', role: 'operator' }
+  const reads = state.identityReads
+  await page.clock.fastForward('05:01')
+  await page.evaluate(() => document.dispatchEvent(new Event('visibilitychange', { bubbles: true })))
+  await expect.poll(() => state.identityReads).toBeGreaterThan(reads)
+  // The card renders in the commit that delivers the new identity, so the
+  // field below is read after the Profile card has rendered that identity.
+  await expect(page.getByText('Workspace GitHub App', { exact: true })).toBeVisible()
+  expect(await field.inputValue()).toBe('Renamed User')
+
+  await page.getByRole('button', { name: 'Save profile' }).click()
+  await expect(page.getByText('Display name updated.')).toBeVisible()
+  expect(state.saved).toEqual(['Renamed User'])
+  await expect(field).toHaveValue('Renamed User')
+})
+
+test('the display name field is never editable before it shows the loaded name', async ({ page }) => {
+  await routeProfile(page)
+  // Records the field's state at each commit that inserts or enables it, in
+  // the commit's own task, before a later task can change the value.
+  await page.addInitScript(() => {
+    const states: Array<{ disabled: boolean; value: string }> = []
+    Object.assign(window, { profileFieldStates: states })
+    new MutationObserver(() => {
+      const field = document.querySelector<HTMLInputElement>('form[aria-label="Update profile"] input')
+      if (field) states.push({ disabled: field.disabled, value: field.value })
+    }).observe(document, { subtree: true, childList: true, attributes: true, attributeFilter: ['disabled'] })
+  })
+  // The Board loads the identity first, so the Profile card mounts on the
+  // cached read: the case where a field seeded after mount was editable while
+  // empty, and a fill could interleave with the seed.
+  await page.goto('/w/demo/')
+  const settings = page
+    .getByRole('navigation', { name: 'Primary' })
+    .getByRole('link', { name: 'Settings', exact: true })
+  await expect(settings).toBeVisible()
+  await settings.click()
+  const field = page.getByRole('form', { name: 'Update profile' }).getByLabel('Display name')
+  await expect(field).toHaveValue('Returning User')
+  const states = await page.evaluate(
+    () => (window as unknown as { profileFieldStates: Array<{ disabled: boolean; value: string }> }).profileFieldStates,
+  )
+  expect(states.length).toBeGreaterThan(0)
+  expect(states.filter((state) => !state.disabled && state.value !== 'Returning User')).toEqual([])
 })
 
 // The shell signs out only when `/v1/workspaces` answers 401; any other failed

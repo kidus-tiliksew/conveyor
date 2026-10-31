@@ -453,6 +453,10 @@ function contextChoices(taskId: string, targets: ContextTarget[], allowed = true
 }
 
 function contextAction(targets: ContextTarget[], allowed = true, origin?: Record<string, unknown>) {
+  // One creation instant for every proposal: the shared age shows only when
+  // the times agree, so a per-row clock read that straddles a millisecond
+  // would drop it (NA-6).
+  const createdAt = new Date(Date.now() - 2 * 3_600_000).toISOString()
   return {
     kind: 'context_proposal',
     label: 'Context proposal',
@@ -472,7 +476,7 @@ function contextAction(targets: ContextTarget[], allowed = true, origin?: Record
         justification: target.justification,
         source: target.source,
         proposed_by: 'system:triage',
-        created_at: new Date(Date.now() - 2 * 3_600_000).toISOString(),
+        created_at: createdAt,
       })),
       ...(origin ? { monitor_origin: origin } : {}),
     },
