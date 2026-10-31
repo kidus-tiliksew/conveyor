@@ -281,6 +281,13 @@ type WorkOrderStore interface {
 	ListElapsedWorkOrderTaskIDs(ctx context.Context, now time.Time) ([]string, error)
 	ApplyWorkOrderClock(ctx context.Context, lease taskops.TaskLease, taskID string, now time.Time) (int, error)
 	ClaimWorkOrderCommand(ctx context.Context, lease taskops.TaskLease, id string, claim core.WorkOrderClaim) (core.WorkOrder, error)
+	// RecordWorkOrderClaimFailure adds one consecutive backend-failed claim
+	// to the order's bounded record outside the failed claim transaction,
+	// and ListWorkOrderClaimFailures reads the records of the given orders.
+	// Each backend's claim transaction deletes the claimed order's record
+	// (component-work-orders, Claim admission; component-persistence).
+	RecordWorkOrderClaimFailure(ctx context.Context, workOrderID, errorClass string, at time.Time) (core.WorkOrderClaimFailure, error)
+	ListWorkOrderClaimFailures(ctx context.Context, workOrderIDs []string) ([]core.WorkOrderClaimFailure, error)
 	RedispatchWorkOrderCommand(ctx context.Context, lease taskops.TaskLease, id string, queueTimeout time.Duration) (core.WorkOrder, error)
 	PreemptWorkOrderCommand(ctx context.Context, lease taskops.TaskLease, request WorkOrderPreemptRequest) (WorkOrderPreemptResult, error)
 	RecoverWorkOrderCommand(ctx context.Context, lease taskops.TaskLease, id, requestID, direction string, queueTimeout time.Duration, refreeze ...*RecoveryRefreeze) (core.WorkOrder, error)
@@ -621,6 +628,7 @@ func NewMemoryWithConfig(cfg *config.Config) Store {
 		interruptedReviewRecoveries: map[string]memoryInterruptedReviewRecovery{},
 		setupChanges:                map[string]memorySetupChange{},
 		preemptions:                 map[string]memoryWorkOrderPreemption{},
+		claimFailures:               map[string]core.WorkOrderClaimFailure{},
 		dependencyAdditions:         map[string]memoryDependencyAddition{},
 		dependencyRemovals:          map[string]memoryDependencyRemoval{},
 		monitorObservations:         map[string]monitor.ObservationRecord{},
@@ -692,6 +700,7 @@ type memory struct {
 	interruptedReviewRecoveries map[string]memoryInterruptedReviewRecovery
 	setupChanges                map[string]memorySetupChange
 	preemptions                 map[string]memoryWorkOrderPreemption
+	claimFailures               map[string]core.WorkOrderClaimFailure
 	dependencyAdditions         map[string]memoryDependencyAddition
 	dependencyRemovals          map[string]memoryDependencyRemoval
 	monitorObservations         map[string]monitor.ObservationRecord

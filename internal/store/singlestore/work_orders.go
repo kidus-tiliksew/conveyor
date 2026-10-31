@@ -1342,6 +1342,11 @@ func (s *Store) ClaimWorkOrderCommand(ctx context.Context, lease taskops.TaskLea
 				return err
 			}
 		}
+		// A successful claim clears the order's claim-failure record in the
+		// claim transaction (component-work-orders, Claim admission).
+		if _, err = documentExec(ctx, tx, `DELETE FROM work_order_claim_failures WHERE workspace_id=? AND work_order_id=?`, documentWorkspace(ctx), o.ID); err != nil {
+			return err
+		}
 		if err = taskEvent(ctx, tx, core.Event{TaskID: o.TaskID, JobID: o.JobID, Kind: "work_order.claimed", Payload: core.JSONPayload(o)}); err != nil {
 			return err
 		}
@@ -1952,4 +1957,65 @@ func projectOrders(orders []core.WorkOrder) {
 	for i := range orders {
 		orders[i] = store.ProjectWorkOrderAt(orders[i], now)
 	}
+}
+
+// RecordWorkOrderClaimFailure upserts the order's claim-failure record
+// outside the failed claim transaction. Go checks the arguments that
+// PostgreSQL's CHECK constraints enforce (component-work-orders, Claim
+// admission; component-persistence, Schema domains).
+func (s *Store) RecordWorkOrderClaimFailure(ctx context.Context, workOrderID, errorClass string, at time.Time) (core.WorkOrderClaimFailure, error) {
+	if err := store.ValidateWorkOrderClaimFailure(workOrderID, errorClass, at); err != nil {
+		return core.WorkOrderClaimFailure{}, err
+	}
+	at = at.UTC().Truncate(time.Microsecond)
+	record := core.WorkOrderClaimFailure{WorkOrderID: workOrderID}
+	err := s.withTx(ctx, func(tx *sql.Tx) error {
+		var exists int
+		if err := documentRow(ctx, tx, `SELECT COUNT(*) FROM work_orders WHERE workspace_id=? AND id=?`, documentWorkspace(ctx), workOrderID).Scan(&exists); err != nil {
+			return err
+		}
+		if exists == 0 {
+			return fmt.Errorf("%w: work order %s", store.ErrNotFound, workOrderID)
+		}
+		if _, err := documentExec(ctx, tx, `INSERT INTO work_order_claim_failures(workspace_id,work_order_id,consecutive_failures,first_failed_at,last_failed_at,error_class) VALUES(?,?,1,?,?,?)
+			ON DUPLICATE KEY UPDATE consecutive_failures=LEAST(consecutive_failures+1,?),last_failed_at=VALUES(last_failed_at),error_class=VALUES(error_class)`,
+			documentWorkspace(ctx), workOrderID, at, at, errorClass, core.WorkOrderClaimFailureCountCap); err != nil {
+			return err
+		}
+		return documentRow(ctx, tx, `SELECT consecutive_failures,first_failed_at,last_failed_at,error_class FROM work_order_claim_failures WHERE workspace_id=? AND work_order_id=?`, documentWorkspace(ctx), workOrderID).
+			Scan(&record.ConsecutiveFailures, &record.FirstFailedAt, &record.LastFailedAt, &record.ErrorClass)
+	})
+	if err != nil {
+		return core.WorkOrderClaimFailure{}, err
+	}
+	record.FirstFailedAt, record.LastFailedAt = record.FirstFailedAt.UTC(), record.LastFailedAt.UTC()
+	return record, nil
+}
+
+// ListWorkOrderClaimFailures reads the given orders' records in one
+// workspace-scoped query through the primary key.
+func (s *Store) ListWorkOrderClaimFailures(ctx context.Context, workOrderIDs []string) ([]core.WorkOrderClaimFailure, error) {
+	out := []core.WorkOrderClaimFailure{}
+	if len(workOrderIDs) == 0 {
+		return out, nil
+	}
+	args := []any{documentWorkspace(ctx)}
+	for _, id := range workOrderIDs {
+		args = append(args, id)
+	}
+	rows, err := documentRows(ctx, s.db, `SELECT work_order_id,consecutive_failures,first_failed_at,last_failed_at,error_class FROM work_order_claim_failures
+		WHERE workspace_id=? AND work_order_id IN (`+strings.TrimSuffix(strings.Repeat("?,", len(workOrderIDs)), ",")+`) ORDER BY work_order_id`, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var record core.WorkOrderClaimFailure
+		if err = rows.Scan(&record.WorkOrderID, &record.ConsecutiveFailures, &record.FirstFailedAt, &record.LastFailedAt, &record.ErrorClass); err != nil {
+			return nil, err
+		}
+		record.FirstFailedAt, record.LastFailedAt = record.FirstFailedAt.UTC(), record.LastFailedAt.UTC()
+		out = append(out, record)
+	}
+	return out, rows.Err()
 }
