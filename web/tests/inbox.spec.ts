@@ -293,7 +293,12 @@ test('bands render in server order with the decision detail the server states', 
   await expect(decisionRows(page).getByRole('button')).toHaveCount(0)
   await expect(decisionRows(page).first()).toHaveAttribute('aria-current', 'true')
   await expect(rowItems(page).nth(1)).toContainText('No PR yet')
-  await expect(rowItems(page).first().locator('[data-row-pull-request]')).toHaveText('acme/conveyor PR #77')
+  // The row names the pull request by number; its tooltip carries the repository.
+  await expect(rowItems(page).first().locator('[data-row-pull-request]')).toHaveText('PR #77')
+  await expect(rowItems(page).first().locator('[data-row-pull-request]')).toHaveAttribute(
+    'title',
+    'acme/conveyor PR #77',
+  )
   const bands = page.locator(
     'section[aria-label="Decisions"], section[aria-label="Blocked"], section[aria-label="Automatic"]',
   )
@@ -315,12 +320,20 @@ test('bands render in server order with the decision detail the server states', 
   await expect(card.locator('[data-serves="REQ-2"]')).toHaveText('REQ-2Reproducible builds')
   await expect(card.locator('[data-serves="REQ-6"]')).toHaveText('REQ-6')
   await expect(card.getByText('Does this plan meet the requirement?')).toBeVisible()
-  await expect(card.getByText('Recommendation: Approve: the plan covers every criterion.')).toBeVisible()
-  await expect(card.locator('[data-decision-footer]')).toContainText(
-    'If you do nothing: The task waits at the plan gate.',
+  // The recommendation is a callout, and the label a pill in its kind's tone.
+  await expect(card.locator('[data-recommendation]')).toHaveText(
+    'Agent recommendsApprove: the plan covers every criterion.',
+  )
+  await expect(card.locator('[data-decision-label]')).toHaveAttribute('data-kind-tone', 'gate')
+  await expect(card.locator('[data-decision-label]')).not.toHaveClass(/attention/)
+  // The deadline is a countdown chip in the head line and a time of day in
+  // the footer's consequence line.
+  await expect(card.locator('[data-due]')).toHaveText(/^due in /)
+  await expect(card.locator('[data-decision-footer] [data-if-ignored]')).toHaveText(
+    /^If nobody acts by \d{1,2}:\d{2} [AP]M: The task waits at the plan gate\.$/,
   )
   await expect(card.locator('[data-context-heading]')).toHaveText('Plan')
-  await expect(card.locator('[data-next-action-deadline] time')).toHaveAttribute('datetime', soon)
+  await expect(card.locator('[data-next-action-deadline]')).toHaveAttribute('datetime', soon)
   await card.getByText('Show IDs').click()
   await expect(card.getByText('wo-zeta-1')).toBeVisible()
 
@@ -608,7 +621,7 @@ test('the context checklist lists each proposed document checked, and Apply atta
     expect(new URL(post.url()).searchParams.get('workspace_id')).toBe('demo')
   }
   await expect(decisionRows(page)).toHaveCount(0)
-  await expect(page.locator('[data-no-decisions]')).toHaveText('No decisions are waiting for you.')
+  await expect(page.locator('[data-no-decisions]')).toContainText('No decisions are waiting.')
   expect(harness.posts).toHaveLength(2)
 
   // The task detail shows the confirmed attachment under Attached context; the
@@ -1537,18 +1550,20 @@ test('blocked rows link blockers, the automatic band offers its one choice and a
 
   const blocked = page.getByRole('region', { name: 'Blocked' })
   await expect(blocked.getByText('Waits for')).toBeVisible()
-  await expect(blocked.getByRole('link', { name: 'Zeta plan everyone waits on' })).toHaveAttribute(
-    'href',
-    '/w/demo/inbox?task=T-zeta',
-  )
-  await expect(blocked.getByRole('link', { name: 'Elsewhere dependency' })).toHaveAttribute(
-    'href',
-    '/w/demo/tasks/T-done',
-  )
-  await blocked.getByRole('link', { name: 'Zeta plan everyone waits on' }).click()
-  await expect(decisionRows(page)).toHaveCount(1)
+  // A blocker that is itself a decision is marked "needs you" and selects it.
+  const zeta = blocked.getByRole('link', { name: /Zeta plan everyone waits on/ })
+  await expect(zeta).toHaveAttribute('href', '/w/demo/inbox?selected=T-zeta')
+  await expect(zeta).toContainText('needs you')
+  await expect(zeta).toHaveClass(/text-attention/)
+  const elsewhere = blocked.getByRole('link', { name: 'Elsewhere dependency' })
+  await expect(elsewhere).toHaveAttribute('href', '/w/demo/tasks/T-done')
+  await expect(elsewhere).not.toContainText('needs you')
+  await expect(elsewhere).not.toHaveClass(/text-attention/)
+  await select(page, 'Alpha agent question')
+  await zeta.click()
+  await expect(page).toHaveURL(/[?&]selected=T-zeta/)
+  await expect(decisionRows(page)).toHaveCount(3)
   await expect(decisionDetail(page).locator('[data-detail-title]')).toHaveText('Zeta plan everyone waits on')
-  await page.getByRole('link', { name: 'Show all' }).click()
 
   const automatic = page.getByRole('region', { name: 'Automatic' })
   await expect(automatic.getByText('Automatic redispatch')).toBeVisible()
@@ -1557,7 +1572,7 @@ test('blocked rows link blockers, the automatic band offers its one choice and a
   const log = automatic.locator('[data-acts-log]')
   await expect(log).not.toHaveAttribute('open')
   await expect(log.getByText('Redispatched')).toBeHidden()
-  await log.getByText('Factory acts (1)').click()
+  await log.getByText('Recent factory acts · 1').click()
   await expect(log.getByText('Redispatched')).toBeVisible()
 })
 
@@ -1677,7 +1692,7 @@ test('task, document and tier narrow the decisions band', async ({ page }) => {
 
   // The tier must match too: the same id at another tier is not this document.
   await page.goto('/w/demo/inbox?document=req-attention&tier=system_design')
-  await expect(page.getByText('No decisions are waiting for you.')).toBeVisible()
+  await expect(page.locator('[data-no-decisions]')).toContainText("You're clear")
   await expect(decisionRows(page)).toHaveCount(0)
 })
 
@@ -1706,6 +1721,8 @@ test('proposal details use the decision layout with server copy and a safe age',
 
   const requirement = await select(page, 'Operator attention')
   await expect(requirement.locator('[data-decision-label]')).toHaveText('Requirement proposal')
+  await expect(requirement.locator('[data-decision-label]')).toHaveAttribute('data-kind-tone', 'document')
+  await expect(requirement.locator('[data-decision-label]')).not.toHaveClass(/attention/)
   await expect(requirement.locator('[data-proposal-version]')).toHaveText('v3')
   await expect(requirement.locator('[data-proposal-age]')).toHaveText(/ago$/)
   await expect(requirement.locator('[data-proposal-age]')).toHaveAttribute('title', /\d/)
@@ -1851,6 +1868,87 @@ test('Inbox is the only primary navigation entry with a badge while requirement 
   }
 })
 
+// Tone by kind, attention for urgency only (feature-operator-next-action
+// NA-6). Deadlines are set relative to now so the three-hour threshold is
+// never borderline.
+function toneFixture(): Fixture {
+  const fixture = decisionsFixture()
+  const deadlines: Record<string, string> = {
+    'T-zeta': new Date(Date.now() + 26 * 3_600_000).toISOString(),
+    'T-alpha': new Date(Date.now() + 30 * 60_000).toISOString(),
+    'T-mid': new Date(Date.now() - 10 * 60_000).toISOString(),
+  }
+  for (const item of fixture.items) {
+    const id = item.task?.id ?? ''
+    if (!(id in deadlines)) continue
+    item.deadline = deadlines[id]
+    Object.assign(item.next_action as Record<string, unknown>, { deadline: deadlines[id] })
+    Object.assign(fixture.actions[id], { deadline: deadlines[id], if_ignored: 'Nothing moves.' })
+  }
+  return fixture
+}
+
+test('each kind takes its tone, and attention marks only what unblocks others or is due soon', async ({ page }) => {
+  await serve(page, toneFixture())
+  await page.goto('/w/demo/inbox')
+
+  await expect(decisionRows(page)).toHaveCount(3)
+  await expect(rowItems(page).locator('[data-kind-tone]')).toHaveCount(3)
+  expect(
+    await rowItems(page)
+      .locator('[data-kind-tone]')
+      .evaluateAll((nodes) => nodes.map((node) => node.getAttribute('data-kind-tone'))),
+  ).toEqual(['gate', 'question', 'broken'])
+  for (const kind of await rowItems(page).locator('[data-row-kind]').all()) {
+    await expect(kind).not.toHaveClass(/attention/)
+  }
+
+  // The countdown chip: neutral beyond three hours, attention within them,
+  // failure once overdue.
+  const later = rowItems(page).nth(0).locator('[data-due]')
+  await expect(later).toHaveAttribute('data-due', 'later')
+  await expect(later).toHaveText('due in 1d')
+  await expect(later).not.toHaveClass(/attention|failure/)
+  const soonChip = rowItems(page).nth(1).locator('[data-due]')
+  await expect(soonChip).toHaveAttribute('data-due', 'soon')
+  await expect(soonChip).toHaveText(/^due in (29|30)m$/)
+  await expect(soonChip).toHaveClass(/text-attention/)
+  const overdue = rowItems(page).nth(2).locator('[data-due]')
+  await expect(overdue).toHaveAttribute('data-due', 'overdue')
+  await expect(overdue).toHaveText(/^(10|11)m overdue$/)
+  await expect(overdue).toHaveClass(/text-failure/)
+
+  // Urgent counts the decisions due within three hours or overdue.
+  await expect(page.locator('[data-inbox-summary]')).toHaveText(
+    '3 calls need you · 2 urgent · 1 waiting on other tasks · 1 handled automatically',
+  )
+
+  // The detail repeats the chip and its label pill takes the kind's tone.
+  const alpha = await select(page, 'Alpha agent question')
+  await expect(alpha.locator('[data-decision-label]')).toHaveAttribute('data-kind-tone', 'question')
+  await expect(alpha.locator('[data-due]')).toHaveAttribute('data-due', 'soon')
+  await expect(alpha.locator('[data-if-ignored]')).toHaveText(
+    /^If nobody acts by \d{1,2}:\d{2} [AP]M: Nothing moves\.$/,
+  )
+  const mid = await select(page, 'Mid item without a deadline')
+  await expect(mid.locator('[data-decision-label]')).toHaveAttribute('data-kind-tone', 'broken')
+  await expect(mid.locator('[data-due]')).toHaveAttribute('data-due', 'overdue')
+})
+
+test('with no decisions the header says nothing needs you and the band shows the empty state', async ({ page }) => {
+  const fixture = decisionsFixture()
+  fixture.items = fixture.items.filter((item) => item.band !== 'decisions')
+  await serve(page, fixture)
+  await page.goto('/w/demo/inbox')
+
+  await expect(page.locator('[data-inbox-summary]')).toHaveText('Nothing needs you right now.')
+  const empty = page.locator('[data-no-decisions]')
+  await expect(empty).toContainText("You're clear")
+  await expect(empty).toContainText('No decisions are waiting. Conveyor will put the next one here.')
+  await expect(page.getByRole('region', { name: 'Blocked' })).toContainText('Waiting on other tasks')
+  await expect(page.getByRole('region', { name: 'Automatic' })).toContainText('Handled automatically')
+})
+
 test('the inbox fits a 390px viewport without horizontal overflow', async ({ page }) => {
   await page.setViewportSize({ width: 390, height: 900 })
   await serve(page, decisionsFixture())
@@ -1869,8 +1967,8 @@ test('band chips count every band from one unfiltered read and filter in the bro
   const harness = await serve(page, decisionsFixture())
   await page.goto('/w/demo/inbox')
   const chips = page.getByRole('navigation', { name: 'Inbox bands' })
-  await expect(chips.locator('[data-band-chip]')).toHaveText(['All', 'Decisions3', 'Blocked by tasks1', 'Auto1'])
-  await expect(chips).toContainText('Blockers first, then nearest deadline')
+  await expect(chips.locator('[data-band-chip]')).toHaveText(['Everything', 'Decisions3', 'Waiting1', 'Automatic1'])
+  await expect(page.locator('[data-inbox-order]')).toHaveText('Blockers first, then nearest deadline')
   await expect(chips.locator('[data-band-chip="all"]')).toHaveAttribute('aria-current', 'page')
 
   await chips.locator('[data-band-chip="blocked"]').click()
@@ -1900,10 +1998,12 @@ test('a decision that blocks other tasks names them on hover and keyboard focus'
   await serve(page, fixture)
   await page.goto('/w/demo/inbox')
 
-  await expect(decisionRows(page).first().locator('[data-row-blocks]')).toHaveText('Blocks 2')
-  await expect(decisionRows(page).nth(1).locator('[data-row-blocks]')).toHaveCount(0)
+  await expect(rowItems(page).first().locator('[data-row-blocks]')).toHaveText('Unblocks 2')
+  await expect(rowItems(page).first().locator('[data-row-blocks]')).toHaveClass(/text-attention/)
+  await expect(rowItems(page).nth(1).locator('[data-row-blocks]')).toHaveCount(0)
+
   const card = decisionDetail(page)
-  const chip = card.getByRole('button', { name: 'Blocks 2 tasks' })
+  const chip = card.getByRole('button', { name: 'Unblocks 2 tasks' })
   await expect(chip).toBeVisible()
   await chip.hover()
   const list = card.locator('[data-blocks-list]')
@@ -1915,7 +2015,7 @@ test('a decision that blocks other tasks names them on hover and keyboard focus'
 
   // A decision without dependents shows no chip.
   const alpha = await select(page, 'Alpha agent question')
-  await expect(alpha.getByRole('button', { name: /^Blocks / })).toHaveCount(0)
+  await expect(alpha.getByRole('button', { name: /^Unblocks / })).toHaveCount(0)
 })
 
 test('the plan context splits the plan at its headings beside the choices that decide it', async ({ page }) => {
@@ -2094,7 +2194,7 @@ test('band counts cover every page of the inbox', async ({ page }) => {
   const harness = await serve(page, fixture)
   await page.goto('/w/demo/inbox')
   const chips = page.getByRole('navigation', { name: 'Inbox bands' })
-  await expect(chips.locator('[data-band-chip="automatic"]')).toHaveText('Auto121')
+  await expect(chips.locator('[data-band-chip="automatic"]')).toHaveText('Automatic121')
   await expect(chips.locator('[data-band-chip="decisions"]')).toHaveText('Decisions3')
   const offsets = harness.inboxRequests.map((search) => new URLSearchParams(search).get('offset'))
   expect(offsets).toContain('0')
@@ -2168,7 +2268,7 @@ test('the inbox reads past 2,000 items to the server total', async ({ page }) =>
   const harness = await serve(page, fixture)
   await page.goto('/w/demo/inbox?band=blocked')
   const chips = page.getByRole('navigation', { name: 'Inbox bands' })
-  await expect(chips.locator('[data-band-chip="blocked"]')).toHaveText('Blocked by tasks2002')
+  await expect(chips.locator('[data-band-chip="blocked"]')).toHaveText('Waiting2002')
   await expect(chips.locator('[data-band-chip="decisions"]')).toHaveText('Decisions3')
   await expect(
     page.getByRole('region', { name: 'Blocked' }).getByText('Held task 2000', { exact: true }),
@@ -2387,7 +2487,7 @@ test('resolving the selected item selects the next one, or the previous when it 
   await expect(decisionRows(page)).toHaveCount(1)
   await expect(decisionDetail(page).locator('[data-detail-title]')).toHaveText('Operator attention')
   await footer().getByRole('button', { name: 'Confirm' }).click()
-  await expect(page.locator('[data-no-decisions]')).toHaveText('No decisions are waiting for you.')
+  await expect(page.locator('[data-no-decisions]')).toContainText('No decisions are waiting.')
   expect(harness.posts.length).toBeGreaterThanOrEqual(5)
 })
 
@@ -2815,7 +2915,8 @@ test('a merge decision names the recorded pull request, keeps the issue apart, a
   // The row links the recorded pull request above its selection link, so the
   // link opens the pull request and never selects the row or the issue.
   const rowLink = rowItems(page).first().locator('[data-row-pull-request]')
-  await expect(rowLink).toHaveText('acme/runtime PR #1709')
+  await expect(rowLink).toHaveText('PR #1709')
+  await expect(rowLink).toHaveAttribute('title', 'acme/runtime PR #1709')
   await expect(rowLink).toHaveAttribute('href', 'https://github.com/acme/runtime/pull/1709')
   await expect(rowItems(page).first()).not.toContainText('1671')
   await expect(decisionRows(page).first().locator('a')).toHaveCount(0)
