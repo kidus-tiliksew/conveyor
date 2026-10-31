@@ -2,6 +2,7 @@ package singlestore
 
 import (
 	"context"
+	"crypto/rand"
 	"database/sql"
 	"encoding/json"
 	"fmt"
@@ -81,4 +82,13 @@ func insertWorkspaceEvent(ctx context.Context, tx *sql.Tx, event core.Event) err
 		}
 	}
 	return nil
+}
+
+// Task timelines stay on one partition. Task-less audit rows use independent
+// random keys instead of concentrating every NULL task ID on one partition.
+func eventShardKey(taskID string) string {
+	if taskID != "" {
+		return taskID
+	}
+	return "event/" + rand.Text()
 }

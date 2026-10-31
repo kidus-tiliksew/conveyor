@@ -485,7 +485,7 @@ func (s *Store) insertOrderTx(ctx context.Context, tx *sql.Tx, o core.WorkOrder,
 		return err
 	}
 	o.Claimable = o.ClaimableAt(time.Now().UTC())
-	return taskEvent(ctx, tx, core.Event{TaskID: o.TaskID, JobID: o.JobID, Kind: "work_order.created", Payload: core.JSONPayload(o)})
+	return taskEvent(ctx, tx, core.Event{TaskID: o.TaskID, JobID: o.JobID, Kind: "work_order.created", Payload: store.WorkOrderEventPayload(o)})
 }
 func (s *Store) CreateWorkOrderCommand(ctx context.Context, lease taskops.TaskLease, o core.WorkOrder) error {
 	if !lease.ValidForCommand(o.TaskID, string(core.WorkOrderCmdCreate)) {
@@ -668,7 +668,7 @@ func (s *Store) transitionWorkOrderTx(ctx context.Context, tx *sql.Tx, o core.Wo
 	}
 	eventOrder := o
 	eventOrder.AttemptID = attempt
-	err = taskEvent(ctx, tx, core.Event{TaskID: o.TaskID, JobID: o.JobID, Kind: kind, At: now, Payload: core.JSONPayload(eventOrder)})
+	err = taskEvent(ctx, tx, core.Event{TaskID: o.TaskID, JobID: o.JobID, Kind: kind, At: now, Payload: store.WorkOrderEventPayload(eventOrder)})
 	return o, err
 }
 func reviewSeatAcceptedTx(ctx context.Context, tx *sql.Tx, ws, task, id string) (bool, error) {
@@ -1342,7 +1342,7 @@ func (s *Store) ClaimWorkOrderCommand(ctx context.Context, lease taskops.TaskLea
 				return err
 			}
 		}
-		if err = taskEvent(ctx, tx, core.Event{TaskID: o.TaskID, JobID: o.JobID, Kind: "work_order.claimed", Payload: core.JSONPayload(o)}); err != nil {
+		if err = taskEvent(ctx, tx, core.Event{TaskID: o.TaskID, JobID: o.JobID, Kind: "work_order.claimed", Payload: store.WorkOrderEventPayload(o)}); err != nil {
 			return err
 		}
 		result = o

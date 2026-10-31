@@ -1,0 +1,151 @@
+{
+  "area": "bounded-history",
+  "machines": {
+    "task-created-verify-policy": {
+      "states": [
+        {
+          "id": "no-created-history",
+          "label": "No task-created history"
+        },
+        {
+          "id": "history-holds-verify-required",
+          "label": "History holds verification required"
+        },
+        {
+          "id": "history-holds-verify-not-required",
+          "label": "History holds verification not required"
+        }
+      ],
+      "transitions": [
+        {
+          "from": "no-created-history",
+          "to": "history-holds-verify-required",
+          "event": "create-verify-required",
+          "label": "Create a task with verification required",
+          "case": "BHIST-001"
+        },
+        {
+          "from": "no-created-history",
+          "to": "history-holds-verify-not-required",
+          "event": "create-verify-not-required",
+          "label": "Create a task with verification not required",
+          "case": "BHIST-001"
+        }
+      ]
+    }
+  },
+  "cases": [
+    {
+      "id": "BHIST-001",
+      "title": "Task-created history keeps verify required and not-required as distinct facts",
+      "tier": "medium",
+      "given": "A workspace on each supported store (memory, PostgreSQL, and SingleStore) can create tasks through the real task-creation path. One task is created with verification required. A second task is created with verification not required. Each creation records a task-created audit event. Frozen task policy is not changed after creation. Task body size does not determine whether the historical verify-policy fact is kept.",
+      "when": "Those task-created events are persisted on the event ledger and later read through the event-history consumer on that same backend.",
+      "then": "For each task, the consumer reports the verify-required or verify-not-required fact that was in force at creation. The two tasks remain distinguishable. Live canonical task and order authority stay intact. Recorded events are not rewritten.",
+      "why": "After compact task-created events, later consumers still need the creation-time verify policy and cannot recover the required versus not-required distinction from a default.",
+      "source": "Approved task 261031-136441 Changes and ownership: compact task-created events retain historical policy independent of body size; done criteria require behavioral checks across memory, PostgreSQL, and SingleStore. No policy-preservation AC in req-260802-72fc68; REQ-2 AC-2.5 governs identical work-order context for unchanged lineage only.",
+      "status": "approved",
+      "approved_at": "2026-10-31",
+      "comment": "auto: agent-owned",
+      "visual": {
+        "kind": "sequence",
+        "actors": [
+          {
+            "id": "creator",
+            "label": "Task creator"
+          },
+          {
+            "id": "ledger",
+            "label": "Event ledger"
+          },
+          {
+            "id": "consumer",
+            "label": "Event-history consumer"
+          }
+        ],
+        "setup": [
+          {
+            "actor": "ledger",
+            "text": "Memory, PostgreSQL, and SingleStore each have a workspace ready for real task creation."
+          },
+          {
+            "actor": "creator",
+            "text": "Can create one task with verification required and one with verification not required."
+          },
+          {
+            "actor": "consumer",
+            "text": "Reads task-created history after the ledger persists it."
+          }
+        ],
+        "steps": [
+          {
+            "from": "creator",
+            "to": "ledger",
+            "text": "Create a task with verification required.",
+            "kind": "action"
+          },
+          {
+            "from": "ledger",
+            "to": "consumer",
+            "text": "Persist the task-created audit event.",
+            "kind": "call"
+          },
+          {
+            "from": "consumer",
+            "to": "creator",
+            "text": "Report the creation-time verify policy.",
+            "kind": "return"
+          },
+          {
+            "from": "creator",
+            "to": "ledger",
+            "text": "Create a second task with verification not required.",
+            "kind": "action"
+          },
+          {
+            "from": "ledger",
+            "to": "consumer",
+            "text": "Persist that task-created audit event.",
+            "kind": "call"
+          },
+          {
+            "from": "consumer",
+            "to": "creator",
+            "text": "Report the creation-time verify policy.",
+            "kind": "return"
+          }
+        ],
+        "asserts": [
+          {
+            "text": "The event-history consumer reports that the first task required verification at creation.",
+            "polarity": "must"
+          },
+          {
+            "text": "The event-history consumer reports that the second task did not require verification at creation.",
+            "polarity": "must"
+          },
+          {
+            "text": "Memory, PostgreSQL, and SingleStore all report those same two facts.",
+            "polarity": "must"
+          },
+          {
+            "text": "The verify-policy fact remains available when the task body is large.",
+            "polarity": "must"
+          },
+          {
+            "text": "The consumer reports the same verify-policy fact for both tasks.",
+            "polarity": "must_not"
+          },
+          {
+            "text": "The historical event replaces live canonical task or order authority.",
+            "polarity": "must_not"
+          },
+          {
+            "text": "A recorded task-created event is rewritten.",
+            "polarity": "must_not"
+          }
+        ]
+      }
+    }
+  ]
+}

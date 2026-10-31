@@ -95,14 +95,14 @@ func seedActivityValidationScale(t *testing.T, st *Store, ctx context.Context, w
 		var args []any
 		for _, id := range ids[start:min(start+50, len(ids))] {
 			for range eventsPerTask {
-				values = append(values, "(?,?,'task.updated','system','system',?,?)")
-				args = append(args, workspace, id, payload, now.Add(-time.Minute))
+				values = append(values, "(?,?,'task.updated','system','system',?,?,?)")
+				args = append(args, workspace, id, payload, now.Add(-time.Minute), id)
 			}
 		}
 		if len(values) == 0 {
 			continue
 		}
-		if _, err := sharedDatabase.admin.ExecContext(ctx, "INSERT INTO `"+sharedDatabase.name+"`.events (workspace_id, task_id, kind, actor_id, actor_role, payload_json, at) VALUES "+strings.Join(values, ","), args...); err != nil {
+		if _, err := sharedDatabase.admin.ExecContext(ctx, "INSERT INTO `"+sharedDatabase.name+"`.events (workspace_id, task_id, kind, actor_id, actor_role, payload_json, at, event_shard_key) VALUES "+strings.Join(values, ","), args...); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -215,7 +215,7 @@ func TestActivityValidationSeesRowOnlyWritesAndLateCommitsIntegration(t *testing
 		t.Fatal(err)
 	}
 	defer func() { _ = tx.Rollback() }()
-	if _, err = tx.ExecContext(ctx, "INSERT INTO `"+sharedDatabase.name+"`.events (workspace_id, task_id, kind, actor_id, actor_role, payload_json, at) VALUES (?,?,'task.updated','system','system','{}',?)", workspaceID, taskID, now.Add(-time.Minute)); err != nil {
+	if _, err = tx.ExecContext(ctx, "INSERT INTO `"+sharedDatabase.name+"`.events (workspace_id, task_id, kind, actor_id, actor_role, payload_json, at, event_shard_key) VALUES (?,?,'task.updated','system','system','{}',?,?)", workspaceID, taskID, now.Add(-time.Minute), taskID); err != nil {
 		t.Fatal(err)
 	}
 	if err = st.AppendEvent(ctx, core.Event{TaskID: taskID, Kind: "task.updated", At: now.Add(-time.Minute)}); err != nil {

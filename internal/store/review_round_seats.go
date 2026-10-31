@@ -690,7 +690,7 @@ func (m *memory) AddReviewSeatsCommand(ctx context.Context, lease taskops.TaskLe
 		order := plan.Orders[i]
 		order.UpdatedAt = now
 		m.workOrders[order.ID] = order
-		m.appendEventLocked(ctx, core.Event{TaskID: task.ID, JobID: job.ID, Kind: "work_order.created", Payload: core.JSONPayload(order), At: now})
+		m.appendEventLocked(ctx, core.Event{TaskID: task.ID, JobID: job.ID, Kind: "work_order.created", Payload: WorkOrderEventPayload(order), At: now})
 	}
 	m.putReviewRoundSeatsLocked(task.Workspace, plan.Record)
 	m.reviewSeatAdditions[key] = memoryReviewSeatAddition{workspace: workspace, ReviewSeatAddition: plan.Ledger}

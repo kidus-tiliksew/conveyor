@@ -118,6 +118,10 @@ func writeRow(ctx context.Context, tx *sql.Tx, w rowWrite) (sql.Result, error) {
 			return nil, fmt.Errorf("%s insert: %w", w.table, err)
 		}
 	}
+	if w.table == "events" {
+		taskID, _ := w.values["task_id"].(string)
+		w.values["event_shard_key"] = eventShardKey(taskID)
+	}
 	if !validIdentifier(w.table) {
 		return nil, fmt.Errorf("invalid SQL table")
 	}

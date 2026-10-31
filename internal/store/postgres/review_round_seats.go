@@ -180,7 +180,7 @@ func (s *Store) AddReviewSeatsCommand(ctx context.Context, lease taskops.TaskLea
 			if err = insertReviewSeatAdditionOrderTx(ctx, tx, workspaceID, order); err != nil {
 				return err
 			}
-			if err = insertEvent(ctx, q, core.Event{TaskID: request.TaskID, JobID: job.ID, Kind: "work_order.created", Payload: core.JSONPayload(order), At: now}); err != nil {
+			if err = insertEvent(ctx, q, core.Event{TaskID: request.TaskID, JobID: job.ID, Kind: "work_order.created", Payload: store.WorkOrderEventPayload(order), At: now}); err != nil {
 				return err
 			}
 		}

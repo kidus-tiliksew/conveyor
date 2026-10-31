@@ -3,6 +3,7 @@ package storetest
 import (
 	"context"
 	"encoding/json"
+	"strings"
 	"testing"
 	"time"
 
@@ -47,11 +48,49 @@ func runTaskCreationProvenance(t *testing.T, x Fixture) {
 		if len(found) != 1 {
 			t.Fatalf("task %s has %d task.created events", taskID, len(found))
 		}
+		var fields map[string]json.RawMessage
+		requireOK(t, json.Unmarshal(found[0].Payload, &fields))
+		for _, field := range []string{"body", "title", "source", "repo", "dependencies", "children"} {
+			if _, copied := fields[field]; copied {
+				t.Fatalf("task.created copied stored task field %q", field)
+			}
+		}
 		return found[0]
 	}
 
+	// case: BHIST-001
+	t.Run("creation history preserves distinct verify policies", func(t *testing.T) {
+		required := newTask("api", "history-required-"+core.NewTaskID())
+		required.Body = strings.Repeat("Canonical task authority remains in task storage.\n", 20000)
+		required.SetupContract.VerifyStage = true
+		requireOK(t, st.CreateTaskWithDependenciesAndContext(humanCtx, required, nil, store.TaskContextInput{}))
+		recorded := created(t, required.ID)
+
+		notRequired := newTask("api", "history-not-required-"+core.NewTaskID())
+		notRequired.SetupContract.VerifyStage = false
+		requireOK(t, st.CreateTaskWithDependenciesAndContext(humanCtx, notRequired, nil, store.TaskContextInput{}))
+
+		for _, task := range []core.Task{required, notRequired} {
+			event := created(t, task.ID)
+			var history store.TaskCreatedEvent
+			requireOK(t, json.Unmarshal(event.Payload, &history))
+			if history.PolicyContract.VerifyStage != task.SetupContract.VerifyStage {
+				t.Fatalf("task %s creation history verify policy=%t, want %t", task.ID, history.PolicyContract.VerifyStage, task.SetupContract.VerifyStage)
+			}
+			stored, err := st.GetTask(base, task.ID)
+			requireOK(t, err)
+			if stored.Body != task.Body || stored.SetupContract.VerifyStage != task.SetupContract.VerifyStage {
+				t.Fatalf("task %s canonical body or verify policy changed", task.ID)
+			}
+			if task.ID == required.ID && (event.ID != recorded.ID || string(event.Payload) != string(recorded.Payload)) {
+				t.Fatal("creating a task with another policy rewrote earlier task-created history")
+			}
+		}
+	})
+
 	t.Run("agent creation records agent and owner", func(t *testing.T) {
 		task := newTask("mcp", "provenance-agent-"+core.NewTaskID())
+		task.Body = strings.Repeat("The complete task body belongs in task storage, not audit events.\n", 20000)
 		requireOK(t, st.CreateTaskWithDependenciesAndContext(agentCtx, task, nil, store.TaskContextInput{DesignIDs: []string{design.ID}}))
 		event := created(t, task.ID)
 		if event.ActorID != store.AgentActorID(agent.ID) || event.ActorRole != core.ActorAgent {
@@ -62,18 +101,20 @@ func runTaskCreationProvenance(t *testing.T, x Fixture) {
 		if !ok || provenance.AgentCredentialID != agent.ID || provenance.OwnerUserID != agent.OwnerUserID {
 			t.Fatalf("provenance=%+v ok=%t payload=%s", provenance, ok, event.Payload)
 		}
-		// The additive field leaves the payload decodable as the task, with
-		// the intake context IDs retries compare against.
-		var decoded core.Task
+		var decoded store.TaskCreatedEvent
 		requireOK(t, json.Unmarshal(event.Payload, &decoded))
-		if decoded.ID != task.ID || decoded.Source != "mcp" || decoded.Body != task.Body || decoded.Title != task.Title || !decoded.SpecApproval || !decoded.MergeApproval {
-			t.Fatalf("decoded=%+v", decoded)
+		if decoded.ID != task.ID || !decoded.SpecApproval || !decoded.MergeApproval || decoded.State != core.TaskQueued || decoded.NextStage != core.StageTriage {
+			t.Fatalf("creation history=%+v", decoded)
 		}
 		if len(decoded.Context.Designs) != 1 || decoded.Context.Designs[0].ID != design.ID {
-			t.Fatalf("decoded context=%+v", decoded.Context)
+			t.Fatalf("creation context=%+v", decoded.Context)
 		}
 		persisted, err := st.GetTask(base, task.ID)
 		requireOK(t, err)
+		if persisted.Body != task.Body || persisted.Title != task.Title || persisted.Source != task.Source {
+			t.Fatal("task storage did not preserve the complete intake")
+		}
+		t.Logf("stored task body=%d bytes; task.created=%d bytes", len(persisted.Body), len(event.Payload))
 		if persisted.State != core.TaskQueued || persisted.NextStage != core.StageTriage {
 			t.Fatalf("agent task did not enter triage: state=%s next=%s", persisted.State, persisted.NextStage)
 		}
@@ -85,7 +126,7 @@ func runTaskCreationProvenance(t *testing.T, x Fixture) {
 		}
 	})
 
-	t.Run("human and system creations keep the plain payload", func(t *testing.T) {
+	t.Run("human and system creations omit provenance", func(t *testing.T) {
 		for _, creator := range []struct {
 			name  string
 			ctx   context.Context
@@ -109,6 +150,69 @@ func runTaskCreationProvenance(t *testing.T, x Fixture) {
 			if _, present := fields["trigger_provenance"]; present {
 				t.Fatalf("%s payload has trigger_provenance: %s", name, event.Payload)
 			}
+		}
+	})
+
+	t.Run("blueprint children reference stored task content and ancestry", func(t *testing.T) {
+		parent := newTask("api", "")
+		requireOK(t, st.CreateTask(base, parent))
+		version := createBlueprintSpec(t, base, st, parent.ID, []blueprintItem{{
+			ID: "SUB-1", Repo: repo, Summary: strings.Repeat("Child task content. ", 512),
+		}})
+		children := approveBlueprint(t, agentCtx, st, parent.ID, version.Version)
+		if len(children) != 1 {
+			t.Fatalf("materialized children=%d", len(children))
+		}
+		child := children[0]
+		event := created(t, child.ID)
+		var decoded store.TaskCreatedEvent
+		requireOK(t, json.Unmarshal(event.Payload, &decoded))
+		if decoded.ID != child.ID || decoded.ParentTaskID != parent.ID || decoded.OriginSpecVersion != version.Version {
+			t.Fatalf("child ancestry=%+v", decoded)
+		}
+		persisted, err := st.GetTask(base, child.ID)
+		requireOK(t, err)
+		if persisted.Body != child.Body {
+			t.Fatal("materialized child body was not preserved")
+		}
+		provenance, ok, err := store.TaskCreatedProvenance(event.Payload)
+		requireOK(t, err)
+		if !ok || provenance.AgentCredentialID != agent.ID {
+			t.Fatalf("child creation provenance=%+v ok=%t", provenance, ok)
+		}
+	})
+
+	t.Run("planning tasks reference stored task content", func(t *testing.T) {
+		session, err := st.CreatePlanningSession(base, core.PlanningSession{ID: "session-" + core.NewTaskID(), Goal: core.PlanningGoalBundle})
+		requireOK(t, err)
+		pendingDesign, pendingVersion, err := st.CreateSystemDesign(base,
+			core.SystemDesign{ID: "bundle-design-" + core.NewTaskID(), Title: "Planning task references", Category: "Architecture"},
+			core.SystemDesignVersion{Content: designProposalContent("task references"), Origin: core.SystemDesignOriginOperator})
+		requireOK(t, err)
+		body := strings.Repeat("Planning task content.\n", 512) + "End"
+		bundle, err := st.CreatePlanningBundle(base, core.PlanningBundle{
+			ID: "bundle-" + core.NewTaskID(), SessionID: session.ID, Title: "Task event references",
+			Documents: []core.PlanningBundleDocument{{Kind: core.PlanningBundleSystemDesign, ID: pendingDesign.ID, Version: pendingVersion.Version}},
+			Tasks:     []core.PlanningBundleTask{{MemberID: "one", Title: "Planned task", Body: body, Repo: repo}},
+		})
+		requireOK(t, err)
+		approved, err := st.ApprovePlanningBundle(agentCtx, bundle.ID)
+		requireOK(t, err)
+		event := created(t, approved.Tasks[0].CreatedTaskID)
+		var decoded store.TaskCreatedEvent
+		requireOK(t, json.Unmarshal(event.Payload, &decoded))
+		if decoded.ID != approved.Tasks[0].CreatedTaskID {
+			t.Fatalf("planned task identity=%q", decoded.ID)
+		}
+		persisted, err := st.GetTask(base, decoded.ID)
+		requireOK(t, err)
+		if persisted.Body != body {
+			t.Fatal("planned task body was not preserved")
+		}
+		provenance, ok, err := store.TaskCreatedProvenance(event.Payload)
+		requireOK(t, err)
+		if !ok || provenance.AgentCredentialID != agent.ID {
+			t.Fatalf("planning task creation provenance=%+v ok=%t", provenance, ok)
 		}
 	})
 

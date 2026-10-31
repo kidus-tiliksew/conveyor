@@ -925,7 +925,7 @@ func (s *Store) ApproveSpecVersionAndMaterialize(ctx context.Context, taskID str
 			if err = insertTaskRow(ctx, tx, child); err != nil {
 				return fmt.Errorf("materialize %s: %w", item.ID, err)
 			}
-			if err = taskEvent(ctx, tx, core.Event{TaskID: child.ID, Kind: "task.created", Payload: core.JSONPayload(child), At: createdAt}); err != nil {
+			if err = taskEvent(ctx, tx, core.Event{TaskID: child.ID, Kind: "task.created", Payload: store.TaskCreatedPayload(ctx, child), At: createdAt}); err != nil {
 				return err
 			}
 			if _, err = s.enqueueTaskTx(ctx, tx, child.ID, child.Workspace); err != nil {

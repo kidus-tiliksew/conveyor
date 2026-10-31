@@ -16,6 +16,13 @@ parameter count plus one, such as a pinned claim snapshot of a few MiB. SingleSt
 and refuses another server time zone rather than silently misreading timestamps. The MySQL driver stays inside this package and
 `internal/eventlog/s2log`. No SQL layer is shared with PostgreSQL.
 
+`connectionConfig` forces `interpolateParams=true`, including when a supplied
+DSN disables it. SingleStore rejects `COM_STMT_SEND_LONG_DATA` with errno 1706;
+the MySQL driver's prepared-statement path selects that command for a parameter
+at least `maxAllowedPacket/(parameter count+1)` bytes long, even when the full
+statement fits the packet budget. Driver-escaped text queries preserve complete
+large string and JSON parameters without that unsupported protocol command.
+
 ## Implemented behavior
 
 The backend implements the complete `store.Backend` interface, including
@@ -35,12 +42,19 @@ no durable dispatch or publication jobs to reconcile.
 `migrations/0001_schema.sql` defines all 56 current relational tables from
 scratch. It uses the schema domains in component-persistence as its
 checklist. No PostgreSQL migration runs against SingleStore. JSON stores JSON
-objects and array-valued projections, timestamps use `DATETIME(6)`, and all
-tables are rowstores with binary UTF-8 collation for case-sensitive identifiers. Key columns use `VARCHAR(255)`; other text is `LONGTEXT`.
+objects and array-valued projections, timestamps use `DATETIME(6)`, and binary
+UTF-8 collation preserves case-sensitive identifiers. The initial tables are
+rowstores; migration 0027 converts the append-only `events` table to columnstore.
+Key columns use `VARCHAR(255)`; other text is `LONGTEXT`.
 
-Every workspace table shards on `workspace_id`. Jobs, transcripts, specs and
-interventions carry that column explicitly rather than inheriting scope from
-a parent join. Deployment tables shard on their primary key. Every unique key
+Workspace tables shard on `workspace_id`, except `events`, which shards on
+the non-null `event_shard_key`: the task ID when present, otherwise
+`event/<id>` for historical rows or `event/<random id>` for new rows. Each
+task's timeline stays together, while task-less events spread across partitions
+instead of concentrating a workspace's NULL task IDs on one shard.
+Jobs, transcripts, specs and interventions carry workspace scope explicitly
+rather than inheriting it from a parent join. Deployment tables shard on their
+primary key. Every unique key
 includes the shard key. Consequently, a unique key alone does not establish a
 deployment-wide identity when that identity is not the shard key. Identity
 writers must serialize and check global email, token hash and singleton rules.
@@ -61,14 +75,56 @@ in place and is retried on startup. This differs from PostgreSQL's atomic DDL
 transaction. Published migration files are immutable; corrections get a new
 number. Checksums are never rewritten to conceal a failure.
 
+### Events columnstore upgrade (0027)
+
+Stop **all** old API/worker writers and readers before starting the upgraded binary.
+Keep all traffic stopped until migration, allocator synchronization, and post-upgrade checks complete.
+The startup lock excludes other migrators, not old processes.
+SingleStore supports only separate `ALTER TABLE ... RENAME TO` operations, so `events` is briefly absent during the swap.
+An interrupted start resumes from its staging table or rename state.
+Restart the same upgraded binary against the same database with traffic still frozen; do not reset the migration ledger or manually drop either migration table.
+
+The copy preserves IDs, timestamps, nullable task/job IDs and JSON payloads.
+Each server-side `INSERT SELECT` copies at most 256 candidate IDs and roughly
+8 MiB of payload (an oversized row or equal IDs across workspaces can exceed
+that budget). Go fetches only ID/length metadata, never document bodies.
+The staging columnstore is flushed every 32 batches and before promotion, so
+its row buffer does not retain a second full event log in RAM (roughly
+256 MiB of payload between flushes, plus indexes and row overhead).
+The source stays intact until counts match and promotion succeeds. All
+aggregators' AUTO_INCREMENT allocators are synchronized before the old table
+is dropped, preserving existing cursor IDs. AUTO_INCREMENT retains
+SingleStore's existing per-aggregator ordering semantics, not a new global
+commit-order guarantee.
+
+The sort key `(workspace_id, task_id, at, id)` supports task timelines.
+Hash indexes cover task equality and workspace/event-ID lookups; workspace
+time/kind scans aggregate across task shards. The unique hash key includes
+`event_shard_key` as required by SingleStore. Normal event writers always
+allocate IDs; no new explicit-ID write path is introduced.
+Reserve disk for both copies and keep the existing rowstore plus the staging
+buffer/index RAM available during copying. Compression and host I/O determine
+actual upgrade time and peak memory; measure a restored production backup
+before scheduling the outage.
+
+Before scheduling the upgrade, take a compatible backup and rehearse restoration and the complete upgrade against an isolated restored database.
+Record backup identity, restoration success, pre-upgrade event counts, migration completion, post-upgrade counts, taskless-event reads, workspace isolation, and a successful resumed write.
+Measure elapsed time and peak resources in that rehearsal; local synthetic results do not establish a production outage duration or memory bound.
+If recovery cannot converge, leave traffic frozen and restore the compatible backup with the matching old binary.
+Rollback is a backup restoration, not an in-place reverse migration or manual table rename.
+Only the operator performs production backup, deployment, traffic changes, or rollback.
+After local validation, tear down only the invocation-owned fixture databases and processes through the repository validation tooling.
+Do not stop the coordinator's shared SingleStore container or remove its unrelated databases.
+
 ## Lock and transaction contract
 
 `withTx` rolls back on errors, cancellation and panic. It translates MySQL
 1062 on `jobs_pkey`/`jobs_dispatch_unique` and
 `reference_documents_live_name_idx` into the store conflict sentinels; 1205
 and 1213 become `store.ErrRetryable`. Callers retry the whole command, never
-an individual statement inside a failed transaction. Other MySQL errors lose
-their driver type before crossing the backend boundary.
+an individual statement inside a failed transaction. Other MySQL errors log
+their errno, SQLSTATE, message, and translating operation on the server, then
+lose their driver type and detail before crossing the backend boundary.
 
 `lockKey` hashes a logical key to a fixed-width row, inserts it on first use,
 and selects it `FOR UPDATE`. A transaction holds that row until commit or
@@ -139,6 +195,16 @@ express the PostgreSQL constraints:
 The schema cannot synthesize `work_orders.queue_deadline`; its writer supplies
 the frozen queue deadline. Deferred uniqueness must be checked at the command
 boundary under locks after all intermediate writes, before committing.
+
+Work-order lifecycle events retain the order ID and attempt/lifecycle metadata,
+not governance or served-requirement snapshot bodies. The `work_orders` row is
+the stored authority pin; all backends share the same event payload projection.
+
+`task.created` likewise references the task instead of copying its body or live
+display fields, including blueprint-child and planning-bundle creation. It
+retains only the initial state, policy switches, assignee ID, ancestry, intake
+context IDs and verified trigger provenance used by event consumers. These
+historical values cannot be recovered from the task's current mutable row.
 
 ## Verification and CI
 

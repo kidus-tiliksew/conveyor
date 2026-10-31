@@ -32,9 +32,9 @@ func TestTaskEventWindowDelayedCommitIntegration(t *testing.T) {
 		t.Fatal(err)
 	}
 	at := time.Date(2026, 10, 2, 5, 0, 0, 0, time.UTC)
-	insert := "INSERT INTO events (workspace_id, task_id, kind, actor_id, actor_role, payload_json, at) VALUES (?, ?, 'test.delayed', 'fixture', 'system', '{}', ?)"
+	insert := "INSERT INTO events (workspace_id, task_id, kind, actor_id, actor_role, payload_json, at, event_shard_key) VALUES (?, ?, 'test.delayed', 'fixture', 'system', '{}', ?, ?)"
 	for i := 0; i < 3; i++ {
-		if _, err := st.db.ExecContext(ctx, insert, ws, task.ID, at.Add(time.Duration(i)*time.Second)); err != nil {
+		if _, err := st.db.ExecContext(ctx, insert, ws, task.ID, at.Add(time.Duration(i)*time.Second), task.ID); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -43,7 +43,7 @@ func TestTaskEventWindowDelayedCommitIntegration(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer func() { _ = delayed.Rollback() }()
-	result, err := delayed.ExecContext(ctx, insert, ws, task.ID, at.Add(-time.Hour))
+	result, err := delayed.ExecContext(ctx, insert, ws, task.ID, at.Add(-time.Hour), task.ID)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -51,7 +51,7 @@ func TestTaskEventWindowDelayedCommitIntegration(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	result, err = st.db.ExecContext(ctx, insert, ws, task.ID, at.Add(time.Hour))
+	result, err = st.db.ExecContext(ctx, insert, ws, task.ID, at.Add(time.Hour), task.ID)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -135,10 +135,10 @@ func TestTaskEventWindowFetchBoundsIntegration(t *testing.T) {
 	}
 	at := time.Date(2026, 10, 2, 6, 0, 0, 0, time.UTC)
 	huge := strings.Repeat("x", 2<<20)
-	insert := "INSERT INTO events (workspace_id, task_id, kind, actor_id, actor_role, payload_json, at) VALUES (?, ?, ?, ?, 'system', '{}', ?)"
+	insert := "INSERT INTO events (workspace_id, task_id, kind, actor_id, actor_role, payload_json, at, event_shard_key) VALUES (?, ?, ?, ?, 'system', '{}', ?, ?)"
 	ids := make([]int64, 4)
 	for i, row := range []struct{ kind, actor string }{{"test.fetch", "fixture"}, {"test.fetch", "fixture"}, {"test.fetch", huge}, {huge, "fixture"}} {
-		result, err := st.db.ExecContext(ctx, insert, ws, task.ID, row.kind, row.actor, at.Add(time.Duration(i)*time.Second))
+		result, err := st.db.ExecContext(ctx, insert, ws, task.ID, row.kind, row.actor, at.Add(time.Duration(i)*time.Second), task.ID)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -215,7 +215,7 @@ func TestTaskEventWindowFetchBoundsIntegration(t *testing.T) {
 	payloadIDs := make([]int64, 2)
 	small := `{"n":1}`
 	for i, payload := range []string{`{"blob":"` + strings.Repeat("y", 2<<20) + `"}`, small} {
-		result, err := st.db.ExecContext(ctx, "INSERT INTO events (workspace_id, task_id, kind, actor_id, actor_role, payload_json, at) VALUES (?, ?, 'test.payload', 'fixture', 'system', ?, ?)", ws, payloadTask.ID, payload, later.Add(time.Duration(i)*time.Second))
+		result, err := st.db.ExecContext(ctx, "INSERT INTO events (workspace_id, task_id, kind, actor_id, actor_role, payload_json, at, event_shard_key) VALUES (?, ?, 'test.payload', 'fixture', 'system', ?, ?, ?)", ws, payloadTask.ID, payload, later.Add(time.Duration(i)*time.Second), payloadTask.ID)
 		if err != nil {
 			t.Fatal(err)
 		}

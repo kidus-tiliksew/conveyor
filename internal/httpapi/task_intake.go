@@ -356,7 +356,7 @@ func (s *Server) taskContextsForRetry(ctx context.Context, taskID string) (core.
 		if event.Kind != "task.created" {
 			continue
 		}
-		var created core.Task
+		var created store.TaskCreatedEvent
 		if err := json.Unmarshal(event.Payload, &created); err != nil {
 			return core.TaskContext{}, store.TaskContextInput{}, fmt.Errorf("decode task.created context: %w", err)
 		}

@@ -181,7 +181,7 @@ func (s *Store) settleAcceptedReviewTx(ctx context.Context, tx *sql.Tx, o core.W
 		if err = orderWrite(ctx, tx, o); err != nil {
 			return err
 		}
-		if err = taskEvent(ctx, tx, core.Event{TaskID: o.TaskID, JobID: o.JobID, Kind: "work_order.updated", Payload: core.JSONPayload(o), At: now}); err != nil {
+		if err = taskEvent(ctx, tx, core.Event{TaskID: o.TaskID, JobID: o.JobID, Kind: "work_order.updated", Payload: store.WorkOrderEventPayload(o), At: now}); err != nil {
 			return err
 		}
 	}

@@ -251,7 +251,7 @@ func (s *Store) CreateConflictFixCommand(ctx context.Context, lease taskops.Task
 		if err != nil {
 			return err
 		}
-		if err = insertEvent(ctx, q, core.Event{TaskID: request.TaskID, JobID: request.Job.ID, Kind: "work_order.created", Payload: core.JSONPayload(order)}); err != nil {
+		if err = insertEvent(ctx, q, core.Event{TaskID: request.TaskID, JobID: request.Job.ID, Kind: "work_order.created", Payload: store.WorkOrderEventPayload(order)}); err != nil {
 			return err
 		}
 		if err = insertEvent(ctx, q, core.Event{TaskID: request.TaskID, JobID: request.Job.ID, Kind: "pipeline.awaiting_work_order", Payload: core.JSONPayload(map[string]any{"stage": core.StageImplement, "execution": "mcp", "reason_code": "merge-conflict"})}); err != nil {

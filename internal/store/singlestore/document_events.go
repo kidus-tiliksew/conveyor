@@ -130,7 +130,7 @@ func insertLineageLink(ctx context.Context, tx *sql.Tx, l core.LineageLink) erro
 }
 
 func documentTaskEvents(ctx context.Context, db s2log.Executor, taskID string) ([]core.Event, error) {
-	rows, err := documentRows(ctx, db, `SELECT id,COALESCE(task_id,''),COALESCE(job_id,''),kind,actor_id,actor_role,payload_json,at FROM events WHERE workspace_id=? AND task_id=? ORDER BY at,id`, documentWorkspace(ctx), taskID)
+	rows, err := documentRows(ctx, db, `SELECT id,COALESCE(task_id,''),COALESCE(job_id,''),kind,actor_id,actor_role,payload_json,at FROM events WHERE workspace_id=? AND event_shard_key=? AND task_id=event_shard_key ORDER BY at,id`, documentWorkspace(ctx), taskID)
 	if err != nil {
 		return nil, err
 	}
@@ -185,11 +185,37 @@ func (s *Store) listActivityMarkers(ctx context.Context, taskIDs []string, now t
 	var rows []markerRow
 	var selected *documentResultSet
 	var err error
-	query := `SELECT t.id,COALESCE((SELECT w.stage FROM work_orders w WHERE w.workspace_id=t.workspace_id AND w.task_id=t.id AND w.state='claimed' ORDER BY w.execution_started_at DESC,w.created_at DESC,w.id DESC LIMIT 1),(SELECT j.stage FROM jobs j WHERE j.workspace_id=t.workspace_id AND j.task_id=t.id ORDER BY j.started_at DESC,j.id DESC LIMIT 1),''),COALESCE((SELECT e.at FROM events e WHERE e.workspace_id=t.workspace_id AND e.task_id=t.id ORDER BY e.at DESC,e.id DESC LIMIT 1),t.created_at),COALESCE((SELECT e.id FROM events e WHERE e.workspace_id=t.workspace_id AND e.task_id=t.id ORDER BY e.at DESC,e.id DESC LIMIT 1),0) FROM tasks t WHERE t.workspace_id=?`
+	taskFilter := ""
+	if len(taskIDs) > 0 {
+		taskFilter = " AND id IN (%s)"
+	}
+	// Events shard by task rather than workspace. Rank the scoped rows and
+	// join once: correlated LIMIT subqueries cannot cross those shard keys.
+	query := `WITH scoped_tasks AS (
+		SELECT workspace_id,id,created_at FROM tasks WHERE workspace_id=?` + taskFilter + `
+	), claimed AS (
+		SELECT w.workspace_id,w.task_id,w.stage,
+			ROW_NUMBER() OVER (PARTITION BY w.workspace_id,w.task_id ORDER BY w.execution_started_at DESC,w.created_at DESC,w.id DESC) AS position
+		FROM work_orders w JOIN scoped_tasks t ON t.workspace_id=w.workspace_id AND t.id=w.task_id WHERE w.state='claimed'
+	), latest_jobs AS (
+		SELECT j.workspace_id,j.task_id,j.stage,
+			ROW_NUMBER() OVER (PARTITION BY j.workspace_id,j.task_id ORDER BY j.started_at DESC,j.id DESC) AS position
+		FROM jobs j JOIN scoped_tasks t ON t.workspace_id=j.workspace_id AND t.id=j.task_id
+	), latest_events AS (
+		SELECT e.workspace_id,e.task_id,e.at,e.id,
+			ROW_NUMBER() OVER (PARTITION BY e.workspace_id,e.event_shard_key ORDER BY e.at DESC,e.id DESC) AS position
+		FROM events e JOIN scoped_tasks t ON t.workspace_id=e.workspace_id AND t.id=e.event_shard_key AND t.id=e.task_id
+	)
+	SELECT t.id,COALESCE(w.stage,j.stage,''),COALESCE(e.at,t.created_at),COALESCE(e.id,0)
+	FROM scoped_tasks t
+	LEFT JOIN claimed w ON w.workspace_id=t.workspace_id AND w.task_id=t.id AND w.position=1
+	LEFT JOIN latest_jobs j ON j.workspace_id=t.workspace_id AND j.task_id=t.id AND j.position=1
+	LEFT JOIN latest_events e ON e.workspace_id=t.workspace_id AND e.task_id=t.id AND e.position=1
+	ORDER BY t.created_at,t.id`
 	if len(taskIDs) == 0 {
-		selected, err = documentRows(ctx, s.db, query+` ORDER BY t.created_at,t.id`, documentWorkspace(ctx))
+		selected, err = documentRows(ctx, s.db, query, documentWorkspace(ctx))
 	} else {
-		selected, err = documentBatchRows(ctx, s.db, query+` AND t.id IN (%s) ORDER BY t.created_at,t.id`, documentWorkspace(ctx), taskIDs)
+		selected, err = documentBatchRows(ctx, s.db, query, documentWorkspace(ctx), taskIDs)
 	}
 
 	if err != nil {
@@ -388,18 +414,18 @@ func (s *Store) ListFactoryActs(ctx context.Context, since time.Time, limit int)
 // from per-aggregator AUTO_INCREMENT ranges, so numeric order is not insertion
 // order and never selects the tail (component-persistence; DEC-39).
 func (s *Store) ListEventsAfter(ctx context.Context, id string, after int64) ([]core.Event, error) {
-	query := `SELECT id,COALESCE(task_id,''),COALESCE(job_id,''),kind,actor_id,actor_role,payload_json,at FROM events WHERE workspace_id=? AND task_id=? ORDER BY at,id`
+	query := `SELECT id,COALESCE(task_id,''),COALESCE(job_id,''),kind,actor_id,actor_role,payload_json,at FROM events WHERE workspace_id=? AND event_shard_key=? AND task_id=event_shard_key ORDER BY at,id`
 	args := []any{documentWorkspace(ctx), id}
 	if after != 0 {
 		var anchorAt time.Time
-		err := documentRow(ctx, s.db, `SELECT at FROM events WHERE workspace_id=? AND task_id=? AND id=?`, documentWorkspace(ctx), id, after).Scan(&anchorAt)
+		err := documentRow(ctx, s.db, `SELECT at FROM events WHERE workspace_id=? AND event_shard_key=? AND task_id=event_shard_key AND id=?`, documentWorkspace(ctx), id, after).Scan(&anchorAt)
 		if errors.Is(err, sql.ErrNoRows) {
 			return nil, store.ErrEventAnchorNotFound
 		}
 		if err != nil {
 			return nil, err
 		}
-		query = `SELECT id,COALESCE(task_id,''),COALESCE(job_id,''),kind,actor_id,actor_role,payload_json,at FROM events WHERE workspace_id=? AND task_id=? AND (at>? OR at=? AND id>?) ORDER BY at,id`
+		query = `SELECT id,COALESCE(task_id,''),COALESCE(job_id,''),kind,actor_id,actor_role,payload_json,at FROM events WHERE workspace_id=? AND event_shard_key=? AND task_id=event_shard_key AND (at>? OR at=? AND id>?) ORDER BY at,id`
 		args = append(args, anchorAt, anchorAt, after)
 	}
 	rows, err := documentRows(ctx, s.db, query, args...)
@@ -419,7 +445,7 @@ func (s *Store) ReadTaskEventStream(ctx context.Context, q store.TaskEventStream
 	if err := documentRow(ctx, s.db, `SELECT 1 FROM tasks WHERE workspace_id=? AND id=?`, documentWorkspace(ctx), q.TaskID).Scan(&exists); err != nil {
 		return store.TaskEventStreamPage{}, notFound(err, "task %s", q.TaskID)
 	}
-	query := `SELECT id,COALESCE(task_id,''),COALESCE(job_id,''),kind,actor_id,actor_role,payload_json,at FROM events WHERE workspace_id=? AND task_id=?`
+	query := `SELECT id,COALESCE(task_id,''),COALESCE(job_id,''),kind,actor_id,actor_role,payload_json,at FROM events WHERE workspace_id=? AND event_shard_key=? AND task_id=event_shard_key`
 	args := []any{documentWorkspace(ctx), q.TaskID}
 	if !q.Since.IsZero() {
 		query += ` AND at>=?`
@@ -447,12 +473,14 @@ func (s *Store) ReadTaskEventStream(ctx context.Context, q store.TaskEventStream
 }
 func (s *Store) CountEvents(ctx context.Context, id, kind string) (int, error) {
 	var n int
-	err := documentRow(ctx, s.db, `SELECT COUNT(*) FROM events WHERE workspace_id=? AND task_id=? AND kind=?`, documentWorkspace(ctx), id, kind).Scan(&n)
+	err := documentRow(ctx, s.db, `SELECT COUNT(*) FROM events WHERE workspace_id=? AND event_shard_key=? AND task_id=event_shard_key AND kind=?`, documentWorkspace(ctx), id, kind).Scan(&n)
 	return n, err
 }
 func (s *Store) CountEventsSinceHumanIntervention(ctx context.Context, id, kind string) (int, error) {
 	var n int
-	err := documentRow(ctx, s.db, `SELECT COUNT(*) FROM events e WHERE workspace_id=? AND task_id=? AND kind=? AND (NOT EXISTS(SELECT 1 FROM interventions i WHERE i.workspace_id=e.workspace_id AND i.task_id=e.task_id AND i.actor_role='human') OR e.at>(SELECT MAX(i.at) FROM interventions i WHERE i.workspace_id=e.workspace_id AND i.task_id=e.task_id AND i.actor_role='human'))`, documentWorkspace(ctx), id, kind).Scan(&n)
+	err := documentRow(ctx, s.db, `SELECT COUNT(*) FROM events e
+		LEFT JOIN (SELECT MAX(at) AS last_at FROM interventions WHERE workspace_id=? AND task_id=? AND actor_role='human') i ON 1=1
+		WHERE e.workspace_id=? AND e.event_shard_key=? AND e.task_id=e.event_shard_key AND e.kind=? AND (i.last_at IS NULL OR e.at>i.last_at)`, documentWorkspace(ctx), id, documentWorkspace(ctx), id, kind).Scan(&n)
 	return n, err
 }
 func (s *Store) ListRequirementEvents(ctx context.Context, id string) ([]core.Event, error) {
