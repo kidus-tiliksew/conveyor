@@ -2,6 +2,7 @@
 // the page (DEC-76).
 import ELK, { type ELK as ElkApi, type ElkNode } from 'elkjs/lib/elk-api'
 import workerUrl from 'elkjs/lib/elk-worker.min.js?url'
+import { adoptLayoutWorker } from './layout-worker'
 
 export const CARD_WIDTH = 264
 export const CARD_HEIGHT = 80
@@ -11,7 +12,8 @@ export const HUB_HEIGHT = 132
 // ELK answers each layout through its worker. A worker that fails to load or
 // dies answers nothing, so its error event rejects every layout in flight and
 // the next layout starts a fresh worker (component-web-task-surfaces, Board
-// map Layout failure).
+// map Layout failure). The first engine adopts the worker the Board started
+// when it asked for the map's chunk (layout-worker.ts).
 let engine: { elk: ElkApi; failed: Promise<never> } | undefined
 
 function layoutEngine() {
@@ -26,7 +28,7 @@ function layoutEngine() {
     elk: new ELK({
       workerUrl,
       workerFactory: (url) => {
-        const worker = new Worker(url as string)
+        const worker = adoptLayoutWorker(url as string)
         worker.addEventListener('error', (event) => {
           if (engine === current) engine = undefined
           worker.terminate()
@@ -119,9 +121,26 @@ export interface Rect {
   height: number
 }
 
+// The map's request in flight, by key. MapView requests its layout while it
+// renders, so the request leaves before React Flow mounts; a second request
+// for the same key, such as StrictMode's second render, reuses it, and a
+// rejected layout leaves the cache (req-board-map AC-3.2).
+let requested: { key: string; layout: ReturnType<typeof placeClusters> } | undefined
+
 // The map: each document's tasks flow top to bottom into its hub, and the
-// frames are placed in the order given (req-board-map AC-1.3).
-export async function layoutClusters(clusters: ClusterInput[]) {
+// frames are placed in the order given (req-board-map AC-1.3). The key names
+// the clusters laid out and the Retry attempt.
+export function layoutClusters(key: string, clusters: ClusterInput[]) {
+  if (requested?.key === key) return requested.layout
+  const entry = { key, layout: placeClusters(clusters) }
+  requested = entry
+  entry.layout.catch(() => {
+    if (requested === entry) requested = undefined
+  })
+  return entry.layout
+}
+
+async function placeClusters(clusters: ClusterInput[]) {
   const result = await runLayout({
     id: 'root',
     // ELK only sizes the frames; placeFrames places them.

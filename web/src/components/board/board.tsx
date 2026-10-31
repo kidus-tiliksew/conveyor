@@ -22,9 +22,15 @@ import { EmptyRepositoryNotice } from '../workspace/empty-repository-notice'
 import { BoardColumn } from './board-column'
 import { type BoardSearch, boardSearchFilter } from './board-search'
 import { BoardToolbar } from './board-toolbar'
+import { startLayoutWorker } from './map/layout-worker'
 
 // The map's graph libraries load with the view, never with the Board (DEC-76).
-const BoardMap = lazy(() => import('./map/board-map').then((module) => ({ default: module.BoardMap })))
+// Asking for the map's chunk also starts the ELK worker, so it compiles while
+// the chunk and the map's read load (req-board-map AC-3.2).
+const BoardMap = lazy(() => {
+  startLayoutWorker()
+  return import('./map/board-map').then((module) => ({ default: module.BoardMap }))
+})
 
 // The Board: kanban columns or the map of the same workspace, and no list
 // view (REQ-6, AC-6.1; req-board-map), with task intake over either. The view,
