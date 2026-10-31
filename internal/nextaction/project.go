@@ -81,7 +81,7 @@ func rules() []rule {
 		}},
 		{match: agentQuestion, build: agentQuestionBuild},
 		{match: verificationDisposition, build: func(in Input) built {
-			return built{actor: ActorOperator, kind: KindVerificationDisposition, judgment: true, deadline: in.Markers.VerificationHoldDeadline, order: verifyOrder(in.Orders)}
+			return built{actor: ActorOperator, kind: KindVerificationDisposition, judgment: true, deadline: in.Markers.VerificationHoldDeadline, order: dispositionOrder(in.Orders)}
 		}},
 		{match: forgeFailure, build: func(Input) built { return built{actor: ActorOperator, kind: KindForgeFailure} }},
 		{match: reviewRecovery, build: func(Input) built { return built{actor: ActorOperator, kind: KindReviewRecovery} }},
@@ -201,8 +201,19 @@ func agentQuestionBuild(in Input) built {
 	return row
 }
 
+// verificationDisposition matches row 10 only when it can select a verify
+// order for the applied and not-applied choices. A disposition marker with no
+// queued or claimed verify order behind it, such as a checkpoint kept for
+// history on a verify order that has since been recovered and submitted,
+// never selects row 10, so the operator is never asked for a disposition that
+// every choice refuses with no order to recover; the task falls through to the
+// row its current orders state (feature-operator-next-action NA-3 row 10;
+// task 261030-54fbd3).
 func verificationDisposition(in Input) bool {
-	return in.Markers.VerificationDisposition || (in.Markers.VerificationHoldDeadline != nil && verifyOrder(in.Orders) != nil)
+	if !in.Markers.VerificationDisposition && in.Markers.VerificationHoldDeadline == nil {
+		return false
+	}
+	return dispositionOrder(in.Orders) != nil
 }
 
 func forgeFailure(in Input) bool { return in.Markers.ForgeFailure }
@@ -500,6 +511,33 @@ func verifyOrder(orders []core.WorkOrder) *core.WorkOrder {
 		}
 	}
 	return nil
+}
+
+// dispositionOrder selects row 10's order: the latest queued verify order
+// still released at a verification checkpoint, the order whose sealed
+// checkpoint the disposition binding reads, and otherwise the latest queued
+// or claimed verify order (feature-operator-next-action NA-3 row 10,
+// Disposition binding).
+func dispositionOrder(orders []core.WorkOrder) *core.WorkOrder {
+	for i := len(orders) - 1; i >= 0; i-- {
+		if AtVerificationCheckpoint(orders[i]) {
+			order := orders[i]
+			return &order
+		}
+	}
+	return verifyOrder(orders)
+}
+
+// AtVerificationCheckpoint reports whether a verify order is queued and still
+// released at its sealed verification checkpoint. An operator recovery clears
+// the released outcome and keeps the checkpoint for history, and a later
+// claim, submission, or retirement moves the order out of the queue, so none
+// of those shapes asks for a disposition (feature-operator-next-action NA-3
+// row 10; component-work-orders, Recovery).
+func AtVerificationCheckpoint(order core.WorkOrder) bool {
+	return order.Stage == core.StageVerify && order.State == core.WorkOrderQueued &&
+		order.LastAttemptOutcome == core.WorkOrderOutcomeReleased &&
+		order.Checkpoint != nil && order.Checkpoint.Verification != nil
 }
 
 func currentOrder(in Input) *core.WorkOrder {
