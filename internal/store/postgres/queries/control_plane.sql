@@ -32,18 +32,6 @@ INSERT INTO user_tokens (id, user_id, label, token_hash, kind, scope, deployment
 VALUES ($1, $2, $3, $4, $5, $6, true)
 RETURNING id, user_id, label, token_hash, kind, scope, last_used_at, revoked_at, created_at;
 
--- name: GetUserTokenByHash :one
-SELECT t.id, t.user_id, t.label, t.token_hash, t.kind, t.scope, t.last_used_at,
-       t.revoked_at, t.created_at, u.email, u.display_name, u.status
-FROM user_tokens t
-JOIN users u ON u.id = t.user_id
-WHERE t.token_hash = $1;
-
--- name: MarkUserTokenUsed :execrows
-UPDATE user_tokens SET last_used_at = now()
-WHERE id = $1 AND token_hash = $2 AND revoked_at IS NULL
-  AND EXISTS (SELECT 1 FROM users WHERE users.id = user_tokens.user_id AND users.status = 'active');
-
 -- name: RevokeUserToken :one
 UPDATE user_tokens SET revoked_at = COALESCE(revoked_at, now())
 WHERE id = $1 AND kind = 'user'

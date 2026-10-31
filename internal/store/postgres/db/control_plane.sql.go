@@ -2253,56 +2253,6 @@ func (q *Queries) InsertDeploymentCredential(ctx context.Context, arg InsertDepl
 	return item, err
 }
 
-type GetUserTokenByHashRow struct {
-	ID          string             `json:"id"`
-	UserID      string             `json:"user_id"`
-	Label       string             `json:"label"`
-	TokenHash   []byte             `json:"token_hash"`
-	Kind        string             `json:"kind"`
-	Scope       string             `json:"scope"`
-	LastUsedAt  pgtype.Timestamptz `json:"last_used_at"`
-	RevokedAt   pgtype.Timestamptz `json:"revoked_at"`
-	CreatedAt   pgtype.Timestamptz `json:"created_at"`
-	Email       string             `json:"email"`
-	DisplayName string             `json:"display_name"`
-	Status      string             `json:"status"`
-}
-
-const getUserTokenByHash = `-- name: GetUserTokenByHash :one
-SELECT t.id, t.user_id, t.label, t.token_hash, t.kind, t.scope, t.last_used_at,
-       t.revoked_at, t.created_at, u.email, u.display_name, u.status
-FROM user_tokens t
-JOIN users u ON u.id = t.user_id
-WHERE t.token_hash = $1
-`
-
-func (q *Queries) GetUserTokenByHash(ctx context.Context, tokenHash []byte) (GetUserTokenByHashRow, error) {
-	row := q.db.QueryRow(ctx, getUserTokenByHash, tokenHash)
-	var item GetUserTokenByHashRow
-	err := row.Scan(&item.ID, &item.UserID, &item.Label, &item.TokenHash, &item.Kind, &item.Scope, &item.LastUsedAt,
-		&item.RevokedAt, &item.CreatedAt, &item.Email, &item.DisplayName, &item.Status)
-	return item, err
-}
-
-const markUserTokenUsed = `-- name: MarkUserTokenUsed :execrows
-UPDATE user_tokens SET last_used_at = now()
-WHERE id = $1 AND token_hash = $2 AND revoked_at IS NULL
-  AND EXISTS (SELECT 1 FROM users WHERE users.id = user_tokens.user_id AND users.status = 'active')
-`
-
-type MarkUserTokenUsedParams struct {
-	ID        string `json:"id"`
-	TokenHash []byte `json:"token_hash"`
-}
-
-func (q *Queries) MarkUserTokenUsed(ctx context.Context, arg MarkUserTokenUsedParams) (int64, error) {
-	result, err := q.db.Exec(ctx, markUserTokenUsed, arg.ID, arg.TokenHash)
-	if err != nil {
-		return 0, err
-	}
-	return result.RowsAffected(), nil
-}
-
 const revokeUserToken = `-- name: RevokeUserToken :one
 UPDATE user_tokens SET revoked_at = COALESCE(revoked_at, now())
 WHERE id = $1 AND kind = 'user'

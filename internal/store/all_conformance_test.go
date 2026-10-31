@@ -81,6 +81,10 @@ func TestMemoryConformance(t *testing.T) {
 				store.SeedDashboardSessionTimesForTest(t, st, sessionID, lastUsedAgo, expiresIn)
 			}, DashboardSessionTimes: func(t *testing.T, _ context.Context, sessionID string) (time.Time, time.Time) {
 				return store.DashboardSessionTimesForTest(t, st, sessionID)
+			}, SeedCredentialLastUsed: func(t *testing.T, _ context.Context, credentialID string, lastUsedAgo time.Duration) {
+				store.SeedCredentialLastUsedForTest(t, st, credentialID, lastUsedAgo)
+			}, CredentialLastUsed: func(t *testing.T, _ context.Context, credentialID string) time.Time {
+				return store.CredentialLastUsedForTest(t, st, credentialID)
 			}, WorkerService: func(*testing.T) storetest.WorkerExercise {
 				return conformanceWorkerExercise(st, cfg)
 			}, LineageHTTP: func(*testing.T) http.Handler {

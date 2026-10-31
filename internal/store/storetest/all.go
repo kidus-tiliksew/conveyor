@@ -87,6 +87,14 @@ type Fixture struct {
 	// (component-identity-membership).
 	SeedDashboardSessionTimes func(t *testing.T, ctx context.Context, sessionID string, lastUsedAgo, expiresIn time.Duration)
 	DashboardSessionTimes     func(t *testing.T, ctx context.Context, sessionID string) (lastUsedAt, expiresAt time.Time)
+	// SeedCredentialLastUsed sets one bearer credential's stored last use
+	// relative to the backend's own clock, and CredentialLastUsed returns
+	// it, zero when unset. No public writer sets it and no public read
+	// exposes an agent credential's, so each test binary supplies both. The
+	// Tokens/CredentialUseStamp cases require them and never skip
+	// (component-identity-membership).
+	SeedCredentialLastUsed func(t *testing.T, ctx context.Context, credentialID string, lastUsedAgo time.Duration)
+	CredentialLastUsed     func(t *testing.T, ctx context.Context, credentialID string) time.Time
 }
 
 // WorkerExercise is the worker-service surface the Workers hold-retirement
