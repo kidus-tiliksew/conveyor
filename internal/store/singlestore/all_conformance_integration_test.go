@@ -153,6 +153,10 @@ func TestSingleStoreConformanceIntegration(t *testing.T) {
 			_, pending, err := dispatch.PendingPlanRevisionGate(ctx, st, taskID)
 			return pending, err
 		},
+		ClaimService: func(st store.Store, cfg *config.Config) func(context.Context, string, core.WorkOrderClaim) (core.WorkOrder, error) {
+			service := &workorder.Service{Store: st, ConfigProvider: func(context.Context) (*config.Config, error) { return cfg, nil }}
+			return service.Claim
+		},
 		ReviewSweep: func(ctx context.Context, st store.Store, cfg *config.Config, head string, now time.Time) (int, error) {
 			service := &workorder.Service{
 				Store:          st,

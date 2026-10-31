@@ -326,6 +326,21 @@ func stalledChoices() []ChoiceSpec {
 	}
 }
 
+// claimFailingChoices are the acts the routes accept for a queued order
+// whose claims keep failing in the backend. The task-scoped redispatch is
+// not offered: the queued order holds its stage, so the route refuses it
+// (feature-operator-next-action NA-3, Claim-failure stall;
+// req-operator-next-action AC-1.4).
+func claimFailingChoices() []ChoiceSpec {
+	var out []ChoiceSpec
+	for _, spec := range stalledChoices() {
+		if spec.ID == "recover" || spec.ID == "start_over" {
+			out = append(out, spec)
+		}
+	}
+	return out
+}
+
 func roundChoices() []ChoiceSpec {
 	return []ChoiceSpec{
 		{ID: "retry_round", Label: "Retry round", Effect: "Retries the review round.", Method: "POST", Path: "/v1/tasks/{id}/review-round/retry", Capability: core.CapabilityOperateGates},
