@@ -221,6 +221,10 @@ test('primary navigation places Decisions directly after System Design and opens
   await serve(page)
   await page.goto('/w/demo/')
   const nav = page.getByRole('navigation', { name: 'Primary' })
+  // evaluateAll reads the DOM once without waiting, so wait for the rendered
+  // entry first. Every entry renders in the same commit, which makes the one
+  // read below see the whole order.
+  await expect(nav.getByRole('link', { name: 'System Design', exact: true })).toBeVisible()
   const labels = await nav.locator('a').evaluateAll((links) => links.map((link) => link.textContent?.trim()))
   const position = labels.indexOf('System Design')
   expect(labels[position + 1]).toBe('Decisions')
