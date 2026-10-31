@@ -542,8 +542,14 @@ func markersFromHistory(marker ActivityMarker, parkCommand string, orders []core
 	if marker.InterruptedReviewRecovery != nil {
 		out.InterruptedReview = true
 	}
+	// The disposition marker reads only a verify order that is still queued
+	// and released at its verification checkpoint. Recovery keeps the
+	// checkpoint on the order for history, so a verify order that was
+	// recovered, claimed again, submitted, or retired no longer asks for a
+	// disposition, and a later review order is never shadowed by row 10
+	// (feature-operator-next-action NA-3 row 10; task 261030-54fbd3).
 	for _, order := range orders {
-		if order.Checkpoint != nil && order.Checkpoint.Verification != nil {
+		if nextaction.AtVerificationCheckpoint(order) {
 			out.VerificationDisposition = true
 		}
 	}

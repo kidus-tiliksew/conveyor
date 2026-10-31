@@ -268,6 +268,22 @@ func TestSingleStoreConformanceIntegration(t *testing.T) {
 					t.Fatal(err)
 				}
 				return lastUsed.Time.UTC(), expires.UTC()
+			}, SeedCredentialLastUsed: func(t *testing.T, ctx context.Context, credentialID string, lastUsedAgo time.Duration) {
+				// No public writer sets a credential's last use
+				// (component-identity-membership).
+				result, err := st.db.ExecContext(ctx, `UPDATE user_tokens SET last_used_at=DATE_SUB(CURRENT_TIMESTAMP(6),INTERVAL ? MICROSECOND) WHERE id=?`, lastUsedAgo.Microseconds(), credentialID)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if rows, err := result.RowsAffected(); err != nil || rows != 1 {
+					t.Fatalf("seed credential last use rows=%d err=%v", rows, err)
+				}
+			}, CredentialLastUsed: func(t *testing.T, ctx context.Context, credentialID string) time.Time {
+				var lastUsed sql.NullTime
+				if err := st.db.QueryRowContext(ctx, `SELECT last_used_at FROM user_tokens WHERE id=?`, credentialID).Scan(&lastUsed); err != nil {
+					t.Fatal(err)
+				}
+				return lastUsed.Time.UTC()
 			}, WorkerService: func(*testing.T) storetest.WorkerExercise {
 				return conformanceWorkerExercise(st, cfg)
 			}, LineageHTTP: func(*testing.T) http.Handler {

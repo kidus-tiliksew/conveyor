@@ -201,6 +201,7 @@ func TestNextActionReadsStayEqualThroughBatchedLoaders(t *testing.T) {
 	})
 	disposition := f.task(t, "disposition", core.TaskRunning, "")
 	f.order(t, disposition, core.StageVerify, func(order *core.WorkOrder) {
+		order.LastAttemptID, order.LastAttemptOutcome = "attempt-"+disposition.ID, core.WorkOrderOutcomeReleased
 		order.Checkpoint = &core.WorkOrderCheckpoint{Verification: &core.WorkOrderVerificationCheckpoint{ContextID: "context-" + disposition.ID, HeadSHA: "head", Reason: "unresolved", RequiredAction: "dispose", OperationIDs: []string{"operation-" + disposition.ID}}}
 	})
 	parked := f.task(t, "parked", core.TaskParked, "")
