@@ -143,6 +143,14 @@ func init() {
 		base.Summary = text(reason.summary)
 		put(KindStalled, reason.code, "", "", base)
 	}
+	// The observed claim-failure stall names the server fault and its
+	// effect; the count and times stay in details (feature-operator-next-action NA-4).
+	claimFailing := catalogueTable[catalogueKey{KindStalled, "", "", "", ""}]
+	claimFailing.Label = "Claims failing"
+	claimFailing.Summary = text("Claims of this order keep failing with a server database error.")
+	claimFailing.IfIgnored = text("Claims keep failing until the server's database error is fixed.")
+	claimFailing.Choices = claimFailingChoices()
+	put(KindStalled, StallClaimFailing, "", "", claimFailing)
 	for _, outcome := range []struct{ code, label string }{
 		{ReleaseCheckpoint, "Checkpoint"},
 		{ReleaseExpired, "Expired"},
@@ -208,7 +216,7 @@ func Kinds() []string {
 }
 
 func StallReasons() []string {
-	return []string{StallRetrySuppressed, StallStale, StallTimedOut, StallUnclaimable, StallDispatchFailing, StallAutomaticRecoveryExhausted}
+	return []string{StallRetrySuppressed, StallStale, StallTimedOut, StallUnclaimable, StallDispatchFailing, StallAutomaticRecoveryExhausted, StallClaimFailing}
 }
 
 func ReleaseOutcomes() []string {

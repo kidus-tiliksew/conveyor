@@ -17,6 +17,16 @@ type StallHit struct {
 // Stall walks queued, stale, and timed-out orders newest-first. An order whose
 // automatic recovery is still in the future is skipped. The first hit wins.
 func Stall(task core.Task, orders []core.WorkOrder, recovery map[string]AutomaticRecovery, claimants *ClaimantView, now time.Time) *StallHit {
+	return stall(task, orders, recovery, claimants, nil, now)
+}
+
+// stallIn is Stall over the projection input, including its claim-failure
+// records (feature-operator-next-action NA-3, Claim-failure stall).
+func stallIn(in Input) *StallHit {
+	return stall(in.Task, in.Orders, in.Recovery, in.LiveClaimants, in.ClaimFailures, in.Now)
+}
+
+func stall(task core.Task, orders []core.WorkOrder, recovery map[string]AutomaticRecovery, claimants *ClaimantView, failures map[string]core.WorkOrderClaimFailure, now time.Time) *StallHit {
 	for i := len(orders) - 1; i >= 0; i-- {
 		order := orders[i]
 		switch order.State {
@@ -28,7 +38,7 @@ func Stall(task core.Task, orders []core.WorkOrder, recovery map[string]Automati
 		if rec.NextAt != nil && rec.NextAt.After(now) {
 			continue
 		}
-		reason := stallReason(task, order, claimants, rec)
+		reason := stallReason(task, order, claimants, rec, failures[order.ID])
 		if len(order.UnsatisfiableTaskIDs) > 0 {
 			return &StallHit{Order: order, Reason: reason, DependencyUnsatisfiable: true}
 		}
@@ -39,7 +49,7 @@ func Stall(task core.Task, orders []core.WorkOrder, recovery map[string]Automati
 	return nil
 }
 
-func stallReason(task core.Task, order core.WorkOrder, claimants *ClaimantView, rec AutomaticRecovery) string {
+func stallReason(task core.Task, order core.WorkOrder, claimants *ClaimantView, rec AutomaticRecovery, failure core.WorkOrderClaimFailure) string {
 	switch {
 	case rec.Exhausted:
 		return StallAutomaticRecoveryExhausted
@@ -51,6 +61,8 @@ func stallReason(task core.Task, order core.WorkOrder, claimants *ClaimantView, 
 		return StallTimedOut
 	case unclaimable(task, order, claimants):
 		return StallUnclaimable
+	case claimFailing(order, failure):
+		return StallClaimFailing
 	case order.AutomaticRetryCount >= 2 && failureText(order) != "":
 		return StallDispatchFailing
 	default:
@@ -93,4 +105,12 @@ func trim(s string) string {
 		s = s[:len(s)-1]
 	}
 	return s
+}
+
+// claimFailing reports an observed stall: a queued order whose consecutive
+// claims failed in the backend reached the threshold. Deterministic reasons
+// are checked first and keep winning (feature-operator-next-action NA-3,
+// Claim-failure stall; req-operator-next-action AC-1.8).
+func claimFailing(order core.WorkOrder, failure core.WorkOrderClaimFailure) bool {
+	return order.State == core.WorkOrderQueued && failure.WorkOrderID == order.ID && failure.ConsecutiveFailures >= ClaimFailureStallThreshold
 }
