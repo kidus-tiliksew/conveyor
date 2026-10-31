@@ -33,32 +33,40 @@ func LoadVerificationAuthority(ctx context.Context, b Store, c VerificationComma
 	}
 	return a, nil
 }
+
+// verificationOrderPins lists an order's pinned served-requirement and System
+// Design versions as governing pins, in sortedVerificationPins order.
+func verificationOrderPins(o core.WorkOrder) []core.VerificationPin {
+	pins := []core.VerificationPin{}
+	for _, r := range o.ServedRequirementSnapshot {
+		pins = append(pins, core.VerificationPin{Kind: "requirement", DocumentID: r.ID, Version: r.Version})
+	}
+	if o.GovernanceSnapshot != nil {
+		for _, d := range o.GovernanceSnapshot.Designs {
+			pins = append(pins, core.VerificationPin{Kind: "system_design", DocumentID: d.ID, Version: d.Version})
+		}
+	}
+	return sortedVerificationPins(pins)
+}
+
+// sortedVerificationPins returns a copy of pins ordered by kind, then document ID.
+func sortedVerificationPins(pins []core.VerificationPin) []core.VerificationPin {
+	sorted := append([]core.VerificationPin{}, pins...)
+	sort.Slice(sorted, func(i, j int) bool {
+		if sorted[i].Kind != sorted[j].Kind {
+			return sorted[i].Kind < sorted[j].Kind
+		}
+		return sorted[i].DocumentID < sorted[j].DocumentID
+	})
+	return sorted
+}
+
 func VerifyVerificationAuthority(c VerificationCommand, a VerificationAuthoritySnapshot, o core.WorkOrder) error {
 	if c.Kind == VerificationCreateContext {
 		if c.Context == nil || c.Context.ReviewScope != o.ReviewScope || c.Context.BaselineSHA != o.BaselineSHA {
 			return ErrVerificationInvalid
 		}
-		pins := []core.VerificationPin{}
-		for _, r := range o.ServedRequirementSnapshot {
-			pins = append(pins, core.VerificationPin{Kind: "requirement", DocumentID: r.ID, Version: r.Version})
-		}
-		if o.GovernanceSnapshot != nil {
-			for _, d := range o.GovernanceSnapshot.Designs {
-				pins = append(pins, core.VerificationPin{Kind: "system_design", DocumentID: d.ID, Version: d.Version})
-			}
-		}
-		supplied := append([]core.VerificationPin{}, c.Context.GoverningPins...)
-		sortPins := func(v []core.VerificationPin) {
-			sort.Slice(v, func(i, j int) bool {
-				if v[i].Kind != v[j].Kind {
-					return v[i].Kind < v[j].Kind
-				}
-				return v[i].DocumentID < v[j].DocumentID
-			})
-		}
-		sortPins(pins)
-		sortPins(supplied)
-		if !verificationEqual(pins, supplied) {
+		if !verificationEqual(verificationOrderPins(o), sortedVerificationPins(c.Context.GoverningPins)) {
 			return ErrVerificationAccess
 		}
 		// The submitted head is the primary repository's authoritative revision.

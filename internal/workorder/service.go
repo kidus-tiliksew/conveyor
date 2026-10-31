@@ -1904,7 +1904,7 @@ func (s *Service) SubmitVerdict(ctx context.Context, id, session string, review 
 		if e != nil {
 			return nil, e
 		}
-		decision := core.ReviewDecision{VerificationAssessment: validated.VerificationAssessment, ReviewedCommitSHA: order.HeadSHA, HeadSHA: order.HeadSHA, ReviewScope: order.ReviewScope, BaselineSHA: order.BaselineSHA, Reviewer: store.ActorFromContext(ctx).ID}
+		decision := core.ReviewDecision{Verdict: validated.Verdict, VerificationAssessment: validated.VerificationAssessment, ReviewedCommitSHA: order.HeadSHA, HeadSHA: order.HeadSHA, ReviewScope: order.ReviewScope, BaselineSHA: order.BaselineSHA, Reviewer: store.ActorFromContext(ctx).ID}
 		if e = store.ValidateSealedVerificationReview(task, &decision, state); e != nil {
 			return nil, e
 		}
