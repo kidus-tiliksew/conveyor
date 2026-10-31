@@ -276,3 +276,98 @@ func TestDashboardSessionRefreshIntegration(t *testing.T) {
 		t.Fatalf("stale verification under held registry locks: output=%s err=%v", refreshed.SessionExpiresAt, err)
 	}
 }
+
+// TestCredentialVerificationLockFreeIntegration proves on stored rows that
+// bearer verification inside the stamp interval writes nothing and that a
+// stale one stamps last_used_at once. Verification never enters identityTx:
+// it records no lock-row acquisition and completes while another
+// transaction holds both registry lock rows, and a revocation committed
+// there still refuses the next use (component-identity-membership;
+// req-security-boundaries AC-2.1).
+func TestCredentialVerificationLockFreeIntegration(t *testing.T) {
+	s, ctx, owner := ownedIdentityFixture(t)
+	issued, err := s.IssueOwnPersonalAccessToken(ctx, owner.ID, "lock-free")
+	if err != nil {
+		t.Fatal(err)
+	}
+	stored := func() sql.NullTime {
+		t.Helper()
+		var lastUsed sql.NullTime
+		if err := s.db.QueryRowContext(ctx, "SELECT last_used_at FROM user_tokens WHERE id=?", issued.ID).Scan(&lastUsed); err != nil {
+			t.Fatal(err)
+		}
+		return lastUsed
+	}
+	stamps := 0
+	verify := func(t *testing.T, ctx context.Context) {
+		t.Helper()
+		hooked := store.WithIdentityTestHook(ctx, func(stage string) error {
+			if stage == store.IdentityHookCredentialStamping {
+				stamps++
+			}
+			return nil
+		})
+		observedCtx, observed := observeLockReturn(hooked)
+		auth, err := s.VerifyCredential(observedCtx, issued.Value)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if auth.ID != issued.ID || auth.OwnerUserID != owner.ID {
+			t.Fatalf("verification=%+v, want credential %q", auth, issued.ID)
+		}
+		if !observed.at.IsZero() {
+			t.Fatal("bearer verification acquired a lock row")
+		}
+	}
+
+	// A never-used credential is stale: the first verification stamps it.
+	if before := stored(); before.Valid {
+		t.Fatalf("issued credential last_used_at=%s, want null", before.Time)
+	}
+	verify(t, ctx)
+	first := stored()
+	if !first.Valid || stamps != 1 {
+		t.Fatalf("unused verification: last_used=%v stamps=%d, want one stamp", first, stamps)
+	}
+	verify(t, ctx)
+	if again := stored(); !again.Time.Equal(first.Time) || stamps != 1 {
+		t.Fatalf("fresh verification wrote: last_used %s->%s stamps=%d", first.Time, again.Time, stamps)
+	}
+
+	// Another transaction holds both registry lock rows that identityTx
+	// takes; fresh and stale verifications still complete. The deadline is
+	// only a failure bound for a verification that would wait on them.
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = tx.Rollback() }()
+	for _, key := range []string{"workspace-registry", "identity-registry"} {
+		if err = lockKey(ctx, tx, key); err != nil {
+			t.Fatal(err)
+		}
+	}
+	bounded, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+	verify(t, bounded)
+	if _, err = s.db.ExecContext(ctx, "UPDATE user_tokens SET last_used_at=DATE_SUB(CURRENT_TIMESTAMP(6),INTERVAL 10 MINUTE) WHERE id=?", issued.ID); err != nil {
+		t.Fatal(err)
+	}
+	before := stored()
+	verify(t, bounded)
+	if after := stored(); stamps != 2 || !after.Time.After(before.Time) {
+		t.Fatalf("stale verification under held registry locks: last_used %s->%s stamps=%d", before.Time, after.Time, stamps)
+	}
+	if err = tx.Rollback(); err != nil {
+		t.Fatal(err)
+	}
+
+	// Revocation keeps identityTx and refuses the next use inside the
+	// stamp interval.
+	if _, err = s.RevokeOwnPersonalAccessToken(ctx, owner.ID, issued.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = s.VerifyCredential(bounded, issued.Value); !errors.Is(err, core.ErrInvalidCredential) {
+		t.Fatalf("revoked credential verification err=%v, want invalid credential", err)
+	}
+}

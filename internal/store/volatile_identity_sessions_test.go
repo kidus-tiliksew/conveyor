@@ -36,3 +36,37 @@ func DashboardSessionTimesForTest(t *testing.T, st Backend, sessionID string) (t
 	}
 	return session.LastUsedAt, session.ExpiresAt
 }
+
+// SeedCredentialLastUsedForTest sets one bearer credential's stored last use
+// relative to now. No public writer can; the memory conformance entry point
+// supplies it as Fixture.SeedCredentialLastUsed
+// (component-identity-membership; component-verification-strategy).
+func SeedCredentialLastUsedForTest(t *testing.T, st Backend, credentialID string, lastUsedAgo time.Duration) {
+	t.Helper()
+	m := st.(*volatileMemory)
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	credential, ok := m.credentials[credentialID]
+	if !ok {
+		t.Fatalf("seed requires an existing credential %q", credentialID)
+	}
+	credential.LastUsedAt = timePtr(time.Now().UTC().Add(-lastUsedAgo))
+	m.credentials[credentialID] = credential
+}
+
+// CredentialLastUsedForTest returns one bearer credential's stored last use,
+// zero when unset; no public read exposes an agent credential's.
+func CredentialLastUsedForTest(t *testing.T, st Backend, credentialID string) time.Time {
+	t.Helper()
+	m := st.(*volatileMemory)
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	credential, ok := m.credentials[credentialID]
+	if !ok {
+		t.Fatalf("credential %q is missing", credentialID)
+	}
+	if credential.LastUsedAt == nil {
+		return time.Time{}
+	}
+	return *credential.LastUsedAt
+}

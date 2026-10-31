@@ -547,9 +547,20 @@ func (m *volatileMemory) credentialByHash(hash []byte) (identityCredential, bool
 	return identityCredential{}, false
 }
 
-func (m *volatileMemory) verifyCredential(_ context.Context, candidate string) (core.AuthenticatedCredential, core.IdentityUser, error) {
+// credentialUseStale reports whether a credential's last use is unset or at
+// least one stamp interval before now.
+func credentialUseStale(credential identityCredential, now time.Time) bool {
+	return credential.LastUsedAt == nil || now.Sub(*credential.LastUsedAt) >= credentialUseGranularity
+}
+
+// verifyCredential reads under the read lock on every call, so a revocation
+// or deactivation that completed first refuses this call. A stale credential
+// is stamped under the write mutex only after presence, revocation, active
+// owner, and staleness are rechecked against the current entry; an
+// ineligible recheck refuses, and an already stamped one succeeds without a
+// write (component-identity-membership).
+func (m *volatileMemory) verifyCredential(ctx context.Context, candidate string) (core.AuthenticatedCredential, core.IdentityUser, error) {
 	hash := sha256.Sum256([]byte(candidate))
-	now := time.Now().UTC()
 	m.mu.RLock()
 	credential, ok := m.credentialByHash(hash[:])
 	user := m.users[credential.UserID]
@@ -557,13 +568,33 @@ func (m *volatileMemory) verifyCredential(_ context.Context, candidate string) (
 	if !ok || credential.RevokedAt != nil || user.Status != "active" {
 		return core.AuthenticatedCredential{}, core.IdentityUser{}, core.ErrInvalidCredential
 	}
-	if credential.LastUsedAt == nil || now.Sub(*credential.LastUsedAt) >= credentialUseGranularity {
+	if err := RunIdentityTestHook(ctx, IdentityHookCredentialRead); err != nil {
+		return core.AuthenticatedCredential{}, core.IdentityUser{}, err
+	}
+	if credentialUseStale(credential, time.Now().UTC()) {
+		if err := RunIdentityTestHook(ctx, IdentityHookCredentialStamping); err != nil {
+			return core.AuthenticatedCredential{}, core.IdentityUser{}, err
+		}
 		m.lock()
-		if current, ok := m.credentials[credential.ID]; ok && current.RevokedAt == nil {
+		current, present := m.credentials[credential.ID]
+		owner := m.users[current.UserID]
+		eligible := present && current.RevokedAt == nil && owner.Status == "active" && subtle.ConstantTimeCompare(current.TokenHash, hash[:]) == 1
+		now := time.Now().UTC()
+		stamped := eligible && credentialUseStale(current, now)
+		if stamped {
 			current.LastUsedAt = timePtr(now)
 			m.credentials[credential.ID] = current
 		}
 		m.unlock()
+		if !eligible {
+			return core.AuthenticatedCredential{}, core.IdentityUser{}, core.ErrInvalidCredential
+		}
+		if stamped {
+			if err := RunIdentityTestHook(ctx, IdentityHookCredentialStamped); err != nil {
+				return core.AuthenticatedCredential{}, core.IdentityUser{}, err
+			}
+		}
+		credential, user = current, owner
 	}
 	authenticated := core.AuthenticatedCredential{ID: credential.ID, OwnerUserID: credential.UserID, Kind: credential.Kind, Scope: credential.Scope}
 	if credential.Kind == core.CredentialAgent {

@@ -132,6 +132,16 @@ const (
 	// IdentityHookSessionRefreshed runs only after a refresh changed the
 	// session row, so exactly the winning verification reaches it.
 	IdentityHookSessionRefreshed = "session_refreshed"
+	// IdentityHookCredentialRead runs after bearer verification's initial
+	// read found a live credential and before any use-stamp decision, with
+	// no transaction, row lock, or mutex held.
+	IdentityHookCredentialRead = "credential_read"
+	// IdentityHookCredentialStamping runs immediately before each
+	// conditional last_used_at stamp attempt.
+	IdentityHookCredentialStamping = "credential_stamping"
+	// IdentityHookCredentialStamped runs only after a stamp changed the
+	// credential row, so exactly the winning verification reaches it.
+	IdentityHookCredentialStamped = "credential_stamped"
 )
 
 type identityTestHookKey struct{}

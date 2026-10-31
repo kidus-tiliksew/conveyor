@@ -260,6 +260,11 @@ func TestServerTimingIsolationIntegration(t *testing.T) {
 		}
 		return parseServerTiming(t, recorder.Result().Header).queries
 	}
+	// The first verification of the unused fixture token stamps its
+	// last_used_at; later requests inside the one-minute stamp interval
+	// verify by a read alone, so the baseline starts after it
+	// (component-identity-membership).
+	alone()
 	baseline := alone()
 	if again := alone(); again != baseline {
 		t.Fatalf("the same request reported %d then %d queries", baseline, again)

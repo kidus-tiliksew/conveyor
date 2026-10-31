@@ -275,6 +275,22 @@ func TestPostgresConformanceIntegration(t *testing.T) {
 					return time.Time{}, expires.UTC()
 				}
 				return lastUsed.UTC(), expires.UTC()
+			}, SeedCredentialLastUsed: func(t *testing.T, ctx context.Context, credentialID string, lastUsedAgo time.Duration) {
+				// No public writer sets a credential's last use
+				// (component-identity-membership).
+				tag, err := st.pool.Exec(ctx, `UPDATE user_tokens SET last_used_at=now()-$2::bigint*interval '1 microsecond' WHERE id=$1`, credentialID, lastUsedAgo.Microseconds())
+				if err != nil || tag.RowsAffected() != 1 {
+					t.Fatalf("seed credential last use rows=%d err=%v", tag.RowsAffected(), err)
+				}
+			}, CredentialLastUsed: func(t *testing.T, ctx context.Context, credentialID string) time.Time {
+				var lastUsed *time.Time
+				if err := st.pool.QueryRow(ctx, `SELECT last_used_at FROM user_tokens WHERE id=$1`, credentialID).Scan(&lastUsed); err != nil {
+					t.Fatal(err)
+				}
+				if lastUsed == nil {
+					return time.Time{}
+				}
+				return lastUsed.UTC()
 			}, WorkerService: func(*testing.T) storetest.WorkerExercise {
 				return conformanceWorkerExercise(st, cfg)
 			}, LineageHTTP: func(*testing.T) http.Handler {
