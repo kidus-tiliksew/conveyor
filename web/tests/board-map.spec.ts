@@ -774,9 +774,12 @@ test('opening a task shows the Board sheet over the map, and closing it returns 
   await waitForSheetSettled(page.getByRole('dialog'))
 })
 
-test('500 open and 2,000 finished tasks show their groups, tasks, and edges within two seconds of the read', async ({
-  page,
-}) => {
+test('500 open and 2,000 finished tasks show their groups, tasks, and edges within two seconds of the read', {
+  tag: '@built-dashboard',
+}, async ({ page }) => {
+  // This bound runs in the built-dashboard project: it times the committed
+  // production bundle users get, as the operator decided for task
+  // 261031-66d10d (component-verification-strategy, Playwright).
   test.setTimeout(60_000)
   const kinds = [working, queued, blocked, planGate, merging]
   const open: TaskMapItem[] = []
@@ -841,6 +844,12 @@ test('500 open and 2,000 finished tasks show their groups, tasks, and edges with
     }
     requestAnimationFrame(tick)
   })
+  // A local acceptance run can emulate a slower CPU with Chrome DevTools
+  // Protocol throttling, for example BOARD_MAP_CPU_THROTTLE=4; CI leaves it
+  // unset. Throttling slows the page's main thread, not the ELK worker.
+  const throttle = Number(process.env.BOARD_MAP_CPU_THROTTLE ?? 1)
+  if (throttle > 1)
+    await (await page.context().newCDPSession(page)).send('Emulation.setCPUThrottlingRate', { rate: throttle })
   await page.goto('/?view=map')
   await page.waitForFunction(() => (window as unknown as { mapRenderedAt?: number }).mapRenderedAt !== undefined)
   const { readAt, renderedAt } = await page.evaluate(() => {

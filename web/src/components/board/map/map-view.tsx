@@ -7,6 +7,8 @@ import {
   ControlButton,
   Controls,
   type Edge,
+  type EdgeProps,
+  getBezierPath,
   MarkerType,
   MiniMap,
   type Node,
@@ -90,6 +92,25 @@ const FrameNode = memo(function FrameNode({ data, width = 0, height = 0 }: NodeP
 })
 
 const nodeTypes = { frame: FrameNode, hub: HubNode, task: TaskNode }
+
+// Map edges take no pointer input (React Flow marks them inactive), so each
+// draws as one bezier path with its marker and style, without the invisible
+// interaction stroke React Flow's default edge adds (req-board-map AC-3.2).
+const MapEdge = memo(function MapEdge({
+  id,
+  sourceX,
+  sourceY,
+  targetX,
+  targetY,
+  sourcePosition,
+  targetPosition,
+  style,
+  markerEnd,
+}: EdgeProps) {
+  const [path] = getBezierPath({ sourceX, sourceY, targetX, targetY, sourcePosition, targetPosition })
+  return <path id={id} className="react-flow__edge-path" d={path} fill="none" style={style} markerEnd={markerEnd} />
+})
+const edgeTypes = { map: MapEdge }
 
 // A map that could not be read or laid out says so in words, in place of the
 // canvas, and offers Retry (component-web-task-surfaces, Board map Read and
@@ -191,11 +212,19 @@ export function MapView({
   const [failedKey, setFailedKey] = useState<string>()
   const [attempt, setAttempt] = useState(0)
   const latestKey = useRef(layoutKey)
+  // The layout is requested while the map renders, so it leaves before React
+  // Flow mounts; layoutClusters reuses a request in flight for the same key
+  // and attempt (AC-3.2).
+  // biome-ignore lint/correctness/useExhaustiveDependencies: the key names everything laid out; Retry lays it out again
+  const requested = useMemo(
+    () => (ordered.length === 0 ? undefined : layoutClusters(`${attempt}|${layoutKey}`, ordered)),
+    [layoutKey, attempt],
+  )
   useEffect(() => {
     latestKey.current = layoutKey
-    if (ordered.length === 0) return
+    if (!requested) return
     // A result or a failure for a layout since replaced is ignored.
-    layoutClusters(ordered).then(
+    requested.then(
       (next) => {
         if (latestKey.current !== layoutKey) return
         setLayout(next)
@@ -206,8 +235,7 @@ export function MapView({
         if (latestKey.current === layoutKey) setFailedKey(layoutKey)
       },
     )
-    // biome-ignore lint/correctness/useExhaustiveDependencies: the key names everything laid out; Retry lays it out again
-  }, [layoutKey, attempt])
+  }, [layoutKey, requested])
 
   // Only a clicked task dims the rest of the canvas; hovering lights the
   // hovered card's own lines, after a short pause, so sweeping the pointer
@@ -381,6 +409,7 @@ export function MapView({
         Boolean(rowDimmed && (rowDimmed.has(edge.source) || rowDimmed.has(edge.target)))
       return {
         id: edge.id,
+        type: 'map',
         source: edge.source,
         target: edge.target,
         // Work in flight flows: edges out of running tasks, and the traced
@@ -498,6 +527,15 @@ export function MapView({
     if (focus && laidOutKey) requestAnimationFrame(() => centre(focus))
   }, [focus])
 
+  // The minimap mounts one frame after the first laid-out map renders, so its
+  // nodes stay out of the commit that first shows the map (AC-3.2).
+  const [miniMap, setMiniMap] = useState(false)
+  useEffect(() => {
+    if (!laidOutKey || miniMap) return
+    const frame = requestAnimationFrame(() => setMiniMap(true))
+    return () => cancelAnimationFrame(frame)
+  }, [laidOutKey, miniMap])
+
   const theme = document.documentElement.dataset.theme
   const palette = useMemo(() => {
     const style = getComputedStyle(document.documentElement)
@@ -528,6 +566,7 @@ export function MapView({
       nodes={nodes}
       edges={edges}
       nodeTypes={nodeTypes}
+      edgeTypes={edgeTypes}
       // The first layout frames itself (overview, centre, or flyTo).
       defaultViewport={{ x: 0, y: 0, zoom: 0.1 }}
       colorMode={theme === 'dark' ? 'dark' : 'light'}
@@ -578,30 +617,32 @@ export function MapView({
           <Maximize2 />
         </ControlButton>
       </Controls>
-      <MiniMap
-        pannable
-        zoomable
-        position="bottom-right"
-        nodeBorderRadius={12}
-        nodeColor={(node) => {
-          if (node.type !== 'task') return palette.raised
-          switch ((node as TaskFlowNode).data.task.status) {
-            case 'blocked':
-              return palette.failure
-            case 'plan_gate':
-            case 'merge_gate':
-            case 'needs_you':
-              return palette.attention
-            case 'running':
-              return palette.primary
-            case 'ready':
-              return palette.positive
-            default:
-              return palette.edge
-          }
-        }}
-        maskColor="rgba(0, 0, 0, 0.35)"
-      />
+      {miniMap && (
+        <MiniMap
+          pannable
+          zoomable
+          position="bottom-right"
+          nodeBorderRadius={12}
+          nodeColor={(node) => {
+            if (node.type !== 'task') return palette.raised
+            switch ((node as TaskFlowNode).data.task.status) {
+              case 'blocked':
+                return palette.failure
+              case 'plan_gate':
+              case 'merge_gate':
+              case 'needs_you':
+                return palette.attention
+              case 'running':
+                return palette.primary
+              case 'ready':
+                return palette.positive
+              default:
+                return palette.edge
+            }
+          }}
+          maskColor="rgba(0, 0, 0, 0.35)"
+        />
+      )}
     </ReactFlow>
   )
 }
