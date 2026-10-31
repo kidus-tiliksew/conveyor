@@ -43,4 +43,3 @@ func TestInsertEventRequiresActor(t *testing.T) {
 		}
 	}
 }
-
