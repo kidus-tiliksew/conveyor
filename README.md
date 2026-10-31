@@ -107,12 +107,6 @@ Workflows that have worked well so far:
   using `conveyor-plan`, confirm the requirements and decisions, and only then
   file tasks with `conveyor-file-tasks`. Small, dependency-ordered tasks review
   faster than large ones.
-- **Let CI be the evidence.** Agents run quick, focused tests while they work
-  and leave full suites to CI. Reviewers check a green run on the exact commit
-  under review.
-- **Put the evidence in the pull request.** When the pull request lists what
-  was tested and links the results, reviews take minutes. When it doesn't,
-  tasks bounce back.
 - **Get gates on your phone with [AgentDesk](https://github.com/kidus-tiliksew/AgentDesk).**
   Plan approvals, merges, and document confirmations wait on you. AgentDesk
   sends each one to you as a question you can answer from anywhere, so the
