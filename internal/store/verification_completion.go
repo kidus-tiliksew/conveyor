@@ -134,7 +134,7 @@ func PrepareVerificationCompletion(ctx context.Context, task core.Task, order co
 		job.StartedAt, job.EndedAt = time.Time{}, time.Time{}
 	}
 	kind := "work_order.updated"
-	orderPayload := core.JSONPayload(order)
+	orderPayload := WorkOrderEventPayload(order)
 	if orderCommand == core.WorkOrderCmdRelease {
 		orderPayload = core.JSONPayload(map[string]any{"attempt_id": originalAttempt, "session_id": originalSession, "reason": core.WorkOrderReleaseReasonOperatorCheckpointReached, "release_cause": core.WorkOrderReleaseCauseOperatorAction, "outcome": core.WorkOrderOutcomeReleased, "checkpoint": order.Checkpoint, "retry_suppressed": true, "suppression_reason": order.RetrySuppressionReason, "verification_context_id": c.ContextID, "head_sha": order.HeadSHA})
 		kind = "work_order.released"

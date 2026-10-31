@@ -330,7 +330,7 @@ func (m *memory) ApproveSpecVersionAndMaterialize(ctx context.Context, taskID st
 		m.tasks[id] = child
 		childrenBySub[item.ID] = child
 		createdSubs[item.ID] = struct{}{}
-		m.appendEventLocked(ctx, core.Event{TaskID: id, Kind: "task.created", Payload: core.JSONPayload(child), At: createdAt})
+		m.appendEventLocked(ctx, core.Event{TaskID: id, Kind: "task.created", Payload: TaskCreatedPayload(ctx, child), At: createdAt})
 	}
 	for _, item := range decomposition {
 		if _, created := createdSubs[item.ID]; !created {

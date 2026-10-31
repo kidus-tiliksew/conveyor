@@ -31,9 +31,9 @@ func TestTaskGateKindCrossWorkspaceBackfillIntegration(t *testing.T) {
 	insertEvent := func(workspace, taskID string, id int64, at time.Time, command core.TaskCommand) {
 		t.Helper()
 		if _, err := st.db.ExecContext(ctx, `INSERT INTO events
-			(id,workspace_id,task_id,kind,actor_id,actor_role,payload_json,at)
-			VALUES(?,?,?,'task.state_changed','migration','system',?,?)`,
-			id, workspace, taskID, `{"command":"`+string(command)+`"}`, at); err != nil {
+			(id,workspace_id,task_id,event_shard_key,kind,actor_id,actor_role,payload_json,at)
+			VALUES(?,?,?,?,'task.state_changed','migration','system',?,?)`,
+			id, workspace, taskID, taskID, `{"command":"`+string(command)+`"}`, at); err != nil {
 			t.Fatal(err)
 		}
 	}

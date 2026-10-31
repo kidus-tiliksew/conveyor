@@ -291,7 +291,7 @@ func (s *Store) ApprovePlanningBundle(ctx context.Context, id string) (core.Plan
 			if _, err = insertPlanningBundleTask(ctx, tx, task); err != nil {
 				return err
 			}
-			if _, err = insertEventWithID(ctx, tx, core.Event{TaskID: task.ID, Kind: "task.created", Payload: core.JSONPayload(task), At: now}); err != nil {
+			if _, err = insertEventWithID(ctx, tx, core.Event{TaskID: task.ID, Kind: "task.created", Payload: store.TaskCreatedPayload(ctx, task), At: now}); err != nil {
 				return err
 			}
 		}

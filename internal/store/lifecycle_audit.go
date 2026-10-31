@@ -38,7 +38,7 @@ func AuditLifecycleHistory(events []core.Event) []LifecycleAuditViolation {
 	var violations []LifecycleAuditViolation
 	for _, event := range ordered {
 		if event.Kind == "task.created" {
-			var task core.Task
+			var task TaskCreatedEvent
 			if json.Unmarshal(event.Payload, &task) == nil && task.State != "" {
 				taskStates[event.TaskID] = task.State
 			}

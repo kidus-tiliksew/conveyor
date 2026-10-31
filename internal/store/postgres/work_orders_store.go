@@ -265,7 +265,7 @@ func (s *Store) CreateWorkOrderCommand(ctx context.Context, lease taskops.TaskLe
 		if err := firstOrderDirectionTx(ctx, tx, &order); err != nil {
 			return err
 		}
-		if eventErr := insertEvent(ctx, q, core.Event{TaskID: order.TaskID, JobID: order.JobID, Kind: "work_order.created", Payload: core.JSONPayload(order)}); eventErr != nil {
+		if eventErr := insertEvent(ctx, q, core.Event{TaskID: order.TaskID, JobID: order.JobID, Kind: "work_order.created", Payload: store.WorkOrderEventPayload(order)}); eventErr != nil {
 			return eventErr
 		}
 		return retireWorkOrderSiblingsTx(ctx, tx, q, workspace(ctx), order, "superseded by successor creation", time.Now().UTC(), true)
@@ -384,7 +384,7 @@ func (s *Store) CreateReviewRoundCommand(ctx context.Context, lease taskops.Task
 			if err != nil {
 				return err
 			}
-			if err = insertEvent(ctx, q, core.Event{TaskID: taskID, JobID: job.ID, Kind: "work_order.created", Payload: core.JSONPayload(order)}); err != nil {
+			if err = insertEvent(ctx, q, core.Event{TaskID: taskID, JobID: job.ID, Kind: "work_order.created", Payload: store.WorkOrderEventPayload(order)}); err != nil {
 				return err
 			}
 		}
@@ -493,7 +493,7 @@ func (s *Store) CreateStageWorkOrderCommand(ctx context.Context, lease taskops.T
 		if err := firstOrderDirectionTx(ctx, tx, &order); err != nil {
 			return err
 		}
-		if err = insertEvent(ctx, q, core.Event{TaskID: job.TaskID, JobID: job.ID, Kind: "work_order.created", Payload: core.JSONPayload(order)}); err != nil {
+		if err = insertEvent(ctx, q, core.Event{TaskID: job.TaskID, JobID: job.ID, Kind: "work_order.created", Payload: store.WorkOrderEventPayload(order)}); err != nil {
 			return err
 		}
 		created = true
@@ -652,7 +652,7 @@ func (s *Store) RetryReviewRoundCommand(ctx context.Context, lease taskops.TaskL
 			return store.ReviewRoundRetryResult{}, err
 		}
 		created = append(created, order)
-		if err = insertEvent(ctx, q, core.Event{TaskID: request.TaskID, JobID: job.ID, Kind: "work_order.created", Payload: core.JSONPayload(order), At: now}); err != nil {
+		if err = insertEvent(ctx, q, core.Event{TaskID: request.TaskID, JobID: job.ID, Kind: "work_order.created", Payload: store.WorkOrderEventPayload(order), At: now}); err != nil {
 			return store.ReviewRoundRetryResult{}, err
 		}
 	}
@@ -1443,7 +1443,7 @@ func (s *Store) ClaimWorkOrderCommand(ctx context.Context, lifecycleLease taskop
 	if _, err := tx.Exec(ctx, `DELETE FROM work_order_claim_failures WHERE workspace_id=$1 AND work_order_id=$2`, workspace(ctx), order.ID); err != nil {
 		return core.WorkOrder{}, err
 	}
-	if err := insertEvent(ctx, q, core.Event{TaskID: order.TaskID, JobID: order.JobID, Kind: "work_order.claimed", Payload: core.JSONPayload(order)}); err != nil {
+	if err := insertEvent(ctx, q, core.Event{TaskID: order.TaskID, JobID: order.JobID, Kind: "work_order.claimed", Payload: store.WorkOrderEventPayload(order)}); err != nil {
 		return core.WorkOrder{}, err
 	}
 	if err := tx.Commit(ctx); err != nil {
@@ -1889,7 +1889,7 @@ func (s *Store) transitionWorkOrderTx(ctx context.Context, tx pgx.Tx, order core
 	q := s.queries.WithTx(tx)
 	eventOrder := updated
 	eventOrder.AttemptID = attemptID
-	if err = insertEvent(ctx, q, core.Event{TaskID: updated.TaskID, JobID: updated.JobID, Kind: kind, Payload: core.JSONPayload(eventOrder), At: now}); err != nil {
+	if err = insertEvent(ctx, q, core.Event{TaskID: updated.TaskID, JobID: updated.JobID, Kind: kind, Payload: store.WorkOrderEventPayload(eventOrder), At: now}); err != nil {
 		return core.WorkOrder{}, err
 	}
 	return updated, nil
@@ -2315,7 +2315,7 @@ func (s *Store) settleAcceptedReviewTx(ctx context.Context, tx pgx.Tx, q *db.Que
 		if tag.RowsAffected() != 1 {
 			return fmt.Errorf("work order %s changed while accepting its review verdict", order.ID)
 		}
-		if err = insertEvent(ctx, q, core.Event{TaskID: order.TaskID, JobID: order.JobID, Kind: "work_order.updated", Payload: core.JSONPayload(order), At: now}); err != nil {
+		if err = insertEvent(ctx, q, core.Event{TaskID: order.TaskID, JobID: order.JobID, Kind: "work_order.updated", Payload: store.WorkOrderEventPayload(order), At: now}); err != nil {
 			return err
 		}
 	}

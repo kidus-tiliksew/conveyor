@@ -263,7 +263,7 @@ func (m *memory) ChangeTaskPolicyCommand(ctx context.Context, lease taskops.Task
 			order.State, order.Claimable, order.UpdatedAt = state, false, now
 			m.workOrders[id] = order
 			m.appendEventLocked(ctx, core.Event{TaskID: task.ID, JobID: order.JobID, Kind: eventKind, ActorID: actor.ID, ActorRole: actor.Role,
-				Payload: core.JSONPayload(order), At: now})
+				Payload: WorkOrderEventPayload(order), At: now})
 			if job, index, found := m.findJobLocked(order.JobID); found {
 				job.State, job.EndedAt = core.JobFailed, now
 				m.jobs[job.TaskID][index] = job
@@ -302,7 +302,7 @@ func (m *memory) ChangeTaskPolicyCommand(ctx context.Context, lease taskops.Task
 		}
 		m.workOrders[order.ID] = order
 		result.CreatedWorkOrders = append(result.CreatedWorkOrders, order.ID)
-		m.appendEventLocked(ctx, core.Event{TaskID: task.ID, JobID: job.ID, Kind: "work_order.created", Payload: core.JSONPayload(order), At: now})
+		m.appendEventLocked(ctx, core.Event{TaskID: task.ID, JobID: job.ID, Kind: "work_order.created", Payload: WorkOrderEventPayload(order), At: now})
 		if order.Stage == core.StageReview {
 			m.appendEventLocked(ctx, setupSeatEvent(task.ID, order, actor, workspace, priorSetup, request, "created_under_new_setup", now))
 		}

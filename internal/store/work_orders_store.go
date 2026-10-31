@@ -16,6 +16,15 @@ import (
 	"github.com/kidus-tiliksew/conveyor/internal/taskops"
 )
 
+// WorkOrderEventPayload preserves lifecycle and attempt identity without
+// duplicating execution authority. The event's id identifies the work order
+// whose persisted snapshots supply the complete document bodies.
+func WorkOrderEventPayload(order core.WorkOrder) json.RawMessage {
+	order.GovernanceSnapshot = nil
+	order.ServedRequirementSnapshot = nil
+	return core.JSONPayload(order)
+}
+
 const (
 	ReviewClaimedWithoutVerdict = "claimed_without_verdict"
 	ReviewExpiredWithoutVerdict = "expired_without_verdict"
@@ -1276,7 +1285,7 @@ func (m *memory) settleAcceptedReviewLocked(ctx context.Context, decision core.R
 		order.ContinuationSessionID, order.ContinuationAttemptID = "", ""
 		order.ContinuationHarness, order.ContinuationLaunchEnvironment = "", ""
 		m.workOrders[order.ID] = order
-		m.appendEventLocked(ctx, core.Event{TaskID: order.TaskID, JobID: order.JobID, Kind: "work_order.updated", Payload: core.JSONPayload(order), At: now})
+		m.appendEventLocked(ctx, core.Event{TaskID: order.TaskID, JobID: order.JobID, Kind: "work_order.updated", Payload: WorkOrderEventPayload(order), At: now})
 	}
 	if job.State != core.JobDone {
 		if err := ValidateJobTransition(job.State, core.JobDone); err != nil {
@@ -1485,7 +1494,7 @@ func (m *memory) CreateWorkOrderCommand(ctx context.Context, lease taskops.TaskL
 	}
 	order.OperatorDirection = m.firstOrderDirectionLocked(order.TaskID, order.OperatorDirection)
 	m.workOrders[order.ID] = order
-	m.appendEventLocked(ctx, core.Event{TaskID: order.TaskID, JobID: order.JobID, Kind: "work_order.created", Payload: core.JSONPayload(order)})
+	m.appendEventLocked(ctx, core.Event{TaskID: order.TaskID, JobID: order.JobID, Kind: "work_order.created", Payload: WorkOrderEventPayload(order)})
 	m.retireWorkOrderSiblingsLocked(ctx, order, "superseded by successor creation", now, true)
 	return nil
 }
@@ -1573,7 +1582,7 @@ func (m *memory) CreateReviewRoundCommand(ctx context.Context, lease taskops.Tas
 		order.DeclaredReviewSeats = nil
 		order.VerificationContextID = contextID
 		m.workOrders[order.ID] = order
-		m.appendEventLocked(ctx, core.Event{TaskID: taskID, JobID: job.ID, Kind: "work_order.created", Payload: core.JSONPayload(order)})
+		m.appendEventLocked(ctx, core.Event{TaskID: taskID, JobID: job.ID, Kind: "work_order.created", Payload: WorkOrderEventPayload(order)})
 	}
 	m.putReviewRoundSeatsLocked(task.Workspace, record)
 	m.appendEventLocked(ctx, core.Event{TaskID: taskID, Kind: "review.round_created", Payload: core.JSONPayload(ReviewRoundCreatedPayload(round, seats))})
@@ -1647,7 +1656,7 @@ func (m *memory) CreateStageWorkOrderCommand(ctx context.Context, lease taskops.
 	}
 	order.OperatorDirection = m.firstOrderDirectionLocked(order.TaskID, order.OperatorDirection)
 	m.workOrders[order.ID] = order
-	m.appendEventLocked(ctx, core.Event{TaskID: job.TaskID, JobID: job.ID, Kind: "work_order.created", Payload: core.JSONPayload(order)})
+	m.appendEventLocked(ctx, core.Event{TaskID: job.TaskID, JobID: job.ID, Kind: "work_order.created", Payload: WorkOrderEventPayload(order)})
 	m.retireWorkOrderSiblingsLocked(ctx, order, "superseded by stage re-entry", now, true)
 	return true, nil
 }
@@ -1771,7 +1780,7 @@ func (m *memory) RetryReviewRoundCommand(ctx context.Context, lease taskops.Task
 		order.VerificationContextID = contextID
 		m.workOrders[order.ID] = order
 		created = append(created, order)
-		m.appendEventLocked(ctx, core.Event{TaskID: request.TaskID, JobID: job.ID, Kind: "work_order.created", Payload: core.JSONPayload(order), At: now})
+		m.appendEventLocked(ctx, core.Event{TaskID: request.TaskID, JobID: job.ID, Kind: "work_order.created", Payload: WorkOrderEventPayload(order), At: now})
 	}
 	actor := ActorFromContext(ctx)
 	timedOutIDs := make([]string, 0, len(recovery.TimedOutOrders))
@@ -2416,7 +2425,7 @@ func (m *memory) ClaimWorkOrderCommand(ctx context.Context, lifecycleLease tasko
 	// A successful claim clears the order's claim-failure record in the same
 	// write (component-work-orders, Claim admission).
 	delete(m.claimFailures, order.ID)
-	m.appendEventLocked(ctx, core.Event{TaskID: order.TaskID, JobID: order.JobID, Kind: "work_order.claimed", Payload: core.JSONPayload(order)})
+	m.appendEventLocked(ctx, core.Event{TaskID: order.TaskID, JobID: order.JobID, Kind: "work_order.claimed", Payload: WorkOrderEventPayload(order)})
 	return order, nil
 }
 
@@ -2618,7 +2627,7 @@ func (m *memory) refreshWorkOrderLocked(ctx context.Context, order core.WorkOrde
 		}
 		eventOrder := order
 		eventOrder.AttemptID = attemptID
-		m.appendEventLocked(ctx, core.Event{TaskID: order.TaskID, JobID: order.JobID, Kind: "work_order.timed_out", Payload: core.JSONPayload(eventOrder), At: now})
+		m.appendEventLocked(ctx, core.Event{TaskID: order.TaskID, JobID: order.JobID, Kind: "work_order.timed_out", Payload: WorkOrderEventPayload(eventOrder), At: now})
 		return order
 	}
 	if order.State == core.WorkOrderClaimed && !order.LeaseExpiresAt.After(now) {
@@ -2651,7 +2660,7 @@ func (m *memory) refreshWorkOrderLocked(ctx context.Context, order core.WorkOrde
 		}
 		order.State, order.Claimable, order.UpdatedAt = next, false, now
 		m.workOrders[order.ID] = order
-		m.appendEventLocked(ctx, core.Event{TaskID: order.TaskID, JobID: order.JobID, Kind: "work_order.stale", Payload: core.JSONPayload(order), At: now})
+		m.appendEventLocked(ctx, core.Event{TaskID: order.TaskID, JobID: order.JobID, Kind: "work_order.stale", Payload: WorkOrderEventPayload(order), At: now})
 		return order
 	}
 	order.Claimable = order.ClaimableAt(now)

@@ -1,7 +1,6 @@
 package storetest
 
 import (
-	"encoding/json"
 	"github.com/kidus-tiliksew/conveyor/internal/config"
 	"github.com/kidus-tiliksew/conveyor/internal/core"
 	"github.com/kidus-tiliksew/conveyor/internal/store"
@@ -58,11 +57,6 @@ func runRepositoryInstall(t *testing.T, x Fixture) {
 	for _, event := range events {
 		if event.Kind != "task.created" {
 			continue
-		}
-		var payload core.Task
-		requireOK(t, json.Unmarshal(event.Payload, &payload))
-		if payload.Source != core.RepositoryRegistrationSource || payload.RepositoryInstallAttempt != 1 {
-			t.Fatal("event lost registration provenance")
 		}
 		// Every task.created joins the task to its own blueprint and nothing
 		// else (component-lineage); registration adds no other edge.

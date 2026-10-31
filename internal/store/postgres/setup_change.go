@@ -244,7 +244,7 @@ func (s *Store) ChangeTaskPolicyCommand(ctx context.Context, lease taskops.TaskL
 			return store.SetupChangeResult{}, err
 		}
 		result.CreatedWorkOrders = append(result.CreatedWorkOrders, order.ID)
-		if err = insertEvent(ctx, q, core.Event{TaskID: task.ID, JobID: job.ID, Kind: "work_order.created", Payload: core.JSONPayload(order), At: now}); err != nil {
+		if err = insertEvent(ctx, q, core.Event{TaskID: task.ID, JobID: job.ID, Kind: "work_order.created", Payload: store.WorkOrderEventPayload(order), At: now}); err != nil {
 			return store.SetupChangeResult{}, err
 		}
 		if order.Stage != core.StageReview {

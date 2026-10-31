@@ -178,12 +178,12 @@ func (s SubmissionReviewSeats) normalize() (SubmissionReviewSeats, error) {
 	return SubmissionReviewSeats{Declared: copySeatCount(s.Declared), Unused: copySeatCount(s.Unused)}, nil
 }
 
-// SubmissionWorkOrderEventPayload is the submission's work_order.updated
-// payload: the order itself, with "review_seats" and "review_seats_applied":
-// false appended when the submission records an unused count. Without one the
-// payload is exactly the order's JSON (feature-review-seat-minimum RS-4).
+// SubmissionWorkOrderEventPayload is the submission's authority-free
+// work_order.updated payload, with "review_seats" and "review_seats_applied":
+// false appended when the submission records an unused count
+// (feature-review-seat-minimum RS-4).
 func SubmissionWorkOrderEventPayload(order core.WorkOrder, seats SubmissionReviewSeats) json.RawMessage {
-	payload := core.JSONPayload(order)
+	payload := WorkOrderEventPayload(order)
 	if seats.Unused == nil {
 		return payload
 	}
@@ -358,7 +358,7 @@ func (m *memory) CreateConflictFixCommand(ctx context.Context, lease taskops.Tas
 	m.jobs[task.ID] = append(m.jobs[task.ID], request.Job)
 	m.appendEventLocked(ctx, core.Event{TaskID: task.ID, JobID: request.Job.ID, Kind: "job.created", Payload: core.JSONPayload(request.Job)})
 	m.workOrders[order.ID] = order
-	m.appendEventLocked(ctx, core.Event{TaskID: task.ID, JobID: request.Job.ID, Kind: "work_order.created", Payload: core.JSONPayload(order)})
+	m.appendEventLocked(ctx, core.Event{TaskID: task.ID, JobID: request.Job.ID, Kind: "work_order.created", Payload: WorkOrderEventPayload(order)})
 	m.appendEventLocked(ctx, core.Event{TaskID: task.ID, JobID: request.Job.ID, Kind: "pipeline.awaiting_work_order", Payload: core.JSONPayload(map[string]any{"stage": core.StageImplement, "execution": "mcp", "reason_code": "merge-conflict"})})
 	m.appendEventLocked(ctx, core.Event{TaskID: task.ID, JobID: request.Job.ID, Kind: "merge.conflict_fix_dispatched", Payload: core.JSONPayload(map[string]any{"workspace": task.Workspace, "task_id": task.ID, "reason_code": "merge-conflict", "approved_head": request.ApprovedHead, "new_head": request.NewHead, "work_order_id": order.ID})})
 	return ConflictFixResult{WorkOrder: order, Created: true}, nil

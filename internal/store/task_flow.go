@@ -362,11 +362,11 @@ func FoldTaskFlow(events []core.Event, action nextaction.NextAction, recovery co
 	for _, event := range ordered {
 		switch {
 		case event.Kind == "task.created":
-			var task core.Task
+			var task TaskCreatedEvent
 			if json.Unmarshal(event.Payload, &task) != nil {
 				continue
 			}
-			specApproval, mergeApproval, verifyStage = task.SpecApproval, task.MergeApproval, task.SetupContract.VerifyStage
+			specApproval, mergeApproval, verifyStage = task.SpecApproval, task.MergeApproval, task.PolicyContract.VerifyStage
 			if state == "" {
 				state = string(task.State)
 			}

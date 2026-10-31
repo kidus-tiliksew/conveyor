@@ -34,7 +34,7 @@ const taskEventWindowSelect = `SELECT b.max_id, b.matching, w.id, w.at, w.source
 	CASE WHEN w.fits AND w.within_limit THEN e.actor_role END,
 	CASE WHEN w.fits AND w.within_limit AND NOT w.omitted THEN e.payload_json END
 FROM (SELECT %[1]s AS max_id, COALESCE(SUM(CASE WHEN %[2]s THEN 1 ELSE 0 END), 0) AS matching
-	FROM events WHERE workspace_id = ? AND task_id = ?%[3]s) b
+	FROM events WHERE workspace_id = ? AND event_shard_key = ? AND task_id = event_shard_key%[3]s) b
 LEFT JOIN (
 	SELECT c.id, c.at, c.payload_bytes, c.omitted, c.source_bytes,
 		SUM(c.source_bytes) OVER (ORDER BY c.at%[5]s, c.id%[5]s ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) <= ? AS fits,
@@ -44,10 +44,10 @@ LEFT JOIN (
 		FROM (SELECT id, at, LENGTH(payload_json) AS payload_bytes,
 				? > 0 AND LENGTH(payload_json) > ? AS omitted,
 				LENGTH(kind) + LENGTH(actor_id) + LENGTH(actor_role) + LENGTH(COALESCE(job_id, '')) + LENGTH(task_id) + 64 AS column_bytes
-			FROM events WHERE workspace_id = ? AND task_id = ? AND %[2]s%[4]s
+			FROM events WHERE workspace_id = ? AND event_shard_key = ? AND task_id = event_shard_key AND %[2]s%[4]s
 			ORDER BY at%[5]s, id%[5]s LIMIT ?) r) c
 ) w ON w.id <= b.max_id
-LEFT JOIN events e ON e.workspace_id = ? AND e.task_id = ? AND e.id = w.id
+LEFT JOIN events e ON e.workspace_id = ? AND e.event_shard_key = ? AND e.task_id = e.event_shard_key AND e.id = w.id
 ORDER BY w.at%[5]s, w.id%[5]s`
 
 // taskEventKindFilter renders the query's kind filter with its arguments: an
