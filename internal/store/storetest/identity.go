@@ -519,6 +519,223 @@ func runTokens(t *testing.T, x Fixture) {
 	if _, err := st.VerifyPersonalAccessToken(ctx, issued.Value); err == nil {
 		t.Fatal("revoked PAT authenticates")
 	}
+	t.Run("CredentialUseStamp", func(t *testing.T) { runCredentialUseStamp(t, x, ctx, owner) })
+}
+
+// runCredentialUseStamp proves read-first bearer verification: a credential
+// used within the stamp interval is verified with no write, a stale or unused
+// one is stamped exactly once even under a concurrent burst, and a revoked
+// credential or deactivated owner is refused on the next use, inside the
+// interval and between the read and the stamp
+// (component-identity-membership; req-security-boundaries AC-2.1, AC-2.3).
+// Interleavings use the identity test hook and channels, never sleeps.
+func runCredentialUseStamp(t *testing.T, x Fixture, ctx context.Context, owner core.IdentityUser) {
+	if x.SeedCredentialLastUsed == nil || x.CredentialLastUsed == nil {
+		t.Fatal("conformance fixture must provide SeedCredentialLastUsed and CredentialLastUsed for the credential use-stamp cases")
+	}
+	st := x.Backend
+	type credential struct {
+		id, value string
+		user      core.IdentityUser
+		agent     bool
+		binding   store.RunAgentCredentialBinding
+	}
+	provision := func(t *testing.T, email string) core.IdentityUser {
+		t.Helper()
+		user, err := st.ProvisionIdentityUser(ctx, email, "Stamp")
+		requireOK(t, err)
+		return user
+	}
+	personal := func(t *testing.T, user core.IdentityUser) credential {
+		t.Helper()
+		issued, err := st.IssueOwnPersonalAccessToken(ctx, user.ID, "stamp")
+		requireOK(t, err)
+		return credential{id: issued.ID, value: issued.Value, user: user}
+	}
+	agent := func(t *testing.T, user core.IdentityUser, session string) credential {
+		t.Helper()
+		binding := store.RunAgentCredentialBinding{WorkspaceID: x.Workspace, WorkOrderID: "stamp-order", SessionID: session}
+		label, err := store.RunAgentCredentialLabel(binding)
+		requireOK(t, err)
+		issued, err := st.IssueAgentCredential(ctx, user.ID, label)
+		requireOK(t, err)
+		return credential{id: issued.ID, value: issued.Value, user: user, agent: true, binding: binding}
+	}
+	verify := func(t *testing.T, ctx context.Context, c credential) {
+		t.Helper()
+		auth, err := st.VerifyCredential(ctx, c.value)
+		requireOK(t, err)
+		if auth.ID != c.id || auth.OwnerUserID != c.user.ID || auth.Method != core.CredentialMethodBearer {
+			t.Fatalf("verification=%+v, want credential %q of %q by bearer", auth, c.id, c.user.ID)
+		}
+	}
+	requireRefusal := func(t *testing.T, err error, what string) {
+		t.Helper()
+		if !errors.Is(err, core.ErrInvalidCredential) {
+			t.Fatalf("%s: verification err=%v, want invalid credential", what, err)
+		}
+	}
+	const stale = 10 * time.Minute
+
+	t.Run("Unused", func(t *testing.T) {
+		c := personal(t, provision(t, "stamp-unused@example.test"))
+		if used := x.CredentialLastUsed(t, ctx, c.id); !used.IsZero() {
+			t.Fatalf("issued credential last use=%s, want unset", used)
+		}
+		stages := &sessionStages{}
+		verify(t, stages.hook(ctx), c)
+		verify(t, stages.hook(ctx), c)
+		if stages.count(store.IdentityHookCredentialRead) != 2 || stages.count(store.IdentityHookCredentialStamping) != 1 || stages.count(store.IdentityHookCredentialStamped) != 1 {
+			t.Fatalf("unused verification stages=%v, want two reads and one stamp", stages.counts)
+		}
+		if used := x.CredentialLastUsed(t, ctx, c.id); used.IsZero() {
+			t.Fatal("unused credential was not stamped")
+		}
+	})
+
+	t.Run("Fresh", func(t *testing.T) {
+		for _, c := range []credential{personal(t, provision(t, "stamp-fresh@example.test")), agent(t, owner, "stamp-fresh")} {
+			x.SeedCredentialLastUsed(t, ctx, c.id, 10*time.Second)
+			before := x.CredentialLastUsed(t, ctx, c.id)
+			stages := &sessionStages{}
+			verify(t, stages.hook(ctx), c)
+			verify(t, stages.hook(ctx), c)
+			if stages.count(store.IdentityHookCredentialRead) != 2 || stages.count(store.IdentityHookCredentialStamping) != 0 {
+				t.Fatalf("fresh verification stages=%v, want two reads and no stamp attempt", stages.counts)
+			}
+			if after := x.CredentialLastUsed(t, ctx, c.id); !after.Equal(before) {
+				t.Fatalf("fresh verification moved last use from %s to %s", before, after)
+			}
+		}
+	})
+
+	t.Run("Stale", func(t *testing.T) {
+		c := personal(t, provision(t, "stamp-stale@example.test"))
+		x.SeedCredentialLastUsed(t, ctx, c.id, stale)
+		before := x.CredentialLastUsed(t, ctx, c.id)
+		stages := &sessionStages{}
+		verify(t, stages.hook(ctx), c)
+		after := x.CredentialLastUsed(t, ctx, c.id)
+		if stages.count(store.IdentityHookCredentialStamped) != 1 || !after.After(before) {
+			t.Fatalf("stale verification stages=%v last use %s->%s, want one stamp moving it", stages.counts, before, after)
+		}
+		verify(t, stages.hook(ctx), c)
+		if stages.count(store.IdentityHookCredentialStamping) != 1 || !x.CredentialLastUsed(t, ctx, c.id).Equal(after) {
+			t.Fatalf("second verification stages=%v, want no further stamp", stages.counts)
+		}
+	})
+
+	t.Run("ConcurrentStale", func(t *testing.T) {
+		c := personal(t, provision(t, "stamp-burst@example.test"))
+		x.SeedCredentialLastUsed(t, ctx, c.id, stale)
+		const callers = 4
+		stages := &sessionStages{}
+		arrived, release := make(chan struct{}, callers), make(chan struct{})
+		held := store.WithIdentityTestHook(ctx, func(stage string) error {
+			stages.mu.Lock()
+			if stages.counts == nil {
+				stages.counts = map[string]int{}
+			}
+			stages.counts[stage]++
+			stages.mu.Unlock()
+			if stage == store.IdentityHookCredentialRead {
+				arrived <- struct{}{}
+				<-release
+			}
+			return nil
+		})
+		results := make(chan error, callers)
+		for range callers {
+			go func() {
+				auth, err := st.VerifyCredential(held, c.value)
+				if err == nil && (auth.ID != c.id || auth.OwnerUserID != c.user.ID) {
+					err = fmt.Errorf("burst verification=%+v, want credential %q", auth, c.id)
+				}
+				results <- err
+			}()
+		}
+		for range callers {
+			<-arrived
+		}
+		close(release)
+		for range callers {
+			requireOK(t, <-results)
+		}
+		if stages.count(store.IdentityHookCredentialStamped) != 1 {
+			t.Fatalf("burst stages=%v, want exactly one winning stamp", stages.counts)
+		}
+	})
+
+	t.Run("RefusedNextUse", func(t *testing.T) {
+		revokedUser := provision(t, "stamp-revoked@example.test")
+		token, run := personal(t, revokedUser), agent(t, revokedUser, "stamp-revoked")
+		verify(t, ctx, token)
+		verify(t, ctx, run)
+		_, err := st.RevokeOwnPersonalAccessToken(ctx, revokedUser.ID, token.id)
+		requireOK(t, err)
+		requireOK(t, st.RevokeRunAgentCredential(ctx, revokedUser.ID, run.id, run.binding))
+		for _, c := range []credential{token, run} {
+			_, err := st.VerifyCredential(ctx, c.value)
+			requireRefusal(t, err, fmt.Sprintf("revoked credential (agent=%t) inside the stamp interval", c.agent))
+		}
+
+		deactivatedUser := provision(t, "stamp-deactivated@example.test")
+		token, run = personal(t, deactivatedUser), agent(t, deactivatedUser, "stamp-deactivated")
+		verify(t, ctx, token)
+		verify(t, ctx, run)
+		deactivateUser(t, x, ctx, deactivatedUser.ID)
+		for _, c := range []credential{token, run} {
+			_, err := st.VerifyCredential(ctx, c.value)
+			requireRefusal(t, err, fmt.Sprintf("deactivated owner's credential (agent=%t) inside the stamp interval", c.agent))
+		}
+	})
+
+	t.Run("RefusedDuringStamp", func(t *testing.T) {
+		for _, test := range []struct {
+			name   string
+			change func(t *testing.T, c credential)
+		}{
+			{"Revoked", func(t *testing.T, c credential) {
+				_, err := st.RevokeOwnPersonalAccessToken(ctx, c.user.ID, c.id)
+				requireOK(t, err)
+			}},
+			{"Deactivated", func(t *testing.T, c credential) {
+				deactivateUser(t, x, ctx, c.user.ID)
+			}},
+		} {
+			t.Run(test.name, func(t *testing.T) {
+				c := personal(t, provision(t, "stamp-race-"+strings.ToLower(test.name)+"@example.test"))
+				x.SeedCredentialLastUsed(t, ctx, c.id, stale)
+				stages := &sessionStages{}
+				reached, release := make(chan struct{}), make(chan struct{})
+				held := store.WithIdentityTestHook(ctx, func(stage string) error {
+					stages.mu.Lock()
+					if stages.counts == nil {
+						stages.counts = map[string]int{}
+					}
+					stages.counts[stage]++
+					stages.mu.Unlock()
+					if stage == store.IdentityHookCredentialRead {
+						close(reached)
+						<-release
+					}
+					return nil
+				})
+				done := make(chan error, 1)
+				go func() {
+					_, err := st.VerifyCredential(held, c.value)
+					done <- err
+				}()
+				<-reached
+				test.change(t, c)
+				close(release)
+				requireRefusal(t, <-done, test.name+" between read and stamp")
+				if stages.count(store.IdentityHookCredentialStamped) != 0 {
+					t.Fatalf("%s credential was stamped: stages=%v", test.name, stages.counts)
+				}
+			})
+		}
+	})
 }
 
 // workspaceEventsOf returns the workspace's taskless events of exactly kind.

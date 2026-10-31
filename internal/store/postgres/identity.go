@@ -886,36 +886,84 @@ func (s *Store) RecordInvitationDelivery(ctx context.Context, email, outcome str
 	})
 }
 
+// credentialUseGranularity bounds how often bearer verification writes a
+// credential row: a credential used within it is verified by a read alone,
+// so last_used_at is accurate to this interval (component-identity-membership).
+const credentialUseGranularity = time.Minute
+
+// credentialRead is one verification read of a live bearer credential.
+type credentialRead struct {
+	credential core.AuthenticatedCredential
+	user       IdentityUser
+	stale      bool
+}
+
+// readCredential reads a live credential by its unique hash without locking:
+// unrevoked and owned by an active user. It reports whether last_used_at is
+// unset or older than the stamp interval by the database clock.
+func (s *Store) readCredential(ctx context.Context, hash []byte) (credentialRead, error) {
+	var r credentialRead
+	var stored []byte
+	var revoked pgtype.Timestamptz
+	var kind, scope, label string
+	err := s.boundary.QueryRow(ctx, `SELECT t.id,t.user_id,t.kind,t.scope,t.label,t.token_hash,t.revoked_at,u.email,u.display_name,u.status,t.last_used_at IS NULL OR t.last_used_at<now()-$2::bigint*interval '1 microsecond' FROM user_tokens t JOIN users u ON u.id=t.user_id WHERE t.token_hash=$1`,
+		hash, credentialUseGranularity.Microseconds()).Scan(&r.credential.ID, &r.credential.OwnerUserID, &kind, &scope, &label, &stored, &revoked, &r.user.Email, &r.user.DisplayName, &r.user.Status, &r.stale)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return credentialRead{}, ErrInvalidPersonalAccessToken
+	}
+	if err != nil {
+		return credentialRead{}, err
+	}
+	if subtle.ConstantTimeCompare(stored, hash) != 1 || revoked.Valid || r.user.Status != "active" {
+		return credentialRead{}, ErrInvalidPersonalAccessToken
+	}
+	r.user.ID = r.credential.OwnerUserID
+	r.credential.Kind, r.credential.Scope = core.CredentialKind(kind), core.CredentialScope(scope)
+	if r.credential.Kind == core.CredentialAgent {
+		if binding, ok := store.ParseRunAgentCredentialLabel(label); ok {
+			r.credential.RunWorkspaceID = binding.WorkspaceID
+			r.credential.RunWorkOrderID = binding.WorkOrderID
+			r.credential.RunSessionID = binding.SessionID
+		}
+	}
+	return r, nil
+}
+
+// verifyCredential reads before it writes. Every call's read refuses a
+// revocation or deactivation that completed first. A stale credential gets
+// one conditional UPDATE that repeats every validity predicate; a call whose
+// UPDATE changes nothing rereads, because a concurrent call stamped first or
+// the credential lost its validity in between (component-identity-membership;
+// req-security-boundaries AC-2.1, AC-2.3).
 func (s *Store) verifyCredential(ctx context.Context, candidate string) (core.AuthenticatedCredential, IdentityUser, error) {
 	hash := sha256.Sum256([]byte(candidate))
-	row, err := s.queries.GetUserTokenByHash(ctx, hash[:])
-	if err != nil {
-		if errors.Is(err, pgx.ErrNoRows) {
-			return core.AuthenticatedCredential{}, IdentityUser{}, ErrInvalidPersonalAccessToken
-		}
-		return core.AuthenticatedCredential{}, IdentityUser{}, err
-	}
-	if subtle.ConstantTimeCompare(row.TokenHash, hash[:]) != 1 || row.RevokedAt.Valid || row.Status != "active" {
-		return core.AuthenticatedCredential{}, IdentityUser{}, ErrInvalidPersonalAccessToken
-	}
-	used, err := s.queries.MarkUserTokenUsed(ctx, db.MarkUserTokenUsedParams{ID: row.ID, TokenHash: hash[:]})
+	read, err := s.readCredential(ctx, hash[:])
 	if err != nil {
 		return core.AuthenticatedCredential{}, IdentityUser{}, err
 	}
-	if used != 1 {
-		return core.AuthenticatedCredential{}, IdentityUser{}, ErrInvalidPersonalAccessToken
+	if err = store.RunIdentityTestHook(ctx, store.IdentityHookCredentialRead); err != nil {
+		return core.AuthenticatedCredential{}, IdentityUser{}, err
 	}
-	kind, scope := core.CredentialKind(row.Kind), core.CredentialScope(row.Scope)
-	credential := core.AuthenticatedCredential{ID: row.ID, OwnerUserID: row.UserID, Kind: kind, Scope: scope}
-	if kind == core.CredentialAgent {
-		if binding, ok := store.ParseRunAgentCredentialLabel(row.Label); ok {
-			credential.RunWorkspaceID = binding.WorkspaceID
-			credential.RunWorkOrderID = binding.WorkOrderID
-			credential.RunSessionID = binding.SessionID
+	if read.stale {
+		if err = store.RunIdentityTestHook(ctx, store.IdentityHookCredentialStamping); err != nil {
+			return core.AuthenticatedCredential{}, IdentityUser{}, err
+		}
+		tag, err := s.boundary.Exec(ctx, `UPDATE user_tokens t SET last_used_at=now() FROM users u WHERE t.id=$1 AND t.token_hash=$2 AND t.user_id=u.id AND u.status='active' AND t.revoked_at IS NULL AND (t.last_used_at IS NULL OR t.last_used_at<now()-$3::bigint*interval '1 microsecond')`,
+			read.credential.ID, hash[:], credentialUseGranularity.Microseconds())
+		if err != nil {
+			return core.AuthenticatedCredential{}, IdentityUser{}, err
+		}
+		if tag.RowsAffected() == 1 {
+			if err = store.RunIdentityTestHook(ctx, store.IdentityHookCredentialStamped); err != nil {
+				return core.AuthenticatedCredential{}, IdentityUser{}, err
+			}
+		} else if read, err = s.readCredential(ctx, hash[:]); err != nil {
+			// A concurrent verification stamped first, or the credential
+			// lost its validity in between; the reread decides which.
+			return core.AuthenticatedCredential{}, IdentityUser{}, err
 		}
 	}
-	user := IdentityUser{ID: row.UserID, Email: row.Email, DisplayName: row.DisplayName, Status: row.Status}
-	return credential, user, nil
+	return read.credential, read.user, nil
 }
 
 func (s *Store) RevokePersonalAccessToken(ctx context.Context, tokenID string) (PersonalAccessToken, error) {

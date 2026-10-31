@@ -94,42 +94,91 @@ func (s *Store) RevokeRunAgentCredential(ctx context.Context, userID, id string,
 		return translateBackendConflict(err)
 	})
 }
+
+// credentialUseGranularity bounds how often bearer verification writes a
+// credential row: a credential used within it is verified by a read alone,
+// so last_used_at is accurate to this interval (component-identity-membership).
+const credentialUseGranularity = time.Minute
+
+// credentialRead is one verification read of a live bearer credential.
+type credentialRead struct {
+	credential core.AuthenticatedCredential
+	user       core.IdentityUser
+	stale      bool
+}
+
+// readCredential reads a live credential by its hash on the ordinary handle,
+// outside identityTx and its registry locks: unrevoked and owned by an active
+// user. It reports whether last_used_at is unset or older than the stamp
+// interval by the database clock.
+func (s *Store) readCredential(ctx context.Context, hash []byte) (credentialRead, error) {
+	var r credentialRead
+	var stored []byte
+	var revoked sql.NullTime
+	var label string
+	err := s.db.QueryRowContext(ctx, "SELECT t.id,t.user_id,t.kind,t.scope,t.token_hash,t.revoked_at,t.label,u.email,u.display_name,u.status,t.last_used_at IS NULL OR t.last_used_at<DATE_SUB(CURRENT_TIMESTAMP(6),INTERVAL ? MICROSECOND) FROM user_tokens t JOIN users u ON u.id=t.user_id WHERE t.token_hash=?",
+		credentialUseGranularity.Microseconds(), hash).Scan(&r.credential.ID, &r.credential.OwnerUserID, &r.credential.Kind, &r.credential.Scope, &stored, &revoked, &label, &r.user.Email, &r.user.DisplayName, &r.user.Status, &r.stale)
+	if errors.Is(err, sql.ErrNoRows) {
+		return credentialRead{}, core.ErrInvalidCredential
+	}
+	if err != nil {
+		return credentialRead{}, translateBackendConflict(err)
+	}
+	if revoked.Valid || r.user.Status != "active" || subtle.ConstantTimeCompare(stored, hash) != 1 {
+		return credentialRead{}, core.ErrInvalidCredential
+	}
+	r.user.ID = r.credential.OwnerUserID
+	r.credential.Method = core.CredentialMethodBearer
+	if r.credential.Kind == core.CredentialAgent {
+		if b, ok := store.ParseRunAgentCredentialLabel(label); ok {
+			r.credential.RunWorkspaceID = b.WorkspaceID
+			r.credential.RunWorkOrderID = b.WorkOrderID
+			r.credential.RunSessionID = b.SessionID
+		}
+	}
+	return r, nil
+}
+
+// verifyCredential reads before it writes and never enters identityTx, so a
+// bearer call takes neither registry lock row. Every call's read refuses a
+// revocation or deactivation that completed first. A stale credential gets
+// one conditional UPDATE that repeats every validity predicate; a call whose
+// UPDATE changes nothing rereads, because a concurrent call stamped first or
+// the credential lost its validity in between (component-identity-membership;
+// req-security-boundaries AC-2.1, AC-2.3).
 func (s *Store) verifyCredential(ctx context.Context, candidate string) (core.AuthenticatedCredential, core.IdentityUser, error) {
 	hash := sha256.Sum256([]byte(candidate))
-	var c core.AuthenticatedCredential
-	var u core.IdentityUser
-	err := s.identityTx(ctx, func(tx *sql.Tx) error {
-		var stored []byte
-		var revoked sql.NullTime
-		var label string
-		err := tx.QueryRowContext(ctx, "SELECT t.id,t.user_id,t.kind,t.scope,t.token_hash,t.revoked_at,t.label,u.email,u.display_name,u.status FROM user_tokens t JOIN users u ON u.id=t.user_id WHERE t.token_hash=?", hash[:]).Scan(&c.ID, &c.OwnerUserID, &c.Kind, &c.Scope, &stored, &revoked, &label, &u.Email, &u.DisplayName, &u.Status)
-		if errors.Is(err, sql.ErrNoRows) {
-			return core.ErrInvalidCredential
-		}
-		if err != nil {
-			return translateBackendConflict(err)
-		}
-		if revoked.Valid || u.Status != "active" || subtle.ConstantTimeCompare(stored, hash[:]) != 1 {
-			return core.ErrInvalidCredential
-		}
-		if _, err = tx.ExecContext(ctx, "UPDATE user_tokens SET last_used_at=CURRENT_TIMESTAMP(6) WHERE id=?", c.ID); err != nil {
-			return translateBackendConflict(err)
-		}
-		u.ID = c.OwnerUserID
-		c.Method = core.CredentialMethodBearer
-		if c.Kind == core.CredentialAgent {
-			if b, ok := store.ParseRunAgentCredentialLabel(label); ok {
-				c.RunWorkspaceID = b.WorkspaceID
-				c.RunWorkOrderID = b.WorkOrderID
-				c.RunSessionID = b.SessionID
-			}
-		}
-		return nil
-	})
+	read, err := s.readCredential(ctx, hash[:])
 	if err != nil {
-		return core.AuthenticatedCredential{}, core.IdentityUser{}, translateBackendConflict(err)
+		return core.AuthenticatedCredential{}, core.IdentityUser{}, err
 	}
-	return c, u, nil
+	if err = store.RunIdentityTestHook(ctx, store.IdentityHookCredentialRead); err != nil {
+		return core.AuthenticatedCredential{}, core.IdentityUser{}, err
+	}
+	if read.stale {
+		if err = store.RunIdentityTestHook(ctx, store.IdentityHookCredentialStamping); err != nil {
+			return core.AuthenticatedCredential{}, core.IdentityUser{}, err
+		}
+		result, err := s.db.ExecContext(ctx, "UPDATE user_tokens SET last_used_at=CURRENT_TIMESTAMP(6) WHERE id=? AND token_hash=? AND revoked_at IS NULL AND (last_used_at IS NULL OR last_used_at<DATE_SUB(CURRENT_TIMESTAMP(6),INTERVAL ? MICROSECOND)) AND user_id IN (SELECT id FROM users WHERE status='active')",
+			read.credential.ID, hash[:], credentialUseGranularity.Microseconds())
+		if err != nil {
+			return core.AuthenticatedCredential{}, core.IdentityUser{}, translateBackendConflict(err)
+		}
+		changed, err := result.RowsAffected()
+		if err != nil {
+			return core.AuthenticatedCredential{}, core.IdentityUser{}, translateBackendConflict(err)
+		}
+		if changed == 1 {
+			if err = store.RunIdentityTestHook(ctx, store.IdentityHookCredentialStamped); err != nil {
+				return core.AuthenticatedCredential{}, core.IdentityUser{}, err
+			}
+		} else if read, err = s.readCredential(ctx, hash[:]); err != nil {
+			// A concurrent verification stamped first, or the credential
+			// lost its validity in between; the reread decides which.
+			return core.AuthenticatedCredential{}, core.IdentityUser{}, err
+		}
+	}
+	return read.credential, read.user, nil
 }
 func (s *Store) VerifyCredential(ctx context.Context, candidate string) (core.AuthenticatedCredential, error) {
 	c, _, err := s.verifyCredential(ctx, candidate)
