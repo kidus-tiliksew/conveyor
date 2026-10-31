@@ -91,7 +91,7 @@ work back through the same gates.
 
 ## Tips
 
-Workflows that have worked well while building Conveyor with Conveyor:
+Workflows that have worked well so far:
 
 - **Run your agents from [T3 Code](https://github.com/pingdotgg/t3code).**
   Conveyor gives each stage its own agent, and T3 Code lets one session start
