@@ -38,8 +38,7 @@ https://github.com/user-attachments/assets/f50c12bc-81ed-429c-ba10-90dd3cdb8c34
 
 ## Get started
 
-Paste this into your coding agent, such as Claude Code, Codex, Cursor, or
-OpenCode:
+Paste this into your coding agent:
 
 ```text
 Set up Conveyor with me by following https://raw.githubusercontent.com/kidus-tiliksew/conveyor/main/docs/playbooks/conveyor-install.md
