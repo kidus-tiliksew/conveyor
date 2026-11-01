@@ -1844,19 +1844,10 @@ func (d *Dispatcher) pendingSpecGate(
 	return spec, true, nil
 }
 
-// PollGitHub preserves issue intake while execution ownership moves to MCP.
-func (d *Dispatcher) PollGitHub(ctx context.Context, interval time.Duration) {
-	ticker := time.NewTicker(interval)
-	defer ticker.Stop()
-	for {
-		d.pollOnce(ctx)
-		select {
-		case <-ctx.Done():
-			return
-		case <-ticker.C:
-		}
-	}
-}
+// pollOnce reads every repository's ready-labeled issues once. The
+// dispatcher keeps no timer: conveyord's startIssueIntakePoll drives it
+// through PollOnce only when timed issue intake is enabled
+// (component-runtime, Timed issue intake; req-quiet-idle-runtime AC-3.7).
 func (d *Dispatcher) pollOnce(ctx context.Context) {
 	forgeCtx, forgeErr := d.workspaceForgeContext(ctx)
 	if forgeErr != nil {

@@ -9,7 +9,7 @@ import (
 )
 
 // workspaceActivity is the data of one workspace change frame. TaskID is
-// empty when the notice folded several tasks or came from the peer tail:
+// empty when the notice folded several tasks or came from the peer check:
 // some task of the workspace changed.
 type workspaceActivity struct {
 	TaskID string `json:"task_id,omitempty"`

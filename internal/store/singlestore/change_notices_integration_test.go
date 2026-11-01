@@ -103,10 +103,10 @@ func TestSingleStoreNoticesPublishOnlyAfterCommitIntegration(t *testing.T) {
 	expectNoNotice(t, jobs, 10*time.Millisecond, "rolled-back enqueue")
 }
 
-func singleStoreNoticeRuntime(t *testing.T, st *Store, ws string, peerTail time.Duration) <-chan time.Time {
+func singleStoreNoticeRuntime(t *testing.T, st *Store, ws string) <-chan time.Time {
 	t.Helper()
 	started := make(chan time.Time, 1)
-	rt := logqueue.NewRuntime(st.Log(), logqueue.Options{Workspaces: []string{ws}, Changes: st.Changes(), PeerTail: peerTail})
+	rt := logqueue.NewRuntime(st.Log(), logqueue.Options{Workspaces: []string{ws}, Changes: st.Changes()})
 	rt.Register(queue.Registration{Kind: "notice_probe", Handle: func(context.Context, queue.Job) error {
 		started <- time.Now()
 		return nil
@@ -159,33 +159,52 @@ func singleStoreStartedWithin(t *testing.T, started <-chan time.Time, committed 
 func TestSingleStoreJobStartsWithinOneSecondOfCommitIntegration(t *testing.T) {
 	st := openOwnedStore(t)
 	ctx, ws, taskID := seedSingleStoreNoticeTask(t, st)
-	started := singleStoreNoticeRuntime(t, st, ws, 0)
+	started := singleStoreNoticeRuntime(t, st, ws)
 	committed := commitSingleStoreProbeJob(t, st, ctx, ws, taskID)
 	singleStoreStartedWithin(t, started, committed, time.Second, "same daemon")
 }
 
-// TestSingleStorePeerTailStartsJobWithinThirtySecondsIntegration: a second
+// TestSingleStorePeerCheckStartsJobWithinThirtySecondsIntegration: a second
 // daemon on SingleStore, which has no change notification, finds a job the
-// first committed through its 30-second peer tail (req-quiet-idle-runtime
-// AC-2.5).
-func TestSingleStorePeerTailStartsJobWithinThirtySecondsIntegration(t *testing.T) {
+// first committed through its daemon-wide peer check, which runs every 30
+// seconds and wakes the runtime with a job notice; the runtime keeps no peer
+// timer of its own (feature-quiet-idle-runtime, Peers;
+// req-quiet-idle-runtime AC-2.5).
+func TestSingleStorePeerCheckStartsJobWithinThirtySecondsIntegration(t *testing.T) {
 	committer := openOwnedStore(t)
 	peer := reopenSharedStore(t)
 	ctx, ws, taskID := seedSingleStoreNoticeTask(t, committer)
-	if peer.EnablePeers(ctx) {
-		t.Fatal("SingleStore claims change notification")
+	checks := make(chan time.Time, 4)
+	check := changes.SelectPeerCheck(ctx, config.RuntimeSettings{Peers: true}.Peers, peer, peer.Changes(), logqueue.PeerTailInterval, t.Logf)
+	if check == nil {
+		t.Fatal("SingleStore with peers selected no peer check")
 	}
-	started := singleStoreNoticeRuntime(t, peer, ws, logqueue.PeerTailInterval)
-	// The peer caught up once at start. Commit partway through its first tail
-	// period, so the job can reach it only through the next peer tail.
+	check.Checked = func(_ int, err error) {
+		if err != nil && !errors.Is(err, context.Canceled) {
+			t.Errorf("peer check: %v", err)
+		}
+		checks <- time.Now()
+	}
+	// The daemon's start order: the check's first statement, then the
+	// runtime's first catch-up, then the check on its ticker.
+	if err := check.Check(ctx); err != nil {
+		t.Fatal(err)
+	}
+	<-checks
+	started := singleStoreNoticeRuntime(t, peer, ws)
+	runCtx, stop := context.WithCancel(context.Background())
+	defer stop()
+	go check.Run(runCtx)
+	// Commit partway through the first period, so the job can reach the
+	// peer only through the next check.
 	time.Sleep(12 * time.Second)
 	committed := commitSingleStoreProbeJob(t, committer, ctx, ws, taskID)
 	select {
 	case at := <-started:
 		if at.Sub(committed) < time.Second {
-			t.Fatalf("peer started the job %s after commit, before its next tail", at.Sub(committed))
+			t.Fatalf("peer started the job %s after commit, before its next check", at.Sub(committed))
 		}
-		singleStoreStartedWithin(t, singleStoreReplay(at), committed, logqueue.PeerTailInterval, "peer tail")
+		singleStoreStartedWithin(t, singleStoreReplay(at), committed, logqueue.PeerTailInterval, "peer check")
 	case <-time.After(logqueue.PeerTailInterval):
 		t.Fatalf("peer daemon did not start the job within %s of its commit", logqueue.PeerTailInterval)
 	}

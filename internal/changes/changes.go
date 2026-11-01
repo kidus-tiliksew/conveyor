@@ -6,7 +6,7 @@
 //
 // A Hub routes notices to subscribers. A Batch holds the notices one
 // transaction raises until it commits. No notice is persisted: a lost notice
-// is recovered by the next catch-up, the peer tail, or the next start.
+// is recovered by the next catch-up, the peer check, or the next start.
 package changes
 
 import (

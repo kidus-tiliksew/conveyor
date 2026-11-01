@@ -327,13 +327,26 @@ func TestLogWithoutAnIndexIsTailedFromZero(t *testing.T) {
 	}
 }
 
-// TestIndexMatchesFoldAcrossReplicasAndPeerTail: two runtimes share one
-// log. One learns of jobs only through its 20 ms peer tail, the other
-// through notices, and a log writer appends enqueues without a notice. A
-// duplicate enqueue of an active job is suppressed. After every job ran
-// once, each job stream's index row equals a full fold, and a restarted
-// runtime finds nothing unfinished.
-func TestIndexMatchesFoldAcrossReplicasAndPeerTail(t *testing.T) {
+// memlogPeerReader is a peer check read over memlog: each workspace's log
+// head position.
+type memlogPeerReader struct{ log *memlog.Store }
+
+func (r memlogPeerReader) PeerMarks(context.Context) (map[string]changes.PeerMark, error) {
+	marks := map[string]changes.PeerMark{}
+	for workspace, position := range r.log.Positions() {
+		marks[workspace] = changes.PeerMark{Log: int64(position)}
+	}
+	return marks, nil
+}
+
+// TestIndexMatchesFoldAcrossReplicasAndPeerCheck: two runtimes share one
+// log. One learns of other writers' jobs only through the job notices of a
+// 20 ms daemon-wide peer check on its own hub, the other through notices,
+// and a log writer appends enqueues without a notice. A duplicate enqueue
+// of an active job is suppressed. After every job ran once, each job
+// stream's index row equals a full fold, and a restarted runtime finds
+// nothing unfinished.
+func TestIndexMatchesFoldAcrossReplicasAndPeerCheck(t *testing.T) {
 	mem := memlog.New()
 	notifying := Notify(mem, changes.NewHub())
 	var mu sync.Mutex
@@ -361,11 +374,16 @@ func TestIndexMatchesFoldAcrossReplicasAndPeerTail(t *testing.T) {
 		return rt
 	}
 	start(notifying, Options{WorkerID: "a"})
-	start(Notify(mem, changes.NewHub()), Options{WorkerID: "b", PeerTail: 20 * time.Millisecond})
+	peerHub := changes.NewHub()
+	start(Notify(mem, peerHub), Options{WorkerID: "b", Changes: peerHub})
+	checkCtx, stopCheck := context.WithCancel(context.Background())
+	t.Cleanup(stopCheck)
+	check := &changes.PeerCheck{Reader: memlogPeerReader{log: mem}, Hub: peerHub, Interval: 20 * time.Millisecond}
+	go check.Run(checkCtx)
 	keys := make([]string, 12)
 	for i := range keys {
 		keys[i] = fmt.Sprintf("k%d", i)
-		writer := eventlog.Store(mem) // no notice: only the peer tail sees these
+		writer := eventlog.Store(mem) // no notice: only the peer check sees these
 		if i%2 == 0 {
 			writer = notifying
 		}

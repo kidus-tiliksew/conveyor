@@ -13,7 +13,7 @@ import (
 // DEC-99(1), (3)). A store transaction registers a batch for its *sql.Tx;
 // event writes and job appends inside it raise into that batch, which is
 // published only after Commit returns. SingleStore has no change
-// notification, so a peered daemon tails each workspace instead.
+// notification, so a peered daemon runs the peer check on PeerMarks instead.
 
 // txBatches maps each open store transaction to its notice batch.
 var txBatches sync.Map // *sql.Tx -> *changes.Batch
@@ -61,5 +61,5 @@ func logTx(ctx context.Context, tx *sql.Tx) context.Context {
 func (s *Store) Changes() *changes.Hub { return s.changes }
 
 // EnablePeers reports false: SingleStore offers no change notification, so
-// a peered daemon tails each workspace every 30 seconds.
+// a peered daemon runs one peer check every 30 seconds on PeerMarks.
 func (s *Store) EnablePeers(context.Context) bool { return false }

@@ -185,9 +185,6 @@ func main() {
 	// workspace created after this read has no task to check.
 	var startupWorkspaceIDs []string
 	var reviewRecovery atomic.Pointer[workorder.Service]
-	// peerTail is positive only for peers on a backend without change
-	// notification; streams and await_review wake on it too.
-	var peerTail time.Duration
 	if st.IsDurable() {
 		d.ConfigProvider = func(ctx context.Context) (*config.Config, error) {
 			return st.RuntimeConfig(ctx, deployment)
@@ -215,7 +212,11 @@ func main() {
 		log.Printf("queue stuck-job rescue threshold %s", rescueAfter)
 		queueShutdown := &dispatch.ShutdownMarker{}
 		hostname, _ := os.Hostname()
-		peerTail = queuePeerTail(ctx, deployment.Runtime.Peers, st.EnablePeers, log.Printf)
+		// One peer check serves the whole daemon on a backend without change
+		// notification; the runtime, streams, and await_review keep no peer
+		// timer and wake on the notices it republishes (component-runtime,
+		// Peers; feature-quiet-idle-runtime, Peers).
+		peerCheck := changes.SelectPeerCheck(ctx, deployment.Runtime.Peers, st, st.Changes(), logqueue.PeerTailInterval, log.Printf)
 		// The order clock handler's review-round recovery pass reads the
 		// work-order service once step 9 installs it (component-runtime,
 		// Daemon startup order).
@@ -228,7 +229,7 @@ func main() {
 		}
 		runtime := logqueue.NewRuntime(st.Log(), logqueue.Options{
 			Workspaces: workspaceIDs, RescueStuckAfter: rescueAfter, WorkerID: hostname, Logf: log.Printf,
-			Changes: st.Changes(), PeerTail: peerTail, Deadlines: dispatch.StoreDeadlines(st),
+			Changes: st.Changes(), Deadlines: dispatch.StoreDeadlines(st),
 		})
 		for _, registration := range d.Registrations(queueShutdown) {
 			runtime.Register(registration)
@@ -238,8 +239,17 @@ func main() {
 		// (component-runtime, Start-up checks and background loops).
 		startupWorkspaceIDs = workspaceIDs
 		startupChecks.RunDrift(ctx, startupWorkspaceIDs)
+		// The peer check's first statement runs before the runtime's first
+		// catch-up and before the server serves, so every first read follows
+		// the marks it holds; a failure is logged and the next check retries.
+		if peerCheck != nil {
+			_ = peerCheck.Check(ctx)
+		}
 		if startErr := runtime.Start(context.Background()); startErr != nil {
 			log.Fatalf("start queue runtime: %v", startErr)
+		}
+		if peerCheck != nil {
+			go peerCheck.Run(ctx)
 		}
 		workspaceQueues = dispatch.NewWorkspaceQueueRegistrar(workspaceIDs, func(workspace string) error {
 			workspaceConfig, configErr := st.RuntimeConfig(store.WithWorkspace(ctx, workspace), deployment)
@@ -287,7 +297,6 @@ func main() {
 	srv.OnGateMerge = d.MergeAtGate
 	srv.OnMergeReadiness = d.ReadMergeReadiness
 	srv.OnConflictFix = d.DispatchConflictFix
-	srv.PeerTail = peerTail
 	workOrders := &workorder.Service{Store: st, Dispatcher: d, Pack: packBundle, ConfigProvider: func(ctx context.Context) (*config.Config, error) {
 		if st.IsDurable() {
 			return st.RuntimeConfig(ctx, deployment)
@@ -295,7 +304,6 @@ func main() {
 		return cfg, nil
 	}}
 	workOrders.WorkspaceGitHubApps = st
-	workOrders.PeerTail = peerTail
 	workOrders.PublicURL = srv.InvitationDelivery.PublicURL
 	d.WorkspaceGitHubApps = st
 	workOrders.RedactionSecrets = st
@@ -523,21 +531,4 @@ func workspaceMonitorGitHubRunner(ctx context.Context, st githubtrigger.AppStore
 		return nil, err
 	}
 	return githubtrigger.RESTRunner(token, githubtrigger.AppIdentity(workspace)), nil
-}
-
-// queuePeerTail selects the queue runtime's peer mode from runtime.peers
-// (component-runtime, Peers; DEC-99(2), (3)). Off: no listener and no peer
-// tail. On a backend that notifies peers (PostgreSQL): no tail, its listener
-// wakes the runtime. Otherwise: tail each workspace every 30 seconds.
-func queuePeerTail(ctx context.Context, peers bool, enable func(context.Context) bool, logf func(string, ...any)) time.Duration {
-	if !peers {
-		logf("runtime peers: off")
-		return 0
-	}
-	if enable(ctx) {
-		logf("runtime peers: PostgreSQL change notification")
-		return 0
-	}
-	logf("runtime peers: tailing each workspace every %s", logqueue.PeerTailInterval)
-	return logqueue.PeerTailInterval
 }
