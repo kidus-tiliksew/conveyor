@@ -56,17 +56,13 @@ func (t *noticeTx) Begin(ctx context.Context) (pgx.Tx, error) {
 // Commit sends the batch to peers inside the transaction when peers are on,
 // commits, and publishes the batch only after the commit succeeded.
 func (t *noticeTx) Commit(ctx context.Context) error {
-	var sent []string
 	if t.root && t.store.peersEnabled() {
+		// The listener hears this daemon's own notifications too and
+		// republishes them; the duplicate coalesces on the hub. Nothing is
+		// suppressed, because a payload does not identify its sender and a
+		// peer's notice must arrive whatever happens to this transaction.
 		for _, n := range t.batch.Notices() {
-			sent = append(sent, n.Payload())
-		}
-		// The listener hears this daemon's own notifications too; expect
-		// each once so it is not published twice.
-		t.store.peers.expectEchoes(sent)
-		for _, payload := range sent {
-			if _, err := t.Tx.Exec(ctx, `SELECT pg_notify($1, $2)`, peerChannel, payload); err != nil {
-				t.store.peers.cancelEchoes(sent)
+			if _, err := t.Tx.Exec(ctx, `SELECT pg_notify($1, $2)`, peerChannel, n.Payload()); err != nil {
 				t.batch.Discard()
 				_ = t.Tx.Rollback(ctx)
 				return err
@@ -74,7 +70,6 @@ func (t *noticeTx) Commit(ctx context.Context) error {
 		}
 	}
 	if err := t.Tx.Commit(ctx); err != nil {
-		t.store.peers.cancelEchoes(sent)
 		t.batch.Discard()
 		return err
 	}
@@ -197,68 +192,6 @@ type peerListener struct {
 	closed  bool
 	done    chan struct{}
 	logf    func(string, ...any)
-	// echoes counts this daemon's own sent payloads not yet heard back, with
-	// the time each was sent; an echo older than echoWindow is forgotten.
-	echoMu sync.Mutex
-	echoes map[string][]time.Time
-}
-
-const echoWindow = 30 * time.Second
-
-// expectEchoes records payloads about to be sent. Only a listening
-// connection hears them back, so nothing is recorded while it is down.
-func (p *peerListener) expectEchoes(payloads []string) {
-	if len(payloads) == 0 || !p.listening() {
-		return
-	}
-	now := time.Now()
-	p.echoMu.Lock()
-	defer p.echoMu.Unlock()
-	if p.echoes == nil {
-		p.echoes = map[string][]time.Time{}
-	}
-	for payload, sent := range p.echoes {
-		kept := sent[:0]
-		for _, at := range sent {
-			if now.Sub(at) < echoWindow {
-				kept = append(kept, at)
-			}
-		}
-		if len(kept) == 0 {
-			delete(p.echoes, payload)
-		} else {
-			p.echoes[payload] = kept
-		}
-	}
-	for _, payload := range payloads {
-		p.echoes[payload] = append(p.echoes[payload], now)
-	}
-}
-
-func (p *peerListener) cancelEchoes(payloads []string) {
-	p.echoMu.Lock()
-	defer p.echoMu.Unlock()
-	for _, payload := range payloads {
-		if sent := p.echoes[payload]; len(sent) > 0 {
-			p.echoes[payload] = sent[1:]
-		}
-	}
-}
-
-// takeEcho reports whether payload is this daemon's own notification.
-func (p *peerListener) takeEcho(payload string) bool {
-	p.echoMu.Lock()
-	defer p.echoMu.Unlock()
-	sent := p.echoes[payload]
-	for len(sent) > 0 && time.Since(sent[0]) >= echoWindow {
-		sent = sent[1:]
-	}
-	if len(sent) == 0 {
-		delete(p.echoes, payload)
-		return false
-	}
-	p.echoes[payload] = sent[1:]
-	return true
 }
 
 func newPeerListener(logf func(string, ...any)) *peerListener {
@@ -304,9 +237,6 @@ func (p *peerListener) dial(ctx context.Context, s *Store) error {
 		return errors.New("store closed")
 	}
 	p.conn, p.cancel, p.done = conn, cancel, done
-	p.echoMu.Lock()
-	p.echoes = nil
-	p.echoMu.Unlock()
 	p.state.Store(listenerUp)
 	p.mu.Unlock()
 	go p.listen(listenCtx, conn, s.changes, done)
@@ -331,9 +261,6 @@ func (p *peerListener) listen(ctx context.Context, conn *pgx.Conn, hub *changes.
 			}
 			p.mu.Unlock()
 			return
-		}
-		if p.takeEcho(notification.Payload) {
-			continue
 		}
 		if n, ok := changes.ParsePayload(notification.Payload); ok {
 			hub.Publish(n)

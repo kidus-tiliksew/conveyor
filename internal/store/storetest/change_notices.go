@@ -26,10 +26,15 @@ func RunChangeNoticeConformance(t *testing.T, x Fixture) {
 		t.Fatal("backend has no change-notice hub")
 	}
 	taskID := createTask(t, st, ctx, ws, core.TaskRunning, "")
+	// The refused write targets its own task, so a peer listener's
+	// republished copy of an earlier notice cannot be mistaken for it.
+	refusedTaskID := createTask(t, st, ctx, ws, core.TaskRunning, "")
 	assertRound := func(t *testing.T, round string) {
 		t.Helper()
 		taskNotices := hub.SubscribeTask(ws, taskID)
 		defer taskNotices.Close()
+		refusedNotices := hub.SubscribeTask(ws, refusedTaskID)
+		defer refusedNotices.Close()
 		jobNotices := hub.Subscribe(ws, changes.Job)
 		defer jobNotices.Close()
 
@@ -49,10 +54,10 @@ func RunChangeNoticeConformance(t *testing.T, x Fixture) {
 			t.Fatalf("event %s not readable when its notice arrived", kind)
 		}
 		refused := store.WithWorkspace(context.Background(), ws)
-		if err := st.AppendEvent(refused, core.Event{TaskID: taskID, Kind: kind + ".refused"}); err == nil {
+		if err := st.AppendEvent(refused, core.Event{TaskID: refusedTaskID, Kind: kind + ".refused"}); err == nil {
 			t.Fatal("actorless event write accepted")
 		}
-		expectQuiet(t, taskNotices, "refused event write")
+		expectQuiet(t, refusedNotices, "refused event write")
 
 		probe := "change_notice_probe"
 		key := round + "-" + core.NewTaskID()
@@ -68,6 +73,10 @@ func RunChangeNoticeConformance(t *testing.T, x Fixture) {
 		if err != nil || head != eventlog.Version(1) {
 			t.Fatalf("job stream head=%d err=%v when its notice arrived", head, err)
 		}
+		// With peers on, PostgreSQL also delivers this daemon's own
+		// notification to its listener, which republishes it; let that copy
+		// arrive before proving the suppressed enqueue raises nothing.
+		settle(jobNotices)
 		inserted, err = logqueue.Enqueue(ctx, st.Log(), ws, probe, key, map[string]string{"key": key}, 1, time.Now().UTC())
 		if err != nil || inserted {
 			t.Fatalf("duplicate enqueue inserted=%t err=%v", inserted, err)
@@ -121,6 +130,20 @@ func awaitNotice(t *testing.T, s *changes.Subscription, what string) changes.Not
 		t.Fatalf("no %s", what)
 	}
 	return changes.Notice{}
+}
+
+// settle drains s until it has been silent for 300ms, at most 3 seconds.
+func settle(s *changes.Subscription) {
+	deadline := time.After(3 * time.Second)
+	for {
+		select {
+		case <-s.C():
+		case <-time.After(300 * time.Millisecond):
+			return
+		case <-deadline:
+			return
+		}
+	}
 }
 
 func expectQuiet(t *testing.T, s *changes.Subscription, what string) {

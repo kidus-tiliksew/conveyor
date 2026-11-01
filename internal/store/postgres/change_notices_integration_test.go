@@ -197,8 +197,8 @@ func TestNoticesPublishOnlyAfterCommitIntegration(t *testing.T) {
 }
 
 // TestPeerNotifySentInsideTransactionIntegration: with peers on, another
-// daemon hears a notice only after the committing transaction commits, and
-// a daemon does not republish its own notification (DEC-99(2)).
+// daemon hears a notice only after the committing transaction commits
+// (DEC-99(2)).
 func TestPeerNotifySentInsideTransactionIntegration(t *testing.T) {
 	x := newNoticeSchema(t)
 	a, b := x.daemon(t, ""), x.daemon(t, "")
@@ -232,7 +232,100 @@ func TestPeerNotifySentInsideTransactionIntegration(t *testing.T) {
 		t.Fatalf("peer notice=%+v", n)
 	}
 	arrives(t, local, time.Second, "local notice after commit")
-	quiet(t, local, 300*time.Millisecond, "own notification republished")
+}
+
+// TestPeerNoticeSurvivesFailedLocalCommitIntegration is the regression for a
+// lost peer wake: daemon A's transaction raised a job notice for a workspace
+// and is inside COMMIT, after its pg_notify, when daemon B commits a job in
+// the same workspace. A must publish B's identical payload, and A's own
+// commit then fails, so B's notice is the only wake A gets
+// (req-quiet-idle-runtime AC-2.1; DEC-99(2); component-persistence, Peers).
+func TestPeerNoticeSurvivesFailedLocalCommitIntegration(t *testing.T) {
+	x := newNoticeSchema(t)
+	name := "notices-" + strings.ReplaceAll(core.NewTaskID(), "-", "")
+	a, b := x.daemon(t, name), x.daemon(t, "")
+	ctx, ws, taskID := seedNoticeTask(t, a)
+	if !a.EnablePeers(ctx) || !b.EnablePeers(ctx) || !a.peers.listening() {
+		t.Fatal("peer listeners not up")
+	}
+	// A deferred constraint trigger runs at COMMIT, after A's pg_notify: it
+	// waits for the test's advisory lock and then fails the commit.
+	const gateKey = 7311
+	if _, err := x.pool(t, "").Exec(t.Context(), `
+CREATE TABLE notice_commit_gate (id int);
+CREATE FUNCTION notice_commit_gate_fail() RETURNS trigger LANGUAGE plpgsql AS $$
+BEGIN
+	PERFORM pg_advisory_xact_lock(7311);
+	RAISE EXCEPTION 'commit gate closed';
+END $$;
+CREATE CONSTRAINT TRIGGER notice_commit_gate_fail AFTER INSERT ON notice_commit_gate
+	DEFERRABLE INITIALLY DEFERRED FOR EACH ROW EXECUTE FUNCTION notice_commit_gate_fail();`); err != nil {
+		t.Fatal(err)
+	}
+	gate, err := x.admin.Acquire(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer gate.Release()
+	if _, err := gate.Exec(t.Context(), `SELECT pg_advisory_lock($1)`, gateKey); err != nil {
+		t.Fatal(err)
+	}
+	unlocked := false
+	defer func() {
+		if !unlocked {
+			_, _ = gate.Exec(context.Background(), `SELECT pg_advisory_unlock($1)`, gateKey)
+		}
+	}()
+
+	jobs := a.Changes().Subscribe(ws, changes.Job)
+	defer jobs.Close()
+	done := make(chan error, 1)
+	go func() {
+		done <- a.inTx(ctx, func(tx pgx.Tx, _ *db.Queries) error {
+			// The job notice is raised directly: a real job append would
+			// hold the workspace's log position lock and serialize B's job
+			// behind this transaction.
+			raiseTx(tx, changes.Notice{Workspace: ws, Kind: changes.Job})
+			_, err := tx.Exec(ctx, `INSERT INTO notice_commit_gate VALUES (1)`)
+			return err
+		})
+	}()
+	// Wait until A's COMMIT is blocked in the deferred trigger.
+	deadline := time.Now().Add(10 * time.Second)
+	for {
+		var waiting int
+		if err := x.admin.QueryRow(t.Context(), `SELECT count(*) FROM pg_stat_activity
+			WHERE application_name=$1 AND wait_event_type='Lock' AND wait_event='advisory'`, name).Scan(&waiting); err != nil {
+			t.Fatal(err)
+		}
+		if waiting == 1 {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("daemon A never reached its blocked COMMIT")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	quiet(t, jobs, 100*time.Millisecond, "job notice before any commit")
+
+	commitProbeJob(t, b, ctx, ws, taskID)
+	if n := arrives(t, jobs, 2*time.Second, "peer job notice while the local commit is pending"); n.Workspace != ws || n.Kind != changes.Job {
+		t.Fatalf("peer notice=%+v", n)
+	}
+
+	if _, err := gate.Exec(t.Context(), `SELECT pg_advisory_unlock($1)`, gateKey); err != nil {
+		t.Fatal(err)
+	}
+	unlocked = true
+	select {
+	case err := <-done:
+		if err == nil {
+			t.Fatal("local commit succeeded; the gate should have failed it")
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("local commit did not finish after the gate opened")
+	}
+	quiet(t, jobs, 200*time.Millisecond, "failed local commit")
 }
 
 func listenerBackends(t *testing.T, admin *pgxpool.Pool, name string) int {
