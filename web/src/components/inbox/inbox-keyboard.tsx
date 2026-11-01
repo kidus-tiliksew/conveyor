@@ -33,9 +33,13 @@ export const CONTEXT_APPLY_SHORTCUT = 'context-proposal:apply'
 // proposal binds c to its checklist's Apply instead of any one choice.
 export function shortcutChoiceId(action: NextAction) {
   if (action.kind === 'context_proposal' && action.details?.context_proposals?.length) return CONTEXT_APPLY_SHORTCUT
+  // At merge_approval an allowed merge is the primary wherever the server
+  // lists it (feature-operator-next-action NA-6).
+  if (action.kind === 'merge_approval' && action.choices.some((choice) => choice.id === 'merge' && choice.allowed)) {
+    return 'merge'
+  }
   for (const choice of action.choices) {
     if (!choice.allowed) continue
-    if (action.kind === 'merge_approval' && choice.id === 'merge') return choice.id
     const body = choiceBody(choice.id)
     if (!body || body.unavailable?.(action.details)) continue
     return choice.id

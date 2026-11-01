@@ -1,5 +1,5 @@
 import { KeyRound } from 'lucide-react'
-import { useState } from 'react'
+import { useId, useState } from 'react'
 import { updateOwnPassword } from '../../lib/api'
 import { Button } from '../ui/button'
 import { Card, CardContent, CardHeader, CardTitle } from '../ui/card'
@@ -12,6 +12,7 @@ export function PasswordCard() {
   const [pending, setPending] = useState(false)
   const [message, setMessage] = useState('')
   const [failed, setFailed] = useState(false)
+  const ids = useId()
 
   async function submit(event: React.FormEvent) {
     event.preventDefault()
@@ -44,36 +45,54 @@ export function PasswordCard() {
         <KeyRound className="size-4 text-primary" />
       </CardHeader>
       <CardContent>
-        <p className="mb-4 text-sm leading-6 text-muted">
-          Set a password for returning sign-in. Enter your current password when changing it. If you arrived through a
-          fresh operator-issued link, you can leave the current password blank to set or replace it.
-        </p>
-        <form className="max-w-sm space-y-3" aria-label="Update password" onSubmit={submit}>
-          <Input
-            type="password"
-            aria-label="Current password"
-            autoComplete="current-password"
-            placeholder="Current password (when required)"
-            value={currentPassword}
-            onChange={(event) => setCurrentPassword(event.target.value)}
-          />
-          <Input
-            type="password"
-            aria-label="New password"
-            autoComplete="new-password"
-            placeholder="New password (12 characters minimum)"
-            value={newPassword}
-            onChange={(event) => setNewPassword(event.target.value)}
-          />
-          <Input
-            type="password"
-            aria-label="Confirm new password"
-            autoComplete="new-password"
-            placeholder="Confirm new password"
-            value={confirmPassword}
-            onChange={(event) => setConfirmPassword(event.target.value)}
-          />
-          <Button type="submit" disabled={pending || newPassword.length < 12 || !confirmPassword}>
+        <p className="mb-4 text-sm leading-6 text-muted">Use a password to sign in next time.</p>
+        <form className="w-full space-y-3 sm:max-w-sm" aria-label="Update password" onSubmit={submit}>
+          <div className="space-y-1">
+            <label htmlFor={`${ids}-current`} className="block text-xs font-medium">
+              Current password
+            </label>
+            <Input
+              id={`${ids}-current`}
+              type="password"
+              autoComplete="current-password"
+              aria-describedby={`${ids}-current-hint`}
+              value={currentPassword}
+              onChange={(event) => setCurrentPassword(event.target.value)}
+            />
+            <p id={`${ids}-current-hint`} className="text-[11px] text-faint">
+              Leave blank if you just opened a sign-in link.
+            </p>
+          </div>
+          <div className="space-y-1">
+            <label htmlFor={`${ids}-new`} className="block text-xs font-medium">
+              New password
+            </label>
+            <Input
+              id={`${ids}-new`}
+              type="password"
+              autoComplete="new-password"
+              placeholder="At least 12 characters"
+              value={newPassword}
+              onChange={(event) => setNewPassword(event.target.value)}
+            />
+          </div>
+          <div className="space-y-1">
+            <label htmlFor={`${ids}-confirm`} className="block text-xs font-medium">
+              Confirm new password
+            </label>
+            <Input
+              id={`${ids}-confirm`}
+              type="password"
+              autoComplete="new-password"
+              value={confirmPassword}
+              onChange={(event) => setConfirmPassword(event.target.value)}
+            />
+          </div>
+          <Button
+            type="submit"
+            className="w-full sm:w-auto"
+            disabled={pending || newPassword.length < 12 || !confirmPassword}
+          >
             {pending ? 'Updating…' : 'Update password'}
           </Button>
           {message && (
