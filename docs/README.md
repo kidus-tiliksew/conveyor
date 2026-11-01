@@ -8,7 +8,7 @@ URL,
 `https://raw.githubusercontent.com/kidus-tiliksew/conveyor/main/docs/playbooks/conveyor-install.md`,
 and the agent interviews you, agrees a setup with you, and carries it out. The
 pages below are reference: they describe commands, settings, and behavior, and
-hold no setup procedure (DEC-92).
+hold no setup procedure (DEC-93).
 
 ## Guides
 
@@ -26,17 +26,10 @@ hold no setup procedure (DEC-92).
 
 ## Operations
 
-- [Worker operations](worker-operations.md): durable worker enrollment, service install, recovery
 - [GitHub lifecycle](github-lifecycle.md): how issues, PRs, and review statuses are projected onto GitHub
 - [SingleStore operations](singlestore.md): running the factory on SingleStore instead of PostgreSQL
 - [The log core](log-core.md): the event log and the durable queue that runs on it
 - [Known limitations](known-limitations.md): accepted boundaries of the current implementation
-
-## Agent harnesses
-
-- [Cursor CLI](cursor-build.md): worker setup with environment MCP transport
-- [Grok Build](grok-build.md): worker setup with environment MCP transport
-- [OpenCode](opencode-build.md): worker setup with environment MCP transport
 
 ## Playbooks
 

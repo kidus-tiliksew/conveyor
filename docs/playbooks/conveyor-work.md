@@ -9,28 +9,28 @@ Never edit, test, commit, or push for a task without its claim. If a claim is
 declined, fails, expires, or is lost, stop. Never bypass the factory by working
 the task branch bare.
 
-## Know the session mode
+## Own the session
 
-Who called `claim_work_order` decides the session mode for the whole order:
+Every session that follows this playbook claims its order itself. A person
+started it in their own harness, for example a Claude Code, Codex, OpenCode,
+or Cursor session the user asked to work a task, and it calls
+`claim_work_order` over MCP. Conveyor launches no agent session and has no
+run command or worker, so nothing else renews the lease, receives verdicts,
+or schedules a later stage (DEC-97(1)).
 
-- **Launched session.** `conveyor run` or a worker claimed the order, set
-  `CONVEYOR_WORK_ORDER_ID`, and started the session with a launch prompt. The
-  launcher renews the lease, receives verdicts, and schedules every later
-  stage. A launched session exits after its stage submission and leaves later
-  stages to the launcher (req-agent-skills AC-3.8).
-- **Self-claimed session.** The session called `claim_work_order` itself, with
-  no launcher behind it, for example a Claude Code, Codex, OpenCode, or Cursor
-  session the user asked to work a task. It renews its own lease, plans
-  in-session unless the operator's planning preference names another agent,
-  and, after an implementation submission, runs the
-  [self-claimed delivery loop](#self-claimed-delivery-loop) until the task
-  merges, closes, or parks, or the operator stops it. At each pending human
-  gate it summarizes the decision, offers to record it, and waits, as
-  [Human gates](#human-gates) describes (req-agent-skills REQ-3; DEC-44;
-  DEC-84).
+The session renews its own lease, plans in-session unless the operator's
+planning preference names another agent, and, after an implementation
+submission, runs the [self-claimed delivery loop](#self-claimed-delivery-loop)
+until the task merges, closes, or parks, or the operator stops it. At each
+pending human gate it summarizes the decision, offers to record it, and
+waits, as [Human gates](#human-gates) describes (req-agent-skills REQ-3;
+DEC-97(2); DEC-84).
 
-Setting `CONVEYOR_WORK_ORDER_ID` and `CONVEYOR_SESSION_ID` for CLI commands
-after a self-claim does not make the session launched.
+A planner, verifier, or reviewer that the session starts is a delegated
+agent. It claims its own order, submits its result, reports, and exits, as
+[Finish through the factory](#finish-through-the-factory) describes. A
+session that a coordinator started with a `conveyor-coordinate` thread prompt
+follows that prompt, which ends it after its own submission.
 
 ## Enter the claimed loop
 
@@ -67,7 +67,7 @@ after a self-claim does not make the session launched.
    - When checkout reports that no worktree location is configured, stop and
      report the command it names. Choosing the location belongs to the
      operator. A spec order instead executes
-   read-only in the checkout where its session was launched: never run
+   read-only in the checkout where its session started: never run
    `conveyor checkout` for a spec order and never alter that checkout's Git
    state.
 
@@ -116,8 +116,8 @@ terminal lifecycle tool: `submit_plan`, `conveyor submit` or
   not increments.
 - Report tokens only. Omit `cost_usd`: the server ignores it, and an unknown
   cost is never recorded as zero (req-usage-telemetry AC-2.1).
-- Leave `source` unset or `self_reported`; `worker_fallback` belongs to
-  workers.
+- Leave `source` unset or `self_reported`; the server refuses the retired
+  `worker_fallback` value.
 - A session without figures skips the call and invents none.
 
 Usage is telemetry. Missing usage never delays or blocks a lifecycle
@@ -212,17 +212,13 @@ minutes (`internal/core.DefaultWorkOrderClaimLease`). The live
 `get_work_order` are the authority for the session; renewal never extends the
 fixed execution deadline (req-delegated-execution AC-1.1).
 
-- **Launched session.** The launcher (`conveyor run` or the worker) renews from
-  claim time, attempting renewal every ten seconds and reducing that interval
-  to one third of the remaining lease when necessary. That ten-second cadence
-  belongs to the launcher only.
-- **Self-claimed session.** Claim with a `lease_seconds` that covers the
-  longest expected step, up to the 3600-second maximum. Call
-  `renew_work_order` with the same `lease_seconds` at each progress milestone
-  and before any step expected to outlast one third of the remaining lease,
-  such as a long test run or a wait for operator input; a renewal without it
-  renews for the five-minute default. Update the local expiry from every
-  successful response (req-agent-skills AC-2.2).
+Claim with a `lease_seconds` that covers the longest expected step, up to the
+3600-second maximum. Call `renew_work_order` with the same `lease_seconds` at
+each progress milestone and before any step expected to outlast one third of
+the remaining lease, such as a long test run or a wait for operator input; a
+renewal without it renews for the five-minute default. Update the local
+expiry from every successful response (req-agent-skills AC-2.2). No launcher
+renews the lease on the session's behalf (DEC-97(1)).
 
 If renewal fails or the server no longer reports the order claimed by this
 session, stop repository work immediately. Return to `list_work_orders` and
@@ -259,10 +255,6 @@ abandoning the attempt, `release_work_order` with a truthful reason:
 
 After the stage's submission tool succeeds:
 
-- A launched session reports the result and exits. It never polls
-  `await_review`: verdict handling, bounces, and successor orders belong to the
-  launcher, and a changes-requested bounce always arrives as a new order in a
-  fresh session (req-agent-skills AC-3.8).
 - Every verifier and reviewer reports and exits, including one that a
   self-claimed session started. It never polls `await_review` or claims
   another order (req-agent-skills AC-3.2).
@@ -277,7 +269,8 @@ After the stage's submission tool succeeds:
   claimable implementation order.
 - A self-claimed implementation session reports the result and continues with
   the [self-claimed delivery loop](#self-claimed-delivery-loop) instead of
-  exiting (req-agent-skills AC-3.1).
+  exiting (req-agent-skills AC-3.1). A changes-requested bounce always arrives
+  as a new order in a fresh session, which the loop claims (AC-3.3).
 
 ### Release at an authority-conflict checkpoint
 
@@ -300,8 +293,8 @@ checkpoint, the delivered implement role states the release. In brief
 - A System Design clause may name a heading with or without its code
   formatting, or by its anchor.
 
-The launched report-and-exit rule also applies after an explicit truthful
-release. `release_work_order` is an explicit abandonment or checkpoint handoff,
+A delegated planner, verifier, or reviewer that releases its order reports
+and exits the same way it does after a submission. `release_work_order` is an explicit abandonment or checkpoint handoff,
 not a way to declare success. Do not simply exit while leaving a claim to
 expire.
 
@@ -342,10 +335,9 @@ evidence are adequate (DEC-53; req-verification-kits AC-8.4).
 ### CLI environment
 
 `conveyor submit` refuses to run unless `CONVEYOR_WORK_ORDER_ID` and
-`CONVEYOR_SESSION_ID` are set. A launcher sets both for a launched session. A
-self-claimed session sets them on the command to the claimed implementation
-order's ID and the session ID it passed to `claim_work_order`, and names the
-server and workspace explicitly:
+`CONVEYOR_SESSION_ID` are set. The session sets them on the command to the
+claimed implementation order's ID and the session ID it passed to
+`claim_work_order`, and names the server and workspace explicitly:
 
 ```sh
 CONVEYOR_WORK_ORDER_ID=<implementation-order-id> \
@@ -359,7 +351,7 @@ CONVEYOR_SESSION_ID=<claim-session-id> \
 - The push and pull-request creation use `CONVEYOR_GIT_TOKEN` when it is set
   in the startup environment, and otherwise the host's Git credential for the
   repository host. `CONVEYOR_GIT_ASKPASS_MODE` and `CONVEYOR_GIT_ASKPASS_TOKEN`
-  are launcher-only child variables; a self-claimed session does not set them.
+  belong to the CLI's own Git helper; the session never sets them.
 - `conveyor submit` reads no client token. Never write the client token into a
   command line, environment file, transcript, repository file, or child-agent
   prompt.
@@ -367,8 +359,8 @@ CONVEYOR_SESSION_ID=<claim-session-id> \
 ## Self-claimed delivery loop
 
 This loop applies only to a self-claimed session after a successful
-implementation submission. It implements req-agent-skills REQ-3, DEC-44, and
-DEC-84. The session holds no claim while it waits; each verifier and reviewer
+implementation submission. It implements req-agent-skills REQ-3, DEC-97(2),
+and DEC-84. The session holds no claim while it waits; each verifier and reviewer
 holds its own. Planning before the first implementation order follows
 [Choose how each stage runs](#choose-how-each-stage-runs) and
 [Human gates](#human-gates).
@@ -447,8 +439,8 @@ After a round settles, a session that coordinated its seats may optionally recor
 
 The operator's stage preference is free-form text in the session's own agent
 memory, the persistent memory its harness provides. It can name how planning,
-verification, or review runs. Conveyor never stores it on the server, in a
-local execution setup, or in a Conveyor-owned file (DEC-44).
+verification, or review runs. Conveyor never stores it on the server, on the
+executing machine, or in a Conveyor-owned file (DEC-97(3)).
 
 - **Planning without a preference.** When no planning preference is recorded,
   plan the order in-session and do not ask (req-agent-skills AC-3.12).
@@ -475,7 +467,7 @@ local execution setup, or in a Conveyor-owned file (DEC-44).
   (DEC-78(3)). A delegated planner receives that direction as one added
   sentence in its launch prompt. The rule stays in agent memory: Conveyor
   stores seat counts and their sources, never a difficulty class, risk level,
-  or raise rule (DEC-44; DEC-78(3)). A planned count below the task's frozen
+  or raise rule (DEC-97(3); DEC-78(3)). A planned count below the task's frozen
   minimum is refused with `review_seats_below_minimum` and the plan order stays
   claimed for correction. An accepted count is shown with the plan at plan
   approval, and only the latest approved plan's count contributes to the seat
@@ -612,8 +604,7 @@ another task. A planner, verifier, or reviewer that the session started never
 runs `done`. Running `done` records no gate or proposal decision. When the task
 parks or the operator stops the wait before the task merges or closes, the
 session runs nothing and its report says cleanup becomes available once the
-task merges or closes. A launched session runs no cleanup; its launcher removes
-the worktree after the task ends.
+task merges or closes.
 
 #### Post-merge fast-forward
 
@@ -642,9 +633,8 @@ recovery.
 
 The fast-forward is the only change the session makes to the primary checkout.
 The session never merges, rebases, stashes, resets, or switches branches there,
-and never edits its files (req-delegated-execution AC-3.9). A launched session,
-a worker, and a planner, verifier, or reviewer that the session started never
-run the fast-forward.
+and never edits its files (req-delegated-execution AC-3.9). A planner,
+verifier, or reviewer that the session started never runs the fast-forward.
 
 ### Human gates
 
@@ -908,7 +898,7 @@ the same conversation, for its own task, with the operator's own credential
 completed.
 
 This loop implements req-agent-skills REQ-2 (AC-2.1 through AC-2.3) and REQ-3
-(AC-3.1 through AC-3.12) under DEC-44 and DEC-84. It preserves req-delegated-execution
+(AC-3.1 through AC-3.7 and AC-3.9 through AC-3.12) under DEC-97 and DEC-84. It preserves req-delegated-execution
 REQ-1 lease and deadline rules, REQ-2 review independence, and REQ-3 dedicated
 worktrees, with the post-merge fast-forward bounded by REQ-3 AC-3.8 and AC-3.9.
 Declared, planned, and operator-added review seats follow

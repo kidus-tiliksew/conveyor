@@ -184,7 +184,7 @@ attempt has started.
 
 Tools outside the default path, such as a Homebrew prefix or a Go bin
 directory, need an operator-owned `verification_toolchains` record in the
-operator-selected local execution configuration outside the checkout. The kit
+operator-selected local configuration file outside the checkout. The kit
 cannot select or widen it; a record in a repository `conveyor.yaml` is
 refused. The `conveyor-kit-verify` playbook gives the schema. Never ask an
 operator to copy a user HOME or install tools for a kit.

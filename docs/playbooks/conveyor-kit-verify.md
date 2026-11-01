@@ -35,14 +35,14 @@ revocations").
 4. Call `get_evidence_schemas` for current payload and provenance schemas.
    Register ordinary obligations and build coverage before execution. Obtain
    operator-issued grants through the grant wait below and inspect the local
-   execution configuration.
+   configuration file.
 5. Call `refresh_work_order_context` before you execute anything and again
    before you seal. Follow [Late task context](#late-task-context) when it
    reports `comparison_status: authority_diverged`.
 
 The runner needs `CONVEYOR_WORK_ORDER_ID`, `CONVEYOR_SESSION_ID`,
-`CONVEYOR_CLIENT_TOKEN` and explicit workspace context. A launcher provides
-them. A self-claimed verifier has no launcher: it supplies the work order ID,
+`CONVEYOR_CLIENT_TOKEN` and explicit workspace context. No launcher provides
+them (DEC-97(1)): the verifier supplies the work order ID,
 session ID and client token it passed to `claim_work_order` as environment
 assignments on the single command that runs `conveyor kit verify`, never as
 flags or exported shell state. That command is the only one that carries the
@@ -200,8 +200,8 @@ of releasing at once:
    ungranted subject as a `missing_grant` ground with no attempt, and releases
    the order at the operator checkpoint.
 
-Never issue, request through MCP or simulate a grant yourself. No MCP tool or
-worker route grants or revokes; only an authenticated operator user with
+Never issue, request through MCP or simulate a grant yourself. No MCP tool
+grants or revokes; only an authenticated operator user with
 `operate_gates` can.
 
 The operator works from the projection of
@@ -342,7 +342,7 @@ Run from the dedicated worktree, substituting the actual context and paths:
 
 ```sh
 conveyor --server '<server>' --workspace '<workspace>' kit verify '<task-id>' \
-  --context-id '<context-id>' --config '<local-execution-config>' \
+  --context-id '<context-id>' --config '<local-config>' \
   --coverage '<outside-checkout>/coverage.json' \
   --inputs '<outside-checkout>/inputs.json' \
   --attempt-root '<private-outside-checkout-directory>'
@@ -646,7 +646,7 @@ store refuses answers `verification_field_required`: a list or `safe_inputs`
 sent as `null`, or a blank `start_key`.
 
 `conveyor kit verify` prints the server's refusal text after its own redactor
-removes the launcher credential and claim token, as
+removes the CLI credential and claim token, as
 `<tool> refused: <code> at <field>: <rule> <remedy>`. Read the code and field
 as above. The sentence `<tool> refused or unavailable; inspect the claim and
 verification context` means the server sent no refusal text; inspect the claim

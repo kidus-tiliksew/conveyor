@@ -6,15 +6,15 @@ description: Work an existing Conveyor task through its live claim, dedicated ch
 # Work a Conveyor task
 
 Read and follow [docs/playbooks/conveyor-work.md](../../../docs/playbooks/conveyor-work.md)
-— it is the canonical playbook for session mode, claim, contract, artifact,
-checkout, lease, submission, release, exit, self-claimed delivery, and
-review-bounce discipline.
+— it is the canonical playbook for session ownership, claim, contract,
+artifact, checkout, lease, submission, release, exit, self-claimed delivery,
+and review-bounce discipline.
 
 Non-negotiables, restated: never edit or push for a task without holding its
 live claim; never bypass a failed, declined, expired, or lost claim by working
 bare. Fetch the delivered work-order contract before repository work, use
 `conveyor checkout <task-id>` only for implementation and review orders, and
-keep spec work read-only in its launched checkout. Work only in the path
+keep spec work read-only in the checkout where it started. Work only in the path
 `conveyor checkout` prints inside the configured worktree location; never work
 from a checkout path outside it, and never create a separate clone to get
 around a primary checkout that has uncommitted changes. Keep the lease alive for
@@ -24,16 +24,16 @@ only; operator confirmations, gates, assignment, drift resolution, and merge
 remain outside the executor's authority. A self-claimed session records an
 operator's gate or proposal decision only on the operator's direct instruction
 in the same conversation, for its own task, with the operator's own credential
-(DEC-45). Every claim names the harness in `agent` and the runtime's concrete model ID in
+(DEC-84). Every claim names the harness in `agent` and the runtime's concrete model ID in
 `model`, or the harness's reported value such as `auto` verbatim when the
 harness does not expose one; never guess a model ID.
 
-Session mode decides what follows a stage submission. A session that
-`conveyor run` or a worker launched reports and exits, and never polls
-`await_review`; the launcher owns verdicts and successor orders. Every verifier
-and reviewer reports and exits after submitting its own result. A session that
-called `claim_work_order` itself continues the playbook's self-claimed
-delivery loop after implementation submission: it starts a separate verifier or
+Every session claims its own order: a person started it in their own
+harness, and Conveyor launches no agent session, so no launcher renews the
+lease or owns a later stage (DEC-97(1)). Every verifier and reviewer reports
+and exits after submitting its own result. The session that claimed the
+task's order continues the playbook's self-claimed delivery loop after
+implementation submission (DEC-97(2)): it starts a separate verifier or
 reviewer agent per order, awaits the verdict with `await_review`, and claims
 each changes-requested successor under a fresh session ID and client token. At
 a pending human gate it summarizes the decision with a dashboard link and
@@ -57,4 +57,4 @@ For implementation delivery, commit after validation and run
 session. It pushes the exact head, opens or reuses the pull request with the
 executing machine's credential, and submits `head_sha`. Direct
 `submit_for_review` requires that the PR already exists and that the call names
-its pushed head SHA. Then follow the session-mode rule above.
+its pushed head SHA. Then continue the delivery loop above.

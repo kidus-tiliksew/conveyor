@@ -36,7 +36,7 @@ parallel workflow.
 4. Report the returned task ID. Creation enqueues Conveyor's existing triage
    and specification pipeline; do not run a second triage path in Codex.
 5. If no task-status tool is available, direct the user to Conveyor's dashboard
-   or worker logs instead of inventing polling.
+   or `conveyor task status <task-id>` instead of inventing polling.
 
 ## Implement a work order
 
@@ -77,11 +77,11 @@ parallel workflow.
    branch with upstream tracking, and verify the remote push succeeded.
 10. Run `conveyor submit <task-id>` from the task worktree. It pushes the head,
     opens or reuses the PR, and calls `submit_for_review` with the pushed SHA.
-11. What follows submission, including review bounces, depends on whether a
-    launcher or this session made the claim. Follow the `conveyor-work`
-    playbook (`docs/playbooks/conveyor-work.md`, installed with the
-    `conveyor-work` skill) for both session modes. Never review your own
-    implementation.
+11. This session made the claim; Conveyor launches no agent session
+    (DEC-97(1)). After submission, follow the `conveyor-work` playbook
+    (`docs/playbooks/conveyor-work.md`, installed with the `conveyor-work`
+    skill) for its delivery loop, including review bounces. Never review your
+    own implementation.
 
 ### Safe task-worktree setup
 
@@ -94,8 +94,8 @@ When the CLI is unavailable, apply this equivalent fallback without switching
 the primary checkout:
 
 1. Before fetching or inspecting refs/worktrees, compare the current
-   checkout's normalized `origin` with the assigned configured repository URL
-   (`CONVEYOR_TASK_REPO_URL` in a worker session). Equivalent GitHub HTTPS/SSH
+   checkout's normalized `origin` with the assigned repository URL from
+   `get_task`. Equivalent GitHub HTTPS/SSH
    forms are acceptable; missing, ambiguous, or mismatched identity is a
    blocker even with an explicit path. Then inspect the repository root,
    primary-checkout cleanliness and current branch, `git worktree list
@@ -169,8 +169,9 @@ Conveyor's review trust boundary.
 - Do not implement Phase 8 multi-repository worktree sets through this local
   single-repository helper.
 
-## Workers
+## Execution
 
-Worker enrollment credentials and attempt credentials belong to their launcher.
-Personal-client installation does not configure a worker attachment. Preserve
-server-scoped child credentials, operator gates, and local harness setup rules.
+Every work order is claimed by an agent session a person started, which claims
+it itself over MCP. Conveyor has no worker, pairing token, worker credential,
+or local execution setup, and personal-client installation configures none
+(DEC-97(1); DEC-96(2)). Preserve operator gates.
