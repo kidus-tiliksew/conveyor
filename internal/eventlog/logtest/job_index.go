@@ -3,6 +3,7 @@ package logtest
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"sort"
 	"testing"
 	"time"
@@ -129,6 +130,13 @@ func checkJobIndex(t *testing.T, s eventlog.Store, reader jobindex.Reader, w, st
 		folded := jobindex.RowOf(job)
 		if !ok || !sameRow(row, folded) {
 			t.Fatalf("%s: %s index row=%+v (present %v), full fold=%+v", step, stream, row, ok, folded)
+		}
+		generation, err := reader.ReadGeneration(ctx, w, stream, folded.Version)
+		if err != nil {
+			t.Fatalf("%s: read generation %s: %v", step, stream, err)
+		}
+		if got, wantVersions := versions(generation), versions(jobindex.CurrentGeneration(events, folded.Version)); fmt.Sprint(got) != fmt.Sprint(wantVersions) {
+			t.Fatalf("%s: %s current generation versions=%v, want %v", step, stream, got, wantVersions)
 		}
 		if jobindex.Unfinished(folded.State) {
 			want = append(want, folded)

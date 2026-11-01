@@ -186,6 +186,17 @@ func (s *Store) JobIndexRow(_ context.Context, workspace string, stream eventlog
 	return row, ok, nil
 }
 
+// ReadGeneration implements jobindex.Reader.
+func (s *Store) ReadGeneration(_ context.Context, workspace string, stream eventlog.StreamID, version eventlog.Version) ([]eventlog.Event, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	w, ok := s.workspaces[workspace]
+	if !ok {
+		return nil, nil
+	}
+	return copyEvents(jobindex.CurrentGeneration(w.streams[stream], version)), nil
+}
+
 // RepairJobIndex implements jobindex.Reader. memlog writes every row with
 // its append, so only DropJobIndexRow can leave one to repair.
 func (s *Store) RepairJobIndex(_ context.Context, workspace string) (int, error) {

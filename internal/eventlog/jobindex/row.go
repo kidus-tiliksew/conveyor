@@ -137,6 +137,11 @@ type Reader interface {
 	UnfinishedJobs(ctx context.Context, workspace string) (eventlog.Position, []Row, error)
 	// JobIndexRow reads one stream's row; ok is false when it has none.
 	JobIndexRow(ctx context.Context, workspace string, stream eventlog.StreamID) (Row, bool, error)
+	// ReadGeneration returns the stream's events from its last job.enqueued
+	// at or below version through version, ascending, or from version 1
+	// when it has none: the current generation of a job whose row is at
+	// version. No earlier event is returned.
+	ReadGeneration(ctx context.Context, workspace string, stream eventlog.StreamID, version eventlog.Version) ([]eventlog.Event, error)
 	// RepairJobIndex rebuilds, from a full fold, every row of the workspace
 	// that is missing or whose version differs from its stream's head, and
 	// reports how many it rebuilt. Only mismatched streams are read.
@@ -150,47 +155,45 @@ func ReaderOf(log eventlog.Store) (Reader, bool) {
 }
 
 // LoadCurrent folds a job from its row and the events of its current
-// generation only: it reads the stream up to the row's version in a window
-// that widens from 16 events by four times until the window holds a
-// job.enqueued or starts at version 1, and folds from the last job.enqueued
-// with the generation the row implies. ok is false when the result does not
-// match the row's state, generation, and version; the caller then folds
-// the whole stream.
-func LoadCurrent(ctx context.Context, log eventlog.Store, row Row) (Job, bool, error) {
+// generation only, read through ReadGeneration, starting from the
+// generation the row implies. ok is false when the result does not match
+// the row's state, generation, and version; the caller then folds the whole
+// stream.
+func LoadCurrent(ctx context.Context, reader Reader, row Row) (Job, bool, error) {
+	job := NewJob(row.Workspace, row.Stream)
 	if row.Version == 0 {
-		return NewJob(row.Workspace, row.Stream), row.State == StateNone && row.Generation == 0, nil
+		return job, row.State == StateNone && row.Generation == 0, nil
 	}
-	window := eventlog.Version(16)
-	for {
-		var after eventlog.Version
-		if row.Version > window {
-			after = row.Version - window
-		}
-		events, err := log.Read(ctx, row.Workspace, row.Stream, after, int(row.Version-after))
-		if err != nil {
-			return Job{}, false, err
-		}
-		start := -1
-		for i := range events {
-			if events[i].Kind == KindEnqueued {
-				start = i
-			}
-		}
-		if start < 0 && after > 0 {
-			window *= 4
-			continue
-		}
-		job := NewJob(row.Workspace, row.Stream)
-		if start >= 0 {
-			events = events[start:]
-			job.Generation = row.Generation - 1
-		}
-		for _, event := range events {
-			if err := job.Apply(event); err != nil {
-				return Job{}, false, fmt.Errorf("jobindex: %s: %w", row.Stream, err)
-			}
-		}
-		got := RowOf(job)
-		return job, got.State == row.State && got.Generation == row.Generation && got.Version == row.Version, nil
+	events, err := reader.ReadGeneration(ctx, row.Workspace, row.Stream, row.Version)
+	if err != nil {
+		return Job{}, false, err
 	}
+	if len(events) > 0 && events[0].Kind == KindEnqueued {
+		job.Generation = row.Generation - 1
+	}
+	for _, event := range events {
+		if err := job.Apply(event); err != nil {
+			return Job{}, false, fmt.Errorf("jobindex: %s: %w", row.Stream, err)
+		}
+	}
+	got := RowOf(job)
+	return job, got.State == row.State && got.Generation == row.Generation && got.Version == row.Version, nil
+}
+
+// CurrentGeneration returns the suffix of a stream's events, ascending and
+// ending at or below version, that starts at its last job.enqueued, or every
+// event through version when there is none. memlog uses it, and the SQL
+// drivers select the same rows.
+func CurrentGeneration(events []eventlog.Event, version eventlog.Version) []eventlog.Event {
+	end := 0
+	for end < len(events) && events[end].Version <= version {
+		end++
+	}
+	events = events[:end]
+	for i := len(events) - 1; i >= 0; i-- {
+		if events[i].Kind == KindEnqueued {
+			return events[i:]
+		}
+	}
+	return events
 }

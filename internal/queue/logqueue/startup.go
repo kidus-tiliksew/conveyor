@@ -54,7 +54,7 @@ func (rt *Runtime) load(ctx context.Context, ws *workspace) error {
 	}
 	jobs := make(map[eventlog.StreamID]*Job, len(rows))
 	for _, row := range rows {
-		job, err := rt.loadRow(ctx, ws, row)
+		job, err := rt.loadRow(ctx, ws, reader, row)
 		if err != nil {
 			return err
 		}
@@ -86,8 +86,8 @@ func (rt *Runtime) markLoaded(ws *workspace, position eventlog.Position, jobs ma
 
 // loadRow folds a job from its index row and the events of its current
 // generation, or from its whole stream when the two disagree.
-func (rt *Runtime) loadRow(ctx context.Context, ws *workspace, row jobindex.Row) (Job, error) {
-	job, ok, err := jobindex.LoadCurrent(ctx, rt.log, row)
+func (rt *Runtime) loadRow(ctx context.Context, ws *workspace, reader jobindex.Reader, row jobindex.Row) (Job, error) {
+	job, ok, err := jobindex.LoadCurrent(ctx, reader, row)
 	if err != nil {
 		return Job{}, fmt.Errorf("load %s: %w", row.Stream, err)
 	}
@@ -109,7 +109,7 @@ func (rt *Runtime) loadStream(ctx context.Context, ws *workspace, stream eventlo
 		row, found, err := reader.JobIndexRow(ctx, ws.id, stream)
 		switch {
 		case err == nil && found:
-			return rt.loadRow(ctx, ws, row)
+			return rt.loadRow(ctx, ws, reader, row)
 		case err != nil && !errors.Is(err, jobindex.ErrUnsupported):
 			return Job{}, err
 		}

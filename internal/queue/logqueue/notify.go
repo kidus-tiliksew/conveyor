@@ -71,6 +71,14 @@ func (l *NotifyingLog) JobIndexRow(ctx context.Context, workspace string, stream
 	return jobindex.Row{}, false, jobindex.ErrUnsupported
 }
 
+// ReadGeneration forwards to the wrapped driver's job index.
+func (l *NotifyingLog) ReadGeneration(ctx context.Context, workspace string, stream eventlog.StreamID, version eventlog.Version) ([]eventlog.Event, error) {
+	if reader, ok := jobindex.ReaderOf(l.Store); ok {
+		return reader.ReadGeneration(ctx, workspace, stream, version)
+	}
+	return nil, jobindex.ErrUnsupported
+}
+
 // RepairJobIndex forwards to the wrapped driver's job index.
 func (l *NotifyingLog) RepairJobIndex(ctx context.Context, workspace string) (int, error) {
 	if reader, ok := jobindex.ReaderOf(l.Store); ok {

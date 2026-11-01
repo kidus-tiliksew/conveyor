@@ -184,6 +184,34 @@ func (s *Store) JobIndexRow(ctx context.Context, workspace string, stream eventl
 	return readJobIndexRow(ctx, s.executor(ctx), workspace, stream)
 }
 
+// ReadGeneration implements jobindex.Reader. The first statement finds the
+// last job.enqueued at or below version by reading the stream backward
+// through its (workspace_id, stream_id, version) key; the second returns
+// only the events from there through version.
+func (s *Store) ReadGeneration(ctx context.Context, workspace string, stream eventlog.StreamID, version eventlog.Version) ([]eventlog.Event, error) {
+	exec := s.executor(ctx)
+	from := int64(1)
+	err := exec.QueryRow(ctx, `
+SELECT version
+FROM event_log
+WHERE workspace_id = $1 AND stream_id = $2 AND version <= $3 AND kind = $4
+ORDER BY version DESC
+LIMIT 1`, workspace, string(stream), int64(version), jobindex.KindEnqueued).Scan(&from)
+	if err != nil && !errors.Is(err, pgx.ErrNoRows) {
+		return nil, fmt.Errorf("pglog: find current generation: %w", err)
+	}
+	rows, err := exec.Query(ctx, `
+SELECT `+selectColumns+`
+FROM event_log
+WHERE workspace_id = $1 AND stream_id = $2 AND version >= $3 AND version <= $4
+ORDER BY version`, workspace, string(stream), from, int64(version))
+	if err != nil {
+		return nil, fmt.Errorf("pglog: read current generation: %w", err)
+	}
+	defer rows.Close()
+	return scanEvents(rows)
+}
+
 // RepairJobIndex implements jobindex.Reader. The database compares each job
 // stream's head in event_log_streams with its row's version, and only the
 // mismatched stream IDs reach the daemon; no event is read for a stream

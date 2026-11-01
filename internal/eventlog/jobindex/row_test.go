@@ -115,16 +115,16 @@ func TestNextFoldsTheWholeStreamWhenTheRowIsMissingOrBehind(t *testing.T) {
 	}
 }
 
-// readCounter counts the events a store returns from Read.
+// readCounter counts the events ReadGeneration returns.
 type readCounter struct {
-	eventlog.Store
+	*memlog.Store
 	mu       sync.Mutex
 	events   int
 	earliest eventlog.Version
 }
 
-func (r *readCounter) Read(ctx context.Context, workspace string, stream eventlog.StreamID, after eventlog.Version, limit int) ([]eventlog.Event, error) {
-	events, err := r.Store.Read(ctx, workspace, stream, after, limit)
+func (r *readCounter) ReadGeneration(ctx context.Context, workspace string, stream eventlog.StreamID, version eventlog.Version) ([]eventlog.Event, error) {
+	events, err := r.Store.ReadGeneration(ctx, workspace, stream, version)
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.events += len(events)
@@ -147,8 +147,7 @@ func TestLoadCurrentReadsOnlyTheCurrentGeneration(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	// Generation 1 is long and finished; generation 2 is longer than the
-	// first read window, so the window must widen once.
+	// Generation 1 is long and finished; generation 2 is still running.
 	appendEvent(jobindex.KindEnqueued, jobindex.EnqueuedPayload{Kind: "demo", Key: "a", MaxAttempts: 9})
 	for i := 0; i < 30; i++ {
 		appendEvent(jobindex.KindClaimed, jobindex.ClaimedPayload{Attempt: 1, Worker: "w", ClaimedAt: base})
@@ -156,7 +155,7 @@ func TestLoadCurrentReadsOnlyTheCurrentGeneration(t *testing.T) {
 	}
 	appendEvent(jobindex.KindClaimed, jobindex.ClaimedPayload{Attempt: 1, Worker: "w", ClaimedAt: base})
 	appendEvent(jobindex.KindCompleted, jobindex.OutcomePayload{Attempt: 1})
-	enqueuedAt := eventlog.Version(63)
+	enqueuedAt := eventlog.Version(64)
 	appendEvent(jobindex.KindEnqueued, jobindex.EnqueuedPayload{Kind: "demo", Key: "a", Args: json.RawMessage(`{"n":2}`), MaxAttempts: 4})
 	for i := 0; i < 10; i++ {
 		appendEvent(jobindex.KindClaimed, jobindex.ClaimedPayload{Attempt: i + 1, Worker: "w", ClaimedAt: base})
@@ -179,13 +178,13 @@ func TestLoadCurrentReadsOnlyTheCurrentGeneration(t *testing.T) {
 	if !reflect.DeepEqual(job, full) {
 		t.Fatalf("current-generation fold %+v, full fold %+v", job, full)
 	}
-	// Windows of 16 then 64 events end at version 83: the second reaches
-	// back to version 20, never to the start of the finished generation.
-	if counter.earliest <= 1 || counter.earliest > enqueuedAt {
-		t.Fatalf("earliest version read=%d, want within (1, %d]", counter.earliest, enqueuedAt)
+	// Only generation 2 is read: versions 64 through 84.
+	if counter.earliest != enqueuedAt || counter.events != len(all)-int(enqueuedAt)+1 {
+		t.Fatalf("read %d events from version %d, want the %d events from %d", counter.events, counter.earliest, len(all)-int(enqueuedAt)+1, enqueuedAt)
 	}
-	if counter.events >= len(all) {
-		t.Fatalf("read %d events of %d", counter.events, len(all))
+	// A row behind the head reads only its own generation's prefix.
+	if events, err := log.ReadGeneration(ctx, "ws", stream, 62); err != nil || len(events) != 62 || events[0].Version != 1 {
+		t.Fatalf("generation 1 read: %d events err=%v", len(events), err)
 	}
 
 	// A row whose state or version disagrees with its stream is reported,
