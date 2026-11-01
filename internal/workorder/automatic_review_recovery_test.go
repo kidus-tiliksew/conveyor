@@ -70,9 +70,7 @@ func newAutomaticReviewHarness(t *testing.T) *automaticReviewHarness {
 		Workspace: "demo", WorkOrderQueueTimeout: time.Hour, Recovery: config.DefaultRecoveryPolicy(),
 		Repos:   []config.Repo{{Name: "app", Base: "main", GitHub: "acme/app"}},
 		Routing: config.Routing{Stages: map[string]config.StageRoute{"review": {Execution: config.ExecutionMCP, Harness: "codex", TimeoutText: "45m"}}},
-		Harnesses: []config.Harness{
-			{Name: "codex", Command: []string{"codex", "{prompt}"}, ProbeCommand: []string{"codex", "--version"}, ProbeTimeoutText: "5s"},
-		},
+
 		Review: config.ReviewPanel{Seats: []config.ReviewSeat{{Model: "gpt-current", Harness: "codex"}, {Model: "gpt-second", Harness: "codex"}}},
 	}
 	h.service = &Service{

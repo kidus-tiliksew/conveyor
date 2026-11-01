@@ -247,7 +247,7 @@ func TestObservedMergeAtMergeGateReconcilesToMerged(t *testing.T) {
 		verified := core.Task{
 			ID: "gate-verified", Workspace: "test", Repo: "app", BaseBranch: "main", Branch: "conveyor/gate-verified",
 			State: core.TaskRunning, NextStage: core.StageVerify, ReviewedHeadSHA: "verified-head", MergeApproval: true,
-			SetupContract: config.ExecutionSetup{VerifyStage: true}, CreatedAt: time.Now().UTC(),
+			SetupContract: config.PolicyContract{VerifyStage: true}, CreatedAt: time.Now().UTC(),
 		}
 		if err := st.CreateTask(ctx, verified); err != nil {
 			t.Fatal(err)

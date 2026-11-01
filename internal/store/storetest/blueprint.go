@@ -255,10 +255,10 @@ func assertStoredHold(t *testing.T, ctx context.Context, st store.Store, taskID 
 	}
 }
 
-func samePolicyContract(left, right config.ExecutionSetup) bool {
-	return left.ExecutionSettings.Spec.TimeoutText == right.ExecutionSettings.Spec.TimeoutText &&
-		left.ExecutionSettings.Implementation.TimeoutText == right.ExecutionSettings.Implementation.TimeoutText &&
-		left.ExecutionSettings.Review.TimeoutText == right.ExecutionSettings.Review.TimeoutText &&
+func samePolicyContract(left, right config.PolicyContract) bool {
+	return left.StageTimeouts.Spec == right.StageTimeouts.Spec &&
+		left.StageTimeouts.Implement == right.StageTimeouts.Implement &&
+		left.StageTimeouts.Review == right.StageTimeouts.Review &&
 		len(left.Review.Seats) == len(right.Review.Seats) && left.RefreshReview == right.RefreshReview
 }
 

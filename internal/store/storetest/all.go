@@ -58,6 +58,14 @@ type Fixture struct {
 	// No public writer can; each backend seeds it directly in its test
 	// binary. The hold-retirement cases require it and never skip.
 	SeedStoredTaskHold func(t *testing.T, ctx context.Context, taskID string)
+	// SeedWorkspaceConfigYAML replaces the bound workspace's stored
+	// configuration document with raw YAML without changing its version,
+	// modelling a row an earlier release wrote, and WorkspaceConfigYAML
+	// returns the stored document's bytes. No public writer or read exposes
+	// either, so each test binary supplies both. The WorkspaceControl
+	// legacy-row case requires them and never skips (component-persistence).
+	SeedWorkspaceConfigYAML func(t *testing.T, ctx context.Context, raw string)
+	WorkspaceConfigYAML     func(t *testing.T, ctx context.Context) string
 	// LineageHTTP returns the real httpapi handler over Backend, bound to
 	// Workspace and accepting LineageHTTPToken as its operator bearer, so the
 	// Lineage suite reads GET /v1/lineage/{type}/{id}. storetest cannot

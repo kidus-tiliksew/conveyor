@@ -13,6 +13,7 @@ import (
 	"github.com/kidus-tiliksew/conveyor/internal/gitx"
 	"github.com/kidus-tiliksew/conveyor/internal/planning"
 	"github.com/kidus-tiliksew/conveyor/internal/trigger/github"
+	"gopkg.in/yaml.v3"
 )
 
 // runtimePlanningRevision is the fixed commit the fake snapshot API pins.
@@ -115,7 +116,7 @@ func requirePolicyOnlyWorkspace(t *testing.T, x Fixture) config.VersionedDocumen
 	stored, err := x.Backend.WorkspaceConfig(x.Context)
 	requireOK(t, err)
 	document := stored.Document
-	if document.ExecutionSettings != nil || len(document.PlanningModels) != 0 || len(document.Setups) != 0 || document.DefaultSetup != "" || len(document.Routing.Stages) != 0 {
+	if document.ExecutionSettings != nil || len(document.PlanningModels) != 0 || len(document.Routing.Stages) != 0 {
 		t.Fatalf("stored workspace document is not policy-only: %+v", document)
 	}
 	return stored
@@ -220,5 +221,121 @@ func runPolicyOnlyPlanningRejectsMissingDeploymentControlPlane(t *testing.T, x F
 	}
 	if stored := requirePolicyOnlyWorkspace(t, x); stored.Version != before.Version {
 		t.Fatalf("refusal advanced the configuration version %d -> %d", before.Version, stored.Version)
+	}
+}
+
+// legacyWorkspaceRowKeys are the members an earlier release wrote into a
+// stored workspace document: a harness registry whose argv the retired
+// validation refused, two execution setups with executor detail, the
+// default setup that names one, a stale top-level projection and routing,
+// and review seat contents (DEC-96(1), DEC-96(2)).
+const legacyWorkspaceRowKeys = `harnesses:
+  - {name: codex, mcp_transport: toml_override, command: [codex, exec], probe_command: [codex, --version], probe_timeout: 10s}
+setups:
+  - name: other
+    execution_settings:
+      implementation: {harness: codex, model: other-impl, timeout: 12m}
+      review: {execution: mcp, timeout: 13m}
+    review: {seats: [{model: other-seat}]}
+  - name: fast
+    refresh_review: full
+    execution_settings:
+      spec: {harness: codex, model: setup-spec, model_policy: explicit, effort: high, timeout: 45m}
+      implementation: {harness: codex, model_policy: bogus, effort: high, timeout: 5h}
+      verify: {harness: codex, model: setup-verify, timeout: 90m}
+      review: {execution: mcp, timeout: 2h, fallback_harness: codex, fallback_model: setup-fallback}
+    review:
+      seats:
+        - {model: seat-a, harness: codex}
+        - {model: seat-b}
+        - {model: seat-c, effort: high}
+default_setup: fast
+execution_settings:
+  implementation: {harness: codex, model: stale-impl, timeout: 1h}
+  review: {execution: mcp, timeout: 20m}
+routing:
+  stages:
+    implement: {model: stale-routing, harness: codex, timeout: 9m, execution: mcp}
+review: {seats: [{model: stale-seat}]}
+`
+
+// runLegacyWorkspaceRowLoads holds every backend to the stored-row contract:
+// a workspace row carrying legacy harness, setup, and default-setup keys
+// loads through WorkspaceConfig and RuntimeConfig without validation, yields
+// the stage timeouts and review seat count its named default setup declared
+// with no executor detail, and is neither rewritten nor versioned by the
+// reads (component-persistence; component-runtime; DEC-96(1)).
+func runLegacyWorkspaceRowLoads(t *testing.T, x Fixture) {
+	if x.SeedWorkspaceConfigYAML == nil || x.WorkspaceConfigYAML == nil {
+		t.Fatal("conformance fixture must provide SeedWorkspaceConfigYAML and WorkspaceConfigYAML for the legacy-row case (component-persistence)")
+	}
+	st, ctx := x.Backend, x.Context
+	before, err := st.WorkspaceConfig(ctx)
+	requireOK(t, err)
+	original := x.WorkspaceConfigYAML(t, ctx)
+	t.Cleanup(func() { x.SeedWorkspaceConfigYAML(t, ctx, original) })
+	var document map[string]any
+	if err := yaml.Unmarshal([]byte(original), &document); err != nil {
+		t.Fatal(err)
+	}
+	var legacyKeys map[string]any
+	if err := yaml.Unmarshal([]byte(legacyWorkspaceRowKeys), &legacyKeys); err != nil {
+		t.Fatal(err)
+	}
+	delete(document, "stage_timeouts")
+	for key, value := range legacyKeys {
+		document[key] = value
+	}
+	encoded, err := yaml.Marshal(document)
+	requireOK(t, err)
+	legacy := string(encoded)
+	x.SeedWorkspaceConfigYAML(t, ctx, legacy)
+
+	stored, err := st.WorkspaceConfig(ctx)
+	if err != nil {
+		t.Fatalf("legacy row failed to load: %v", err)
+	}
+	if stored.Version != before.Version || stored.Document.Workspace != before.Document.Workspace || len(stored.Document.Repos) != len(before.Document.Repos) {
+		t.Fatalf("legacy row read = version %d workspace %q repos %d, want version %d workspace %q repos %d",
+			stored.Version, stored.Document.Workspace, len(stored.Document.Repos), before.Version, before.Document.Workspace, len(before.Document.Repos))
+	}
+	if len(stored.Document.Review.Seats) != 3 {
+		t.Fatalf("legacy row review seats = %+v, want the default setup's three", stored.Document.Review.Seats)
+	}
+	for i, seat := range stored.Document.Review.Seats {
+		if seat != (config.ReviewSeat{}) {
+			t.Fatalf("legacy row kept review seat %d contents: %+v", i, seat)
+		}
+	}
+	runtime, err := st.RuntimeConfig(ctx, x.Config)
+	if err != nil {
+		t.Fatalf("legacy row failed to compose: %v", err)
+	}
+	for stage, timeout := range map[string]string{"spec": "45m", "implement": "5h", "review": "2h", "verify": "90m"} {
+		route := runtime.Routing.Stages[stage]
+		if route.TimeoutText != timeout || route.Model != "" || route.Harness != "" || route.Effort != "" || route.ModelPolicy != "" {
+			t.Fatalf("legacy row %s route = %+v, want only the default setup's %s timeout", stage, route, timeout)
+		}
+	}
+	if len(runtime.Review.Seats) != 3 || runtime.MaxBounces != before.Document.MaxBounces {
+		t.Fatalf("legacy row runtime policy = seats %d bounces %d", len(runtime.Review.Seats), runtime.MaxBounces)
+	}
+	if frozen := runtime.FreezePolicy(); frozen.StageTimeouts != (config.PolicyStageTimeouts{Spec: "45m", Implement: "5h", Review: "2h", Verify: "90m"}) || len(frozen.Review.Seats) != 3 {
+		t.Fatalf("legacy row froze %+v", frozen)
+	}
+	if settings := runtime.ExecutionSettings; settings != nil {
+		for _, stage := range []config.ImplementationSettings{settings.Spec, settings.Implementation, settings.Verify} {
+			if stage.Harness != "" || stage.Model != "" || stage.Effort != "" || stage.ModelPolicy != "" {
+				t.Fatalf("legacy row composed executor settings: %+v", settings)
+			}
+		}
+	}
+	if after := x.WorkspaceConfigYAML(t, ctx); after != legacy {
+		t.Fatalf("reads rewrote the legacy row:\n%s\nwant:\n%s", after, legacy)
+	}
+	again, err := st.WorkspaceConfig(ctx)
+	requireOK(t, err)
+	if again.Version != before.Version {
+		t.Fatalf("reads advanced the configuration version %d -> %d", before.Version, again.Version)
 	}
 }

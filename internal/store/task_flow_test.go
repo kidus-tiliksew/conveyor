@@ -83,7 +83,7 @@ func flowStatuses(flow TaskFlow) map[core.Stage]string {
 }
 
 func approvalTask() core.Task {
-	return core.Task{SpecApproval: true, MergeApproval: true, SetupContract: config.ExecutionSetup{VerifyStage: true}}
+	return core.Task{SpecApproval: true, MergeApproval: true, SetupContract: config.PolicyContract{VerifyStage: true}}
 }
 
 func TestFoldTaskFlowStages(t *testing.T) {
@@ -128,7 +128,7 @@ func TestFoldTaskFlowStages(t *testing.T) {
 
 func TestFoldTaskFlowFrozenPolicy(t *testing.T) {
 	action := nextaction.NextAction{Actor: nextaction.ActorFactory}
-	off := core.Task{SpecApproval: false, MergeApproval: false, SetupContract: config.ExecutionSetup{VerifyStage: false}}
+	off := core.Task{SpecApproval: false, MergeApproval: false, SetupContract: config.PolicyContract{VerifyStage: false}}
 	flow := new(flowLedger).created(off).fold(action)
 	spec, verify, merge := flowStage(t, flow, core.StageSpec), flowStage(t, flow, core.StageVerify), flowStage(t, flow, core.StageMerge)
 	if spec.Status != FlowOff || spec.Gate != nil {
@@ -660,7 +660,7 @@ func TestFoldTaskFlowTraversal(t *testing.T) {
 		}
 		return out
 	}
-	skipped := core.Task{SpecApproval: false, MergeApproval: false, SetupContract: config.ExecutionSetup{VerifyStage: false}}
+	skipped := core.Task{SpecApproval: false, MergeApproval: false, SetupContract: config.PolicyContract{VerifyStage: false}}
 	fresh := new(flowLedger).created(skipped)
 	if got := read(fresh.fold(nextaction.NextAction{Actor: nextaction.ActorFactory})); got[core.StageSpec] != (marks{}) || got[core.StageVerify] != (marks{}) {
 		t.Fatalf("off nodes before the task moved = %v, want untraversed", got)

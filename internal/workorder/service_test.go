@@ -890,10 +890,7 @@ func TestRetryReviewRoundVerifiesPRHeadAndSnapshotsCurrentPanel(t *testing.T) {
 		Workspace: "demo", WorkOrderQueueTimeout: time.Hour,
 		Repos:   []config.Repo{{Name: "app", Base: "main", GitHub: "acme/app"}},
 		Routing: config.Routing{Stages: map[string]config.StageRoute{"review": {Execution: config.ExecutionMCP, Harness: "codex", TimeoutText: "45m"}}},
-		Harnesses: []config.Harness{
-			{Name: "codex", Command: []string{"current-codex", "{prompt}"}, ProbeCommand: []string{"codex", "--version"}, ProbeTimeoutText: "5s"},
-			{Name: "claude", Command: []string{"current-claude", "{prompt}"}, ProbeCommand: []string{"claude", "--version"}, ProbeTimeoutText: "5s"},
-		},
+
 		Review: config.ReviewPanel{Seats: []config.ReviewSeat{{Model: "gpt-current", Harness: "codex", Effort: "high"}, {Model: "claude-current", Harness: "claude"}}},
 	}
 	currentHead := "changed-head"
@@ -2173,7 +2170,7 @@ func TestOperatorRecoveryDirectionIsTrustedContextAndClearsAtLifecycleBoundaries
 func TestOperatorRecoveryRetainsFrozenSetupWhenNamedDefinitionIsMissing(t *testing.T) {
 	ctx := store.WithWorkspace(store.WithActor(t.Context(), store.SystemActor()), "demo")
 	st := store.NewMemory()
-	frozen := config.ExecutionSetup{Name: "removed", ExecutionSettings: config.ContextualExecutionSettings{Implementation: config.ImplementationSettings{Harness: "codex", Model: "frozen-model", ModelPolicy: config.ModelPolicyExplicit, TimeoutText: "1h"}}}
+	frozen := config.PolicyContract{StageTimeouts: config.PolicyStageTimeouts{Implement: "1h"}}
 	task := core.Task{ID: "missing-setup-task", Workspace: "demo", State: core.TaskRunning, SetupName: "removed", SetupContract: frozen, CreatedAt: time.Now().UTC()}
 	job := core.Job{ID: "missing-setup-order", TaskID: task.ID, Stage: core.StageImplement, State: core.JobPending}
 	if err := st.CreateTask(ctx, task); err != nil {
@@ -2198,7 +2195,7 @@ func TestOperatorRecoveryRetainsFrozenSetupWhenNamedDefinitionIsMissing(t *testi
 	if err != nil || recovered.State != core.WorkOrderQueued || recovered.RequiredModel != "" || recovered.RequiredHarness != "" || recovered.ExecutionTimeoutText != "1h" {
 		t.Fatalf("recovered=%+v err=%v", recovered, err)
 	}
-	if current, taskErr := st.GetTask(ctx, task.ID); taskErr != nil || current.SetupName != "removed" || current.SetupContract.ExecutionSettings.Implementation.Model != "frozen-model" {
+	if current, taskErr := st.GetTask(ctx, task.ID); taskErr != nil || current.SetupName != "removed" || current.SetupContract.StageTimeouts.Implement != "1h" {
 		t.Fatalf("frozen setup changed: task=%+v err=%v", current, taskErr)
 	}
 	events, _ := st.CountEvents(ctx, task.ID, "task.setup.refrozen")
@@ -2442,7 +2439,6 @@ func TestRedispatchClearsLegacyExecutionPinsWithoutHarnessRegistry(t *testing.T)
 		return &config.Config{
 			WorkOrderQueueTimeout: config.DefaultWorkOrderQueueTimeout,
 			Routing:               config.Routing{Stages: map[string]config.StageRoute{"implement": {Timeout: time.Hour}}},
-			Harnesses:             []config.Harness{{Name: "claude", Command: []string{"claude", "-p", "{prompt}", "{mcp_config}", "--dangerously-skip-permissions"}}},
 		}, nil
 	}
 	redispatched, err := service.Redispatch(ctx, order.ID)

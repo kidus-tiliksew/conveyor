@@ -316,7 +316,7 @@ func TestTaskFlowRouteStatesStageCopy(t *testing.T) {
 	now := time.Now().UTC().Truncate(time.Second)
 	seed := func(id string, lease time.Time) {
 		task := core.Task{ID: id, Workspace: "demo", Repo: "conveyor", BaseBranch: "main", Branch: "conveyor/" + id, State: core.TaskRunning,
-			MergeApproval: true, SetupContract: config.ExecutionSetup{VerifyStage: true}, CreatedAt: now.Add(-3 * time.Hour)}
+			MergeApproval: true, SetupContract: config.PolicyContract{VerifyStage: true}, CreatedAt: now.Add(-3 * time.Hour)}
 		if err := fixture.Backend.CreateTask(fixture.Context, task); err != nil {
 			t.Fatal(err)
 		}

@@ -13,11 +13,9 @@ import (
 	"errors"
 	"fmt"
 	"log"
-	"net/url"
 	"os"
 	"path/filepath"
 	"reflect"
-	"regexp"
 	"strings"
 	"sync"
 	"time"
@@ -370,44 +368,12 @@ type StageRoute struct {
 	Timeout     time.Duration `yaml:"-" json:"-"`
 	TimeoutText string        `yaml:"timeout" json:"timeout"`
 	Execution   ExecutionMode `yaml:"execution" json:"execution"`
-	// EffectiveModel is the normalized worker argument. It is deliberately
-	// absent from persisted compatibility routes (component-runtime).
-	EffectiveModel string `yaml:"-" json:"-"`
 
 	// v1.3 compatibility inputs. They are consumed during normalization and
 	// omitted from the canonical v1.4 document.
 	LegacyHarnesses []string `yaml:"harnesses,omitempty" json:"-"`
 	LegacyModelTier string   `yaml:"model_tier,omitempty" json:"-"`
 }
-
-type Harness struct {
-	Name          string   `yaml:"name" json:"name"`
-	MCPTransport  string   `yaml:"mcp_transport" json:"mcp_transport"`
-	MCPAttachment string   `yaml:"mcp_attachment,omitempty" json:"mcp_attachment,omitempty"`
-	Command       []string `yaml:"command" json:"command"`
-	// ResumeCommand is an optional client-local argv fragment.
-	// req-260818-24dd3a AC-2.2 and DEC-56 keep both its validation and
-	// eventual substitution off the server.
-	ResumeCommand         []string            `yaml:"resume_command,omitempty" json:"resume_command,omitempty"`
-	ModelArgs             []string            `yaml:"model_args,omitempty" json:"model_args,omitempty"`
-	DefaultModelSentinels []string            `yaml:"default_model_sentinels,omitempty" json:"default_model_sentinels,omitempty"`
-	EffortArgs            map[string][]string `yaml:"effort_args,omitempty" json:"effort_args,omitempty"`
-	ProbeCommand          []string            `yaml:"probe_command" json:"probe_command"`
-	ProbeTimeout          time.Duration       `yaml:"-" json:"-"`
-	ProbeTimeoutText      string              `yaml:"probe_timeout" json:"probe_timeout"`
-	StallTimeout          time.Duration       `yaml:"-" json:"-"`
-	StallTimeoutText      string              `yaml:"stall_timeout,omitempty" json:"stall_timeout,omitempty"`
-}
-
-const (
-	// MCP transport controls the representation substituted for the whole
-	// {mcp_config} argv element (component-runtime).
-	MCPTransportJSONFile     = "json_file"
-	MCPTransportTOMLOverride = "toml_override"
-	MCPTransportEnvironment  = "environment"
-)
-
-var mcpAttachmentPattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]{0,62}$`)
 
 // ReviewSeat is one immutable assignment in a submitted review round. The
 // model is always pinned; Harness optionally overrides the workspace review
@@ -606,8 +572,6 @@ const (
 	DefaultStageTimeout              = 2 * time.Hour
 	DefaultFirstActivityTimeout      = 2 * time.Minute
 	DefaultFirstActivityTimeoutText  = "2m"
-	DefaultHarnessStallTimeout       = 10 * time.Minute
-	DefaultHarnessStallTimeoutText   = "10m"
 	DefaultWorkOrderQueueTimeout     = 24 * time.Hour
 	DefaultWorkOrderQueueTimeoutText = "24h"
 )
@@ -617,8 +581,7 @@ type Routing struct {
 }
 
 const (
-	ModelPolicyExplicit       = "explicit"
-	ModelPolicyHarnessDefault = "harness_default"
+	ModelPolicyExplicit = "explicit"
 )
 
 type ModelTimeoutSettings struct {
@@ -737,68 +700,119 @@ type ContextualExecutionSettings struct {
 	Review         ReviewExecutionSettings `yaml:"review" json:"review"`
 }
 
-// ExecutionSetup is one named execution contract. Its harness, model, and
-// effort settings are client-local and never freeze onto a task; only the
-// pipeline-policy subset that MarshalJSON persists freezes by value at intake
-// (component-runtime; DEC-47, DEC-56).
-type ExecutionSetup struct {
-	VerifyStage       bool                        `yaml:"verify_stage,omitempty" json:"verify_stage,omitempty"`
-	Name              string                      `yaml:"name" json:"name"`
-	MaxBounces        int                         `yaml:"max_bounces,omitempty" json:"max_bounces,omitempty"`
-	ExecutionSettings ContextualExecutionSettings `yaml:"execution_settings" json:"execution_settings"`
-	Review            ReviewPanel                 `yaml:"review" json:"review"`
-	RefreshReview     string                      `yaml:"refresh_review,omitempty" json:"refresh_review"`
+// PolicyStageTimeouts is the frozen per-stage execution timeout policy.
+type PolicyStageTimeouts struct {
+	Spec      string
+	Implement string
+	Review    string
+	Verify    string
 }
 
-// MarshalJSON persists and serves only the frozen pipeline-policy subset.
-// Legacy execution setups remain YAML-readable for client-local files and are
-// accepted by UnmarshalJSON solely to migrate existing task rows. Nil seats
-// omit the seats key (no frozen seat count), distinct from an empty frozen
-// panel; historical migration 099 reads an absent key as an empty array.
-func (s ExecutionSetup) MarshalJSON() ([]byte, error) {
-	var seats *[]struct{}
+// PolicyContract is a task's frozen pipeline policy (DEC-96(1)): the verify
+// stage toggle, bounce limit, stage timeouts, review seat count and
+// fail-fast, and refresh review mode. It is the type of core.Task's
+// SetupContract and of a planning bundle member's contract. It carries no
+// harness, model, effort, or setup selection (DEC-96(2); component-runtime).
+type PolicyContract struct {
+	VerifyStage   bool
+	MaxBounces    int
+	StageTimeouts PolicyStageTimeouts
+	Review        ReviewPanel
+	RefreshReview string
+	// legacyNamed records that an earlier full-setup encoding named its
+	// setup; such a stored row still counts as frozen policy.
+	legacyNamed bool
+}
+
+type policyContractJSON struct {
+	VerifyStage   bool              `json:"verify_stage,omitempty"`
+	MaxBounces    int               `json:"max_bounces"`
+	StageTimeouts map[string]string `json:"stage_timeouts"`
+	Review        struct {
+		Seats    *[]struct{} `json:"seats,omitempty"`
+		FailFast bool        `json:"fail_fast,omitempty"`
+	} `json:"review"`
+	RefreshReview string `json:"refresh_review,omitempty"`
+}
+
+// MarshalJSON persists and serves the frozen policy in the policy_contract
+// shape. Nil seats omit the seats key (no frozen seat count), distinct from an
+// empty frozen panel; historical migration 099 reads an absent key as an
+// empty array.
+func (s PolicyContract) MarshalJSON() ([]byte, error) {
+	var encoded policyContractJSON
+	encoded.VerifyStage, encoded.MaxBounces, encoded.RefreshReview = s.VerifyStage, s.MaxBounces, s.RefreshReview
+	encoded.StageTimeouts = map[string]string{
+		"verify":    s.StageTimeouts.Verify,
+		"spec":      s.StageTimeouts.Spec,
+		"implement": s.StageTimeouts.Implement,
+		"review":    s.StageTimeouts.Review,
+	}
 	if s.Review.Seats != nil {
 		frozen := make([]struct{}, len(s.Review.Seats))
-		seats = &frozen
+		encoded.Review.Seats = &frozen
 	}
-	return json.Marshal(struct {
-		VerifyStage   bool              `json:"verify_stage,omitempty"`
-		MaxBounces    int               `json:"max_bounces"`
-		StageTimeouts map[string]string `json:"stage_timeouts"`
-		Review        struct {
-			Seats    *[]struct{} `json:"seats,omitempty"`
-			FailFast bool        `json:"fail_fast,omitempty"`
-		} `json:"review"`
-		RefreshReview string `json:"refresh_review,omitempty"`
-	}{
-		VerifyStage: s.VerifyStage,
-		MaxBounces:  s.MaxBounces,
-		StageTimeouts: map[string]string{
-			"verify":    s.ExecutionSettings.Verify.TimeoutText,
-			"spec":      s.ExecutionSettings.Spec.TimeoutText,
-			"implement": s.ExecutionSettings.Implementation.TimeoutText,
-			"review":    s.ExecutionSettings.Review.TimeoutText,
-		},
-		Review: struct {
-			Seats    *[]struct{} `json:"seats,omitempty"`
-			FailFast bool        `json:"fail_fast,omitempty"`
-		}{Seats: seats, FailFast: s.Review.FailFast},
-		RefreshReview: s.RefreshReview,
-	})
+	encoded.Review.FailFast = s.Review.FailFast
+	return json.Marshal(encoded)
 }
 
-func (s *ExecutionSetup) UnmarshalJSON(data []byte) error {
-	type legacy ExecutionSetup
+// legacySetupContract is the earlier full-setup encoding of a stored task
+// contract. Only its policy members are read; harness, model, and effort
+// members are ignored and never validated (DEC-96(2)).
+type legacySetupContract struct {
+	VerifyStage       bool   `json:"verify_stage"`
+	Name              string `json:"name"`
+	MaxBounces        int    `json:"max_bounces"`
+	ExecutionSettings struct {
+		Verify struct {
+			TimeoutText string `json:"timeout"`
+		} `json:"verify"`
+		Spec struct {
+			TimeoutText string `json:"timeout"`
+		} `json:"spec"`
+		Implementation struct {
+			TimeoutText string `json:"timeout"`
+		} `json:"implementation"`
+		Review struct {
+			TimeoutText string `json:"timeout"`
+		} `json:"review"`
+	} `json:"execution_settings"`
+	Review struct {
+		Seats    []struct{} `json:"seats"`
+		FailFast bool       `json:"fail_fast"`
+	} `json:"review"`
+	RefreshReview string `json:"refresh_review"`
+}
+
+// UnmarshalJSON reads the policy_contract shape and, for task rows written
+// before it, the policy members of the earlier full-setup encoding.
+func (s *PolicyContract) UnmarshalJSON(data []byte) error {
 	var probe map[string]json.RawMessage
 	if err := json.Unmarshal(data, &probe); err != nil {
 		return err
 	}
 	if _, policy := probe["stage_timeouts"]; !policy {
-		var decoded legacy
+		var decoded legacySetupContract
 		if err := json.Unmarshal(data, &decoded); err != nil {
 			return err
 		}
-		*s = ExecutionSetup(decoded)
+		var seats []ReviewSeat
+		if decoded.Review.Seats != nil {
+			seats = make([]ReviewSeat, len(decoded.Review.Seats))
+		}
+		*s = PolicyContract{
+			VerifyStage: decoded.VerifyStage,
+			MaxBounces:  decoded.MaxBounces,
+			StageTimeouts: PolicyStageTimeouts{
+				Spec:      decoded.ExecutionSettings.Spec.TimeoutText,
+				Implement: decoded.ExecutionSettings.Implementation.TimeoutText,
+				Review:    decoded.ExecutionSettings.Review.TimeoutText,
+				Verify:    decoded.ExecutionSettings.Verify.TimeoutText,
+			},
+			Review:        ReviewPanel{Seats: seats, FailFast: decoded.Review.FailFast},
+			RefreshReview: decoded.RefreshReview,
+			legacyNamed:   decoded.Name != "",
+		}
 		return nil
 	}
 	var policy struct {
@@ -814,27 +828,29 @@ func (s *ExecutionSetup) UnmarshalJSON(data []byte) error {
 	if err := json.Unmarshal(data, &policy); err != nil {
 		return err
 	}
-	s.VerifyStage = policy.VerifyStage
-	s.ExecutionSettings.Verify.TimeoutText = policy.StageTimeouts["verify"]
-	s.ExecutionSettings.Spec.TimeoutText = policy.StageTimeouts["spec"]
-	s.ExecutionSettings.Implementation.TimeoutText = policy.StageTimeouts["implement"]
-	s.ExecutionSettings.Review.TimeoutText = policy.StageTimeouts["review"]
 	var seats []ReviewSeat
 	if policy.Review.Seats != nil {
 		seats = make([]ReviewSeat, len(policy.Review.Seats))
 	}
-	s.Review.Seats = seats
-	s.Review.FailFast = policy.Review.FailFast
-	s.MaxBounces = policy.MaxBounces
-	s.RefreshReview = policy.RefreshReview
+	*s = PolicyContract{
+		VerifyStage: policy.VerifyStage,
+		MaxBounces:  policy.MaxBounces,
+		StageTimeouts: PolicyStageTimeouts{
+			Spec:      policy.StageTimeouts["spec"],
+			Implement: policy.StageTimeouts["implement"],
+			Review:    policy.StageTimeouts["review"],
+			Verify:    policy.StageTimeouts["verify"],
+		},
+		Review:        ReviewPanel{Seats: seats, FailFast: policy.Review.FailFast},
+		RefreshReview: policy.RefreshReview,
+	}
 	return nil
 }
 
-// HasFrozenPolicy distinguishes the policy carrier from a zero-value legacy
-// contract without relying on the retired setup name.
-func (s ExecutionSetup) HasFrozenPolicy() bool {
-	return s.VerifyStage || s.ExecutionSettings.Verify.TimeoutText != "" || s.Name != "" || s.MaxBounces > 0 || s.ExecutionSettings.Spec.TimeoutText != "" ||
-		s.ExecutionSettings.Implementation.TimeoutText != "" || s.ExecutionSettings.Review.TimeoutText != "" ||
+// HasFrozenPolicy distinguishes a frozen contract from the zero value of a
+// task that predates policy freezing.
+func (s PolicyContract) HasFrozenPolicy() bool {
+	return s.VerifyStage || s.legacyNamed || s.MaxBounces > 0 || s.StageTimeouts != (PolicyStageTimeouts{}) ||
 		s.Review.Seats != nil || s.RefreshReview != ""
 }
 
@@ -851,10 +867,7 @@ type WorkspaceDocument struct {
 	WorkOrderQueueTimeoutText string                       `yaml:"work_order_queue_timeout" json:"work_order_queue_timeout"`
 	ExecutionSettings         *ContextualExecutionSettings `yaml:"execution_settings,omitempty" json:"execution_settings,omitempty"`
 	Routing                   Routing                      `yaml:"routing" json:"routing"`
-	Harnesses                 []Harness                    `yaml:"harnesses,omitempty" json:"harnesses"`
 	Review                    ReviewPanel                  `yaml:"review" json:"review"`
-	Setups                    []ExecutionSetup             `yaml:"setups,omitempty" json:"setups"`
-	DefaultSetup              string                       `yaml:"default_setup,omitempty" json:"default_setup"`
 	Execution                 ExecutionPolicy              `yaml:"execution" json:"execution"`
 	Repos                     []Repo                       `yaml:"repos" json:"repos"`
 	Monitor                   MonitorConfig                `yaml:"monitor" json:"monitor"`
@@ -873,7 +886,7 @@ type WorkspaceDocument struct {
 // retaining legacy JSON emission for upgrade fixtures that still carry
 // execution settings. YAML remains the compatibility format for old rows.
 func (d WorkspaceDocument) MarshalJSON() ([]byte, error) {
-	policyOnly := d.StageTimeouts != nil && d.ExecutionSettings == nil && len(d.Routing.Stages) == 0 && len(d.Harnesses) == 0 && len(d.Setups) == 0 && d.DefaultSetup == "" && len(d.PlanningModels) == 0
+	policyOnly := d.StageTimeouts != nil && d.ExecutionSettings == nil && len(d.Routing.Stages) == 0 && len(d.PlanningModels) == 0
 	if !policyOnly {
 		type legacy WorkspaceDocument
 		return json.Marshal(legacy(d))
@@ -928,32 +941,12 @@ type Config struct {
 	Runtime           RuntimeSettings              `yaml:"runtime,omitempty"`
 	ExecutionSettings *ContextualExecutionSettings `yaml:"execution_settings,omitempty"`
 	Routing           Routing                      `yaml:"routing"`
-	Harnesses         []Harness                    `yaml:"harnesses,omitempty"`
 	Review            ReviewPanel                  `yaml:"review"`
-	Setups            []ExecutionSetup             `yaml:"setups,omitempty"`
-	DefaultSetup      string                       `yaml:"default_setup,omitempty"`
 	Execution         ExecutionPolicy              `yaml:"execution"`
 	Repos             []Repo                       `yaml:"repos"`
 	Monitor           MonitorConfig                `yaml:"monitor"`
 	IssuePublication  IssuePublication             `yaml:"issue_publication,omitempty"`
 	PlanningModels    []string                     `yaml:"planning_models,omitempty"`
-}
-
-func Load(path string) (*Config, error) {
-	data, err := os.ReadFile(path)
-	if err != nil {
-		return nil, err
-	}
-	var c Config
-	if err := decodeKnown(data, &c); err != nil {
-		return nil, fmt.Errorf("parse %s: %w", path, err)
-	}
-	var fields map[string]yaml.Node
-	if err := yaml.Unmarshal(data, &fields); err != nil {
-		return nil, fmt.Errorf("parse %s: %w", path, err)
-	}
-	_, c.packDirSet = fields["pack_dir"]
-	return normalize(&c, path)
 }
 
 func ParseWorkspaceDocument(data []byte, deployment *Config, source string) (*Config, error) {
@@ -972,36 +965,70 @@ func ParseWorkspaceDocument(data []byte, deployment *Config, source string) (*Co
 	next.MaxBounces = document.MaxBounces
 	next.WorkOrderQueueTimeoutText = document.WorkOrderQueueTimeoutText
 	next.Recovery = document.Recovery
-	policyOnly := document.ExecutionSettings == nil && document.Setups == nil && len(document.Routing.Stages) == 0 && len(document.Harnesses) == 0
-	// A policy-only document deliberately inherits no execution authority
-	// from workspace state. The deployment value is retained only as a
-	// compatibility substrate for in-process control-plane execution and old
-	// rows while dispatch transitions to client-local setup resolution.
-	if document.ExecutionSettings != nil || document.Setups != nil || len(document.Routing.Stages) != 0 || len(document.Harnesses) != 0 {
-		next.ExecutionSettings = document.ExecutionSettings
-		next.Routing = document.Routing
-		next.Harnesses = document.Harnesses
-		next.Setups = document.Setups
-		next.DefaultSetup = document.DefaultSetup
-	}
-	next.Review = document.Review
+	// Every document parses as policy. A legacy document's execution
+	// settings and routes supply only the stage timeouts that stage_timeouts
+	// omits; no harness, setup, model, or effort is read (DEC-96(1), DEC-96(2)).
+	legacyShape := document.ExecutionSettings != nil || len(document.Routing.Stages) != 0
+	document.StageTimeouts = legacyStageTimeouts(document)
 	if next.Routing.Stages == nil {
 		next.Routing.Stages = map[string]StageRoute{}
 	}
-	for stage, timeout := range document.StageTimeouts {
-		route := next.Routing.Stages[stage]
-		route.TimeoutText = timeout
-		next.Routing.Stages[stage] = route
-	}
 	next.Execution = document.Execution
+	if legacyShape {
+		// A legacy document keeps the execution defaults its earlier full
+		// parse applied: an absent block means both gates on (DEC-74(1)).
+		defaultLegacyExecution(&next.Execution)
+	}
 	next.Repos = document.Repos
 	next.Monitor = document.Monitor
 	next.IssuePublication = document.IssuePublication
-	next.PlanningModels = document.PlanningModels
-	if policyOnly {
-		return normalizePolicy(&next, document)
+	return normalizePolicy(&next, document)
+}
+
+func defaultLegacyExecution(execution *ExecutionPolicy) {
+	if *execution == (ExecutionPolicy{}) {
+		execution.SpecApproval = true
+		execution.MergeApproval = true
 	}
-	return normalize(&next, source)
+	execution.DefaultMode = ""
+	if execution.VerifyConcurrency == 0 {
+		execution.VerifyConcurrency = 1
+	}
+	if execution.ImplementConcurrency == 0 {
+		execution.ImplementConcurrency = 1
+	}
+	if execution.ReviewConcurrency == 0 {
+		execution.ReviewConcurrency = 1
+	}
+}
+
+// legacyStageTimeouts returns the document's stage timeouts, filling a stage
+// that stage_timeouts omits from a legacy document's execution settings (the
+// pre-v1.34 control_plane.spec timeout supplies spec) and then its routes.
+func legacyStageTimeouts(document WorkspaceDocument) map[string]string {
+	if document.ExecutionSettings == nil && len(document.Routing.Stages) == 0 {
+		return document.StageTimeouts
+	}
+	timeouts := make(map[string]string, 4)
+	for stage, timeout := range document.StageTimeouts {
+		timeouts[stage] = timeout
+	}
+	fill := func(stage, timeout string) {
+		if strings.TrimSpace(timeouts[stage]) == "" && strings.TrimSpace(timeout) != "" {
+			timeouts[stage] = timeout
+		}
+	}
+	if settings := document.ExecutionSettings; settings != nil {
+		fill("spec", settings.Spec.TimeoutText)
+		fill("spec", settings.ControlPlane.Spec.TimeoutText)
+		fill("implement", settings.Implementation.TimeoutText)
+		fill("review", settings.Review.TimeoutText)
+		fill("verify", settings.Verify.TimeoutText)
+	}
+	for _, stage := range []string{"spec", "implement", "review", "verify"} {
+		fill(stage, document.Routing.Stages[stage].TimeoutText)
+	}
+	return timeouts
 }
 
 // cloneConfig isolates every mutable container reachable from a deployment
@@ -1021,26 +1048,7 @@ func cloneConfig(source *Config) Config {
 			next.Routing.Stages[stage] = route
 		}
 	}
-	if source.Harnesses != nil {
-		next.Harnesses = make([]Harness, len(source.Harnesses))
-		for i, harness := range source.Harnesses {
-			harness.Command = cloneStrings(harness.Command)
-			harness.ResumeCommand = cloneStrings(harness.ResumeCommand)
-			harness.ModelArgs = cloneStrings(harness.ModelArgs)
-			harness.DefaultModelSentinels = cloneStrings(harness.DefaultModelSentinels)
-			harness.ProbeCommand = cloneStrings(harness.ProbeCommand)
-			harness.EffortArgs = cloneStringSlices(harness.EffortArgs)
-			next.Harnesses[i] = harness
-		}
-	}
 	next.Review.Seats = cloneSlice(source.Review.Seats)
-	if source.Setups != nil {
-		next.Setups = make([]ExecutionSetup, len(source.Setups))
-		for i, setup := range source.Setups {
-			setup.Review.Seats = cloneSlice(setup.Review.Seats)
-			next.Setups[i] = setup
-		}
-	}
 	if source.Repos != nil {
 		next.Repos = make([]Repo, len(source.Repos))
 		for i, repo := range source.Repos {
@@ -1064,17 +1072,6 @@ func cloneSlice[T any](source []T) []T {
 	}
 	next := make([]T, len(source))
 	copy(next, source)
-	return next
-}
-
-func cloneStringSlices(source map[string][]string) map[string][]string {
-	if source == nil {
-		return nil
-	}
-	next := make(map[string][]string, len(source))
-	for key, values := range source {
-		next[key] = cloneStrings(values)
-	}
 	return next
 }
 
@@ -1144,11 +1141,10 @@ func normalizePolicy(next *Config, document WorkspaceDocument) (*Config, error) 
 		}
 		route := next.Routing.Stages[stage]
 		route.Execution, route.TimeoutText, route.Timeout = ExecutionMCP, timeout, parsed
-		route.Model, route.ModelPolicy, route.Harness, route.Effort, route.EffectiveModel = "", "", "", "", ""
+		route.Model, route.ModelPolicy, route.Harness, route.Effort = "", "", "", ""
 		next.Routing.Stages[stage] = route
 	}
-	next.ExecutionSettings, next.Harnesses, next.Setups, next.PlanningModels = nil, nil, nil, nil
-	next.DefaultSetup = ""
+	next.ExecutionSettings, next.PlanningModels = nil, nil
 	next.Review = document.Review
 	if next.Review.Seats == nil {
 		next.Review.Seats = []ReviewSeat{{}}
@@ -1174,18 +1170,17 @@ func normalizePolicy(next *Config, document WorkspaceDocument) (*Config, error) 
 
 // ParseStoredWorkspaceDocument canonicalizes both the v1.4 document and the
 // superseded Phase 4.5 fields accepted by the compatibility members above.
+// Legacy harness, setup, default-setup, and executor keys are dropped before
+// strict decoding, so such a row loads without validation and is never
+// rewritten only because it carries them (DEC-96(1); component-runtime).
 func ParseStoredWorkspaceDocument(data []byte, deployment *Config, source string) (*Config, bool, error) {
-	canonicalData, hadBudget, err := stripLegacyBudgetFields(data)
+	document, hadBudget, err := decodeStoredWorkspaceDocument(data)
 	if err != nil {
-		return nil, false, fmt.Errorf("parse %s: %w", source, err)
-	}
-	var document WorkspaceDocument
-	if err := decodeKnown(canonicalData, &document); err != nil {
 		return nil, false, fmt.Errorf("parse %s: %w", source, err)
 	}
 	legacy := hadBudget || document.LegacyImage != "" || document.WorkOrderQueueTimeoutText == "" ||
 		document.Execution.FirstActivityTimeoutText == "" || document.Review.Seats == nil ||
-		document.ExecutionSettings == nil || document.Setups == nil
+		document.ExecutionSettings == nil
 	for _, repo := range document.Repos {
 		legacy = legacy || repo.LegacyImage != "" || len(repo.LegacySecretRefs) != 0 || len(repo.LegacyToolPolicy) != 0
 	}
@@ -1193,12 +1188,43 @@ func ParseStoredWorkspaceDocument(data []byte, deployment *Config, source string
 		legacy = legacy || len(route.LegacyHarnesses) != 0 || route.LegacyModelTier != ""
 	}
 	StoredRepositoryDefaults(document.Repos)
-	canonicalData, err = yaml.Marshal(document)
+	canonicalData, err := yaml.Marshal(document)
 	if err != nil {
 		return nil, false, err
 	}
 	cfg, err := ParseWorkspaceDocument(canonicalData, deployment, source)
 	return cfg, legacy, err
+}
+
+// DecodeStoredWorkspaceDocument strictly decodes a stored workspace row after
+// dropping the legacy budget, harness, setup, default-setup, and executor keys
+// an earlier release wrote. The input is never modified (component-runtime;
+// component-persistence).
+func DecodeStoredWorkspaceDocument(data []byte) (WorkspaceDocument, error) {
+	document, _, err := decodeStoredWorkspaceDocument(data)
+	return document, err
+}
+
+func decodeStoredWorkspaceDocument(data []byte) (WorkspaceDocument, bool, error) {
+	canonicalData, hadBudget, err := stripLegacyBudgetFields(data)
+	if err != nil {
+		return WorkspaceDocument{}, false, err
+	}
+	stripped, _, _, err := stripDeploymentExecutionDetail(canonicalData)
+	if err != nil {
+		// Report the strict decoder's located error when it has one.
+		var located WorkspaceDocument
+		if decodeErr := decodeKnown(canonicalData, &located); decodeErr != nil {
+			return WorkspaceDocument{}, false, decodeErr
+		}
+		return WorkspaceDocument{}, false, err
+	}
+	canonicalData = stripped
+	var document WorkspaceDocument
+	if err := decodeKnown(canonicalData, &document); err != nil {
+		return WorkspaceDocument{}, false, err
+	}
+	return document, hadBudget, nil
 }
 
 // stripLegacyBudgetFields lets an existing v1.5 Postgres workspace document
@@ -1259,72 +1285,6 @@ func decodeKnown(data []byte, target any) error {
 	return decoder.Decode(target)
 }
 
-func applyContextualExecutionSettings(c *Config) {
-	if c.ExecutionSettings == nil {
-		return
-	}
-	settings := c.ExecutionSettings
-	legacy := settings.ControlPlane.Spec
-	if settings.Spec.Model == "" && legacy.Model != "" {
-		settings.Spec.Model = legacy.Model
-		// The implementation harness is the unambiguous legacy worker context;
-		// otherwise a single registered harness is safe to adopt.
-		if settings.Spec.Harness == "" {
-			settings.Spec.Harness = settings.Implementation.Harness
-		}
-		if settings.Spec.Harness == "" && len(c.Harnesses) == 1 {
-			settings.Spec.Harness = c.Harnesses[0].Name
-		}
-		if settings.Spec.ModelPolicy == "" {
-			settings.Spec.ModelPolicy = ModelPolicyExplicit
-		}
-	}
-	if settings.Spec.TimeoutText == "" && legacy.TimeoutText != "" {
-		settings.Spec.TimeoutText = legacy.TimeoutText
-	}
-	settings.ControlPlane.Spec = ModelTimeoutSettings{}
-	if settings.ControlPlane.Planning.Model == "" {
-		settings.ControlPlane.Planning.Model = settings.ControlPlane.Triage.Model
-	}
-	if settings.ControlPlane.Planning.Effort == "" {
-		settings.ControlPlane.Planning.Effort = settings.ControlPlane.Triage.Effort
-	}
-	if settings.ControlPlane.Planning.TimeoutText == "" {
-		settings.ControlPlane.Planning.TimeoutText = settings.ControlPlane.Triage.TimeoutText
-	}
-	if settings.ControlPlane.Planning.ExplorationOutputTokens == 0 {
-		settings.ControlPlane.Planning.ExplorationOutputTokens = DefaultPlanningExplorationOutputTokens
-	}
-	defaultLineageContextSettings(&settings.ControlPlane.Planning.Context)
-	if c.Routing.Stages == nil {
-		c.Routing.Stages = map[string]StageRoute{}
-	}
-	c.Routing.Stages["triage"] = StageRoute{
-		Model: settings.ControlPlane.Triage.Model, Effort: settings.ControlPlane.Triage.Effort,
-		TimeoutText: settings.ControlPlane.Triage.TimeoutText,
-		Execution:   ExecutionInProcess, ModelPolicy: ModelPolicyExplicit,
-	}
-	c.Routing.Stages["spec"] = StageRoute{
-		Model: settings.Spec.Model, Harness: settings.Spec.Harness, Effort: settings.Spec.Effort,
-		TimeoutText: settings.Spec.TimeoutText,
-		Execution:   ExecutionMCP, ModelPolicy: settings.Spec.ModelPolicy,
-	}
-	c.Routing.Stages["implement"] = StageRoute{
-		Model: settings.Implementation.Model, ModelPolicy: settings.Implementation.ModelPolicy,
-		Harness: settings.Implementation.Harness, Effort: settings.Implementation.Effort,
-		TimeoutText: settings.Implementation.TimeoutText,
-		Execution:   ExecutionMCP,
-	}
-	if settings.Verify != (ImplementationSettings{}) {
-		c.Routing.Stages["verify"] = StageRoute{Model: settings.Verify.Model, Harness: settings.Verify.Harness, Effort: settings.Verify.Effort, ModelPolicy: settings.Verify.ModelPolicy, TimeoutText: settings.Verify.TimeoutText, Execution: ExecutionMCP}
-	}
-	c.Routing.Stages["review"] = StageRoute{
-		Model: settings.Review.FallbackModel, Harness: settings.Review.FallbackHarness,
-		TimeoutText: settings.Review.TimeoutText, Execution: settings.Review.Execution,
-		ModelPolicy: ModelPolicyExplicit,
-	}
-}
-
 func contextualExecutionSettings(routing Routing) *ContextualExecutionSettings {
 	triage := routing.Stages["triage"]
 	spec := routing.Stages["spec"]
@@ -1370,363 +1330,11 @@ func contextualExecutionSettings(routing Routing) *ContextualExecutionSettings {
 	}
 }
 
-func symbolicModelPolicy(model string) bool {
-	switch strings.ToLower(strings.TrimSpace(model)) {
-	case "subscription", "operator", "operator-owned", "default", "harness-default":
-		return true
-	default:
-		return false
-	}
-}
-
 func stageName(stage string) string {
 	if stage == "implement" {
 		return "implementation"
 	}
 	return stage
-}
-
-func normalizeHarnessModel(route StageRoute, harnesses []Harness) (string, error) {
-	symbol := strings.TrimSpace(route.Model)
-	if route.ModelPolicy == ModelPolicyExplicit {
-		if symbol == "" {
-			return "", fmt.Errorf("explicit model policy requires a model")
-		}
-		if symbolicModelPolicy(symbol) {
-			return "", fmt.Errorf("symbolic model %q requires harness_default model policy", symbol)
-		}
-		return symbol, nil
-	}
-	var selected *Harness
-	for i := range harnesses {
-		if harnesses[i].Name == route.Harness {
-			selected = &harnesses[i]
-			break
-		}
-	}
-	if selected == nil {
-		// Legacy/manual-only documents may predate the harness registry. They
-		// remain readable; worker health rejects Auto because no route harness
-		// is usable (component-runtime).
-		if route.Harness == "" {
-			return "", nil
-		}
-		return "", fmt.Errorf("harness_default model policy requires a usable harness")
-	}
-	if symbol == "" {
-		return "", nil
-	}
-	for _, supported := range selected.DefaultModelSentinels {
-		if symbol == supported {
-			return symbol, nil
-		}
-	}
-	if symbolicModelPolicy(symbol) {
-		return "", nil
-	}
-	return "", fmt.Errorf("model %q is not declared by harness %q as a default-model sentinel", symbol, selected.Name)
-}
-
-func normalize(c *Config, path string) (*Config, error) {
-	for _, grant := range c.KitPermissions {
-		if err := grant.Validate(); err != nil {
-			return nil, err
-		}
-	}
-	if err := validateVerificationToolchains(c.VerificationToolchains); err != nil {
-		return nil, err
-	}
-	setups := append([]ExecutionSetup(nil), c.Setups...)
-	defaultSetup := strings.TrimSpace(c.DefaultSetup)
-	if c.Setups == nil {
-		legacy := *c
-		legacy.Setups = nil
-		legacy.DefaultSetup = ""
-		normalized, err := normalizeLegacy(&legacy, path)
-		if err != nil {
-			return nil, err
-		}
-		setups = []ExecutionSetup{{Name: "default", ExecutionSettings: *normalized.ExecutionSettings, Review: normalized.Review, RefreshReview: RefreshReviewDelta}}
-		defaultSetup = "default"
-	} else if len(setups) == 0 {
-		return nil, fmt.Errorf("setups must contain at least one setup")
-	}
-	if defaultSetup == "" {
-		return nil, fmt.Errorf("default_setup is required")
-	}
-
-	names := make(map[string]struct{}, len(setups))
-	var defaultConfig *Config
-	normalizedSetups := make([]ExecutionSetup, 0, len(setups))
-	for i, setup := range setups {
-		setup.Name = strings.TrimSpace(setup.Name)
-		if setup.Name == "" || !safePathSegment(setup.Name) {
-			return nil, fmt.Errorf("setups[%d].name must be one path-safe segment", i)
-		}
-		if _, duplicate := names[setup.Name]; duplicate {
-			return nil, fmt.Errorf("duplicate setup name %q", setup.Name)
-		}
-		names[setup.Name] = struct{}{}
-		setup.RefreshReview = strings.TrimSpace(setup.RefreshReview)
-		if setup.RefreshReview == "" {
-			setup.RefreshReview = RefreshReviewDelta
-		}
-		if setup.RefreshReview != RefreshReviewDelta && setup.RefreshReview != RefreshReviewFull && setup.RefreshReview != RefreshReviewNone {
-			return nil, fmt.Errorf("setup %q: refresh_review must be delta, full, or none", setup.Name)
-		}
-		candidate := *c
-		candidate.Setups = nil
-		candidate.DefaultSetup = ""
-		candidate.ExecutionSettings = &setup.ExecutionSettings
-		candidate.Review = setup.Review
-		candidate.Routing = Routing{Stages: map[string]StageRoute{}}
-		normalized, err := normalizeLegacy(&candidate, path)
-		if err != nil {
-			return nil, fmt.Errorf("setup %q: %w", setup.Name, err)
-		}
-		normalizedSetup := ExecutionSetup{Name: setup.Name, ExecutionSettings: *normalized.ExecutionSettings, Review: normalized.Review, RefreshReview: setup.RefreshReview}
-		normalizedSetups = append(normalizedSetups, normalizedSetup)
-		if setup.Name == defaultSetup {
-			defaultConfig = normalized
-		}
-	}
-	if defaultConfig == nil {
-		return nil, fmt.Errorf("default_setup %q does not name a configured setup", defaultSetup)
-	}
-	result := *defaultConfig
-	result.Setups = normalizedSetups
-	result.DefaultSetup = defaultSetup
-	// The legacy singleton is a read-only projection of the default setup.
-	for i := range normalizedSetups {
-		if normalizedSetups[i].Name == defaultSetup {
-			result.ExecutionSettings = &normalizedSetups[i].ExecutionSettings
-			// Fail-fast is workspace review policy; setups own seats only.
-			result.Review = ReviewPanel{Seats: normalizedSetups[i].Review.Seats, FailFast: c.Review.FailFast}
-			break
-		}
-	}
-	return &result, nil
-}
-
-func normalizeLegacy(c *Config, path string) (*Config, error) {
-	var requestedPlanning PlanningSettings
-	if c.ExecutionSettings != nil {
-		requestedPlanning = c.ExecutionSettings.ControlPlane.Planning
-	}
-	applyContextualExecutionSettings(c)
-	if err := normalizeDeploymentScalars(c, path); err != nil {
-		return nil, err
-	}
-	harnesses := make(map[string]Harness, len(c.Harnesses))
-	for i := range c.Harnesses {
-		harness := &c.Harnesses[i]
-		if strings.TrimSpace(harness.Name) == "" || !safePathSegment(harness.Name) {
-			return nil, fmt.Errorf("harnesses[%d].name must be one path-safe segment", i)
-		}
-		if _, duplicate := harnesses[harness.Name]; duplicate {
-			return nil, fmt.Errorf("duplicate harness name %q", harness.Name)
-		}
-		if harness.MCPTransport == "" {
-			harness.MCPTransport = MCPTransportJSONFile
-		}
-		harness.MCPAttachment = strings.TrimSpace(harness.MCPAttachment)
-		if harness.StallTimeoutText == "" {
-			harness.StallTimeoutText = DefaultHarnessStallTimeoutText
-		}
-		if err := validateHarness(*harness, i); err != nil {
-			return nil, err
-		}
-		parsed, _ := time.ParseDuration(harness.ProbeTimeoutText)
-		harness.ProbeTimeout = parsed
-		harness.StallTimeout, _ = time.ParseDuration(harness.StallTimeoutText)
-		harnesses[harness.Name] = *harness
-	}
-	for stage, route := range c.Routing.Stages {
-		if stage == "spec" {
-			// Pre-v1.34 stored routes were fixed in-process. Upgrade them to the
-			// worker context without allowing legacy values to override explicit
-			// contextual spec settings (component-runtime).
-			if route.Execution == "" || route.Execution == ExecutionInProcess {
-				route.Execution = ExecutionMCP
-			}
-			if route.Harness == "" {
-				route.Harness = c.Routing.Stages["implement"].Harness
-			}
-		}
-		route.Effort = strings.TrimSpace(route.Effort)
-		if stage != "triage" && stage != "spec" && stage != "implement" && stage != "verify" && route.Effort != "" {
-			return nil, fmt.Errorf("routing stage %s: effort is not supported", stage)
-		}
-		if route.Model == "" {
-			route.Model = route.LegacyModelTier
-		}
-		if route.ModelPolicy == "" {
-			if stage == "implement" && symbolicModelPolicy(route.Model) {
-				route.ModelPolicy = ModelPolicyHarnessDefault
-			} else {
-				route.ModelPolicy = ModelPolicyExplicit
-			}
-		}
-		if route.ModelPolicy != ModelPolicyExplicit && route.ModelPolicy != ModelPolicyHarnessDefault {
-			return nil, fmt.Errorf("routing stage %s: model_policy must be explicit or harness_default", stage)
-		}
-		if route.Model == "" && (stage == "triage" || stage == "spec" || stage == "implement" && route.ModelPolicy == ModelPolicyExplicit) {
-			return nil, fmt.Errorf("routing stage %s: model is required", stage)
-		}
-		if route.TimeoutText == "" {
-			route.Timeout = DefaultStageTimeout
-			route.TimeoutText = DefaultStageTimeout.String()
-		} else {
-			parsed, parseErr := time.ParseDuration(route.TimeoutText)
-			if parseErr != nil || parsed <= 0 {
-				return nil, fmt.Errorf("routing stage %s: timeout must be a positive duration", stage)
-			}
-			route.Timeout = parsed
-		}
-		if route.Execution == "" {
-			switch stage {
-			case "triage":
-				route.Execution = ExecutionInProcess
-			default:
-				route.Execution = ExecutionMCP
-			}
-		}
-		if route.Execution != ExecutionInProcess && route.Execution != ExecutionMCP {
-			return nil, fmt.Errorf("routing stage %s: execution must be in_process or mcp", stage)
-		}
-		if stage == "triage" && route.Execution != ExecutionInProcess {
-			return nil, fmt.Errorf("routing stage triage: execution is fixed to in_process")
-		}
-		if (stage == "spec" || stage == "implement" || stage == "verify") && route.Execution != ExecutionMCP {
-			return nil, fmt.Errorf("routing stage %s: execution is fixed to mcp", stage)
-		}
-		if stage == "triage" {
-			if route.Effort != "" && !validResponsesEffort(route.Effort) {
-				return nil, fmt.Errorf("execution_settings.control_plane.%s.effort %q must be minimal, low, medium, or high", stage, route.Effort)
-			}
-			// Harness fields on pre-v1.18 control-plane routes are compatibility
-			// noise and never become worker requirements (component-runtime).
-			route.Harness = ""
-		}
-		if stage == "review" && route.Execution == ExecutionInProcess {
-			if route.Harness != "" {
-				return nil, fmt.Errorf("routing stage review: in_process execution cannot select a harness")
-			}
-		} else if stage == "spec" || stage == "implement" || stage == "verify" {
-			if route.Harness == "" && len(c.Harnesses) == 1 {
-				route.Harness = c.Harnesses[0].Name
-			}
-			if route.Harness == "" && len(c.Harnesses) > 1 {
-				return nil, fmt.Errorf("routing stage %s: harness is required when multiple harnesses are registered", stage)
-			}
-			var implementationHarness Harness
-			if route.Harness != "" {
-				var ok bool
-				if implementationHarness, ok = harnesses[route.Harness]; !ok {
-					return nil, fmt.Errorf("routing stage %s: unknown harness %q", stage, route.Harness)
-				}
-			}
-			if route.Effort != "" {
-				if !validEffort(route.Effort) {
-					return nil, fmt.Errorf("execution_settings.%s.effort must be low, medium, or high", stageName(stage))
-				}
-				if len(implementationHarness.EffortArgs[route.Effort]) == 0 {
-					return nil, fmt.Errorf("execution_settings.%s.effort %q is not supported by harness %q", stageName(stage), route.Effort, route.Harness)
-				}
-			}
-			effective, modelErr := normalizeHarnessModel(route, c.Harnesses)
-			if modelErr != nil {
-				return nil, fmt.Errorf("routing stage %s: %w", stage, modelErr)
-			}
-			route.EffectiveModel = effective
-		}
-		route.LegacyHarnesses = nil
-		route.LegacyModelTier = ""
-		c.Routing.Stages[stage] = route
-	}
-	for _, required := range []string{"triage", "spec", "implement", "review"} {
-		if _, ok := c.Routing.Stages[required]; !ok {
-			return nil, fmt.Errorf("routing stage %s is required", required)
-		}
-	}
-	reviewRoute := c.Routing.Stages["review"]
-	if c.Review.Seats == nil {
-		// Upgrade the pre-5.2 single review route without changing its behavior.
-		c.Review.Seats = []ReviewSeat{{Model: reviewRoute.Model, Harness: reviewRoute.Harness}}
-	}
-	if len(c.Review.Seats) == 0 {
-		return nil, fmt.Errorf("review.seats must contain at least one seat")
-	}
-	if reviewRoute.Execution == ExecutionInProcess && len(c.Review.Seats) != 1 {
-		return nil, fmt.Errorf("review.seats must contain exactly one seat for in_process review execution")
-	}
-	for i, seat := range c.Review.Seats {
-		seat.Model = strings.TrimSpace(seat.Model)
-		seat.Harness = strings.TrimSpace(seat.Harness)
-		seat.Effort = strings.TrimSpace(seat.Effort)
-		if seat.Model == "" {
-			return nil, fmt.Errorf("review.seats[%d].model is required", i)
-		}
-		if reviewRoute.Execution == ExecutionInProcess && seat.Harness != "" {
-			return nil, fmt.Errorf("review.seats[%d].harness cannot override an in_process review route", i)
-		}
-		if seat.Harness != "" {
-			if _, ok := harnesses[seat.Harness]; !ok {
-				return nil, fmt.Errorf("review.seats[%d].harness references unknown harness %q", i, seat.Harness)
-			}
-		}
-		if seat.Effort != "" {
-			if !validEffort(seat.Effort) {
-				return nil, fmt.Errorf("review.seats[%d].effort must be low, medium, or high", i)
-			}
-			if reviewRoute.Execution == ExecutionInProcess {
-				return nil, fmt.Errorf("review.seats[%d].effort cannot override an in_process review route", i)
-			}
-			harnessName := seat.Harness
-			if harnessName == "" {
-				harnessName = reviewRoute.Harness
-			}
-			if harnessName == "" && len(c.Harnesses) == 1 {
-				harnessName = c.Harnesses[0].Name
-			}
-			harness, ok := harnesses[harnessName]
-			if !ok || len(harness.EffortArgs[seat.Effort]) == 0 {
-				return nil, fmt.Errorf("review.seats[%d].effort %q is not supported by harness %q", i, seat.Effort, harnessName)
-			}
-		}
-		c.Review.Seats[i] = seat
-	}
-	if reviewRoute.Execution == ExecutionMCP {
-		needsFallback := false
-		for _, seat := range c.Review.Seats {
-			needsFallback = needsFallback || seat.Harness == ""
-		}
-		if needsFallback {
-			if reviewRoute.Harness == "" && len(c.Harnesses) == 1 {
-				reviewRoute.Harness = c.Harnesses[0].Name
-			}
-			if reviewRoute.Harness == "" && len(c.Harnesses) > 0 {
-				return nil, fmt.Errorf("routing stage review: fallback harness is required for seats without a harness override")
-			}
-			if reviewRoute.Harness != "" {
-				if _, ok := harnesses[reviewRoute.Harness]; ok {
-					c.Routing.Stages["review"] = reviewRoute
-				} else {
-					return nil, fmt.Errorf("routing stage review: unknown harness %q for fallback", reviewRoute.Harness)
-				}
-			}
-		}
-		// A stale fallback is intentionally not validated when every seat is
-		// explicit; it is retained only for compatibility (component-runtime).
-		c.Routing.Stages["review"] = reviewRoute
-	}
-	for _, stage := range []string{"spec", "implement", "review", "verify"} {
-		route := c.Routing.Stages[stage]
-		if route.Execution == ExecutionMCP && c.Execution.FirstActivityTimeout >= route.Timeout {
-			return nil, fmt.Errorf("execution.first_activity_timeout must be shorter than %s execution timeout", stageName(stage))
-		}
-	}
-	return finishNormalization(c, requestedPlanning)
 }
 
 // normalizeDeploymentScalars validates and defaults the settings that the
@@ -2010,10 +1618,7 @@ func (c *Config) WorkspaceDocument() WorkspaceDocument {
 		WorkOrderQueueTimeoutText: c.WorkOrderQueueTimeoutText,
 		ExecutionSettings:         executionSettings,
 		Routing:                   Routing{Stages: make(map[string]StageRoute, len(c.Routing.Stages))},
-		Harnesses:                 append(make([]Harness, 0, len(c.Harnesses)), c.Harnesses...),
 		Review:                    ReviewPanel{Seats: reviewSeats, FailFast: c.Review.FailFast},
-		Setups:                    append([]ExecutionSetup(nil), c.Setups...),
-		DefaultSetup:              c.DefaultSetup,
 		Execution:                 execution,
 		Repos:                     append(make([]Repo, 0, len(c.Repos)), c.Repos...),
 		Monitor:                   c.Monitor,
@@ -2032,7 +1637,6 @@ func (c *Config) WorkspaceDocument() WorkspaceDocument {
 	document.Monitor.Repositories = append(make([]string, 0, len(c.Monitor.Repositories)), c.Monitor.Repositories...)
 	for stage, route := range c.Routing.Stages {
 		route.Timeout = 0
-		route.EffectiveModel = ""
 		route.LegacyHarnesses = nil
 		route.LegacyModelTier = ""
 		document.Routing.Stages[stage] = route
@@ -2047,9 +1651,6 @@ func (c *Config) PolicyDocument() WorkspaceDocument {
 	document := c.WorkspaceDocument()
 	document.ExecutionSettings = nil
 	document.Routing = Routing{}
-	document.Harnesses = nil
-	document.Setups = nil
-	document.DefaultSetup = ""
 	document.PlanningModels = nil
 	document.Execution.VerifyConcurrency = 0
 	document.Execution.FirstActivityTimeout = 0
@@ -2060,90 +1661,63 @@ func (c *Config) PolicyDocument() WorkspaceDocument {
 	return document
 }
 
-// FreezePolicy projects the current default policy into the legacy task
-// contract carrier without retaining execution selection or routing detail.
-func (c *Config) FreezePolicy() ExecutionSetup {
+// FreezePolicy projects the current workspace policy into a task's frozen
+// policy contract without retaining execution selection or routing detail.
+func (c *Config) FreezePolicy() PolicyContract {
 	verifyTimeout := c.Routing.Stages["verify"].TimeoutText
 	if verifyTimeout == "" {
 		verifyTimeout = "1h"
 	}
-	setup, ok := c.Setup("")
+	policy, ok := c.DefaultPolicy()
 	if !ok {
-		setup.ExecutionSettings.Spec.TimeoutText = c.Routing.Stages["spec"].TimeoutText
-		setup.ExecutionSettings.Implementation.TimeoutText = c.Routing.Stages["implement"].TimeoutText
-		setup.ExecutionSettings.Review.TimeoutText = c.Routing.Stages["review"].TimeoutText
-		setup.Review = c.Review
-		setup.RefreshReview = RefreshReviewDelta
+		policy.StageTimeouts.Spec = c.Routing.Stages["spec"].TimeoutText
+		policy.StageTimeouts.Implement = c.Routing.Stages["implement"].TimeoutText
+		policy.StageTimeouts.Review = c.Routing.Stages["review"].TimeoutText
+		policy.Review = c.Review
+		policy.RefreshReview = RefreshReviewDelta
 	}
-	return ExecutionSetup{
+	return PolicyContract{
 		VerifyStage: c.Execution.VerifyStage,
 		MaxBounces:  c.MaxBounces,
-		ExecutionSettings: ContextualExecutionSettings{
-			Verify:         ImplementationSettings{TimeoutText: verifyTimeout},
-			Spec:           ImplementationSettings{TimeoutText: setup.ExecutionSettings.Spec.TimeoutText},
-			Implementation: ImplementationSettings{TimeoutText: setup.ExecutionSettings.Implementation.TimeoutText},
-			Review:         ReviewExecutionSettings{TimeoutText: setup.ExecutionSettings.Review.TimeoutText},
+		StageTimeouts: PolicyStageTimeouts{
+			Verify:    verifyTimeout,
+			Spec:      policy.StageTimeouts.Spec,
+			Implement: policy.StageTimeouts.Implement,
+			Review:    policy.StageTimeouts.Review,
 		},
-		// Fail-fast is workspace review policy, never setup execution detail.
-		Review:        ReviewPanel{Seats: make([]ReviewSeat, len(setup.Review.Seats)), FailFast: c.Review.FailFast},
-		RefreshReview: setup.RefreshReview,
+		// Fail-fast is workspace review policy.
+		Review:        ReviewPanel{Seats: make([]ReviewSeat, len(policy.Review.Seats)), FailFast: c.Review.FailFast},
+		RefreshReview: policy.RefreshReview,
 	}
 }
 
-// Setup resolves a configured setup by name, defaulting an empty selector to
-// the workspace default. Unknown explicit names never fall back (component-runtime).
-func (c *Config) Setup(name string) (ExecutionSetup, bool) {
-	name = strings.TrimSpace(name)
-	if name == "" {
-		name = c.DefaultSetup
-		if name == "" && len(c.Setups) == 0 {
-			name = "default"
-		}
+// DefaultPolicy derives the workspace default policy that a planning bundle
+// member carries: the composed stage timeouts, the workspace review panel,
+// and delta refresh review. It reports false when the value holds neither
+// execution settings nor stage routes (component-runtime; component-planning).
+func (c *Config) DefaultPolicy() (PolicyContract, bool) {
+	settings := c.ExecutionSettings
+	if settings == nil && len(c.Routing.Stages) != 0 {
+		settings = contextualExecutionSettings(c.Routing)
 	}
-	for _, setup := range c.Setups {
-		if setup.Name == name {
-			return setup, true
-		}
+	if settings == nil {
+		return PolicyContract{}, false
 	}
-	if len(c.Setups) == 0 && name == "default" {
-		settings := c.ExecutionSettings
-		if settings == nil && len(c.Routing.Stages) != 0 {
-			settings = contextualExecutionSettings(c.Routing)
-		}
-		if settings != nil {
-			return ExecutionSetup{Name: "default", ExecutionSettings: *settings, Review: c.Review, RefreshReview: RefreshReviewDelta}, true
-		}
-	}
-	return ExecutionSetup{}, false
-}
-
-// WithSetup returns the existing normalized config projected through one
-// already-normalized setup. It is used for task-frozen dispatch and health
-// calculations without consulting the mutable setup name again.
-func (c *Config) WithSetup(setup ExecutionSetup) *Config {
-	next := *c
-	if setup.MaxBounces > 0 {
-		next.MaxBounces = setup.MaxBounces
-	}
-	next.Setups = []ExecutionSetup{setup}
-	next.DefaultSetup = setup.Name
-	next.ExecutionSettings = &next.Setups[0].ExecutionSettings
-	next.Review = ReviewPanel{Seats: setup.Review.Seats, FailFast: c.Review.FailFast}
-	next.Routing = Routing{Stages: make(map[string]StageRoute, 4)}
-	applyContextualExecutionSettings(&next)
-	for stage, route := range next.Routing.Stages {
-		route.Timeout, _ = time.ParseDuration(route.TimeoutText)
-		if stage == "implement" || stage == "verify" {
-			route.EffectiveModel, _ = normalizeHarnessModel(route, next.Harnesses)
-		}
-		next.Routing.Stages[stage] = route
-	}
-	return &next
+	return PolicyContract{
+		StageTimeouts: PolicyStageTimeouts{
+			Spec:      settings.Spec.TimeoutText,
+			Implement: settings.Implementation.TimeoutText,
+			Review:    settings.Review.TimeoutText,
+			Verify:    settings.Verify.TimeoutText,
+		},
+		Review:        c.Review,
+		RefreshReview: RefreshReviewDelta,
+	}, true
 }
 
 // WithPolicy overlays a task's frozen pipeline policy without replacing the
-// deployment's control-plane routes or a client's local execution detail.
-func (c *Config) WithPolicy(policy ExecutionSetup) *Config {
+// deployment's control-plane routes.
+func (c *Config) WithPolicy(policy PolicyContract) *Config {
 	next := *c
 	next.Execution.VerifyStage = policy.VerifyStage
 	if policy.MaxBounces > 0 {
@@ -2154,10 +1728,10 @@ func (c *Config) WithPolicy(policy ExecutionSetup) *Config {
 		next.Routing.Stages[stage] = route
 	}
 	timeouts := map[string]string{
-		"verify":    policy.ExecutionSettings.Verify.TimeoutText,
-		"spec":      policy.ExecutionSettings.Spec.TimeoutText,
-		"implement": policy.ExecutionSettings.Implementation.TimeoutText,
-		"review":    policy.ExecutionSettings.Review.TimeoutText,
+		"verify":    policy.StageTimeouts.Verify,
+		"spec":      policy.StageTimeouts.Spec,
+		"implement": policy.StageTimeouts.Implement,
+		"review":    policy.StageTimeouts.Review,
 	}
 	for stage, timeout := range timeouts {
 		if timeout == "" {
@@ -2180,152 +1754,6 @@ func (c *Config) WithPolicy(policy ExecutionSetup) *Config {
 	// The frozen value always wins over the workspace's current setting.
 	next.Review.FailFast = policy.Review.FailFast
 	return &next
-}
-
-func (c *Config) EffectiveModel(stage string) string {
-	route := c.Routing.Stages[stage]
-	if route.EffectiveModel != "" || route.ModelPolicy == ModelPolicyHarnessDefault {
-		return route.EffectiveModel
-	}
-	return route.Model
-}
-
-func validateHarness(h Harness, index int) error {
-	field := func(name string, values []string, allowed map[string]bool) (map[string]int, error) {
-		counts := map[string]int{}
-		for _, value := range values {
-			if !strings.Contains(value, "{") && !strings.Contains(value, "}") {
-				continue
-			}
-			if !allowed[value] {
-				return nil, fmt.Errorf("harnesses[%d].%s: placeholder %q is not allowed as a whole argv element", index, name, value)
-			}
-			counts[value]++
-		}
-		return counts, nil
-	}
-	if len(h.Command) == 0 {
-		return fmt.Errorf("harnesses[%d].command is required", index)
-	}
-	if h.MCPTransport != MCPTransportJSONFile && h.MCPTransport != MCPTransportTOMLOverride && h.MCPTransport != MCPTransportEnvironment {
-		return fmt.Errorf("harnesses[%d].mcp_transport must be %q, %q, or %q", index, MCPTransportJSONFile, MCPTransportTOMLOverride, MCPTransportEnvironment)
-	}
-	counts, err := field("command", h.Command, map[string]bool{"{prompt}": true, "{mcp_config}": true})
-	if err != nil {
-		return err
-	}
-	if counts["{prompt}"] != 1 {
-		return fmt.Errorf("harnesses[%d].command must contain exactly one {prompt}", index)
-	}
-	if len(h.ResumeCommand) > 0 {
-		resumeCounts, resumeErr := field("resume_command", h.ResumeCommand, map[string]bool{"{session_id}": true})
-		if resumeErr != nil {
-			return resumeErr
-		}
-		if resumeCounts["{session_id}"] != 1 {
-			return fmt.Errorf("harnesses[%d].resume_command must contain exactly one {session_id}", index)
-		}
-	}
-	if h.MCPTransport == MCPTransportEnvironment {
-		if counts["{mcp_config}"] != 0 {
-			return fmt.Errorf("harnesses[%d].command must not contain {mcp_config} for environment transport", index)
-		}
-		if !mcpAttachmentPattern.MatchString(h.MCPAttachment) {
-			return fmt.Errorf("harnesses[%d].mcp_attachment must be a non-secret MCP server name for environment transport", index)
-		}
-		if environmentHarnessContainsRuntimeValue(h) {
-			return fmt.Errorf("harnesses[%d] environment transport fields must not contain runtime Conveyor credentials or addresses", index)
-		}
-	} else {
-		if counts["{mcp_config}"] != 1 {
-			return fmt.Errorf("harnesses[%d].command must contain exactly one {mcp_config} for %s transport", index, h.MCPTransport)
-		}
-		if h.MCPAttachment != "" {
-			return fmt.Errorf("harnesses[%d].mcp_attachment is only valid for environment transport", index)
-		}
-	}
-	if _, err = field("model_args", h.ModelArgs, map[string]bool{"{model}": true}); err != nil {
-		return err
-	}
-	if _, err = field("default_model_sentinels", h.DefaultModelSentinels, map[string]bool{}); err != nil {
-		return err
-	}
-	for effort, values := range h.EffortArgs {
-		if !validEffort(effort) {
-			return fmt.Errorf("harnesses[%d].effort_args contains unsupported effort %q", index, effort)
-		}
-		if len(values) == 0 {
-			return fmt.Errorf("harnesses[%d].effort_args.%s must contain at least one argv element", index, effort)
-		}
-		if _, err = field("effort_args."+effort, values, map[string]bool{}); err != nil {
-			return err
-		}
-	}
-	if len(h.ProbeCommand) == 0 {
-		return fmt.Errorf("harnesses[%d].probe_command is required", index)
-	}
-	if _, err = field("probe_command", h.ProbeCommand, map[string]bool{}); err != nil {
-		return err
-	}
-	parsed, parseErr := time.ParseDuration(h.ProbeTimeoutText)
-	if parseErr != nil || parsed <= 0 {
-		return fmt.Errorf("harnesses[%d].probe_timeout must be a positive duration", index)
-	}
-	if h.StallTimeoutText != "" {
-		parsed, parseErr = time.ParseDuration(h.StallTimeoutText)
-		if parseErr != nil || parsed < 0 || parsed == 0 && strings.TrimSpace(h.StallTimeoutText) != "0" {
-			return fmt.Errorf("harnesses[%d].stall_timeout must be 0 to disable or a positive duration", index)
-		}
-	}
-	return nil
-}
-
-// ValidateHarness applies the same transport-aware durable contract to worker
-// snapshots immediately before probing or launch (component-runtime).
-func ValidateHarness(h Harness) error {
-	return validateHarness(h, 0)
-}
-
-func environmentHarnessContainsRuntimeValue(h Harness) bool {
-	forbidden := func(value string) bool {
-		upper := strings.ToUpper(value)
-		if strings.Contains(upper, "CONVEYOR_ADDR") ||
-			strings.Contains(upper, "CONVEYOR_API_TOKEN") ||
-			strings.Contains(upper, "CONVEYOR_SESSION_ID") ||
-			strings.Contains(upper, "CONVEYOR_CLIENT_TOKEN") ||
-			strings.Contains(upper, "BEARER ") {
-			return true
-		}
-		parsed, err := url.Parse(value)
-		if err != nil || parsed.Scheme == "" || parsed.Host == "" {
-			return false
-		}
-		if parsed.User != nil {
-			return true
-		}
-		for name := range parsed.Query() {
-			name = strings.ToUpper(name)
-			if strings.Contains(name, "TOKEN") || strings.Contains(name, "SECRET") || strings.Contains(name, "KEY") || strings.Contains(name, "AUTH") {
-				return true
-			}
-		}
-		return false
-	}
-	if forbidden(h.MCPAttachment) {
-		return true
-	}
-	groups := [][]string{h.Command, h.ResumeCommand, h.ModelArgs, h.DefaultModelSentinels, h.ProbeCommand}
-	for _, args := range h.EffortArgs {
-		groups = append(groups, args)
-	}
-	for _, values := range groups {
-		for _, value := range values {
-			if forbidden(value) {
-				return true
-			}
-		}
-	}
-	return false
 }
 
 func validEffort(effort string) bool {

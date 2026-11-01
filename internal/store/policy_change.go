@@ -54,10 +54,10 @@ func PlanTaskPolicyChange(task core.Task, orders []core.WorkOrder, r SetupChange
 		r.Setup.VerifyStage = *r.Policy.VerifyStage
 	}
 	if value, ok := r.Policy.StageTimeouts["verify"]; ok {
-		r.Setup.ExecutionSettings.Verify.TimeoutText = strings.TrimSpace(value)
+		r.Setup.StageTimeouts.Verify = strings.TrimSpace(value)
 	}
-	if r.Setup.ExecutionSettings.Verify.TimeoutText == "" {
-		r.Setup.ExecutionSettings.Verify.TimeoutText = "1h"
+	if r.Setup.StageTimeouts.Verify == "" {
+		r.Setup.StageTimeouts.Verify = "1h"
 	}
 	r.ReviewTransition = "policy_only"
 	r.NextStage = task.NextStage
@@ -79,7 +79,7 @@ func PlanTaskPolicyChange(task core.Task, orders []core.WorkOrder, r SetupChange
 	if target == task.NextStage {
 		for _, order := range orders {
 			if order.Stage == core.StageVerify && order.State == core.WorkOrderQueued {
-				order.ExecutionTimeoutText = r.Setup.ExecutionSettings.Verify.TimeoutText
+				order.ExecutionTimeoutText = r.Setup.StageTimeouts.Verify
 				r.WorkOrderUpdates = append(r.WorkOrderUpdates, order)
 			}
 		}
@@ -128,7 +128,7 @@ func PlanTaskPolicyChange(task core.Task, orders []core.WorkOrder, r SetupChange
 	r.NextStage, r.ReviewTransition = target, "policy_handoff"
 	now := time.Now().UTC()
 	count := 1
-	timeout := r.Setup.ExecutionSettings.Verify.TimeoutText
+	timeout := r.Setup.StageTimeouts.Verify
 	if target == core.StageReview {
 		minimum := ReviewSeatMinimum(r.Setup, r.WorkspaceReviewSeats)
 		resolved := ResolveReviewRoundSeats(ReviewRoundSeatInputsFor(minimum, reviewRound, orders, seats.Events, seats.Records, seats.PlannedSeatCount))
@@ -137,7 +137,7 @@ func PlanTaskPolicyChange(task core.Task, orders []core.WorkOrder, r SetupChange
 		}
 		count = resolved.SeatCount
 		r.ReviewRoundSeats = &resolved
-		timeout = r.Setup.ExecutionSettings.Review.TimeoutText
+		timeout = r.Setup.StageTimeouts.Review
 		r.ResultingReviewRound = reviewRound
 	}
 	for seat := 1; seat <= count; seat++ {

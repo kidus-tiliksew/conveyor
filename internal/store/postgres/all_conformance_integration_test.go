@@ -251,6 +251,18 @@ func TestPostgresConformanceIntegration(t *testing.T) {
 				}
 			}, SeedEvents: func(t *testing.T, ctx context.Context, base int64, events []core.Event) []core.Event {
 				return postgresSeedEvents(t, st, ctx, base, events)
+			}, SeedWorkspaceConfigYAML: func(t *testing.T, ctx context.Context, raw string) {
+				// A row an earlier release wrote; the version is unchanged.
+				tag, err := st.pool.Exec(ctx, `UPDATE workspaces SET config_yaml=$1 WHERE id=$2`, raw, workspace)
+				if err != nil || tag.RowsAffected() != 1 {
+					t.Fatalf("seed workspace config: rows=%d err=%v", tag.RowsAffected(), err)
+				}
+			}, WorkspaceConfigYAML: func(t *testing.T, ctx context.Context) string {
+				var raw string
+				if err := st.pool.QueryRow(ctx, `SELECT config_yaml FROM workspaces WHERE id=$1`, workspace).Scan(&raw); err != nil {
+					t.Fatal(err)
+				}
+				return raw
 			}, SeedSetupContract: func(t *testing.T, ctx context.Context, taskID, raw string) {
 				if _, err := st.pool.Exec(ctx, `UPDATE tasks SET setup_contract=$1::jsonb WHERE workspace_id=$2 AND id=$3`, raw, workspace, taskID); err != nil {
 					t.Fatal(err)

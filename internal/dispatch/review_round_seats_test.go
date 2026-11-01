@@ -33,7 +33,7 @@ func TestResolveReviewRoundSeats(t *testing.T) {
 	superseded := core.Event{Kind: "task.setup.changed", Payload: core.JSONPayload(map[string]any{"review_transition": map[string]any{"superseded_work_order_ids": []string{"review-1-seat-3"}}})}
 	for _, tc := range []struct {
 		name      string
-		setup     config.ExecutionSetup
+		setup     config.PolicyContract
 		workspace int
 		round     int
 		orders    []core.WorkOrder
@@ -46,8 +46,8 @@ func TestResolveReviewRoundSeats(t *testing.T) {
 		floor     int
 		impl      string
 	}{
-		{name: "Minimum", setup: config.ExecutionSetup{Review: config.ReviewPanel{Seats: make([]config.ReviewSeat, 2)}}, round: 1, count: 2, source: store.ReviewSeatSourceMinimum, minimum: 2, floor: 2},
-		{name: "ZeroSeatPolicy", setup: config.ExecutionSetup{Review: config.ReviewPanel{Seats: []config.ReviewSeat{}}}, workspace: 3, round: 1, count: 1, source: store.ReviewSeatSourceMinimum, minimum: 1, floor: 1},
+		{name: "Minimum", setup: config.PolicyContract{Review: config.ReviewPanel{Seats: make([]config.ReviewSeat, 2)}}, round: 1, count: 2, source: store.ReviewSeatSourceMinimum, minimum: 2, floor: 2},
+		{name: "ZeroSeatPolicy", setup: config.PolicyContract{Review: config.ReviewPanel{Seats: []config.ReviewSeat{}}}, workspace: 3, round: 1, count: 1, source: store.ReviewSeatSourceMinimum, minimum: 1, floor: 1},
 		{name: "WorkspaceMinimumWithoutFrozenSeats", workspace: 3, round: 1, count: 3, source: store.ReviewSeatSourceMinimum, minimum: 3, floor: 3},
 		{name: "Planned", workspace: 2, round: 1, planned: seats(4), count: 4, source: store.ReviewSeatSourcePlanned, minimum: 2, floor: 4},
 		{name: "Declared", workspace: 2, round: 1, planned: seats(3),
@@ -74,7 +74,7 @@ func TestResolveReviewRoundSeats(t *testing.T) {
 		{name: "PreviousBelowPlannedFloor", workspace: 2, round: 2, orders: seatOrders(1, 2), planned: seats(4),
 			records: []store.ReviewRoundSeats{{TaskID: "task", ReviewRound: 1, SeatCount: 2, SeatCountSource: store.ReviewSeatSourceMinimum, MinimumSeatCount: 2}},
 			count:   4, source: store.ReviewSeatSourcePlanned, minimum: 2, floor: 4},
-		{name: "PreviousBelowMinimum", setup: config.ExecutionSetup{Review: config.ReviewPanel{Seats: make([]config.ReviewSeat, 3)}}, round: 2, orders: seatOrders(1, 1), count: 3, source: store.ReviewSeatSourceMinimum, minimum: 3, floor: 3},
+		{name: "PreviousBelowMinimum", setup: config.PolicyContract{Review: config.ReviewPanel{Seats: make([]config.ReviewSeat, 3)}}, round: 2, orders: seatOrders(1, 1), count: 3, source: store.ReviewSeatSourceMinimum, minimum: 3, floor: 3},
 		{name: "CarryAtFloor", workspace: 2, round: 2, orders: seatOrders(1, 4), planned: seats(4), count: 4, source: store.ReviewSeatSourceCarried, minimum: 2, floor: 4},
 		{name: "NoPlanCount", workspace: 2, round: 2, orders: seatOrders(1, 1), count: 2, source: store.ReviewSeatSourceMinimum, minimum: 2, floor: 2},
 	} {
@@ -113,7 +113,7 @@ func TestBuildReviewRoundRejectsBelowFloor(t *testing.T) {
 func TestBuildReviewRoundBeyondConfiguredSeats(t *testing.T) {
 	cfg := &config.Config{WorkOrderQueueTimeout: time.Hour, Review: config.ReviewPanel{Seats: []config.ReviewSeat{{Harness: "codex", Model: "pinned", Effort: "high"}}},
 		Routing: config.Routing{Stages: map[string]config.StageRoute{"review": {Execution: config.ExecutionMCP, TimeoutText: "45m", Harness: "codex", Model: "route"}}}}
-	task := core.Task{ID: "beyond", SetupContract: config.ExecutionSetup{Review: config.ReviewPanel{Seats: make([]config.ReviewSeat, 1)}}}
+	task := core.Task{ID: "beyond", SetupContract: config.PolicyContract{Review: config.ReviewPanel{Seats: make([]config.ReviewSeat, 1)}}}
 	jobs, orders, err := BuildReviewRound(cfg, task, config.StageRoute{TimeoutText: "45m", Harness: "codex", Model: "route"}, 2, 3, 1)
 	if err != nil || len(jobs) != 3 || len(orders) != 3 {
 		t.Fatalf("jobs=%+v orders=%+v err=%v", jobs, orders, err)
@@ -137,7 +137,7 @@ func TestDispatcherOpensResolvedReviewRound(t *testing.T) {
 	st := store.NewMemory()
 	task := core.Task{ID: "dispatch-seats", Workspace: "demo", Repo: "api", Title: "Review seats", PolicyVersion: 1, State: core.TaskQueued, NextStage: core.StageReview,
 		Branch: "conveyor/task-dispatch-seats", BaseBranch: "main", CreatedAt: time.Now(),
-		SetupContract: config.ExecutionSetup{Review: config.ReviewPanel{Seats: make([]config.ReviewSeat, 1)}, ExecutionSettings: config.ContextualExecutionSettings{Review: config.ReviewExecutionSettings{TimeoutText: "45m"}}}}
+		SetupContract: config.PolicyContract{Review: config.ReviewPanel{Seats: make([]config.ReviewSeat, 1)}, StageTimeouts: config.PolicyStageTimeouts{Review: "45m"}}}
 	if err := st.CreateTask(ctx, task); err != nil {
 		t.Fatal(err)
 	}

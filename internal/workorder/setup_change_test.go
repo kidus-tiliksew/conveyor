@@ -19,8 +19,8 @@ func policyChangeFixture(t *testing.T) (*Service, store.Store, context.Context, 
 	t.Helper()
 	ctx := store.WithActor(store.WithWorkspace(context.Background(), "demo"), store.Actor{ID: "operator", Role: core.ActorHuman})
 	st := store.NewMemory()
-	contract := config.ExecutionSetup{Name: "legacy", VerifyStage: true, MaxBounces: 3, Review: config.ReviewPanel{Seats: []config.ReviewSeat{{}, {}}},
-		ExecutionSettings: config.ContextualExecutionSettings{Verify: config.ImplementationSettings{TimeoutText: "1h"}, Review: config.ReviewExecutionSettings{TimeoutText: "45m"}}}
+	contract := config.PolicyContract{VerifyStage: true, MaxBounces: 3, Review: config.ReviewPanel{Seats: []config.ReviewSeat{{}, {}}},
+		StageTimeouts: config.PolicyStageTimeouts{Verify: "1h", Review: "45m"}}
 	now := time.Now().UTC()
 	task := core.Task{ID: "policy-change", Workspace: "demo", Repo: "app", State: core.TaskRunning, NextStage: core.StageImplement, ReviewedHeadSHA: "head", SetupName: "legacy", SetupContract: contract, CreatedAt: now}
 	if err := st.CreateTask(ctx, task); err != nil {
@@ -66,7 +66,7 @@ func TestChangeTaskPolicyHandsSubmittedImplementationToEveryReviewSeat(t *testin
 		len(result.CreatedWorkOrders) != 2 || len(result.SupersededWorkOrders) != 1 || result.SupersededWorkOrders[0] != verify.ID {
 		t.Fatalf("result=%+v", result)
 	}
-	if result.Task.SetupName != "legacy" || result.Task.SetupContract.Name != "legacy" {
+	if result.Task.SetupName != "legacy" {
 		t.Fatalf("policy change selected an execution setup: %+v", result.Task)
 	}
 	for seat, id := range result.CreatedWorkOrders {
@@ -114,7 +114,7 @@ func TestChangeTaskPolicyUpdatesQueuedVerifyTimeoutOnly(t *testing.T) {
 		t.Fatal(err)
 	}
 	if result.ReviewTransition != "policy_only" || result.Task.NextStage != core.StageVerify || len(result.CreatedWorkOrders) != 0 ||
-		len(result.UpdatedWorkOrders) != 1 || result.UpdatedWorkOrders[0] != verify.ID || result.Task.SetupContract.ExecutionSettings.Verify.TimeoutText != "2h" {
+		len(result.UpdatedWorkOrders) != 1 || result.UpdatedWorkOrders[0] != verify.ID || result.Task.SetupContract.StageTimeouts.Verify != "2h" {
 		t.Fatalf("result=%+v", result)
 	}
 	updated, _ := st.GetWorkOrder(ctx, verify.ID)
