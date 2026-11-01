@@ -47,9 +47,10 @@ type GitHubFallback struct {
 	// Logf writes error-level lines; nil uses log.Printf.
 	Logf func(string, ...any)
 	// Stepped, when set, is called after the goroutine of a workspace
-	// handles its start, a notice, or a fire, with whether its timer is
-	// armed and when it is due. Tests wait on it instead of sleeping.
-	Stepped func(workspace string, armed bool, due time.Time)
+	// handles an event (start, task, settings, fire, or delivered), with
+	// whether its timer is armed and when it is due. Tests wait on it
+	// instead of sleeping.
+	Stepped func(workspace, event string, armed bool, due time.Time)
 
 	mu      sync.Mutex
 	workers map[string]*fallbackWorker
@@ -164,22 +165,27 @@ func (f *GitHubFallback) run(ctx context.Context, workspace string, worker *fall
 	st := &fallbackState{}
 	defer st.disarm()
 	f.begin(ctx, workspace, st)
-	f.stepped(workspace, st)
+	f.stepped(workspace, "start", st)
 	for {
+		var event string
 		select {
 		case <-ctx.Done():
 			return
 		case <-worker.delivered:
+			event = "delivered"
 			st.webhook = true
 			st.disarm()
 		case notice := <-tasks.C():
+			event = "task"
 			f.onTask(ctx, workspace, st, notice)
 		case <-settings.C():
+			event = "settings"
 			f.onSettings(ctx, workspace, st)
 		case <-st.timer:
+			event = "fire"
 			f.fire(ctx, workspace, st)
 		}
-		f.stepped(workspace, st)
+		f.stepped(workspace, event, st)
 	}
 }
 
@@ -426,9 +432,9 @@ func (f *GitHubFallback) pollMonitor(ctx context.Context, workspace string) {
 	}
 }
 
-func (f *GitHubFallback) stepped(workspace string, st *fallbackState) {
+func (f *GitHubFallback) stepped(workspace, event string, st *fallbackState) {
 	if f.Stepped != nil {
-		f.Stepped(workspace, st.armed, st.due)
+		f.Stepped(workspace, event, st.armed, st.due)
 	}
 }
 

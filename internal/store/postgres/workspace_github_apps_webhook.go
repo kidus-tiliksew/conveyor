@@ -108,7 +108,7 @@ func (s *Store) RecordGitHubWebhookDelivery(ctx context.Context, id, deliveryID,
 	if err := store.ValidateGitHubWebhookDelivery(id, deliveryID, event); err != nil {
 		return false, translateBackendConflict(err)
 	}
-	tag, err := s.boundary.Exec(ctx, `INSERT INTO github_webhook_deliveries (workspace_id,delivery_id,event,received_at) SELECT id,$2,$3,$4 FROM workspaces WHERE id=$1 ON CONFLICT (workspace_id,delivery_id) DO NOTHING`, id, deliveryID, event, receivedAt.UTC().Truncate(time.Microsecond))
+	tag, err := s.boundary.Exec(ctx, `INSERT INTO github_webhook_deliveries (workspace_id,delivery_id,event,received_at) SELECT id,$2::text,$3::text,$4::timestamptz FROM workspaces WHERE id=$1 ON CONFLICT (workspace_id,delivery_id) DO NOTHING`, id, deliveryID, event, receivedAt.UTC().Truncate(time.Microsecond))
 	if err != nil {
 		return false, translateBackendConflict(err)
 	}

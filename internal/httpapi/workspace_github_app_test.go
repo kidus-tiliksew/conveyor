@@ -87,7 +87,7 @@ func TestWorkspaceGitHubAppHTTPFlow(t *testing.T) {
 		switch r.URL.Path {
 		case "/app-manifests/code/conversions":
 			conversions++
-			_ = json.NewEncoder(w).Encode(map[string]any{"id": 41, "slug": "conveyor-alpha", "client_id": "client", "pem": private})
+			_ = json.NewEncoder(w).Encode(map[string]any{"id": 41, "slug": "conveyor-alpha", "client_id": "client", "pem": private, "webhook_secret": "conversion-webhook-secret-from-github"})
 		case "/app/installations/12":
 			fmt.Fprint(w, `{"id":12,"app_id":41,"account":{"login":"org"}}`)
 		case "/app/installations/99":
@@ -117,7 +117,7 @@ func TestWorkspaceGitHubAppHTTPFlow(t *testing.T) {
 		}
 		w := httptest.NewRecorder()
 		server.Handler().ServeHTTP(w, r)
-		if strings.Contains(w.Body.String(), private) || strings.Contains(w.Body.String(), "http-installation-private-token") {
+		if strings.Contains(w.Body.String(), private) || strings.Contains(w.Body.String(), "http-installation-private-token") || strings.Contains(w.Body.String(), "conversion-webhook-secret-from-github") {
 			t.Fatal("HTTP response contains app secret")
 		}
 		return w
@@ -232,6 +232,11 @@ func TestWorkspaceGitHubAppHTTPFlow(t *testing.T) {
 	setupState := installationURL.Query().Get("state")
 	if got := call("GET", callback, "session-a", "", false); got.Code != 400 || conversions != 1 {
 		t.Fatal("callback replay")
+	}
+	// The callback stores the webhook secret GitHub's conversion returned
+	// (component-identity-membership, The webhook secret).
+	if secret, err := st.GetWorkspaceGitHubWebhookSecretForUse(t.Context(), "alpha"); err != nil || secret != "conversion-webhook-secret-from-github" {
+		t.Fatalf("conversion webhook secret not stored: err=%v", err)
 	}
 	if got := call("GET", "/setup?installation_id=99&setup_action=install&state="+setupState, "session-a", "", false); got.Code != 422 {
 		t.Fatal("foreign app installation accepted")
