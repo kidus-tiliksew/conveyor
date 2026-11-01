@@ -2,12 +2,15 @@ package dispatch
 
 import (
 	"context"
+	"errors"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/kidus-tiliksew/conveyor/internal/changes"
 	"github.com/kidus-tiliksew/conveyor/internal/config"
 	"github.com/kidus-tiliksew/conveyor/internal/core"
+	"github.com/kidus-tiliksew/conveyor/internal/queue"
 	"github.com/kidus-tiliksew/conveyor/internal/queue/logqueue"
 	"github.com/kidus-tiliksew/conveyor/internal/store"
 	"github.com/kidus-tiliksew/conveyor/internal/store/storetest"
@@ -186,4 +189,77 @@ func TestDeadlineAlarmAppliesPublicationRetry(t *testing.T) {
 		return err == nil && current.State == core.ReviewPublicationRetrying
 	})
 	h.within("publication retry", due, at)
+}
+
+// housekeepingStore records the order clock handler's verification passes.
+type housekeepingStore struct {
+	store.Backend
+	claimErr, expiryErr error
+	expired             int
+	claimActor          store.Actor
+	expiryActor         store.Actor
+	expiryLimit         int
+	expiryBudget        time.Duration
+	calls               []string
+}
+
+func (s *housekeepingStore) ReconcileVerificationClaims(ctx context.Context) (int, error) {
+	s.calls = append(s.calls, "claims")
+	s.claimActor = store.ActorFromContext(ctx)
+	return 0, s.claimErr
+}
+
+func (s *housekeepingStore) ExpireVerificationChunks(ctx context.Context, limit int) (int, error) {
+	s.calls = append(s.calls, "chunks")
+	s.expiryActor, s.expiryLimit = store.ActorFromContext(ctx), limit
+	if deadline, ok := ctx.Deadline(); ok {
+		s.expiryBudget = time.Until(deadline)
+	}
+	return s.expired, s.expiryErr
+}
+
+// TestOrderClockReconcilesVerificationClaimsAndExpiresChunks: the order clock
+// handler runs claim-loss reconciliation, then chunk expiry, under the
+// verification-reconciler actor with the 100-row limit and a five-second
+// deadline; a claim error does not skip expiry; and a full page publishes a
+// deadline notice so the next fire drains the next page
+// (component-durable-queue, The deadline alarm).
+func TestOrderClockReconcilesVerificationClaimsAndExpiresChunks(t *testing.T) {
+	backend := store.NewVolatileBackend()
+	st := &housekeepingStore{Backend: backend, claimErr: errors.New("claims unavailable"), expired: store.VerificationChunkExpiryLimit}
+	notices := backend.Changes().Subscribe("test", changes.Deadline)
+	defer notices.Close()
+	clock := &orderClockWorker{dispatcher: New(st, &config.Config{Workspace: "test"}, nil)}
+	err := clock.Work(t.Context(), testJob(queue.OrderClockArgs{WorkspaceID: "test"}, 1, 1, 1))
+	if err == nil || !strings.Contains(err.Error(), "claims unavailable") {
+		t.Fatalf("handler err=%v, want the claim error", err)
+	}
+	if strings.Join(st.calls, ",") != "claims,chunks" {
+		t.Fatalf("calls=%v", st.calls)
+	}
+	reconciler := store.SystemActor("verification-reconciler")
+	if st.claimActor != reconciler || st.expiryActor != reconciler {
+		t.Fatalf("actors claims=%+v chunks=%+v", st.claimActor, st.expiryActor)
+	}
+	if st.expiryLimit != store.VerificationChunkExpiryLimit || st.expiryBudget <= 0 || st.expiryBudget > store.VerificationChunkExpiryBudget {
+		t.Fatalf("limit=%d budget=%s", st.expiryLimit, st.expiryBudget)
+	}
+	select {
+	case n := <-notices.C():
+		if n.Workspace != "test" || n.At.IsZero() {
+			t.Fatalf("full page notice=%+v", n)
+		}
+	default:
+		t.Fatal("a full expiry page published no deadline notice")
+	}
+
+	st.claimErr, st.expired, st.calls = nil, store.VerificationChunkExpiryLimit-1, nil
+	if err := clock.Work(t.Context(), testJob(queue.OrderClockArgs{WorkspaceID: "test"}, 2, 1, 1)); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case n := <-notices.C():
+		t.Fatalf("a partial page published %+v", n)
+	default:
+	}
 }

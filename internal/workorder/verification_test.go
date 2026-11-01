@@ -193,20 +193,3 @@ func TestVerificationMemberAndSealedReviewReads(t *testing.T) {
 		t.Fatalf("review write: %v", err)
 	}
 }
-
-// TestExpireVerificationChunksRequiresSystemActor keeps chunk expiry internal:
-// only a system caller reaches the store, and the store sees the
-// verification-reconciler actor (component-verification-evidence).
-func TestExpireVerificationChunksRequiresSystemActor(t *testing.T) {
-	s := &Service{Store: store.NewVolatileBackend()}
-	ctx := store.WithWorkspace(store.WithActor(t.Context(), store.SystemActor()), "demo")
-	for _, actor := range []store.Actor{{ID: "worker:w", Role: core.ActorWorker}, {ID: "owner", Role: core.ActorUser}} {
-		if _, err := s.ExpireVerificationChunks(store.WithActor(ctx, actor), store.VerificationChunkExpiryLimit); !errors.Is(err, store.ErrVerificationAccess) {
-			t.Fatalf("%+v reached chunk expiry: %v", actor, err)
-		}
-	}
-	n, err := s.ExpireVerificationChunks(store.WithActor(ctx, store.Actor{ID: "daemon", Role: core.ActorSystem}), store.VerificationChunkExpiryLimit)
-	if err != nil || n != 0 {
-		t.Fatalf("system expiry = %d, %v", n, err)
-	}
-}

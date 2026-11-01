@@ -80,6 +80,7 @@ func ParsePayload(payload string) (Notice, bool) {
 type Subscription struct {
 	hub       *Hub
 	workspace string
+	every     bool
 	kind      Kind
 	taskID    string
 	c         chan Notice
@@ -104,7 +105,7 @@ func (s *Subscription) matches(n Notice) bool {
 	if n.Kind != s.kind {
 		return false
 	}
-	if n.Workspace != "" && n.Workspace != s.workspace {
+	if !s.every && n.Workspace != "" && n.Workspace != s.workspace {
 		return false
 	}
 	if s.taskID == "" {
@@ -169,6 +170,13 @@ func NewHub() *Hub {
 // for every workspace.
 func (h *Hub) Subscribe(workspace string, kind Kind) *Subscription {
 	return h.add(&Subscription{workspace: workspace, kind: kind, c: make(chan Notice, 1)})
+}
+
+// SubscribeAll receives notices of one kind for every workspace. The
+// daemon's workspace registration watcher uses it to learn of workspaces a
+// peer created (component-runtime, Start-up checks and background loops).
+func (h *Hub) SubscribeAll(kind Kind) *Subscription {
+	return h.add(&Subscription{every: true, kind: kind, c: make(chan Notice, 1)})
 }
 
 // SubscribeTask receives the task's Task notices, including notices for

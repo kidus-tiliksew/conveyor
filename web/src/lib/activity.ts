@@ -329,6 +329,7 @@ export const noteEventKinds = [
   'review.refresh_round_created',
   'review.refresh_skipped',
   'dispatch.failed',
+  'drift.repaired',
   'job.log_stream_degraded',
   'task.state_changed',
   'task.dependency_added',
@@ -1447,6 +1448,15 @@ function noteContent(
         title: 'Dispatch failed',
         detail: typeof payload.error === 'string' ? payload.error : undefined,
         alarm: true,
+      }
+    case 'drift.repaired':
+      // A daemon start-up check repaired a mismatch (req-quiet-idle-runtime AC-4.1).
+      return {
+        title: 'Start-up check repaired drift',
+        detail:
+          typeof payload.mismatch === 'string' && typeof payload.repair === 'string'
+            ? `${payload.mismatch}: ${payload.repair}`
+            : undefined,
       }
     case 'job.log_stream_degraded':
       return { title: 'Live logs unavailable — the full transcript is still archived' }

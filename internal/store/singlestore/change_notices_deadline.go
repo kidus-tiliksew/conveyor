@@ -18,8 +18,9 @@ var _ store.DeadlineReader = (*Store)(nil)
 // deadlineFloor is the earliest bound NextDeadline sends.
 var deadlineFloor = time.Unix(0, 0).UTC()
 
-// nextDeadlineSQL reads, in one statement, the earliest work-order and
-// verification-delivery deadline after the bound time, every failed
+// nextDeadlineSQL reads, in one statement, the earliest work-order,
+// verification-delivery, and staging upload chunk expiry deadline after the
+// bound time, every failed
 // publication's last automatic re-enqueue, and the workspace document that
 // names the recovery window. Each branch mirrors store.WorkOrderDeadline.
 const nextDeadlineSQL = `
@@ -34,6 +35,8 @@ SELECT 'deadline' AS kind, MIN(d) AS at, CAST(NULL AS CHAR) AS config_yaml FROM 
 		WHERE workspace_id=? AND state IN ('queued','claimed','stale','timed_out') AND next_automatic_recovery_at > ?
 	UNION ALL SELECT next_attempt_at AS d FROM verification_publication_deliveries
 		WHERE workspace_id=? AND state='failed' AND next_attempt_at > ?
+	UNION ALL SELECT MIN(expires_at) AS d FROM verification_upload_chunks
+		WHERE workspace_id=? AND state='staging' AND expires_at > ?
 ) deadlines
 UNION ALL SELECT 'reenqueue' AS kind, automatic_reenqueue_at AS at, CAST(NULL AS CHAR) AS config_yaml FROM github_lifecycles
 	WHERE workspace_id=? AND state='failed' AND automatic_reenqueue_at IS NOT NULL
@@ -52,7 +55,7 @@ func (s *Store) NextDeadline(ctx context.Context, after time.Time) (time.Time, b
 	if bound.Before(deadlineFloor) {
 		bound = deadlineFloor
 	}
-	rows, err := documentRows(ctx, s.db, nextDeadlineSQL, ws, bound, ws, bound, ws, bound, ws, bound, ws, bound, ws, ws, ws)
+	rows, err := documentRows(ctx, s.db, nextDeadlineSQL, ws, bound, ws, bound, ws, bound, ws, bound, ws, bound, ws, bound, ws, ws, ws)
 	if err != nil {
 		return time.Time{}, false, err
 	}

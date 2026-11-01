@@ -260,7 +260,6 @@ func (m *volatileMemory) ReconcileBlueprintClosures(ctx context.Context) (int, e
 		return 0, err
 	}
 	m.mu.Lock()
-	defer m.mu.Unlock()
 	workspace := workspaceOrDefault(ctx, "")
 	var parents []core.Task
 	for _, task := range m.tasks {
@@ -274,13 +273,19 @@ func (m *volatileMemory) ReconcileBlueprintClosures(ctx context.Context) (int, e
 		}
 		return parents[i].ID < parents[j].ID
 	})
-	closed := 0
+	var closed []string
 	for _, parent := range parents {
 		if m.closeBlueprintParentLocked(ctx, parent.ID) {
-			closed++
+			closed = append(closed, parent.ID)
 		}
 	}
-	return closed, nil
+	m.mu.Unlock()
+	// Repairs are reported once the lock is released (component-persistence,
+	// Drift repair reports).
+	for _, id := range closed {
+		ReportDriftRepair(ctx, DriftBlueprintParentOpen.For(id))
+	}
+	return len(closed), nil
 }
 
 // Volatile dispatch uses the in-process queue and has no durable jobs to repair.

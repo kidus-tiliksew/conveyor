@@ -253,6 +253,7 @@ func (s *Store) ReconcileBlueprintClosures(ctx context.Context) (int, error) {
 		}
 		if closed {
 			n++
+			store.ReportDriftRepair(ctx, store.DriftBlueprintParentOpen.For(id))
 		}
 	}
 	return n, nil
@@ -264,7 +265,11 @@ func (s *Store) ReconcileQueuedTasks(ctx context.Context) (int, error) {
 		return 0, err
 	}
 	n := 0
+	// Repairs are reported after the transaction commits (component-persistence,
+	// Drift repair reports).
+	var enqueued []string
 	err = s.withTx(ctx, func(tx *sql.Tx) error {
+		enqueued = enqueued[:0]
 		if err := lockKey(ctx, tx, "queue-reconcile:"+ws); err != nil {
 			return err
 		}
@@ -298,18 +303,18 @@ func (s *Store) ReconcileQueuedTasks(ctx context.Context) (int, error) {
 			if err != nil {
 				return err
 			}
-			if !inserted {
-				continue
+			if inserted {
+				enqueued = append(enqueued, id)
 			}
-			if err = taskEvent(ctx, tx, core.Event{TaskID: id, Kind: "dispatch.reconciled", Payload: core.JSONPayload(map[string]string{"reason": "missing durable queue job"})}); err != nil {
-				return err
-			}
-			n++
 		}
 		return nil
 	})
 	if err != nil {
 		return n, err
+	}
+	for _, id := range enqueued {
+		n++
+		store.ReportDriftRepair(ctx, store.DriftQueuedTaskWithoutJob.For(id))
 	}
 	tasks, err := s.ListTasksFiltered(ctx, store.TaskFilter{States: []core.TaskState{core.TaskRunning}})
 	if err != nil {
@@ -332,6 +337,7 @@ func (s *Store) ReconcileQueuedTasks(ctx context.Context) (int, error) {
 				return n, err
 			}
 			n++
+			store.ReportDriftRepair(ctx, store.DriftRunningTaskJobDiscarded.For(t.ID))
 		}
 	}
 	return n, nil

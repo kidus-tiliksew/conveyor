@@ -96,7 +96,10 @@ func (s *Store) UpdateGitHubLifecycle(ctx context.Context, lifecycle core.GitHub
 }
 
 // ReconcileGitHubLifecycles repairs queued or retrying outbox rows whose job
-// is missing. A failed row is re-enqueued only by the bounded AR-5 sweep.
+// is missing. A failed row is re-enqueued only by the bounded AR-5 sweep. Only
+// a row whose job it enqueues is a repair; it is counted and reported to the
+// context's drift recorder after its transaction commits
+// (component-persistence, Drift repair reports).
 func (s *Store) ReconcileGitHubLifecycles(ctx context.Context) (int, error) {
 	rows, err := documentRows(ctx, s.db, `SELECT `+githubLifecycleColumns+` FROM github_lifecycles
 		WHERE workspace_id=? AND state IN ('queued','retrying') ORDER BY created_at`, documentWorkspace(ctx))
@@ -117,12 +120,18 @@ func (s *Store) ReconcileGitHubLifecycles(ctx context.Context) (int, error) {
 		return 0, err
 	}
 	rows.Close()
+	repaired := 0
 	for _, lifecycle := range pending {
-		if err = s.QueueGitHubLifecycle(ctx, lifecycle); err != nil {
-			return 0, err
+		inserted := false
+		if err = s.queueGitHubLifecycle(ctx, lifecycle, &inserted); err != nil {
+			return repaired, err
+		}
+		if inserted {
+			repaired++
+			store.ReportDriftRepair(ctx, store.DriftIssuePublicationWithoutJob.For(lifecycle.TaskID))
 		}
 	}
-	return len(pending), nil
+	return repaired, nil
 }
 
 func scanGitHubLifecycle(row interface{ Scan(...any) error }) (core.GitHubLifecycle, error) {
@@ -250,6 +259,7 @@ func (s *Store) ReconcileReviewPublications(ctx context.Context) (int, error) {
 			return created, err
 		}
 		created++
+		store.ReportDriftRepair(ctx, store.DriftReviewPublicationMissing.For(publication.TaskID))
 	}
 	for _, publication := range invalid {
 		repaired, repairErr := s.repairPublishedReviewPublication(ctx, publication)
@@ -258,6 +268,7 @@ func (s *Store) ReconcileReviewPublications(ctx context.Context) (int, error) {
 		}
 		if repaired {
 			created++
+			store.ReportDriftRepair(ctx, store.DriftReviewPublicationWithoutComment.For(publication.TaskID))
 		}
 	}
 	return created, nil
@@ -347,6 +358,12 @@ func (s *Store) enqueueGitHubIssuePublicationTx(ctx context.Context, tx *sql.Tx,
 	return logqueue.Enqueue(logTx(ctx, tx), s.log, documentWorkspace(ctx), queue.GitHubIssuePublicationArgs{}.Kind(), taskID, queue.GitHubIssuePublicationArgs{WorkspaceID: documentWorkspace(ctx), TaskID: taskID}, 5, time.Now().UTC())
 }
 func (s *Store) QueueGitHubLifecycle(ctx context.Context, p core.GitHubLifecycle) error {
+	return s.queueGitHubLifecycle(ctx, p, nil)
+}
+
+// queueGitHubLifecycle inserts the outbox row once and enqueues its job;
+// jobEnqueued, when set, reports whether a job event was appended.
+func (s *Store) queueGitHubLifecycle(ctx context.Context, p core.GitHubLifecycle, jobEnqueued *bool) error {
 	if err := store.NormalizeForgeAuthorProjectionForWrite(&p.ForgeAuthorClass, &p.ForgeAuthorUserID, core.ForgeAuthorWorkspace); err != nil {
 		return err
 	}
@@ -379,7 +396,10 @@ func (s *Store) QueueGitHubLifecycle(ctx context.Context, p core.GitHubLifecycle
 				return err
 			}
 		}
-		_, err := s.enqueueGitHubIssuePublicationTx(ctx, tx, p.TaskID)
+		inserted, err := s.enqueueGitHubIssuePublicationTx(ctx, tx, p.TaskID)
+		if jobEnqueued != nil {
+			*jobEnqueued = inserted
+		}
 		return err
 	})
 }

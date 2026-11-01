@@ -52,6 +52,7 @@ export const serverHumanTimelineEventKinds = [
   'review.refresh_round_created',
   'review.refresh_skipped',
   'dispatch.failed',
+  'drift.repaired',
   'job.log_stream_degraded',
   'pipeline.bounced',
   'task.state_changed',

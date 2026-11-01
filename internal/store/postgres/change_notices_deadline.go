@@ -15,8 +15,9 @@ import (
 
 var _ store.DeadlineReader = (*Store)(nil)
 
-// nextDeadlineSQL reads, in one statement, the earliest work-order and
-// verification-delivery deadline after $2, every failed publication's last
+// nextDeadlineSQL reads, in one statement, the earliest work-order,
+// verification-delivery, and staging upload chunk expiry deadline after $2
+// (the chunk branch uses verification_upload_chunks_expiry), every failed publication's last
 // automatic re-enqueue, and the workspace document that names the recovery
 // window those re-enqueues wait for. Each branch mirrors
 // store.WorkOrderDeadline and ListElapsedWorkOrderTaskIDs.
@@ -32,6 +33,8 @@ SELECT 'deadline', min(d), NULL::text FROM (
 		WHERE workspace_id=$1 AND state IN ('queued','claimed','stale','timed_out') AND next_automatic_recovery_at > $2
 	UNION ALL SELECT next_attempt_at FROM verification_publication_deliveries
 		WHERE workspace_id=$1 AND state='failed' AND next_attempt_at > $2
+	UNION ALL SELECT min(expires_at) FROM verification_upload_chunks
+		WHERE workspace_id=$1 AND state='staging' AND expires_at > $2
 ) deadlines
 UNION ALL SELECT 'reenqueue', automatic_reenqueue_at, NULL::text FROM github_lifecycles
 	WHERE workspace_id=$1 AND state='failed' AND automatic_reenqueue_at IS NOT NULL

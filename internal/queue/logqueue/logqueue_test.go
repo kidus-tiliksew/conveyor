@@ -475,14 +475,12 @@ func TestDefaultRetryDelayDoublesAndCaps(t *testing.T) {
 	}
 }
 
-// TestRuntimeReconcilesOncePerWorkspaceAtStart: the Reconcile hook runs once
-// for each workspace when its loops start, including a workspace added to a
-// running runtime, and never again while jobs run (component-durable-queue;
-// component-verification-publication). Handlers see the trusted partition.
-func TestRuntimeReconcilesOncePerWorkspaceAtStart(t *testing.T) {
+// TestRuntimeHandlersSeeTrustedPartition: jobs enqueued in a starting
+// workspace and in one added to a running runtime run with the trusted
+// partition, and a job a handler enqueues wakes the runtime on its notice
+// (component-durable-queue).
+func TestRuntimeHandlersSeeTrustedPartition(t *testing.T) {
 	log := notifyingLog()
-	var mu sync.Mutex
-	reconciled := map[string]int{}
 	var completed atomic.Int32
 	rt := NewRuntime(log, Options{Workspaces: []string{"alpha"}})
 	rt.Register(queue.Registration{Kind: "publication", Handle: func(ctx context.Context, job queue.Job) error {
@@ -496,12 +494,6 @@ func TestRuntimeReconcilesOncePerWorkspaceAtStart(t *testing.T) {
 			}
 		}
 		return nil
-	}, Reconcile: func(ctx context.Context, ws string) error {
-		mu.Lock()
-		reconciled[ws]++
-		mu.Unlock()
-		_, err := Enqueue(ctx, log, ws, "publication", "same-pr", map[string]string{"workspace_id": "forged"}, 5, time.Now())
-		return err
 	}})
 	if err := rt.Start(t.Context()); err != nil {
 		t.Fatal(err)
@@ -510,18 +502,18 @@ func TestRuntimeReconcilesOncePerWorkspaceAtStart(t *testing.T) {
 	if err := rt.EnsureWorkspace("beta"); err != nil {
 		t.Fatal(err)
 	}
+	for _, ws := range []string{"alpha", "beta"} {
+		if _, err := Enqueue(t.Context(), log, ws, "publication", "same-pr", map[string]string{"workspace_id": "forged"}, 5, time.Now()); err != nil {
+			t.Fatal(err)
+		}
+	}
 	deadline := time.After(3 * time.Second)
 	for completed.Load() < 3 {
 		select {
 		case <-deadline:
-			t.Fatalf("completed=%d, want the two reconciled jobs and the handler's job", completed.Load())
+			t.Fatalf("completed=%d, want the two enqueued jobs and the handler's job", completed.Load())
 		case <-time.After(5 * time.Millisecond):
 		}
-	}
-	mu.Lock()
-	defer mu.Unlock()
-	if reconciled["alpha"] != 1 || reconciled["beta"] != 1 || len(reconciled) != 2 {
-		t.Fatalf("reconcile calls=%v, want once per workspace", reconciled)
 	}
 }
 

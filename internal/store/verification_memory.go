@@ -491,10 +491,20 @@ func (m *volatileMemory) ReconcileVerificationDeliveries(ctx context.Context) er
 		return ErrVerificationAccess
 	}
 	m.mu.Lock()
-	defer m.mu.Unlock()
+	var repaired []string
+	defer func() {
+		m.mu.Unlock()
+		// A pending or retrying delivery whose job was enqueued is drift,
+		// reported once the lock is released (component-persistence, Drift
+		// repair reports).
+		for _, taskID := range repaired {
+			ReportDriftRepair(ctx, DriftVerificationDeliveryWithoutJob.For(taskID))
+		}
+	}()
 	for _, d := range m.verificationDeliveries {
 		if d.WorkspaceID == ws && (d.State == "pending" || d.State == "retrying" || d.State == "failed" && d.NextAttemptAt != nil && !d.NextAttemptAt.After(time.Now().UTC())) {
-			if d.State == "failed" {
+			due := d.State == "failed"
+			if due {
 				next, err := AdvanceVerificationDelivery(d, "retry", d, time.Now().UTC())
 				if err != nil {
 					return err
@@ -502,8 +512,12 @@ func (m *volatileMemory) ReconcileVerificationDeliveries(ctx context.Context) er
 				d = next
 			}
 			a := VerificationDeliveryArgs(d)
-			if _, err := logqueue.Enqueue(ctx, m.log, ws, a.Kind(), a.UniqueKey(), a, 5, time.Now().UTC()); err != nil {
+			inserted, err := logqueue.Enqueue(ctx, m.log, ws, a.Kind(), a.UniqueKey(), a, 5, time.Now().UTC())
+			if err != nil {
 				return err
+			}
+			if inserted && !due {
+				repaired = append(repaired, d.TaskID)
 			}
 			m.putDeliveriesLocked([]core.VerificationDelivery{d})
 		}

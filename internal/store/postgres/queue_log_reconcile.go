@@ -5,16 +5,24 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	"github.com/kidus-tiliksew/conveyor/internal/core"
+	"github.com/kidus-tiliksew/conveyor/internal/store"
 	"github.com/kidus-tiliksew/conveyor/internal/store/postgres/db"
 	"github.com/kidus-tiliksew/conveyor/internal/taskops"
 )
 
 // ReconcileQueuedTasks repairs projection/queue drift: a queued task whose
 // job stream is no longer active is enqueued again, and a running task whose
-// job was discarded after its final attempt is parked with evidence.
+// job was discarded after its final attempt is parked with evidence. Each
+// repair is reported to the context's drift recorder; the start-up check
+// records it as drift.repaired (component-durable-queue, Reconciliation
+// between tasks and jobs; req-quiet-idle-runtime AC-4.1).
 func (s *Store) ReconcileQueuedTasks(ctx context.Context) (int, error) {
 	repaired := 0
-	err := s.inTx(ctx, func(tx pgx.Tx, q *db.Queries) error {
+	// Repairs are reported after the transaction commits, so a rolled-back
+	// repair reports nothing (component-persistence, Drift repair reports).
+	var enqueued []string
+	err := s.inTx(ctx, func(tx pgx.Tx, _ *db.Queries) error {
+		enqueued = enqueued[:0]
 		if _, err := tx.Exec(ctx, "SELECT pg_advisory_xact_lock(hashtext($1))", "conveyor:queue-reconcile:"+workspace(ctx)); err != nil {
 			return err
 		}
@@ -27,21 +35,18 @@ func (s *Store) ReconcileQueuedTasks(ctx context.Context) (int, error) {
 			if err != nil {
 				return err
 			}
-			if !inserted {
-				continue
-			}
-			repaired++
-			if err := insertEvent(ctx, q, core.Event{
-				TaskID: taskID, Kind: "dispatch.reconciled",
-				Payload: core.JSONPayload(map[string]string{"reason": "missing durable queue job"}),
-			}); err != nil {
-				return err
+			if inserted {
+				enqueued = append(enqueued, taskID)
 			}
 		}
 		return nil
 	})
 	if err != nil {
 		return repaired, err
+	}
+	for _, taskID := range enqueued {
+		repaired++
+		store.ReportDriftRepair(ctx, store.DriftQueuedTaskWithoutJob.For(taskID))
 	}
 	discarded, err := s.queue.exhaustedDispatches(ctx, workspace(ctx))
 	if err != nil {
@@ -57,6 +62,7 @@ func (s *Store) ReconcileQueuedTasks(ctx context.Context) (int, error) {
 			return repaired, applyErr
 		}
 		repaired++
+		store.ReportDriftRepair(ctx, store.DriftRunningTaskJobDiscarded.For(candidate.taskID))
 	}
 	return repaired, nil
 }

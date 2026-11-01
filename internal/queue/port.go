@@ -58,13 +58,8 @@ func Snooze(d time.Duration) error { return &SnoozeError{Duration: d} }
 
 // Registration binds a kind to its handler and retry policy.
 type Registration struct {
-	// Reconcile repairs durable intents suppressed by an active stream. The
-	// runtime calls it once per workspace when it starts that workspace's
-	// loops and never again while it runs, recording nothing for the call
-	// (component-durable-queue; DEC-99(1), (6)).
-	Reconcile func(context.Context, string) error
-	Kind      string
-	Handle    Handler
+	Kind   string
+	Handle Handler
 	// RetryDelay, when set, decides how long after a failed attempt the next
 	// one runs. Nil uses the driver's default backoff.
 	RetryDelay func(attempt int) time.Duration

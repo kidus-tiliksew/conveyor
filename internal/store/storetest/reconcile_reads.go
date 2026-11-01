@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/kidus-tiliksew/conveyor/internal/changes"
 	"github.com/kidus-tiliksew/conveyor/internal/config"
 	"github.com/kidus-tiliksew/conveyor/internal/core"
 	"github.com/kidus-tiliksew/conveyor/internal/store"
@@ -76,6 +77,9 @@ func runReconcileReads(t *testing.T, x Fixture) {
 		}
 	})
 
+	t.Run("ReleasedVerificationClaimIsDueAtOnce", func(t *testing.T) {
+		runReleasedVerificationClaimDue(t, x)
+	})
 	t.Run("VerificationClaimsReadOnlyAttemptHolders", func(t *testing.T) {
 		runVerificationClaimReadScope(t, x)
 	})
@@ -217,6 +221,55 @@ func runReconcileReads(t *testing.T, x Fixture) {
 			t.Fatalf("turn-off stored %+v, want off with last turn-on time %s", off, turnedOn.EnabledAt)
 		}
 	})
+}
+
+// runReleasedVerificationClaimDue releases a verify order whose attempt is
+// running and checks that the release raises a deadline notice due at once,
+// so the next deadline alarm fire runs claim-loss reconciliation, which
+// cancels the attempt (component-durable-queue, The deadline alarm;
+// component-persistence, Deadlines).
+func runReleasedVerificationClaimDue(t *testing.T, x Fixture) {
+	st, ctx := x.Backend, x.Context
+	v := newVerificationFixture(t, x)
+	notices := st.Changes().Subscribe(x.Workspace, changes.Deadline)
+	defer notices.Close()
+	for drained := false; !drained; {
+		select {
+		case <-notices.C():
+		default:
+			drained = true
+		}
+	}
+	order, err := st.GetWorkOrder(ctx, v.access.WorkOrderID)
+	requireOK(t, err)
+	order.State, order.LastAttemptID, order.LastAttemptOutcome, order.RetrySuppressed = core.WorkOrderQueued, order.AttemptID, "released", true
+	order.SessionID, order.AttemptID, order.ClaimantID, order.WorkerID, order.ClientTokenHash = "", "", "", "", ""
+	order.LeaseExpiresAt = time.Time{}
+	requireOK(t, UpdateWorkOrder(ctx, st, order, core.WorkOrderCmdRelease))
+	for wait := time.After(2 * time.Second); ; {
+		select {
+		case n := <-notices.C():
+			// Due at once: the release time, or no time from a peer listener.
+			if n.At.IsZero() || !n.At.After(time.Now().UTC()) {
+				goto due
+			}
+		case <-wait:
+			t.Fatal("releasing a verify order raised no deadline notice due at once")
+		}
+	}
+due:
+	reconciler := store.WithActor(ctx, store.Actor{ID: "verification-reconciler", Role: core.ActorSystem})
+	count, err := st.ReconcileVerificationClaims(reconciler)
+	requireOK(t, err)
+	if count < 1 {
+		t.Fatalf("claim-loss reconciliation after the release reconciled %d attempts", count)
+	}
+	userContext, owner := bootstrapOwner(t, x)
+	snapshot, err := st.ReadVerification(userContext, store.VerificationAccess{TaskID: v.access.TaskID, UserID: owner.ID}, v.contextID)
+	requireOK(t, err)
+	if len(snapshot.Attempts) != 1 || snapshot.Attempts[0].State != "cancelled" {
+		t.Fatalf("released attempt=%+v, want cancelled", snapshot.Attempts)
+	}
 }
 
 // runVerificationClaimReadScope seeds a workspace dominated by finished

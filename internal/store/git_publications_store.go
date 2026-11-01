@@ -171,7 +171,7 @@ func (m *memory) ReconcileReviewPublications(ctx context.Context) (int, error) {
 	m.mu.Lock()
 	var missing []core.ReviewPublication
 	seen := map[string]bool{}
-	repaired := 0
+	var retried []string
 	for taskID, events := range m.events {
 		for _, event := range events {
 			if event.Kind != "review.completed" {
@@ -196,18 +196,22 @@ func (m *memory) ReconcileReviewPublications(ctx context.Context) (int, error) {
 						TaskID: existing.TaskID, JobID: existing.JobID,
 						Kind: "review.publication_retry", Payload: core.JSONPayload(existing),
 					})
-					repaired++
+					retried = append(retried, existing.TaskID)
 				}
 			}
 		}
 	}
 	m.mu.Unlock()
-	created := repaired
+	created := len(retried)
+	for _, taskID := range retried {
+		ReportDriftRepair(ctx, DriftReviewPublicationWithoutComment.For(taskID))
+	}
 	for _, publication := range missing {
 		if err := m.QueueReviewPublication(ctx, publication); err != nil {
 			return created, err
 		}
 		created++
+		ReportDriftRepair(ctx, DriftReviewPublicationMissing.For(publication.TaskID))
 	}
 	return created, nil
 }

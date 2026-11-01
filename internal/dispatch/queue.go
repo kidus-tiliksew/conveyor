@@ -10,6 +10,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/kidus-tiliksew/conveyor/internal/changes"
 	"github.com/kidus-tiliksew/conveyor/internal/config"
 	"github.com/kidus-tiliksew/conveyor/internal/core"
 	"github.com/kidus-tiliksew/conveyor/internal/queue"
@@ -103,7 +104,7 @@ type orderClockWorker struct {
 }
 
 // Work is the order clock handler the deadline alarm runs at each fire. It
-// runs four passes for the workspace and logs each error and each non-zero
+// runs six passes for the workspace and logs each error and each non-zero
 // count without skipping the later passes; every pass keeps its per-task lock
 // and its idempotent request IDs (component-durable-queue, The deadline
 // alarm; req-quiet-idle-runtime AC-2.4).
@@ -144,6 +145,47 @@ func (w *orderClockWorker) Work(ctx context.Context, job queue.Job) error {
 			errs = append(errs, fmt.Errorf("verification delivery recovery: %w", deliveryErr))
 		}
 	}
+	if err := reconcileVerificationHousekeeping(ctx, st, args.WorkspaceID); err != nil {
+		errs = append(errs, err)
+	}
+	return errors.Join(errs...)
+}
+
+// reconcileVerificationHousekeeping runs the order clock handler's verification
+// passes, which the removed minute reconcile tick ran: claim-loss
+// reconciliation, then expiry of at most VerificationChunkExpiryLimit staging
+// upload chunks under VerificationChunkExpiryBudget. A claim error does not
+// skip expiry. A full page publishes a deadline notice, so the next fire
+// drains the next page (component-durable-queue, The deadline alarm;
+// component-verification-evidence).
+func reconcileVerificationHousekeeping(ctx context.Context, st store.Store, workspace string) error {
+	verification, ok := st.(store.VerificationStore)
+	if !ok {
+		return nil
+	}
+	ctx = store.WithActor(ctx, store.SystemActor("verification-reconciler"))
+	var errs []error
+	if reconciled, err := verification.ReconcileVerificationClaims(ctx); err != nil {
+		log.Printf("reconcile verification claims in workspace %s: %v", workspace, err)
+		errs = append(errs, fmt.Errorf("verification claim reconciliation: %w", err))
+	} else if reconciled != 0 {
+		log.Printf("reconciled %d lost verification claim(s) in workspace %s", reconciled, workspace)
+	}
+	expiryCtx, cancel := context.WithTimeout(ctx, store.VerificationChunkExpiryBudget)
+	defer cancel()
+	expired, err := verification.ExpireVerificationChunks(expiryCtx, store.VerificationChunkExpiryLimit)
+	if err != nil {
+		log.Printf("expire verification upload chunks in workspace %s: %v", workspace, err)
+		errs = append(errs, fmt.Errorf("verification chunk expiry: %w", err))
+	}
+	if expired != 0 {
+		log.Printf("expired %d verification upload chunk(s) in workspace %s", expired, workspace)
+	}
+	if expired >= store.VerificationChunkExpiryLimit {
+		if notifier, ok := st.(interface{ Changes() *changes.Hub }); ok {
+			notifier.Changes().Publish(changes.Notice{Workspace: workspace, Kind: changes.Deadline, At: time.Now().UTC()})
+		}
+	}
 	return errors.Join(errs...)
 }
 
@@ -170,7 +212,7 @@ type githubIssuePublicationWorker struct {
 func (d *Dispatcher) Registrations(shutdown *ShutdownMarker) []queue.Registration {
 	publications := &verificationPublicationWorker{dispatcher: d}
 	return []queue.Registration{
-		{Kind: queue.VerificationPublicationArgs{}.Kind(), Handle: publications.Work, Reconcile: publications.Reconcile},
+		{Kind: queue.VerificationPublicationArgs{}.Kind(), Handle: publications.Work},
 		{Kind: "verification_publication", Handle: publications.Legacy},
 		{
 			Kind:   queue.DispatchTaskArgs{}.Kind(),

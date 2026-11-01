@@ -542,12 +542,20 @@ func (s *Store) RunVerificationDelivery(ctx context.Context, a queue.Verificatio
 	}
 	return commit()
 }
+
+// ReconcileVerificationDeliveries enqueues each pending or retrying delivery
+// and each failed one whose next_attempt_at passed. A pending or retrying
+// delivery whose job it enqueues is drift and is reported to the context's
+// drift recorder after the commit (component-persistence, Drift repair
+// reports).
 func (s *Store) ReconcileVerificationDeliveries(ctx context.Context) error {
 	ws, err := workspace(ctx)
 	if err != nil {
 		return err
 	}
-	return s.withTx(ctx, func(tx *sql.Tx) error {
+	var repaired []string
+	err = s.withTx(ctx, func(tx *sql.Tx) error {
+		repaired = repaired[:0]
 		if err := lockKey(ctx, tx, "verification:"+ws); err != nil {
 			return err
 		}
@@ -575,7 +583,8 @@ func (s *Store) ReconcileVerificationDeliveries(ctx context.Context) error {
 			return err
 		}
 		for _, d := range ds {
-			if d.State == "failed" {
+			due := d.State == "failed"
+			if due {
 				next, e := store.AdvanceVerificationDelivery(d, "retry", d, time.Now().UTC())
 				if e != nil {
 					return e
@@ -586,10 +595,21 @@ func (s *Store) ReconcileVerificationDeliveries(ctx context.Context) error {
 				d = next
 			}
 			a := store.VerificationDeliveryArgs(d)
-			if _, err = logqueue.Enqueue(logTx(ctx, tx), s.log, ws, a.Kind(), a.UniqueKey(), a, 5, time.Now().UTC()); err != nil {
+			inserted, err := logqueue.Enqueue(logTx(ctx, tx), s.log, ws, a.Kind(), a.UniqueKey(), a, 5, time.Now().UTC())
+			if err != nil {
 				return err
+			}
+			if inserted && !due {
+				repaired = append(repaired, d.TaskID)
 			}
 		}
 		return nil
 	})
+	if err != nil {
+		return err
+	}
+	for _, taskID := range repaired {
+		store.ReportDriftRepair(ctx, store.DriftVerificationDeliveryWithoutJob.For(taskID))
+	}
+	return nil
 }

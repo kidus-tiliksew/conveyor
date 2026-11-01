@@ -187,3 +187,30 @@ func TestPayloadRoundTrip(t *testing.T) {
 		}
 	}
 }
+
+// TestSubscribeAllReceivesEveryWorkspace: an every-workspace subscription
+// receives its kind for any workspace, including the wildcard, and no other
+// kind.
+func TestSubscribeAllReceivesEveryWorkspace(t *testing.T) {
+	hub := NewHub()
+	all := hub.SubscribeAll(Workspace)
+	defer all.Close()
+	hub.Publish(Notice{Workspace: "peer-created", Kind: Workspace})
+	if n, ok := received(t, all); !ok || n.Workspace != "peer-created" {
+		t.Fatalf("notice=%+v ok=%t", n, ok)
+	}
+	hub.Publish(Notice{Kind: Workspace})
+	if n, ok := received(t, all); !ok || n.Workspace != "" {
+		t.Fatalf("wildcard notice=%+v ok=%t", n, ok)
+	}
+	hub.Publish(Notice{Workspace: "peer-created", Kind: Job})
+	if n, ok := received(t, all); ok {
+		t.Fatalf("other kind delivered: %+v", n)
+	}
+	one := hub.Subscribe("ws", Workspace)
+	defer one.Close()
+	hub.Publish(Notice{Workspace: "other", Kind: Workspace})
+	if n, ok := received(t, one); ok {
+		t.Fatalf("workspace subscription received another workspace: %+v", n)
+	}
+}

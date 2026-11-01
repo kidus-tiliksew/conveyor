@@ -622,35 +622,6 @@ func ValidateVerificationSuccess(snapshot store.VerificationSnapshot, runID stri
 	return store.ValidateVerificationSuccess(snapshot, runID, exit)
 }
 
-// ReconcileVerificationClaims is called by the daemon workspace reconciliation
-// loop. It never impersonates a worker or renews an abandoned execution.
-func (s *Service) ReconcileVerificationClaims(ctx context.Context) (int, error) {
-	b, ok := s.Store.(store.VerificationStore)
-	if !ok {
-		return 0, nil
-	}
-	actor := store.ActorFromContext(ctx)
-	if actor.Role != core.ActorSystem {
-		return 0, store.ErrVerificationAccess
-	}
-	return b.ReconcileVerificationClaims(store.WithActor(ctx, store.SystemActor("verification-reconciler")))
-}
-
-// ExpireVerificationChunks is called by the daemon workspace reconciliation
-// loop. It reaches the store only as the internal verification-reconciler
-// actor, so no route, MCP tool, or worker can delete staging rows
-// (component-verification-evidence; component-runtime).
-func (s *Service) ExpireVerificationChunks(ctx context.Context, limit int) (int, error) {
-	if store.ActorFromContext(ctx).Role != core.ActorSystem {
-		return 0, store.ErrVerificationAccess
-	}
-	b, ok := s.Store.(store.VerificationStore)
-	if !ok {
-		return 0, nil
-	}
-	return b.ExpireVerificationChunks(store.WithActor(ctx, store.SystemActor("verification-reconciler")), limit)
-}
-
 // Bounds for copied declaration diagnostics (component-verification-service).
 const (
 	verificationDeclarationDiagnosticLimit = 100
