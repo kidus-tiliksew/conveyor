@@ -18,7 +18,6 @@ import (
 	"github.com/kidus-tiliksew/conveyor/internal/config"
 	"github.com/kidus-tiliksew/conveyor/internal/core"
 	"github.com/kidus-tiliksew/conveyor/internal/corpus"
-	"github.com/kidus-tiliksew/conveyor/internal/gitx"
 	"github.com/kidus-tiliksew/conveyor/internal/inprocess"
 	"github.com/kidus-tiliksew/conveyor/internal/lineagecontext"
 	"github.com/kidus-tiliksew/conveyor/internal/monitor"
@@ -1878,20 +1877,9 @@ func (d *Dispatcher) pollOnce(ctx context.Context) {
 			continue
 		}
 		for _, issue := range issues {
-			source := fmt.Sprintf("github:%s#%d", repo.GitHub, issue.Number)
-			if d.sourceTaskExists(ctx, source) {
-				continue
-			}
-			id := core.NewTaskID()
-			task := core.Task{ID: id, Workspace: cfg.Workspace, Source: source, Title: issue.Title, Body: issue.Body, Level: core.L2, Repo: repo.Name, BaseBranch: repo.Base, Branch: gitx.BranchName(id), State: core.TaskClaiming, NextStage: core.StageTriage, CreatedAt: time.Now().UTC()}
-			if err = d.Store.CreateTask(ctx, task); err != nil {
-				continue
-			}
-			if err = github.MarkIssueDispatched(forgeCtx, repo.GitHub, issue.Number, id); err != nil {
-				continue
-			}
-			_, _ = taskops.New(d.Store).Perform(ctx, id, taskops.Command{Kind: core.TaskIntakeFinalize})
-			d.Enqueue(ctx, id)
+			// The intake body is shared with the issues webhook delivery
+			// (component-runtime, Timed issue intake).
+			_ = d.intakeReadyIssue(ctx, forgeCtx, cfg.Workspace, repo, issue)
 		}
 	}
 }

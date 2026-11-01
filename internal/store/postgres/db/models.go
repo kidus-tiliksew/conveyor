@@ -60,6 +60,15 @@ type DecisionSupersessionSweep struct {
 	ResolvedAt           pgtype.Timestamptz `json:"resolved_at"`
 }
 
+// GithubWebhookDelivery is maintained by hand with migration 154
+// (component-identity-membership, The webhook secret).
+type GithubWebhookDelivery struct {
+	WorkspaceID string             `json:"workspace_id"`
+	DeliveryID  string             `json:"delivery_id"`
+	Event       string             `json:"event"`
+	ReceivedAt  pgtype.Timestamptz `json:"received_at"`
+}
+
 type GithubLifecycle struct {
 	WorkspaceID        string             `json:"workspace_id"`
 	TaskID             string             `json:"task_id"`
@@ -436,6 +445,15 @@ type WorkOrderRecovery struct {
 	WorkOrderID string             `json:"work_order_id"`
 	RequestID   string             `json:"request_id"`
 	CreatedAt   pgtype.Timestamptz `json:"created_at"`
+}
+
+// WorkspaceGithubWebhookSecret is maintained by hand with migration 154
+// (component-identity-membership, The webhook secret).
+type WorkspaceGithubWebhookSecret struct {
+	WorkspaceID      string             `json:"workspace_id"`
+	SecretNonce      []byte             `json:"secret_nonce"`
+	SecretCiphertext []byte             `json:"secret_ciphertext"`
+	SetAt            pgtype.Timestamptz `json:"set_at"`
 }
 
 type Workspace struct {

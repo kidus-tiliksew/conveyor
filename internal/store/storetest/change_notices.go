@@ -105,6 +105,25 @@ func RunChangeNoticeConformance(t *testing.T, x Fixture) {
 		if _, err := st.GetWorkspace(systemCtx, created); err != nil {
 			t.Fatalf("workspace not readable when its notice arrived: %v", err)
 		}
+		// A configuration update raises a workspace notice, so a monitor
+		// enabled in configuration reaches the timed GitHub fallback
+		// (component-persistence, Change notices).
+		current, err := st.WorkspaceConfig(systemCtx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		next := &config.Config{Workspace: created}
+		next.Monitor.Enabled = true
+		if _, err := st.UpdateWorkspaceConfig(systemCtx, current.Version, next); err != nil {
+			t.Fatal(err)
+		}
+		if n := awaitNotice(t, notices, "workspace notice after UpdateWorkspaceConfig"); n.Kind != changes.Workspace || n.Workspace != created {
+			t.Fatalf("workspace notice=%+v", n)
+		}
+		updated, err := st.WorkspaceConfig(systemCtx)
+		if err != nil || updated.Version != current.Version+1 {
+			t.Fatalf("configuration not readable when its notice arrived: version=%d err=%v", updated.Version, err)
+		}
 	})
 
 	t.Run("PeersOn", func(t *testing.T) {

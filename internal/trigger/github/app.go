@@ -273,11 +273,17 @@ func (c *AppClient) ConvertManifest(ctx context.Context, code string) (core.Work
 		Slug     string `json:"slug"`
 		ClientID string `json:"client_id"`
 		PEM      string `json:"pem"`
+		// WebhookSecret is the secret GitHub signs the new App's deliveries
+		// with (component-identity-membership, The webhook secret).
+		WebhookSecret string `json:"webhook_secret"`
 	}
 	if json.Unmarshal(raw, &result) != nil {
 		return app, failure
 	}
 	redact.RegisterSecret(result.PEM, time.Time{})
+	if result.WebhookSecret != "" {
+		redact.RegisterSecret(result.WebhookSecret, time.Time{})
+	}
 	if result.ID <= 0 || !appSlugPattern.MatchString(result.Slug) || result.ClientID == "" {
 		return app, failure
 	}
@@ -288,6 +294,7 @@ func (c *AppClient) ConvertManifest(ctx context.Context, code string) (core.Work
 	app.AppSlug = result.Slug
 	app.ClientID = result.ClientID
 	app.PrivateKey = result.PEM
+	app.WebhookSecret = result.WebhookSecret
 	return app, nil
 }
 

@@ -357,115 +357,40 @@ func main() {
 		startupChecks.RunGitHub(ctx, startupWorkspaceIDs)
 	}
 
-	if *pollGitHub > 0 {
-		log.Printf("polling GitHub for %s issues in every workspace every %s", "conveyor:ready", *pollGitHub)
-		go func() {
-			ticker := time.NewTicker(*pollGitHub)
-			defer ticker.Stop()
-			for {
-				if st.IsDurable() {
-					items, listErr := st.ListWorkspaces(ctx)
-					if listErr == nil {
-						for _, item := range items {
-							d.PollOnce(store.WithWorkspace(ctx, item.ID))
-						}
-					}
-				} else if cfg.Workspace != "" {
-					d.PollOnce(store.WithWorkspace(ctx, cfg.Workspace))
-				}
-				select {
-				case <-ctx.Done():
-					return
-				case <-ticker.C:
-				}
+	// GitHub observation while running: webhook deliveries for every
+	// workspace, the timed fallback for a workspace without webhook
+	// delivery, and timed issue intake only with -poll-github. No monitor
+	// loop runs (component-runtime, Start-up checks and background loops;
+	// req-quiet-idle-runtime AC-3.1, AC-3.5, AC-3.7).
+	listWorkspaceIDs := func(ctx context.Context) ([]string, error) {
+		if !st.IsDurable() {
+			if cfg.Workspace == "" {
+				return nil, nil
 			}
-		}()
+			return []string{cfg.Workspace}, nil
+		}
+		items, listErr := st.ListWorkspaces(ctx)
+		if listErr != nil {
+			return nil, listErr
+		}
+		ids := make([]string, 0, len(items))
+		for _, item := range items {
+			ids = append(ids, item.ID)
+		}
+		return ids, nil
 	}
-
-	if srv.Monitor != nil {
-		go func() {
-			lastPoll := map[string]time.Time{}
-			ticker := time.NewTicker(5 * time.Second)
-			defer ticker.Stop()
-			for {
-				var workspaceIDs []string
-				if st.IsDurable() {
-					items, listErr := st.ListWorkspaces(ctx)
-					if listErr != nil {
-						log.Printf("list workspaces for monitor: %v", listErr)
-					} else {
-						for _, item := range items {
-							workspaceIDs = append(workspaceIDs, item.ID)
-						}
-					}
-				} else if cfg.Workspace != "" {
-					workspaceIDs = append(workspaceIDs, cfg.Workspace)
-				}
-				for _, workspaceID := range workspaceIDs {
-					workspaceCtx := store.WithWorkspace(ctx, workspaceID)
-					current, configErr := workOrders.ConfigProvider(workspaceCtx)
-					if configErr != nil || !current.Monitor.Enabled {
-						continue
-					}
-					if previous := lastPoll[workspaceID]; !previous.IsZero() && time.Since(previous) < current.Monitor.PollInterval {
-						continue
-					}
-					lastPoll[workspaceID] = time.Now()
-					for _, repositoryName := range current.Monitor.Repositories {
-						repository, ok := current.Repo(repositoryName)
-						if !ok || repository.GitHub == "" {
-							_ = srv.Monitor.Store.RecordMonitorFailure(workspaceCtx, "forge_response",
-								"monitored repository requires a GitHub slug", time.Now().Add(current.Monitor.PollInterval))
-							continue
-						}
-						runGitHub, tokenErr := workspaceMonitorGitHubRunner(workspaceCtx, st, workspaceID, repository.GitHub, githubtrigger.DefaultAppClient)
-						if tokenErr != nil {
-							_ = srv.Monitor.Store.RecordMonitorFailure(workspaceCtx, string(githubtrigger.ErrorCategory(tokenErr)), tokenErr.Error(), time.Now().Add(current.Monitor.PollInterval))
-							continue
-						}
-						source := monitor.GitHubSource{
-							WorkspaceID: workspaceID, Repository: repositoryName, GitHubSlug: repository.GitHub, Run: runGitHub,
-							NewTaskResolver: assignmentResolveTask(st, repositoryName, repository.GitHub),
-							ReconcileMerged: func(callCtx context.Context, taskID string, pr githubtrigger.PullRequest) (bool, error) {
-								return d.ReconcileObservedPullRequest(callCtx, repositoryName, repository.GitHub, taskID, pr)
-							},
-						}
-						bound := current.Monitor.MergeDeferralBound
-						monitorStore := srv.Monitor.Store
-						source.MergeCommitState = func(ctx context.Context, repository, commitSHA string, committedAt time.Time) (monitor.MergeState, string, error) {
-							return monitorStore.MonitorMergeCommitState(ctx, repository, commitSHA, committedAt, time.Now().UTC(), bound)
-						}
-						source.OnSuppressed = func(ctx context.Context, payload map[string]any) error {
-							return srv.Monitor.Store.AuditMonitor(ctx, "monitor.suppressed", payload)
-						}
-						source.LoadHints = func(ctx context.Context, revision string) (*monitor.HintContext, error) {
-							return monitor.FetchGitHubHints(ctx, repository.GitHub, revision, runGitHub)
-						}
-						poller := monitor.Poller{
-							Service: srv.Monitor, Source: source, StartupWindow: current.Monitor.StartupWindow,
-							RetryInitial: time.Second, RetryMaximum: 30 * time.Second,
-							Sleep: func(ctx context.Context, delay time.Duration) error {
-								select {
-								case <-ctx.Done():
-									return ctx.Err()
-								case <-time.After(delay):
-									return nil
-								}
-							},
-						}
-						if pollErr := poller.Poll(workspaceCtx); pollErr != nil {
-							log.Printf("monitor workspace %s repository %s: %v", workspaceID, repositoryName, pollErr)
-						}
-					}
-				}
-				select {
-				case <-ctx.Done():
-					return
-				case <-ticker.C:
-				}
-			}
-		}()
+	monitorPolls := &monitorPoller{Store: st, Dispatcher: d, Service: srv.Monitor, Config: workOrders.ConfigProvider}
+	gitHubFallback := newGitHubFallback(st, d, listWorkspaceIDs, monitorPolls, log.Printf)
+	webhookApplier := newGitHubWebhookApplier(st, d, monitorPolls.PushedRef, gitHubFallback.WebhookDelivered, log.Printf)
+	webhookApplier.Start(ctx)
+	srv.GitHubWebhooks = st
+	srv.GitHubWebhookApplier = webhookApplier
+	fallbackWorkspaces := startupWorkspaceIDs
+	if !st.IsDurable() {
+		fallbackWorkspaces, _ = listWorkspaceIDs(ctx)
 	}
+	gitHubFallback.Start(ctx, fallbackWorkspaces)
+	startIssueIntakePoll(ctx, *pollGitHub, listWorkspaceIDs, d.PollOnce, nil, log.Printf)
 
 	if poolStats != nil {
 		// The wrapped close stops and joins the worker, then logs the final

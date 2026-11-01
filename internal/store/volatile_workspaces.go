@@ -214,6 +214,9 @@ func (m *volatileMemory) UpdateWorkspaceConfig(ctx context.Context, expectedVers
 	// The next order clock run applies the changed setting
 	// (component-persistence, Deadlines; req-bounded-automatic-recovery AC-5.1).
 	m.raiseEventDeadlineLocked(id, event)
+	// A configuration change, such as enabling the monitor, reaches the timed
+	// GitHub fallback (component-persistence, Change notices).
+	m.raiseLocked(changes.Notice{Workspace: id, Kind: changes.Workspace})
 	return config.UpdateReceipt{
 		VersionedDocument: config.VersionedDocument{Document: next.PolicyDocument(), Version: record.ConfigVersion},
 		EventID:           event.ID, ActorID: actor.ID, Sections: sections,

@@ -116,6 +116,11 @@ type Server struct {
 	PersonalTokens      store.PersonalAccessTokenStore
 	WorkspaceGitHubApps store.WorkspaceGitHubAppStore
 	GitHubApps          *github.AppClient
+	// GitHubWebhooks stores the webhook secret and accepted deliveries, and
+	// GitHubWebhookApplier applies each accepted delivery
+	// (component-http-api, GitHub webhook receiver).
+	GitHubWebhooks       store.GitHubWebhookStore
+	GitHubWebhookApplier GitHubWebhookApplier
 	// verificationKitMemo caches exact-commit kit discovery for the workspace
 	// kit registry (component-verification-kit-contract).
 	verificationKitMemo   kitRegistryMemo
@@ -161,6 +166,9 @@ func NewServer(s store.Store) *Server {
 	if apps, ok := s.(store.WorkspaceGitHubAppStore); ok {
 		server.WorkspaceGitHubApps = apps
 	}
+	if hooks, ok := s.(store.GitHubWebhookStore); ok {
+		server.GitHubWebhooks = hooks
+	}
 	if sessions, ok := s.(store.InvitationSessionStore); ok {
 		server.InvitationSessions = sessions
 	}
@@ -182,6 +190,9 @@ func (s *Server) Handler() http.Handler {
 		r.Get("/version", func(w http.ResponseWriter, _ *http.Request) {
 			writeJSON(w, http.StatusOK, map[string]string{"version": s.Release})
 		})
+		// GitHub authenticates a delivery with its signature; the route
+		// reads no credential (component-http-api, GitHub webhook receiver).
+		r.Post("/github/webhook/{workspace}", s.receiveGitHubWebhook)
 		r.Post("/sign-in/redeem", s.redeemSignInLink)
 		r.Post("/sign-in/password", s.signInWithPassword)
 		r.With(s.requireSelfServiceCredential).Post("/sign-out", s.signOutDashboardSession)
@@ -214,6 +225,7 @@ func (s *Server) Handler() http.Handler {
 		r.With(s.requireWorkspaceAuth, s.resolveWorkspaceContext, s.requireWorkspaceCapability(core.CapabilityViewWorkspace)).Get("/workspaces/{workspace_id}/github-app", s.getWorkspaceGitHubApp)
 		r.With(s.requireWorkspaceAuth, s.resolveWorkspaceContext, s.requireWorkspaceCapability(core.CapabilityViewWorkspace)).Get("/workspaces/{workspace_id}/verification-kits", s.getWorkspaceVerificationKits)
 		r.With(s.requireWorkspaceAuth, s.resolveWorkspaceContext, s.requireWorkspaceCapability(core.CapabilityManageWorkspace)).Delete("/workspaces/{workspace_id}/github-app", s.deleteWorkspaceGitHubApp)
+		r.With(s.requireWorkspaceAuth, s.resolveWorkspaceContext, s.requireWorkspaceCapability(core.CapabilityManageWorkspace)).Post("/workspaces/{workspace_id}/github-app/webhook-secret", s.createWorkspaceGitHubWebhookSecret)
 		r.With(s.requireWorkspaceAuth, s.resolveWorkspaceContext, s.requireWorkspaceCapability(core.CapabilityViewWorkspace)).Get("/workspaces/{workspace_id}/members", s.listWorkspaceMembers)
 		r.With(s.requireWorkspaceAuth, s.resolveWorkspaceContext, s.requireWorkspaceCapability(core.CapabilityManageMembership)).Post("/workspaces/{workspace_id}/members", s.grantWorkspaceMembership)
 		r.With(s.requireWorkspaceAuth, s.resolveWorkspaceContext, s.requireWorkspaceCapability(core.CapabilityManageMembership)).Get("/workspaces/{workspace_id}/invitations", s.listWorkspaceInvitations)
