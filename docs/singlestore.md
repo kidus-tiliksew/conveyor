@@ -1,92 +1,20 @@
 # SingleStore operations
 
-Set `database.backend: singlestore` and supply the connection through
-`CONVEYOR_DATABASE_URL`. Use `singlestore://user:password@host:3306/conveyor`,
-`mysql://` with the same URL shape, or a MySQL DSN such as
-`user:password@tcp(host:3306)/conveyor`. Add `?tls=true` for TLS. Percent-encode
-reserved characters in URL passwords.
-Create an empty database, then follow the [ordered events preparation checklist](singlestore-events-cutover.md) before running `conveyor init`.
-The operator creates `events_columnstore`; the schema-only command applies numbered prerequisites without serving or workspace bootstrap.
-Copy, validation, and allocator preparation must finish before initialization or serving starts.
-Conveyor never imports PostgreSQL state.
+Select `database.backend: singlestore` and supply the connection with `CONVEYOR_DATABASE_URL`.
+The backend accepts SingleStore/MySQL URLs and MySQL DSNs.
+`conveyor init`, `conveyor user issue-link`, and `conveyord` use the same backend factory.
+Conveyor does not import PostgreSQL state.
 
-`conveyor init`, `conveyor user issue-link`, and `conveyord` use the same
-backend factory.
-After operator preparation, startup applies outstanding numbered migrations, ensures the event-log schema, and bootstraps deployment identity and the configured workspace.
-It requires the prepared event target.
-It logs
-`using durable SingleStore store with the event log`. The tested local engine
-version and admission measurements are in
-[the admission report](measurements/singlestore-admission-260905-d3c03a.md).
+Current audit events use the operator-created `events_columnstore`; mutable application state uses rowstore tables.
+For existing databases and fresh installations, see the [events preparation guide](singlestore-events-cutover.md).
+Startup applies pending numbered migrations and refuses a missing or incompatible event table.
+It does not copy, rename, or drop event tables or synchronize allocators.
 
-## Shard keys and write rules
+Workspace data is scoped by `workspace_id`.
+The server must use UTC; outgoing timestamps are truncated to microseconds.
+Go transactions enforce the constraints unavailable in SingleStore, and failed event writes roll back their associated entity change.
+Statement arguments are interpolated by the driver to avoid unsupported long-data prepared statements.
 
-Workspace tables shard on `workspace_id`; deployment tables shard on their
-primary key. Each SQL read and write includes its workspace scope. Unique keys
-must contain the shard key, so Go enforces deployment-wide identity, branch,
-credential and other uniqueness rules that a workspace key cannot express.
-The backend uses rowstore tables for mutable state and the operator-created
-`events_columnstore` for current audit events, with binary UTF-8 identifier
-collation, JSON, LONGTEXT and UTC `DATETIME(6)`.
-Startup refuses a server whose actual system time zone is not UTC.
-Every outgoing timestamp is truncated to microseconds.
-
-SingleStore has no PostgreSQL foreign keys, CHECK constraints, triggers or
-partial indexes. Aggregate transactions validate parents, lifecycle states,
-workspace ownership and uniqueness before committing. Ledger writes are
-append-only. A failed event or queue append rolls back the associated entity
-change. SQL and driver errors stay inside the backend and become the shared
-store errors; retryable conflicts require retrying the whole command.
-
-## Locks and migrations
-
-`conveyor_locks` stores hashed coordination keys in rowstore rows. A command
-inserts its key if absent and selects it `FOR UPDATE`; transaction completion
-releases ownership. Callback locks hold a dedicated connection until the
-callback returns. Lock rows remain for reuse. Same-task commands share the
-task-operation key; unrelated tasks have different keys.
-
-A commit that spans partitions can release its lock row before its other rows
-are visible, so a waiting command can acquire the lock and still miss them.
-The one-deployment-credential and live reference-name rules therefore record
-their winner in the lock row's `holder` column, which commits with the release,
-and check it alongside their counts. The race and its measurement are recorded
-in [the unique-write race report](measurements/singlestore-unique-write-race-261012-832d9c.md).
-
-`conveyor:startup-migrations` serializes daemon starts. SingleStore DDL commits
-implicitly, so that lock lives on one connection while DDL runs on another.
-Migration files must be restart-safe. The runner records a version only after
-its entire file succeeds and retries a partially applied file on the next
-start. It never rewrites checksums to conceal partial work.
-
-`conveyor_singlestore_migrations` records each version, filename, SHA-256 and
-applied time. Startup rejects a newer-than-binary version, a changed filename,
-or a changed checksum. Upgrade the binary before reopening a newer schema.
-New migrations get new numbers; published files stay immutable. The backend
-starts from its own version-one schema and does not replay PostgreSQL history.
-
-Event-table cutover is not an automatic schema migration.
-Before releasing corrected code, follow [the ordered event cutover checklist](singlestore-events-cutover.md), including its conditional numbered prerequisites, schema-only command, and manual create/copy/validate/allocator scripts.
-Current reads and writes require `events_columnstore`; there is no legacy fallback.
-Do not start a serving process before the operator has completed the final copy and allocator preparation.
-Keep legacy `events` intact; the ordinary cutover neither drops nor renames it.
-
-The event-log driver binds to the aggregate's `*sql.Tx`. Entity state, audit
-history and queue intent therefore commit together. The queue needs no second
-database or external broker.
-
-## Verification
-
-`make test-integration-singlestore-ci` requires a MySQL DSN in
-`CONVEYOR_TEST_SINGLESTORE_URL` naming an isolated `_test` database. Tests
-create and drop only their own fresh `_test` databases: the store package
-creates one per test binary and empties its tables between fixtures, and the
-CLI and daemon tests create one each. All connections use the default query
-mode.
-
-The target runs the complete store and event-log conformance packs plus CLI
-initialization and daemon startup tests. It prints suite timings. CI requires
-`SINGLESTORE_ROOT_PASSWORD` and proves that an unset URL and a deliberately
-failing test cannot produce a green integration job. PostgreSQL stays the
-behavioral reference. Passing the dev-container pack does not measure a
-production cluster's query plans, capacity or failover behavior.
+Isolated SingleStore CI jobs run the store and event-log conformance packs plus CLI and daemon integration tests.
+PostgreSQL remains the behavioral reference.
+Local conformance does not measure a production cluster's capacity, query plans, or failover behavior.

@@ -26,7 +26,6 @@ import (
 	"github.com/kidus-tiliksew/conveyor/internal/core"
 	"github.com/kidus-tiliksew/conveyor/internal/store"
 	"github.com/kidus-tiliksew/conveyor/internal/store/backend"
-	"github.com/kidus-tiliksew/conveyor/internal/store/singlestore"
 )
 
 // DEC-39; component-runtime. Both durable selections execute real migrations,
@@ -478,9 +477,6 @@ func durableStartupDatabaseFor(t, owner *testing.T, name string) string {
 		}
 	})
 	cfg.DBName = database
-	if err = singlestore.Migrate(t.Context(), cfg.FormatDSN()); err != nil {
-		t.Fatal(err)
-	}
 	preparationConnector, err := mysql.NewConnector(cfg)
 	if err != nil {
 		t.Fatal(err)

@@ -1,19 +1,13 @@
 # SingleStore migration rules
 
-These numbers belong to this backend. Version one is a fresh schema and does
-not replay PostgreSQL's migration history. Published files are immutable;
-add a new numbered file for each correction. DDL commits implicitly, so every
-file must be safe to retry after an interrupted startup.
+These numbers belong to this backend; version one is a fresh schema, not a replay of PostgreSQL migrations.
+Published SQL and recorded checksums are immutable.
+DDL commits implicitly, so new migrations must tolerate an interrupted startup.
+Normal startup applies pending numbered migrations under the backend migration lock.
+Migration 0027 keeps its original ledger identity but its retired automatic event conversion is not executed.
 
-The [backend README](../README.md#go-enforced-rules-for-aggregate-writers)
-lists the mandatory Go write checks that replace unavailable triggers,
-CHECKs, partial unique indexes and deferrable constraints. In particular,
-`events_columnstore`, `deployment_events` and `interventions` are append-only; task and
-work-order states come from the core state sets; deployment credentials and
-live reference names require transaction-locked uniqueness checks.
+Current audit events use operator-created `events_columnstore`; legacy `events` remains historical input.
+See the [events preparation guide](../../../../docs/singlestore-events-cutover.md) for existing databases and fresh installations.
 
-Keep workspace shard keys and all unique keys aligned.
-The operator-created `events_columnstore` is the append-only columnstore exception: its non-null `event_shard_key` is the task ID, or an independently distributed fallback for taskless events, and is included in its unique hash key.
-Legacy `events` remains historical input; migration 0027's published SQL stays immutable but its retired conversion does not run.
-Follow the [operator checklist](../../../../docs/singlestore-events-cutover.md) instead.
-Add workspace_id to parent-scoped child tables rather than relying on a cross-shard parent join.
+Keep workspace shard keys and unique keys aligned.
+Go aggregate writers enforce the constraints unavailable in SingleStore; see the [backend rules](../README.md#go-enforced-rules-for-aggregate-writers).

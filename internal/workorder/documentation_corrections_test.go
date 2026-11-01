@@ -113,9 +113,6 @@ func documentationCorrectionStore(t *testing.T, backend string) store.Store {
 			admin.Close()
 		})
 		cfg.DBName = name
-		if err := singlestore.Migrate(t.Context(), cfg.FormatDSN()); err != nil {
-			t.Fatal(err)
-		}
 		preparationConnector, err := mysql.NewConnector(cfg)
 		if err != nil {
 			t.Fatal(err)

@@ -82,11 +82,7 @@ func openSharedDatabase() error {
 	sharedDatabase.name = name
 	cfg.DBName = name
 	sharedDatabase.cfg = cfg
-	// Match operator bootstrap: finish ordinary migrations, explicitly create
-	// the stable event table, then open the application pool.
-	if err := Migrate(ctx, cfg.FormatDSN()); err != nil {
-		return err
-	}
+	// Fresh installs create the operator-owned event table before normal startup.
 	preparationConnector, err := mysql.NewConnector(cfg)
 	if err != nil {
 		return err

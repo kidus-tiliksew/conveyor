@@ -51,7 +51,7 @@ func execEventsOperatorScript(ctx context.Context, db *sql.DB, name string) erro
 		return err
 	}
 	for _, statement := range statements {
-		statement = strings.ReplaceAll(statement, "__DATABASE__", "`"+strings.ReplaceAll(database, "`", "``")+"`")
+		statement = strings.ReplaceAll(statement, "`your_database`", "`"+strings.ReplaceAll(database, "`", "``")+"`")
 		if _, err := db.ExecContext(ctx, statement); err != nil {
 			return fmt.Errorf("operator script %s: %w", name, err)
 		}
@@ -299,9 +299,6 @@ func TestEventsColumnstoreStartupPrerequisiteIntegration(t *testing.T) {
 		if !strings.Contains(err.Error(), "events_columnstore") {
 			t.Fatalf("prerequisite failure does not identify stable table: %v", err)
 		}
-	}
-	if err := Migrate(ctx, sharedDatabase.cfg.FormatDSN()); err != nil {
-		t.Fatalf("migration-only preflight requires stable table: %v", err)
 	}
 	if after := queryRows(t, st, ctx, `SELECT version,name,checksum,applied_at FROM conveyor_singlestore_migrations`); !reflect.DeepEqual(ledgerBefore, after) {
 		t.Fatal("restart rewrote recorded migration history")

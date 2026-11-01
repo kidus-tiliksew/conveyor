@@ -13,7 +13,6 @@ import (
 	"github.com/go-sql-driver/mysql"
 	"github.com/kidus-tiliksew/conveyor/internal/config"
 	"github.com/kidus-tiliksew/conveyor/internal/store"
-	"github.com/kidus-tiliksew/conveyor/internal/store/singlestore"
 )
 
 func TestSingleStoreInitAndUserIntegration(t *testing.T) {
@@ -43,9 +42,6 @@ func TestSingleStoreInitAndUserIntegration(t *testing.T) {
 		}
 	})
 	cfg.DBName = database
-	if err = singlestore.Migrate(t.Context(), cfg.FormatDSN()); err != nil {
-		t.Fatal(err)
-	}
 	preparationConnector, err := mysql.NewConnector(cfg)
 	if err != nil {
 		t.Fatal(err)
