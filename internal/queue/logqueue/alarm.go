@@ -27,14 +27,17 @@ const (
 	// requested sooner waits, which bounds a burst of notices and the
 	// notices a fire's own writes raise.
 	AlarmSpacing = time.Second
-	// alarmRetryMin and alarmRetryMax bound the retry delay after a fire
-	// whose handler or deadline read failed.
-	alarmRetryMin = 5 * time.Second
+	// alarmRetryMax caps the retry delay after a fire whose handler or
+	// deadline read failed.
 	alarmRetryMax = time.Minute
 	// rescueMargin moves a foreign claim's rescue time just past the
 	// threshold, because rescue acts only on a claim strictly older than it.
 	rescueMargin = time.Millisecond
 )
+
+// alarmRetryMin is the first retry delay after a fire whose handler or
+// deadline read failed; it doubles to alarmRetryMax. Tests shorten it.
+var alarmRetryMin = 5 * time.Second
 
 // alarmLoop runs one workspace's deadline alarm.
 func (rt *Runtime) alarmLoop(ws *workspace) {
@@ -198,9 +201,9 @@ func (rt *Runtime) setAlarmTarget(ws *workspace, target time.Time) {
 	rt.mu.Unlock()
 }
 
-// alarmTarget is the time the workspace's alarm sleeps until, and false when
-// it arms no timer; for tests.
-func (rt *Runtime) alarmTarget(workspaceID string) (time.Time, bool) {
+// AlarmTarget is the time the workspace's deadline alarm sleeps until, and
+// false when it arms no timer; for tests and diagnostics.
+func (rt *Runtime) AlarmTarget(workspaceID string) (time.Time, bool) {
 	rt.mu.Lock()
 	defer rt.mu.Unlock()
 	ws, ok := rt.spaces[workspaceID]
