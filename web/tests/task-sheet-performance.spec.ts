@@ -2,6 +2,7 @@ import { expect, type Page, type Route, test } from '@playwright/test'
 import { callerIdentity } from './helpers/caller-identity'
 import { installQueryClientProbe, withQueryClient } from './helpers/query-client'
 import { activityFrame, controlTaskStreams, readyFrame } from './helpers/task-streams'
+import { controlWorkspaceChanges } from './helpers/workspace-changes'
 
 // Task-sheet read scheduling, Board navigation, stream refresh precedence, and
 // the slow-read cache policy (component-web-task-surfaces, Sheet read
@@ -327,6 +328,7 @@ const secondPage: Fixture[] = [
 ]
 
 test('Board sheet navigation follows the visible filtered page without an unfiltered read', async ({ page }) => {
+  const changes = await controlWorkspaceChanges(page)
   await page.clock.install({ time: new Date('2026-07-15T13:00:00Z') })
   const server = await serve(page, { board: [firstPage, secondPage] })
   await page.goto('/')
@@ -338,9 +340,11 @@ test('Board sheet navigation follows the visible filtered page without an unfilt
   const header = sheet(page).locator('header').first()
   await expect(header).toContainText('Second page newest')
   await expect(header.getByRole('note')).toHaveText('The previous task is on an earlier Board page.')
-  // A clock-driven Board pass refreshes only the Board's own filtered page.
-  await page.clock.runFor(15_000)
-  await expect.poll(() => server.count(reads.activity)).toBeGreaterThanOrEqual(3)
+  // A change-driven Board pass refreshes only the Board's own filtered page.
+  const beforePass = server.count(reads.activity)
+  await changes.activity('page-two-newest')
+  await page.clock.runFor(250)
+  await expect.poll(() => server.count(reads.activity)).toBe(beforePass + 1)
   expect(server.count(reads.unfilteredActivity)).toBe(0)
 
   const order = ['Second page newest', 'Second page tie A', 'Second page tie B', 'Second page review']
@@ -481,10 +485,11 @@ test.describe('task stream refresh', () => {
     expect(server.count(reads.summary(sheetTask.id))).toBe(1)
   })
 
-  test('next action still refreshes once after a dependency poll or a mutation changes the detail', async ({
+  test('next action still refreshes once after a workspace change or a mutation changes the detail', async ({
     page,
   }) => {
     await controlTaskStreams(page)
+    const changes = await controlWorkspaceChanges(page)
     await page.clock.install({ time: new Date('2026-07-15T13:00:00Z') })
     const blocked: Fixture = { id: 'blocked-task', title: 'Blocked task', created: at(4), blocking: ['plain'] }
     const server = await serve(page, { board: [[blocked, plainTask]] })
@@ -493,13 +498,25 @@ test.describe('task stream refresh', () => {
     const detail = () => server.count(reads.detail(blocked.id))
     const nextActions = () => server.count(reads.nextAction(blocked.id))
     expect(nextActions()).toBe(1)
-
-    // The 15 s blocker poll changes the detail without a stream frame.
-    server.revise(blocked.id, 'Blocked task, polled')
-    await page.clock.runFor(15_000)
+    // The change stream's connect refresh rereads the detail, and the next
+    // action follows it once.
+    await changes.ready()
+    await page.clock.runFor(250)
     await expect.poll(detail).toBe(2)
-    await expect(sheet(page).locator('header').first()).toContainText('Blocked task, polled')
     await expect.poll(nextActions).toBe(2)
+
+    // No timer rereads a blocked task's detail.
+    server.revise(blocked.id, 'Blocked task, unblocked')
+    await page.clock.runFor(30_000)
+    expect(detail()).toBe(2)
+
+    // A frame naming the blocking task changes the detail without a frame on
+    // the blocked task itself.
+    await changes.activity('plain')
+    await page.clock.runFor(250)
+    await expect.poll(detail).toBe(3)
+    await expect(sheet(page).locator('header').first()).toContainText('Blocked task, unblocked')
+    await expect.poll(nextActions).toBe(3)
 
     // Assignment refreshes the detail through its mutation.
     server.revise(blocked.id, 'Blocked task, assigned')
@@ -507,26 +524,26 @@ test.describe('task stream refresh', () => {
     await page.getByRole('menuitem', { name: 'Assign', exact: true }).click()
     await page.getByRole('listbox', { name: 'Workspace members' }).getByRole('option', { name: 'Ada' }).click()
     await expect(sheet(page).locator('header').first()).toContainText('Blocked task, assigned')
-    await expect.poll(nextActions).toBe(3)
+    await expect.poll(nextActions).toBe(4)
     await page.clock.runFor(1_000)
-    expect(nextActions()).toBe(3)
+    expect(nextActions()).toBe(4)
 
-    // Window focus sends no detail read; the blocker poll continues.
+    // Window focus sends no detail read and no timer does; the next frame
+    // naming the blocking task still rereads it.
     const beforeFocus = detail()
     await page.clock.runFor(6_000)
-    await page.evaluate(() => {
-      window.dispatchEvent(new Event('focus'))
-      document.dispatchEvent(new Event('visibilitychange'))
-    })
-    await page.clock.runFor(1_000)
+    await page.evaluate(() => window.dispatchEvent(new Event('focus')))
+    await page.clock.runFor(30_000)
     expect(detail()).toBe(beforeFocus)
-    await page.clock.runFor(8_000)
+    await changes.activity('plain')
+    await page.clock.runFor(250)
     await expect.poll(detail).toBe(beforeFocus + 1)
   })
 })
 
 test.describe('slow reads', () => {
-  test('repeated sheet opens reuse slow reads and only Blueprints routes poll blueprints', async ({ page }) => {
+  test('repeated sheet opens reuse slow reads and only Blueprints routes refresh blueprints', async ({ page }) => {
+    const changes = await controlWorkspaceChanges(page)
     await page.clock.install({ time: new Date('2026-07-15T13:00:00Z') })
     const server = await serve(page, { board: [[sheetTask, plainTask]] })
     await page.goto(`/w/demo/tasks/${sheetTask.id}`)
@@ -540,8 +557,13 @@ test.describe('slow reads', () => {
     const first = slow()
     expect(first).toEqual({ identity: 1, members: 1, blueprints: 1, systemDesigns: 1 })
 
-    // A sheet left open sends no blueprint poll.
+    // A sheet left open sends no blueprint read on the clock, on the change
+    // stream's connect, or on a change frame.
     await page.clock.runFor(31_000)
+    await changes.ready()
+    await changes.activity(sheetTask.id)
+    await page.clock.runFor(1_000)
+    await expect.poll(() => server.count(reads.detail(sheetTask.id))).toBeGreaterThan(1)
     expect(server.count(reads.blueprints)).toBe(1)
 
     // Opening other sheets inside five minutes reuses every slow read.
@@ -561,14 +583,22 @@ test.describe('slow reads', () => {
     await expect(nextActionRegion(page)).toBeVisible()
     expect(slow()).toEqual(first)
 
-    // The Blueprints route polls every 15 s.
+    // The Blueprints route has no interval; the change stream's connect and
+    // each change frame read blueprints again.
+    const beforeRoute = server.count(reads.blueprints)
     await page.goto('/w/demo/blueprints')
-    await expect.poll(() => server.count(reads.blueprints)).toBeGreaterThan(0)
+    await expect.poll(() => server.count(reads.blueprints)).toBe(beforeRoute + 1)
     const landed = server.count(reads.blueprints)
-    await page.clock.runFor(15_000)
+    await page.clock.runFor(30_000)
+    expect(server.count(reads.blueprints)).toBe(landed)
+    await changes.ready()
+    await page.clock.runFor(250)
     await expect.poll(() => server.count(reads.blueprints)).toBe(landed + 1)
-    await page.clock.runFor(15_000)
+    await changes.activity(plainTask.id)
+    await page.clock.runFor(250)
     await expect.poll(() => server.count(reads.blueprints)).toBe(landed + 2)
+    await page.clock.runFor(30_000)
+    expect(server.count(reads.blueprints)).toBe(landed + 2)
   })
 
   test('a failed identity read denies, and saving, switching, and signing out still refresh slow reads', async ({

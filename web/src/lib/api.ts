@@ -761,6 +761,15 @@ function githubAppErrorMessage(body: string, fallback: string) {
   }
 }
 
+/**
+ * The workspace change stream's address (component-http-api, Workspace change
+ * stream). The shell opens it with `EventSource`, which sends the session
+ * cookie (component-web-dashboard, Workspace change stream).
+ */
+export function workspaceChangeStreamURL(workspace: string) {
+  return `/v1/workspaces/${encodeURIComponent(workspace)}/changes`
+}
+
 export async function fetchWorkspaceGitHubApp(workspace: string) {
   const response = await fetch(`/v1/workspaces/${encodeURIComponent(workspace)}/github-app`)
   if (!response.ok)

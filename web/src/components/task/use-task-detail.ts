@@ -30,9 +30,10 @@ export function useTaskDetail(taskId: string) {
   const query = useQuery({
     queryKey: taskDetailQueryKey(workspace, taskId),
     queryFn: (context) => withQuerySignal(context, (signal) => fetchTaskActivity(workspace, taskId, signal)),
-    // A dependency can merge without emitting an event on this task. Poll only
-    // while the task reports active blockers; SSE remains the fast path.
-    refetchInterval: (current) => ((current.state.data?.task.blocking_task_ids?.length ?? 0) > 0 ? 15_000 : false),
+    // No interval. A dependency can merge without emitting an event on this
+    // task, so the workspace change stream also refreshes this entry when a
+    // frame names one of its blocking tasks (component-web-dashboard,
+    // Workspace change stream).
     // A bounded view can weigh more than a megabyte, and the task stream keeps
     // it current, so returning to the tab sends no detail read.
     refetchOnWindowFocus: false,
