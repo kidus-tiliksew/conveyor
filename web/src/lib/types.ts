@@ -1028,6 +1028,28 @@ export interface WorkspaceGitHubAppStatus {
   installation_account: string
   repositories: Array<{ name: string; covered: boolean }>
   installation_url?: string
+  webhook: WorkspaceGitHubWebhookStatus
+}
+
+// The secret-free webhook projection of GET …/github-app
+// (component-identity-membership; req-quiet-idle-runtime AC-3.6). A workspace
+// has webhook delivery (`configured`) from its first accepted delivery.
+export interface WorkspaceGitHubWebhookStatus {
+  receiver_url: string
+  events: string[]
+  secret_configured: boolean
+  secret_set_at: string | null
+  last_delivery_at: string | null
+  configured: boolean
+}
+
+// The one response that carries the webhook secret (POST …/webhook-secret).
+// Callers keep `secret` in component state only (component-web-dashboard).
+export interface GeneratedGitHubWebhookSecret {
+  secret: string
+  secret_set_at: string
+  receiver_url: string
+  events: string[]
 }
 
 export interface WorkspaceGitHubAppManifest {
@@ -1038,7 +1060,8 @@ export interface WorkspaceGitHubAppManifest {
     redirect_url: string
     setup_url: string
     setup_on_update: boolean
-    hook_attributes: { active: boolean }
+    hook_attributes: { active: boolean; url: string }
+    default_events: string[]
     default_permissions: Record<string, string>
   }
   state: string

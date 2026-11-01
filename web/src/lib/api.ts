@@ -870,6 +870,18 @@ export async function createWorkspaceGitHubAppManifest(workspace: string) {
   return response.json() as Promise<import('./types').WorkspaceGitHubAppManifest>
 }
 
+// The response is the only one that carries the webhook secret; it is
+// served with Cache-Control: no-store (component-identity-membership).
+export async function createWorkspaceGitHubWebhookSecret(workspace: string) {
+  const response = await fetch(`/v1/workspaces/${encodeURIComponent(workspace)}/github-app/webhook-secret`, {
+    method: 'POST',
+    headers: mutationHeaders(),
+  })
+  if (!response.ok)
+    throw new Error(githubAppErrorMessage(await response.text(), 'Could not generate a webhook secret.'))
+  return response.json() as Promise<import('./types').GeneratedGitHubWebhookSecret>
+}
+
 export async function disconnectWorkspaceGitHubApp(workspace: string) {
   const response = await fetch(`/v1/workspaces/${encodeURIComponent(workspace)}/github-app`, {
     method: 'DELETE',
