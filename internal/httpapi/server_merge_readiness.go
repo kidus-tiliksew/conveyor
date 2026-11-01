@@ -17,15 +17,10 @@ import (
 	"github.com/kidus-tiliksew/conveyor/internal/store"
 )
 
+// mergeReadinessReuse bounds forge reads from repeated detail and next-action
+// reads: a successful readiness result is reused for this long per task, task
+// state, and approved head. The merge route always rechecks readiness itself.
 const mergeReadinessReuse = 10 * time.Second
-
-// taskRunMergeExecutionGate projects the remaining merge act of an approved
-// task behind the merge gate (req-review-gates-evidence AC-1.1;
-// component-mcp-protocol, Run-order plane). A gate-off approved task never
-// reaches here: the runtime's merge path owns it. The readiness read is the
-// task detail's ReadMergeReadiness (component-submission-merge); this
-// projection never requests a merge. A missing hook or failed read yields a
-// gate without readiness, which no client treats as mergeable.
 
 // mergeReadinessCache reuses successful merge-readiness reads for
 // mergeReadinessReuse. Failed reads are never cached, and a key covers
