@@ -15,6 +15,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/kidus-tiliksew/conveyor/internal/changes"
 	"github.com/kidus-tiliksew/conveyor/internal/config"
 	"github.com/kidus-tiliksew/conveyor/internal/core"
 	"github.com/kidus-tiliksew/conveyor/internal/dispatch"
@@ -56,8 +57,16 @@ type Service struct {
 	RetryDelay   time.Duration
 	RetryMaximum time.Duration
 	RetryLimit   int
-	consultedMu  sync.Mutex
-	consulted    map[string]struct{}
+	// Changes is the backend's change-notice hub; await_review reads again
+	// only on its task notices. Nil selects the hub of a store that exposes
+	// Changes() (component-work-orders, await_review; DEC-99(1)).
+	Changes *changes.Hub
+	// PeerTail, when positive, also wakes await_review on that period.
+	// conveyord sets it only for peers on a backend without change
+	// notification (feature-quiet-idle-runtime, Peers).
+	PeerTail    time.Duration
+	consultedMu sync.Mutex
+	consulted   map[string]struct{}
 }
 
 type Context struct {
@@ -1598,8 +1607,22 @@ func (s *Service) AwaitReview(ctx context.Context, id, session string, wait time
 	}
 	deadline := time.NewTimer(wait)
 	defer deadline.Stop()
-	ticker := time.NewTicker(time.Second)
-	defer ticker.Stop()
+	// Subscribe before the first read, so a round that settles between that
+	// read and the first wait leaves its notice buffered (component-work-orders,
+	// await_review; feature-quiet-idle-runtime, "Pushed task streams and
+	// `await_review`"; req-quiet-idle-runtime AC-1.2, AC-2.3).
+	workspace, err := s.awaitWorkspace(ctx, order.TaskID)
+	if err != nil {
+		return nil, err
+	}
+	subscription := s.changeHub().SubscribeTask(workspace, order.TaskID)
+	defer subscription.Close()
+	var peer <-chan time.Time
+	if s.PeerTail > 0 {
+		ticker := time.NewTicker(s.PeerTail)
+		defer ticker.Stop()
+		peer = ticker.C
+	}
 	for {
 		if result, resultErr := s.latestReviewResult(ctx, order.TaskID, order.UpdatedAt); resultErr == nil {
 			return result, nil
@@ -1611,9 +1634,34 @@ func (s *Service) AwaitReview(ctx context.Context, id, session string, wait time
 			return nil, ctx.Err()
 		case <-deadline.C:
 			return s.pendingReviewProgress(ctx, order.TaskID)
-		case <-ticker.C:
+		case <-subscription.C():
+		case <-peer:
 		}
 	}
+}
+
+// changeHub is Changes, or the hub of a store that exposes Changes().
+func (s *Service) changeHub() *changes.Hub {
+	if s.Changes != nil {
+		return s.Changes
+	}
+	if source, ok := s.Store.(interface{ Changes() *changes.Hub }); ok {
+		return source.Changes()
+	}
+	return nil
+}
+
+// awaitWorkspace is the workspace whose task notices await_review receives:
+// the request's, or the task's when the request carries none.
+func (s *Service) awaitWorkspace(ctx context.Context, taskID string) (string, error) {
+	if workspace, ok := store.WorkspaceFromContext(ctx); ok {
+		return workspace, nil
+	}
+	task, err := s.Store.GetTask(ctx, taskID)
+	if err != nil {
+		return "", err
+	}
+	return task.Workspace, nil
 }
 
 const awaitReviewRecommendation = "keep awaiting until the latest seat execution deadline"
