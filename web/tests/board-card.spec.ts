@@ -275,8 +275,6 @@ async function mockBoard(
         },
       })
     }
-    if (path === '/v1/workers')
-      return route.fulfill({ json: { workers: [], worker_expected: false, worker_available: false } })
     return route.fulfill({ json: [] })
   })
   return counts

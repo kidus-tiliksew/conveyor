@@ -1,5 +1,5 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { Link } from '@tanstack/react-router'
+import { Link, useLocation } from '@tanstack/react-router'
 import { CheckCircle2, Plus, Save, Trash2 } from 'lucide-react'
 import { useEffect, useMemo, useState } from 'react'
 import {
@@ -17,32 +17,35 @@ import { Field } from '../components/workspace/field'
 import { MembersSection } from '../components/workspace/members-section'
 import { VerificationKits } from '../components/workspace/verification-kits'
 import { VerificationSettings } from '../components/workspace/verification-settings'
-import {
-  ConfigValidationError,
-  fetchWorkers,
-  fetchWorkspaceConfig,
-  issueWorkerPairing,
-  revokeWorker,
-  updateWorkspaceConfig,
-} from '../lib/api'
+import { ConfigValidationError, fetchWorkspaceConfig, updateWorkspaceConfig } from '../lib/api'
 import { githubSlug } from '../lib/repository'
-import type { WorkerList, WorkspaceConfigDocument, WorkspaceConfigRepo } from '../lib/types'
+import type { WorkspaceConfigDocument, WorkspaceConfigRepo } from '../lib/types'
 import { cn } from '../lib/utils'
 
-type TabId = 'general' | 'policy' | 'verification' | 'workers' | 'members'
+// The selected tab is page state, never part of the address, so ordinary
+// navigation to this page opens on Policy. Conveyor has no workers, so no tab,
+// badge, or panel describes them (DEC-97(1)).
+type TabId = 'general' | 'policy' | 'verification' | 'members'
+
+// A link saved while the retired Workers tab was open carries `?tab=workers`
+// and opens General as a bounded compatibility fallback. No other `tab` value
+// selects a tab, and the page never writes one (component-web-dashboard,
+// Workspace page).
+function initialTab(searchStr: string): TabId {
+  return new URLSearchParams(searchStr).get('tab') === 'workers' ? 'general' : 'policy'
+}
 
 const TABS: Array<{ id: TabId; label: string }> = [
   { id: 'general', label: 'General' },
   { id: 'policy', label: 'Policy' },
   { id: 'verification', label: 'Verification' },
-  { id: 'workers', label: 'Workers' },
   { id: 'members', label: 'Members' },
 ]
 
 // Which tab owns a config section, for dirty markers and validation-error routing.
 // The verify_stage switch lives in execution but belongs to the Verification
 // tab, so the policy slice compares execution without it.
-const TAB_SLICES: Record<Exclude<TabId, 'workers' | 'members'>, (document: WorkspaceConfigDocument) => unknown> = {
+const TAB_SLICES: Record<Exclude<TabId, 'members'>, (document: WorkspaceConfigDocument) => unknown> = {
   general: (document) => [
     document.work_order_queue_timeout,
     document.repos,
@@ -75,19 +78,10 @@ export function WorkspacePage() {
     queryFn: () => fetchWorkspaceConfig(workspace),
     enabled: Boolean(workspace),
   })
-  const workers = useQuery({
-    queryKey: ['workers', workspace],
-    queryFn: () => fetchWorkers(workspace),
-    enabled: Boolean(workspace),
-    refetchInterval: () => (document.visibilityState === 'visible' ? 15_000 : false),
-    refetchIntervalInBackground: false,
-    refetchOnWindowFocus: true,
-    refetchOnReconnect: true,
-  })
-  const [tab, setTab] = useState<TabId>('policy')
+  const searchStr = useLocation({ select: (location) => location.searchStr })
+  const [tab, setTab] = useState<TabId>(() => initialTab(searchStr))
   const [draft, setDraftState] = useState<WorkspaceConfigDocument | null>(null)
   const [saved, setSaved] = useState('')
-  const [pairing, setPairing] = useState('')
   useEffect(() => {
     setDraftState(query.data ? structuredClone(query.data.document) : null)
   }, [query.data, workspace])
@@ -100,15 +94,6 @@ export function WorkspacePage() {
       setSaved(`Recorded config.updated event ${receipt.event_id} · version ${receipt.version}`)
     },
   })
-  const pair = useMutation({
-    mutationFn: () => issueWorkerPairing(workspace),
-    onSuccess: (result) =>
-      setPairing(`${result.pairing_token} (expires ${new Date(result.expires_at).toLocaleTimeString()})`),
-  })
-  const revoke = useMutation({
-    mutationFn: (id: string) => revokeWorker(workspace, id),
-    onSuccess: () => void queryClient.invalidateQueries({ queryKey: ['workers', workspace] }),
-  })
 
   const setDraft = (value: WorkspaceConfigDocument) => {
     setDraftState(value)
@@ -117,7 +102,7 @@ export function WorkspacePage() {
   const serverDocument = query.data?.document
   const dirtyTabs = useMemo(() => {
     if (!draft || !serverDocument) return [] as TabId[]
-    return (Object.keys(TAB_SLICES) as Array<Exclude<TabId, 'workers' | 'members'>>).filter(
+    return (Object.keys(TAB_SLICES) as Array<Exclude<TabId, 'members'>>).filter(
       (id) => JSON.stringify(TAB_SLICES[id](draft)) !== JSON.stringify(TAB_SLICES[id](serverDocument)),
     )
   }, [draft, serverDocument])
@@ -166,7 +151,7 @@ export function WorkspacePage() {
 
         {draft && canManageWorkspace ? (
           <>
-            {/* Five tabs exceed a phone width; the row scrolls inside itself. */}
+            {/* When the tabs exceed a phone width, the row scrolls inside itself. */}
             <div
               role="tablist"
               className="mt-6 flex gap-1 overflow-x-auto border-b border-border [scrollbar-width:none] [&::-webkit-scrollbar]:hidden"
@@ -189,11 +174,6 @@ export function WorkspacePage() {
                     )}
                   >
                     {entry.label}
-                    {entry.id === 'workers' && (
-                      <span className="rounded-full bg-raised px-1.5 text-[11px] leading-4 text-muted">
-                        {workers.data?.workers.length ?? 0}
-                      </span>
-                    )}
                     {(dirty || errored) && (
                       <span
                         title={errored ? 'Validation errors' : 'Unsaved changes'}
@@ -219,14 +199,6 @@ export function WorkspacePage() {
                   <VerificationSettings draft={draft} setDraft={setDraft} />
                   <VerificationKits key={workspace} workspace={workspace} />
                 </div>
-              )}
-              {tab === 'workers' && (
-                <WorkersTab
-                  data={workers.data}
-                  pairing={pairing}
-                  onPair={() => pair.mutate()}
-                  onRevoke={(id) => revoke.mutate(id)}
-                />
               )}
               {tab === 'members' && <MembersSection />}
             </div>
@@ -342,7 +314,7 @@ function GeneralTab({
         <CardContent>
           <Field
             label="Work-order queue timeout"
-            hint="How long a task may wait for a worker before it is marked stalled."
+            hint="How long a work order may wait in the queue before it is marked stalled."
           >
             <Input
               value={draft.work_order_queue_timeout}
@@ -665,114 +637,6 @@ function PolicyTab({
     </div>
   )
 }
-function WorkersTab({
-  data,
-  pairing,
-  onPair,
-  onRevoke,
-}: {
-  data?: WorkerList
-  pairing: string
-  onPair: () => void
-  onRevoke: (id: string) => void
-}) {
-  return (
-    <Card>
-      <CardHeader>
-        <CardTitle>Workers</CardTitle>
-        <div className="flex items-center gap-2">
-          <Badge variant={!data?.worker_expected || data.worker_available ? 'positive' : 'attention'}>
-            {!data?.worker_expected
-              ? 'Pull claiming'
-              : data.worker_available
-                ? 'Worker available'
-                : 'Worker unavailable'}
-          </Badge>
-          <Button size="sm" variant="secondary" onClick={onPair}>
-            Issue pairing token
-          </Button>
-        </div>
-      </CardHeader>
-      <CardContent className="space-y-3">
-        {pairing && (
-          <p className="break-all rounded-md border border-border bg-surface p-2 font-mono text-xs">{pairing}</p>
-        )}
-        {data?.worker_expected && !data.worker_available && (
-          <div className="rounded-md border border-attention/40 bg-attention-soft p-3 text-xs leading-5 text-muted">
-            <p>{data?.worker_unavailable_reason}</p>
-            <p>
-              Restart an enrolled worker with its saved credential; ordinary restarts do not require a new pairing
-              token.
-            </p>
-          </div>
-        )}
-        {(data?.rate_limits?.length ?? 0) > 0 && (
-          <div className="rounded-md border border-border bg-surface p-3">
-            <p className="text-xs font-semibold uppercase tracking-wider text-faint">Provider rate limits</p>
-            <div className="mt-2 space-y-2">
-              {data!.rate_limits!.map((entry) => {
-                const values = [
-                  entry.rate_limit.remaining != null && entry.rate_limit.limit != null
-                    ? `${entry.rate_limit.remaining} of ${entry.rate_limit.limit} remaining`
-                    : undefined,
-                  entry.rate_limit.reset_at
-                    ? `resets ${new Date(entry.rate_limit.reset_at).toLocaleString()}`
-                    : undefined,
-                  `observed ${new Date(entry.observed_at).toLocaleString()}`,
-                ]
-                  .filter(Boolean)
-                  .join(' · ')
-                return (
-                  <div
-                    key={`${entry.harness}-${entry.model ?? ''}`}
-                    className="flex flex-wrap items-baseline gap-x-2 text-xs"
-                  >
-                    <span className="font-mono font-medium">
-                      {entry.harness}
-                      {entry.model ? ` / ${entry.model}` : ''}
-                    </span>
-                    <Badge variant="mono">{entry.rate_limit.status}</Badge>
-                    <span className="text-muted">{values}</span>
-                  </div>
-                )
-              })}
-            </div>
-            <p className="mt-2 text-[11px] text-faint">
-              Self-reported telemetry only; Conveyor does not use it to gate or route work.
-            </p>
-          </div>
-        )}
-        {(data?.workers ?? []).map((worker) => (
-          <div key={worker.id} className="rounded-md border border-border p-3">
-            <div className="flex items-center justify-between">
-              <div>
-                <p className="text-sm font-medium">{worker.name}</p>
-                <p className="font-mono text-xs text-faint">{worker.id}</p>
-                <p className="text-xs text-muted">
-                  {worker.last_seen_at
-                    ? `Last heartbeat ${new Date(worker.last_seen_at).toLocaleString()}`
-                    : 'No heartbeat recorded'}
-                  {worker.lease_expires_at && new Date(worker.lease_expires_at) <= new Date() ? ' · disconnected' : ''}
-                </p>
-              </div>
-              <Button size="sm" variant="destructive" onClick={() => onRevoke(worker.id)}>
-                Revoke
-              </Button>
-            </div>
-            <div className="mt-2 flex flex-wrap gap-1">
-              {(worker.probes ?? []).map((probe) => (
-                <Badge key={`${probe.harness}-${probe.checked_at}`} variant={probe.healthy ? 'positive' : 'attention'}>
-                  {probe.harness}: {probe.healthy ? 'healthy' : 'unhealthy'}
-                </Badge>
-              ))}
-            </div>
-          </div>
-        ))}
-      </CardContent>
-    </Card>
-  )
-}
-
 function ReadOnly({
   snapshot,
   configuration,

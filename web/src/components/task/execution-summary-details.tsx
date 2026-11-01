@@ -1,12 +1,9 @@
 import { Link } from '@tanstack/react-router'
 import { AlertTriangle, CircleDashed } from 'lucide-react'
-import { useLayoutEffect, useRef } from 'react'
 import { type CurrentExecutionState, dependencyRelationLabel } from '../../lib/activity'
 import { relatedTaskRoute, type TaskRouteVariant } from '../../lib/task-route'
-import type { WorkOrderActivitySnapshot } from '../../lib/types'
-import { absoluteTime, cn } from '../../lib/utils'
+import { cn } from '../../lib/utils'
 import { useWorkspaceSelection } from '../app-shell'
-import { Disclosure } from '../ui/disclosure'
 
 // The current order's execution state as the next-action card prints it
 // (component-web-task-surfaces, Next-action card). Every line comes from
@@ -99,44 +96,6 @@ export function ExecutionFactRows({
         </div>
       )}
     </dl>
-  )
-}
-
-export function RecentActivity({ snapshot }: { snapshot: WorkOrderActivitySnapshot }) {
-  const outputRef = useRef<HTMLPreElement>(null)
-
-  useLayoutEffect(() => {
-    if (outputRef.current) outputRef.current.scrollTop = outputRef.current.scrollHeight
-  }, [snapshot.content])
-
-  return (
-    <section
-      aria-label="Client machine activity"
-      className="grid grid-cols-[auto_minmax(0,1fr)] items-baseline gap-x-2 border-t border-border/60 pt-2.5"
-    >
-      <details className="contents [&::details-content]:col-span-2">
-        <summary
-          aria-label="Client machine activity"
-          className="flex cursor-pointer flex-wrap items-baseline gap-2 rounded-sm focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary"
-        >
-          <h3 className="text-xs font-medium text-foreground">Client machine activity</h3>
-        </summary>
-        <pre
-          ref={outputRef}
-          className="mt-1.5 max-h-40 overflow-auto whitespace-pre-wrap rounded border border-border bg-background p-2 font-mono text-[11px] leading-5 text-foreground"
-        >
-          {snapshot.content}
-        </pre>
-      </details>
-      {/* Inspecting the capture time must not toggle the output summary. */}
-      <Disclosure
-        className="col-start-2 row-start-1 justify-self-start"
-        triggerClassName="text-[11px] text-faint"
-        content={absoluteTime(snapshot.captured_at)}
-      >
-        <time dateTime={snapshot.captured_at}>Captured {absoluteTime(snapshot.captured_at)}</time>
-      </Disclosure>
-    </section>
   )
 }
 

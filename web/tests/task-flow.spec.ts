@@ -233,8 +233,6 @@ async function mockAPI(
         json: items.map((item) => ({ ...item, next_action: { ...action, choices: undefined } })),
         headers: { 'X-Conveyor-Total': '2', 'X-Conveyor-Limit': '100', 'X-Conveyor-Offset': '0' },
       })
-    if (path === '/v1/workers')
-      return route.fulfill({ json: { workers: [], worker_expected: false, worker_available: false } })
     return route.fulfill({ json: [] })
   })
   return {

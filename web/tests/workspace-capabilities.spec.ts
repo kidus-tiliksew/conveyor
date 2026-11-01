@@ -84,8 +84,6 @@ async function mockShell(page: Page, options: ShellOptions) {
     if (path === '/v1/workspace')
       return route.fulfill({ json: { workspace: url.searchParams.get('workspace_id'), max_bounces: 2, repos: [] } })
     if (path === '/v1/workspace/config') return route.fulfill({ json: { document: workspaceConfig, version: 1 } })
-    if (path === '/v1/workers')
-      return route.fulfill({ json: { workers: [], worker_expected: false, worker_available: false } })
     const members = /^\/v1\/workspaces\/([^/]+)\/members$/.exec(path)
     if (members && request.method() === 'GET')
       return route.fulfill({

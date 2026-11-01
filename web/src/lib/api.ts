@@ -34,9 +34,7 @@ import type {
   TaskRestartResult,
   TaskState,
   VersionedWorkspaceConfig,
-  WorkerList,
   WorkOrder,
-  WorkOrderTranscriptCaptureContent,
   WorkspaceConfigDocument,
   WorkspaceConfigReceipt,
   WorkspaceInfo,
@@ -412,22 +410,6 @@ export async function fetchTaskAudit(
   const response = await fetch(`${path}?workspace_id=${encodeURIComponent(workspace)}`, { signal })
   if (!response.ok) throw new Error(apiErrorMessage(await response.text(), response.statusText))
   return response.json() as Promise<TaskAuditResponse>
-}
-
-// One transcript capture's content, read only while its disclosure is open
-// (component-web-task-surfaces, Transcript disclosures). The workspace is
-// always explicit.
-export async function fetchTaskTranscriptCapture(
-  workspace: string,
-  taskId: string,
-  workOrderId: string,
-  attemptId: string,
-  signal: AbortSignal,
-) {
-  const path = `/v1/tasks/${encodeURIComponent(taskId)}/work-orders/${encodeURIComponent(workOrderId)}/transcript-captures/${encodeURIComponent(attemptId)}`
-  const response = await fetch(workspaceURL(path, workspace), { signal })
-  if (!response.ok) throw new Error(apiErrorMessage(await response.text(), response.statusText))
-  return response.json() as Promise<WorkOrderTranscriptCaptureContent>
 }
 
 export function fetchWorkspace(workspace: string) {
@@ -1695,29 +1677,6 @@ export class TaskIntakeError extends Error {
   }
 }
 
-export async function fetchWorkers(workspace: string) {
-  const response = await fetch(workspaceURL('/v1/workers', workspace), { headers: mutationHeaders() })
-  if (!response.ok) throw new Error(apiErrorMessage(await response.text(), response.statusText))
-  const result = (await response.json()) as WorkerList
-  return { ...result, workers: (result.workers ?? []).map((worker) => ({ ...worker, probes: worker.probes ?? [] })) }
-}
-export async function issueWorkerPairing(workspace: string) {
-  const response = await fetch(workspaceURL('/v1/workers/pairings', workspace), {
-    method: 'POST',
-    headers: mutationHeaders(),
-    body: JSON.stringify({ ttl_seconds: 600 }),
-  })
-  if (!response.ok) throw new Error(apiErrorMessage(await response.text(), response.statusText))
-  return response.json() as Promise<{ pairing_token: string; expires_at: string }>
-}
-export async function revokeWorker(workspace: string, id: string) {
-  const response = await fetch(workspaceURL(`/v1/workers/${encodeURIComponent(id)}`, workspace), {
-    method: 'DELETE',
-    headers: mutationHeaders(),
-  })
-  if (!response.ok) throw new Error(apiErrorMessage(await response.text(), response.statusText))
-}
-
 export async function createTask(
   workspace: string,
   input: CreateTaskInput,
@@ -1828,7 +1787,6 @@ export async function preemptWorkOrder(workspace: string, workOrderId: string, r
     work_order: WorkOrder
     revoked_attempt_id: string
     revoked_session_id: string
-    revoked_worker_id: string
     grace_bound: string
   }>
 }

@@ -16,10 +16,10 @@ import { type Proposal, proposalIdentity } from './system-design-proposal-card'
 import { TaskContextAttachmentDialog } from './task-context-attachment-dialog'
 import { VerificationCheckpointGrounds } from './verification-checkpoint-grounds'
 
-// Whether the current order needs a worker-recovery act. The current order and
+// Whether the current order needs a recovery act. The current order and
 // its state come from the server's next action (deriveCurrentExecutionState);
 // a plan revision is decided at the gate, never recovered here.
-export function hasWorkerRecovery(item: ActivityItem, state: CurrentExecutionState | undefined) {
+export function hasOrderRecovery(item: ActivityItem, state: CurrentExecutionState | undefined) {
   return (
     item.next_action?.kind !== 'plan_revision' &&
     state != null &&
@@ -168,7 +168,7 @@ export function WorkOrderRecoveryCard({
   item: ActivityItem
   state: CurrentExecutionState | undefined
 }) {
-  if (!state || !hasWorkerRecovery(item, state)) return null
+  if (!state || !hasOrderRecovery(item, state)) return null
   return <RecoveryState item={item} state={state} />
 }
 

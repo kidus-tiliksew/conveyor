@@ -1995,31 +1995,6 @@ function activity(taskId: string, overflowing: boolean, liveEventCount = 18) {
               unsatisfiable_edge: true,
             }
           : undefined,
-    worker_status:
-      taskId === 'interrupted-review'
-        ? {
-            available: false,
-            required_harnesses: ['claude'],
-            reason: "no healthy worker can serve the task's required harnesses; last heartbeat was 2m ago",
-            last_heartbeat_at: createdAt,
-            last_heartbeat_age: '2m0s',
-            queue_context: 'interrupted',
-          }
-        : taskId === 'null-worker-status'
-          ? {
-              available: false,
-              required_harnesses: null,
-              reason: "no healthy worker can serve the task's required harnesses",
-              queue_context: 'never_started',
-            }
-          : taskId === 'queued-worker'
-            ? {
-                available: false,
-                required_harnesses: ['codex'],
-                reason: "no healthy worker can serve the task's required harnesses",
-                queue_context: 'never_started',
-              }
-            : undefined,
     merge_readiness:
       taskId === 'merge-unknown'
         ? { state: 'UNKNOWN', head_sha: 'head-1' }
@@ -2520,7 +2495,6 @@ test('a claimed attempt exposes reasoned operator preemption with the renewal gr
         work_order: { id: 'setup-claimed-implement-1', state: 'queued' },
         revoked_attempt_id: 'attempt-1',
         revoked_session_id: 'session-1',
-        revoked_worker_id: 'worker-1',
         grace_bound: 'one renewal interval',
       },
     })
@@ -2568,15 +2542,7 @@ test('preemption is rendered as attributed activity rather than a failure', asyn
   await expect(page.getByText(/Replace the setup contract · stops within one renewal interval/)).toBeVisible()
 })
 
-test('task detail tolerates null required harnesses from a legacy worker status', async ({ page }) => {
-  await page.goto('/w/demo/tasks/null-worker-status/full')
-  await expect(page.getByText('No healthy enrolled worker can serve this queued work')).toBeVisible()
-  await expect(page.getByRole('region', { name: 'Enrolled worker unavailable' })).not.toHaveClass(/bg-attention-soft/)
-  await expect(page.getByText('Required harnesses: not yet routed.')).toBeVisible()
-  await expect(page.getByText('Something went wrong!')).toHaveCount(0)
-})
-
-test('suppressed worker order exposes failure state and audited recovery action', async ({ page }) => {
+test('suppressed order exposes failure state and audited recovery action', async ({ page }) => {
   let recoveryRequest = ''
   await page.route('**/v1/work-orders/*/recover*', async (route) => {
     recoveryRequest = route.request().postData() ?? ''
@@ -3913,238 +3879,66 @@ test('a running attempt becoming paused is announced through the live region', a
   await expect(page.getByRole('status')).toContainText('Retry the implementation after the provider limit has cleared.')
 })
 
-test('client machine activity is collapsed, refreshes, and disappears after termination', async ({ page }) => {
-  let activityRequests = 0
-  await page.route('**/v1/tasks/attempt-observability/activity*', async (route) => {
-    activityRequests++
-    const item = activity('usage-suppressed', false)
-    item.task.id = 'attempt-observability'
-    item.work_orders[0] = {
-      ...item.work_orders[0],
-      task_id: 'attempt-observability',
-      state: activityRequests < 3 ? 'claimed' : 'completed',
-      claimable: false,
-      attempt_id: 'attempt-live',
-      last_attempt_id: activityRequests < 3 ? undefined : 'attempt-live',
-      activity_snapshot:
-        activityRequests < 3
-          ? {
-              attempt_id: 'attempt-live',
-              content:
-                activityRequests === 1
-                  ? `building dashboard\n${Array.from({ length: 20 }, (_, index) => `first output ${index}`).join('\n')}\nfirst tail`
-                  : `running tests\n${Array.from({ length: 20 }, (_, index) => `latest output ${index}`).join('\n')}\nlatest tail`,
-              captured_at: activityRequests === 1 ? '2026-07-15T12:01:00Z' : '2026-07-15T12:02:00Z',
-            }
-          : undefined,
-    }
-    await route.fulfill({ json: item })
-  })
-
-  await page.goto('/w/demo/tasks/attempt-observability/full')
-  const activityRegion = page.getByRole('region', { name: 'Client machine activity' })
-  const disclosure = activityRegion.locator('details')
-  const toggle = activityRegion.locator('summary')
-  const output = activityRegion.locator('pre')
-  await expect(page.getByRole('region', { name: 'Recent activity' })).toHaveCount(0)
-  await expect(activityRegion.getByRole('heading', { name: 'Client machine activity' })).toBeVisible()
-  await expect(disclosure).not.toHaveAttribute('open', '')
-  await expect(output).not.toBeVisible()
-
-  await toggle.focus()
-  await toggle.press('Enter')
-  await expect(disclosure).toHaveAttribute('open', '')
-  await expect(output).toContainText('first tail')
-  await expect(activityRegion.getByText(/Captured/)).toBeVisible()
-  await expect.poll(() => output.evaluate((element) => element.scrollTop)).toBeGreaterThan(0)
-
-  await page.reload()
-  await expect(disclosure).not.toHaveAttribute('open', '')
-  await expect(output).not.toBeVisible()
-  await toggle.click()
-  await expect(disclosure).toHaveAttribute('open', '')
-  await expect(output).toContainText('latest tail')
-  await expect(output).not.toContainText('first tail')
-  await expect.poll(() => output.evaluate((element) => element.scrollTop)).toBeGreaterThan(0)
-
-  await page.reload()
-  await expect(activityRegion).toHaveCount(0)
-})
-
-// A task whose first work order ended two attempts: one truncated capture with
-// text and one empty capture. The fake server sends their metadata only and
-// serves each capture's content from this fixture (tests/helpers/bounded-detail).
-function transcriptActivity(taskId: string, title: string) {
-  const item = activity('timeout', false)
-  item.task = { ...item.task, id: taskId, title }
-  item.jobs = item.jobs.map((job) => ({ ...job, task_id: taskId }))
+// The server records no activity snapshot or transcript capture and has no
+// workers (DEC-97(1)). A response that still carries those fields renders
+// none of them, and task detail never asks for them.
+function staleFieldActivity(taskId: string, state: 'claimed' | 'queued') {
+  const item = activity('usage-suppressed', false)
+  item.task = { ...item.task, id: taskId }
   item.work_orders[0] = {
     ...item.work_orders[0],
     task_id: taskId,
+    state,
+    claimable: state === 'queued',
+    attempt_id: state === 'claimed' ? 'attempt-live' : undefined,
+    activity_snapshot: { attempt_id: 'attempt-live', content: 'stale snapshot marker', captured_at: createdAt },
     transcript_captures: [
       {
         attempt_id: 'attempt-ended',
-        content: `captured transcript tail marker ${taskId}`,
+        content: 'stale transcript marker',
         termination_reason: 'execution deadline elapsed',
         truncated: true,
-        captured_at: '2026-07-15T12:30:00Z',
-      },
-      {
-        attempt_id: 'attempt-empty',
-        content: '',
-        termination_reason: 'harness exited',
-        truncated: false,
-        captured_at: '2026-07-15T12:40:00Z',
+        captured_at: createdAt,
       },
     ],
+  } as (typeof item.work_orders)[number]
+  return {
+    ...item,
+    worker_status: {
+      available: false,
+      required_harnesses: ['codex'],
+      reason: "no healthy worker can serve the task's required harnesses",
+      queue_context: 'never_started',
+    },
   }
-  return item
 }
 
-// Every transcript content read the page starts, and a gate that can fail or
-// hold the next one (component-web-task-surfaces, Transcript disclosures).
-async function routeTranscriptReads(page: Page) {
-  const requests: string[] = []
-  page.on('request', (request) => {
-    const url = new URL(request.url())
-    if (url.pathname.includes('/transcript-captures/')) requests.push(`${url.pathname}${url.search}`)
-  })
-  const gate = { fail: false, hold: undefined as Promise<void> | undefined }
-  await page.route(/\/transcript-captures\//, async (route) => {
-    if (gate.fail) {
-      gate.fail = false
-      await route.fulfill({ status: 500, contentType: 'text/plain', body: 'internal server error\n' })
-      return
+for (const surface of ['full', 'board sheet'] as const) {
+  test(`task detail shows no transcript, client machine activity, or worker status on the ${surface}`, async ({
+    page,
+  }) => {
+    const retired: string[] = []
+    page.on('request', (request) => {
+      const path = new URL(request.url()).pathname
+      if (path.includes('/transcript-captures/') || path.startsWith('/v1/workers')) retired.push(path)
+    })
+    for (const state of ['claimed', 'queued'] as const) {
+      const taskId = `stale-fields-${state}`
+      await page.route(`**/v1/tasks/${taskId}/activity*`, (route) =>
+        route.fulfill({ json: staleFieldActivity(taskId, state) }),
+      )
+      await page.goto(surface === 'full' ? `/w/demo/tasks/${taskId}/full` : `/w/demo/tasks/${taskId}`)
+      const timeline = page.getByRole('region', { name: 'Execution event timeline' })
+      await expect(timeline).toBeVisible()
+      await expect(page.getByRole('region', { name: 'Client machine activity' })).toHaveCount(0)
+      await expect(page.getByRole('region', { name: 'Enrolled worker unavailable' })).toHaveCount(0)
+      await expect(page.getByText(/stale snapshot marker|stale transcript marker/)).toHaveCount(0)
+      await expect(page.getByText(/Attempt .* transcript/)).toHaveCount(0)
+      await expect(page.getByText(/enrolled worker|pairing token/i)).toHaveCount(0)
     }
-    if (gate.hold) await gate.hold
-    // The page may have abandoned the read while it was held.
-    await route.fallback().catch(() => {})
+    expect(retired).toEqual([])
   })
-  return { requests, gate }
 }
-
-test('terminated attempt transcripts load only when their disclosure opens', async ({ page }) => {
-  const streams = await controlTaskStreams(page)
-  const { requests, gate } = await routeTranscriptReads(page)
-  let detailReads = 0
-  await page.route('**/v1/tasks/attempt-transcript/activity*', async (route) => {
-    detailReads++
-    await route.fulfill({ json: transcriptActivity('attempt-transcript', 'Transcript task') })
-  })
-  const orderId = transcriptActivity('attempt-transcript', 'Transcript task').work_orders[0].id
-  const contentPath = (attempt: string) =>
-    `/v1/tasks/attempt-transcript/work-orders/${orderId}/transcript-captures/${attempt}?workspace_id=demo`
-
-  await page.goto('/w/demo/tasks/attempt-transcript/full')
-  const ended = page.locator('details').filter({ hasText: 'Attempt attempt-ended transcript' })
-  const empty = page.locator('details').filter({ hasText: 'Attempt attempt-empty transcript' })
-  await expect(ended).toBeVisible()
-  await expect(empty).toBeVisible()
-  await expect(page.getByText('captured transcript tail marker')).toHaveCount(0)
-
-  // A closed disclosure sends no read, through a detail refetch and focus.
-  await expect.poll(() => streams.countFor('attempt-transcript')).toBeGreaterThan(0)
-  await streams.open()
-  await streams.send(activityFrame)
-  await expect.poll(() => detailReads).toBe(2)
-  await page.evaluate(() => {
-    window.dispatchEvent(new Event('focus'))
-    document.dispatchEvent(new Event('visibilitychange'))
-  })
-  await expect(ended).toBeVisible()
-  expect(requests).toEqual([])
-
-  // Opening reads only that attempt in the explicit workspace; the metadata
-  // lines render with it.
-  await ended.locator('summary').click()
-  await expect(ended.getByText('captured transcript tail marker attempt-transcript')).toBeVisible()
-  await expect(ended.getByText('Ended: execution deadline elapsed')).toBeVisible()
-  await expect(ended.getByText('This transcript was truncated; the most recent output is shown.')).toBeVisible()
-  expect(requests).toEqual([contentPath('attempt-ended')])
-
-  // Empty content says so, without a truncation notice.
-  await empty.locator('summary').click()
-  await expect(empty.getByText('No transcript output was captured.')).toBeVisible()
-  await expect(empty.getByText('Ended: harness exited')).toBeVisible()
-  await expect(empty.getByText('This transcript was truncated', { exact: false })).toHaveCount(0)
-  expect(requests).toEqual([contentPath('attempt-ended'), contentPath('attempt-empty')])
-
-  // Closing and reopening reads again; a failure offers Retry.
-  await ended.locator('summary').click()
-  await expect(ended.getByText('captured transcript tail marker attempt-transcript')).toHaveCount(0)
-  gate.fail = true
-  await ended.locator('summary').click()
-  await expect(ended.getByRole('alert')).toContainText('Could not load the transcript')
-  await ended.getByRole('button', { name: 'Retry' }).click()
-  await expect(ended.getByText('captured transcript tail marker attempt-transcript')).toBeVisible()
-  expect(requests.filter((path) => path === contentPath('attempt-ended'))).toHaveLength(3)
-
-  // A task with no captures renders no disclosure.
-  await page.goto('/w/demo/tasks/timeout/full')
-  await expect(page.getByText(/Attempt .* transcript/)).toHaveCount(0)
-})
-
-test('a task change during a pending transcript read drops the late response', async ({ page }) => {
-  const { requests, gate } = await routeTranscriptReads(page)
-  await page.route(/\/v1\/tasks\/transcript-owner-[ab]\/activity/, async (route) => {
-    const taskId = new URL(route.request().url()).pathname.split('/')[3]
-    await route.fulfill({
-      json:
-        taskId === 'transcript-owner-a'
-          ? transcriptActivity(taskId, 'First transcript owner')
-          : {
-              ...activity('timeout', false),
-              task: { ...activity('timeout', false).task, id: taskId, title: 'Second transcript owner' },
-            },
-    })
-  })
-  await page.route('**/v1/activity*', (route) => {
-    const first = transcriptActivity('transcript-owner-a', 'First transcript owner')
-    const second = activity('timeout', false)
-    return route.fulfill({
-      json: [
-        { task: first.task, latest_stage: 'implement', last_event_at: '2026-07-15T12:02:00Z', needs_attention: false },
-        {
-          task: { ...second.task, id: 'transcript-owner-b', title: 'Second transcript owner' },
-          latest_stage: 'implement',
-          last_event_at: '2026-07-15T12:01:00Z',
-          needs_attention: false,
-        },
-      ],
-    })
-  })
-  // Navigation follows the Board page, so the move happens on the Board sheet.
-  await page.goto('/w/demo/tasks/transcript-owner-a')
-  const sheet = page.getByRole('dialog', { name: 'Task detail' })
-  const ended = sheet.locator('details').filter({ hasText: 'Attempt attempt-ended transcript' })
-  await expect(ended).toBeVisible()
-  expect(requests).toEqual([])
-  const orderId = transcriptActivity('transcript-owner-a', 'First transcript owner').work_orders[0].id
-  await ended.locator('summary').click()
-  await expect(ended.getByText('captured transcript tail marker transcript-owner-a')).toBeVisible()
-  await expect(ended.getByText('This transcript was truncated; the most recent output is shown.')).toBeVisible()
-  expect(requests).toEqual([
-    `/v1/tasks/transcript-owner-a/work-orders/${orderId}/transcript-captures/attempt-ended?workspace_id=demo`,
-  ])
-  await ended.locator('summary').click()
-
-  // Reopen with the read held, then move to the next task before it answers.
-  let release = () => {}
-  gate.hold = new Promise<void>((resolve) => {
-    release = resolve
-  })
-  await ended.locator('summary').click()
-  await expect(ended.getByRole('status')).toHaveText('Loading transcript…')
-  await expect.poll(() => requests.length).toBe(2)
-
-  await sheet.locator('header').first().getByRole('link', { name: 'Next task' }).click()
-  await expect(sheet.locator('header').first()).toContainText('Second transcript owner')
-  release()
-  // The held response for the first task never renders on the second.
-  await expect(sheet.getByText('captured transcript tail marker')).toHaveCount(0)
-  await expect(sheet.getByText(/Attempt .* transcript/)).toHaveCount(0)
-  expect(requests).toHaveLength(2)
-})
 
 test('timed-out review round exposes a reasoned full-round retry and preserves history', async ({ page }) => {
   let retryRequest = ''
@@ -4202,8 +3996,7 @@ test('interrupted review round offers one same-round recovery and retains comple
   await expect(page.getByRole('region', { name: 'Interrupted review round recovery' })).not.toHaveClass(
     /bg-attention-soft/,
   )
-  await expect(page.getByText('No healthy enrolled worker can serve this queued work')).toBeVisible()
-  await expect(page.getByText(/This work was interrupted/)).toBeVisible()
+  await expect(page.getByRole('region', { name: 'Enrolled worker unavailable' })).toHaveCount(0)
   await expect(page.getByText(/completed verdict retained/)).toBeVisible()
   await expect(page.getByRole('button', { name: 'Recover work order' })).toHaveCount(0)
   const action = page.getByRole('button', { name: 'Recover interrupted review round' })
@@ -5596,7 +5389,9 @@ test('the revision chain reads as request, decision, and the plan version it pro
   await expect(plan.getByText('Awaiting approval')).toBeVisible()
 })
 
-test('worker warning is scoped to actionable task-owned work at the human gate', async ({ page }) => {
+// A queued order with no claimant is waiting, never a health problem
+// (req-task-lifecycle-and-queue AC-9.4; DEC-97(1)).
+test('queued work with no claimant waits with no worker alert, at the human gate or not', async ({ page }) => {
   await page.goto('/w/demo/tasks/human-gate-worker-scope/full')
 
   await expect(
@@ -5607,11 +5402,12 @@ test('worker warning is scoped to actionable task-owned work at the human gate',
   await expect(page.getByText('This queued work has never started.')).toHaveCount(0)
 
   await page.goto('/w/demo/tasks/queued-worker/full')
-  await expect(page.getByRole('region', { name: 'Enrolled worker unavailable' })).toBeVisible()
-  await expect(page.getByText('This queued work has never started.')).toBeVisible()
+  await expect(orderEntry(page, 'Implementation', 'Waiting for an agent')).toBeVisible()
+  await expect(page.getByRole('region', { name: 'Enrolled worker unavailable' })).toHaveCount(0)
+  await expect(page.getByText('This queued work has never started.')).toHaveCount(0)
 })
 
-test('pull-only queued work waits for an operator agent without a worker alarm or route chip', async ({ page }) => {
+test('pull-only queued work waits for an agent without a worker alarm or route chip', async ({ page }) => {
   await page.goto('/w/demo/tasks/pull-only-worker/full')
 
   await expect(orderEntry(page, 'Implementation', 'Waiting for an agent')).toBeVisible()
