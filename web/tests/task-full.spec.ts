@@ -6,6 +6,7 @@ import { callerIdentity } from './helpers/caller-identity'
 import { serveNextActionsFromActivity } from './helpers/next-action-stub'
 import { waitForSheetSettled } from './helpers/sheet'
 import { activityFrame, controlTaskStreams, readyFrame } from './helpers/task-streams'
+import { controlWorkspaceChanges } from './helpers/workspace-changes'
 
 // A work-order timeline entry by its stage label and state badge
 // (component-web-task-surfaces, Work-order timeline entries).
@@ -5837,7 +5838,11 @@ test('blueprint history describes a missing stored spec as a missing plan versio
   await expect(page.getByText('This blueprint has no recorded spec version.')).toHaveCount(0)
 })
 
-test('blocked detail polling clears waiting state without a reload and stays off when unblocked', async ({ page }) => {
+// A dependency can merge without an event on its dependent; the workspace
+// change stream's frame for the dependency rereads the dependent's detail, and
+// no timer does (component-web-dashboard, Workspace change stream).
+test('a blocking task change clears waiting state without a reload and no timer rereads detail', async ({ page }) => {
+  const changes = await controlWorkspaceChanges(page)
   await page.clock.install()
   await page.goto('/w/demo/tasks/blocked-refresh/full')
   await expect(
@@ -5845,7 +5850,10 @@ test('blocked detail polling clears waiting state without a reload and stays off
   ).toBeVisible()
   expect(detailRequestCounts.get('blocked-refresh')).toBe(1)
 
-  await page.clock.fastForward(15_100)
+  await page.clock.fastForward(30_000)
+  expect(detailRequestCounts.get('blocked-refresh')).toBe(1)
+  await changes.activity('refresh-dependency')
+  await page.clock.fastForward(250)
   await expect.poll(() => detailRequestCounts.get('blocked-refresh') ?? 0).toBeGreaterThan(1)
   await expect(nextActionBox(page).getByRole('heading', { name: 'This task is waiting on another task.' })).toHaveCount(
     0,

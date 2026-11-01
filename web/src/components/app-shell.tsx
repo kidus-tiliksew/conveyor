@@ -41,6 +41,7 @@ import { sameWorkspacePlaceholder } from '../lib/query-keys'
 import type { ActivityPage, WorkspaceCapability, WorkspaceRole } from '../lib/types'
 import { useMediaQuery, wideLayoutQuery } from '../lib/use-media-query'
 import { cn } from '../lib/utils'
+import { startWorkspaceChangeRefresh } from '../lib/workspace-changes'
 import { ThemeProvider, useTheme } from './theme-provider'
 import { Badge } from './ui/badge'
 import { Button } from './ui/button'
@@ -292,12 +293,13 @@ export function useWorkspaceMembers() {
 // Blueprint anchors left the activity feed, so this projection
 // is the only place the dashboard can resolve one — the Blueprints surface,
 // the anchor's own detail, and a child's parent reference all read it. It
-// polls every 15 s only on the Blueprints routes; a task sheet or full task
-// route reading a parent's title never polls (component-web-dashboard).
+// has no interval: the workspace change stream refreshes it only on the
+// Blueprints routes, so a task sheet or full task route reading a parent's
+// title keeps the five-minute slow read (component-web-dashboard, Workspace
+// change stream).
 export function useBlueprints() {
   const { workspace } = useWorkspaceSelection()
-  const onBlueprints = useRouterState({ select: (state) => isBlueprintsPath(state.location.pathname) })
-  return useQuery({ ...blueprintsQueryOptions(workspace), refetchInterval: onBlueprints ? 15_000 : false })
+  return useQuery(blueprintsQueryOptions(workspace))
 }
 
 function isBlueprintsPath(pathname: string) {
@@ -353,8 +355,8 @@ export function usePendingProposals() {
     queryFn: () => fetchPendingProposals(workspace),
     enabled: Boolean(workspace),
     staleTime: 15_000,
-    refetchInterval: () => (document.visibilityState === 'visible' ? 15_000 : false),
-    refetchIntervalInBackground: false,
+    // No interval: the workspace change stream refreshes it
+    // (component-web-dashboard, Workspace change stream).
     refetchOnWindowFocus: true,
     refetchOnReconnect: 'always',
   })
@@ -476,6 +478,11 @@ function WorkspaceProvider({
   // names it and the remembered choice stays as it was (AC-1.4).
   const addressed = useRouterState({ select: (state) => addressWorkspace(state.location.pathname) })
   const workspace = addressed && workspaces.some((item) => item.id === addressed) ? addressed : ''
+  const onBlueprints = useRouterState({ select: (state) => isBlueprintsPath(state.location.pathname) })
+  const onBlueprintsRef = useRef(onBlueprints)
+  useEffect(() => {
+    onBlueprintsRef.current = onBlueprints
+  }, [onBlueprints])
   const switchWorkspace = useCallback(
     (id: string) => void navigate({ to: '/w/$workspaceId/', params: { workspaceId: id } }),
     [navigate],
@@ -509,19 +516,19 @@ function WorkspaceProvider({
     let refreshPending = false
     let coldPending = false
 
-    // One workspace clock refreshes all active activity representations in
-    // sequence. Calls that arrive while a pass is running coalesce into one
-    // follow-up pass, so focus/reconnect/visibility cannot create competing
-    // request loops (component-web-dashboard).
-    const refreshActivity = async (cold: boolean) => {
+    // One pass refreshes all active activity representations in sequence.
+    // It has no timer: the workspace change stream starts it after each
+    // change and each connect, and window focus starts it cold. Calls that
+    // arrive while a pass is running coalesce into one follow-up pass, so no
+    // trigger creates competing request loops (component-web-dashboard).
+    const refreshActivity = async (cold: boolean, followUp: boolean) => {
+      if (document.visibilityState !== 'visible') return
       if (refreshRunning) {
-        // An ordinary tick cannot improve on a pass already in flight. A
-        // cold trigger needs one follow-up only when the current pass still
-        // carries conditional state.
-        if (cold && !refreshIsCold) {
-          refreshPending = true
-          coldPending = true
-        }
+        // A change or connect may postdate the running pass's reads, so it
+        // always queues a follow-up. Focus needs one only when the running
+        // pass still carries conditional state.
+        if (followUp || (cold && !refreshIsCold)) refreshPending = true
+        if (cold && !refreshIsCold) coldPending = true
         return
       }
       refreshRunning = true
@@ -551,23 +558,20 @@ function WorkspaceProvider({
       refreshRunning = false
     }
 
-    const scheduledRefresh = () => {
-      if (document.visibilityState === 'visible') void refreshActivity(false)
-    }
-    const coldRefresh = () => void refreshActivity(true)
-    const visibleRefresh = () => {
-      if (document.visibilityState === 'visible') coldRefresh()
-    }
-    const interval = window.setInterval(scheduledRefresh, 15_000)
-    window.addEventListener('online', coldRefresh)
-    window.addEventListener('focus', coldRefresh)
-    document.addEventListener('visibilitychange', visibleRefresh)
+    const focusRefresh = () => void refreshActivity(true, false)
+    window.addEventListener('focus', focusRefresh)
+    // The change stream replaces the 15-second clock and the online and
+    // visibility passes: it opens only while the tab is visible, and its
+    // connect refresh runs the cold pass (component-web-dashboard, Workspace
+    // change stream).
+    const stopChanges = startWorkspaceChangeRefresh(queryClient, workspace, {
+      refreshActivity: (cold) => void refreshActivity(cold, true),
+      blueprintsActive: () => onBlueprintsRef.current,
+    })
     return () => {
       disposed = true
-      window.clearInterval(interval)
-      window.removeEventListener('online', coldRefresh)
-      window.removeEventListener('focus', coldRefresh)
-      document.removeEventListener('visibilitychange', visibleRefresh)
+      stopChanges()
+      window.removeEventListener('focus', focusRefresh)
     }
   }, [queryClient, workspace])
   return <WorkspaceContext.Provider value={{ workspace, switchWorkspace }}>{children}</WorkspaceContext.Provider>
