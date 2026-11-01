@@ -3,10 +3,11 @@ package postgres
 import (
 	"context"
 	"errors"
-	"github.com/kidus-tiliksew/conveyor/internal/store/storetest"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/kidus-tiliksew/conveyor/internal/store/storetest"
 
 	"github.com/kidus-tiliksew/conveyor/internal/config"
 	"github.com/kidus-tiliksew/conveyor/internal/core"
@@ -44,10 +45,7 @@ func TestAcceptedReviewSeatRejectsReclaimIntegration(t *testing.T) {
 	if err = storetest.For(st).CreateWorkOrder(ctx, order); err != nil {
 		t.Fatal(err)
 	}
-	// Worker IDs are global; a per-workspace ID keeps reruns on a kept
-	// database from colliding, and the reclaim reuses the same worker.
-	workerID := "worker-" + workspace
-	claimed, err := storetest.For(st).ClaimWorkOrder(ctx, order.ID, core.WorkOrderClaim{SessionID: "accepted-session", ClientToken: "accepted-token", WorkerID: workerID, Lease: time.Hour})
+	claimed, err := storetest.For(st).ClaimWorkOrder(ctx, order.ID, core.WorkOrderClaim{SessionID: "accepted-session", ClientToken: "accepted-token", Lease: time.Hour})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -58,7 +56,7 @@ func TestAcceptedReviewSeatRejectsReclaimIntegration(t *testing.T) {
 	if err = storetest.For(st).AcceptReviewDecision(ctx, core.ReviewDecision{TaskID: task.ID, JobID: job.ID, ReviewWorkOrderID: order.ID, ReviewRound: 1, ReviewSeat: 1, Verdict: "approve", ReasonCode: "approved", Summary: "accepted", PolicyVersion: 1, MergeApproval: false}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err = storetest.For(st).ClaimWorkOrder(ctx, order.ID, core.WorkOrderClaim{SessionID: "reclaim", ClientToken: "reclaim-token", WorkerID: workerID, Lease: time.Hour}); err == nil || !strings.Contains(err.Error(), "accepted review seat") {
+	if _, err = storetest.For(st).ClaimWorkOrder(ctx, order.ID, core.WorkOrderClaim{SessionID: "reclaim", ClientToken: "reclaim-token", Lease: time.Hour}); err == nil || !strings.Contains(err.Error(), "accepted review seat") {
 		t.Fatalf("accepted reclaim err=%v", err)
 	}
 	persisted, err := st.GetWorkOrder(ctx, order.ID)

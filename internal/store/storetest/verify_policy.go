@@ -126,7 +126,7 @@ func runVerifyPolicy(t *testing.T, x Fixture) {
 	if !found {
 		t.Fatal("policy reason missing from audit")
 	}
-	claimed, err := ClaimWorkOrder(ctx, st, verify.ID, core.WorkOrderClaim{WorkerID: "worker", ClaimantID: "worker", SessionID: "verify-session", ClientToken: "verify-token", Lease: time.Minute, ExecutionTimeout: time.Hour})
+	claimed, err := ClaimWorkOrder(ctx, st, verify.ID, core.WorkOrderClaim{ClaimantID: core.TaskRunClaimantID("worker"), SessionID: "verify-session", ClientToken: "verify-token", Lease: time.Minute, ExecutionTimeout: time.Hour})
 	requireOK(t, err)
 	if claimed.Stage != core.StageVerify || claimed.State != core.WorkOrderClaimed {
 		t.Fatal("verify claim failed")
@@ -161,7 +161,7 @@ func runVerifyPolicy(t *testing.T, x Fixture) {
 	request.RequestID = core.NewTaskID()
 	result, err = change(request)
 	requireOK(t, err)
-	second, err := ClaimWorkOrder(ctx, st, result.CreatedWorkOrders[0], core.WorkOrderClaim{ClaimantID: "worker", SessionID: "verify-session-2", ClientToken: "verify-token-2", Lease: time.Minute})
+	second, err := ClaimWorkOrder(ctx, st, result.CreatedWorkOrders[0], core.WorkOrderClaim{ClaimantID: core.TaskRunClaimantID("worker"), SessionID: "verify-session-2", ClientToken: "verify-token-2", Lease: time.Minute})
 	requireOK(t, err)
 	if second.HeadSHA != source.HeadSHA || second.BaselineSHA != source.BaselineSHA {
 		t.Fatalf("re-enable lost binding: %+v", second)
@@ -182,7 +182,7 @@ func runVerifyPolicy(t *testing.T, x Fixture) {
 func runVerifyAdmission(t *testing.T, x Fixture) {
 	st, ctx := x.Backend, x.Context
 	order := newAggregateOrder(t, x, core.StageVerify)
-	claim := core.WorkOrderClaim{WorkerID: "verify-worker", ClaimantID: "verify-worker", SessionID: "verify-admission", ClientToken: "verify-admission", Lease: time.Minute}
+	claim := core.WorkOrderClaim{ClaimantID: "verify-worker", SessionID: "verify-admission", ClientToken: "verify-admission", Lease: time.Minute}
 	var err error
 	dependency := newAggregateTask(t, x)
 	_, err = st.AddTaskDependency(ctx, store.DependencyAdditionRequest{TaskID: order.TaskID, DependsOnTaskID: dependency.ID, Reason: "verify dependency", RequestID: core.NewTaskID()})
@@ -295,7 +295,7 @@ func runVerifyPolicyStranded(t *testing.T, x Fixture) {
 	t.Run("enable_queued_claimable", func(t *testing.T) {
 		task, verify := newStranded(core.WorkOrderQueued)
 		if _, err := ClaimWorkOrder(ctx, st, verify.ID, core.WorkOrderClaim{
-			SessionID: "stranded-claim", ClientToken: "stranded-claim", ClaimantID: "worker", WorkerID: "worker", Lease: time.Minute,
+			SessionID: "stranded-claim", ClientToken: "stranded-claim", ClaimantID: core.TaskRunClaimantID("worker"), Lease: time.Minute,
 		}); err != nil {
 			t.Fatalf("queued verify after enable: %v task=%+v", err, task)
 		}
@@ -307,7 +307,7 @@ func runVerifyPolicyStranded(t *testing.T, x Fixture) {
 			requireOK(t, err)
 			if _, err = ClaimWorkOrder(ctx, st, recovered.ID, core.WorkOrderClaim{
 				SessionID: "stranded-" + string(state), ClientToken: "stranded-" + string(state),
-				ClaimantID: "worker", WorkerID: "worker", Lease: time.Minute,
+				ClaimantID: core.TaskRunClaimantID("worker"), Lease: time.Minute,
 			}); err != nil {
 				t.Fatal(err)
 			}
@@ -359,7 +359,7 @@ func runVerifyPolicyStranded(t *testing.T, x Fixture) {
 			requireOK(t, err)
 			if _, err = ClaimWorkOrder(ctx, st, review.ID, core.WorkOrderClaim{
 				SessionID: "review-" + string(state), ClientToken: "review-" + string(state),
-				ClaimantID: "worker", WorkerID: "worker", Lease: time.Minute,
+				ClaimantID: core.TaskRunClaimantID("worker"), Lease: time.Minute,
 			}); err != nil {
 				t.Fatal(err)
 			}

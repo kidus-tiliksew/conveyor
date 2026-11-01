@@ -33,7 +33,6 @@ import (
 	"github.com/kidus-tiliksew/conveyor/internal/store"
 	"github.com/kidus-tiliksew/conveyor/internal/store/backend"
 	githubtrigger "github.com/kidus-tiliksew/conveyor/internal/trigger/github"
-	workerservice "github.com/kidus-tiliksew/conveyor/internal/worker"
 	"github.com/kidus-tiliksew/conveyor/internal/workorder"
 )
 
@@ -51,8 +50,8 @@ func registerDaemonFlags(flags *flag.FlagSet) conveyordFlags {
 		addr:               flags.String("addr", "127.0.0.1:8080", "listen address"),
 		configPath:         flags.String("config", "conveyor.yaml", "path to deployment config"),
 		pollGitHub:         flags.Duration("poll-github", 0, "poll interval for conveyor:ready issues (0 disables)"),
-		workerRetryDelay:   flags.Duration("worker-retry-delay", workerservice.DefaultRetryDelay, "initial supervised-child retry delay"),
-		workerRetryMaximum: flags.Duration("worker-retry-max", workerservice.DefaultRetryMaximum, "maximum supervised-child retry delay"),
+		workerRetryDelay:   flags.Duration("worker-retry-delay", workorder.DefaultReleaseRetryDelay, "initial automatic retry delay after a failed or stalled release"),
+		workerRetryMaximum: flags.Duration("worker-retry-max", workorder.DefaultReleaseRetryMaximum, "maximum automatic retry delay after a failed or stalled release"),
 		shutdownTimeout:    flags.Duration("shutdown-timeout", defaultConveyordShutdownTimeout, "total graceful shutdown budget"),
 		debugAddr:          flags.String(debugAddrFlag, "", "opt-in net/http/pprof listen address (loopback only unless -"+debugAllowRemoteFlag+"; empty disables)"),
 		debugAllowRemote:   flags.Bool(debugAllowRemoteFlag, false, "allow -"+debugAddrFlag+" to bind a non-loopback address"),
@@ -245,7 +244,6 @@ func main() {
 	srv.CallerIdentities = st
 	srv.OwnProfiles = st
 	srv.PersonalTokens = st
-	srv.AgentCredentials = st
 	srv.WorkspaceGitHubApps = st
 	srv.InvitationSessions = st
 	srv.Release = releaseinfo.Version
@@ -307,9 +305,7 @@ func main() {
 			return err
 		}
 	}
-	srv.Workers = &workerservice.Service{Store: st, WorkOrders: workOrders, ConfigProvider: workOrders.ConfigProvider, RetryDelay: *workerRetryDelay, RetryMaximum: *workerRetryMaximum}
-	srv.Workers.IdentityUsers = st
-	srv.Workers.RedactionSecrets = st
+	workOrders.RetryDelay, workOrders.RetryMaximum = *workerRetryDelay, *workerRetryMaximum
 	if st.IsDurable() {
 		srv.Workspaces = st
 		srv.EnsureWorkspaceQueues = addWorkspaceQueue

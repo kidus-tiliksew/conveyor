@@ -3,7 +3,6 @@ package storetest
 import (
 	"errors"
 	"testing"
-	"time"
 
 	"github.com/kidus-tiliksew/conveyor/internal/core"
 	"github.com/kidus-tiliksew/conveyor/internal/store"
@@ -18,12 +17,7 @@ import (
 func runLegacyVerificationEvidence(t *testing.T, x Fixture) {
 	st, ctx := x.Backend, x.Context
 	order := newAggregateOrder(t, x)
-	claimed, err := ClaimWorkOrder(ctx, st, order.ID, core.WorkOrderClaim{SessionID: "legacy-evidence", ClientToken: "legacy-evidence-token", ClaimantID: "worker", WorkerID: "worker", Lease: time.Hour, ExecutionTimeout: time.Hour})
-	requireOK(t, err)
-	create := func(claim bool, name, media string, content []byte) (core.Artifact, error) {
-		if claim {
-			return st.CreateClaimedVerificationEvidence(ctx, store.ClaimedVerificationEvidenceRequest{WorkOrderID: order.ID, WorkerID: "worker", SessionID: claimed.SessionID, ClientToken: "legacy-evidence-token", Name: name, ContentType: media}, content)
-		}
+	create := func(_ bool, name, media string, content []byte) (core.Artifact, error) {
 		return st.CreateArtifact(ctx, core.Artifact{Name: name, ContentType: media, Role: core.ArtifactRoleVerificationEvidence, TaskID: order.TaskID}, content)
 	}
 	links := func() int {
@@ -41,7 +35,7 @@ func runLegacyVerificationEvidence(t *testing.T, x Fixture) {
 	for _, path := range []struct {
 		name  string
 		claim bool
-	}{{"Direct", false}, {"Claimed", true}} {
+	}{{"Direct", false}} {
 		t.Run(path.name, func(t *testing.T) {
 			seed := "legacy-" + path.name
 			for _, tc := range []struct {

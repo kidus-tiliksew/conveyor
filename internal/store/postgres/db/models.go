@@ -83,15 +83,6 @@ type GithubLifecycle struct {
 	ForgeAuthorUserID  string             `json:"forge_author_user_id"`
 }
 
-type HarnessModelFailure struct {
-	WorkspaceID string             `json:"workspace_id"`
-	Harness     string             `json:"harness"`
-	Model       string             `json:"model"`
-	Detail      string             `json:"detail"`
-	WorkOrderID string             `json:"work_order_id"`
-	ObservedAt  pgtype.Timestamptz `json:"observed_at"`
-}
-
 type InterruptedReviewRecovery struct {
 	WorkspaceID string             `json:"workspace_id"`
 	RequestID   string             `json:"request_id"`
@@ -383,93 +374,67 @@ type UserToken struct {
 }
 
 type WorkOrder struct {
-	ID                            string             `json:"id"`
-	WorkspaceID                   string             `json:"workspace_id"`
-	TaskID                        string             `json:"task_id"`
-	JobID                         string             `json:"job_id"`
-	Stage                         string             `json:"stage"`
-	State                         string             `json:"state"`
-	ClaimantID                    string             `json:"claimant_id"`
-	SessionID                     string             `json:"session_id"`
-	ClientTokenHash               string             `json:"client_token_hash"`
-	Agent                         string             `json:"agent"`
-	Model                         string             `json:"model"`
-	LeaseExpiresAt                pgtype.Timestamptz `json:"lease_expires_at"`
-	Progress                      string             `json:"progress"`
-	CostUsd                       float64            `json:"cost_usd"`
-	TokensIn                      int64              `json:"tokens_in"`
-	TokensOut                     int64              `json:"tokens_out"`
-	SelfReported                  bool               `json:"self_reported"`
-	CreatedAt                     pgtype.Timestamptz `json:"created_at"`
-	UpdatedAt                     pgtype.Timestamptz `json:"updated_at"`
-	QueueEnteredAt                pgtype.Timestamptz `json:"queue_entered_at"`
-	QueueDeadline                 pgtype.Timestamptz `json:"queue_deadline"`
-	ExecutionStartedAt            pgtype.Timestamptz `json:"execution_started_at"`
-	ExecutionDeadline             pgtype.Timestamptz `json:"execution_deadline"`
-	RedispatchCount               int32              `json:"redispatch_count"`
-	OperatorDirection             string             `json:"operator_direction"`
-	Checkpoint                    []byte             `json:"checkpoint"`
-	ContinuationSessionID         string             `json:"continuation_session_id"`
-	ContinuationAttemptID         string             `json:"continuation_attempt_id"`
-	ContinuationHarness           string             `json:"continuation_harness"`
-	ContinuationLaunchEnvironment string             `json:"continuation_launch_environment"`
-	WorkerID                      string             `json:"worker_id"`
-	ReviewRound                   int32              `json:"review_round"`
-	ReviewSeat                    int32              `json:"review_seat"`
-	RequiredModel                 string             `json:"required_model"`
-	RequiredHarness               string             `json:"required_harness"`
-	ModelEnforcement              string             `json:"model_enforcement"`
-	RequiredHarnessConfig         []byte             `json:"required_harness_config"`
-	ExecutionTimeout              string             `json:"execution_timeout"`
-	LastAttemptOutcome            string             `json:"last_attempt_outcome"`
-	LastFailureMessage            string             `json:"last_failure_message"`
-	LastFailureExitStatus         pgtype.Int4        `json:"last_failure_exit_status"`
-	LastFailureAt                 pgtype.Timestamptz `json:"last_failure_at"`
-	AutomaticRetryCount           int32              `json:"automatic_retry_count"`
-	NextRetryAt                   pgtype.Timestamptz `json:"next_retry_at"`
-	RetrySuppressed               bool               `json:"retry_suppressed"`
-	ReasonCode                    string             `json:"reason_code"`
-	ReviewKind                    string             `json:"review_kind"`
-	ReviewScope                   string             `json:"review_scope"`
-	BaselineSha                   string             `json:"baseline_sha"`
-	HeadSha                       string             `json:"head_sha"`
-	LastFailureDetail             string             `json:"last_failure_detail"`
-	RetrySuppressionReason        string             `json:"retry_suppression_reason"`
-	ReviewSuperseded              bool               `json:"review_superseded"`
-	RequiredEffort                string             `json:"required_effort"`
-	RateLimit                     []byte             `json:"rate_limit"`
-	RateLimitObservedAt           pgtype.Timestamptz `json:"rate_limit_observed_at"`
-	QueueBlockedAt                pgtype.Timestamptz `json:"queue_blocked_at"`
-	ServedRequirementSnapshot     []byte             `json:"served_requirement_snapshot"`
-	GovernanceSnapshot            []byte             `json:"governance_snapshot"`
+	ID                        string             `json:"id"`
+	WorkspaceID               string             `json:"workspace_id"`
+	TaskID                    string             `json:"task_id"`
+	JobID                     string             `json:"job_id"`
+	Stage                     string             `json:"stage"`
+	State                     string             `json:"state"`
+	ClaimantID                string             `json:"claimant_id"`
+	SessionID                 string             `json:"session_id"`
+	ClientTokenHash           string             `json:"client_token_hash"`
+	Agent                     string             `json:"agent"`
+	Model                     string             `json:"model"`
+	LeaseExpiresAt            pgtype.Timestamptz `json:"lease_expires_at"`
+	Progress                  string             `json:"progress"`
+	CostUsd                   float64            `json:"cost_usd"`
+	TokensIn                  int64              `json:"tokens_in"`
+	TokensOut                 int64              `json:"tokens_out"`
+	SelfReported              bool               `json:"self_reported"`
+	CreatedAt                 pgtype.Timestamptz `json:"created_at"`
+	UpdatedAt                 pgtype.Timestamptz `json:"updated_at"`
+	QueueEnteredAt            pgtype.Timestamptz `json:"queue_entered_at"`
+	QueueDeadline             pgtype.Timestamptz `json:"queue_deadline"`
+	ExecutionStartedAt        pgtype.Timestamptz `json:"execution_started_at"`
+	ExecutionDeadline         pgtype.Timestamptz `json:"execution_deadline"`
+	RedispatchCount           int32              `json:"redispatch_count"`
+	OperatorDirection         string             `json:"operator_direction"`
+	Checkpoint                []byte             `json:"checkpoint"`
+	WorkerID                  string             `json:"worker_id"`
+	ReviewRound               int32              `json:"review_round"`
+	ReviewSeat                int32              `json:"review_seat"`
+	RequiredModel             string             `json:"required_model"`
+	RequiredHarness           string             `json:"required_harness"`
+	ModelEnforcement          string             `json:"model_enforcement"`
+	RequiredHarnessConfig     []byte             `json:"required_harness_config"`
+	ExecutionTimeout          string             `json:"execution_timeout"`
+	LastAttemptOutcome        string             `json:"last_attempt_outcome"`
+	LastFailureMessage        string             `json:"last_failure_message"`
+	LastFailureExitStatus     pgtype.Int4        `json:"last_failure_exit_status"`
+	LastFailureAt             pgtype.Timestamptz `json:"last_failure_at"`
+	AutomaticRetryCount       int32              `json:"automatic_retry_count"`
+	NextRetryAt               pgtype.Timestamptz `json:"next_retry_at"`
+	RetrySuppressed           bool               `json:"retry_suppressed"`
+	ReasonCode                string             `json:"reason_code"`
+	ReviewKind                string             `json:"review_kind"`
+	ReviewScope               string             `json:"review_scope"`
+	BaselineSha               string             `json:"baseline_sha"`
+	HeadSha                   string             `json:"head_sha"`
+	LastFailureDetail         string             `json:"last_failure_detail"`
+	RetrySuppressionReason    string             `json:"retry_suppression_reason"`
+	ReviewSuperseded          bool               `json:"review_superseded"`
+	RequiredEffort            string             `json:"required_effort"`
+	RateLimit                 []byte             `json:"rate_limit"`
+	RateLimitObservedAt       pgtype.Timestamptz `json:"rate_limit_observed_at"`
+	QueueBlockedAt            pgtype.Timestamptz `json:"queue_blocked_at"`
+	ServedRequirementSnapshot []byte             `json:"served_requirement_snapshot"`
+	GovernanceSnapshot        []byte             `json:"governance_snapshot"`
 }
 
 type WorkOrderRecovery struct {
 	WorkspaceID string             `json:"workspace_id"`
 	WorkOrderID string             `json:"work_order_id"`
 	RequestID   string             `json:"request_id"`
-	CreatedAt   pgtype.Timestamptz `json:"created_at"`
-}
-
-type Worker struct {
-	ID             string             `json:"id"`
-	WorkspaceID    string             `json:"workspace_id"`
-	OwnerUserID    pgtype.Text        `json:"owner_user_id"`
-	Name           string             `json:"name"`
-	CredentialHash string             `json:"credential_hash"`
-	LeaseExpiresAt pgtype.Timestamptz `json:"lease_expires_at"`
-	LastSeenAt     pgtype.Timestamptz `json:"last_seen_at"`
-	RevokedAt      pgtype.Timestamptz `json:"revoked_at"`
-	ProbeResults   []byte             `json:"probe_results"`
-	CreatedAt      pgtype.Timestamptz `json:"created_at"`
-}
-
-type WorkerPairing struct {
-	TokenHash   string             `json:"token_hash"`
-	WorkspaceID string             `json:"workspace_id"`
-	OwnerUserID pgtype.Text        `json:"owner_user_id"`
-	ExpiresAt   pgtype.Timestamptz `json:"expires_at"`
-	ConsumedAt  pgtype.Timestamptz `json:"consumed_at"`
 	CreatedAt   pgtype.Timestamptz `json:"created_at"`
 }
 

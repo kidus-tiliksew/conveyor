@@ -191,7 +191,7 @@ func validateMCPRead(name string, args map[string]any) (int, int, string, error)
 }
 func (s *Server) callMCPRead(r *http.Request, name string, args map[string]any) (any, error) {
 	credential, ok := store.CredentialFromContext(r.Context())
-	if _, worker := workerFromContext(r.Context()); worker || !ok || credential.Kind != core.CredentialUser {
+	if !ok || credential.Kind != core.CredentialUser {
 		return nil, fmt.Errorf("%s requires an operator-scoped user credential", name)
 	}
 	// Read capacity and tokens belong to one credential; an unidentified

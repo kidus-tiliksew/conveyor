@@ -160,7 +160,7 @@ func runVerificationRetryAndSeal(t *testing.T, v *verificationFixture) {
 	t.Run("OperatorObservation", func(t *testing.T) {
 		e := v.envelope("forged-operator", "forged-operator", "unused")
 		e.Type = "operator_observation"
-		e.CapturedBy = core.VerificationCaptureActor{Identity: "worker:worker", Kind: "operator", Version: "1", Attribution: "authenticated_operator"}
+		e.CapturedBy = core.VerificationCaptureActor{Identity: "user:worker", Kind: "operator", Version: "1", Attribution: "authenticated_operator"}
 		e.Payload = core.JSONPayload(core.OperatorObservationPayload{OperatorID: e.CapturedBy.Identity, Fact: "observed", CapturedAt: e.CapturedAt, Supporting: []core.VerificationReference{{EvidenceID: "second-run-evidence"}}})
 		c := v.command(store.VerificationCommand{Kind: store.VerificationWriteEvidence, Key: e.SubmissionKey, Evidence: []json.RawMessage{verificationBytes(e)}, Authority: core.VerificationEvidenceAuthority{OperateGates: true}})
 		if _, err := v.x.Backend.ApplyVerification(v.ctx, c); err == nil {

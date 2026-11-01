@@ -16,12 +16,11 @@ import (
 	"github.com/kidus-tiliksew/conveyor/internal/core"
 	"github.com/kidus-tiliksew/conveyor/internal/store"
 	"github.com/kidus-tiliksew/conveyor/internal/store/storetest"
-	workerservice "github.com/kidus-tiliksew/conveyor/internal/worker"
 	"github.com/kidus-tiliksew/conveyor/internal/workorder"
 )
 
 func TestContextRefreshTransportParityAndConfinement(t *testing.T) {
-	for _, channel := range []string{"user", "agent", "worker"} {
+	for _, channel := range []string{"user", "agent"} {
 		t.Run(channel, func(t *testing.T) {
 			ctx := store.WithWorkspace(store.WithActor(t.Context(), store.SystemActor()), "demo")
 			st := store.NewMemory()
@@ -38,16 +37,6 @@ func TestContextRefreshTransportParityAndConfinement(t *testing.T) {
 			credential := core.AuthenticatedCredential{ID: "user-token", OwnerUserID: "owner", Kind: core.CredentialUser}
 			if channel == "agent" {
 				credential.Kind = core.CredentialAgent
-				credential.RunWorkspaceID = "demo"
-				credential.RunWorkOrderID = "order"
-				credential.RunSessionID = "session"
-			}
-			if channel == "worker" {
-				claim.WorkerID = "worker"
-				claim.ClaimantID = "worker"
-				if e := createOwnedWorker(st, ctx, core.Worker{ID: "worker", Workspace: "demo", OwnerUserID: "owner"}); e != nil {
-					t.Fatal(e)
-				}
 			}
 			if _, e := storetest.For(st).ClaimWorkOrder(ctx, "order", claim); e != nil {
 				t.Fatal(e)
@@ -57,13 +46,9 @@ func TestContextRefreshTransportParityAndConfinement(t *testing.T) {
 				actor = store.Actor{ID: store.AgentActorID(credential.ID), Role: core.ActorAgent}
 			}
 			ctx = store.WithActor(store.WithCredential(ctx, credential), actor)
-			if channel == "worker" {
-				ctx = context.WithValue(store.WithActor(ctx, store.Actor{ID: "worker:worker", Role: core.ActorWorker}), workerContextKey{}, core.Worker{ID: "worker", Workspace: "demo"})
-			}
 			server := NewServer(st)
 			server.Workspace = "demo"
 			server.WorkOrders = &workorder.Service{Store: st}
-			server.Workers = &workerservice.Service{Store: st, WorkOrders: server.WorkOrders}
 			request := httptest.NewRequest(http.MethodPost, "/mcp", nil).WithContext(ctx)
 			args := map[string]any{"workspace_id": "demo", "work_order_id": "order", "session_id": "session"}
 			raw, e := server.callMCPTool(request, "refresh_work_order_context", args)
@@ -91,9 +76,6 @@ func TestContextRefreshTransportParityAndConfinement(t *testing.T) {
 			delete(body, "work_order_id")
 			data, _ := json.Marshal(body)
 			path := "/v1/work-orders/order/context-refresh"
-			if channel == "worker" {
-				path = "/v1/worker/work-orders/order/context-refresh"
-			}
 			r := httptest.NewRequest(http.MethodPost, path, bytes.NewReader(data)).WithContext(ctx)
 			route := chi.NewRouteContext()
 			route.URLParams.Add("id", "order")

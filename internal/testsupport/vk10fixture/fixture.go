@@ -38,7 +38,6 @@ import (
 	"github.com/kidus-tiliksew/conveyor/internal/store"
 	"github.com/kidus-tiliksew/conveyor/internal/trigger/github"
 	"github.com/kidus-tiliksew/conveyor/internal/verification"
-	"github.com/kidus-tiliksew/conveyor/internal/worker"
 	"github.com/kidus-tiliksew/conveyor/internal/workorder"
 )
 
@@ -267,7 +266,6 @@ func newFixture(t *testing.T, b store.Backend, mode string) *fixture {
 
 	server := httpapi.NewServer(b)
 	server.WorkOrders, server.Workspaces, server.Workspace = f.s, b, f.ws
-	server.Workers = &worker.Service{Store: b, WorkOrders: f.s}
 	server.ConfigProvider = f.s.ConfigProvider
 	f.api = httptest.NewServer(server.Handler())
 	t.Cleanup(f.api.Close)

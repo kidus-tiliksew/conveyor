@@ -27,7 +27,7 @@ queue_entered_at, queue_deadline, queue_blocked_at, execution_started_at, execut
 last_attempt_id, last_attempt_outcome, last_failure_category, last_failure_message, last_failure_detail, last_failure_exit_status, last_failure_at,
 automatic_retry_count, next_retry_at, retry_suppressed, retry_suppression_reason,
 COALESCE(automatic_recovery_count, 0), automatic_recovery_window_started_at, next_automatic_recovery_at, base_conflict_checked_at,
-redispatch_count, operator_direction, checkpoint, continuation_session_id, continuation_attempt_id, continuation_harness, continuation_launch_environment, progress, cost_usd, tokens_in, tokens_out, usage_reported, self_reported,
+redispatch_count, operator_direction, checkpoint, progress, cost_usd, tokens_in, tokens_out, usage_reported, self_reported,
 rate_limit, rate_limit_observed_at, created_at, updated_at, served_requirement_snapshot, governance_snapshot, declared_review_seats`
 
 func servedRequirementSnapshotJSON(snapshot []core.ServedRequirementContext) any {
@@ -64,8 +64,7 @@ func scanWorkOrder(row interface{ Scan(...any) error }) (core.WorkOrder, error) 
 		&order.LastAttemptID, &order.LastAttemptOutcome, &order.LastFailureCategory, &order.LastFailureMessage, &order.LastFailureDetail, &order.LastFailureExitStatus, &lastFailureAt,
 		&order.AutomaticRetryCount, &nextRetryAt, &order.RetrySuppressed, &order.RetrySuppressionReason,
 		&order.AutomaticRecoveryCount, &recoveryWindow, &nextAutomaticRecovery, &baseConflictChecked,
-		&order.RedispatchCount, &order.OperatorDirection, &checkpoint, &order.ContinuationSessionID, &order.ContinuationAttemptID,
-		&order.ContinuationHarness, &order.ContinuationLaunchEnvironment, &order.Progress, &order.CostUSD, &order.TokensIn,
+		&order.RedispatchCount, &order.OperatorDirection, &checkpoint, &order.Progress, &order.CostUSD, &order.TokensIn,
 		&order.TokensOut, &order.UsageReported, &order.SelfReported, &rateLimit, &rateLimitObservedAt, &order.CreatedAt, &order.UpdatedAt, &servedRequirementSnapshot, &governanceSnapshot,
 		&order.DeclaredReviewSeats)
 	order.Stage, order.State = core.Stage(stage), core.WorkOrderState(state)
@@ -218,10 +217,6 @@ func orderValues(o core.WorkOrder) map[string]any {
 		"redispatch_count":                     o.RedispatchCount,
 		"operator_direction":                   o.OperatorDirection,
 		"checkpoint":                           checkpointJSON(o.Checkpoint),
-		"continuation_session_id":              o.ContinuationSessionID,
-		"continuation_attempt_id":              o.ContinuationAttemptID,
-		"continuation_harness":                 o.ContinuationHarness,
-		"continuation_launch_environment":      o.ContinuationLaunchEnvironment,
 		"cost_usd":                             o.CostUSD,
 		"tokens_in":                            o.TokensIn,
 		"tokens_out":                           o.TokensOut,
@@ -941,8 +936,6 @@ func (s *Store) updateWorkOrderSubmissionTx(ctx context.Context, tx *sql.Tx, cur
 		}
 		if order.State == core.WorkOrderCompleted {
 			order.OperatorDirection = ""
-			order.ContinuationSessionID, order.ContinuationAttemptID = "", ""
-			order.ContinuationHarness, order.ContinuationLaunchEnvironment = "", ""
 		}
 		if command == core.WorkOrderCmdSubmitForReview && order.Stage == core.StageImplement && order.HeadSHA != "" {
 			if err := s.supersedeVerificationTx(ctx, tx, order.TaskID, order.HeadSHA); err != nil {
@@ -956,7 +949,7 @@ func (s *Store) updateWorkOrderSubmissionTx(ctx context.Context, tx *sql.Tx, cur
 			}
 		}
 		values := orderValues(order)
-		allowed := map[string]bool{"state": true, "claimant_id": true, "session_id": true, "attempt_id": true, "client_token_hash": true, "agent": true, "model": true, "lease_expires_at": true, "model_enforcement": true, "queue_entered_at": true, "queue_deadline": true, "execution_started_at": true, "execution_deadline": true, "last_attempt_id": true, "last_attempt_outcome": true, "last_failure_category": true, "last_failure_message": true, "last_failure_detail": true, "last_failure_exit_status": true, "last_failure_at": true, "automatic_retry_count": true, "next_retry_at": true, "retry_suppressed": true, "retry_suppression_reason": true, "redispatch_count": true, "progress": true, "cost_usd": true, "tokens_in": true, "tokens_out": true, "usage_reported": true, "self_reported": true, "operator_direction": true, "continuation_session_id": true, "continuation_attempt_id": true, "continuation_harness": true, "continuation_launch_environment": true, "rate_limit": true, "rate_limit_observed_at": true, "updated_at": true}
+		allowed := map[string]bool{"state": true, "claimant_id": true, "session_id": true, "attempt_id": true, "client_token_hash": true, "agent": true, "model": true, "lease_expires_at": true, "model_enforcement": true, "queue_entered_at": true, "queue_deadline": true, "execution_started_at": true, "execution_deadline": true, "last_attempt_id": true, "last_attempt_outcome": true, "last_failure_category": true, "last_failure_message": true, "last_failure_detail": true, "last_failure_exit_status": true, "last_failure_at": true, "automatic_retry_count": true, "next_retry_at": true, "retry_suppressed": true, "retry_suppression_reason": true, "redispatch_count": true, "progress": true, "cost_usd": true, "tokens_in": true, "tokens_out": true, "usage_reported": true, "self_reported": true, "operator_direction": true, "rate_limit": true, "rate_limit_observed_at": true, "updated_at": true}
 		for key := range values {
 			if !allowed[key] {
 				delete(values, key)
@@ -1000,50 +993,6 @@ func (s *Store) claimOwnerTx(ctx context.Context, tx *sql.Tx, claim *core.WorkOr
 	if claim.OwnerUserID == "" {
 		if c, ok := store.CredentialFromContext(ctx); ok {
 			claim.OwnerUserID = c.OwnerUserID
-		}
-	}
-	if claim.WorkerID != "" {
-		// A missing worker row, a revoked worker, a null owner, a missing or
-		// inactive owner user, and a missing binding are all refused. The row
-		// locks serialize the claim against identity deactivation and
-		// membership revocation (component-work-orders, Worker owner admission).
-		var owner sql.NullString
-		var revoked sql.NullTime
-		err := tx.QueryRowContext(ctx, `SELECT owner_user_id,revoked_at FROM workers WHERE workspace_id=? AND id=? FOR UPDATE`, documentWorkspace(ctx), claim.WorkerID).Scan(&owner, &revoked)
-		if errors.Is(err, sql.ErrNoRows) {
-			return fmt.Errorf("%w: worker %s is not enrolled", store.ErrWorkerUnauthorized, claim.WorkerID)
-		}
-		if err != nil {
-			return err
-		}
-		if revoked.Valid {
-			return fmt.Errorf("%w: worker %s", store.ErrWorkerUnauthorized, claim.WorkerID)
-		}
-		if !owner.Valid || strings.TrimSpace(owner.String) == "" {
-			return fmt.Errorf("%w: worker %s has no owner", store.ErrWorkerUnauthorized, claim.WorkerID)
-		}
-		if err = store.RunWorkerOwnerTestHook(ctx, store.WorkerOwnerHookClaimOwnerRead); err != nil {
-			return err
-		}
-		claim.OwnerUserID = owner.String
-		var status string
-		err = tx.QueryRowContext(ctx, `SELECT status FROM users WHERE id=? FOR UPDATE`, owner.String).Scan(&status)
-		if err != nil && !errors.Is(err, sql.ErrNoRows) {
-			return err
-		}
-		if err != nil || status != "active" {
-			return fmt.Errorf("%w: worker %s owner is not active", store.ErrWorkerUnauthorized, claim.WorkerID)
-		}
-		var exists int
-		err = tx.QueryRowContext(ctx, `SELECT 1 FROM workspace_role_bindings WHERE workspace_id=? AND user_id=? FOR UPDATE`, documentWorkspace(ctx), owner.String).Scan(&exists)
-		if errors.Is(err, sql.ErrNoRows) {
-			return fmt.Errorf("%w: worker %s owner has no live workspace binding", store.ErrWorkerUnauthorized, claim.WorkerID)
-		}
-		if err != nil {
-			return err
-		}
-		if err = store.RunWorkerOwnerTestHook(ctx, store.WorkerOwnerHookClaimOwnerLocked); err != nil {
-			return err
 		}
 	}
 	if task.Assignee != nil && task.Assignee.UserID != claim.OwnerUserID {
@@ -1139,9 +1088,6 @@ func (s *Store) reviewClaimGuardTx(ctx context.Context, tx *sql.Tx, o core.WorkO
 			return fmt.Errorf("self-review forbidden: review session independence requires a fresh session and client token")
 		}
 	}
-	if claim.WorkerID != "" && o.RequiredModel != "" && claim.Model != o.RequiredModel {
-		return fmt.Errorf("worker review model %q does not match pinned seat model %q", claim.Model, o.RequiredModel)
-	}
 	return nil
 }
 func (s *Store) ClaimWorkOrderCommand(ctx context.Context, lease taskops.TaskLease, id string, claim core.WorkOrderClaim) (core.WorkOrder, error) {
@@ -1204,11 +1150,7 @@ func (s *Store) ClaimWorkOrderCommand(ctx context.Context, lease taskops.TaskLea
 			if err = s.reviewClaimGuardTx(ctx, tx, o, claim, hash); err != nil {
 				return err
 			}
-			if claim.WorkerID != "" {
-				o.ModelEnforcement = "worker-pinned"
-			} else {
-				o.ModelEnforcement = "self-reported"
-			}
+			o.ModelEnforcement = "self-reported"
 		}
 		now := time.Now().UTC()
 		if o.Stage == core.StageImplement || o.Stage == core.StageVerify {
@@ -1298,7 +1240,7 @@ func (s *Store) ClaimWorkOrderCommand(ctx context.Context, lease taskops.TaskLea
 		o.ClientTokenHash = hash
 		o.Agent = claim.Agent
 		o.Model = claim.Model
-		o.WorkerID = claim.WorkerID
+		o.WorkerID = ""
 		o.LeaseExpiresAt = now.Add(duration)
 		o.UpdatedAt = now
 		repin := false
@@ -1660,7 +1602,7 @@ func (s *Store) RequestPlanRevisionCommand(ctx context.Context, lease taskops.Ta
 		if err = taskWrite(ctx, tx, t.ID, map[string]any{"state": nextTask, "gate_kind": string(core.GateKindFor(nextTask, core.TaskGatePlanRevision))}); err != nil {
 			return err
 		}
-		eventCtx := workerClaimActorContext(ctx, claim.WorkerID)
+		eventCtx := ctx
 		for _, e := range []core.Event{{TaskID: t.ID, JobID: o.JobID, Kind: "work_order.plan_revision_requested", Payload: core.JSONPayload(map[string]any{"work_order_id": id, "attempt_id": attempt, "session_id": claim.SessionID, "rationale": rationale, "plan_version": version}), At: now}, {TaskID: t.ID, JobID: o.JobID, Kind: "work_order.released", Payload: core.JSONPayload(map[string]any{"attempt_id": attempt, "session_id": claim.SessionID, "reason": core.WorkOrderReleaseReasonPlanRevisionRequested, "release_cause": core.WorkOrderReleaseCauseOperatorAction, "outcome": core.WorkOrderOutcomeReleased, "automatic_retry_count": o.AutomaticRetryCount, "retry_suppressed": true}), At: now}, {TaskID: t.ID, Kind: "task.state_changed", Payload: core.JSONPayload(map[string]any{"from": t.State, "to": nextTask, "command": core.TaskGatePlanRevision}), At: now}} {
 			if err = taskEvent(eventCtx, tx, e); err != nil {
 				return err

@@ -42,7 +42,7 @@ func (s *Server) listWorkOrders(w http.ResponseWriter, r *http.Request) {
 		orders = []core.WorkOrder{}
 	}
 	orders = projectAssigneeClaimability(r.Context(), orders)
-	orders, err = s.projectWorkOrderSessions(r.Context(), orders, false, core.Worker{})
+	orders, err = s.projectWorkOrderSessions(r.Context(), orders)
 	if err != nil {
 		log.Printf("project work order sessions: %v", err)
 		http.Error(w, "internal server error", http.StatusInternalServerError)
@@ -71,7 +71,7 @@ func (s *Server) getWorkOrder(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	orders := projectAssigneeClaimability(r.Context(), []core.WorkOrder{order})
-	orders, err = s.projectWorkOrderSessions(r.Context(), orders, false, core.Worker{})
+	orders, err = s.projectWorkOrderSessions(r.Context(), orders)
 	if err != nil {
 		log.Printf("project work order sessions: %v", err)
 		http.Error(w, "internal server error", http.StatusInternalServerError)
@@ -83,31 +83,11 @@ func (s *Server) getWorkOrder(w http.ResponseWriter, r *http.Request) {
 // projectWorkOrderSessions removes bearer session material unless the caller
 // is the principal that owns the claim. This projection is for list surfaces;
 // claim-time continuation and exact claimed-order reads keep their contracts.
-func (s *Server) projectWorkOrderSessions(ctx context.Context, orders []core.WorkOrder, workerAuth bool, worker core.Worker) ([]core.WorkOrder, error) {
+func (s *Server) projectWorkOrderSessions(ctx context.Context, orders []core.WorkOrder) ([]core.WorkOrder, error) {
 	credential, credentialAuth := store.CredentialFromContext(ctx)
-	ownedWorkers := map[string]bool{}
-	if !workerAuth && credentialAuth && credential.Kind == core.CredentialAgent {
-		workers, err := s.Store.ListWorkers(ctx)
-		if err != nil {
-			return nil, err
-		}
-		for _, candidate := range workers {
-			if candidate.OwnerUserID == credential.OwnerUserID {
-				ownedWorkers[candidate.ID] = true
-			}
-		}
-	}
 	for i := range orders {
-		owner := false
-		switch {
-		case workerAuth:
-			owner = orders[i].WorkerID != "" && orders[i].WorkerID == worker.ID
-		case credentialAuth && credential.Kind == core.CredentialUser:
-			owner = orders[i].WorkerID == "" && orders[i].ClaimantID == core.TaskRunClaimantID(credential.OwnerUserID)
-		case credentialAuth && credential.Kind == core.CredentialAgent:
-			owner = (orders[i].WorkerID == "" && orders[i].ClaimantID == core.TaskRunClaimantID(credential.OwnerUserID)) ||
-				(orders[i].WorkerID != "" && ownedWorkers[orders[i].WorkerID])
-		}
+		owner := credentialAuth && (credential.Kind == core.CredentialUser || credential.Kind == core.CredentialAgent) &&
+			orders[i].WorkerID == "" && orders[i].ClaimantID == core.TaskRunClaimantID(credential.OwnerUserID)
 		if !owner {
 			orders[i].SessionID = ""
 		}

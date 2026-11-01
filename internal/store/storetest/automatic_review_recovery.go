@@ -56,7 +56,7 @@ func RunAutomaticReviewRecoveryConformance(t *testing.T, st store.Store, ctx con
 		// A need on the round the automatic retry created is left to the
 		// operator: the store refuses a second automatic act, and the
 		// operator retry still succeeds.
-		verdict, err := ClaimWorkOrder(ctx, st, result.WorkOrders[0].ID, core.WorkOrderClaim{WorkerID: "worker", ClaimantID: "worker", SessionID: "verdict-2-" + task.ID, ClientToken: "verdict-2", Lease: time.Hour, ExecutionTimeout: time.Hour})
+		verdict, err := ClaimWorkOrder(ctx, st, result.WorkOrders[0].ID, core.WorkOrderClaim{ClaimantID: "worker", SessionID: "verdict-2-" + task.ID, ClientToken: "verdict-2", Lease: time.Hour, ExecutionTimeout: time.Hour})
 		requireOK(t, err)
 		verdict.State = core.WorkOrderCompleted
 		requireOK(t, UpdateWorkOrder(ctx, st, verdict, core.WorkOrderCmdSubmitReviewVerdict))
@@ -108,7 +108,7 @@ func seedReviewRoundWithVerdict(t *testing.T, st store.Store, ctx context.Contex
 	requireOK(t, st.CreateTask(ctx, task))
 	jobs, orders := reviewRound(task.ID, 1)
 	requireOK(t, CreateReviewRound(ctx, st, task.ID, jobs, orders))
-	first, err := ClaimWorkOrder(ctx, st, orders[0].ID, core.WorkOrderClaim{WorkerID: "worker", ClaimantID: "worker", SessionID: "verdict-" + task.ID, ClientToken: "verdict", Lease: time.Hour, ExecutionTimeout: time.Hour})
+	first, err := ClaimWorkOrder(ctx, st, orders[0].ID, core.WorkOrderClaim{ClaimantID: "worker", SessionID: "verdict-" + task.ID, ClientToken: "verdict", Lease: time.Hour, ExecutionTimeout: time.Hour})
 	requireOK(t, err)
 	first.State = core.WorkOrderCompleted
 	requireOK(t, UpdateWorkOrder(ctx, st, first, core.WorkOrderCmdSubmitReviewVerdict))
@@ -118,7 +118,7 @@ func seedReviewRoundWithVerdict(t *testing.T, st store.Store, ctx context.Contex
 // expireReviewSeat loses one claim's lease so the seat is interrupted.
 func expireReviewSeat(t *testing.T, st store.Store, ctx context.Context, id, label string) {
 	t.Helper()
-	if _, err := ClaimWorkOrder(ctx, st, id, core.WorkOrderClaim{WorkerID: "worker", ClaimantID: "worker", SessionID: label + "-" + id, ClientToken: label + "-" + id, Lease: time.Millisecond, ExecutionTimeout: time.Hour}); err != nil {
+	if _, err := ClaimWorkOrder(ctx, st, id, core.WorkOrderClaim{ClaimantID: "worker", SessionID: label + "-" + id, ClientToken: label + "-" + id, Lease: time.Millisecond, ExecutionTimeout: time.Hour}); err != nil {
 		t.Fatal(err)
 	}
 	time.Sleep(5 * time.Millisecond)

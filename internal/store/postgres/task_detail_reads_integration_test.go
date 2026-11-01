@@ -53,8 +53,8 @@ func (r *detailReadTracer) observe(t *testing.T, read func() error) ([]string, i
 	return r.queries, r.rows
 }
 
-// TestTaskDetailReadsIssueOneBoundedQueryIntegration observes the three
-// detail selections before and after unrelated captures, document versions
+// TestTaskDetailReadsIssueOneBoundedQueryIntegration observes the detail
+// metadata selection before and after unrelated orders, document versions
 // and bodies, other documents, and artifact blobs grow: each selection stays
 // one query with the same returned rows and values, and no selected query
 // reads a version, artifact, or blob table.
@@ -89,9 +89,7 @@ func TestTaskDetailReadsIssueOneBoundedQueryIntegration(t *testing.T) {
 		t.Helper()
 		out := map[string]observation{}
 		for name, read := range map[string]func() error{
-			"captures":  func() error { _, err := st.ListTaskTranscriptCaptures(ctx, seed.TaskID); return err },
-			"snapshots": func() error { _, err := st.ListTaskActivitySnapshots(ctx, seed.TaskID, seed.OrderIDs); return err },
-			"metadata":  func() error { _, err := st.ListDocumentMetadata(ctx, seed.DocumentIDs); return err },
+			"metadata": func() error { _, err := st.ListDocumentMetadata(ctx, seed.DocumentIDs); return err },
 		} {
 			queries, rows := tracer.observe(t, read)
 			for _, query := range queries {
@@ -104,33 +102,24 @@ func TestTaskDetailReadsIssueOneBoundedQueryIntegration(t *testing.T) {
 		return out, storetest.ReadTaskDetailSelections(t, st, ctx, seed)
 	}
 	before, beforeValues := observe()
-	want := map[string]observation{"captures": {1, 2}, "snapshots": {1, 1}, "metadata": {1, 2}}
-	if len(before) != len(want) || before["captures"] != want["captures"] || before["snapshots"] != want["snapshots"] || before["metadata"] != want["metadata"] {
+	want := map[string]observation{"metadata": {1, 2}}
+	if len(before) != len(want) || before["metadata"] != want["metadata"] {
 		t.Fatalf("selections = %+v, want %+v", before, want)
 	}
 	storetest.GrowUnrelatedTaskDetailHistory(t, st, ctx, seed, sentinel, 2)
 	storetest.GrowUnrelatedTaskDetailHistory(t, st, ctx, seed, sentinel, 8)
 	after, afterValues := observe()
-	if after["captures"] != before["captures"] || after["snapshots"] != before["snapshots"] || after["metadata"] != before["metadata"] {
+	if after["metadata"] != before["metadata"] {
 		t.Fatalf("unrelated growth changed the selections: before %+v after %+v", before, after)
 	}
 	if afterValues != beforeValues || strings.Contains(afterValues, sentinel) {
 		t.Fatalf("unrelated growth changed returned values:\nbefore %s\nafter  %s", beforeValues, afterValues)
 	}
-	// Growing the selected output keeps one query per selection and follows
-	// the stated row bounds: one row per capture, at most one snapshot row
-	// per requested order, one metadata row per requested tier and ID.
+	// Growing the selected output keeps one query and one metadata row per
+	// requested tier and ID.
 	storetest.GrowSelectedTaskDetail(t, st, ctx, &seed, 4)
 	grown, _ := observe()
-	snapshotRows := int64(0)
-	for _, id := range seed.OrderIDs {
-		if _, found, err := st.GetWorkOrderActivitySnapshot(ctx, id); err != nil {
-			t.Fatal(err)
-		} else if found {
-			snapshotRows++
-		}
-	}
-	if grown["captures"] != (observation{1, before["captures"].rows + 4}) || grown["snapshots"] != (observation{1, snapshotRows}) || snapshotRows > int64(len(seed.OrderIDs)) || grown["metadata"] != (observation{1, before["metadata"].rows + 4}) {
-		t.Fatalf("selected growth = %+v (before %+v, stored snapshots %d)", grown, before, snapshotRows)
+	if grown["metadata"] != (observation{1, before["metadata"].rows + 4}) {
+		t.Fatalf("selected growth = %+v (before %+v)", grown, before)
 	}
 }

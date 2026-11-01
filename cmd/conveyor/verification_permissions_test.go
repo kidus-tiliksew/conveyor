@@ -48,11 +48,11 @@ func newVerificationCLIFixture(t *testing.T) verificationCLIFixture {
 	if _, err := storetest.CreateStageWorkOrder(ctx, b, job, order); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := storetest.ClaimWorkOrder(ctx, b, order.ID, core.WorkOrderClaim{Requirements: []core.ServedRequirementContext{{ID: "req-fixture", Version: 1, Statements: []core.RequirementStatement{{ID: "REQ-1", Statement: "Observe"}}}}, WorkerID: "fixture", ClaimantID: "fixture", SessionID: "session", ClientToken: "token", Lease: time.Hour, ExecutionTimeout: time.Hour}); err != nil {
+	if _, err := storetest.ClaimWorkOrder(ctx, b, order.ID, core.WorkOrderClaim{Requirements: []core.ServedRequirementContext{{ID: "req-fixture", Version: 1, Statements: []core.RequirementStatement{{ID: "REQ-1", Statement: "Observe"}}}}, ClaimantID: core.TaskRunClaimantID("fixture"), SessionID: "session", ClientToken: "token", Lease: time.Hour, ExecutionTimeout: time.Hour}); err != nil {
 		t.Fatal(err)
 	}
 	service := &workorder.Service{Store: b, ConfigProvider: func(context.Context) (*config.Config, error) { return cfg, nil }}
-	worker := store.WithActor(ctx, store.Actor{ID: "worker:fixture", Role: core.ActorWorker})
+	worker := store.WithActor(ctx, store.Actor{ID: store.UserActorID("fixture"), Role: core.ActorUser})
 	call := func(name string, input any) any {
 		t.Helper()
 		out, err := service.Verification(worker, order.ID, "session", "token", name, core.JSONPayload(input))

@@ -198,9 +198,6 @@ func (s *Store) GrantWorkspaceRole(ctx context.Context, email, workspaceID strin
 				if err := clearMemberAssignments(ctx, tx, workspaceID, uid); err != nil {
 					return translateBackendConflict(err)
 				}
-				if err := revokeOwnedWorkers(ctx, tx, uid, workspaceID, "workspace_membership_demoted"); err != nil {
-					return translateBackendConflict(err)
-				}
 			}
 			if _, err := tx.ExecContext(ctx, "DELETE FROM workspace_membership_invitations WHERE workspace_id=? AND email=?", workspaceID, email); err != nil {
 				return translateBackendConflict(err)
@@ -270,9 +267,6 @@ func (s *Store) RevokeWorkspaceRole(ctx context.Context, userID, workspaceID str
 		if err := clearMemberAssignments(ctx, tx, workspaceID, userID); err != nil {
 			return translateBackendConflict(err)
 		}
-		if err := revokeOwnedWorkers(ctx, tx, userID, workspaceID, "workspace_membership_revoked"); err != nil {
-			return translateBackendConflict(err)
-		}
 		_, err := appendWorkspaceEvent(ctx, tx, workspaceID, "workspace.membership_revoked", map[string]any{"workspace_id": workspaceID, "user_id": userID})
 		return translateBackendConflict(err)
 	})
@@ -304,43 +298,6 @@ func clearMemberAssignments(ctx context.Context, tx *sql.Tx, ws, uid string) err
 		}
 		actor := store.ActorFromContext(ctx)
 		if _, err = writeRow(ctx, tx, rowWrite{table: "events", operation: "INSERT", values: map[string]any{"workspace_id": ws, "task_id": id, "kind": "task.assignee.cleared", "actor_id": actor.ID, "actor_role": string(actor.Role), "payload_json": []byte(core.JSONPayload(map[string]any{"assignee_user_id": "", "revoked_user_id": uid}))}}); err != nil {
-			return translateBackendConflict(err)
-		}
-	}
-	return nil
-}
-func revokeOwnedWorkers(ctx context.Context, tx *sql.Tx, uid, ws, reason string) error {
-	query := "SELECT id,workspace_id FROM workers WHERE owner_user_id=? AND revoked_at IS NULL"
-	args := []any{uid}
-	if ws != "" {
-		query += " AND workspace_id=?"
-		args = append(args, ws)
-	}
-	query += " FOR UPDATE"
-	rows, err := tx.QueryContext(ctx, query, args...)
-	if err != nil {
-		return translateBackendConflict(err)
-	}
-	type worker struct{ id, ws string }
-	var items []worker
-	for rows.Next() {
-		var w worker
-		if err = rows.Scan(&w.id, &w.ws); err != nil {
-			rows.Close()
-			return translateBackendConflict(err)
-		}
-		items = append(items, w)
-	}
-	err = rows.Err()
-	rows.Close()
-	if err != nil {
-		return translateBackendConflict(err)
-	}
-	for _, w := range items {
-		if _, err = tx.ExecContext(ctx, "UPDATE workers SET revoked_at=CURRENT_TIMESTAMP(6),lease_expires_at=NULL WHERE workspace_id=? AND id=?", w.ws, w.id); err != nil {
-			return translateBackendConflict(err)
-		}
-		if _, err = appendWorkspaceEvent(ctx, tx, w.ws, "worker.revoked", map[string]any{"worker_id": w.id, "owner_user_id": uid, "reason": reason}); err != nil {
 			return translateBackendConflict(err)
 		}
 	}

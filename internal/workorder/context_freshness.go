@@ -142,14 +142,7 @@ func (s *Service) RefreshContext(ctx context.Context, id, session, prior string)
 	if err != nil {
 		return core.ContextFreshness{}, store.ErrWorkOrderClaimUnauthorized
 	}
-	owner := ""
-	if order.WorkerID != "" {
-		owner, err = store.WorkOrderOwnerUserID(ctx, s.Store, order)
-		if err != nil {
-			return core.ContextFreshness{}, store.ErrWorkOrderClaimUnauthorized
-		}
-	}
-	if err = store.ValidateContextClaim(ctx, task, order, order.AttemptID, session, owner, time.Now()); err != nil {
+	if err = store.ValidateContextClaim(ctx, task, order, order.AttemptID, session, time.Now()); err != nil {
 		return core.ContextFreshness{}, err
 	}
 	f := s.refreshContext(ctx, order, prior, "context.refresh_observed")
@@ -157,7 +150,7 @@ func (s *Service) RefreshContext(ctx context.Context, id, session, prior string)
 	if err != nil || latest.AttemptID != order.AttemptID {
 		return core.ContextFreshness{}, store.ErrWorkOrderClaimUnauthorized
 	}
-	if err = store.ValidateContextClaim(ctx, task, latest, order.AttemptID, session, owner, time.Now()); err != nil {
+	if err = store.ValidateContextClaim(ctx, task, latest, order.AttemptID, session, time.Now()); err != nil {
 		return core.ContextFreshness{}, err
 	}
 	return f, nil

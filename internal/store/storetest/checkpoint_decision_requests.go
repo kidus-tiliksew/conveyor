@@ -28,7 +28,7 @@ func RunCheckpointDecisionRequestConformance(t *testing.T, st store.Store, ctx c
 	}
 	const workerID = "worker-checkpoint-metadata"
 	const sessionID = "session-checkpoint-metadata"
-	if _, err := ClaimWorkOrder(ctx, st, orderID, core.WorkOrderClaim{WorkerID: workerID, ClaimantID: workerID, SessionID: sessionID, ClientToken: "secret", Lease: time.Minute, ExecutionTimeout: time.Hour}); err != nil {
+	if _, err := ClaimWorkOrder(ctx, st, orderID, core.WorkOrderClaim{ClaimantID: workerID, SessionID: sessionID, ClientToken: "secret", Lease: time.Minute, ExecutionTimeout: time.Hour}); err != nil {
 		t.Fatal(err)
 	}
 	want := &core.WorkOrderCheckpoint{DecisionRequest: "Confirm the authority revision.", Class: core.WorkOrderCheckpointClassAuthorityConflict, Citations: []core.WorkOrderAuthorityConflictCitation{{DocumentID: "req-authority", CitedVersion: 3, StatementOrSectionID: "AC-2.1"}}}

@@ -194,7 +194,7 @@ func TestMemoryCancelTaskIsAtomicAndCancelledSessionIsTerminal(t *testing.T) {
 	if err := storetestFor(st).CreateWorkOrder(ctx, core.WorkOrder{ID: completedJob.ID, TaskID: task.ID, JobID: completedJob.ID, Stage: core.StageSpec, State: core.WorkOrderQueued}); err != nil {
 		t.Fatal(err)
 	}
-	completedOrder, err := storetestFor(st).ClaimWorkOrder(ctx, completedJob.ID, core.WorkOrderClaim{SessionID: "completed-session", ClientToken: "completed-secret", ClaimantID: "worker", WorkerID: "worker", Lease: time.Minute})
+	completedOrder, err := storetestFor(st).ClaimWorkOrder(ctx, completedJob.ID, core.WorkOrderClaim{SessionID: "completed-session", ClientToken: "completed-secret", ClaimantID: "worker", Lease: time.Minute})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -205,12 +205,12 @@ func TestMemoryCancelTaskIsAtomicAndCancelledSessionIsTerminal(t *testing.T) {
 	if err = projectTaskNextStageForTest(ctx, st, task.ID, core.StageImplement); err != nil {
 		t.Fatal(err)
 	}
-	claimed, err := storetestFor(st).ClaimWorkOrder(ctx, job.ID, core.WorkOrderClaim{SessionID: "session", ClientToken: "secret", ClaimantID: "worker", WorkerID: "worker", Lease: time.Minute})
+	claimed, err := storetestFor(st).ClaimWorkOrder(ctx, job.ID, core.WorkOrderClaim{SessionID: "session", ClientToken: "secret", ClaimantID: "worker", Lease: time.Minute})
 	if err != nil {
 		t.Fatal(err)
 	}
 	if _, err = taskops.ExecuteWorkOrder(ctx, st, task.ID, core.WorkOrderCmdRenew, func(lease taskops.TaskLease) (core.WorkOrder, error) {
-		return st.RenewWorkerClaimCommand(ctx, lease, job.ID, core.WorkOrderClaimIdentity{WorkerID: "worker", ClaimantID: "different-claimant", SessionID: "session"}, time.Minute)
+		return st.RenewWorkerClaimCommand(ctx, lease, job.ID, core.WorkOrderClaimIdentity{ClaimantID: "different-claimant", SessionID: "session"}, time.Minute)
 	}); !errors.Is(err, ErrWorkOrderClaimLost) {
 		t.Fatalf("wrong-claimant renew error=%v", err)
 	}

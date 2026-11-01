@@ -166,7 +166,7 @@ func TestStaleOrderIsRedispatchedNotReissued(t *testing.T) {
 func TestTimedOutOrderIsRecoveredNotReissued(t *testing.T) {
 	ctx, st, d, task := staleMintFixture(t, "timed-out-holds")
 	orderID := task.ID + "-implement-1"
-	if _, err := storetest.ClaimWorkOrder(ctx, st, orderID, core.WorkOrderClaim{WorkerID: "worker", ClaimantID: "worker", SessionID: "session", ClientToken: "token", Lease: time.Minute, ExecutionTimeout: time.Millisecond}); err != nil {
+	if _, err := storetest.ClaimWorkOrder(ctx, st, orderID, core.WorkOrderClaim{ClaimantID: "worker", SessionID: "session", ClientToken: "token", Lease: time.Minute, ExecutionTimeout: time.Millisecond}); err != nil {
 		t.Fatal(err)
 	}
 	time.Sleep(5 * time.Millisecond)

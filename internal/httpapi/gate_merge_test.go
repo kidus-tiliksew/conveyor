@@ -89,7 +89,7 @@ func TestNextActionMergeChoiceUsesLastKnownReadiness(t *testing.T) {
 		t.Fatal(err)
 	}
 	refusal := func() string {
-		opts := store.NextActionOptions{MergeReadiness: s.taskRunReadiness.lastKnown}
+		opts := store.NextActionOptions{MergeReadiness: s.mergeReadiness.lastKnown}
 		action, err := store.ReadNextAction(store.WithActor(ctx, store.SystemActor()), s.Store, "gate", opts)
 		if err != nil {
 			t.Fatal(err)
@@ -106,7 +106,7 @@ func TestNextActionMergeChoiceUsesLastKnownReadiness(t *testing.T) {
 	}
 	// A run-gate peek at the reviewed head is reused by next-action; a
 	// replaced reviewed head misses.
-	if _, err := s.taskRunReadiness.read(ctx, task, s.OnMergeReadiness); err != nil {
+	if _, err := s.mergeReadiness.read(ctx, task, s.OnMergeReadiness); err != nil {
 		t.Fatal(err)
 	}
 	if got := refusal(); got != "" || reads != 1 {
@@ -114,13 +114,13 @@ func TestNextActionMergeChoiceUsesLastKnownReadiness(t *testing.T) {
 	}
 	replaced := task
 	replaced.ReviewedHeadSHA = "replaced-head"
-	if got := s.taskRunReadiness.lastKnown(ctx, replaced); got != nil {
+	if got := s.mergeReadiness.lastKnown(ctx, replaced); got != nil {
 		t.Fatalf("replaced head reused %+v", got)
 	}
-	if got := s.taskRunReadiness.lastKnown(ctx, task); got == nil || got.State != "MERGEABLE" {
+	if got := s.mergeReadiness.lastKnown(ctx, task); got == nil || got.State != "MERGEABLE" {
 		t.Fatalf("reviewed head miss %+v", got)
 	}
-	s.taskRunReadiness.forget(ctx, task.ID)
+	s.mergeReadiness.forget(ctx, task.ID)
 	// The task detail read caches the gate peek for the next-action read.
 	response := httptest.NewRecorder()
 	s.Handler().ServeHTTP(response, authenticatedMemoryRead(s, httptest.NewRequest(http.MethodGet, "/v1/tasks/gate/activity", nil)))
@@ -138,13 +138,13 @@ func TestTaskRunReadinessKeyFollowsReviewedHeadAtGate(t *testing.T) {
 	gate := core.Task{State: core.TaskAwaiting, GateKind: core.GateKindMergeApproval, ApprovedHeadSHA: "old-approval", ReviewedHeadSHA: "a"}
 	replaced := gate
 	replaced.ReviewedHeadSHA = "b"
-	if taskRunReadinessKey(gate) == taskRunReadinessKey(replaced) {
+	if mergeReadinessKey(gate) == mergeReadinessKey(replaced) {
 		t.Fatal("replaced reviewed head reused the gate cache key")
 	}
 	approved := core.Task{State: core.TaskApproved, ApprovedHeadSHA: "approved", ReviewedHeadSHA: "a"}
 	moved := approved
 	moved.ReviewedHeadSHA = "b"
-	if taskRunReadinessKey(approved) != taskRunReadinessKey(moved) {
+	if mergeReadinessKey(approved) != mergeReadinessKey(moved) {
 		t.Fatal("approved task key must follow the approved head")
 	}
 }

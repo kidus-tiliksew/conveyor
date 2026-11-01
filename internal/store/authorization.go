@@ -2,9 +2,7 @@ package store
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
-	"strings"
 
 	"github.com/kidus-tiliksew/conveyor/internal/core"
 )
@@ -181,13 +179,12 @@ type PersonalAccessTokenStore interface {
 	RevokeOwnPersonalAccessToken(context.Context, string, string) (core.PersonalAccessToken, error)
 }
 
-// AgentCredentialStore is the execution-only credential boundary used by the
-// attended run parent. The HTTP layer derives the owner from the authenticated
-// user and validates the exact live work-order session before calling it
-// (req-security-boundaries REQ-1/AC-1.1, REQ-2/AC-2.2-AC-2.3).
+// AgentCredentialStore issues agent-kind credentials under an owning user
+// (req-accounts-and-membership AC-3.2, AC-3.3). No route calls it: Conveyor
+// launches no agent session and mints no child credential (DEC-97(1);
+// component-identity-membership).
 type AgentCredentialStore interface {
 	IssueAgentCredential(context.Context, string, string) (IssuedAgentCredential, error)
-	RevokeRunAgentCredential(context.Context, string, string, RunAgentCredentialBinding) error
 }
 
 type IssuedAgentCredential struct {
@@ -195,37 +192,4 @@ type IssuedAgentCredential struct {
 	UserID string `json:"-"`
 	Label  string `json:"-"`
 	Value  string `json:"credential"`
-}
-
-const runAgentCredentialLabelPrefix = "conveyor-run:"
-
-type RunAgentCredentialBinding struct {
-	WorkspaceID string `json:"workspace_id"`
-	WorkOrderID string `json:"work_order_id"`
-	SessionID   string `json:"session_id"`
-}
-
-var ErrRunAgentCredentialBindingMismatch = errors.New("agent credential does not match the task run binding")
-
-func RunAgentCredentialLabel(binding RunAgentCredentialBinding) (string, error) {
-	if strings.TrimSpace(binding.WorkspaceID) == "" || strings.TrimSpace(binding.WorkOrderID) == "" || strings.TrimSpace(binding.SessionID) == "" {
-		return "", errors.New("run agent credential binding is incomplete")
-	}
-	encoded, err := json.Marshal(binding)
-	if err != nil {
-		return "", err
-	}
-	return runAgentCredentialLabelPrefix + string(encoded), nil
-}
-
-func ParseRunAgentCredentialLabel(label string) (RunAgentCredentialBinding, bool) {
-	if !strings.HasPrefix(label, runAgentCredentialLabelPrefix) {
-		return RunAgentCredentialBinding{}, false
-	}
-	var binding RunAgentCredentialBinding
-	if err := json.Unmarshal([]byte(strings.TrimPrefix(label, runAgentCredentialLabelPrefix)), &binding); err != nil ||
-		strings.TrimSpace(binding.WorkspaceID) == "" || strings.TrimSpace(binding.WorkOrderID) == "" || strings.TrimSpace(binding.SessionID) == "" {
-		return RunAgentCredentialBinding{}, false
-	}
-	return binding, true
 }

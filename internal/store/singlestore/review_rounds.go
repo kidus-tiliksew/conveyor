@@ -174,10 +174,6 @@ func (s *Store) settleAcceptedReviewTx(ctx context.Context, tx *sql.Tx, o core.W
 		o.Claimable = false
 		o.OperatorDirection = ""
 		o.UpdatedAt = now
-		o.ContinuationSessionID = ""
-		o.ContinuationAttemptID = ""
-		o.ContinuationHarness = ""
-		o.ContinuationLaunchEnvironment = ""
 		if err = orderWrite(ctx, tx, o); err != nil {
 			return err
 		}
@@ -202,26 +198,6 @@ func (s *Store) settleAcceptedReviewTx(ctx context.Context, tx *sql.Tx, o core.W
 			return err
 		}
 		if err := taskEvent(ctx, tx, core.Event{TaskID: j.TaskID, JobID: j.ID, Kind: "job.updated", Payload: core.JSONPayload(j), At: now}); err != nil {
-			return err
-		}
-	}
-	orders, err := s.listOrders(ctx, tx, []string{o.TaskID})
-	if err != nil {
-		return err
-	}
-	for _, i := range orders {
-		if i.Stage != core.StageImplement || i.State != core.WorkOrderSubmitted || (i.ContinuationSessionID == "" && i.ContinuationAttemptID == "" && i.ContinuationHarness == "" && i.ContinuationLaunchEnvironment == "") {
-			continue
-		}
-		i.ContinuationSessionID = ""
-		i.ContinuationAttemptID = ""
-		i.ContinuationHarness = ""
-		i.ContinuationLaunchEnvironment = ""
-		i.UpdatedAt = now
-		if err = orderWrite(ctx, tx, i); err != nil {
-			return err
-		}
-		if err = taskEvent(ctx, tx, core.Event{TaskID: i.TaskID, JobID: i.JobID, Kind: "work_order.updated", Payload: core.JSONPayload(i), At: now}); err != nil {
 			return err
 		}
 	}

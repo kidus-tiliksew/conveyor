@@ -126,7 +126,7 @@ func (f claimParityFixture) submitImplementation(taskID string) {
 	if err := storetest.For(f.st).CreateWorkOrder(f.ctx, core.WorkOrder{ID: jobID, TaskID: taskID, JobID: jobID, Stage: core.StageImplement, State: core.WorkOrderQueued}); err != nil {
 		f.t.Fatal(err)
 	}
-	claimed, err := storetest.For(f.st).ClaimWorkOrder(f.ctx, jobID, core.WorkOrderClaim{SessionID: taskID + "-implementer", ClientToken: "token", WorkerID: "worker", Lease: time.Minute})
+	claimed, err := storetest.For(f.st).ClaimWorkOrder(f.ctx, jobID, core.WorkOrderClaim{SessionID: taskID + "-implementer", ClientToken: "token", Lease: time.Minute})
 	if err != nil {
 		f.t.Fatal(err)
 	}

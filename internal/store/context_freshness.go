@@ -20,19 +20,20 @@ type ContextObservationStore interface {
 
 // ValidateContextClaim repeats exact scope and authenticated owner checks under
 // the store serialization boundary. No client assertion grants delivery state.
-func ValidateContextClaim(ctx context.Context, task core.Task, order core.WorkOrder, attempt, session, workerOwner string, now time.Time) error {
+func ValidateContextClaim(ctx context.Context, task core.Task, order core.WorkOrder, attempt, session string, now time.Time) error {
 	ws, ok := WorkspaceFromContext(ctx)
 	if !ok || task.Workspace != ws || task.ID != order.TaskID || order.AttemptID != attempt || session == "" || order.SessionID != session || order.State != core.WorkOrderClaimed || !order.LeaseExpiresAt.After(now) || (!order.ExecutionDeadline.IsZero() && !order.ExecutionDeadline.After(now)) {
 		return ErrWorkOrderClaimUnauthorized
 	}
+	// An order claimed by a worker before DEC-97 keeps its historical
+	// worker_id, which no current actor matches (component-context-freshness).
+	if order.WorkerID != "" {
+		return ErrWorkOrderClaimUnauthorized
+	}
 	actor := ActorFromContext(ctx)
 	switch actor.Role {
-	case core.ActorWorker:
-		if order.WorkerID != "" && actor.ID == WorkerActorID(order.WorkerID) {
-			return nil
-		}
 	case core.ActorUser:
-		if order.WorkerID == "" && order.ClaimantID == core.TaskRunClaimantID(strings.TrimPrefix(actor.ID, "user:")) {
+		if order.ClaimantID == core.TaskRunClaimantID(strings.TrimPrefix(actor.ID, "user:")) {
 			return nil
 		}
 	case core.ActorAgent:
@@ -40,21 +41,15 @@ func ValidateContextClaim(ctx context.Context, task core.Task, order core.WorkOr
 		if !ok || c.Kind != core.CredentialAgent || actor.ID != AgentActorID(c.ID) {
 			break
 		}
-		if c.RunWorkOrderID != "" && (c.RunWorkspaceID != ws || c.RunWorkOrderID != order.ID || c.RunSessionID != session) {
-			break
-		}
-		if order.WorkerID == "" && order.ClaimantID == core.TaskRunClaimantID(c.OwnerUserID) {
-			return nil
-		}
-		if order.WorkerID != "" && workerOwner != "" && workerOwner == c.OwnerUserID {
+		if order.ClaimantID == core.TaskRunClaimantID(c.OwnerUserID) {
 			return nil
 		}
 	}
 	return ErrWorkOrderClaimUnauthorized
 }
 
-func EvaluateContextObservation(ctx context.Context, task core.Task, order core.WorkOrder, workerOwner string, events []core.Event, o core.ContextObservation, now time.Time) (core.ContextObservation, *core.Event, error) {
-	if err := ValidateContextClaim(ctx, task, order, o.AttemptID, o.SessionID, workerOwner, now); err != nil {
+func EvaluateContextObservation(ctx context.Context, task core.Task, order core.WorkOrder, events []core.Event, o core.ContextObservation, now time.Time) (core.ContextObservation, *core.Event, error) {
+	if err := ValidateContextClaim(ctx, task, order, o.AttemptID, o.SessionID, now); err != nil {
 		return core.ContextObservation{}, nil, err
 	}
 	return evaluateContextObservation(ctx, task, order, events, o, now)
@@ -122,15 +117,7 @@ func (m *memory) RecordContextObservation(ctx context.Context, lease taskops.Tas
 		return core.ContextObservation{}, fmt.Errorf("context observation requires taskops lease")
 	}
 	task := m.tasks[order.TaskID]
-	owner := ""
-	if order.WorkerID != "" {
-		worker, exists := m.workers[order.WorkerID]
-		if !exists || !worker.RevokedAt.IsZero() {
-			return core.ContextObservation{}, ErrWorkOrderClaimUnauthorized
-		}
-		owner = worker.OwnerUserID
-	}
-	result, event, err := EvaluateContextObservation(ctx, task, order, owner, m.events[task.ID], o, time.Now().UTC())
+	result, event, err := EvaluateContextObservation(ctx, task, order, m.events[task.ID], o, time.Now().UTC())
 	if err == nil && event != nil {
 		m.appendEventLocked(ctx, *event)
 	}

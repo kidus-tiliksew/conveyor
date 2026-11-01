@@ -71,7 +71,7 @@ func RunPlanRevisionConformance(t *testing.T, st store.Store, ctx context.Contex
 
 	t.Run("live claim rejects a different authenticated claimant", func(t *testing.T) {
 		fixture := newPlanRevisionFixture(t, st, ctx, core.StageImplement, true, true)
-		wrong := core.WorkOrderClaimIdentity{WorkerID: "worker-b", ClaimantID: "worker-b", SessionID: fixture.sessionID}
+		wrong := core.WorkOrderClaimIdentity{ClaimantID: "worker-b", SessionID: fixture.sessionID}
 		_, err := taskops.ExecuteWorkOrder(ctx, st, fixture.order.TaskID, core.WorkOrderCmdRequestPlanRevision, func(lease taskops.TaskLease) (store.PlanRevisionRequestResult, error) {
 			return st.RequestPlanRevisionCommand(ctx, lease, fixture.order.ID, wrong, "wrong claimant")
 		})
@@ -171,7 +171,7 @@ func newPlanRevisionFixture(t *testing.T, st store.Store, ctx context.Context, s
 	}
 	fixture := planRevisionFixture{order: order, workerID: "worker-a", sessionID: "session-a"}
 	if claimed {
-		claimedOrder, err := For(st).ClaimWorkOrder(ctx, order.ID, core.WorkOrderClaim{SessionID: fixture.sessionID, ClientToken: taskID + "-token", Agent: "codex", Model: "model", WorkerID: fixture.workerID, Lease: time.Minute, ExecutionTimeout: time.Hour})
+		claimedOrder, err := For(st).ClaimWorkOrder(ctx, order.ID, core.WorkOrderClaim{SessionID: fixture.sessionID, ClientToken: taskID + "-token", Agent: "codex", Model: "model", Lease: time.Minute, ExecutionTimeout: time.Hour})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -186,7 +186,7 @@ func requestPlanRevision(ctx context.Context, st store.Store, taskID, orderID, w
 		return store.PlanRevisionRequestResult{}, err
 	}
 	return taskops.ExecuteWorkOrder(ctx, st, taskID, core.WorkOrderCmdRequestPlanRevision, func(lease taskops.TaskLease) (store.PlanRevisionRequestResult, error) {
-		claim := core.WorkOrderClaimIdentity{WorkerID: workerID, ClaimantID: order.ClaimantID, SessionID: sessionID}
+		claim := core.WorkOrderClaimIdentity{ClaimantID: order.ClaimantID, SessionID: sessionID}
 		return st.RequestPlanRevisionCommand(ctx, lease, orderID, claim, rationale)
 	})
 }

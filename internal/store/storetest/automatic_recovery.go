@@ -29,7 +29,7 @@ func RunAutomaticRecoveryConformance(t *testing.T, st store.Store, ctx context.C
 	if err := CreateWorkOrder(ctx, st, core.WorkOrder{ID: orderID, TaskID: taskID, JobID: orderID, Stage: core.StageImplement, State: core.WorkOrderQueued, QueueEnteredAt: now, QueueDeadline: now.Add(time.Hour)}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := ClaimWorkOrder(ctx, st, orderID, core.WorkOrderClaim{WorkerID: "worker", ClaimantID: "worker", SessionID: "session", ClientToken: "token", Lease: time.Minute, ExecutionTimeout: time.Minute}); err != nil {
+	if _, err := ClaimWorkOrder(ctx, st, orderID, core.WorkOrderClaim{ClaimantID: "worker", SessionID: "session", ClientToken: "token", Lease: time.Minute, ExecutionTimeout: time.Minute}); err != nil {
 		t.Fatal(err)
 	}
 	tick := now.Add(2 * time.Minute)
@@ -75,7 +75,7 @@ func RunAutomaticRecoveryConformance(t *testing.T, st store.Store, ctx context.C
 		t.Fatal("automatic recovery event missing")
 	}
 	for recovered.AutomaticRecoveryCount < 2 {
-		if _, err = ClaimWorkOrder(ctx, st, orderID, core.WorkOrderClaim{WorkerID: "worker", ClaimantID: "worker", SessionID: "session-" + recovered.ID, ClientToken: "token-" + recovered.ID, Lease: time.Minute, ExecutionTimeout: time.Minute}); err != nil {
+		if _, err = ClaimWorkOrder(ctx, st, orderID, core.WorkOrderClaim{ClaimantID: "worker", SessionID: "session-" + recovered.ID, ClientToken: "token-" + recovered.ID, Lease: time.Minute, ExecutionTimeout: time.Minute}); err != nil {
 			t.Fatal(err)
 		}
 		tick = time.Now().UTC().Add(2 * time.Minute)
@@ -95,7 +95,7 @@ func RunAutomaticRecoveryConformance(t *testing.T, st store.Store, ctx context.C
 			t.Fatal(err)
 		}
 	}
-	if _, err = ClaimWorkOrder(ctx, st, orderID, core.WorkOrderClaim{WorkerID: "worker", ClaimantID: "worker", SessionID: "session-last", ClientToken: "token-last", Lease: time.Minute, ExecutionTimeout: time.Minute}); err != nil {
+	if _, err = ClaimWorkOrder(ctx, st, orderID, core.WorkOrderClaim{ClaimantID: "worker", SessionID: "session-last", ClientToken: "token-last", Lease: time.Minute, ExecutionTimeout: time.Minute}); err != nil {
 		t.Fatal(err)
 	}
 	tick = time.Now().UTC().Add(2 * time.Minute)

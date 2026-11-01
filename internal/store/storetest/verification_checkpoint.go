@@ -162,14 +162,14 @@ func runVerificationMissingGrantCheckpoint(t *testing.T, x Fixture) {
 	if recoveryReplay.State != recovered.State || recoveryReplay.RetrySuppressed {
 		t.Fatal("recovery replay changed the order")
 	}
-	claim := core.WorkOrderClaim{WorkerID: "worker", ClaimantID: "worker", SessionID: "checkpoint-successor", ClientToken: "checkpoint-successor-token", Lease: time.Hour, ExecutionTimeout: time.Hour, Requirements: recovered.ServedRequirementSnapshot, Governance: recovered.GovernanceSnapshot}
+	claim := core.WorkOrderClaim{ClaimantID: core.TaskRunClaimantID("worker"), SessionID: "checkpoint-successor", ClientToken: "checkpoint-successor-token", Lease: time.Hour, ExecutionTimeout: time.Hour, Requirements: recovered.ServedRequirementSnapshot, Governance: recovered.GovernanceSnapshot}
 	successor, err := ClaimWorkOrder(x.Context, x.Backend, order.ID, claim)
 	requireOK(t, err)
 	if successor.AttemptID == v.access.WorkOrderAttemptID {
 		t.Fatal("successor reused the checkpoint attempt")
 	}
 	oldContext := v.contextID
-	v.access = store.VerificationAccess{TaskID: successor.TaskID, WorkOrderID: successor.ID, WorkOrderAttemptID: successor.AttemptID, Claim: core.WorkOrderClaimIdentity{WorkerID: "worker", ClaimantID: "worker", SessionID: claim.SessionID}, ClientToken: claim.ClientToken}
+	v.access = store.VerificationAccess{TaskID: successor.TaskID, WorkOrderID: successor.ID, WorkOrderAttemptID: successor.AttemptID, Claim: core.WorkOrderClaimIdentity{ClaimantID: core.TaskRunClaimantID("worker"), SessionID: claim.SessionID}, ClientToken: claim.ClientToken}
 	v.contextID = ""
 	next := v.apply(t, store.VerificationCommand{Kind: store.VerificationCreateContext, Key: "checkpoint-successor", Context: &store.VerificationContext{Revisions: v.revisions, GoverningPins: v.pins}})
 	if next.ID == "" || next.ID == oldContext {

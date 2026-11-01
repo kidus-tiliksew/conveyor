@@ -21,7 +21,6 @@ import (
 	"github.com/kidus-tiliksew/conveyor/internal/core"
 	"github.com/kidus-tiliksew/conveyor/internal/store"
 	"github.com/kidus-tiliksew/conveyor/internal/store/storetest"
-	workerservice "github.com/kidus-tiliksew/conveyor/internal/worker"
 	"github.com/kidus-tiliksew/conveyor/internal/workorder"
 )
 
@@ -70,7 +69,6 @@ func newGovernanceAuthFixture(t *testing.T) *governanceAuthFixture {
 		return &config.Config{Workspace: governanceWorkspace, Routing: config.Routing{Stages: map[string]config.StageRoute{"implement": {Timeout: time.Hour}}}}, nil
 	}
 	server.WorkOrders = &workorder.Service{Store: st, ConfigProvider: provider}
-	server.Workers = &workerservice.Service{Store: st, WorkOrders: server.WorkOrders}
 	return &governanceAuthFixture{t: t, ctx: ctx, store: st, server: server, handler: server.Handler(), members: members, credentials: credentials}
 }
 
@@ -112,17 +110,6 @@ func (f *governanceAuthFixture) order(name string, stage core.Stage) string {
 func (f *governanceAuthFixture) claimRun(orderID, owner, session string) {
 	f.t.Helper()
 	if _, err := storetest.For(f.store).ClaimWorkOrder(f.ctx, orderID, core.WorkOrderClaim{SessionID: session, ClientToken: "secret-" + session, ClaimantID: core.TaskRunClaimantID(owner), OwnerUserID: owner, Agent: "codex", Model: "model", Lease: time.Hour, ExecutionTimeout: time.Hour}); err != nil {
-		f.t.Fatal(err)
-	}
-}
-
-// claimWorker enrolls a worker for owner and stores its live claim.
-func (f *governanceAuthFixture) claimWorker(orderID, workerID, owner, session string) {
-	f.t.Helper()
-	if err := createOwnedWorker(f.store, f.ctx, core.Worker{ID: workerID, Workspace: governanceWorkspace, OwnerUserID: owner, Name: workerID, CredentialHash: "hash-" + workerID, CreatedAt: time.Now()}); err != nil {
-		f.t.Fatal(err)
-	}
-	if _, err := storetest.For(f.store).ClaimWorkOrder(f.ctx, orderID, core.WorkOrderClaim{SessionID: session, ClientToken: "secret-" + session, ClaimantID: workerID, WorkerID: workerID, Agent: "codex", Model: "model", Lease: time.Hour, ExecutionTimeout: time.Hour}); err != nil {
 		f.t.Fatal(err)
 	}
 }
@@ -297,52 +284,6 @@ func TestMCPDemotedUserRunClaimRefusesMutations(t *testing.T) {
 	}
 }
 
-func TestMCPDemotedWorkerHeldAgentClaimRefusesMutations(t *testing.T) {
-	t.Parallel()
-	for _, tool := range claimMutationMCPTools {
-		t.Run(tool, func(t *testing.T) {
-			t.Parallel()
-			f := newGovernanceAuthFixture(t)
-			owner := "usr_demoted_worker_owner"
-			_, agentToken := f.user(owner, core.WorkspaceRoleExecutor)
-			orderID := f.order("worker", core.StageImplement)
-			const session = "worker-session"
-			f.claimWorker(orderID, "worker-owned", owner, session)
-
-			// Demote the owner in the membership fixture while the stored
-			// claim and the enrolled worker both remain, so the refusal cannot
-			// be attributed to worker revocation.
-			f.members.setRole(owner, governanceWorkspace, core.WorkspaceRoleViewer)
-			before := f.snapshot(orderID)
-			if before.order.State != core.WorkOrderClaimed || before.order.WorkerID != "worker-owned" {
-				t.Fatalf("worker claim=%+v", before.order)
-			}
-			workers, err := f.store.ListWorkers(f.ctx)
-			if err != nil || !slices.ContainsFunc(workers, func(worker core.Worker) bool { return worker.ID == "worker-owned" && worker.RevokedAt.IsZero() }) {
-				t.Fatalf("enrolled worker missing or revoked: %+v err=%v", workers, err)
-			}
-			text, isErr := f.call(agentToken, tool, governanceCallArgs(tool, governanceWorkspace, orderID, session))
-			f.requireViewerRefusal("demoted worker-held "+tool, text, isErr)
-			f.requireUnchanged("demoted worker-held "+tool, before)
-
-			// Control with the binding restored. A worker-held claim is not
-			// renewable by an agent credential; that separate boundary answers
-			// claim loss, which the demoted call never reached.
-			f.members.setRole(owner, governanceWorkspace, core.WorkspaceRoleExecutor)
-			text, isErr = f.call(agentToken, tool, governanceCallArgs(tool, governanceWorkspace, orderID, session))
-			if tool == "renew_work_order" {
-				if !isErr || !strings.Contains(text, store.ErrWorkOrderClaimLost.Error()) {
-					t.Fatalf("restored agent renew of worker claim isError=%v text=%q, want claim lost", isErr, text)
-				}
-				return
-			}
-			if isErr {
-				t.Fatalf("restored executor agent %s: %s", tool, text)
-			}
-		})
-	}
-}
-
 func TestMCPGovernanceCapabilityAndClaimMatrix(t *testing.T) {
 	t.Parallel()
 	roles := []core.WorkspaceRole{core.WorkspaceRoleViewer, core.WorkspaceRoleExecutor, core.WorkspaceRoleContributor, core.WorkspaceRoleMaintainer, core.WorkspaceRoleOperator}
@@ -401,14 +342,14 @@ func TestMCPGovernanceCapabilityAndClaimMatrix(t *testing.T) {
 				})
 			}
 
-			t.Run("own worker-held claim through owner agent", func(t *testing.T) {
+			t.Run("own claim through owner agent", func(t *testing.T) {
 				f := newGovernanceAuthFixture(t)
-				_, agentToken := f.user("usr_worker_owner", core.WorkspaceRoleExecutor)
-				orderID := f.order("worker", core.StageImplement)
-				f.claimWorker(orderID, "worker-own", "usr_worker_owner", "worker-session")
-				text, isErr := f.call(agentToken, tool, governanceCallArgs(tool, governanceWorkspace, orderID, "worker-session"))
+				_, agentToken := f.user("usr_agent_owner", core.WorkspaceRoleExecutor)
+				orderID := f.order("agent", core.StageImplement)
+				f.claimRun(orderID, "usr_agent_owner", "agent-session")
+				text, isErr := f.call(agentToken, tool, governanceCallArgs(tool, governanceWorkspace, orderID, "agent-session"))
 				if isErr {
-					t.Fatalf("owned worker claim: %s", text)
+					t.Fatalf("owned claim through agent: %s", text)
 				}
 				requireSuccess(t, f, tool, orderID, text)
 			})
@@ -425,12 +366,12 @@ func TestMCPGovernanceCapabilityAndClaimMatrix(t *testing.T) {
 					f.claimRun(orderID, "usr_other", "foreign-session")
 					return userToken, governanceCallArgs(tool, governanceWorkspace, orderID, "foreign-session"), orderID
 				}},
-				{name: "foreign worker claim", want: store.ErrWorkOrderClaimUnauthorized.Error(), setup: func(f *governanceAuthFixture) (string, map[string]any, string) {
+				{name: "foreign owner claim through agent", want: store.ErrWorkOrderClaimUnauthorized.Error(), setup: func(f *governanceAuthFixture) (string, map[string]any, string) {
 					_, agentToken := f.user("usr_caller", core.WorkspaceRoleOperator)
 					f.user("usr_other", core.WorkspaceRoleExecutor)
-					orderID := f.order("foreign-worker", core.StageImplement)
-					f.claimWorker(orderID, "worker-foreign", "usr_other", "foreign-worker-session")
-					return agentToken, governanceCallArgs(tool, governanceWorkspace, orderID, "foreign-worker-session"), orderID
+					orderID := f.order("foreign-agent", core.StageImplement)
+					f.claimRun(orderID, "usr_other", "foreign-agent-session")
+					return agentToken, governanceCallArgs(tool, governanceWorkspace, orderID, "foreign-agent-session"), orderID
 				}},
 				{name: "wrong session", want: "claim", setup: func(f *governanceAuthFixture) (string, map[string]any, string) {
 					userToken, _ := f.user("usr_caller", core.WorkspaceRoleExecutor)
@@ -537,8 +478,8 @@ func TestMCPAgentCapabilityCeilingUsesToolTable(t *testing.T) {
 			}
 			f.requireUnchanged(name, before)
 			refused = append(refused, name)
-		case isMCPRead(name) || name == "report_continuation":
-			// Independent user-only read and launcher-only continuation rules.
+		case isMCPRead(name):
+			// Independent user-only read rule.
 			if !ceilingRefusal {
 				t.Fatalf("%s isError=%v text=%q, want credential refusal", name, isErr, text)
 			}

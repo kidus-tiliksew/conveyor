@@ -315,7 +315,7 @@ func runClaimedExclusivity(t *testing.T, st store.Backend) {
 	h := newHarness(t, st, "claimed", config.DefaultRecoveryPolicy(), core.Task{NextStage: core.StageImplement})
 	first := h.task.ID + "-implement-1"
 	h.dispatch(t)
-	if _, err := storetest.ClaimWorkOrder(h.ctx, h.st, first, core.WorkOrderClaim{WorkerID: "worker", ClaimantID: "worker", SessionID: "claimed", ClientToken: "claimed-token", Lease: time.Hour, ExecutionTimeout: time.Hour}); err != nil {
+	if _, err := storetest.ClaimWorkOrder(h.ctx, h.st, first, core.WorkOrderClaim{ClaimantID: "worker", SessionID: "claimed", ClientToken: "claimed-token", Lease: time.Hour, ExecutionTimeout: time.Hour}); err != nil {
 		t.Fatal(err)
 	}
 	now := time.Now().UTC()

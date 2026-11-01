@@ -53,9 +53,6 @@ func TestSingleStoreLargeGovernanceClaimIntegration(t *testing.T) {
 	if _, err := st.ConfirmDecision(ctx, decision.ID); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := storetest.EnsureWorkerEnrollment(ctx, st, "large-claim-worker"); err != nil {
-		t.Fatal(err)
-	}
 	service := &workorder.Service{Store: st, ConfigProvider: func(_ context.Context) (*config.Config, error) { return cfg, nil }}
 	for _, stage := range []core.Stage{core.StageReview, core.StageVerify} {
 		t.Run(string(stage), func(t *testing.T) {
@@ -78,7 +75,7 @@ func TestSingleStoreLargeGovernanceClaimIntegration(t *testing.T) {
 			if err := storetest.For(st).CreateWorkOrder(ctx, core.WorkOrder{ID: job.ID, JobID: job.ID, TaskID: id, Stage: stage, HeadSHA: task.ReviewedHeadSHA, State: core.WorkOrderQueued}); err != nil {
 				t.Fatal(err)
 			}
-			claimed, err := service.Claim(ctx, job.ID, core.WorkOrderClaim{ClaimantID: "large-claim-worker", WorkerID: "large-claim-worker", SessionID: id, ClientToken: id + "-token", Lease: time.Minute})
+			claimed, err := service.Claim(ctx, job.ID, core.WorkOrderClaim{ClaimantID: "large-claim-worker", SessionID: id, ClientToken: id + "-token", Lease: time.Minute})
 			if err != nil {
 				t.Fatalf("claim %s with complete governance: %v", stage, err)
 			}

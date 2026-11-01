@@ -35,7 +35,7 @@ func newMCPReadFixture(t *testing.T) (*Server, context.Context) {
 		"other":  {ID: "other-pat", OwnerUserID: "other", Kind: core.CredentialUser, Scope: core.CredentialScopeUser},
 		"denied": {ID: "denied-pat", OwnerUserID: "denied", Kind: core.CredentialUser, Scope: core.CredentialScopeUser},
 		"agent":  {ID: "agent-credential", OwnerUserID: "reader", Kind: core.CredentialAgent, Scope: core.CredentialScopeUser},
-		"child":  {ID: "child-credential", OwnerUserID: "reader", Kind: core.CredentialAgent, Scope: core.CredentialScopeUser, RunWorkspaceID: "demo", RunWorkOrderID: "claimed-order", RunSessionID: "claimed-session"},
+		"child":  {ID: "child-credential", OwnerUserID: "reader", Kind: core.CredentialAgent, Scope: core.CredentialScopeUser},
 	}
 	s.ConfigProvider = func(ctx context.Context) (*config.Config, error) {
 		workspace, _ := store.WorkspaceFromContext(ctx)
@@ -318,10 +318,6 @@ func TestMCPReadAuthorizationAndSchemas(t *testing.T) {
 			_, absent := mcpReadCall(t, s, "reader", d.name, a)
 			if foreign != absent || !strings.Contains(foreign, "workspace_not_found") {
 				t.Fatalf("scope leaks existence: %s / %s", foreign, absent)
-			}
-			request := httptest.NewRequest(http.MethodPost, "/mcp", nil).WithContext(context.WithValue(store.WithActor(t.Context(), store.SystemActor()), workerContextKey{}, core.Worker{ID: "worker", Workspace: "demo"}))
-			if _, e := s.callMCPTool(request, d.name, a); e == nil {
-				t.Fatal("worker read accepted")
 			}
 		})
 	}

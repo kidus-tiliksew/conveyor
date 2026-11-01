@@ -25,7 +25,7 @@ func createMemoryReviewOrderInState(t *testing.T, st Store, ctx context.Context,
 	case core.WorkOrderQueued:
 		return
 	case core.WorkOrderCompleted:
-		claimed, err := storetestFor(st).ClaimWorkOrder(ctx, order.ID, core.WorkOrderClaim{SessionID: order.ID + "-session", ClientToken: "test-token", ClaimantID: "worker", WorkerID: "worker", Lease: time.Minute})
+		claimed, err := storetestFor(st).ClaimWorkOrder(ctx, order.ID, core.WorkOrderClaim{SessionID: order.ID + "-session", ClientToken: "test-token", ClaimantID: "worker", Lease: time.Minute})
 		if err != nil {
 			t.Fatal(err)
 		}

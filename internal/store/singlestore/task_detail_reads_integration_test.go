@@ -15,7 +15,7 @@ import (
 
 // TestTaskDetailReadsSelectBoundedRowsIntegration observes every value the
 // database returns to the three detail selections before and after unrelated
-// captures, document versions and bodies, other documents, and artifact blobs
+// orders, document versions and bodies, other documents, and artifact blobs
 // grow: each selection stays one query with the same rows and value bytes,
 // and no returned value carries the unrelated sentinel (component-persistence,
 // Task-detail batch reads).
@@ -43,11 +43,6 @@ func TestTaskDetailReadsSelectBoundedRowsIntegration(t *testing.T) {
 		t.Helper()
 		out := map[string]observation{}
 		for name, read := range map[string]func() error{
-			"captures": func() error { _, err := recorded.ListTaskTranscriptCaptures(ctx, seed.TaskID); return err },
-			"snapshots": func() error {
-				_, err := recorded.ListTaskActivitySnapshots(ctx, seed.TaskID, seed.OrderIDs)
-				return err
-			},
 			"metadata": func() error { _, err := recorded.ListDocumentMetadata(ctx, seed.DocumentIDs); return err },
 		} {
 			recorder.start()
@@ -64,7 +59,7 @@ func TestTaskDetailReadsSelectBoundedRowsIntegration(t *testing.T) {
 		return out, storetest.ReadTaskDetailSelections(t, recorded, ctx, seed)
 	}
 	before, beforeValues := observe()
-	for name, rows := range map[string]int{"captures": 2, "snapshots": 1, "metadata": 2} {
+	for name, rows := range map[string]int{"metadata": 2} {
 		if before[name].queries != 1 || before[name].rows != rows {
 			t.Fatalf("%s = %+v, want one query returning %d rows", name, before[name], rows)
 		}
@@ -80,25 +75,11 @@ func TestTaskDetailReadsSelectBoundedRowsIntegration(t *testing.T) {
 	if afterValues != beforeValues || strings.Contains(afterValues, sentinel) {
 		t.Fatalf("unrelated growth changed returned values:\nbefore %s\nafter  %s", beforeValues, afterValues)
 	}
-	// Growing the selected output keeps one query per selection and follows
-	// the stated row bounds: one row per capture, at most one snapshot row
-	// per requested order, one metadata row per requested tier and ID.
+	// Growing the selected output keeps one query and one metadata row per
+	// requested tier and ID.
 	storetest.GrowSelectedTaskDetail(t, st, ctx, &seed, 4)
 	grown, _ := observe()
-	snapshotRows := 0
-	for _, id := range seed.OrderIDs {
-		if _, found, err := st.GetWorkOrderActivitySnapshot(ctx, id); err != nil {
-			t.Fatal(err)
-		} else if found {
-			snapshotRows++
-		}
-	}
-	for name, rows := range map[string]int{"captures": before["captures"].rows + 4, "snapshots": snapshotRows, "metadata": before["metadata"].rows + 4} {
-		if grown[name].queries != 1 || grown[name].rows != rows || grown[name].bytes <= 0 {
-			t.Fatalf("selected growth %s = %+v, want one query returning %d rows", name, grown[name], rows)
-		}
-	}
-	if snapshotRows > len(seed.OrderIDs) || grown["captures"].bytes <= before["captures"].bytes || grown["metadata"].bytes <= before["metadata"].bytes {
-		t.Fatalf("selected growth bytes: before %+v grown %+v", before, grown)
+	if grown["metadata"].queries != 1 || grown["metadata"].rows != before["metadata"].rows+4 || grown["metadata"].bytes <= before["metadata"].bytes {
+		t.Fatalf("selected growth metadata = %+v (before %+v)", grown["metadata"], before["metadata"])
 	}
 }

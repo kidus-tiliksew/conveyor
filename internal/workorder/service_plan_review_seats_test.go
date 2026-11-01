@@ -81,7 +81,7 @@ func (e *planSeatsEnv) claimStage(t *testing.T, stage core.Stage) core.WorkOrder
 		}
 		e.claims++
 		session := fmt.Sprintf("%s-session-%d", stage, e.claims)
-		claimed, claimErr := storetest.For(e.st).ClaimWorkOrder(e.ctx, orders[i].ID, core.WorkOrderClaim{SessionID: session, ClientToken: session + "-token", WorkerID: fmt.Sprintf("%s-worker-%d", e.taskID, e.claims), Agent: "codex", Model: "gpt", Lease: time.Minute, ExecutionTimeout: time.Hour})
+		claimed, claimErr := storetest.For(e.st).ClaimWorkOrder(e.ctx, orders[i].ID, core.WorkOrderClaim{SessionID: session, ClientToken: session + "-token", Agent: "codex", Model: "gpt", Lease: time.Minute, ExecutionTimeout: time.Hour})
 		if claimErr != nil {
 			t.Fatal(claimErr)
 		}
@@ -135,7 +135,7 @@ func (e *planSeatsEnv) reenterPlan(t *testing.T) core.WorkOrder {
 	}
 	implement := e.claimStage(t, core.StageImplement)
 	if _, err := taskops.ExecuteWorkOrder(e.ctx, e.st, e.taskID, core.WorkOrderCmdRequestPlanRevision, func(lease taskops.TaskLease) (store.PlanRevisionRequestResult, error) {
-		return e.st.RequestPlanRevisionCommand(e.ctx, lease, implement.ID, core.WorkOrderClaimIdentity{WorkerID: implement.WorkerID, ClaimantID: implement.ClaimantID, SessionID: implement.SessionID}, "the panel needs revising")
+		return e.st.RequestPlanRevisionCommand(e.ctx, lease, implement.ID, core.WorkOrderClaimIdentity{ClaimantID: implement.ClaimantID, SessionID: implement.SessionID}, "the panel needs revising")
 	}); err != nil {
 		t.Fatal(err)
 	}

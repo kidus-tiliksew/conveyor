@@ -92,20 +92,6 @@ func TestNextActionDerivationAndAttentionParity(t *testing.T) {
 		if !strings.Contains(inbox.Body.String(), `"kind":"`+projected.Kind+`"`) || !strings.Contains(inbox.Body.String(), `"label":"`+projected.Label+`"`) {
 			t.Fatalf("inbox missing %s kind/label: %s", task.ID, inbox.Body.String())
 		}
-		gate, _, err := server.taskRunGate(ctx, task, false)
-		if err != nil {
-			t.Fatal(err)
-		}
-		entry, _ := nextaction.Lookup(projected.Kind, projected.Details.StallReason, projected.Details.ReleaseOutcome, projected.Details.GateKind)
-		if entry.RunGate == nil {
-			if gate != nil {
-				t.Fatalf("%s gate=%+v want none", task.ID, gate)
-			}
-			continue
-		}
-		if gate == nil || gate.Kind != entry.RunGate.Kind || gate.Label != entry.RunGate.Label {
-			t.Fatalf("%s gate=%+v want %s/%s", task.ID, gate, entry.RunGate.Kind, entry.RunGate.Label)
-		}
 	}
 	if _, ok := attention["running"]; ok {
 		t.Fatal("attention included a factory task or honored the subject query")
@@ -119,36 +105,6 @@ func TestNextActionDerivationAndAttentionParity(t *testing.T) {
 	}
 	if pending.Code != http.StatusOK || json.Unmarshal(pending.Body.Bytes(), &summary) != nil || summary.Attention.OperatorDecisions != summary.Attention.Total || summary.Attention.Total != len(attention) {
 		t.Fatalf("decisions status=%d summary=%+v attention=%d body=%s", pending.Code, summary, len(attention), pending.Body.String())
-	}
-}
-
-func TestRunGateGoldenJSON(t *testing.T) {
-	ctx := store.WithWorkspace(store.WithActor(t.Context(), store.SystemActor()), "demo")
-	st := store.NewMemory()
-	server := NewServer(st)
-	cases := []struct {
-		task core.Task
-		want string
-	}{
-		{core.Task{ID: "spec", Workspace: "demo", Repo: "conveyor", Branch: "spec", State: core.TaskAwaiting, GateKind: core.GateKindPlanApproval}, `{"kind":"spec","label":"Approve plan","summary":"The execution plan is waiting for approval.","can_operate":false,"can_request_changes":false}`},
-		{core.Task{ID: "merge", Workspace: "demo", Repo: "conveyor", Branch: "merge-branch", BaseBranch: "main", State: core.TaskAwaiting, GateKind: core.GateKindMergeApproval}, `{"kind":"merge","label":"Approve merge","summary":"The reviewed branch is waiting for merge approval.","can_operate":false,"can_request_changes":false}`},
-		{core.Task{ID: "revision", Workspace: "demo", Repo: "conveyor", Branch: "revision", State: core.TaskAwaiting, GateKind: core.GateKindPlanRevision}, `{"kind":"plan_revision","label":"Approve plan revision","summary":"Implementation asked to revise the plan.","can_operate":false,"can_request_changes":false}`},
-		{core.Task{ID: "bounce", Workspace: "demo", Repo: "conveyor", Branch: "bounce", State: core.TaskAwaiting, GateKind: core.GateKindReviewBounceLimit}, `{"kind":"human","label":"Settle review","summary":"Review bounced until the limit.","can_operate":false,"can_request_changes":false}`},
-		{core.Task{ID: "failed", Workspace: "demo", Repo: "conveyor", Branch: "failed", State: core.TaskAwaiting, GateKind: core.GateKindJobFailure}, `{"kind":"human","label":"human recovery gate","summary":"A job failed and needs a person.","can_operate":false,"can_request_changes":false}`},
-		{core.Task{ID: "execute", Workspace: "demo", Repo: "conveyor", Branch: "execute-branch", BaseBranch: "main", State: core.TaskApproved, MergeApproval: true}, `{"kind":"merge_execution","label":"merge execution pending","summary":"execute-branch into main; merge readiness is not configured on this server","can_operate":false,"can_request_changes":false}`},
-	}
-	for _, tc := range cases {
-		if err := st.CreateTask(ctx, tc.task); err != nil {
-			t.Fatal(err)
-		}
-		gate, _, err := server.taskRunGate(ctx, tc.task, false)
-		if err != nil || gate == nil {
-			t.Fatalf("%s gate=%+v err=%v", tc.task.ID, gate, err)
-		}
-		raw, err := json.Marshal(gate)
-		if err != nil || string(raw) != tc.want {
-			t.Fatalf("%s gate=%s want %s", tc.task.ID, raw, tc.want)
-		}
 	}
 }
 

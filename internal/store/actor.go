@@ -2,6 +2,7 @@ package store
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 
@@ -14,6 +15,9 @@ func WorkerActorID(id string) string { return "worker:" + strings.TrimSpace(id) 
 
 // Actor is the typed event actor (component-persistence, Actor context).
 type Actor = core.Actor
+
+// ErrRetiredWorkerActor refuses a new write by the retired worker actor role.
+var ErrRetiredWorkerActor = errors.New("worker actors are retired (DEC-97)")
 
 // ErrMissingActor wraps every refused event write whose context carries no
 // complete actor.
@@ -61,25 +65,24 @@ func RequireActor(ctx context.Context) (Actor, error) {
 	if !actor.Complete() {
 		return Actor{}, fmt.Errorf("%w: the context carries no complete typed actor", ErrMissingActor)
 	}
+	// Worker actors are retired: no credential produces one and no new event
+	// may carry one. Events stored earlier with the role read back unchanged
+	// (req-accounts-and-membership REQ-3; DEC-97(4); component-persistence).
+	if actor.Role == core.ActorWorker {
+		return Actor{}, fmt.Errorf("%w: actor %s", ErrRetiredWorkerActor, actor.ID)
+	}
 	return actor, nil
 }
 
 // WorkOrderOwnerUserID resolves the executing human from durable claim state.
-// Client-supplied claimant text is never treated as authority: run claimants
-// use the server-derived run:<user-id> form and worker claims use durable
-// enrollment ownership (req-delivery-and-forge REQ-6 and REQ-1).
+// Client-supplied claimant text is never treated as authority: claimants use
+// the server-derived run:<user-id> form (req-delivery-and-forge REQ-6 and
+// REQ-1). An order claimed by a worker before DEC-97 keeps its historical
+// worker ID, whose enrollment owner is no longer stored, so it resolves no
+// owner (DEC-97(1)).
 func WorkOrderOwnerUserID(ctx context.Context, st Store, order core.WorkOrder) (string, error) {
 	if order.WorkerID != "" {
-		workers, err := st.ListWorkers(ctx)
-		if err != nil {
-			return "", fmt.Errorf("list workers for work-order owner: %w", err)
-		}
-		for _, worker := range workers {
-			if worker.ID == order.WorkerID && strings.TrimSpace(worker.OwnerUserID) != "" {
-				return strings.TrimSpace(worker.OwnerUserID), nil
-			}
-		}
-		return "", fmt.Errorf("work order %s worker %s has no durable owner", order.ID, order.WorkerID)
+		return "", fmt.Errorf("work order %s was claimed by retired worker %s and has no recorded owner (DEC-97)", order.ID, order.WorkerID)
 	}
 	owner := strings.TrimSpace(strings.TrimPrefix(order.ClaimantID, core.TaskRunClaimantPrefix))
 	if owner == "" || order.ClaimantID != core.TaskRunClaimantID(owner) {

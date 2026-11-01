@@ -122,8 +122,7 @@ func TestRequestChangesBouncesThroughSharedContextAndAttention(t *testing.T) {
 		t.Fatalf("prior feedback=%q err=%v", assembled.PriorFeedback, err)
 	}
 	claimed, err := storetest.For(st).ClaimWorkOrder(ctx, orders[0].ID, core.WorkOrderClaim{
-		ClaimantID: "worker-1", SessionID: "worker-session", ClientToken: "worker-secret",
-		WorkerID: "worker-1", Agent: "codex", Model: "implementer", Lease: time.Minute,
+		ClaimantID: "worker-1", SessionID: "worker-session", ClientToken: "worker-secret", Agent: "codex", Model: "implementer", Lease: time.Minute,
 	})
 	if err != nil || claimed.State != core.WorkOrderClaimed {
 		t.Fatalf("worker claim=%+v err=%v", claimed, err)

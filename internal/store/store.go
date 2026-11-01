@@ -47,8 +47,6 @@ var (
 	// order itself (component-durable-queue; DEC-62).
 	ErrTaskHeldByWorkOrder      = errors.New("task stage is held by a work order; redispatch or recover the work order instead")
 	ErrReviewRetryConflict      = errors.New("review round retry conflicts with current state")
-	ErrPairingInvalid           = errors.New("worker pairing token is invalid, expired, or already used")
-	ErrWorkerUnauthorized       = errors.New("worker credential is invalid or revoked")
 	ErrWorkOrderCancelled       = errors.New("work order was cancelled")
 	ErrWorkOrderPreempted       = errors.New("work order was preempted by an operator")
 	ErrWorkOrderPreemptConflict = errors.New("work order preempt conflict")
@@ -75,9 +73,8 @@ var (
 	ErrTaskDependencyConflict   = errors.New("task dependency request conflicts with current state")
 	ErrLineageRebuildValidation = errors.New("invalid lineage rebuild request")
 	ErrLineageRebuildConflict   = errors.New("lineage rebuild request conflicts with a prior request")
-	// ErrWorkOrderClaimLost is the order-scoped counterpart to
-	// ErrWorkerUnauthorized: the caller's credential is valid but the order is
-	// no longer claimed by it, typically because the claim lease expired and
+	// ErrWorkOrderClaimLost reports that the caller's credential is valid but
+	// the order is no longer claimed by it, typically because the claim lease expired and
 	// ownership returned to the queue. Kept distinct so agents do
 	// not misdiagnose a lapsed claim as a revoked credential.
 	ErrWorkOrderClaimLost = errors.New("work order claim is no longer held by this worker (claim expired or order reassigned)")
@@ -88,11 +85,6 @@ var (
 	// ErrWorkOrderClaimUnauthorized distinguishes a live claim owned by a
 	// different authenticated claimant from an expired or reassigned lease.
 	ErrWorkOrderClaimUnauthorized = errors.New("authenticated caller does not hold this live work order claim")
-	// ErrVerificationEvidenceClaimConflict intentionally collapses every
-	// missing, stale, expired, superseded, stage-mismatched, or differently
-	// owned claim into one response so the upload route cannot disclose another
-	// task's ownership.
-	ErrVerificationEvidenceClaimConflict = errors.New("verification evidence upload requires the matching live implement claim")
 	// ErrPlanRevisionGateUnreadable marks an awaiting plan-revision gate whose
 	// latest transition or request payload cannot be read. Listings treat it as
 	// pending; writes stay refused.
@@ -235,12 +227,9 @@ type TaskStore interface {
 	// (feature-bounded-automatic-recovery AR-4); updated_at is left alone.
 	ClaimBaseConflictCheck(ctx context.Context, workOrderID string, at time.Time) (bool, error)
 	RequestPlanRevisionCommand(ctx context.Context, taskLease taskops.TaskLease, workOrderID string, claim core.WorkOrderClaimIdentity, rationale string) (PlanRevisionRequestResult, error)
-	// CreateClaimedVerificationEvidence atomically derives evidence ownership
-	// from an exact live implement claim (component-artifacts; DEC-53).
-	CreateClaimedVerificationEvidence(ctx context.Context, request ClaimedVerificationEvidenceRequest, content []byte) (core.Artifact, error)
 }
 
-// WorkOrderStore owns the work-order, review-round and worker contract.
+// WorkOrderStore owns the work-order and review-round contract.
 type WorkOrderStore interface {
 	CreateWorkOrderCommand(ctx context.Context, lease taskops.TaskLease, order core.WorkOrder) error
 	// CreateStageWorkOrder atomically creates one non-review stage job and work
@@ -307,34 +296,11 @@ type WorkOrderStore interface {
 	// enqueues its job. It reports false when the row is no longer due.
 	AutomaticPublicationRetryCommand(ctx context.Context, lease taskops.TaskLease, retry AutomaticPublicationRetry, now time.Time) (bool, error)
 	AcceptReviewDecisionCommand(ctx context.Context, lease taskops.TaskLease, decision core.ReviewDecision) error
-	CreateWorkerPairing(ctx context.Context, pairing core.WorkerPairing) error
-	ConsumeWorkerPairing(ctx context.Context, tokenHash string, now time.Time) (core.WorkerPairing, error)
-	CreateWorker(ctx context.Context, worker core.Worker) error
-	ListWorkers(ctx context.Context) ([]core.Worker, error)
-	ListHarnessModelFailures(ctx context.Context) ([]core.HarnessModelFailure, error)
-	AuthenticateWorker(ctx context.Context, credentialHash string) (core.Worker, error)
-	HeartbeatWorker(ctx context.Context, id string, leaseExpires time.Time, probes []core.HarnessProbe) (core.Worker, error)
-	RevokeWorker(ctx context.Context, id string) error
 	RenewWorkerClaimCommand(ctx context.Context, taskLease taskops.TaskLease, workOrderID string, claim core.WorkOrderClaimIdentity, lease time.Duration) (core.WorkOrder, error)
 	ReleaseWorkerClaimCommand(ctx context.Context, taskLease taskops.TaskLease, workOrderID string, claim core.WorkOrderClaimIdentity, release core.WorkOrderRelease) (core.WorkOrder, error)
 	// CancelPlanRevisionWorkOrderCommand retires the exact released
 	// implementation order when the operator approves plan re-entry.
 	CancelPlanRevisionWorkOrderCommand(ctx context.Context, taskLease taskops.TaskLease, workOrderID, attemptID string) (core.WorkOrder, error)
-	WorktreeHandoffCommand(context.Context, taskops.TaskLease, string, core.WorkOrderClaimIdentity, string, core.WorktreeHandoffRequest) (core.WorktreeHandoff, error)
-	RecordWorkOrderAttemptCheckpoint(ctx context.Context, workOrderID, workerID string, checkpoint core.WorkOrderAttemptCheckpoint) (bool, error)
-	UpsertWorkOrderActivitySnapshot(ctx context.Context, workOrderID string, claim core.WorkOrderClaimIdentity, content string) error
-	FinalizeWorkOrderAttemptObservability(ctx context.Context, workOrderID, workerID string, checkpoint core.WorkOrderAttemptCheckpoint) error
-	// RecordWorkOrderAttemptCapture records the observational transcript
-	// capture of one already-ended attempt for any stage, independently of
-	// Git preservation (req-260820-221be8 AC-2.1; DEC-26). It authenticates
-	// against the attempt's immutable claim event, derives the reason from
-	// the attempt's persisted ending, supersedes only that attempt's activity
-	// snapshot, and inserts at most one capture per attempt under the order
-	// row lock. It changes no claim, lease, release, or retry state.
-	RecordWorkOrderAttemptCapture(ctx context.Context, workOrderID string, claim core.WorkOrderClaimIdentity, capture core.WorkOrderAttemptCapture) (core.WorkOrderAttemptCaptureResult, error)
-	GetWorkOrderActivitySnapshot(ctx context.Context, workOrderID string) (core.WorkOrderActivitySnapshot, bool, error)
-	ListWorkOrderTranscriptCaptures(ctx context.Context, workOrderID string) ([]core.WorkOrderTranscriptCapture, error)
-	RecordWorkOrderContinuation(ctx context.Context, workOrderID string, claim core.WorkOrderClaimIdentity, continuation core.WorkOrderContinuation) (core.WorkOrder, error)
 }
 
 // DocumentStore owns the document and decision contract.
@@ -599,8 +565,6 @@ func NewMemoryWithConfig(cfg *config.Config) Store {
 		transcripts:                 map[string]core.Transcript{},
 		specs:                       map[string][]core.SpecVersion{},
 		workOrders:                  map[string]core.WorkOrder{},
-		workOrderActivitySnapshots:  map[string]core.WorkOrderActivitySnapshot{},
-		workOrderTranscriptCaptures: map[string][]core.WorkOrderTranscriptCapture{},
 		publications:                map[string]core.ReviewPublication{},
 		github:                      map[string]core.GitHubLifecycle{},
 		requirements:                map[memoryScopedKey]core.Requirement{},
@@ -616,11 +580,8 @@ func NewMemoryWithConfig(cfg *config.Config) Store {
 		planningBundles:             map[memoryScopedKey]core.PlanningBundle{},
 		planningMessages:            map[memoryScopedKey][]core.PlanningMessage{},
 		artifacts:                   map[memoryArtifactKey]memoryArtifact{},
-		pairings:                    map[string]core.WorkerPairing{},
-		workers:                     map[string]core.Worker{},
 		workspaceMembers:            map[memoryScopedKey]bool{},
 		workspaceMemberRoles:        map[memoryScopedKey]core.WorkspaceRole{},
-		harnessModelFailures:        map[string]core.HarnessModelFailure{},
 		recoveries:                  map[string]struct{}{},
 		reviewRetries:               map[string]memoryReviewRoundRetry{},
 		reviewRoundSeats:            map[string]memoryReviewRoundSeats{},
@@ -669,8 +630,6 @@ type memory struct {
 	transcripts                 map[string]core.Transcript
 	specs                       map[string][]core.SpecVersion
 	workOrders                  map[string]core.WorkOrder
-	workOrderActivitySnapshots  map[string]core.WorkOrderActivitySnapshot
-	workOrderTranscriptCaptures map[string][]core.WorkOrderTranscriptCapture
 	publications                map[string]core.ReviewPublication
 	pullRequestCloses           map[string]core.PullRequestClose
 	github                      map[string]core.GitHubLifecycle
@@ -688,11 +647,8 @@ type memory struct {
 	planningMessages            map[memoryScopedKey][]core.PlanningMessage
 	artifacts                   map[memoryArtifactKey]memoryArtifact
 	artifactRepairs             map[memoryScopedKey]ArtifactRepairReceipt
-	pairings                    map[string]core.WorkerPairing
-	workers                     map[string]core.Worker
 	workspaceMembers            map[memoryScopedKey]bool
 	workspaceMemberRoles        map[memoryScopedKey]core.WorkspaceRole
-	harnessModelFailures        map[string]core.HarnessModelFailure
 	recoveries                  map[string]struct{}
 	reviewRetries               map[string]memoryReviewRoundRetry
 	reviewRoundSeats            map[string]memoryReviewRoundSeats

@@ -113,10 +113,10 @@ func runVerificationOperations(t *testing.T, x Fixture) {
 		if !reflect.DeepEqual(beforeRecovery, verificationPublicState(t, &observer)) {
 			t.Fatal("conflicting recovery request changed aggregate")
 		}
-		claim := core.WorkOrderClaim{WorkerID: "worker", ClaimantID: "worker", SessionID: "successor", ClientToken: "successor-token", Lease: time.Hour, ExecutionTimeout: time.Hour, Requirements: order.ServedRequirementSnapshot, Governance: order.GovernanceSnapshot}
+		claim := core.WorkOrderClaim{ClaimantID: core.TaskRunClaimantID("worker"), SessionID: "successor", ClientToken: "successor-token", Lease: time.Hour, ExecutionTimeout: time.Hour, Requirements: order.ServedRequirementSnapshot, Governance: order.GovernanceSnapshot}
 		order, err = ClaimWorkOrder(x.Context, x.Backend, order.ID, claim)
 		requireOK(t, err)
-		v.access = store.VerificationAccess{TaskID: order.TaskID, WorkOrderID: order.ID, WorkOrderAttemptID: order.AttemptID, Claim: core.WorkOrderClaimIdentity{WorkerID: "worker", ClaimantID: "worker", SessionID: claim.SessionID}, ClientToken: claim.ClientToken}
+		v.access = store.VerificationAccess{TaskID: order.TaskID, WorkOrderID: order.ID, WorkOrderAttemptID: order.AttemptID, Claim: core.WorkOrderClaimIdentity{ClaimantID: core.TaskRunClaimantID("worker"), SessionID: claim.SessionID}, ClientToken: claim.ClientToken}
 		v.contextID, v.runID = "", ""
 		contextReceipt := v.apply(t, store.VerificationCommand{Kind: store.VerificationCreateContext, Key: "successor", Context: &store.VerificationContext{Revisions: v.revisions, GoverningPins: v.pins}})
 		v.contextID = contextReceipt.ID
@@ -428,9 +428,9 @@ func runSealedVerificationReview(t *testing.T, x Fixture) {
 	job := core.Job{ID: verify.TaskID + "-review-1", TaskID: verify.TaskID, Stage: core.StageReview, State: core.JobPending}
 	order := core.WorkOrder{ID: job.ID, JobID: job.ID, TaskID: job.TaskID, Stage: core.StageReview, State: core.WorkOrderQueued, HeadSHA: verify.HeadSHA, ReviewRound: 1, ReviewSeat: 1, CreatedAt: time.Now().UTC()}
 	requireOK(t, CreateReviewRound(x.Context, x.Backend, order.TaskID, []core.Job{job}, []core.WorkOrder{order}))
-	order, err = ClaimWorkOrder(x.Context, x.Backend, order.ID, core.WorkOrderClaim{WorkerID: "reviewer", ClaimantID: "reviewer", SessionID: "reviewer", ClientToken: "review-token", Lease: time.Hour, ExecutionTimeout: time.Hour, Requirements: verify.ServedRequirementSnapshot})
+	order, err = ClaimWorkOrder(x.Context, x.Backend, order.ID, core.WorkOrderClaim{ClaimantID: core.TaskRunClaimantID("reviewer"), SessionID: "reviewer", ClientToken: "review-token", Lease: time.Hour, ExecutionTimeout: time.Hour, Requirements: verify.ServedRequirementSnapshot})
 	requireOK(t, err)
-	ctx := store.WithActor(x.Context, store.Actor{ID: "worker:reviewer", Role: core.ActorWorker})
+	ctx := store.WithActor(x.Context, store.Actor{ID: store.UserActorID("reviewer"), Role: core.ActorUser})
 	valid := core.ReviewDecision{TaskID: order.TaskID, JobID: order.JobID, ReviewWorkOrderID: order.ID, ClaimSession: "reviewer", ReviewRound: 1, ReviewSeat: 1, Verdict: "approve", ReasonCode: "verified", Summary: "Sealed empty fixture assessed", ReviewedCommitSHA: verify.HeadSHA, HeadSHA: verify.HeadSHA, Reviewer: "forged actor", MaxBounces: 3, VerificationAssessment: &core.VerificationAssessment{ContextIDs: []string{v.contextID}, RunIDs: []string{}, EvidenceIDs: []string{}, Mappings: []core.VerificationAssessmentMapping{{DocumentID: "req-fixture", Version: 1, AcceptanceCriterionID: "AC-1.1", EvidenceIDs: []string{}, Assessment: "Explicit empty assessment is appropriate for this fixture"}}, Actor: "forged actor"}}
 	// Each backend's acceptance transaction returns the same correctable
 	// refusal as the preflight; a stale binding or an unknown context keeps
@@ -483,7 +483,7 @@ func runSealedVerificationReview(t *testing.T, x Fixture) {
 				Assessment *core.VerificationAssessment `json:"verification_assessment"`
 			}
 			requireOK(t, json.Unmarshal(e.Payload, &body))
-			if body.Assessment == nil || body.Assessment.Actor != "worker:reviewer" {
+			if body.Assessment == nil || body.Assessment.Actor != "user:reviewer" {
 				t.Fatal("review lost authenticated assessment attribution")
 			}
 			found = true
@@ -514,10 +514,10 @@ func runSealedVerificationReviewDrift(t *testing.T, x Fixture) {
 		t.Fatalf("verify order pins %+v, want req-fixture v1", drifted)
 	}
 	drifted[0].Version = 2
-	order, err = ClaimWorkOrder(x.Context, x.Backend, order.ID, core.WorkOrderClaim{WorkerID: "reviewer", ClaimantID: "reviewer", SessionID: "reviewer", ClientToken: "review-token", Lease: time.Hour, ExecutionTimeout: time.Hour, Requirements: drifted})
+	order, err = ClaimWorkOrder(x.Context, x.Backend, order.ID, core.WorkOrderClaim{ClaimantID: core.TaskRunClaimantID("reviewer"), SessionID: "reviewer", ClientToken: "review-token", Lease: time.Hour, ExecutionTimeout: time.Hour, Requirements: drifted})
 	requireOK(t, err)
-	ctx := store.WithActor(x.Context, store.Actor{ID: "worker:reviewer", Role: core.ActorWorker})
-	decision := core.ReviewDecision{TaskID: order.TaskID, JobID: order.JobID, ReviewWorkOrderID: order.ID, ClaimSession: "reviewer", ReviewRound: 1, ReviewSeat: 1, Verdict: "approve", ReasonCode: "verified", Summary: "Sealed empty fixture assessed", ReviewedCommitSHA: verify.HeadSHA, HeadSHA: verify.HeadSHA, Reviewer: "worker:reviewer", MaxBounces: 3, VerificationAssessment: &core.VerificationAssessment{ContextIDs: []string{v.contextID}, RunIDs: []string{}, EvidenceIDs: []string{}, Mappings: []core.VerificationAssessmentMapping{{DocumentID: "req-fixture", Version: 1, AcceptanceCriterionID: "AC-1.1", EvidenceIDs: []string{}, Assessment: "The context was sealed under v1; v2 is unverified"}}}}
+	ctx := store.WithActor(x.Context, store.Actor{ID: store.UserActorID("reviewer"), Role: core.ActorUser})
+	decision := core.ReviewDecision{TaskID: order.TaskID, JobID: order.JobID, ReviewWorkOrderID: order.ID, ClaimSession: "reviewer", ReviewRound: 1, ReviewSeat: 1, Verdict: "approve", ReasonCode: "verified", Summary: "Sealed empty fixture assessed", ReviewedCommitSHA: verify.HeadSHA, HeadSHA: verify.HeadSHA, Reviewer: "user:reviewer", MaxBounces: 3, VerificationAssessment: &core.VerificationAssessment{ContextIDs: []string{v.contextID}, RunIDs: []string{}, EvidenceIDs: []string{}, Mappings: []core.VerificationAssessmentMapping{{DocumentID: "req-fixture", Version: 1, AcceptanceCriterionID: "AC-1.1", EvidenceIDs: []string{}, Assessment: "The context was sealed under v1; v2 is unverified"}}}}
 	before := verificationPublicState(t, &v)
 	err = taskops.New(x.Backend).AcceptReviewDecision(ctx, decision)
 	var refusal *store.VerificationRefusal
@@ -814,10 +814,10 @@ func runNextActionGatedAttemptBinding(t *testing.T, x Fixture) {
 		t.Helper()
 		order, err := x.Backend.GetWorkOrder(x.Context, v.access.WorkOrderID)
 		requireOK(t, err)
-		claim := core.WorkOrderClaim{WorkerID: "worker", ClaimantID: "worker", SessionID: session, ClientToken: session + "-token", Lease: time.Hour, ExecutionTimeout: time.Hour, Requirements: order.ServedRequirementSnapshot, Governance: order.GovernanceSnapshot}
+		claim := core.WorkOrderClaim{ClaimantID: core.TaskRunClaimantID("worker"), SessionID: session, ClientToken: session + "-token", Lease: time.Hour, ExecutionTimeout: time.Hour, Requirements: order.ServedRequirementSnapshot, Governance: order.GovernanceSnapshot}
 		order, err = ClaimWorkOrder(x.Context, x.Backend, order.ID, claim)
 		requireOK(t, err)
-		v.access = store.VerificationAccess{TaskID: order.TaskID, WorkOrderID: order.ID, WorkOrderAttemptID: order.AttemptID, Claim: core.WorkOrderClaimIdentity{WorkerID: "worker", ClaimantID: "worker", SessionID: session}, ClientToken: claim.ClientToken}
+		v.access = store.VerificationAccess{TaskID: order.TaskID, WorkOrderID: order.ID, WorkOrderAttemptID: order.AttemptID, Claim: core.WorkOrderClaimIdentity{ClaimantID: core.TaskRunClaimantID("worker"), SessionID: session}, ClientToken: claim.ClientToken}
 		v.contextID, v.runID = "", ""
 		discovery := []json.RawMessage{core.JSONPayload(map[string]any{"repository": v.revisions[0].Repository, "revision": v.revisions[0].SHA, "state": "no_manifest"})}
 		v.contextID = v.apply(t, store.VerificationCommand{Kind: store.VerificationCreateContext, Key: session, Context: &store.VerificationContext{Revisions: v.revisions, GoverningPins: v.pins, Discovery: discovery}}).ID
@@ -960,10 +960,10 @@ func runVerificationRetryGateScope(t *testing.T, x Fixture) {
 		disposition := &store.VerificationRecoveryDisposition{ContextID: oldContext, RunID: oldRun, OperationIDs: []string{}, InputDigest: verificationSHA([]byte("{}")), Disposition: "not_applied", Reason: "Operator restored the environment and authorizes one retry."}
 		_, err = RecoverWorkOrder(store.WithVerificationRecovery(operator, disposition), x.Backend, order.ID, "gate-recovery", time.Hour)
 		requireOK(t, err)
-		claim := core.WorkOrderClaim{WorkerID: "worker", ClaimantID: "worker", SessionID: "gate-successor", ClientToken: "gate-successor-token", Lease: time.Hour, ExecutionTimeout: time.Hour, Requirements: order.ServedRequirementSnapshot, Governance: order.GovernanceSnapshot}
+		claim := core.WorkOrderClaim{ClaimantID: core.TaskRunClaimantID("worker"), SessionID: "gate-successor", ClientToken: "gate-successor-token", Lease: time.Hour, ExecutionTimeout: time.Hour, Requirements: order.ServedRequirementSnapshot, Governance: order.GovernanceSnapshot}
 		order, err = ClaimWorkOrder(x.Context, x.Backend, order.ID, claim)
 		requireOK(t, err)
-		v.access = store.VerificationAccess{TaskID: order.TaskID, WorkOrderID: order.ID, WorkOrderAttemptID: order.AttemptID, Claim: core.WorkOrderClaimIdentity{WorkerID: "worker", ClaimantID: "worker", SessionID: claim.SessionID}, ClientToken: claim.ClientToken}
+		v.access = store.VerificationAccess{TaskID: order.TaskID, WorkOrderID: order.ID, WorkOrderAttemptID: order.AttemptID, Claim: core.WorkOrderClaimIdentity{ClaimantID: core.TaskRunClaimantID("worker"), SessionID: claim.SessionID}, ClientToken: claim.ClientToken}
 		v.contextID, v.runID = "", ""
 		v.contextID = v.apply(t, store.VerificationCommand{Kind: store.VerificationCreateContext, Key: "gate-successor", Context: &store.VerificationContext{Revisions: v.revisions, GoverningPins: v.pins}}).ID
 		r := v.apply(t, store.VerificationCommand{Kind: store.VerificationRegisterObligation, Obligation: &obligation})
@@ -1028,7 +1028,7 @@ func verifyOrderAfterResubmission(t *testing.T, x Fixture, v verificationFixture
 	o := core.WorkOrder{ID: job.ID, JobID: job.ID, TaskID: task.ID, Stage: core.StageImplement, State: core.WorkOrderQueued, QueueEnteredAt: time.Now().UTC(), QueueDeadline: time.Now().UTC().Add(time.Hour), CreatedAt: time.Now().UTC()}
 	_, err = CreateStageWorkOrder(ctx, st, job, o)
 	requireOK(t, err)
-	o, err = ClaimWorkOrder(ctx, st, o.ID, core.WorkOrderClaim{WorkerID: "worker", ClaimantID: "worker", SessionID: "resubmit", ClientToken: "resubmit-token", Lease: time.Hour, ExecutionTimeout: time.Hour})
+	o, err = ClaimWorkOrder(ctx, st, o.ID, core.WorkOrderClaim{ClaimantID: core.TaskRunClaimantID("worker"), SessionID: "resubmit", ClientToken: "resubmit-token", Lease: time.Hour, ExecutionTimeout: time.Hour})
 	requireOK(t, err)
 	o.State, o.HeadSHA = core.WorkOrderSubmitted, head
 	requireOK(t, UpdateWorkOrder(ctx, st, o, core.WorkOrderCmdSubmitForReview))
@@ -1057,12 +1057,12 @@ func verifyOrderAtHead(t *testing.T, x Fixture, v verificationFixture, head stri
 	o := core.WorkOrder{ID: job.ID, JobID: job.ID, TaskID: task.ID, Stage: core.StageVerify, State: core.WorkOrderQueued, HeadSHA: head, ReviewScope: task.RefreshReviewScope, BaselineSHA: task.RefreshBaselineSHA, QueueEnteredAt: time.Now().UTC(), QueueDeadline: time.Now().UTC().Add(time.Hour), CreatedAt: time.Now().UTC()}
 	_, err = CreateStageWorkOrder(ctx, st, job, o)
 	requireOK(t, err)
-	claim := core.WorkOrderClaim{WorkerID: "worker", ClaimantID: "worker", SessionID: "later-verify", ClientToken: "later-verify-token", Lease: time.Hour, ExecutionTimeout: time.Hour}
+	claim := core.WorkOrderClaim{ClaimantID: core.TaskRunClaimantID("worker"), SessionID: "later-verify", ClientToken: "later-verify-token", Lease: time.Hour, ExecutionTimeout: time.Hour}
 	claim.Requirements = []core.ServedRequirementContext{{ID: "req-fixture", Version: 1, Statements: []core.RequirementStatement{{ID: "REQ-1", Statement: "Observe the state", AcceptanceCriteria: []core.AcceptanceCriterion{{ID: "AC-1.1", Statement: "Retain the observation"}}}}}}
 	o, err = ClaimWorkOrder(ctx, st, o.ID, claim)
 	requireOK(t, err)
 	next := v
-	next.access = store.VerificationAccess{TaskID: o.TaskID, WorkOrderID: o.ID, WorkOrderAttemptID: o.AttemptID, ClientToken: claim.ClientToken, Claim: core.WorkOrderClaimIdentity{WorkerID: claim.WorkerID, ClaimantID: claim.ClaimantID, SessionID: claim.SessionID}}
+	next.access = store.VerificationAccess{TaskID: o.TaskID, WorkOrderID: o.ID, WorkOrderAttemptID: o.AttemptID, ClientToken: claim.ClientToken, Claim: core.WorkOrderClaimIdentity{ClaimantID: claim.ClaimantID, SessionID: claim.SessionID}}
 	next.revisions = []core.VerificationRevision{{Repository: v.revisions[0].Repository, RemoteIdentity: v.revisions[0].RemoteIdentity, SHA: head}}
 	next.contextID, next.runID = "", ""
 	next.contextID = next.apply(t, store.VerificationCommand{Kind: store.VerificationCreateContext, Key: "later-verify", Context: &store.VerificationContext{ReviewScope: o.ReviewScope, BaselineSHA: o.BaselineSHA, Revisions: next.revisions, GoverningPins: next.pins, Discovery: []json.RawMessage{core.JSONPayload(map[string]any{"repository": next.revisions[0].Repository, "revision": head, "state": "no_manifest"})}}}).ID

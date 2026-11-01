@@ -147,8 +147,7 @@ func newAgentIntakeFixture(t *testing.T) *agentIntakeFixture {
 	}
 	// A second agent of the maintainer owner, and a run child bound to alpha.
 	credentials["agent-maintainer-second"] = core.AuthenticatedCredential{ID: "agt_maintainer_second", OwnerUserID: intakeOwner(core.WorkspaceRoleMaintainer), Kind: core.CredentialAgent, Scope: core.CredentialScopeUser}
-	credentials["run-child"] = core.AuthenticatedCredential{ID: "agt_run_child", OwnerUserID: intakeOwner(core.WorkspaceRoleMaintainer), Kind: core.CredentialAgent, Scope: core.CredentialScopeUser,
-		RunWorkspaceID: "alpha", RunWorkOrderID: "bound-order", RunSessionID: "bound-session"}
+	credentials["run-child"] = core.AuthenticatedCredential{ID: "agt_run_child", OwnerUserID: intakeOwner(core.WorkspaceRoleMaintainer), Kind: core.CredentialAgent, Scope: core.CredentialScopeUser}
 	members.setRole(intakeOwner(core.WorkspaceRoleMaintainer), "beta", core.WorkspaceRoleMaintainer)
 	members.setRole("usr_foreign", "beta", core.WorkspaceRoleOperator)
 	credentials["agent-foreign"] = core.AuthenticatedCredential{ID: "agt_foreign", OwnerUserID: "usr_foreign", Kind: core.CredentialAgent, Scope: core.CredentialScopeUser}
@@ -662,32 +661,6 @@ func TestMCPAgentCreateTaskConcurrentRetry(t *testing.T) {
 	}
 }
 
-func TestMCPRunChildCreateTaskStaysConfined(t *testing.T) {
-	f := newAgentIntakeFixture(t)
-	created := f.callMCP(t, "run-child", "create_task", intakeArgs("run-child-key", nil))
-	if created.errText != "" || !created.created {
-		t.Fatalf("run child create: %q", created.errText)
-	}
-	requireAgentProvenance(t, f, created.task.ID, "agt_run_child", intakeOwner(core.WorkspaceRoleMaintainer))
-	foreign := intakeArgs("run-child-foreign", nil)
-	foreign["workspace_id"] = "beta"
-	if result := f.callMCP(t, "run-child", "create_task", foreign); !strings.Contains(result.errText, "workspace_not_found") {
-		t.Fatalf("foreign workspace err=%q", result.errText)
-	}
-	if result := f.callMCP(t, "run-child", "claim_work_order", map[string]any{"workspace_id": "alpha", "work_order_id": created.task.ID + "-spec-1", "session_id": "bound-session", "client_token": "token", "agent": "test", "model": "test"}); !strings.Contains(result.errText, "claim_work_order is unavailable to a session-bound run child credential") {
-		t.Fatalf("claim err=%q", result.errText)
-	}
-	for _, binding := range []struct{ order, session string }{
-		{created.task.ID + "-spec-1", "bound-session"},
-		{"bound-order", "other-session"},
-	} {
-		result := f.callMCP(t, "run-child", "report_progress", map[string]any{"workspace_id": "alpha", "work_order_id": binding.order, "session_id": binding.session, "message": "not mine"})
-		if !strings.Contains(result.errText, store.ErrWorkOrderClaimUnauthorized.Error()) {
-			t.Fatalf("%+v err=%q", binding, result.errText)
-		}
-	}
-}
-
 func TestMCPAgentTaskCreationGrantsNoAdditionalCapabilities(t *testing.T) {
 	f := newAgentIntakeFixture(t)
 	token := agentIntakeToken(core.WorkspaceRoleOperator)
@@ -696,8 +669,6 @@ func TestMCPAgentTaskCreationGrantsNoAdditionalCapabilities(t *testing.T) {
 		t.Fatalf("create: %q", created.errText)
 	}
 	taskID := created.task.ID
-	// report_continuation's launcher-only refusal is in its handler, past the
-	// work-order service availability check.
 	f.server.WorkOrders = &workorder.Service{Store: f.store}
 	for _, tool := range mcpTools() {
 		name, _ := tool["name"].(string)
@@ -736,12 +707,6 @@ func TestMCPAgentTaskCreationGrantsNoAdditionalCapabilities(t *testing.T) {
 	persisted, err := f.store.GetTask(store.WithWorkspace(t.Context(), "alpha"), taskID)
 	if err != nil || persisted.Assignee != nil || !persisted.SpecApproval {
 		t.Fatalf("persisted=%+v err=%v", persisted, err)
-	}
-	// A worker credential still cannot create tasks.
-	request := httptest.NewRequest(http.MethodPost, "/mcp", nil)
-	request = request.WithContext(withWorkerActor(request.Context(), core.Worker{ID: "worker", Workspace: "alpha"}))
-	if _, err := f.server.callMCPTool(request, "create_task", intakeArgs("worker", nil)); err == nil || !strings.Contains(err.Error(), "worker credentials cannot create tasks") {
-		t.Fatalf("worker err=%v", err)
 	}
 }
 

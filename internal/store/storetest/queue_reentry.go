@@ -84,20 +84,16 @@ func runQueueReentryPins(t *testing.T, x Fixture) {
 	st, ctx := x.Backend, x.Context
 	t.Run("ReleaseThenNextMachineClaims", func(t *testing.T) {
 		order := newPinnedImplementOrder(t, x)
-		_, err := ClaimWorkOrder(ctx, st, order.ID, core.WorkOrderClaim{SessionID: "first-machine", ClientToken: "first", ClaimantID: "worker-a", WorkerID: "worker-a", Lease: time.Minute, ExecutionTimeout: time.Hour})
+		_, err := ClaimWorkOrder(ctx, st, order.ID, core.WorkOrderClaim{SessionID: "first-machine", ClientToken: "first", ClaimantID: "worker-a", Lease: time.Minute, ExecutionTimeout: time.Hour})
 		requireOK(t, err)
 		released, err := ReleaseWorkerClaim(ctx, st, order.ID, "worker-a", retryableRelease("first-machine"))
 		requireOK(t, err)
 		requireStoredWithoutPins(t, x, "release", released)
 		time.Sleep(time.Millisecond)
-		next, err := ClaimWorkOrder(ctx, st, order.ID, core.WorkOrderClaim{SessionID: "next-machine", ClientToken: "next", ClaimantID: "worker-b", WorkerID: "worker-b", Model: "next-model", Lease: time.Minute, ExecutionTimeout: time.Hour})
+		next, err := ClaimWorkOrder(ctx, st, order.ID, core.WorkOrderClaim{SessionID: "next-machine", ClientToken: "next", ClaimantID: "worker-b", Model: "next-model", Lease: time.Minute, ExecutionTimeout: time.Hour})
 		requireOK(t, err)
-		identity := core.WorkOrderClaimIdentity{WorkerID: "worker-b", ClaimantID: "worker-b", SessionID: "next-machine"}
-		// The continuation harness falls back to the order's pinned harness
-		// when the claim names no agent; a cleared pin admits the next
-		// machine's own harness.
-		if _, err = st.RecordWorkOrderContinuation(ctx, order.ID, identity, core.WorkOrderContinuation{SessionID: "native", AttemptID: next.AttemptID, Harness: "next-harness", LaunchEnvironment: "test"}); err != nil {
-			t.Fatalf("next machine harness refused after re-entry: %v", err)
+		if next.State != core.WorkOrderClaimed || next.ClaimantID != "worker-b" {
+			t.Fatalf("next machine claim after re-entry=%+v", next)
 		}
 	})
 	t.Run("LeaseExpiry", func(t *testing.T) {
@@ -156,7 +152,7 @@ func runQueueReentryPins(t *testing.T, x Fixture) {
 	})
 	t.Run("Preempt", func(t *testing.T) {
 		order := newPinnedImplementOrder(t, x)
-		_, err := ClaimWorkOrder(ctx, st, order.ID, core.WorkOrderClaim{SessionID: "preempted", ClientToken: "preempted", ClaimantID: "worker-a", WorkerID: "worker-a", Lease: time.Minute, ExecutionTimeout: time.Hour})
+		_, err := ClaimWorkOrder(ctx, st, order.ID, core.WorkOrderClaim{SessionID: "preempted", ClientToken: "preempted", ClaimantID: "worker-a", Lease: time.Minute, ExecutionTimeout: time.Hour})
 		requireOK(t, err)
 		result, err := taskops.ExecuteWorkOrder(ctx, st, order.TaskID, core.WorkOrderCmdPreempt, func(lease taskops.TaskLease) (store.WorkOrderPreemptResult, error) {
 			return st.PreemptWorkOrderCommand(ctx, lease, store.WorkOrderPreemptRequest{WorkOrderID: order.ID, RequestID: "preempt-" + core.NewTaskID(), Reason: "fixture preempt"})
@@ -175,12 +171,7 @@ func runQueueReentryPins(t *testing.T, x Fixture) {
 		stored, err := st.GetWorkOrder(ctx, seat.ID)
 		requireOK(t, err)
 		requireExecutionPins(t, "created review seat", stored)
-		// The legacy pin is still enforced before re-entry: a worker with a
-		// different model cannot claim the pinned seat.
-		if _, err = ClaimWorkOrder(ctx, st, seat.ID, core.WorkOrderClaim{SessionID: "wrong-model", ClientToken: "wrong-model", ClaimantID: "worker-a", WorkerID: "worker-a", Model: "next-model", Lease: time.Minute, ExecutionTimeout: time.Hour}); err == nil {
-			t.Fatal("pinned review seat accepted a different worker model before re-entry")
-		}
-		_, err = ClaimWorkOrder(ctx, st, seat.ID, core.WorkOrderClaim{SessionID: "seat-two-first", ClientToken: "seat-two-first", ClaimantID: "worker-a", WorkerID: "worker-a", Model: "legacy-model", Lease: time.Minute, ExecutionTimeout: time.Hour})
+		_, err = ClaimWorkOrder(ctx, st, seat.ID, core.WorkOrderClaim{SessionID: "seat-two-first", ClientToken: "seat-two-first", ClaimantID: "worker-a", Model: "legacy-model", Lease: time.Minute, ExecutionTimeout: time.Hour})
 		requireOK(t, err)
 		released, err := ReleaseWorkerClaim(ctx, st, seat.ID, "worker-a", retryableRelease("seat-two-first"))
 		requireOK(t, err)
@@ -189,7 +180,7 @@ func runQueueReentryPins(t *testing.T, x Fixture) {
 			t.Fatalf("review seat identity changed: result=%d/%d stored=%d/%d", released.ReviewRound, released.ReviewSeat, requeued.ReviewRound, requeued.ReviewSeat)
 		}
 		time.Sleep(time.Millisecond)
-		next, err := ClaimWorkOrder(ctx, st, seat.ID, core.WorkOrderClaim{SessionID: "seat-two-next", ClientToken: "seat-two-next", ClaimantID: "worker-b", WorkerID: "worker-b", Model: "next-model", Lease: time.Minute, ExecutionTimeout: time.Hour})
+		next, err := ClaimWorkOrder(ctx, st, seat.ID, core.WorkOrderClaim{SessionID: "seat-two-next", ClientToken: "seat-two-next", ClaimantID: "worker-b", Model: "next-model", Lease: time.Minute, ExecutionTimeout: time.Hour})
 		if err != nil {
 			t.Fatalf("next machine model refused after re-entry: %v", err)
 		}
@@ -237,7 +228,7 @@ func runQueueReentryPins(t *testing.T, x Fixture) {
 		// Active-attempt freezing is unchanged: renewal does not clear the
 		// pins of an attempt that is still running.
 		order := newPinnedImplementOrder(t, x)
-		_, err := ClaimWorkOrder(ctx, st, order.ID, core.WorkOrderClaim{SessionID: "running", ClientToken: "running", ClaimantID: "worker-a", WorkerID: "worker-a", Lease: time.Minute, ExecutionTimeout: time.Hour})
+		_, err := ClaimWorkOrder(ctx, st, order.ID, core.WorkOrderClaim{SessionID: "running", ClientToken: "running", ClaimantID: "worker-a", Lease: time.Minute, ExecutionTimeout: time.Hour})
 		requireOK(t, err)
 		renewed, err := RenewWorkerClaim(ctx, st, order.ID, "worker-a", "running", 2*time.Minute)
 		requireOK(t, err)
@@ -276,7 +267,7 @@ func claimVerifyLive(t *testing.T, x Fixture, orderID, session string, lease, ti
 	requireOK(t, err)
 	governance, err := store.GovernanceForTask(x.Context, x.Backend, task.ID, task.Repo)
 	requireOK(t, err)
-	claimed, err := ClaimWorkOrder(x.Context, x.Backend, orderID, core.WorkOrderClaim{WorkerID: "worker-verify", ClaimantID: "worker-verify", SessionID: session, ClientToken: session + "-token", Lease: lease, ExecutionTimeout: timeout,
+	claimed, err := ClaimWorkOrder(x.Context, x.Backend, orderID, core.WorkOrderClaim{ClaimantID: core.TaskRunClaimantID("worker-verify"), SessionID: session, ClientToken: session + "-token", Lease: lease, ExecutionTimeout: timeout,
 		Requirements: append([]core.ServedRequirementContext{}, served.Requirements...), Governance: &governance})
 	requireOK(t, err)
 	return claimed
@@ -338,8 +329,8 @@ func requireLateRequirementSelectable(t *testing.T, x Fixture, order core.WorkOr
 	t.Helper()
 	revision := core.VerificationRevision{Repository: "conveyor", RemoteIdentity: "https://example.test/conveyor", SHA: order.HeadSHA}
 	pins := verifySnapshotPins(order)
-	v := verificationFixture{x: x, ctx: store.WithActor(x.Context, store.Actor{ID: "worker:worker-verify", Role: core.ActorWorker}),
-		access:    store.VerificationAccess{TaskID: order.TaskID, WorkOrderID: order.ID, WorkOrderAttemptID: order.AttemptID, ClientToken: session + "-token", Claim: core.WorkOrderClaimIdentity{WorkerID: "worker-verify", ClaimantID: "worker-verify", SessionID: session}},
+	v := verificationFixture{x: x, ctx: store.WithActor(x.Context, store.Actor{ID: store.UserActorID("worker-verify"), Role: core.ActorUser}),
+		access:    store.VerificationAccess{TaskID: order.TaskID, WorkOrderID: order.ID, WorkOrderAttemptID: order.AttemptID, ClientToken: session + "-token", Claim: core.WorkOrderClaimIdentity{ClaimantID: core.TaskRunClaimantID("worker-verify"), SessionID: session}},
 		revisions: []core.VerificationRevision{revision}, pins: pins}
 	discovery := []json.RawMessage{core.JSONPayload(map[string]any{"repository": revision.Repository, "revision": revision.SHA, "state": "present"})}
 	created := v.apply(t, store.VerificationCommand{Kind: store.VerificationCreateContext, Key: "late-" + session, Context: &store.VerificationContext{Revisions: v.revisions, GoverningPins: pins, Discovery: discovery}})

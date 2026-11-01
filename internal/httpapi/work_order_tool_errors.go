@@ -8,8 +8,7 @@ import (
 )
 
 // errWorkspaceNotVisible is the one workspace-visibility refusal: no binding,
-// a missing capability, a run child's or worker's foreign workspace, or a
-// missing membership authority. Its text is the long-standing MCP in-band
+// a missing capability, or a missing membership authority. Its text is the long-standing MCP in-band
 // error, so tool callers see no change; REST callers get the canonical 404
 // that a nonexistent workspace gets (req-accounts-and-membership AC-4.2;
 // DEC-19; component-http-api).

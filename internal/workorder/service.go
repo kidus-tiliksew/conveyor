@@ -18,7 +18,6 @@ import (
 	"github.com/kidus-tiliksew/conveyor/internal/config"
 	"github.com/kidus-tiliksew/conveyor/internal/core"
 	"github.com/kidus-tiliksew/conveyor/internal/dispatch"
-	"github.com/kidus-tiliksew/conveyor/internal/gitx"
 	"github.com/kidus-tiliksew/conveyor/internal/lineagecontext"
 	"github.com/kidus-tiliksew/conveyor/internal/pack"
 	"github.com/kidus-tiliksew/conveyor/internal/pipeline"
@@ -51,14 +50,18 @@ type Service struct {
 	// PublicURL is the deployment's configured public dashboard origin
 	// (config.PublicURLEnv). Pull-request bodies link the task page under it
 	// (req-delivery-and-forge AC-2.5).
-	PublicURL   string
-	consultedMu sync.Mutex
-	consulted   map[string]struct{}
+	PublicURL string
+	// RetryDelay, RetryMaximum, and RetryLimit bound automatic retry after a
+	// failed or stalled release; zero values select the Default* constants.
+	RetryDelay   time.Duration
+	RetryMaximum time.Duration
+	RetryLimit   int
+	consultedMu  sync.Mutex
+	consulted    map[string]struct{}
 }
 
 type Context struct {
 	ContextFreshness          core.ContextFreshness           `json:"context_freshness"`
-	Predecessor               *core.WorktreeIdentity          `json:"predecessor,omitempty"`
 	OperatorNotes             []core.OperatorNote             `json:"operator_notes,omitempty"`
 	Order                     core.WorkOrder                  `json:"work_order"`
 	Task                      core.Task                       `json:"task"`
@@ -142,19 +145,6 @@ func (s *Service) List(ctx context.Context) ([]core.WorkOrder, error) {
 	}
 	orders, err = s.projectList(ctx, orders, s.Store.ListWorkOrdersForTasks)
 	return liveOrders(orders), err
-}
-
-// ListForTask derives the same public work-order projection as List while
-// reading only one task. It remains observational: clock-derived state is
-// projected by the store and no lifecycle reconciliation or claim occurs.
-func (s *Service) ListForTask(ctx context.Context, taskID string) ([]core.WorkOrder, error) {
-	orders, err := s.Store.ListTaskWorkOrders(ctx, taskID)
-	if err != nil {
-		return nil, err
-	}
-	complete := func(context.Context, []string) ([]core.WorkOrder, error) { return orders, nil }
-	projected, err := s.projectList(ctx, append([]core.WorkOrder(nil), orders...), complete)
-	return liveOrders(projected), err
 }
 
 // Lookup reads one order of the workspace by ID, in any state, through the
@@ -431,12 +421,8 @@ func (s *Service) claim(ctx context.Context, id string, claim core.WorkOrderClai
 }
 
 // assigneeExcludesClaimant reports whether the task's assignee rules out a
-// direct claimant. A worker claim's owner comes from its enrollment inside
-// the store transaction, so it is never judged here.
+// direct claimant.
 func (s *Service) assigneeExcludesClaimant(ctx context.Context, taskID string, claim core.WorkOrderClaim) (bool, error) {
-	if claim.WorkerID != "" {
-		return false, nil
-	}
 	owner := claim.OwnerUserID
 	if owner == "" {
 		if credential, ok := store.CredentialFromContext(ctx); ok {
@@ -788,7 +774,7 @@ func (s *Service) contextForClaimedOrder(ctx context.Context, order core.WorkOrd
 	}
 	defer cancel()
 
-	claim := core.WorkOrderClaimIdentity{WorkerID: order.WorkerID, ClaimantID: order.ClaimantID, SessionID: order.SessionID}
+	claim := core.WorkOrderClaimIdentity{ClaimantID: order.ClaimantID, SessionID: order.SessionID}
 	renew := func() error {
 		_, renewErr := taskops.ExecuteWorkOrder(assemblyCtx, s.Store, order.TaskID, core.WorkOrderCmdRenew, func(lease taskops.TaskLease) (core.WorkOrder, error) {
 			return s.Store.RenewWorkerClaimCommand(assemblyCtx, lease, order.ID, claim, remaining)
@@ -993,24 +979,6 @@ func (s *Service) contextForOrder(ctx context.Context, order core.WorkOrder) (Co
 			return Context{}, fmt.Errorf("resolve review documentation evidence: %w", evidenceErr)
 		}
 	}
-	if order.Stage == core.StageImplement && order.State == core.WorkOrderClaimed && cfg != nil {
-		for _, repository := range cfg.Repos {
-			if repository.Name != task.Repo {
-				continue
-			}
-			normalized, identityErr := gitx.NormalizeRepositoryIdentity(repository.URL)
-			if identityErr != nil {
-				return Context{}, identityErr
-			}
-			handoff, _, identityErr := store.EvaluateWorktreeHandoff(task, order, core.WorkOrderClaimIdentity{WorkerID: order.WorkerID, ClaimantID: order.ClaimantID, SessionID: order.SessionID}, normalized, events, core.WorktreeHandoffRequest{SessionID: order.SessionID, Generation: order.SessionID, Action: "describe"}, time.Now().UTC())
-			if identityErr != nil {
-				return Context{}, identityErr
-			}
-			result.Predecessor = handoff.Predecessor
-			break
-		}
-	}
-
 	if order.Stage == core.StageReview || order.Stage == core.StageImplement || order.Stage == core.StageVerify {
 		operatorNotes, noteErr := store.OperatorNotesForTask(ctx, s.Store, task.ID)
 		if noteErr != nil {
@@ -1456,51 +1424,20 @@ func (s *Service) Usage(ctx context.Context, id, session string, tokensIn, token
 	return s.UsageWithRateLimit(ctx, id, session, tokensIn, tokensOut, nil)
 }
 
-// ReportContinuation replaces advisory harness-native continuation metadata for
-// the exact active attempt. Authorization of the launching worker or run client
-// is performed by the command plane before this claim-bound store mutation.
-func (s *Service) ReportContinuation(ctx context.Context, id string, claim core.WorkOrderClaimIdentity, continuation core.WorkOrderContinuation) (core.WorkOrder, error) {
-	continuation, err := core.NormalizeWorkOrderContinuation(continuation)
-	if err != nil {
-		return core.WorkOrder{}, err
-	}
-	return s.Store.RecordWorkOrderContinuation(ctx, id, claim, continuation)
-}
-
 func (s *Service) UsageWithRateLimit(ctx context.Context, id, session string, tokensIn, tokensOut int64, rateLimit *core.RateLimitStatus) (core.WorkOrder, error) {
-	return s.usageWithRateLimit(ctx, id, session, tokensIn, tokensOut, rateLimit, true)
-}
-
-// UsageFromWorkerFallback records a stable machine-readable harness total
-// without turning telemetry into lifecycle authority (DEC-1). The exact worker
-// session may finish its terminal handoff before Codex emits turn.completed, so
-// this narrow path admits that same session after submission or completion.
-func (s *Service) UsageFromWorkerFallback(ctx context.Context, id, session string, tokensIn, tokensOut int64) (core.WorkOrder, error) {
-	return s.usageWithRateLimit(ctx, id, session, tokensIn, tokensOut, nil, false)
+	return s.usageWithRateLimit(ctx, id, session, tokensIn, tokensOut, rateLimit)
 }
 
 // usageWithRateLimit records cumulative token telemetry. Reports carry no
 // cost: the order and job keep any historical cost unchanged, and new events
 // omit it (req-usage-telemetry REQ-2; DEC-1).
-func (s *Service) usageWithRateLimit(ctx context.Context, id, session string, tokensIn, tokensOut int64, rateLimit *core.RateLimitStatus, selfReported bool) (core.WorkOrder, error) {
-	order, err := s.authorizedForUsage(ctx, id, session, !selfReported)
+func (s *Service) usageWithRateLimit(ctx context.Context, id, session string, tokensIn, tokensOut int64, rateLimit *core.RateLimitStatus) (core.WorkOrder, error) {
+	order, err := s.authorizedForObservation(ctx, id, session)
 	if err != nil {
 		return core.WorkOrder{}, err
 	}
 	if tokensIn < 0 || tokensOut < 0 {
 		return core.WorkOrder{}, fmt.Errorf("usage values cannot be negative")
-	}
-	if !selfReported {
-		reported, reportErr := s.hasAgentUsageReport(ctx, order)
-		if reportErr != nil {
-			return core.WorkOrder{}, reportErr
-		}
-		if reported {
-			// The agent's cumulative report is authoritative over the worker's
-			// post-run fallback, including when the agent reported measured zero.
-			// Usage remains observational and never affects lifecycle (DEC-1).
-			return order, nil
-		}
 	}
 	order.TokensIn = tokensIn
 	order.TokensOut = tokensOut
@@ -1508,7 +1445,7 @@ func (s *Service) usageWithRateLimit(ctx context.Context, id, session string, to
 	// Persist availability separately so an explicit zero remains distinguishable
 	// from a session that never reported usage.
 	order.UsageReported = true
-	order.SelfReported = selfReported
+	order.SelfReported = true
 	if rateLimit != nil {
 		status := *rateLimit
 		status.Status = strings.TrimSpace(status.Status)
@@ -1537,62 +1474,12 @@ func (s *Service) usageWithRateLimit(ctx context.Context, id, session string, to
 		TaskID: order.TaskID, JobID: order.JobID, Kind: "work_order.usage_reported",
 		Payload: core.JSONPayload(map[string]any{
 			"work_order_id": order.ID, "tokens_in": tokensIn, "tokens_out": tokensOut,
-			"rate_limit": rateLimit, "self_reported": selfReported,
+			"rate_limit": rateLimit, "self_reported": true,
 		}),
 	}); err != nil {
 		return core.WorkOrder{}, err
 	}
 	return order, nil
-}
-
-func (s *Service) hasAgentUsageReport(ctx context.Context, order core.WorkOrder) (bool, error) {
-	events, err := s.Store.ListEvents(ctx, order.TaskID)
-	if err != nil {
-		return false, fmt.Errorf("inspect existing usage reports: %w", err)
-	}
-	for _, event := range events {
-		if event.Kind != "work_order.usage_reported" || event.JobID != order.JobID {
-			continue
-		}
-		var payload struct {
-			WorkOrderID  string `json:"work_order_id"`
-			SelfReported bool   `json:"self_reported"`
-		}
-		if json.Unmarshal(event.Payload, &payload) == nil && payload.WorkOrderID == order.ID && payload.SelfReported {
-			return true, nil
-		}
-	}
-	return false, nil
-}
-
-func (s *Service) authorizedForUsage(ctx context.Context, id, session string, workerFallback bool) (core.WorkOrder, error) {
-	if !workerFallback {
-		return s.authorizedForObservation(ctx, id, session)
-	}
-	order, err := s.Store.GetWorkOrder(ctx, id)
-	if err != nil {
-		return core.WorkOrder{}, err
-	}
-	if session == "" || order.SessionID != session {
-		return core.WorkOrder{}, fmt.Errorf("work order %s belongs to another session", id)
-	}
-	switch order.State {
-	case core.WorkOrderSubmitted, core.WorkOrderCompleted:
-		return order, nil
-	case core.WorkOrderClaimed:
-		if !order.LeaseExpiresAt.After(time.Now()) {
-			return core.WorkOrder{}, fmt.Errorf("work order lease expired")
-		}
-		return order, nil
-	case core.WorkOrderTimedOut:
-		return core.WorkOrder{}, store.ErrWorkOrderTimedOut
-	case core.WorkOrderStale:
-		return core.WorkOrder{}, store.ErrWorkOrderStale
-	case core.WorkOrderCancelled:
-		return core.WorkOrder{}, store.ErrWorkOrderCancelled
-	default:
-		return core.WorkOrder{}, fmt.Errorf("work order %s is not observable by its worker session", id)
-	}
 }
 
 func (s *Service) UploadTranscript(ctx context.Context, id, session, transcript string) (core.Artifact, error) {

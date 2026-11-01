@@ -5,7 +5,6 @@ import (
 	"crypto/sha256"
 	"database/sql"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"strings"
 	"time"
@@ -97,7 +96,7 @@ func prepareArtifact(ctx context.Context, a core.Artifact, content []byte) (core
 	return a, nil
 }
 func insertArtifactTx(ctx context.Context, tx *sql.Tx, a core.Artifact, content []byte) error {
-	if err := workerWorkspaceExists(ctx, tx, a.Workspace); err != nil {
+	if err := workspaceRowExists(ctx, tx, a.Workspace); err != nil {
 		return err
 	}
 	if err := lockKey(ctx, tx, "artifact:"+a.Workspace+":"+a.ID); err != nil {
@@ -147,36 +146,6 @@ func (s *Store) CreateArtifact(ctx context.Context, a core.Artifact, content []b
 	}
 	return a, nil
 }
-func (s *Store) CreateClaimedVerificationEvidence(ctx context.Context, r store.ClaimedVerificationEvidenceRequest, content []byte) (core.Artifact, error) {
-	if strings.TrimSpace(r.WorkOrderID) == "" || strings.TrimSpace(r.WorkerID) == "" || strings.TrimSpace(r.SessionID) == "" || strings.TrimSpace(r.ClientToken) == "" {
-		return core.Artifact{}, store.ErrVerificationEvidenceClaimConflict
-	}
-	var a core.Artifact
-	hash := fmt.Sprintf("%x", sha256.Sum256([]byte(r.ClientToken)))
-	err := s.orderTx(ctx, r.WorkOrderID, func(tx *sql.Tx, o core.WorkOrder) error {
-		now := time.Now().UTC()
-		if o.Stage != core.StageImplement || o.State != core.WorkOrderClaimed || o.WorkerID != r.WorkerID || o.SessionID != r.SessionID || o.ClientTokenHash != hash || !o.LeaseExpiresAt.After(now) || (!o.ExecutionDeadline.IsZero() && !o.ExecutionDeadline.After(now)) {
-			return store.ErrVerificationEvidenceClaimConflict
-		}
-		var err error
-		a, err = prepareArtifact(ctx, core.Artifact{TaskID: o.TaskID, Name: r.Name, ContentType: r.ContentType, Role: core.ArtifactRoleVerificationEvidence}, content)
-		if err != nil {
-			return err
-		}
-		if err := insertArtifactTx(ctx, tx, a, content); err != nil {
-			return err
-		}
-		return tx.QueryRowContext(ctx, `SELECT name,content_type,size_bytes,created_at FROM artifacts WHERE workspace_id=? AND id=?`, a.Workspace, a.ID).Scan(&a.Name, &a.ContentType, &a.SizeBytes, &a.CreatedAt)
-	})
-	if errors.Is(err, store.ErrNotFound) {
-		err = store.ErrVerificationEvidenceClaimConflict
-	}
-	if err != nil {
-		return core.Artifact{}, err
-	}
-	return a, nil
-}
-
 func (s *Store) GetArtifact(ctx context.Context, id string) (core.Artifact, []byte, error) {
 	var artifact core.Artifact
 	var content []byte
@@ -225,195 +194,8 @@ func (s *Store) ListArtifacts(ctx context.Context) ([]core.Artifact, error) {
 	return result, rows.Err()
 }
 
-func checkpointHistory(events []core.Event, id, worker string, c core.WorkOrderAttemptCheckpoint) (bool, bool) {
-	claimed, checkpointed := false, false
-	for _, e := range events {
-		if e.Kind == "work_order.claimed" {
-			var o core.WorkOrder
-			if json.Unmarshal(e.Payload, &o) == nil && o.ID == id && o.WorkerID == worker && o.SessionID == c.SessionID && o.AttemptID == c.AttemptID {
-				claimed = true
-			}
-		}
-		if e.Kind == "work_order.attempt_checkpointed" {
-			var p struct {
-				ID      string `json:"work_order_id"`
-				Attempt string `json:"attempt_id"`
-				Commit  string `json:"commit_sha"`
-			}
-			if json.Unmarshal(e.Payload, &p) == nil && p.ID == id && p.Attempt == c.AttemptID && p.Commit == c.CommitSHA {
-				checkpointed = true
-			}
-		}
-	}
-	return claimed, checkpointed
-}
-func (s *Store) RecordWorkOrderAttemptCheckpoint(ctx context.Context, id, worker string, c core.WorkOrderAttemptCheckpoint) (bool, error) {
-	recorded := false
-	err := s.orderTx(ctx, id, func(tx *sql.Tx, o core.WorkOrder) error {
-		events, err := documentTaskEvents(ctx, tx, o.TaskID)
-		if err != nil {
-			return err
-		}
-		for _, event := range events {
-			if event.Kind == "work_order.writer_admitted" {
-				return store.ErrWorkOrderClaimLost
-			}
-		}
-		claimed, exists := checkpointHistory(events, id, worker, c)
-		if !o.AuthorizesAttemptCheckpoint(worker, c, time.Now().UTC()) && !(o.Stage == core.StageImplement && claimed) {
-			return store.ErrWorkOrderClaimLost
-		}
-		if exists {
-			return nil
-		}
-		if err = taskEvent(workerClaimActorContext(ctx, worker), tx, core.Event{TaskID: o.TaskID, JobID: o.JobID, Kind: "work_order.attempt_checkpointed", Payload: store.AttemptCheckpointPayload(o, c), At: time.Now().UTC()}); err != nil {
-			return err
-		}
-		recorded = true
-		return nil
-	})
-	if errors.Is(err, store.ErrNotFound) {
-		err = store.ErrWorkOrderClaimLost
-	}
-	return recorded, err
-}
-func (s *Store) UpsertWorkOrderActivitySnapshot(ctx context.Context, id string, c core.WorkOrderClaimIdentity, content string) error {
-	err := s.orderTx(ctx, id, func(tx *sql.Tx, o core.WorkOrder) error {
-		now := time.Now().UTC()
-		if !claimAlive(o, c, now) || o.AttemptID == "" {
-			return store.ErrWorkOrderClaimLost
-		}
-		_, err := tx.ExecContext(ctx, `INSERT INTO work_order_activity_snapshots(workspace_id,work_order_id,attempt_id,content,captured_at) VALUES(?,?,?,?,?) ON DUPLICATE KEY UPDATE attempt_id=VALUES(attempt_id),content=VALUES(content),captured_at=VALUES(captured_at)`, documentWorkspace(ctx), id, o.AttemptID, content, now)
-		return err
-	})
-	if errors.Is(err, store.ErrNotFound) {
-		return store.ErrWorkOrderClaimLost
-	}
-	return err
-}
-func (s *Store) FinalizeWorkOrderAttemptObservability(ctx context.Context, id, worker string, c core.WorkOrderAttemptCheckpoint) error {
-	err := s.orderTx(ctx, id, func(tx *sql.Tx, o core.WorkOrder) error {
-		events, err := documentTaskEvents(ctx, tx, o.TaskID)
-		if err != nil {
-			return err
-		}
-		claimed, checkpointed := checkpointHistory(events, id, worker, c)
-		if !claimed || !checkpointed {
-			return store.ErrWorkOrderClaimLost
-		}
-		if _, err = tx.ExecContext(ctx, `DELETE FROM work_order_activity_snapshots WHERE workspace_id=? AND work_order_id=? AND attempt_id=?`, documentWorkspace(ctx), id, c.AttemptID); err != nil {
-			return err
-		}
-		if c.Transcript != nil {
-			_, err = tx.ExecContext(ctx, `INSERT INTO work_order_transcript_captures(workspace_id,work_order_id,attempt_id,content,termination_reason,truncated,captured_at) VALUES(?,?,?,?,?,?,?) ON DUPLICATE KEY UPDATE attempt_id=VALUES(attempt_id)`, documentWorkspace(ctx), id, c.AttemptID, c.Transcript.Content, c.TerminationReason, c.Transcript.Truncated, time.Now().UTC())
-		}
-		return err
-	})
-	if errors.Is(err, store.ErrNotFound) {
-		return store.ErrWorkOrderClaimLost
-	}
-	return err
-}
-
 // attemptCaptureInsertFault is a test-only seam that fails the capture
 // transaction after the snapshot supersession and before the insert, so the
 // native integration test can prove the rollback leaves no partial capture.
 // SingleStore has no triggers to inject that failure. It is nil in production.
 var attemptCaptureInsertFault func() error
-
-// RecordWorkOrderAttemptCapture records one already-ended attempt's capture
-// for any stage (req-260820-221be8 AC-2.1; DEC-26; component-work-orders).
-// orderTx holds the task-operation lock, which serializes it with successor
-// claims and duplicate deliveries, so the existence check and insert are one
-// atomic decision. Identity comes only from the immutable claim event.
-func (s *Store) RecordWorkOrderAttemptCapture(ctx context.Context, id string, claim core.WorkOrderClaimIdentity, capture core.WorkOrderAttemptCapture) (core.WorkOrderAttemptCaptureResult, error) {
-	capture = store.NormalizeAttemptCapture(capture)
-	var result core.WorkOrderAttemptCaptureResult
-	err := s.orderTx(ctx, id, func(tx *sql.Tx, o core.WorkOrder) error {
-		events, err := documentTaskEvents(ctx, tx, o.TaskID)
-		if err != nil {
-			return err
-		}
-		authorized := false
-		for _, event := range events {
-			if store.AttemptCaptureClaimEventMatches(event, o, claim, capture) {
-				authorized = true
-				break
-			}
-		}
-		if !authorized {
-			return store.ErrWorkOrderClaimUnauthorized
-		}
-		existingReason, existing := "", true
-		err = documentRow(ctx, tx, `SELECT termination_reason FROM work_order_transcript_captures WHERE workspace_id=? AND work_order_id=? AND attempt_id=?`, documentWorkspace(ctx), id, capture.AttemptID).Scan(&existingReason)
-		if errors.Is(err, sql.ErrNoRows) {
-			existing, err = false, nil
-		}
-		if err != nil {
-			return err
-		}
-		reason, err := store.AttemptCaptureReason(o, capture, existingReason, existing)
-		if err != nil {
-			return err
-		}
-		if _, err = tx.ExecContext(ctx, `DELETE FROM work_order_activity_snapshots WHERE workspace_id=? AND work_order_id=? AND attempt_id=?`, documentWorkspace(ctx), id, capture.AttemptID); err != nil {
-			return err
-		}
-		result = core.WorkOrderAttemptCaptureResult{TerminationReason: reason}
-		if capture.Transcript == nil || existing {
-			return nil
-		}
-		if attemptCaptureInsertFault != nil {
-			if err = attemptCaptureInsertFault(); err != nil {
-				return err
-			}
-		}
-		if _, err = tx.ExecContext(ctx, `INSERT INTO work_order_transcript_captures(workspace_id,work_order_id,attempt_id,content,termination_reason,truncated,captured_at) VALUES(?,?,?,?,?,?,?)`, documentWorkspace(ctx), id, capture.AttemptID, capture.Transcript.Content, reason, capture.Transcript.Truncated, time.Now().UTC()); err != nil {
-			return err
-		}
-		result.Created = true
-		return nil
-	})
-	if errors.Is(err, store.ErrNotFound) {
-		return core.WorkOrderAttemptCaptureResult{}, store.ErrWorkOrderClaimUnauthorized
-	}
-	if err != nil {
-		return core.WorkOrderAttemptCaptureResult{}, err
-	}
-	return result, nil
-}
-
-func (s *Store) GetWorkOrderActivitySnapshot(ctx context.Context, workOrderID string) (core.WorkOrderActivitySnapshot, bool, error) {
-	var snapshot core.WorkOrderActivitySnapshot
-	err := documentRow(ctx, s.db, `SELECT attempt_id, content, captured_at
-		FROM work_order_activity_snapshots
-		WHERE workspace_id=? AND work_order_id=?`, documentWorkspace(ctx), workOrderID).
-		Scan(&snapshot.AttemptID, &snapshot.Content, &snapshot.CapturedAt)
-	if err != nil {
-		if errors.Is(err, sql.ErrNoRows) {
-			return core.WorkOrderActivitySnapshot{}, false, nil
-		}
-		return core.WorkOrderActivitySnapshot{}, false, fmt.Errorf("get work-order activity snapshot: %w", err)
-	}
-	return snapshot, true, nil
-}
-
-func (s *Store) ListWorkOrderTranscriptCaptures(ctx context.Context, workOrderID string) ([]core.WorkOrderTranscriptCapture, error) {
-	rows, err := documentRows(ctx, s.db, `SELECT attempt_id, content, termination_reason, truncated, captured_at
-		FROM work_order_transcript_captures
-		WHERE workspace_id=? AND work_order_id=?
-		ORDER BY captured_at, attempt_id`, documentWorkspace(ctx), workOrderID)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	captures := make([]core.WorkOrderTranscriptCapture, 0)
-	for rows.Next() {
-		var capture core.WorkOrderTranscriptCapture
-		if err = rows.Scan(&capture.AttemptID, &capture.Content, &capture.TerminationReason, &capture.Truncated, &capture.CapturedAt); err != nil {
-			return nil, err
-		}
-		captures = append(captures, capture)
-	}
-	return captures, rows.Err()
-}

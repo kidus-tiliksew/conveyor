@@ -14,6 +14,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgtype"
+
 	"github.com/kidus-tiliksew/conveyor/internal/config"
 	"github.com/kidus-tiliksew/conveyor/internal/core"
 	"github.com/kidus-tiliksew/conveyor/internal/store"
@@ -143,7 +144,7 @@ queue_entered_at, queue_deadline, queue_blocked_at, execution_started_at, execut
 last_attempt_id, last_attempt_outcome, last_failure_category, last_failure_message, last_failure_detail, last_failure_exit_status, last_failure_at,
 automatic_retry_count, next_retry_at, retry_suppressed, retry_suppression_reason,
 COALESCE(automatic_recovery_count, 0), automatic_recovery_window_started_at, next_automatic_recovery_at, base_conflict_checked_at,
-redispatch_count, operator_direction, checkpoint, continuation_session_id, continuation_attempt_id, continuation_harness, continuation_launch_environment, progress, cost_usd, tokens_in, tokens_out, usage_reported, self_reported,
+redispatch_count, operator_direction, checkpoint, progress, cost_usd, tokens_in, tokens_out, usage_reported, self_reported,
 rate_limit, rate_limit_observed_at, created_at, updated_at, served_requirement_snapshot, governance_snapshot, declared_review_seats`
 
 func servedRequirementSnapshotJSON(snapshot []core.ServedRequirementContext) any {
@@ -1188,49 +1189,6 @@ func (s *Store) ClaimWorkOrderCommand(ctx context.Context, lifecycleLease taskop
 			claim.OwnerUserID = credential.OwnerUserID
 		}
 	}
-	if claim.WorkerID != "" {
-		// Worker ownership is durable enrollment state, never a client
-		// assertion. A missing row, a revoked worker, a null owner, and an
-		// owner without an active user and live binding are all refused.
-		// Holding the worker, owner, and binding rows through claim commit
-		// serializes against revocation and identity deactivation
-		// (component-work-orders, Worker owner admission).
-		var workerOwner pgtype.Text
-		var workerRevoked pgtype.Timestamptz
-		err := tx.QueryRow(ctx, `SELECT owner_user_id,revoked_at FROM workers
-			WHERE workspace_id=$1 AND id=$2
-			FOR SHARE`, workspace(ctx), claim.WorkerID).Scan(&workerOwner, &workerRevoked)
-		if errors.Is(err, pgx.ErrNoRows) {
-			return core.WorkOrder{}, fmt.Errorf("%w: worker %s is not enrolled", store.ErrWorkerUnauthorized, claim.WorkerID)
-		}
-		if err != nil {
-			return core.WorkOrder{}, err
-		}
-		if workerRevoked.Valid {
-			return core.WorkOrder{}, fmt.Errorf("%w: worker %s", store.ErrWorkerUnauthorized, claim.WorkerID)
-		}
-		if !workerOwner.Valid || strings.TrimSpace(workerOwner.String) == "" {
-			return core.WorkOrder{}, fmt.Errorf("%w: worker %s has no owner", store.ErrWorkerUnauthorized, claim.WorkerID)
-		}
-		if err := store.RunWorkerOwnerTestHook(ctx, store.WorkerOwnerHookClaimOwnerRead); err != nil {
-			return core.WorkOrder{}, err
-		}
-		claim.OwnerUserID = workerOwner.String
-		var authorized int
-		err = tx.QueryRow(ctx, `SELECT 1 FROM users u
-			JOIN workspace_role_bindings b ON b.user_id=u.id AND b.workspace_id=$1
-			WHERE u.id=$2 AND u.status='active'
-			FOR SHARE OF u,b`, workspace(ctx), workerOwner.String).Scan(&authorized)
-		if errors.Is(err, pgx.ErrNoRows) {
-			return core.WorkOrder{}, fmt.Errorf("%w: worker %s owner has no live workspace binding", store.ErrWorkerUnauthorized, claim.WorkerID)
-		}
-		if err != nil {
-			return core.WorkOrder{}, err
-		}
-		if err := store.RunWorkerOwnerTestHook(ctx, store.WorkerOwnerHookClaimOwnerLocked); err != nil {
-			return core.WorkOrder{}, err
-		}
-	}
 	if assigneeUserID.Valid && assigneeUserID.String != claim.OwnerUserID {
 		return core.WorkOrder{}, fmt.Errorf("task %s is assigned to %s; only that assignee may claim its work orders", order.TaskID, assigneeUserID.String)
 	}
@@ -1361,14 +1319,7 @@ func (s *Store) ClaimWorkOrderCommand(ctx context.Context, lifecycleLease taskop
 		if blocked {
 			return core.WorkOrder{}, fmt.Errorf("self-review forbidden: review session independence requires a fresh session and client token")
 		}
-		if claim.WorkerID != "" {
-			if order.RequiredModel != "" && claim.Model != order.RequiredModel {
-				return core.WorkOrder{}, fmt.Errorf("worker review model %q does not match pinned seat model %q", claim.Model, order.RequiredModel)
-			}
-			order.ModelEnforcement = "worker-pinned"
-		} else {
-			order.ModelEnforcement = "self-reported"
-		}
+		order.ModelEnforcement = "self-reported"
 	}
 	if !order.ExecutionStartedAt.IsZero() && order.ExecutionDeadline.IsZero() && claim.ExecutionTimeout > 0 {
 		order.ExecutionDeadline = order.ExecutionStartedAt.Add(claim.ExecutionTimeout)
@@ -1411,7 +1362,7 @@ func (s *Store) ClaimWorkOrderCommand(ctx context.Context, lifecycleLease taskop
 		repin = store.VerifyClaimRepinsAuthority(order, verificationRows(records))
 	}
 	row := tx.QueryRow(ctx, "UPDATE work_orders SET state='claimed', claimant_id=$1, session_id=$2, attempt_id=$3, client_token_hash=$4, agent=$5, model=$6, worker_id=$7, lease_expires_at=$8, execution_started_at=$9, execution_deadline=$10, model_enforcement=$11, updated_at=$12, served_requirement_snapshot=CASE WHEN $17 AND $13::jsonb IS NOT NULL THEN $13::jsonb ELSE COALESCE(served_requirement_snapshot,$13::jsonb) END, governance_snapshot=CASE WHEN $14::jsonb IS NULL THEN governance_snapshot WHEN $17 OR governance_snapshot IS NULL THEN $14::jsonb ELSE jsonb_set(jsonb_set(governance_snapshot, '{pending_design_proposals}', COALESCE($14::jsonb->'pending_design_proposals','[]'::jsonb), true), '{resolution_notes}', COALESCE($14::jsonb->'resolution_notes','[]'::jsonb), true) END WHERE workspace_id=$15 AND id=$16 RETURNING "+workOrderColumns,
-		claim.ClaimantID, claim.SessionID, attemptID, hash, claim.Agent, claim.Model, claim.WorkerID, expires,
+		claim.ClaimantID, claim.SessionID, attemptID, hash, claim.Agent, claim.Model, "", expires,
 		executionStarted, nullableTimeValue(executionDeadline), order.ModelEnforcement, now, servedRequirementSnapshotJSON(claim.Requirements), governanceSnapshotJSON(claim.Governance), workspace(ctx), id, repin)
 	order, err = scanWorkOrder(row)
 	if err != nil {
@@ -1990,8 +1941,6 @@ func (s *Store) updateWorkOrderSubmissionTx(ctx context.Context, tx pgx.Tx, q *d
 		}
 		if order.State == core.WorkOrderCompleted {
 			order.OperatorDirection = ""
-			order.ContinuationSessionID, order.ContinuationAttemptID = "", ""
-			order.ContinuationHarness, order.ContinuationLaunchEnvironment = "", ""
 		}
 		if command == core.WorkOrderCmdSubmitForReview && order.Stage == core.StageImplement && order.HeadSHA != "" {
 			if err := s.supersedeVerificationTx(ctx, tx, order.TaskID, order.HeadSHA); err != nil {
@@ -2011,10 +1960,9 @@ func (s *Store) updateWorkOrderSubmissionTx(ctx context.Context, tx pgx.Tx, q *d
 			last_failure_exit_status=$19, last_failure_at=$20, automatic_retry_count=$21,
 			next_retry_at=$22, retry_suppressed=$23, retry_suppression_reason=$24, redispatch_count=$25, progress=$26,
 			cost_usd=$27, tokens_in=$28, tokens_out=$29, usage_reported=$30, self_reported=$31,
-			operator_direction=$32, continuation_session_id=$33, continuation_attempt_id=$34,
-			continuation_harness=$35, continuation_launch_environment=$36,
-			rate_limit=$37, rate_limit_observed_at=$38, updated_at=now()
-			WHERE workspace_id=$39 AND id=$40`, order.State, order.ClaimantID, order.SessionID, order.AttemptID,
+			operator_direction=$32,
+			rate_limit=$33, rate_limit_observed_at=$34, updated_at=now()
+			WHERE workspace_id=$35 AND id=$36`, order.State, order.ClaimantID, order.SessionID, order.AttemptID,
 			order.ClientTokenHash, order.Agent, order.Model, nullableTimeValue(order.LeaseExpiresAt),
 			order.ModelEnforcement,
 			order.QueueEnteredAt, order.QueueDeadline, nullableTimeValue(order.ExecutionStartedAt),
@@ -2022,7 +1970,7 @@ func (s *Store) updateWorkOrderSubmissionTx(ctx context.Context, tx pgx.Tx, q *d
 			order.LastFailureExitStatus, nullableTimeValue(order.LastFailureAt), order.AutomaticRetryCount,
 			nullableTimeValue(order.NextRetryAt), order.RetrySuppressed, order.RetrySuppressionReason, order.RedispatchCount, order.Progress,
 			order.CostUSD, order.TokensIn, order.TokensOut, order.UsageReported, order.SelfReported,
-			order.OperatorDirection, order.ContinuationSessionID, order.ContinuationAttemptID, order.ContinuationHarness, order.ContinuationLaunchEnvironment,
+			order.OperatorDirection,
 			rateLimitJSON(order.RateLimit), nullableTimeValue(order.RateLimitObservedAt), workspace(ctx), order.ID)
 		if err != nil {
 			return err
@@ -2305,9 +2253,7 @@ func (s *Store) settleAcceptedReviewTx(ctx context.Context, tx pgx.Tx, q *db.Que
 			return err
 		}
 		order.State, order.Claimable, order.OperatorDirection, order.UpdatedAt = next, false, "", now
-		order.ContinuationSessionID, order.ContinuationAttemptID = "", ""
-		order.ContinuationHarness, order.ContinuationLaunchEnvironment = "", ""
-		tag, err := tx.Exec(ctx, `UPDATE work_orders SET state=$1,operator_direction='',continuation_session_id='',continuation_attempt_id='',continuation_harness='',continuation_launch_environment='',updated_at=$2
+		tag, err := tx.Exec(ctx, `UPDATE work_orders SET state=$1,operator_direction='',updated_at=$2
 			WHERE workspace_id=$3 AND id=$4 AND state=$5`, order.State, now, workspace(ctx), order.ID, core.WorkOrderClaimed)
 		if err != nil {
 			return err
@@ -2332,34 +2278,6 @@ func (s *Store) settleAcceptedReviewTx(ctx context.Context, tx pgx.Tx, q *db.Que
 			return err
 		}
 		if err := insertEvent(ctx, q, core.Event{TaskID: job.TaskID, JobID: job.ID, Kind: "job.updated", Payload: core.JSONPayload(job), At: now}); err != nil {
-			return err
-		}
-	}
-	rows, err := tx.Query(ctx, `UPDATE work_orders
-		SET continuation_session_id='',continuation_attempt_id='',continuation_harness='',continuation_launch_environment='',updated_at=$1
-		WHERE workspace_id=$2 AND task_id=$3 AND stage='implement' AND state='submitted'
-			AND (continuation_session_id<>'' OR continuation_attempt_id<>'' OR continuation_harness<>'' OR continuation_launch_environment<>'')
-		RETURNING `+workOrderColumns, now, workspace(ctx), order.TaskID)
-	if err != nil {
-		return err
-	}
-	// pgx refuses another statement on the transaction connection while this
-	// result set is open, so drain it before appending events.
-	var cleared []core.WorkOrder
-	for rows.Next() {
-		implementation, scanErr := scanWorkOrder(rows)
-		if scanErr != nil {
-			rows.Close()
-			return scanErr
-		}
-		cleared = append(cleared, implementation)
-	}
-	rows.Close()
-	if err = rows.Err(); err != nil {
-		return err
-	}
-	for _, implementation := range cleared {
-		if err = insertEvent(ctx, q, core.Event{TaskID: implementation.TaskID, JobID: implementation.JobID, Kind: "work_order.updated", Payload: core.JSONPayload(implementation), At: now}); err != nil {
 			return err
 		}
 	}
@@ -2527,8 +2445,7 @@ func scanWorkOrder(row interface{ Scan(...any) error }) (core.WorkOrder, error) 
 		&order.LastAttemptID, &order.LastAttemptOutcome, &order.LastFailureCategory, &order.LastFailureMessage, &order.LastFailureDetail, &order.LastFailureExitStatus, &lastFailureAt,
 		&order.AutomaticRetryCount, &nextRetryAt, &order.RetrySuppressed, &order.RetrySuppressionReason,
 		&order.AutomaticRecoveryCount, &recoveryWindow, &nextAutomaticRecovery, &baseConflictChecked,
-		&order.RedispatchCount, &order.OperatorDirection, &checkpoint, &order.ContinuationSessionID, &order.ContinuationAttemptID,
-		&order.ContinuationHarness, &order.ContinuationLaunchEnvironment, &order.Progress, &order.CostUSD, &order.TokensIn,
+		&order.RedispatchCount, &order.OperatorDirection, &checkpoint, &order.Progress, &order.CostUSD, &order.TokensIn,
 		&order.TokensOut, &order.UsageReported, &order.SelfReported, &rateLimit, &rateLimitObservedAt, &order.CreatedAt, &order.UpdatedAt, &servedRequirementSnapshot, &governanceSnapshot,
 		&order.DeclaredReviewSeats)
 	order.Stage, order.State = core.Stage(stage), core.WorkOrderState(state)

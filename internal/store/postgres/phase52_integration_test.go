@@ -2,11 +2,12 @@ package postgres
 
 import (
 	"context"
-	"github.com/kidus-tiliksew/conveyor/internal/store/storetest"
 	"strings"
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/kidus-tiliksew/conveyor/internal/store/storetest"
 
 	"github.com/kidus-tiliksew/conveyor/internal/config"
 	"github.com/kidus-tiliksew/conveyor/internal/core"
@@ -124,10 +125,7 @@ func TestPhase52ConcurrentReviewClaimsEnforceIndependenceIntegration(t *testing.
 	if _, err = st.BootstrapWorkspaceConfig(ctx, cfg); err != nil {
 		t.Fatal(err)
 	}
-	worker := core.Worker{ID: "worker-" + core.NewTaskID(), Workspace: workspace, OwnerUserID: activeWorkerOwner(t, st, workspace), Name: "phase52-claims", CredentialHash: "hash-" + core.NewTaskID(), LeaseExpiresAt: time.Now().UTC().Add(time.Minute), CreatedAt: time.Now().UTC()}
-	if err = st.CreateWorker(ctx, worker); err != nil {
-		t.Fatal(err)
-	}
+	claimant := core.TaskRunClaimantID("phase52-owner")
 
 	tests := []struct {
 		name   string
@@ -136,15 +134,15 @@ func TestPhase52ConcurrentReviewClaimsEnforceIndependenceIntegration(t *testing.
 		{
 			name: "duplicate session",
 			claims: [2]core.WorkOrderClaim{
-				{SessionID: "same-session", ClientToken: "token-1", WorkerID: worker.ID, ClaimantID: worker.ID, Agent: "codex", Model: "gpt-review", Lease: time.Minute, ExecutionTimeout: time.Hour},
-				{SessionID: "same-session", ClientToken: "token-2", WorkerID: worker.ID, ClaimantID: worker.ID, Agent: "claude", Model: "claude-review", Lease: time.Minute, ExecutionTimeout: time.Hour},
+				{SessionID: "same-session", ClientToken: "token-1", ClaimantID: claimant, Agent: "codex", Model: "gpt-review", Lease: time.Minute, ExecutionTimeout: time.Hour},
+				{SessionID: "same-session", ClientToken: "token-2", ClaimantID: claimant, Agent: "claude", Model: "claude-review", Lease: time.Minute, ExecutionTimeout: time.Hour},
 			},
 		},
 		{
 			name: "duplicate client token",
 			claims: [2]core.WorkOrderClaim{
-				{SessionID: "session-1", ClientToken: "same-token", WorkerID: worker.ID, ClaimantID: worker.ID, Agent: "codex", Model: "gpt-review", Lease: time.Minute, ExecutionTimeout: time.Hour},
-				{SessionID: "session-2", ClientToken: "same-token", WorkerID: worker.ID, ClaimantID: worker.ID, Agent: "claude", Model: "claude-review", Lease: time.Minute, ExecutionTimeout: time.Hour},
+				{SessionID: "session-1", ClientToken: "same-token", ClaimantID: claimant, Agent: "codex", Model: "gpt-review", Lease: time.Minute, ExecutionTimeout: time.Hour},
+				{SessionID: "session-2", ClientToken: "same-token", ClaimantID: claimant, Agent: "claude", Model: "claude-review", Lease: time.Minute, ExecutionTimeout: time.Hour},
 			},
 		},
 	}

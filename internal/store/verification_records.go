@@ -123,17 +123,8 @@ func VerifyVerificationClaim(ctx context.Context, a VerificationAccess, task cor
 		return ErrVerificationAccess
 	}
 	switch actor.Role {
-	case core.ActorWorker:
-		if o.WorkerID == "" || actor.ID != WorkerActorID(o.WorkerID) {
-			return ErrVerificationAccess
-		}
 	case core.ActorUser:
 		if o.ClaimantID != core.TaskRunClaimantID(strings.TrimPrefix(actor.ID, "user:")) {
-			return ErrVerificationAccess
-		}
-	case core.ActorAgent:
-		credential, ok := CredentialFromContext(ctx)
-		if !ok || actor.ID != AgentActorID(credential.ID) || credential.RunWorkspaceID != ws || credential.RunWorkOrderID != o.ID || credential.RunSessionID != o.SessionID {
 			return ErrVerificationAccess
 		}
 	case core.ActorSystem:
