@@ -27,6 +27,7 @@ import (
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/chi/v5/middleware"
 
+	"github.com/kidus-tiliksew/conveyor/internal/changes"
 	"github.com/kidus-tiliksew/conveyor/internal/config"
 	"github.com/kidus-tiliksew/conveyor/internal/core"
 	"github.com/kidus-tiliksew/conveyor/internal/dispatch"
@@ -58,9 +59,21 @@ type Server struct {
 	historyCursorsOnce sync.Once
 	historyCursors     *taskHistoryCursorCodec
 	historyCursorsErr  error
-	// taskEventStreamTicks replaces the notify stream's one-second poll
-	// ticker in tests; nil selects time.NewTicker.
+	// taskEventStreamTicks is an extra wake source for the notify stream in
+	// tests: each tick makes it read its fingerprint as a notice would.
 	taskEventStreamTicks func() (<-chan time.Time, func())
+	// Changes is the backend's change-notice hub. Task event streams and the
+	// workspace change stream subscribe to it and read only on a notice
+	// (component-http-api, "When a task stream reads"; DEC-99(1)). NewServer
+	// sets it from a store that exposes Changes().
+	Changes *changes.Hub
+	// PeerTail, when positive, also wakes every open stream on that period.
+	// conveyord sets it only for peers on a backend without change
+	// notification (feature-quiet-idle-runtime, Peers).
+	PeerTail time.Duration
+	// StreamKeepalive replaces the 25-second keep-alive ticker of every
+	// stream in tests; nil selects time.NewTicker.
+	StreamKeepalive func() (<-chan time.Time, func())
 	// Repos is the set of valid repo names; nil skips validation.
 	Repos []string
 	// multipartTaskIntakeLimit overrides maxMultipartTaskIntakeBytes in tests;
@@ -151,6 +164,9 @@ func NewServer(s store.Store) *Server {
 	if sessions, ok := s.(store.InvitationSessionStore); ok {
 		server.InvitationSessions = sessions
 	}
+	if source, ok := s.(interface{ Changes() *changes.Hub }); ok {
+		server.Changes = source.Changes()
+	}
 	return server
 }
 
@@ -190,6 +206,7 @@ func (s *Server) Handler() http.Handler {
 		r.With(s.requireWorkspaceCreation).Post("/workspaces", s.createWorkspace)
 		r.With(s.requireWorkspaceAuth, s.resolveWorkspaceContext, s.requireWorkspaceCapability(core.CapabilityViewWorkspace)).Get("/workspaces/{workspace_id}", s.getWorkspaceRecord)
 		r.With(s.requireWorkspaceAuth, s.resolveWorkspaceContext, s.requireWorkspaceCapability(core.CapabilityViewWorkspace)).Get("/workspaces/{workspace_id}/config", s.getWorkspaceConfig)
+		r.With(s.requireWorkspaceAuth, s.resolveWorkspaceContext, s.requireWorkspaceCapability(core.CapabilityViewWorkspace)).Get("/workspaces/{workspace_id}/changes", s.streamWorkspaceChanges)
 		r.With(s.requireWorkspaceAuth, s.resolveWorkspaceContext, s.requireWorkspaceCapability(core.CapabilityManageWorkspace)).Put("/workspaces/{workspace_id}/config", s.putWorkspaceConfig)
 		r.With(s.requireWorkspaceAuth, s.resolveWorkspaceContext, s.requireWorkspaceCapability(core.CapabilityManageWorkspace)).Post("/workspaces/{workspace_id}/github-app/manifest", s.createWorkspaceGitHubAppManifest)
 		r.With(s.requireWorkspaceAuth, s.resolveWorkspaceContext, s.requireWorkspaceCapability(core.CapabilityManageWorkspace)).Get("/workspaces/{workspace_id}/github-app/callback", s.workspaceGitHubAppCallback)
@@ -1300,7 +1317,8 @@ func (s *Server) streamEvents(w http.ResponseWriter, r *http.Request) {
 		}
 		notify = true
 	}
-	if _, err := s.Store.GetTask(r.Context(), chi.URLParam(r, "id")); err != nil {
+	task, err := s.Store.GetTask(r.Context(), chi.URLParam(r, "id"))
+	if err != nil {
 		http.Error(w, err.Error(), http.StatusNotFound)
 		return
 	}
@@ -1312,13 +1330,16 @@ func (s *Server) streamEvents(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "text/event-stream")
 	w.Header().Set("Cache-Control", "no-cache")
 	w.Header().Set("X-Accel-Buffering", "no")
+	// Subscribe before the first read, so a commit between that read and the
+	// first wait still wakes the stream (component-http-api, "When a task
+	// stream reads").
+	wake := s.openTaskWake(taskStreamWorkspace(r.Context(), task), chi.URLParam(r, "id"), notify)
+	defer wake.close()
 	if notify {
-		s.streamTaskEventNotifications(w, flusher, r, chi.URLParam(r, "id"))
+		s.streamTaskEventNotifications(w, flusher, r, chi.URLParam(r, "id"), wake)
 		return
 	}
 	stream := newTaskEventStream(s.Store, chi.URLParam(r, "id"))
-	ticker := time.NewTicker(time.Second)
-	defer ticker.Stop()
 	for {
 		if err := stream.poll(r.Context(), w); err != nil {
 			if errors.Is(err, errTaskEventStreamRead) {
@@ -1328,10 +1349,8 @@ func (s *Server) streamEvents(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		flusher.Flush()
-		select {
-		case <-r.Context().Done():
+		if _, ok := wake.wait(r.Context(), w, flusher); !ok {
 			return
-		case <-ticker.C:
 		}
 	}
 }

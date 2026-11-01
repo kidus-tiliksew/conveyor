@@ -178,6 +178,9 @@ func main() {
 	var queueRuntime shutdownQueue
 	var addWorkspaceQueue func(string, *config.Config) error
 	var workspaceQueues *dispatch.WorkspaceQueueRegistrar
+	// peerTail is positive only for peers on a backend without change
+	// notification; streams and await_review wake on it too.
+	var peerTail time.Duration
 	if st.IsDurable() {
 		d.ConfigProvider = func(ctx context.Context) (*config.Config, error) {
 			return st.RuntimeConfig(ctx, deployment)
@@ -205,7 +208,7 @@ func main() {
 		log.Printf("queue stuck-job rescue threshold %s", rescueAfter)
 		queueShutdown := &dispatch.ShutdownMarker{}
 		hostname, _ := os.Hostname()
-		peerTail := queuePeerTail(ctx, deployment.Runtime.Peers, st.EnablePeers, log.Printf)
+		peerTail = queuePeerTail(ctx, deployment.Runtime.Peers, st.EnablePeers, log.Printf)
 		runtime := logqueue.NewRuntime(st.Log(), logqueue.Options{
 			Workspaces: workspaceIDs, RescueStuckAfter: rescueAfter, WorkerID: hostname, Logf: log.Printf,
 			Changes: st.Changes(), PeerTail: peerTail,
@@ -262,6 +265,7 @@ func main() {
 	srv.OnGateMerge = d.MergeAtGate
 	srv.OnMergeReadiness = d.ReadMergeReadiness
 	srv.OnConflictFix = d.DispatchConflictFix
+	srv.PeerTail = peerTail
 	workOrders := &workorder.Service{Store: st, Dispatcher: d, Pack: packBundle, ConfigProvider: func(ctx context.Context) (*config.Config, error) {
 		if st.IsDurable() {
 			return st.RuntimeConfig(ctx, deployment)
@@ -269,6 +273,7 @@ func main() {
 		return cfg, nil
 	}}
 	workOrders.WorkspaceGitHubApps = st
+	workOrders.PeerTail = peerTail
 	workOrders.PublicURL = srv.InvitationDelivery.PublicURL
 	d.WorkspaceGitHubApps = st
 	workOrders.RedactionSecrets = st
