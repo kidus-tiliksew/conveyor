@@ -70,6 +70,7 @@ func (m *memory) StartOverTaskCommand(ctx context.Context, lease taskops.TaskLea
 	// Stage copies of every projection this command can mutate. Failed context,
 	// dismissal, cancellation or artifact writes never publish a partial image.
 	staged := memory{tasks: maps.Clone(m.tasks), dependencies: maps.Clone(m.dependencies), jobs: cloneStartOverSlices(m.jobs), events: cloneStartOverSlices(m.events), lineage: m.lineage.clone(), interventions: cloneStartOverSlices(m.interventions), workOrders: maps.Clone(m.workOrders), requirements: maps.Clone(m.requirements), requirementVersions: cloneStartOverSlices(m.requirementVersions), systemDesigns: maps.Clone(m.systemDesigns), systemDesignVersions: cloneStartOverSlices(m.systemDesignVersions), taskContextProposals: maps.Clone(m.taskContextProposals), artifacts: maps.Clone(m.artifacts), nextEventID: m.nextEventID, nextReviewID: m.nextReviewID}
+	stageNotices(&staged)
 	type proposal struct {
 		id      string
 		version int
@@ -178,5 +179,6 @@ func (m *memory) StartOverTaskCommand(ctx context.Context, lease taskops.TaskLea
 	m.artifacts = staged.artifacts
 	m.nextEventID = staged.nextEventID
 	m.nextReviewID = staged.nextReviewID
+	m.publishStaged(&staged)
 	return core.TaskStartOverResult{Task: old, Successor: next, Created: true, DroppedContext: drops}, nil
 }

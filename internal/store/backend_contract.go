@@ -3,6 +3,7 @@ package store
 import (
 	"context"
 
+	"github.com/kidus-tiliksew/conveyor/internal/changes"
 	"github.com/kidus-tiliksew/conveyor/internal/config"
 	"github.com/kidus-tiliksew/conveyor/internal/core"
 	"github.com/kidus-tiliksew/conveyor/internal/eventlog"
@@ -41,6 +42,13 @@ type Backend interface {
 	ReconcileQueuedTasks(context.Context) (int, error)
 	ReconcileBlueprintClosures(context.Context) (int, error)
 	Log() eventlog.Store
+	// Changes is the hub on which the backend publishes committed change
+	// notices (component-persistence, Change notices; DEC-99(1)).
+	Changes() *changes.Hub
+	// EnablePeers turns on cross-daemon change notification and reports
+	// whether the backend notifies other daemons itself. False means the
+	// daemon tails each workspace on the peer schedule (DEC-99(2), (3)).
+	EnablePeers(context.Context) bool
 }
 
 // WorkspaceGitHubAppStore owns encrypted app identity and secret-free status.

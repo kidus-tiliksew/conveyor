@@ -12,6 +12,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/kidus-tiliksew/conveyor/internal/changes"
 	"github.com/kidus-tiliksew/conveyor/internal/config"
 	"github.com/kidus-tiliksew/conveyor/internal/core"
 	"github.com/kidus-tiliksew/conveyor/internal/monitor"
@@ -555,6 +556,7 @@ func NewMemoryWithConfig(cfg *config.Config) Store {
 		}
 	}
 	return &memory{
+		changes:                     changes.NewHub(),
 		tasks:                       map[string]core.Task{},
 		repositories:                repositories,
 		dependencies:                map[string]map[string]struct{}{},
@@ -614,6 +616,11 @@ type memoryDecisionSweepKey struct {
 }
 
 type memory struct {
+	// changes publishes this store's committed change notices; staged, when
+	// set, holds the notices of a staged copy until it is installed
+	// (component-persistence, Change notices).
+	changes                     *changes.Hub
+	staged                      *[]changes.Notice
 	documentationEvidence       map[memoryScopedKey]map[string]core.DocumentationGateEvidence
 	verificationDeliveries      map[string]core.VerificationDelivery
 	verificationRows            map[string]VerificationRow
@@ -923,6 +930,11 @@ func (m *memory) appendEventLocked(ctx context.Context, event core.Event) {
 		if task, ok := m.tasks[event.TaskID]; ok {
 			workspace = task.Workspace
 		}
+	}
+	if event.TaskID != "" {
+		// Published while the mutation holds the mutex, so a subscriber's
+		// read waits for the mutation to finish.
+		m.raiseLocked(changes.Notice{Workspace: workspace, Kind: changes.Task, TaskID: event.TaskID})
 	}
 	projection := projectLineageEvent(workspace, event)
 	for _, link := range projection.Suppresses {

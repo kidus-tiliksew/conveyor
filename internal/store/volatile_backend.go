@@ -9,6 +9,7 @@ import (
 	"github.com/kidus-tiliksew/conveyor/internal/core"
 	"github.com/kidus-tiliksew/conveyor/internal/eventlog"
 	"github.com/kidus-tiliksew/conveyor/internal/eventlog/memlog"
+	"github.com/kidus-tiliksew/conveyor/internal/queue/logqueue"
 )
 
 // volatileMemory adds deployment capabilities only for tests which explicitly
@@ -33,8 +34,9 @@ var _ Backend = (*volatileMemory)(nil)
 // NewVolatileBackend constructs the test backend. Deployment selection must
 // use backend.Open, which requires an explicit AllowVolatile option.
 func NewVolatileBackend() Backend {
+	mem := NewMemory().(*memory)
 	backend := &volatileMemory{
-		memory:      NewMemory().(*memory),
+		memory:      mem,
 		memberships: map[memoryScopedKey]workspaceBinding{},
 		invitations: map[memoryScopedKey]workspaceInvitation{},
 		workspaces:  map[string]workspaceRecord{},
@@ -43,7 +45,7 @@ func NewVolatileBackend() Backend {
 		signInLinks: map[string]signInLink{},
 		sessions:    map[string]dashboardSession{},
 		orgName:     "Conveyor",
-		log:         memlog.New(),
+		log:         logqueue.Notify(memlog.New(), mem.changes),
 	}
 	backend.readClockPolicy = func(workspace string) (config.RecoveryPolicy, time.Duration, error) {
 		record, ok := backend.workspaces[workspace]

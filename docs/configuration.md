@@ -104,6 +104,33 @@ connection strings retain PostgreSQL selection. `conveyor init` and
 `conveyor user issue-link` apply the same inference to `CONVEYOR_DATABASE_URL`.
 See [SingleStore operations](singlestore.md) before creating its database.
 
+#### Several daemons on one database
+
+`runtime.peers: true` declares that this `conveyord` runs beside other
+daemons on the same database. The default is `false`: a single daemon learns
+of new work from its own commits and sends no statement to the database
+while idle.
+
+```yaml
+runtime:
+  peers: true
+```
+
+- **PostgreSQL.** Each notice-raising transaction also sends
+  `pg_notify('conveyor_changes', ...)`, and each daemon holds one direct,
+  unpooled connection that runs `LISTEN conveyor_changes`. When the database
+  closes that connection, for example when a scale-to-zero database suspends,
+  the daemon reconnects on its next request and then catches up every
+  workspace once. Use a direct connection string, not a transaction pooler:
+  `LISTEN` needs a session.
+- **SingleStore.** There is no change notification, so each daemon tails
+  every workspace's job log once every 30 seconds. Work another daemon
+  commits starts within 30 seconds.
+
+The daemon logs its peer mode at startup: `runtime peers: off`,
+`runtime peers: PostgreSQL change notification`, or
+`runtime peers: tailing each workspace every 30s`.
+
 #### PostgreSQL pool size
 
 `database.max_conns` sets the maximum number of connections in each

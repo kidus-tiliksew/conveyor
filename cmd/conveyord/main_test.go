@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"encoding/base64"
 	"errors"
 	"flag"
@@ -20,6 +21,7 @@ import (
 	"github.com/kidus-tiliksew/conveyor/internal/core"
 	"github.com/kidus-tiliksew/conveyor/internal/dispatch"
 	"github.com/kidus-tiliksew/conveyor/internal/envfile"
+	"github.com/kidus-tiliksew/conveyor/internal/queue/logqueue"
 )
 
 func TestWorkspaceQueueRegistrarConvergesOnceAndRetriesFailures(t *testing.T) {
@@ -465,5 +467,32 @@ repos:
 	}
 	if strings.Contains(startupLog, "open store") || strings.Contains(startupLog, "using durable") || strings.Contains(startupLog, "unavailable until configured") || strings.Contains(startupLog, "bootstrap") {
 		t.Fatalf("conflict did not stop startup before the store: %s", startupLog)
+	}
+}
+
+func TestQueuePeerMode(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		peers    bool
+		notifies bool
+		want     time.Duration
+		called   bool
+		logged   string
+	}{
+		{name: "off", want: 0, logged: "runtime peers: off"},
+		{name: "on with notification", peers: true, notifies: true, want: 0, called: true, logged: "runtime peers: PostgreSQL change notification"},
+		{name: "on without notification", peers: true, want: logqueue.PeerTailInterval, called: true, logged: "runtime peers: tailing each workspace every 30s"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			called := false
+			var lines []string
+			got := queuePeerTail(context.Background(), tc.peers, func(context.Context) bool {
+				called = true
+				return tc.notifies
+			}, func(format string, args ...any) { lines = append(lines, fmt.Sprintf(format, args...)) })
+			if got != tc.want || called != tc.called || len(lines) != 1 || lines[0] != tc.logged {
+				t.Fatalf("tail=%s called=%t lines=%q", got, called, lines)
+			}
+		})
 	}
 }

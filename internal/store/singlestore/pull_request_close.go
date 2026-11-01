@@ -8,7 +8,6 @@ import (
 	"time"
 
 	"github.com/kidus-tiliksew/conveyor/internal/core"
-	"github.com/kidus-tiliksew/conveyor/internal/eventlog/s2log"
 	"github.com/kidus-tiliksew/conveyor/internal/queue"
 	"github.com/kidus-tiliksew/conveyor/internal/queue/logqueue"
 	"github.com/kidus-tiliksew/conveyor/internal/store"
@@ -43,7 +42,7 @@ func (s *Store) QueuePullRequestClose(ctx context.Context, p core.PullRequestClo
 		if p.Terminal() {
 			return nil
 		}
-		_, err = logqueue.Enqueue(s2log.WithTx(ctx, tx), s.log, documentWorkspace(ctx), queue.PullRequestCloseArgs{}.Kind(), p.TaskID, queue.PullRequestCloseArgs{WorkspaceID: documentWorkspace(ctx), TaskID: p.TaskID}, core.PullRequestCloseMaxAttempts, time.Now().UTC())
+		_, err = logqueue.Enqueue(logTx(ctx, tx), s.log, documentWorkspace(ctx), queue.PullRequestCloseArgs{}.Kind(), p.TaskID, queue.PullRequestCloseArgs{WorkspaceID: documentWorkspace(ctx), TaskID: p.TaskID}, core.PullRequestCloseMaxAttempts, time.Now().UTC())
 		return err
 	})
 }

@@ -52,7 +52,7 @@ func TestLogQueueShutdownInterruptionPreservesAttemptIntegration(t *testing.T) {
 	dispatcher := New(blocking, cfg, nil)
 	marker := &ShutdownMarker{}
 	runtime := logqueue.NewRuntime(st.Log(), logqueue.Options{
-		Workspaces: []string{workspace}, PollInterval: 50 * time.Millisecond, ClockInterval: -1,
+		Workspaces: []string{workspace}, ClockInterval: -1,
 		RescueStuckAfter: time.Hour, WorkerID: "test-" + suffix, Logf: t.Logf,
 	})
 	for _, registration := range dispatcher.Registrations(marker) {

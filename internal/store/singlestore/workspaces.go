@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/kidus-tiliksew/conveyor/internal/changes"
 	"github.com/kidus-tiliksew/conveyor/internal/config"
 	"github.com/kidus-tiliksew/conveyor/internal/core"
 	"github.com/kidus-tiliksew/conveyor/internal/store"
@@ -97,6 +98,7 @@ func (s *Store) BootstrapWorkspaceConfig(ctx context.Context, cfg *config.Config
 			}
 		}
 		seeded = true
+		raiseTx(tx, changes.Notice{Workspace: cfg.Workspace, Kind: changes.Workspace})
 		return nil
 	})
 	return seeded && err == nil, err
@@ -139,6 +141,7 @@ func (s *Store) CreateWorkspace(ctx context.Context, id, name string, cfg *confi
 			return err
 		}
 		w = core.Workspace{ID: id, Name: name, ConfigVersion: 1, CreatedAt: now}
+		raiseTx(tx, changes.Notice{Workspace: id, Kind: changes.Workspace})
 		return nil
 	})
 	return w, err

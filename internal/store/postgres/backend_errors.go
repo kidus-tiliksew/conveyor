@@ -148,14 +148,27 @@ type boundaryQuerier interface {
 }
 
 // boundaryDB translates every driver error a direct pool query returns.
-type boundaryDB struct{ q boundaryQuerier }
+type boundaryDB struct {
+	q boundaryQuerier
+	// use, when set, runs before each statement; the store's reopens a
+	// closed peer listener on the next request (component-persistence).
+	use func()
+}
+
+func (b boundaryDB) used() {
+	if b.use != nil {
+		b.use()
+	}
+}
 
 func (b boundaryDB) Exec(ctx context.Context, sql string, args ...any) (pgconn.CommandTag, error) {
+	b.used()
 	tag, err := b.q.Exec(ctx, sql, args...)
 	return tag, translateDriverError(err)
 }
 
 func (b boundaryDB) Query(ctx context.Context, sql string, args ...any) (pgx.Rows, error) {
+	b.used()
 	rows, err := b.q.Query(ctx, sql, args...)
 	if err != nil {
 		if rows != nil {
@@ -167,6 +180,7 @@ func (b boundaryDB) Query(ctx context.Context, sql string, args ...any) (pgx.Row
 }
 
 func (b boundaryDB) QueryRow(ctx context.Context, sql string, args ...any) pgx.Row {
+	b.used()
 	return boundaryRow{b.q.QueryRow(ctx, sql, args...)}
 }
 
@@ -185,15 +199,15 @@ func newBoundaryTx(tx pgx.Tx) pgx.Tx {
 }
 
 func (b boundaryTx) Exec(ctx context.Context, sql string, args ...any) (pgconn.CommandTag, error) {
-	return boundaryDB{b.Tx}.Exec(ctx, sql, args...)
+	return boundaryDB{q: b.Tx}.Exec(ctx, sql, args...)
 }
 
 func (b boundaryTx) Query(ctx context.Context, sql string, args ...any) (pgx.Rows, error) {
-	return boundaryDB{b.Tx}.Query(ctx, sql, args...)
+	return boundaryDB{q: b.Tx}.Query(ctx, sql, args...)
 }
 
 func (b boundaryTx) QueryRow(ctx context.Context, sql string, args ...any) pgx.Row {
-	return boundaryDB{b.Tx}.QueryRow(ctx, sql, args...)
+	return boundaryDB{q: b.Tx}.QueryRow(ctx, sql, args...)
 }
 
 func (b boundaryTx) Commit(ctx context.Context) error {

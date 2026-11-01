@@ -11,7 +11,6 @@ import (
 	"time"
 
 	"github.com/kidus-tiliksew/conveyor/internal/core"
-	"github.com/kidus-tiliksew/conveyor/internal/eventlog/s2log"
 	"github.com/kidus-tiliksew/conveyor/internal/queue/logqueue"
 	"github.com/kidus-tiliksew/conveyor/internal/store"
 	"github.com/kidus-tiliksew/conveyor/internal/taskops"
@@ -407,7 +406,7 @@ func (s *Store) deliveryIntentTx(ctx context.Context, tx *sql.Tx, task string, r
 		}
 		if d.State == "pending" {
 			a := store.VerificationDeliveryArgs(d)
-			if _, err = logqueue.Enqueue(s2log.WithTx(ctx, tx), s.log, ws, a.Kind(), a.UniqueKey(), a, 5, time.Now().UTC()); err != nil {
+			if _, err = logqueue.Enqueue(logTx(ctx, tx), s.log, ws, a.Kind(), a.UniqueKey(), a, 5, time.Now().UTC()); err != nil {
 				return err
 			}
 		}
@@ -469,13 +468,21 @@ func (s *Store) RunVerificationDelivery(ctx context.Context, a queue.Verificatio
 		if e != nil {
 			return e
 		}
+		s.beginNotices(tx)
 		return lockKey(ctx, tx, "verification-publication:"+ws+":"+key)
 	}
 	defer func() {
 		if tx != nil {
 			_ = tx.Rollback()
+			finishNotices(tx, false)
 		}
 	}()
+	// commit publishes the transaction's notices only after it committed.
+	commit := func() error {
+		e := tx.Commit()
+		finishNotices(tx, e == nil)
+		return e
+	}
 	if err = begin(); err != nil {
 		return err
 	}
@@ -492,7 +499,7 @@ func (s *Store) RunVerificationDelivery(ctx context.Context, a queue.Verificatio
 		return err
 	}
 	if !ok {
-		return tx.Commit()
+		return commit()
 	}
 	view := current
 	check := func() error {
@@ -519,7 +526,7 @@ func (s *Store) RunVerificationDelivery(ctx context.Context, a queue.Verificatio
 		current = updated
 		view = updated
 		if command == "attempt" {
-			if e = tx.Commit(); e != nil {
+			if e = commit(); e != nil {
 				return e
 			}
 			tx = nil
@@ -533,7 +540,7 @@ func (s *Store) RunVerificationDelivery(ctx context.Context, a queue.Verificatio
 	if err = fn(&view, save); err != nil {
 		return err
 	}
-	return tx.Commit()
+	return commit()
 }
 func (s *Store) ReconcileVerificationDeliveries(ctx context.Context) error {
 	ws, err := workspace(ctx)
@@ -579,7 +586,7 @@ func (s *Store) ReconcileVerificationDeliveries(ctx context.Context) error {
 				d = next
 			}
 			a := store.VerificationDeliveryArgs(d)
-			if _, err = logqueue.Enqueue(s2log.WithTx(ctx, tx), s.log, ws, a.Kind(), a.UniqueKey(), a, 5, time.Now().UTC()); err != nil {
+			if _, err = logqueue.Enqueue(logTx(ctx, tx), s.log, ws, a.Kind(), a.UniqueKey(), a, 5, time.Now().UTC()); err != nil {
 				return err
 			}
 		}

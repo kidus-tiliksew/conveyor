@@ -13,7 +13,6 @@ import (
 	"time"
 
 	"github.com/kidus-tiliksew/conveyor/internal/core"
-	"github.com/kidus-tiliksew/conveyor/internal/eventlog/s2log"
 	"github.com/kidus-tiliksew/conveyor/internal/queue"
 	"github.com/kidus-tiliksew/conveyor/internal/queue/logqueue"
 	"github.com/kidus-tiliksew/conveyor/internal/store"
@@ -288,7 +287,7 @@ func (s *Store) ReconcileQueuedTasks(ctx context.Context) (int, error) {
 			return err
 		}
 		for _, id := range ids {
-			job, err := logqueue.Load(s2log.WithTx(ctx, tx), s.log, ws, logqueue.StreamFor(queue.DispatchTaskArgs{}.Kind(), id))
+			job, err := logqueue.Load(logTx(ctx, tx), s.log, ws, logqueue.StreamFor(queue.DispatchTaskArgs{}.Kind(), id))
 			if err != nil {
 				return err
 			}
