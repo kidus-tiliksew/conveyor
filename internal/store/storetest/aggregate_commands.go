@@ -1,11 +1,7 @@
 package storetest
 
 import (
-	"bytes"
-	"image"
-	"image/png"
 	"testing"
-	"time"
 
 	"github.com/kidus-tiliksew/conveyor/internal/core"
 	"github.com/kidus-tiliksew/conveyor/internal/store"
@@ -45,20 +41,6 @@ func runCommandRefusals(t *testing.T, x Fixture) {
 	requireOK(t, err)
 	if current.State != core.TaskRunning {
 		t.Fatal("refused command changed task state")
-	}
-	if _, err := st.CreateClaimedVerificationEvidence(ctx, store.ClaimedVerificationEvidenceRequest{WorkOrderID: order.ID, SessionID: "absent", Name: "proof.txt", ContentType: "text/plain"}, []byte("proof")); err == nil {
-		t.Fatal("unclaimed order accepted verification evidence")
-	}
-	claimed, err := ClaimWorkOrder(ctx, st, order.ID, core.WorkOrderClaim{SessionID: "evidence", ClientToken: "fixture-evidence", ClaimantID: "worker", WorkerID: "worker", Lease: time.Minute, ExecutionTimeout: time.Hour})
-	requireOK(t, err)
-	var proof bytes.Buffer
-	requireOK(t, png.Encode(&proof, image.NewRGBA(image.Rect(0, 0, 1, 1))))
-	artifact, err := st.CreateClaimedVerificationEvidence(ctx, store.ClaimedVerificationEvidenceRequest{WorkOrderID: order.ID, WorkerID: "worker", SessionID: claimed.SessionID, ClientToken: "fixture-evidence", Name: "proof.png", ContentType: "image/png"}, proof.Bytes())
-	requireOK(t, err)
-	_, content, err := st.GetArtifact(ctx, artifact.ID)
-	requireOK(t, err)
-	if !bytes.Equal(content, proof.Bytes()) {
-		t.Fatal("claimed evidence bytes differ")
 	}
 }
 

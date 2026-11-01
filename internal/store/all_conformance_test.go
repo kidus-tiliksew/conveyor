@@ -15,7 +15,6 @@ import (
 	"github.com/kidus-tiliksew/conveyor/internal/store"
 	"github.com/kidus-tiliksew/conveyor/internal/store/storetest"
 	githubtrigger "github.com/kidus-tiliksew/conveyor/internal/trigger/github"
-	"github.com/kidus-tiliksew/conveyor/internal/worker"
 	"github.com/kidus-tiliksew/conveyor/internal/workorder"
 )
 
@@ -89,8 +88,6 @@ func TestMemoryConformance(t *testing.T) {
 				store.SeedCredentialLastUsedForTest(t, st, credentialID, lastUsedAgo)
 			}, CredentialLastUsed: func(t *testing.T, _ context.Context, credentialID string) time.Time {
 				return store.CredentialLastUsedForTest(t, st, credentialID)
-			}, WorkerService: func(*testing.T) storetest.WorkerExercise {
-				return conformanceWorkerExercise(st, cfg)
 			}, LineageHTTP: func(*testing.T) http.Handler {
 				// The shared-token operator fixture (component-lineage).
 				server := httpapi.NewServer(st)
@@ -100,26 +97,6 @@ func TestMemoryConformance(t *testing.T) {
 			}}
 		},
 	})
-}
-
-// conformanceWorkerExercise builds the real worker service over one
-// conformance fixture; storetest cannot import internal/worker
-// (component-verification-strategy).
-func conformanceWorkerExercise(st store.Store, cfg *config.Config) storetest.WorkerExercise {
-	provider := func(context.Context) (*config.Config, error) { return cfg, nil }
-	service := &worker.Service{Store: st, WorkOrders: &workorder.Service{Store: st, ConfigProvider: provider}, ConfigProvider: provider}
-	return storetest.WorkerExercise{
-		ListClaimable: func(ctx context.Context, enrolled core.Worker) ([]core.WorkOrder, error) {
-			items, err := service.ListClaimable(ctx, enrolled)
-			orders := make([]core.WorkOrder, 0, len(items))
-			for _, item := range items {
-				orders = append(orders, item.Order)
-			}
-			return orders, err
-		},
-		ListVisibleOrders: service.ListVisibleOrders,
-		ClaimForWorker:    service.ClaimForWorker,
-	}
 }
 
 // TestMemoryFreshDeploymentBootstrap runs the empty-deployment DEC-75 cases

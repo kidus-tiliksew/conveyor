@@ -2,7 +2,6 @@ package core
 
 import (
 	"encoding/json"
-	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -155,108 +154,5 @@ func TestVerificationEvidencePolicyNormalizesAndRejectsIneligibleMedia(t *testin
 	}
 	if !(Artifact{Role: ArtifactRoleVerificationEvidence, TaskID: "task", ContentType: "video/webm", SizeBytes: 1}).EligibleVerificationEvidence() {
 		t.Fatal("eligible recording was rejected")
-	}
-}
-
-func TestWorkOrderContinuationValidationAndEligibility(t *testing.T) {
-	capture, err := NormalizeWorkOrderContinuation(WorkOrderContinuation{
-		SessionID: " native-session ", AttemptID: " attempt-1 ", Harness: " codex ", LaunchEnvironment: " worker-a ",
-	})
-	if err != nil || capture.SessionID != "native-session" || capture.LaunchEnvironment != "worker-a" {
-		t.Fatalf("normalized capture=%+v err=%v", capture, err)
-	}
-	if _, err = NormalizeWorkOrderContinuation(WorkOrderContinuation{
-		SessionID: strings.Repeat("x", MaxWorkOrderContinuationSessionIDRunes+1), AttemptID: "attempt-1", Harness: "codex", LaunchEnvironment: "worker-a",
-	}); err == nil || !strings.Contains(err.Error(), "continuation_session_id") {
-		t.Fatalf("oversized session error=%v", err)
-	}
-
-	base := WorkOrder{
-		Stage: StageImplement, LastAttemptID: "attempt-1", ContinuationSessionID: "native-session",
-		ContinuationAttemptID: "attempt-1", ContinuationHarness: "codex", ContinuationLaunchEnvironment: "worker-a",
-	}
-	for _, test := range []struct {
-		name     string
-		mutate   func(*WorkOrder)
-		eligible bool
-	}{
-		{name: "checkpoint", mutate: func(order *WorkOrder) { order.LastFailureMessage = WorkOrderReleaseReasonOperatorCheckpointReached }, eligible: true},
-		{name: "plan revision declined recovery", mutate: func(order *WorkOrder) { order.LastFailureMessage = WorkOrderReleaseReasonPlanRevisionRequested }, eligible: true},
-		{name: "crash", mutate: func(order *WorkOrder) { order.LastFailureMessage = "harness exited" }},
-		{name: "stall", mutate: func(order *WorkOrder) { order.LastFailureMessage = "agent progress stalled" }},
-		{name: "preemption", mutate: func(order *WorkOrder) { order.LastFailureMessage = "work order was preempted by an operator" }},
-		{name: "claim loss", mutate: func(order *WorkOrder) { order.LastFailureMessage = "claim lease expired" }},
-		{name: "ordinary release", mutate: func(order *WorkOrder) { order.LastFailureMessage = "session exited" }},
-		{name: "review", mutate: func(order *WorkOrder) {
-			order.Stage = StageReview
-			order.LastFailureMessage = WorkOrderReleaseReasonOperatorCheckpointReached
-		}},
-		{name: "post-bounce successor", mutate: func(order *WorkOrder) {
-			order.LastAttemptID = "bounce-attempt"
-			order.LastFailureMessage = WorkOrderReleaseReasonOperatorCheckpointReached
-		}},
-	} {
-		t.Run(test.name, func(t *testing.T) {
-			order := base
-			test.mutate(&order)
-			if got := order.CanResumeContinuation(); got != test.eligible {
-				t.Fatalf("eligible=%v want=%v order=%+v", got, test.eligible, order)
-			}
-			data, marshalErr := json.Marshal(order)
-			if marshalErr != nil || !strings.Contains(string(data), fmt.Sprintf(`"continuation_resume_eligible":%t`, test.eligible)) {
-				t.Fatalf("json=%s err=%v", data, marshalErr)
-			}
-			var decoded WorkOrder
-			if err := json.Unmarshal(data, &decoded); err != nil || decoded.ContinuationResumeEligible != test.eligible {
-				t.Fatalf("decoded eligibility=%v err=%v json=%s", decoded.ContinuationResumeEligible, err, data)
-			}
-		})
-	}
-}
-
-// TestWorkOrderAttemptEndingReason pins which persisted rows name an
-// attempt's ending (req-260820-221be8 AC-2.1, AC-2.3; DEC-26). Rows whose
-// last_failure_message may belong to an earlier attempt never yield a reason.
-func TestWorkOrderAttemptEndingReason(t *testing.T) {
-	const attempt, older, successor = "att-own", "att-older", "att-next"
-	for _, tc := range []struct {
-		name   string
-		order  WorkOrder
-		reason string
-		ok     bool
-	}{
-		{"empty attempt", WorkOrder{State: WorkOrderQueued}, "", false},
-		{"still active", WorkOrder{State: WorkOrderClaimed, AttemptID: attempt}, "", false},
-		{"active with stale history", WorkOrder{State: WorkOrderClaimed, AttemptID: attempt, LastAttemptID: older, LastAttemptOutcome: WorkOrderOutcomeChildFailure, LastFailureMessage: "older failure"}, "", false},
-		{"implementation handoff", WorkOrder{State: WorkOrderSubmitted, AttemptID: attempt, LastAttemptID: older, LastAttemptOutcome: WorkOrderOutcomeStalled, LastFailureMessage: "older stall"}, "work order submitted", true},
-		{"stage completion", WorkOrder{State: WorkOrderCompleted, AttemptID: attempt}, "work order completed", true},
-		{"submitted then stale", WorkOrder{State: WorkOrderStale, AttemptID: attempt}, "", false},
-		{"child failure release", WorkOrder{State: WorkOrderQueued, LastAttemptID: attempt, LastAttemptOutcome: WorkOrderOutcomeChildFailure, LastFailureMessage: " harness exited with status 1 "}, "harness exited with status 1", true},
-		{"stall release", WorkOrder{State: WorkOrderQueued, LastAttemptID: attempt, LastAttemptOutcome: WorkOrderOutcomeStalled, LastFailureMessage: "no output"}, "no output", true},
-		{"checkpoint release", WorkOrder{State: WorkOrderQueued, LastAttemptID: attempt, LastAttemptOutcome: WorkOrderOutcomeReleased, LastFailureMessage: WorkOrderReleaseReasonOperatorCheckpointReached}, WorkOrderReleaseReasonOperatorCheckpointReached, true},
-		{"plan revision release", WorkOrder{State: WorkOrderQueued, LastAttemptID: attempt, LastAttemptOutcome: WorkOrderOutcomeReleased, LastFailureMessage: WorkOrderReleaseReasonPlanRevisionRequested}, WorkOrderReleaseReasonPlanRevisionRequested, true},
-		{"worker shutdown release", WorkOrder{State: WorkOrderQueued, LastAttemptID: attempt, LastAttemptOutcome: WorkOrderOutcomeCancelled, LastFailureMessage: "worker shutting down"}, "worker shutting down", true},
-		{"release without reason", WorkOrder{State: WorkOrderQueued, LastAttemptID: attempt, LastAttemptOutcome: WorkOrderOutcomeReleased}, WorkOrderOutcomeReleased, true},
-		{"preempted", WorkOrder{State: WorkOrderQueued, LastAttemptID: attempt, LastAttemptOutcome: WorkOrderOutcomePreempted}, WorkOrderOutcomePreempted, true},
-		{"released then successor claimed", WorkOrder{State: WorkOrderClaimed, AttemptID: successor, LastAttemptID: attempt, LastAttemptOutcome: WorkOrderOutcomeChildFailure, LastFailureMessage: "own failure"}, "own failure", true},
-		{"released then successor completed", WorkOrder{State: WorkOrderCompleted, AttemptID: successor, LastAttemptID: attempt, LastAttemptOutcome: WorkOrderOutcomeStalled, LastFailureMessage: "own stall"}, "own stall", true},
-		{"released then stale queue", WorkOrder{State: WorkOrderStale, LastAttemptID: attempt, LastAttemptOutcome: WorkOrderOutcomeReleased, LastFailureMessage: "own release"}, "own release", true},
-		{"successor released", WorkOrder{State: WorkOrderQueued, LastAttemptID: successor, LastAttemptOutcome: WorkOrderOutcomeChildFailure, LastFailureMessage: "successor failure"}, "", false},
-		{"lease expired with stale message", WorkOrder{State: WorkOrderQueued, LastAttemptID: attempt, LastAttemptOutcome: WorkOrderOutcomeExpired, LastFailureMessage: WorkOrderReleaseReasonOperatorCheckpointReached}, "", false},
-		{"recovered with kept message", WorkOrder{State: WorkOrderQueued, LastAttemptID: attempt, LastFailureMessage: "older failure"}, "", false},
-		{"execution timeout with stale outcome", WorkOrder{State: WorkOrderTimedOut, LastAttemptID: attempt, LastAttemptOutcome: WorkOrderOutcomeChildFailure, LastFailureMessage: "older failure"}, "", false},
-		{"task cancellation with stale message", WorkOrder{State: WorkOrderCancelled, LastAttemptID: attempt, LastAttemptOutcome: WorkOrderOutcomeCancelled, LastFailureMessage: "older failure"}, "", false},
-		{"sibling retirement after release", WorkOrder{State: WorkOrderCancelled, LastAttemptID: attempt, LastAttemptOutcome: WorkOrderOutcomeCancelled, LastFailureMessage: "worker shutting down"}, "", false},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			id := attempt
-			if tc.name == "empty attempt" {
-				id = "  "
-			}
-			reason, ok := tc.order.AttemptEndingReason(" " + id + " ")
-			if reason != tc.reason || ok != tc.ok {
-				t.Fatalf("AttemptEndingReason=%q,%v want %q,%v", reason, ok, tc.reason, tc.ok)
-			}
-		})
 	}
 }

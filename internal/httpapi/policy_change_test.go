@@ -1,18 +1,21 @@
 package httpapi
 
 import (
+	"context"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/kidus-tiliksew/conveyor/internal/config"
 	"github.com/kidus-tiliksew/conveyor/internal/core"
 	"github.com/kidus-tiliksew/conveyor/internal/store"
+	"github.com/kidus-tiliksew/conveyor/internal/workorder"
 )
 
 func TestTaskPolicyHTTPBoundary(t *testing.T) {
-	_, st, handler := taskRunHTTPFixture(t)
+	_, st, handler := policyHTTPFixture(t)
 	ctx := store.WithWorkspace(store.WithActor(t.Context(), store.SystemActor()), "demo")
 	if err := st.CreateTask(ctx, core.Task{ID: "policy-task", Workspace: "demo", Repo: "conveyor", State: core.TaskRunning, NextStage: core.StageImplement, CreatedAt: time.Now().UTC()}); err != nil {
 		t.Fatal(err)
@@ -55,4 +58,27 @@ func TestVerifyPolicyRejectsLocalExecutionFields(t *testing.T) {
 			t.Fatalf("policy accepts %s", field)
 		}
 	}
+}
+
+// policyHTTPFixture serves the router over a memory store with the shared
+// bearer token "user-token".
+func policyHTTPFixture(t *testing.T) (*Server, store.Store, http.Handler) {
+	t.Helper()
+	st := store.NewMemory()
+	cfg := &config.Config{
+		Workspace: "demo",
+		Routing: config.Routing{Stages: map[string]config.StageRoute{
+			"spec":      {Execution: config.ExecutionMCP, Timeout: time.Hour, TimeoutText: "1h"},
+			"implement": {Execution: config.ExecutionMCP, Timeout: time.Hour, TimeoutText: "1h"},
+			"review":    {Execution: config.ExecutionMCP, Timeout: time.Hour, TimeoutText: "1h"},
+		}},
+		Repos: []config.Repo{{Name: "conveyor", URL: "https://example.test/conveyor.git", Base: "main"}},
+	}
+	provider := func(context.Context) (*config.Config, error) { return cfg, nil }
+	server := NewServer(st)
+	server.Workspace = "demo"
+	server.BearerToken = "user-token"
+	server.ConfigProvider = provider
+	server.WorkOrders = &workorder.Service{Store: st, ConfigProvider: provider}
+	return server, st, server.Handler()
 }

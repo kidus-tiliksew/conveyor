@@ -497,25 +497,6 @@ func (m *volatileMemory) RevokeAgentCredential(_ context.Context, userID, creden
 	return nil
 }
 
-// RevokeRunAgentCredential implements AgentCredentialStore.
-func (m *volatileMemory) RevokeRunAgentCredential(_ context.Context, userID, credentialID string, expected RunAgentCredentialBinding) error {
-	m.lock()
-	defer m.unlock()
-	credential, ok := m.credentials[credentialID]
-	if !ok || credential.UserID != userID || credential.Kind != core.CredentialAgent {
-		return ErrNotFound
-	}
-	binding, ok := ParseRunAgentCredentialLabel(credential.Label)
-	if !ok || binding != expected {
-		return ErrRunAgentCredentialBindingMismatch
-	}
-	if credential.RevokedAt == nil {
-		credential.RevokedAt = timePtr(time.Now().UTC())
-		m.credentials[credentialID] = credential
-	}
-	return nil
-}
-
 // VerifyPersonalAccessToken resolves a human credential's user.
 func (m *volatileMemory) VerifyPersonalAccessToken(ctx context.Context, candidate string) (core.IdentityUser, error) {
 	credential, user, err := m.verifyCredential(ctx, candidate)
@@ -597,11 +578,6 @@ func (m *volatileMemory) verifyCredential(ctx context.Context, candidate string)
 		credential, user = current, owner
 	}
 	authenticated := core.AuthenticatedCredential{ID: credential.ID, OwnerUserID: credential.UserID, Kind: credential.Kind, Scope: credential.Scope}
-	if credential.Kind == core.CredentialAgent {
-		if binding, ok := ParseRunAgentCredentialLabel(credential.Label); ok {
-			authenticated.RunWorkspaceID, authenticated.RunWorkOrderID, authenticated.RunSessionID = binding.WorkspaceID, binding.WorkOrderID, binding.SessionID
-		}
-	}
 	return authenticated, user.IdentityUser, nil
 }
 
@@ -979,7 +955,7 @@ func (m *volatileMemory) RevokeOwnPersonalAccessToken(ctx context.Context, userI
 	return m.revokePersonalTokenLocked(ctx, credential), nil
 }
 
-// DeactivateIdentityUser closes the account and revokes its workers.
+// DeactivateIdentityUser closes the account.
 func (m *volatileMemory) DeactivateIdentityUser(ctx context.Context, userID string) (core.IdentityUser, error) {
 	if _, err := RequireActor(ctx); err != nil {
 		return core.IdentityUser{}, err
@@ -992,7 +968,6 @@ func (m *volatileMemory) DeactivateIdentityUser(ctx context.Context, userID stri
 	}
 	user.Status = "deactivated"
 	m.users[userID] = user
-	m.revokeOwnedWorkersLocked(ctx, userID, "", "identity_user_deactivated")
 	return user.IdentityUser, nil
 }
 
@@ -1167,7 +1142,6 @@ func (m *volatileMemory) GrantWorkspaceRole(ctx context.Context, email, workspac
 		m.memberships[key] = binding
 		if bound && core.RoleAllows(previous.Role, core.CapabilityClaimWork) && !core.RoleAllows(role, core.CapabilityClaimWork) {
 			m.clearMemberAssignmentsLocked(ctx, workspaceID, user.ID)
-			m.revokeOwnedWorkersLocked(ctx, user.ID, workspaceID, "workspace_membership_demoted")
 		}
 		delete(m.invitations, memoryScopedKey{workspace: workspaceID, id: email})
 	}
@@ -1227,7 +1201,6 @@ func (m *volatileMemory) RevokeWorkspaceRole(ctx context.Context, userID, worksp
 	}
 	delete(m.memberships, key)
 	m.clearMemberAssignmentsLocked(ctx, workspaceID, userID)
-	m.revokeOwnedWorkersLocked(ctx, userID, workspaceID, "workspace_membership_revoked")
 	m.workspaceEventLocked(ctx, workspaceID, core.Event{Kind: "workspace.membership_revoked", Payload: core.JSONPayload(map[string]any{
 		"workspace_id": workspaceID, "user_id": userID,
 	})})
@@ -1249,31 +1222,6 @@ func (m *volatileMemory) clearMemberAssignmentsLocked(ctx context.Context, works
 		m.appendEventLocked(ctx, core.Event{TaskID: id, Kind: "task.assignee.cleared", Payload: core.JSONPayload(map[string]any{
 			"assignee_user_id": "", "revoked_user_id": userID,
 		})})
-	}
-}
-
-// revokeOwnedWorkersLocked revokes the user's live workers, in one workspace
-// or, with an empty workspace, everywhere.
-func (m *volatileMemory) revokeOwnedWorkersLocked(ctx context.Context, userID, workspaceID, reason string) {
-	// Mutating callers check RequireActor at entry, so the cascade records
-	// the actor that initiated the deactivation or revocation.
-	actor := ActorFromContext(ctx)
-	now := time.Now().UTC()
-	var ids []string
-	for id, worker := range m.workers {
-		if worker.OwnerUserID == userID && worker.RevokedAt.IsZero() && (workspaceID == "" || worker.Workspace == workspaceID) {
-			ids = append(ids, id)
-		}
-	}
-	sort.Strings(ids)
-	for _, id := range ids {
-		worker := m.workers[id]
-		worker.RevokedAt, worker.LeaseExpiresAt = now, time.Time{}
-		m.workers[id] = worker
-		m.recordEventLocked(actor, worker.Workspace, core.Event{
-			Kind: "worker.revoked", ActorID: actor.ID, ActorRole: actor.Role, At: now,
-			Payload: core.JSONPayload(map[string]string{"worker_id": id, "owner_user_id": userID, "reason": reason}),
-		})
 	}
 }
 

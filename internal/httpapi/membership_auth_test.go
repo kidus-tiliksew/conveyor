@@ -531,7 +531,7 @@ func TestMutationRoutesNameCapabilitiesExplicitly(t *testing.T) {
 	}
 }
 
-func TestTaskRunRoutesAlsoRequireClaimWork(t *testing.T) {
+func TestWorktreeCleanupRoutesRequireClaimWork(t *testing.T) {
 	fixture := &membershipFixture{
 		workspaces: []core.Workspace{{ID: "alpha"}},
 		roles:      map[string]map[string]core.WorkspaceRole{"user": {"alpha": core.WorkspaceRoleContributor}},
@@ -544,15 +544,8 @@ func TestTaskRunRoutesAlsoRequireClaimWork(t *testing.T) {
 		method string
 		path   string
 	}{
-		{http.MethodGet, "/v1/tasks/task/run-order"},
-		{http.MethodPost, "/v1/tasks/task/run-orders/order/claim"},
-		{http.MethodPost, "/v1/tasks/task/run-orders/order/agent-credential"},
-		{http.MethodDelete, "/v1/tasks/task/run-orders/order/agent-credential"},
-		{http.MethodPost, "/v1/tasks/task/run-orders/order/renew"},
-		{http.MethodGet, "/v1/tasks/task/run-orders/order/reconcile"},
-		{http.MethodPost, "/v1/tasks/task/run-orders/order/attempt-checkpoint"},
-		{http.MethodPost, "/v1/tasks/task/run-orders/order/worktree-handoff"},
-		{http.MethodPost, "/v1/tasks/task/run-orders/order/release"},
+		{http.MethodGet, "/v1/tasks/task/worktree-cleanup"},
+		{http.MethodPost, "/v1/tasks/task/worktree-cleanup"},
 	} {
 		fixture.capabilityCalls = nil
 		request := httptest.NewRequest(route.method, route.path+"?workspace_id=alpha", strings.NewReader(`{}`))
@@ -565,62 +558,7 @@ func TestTaskRunRoutesAlsoRequireClaimWork(t *testing.T) {
 	}
 }
 
-func TestTaskRunChildRoutesAdmitOnlyBoundRunChildAgents(t *testing.T) {
-	fixture := &membershipFixture{
-		workspaces: []core.Workspace{{ID: "alpha"}},
-		roles:      map[string]map[string]core.WorkspaceRole{"user": {"alpha": core.WorkspaceRoleExecutor}},
-	}
-	server := NewServer(store.NewMemory())
-	server.Workspaces, server.Memberships = fixture, fixture
-	server.Credentials = staticCredentialVerifier{
-		"bound-token": {ID: "agt_child", OwnerUserID: "user", Kind: core.CredentialAgent, Scope: core.CredentialScopeUser,
-			RunWorkspaceID: "alpha", RunWorkOrderID: "order", RunSessionID: "session"},
-		"unbound-token": {ID: "agt_plain", OwnerUserID: "user", Kind: core.CredentialAgent, Scope: core.CredentialScopeUser},
-	}
-	handler := server.Handler()
-	call := func(token, method, path string) *httptest.ResponseRecorder {
-		t.Helper()
-		fixture.capabilityCalls = nil
-		request := httptest.NewRequest(method, path+"?workspace_id=alpha", strings.NewReader(`{}`))
-		request.Header.Set("Authorization", "Bearer "+token)
-		response := httptest.NewRecorder()
-		handler.ServeHTTP(response, request)
-		return response
-	}
-
-	childRoutes := []struct{ method, path string }{
-		{http.MethodPost, "/v1/tasks/task/run-orders/order/renew"},
-		{http.MethodPost, "/v1/tasks/task/run-orders/order/attempt-checkpoint"},
-		{http.MethodPost, "/v1/tasks/task/run-orders/order/worktree-handoff"},
-	}
-	for _, route := range childRoutes {
-		response := call("bound-token", route.method, route.path)
-		if response.Code == http.StatusUnauthorized {
-			t.Fatalf("bound child rejected at boundary %s %s body=%q", route.method, route.path, response.Body.String())
-		}
-		if len(fixture.capabilityCalls) < 2 || fixture.capabilityCalls[len(fixture.capabilityCalls)-1] != core.CapabilityClaimWork {
-			t.Fatalf("bound child %s %s capability calls=%v", route.method, route.path, fixture.capabilityCalls)
-		}
-		if response = call("unbound-token", route.method, route.path); response.Code != http.StatusUnauthorized {
-			t.Fatalf("unbound agent %s %s status=%d", route.method, route.path, response.Code)
-		}
-	}
-
-	for _, route := range []struct{ method, path string }{
-		{http.MethodGet, "/v1/tasks/task/run-order"},
-		{http.MethodPost, "/v1/tasks/task/run-orders/order/claim"},
-		{http.MethodPost, "/v1/tasks/task/run-orders/order/agent-credential"},
-		{http.MethodDelete, "/v1/tasks/task/run-orders/order/agent-credential"},
-		{http.MethodGet, "/v1/tasks/task/run-orders/order/reconcile"},
-		{http.MethodPost, "/v1/tasks/task/run-orders/order/release"},
-	} {
-		if response := call("bound-token", route.method, route.path); response.Code != http.StatusUnauthorized {
-			t.Fatalf("bound child reached user-reserved %s %s status=%d body=%q", route.method, route.path, response.Code, response.Body.String())
-		}
-	}
-}
-
-func TestTaskRunRoutesRejectDashboardSessionsAndAcceptBearerPATs(t *testing.T) {
+func TestWorktreeCleanupRoutesRejectDashboardSessionsAndAcceptBearerPATs(t *testing.T) {
 	fixture := &membershipFixture{
 		workspaces: []core.Workspace{{ID: "alpha"}},
 		roles:      map[string]map[string]core.WorkspaceRole{"user": {"alpha": core.WorkspaceRoleExecutor}},
@@ -637,15 +575,8 @@ func TestTaskRunRoutesRejectDashboardSessionsAndAcceptBearerPATs(t *testing.T) {
 		method string
 		path   string
 	}{
-		{http.MethodGet, "/v1/tasks/task/run-order"},
-		{http.MethodPost, "/v1/tasks/task/run-orders/order/claim"},
-		{http.MethodPost, "/v1/tasks/task/run-orders/order/agent-credential"},
-		{http.MethodDelete, "/v1/tasks/task/run-orders/order/agent-credential"},
-		{http.MethodPost, "/v1/tasks/task/run-orders/order/renew"},
-		{http.MethodGet, "/v1/tasks/task/run-orders/order/reconcile"},
-		{http.MethodPost, "/v1/tasks/task/run-orders/order/attempt-checkpoint"},
-		{http.MethodPost, "/v1/tasks/task/run-orders/order/worktree-handoff"},
-		{http.MethodPost, "/v1/tasks/task/run-orders/order/release"},
+		{http.MethodGet, "/v1/tasks/task/worktree-cleanup"},
+		{http.MethodPost, "/v1/tasks/task/worktree-cleanup"},
 	}
 	for _, route := range routes {
 		t.Run(route.method+" "+route.path, func(t *testing.T) {
@@ -689,7 +620,7 @@ func TestViewerReadsWorkspaceAndAllMutationsUseCapabilityRefusal(t *testing.T) {
 		return response
 	}
 
-	for _, path := range []string{"/v1/activity", "/v1/attention/tasks", "/v1/tasks", "/v1/work-orders", "/v1/monitor", "/v1/pending-proposals", "/v1/workspace/config", "/v1/artifacts", "/v1/workers", "/v1/workspaces/alpha/members"} {
+	for _, path := range []string{"/v1/activity", "/v1/attention/tasks", "/v1/tasks", "/v1/work-orders", "/v1/monitor", "/v1/pending-proposals", "/v1/workspace/config", "/v1/artifacts", "/v1/workspaces/alpha/members"} {
 		response := call(http.MethodGet, path)
 		if response.Code == http.StatusNotFound && response.Body.String() == canonicalWorkspaceNotFoundBody() {
 			t.Fatalf("viewer read %s was capability-refused", path)
@@ -713,7 +644,6 @@ func TestViewerReadsWorkspaceAndAllMutationsUseCapabilityRefusal(t *testing.T) {
 		{http.MethodPost, "/v1/system-designs"},
 		{http.MethodPost, "/v1/decisions"},
 		{http.MethodPost, "/v1/work-orders/order/recover"},
-		{http.MethodPost, "/v1/workers/pairings"},
 	} {
 		response := call(route.method, route.path)
 		if response.Code != http.StatusNotFound || response.Body.String() != canonicalWorkspaceNotFoundBody() {
@@ -862,8 +792,6 @@ func TestExecutorAndMaintainerRouteBoundaries(t *testing.T) {
 		{http.MethodPost, "/v1/requirements/req/staleness/signal/follow-up?workspace_id=alpha", `{}`, core.CapabilityManageWorkspace},
 		{http.MethodPost, "/v1/monitor/observations?workspace_id=alpha", `{}`, core.CapabilityManageWorkspace},
 		{http.MethodPost, "/v1/monitor/drift/drift/resolve?workspace_id=alpha", `{}`, core.CapabilityManageWorkspace},
-		{http.MethodPost, "/v1/workers/pairings?workspace_id=alpha", `{}`, core.CapabilityManageWorkspace},
-		{http.MethodDelete, "/v1/workers/worker?workspace_id=alpha", "", core.CapabilityManageWorkspace},
 	} {
 		fixture.capabilityCalls = nil
 		response := call(route.method, route.path, "maintainer-token", route.body)
@@ -956,8 +884,7 @@ func TestReferenceDocumentWritesRefuseExecutionCredentials(t *testing.T) {
 	harness := newReferenceDocumentRoleHarness(t)
 	harness.member(core.WorkspaceRoleOperator)
 	harness.credentials["agent-token"] = core.AuthenticatedCredential{ID: "agt_operator", OwnerUserID: "operator", Kind: core.CredentialAgent, Scope: core.CredentialScopeUser}
-	harness.credentials["run-child-token"] = core.AuthenticatedCredential{ID: "agt_child", OwnerUserID: "operator", Kind: core.CredentialAgent, Scope: core.CredentialScopeUser,
-		RunWorkspaceID: "demo", RunWorkOrderID: "order", RunSessionID: "session"}
+	harness.credentials["run-child-token"] = core.AuthenticatedCredential{ID: "agt_child", OwnerUserID: "operator", Kind: core.CredentialAgent, Scope: core.CredentialScopeUser}
 	// Worker credentials authenticate only through the worker surface, so the
 	// human credential boundary does not recognize them.
 	for _, token := range []string{"agent-token", "run-child-token", "worker-token"} {
@@ -994,26 +921,6 @@ func TestDurableWorkspaceAuthorizationWithoutMembershipsFailsClosed(t *testing.T
 	ctx := withCredentialActor(store.WithActor(t.Context(), store.SystemActor()), core.AuthenticatedCredential{ID: "pat", OwnerUserID: "operator", Kind: core.CredentialUser})
 	if _, err := server.resolveMCPWorkspace(ctx, "alpha"); err == nil || err.Error() != "workspace_not_found: workspace not found" {
 		t.Fatalf("MCP fail-closed error=%v", err)
-	}
-}
-
-func TestWorkerMCPWorkspaceIsBoundToEnrollment(t *testing.T) {
-	server := NewServer(store.NewMemory())
-	server.Workspaces = &fakeWorkspaceControl{items: []core.Workspace{{ID: "alpha"}, {ID: "beta"}}}
-	ctx := context.WithValue(store.WithActor(t.Context(), store.SystemActor()), workerContextKey{}, core.Worker{ID: "worker-alpha", Workspace: "alpha"})
-	if got, err := server.resolveMCPWorkspace(ctx, ""); err != nil || got != "alpha" {
-		t.Fatalf("omitted workspace=%q err=%v", got, err)
-	}
-	if got, err := server.resolveMCPWorkspace(ctx, "alpha"); err != nil || got != "alpha" {
-		t.Fatalf("matching workspace=%q err=%v", got, err)
-	}
-	if got, err := server.resolveMCPWorkspace(ctx, "beta"); err == nil || got != "" || err.Error() != "workspace_not_found: workspace not found" {
-		t.Fatalf("mismatched workspace=%q err=%v", got, err)
-	}
-	request := httptest.NewRequest(http.MethodPost, "/mcp", nil).WithContext(ctx)
-	result, err := server.callMCPTool(request, "list_work_orders", map[string]any{"workspace_id": "beta"})
-	if err == nil || err.Error() != "workspace_not_found: workspace not found" || result != nil {
-		t.Fatalf("mismatched tool call result=%v err=%v", result, err)
 	}
 }
 

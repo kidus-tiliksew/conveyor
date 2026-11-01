@@ -1,9 +1,6 @@
 package httpapi
 
 import (
-	"context"
-	"crypto/sha256"
-	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -74,8 +71,6 @@ func TestMCPGetTaskStatusAdmission(t *testing.T) {
 	f.claimRun(submitted, "usr_status", "submitted-session")
 	f.ageClaim(submitted, func(order *core.WorkOrder) { order.State = core.WorkOrderSubmitted })
 	other := f.order("status-other", core.StageImplement)
-	child := "child-status"
-	f.credentials[child] = core.AuthenticatedCredential{ID: "agt_child_status", OwnerUserID: "usr_status", Kind: core.CredentialAgent, Scope: core.CredentialScopeUser, RunWorkspaceID: governanceWorkspace, RunWorkOrderID: claimed, RunSessionID: "claimed-session"}
 
 	read := func(token string, args map[string]any) (string, bool) {
 		args["workspace_id"] = governanceWorkspace
@@ -95,7 +90,6 @@ func TestMCPGetTaskStatusAdmission(t *testing.T) {
 	admit("user without an order", userToken, map[string]any{"task_id": "gov-task-status-other"})
 	admit("agent with its claimed order", agentToken, map[string]any{"task_id": "gov-task-status-claimed", "work_order_id": claimed, "session_id": "claimed-session"})
 	admit("agent with its submitted order", agentToken, map[string]any{"task_id": "gov-task-status-submitted", "work_order_id": submitted, "session_id": "submitted-session"})
-	admit("run child with its own order", child, map[string]any{"task_id": "gov-task-status-claimed", "work_order_id": claimed, "session_id": "claimed-session"})
 
 	missing, isErr := read(agentToken, map[string]any{"task_id": "gov-task-absent", "work_order_id": claimed, "session_id": "claimed-session"})
 	if !isErr || missing == "" {
@@ -110,27 +104,11 @@ func TestMCPGetTaskStatusAdmission(t *testing.T) {
 		"agent submitted with wrong session": {agentToken, map[string]any{"task_id": "gov-task-status-submitted", "work_order_id": submitted, "session_id": "claimed-session"}},
 		"agent without work_order_id":        {agentToken, map[string]any{"task_id": "gov-task-status-claimed", "session_id": "claimed-session"}},
 		"agent with an unclaimed order":      {agentToken, map[string]any{"task_id": "gov-task-status-other", "work_order_id": other, "session_id": "claimed-session"}},
-		"run child naming another order":     {child, map[string]any{"task_id": "gov-task-status-submitted", "work_order_id": submitted, "session_id": "submitted-session"}},
 	} {
 		text, refused := read(refusal.token, refusal.args)
 		if !refused || text != missing {
 			t.Fatalf("%s isError=%v text=%q, want the nonexistent-task refusal %q", label, refused, text, missing)
 		}
-	}
-
-	// A real worker bearer token reaches the tool through the full handler,
-	// holding the order it names, so only the worker refusal can stop it.
-	workerToken := "worker-status-token"
-	sum := sha256.Sum256([]byte(workerToken))
-	if err := createOwnedWorker(f.store, f.ctx, core.Worker{ID: "worker-status", Workspace: governanceWorkspace, OwnerUserID: "usr_status", Name: "worker-status", CredentialHash: hex.EncodeToString(sum[:]), CreatedAt: time.Now()}); err != nil {
-		t.Fatal(err)
-	}
-	workerOrder := f.order("status-worker", core.StageImplement)
-	if _, err := storetest.For(f.store).ClaimWorkOrder(f.ctx, workerOrder, core.WorkOrderClaim{SessionID: "worker-session", ClientToken: "secret-worker-session", ClaimantID: "worker-status", WorkerID: "worker-status", Agent: "codex", Model: "model", Lease: time.Hour, ExecutionTimeout: time.Hour}); err != nil {
-		t.Fatal(err)
-	}
-	if text, isErr := read(workerToken, map[string]any{"task_id": "gov-task-status-worker", "work_order_id": workerOrder, "session_id": "worker-session"}); !isErr || text != "get_task_status requires a user or agent credential" {
-		t.Fatalf("worker read isError=%v text=%q, want the worker refusal", isErr, text)
 	}
 }
 
@@ -183,7 +161,7 @@ func TestMCPGetTaskStatusAgentQuestionParity(t *testing.T) {
 		t.Fatal(err)
 	}
 	order := f.order("question", core.StageImplement)
-	f.claimWorker(order, "worker-question", "usr_question", "question-session")
+	f.claimRun(order, "usr_question", "question-session")
 	if _, err = storetest.ReleaseWorkerClaim(f.ctx, f.store, order, "worker-question", core.WorkOrderRelease{
 		SessionID: "question-session", Reason: core.WorkOrderReleaseReasonOperatorCheckpointReached, Cause: core.WorkOrderReleaseCauseOperatorAction, Outcome: core.WorkOrderOutcomeReleased,
 		Checkpoint: &core.WorkOrderCheckpoint{DecisionRequest: "Confirm component-question.", Class: core.WorkOrderCheckpointClassAuthorityConflict, Citations: []core.WorkOrderAuthorityConflictCitation{{DocumentID: design.ID, CitedVersion: initial.Version, StatementOrSectionID: "Section"}}},
@@ -307,7 +285,7 @@ func TestMCPGetTaskStatusClaimWaitParity(t *testing.T) {
 	order := f.order("context-question", core.StageImplement)
 	suggest("gov-task-context-question", suggested.ID)
 	firstVersion, secondVersion := propose(first.ID, "gov-task-context-question"), propose(second.ID, "gov-task-context-question")
-	f.claimWorker(order, "worker-context-question", "usr_claim_wait", "context-question-session")
+	f.claimRun(order, "usr_claim_wait", "context-question-session")
 	if _, err := storetest.ReleaseWorkerClaim(f.ctx, f.store, order, "worker-context-question", core.WorkOrderRelease{
 		SessionID: "context-question-session", Reason: core.WorkOrderReleaseReasonOperatorCheckpointReached, Cause: core.WorkOrderReleaseCauseOperatorAction, Outcome: core.WorkOrderOutcomeReleased,
 		Checkpoint: &core.WorkOrderCheckpoint{DecisionRequest: "Confirm or dismiss both revisions.", Class: core.WorkOrderCheckpointClassAuthorityConflict, Citations: []core.WorkOrderAuthorityConflictCitation{
@@ -345,7 +323,7 @@ func TestMCPGetTaskStatusAfterAuthorityConfirmedRecovery(t *testing.T) {
 		t.Fatal(err)
 	}
 	order := f.order("answered", core.StageImplement)
-	f.claimWorker(order, "worker-answered", "usr_answered", "answered-session")
+	f.claimRun(order, "usr_answered", "answered-session")
 	if _, err = storetest.ReleaseWorkerClaim(f.ctx, f.store, order, "worker-answered", core.WorkOrderRelease{
 		SessionID: "answered-session", Reason: core.WorkOrderReleaseReasonOperatorCheckpointReached, Cause: core.WorkOrderReleaseCauseOperatorAction, Outcome: core.WorkOrderOutcomeReleased,
 		Checkpoint: &core.WorkOrderCheckpoint{DecisionRequest: "Confirm component-answered.", Class: core.WorkOrderCheckpointClassAuthorityConflict, Citations: []core.WorkOrderAuthorityConflictCitation{{DocumentID: design.ID, CitedVersion: initial.Version, StatementOrSectionID: "Section"}}},
@@ -468,9 +446,5 @@ func TestMCPListOperatorInbox(t *testing.T) {
 	}
 	if text, isErr := f.call(agentToken, "list_operator_inbox", map[string]any{"workspace_id": governanceWorkspace}); !isErr || !strings.Contains(text, "requires an operator-scoped user credential") {
 		t.Fatalf("agent inbox isError=%v text=%q", isErr, text)
-	}
-	request := httptest.NewRequest(http.MethodPost, "/mcp", nil).WithContext(context.WithValue(store.WithActor(t.Context(), store.SystemActor()), workerContextKey{}, core.Worker{ID: "worker", Workspace: governanceWorkspace}))
-	if _, err := f.server.callMCPTool(request, "list_operator_inbox", map[string]any{"workspace_id": governanceWorkspace}); err == nil {
-		t.Fatal("worker credential read the inbox")
 	}
 }

@@ -14,8 +14,6 @@ import (
 	"github.com/kidus-tiliksew/conveyor/internal/core"
 	"github.com/kidus-tiliksew/conveyor/internal/httpapi"
 	"github.com/kidus-tiliksew/conveyor/internal/store"
-	"github.com/kidus-tiliksew/conveyor/internal/store/storetest"
-	workerservice "github.com/kidus-tiliksew/conveyor/internal/worker"
 	"github.com/kidus-tiliksew/conveyor/internal/workorder"
 )
 
@@ -43,7 +41,6 @@ func TestInvitationLinkSessionAndFirstPATIntegration(t *testing.T) {
 	provider := func(context.Context) (*config.Config, error) { return isolationConfig(workspace), nil }
 	server.ConfigProvider = provider
 	server.WorkOrders = &workorder.Service{Store: st, ConfigProvider: provider}
-	server.Workers = &workerservice.Service{Store: st, WorkOrders: server.WorkOrders, ConfigProvider: provider}
 	handler := server.Handler()
 	call := func(method, path, bearer, body string, cookie *http.Cookie, csrf bool) *httptest.ResponseRecorder {
 		r := httptest.NewRequest(method, path, strings.NewReader(body))
@@ -122,56 +119,20 @@ func TestInvitationLinkSessionAndFirstPATIntegration(t *testing.T) {
 		t.Fatal("first PAT missing")
 	}
 	now := time.Now().UTC()
-	runCtx := store.WithWorkspace(ctx, workspace)
-	runTask := core.Task{ID: "session-pat-run-" + core.NewTaskID(), Workspace: workspace, Repo: "repo", BaseBranch: "main", State: core.TaskRunning, NextStage: core.StageImplement, CreatedAt: now}
-	runTask.Branch = "conveyor/task-" + runTask.ID
-	if err = st.CreateTask(runCtx, runTask); err != nil {
+	taskCtx := store.WithWorkspace(ctx, workspace)
+	cleanupTask := core.Task{ID: "session-pat-cleanup-" + core.NewTaskID(), Workspace: workspace, Repo: "repo", BaseBranch: "main", State: core.TaskRunning, NextStage: core.StageImplement, CreatedAt: now}
+	cleanupTask.Branch = "conveyor/task-" + cleanupTask.ID
+	if err = st.CreateTask(taskCtx, cleanupTask); err != nil {
 		t.Fatal(err)
 	}
-	runJob := core.Job{ID: runTask.ID + "-implement-1", TaskID: runTask.ID, Stage: core.StageImplement, State: core.JobPending}
-	if err = st.CreateJob(runCtx, runJob); err != nil {
-		t.Fatal(err)
+	// The bearer-only worktree-cleanup routes refuse a dashboard session and
+	// admit the first PAT (component-http-api, requireUserBearerAuth).
+	cleanup := "/v1/tasks/" + cleanupTask.ID + "/worktree-cleanup"
+	if refused := call(http.MethodGet, cleanup, "", "", cookies[0], true); refused.Code != http.StatusUnauthorized || refused.Header().Get("WWW-Authenticate") != "Bearer" {
+		t.Fatalf("session reached worktree cleanup: status=%d body=%s", refused.Code, refused.Body.String())
 	}
-	if err = storetest.For(st).CreateWorkOrder(runCtx, core.WorkOrder{ID: runJob.ID, TaskID: runTask.ID, JobID: runJob.ID, Stage: core.StageImplement, State: core.WorkOrderQueued, Claimable: true, QueueEnteredAt: now, QueueDeadline: now.Add(time.Hour), CreatedAt: now}); err != nil {
-		t.Fatal(err)
-	}
-	runBase := "/v1/tasks/" + runTask.ID
-	for _, route := range []struct{ method, path, body string }{
-		{http.MethodGet, runBase + "/run-order", ""},
-		{http.MethodPost, runBase + "/run-orders/" + runJob.ID + "/claim", `{}`},
-		{http.MethodPost, runBase + "/run-orders/" + runJob.ID + "/renew", `{}`},
-		{http.MethodGet, runBase + "/run-orders/" + runJob.ID + "/reconcile", ""},
-		{http.MethodPost, runBase + "/run-orders/" + runJob.ID + "/attempt-checkpoint", `{}`},
-		{http.MethodPost, runBase + "/run-orders/" + runJob.ID + "/release", `{}`},
-	} {
-		refused := call(route.method, route.path, "", route.body, cookies[0], true)
-		if refused.Code != http.StatusUnauthorized || refused.Header().Get("WWW-Authenticate") != "Bearer" {
-			t.Fatalf("session reached run route %s %s: status=%d body=%s", route.method, route.path, refused.Code, refused.Body.String())
-		}
-	}
-	if response := call(http.MethodGet, runBase+"/run-order", pat.Value, "", nil, false); response.Code != http.StatusOK {
-		t.Fatalf("PAT run-order status=%d body=%s", response.Code, response.Body.String())
-	}
-	claim := call(http.MethodPost, runBase+"/run-orders/"+runJob.ID+"/claim", pat.Value, `{"session_id":"pat-run-session","client_token":"pat-run-secret","agent":"codex","model":"gpt"}`, nil, false)
-	if claim.Code != http.StatusOK {
-		t.Fatalf("PAT claim status=%d body=%s", claim.Code, claim.Body.String())
-	}
-	var claimed core.WorkOrder
-	if err = json.Unmarshal(claim.Body.Bytes(), &claimed); err != nil {
-		t.Fatal(err)
-	}
-	if response := call(http.MethodPost, runBase+"/run-orders/"+runJob.ID+"/renew", pat.Value, `{"session_id":"pat-run-session"}`, nil, false); response.Code != http.StatusOK {
-		t.Fatalf("PAT renew status=%d body=%s", response.Code, response.Body.String())
-	}
-	if response := call(http.MethodGet, runBase+"/run-orders/"+runJob.ID+"/reconcile?session_id=pat-run-session", pat.Value, "", nil, false); response.Code != http.StatusOK {
-		t.Fatalf("PAT reconcile status=%d body=%s", response.Code, response.Body.String())
-	}
-	checkpoint := `{"session_id":"pat-run-session","attempt_id":"` + claimed.AttemptID + `","termination_reason":"integration preservation","commit_sha":"1111111111111111111111111111111111111111","push_result":"pushed"}`
-	if response := call(http.MethodPost, runBase+"/run-orders/"+runJob.ID+"/attempt-checkpoint", pat.Value, checkpoint, nil, false); response.Code != http.StatusOK {
-		t.Fatalf("PAT checkpoint status=%d body=%s", response.Code, response.Body.String())
-	}
-	if response := call(http.MethodPost, runBase+"/run-orders/"+runJob.ID+"/release", pat.Value, `{"session_id":"pat-run-session","reason":"integration complete","outcome":"released"}`, nil, false); response.Code != http.StatusOK {
-		t.Fatalf("PAT release status=%d body=%s", response.Code, response.Body.String())
+	if response := call(http.MethodGet, cleanup, pat.Value, "", nil, false); response.Code == http.StatusUnauthorized {
+		t.Fatalf("PAT worktree cleanup status=%d body=%s", response.Code, response.Body.String())
 	}
 	if me := call(http.MethodGet, "/v1/me", pat.Value, "", nil, false); me.Code != http.StatusOK {
 		t.Fatalf("PAT /me status=%d body=%s", me.Code, me.Body.String())

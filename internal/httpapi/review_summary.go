@@ -59,15 +59,11 @@ func reviewSummaryMCPTool() map[string]any {
 }
 
 // callReviewSummaryMCP admits and records one submit_review_summary call. It
-// applies the generic MCP boundary itself (worker refusal, agent capability
-// ceiling, workspace resolution, and live claim_work membership) so every
+// applies the generic MCP boundary itself (agent capability ceiling, workspace resolution, and live claim_work membership) so every
 // admission refusal is the one ErrWorkOrderClaimUnauthorized the service
 // returns, and never discloses whether the task exists (SU-3; DEC-19).
 func (s *Server) callReviewSummaryMCP(r *http.Request, args map[string]any) (any, error) {
 	ctx := r.Context()
-	if _, workerAuth := workerFromContext(ctx); workerAuth {
-		return nil, store.ErrWorkOrderClaimUnauthorized
-	}
 	credential, ok := store.CredentialFromContext(ctx)
 	if !ok {
 		return nil, store.ErrWorkOrderClaimUnauthorized

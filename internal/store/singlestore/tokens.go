@@ -80,20 +80,6 @@ func (s *Store) IssueAgentCredential(ctx context.Context, userID, label string) 
 	r, err := s.issueCredential(ctx, userID, label, true)
 	return store.IssuedAgentCredential{ID: r.ID, UserID: r.UserID, Label: r.Label, Value: r.Value}, translateBackendConflict(err)
 }
-func (s *Store) RevokeRunAgentCredential(ctx context.Context, userID, id string, expected store.RunAgentCredentialBinding) error {
-	return s.identityTx(ctx, func(tx *sql.Tx) error {
-		var label string
-		if err := tx.QueryRowContext(ctx, "SELECT label FROM user_tokens WHERE id=? AND user_id=? AND kind='agent' FOR UPDATE", id, userID).Scan(&label); err != nil {
-			return identityNotFound(err)
-		}
-		binding, ok := store.ParseRunAgentCredentialLabel(label)
-		if !ok || binding != expected {
-			return store.ErrRunAgentCredentialBindingMismatch
-		}
-		_, err := tx.ExecContext(ctx, "UPDATE user_tokens SET revoked_at=COALESCE(revoked_at,CURRENT_TIMESTAMP(6)) WHERE id=?", id)
-		return translateBackendConflict(err)
-	})
-}
 
 // credentialUseGranularity bounds how often bearer verification writes a
 // credential row: a credential used within it is verified by a read alone,
@@ -129,13 +115,6 @@ func (s *Store) readCredential(ctx context.Context, hash []byte) (credentialRead
 	}
 	r.user.ID = r.credential.OwnerUserID
 	r.credential.Method = core.CredentialMethodBearer
-	if r.credential.Kind == core.CredentialAgent {
-		if b, ok := store.ParseRunAgentCredentialLabel(label); ok {
-			r.credential.RunWorkspaceID = b.WorkspaceID
-			r.credential.RunWorkOrderID = b.WorkOrderID
-			r.credential.RunSessionID = b.SessionID
-		}
-	}
 	return r, nil
 }
 

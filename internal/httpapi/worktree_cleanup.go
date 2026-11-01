@@ -153,7 +153,7 @@ func (s *Server) authorizedWorktreeCleanupTask(r *http.Request) (core.Task, bool
 		return core.Task{}, false, err
 	}
 	actor := store.ActorFromContext(r.Context())
-	if strings.TrimSpace(actor.ID) == "" || (actor.Role != core.ActorUser && actor.Role != core.ActorWorker) {
+	if strings.TrimSpace(actor.ID) == "" || actor.Role != core.ActorUser {
 		return core.Task{}, false, nil
 	}
 	events, err := s.Store.ListEvents(r.Context(), task.ID)

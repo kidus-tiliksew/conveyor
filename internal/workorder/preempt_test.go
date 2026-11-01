@@ -14,11 +14,8 @@ import (
 func TestPreemptPreservesQueueTelemetryAndSignalsRevokedAttempt(t *testing.T) {
 	ctx, st, service, order := newLifecycleService(t, "preempt")
 	ctx = store.WithActor(store.WithWorkspace(ctx, "test"), store.Actor{ID: "operator-7", Role: core.ActorHuman})
-	if _, err := storetest.EnsureWorkerEnrollment(ctx, st, "worker-7"); err != nil {
-		t.Fatal(err)
-	}
 	claimed, err := service.Claim(ctx, order.ID, core.WorkOrderClaim{
-		SessionID: "preempt-session", ClientToken: "secret", ClaimantID: "worker-7", WorkerID: "worker-7",
+		SessionID: "preempt-session", ClientToken: "secret", ClaimantID: "worker-7",
 		Agent: "codex", Model: "gpt", Lease: time.Minute,
 	})
 	if err != nil {
@@ -52,7 +49,7 @@ func TestPreemptPreservesQueueTelemetryAndSignalsRevokedAttempt(t *testing.T) {
 		t.Fatalf("preempted task=%+v err=%v", task, err)
 	}
 	if result.RevokedAttemptID != claimed.AttemptID || result.RevokedSessionID != "preempt-session" ||
-		result.RevokedWorkerID != "worker-7" || result.GraceBound != "one renewal interval" {
+		result.RevokedWorkerID != "" || result.GraceBound != "one renewal interval" {
 		t.Fatalf("preempt result=%+v", result)
 	}
 	duplicate, err := service.Preempt(ctx, order.ID, "switch to the repaired setup", "preempt-request-1")
@@ -65,11 +62,6 @@ func TestPreemptPreservesQueueTelemetryAndSignalsRevokedAttempt(t *testing.T) {
 	if _, err = storetest.For(st).RenewWorkerClaim(ctx, order.ID, "worker-7", "preempt-session", time.Minute); !errors.Is(err, store.ErrWorkOrderPreempted) {
 		t.Fatalf("revoked renewal err=%v", err)
 	}
-	checkpoint := core.WorkOrderAttemptCheckpoint{SessionID: "preempt-session", AttemptID: claimed.AttemptID, TerminationReason: "work order was preempted by an operator", CommitSHA: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", PushResult: "pushed"}
-	if created, checkpointErr := st.RecordWorkOrderAttemptCheckpoint(ctx, order.ID, "worker-7", checkpoint); checkpointErr != nil || !created {
-		t.Fatalf("late preempt checkpoint created=%v err=%v", created, checkpointErr)
-	}
-
 	events, err := st.ListEvents(ctx, order.TaskID)
 	if err != nil {
 		t.Fatal(err)
@@ -125,10 +117,7 @@ func TestPreemptRetiresQueuedOrderIdempotently(t *testing.T) {
 func TestPreemptAfterDeadWorkerLeaseExpiryRetiresQueuedOrder(t *testing.T) {
 	ctx, st, service, order := newLifecycleService(t, "preempt-dead")
 	ctx = store.WithActor(store.WithWorkspace(ctx, "test"), store.Actor{ID: "operator", Role: core.ActorHuman})
-	if _, err := storetest.EnsureWorkerEnrollment(ctx, st, "dead-worker"); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := service.Claim(ctx, order.ID, core.WorkOrderClaim{SessionID: "dead-session", ClientToken: "secret", ClaimantID: "dead-worker", WorkerID: "dead-worker", Lease: time.Nanosecond}); err != nil {
+	if _, err := service.Claim(ctx, order.ID, core.WorkOrderClaim{SessionID: "dead-session", ClientToken: "secret", ClaimantID: "dead-worker", Lease: time.Nanosecond}); err != nil {
 		t.Fatal(err)
 	}
 	time.Sleep(time.Millisecond)

@@ -194,7 +194,7 @@ func runVerificationPermissions(t *testing.T, x Fixture) {
 		if _, err = RecoverWorkOrder(x.Context, x.Backend, v.access.WorkOrderID, "reasons-recover", time.Hour); err != nil {
 			t.Fatal(err)
 		}
-		claim := core.WorkOrderClaim{WorkerID: "worker", ClaimantID: "worker", SessionID: "successor", ClientToken: "successor-token", Lease: time.Hour, ExecutionTimeout: time.Hour}
+		claim := core.WorkOrderClaim{ClaimantID: core.TaskRunClaimantID("worker"), SessionID: "successor", ClientToken: "successor-token", Lease: time.Hour, ExecutionTimeout: time.Hour}
 		claim.Requirements = []core.ServedRequirementContext{{ID: "req-fixture", Version: 1, Statements: []core.RequirementStatement{{ID: "REQ-1", Statement: "Observe the state", AcceptanceCriteria: []core.AcceptanceCriterion{{ID: "AC-1.1", Statement: "Retain the observation"}}}}}}
 		if _, err = ClaimWorkOrder(x.Context, x.Backend, v.access.WorkOrderID, claim); err != nil {
 			t.Fatal(err)

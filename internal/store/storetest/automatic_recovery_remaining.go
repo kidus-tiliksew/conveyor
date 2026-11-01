@@ -32,7 +32,7 @@ func runAutomaticRecoveryRemaining(t *testing.T, st store.Store, ctx context.Con
 func runQueuedExpiredRecovery(t *testing.T, st store.Store, ctx context.Context, workspace string) {
 	t.Helper()
 	id := seedRunningOrder(t, st, ctx, workspace)
-	if _, err := ClaimWorkOrder(ctx, st, id, core.WorkOrderClaim{WorkerID: "worker", ClaimantID: "worker", SessionID: "lease", ClientToken: "lease-token", Lease: time.Millisecond, ExecutionTimeout: time.Hour}); err != nil {
+	if _, err := ClaimWorkOrder(ctx, st, id, core.WorkOrderClaim{ClaimantID: "worker", SessionID: "lease", ClientToken: "lease-token", Lease: time.Millisecond, ExecutionTimeout: time.Hour}); err != nil {
 		t.Fatal(err)
 	}
 	tick := time.Now().UTC().Add(time.Second)
@@ -57,7 +57,7 @@ func runQueuedRetryLimitRecovery(t *testing.T, st store.Store, ctx context.Conte
 	id := seedRunningOrder(t, st, ctx, workspace)
 	claimAndRelease(t, st, ctx, id, "retry", core.WorkOrderRelease{SessionID: "retry", Outcome: core.WorkOrderOutcomeChildFailure, Reason: "boom", FailureDetail: "once", AutomaticRetryLimit: 1, InitialRetryDelay: time.Nanosecond, MaximumRetryDelay: time.Nanosecond})
 	time.Sleep(time.Millisecond)
-	if _, err := ClaimWorkOrder(ctx, st, id, core.WorkOrderClaim{WorkerID: "worker", ClaimantID: "worker", SessionID: "retry-2", ClientToken: "retry-2", Lease: time.Hour, ExecutionTimeout: time.Hour}); err != nil {
+	if _, err := ClaimWorkOrder(ctx, st, id, core.WorkOrderClaim{ClaimantID: "worker", SessionID: "retry-2", ClientToken: "retry-2", Lease: time.Hour, ExecutionTimeout: time.Hour}); err != nil {
 		t.Fatal(err)
 	}
 	released, err := ReleaseWorkerClaim(ctx, st, id, "worker", core.WorkOrderRelease{SessionID: "retry-2", Outcome: core.WorkOrderOutcomeChildFailure, Reason: "boom-2", FailureDetail: "twice", AutomaticRetryLimit: 1})
@@ -83,7 +83,7 @@ func runQueuedRetryLimitRecovery(t *testing.T, st store.Store, ctx context.Conte
 func runNeverRecovered(t *testing.T, st store.Store, ctx context.Context, workspace string) {
 	t.Helper()
 	live := seedRunningOrder(t, st, ctx, workspace)
-	if _, err := ClaimWorkOrder(ctx, st, live, core.WorkOrderClaim{WorkerID: "worker", ClaimantID: "worker", SessionID: "live", ClientToken: "live-token", Lease: time.Hour, ExecutionTimeout: time.Hour}); err != nil {
+	if _, err := ClaimWorkOrder(ctx, st, live, core.WorkOrderClaim{ClaimantID: "worker", SessionID: "live", ClientToken: "live-token", Lease: time.Hour, ExecutionTimeout: time.Hour}); err != nil {
 		t.Fatal(err)
 	}
 	assertUnscheduled(t, st, ctx, live, time.Now().UTC().Add(time.Minute))
@@ -99,7 +99,7 @@ func runNeverRecovered(t *testing.T, st store.Store, ctx context.Context, worksp
 	assertUnscheduled(t, st, ctx, identical, time.Now().UTC())
 
 	checkpoint := seedRunningOrder(t, st, ctx, workspace)
-	if _, err = ClaimWorkOrder(ctx, st, checkpoint, core.WorkOrderClaim{WorkerID: "worker", ClaimantID: "worker", SessionID: "checkpoint", ClientToken: "checkpoint-token", Lease: time.Hour, ExecutionTimeout: time.Hour}); err != nil {
+	if _, err = ClaimWorkOrder(ctx, st, checkpoint, core.WorkOrderClaim{ClaimantID: "worker", SessionID: "checkpoint", ClientToken: "checkpoint-token", Lease: time.Hour, ExecutionTimeout: time.Hour}); err != nil {
 		t.Fatal(err)
 	}
 	if _, err = ReleaseWorkerClaim(ctx, st, checkpoint, "worker", core.WorkOrderRelease{SessionID: "checkpoint", Reason: core.WorkOrderReleaseReasonOperatorCheckpointReached, Outcome: core.WorkOrderOutcomeReleased, Checkpoint: &core.WorkOrderCheckpoint{DecisionRequest: "hold"}}); err != nil {
@@ -108,7 +108,7 @@ func runNeverRecovered(t *testing.T, st store.Store, ctx context.Context, worksp
 	assertUnscheduled(t, st, ctx, checkpoint, time.Now().UTC())
 
 	revision := seedRunningOrder(t, st, ctx, workspace)
-	if _, err = ClaimWorkOrder(ctx, st, revision, core.WorkOrderClaim{WorkerID: "worker", ClaimantID: "worker", SessionID: "revision", ClientToken: "revision-token", Lease: time.Hour, ExecutionTimeout: time.Hour}); err != nil {
+	if _, err = ClaimWorkOrder(ctx, st, revision, core.WorkOrderClaim{ClaimantID: "worker", SessionID: "revision", ClientToken: "revision-token", Lease: time.Hour, ExecutionTimeout: time.Hour}); err != nil {
 		t.Fatal(err)
 	}
 	if _, err = ReleaseWorkerClaim(ctx, st, revision, "worker", core.WorkOrderRelease{SessionID: "revision", Reason: core.WorkOrderReleaseReasonPlanRevisionRequested, Outcome: core.WorkOrderOutcomeReleased}); err != nil {
@@ -117,7 +117,7 @@ func runNeverRecovered(t *testing.T, st store.Store, ctx context.Context, worksp
 	assertUnscheduled(t, st, ctx, revision, time.Now().UTC())
 
 	ordinary := seedRunningOrder(t, st, ctx, workspace)
-	if _, err = ClaimWorkOrder(ctx, st, ordinary, core.WorkOrderClaim{WorkerID: "worker", ClaimantID: "worker", SessionID: "ordinary", ClientToken: "ordinary-token", Lease: time.Hour, ExecutionTimeout: time.Hour}); err != nil {
+	if _, err = ClaimWorkOrder(ctx, st, ordinary, core.WorkOrderClaim{ClaimantID: "worker", SessionID: "ordinary", ClientToken: "ordinary-token", Lease: time.Hour, ExecutionTimeout: time.Hour}); err != nil {
 		t.Fatal(err)
 	}
 	if _, err = ReleaseWorkerClaim(ctx, st, ordinary, "worker", core.WorkOrderRelease{SessionID: "ordinary", Reason: "operator release", Outcome: core.WorkOrderOutcomeReleased}); err != nil {
@@ -150,7 +150,7 @@ func runNeverRecovered(t *testing.T, st store.Store, ctx context.Context, worksp
 	assertUnscheduled(t, st, ctx, awaitingOrder, now)
 
 	older := seedRunningOrder(t, st, ctx, workspace)
-	if _, err = ClaimWorkOrder(ctx, st, older, core.WorkOrderClaim{WorkerID: "worker", ClaimantID: "worker", SessionID: "older", ClientToken: "older-token", Lease: time.Millisecond, ExecutionTimeout: time.Hour}); err != nil {
+	if _, err = ClaimWorkOrder(ctx, st, older, core.WorkOrderClaim{ClaimantID: "worker", SessionID: "older", ClientToken: "older-token", Lease: time.Millisecond, ExecutionTimeout: time.Hour}); err != nil {
 		t.Fatal(err)
 	}
 	if _, err = taskops.New(st).TickOrderClock(ctx, time.Now().UTC().Add(time.Second)); err != nil {
@@ -180,7 +180,7 @@ func runNeverRecovered(t *testing.T, st store.Store, ctx context.Context, worksp
 func runWindowRollover(t *testing.T, st store.Store, ctx context.Context, workspace string) {
 	t.Helper()
 	id := seedRunningOrder(t, st, ctx, workspace)
-	if _, err := ClaimWorkOrder(ctx, st, id, core.WorkOrderClaim{WorkerID: "worker", ClaimantID: "worker", SessionID: "first", ClientToken: "first-token", Lease: time.Minute, ExecutionTimeout: time.Minute}); err != nil {
+	if _, err := ClaimWorkOrder(ctx, st, id, core.WorkOrderClaim{ClaimantID: "worker", SessionID: "first", ClientToken: "first-token", Lease: time.Minute, ExecutionTimeout: time.Minute}); err != nil {
 		t.Fatal(err)
 	}
 	recoverAutomatically(t, st, ctx, id)
@@ -188,7 +188,7 @@ func runWindowRollover(t *testing.T, st store.Store, ctx context.Context, worksp
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err = ClaimWorkOrder(ctx, st, id, core.WorkOrderClaim{WorkerID: "worker", ClaimantID: "worker", SessionID: "rollover", ClientToken: "rollover-token", Lease: time.Minute, ExecutionTimeout: time.Minute}); err != nil {
+	if _, err = ClaimWorkOrder(ctx, st, id, core.WorkOrderClaim{ClaimantID: "worker", SessionID: "rollover", ClientToken: "rollover-token", Lease: time.Minute, ExecutionTimeout: time.Minute}); err != nil {
 		t.Fatal(err)
 	}
 	later := first.AutomaticRecoveryWindowStartedAt.Add(24*time.Hour + 2*time.Minute)
@@ -281,7 +281,7 @@ func runOperatorRedispatchReset(t *testing.T, st store.Store, ctx context.Contex
 	if err != nil || reset.AutomaticRecoveryCount != 0 || reset.RetrySuppressed {
 		t.Fatalf("operator redispatch=%+v err=%v", reset, err)
 	}
-	if _, err = ClaimWorkOrder(ctx, st, id, core.WorkOrderClaim{WorkerID: "worker", ClaimantID: "worker", SessionID: "after-reset", ClientToken: "after-reset-token", Lease: time.Minute, ExecutionTimeout: time.Minute}); err != nil {
+	if _, err = ClaimWorkOrder(ctx, st, id, core.WorkOrderClaim{ClaimantID: "worker", SessionID: "after-reset", ClientToken: "after-reset-token", Lease: time.Minute, ExecutionTimeout: time.Minute}); err != nil {
 		t.Fatal(err)
 	}
 	recovered := recoverAutomatically(t, st, ctx, id)
@@ -356,7 +356,7 @@ func runQueuePositionAndIdentity(t *testing.T, st store.Store, ctx context.Conte
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err = ClaimWorkOrder(ctx, st, moving, core.WorkOrderClaim{WorkerID: "worker", ClaimantID: "worker", SessionID: "moving", ClientToken: "moving-token", Lease: time.Minute, ExecutionTimeout: 2 * time.Minute}); err != nil {
+	if _, err = ClaimWorkOrder(ctx, st, moving, core.WorkOrderClaim{ClaimantID: "worker", SessionID: "moving", ClientToken: "moving-token", Lease: time.Minute, ExecutionTimeout: 2 * time.Minute}); err != nil {
 		t.Fatal(err)
 	}
 	claimed, err := st.GetWorkOrder(ctx, moving)
@@ -407,7 +407,7 @@ func runPolicyChangeOnNextTick(t *testing.T, st store.Store, ctx context.Context
 		t.Fatal(err)
 	}
 	id := seedRunningOrder(t, st, ctx, workspace)
-	if _, err = ClaimWorkOrder(ctx, st, id, core.WorkOrderClaim{WorkerID: "worker", ClaimantID: "worker", SessionID: "policy", ClientToken: "policy-token", Lease: time.Minute, ExecutionTimeout: time.Minute}); err != nil {
+	if _, err = ClaimWorkOrder(ctx, st, id, core.WorkOrderClaim{ClaimantID: "worker", SessionID: "policy", ClientToken: "policy-token", Lease: time.Minute, ExecutionTimeout: time.Minute}); err != nil {
 		t.Fatal(err)
 	}
 	if _, err = taskops.New(st).TickOrderClock(ctx, time.Now().UTC().Add(2*time.Minute)); err != nil {
@@ -433,7 +433,7 @@ func runConcurrentDueTicks(t *testing.T, st store.Store, ctx context.Context, wo
 	restoreBound := setAutomaticRecoveryBound(t, st, ctx, 1)
 	defer restoreBound()
 	id := seedRunningOrder(t, st, ctx, workspace)
-	if _, err := ClaimWorkOrder(ctx, st, id, core.WorkOrderClaim{WorkerID: "worker", ClaimantID: "worker", SessionID: "race", ClientToken: "race-token", Lease: time.Minute, ExecutionTimeout: time.Minute}); err != nil {
+	if _, err := ClaimWorkOrder(ctx, st, id, core.WorkOrderClaim{ClaimantID: "worker", SessionID: "race", ClientToken: "race-token", Lease: time.Minute, ExecutionTimeout: time.Minute}); err != nil {
 		t.Fatal(err)
 	}
 	tick := time.Now().UTC().Add(2 * time.Minute)
@@ -460,7 +460,7 @@ func runConcurrentDueTicks(t *testing.T, st store.Store, ctx context.Context, wo
 	if n := countWorkOrderEvents(t, st, ctx, recovered.TaskID, "work_order.recovered"); n != 1 {
 		t.Fatalf("recovered events=%d", n)
 	}
-	if _, err = ClaimWorkOrder(ctx, st, id, core.WorkOrderClaim{WorkerID: "worker", ClaimantID: "worker", SessionID: "race-bound", ClientToken: "race-bound-token", Lease: time.Hour, ExecutionTimeout: time.Minute}); err != nil {
+	if _, err = ClaimWorkOrder(ctx, st, id, core.WorkOrderClaim{ClaimantID: "worker", SessionID: "race-bound", ClientToken: "race-bound-token", Lease: time.Hour, ExecutionTimeout: time.Minute}); err != nil {
 		t.Fatal(err)
 	}
 	exhaustAt := time.Now().UTC().Add(2 * time.Minute)
@@ -540,7 +540,7 @@ func recoverAutomatically(t *testing.T, st store.Store, ctx context.Context, id 
 
 func claimAndRelease(t *testing.T, st store.Store, ctx context.Context, id, token string, release core.WorkOrderRelease) {
 	t.Helper()
-	if _, err := ClaimWorkOrder(ctx, st, id, core.WorkOrderClaim{WorkerID: "worker", ClaimantID: "worker", SessionID: release.SessionID, ClientToken: token, Lease: time.Hour, ExecutionTimeout: time.Hour}); err != nil {
+	if _, err := ClaimWorkOrder(ctx, st, id, core.WorkOrderClaim{ClaimantID: "worker", SessionID: release.SessionID, ClientToken: token, Lease: time.Hour, ExecutionTimeout: time.Hour}); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := ReleaseWorkerClaim(ctx, st, id, "worker", release); err != nil {

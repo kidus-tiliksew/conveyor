@@ -207,7 +207,7 @@ func (s *Server) getRequirementInsightSummary(w http.ResponseWriter, r *http.Req
 		writeRequirementInsightReadError(w, "headline read", err)
 		return
 	}
-	canGenerate, err := s.taskRunCapability(ctx, core.CapabilityCreateTasks)
+	canGenerate, err := s.callerCapability(ctx, core.CapabilityCreateTasks)
 	if err != nil {
 		writeRequirementInsightReadError(w, "generate capability", err)
 		return
@@ -242,7 +242,7 @@ func (s *Server) generateRequirementInsightSummary(w http.ResponseWriter, r *htt
 		writeJSON(w, http.StatusConflict, map[string]string{"error": "insight_headline_current"})
 		return
 	}
-	canGenerate, err := s.taskRunCapability(ctx, core.CapabilityCreateTasks)
+	canGenerate, err := s.callerCapability(ctx, core.CapabilityCreateTasks)
 	if err != nil {
 		writeRequirementInsightReadError(w, "generate capability", err)
 		return

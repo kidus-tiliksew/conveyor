@@ -42,12 +42,12 @@ func newVerificationServiceFixture(t *testing.T) verificationServiceFixture {
 	if _, err := storetest.CreateStageWorkOrder(ctx, b, job, order); err != nil {
 		t.Fatal(err)
 	}
-	claim := core.WorkOrderClaim{WorkerID: "fixture", ClaimantID: "fixture", SessionID: "session", ClientToken: "token", Lease: time.Hour, ExecutionTimeout: time.Hour, Requirements: []core.ServedRequirementContext{{ID: "req-fixture", Version: 1, Statements: []core.RequirementStatement{{ID: "REQ-1", Statement: "Observe", AcceptanceCriteria: []core.AcceptanceCriterion{{ID: "AC-1.1", Statement: "Observed"}}}}}}}
+	claim := core.WorkOrderClaim{ClaimantID: core.TaskRunClaimantID("fixture"), SessionID: "session", ClientToken: "token", Lease: time.Hour, ExecutionTimeout: time.Hour, Requirements: []core.ServedRequirementContext{{ID: "req-fixture", Version: 1, Statements: []core.RequirementStatement{{ID: "REQ-1", Statement: "Observe", AcceptanceCriteria: []core.AcceptanceCriterion{{ID: "AC-1.1", Statement: "Observed"}}}}}}}
 	order, err := storetest.ClaimWorkOrder(ctx, b, order.ID, claim)
 	if err != nil {
 		t.Fatal(err)
 	}
-	ctx = store.WithActor(ctx, store.Actor{ID: "worker:fixture", Role: core.ActorWorker})
+	ctx = store.WithActor(ctx, store.Actor{ID: store.UserActorID("fixture"), Role: core.ActorUser})
 	s := &Service{Store: b, ConfigProvider: func(context.Context) (*config.Config, error) { return cfg, nil }}
 	return verificationServiceFixture{s, b, ctx, order}
 }
@@ -83,7 +83,7 @@ func TestVerificationPreparationAndClaimRefusal(t *testing.T) {
 		for _, scope := range []struct {
 			ctx                   context.Context
 			order, session, token string
-		}{{store.WithWorkspace(f.ctx, "foreign"), f.o.ID, "session", "token"}, {f.ctx, "foreign", "session", "token"}, {f.ctx, f.o.ID, "foreign", "token"}, {f.ctx, f.o.ID, "session", "foreign"}, {store.WithActor(f.ctx, store.Actor{ID: "worker:foreign", Role: core.ActorWorker}), f.o.ID, "session", "token"}} {
+		}{{store.WithWorkspace(f.ctx, "foreign"), f.o.ID, "session", "token"}, {f.ctx, "foreign", "session", "token"}, {f.ctx, f.o.ID, "foreign", "token"}, {f.ctx, f.o.ID, "session", "foreign"}, {store.WithActor(f.ctx, store.Actor{ID: store.UserActorID("foreign"), Role: core.ActorUser}), f.o.ID, "session", "token"}} {
 			if _, err := f.s.Verification(scope.ctx, scope.order, scope.session, scope.token, name, raw); !errors.Is(err, store.ErrVerificationAccess) {
 				t.Fatalf("%s foreign scope: %v", name, err)
 			}
@@ -109,7 +109,7 @@ func TestVerificationPrematureSuccessRetainsEvidence(t *testing.T) {
 		t.Fatal("start replay changed identity")
 	}
 	at := time.Now().UTC().Format(time.RFC3339Nano)
-	base := core.VerificationEvidence{SchemaVersion: 1, SubmissionKey: "evidence", CapturedAt: at, ReceivedAt: at, SubmittedBy: "worker:fixture", CapturedBy: core.VerificationCaptureActor{Identity: "fixture", Kind: "tool", Version: "1", Attribution: "self_reported"}, WorkspaceID: "demo", TaskID: f.o.TaskID, WorkOrderID: f.o.ID, WorkOrderAttemptID: f.o.AttemptID, ContextID: vc.ID, RunID: run.ID, Subject: subject, Revisions: vc.Revisions, GoverningPins: vc.GoverningPins, SafeInputs: map[string]json.RawMessage{}, Environment: environment}
+	base := core.VerificationEvidence{SchemaVersion: 1, SubmissionKey: "evidence", CapturedAt: at, ReceivedAt: at, SubmittedBy: "user:fixture", CapturedBy: core.VerificationCaptureActor{Identity: "fixture", Kind: "tool", Version: "1", Attribution: "self_reported"}, WorkspaceID: "demo", TaskID: f.o.TaskID, WorkOrderID: f.o.ID, WorkOrderAttemptID: f.o.AttemptID, ContextID: vc.ID, RunID: run.ID, Subject: subject, Revisions: vc.Revisions, GoverningPins: vc.GoverningPins, SafeInputs: map[string]json.RawMessage{}, Environment: environment}
 	observation := base
 	observation.ID = "observation"
 	observation.Type = "state_observation"
@@ -170,7 +170,7 @@ func TestVerificationMemberAndSealedReviewReads(t *testing.T) {
 			t.Fatalf("foreign member: %v", err)
 		}
 	}
-	access := store.VerificationAccess{TaskID: f.o.TaskID, WorkOrderID: f.o.ID, WorkOrderAttemptID: f.o.AttemptID, ClientToken: "token", Claim: core.WorkOrderClaimIdentity{WorkerID: "fixture", ClaimantID: "fixture", SessionID: "session"}}
+	access := store.VerificationAccess{TaskID: f.o.TaskID, WorkOrderID: f.o.ID, WorkOrderAttemptID: f.o.AttemptID, ClientToken: "token", Claim: core.WorkOrderClaimIdentity{ClaimantID: core.TaskRunClaimantID("fixture"), SessionID: "session"}}
 	vc = storetest.SealEmptyVerificationFixture(t, f.ctx, f.b, access, vc, "AC-1.1")
 	raw = core.JSONPayload(VerificationContextRequest{ContextID: vc.ID})
 	job := core.Job{ID: f.o.TaskID + "-review-1", TaskID: f.o.TaskID, Stage: core.StageReview, State: core.JobPending}
@@ -179,11 +179,11 @@ func TestVerificationMemberAndSealedReviewReads(t *testing.T) {
 	if err = storetest.CreateReviewRound(f.ctx, f.b, f.o.TaskID, []core.Job{job}, []core.WorkOrder{review}); err != nil {
 		t.Fatal(err)
 	}
-	review, err = storetest.ClaimWorkOrder(f.ctx, f.b, review.ID, core.WorkOrderClaim{WorkerID: "reviewer", ClaimantID: "reviewer", SessionID: "review-session", ClientToken: "review-token", Lease: time.Hour, ExecutionTimeout: time.Hour})
+	review, err = storetest.ClaimWorkOrder(f.ctx, f.b, review.ID, core.WorkOrderClaim{ClaimantID: core.TaskRunClaimantID("reviewer"), SessionID: "review-session", ClientToken: "review-token", Lease: time.Hour, ExecutionTimeout: time.Hour})
 	if err != nil {
 		t.Fatal(err)
 	}
-	reviewctx := store.WithActor(f.ctx, store.Actor{ID: "worker:reviewer", Role: core.ActorWorker})
+	reviewctx := store.WithActor(f.ctx, store.Actor{ID: store.UserActorID("reviewer"), Role: core.ActorUser})
 	for _, name := range []string{"get_verification_context", "get_verification_publication"} {
 		if _, err = f.s.Verification(reviewctx, review.ID, "review-session", "review-token", name, raw); err != nil {
 			t.Fatalf("sealed review %s: %v", name, err)

@@ -29,10 +29,9 @@ from the role bundles, not from a list of tool names, so a tool added under a
 higher capability is refused for agents automatically. That refuses
 `add_task_dependency` and `attach_task_branch` (`operate_gates`), `set_assignee`
 (`set_assignee`), and `redispatch_work_order` (`recover_work`) with
-`<tool> requires an operator-scoped user credential`. Two separate rules refuse
+`<tool> requires an operator-scoped user credential`. A separate rule refuses
 agents the same way: the operator investigation tools below admit user
-credentials only, and `report_continuation` belongs to the launching client
-(`conveyor run` or a worker). `create_task` is the one maintainer act an agent
+credentials only. `create_task` is the one maintainer act an agent
 credential may perform, under the rules in its row below (DEC-60).
 
 The agent-facing discipline for using these tools well is the
@@ -382,9 +381,8 @@ fire-and-forget. The server records nothing from the flag.
 
 | Tool | What it does |
 |---|---|
-| `report_usage` | Cumulative self-reported tokens and optional provider rate-limit status. Observational only; missing usage never blocks lifecycle progress. |
+| `report_usage` | Cumulative self-reported tokens and optional provider rate-limit status, stored with the usage record on the order. Observational only; missing usage never blocks lifecycle progress. `source` admits only `self_reported`; `worker_fallback` is refused. |
 | `upload_transcript` | Optional self-reported session transcript, capped at 4 MiB, passed through redaction, and stored as an audit artifact. |
-| `report_continuation` | Advisory harness-native continuation metadata for the active attempt, enabling resume after checkpoint or plan-revision releases. Requires `claim_work`; the launching client's user or worker credential only, never the agent session it launched. |
 
 ## Filing and operating
 

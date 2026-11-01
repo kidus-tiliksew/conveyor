@@ -59,12 +59,12 @@ func verificationHTTPFixtureWith(t *testing.T, governance *core.GovernanceSnapsh
 	if _, err := storetest.CreateStageWorkOrder(ctx, b, job, o); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := storetest.ClaimWorkOrder(ctx, b, o.ID, core.WorkOrderClaim{Requirements: []core.ServedRequirementContext{{ID: "req-fixture", Version: 1, Statements: []core.RequirementStatement{{ID: "REQ-1", Statement: "Observe"}}}}, Governance: governance, WorkerID: "fixture", ClaimantID: "fixture", SessionID: "session", ClientToken: "token", Lease: time.Hour, ExecutionTimeout: time.Hour}); err != nil {
+	if _, err := storetest.ClaimWorkOrder(ctx, b, o.ID, core.WorkOrderClaim{Requirements: []core.ServedRequirementContext{{ID: "req-fixture", Version: 1, Statements: []core.RequirementStatement{{ID: "REQ-1", Statement: "Observe"}}}}, Governance: governance, ClaimantID: core.TaskRunClaimantID("fixture"), SessionID: "session", ClientToken: "token", Lease: time.Hour, ExecutionTimeout: time.Hour}); err != nil {
 		t.Fatal(err)
 	}
-	ctx = store.WithActor(ctx, store.Actor{ID: "worker:fixture", Role: core.ActorWorker})
-	ctx = withWorkerActor(ctx, core.Worker{ID: "fixture", Workspace: "demo"})
+	ctx = withCredentialActor(ctx, core.AuthenticatedCredential{ID: "pat-fixture", OwnerUserID: "fixture", Kind: core.CredentialUser, Scope: core.CredentialScopeUser})
 	s := NewServer(b)
+	s.Workspace = "demo"
 	s.WorkOrders = &workorder.Service{Store: b, ConfigProvider: func(context.Context) (*config.Config, error) { return cfg, nil }}
 	return s, ctx, o.ID
 }
@@ -249,18 +249,17 @@ func TestVerificationSealedReviewSurfaceReads(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	access := store.VerificationAccess{TaskID: order.TaskID, WorkOrderID: id, WorkOrderAttemptID: order.AttemptID, ClientToken: "token", Claim: core.WorkOrderClaimIdentity{WorkerID: "fixture", ClaimantID: "fixture", SessionID: "session"}}
+	access := store.VerificationAccess{TaskID: order.TaskID, WorkOrderID: id, WorkOrderAttemptID: order.AttemptID, ClientToken: "token", Claim: core.WorkOrderClaimIdentity{ClaimantID: core.TaskRunClaimantID("fixture"), SessionID: "session"}}
 	sealed.Contexts[0] = storetest.SealEmptyVerificationFixture(t, ctx, s.Store.(store.VerificationStore), access, sealed.Contexts[0], "REQ-1")
 	job := core.Job{ID: order.TaskID + "-review-1", TaskID: order.TaskID, Stage: core.StageReview, State: core.JobPending}
 	review := core.WorkOrder{ID: job.ID, JobID: job.ID, TaskID: order.TaskID, Stage: core.StageReview, ReviewRound: 1, ReviewSeat: 1, HeadSHA: order.HeadSHA, State: core.WorkOrderQueued, CreatedAt: time.Now().UTC()}
 	if err = storetest.CreateReviewRound(ctx, s.Store, order.TaskID, []core.Job{job}, []core.WorkOrder{review}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err = storetest.ClaimWorkOrder(ctx, s.Store, review.ID, core.WorkOrderClaim{WorkerID: "reviewer", ClaimantID: "reviewer", SessionID: "review-session", ClientToken: "review-token", Lease: time.Hour, ExecutionTimeout: time.Hour}); err != nil {
+	if _, err = storetest.ClaimWorkOrder(ctx, s.Store, review.ID, core.WorkOrderClaim{ClaimantID: core.TaskRunClaimantID("reviewer"), SessionID: "review-session", ClientToken: "review-token", Lease: time.Hour, ExecutionTimeout: time.Hour}); err != nil {
 		t.Fatal(err)
 	}
-	ctx = store.WithActor(ctx, store.Actor{ID: "worker:reviewer", Role: core.ActorWorker})
-	ctx = withWorkerActor(ctx, core.Worker{ID: "reviewer", Workspace: "demo"})
+	ctx = withCredentialActor(ctx, core.AuthenticatedCredential{ID: "pat-reviewer", OwnerUserID: "reviewer", Kind: core.CredentialUser, Scope: core.CredentialScopeUser})
 	request = request.WithContext(ctx)
 	for _, vc := range []store.VerificationContext{sealed.Contexts[0], unsealed.Contexts[0]} {
 		for _, name := range []string{"get_verification_context", "get_verification_publication"} {
@@ -362,7 +361,7 @@ func TestVerificationNoKitSubmissionSurface(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	access := store.VerificationAccess{TaskID: order.TaskID, WorkOrderID: id, WorkOrderAttemptID: order.AttemptID, ClientToken: "token", Claim: core.WorkOrderClaimIdentity{WorkerID: "fixture", ClaimantID: "fixture", SessionID: "session"}}
+	access := store.VerificationAccess{TaskID: order.TaskID, WorkOrderID: id, WorkOrderAttemptID: order.AttemptID, ClientToken: "token", Claim: core.WorkOrderClaimIdentity{ClaimantID: core.TaskRunClaimantID("fixture"), SessionID: "session"}}
 	vc := store.VerificationContext{Revisions: []core.VerificationRevision{{Repository: "repo", RemoteIdentity: "https://github.com/org/repo", SHA: order.HeadSHA}}, GoverningPins: []core.VerificationPin{{Kind: "requirement", DocumentID: "req-fixture", Version: 1}}, Discovery: []json.RawMessage{core.JSONPayload(map[string]any{"repository": "repo", "revision": order.HeadSHA, "state": "no_manifest"})}}
 	selected := &store.VerificationSelection{Receipt: verification.SelectionReceipt{SchemaVersion: 1, Stage: "verify", ContextPins: []verification.Pin{{Kind: "requirement", DocumentID: "req-fixture", Version: 1}}, Kits: []verification.KitReceipt{}}, Subjects: []store.VerificationSubjectContract{}}
 	created, err := s.Store.(store.VerificationStore).ApplyVerification(ctx, store.VerificationCommand{Kind: store.VerificationCreateContext, Key: "no-kit-surface", Access: access, Context: &vc, Selection: selected})
@@ -443,7 +442,7 @@ func TestVerificationCheckpointRemedyAndMissingGrant(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	access := store.VerificationAccess{TaskID: order.TaskID, WorkOrderID: id, WorkOrderAttemptID: order.AttemptID, ClientToken: "token", Claim: core.WorkOrderClaimIdentity{WorkerID: "fixture", ClaimantID: "fixture", SessionID: "session"}}
+	access := store.VerificationAccess{TaskID: order.TaskID, WorkOrderID: id, WorkOrderAttemptID: order.AttemptID, ClientToken: "token", Claim: core.WorkOrderClaimIdentity{ClaimantID: core.TaskRunClaimantID("fixture"), SessionID: "session"}}
 	vc := store.VerificationContext{Revisions: []core.VerificationRevision{{Repository: "repo", RemoteIdentity: "https://github.com/org/repo", SHA: order.HeadSHA}}, GoverningPins: []core.VerificationPin{{Kind: "requirement", DocumentID: "req-fixture", Version: 1}}, Discovery: []json.RawMessage{core.JSONPayload(map[string]any{"repository": "repo", "revision": order.HeadSHA, "state": "no_manifest"})}}
 	selected := &store.VerificationSelection{Receipt: verification.SelectionReceipt{SchemaVersion: 1, Stage: "verify", ContextPins: []verification.Pin{{Kind: "requirement", DocumentID: "req-fixture", Version: 1}}, Kits: []verification.KitReceipt{}}, Subjects: []store.VerificationSubjectContract{}}
 	created, err := s.Store.(store.VerificationStore).ApplyVerification(ctx, store.VerificationCommand{Kind: store.VerificationCreateContext, Key: "checkpoint-surface", Access: access, Context: &vc, Selection: selected})
@@ -577,7 +576,7 @@ func newNoEligibleKitFixture(t *testing.T) *noEligibleKitFixture {
 }
 
 func (f *noEligibleKitFixture) access() store.VerificationAccess {
-	return store.VerificationAccess{TaskID: f.order.TaskID, WorkOrderID: f.id, WorkOrderAttemptID: f.order.AttemptID, ClientToken: "token", Claim: core.WorkOrderClaimIdentity{WorkerID: "fixture", ClaimantID: "fixture", SessionID: "session"}}
+	return store.VerificationAccess{TaskID: f.order.TaskID, WorkOrderID: f.id, WorkOrderAttemptID: f.order.AttemptID, ClientToken: "token", Claim: core.WorkOrderClaimIdentity{ClaimantID: core.TaskRunClaimantID("fixture"), SessionID: "session"}}
 }
 
 // context records discovery as the service would after GitHub App discovery.
@@ -762,7 +761,7 @@ func TestVerificationNoEligibleKitOutcomes(t *testing.T) {
 			f.refused("submit_verification", workorder.VerificationSubmitRequest{ContextID: contextID, Outcome: "succeeded", Coverage: coverage}, store.VerificationCodeAttemptRunning, "context_id", http.StatusConflict)
 			at := time.Now().UTC().Format(time.RFC3339Nano)
 			zero, no := 0, false
-			report := core.VerificationEvidence{ID: "report", Type: "execution_report", SchemaVersion: 1, SubmissionKey: "evidence", CapturedAt: at, ReceivedAt: at, SubmittedBy: "worker:fixture", CapturedBy: core.VerificationCaptureActor{Identity: "fixture", Kind: "tool", Version: "1", Attribution: "self_reported"}, WorkspaceID: "demo", TaskID: f.order.TaskID, WorkOrderID: f.id, WorkOrderAttemptID: f.order.AttemptID, ContextID: contextID, RunID: run, Subject: subject, Revisions: vc.Revisions, GoverningPins: vc.GoverningPins, SafeInputs: map[string]json.RawMessage{}, Environment: core.VerificationEnvironment{Target: "fixture", OS: "unknown", Architecture: "unknown", Runtime: "unknown", Deployment: "unknown"}}
+			report := core.VerificationEvidence{ID: "report", Type: "execution_report", SchemaVersion: 1, SubmissionKey: "evidence", CapturedAt: at, ReceivedAt: at, SubmittedBy: "user:fixture", CapturedBy: core.VerificationCaptureActor{Identity: "fixture", Kind: "tool", Version: "1", Attribution: "self_reported"}, WorkspaceID: "demo", TaskID: f.order.TaskID, WorkOrderID: f.id, WorkOrderAttemptID: f.order.AttemptID, ContextID: contextID, RunID: run, Subject: subject, Revisions: vc.Revisions, GoverningPins: vc.GoverningPins, SafeInputs: map[string]json.RawMessage{}, Environment: core.VerificationEnvironment{Target: "fixture", OS: "unknown", Architecture: "unknown", Runtime: "unknown", Deployment: "unknown"}}
 			report.Payload = core.JSONPayload(core.ExecutionReportPayload{Argv: []string{"check"}, Tool: "check", ToolVersion: "1", Runtime: "fixture", StartedAt: at, EndedAt: at, ExitCode: &zero, TimedOut: &no, Cancelled: &no, StdoutSHA256: strings.Repeat("a", 64), StderrSHA256: strings.Repeat("b", 64), StdoutTruncated: &no, StderrTruncated: &no})
 			if _, err, _ = f.call("submit_verification_evidence", workorder.VerificationEvidenceRequest{ContextID: contextID, RunID: run, SubmissionKey: "evidence", Evidence: []json.RawMessage{core.JSONPayload(report)}}, false); err != nil {
 				t.Fatal(err)
@@ -1084,11 +1083,11 @@ func (f *noEligibleKitFixture) foreignContext() string {
 	if _, err := storetest.CreateStageWorkOrder(admin, b, job, o); err != nil {
 		f.t.Fatal(err)
 	}
-	o, err := storetest.ClaimWorkOrder(admin, b, o.ID, core.WorkOrderClaim{Requirements: []core.ServedRequirementContext{{ID: "req-fixture", Version: 1, Statements: []core.RequirementStatement{{ID: "REQ-1", Statement: "Observe"}}}}, WorkerID: "fixture", ClaimantID: "fixture", SessionID: "foreign-session", ClientToken: "foreign-token", Lease: time.Hour, ExecutionTimeout: time.Hour})
+	o, err := storetest.ClaimWorkOrder(admin, b, o.ID, core.WorkOrderClaim{Requirements: []core.ServedRequirementContext{{ID: "req-fixture", Version: 1, Statements: []core.RequirementStatement{{ID: "REQ-1", Statement: "Observe"}}}}, ClaimantID: core.TaskRunClaimantID("fixture"), SessionID: "foreign-session", ClientToken: "foreign-token", Lease: time.Hour, ExecutionTimeout: time.Hour})
 	if err != nil {
 		f.t.Fatal(err)
 	}
-	access := store.VerificationAccess{TaskID: task.ID, WorkOrderID: o.ID, WorkOrderAttemptID: o.AttemptID, ClientToken: "foreign-token", Claim: core.WorkOrderClaimIdentity{WorkerID: "fixture", ClaimantID: "fixture", SessionID: "foreign-session"}}
+	access := store.VerificationAccess{TaskID: task.ID, WorkOrderID: o.ID, WorkOrderAttemptID: o.AttemptID, ClientToken: "foreign-token", Claim: core.WorkOrderClaimIdentity{ClaimantID: core.TaskRunClaimantID("fixture"), SessionID: "foreign-session"}}
 	vc := store.VerificationContext{Revisions: []core.VerificationRevision{{Repository: "repo", RemoteIdentity: "https://github.com/org/repo", SHA: o.HeadSHA}}, GoverningPins: []core.VerificationPin{{Kind: "requirement", DocumentID: "req-fixture", Version: 1}}, Discovery: []json.RawMessage{core.JSONPayload(map[string]any{"repository": "repo", "revision": o.HeadSHA, "state": "no_manifest"})}}
 	created, err := f.s.Store.(store.VerificationStore).ApplyVerification(f.ctx, store.VerificationCommand{Kind: store.VerificationCreateContext, Key: "foreign", Access: access, Context: &vc})
 	if err != nil {
@@ -1114,7 +1113,7 @@ func reviewClaimFixture(t *testing.T) (*Server, *http.Request, core.WorkOrder, s
 	if err != nil {
 		t.Fatal(err)
 	}
-	access := store.VerificationAccess{TaskID: order.TaskID, WorkOrderID: id, WorkOrderAttemptID: order.AttemptID, ClientToken: "token", Claim: core.WorkOrderClaimIdentity{WorkerID: "fixture", ClaimantID: "fixture", SessionID: "session"}}
+	access := store.VerificationAccess{TaskID: order.TaskID, WorkOrderID: id, WorkOrderAttemptID: order.AttemptID, ClientToken: "token", Claim: core.WorkOrderClaimIdentity{ClaimantID: core.TaskRunClaimantID("fixture"), SessionID: "session"}}
 	sealed := storetest.SealEmptyVerificationFixture(t, ctx, s.Store.(store.VerificationStore), access, result.(store.VerificationSnapshot).Contexts[0], "REQ-1")
 	request, review := claimReviewSeat(t, s, ctx, order, &core.GovernanceSnapshot{})
 	return s, request, review, sealed.ID, result.(store.VerificationSnapshot).Contexts[0].ID
@@ -1136,12 +1135,11 @@ func claimReviewSeat(t *testing.T, s *Server, ctx context.Context, order core.Wo
 		t.Fatal(err)
 	}
 	served := []core.ServedRequirementContext{{ID: "req-fixture", Version: 1, Statements: []core.RequirementStatement{{ID: "REQ-1", Statement: "Observe", AcceptanceCriteria: []core.AcceptanceCriterion{{ID: "AC-1.1", Statement: "Retain the observation"}}}}}}
-	review, err := storetest.ClaimWorkOrder(ctx, s.Store, review.ID, core.WorkOrderClaim{Requirements: served, Governance: governance, WorkerID: "reviewer", ClaimantID: "reviewer", SessionID: "review-session", ClientToken: "review-token", Lease: time.Hour, ExecutionTimeout: time.Hour})
+	review, err := storetest.ClaimWorkOrder(ctx, s.Store, review.ID, core.WorkOrderClaim{Requirements: served, Governance: governance, ClaimantID: core.TaskRunClaimantID("reviewer"), SessionID: "review-session", ClientToken: "review-token", Lease: time.Hour, ExecutionTimeout: time.Hour})
 	if err != nil {
 		t.Fatal(err)
 	}
-	ctx = store.WithActor(ctx, store.Actor{ID: "worker:reviewer", Role: core.ActorWorker})
-	ctx = withWorkerActor(ctx, core.Worker{ID: "reviewer", Workspace: "demo"})
+	ctx = withCredentialActor(ctx, core.AuthenticatedCredential{ID: "pat-reviewer", OwnerUserID: "reviewer", Kind: core.CredentialUser, Scope: core.CredentialScopeUser})
 	bundle, err := pack.Load("../../pack")
 	if err != nil {
 		t.Fatal(err)
@@ -1357,7 +1355,7 @@ func attemptedReviewClaimFixtureSeatDesign(t *testing.T, seatDesignVersion int) 
 		}
 		return out
 	}
-	access := store.VerificationAccess{TaskID: order.TaskID, WorkOrderID: id, WorkOrderAttemptID: order.AttemptID, ClientToken: "token", Claim: core.WorkOrderClaimIdentity{WorkerID: "fixture", ClaimantID: "fixture", SessionID: "session"}}
+	access := store.VerificationAccess{TaskID: order.TaskID, WorkOrderID: id, WorkOrderAttemptID: order.AttemptID, ClientToken: "token", Claim: core.WorkOrderClaimIdentity{ClaimantID: core.TaskRunClaimantID("fixture"), SessionID: "session"}}
 	pins := []core.VerificationPin{{Kind: "requirement", DocumentID: "req-fixture", Version: 1}, {Kind: "system_design", DocumentID: design.ID, Version: design.Version}}
 	vc := store.VerificationContext{Revisions: []core.VerificationRevision{{Repository: "repo", RemoteIdentity: "https://github.com/org/repo", SHA: order.HeadSHA}}, GoverningPins: pins, Discovery: []json.RawMessage{core.JSONPayload(map[string]any{"repository": "repo", "revision": order.HeadSHA, "state": "no_manifest"})}}
 	selection := &store.VerificationSelection{Receipt: verification.SelectionReceipt{SchemaVersion: 1, Stage: "verify", ContextPins: []verification.Pin{{Kind: "requirement", DocumentID: "req-fixture", Version: 1}, {Kind: "system_design", DocumentID: design.ID, Version: design.Version}}, Kits: []verification.KitReceipt{}}, Subjects: []store.VerificationSubjectContract{}}
@@ -1382,7 +1380,7 @@ func attemptedReviewClaimFixtureSeatDesign(t *testing.T, seatDesignVersion int) 
 	run := call("start_verification_attempt", workorder.VerificationStartRequest{ContextID: contextID, StartKey: "observe-1", GrantID: grantID, Subject: subject, EffectiveActions: []core.VerificationPermission{}, Environment: environment, EffectivePermissions: []verification.Permission{}, SafeInputs: map[string]json.RawMessage{}, Coverage: coverage}).(store.VerificationReceipt).ID
 	at := time.Now().UTC().Format(time.RFC3339Nano)
 	zero, no := 0, false
-	report := core.VerificationEvidence{ID: "observe-report", Type: "execution_report", SchemaVersion: 1, SubmissionKey: "evidence", CapturedAt: at, ReceivedAt: at, SubmittedBy: "worker:fixture", CapturedBy: core.VerificationCaptureActor{Identity: "fixture", Kind: "tool", Version: "1", Attribution: "self_reported"}, WorkspaceID: "demo", TaskID: order.TaskID, WorkOrderID: id, WorkOrderAttemptID: order.AttemptID, ContextID: contextID, RunID: run, Subject: subject, Revisions: vc.Revisions, GoverningPins: pins, SafeInputs: map[string]json.RawMessage{}, Environment: environment}
+	report := core.VerificationEvidence{ID: "observe-report", Type: "execution_report", SchemaVersion: 1, SubmissionKey: "evidence", CapturedAt: at, ReceivedAt: at, SubmittedBy: "user:fixture", CapturedBy: core.VerificationCaptureActor{Identity: "fixture", Kind: "tool", Version: "1", Attribution: "self_reported"}, WorkspaceID: "demo", TaskID: order.TaskID, WorkOrderID: id, WorkOrderAttemptID: order.AttemptID, ContextID: contextID, RunID: run, Subject: subject, Revisions: vc.Revisions, GoverningPins: pins, SafeInputs: map[string]json.RawMessage{}, Environment: environment}
 	report.Payload = core.JSONPayload(core.ExecutionReportPayload{Argv: []string{"check"}, Tool: "check", ToolVersion: "1", Runtime: "fixture", StartedAt: at, EndedAt: at, ExitCode: &zero, TimedOut: &no, Cancelled: &no, StdoutSHA256: strings.Repeat("a", 64), StderrSHA256: strings.Repeat("b", 64), StdoutTruncated: &no, StderrTruncated: &no})
 	call("submit_verification_evidence", workorder.VerificationEvidenceRequest{ContextID: contextID, RunID: run, SubmissionKey: "evidence", Evidence: []json.RawMessage{core.JSONPayload(report)}})
 	call("report_verification_outcome", workorder.VerificationOutcomeRequest{ContextID: contextID, RunID: run, State: "succeeded", ExitCode: &zero})
@@ -1610,20 +1608,18 @@ func TestVerificationLateRequirementReachesRecoveredVerifyOrder(t *testing.T) {
 	if _, err = storetest.CreateStageWorkOrder(ctx, b, job, core.WorkOrder{ID: job.ID, JobID: job.ID, TaskID: task.ID, Stage: core.StageVerify, State: core.WorkOrderQueued, HeadSHA: head, CreatedAt: task.CreatedAt}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err = storetest.EnsureWorkerEnrollment(ctx, b, "fixture"); err != nil {
-		t.Fatal(err)
-	}
 	bundle, err := pack.Load("")
 	if err != nil {
 		t.Fatal(err)
 	}
 	service := &workorder.Service{Store: b, Pack: bundle, ConfigProvider: func(context.Context) (*config.Config, error) { return cfg, nil }, GitHubApps: github.NewAppClient(forge.server.Client(), forge.server.URL), WorkspaceGitHubApps: b}
 	s := NewServer(b)
+	s.Workspace = "demo"
 	s.WorkOrders = service
-	workerCtx := withWorkerActor(store.WithActor(ctx, store.Actor{ID: "worker:fixture", Role: core.ActorWorker}), core.Worker{ID: "fixture", Workspace: "demo"})
+	workerCtx := store.WithActor(ctx, store.Actor{ID: store.UserActorID("fixture"), Role: core.ActorUser})
 	claim := func(session string) core.WorkOrder {
 		t.Helper()
-		order, claimErr := service.Claim(workerCtx, job.ID, core.WorkOrderClaim{WorkerID: "fixture", ClaimantID: "fixture", SessionID: session, ClientToken: session + "-token", Lease: time.Hour})
+		order, claimErr := service.Claim(workerCtx, job.ID, core.WorkOrderClaim{ClaimantID: core.TaskRunClaimantID("fixture"), SessionID: session, ClientToken: session + "-token", Lease: time.Hour})
 		if claimErr != nil {
 			t.Fatal(claimErr)
 		}

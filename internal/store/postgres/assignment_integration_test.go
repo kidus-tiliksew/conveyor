@@ -1,15 +1,16 @@
 package postgres
 
 import (
+	"strings"
+	"testing"
+	"time"
+
 	"github.com/kidus-tiliksew/conveyor/internal/config"
 	"github.com/kidus-tiliksew/conveyor/internal/core"
 	"github.com/kidus-tiliksew/conveyor/internal/store"
 	"github.com/kidus-tiliksew/conveyor/internal/store/postgres/db"
 	"github.com/kidus-tiliksew/conveyor/internal/store/storetest"
 	"github.com/kidus-tiliksew/conveyor/internal/taskops"
-	"strings"
-	"testing"
-	"time"
 )
 
 func TestTaskAssignmentClaimEligibilityIntegration(t *testing.T) {
@@ -44,22 +45,6 @@ func TestTaskAssignmentClaimEligibilityIntegration(t *testing.T) {
 		t.Fatal(err)
 	}
 	now := time.Now().UTC()
-	pairing := core.WorkerPairing{TokenHash: "pair-" + core.NewTaskID(), Workspace: workspace, OwnerUserID: member.ID, ExpiresAt: now.Add(time.Minute), CreatedAt: now}
-	if err = st.CreateWorkerPairing(ctx, pairing); err != nil {
-		t.Fatal(err)
-	}
-	consumed, err := st.ConsumeWorkerPairing(ctx, pairing.TokenHash, now)
-	if err != nil || consumed.OwnerUserID != member.ID {
-		t.Fatalf("consumed pairing owner=%q err=%v", consumed.OwnerUserID, err)
-	}
-	worker := core.Worker{ID: "worker-" + core.NewTaskID(), Workspace: workspace, OwnerUserID: consumed.OwnerUserID, Name: "owned-worker", CredentialHash: "worker-hash-" + core.NewTaskID(), CreatedAt: now}
-	if err = st.CreateWorker(ctx, worker); err != nil {
-		t.Fatal(err)
-	}
-	authenticated, err := st.AuthenticateWorker(ctx, worker.CredentialHash)
-	if err != nil || authenticated.OwnerUserID != member.ID {
-		t.Fatalf("authenticated worker owner=%q err=%v", authenticated.OwnerUserID, err)
-	}
 	task := core.Task{ID: "task-" + core.NewTaskID(), Workspace: workspace, Repo: "conveyor", BaseBranch: "main", Branch: "conveyor/assignment", State: core.TaskRunning, CreatedAt: now}
 	if err = st.CreateTask(ctx, task); err != nil {
 		t.Fatal(err)

@@ -9,19 +9,17 @@ import (
 	"github.com/kidus-tiliksew/conveyor/internal/core"
 )
 
-func TestWorkOrderOwnerUserIDUsesAuthenticatedRunOrDurableWorkerOwner(t *testing.T) {
+func TestWorkOrderOwnerUserIDUsesAuthenticatedRunOwnerOnly(t *testing.T) {
 	ctx := WithWorkspace(WithActor(t.Context(), SystemActor()), "test")
 	st := NewMemory()
 	runOwner, err := WorkOrderOwnerUserID(ctx, st, core.WorkOrder{ID: "run-order", ClaimantID: core.TaskRunClaimantID("usr-run")})
 	if err != nil || runOwner != "usr-run" {
 		t.Fatalf("run owner=%q err=%v", runOwner, err)
 	}
-	if err = st.CreateWorker(ctx, core.Worker{ID: "worker-1", Workspace: "test", OwnerUserID: "usr-worker", Name: "worker", CredentialHash: "hash", CreatedAt: time.Now().UTC()}); err != nil {
-		t.Fatal(err)
-	}
-	workerOwner, err := WorkOrderOwnerUserID(ctx, st, core.WorkOrder{ID: "worker-order", WorkerID: "worker-1", ClaimantID: "spoofed"})
-	if err != nil || workerOwner != "usr-worker" {
-		t.Fatalf("worker owner=%q err=%v", workerOwner, err)
+	// An order a retired worker claimed keeps its worker ID but resolves no
+	// owner, and a spoofed claimant never stands in for one (DEC-97(1)).
+	if workerOwner, err := WorkOrderOwnerUserID(ctx, st, core.WorkOrder{ID: "worker-order", WorkerID: "worker-1", ClaimantID: core.TaskRunClaimantID("usr-spoofed")}); err == nil || workerOwner != "" {
+		t.Fatalf("retired worker owner=%q err=%v", workerOwner, err)
 	}
 }
 
@@ -70,7 +68,6 @@ func TestActorFromContextRequiresExplicitActor(t *testing.T) {
 	for _, actor := range []Actor{
 		{ID: UserActorID("usr-1"), Role: core.ActorUser},
 		{ID: AgentActorID("agent-1"), Role: core.ActorAgent},
-		{ID: WorkerActorID("worker-1"), Role: core.ActorWorker},
 		SystemActor(),
 		SystemActor("dispatcher"),
 	} {
@@ -84,5 +81,37 @@ func TestActorFromContextRequiresExplicitActor(t *testing.T) {
 	}
 	if got := SystemActor(); got.ID != core.SystemActorID || got.Role != core.ActorSystem {
 		t.Fatalf("store.SystemActor = %+v", got)
+	}
+}
+
+// TestRequireActorRefusesRetiredWorkerRole proves no new write can carry a
+// worker actor, while the context still reads it back (DEC-97(4);
+// component-persistence, Actor context).
+func TestRequireActorRefusesRetiredWorkerRole(t *testing.T) {
+	worker := Actor{ID: WorkerActorID("worker-1"), Role: core.ActorWorker}
+	ctx := WithActor(WithWorkspace(t.Context(), "test"), worker)
+	if got := ActorFromContext(ctx); got != worker {
+		t.Fatalf("ActorFromContext = %+v, want %+v", got, worker)
+	}
+	if got, err := RequireActor(ctx); !errors.Is(err, ErrRetiredWorkerActor) || got != (Actor{}) {
+		t.Fatalf("RequireActor = %+v, %v; want the retired-worker refusal", got, err)
+	}
+	st := NewVolatileBackend()
+	systemCtx := WithWorkspace(WithActor(t.Context(), SystemActor()), "test")
+	task := core.Task{ID: "retired-worker-actor", Workspace: "test", Title: "actor", State: core.TaskQueued, CreatedAt: time.Now().UTC()}
+	if err := st.CreateTask(systemCtx, task); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.AppendEvent(ctx, core.Event{TaskID: task.ID, Kind: "test.event"}); !errors.Is(err, ErrRetiredWorkerActor) {
+		t.Fatalf("AppendEvent by a worker actor err=%v", err)
+	}
+	events, err := st.ListEvents(systemCtx, task.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, event := range events {
+		if event.ActorRole == core.ActorWorker {
+			t.Fatalf("a worker-actor event was recorded: %+v", event)
+		}
 	}
 }

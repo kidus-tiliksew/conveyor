@@ -234,7 +234,7 @@ func runAgentQuestionCheckpoint(t *testing.T, st store.Store, ctx context.Contex
 		requireOK(t, st.CreateJob(ctx, core.Job{ID: orderID, TaskID: taskID, Stage: core.StageImplement, State: core.JobPending}))
 		requireOK(t, CreateWorkOrder(ctx, st, core.WorkOrder{ID: orderID, TaskID: taskID, JobID: orderID, Stage: core.StageImplement, State: core.WorkOrderQueued, QueueEnteredAt: now, QueueDeadline: now.Add(time.Hour)}))
 		worker, session := "worker-question-"+taskID, "session-question-"+taskID
-		_, err := ClaimWorkOrder(ctx, st, orderID, core.WorkOrderClaim{WorkerID: worker, ClaimantID: worker, SessionID: session, ClientToken: "secret", Lease: time.Minute, ExecutionTimeout: time.Hour})
+		_, err := ClaimWorkOrder(ctx, st, orderID, core.WorkOrderClaim{ClaimantID: worker, SessionID: session, ClientToken: "secret", Lease: time.Minute, ExecutionTimeout: time.Hour})
 		requireOK(t, err)
 		_, err = ReleaseWorkerClaim(ctx, st, orderID, worker, core.WorkOrderRelease{
 			SessionID: session, Reason: core.WorkOrderReleaseReasonOperatorCheckpointReached, Cause: core.WorkOrderReleaseCauseOperatorAction, Outcome: core.WorkOrderOutcomeReleased,
@@ -337,7 +337,7 @@ func runAgentQuestionConfirmedCitations(t *testing.T, st store.Store, ctx contex
 	requireOK(t, st.CreateJob(ctx, core.Job{ID: orderID, TaskID: taskID, Stage: core.StageImplement, State: core.JobPending}))
 	requireOK(t, CreateWorkOrder(ctx, st, core.WorkOrder{ID: orderID, TaskID: taskID, JobID: orderID, Stage: core.StageImplement, State: core.WorkOrderQueued, QueueEnteredAt: now, QueueDeadline: now.Add(time.Hour)}))
 	worker, session := "worker-confirmed-"+taskID, "session-confirmed-"+taskID
-	_, err = ClaimWorkOrder(ctx, st, orderID, core.WorkOrderClaim{WorkerID: worker, ClaimantID: worker, SessionID: session, ClientToken: "secret", Lease: time.Minute, ExecutionTimeout: time.Hour})
+	_, err = ClaimWorkOrder(ctx, st, orderID, core.WorkOrderClaim{ClaimantID: worker, SessionID: session, ClientToken: "secret", Lease: time.Minute, ExecutionTimeout: time.Hour})
 	requireOK(t, err)
 	_, err = ReleaseWorkerClaim(ctx, st, orderID, worker, core.WorkOrderRelease{
 		SessionID: session, Reason: core.WorkOrderReleaseReasonOperatorCheckpointReached, Cause: core.WorkOrderReleaseCauseOperatorAction, Outcome: core.WorkOrderOutcomeReleased,
@@ -633,7 +633,7 @@ func runClaimWaitRow8(t *testing.T, st store.Store, ctx context.Context, workspa
 	requireOK(t, st.CreateJob(ctx, core.Job{ID: orderID, TaskID: conflictTask, Stage: core.StageImplement, State: core.JobPending}))
 	requireOK(t, CreateWorkOrder(ctx, st, core.WorkOrder{ID: orderID, TaskID: conflictTask, JobID: orderID, Stage: core.StageImplement, State: core.WorkOrderQueued, QueueEnteredAt: now, QueueDeadline: now.Add(time.Hour)}))
 	worker, session := "worker-claim-wait-"+conflictTask, "session-claim-wait-"+conflictTask
-	_, err = ClaimWorkOrder(ctx, st, orderID, core.WorkOrderClaim{WorkerID: worker, ClaimantID: worker, SessionID: session, ClientToken: "secret", Lease: time.Minute, ExecutionTimeout: time.Hour})
+	_, err = ClaimWorkOrder(ctx, st, orderID, core.WorkOrderClaim{ClaimantID: worker, SessionID: session, ClientToken: "secret", Lease: time.Minute, ExecutionTimeout: time.Hour})
 	requireOK(t, err)
 	_, err = ReleaseWorkerClaim(ctx, st, orderID, worker, core.WorkOrderRelease{
 		SessionID: session, Reason: core.WorkOrderReleaseReasonOperatorCheckpointReached, Cause: core.WorkOrderReleaseCauseOperatorAction, Outcome: core.WorkOrderOutcomeReleased,

@@ -3,12 +3,11 @@ package postgres
 import (
 	"context"
 	"crypto/sha256"
-	"errors"
 	"fmt"
-	"strings"
 	"time"
 
 	"github.com/jackc/pgx/v5"
+
 	"github.com/kidus-tiliksew/conveyor/internal/core"
 	"github.com/kidus-tiliksew/conveyor/internal/store"
 	"github.com/kidus-tiliksew/conveyor/internal/store/postgres/db"
@@ -97,44 +96,6 @@ func (s *Store) createArtifactTx(ctx context.Context, tx pgx.Tx, artifact core.A
 	}
 	err = tx.QueryRow(ctx, `SELECT name,content_type,size_bytes,created_at FROM artifacts WHERE workspace_id=$1 AND id=$2`, workspace(ctx), artifact.ID).Scan(&artifact.Name, &artifact.ContentType, &artifact.SizeBytes, &artifact.CreatedAt)
 	return artifact, err
-}
-
-func (s *Store) CreateClaimedVerificationEvidence(ctx context.Context, request store.ClaimedVerificationEvidenceRequest, content []byte) (core.Artifact, error) {
-	artifact := core.Artifact{
-		Workspace: workspace(ctx), Name: request.Name, ContentType: request.ContentType,
-		SizeBytes: int64(len(content)), Role: core.ArtifactRoleVerificationEvidence,
-		CreatedAt: time.Now().UTC(),
-	}
-	clientTokenHash := fmt.Sprintf("%x", sha256.Sum256([]byte(request.ClientToken)))
-
-	tx, err := s.begin(ctx)
-	if err != nil {
-		return core.Artifact{}, err
-	}
-	defer tx.Rollback(ctx) //nolint:errcheck
-	if strings.TrimSpace(request.WorkOrderID) == "" || strings.TrimSpace(request.WorkerID) == "" ||
-		strings.TrimSpace(request.SessionID) == "" || strings.TrimSpace(request.ClientToken) == "" {
-		return core.Artifact{}, store.ErrVerificationEvidenceClaimConflict
-	}
-	if err = tx.QueryRow(ctx, `SELECT task_id FROM work_orders
-		WHERE workspace_id=$1 AND id=$2 AND state='claimed' AND stage='implement'
-		AND worker_id=$3 AND session_id=$4 AND client_token_hash=$5
-		AND lease_expires_at>now() AND (execution_deadline IS NULL OR execution_deadline>now())
-		FOR UPDATE`, workspace(ctx), request.WorkOrderID, request.WorkerID, request.SessionID, clientTokenHash).Scan(&artifact.TaskID); err != nil {
-		if errors.Is(err, pgx.ErrNoRows) {
-			return core.Artifact{}, store.ErrVerificationEvidenceClaimConflict
-		}
-		return core.Artifact{}, err
-	}
-	artifact, err = s.createArtifactTx(ctx, tx, artifact, content)
-	if err != nil {
-		return core.Artifact{}, err
-	}
-
-	if err = tx.Commit(ctx); err != nil {
-		return core.Artifact{}, err
-	}
-	return artifact, nil
 }
 
 func (s *Store) GetArtifact(ctx context.Context, id string) (core.Artifact, []byte, error) {

@@ -63,7 +63,7 @@ func TestVerificationPermissionRouteIsOperatorOnly(t *testing.T) {
 		return w.Code
 	}
 	path := "/v1/work-orders/" + id + "/verification/permissions?workspace_id=demo"
-	agent := store.WithActor(store.WithCredential(ctx, core.AuthenticatedCredential{ID: "child", Kind: core.CredentialAgent, OwnerUserID: owner.ID, RunWorkspaceID: "demo", RunWorkOrderID: id, RunSessionID: "session"}), store.Actor{ID: "agent:child", Role: core.ActorAgent})
+	agent := store.WithActor(store.WithCredential(ctx, core.AuthenticatedCredential{ID: "child", Kind: core.CredentialAgent, OwnerUserID: owner.ID}), store.Actor{ID: "agent:child", Role: core.ActorAgent})
 	for _, caller := range []context.Context{worker, agent, user(member.ID)} {
 		if code := serve(caller, path, core.JSONPayload(request)); code < 400 {
 			t.Fatalf("nonoperator created grant: %d", code)

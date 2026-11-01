@@ -47,7 +47,7 @@ func newAutomaticReviewHarness(t *testing.T) *automaticReviewHarness {
 	if err := storetest.CreateReviewRound(ctx, st, h.task.ID, jobs, orders); err != nil {
 		t.Fatal(err)
 	}
-	first, err := storetest.ClaimWorkOrder(ctx, st, orders[0].ID, core.WorkOrderClaim{WorkerID: "worker", ClaimantID: "worker", SessionID: "verdict", ClientToken: "verdict", Lease: time.Hour, ExecutionTimeout: time.Hour})
+	first, err := storetest.ClaimWorkOrder(ctx, st, orders[0].ID, core.WorkOrderClaim{ClaimantID: "worker", SessionID: "verdict", ClientToken: "verdict", Lease: time.Hour, ExecutionTimeout: time.Hour})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -87,7 +87,7 @@ func newAutomaticReviewHarness(t *testing.T) *automaticReviewHarness {
 
 func (h *automaticReviewHarness) expireSeat(t *testing.T, label string) {
 	t.Helper()
-	if _, err := storetest.ClaimWorkOrder(h.ctx, h.st, h.seat, core.WorkOrderClaim{WorkerID: "worker", ClaimantID: "worker", SessionID: label, ClientToken: label, Lease: time.Millisecond, ExecutionTimeout: time.Hour}); err != nil {
+	if _, err := storetest.ClaimWorkOrder(h.ctx, h.st, h.seat, core.WorkOrderClaim{ClaimantID: "worker", SessionID: label, ClientToken: label, Lease: time.Millisecond, ExecutionTimeout: time.Hour}); err != nil {
 		t.Fatal(err)
 	}
 	time.Sleep(5 * time.Millisecond)
@@ -278,7 +278,7 @@ func mustOrders(t *testing.T, h *automaticReviewHarness) []core.WorkOrder {
 // leaves it interrupted and outside the AR-3 clock.
 func (h *automaticReviewHarness) release(t *testing.T, label string) {
 	t.Helper()
-	if _, err := storetest.ClaimWorkOrder(h.ctx, h.st, h.seat, core.WorkOrderClaim{WorkerID: "worker", ClaimantID: "worker", SessionID: label, ClientToken: label, Lease: time.Hour, ExecutionTimeout: time.Hour}); err != nil {
+	if _, err := storetest.ClaimWorkOrder(h.ctx, h.st, h.seat, core.WorkOrderClaim{ClaimantID: "worker", SessionID: label, ClientToken: label, Lease: time.Hour, ExecutionTimeout: time.Hour}); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := storetest.ReleaseWorkerClaim(h.ctx, h.st, h.seat, "worker", core.WorkOrderRelease{SessionID: label, Reason: "operator release", Outcome: core.WorkOrderOutcomeReleased}); err != nil {
@@ -333,7 +333,7 @@ func TestSweepAutomaticReviewRecoveryExclusions(t *testing.T) {
 	})
 	t.Run("Checkpoint", func(t *testing.T) {
 		h := newAutomaticReviewHarness(t)
-		if _, err := storetest.ClaimWorkOrder(h.ctx, h.st, h.seat, core.WorkOrderClaim{WorkerID: "worker", ClaimantID: "worker", SessionID: "checkpoint", ClientToken: "checkpoint", Lease: time.Hour, ExecutionTimeout: time.Hour}); err != nil {
+		if _, err := storetest.ClaimWorkOrder(h.ctx, h.st, h.seat, core.WorkOrderClaim{ClaimantID: "worker", SessionID: "checkpoint", ClientToken: "checkpoint", Lease: time.Hour, ExecutionTimeout: time.Hour}); err != nil {
 			t.Fatal(err)
 		}
 		if _, err := storetest.ReleaseWorkerClaim(h.ctx, h.st, h.seat, "worker", core.WorkOrderRelease{SessionID: "checkpoint", Reason: core.WorkOrderReleaseReasonOperatorCheckpointReached, Outcome: core.WorkOrderOutcomeReleased, Checkpoint: &core.WorkOrderCheckpoint{DecisionRequest: "hold"}}); err != nil {

@@ -74,7 +74,10 @@ func runVerificationChunkExpiry(t *testing.T, x Fixture) {
 			"user":            at(store.WithActor(x.Context, store.Actor{ID: "owner", Role: core.ActorUser}), 25*time.Hour),
 			"reconciler role": at(store.WithActor(x.Context, store.Actor{ID: "verification-reconciler", Role: core.ActorWorker}), 25*time.Hour),
 		} {
-			if _, err := x.Backend.ExpireVerificationChunks(ctx, 100); !errors.Is(err, store.ErrVerificationAccess) {
+			// A worker-role actor is refused before any write because worker
+			// actors are retired (DEC-97(4)); every other actor is refused
+			// by the reconciler-only rule.
+			if _, err := x.Backend.ExpireVerificationChunks(ctx, 100); !errors.Is(err, store.ErrVerificationAccess) && !errors.Is(err, store.ErrRetiredWorkerActor) {
 				t.Fatalf("%s expired chunks: %v", name, err)
 			}
 		}

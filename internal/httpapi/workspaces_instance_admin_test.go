@@ -2,14 +2,11 @@ package httpapi
 
 import (
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
 	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/kidus-tiliksew/conveyor/internal/config"
 	"github.com/kidus-tiliksew/conveyor/internal/core"
@@ -203,15 +200,7 @@ func newInstanceAdminHarness(t *testing.T) *instanceAdminHarness {
 		t.Fatal(err)
 	}
 	h.operatorAgent = operatorAgent.Value
-	for _, worker := range []struct{ id, secret, owner string }{
-		{"worker-owner", "cv_wkr_instance_admin_fixture", owner.ID},
-		{"worker-operator", "cv_wkr_instance_admin_operator", h.users["alpha-operator"].ID},
-	} {
-		sum := sha256.Sum256([]byte(worker.secret))
-		if err := st.CreateWorker(store.WithWorkspace(system, "alpha"), core.Worker{ID: worker.id, Workspace: "alpha", OwnerUserID: worker.owner, Name: worker.id, CredentialHash: hex.EncodeToString(sum[:]), CreatedAt: time.Now()}); err != nil {
-			t.Fatal(err)
-		}
-	}
+	// Former worker secrets match no stored credential (DEC-97(1)).
 	h.worker, h.operatorWorker = "cv_wkr_instance_admin_fixture", "cv_wkr_instance_admin_operator"
 	h.control = &countingWorkspaceControl{WorkspaceControlStore: st}
 	h.provisioner = &countingProvisioner{IdentityProvisioner: st}

@@ -60,7 +60,7 @@ func seedWorkOrder(t *testing.T, ctx context.Context, st store.Store, taskID str
 			t.Fatal(err)
 		}
 	case core.WorkOrderClaimed, core.WorkOrderSubmitted:
-		if _, err := storetest.ClaimWorkOrder(ctx, st, id, core.WorkOrderClaim{ClaimantID: "worker", WorkerID: "worker", SessionID: "session-" + id, ClientToken: "token-" + id, Lease: time.Hour, ExecutionTimeout: time.Hour}); err != nil {
+		if _, err := storetest.ClaimWorkOrder(ctx, st, id, core.WorkOrderClaim{ClaimantID: "worker", SessionID: "session-" + id, ClientToken: "token-" + id, Lease: time.Hour, ExecutionTimeout: time.Hour}); err != nil {
 			t.Fatal(err)
 		}
 		if state == core.WorkOrderSubmitted {

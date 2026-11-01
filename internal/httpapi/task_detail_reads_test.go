@@ -28,7 +28,6 @@ import (
 	"github.com/kidus-tiliksew/conveyor/internal/store"
 	"github.com/kidus-tiliksew/conveyor/internal/store/storetest"
 	"github.com/kidus-tiliksew/conveyor/internal/taskops"
-	workerservice "github.com/kidus-tiliksew/conveyor/internal/worker"
 )
 
 // taskDetailCountingStore counts every store.Store method a request calls,
@@ -154,11 +153,6 @@ func (c *taskDetailCountingStore) AttachTaskBranch(a0 context.Context, a1 string
 	return c.Store.AttachTaskBranch(a0, a1, a2)
 }
 
-func (c *taskDetailCountingStore) AuthenticateWorker(a0 context.Context, a1 string) (core.Worker, error) {
-	c.count("AuthenticateWorker")
-	return c.Store.AuthenticateWorker(a0, a1)
-}
-
 func (c *taskDetailCountingStore) AutomaticPublicationRetryCommand(a0 context.Context, a1 taskops.TaskLease, a2 store.AutomaticPublicationRetry, a3 time.Time) (bool, error) {
 	c.count("AutomaticPublicationRetryCommand")
 	return c.Store.AutomaticPublicationRetryCommand(a0, a1, a2, a3)
@@ -219,11 +213,6 @@ func (c *taskDetailCountingStore) ConfirmTaskContextProposal(a0 context.Context,
 	return c.Store.ConfirmTaskContextProposal(a0, a1, a2, a3)
 }
 
-func (c *taskDetailCountingStore) ConsumeWorkerPairing(a0 context.Context, a1 string, a2 time.Time) (core.WorkerPairing, error) {
-	c.count("ConsumeWorkerPairing")
-	return c.Store.ConsumeWorkerPairing(a0, a1, a2)
-}
-
 func (c *taskDetailCountingStore) CountEvents(a0 context.Context, a1 string, a2 string) (int, error) {
 	c.count("CountEvents")
 	return c.Store.CountEvents(a0, a1, a2)
@@ -242,11 +231,6 @@ func (c *taskDetailCountingStore) CountOperatorAttention(a0 context.Context) (in
 func (c *taskDetailCountingStore) CreateArtifact(a0 context.Context, a1 core.Artifact, a2 []uint8) (core.Artifact, error) {
 	c.count("CreateArtifact")
 	return c.Store.CreateArtifact(a0, a1, a2)
-}
-
-func (c *taskDetailCountingStore) CreateClaimedVerificationEvidence(a0 context.Context, a1 store.ClaimedVerificationEvidenceRequest, a2 []uint8) (core.Artifact, error) {
-	c.count("CreateClaimedVerificationEvidence")
-	return c.Store.CreateClaimedVerificationEvidence(a0, a1, a2)
 }
 
 func (c *taskDetailCountingStore) CreateConflictFixCommand(a0 context.Context, a1 taskops.TaskLease, a2 store.ConflictFixRequest) (store.ConflictFixResult, error) {
@@ -329,16 +313,6 @@ func (c *taskDetailCountingStore) CreateWorkOrderCommand(a0 context.Context, a1 
 	return c.Store.CreateWorkOrderCommand(a0, a1, a2)
 }
 
-func (c *taskDetailCountingStore) CreateWorker(a0 context.Context, a1 core.Worker) error {
-	c.count("CreateWorker")
-	return c.Store.CreateWorker(a0, a1)
-}
-
-func (c *taskDetailCountingStore) CreateWorkerPairing(a0 context.Context, a1 core.WorkerPairing) error {
-	c.count("CreateWorkerPairing")
-	return c.Store.CreateWorkerPairing(a0, a1)
-}
-
 func (c *taskDetailCountingStore) DeleteReferenceDocument(a0 context.Context, a1 string) error {
 	c.count("DeleteReferenceDocument")
 	return c.Store.DeleteReferenceDocument(a0, a1)
@@ -382,11 +356,6 @@ func (c *taskDetailCountingStore) EnsureTaskEnqueued(a0 context.Context, a1 stri
 func (c *taskDetailCountingStore) FinalizePlanningSession(a0 context.Context, a1 store.PlanningFinalizeRequest) (core.PlanningSession, error) {
 	c.count("FinalizePlanningSession")
 	return c.Store.FinalizePlanningSession(a0, a1)
-}
-
-func (c *taskDetailCountingStore) FinalizeWorkOrderAttemptObservability(a0 context.Context, a1 string, a2 string, a3 core.WorkOrderAttemptCheckpoint) error {
-	c.count("FinalizeWorkOrderAttemptObservability")
-	return c.Store.FinalizeWorkOrderAttemptObservability(a0, a1, a2, a3)
 }
 
 func (c *taskDetailCountingStore) GetApprovedSpecVersion(a0 context.Context, a1 string) (core.SpecVersion, bool, error) {
@@ -507,16 +476,6 @@ func (c *taskDetailCountingStore) GetTranscript(a0 context.Context, a1 string) (
 func (c *taskDetailCountingStore) GetWorkOrder(a0 context.Context, a1 string) (core.WorkOrder, error) {
 	c.count("GetWorkOrder")
 	return c.Store.GetWorkOrder(a0, a1)
-}
-
-func (c *taskDetailCountingStore) GetWorkOrderActivitySnapshot(a0 context.Context, a1 string) (core.WorkOrderActivitySnapshot, bool, error) {
-	c.count("GetWorkOrderActivitySnapshot")
-	return c.Store.GetWorkOrderActivitySnapshot(a0, a1)
-}
-
-func (c *taskDetailCountingStore) HeartbeatWorker(a0 context.Context, a1 string, a2 time.Time, a3 []core.HarnessProbe) (core.Worker, error) {
-	c.count("HeartbeatWorker")
-	return c.Store.HeartbeatWorker(a0, a1, a2, a3)
 }
 
 func (c *taskDetailCountingStore) IsDurable() bool {
@@ -652,11 +611,6 @@ func (c *taskDetailCountingStore) ListGitHubLifecycleReconcileTaskIDs(a0 context
 func (c *taskDetailCountingStore) ListGovernanceDesigns(a0 context.Context, a1 string) ([]core.GovernanceDesignContext, error) {
 	c.count("ListGovernanceDesigns")
 	return c.Store.ListGovernanceDesigns(a0, a1)
-}
-
-func (c *taskDetailCountingStore) ListHarnessModelFailures(a0 context.Context) ([]core.HarnessModelFailure, error) {
-	c.count("ListHarnessModelFailures")
-	return c.Store.ListHarnessModelFailures(a0)
 }
 
 func (c *taskDetailCountingStore) ListInterventions(a0 context.Context, a1 string) ([]core.Intervention, error) {
@@ -864,11 +818,6 @@ func (c *taskDetailCountingStore) ListSystemDesigns(a0 context.Context, a1 bool)
 	return c.Store.ListSystemDesigns(a0, a1)
 }
 
-func (c *taskDetailCountingStore) ListTaskActivitySnapshots(a0 context.Context, a1 string, a2 []string) (map[string]core.WorkOrderActivitySnapshot, error) {
-	c.count("ListTaskActivitySnapshots")
-	return c.Store.ListTaskActivitySnapshots(a0, a1, a2)
-}
-
 func (c *taskDetailCountingStore) ListTaskContextDesignPins(a0 context.Context, a1 []string, a2 []string) (map[string]map[string]int, error) {
 	c.count("ListTaskContextDesignPins")
 	return c.Store.ListTaskContextDesignPins(a0, a1, a2)
@@ -899,11 +848,6 @@ func (c *taskDetailCountingStore) ListTaskPage(a0 context.Context, a1 store.Task
 	return c.Store.ListTaskPage(a0, a1)
 }
 
-func (c *taskDetailCountingStore) ListTaskTranscriptCaptures(a0 context.Context, a1 string) (map[string][]core.WorkOrderTranscriptCapture, error) {
-	c.count("ListTaskTranscriptCaptures")
-	return c.Store.ListTaskTranscriptCaptures(a0, a1)
-}
-
 func (c *taskDetailCountingStore) ListTaskWorkOrders(a0 context.Context, a1 string) ([]core.WorkOrder, error) {
 	c.count("ListTaskWorkOrders")
 	return c.Store.ListTaskWorkOrders(a0, a1)
@@ -929,11 +873,6 @@ func (c *taskDetailCountingStore) ListTasksFiltered(a0 context.Context, a1 store
 	return c.Store.ListTasksFiltered(a0, a1)
 }
 
-func (c *taskDetailCountingStore) ListWorkOrderTranscriptCaptures(a0 context.Context, a1 string) ([]core.WorkOrderTranscriptCapture, error) {
-	c.count("ListWorkOrderTranscriptCaptures")
-	return c.Store.ListWorkOrderTranscriptCaptures(a0, a1)
-}
-
 func (c *taskDetailCountingStore) ListWorkOrders(a0 context.Context) ([]core.WorkOrder, error) {
 	c.count("ListWorkOrders")
 	return c.Store.ListWorkOrders(a0)
@@ -942,11 +881,6 @@ func (c *taskDetailCountingStore) ListWorkOrders(a0 context.Context) ([]core.Wor
 func (c *taskDetailCountingStore) ListWorkOrdersForTasks(a0 context.Context, a1 []string) ([]core.WorkOrder, error) {
 	c.count("ListWorkOrdersForTasks")
 	return c.Store.ListWorkOrdersForTasks(a0, a1)
-}
-
-func (c *taskDetailCountingStore) ListWorkers(a0 context.Context) ([]core.Worker, error) {
-	c.count("ListWorkers")
-	return c.Store.ListWorkers(a0)
 }
 
 func (c *taskDetailCountingStore) MarkTaskApprovalStale(a0 context.Context, a1 string, a2 string, a3 string, a4 string, a5 string) (bool, error) {
@@ -1079,21 +1013,6 @@ func (c *taskDetailCountingStore) RecordSystemDesignConsulted(a0 context.Context
 	return c.Store.RecordSystemDesignConsulted(a0, a1, a2, a3, a4)
 }
 
-func (c *taskDetailCountingStore) RecordWorkOrderAttemptCapture(a0 context.Context, a1 string, a2 core.WorkOrderClaimIdentity, a3 core.WorkOrderAttemptCapture) (core.WorkOrderAttemptCaptureResult, error) {
-	c.count("RecordWorkOrderAttemptCapture")
-	return c.Store.RecordWorkOrderAttemptCapture(a0, a1, a2, a3)
-}
-
-func (c *taskDetailCountingStore) RecordWorkOrderAttemptCheckpoint(a0 context.Context, a1 string, a2 string, a3 core.WorkOrderAttemptCheckpoint) (bool, error) {
-	c.count("RecordWorkOrderAttemptCheckpoint")
-	return c.Store.RecordWorkOrderAttemptCheckpoint(a0, a1, a2, a3)
-}
-
-func (c *taskDetailCountingStore) RecordWorkOrderContinuation(a0 context.Context, a1 string, a2 core.WorkOrderClaimIdentity, a3 core.WorkOrderContinuation) (core.WorkOrder, error) {
-	c.count("RecordWorkOrderContinuation")
-	return c.Store.RecordWorkOrderContinuation(a0, a1, a2, a3)
-}
-
 func (c *taskDetailCountingStore) RecoverInterruptedReviewRoundCommand(a0 context.Context, a1 taskops.TaskLease, a2 store.InterruptedReviewRecoveryRequest, a3 time.Duration) (store.InterruptedReviewRecoveryResult, error) {
 	c.count("RecoverInterruptedReviewRoundCommand")
 	return c.Store.RecoverInterruptedReviewRoundCommand(a0, a1, a2, a3)
@@ -1157,11 +1076,6 @@ func (c *taskDetailCountingStore) RestoreSystemDesign(a0 context.Context, a1 str
 func (c *taskDetailCountingStore) RetryReviewRoundCommand(a0 context.Context, a1 taskops.TaskLease, a2 store.ReviewRoundRetryRequest, a3 store.ReviewRoundSeatResolution, a4 []core.Job, a5 []core.WorkOrder) (store.ReviewRoundRetryResult, error) {
 	c.count("RetryReviewRoundCommand")
 	return c.Store.RetryReviewRoundCommand(a0, a1, a2, a3, a4, a5)
-}
-
-func (c *taskDetailCountingStore) RevokeWorker(a0 context.Context, a1 string) error {
-	c.count("RevokeWorker")
-	return c.Store.RevokeWorker(a0, a1)
 }
 
 func (c *taskDetailCountingStore) SetTaskAssigneeCommand(a0 context.Context, a1 taskops.TaskLease, a2 string, a3 string) (core.Task, error) {
@@ -1229,11 +1143,6 @@ func (c *taskDetailCountingStore) UpsertTranscript(a0 context.Context, a1 core.T
 	return c.Store.UpsertTranscript(a0, a1)
 }
 
-func (c *taskDetailCountingStore) UpsertWorkOrderActivitySnapshot(a0 context.Context, a1 string, a2 core.WorkOrderClaimIdentity, a3 string) error {
-	c.count("UpsertWorkOrderActivitySnapshot")
-	return c.Store.UpsertWorkOrderActivitySnapshot(a0, a1, a2, a3)
-}
-
 func (c *taskDetailCountingStore) ValidateTaskDependencies(a0 context.Context, a1 []string) error {
 	c.count("ValidateTaskDependencies")
 	return c.Store.ValidateTaskDependencies(a0, a1)
@@ -1252,11 +1161,6 @@ func (c *taskDetailCountingStore) WithPlanningSessionRun(a0 context.Context, a1 
 func (c *taskDetailCountingStore) WithTaskSideEffectLock(a0 context.Context, a1 string, a2 func(context.Context) error) error {
 	c.count("WithTaskSideEffectLock")
 	return c.Store.WithTaskSideEffectLock(a0, a1, a2)
-}
-
-func (c *taskDetailCountingStore) WorktreeHandoffCommand(a0 context.Context, a1 taskops.TaskLease, a2 string, a3 core.WorkOrderClaimIdentity, a4 string, a5 core.WorktreeHandoffRequest) (core.WorktreeHandoff, error) {
-	c.count("WorktreeHandoffCommand")
-	return c.Store.WorktreeHandoffCommand(a0, a1, a2, a3, a4, a5)
 }
 
 // countingMemberships counts the membership decisions a request makes.
@@ -1350,24 +1254,6 @@ func legacyTaskActivity(s *Server, w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	for index := range workOrders {
-		captures, captureErr := s.Store.ListWorkOrderTranscriptCaptures(r.Context(), workOrders[index].ID)
-		if captureErr != nil {
-			fail(captureErr)
-			return
-		}
-		if len(captures) > 0 {
-			workOrders[index].TranscriptCaptures = captures
-		}
-		if workOrders[index].State == core.WorkOrderClaimed && workOrders[index].AttemptID != "" {
-			snapshot, exists, snapshotErr := s.Store.GetWorkOrderActivitySnapshot(r.Context(), workOrders[index].ID)
-			if snapshotErr != nil {
-				fail(snapshotErr)
-				return
-			}
-			if exists && snapshot.AttemptID == workOrders[index].AttemptID {
-				workOrders[index].ActivitySnapshot = &snapshot
-			}
-		}
 		store.ApplyRecoveryRefusal(&workOrders[index], task, workOrders, pendingPlanRevision)
 		if workOrders[index].Stage != core.StageImplement {
 			continue
@@ -1408,14 +1294,13 @@ func legacyTaskActivity(s *Server, w http.ResponseWriter, r *http.Request) {
 		artifact.DownloadURL = "/v1/artifacts/" + artifact.ID
 		verificationEvidence = append(verificationEvidence, artifact)
 	}
-	var workerStatus *workerservice.TaskWorkerStatus
 	var mergeReadiness *dispatch.MergeReadiness
 	gateMerge := task.State == core.TaskAwaiting && task.GateKind == core.GateKindMergeApproval
 	if (task.State == core.TaskApproved || gateMerge) && s.OnMergeReadiness != nil {
 		var readiness dispatch.MergeReadiness
 		var readinessErr error
 		if gateMerge {
-			readiness, readinessErr = s.taskRunReadiness.read(r.Context(), task, s.OnMergeReadiness)
+			readiness, readinessErr = s.mergeReadiness.read(r.Context(), task, s.OnMergeReadiness)
 		} else {
 			readiness, readinessErr = s.OnMergeReadiness(r.Context(), task)
 		}
@@ -1426,11 +1311,6 @@ func legacyTaskActivity(s *Server, w http.ResponseWriter, r *http.Request) {
 		mergeReadiness = &readiness
 		if refreshed, refreshErr := s.Store.GetTask(r.Context(), id); refreshErr == nil {
 			task = refreshed
-		}
-	}
-	if s.Workers != nil && s.ConfigProvider != nil && !core.TaskTerminal(task.State) {
-		if cfg, cfgErr := s.ConfigProvider(r.Context()); cfgErr == nil {
-			workerStatus = s.Workers.TaskAvailability(r.Context(), cfg, task, workOrders)
 		}
 	}
 	stalled := store.StalledTask(workOrders)
@@ -1486,7 +1366,6 @@ func legacyTaskActivity(s *Server, w http.ResponseWriter, r *http.Request) {
 		ReviewRecovery:            store.ReviewRecoveryNeeded(workOrders, events),
 		InterruptedReviewRecovery: store.InterruptedReviewRecoveryNeeded(task, store.CurrentReviewOrders(workOrders, events), events),
 		Stalled:                   stalled,
-		WorkerStatus:              workerStatus,
 		MergeReadiness:            mergeReadiness,
 		Attachments:               attachments,
 		VerificationEvidence:      verificationEvidence,
@@ -1734,35 +1613,23 @@ func (f *detailFixture) grow(t *testing.T, task core.Task, claimed, checkpointLa
 	return task
 }
 
-// attempts ends one attempt with a capture whose snapshot stays behind; live
-// opens a second attempt whose snapshot matches, as only one order of a task
-// can be claimed.
+// attempts ends one attempt with a release; live opens a second attempt, as
+// only one order of a task can be claimed.
 func (f *detailFixture) attempts(t *testing.T, orderID string, live bool) {
 	t.Helper()
 	const worker = "detail-worker"
-	first, err := storetest.ClaimWorkOrder(f.ctx, f.st, orderID, core.WorkOrderClaim{WorkerID: worker, ClaimantID: worker, SessionID: "first-" + orderID, ClientToken: "first-" + orderID, Lease: time.Hour, ExecutionTimeout: time.Hour})
+	first, err := storetest.ClaimWorkOrder(f.ctx, f.st, orderID, core.WorkOrderClaim{ClaimantID: worker, SessionID: "first-" + orderID, ClientToken: "first-" + orderID, Lease: time.Hour, ExecutionTimeout: time.Hour})
 	if err != nil {
 		t.Fatalf("claim %s: %v", orderID, err)
-	}
-	identity := core.WorkOrderClaimIdentity{WorkerID: worker, ClaimantID: worker, SessionID: first.SessionID}
-	if err = f.st.UpsertWorkOrderActivitySnapshot(f.ctx, orderID, identity, "first tail "+orderID); err != nil {
-		t.Fatal(err)
 	}
 	if _, err = storetest.ReleaseWorkerClaim(f.ctx, f.st, orderID, worker, core.WorkOrderRelease{SessionID: first.SessionID, Outcome: core.WorkOrderOutcomeChildFailure, Reason: "harness exited", InitialRetryDelay: time.Nanosecond, MaximumRetryDelay: time.Nanosecond}); err != nil {
 		t.Fatalf("release %s: %v", orderID, err)
 	}
-	if _, err = f.st.RecordWorkOrderAttemptCapture(f.ctx, orderID, identity, core.WorkOrderAttemptCapture{SessionID: first.SessionID, AttemptID: first.AttemptID, Transcript: &core.WorkOrderAttemptTranscript{Content: "transcript " + orderID, Truncated: true}}); err != nil {
-		t.Fatalf("capture %s: %v", orderID, err)
-	}
 	if !live {
 		return
 	}
-	second, err := storetest.ClaimWorkOrder(f.ctx, f.st, orderID, core.WorkOrderClaim{WorkerID: worker, ClaimantID: worker, SessionID: "second-" + orderID, ClientToken: "second-" + orderID, Lease: time.Hour, ExecutionTimeout: time.Hour})
-	if err != nil {
+	if _, err := storetest.ClaimWorkOrder(f.ctx, f.st, orderID, core.WorkOrderClaim{ClaimantID: worker, SessionID: "second-" + orderID, ClientToken: "second-" + orderID, Lease: time.Hour, ExecutionTimeout: time.Hour}); err != nil {
 		t.Fatalf("reclaim %s: %v", orderID, err)
-	}
-	if err = f.st.UpsertWorkOrderActivitySnapshot(f.ctx, orderID, core.WorkOrderClaimIdentity{WorkerID: worker, ClaimantID: worker, SessionID: second.SessionID}, "second tail "+orderID); err != nil {
-		t.Fatal(err)
 	}
 }
 
@@ -1779,7 +1646,7 @@ func newDetailServer(f *detailFixture) *detailServer {
 	d := &detailServer{counter: newTaskDetailCountingStore(f.st), clock: f.now}
 	d.server = NewServer(d.counter)
 	d.server.BearerToken, d.server.Workspace = "operator-token", "demo"
-	d.server.taskRunReadiness.clock = func() time.Time { return d.clock }
+	d.server.mergeReadiness.clock = func() time.Time { return d.clock }
 	d.server.OnMergeReadiness = func(_ context.Context, task core.Task) (dispatch.MergeReadiness, error) {
 		d.hooks++
 		return dispatch.MergeReadiness{State: "MERGEABLE", HeadSHA: "head-" + task.ID, URL: "https://github.com/acme/conveyor/pull/7", Number: 7}, nil
@@ -1805,36 +1672,36 @@ func detailPath(id string, bounded bool) string {
 
 // detailForbidden are the per-item and workspace-wide reads the detail no
 // longer issues.
-var detailForbidden = []string{"GetRequirement", "GetSystemDesign", "ListArtifacts", "ListWorkOrderTranscriptCaptures", "GetWorkOrderActivitySnapshot", "ReadVerificationReview"}
+var detailForbidden = []string{"GetRequirement", "GetSystemDesign", "ListArtifacts", "ReadVerificationReview"}
 
 // detailCallVectors are the exact per-method store-call vectors of each
 // branch through the real route, cold (no cached readiness) and warm. They
 // hold for every fixture size; route middleware calls are included.
 var detailCallVectors = map[string]map[string]int{
-	"running bounded=false cold":    {"GetLatestSpecVersion": 1, "GetTask": 1, "ListActivityMarkersForTasks": 1, "ListArtifactsForLineage": 1, "ListClaimBlockingProposalsForTasks": 1, "ListDependencyBlockers": 1, "ListDocumentMetadata": 1, "ListDocumentOperatorNotesForTask": 1, "ListEvents": 1, "ListInterventions": 1, "ListJobs": 1, "ListOpenDependents": 1, "ListPendingProposals": 2, "ListTaskActivitySnapshots": 1, "ListTaskContextProposals": 2, "ListTaskTranscriptCaptures": 1, "ListTaskWorkOrders": 1},
-	"running bounded=false warm":    {"GetLatestSpecVersion": 1, "GetTask": 1, "ListActivityMarkersForTasks": 1, "ListArtifactsForLineage": 1, "ListClaimBlockingProposalsForTasks": 1, "ListDependencyBlockers": 1, "ListDocumentMetadata": 1, "ListDocumentOperatorNotesForTask": 1, "ListEvents": 1, "ListInterventions": 1, "ListJobs": 1, "ListOpenDependents": 1, "ListPendingProposals": 2, "ListTaskActivitySnapshots": 1, "ListTaskContextProposals": 2, "ListTaskTranscriptCaptures": 1, "ListTaskWorkOrders": 1},
-	"running bounded=true cold":     {"GetApprovedSpecVersion": 1, "GetLatestSpecVersion": 1, "GetTask": 1, "ListActivityMarkersForTasks": 1, "ListArtifactsForLineage": 1, "ListClaimBlockingProposalsForTasks": 1, "ListDependencyBlockers": 1, "ListDocumentMetadata": 1, "ListDocumentOperatorNotesForTask": 1, "ListEvents": 1, "ListInterventions": 1, "ListJobs": 1, "ListOpenDependents": 1, "ListPendingProposals": 2, "ListReviewRoundSeats": 1, "ListTaskActivitySnapshots": 1, "ListTaskContextProposals": 2, "ListTaskTranscriptCaptures": 1, "ListTaskWorkOrders": 1, "ReadTaskEventWindow": 1},
-	"running bounded=true warm":     {"GetApprovedSpecVersion": 1, "GetLatestSpecVersion": 1, "GetTask": 1, "ListActivityMarkersForTasks": 1, "ListArtifactsForLineage": 1, "ListClaimBlockingProposalsForTasks": 1, "ListDependencyBlockers": 1, "ListDocumentMetadata": 1, "ListDocumentOperatorNotesForTask": 1, "ListEvents": 1, "ListInterventions": 1, "ListJobs": 1, "ListOpenDependents": 1, "ListPendingProposals": 2, "ListReviewRoundSeats": 1, "ListTaskActivitySnapshots": 1, "ListTaskContextProposals": 2, "ListTaskTranscriptCaptures": 1, "ListTaskWorkOrders": 1, "ReadTaskEventWindow": 1},
-	"checkpoint bounded=false cold": {"GetLatestSpecVersion": 1, "GetTask": 1, "ListActivityMarkersForTasks": 1, "ListArtifactsForLineage": 1, "ListClaimBlockingProposalsForTasks": 1, "ListDependencyBlockers": 1, "ListDocumentHeads": 1, "ListDocumentMetadata": 1, "ListDocumentOperatorNotesForTask": 1, "ListEvents": 1, "ListInterventions": 1, "ListJobs": 1, "ListOpenDependents": 1, "ListPendingProposals": 2, "ListTaskContextDesignPins": 1, "ListTaskContextProposals": 2, "ListTaskTranscriptCaptures": 1, "ListTaskWorkOrders": 1},
-	"checkpoint bounded=false warm": {"GetLatestSpecVersion": 1, "GetTask": 1, "ListActivityMarkersForTasks": 1, "ListArtifactsForLineage": 1, "ListClaimBlockingProposalsForTasks": 1, "ListDependencyBlockers": 1, "ListDocumentHeads": 1, "ListDocumentMetadata": 1, "ListDocumentOperatorNotesForTask": 1, "ListEvents": 1, "ListInterventions": 1, "ListJobs": 1, "ListOpenDependents": 1, "ListPendingProposals": 2, "ListTaskContextDesignPins": 1, "ListTaskContextProposals": 2, "ListTaskTranscriptCaptures": 1, "ListTaskWorkOrders": 1},
-	"checkpoint bounded=true cold":  {"GetApprovedSpecVersion": 1, "GetLatestSpecVersion": 1, "GetTask": 1, "ListActivityMarkersForTasks": 1, "ListArtifactsForLineage": 1, "ListClaimBlockingProposalsForTasks": 1, "ListDependencyBlockers": 1, "ListDocumentHeads": 1, "ListDocumentMetadata": 1, "ListDocumentOperatorNotesForTask": 1, "ListEvents": 1, "ListInterventions": 1, "ListJobs": 1, "ListOpenDependents": 1, "ListPendingProposals": 2, "ListReviewRoundSeats": 1, "ListTaskContextDesignPins": 1, "ListTaskContextProposals": 2, "ListTaskTranscriptCaptures": 1, "ListTaskWorkOrders": 1, "ReadTaskEventWindow": 1},
-	"checkpoint bounded=true warm":  {"GetApprovedSpecVersion": 1, "GetLatestSpecVersion": 1, "GetTask": 1, "ListActivityMarkersForTasks": 1, "ListArtifactsForLineage": 1, "ListClaimBlockingProposalsForTasks": 1, "ListDependencyBlockers": 1, "ListDocumentHeads": 1, "ListDocumentMetadata": 1, "ListDocumentOperatorNotesForTask": 1, "ListEvents": 1, "ListInterventions": 1, "ListJobs": 1, "ListOpenDependents": 1, "ListPendingProposals": 2, "ListReviewRoundSeats": 1, "ListTaskContextDesignPins": 1, "ListTaskContextProposals": 2, "ListTaskTranscriptCaptures": 1, "ListTaskWorkOrders": 1, "ReadTaskEventWindow": 1},
-	"plan bounded=false cold":       {"GetLatestSpecVersion": 1, "GetTask": 1, "ListActivityMarkersForTasks": 1, "ListArtifactsForLineage": 1, "ListClaimBlockingProposalsForTasks": 1, "ListDependencyBlockers": 1, "ListDocumentMetadata": 1, "ListDocumentOperatorNotesForTask": 1, "ListEvents": 1, "ListInterventions": 1, "ListJobs": 1, "ListLatestSpecVersionNumbers": 1, "ListNextActionHistory": 1, "ListOpenDependents": 1, "ListPendingProposals": 2, "ListTaskContextProposals": 2, "ListTaskTranscriptCaptures": 1, "ListTaskWorkOrders": 1},
-	"plan bounded=false warm":       {"GetLatestSpecVersion": 1, "GetTask": 1, "ListActivityMarkersForTasks": 1, "ListArtifactsForLineage": 1, "ListClaimBlockingProposalsForTasks": 1, "ListDependencyBlockers": 1, "ListDocumentMetadata": 1, "ListDocumentOperatorNotesForTask": 1, "ListEvents": 1, "ListInterventions": 1, "ListJobs": 1, "ListLatestSpecVersionNumbers": 1, "ListNextActionHistory": 1, "ListOpenDependents": 1, "ListPendingProposals": 2, "ListTaskContextProposals": 2, "ListTaskTranscriptCaptures": 1, "ListTaskWorkOrders": 1},
-	"plan bounded=true cold":        {"GetApprovedSpecVersion": 1, "GetLatestSpecVersion": 1, "GetTask": 1, "ListActivityMarkersForTasks": 1, "ListArtifactsForLineage": 1, "ListClaimBlockingProposalsForTasks": 1, "ListDependencyBlockers": 1, "ListDocumentMetadata": 1, "ListDocumentOperatorNotesForTask": 1, "ListEvents": 1, "ListInterventions": 1, "ListJobs": 1, "ListLatestSpecVersionNumbers": 1, "ListNextActionHistory": 1, "ListOpenDependents": 1, "ListPendingProposals": 2, "ListReviewRoundSeats": 1, "ListTaskContextProposals": 2, "ListTaskTranscriptCaptures": 1, "ListTaskWorkOrders": 1, "ReadTaskEventWindow": 1},
-	"plan bounded=true warm":        {"GetApprovedSpecVersion": 1, "GetLatestSpecVersion": 1, "GetTask": 1, "ListActivityMarkersForTasks": 1, "ListArtifactsForLineage": 1, "ListClaimBlockingProposalsForTasks": 1, "ListDependencyBlockers": 1, "ListDocumentMetadata": 1, "ListDocumentOperatorNotesForTask": 1, "ListEvents": 1, "ListInterventions": 1, "ListJobs": 1, "ListLatestSpecVersionNumbers": 1, "ListNextActionHistory": 1, "ListOpenDependents": 1, "ListPendingProposals": 2, "ListReviewRoundSeats": 1, "ListTaskContextProposals": 2, "ListTaskTranscriptCaptures": 1, "ListTaskWorkOrders": 1, "ReadTaskEventWindow": 1},
-	"gate bounded=false cold":       {"GetLatestSpecVersion": 1, "GetTask": 2, "ListActivityMarkersForTasks": 1, "ListArtifactsForLineage": 1, "ListClaimBlockingProposalsForTasks": 1, "ListDependencyBlockers": 1, "ListDocumentMetadata": 1, "ListDocumentOperatorNotesForTask": 1, "ListEvents": 1, "ListInterventions": 1, "ListJobs": 1, "ListLatestSpecVersionNumbers": 1, "ListNextActionHistory": 1, "ListOpenDependents": 1, "ListPendingProposals": 2, "ListTaskContextProposals": 2, "ListTaskTranscriptCaptures": 1, "ListTaskWorkOrders": 1},
-	"gate bounded=false warm":       {"GetLatestSpecVersion": 1, "GetTask": 1, "ListActivityMarkersForTasks": 1, "ListArtifactsForLineage": 1, "ListClaimBlockingProposalsForTasks": 1, "ListDependencyBlockers": 1, "ListDocumentMetadata": 1, "ListDocumentOperatorNotesForTask": 1, "ListEvents": 1, "ListInterventions": 1, "ListJobs": 1, "ListLatestSpecVersionNumbers": 1, "ListNextActionHistory": 1, "ListOpenDependents": 1, "ListPendingProposals": 2, "ListTaskContextProposals": 2, "ListTaskTranscriptCaptures": 1, "ListTaskWorkOrders": 1},
-	"gate bounded=true cold":        {"GetApprovedSpecVersion": 1, "GetLatestSpecVersion": 1, "GetTask": 2, "ListActivityMarkersForTasks": 1, "ListArtifactsForLineage": 1, "ListClaimBlockingProposalsForTasks": 1, "ListDependencyBlockers": 1, "ListDocumentMetadata": 1, "ListDocumentOperatorNotesForTask": 1, "ListEvents": 1, "ListInterventions": 1, "ListJobs": 1, "ListLatestSpecVersionNumbers": 1, "ListNextActionHistory": 1, "ListOpenDependents": 1, "ListPendingProposals": 2, "ListReviewRoundSeats": 1, "ListTaskContextProposals": 2, "ListTaskTranscriptCaptures": 1, "ListTaskWorkOrders": 1, "ReadTaskEventWindow": 1},
-	"gate bounded=true warm":        {"GetApprovedSpecVersion": 1, "GetLatestSpecVersion": 1, "GetTask": 1, "ListActivityMarkersForTasks": 1, "ListArtifactsForLineage": 1, "ListClaimBlockingProposalsForTasks": 1, "ListDependencyBlockers": 1, "ListDocumentMetadata": 1, "ListDocumentOperatorNotesForTask": 1, "ListEvents": 1, "ListInterventions": 1, "ListJobs": 1, "ListLatestSpecVersionNumbers": 1, "ListNextActionHistory": 1, "ListOpenDependents": 1, "ListPendingProposals": 2, "ListReviewRoundSeats": 1, "ListTaskContextProposals": 2, "ListTaskTranscriptCaptures": 1, "ListTaskWorkOrders": 1, "ReadTaskEventWindow": 1},
-	"approved bounded=false cold":   {"GetLatestSpecVersion": 1, "GetTask": 2, "ListActivityMarkersForTasks": 1, "ListArtifactsForLineage": 1, "ListClaimBlockingProposalsForTasks": 1, "ListDependencyBlockers": 1, "ListDocumentMetadata": 1, "ListDocumentOperatorNotesForTask": 1, "ListEvents": 1, "ListInterventions": 1, "ListJobs": 1, "ListNextActionHistory": 1, "ListOpenDependents": 1, "ListPendingProposals": 2, "ListTaskContextProposals": 2, "ListTaskTranscriptCaptures": 1, "ListTaskWorkOrders": 1},
-	"approved bounded=false warm":   {"GetLatestSpecVersion": 1, "GetTask": 1, "ListActivityMarkersForTasks": 1, "ListArtifactsForLineage": 1, "ListClaimBlockingProposalsForTasks": 1, "ListDependencyBlockers": 1, "ListDocumentMetadata": 1, "ListDocumentOperatorNotesForTask": 1, "ListEvents": 1, "ListInterventions": 1, "ListJobs": 1, "ListNextActionHistory": 1, "ListOpenDependents": 1, "ListPendingProposals": 2, "ListTaskContextProposals": 2, "ListTaskTranscriptCaptures": 1, "ListTaskWorkOrders": 1},
-	"approved bounded=true cold":    {"GetApprovedSpecVersion": 1, "GetLatestSpecVersion": 1, "GetTask": 2, "ListActivityMarkersForTasks": 1, "ListArtifactsForLineage": 1, "ListClaimBlockingProposalsForTasks": 1, "ListDependencyBlockers": 1, "ListDocumentMetadata": 1, "ListDocumentOperatorNotesForTask": 1, "ListEvents": 1, "ListInterventions": 1, "ListJobs": 1, "ListNextActionHistory": 1, "ListOpenDependents": 1, "ListPendingProposals": 2, "ListReviewRoundSeats": 1, "ListTaskContextProposals": 2, "ListTaskTranscriptCaptures": 1, "ListTaskWorkOrders": 1, "ReadTaskEventWindow": 1},
-	"approved bounded=true warm":    {"GetApprovedSpecVersion": 1, "GetLatestSpecVersion": 1, "GetTask": 1, "ListActivityMarkersForTasks": 1, "ListArtifactsForLineage": 1, "ListClaimBlockingProposalsForTasks": 1, "ListDependencyBlockers": 1, "ListDocumentMetadata": 1, "ListDocumentOperatorNotesForTask": 1, "ListEvents": 1, "ListInterventions": 1, "ListJobs": 1, "ListNextActionHistory": 1, "ListOpenDependents": 1, "ListPendingProposals": 2, "ListReviewRoundSeats": 1, "ListTaskContextProposals": 2, "ListTaskTranscriptCaptures": 1, "ListTaskWorkOrders": 1, "ReadTaskEventWindow": 1},
-	"merged bounded=false cold":     {"GetLatestSpecVersion": 1, "GetTask": 1, "ListActivityMarkersForTasks": 1, "ListArtifactsForLineage": 1, "ListClaimBlockingProposalsForTasks": 1, "ListDependencyBlockers": 1, "ListDocumentMetadata": 1, "ListEvents": 1, "ListInterventions": 1, "ListJobs": 1, "ListOpenDependents": 1, "ListPendingProposals": 2, "ListTaskContextProposals": 1, "ListTaskTranscriptCaptures": 1, "ListTaskWorkOrders": 1},
-	"merged bounded=false warm":     {"GetLatestSpecVersion": 1, "GetTask": 1, "ListActivityMarkersForTasks": 1, "ListArtifactsForLineage": 1, "ListClaimBlockingProposalsForTasks": 1, "ListDependencyBlockers": 1, "ListDocumentMetadata": 1, "ListEvents": 1, "ListInterventions": 1, "ListJobs": 1, "ListOpenDependents": 1, "ListPendingProposals": 2, "ListTaskContextProposals": 1, "ListTaskTranscriptCaptures": 1, "ListTaskWorkOrders": 1},
-	"merged bounded=true cold":      {"GetApprovedSpecVersion": 1, "GetLatestSpecVersion": 1, "GetTask": 1, "ListActivityMarkersForTasks": 1, "ListArtifactsForLineage": 1, "ListClaimBlockingProposalsForTasks": 1, "ListDependencyBlockers": 1, "ListDocumentMetadata": 1, "ListEvents": 1, "ListInterventions": 1, "ListJobs": 1, "ListOpenDependents": 1, "ListPendingProposals": 2, "ListReviewRoundSeats": 1, "ListTaskContextProposals": 1, "ListTaskTranscriptCaptures": 1, "ListTaskWorkOrders": 1, "ReadTaskEventWindow": 1},
-	"merged bounded=true warm":      {"GetApprovedSpecVersion": 1, "GetLatestSpecVersion": 1, "GetTask": 1, "ListActivityMarkersForTasks": 1, "ListArtifactsForLineage": 1, "ListClaimBlockingProposalsForTasks": 1, "ListDependencyBlockers": 1, "ListDocumentMetadata": 1, "ListEvents": 1, "ListInterventions": 1, "ListJobs": 1, "ListOpenDependents": 1, "ListPendingProposals": 2, "ListReviewRoundSeats": 1, "ListTaskContextProposals": 1, "ListTaskTranscriptCaptures": 1, "ListTaskWorkOrders": 1, "ReadTaskEventWindow": 1},
+	"running bounded=false cold":    {"GetLatestSpecVersion": 1, "GetTask": 1, "ListActivityMarkersForTasks": 1, "ListArtifactsForLineage": 1, "ListClaimBlockingProposalsForTasks": 1, "ListDependencyBlockers": 1, "ListDocumentMetadata": 1, "ListDocumentOperatorNotesForTask": 1, "ListEvents": 1, "ListInterventions": 1, "ListJobs": 1, "ListOpenDependents": 1, "ListPendingProposals": 2, "ListTaskContextProposals": 2, "ListTaskWorkOrders": 1},
+	"running bounded=false warm":    {"GetLatestSpecVersion": 1, "GetTask": 1, "ListActivityMarkersForTasks": 1, "ListArtifactsForLineage": 1, "ListClaimBlockingProposalsForTasks": 1, "ListDependencyBlockers": 1, "ListDocumentMetadata": 1, "ListDocumentOperatorNotesForTask": 1, "ListEvents": 1, "ListInterventions": 1, "ListJobs": 1, "ListOpenDependents": 1, "ListPendingProposals": 2, "ListTaskContextProposals": 2, "ListTaskWorkOrders": 1},
+	"running bounded=true cold":     {"GetApprovedSpecVersion": 1, "GetLatestSpecVersion": 1, "GetTask": 1, "ListActivityMarkersForTasks": 1, "ListArtifactsForLineage": 1, "ListClaimBlockingProposalsForTasks": 1, "ListDependencyBlockers": 1, "ListDocumentMetadata": 1, "ListDocumentOperatorNotesForTask": 1, "ListEvents": 1, "ListInterventions": 1, "ListJobs": 1, "ListOpenDependents": 1, "ListPendingProposals": 2, "ListReviewRoundSeats": 1, "ListTaskContextProposals": 2, "ListTaskWorkOrders": 1, "ReadTaskEventWindow": 1},
+	"running bounded=true warm":     {"GetApprovedSpecVersion": 1, "GetLatestSpecVersion": 1, "GetTask": 1, "ListActivityMarkersForTasks": 1, "ListArtifactsForLineage": 1, "ListClaimBlockingProposalsForTasks": 1, "ListDependencyBlockers": 1, "ListDocumentMetadata": 1, "ListDocumentOperatorNotesForTask": 1, "ListEvents": 1, "ListInterventions": 1, "ListJobs": 1, "ListOpenDependents": 1, "ListPendingProposals": 2, "ListReviewRoundSeats": 1, "ListTaskContextProposals": 2, "ListTaskWorkOrders": 1, "ReadTaskEventWindow": 1},
+	"checkpoint bounded=false cold": {"GetLatestSpecVersion": 1, "GetTask": 1, "ListActivityMarkersForTasks": 1, "ListArtifactsForLineage": 1, "ListClaimBlockingProposalsForTasks": 1, "ListDependencyBlockers": 1, "ListDocumentHeads": 1, "ListDocumentMetadata": 1, "ListDocumentOperatorNotesForTask": 1, "ListEvents": 1, "ListInterventions": 1, "ListJobs": 1, "ListOpenDependents": 1, "ListPendingProposals": 2, "ListTaskContextDesignPins": 1, "ListTaskContextProposals": 2, "ListTaskWorkOrders": 1},
+	"checkpoint bounded=false warm": {"GetLatestSpecVersion": 1, "GetTask": 1, "ListActivityMarkersForTasks": 1, "ListArtifactsForLineage": 1, "ListClaimBlockingProposalsForTasks": 1, "ListDependencyBlockers": 1, "ListDocumentHeads": 1, "ListDocumentMetadata": 1, "ListDocumentOperatorNotesForTask": 1, "ListEvents": 1, "ListInterventions": 1, "ListJobs": 1, "ListOpenDependents": 1, "ListPendingProposals": 2, "ListTaskContextDesignPins": 1, "ListTaskContextProposals": 2, "ListTaskWorkOrders": 1},
+	"checkpoint bounded=true cold":  {"GetApprovedSpecVersion": 1, "GetLatestSpecVersion": 1, "GetTask": 1, "ListActivityMarkersForTasks": 1, "ListArtifactsForLineage": 1, "ListClaimBlockingProposalsForTasks": 1, "ListDependencyBlockers": 1, "ListDocumentHeads": 1, "ListDocumentMetadata": 1, "ListDocumentOperatorNotesForTask": 1, "ListEvents": 1, "ListInterventions": 1, "ListJobs": 1, "ListOpenDependents": 1, "ListPendingProposals": 2, "ListReviewRoundSeats": 1, "ListTaskContextDesignPins": 1, "ListTaskContextProposals": 2, "ListTaskWorkOrders": 1, "ReadTaskEventWindow": 1},
+	"checkpoint bounded=true warm":  {"GetApprovedSpecVersion": 1, "GetLatestSpecVersion": 1, "GetTask": 1, "ListActivityMarkersForTasks": 1, "ListArtifactsForLineage": 1, "ListClaimBlockingProposalsForTasks": 1, "ListDependencyBlockers": 1, "ListDocumentHeads": 1, "ListDocumentMetadata": 1, "ListDocumentOperatorNotesForTask": 1, "ListEvents": 1, "ListInterventions": 1, "ListJobs": 1, "ListOpenDependents": 1, "ListPendingProposals": 2, "ListReviewRoundSeats": 1, "ListTaskContextDesignPins": 1, "ListTaskContextProposals": 2, "ListTaskWorkOrders": 1, "ReadTaskEventWindow": 1},
+	"plan bounded=false cold":       {"GetLatestSpecVersion": 1, "GetTask": 1, "ListActivityMarkersForTasks": 1, "ListArtifactsForLineage": 1, "ListClaimBlockingProposalsForTasks": 1, "ListDependencyBlockers": 1, "ListDocumentMetadata": 1, "ListDocumentOperatorNotesForTask": 1, "ListEvents": 1, "ListInterventions": 1, "ListJobs": 1, "ListLatestSpecVersionNumbers": 1, "ListNextActionHistory": 1, "ListOpenDependents": 1, "ListPendingProposals": 2, "ListTaskContextProposals": 2, "ListTaskWorkOrders": 1},
+	"plan bounded=false warm":       {"GetLatestSpecVersion": 1, "GetTask": 1, "ListActivityMarkersForTasks": 1, "ListArtifactsForLineage": 1, "ListClaimBlockingProposalsForTasks": 1, "ListDependencyBlockers": 1, "ListDocumentMetadata": 1, "ListDocumentOperatorNotesForTask": 1, "ListEvents": 1, "ListInterventions": 1, "ListJobs": 1, "ListLatestSpecVersionNumbers": 1, "ListNextActionHistory": 1, "ListOpenDependents": 1, "ListPendingProposals": 2, "ListTaskContextProposals": 2, "ListTaskWorkOrders": 1},
+	"plan bounded=true cold":        {"GetApprovedSpecVersion": 1, "GetLatestSpecVersion": 1, "GetTask": 1, "ListActivityMarkersForTasks": 1, "ListArtifactsForLineage": 1, "ListClaimBlockingProposalsForTasks": 1, "ListDependencyBlockers": 1, "ListDocumentMetadata": 1, "ListDocumentOperatorNotesForTask": 1, "ListEvents": 1, "ListInterventions": 1, "ListJobs": 1, "ListLatestSpecVersionNumbers": 1, "ListNextActionHistory": 1, "ListOpenDependents": 1, "ListPendingProposals": 2, "ListReviewRoundSeats": 1, "ListTaskContextProposals": 2, "ListTaskWorkOrders": 1, "ReadTaskEventWindow": 1},
+	"plan bounded=true warm":        {"GetApprovedSpecVersion": 1, "GetLatestSpecVersion": 1, "GetTask": 1, "ListActivityMarkersForTasks": 1, "ListArtifactsForLineage": 1, "ListClaimBlockingProposalsForTasks": 1, "ListDependencyBlockers": 1, "ListDocumentMetadata": 1, "ListDocumentOperatorNotesForTask": 1, "ListEvents": 1, "ListInterventions": 1, "ListJobs": 1, "ListLatestSpecVersionNumbers": 1, "ListNextActionHistory": 1, "ListOpenDependents": 1, "ListPendingProposals": 2, "ListReviewRoundSeats": 1, "ListTaskContextProposals": 2, "ListTaskWorkOrders": 1, "ReadTaskEventWindow": 1},
+	"gate bounded=false cold":       {"GetLatestSpecVersion": 1, "GetTask": 2, "ListActivityMarkersForTasks": 1, "ListArtifactsForLineage": 1, "ListClaimBlockingProposalsForTasks": 1, "ListDependencyBlockers": 1, "ListDocumentMetadata": 1, "ListDocumentOperatorNotesForTask": 1, "ListEvents": 1, "ListInterventions": 1, "ListJobs": 1, "ListLatestSpecVersionNumbers": 1, "ListNextActionHistory": 1, "ListOpenDependents": 1, "ListPendingProposals": 2, "ListTaskContextProposals": 2, "ListTaskWorkOrders": 1},
+	"gate bounded=false warm":       {"GetLatestSpecVersion": 1, "GetTask": 1, "ListActivityMarkersForTasks": 1, "ListArtifactsForLineage": 1, "ListClaimBlockingProposalsForTasks": 1, "ListDependencyBlockers": 1, "ListDocumentMetadata": 1, "ListDocumentOperatorNotesForTask": 1, "ListEvents": 1, "ListInterventions": 1, "ListJobs": 1, "ListLatestSpecVersionNumbers": 1, "ListNextActionHistory": 1, "ListOpenDependents": 1, "ListPendingProposals": 2, "ListTaskContextProposals": 2, "ListTaskWorkOrders": 1},
+	"gate bounded=true cold":        {"GetApprovedSpecVersion": 1, "GetLatestSpecVersion": 1, "GetTask": 2, "ListActivityMarkersForTasks": 1, "ListArtifactsForLineage": 1, "ListClaimBlockingProposalsForTasks": 1, "ListDependencyBlockers": 1, "ListDocumentMetadata": 1, "ListDocumentOperatorNotesForTask": 1, "ListEvents": 1, "ListInterventions": 1, "ListJobs": 1, "ListLatestSpecVersionNumbers": 1, "ListNextActionHistory": 1, "ListOpenDependents": 1, "ListPendingProposals": 2, "ListReviewRoundSeats": 1, "ListTaskContextProposals": 2, "ListTaskWorkOrders": 1, "ReadTaskEventWindow": 1},
+	"gate bounded=true warm":        {"GetApprovedSpecVersion": 1, "GetLatestSpecVersion": 1, "GetTask": 1, "ListActivityMarkersForTasks": 1, "ListArtifactsForLineage": 1, "ListClaimBlockingProposalsForTasks": 1, "ListDependencyBlockers": 1, "ListDocumentMetadata": 1, "ListDocumentOperatorNotesForTask": 1, "ListEvents": 1, "ListInterventions": 1, "ListJobs": 1, "ListLatestSpecVersionNumbers": 1, "ListNextActionHistory": 1, "ListOpenDependents": 1, "ListPendingProposals": 2, "ListReviewRoundSeats": 1, "ListTaskContextProposals": 2, "ListTaskWorkOrders": 1, "ReadTaskEventWindow": 1},
+	"approved bounded=false cold":   {"GetLatestSpecVersion": 1, "GetTask": 2, "ListActivityMarkersForTasks": 1, "ListArtifactsForLineage": 1, "ListClaimBlockingProposalsForTasks": 1, "ListDependencyBlockers": 1, "ListDocumentMetadata": 1, "ListDocumentOperatorNotesForTask": 1, "ListEvents": 1, "ListInterventions": 1, "ListJobs": 1, "ListNextActionHistory": 1, "ListOpenDependents": 1, "ListPendingProposals": 2, "ListTaskContextProposals": 2, "ListTaskWorkOrders": 1},
+	"approved bounded=false warm":   {"GetLatestSpecVersion": 1, "GetTask": 1, "ListActivityMarkersForTasks": 1, "ListArtifactsForLineage": 1, "ListClaimBlockingProposalsForTasks": 1, "ListDependencyBlockers": 1, "ListDocumentMetadata": 1, "ListDocumentOperatorNotesForTask": 1, "ListEvents": 1, "ListInterventions": 1, "ListJobs": 1, "ListNextActionHistory": 1, "ListOpenDependents": 1, "ListPendingProposals": 2, "ListTaskContextProposals": 2, "ListTaskWorkOrders": 1},
+	"approved bounded=true cold":    {"GetApprovedSpecVersion": 1, "GetLatestSpecVersion": 1, "GetTask": 2, "ListActivityMarkersForTasks": 1, "ListArtifactsForLineage": 1, "ListClaimBlockingProposalsForTasks": 1, "ListDependencyBlockers": 1, "ListDocumentMetadata": 1, "ListDocumentOperatorNotesForTask": 1, "ListEvents": 1, "ListInterventions": 1, "ListJobs": 1, "ListNextActionHistory": 1, "ListOpenDependents": 1, "ListPendingProposals": 2, "ListReviewRoundSeats": 1, "ListTaskContextProposals": 2, "ListTaskWorkOrders": 1, "ReadTaskEventWindow": 1},
+	"approved bounded=true warm":    {"GetApprovedSpecVersion": 1, "GetLatestSpecVersion": 1, "GetTask": 1, "ListActivityMarkersForTasks": 1, "ListArtifactsForLineage": 1, "ListClaimBlockingProposalsForTasks": 1, "ListDependencyBlockers": 1, "ListDocumentMetadata": 1, "ListDocumentOperatorNotesForTask": 1, "ListEvents": 1, "ListInterventions": 1, "ListJobs": 1, "ListNextActionHistory": 1, "ListOpenDependents": 1, "ListPendingProposals": 2, "ListReviewRoundSeats": 1, "ListTaskContextProposals": 2, "ListTaskWorkOrders": 1, "ReadTaskEventWindow": 1},
+	"merged bounded=false cold":     {"GetLatestSpecVersion": 1, "GetTask": 1, "ListActivityMarkersForTasks": 1, "ListArtifactsForLineage": 1, "ListClaimBlockingProposalsForTasks": 1, "ListDependencyBlockers": 1, "ListDocumentMetadata": 1, "ListEvents": 1, "ListInterventions": 1, "ListJobs": 1, "ListOpenDependents": 1, "ListPendingProposals": 2, "ListTaskContextProposals": 1, "ListTaskWorkOrders": 1},
+	"merged bounded=false warm":     {"GetLatestSpecVersion": 1, "GetTask": 1, "ListActivityMarkersForTasks": 1, "ListArtifactsForLineage": 1, "ListClaimBlockingProposalsForTasks": 1, "ListDependencyBlockers": 1, "ListDocumentMetadata": 1, "ListEvents": 1, "ListInterventions": 1, "ListJobs": 1, "ListOpenDependents": 1, "ListPendingProposals": 2, "ListTaskContextProposals": 1, "ListTaskWorkOrders": 1},
+	"merged bounded=true cold":      {"GetApprovedSpecVersion": 1, "GetLatestSpecVersion": 1, "GetTask": 1, "ListActivityMarkersForTasks": 1, "ListArtifactsForLineage": 1, "ListClaimBlockingProposalsForTasks": 1, "ListDependencyBlockers": 1, "ListDocumentMetadata": 1, "ListEvents": 1, "ListInterventions": 1, "ListJobs": 1, "ListOpenDependents": 1, "ListPendingProposals": 2, "ListReviewRoundSeats": 1, "ListTaskContextProposals": 1, "ListTaskWorkOrders": 1, "ReadTaskEventWindow": 1},
+	"merged bounded=true warm":      {"GetApprovedSpecVersion": 1, "GetLatestSpecVersion": 1, "GetTask": 1, "ListActivityMarkersForTasks": 1, "ListArtifactsForLineage": 1, "ListClaimBlockingProposalsForTasks": 1, "ListDependencyBlockers": 1, "ListDocumentMetadata": 1, "ListEvents": 1, "ListInterventions": 1, "ListJobs": 1, "ListOpenDependents": 1, "ListPendingProposals": 2, "ListReviewRoundSeats": 1, "ListTaskContextProposals": 1, "ListTaskWorkOrders": 1, "ReadTaskEventWindow": 1},
 }
 
 // measureDetailVectors reads every branch through the real route, complete
@@ -1849,7 +1716,7 @@ func measureDetailVectors(t *testing.T, f *detailFixture, label string) map[stri
 			for _, warmth := range []string{"cold", "warm"} {
 				id := f.branches[branch]
 				if warmth == "cold" {
-					d.server.taskRunReadiness.forget(store.WithWorkspace(context.Background(), "demo"), id)
+					d.server.mergeReadiness.forget(store.WithWorkspace(context.Background(), "demo"), id)
 				} else {
 					// The warm entry predates the request's task read.
 					d.clock = d.clock.Add(time.Second)
@@ -2275,7 +2142,7 @@ func TestTaskDetailReadinessCache(t *testing.T) {
 	}
 
 	t.Run("ConcurrentMissesShareOneCall", func(t *testing.T) {
-		cache := &taskRunReadinessCache{clock: func() time.Time { return now }}
+		cache := &mergeReadinessCache{clock: func() time.Time { return now }}
 		hook := newGatedHook(mergeable)
 		results := make(chan bool, 4)
 		go func() {
@@ -2302,7 +2169,7 @@ func TestTaskDetailReadinessCache(t *testing.T) {
 
 	t.Run("ExpiryKeysAndFailures", func(t *testing.T) {
 		clock := now
-		cache := &taskRunReadinessCache{clock: func() time.Time { return clock }}
+		cache := &mergeReadinessCache{clock: func() time.Time { return clock }}
 		calls, hook := immediate(mergeable)
 		read := func(task core.Task, since time.Time) bool {
 			t.Helper()
@@ -2347,7 +2214,7 @@ func TestTaskDetailReadinessCache(t *testing.T) {
 			t.Fatalf("workspace collision: calls=%d err=%v", *calls, err)
 		}
 		before = *calls
-		clock = clock.Add(taskRunMergeReadinessReuse)
+		clock = clock.Add(mergeReadinessReuse)
 		read(task, clock)
 		if *calls != before+1 {
 			t.Fatal("an expired entry was reused")
@@ -2367,7 +2234,7 @@ func TestTaskDetailReadinessCache(t *testing.T) {
 	})
 
 	t.Run("CancelledWaiterReturnsAlone", func(t *testing.T) {
-		cache := &taskRunReadinessCache{clock: func() time.Time { return now }}
+		cache := &mergeReadinessCache{clock: func() time.Time { return now }}
 		hook := newGatedHook(mergeable)
 		leader := make(chan error, 1)
 		go func() {
@@ -2390,7 +2257,7 @@ func TestTaskDetailReadinessCache(t *testing.T) {
 	})
 
 	t.Run("LeaderCancellationLetsLiveWaiterCall", func(t *testing.T) {
-		cache := &taskRunReadinessCache{clock: func() time.Time { return now }}
+		cache := &mergeReadinessCache{clock: func() time.Time { return now }}
 		hook := newGatedHook(mergeable)
 		leaderCtx, cancelLeader := context.WithCancel(ctx)
 		leader := make(chan error, 1)
@@ -2424,7 +2291,7 @@ func TestTaskDetailReadinessCache(t *testing.T) {
 	t.Run("OverlappingKeysKeepTheNewerEntry", func(t *testing.T) {
 		// An older head's flight finishes after a newer head's: the newer
 		// entry stays readable and its hook runs once in the window.
-		cache := &taskRunReadinessCache{clock: func() time.Time { return now }}
+		cache := &mergeReadinessCache{clock: func() time.Time { return now }}
 		oldHead := task
 		newHead := core.Task{ID: task.ID, State: core.TaskApproved, ApprovedHeadSHA: "head-2"}
 		oldHook := newGatedHook(mergeable)
@@ -2459,7 +2326,7 @@ func TestTaskDetailReadinessCache(t *testing.T) {
 	})
 
 	t.Run("ForgetKeepsOldFlightOut", func(t *testing.T) {
-		cache := &taskRunReadinessCache{clock: func() time.Time { return now }}
+		cache := &mergeReadinessCache{clock: func() time.Time { return now }}
 		hook := newGatedHook(mergeable)
 		leader := make(chan error, 1)
 		go func() {

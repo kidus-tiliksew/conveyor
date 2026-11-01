@@ -60,11 +60,11 @@ func newVerificationFixtureTask(t *testing.T, x Fixture, scope []core.Verificati
 	o := core.WorkOrder{ID: job.ID, JobID: job.ID, TaskID: id, Stage: core.StageVerify, State: core.WorkOrderQueued, HeadSHA: task.ReviewedHeadSHA, QueueEnteredAt: task.CreatedAt, QueueDeadline: task.CreatedAt.Add(time.Hour), CreatedAt: task.CreatedAt}
 	_, err := CreateStageWorkOrder(x.Context, x.Backend, job, o)
 	requireOK(t, err)
-	claim := core.WorkOrderClaim{WorkerID: "worker", ClaimantID: "worker", SessionID: "verification", ClientToken: "verification-fixture-token", Lease: time.Hour, ExecutionTimeout: time.Hour}
+	claim := core.WorkOrderClaim{ClaimantID: core.TaskRunClaimantID("worker"), SessionID: "verification", ClientToken: "verification-fixture-token", Lease: time.Hour, ExecutionTimeout: time.Hour}
 	claim.Requirements = []core.ServedRequirementContext{{ID: "req-fixture", Version: 1, Statements: []core.RequirementStatement{{ID: "REQ-1", Statement: "Observe the state", AcceptanceCriteria: []core.AcceptanceCriterion{{ID: "AC-1.1", Statement: "Retain the observation"}}}}}}
 	o, err = ClaimWorkOrder(x.Context, x.Backend, o.ID, claim)
 	requireOK(t, err)
-	v := verificationFixture{x: x, ctx: store.WithActor(x.Context, store.Actor{ID: "worker:worker", Role: core.ActorWorker}), access: store.VerificationAccess{TaskID: o.TaskID, WorkOrderID: o.ID, WorkOrderAttemptID: o.AttemptID, ClientToken: claim.ClientToken, Claim: core.WorkOrderClaimIdentity{WorkerID: claim.WorkerID, ClaimantID: claim.ClaimantID, SessionID: claim.SessionID}}, revisions: append([]core.VerificationRevision{}, revisions...), pins: []core.VerificationPin{{Kind: "requirement", DocumentID: "req-fixture", Version: 1}}}
+	v := verificationFixture{x: x, ctx: store.WithActor(x.Context, store.Actor{ID: store.UserActorID("worker"), Role: core.ActorUser}), access: store.VerificationAccess{TaskID: o.TaskID, WorkOrderID: o.ID, WorkOrderAttemptID: o.AttemptID, ClientToken: claim.ClientToken, Claim: core.WorkOrderClaimIdentity{ClaimantID: claim.ClaimantID, SessionID: claim.SessionID}}, revisions: append([]core.VerificationRevision{}, revisions...), pins: []core.VerificationPin{{Kind: "requirement", DocumentID: "req-fixture", Version: 1}}}
 	discovery := []json.RawMessage{}
 	for _, r := range revisions {
 		discovery = append(discovery, core.JSONPayload(map[string]any{"repository": r.Repository, "revision": r.SHA, "state": "no_manifest"}))
@@ -136,7 +136,7 @@ func (v *verificationFixture) start(t *testing.T, key string) {
 }
 func (v *verificationFixture) envelope(id, key, value string) core.VerificationEvidence {
 	at := time.Now().UTC().Format(time.RFC3339Nano)
-	return core.VerificationEvidence{SchemaVersion: 1, ID: id, SubmissionKey: key, Type: "state_observation", CapturedAt: at, ReceivedAt: at, SubmittedBy: "worker:worker", CapturedBy: core.VerificationCaptureActor{Identity: "fixture-tool", Kind: "tool", Version: "1", Attribution: "self_reported"}, WorkspaceID: v.x.Workspace, TaskID: v.access.TaskID, WorkOrderID: v.access.WorkOrderID, WorkOrderAttemptID: v.access.WorkOrderAttemptID, ContextID: v.contextID, RunID: v.runID, Subject: v.subject, Revisions: v.revisions, GoverningPins: v.pins, SafeInputs: map[string]json.RawMessage{}, Environment: core.VerificationEnvironment{Target: "fixture", OS: "unknown", Architecture: "unknown", Runtime: "unknown", Deployment: "unknown"}, Payload: core.JSONPayload(core.StateObservationPayload{Target: "fixture", Method: "read", CapturedAt: at, Value: core.JSONPayload(value)})}
+	return core.VerificationEvidence{SchemaVersion: 1, ID: id, SubmissionKey: key, Type: "state_observation", CapturedAt: at, ReceivedAt: at, SubmittedBy: "user:worker", CapturedBy: core.VerificationCaptureActor{Identity: "fixture-tool", Kind: "tool", Version: "1", Attribution: "self_reported"}, WorkspaceID: v.x.Workspace, TaskID: v.access.TaskID, WorkOrderID: v.access.WorkOrderID, WorkOrderAttemptID: v.access.WorkOrderAttemptID, ContextID: v.contextID, RunID: v.runID, Subject: v.subject, Revisions: v.revisions, GoverningPins: v.pins, SafeInputs: map[string]json.RawMessage{}, Environment: core.VerificationEnvironment{Target: "fixture", OS: "unknown", Architecture: "unknown", Runtime: "unknown", Deployment: "unknown"}, Payload: core.JSONPayload(core.StateObservationPayload{Target: "fixture", Method: "read", CapturedAt: at, Value: core.JSONPayload(value)})}
 }
 func (v *verificationFixture) snapshot(t *testing.T) store.VerificationSnapshot {
 	t.Helper()

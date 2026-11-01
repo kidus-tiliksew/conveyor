@@ -19,7 +19,7 @@ func runPopulatedProjections(t *testing.T, x Fixture) {
 	x.Context = ctx
 	st := x.Backend
 	order := newAggregateOrder(t, x)
-	_, err := ClaimWorkOrder(ctx, st, order.ID, core.WorkOrderClaim{WorkerID: "worker", ClaimantID: "worker", SessionID: "session", ClientToken: "fixture", Lease: time.Minute, ExecutionTimeout: time.Hour})
+	_, err := ClaimWorkOrder(ctx, st, order.ID, core.WorkOrderClaim{ClaimantID: "worker", SessionID: "session", ClientToken: "fixture", Lease: time.Minute, ExecutionTimeout: time.Hour})
 	requireOK(t, err)
 	_, err = ReleaseWorkerClaim(ctx, st, order.ID, "worker", core.WorkOrderRelease{SessionID: "session", Reason: "operator checkpoint reached", Outcome: core.WorkOrderOutcomeReleased, Checkpoint: &core.WorkOrderCheckpoint{DecisionRequest: "Confirm the fixture proposal"}})
 	requireOK(t, err)

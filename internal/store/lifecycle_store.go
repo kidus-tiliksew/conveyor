@@ -22,10 +22,10 @@ type PlanRevisionRequestResult struct {
 }
 
 func (m *memory) RequestPlanRevisionCommand(ctx context.Context, taskLease taskops.TaskLease, workOrderID string, claim core.WorkOrderClaimIdentity, rationale string) (PlanRevisionRequestResult, error) {
-	// A worker claim records its own worker actor; any other claim records the
-	// caller's actor. Either must be complete before the order, job, session,
-	// or task changes (component-persistence, Actor context).
-	if _, err := RequireActor(workerClaimActorContext(ctx, claim.WorkerID)); err != nil {
+	// The claim records the caller's actor, which must be complete before the
+	// order, job, session, or task changes (component-persistence, Actor
+	// context).
+	if _, err := RequireActor(ctx); err != nil {
 		return PlanRevisionRequestResult{}, err
 	}
 	m.mu.Lock()
@@ -101,7 +101,7 @@ func (m *memory) RequestPlanRevisionCommand(ctx context.Context, taskLease tasko
 	task.State = nextTask
 	task.GateKind = core.GateKindFor(nextTask, core.TaskGatePlanRevision)
 	m.tasks[task.ID] = task
-	actor := workerClaimActorContext(ctx, claim.WorkerID)
+	actor := ctx
 	m.appendEventLocked(actor, core.Event{TaskID: task.ID, JobID: order.JobID, Kind: "work_order.plan_revision_requested", Payload: core.JSONPayload(map[string]any{"work_order_id": order.ID, "attempt_id": attemptID, "session_id": claim.SessionID, "rationale": rationale, "plan_version": plan.Version}), At: now})
 	m.appendEventLocked(actor, core.Event{TaskID: task.ID, JobID: order.JobID, Kind: "work_order.released", Payload: core.JSONPayload(map[string]any{"attempt_id": attemptID, "session_id": claim.SessionID, "reason": core.WorkOrderReleaseReasonPlanRevisionRequested, "release_cause": core.WorkOrderReleaseCauseOperatorAction, "outcome": core.WorkOrderOutcomeReleased, "automatic_retry_count": order.AutomaticRetryCount, "retry_suppressed": true}), At: now})
 	m.appendEventLocked(actor, core.Event{TaskID: task.ID, Kind: "task.state_changed", Payload: core.JSONPayload(map[string]any{"from": core.TaskRunning, "to": nextTask, "command": core.TaskGatePlanRevision}), At: now})

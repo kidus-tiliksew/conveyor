@@ -88,11 +88,6 @@ func (s *Service) admitReviewSummary(ctx context.Context, input ReviewSummaryInp
 		if actor.Role != core.ActorAgent || input.WorkOrderID == "" || input.SessionID == "" {
 			return refused, errReviewSummaryRefused
 		}
-		// A conveyor-run child credential stays confined to the exact
-		// workspace, order, and session its parent minted it for.
-		if credential.RunWorkOrderID != "" && (credential.RunWorkspaceID != workspace || credential.RunWorkOrderID != input.WorkOrderID || credential.RunSessionID != input.SessionID) {
-			return refused, errReviewSummaryRefused
-		}
 		order, err := s.Store.GetWorkOrder(ctx, input.WorkOrderID)
 		if err != nil || order.TaskID != input.TaskID || order.SessionID == "" || order.SessionID != input.SessionID || !reviewSummaryAuthorOrderState(order, time.Now()) {
 			return refused, errReviewSummaryRefused

@@ -37,16 +37,16 @@ import (
 	"github.com/kidus-tiliksew/conveyor/internal/store"
 	"github.com/kidus-tiliksew/conveyor/internal/taskops"
 	"github.com/kidus-tiliksew/conveyor/internal/trigger/github"
-	workerservice "github.com/kidus-tiliksew/conveyor/internal/worker"
 	"github.com/kidus-tiliksew/conveyor/internal/workorder"
 )
 
 type Server struct {
 	mcpReads mcpReadCache
-	// taskRunReadiness bounds run-order merge-readiness reads (component-mcp-protocol).
-	taskRunReadiness taskRunReadinessCache
-	Store            store.Store
-	Credentials      CredentialVerifier
+	// mergeReadiness bounds merge-readiness reads of task detail and next
+	// actions (component-http-api, Request-scoped detail reads).
+	mergeReadiness mergeReadinessCache
+	Store          store.Store
+	Credentials    CredentialVerifier
 	// Release is the build-injected binary identity reported by /v1/version.
 	Release                  string
 	planningBundleMu         sync.Mutex
@@ -101,7 +101,6 @@ type Server struct {
 	CallerIdentities    store.CallerIdentityStore
 	OwnProfiles         store.OwnProfileStore
 	PersonalTokens      store.PersonalAccessTokenStore
-	AgentCredentials    store.AgentCredentialStore
 	WorkspaceGitHubApps store.WorkspaceGitHubAppStore
 	GitHubApps          *github.AppClient
 	// verificationKitMemo caches exact-commit kit discovery for the workspace
@@ -114,7 +113,6 @@ type Server struct {
 	EnsureWorkspaceQueues func(string, *config.Config) error
 	Deployment            *config.Config
 	WorkOrders            *workorder.Service
-	Workers               *workerservice.Service
 	Monitor               *monitor.Service
 	Planning              *planning.Service
 
@@ -147,9 +145,6 @@ func NewServer(s store.Store) *Server {
 	if tokens, ok := s.(store.PersonalAccessTokenStore); ok {
 		server.PersonalTokens = tokens
 	}
-	if credentials, ok := s.(store.AgentCredentialStore); ok {
-		server.AgentCredentials = credentials
-	}
 	if apps, ok := s.(store.WorkspaceGitHubAppStore); ok {
 		server.WorkspaceGitHubApps = apps
 	}
@@ -171,32 +166,10 @@ func (s *Server) Handler() http.Handler {
 		r.Get("/version", func(w http.ResponseWriter, _ *http.Request) {
 			writeJSON(w, http.StatusOK, map[string]string{"version": s.Release})
 		})
-		r.Post("/worker/enroll", s.enrollWorker)
 		r.Post("/sign-in/redeem", s.redeemSignInLink)
 		r.Post("/sign-in/password", s.signInWithPassword)
 		r.With(s.requireSelfServiceCredential).Post("/sign-out", s.signOutDashboardSession)
 		r.With(s.requireSelfServiceCredential).Post("/password", s.setOwnPassword)
-		r.With(s.requireWorkerAuth).Post("/worker/heartbeat", s.heartbeatWorker)
-		r.With(s.requireWorkerAuth).Get("/worker/config", s.getWorkerConfig)
-		r.With(s.requireWorkerAuth).Get("/worker/work-orders", s.listWorkerOrders)
-		r.With(s.requireWorkerAuth).Post("/worker/work-orders/{id}/claim", s.claimWorkerOrder)
-		r.With(s.requireWorkerAuth).Get("/worker/work-orders/{id}/pull-request-template", s.getSubmissionTemplate)
-		r.With(s.requireWorkerAuth).Post("/worker/work-orders/{id}/submit-for-review", s.submitWorkOrderReview)
-		r.With(s.requireWorkerAuth).Post("/worker/work-orders/{id}/context-refresh", s.refreshWorkOrderContext)
-		r.With(s.requireWorkerAuth).Get("/worker/work-orders/{id}/reconcile", s.reconcileWorkerOrder)
-		r.With(s.requireWorkerAuth).Post("/worker/work-orders/{id}/renew", s.renewWorkerOrder)
-		r.With(s.requireWorkerAuth).Post("/worker/work-orders/{id}/attempt-checkpoint", s.checkpointWorkerOrderAttempt)
-		// Parent-launcher attempt-ending capture: observational only, every
-		// stage (req-260820-221be8 AC-2.1; DEC-26; component-http-api).
-		r.With(s.requireWorkerAuth).Post("/worker/work-orders/{id}/attempt-observability", s.captureWorkerOrderAttempt)
-		r.With(s.requireWorkerAuth).Post("/worker/work-orders/{id}/worktree-handoff", s.workerWorktreeHandoff)
-		r.With(s.requireWorkerAuth).Post("/worker/work-orders/{id}/release", s.releaseWorkerOrder)
-		r.With(s.requireWorkerAuth).Get("/worker/tasks/{id}/worktree-cleanup", s.getWorktreeCleanupStatus)
-		r.With(s.requireWorkerAuth).Post("/worker/tasks/{id}/worktree-cleanup", s.recordWorktreeCleanup)
-		// Legacy claim-bound evidence upload (component-artifacts; DEC-53):
-		// this is an exact-claim exception, not an agent-reachable role
-		// capability.
-		r.With(s.requireWorkerAuth).Post("/worker/work-orders/{id}/verification-evidence", s.uploadWorkerVerificationEvidence)
 		r.With(s.requireWorkspaceAuth).Get("/workspaces", s.listWorkspaces)
 		r.With(s.requireSelfServiceCredential, s.resolveOptionalWorkspaceCapability(core.CapabilityViewWorkspace)).Get("/me", s.getCallerIdentity)
 		r.With(s.requireSelfServiceCredential).Put("/me", s.putOwnDisplayName)
@@ -230,17 +203,6 @@ func (s *Server) Handler() http.Handler {
 		r.With(s.requireWorkspaceAuth, s.resolveWorkspaceContext, s.requireWorkspaceCapability(core.CapabilityManageMembership)).Delete("/workspaces/{workspace_id}/invitations/{email}", s.revokeWorkspaceInvitation)
 		r.With(s.requireWorkspaceAuth, s.resolveWorkspaceContext, s.requireWorkspaceCapability(core.CapabilityManageMembership)).Post("/workspaces/{workspace_id}/invitations/{email}/resend", s.resendWorkspaceInvitation)
 		r.With(s.requireWorkspaceAuth, s.resolveWorkspaceContext, s.requireWorkspaceCapability(core.CapabilityManageMembership)).Delete("/workspaces/{workspace_id}/members/{user_id}", s.revokeWorkspaceMembership)
-		// Renewal and predecessor-attempt checkpoint recording are the only
-		// run-order lifecycle routes a session-bound run child credential may
-		// reach; every other run-order control route stays on the user-only
-		// requireTaskRunAuth boundary (req-security-boundaries REQ-1/AC-1.1;
-		// req-260818-24dd3a; component-http-api).
-		r.Group(func(r chi.Router) {
-			r.Use(s.requireTaskRunChildAuth, s.resolveWorkspaceContext, s.requireTaskRunChildCapability(core.CapabilityViewWorkspace), s.requireTaskRunChildCapability(core.CapabilityClaimWork))
-			r.Post("/tasks/{id}/run-orders/{order_id}/renew", s.renewTaskRunOrder)
-			r.Post("/tasks/{id}/run-orders/{order_id}/attempt-checkpoint", s.checkpointTaskRunOrderAttempt)
-			r.Post("/tasks/{id}/run-orders/{order_id}/worktree-handoff", s.runWorktreeHandoff)
-		})
 		r.Group(func(r chi.Router) {
 			r.Use(s.requireWorkspaceAuth, s.resolveWorkspaceContext, s.requireWorkspaceCapability(core.CapabilityViewWorkspace))
 			r.Get("/activity", s.listActivity)
@@ -266,24 +228,16 @@ func (s *Server) Handler() http.Handler {
 			r.Get("/tasks/{id}/verification/contexts/{context_id}/evidence/{evidence_id}/artifacts/{artifact_id}", s.getTaskVerificationEvidence)
 			r.With(s.requireMutationCapability(core.CapabilityOperateGates)).Post("/tasks/{id}/verification/observations", s.recordTaskVerificationObservation)
 			r.Get("/tasks/{id}/audit/{kind}/{record_id}", s.getTaskAudit)
-			r.Get("/tasks/{id}/work-orders/{order_id}/transcript-captures/{attempt_id}", s.getTaskTranscriptCapture)
 			r.Get("/lineage/{type}/{id}", s.getLineage)
 			r.Get("/lineage/{type}/{id}/impact", s.getLineageImpact)
 			r.With(s.requireMutationCapability(core.CapabilityManageWorkspace)).Post("/lineage/rebuild", s.rebuildLineage)
 			r.Get("/tasks/{id}/interventions", s.listInterventions)
 			r.Get("/tasks/{id}/spec", s.getLatestSpec)
-			r.With(s.requireTaskRunAuth, s.requireWorkspaceCapability(core.CapabilityClaimWork)).Get("/tasks/{id}/run-order", s.getTaskRunOrder)
-			r.With(s.requireTaskRunAuth, s.requireWorkspaceCapability(core.CapabilityClaimWork)).Post("/tasks/{id}/run-orders/{order_id}/claim", s.claimTaskRunOrder)
-			r.With(s.requireTaskRunAuth, s.requireWorkspaceCapability(core.CapabilityClaimWork)).Post("/tasks/{id}/run-orders/{order_id}/agent-credential", s.issueTaskRunAgentCredential)
-			r.With(s.requireTaskRunAuth, s.requireWorkspaceCapability(core.CapabilityClaimWork)).Delete("/tasks/{id}/run-orders/{order_id}/agent-credential", s.revokeTaskRunAgentCredential)
-			r.With(s.requireTaskRunAuth, s.requireWorkspaceCapability(core.CapabilityClaimWork)).Get("/tasks/{id}/run-orders/{order_id}/reconcile", s.reconcileTaskRunOrder)
-			r.With(s.requireTaskRunAuth, s.requireWorkspaceCapability(core.CapabilityClaimWork)).Post("/tasks/{id}/run-orders/{order_id}/release", s.releaseTaskRunOrder)
-			r.With(s.requireTaskRunAuth, s.requireWorkspaceCapability(core.CapabilityClaimWork)).Post("/tasks/{id}/run-orders/{order_id}/attempt-observability", s.captureTaskRunOrderAttempt)
-			r.With(s.requireTaskRunAuth, s.requireWorkspaceCapability(core.CapabilityClaimWork)).Get("/tasks/{id}/worktree-cleanup", s.getWorktreeCleanupStatus)
-			r.With(s.requireTaskRunAuth, s.requireWorkspaceCapability(core.CapabilityClaimWork)).Post("/tasks/{id}/worktree-cleanup", s.recordWorktreeCleanup)
-			// Request-changes is the human merge-gate action, not part of the
-			// bearer-only run-order automation plane. Dashboard sessions retain
-			// this route through the outer CSRF proof and capability boundary.
+			r.With(s.requireUserBearerAuth, s.requireWorkspaceCapability(core.CapabilityClaimWork)).Get("/tasks/{id}/worktree-cleanup", s.getWorktreeCleanupStatus)
+			r.With(s.requireUserBearerAuth, s.requireWorkspaceCapability(core.CapabilityClaimWork)).Post("/tasks/{id}/worktree-cleanup", s.recordWorktreeCleanup)
+			// Request-changes is the human merge-gate action. Dashboard sessions
+			// retain this route through the outer CSRF proof and capability
+			// boundary.
 			r.With(s.requireTaskRequestChangesAuth, s.requireWorkspaceCapability(core.CapabilityRequestChanges)).Post("/tasks/{id}/request-changes", s.requestTaskChanges)
 			r.Get("/reviews", s.listReviews)
 			r.Get("/workspace", s.getWorkspace)
@@ -375,9 +329,6 @@ func (s *Server) Handler() http.Handler {
 			r.With(s.requireMutationCapability(core.CapabilityOperateGates)).Post("/artifacts", s.uploadArtifact)
 			r.With(requireExplicitArtifactWorkspace, s.requireMutationCapability(core.CapabilityManageWorkspace)).Post("/artifacts/{id}/metadata-repair", s.repairArtifactMetadata)
 			r.Get("/artifacts/{id}", s.downloadArtifact)
-			r.Get("/workers", s.listWorkers)
-			r.With(s.requireMutationCapability(core.CapabilityManageWorkspace)).Post("/workers/pairings", s.issueWorkerPairing)
-			r.With(s.requireMutationCapability(core.CapabilityManageWorkspace)).Delete("/workers/{id}", s.revokeWorker)
 		})
 	})
 	// All methods route to the handler so non-POST gets a spec-correct 405
@@ -390,8 +341,6 @@ func (s *Server) Handler() http.Handler {
 	r.With(s.requireWorkspaceAuth, s.resolveWorkspaceContext, s.requireWorkspaceCapability(core.CapabilityViewWorkspace), s.requireWorkspaceCapability(core.CapabilityOperateGates)).Get("/v1/work-orders/{id}/verification/permissions", s.getVerificationPermissions)
 	r.With(s.requireMCPAuth).Post("/v1/work-orders/{id}/verification/{operation}", s.verificationOrder)
 	r.With(s.requireMCPAuth).Get("/v1/work-orders/{id}/verification/{operation}", s.verificationOrder)
-	r.With(s.requireWorkerAuth).Post("/v1/worker/work-orders/{id}/verification/{operation}", s.verificationOrder)
-	r.With(s.requireWorkerAuth).Get("/v1/worker/work-orders/{id}/verification/{operation}", s.verificationOrder)
 	r.With(s.requireMCPAuth).Get("/v1/work-orders/{id}/pull-request-template", s.getSubmissionTemplate)
 	r.With(s.requireMCPAuth).Post("/v1/work-orders/{id}/submit-for-review", s.submitWorkOrderReview)
 	r.With(s.requireMCPAuth).Post("/v1/work-orders/{id}/context-refresh", s.refreshWorkOrderContext)
@@ -695,14 +644,6 @@ func (s *Server) requireMCPAuth(next http.Handler) http.Handler {
 		if !errors.Is(verifyErr, core.ErrInvalidCredential) {
 			writeCredentialVerificationError(w, verifyErr)
 			return
-		}
-		if s.Workers != nil {
-			ctx, worker, err := s.Workers.Authenticate(r.Context(), provided, "")
-			if err == nil {
-				ctx = context.WithValue(ctx, workerContextKey{}, worker)
-				next.ServeHTTP(w, r.WithContext(ctx))
-				return
-			}
 		}
 		w.Header().Set("WWW-Authenticate", "Bearer")
 		http.Error(w, "unauthorized", http.StatusUnauthorized)
@@ -1119,7 +1060,7 @@ func (s *Server) mergeTaskAtGate(w http.ResponseWriter, r *http.Request, task co
 		http.Error(w, "merge was not confirmed by the forge", http.StatusConflict)
 		return
 	}
-	s.taskRunReadiness.forget(r.Context(), task.ID)
+	s.mergeReadiness.forget(r.Context(), task.ID)
 	writeJSON(w, http.StatusOK, updated)
 }
 
@@ -1454,7 +1395,6 @@ type reviewItem struct {
 	ReviewRecovery            *store.ReviewRecoveryState            `json:"review_recovery,omitempty"`
 	InterruptedReviewRecovery *store.InterruptedReviewRecoveryState `json:"interrupted_review_recovery,omitempty"`
 	Stalled                   *store.StalledState                   `json:"stalled,omitempty"`
-	WorkerStatus              *workerservice.TaskWorkerStatus       `json:"worker_status,omitempty"`
 	MergeReadiness            *dispatch.MergeReadiness              `json:"merge_readiness,omitempty"`
 	Attachments               []core.Artifact                       `json:"attachments"`
 	VerificationEvidence      []core.Artifact                       `json:"verification_evidence"`
@@ -2403,7 +2343,7 @@ func (s *Server) getTaskActivity(w http.ResponseWriter, r *http.Request) {
 	// The task, its events, and its orders are read once per request and
 	// every fold takes these copies (component-http-api, Request-scoped
 	// detail reads).
-	readStart := s.taskRunReadiness.now()
+	readStart := s.mergeReadiness.now()
 	task, err := s.Store.GetTask(r.Context(), id)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusNotFound)
@@ -2417,7 +2357,7 @@ func (s *Server) getTaskActivity(w http.ResponseWriter, r *http.Request) {
 	approved := task.State == core.TaskApproved
 	gateMerge := task.State == core.TaskAwaiting && task.GateKind == core.GateKindMergeApproval
 	if (approved || gateMerge) && s.OnMergeReadiness != nil {
-		readiness, fresh, readinessErr := s.taskRunReadiness.readObserved(r.Context(), task, s.OnMergeReadiness, readStart)
+		readiness, fresh, readinessErr := s.mergeReadiness.readObserved(r.Context(), task, s.OnMergeReadiness, readStart)
 		switch {
 		case readinessErr != nil && approved:
 			// The merge action must never render without a successful
@@ -2498,35 +2438,7 @@ func (s *Server) getTaskActivity(w http.ResponseWriter, r *http.Request) {
 		}
 		pendingPlanRevision = pending
 	}
-	captures, err := s.Store.ListTaskTranscriptCaptures(r.Context(), id)
-	if err != nil {
-		log.Printf("load work-order transcript captures: %v", err)
-		http.Error(w, "internal server error", http.StatusInternalServerError)
-		return
-	}
-	var running []string
-	for _, order := range workOrders {
-		if order.State == core.WorkOrderClaimed && order.AttemptID != "" {
-			running = append(running, order.ID)
-		}
-	}
-	snapshots := map[string]core.WorkOrderActivitySnapshot{}
-	if len(running) > 0 {
-		if snapshots, err = s.Store.ListTaskActivitySnapshots(r.Context(), id, running); err != nil {
-			log.Printf("load work-order activity snapshot: %v", err)
-			http.Error(w, "internal server error", http.StatusInternalServerError)
-			return
-		}
-	}
 	for index := range workOrders {
-		if orderCaptures := captures[workOrders[index].ID]; len(orderCaptures) > 0 {
-			workOrders[index].TranscriptCaptures = orderCaptures
-		}
-		if workOrders[index].State == core.WorkOrderClaimed && workOrders[index].AttemptID != "" {
-			if snapshot, exists := snapshots[workOrders[index].ID]; exists && snapshot.AttemptID == workOrders[index].AttemptID {
-				workOrders[index].ActivitySnapshot = &snapshot
-			}
-		}
 		store.ApplyRecoveryRefusal(&workOrders[index], task, workOrders, pendingPlanRevision)
 		if workOrders[index].Stage != core.StageImplement {
 			continue
@@ -2566,15 +2478,6 @@ func (s *Server) getTaskActivity(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	attachments, verificationEvidence := taskDetailArtifacts(id, artifacts)
-	var workerStatus *workerservice.TaskWorkerStatus
-	// Worker status is advisory serviceability for every non-terminal task; a
-	// stored historical hold never suppresses it (component-work-orders;
-	// DEC-74(3)).
-	if s.Workers != nil && s.ConfigProvider != nil && !core.TaskTerminal(task.State) {
-		if cfg, cfgErr := s.ConfigProvider(r.Context()); cfgErr == nil {
-			workerStatus = s.Workers.TaskAvailability(r.Context(), cfg, task, workOrders)
-		}
-	}
 	stalled := store.StalledTask(workOrders)
 	if core.TaskTerminal(task.State) {
 		stalled = nil
@@ -2642,7 +2545,6 @@ func (s *Server) getTaskActivity(w http.ResponseWriter, r *http.Request) {
 		ReviewRecovery:            store.ReviewRecoveryNeeded(workOrders, events),
 		InterruptedReviewRecovery: store.InterruptedReviewRecoveryNeeded(task, store.CurrentReviewOrders(workOrders, events), events),
 		Stalled:                   stalled,
-		WorkerStatus:              workerStatus,
 		MergeReadiness:            mergeReadiness,
 		Attachments:               attachments,
 		VerificationEvidence:      verificationEvidence,

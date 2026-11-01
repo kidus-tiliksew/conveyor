@@ -178,6 +178,11 @@ func (s *Store) migrate(ctx context.Context) error {
 				return fmt.Errorf("SingleStore migration %s: %w", file.name, err)
 			}
 		}
+		if file.version == 28 {
+			if err := s.migrateLauncherRetirement(ctx); err != nil {
+				return fmt.Errorf("SingleStore migration %s: %w", file.name, err)
+			}
+		}
 		for _, statement := range strings.Split(file.sql, ";") {
 			if strings.TrimSpace(statement) == "" {
 				continue
@@ -295,6 +300,27 @@ func (s *Store) migrateReviewRoundSeatColumns(ctx context.Context) error {
 		nullableColumn{"work_orders", "declared_review_seats", "INT NULL"},
 		nullableColumn{"task_specs", "review_seats", "INT NULL"},
 	)
+}
+
+// migrateLauncherRetirement drops the work_orders continuation columns before
+// file 0028 drops the retired launcher tables (task 261101-699ace; DEC-94;
+// component-persistence, Launcher-record retirement). SingleStore has no
+// DROP COLUMN IF EXISTS and commits DDL implicitly, so each drop runs behind
+// an information_schema check and a retry after any committed drop converges.
+func (s *Store) migrateLauncherRetirement(ctx context.Context) error {
+	for _, column := range []string{"continuation_session_id", "continuation_attempt_id", "continuation_harness", "continuation_launch_environment"} {
+		exists, err := s.columnExists(ctx, "work_orders", column)
+		if err != nil {
+			return err
+		}
+		if !exists {
+			continue
+		}
+		if _, err := s.db.ExecContext(ctx, "ALTER TABLE work_orders DROP COLUMN "+column); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 type nullableColumn struct{ table, name, definition string }

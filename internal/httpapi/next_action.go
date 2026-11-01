@@ -74,7 +74,7 @@ var nextActionCapabilities = []core.Capability{core.CapabilityOperateGates, core
 func (s *Server) nextActionOptionsFor(ctx context.Context) (store.NextActionOptions, error) {
 	opts := store.NextActionOptions{Now: time.Now().UTC(), Capabilities: map[core.Capability]bool{}}
 	for _, capability := range nextActionCapabilities {
-		allowed, err := s.taskRunCapability(ctx, capability)
+		allowed, err := s.callerCapability(ctx, capability)
 		if err != nil {
 			return store.NextActionOptions{}, err
 		}
@@ -82,7 +82,7 @@ func (s *Server) nextActionOptionsFor(ctx context.Context) (store.NextActionOpti
 			opts.Capabilities[capability] = true
 		}
 	}
-	opts.MergeReadiness = s.taskRunReadiness.lastKnown
+	opts.MergeReadiness = s.mergeReadiness.lastKnown
 	return opts, nil
 }
 

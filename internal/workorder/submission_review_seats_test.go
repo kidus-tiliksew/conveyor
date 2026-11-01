@@ -428,13 +428,13 @@ func TestSubmitForReviewReviewSeatsAfterVerify(t *testing.T) {
 	if records, _ := f.st.ListReviewRoundSeats(f.ctx, f.task.ID); len(records) != 0 {
 		t.Fatalf("records before verification: %+v", records)
 	}
-	claim := core.WorkOrderClaim{WorkerID: "verifier", ClaimantID: "verifier", SessionID: "rs4-verify", ClientToken: "rs4-verify-token", Lease: time.Hour, ExecutionTimeout: time.Hour,
+	claim := core.WorkOrderClaim{ClaimantID: core.TaskRunClaimantID("verifier"), SessionID: "rs4-verify", ClientToken: "rs4-verify-token", Lease: time.Hour, ExecutionTimeout: time.Hour,
 		Requirements: []core.ServedRequirementContext{{ID: "req-fixture", Version: 1, Statements: []core.RequirementStatement{{ID: "REQ-1", Statement: "Observe", AcceptanceCriteria: []core.AcceptanceCriterion{{ID: "AC-1.1", Statement: "Observed"}}}}}}}
 	verify, err = storetest.ClaimWorkOrder(f.ctx, f.st, verify.ID, claim)
 	if err != nil {
 		t.Fatal(err)
 	}
-	workerCtx := store.WithActor(f.ctx, store.Actor{ID: "worker:verifier", Role: core.ActorWorker})
+	workerCtx := store.WithActor(f.ctx, store.Actor{ID: store.UserActorID("verifier"), Role: core.ActorUser})
 	raw, err := json.Marshal(VerificationPrepareRequest{RequestKey: "rs4-prepare"})
 	if err != nil {
 		t.Fatal(err)
@@ -444,7 +444,7 @@ func TestSubmitForReviewReviewSeatsAfterVerify(t *testing.T) {
 		t.Fatal(err)
 	}
 	snapshot := prepared.(store.VerificationSnapshot)
-	access := store.VerificationAccess{TaskID: f.task.ID, WorkOrderID: verify.ID, WorkOrderAttemptID: verify.AttemptID, ClientToken: claim.ClientToken, Claim: core.WorkOrderClaimIdentity{WorkerID: claim.WorkerID, ClaimantID: claim.ClaimantID, SessionID: claim.SessionID}}
+	access := store.VerificationAccess{TaskID: f.task.ID, WorkOrderID: verify.ID, WorkOrderAttemptID: verify.AttemptID, ClientToken: claim.ClientToken, Claim: core.WorkOrderClaimIdentity{ClaimantID: claim.ClaimantID, SessionID: claim.SessionID}}
 	storetest.SealEmptyVerificationFixture(t, workerCtx, f.st, access, snapshot.Contexts[0], "AC-1.1")
 	if err = f.dispatcher.DispatchNow(f.ctx, f.task.ID); err != nil {
 		t.Fatal(err)

@@ -189,7 +189,7 @@ func (s *Service) verificationAccess(ctx context.Context, id, session, token str
 	if err != nil || task.Workspace != ws {
 		return refuse()
 	}
-	a := store.VerificationAccess{TaskID: task.ID, WorkOrderID: o.ID, WorkOrderAttemptID: o.AttemptID, ClientToken: token, Claim: core.WorkOrderClaimIdentity{WorkerID: o.WorkerID, ClaimantID: o.ClaimantID, SessionID: session}}
+	a := store.VerificationAccess{TaskID: task.ID, WorkOrderID: o.ID, WorkOrderAttemptID: o.AttemptID, ClientToken: token, Claim: core.WorkOrderClaimIdentity{ClaimantID: o.ClaimantID, SessionID: session}}
 	actor := store.ActorFromContext(ctx)
 	if !write && session == "" && actor.Role == core.ActorUser {
 		a.UserID = strings.TrimPrefix(actor.ID, "user:")
@@ -235,7 +235,7 @@ func (s *Service) verificationCheckpointReplayAccess(ctx context.Context, id, se
 		if events[i].Kind != "work_order.claimed" || events[i].JobID != o.JobID || json.Unmarshal(events[i].Payload, &claimed) != nil || claimed.ID != o.ID || claimed.AttemptID != o.LastAttemptID || claimed.SessionID != session {
 			continue
 		}
-		a := store.VerificationAccess{TaskID: task.ID, WorkOrderID: o.ID, WorkOrderAttemptID: o.LastAttemptID, ClientToken: token, Claim: core.WorkOrderClaimIdentity{WorkerID: claimed.WorkerID, ClaimantID: claimed.ClaimantID, SessionID: session}}
+		a := store.VerificationAccess{TaskID: task.ID, WorkOrderID: o.ID, WorkOrderAttemptID: o.LastAttemptID, ClientToken: token, Claim: core.WorkOrderClaimIdentity{ClaimantID: claimed.ClaimantID, SessionID: session}}
 		return backend, a, o, nil
 	}
 	return refuse()

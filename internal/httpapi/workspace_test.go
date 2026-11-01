@@ -10,7 +10,6 @@ import (
 
 	"github.com/kidus-tiliksew/conveyor/internal/config"
 	"github.com/kidus-tiliksew/conveyor/internal/store"
-	workerservice "github.com/kidus-tiliksew/conveyor/internal/worker"
 	"github.com/kidus-tiliksew/conveyor/internal/workorder"
 	"gopkg.in/yaml.v3"
 )
@@ -60,7 +59,6 @@ func composedRuntimeServer(t *testing.T) (*Server, store.Backend, *config.Config
 	server.Deployment = deployment
 	server.ConfigProvider = provider
 	server.WorkOrders = &workorder.Service{Store: backend, ConfigProvider: provider}
-	server.Workers = &workerservice.Service{Store: backend, WorkOrders: server.WorkOrders, ConfigProvider: provider}
 	return server, backend, deployment, ctx
 }
 
