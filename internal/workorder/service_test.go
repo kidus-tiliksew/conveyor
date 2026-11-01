@@ -1002,9 +1002,10 @@ func TestReviewWorkOrderContextUsesMCPCompletionContract(t *testing.T) {
 	}
 }
 
-// The delivered implement contract names both session modes and the
-// self-claimed lease cadence (req-agent-skills AC-2.2, AC-3.1, AC-3.8; DEC-44).
-func TestImplementWorkOrderContextStatesSessionModesAndLeaseCadence(t *testing.T) {
+// The delivered implement contract states the self-claimed delivery loop and
+// lease cadence and describes no launched session (req-agent-skills AC-2.2,
+// AC-3.1; DEC-97(1), DEC-97(2)).
+func TestImplementWorkOrderContextStatesSelfClaimedLoopAndLeaseCadence(t *testing.T) {
 	ctx := store.WithWorkspace(store.WithActor(t.Context(), store.SystemActor()), "demo")
 	st := store.NewMemory()
 	task := core.Task{ID: "session-modes", Workspace: "demo", State: core.TaskRunning, NextStage: core.StageImplement, CreatedAt: time.Now().UTC()}
@@ -1032,8 +1033,8 @@ func TestImplementWorkOrderContextStatesSessionModesAndLeaseCadence(t *testing.T
 	}
 	normalized := strings.Join(strings.Fields(got.RolePrompt), " ")
 	for name, required := range map[string]string{
-		"launched exit":             "A launched session reports the handoff and exits; it never polls `await_review`",
-		"self-claimed continuation": "A self-claimed session reports the handoff and continues with the `conveyor-work` playbook's self-claimed delivery loop",
+		"self-claimed claim":        "You called `claim_work_order` yourself. Conveyor launches no agent session",
+		"self-claimed continuation": "the self-claimed session reports the handoff and continues with the `conveyor-work` playbook's self-claimed delivery loop",
 		"self-claimed await":        "awaits the verdict with `await_review`",
 		"lease sizing":              "Claim with a `lease_seconds` that covers the longest expected step, up to the 3600-second maximum",
 		"milestone renewal":         "Call `renew_work_order` at each progress milestone and before any step expected to outlast one third of the remaining lease",
@@ -1044,6 +1045,9 @@ func TestImplementWorkOrderContextStatesSessionModesAndLeaseCadence(t *testing.T
 	}
 	if strings.Contains(normalized, "Never poll `await_review` from an implementation stage session") {
 		t.Errorf("delivered implement role still forbids await_review for every session: %s", got.RolePrompt)
+	}
+	if strings.Contains(strings.ToLower(normalized), "launched session") {
+		t.Errorf("delivered implement role still describes a launched session: %s", got.RolePrompt)
 	}
 }
 
