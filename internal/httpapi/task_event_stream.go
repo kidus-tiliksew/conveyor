@@ -9,12 +9,13 @@ import (
 	"net/http"
 	"time"
 
+	"github.com/kidus-tiliksew/conveyor/internal/changes"
 	"github.com/kidus-tiliksew/conveyor/internal/core"
 	"github.com/kidus-tiliksew/conveyor/internal/store"
 )
 
 // taskEventStreamReader is the bounded chronological read a live task stream
-// polls.
+// makes on its first read and on each wake.
 type taskEventStreamReader interface {
 	ReadTaskEventStream(ctx context.Context, query store.TaskEventStreamQuery) (store.TaskEventStreamPage, error)
 }
@@ -122,7 +123,8 @@ func writeTaskActivityFrame(w io.Writer, event core.Event) error {
 	return err
 }
 
-// taskEventFingerprintReader is the one window read a notify stream polls.
+// taskEventFingerprintReader is the one window read a notify stream makes
+// on start and on each wake.
 type taskEventFingerprintReader interface {
 	ReadTaskEventWindow(ctx context.Context, query store.TaskEventWindowQuery) (store.TaskEventWindow, error)
 }
@@ -172,7 +174,7 @@ func (s *taskEventNotifyStream) start(ctx context.Context, w io.Writer) error {
 }
 
 // poll writes one activity frame when the fingerprint differs from the last
-// one written, however many commits happened since, and records the new
+// one written, however many commits happened since the previous wake, and records the new
 // fingerprint only after the write succeeds.
 func (s *taskEventNotifyStream) poll(ctx context.Context, w io.Writer) error {
 	current, err := s.fingerprint(ctx)
@@ -189,23 +191,109 @@ func (s *taskEventNotifyStream) poll(ctx context.Context, w io.Writer) error {
 	return nil
 }
 
-func (s *Server) taskEventStreamTicker() (<-chan time.Time, func()) {
-	if s.taskEventStreamTicks != nil {
-		return s.taskEventStreamTicks()
+// streamKeepaliveInterval is how often an open stream writes an SSE comment
+// so proxies keep the connection open. A keep-alive reads nothing.
+const streamKeepaliveInterval = 25 * time.Second
+
+const keepaliveFrame = ": keepalive\n\n"
+
+// streamWake is what a pushed stream waits on after its first read: change
+// notices from the hub, the peer tail, and, for the notify mode in tests,
+// taskEventStreamTicks. The stream opens it before its first read, so a
+// commit after that read leaves a notice buffered for the first wait
+// (component-http-api, "When a task stream reads"; DEC-99(1)).
+type streamWake struct {
+	subscription *changes.Subscription
+	peer         <-chan time.Time
+	ticks        <-chan time.Time
+	keepalive    <-chan time.Time
+	stops        []func()
+}
+
+// openTaskWake subscribes to the task's notices. ticks selects the notify
+// mode's test hook as an extra notice source.
+func (s *Server) openTaskWake(workspace, taskID string, ticks bool) *streamWake {
+	wake := s.openWake(s.Changes.SubscribeTask(workspace, taskID))
+	if ticks && s.taskEventStreamTicks != nil {
+		c, stop := s.taskEventStreamTicks()
+		wake.ticks = c
+		wake.stops = append(wake.stops, stop)
 	}
-	ticker := time.NewTicker(time.Second)
-	return ticker.C, ticker.Stop
+	return wake
+}
+
+// openWorkspaceWake subscribes to every task notice of the workspace.
+func (s *Server) openWorkspaceWake(workspace string) *streamWake {
+	return s.openWake(s.Changes.Subscribe(workspace, changes.Task))
+}
+
+func (s *Server) openWake(subscription *changes.Subscription) *streamWake {
+	wake := &streamWake{subscription: subscription}
+	wake.stops = append(wake.stops, subscription.Close)
+	if s.PeerTail > 0 {
+		ticker := time.NewTicker(s.PeerTail)
+		wake.peer = ticker.C
+		wake.stops = append(wake.stops, ticker.Stop)
+	}
+	if s.StreamKeepalive != nil {
+		c, stop := s.StreamKeepalive()
+		wake.keepalive = c
+		wake.stops = append(wake.stops, stop)
+	} else {
+		ticker := time.NewTicker(streamKeepaliveInterval)
+		wake.keepalive = ticker.C
+		wake.stops = append(wake.stops, ticker.Stop)
+	}
+	return wake
+}
+
+func (w *streamWake) close() {
+	for _, stop := range w.stops {
+		stop()
+	}
+}
+
+// wait blocks until a notice, a peer-tail tick, or a test tick arrives, and
+// returns the notice; a tick returns the zero notice, which names no task.
+// Keep-alive ticks write a comment and keep waiting. It reports false when
+// the request ended or a keep-alive write failed.
+func (w *streamWake) wait(ctx context.Context, out io.Writer, flusher http.Flusher) (changes.Notice, bool) {
+	for {
+		select {
+		case <-ctx.Done():
+			return changes.Notice{}, false
+		case notice := <-w.subscription.C():
+			return notice, true
+		case <-w.peer:
+			return changes.Notice{}, true
+		case <-w.ticks:
+			return changes.Notice{}, true
+		case <-w.keepalive:
+			if _, err := io.WriteString(out, keepaliveFrame); err != nil {
+				return changes.Notice{}, false
+			}
+			flusher.Flush()
+		}
+	}
+}
+
+// taskStreamWorkspace is the workspace whose notices a task stream receives:
+// the task's own, or the request's when the task names none.
+func taskStreamWorkspace(ctx context.Context, task core.Task) string {
+	if task.Workspace != "" {
+		return task.Workspace
+	}
+	workspace, _ := store.WorkspaceFromContext(ctx)
+	return workspace
 }
 
 // streamTaskEventNotifications serves mode=notify: ready after the first
-// fingerprint, then one activity frame per changed fingerprint per poll. A
+// fingerprint, then one activity frame per changed fingerprint per wake. A
 // read failure writes an error frame and ends the stream; a write failure
 // ends it silently.
-func (s *Server) streamTaskEventNotifications(w http.ResponseWriter, flusher http.Flusher, r *http.Request, taskID string) {
+func (s *Server) streamTaskEventNotifications(w http.ResponseWriter, flusher http.Flusher, r *http.Request, taskID string, wake *streamWake) {
 	ctx := r.Context()
 	stream := newTaskEventNotifyStream(s.Store, taskID)
-	ticks, stop := s.taskEventStreamTicker()
-	defer stop()
 	fail := func(err error) {
 		if errors.Is(err, errTaskEventStreamRead) {
 			_, _ = w.Write([]byte("event: error\ndata: {}\n\n"))
@@ -218,10 +306,8 @@ func (s *Server) streamTaskEventNotifications(w http.ResponseWriter, flusher htt
 	}
 	flusher.Flush()
 	for {
-		select {
-		case <-ctx.Done():
+		if _, ok := wake.wait(ctx, w, flusher); !ok {
 			return
-		case <-ticks:
 		}
 		if err := stream.poll(ctx, w); err != nil {
 			fail(err)
