@@ -300,3 +300,103 @@ func TestStartupGitHubReadAppliesMergedPullRequest(t *testing.T) {
 		t.Fatalf("lines=%v", got)
 	}
 }
+
+// TestStartupPullRequestReadCoversWaitingTasks: the start-up pull_requests
+// pass reads, against a fake forge, the pull request of a parked task with
+// an open recorded pull request that GitHub reports merged and of a running
+// task without an approved review. Each observation goes through
+// ReconcileObservedPullRequest, so neither task changes state and no merge is
+// requested. A closed task and a parked task without a recorded pull request
+// are not read. A branch without a pull request writes nothing; a failed read
+// writes one error line and is not retried (req-quiet-idle-runtime AC-3.4;
+// component-runtime, Start-up checks and background loops).
+func TestStartupPullRequestReadCoversWaitingTasks(t *testing.T) {
+	ctx := forgeReconcileCtx()
+	st := store.NewMemory()
+	create := func(id string, state core.TaskState) core.Task {
+		t.Helper()
+		task := core.Task{ID: id, Workspace: "test", Repo: "app", BaseBranch: "main", Branch: "conveyor/" + id, State: state, NextStage: core.StageImplement, CreatedAt: time.Now().UTC()}
+		if err := st.CreateTask(ctx, task); err != nil {
+			t.Fatal(err)
+		}
+		return task
+	}
+	parked := create("parked-open-pr", core.TaskParked)
+	openPullRequest(t, st, ctx, parked.ID, 51, "parked-head")
+	running := create("running-unreviewed", core.TaskRunning)
+	queued := create("queued-no-pr", core.TaskQueued)
+	failing := create("running-forge-error", core.TaskRunning)
+	closed := create("closed-with-pr", core.TaskClosed)
+	openPullRequest(t, st, ctx, closed.ID, 52, "closed-head")
+	create("parked-no-pr", core.TaskParked)
+	for _, task := range []core.Task{parked, running, queued, failing, closed} {
+		current, err := st.GetTask(ctx, task.ID)
+		if err != nil || current.State != task.State {
+			t.Fatalf("seeded task %s=%+v err=%v", task.ID, current, err)
+		}
+	}
+
+	d := newForgeDispatcher(st)
+	forbidMergeCalls(t, d)
+	var mu sync.Mutex
+	reads := map[string]int{}
+	d.ViewPullRequest = func(_ context.Context, repo, branch string) (githubtrigger.PullRequest, error) {
+		mu.Lock()
+		reads[branch]++
+		mu.Unlock()
+		if repo != "acme/app" {
+			t.Errorf("read repository %s", repo)
+		}
+		switch branch {
+		case parked.Branch:
+			return mergedPull(parked, 51, "parked-head", "landed-outside", "github-operator"), nil
+		case running.Branch:
+			return githubtrigger.PullRequest{Number: 53, State: "open", Mergeable: "MERGEABLE", HeadSHA: "running-head", HeadRef: running.Branch}, nil
+		case queued.Branch:
+			return githubtrigger.PullRequest{}, &githubtrigger.Error{Category: githubtrigger.ForgeStatus, Err: fmt.Errorf("%w for branch %s", githubtrigger.ErrPullRequestNotFound, branch)}
+		default:
+			return githubtrigger.PullRequest{}, errors.New("GitHub unavailable")
+		}
+	}
+	log := &lines{}
+	sleeps := 0
+	checks := &StartupChecks{Dispatcher: d, Logf: log.logf, Sleep: func(ctx context.Context, _ time.Duration) error {
+		sleeps++
+		return ctx.Err()
+	}}
+	checks.RunGitHub(ctx, []string{"test"})
+	checks.Wait()
+
+	want := map[string]int{parked.Branch: 1, running.Branch: 1, queued.Branch: 1, failing.Branch: 1}
+	mu.Lock()
+	if len(reads) != len(want) {
+		t.Fatalf("reads=%v, want %v", reads, want)
+	}
+	for branch, n := range want {
+		if reads[branch] != n {
+			t.Fatalf("reads=%v, want %v", reads, want)
+		}
+	}
+	mu.Unlock()
+	for _, task := range []core.Task{parked, running, queued, failing} {
+		current, err := st.GetTask(ctx, task.ID)
+		if err != nil || current.State != task.State {
+			t.Fatalf("task %s after the start-up read=%+v err=%v, want state %s", task.ID, current, err, task.State)
+		}
+		events, err := st.ListEvents(ctx, task.ID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, event := range events {
+			if strings.HasPrefix(event.Kind, "merge.") || event.Kind == store.DriftRepairedEvent {
+				t.Fatalf("task %s recorded %s from a start-up read", task.ID, event.Kind)
+			}
+		}
+	}
+	if got := log.matching("level=error", "start-up GitHub read failed", "workspace=test", "task="+failing.ID, "GitHub unavailable"); len(got) != 1 {
+		t.Fatalf("failure lines=%v", log.matching(""))
+	}
+	if all := log.matching(""); len(all) != 1 || sleeps != 0 {
+		t.Fatalf("lines=%v sleeps=%d, want only the failed read and no retry", all, sleeps)
+	}
+}

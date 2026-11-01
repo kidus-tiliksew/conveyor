@@ -9,6 +9,7 @@ import (
 
 	"github.com/kidus-tiliksew/conveyor/internal/core"
 	"github.com/kidus-tiliksew/conveyor/internal/store"
+	"github.com/kidus-tiliksew/conveyor/internal/trigger/github"
 )
 
 // Start-up checks replace the minute reconcile tick: each repair pass runs
@@ -17,8 +18,11 @@ import (
 // passes on a timer (component-runtime, Start-up checks and background loops;
 // req-quiet-idle-runtime REQ-4, AC-4.1 to AC-4.3, AC-3.4; DEC-99(6)).
 
-// StartupMergeReadinessPass names the start-up GitHub read.
-const StartupMergeReadinessPass = "merge_readiness"
+// The start-up GitHub reads (req-quiet-idle-runtime AC-3.4).
+const (
+	StartupMergeReadinessPass = "merge_readiness"
+	StartupPullRequestsPass   = "pull_requests"
+)
 
 const (
 	startupRetryInitial = 5 * time.Second
@@ -86,13 +90,100 @@ func (c *StartupChecks) RunDrift(ctx context.Context, workspaces []string) {
 }
 
 // RunGitHub reads GitHub once for every task that waits on it in each
-// workspace: ReconcileMergeReadiness reads each task in a state
-// mergeReadinessTaskStates selects (req-quiet-idle-runtime AC-3.4). The
-// daemon calls it once the server is wired and before it serves requests.
+// workspace (req-quiet-idle-runtime AC-3.4). ReconcileMergeReadiness runs
+// unchanged; the pull_requests pass then reads the pull request of every task
+// in the union of mergeReadinessTaskStates and the open tasks with a recorded
+// pull request. The daemon calls it once the server is wired and before it
+// serves requests (component-runtime, Start-up checks and background loops).
 func (c *StartupChecks) RunGitHub(ctx context.Context, workspaces []string) {
 	for _, workspace := range workspaces {
 		c.run(ctx, workspace, startupPass{StartupMergeReadinessPass, c.Dispatcher.ReconcileMergeReadiness})
+		c.run(ctx, workspace, startupPass{StartupPullRequestsPass, c.readPullRequests})
 	}
+}
+
+// readPullRequests reads, under the workspace GitHub App identity
+// (Dispatcher.ViewPullRequest), the branch pull request of every task that
+// waits on GitHub and hands each observation to ReconcileObservedPullRequest,
+// the path the repository monitor uses. That path records a merge only for a
+// task its eligibility rules accept and never requests one, so reading a
+// parked, queued, or running task never merges it. A failed read writes one
+// error line and is not retried, so no GitHub call repeats on a timer; a
+// failed candidate read fails the pass, which retries it. It returns the
+// number of pull requests read.
+func (c *StartupChecks) readPullRequests(ctx context.Context) (int, error) {
+	d := c.Dispatcher
+	candidates, err := startupPullRequestCandidates(ctx, d.Store)
+	if err != nil {
+		return 0, err
+	}
+	if len(candidates) == 0 {
+		return 0, nil
+	}
+	cfg, err := d.currentConfig(ctx)
+	if err != nil {
+		return 0, err
+	}
+	workspace, _ := store.WorkspaceFromContext(ctx)
+	read := 0
+	for _, task := range candidates {
+		if err := ctx.Err(); err != nil {
+			return read, err
+		}
+		repo, ok := cfg.Repo(task.Repo)
+		if !ok || repo.GitHub == "" || task.Branch == "" || d.ViewPullRequest == nil {
+			continue
+		}
+		pr, viewErr := d.ViewPullRequest(ctx, repo.GitHub, task.Branch)
+		switch {
+		case errors.Is(viewErr, github.ErrPullRequestNotFound):
+			// GitHub answered: the branch has no pull request to apply.
+			read++
+		case viewErr != nil:
+			c.logf(`level=error msg="start-up GitHub read failed" workspace=%s task=%s repository=%s err=%v`, workspace, task.ID, repo.GitHub, viewErr)
+		default:
+			read++
+			if _, err := d.ReconcileObservedPullRequest(ctx, task.Repo, repo.GitHub, task.ID, pr); err != nil {
+				c.logf(`level=error msg="start-up GitHub read failed" workspace=%s task=%s repository=%s err=%v`, workspace, task.ID, repo.GitHub, err)
+			}
+		}
+	}
+	return read, nil
+}
+
+// startupPullRequestCandidates is the union, in store order and without
+// duplicates, of the tasks in a state mergeReadinessTaskStates selects and the
+// open tasks, parked included, with a recorded pull_request.opened event.
+func startupPullRequestCandidates(ctx context.Context, st store.Store) ([]core.Task, error) {
+	waiting, err := st.ListTasksFiltered(ctx, store.TaskFilter{States: mergeReadinessTaskStates})
+	if err != nil {
+		return nil, err
+	}
+	open, err := st.ListTasksFiltered(ctx, store.TaskFilter{Open: true})
+	if err != nil {
+		return nil, err
+	}
+	ids := make([]string, 0, len(open))
+	for _, task := range open {
+		ids = append(ids, task.ID)
+	}
+	recorded, err := st.ListMonitorPullRequestEventsForTasks(ctx, ids)
+	if err != nil {
+		return nil, err
+	}
+	seen := make(map[string]bool, len(waiting)+len(open))
+	candidates := make([]core.Task, 0, len(waiting))
+	for _, task := range waiting {
+		seen[task.ID] = true
+		candidates = append(candidates, task)
+	}
+	for _, task := range open {
+		if !seen[task.ID] && len(recorded[task.ID]) > 0 {
+			seen[task.ID] = true
+			candidates = append(candidates, task)
+		}
+	}
+	return candidates, nil
 }
 
 // Wait returns once every background retry has ended.
