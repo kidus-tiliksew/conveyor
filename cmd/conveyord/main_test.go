@@ -17,6 +17,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/kidus-tiliksew/conveyor/internal/changes"
 	"github.com/kidus-tiliksew/conveyor/internal/config"
 	"github.com/kidus-tiliksew/conveyor/internal/core"
 	"github.com/kidus-tiliksew/conveyor/internal/dispatch"
@@ -470,29 +471,60 @@ repos:
 	}
 }
 
+// queuePeerModeBackend answers EnablePeers and, when reader is set, offers
+// PeerMarks.
+type queuePeerModeBackend struct {
+	notifies bool
+	called   bool
+}
+
+func (b *queuePeerModeBackend) EnablePeers(context.Context) bool {
+	b.called = true
+	return b.notifies
+}
+
+type queuePeerModeReader struct{ queuePeerModeBackend }
+
+func (*queuePeerModeReader) PeerMarks(context.Context) (map[string]changes.PeerMark, error) {
+	return nil, nil
+}
+
+// TestQueuePeerMode: the daemon's peer mode selection (component-runtime,
+// Peers). Off selects no peer check and calls no EnablePeers; a notifying
+// backend selects no check; a backend that does not notify and offers
+// PeerMarks selects one daemon-wide check at logqueue.PeerTailInterval; one
+// that offers neither writes an error line and selects none.
 func TestQueuePeerMode(t *testing.T) {
 	for _, tc := range []struct {
-		name     string
-		peers    bool
-		notifies bool
-		want     time.Duration
-		called   bool
-		logged   string
+		name    string
+		peers   bool
+		backend interface {
+			changes.PeerBackend
+			wasCalled() bool
+		}
+		check  bool
+		called bool
+		logged string
 	}{
-		{name: "off", want: 0, logged: "runtime peers: off"},
-		{name: "on with notification", peers: true, notifies: true, want: 0, called: true, logged: "runtime peers: PostgreSQL change notification"},
-		{name: "on without notification", peers: true, want: logqueue.PeerTailInterval, called: true, logged: "runtime peers: tailing each workspace every 30s"},
+		{name: "off", backend: &queuePeerModeReader{}, logged: "runtime peers: off"},
+		{name: "on with notification", peers: true, backend: &queuePeerModeReader{queuePeerModeBackend{notifies: true}}, called: true, logged: "runtime peers: PostgreSQL change notification"},
+		{name: "on without notification", peers: true, backend: &queuePeerModeReader{}, check: true, called: true, logged: "runtime peers: one peer check every 30s for the whole daemon"},
+		{name: "on without notification or peer check", peers: true, backend: &queuePeerModeBackend{}, called: true, logged: `level=error msg="runtime peers: the backend neither notifies peers nor offers a peer check; no peer check runs"`},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			called := false
 			var lines []string
-			got := queuePeerTail(context.Background(), tc.peers, func(context.Context) bool {
-				called = true
-				return tc.notifies
-			}, func(format string, args ...any) { lines = append(lines, fmt.Sprintf(format, args...)) })
-			if got != tc.want || called != tc.called || len(lines) != 1 || lines[0] != tc.logged {
-				t.Fatalf("tail=%s called=%t lines=%q", got, called, lines)
+			hub := changes.NewHub()
+			got := changes.SelectPeerCheck(context.Background(), tc.peers, tc.backend, hub, logqueue.PeerTailInterval, func(format string, args ...any) {
+				lines = append(lines, fmt.Sprintf(format, args...))
+			})
+			if (got != nil) != tc.check || tc.backend.wasCalled() != tc.called || len(lines) != 1 || lines[0] != tc.logged {
+				t.Fatalf("check=%v called=%t lines=%q", got, tc.backend.wasCalled(), lines)
+			}
+			if got != nil && (got.Interval != logqueue.PeerTailInterval || got.Hub != hub) {
+				t.Fatalf("check=%+v", got)
 			}
 		})
 	}
 }
+
+func (b *queuePeerModeBackend) wasCalled() bool { return b.called }

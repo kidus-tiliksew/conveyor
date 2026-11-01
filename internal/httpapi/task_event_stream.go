@@ -198,13 +198,14 @@ const streamKeepaliveInterval = 25 * time.Second
 const keepaliveFrame = ": keepalive\n\n"
 
 // streamWake is what a pushed stream waits on after its first read: change
-// notices from the hub, the peer tail, and, for the notify mode in tests,
-// taskEventStreamTicks. The stream opens it before its first read, so a
+// notices from the hub, including the workspace-wide task notices the
+// daemon-wide peer check republishes, and, for the notify mode in tests,
+// taskEventStreamTicks. It keeps no peer timer (feature-quiet-idle-runtime,
+// Peers; req-quiet-idle-runtime AC-1.3). The stream opens it before its first read, so a
 // commit after that read leaves a notice buffered for the first wait
 // (component-http-api, "When a task stream reads"; DEC-99(1)).
 type streamWake struct {
 	subscription *changes.Subscription
-	peer         <-chan time.Time
 	ticks        <-chan time.Time
 	keepalive    <-chan time.Time
 	stops        []func()
@@ -230,11 +231,6 @@ func (s *Server) openWorkspaceWake(workspace string) *streamWake {
 func (s *Server) openWake(subscription *changes.Subscription) *streamWake {
 	wake := &streamWake{subscription: subscription}
 	wake.stops = append(wake.stops, subscription.Close)
-	if s.PeerTail > 0 {
-		ticker := time.NewTicker(s.PeerTail)
-		wake.peer = ticker.C
-		wake.stops = append(wake.stops, ticker.Stop)
-	}
 	if s.StreamKeepalive != nil {
 		c, stop := s.StreamKeepalive()
 		wake.keepalive = c
@@ -253,7 +249,7 @@ func (w *streamWake) close() {
 	}
 }
 
-// wait blocks until a notice, a peer-tail tick, or a test tick arrives, and
+// wait blocks until a notice or a test tick arrives, and
 // returns the notice; a tick returns the zero notice, which names no task.
 // Keep-alive ticks write a comment and keep waiting. It reports false when
 // the request ended or a keep-alive write failed.
@@ -264,8 +260,6 @@ func (w *streamWake) wait(ctx context.Context, out io.Writer, flusher http.Flush
 			return changes.Notice{}, false
 		case notice := <-w.subscription.C():
 			return notice, true
-		case <-w.peer:
-			return changes.Notice{}, true
 		case <-w.ticks:
 			return changes.Notice{}, true
 		case <-w.keepalive:

@@ -60,11 +60,7 @@ type Service struct {
 	// Changes is the backend's change-notice hub; await_review reads again
 	// only on its task notices. Nil selects the hub of a store that exposes
 	// Changes() (component-work-orders, await_review; DEC-99(1)).
-	Changes *changes.Hub
-	// PeerTail, when positive, also wakes await_review on that period.
-	// conveyord sets it only for peers on a backend without change
-	// notification (feature-quiet-idle-runtime, Peers).
-	PeerTail    time.Duration
+	Changes     *changes.Hub
 	consultedMu sync.Mutex
 	consulted   map[string]struct{}
 }
@@ -1615,14 +1611,11 @@ func (s *Service) AwaitReview(ctx context.Context, id, session string, wait time
 	if err != nil {
 		return nil, err
 	}
+	// The subscription also receives the workspace-wide task notices the
+	// daemon-wide peer check republishes; the call keeps no peer timer
+	// (feature-quiet-idle-runtime, Peers; req-quiet-idle-runtime AC-1.3).
 	subscription := s.changeHub().SubscribeTask(workspace, order.TaskID)
 	defer subscription.Close()
-	var peer <-chan time.Time
-	if s.PeerTail > 0 {
-		ticker := time.NewTicker(s.PeerTail)
-		defer ticker.Stop()
-		peer = ticker.C
-	}
 	for {
 		if result, resultErr := s.latestReviewResult(ctx, order.TaskID, order.UpdatedAt); resultErr == nil {
 			return result, nil
@@ -1635,7 +1628,6 @@ func (s *Service) AwaitReview(ctx context.Context, id, session string, wait time
 		case <-deadline.C:
 			return s.pendingReviewProgress(ctx, order.TaskID)
 		case <-subscription.C():
-		case <-peer:
 		}
 	}
 }

@@ -2,6 +2,7 @@ package httpapi
 
 import (
 	"context"
+	"fmt"
 	"strings"
 	"sync"
 	"testing"
@@ -265,7 +266,6 @@ func TestTaskEventNotifyStreamTestHookIsANoticeSource(t *testing.T) {
 	h := newPushHarness(t, "peer-task")
 	ticks := make(chan time.Time)
 	h.srv.taskEventStreamTicks = func() (<-chan time.Time, func()) { return ticks, func() {} }
-	h.srv.PeerTail = time.Hour
 	h.handler = h.srv.Handler()
 	connection := openNotifyStream(h.historyHarness, "peer-task", streamQuery(true))
 	defer connection.close()
@@ -287,24 +287,35 @@ func TestTaskEventNotifyStreamTestHookIsANoticeSource(t *testing.T) {
 	}
 }
 
-func TestTaskEventStreamPeerTailWakes(t *testing.T) {
-	h := newPushHarness(t, "tail-task")
-	h.srv.Changes = nil // a peer on a backend without notification hears no commit
-	h.srv.PeerTail = time.Millisecond
-	h.handler = h.srv.Handler()
-	connection := openNotifyStream(h.historyHarness, "tail-task", streamQuery(true))
-	defer connection.close()
-	if frame := <-connection.recorder.flushes; frame != readyFrame {
-		t.Fatalf("first frame=%q", frame)
-	}
-	h.commit(t, "tail-task", "merge.requested")
-	for {
-		frame := <-connection.recorder.flushes
-		if frame == activityFrame {
-			return
-		}
-		if frame != "" {
-			t.Fatalf("peer-tail frame=%q", frame)
-		}
+// TestTaskEventStreamWakesOnWorkspaceTaskNotice: on a daemon whose hub hears
+// no commit of another daemon, a task notice without a task ID for the
+// workspace, as the daemon-wide peer check publishes, makes each mode read
+// once; the server keeps no peer timer (feature-quiet-idle-runtime, Peers;
+// component-http-api, "When a task stream reads").
+func TestTaskEventStreamWakesOnWorkspaceTaskNotice(t *testing.T) {
+	for _, notify := range []bool{true, false} {
+		t.Run(fmt.Sprintf("notify=%t", notify), func(t *testing.T) {
+			h := newPushHarness(t, "peer-check-task")
+			daemon := changes.NewHub() // hears none of the store's commits
+			h.srv.Changes = daemon
+			h.handler = h.srv.Handler()
+			connection := openNotifyStream(h.historyHarness, "peer-check-task", streamQuery(notify))
+			defer connection.close()
+			first := <-connection.recorder.flushes
+			if notify && first != readyFrame {
+				t.Fatalf("first frame=%q", first)
+			}
+			reads := h.reads.readCount()
+			// Another daemon commits; this daemon's hub hears nothing.
+			h.commit(t, "peer-check-task", "merge.requested")
+			if got := h.reads.readCount(); got != reads {
+				t.Fatalf("a commit this daemon did not hear caused %d reads", got-reads)
+			}
+			daemon.Publish(changes.Notice{Workspace: historyWorkspace, Kind: changes.Task})
+			wantActivity(t, notify, <-connection.recorder.flushes, 1)
+			if got := h.reads.readCount(); got != reads+1 {
+				t.Fatalf("reads=%d, want one read for the peer notice", got-reads)
+			}
+		})
 	}
 }
