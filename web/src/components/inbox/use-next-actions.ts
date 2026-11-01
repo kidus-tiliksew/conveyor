@@ -18,15 +18,15 @@ export function nextActionQueryKey(workspace: string, taskId: string) {
 
 // The operator inbox (NA-6). The server orders it; the page renders that order.
 // It is read once without a band so every band's count comes from one
-// response; the page filters by band in the browser. No workspace event
-// stream exists, so it refreshes on a poll and on its own acts.
+// response; the page filters by band in the browser. It has no interval: the
+// workspace change stream, the task stream, its own acts, and window focus
+// refresh it (component-web-dashboard, Workspace change stream).
 export function useNextActions() {
   const { workspace } = useWorkspaceSelection()
   return useQuery({
     queryKey: nextActionsQueryKey(workspace),
     queryFn: ({ signal }) => fetchWholeInbox(workspace, signal),
     enabled: Boolean(workspace),
-    refetchInterval: 15_000,
   })
 }
 

@@ -2,6 +2,7 @@ import { expect, type Page } from '@playwright/test'
 import { test } from './helpers/bounded-detail'
 import { callerIdentity } from './helpers/caller-identity'
 import { serveNextActionsFromActivity } from './helpers/next-action-stub'
+import { controlWorkspaceChanges } from './helpers/workspace-changes'
 
 // Task detail opens on its Timeline tab; pin it so a persisted Flow choice
 // can never hide the activity these cases check (component-web-task-surfaces,
@@ -560,8 +561,13 @@ test('board sends the shared filter family to the whole-workspace activity query
   await expect(page.getByRole('tab', { name: 'Phase' })).toHaveCount(0)
 })
 
-test('activity polling is serialized, pauses while hidden, and cold-refreshes on resume', async ({ page }) => {
+// The workspace change stream drives the Board's activity passes; there is no
+// timer (component-web-dashboard, Workspace change stream).
+test('change-driven activity passes are serialized, pause while hidden, and cold-refresh on reconnect', async ({
+  page,
+}) => {
   const seen: string[] = []
+  const changes = await controlWorkspaceChanges(page)
   await page.addInitScript(() => {
     localStorage.setItem('conveyor-workspace', 'demo')
     localStorage.setItem('conveyor-task-filters:board:demo', JSON.stringify({ created: 'any' }))
@@ -574,9 +580,6 @@ test('activity polling is serialized, pauses while hidden, and cold-refreshes on
       visible = next
       document.dispatchEvent(new Event('visibilitychange'))
     }
-    const nativeSetInterval = window.setInterval.bind(window)
-    window.setInterval = ((handler: TimerHandler, timeout?: number, ...args: unknown[]) =>
-      nativeSetInterval(handler, timeout === 15_000 ? 50 : timeout, ...args)) as typeof window.setInterval
   })
   await routeBoard(page, seen)
   let requests = 0
@@ -612,13 +615,25 @@ test('activity polling is serialized, pauses while hidden, and cold-refreshes on
   await page.goto('/')
   await expect(page.getByRole('heading', { name: 'Board' })).toBeVisible()
   await expect(page.getByText(/Activity feed unavailable:/)).toHaveCount(0)
-  await expect.poll(() => requests).toBeGreaterThanOrEqual(3)
+  await expect.poll(() => requests).toBe(1)
+  // The connect refresh is a cold pass, and the frames that follow while a
+  // read is held run as one serialized follow-up each, with the cursor.
+  await changes.ready()
+  await expect.poll(() => requests).toBe(2)
+  await expect.poll(() => active).toBe(0)
+  for (let frame = 0; frame < 3; frame++) {
+    await changes.activity('task-recent')
+    await expect.poll(() => requests).toBeGreaterThanOrEqual(3 + frame)
+  }
+  await expect.poll(() => active).toBe(0)
   expect(maxActive).toBe(1)
   expect(urls.every((url) => Number(new URL(url).searchParams.get('limit')) === 100)).toBe(true)
-  expect(urls.some((url) => new URL(url).searchParams.has('since'))).toBe(true)
+  expect(new URL(urls[1]).searchParams.has('since')).toBe(false)
+  expect(urls.slice(2).every((url) => new URL(url).searchParams.has('since'))).toBe(true)
   await page.evaluate(() =>
     (window as unknown as { setActivityVisible: (next: boolean) => void }).setActivityVisible(false),
   )
+  expect(await changes.open()).toBe(0)
   await expect.poll(() => active).toBe(0)
   const hiddenCount = requests
   await page.waitForTimeout(200)
@@ -626,7 +641,10 @@ test('activity polling is serialized, pauses while hidden, and cold-refreshes on
   await page.evaluate(() =>
     (window as unknown as { setActivityVisible: (next: boolean) => void }).setActivityVisible(true),
   )
-  await expect.poll(() => requests).toBeGreaterThan(hiddenCount)
+  expect(await changes.open()).toBe(1)
+  expect(requests).toBe(hiddenCount)
+  await changes.ready()
+  await expect.poll(() => requests).toBe(hiddenCount + 1)
   expect(urls.every((url) => Number(new URL(url).searchParams.get('limit')) === 100)).toBe(true)
   expect(new URL(urls.at(-1) ?? '').searchParams.has('since')).toBe(false)
 })
@@ -637,6 +655,7 @@ test('activity polling is serialized, pauses while hidden, and cold-refreshes on
 // held (component-web-task-surfaces, Board navigation).
 test('a Board sheet adds no unfiltered activity read and the Board pass stays serialized', async ({ page }) => {
   const seen: string[] = []
+  const changes = await controlWorkspaceChanges(page)
   await page.addInitScript(() => {
     localStorage.setItem('conveyor-workspace', 'demo')
   })
@@ -686,9 +705,14 @@ test('a Board sheet adds no unfiltered activity read and the Board pass stays se
   await release()
   await expect(page.getByRole('dialog', { name: 'Task detail' }).getByRole('note')).toHaveCount(0)
 
-  // A clock tick and a cold focus pass while the tick's read is held: the
-  // focus pass waits for the held read instead of overlapping it.
-  await page.clock.runFor(15_000)
+  // The clock alone starts no pass.
+  await page.clock.runFor(60_000)
+  expect(urls).toHaveLength(1)
+
+  // A change frame and a cold focus pass while the change's read is held:
+  // the focus pass waits for the held read instead of overlapping it.
+  await changes.activity('task-recent')
+  await page.clock.runFor(250)
   await expect.poll(() => urls.length).toBe(2)
   await page.evaluate(() => window.dispatchEvent(new Event('focus')))
   await page.clock.runFor(1_000)
@@ -696,6 +720,16 @@ test('a Board sheet adds no unfiltered activity read and the Board pass stays se
   expect(held).toHaveLength(1)
   await release()
   await expect.poll(() => urls.length).toBe(3)
+  expect(held).toHaveLength(1)
+
+  // A change frame while that pass is held queues one follow-up pass, which
+  // reads after the held one settles and never beside it.
+  await changes.activity('task-recent')
+  await page.clock.runFor(250)
+  await page.clock.runFor(1_000)
+  expect(urls).toHaveLength(3)
+  await release()
+  await expect.poll(() => urls.length).toBe(4)
   expect(held).toHaveLength(1)
   await release()
 
