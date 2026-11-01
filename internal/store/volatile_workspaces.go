@@ -211,6 +211,9 @@ func (m *volatileMemory) UpdateWorkspaceConfig(ctx context.Context, expectedVers
 	event := m.workspaceEventLocked(ctx, id, core.Event{Kind: "config.updated", Payload: core.JSONPayload(map[string]any{
 		"from_version": from, "to_version": record.ConfigVersion, "sections": sections,
 	})})
+	// The next order clock run applies the changed setting
+	// (component-persistence, Deadlines; req-bounded-automatic-recovery AC-5.1).
+	m.raiseEventDeadlineLocked(id, event)
 	return config.UpdateReceipt{
 		VersionedDocument: config.VersionedDocument{Document: next.PolicyDocument(), Version: record.ConfigVersion},
 		EventID:           event.ID, ActorID: actor.ID, Sections: sections,

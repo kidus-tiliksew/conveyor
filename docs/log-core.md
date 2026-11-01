@@ -40,8 +40,10 @@ per kind.
 
 Enqueues from the store run inside the store's own transaction by binding it
 to the log driver, so a lifecycle command's rows and its job commit together.
-The order clock is a process-local ticker that writes nothing: a tick is not
-a fact, and its handler is idempotent under concurrent replicas.
+One deadline alarm per workspace runs the order clock at the earliest
+recorded deadline, scheduled job, or deadline notice, and never on a fixed
+timer. A fire writes nothing to the log: a tick is not a fact, and its
+handler is idempotent under concurrent replicas.
 
 The dispatcher sees only `queue.Runtime` and the handler contract: return
 nil to complete a job, `queue.Snooze` to reschedule it, any other error to

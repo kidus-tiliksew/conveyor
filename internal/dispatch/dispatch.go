@@ -30,6 +30,10 @@ import (
 )
 
 type Dispatcher struct {
+	// AutomaticReviewRecovery is the order clock handler's review-round
+	// recovery pass, installed by the daemon before the queue starts
+	// (component-durable-queue, The deadline alarm).
+	AutomaticReviewRecovery     func(context.Context, time.Time) (int, error)
 	ReadVerificationPR          func(context.Context, string, int) (github.VerificationPullRequest, error)
 	WriteVerificationPR         func(context.Context, string, int, string) error
 	Store                       store.Store

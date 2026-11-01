@@ -84,6 +84,7 @@ func RunChangeNoticeConformance(t *testing.T, x Fixture) {
 		expectQuiet(t, jobNotices, "suppressed enqueue")
 	}
 	t.Run("PeersOff", func(t *testing.T) { assertRound(t, "off") })
+	t.Run("NextDeadline", func(t *testing.T) { runNextDeadline(t, x) })
 
 	t.Run("Workspace", func(t *testing.T) {
 		created := ws + "-notice"
@@ -152,5 +153,97 @@ func expectQuiet(t *testing.T, s *changes.Subscription, what string) {
 	case n := <-s.C():
 		t.Fatalf("%s raised %+v", what, n)
 	case <-time.After(50 * time.Millisecond):
+	}
+}
+
+// runNextDeadline proves NextDeadline returns the earliest stored deadline
+// strictly after its bound for the context's workspace only, and that a
+// claim raises a deadline notice carrying its lease once the claim is
+// readable (component-persistence, Deadlines; req-quiet-idle-runtime
+// AC-2.4).
+func runNextDeadline(t *testing.T, x Fixture) {
+	st, ctx, ws := x.Backend, x.Context, x.Workspace
+	hub := st.Changes()
+	// Deadlines far from now keep the clock out of the comparison; times are
+	// microseconds, as every backend stores them.
+	base := time.Now().UTC().Add(240 * time.Hour).Truncate(time.Second)
+	if _, ok, err := st.NextDeadline(ctx, time.Time{}); err != nil || ok {
+		t.Fatalf("empty workspace NextDeadline ok=%t err=%v", ok, err)
+	}
+	order := func(queueDeadline time.Time) core.WorkOrder {
+		t.Helper()
+		taskID := createTask(t, st, ctx, ws, core.TaskRunning, core.StageImplement)
+		id := taskID + "-implement-1"
+		now := time.Now().UTC()
+		requireOK(t, st.CreateJob(ctx, core.Job{ID: id, TaskID: taskID, Stage: core.StageImplement, State: core.JobPending}))
+		requireOK(t, CreateWorkOrder(ctx, st, core.WorkOrder{ID: id, TaskID: taskID, JobID: id, Stage: core.StageImplement, State: core.WorkOrderQueued, QueueEnteredAt: now, QueueDeadline: queueDeadline, CreatedAt: now}))
+		stored, err := st.GetWorkOrder(ctx, id)
+		requireOK(t, err)
+		return stored
+	}
+	queued := order(base.Add(3 * time.Hour))
+	next, ok, err := st.NextDeadline(ctx, time.Time{})
+	if err != nil || !ok || !next.Equal(queued.QueueDeadline) {
+		t.Fatalf("queued NextDeadline=%s ok=%t err=%v, want queue deadline %s", next, ok, err, queued.QueueDeadline)
+	}
+
+	// A claim records the lease and the execution deadline; the earlier one
+	// wins, and the claim's notice carries it.
+	claimed := order(base.Add(5 * time.Hour))
+	notices := hub.Subscribe(ws, changes.Deadline)
+	defer notices.Close()
+	session := "deadline-" + core.NewTaskID()
+	claimedOrder, err := ClaimWorkOrder(ctx, st, claimed.ID, core.WorkOrderClaim{ClaimantID: "worker-deadline", SessionID: session, ClientToken: session + "-token", Lease: 30 * time.Minute, ExecutionTimeout: time.Hour})
+	requireOK(t, err)
+	claimedOrder, err = st.GetWorkOrder(ctx, claimed.ID)
+	requireOK(t, err)
+	lease := claimedOrder.LeaseExpiresAt
+	if lease.IsZero() || !claimedOrder.ExecutionDeadline.After(lease) {
+		t.Fatalf("claimed order lease=%s execution=%s", lease, claimedOrder.ExecutionDeadline)
+	}
+	gotLease := false
+	for deadline := time.After(2 * time.Second); !gotLease; {
+		select {
+		case n := <-notices.C():
+			if n.Kind != changes.Deadline || n.Workspace != ws {
+				t.Fatalf("deadline notice=%+v", n)
+			}
+			gotLease = n.At.Equal(lease) || n.At.IsZero()
+		case <-deadline:
+			t.Fatal("no deadline notice carrying the lease after a claim")
+		}
+	}
+	next, ok, err = st.NextDeadline(ctx, time.Time{})
+	if err != nil || !ok || !next.Equal(lease) {
+		t.Fatalf("claimed NextDeadline=%s ok=%t err=%v, want lease %s", next, ok, err, lease)
+	}
+	// after excludes the earliest: the next one is the execution deadline,
+	// then the queued order's queue deadline.
+	next, ok, err = st.NextDeadline(ctx, lease)
+	if err != nil || !ok || !next.Equal(claimedOrder.ExecutionDeadline) {
+		t.Fatalf("NextDeadline after the lease=%s ok=%t err=%v, want execution deadline %s", next, ok, err, claimedOrder.ExecutionDeadline)
+	}
+	next, ok, err = st.NextDeadline(ctx, claimedOrder.ExecutionDeadline)
+	if err != nil || !ok || !next.Equal(queued.QueueDeadline) {
+		t.Fatalf("NextDeadline after the execution deadline=%s ok=%t err=%v, want %s", next, ok, err, queued.QueueDeadline)
+	}
+
+	// A cancelled order records no deadline.
+	cancelled := order(base.Add(time.Hour))
+	cancelled.State = core.WorkOrderCancelled
+	requireOK(t, UpdateWorkOrder(ctx, st, cancelled, core.WorkOrderCmdCancel))
+	next, ok, err = st.NextDeadline(ctx, time.Time{})
+	if err != nil || !ok || !next.Equal(lease) {
+		t.Fatalf("NextDeadline with a cancelled order=%s ok=%t err=%v, want lease %s", next, ok, err, lease)
+	}
+
+	// Another workspace reads none of these.
+	other := ws + "-deadline"
+	systemCtx := store.WithActor(store.WithWorkspace(context.Background(), other), store.SystemActor())
+	if _, err := st.CreateWorkspace(systemCtx, other, "Deadline", &config.Config{Workspace: other}); err != nil {
+		t.Fatal(err)
+	}
+	if next, ok, err := st.NextDeadline(systemCtx, time.Time{}); err != nil || ok {
+		t.Fatalf("other workspace NextDeadline=%s ok=%t err=%v", next, ok, err)
 	}
 }

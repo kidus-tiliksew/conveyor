@@ -977,7 +977,11 @@ func insertWorkspaceEventRow(ctx context.Context, q *db.Queries, arg db.InsertWo
 	if _, err := store.RequireActor(ctx); err != nil {
 		return db.Event{}, fmt.Errorf("workspace event %q: %w", arg.Kind, err)
 	}
-	return q.InsertWorkspaceEvent(ctx, arg)
+	inserted, err := q.InsertWorkspaceEvent(ctx, arg)
+	if err == nil {
+		raiseEventDeadline(q.DB(), arg.WorkspaceID, arg.Kind, arg.PayloadJson, arg.At.Time)
+	}
+	return inserted, err
 }
 
 func insertDeploymentEvent(ctx context.Context, q *db.Queries, arg db.InsertDeploymentEventParams) error {
@@ -1016,6 +1020,7 @@ func insertEventWithID(ctx context.Context, q *db.Queries, event core.Event) (in
 		return 0, err
 	}
 	raiseTaskNotice(ctx, q.DB(), event.TaskID)
+	raiseEventDeadline(q.DB(), workspace(ctx), event.Kind, event.Payload, event.At)
 	event.ID, event.At = inserted.ID, inserted.At.Time
 	projection := store.ProjectLineageEvent(inserted.WorkspaceID, event)
 	for _, link := range projection.Suppresses {
@@ -1066,6 +1071,7 @@ func insertWorkspaceEvent(ctx context.Context, q *db.Queries, event core.Event) 
 	if err != nil {
 		return err
 	}
+	raiseEventDeadline(q.DB(), workspace(ctx), event.Kind, event.Payload, event.At)
 	event.ID, event.At = inserted.ID, inserted.At.Time
 	projection := store.ProjectLineageEvent(inserted.WorkspaceID, event)
 	for _, link := range projection.Suppresses {

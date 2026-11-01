@@ -106,7 +106,7 @@ func TestSingleStoreNoticesPublishOnlyAfterCommitIntegration(t *testing.T) {
 func singleStoreNoticeRuntime(t *testing.T, st *Store, ws string, peerTail time.Duration) <-chan time.Time {
 	t.Helper()
 	started := make(chan time.Time, 1)
-	rt := logqueue.NewRuntime(st.Log(), logqueue.Options{Workspaces: []string{ws}, ClockInterval: -1, Changes: st.Changes(), PeerTail: peerTail})
+	rt := logqueue.NewRuntime(st.Log(), logqueue.Options{Workspaces: []string{ws}, Changes: st.Changes(), PeerTail: peerTail})
 	rt.Register(queue.Registration{Kind: "notice_probe", Handle: func(context.Context, queue.Job) error {
 		started <- time.Now()
 		return nil

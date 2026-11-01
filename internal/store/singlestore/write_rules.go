@@ -122,6 +122,13 @@ func writeRow(ctx context.Context, tx *sql.Tx, w rowWrite) (result sql.Result, e
 	if w.table == "events" {
 		taskID, _ := w.values["task_id"].(string)
 		w.values["event_shard_key"] = eventShardKey(taskID)
+		if w.operation == "INSERT" {
+			defer func() {
+				if err == nil {
+					raiseEventDeadline(tx, w.values)
+				}
+			}()
+		}
 		if workspaceID, _ := w.values["workspace_id"].(string); taskID != "" && w.operation == "INSERT" {
 			defer func() {
 				if err == nil {

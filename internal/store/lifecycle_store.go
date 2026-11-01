@@ -413,6 +413,7 @@ func (m *memory) resumeDependencyQueueClocksLocked(taskID string, now time.Time)
 			return
 		}
 	}
+	resumed := false
 	for id, order := range m.workOrders {
 		if order.TaskID != taskID || (order.Stage != core.StageImplement && order.Stage != core.StageVerify) ||
 			order.State != core.WorkOrderQueued || order.QueueBlockedAt.IsZero() {
@@ -423,6 +424,12 @@ func (m *memory) resumeDependencyQueueClocksLocked(taskID string, now time.Time)
 		order.Claimable = order.ClaimableAt(now)
 		order.UpdatedAt = now
 		m.workOrders[id] = order
+		resumed = true
+	}
+	if resumed {
+		// The resume appends no event, so it raises its own deadline notice
+		// (component-task-lifecycle, Dependency commands).
+		m.raiseLocked(DependencyResumeDeadlineNotice(m.tasks[taskID].Workspace, now))
 	}
 }
 

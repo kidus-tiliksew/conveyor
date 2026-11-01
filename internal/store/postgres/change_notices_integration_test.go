@@ -390,7 +390,7 @@ func TestPeerListenerReconnectsOnNextRequestIntegration(t *testing.T) {
 func noticeRuntime(t *testing.T, st *Store, ws string) <-chan time.Time {
 	t.Helper()
 	started := make(chan time.Time, 1)
-	rt := logqueue.NewRuntime(st.Log(), logqueue.Options{Workspaces: []string{ws}, ClockInterval: -1, Changes: st.Changes()})
+	rt := logqueue.NewRuntime(st.Log(), logqueue.Options{Workspaces: []string{ws}, Changes: st.Changes()})
 	rt.Register(queue.Registration{Kind: "notice_probe", Handle: func(context.Context, queue.Job) error {
 		started <- time.Now()
 		return nil

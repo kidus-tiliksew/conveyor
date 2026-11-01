@@ -17,9 +17,11 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"time"
 
+	"github.com/kidus-tiliksew/conveyor/internal/changes"
 	"github.com/kidus-tiliksew/conveyor/internal/config"
 	"github.com/kidus-tiliksew/conveyor/internal/dispatch"
 	"github.com/kidus-tiliksew/conveyor/internal/envfile"
@@ -178,6 +180,7 @@ func main() {
 	var queueRuntime shutdownQueue
 	var addWorkspaceQueue func(string, *config.Config) error
 	var workspaceQueues *dispatch.WorkspaceQueueRegistrar
+	var reviewRecovery atomic.Pointer[workorder.Service]
 	// peerTail is positive only for peers on a backend without change
 	// notification; streams and await_review wake on it too.
 	var peerTail time.Duration
@@ -209,9 +212,19 @@ func main() {
 		queueShutdown := &dispatch.ShutdownMarker{}
 		hostname, _ := os.Hostname()
 		peerTail = queuePeerTail(ctx, deployment.Runtime.Peers, st.EnablePeers, log.Printf)
+		// The order clock handler's review-round recovery pass reads the
+		// work-order service once step 9 installs it (component-runtime,
+		// Daemon startup order).
+		d.AutomaticReviewRecovery = func(ctx context.Context, now time.Time) (int, error) {
+			service := reviewRecovery.Load()
+			if service == nil {
+				return 0, nil
+			}
+			return service.SweepAutomaticReviewRecovery(ctx, now)
+		}
 		runtime := logqueue.NewRuntime(st.Log(), logqueue.Options{
 			Workspaces: workspaceIDs, RescueStuckAfter: rescueAfter, WorkerID: hostname, Logf: log.Printf,
-			Changes: st.Changes(), PeerTail: peerTail,
+			Changes: st.Changes(), PeerTail: peerTail, Deadlines: dispatch.StoreDeadlines(st),
 		})
 		for _, registration := range d.Registrations(queueShutdown) {
 			runtime.Register(registration)
@@ -313,6 +326,10 @@ func main() {
 		}
 	}
 	workOrders.RetryDelay, workOrders.RetryMaximum = *workerRetryDelay, *workerRetryMaximum
+	// Every workspace's deadline alarm fires once with the review-round
+	// recovery sweep in place (component-runtime, Daemon startup order).
+	reviewRecovery.Store(workOrders)
+	st.Changes().Publish(changes.Notice{Kind: changes.Deadline, At: time.Now().UTC()})
 	if st.IsDurable() {
 		srv.Workspaces = st
 		srv.EnsureWorkspaceQueues = addWorkspaceQueue
@@ -382,19 +399,8 @@ func main() {
 				if publications != 0 {
 					log.Printf("reconciled %d completed review publication(s) in workspace %s", publications, workspace.ID)
 				}
-				// Bounded automatic recovery AR-5 runs last; a failure is logged
-				// so it never blocks the remaining workspaces.
-				now := time.Now().UTC()
-				if reenqueued, reenqueueErr := store.ReconcileFailedPublications(workspaceCtx, st, now); reenqueueErr != nil {
-					log.Printf("automatic publication recovery in workspace %s: %v", workspace.ID, reenqueueErr)
-				} else if reenqueued != 0 {
-					log.Printf("automatically re-enqueued %d failed publication(s) in workspace %s", reenqueued, workspace.ID)
-				}
-				if reviewActs, reviewErr := workOrders.SweepAutomaticReviewRecovery(workspaceCtx, now); reviewErr != nil {
-					log.Printf("automatic review recovery in workspace %s: %v", workspace.ID, reviewErr)
-				} else if reviewActs != 0 {
-					log.Printf("automatically recovered %d review round(s) in workspace %s", reviewActs, workspace.ID)
-				}
+				// The time-based recovery passes run at each deadline alarm
+				// fire, not on this tick (component-runtime, Reconcile tick).
 			}
 		}
 		reconcile()
