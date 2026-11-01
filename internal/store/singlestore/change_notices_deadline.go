@@ -15,6 +15,9 @@ import (
 
 var _ store.DeadlineReader = (*Store)(nil)
 
+// deadlineFloor is the earliest bound NextDeadline sends.
+var deadlineFloor = time.Unix(0, 0).UTC()
+
 // nextDeadlineSQL reads, in one statement, the earliest work-order and
 // verification-delivery deadline after the bound time, every failed
 // publication's last automatic re-enqueue, and the workspace document that
@@ -42,7 +45,13 @@ UNION ALL SELECT 'config' AS kind, NULL AS at, config_yaml FROM workspaces WHERE
 // context's workspace.
 func (s *Store) NextDeadline(ctx context.Context, after time.Time) (time.Time, bool, error) {
 	ws := documentWorkspace(ctx)
+	// SingleStore refuses a DATETIME conversion of Go's zero time, so an
+	// unbounded read compares against the Unix epoch, before every stored
+	// deadline.
 	bound := after.UTC()
+	if bound.Before(deadlineFloor) {
+		bound = deadlineFloor
+	}
 	rows, err := documentRows(ctx, s.db, nextDeadlineSQL, ws, bound, ws, bound, ws, bound, ws, bound, ws, bound, ws, ws, ws)
 	if err != nil {
 		return time.Time{}, false, err
