@@ -2,25 +2,32 @@ package main
 
 import (
 	"bytes"
-	"context"
 	"encoding/json"
-	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"reflect"
+	"strconv"
 	"strings"
-	"sync"
 	"sync/atomic"
 	"testing"
-	"time"
-
-	"github.com/kidus-tiliksew/conveyor/internal/config"
-	"github.com/kidus-tiliksew/conveyor/internal/core"
-	workerservice "github.com/kidus-tiliksew/conveyor/internal/worker"
 )
+
+// TestMain answers Git askpass prompts when Git invokes the test binary as
+// its askpass helper, as main does for the CLI (component-git-delivery).
+func TestMain(m *testing.M) {
+	if os.Getenv(gitAskPassModeEnv) == "1" && len(os.Args) == 2 && isGitAskPassPrompt(os.Args[1]) {
+		if err := runGitAskPass(os.Stdout, os.Args[1]); err != nil {
+			os.Exit(1)
+		}
+		os.Exit(0)
+	}
+	os.Exit(m.Run())
+}
 
 func TestLocalGitCredentialResolutionExplicitAndAmbient(t *testing.T) {
 	t.Setenv(localGitTokenEnv, "local-only-secret")
@@ -71,284 +78,282 @@ func TestLocalGitCredentialResolutionExplicitAndAmbient(t *testing.T) {
 	}
 }
 
-func TestLocalGitScrubberHandlesEveryChunkAndNewlineBoundary(t *testing.T) {
-	for _, token := range []string{"locally-held-secret", "local\nsecret", "quote\"\\secret"} {
-		input := "before " + token + " after\n" + token
-		for split := 0; split <= len(input); split++ {
-			g := &localGitCredential{token: token}
-			var out bytes.Buffer
-			writer := g.outputWriter(&out, g.redactor())
-			if _, err := writer.Write([]byte(input[:split])); err != nil {
-				t.Fatal(err)
-			}
-			if _, err := writer.Write([]byte(input[split:])); err != nil {
-				t.Fatal(err)
-			}
-			if err := writer.Flush(); err != nil {
-				t.Fatal(err)
-			}
-			if strings.Contains(out.String(), token) || !strings.Contains(out.String(), "[REDACTED:exact]") {
-				t.Fatalf("unsafe split %d", split)
-			}
+// The exact token never reaches an upload body or a returned error
+// (req-delivery-and-forge AC-7.1; component-git-delivery).
+func TestLocalGitCredentialScrubsUploadBytesAndErrors(t *testing.T) {
+	const secret = "locally-held-\"secret\nvalue"
+	var requests atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		var value any
+		if err := json.Unmarshal(body, &value); err != nil {
+			t.Error(err)
+		}
+		decoded, _ := json.Marshal(value)
+		encodedSecret, _ := json.Marshal(secret)
+		if bytes.Contains(decoded, encodedSecret[1:len(encodedSecret)-1]) || bytes.Contains(body, []byte(secret)) {
+			t.Error("local credential reached upload")
+		}
+		if !bytes.Contains(body, []byte("[REDACTED:exact]")) {
+			t.Error("missing exact scrub")
+		}
+		if requests.Add(1) == 2 {
+			http.Error(w, "refused "+secret, http.StatusConflict)
+			return
+		}
+		_, _ = io.WriteString(w, `{}`)
+	}))
+	defer server.Close()
+	c := &client{base: server.URL, gitCredentials: &localGitCredential{token: secret}}
+	body, _ := json.Marshal(map[string]any{"evidence": map[string]string{"content": secret}})
+	if err := c.workerDoContext(t.Context(), http.MethodPost, "/verification-evidence", body, nil, "credential"); err != nil {
+		t.Fatal(err)
+	}
+	err := c.workerDoContext(t.Context(), http.MethodPost, "/v1/tasks/task/worktree-cleanup", body, nil, "credential")
+	if err == nil || strings.Contains(err.Error(), secret) || !strings.Contains(err.Error(), "[REDACTED:exact]") {
+		t.Fatalf("refusal error = %v", err)
+	}
+	if requests.Load() != 2 {
+		t.Fatalf("requests=%d", requests.Load())
+	}
+}
+
+func TestIsolatedChildEnvironmentReplacesLaunchIdentity(t *testing.T) {
+	childValues := map[string]string{
+		"CONVEYOR_ADDR":                    "endpoint",
+		"CONVEYOR_API_TOKEN":               "fresh-token",
+		"CONVEYOR_CLIENT_TOKEN":            "fresh-client",
+		"CONVEYOR_CURRENT_ATTEMPT_ID":      "attempt-current",
+		"CONVEYOR_PREVIOUS_ATTEMPT_ID":     "attempt-previous",
+		"CONVEYOR_PREVIOUS_ATTEMPT_REASON": "previous harness exit",
+		"CONVEYOR_PREDECESSOR":             `{"task_id":"task-1","attempt_id":"attempt-previous"}`,
+		"CONVEYOR_PREVIOUS_WORK_ORDER_ID":  "task-1-implement-0",
+		"CONVEYOR_SESSION_ID":              "session-current",
+		"CONVEYOR_TASK_BASE_BRANCH":        "main",
+		"CONVEYOR_TASK_BRANCH":             "conveyor/task-1",
+		"CONVEYOR_TASK_ID":                 "task-1",
+		"CONVEYOR_TASK_REPO":               "conveyor",
+		"CONVEYOR_TASK_REPO_URL":           "https://github.com/kidus-tiliksew/conveyor.git",
+		"CONVEYOR_WORKSPACE":               "demo",
+		"CONVEYOR_WORKTREE_ROOT":           "/var/lib/conveyor/worktrees",
+		"CONVEYOR_WORK_ORDER_ID":           "task-1-implement-1",
+		"CONVEYOR_WRITER_GENERATION":       "session-current",
+		"CONVEYOR_WRITER_PATH":             "/var/lib/conveyor/writers/task-1.json",
+		"GIT_AUTHOR_NAME":                  "Executing User",
+		"GIT_AUTHOR_EMAIL":                 "executor@example.test",
+		"GIT_COMMITTER_NAME":               "Executing User",
+		"GIT_COMMITTER_EMAIL":              "executor@example.test",
+	}
+	base := []string{
+		"PATH=/bin", "GOCACHE=/cache/go", "CONVEYOR_TEST_DATABASE_URL=postgres://fixture",
+		localGitTokenEnv + "=parent-forge-token",
+		"GIT_AUTHOR_NAME=Host", "GIT_AUTHOR_EMAIL=host@example.test",
+		"GIT_COMMITTER_NAME=Host", "GIT_COMMITTER_EMAIL=host@example.test",
+	}
+	for name := range childValues {
+		base = append(base, name+"=stale-"+strings.ToLower(name))
+	}
+	env := isolatedChildEnvironment(base, childValues)
+	for name, want := range childValues {
+		if got := environmentValue(env, name); got != want {
+			t.Fatalf("%s=%q want=%q", name, got, want)
+		}
+	}
+	for name, want := range map[string]string{
+		"PATH":                       "/bin",
+		"GOCACHE":                    "/cache/go",
+		"CONVEYOR_TEST_DATABASE_URL": "postgres://fixture",
+	} {
+		if got := environmentValue(env, name); got != want {
+			t.Fatalf("preserved %s=%q want=%q", name, got, want)
+		}
+	}
+	if got := environmentValue(env, localGitTokenEnv); got != "" {
+		t.Fatalf("parent forge token escaped into child environment: %q", got)
+	}
+	other := isolatedChildEnvironment(env, map[string]string{
+		"CONVEYOR_API_TOKEN": "other-token", "CONVEYOR_ADDR": "other-endpoint", "CONVEYOR_WORKSPACE": "demo",
+		"CONVEYOR_WORK_ORDER_ID": "other-order", "CONVEYOR_SESSION_ID": "other-session", "CONVEYOR_CLIENT_TOKEN": "other-client",
+	})
+	if environmentValue(env, "CONVEYOR_SESSION_ID") != "session-current" || environmentValue(other, "CONVEYOR_SESSION_ID") != "other-session" || environmentValue(other, "CONVEYOR_CLIENT_TOKEN") != "other-client" {
+		t.Fatalf("concurrent child environments shared launch identity")
+	}
+}
+
+func TestChildGitCredentialEnvironmentUsesAskPassWithoutPersistentSecrets(t *testing.T) {
+	const token = "forge-token-only-in-environment"
+	environment, err := childGitCredentialEnvironment(token)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if environment[gitAskPassTokenEnv] != token || environment[gitAskPassModeEnv] != "1" || environment["GIT_TERMINAL_PROMPT"] != "0" || environment["GIT_CONFIG_VALUE_0"] != "" {
+		t.Fatalf("Git environment=%v", environment)
+	}
+	for name, value := range environment {
+		if name != gitAskPassTokenEnv && strings.Contains(value, token) {
+			t.Fatalf("token escaped its dedicated environment value through %s", name)
+		}
+	}
+	t.Setenv(gitAskPassUsernameEnv, environment[gitAskPassUsernameEnv])
+	t.Setenv(gitAskPassTokenEnv, environment[gitAskPassTokenEnv])
+	var output bytes.Buffer
+	if err = runGitAskPass(&output, "Username for 'https://example.test':"); err != nil || strings.TrimSpace(output.String()) != "x-access-token" {
+		t.Fatalf("username response=%q err=%v", output.String(), err)
+	}
+	output.Reset()
+	if err = runGitAskPass(&output, "Password for 'https://x-access-token@example.test':"); err != nil || strings.TrimSpace(output.String()) != token {
+		t.Fatalf("password response=%q err=%v", output.String(), err)
+	}
+	output.Reset()
+	if err = runGitAskPass(&output, "OTP:"); err == nil || output.Len() != 0 {
+		t.Fatalf("unsupported prompt response=%q err=%v", output.String(), err)
+	}
+	if err = requireHTTPSRemote("https://github.com/example/repository.git"); err != nil {
+		t.Fatal(err)
+	}
+	for _, remote := range []string{"git@github.com:example/repository.git", "ssh://git@github.com/example/repository.git", "https://token@github.com/example/repository.git"} {
+		if err = requireHTTPSRemote(remote); err == nil || !strings.Contains(err.Error(), "HTTPS") {
+			t.Fatalf("remote %q error=%v", remote, err)
 		}
 	}
 }
 
-func TestLocalGitCredentialScrubsWorkerAndRunUploadBytes(t *testing.T) {
-	const secret = "locally-held-\"secret\nvalue"
-	for _, dispatch := range []string{"worker", "run"} {
-		t.Run(dispatch, func(t *testing.T) {
-			var requests atomic.Int32
+func TestLocalGitCredentialPushesWithExplicitAndAmbientCredentials(t *testing.T) {
+	for _, mode := range []string{"explicit", "ambient"} {
+		t.Run(mode, func(t *testing.T) {
+			const token = "forge-token-used-only-by-askpass"
+			serverRoot := t.TempDir()
+			bare := filepath.Join(serverRoot, "repository.git")
+			if output, err := exec.Command("git", "init", "--bare", bare).CombinedOutput(); err != nil {
+				t.Fatalf("init bare repository: %v\n%s", err, output)
+			}
+			if output, err := exec.Command("git", "--git-dir", bare, "config", "http.receivepack", "true").CombinedOutput(); err != nil {
+				t.Fatalf("enable HTTP receive-pack: %v\n%s", err, output)
+			}
+			authenticatedRequests := 0
 			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-				body, _ := io.ReadAll(r.Body)
-				var value any
-				if err := json.Unmarshal(body, &value); err != nil {
-					t.Error(err)
+				username, password, ok := r.BasicAuth()
+				if !ok || username != "x-access-token" || password != token {
+					w.Header().Set("WWW-Authenticate", `Basic realm="conveyor-test"`)
+					http.Error(w, "authentication required", http.StatusUnauthorized)
+					return
 				}
-				decoded, _ := json.Marshal(value)
-				encodedSecret, _ := json.Marshal(secret)
-				if bytes.Contains(decoded, encodedSecret[1:len(encodedSecret)-1]) || bytes.Contains(body, []byte(secret)) {
-					t.Error("local credential reached upload")
+				authenticatedRequests++
+				command := exec.Command("git", "http-backend")
+				command.Env = append(os.Environ(),
+					"GIT_PROJECT_ROOT="+serverRoot,
+					"GIT_HTTP_EXPORT_ALL=1",
+					"REQUEST_METHOD="+r.Method,
+					"PATH_INFO="+r.URL.Path,
+					"QUERY_STRING="+r.URL.RawQuery,
+					"CONTENT_TYPE="+r.Header.Get("Content-Type"),
+					"CONTENT_LENGTH="+strconv.FormatInt(r.ContentLength, 10),
+					"REMOTE_USER=x-access-token",
+				)
+				command.Stdin = r.Body
+				var response, stderr bytes.Buffer
+				command.Stdout, command.Stderr = &response, &stderr
+				if err := command.Run(); err != nil {
+					http.Error(w, "Git backend failed", http.StatusInternalServerError)
+					return
 				}
-				if !bytes.Contains(body, []byte("[REDACTED:exact]")) {
-					t.Error("missing exact scrub")
+				headerBlock, body, ok := bytes.Cut(response.Bytes(), []byte("\r\n\r\n"))
+				if !ok {
+					http.Error(w, "Git backend returned malformed CGI output", http.StatusInternalServerError)
+					return
 				}
-				requests.Add(1)
-				_, _ = io.WriteString(w, `{}`)
+				status := http.StatusOK
+				for _, line := range strings.Split(string(headerBlock), "\r\n") {
+					name, value, found := strings.Cut(line, ":")
+					if !found {
+						continue
+					}
+					value = strings.TrimSpace(value)
+					if strings.EqualFold(name, "Status") {
+						if code, parseErr := strconv.Atoi(strings.Fields(value)[0]); parseErr == nil {
+							status = code
+						}
+						continue
+					}
+					w.Header().Add(name, value)
+				}
+				w.WriteHeader(status)
+				_, _ = w.Write(body)
 			}))
 			defer server.Close()
-			c := &client{base: server.URL, gitCredentials: &localGitCredential{token: secret}}
-			item := workerservice.DispatchOrder{Dispatch: dispatch, Task: core.Task{ID: "task"}, Order: core.WorkOrder{ID: "order"}}
-			ctx := t.Context()
-			_, err := c.renewDispatchOrderContext(ctx, "credential", item, "session", &core.WorkOrderActivitySnapshotInput{Content: secret})
+
+			checkout := t.TempDir()
+			if output, err := exec.Command("git", "init", checkout).CombinedOutput(); err != nil {
+				t.Fatalf("init checkout: %v\n%s", err, output)
+			}
+			if err := os.WriteFile(filepath.Join(checkout, "README.md"), []byte("credential fixture\n"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			for _, args := range [][]string{{"-C", checkout, "add", "README.md"}, {"-C", checkout, "-c", "user.name=Worker", "-c", "user.email=worker@example.test", "commit", "-m", "fixture"}} {
+				if output, err := exec.Command("git", args...).CombinedOutput(); err != nil {
+					t.Fatalf("git %v: %v\n%s", args, err, output)
+				}
+			}
+			hostHome := t.TempDir()
+			t.Setenv("HOME", hostHome)
+			t.Setenv("GIT_CONFIG_GLOBAL", filepath.Join(hostHome, ".gitconfig"))
+			t.Setenv("GIT_CONFIG_NOSYSTEM", "1")
+			t.Setenv("GIT_CONFIG_COUNT", "0")
+			t.Setenv("GIT_TERMINAL_PROMPT", "0")
+			t.Setenv(localGitTokenEnv, "")
+			if mode == "explicit" {
+				t.Setenv(localGitTokenEnv, token)
+			} else {
+				t.Setenv("CONVEYOR_TEST_AMBIENT_TOKEN", token)
+				helper := `!f() { printf '%s\n' 'username=x-access-token' "password=$CONVEYOR_TEST_AMBIENT_TOKEN"; }; f`
+				mustGit(t, "", "config", "--global", "credential.helper", helper)
+			}
+			c, err := (&client{}).withLocalGitCredential()
 			if err != nil {
 				t.Fatal(err)
 			}
-			checkpoint := core.WorkOrderAttemptCheckpoint{SessionID: "session", TerminationReason: secret}
-			if err := c.checkpointDispatchOrderAttemptContext(ctx, "credential", item, checkpoint, &core.WorkOrderAttemptTranscript{Content: secret}); err != nil {
-				t.Fatal(err)
+			push := exec.Command("git", "-C", checkout, "push", server.URL+"/repository.git", "HEAD:refs/heads/task")
+			push.Env = c.gitCredentials.environment()
+			push.Env = isolatedChildEnvironment(push.Env, map[string]string{"HOME": hostHome})
+			output, err := push.CombinedOutput()
+			if err != nil {
+				t.Fatalf("credentialed push: %v\n%s", err, output)
 			}
-			if err := c.releaseDispatchOrderContext(ctx, "credential", item, core.WorkOrderRelease{SessionID: "session", Reason: secret, FailureDetail: secret}); err != nil {
-				t.Fatal(err)
+			if bytes.Contains(output, []byte(token)) || authenticatedRequests == 0 {
+				t.Fatalf("unsafe push output=%q authenticated_requests=%d", output, authenticatedRequests)
 			}
-			// Evidence bodies use the same serialized upload boundary.
-			body, _ := json.Marshal(map[string]any{"evidence": map[string]string{"content": secret}})
-			if err := c.workerDoContext(ctx, http.MethodPost, "/verification-evidence", body, nil, "credential"); err != nil {
-				t.Fatal(err)
+			if output, err = exec.Command("git", "--git-dir", bare, "rev-parse", "refs/heads/task").CombinedOutput(); err != nil {
+				t.Fatalf("pushed branch is missing: %v\n%s", err, output)
 			}
-			if requests.Load() != 4 {
-				t.Fatalf("requests=%d", requests.Load())
+			for _, root := range []string{checkout, serverRoot, hostHome} {
+				if err = filepath.WalkDir(root, func(path string, entry os.DirEntry, walkErr error) error {
+					if walkErr != nil || entry.IsDir() {
+						return walkErr
+					}
+					data, readErr := os.ReadFile(path)
+					if readErr != nil {
+						return readErr
+					}
+					if bytes.Contains(data, []byte(token)) {
+						return fmt.Errorf("forge token persisted in %s", path)
+					}
+					return nil
+				}); err != nil {
+					t.Fatal(err)
+				}
 			}
 		})
 	}
 }
 
-func TestLocalGitPreflightUsesEnvironmentAndBoundedContext(t *testing.T) {
-	t.Setenv(localGitTokenEnv, "local-secret")
-	c, err := (&client{}).withLocalGitCredential()
-	if err != nil {
-		t.Fatal(err)
-	}
-	called := false
-	c.gitPreflight = func(ctx context.Context, item workerservice.DispatchOrder, env []string) error {
-		called = true
-		deadline, ok := ctx.Deadline()
-		if !ok || time.Until(deadline) > localGitPreflightTimeout {
-			t.Error("unbounded preflight")
-		}
-		if !reflect.DeepEqual(env, isolatedChildEnvironment(c.gitCredentials.environment(), map[string]string{"GIT_TERMINAL_PROMPT": "0"})) {
-			t.Error("preflight environment differs from child")
-		}
-		return errors.New("unusable local-secret")
-	}
-	item := workerservice.DispatchOrder{Task: core.Task{Repo: "repo", BaseBranch: "main"}, Repository: config.Repo{URL: "https://example.test/repo.git"}}
-	err = c.preflightLocalGitCredential(t.Context(), item)
-	if !called || err == nil || strings.Contains(err.Error(), "local-secret") || !strings.Contains(err.Error(), localGitCredentialRemedy) {
-		t.Fatalf("preflight error=%v", err)
-	}
-}
-
-func TestLocalGitPreflightRunsRealGitAndRefusesBeforeWorkerOrRunClaim(t *testing.T) {
-	t.Setenv(localGitTokenEnv, "")
-	t.Setenv("CONVEYOR_WORKER_TOKEN", "enrolled-worker")
-	configPath := writeWorkerLocalExecutionConfig(t, []string{"true", "{prompt}", "{mcp_config}"}, []string{"true"})
-	missing := filepath.Join(t.TempDir(), "unreachable.git")
-	item := workerservice.DispatchOrder{Task: core.Task{ID: "task", Repo: "repo", BaseBranch: "main"}, Repository: config.Repo{Name: "repo", URL: missing}, Order: core.WorkOrder{ID: "order", Stage: core.StageSpec, Claimable: true, State: core.WorkOrderQueued}}
-	var claims atomic.Int32
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		switch r.URL.Path {
-		case "/v1/worker/heartbeat":
-			_ = json.NewEncoder(w).Encode(core.Worker{ID: "worker"})
-		case "/v1/worker/work-orders":
-			_ = json.NewEncoder(w).Encode([]workerservice.DispatchOrder{item})
-		case "/v1/tasks/task/run-order":
-			_ = json.NewEncoder(w).Encode(item)
-		default:
-			claims.Add(1)
-			http.Error(w, "claim should not be attempted", 500)
-		}
-	}))
-	defer server.Close()
-	c := &client{base: server.URL, workspace: "demo", token: "user"}
-	var output bytes.Buffer
-	err := runTask(t.Context(), c, "task", configPath, strings.NewReader(""), &output, false, false)
-	if err == nil || !strings.Contains(err.Error(), localGitCredentialRemedy) {
-		t.Fatalf("run refusal=%v", err)
-	}
-	if err := runWorkerWithPolicyAndConfig(t.Context(), c, "", "test", true, defaultWorkerReconnectPolicy, configPath); err != nil {
-		t.Fatal(err)
-	}
-	if claims.Load() != 0 || item.Order.State != core.WorkOrderQueued {
-		t.Fatalf("preflight attempted %d claims", claims.Load())
-	}
-}
-
-func TestWorkerLocalGitPreflightCachesFailedRepositories(t *testing.T) {
-	t.Setenv(localGitTokenEnv, "")
-	t.Setenv("CONVEYOR_WORKER_TOKEN", "enrolled-worker")
-	configPath := writeWorkerLocalExecutionConfig(t, []string{"true", "{prompt}", "{mcp_config}"}, []string{"true"})
-	orders := []workerservice.DispatchOrder{}
-	for _, id := range []string{"one", "two", "three"} {
-		remote := "https://example.test/first.git"
-		if id == "three" {
-			remote = "https://example.test/second.git"
-		}
-		orders = append(orders, workerservice.DispatchOrder{Task: core.Task{ID: id, Repo: "repo"}, Repository: config.Repo{URL: remote}, Order: core.WorkOrder{ID: id, Stage: core.StageSpec, Claimable: true}})
-	}
-	var claims atomic.Int32
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		switch r.URL.Path {
-		case "/v1/worker/heartbeat":
-			_ = json.NewEncoder(w).Encode(core.Worker{ID: "worker"})
-		case "/v1/worker/work-orders":
-			_ = json.NewEncoder(w).Encode(orders)
-		default:
-			claims.Add(1)
-			http.Error(w, "unexpected claim", 500)
-		}
-	}))
-	defer server.Close()
-	checked := map[string]int{}
-	c := &client{base: server.URL, workspace: "demo", gitPreflight: func(_ context.Context, item workerservice.DispatchOrder, _ []string) error {
-		checked[item.Repository.URL]++
-		return errors.New("no access")
-	}}
-	if err := runWorkerWithPolicyAndConfig(t.Context(), c, "", "test", true, defaultWorkerReconnectPolicy, configPath); err != nil {
-		t.Fatal(err)
-	}
-	if claims.Load() != 0 || len(checked) != 2 {
-		t.Fatalf("claims=%d checks=%v", claims.Load(), checked)
-	}
-	for _, n := range checked {
-		if n != 1 {
-			t.Fatalf("cache missed: %v", checked)
+// environmentValue returns the last value of name in env.
+func environmentValue(env []string, name string) string {
+	prefix := name + "="
+	value := ""
+	for _, entry := range env {
+		if strings.HasPrefix(entry, prefix) {
+			value = strings.TrimPrefix(entry, prefix)
 		}
 	}
-}
-
-func TestWorkerLocalGitPreflightCachesSuccessfulRepositoryBeforeClaims(t *testing.T) {
-	t.Setenv(localGitTokenEnv, "")
-	t.Setenv("CONVEYOR_WORKER_TOKEN", "enrolled-worker")
-	configPath := writeWorkerLocalExecutionConfig(t, []string{"true", "{prompt}", "{mcp_config}"}, []string{"true"})
-	var checked, claims atomic.Int32
-	var mu sync.Mutex
-	claimed := map[string]struct{}{}
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		switch r.URL.Path {
-		case "/v1/worker/heartbeat":
-			_ = json.NewEncoder(w).Encode(core.Worker{ID: "worker"})
-		case "/v1/worker/work-orders":
-			mu.Lock()
-			orders := []workerservice.DispatchOrder{}
-			for _, stage := range []core.Stage{core.StageSpec, core.StageReview} {
-				if _, ok := claimed[string(stage)]; ok {
-					continue
-				}
-				orders = append(orders, workerservice.DispatchOrder{Task: core.Task{ID: string(stage), Repo: "repo"}, Repository: config.Repo{URL: "https://example.test/repo.git"}, Order: core.WorkOrder{ID: string(stage), Stage: stage, ReviewSeat: 1, Claimable: true}})
-			}
-			mu.Unlock()
-			_ = json.NewEncoder(w).Encode(orders)
-		default:
-			if strings.HasSuffix(r.URL.Path, "/claim") {
-				if checked.Load() != 1 {
-					t.Error("claimed before successful preflight")
-				}
-				id := strings.TrimSuffix(strings.TrimPrefix(r.URL.Path, "/v1/worker/work-orders/"), "/claim")
-				mu.Lock()
-				if _, ok := claimed[id]; !ok {
-					claimed[id] = struct{}{}
-					claims.Add(1)
-				}
-				mu.Unlock()
-				http.Error(w, "another claimant won", http.StatusConflict)
-			} else {
-				http.NotFound(w, r)
-			}
-		}
-	}))
-	defer server.Close()
-	c := &client{base: server.URL, workspace: "demo", gitPreflight: func(context.Context, workerservice.DispatchOrder, []string) error { checked.Add(1); return nil }}
-	ctx, cancel := context.WithTimeout(t.Context(), 3*time.Second)
-	defer cancel()
-	if err := runWorkerWithPolicyAndConfig(ctx, c, "", "test", true, defaultWorkerReconnectPolicy, configPath); err != nil {
-		t.Fatal(err)
-	}
-	if checked.Load() != 1 || claims.Load() != 2 {
-		t.Fatalf("checks=%d claims=%d", checked.Load(), claims.Load())
-	}
-}
-
-func TestLocalGitPreflightCommandAndCancellation(t *testing.T) {
-	t.Setenv(localGitTokenEnv, "")
-	directory := t.TempDir()
-	script := `#!/bin/sh
-[ "$1" = ls-remote ] && [ "$2" = --heads ] && [ "$3" = https://example.test/repo.git ] && [ "$4" = release ] || exit 31
-[ "$GIT_TERMINAL_PROMPT" = 0 ] || exit 32
-if [ "$CONVEYOR_PREFLIGHT_SLEEP" = 1 ]; then sleep 30 & wait; fi
-`
-	if err := os.WriteFile(filepath.Join(directory, "git"), []byte(script), 0700); err != nil {
-		t.Fatal(err)
-	}
-	t.Setenv("PATH", directory+string(os.PathListSeparator)+os.Getenv("PATH"))
-	c, err := (&client{}).withLocalGitCredential()
-	if err != nil {
-		t.Fatal(err)
-	}
-	item := workerservice.DispatchOrder{Task: core.Task{Repo: "repo", BaseBranch: "release"}, Repository: config.Repo{URL: "https://example.test/repo.git", Base: "main"}, Order: core.WorkOrder{Stage: core.StageSpec}}
-	if err := c.preflightLocalGitCredential(t.Context(), item); err != nil {
-		t.Fatal(err)
-	}
-	t.Setenv("CONVEYOR_PREFLIGHT_SLEEP", "1")
-	ctx, cancel := context.WithTimeout(t.Context(), 50*time.Millisecond)
-	defer cancel()
-	started := time.Now()
-	err = c.preflightLocalGitCredential(ctx, item)
-	if err == nil || !strings.Contains(err.Error(), "deadline exceeded") || time.Since(started) > 2*time.Second {
-		t.Fatalf("cancellation elapsed=%s err=%v", time.Since(started), err)
-	}
-}
-
-func TestLocalGitScrubberRemovesJSONEscapedHarnessOutput(t *testing.T) {
-	const token = "quoted-\"local\nsecret"
-	g := &localGitCredential{token: token}
-	event, err := json.Marshal(map[string]string{"message": token})
-	if err != nil {
-		t.Fatal(err)
-	}
-	for split := 0; split <= len(event); split++ {
-		var output bytes.Buffer
-		writer := g.outputWriter(&output, g.redactor())
-		_, _ = writer.Write(event[:split])
-		_, _ = writer.Write(event[split:])
-		if err := writer.Flush(); err != nil {
-			t.Fatal(err)
-		}
-		var decoded map[string]string
-		if err := json.Unmarshal(output.Bytes(), &decoded); err != nil {
-			t.Fatal(err)
-		}
-		if strings.Contains(decoded["message"], token) || decoded["message"] != "[REDACTED:exact]" {
-			t.Fatalf("unsafe decoded event at split %d", split)
-		}
-	}
+	return value
 }

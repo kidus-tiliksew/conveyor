@@ -18,7 +18,7 @@ func HarnessTemplates() []HarnessTemplate {
 			ID:          "codex",
 			Label:       "Codex CLI",
 			Description: "OpenAI's coding agent",
-			// Codex uses the whole-argument TOML override transport (component-harness-execution).
+			// Codex uses the whole-argument TOML override transport (component-runtime).
 			Harness: Harness{
 				Name:         "codex",
 				MCPTransport: MCPTransportTOMLOverride,
@@ -43,14 +43,14 @@ func HarnessTemplates() []HarnessTemplate {
 				MCPTransport: MCPTransportJSONFile,
 				// stream-json keeps stdout flowing from the first event; plain -p
 				// buffers until completion and trips first_activity_timeout
-				// (component-local-launchers) on any run longer than the liveness
+				// (component-runtime) on any run longer than the liveness
 				// window. Headless -p has no interactive approver, so writes need
 				// bypassPermissions, and --add-dir .. reaches the sibling task
 				// worktrees outside the primary checkout the child starts in.
 				// --strict-mcp-config makes the generated credential-free
 				// mcp.json the only MCP source, and stream-json with --verbose
 				// carries the initialization receipt the launcher requires
-				// (component-harness-execution; req-security-boundaries AC-2.7).
+				// (component-runtime; req-security-boundaries AC-2.7).
 				Command:       []string{"claude", "-p", "{prompt}", "--mcp-config", "{mcp_config}", "--strict-mcp-config", "--allowedTools", "mcp__conveyor__*", "--output-format", "stream-json", "--verbose", "--permission-mode", "bypassPermissions", "--add-dir", ".."},
 				ResumeCommand: []string{"--resume", "{session_id}"},
 				ModelArgs:     []string{"--model", "{model}"},
@@ -69,7 +69,7 @@ func HarnessTemplates() []HarnessTemplate {
 			Label:       "Grok CLI",
 			Description: "xAI's coding agent",
 			// Grok receives Conveyor through its child-scoped environment attachment;
-			// this argv is pinned by component-harness-execution.
+			// this argv is pinned by component-runtime.
 			Harness: Harness{
 				Name:          "grok",
 				MCPTransport:  MCPTransportEnvironment,

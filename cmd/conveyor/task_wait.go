@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math/rand/v2"
 	"net/http"
 	"net/url"
 	"sort"
@@ -13,15 +14,17 @@ import (
 	"time"
 
 	"github.com/kidus-tiliksew/conveyor/internal/core"
-	workerservice "github.com/kidus-tiliksew/conveyor/internal/worker"
+	"github.com/kidus-tiliksew/conveyor/internal/nextaction"
 	"github.com/spf13/cobra"
 )
 
 // conveyor task wait blocks one CLI process until a task's observed delivery
 // position moves, the task reaches a terminal state, or the timeout elapses
-// (req-agent-skills REQ-4, AC-4.1 through AC-4.3; DEC-45; component-runtime).
-// It reads the same task and run-order projections conveyor run uses and
-// never mutates the task.
+// (req-agent-skills REQ-4, AC-4.1 through AC-4.3; DEC-84;
+// component-cli-onboarding). It reads only routes a self-claimed session's
+// credential holds: the task, the workspace work-order listing, the pending
+// proposals, and, at a gate, the latest plan or the task activity. It reads no
+// run-order or worker route (DEC-97(1)) and never mutates the task.
 
 const (
 	taskWaitDefaultTimeout    = 5 * time.Minute
@@ -41,8 +44,10 @@ merge execution, plan revision, or human recovery, with the plan version when
 one applies and the merge readiness state for merge execution),
 the next claimable work order ID and stage, and the pending task-authored
 proposals (kind, document ID, and version). The command reads
-GET /v1/tasks/{id} and GET /v1/tasks/{id}/run-order with the ordinary server,
-workspace, and credential resolution. It re-reads with jittered backoff from
+GET /v1/tasks/{id}, GET /v1/work-orders, and GET /v1/pending-proposals, plus
+GET /v1/tasks/{id}/spec at a plan gate and GET /v1/tasks/{id}/activity at a
+merge-execution gate, with the ordinary server, workspace, and credential
+resolution. It re-reads with jittered backoff from
 250ms to a 2s ceiling and returns when any observed field differs from the
 first observation. A merged, closed, or parked task returns at once, at start
 or during the wait.
@@ -133,7 +138,7 @@ type taskWaitResult struct {
 
 type taskWaitOptions struct {
 	timeout   time.Duration
-	newPoller func() *runAdaptivePoller
+	newPoller func() *taskWaitPoller
 	now       func() time.Time
 	// until is the raw --until value; empty keeps the change-detection wait.
 	until string
@@ -224,7 +229,7 @@ func runTaskWait(ctx context.Context, c *client, output io.Writer, taskID string
 		return c.configErr
 	}
 	if options.newPoller == nil {
-		options.newPoller = newRunAdaptivePoller
+		options.newPoller = newTaskWaitPoller
 	}
 	if options.now == nil {
 		options.now = time.Now
@@ -410,37 +415,95 @@ func taskWaitDeadline(ctx context.Context, latest taskWaitObservation, lastErr e
 	return result, nil
 }
 
-// observeTaskWait reads the task and its run-order projection. The task state
-// comes from the later run-order response so state, gate, and order describe
-// the same read.
+// taskWaitPoller spaces the reads of one wait: jittered delays from 250 ms
+// doubling to a 2 s ceiling, so a real transition is observed within that
+// ceiling and concurrent waits do not synchronize (component-cli-onboarding).
+type taskWaitPoller struct {
+	base, maximum, current time.Duration
+	jitter                 func(time.Duration, time.Duration) time.Duration
+}
+
+const taskWaitPollInterval = 250 * time.Millisecond
+
+func newTaskWaitPoller() *taskWaitPoller {
+	return &taskWaitPoller{base: taskWaitPollInterval, maximum: taskWaitPollInterval * 8, current: taskWaitPollInterval, jitter: taskWaitPollJitter}
+}
+
+func taskWaitPollJitter(delay, maximum time.Duration) time.Duration {
+	spread := delay / 10
+	if spread <= 0 {
+		return delay
+	}
+	delay += time.Duration(rand.Int64N(int64(spread)*2+1)) - spread
+	if delay > maximum {
+		return maximum
+	}
+	return delay
+}
+
+func (p *taskWaitPoller) delay() time.Duration { return p.jitter(p.current, p.maximum) }
+
+func (p *taskWaitPoller) observe(changed bool) {
+	if changed {
+		p.current = p.base
+		return
+	}
+	p.current = min(p.current*2, p.maximum)
+}
+
+const taskWaitGateMergeExecution = "merge_execution"
+
+// taskWaitStageOrder ranks claimable stages the way a session works them.
+var taskWaitStageOrder = map[core.Stage]int{core.StageSpec: 0, core.StageImplement: 1, core.StageVerify: 2, core.StageReview: 3}
+
+// taskWaitAwaitingGate maps the next action of an awaiting_human task to the
+// reported gate kind; any other kind is a human recovery gate.
+func taskWaitAwaitingGate(kind string) string {
+	switch kind {
+	case nextaction.KindPlanApproval:
+		return "plan"
+	case nextaction.KindPlanRevision:
+		return "plan_revision"
+	case nextaction.KindMergeApproval:
+		return "merge"
+	case nextaction.KindMergeConflict, nextaction.KindMergeExecution:
+		return taskWaitGateMergeExecution
+	default:
+		return "human"
+	}
+}
+
+// observeTaskWait reads the task with its embedded next action, the
+// workspace work-order listing, and the pending proposals, and at a gate the
+// latest plan version or the merge readiness (component-cli-onboarding).
 func (c *client) observeTaskWait(ctx context.Context, taskID string, now func() time.Time, withNextAction bool) (taskWaitObservation, error) {
 	var task struct {
 		core.Task
 		NextAction *nextActionView `json:"next_action"`
 	}
-	if err := c.workerDoContext(ctx, http.MethodGet, "/v1/tasks/"+url.PathEscape(taskID), nil, &task, c.token); err != nil {
+	escaped := url.PathEscape(taskID)
+	if err := c.workerDoContext(ctx, http.MethodGet, "/v1/tasks/"+escaped, nil, &task, c.token); err != nil {
 		return taskWaitObservation{}, err
 	}
 	if strings.TrimSpace(task.ID) == "" {
 		return taskWaitObservation{}, fmt.Errorf("task read returned no task")
 	}
-	run, err := c.getTaskRunOrderContext(ctx, c.token, taskID)
-	if err != nil {
-		return taskWaitObservation{}, err
-	}
-	if run == nil {
-		return taskWaitObservation{}, fmt.Errorf("run-order read returned no task")
-	}
-	state := run.Task.State
-	if state == "" {
-		state = task.State
-	}
-	if state == "" {
+	if task.State == "" {
 		return taskWaitObservation{}, fmt.Errorf("task read returned no state")
 	}
-	observation := taskWaitObservation{TaskID: task.ID, State: state, PendingProposals: []taskWaitProposal{}, ObservedAt: now().UTC()}
+	var orders []core.WorkOrder
+	if err := c.workerDoContext(ctx, http.MethodGet, "/v1/work-orders", nil, &orders, c.token); err != nil {
+		return taskWaitObservation{}, err
+	}
+	var pending struct {
+		Items []core.PendingProposal `json:"items"`
+	}
+	if err := c.workerDoContext(ctx, http.MethodGet, "/v1/pending-proposals", nil, &pending, c.token); err != nil {
+		return taskWaitObservation{}, err
+	}
+	observation := taskWaitObservation{TaskID: task.ID, State: task.State, PendingProposals: []taskWaitProposal{}, ObservedAt: now().UTC()}
+	action := task.NextAction
 	if withNextAction {
-		action := task.NextAction
 		if action == nil || strings.TrimSpace(action.Actor) == "" {
 			return taskWaitObservation{}, fmt.Errorf("task read returned no next_action")
 		}
@@ -449,28 +512,50 @@ func (c *client) observeTaskWait(ctx context.Context, taskID string, now func() 
 			observation.NextAction.Stage = action.CurrentOrder.Stage
 		}
 	}
-	if gate := run.Gate; gate != nil && strings.TrimSpace(gate.Kind) != "" {
-		normalized := taskWaitGate{Kind: gate.Kind, PlanVersion: gate.PlanVersion}
-		switch gate.Kind {
-		case "spec":
-			normalized = taskWaitGate{Kind: "plan", PlanVersion: gate.SpecVersion}
-		case workerservice.TaskRunGateMergeExecution:
-			if gate.MergeReadiness != nil {
-				normalized.MergeReadiness = gate.MergeReadiness.State
-			}
-		}
-		observation.PendingGate = &normalized
+	actionKind := ""
+	if action != nil {
+		actionKind = action.Kind
 	}
-	if strings.TrimSpace(run.Order.ID) != "" {
-		observation.NextOrder = &taskWaitOrder{ID: run.Order.ID, Stage: run.Order.Stage}
+	if order := taskWaitNextOrder(orders, task.ID); order != nil {
+		observation.NextOrder = order
+	} else {
+		gate, err := c.taskWaitGate(ctx, task.Task, actionKind)
+		if err != nil {
+			return taskWaitObservation{}, err
+		}
+		observation.PendingGate = gate
 	}
 	seen := map[taskWaitProposal]bool{}
-	for _, proposal := range run.PendingProposals {
-		identity := taskWaitProposal{Kind: proposal.Kind, DocumentID: proposal.DocumentID, Version: proposal.Version}
+	add := func(identity taskWaitProposal) {
 		if !seen[identity] {
 			seen[identity] = true
 			observation.PendingProposals = append(observation.PendingProposals, identity)
 		}
+	}
+	for _, proposal := range pending.Items {
+		if proposal.OriginType != "task" || proposal.OriginID != task.ID {
+			continue
+		}
+		identity := taskWaitProposal{DocumentID: proposal.ID, Version: proposal.Version}
+		switch proposal.Tier {
+		case "requirement":
+			identity.Kind = "requirement"
+		case "system_design":
+			identity.Kind = "design"
+		case "decision":
+			// A decision is one immutable record, reported as v1.
+			identity.Kind, identity.Version = "decision", 1
+		default:
+			continue
+		}
+		add(identity)
+	}
+	if task.State == core.TaskAwaiting && actionKind == nextaction.KindPlanRevision {
+		version, err := c.taskWaitPlanVersion(ctx, task.ID)
+		if err != nil {
+			return taskWaitObservation{}, err
+		}
+		add(taskWaitProposal{Kind: "plan_revision", DocumentID: task.ID, Version: version})
 	}
 	sort.Slice(observation.PendingProposals, func(i, j int) bool {
 		a, b := observation.PendingProposals[i], observation.PendingProposals[j]
@@ -483,6 +568,92 @@ func (c *client) observeTaskWait(ctx context.Context, taskID string, now func() 
 		return a.Version < b.Version
 	})
 	return observation, nil
+}
+
+// taskWaitNextOrder selects the task's queued, claimable order of a known
+// stage: spec, implement, verify, then review, then the oldest queue entry.
+func taskWaitNextOrder(orders []core.WorkOrder, taskID string) *taskWaitOrder {
+	var eligible []core.WorkOrder
+	for _, order := range orders {
+		if order.TaskID == taskID && order.State == core.WorkOrderQueued && order.Claimable && core.ValidWorkOrderStage(order.Stage) {
+			eligible = append(eligible, order)
+		}
+	}
+	if len(eligible) == 0 {
+		return nil
+	}
+	sort.Slice(eligible, func(i, j int) bool {
+		a, b := eligible[i], eligible[j]
+		if a.Stage != b.Stage {
+			return taskWaitStageOrder[a.Stage] < taskWaitStageOrder[b.Stage]
+		}
+		if !a.QueueEnteredAt.Equal(b.QueueEnteredAt) {
+			return a.QueueEnteredAt.Before(b.QueueEnteredAt)
+		}
+		return a.ID < b.ID
+	})
+	return &taskWaitOrder{ID: eligible[0].ID, Stage: eligible[0].Stage}
+}
+
+// taskWaitGate derives the pending gate of a task with no claimable order.
+// An approved task behind the merge gate has the merge act pending; an
+// awaiting_human task maps its next action.
+func (c *client) taskWaitGate(ctx context.Context, task core.Task, actionKind string) (*taskWaitGate, error) {
+	switch {
+	case task.State == core.TaskApproved && task.MergeApproval:
+		readiness, err := c.taskWaitMergeReadiness(ctx, task.ID)
+		if err != nil {
+			return nil, err
+		}
+		return &taskWaitGate{Kind: taskWaitGateMergeExecution, MergeReadiness: readiness}, nil
+	case task.State != core.TaskAwaiting:
+		return nil, nil
+	}
+	gate := &taskWaitGate{Kind: taskWaitAwaitingGate(actionKind)}
+	if gate.Kind == "plan" {
+		version, err := c.taskWaitPlanVersion(ctx, task.ID)
+		if err != nil {
+			return nil, err
+		}
+		gate.PlanVersion = version
+	}
+	return gate, nil
+}
+
+// taskWaitPlanVersion reads the latest plan version; a task without a plan
+// reports 0.
+func (c *client) taskWaitPlanVersion(ctx context.Context, taskID string) (int, error) {
+	var spec core.SpecVersion
+	err := c.workerDoContext(ctx, http.MethodGet, "/v1/tasks/"+url.PathEscape(taskID)+"/spec", nil, &spec, c.token)
+	var response *workerHTTPError
+	if errors.As(err, &response) && response.StatusCode == http.StatusNotFound {
+		return 0, nil
+	}
+	if err != nil {
+		return 0, err
+	}
+	return spec.Version, nil
+}
+
+// taskWaitMergeReadiness reads the readiness state the task activity carries
+// for an approved task. A server error leaves the state empty, which reports
+// readiness as unavailable; any other failure fails the observation.
+func (c *client) taskWaitMergeReadiness(ctx context.Context, taskID string) (string, error) {
+	var activity struct {
+		MergeReadiness *taskMergeReadiness `json:"merge_readiness"`
+	}
+	err := c.workerDoContext(ctx, http.MethodGet, "/v1/tasks/"+url.PathEscape(taskID)+"/activity?view=bounded", nil, &activity, c.token)
+	var response *workerHTTPError
+	if errors.As(err, &response) && response.StatusCode >= 500 && response.StatusCode <= 599 {
+		return "", nil
+	}
+	if err != nil {
+		return "", err
+	}
+	if activity.MergeReadiness == nil {
+		return "", nil
+	}
+	return activity.MergeReadiness.State, nil
 }
 
 func (o taskWaitObservation) sameAs(other taskWaitObservation) bool {
@@ -533,7 +704,7 @@ func writeTaskWaitResult(w io.Writer, result taskWaitResult, timeout time.Durati
 		if result.PendingGate.PlanVersion > 0 {
 			gate += fmt.Sprintf(" v%d", result.PendingGate.PlanVersion)
 		}
-		if result.PendingGate.Kind == workerservice.TaskRunGateMergeExecution {
+		if result.PendingGate.Kind == taskWaitGateMergeExecution {
 			readiness := result.PendingGate.MergeReadiness
 			if readiness == "" {
 				readiness = "unavailable"

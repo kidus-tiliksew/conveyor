@@ -1,3 +1,0 @@
-[mcp_servers.conveyor]
-url = "${CONVEYOR_ADDR}"
-headers = { "Authorization" = "Bearer ${CONVEYOR_API_TOKEN}" }

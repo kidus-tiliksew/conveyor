@@ -247,9 +247,16 @@ func choiceCommand(taskID string, action nextActionView, choice nextActionChoice
 		return command, true
 	}
 	switch {
-	case onTask && strings.HasSuffix(choice.Path, "/review") &&
-		(choice.ID == "approve" || choice.ID == "redirect" || choice.ID == "approve_revision" || choice.ID == "decline"):
-		return "conveyor run " + taskID, true
+	// Gate acts record through POST /v1/tasks/{id}/review; no launcher command
+	// exists (DEC-97(1)).
+	case onTask && strings.HasSuffix(choice.Path, "/review") && choice.ID == "approve":
+		return "conveyor task approve " + taskID, true
+	case onTask && strings.HasSuffix(choice.Path, "/review") && choice.ID == "redirect":
+		return "conveyor task redirect " + taskID + " --reason changes-requested -m <direction>", true
+	case onTask && strings.HasSuffix(choice.Path, "/review") && choice.ID == "approve_revision":
+		return "conveyor task redirect " + taskID + " --reason plan-revision-approved -m <comment>", true
+	case onTask && strings.HasSuffix(choice.Path, "/review") && choice.ID == "decline":
+		return "conveyor task redirect " + taskID + " --reason plan-revision-declined -m <direction>", true
 	case onTask && choice.ID == "merge":
 		return "conveyor task merge " + taskID, true
 	case onTask && choice.ID == "request_changes":

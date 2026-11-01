@@ -43,7 +43,7 @@ func kitVerifyCmd() *cobra.Command {
 		if err != nil {
 			return err
 		}
-		selected, err := resolveLocalExecutionConfigPath(cmd, o.configPath)
+		selected, err := resolveLocalConfigPath(cmd, o.configPath)
 		if err != nil {
 			return err
 		}
@@ -54,7 +54,7 @@ func kitVerifyCmd() *cobra.Command {
 	c.Flags().StringVar(&o.retryKey, "retry-key", "", "explicit new attempt key after replay admission")
 	c.Flags().StringVar(&o.replayAuthorization, "replay-authorization", "", "operator recovery authorization for this retry")
 	c.Flags().BoolVar(&o.withUI, "ui", false, "launch the optional loopback kit UI")
-	c.Flags().StringVar(&o.configPath, "config", defaultLocalExecutionConfigPath(), "local execution configuration")
+	c.Flags().StringVar(&o.configPath, "config", defaultLocalConfigPath(), "local configuration file")
 	c.Flags().StringVar(&o.contextID, "context-id", "", "prepared verification context (otherwise prepare the current claim)")
 	c.Flags().StringVar(&o.coveragePath, "coverage", "", "JSON coverage mapping for registered ordinary obligations and selected kits")
 	c.Flags().StringVar(&o.attemptRoot, "attempt-root", "", "private output directory outside the checkout (defaults to the task cache)")
@@ -126,7 +126,7 @@ func verifyKits(ctx context.Context, rpc kitRPC, root, taskID string, o kitVerif
 	if err := v.checkCheckout(ctx); err != nil {
 		return err
 	}
-	cfg, err := config.Load(o.configPath)
+	cfg, err := loadLocalConfig(o.configPath)
 	if err != nil {
 		return err
 	}

@@ -8,7 +8,7 @@ import (
 )
 
 // Worktree location modes recorded by the local execution document
-// (component-harness-execution; component-git-delivery).
+// (component-git-delivery).
 const (
 	WorktreeLocationRepository   = "repository"
 	WorktreeLocationMachine      = "machine"
@@ -83,7 +83,7 @@ func (l WorktreeLocation) Normalized(home string) (WorktreeLocation, error) {
 }
 
 // safeWorktreeDir keeps dir a literal Git path: no ignore-pattern comment,
-// negation, or glob character and no pathspec magic (component-harness-execution).
+// negation, or glob character and no pathspec magic (component-git-delivery).
 func safeWorktreeDir(value string) bool {
 	if !safePathSegment(value) || value == ".git" || strings.HasPrefix(value, "-") {
 		return false
@@ -99,7 +99,7 @@ func safeWorktreeDir(value string) bool {
 // ConfiguredWorktreeLocation reports the normalized location the document
 // records. A legacy worktree_root reads as machine mode with that root. The
 // second result is false when the document records no location, which callers
-// must treat as undecided rather than defaulting (component-harness-execution).
+// must treat as undecided rather than defaulting (component-git-delivery).
 func (c *Config) ConfiguredWorktreeLocation() (WorktreeLocation, bool) {
 	if c == nil {
 		return WorktreeLocation{}, false

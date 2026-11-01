@@ -429,9 +429,6 @@ func ordinaryKitVerifyOptions(t *testing.T, f *kitExecutionFixture, discovery st
 		g.Server, g.Workspace, g.Repository = f.v.rpc.client.base, "demo", "repo"
 		cfg.KitPermissions = append(cfg.KitPermissions, g)
 	}
-	harness := config.HarnessTemplates()[0].Harness
-	document := localExecutionDocument("demo", newExecutionWizardState(healthyDetections(harness), nil).choices, []config.Harness{harness})
-	cfg.ExecutionSettings, cfg.Harnesses, cfg.Review = document.ExecutionSettings, document.Harnesses, document.Review
 	cfgBytes, err := yaml.Marshal(cfg)
 	if err != nil {
 		t.Fatal(err)
@@ -809,11 +806,11 @@ func TestKitPermissionsUntrustedSourceRefused(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		inside := filepath.Join(f.v.root, localExecutionConfigName)
+		inside := filepath.Join(f.v.root, localConfigName)
 		if err = os.WriteFile(inside, data, 0o600); err != nil {
 			t.Fatal(err)
 		}
-		for _, args := range [][]string{{"add", localExecutionConfigName}, {"commit", "-qm", "repository kit_permissions"}} {
+		for _, args := range [][]string{{"add", localConfigName}, {"commit", "-qm", "repository kit_permissions"}} {
 			if _, err := localKitGit(t.Context(), f.v.root, args...); err != nil {
 				t.Fatal(err)
 			}
@@ -864,7 +861,7 @@ func TestKitPermissionsUntrustedSourceRefused(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			inside := filepath.Join(strings.TrimSpace(string(common)), localExecutionConfigName)
+			inside := filepath.Join(strings.TrimSpace(string(common)), localConfigName)
 			if err = os.WriteFile(inside, data, 0o600); err != nil {
 				t.Fatal(err)
 			}

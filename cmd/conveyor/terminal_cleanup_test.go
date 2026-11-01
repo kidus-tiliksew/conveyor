@@ -6,245 +6,152 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"strings"
+	"sync"
 	"testing"
 
-	"github.com/kidus-tiliksew/conveyor/internal/config"
 	"github.com/kidus-tiliksew/conveyor/internal/core"
-	workerservice "github.com/kidus-tiliksew/conveyor/internal/worker"
 )
 
-func TestTerminalWorktreeCleanupUsesRunAndWorkerRoutes(t *testing.T) {
-	for _, test := range []struct {
-		dispatch string
-		path     string
-	}{
-		{dispatch: "run", path: "/v1/tasks/task-a/worktree-cleanup"},
-		{dispatch: "worker", path: "/v1/worker/tasks/task-a/worktree-cleanup"},
-	} {
-		t.Run(test.dispatch, func(t *testing.T) {
-			cleanupCalls := 0
-			recordCalls := 0
-			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-				if r.URL.Path == "/v1/tasks" && r.Method == http.MethodGet {
-					_ = json.NewEncoder(w).Encode([]core.Task{})
-					return
-				}
-				if r.Header.Get("Authorization") != "Bearer credential" || r.Header.Get("X-Workspace-ID") != "demo" || r.URL.Path != test.path {
-					http.Error(w, "wrong cleanup request", http.StatusBadRequest)
-					return
-				}
-				switch r.Method {
-				case http.MethodGet:
-					_ = json.NewEncoder(w).Encode(terminalCleanupStatus{Terminal: true})
-				case http.MethodPost:
-					recordCalls++
-					var record terminalCleanupRecord
-					_ = json.NewDecoder(r.Body).Decode(&record)
-					if record.Repository != "conveyor" || record.Branch != "conveyor/task-a" || record.Worktree != "removed" || record.BranchResult != "retained" || record.Path != "/worktrees/task-a" {
-						http.Error(w, "wrong cleanup record", http.StatusBadRequest)
-						return
-					}
-					_ = json.NewEncoder(w).Encode(terminalCleanupReceipt{Completed: true, Recorded: true})
-				default:
-					http.Error(w, "wrong method", http.StatusMethodNotAllowed)
-				}
-			}))
-			defer server.Close()
-
-			previous := cleanupTerminalTaskWorktree
-			cleanupTerminalTaskWorktree = func(_ context.Context, _ *config.Config, _ workerservice.DispatchOrder) (worktreeCleanupResult, error) {
-				cleanupCalls++
-				return worktreeCleanupResult{Worktree: "removed", Branch: "retained", Path: "/worktrees/task-a"}, nil
-			}
-			t.Cleanup(func() { cleanupTerminalTaskWorktree = previous })
-
-			item := workerservice.DispatchOrder{
-				Task:     core.Task{ID: "task-a", Repo: "conveyor", Branch: "conveyor/task-a", State: core.TaskMerged},
-				Dispatch: test.dispatch,
-			}
-			attempt, err := attemptTerminalWorktreeCleanup(t.Context(), &client{base: server.URL, workspace: "demo"}, "credential", item, &config.Config{})
-			if err != nil || !attempt.Completed || cleanupCalls != 1 || recordCalls != 1 {
-				t.Fatalf("attempt=%+v cleanupCalls=%d recordCalls=%d err=%v", attempt, cleanupCalls, recordCalls, err)
-			}
-		})
-	}
+// doneCleanupServer serves the reads conveyor done makes and records every
+// cleanup request; status answers the recording request.
+type doneCleanupServer struct {
+	t        *testing.T
+	task     core.Task
+	holders  []core.Task
+	status   int
+	mu       sync.Mutex
+	paths    []string
+	recorded []terminalCleanupRecord
 }
 
-func TestTerminalWorktreeCleanupSkipsRecordedAndRetriesNonterminal(t *testing.T) {
-	completed := true
-	terminal := true
-	cleanupCalls := 0
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != http.MethodGet {
-			http.Error(w, "recording must not run", http.StatusInternalServerError)
-			return
-		}
-		_ = json.NewEncoder(w).Encode(terminalCleanupStatus{Terminal: terminal, Completed: completed})
-	}))
-	defer server.Close()
-	previous := cleanupTerminalTaskWorktree
-	cleanupTerminalTaskWorktree = func(_ context.Context, _ *config.Config, _ workerservice.DispatchOrder) (worktreeCleanupResult, error) {
-		cleanupCalls++
-		return worktreeCleanupResult{}, nil
-	}
-	t.Cleanup(func() { cleanupTerminalTaskWorktree = previous })
-	item := workerservice.DispatchOrder{Task: core.Task{ID: "task-a", Repo: "conveyor", Branch: "conveyor/task-a", State: core.TaskMerged}, Dispatch: "run"}
-	c := &client{base: server.URL, workspace: "demo"}
-	attempt, err := attemptTerminalWorktreeCleanup(t.Context(), c, "credential", item, &config.Config{})
-	if err != nil || !attempt.Completed || cleanupCalls != 0 {
-		t.Fatalf("recorded attempt=%+v calls=%d err=%v", attempt, cleanupCalls, err)
-	}
-	completed = false
-	terminal = false
-	attempt, err = attemptTerminalWorktreeCleanup(t.Context(), c, "credential", item, &config.Config{})
-	if err != nil || !attempt.Pending || cleanupCalls != 0 {
-		t.Fatalf("nonterminal attempt=%+v calls=%d err=%v", attempt, cleanupCalls, err)
-	}
+func newDoneCleanupServer(t *testing.T, task core.Task, status int, holders ...core.Task) *doneCleanupServer {
+	t.Helper()
+	server := &doneCleanupServer{t: t, task: task, holders: holders, status: status}
+	httpServer := httptest.NewServer(http.HandlerFunc(server.serve))
+	t.Cleanup(httpServer.Close)
+	t.Setenv("CONVEYOR_ADDR", httpServer.URL)
+	t.Setenv("CONVEYOR_API_TOKEN", "done-token")
+	t.Setenv("CONVEYOR_WORKSPACE", "demo")
+	return server
 }
 
-func TestTerminalWorktreeCleanupRecordingFailureRemainsRetryable(t *testing.T) {
-	cleanupCalls := 0
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path == "/v1/tasks" && r.Method == http.MethodGet {
-			_ = json.NewEncoder(w).Encode([]core.Task{})
-			return
-		}
-		if r.Method == http.MethodGet {
-			_ = json.NewEncoder(w).Encode(terminalCleanupStatus{Terminal: true})
-			return
-		}
-		http.Error(w, "recording unavailable", http.StatusServiceUnavailable)
-	}))
-
-	defer server.Close()
-	previous := cleanupTerminalTaskWorktree
-	cleanupTerminalTaskWorktree = func(_ context.Context, _ *config.Config, _ workerservice.DispatchOrder) (worktreeCleanupResult, error) {
-		cleanupCalls++
-		return worktreeCleanupResult{Worktree: "skipped", Branch: "retained", Path: "-"}, nil
+func (s *doneCleanupServer) serve(w http.ResponseWriter, r *http.Request) {
+	s.mu.Lock()
+	s.paths = append(s.paths, r.Method+" "+r.URL.Path)
+	s.mu.Unlock()
+	if got := r.Header.Get("Authorization"); got != "Bearer done-token" {
+		s.t.Errorf("Authorization = %q", got)
 	}
-	t.Cleanup(func() { cleanupTerminalTaskWorktree = previous })
-	item := workerservice.DispatchOrder{Task: core.Task{ID: "task-a", Repo: "conveyor", Branch: "conveyor/task-a", State: core.TaskClosed}, Dispatch: "worker"}
-	_, firstErr := attemptTerminalWorktreeCleanup(t.Context(), &client{base: server.URL, workspace: "demo"}, "credential", item, &config.Config{})
-	_, secondErr := attemptTerminalWorktreeCleanup(t.Context(), &client{base: server.URL, workspace: "demo"}, "credential", item, &config.Config{})
-	if firstErr == nil || secondErr == nil || !strings.Contains(firstErr.Error(), "record completion") || cleanupCalls != 2 {
-		t.Fatalf("first=%v second=%v cleanupCalls=%d", firstErr, secondErr, cleanupCalls)
-	}
-}
-
-func TestWorkerCleanupPassRemovesCompletedTasksAndRetainsFailures(t *testing.T) {
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path == "/v1/tasks" && r.Method == http.MethodGet {
-			_ = json.NewEncoder(w).Encode([]core.Task{})
-			return
-		}
-		if strings.Contains(r.URL.Path, "retry-task") {
-			http.Error(w, "temporarily unavailable", http.StatusServiceUnavailable)
-			return
-		}
-		if r.Method == http.MethodGet {
-			_ = json.NewEncoder(w).Encode(terminalCleanupStatus{Terminal: true})
-			return
-		}
-		_ = json.NewEncoder(w).Encode(terminalCleanupReceipt{Completed: true, Recorded: true})
-	}))
-
-	defer server.Close()
-	previous := cleanupTerminalTaskWorktree
-	cleanupTerminalTaskWorktree = func(_ context.Context, _ *config.Config, item workerservice.DispatchOrder) (worktreeCleanupResult, error) {
-		return worktreeCleanupResult{Worktree: "removed", Branch: "retained", Path: "/worktrees/" + item.Task.ID}, nil
-	}
-	t.Cleanup(func() { cleanupTerminalTaskWorktree = previous })
-	tasks := map[string]workerservice.DispatchOrder{
-		"done-task":  {Task: core.Task{ID: "done-task", Repo: "conveyor", Branch: "conveyor/task-done", State: core.TaskMerged}, Dispatch: "worker"},
-		"retry-task": {Task: core.Task{ID: "retry-task", Repo: "conveyor", Branch: "conveyor/task-retry", State: core.TaskRunning}, Dispatch: "worker"},
-	}
-	var output bytes.Buffer
-	cleanupWorkerTaskWorktrees(t.Context(), &client{base: server.URL, workspace: "demo"}, "credential", tasks, &config.Config{}, &output)
-	if _, ok := tasks["done-task"]; ok {
-		t.Fatalf("completed task remained tracked: %+v", tasks)
-	}
-	if _, ok := tasks["retry-task"]; !ok || !strings.Contains(output.String(), "worker worktree cleanup task retry-task") {
-		t.Fatalf("retry task was not retained and logged: tasks=%+v output=%q", tasks, output.String())
-	}
-}
-
-func TestTerminalWorktreeCleanupSkipsOccupiedBranch(t *testing.T) {
-	cleanupCalls := 0
-	recordCalls := 0
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path == "/v1/tasks" && r.Method == http.MethodGet {
-			_ = json.NewEncoder(w).Encode([]core.Task{
-				{ID: "task-a", Repo: "conveyor", Branch: "feature/shared", State: core.TaskMerged},
-				{ID: "task-b", Repo: "conveyor", Branch: "feature/shared", State: core.TaskQueued},
-			})
-
-			return
-		}
-		if r.Method == http.MethodGet {
-			_ = json.NewEncoder(w).Encode(terminalCleanupStatus{Terminal: true})
-			return
-		}
-		recordCalls++
+	switch {
+	case r.Method == http.MethodGet && r.URL.Path == "/v1/tasks/"+s.task.ID:
+		_ = json.NewEncoder(w).Encode(s.task)
+	case r.Method == http.MethodGet && r.URL.Path == "/v1/tasks":
+		_ = json.NewEncoder(w).Encode(append([]core.Task{}, s.holders...))
+	case r.Method == http.MethodPost && r.URL.Path == "/v1/tasks/"+s.task.ID+"/worktree-cleanup":
 		var record terminalCleanupRecord
-		_ = json.NewDecoder(r.Body).Decode(&record)
-		if record.Worktree != "skipped" || record.BranchResult != "retained" {
-			http.Error(w, "wrong skip record", http.StatusBadRequest)
+		if err := json.NewDecoder(r.Body).Decode(&record); err != nil {
+			s.t.Error(err)
+		}
+		s.mu.Lock()
+		s.recorded = append(s.recorded, record)
+		s.mu.Unlock()
+		if s.status != http.StatusOK {
+			http.Error(w, "worktree cleanup requires a claimed order", s.status)
 			return
 		}
 		_ = json.NewEncoder(w).Encode(terminalCleanupReceipt{Completed: true, Recorded: true})
-	}))
-	defer server.Close()
-	previous := cleanupTerminalTaskWorktree
-	cleanupTerminalTaskWorktree = func(_ context.Context, _ *config.Config, _ workerservice.DispatchOrder) (worktreeCleanupResult, error) {
-		cleanupCalls++
-		return worktreeCleanupResult{Worktree: "removed", Branch: "retained", Path: "/worktrees/task-a"}, nil
-	}
-	t.Cleanup(func() { cleanupTerminalTaskWorktree = previous })
-	item := workerservice.DispatchOrder{
-		Task:     core.Task{ID: "task-a", Repo: "conveyor", Branch: "feature/shared", State: core.TaskMerged},
-		Dispatch: "run",
-	}
-	attempt, err := attemptTerminalWorktreeCleanup(t.Context(), &client{base: server.URL, workspace: "demo"}, "credential", item, &config.Config{})
-	if err != nil || !attempt.Completed || cleanupCalls != 0 || recordCalls != 1 || attempt.Cleanup.Worktree != "skipped" {
-		t.Fatalf("attempt=%+v cleanupCalls=%d recordCalls=%d err=%v", attempt, cleanupCalls, recordCalls, err)
+	default:
+		s.t.Errorf("unexpected request %s %s", r.Method, r.URL.Path)
+		http.NotFound(w, r)
 	}
 }
 
-func TestTerminalWorktreeCleanupSkipsWhenTaskListFails(t *testing.T) {
-	cleanupCalls := 0
-	recordCalls := 0
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path == "/v1/tasks" {
-			http.Error(w, "cannot list", http.StatusUnauthorized)
-			return
-		}
-		if r.Method == http.MethodGet {
-			_ = json.NewEncoder(w).Encode(terminalCleanupStatus{Terminal: true})
-			return
-		}
-		recordCalls++
-		var record terminalCleanupRecord
-		_ = json.NewDecoder(r.Body).Decode(&record)
-		if record.Worktree != "skipped" {
-			http.Error(w, "wrong skip record", http.StatusBadRequest)
-			return
-		}
-		_ = json.NewEncoder(w).Encode(terminalCleanupReceipt{Completed: true, Recorded: true})
-	}))
-	defer server.Close()
-	previous := cleanupTerminalTaskWorktree
-	cleanupTerminalTaskWorktree = func(_ context.Context, _ *config.Config, _ workerservice.DispatchOrder) (worktreeCleanupResult, error) {
-		cleanupCalls++
-		return worktreeCleanupResult{Worktree: "removed", Branch: "retained", Path: "/worktrees/task-a"}, nil
+func runDone(t *testing.T, taskID string) (string, string, error) {
+	t.Helper()
+	var stdout, stderr bytes.Buffer
+	cmd := doneCmd()
+	cmd.SetOut(&stdout)
+	cmd.SetErr(&stderr)
+	cmd.SetArgs([]string{taskID})
+	err := cmd.Execute()
+	return stdout.String(), stderr.String(), err
+}
+
+// conveyor done removes the worktree, then records the result on the user
+// route only (DEC-95; component-git-delivery).
+func TestDoneRecordsCleanupOnUserRouteOnly(t *testing.T) {
+	fixture := newGitFixture(t)
+	branch := "conveyor/task-recorded"
+	destination, err := checkoutTask(context.Background(), branch, "main", "conveyor", fixture.origin, "recorded", "")
+	if err != nil {
+		t.Fatal(err)
 	}
-	t.Cleanup(func() { cleanupTerminalTaskWorktree = previous })
-	item := workerservice.DispatchOrder{
-		Task:     core.Task{ID: "task-a", Repo: "conveyor", Branch: "conveyor/task-a", State: core.TaskMerged},
-		Dispatch: "worker",
+	server := newDoneCleanupServer(t, core.Task{ID: "recorded", Repo: "conveyor", Branch: branch, State: core.TaskMerged}, http.StatusOK)
+	stdout, stderr, err := runDone(t, "recorded")
+	if err != nil {
+		t.Fatal(err)
 	}
-	attempt, err := attemptTerminalWorktreeCleanup(t.Context(), &client{base: server.URL, workspace: "demo"}, "credential", item, &config.Config{})
-	if err != nil || !attempt.Completed || cleanupCalls != 0 || recordCalls != 1 || attempt.Cleanup.Worktree != "skipped" {
-		t.Fatalf("attempt=%+v cleanupCalls=%d recordCalls=%d err=%v", attempt, cleanupCalls, recordCalls, err)
+	if !strings.Contains(stdout, "worktree=removed branch=retained path="+destination) || strings.Contains(stderr, "not recorded") {
+		t.Fatalf("stdout=%q stderr=%q", stdout, stderr)
+	}
+	if len(server.recorded) != 1 || server.recorded[0].Repository != "conveyor" || server.recorded[0].Branch != branch || server.recorded[0].Worktree != "removed" || server.recorded[0].BranchResult != "retained" || server.recorded[0].Path != destination {
+		t.Fatalf("recorded = %+v", server.recorded)
+	}
+	for _, path := range server.paths {
+		if strings.Contains(path, "/v1/worker/") {
+			t.Fatalf("done called a worker route: %s", path)
+		}
+	}
+	if _, err := os.Stat(destination); !os.IsNotExist(err) {
+		t.Fatalf("worktree still exists: %v", err)
+	}
+}
+
+// A refused recording leaves the local result and the exit status unchanged
+// and prints one warning line.
+func TestDoneRecordingRefusalWarnsWithoutFailing(t *testing.T) {
+	fixture := newGitFixture(t)
+	branch := "conveyor/task-refused"
+	if _, err := checkoutTask(context.Background(), branch, "main", "conveyor", fixture.origin, "refused", ""); err != nil {
+		t.Fatal(err)
+	}
+	server := newDoneCleanupServer(t, core.Task{ID: "refused", Repo: "conveyor", Branch: branch, State: core.TaskClosed}, http.StatusNotFound)
+	stdout, stderr, err := runDone(t, "refused")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(stdout, "worktree=removed") || strings.Count(stderr, "warning: worktree cleanup not recorded:") != 1 {
+		t.Fatalf("stdout=%q stderr=%q", stdout, stderr)
+	}
+	if len(server.recorded) != 1 {
+		t.Fatalf("recorded = %+v", server.recorded)
+	}
+}
+
+// A branch that another open task holds is skipped, removes nothing, and is
+// recorded as skipped (req-task-branch-assignment AC-3.5).
+func TestDoneRecordsSkippedOccupiedBranch(t *testing.T) {
+	fixture := newGitFixture(t)
+	branch := "conveyor/task-shared"
+	destination, err := checkoutTask(context.Background(), branch, "main", "conveyor", fixture.origin, "shared", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	holder := core.Task{ID: "holder", Repo: "conveyor", Branch: branch, State: core.TaskRunning}
+	server := newDoneCleanupServer(t, core.Task{ID: "shared", Repo: "conveyor", Branch: branch, State: core.TaskMerged}, http.StatusOK, holder)
+	stdout, _, err := runDone(t, "shared")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(stdout, "worktree=skipped branch="+branch+" path=- other_task=holder") {
+		t.Fatalf("stdout=%q", stdout)
+	}
+	if len(server.recorded) != 1 || server.recorded[0].Worktree != "skipped" {
+		t.Fatalf("recorded = %+v", server.recorded)
+	}
+	if _, err := os.Stat(destination); err != nil {
+		t.Fatalf("occupied worktree was removed: %v", err)
 	}
 }

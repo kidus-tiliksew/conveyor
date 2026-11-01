@@ -1694,7 +1694,7 @@ func TestHarnessTemplatesMatchValidationContract(t *testing.T) {
 	// The only built-in json_file template is Claude Code: its generated
 	// mcp.json is the exclusive MCP source and its stream-json output carries
 	// the initialization receipt the launcher requires
-	// (component-harness-execution; req-security-boundaries AC-2.7).
+	// (component-runtime; req-security-boundaries AC-2.7).
 	if want := []string{"claude", "-p", "{prompt}", "--mcp-config", "{mcp_config}", "--strict-mcp-config", "--allowedTools", "mcp__conveyor__*", "--output-format", "stream-json", "--verbose", "--permission-mode", "bypassPermissions", "--add-dir", ".."}; !reflect.DeepEqual(templates[1].Harness.Command, want) {
 		t.Fatalf("claude command = %#v, want %#v", templates[1].Harness.Command, want)
 	}

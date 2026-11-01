@@ -27,52 +27,32 @@ type worktreeCleanupResult struct {
 	ProcessWarnings []string
 }
 
-type attemptCheckpoint struct {
-	AttemptID         string
-	WorkOrderID       string
-	TerminationReason string
-	Identity          *core.WorktreeIdentity
-	Writer            *worktreeWriter
-	Authorize         func(context.Context) error
-}
-
-type attemptCheckpointResult struct {
-	Worktree          string
-	CommitSHA         string
-	Pushed            bool
-	TerminationReason string
-}
-
+// checkoutTaskAtRoot resolves the task worktree with a fixed container.
 func checkoutTaskAtRoot(ctx context.Context, branch, base, repo, repoURL, taskID, destination, worktreeRoot string) (string, error) {
-	path, _, err := checkoutTaskWithCheckpointAtRoot(ctx, branch, base, repo, repoURL, taskID, destination, worktreeRoot, nil)
-	return path, err
-}
-
-func checkoutTaskWithCheckpointAtRoot(ctx context.Context, branch, base, repo, repoURL, taskID, destination, worktreeRoot string, checkpoint *attemptCheckpoint) (string, *attemptCheckpointResult, error) {
-	return checkoutTaskWithPlacement(ctx, branch, base, repo, repoURL, taskID, destination, fixedWorktreePlacement(worktreeRoot), checkpoint)
+	return checkoutTaskWithPlacement(ctx, branch, base, repo, repoURL, taskID, destination, fixedWorktreePlacement(worktreeRoot))
 }
 
 // checkoutTaskWithPlacement resolves one safe, task-dedicated checkout without
 // switching or rewriting the operator's primary checkout (component-git-delivery;
 // DEC-10). The placement is read only when a new worktree is created.
-func checkoutTaskWithPlacement(ctx context.Context, branch, base, repo, repoURL, taskID, destination string, placement worktreePlacement, checkpoint *attemptCheckpoint) (string, *attemptCheckpointResult, error) {
+func checkoutTaskWithPlacement(ctx context.Context, branch, base, repo, repoURL, taskID, destination string, placement worktreePlacement) (string, error) {
 	root, err := repositoryRoot(ctx)
 	if err != nil {
-		return "", nil, fmt.Errorf("checkout must run from inside the target repository; change into its primary checkout (dispatched launches may configure repos[].checkout): %w", err)
+		return "", fmt.Errorf("checkout must run from inside the target repository; change into its primary checkout: %w", err)
 	}
 	// Identity precedes fetches, ref inspection, worktree reuse, and creation.
 	// A directory label is never accepted as proof of repository ownership
 	// (component-git-delivery).
 	if err := localgit.VerifyRepositoryIdentity(ctx, root, repo, repoURL); err != nil {
-		return "", nil, err
+		return "", err
 	}
 	worktrees, err := listRegisteredWorktrees(ctx, root)
 	if err != nil {
-		return "", nil, err
+		return "", err
 	}
 	primary, err := primaryWorktreeRoot(ctx, root)
 	if err != nil {
-		return "", nil, err
+		return "", err
 	}
 	var assigned *registeredWorktree
 	for i := range worktrees {
@@ -81,15 +61,15 @@ func checkoutTaskWithPlacement(ctx context.Context, branch, base, repo, repoURL,
 			continue
 		}
 		if assigned != nil {
-			return "", nil, fmt.Errorf("task branch %s is registered in multiple worktrees", branch)
+			return "", fmt.Errorf("task branch %s is registered in multiple worktrees", branch)
 		}
 		assigned = entry
 	}
 	reusingAssigned := assigned != nil && filepath.Clean(assigned.Path) != filepath.Clean(primary)
 	if operation, err := inProgressGitOperation(ctx, primary); err != nil {
-		return "", nil, err
+		return "", err
 	} else if operation != "" {
-		return "", nil, fmt.Errorf("primary checkout is unsafe: Git operation %s is in progress", operation)
+		return "", fmt.Errorf("primary checkout is unsafe: Git operation %s is in progress", operation)
 	}
 	// The implicit container is resolved only for a new worktree. An
 	// in-repository container gets its exclude entry before the cleanliness
@@ -98,7 +78,7 @@ func checkoutTaskWithPlacement(ctx context.Context, branch, base, repo, repoURL,
 	var worktreeRoot string
 	if implicitDestination && assigned == nil {
 		if worktreeRoot, err = placement.prepare(ctx, primary, repo, taskID, branch); err != nil {
-			return "", nil, err
+			return "", err
 		}
 	}
 	// Dirty-primary refusal: creating a new worktree, at any destination,
@@ -127,7 +107,7 @@ func checkoutTaskWithPlacement(ctx context.Context, branch, base, repo, repoURL,
 	// decision.
 	if !reusingAssigned {
 		if _, err := requireSafeWorktree(ctx, primary); err != nil {
-			return "", nil, unsafePrimaryError(ctx, primary, taskID, inRepositoryWorktreeCandidates(primary, placement, worktrees), err)
+			return "", unsafePrimaryError(ctx, primary, taskID, inRepositoryWorktreeCandidates(primary, placement, worktrees), err)
 		}
 	}
 	var currentCheckoutErr error
@@ -139,91 +119,77 @@ func checkoutTaskWithPlacement(ctx context.Context, branch, base, repo, repoURL,
 		if assigned == nil {
 			destination, err = implicitCheckoutDestination(worktreeRoot, repo, taskID, branch)
 			if err != nil {
-				return "", nil, err
+				return "", err
 			}
 		}
 	} else {
 		if !filepath.IsAbs(destination) {
 			destination, err = filepath.Abs(destination)
 			if err != nil {
-				return "", nil, err
+				return "", err
 			}
 		}
 		destination, err = canonicalWorktreePath(destination)
 		if err != nil {
-			return "", nil, err
+			return "", err
 		}
 	}
 
-	var assignedCheckpoint *attemptCheckpointResult
-	if currentCheckoutErr != nil && (checkpoint == nil || assigned == nil || filepath.Clean(root) != filepath.Clean(assigned.Path)) {
-		return "", nil, fmt.Errorf("current checkout is unsafe: %w", currentCheckoutErr)
+	if currentCheckoutErr != nil {
+		return "", fmt.Errorf("current checkout is unsafe: %w", currentCheckoutErr)
 	}
 	if assigned != nil {
 		if filepath.Clean(assigned.Path) == filepath.Clean(primary) {
-			return "", nil, fmt.Errorf("task branch %s is checked out in the shared primary checkout %s", branch, primary)
+			return "", fmt.Errorf("task branch %s is checked out in the shared primary checkout %s", branch, primary)
 		}
 		if assigned.Locked || assigned.Prunable {
-			return "", nil, fmt.Errorf("task branch %s is registered in an unavailable worktree at %s", branch, assigned.Path)
+			return "", fmt.Errorf("task branch %s is registered in an unavailable worktree at %s", branch, assigned.Path)
 		}
 		actualBranch, err := worktreeBranch(ctx, assigned.Path)
 		if err != nil {
-			return "", nil, fmt.Errorf("task worktree %s is unsafe: %w", assigned.Path, err)
+			return "", fmt.Errorf("task worktree %s is unsafe: %w", assigned.Path, err)
 		}
 		if actualBranch != branch {
-			return "", nil, fmt.Errorf("task worktree %s owns %s instead of %s", assigned.Path, actualBranch, branch)
+			return "", fmt.Errorf("task worktree %s owns %s instead of %s", assigned.Path, actualBranch, branch)
 		}
 		if operation, opErr := inProgressGitOperation(ctx, assigned.Path); opErr != nil {
-			return "", nil, opErr
+			return "", opErr
 		} else if operation != "" {
-			return "", nil, fmt.Errorf("task worktree %s has Git operation %s in progress", assigned.Path, operation)
+			return "", fmt.Errorf("task worktree %s has Git operation %s in progress", assigned.Path, operation)
 		}
 		status, statusErr := gitOutput(ctx, assigned.Path, "status", "--porcelain", "--untracked-files=normal")
 		if statusErr != nil {
-			return "", nil, statusErr
+			return "", statusErr
 		}
-		var checkpointed *attemptCheckpointResult
 		if strings.TrimSpace(status) != "" {
-			if checkpoint == nil {
-				return "", nil, fmt.Errorf("task worktree %s is unsafe: worktree has uncommitted or untracked changes", assigned.Path)
-			}
-			checkpointed, err = checkpointTaskWorktreeAtPath(ctx, assigned.Path, branch, primary, *checkpoint)
-			if err != nil {
-				return "", nil, err
-			}
-		} else if checkpoint != nil {
-			checkpointed, err = matchingAttemptCheckpointAtHEAD(ctx, assigned.Path, *checkpoint)
-			if err != nil {
-				return "", nil, err
-			}
+			return "", fmt.Errorf("task worktree %s is unsafe: worktree has uncommitted or untracked changes", assigned.Path)
 		}
-		assignedCheckpoint = checkpointed
 	}
 	canonicalPrimary, err := canonicalWorktreePath(primary)
 	if err != nil {
-		return "", nil, err
+		return "", err
 	}
 	if assigned == nil && filepath.Clean(destination) == canonicalPrimary {
-		return "", nil, fmt.Errorf("refusing to use the primary checkout %s as the task worktree", primary)
+		return "", fmt.Errorf("refusing to use the primary checkout %s as the task worktree", primary)
 	}
 	baseRef := "refs/remotes/origin/" + base
 	if _, err := gitOutput(ctx, root, "fetch", "origin", "refs/heads/"+base+":"+baseRef); err != nil {
-		return "", nil, fmt.Errorf("fetch assigned base %s: %w", base, err)
+		return "", fmt.Errorf("fetch assigned base %s: %w", base, err)
 	}
 	if !gitRefExists(ctx, root, baseRef) {
-		return "", nil, fmt.Errorf("assigned base origin/%s is unavailable", base)
+		return "", fmt.Errorf("assigned base origin/%s is unavailable", base)
 	}
 
 	localRef := "refs/heads/" + branch
 	remoteRef := "refs/remotes/origin/" + branch
 	remoteListing, err := gitOutput(ctx, root, "ls-remote", "--heads", "origin", localRef)
 	if err != nil {
-		return "", nil, err
+		return "", err
 	}
 	remoteExists := strings.TrimSpace(remoteListing) != ""
 	if remoteExists {
 		if _, err := gitOutput(ctx, root, "fetch", "origin", localRef+":"+remoteRef); err != nil {
-			return "", nil, fmt.Errorf("fetch assigned task branch %s: %w", branch, err)
+			return "", fmt.Errorf("fetch assigned task branch %s: %w", branch, err)
 		}
 	}
 	localExists := gitRefExists(ctx, root, localRef)
@@ -235,17 +201,17 @@ func checkoutTaskWithPlacement(ctx context.Context, branch, base, repo, repoURL,
 		case gitIsAncestor(ctx, root, remoteRef, localRef):
 			// Preserve local commits that have not been pushed yet.
 		default:
-			return "", nil, fmt.Errorf("task branch %s diverged between the local clone and origin", branch)
+			return "", fmt.Errorf("task branch %s diverged between the local clone and origin", branch)
 		}
 	}
 
 	if assigned != nil {
 		if remoteAhead {
 			if _, err := gitOutput(ctx, assigned.Path, "merge", "--ff-only", remoteRef); err != nil {
-				return "", nil, fmt.Errorf("fast-forward existing task worktree: %w", err)
+				return "", fmt.Errorf("fast-forward existing task worktree: %w", err)
 			}
 		}
-		return assigned.Path, assignedCheckpoint, nil
+		return assigned.Path, nil
 	}
 
 	for _, entry := range worktrees {
@@ -254,54 +220,54 @@ func checkoutTaskWithPlacement(ctx context.Context, branch, base, repo, repoURL,
 			if occupying == "" {
 				occupying = entry.Branch
 			}
-			return "", nil, fmt.Errorf("destination %s is already a registered worktree for %s at %s", destination, occupying, entry.Path)
+			return "", fmt.Errorf("destination %s is already a registered worktree for %s at %s", destination, occupying, entry.Path)
 		}
 	}
 	if _, err := os.Lstat(destination); err == nil {
-		return "", nil, fmt.Errorf("destination %s already exists but is not the assigned task worktree", destination)
+		return "", fmt.Errorf("destination %s already exists but is not the assigned task worktree", destination)
 	} else if !os.IsNotExist(err) {
-		return "", nil, fmt.Errorf("inspect destination %s: %w", destination, err)
+		return "", fmt.Errorf("inspect destination %s: %w", destination, err)
 	}
 	if implicitDestination && assigned == nil {
 		if err := os.MkdirAll(filepath.Dir(destination), 0o755); err != nil {
-			return "", nil, fmt.Errorf("create implicit worktree container: %w", err)
+			return "", fmt.Errorf("create implicit worktree container: %w", err)
 		}
 		validated, err := implicitCheckoutDestination(worktreeRoot, repo, taskID, branch)
 		if err != nil {
-			return "", nil, err
+			return "", err
 		}
 		if filepath.Clean(validated) != filepath.Clean(destination) {
-			return "", nil, fmt.Errorf("implicit worktree destination changed during validation: %s became %s", destination, validated)
+			return "", fmt.Errorf("implicit worktree destination changed during validation: %s became %s", destination, validated)
 		}
 	}
 
 	switch {
 	case localExists:
 		if _, err := gitOutput(ctx, root, "worktree", "add", destination, branch); err != nil {
-			return "", nil, err
+			return "", err
 		}
 		if remoteAhead {
 			if _, err := gitOutput(ctx, destination, "merge", "--ff-only", remoteRef); err != nil {
-				return "", nil, fmt.Errorf("fast-forward new task worktree: %w", err)
+				return "", fmt.Errorf("fast-forward new task worktree: %w", err)
 			}
 		}
 	case remoteExists:
 		if _, err := gitOutput(ctx, root, "worktree", "add", "--track", "-b", branch, destination, remoteRef); err != nil {
-			return "", nil, err
+			return "", err
 		}
 	default:
 		if _, err := gitOutput(ctx, root, "worktree", "add", "-b", branch, destination, baseRef); err != nil {
-			return "", nil, err
+			return "", err
 		}
 	}
 	actualBranch, err := requireSafeWorktree(ctx, destination)
 	if err != nil {
-		return "", nil, fmt.Errorf("created task worktree is unsafe: %w", err)
+		return "", fmt.Errorf("created task worktree is unsafe: %w", err)
 	}
 	if actualBranch != branch {
-		return "", nil, fmt.Errorf("created task worktree owns %s instead of %s", actualBranch, branch)
+		return "", fmt.Errorf("created task worktree owns %s instead of %s", actualBranch, branch)
 	}
-	return destination, nil, nil
+	return destination, nil
 }
 
 func worktreeBranch(ctx context.Context, path string) (string, error) {
@@ -316,7 +282,7 @@ func worktreeBranch(ctx context.Context, path string) (string, error) {
 // named HEAD when it differs, then leaves checkout to adopt that worktree
 // (req-task-branch-assignment AC-2.2). Primary checkouts and HEAD matching
 // the current assignment skip attach (AC-2.3, AC-2.6).
-func maybeAttachOperatorCheckout(ctx context.Context, c *client, taskID, assignment, repo, repoURL string, checkpoint *attemptCheckpoint) (string, error) {
+func maybeAttachOperatorCheckout(ctx context.Context, c *client, taskID, assignment, repo, repoURL string) (string, error) {
 	if c == nil {
 		return assignment, fmt.Errorf("a credential is required to attach a task branch; run `conveyor auth login`")
 	}
@@ -357,7 +323,7 @@ func maybeAttachOperatorCheckout(ctx context.Context, c *client, taskID, assignm
 	if err != nil {
 		return assignment, err
 	}
-	if strings.TrimSpace(status) != "" && checkpoint == nil {
+	if strings.TrimSpace(status) != "" {
 		return assignment, fmt.Errorf("worktree has uncommitted or untracked changes")
 	}
 	task, err := c.attachTaskBranch(taskID, head)
@@ -387,241 +353,6 @@ func skippedOccupiedWorktreeCleanup() worktreeCleanupResult {
 	return worktreeCleanupResult{Worktree: "skipped", Branch: "retained", Path: "-"}
 }
 
-// checkpointTaskWorktreeAtPath preserves dirty state with a normal additive
-// commit and a non-force push. The caller has already resolved this path from
-// Git's registered worktree inventory, rather than trusting a directory name
-// (component-git-delivery).
-func checkpointTaskWorktreeAtPath(ctx context.Context, path, branch, primary string, checkpoint attemptCheckpoint) (*attemptCheckpointResult, error) {
-	canonicalPath, err := canonicalWorktreePath(path)
-	if err != nil {
-		return nil, err
-	}
-	canonicalPrimary, err := canonicalWorktreePath(primary)
-	if err != nil {
-		return nil, err
-	}
-	if canonicalPath == canonicalPrimary {
-		return nil, fmt.Errorf("refusing to checkpoint the primary checkout %s", canonicalPrimary)
-	}
-	actualBranch, err := worktreeBranch(ctx, canonicalPath)
-	if err != nil {
-		return nil, err
-	}
-	if actualBranch != branch {
-		return nil, fmt.Errorf("refusing to checkpoint %s: branch is %s, want %s", canonicalPath, actualBranch, branch)
-	}
-	if operation, opErr := inProgressGitOperation(ctx, canonicalPath); opErr != nil {
-		return nil, opErr
-	} else if operation != "" {
-		return nil, fmt.Errorf("refusing to checkpoint %s while Git operation %s is in progress", canonicalPath, operation)
-	}
-	status, err := gitOutput(ctx, canonicalPath, "status", "--porcelain", "--untracked-files=normal")
-	if err != nil {
-		return nil, err
-	}
-	if checkpoint.Authorize != nil {
-		if err := checkpoint.Authorize(ctx); err != nil {
-			return nil, err
-		}
-	}
-	if checkpoint.Identity != nil {
-		if err := verifyCheckpointRemoteHistory(ctx, canonicalPath, branch); err != nil {
-			return nil, err
-		}
-	}
-	if strings.TrimSpace(status) == "" {
-		if checkpoint.Writer != nil && checkpoint.Identity != nil && checkpoint.Identity.AttemptID == checkpoint.Writer.record.Writer.AttemptID {
-			head, err := gitOutput(ctx, canonicalPath, "rev-parse", "HEAD")
-			if err != nil {
-				return nil, err
-			}
-			if strings.TrimSpace(head) == checkpoint.Writer.record.Parent {
-				return nil, nil
-			}
-		}
-		return matchingAttemptCheckpointAtHEAD(ctx, canonicalPath, checkpoint)
-	}
-	if checkpoint.AttemptID == "" || checkpoint.WorkOrderID == "" || strings.TrimSpace(checkpoint.TerminationReason) == "" {
-		return nil, fmt.Errorf("attempt ID, work-order ID, and termination reason are required to checkpoint %s", canonicalPath)
-	}
-	if checkpoint.Identity != nil {
-		if checkpoint.Writer == nil || checkpoint.Writer.record.Producer == nil || checkpoint.Writer.record.Producer.AttemptID != checkpoint.AttemptID || checkpoint.Writer.record.Producer.WorkOrderID != checkpoint.WorkOrderID {
-			return nil, fmt.Errorf("dirty worktree lacks proven producing writer")
-		}
-		if checkpoint.Writer.record.Parent == "" || !gitIsAncestor(ctx, canonicalPath, checkpoint.Writer.record.Parent, "HEAD") {
-			return nil, fmt.Errorf("dirty worktree history differs from producing writer record")
-		}
-		if err = checkpoint.Writer.verify(); err != nil {
-			return nil, err
-		}
-	}
-	if checkpoint.Authorize != nil {
-		if err = checkpoint.Authorize(ctx); err != nil {
-			return nil, err
-		}
-	}
-	if _, err = gitOutput(ctx, canonicalPath, "add", "-A"); err != nil {
-		return nil, fmt.Errorf("stage attempt checkpoint in %s: %w", canonicalPath, err)
-	}
-	subject := fmt.Sprintf("wip(%s): checkpoint at attempt death", checkpoint.AttemptID)
-	body := fmt.Sprintf("Attempt-ID: %s\nWork-Order-ID: %s\nTermination-Reason: %s", checkpoint.AttemptID, checkpoint.WorkOrderID, oneLine(checkpoint.TerminationReason))
-	if _, err = gitOutput(ctx, canonicalPath, "commit", "-m", subject, "-m", body); err != nil {
-		return nil, fmt.Errorf("commit attempt checkpoint in %s: %w", canonicalPath, err)
-	}
-	commitSHA, err := gitOutput(ctx, canonicalPath, "rev-parse", "HEAD")
-	if err != nil {
-		return nil, err
-	}
-	commitSHA = strings.TrimSpace(commitSHA)
-	if checkpoint.Writer != nil {
-		checkpoint.Writer.record.CommitSHA = commitSHA
-		if err = checkpoint.Writer.save(); err != nil {
-			return nil, err
-		}
-	}
-	if checkpoint.Authorize != nil {
-		if err = checkpoint.Authorize(ctx); err != nil {
-			return nil, err
-		}
-	}
-	if _, err = gitOutput(ctx, canonicalPath, "push", "origin", "HEAD:refs/heads/"+branch); err != nil {
-		return nil, fmt.Errorf("checkpoint commit %s preserved locally in %s but push failed: %w", commitSHA, canonicalPath, err)
-	}
-	return &attemptCheckpointResult{Worktree: canonicalPath, CommitSHA: commitSHA, Pushed: true, TerminationReason: oneLine(checkpoint.TerminationReason)}, nil
-}
-
-func checkpointAssignedTaskWorktree(ctx context.Context, branch, repo, repoURL string, checkpoint attemptCheckpoint) (*attemptCheckpointResult, error) {
-	return checkpointAssignedTaskWorktreeAt(ctx, "", branch, repo, repoURL, checkpoint)
-}
-
-// checkpointAssignedTaskWorktreeAt anchors the checkpoint at the launcher's
-// resolved primary checkout rather than the process working directory, so an
-// attempt launched from outside the repository still preserves dirty work
-// (component-git-delivery, component-work-orders). An empty checkout keeps
-// the process-directory behavior for `conveyor checkout`.
-func checkpointAssignedTaskWorktreeAt(ctx context.Context, checkout, branch, repo, repoURL string, checkpoint attemptCheckpoint) (*attemptCheckpointResult, error) {
-	root, err := repositoryRootAt(ctx, checkout)
-	if err != nil {
-		if strings.TrimSpace(checkout) == "" {
-			return nil, fmt.Errorf("checkpoint must run inside the target repository: %w", err)
-		}
-		return nil, fmt.Errorf("checkpoint checkout %s is not a git repository: %w", checkout, err)
-	}
-	if err = localgit.VerifyRepositoryIdentity(ctx, root, repo, repoURL); err != nil {
-		return nil, err
-	}
-	primary, err := primaryWorktreeRoot(ctx, root)
-	if err != nil {
-		return nil, err
-	}
-	worktrees, err := listRegisteredWorktrees(ctx, root)
-	if err != nil {
-		return nil, err
-	}
-	var assigned *registeredWorktree
-	for i := range worktrees {
-		if worktrees[i].Branch != "refs/heads/"+branch {
-			continue
-		}
-		if assigned != nil {
-			return nil, fmt.Errorf("task branch %s is registered in multiple worktrees", branch)
-		}
-		assigned = &worktrees[i]
-	}
-	if assigned == nil {
-		return nil, nil
-	}
-	if assigned.Locked || assigned.Prunable {
-		return nil, fmt.Errorf("task branch %s is registered in an unavailable worktree at %s", branch, assigned.Path)
-	}
-	return checkpointTaskWorktreeAtPath(ctx, assigned.Path, branch, primary, checkpoint)
-}
-
-func matchingAttemptCheckpointAtHEAD(ctx context.Context, path string, checkpoint attemptCheckpoint) (*attemptCheckpointResult, error) {
-	if checkpoint.AttemptID == "" || checkpoint.WorkOrderID == "" || strings.TrimSpace(checkpoint.TerminationReason) == "" {
-		return nil, nil
-	}
-	message, err := gitOutput(ctx, path, "show", "-s", "--format=%B", "HEAD")
-	if err != nil {
-		return nil, err
-	}
-	subject := fmt.Sprintf("wip(%s): checkpoint at attempt death", checkpoint.AttemptID)
-	lines := strings.Split(strings.TrimSpace(message), "\n")
-	if len(lines) == 0 || lines[0] != subject ||
-		checkpointMessageField(lines, "Attempt-ID") != checkpoint.AttemptID ||
-		checkpointMessageField(lines, "Work-Order-ID") != checkpoint.WorkOrderID {
-		if checkpoint.Identity != nil && len(lines) > 0 && strings.HasPrefix(lines[0], "wip(") {
-			return nil, fmt.Errorf("checkpoint at HEAD belongs to a different producing attempt or order")
-		}
-		return nil, nil
-	}
-	if checkpoint.Identity != nil && checkpointMessageField(lines, "Termination-Reason") == "" {
-		return nil, fmt.Errorf("checkpoint termination trailer is missing or ambiguous")
-	}
-	if checkpoint.Identity == nil && checkpointMessageField(lines, "Termination-Reason") != oneLine(checkpoint.TerminationReason) {
-		return nil, fmt.Errorf("checkpoint at HEAD matches attempt %s and work order %s but not termination reason %q; refusing ambiguous reuse", checkpoint.AttemptID, checkpoint.WorkOrderID, oneLine(checkpoint.TerminationReason))
-	}
-	commitSHA, err := gitOutput(ctx, path, "rev-parse", "HEAD")
-	if err != nil {
-		return nil, err
-	}
-	commitSHA = strings.TrimSpace(commitSHA)
-	branch, err := worktreeBranch(ctx, path)
-	if err != nil {
-		return nil, err
-	}
-	remote, err := gitOutput(ctx, path, "ls-remote", "--heads", "origin", "refs/heads/"+branch)
-	if err != nil {
-		return nil, err
-	}
-	if checkpoint.Identity != nil {
-		if checkpoint.Identity.CheckpointEventID == 0 && (checkpoint.Writer == nil || checkpoint.Writer.record.Producer == nil || checkpoint.Writer.record.Producer.AttemptID != checkpoint.AttemptID || checkpoint.Writer.record.Producer.WorkOrderID != checkpoint.WorkOrderID || checkpoint.Writer.record.Parent == "" || !gitIsAncestor(ctx, path, checkpoint.Writer.record.Parent, commitSHA)) {
-			return nil, fmt.Errorf("checkpoint has no durable audit or matching local producer evidence")
-		}
-		if err = verifyCheckpointRemoteHistory(ctx, path, branch); err != nil {
-			return nil, err
-		}
-	}
-	if checkpoint.Identity != nil && checkpoint.Identity.CommitSHA != "" && checkpoint.Identity.CommitSHA != commitSHA {
-		return nil, fmt.Errorf("checkpoint SHA differs from durable audit")
-	}
-	if checkpoint.Authorize != nil {
-		if err = checkpoint.Authorize(ctx); err != nil {
-			return nil, err
-		}
-	}
-	pushed := strings.HasPrefix(strings.TrimSpace(remote), commitSHA+"\t")
-	if !pushed {
-		if _, err = gitOutput(ctx, path, "push", "origin", "HEAD:refs/heads/"+branch); err != nil {
-			return nil, fmt.Errorf("checkpoint commit %s preserved locally in %s but push failed: %w", commitSHA, path, err)
-		}
-		pushed = true
-	}
-	return &attemptCheckpointResult{Worktree: path, CommitSHA: commitSHA, Pushed: pushed, TerminationReason: checkpointMessageField(lines, "Termination-Reason")}, nil
-}
-
-func checkpointMessageField(lines []string, name string) string {
-	prefix := name + ": "
-	value := ""
-	found := false
-	for _, line := range lines[1:] {
-		if strings.HasPrefix(line, prefix) {
-			if found {
-				return ""
-			}
-			value = strings.TrimSpace(strings.TrimPrefix(line, prefix))
-			found = true
-		}
-	}
-	return value
-}
-
-func oneLine(value string) string {
-	return strings.Join(strings.Fields(value), " ")
-}
-
-// removeTaskWorktree performs post-merge/close cleanup only. It intentionally
-// retains the task branch so unmerged history is never deleted (component-git-delivery; DEC-10).
 func removeTaskWorktree(ctx context.Context, branch string, state core.TaskState) (worktreeCleanupResult, error) {
 	result := worktreeCleanupResult{Worktree: "skipped", Branch: "absent", Path: "-"}
 	if state != core.TaskMerged && state != core.TaskClosed {
@@ -864,9 +595,6 @@ func inProgressGitOperation(ctx context.Context, path string) (string, error) {
 func gitOutput(ctx context.Context, dir string, args ...string) (string, error) {
 	command := exec.CommandContext(ctx, "git", args...)
 	command.Dir = dir
-	if environment := gitEnvironmentFromContext(ctx); len(environment) > 0 {
-		command.Env = isolatedChildEnvironment(os.Environ(), environment)
-	}
 	out, err := command.CombinedOutput()
 	if err != nil {
 		return "", fmt.Errorf("git %s: %w: %s", strings.Join(args, " "), err, strings.TrimSpace(string(out)))
@@ -882,45 +610,5 @@ func gitRefExists(ctx context.Context, dir, ref string) bool {
 func gitIsAncestor(ctx context.Context, dir, older, newer string) bool {
 	command := exec.CommandContext(ctx, "git", "merge-base", "--is-ancestor", older, newer)
 	command.Dir = dir
-	if environment := gitEnvironmentFromContext(ctx); len(environment) > 0 {
-		command.Env = isolatedChildEnvironment(os.Environ(), environment)
-	}
 	return command.Run() == nil
-}
-
-type gitEnvironmentContextKey struct{}
-
-func contextWithGitEnvironment(ctx context.Context, environment map[string]string) context.Context {
-	if len(environment) == 0 {
-		return ctx
-	}
-	copy := make(map[string]string, len(environment))
-	for key, value := range environment {
-		copy[key] = value
-	}
-	return context.WithValue(ctx, gitEnvironmentContextKey{}, copy)
-}
-
-func gitEnvironmentFromContext(ctx context.Context) map[string]string {
-	environment, _ := ctx.Value(gitEnvironmentContextKey{}).(map[string]string)
-	return environment
-}
-
-func verifyCheckpointRemoteHistory(ctx context.Context, path, branch string) error {
-	remote, err := gitOutput(ctx, path, "ls-remote", "--heads", "origin", "refs/heads/"+branch)
-	if err != nil {
-		return err
-	}
-	if strings.TrimSpace(remote) == "" {
-		return nil
-	}
-	// Fetch into FETCH_HEAD without changing the task's local ref. Both dirty
-	// preservation and clean-HEAD retry refuse divergence before any Git write.
-	if _, err = gitOutput(ctx, path, "fetch", "origin", "refs/heads/"+branch); err != nil {
-		return err
-	}
-	if !gitIsAncestor(ctx, path, "FETCH_HEAD", "HEAD") {
-		return fmt.Errorf("task branch %s remote is ahead or divergent; refusing checkpoint mutation", branch)
-	}
-	return nil
 }

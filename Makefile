@@ -102,7 +102,7 @@ test-validation-environment:
 
 test-worker-environment:
 	CONVEYOR_TEST_DATABASE_URL= CONVEYOR_TEST_SINGLESTORE_URL= $(VALIDATION_CHILD_ENV) go test ./cmd/conveyor \
-		-run '^(TestCheckoutCmdSkipsAttachForWorkerAssignment|TestIsolatedChildEnvironmentReplacesLaunchIdentity)$$' -count=1
+		-run '^(TestCheckoutTakesWriterLockWithoutLauncherEnvironment|TestIsolatedChildEnvironmentReplacesLaunchIdentity)$$' -count=1
 
 build: conveyor-cli
 	go build $(LDFLAGS) -o $(BIN)/conveyord ./cmd/conveyord

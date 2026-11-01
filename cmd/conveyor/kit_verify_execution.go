@@ -661,3 +661,59 @@ func kitSanitizeText(raw string) string {
 	clean := kitURLPattern.ReplaceAllStringFunc(raw, kitSafeReference)
 	return kitHeaderPattern.ReplaceAllString(clean, "[redacted header]")
 }
+
+// harnessProcessGroup is the process group of one kit child or kit UI that
+// conveyor kit verify started (component-verification-runner).
+var harnessProcessGroupTerminationGrace = 2 * time.Second
+
+type harnessProcessGroup struct {
+	pgid int
+	done <-chan error
+}
+
+// terminate owns every post-start shutdown path of a kit child or kit UI. The
+// child is the leader of a dedicated process group, so TERM and the bounded
+// KILL escalation cover dev servers, watchers, and other descendants as well
+// as the child. A completed child may still have live descendants, so
+// normal-exit cleanup also routes through this method
+// (component-verification-runner).
+func (g harnessProcessGroup) terminate(completed *error) error {
+	if g.pgid <= 0 || g.pgid == syscall.Getpgrp() {
+		if completed != nil {
+			return *completed
+		}
+		return <-g.done
+	}
+	waitErr, waited := error(nil), false
+	if completed != nil {
+		waitErr, waited = *completed, true
+	}
+	_ = syscall.Kill(-g.pgid, syscall.SIGTERM)
+	deadline := time.Now().Add(harnessProcessGroupTerminationGrace)
+	for processGroupAlive(g.pgid) && time.Now().Before(deadline) {
+		if !waited {
+			select {
+			case waitErr = <-g.done:
+				waited = true
+			default:
+			}
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if processGroupAlive(g.pgid) {
+		_ = syscall.Kill(-g.pgid, syscall.SIGKILL)
+	}
+	if !waited {
+		waitErr = <-g.done
+	}
+	killDeadline := time.Now().Add(harnessProcessGroupTerminationGrace)
+	for processGroupAlive(g.pgid) && time.Now().Before(killDeadline) {
+		time.Sleep(10 * time.Millisecond)
+	}
+	return waitErr
+}
+
+func processGroupAlive(pgid int) bool {
+	err := syscall.Kill(-pgid, 0)
+	return err == nil || errors.Is(err, syscall.EPERM)
+}

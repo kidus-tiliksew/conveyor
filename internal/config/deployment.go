@@ -14,7 +14,7 @@ import (
 // policy and the settings of the stages that run inside conveyord, never the
 // execution detail that client-local setups own (DEC-56; component-runtime).
 // Load stays the client loader for the local execution document
-// (component-harness-execution).
+// (component-runtime).
 
 // deploymentExecutorStageKeys are removed from execution_settings.spec,
 // implementation, and verify.
@@ -28,7 +28,7 @@ var deploymentRetiredRouteKeys = map[string]bool{
 }
 
 // policyStageTimeoutDefaults are the policy stage timeouts that apply when a
-// deployment file names none (component-harness-execution "Defaults").
+// deployment file names none (component-runtime).
 var policyStageTimeoutDefaults = map[string]string{"spec": "30m", "implement": "4h", "review": "1h", "verify": "1h"}
 
 // LoadDeployment reads the server's deployment file. Execution detail that a
