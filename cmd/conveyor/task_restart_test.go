@@ -149,7 +149,7 @@ func TestTaskRestartPreviewAndRetry(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, want := range []string{"Repair preview", "queued (implement, queued)", "claimed", "submitted", "stale", "timed-out", "design-one v2", "Recorded pull request: #7", "Open pull request to close: #7", "Successor: next", "Branch: conveyor/task-next", "conveyor --workspace demo run next"} {
+	for _, want := range []string{"Repair preview", "queued (implement, queued)", "claimed", "submitted", "stale", "timed-out", "design-one v2", "Recorded pull request: #7", "Open pull request to close: #7", "Successor: next", "Branch: conveyor/task-next", "Next: work task next in workspace demo from an agent session with the conveyor-work skill"} {
 		if !strings.Contains(output, want) {
 			t.Errorf("missing %q in %s", want, output)
 		}
@@ -157,6 +157,13 @@ func TestTaskRestartPreviewAndRetry(t *testing.T) {
 	for _, unwanted := range []string{"finished-order", "cancelled-order", "other-task-proposal", "operator-proposal"} {
 		if strings.Contains(output, unwanted) {
 			t.Errorf("unexpected %s", unwanted)
+		}
+	}
+	// The CLI has no run command, so the next step never names one
+	// (component-task-lifecycle; DEC-97(1)).
+	for _, retired := range []string{"Run:", " run next", "conveyor run"} {
+		if strings.Contains(output, retired) {
+			t.Errorf("restart output names the retired run command %q: %s", retired, output)
 		}
 	}
 	if len(f.requests) != 1 {
