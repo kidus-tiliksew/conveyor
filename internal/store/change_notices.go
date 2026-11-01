@@ -13,7 +13,7 @@ import (
 func (m *memory) Changes() *changes.Hub { return m.changes }
 
 // EnablePeers reports false: the volatile backend notifies no other daemon,
-// so a peered daemon tails each workspace instead.
+// so a peered daemon runs the peer check on PeerMarks instead.
 func (m *memory) EnablePeers(context.Context) bool { return false }
 
 // raiseLocked publishes n, or holds it on a staged copy until the copy is

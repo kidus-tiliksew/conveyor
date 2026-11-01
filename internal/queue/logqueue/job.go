@@ -14,205 +14,63 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"strings"
 	"time"
 
 	"github.com/kidus-tiliksew/conveyor/internal/core"
 	"github.com/kidus-tiliksew/conveyor/internal/eventlog"
+	"github.com/kidus-tiliksew/conveyor/internal/eventlog/jobindex"
 )
+
+// The job fold lives in jobindex so the log drivers can maintain the job
+// index with the same transition table (component-durable-queue, Job
+// streams and their event kinds). These aliases keep logqueue's names.
 
 // Event kinds on a job stream.
 const (
-	KindEnqueued  = "job.enqueued"
-	KindClaimed   = "job.claimed"
-	KindCompleted = "job.completed"
-	KindFailed    = "job.failed"
-	KindSnoozed   = "job.snoozed"
-	KindRescued   = "job.rescued"
-	KindDiscarded = "job.discarded"
+	KindEnqueued  = jobindex.KindEnqueued
+	KindClaimed   = jobindex.KindClaimed
+	KindCompleted = jobindex.KindCompleted
+	KindFailed    = jobindex.KindFailed
+	KindSnoozed   = jobindex.KindSnoozed
+	KindRescued   = jobindex.KindRescued
+	KindDiscarded = jobindex.KindDiscarded
 )
 
 // StreamType is the stream type every job lives under.
-const StreamType = "job"
+const StreamType = jobindex.StreamType
 
 // StreamFor is the stream that owns the job for one kind and unique key.
-func StreamFor(kind, key string) eventlog.StreamID {
-	return eventlog.StreamID(StreamType + "/" + kind + ":" + key)
-}
+func StreamFor(kind, key string) eventlog.StreamID { return jobindex.StreamFor(kind, key) }
 
 // State is where a job stands after folding its stream.
-type State string
+type State = jobindex.State
 
 const (
-	// StateNone means the stream has no job yet.
-	StateNone State = ""
-	// StateAvailable means the job may be claimed now.
-	StateAvailable State = "available"
-	// StateScheduled means the job may be claimed once ScheduledAt passes:
-	// a retry, a snooze, or a rescue.
-	StateScheduled State = "scheduled"
-	// StateRunning means a worker holds the job.
-	StateRunning   State = "running"
-	StateCompleted State = "completed"
-	StateDiscarded State = "discarded"
+	StateNone      = jobindex.StateNone
+	StateAvailable = jobindex.StateAvailable
+	StateScheduled = jobindex.StateScheduled
+	StateRunning   = jobindex.StateRunning
+	StateCompleted = jobindex.StateCompleted
+	StateDiscarded = jobindex.StateDiscarded
 )
 
 // Job is the folded state of one job stream.
-type Job struct {
-	Workspace string
-	Stream    eventlog.StreamID
-	Kind      string
-	Key       string
-	Args      json.RawMessage
-	State     State
-	// Attempt is the number of executions counted so far. A claim runs
-	// Attempt+1; a snooze hands the count back.
-	Attempt     int
-	MaxAttempts int
-	// ScheduledAt is when a scheduled job becomes claimable.
-	ScheduledAt time.Time
-	ClaimedAt   time.Time
-	ClaimedBy   string
-	LastError   string
-	// Head is the stream version the fold reflects; a claim names it.
-	Head eventlog.Version
-	// EnqueuedAt orders claimable jobs: earliest enqueue first.
-	EnqueuedAt eventlog.Position
-	// Generation counts enqueues on the stream; the handler's job id
-	// carries it so a completion for an earlier generation is recognisable.
-	Generation int
-}
+type Job = jobindex.Job
 
-// Active reports whether a new enqueue must be suppressed.
-func (j Job) Active() bool {
-	switch j.State {
-	case StateAvailable, StateScheduled, StateRunning:
-		return true
-	}
-	return false
-}
-
-// Claimable reports whether a worker may claim the job at now.
-func (j Job) Claimable(now time.Time) bool {
-	switch j.State {
-	case StateAvailable:
-		return true
-	case StateScheduled:
-		return !now.Before(j.ScheduledAt)
-	}
-	return false
-}
-
-// ID is the identity handed to handlers: stream and generation.
-func (j Job) ID() string {
-	return fmt.Sprintf("%s@%d", j.Stream, j.Generation)
-}
-
-type enqueuedPayload struct {
-	Kind        string          `json:"kind"`
-	Key         string          `json:"key"`
-	Args        json.RawMessage `json:"args"`
-	MaxAttempts int             `json:"max_attempts"`
-	// ScheduledAt delays the first run; zero means now.
-	ScheduledAt time.Time `json:"scheduled_at,omitempty"`
-}
-
-type claimedPayload struct {
-	Attempt   int       `json:"attempt"`
-	Worker    string    `json:"worker"`
-	ClaimedAt time.Time `json:"claimed_at"`
-}
-
-type outcomePayload struct {
-	Attempt int       `json:"attempt"`
-	Error   string    `json:"error,omitempty"`
-	NextAt  time.Time `json:"next_at,omitempty"`
-	Until   time.Time `json:"until,omitempty"`
-}
+type (
+	enqueuedPayload = jobindex.EnqueuedPayload
+	claimedPayload  = jobindex.ClaimedPayload
+	outcomePayload  = jobindex.OutcomePayload
+)
 
 // Fold derives a job from its stream's events, in version order.
 func Fold(workspace string, stream eventlog.StreamID, events []eventlog.Event) (Job, error) {
-	job := NewJob(workspace, stream)
-	for _, event := range events {
-		if err := job.Apply(event); err != nil {
-			return job, err
-		}
-	}
-	return job, nil
+	return jobindex.Fold(workspace, stream, events)
 }
 
 // NewJob is the empty job for a stream, before any event.
 func NewJob(workspace string, stream eventlog.StreamID) Job {
-	job := Job{Workspace: workspace, Stream: stream}
-	job.Kind, job.Key, _ = strings.Cut(stream.EntityID(), ":")
-	return job
-}
-
-// Apply folds one more event of the job's stream into it. Fold and the
-// runtime's tail both go through here, so there is one transition table.
-func (j *Job) Apply(event eventlog.Event) error {
-	j.Head = event.Version
-	switch event.Kind {
-	case KindEnqueued:
-		var p enqueuedPayload
-		if err := json.Unmarshal(event.Payload, &p); err != nil {
-			return fmt.Errorf("logqueue: %s@%d: %w", j.Stream, event.Version, err)
-		}
-		j.Kind, j.Key, j.Args = p.Kind, p.Key, p.Args
-		j.MaxAttempts = p.MaxAttempts
-		j.Attempt = 0
-		j.State = StateAvailable
-		j.ScheduledAt = p.ScheduledAt
-		if !p.ScheduledAt.IsZero() && p.ScheduledAt.Truncate(time.Microsecond).After(event.At) {
-			j.State = StateScheduled
-		}
-		j.ClaimedAt, j.ClaimedBy, j.LastError = time.Time{}, "", ""
-		j.EnqueuedAt = event.Position
-		j.Generation++
-	case KindClaimed:
-		var p claimedPayload
-		if err := json.Unmarshal(event.Payload, &p); err != nil {
-			return fmt.Errorf("logqueue: %s@%d: %w", j.Stream, event.Version, err)
-		}
-		j.State = StateRunning
-		j.Attempt = p.Attempt
-		j.ClaimedAt, j.ClaimedBy = p.ClaimedAt, p.Worker
-	case KindCompleted:
-		j.State = StateCompleted
-		j.ClaimedBy = ""
-	case KindFailed, KindRescued:
-		var p outcomePayload
-		if err := json.Unmarshal(event.Payload, &p); err != nil {
-			return fmt.Errorf("logqueue: %s@%d: %w", j.Stream, event.Version, err)
-		}
-		j.LastError = p.Error
-		j.State = StateScheduled
-		j.ScheduledAt = p.NextAt
-		j.ClaimedBy = ""
-	case KindSnoozed:
-		var p outcomePayload
-		if err := json.Unmarshal(event.Payload, &p); err != nil {
-			return fmt.Errorf("logqueue: %s@%d: %w", j.Stream, event.Version, err)
-		}
-		// A snooze is not an execution: hand the attempt back.
-		if j.Attempt > 0 {
-			j.Attempt--
-		}
-		j.State = StateScheduled
-		j.ScheduledAt = p.Until
-		j.ClaimedBy = ""
-	case KindDiscarded:
-		var p outcomePayload
-		if err := json.Unmarshal(event.Payload, &p); err != nil {
-			return fmt.Errorf("logqueue: %s@%d: %w", j.Stream, event.Version, err)
-		}
-		if p.Error != "" {
-			j.LastError = p.Error
-		}
-		j.State = StateDiscarded
-		j.ClaimedBy = ""
-	}
-	return nil
+	return jobindex.NewJob(workspace, stream)
 }
 
 // Load reads and folds one job stream.

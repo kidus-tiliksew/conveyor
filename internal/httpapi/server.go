@@ -67,10 +67,6 @@ type Server struct {
 	// (component-http-api, "When a task stream reads"; DEC-99(1)). NewServer
 	// sets it from a store that exposes Changes().
 	Changes *changes.Hub
-	// PeerTail, when positive, also wakes every open stream on that period.
-	// conveyord sets it only for peers on a backend without change
-	// notification (feature-quiet-idle-runtime, Peers).
-	PeerTail time.Duration
 	// StreamKeepalive replaces the 25-second keep-alive ticker of every
 	// stream in tests; nil selects time.NewTicker.
 	StreamKeepalive func() (<-chan time.Time, func())

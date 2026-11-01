@@ -123,13 +123,16 @@ runtime:
   the daemon reconnects on its next request and then catches up every
   workspace once. Use a direct connection string, not a transaction pooler:
   `LISTEN` needs a session.
-- **SingleStore.** There is no change notification, so each daemon tails
-  every workspace's job log once every 30 seconds. Work another daemon
-  commits starts within 30 seconds.
+- **SingleStore.** There is no change notification, so each daemon runs one
+  peer check every 30 seconds: a single statement that reads every
+  workspace's job log head and task-event position, however many workspaces,
+  open dashboard streams, and pending `await_review` calls the daemon serves.
+  Work another daemon commits starts within 30 seconds, and an open stream or
+  `await_review` sees another daemon's change within 30 seconds.
 
 The daemon logs its peer mode at startup: `runtime peers: off`,
 `runtime peers: PostgreSQL change notification`, or
-`runtime peers: tailing each workspace every 30s`.
+`runtime peers: one peer check every 30s for the whole daemon`.
 
 #### PostgreSQL pool size
 

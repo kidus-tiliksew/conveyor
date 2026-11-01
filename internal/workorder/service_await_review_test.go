@@ -2,7 +2,6 @@ package workorder
 
 import (
 	"context"
-	"errors"
 	"sync"
 	"testing"
 	"time"
@@ -198,24 +197,30 @@ func TestAwaitReviewIdleUntilDeadline(t *testing.T) {
 	}
 }
 
-func TestAwaitReviewWakesOnPeerTail(t *testing.T) {
+// TestAwaitReviewWakesOnWorkspaceTaskNotice: on a daemon whose hub hears no
+// commit of another daemon, a settled round reaches await_review through the
+// task notice without a task ID that the daemon-wide peer check publishes
+// for the workspace; the service keeps no peer timer
+// (feature-quiet-idle-runtime, Peers; component-work-orders, await_review).
+func TestAwaitReviewWakesOnWorkspaceTaskNotice(t *testing.T) {
 	f := newAwaitFixture(t, "await-peer")
-	f.svc.Changes = nil // a peer on a backend without notification hears no commit
-	f.svc.PeerTail = time.Millisecond
-	ctx, cancel := context.WithCancel(f.ctx)
-	done := f.start(ctx, time.Minute)
+	daemon := changes.NewHub() // hears none of the store's commits
+	f.svc.Changes = daemon
+	done := f.start(f.ctx, time.Minute)
 	waitRead(t, f, 1)
+	f.commit(t, "await-peer", "review.round_completed")
+	select {
+	case outcome := <-done:
+		t.Fatalf("await_review returned before the peer notice: %v %v", outcome.result, outcome.err)
+	case <-time.After(50 * time.Millisecond):
+	}
+	if got := f.reads.count(); got != 1 {
+		t.Fatalf("a commit this daemon did not hear caused %d reads", got-1)
+	}
+	daemon.Publish(changes.Notice{Workspace: "await-ws", Kind: changes.Task})
 	waitRead(t, f, 2)
-	waitRead(t, f, 3)
-	cancel()
-	for {
-		select {
-		case <-f.reads.readDone:
-		case outcome := <-done:
-			if !errors.Is(outcome.err, context.Canceled) {
-				t.Fatalf("err=%v", outcome.err)
-			}
-			return
-		}
+	outcome := waitOutcome(t, done)
+	if outcome.err != nil || outcome.result["verdict"] != "approved" {
+		t.Fatalf("result=%v err=%v", outcome.result, outcome.err)
 	}
 }

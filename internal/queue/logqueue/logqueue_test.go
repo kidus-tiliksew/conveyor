@@ -579,43 +579,72 @@ func TestRuntimeStartsJobWithinOneSecondAndStaysQuietWhileIdle(t *testing.T) {
 	}
 }
 
-// TestRuntimePeerTailCatchesUpUnnotifiedAppends: an append that raised no
-// notice in this process, as another daemon's commit on SingleStore, is
-// found only by the peer tail (req-quiet-idle-runtime AC-2.5).
-func TestRuntimePeerTailCatchesUpUnnotifiedAppends(t *testing.T) {
-	for _, tc := range []struct {
-		name string
-		tail time.Duration
-		want bool
-	}{{"peer tail", 50 * time.Millisecond, true}, {"no peer tail", 0, false}} {
-		t.Run(tc.name, func(t *testing.T) {
-			raw := memlog.New()
-			ran := make(chan struct{}, 1)
-			rt := NewRuntime(Notify(raw, changes.NewHub()), Options{Workspaces: []string{"ws"}, PeerTail: tc.tail})
-			rt.Register(queue.Registration{Kind: "demo", Handle: func(context.Context, queue.Job) error {
-				ran <- struct{}{}
-				return nil
-			}})
-			if err := rt.Start(context.Background()); err != nil {
-				t.Fatal(err)
-			}
-			defer rt.Stop(context.Background())
-			time.Sleep(20 * time.Millisecond)
-			if _, err := Enqueue(context.Background(), raw, "ws", "demo", "peer", demoArgs{}, 3, time.Now().UTC()); err != nil {
-				t.Fatal(err)
-			}
-			select {
-			case <-ran:
-				if !tc.want {
-					t.Fatal("an unnotified append ran without a peer tail")
-				}
-			case <-time.After(400 * time.Millisecond):
-				if tc.want {
-					t.Fatal("peer tail did not catch up the unnotified append")
-				}
-			}
-		})
+// TestRuntimeCatchesUpUnnotifiedAppendOnPeerNotice: an append that raised
+// no notice in this process, as another daemon's commit on SingleStore, is
+// found by the catch-up that the daemon-wide peer check's job notice wakes.
+// The runtime keeps no peer timer of its own, so without that notice it
+// never tails (feature-quiet-idle-runtime, Peers; req-quiet-idle-runtime
+// AC-1.3, AC-2.5).
+func TestRuntimeCatchesUpUnnotifiedAppendOnPeerNotice(t *testing.T) {
+	raw := memlog.New()
+	hub := changes.NewHub()
+	counted := &tailCountingLog{Store: Notify(raw, hub)}
+	ran := make(chan struct{}, 1)
+	rt := NewRuntime(counted, Options{Workspaces: []string{"ws"}, Changes: hub})
+	rt.Register(queue.Registration{Kind: "demo", Handle: func(context.Context, queue.Job) error {
+		ran <- struct{}{}
+		return nil
+	}})
+	if err := rt.Start(context.Background()); err != nil {
+		t.Fatal(err)
 	}
+	defer rt.Stop(context.Background())
+	deadline := time.Now().Add(5 * time.Second)
+	for counted.count() == 0 {
+		if time.Now().After(deadline) {
+			t.Fatal("the runtime made no first catch-up")
+		}
+		time.Sleep(time.Millisecond)
+	}
+	tails := counted.count()
+	if _, err := Enqueue(context.Background(), raw, "ws", "demo", "peer", demoArgs{}, 3, time.Now().UTC()); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-ran:
+		t.Fatal("an unnotified append ran before any notice")
+	case <-time.After(100 * time.Millisecond):
+	}
+	if got := counted.count(); got != tails {
+		t.Fatalf("the runtime tailed %d times without a notice", got-tails)
+	}
+	// The peer check publishes one job notice for the workspace.
+	hub.Publish(changes.Notice{Workspace: "ws", Kind: changes.Job})
+	select {
+	case <-ran:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the peer notice did not catch up the unnotified append")
+	}
+}
+
+// tailCountingLog counts Tail calls.
+type tailCountingLog struct {
+	eventlog.Store
+	mu    sync.Mutex
+	tails int
+}
+
+func (l *tailCountingLog) Tail(ctx context.Context, workspace string, after eventlog.Position, limit int) ([]eventlog.Event, error) {
+	l.mu.Lock()
+	l.tails++
+	l.mu.Unlock()
+	return l.Store.Tail(ctx, workspace, after, limit)
+}
+
+func (l *tailCountingLog) count() int {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.tails
 }
 
 // TestNotifyRaisesJobNoticesAfterAppend: enqueue, failure, snooze, and
