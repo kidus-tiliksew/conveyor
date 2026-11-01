@@ -819,14 +819,14 @@ func (d *Dispatcher) mergeApprovedTaskLocked(ctx context.Context, task core.Task
 	}
 	if current.State != core.TaskApproved {
 		if (current.State != core.TaskQueued && current.State != core.TaskRunning) || current.MergeApproval {
-			return fmt.Errorf("task %s is not approved for merge", task.ID)
+			return ineligibleMerge(fmt.Errorf("task %s is not approved for merge", task.ID))
 		}
 		recoverable, evidenceErr := d.hasRecoverableApprovedReview(ctx, current)
 		if evidenceErr != nil {
 			return evidenceErr
 		}
 		if !recoverable {
-			return fmt.Errorf("task %s has no accepted review evidence for merge recovery", task.ID)
+			return ineligibleMerge(fmt.Errorf("task %s has no accepted review evidence for merge recovery", task.ID))
 		}
 	}
 	author := core.ForgeAuthoringIdentity{Class: core.ForgeAuthorWorkspace}
@@ -836,7 +836,7 @@ func (d *Dispatcher) mergeApprovedTaskLocked(ctx context.Context, task core.Task
 	}
 	repo, ok := cfg.Repo(current.Repo)
 	if !ok || strings.TrimSpace(repo.GitHub) == "" {
-		return d.recordMergeFailureWithAuthor(ctx, current, "unsupported_repository", fmt.Errorf("repository %q does not configure GitHub; merge it in its forge and retry reconciliation", current.Repo), author)
+		return d.recordIneligibleMerge(ctx, current, "unsupported_repository", fmt.Errorf("repository %q does not configure GitHub; merge it in its forge and retry reconciliation", current.Repo), author)
 	}
 
 	pr, err := d.ViewPullRequest(ctx, repo.GitHub, current.Branch)
@@ -848,7 +848,7 @@ func (d *Dispatcher) mergeApprovedTaskLocked(ctx context.Context, task core.Task
 	}
 	if pr.Merged {
 		if current.ApprovalStale {
-			return fmt.Errorf("approval is stale for task %s; refresh review before reconciling the merged pull request", current.ID)
+			return ineligibleMerge(fmt.Errorf("approval is stale for task %s; refresh review before reconciling the merged pull request", current.ID))
 		}
 		expected := current.ApprovedHeadSHA
 		if expected == "" {
@@ -859,7 +859,7 @@ func (d *Dispatcher) mergeApprovedTaskLocked(ctx context.Context, task core.Task
 			return reconcileErr
 		}
 		if !matched {
-			return fmt.Errorf("observed merge head %s does not match expected head %s for task %s", pr.HeadSHA, expected, current.ID)
+			return ineligibleMerge(fmt.Errorf("observed merge head %s does not match expected head %s for task %s", pr.HeadSHA, expected, current.ID))
 		}
 		return nil
 	}
@@ -876,7 +876,7 @@ func (d *Dispatcher) mergeApprovedTaskLocked(ctx context.Context, task core.Task
 		return d.recordMergeFailureWithAuthor(ctx, current, "merge_author_unavailable", err, author)
 	}
 	if pr.State != "open" {
-		return d.recordMergeFailureWithAuthor(ctx, current, "pull_request_not_open", fmt.Errorf("pull request %s#%d is %s without a merge; reopen or replace it and retry", repo.GitHub, pr.Number, pr.State), author)
+		return d.recordIneligibleMerge(ctx, current, "pull_request_not_open", fmt.Errorf("pull request %s#%d is %s without a merge; reopen or replace it and retry", repo.GitHub, pr.Number, pr.State), author)
 	}
 	approvedHead := current.ApprovedHeadSHA
 	if approvedHead == "" {
@@ -892,7 +892,7 @@ func (d *Dispatcher) mergeApprovedTaskLocked(ctx context.Context, task core.Task
 		}
 	}
 	if pr.Mergeable == "UNKNOWN" {
-		return fmt.Errorf("pull request %s#%d merge readiness is still pending", repo.GitHub, pr.Number)
+		return fmt.Errorf("pull request %s#%d %w", repo.GitHub, pr.Number, ErrMergeReadinessPending)
 	}
 	if pr.Mergeable == "CONFLICTING" {
 		if err = d.recordMergeConflictBlocked(ctx, current, approvedHead, pr.HeadSHA, "merge-conflict"); err != nil {
@@ -914,10 +914,10 @@ func (d *Dispatcher) mergeApprovedTaskLocked(ctx context.Context, task core.Task
 		if err = d.beginRefreshLocked(ctx, current, pr, "head-changed", false); err != nil {
 			return err
 		}
-		return fmt.Errorf("approval is stale: reviewed head %s differs from current head %s; refresh review dispatched", approvedHead, pr.HeadSHA)
+		return ineligibleMerge(fmt.Errorf("approval is stale: reviewed head %s differs from current head %s; refresh review dispatched", approvedHead, pr.HeadSHA))
 	}
 	if pr.Mergeable != "MERGEABLE" {
-		return d.recordMergeFailureWithAuthor(ctx, current, "pull_request_not_mergeable", fmt.Errorf("pull request %s#%d is not mergeable (%s); update the branch or resolve required checks and retry", repo.GitHub, pr.Number, pr.Mergeable), author)
+		return d.recordIneligibleMerge(ctx, current, "pull_request_not_mergeable", fmt.Errorf("pull request %s#%d is not mergeable (%s); update the branch or resolve required checks and retry", repo.GitHub, pr.Number, pr.Mergeable), author)
 	}
 	requestPayload := map[string]any{"repository": repo.GitHub, "pull_request": pr.Number, "url": pr.URL}
 	addForgeAuthor(requestPayload, author)
@@ -1090,7 +1090,14 @@ func (d *Dispatcher) ReconcileMergeReadiness(ctx context.Context) (int, error) {
 		if err := ctx.Err(); err != nil {
 			return reconciled, err
 		}
-		if d.gateOnMergeReadiness(ctx, task) {
+		// A gate-on read failure is logged per task and never aborts the
+		// sweep: later tasks and the daemon's later steps still run.
+		changed, err := d.gateOnMergeReadiness(ctx, task)
+		if err != nil {
+			log.Printf("[task %s] gate-on merge readiness: %v", task.ID, err)
+			continue
+		}
+		if changed {
 			reconciled++
 		}
 	}
@@ -1101,7 +1108,12 @@ func (d *Dispatcher) ReconcileMergeReadiness(ctx context.Context) (int, error) {
 		if err := ctx.Err(); err != nil {
 			return reconciled, err
 		}
-		if d.gateOffMergeReadiness(ctx, task) {
+		changed, err := d.gateOffMergeReadiness(ctx, task)
+		if err != nil {
+			log.Printf("[task %s] merge readiness: %v", task.ID, err)
+			continue
+		}
+		if changed {
 			reconciled++
 		}
 	}
@@ -1111,41 +1123,43 @@ func (d *Dispatcher) ReconcileMergeReadiness(ctx context.Context) (int, error) {
 // reconcileMergeReadinessTask runs both passes of ReconcileMergeReadiness for
 // one task, unchanged; a check delivery applies it to each task whose head
 // matches (component-submission-merge, Merge readiness from webhook
-// deliveries). It reports whether the task's state changed.
-func (d *Dispatcher) reconcileMergeReadinessTask(ctx context.Context, task core.Task) bool {
-	if d.gateOnMergeReadiness(ctx, task) {
-		return true
+// deliveries). It reports whether the task's state changed and the error of
+// the pass that failed, prefixed as the sweep logs it.
+func (d *Dispatcher) reconcileMergeReadinessTask(ctx context.Context, task core.Task) (bool, error) {
+	changed, err := d.gateOnMergeReadiness(ctx, task)
+	if err != nil {
+		return false, fmt.Errorf("gate-on merge readiness: %w", err)
 	}
-	if !gateOffMergeReadinessCandidate(task) {
-		return false
+	if changed || !gateOffMergeReadinessCandidate(task) {
+		return changed, nil
 	}
-	return d.gateOffMergeReadiness(ctx, task)
+	changed, err = d.gateOffMergeReadiness(ctx, task)
+	if err != nil {
+		return false, fmt.Errorf("merge readiness: %w", err)
+	}
+	return changed, nil
 }
 
 // gateOnMergeReadiness reads the merged short-circuit for a gate-on approved
-// or merge-gate task under the task side-effect lock. A read failure is
-// logged for that task and never aborts the caller.
-func (d *Dispatcher) gateOnMergeReadiness(ctx context.Context, task core.Task) bool {
+// or merge-gate task under the task side-effect lock and reports whether the
+// task's state changed. A failure is returned for the caller to log or
+// retry.
+func (d *Dispatcher) gateOnMergeReadiness(ctx context.Context, task core.Task) (bool, error) {
 	if !task.MergeApproval || (task.State != core.TaskApproved && !(task.State == core.TaskAwaiting && task.GateKind == core.GateKindMergeApproval)) {
-		return false
+		return false, nil
 	}
-	// A gate-on read failure is logged per task and never aborts the tick:
-	// later tasks and the daemon's later reconcile steps still run.
 	before := task.State
-	readErr := d.Store.WithTaskSideEffectLock(ctx, task.ID, func(lockedCtx context.Context) error {
+	if err := d.Store.WithTaskSideEffectLock(ctx, task.ID, func(lockedCtx context.Context) error {
 		_, lockedErr := d.readMergeReadinessLocked(lockedCtx, task, true)
 		return lockedErr
-	})
-	if readErr != nil {
-		log.Printf("[task %s] gate-on merge readiness: %v", task.ID, readErr)
-		return false
+	}); err != nil {
+		return false, err
 	}
-	after, getErr := d.Store.GetTask(ctx, task.ID)
-	if getErr != nil {
-		log.Printf("[task %s] gate-on merge readiness: %v", task.ID, getErr)
-		return false
+	after, err := d.Store.GetTask(ctx, task.ID)
+	if err != nil {
+		return false, err
 	}
-	return before != after.State
+	return before != after.State, nil
 }
 
 func gateOffMergeReadinessCandidate(task core.Task) bool {
@@ -1153,40 +1167,67 @@ func gateOffMergeReadinessCandidate(task core.Task) bool {
 }
 
 // gateOffMergeReadiness recovers or merges a gate-off task with an accepted
-// review through MergeApprovedTask. Errors are logged per task.
-func (d *Dispatcher) gateOffMergeReadiness(ctx context.Context, task core.Task) bool {
+// review through MergeApprovedTask and reports whether the task's state
+// changed. A pending conflict fix and a refresh the merge began are handled
+// outcomes; any other failure is returned for the caller to log or retry.
+func (d *Dispatcher) gateOffMergeReadiness(ctx context.Context, task core.Task) (bool, error) {
 	if task.State != core.TaskApproved {
-		recoverable, evidenceErr := d.hasRecoverableApprovedReview(ctx, task)
-		if evidenceErr != nil {
-			log.Printf("[task %s] merge readiness: %v", task.ID, evidenceErr)
-			return false
-		}
-		if !recoverable {
-			return false
+		recoverable, err := d.hasRecoverableApprovedReview(ctx, task)
+		if err != nil || !recoverable {
+			return false, err
 		}
 	}
 	before := task.State
-	if err := d.MergeApprovedTask(ctx, task); err != nil {
-		if errors.Is(err, ErrConflictFixPending) {
-			return false
+	if mergeErr := d.MergeApprovedTask(ctx, task); mergeErr != nil {
+		if errors.Is(mergeErr, ErrConflictFixPending) {
+			return false, nil
 		}
-		after, getErr := d.Store.GetTask(ctx, task.ID)
-		if getErr != nil {
-			log.Printf("[task %s] merge readiness: %v", task.ID, getErr)
-			return false
+		after, err := d.Store.GetTask(ctx, task.ID)
+		if err != nil {
+			return false, err
 		}
 		if after.ApprovalStale || (after.State == core.TaskQueued && after.State != before) {
-			return true
+			return true, nil
 		}
-		log.Printf("[task %s] merge readiness: %v", task.ID, err)
-		return false
+		return false, mergeErr
 	}
-	after, getErr := d.Store.GetTask(ctx, task.ID)
-	if getErr != nil {
-		log.Printf("[task %s] merge readiness: %v", task.ID, getErr)
-		return false
+	after, err := d.Store.GetTask(ctx, task.ID)
+	if err != nil {
+		return false, err
 	}
-	return before != after.State || after.State == core.TaskMerged
+	return before != after.State || after.State == core.TaskMerged, nil
+}
+
+// ErrMergeReadinessPending reports that GitHub has not settled the pull
+// request's mergeability; a webhook delivery retries it
+// (component-submission-merge, Merge readiness from webhook deliveries).
+var ErrMergeReadinessPending = errors.New("merge readiness is still pending")
+
+// errMergeIneligible marks a definitive merge refusal: the merge path has
+// recorded it, and only a later change can make the task mergeable.
+var errMergeIneligible = errors.New("merge is not eligible")
+
+type ineligibleMergeError struct{ err error }
+
+func (e *ineligibleMergeError) Error() string        { return e.err.Error() }
+func (e *ineligibleMergeError) Unwrap() error        { return e.err }
+func (e *ineligibleMergeError) Is(target error) bool { return target == errMergeIneligible }
+
+func ineligibleMerge(err error) error {
+	if err == nil {
+		return nil
+	}
+	return &ineligibleMergeError{err}
+}
+
+// recordIneligibleMerge records a definitive refusal as merge.failed and
+// marks it ineligible; a failed record stays a retryable store failure.
+func (d *Dispatcher) recordIneligibleMerge(ctx context.Context, task core.Task, reason string, mergeErr error, author core.ForgeAuthoringIdentity) error {
+	err := d.recordMergeFailureWithAuthor(ctx, task, reason, mergeErr, author)
+	if err == mergeErr {
+		return ineligibleMerge(err)
+	}
+	return err
 }
 
 func (d *Dispatcher) confirmTaskMerged(ctx context.Context, taskID string) error {

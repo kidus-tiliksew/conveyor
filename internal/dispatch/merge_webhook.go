@@ -2,6 +2,9 @@ package dispatch
 
 import (
 	"context"
+	"errors"
+	"fmt"
+	"log"
 	"strings"
 
 	"github.com/kidus-tiliksew/conveyor/internal/config"
@@ -69,8 +72,10 @@ func (d *Dispatcher) ApplyPullRequestDelivery(ctx context.Context, githubRepo st
 // commit or whose branch is one of the delivery's branches. Each task runs
 // the per-task body of ReconcileMergeReadiness, so a gate-off approved task
 // merges once GitHub reports it mergeable: auto-merge on green checks
-// (req-review-gates-evidence AC-1.1). Per-task failures are logged as the
-// sweep logs them; only a failed task read is returned.
+// (req-review-gates-evidence AC-1.1). A task's failure is logged as the
+// sweep logs it and the remaining tasks still apply; the retryable failures
+// are returned joined, so the webhook applier retries the delivery instead
+// of reporting it applied (req-quiet-idle-runtime AC-3.1).
 func (d *Dispatcher) ApplyChecksDelivery(ctx context.Context, githubRepo, sha string, branches []string) error {
 	repo, ok, err := d.webhookRepository(ctx, githubRepo)
 	if err != nil || !ok || (sha == "" && len(branches) == 0) {
@@ -80,6 +85,7 @@ func (d *Dispatcher) ApplyChecksDelivery(ctx context.Context, githubRepo, sha st
 	if err != nil {
 		return err
 	}
+	var failures []error
 	for _, task := range tasks {
 		if !checksDeliveryMatches(task, sha, branches) {
 			continue
@@ -87,9 +93,32 @@ func (d *Dispatcher) ApplyChecksDelivery(ctx context.Context, githubRepo, sha st
 		if err := ctx.Err(); err != nil {
 			return err
 		}
-		d.reconcileMergeReadinessTask(ctx, task)
+		if _, err := d.reconcileMergeReadinessTask(ctx, task); err != nil {
+			log.Printf("[task %s] %v", task.ID, err)
+			if retryableMergeError(err) {
+				failures = append(failures, fmt.Errorf("task %s: %w", task.ID, err))
+			}
+		}
 	}
-	return nil
+	return errors.Join(failures...)
+}
+
+// retryableMergeError separates a failure a retry can fix from a deferral
+// (component-submission-merge, Merge readiness from webhook deliveries). A
+// pending conflict fix, a definitive refusal the merge path recorded, and a
+// GitHub client-status or permission refusal wait for the next delivery.
+// A transient GitHub failure, mergeability still UNKNOWN, an unconfirmed
+// merge, and a store or configuration failure are retried.
+func retryableMergeError(err error) bool {
+	switch {
+	case err == nil, errors.Is(err, context.Canceled), errors.Is(err, ErrConflictFixPending), errors.Is(err, errMergeIneligible), errors.Is(err, github.ErrPullRequestNotFound):
+		return false
+	case errors.Is(err, ErrMergeReadinessPending):
+		return true
+	case github.ErrorCategory(err) != "":
+		return github.IsTransientReadError(err)
+	}
+	return true
 }
 
 func checksDeliveryMatches(task core.Task, sha string, branches []string) bool {

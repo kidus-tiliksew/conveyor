@@ -99,6 +99,7 @@ func (p *monitorPoller) pollRepository(workspaceCtx context.Context, workspaceID
 	st, d := p.Store, p.Dispatcher
 	repository, ok := current.Repo(repositoryName)
 	if !ok || repository.GitHub == "" {
+		// Configuration a retry cannot fix: recorded, not retried.
 		_ = p.Service.Store.RecordMonitorFailure(workspaceCtx, "forge_response",
 			"monitored repository requires a GitHub slug", time.Now().Add(current.Monitor.PollInterval))
 		return nil
@@ -111,8 +112,11 @@ func (p *monitorPoller) pollRepository(workspaceCtx context.Context, workspaceID
 	}
 	runGitHub, tokenErr := resolve(workspaceCtx, workspaceID, repository.GitHub)
 	if tokenErr != nil {
+		// Recorded as before, and returned so a push delivery is retried
+		// and the timed fallback logs it (component-runtime, GitHub webhook
+		// applier).
 		_ = p.Service.Store.RecordMonitorFailure(workspaceCtx, string(githubtrigger.ErrorCategory(tokenErr)), tokenErr.Error(), time.Now().Add(current.Monitor.PollInterval))
-		return nil
+		return fmt.Errorf("resolve GitHub runner for %s: %w", repository.GitHub, tokenErr)
 	}
 	source := monitor.GitHubSource{
 		WorkspaceID: workspaceID, Repository: repositoryName, GitHubSlug: repository.GitHub, Run: runGitHub,

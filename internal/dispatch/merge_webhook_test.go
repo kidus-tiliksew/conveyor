@@ -2,8 +2,11 @@ package dispatch
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -191,5 +194,150 @@ func TestApplyChecksDeliveryLeavesGateOnTaskUnmerged(t *testing.T) {
 	}
 	if kinds := mergeEventKinds(t, st, ctx, task.ID); len(kinds) != 0 {
 		t.Fatalf("gate-on delivery recorded %v", kinds)
+	}
+}
+
+// TestRetryableMergeErrorClassifies: deferrals the merge path already
+// recorded are not retried; transient GitHub failures, unsettled
+// mergeability, and store or configuration failures are
+// (component-submission-merge, Merge readiness from webhook deliveries).
+func TestRetryableMergeErrorClassifies(t *testing.T) {
+	cases := []struct {
+		name string
+		err  error
+		want bool
+	}{
+		{"nil", nil, false},
+		{"pending conflict fix", fmt.Errorf("%w: work order x is queued", ErrConflictFixPending), false},
+		{"ineligible", ineligibleMerge(errors.New("pull request is closed without a merge")), false},
+		{"missing pull request", fmt.Errorf("no pull request: %w", githubtrigger.ErrPullRequestNotFound), false},
+		{"merge refused 405", fmt.Errorf("GitHub could not merge: %w", githubtrigger.StatusError(405, errors.New("required status check is expected"))), false},
+		{"permission", githubtrigger.PermissionError(errors.New("App lacks access")), false},
+		{"cancelled", context.Canceled, false},
+		{"GitHub 502", fmt.Errorf("could not read the pull request: %w", githubtrigger.StatusError(502, errors.New("bad gateway"))), true},
+		{"rate limited", &githubtrigger.Error{Category: githubtrigger.ForgeRateLimited, Err: errors.New("rate limit")}, true},
+		{"unsettled mergeability", fmt.Errorf("pull request acme/app#1 %w", ErrMergeReadinessPending), true},
+		{"store failure", errors.New("database unavailable"), true},
+	}
+	for _, tc := range cases {
+		if got := retryableMergeError(tc.err); got != tc.want {
+			t.Errorf("%s: retryable=%t, want %t", tc.name, got, tc.want)
+		}
+	}
+}
+
+// failOnceStore fails the first merge.requested append.
+type failOnceStore struct {
+	store.Store
+	failed atomic.Bool
+}
+
+func (s *failOnceStore) AppendEvent(ctx context.Context, event core.Event) error {
+	if event.Kind == "merge.requested" && s.failed.CompareAndSwap(false, true) {
+		return errors.New("database unavailable")
+	}
+	return s.Store.AppendEvent(ctx, event)
+}
+
+// TestApplyChecksDeliveryReturnsRetryableFailures: a transient GitHub read
+// failure on one matching task is returned after the other matching task
+// merges; a store failure is returned and the next application merges; a
+// 405 merge refusal records merge.failed and is not returned
+// (req-quiet-idle-runtime AC-3.1).
+func TestApplyChecksDeliveryReturnsRetryableFailures(t *testing.T) {
+	ctx, st, task, d := approvedMergeFixture(t, "acme/app")
+	if err := st.BindTaskApproval(ctx, task.ID, "shared-head"); err != nil {
+		t.Fatal(err)
+	}
+	second := core.Task{ID: "second-task", Workspace: "test", Repo: "app", BaseBranch: "main", Branch: "conveyor/second-task", State: core.TaskApproved, CreatedAt: time.Now()}
+	if err := st.CreateTask(ctx, second); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.BindTaskApproval(ctx, second.ID, "shared-head"); err != nil {
+		t.Fatal(err)
+	}
+	var mu sync.Mutex
+	merged := map[string]bool{}
+	failFirst := true
+	d.ViewPullRequest = func(_ context.Context, _, branch string) (githubtrigger.PullRequest, error) {
+		mu.Lock()
+		defer mu.Unlock()
+		if branch == task.Branch && failFirst {
+			failFirst = false
+			return githubtrigger.PullRequest{}, githubtrigger.StatusError(502, errors.New("bad gateway"))
+		}
+		number := 41
+		if branch == second.Branch {
+			number = 42
+		}
+		if merged[branch] {
+			return githubtrigger.PullRequest{Number: number, State: "closed", Merged: true, HeadSHA: "shared-head", BaseSHA: "base", MergeCommitSHA: "landed"}, nil
+		}
+		return githubtrigger.PullRequest{Number: number, State: "open", Mergeable: "MERGEABLE", HeadSHA: "shared-head", BaseSHA: "base"}, nil
+	}
+	d.RequestMerge = func(_ context.Context, _ string, number int) error {
+		mu.Lock()
+		defer mu.Unlock()
+		if number == 41 {
+			merged[task.Branch] = true
+		} else {
+			merged[second.Branch] = true
+		}
+		return nil
+	}
+	err := d.ApplyChecksDelivery(ctx, "acme/app", "shared-head", nil)
+	if err == nil || !retryableMergeError(err) || !strings.Contains(err.Error(), task.ID) {
+		t.Fatalf("transient read failure returned %v", err)
+	}
+	if current, _ := st.GetTask(ctx, second.ID); current.State != core.TaskMerged {
+		t.Fatalf("the remaining matching task was not applied: %s", current.State)
+	}
+	if err := d.ApplyChecksDelivery(ctx, "acme/app", "shared-head", nil); err != nil {
+		t.Fatalf("retry: %v", err)
+	}
+	if current, _ := st.GetTask(ctx, task.ID); current.State != core.TaskMerged {
+		t.Fatalf("retry did not merge: %s", current.State)
+	}
+
+	ctx, st, task, d = approvedMergeFixture(t, "acme/app")
+	if err := st.BindTaskApproval(ctx, task.ID, "approved-head"); err != nil {
+		t.Fatal(err)
+	}
+	failing := &failOnceStore{Store: st}
+	d.Store = failing
+	mergedOnce := false
+	d.ViewPullRequest = func(context.Context, string, string) (githubtrigger.PullRequest, error) {
+		if mergedOnce {
+			return githubtrigger.PullRequest{Number: 41, State: "closed", Merged: true, HeadSHA: "approved-head", BaseSHA: "base", MergeCommitSHA: "landed"}, nil
+		}
+		return githubtrigger.PullRequest{Number: 41, State: "open", Mergeable: "MERGEABLE", HeadSHA: "approved-head", BaseSHA: "base"}, nil
+	}
+	merges := 0
+	d.RequestMerge = func(context.Context, string, int) error { merges++; mergedOnce = true; return nil }
+	if err := d.ApplyChecksDelivery(ctx, "acme/app", "approved-head", nil); err == nil || !retryableMergeError(err) || merges != 0 {
+		t.Fatalf("store failure returned %v merges=%d", err, merges)
+	}
+	if err := d.ApplyChecksDelivery(ctx, "acme/app", "approved-head", nil); err != nil || merges != 1 {
+		t.Fatalf("retry after a store failure: %v merges=%d", err, merges)
+	}
+	if current, _ := st.GetTask(ctx, task.ID); current.State != core.TaskMerged {
+		t.Fatalf("store-failure retry state=%s", current.State)
+	}
+
+	ctx, st, task, d = approvedMergeFixture(t, "acme/app")
+	if err := st.BindTaskApproval(ctx, task.ID, "approved-head"); err != nil {
+		t.Fatal(err)
+	}
+	d.ViewPullRequest = func(context.Context, string, string) (githubtrigger.PullRequest, error) {
+		return githubtrigger.PullRequest{Number: 41, State: "open", Mergeable: "MERGEABLE", HeadSHA: "approved-head", BaseSHA: "base"}, nil
+	}
+	d.RequestMerge = func(context.Context, string, int) error {
+		return githubtrigger.StatusError(405, errors.New("required status check is expected"))
+	}
+	if err := d.ApplyChecksDelivery(ctx, "acme/app", "approved-head", nil); err != nil {
+		t.Fatalf("405 refusal returned %v", err)
+	}
+	if count, _ := st.CountEvents(ctx, task.ID, "merge.failed"); count != 1 {
+		t.Fatalf("405 refusal merge.failed=%d", count)
 	}
 }
