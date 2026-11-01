@@ -204,14 +204,6 @@ function taskActivity(taskId: string) {
       spec: blueprintView().spec,
       attachments: [],
       verification_evidence: [],
-      // A queued anchor with no serviceable worker is exactly the state that
-      // used to offer redispatch and a worker alarm for work it never takes.
-      worker_status: {
-        available: false,
-        required_harnesses: ['claude'],
-        reason: 'no worker has claimed this workspace',
-        queue_context: 'never_started',
-      },
     }
   }
   return {
@@ -441,9 +433,8 @@ test('the canonical blueprint detail suppresses execution affordances and demote
   await expect(page.getByRole('button', { name: 'Cancel task' })).toHaveCount(0)
 
   // An anchor takes no work orders, so execution-recovery affordances are
-  // inert too: no redispatch nudge, no worker-serviceability alarm.
+  // inert too: no redispatch nudge.
   await expect(page.getByRole('button', { name: /Redispatch/ })).toHaveCount(0)
-  await expect(page.getByRole('region', { name: 'Enrolled worker unavailable' })).toHaveCount(0)
 
   // The raw intake body is provenance: collapsed, below the blueprint, and
   // never the first thing the page says.

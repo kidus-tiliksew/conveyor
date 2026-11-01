@@ -35,11 +35,6 @@ async function routeDashboard(page: Page) {
         json: { items: [], attention: { task_count: 0, pending_proposal_count: 0, total: 0 } },
       })
     }
-    if (path === '/v1/workers') {
-      return route.fulfill({
-        json: { workers: [], worker_expected: false, worker_available: false, setup_serviceability: {} },
-      })
-    }
     if (path === '/v1/activity') {
       return route.fulfill({
         json: [],

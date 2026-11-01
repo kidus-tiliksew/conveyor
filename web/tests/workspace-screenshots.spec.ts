@@ -37,24 +37,6 @@ async function mockAPIs(page: Page) {
     if (path === '/v1/me')
       return route.fulfill({ json: callerIdentity({ id: 'usr_operator', role: 'operator' }, route.request()) })
     if (path === '/v1/workspace/config') return route.fulfill({ json: { document, version: 1 } })
-    if (path === '/v1/workers')
-      return route.fulfill({
-        json: {
-          workers: [
-            {
-              id: 'wrk-1',
-              workspace: 'conveyor',
-              name: 'kidus-mbp',
-              last_seen_at: new Date().toISOString(),
-              lease_expires_at: new Date(Date.now() + 60_000).toISOString(),
-              created_at: '2026-07-17T00:00:00Z',
-              probes: [{ harness: 'codex', healthy: true, checked_at: new Date().toISOString() }],
-            },
-          ],
-          worker_expected: true,
-          worker_available: true,
-        },
-      })
     if (path === '/v1/workspace')
       return route.fulfill({ json: { workspace: 'conveyor', max_bounces: 3, database: 'postgres', repos: [] } })
     return route.fulfill({ json: [] })
@@ -74,7 +56,4 @@ test('capture workspace policy screenshots', async ({ page }) => {
 
   await page.getByRole('tab', { name: 'General' }).click()
   await page.screenshot({ path: 'test-results/shots/3-general.png' })
-
-  await page.getByRole('tab', { name: 'Workers' }).click()
-  await page.screenshot({ path: 'test-results/shots/4-workers.png' })
 })

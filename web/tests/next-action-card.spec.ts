@@ -118,8 +118,6 @@ async function mockAPI(page: Page, detail: () => object, action: () => NextActio
         json: [detail()],
         headers: { 'X-Conveyor-Total': '1', 'X-Conveyor-Limit': '50', 'X-Conveyor-Offset': '0' },
       })
-    if (path === '/v1/workers')
-      return route.fulfill({ json: { workers: [], worker_expected: false, worker_available: false } })
     if (request.method() !== 'GET') {
       // The workspace scope is the client's own query parameter; everything
       // else must be the server's method and path verbatim.
@@ -193,6 +191,8 @@ const runningOrder = {
   created_at: timestamp,
   queue_entered_at: timestamp,
   updated_at: timestamp,
+  // The server records no activity snapshot (DEC-97(1)); a stale response
+  // that still carries one renders nothing from it.
   activity_snapshot: {
     attempt_id: 'attempt-running',
     content: 'running focused tests\nall green so far',
@@ -262,11 +262,11 @@ for (const surface of [
       await expect(page.getByText(empty)).toHaveCount(0)
     }
 
-    // The stop affordance and the client machine activity render once, in the box.
+    // The stop affordance renders once, in the box, with no client machine activity.
     await expect(page.getByRole('button', { name: 'Stop attempt' })).toHaveCount(1)
     await expect(card.getByRole('button', { name: 'Stop attempt' })).toBeVisible()
-    await expect(page.getByRole('region', { name: 'Client machine activity' })).toHaveCount(1)
-    await expect(card.getByRole('region', { name: 'Client machine activity' })).toBeVisible()
+    await expect(page.getByRole('region', { name: 'Client machine activity' })).toHaveCount(0)
+    await expect(page.getByText('running focused tests')).toHaveCount(0)
 
     // The box sits directly above the Activity heading.
     const activityHeading = page.getByRole('heading', { name: 'Activity', exact: true })

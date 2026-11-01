@@ -2,14 +2,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { useNavigate } from '@tanstack/react-router'
 import { Paperclip, X } from 'lucide-react'
 import { useRef, useState } from 'react'
-import {
-  createTask,
-  fetchOpenTasks,
-  fetchRequirements,
-  fetchSystemDesigns,
-  fetchWorkers,
-  TaskIntakeError,
-} from '../../lib/api'
+import { createTask, fetchOpenTasks, fetchRequirements, fetchSystemDesigns, TaskIntakeError } from '../../lib/api'
 import { formatBytes } from '../../lib/utils'
 import { useWorkspace, useWorkspaceSelection } from '../app-shell'
 import { Button } from '../ui/button'
@@ -34,12 +27,6 @@ export function TaskCreateSheet() {
   const { workspace: workspaceId } = useWorkspaceSelection()
   const repos = workspace?.repos ?? []
   const [advancedOpen, setAdvancedOpen] = useState(false)
-  const workerHealth = useQuery({
-    queryKey: ['workers', workspaceId],
-    queryFn: () => fetchWorkers(workspaceId),
-    enabled: Boolean(workspaceId),
-    refetchInterval: 5000,
-  })
   const tasks = useQuery({
     queryKey: ['tasks', workspaceId, 'dependency-candidates'],
     queryFn: () => fetchOpenTasks(workspaceId),
@@ -71,8 +58,6 @@ export function TaskCreateSheet() {
   const fileInput = useRef<HTMLInputElement>(null)
   const intakeKey = useRef(crypto.randomUUID())
   const repoName = repo || repos[0]?.name || ''
-  const workerExpected = workerHealth.data?.worker_expected === true
-  const workerAvailable = workerHealth.data?.worker_available === true
   // Intake is the Board's `create` parameter, so closing drops it and leaves
   // whichever view the Board was showing.
   const close = () =>
@@ -282,14 +267,9 @@ export function TaskCreateSheet() {
           </div>
         </details>
 
-        {/* A task carries no hold or other worker reservation (DEC-74(3)); the
-            advisory warning depends on worker liveness only. */}
-        {workerExpected && !workerAvailable && (
-          <p className="text-xs text-attention">
-            Worker unavailable — {workerHealth.data?.worker_unavailable_reason ?? 'waiting for a live worker'}. The task
-            will queue until a worker is available or an agent claims it over a pull surface.
-          </p>
-        )}
+        {/* A task carries no hold or execution reservation (DEC-74(3)), and a
+            filed task waits in the queue for an agent session with no
+            availability warning (req-task-lifecycle-and-queue AC-9.4). */}
 
         <div className="grid gap-4 md:grid-cols-2">
           <Field label="Plan approval gate">

@@ -145,8 +145,6 @@ async function mockAPI(page: Page, item: object, action: NextAction) {
         json: [{ ...item, next_action: { ...action, choices: undefined } }],
         headers: { 'X-Conveyor-Total': '1', 'X-Conveyor-Limit': '100', 'X-Conveyor-Offset': '0' },
       })
-    if (path === '/v1/workers')
-      return route.fulfill({ json: { workers: [], worker_expected: false, worker_available: false } })
     return route.fulfill({ json: [] })
   })
   return counts
@@ -964,22 +962,10 @@ const implementationCases = [
     delivery: false,
   },
   {
-    name: 'shortened summary with a transcript',
+    name: 'shortened summary',
     jobState: 'done',
     extra: { ended_at: minutes(9) },
-    order: {
-      state: 'submitted',
-      head_sha: firstHead,
-      transcript_captures: [
-        {
-          attempt_id: 'attempt-impl',
-          content: 'transcript body',
-          termination_reason: 'completed',
-          truncated: false,
-          captured_at: minutes(9),
-        },
-      ],
-    },
+    order: { state: 'submitted', head_sha: firstHead },
     results: { summary: { text: 'Implemented the **card** and its tests.', event_id: '63', truncated: true } },
     badge: 'Submitted',
     text: 'Implemented the card and its tests.',
@@ -1011,10 +997,9 @@ for (const scenario of implementationCases) {
     await expect(card.getByText(/^Attempt \d/)).toHaveCount(0)
     await expect(card.locator('[data-implementation-delivery]')).toHaveCount(scenario.delivery ? 1 : 0)
     if ('warning' in scenario) await expect(card).toHaveClass(/bg-attention-soft/)
-    if (scenario.name === 'shortened summary with a transcript') {
+    if (scenario.name === 'shortened summary') {
       await expect(card.locator('strong', { hasText: 'card' })).toBeVisible()
       await expect(card.getByText('Full text (shortened here)')).toBeVisible()
-      await expect(card.getByText('Attempt attempt-impl transcript')).toBeVisible()
     }
   })
 }
@@ -1080,105 +1065,6 @@ const orderStateRows = [
     detail: 'Any agent connected over MCP can claim it. The server URL is in Settings.',
   },
 ] as const
-
-// One capture of an ended attempt. Its text reaches the page only through the
-// content read (component-web-task-surfaces, Transcript disclosures).
-const transcriptCapture = (attemptId: string) => ({
-  attempt_id: attemptId,
-  termination_reason: 'harness exited',
-  truncated: false,
-  captured_at: minutes(9),
-  content_bytes: 24,
-})
-
-const transcriptPlacements = [
-  {
-    name: 'Implementation entry',
-    orderId: implementID(1),
-    item: activity({
-      jobs: [job(implementID(1), 'implement', 'done', { ended_at: minutes(9) })],
-      work_orders: [
-        order(implementID(1), { state: 'submitted', transcript_captures: [transcriptCapture('attempt-impl')] }),
-      ],
-    }),
-    attemptId: 'attempt-impl',
-  },
-  {
-    name: 'review seat row',
-    orderId: `${taskId}-review-1-seat-1`,
-    item: activity({
-      latest_stage: 'review',
-      work_orders: [
-        order(`${taskId}-review-1-seat-1`, {
-          stage: 'review',
-          review_round: 1,
-          review_seat: 1,
-          agent: 'codex',
-          model: 'gpt-6',
-          transcript_captures: [transcriptCapture('attempt-seat')],
-        }),
-      ],
-    }),
-    attemptId: 'attempt-seat',
-  },
-  {
-    name: 'job entry',
-    orderId: `${taskId}-spec-1`,
-    item: activity({
-      latest_stage: 'spec',
-      jobs: [job(`${taskId}-spec-1`, 'spec', 'failed', { ended_at: minutes(9), error: 'planner exited' })],
-      work_orders: [
-        order(`${taskId}-spec-1`, {
-          stage: 'spec',
-          state: 'submitted',
-          transcript_captures: [transcriptCapture('attempt-plan')],
-        }),
-      ],
-    }),
-    attemptId: 'attempt-plan',
-  },
-  {
-    name: 'work-order entry',
-    orderId: implementID(1),
-    item: activity({
-      work_orders: [
-        order(implementID(1), { state: 'stale', transcript_captures: [transcriptCapture('attempt-stale')] }),
-      ],
-    }),
-    attemptId: 'attempt-stale',
-  },
-] as const
-
-for (const placement of transcriptPlacements) {
-  test(`the ${placement.name} transcript disclosure reads its own order and attempt only when opened`, async ({
-    page,
-  }) => {
-    await mockAPI(page, placement.item, {
-      ...nextAction(placement.orderId),
-      current_order: undefined,
-      attempt: undefined,
-    })
-    const requests: string[] = []
-    await page.route(/\/transcript-captures\//, async (route) => {
-      const url = new URL(route.request().url())
-      requests.push(`${url.pathname}${url.search}`)
-      await route.fulfill({
-        json: { ...transcriptCapture(placement.attemptId), content: `transcript body ${placement.name}` },
-      })
-    })
-    await page.goto(`/w/demo/tasks/${taskId}/full`)
-    const timeline = page.getByRole('region', { name: 'Execution event timeline' })
-    const summary = timeline.locator('summary', { hasText: `Attempt ${placement.attemptId} transcript` })
-    await expect(summary).toHaveCount(1)
-    await expect(summary).toBeVisible()
-    expect(requests).toEqual([])
-    await summary.click()
-    await expect(timeline.getByText(`transcript body ${placement.name}`)).toBeVisible()
-    expect(requests).toEqual([
-      `/v1/tasks/${taskId}/work-orders/${placement.orderId}/transcript-captures/${placement.attemptId}?workspace_id=demo`,
-    ])
-  })
-}
 
 test.describe('at 390 px', () => {
   test.use({ viewport: { width: 390, height: 844 } })

@@ -307,8 +307,6 @@ async function mockBoard(page: Page, server: Server = {}) {
       return route.fulfill({ json: (server.documents ?? (() => documentsView))() })
     }
     if (path.endsWith('/stream')) return route.fulfill({ status: 204 })
-    if (path === '/v1/workers')
-      return route.fulfill({ json: { workers: [], worker_expected: false, worker_available: false } })
     return route.fulfill({ json: [] })
   })
   const count = (method: string, view: string) =>

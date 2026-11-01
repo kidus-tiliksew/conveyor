@@ -10,8 +10,8 @@ import { MarkdownProse } from '../ui/markdown-prose'
 // state the attempt is in, what the agent reported, and which pull request
 // and head it delivered (component-web-task-surfaces, Work-order timeline
 // entries; task 261028-5c2ae2). The timeline passes its own dot, model
-// metadata, audit disclosure, and transcript captures in as slots so the card
-// reuses them without importing the timeline.
+// metadata, and audit disclosure in as slots so the card reuses them without
+// importing the timeline.
 
 type Status = 'submitted' | 'failed' | 'running' | 'queued'
 
@@ -46,13 +46,11 @@ export function ImplementationEntry({
   dotSlot,
   meta,
   summaryAudit,
-  transcripts,
 }: {
   entry: Extract<TimelineEntry, { type: 'job' }>
   dotSlot: (className: string) => ReactNode
   meta: ReactNode
   summaryAudit?: ReactNode
-  transcripts?: ReactNode
 }) {
   const badge = statusBadge[statusOf(entry.job)]
   const warning = entry.tone === 'warning'
@@ -79,7 +77,6 @@ export function ImplementationEntry({
           {entry.summary}
         </MarkdownProse>
         {summaryAudit && <div className="px-4 pb-3 text-xs text-muted">{summaryAudit}</div>}
-        {transcripts && <div className="px-4 pb-3">{transcripts}</div>}
         {delivery && (
           <footer
             className="flex min-w-0 flex-wrap items-center gap-x-3 gap-y-1 border-t border-border px-4 py-2 text-xs text-muted"

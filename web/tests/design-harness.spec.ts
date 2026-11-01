@@ -894,10 +894,6 @@ async function mockAPIs(page: Page) {
       })
       return
     }
-    if (url.pathname === '/v1/workers') {
-      await route.fulfill({ json: { workers: [], worker_expected: true, worker_available: true } })
-      return
-    }
     await route.fulfill({ json: [] })
   })
 }

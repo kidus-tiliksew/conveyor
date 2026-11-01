@@ -15,7 +15,7 @@ import { useNextAction } from '../inbox/use-next-actions'
 import { Badge } from '../ui/badge'
 import { Card, CardContent } from '../ui/card'
 import { Skeleton } from '../ui/skeleton'
-import { ExecutionFactRows, ExecutionStatusLine, ExecutionTitle, RecentActivity } from './execution-summary-details'
+import { ExecutionFactRows, ExecutionStatusLine, ExecutionTitle } from './execution-summary-details'
 import { GateChoices } from './merge-at-gate'
 import { NextActionDeadline, NextActionIDs } from './next-action-parts'
 import { claimedWorkOrder, WorkOrderPreemptControl } from './work-order-preempt-card'
@@ -83,9 +83,6 @@ export function NextActionCard({
             ))}
           {action.if_ignored && <p className="text-xs text-muted">If ignored: {action.if_ignored}</p>}
           <NextActionDeadline deadline={action.deadline} />
-          {execution?.order.state === 'claimed' && execution.order.activity_snapshot && (
-            <RecentActivity snapshot={execution.order.activity_snapshot} />
-          )}
           {preemptOrder && (
             <div className="border-t border-border/60 pt-2.5">
               <WorkOrderPreemptControl order={preemptOrder} />

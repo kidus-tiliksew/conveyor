@@ -154,8 +154,6 @@ async function serve(page: Page, { board, others = [] }: { board: Fixture[][]; o
       })
     if (/^\/v1\/tasks\/[^/]+\/assignee$/.test(path)) return route.fulfill({ json: {} })
     if (path.endsWith('/events/stream')) return route.fulfill({ status: 204 })
-    if (path === '/v1/workers')
-      return route.fulfill({ json: { workers: [], worker_expected: false, worker_available: false } })
     if (path === '/v1/sign-out') return route.fulfill({ status: 204 })
     return route.fulfill({ json: [] })
   }

@@ -40,8 +40,6 @@ async function mockAPIs(page: Page, role: string, served: Record<string, unknown
       }
       return route.fulfill({ json: { document: served, version: 1 } })
     }
-    if (path === '/v1/workers')
-      return route.fulfill({ json: { workers: [], worker_expected: false, worker_available: false } })
     if (path === '/v1/workspace')
       return route.fulfill({ json: { workspace: 'demo', max_bounces: 3, database: 'postgres', repos: [] } })
     return route.fulfill({ json: [] })

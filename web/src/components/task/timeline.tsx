@@ -39,7 +39,6 @@ import type {
   TaskHistorySelection,
   TaskReviewSeatMetadata,
   WorkOrder,
-  WorkOrderTranscriptCapture,
 } from '../../lib/types'
 import { absoluteTime, cn, compactTokens, duration } from '../../lib/utils'
 import { usePendingProposals, useWorkspaceCapability, useWorkspaceMembers, useWorkspaceSelection } from '../app-shell'
@@ -71,15 +70,13 @@ import {
 } from './system-design-proposal-card'
 import { useTaskAudit } from './use-task-detail'
 import { isHistoryRestart, useTaskHistory } from './use-task-history'
-import { useTaskTranscript } from './use-task-transcript'
 import { VerificationEntry } from './verification-entry'
 import {
   CheckpointProposalRecoveryCard,
-  hasWorkerRecovery,
+  hasOrderRecovery,
   isCheckpointReleasedRecovery,
   WorkOrderRecoveryCard,
 } from './work-order-recovery-card'
-import { hasWorkerAlert, WorkerStatusCard } from './worker-status-card'
 
 // The gate dot pulses — the timeline's one "waiting on you" signal — in the
 // gate card's own tone.
@@ -97,7 +94,7 @@ const gateDots: Record<GateTone, string> = {
 // tail: cause sits directly above prompt, and a recorded decision resolves
 // in place into its intervention entry.
 // `executionActions` is false for a blueprint anchor: it takes
-// no work orders, so redispatch, worker serviceability, and review recovery
+// no work orders, so redispatch, order recovery, and review recovery
 // are affordances for execution that will never happen. The story it does
 // have — materialization, child progress, close — still renders in full.
 export function Timeline({ item, executionActions = true }: { item: ActivityItem; executionActions?: boolean }) {
@@ -137,7 +134,7 @@ export function Timeline({ item, executionActions = true }: { item: ActivityItem
   const standaloneDesignProposals = designProposals.filter((proposal) => !citedSystemDesigns.has(proposal.document.id))
   const combineCheckpointProposal =
     !structuredCheckpoint &&
-    hasWorkerRecovery(item, currentExecution) &&
+    hasOrderRecovery(item, currentExecution) &&
     isCheckpointReleasedRecovery(currentExecution) &&
     designProposals.length > 0
   const priorExecutionStatus = useRef(currentExecution?.status)
@@ -201,12 +198,6 @@ export function Timeline({ item, executionActions = true }: { item: ActivityItem
                 </section>
               ),
             },
-          canOperate &&
-            hasWorkerAlert(item) && {
-              key: 'worker-alert',
-              dot: 'bg-attention-dot',
-              card: <WorkerStatusCard item={item} />,
-            },
           canRecover &&
             hasInterruptedReviewRecovery(item) && {
               key: 'interrupted-review',
@@ -220,7 +211,7 @@ export function Timeline({ item, executionActions = true }: { item: ActivityItem
               card: <ReviewRoundRetryCard item={item} />,
             },
           canRecover &&
-            hasWorkerRecovery(item, currentExecution) && {
+            hasOrderRecovery(item, currentExecution) && {
               key: 'order-recovery',
               dot: 'bg-attention-dot',
               card:
@@ -307,106 +298,6 @@ export function Timeline({ item, executionActions = true }: { item: ActivityItem
       {/* Remounted closed for another task or workspace, which aborts its read. */}
       <TechnicalActivity key={`${workspace}:${item.task.id}`} item={item} workspace={workspace} />
     </>
-  )
-}
-
-// Capture metadata comes with the bounded detail; each disclosure reads its
-// own content only once opened (component-web-task-surfaces, Transcript
-// disclosures).
-function TranscriptCaptures({
-  taskId,
-  workOrderId,
-  captures,
-}: {
-  taskId: string
-  workOrderId: string
-  captures?: WorkOrderTranscriptCapture[]
-}) {
-  const { workspace } = useWorkspaceSelection()
-  if (!captures?.length) return null
-  return (
-    <div className="basis-full space-y-1.5 pt-1">
-      {captures.map((capture) => (
-        // A new workspace, task, order, or attempt remounts the disclosure
-        // closed, which cancels the previous read.
-        <TranscriptDisclosure
-          key={`${workspace}:${taskId}:${workOrderId}:${capture.attempt_id}:${capture.captured_at}`}
-          workspace={workspace}
-          taskId={taskId}
-          workOrderId={workOrderId}
-          capture={capture}
-        />
-      ))}
-    </div>
-  )
-}
-
-function TranscriptDisclosure({
-  workspace,
-  taskId,
-  workOrderId,
-  capture,
-}: {
-  workspace: string
-  taskId: string
-  workOrderId: string
-  capture: WorkOrderTranscriptCapture
-}) {
-  const [open, setOpen] = useState(false)
-  return (
-    <details className="text-xs text-muted" onToggle={(toggle) => setOpen(toggle.currentTarget.open)}>
-      <summary className="cursor-pointer rounded-sm font-medium text-foreground focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary">
-        Attempt {capture.attempt_id} transcript
-        <span className="ml-2 font-normal text-faint">Captured {absoluteTime(capture.captured_at)}</span>
-      </summary>
-      {open && (
-        <div className="mt-2 rounded border border-border bg-surface p-2">
-          <p className="mb-1.5 text-[11px] text-faint">Ended: {capture.termination_reason}</p>
-          {capture.truncated && (
-            <p className="mb-1.5 text-[11px] font-medium text-attention">
-              This transcript was truncated; the most recent output is shown.
-            </p>
-          )}
-          <TranscriptContent
-            workspace={workspace}
-            taskId={taskId}
-            workOrderId={workOrderId}
-            attemptId={capture.attempt_id}
-          />
-        </div>
-      )}
-    </details>
-  )
-}
-
-// Mounted only while its disclosure is open; unmounting cancels the read.
-function TranscriptContent({
-  workspace,
-  taskId,
-  workOrderId,
-  attemptId,
-}: {
-  workspace: string
-  taskId: string
-  workOrderId: string
-  attemptId: string
-}) {
-  const query = useTaskTranscript(workspace, taskId, workOrderId, attemptId)
-  if (query.isError)
-    return (
-      <div role="alert">
-        <p>Could not load the transcript: {query.error.message}</p>
-        <button type="button" className="text-primary underline" onClick={() => void query.refetch()}>
-          Retry
-        </button>
-      </div>
-    )
-  if (query.isPending || query.isFetching) return <p role="status">Loading transcript…</p>
-  if (!query.data.content) return <p>No transcript output was captured.</p>
-  return (
-    <pre className="max-h-64 overflow-auto whitespace-pre-wrap font-mono text-[11px] leading-5 text-foreground">
-      {query.data.content}
-    </pre>
   )
 }
 
@@ -915,15 +806,6 @@ function TimelineRow({
             />
           )
         }
-        transcripts={
-          entry.order?.transcript_captures?.length ? (
-            <TranscriptCaptures
-              taskId={item.task.id}
-              workOrderId={entry.order.id}
-              captures={entry.order.transcript_captures}
-            />
-          ) : undefined
-        }
       />
     )
   if (entry.type === 'job')
@@ -967,14 +849,6 @@ function TimelineRow({
             <time className="ml-auto text-[11px] text-faint">{absoluteTime(entry.at)}</time>
           </div>
           {entry.detail && <p className="mt-0.5 break-words text-xs text-muted">{entry.detail}</p>}
-          {/* A started job's entry already carries this order's captures. */}
-          {!item.jobs.some((job) => job.id === entry.order.job_id && job.started_at) && (
-            <TranscriptCaptures
-              taskId={item.task.id}
-              workOrderId={entry.order.id}
-              captures={entry.order.transcript_captures}
-            />
-          )}
         </div>
       </li>
     )
@@ -1287,11 +1161,6 @@ function SeatRow({ seat, index, usageAvailable }: { seat: PanelSeat; index: numb
       {seat.status === 'deliberating' && progress && (
         <p className="w-full line-clamp-2 text-xs leading-5 text-muted">{progress}</p>
       )}
-      <TranscriptCaptures
-        taskId={seat.order.task_id}
-        workOrderId={seat.order.id}
-        captures={seat.order.transcript_captures}
-      />
     </div>
   )
 }
@@ -1514,7 +1383,6 @@ function JobEntry({
               {usageText(order, usageAvailable === true)}
             </span>
           )}
-          {order && <TranscriptCaptures taskId={taskId} workOrderId={order.id} captures={order.transcript_captures} />}
         </div>
       </li>
     )
@@ -1553,11 +1421,6 @@ function JobEntry({
             />
           </div>
         )}
-        {order?.transcript_captures?.length ? (
-          <div className="px-4 pb-3">
-            <TranscriptCaptures taskId={taskId} workOrderId={order.id} captures={order.transcript_captures} />
-          </div>
-        ) : null}
       </article>
     </li>
   )
@@ -1591,8 +1454,9 @@ function JobMeta({
   const providerUsage = job.runner === 'in-process'
   const note = [
     order?.required_effort ? `effort ${order.required_effort}` : undefined,
+    // A historical order may still carry `worker-pinned` (DEC-97(1)).
     order?.model_enforcement === 'worker-pinned'
-      ? 'model pinned by your worker'
+      ? 'model pinned at launch'
       : order?.model_enforcement === 'self-reported'
         ? 'model self-reported by the agent'
         : undefined,

@@ -213,8 +213,6 @@ async function mockMap(page: Page, server: MapServer = defaultServer) {
       })
     }
     if (path.endsWith('/stream')) return route.fulfill({ status: 204 })
-    if (path === '/v1/workers')
-      return route.fulfill({ json: { workers: [], worker_expected: false, worker_available: false } })
     return route.fulfill({ json: [] })
   })
   return seen

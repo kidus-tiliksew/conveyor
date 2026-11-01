@@ -10,13 +10,13 @@ async function mockTaskCreateAPIs(
     taskList?: 'success' | 'error' | 'delayed'
     createDependencyError?: boolean
     candidates?: Array<Record<string, unknown>>
-    pullOnly?: boolean
     role?: 'viewer' | 'executor' | 'contributor' | 'maintainer' | 'operator'
   } = {},
 ) {
   let submitted = ''
   let taskListRequests = 0
   let taskListQuery = ''
+  let workerRequests = 0
   let releaseTaskList = () => {}
   const taskListGate = new Promise<void>((resolve) => {
     releaseTaskList = resolve
@@ -51,15 +51,10 @@ async function mockTaskCreateAPIs(
       })
       return
     }
-    if (url.pathname === '/v1/workers') {
-      await route.fulfill({
-        json: {
-          workers: [],
-          worker_expected: !options.pullOnly,
-          worker_available: false,
-          worker_unavailable_reason: options.pullOnly ? '' : 'test worker is stale',
-        },
-      })
+    // The server serves no worker routes (DEC-97(1)); a read here is a regression.
+    if (url.pathname.startsWith('/v1/workers')) {
+      workerRequests++
+      await route.fulfill({ status: 404, json: { error: 'not_found' } })
       return
     }
     if (url.pathname === '/v1/requirements') {
@@ -216,6 +211,7 @@ async function mockTaskCreateAPIs(
     submitted: () => submitted,
     taskListRequests: () => taskListRequests,
     taskListQuery: () => new URLSearchParams(taskListQuery),
+    workerRequests: () => workerRequests,
     releaseTaskList,
   }
 }
@@ -353,31 +349,24 @@ test('context dropdown never offers unconfirmed documents', async ({ page }) => 
   await expect(list.getByRole('option')).toHaveCount(3)
 })
 
-test('intake offers no hold control and keeps the advisory worker warning', async ({ page }) => {
-  const { submitted } = await mockTaskCreateAPIs(page)
+test('intake offers no hold control and no worker availability warning', async ({ page }) => {
+  const { submitted, workerRequests } = await mockTaskCreateAPIs(page)
   await page.goto('/w/demo/new')
 
-  // A task carries no hold or other worker reservation (DEC-74(3)): no
-  // control, and the worker warning depends on worker liveness only.
+  // A task carries no hold or execution reservation (DEC-74(3)), and a filed
+  // task waits for an agent session with no availability warning
+  // (req-task-lifecycle-and-queue AC-9.4; DEC-97(1)).
   await expect(page.getByRole('radiogroup', { name: 'Execution mode' })).toHaveCount(0)
   await expect(page.getByRole('switch', { name: /hold/i })).toHaveCount(0)
   await expect(page.getByText(/Hold for hands-on work/)).toHaveCount(0)
-  await expect(page.getByText(/Worker unavailable/)).toBeVisible()
   await page.locator('textarea').fill('Queue this one openly')
-  await expect(page.getByText(/Worker unavailable/)).toBeVisible()
+  await expect(page.getByText(/worker/i)).toHaveCount(0)
+  await expect(page.getByText(/claim it manually/)).toHaveCount(0)
   await page.getByRole('button', { name: 'Create task' }).click()
 
   await expect.poll(submitted).toContain('Queue this one openly')
   expect(submitted()).not.toContain('"hold"')
-})
-
-test('pull-only intake stays quiet when no enrolled worker is expected', async ({ page }) => {
-  await mockTaskCreateAPIs(page, { pullOnly: true })
-  await page.goto('/w/demo/new')
-
-  await expect(page.getByText(/Worker unavailable/)).toHaveCount(0)
-  await expect(page.getByText(/claim it manually/)).toHaveCount(0)
-  await expect(page.getByRole('radiogroup', { name: 'Execution mode' })).toHaveCount(0)
+  expect(workerRequests()).toBe(0)
 })
 
 test('dependency candidates load lazily and selected cross-repository chips survive repository changes', async ({

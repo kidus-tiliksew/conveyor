@@ -217,7 +217,7 @@ export interface Task {
   body: string
   class: string
   level: EscalationLevel | ''
-  // Legacy historical record; no task carries a worker reservation (DEC-74(3)).
+  // Legacy historical record; no task carries an execution reservation (DEC-74(3)).
   mode?: string
   assignee?: TaskAssignee
   spec_approval: boolean
@@ -1140,64 +1140,11 @@ export interface MonitorStatus {
   activity: Array<{ id: number; workspace_id: string; kind: string; payload: Record<string, unknown>; at: string }>
 }
 
-export interface HarnessProbe {
-  harness: string
-  healthy: boolean
-  message?: string
-  checked_at: string
-}
-export interface Worker {
-  id: string
-  workspace: string
-  name: string
-  lease_expires_at?: string
-  last_seen_at?: string
-  revoked_at?: string
-  probes: HarnessProbe[]
-  created_at: string
-}
 export interface RateLimitStatus {
   status: string
   limit?: number
   remaining?: number
   reset_at?: string
-}
-export interface RateLimitHealth {
-  work_order_id: string
-  worker_id?: string
-  harness: string
-  model?: string
-  rate_limit: RateLimitStatus
-  observed_at: string
-}
-export interface HarnessModelFailure {
-  harness: string
-  model: string
-  detail: string
-  work_order_id: string
-  observed_at: string
-}
-export interface SetupServiceability {
-  worker_expected: boolean
-  worker_available: boolean
-  worker_unavailable_reason?: string
-  model_failures?: HarnessModelFailure[]
-}
-export interface WorkerList {
-  workers: Worker[]
-  worker_expected: boolean
-  worker_available: boolean
-  worker_unavailable_reason?: string
-  setup_serviceability?: Record<string, SetupServiceability>
-  rate_limits?: RateLimitHealth[]
-}
-export interface TaskWorkerStatus {
-  available: boolean
-  required_harnesses: string[]
-  reason: string
-  last_heartbeat_at?: string
-  last_heartbeat_age?: string
-  queue_context: 'never_started' | 'interrupted'
 }
 
 export interface VersionedWorkspaceConfig {
@@ -1252,7 +1199,6 @@ export interface ActivityItem {
   review_recovery?: ReviewRecoveryState
   interrupted_review_recovery?: InterruptedReviewRecoveryState
   stalled?: StalledState
-  worker_status?: TaskWorkerStatus
   merge_readiness?: {
     state: 'MERGEABLE' | 'UNKNOWN' | 'CONFLICTING' | 'STALE' | 'MERGED' | 'MERGED_HEAD_MISMATCH'
     head_sha?: string
@@ -1468,7 +1414,6 @@ export interface WorkOrder {
   attempt_id?: string
   agent?: string
   model?: string
-  worker_id?: string
   review_round?: number
   review_seat?: number
   reason_code?: string
@@ -1512,42 +1457,8 @@ export interface WorkOrder {
   rate_limit_observed_at?: string
   last_agent_activity_at?: string
   last_agent_activity_label?: string
-  activity_snapshot?: WorkOrderActivitySnapshot
-  transcript_captures?: WorkOrderTranscriptCapture[]
   created_at?: string
   updated_at?: string
-}
-
-export interface WorkOrderActivitySnapshot {
-  attempt_id: string
-  content: string
-  captured_at: string
-}
-
-/**
- * One capture as the bounded detail presents it: metadata and the stored
- * content's UTF-8 length (component-http-api, Bounded detail view). A
- * complete-view-shaped response may still carry `content`; the transcript
- * disclosure never renders it and always reads the content route
- * (component-web-task-surfaces, Transcript disclosures).
- */
-export interface WorkOrderTranscriptCapture {
-  attempt_id: string
-  termination_reason: string
-  truncated: boolean
-  captured_at: string
-  content_bytes?: number
-  content?: string
-}
-
-/** One capture as the content read returns it. */
-export interface WorkOrderTranscriptCaptureContent {
-  attempt_id: string
-  content: string
-  termination_reason: string
-  truncated: boolean
-  captured_at: string
-  content_bytes: number
 }
 
 export interface WorkOrderCheckpoint {
