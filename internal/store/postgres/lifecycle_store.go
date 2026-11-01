@@ -261,6 +261,7 @@ func (s *Store) recordDependencyOutcomeTx(ctx context.Context, tx pgx.Tx, depend
 		if err != nil {
 			return err
 		}
+		raiseTaskNotice(ctx, tx, dependentID)
 	}
 	return nil
 }

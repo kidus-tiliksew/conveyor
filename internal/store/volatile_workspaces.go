@@ -10,6 +10,7 @@ import (
 
 	"gopkg.in/yaml.v3"
 
+	"github.com/kidus-tiliksew/conveyor/internal/changes"
 	"github.com/kidus-tiliksew/conveyor/internal/config"
 	"github.com/kidus-tiliksew/conveyor/internal/core"
 )
@@ -71,6 +72,7 @@ func (m *volatileMemory) CreateWorkspace(ctx context.Context, id, name string, c
 		m.memberships[memoryScopedKey{workspace: id, id: credential.OwnerUserID}] = workspaceBinding{Role: core.WorkspaceRoleOperator, CreatedAt: record.CreatedAt}
 	}
 	m.workspaceEventLocked(ctx, id, core.Event{Kind: "workspace.created", Payload: core.JSONPayload(map[string]any{"id": id, "name": name, "config_version": record.ConfigVersion})})
+	m.raiseLocked(changes.Notice{Workspace: id, Kind: changes.Workspace})
 	return record.Workspace, nil
 }
 
@@ -128,6 +130,7 @@ func (m *volatileMemory) BootstrapWorkspaceConfig(_ context.Context, cfg *config
 			m.memberships[key] = workspaceBinding{Role: core.WorkspaceRoleOperator, CreatedAt: now}
 		}
 	}
+	m.raiseLocked(changes.Notice{Workspace: cfg.Workspace, Kind: changes.Workspace})
 	return true, nil
 }
 

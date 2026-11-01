@@ -32,7 +32,7 @@ func testRuntime(t *testing.T, log eventlog.Store, d *Dispatcher, shutdown *Shut
 		return nil, err
 	}
 	runtime := logqueue.NewRuntime(log, logqueue.Options{
-		Workspaces: workspaces, RescueStuckAfter: rescueAfter, PollInterval: 50 * time.Millisecond,
+		Workspaces: workspaces, RescueStuckAfter: rescueAfter,
 		ClockInterval: 200 * time.Millisecond, WorkerID: "test", Logf: t.Logf,
 	})
 	for _, registration := range d.Registrations(shutdown) {

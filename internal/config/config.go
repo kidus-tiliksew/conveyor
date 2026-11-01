@@ -938,6 +938,7 @@ type Config struct {
 	// worktree_location mode machine; it is never defaulted.
 	WorktreeRoot      string                       `yaml:"worktree_root,omitempty" json:"-"`
 	Database          Database                     `yaml:"database"`
+	Runtime           RuntimeSettings              `yaml:"runtime,omitempty"`
 	ExecutionSettings *ContextualExecutionSettings `yaml:"execution_settings,omitempty"`
 	Routing           Routing                      `yaml:"routing"`
 	Review            ReviewPanel                  `yaml:"review"`

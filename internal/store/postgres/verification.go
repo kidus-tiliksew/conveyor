@@ -11,7 +11,6 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	"github.com/kidus-tiliksew/conveyor/internal/core"
-	"github.com/kidus-tiliksew/conveyor/internal/eventlog/pglog"
 	"github.com/kidus-tiliksew/conveyor/internal/queue/logqueue"
 	"github.com/kidus-tiliksew/conveyor/internal/store"
 	"github.com/kidus-tiliksew/conveyor/internal/store/postgres/db"
@@ -358,7 +357,7 @@ func (s *Store) deliveryIntentTx(ctx context.Context, tx pgx.Tx, q *db.Queries, 
 		}
 		if d.State == "pending" {
 			a := store.VerificationDeliveryArgs(d)
-			if _, err = logqueue.Enqueue(pglog.WithTx(ctx, tx), s.log, workspace(ctx), a.Kind(), a.UniqueKey(), a, 5, time.Now().UTC()); err != nil {
+			if _, err = logqueue.Enqueue(logTx(ctx, tx), s.log, workspace(ctx), a.Kind(), a.UniqueKey(), a, 5, time.Now().UTC()); err != nil {
 				return err
 			}
 		}
@@ -537,7 +536,7 @@ func (s *Store) ReconcileVerificationDeliveries(ctx context.Context) error {
 				d = next
 			}
 			a := store.VerificationDeliveryArgs(d)
-			if _, err = logqueue.Enqueue(pglog.WithTx(ctx, tx), s.log, workspace(ctx), a.Kind(), a.UniqueKey(), a, 5, time.Now().UTC()); err != nil {
+			if _, err = logqueue.Enqueue(logTx(ctx, tx), s.log, workspace(ctx), a.Kind(), a.UniqueKey(), a, 5, time.Now().UTC()); err != nil {
 				return err
 			}
 		}

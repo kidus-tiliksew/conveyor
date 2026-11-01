@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log"
 	"reflect"
 	"strconv"
 	"strings"
@@ -18,11 +19,13 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/kidus-tiliksew/conveyor/internal/changes"
 	"github.com/kidus-tiliksew/conveyor/internal/config"
 	"github.com/kidus-tiliksew/conveyor/internal/core"
 	"github.com/kidus-tiliksew/conveyor/internal/eventlog"
 	"github.com/kidus-tiliksew/conveyor/internal/eventlog/pglog"
 	"github.com/kidus-tiliksew/conveyor/internal/nextaction"
+	"github.com/kidus-tiliksew/conveyor/internal/queue/logqueue"
 	"github.com/kidus-tiliksew/conveyor/internal/store"
 	"github.com/kidus-tiliksew/conveyor/internal/store/postgres/db"
 	"gopkg.in/yaml.v3"
@@ -36,7 +39,9 @@ type Store struct {
 	boundary               boundaryDB
 	queries                *db.Queries
 	queue                  *logDispatchQueue
-	log                    *pglog.Store
+	log                    *txLog
+	changes                *changes.Hub
+	peers                  *peerListener
 	knownTables            sync.Map // table name -> true once seen to exist
 	gitHubAppEncryptionKey []byte
 }
@@ -101,12 +106,19 @@ func openWithOptions(ctx context.Context, databaseURL string, options openOption
 
 // newStore assembles a store over a migrated pool.
 func newStore(pool *pgxpool.Pool) *Store {
-	log := pglog.New(pool)
-	boundary := boundaryDB{pool}
-	return &Store{pool: pool, boundary: boundary, queries: db.New(boundary), queue: newLogDispatchQueue(boundary, log), log: log}
+	hub := changes.NewHub()
+	s := &Store{pool: pool, changes: hub, peers: newPeerListener(log.Printf)}
+	s.boundary = boundaryDB{q: pool, use: s.notePeerUse}
+	s.queries = db.New(s.boundary)
+	s.log = &txLog{NotifyingLog: logqueue.Notify(pglog.New(pool), hub), store: s}
+	s.queue = newLogDispatchQueue(s.boundary, s.log)
+	return s
 }
 
-func (s *Store) Close() { s.pool.Close() }
+func (s *Store) Close() {
+	s.peers.close()
+	s.pool.Close()
+}
 
 func (s *Store) Pool() *pgxpool.Pool { return s.pool }
 
@@ -124,6 +136,7 @@ func (s *Store) WithTaskSideEffectLock(ctx context.Context, taskID string, fn fu
 }
 
 func (s *Store) withAdvisoryLock(ctx context.Context, key string, fn func(context.Context) error) error {
+	s.notePeerUse()
 	// Keep nested branch and task advisories on one session. inTx must keep
 	// using the connection that owns the outer task lock (AC-3.5).
 	if conn, ok := ctx.Value(sideEffectConnKey{}).(*pgxpool.Conn); ok {
@@ -170,6 +183,7 @@ func (s *Store) withAdvisoryLock(ctx context.Context, key string, fn func(contex
 // The detached connection is always closed, which also releases the session
 // lock if the explicit unlock fails.
 func (s *Store) withDetachedAdvisoryLock(ctx context.Context, key string, fn func(context.Context) error) error {
+	s.notePeerUse()
 	pooled, err := s.pool.Acquire(ctx)
 	if err != nil {
 		return translateDriverError(err)
@@ -242,6 +256,7 @@ func (s *Store) BootstrapWorkspaceConfig(ctx context.Context, cfg *config.Config
 		return false, err
 	}
 	if seeded {
+		raiseTx(tx, changes.Notice{Workspace: cfg.Workspace, Kind: changes.Workspace})
 		// Historical migration fixtures stop before the new column exists.
 		// Normal startup finishes migrations before bootstrapping configuration.
 		var installSchema bool
@@ -359,6 +374,7 @@ func (s *Store) CreateWorkspace(ctx context.Context, id, name string, cfg *confi
 		if err != nil {
 			return err
 		}
+		raiseTx(tx, changes.Notice{Workspace: id, Kind: changes.Workspace})
 		created = core.Workspace{ID: row.ID, Name: row.Name, ConfigVersion: row.ConfigVersion, CreatedAt: row.CreatedAt.Time}
 		return nil
 	})
@@ -999,6 +1015,7 @@ func insertEventWithID(ctx context.Context, q *db.Queries, event core.Event) (in
 	if err != nil {
 		return 0, err
 	}
+	raiseTaskNotice(ctx, q.DB(), event.TaskID)
 	event.ID, event.At = inserted.ID, inserted.At.Time
 	projection := store.ProjectLineageEvent(inserted.WorkspaceID, event)
 	for _, link := range projection.Suppresses {

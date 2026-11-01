@@ -8,15 +8,23 @@ import (
 	"sync"
 	"time"
 
+	"github.com/kidus-tiliksew/conveyor/internal/changes"
 	"github.com/kidus-tiliksew/conveyor/internal/eventlog"
 	"github.com/kidus-tiliksew/conveyor/internal/queue"
 )
 
+// PeerTailInterval is how often a daemon that runs beside other daemons on a
+// backend without change notification tails each workspace's log
+// (DEC-99(3); req-quiet-idle-runtime AC-1.3, AC-2.5).
+const PeerTailInterval = 30 * time.Second
+
 // Runtime is queue.Runtime on the event log.
 //
-// One goroutine per workspace tails the log and folds job streams into an
-// in-memory index; one goroutine per (workspace, kind) drains that index one
-// job at a time, so a workspace never runs two jobs of one kind at once. A
+// One goroutine per workspace catches up on the log, folding job streams
+// into an in-memory index, once at start and then only when a job change
+// notice or a peer tail tick wakes it; one goroutine per (workspace, kind)
+// drains that index one job at a time, so a workspace never runs two jobs of
+// one kind at once (DEC-99(1); component-durable-queue). A
 // claim is an expected-version append, so any number of replicas may run
 // the same runtime against the same log. The periodic order clock runs
 // in-process on a ticker and writes nothing to the log: a tick is not a
@@ -24,6 +32,7 @@ import (
 type Runtime struct {
 	log     eventlog.Store
 	opts    Options
+	hub     *changes.Hub
 	mu      sync.Mutex
 	regs    map[string]queue.Registration
 	spaces  map[string]*workspace
@@ -40,11 +49,17 @@ type Runtime struct {
 // Options configure the runtime.
 type Options struct {
 	Workspaces []string
-	// RescueStuckAfter is how long a claimed job may run before the poll
-	// loop treats its worker as dead and reschedules or discards it.
+	// RescueStuckAfter is how long a claimed job may run before a catch-up
+	// treats its worker as dead and reschedules or discards it.
 	RescueStuckAfter time.Duration
-	// PollInterval is how often each workspace tails the log. Default 1s.
-	PollInterval time.Duration
+	// Changes is the hub whose job notices wake each workspace's catch-up.
+	// Nil selects the hub of a log that exposes Changes(), such as a
+	// backend's Log(), and otherwise a private hub.
+	Changes *changes.Hub
+	// PeerTail, when positive, also catches up each workspace on that
+	// period: PeerTailInterval for peers on a backend without change
+	// notification. Zero runs no peer tail.
+	PeerTail time.Duration
 	// ClockInterval is the order clock's period. Default 5s; zero disables.
 	ClockInterval time.Duration
 	// WorkerID names this process in claims.
@@ -65,7 +80,13 @@ type workspace struct {
 	// worker agree on "one at a time" even before the claim event is read
 	// back from the log.
 	running map[string]bool
-	wake    chan struct{}
+	// wakes holds one channel per worker kind, so every worker learns of
+	// every catch-up; a shared channel would let one kind take another's.
+	wakes map[string]chan struct{}
+	// fold asks the poll loop to catch up after this process recorded an
+	// outcome, so its own completions and discards, which raise no notice,
+	// reach the index.
+	fold    chan struct{}
 	stopped bool
 }
 
@@ -83,9 +104,6 @@ func defaultRetryDelay(attempt int) time.Duration {
 }
 
 func NewRuntime(log eventlog.Store, opts Options) *Runtime {
-	if opts.PollInterval <= 0 {
-		opts.PollInterval = time.Second
-	}
 	if opts.ClockInterval == 0 {
 		opts.ClockInterval = 5 * time.Second
 	}
@@ -98,7 +116,16 @@ func NewRuntime(log eventlog.Store, opts Options) *Runtime {
 	if opts.WorkerID == "" {
 		opts.WorkerID = "conveyord"
 	}
-	rt := &Runtime{log: log, opts: opts, regs: map[string]queue.Registration{}, spaces: map[string]*workspace{}}
+	hub := opts.Changes
+	if hub == nil {
+		if source, ok := log.(interface{ Changes() *changes.Hub }); ok {
+			hub = source.Changes()
+		}
+	}
+	if hub == nil {
+		hub = changes.NewHub()
+	}
+	rt := &Runtime{log: log, opts: opts, hub: hub, regs: map[string]queue.Registration{}, spaces: map[string]*workspace{}}
 	rt.clockKind = queue.OrderClockArgs{}.Kind()
 	for _, id := range opts.Workspaces {
 		rt.spaces[id] = newWorkspace(id)
@@ -107,7 +134,7 @@ func NewRuntime(log eventlog.Store, opts Options) *Runtime {
 }
 
 func newWorkspace(id string) *workspace {
-	return &workspace{id: id, jobs: map[eventlog.StreamID]*Job{}, running: map[string]bool{}, wake: make(chan struct{}, 1)}
+	return &workspace{id: id, jobs: map[eventlog.StreamID]*Job{}, running: map[string]bool{}, wakes: map[string]chan struct{}{}, fold: make(chan struct{}, 1)}
 }
 
 func (rt *Runtime) Register(registration queue.Registration) {
@@ -232,12 +259,34 @@ func (rt *Runtime) wait(ctx context.Context) error {
 	}
 }
 
-// pollLoop tails the workspace's log into the job index and rescues
-// stuck jobs.
+// pollLoop runs each registration's Reconcile once, catches up, and then
+// waits: it catches up again only on a job notice for the workspace (or for
+// every workspace, after a peer listener reconnects) and on a peer tail
+// tick. While idle it sends no statement (req-quiet-idle-runtime AC-1.1,
+// AC-2.1). Rescue runs after every catch-up.
 func (rt *Runtime) pollLoop(ws *workspace) {
 	defer rt.wg.Done()
-	ticker := time.NewTicker(rt.opts.PollInterval)
-	defer ticker.Stop()
+	notices := rt.hub.Subscribe(ws.id, changes.Job)
+	defer notices.Close()
+	var peerTick <-chan time.Time
+	if rt.opts.PeerTail > 0 {
+		ticker := time.NewTicker(rt.opts.PeerTail)
+		defer ticker.Stop()
+		peerTick = ticker.C
+	}
+	rt.mu.Lock()
+	var reconcilers []func(context.Context, string) error
+	for _, reg := range rt.regs {
+		if reg.Reconcile != nil {
+			reconcilers = append(reconcilers, reg.Reconcile)
+		}
+	}
+	rt.mu.Unlock()
+	for _, reconcile := range reconcilers {
+		if err := reconcile(rt.loopCtx, ws.id); err != nil && !errors.Is(err, context.Canceled) {
+			rt.opts.Logf("logqueue: workspace %s: reconcile: %v", ws.id, err)
+		}
+	}
 	for {
 		if err := rt.catchUp(rt.loopCtx, ws); err != nil && !errors.Is(err, context.Canceled) {
 			rt.opts.Logf("logqueue: workspace %s: tail: %v", ws.id, err)
@@ -245,23 +294,12 @@ func (rt *Runtime) pollLoop(ws *workspace) {
 		if err := rt.rescue(rt.loopCtx, ws); err != nil && !errors.Is(err, context.Canceled) {
 			rt.opts.Logf("logqueue: workspace %s: rescue: %v", ws.id, err)
 		}
-		rt.mu.Lock()
-		var reconcilers []func(context.Context, string) error
-		for _, reg := range rt.regs {
-			if reg.Reconcile != nil {
-				reconcilers = append(reconcilers, reg.Reconcile)
-			}
-		}
-		rt.mu.Unlock()
-		for _, reconcile := range reconcilers {
-			if err := reconcile(rt.loopCtx, ws.id); err != nil && !errors.Is(err, context.Canceled) {
-				rt.opts.Logf("logqueue: workspace %s: reconcile: %v", ws.id, err)
-			}
-		}
 		select {
 		case <-rt.loopCtx.Done():
 			return
-		case <-ticker.C:
+		case <-notices.C():
+		case <-ws.fold:
+		case <-peerTick:
 		}
 	}
 }
@@ -305,10 +343,26 @@ func (rt *Runtime) catchUp(ctx context.Context, ws *workspace) error {
 }
 
 func (rt *Runtime) wakeWorkers(ws *workspace) {
-	select {
-	case ws.wake <- struct{}{}:
-	default:
+	rt.mu.Lock()
+	defer rt.mu.Unlock()
+	for _, wake := range ws.wakes {
+		select {
+		case wake <- struct{}{}:
+		default:
+		}
 	}
+}
+
+// wakeChannel is the worker kind's wake channel in the workspace.
+func (rt *Runtime) wakeChannel(ws *workspace, kind string) chan struct{} {
+	rt.mu.Lock()
+	defer rt.mu.Unlock()
+	wake, ok := ws.wakes[kind]
+	if !ok {
+		wake = make(chan struct{}, 1)
+		ws.wakes[kind] = wake
+	}
+	return wake
 }
 
 func (rt *Runtime) retryDelay(kind string, attempt int) time.Duration {
@@ -329,17 +383,33 @@ func (rt *Runtime) appendOutcome(ctx context.Context, job Job, kind string, payl
 	return err
 }
 
-// workerLoop drains one kind in one workspace, one job at a time.
+// workerLoop drains one kind in one workspace, one job at a time. With
+// nothing claimable it waits for a catch-up's wake, or, when the kind has a
+// scheduled job, until the earliest one is due; that timer reads only the
+// in-memory index, so it sends no statement before the job is due.
 func (rt *Runtime) workerLoop(ws *workspace, kind string) {
 	defer rt.wg.Done()
+	wake := rt.wakeChannel(ws, kind)
 	for {
 		job, ok := rt.next(ws, kind)
 		if !ok {
+			var due <-chan time.Time
+			var timer *time.Timer
+			if at, scheduled := rt.nextScheduled(ws, kind); scheduled {
+				timer = time.NewTimer(max(at.Sub(rt.opts.Now()), 0))
+				due = timer.C
+			}
 			select {
 			case <-rt.loopCtx.Done():
+				if timer != nil {
+					timer.Stop()
+				}
 				return
-			case <-ws.wake:
-			case <-time.After(rt.opts.PollInterval):
+			case <-wake:
+			case <-due:
+			}
+			if timer != nil {
+				timer.Stop()
 			}
 			continue
 		}
@@ -375,6 +445,24 @@ func (rt *Runtime) next(ws *workspace, kind string) (Job, bool) {
 	ws.running[kind] = true
 	ws.running[kind+"|"+string(best.Stream)] = true
 	return *best, true
+}
+
+// nextScheduled is the earliest time a scheduled job of kind becomes
+// claimable, from the in-memory index.
+func (rt *Runtime) nextScheduled(ws *workspace, kind string) (time.Time, bool) {
+	rt.mu.Lock()
+	defer rt.mu.Unlock()
+	var earliest time.Time
+	found := false
+	for _, job := range ws.jobs {
+		if job.Kind != kind || job.State != StateScheduled {
+			continue
+		}
+		if !found || job.ScheduledAt.Before(earliest) {
+			earliest, found = job.ScheduledAt, true
+		}
+	}
+	return earliest, found
 }
 
 func (rt *Runtime) release(ws *workspace, kind string, stream eventlog.StreamID) {
@@ -445,6 +533,10 @@ func (rt *Runtime) run(ws *workspace, kind string, job Job) {
 	// keeps the worker from re-claiming it.
 	if err := rt.appendOutcome(context.Background(), job, outcomeKind, outcome, finished); err != nil {
 		rt.opts.Logf("logqueue: record %s for %s: %v", outcomeKind, job.ID(), err)
+	}
+	select {
+	case ws.fold <- struct{}{}:
+	default:
 	}
 }
 

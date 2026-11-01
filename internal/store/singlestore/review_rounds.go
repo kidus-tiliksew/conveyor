@@ -11,7 +11,6 @@ import (
 	"time"
 
 	"github.com/kidus-tiliksew/conveyor/internal/core"
-	"github.com/kidus-tiliksew/conveyor/internal/eventlog/s2log"
 	"github.com/kidus-tiliksew/conveyor/internal/queue"
 	"github.com/kidus-tiliksew/conveyor/internal/queue/logqueue"
 	"github.com/kidus-tiliksew/conveyor/internal/store"
@@ -561,7 +560,7 @@ func (s *Store) queueReviewPublicationTx(ctx context.Context, tx *sql.Tx, p core
 	if err = taskEvent(ctx, tx, core.Event{TaskID: p.TaskID, JobID: p.JobID, Kind: "review.publication_queued", Payload: core.JSONPayload(p)}); err != nil {
 		return err
 	}
-	_, err = logqueue.Enqueue(s2log.WithTx(ctx, tx), s.log, documentWorkspace(ctx), queue.ReviewPublicationArgs{}.Kind(), p.ReviewWorkOrderID, queue.ReviewPublicationArgs{WorkspaceID: documentWorkspace(ctx), ReviewWorkOrderID: p.ReviewWorkOrderID}, 5, time.Now().UTC())
+	_, err = logqueue.Enqueue(logTx(ctx, tx), s.log, documentWorkspace(ctx), queue.ReviewPublicationArgs{}.Kind(), p.ReviewWorkOrderID, queue.ReviewPublicationArgs{WorkspaceID: documentWorkspace(ctx), ReviewWorkOrderID: p.ReviewWorkOrderID}, 5, time.Now().UTC())
 	return err
 }
 

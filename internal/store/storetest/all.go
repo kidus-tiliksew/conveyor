@@ -185,6 +185,7 @@ func RunAll(t *testing.T, factory Factory) {
 			return BlueprintFixture{x.Backend, x.Context, x.Workspace, x.SeedStoredTaskHold}
 		})
 	})
+	run("ChangeNotices", func(t *testing.T) { RunChangeNoticeConformance(t, factory.fresh(t, nil)) })
 	run("ClaimFailureStall", func(t *testing.T) { runClaimFailureStall(t, factory.fresh(t, nil), factory.ClaimService) })
 	run("HoldRetirement", func(t *testing.T) { runHoldRetirement(t, factory.fresh(t, nil), factory.ClaimService) })
 	run("TaskStartOver", func(t *testing.T) { runTaskStartOver(t, factory) })

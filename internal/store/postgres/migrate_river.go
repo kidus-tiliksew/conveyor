@@ -53,7 +53,7 @@ ORDER BY id`)
 	if err := rows.Err(); err != nil {
 		return err
 	}
-	logCtx := pglog.WithTx(ctx, tx)
+	logCtx := logTx(ctx, tx)
 	log := pglog.New(nil)
 	now := time.Now().UTC()
 	for _, job := range jobs {

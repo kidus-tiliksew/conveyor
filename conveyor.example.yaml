@@ -37,6 +37,10 @@ database:
   # backend: postgres
   # url: postgres://conveyor:conveyor@localhost:5432/conveyor?sslmode=disable
 
+# Set when several conveyord processes share one database (default false).
+# runtime:
+#   peers: true
+
 # Default-setup projection for older clients (component-harness-execution). The setup block
 # below is authoritative; this and routing remain readable compatibility data.
 execution_settings:

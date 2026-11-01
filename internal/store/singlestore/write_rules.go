@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/kidus-tiliksew/conveyor/internal/changes"
 	"github.com/kidus-tiliksew/conveyor/internal/core"
 	"github.com/kidus-tiliksew/conveyor/internal/store"
 )
@@ -106,7 +107,7 @@ func sortedColumns(values map[string]any) ([]string, error) {
 // writeRow enforces the rules that SingleStore cannot express as constraints.
 // A unique rule claims its value on a lock row (claimKey) and also counts the
 // committed rows, which covers rows written before claims existed.
-func writeRow(ctx context.Context, tx *sql.Tx, w rowWrite) (sql.Result, error) {
+func writeRow(ctx context.Context, tx *sql.Tx, w rowWrite) (result sql.Result, err error) {
 	if err := checkWrite(w); err != nil {
 		return nil, err
 	}
@@ -121,6 +122,13 @@ func writeRow(ctx context.Context, tx *sql.Tx, w rowWrite) (sql.Result, error) {
 	if w.table == "events" {
 		taskID, _ := w.values["task_id"].(string)
 		w.values["event_shard_key"] = eventShardKey(taskID)
+		if workspaceID, _ := w.values["workspace_id"].(string); taskID != "" && w.operation == "INSERT" {
+			defer func() {
+				if err == nil {
+					raiseTx(tx, changes.Notice{Workspace: workspaceID, Kind: changes.Task, TaskID: taskID})
+				}
+			}()
+		}
 	}
 	if !validIdentifier(w.table) {
 		return nil, fmt.Errorf("invalid SQL table")

@@ -12,7 +12,6 @@ import (
 	"time"
 
 	"github.com/kidus-tiliksew/conveyor/internal/core"
-	"github.com/kidus-tiliksew/conveyor/internal/eventlog/s2log"
 	"github.com/kidus-tiliksew/conveyor/internal/queue"
 	"github.com/kidus-tiliksew/conveyor/internal/queue/logqueue"
 	"github.com/kidus-tiliksew/conveyor/internal/store"
@@ -340,12 +339,12 @@ func (s *Store) enqueueReviewPublicationJobTx(ctx context.Context, tx *sql.Tx, i
 // enqueueReviewPublicationTx reports whether a new job was inserted; false
 // means a job for the same publication is still active on its stream.
 func (s *Store) enqueueReviewPublicationTx(ctx context.Context, tx *sql.Tx, id string) (bool, error) {
-	return logqueue.Enqueue(s2log.WithTx(ctx, tx), s.log, documentWorkspace(ctx), queue.ReviewPublicationArgs{}.Kind(), id, queue.ReviewPublicationArgs{WorkspaceID: documentWorkspace(ctx), ReviewWorkOrderID: id}, 5, time.Now().UTC())
+	return logqueue.Enqueue(logTx(ctx, tx), s.log, documentWorkspace(ctx), queue.ReviewPublicationArgs{}.Kind(), id, queue.ReviewPublicationArgs{WorkspaceID: documentWorkspace(ctx), ReviewWorkOrderID: id}, 5, time.Now().UTC())
 }
 
 // enqueueGitHubIssuePublicationTx reports whether a new job was inserted.
 func (s *Store) enqueueGitHubIssuePublicationTx(ctx context.Context, tx *sql.Tx, taskID string) (bool, error) {
-	return logqueue.Enqueue(s2log.WithTx(ctx, tx), s.log, documentWorkspace(ctx), queue.GitHubIssuePublicationArgs{}.Kind(), taskID, queue.GitHubIssuePublicationArgs{WorkspaceID: documentWorkspace(ctx), TaskID: taskID}, 5, time.Now().UTC())
+	return logqueue.Enqueue(logTx(ctx, tx), s.log, documentWorkspace(ctx), queue.GitHubIssuePublicationArgs{}.Kind(), taskID, queue.GitHubIssuePublicationArgs{WorkspaceID: documentWorkspace(ctx), TaskID: taskID}, 5, time.Now().UTC())
 }
 func (s *Store) QueueGitHubLifecycle(ctx context.Context, p core.GitHubLifecycle) error {
 	if err := store.NormalizeForgeAuthorProjectionForWrite(&p.ForgeAuthorClass, &p.ForgeAuthorUserID, core.ForgeAuthorWorkspace); err != nil {

@@ -205,8 +205,10 @@ func main() {
 		log.Printf("queue stuck-job rescue threshold %s", rescueAfter)
 		queueShutdown := &dispatch.ShutdownMarker{}
 		hostname, _ := os.Hostname()
+		peerTail := queuePeerTail(ctx, deployment.Runtime.Peers, st.EnablePeers, log.Printf)
 		runtime := logqueue.NewRuntime(st.Log(), logqueue.Options{
 			Workspaces: workspaceIDs, RescueStuckAfter: rescueAfter, WorkerID: hostname, Logf: log.Printf,
+			Changes: st.Changes(), PeerTail: peerTail,
 		})
 		for _, registration := range d.Registrations(queueShutdown) {
 			runtime.Register(registration)
@@ -646,4 +648,21 @@ func workspaceMonitorGitHubRunner(ctx context.Context, st githubtrigger.AppStore
 		return nil, err
 	}
 	return githubtrigger.RESTRunner(token, githubtrigger.AppIdentity(workspace)), nil
+}
+
+// queuePeerTail selects the queue runtime's peer mode from runtime.peers
+// (component-runtime, Peers; DEC-99(2), (3)). Off: no listener and no peer
+// tail. On a backend that notifies peers (PostgreSQL): no tail, its listener
+// wakes the runtime. Otherwise: tail each workspace every 30 seconds.
+func queuePeerTail(ctx context.Context, peers bool, enable func(context.Context) bool, logf func(string, ...any)) time.Duration {
+	if !peers {
+		logf("runtime peers: off")
+		return 0
+	}
+	if enable(ctx) {
+		logf("runtime peers: PostgreSQL change notification")
+		return 0
+	}
+	logf("runtime peers: tailing each workspace every %s", logqueue.PeerTailInterval)
+	return logqueue.PeerTailInterval
 }
