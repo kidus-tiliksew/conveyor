@@ -273,11 +273,17 @@ const fillBatch = 200
 // next start writes the same rows. It reads event_log and rewrites no
 // event. It reports the number of streams it folded.
 func FillJobIndex(ctx context.Context, exec Executor) (int, error) {
+	return fillJobIndex(ctx, exec, "")
+}
+
+// fillJobIndex fills every workspace, or only workspace when it is set; the
+// integration test fills its own workspace on the shared test database.
+func fillJobIndex(ctx context.Context, exec Executor, workspace string) (int, error) {
 	rows, err := exec.QueryContext(ctx, `
 SELECT `+selectColumns+`
 FROM event_log
-WHERE stream_id LIKE 'job/%'
-ORDER BY workspace_id, stream_id, version`)
+WHERE stream_id LIKE 'job/%' AND (? = '' OR workspace_id = ?)
+ORDER BY workspace_id, stream_id, version`, workspace, workspace)
 	if err != nil {
 		return 0, fmt.Errorf("s2log: fill job index: %w", err)
 	}
