@@ -135,8 +135,9 @@ cannot be confirmed, even with `--yes`.
 Without `--yes`, stdin must be a terminal and the operator must type `y`.
 Non-terminal stdin exits without restarting. After confirmation, the CLI sends
 one restart request and prints the successor ID and branch. Its third output
-line, `Run:`, still names a command that no longer exists; work the successor
-in an agent session instead. The server cancels the retired task and its non-terminal orders,
+line, `Next:`, names the successor task and workspace and the `conveyor-work`
+skill: work the successor from an agent session that claims its orders. The
+server cancels the retired task and its non-terminal orders,
 dismisses its pending document proposals, and attempts to close its open pull
 request. Its branch and worktree are preserved. Server refusals retain the
 server's message and exit non-zero.

@@ -509,11 +509,12 @@ func TestReviewRoleCarriesDurableRequirementCitationGuidance(t *testing.T) {
 	}
 }
 
-// Launched sessions exit after their stage submission; a self-claimed session
-// continues the conveyor-work loop, and every reviewer and verifier exits after
-// its own result (req-agent-skills AC-2.2, AC-3.1, AC-3.2, AC-3.7, AC-3.8;
-// DEC-44).
-func TestStageRolesStateLaunchedAndSelfClaimedModes(t *testing.T) {
+// Every stage role addresses a session that claimed its order itself: a
+// self-claimed session continues the conveyor-work loop, every reviewer and
+// verifier exits after its own result, and no role describes a launched
+// session (req-agent-skills AC-2.2, AC-3.1, AC-3.2, AC-3.7; DEC-97(1),
+// DEC-97(2)).
+func TestStageRolesStateSelfClaimedMode(t *testing.T) {
 	loader := Loader{Dir: filepath.Join("..", "..", "pack")}
 	normalizedRole := func(stage core.Stage) string {
 		t.Helper()
@@ -540,17 +541,15 @@ func TestStageRolesStateLaunchedAndSelfClaimedModes(t *testing.T) {
 		core.StageSpec: {
 			"materialized read-only repository checkout",
 			"do not run `conveyor checkout` for a spec order",
-			"Report the result and exit the session; the launcher renews the lease every ten seconds and owns all later gates and stages",
-			"You called `claim_work_order` yourself",
+			"You called `claim_work_order` yourself. Conveyor launches no agent session, so nothing else renews your lease or schedules a later stage",
 			"When the plan approval gate is pending, summarize the pending decision, offer to record it, and wait",
 			"Record the decision only on the operator's direct instruction in the same conversation",
 			"Once the gate resolves, continue with the task's next claimable implementation order through the `conveyor-work` playbook",
 			"A delegated planner never records gate or proposal decisions",
 		},
 		core.StageImplement: {
-			"A launched session reports the handoff and exits; it never polls `await_review`",
-			"successor as a new order in a fresh session",
-			"A self-claimed session reports the handoff and continues with the `conveyor-work` playbook's self-claimed delivery loop",
+			"You called `claim_work_order` yourself. Conveyor launches no agent session, so nothing else renews your lease, receives verdicts, or schedules a later stage",
+			"After `submit_for_review` succeeds, the self-claimed session reports the handoff and continues with the `conveyor-work` playbook's self-claimed delivery loop",
 			"awaits the verdict with `await_review`",
 			"claims any changes-requested successor under a fresh session identifier and client token",
 			"Setting CLI environment variables after that claim does not change the mode",
@@ -560,13 +559,14 @@ func TestStageRolesStateLaunchedAndSelfClaimedModes(t *testing.T) {
 		},
 		core.StageReview: {
 			"including as a reviewer that a self-claimed implementer started",
-			"Every reviewer, in either mode, ends by submitting its own verdict through the factory, observing success, reporting, and exiting",
+			"you called `claim_work_order` yourself, including as a reviewer that a self-claimed implementer started, and nothing else renews the lease",
+			"Every reviewer ends by submitting its own verdict through the factory, observing success, reporting, and exiting",
 			"never polls `await_review`, claims another order, or continues the task's delivery loop",
 			"A delegated reviewer never records gate or proposal decisions",
 		},
 		core.StageVerify: {
-			"including as a verifier that a self-claimed implementer started",
-			"report the handoff and exit without polling await_review or claiming another order",
+			"You called claim_work_order yourself, including as a verifier that a self-claimed implementer started, and nothing else renews the lease",
+			"Every verifier ends by submitting its own result: after submit_verification succeeds, report the handoff and exit without polling await_review or claiming another order",
 			"A delegated verifier never records gate or proposal decisions",
 		},
 	}
@@ -583,6 +583,14 @@ func TestStageRolesStateLaunchedAndSelfClaimedModes(t *testing.T) {
 		} {
 			if strings.Contains(normalized, forbidden) {
 				t.Errorf("%s role keeps the stop-at-gate rule %q", stage, forbidden)
+			}
+		}
+		// Conveyor launches no agent session, so no role names a launched
+		// session, a launcher, or the retired run command (DEC-97(1)).
+		lower := strings.ToLower(normalized)
+		for _, retired := range []string{"launched session", "launcher", "conveyor run", "a worker claimed", "in either mode"} {
+			if strings.Contains(lower, retired) {
+				t.Errorf("%s role still describes a launched session with %q", stage, retired)
 			}
 		}
 	}

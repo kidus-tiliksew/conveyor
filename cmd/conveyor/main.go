@@ -624,7 +624,7 @@ func checkoutCmd() *cobra.Command {
 				return err
 			}
 			// The assignment always comes from the task read with the caller's
-			// credential; no launcher environment supplies it
+			// credential; no environment variable supplies it
 			// (req-delegated-execution REQ-3; req-task-branch-assignment REQ-2;
 			// DEC-97(1)).
 			client := newClient()
@@ -859,7 +859,10 @@ func runTaskRestart(cmd *cobra.Command, c *client, request core.TaskStartOverReq
 	if err != nil {
 		return err
 	}
-	fmt.Fprintf(out, "Successor: %s\nBranch: %s\nRun: conveyor --workspace %s run %s\n", result.Successor.ID, result.Successor.Branch, result.Successor.Workspace, result.Successor.ID)
+	// A person's own agent session claims the successor's orders; the CLI
+	// launches none, so the next step names the skill, not a command
+	// (component-task-lifecycle; DEC-97(1)).
+	fmt.Fprintf(out, "Successor: %s\nBranch: %s\nNext: work task %s in workspace %s from an agent session with the conveyor-work skill\n", result.Successor.ID, result.Successor.Branch, result.Successor.ID, result.Successor.Workspace)
 	for _, drop := range result.DroppedContext {
 		fmt.Fprintf(out, "Dropped %s %s: %s\n", drop.Kind, drop.ID, drop.Reason)
 	}
