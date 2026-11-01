@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/kidus-tiliksew/conveyor/internal/eventlog"
+	"github.com/kidus-tiliksew/conveyor/internal/eventlog/jobindex"
 )
 
 // Executor is the database/sql operations a driver call needs. Both *sql.DB and
@@ -38,7 +39,7 @@ CREATE ROWSTORE TABLE IF NOT EXISTS event_log (
  payload JSON NOT NULL, at DATETIME(6) NOT NULL,
  PRIMARY KEY (workspace_id, position), UNIQUE KEY event_log_stream_version (workspace_id,stream_id,version),
  SHARD KEY (workspace_id)
-) CHARACTER SET utf8mb4 COLLATE utf8mb4_bin;`
+) CHARACTER SET utf8mb4 COLLATE utf8mb4_bin;` + JobIndexSchema
 
 // EnsureSchema is called before numbered backend migrations. DDL commits implicitly.
 func EnsureSchema(ctx context.Context, exec Executor) error {
@@ -73,7 +74,10 @@ type Store struct {
 	now  func() time.Time
 }
 
-var _ eventlog.Store = (*Store)(nil)
+var (
+	_ eventlog.Store  = (*Store)(nil)
+	_ jobindex.Reader = (*Store)(nil)
+)
 
 func New(pool *sql.DB) *Store {
 	return &Store{pool: pool, now: time.Now}
@@ -155,6 +159,7 @@ func (s *Store) appendTx(ctx context.Context, tx Executor, workspace string, str
 		return current, &eventlog.VersionConflictError{Workspace: workspace, Stream: stream, Expected: expected, Actual: current}
 	}
 	now := s.now().UTC()
+	stored := make([]eventlog.Event, 0, len(events))
 	for i, incoming := range events {
 		incoming = eventlog.Normalize(incoming, now)
 		head++
@@ -166,6 +171,15 @@ VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 			[]byte(incoming.Payload), incoming.At); err != nil {
 			return 0, fmt.Errorf("s2log: append event %d: %w", i, err)
 		}
+		stored = append(stored, eventlog.Event{
+			Workspace: workspace, Stream: stream, Version: eventlog.Version(head), Position: eventlog.Position(position),
+			Kind: incoming.Kind, ActorID: incoming.ActorID, ActorRole: incoming.ActorRole, Payload: incoming.Payload, At: incoming.At,
+		})
+	}
+	// The job index row is written in this transaction, under the stream
+	// head lock, so the append and its row commit or roll back together.
+	if err := s.writeJobIndex(ctx, tx, workspace, stream, current, stored); err != nil {
+		return 0, err
 	}
 	if _, err := tx.ExecContext(ctx, `UPDATE event_log_streams SET version = ? WHERE workspace_id = ? AND stream_id = ?`, head, workspace, string(stream)); err != nil {
 		return 0, fmt.Errorf("s2log: advance stream head: %w", err)

@@ -5,6 +5,7 @@ import (
 
 	"github.com/kidus-tiliksew/conveyor/internal/changes"
 	"github.com/kidus-tiliksew/conveyor/internal/eventlog"
+	"github.com/kidus-tiliksew/conveyor/internal/eventlog/jobindex"
 )
 
 // NotifyingLog is an eventlog.Store that raises a job change notice after
@@ -51,4 +52,29 @@ func RaisesJobNotice(stream eventlog.StreamID, events []eventlog.NewEvent) bool 
 		}
 	}
 	return false
+}
+
+// UnfinishedJobs forwards to the wrapped driver's job index, or returns
+// jobindex.ErrUnsupported when it keeps none.
+func (l *NotifyingLog) UnfinishedJobs(ctx context.Context, workspace string) (eventlog.Position, []jobindex.Row, error) {
+	if reader, ok := jobindex.ReaderOf(l.Store); ok {
+		return reader.UnfinishedJobs(ctx, workspace)
+	}
+	return 0, nil, jobindex.ErrUnsupported
+}
+
+// JobIndexRow forwards to the wrapped driver's job index.
+func (l *NotifyingLog) JobIndexRow(ctx context.Context, workspace string, stream eventlog.StreamID) (jobindex.Row, bool, error) {
+	if reader, ok := jobindex.ReaderOf(l.Store); ok {
+		return reader.JobIndexRow(ctx, workspace, stream)
+	}
+	return jobindex.Row{}, false, jobindex.ErrUnsupported
+}
+
+// RepairJobIndex forwards to the wrapped driver's job index.
+func (l *NotifyingLog) RepairJobIndex(ctx context.Context, workspace string) (int, error) {
+	if reader, ok := jobindex.ReaderOf(l.Store); ok {
+		return reader.RepairJobIndex(ctx, workspace)
+	}
+	return 0, jobindex.ErrUnsupported
 }

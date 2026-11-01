@@ -166,6 +166,13 @@ CREATE TABLE IF NOT EXISTS conveyor_schema_migrations (
 		if _, err := tx.Exec(ctx, string(sql)); err != nil {
 			return fmt.Errorf("apply migration %s: %w", name, err)
 		}
+		if version == 155 {
+			// component-durable-queue (The job index): fold every existing
+			// job stream once into the index this migration declares.
+			if _, err := pglog.FillJobIndex(ctx, tx); err != nil {
+				return fmt.Errorf("fill the job index after migration %s: %w", name, err)
+			}
+		}
 		if version == 137 {
 			dismissalArchives, err = repairDismissalArchives(ctx, tx)
 			if err != nil {
