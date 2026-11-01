@@ -91,7 +91,7 @@ func TestConveyordIdleRuntimeIntegration(t *testing.T) {
 		phase("settle")
 		start := time.Now()
 		time.Sleep(idleWindow)
-		window := proxy.since(start)
+		window := proxy.between(start, start.Add(idleWindow))
 		phase("window")
 		run.requirePending(t)
 		if n := countStatements(window); n > idleSingleStoreBound {
@@ -157,6 +157,9 @@ func prepareIdleDaemon(t *testing.T, name, daemonURL, seedURL string, peers bool
 	requireStartupWrite(t, cfgPath, []byte(idleDaemonConfig(name, peers)))
 	phase := idlePhases(t)
 	first := startDurableDaemon(t, daemonURL, cfgPath, 5*time.Minute)
+	// A fresh SingleStore database compiles each query plan on first use,
+	// which can outlast the helper's ten-second request timeout.
+	first.client.Timeout = time.Minute
 	phase("first start")
 	if code, body := first.post(t, "/v1/workspaces", durableStartupToken, `{"id":"`+idleQuietWorkspace+`","name":"Quiet","document":{"repos":[]}}`); code != http.StatusCreated {
 		t.Fatalf("create workspace status=%d body=%s", code, body)

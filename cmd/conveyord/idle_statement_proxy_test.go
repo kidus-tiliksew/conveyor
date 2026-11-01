@@ -171,6 +171,17 @@ func (p *statementProxy) since(from time.Time) []proxyCommand {
 	return out
 }
 
+// between returns the commands recorded at or after from and before to.
+func (p *statementProxy) between(from, to time.Time) []proxyCommand {
+	var out []proxyCommand
+	for _, command := range p.since(from) {
+		if command.at.Before(to) {
+			out = append(out, command)
+		}
+	}
+	return out
+}
+
 func countStatements(commands []proxyCommand) int {
 	n := 0
 	for _, command := range commands {

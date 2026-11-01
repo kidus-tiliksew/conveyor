@@ -40,24 +40,14 @@ var idleTickerAllowList = []tickerAllowance{
 		permittedBy: "req-quiet-idle-runtime AC-3.7: only when the deployment enables it",
 	},
 	{
-		file: "internal/queue/logqueue/runtime.go", function: "Runtime.pollLoop", interval: "rt.opts.PeerTail",
-		timer:       "peer tail of each workspace's log",
-		permittedBy: "req-quiet-idle-runtime AC-1.3, AC-2.5: only with runtime.peers on a backend without change notification",
-	},
-	{
-		file: "internal/httpapi/task_event_stream.go", function: "Server.openWake", interval: "s.PeerTail",
-		timer:       "peer tail of an open task or workspace stream",
+		file: "internal/changes/peer_check.go", function: "PeerCheck.ticker", interval: "p.Interval",
+		timer:       "daemon-wide peer check every 30 seconds: one PeerMarks statement for every workspace, open task stream, and pending await_review",
 		permittedBy: "req-quiet-idle-runtime AC-1.3, AC-2.5: only with runtime.peers on a backend without change notification",
 	},
 	{
 		file: "internal/httpapi/task_event_stream.go", function: "Server.openWake", interval: "streamKeepaliveInterval",
 		timer:       "stream keep-alive comment every 25 seconds",
 		permittedBy: "req-quiet-idle-runtime AC-1.2: writes to the client and reads nothing",
-	},
-	{
-		file: "internal/workorder/service.go", function: "Service.AwaitReview", interval: "s.PeerTail",
-		timer:       "peer tail of a pending await_review",
-		permittedBy: "req-quiet-idle-runtime AC-1.3, AC-2.5: only with runtime.peers on a backend without change notification",
 	},
 	{
 		file: "internal/workorder/service.go", function: "Service.contextForClaimedOrder", interval: "interval",
