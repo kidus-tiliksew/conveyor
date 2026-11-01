@@ -10,6 +10,7 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/kidus-tiliksew/conveyor/internal/config"
 	"github.com/kidus-tiliksew/conveyor/internal/core"
@@ -17,6 +18,11 @@ import (
 )
 
 func runGitHubApps(t *testing.T, x Fixture) {
+	runGitHubAppLifecycle(t, x)
+	t.Run("WebhookSecretAndDeliveries", func(t *testing.T) { runGitHubWebhooks(t, x) })
+}
+
+func runGitHubAppLifecycle(t *testing.T, x Fixture) {
 	st := x.Backend
 	ctx, _ := bootstrapOwner(t, x)
 	key := bytes.Repeat([]byte{41}, 32)
@@ -117,7 +123,137 @@ func runGitHubApps(t *testing.T, x Fixture) {
 
 // RunGitHubAppConformance allows native integration fixtures to check the
 // encrypted row and workspace ledger alongside the shared public contract.
-func RunGitHubAppConformance(t *testing.T, x Fixture) { runGitHubApps(t, x) }
+func RunGitHubAppConformance(t *testing.T, x Fixture) { runGitHubAppLifecycle(t, x) }
+
+// runGitHubWebhooks checks the webhook secret and delivery records
+// (component-identity-membership, The webhook secret; req-quiet-idle-runtime
+// AC-3.2, AC-3.3, AC-3.6).
+func runGitHubWebhooks(t *testing.T, x Fixture) {
+	st := x.Backend
+	ctx, _ := bootstrapOwner(t, x)
+	key := bytes.Repeat([]byte{43}, 32)
+	st.ConfigureGitHubAppKeyEncryptionKey(key)
+	const conversionSecret = "conversion-webhook-secret-material"
+	const generatedSecret = "generated-webhook-secret-material"
+	if _, err := st.SetWorkspaceGitHubWebhookSecret(ctx, x.Workspace, generatedSecret); !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("secret without an App: %v", err)
+	}
+	if _, err := st.GetWorkspaceGitHubWebhookSecretForUse(ctx, x.Workspace); !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("secret before any was set: %v", err)
+	}
+	status, err := st.GitHubWebhookStatus(ctx, x.Workspace)
+	requireOK(t, err)
+	if status.SecretConfigured || status.SecretSetAt != nil || status.HasWebhookDelivery() {
+		t.Fatalf("new workspace webhook status=%+v", status)
+	}
+	if _, err = st.GitHubWebhookStatus(ctx, "absent"); !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("absent workspace status: %v", err)
+	}
+	app := core.WorkspaceGitHubAppCredential{WorkspaceGitHubAppStatus: core.WorkspaceGitHubAppStatus{AppID: 51, AppSlug: "conveyor-webhook-fixture", ClientID: "client-webhook"}, PrivateKey: "webhook-app-private-key-material", WebhookSecret: conversionSecret}
+	_, err = st.StoreWorkspaceGitHubApp(ctx, x.Workspace, app)
+	requireOK(t, err)
+	secret, err := st.GetWorkspaceGitHubWebhookSecretForUse(ctx, x.Workspace)
+	requireOK(t, err)
+	if secret != conversionSecret {
+		t.Fatal("conversion webhook secret did not round trip")
+	}
+	raw, err := json.Marshal(app)
+	requireOK(t, err)
+	if strings.Contains(string(raw), conversionSecret) {
+		t.Fatal("credential serializes the webhook secret")
+	}
+	setAt, err := st.SetWorkspaceGitHubWebhookSecret(ctx, x.Workspace, generatedSecret)
+	requireOK(t, err)
+	if setAt.IsZero() {
+		t.Fatal("secret set time is zero")
+	}
+	secret, err = st.GetWorkspaceGitHubWebhookSecretForUse(ctx, x.Workspace)
+	requireOK(t, err)
+	if secret != generatedSecret {
+		t.Fatal("regenerated webhook secret did not replace the conversion secret")
+	}
+	status, err = st.GitHubWebhookStatus(ctx, x.Workspace)
+	requireOK(t, err)
+	if !status.SecretConfigured || status.SecretSetAt == nil || status.HasWebhookDelivery() {
+		t.Fatalf("configured webhook status=%+v", status)
+	}
+	st.ConfigureGitHubAppKeyEncryptionKey(bytes.Repeat([]byte{44}, 32))
+	if _, err = st.GetWorkspaceGitHubWebhookSecretForUse(ctx, x.Workspace); !errors.Is(err, store.ErrGitHubAppKeyDecrypt) {
+		t.Fatalf("wrong key: %v", err)
+	}
+	st.ConfigureGitHubAppKeyEncryptionKey(key)
+
+	received := time.Now().UTC().Add(-time.Minute).Truncate(time.Millisecond)
+	accepted, err := st.RecordGitHubWebhookDelivery(ctx, x.Workspace, "delivery-1", "pull_request", received)
+	requireOK(t, err)
+	if !accepted {
+		t.Fatal("first delivery refused")
+	}
+	accepted, err = st.RecordGitHubWebhookDelivery(ctx, x.Workspace, "delivery-1", "pull_request", received.Add(time.Second))
+	requireOK(t, err)
+	if accepted {
+		t.Fatal("repeated delivery accepted")
+	}
+	later := received.Add(30 * time.Second)
+	accepted, err = st.RecordGitHubWebhookDelivery(ctx, x.Workspace, "delivery-2", "check_suite", later)
+	requireOK(t, err)
+	if !accepted {
+		t.Fatal("second delivery refused")
+	}
+	if _, err = st.RecordGitHubWebhookDelivery(ctx, "absent", "delivery-3", "push", later); !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("absent workspace delivery: %v", err)
+	}
+	if _, err = st.RecordGitHubWebhookDelivery(ctx, x.Workspace, "", "push", later); err == nil {
+		t.Fatal("delivery without an ID accepted")
+	}
+	status, err = st.GitHubWebhookStatus(ctx, x.Workspace)
+	requireOK(t, err)
+	if !status.HasWebhookDelivery() || !status.LastDeliveryAt.Equal(later) {
+		t.Fatalf("last delivery=%v, want %v", status.LastDeliveryAt, later)
+	}
+	requireOK(t, st.ForgetGitHubWebhookDelivery(ctx, x.Workspace, "delivery-1"))
+	accepted, err = st.RecordGitHubWebhookDelivery(ctx, x.Workspace, "delivery-1", "pull_request", received)
+	requireOK(t, err)
+	if !accepted {
+		t.Fatal("forgotten delivery refused on redelivery")
+	}
+
+	// A replacement App without a conversion secret removes the earlier one;
+	// recorded deliveries stay.
+	app.AppID, app.PrivateKey, app.WebhookSecret = 52, "replacement-webhook-app-private-key", ""
+	_, err = st.StoreWorkspaceGitHubApp(ctx, x.Workspace, app)
+	requireOK(t, err)
+	if _, err = st.GetWorkspaceGitHubWebhookSecretForUse(ctx, x.Workspace); !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("replacement kept the earlier secret: %v", err)
+	}
+	status, err = st.GitHubWebhookStatus(ctx, x.Workspace)
+	requireOK(t, err)
+	if status.SecretConfigured || !status.HasWebhookDelivery() {
+		t.Fatalf("replacement webhook status=%+v", status)
+	}
+	_, err = st.SetWorkspaceGitHubWebhookSecret(ctx, x.Workspace, generatedSecret)
+	requireOK(t, err)
+	requireOK(t, st.DeleteWorkspaceGitHubApp(ctx, x.Workspace))
+	if _, err = st.GetWorkspaceGitHubWebhookSecretForUse(ctx, x.Workspace); !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("secret outlived its App: %v", err)
+	}
+	if !st.IsDurable() {
+		events, err := st.ListEvents(ctx, "")
+		requireOK(t, err)
+		set := 0
+		for _, event := range events {
+			if strings.Contains(string(event.Payload), conversionSecret) || strings.Contains(string(event.Payload), generatedSecret) {
+				t.Fatalf("event %s carries the webhook secret", event.Kind)
+			}
+			if event.Kind == store.GitHubWebhookSecretSetEvent {
+				set++
+			}
+		}
+		if set != 2 {
+			t.Fatalf("secret events=%d, want 2", set)
+		}
+	}
+}
 
 func AssertGitHubAppEvents(t *testing.T, events []core.Event, workspace, actor string) {
 	t.Helper()

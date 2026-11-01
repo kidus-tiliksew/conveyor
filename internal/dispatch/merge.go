@@ -1090,73 +1090,103 @@ func (d *Dispatcher) ReconcileMergeReadiness(ctx context.Context) (int, error) {
 		if err := ctx.Err(); err != nil {
 			return reconciled, err
 		}
-		if !task.MergeApproval || (task.State != core.TaskApproved && !(task.State == core.TaskAwaiting && task.GateKind == core.GateKindMergeApproval)) {
-			continue
-		}
-		// A gate-on read failure is logged per task and never aborts the tick:
-		// later tasks and the daemon's later reconcile steps still run.
-		before := task.State
-		readErr := d.Store.WithTaskSideEffectLock(ctx, task.ID, func(lockedCtx context.Context) error {
-			_, lockedErr := d.readMergeReadinessLocked(lockedCtx, task, true)
-			return lockedErr
-		})
-		if readErr != nil {
-			log.Printf("[task %s] gate-on merge readiness: %v", task.ID, readErr)
-			continue
-		}
-		after, getErr := d.Store.GetTask(ctx, task.ID)
-		if getErr != nil {
-			log.Printf("[task %s] gate-on merge readiness: %v", task.ID, getErr)
-			continue
-		}
-		if before != after.State {
+		if d.gateOnMergeReadiness(ctx, task) {
 			reconciled++
 		}
 	}
 	for _, task := range tasks {
-		if task.MergeApproval || task.State == core.TaskMerged || task.State == core.TaskClosed || task.State == core.TaskParked || task.State == core.TaskAwaiting {
+		if !gateOffMergeReadinessCandidate(task) {
 			continue
 		}
 		if err := ctx.Err(); err != nil {
 			return reconciled, err
 		}
-		if task.State != core.TaskApproved {
-			recoverable, evidenceErr := d.hasRecoverableApprovedReview(ctx, task)
-			if evidenceErr != nil {
-				log.Printf("[task %s] merge readiness: %v", task.ID, evidenceErr)
-				continue
-			}
-			if !recoverable {
-				continue
-			}
-		}
-		before := task.State
-		if err = d.MergeApprovedTask(ctx, task); err != nil {
-			if errors.Is(err, ErrConflictFixPending) {
-				continue
-			}
-			after, getErr := d.Store.GetTask(ctx, task.ID)
-			if getErr != nil {
-				log.Printf("[task %s] merge readiness: %v", task.ID, getErr)
-				continue
-			}
-			if after.ApprovalStale || (after.State == core.TaskQueued && after.State != before) {
-				reconciled++
-				continue
-			}
-			log.Printf("[task %s] merge readiness: %v", task.ID, err)
-			continue
-		}
-		after, getErr := d.Store.GetTask(ctx, task.ID)
-		if getErr != nil {
-			log.Printf("[task %s] merge readiness: %v", task.ID, getErr)
-			continue
-		}
-		if before != after.State || after.State == core.TaskMerged {
+		if d.gateOffMergeReadiness(ctx, task) {
 			reconciled++
 		}
 	}
 	return reconciled, nil
+}
+
+// reconcileMergeReadinessTask runs both passes of ReconcileMergeReadiness for
+// one task, unchanged; a check delivery applies it to each task whose head
+// matches (component-submission-merge, Merge readiness from webhook
+// deliveries). It reports whether the task's state changed.
+func (d *Dispatcher) reconcileMergeReadinessTask(ctx context.Context, task core.Task) bool {
+	if d.gateOnMergeReadiness(ctx, task) {
+		return true
+	}
+	if !gateOffMergeReadinessCandidate(task) {
+		return false
+	}
+	return d.gateOffMergeReadiness(ctx, task)
+}
+
+// gateOnMergeReadiness reads the merged short-circuit for a gate-on approved
+// or merge-gate task under the task side-effect lock. A read failure is
+// logged for that task and never aborts the caller.
+func (d *Dispatcher) gateOnMergeReadiness(ctx context.Context, task core.Task) bool {
+	if !task.MergeApproval || (task.State != core.TaskApproved && !(task.State == core.TaskAwaiting && task.GateKind == core.GateKindMergeApproval)) {
+		return false
+	}
+	// A gate-on read failure is logged per task and never aborts the tick:
+	// later tasks and the daemon's later reconcile steps still run.
+	before := task.State
+	readErr := d.Store.WithTaskSideEffectLock(ctx, task.ID, func(lockedCtx context.Context) error {
+		_, lockedErr := d.readMergeReadinessLocked(lockedCtx, task, true)
+		return lockedErr
+	})
+	if readErr != nil {
+		log.Printf("[task %s] gate-on merge readiness: %v", task.ID, readErr)
+		return false
+	}
+	after, getErr := d.Store.GetTask(ctx, task.ID)
+	if getErr != nil {
+		log.Printf("[task %s] gate-on merge readiness: %v", task.ID, getErr)
+		return false
+	}
+	return before != after.State
+}
+
+func gateOffMergeReadinessCandidate(task core.Task) bool {
+	return !task.MergeApproval && task.State != core.TaskMerged && task.State != core.TaskClosed && task.State != core.TaskParked && task.State != core.TaskAwaiting
+}
+
+// gateOffMergeReadiness recovers or merges a gate-off task with an accepted
+// review through MergeApprovedTask. Errors are logged per task.
+func (d *Dispatcher) gateOffMergeReadiness(ctx context.Context, task core.Task) bool {
+	if task.State != core.TaskApproved {
+		recoverable, evidenceErr := d.hasRecoverableApprovedReview(ctx, task)
+		if evidenceErr != nil {
+			log.Printf("[task %s] merge readiness: %v", task.ID, evidenceErr)
+			return false
+		}
+		if !recoverable {
+			return false
+		}
+	}
+	before := task.State
+	if err := d.MergeApprovedTask(ctx, task); err != nil {
+		if errors.Is(err, ErrConflictFixPending) {
+			return false
+		}
+		after, getErr := d.Store.GetTask(ctx, task.ID)
+		if getErr != nil {
+			log.Printf("[task %s] merge readiness: %v", task.ID, getErr)
+			return false
+		}
+		if after.ApprovalStale || (after.State == core.TaskQueued && after.State != before) {
+			return true
+		}
+		log.Printf("[task %s] merge readiness: %v", task.ID, err)
+		return false
+	}
+	after, getErr := d.Store.GetTask(ctx, task.ID)
+	if getErr != nil {
+		log.Printf("[task %s] merge readiness: %v", task.ID, getErr)
+		return false
+	}
+	return before != after.State || after.State == core.TaskMerged
 }
 
 func (d *Dispatcher) confirmTaskMerged(ctx context.Context, taskID string) error {

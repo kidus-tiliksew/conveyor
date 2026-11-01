@@ -231,6 +231,9 @@ func (s *Store) UpdateWorkspaceConfig(ctx context.Context, expected int64, next 
 			return err
 		}
 		sections := configDiff(before, next.PolicyDocument())
+		// A configuration change, such as enabling the monitor, reaches the
+		// timed GitHub fallback (component-persistence, Change notices).
+		raiseTx(tx, changes.Notice{Workspace: ws, Kind: changes.Workspace})
 		eventID, err := appendWorkspaceEvent(ctx, tx, ws, "config.updated", map[string]any{"from_version": version, "to_version": version + 1, "sections": sections})
 		if err != nil {
 			return err

@@ -27,6 +27,7 @@ type Backend interface {
 	InvitationSessionStore
 	redact.SecretSource
 	WorkspaceGitHubAppStore
+	GitHubWebhookStore
 	PersonalAccessTokenStore
 	AgentCredentialStore
 	WorkspaceControlStore

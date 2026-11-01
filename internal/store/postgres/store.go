@@ -461,6 +461,9 @@ func (s *Store) UpdateWorkspaceConfig(ctx context.Context, expectedVersion int64
 			}
 		}
 		sections := configDiff(previous, next.PolicyDocument())
+		// A configuration change, such as enabling the monitor, reaches the
+		// timed GitHub fallback (component-persistence, Change notices).
+		raiseTx(tx, changes.Notice{Workspace: workspace(ctx), Kind: changes.Workspace})
 		actor := store.ActorFromContext(ctx)
 		event, err := insertWorkspaceEventRow(ctx, q, db.InsertWorkspaceEventParams{
 			WorkspaceID: workspace(ctx), Kind: "config.updated", ActorID: actor.ID,

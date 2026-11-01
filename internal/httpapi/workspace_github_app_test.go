@@ -193,11 +193,20 @@ func TestWorkspaceGitHubAppHTTPFlow(t *testing.T) {
 		if result.Manifest["name"] != "Conveyor Alpha" || result.Manifest["public"] != true || result.Manifest["setup_on_update"] != true || result.Manifest["redirect_url"] != "https://conveyor.example/v1/workspaces/alpha/github-app/callback" {
 			t.Fatal("manifest contract")
 		}
-		// GitHub requires hook_attributes.url even with active=false.
-		// Assert the serialized HTTP response, not the construction map.
+		// Webhook delivery is active at the workspace receiver with the six
+		// events and checks read (component-identity-membership). Assert
+		// the serialized HTTP response, not the construction map.
 		hook, ok := result.Manifest["hook_attributes"].(map[string]any)
-		if !ok || hook["active"] != false || hook["url"] != "https://conveyor.example" {
-			t.Fatal("GitHub requires a URL for the disabled webhook")
+		if !ok || hook["active"] != true || hook["url"] != "https://conveyor.example/v1/github/webhook/alpha" {
+			t.Fatalf("manifest webhook=%v", result.Manifest["hook_attributes"])
+		}
+		events, _ := json.Marshal(result.Manifest["default_events"])
+		if string(events) != `["pull_request","check_suite","check_run","status","push","issues"]` {
+			t.Fatalf("manifest events=%s", events)
+		}
+		permissions, _ := result.Manifest["default_permissions"].(map[string]any)
+		if permissions["checks"] != "read" || permissions["statuses"] != "write" {
+			t.Fatalf("manifest permissions=%v", permissions)
 		}
 		if result.Manifest["url"] != "https://conveyor.example" || result.Manifest["setup_url"] != "https://conveyor.example/v1/workspaces/alpha/github-app/setup" {
 			t.Fatal("manifest homepage/setup URLs")
