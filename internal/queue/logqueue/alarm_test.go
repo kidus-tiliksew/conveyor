@@ -343,3 +343,134 @@ func waitTarget(t *testing.T, rt *Runtime, want time.Time) {
 	got, armed := rt.AlarmTarget("ws")
 	t.Fatalf("alarm target=%s armed=%t, want %s", got, armed, want)
 }
+
+// flakyLog fails the next append of a rescue outcome once, as a transient
+// backend error would.
+type flakyLog struct {
+	*NotifyingLog
+	failRescue atomic.Bool
+	failed     atomic.Int32
+}
+
+func (l *flakyLog) Append(ctx context.Context, workspace string, stream eventlog.StreamID, expected eventlog.Version, events []eventlog.NewEvent) (eventlog.Version, error) {
+	for _, event := range events {
+		if event.Kind == KindRescued && l.failRescue.CompareAndSwap(true, false) {
+			l.failed.Add(1)
+			return 0, errors.New("backend unavailable")
+		}
+	}
+	return l.NotifyingLog.Append(ctx, workspace, stream, expected, events)
+}
+
+// TestAlarmRetriesAFailedRescue: a rescue whose append fails once keeps a
+// retry target, so after the backend recovers the alarm rescues the stuck
+// claim again and the job runs, with no notice or other wake from outside.
+func TestAlarmRetriesAFailedRescue(t *testing.T) {
+	previous := alarmRetryMin
+	alarmRetryMin = 50 * time.Millisecond
+	t.Cleanup(func() { alarmRetryMin = previous })
+	const threshold = 1200 * time.Millisecond
+	log := &flakyLog{NotifyingLog: notifyingLog()}
+	log.failRescue.Store(true)
+	rt := NewRuntime(log, Options{Workspaces: []string{"ws"}, RescueStuckAfter: threshold})
+	ran := make(chan struct{}, 1)
+	rt.Register(queue.Registration{Kind: "demo", Handle: func(context.Context, queue.Job) error {
+		select {
+		case ran <- struct{}{}:
+		default:
+		}
+		return nil
+	}, RetryDelay: func(int) time.Duration { return 30 * time.Millisecond }})
+	ctx := context.Background()
+	if _, err := Enqueue(ctx, log, "ws", "demo", "stuck", demoArgs{Key: "stuck"}, 3, time.Now().UTC()); err != nil {
+		t.Fatal(err)
+	}
+	// Another process claimed the job and died.
+	job, err := Load(ctx, log, "ws", StreamFor("demo", "stuck"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	claimedAt := time.Now().UTC()
+	payload, _ := jsonMarshal(claimedPayload{Attempt: 1, Worker: "dead-replica", ClaimedAt: claimedAt})
+	if _, err := log.Append(ctx, "ws", job.Stream, job.Head, []eventlog.NewEvent{{Kind: KindClaimed, ActorID: "dead-replica", ActorRole: "system", Payload: payload, At: claimedAt}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := rt.Start(ctx); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		stopCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		_ = rt.StopAndCancel(stopCtx)
+	})
+	due := claimedAt.Add(threshold)
+	select {
+	case <-ran:
+	case <-time.After(due.Sub(time.Now()) + alarmBudget):
+		t.Fatalf("stuck job never ran after the failed rescue; injected failures=%d", log.failed.Load())
+	}
+	if got := log.failed.Load(); got != 1 {
+		t.Fatalf("injected rescue failures=%d, want 1", got)
+	}
+	if late := time.Since(due); late > alarmBudget*6/10 {
+		t.Fatalf("job ran %s after its rescue time", late)
+	}
+	// Once the job has completed, the alarm is idle again.
+	deadline := time.Now().Add(alarmBudget)
+	for {
+		if _, armed := rt.AlarmTarget("ws"); !armed {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("alarm stayed armed after the rescued job completed")
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+}
+
+// TestAlarmRetriesAFailedOrderClock: an order clock handler error keeps a
+// retry target, so a deadline the failed fire left unapplied is reached
+// again without a notice.
+func TestAlarmRetriesAFailedOrderClock(t *testing.T) {
+	previous := alarmRetryMin
+	alarmRetryMin = 50 * time.Millisecond
+	t.Cleanup(func() { alarmRetryMin = previous })
+	log := notifyingLog()
+	rt := NewRuntime(log, Options{Workspaces: []string{"ws"}})
+	fires := make(chan time.Time, 8)
+	var calls atomic.Int32
+	rt.Register(queue.Registration{Kind: queue.OrderClockArgs{}.Kind(), Handle: func(context.Context, queue.Job) error {
+		fires <- time.Now().UTC()
+		if calls.Add(1) == 1 {
+			return errors.New("database unavailable")
+		}
+		return nil
+	}})
+	if err := rt.Start(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		stopCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		_ = rt.StopAndCancel(stopCtx)
+	})
+	first := <-fires
+	select {
+	case retried := <-fires:
+		if gap := retried.Sub(first); gap < AlarmSpacing || gap > alarmBudget*6/10 {
+			t.Fatalf("retry %s after the failed fire", gap)
+		}
+	case <-time.After(alarmBudget):
+		t.Fatal("failed order clock fire was never retried")
+	}
+	deadline := time.Now().Add(alarmBudget)
+	for {
+		if _, armed := rt.AlarmTarget("ws"); !armed {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("alarm stayed armed after a successful retry")
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+}

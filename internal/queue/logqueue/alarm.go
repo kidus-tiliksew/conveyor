@@ -54,6 +54,12 @@ func (rt *Runtime) alarmLoop(ws *workspace) {
 		retryDelay time.Duration
 		ticks      int
 	)
+	// scheduleRetry keeps due work that a failed fire left undone: the after
+	// bound drops times at or before lastFire only once a fire succeeds.
+	scheduleRetry := func() {
+		retryDelay = min(max(retryDelay*2, alarmRetryMin), alarmRetryMax)
+		retryAt = rt.opts.Now().UTC().Add(retryDelay)
+	}
 	fire := func() {
 		ticks++
 		start := rt.opts.Now().UTC()
@@ -62,8 +68,11 @@ func (rt *Runtime) alarmLoop(ws *workspace) {
 		if err := rt.runClock(ws, ticks); err != nil {
 			failed = true
 		}
+		// A failed rescue keeps a retry target: lastFire moves past the stuck
+		// claim's rescue time, so nothing else would bring the alarm back.
 		if err := rt.rescue(rt.loopCtx, ws); err != nil && !errors.Is(err, context.Canceled) {
 			rt.opts.Logf("logqueue: workspace %s: rescue: %v", ws.id, err)
+			failed = true
 		}
 		rt.wakeWorkers(ws)
 		next, err := rt.readDeadline(ws, start)
@@ -77,8 +86,7 @@ func (rt *Runtime) alarmLoop(ws *workspace) {
 			pending = time.Time{}
 		}
 		if failed {
-			retryDelay = min(max(retryDelay*2, alarmRetryMin), alarmRetryMax)
-			retryAt = rt.opts.Now().UTC().Add(retryDelay)
+			scheduleRetry()
 		} else {
 			retryDelay, retryAt = 0, time.Time{}
 		}
@@ -120,8 +128,8 @@ func (rt *Runtime) alarmLoop(ws *workspace) {
 			// a retry time while the job ran.
 			if next, err := rt.readDeadline(ws, lastFire); err == nil {
 				stored = next
-			} else {
-				retryAt = earliestTime(retryAt, rt.opts.Now().UTC().Add(alarmRetryMin))
+			} else if retryAt.IsZero() {
+				scheduleRetry()
 			}
 		}
 		if timer != nil {
