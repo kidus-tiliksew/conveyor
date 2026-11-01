@@ -1,5 +1,5 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { Link } from '@tanstack/react-router'
+import { Link, useLocation } from '@tanstack/react-router'
 import { CheckCircle2, Plus, Save, Trash2 } from 'lucide-react'
 import { useEffect, useMemo, useState } from 'react'
 import {
@@ -22,10 +22,18 @@ import { githubSlug } from '../lib/repository'
 import type { WorkspaceConfigDocument, WorkspaceConfigRepo } from '../lib/types'
 import { cn } from '../lib/utils'
 
-// The selected tab is page state, never part of the address, so every saved
-// link to this page opens on Policy. Conveyor has no workers, so no tab, badge,
-// or panel describes them (DEC-97(1)).
+// The selected tab is page state, never part of the address, so ordinary
+// navigation to this page opens on Policy. Conveyor has no workers, so no tab,
+// badge, or panel describes them (DEC-97(1)).
 type TabId = 'general' | 'policy' | 'verification' | 'members'
+
+// A link saved while the retired Workers tab was open carries `?tab=workers`
+// and opens General as a bounded compatibility fallback. No other `tab` value
+// selects a tab, and the page never writes one (component-web-dashboard,
+// Workspace page).
+function initialTab(searchStr: string): TabId {
+  return new URLSearchParams(searchStr).get('tab') === 'workers' ? 'general' : 'policy'
+}
 
 const TABS: Array<{ id: TabId; label: string }> = [
   { id: 'general', label: 'General' },
@@ -70,7 +78,8 @@ export function WorkspacePage() {
     queryFn: () => fetchWorkspaceConfig(workspace),
     enabled: Boolean(workspace),
   })
-  const [tab, setTab] = useState<TabId>('policy')
+  const searchStr = useLocation({ select: (location) => location.searchStr })
+  const [tab, setTab] = useState<TabId>(() => initialTab(searchStr))
   const [draft, setDraftState] = useState<WorkspaceConfigDocument | null>(null)
   const [saved, setSaved] = useState('')
   useEffect(() => {

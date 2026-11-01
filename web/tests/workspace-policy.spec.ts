@@ -106,13 +106,25 @@ test('workspace surfaces named policy rejections verbatim', async ({ page }) => 
 
 test('workspace shows no worker surface', async ({ page }) => {
   const mocks = await mockAPIs(page)
-  // A link saved while the retired Workers tab was open names no tab: tab
-  // selection is page state. A stray tab parameter changes nothing.
-  for (const address of ['/w/demo/workspace', '/w/demo/workspace?tab=workers']) {
+  // Ordinary navigation opens on Policy. A link saved while the retired
+  // Workers tab was open (`?tab=workers`) opens General as a bounded
+  // compatibility fallback; any other tab value selects nothing.
+  for (const [address, opens] of [
+    ['/w/demo/workspace', 'Policy'],
+    ['/w/demo/workspace?tab=policy', 'Policy'],
+    ['/w/demo/workspace?tab=members', 'Policy'],
+    ['/w/demo/workspace?tab=workers', 'General'],
+  ] as const) {
     await page.goto(address)
-    await expect(page.getByText('Pipeline policy')).toBeVisible()
     await expect(page.getByRole('tab')).toHaveText(['General', 'Policy', 'Verification', 'Members'])
+    await expect(page.getByRole('tab', { name: opens })).toHaveAttribute('aria-selected', 'true')
     await expect(page.getByRole('tab', { name: 'Workers' })).toHaveCount(0)
+    if (opens === 'General') {
+      await expect(page.getByText('Work-order queue timeout')).toBeVisible()
+      await expect(page.getByText('Pipeline policy')).toHaveCount(0)
+    } else {
+      await expect(page.getByText('Pipeline policy')).toBeVisible()
+    }
     for (const tab of ['General', 'Policy', 'Verification', 'Members']) {
       await page.getByRole('tab', { name: tab }).click()
       await expect(page.getByRole('tab', { name: tab })).toHaveAttribute('aria-selected', 'true')
