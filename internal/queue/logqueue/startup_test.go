@@ -326,3 +326,90 @@ func TestLogWithoutAnIndexIsTailedFromZero(t *testing.T) {
 		t.Fatal("the job did not run")
 	}
 }
+
+// TestIndexMatchesFoldAcrossReplicasAndPeerTail: two runtimes share one
+// log. One learns of jobs only through its 20 ms peer tail, the other
+// through notices, and a log writer appends enqueues without a notice. A
+// duplicate enqueue of an active job is suppressed. After every job ran
+// once, each job stream's index row equals a full fold, and a restarted
+// runtime finds nothing unfinished.
+func TestIndexMatchesFoldAcrossReplicasAndPeerTail(t *testing.T) {
+	mem := memlog.New()
+	notifying := Notify(mem, changes.NewHub())
+	var mu sync.Mutex
+	runs := map[string]int{}
+	register := func(rt *Runtime) {
+		rt.Register(queue.Registration{Kind: "demo", Handle: func(_ context.Context, job queue.Job) error {
+			mu.Lock()
+			runs[job.ID]++
+			mu.Unlock()
+			return nil
+		}})
+	}
+	start := func(log eventlog.Store, opts Options) *Runtime {
+		opts.Workspaces = []string{"ws"}
+		rt := NewRuntime(log, opts)
+		register(rt)
+		if err := rt.Start(context.Background()); err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() {
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			_ = rt.StopAndCancel(ctx)
+		})
+		return rt
+	}
+	start(notifying, Options{WorkerID: "a"})
+	start(Notify(mem, changes.NewHub()), Options{WorkerID: "b", PeerTail: 20 * time.Millisecond})
+	keys := make([]string, 12)
+	for i := range keys {
+		keys[i] = fmt.Sprintf("k%d", i)
+		writer := eventlog.Store(mem) // no notice: only the peer tail sees these
+		if i%2 == 0 {
+			writer = notifying
+		}
+		if inserted, err := Enqueue(context.Background(), writer, "ws", "demo", keys[i], demoArgs{Key: keys[i]}, 3, time.Now()); err != nil || !inserted {
+			t.Fatalf("enqueue %s inserted=%v err=%v", keys[i], inserted, err)
+		}
+	}
+	if inserted, err := Enqueue(context.Background(), notifying, "ws", "demo", "k0", demoArgs{Key: "k0"}, 3, time.Now()); err != nil {
+		t.Fatal(err)
+	} else if inserted {
+		// k0 may already have completed; then the enqueue is a new generation.
+		keys = append(keys, "k0@2")
+	}
+	waitUntil(t, "every job to complete", func() bool {
+		for _, key := range keys {
+			name, _, _ := strings.Cut(key, "@")
+			job, err := Load(context.Background(), mem, "ws", StreamFor("demo", name))
+			if err != nil || job.State != StateCompleted {
+				return false
+			}
+		}
+		return true
+	})
+	mu.Lock()
+	for id, n := range runs {
+		if n != 1 {
+			mu.Unlock()
+			t.Fatalf("%s ran %d times", id, n)
+		}
+	}
+	mu.Unlock()
+	for i := range 12 {
+		stream := StreamFor("demo", fmt.Sprintf("k%d", i))
+		events, _ := mem.Read(context.Background(), "ws", stream, 0, 0)
+		job, err := Fold("ws", stream, events)
+		if err != nil {
+			t.Fatal(err)
+		}
+		row, ok, _ := mem.JobIndexRow(context.Background(), "ws", stream)
+		if want := jobindex.RowOf(job); !ok || row != want {
+			t.Fatalf("%s row=%+v, full fold=%+v", stream, row, want)
+		}
+	}
+	if _, rows, err := mem.UnfinishedJobs(context.Background(), "ws"); err != nil || len(rows) != 0 {
+		t.Fatalf("unfinished after every job ran=%v err=%v", rows, err)
+	}
+}
