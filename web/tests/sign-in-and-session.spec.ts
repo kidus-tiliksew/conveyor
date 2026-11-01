@@ -339,6 +339,16 @@ test('a returning user signs in with a password and resets it through an operato
   await expect(page.getByText('Display name updated.')).toBeVisible()
   expect(displayName).toBe('Renamed User')
   const passwordForm = page.getByRole('form', { name: 'Update password' })
+  // One sentence of description; the blank-current rule is a hint on its field.
+  await expect(page.getByText('Use a password to sign in next time.')).toBeVisible()
+  await expect(page.getByText('Set a password for returning sign-in.', { exact: false })).toHaveCount(0)
+  await expect(passwordForm.getByLabel('Current password')).toHaveAccessibleDescription(
+    'Leave blank if you just opened a sign-in link.',
+  )
+  await expect(passwordForm.getByLabel('New password', { exact: true })).toHaveAttribute(
+    'placeholder',
+    'At least 12 characters',
+  )
   await passwordForm.getByLabel('Current password').fill(password)
   await passwordForm.getByLabel('New password', { exact: true }).fill('second-password-value')
   await passwordForm.getByLabel('Confirm new password').fill('second-password-value')
