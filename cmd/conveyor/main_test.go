@@ -3,7 +3,6 @@ package main
 import (
 	"context"
 	"encoding/json"
-	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -14,6 +13,7 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/kidus-tiliksew/conveyor/internal/config"
 	"github.com/kidus-tiliksew/conveyor/internal/core"
@@ -24,52 +24,6 @@ type gitFixture struct {
 	origin  string
 	primary string
 	seed    string
-}
-
-func TestAssignedCheckoutFromEnvironmentHonorsOnlyItsOwnTask(t *testing.T) {
-	t.Setenv("CONVEYOR_TASK_ID", "task-1")
-	t.Setenv("CONVEYOR_TASK_BRANCH", "conveyor/task-1")
-	t.Setenv("CONVEYOR_TASK_BASE_BRANCH", "main")
-	t.Setenv("CONVEYOR_TASK_REPO", "conveyor")
-	t.Setenv("CONVEYOR_TASK_REPO_URL", "https://github.com/kidus-tiliksew/conveyor.git")
-
-	branch, base, repo, repoURL, ok := assignedCheckoutFromEnvironment("task-1")
-	if !ok || branch != "conveyor/task-1" || base != "main" || repo != "conveyor" || repoURL != "https://github.com/kidus-tiliksew/conveyor.git" {
-		t.Fatalf("assignment = %q %q %q %q ok=%v", branch, base, repo, repoURL, ok)
-	}
-	if _, _, _, _, ok := assignedCheckoutFromEnvironment("task-2"); ok {
-		t.Fatal("assignment for a different task must fall back to the authenticated lookup")
-	}
-	t.Setenv("CONVEYOR_TASK_REPO_URL", "")
-	if _, _, _, _, ok := assignedCheckoutFromEnvironment("task-1"); ok {
-		t.Fatal("assignment without configured repository identity must fall back to the authenticated lookup")
-	}
-	t.Setenv("CONVEYOR_TASK_REPO_URL", "https://github.com/kidus-tiliksew/conveyor.git")
-	t.Setenv("CONVEYOR_TASK_BRANCH", "")
-	if _, _, _, _, ok := assignedCheckoutFromEnvironment("task-1"); ok {
-		t.Fatal("incomplete assignment must fall back to the authenticated lookup")
-	}
-}
-
-func TestAssignedPredecessorCheckpointRequiresDistinctRecordedAttempt(t *testing.T) {
-	t.Setenv("CONVEYOR_TASK_ID", "task-1")
-	t.Setenv("CONVEYOR_WORK_ORDER_ID", "task-1-implement-1")
-	t.Setenv("CONVEYOR_SESSION_ID", "session-current")
-	t.Setenv("CONVEYOR_CURRENT_ATTEMPT_ID", "attempt-current")
-	t.Setenv("CONVEYOR_PREVIOUS_ATTEMPT_ID", "attempt-prior")
-	t.Setenv("CONVEYOR_PREVIOUS_ATTEMPT_REASON", "harness exited")
-	checkpoint := assignedPredecessorCheckpointFromEnvironment("task-1")
-	if checkpoint == nil || checkpoint.AttemptID != "attempt-prior" || checkpoint.WorkOrderID != "task-1-implement-1" || checkpoint.TerminationReason != "harness exited" {
-		t.Fatalf("checkpoint=%+v", checkpoint)
-	}
-	t.Setenv("CONVEYOR_PREVIOUS_ATTEMPT_ID", "attempt-current")
-	if checkpoint = assignedPredecessorCheckpointFromEnvironment("task-1"); checkpoint != nil {
-		t.Fatalf("current attempt accepted as predecessor: %+v", checkpoint)
-	}
-	t.Setenv("CONVEYOR_PREVIOUS_ATTEMPT_ID", "attempt-prior")
-	if checkpoint = assignedPredecessorCheckpointFromEnvironment("other-task"); checkpoint != nil {
-		t.Fatalf("cross-task predecessor accepted: %+v", checkpoint)
-	}
 }
 
 func TestCheckoutRepositoryIdentityAppliesBeforeMutationAndPathOverride(t *testing.T) {
@@ -227,170 +181,6 @@ func TestCheckoutReusesRegisteredWorktreeAtFormerSiblingLocation(t *testing.T) {
 	}
 	if cleanup.Worktree != "removed" || cleanup.Path != legacyPath {
 		t.Fatalf("legacy cleanup result = %+v", cleanup)
-	}
-}
-
-func TestCheckoutCheckpointsAttributedPredecessorWorkAndPushes(t *testing.T) {
-	fixture := newGitFixture(t)
-	branch := "conveyor/task-checkpoint"
-	path, err := checkoutTask(context.Background(), branch, "main", "conveyor", fixture.origin, "checkpoint", "")
-	if err != nil {
-		t.Fatal(err)
-	}
-	primaryHead := mustGitOutput(t, fixture.primary, "rev-parse", "HEAD")
-	writeFile(t, filepath.Join(path, "predecessor.txt"), "preserve me\n")
-	checkpoint := &attemptCheckpoint{AttemptID: "attempt-prior", WorkOrderID: "checkpoint-implement-1", TerminationReason: "harness exited: signal: killed"}
-
-	got, result, err := checkoutTaskWithCheckpoint(context.Background(), branch, "main", "conveyor", fixture.origin, "checkpoint", "", checkpoint)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if got != path || result == nil || !result.Pushed || result.CommitSHA == "" {
-		t.Fatalf("checkout=%q checkpoint=%+v", got, result)
-	}
-	if status := mustGitOutput(t, path, "status", "--porcelain"); status != "" {
-		t.Fatalf("checkpoint left dirty state: %s", status)
-	}
-	message := mustGitOutput(t, path, "show", "-s", "--format=%B", "HEAD")
-	for _, want := range []string{
-		"wip(attempt-prior): checkpoint at attempt death",
-		"Attempt-ID: attempt-prior", "Work-Order-ID: checkpoint-implement-1",
-		"Termination-Reason: harness exited: signal: killed",
-	} {
-		if !strings.Contains(message, want) {
-			t.Fatalf("checkpoint message %q missing %q", message, want)
-		}
-	}
-	if remote := mustGitOutput(t, path, "ls-remote", "--heads", "origin", "refs/heads/"+branch); !strings.HasPrefix(remote, result.CommitSHA+"\t") {
-		t.Fatalf("remote branch = %q, want checkpoint %s", remote, result.CommitSHA)
-	}
-	assertPrimaryUntouched(t, fixture.primary, primaryHead)
-
-	// Retrying recovery recognizes the already-pushed attributed commit and
-	// does not manufacture a duplicate.
-	_, retry, err := checkoutTaskWithCheckpoint(context.Background(), branch, "main", "conveyor", fixture.origin, "checkpoint", "", checkpoint)
-	if err != nil || retry == nil || retry.CommitSHA != result.CommitSHA {
-		t.Fatalf("retry checkpoint=%+v err=%v", retry, err)
-	}
-	if head := mustGitOutput(t, path, "rev-parse", "HEAD"); head != result.CommitSHA {
-		t.Fatalf("retry created duplicate commit %s after %s", head, result.CommitSHA)
-	}
-}
-
-// The launcher resolves the child's checkout from the local setup, so a run
-// started from any directory (the 2026-09-09 `conveyor run` from `~`) must
-// still checkpoint the registered task worktree instead of failing on the
-// process working directory.
-func TestCheckpointAssignedTaskWorktreeAtUsesResolvedCheckoutOutsideProcessDirectory(t *testing.T) {
-	fixture := newGitFixture(t)
-	branch := "conveyor/task-checkpoint-elsewhere"
-	path, err := checkoutTask(context.Background(), branch, "main", "conveyor", fixture.origin, "checkpoint-elsewhere", "")
-	if err != nil {
-		t.Fatal(err)
-	}
-	writeFile(t, filepath.Join(path, "interrupted.txt"), "preserve me\n")
-	primaryHead := mustGitOutput(t, fixture.primary, "rev-parse", "HEAD")
-	checkpoint := attemptCheckpoint{AttemptID: "attempt-elsewhere", WorkOrderID: "checkpoint-elsewhere-implement-1", TerminationReason: "harness exited before completing work order"}
-	t.Chdir(t.TempDir())
-
-	if _, err := checkpointAssignedTaskWorktree(context.Background(), branch, "conveyor", fixture.origin, checkpoint); err == nil || !strings.Contains(err.Error(), "checkpoint must run inside the target repository") {
-		t.Fatalf("process-directory checkpoint outside the repository = %v", err)
-	}
-	if status := mustGitOutput(t, path, "status", "--porcelain"); !strings.Contains(status, "interrupted.txt") {
-		t.Fatalf("failed checkpoint changed the worktree: %q", status)
-	}
-
-	result, err := checkpointAssignedTaskWorktreeAt(context.Background(), fixture.primary, branch, "conveyor", fixture.origin, checkpoint)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if result == nil || !result.Pushed || result.CommitSHA == "" || result.Worktree != path {
-		t.Fatalf("resolved-checkout checkpoint=%+v", result)
-	}
-	if status := mustGitOutput(t, path, "status", "--porcelain"); status != "" {
-		t.Fatalf("checkpoint left dirty state: %s", status)
-	}
-	if remote := mustGitOutput(t, path, "ls-remote", "--heads", "origin", "refs/heads/"+branch); !strings.HasPrefix(remote, result.CommitSHA+"\t") {
-		t.Fatalf("remote branch = %q, want checkpoint %s", remote, result.CommitSHA)
-	}
-	assertPrimaryUntouched(t, fixture.primary, primaryHead)
-
-	if _, err := checkpointAssignedTaskWorktreeAt(context.Background(), t.TempDir(), branch, "conveyor", fixture.origin, checkpoint); err == nil || !strings.Contains(err.Error(), "is not a git repository") {
-		t.Fatalf("non-repository checkout = %v", err)
-	}
-}
-
-func TestAttemptAuthorityLossPreservesDirtyWorkAndRequiresAuditReconciliation(t *testing.T) {
-	fixture := newGitFixture(t)
-	branch := "conveyor/task-authority-loss"
-	path, err := checkoutTask(context.Background(), branch, "main", "conveyor", fixture.origin, "authority-loss", "")
-	if err != nil {
-		t.Fatal(err)
-	}
-	writeFile(t, filepath.Join(path, "interrupted.txt"), "preserve me\n")
-	checkpoint := attemptCheckpoint{
-		AttemptID: "attempt-lost", WorkOrderID: "authority-loss-implement-1",
-		TerminationReason: "claim authority lost: server reports queued",
-	}
-	var preserved *attemptCheckpointResult
-	err = attemptAuthorityLoss(checkpoint.TerminationReason, func(string) error {
-		preserved, err = checkpointAssignedTaskWorktree(context.Background(), branch, "conveyor", fixture.origin, checkpoint)
-		if err != nil {
-			return err
-		}
-		return fmt.Errorf("checkpoint commit %s was pushed from %s, but its audit event is not durable; successor reconciliation required: claim lost", preserved.CommitSHA, preserved.Worktree)
-	})
-	if err == nil || !strings.Contains(err.Error(), "successor reconciliation required") {
-		t.Fatalf("authority-loss outcome=%v", err)
-	}
-	if preserved == nil || !preserved.Pushed || preserved.CommitSHA == "" {
-		t.Fatalf("dirty work was not preserved: %+v", preserved)
-	}
-	if remote := mustGitOutput(t, path, "ls-remote", "--heads", "origin", "refs/heads/"+branch); !strings.HasPrefix(remote, preserved.CommitSHA+"\t") {
-		t.Fatalf("remote branch = %q, want preserved commit %s", remote, preserved.CommitSHA)
-	}
-
-	// The next authorized attempt can identify the exact pushed checkpoint and
-	// publish its append-only event through the existing predecessor path.
-	reconciled, err := matchingAttemptCheckpointAtHEAD(context.Background(), path, checkpoint)
-	if err != nil || reconciled == nil || reconciled.CommitSHA != preserved.CommitSHA {
-		t.Fatalf("successor reconciliation=%+v err=%v", reconciled, err)
-	}
-}
-
-func TestMatchingAttemptCheckpointRejectsMismatchedTerminationReason(t *testing.T) {
-	fixture := newGitFixture(t)
-	branch := "conveyor/task-checkpoint-reason"
-	path, err := checkoutTask(context.Background(), branch, "main", "conveyor", fixture.origin, "checkpoint-reason", "")
-	if err != nil {
-		t.Fatal(err)
-	}
-	writeFile(t, filepath.Join(path, "predecessor.txt"), "preserve me\n")
-	checkpoint := attemptCheckpoint{AttemptID: "attempt-prior", WorkOrderID: "reason-implement-1", TerminationReason: "harness exited"}
-	if _, err = checkpointAssignedTaskWorktree(context.Background(), branch, "conveyor", fixture.origin, checkpoint); err != nil {
-		t.Fatal(err)
-	}
-	checkpoint.TerminationReason = "claim authority lost"
-	if _, err = matchingAttemptCheckpointAtHEAD(context.Background(), path, checkpoint); err == nil || !strings.Contains(err.Error(), "not termination reason") {
-		t.Fatalf("mismatched reason was reused: %v", err)
-	}
-}
-
-func TestAttemptCheckpointCleanNoopAndUnattributableDirtyStateStillBlocks(t *testing.T) {
-	fixture := newGitFixture(t)
-	branch := "conveyor/task-checkpoint-guard"
-	path, err := checkoutTask(context.Background(), branch, "main", "conveyor", fixture.origin, "checkpoint-guard", "")
-	if err != nil {
-		t.Fatal(err)
-	}
-	checkpoint := attemptCheckpoint{AttemptID: "attempt-prior", WorkOrderID: "guard-implement-1", TerminationReason: "worker lost"}
-	result, err := checkpointAssignedTaskWorktree(context.Background(), branch, "conveyor", fixture.origin, checkpoint)
-	if err != nil || result != nil {
-		t.Fatalf("clean checkpoint=%+v err=%v, want no-op", result, err)
-	}
-	writeFile(t, filepath.Join(path, "unknown.txt"), "unknown provenance\n")
-	if _, err = checkoutTask(context.Background(), branch, "main", "conveyor", fixture.origin, "checkpoint-guard", ""); err == nil || !strings.Contains(err.Error(), "uncommitted") {
-		t.Fatalf("unattributable checkout err=%v", err)
 	}
 }
 
@@ -892,7 +682,7 @@ func TestMaybeAttachOperatorCheckoutFromNonPrimaryThenAdopt(t *testing.T) {
 	defer server.Close()
 
 	assigned := "conveyor/task-task-1"
-	got, err := maybeAttachOperatorCheckout(context.Background(), &client{base: server.URL, token: "secret-token", workspace: "demo"}, "task-1", assigned, "conveyor", fixture.origin, nil)
+	got, err := maybeAttachOperatorCheckout(context.Background(), &client{base: server.URL, token: "secret-token", workspace: "demo"}, "task-1", assigned, "conveyor", fixture.origin)
 	if err != nil || got != "feature/adopt" || posts != 1 {
 		t.Fatalf("attach = %q posts=%d err=%v", got, posts, err)
 	}
@@ -917,7 +707,7 @@ func TestMaybeAttachOperatorCheckoutSkipsPrimaryAndMatchingHead(t *testing.T) {
 	defer server.Close()
 	c := &client{base: server.URL, token: "secret-token", workspace: "demo"}
 	assigned := "conveyor/task-head-eq"
-	got, err := maybeAttachOperatorCheckout(context.Background(), c, "head-eq", assigned, "conveyor", fixture.origin, nil)
+	got, err := maybeAttachOperatorCheckout(context.Background(), c, "head-eq", assigned, "conveyor", fixture.origin)
 	if err != nil || got != assigned {
 		t.Fatalf("primary skip = %q err=%v", got, err)
 	}
@@ -925,81 +715,89 @@ func TestMaybeAttachOperatorCheckoutSkipsPrimaryAndMatchingHead(t *testing.T) {
 	path := filepath.Join(fixture.tmp, "matching-head")
 	mustGit(t, fixture.primary, "worktree", "add", "-b", assigned, path, "origin/main")
 	t.Chdir(path)
-	got, err = maybeAttachOperatorCheckout(context.Background(), c, "head-eq", assigned, "conveyor", fixture.origin, nil)
+	got, err = maybeAttachOperatorCheckout(context.Background(), c, "head-eq", assigned, "conveyor", fixture.origin)
 	if err != nil || got != assigned {
 		t.Fatalf("matching HEAD skip = %q err=%v", got, err)
 	}
 }
 
-func TestCheckoutCmdSkipsAttachForWorkerAssignment(t *testing.T) {
-	for _, polluted := range []bool{false, true} {
-		name := "clean"
-		if polluted {
-			name = "polluted"
-		}
-		t.Run(name, func(t *testing.T) {
-			fixture := newGitFixture(t)
-			outsideRoot := filepath.Join(t.TempDir(), "inherited-worker-root")
-			if polluted {
-				for key, value := range map[string]string{
-					"CONVEYOR_TASK_ID":                 "stale-task",
-					"CONVEYOR_TASK_BRANCH":             "conveyor/task-stale-task",
-					"CONVEYOR_PREDECESSOR":             `{"task_id":"stale-task","branch":"conveyor/task-stale-task"}`,
-					"CONVEYOR_PREVIOUS_WORK_ORDER_ID":  "stale-task-implement-1",
-					"CONVEYOR_PREVIOUS_ATTEMPT_ID":     "attempt-stale",
-					"CONVEYOR_PREVIOUS_ATTEMPT_REASON": "stale failure",
-					"CONVEYOR_WORKTREE_ROOT":           outsideRoot,
-					"CONVEYOR_WRITER_GENERATION":       "stale-generation",
-					"CONVEYOR_WRITER_PATH":             filepath.Join(outsideRoot, "stale-writer.json"),
-				} {
-					t.Setenv(key, value)
-				}
-			}
-			setCheckoutWorkerFixtureEnvironment(t, fixture, "env-task")
-
-			cmd := checkoutCmd()
-			cmd.SetArgs([]string{"env-task"})
-			if err := cmd.Execute(); err != nil {
-				t.Fatal(err)
-			}
-			want := filepath.Join(fixture.tmp, ".conveyor", "worktrees", "conveyor-task-env-task")
-			if _, err := os.Stat(want); err != nil {
-				t.Fatalf("worker checkout dest = %v", err)
-			}
-			if _, err := os.Stat(outsideRoot); !os.IsNotExist(err) {
-				t.Fatalf("inherited worker root was used outside the fixture: %v", err)
-			}
-		})
-	}
-}
-
-func setCheckoutWorkerFixtureEnvironment(t *testing.T, fixture gitFixture, taskID string) {
-	t.Helper()
-	values := map[string]string{
-		"CONVEYOR_ADDR":                    "http://127.0.0.1:1",
-		"CONVEYOR_API_TOKEN":               "",
-		"CONVEYOR_CLIENT_TOKEN":            "",
+// conveyor checkout reads the assignment from the task with the caller's
+// credential and ignores every launcher variable: it takes and releases the
+// writer lock, creates the worktree under the configured location, makes no
+// checkpoint commit, and sends no write request (req-delegated-execution
+// REQ-3; DEC-97(1); component-attempt-checkpoints).
+func TestCheckoutTakesWriterLockWithoutLauncherEnvironment(t *testing.T) {
+	fixture := newGitFixture(t)
+	outsideRoot := filepath.Join(t.TempDir(), "launcher-root")
+	for key, value := range map[string]string{
+		"CONVEYOR_TASK_ID":                 "env-task",
+		"CONVEYOR_TASK_BRANCH":             "conveyor/task-stale-task",
+		"CONVEYOR_TASK_BASE_BRANCH":        "stale-base",
+		"CONVEYOR_TASK_REPO":               "stale-repo",
+		"CONVEYOR_TASK_REPO_URL":           "https://example.invalid/stale.git",
+		"CONVEYOR_PREDECESSOR":             `{"task_id":"env-task","branch":"conveyor/task-env-task"}`,
+		"CONVEYOR_PREVIOUS_WORK_ORDER_ID":  "env-task-implement-1",
+		"CONVEYOR_PREVIOUS_ATTEMPT_ID":     "attempt-previous",
 		"CONVEYOR_CURRENT_ATTEMPT_ID":      "attempt-current",
-		"CONVEYOR_PREVIOUS_ATTEMPT_ID":     "",
-		"CONVEYOR_PREVIOUS_ATTEMPT_REASON": "",
-		"CONVEYOR_PREDECESSOR":             "",
-		"CONVEYOR_PREVIOUS_WORK_ORDER_ID":  "",
+		"CONVEYOR_PREVIOUS_ATTEMPT_REASON": "stale failure",
+		"CONVEYOR_WORK_ORDER_ID":           "env-task-implement-1",
 		"CONVEYOR_SESSION_ID":              "session-current",
-		"CONVEYOR_TASK_BASE_BRANCH":        "main",
-		"CONVEYOR_TASK_BRANCH":             "conveyor/task-" + taskID,
-		"CONVEYOR_TASK_ID":                 taskID,
-		"CONVEYOR_TASK_REPO":               "conveyor",
-		"CONVEYOR_TASK_REPO_URL":           fixture.origin,
-		"CONVEYOR_WORKSPACE":               "demo",
-		"CONVEYOR_WORKTREE_ROOT":           filepath.Join(fixture.tmp, ".conveyor", "worktrees"),
-		"CONVEYOR_WORK_ORDER_ID":           taskID + "-implement-1",
-		"CONVEYOR_WRITER_GENERATION":       "",
-		"CONVEYOR_WRITER_PATH":             "",
-		"CONVEYOR_CONFIG":                  filepath.Join(fixture.tmp, "no-such-config.yaml"),
-	}
-	for key, value := range values {
+		"CONVEYOR_WORKTREE_ROOT":           outsideRoot,
+		"CONVEYOR_WRITER_GENERATION":       "stale-generation",
+		"CONVEYOR_WRITER_PATH":             filepath.Join(outsideRoot, "stale-writer.json"),
+	} {
 		t.Setenv(key, value)
 	}
+	var writes []string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			writes = append(writes, r.Method+" "+r.URL.Path)
+			http.Error(w, "unexpected write", http.StatusMethodNotAllowed)
+			return
+		}
+		switch r.URL.Path {
+		case "/v1/tasks/env-task":
+			_ = json.NewEncoder(w).Encode(core.Task{ID: "env-task", Workspace: "demo", Repo: "conveyor", Branch: "conveyor/task-env-task", BaseBranch: "main", State: core.TaskRunning})
+		case "/v1/workspace/config":
+			_ = json.NewEncoder(w).Encode(config.VersionedDocument{Document: config.WorkspaceDocument{Repos: []config.Repo{{Name: "conveyor", URL: fixture.origin}}}})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	t.Cleanup(server.Close)
+	t.Setenv("CONVEYOR_ADDR", server.URL)
+	t.Setenv("CONVEYOR_API_TOKEN", "checkout-token")
+	t.Setenv("CONVEYOR_WORKSPACE", "demo")
+	root := filepath.Join(fixture.tmp, "configured-root")
+	t.Setenv("CONVEYOR_CONFIG", worktreeLocationTestConfig(t, "  mode: machine\n  root: "+root+"\n"))
+
+	cmd := checkoutCmd()
+	cmd.SetArgs([]string{"env-task"})
+	if err := cmd.Execute(); err != nil {
+		t.Fatal(err)
+	}
+	worktree := filepath.Join(root, "conveyor-task-env-task")
+	assertBranch(t, worktree, "conveyor/task-env-task")
+	if head, base := mustGitOutput(t, worktree, "rev-parse", "HEAD"), mustGitOutput(t, fixture.primary, "rev-parse", "origin/main"); head != base {
+		t.Fatalf("checkout HEAD = %s, want the fresh base %s with no checkpoint commit", head, base)
+	}
+	if _, err := os.Stat(outsideRoot); !os.IsNotExist(err) {
+		t.Fatalf("launcher worktree root was used: %v", err)
+	}
+	if len(writes) != 0 {
+		t.Fatalf("checkout sent writes %v", writes)
+	}
+	writerPath, err := worktreeWriterPath(context.Background(), fixture.primary, "conveyor/task-env-task", "conveyor", fixture.origin)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	lock, err := acquireWorktreeWriter(ctx, writerPath)
+	if err != nil {
+		t.Fatalf("writer lock still held after checkout: %v", err)
+	}
+	lock.close()
 }
 
 func TestMaybeAttachOperatorCheckoutRefusalsPreserveAssignment(t *testing.T) {
@@ -1012,7 +810,7 @@ func TestMaybeAttachOperatorCheckoutRefusalsPreserveAssignment(t *testing.T) {
 		t.Chdir(path)
 		other := filepath.Join(fixture.tmp, "other-origin.git")
 		mustGit(t, "", "init", "--bare", "--initial-branch=main", other)
-		got, err := maybeAttachOperatorCheckout(context.Background(), &client{token: "secret-token"}, "refuse", assigned, "conveyor", other, nil)
+		got, err := maybeAttachOperatorCheckout(context.Background(), &client{token: "secret-token"}, "refuse", assigned, "conveyor", other)
 		if err == nil || !strings.Contains(err.Error(), "repository identity mismatch") || got != assigned {
 			t.Fatalf("identity = %q err=%v", got, err)
 		}
@@ -1021,7 +819,7 @@ func TestMaybeAttachOperatorCheckoutRefusalsPreserveAssignment(t *testing.T) {
 		t.Chdir(path)
 		writeFile(t, filepath.Join(path, "dirty.txt"), "keep\n")
 		t.Cleanup(func() { _ = os.Remove(filepath.Join(path, "dirty.txt")) })
-		got, err := maybeAttachOperatorCheckout(context.Background(), &client{token: "secret-token"}, "refuse", assigned, "conveyor", fixture.origin, nil)
+		got, err := maybeAttachOperatorCheckout(context.Background(), &client{token: "secret-token"}, "refuse", assigned, "conveyor", fixture.origin)
 		if err == nil || !strings.Contains(err.Error(), "uncommitted") || got != assigned {
 			t.Fatalf("dirty = %q err=%v", got, err)
 		}
@@ -1030,7 +828,7 @@ func TestMaybeAttachOperatorCheckoutRefusalsPreserveAssignment(t *testing.T) {
 		t.Chdir(path)
 		mustGit(t, path, "checkout", "--detach")
 		t.Cleanup(func() { mustGit(t, path, "checkout", "feature/refuse") })
-		got, err := maybeAttachOperatorCheckout(context.Background(), &client{token: "secret-token"}, "refuse", assigned, "conveyor", fixture.origin, nil)
+		got, err := maybeAttachOperatorCheckout(context.Background(), &client{token: "secret-token"}, "refuse", assigned, "conveyor", fixture.origin)
 		if err == nil || !strings.Contains(err.Error(), "detached HEAD") || got != assigned {
 			t.Fatalf("detached = %q err=%v", got, err)
 		}
@@ -1043,7 +841,7 @@ func TestMaybeAttachOperatorCheckoutRefusalsPreserveAssignment(t *testing.T) {
 			_ = json.NewEncoder(w).Encode(map[string]string{"error": "pull_request_recorded", "message": "pull request recorded"})
 		}))
 		defer server.Close()
-		got, err := maybeAttachOperatorCheckout(context.Background(), &client{base: server.URL, token: "secret-token", workspace: "demo"}, "refuse", assigned, "conveyor", fixture.origin, nil)
+		got, err := maybeAttachOperatorCheckout(context.Background(), &client{base: server.URL, token: "secret-token", workspace: "demo"}, "refuse", assigned, "conveyor", fixture.origin)
 		if err == nil || !strings.Contains(err.Error(), "pull_request_recorded") || got != assigned {
 			t.Fatalf("server = %q err=%v", got, err)
 		}
@@ -1128,16 +926,11 @@ func TestDoneRefusesDirtyWorktreeAndHandlesMissingDirectory(t *testing.T) {
 // checkoutTask checks out under the fixture's machine-mode worktree location,
 // $HOME/.conveyor/worktrees; newGitFixture redirects HOME.
 func checkoutTask(ctx context.Context, branch, base, repo, repoURL, taskID, destination string) (string, error) {
-	path, _, err := checkoutTaskWithCheckpoint(ctx, branch, base, repo, repoURL, taskID, destination, nil)
-	return path, err
-}
-
-func checkoutTaskWithCheckpoint(ctx context.Context, branch, base, repo, repoURL, taskID, destination string, checkpoint *attemptCheckpoint) (string, *attemptCheckpointResult, error) {
 	home, err := os.UserHomeDir()
 	if err != nil {
-		return "", nil, err
+		return "", err
 	}
-	return checkoutTaskWithCheckpointAtRoot(ctx, branch, base, repo, repoURL, taskID, destination, config.DefaultWorktreeRoot(home), checkpoint)
+	return checkoutTaskAtRoot(ctx, branch, base, repo, repoURL, taskID, destination, config.DefaultWorktreeRoot(home))
 }
 
 func newGitFixture(t *testing.T) gitFixture {
@@ -1319,13 +1112,11 @@ func stubWorktreeLocationPrompt(t *testing.T, prompt func(repositoryPath, machin
 
 func checkoutWithLocationConfig(t *testing.T, fixture gitFixture, configPath, taskID, destination string) (string, error) {
 	t.Helper()
-	t.Setenv("CONVEYOR_WORKTREE_ROOT", "")
-	placement, err := checkoutWorktreePlacement(configPath, "demo")
+	placement, err := checkoutWorktreePlacement(configPath)
 	if err != nil {
 		return "", err
 	}
-	path, _, err := checkoutTaskWithPlacement(context.Background(), "conveyor/task-"+taskID, "main", "conveyor", fixture.origin, taskID, destination, placement, nil)
-	return path, err
+	return checkoutTaskWithPlacement(context.Background(), "conveyor/task-"+taskID, "main", "conveyor", fixture.origin, taskID, destination, placement)
 }
 
 func TestCheckoutWorktreeLocationNonInteractiveRefusesAndCreatesNothing(t *testing.T) {
@@ -1340,7 +1131,7 @@ func TestCheckoutWorktreeLocationNonInteractiveRefusesAndCreatesNothing(t *testi
 	if err == nil {
 		t.Fatal("checkout without a worktree location succeeded")
 	}
-	for _, want := range []string{"no worktree location is configured", "repository (", "machine (", "conveyor config set worktree_location repository --config " + configPath, "conveyor config set worktree_location machine --config " + configPath, "conveyor config init-execution --worktree-location"} {
+	for _, want := range []string{"no worktree location is configured", "repository (", "machine (", "conveyor config set worktree_location repository --config " + configPath, "conveyor config set worktree_location machine --config " + configPath} {
 		if !strings.Contains(err.Error(), want) {
 			t.Fatalf("error %q lacks %q", err, want)
 		}
@@ -1503,14 +1294,10 @@ func TestCheckoutWorktreeLocationMachineRootAndPathPrecedence(t *testing.T) {
 	if got, err = checkoutWithLocationConfig(t, fixture, configPath, "explicit", explicit); err != nil || got != explicit {
 		t.Fatalf("--path = %q, %v; want %q", got, err, explicit)
 	}
-	forwarded := filepath.Join(fixture.tmp, "forwarded")
-	t.Setenv("CONVEYOR_WORKTREE_ROOT", forwarded)
-	placement, err := checkoutWorktreePlacement(configPath, "demo")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if got, _, err = checkoutTaskWithPlacement(context.Background(), "conveyor/task-forwarded", "main", "conveyor", fixture.origin, "forwarded", "", placement, nil); err != nil || got != filepath.Join(forwarded, "conveyor-task-forwarded") {
-		t.Fatalf("forwarded path = %q, %v", got, err)
+	// A launcher's forwarded container is no longer read (DEC-97(1)).
+	t.Setenv("CONVEYOR_WORKTREE_ROOT", filepath.Join(fixture.tmp, "forwarded"))
+	if got, err = checkoutWithLocationConfig(t, fixture, configPath, "forwarded", ""); err != nil || filepath.Dir(got) == filepath.Join(fixture.tmp, "forwarded") {
+		t.Fatalf("forwarded path = %q, %v; want the configured location", got, err)
 	}
 }
 
@@ -1524,5 +1311,56 @@ func TestCheckoutWorktreeLocationReusesRegisteredWorktreeWithoutLocation(t *test
 	got, err := checkoutWithLocationConfig(t, fixture, worktreeLocationTestConfig(t, ""), "reuse-unconfigured", "")
 	if err != nil || got != first {
 		t.Fatalf("reuse = %q, %v; want %q", got, err, first)
+	}
+}
+
+// conveyor run, conveyor worker, and conveyor setup are retired with the
+// launcher, and conveyor config keeps no execution setup acts (DEC-97(1);
+// DEC-96(2); component-runtime).
+func TestRetiredLauncherCommandsAreUnknown(t *testing.T) {
+	root := newRootCmd()
+	for _, command := range root.Commands() {
+		switch command.Name() {
+		case "run", "worker", "setup":
+			t.Errorf("root command tree still registers %q", command.Name())
+		}
+	}
+	var help strings.Builder
+	root.SetOut(&help)
+	root.SetArgs([]string{"--help"})
+	if err := root.Execute(); err != nil {
+		t.Fatal(err)
+	}
+	for _, line := range strings.Split(help.String(), "\n") {
+		fields := strings.Fields(line)
+		if len(fields) > 0 && (fields[0] == "run" || fields[0] == "worker" || fields[0] == "setup") {
+			t.Errorf("conveyor --help lists %q", line)
+		}
+	}
+	for _, args := range [][]string{{"run", "261101-abc123"}, {"worker", "start"}, {"setup", "list"}} {
+		cmd := newRootCmd()
+		cmd.SetOut(io.Discard)
+		cmd.SetErr(io.Discard)
+		cmd.SetArgs(args)
+		err := cmd.Execute()
+		if err == nil || !strings.Contains(err.Error(), `unknown command "`+args[0]+`"`) {
+			t.Errorf("conveyor %s: err = %v, want unknown command", strings.Join(args, " "), err)
+		}
+	}
+	configPath := filepath.Join(t.TempDir(), "conveyor.yaml")
+	for _, args := range [][]string{
+		{"config", "set", "--config", configPath, "execution.implement.model", "gpt-5.6"},
+		{"config", "init-execution", "--config", configPath},
+	} {
+		cmd := newRootCmd()
+		cmd.SetOut(io.Discard)
+		cmd.SetErr(io.Discard)
+		cmd.SetArgs(args)
+		if err := cmd.Execute(); err == nil {
+			t.Errorf("conveyor %s succeeded", strings.Join(args, " "))
+		}
+	}
+	if _, err := os.Stat(configPath); !os.IsNotExist(err) {
+		t.Fatalf("a refused config act wrote %s: %v", configPath, err)
 	}
 }

@@ -463,18 +463,15 @@ func TestKitToolchainRepositoryConfigurationRefused(t *testing.T) {
 	f.snapshot.Selections = []store.VerificationSelection{{Receipt: verification.SelectionReceipt{Kits: []verification.KitReceipt{{KitID: "sample", Eligibility: "ineligible", Reasons: []verification.SelectionReason{{Code: "pin_mismatch"}}}}}}}
 	f.snapshot.PermissionGrants = []store.VerificationPermissionGrant{{ID: "grant", Subject: subject, Actions: []core.VerificationPermission{}}}
 	cfg := config.Config{KitPermissions: []config.KitPermissionGrant{{Server: f.v.rpc.client.base, Workspace: "demo", Repository: "repo", Binding: "repo", Actions: []verification.VerificationPermission{}}}, VerificationToolchains: []config.VerificationToolchain{h.record(f.v.rpc.client.base)}}
-	harness := config.HarnessTemplates()[0].Harness
-	document := localExecutionDocument("demo", newExecutionWizardState(healthyDetections(harness), nil).choices, []config.Harness{harness})
-	cfg.ExecutionSettings, cfg.Harnesses, cfg.Review = document.ExecutionSettings, document.Harnesses, document.Review
 	cfgBytes, err := yaml.Marshal(cfg)
 	if err != nil {
 		t.Fatal(err)
 	}
-	repoConfig := filepath.Join(f.v.root, localExecutionConfigName)
+	repoConfig := filepath.Join(f.v.root, localConfigName)
 	if err := os.WriteFile(repoConfig, cfgBytes, 0o600); err != nil {
 		t.Fatal(err)
 	}
-	for _, args := range [][]string{{"add", localExecutionConfigName}, {"commit", "-qm", "repository toolchain"}} {
+	for _, args := range [][]string{{"add", localConfigName}, {"commit", "-qm", "repository toolchain"}} {
 		if _, err := localKitGit(t.Context(), f.v.root, args...); err != nil {
 			t.Fatal(err)
 		}
@@ -491,7 +488,7 @@ func TestKitToolchainRepositoryConfigurationRefused(t *testing.T) {
 	t.Setenv("CONVEYOR_CONFIG", "")
 	t.Chdir(f.v.root)
 	cmd := kitVerifyCmd()
-	selected, err := resolveLocalExecutionConfigPath(cmd, cmd.Flags().Lookup("config").Value.String())
+	selected, err := resolveLocalConfigPath(cmd, cmd.Flags().Lookup("config").Value.String())
 	if err != nil || selected.Source != "working-directory file" {
 		t.Fatalf("default config selection: %+v %v", selected, err)
 	}
@@ -527,7 +524,7 @@ func TestKitToolchainRepositoryConfigurationRefused(t *testing.T) {
 		}
 	}
 
-	operatorConfig := filepath.Join(dir, "operator", localExecutionConfigName)
+	operatorConfig := filepath.Join(dir, "operator", localConfigName)
 	if err := os.MkdirAll(filepath.Dir(operatorConfig), 0o700); err != nil {
 		t.Fatal(err)
 	}

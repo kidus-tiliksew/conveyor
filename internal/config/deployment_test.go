@@ -282,9 +282,9 @@ review:
 	})
 }
 
-// component-harness-execution "The local execution document": the client
-// loader keeps and validates the same authored YAML that the deployment
-// loader strips.
+// component-runtime "The client loader": Load, the full-document parser,
+// keeps and validates the same authored YAML that the deployment loader
+// strips. The CLI reads conveyor.yaml only through LoadClient.
 func TestDeploymentAndLocalLoadHaveSeparateSemantics(t *testing.T) {
 	path := writeDeploymentFixture(t, legacyInitShapedDeployment(t))
 	local, err := Load(path)

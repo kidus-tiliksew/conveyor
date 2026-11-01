@@ -4,8 +4,10 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/url"
 	"os"
@@ -18,13 +20,11 @@ import (
 	"github.com/kidus-tiliksew/conveyor/internal/monitor"
 	"github.com/kidus-tiliksew/conveyor/internal/store"
 	"github.com/kidus-tiliksew/conveyor/internal/trigger/github"
-	workerservice "github.com/kidus-tiliksew/conveyor/internal/worker"
 )
 
 // client is a thin wrapper over the control-plane API (component-runtime).
 type client struct {
 	gitCredentials *localGitCredential
-	gitPreflight   func(context.Context, workerservice.DispatchOrder, []string) error
 	base           string
 	token          string
 	workspace      string
@@ -297,8 +297,17 @@ func (c *client) mergeTask(id string) (core.Task, error) {
 // the one-act gate merge: the task and the readiness peek the activity
 // envelope carries at the merge_approval gate (DEC-64(3)).
 type taskMergeGate struct {
-	Task           core.Task                            `json:"task"`
-	MergeReadiness *workerservice.TaskRunMergeReadiness `json:"merge_readiness"`
+	Task           core.Task           `json:"task"`
+	MergeReadiness *taskMergeReadiness `json:"merge_readiness"`
+}
+
+// taskMergeReadiness is the CLI copy of the merge-readiness read the task
+// activity envelope carries (component-submission-merge).
+type taskMergeReadiness struct {
+	State   string `json:"state"`
+	HeadSHA string `json:"head_sha,omitempty"`
+	URL     string `json:"url,omitempty"`
+	Number  int    `json:"number,omitempty"`
 }
 
 func (c *client) taskMergeGate(id string) (taskMergeGate, error) {
@@ -644,4 +653,107 @@ func (c *client) restartPullRequest(ctx context.Context, task core.Task) (github
 		return empty, fmt.Errorf("read GitHub pull request: %s", clean)
 	}
 	return pr, nil
+}
+
+// workerHTTPError, transientWorkerError, and workerDoContext are the shared
+// REST helpers of the commands that poll or relay: conveyor task wait,
+// conveyor kit verify, conveyor submit, and conveyor done (component-runtime).
+type workerHTTPError struct {
+	StatusCode int
+	Status     string
+	Message    string
+	Code       string
+}
+
+func (e *workerHTTPError) Error() string {
+	if e.Message == "" {
+		return e.Status
+	}
+	return e.Status + ": " + e.Message
+}
+
+// transientWorkerError is deliberately narrow: authentication, conflicts,
+// malformed responses, and invalid configuration must fail closed instead of
+// disappearing into a polling loop (component-runtime).
+func transientWorkerError(err error) bool {
+	if err == nil || errors.Is(err, context.Canceled) {
+		return false
+	}
+	var response *workerHTTPError
+	if errors.As(err, &response) {
+		return response.StatusCode >= 500 && response.StatusCode <= 599
+	}
+	var network net.Error
+	return errors.As(err, &network)
+}
+
+func (c *client) workerDoContext(ctx context.Context, method, path string, body []byte, out any, credential string) (resultErr error) {
+	defer func() {
+		if c.gitCredentials != nil {
+			resultErr = c.gitCredentials.scrubError(resultErr)
+		}
+	}()
+	if c.gitCredentials != nil && len(body) > 0 {
+		var err error
+		body, err = c.gitCredentials.scrubJSON(body)
+		if err != nil {
+			return fmt.Errorf("scrub request: %w", err)
+		}
+	}
+	req, err := http.NewRequestWithContext(ctx, method, c.base+path, bytes.NewReader(body))
+	if err != nil {
+		return err
+	}
+	if body != nil {
+		req.Header.Set("Content-Type", "application/json")
+	}
+	if credential != "" {
+		req.Header.Set("Authorization", "Bearer "+credential)
+	}
+	if c.workspace != "" {
+		req.Header.Set("X-Workspace-ID", c.workspace)
+	}
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return fmt.Errorf("API transport: %w", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode >= 300 {
+		message, _ := io.ReadAll(resp.Body)
+		return &workerHTTPError{StatusCode: resp.StatusCode, Status: resp.Status, Message: string(bytes.TrimSpace(message)), Code: resp.Header.Get("X-Conveyor-Error-Code")}
+	}
+	if resp.StatusCode == http.StatusNoContent || out == nil {
+		return nil
+	}
+	return json.NewDecoder(resp.Body).Decode(out)
+}
+
+// contextFreshnessSummary is display-only. Proposal polling neither fetches
+// nor acknowledges artifacts; repeated receipts have the same display key.
+func contextFreshnessSummary(f core.ContextFreshness) (string, string) {
+	if f.SelectionRevision == "" {
+		if f.Diagnostic == "" {
+			return "", ""
+		}
+		return f.Diagnostic, "Context freshness: " + f.Diagnostic
+	}
+	failures := 0
+	omissions, truncated := f.Snapshot.OmittedCount, 0
+	for _, d := range f.Deliveries {
+		if d.Failed {
+			failures++
+		}
+		if d.Omitted {
+			omissions++
+		}
+		if d.Truncated {
+			truncated++
+		}
+	}
+	incomplete := f.Truncated || f.Snapshot.IncompleteCoverage || f.Snapshot.Artifacts.Truncated || f.Snapshot.Omissions.Truncated
+	summary := fmt.Sprintf("Context %s: %d additions not fetched in this attempt, %d fetch failures, %d omissions, %d truncated inputs (comparison %s; incomplete coverage %t).", f.SelectionRevision, f.UnfetchedAdditions, failures, omissions, truncated, f.ComparisonStatus, incomplete)
+	if f.Diagnostic != "" {
+		summary += " Diagnostic: " + f.Diagnostic + "."
+	}
+	return core.ContextDigest([]string{f.ObservationRevision, summary}), summary
 }

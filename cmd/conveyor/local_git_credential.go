@@ -1,32 +1,27 @@
 package main
 
 import (
-	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"io"
+	"net/url"
 	"os"
-	"os/exec"
+	"sort"
 	"strings"
-	"sync"
-	"syscall"
 	"time"
 
 	"github.com/kidus-tiliksew/conveyor/internal/redact"
-	workerservice "github.com/kidus-tiliksew/conveyor/internal/worker"
 )
 
 const localGitTokenEnv = "CONVEYOR_GIT_TOKEN"
 const localGitPreflightTimeout = 20 * time.Second
-const localGitCredentialRemedy = "set CONVEYOR_GIT_TOKEN, or configure the host's git credential for that host"
-const localGitCredentialHelp = "Git credentials resolve locally: set CONVEYOR_GIT_TOKEN in the startup environment for child-only askpass, or leave it unset to use the host's Git credentials. The token is never accepted as an argument or saved. Before claiming, Git checks repository access with terminal prompting disabled and a bounded timeout. Repository checks are cached for this invocation; restart after changing credentials. Control-plane GitHub operations use the workspace GitHub App."
 
-// localGitCredential is invocation-local, shared by run and worker. It resolves
-// on the executing machine for committing, pushing, and opening the pull
-// request; no stored forge credential or control-plane installation token is
-// forwarded to it (req-delivery-and-forge REQ-7, AC-7.1 through AC-7.3,
-// DEC-59(3)-(4); component-local-launchers).
+// localGitCredential is invocation-local, used by conveyor submit and the Git
+// commands of conveyor checkout. It resolves on the executing machine for
+// committing, pushing, and opening the pull request; no stored forge
+// credential or control-plane installation token is forwarded to it
+// (req-delivery-and-forge REQ-7, AC-7.1 through AC-7.3, DEC-59(3)-(4);
+// component-git-delivery).
 type localGitCredential struct {
 	token  string
 	values map[string]string
@@ -50,62 +45,6 @@ func (g *localGitCredential) environment() []string {
 	// The startup variable never propagates to a child. Only self-askpass holds
 	// the explicit value; ambient Git configuration remains intact when unset.
 	return isolatedChildEnvironment(os.Environ(), g.values)
-}
-
-func (c *client) preflightLocalGitCredential(ctx context.Context, item workerservice.DispatchOrder) error {
-	g := c.gitCredentials
-	environment := isolatedChildEnvironment(g.environment(), map[string]string{"GIT_TERMINAL_PROMPT": "0"})
-	checkCtx, cancel := context.WithTimeout(ctx, localGitPreflightTimeout)
-	defer cancel()
-	var err error
-	switch {
-	case item.Repository.URL == "":
-		err = fmt.Errorf("repository URL is missing")
-	case g.token != "":
-		err = requireHTTPSRemote(item.Repository.URL)
-	}
-	if err == nil {
-		if c.gitPreflight != nil {
-			err = c.gitPreflight(checkCtx, item, environment)
-		} else {
-			base := item.Task.BaseBranch
-			if base == "" {
-				base = item.Repository.Base
-			}
-			if base == "" {
-				base = "main"
-			}
-			command := exec.CommandContext(checkCtx, "git", "ls-remote", "--heads", item.Repository.URL, base)
-			command.Env = environment
-			command.Dir = os.TempDir()
-			if item.Order.Stage != "spec" {
-				directory, resolveErr := resolveHarnessWorkingDirectory(checkCtx, localExecutionConfigFromContext(ctx), item)
-				if resolveErr != nil {
-					return fmt.Errorf("local Git credential preflight failed: %s; %s; work order left queued", g.scrub(resolveErr.Error()), localGitCredentialRemedy)
-				}
-				command.Dir = directory
-			}
-			command.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
-			command.Cancel = func() error {
-				err := syscall.Kill(-command.Process.Pid, syscall.SIGKILL)
-				if errors.Is(err, syscall.ESRCH) {
-					return os.ErrProcessDone
-				}
-				return err
-			}
-			command.WaitDelay = time.Second
-			// Git output may include credentials. Only the exit category is reported.
-			command.Stdout, command.Stderr = io.Discard, io.Discard
-			err = command.Run()
-			if checkCtx.Err() != nil {
-				err = checkCtx.Err()
-			}
-		}
-	}
-	if err != nil {
-		return fmt.Errorf("local Git credential preflight failed for repository %s: %s; %s; work order left queued", g.scrub(item.Task.Repo), g.scrub(err.Error()), localGitCredentialRemedy)
-	}
-	return nil
 }
 
 // scrub is the exact-match client boundary, also used before JSON encoding and
@@ -136,51 +75,6 @@ func (g *localGitCredential) scrubJSON(body []byte) ([]byte, error) {
 	return clean, err
 }
 
-// localGitOutputWriter holds a possible token prefix across writes, including
-// newlines. The existing redactor then removes the other session credentials.
-// Nothing unsanitized reaches the transcript spool, activity tail, or TUI.
-type localGitOutputWriter struct {
-	credential  *localGitCredential
-	destination *redact.Writer
-	mu          sync.Mutex
-	pending     string
-}
-
-func (g *localGitCredential) outputWriter(destination io.Writer, redactor *redact.Redactor) *localGitOutputWriter {
-	return &localGitOutputWriter{credential: g, destination: &redact.Writer{Destination: destination, Redactor: redactor}}
-}
-
-func (w *localGitOutputWriter) Write(p []byte) (int, error) {
-	w.mu.Lock()
-	defer w.mu.Unlock()
-	w.pending += string(p)
-	token := w.credential.token
-	// Replace complete matches before retaining an incomplete suffix.
-	w.pending = w.credential.scrub(w.pending)
-	keep := 0
-	for n := 1; n < len(token) && n <= len(w.pending); n++ {
-		if strings.HasSuffix(w.pending, token[:n]) {
-			keep = n
-		}
-	}
-	ready := w.pending[:len(w.pending)-keep]
-	w.pending = w.pending[len(w.pending)-keep:]
-	if _, err := io.WriteString(w.destination, ready); err != nil {
-		return 0, err
-	}
-	return len(p), nil
-}
-
-func (w *localGitOutputWriter) Flush() error {
-	w.mu.Lock()
-	defer w.mu.Unlock()
-	if _, err := io.WriteString(w.destination, w.credential.scrub(w.pending)); err != nil {
-		return err
-	}
-	w.pending = ""
-	return w.destination.Flush()
-}
-
 // Preserve error identity for lease/cancellation handling while removing local
 // secrets from diagnostics that a caller may print or report.
 type localGitError struct {
@@ -199,4 +93,100 @@ func (g *localGitCredential) scrubError(err error) error {
 		return err
 	}
 	return &localGitError{cause: err, message: clean}
+}
+
+// isolatedChildEnvironment builds a Git child's environment: the startup
+// CONVEYOR_GIT_TOKEN never propagates, and each named value replaces any
+// inherited entry (component-git-delivery).
+func isolatedChildEnvironment(base []string, values map[string]string) []string {
+	result := make([]string, 0, len(base)+len(values))
+	for _, entry := range base {
+		name, _, found := strings.Cut(entry, "=")
+		if name == localGitTokenEnv {
+			continue
+		}
+		if found {
+			if _, replaced := values[name]; replaced {
+				continue
+			}
+		}
+		result = append(result, entry)
+	}
+	names := make([]string, 0, len(values))
+	for name := range values {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	for _, name := range names {
+		result = append(result, name+"="+values[name])
+	}
+	return result
+}
+
+const (
+	gitAskPassModeEnv     = "CONVEYOR_GIT_ASKPASS_MODE"
+	gitAskPassTokenEnv    = "CONVEYOR_GIT_ASKPASS_TOKEN"
+	gitAskPassUsernameEnv = "CONVEYOR_GIT_ASKPASS_USERNAME"
+)
+
+// childGitCredentialEnvironment keeps the forge token in process memory and
+// the child-only environment. Git invokes this same executable as askpass;
+// neither the token nor a token-bearing URL enters argv or Git configuration
+// (req-delivery-and-forge REQ-7/AC-7.2; req-security-boundaries REQ-2).
+func childGitCredentialEnvironment(token string) (map[string]string, error) {
+	if token == "" {
+		return nil, nil
+	}
+	executable, err := os.Executable()
+	if err != nil {
+		return nil, fmt.Errorf("resolve Conveyor executable for Git askpass: %w", err)
+	}
+	return map[string]string{
+		"GIT_ASKPASS":         executable,
+		"GIT_TERMINAL_PROMPT": "0",
+		"GCM_INTERACTIVE":     "never",
+		"GIT_CONFIG_NOSYSTEM": "1",
+		"GIT_CONFIG_GLOBAL":   os.DevNull,
+		"GIT_CONFIG_COUNT":    "1",
+		"GIT_CONFIG_KEY_0":    "credential.helper",
+		"GIT_CONFIG_VALUE_0":  "",
+		gitAskPassModeEnv:     "1",
+		gitAskPassTokenEnv:    token,
+		gitAskPassUsernameEnv: "x-access-token",
+	}, nil
+}
+
+func runGitAskPass(output io.Writer, prompt string) error {
+	lowerPrompt := strings.ToLower(strings.TrimSpace(prompt))
+	switch {
+	case strings.HasPrefix(lowerPrompt, "username for "):
+		username := os.Getenv(gitAskPassUsernameEnv)
+		if username == "" {
+			return fmt.Errorf("Git askpass username is unavailable")
+		}
+		_, err := fmt.Fprintln(output, username)
+		return err
+	case strings.HasPrefix(lowerPrompt, "password for "):
+		token := os.Getenv(gitAskPassTokenEnv)
+		if token == "" {
+			return fmt.Errorf("Git askpass token is unavailable")
+		}
+		_, err := fmt.Fprintln(output, token)
+		return err
+	default:
+		return fmt.Errorf("Git askpass received an unsupported prompt")
+	}
+}
+
+func isGitAskPassPrompt(prompt string) bool {
+	lowerPrompt := strings.ToLower(strings.TrimSpace(prompt))
+	return strings.HasPrefix(lowerPrompt, "username for ") || strings.HasPrefix(lowerPrompt, "password for ")
+}
+
+func requireHTTPSRemote(remote string) error {
+	parsed, err := url.Parse(strings.TrimSpace(remote))
+	if err != nil || !strings.EqualFold(parsed.Scheme, "https") || parsed.Host == "" || parsed.User != nil {
+		return fmt.Errorf("repository origin must use an HTTPS URL without embedded credentials; configure origin with an https:// remote")
+	}
+	return nil
 }

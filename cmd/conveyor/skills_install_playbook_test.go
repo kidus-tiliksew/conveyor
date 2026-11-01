@@ -35,15 +35,22 @@ func readInstallPlaybook(t *testing.T) []byte {
 // variables.
 func TestInstallPlaybookConveyorCommandsExist(t *testing.T) {
 	invocations := playbookcheck.Extract(readInstallPlaybook(t))
-	checked := 0
+	checked, retired := 0, 0
 	for _, invocation := range invocations {
 		if invocation.Program != "conveyor" {
 			continue
 		}
 		checked++
+		if retiredLauncherInvocation(invocation.Args) {
+			retired++
+			continue
+		}
 		if err := playbookcheck.CheckCobra(newRootCmd(), invocation.Args); err != nil {
 			t.Errorf("%s %s: %v", installPlaybookSource, invocation, err)
 		}
+	}
+	if retired > 0 {
+		t.Logf("skipped %d invocations of retired launcher and setup commands in %s; the documentation task removes them", retired, installPlaybookSource)
 	}
 	// The playbook directs dozens of conveyor commands; a near-empty count
 	// means the extractor stopped reading it.
@@ -59,9 +66,9 @@ func TestInstallPlaybookCommandCheckRefusesMisspellings(t *testing.T) {
 		"```sh\n" +
 		"conveyor skils install\n" +
 		"conveyor --server <server-url> mcp install --nmae factory\n" +
-		"conveyor --server <server-url> worker pair --tll 5m\n" +
+		"conveyor --server <server-url> task wait --tiemout 5m 261101-abc123\n" +
 		"```\n\n" +
-		"Change a setup with `conveyor setup create|edti main`.\n"
+		"Check a draft with `conveyor plan check|chekc`.\n"
 	invocations := playbookcheck.Extract([]byte(fixture))
 	if len(invocations) != 5 {
 		t.Fatalf("fixture invocations = %d, want 5", len(invocations))
@@ -75,12 +82,29 @@ func TestInstallPlaybookCommandCheckRefusesMisspellings(t *testing.T) {
 	}{
 		{invocation: invocations[1], want: `unknown command "skils" for "conveyor"`},
 		{invocation: invocations[2], want: `unknown flag "--nmae" for "conveyor mcp install"`},
-		{invocation: invocations[3], want: `unknown flag "--tll" for "conveyor worker pair"`},
-		{invocation: invocations[4], want: `unknown command "create|edti" for "conveyor setup"`},
+		{invocation: invocations[3], want: `unknown flag "--tiemout" for "conveyor task wait"`},
+		{invocation: invocations[4], want: `unknown command "check|chekc" for "conveyor plan"`},
 	} {
 		err := playbookcheck.CheckCobra(newRootCmd(), test.invocation.Args)
 		if err == nil || !strings.Contains(err.Error(), test.want) {
 			t.Errorf("%s: error = %v, want %s", test.invocation, err, test.want)
+		}
+		if retiredLauncherInvocation(test.invocation.Args) {
+			t.Errorf("%s: classified as a retired command", test.invocation)
+		}
+	}
+	// Only the retired groups are skipped, and each still fails the check.
+	for _, args := range [][]string{{"run", "261101-abc123"}, {"--server", "<server-url>", "worker", "install"}, {"setup", "list"}, {"config", "init-execution", "--defaults"}} {
+		if !retiredLauncherInvocation(args) {
+			t.Errorf("%v: not classified as a retired command", args)
+		}
+		if err := playbookcheck.CheckCobra(newRootCmd(), args); err == nil {
+			t.Errorf("%v: retired command still resolves", args)
+		}
+	}
+	for _, args := range [][]string{{"config", "set", "worktree_location", "machine"}, {"task", "wait", "261101-abc123"}, {"--workspace", "run", "task", "list"}} {
+		if retiredLauncherInvocation(args) {
+			t.Errorf("%v: classified as a retired command", args)
 		}
 	}
 }
@@ -294,4 +318,32 @@ func TestInstallPlaybookRESTRequestsKeepSecretsOutOfOutput(t *testing.T) {
 			}
 		}
 	}
+}
+
+// retiredLauncherInvocation reports an invocation of a command group that
+// DEC-97(1) and DEC-96(2) retired: run, worker, setup, and config
+// init-execution. The setup playbook still names them until the documentation
+// task rewrites it; every other unregistered command or flag still fails.
+func retiredLauncherInvocation(args []string) bool {
+	var words []string
+	for i := 0; i < len(args); i++ {
+		arg := args[i]
+		switch {
+		case arg == "--server" || arg == "--workspace":
+			i++
+		case strings.HasPrefix(arg, "-"):
+		default:
+			words = append(words, arg)
+		}
+	}
+	if len(words) == 0 {
+		return false
+	}
+	switch words[0] {
+	case "run", "worker", "setup":
+		return true
+	case "config":
+		return len(words) > 1 && words[1] == "init-execution"
+	}
+	return false
 }

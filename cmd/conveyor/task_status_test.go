@@ -100,10 +100,10 @@ func TestTaskStatusChoiceEquivalents(t *testing.T) {
 		id, method, path string
 		want             string
 	}{
-		{"approve", "POST", taskPath + "/review", "cli: conveyor run " + task},
-		{"redirect", "POST", taskPath + "/review", "cli: conveyor run " + task},
-		{"approve_revision", "POST", taskPath + "/review", "cli: conveyor run " + task},
-		{"decline", "POST", taskPath + "/review", "cli: conveyor run " + task},
+		{"approve", "POST", taskPath + "/review", "cli: conveyor task approve " + task},
+		{"redirect", "POST", taskPath + "/review", "cli: conveyor task redirect " + task + " --reason changes-requested -m <direction>"},
+		{"approve_revision", "POST", taskPath + "/review", "cli: conveyor task redirect " + task + " --reason plan-revision-approved -m <comment>"},
+		{"decline", "POST", taskPath + "/review", "cli: conveyor task redirect " + task + " --reason plan-revision-declined -m <direction>"},
 		{"reject", "POST", taskPath + "/review", "no CLI command; use the dashboard: POST " + taskPath + "/review"},
 		{"request_changes", "POST", taskPath + "/request-changes", "cli: conveyor task request-changes " + task},
 		{"merge", "POST", taskPath + "/merge", "cli: conveyor task merge " + task},

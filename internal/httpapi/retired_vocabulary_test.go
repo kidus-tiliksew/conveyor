@@ -22,11 +22,11 @@ func TestRetiredExecutionModeVocabularyStaysOutOfPayloadsAndWebCopy(t *testing.T
 		"execution mode", "execution-mode",
 	}
 	// These are the only nearby uses of "auto" vocabulary that remain part of
-	// the product contract: gate labels and the local run-mode implementation
-	// constant. They are intentionally explicit so additions require review.
+	// the product contract: gate labels. The conveyor run mode constant left
+	// with that command (DEC-97(1)). They are intentionally explicit so
+	// additions require review.
 	allowlist := map[string][]string{
 		"web/src/components/task/task-create-sheet.tsx": {"Auto-approve", "Auto-merge"},
-		"cmd/conveyor/run_cmd.go":                       {"runModeAuto"},
 	}
 
 	paths := []string{filepath.Join(root, "internal", "httpapi"), filepath.Join(root, "web", "src")}

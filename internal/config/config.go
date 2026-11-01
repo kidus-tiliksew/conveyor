@@ -1,7 +1,7 @@
 // Package config loads Conveyor's immutable deployment settings and the
 // mutable workspace document. Phase 4.7 deliberately keeps execution
 // credentials out of both documents: conveyord uses CONVEYOR_LLM_API_KEY and
-// MCP clients bring their own agent credentials (component-harness-execution;
+// MCP clients bring their own agent credentials (component-runtime;
 // DEC-3).
 package config
 
@@ -49,7 +49,7 @@ type Repo struct {
 
 // MonitorConfig is explicit workspace/repository observation scope. It carries
 // no credentials; the GitHub boundary uses the daemon's least-privilege
-// environment and records only stable error categories (component-harness-execution).
+// environment and records only stable error categories (component-runtime).
 type MonitorConfig struct {
 	Enabled                bool          `yaml:"enabled" json:"enabled"`
 	Repositories           []string      `yaml:"repositories,omitempty" json:"repositories"`
@@ -371,7 +371,7 @@ type StageRoute struct {
 	TimeoutText string        `yaml:"timeout" json:"timeout"`
 	Execution   ExecutionMode `yaml:"execution" json:"execution"`
 	// EffectiveModel is the normalized worker argument. It is deliberately
-	// absent from persisted compatibility routes (component-harness-execution).
+	// absent from persisted compatibility routes (component-runtime).
 	EffectiveModel string `yaml:"-" json:"-"`
 
 	// v1.3 compatibility inputs. They are consumed during normalization and
@@ -401,7 +401,7 @@ type Harness struct {
 
 const (
 	// MCP transport controls the representation substituted for the whole
-	// {mcp_config} argv element (component-harness-execution).
+	// {mcp_config} argv element (component-runtime).
 	MCPTransportJSONFile     = "json_file"
 	MCPTransportTOMLOverride = "toml_override"
 	MCPTransportEnvironment  = "environment"
@@ -411,7 +411,7 @@ var mcpAttachmentPattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]{0,62}$
 
 // ReviewSeat is one immutable assignment in a submitted review round. The
 // model is always pinned; Harness optionally overrides the workspace review
-// route for worker dispatch (component-harness-execution).
+// route for worker dispatch (component-runtime).
 type ReviewSeat struct {
 	Model   string `yaml:"model,omitempty" json:"model,omitempty"`
 	Harness string `yaml:"harness,omitempty" json:"harness,omitempty"`
@@ -439,7 +439,7 @@ type ExecutionPolicy struct {
 	ImplementConcurrency int    `yaml:"implement_concurrency" json:"implement_concurrency"`
 	ReviewConcurrency    int    `yaml:"review_concurrency" json:"review_concurrency"`
 	// FirstActivityTimeout is worker child-output liveness, independent of
-	// the claim lease and fixed execution deadline (component-harness-execution).
+	// the claim lease and fixed execution deadline (component-runtime).
 	FirstActivityTimeout     time.Duration `yaml:"-" json:"-"`
 	FirstActivityTimeoutText string        `yaml:"first_activity_timeout" json:"first_activity_timeout"`
 }
@@ -698,7 +698,7 @@ type ControlPlaneSettings struct {
 	Triage   ModelTimeoutSettings `yaml:"triage" json:"triage"`
 	Planning PlanningSettings     `yaml:"planning" json:"planning"`
 	// Spec accepts pre-v1.34 documents. Normalization moves it into the
-	// contextual spec execution settings and never emits it again (component-harness-execution).
+	// contextual spec execution settings and never emits it again (component-runtime).
 	Spec ModelTimeoutSettings `yaml:"spec,omitempty" json:"spec,omitempty"`
 }
 
@@ -728,7 +728,7 @@ type ReviewExecutionSettings struct {
 
 // ContextualExecutionSettings is the v1.18 canonical surface. Routing remains
 // additive compatibility data and is never a second source of truth when this
-// object is present (component-harness-execution).
+// object is present (component-runtime).
 type ContextualExecutionSettings struct {
 	Verify         ImplementationSettings  `yaml:"verify,omitempty" json:"verify,omitempty"`
 	ControlPlane   ControlPlaneSettings    `yaml:"control_plane" json:"control_plane"`
@@ -740,7 +740,7 @@ type ContextualExecutionSettings struct {
 // ExecutionSetup is one named execution contract. Its harness, model, and
 // effort settings are client-local and never freeze onto a task; only the
 // pipeline-policy subset that MarshalJSON persists freezes by value at intake
-// (component-harness-execution; DEC-47, DEC-56).
+// (component-runtime; DEC-47, DEC-56).
 type ExecutionSetup struct {
 	VerifyStage       bool                        `yaml:"verify_stage,omitempty" json:"verify_stage,omitempty"`
 	Name              string                      `yaml:"name" json:"name"`
@@ -1006,7 +1006,7 @@ func ParseWorkspaceDocument(data []byte, deployment *Config, source string) (*Co
 // cloneConfig isolates every mutable container reachable from a deployment
 // config before workspace overlays and normalization. RuntimeConfig callers
 // parse concurrently, so even compatibility-only fields must not alias the
-// long-lived deployment value (component-harness-execution).
+// long-lived deployment value (component-runtime).
 func cloneConfig(source *Config) Config {
 	next := *source
 	if source.ExecutionSettings != nil {
@@ -1406,7 +1406,7 @@ func normalizeHarnessModel(route StageRoute, harnesses []Harness) (string, error
 	if selected == nil {
 		// Legacy/manual-only documents may predate the harness registry. They
 		// remain readable; worker health rejects Auto because no route harness
-		// is usable (component-harness-execution).
+		// is usable (component-runtime).
 		if route.Harness == "" {
 			return "", nil
 		}
@@ -1544,7 +1544,7 @@ func normalizeLegacy(c *Config, path string) (*Config, error) {
 		if stage == "spec" {
 			// Pre-v1.34 stored routes were fixed in-process. Upgrade them to the
 			// worker context without allowing legacy values to override explicit
-			// contextual spec settings (component-harness-execution).
+			// contextual spec settings (component-runtime).
 			if route.Execution == "" || route.Execution == ExecutionInProcess {
 				route.Execution = ExecutionMCP
 			}
@@ -1604,7 +1604,7 @@ func normalizeLegacy(c *Config, path string) (*Config, error) {
 				return nil, fmt.Errorf("execution_settings.control_plane.%s.effort %q must be minimal, low, medium, or high", stage, route.Effort)
 			}
 			// Harness fields on pre-v1.18 control-plane routes are compatibility
-			// noise and never become worker requirements (component-harness-execution).
+			// noise and never become worker requirements (component-runtime).
 			route.Harness = ""
 		}
 		if stage == "review" && route.Execution == ExecutionInProcess {
@@ -1716,7 +1716,7 @@ func normalizeLegacy(c *Config, path string) (*Config, error) {
 			}
 		}
 		// A stale fallback is intentionally not validated when every seat is
-		// explicit; it is retained only for compatibility (component-harness-execution).
+		// explicit; it is retained only for compatibility (component-runtime).
 		c.Routing.Stages["review"] = reviewRoute
 	}
 	for _, stage := range []string{"spec", "implement", "review", "verify"} {
@@ -1905,7 +1905,7 @@ func finishNormalization(c *Config, requestedPlanning PlanningSettings) (*Config
 		}
 		repoNames[repo.Name] = struct{}{}
 		// Repository names become part of the implicit sibling worktree name,
-		// so keep them to the server-generated task ID alphabet (component-harness-execution).
+		// so keep them to the server-generated task ID alphabet (component-runtime).
 		if !validRepoName(repo.Name) {
 			return nil, fmt.Errorf("repo %d: name %q must use only ASCII letters, digits, '.', '_', or '-' and must not be '.' or '..'", i, repo.Name)
 		}
@@ -2090,7 +2090,7 @@ func (c *Config) FreezePolicy() ExecutionSetup {
 }
 
 // Setup resolves a configured setup by name, defaulting an empty selector to
-// the workspace default. Unknown explicit names never fall back (component-harness-execution).
+// the workspace default. Unknown explicit names never fall back (component-runtime).
 func (c *Config) Setup(name string) (ExecutionSetup, bool) {
 	name = strings.TrimSpace(name)
 	if name == "" {
@@ -2280,7 +2280,7 @@ func validateHarness(h Harness, index int) error {
 }
 
 // ValidateHarness applies the same transport-aware durable contract to worker
-// snapshots immediately before probing or launch (component-harness-execution).
+// snapshots immediately before probing or launch (component-runtime).
 func ValidateHarness(h Harness) error {
 	return validateHarness(h, 0)
 }
@@ -2391,7 +2391,7 @@ func expandDefault(value, home, fallback string) string {
 
 // DefaultWorktreeRoot returns the suggested root for machine-mode worktree
 // locations. It applies only after a user chooses machine mode; an
-// unconfigured location is never defaulted (component-harness-execution).
+// unconfigured location is never defaulted (component-runtime).
 func DefaultWorktreeRoot(home string) string {
 	return filepath.Join(home, ".conveyor", "worktrees")
 }

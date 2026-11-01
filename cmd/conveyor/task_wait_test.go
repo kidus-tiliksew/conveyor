@@ -17,11 +17,10 @@ import (
 	"time"
 
 	"github.com/kidus-tiliksew/conveyor/internal/core"
-	workerservice "github.com/kidus-tiliksew/conveyor/internal/worker"
 )
 
 // Tests for conveyor task wait (req-agent-skills REQ-4, AC-4.1 through AC-4.3;
-// DEC-45; component-runtime).
+// component-cli-onboarding).
 
 const (
 	taskWaitTestToken     = "wait-test-token"
@@ -41,12 +40,54 @@ type taskWaitStep struct {
 	block     bool
 	state     core.TaskState
 	title     string
-	gate      *workerservice.TaskRunGate
+	gate      *taskWaitTestGate
 	order     core.WorkOrder
-	proposals []workerservice.TaskRunProposal
+	proposals []taskWaitTestProposal
 	// nextAction, when set, is embedded as next_action in the task read, as
 	// GET /v1/tasks/{id} does.
 	nextAction *nextActionView
+}
+
+// taskWaitTestGate is the gate a step serves. The fixture projects it onto
+// the reads task wait makes: the task's state and next_action kind, the
+// latest plan, and the activity's merge readiness.
+type taskWaitTestGate struct {
+	Kind              string
+	Label             string
+	Summary           string
+	CanOperate        bool
+	CanRequestChanges bool
+	SpecVersion       int
+	PlanVersion       int
+	MergeReadiness    *taskMergeReadiness
+}
+
+// taskWaitTestProposal is a task-authored pending proposal a step serves.
+type taskWaitTestProposal struct {
+	Kind       string
+	DocumentID string
+	Title      string
+	Version    int
+	CanConfirm bool
+	ActorHint  string
+}
+
+func (g *taskWaitTestGate) nextActionKind() string {
+	if g == nil {
+		return "working"
+	}
+	switch g.Kind {
+	case "spec":
+		return "plan_approval"
+	case "plan_revision":
+		return "plan_revision"
+	case "merge":
+		return "merge_approval"
+	case taskWaitGateMergeExecution:
+		return "merge_execution"
+	default:
+		return "job_failure"
+	}
 }
 
 type taskWaitFixture struct {
@@ -56,6 +97,7 @@ type taskWaitFixture struct {
 	next   int
 	active taskWaitStep
 	reads  int
+	paths  []string
 	server *httptest.Server
 }
 
@@ -77,6 +119,12 @@ func (f *taskWaitFixture) taskReads() int {
 	return f.reads
 }
 
+func (f *taskWaitFixture) requestPaths() []string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]string(nil), f.paths...)
+}
+
 func (f *taskWaitFixture) serve(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		f.t.Errorf("task wait sent %s %s; only GET is allowed", r.Method, r.URL.Path)
@@ -89,9 +137,11 @@ func (f *taskWaitFixture) serve(w http.ResponseWriter, r *http.Request) {
 	if got := r.Header.Get("X-Workspace-ID"); got != taskWaitTestWorkspace {
 		f.t.Errorf("X-Workspace-ID = %q", got)
 	}
+	f.mu.Lock()
+	f.paths = append(f.paths, r.URL.RequestURI())
+	f.mu.Unlock()
 	taskPath := "/v1/tasks/" + taskWaitTestTaskID
-	switch r.URL.Path {
-	case taskPath:
+	if r.URL.Path == taskPath {
 		f.mu.Lock()
 		step := f.steps[min(f.next, len(f.steps)-1)]
 		f.next++
@@ -111,22 +161,62 @@ func (f *taskWaitFixture) serve(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, http.StatusText(step.status), step.status)
 			return
 		}
-		if step.nextAction != nil {
-			_ = json.NewEncoder(w).Encode(struct {
-				core.Task
-				NextAction *nextActionView `json:"next_action"`
-			}{core.Task{ID: taskWaitTestTaskID, State: step.state, Title: step.title}, step.nextAction})
+		task := core.Task{ID: taskWaitTestTaskID, State: step.state, Title: step.title}
+		if step.gate != nil && step.gate.Kind == taskWaitGateMergeExecution && step.state == core.TaskApproved {
+			task.MergeApproval = true
+		}
+		action := step.nextAction
+		if action == nil {
+			action = &nextActionView{Label: "Label " + step.title, Actor: "agent", Kind: step.gate.nextActionKind()}
+		}
+		_ = json.NewEncoder(w).Encode(struct {
+			core.Task
+			NextAction *nextActionView `json:"next_action"`
+		}{task, action})
+		return
+	}
+	f.mu.Lock()
+	step := f.active
+	f.mu.Unlock()
+	switch r.URL.Path {
+	case "/v1/work-orders":
+		// Decoys: another task's claimable order and this task's claimed order.
+		orders := []core.WorkOrder{
+			{ID: "other-task-implement-1", TaskID: "other-task", Stage: core.StageImplement, State: core.WorkOrderQueued, Claimable: true},
+			{ID: taskWaitTestTaskID + "-claimed", TaskID: taskWaitTestTaskID, Stage: core.StageSpec, State: core.WorkOrderClaimed},
+		}
+		if step.order.ID != "" {
+			order := step.order
+			order.TaskID, order.State, order.Claimable = taskWaitTestTaskID, core.WorkOrderQueued, true
+			orders = append(orders, order)
+		}
+		_ = json.NewEncoder(w).Encode(orders)
+	case "/v1/pending-proposals":
+		items := []core.PendingProposal{{ID: "other-design", Tier: "system_design", Version: 3, OriginType: "task", OriginID: "other-task"}}
+		for _, proposal := range step.proposals {
+			tier := proposal.Kind
+			if tier == "design" {
+				tier = "system_design"
+			}
+			items = append(items, core.PendingProposal{ID: proposal.DocumentID, Title: proposal.Title, Tier: tier, Version: proposal.Version, OriginType: "task", OriginID: taskWaitTestTaskID})
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{"items": items})
+	case taskPath + "/spec":
+		version := 0
+		if step.gate != nil {
+			version = max(step.gate.SpecVersion, step.gate.PlanVersion)
+		}
+		if version == 0 {
+			http.Error(w, "spec not found", http.StatusNotFound)
 			return
 		}
-		_ = json.NewEncoder(w).Encode(core.Task{ID: taskWaitTestTaskID, State: step.state, Title: step.title})
-	case taskPath + "/run-order":
-		f.mu.Lock()
-		step := f.active
-		f.mu.Unlock()
-		_ = json.NewEncoder(w).Encode(workerservice.DispatchOrder{
-			Order: step.order, Task: core.Task{ID: taskWaitTestTaskID, State: step.state, Title: step.title},
-			Gate: step.gate, PendingProposals: step.proposals, Dispatch: "run", Auth: "user",
-		})
+		_ = json.NewEncoder(w).Encode(core.SpecVersion{TaskID: taskWaitTestTaskID, Version: version})
+	case taskPath + "/activity":
+		var readiness *taskMergeReadiness
+		if step.gate != nil {
+			readiness = step.gate.MergeReadiness
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{"task": core.Task{ID: taskWaitTestTaskID, State: step.state}, "merge_readiness": readiness})
 	default:
 		f.t.Errorf("unexpected request %s %s", r.Method, r.URL.Path)
 		http.NotFound(w, r)
@@ -136,8 +226,8 @@ func (f *taskWaitFixture) serve(w http.ResponseWriter, r *http.Request) {
 func taskWaitTestOptions(timeout time.Duration) taskWaitOptions {
 	return taskWaitOptions{
 		timeout: timeout,
-		newPoller: func() *runAdaptivePoller {
-			return &runAdaptivePoller{
+		newPoller: func() *taskWaitPoller {
+			return &taskWaitPoller{
 				base: time.Millisecond, maximum: 2 * time.Millisecond, current: time.Millisecond,
 				jitter: func(delay, _ time.Duration) time.Duration { return delay },
 			}
@@ -160,7 +250,7 @@ func runTaskWaitJSON(t *testing.T, f *taskWaitFixture, timeout time.Duration) (t
 }
 
 func TestTaskWaitReturnsWhenGateClears(t *testing.T) {
-	gate := &workerservice.TaskRunGate{Kind: "spec", Label: "spec approval gate", SpecVersion: 1, CanOperate: true}
+	gate := &taskWaitTestGate{Kind: "spec", Label: "spec approval gate", SpecVersion: 1, CanOperate: true}
 	f := newTaskWaitFixture(t,
 		taskWaitStep{state: core.TaskAwaiting, gate: gate},
 		taskWaitStep{state: core.TaskAwaiting, gate: gate},
@@ -196,10 +286,10 @@ func TestTaskWaitReturnsWhenNextOrderAppears(t *testing.T) {
 }
 
 func TestTaskWaitReturnsWhenProposalResolves(t *testing.T) {
-	proposal := workerservice.TaskRunProposal{Kind: "design", DocumentID: "component-runtime", Title: "Runtime", Version: 17, CanConfirm: true}
+	proposal := taskWaitTestProposal{Kind: "design", DocumentID: "component-runtime", Title: "Runtime", Version: 17, CanConfirm: true}
 	f := newTaskWaitFixture(t,
-		taskWaitStep{state: core.TaskRunning, proposals: []workerservice.TaskRunProposal{proposal}},
-		taskWaitStep{state: core.TaskRunning, proposals: []workerservice.TaskRunProposal{proposal}},
+		taskWaitStep{state: core.TaskRunning, proposals: []taskWaitTestProposal{proposal}},
+		taskWaitStep{state: core.TaskRunning, proposals: []taskWaitTestProposal{proposal}},
 		taskWaitStep{state: core.TaskRunning},
 	)
 	result, err := runTaskWaitJSON(t, f, 5*time.Second)
@@ -212,7 +302,7 @@ func TestTaskWaitReturnsWhenProposalResolves(t *testing.T) {
 }
 
 func TestTaskWaitTimesOutWithLastObservation(t *testing.T) {
-	f := newTaskWaitFixture(t, taskWaitStep{state: core.TaskAwaiting, gate: &workerservice.TaskRunGate{Kind: "merge"}})
+	f := newTaskWaitFixture(t, taskWaitStep{state: core.TaskAwaiting, gate: &taskWaitTestGate{Kind: "merge"}})
 	result, err := runTaskWaitJSON(t, f, 50*time.Millisecond)
 	var timedOut *taskWaitTimeoutError
 	if !errors.As(err, &timedOut) {
@@ -265,7 +355,7 @@ func TestTaskWaitRetriesTransientErrorsThenReportsChange(t *testing.T) {
 		taskWaitStep{status: http.StatusServiceUnavailable},
 		taskWaitStep{abort: true},
 		taskWaitStep{status: http.StatusBadGateway},
-		taskWaitStep{state: core.TaskAwaiting, gate: &workerservice.TaskRunGate{Kind: "merge"}},
+		taskWaitStep{state: core.TaskAwaiting, gate: &taskWaitTestGate{Kind: "merge"}},
 	)
 	result, err := runTaskWaitJSON(t, f, 5*time.Second)
 	if err != nil {
@@ -349,20 +439,20 @@ func TestTaskWaitFailsOnMalformedResponse(t *testing.T) {
 }
 
 func TestTaskWaitIgnoresPresentationChurnAndNormalizesOrder(t *testing.T) {
-	first := []workerservice.TaskRunProposal{
+	first := []taskWaitTestProposal{
 		{Kind: "requirement", DocumentID: "req-agent-skills", Title: "Skills", Version: 4},
 		{Kind: "design", DocumentID: "component-runtime", Title: "Runtime", Version: 17},
 		{Kind: "design", DocumentID: "component-runtime", Title: "Runtime duplicate", Version: 17},
 	}
-	second := []workerservice.TaskRunProposal{
+	second := []taskWaitTestProposal{
 		{Kind: "design", DocumentID: "component-runtime", Title: "Runtime renamed", Version: 17, CanConfirm: true, ActorHint: "an operator can confirm"},
 		{Kind: "requirement", DocumentID: "req-agent-skills", Title: "Skills renamed", Version: 4},
 	}
 	f := newTaskWaitFixture(t,
 		taskWaitStep{state: core.TaskAwaiting, title: "one", proposals: first,
-			gate: &workerservice.TaskRunGate{Kind: "spec", Label: "spec approval gate", Summary: "submitted execution plan v2", SpecVersion: 2}},
+			gate: &taskWaitTestGate{Kind: "spec", Label: "spec approval gate", Summary: "submitted execution plan v2", SpecVersion: 2}},
 		taskWaitStep{state: core.TaskAwaiting, title: "two", proposals: second,
-			gate: &workerservice.TaskRunGate{Kind: "spec", Label: "relabelled", Summary: "other", SpecVersion: 2, CanOperate: true, CanRequestChanges: true}},
+			gate: &taskWaitTestGate{Kind: "spec", Label: "relabelled", Summary: "other", SpecVersion: 2, CanOperate: true, CanRequestChanges: true}},
 	)
 	result, err := runTaskWaitJSON(t, f, 60*time.Millisecond)
 	var timedOut *taskWaitTimeoutError
@@ -381,20 +471,20 @@ func TestTaskWaitIgnoresPresentationChurnAndNormalizesOrder(t *testing.T) {
 func TestTaskWaitDetectsGateAndProposalVersionChanges(t *testing.T) {
 	for name, steps := range map[string][]taskWaitStep{
 		"plan version": {
-			{state: core.TaskAwaiting, gate: &workerservice.TaskRunGate{Kind: "spec", SpecVersion: 1}},
-			{state: core.TaskAwaiting, gate: &workerservice.TaskRunGate{Kind: "spec", SpecVersion: 2}},
+			{state: core.TaskAwaiting, gate: &taskWaitTestGate{Kind: "spec", SpecVersion: 1}},
+			{state: core.TaskAwaiting, gate: &taskWaitTestGate{Kind: "spec", SpecVersion: 2}},
 		},
 		"gate kind": {
-			{state: core.TaskAwaiting, gate: &workerservice.TaskRunGate{Kind: "merge"}},
-			{state: core.TaskAwaiting, gate: &workerservice.TaskRunGate{Kind: "plan_revision", PlanVersion: 1}},
+			{state: core.TaskAwaiting, gate: &taskWaitTestGate{Kind: "merge"}},
+			{state: core.TaskAwaiting, gate: &taskWaitTestGate{Kind: "plan_revision", PlanVersion: 1}},
 		},
 		"proposal version": {
-			{state: core.TaskRunning, proposals: []workerservice.TaskRunProposal{{Kind: "design", DocumentID: "component-runtime", Version: 17}}},
-			{state: core.TaskRunning, proposals: []workerservice.TaskRunProposal{{Kind: "design", DocumentID: "component-runtime", Version: 18}}},
+			{state: core.TaskRunning, proposals: []taskWaitTestProposal{{Kind: "design", DocumentID: "component-runtime", Version: 17}}},
+			{state: core.TaskRunning, proposals: []taskWaitTestProposal{{Kind: "design", DocumentID: "component-runtime", Version: 18}}},
 		},
 		"proposal tier": {
-			{state: core.TaskRunning, proposals: []workerservice.TaskRunProposal{{Kind: "design", DocumentID: "x", Version: 1}}},
-			{state: core.TaskRunning, proposals: []workerservice.TaskRunProposal{{Kind: "requirement", DocumentID: "x", Version: 1}}},
+			{state: core.TaskRunning, proposals: []taskWaitTestProposal{{Kind: "design", DocumentID: "x", Version: 1}}},
+			{state: core.TaskRunning, proposals: []taskWaitTestProposal{{Kind: "requirement", DocumentID: "x", Version: 1}}},
 		},
 	} {
 		t.Run(name, func(t *testing.T) {
@@ -436,8 +526,8 @@ func TestTaskWaitJSONNormalizesAbsentFields(t *testing.T) {
 func TestTaskWaitHumanOutputMatchesJSONFields(t *testing.T) {
 	steps := []taskWaitStep{
 		{state: core.TaskRunning},
-		{state: core.TaskAwaiting, gate: &workerservice.TaskRunGate{Kind: "spec", SpecVersion: 3},
-			proposals: []workerservice.TaskRunProposal{{Kind: "design", DocumentID: "component-runtime", Version: 17}}},
+		{state: core.TaskAwaiting, gate: &taskWaitTestGate{Kind: "spec", SpecVersion: 3},
+			proposals: []taskWaitTestProposal{{Kind: "design", DocumentID: "component-runtime", Version: 17}}},
 	}
 	var out bytes.Buffer
 	if err := runTaskWait(t.Context(), newTaskWaitFixture(t, steps...).client(), &out, taskWaitTestTaskID, false, taskWaitTestOptions(5*time.Second)); err != nil {
@@ -634,10 +724,10 @@ func taskWaitChildEnvironment() []string {
 	return environment
 }
 
-func taskWaitMergeExecutionGate(state, summary string) *workerservice.TaskRunGate {
-	gate := &workerservice.TaskRunGate{Kind: workerservice.TaskRunGateMergeExecution, Label: "merge execution pending", Summary: summary, CanOperate: true}
+func taskWaitMergeExecutionGate(state, summary string) *taskWaitTestGate {
+	gate := &taskWaitTestGate{Kind: taskWaitGateMergeExecution, Label: "merge execution pending", Summary: summary, CanOperate: true}
 	if state != "" {
-		gate.MergeReadiness = &workerservice.TaskRunMergeReadiness{State: state, HeadSHA: "0123456789abcdef", URL: "https://github.test/pr/" + summary}
+		gate.MergeReadiness = &taskMergeReadiness{State: state, HeadSHA: "0123456789abcdef", URL: "https://github.test/pr/" + summary}
 	}
 	return gate
 }
@@ -646,7 +736,7 @@ func taskWaitMergeExecutionGate(state, summary string) *workerservice.TaskRunGat
 // wait returns on the move to merged (req-agent-skills AC-4.1, AC-4.2;
 // component-cli-onboarding).
 func TestTaskWaitReportsPendingMergeExecutionUntilMerged(t *testing.T) {
-	approval := &workerservice.TaskRunGate{Kind: "merge", Label: "merge approval gate", CanOperate: true}
+	approval := &taskWaitTestGate{Kind: "merge", Label: "merge approval gate", CanOperate: true}
 	execution := taskWaitMergeExecutionGate("MERGEABLE", "1")
 	steps := []taskWaitStep{
 		{state: core.TaskAwaiting, gate: approval},
@@ -656,7 +746,7 @@ func TestTaskWaitReportsPendingMergeExecutionUntilMerged(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := taskWaitGate{Kind: workerservice.TaskRunGateMergeExecution, MergeReadiness: "MERGEABLE"}
+	want := taskWaitGate{Kind: taskWaitGateMergeExecution, MergeReadiness: "MERGEABLE"}
 	if result.Reason != taskWaitReasonChanged || result.State != core.TaskApproved || result.PendingGate == nil || *result.PendingGate != want || result.NextOrder != nil {
 		t.Fatalf("result = %+v gate %+v", result, result.PendingGate)
 	}
@@ -882,4 +972,66 @@ func TestTaskWaitUntil(t *testing.T) {
 			t.Fatalf("human:\n%s\nwant:\n%s", out.String(), wantHuman)
 		}
 	})
+}
+
+// Each observation reads only routes that survive the retired run-order and
+// worker planes, and the next order is this task's queued claimable order
+// (req-agent-skills AC-4.1; DEC-97(1); component-cli-onboarding).
+func TestTaskWaitReadsOnlySurvivingRoutes(t *testing.T) {
+	f := newTaskWaitFixture(t,
+		taskWaitStep{state: core.TaskAwaiting, gate: &taskWaitTestGate{Kind: "spec", SpecVersion: 2}},
+		taskWaitStep{state: core.TaskApproved, gate: taskWaitMergeExecutionGate("MERGEABLE", "1")},
+	)
+	if result, err := runTaskWaitJSON(t, f, 5*time.Second); err != nil || result.Reason != taskWaitReasonChanged {
+		t.Fatalf("err=%v result=%+v", err, result)
+	}
+	allowed := map[string]bool{
+		"/v1/tasks/" + taskWaitTestTaskID:                            true,
+		"/v1/work-orders":                                            true,
+		"/v1/pending-proposals":                                      true,
+		"/v1/tasks/" + taskWaitTestTaskID + "/spec":                  true,
+		"/v1/tasks/" + taskWaitTestTaskID + "/activity?view=bounded": true,
+	}
+	seen := map[string]bool{}
+	for _, path := range f.requestPaths() {
+		if !allowed[path] {
+			t.Errorf("task wait read %s", path)
+		}
+		seen[path] = true
+	}
+	for path := range allowed {
+		if !seen[path] {
+			t.Errorf("task wait never read %s", path)
+		}
+	}
+	result, err := runTaskWaitJSON(t, newTaskWaitFixture(t,
+		taskWaitStep{state: core.TaskQueued, order: core.WorkOrder{ID: "261004-abc123-review-1-seat-1", Stage: core.StageReview}},
+	), 20*time.Millisecond)
+	var timedOut *taskWaitTimeoutError
+	if !errors.As(err, &timedOut) || result.NextOrder == nil || result.NextOrder.ID != "261004-abc123-review-1-seat-1" || len(result.PendingProposals) != 0 {
+		t.Fatalf("err=%v result=%+v; want only this task's claimable order and none of the decoy proposals", err, result)
+	}
+}
+
+func TestTaskWaitReportsPlanRevisionProposalAndNextOrderPrecedence(t *testing.T) {
+	result, err := runTaskWaitJSON(t, newTaskWaitFixture(t,
+		taskWaitStep{state: core.TaskAwaiting, gate: &taskWaitTestGate{Kind: "plan_revision", PlanVersion: 4}},
+	), 20*time.Millisecond)
+	var timedOut *taskWaitTimeoutError
+	if !errors.As(err, &timedOut) {
+		t.Fatal(err)
+	}
+	if result.PendingGate == nil || result.PendingGate.Kind != "plan_revision" || len(result.PendingProposals) != 1 ||
+		result.PendingProposals[0] != (taskWaitProposal{Kind: "plan_revision", DocumentID: taskWaitTestTaskID, Version: 4}) {
+		t.Fatalf("result = %+v", result)
+	}
+	orders := []core.WorkOrder{
+		{ID: "b-review", TaskID: "t", Stage: core.StageReview, State: core.WorkOrderQueued, Claimable: true},
+		{ID: "c-implement", TaskID: "t", Stage: core.StageImplement, State: core.WorkOrderQueued, Claimable: true, QueueEnteredAt: taskWaitTestTime.Add(time.Minute)},
+		{ID: "a-implement", TaskID: "t", Stage: core.StageImplement, State: core.WorkOrderQueued, Claimable: true, QueueEnteredAt: taskWaitTestTime},
+		{ID: "z-spec", TaskID: "t", Stage: core.StageSpec, State: core.WorkOrderQueued, Claimable: false},
+	}
+	if got := taskWaitNextOrder(orders, "t"); got == nil || got.ID != "a-implement" {
+		t.Fatalf("next order = %+v, want a-implement", got)
+	}
 }
