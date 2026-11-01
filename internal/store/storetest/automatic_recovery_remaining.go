@@ -339,7 +339,7 @@ func runQueuePositionAndIdentity(t *testing.T, st store.Store, ctx context.Conte
 	t.Helper()
 	now := time.Now().UTC()
 	taskID := core.NewTaskID()
-	if err := st.CreateTask(ctx, core.Task{ID: taskID, Workspace: workspace, Repo: "conveyor", BaseBranch: "main", Branch: "conveyor/task-" + taskID, State: core.TaskRunning, NextStage: core.StageImplement, CreatedAt: now, SetupContract: config.ExecutionSetup{Name: "kept"}}); err != nil {
+	if err := st.CreateTask(ctx, core.Task{ID: taskID, Workspace: workspace, Repo: "conveyor", BaseBranch: "main", Branch: "conveyor/task-" + taskID, State: core.TaskRunning, NextStage: core.StageImplement, CreatedAt: now, SetupContract: config.PolicyContract{MaxBounces: 4, RefreshReview: config.RefreshReviewFull}}); err != nil {
 		t.Fatal(err)
 	}
 	waiting := taskID + "-waiting"
@@ -380,7 +380,7 @@ func runQueuePositionAndIdentity(t *testing.T, st store.Store, ctx context.Conte
 		t.Fatal(err)
 	}
 	afterJSON, err := json.Marshal(after.SetupContract)
-	if err != nil || string(beforeJSON) != string(afterJSON) || before.SetupContract.Name != after.SetupContract.Name {
+	if err != nil || string(beforeJSON) != string(afterJSON) || before.SetupContract.HasFrozenPolicy() != after.SetupContract.HasFrozenPolicy() {
 		t.Fatalf("setup contract before=%s after=%s err=%v", beforeJSON, afterJSON, err)
 	}
 	listed, err := st.GetWorkOrder(ctx, moving)

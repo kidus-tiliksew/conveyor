@@ -1180,7 +1180,7 @@ func TestCheckoutWorktreeLocationInteractivePromptPersistsChoice(t *testing.T) {
 	if got != want || shownRepository != want || shownMachine != filepath.Join(fixture.tmp, ".conveyor", "worktrees", "conveyor-task-interactive") {
 		t.Fatalf("path=%q shown repository=%q machine=%q, want %q", got, shownRepository, shownMachine, want)
 	}
-	loaded, err := config.Load(configPath)
+	loaded, err := config.LoadClient(configPath, nil)
 	if err != nil {
 		t.Fatal(err)
 	}

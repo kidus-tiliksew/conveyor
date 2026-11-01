@@ -526,10 +526,10 @@ func TestReviewRoundRetryHTTPIsAuthorizedActionableAndIdempotent(t *testing.T) {
 	}
 	cfg := &config.Config{
 		Workspace: "demo", WorkOrderQueueTimeout: time.Hour,
-		Repos:     []config.Repo{{Name: "api", GitHub: "acme/api", Base: "main"}},
-		Routing:   config.Routing{Stages: map[string]config.StageRoute{"review": {Execution: config.ExecutionMCP, Harness: "codex", TimeoutText: "1h"}}},
-		Harnesses: []config.Harness{{Name: "codex", Command: []string{"codex", "{prompt}"}, ProbeCommand: []string{"codex", "--version"}, ProbeTimeoutText: "5s"}},
-		Review:    config.ReviewPanel{Seats: []config.ReviewSeat{{Model: "gpt-a", Harness: "codex"}, {Model: "gpt-b", Harness: "codex"}}},
+		Repos:   []config.Repo{{Name: "api", GitHub: "acme/api", Base: "main"}},
+		Routing: config.Routing{Stages: map[string]config.StageRoute{"review": {Execution: config.ExecutionMCP, Harness: "codex", TimeoutText: "1h"}}},
+
+		Review: config.ReviewPanel{Seats: []config.ReviewSeat{{Model: "gpt-a", Harness: "codex"}, {Model: "gpt-b", Harness: "codex"}}},
 	}
 	provider := func(context.Context) (*config.Config, error) { return cfg, nil }
 	service := &workorder.Service{Store: st, ConfigProvider: provider, ReviewTarget: func(context.Context, string, string) (githubtrigger.ReviewTarget, error) {
@@ -706,7 +706,7 @@ func TestRetiredTaskHoldRouteAnswersGone(t *testing.T) {
 // live worker and refuses the retired hold input (DEC-74(3)).
 func TestTaskIntakeIsNotHealthGatedAndRefusesHold(t *testing.T) {
 	st := store.NewMemory()
-	cfg := &config.Config{Workspace: "demo", Execution: config.ExecutionPolicy{DefaultMode: "auto", SpecApproval: true, MergeApproval: true, ImplementConcurrency: 1, ReviewConcurrency: 1}, Harnesses: []config.Harness{{Name: "codex"}}, Routing: config.Routing{Stages: map[string]config.StageRoute{"implement": {Harness: "codex"}, "review": {Harness: "codex", Execution: config.ExecutionMCP}}}, Repos: []config.Repo{{Name: "api", Base: "main"}}}
+	cfg := &config.Config{Workspace: "demo", Execution: config.ExecutionPolicy{DefaultMode: "auto", SpecApproval: true, MergeApproval: true, ImplementConcurrency: 1, ReviewConcurrency: 1}, Routing: config.Routing{Stages: map[string]config.StageRoute{"implement": {Harness: "codex"}, "review": {Harness: "codex", Execution: config.ExecutionMCP}}}, Repos: []config.Repo{{Name: "api", Base: "main"}}}
 	provider := func(context.Context) (*config.Config, error) { return cfg, nil }
 	orders := &workorder.Service{Store: st, ConfigProvider: provider}
 	server := NewServer(st)
@@ -3610,7 +3610,7 @@ func TestTaskActivityCarriesNoWorkerStatus(t *testing.T) {
 	server := NewServer(st)
 	server.Workspace = "demo"
 	server.ConfigProvider = func(context.Context) (*config.Config, error) {
-		return &config.Config{Workspace: "demo", Harnesses: []config.Harness{{Name: "codex"}}}, nil
+		return &config.Config{Workspace: "demo"}, nil
 	}
 
 	queued := httptest.NewRecorder()

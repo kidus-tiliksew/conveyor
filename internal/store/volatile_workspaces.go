@@ -140,16 +140,13 @@ func (m *volatileMemory) WorkspaceConfig(ctx context.Context) (config.VersionedD
 	if !ok {
 		return config.VersionedDocument{}, fmt.Errorf("%w: workspace %s", ErrNotFound, id)
 	}
-	var document config.WorkspaceDocument
-	decoder := yaml.NewDecoder(strings.NewReader(record.ConfigYAML))
-	decoder.KnownFields(true)
-	if err := decoder.Decode(&document); err != nil {
+	// Legacy harness, setup, and executor keys are dropped before strict
+	// decoding (component-runtime; component-persistence).
+	document, err := config.DecodeStoredWorkspaceDocument([]byte(record.ConfigYAML))
+	if err != nil {
 		return config.VersionedDocument{}, fmt.Errorf("decode stored workspace config: %w", err)
 	}
 	config.StoredRepositoryDefaults(document.Repos)
-	if document.Harnesses == nil {
-		document.Harnesses = []config.Harness{}
-	}
 	if document.Repos == nil {
 		document.Repos = []config.Repo{}
 	}
@@ -241,14 +238,8 @@ func configDiff(before, after config.WorkspaceDocument) []string {
 	if before.IssuePublication.Enabled != after.IssuePublication.Enabled || !before.IssuePublication.EnabledAt.Equal(after.IssuePublication.EnabledAt) {
 		sections = append(sections, "issue_publication")
 	}
-	if !reflect.DeepEqual(before.Harnesses, after.Harnesses) {
-		sections = append(sections, "harnesses")
-	}
 	if !reflect.DeepEqual(before.Review, after.Review) {
 		sections = append(sections, "review")
-	}
-	if !reflect.DeepEqual(before.Setups, after.Setups) || before.DefaultSetup != after.DefaultSetup {
-		sections = append(sections, "setups")
 	}
 	if !reflect.DeepEqual(before.Execution, after.Execution) {
 		sections = append(sections, "execution")

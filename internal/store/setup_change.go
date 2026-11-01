@@ -40,7 +40,7 @@ type SetupChangeRequest struct {
 	WorkspaceReviewSeats int `json:"-"`
 	// Derived by PlanTaskPolicyChange.
 	NextStage             core.Stage
-	Setup                 config.ExecutionSetup
+	Setup                 config.PolicyContract
 	WorkOrderUpdates      []core.WorkOrder
 	NewJobs               []core.Job
 	NewWorkOrders         []core.WorkOrder
@@ -125,7 +125,7 @@ func SetupChangeIdentity(request SetupChangeRequest) any {
 	}{request.TaskID, request.RequestID, request.Reason, request.Policy, request.PolicyActor}
 }
 
-func setupChangePayload(workspace string, actor Actor, prior config.ExecutionSetup, request SetupChangeRequest, result SetupChangeResult) map[string]any {
+func setupChangePayload(workspace string, actor Actor, prior config.PolicyContract, request SetupChangeRequest, result SetupChangeResult) map[string]any {
 	return map[string]any{
 		"workspace_id": workspace, "task_id": request.TaskID, "actor": actor.ID,
 		"request_id": request.RequestID, "reason": request.Reason,
@@ -335,7 +335,7 @@ func applyFutureRouting(current *core.WorkOrder, desired core.WorkOrder, now tim
 	current.Claimable, current.UpdatedAt = true, now
 }
 
-func setupSeatEvent(taskID string, order core.WorkOrder, actor Actor, workspace string, previous config.ExecutionSetup, request SetupChangeRequest, outcome string, now time.Time) core.Event {
+func setupSeatEvent(taskID string, order core.WorkOrder, actor Actor, workspace string, previous config.PolicyContract, request SetupChangeRequest, outcome string, now time.Time) core.Event {
 	return core.Event{TaskID: taskID, JobID: order.JobID, Kind: "review.seat.setup_rebuilt", ActorID: actor.ID, ActorRole: actor.Role,
 		Payload: core.JSONPayload(map[string]any{"workspace_id": workspace, "request_id": request.RequestID, "review_round": order.ReviewRound,
 			"review_seat": order.ReviewSeat, "work_order_id": order.ID, "outcome": outcome, "previous_setup": previous, "new_setup": request.Setup}), At: now}

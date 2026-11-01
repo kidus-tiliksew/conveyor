@@ -124,7 +124,7 @@ func (s *Server) createTaskRecordWithState(ctx context.Context, req createTaskRe
 		repos = current.RepoNames()
 		workspace = current.Workspace
 	}
-	var selectedSetup config.ExecutionSetup
+	var selectedSetup config.PolicyContract
 	if current != nil {
 		selectedSetup = current.FreezePolicy()
 	}

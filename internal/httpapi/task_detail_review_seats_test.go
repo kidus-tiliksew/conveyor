@@ -39,7 +39,7 @@ func newSeatMetaFixture(t *testing.T) *seatMetaFixture {
 func (f *seatMetaFixture) task(id string, frozenSeats int) core.Task {
 	f.t.Helper()
 	task := core.Task{ID: id, Workspace: historyWorkspace, Repo: "conveyor", BaseBranch: "main", Branch: "conveyor/task-" + id, State: core.TaskRunning, NextStage: core.StageReview, ReviewedHeadSHA: "head", CreatedAt: time.Now().UTC()}
-	task.SetupContract = config.ExecutionSetup{MaxBounces: 3, ExecutionSettings: config.ContextualExecutionSettings{Review: config.ReviewExecutionSettings{TimeoutText: "1h"}}}
+	task.SetupContract = config.PolicyContract{MaxBounces: 3, StageTimeouts: config.PolicyStageTimeouts{Review: "1h"}}
 	if frozenSeats >= 0 {
 		task.SetupContract.Review.Seats = make([]config.ReviewSeat, frozenSeats)
 	}

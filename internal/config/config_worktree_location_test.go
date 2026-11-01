@@ -41,7 +41,7 @@ func loadWorktreeLocationDocument(t *testing.T, document string) (*Config, error
 	if err := os.WriteFile(path, append(example, []byte("\n"+document)...), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	return Load(path)
+	return LoadClient(path, nil)
 }
 
 func TestWorktreeLocationLoadsUnconfiguredWithoutDefault(t *testing.T) {

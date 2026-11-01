@@ -63,7 +63,7 @@ worktree_location:
 	if len(loaded.KitPermissions) != 1 || loaded.KitPermissions[0].Binding != "fixture" {
 		t.Fatalf("kit permissions = %+v", loaded.KitPermissions)
 	}
-	if len(loaded.Harnesses) != 0 || len(loaded.Setups) != 0 || loaded.ExecutionSettings != nil || len(loaded.PlanningModels) != 0 {
+	if loaded.ExecutionSettings != nil || len(loaded.Routing.Stages) != 0 || len(loaded.PlanningModels) != 0 {
 		t.Fatalf("execution detail survived: %+v", loaded)
 	}
 

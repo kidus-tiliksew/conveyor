@@ -14,10 +14,10 @@ import (
 
 func policyCommandTask(t *testing.T, st Store, ctx context.Context, id string) core.Task {
 	t.Helper()
-	prior := config.ExecutionSetup{Name: "prior", Review: config.ReviewPanel{Seats: []config.ReviewSeat{{}}}}
+	prior := config.PolicyContract{MaxBounces: 2, Review: config.ReviewPanel{Seats: []config.ReviewSeat{{}}}}
 	task := core.Task{
 		ID: id, Workspace: "demo", Repo: "app",
-		State: core.TaskRunning, NextStage: core.StageImplement, SetupName: prior.Name, SetupContract: prior,
+		State: core.TaskRunning, NextStage: core.StageImplement, SetupName: "prior", SetupContract: prior,
 		CreatedAt: time.Now().UTC(),
 	}
 	if err := st.CreateTask(ctx, task); err != nil {
@@ -69,7 +69,7 @@ func TestChangeTaskPolicyCommandRequiresPolicyAndNonblankReason(t *testing.T) {
 	}
 	for name, request := range map[string]SetupChangeRequest{
 		// The retired setup-reassignment shape: a named setup without a policy.
-		"setup without policy": {TaskID: task.ID, RequestID: "setup-shape", Reason: "reroute", Setup: config.ExecutionSetup{Name: "next"}},
+		"setup without policy": {TaskID: task.ID, RequestID: "setup-shape", Reason: "reroute", Setup: config.PolicyContract{MaxBounces: 5}},
 		"blank reason":         {TaskID: task.ID, RequestID: "blank-reason", Reason: " \t ", Policy: &TaskPolicyChange{VerifyStage: &enabled}},
 		"blank request id":     {TaskID: task.ID, RequestID: " ", Reason: "enable", Policy: &TaskPolicyChange{VerifyStage: &enabled}},
 		"empty policy":         {TaskID: task.ID, RequestID: "empty-policy", Reason: "enable", Policy: &TaskPolicyChange{}},
@@ -79,7 +79,7 @@ func TestChangeTaskPolicyCommandRequiresPolicyAndNonblankReason(t *testing.T) {
 		}
 	}
 	current, _ := st.GetTask(ctx, task.ID)
-	if current.SetupName != "prior" || current.SetupContract.Name != "prior" || current.SetupContract.VerifyStage {
+	if current.SetupName != "prior" || current.SetupContract.MaxBounces != 2 || current.SetupContract.VerifyStage {
 		t.Fatalf("refused request mutated task=%+v", current)
 	}
 	if count, _ := st.CountEvents(ctx, task.ID, "task.setup.changed"); count != 0 {

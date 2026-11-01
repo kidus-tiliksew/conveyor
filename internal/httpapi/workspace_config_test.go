@@ -111,7 +111,7 @@ func TestWorkspaceConfigAPIValidatesVersionsAndRecordsActor(t *testing.T) {
 	if err := json.Unmarshal(getResult.Body.Bytes(), &got); err != nil {
 		t.Fatal(err)
 	}
-	if got.Document.ExecutionSettings != nil || len(got.Document.Harnesses) != 0 || len(got.Document.Setups) != 0 || len(got.Document.Routing.Stages) != 0 || got.Document.StageTimeouts["implement"] != "2h" || len(got.Document.Review.Seats) != 2 {
+	if got.Document.ExecutionSettings != nil || strings.Contains(getResult.Body.String(), `"harnesses"`) || strings.Contains(getResult.Body.String(), `"setups"`) || len(got.Document.Routing.Stages) != 0 || got.Document.StageTimeouts["implement"] != "2h" || len(got.Document.Review.Seats) != 2 {
 		t.Fatalf("GET lost policy or exposed execution detail: %+v", got.Document)
 	}
 
@@ -138,7 +138,7 @@ func TestWorkspaceConfigAPIValidatesVersionsAndRecordsActor(t *testing.T) {
 	if putResult.Code != http.StatusOK || backend.updates != 1 || !strings.Contains(putResult.Body.String(), `"actor_id":"user:local-operator"`) {
 		t.Fatalf("PUT status=%d updates=%d body=%s", putResult.Code, backend.updates, putResult.Body)
 	}
-	if backend.record.Document.StageTimeouts["implement"] != "45m" || len(backend.record.Document.Review.Seats) != 2 || backend.record.Document.ExecutionSettings != nil || len(backend.record.Document.Harnesses) != 0 {
+	if backend.record.Document.StageTimeouts["implement"] != "45m" || len(backend.record.Document.Review.Seats) != 2 || backend.record.Document.ExecutionSettings != nil || len(backend.record.Document.Routing.Stages) != 0 {
 		t.Fatalf("PUT lost policy or exposed execution detail: %+v", backend.record.Document)
 	}
 

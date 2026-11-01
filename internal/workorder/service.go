@@ -525,16 +525,16 @@ func (s *Service) Recover(ctx context.Context, id, requestID string, suppliedDir
 }
 
 func frozenStageTimeout(task core.Task, stage core.Stage) string {
-	settings := task.SetupContract.ExecutionSettings
+	timeouts := task.SetupContract.StageTimeouts
 	switch stage {
 	case core.StageSpec:
-		return strings.TrimSpace(settings.Spec.TimeoutText)
+		return strings.TrimSpace(timeouts.Spec)
 	case core.StageImplement:
-		return strings.TrimSpace(settings.Implementation.TimeoutText)
+		return strings.TrimSpace(timeouts.Implement)
 	case core.StageVerify:
-		return strings.TrimSpace(settings.Verify.TimeoutText)
+		return strings.TrimSpace(timeouts.Verify)
 	case core.StageReview:
-		return strings.TrimSpace(settings.Review.TimeoutText)
+		return strings.TrimSpace(timeouts.Review)
 	default:
 		return ""
 	}

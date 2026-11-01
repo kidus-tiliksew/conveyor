@@ -792,7 +792,7 @@ type conflictSubmission struct {
 	prBase     string
 }
 
-func newConflictSubmission(t *testing.T, policy config.ExecutionSetup, wrap ...func(store.Store) store.Store) *conflictSubmission {
+func newConflictSubmission(t *testing.T, policy config.PolicyContract, wrap ...func(store.Store) store.Store) *conflictSubmission {
 	t.Helper()
 	ctx := store.WithWorkspace(store.WithActor(t.Context(), store.SystemActor()), "test")
 	var st store.Store = store.NewMemory()
@@ -917,7 +917,7 @@ func (f *conflictSubmission) assertUntouched(t *testing.T, events int, state cor
 }
 
 func TestConflictFixSubmissionRetriesLaggingPullRequestHead(t *testing.T) {
-	f := newConflictSubmission(t, config.ExecutionSetup{})
+	f := newConflictSubmission(t, config.PolicyContract{})
 	f.prHead = func(read int) string {
 		if read < 3 {
 			return "conflict-head"
@@ -972,7 +972,7 @@ func TestConflictFixSubmissionPullRequestRefusals(t *testing.T) {
 		{name: "cancelled wait", head: func(int) string { return "conflict-head" }, wait: func(context.Context, time.Duration) error { return context.Canceled }, want: "context canceled", reads: 1},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			f := newConflictSubmission(t, config.ExecutionSetup{})
+			f := newConflictSubmission(t, config.PolicyContract{})
 			if test.head != nil {
 				f.prHead = test.head
 			}
@@ -1006,7 +1006,7 @@ func TestConflictFixSubmissionPullRequestRefusals(t *testing.T) {
 }
 
 func TestConflictFixSubmissionRealWaitHonorsCancellation(t *testing.T) {
-	f := newConflictSubmission(t, config.ExecutionSetup{})
+	f := newConflictSubmission(t, config.PolicyContract{})
 	f.service.SubmissionPRWait = nil
 	f.prHead = func(int) string { return "conflict-head" }
 	ctx, cancel := context.WithCancel(f.ctx)
@@ -1019,7 +1019,7 @@ func TestConflictFixSubmissionRealWaitHonorsCancellation(t *testing.T) {
 }
 
 func TestConflictFixSubmissionRefusedBeforeSideEffectsWhenTaskLeftRunning(t *testing.T) {
-	f := newConflictSubmission(t, config.ExecutionSetup{})
+	f := newConflictSubmission(t, config.PolicyContract{})
 	// The incident: the readiness sweep moved the task running→queued while the
 	// conflict-fix order was still claimed, without a refresh for this head.
 	if _, err := taskops.New(f.st).Perform(f.ctx, f.task.ID, taskops.Command{Kind: core.TaskRecoverRefresh, NextStage: core.StageReview, ProjectStages: true}); err != nil {
@@ -1037,7 +1037,7 @@ func TestConflictFixSubmissionRefusedBeforeSideEffectsWhenTaskLeftRunning(t *tes
 }
 
 func TestConflictFixSubmissionRequiresItsOwnRunningJob(t *testing.T) {
-	f := newConflictSubmission(t, config.ExecutionSetup{})
+	f := newConflictSubmission(t, config.PolicyContract{})
 	job := core.Job{ID: f.order.JobID, TaskID: f.task.ID, Stage: core.StageImplement, State: core.JobFailed, EndedAt: time.Now()}
 	if err := f.st.UpdateJob(f.ctx, job); err != nil {
 		t.Fatal(err)
@@ -1095,14 +1095,14 @@ func (f *conflictSubmission) dispatchExistingRefresh(t *testing.T, head, scope s
 func TestConflictFixSubmissionCompletesOnceWhenRefreshAlreadyDispatched(t *testing.T) {
 	for _, test := range []struct {
 		name   string
-		policy config.ExecutionSetup
+		policy config.PolicyContract
 		scope  string
 		stage  core.Stage
 	}{
 		{name: "delta review", scope: config.RefreshReviewDelta, stage: core.StageReview},
-		{name: "none policy raised to delta", policy: config.ExecutionSetup{RefreshReview: config.RefreshReviewNone}, scope: config.RefreshReviewDelta, stage: core.StageReview},
-		{name: "full policy", policy: config.ExecutionSetup{RefreshReview: config.RefreshReviewFull}, scope: config.RefreshReviewFull, stage: core.StageReview},
-		{name: "frozen verify stage", policy: config.ExecutionSetup{VerifyStage: true}, scope: config.RefreshReviewDelta, stage: core.StageVerify},
+		{name: "none policy raised to delta", policy: config.PolicyContract{RefreshReview: config.RefreshReviewNone}, scope: config.RefreshReviewDelta, stage: core.StageReview},
+		{name: "full policy", policy: config.PolicyContract{RefreshReview: config.RefreshReviewFull}, scope: config.RefreshReviewFull, stage: core.StageReview},
+		{name: "frozen verify stage", policy: config.PolicyContract{VerifyStage: true}, scope: config.RefreshReviewDelta, stage: core.StageVerify},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			f := newConflictSubmission(t, test.policy)
@@ -1162,7 +1162,7 @@ func TestConflictFixSubmissionCompletesOnceWhenRefreshAlreadyDispatched(t *testi
 
 func TestConflictFixSubmissionRefusesUnprovenRefreshAndForeignReplays(t *testing.T) {
 	t.Run("unrelated refresh head", func(t *testing.T) {
-		f := newConflictSubmission(t, config.ExecutionSetup{})
+		f := newConflictSubmission(t, config.PolicyContract{})
 		f.dispatchExistingRefresh(t, "other-head", config.RefreshReviewDelta)
 		events := f.eventCount(t)
 		if _, err := f.submit("fixer", "fix-head"); err == nil || !strings.Contains(err.Error(), "submission refused before side effects") {
@@ -1171,7 +1171,7 @@ func TestConflictFixSubmissionRefusesUnprovenRefreshAndForeignReplays(t *testing
 		f.assertUntouched(t, events, core.TaskQueued)
 	})
 	t.Run("narrower than frozen full policy", func(t *testing.T) {
-		f := newConflictSubmission(t, config.ExecutionSetup{RefreshReview: config.RefreshReviewFull})
+		f := newConflictSubmission(t, config.PolicyContract{RefreshReview: config.RefreshReviewFull})
 		f.dispatchExistingRefresh(t, "fix-head", config.RefreshReviewDelta)
 		events := f.eventCount(t)
 		if _, err := f.submit("fixer", "fix-head"); err == nil || !strings.Contains(err.Error(), "submission refused before side effects") {
@@ -1180,7 +1180,7 @@ func TestConflictFixSubmissionRefusesUnprovenRefreshAndForeignReplays(t *testing
 		f.assertUntouched(t, events, core.TaskQueued)
 	})
 	t.Run("stale approval without refresh orders", func(t *testing.T) {
-		f := newConflictSubmission(t, config.ExecutionSetup{})
+		f := newConflictSubmission(t, config.PolicyContract{})
 		if _, err := f.st.MarkTaskApprovalStale(f.ctx, f.task.ID, "approved-head", "fix-head", config.RefreshReviewDelta, "head-changed"); err != nil {
 			t.Fatal(err)
 		}
@@ -1194,7 +1194,7 @@ func TestConflictFixSubmissionRefusesUnprovenRefreshAndForeignReplays(t *testing
 		f.assertUntouched(t, events, core.TaskQueued)
 	})
 	t.Run("foreign session and changed head", func(t *testing.T) {
-		f := newConflictSubmission(t, config.ExecutionSetup{})
+		f := newConflictSubmission(t, config.PolicyContract{})
 		if _, err := f.submit("intruder", "fix-head"); err == nil || !strings.Contains(err.Error(), "another session") {
 			t.Fatalf("foreign claimed err=%v", err)
 		}
@@ -1219,7 +1219,7 @@ func TestConflictFixSubmissionRefusesUnprovenRefreshAndForeignReplays(t *testing
 		}
 	})
 	t.Run("expired and cancelled claims", func(t *testing.T) {
-		f := newConflictSubmission(t, config.ExecutionSetup{})
+		f := newConflictSubmission(t, config.PolicyContract{})
 		order, err := f.st.GetWorkOrder(f.ctx, f.order.ID)
 		if err != nil {
 			t.Fatal(err)
@@ -1231,7 +1231,7 @@ func TestConflictFixSubmissionRefusesUnprovenRefreshAndForeignReplays(t *testing
 		if _, err = f.submit("fixer", "fix-head"); err == nil || f.jobState(t, f.order.JobID) == core.JobDone {
 			t.Fatalf("expired claim err=%v", err)
 		}
-		g := newConflictSubmission(t, config.ExecutionSetup{})
+		g := newConflictSubmission(t, config.PolicyContract{})
 		cancelled, err := g.st.GetWorkOrder(g.ctx, g.order.ID)
 		if err != nil {
 			t.Fatal(err)
@@ -1245,7 +1245,7 @@ func TestConflictFixSubmissionRefusesUnprovenRefreshAndForeignReplays(t *testing
 		}
 	})
 	t.Run("submitted order without completed job", func(t *testing.T) {
-		f := newConflictSubmission(t, config.ExecutionSetup{})
+		f := newConflictSubmission(t, config.PolicyContract{})
 		order, err := f.st.GetWorkOrder(f.ctx, f.order.ID)
 		if err != nil {
 			t.Fatal(err)
@@ -1289,7 +1289,7 @@ func TestConflictFixSubmissionAndReadinessSweepRaceCreateOneRefreshRound(t *test
 	for _, first := range []string{"sweep", "submit"} {
 		t.Run(first+" holds the lock first", func(t *testing.T) {
 			barrier := &barrierLockStore{held: make(chan struct{}), release: make(chan struct{})}
-			f := newConflictSubmission(t, config.ExecutionSetup{}, func(st store.Store) store.Store {
+			f := newConflictSubmission(t, config.PolicyContract{}, func(st store.Store) store.Store {
 				barrier.Store = st
 				return barrier
 			})
@@ -1442,7 +1442,7 @@ func TestConflictFixSubmissionReplayRefusesIncompleteHandoff(t *testing.T) {
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			faults := &handoffFaultStore{}
-			f := newConflictSubmission(t, config.ExecutionSetup{}, func(st store.Store) store.Store {
+			f := newConflictSubmission(t, config.PolicyContract{}, func(st store.Store) store.Store {
 				faults.Store = st
 				return faults
 			})
@@ -1493,7 +1493,7 @@ func TestConflictFixSubmissionReplayRefusesIncompleteHandoff(t *testing.T) {
 }
 
 func TestConflictFixSubmissionReplayAfterCompleteHandoffWritesNothing(t *testing.T) {
-	f := newConflictSubmission(t, config.ExecutionSetup{})
+	f := newConflictSubmission(t, config.PolicyContract{})
 	first, err := f.submit("fixer", "fix-head")
 	if err != nil {
 		t.Fatal(err)
@@ -1518,7 +1518,7 @@ func TestConflictFixSubmissionReplayAfterCompleteHandoffWritesNothing(t *testing
 // reports the recorded one without any write (feature-review-seat-minimum
 // RS-4).
 func TestConflictFixSubmissionReviewSeatsReplayWritesNothing(t *testing.T) {
-	f := newConflictSubmission(t, config.ExecutionSetup{})
+	f := newConflictSubmission(t, config.PolicyContract{})
 	declared := 2
 	first, err := f.service.SubmitForReviewWithReviewSeats(f.ctx, f.order.ID, "fixer", "fix-head", &declared)
 	if err != nil || first["review_seats"] != 2 || first["review_seats_applied"] != true {
@@ -1573,7 +1573,7 @@ func (f *conflictSubmission) supersedeRound(t *testing.T, round int) {
 
 func TestConflictFixSubmissionRefusesSupersededRefreshRound(t *testing.T) {
 	t.Run("submission", func(t *testing.T) {
-		f := newConflictSubmission(t, config.ExecutionSetup{})
+		f := newConflictSubmission(t, config.PolicyContract{})
 		f.dispatchExistingRefresh(t, "fix-head", config.RefreshReviewDelta)
 		f.supersedeRound(t, 2)
 		events := f.eventCount(t)
@@ -1586,7 +1586,7 @@ func TestConflictFixSubmissionRefusesSupersededRefreshRound(t *testing.T) {
 		f.assertUntouched(t, events, core.TaskQueued)
 	})
 	t.Run("replay", func(t *testing.T) {
-		f := newConflictSubmission(t, config.ExecutionSetup{})
+		f := newConflictSubmission(t, config.PolicyContract{})
 		f.dispatchExistingRefresh(t, "fix-head", config.RefreshReviewDelta)
 		if result, err := f.submit("fixer", "fix-head"); err != nil || result["refresh_already_dispatched"] != true {
 			t.Fatalf("result=%v err=%v", result, err)

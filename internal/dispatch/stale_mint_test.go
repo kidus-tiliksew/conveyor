@@ -24,17 +24,16 @@ func staleMintFixture(t *testing.T, id string) (context.Context, store.Store, *D
 
 func staleMintFixtureAt(t *testing.T, id string, stage core.Stage) (context.Context, store.Store, *Dispatcher, core.Task) {
 	t.Helper()
-	settings := config.ContextualExecutionSettings{
-		ControlPlane:   config.ControlPlaneSettings{Triage: config.ModelTimeoutSettings{Model: "control", TimeoutText: "20m"}, Spec: config.ModelTimeoutSettings{Model: "control", TimeoutText: "30m"}},
-		Implementation: config.ImplementationSettings{Harness: "codex", Model: "gpt", ModelPolicy: config.ModelPolicyExplicit, Effort: "high", TimeoutText: "2h"},
-		Review:         config.ReviewExecutionSettings{Execution: config.ExecutionMCP, TimeoutText: "45m"},
+	setup := config.PolicyContract{StageTimeouts: config.PolicyStageTimeouts{Spec: "30m", Implement: "2h", Review: "45m"}, Review: config.ReviewPanel{Seats: []config.ReviewSeat{{Model: "gpt-review", Harness: "codex"}}}}
+	routes := map[string]config.StageRoute{
+		"triage":    {Model: "control", TimeoutText: "20m", Execution: config.ExecutionInProcess},
+		"implement": {Execution: config.ExecutionMCP},
+		"review":    {Execution: config.ExecutionMCP},
 	}
-	harness := config.Harness{Name: "codex", Command: []string{"codex", "{prompt}", "{mcp_config}"}, ModelArgs: []string{"--model", "{model}"}, EffortArgs: map[string][]string{"high": {"--effort", "high"}}, ProbeCommand: []string{"codex", "--version"}, ProbeTimeoutText: "5s"}
-	setup := config.ExecutionSetup{Name: "backend", ExecutionSettings: settings, Review: config.ReviewPanel{Seats: []config.ReviewSeat{{Model: "gpt-review", Harness: "codex"}}}}
-	cfg := (&config.Config{Workspace: "demo", WorkOrderQueueTimeout: time.Hour, Harnesses: []config.Harness{harness}, Setups: []config.ExecutionSetup{setup}, DefaultSetup: "backend"}).WithSetup(setup)
+	cfg := (&config.Config{Workspace: "demo", WorkOrderQueueTimeout: time.Hour, Routing: config.Routing{Stages: routes}, Review: setup.Review}).WithPolicy(setup)
 	ctx := store.WithWorkspace(store.WithActor(t.Context(), store.SystemActor()), "demo")
 	st := store.NewMemory()
-	task := core.Task{ID: id, Workspace: "demo", Title: "Stale", SetupName: setup.Name, SetupContract: setup, State: core.TaskQueued, NextStage: stage, CreatedAt: time.Now()}
+	task := core.Task{ID: id, Workspace: "demo", Title: "Stale", SetupName: "backend", SetupContract: setup, State: core.TaskQueued, NextStage: stage, CreatedAt: time.Now()}
 	if err := st.CreateTask(ctx, task); err != nil {
 		t.Fatal(err)
 	}

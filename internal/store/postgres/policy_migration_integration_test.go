@@ -104,7 +104,7 @@ repos:
 	if err != nil {
 		t.Fatal(err)
 	}
-	if persisted.SetupName != "" || persisted.SetupContract.MaxBounces != 3 || persisted.SetupContract.ExecutionSettings.Implementation.TimeoutText != "2h" || persisted.SetupContract.ExecutionSettings.Review.TimeoutText != "35m" || len(persisted.SetupContract.Review.Seats) != 2 {
+	if persisted.SetupName != "" || persisted.SetupContract.MaxBounces != 3 || persisted.SetupContract.StageTimeouts.Implement != "2h" || persisted.SetupContract.StageTimeouts.Review != "35m" || len(persisted.SetupContract.Review.Seats) != 2 {
 		t.Fatalf("projected task policy=%+v", persisted.SetupContract)
 	}
 	if err = dispatch.New(st, bootstrap, nil).DispatchNow(ctx, task.ID); err != nil {

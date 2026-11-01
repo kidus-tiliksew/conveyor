@@ -76,6 +76,10 @@ func TestMemoryConformance(t *testing.T) {
 				store.SeedArtifactMetadataForTest(t, st, ctx, a, b)
 			}, SeedEvents: func(t *testing.T, ctx context.Context, base int64, events []core.Event) []core.Event {
 				return store.SeedEventsForTest(t, st, ctx, base, events)
+			}, SeedWorkspaceConfigYAML: func(t *testing.T, _ context.Context, raw string) {
+				store.SeedWorkspaceConfigYAMLForTest(t, st, workspace, raw)
+			}, WorkspaceConfigYAML: func(t *testing.T, _ context.Context) string {
+				return store.WorkspaceConfigYAMLForTest(t, st, workspace)
 			}, SeedSetupContract: func(t *testing.T, _ context.Context, taskID, raw string) {
 				store.SeedSetupContractForTest(t, st, taskID, raw)
 			}, SeedStoredTaskHold: func(t *testing.T, _ context.Context, taskID string) {

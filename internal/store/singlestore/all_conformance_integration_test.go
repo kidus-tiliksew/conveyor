@@ -237,6 +237,17 @@ func TestSingleStoreConformanceIntegration(t *testing.T) {
 				}
 			}, SeedEvents: func(t *testing.T, ctx context.Context, base int64, events []core.Event) []core.Event {
 				return singlestoreSeedEvents(t, st, ctx, base, events)
+			}, SeedWorkspaceConfigYAML: func(t *testing.T, ctx context.Context, raw string) {
+				// A row an earlier release wrote; the version is unchanged.
+				if _, err := st.db.ExecContext(ctx, `UPDATE workspaces SET config_yaml=? WHERE id=?`, raw, ws); err != nil {
+					t.Fatal(err)
+				}
+			}, WorkspaceConfigYAML: func(t *testing.T, ctx context.Context) string {
+				var raw string
+				if err := st.db.QueryRowContext(ctx, `SELECT config_yaml FROM workspaces WHERE id=?`, ws).Scan(&raw); err != nil {
+					t.Fatal(err)
+				}
+				return raw
 			}, SeedSetupContract: func(t *testing.T, ctx context.Context, taskID, raw string) {
 				if _, err := st.db.ExecContext(ctx, `UPDATE tasks SET setup_contract=? WHERE workspace_id=? AND id=?`, raw, ws, taskID); err != nil {
 					t.Fatal(err)

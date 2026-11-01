@@ -22,7 +22,6 @@ import (
 	"github.com/kidus-tiliksew/conveyor/internal/taskops"
 	"github.com/kidus-tiliksew/conveyor/internal/testimage"
 	githubtrigger "github.com/kidus-tiliksew/conveyor/internal/trigger/github"
-	"gopkg.in/yaml.v3"
 )
 
 func composeReviewOutput(review pipeline.Review) string {
@@ -267,7 +266,7 @@ func TestSpecStageDispatchesMCPWorkOrderWithoutInProcessFallback(t *testing.T) {
 	// A stale legacy route may still say in_process. New spec dispatch must
 	// ignore that execution marker and create an MCP work order; only an already
 	// in-flight legacy call may finish through the old completion path.
-	cfg := &config.Config{Workspace: "demo", WorkOrderQueueTimeout: time.Hour, Harnesses: []config.Harness{{Name: "codex", Command: []string{"codex", "{prompt}"}, ProbeCommand: []string{"codex", "--version"}, ProbeTimeoutText: "5s"}}, Routing: config.Routing{Stages: map[string]config.StageRoute{"spec": {Model: "gpt-spec", ModelPolicy: config.ModelPolicyExplicit, Harness: "codex", TimeoutText: "30m", Execution: config.ExecutionInProcess}}}}
+	cfg := &config.Config{Workspace: "demo", WorkOrderQueueTimeout: time.Hour, Routing: config.Routing{Stages: map[string]config.StageRoute{"spec": {Model: "gpt-spec", ModelPolicy: config.ModelPolicyExplicit, Harness: "codex", TimeoutText: "30m", Execution: config.ExecutionInProcess}}}}
 	d := New(st, cfg, agent)
 	if err := d.DispatchNow(ctx, task.ID); err != nil {
 		t.Fatal(err)
@@ -289,7 +288,7 @@ func TestConcurrentSpecDispatchCreatesOneWorkOrder(t *testing.T) {
 		t.Fatal(err)
 	}
 	st := newConcurrentSpecDispatchStore(memory)
-	cfg := &config.Config{Workspace: "demo", WorkOrderQueueTimeout: time.Hour, Harnesses: []config.Harness{{Name: "codex", Command: []string{"codex", "{prompt}"}, ProbeCommand: []string{"codex", "--version"}, ProbeTimeoutText: "5s"}}, Routing: config.Routing{Stages: map[string]config.StageRoute{"spec": {Model: "gpt-spec", ModelPolicy: config.ModelPolicyExplicit, Harness: "codex", TimeoutText: "30m", Execution: config.ExecutionMCP}}}}
+	cfg := &config.Config{Workspace: "demo", WorkOrderQueueTimeout: time.Hour, Routing: config.Routing{Stages: map[string]config.StageRoute{"spec": {Model: "gpt-spec", ModelPolicy: config.ModelPolicyExplicit, Harness: "codex", TimeoutText: "30m", Execution: config.ExecutionMCP}}}}
 	d := New(st, cfg, &capturingInputAgent{})
 
 	start := make(chan struct{})
@@ -916,25 +915,25 @@ func TestValidateGovernanceAssessmentAllowsDecisionWithoutDesignAndIgnoresLiveRa
 	}
 }
 
-func TestFrozenSetupSourcesImplementationAndReviewDispatch(t *testing.T) {
-	settings := func(harness, model string) config.ContextualExecutionSettings {
-		return config.ContextualExecutionSettings{
-			ControlPlane:   config.ControlPlaneSettings{Triage: config.ModelTimeoutSettings{Model: "control", TimeoutText: "20m"}, Spec: config.ModelTimeoutSettings{Model: "control", TimeoutText: "30m"}},
-			Implementation: config.ImplementationSettings{Harness: harness, Model: model, ModelPolicy: config.ModelPolicyExplicit, Effort: "high", TimeoutText: "2h"},
-			Review:         config.ReviewExecutionSettings{Execution: config.ExecutionMCP, TimeoutText: "45m"},
-		}
+// A task's frozen policy sources stage timeouts for dispatch; review seat
+// contents and workspace routes never become executor requirements
+// (DEC-96(2)).
+func TestFrozenPolicySourcesImplementationAndReviewDispatch(t *testing.T) {
+	policy := func(seat config.ReviewSeat) config.PolicyContract {
+		return config.PolicyContract{StageTimeouts: config.PolicyStageTimeouts{Spec: "30m", Implement: "2h", Review: "45m"}, Review: config.ReviewPanel{Seats: []config.ReviewSeat{seat}}}
 	}
-	harness := func(name string) config.Harness {
-		return config.Harness{Name: name, Command: []string{name, "{prompt}", "{mcp_config}"}, ModelArgs: []string{"--model", "{model}"}, EffortArgs: map[string][]string{"high": {"--effort", "high"}}, ProbeCommand: []string{name, "--version"}, ProbeTimeoutText: "5s"}
+	backend := policy(config.ReviewSeat{Model: "gpt-review", Harness: "codex"})
+	frontend := policy(config.ReviewSeat{Model: "claude-review", Harness: "claude", Effort: "high"})
+	routes := map[string]config.StageRoute{
+		"triage":    {Model: "control", TimeoutText: "20m", Execution: config.ExecutionInProcess},
+		"implement": {Model: "gpt-backend", Harness: "codex", Effort: "high", Execution: config.ExecutionMCP},
+		"review":    {Execution: config.ExecutionMCP},
 	}
-	backend := config.ExecutionSetup{Name: "backend", ExecutionSettings: settings("codex", "gpt-backend"), Review: config.ReviewPanel{Seats: []config.ReviewSeat{{Model: "gpt-review", Harness: "codex"}}}}
-	frontend := config.ExecutionSetup{Name: "frontend", ExecutionSettings: settings("claude", "claude-ui"), Review: config.ReviewPanel{Seats: []config.ReviewSeat{{Model: "claude-review", Harness: "claude", Effort: "high"}}}}
-	cfg := (&config.Config{Workspace: "demo", WorkOrderQueueTimeout: time.Hour, Harnesses: []config.Harness{harness("codex"), harness("claude")}, Setups: []config.ExecutionSetup{backend, frontend}, DefaultSetup: "backend"}).WithSetup(backend)
-	cfg.Setups, cfg.DefaultSetup = []config.ExecutionSetup{backend, frontend}, "backend"
+	cfg := (&config.Config{Workspace: "demo", WorkOrderQueueTimeout: time.Hour, Routing: config.Routing{Stages: routes}, Review: backend.Review}).WithPolicy(backend)
 
 	ctx := store.WithWorkspace(store.WithActor(t.Context(), store.SystemActor()), "demo")
 	st := store.NewMemory()
-	task := core.Task{ID: "frozen-frontend", Workspace: "demo", Title: "Frontend", SetupName: frontend.Name, SetupContract: frontend, State: core.TaskQueued, NextStage: core.StageImplement, CreatedAt: time.Now()}
+	task := core.Task{ID: "frozen-frontend", Workspace: "demo", Title: "Frontend", SetupName: "frontend", SetupContract: frontend, State: core.TaskQueued, NextStage: core.StageImplement, CreatedAt: time.Now()}
 	if err := st.CreateTask(ctx, task); err != nil {
 		t.Fatal(err)
 	}
@@ -1068,7 +1067,7 @@ func newPlanReviewSeatsTask(t *testing.T, ctx context.Context, st store.Store, i
 	t.Helper()
 	task := core.Task{ID: id, Workspace: "demo", Repo: "api", Title: "Planned seats", PolicyVersion: 1, SpecApproval: gate, State: core.TaskRunning, NextStage: core.StageSpec,
 		Branch: "conveyor/task-" + id, BaseBranch: "main", CreatedAt: time.Now(),
-		SetupContract: config.ExecutionSetup{Review: config.ReviewPanel{Seats: make([]config.ReviewSeat, minimum)}, ExecutionSettings: config.ContextualExecutionSettings{Review: config.ReviewExecutionSettings{TimeoutText: "45m"}}}}
+		SetupContract: config.PolicyContract{Review: config.ReviewPanel{Seats: make([]config.ReviewSeat, minimum)}, StageTimeouts: config.PolicyStageTimeouts{Review: "45m"}}}
 	if err := st.CreateTask(ctx, task); err != nil {
 		t.Fatal(err)
 	}
@@ -1582,52 +1581,6 @@ func TestInProcessTriageAndSpecAdvanceToImplementWorkOrder(t *testing.T) {
 	orders, err := st.ListTaskWorkOrders(ctx, task.ID)
 	if err != nil || len(orders) != 1 || orders[0].Stage != core.StageImplement || orders[0].State != core.WorkOrderQueued {
 		t.Fatalf("orders=%+v err=%v", orders, err)
-	}
-}
-
-func TestImplementationDispatchNeverSnapshotsUndeclaredExplicitSymbol(t *testing.T) {
-	ctx := store.WithWorkspace(store.WithActor(t.Context(), store.SystemActor()), "demo")
-	st := store.NewMemory()
-	task := core.Task{ID: "reject-symbolic-implement", Workspace: "demo", Repo: "api", State: core.TaskQueued, NextStage: core.StageImplement, CreatedAt: time.Now()}
-	if err := st.CreateTask(ctx, task); err != nil {
-		t.Fatal(err)
-	}
-	document := implementationModelDocument(config.ModelPolicyExplicit, "subscription", nil)
-	raw, err := yaml.Marshal(document)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err = config.ParseWorkspaceDocument(raw, &config.Config{Workspace: "demo", PackDir: "."}, "symbolic dispatch test"); err == nil || !strings.Contains(err.Error(), `symbolic model "subscription" requires harness_default model policy`) {
-		t.Fatalf("explicit symbolic model error=%v", err)
-	}
-	orders, listErr := st.ListTaskWorkOrders(ctx, task.ID)
-	if listErr != nil || len(orders) != 0 {
-		t.Fatalf("invalid symbolic model created work orders=%+v err=%v", orders, listErr)
-	}
-}
-
-func implementationModelDocument(policy, model string, sentinels []string) config.WorkspaceDocument {
-	return config.WorkspaceDocument{
-		Workspace: "demo", MaxBounces: 2,
-		ExecutionSettings: &config.ContextualExecutionSettings{
-			ControlPlane: config.ControlPlaneSettings{
-				Triage: config.ModelTimeoutSettings{Model: "gpt", TimeoutText: "20m"},
-				Spec:   config.ModelTimeoutSettings{Model: "gpt", TimeoutText: "30m"},
-			},
-			Implementation: config.ImplementationSettings{Harness: "codex", Model: model, ModelPolicy: policy, TimeoutText: "1h"},
-			Review:         config.ReviewExecutionSettings{Execution: config.ExecutionMCP, TimeoutText: "1h", FallbackModel: "gpt-review", FallbackHarness: "codex"},
-		},
-		Routing: config.Routing{Stages: map[string]config.StageRoute{
-			"triage":    {Model: "gpt", TimeoutText: "20m", Execution: config.ExecutionInProcess},
-			"spec":      {Model: "gpt", TimeoutText: "30m", Execution: config.ExecutionInProcess},
-			"implement": {Model: model, ModelPolicy: policy, Harness: "codex", TimeoutText: "1h", Execution: config.ExecutionMCP},
-			"review":    {Model: "gpt-review", Harness: "codex", TimeoutText: "1h", Execution: config.ExecutionMCP},
-		}},
-		Harnesses: []config.Harness{{
-			Name: "codex", Command: []string{"codex", "{prompt}", "{mcp_config}"}, ModelArgs: []string{"--model", "{model}"},
-			DefaultModelSentinels: sentinels, ProbeCommand: []string{"codex", "--version"}, ProbeTimeoutText: "5s",
-		}},
-		Repos: []config.Repo{{Name: "api", URL: "https://example.test/api", Base: "main"}},
 	}
 }
 

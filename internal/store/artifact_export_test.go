@@ -92,12 +92,42 @@ func SeedStoredTaskHoldForTest(t *testing.T, st Backend, taskID string) {
 	m.tasks[taskID] = task
 }
 
+// SeedWorkspaceConfigYAMLForTest replaces one workspace's stored
+// configuration document with raw YAML without changing its version, as a
+// row an earlier release wrote; no public writer accepts a raw document.
+func SeedWorkspaceConfigYAMLForTest(t *testing.T, st Backend, workspace, raw string) {
+	t.Helper()
+	m := st.(*volatileMemory)
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	record, ok := m.workspaces[workspace]
+	if !ok {
+		t.Fatal("seed requires an existing workspace")
+	}
+	record.ConfigYAML = raw
+	m.workspaces[workspace] = record
+}
+
+// WorkspaceConfigYAMLForTest returns one workspace's stored configuration
+// document; no public read exposes the raw bytes.
+func WorkspaceConfigYAMLForTest(t *testing.T, st Backend, workspace string) string {
+	t.Helper()
+	m := st.(*volatileMemory)
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	record, ok := m.workspaces[workspace]
+	if !ok {
+		t.Fatal("read requires an existing workspace")
+	}
+	return record.ConfigYAML
+}
+
 // SeedSetupContractForTest replaces one task's setup contract with the
 // decoding of raw, as the durable backends read a row an earlier encoding
 // wrote; no public writer accepts a raw contract.
 func SeedSetupContractForTest(t *testing.T, st Backend, taskID, raw string) {
 	t.Helper()
-	var setup config.ExecutionSetup
+	var setup config.PolicyContract
 	if err := json.Unmarshal([]byte(raw), &setup); err != nil {
 		t.Fatal(err)
 	}

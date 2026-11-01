@@ -198,12 +198,10 @@ func runRecoveryKeepsEnabledPolicy(t *testing.T, x Fixture) {
 		NextStage: core.StageReview, ReviewedHeadSHA: "submitted-head", CreatedAt: time.Now().UTC(),
 	}
 	task.Branch = "conveyor/task-" + task.ID
-	task.SetupContract = config.ExecutionSetup{
-		MaxBounces: 3,
-		Review:     config.ReviewPanel{Seats: []config.ReviewSeat{{}}},
-		ExecutionSettings: config.ContextualExecutionSettings{
-			Review: config.ReviewExecutionSettings{TimeoutText: "1h"},
-		},
+	task.SetupContract = config.PolicyContract{
+		MaxBounces:    3,
+		Review:        config.ReviewPanel{Seats: []config.ReviewSeat{{}}},
+		StageTimeouts: config.PolicyStageTimeouts{Review: "1h"},
 	}
 	requireOK(t, st.CreateTask(ctx, task))
 	createReviewSource(t, x, task)
@@ -223,7 +221,7 @@ func runRecoveryKeepsEnabledPolicy(t *testing.T, x Fixture) {
 	}
 	stored, err := st.GetTask(ctx, task.ID)
 	requireOK(t, err)
-	if !stored.SetupContract.VerifyStage || stored.SetupContract.ExecutionSettings.Verify.TimeoutText != "45m" {
+	if !stored.SetupContract.VerifyStage || stored.SetupContract.StageTimeouts.Verify != "45m" {
 		t.Fatalf("frozen policy changed: %+v", stored.SetupContract)
 	}
 	requireNoSetupRefreeze(t, x, task.ID)
@@ -243,11 +241,9 @@ func runRecoveryKeepsIntakePolicy(t *testing.T, x Fixture) {
 		NextStage: core.StageVerify, ReviewedHeadSHA: "submitted-head", CreatedAt: time.Now().UTC(),
 	}
 	task.Branch = "conveyor/task-" + task.ID
-	task.SetupContract = config.ExecutionSetup{
-		VerifyStage: true,
-		ExecutionSettings: config.ContextualExecutionSettings{
-			Verify: config.ImplementationSettings{TimeoutText: "45m"},
-		},
+	task.SetupContract = config.PolicyContract{
+		VerifyStage:   true,
+		StageTimeouts: config.PolicyStageTimeouts{Verify: "45m"},
 	}
 	requireOK(t, st.CreateTask(ctx, task))
 	order := core.WorkOrder{
@@ -265,7 +261,7 @@ func runRecoveryKeepsIntakePolicy(t *testing.T, x Fixture) {
 	}
 	stored, err := st.GetTask(ctx, task.ID)
 	requireOK(t, err)
-	if !stored.SetupContract.VerifyStage || stored.SetupContract.ExecutionSettings.Verify.TimeoutText != "45m" {
+	if !stored.SetupContract.VerifyStage || stored.SetupContract.StageTimeouts.Verify != "45m" {
 		t.Fatalf("intake policy changed: %+v", stored.SetupContract)
 	}
 	requireNoSetupRefreeze(t, x, task.ID)
@@ -409,7 +405,7 @@ func runRecoveryRefusalMatrix(t *testing.T, x Fixture) {
 	cells := []cell{
 		{
 			name:        "running/verify-on/equal/verify/queued",
-			task:        core.Task{State: core.TaskRunning, NextStage: core.StageVerify, ReviewedHeadSHA: "head", SetupContract: config.ExecutionSetup{VerifyStage: true}},
+			task:        core.Task{State: core.TaskRunning, NextStage: core.StageVerify, ReviewedHeadSHA: "head", SetupContract: config.PolicyContract{VerifyStage: true}},
 			order:       core.WorkOrder{Stage: core.StageVerify, HeadSHA: "head"},
 			clock:       core.WorkOrderQueued,
 			queuedRetry: true,
@@ -417,7 +413,7 @@ func runRecoveryRefusalMatrix(t *testing.T, x Fixture) {
 		},
 		{
 			name:  "running/verify-on/equal/verify/stale",
-			task:  core.Task{State: core.TaskRunning, NextStage: core.StageVerify, ReviewedHeadSHA: "head", SetupContract: config.ExecutionSetup{VerifyStage: true}},
+			task:  core.Task{State: core.TaskRunning, NextStage: core.StageVerify, ReviewedHeadSHA: "head", SetupContract: config.PolicyContract{VerifyStage: true}},
 			order: core.WorkOrder{Stage: core.StageVerify, HeadSHA: "head"},
 			clock: core.WorkOrderStale,
 			want:  func(string, string, string) string { return "" },
@@ -433,7 +429,7 @@ func runRecoveryRefusalMatrix(t *testing.T, x Fixture) {
 		},
 		{
 			name:  "running/verify-on/mismatch/verify/stale",
-			task:  core.Task{State: core.TaskRunning, NextStage: core.StageVerify, ReviewedHeadSHA: "task-head", SetupContract: config.ExecutionSetup{VerifyStage: true}},
+			task:  core.Task{State: core.TaskRunning, NextStage: core.StageVerify, ReviewedHeadSHA: "task-head", SetupContract: config.PolicyContract{VerifyStage: true}},
 			order: core.WorkOrder{Stage: core.StageVerify, HeadSHA: "order-head"},
 			clock: core.WorkOrderStale,
 			want: func(_, orderID, _ string) string {
@@ -442,7 +438,7 @@ func runRecoveryRefusalMatrix(t *testing.T, x Fixture) {
 		},
 		{
 			name:  "running/verify-on/empty/verify/stale",
-			task:  core.Task{State: core.TaskRunning, NextStage: core.StageVerify, SetupContract: config.ExecutionSetup{VerifyStage: true}},
+			task:  core.Task{State: core.TaskRunning, NextStage: core.StageVerify, SetupContract: config.PolicyContract{VerifyStage: true}},
 			order: core.WorkOrder{Stage: core.StageVerify},
 			clock: core.WorkOrderStale,
 			want: func(_, orderID, _ string) string {
@@ -451,7 +447,7 @@ func runRecoveryRefusalMatrix(t *testing.T, x Fixture) {
 		},
 		{
 			name:  "running/verify-on/refresh/verify/stale",
-			task:  core.Task{State: core.TaskRunning, NextStage: core.StageVerify, ReviewedHeadSHA: "reviewed", ApprovalStale: true, RefreshHeadSHA: "refresh", SetupContract: config.ExecutionSetup{VerifyStage: true}},
+			task:  core.Task{State: core.TaskRunning, NextStage: core.StageVerify, ReviewedHeadSHA: "reviewed", ApprovalStale: true, RefreshHeadSHA: "refresh", SetupContract: config.PolicyContract{VerifyStage: true}},
 			order: core.WorkOrder{Stage: core.StageVerify, HeadSHA: "order"},
 			clock: core.WorkOrderStale,
 			want: func(_, orderID, _ string) string {
@@ -460,7 +456,7 @@ func runRecoveryRefusalMatrix(t *testing.T, x Fixture) {
 		},
 		{
 			name:  "running/next-review/verify/stale",
-			task:  core.Task{State: core.TaskRunning, NextStage: core.StageReview, ReviewedHeadSHA: "head", SetupContract: config.ExecutionSetup{VerifyStage: true}},
+			task:  core.Task{State: core.TaskRunning, NextStage: core.StageReview, ReviewedHeadSHA: "head", SetupContract: config.PolicyContract{VerifyStage: true}},
 			order: core.WorkOrder{Stage: core.StageVerify, HeadSHA: "head"},
 			clock: core.WorkOrderStale,
 			want: func(taskID, orderID, _ string) string {
@@ -496,7 +492,7 @@ func runRecoveryRefusalMatrix(t *testing.T, x Fixture) {
 		},
 		{
 			name:      "running/verify-on/equal/verify/stale/successor",
-			task:      core.Task{State: core.TaskRunning, NextStage: core.StageVerify, ReviewedHeadSHA: "head", SetupContract: config.ExecutionSetup{VerifyStage: true}},
+			task:      core.Task{State: core.TaskRunning, NextStage: core.StageVerify, ReviewedHeadSHA: "head", SetupContract: config.PolicyContract{VerifyStage: true}},
 			order:     core.WorkOrder{Stage: core.StageVerify, HeadSHA: "head"},
 			clock:     core.WorkOrderStale,
 			successor: true,
@@ -669,13 +665,10 @@ func runQueuedStrandedVerifyCancelled(t *testing.T, x Fixture) {
 		NextStage: core.StageReview, ReviewedHeadSHA: "submitted-head", CreatedAt: time.Now().UTC(),
 	}
 	task.Branch = "conveyor/task-" + task.ID
-	task.SetupContract = config.ExecutionSetup{
-		VerifyStage: false,
-		Review:      config.ReviewPanel{Seats: []config.ReviewSeat{{}}},
-		ExecutionSettings: config.ContextualExecutionSettings{
-			Review: config.ReviewExecutionSettings{TimeoutText: "1h"},
-			Verify: config.ImplementationSettings{TimeoutText: "30m"},
-		},
+	task.SetupContract = config.PolicyContract{
+		VerifyStage:   false,
+		Review:        config.ReviewPanel{Seats: []config.ReviewSeat{{}}},
+		StageTimeouts: config.PolicyStageTimeouts{Review: "1h", Verify: "30m"},
 	}
 	requireOK(t, st.CreateTask(ctx, task))
 	createReviewSource(t, x, task)
