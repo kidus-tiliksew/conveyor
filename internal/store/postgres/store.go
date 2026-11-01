@@ -563,7 +563,8 @@ func (s *Store) ListFactoryActs(ctx context.Context, since time.Time, limit int)
 		  AND e.at >= $2
 		  AND e.kind IN (
 		    'pipeline.bounced','work_order.expired','work_order.released','work_order.requeued',
-		    'merge.conflict_fix_dispatched','review.refresh_round_created','review.seat_recovered','merge.confirmed')
+		    'merge.conflict_fix_dispatched','review.refresh_round_created','review.seat_recovered','merge.confirmed',
+		    'drift.repaired')
 		ORDER BY e.at DESC, e.id DESC
 		LIMIT $3`, workspace(ctx), since, limit*8)
 	if err != nil {

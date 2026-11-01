@@ -14,18 +14,6 @@ import (
 
 type verificationPublicationWorker struct{ dispatcher *Dispatcher }
 
-func (w *verificationPublicationWorker) Reconcile(ctx context.Context, workspace string) error {
-	if workspace == "" {
-		return store.VerificationDeliveryIdentityError()
-	}
-	b, ok := w.dispatcher.Store.(store.VerificationDeliveryStore)
-	if !ok {
-		return nil
-	}
-	ctx = store.WithWorkspace(store.WithActor(ctx, store.SystemActor("verification-publication")), workspace)
-	return b.ReconcileVerificationDeliveries(ctx)
-}
-
 // Legacy performs only translation. Source and stream IDs never resolve a
 // workspace; older payloads are bound exclusively to the trusted partition.
 func (w *verificationPublicationWorker) Legacy(ctx context.Context, job queue.Job) error {

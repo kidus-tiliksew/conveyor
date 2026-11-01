@@ -259,8 +259,7 @@ func (rt *Runtime) wait(ctx context.Context) error {
 	}
 }
 
-// pollLoop runs each registration's Reconcile once, catches up, and then
-// waits: it catches up again only on a job notice for the workspace (or for
+// pollLoop catches up once and then waits: it catches up again only on a job notice for the workspace (or for
 // every workspace, after a peer listener reconnects) and on a peer tail
 // tick. While idle it sends no statement (req-quiet-idle-runtime AC-1.1,
 // AC-2.1). Rescue runs after every catch-up.
@@ -273,19 +272,6 @@ func (rt *Runtime) pollLoop(ws *workspace) {
 		ticker := time.NewTicker(rt.opts.PeerTail)
 		defer ticker.Stop()
 		peerTick = ticker.C
-	}
-	rt.mu.Lock()
-	var reconcilers []func(context.Context, string) error
-	for _, reg := range rt.regs {
-		if reg.Reconcile != nil {
-			reconcilers = append(reconcilers, reg.Reconcile)
-		}
-	}
-	rt.mu.Unlock()
-	for _, reconcile := range reconcilers {
-		if err := reconcile(rt.loopCtx, ws.id); err != nil && !errors.Is(err, context.Canceled) {
-			rt.opts.Logf("logqueue: workspace %s: reconcile: %v", ws.id, err)
-		}
 	}
 	for {
 		if err := rt.catchUp(rt.loopCtx, ws); err != nil && !errors.Is(err, context.Canceled) {

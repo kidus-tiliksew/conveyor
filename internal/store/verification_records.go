@@ -29,6 +29,10 @@ type VerificationRow struct {
 
 var VerificationTables = []string{"verification_contexts", "verification_selections", "verification_obligations", "verification_attempts", "verification_operations", "verification_evidence", "verification_evidence_links", "verification_publications", "verification_upload_chunks", "verification_permission_grants", "verification_permission_revocations"}
 
+// VerificationUploadLifetime is how long an upload's staging chunks live
+// after its first chunk (component-verification-evidence).
+const VerificationUploadLifetime = 24 * time.Hour
+
 type VerificationMutation struct {
 	ArtifactReferences []core.VerificationArtifactReference
 	Rows               []VerificationRow
@@ -529,7 +533,7 @@ func prepareVerificationMutation(ctx context.Context, source redact.SecretSource
 			v.ContextID = c.ContextID
 			v.RunID = c.RunID
 			v.CreatedAt = now
-			v.ExpiresAt = now.Add(24 * time.Hour)
+			v.ExpiresAt = now.Add(VerificationUploadLifetime)
 			for _, row := range rows {
 				if row.Table == "verification_upload_chunks" && row.LogicalKey == v.UploadID {
 					if row.ContextID != c.ContextID || row.RunID != c.RunID {

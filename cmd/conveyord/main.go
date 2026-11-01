@@ -180,6 +180,10 @@ func main() {
 	var queueRuntime shutdownQueue
 	var addWorkspaceQueue func(string, *config.Config) error
 	var workspaceQueues *dispatch.WorkspaceQueueRegistrar
+	startupChecks := &dispatch.StartupChecks{Dispatcher: d, Store: st, Logf: log.Printf}
+	// startupWorkspaceIDs are the workspaces the start-up checks cover; a
+	// workspace created after this read has no task to check.
+	var startupWorkspaceIDs []string
 	var reviewRecovery atomic.Pointer[workorder.Service]
 	// peerTail is positive only for peers on a backend without change
 	// notification; streams and await_review wake on it too.
@@ -229,6 +233,11 @@ func main() {
 		for _, registration := range d.Registrations(queueShutdown) {
 			runtime.Register(registration)
 		}
+		// The drift-repair start-up checks run before the runtime starts, so
+		// no alarm fire or worker here repairs drift a check must report
+		// (component-runtime, Start-up checks and background loops).
+		startupWorkspaceIDs = workspaceIDs
+		startupChecks.RunDrift(ctx, startupWorkspaceIDs)
 		if startErr := runtime.Start(context.Background()); startErr != nil {
 			log.Fatalf("start queue runtime: %v", startErr)
 		}
@@ -337,85 +346,15 @@ func main() {
 		srv.ConfigProvider = func(ctx context.Context) (*config.Config, error) {
 			return st.RuntimeConfig(ctx, deployment)
 		}
-		reconcile := func() {
-			workspaces, listErr := st.ListWorkspaces(ctx)
-			if listErr != nil {
-				log.Printf("list workspaces for reconciliation: %v", listErr)
-				return
-			}
-			if queueErr := workspaceQueues.Converge(workspaces); queueErr != nil {
-				log.Printf("%v", queueErr)
-				return
-			}
-			for _, workspace := range workspaces {
-				workspaceCtx := store.WithWorkspace(ctx, workspace.ID)
-				reconcileWorkspaceVerification(workspaceCtx, workOrders, workspace.ID, log.Printf)
-				mergeReadiness, mergeErr := d.ReconcileMergeReadiness(workspaceCtx)
-				if mergeErr != nil {
-					// A readiness failure is logged and never skips the later
-					// lifecycle and publication reconciles in this tick.
-					log.Printf("reconcile merge readiness: %v", mergeErr)
-				}
-				if mergeReadiness != 0 {
-					log.Printf("reconciled %d merge-ready task(s) in workspace %s", mergeReadiness, workspace.ID)
-				}
-				lifecycles, lifecycleErr := d.ReconcileGitHubLifecycles(workspaceCtx)
-				if lifecycleErr != nil {
-					log.Printf("reconcile GitHub lifecycle intents: %v", lifecycleErr)
-					return
-				}
-				if lifecycles != 0 {
-					log.Printf("reconciled %d approved task GitHub lifecycle intent(s) in workspace %s", lifecycles, workspace.ID)
-				}
-				issueJobs, issueErr := st.ReconcileGitHubLifecycles(workspaceCtx)
-				if issueErr != nil {
-					log.Printf("reconcile GitHub issue publications: %v", issueErr)
-					return
-				}
-				if issueJobs != 0 {
-					log.Printf("reconciled %d GitHub issue publication job(s) in workspace %s", issueJobs, workspace.ID)
-				}
-				repaired, err := st.ReconcileQueuedTasks(workspaceCtx)
-				if err != nil {
-					log.Printf("reconcile queued tasks: %v", err)
-					return
-				}
-				if repaired != 0 {
-					log.Printf("reconciled %d queued task(s) missing queue jobs", repaired)
-				}
-				closedBlueprints, closeErr := st.ReconcileBlueprintClosures(workspaceCtx)
-				if closeErr != nil {
-					log.Printf("reconcile blueprint closures: %v", closeErr)
-					return
-				}
-				if closedBlueprints != 0 {
-					log.Printf("reconciled %d blueprint parent closure(s) in workspace %s", closedBlueprints, workspace.ID)
-				}
-				publications, publicationErr := st.ReconcileReviewPublications(workspaceCtx)
-				if publicationErr != nil {
-					log.Printf("reconcile review publications: %v", publicationErr)
-					return
-				}
-				if publications != 0 {
-					log.Printf("reconciled %d completed review publication(s) in workspace %s", publications, workspace.ID)
-				}
-				// The time-based recovery passes run at each deadline alarm
-				// fire, not on this tick (component-runtime, Reconcile tick).
-			}
-		}
-		reconcile()
-		go func() {
-			ticker := time.NewTicker(time.Minute)
-			defer ticker.Stop()
-			for {
-				select {
-				case <-ctx.Done():
-					return
-				case <-ticker.C:
-					reconcile()
-				}
-			}
-		}()
+		// Workspace queue registration converges at start, on creation, and
+		// on each workspace notice, including a peer's; the start-up GitHub
+		// reads run once. No repair pass runs on a timer (component-runtime,
+		// Start-up checks and background loops; req-quiet-idle-runtime AC-4.3).
+		startWorkspaceRegistrationWatcher(ctx, workspaceRegistrationWatcher{
+			notices: st.Changes().SubscribeAll(changes.Workspace), list: st.ListWorkspaces,
+			converge: workspaceQueues.Converge, logf: log.Printf,
+		})
+		startupChecks.RunGitHub(ctx, startupWorkspaceIDs)
 	}
 
 	if *pollGitHub > 0 {

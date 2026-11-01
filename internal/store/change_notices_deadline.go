@@ -110,6 +110,20 @@ func EventDeadlineNotice(workspace, kind string, payload json.RawMessage, at tim
 	case "review.publication_failed", "github_issue.publication_failed",
 		"config.updated", "requirement.version_confirmed", "system_design.version_confirmed":
 		return notice(at)
+	case "verification." + VerificationStageChunk:
+		// A staged chunk's upload expires VerificationUploadLifetime after its
+		// first chunk; the first chunk's event raises that time, and
+		// NextDeadline returns each staging chunk's exact expiry.
+		if at.IsZero() {
+			at = time.Now().UTC()
+		}
+		return notice(at.Add(VerificationUploadLifetime))
+	}
+	if strings.HasPrefix(kind, "work_order.") && verificationClaimMayHaveEnded(kind, payload) {
+		// A verify order that lost its claim may leave a running or pending
+		// verification attempt; the next fire reconciles the claim loss
+		// (component-durable-queue, The deadline alarm).
+		return notice(at)
 	}
 	if !strings.HasPrefix(kind, "work_order.") || len(payload) == 0 {
 		return changes.Notice{}, false
@@ -138,6 +152,36 @@ func EventDeadlineNotice(workspace, kind string, payload json.RawMessage, at tim
 		return changes.Notice{}, false
 	}
 	return notice(earliest)
+}
+
+// claimEndingWorkOrderKinds are the work-order events that can end a claim:
+// release, expiry, cancellation, preemption, staleness, timeout,
+// retirement, stall, child failure, and redispatch.
+var claimEndingWorkOrderKinds = map[string]bool{
+	"work_order.released": true, "work_order.expired": true, "work_order.cancelled": true,
+	"work_order.preempted": true, "work_order.stale": true, "work_order.timed_out": true,
+	"work_order.retired": true, "work_order.stalled": true, "work_order.child_failed": true,
+	"work_order.redispatched": true,
+}
+
+// verificationClaimMayHaveEnded reports whether a work-order event may leave
+// a verification attempt running or pending without its claim: its payload
+// is a verify order that has had an attempt and is no longer claimed,
+// whatever the event kind, or it is a claim-ending event whose payload names
+// no stage, as the verification supersession cancel does.
+func verificationClaimMayHaveEnded(kind string, payload json.RawMessage) bool {
+	var order struct {
+		Stage         core.Stage          `json:"stage"`
+		State         core.WorkOrderState `json:"state"`
+		LastAttemptID string              `json:"last_attempt_id"`
+	}
+	if len(payload) != 0 && json.Unmarshal(payload, &order) != nil {
+		return claimEndingWorkOrderKinds[kind]
+	}
+	if order.Stage == "" {
+		return claimEndingWorkOrderKinds[kind]
+	}
+	return order.Stage == core.StageVerify && order.State != "" && order.State != core.WorkOrderClaimed && order.LastAttemptID != ""
 }
 
 // DependencyResumeDeadlineNotice is raised when a dependency unblock
@@ -194,6 +238,14 @@ func (m *memory) NextDeadline(ctx context.Context, after time.Time) (time.Time, 
 			continue
 		}
 		consider(*delivery.NextAttemptAt, true)
+	}
+	for _, row := range m.verificationRows {
+		if row.Table != "verification_upload_chunks" || row.State != "staging" || row.ExpiresAt == nil {
+			continue
+		}
+		if _, ok := inWorkspace(row.TaskID); ok {
+			consider(*row.ExpiresAt, true)
+		}
 	}
 	return earliest, !earliest.IsZero(), nil
 }

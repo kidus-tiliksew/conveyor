@@ -786,6 +786,7 @@ ORDER BY parent.created_at,parent.id`, workspace(ctx))
 		}
 		if didClose {
 			closed++
+			store.ReportDriftRepair(ctx, store.DriftBlueprintParentOpen.For(parentID))
 		}
 	}
 	return closed, nil

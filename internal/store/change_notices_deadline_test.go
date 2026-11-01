@@ -50,6 +50,24 @@ func TestEventDeadlineNotice(t *testing.T) {
 		{name: "System Design confirmation is due at once", kind: "system_design.version_confirmed", payload: []byte(`{}`), want: at},
 		{name: "an unrelated event raises nothing", kind: "task.state_changed", payload: []byte(`{}`), none: true},
 		{name: "a review publication retry raises nothing", kind: "review.publication_retry", payload: []byte(`{}`), none: true},
+		// A verify order that loses its claim is due at once, so the next fire
+		// reconciles its verification attempt's claim loss.
+		{name: "released verify order is due at once", kind: "work_order.released", payload: order(func(o *core.WorkOrder) {
+			o.Stage, o.State, o.LastAttemptID = core.StageVerify, core.WorkOrderQueued, "attempt-1"
+		}), want: at},
+		{name: "cancelled verify order is due at once", kind: "work_order.cancelled", payload: order(func(o *core.WorkOrder) {
+			o.Stage, o.State, o.LastAttemptID = core.StageVerify, core.WorkOrderCancelled, "attempt-1"
+		}), want: at},
+		{name: "preempted verify order is due at once", kind: "work_order.preempted", payload: order(func(o *core.WorkOrder) {
+			o.Stage, o.State, o.LastAttemptID = core.StageVerify, core.WorkOrderQueued, "attempt-1"
+		}), want: at},
+		{name: "superseded verification cancel without a stage is due at once", kind: "work_order.cancelled", payload: core.JSONPayload(map[string]any{"work_order_id": "o", "reason": "superseded verification head"}), want: at},
+		{name: "a new verify order without an attempt keeps its queue deadline", kind: "work_order.created", payload: order(func(o *core.WorkOrder) { o.Stage, o.State = core.StageVerify, core.WorkOrderQueued }), want: queue},
+		{name: "released implement order keeps its queue deadline", kind: "work_order.released", payload: order(func(o *core.WorkOrder) { o.State = core.WorkOrderQueued }), want: queue},
+		{name: "a claimed verify order keeps its lease", kind: "work_order.claimed", payload: order(func(o *core.WorkOrder) {
+			o.Stage, o.State, o.LeaseExpiresAt, o.ExecutionStartedAt, o.ExecutionDeadline = core.StageVerify, core.WorkOrderClaimed, lease, at, execution
+		}), want: lease},
+		{name: "a staged chunk raises its upload expiry", kind: "verification.chunk.stage", payload: []byte(`{}`), want: at.Add(VerificationUploadLifetime)},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

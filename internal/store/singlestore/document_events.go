@@ -390,7 +390,7 @@ func (s *Store) ListFactoryActs(ctx context.Context, since time.Time, limit int)
 	if limit <= 0 || limit > 100 {
 		limit = 100
 	}
-	rows, err := documentRows(ctx, s.db, `SELECT id,COALESCE(task_id,''),kind,actor_role,payload_json,at FROM events WHERE workspace_id=? AND at>=? AND kind IN ('pipeline.bounced','work_order.expired','work_order.released','work_order.requeued','merge.conflict_fix_dispatched','review.refresh_round_created','review.seat_recovered','merge.confirmed') ORDER BY at DESC, id DESC LIMIT ?`, documentWorkspace(ctx), since, limit*8)
+	rows, err := documentRows(ctx, s.db, `SELECT id,COALESCE(task_id,''),kind,actor_role,payload_json,at FROM events WHERE workspace_id=? AND at>=? AND kind IN ('pipeline.bounced','work_order.expired','work_order.released','work_order.requeued','merge.conflict_fix_dispatched','review.refresh_round_created','review.seat_recovered','merge.confirmed','drift.repaired') ORDER BY at DESC, id DESC LIMIT ?`, documentWorkspace(ctx), since, limit*8)
 	if err != nil {
 		return nil, err
 	}
