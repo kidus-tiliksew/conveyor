@@ -199,12 +199,17 @@ func (s *Store) resumeDependencyQueueClocksTx(ctx context.Context, tx pgx.Tx, ta
 	if blocked {
 		return nil
 	}
-	_, err := tx.Exec(ctx, `UPDATE work_orders
+	tag, err := tx.Exec(ctx, `UPDATE work_orders
 		SET queue_deadline=queue_deadline+($1-queue_blocked_at),
 			queue_blocked_at=NULL, updated_at=$1
 		WHERE workspace_id=$2 AND task_id=$3 AND stage IN ('implement','verify')
 			AND state='queued' AND queue_blocked_at IS NOT NULL`,
 		now, workspace(ctx), taskID)
+	if err == nil && tag.RowsAffected() > 0 {
+		// The resume appends no event, so it raises its own deadline notice
+		// (component-task-lifecycle, Dependency commands).
+		raiseTx(tx, store.DependencyResumeDeadlineNotice(workspace(ctx), now))
+	}
 	return err
 }
 

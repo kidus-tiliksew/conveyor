@@ -26,9 +26,10 @@ const PeerTailInterval = 30 * time.Second
 // drains that index one job at a time, so a workspace never runs two jobs of
 // one kind at once (DEC-99(1); component-durable-queue). A
 // claim is an expected-version append, so any number of replicas may run
-// the same runtime against the same log. The periodic order clock runs
-// in-process on a ticker and writes nothing to the log: a tick is not a
-// fact, and the tick handler is idempotent under concurrent replicas.
+// the same runtime against the same log. One deadline alarm per workspace
+// runs the order clock at the earliest recorded deadline and writes nothing
+// to the log: a tick is not a fact, and the tick handler is idempotent under
+// concurrent replicas.
 type Runtime struct {
 	log     eventlog.Store
 	opts    Options
@@ -60,8 +61,9 @@ type Options struct {
 	// period: PeerTailInterval for peers on a backend without change
 	// notification. Zero runs no peer tail.
 	PeerTail time.Duration
-	// ClockInterval is the order clock's period. Default 5s; zero disables.
-	ClockInterval time.Duration
+	// Deadlines is the deadline alarm's source of stored deadlines; nil
+	// means the alarm serves only the index and notices.
+	Deadlines DeadlineSource
 	// WorkerID names this process in claims.
 	WorkerID string
 	// Now is the clock; tests replace it.
@@ -86,8 +88,13 @@ type workspace struct {
 	// fold asks the poll loop to catch up after this process recorded an
 	// outcome, so its own completions and discards, which raise no notice,
 	// reach the index.
-	fold    chan struct{}
-	stopped bool
+	fold chan struct{}
+	// alarmIndex tells the deadline alarm the index changed; alarmReread
+	// asks it to read the stored deadline again after a local job outcome.
+	alarmIndex  chan struct{}
+	alarmReread chan struct{}
+	alarmTarget time.Time
+	stopped     bool
 }
 
 // Default retry backoff when a registration sets none: doubling from one
@@ -104,9 +111,6 @@ func defaultRetryDelay(attempt int) time.Duration {
 }
 
 func NewRuntime(log eventlog.Store, opts Options) *Runtime {
-	if opts.ClockInterval == 0 {
-		opts.ClockInterval = 5 * time.Second
-	}
 	if opts.Now == nil {
 		opts.Now = time.Now
 	}
@@ -134,7 +138,8 @@ func NewRuntime(log eventlog.Store, opts Options) *Runtime {
 }
 
 func newWorkspace(id string) *workspace {
-	return &workspace{id: id, jobs: map[eventlog.StreamID]*Job{}, running: map[string]bool{}, wakes: map[string]chan struct{}{}, fold: make(chan struct{}, 1)}
+	return &workspace{id: id, jobs: map[eventlog.StreamID]*Job{}, running: map[string]bool{}, wakes: map[string]chan struct{}{}, fold: make(chan struct{}, 1),
+		alarmIndex: make(chan struct{}, 1), alarmReread: make(chan struct{}, 1)}
 }
 
 func (rt *Runtime) Register(registration queue.Registration) {
@@ -190,21 +195,16 @@ func (rt *Runtime) Start(ctx context.Context) error {
 
 func (rt *Runtime) startWorkspace(ws *workspace) {
 	kinds := rt.workerKinds()
-	rt.wg.Add(1 + len(kinds))
+	rt.wg.Add(2 + len(kinds))
 	go rt.pollLoop(ws)
+	go rt.alarmLoop(ws)
 	for _, kind := range kinds {
 		go rt.workerLoop(ws, kind)
 	}
-	if rt.opts.ClockInterval > 0 {
-		if _, ok := rt.registration(rt.clockKind); ok {
-			rt.wg.Add(1)
-			go rt.clockLoop(ws)
-		}
-	}
 }
 
-// workerKinds are the registered kinds that run as queued jobs; the clock
-// runs on its own loop.
+// workerKinds are the registered kinds that run as queued jobs; the order
+// clock runs on the deadline alarm.
 func (rt *Runtime) workerKinds() []string {
 	rt.mu.Lock()
 	defer rt.mu.Unlock()
@@ -336,6 +336,7 @@ func (rt *Runtime) catchUp(ctx context.Context, ws *workspace) error {
 		}
 		rt.mu.Unlock()
 		rt.wakeWorkers(ws)
+		signal(ws.alarmIndex)
 		if len(events) < 1000 {
 			return nil
 		}
@@ -384,32 +385,18 @@ func (rt *Runtime) appendOutcome(ctx context.Context, job Job, kind string, payl
 }
 
 // workerLoop drains one kind in one workspace, one job at a time. With
-// nothing claimable it waits for a catch-up's wake, or, when the kind has a
-// scheduled job, until the earliest one is due; that timer reads only the
-// in-memory index, so it sends no statement before the job is due.
+// nothing claimable it waits for a wake: a catch-up's, or the deadline
+// alarm's when a scheduled job falls due. It sets no timer of its own.
 func (rt *Runtime) workerLoop(ws *workspace, kind string) {
 	defer rt.wg.Done()
 	wake := rt.wakeChannel(ws, kind)
 	for {
 		job, ok := rt.next(ws, kind)
 		if !ok {
-			var due <-chan time.Time
-			var timer *time.Timer
-			if at, scheduled := rt.nextScheduled(ws, kind); scheduled {
-				timer = time.NewTimer(max(at.Sub(rt.opts.Now()), 0))
-				due = timer.C
-			}
 			select {
 			case <-rt.loopCtx.Done():
-				if timer != nil {
-					timer.Stop()
-				}
 				return
 			case <-wake:
-			case <-due:
-			}
-			if timer != nil {
-				timer.Stop()
 			}
 			continue
 		}
@@ -445,24 +432,6 @@ func (rt *Runtime) next(ws *workspace, kind string) (Job, bool) {
 	ws.running[kind] = true
 	ws.running[kind+"|"+string(best.Stream)] = true
 	return *best, true
-}
-
-// nextScheduled is the earliest time a scheduled job of kind becomes
-// claimable, from the in-memory index.
-func (rt *Runtime) nextScheduled(ws *workspace, kind string) (time.Time, bool) {
-	rt.mu.Lock()
-	defer rt.mu.Unlock()
-	var earliest time.Time
-	found := false
-	for _, job := range ws.jobs {
-		if job.Kind != kind || job.State != StateScheduled {
-			continue
-		}
-		if !found || job.ScheduledAt.Before(earliest) {
-			earliest, found = job.ScheduledAt, true
-		}
-	}
-	return earliest, found
 }
 
 func (rt *Runtime) release(ws *workspace, kind string, stream eventlog.StreamID) {
@@ -534,10 +503,8 @@ func (rt *Runtime) run(ws *workspace, kind string, job Job) {
 	if err := rt.appendOutcome(context.Background(), job, outcomeKind, outcome, finished); err != nil {
 		rt.opts.Logf("logqueue: record %s for %s: %v", outcomeKind, job.ID(), err)
 	}
-	select {
-	case ws.fold <- struct{}{}:
-	default:
-	}
+	signal(ws.fold)
+	signal(ws.alarmReread)
 }
 
 // refresh replaces a job's index entry with a full fold of its stream,

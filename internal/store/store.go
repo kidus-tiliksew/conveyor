@@ -115,6 +115,9 @@ type Store interface {
 	RequirementInsightStore
 	ReconcileReadStore
 	TaskDetailReadStore
+	// DeadlineReader serves the deadline alarm (component-persistence,
+	// Deadlines).
+	DeadlineReader
 }
 
 // TaskStore owns the task, dependency, job and intervention contract.
@@ -936,6 +939,7 @@ func (m *memory) appendEventLocked(ctx context.Context, event core.Event) {
 		// read waits for the mutation to finish.
 		m.raiseLocked(changes.Notice{Workspace: workspace, Kind: changes.Task, TaskID: event.TaskID})
 	}
+	m.raiseEventDeadlineLocked(workspace, event)
 	projection := projectLineageEvent(workspace, event)
 	for _, link := range projection.Suppresses {
 		m.lineage.remove(lineageLinkKey(link))

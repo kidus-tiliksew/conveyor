@@ -148,9 +148,6 @@ type runtimeFixture struct {
 func newRuntimeFixture(t *testing.T, opts Options) *runtimeFixture {
 	t.Helper()
 	f := &runtimeFixture{log: notifyingLog()}
-	if opts.ClockInterval == 0 {
-		opts.ClockInterval = -1
-	}
 	if len(opts.Workspaces) == 0 {
 		opts.Workspaces = []string{"ws"}
 	}
@@ -300,7 +297,7 @@ func TestRuntimeReplicasClaimEachJobOnce(t *testing.T) {
 	}
 	var runtimes []*Runtime
 	for i := 0; i < 3; i++ {
-		rt := NewRuntime(log, Options{Workspaces: []string{"ws"}, ClockInterval: -1, WorkerID: fmt.Sprintf("replica-%d", i)})
+		rt := NewRuntime(log, Options{Workspaces: []string{"ws"}, WorkerID: fmt.Sprintf("replica-%d", i)})
 		rt.Register(queue.Registration{Kind: "demo", Handle: handler})
 		runtimes = append(runtimes, rt)
 	}
@@ -364,7 +361,7 @@ func TestRuntimeRescuesStuckClaims(t *testing.T) {
 	stream := StreamFor("demo", "k")
 	appendKind(t, log, "ws", stream, 1, KindClaimed, claimedPayload{Attempt: 1, Worker: "dead", ClaimedAt: now.Add(-time.Hour)})
 	f := &runtimeFixture{log: log}
-	f.rt = NewRuntime(log, Options{Workspaces: []string{"ws"}, ClockInterval: -1, RescueStuckAfter: time.Minute})
+	f.rt = NewRuntime(log, Options{Workspaces: []string{"ws"}, RescueStuckAfter: time.Minute})
 	f.rt.Register(queue.Registration{Kind: "demo", Handle: func(_ context.Context, job queue.Job) error {
 		f.mu.Lock()
 		f.calls = append(f.calls, job)
@@ -420,7 +417,16 @@ func TestRuntimeStopAndCancelInterruptsHandlerAndRecordsSnooze(t *testing.T) {
 func TestRuntimeEnsureWorkspaceAfterStartAndClock(t *testing.T) {
 	log := notifyingLog()
 	var ticks int32
-	rt := NewRuntime(log, Options{ClockInterval: 15 * time.Millisecond})
+	// One stored deadline just after start drives the second fire; like a
+	// store, the source returns it until a fire passes it.
+	stored := time.Now().UTC().Add(20 * time.Millisecond)
+	deadlines := func(_ context.Context, workspace string, after time.Time) (time.Time, bool, error) {
+		if after.Before(stored) {
+			return stored, true, nil
+		}
+		return time.Time{}, false, nil
+	}
+	rt := NewRuntime(log, Options{Deadlines: deadlines})
 	rt.Register(queue.Registration{Kind: queue.OrderClockArgs{}.Kind(), Handle: func(_ context.Context, job queue.Job) error {
 		args, err := queue.DecodeArgs[queue.OrderClockArgs](job)
 		if err != nil || args.WorkspaceID != "late" || job.WorkspaceID != "late" {
@@ -478,7 +484,7 @@ func TestRuntimeReconcilesOncePerWorkspaceAtStart(t *testing.T) {
 	var mu sync.Mutex
 	reconciled := map[string]int{}
 	var completed atomic.Int32
-	rt := NewRuntime(log, Options{Workspaces: []string{"alpha"}, ClockInterval: -1})
+	rt := NewRuntime(log, Options{Workspaces: []string{"alpha"}})
 	rt.Register(queue.Registration{Kind: "publication", Handle: func(ctx context.Context, job queue.Job) error {
 		if job.WorkspaceID != "alpha" && job.WorkspaceID != "beta" {
 			t.Errorf("untrusted partition: %q", job.WorkspaceID)
@@ -537,7 +543,7 @@ func (l *countingLog) Tail(ctx context.Context, workspace string, after eventlog
 func TestRuntimeStartsJobWithinOneSecondAndStaysQuietWhileIdle(t *testing.T) {
 	log := &countingLog{NotifyingLog: notifyingLog()}
 	started := make(chan time.Time, 1)
-	rt := NewRuntime(log, Options{Workspaces: []string{"ws"}, ClockInterval: -1})
+	rt := NewRuntime(log, Options{Workspaces: []string{"ws"}})
 	rt.Register(queue.Registration{Kind: "demo", Handle: func(context.Context, queue.Job) error {
 		started <- time.Now()
 		return nil
@@ -593,7 +599,7 @@ func TestRuntimePeerTailCatchesUpUnnotifiedAppends(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			raw := memlog.New()
 			ran := make(chan struct{}, 1)
-			rt := NewRuntime(Notify(raw, changes.NewHub()), Options{Workspaces: []string{"ws"}, ClockInterval: -1, PeerTail: tc.tail})
+			rt := NewRuntime(Notify(raw, changes.NewHub()), Options{Workspaces: []string{"ws"}, PeerTail: tc.tail})
 			rt.Register(queue.Registration{Kind: "demo", Handle: func(context.Context, queue.Job) error {
 				ran <- struct{}{}
 				return nil
