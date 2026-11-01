@@ -186,7 +186,7 @@ injected into prompts is labeled untrusted data. Recording a gate or proposal
 decision remains your own act; a session records one only on your direct
 instruction, with your credential (DEC-84).
 
-Earlier releases had worker credentials, pairing tokens, and agent-class
+Earlier releases had worker credentials, worker enrollment, and agent-class
 credentials minted for launched children. No worker credential class exists
 any more, and no route, tool, or command issues an agent credential
 (DEC-97(1)). An agent credential that still exists is refused by operator-only

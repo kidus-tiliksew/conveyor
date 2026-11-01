@@ -343,9 +343,6 @@ func TestValidationEvidenceDocumentKeepsScratchDiscipline(t *testing.T) {
 	}
 }
 
-// The installed execution-loop skill separates launched exit from the
-// self-claimed delivery loop and its gate handling (req-agent-skills REQ-2,
-// REQ-3; DEC-44; DEC-84).
 // TestConveyorWorkSkillShipsSealedReviewAssessment pins the reviewer's
 // verification_assessment guidance in the installed playbook and the review
 // role (component-cli-onboarding; component-verification-service;
@@ -410,10 +407,12 @@ func TestConveyorWorkSkillShipsStageCheckoutAndSessionModeDiscipline(t *testing.
 	playbookRequired := []string{
 		"never run `conveyor checkout` for a spec order",
 		"implementation or review order, run `conveyor checkout <task-id>`",
-		// AC-3.8: launched sessions keep exit-after-submission.
-		"A launched session reports the result and exits. It never polls `await_review`",
+		// One session mode: the session claims its own order and no launcher
+		// owns a later stage (DEC-97(1), DEC-97(2)).
+		"Every session that follows this playbook claims its order itself",
+		"nothing else renews the lease, receives verdicts, or schedules a later stage (DEC-97(1))",
 		"changes-requested bounce always arrives as a new order in a fresh session",
-		"That ten-second cadence belongs to the launcher only",
+		"No launcher renews the lease on the session's behalf (DEC-97(1))",
 		// AC-2.2: self-claimed lease sizing and renewal.
 		"Claim with a `lease_seconds` that covers the longest expected step, up to the 3600-second maximum",
 		"Call `renew_work_order` with the same `lease_seconds` at each progress milestone and before any step expected to outlast one third of the remaining lease",
@@ -490,7 +489,6 @@ func TestConveyorWorkSkillShipsStageCheckoutAndSessionModeDiscipline(t *testing.
 		"It never runs `done` for a parked task or for another task",
 		"A planner, verifier, or reviewer that the session started never runs `done`",
 		"cleanup becomes available once the task merges or closes",
-		"A launched session runs no cleanup; its launcher removes the worktree after the task ends",
 		// Post-merge fast-forward (req-delegated-execution AC-3.8, AC-3.9).
 		"#### Post-merge fast-forward",
 		"After the `done` attempt, whatever `done` reported, a self-claimed session that observed its own task `merged` brings the primary checkout's base branch up to date (req-delegated-execution AC-3.8)",
@@ -503,11 +501,16 @@ func TestConveyorWorkSkillShipsStageCheckoutAndSessionModeDiscipline(t *testing.
 		"It does not retry with altered arguments and attempts no recovery",
 		"The fast-forward is the only change the session makes to the primary checkout",
 		"The session never merges, rebases, stashes, resets, or switches branches there, and never edits its files (req-delegated-execution AC-3.9)",
-		"A launched session, a worker, and a planner, verifier, or reviewer that the session started never run the fast-forward",
+		"A planner, verifier, or reviewer that the session started never runs the fast-forward",
 		"with the post-merge fast-forward bounded by REQ-3 AC-3.8 and AC-3.9",
-		"req-agent-skills REQ-2 (AC-2.1 through AC-2.3) and REQ-3 (AC-3.1 through AC-3.12) under DEC-44 and DEC-84",
+		"req-agent-skills REQ-2 (AC-2.1 through AC-2.3) and REQ-3 (AC-3.1 through AC-3.7 and AC-3.9 through AC-3.12) under DEC-97 and DEC-84",
 	}
 	playbookForbidden := []string{
+		// No launched session mode remains (DEC-97(1)).
+		"Launched session",
+		"A launched session",
+		"conveyor run",
+		"DEC-44",
 		"req-260811-0ee057",
 		"Never poll `await_review` from a stage session",
 		"report the pending gate with `report_progress` and stop",
@@ -518,17 +521,21 @@ func TestConveyorWorkSkillShipsStageCheckoutAndSessionModeDiscipline(t *testing.
 		"branch deletion, or any edit in the primary checkout",
 	}
 	wrapperRequired := []string{
-		"A session that `conveyor run` or a worker launched reports and exits, and never polls `await_review`",
+		"Every session claims its own order: a person started it in their own harness, and Conveyor launches no agent session, so no launcher renews the lease or owns a later stage (DEC-97(1))",
 		"continues the playbook's self-claimed delivery loop after implementation submission",
+		"Every verifier and reviewer reports and exits after submitting its own result",
 		"awaits the verdict with `await_review`",
 		"At a pending human gate it summarizes the decision with a dashboard link and offers to record it",
 		"reads the gate again before recording a typed reply, and goes straight into `conveyor task wait` after the offer",
-		"only on the operator's direct instruction in the same conversation, for its own task, with the operator's own credential (DEC-45)",
+		"only on the operator's direct instruction in the same conversation, for its own task, with the operator's own credential (DEC-84)",
 		"Delegated planners, verifiers, and reviewers never record gate or proposal decisions",
 		"When its task merges or closes, it runs `conveyor done <task-id>` from the primary checkout and reports the result",
 		"After a merge it then fast-forwards a clean primary checkout that is on the base branch, and otherwise reports why it skipped (req-delegated-execution AC-3.8, AC-3.9)",
 	}
 	wrapperForbidden := []string{
+		"conveyor run",
+		"launched reports and exits",
+		"DEC-45",
 		"never runs `conveyor done` itself",
 		"never runs that command itself",
 		"tells the operator to run `conveyor done",

@@ -20,7 +20,7 @@ Use the server-specific native MCP connection already configured for the
 intended factory. Supply its workspace explicitly on every investigation
 call. With a human session or PAT, use `list_workspaces` from a known workspace
 scope and `list_repositories` to verify the destination. These reads require
-`view_workspace`; they do not require a claim. Agent and worker credentials
+`view_workspace`; they do not require a claim. Agent credentials
 must stay within their existing work-order context tools.
 
 Use `get_task` for a known ID or `list_tasks` with `state: terminal` / `all`
@@ -55,7 +55,7 @@ boundary; investigation never grants permission to mutate.
   (required — kebab slug + date, e.g. `phase8-3-plan-stage-20260807`),
   optional `depends_on: [task-ids]`, `spec_approval`, `merge_approval`.
   Defaults are correct for ordinary work (spec gate on, merge gate off).
-  A task carries no hold or other worker reservation (DEC-74); never send
+  A task carries no hold or other reservation (DEC-74); never send
   `hold`.
 - The title is generated from the body; don't write one.
 - When tasks are filed out of order, use the human-only MCP
