@@ -26,7 +26,7 @@ const (
 	Task Kind = "task"
 	// Deadline: a recorded deadline moved earlier; At carries it when known.
 	Deadline Kind = "deadline"
-	// Workspace: a workspace was created.
+	// Workspace: a workspace was created or its configuration changed.
 	Workspace Kind = "workspace"
 )
 

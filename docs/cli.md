@@ -473,7 +473,7 @@ The daemon takes single-dash flags:
 |---|---|---|
 | `-addr` | `127.0.0.1:8080` | Listen address. An explicit flag overrides `CONVEYOR_LISTEN_ADDR` and `PORT`. |
 | `-config` | `conveyor.yaml` | Deployment config path |
-| `-poll-github` | `0` | Poll interval for `conveyor:ready` issues; `0` disables |
+| `-poll-github` | `0` | Poll interval for timed `conveyor:ready` issue intake; `0` disables it, and labeled issues then arrive only through the GitHub webhook |
 | `-worker-retry-delay` / `-worker-retry-max` | `1s` / `4s` | Work-order release retry backoff; the names are kept for deployment compatibility |
 
 Service verbs run before flag parsing:

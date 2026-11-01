@@ -381,11 +381,33 @@ can be consumed once. Installation returns use separate single-use state. The
 normal session cookie stays Strict; a ten-minute cookie scoped to the app
 endpoints permits the GitHub return navigation. Operator status responses include
 an `installation_url` to resume installation or update access. The app requests
-metadata read access and contents, pull requests, issues, and commit statuses
-write access. The server stores only the private key, encrypted with AES-256
-under `CONVEYOR_GITHUB_APP_KEY_ENCRYPTION_KEY`, and app metadata. Installation tokens expire within one hour and remain in a process-local
+metadata and checks read access and contents, pull requests, issues, and commit
+statuses write access. The server stores the private key and the webhook
+secret, each encrypted with AES-256 under
+`CONVEYOR_GITHUB_APP_KEY_ENCRYPTION_KEY`, and app metadata. Installation tokens expire within one hour and remain in a process-local
 cache until five minutes before expiry. App replacement and disconnect invalidate
 the cache. No GitHub credential belongs in `conveyor.yaml`.
+
+### Webhook delivery
+
+GitHub tells Conveyor about pull requests, checks, commit statuses, pushes, and
+`conveyor:ready` labels through the app's signed webhook at
+`<public URL>/v1/github/webhook/<workspace>`. An app created from the manifest
+subscribes `pull_request`, `check_suite`, `check_run`, `status`, `push`, and
+`issues` and gets its webhook secret from GitHub, so it needs no setup. For an
+app connected before webhook delivery existed, generate a secret in Workspace
+settings (`POST /v1/workspaces/{id}/github-app/webhook-secret`, shown once) and
+enter it, the receiver URL, those six events, and checks read permission in the
+app's GitHub settings. Workspace settings show the receiver URL, the events,
+whether a secret is set, and when the last delivery was accepted; a workspace
+has webhook delivery from its first accepted delivery.
+
+A workspace without webhook delivery keeps a timed GitHub check, at most once a
+minute, only while one of its tasks waits on GitHub or its monitor is enabled.
+A workspace with webhook delivery makes no timed GitHub call; each daemon start
+still reads every task that waits on GitHub once and polls each enabled
+monitor once. Timed `conveyor:ready` issue intake runs only when `conveyord`
+is started with `-poll-github`.
 
 The dispatcher, work-order reads, and monitor resolve the workspace app without
 host credentials. Stored personal and workspace forge tokens are retired; the
