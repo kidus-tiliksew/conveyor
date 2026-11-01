@@ -2,9 +2,9 @@
 
 Conveyor has one identity model and several credential planes. A person has
 one account; how they prove it depends on where they are: a session cookie in
-the browser, a personal access token in the CLI and MCP clients, a worker
-credential on an enrolled machine, and a short-lived agent credential in an
-attended `conveyor run` child. Agents never hold the operator's personal token.
+the browser, and a personal access token in the CLI and in the MCP
+registrations of the agent sessions the person starts. Conveyor launches no
+agent and mints no credential for one (DEC-97(1)).
 
 ## The two human credential methods
 
@@ -34,8 +34,8 @@ Deliberate asymmetries between the two methods:
 
 - Changing your own password or profile requires a session, not a token, so a
   leaked PAT cannot take over the account.
-- Driving task execution (`conveyor run`'s claim plane) requires a bearer
-  token, not a session, so a browser cannot be tricked into claiming work.
+- Claiming and working a task over MCP requires a bearer token, not a
+  session, so a browser cannot be tricked into claiming work.
   The one gate action carved back out for the browser is request-changes,
   which stays session-accessible behind the CSRF proof.
 
@@ -95,7 +95,7 @@ Only the deployment owner may provision accounts, with their own personal
 access token (any scope) or dashboard session. No workspace role grants it,
 not even `operator`. Creating a workspace is open to the deployment owner and
 to any active account that is an operator of at least one workspace, under the
-same kinds of credential (DEC-75). An agent or worker credential is refused
+same kinds of credential (DEC-75). An agent credential is refused
 for both acts, even when the owner or an operator holds it. Neither right
 grants anything inside other workspaces: the owner reads and manages a
 workspace only through a membership there, like anyone else, and the creator
@@ -105,7 +105,7 @@ Any other signed-in person gets the same `404 workspace_not_found` from
 `POST /v1/users`, and anyone who is neither the owner nor an operator
 somewhere gets it from `POST /v1/workspaces`, whatever they send, before
 anything is created or looked up. A deactivated account is refused even if
-its bindings remain. A missing or invalid credential, or an agent or worker
+its bindings remain. A missing or invalid credential, or an agent
 credential, gets `401`. `GET /v1/me` reports the caller's own creation right
 as `can_create_workspaces`.
 
@@ -147,8 +147,8 @@ capability an agent credential may exercise (DEC-60), as described under
 Requests against a workspace you are not a member of return 404, not 403, so
 membership existence is not disclosed.
 
-Demoting a user below `claim_work` clears their task assignments and revokes
-their enrolled workers in the same operation.
+Demoting a user below `claim_work` clears their task assignments in the same
+operation.
 
 ## GitHub App and local credentials
 
@@ -157,71 +157,48 @@ registered repository. The server encrypts the App private key under
 `CONVEYOR_GITHUB_APP_KEY_ENCRYPTION_KEY` and mints short-lived installation tokens
 for control-plane GitHub operations. It stores no personal GitHub token.
 
-The executing machine resolves its own Git credential to push and open the
-pull request. Run and worker commands check local repository access before
-claiming. Claims do not depend on a token stored in account settings.
+The machine where an agent session works resolves its own Git credential:
+`conveyor submit` pushes and opens the pull request with `CONVEYOR_GIT_TOKEN`
+when it is set, otherwise with the host's Git credential for the repository
+host. Claims do not depend on a token stored in account settings.
 
 A merge from Conveyor uses the App and records the approving operator in the
 merge event and commit message. An approved pull request merged on GitHub
 completes through reconciliation when its recorded identity and approved head
 match; the event records the GitHub actor.
 
-## Worker credentials
-
-Workers are a separate credential class. An operator issues a short-lived
-pairing token (`conveyor worker pair`); the worker exchanges it once at
-enrollment for a durable opaque credential, saved owner-only on the worker
-machine. The pairing records who issued it, and that person's GitHub identity
-is the one the worker's task executions use.
-
-Worker credentials are valid on the worker plane
-(heartbeat, claim, release) and the MCP plane only, never for workspace REST
-reads. That is why dispatched agents receive their task assignment through
-environment variables rather than fetching the task themselves, and why the
-`create_task` and the human-reserved `set_assignee` and
-`redispatch_work_order` MCP tools refuse worker credentials.
-
-Revoke a worker with `conveyor worker revoke <worker-id>`; revoked
-credentials terminate the worker with an actionable error instead of
-retrying.
-
 ## What an agent session gets
 
-The launcher starts the agent with an isolated environment: the credential to
-reach Conveyor's MCP endpoint
-(`CONVEYOR_API_TOKEN`), the server address and workspace, the work order and
-session identity, and the task's branch and repository assignment. MCP
-registration files reference the token through the environment, never by
-value, and the launcher redacts the credential from the child's output
-streams.
+An agent session you start in Claude Code, Codex, Cursor, or OpenCode reaches
+Conveyor's MCP endpoint through the registration `conveyor mcp install`
+wrote. The registration presents your saved personal access token through the
+harness's native header helper or a server-specific environment variable,
+never by value in the registration file (see
+[Native MCP credentials](#native-mcp-credentials)). The session claims a work
+order itself with a session ID and a client token it generates, and the CLI
+commands it runs, such as `conveyor checkout` and `conveyor submit`, use your
+stored credential.
 
-The two launch paths deliberately use different execution credentials. A
-worker child receives the worker's enrollment credential. For every
-`conveyor run` stage and restart, the authenticated parent claims the order and
-then mints a fresh agent-class credential owned by the invoking user and
-authorized only through that exact workspace, work order, and session claim.
-Only that agent credential reaches the child environment and MCP registration.
-The parent retains its personal token for lease renewal, release,
-reconciliation, and interactive gate or proposal confirmation, and revokes the
-agent credential when the child exits, including setup failure, cancellation,
-or terminal submission. Deactivating the owning user makes all derived agent
-credentials fail closed at verification time.
+Everything the session can do through a claim is scoped: claim-bound mutation
+tools work only against its own live claim, artifact reads are bounded to
+what the work order's lineage selection actually served, and document content
+injected into prompts is labeled untrusted data. Recording a gate or proposal
+decision remains your own act; a session records one only on your direct
+instruction, with your credential (DEC-84).
 
-Everything the agent can do with that credential is scoped: claim-bound
-mutation tools work only against its own live claim, artifact reads are
-bounded to what the work order's lineage selection actually served, and
-document content injected into prompts is labeled untrusted data. Agent
-credentials are rejected by operator-only REST routes and by human-reserved
-MCP tools; renewal on the attended run path remains a parent-owned REST act.
-
-Filing a task is the one exception. An agent may call the `create_task` MCP
-tool when its owning user's role in that workspace grants `create_tasks`.
-The task records the agent and its owning user as provenance and enters
-triage like any other task. An omitted plan or merge gate takes the workspace
-default, and the agent may turn a gate on but never off: an explicit `false`,
-or a legacy level `L0` or `L1`, is refused with `agent_gate_disable_forbidden`.
-Filing the task gives the agent no right over it; every other reserved tool
-and REST route still refuses the agent credential (DEC-60).
+Earlier releases had worker credentials, pairing tokens, and agent-class
+credentials minted for launched children. No worker credential class exists
+any more, and no route, tool, or command issues an agent credential
+(DEC-97(1)). An agent credential that still exists is refused by operator-only
+REST routes and by human-reserved MCP tools. Its one remaining right is the
+`create_task` MCP tool when its owning user's role in that workspace grants
+`create_tasks`. The task records the agent and its owning user as provenance
+and enters triage like any other task. An omitted plan or merge gate takes the
+workspace default, and the agent may turn a gate on but never off: an explicit
+`false`, or a legacy level `L0` or `L1`, is refused with
+`agent_gate_disable_forbidden`. Filing the task gives the agent no right over
+it; every other reserved tool and REST route still refuses the agent
+credential (DEC-60).
 
 ## Workspace context
 

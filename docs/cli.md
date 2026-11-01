@@ -32,11 +32,19 @@ when `--server` names a different server, and the source that won is reported by
 errors, never the credential itself. Requests carry
 `Authorization: Bearer <token>` and `X-Workspace-ID`.
 
-Executor-side commands (`run`, `worker`, `checkout`, `config`, `setup`) also
-resolve a local execution config file, in this order: explicit `--config`,
-`CONVEYOR_CONFIG`, an existing `./conveyor.yaml`, then the per-user default at
-`<user-config-dir>/conveyor/conveyor.yaml`. See
+`checkout`, `config`, and `kit verify` also resolve a local configuration
+file, in this order: explicit `--config`, `CONVEYOR_CONFIG`, an existing
+`./conveyor.yaml`, then the per-user default at
+`<user-config-dir>/conveyor/conveyor.yaml`. It holds the worktree location and
+local verification records, never a harness or model. See
 [Configuration](configuration.md) for what goes in it.
+
+Tasks run in agent sessions you start yourself. Open Claude Code, Codex,
+Cursor, or OpenCode with the Conveyor MCP connection and skills installed, and
+ask it to work a task; the `conveyor-work` skill claims the task's order over
+MCP, works in the worktree `conveyor checkout` resolves, and submits with
+`conveyor submit`. You choose the harness and model when you start the
+session. The CLI launches no agent and keeps no execution settings.
 
 ## auth
 
@@ -60,9 +68,8 @@ the environment plus `CONVEYOR_LLM_API_KEY` for in-process triage and
 planning. It registers the repository by name, URL, and default branch without
 requiring a local clone or forge tool, writes a policy-only deployment
 `conveyor.yaml` (mode 0600) with no harnesses or executor models, and prints
-the first operator's sign-in link. `--config` names that server file; create a
-local execution config with `conveyor config init-execution`.
-`--config` picks a different output path.
+the first operator's sign-in link. `--config` names that server file and picks
+a different output path.
 
 Each prompted answer also has a flag:
 
@@ -127,15 +134,15 @@ cannot be confirmed, even with `--yes`.
 
 Without `--yes`, stdin must be a terminal and the operator must type `y`.
 Non-terminal stdin exits without restarting. After confirmation, the CLI sends
-one restart request and prints the successor ID, branch, and `conveyor run`
-command. The server cancels the retired task and its non-terminal orders,
+one restart request and prints the successor ID and branch. Its third output
+line, `Run:`, still names a command that no longer exists; work the successor
+in an agent session instead. The server cancels the retired task and its non-terminal orders,
 dismisses its pending document proposals, and attempts to close its open pull
 request. Its branch and worktree are preserved. Server refusals retain the
 server's message and exit non-zero.
 
-A task carries no execution setup. `conveyor config init-execution` and
-`conveyor setup` manage your local execution settings, and `conveyor run
---setup <name>` selects one for a run on your machine.
+A task carries no execution setup. The person who starts the agent session
+that works the successor chooses its harness and model.
 
 ### task status
 
@@ -155,7 +162,10 @@ derives one. `--json` writes the server body verbatim.
 
 | Choice | CLI equivalent |
 |---|---|
-| `approve`, `redirect`, `approve_revision`, `decline` on `/v1/tasks/{id}/review` | `conveyor run <task-id>` (its gate prompt posts the same review act) |
+| `approve` on `/v1/tasks/{id}/review` | `conveyor task approve <task-id>` |
+| `redirect` on `/v1/tasks/{id}/review` | `conveyor task redirect <task-id> --reason changes-requested -m <direction>` |
+| `approve_revision` on `/v1/tasks/{id}/review` | `conveyor task redirect <task-id> --reason plan-revision-approved -m <comment>` |
+| `decline` on `/v1/tasks/{id}/review` | `conveyor task redirect <task-id> --reason plan-revision-declined -m <direction>` |
 | `merge` | `conveyor task merge <task-id>` |
 | `request_changes` | `conveyor task request-changes <task-id>` |
 | `start_over` | `conveyor task restart <task-id>` |
@@ -176,21 +186,22 @@ conveyor task wait <task-id> [--timeout 5m] [--json]
 `task wait` lets an agent session or script wait for an operator decision
 without polling turn by turn. It never claims, approves, or changes the task.
 
-The command reads `GET /v1/tasks/{id}` and `GET /v1/tasks/{id}/run-order` with
-the ordinary server, workspace, and credential resolution. Each observation
+The command reads `GET /v1/tasks/{id}`, the workspace work-order listing
+`GET /v1/work-orders`, and `GET /v1/pending-proposals` with the ordinary
+server, workspace, and credential resolution. Each observation
 holds these fields:
 
 | Field | Meaning |
 |---|---|
 | `task_id` | The task ID. |
-| `state` | The task state from the run-order read. |
+| `state` | The task state. |
 | `pending_gate` | The pending human gate, or `null`. `kind` is `plan`, `merge`, `merge_execution`, `plan_revision`, or `human`; `plan_version` appears for plan and plan revision gates. `merge_execution` is an approved task behind the merge gate waiting for `conveyor task merge`; its `merge_readiness` is the pull request's readiness state (`MERGEABLE`, `STALE`, `CONFLICTING`, or `UNKNOWN`), absent when the server could not read it. |
 | `next_order` | The next claimable work order `id` and `stage`, or `null`. |
 | `pending_proposals` | Pending task-authored proposals as `kind`, `document_id`, and `version`, sorted; `[]` when none. |
 | `observed_at` | The time of the observation. It is not compared. |
 
 The first successful observation is the baseline. The command re-reads with
-the jittered backoff `conveyor run` uses, from 250ms to a 2s ceiling, and
+a jittered backoff, from 250ms to a 2s ceiling, and
 returns when any compared field differs from the baseline. A readiness change
 on a `merge_execution` gate counts. Titles, labels, summaries, capability
 flags, and progress text are not compared. A merged, closed, or
@@ -263,48 +274,6 @@ the read and the post, the preempt route revokes the claim and requeues the
 order instead of retiring it. The command then prints the state the server
 returned and exits `1` with `work order <id> was not retired`. Retirement
 touches no branch, worktree, or pull request.
-
-## run
-
-```sh
-conveyor run <task-id>
-```
-
-Explicitly claim and execute one task on this machine. Claimable stages chain
-without per-stage prompts by default; plan and merge gates still apply. In a
-terminal it runs a full-screen view with the stage output, and surfaces
-operator gates and pending document proposals inline so you can approve,
-request changes, or confirm without leaving the run. An approved task behind
-the merge gate offers Merge, a separate Yes/No choice that starts on No, only
-when you can operate gates and the pull request is `MERGEABLE`; `--raw`
-requires the full word `merge`. Task-authored requirement
-proposals appear alongside design proposals and use the same operator
-confirmation capability. If a proposal arrives just before a review claim,
-the run refreshes the proposals and waits without holding a claim.
-
-- `--step`: confirm each stage before it is claimed. Requires terminal stdin.
-- `--setup <name>`: use a named local execution setup for this run only. The
-  harness is probed before anything is claimed.
-- `--raw`: print the raw harness event stream instead of the TUI.
-- `--config`: select the local execution config.
-
-Without terminal stdin, the default run chains stages and exits at a pending
-human gate with no claim. With `--step`, it presents the pending stage and
-claims nothing; drop the flag or attach a terminal to proceed.
-
-Deprecated compatibility: hidden `--auto` is accepted as a no-op and prints a
-deprecation notice. It cannot be combined with `--step`.
-
-Requires `CONVEYOR_API_TOKEN` and a local Git credential for the repository
-(`gh auth setup-git` or `CONVEYOR_GIT_TOKEN`; see
-[Authentication](auth.md#github-app-and-local-credentials)).
-
-A run that reports `workspace_required` needs the workspace set for the
-effective server. A run that cannot resolve a primary checkout points at
-`repos[].checkout` and the clone's remote. An authentication failure belongs
-to one of four credentials that serve different operations: the Conveyor
-personal token, the workspace GitHub App, local Git credentials, and the
-agent CLI login.
 
 ## repo init
 
@@ -387,8 +356,8 @@ conveyor checkout <task-id>
 Create or reuse the task's dedicated worktree and print its absolute path
 (designed for `cd "$(conveyor checkout <id>)"`). An explicit `--path` wins.
 Otherwise a new worktree goes to `<container>/<repo>-task-<id>`, where the
-container comes from a dispatch's `CONVEYOR_WORKTREE_ROOT`, else the
-`worktree_location` your local execution config records:
+container comes from the `worktree_location` your local configuration file
+records:
 
 - `repository`: `<primary checkout>/_worktrees` (or the configured `dir`).
   Checkout adds `_worktrees/` to `.git/info/exclude` before it checks the
@@ -419,91 +388,15 @@ run in the repository's primary checkout, and it keeps the branch, so
 unmerged history is never deleted. A self-claimed agent session runs `done`
 itself after its own task merges or closes, still from the primary checkout.
 
-## worker
-
-Enroll and run the durable worker that polls the queue and supervises agent
-harnesses. Day-to-day operation is covered in
-[Worker operations](worker-operations.md).
-
-| Command | What it does |
-|---|---|
-| `conveyor worker pair` | Issue a short-lived single-use pairing token (`--ttl`, default 10m). |
-| `conveyor worker run` | Heartbeat, claim queued work, and supervise harnesses. `--pairing-token` for first enrollment, `--name`, `--once` to drain and exit, `--config`. |
-| `conveyor worker list` | List enrolled workers and their health. |
-| `conveyor worker revoke <worker-id>` | Revoke an enrolled worker. |
-| `conveyor worker install` / `uninstall` / `status` | Manage the workspace-specific user service (launchd on macOS, systemd user unit on Linux). |
-
-A worker validates its complete local execution config before it enrolls,
-heartbeats, or claims, so it never advertises work it cannot run. Enrollment
-credentials are saved at `<user-config-dir>/conveyor/workers/<workspace>.json`
-and reused across restarts.
-
 ## config
 
 | Command | What it does |
 |---|---|
-| `conveyor config init-execution` | Interactive wizard: detect installed agent CLIs, probe them, choose the worktree location, write the local execution config. `--defaults --worktree-location <repository\|machine>` writes the detected defaults without a terminal; `--defaults` alone refuses. |
 | `conveyor config set worktree_location <value>` | Record where new task worktrees go: `repository`, `repository:<dir>`, `machine`, or `machine:<root>`. |
-| `conveyor config set execution.<stage>.<field> <value>` | Set one field without the wizard. Stage is `spec`, `implement`, or `review`; field is `harness`, `model`, `effort`, or `timeout`. Harnesses are probed before being written. |
 | `conveyor config set workspace <id>` | Set the default workspace for the effective server. |
 | `conveyor config list` | Show every effective setting and which source supplied it. |
 | `conveyor config export` | Write the server-side workspace config as YAML. |
 | `conveyor config import <path\|->` | Replace the workspace config from YAML, with optimistic concurrency via the current version. Unknown keys are rejected. |
-
-## setup
-
-Manage named local execution setups. Setup contents never leave your machine.
-
-| Command | What it does |
-|---|---|
-| `conveyor setup create <name>` / `edit <name>` | Create or edit a named setup, interactively or from field flags. |
-| `conveyor setup list` | List every named setup. |
-| `conveyor setup delete <name>` | Delete a non-default setup. |
-| `conveyor setup default <name>` | Designate the default setup. |
-| `conveyor setup seat add <setup>` | Append a review seat at lowest priority. `--harness`, `--model`, `--effort` all required. |
-| `conveyor setup seat remove <setup> <position>` | Remove a seat by one-based position. The last seat cannot be removed. |
-| `conveyor setup seat move <setup> <from> <to>` | Reorder seats. |
-
-One durable review order is created per configured seat, in order, so seat
-position is review priority.
-
-`setup create` and `setup edit` take the wizard's choices as field flags.
-Flag `--<stage>-<field>` matches the `conveyor config set
-execution.<stage>.<field>` key:
-
-| Flag | Value |
-|---|---|
-| `--spec-harness`, `--implement-harness`, `--verify-harness`, `--review-harness` | `codex`, `claude`, `grok`, `cursor`, or `opencode` |
-| `--spec-model`, `--implement-model`, `--verify-model`, `--review-model` | a non-blank model name |
-| `--spec-effort`, `--implement-effort`, `--verify-effort`, `--review-effort` | `low`, `medium`, `high`, or blank |
-| `--worktree-location` | `repository`, `repository:<dir>`, `machine`, or `machine:<root>` |
-
-The `--review-*` flags set review seat 1, as `execution.review.<field>` does;
-`conveyor setup seat` manages the other seats. With no field flag, both
-commands run the terminal wizard as before. With any field flag, the command
-skips the wizard and does not prompt:
-
-- `create` starts from the wizard's detected defaults; `edit` starts from the
-  named setup and changes only the flagged fields.
-- The command runs the wizard's harness detection probe and refuses a flagged
-  harness that is unsupported, undetected, or fails its probe.
-- A harness flag that changes a stage's harness also resets that stage's model
-  to the new harness's suggested model, unless the stage's model flag is given.
-  A harness that takes no effort clears the stage's effort.
-- `--worktree-location` is required when the configuration file records no
-  worktree location.
-- Any invalid field makes the command exit nonzero, name each invalid flag,
-  and leave the file unchanged.
-- `create` refuses an existing name, and `edit` refuses a missing name or a
-  missing file.
-- A valid act writes the setup and the worktree location together through
-  the same staged write as the wizard.
-
-```sh
-conveyor setup create reviewers --review-harness claude --review-model opus \
-  --worktree-location machine
-conveyor setup edit reviewers --implement-model gpt-5.6-sol --implement-effort medium
-```
 
 ## mcp and skills
 
@@ -541,8 +434,7 @@ reported, never deleted.
 ## verification permissions
 
 Operator grants for a claimed verify work order. The commands use your user
-credential and an explicit `--workspace`. Agent, worker and launcher
-credentials are refused.
+credential and an explicit `--workspace`. Agent credentials are refused.
 
 | Command | What it does |
 |---|---|
@@ -581,7 +473,7 @@ The daemon takes single-dash flags:
 | `-addr` | `127.0.0.1:8080` | Listen address. An explicit flag overrides `CONVEYOR_LISTEN_ADDR` and `PORT`. |
 | `-config` | `conveyor.yaml` | Deployment config path |
 | `-poll-github` | `0` | Poll interval for `conveyor:ready` issues; `0` disables |
-| `-worker-retry-delay` / `-worker-retry-max` | `1s` / `4s` | Supervised-child retry backoff |
+| `-worker-retry-delay` / `-worker-retry-max` | `1s` / `4s` | Work-order release retry backoff; the names are kept for deployment compatibility |
 
 Service verbs run before flag parsing:
 

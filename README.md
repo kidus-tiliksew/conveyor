@@ -79,7 +79,7 @@ Every task moves through explicit stages, each with its own contract:
 
 Plan, verify, and the merge gate are per-task policy. The server computes each
 task's next action, so the dashboard, CLI, and MCP always agree on whether a
-task is waiting on an agent, a worker, or you.
+task is waiting on an agent session or on you.
 
 ### Staying aligned
 

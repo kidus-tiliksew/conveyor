@@ -1,8 +1,9 @@
 # Known limitations
 
 These are the accepted boundaries of the Phase 4.7 implementation. Historical
-sandbox-era limitations were retired with the execution-plane demolition
-(DEC-56).
+sandbox-era limitations were retired with the execution-plane demolition, and
+launcher-era ones with the removal of `conveyor run` and workers
+(DEC-96; DEC-97).
 
 ## External work-order usage is self-reported
 
