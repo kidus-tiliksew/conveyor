@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"sort"
 	"sync"
 	"time"
@@ -93,6 +94,10 @@ type workspace struct {
 	alarmReread chan struct{}
 	alarmTarget time.Time
 	stopped     bool
+	// loaded is set once the unfinished jobs are loaded from the job index
+	// and position is the head read before them; until then the poll loop
+	// does not tail.
+	loaded bool
 }
 
 // Default retry backoff when a registration sets none: doubling from one
@@ -267,11 +272,29 @@ func (rt *Runtime) pollLoop(ws *workspace) {
 	defer rt.wg.Done()
 	notices := rt.hub.Subscribe(ws.id, changes.Job)
 	defer notices.Close()
+	// A failed load is retried on the next wake and on its own delay, which
+	// runs only while the load keeps failing.
+	var loadDelay time.Duration
+	var loadRetry *time.Timer
+	defer func() {
+		if loadRetry != nil {
+			loadRetry.Stop()
+		}
+	}()
 	for {
 		if err := rt.catchUp(rt.loopCtx, ws); err != nil && !errors.Is(err, context.Canceled) {
 			rt.opts.Logf("logqueue: workspace %s: tail: %v", ws.id, err)
 		}
-		if err := rt.rescue(rt.loopCtx, ws); err != nil && !errors.Is(err, context.Canceled) {
+		var retry <-chan time.Time
+		if !rt.loaded(ws) {
+			loadDelay = nextLoadRetry(loadDelay)
+			if loadRetry == nil {
+				loadRetry = time.NewTimer(loadDelay)
+			} else {
+				loadRetry.Reset(loadDelay)
+			}
+			retry = loadRetry.C
+		} else if err := rt.rescue(rt.loopCtx, ws); err != nil && !errors.Is(err, context.Canceled) {
 			rt.opts.Logf("logqueue: workspace %s: rescue: %v", ws.id, err)
 		}
 		select {
@@ -279,12 +302,21 @@ func (rt *Runtime) pollLoop(ws *workspace) {
 			return
 		case <-notices.C():
 		case <-ws.fold:
+		case <-retry:
 		}
 	}
 }
 
-// catchUp applies every job event after the workspace's position.
+// catchUp applies every job event after the workspace's position. The
+// first catch-up loads the unfinished jobs from the job index. An event a
+// job in memory already reflects, because its index row was read after
+// the event committed, is skipped, so every event folds once.
 func (rt *Runtime) catchUp(ctx context.Context, ws *workspace) error {
+	if !rt.loaded(ws) {
+		if err := rt.load(ctx, ws); err != nil {
+			return fmt.Errorf("load job index: %w", err)
+		}
+	}
 	for {
 		rt.mu.Lock()
 		after := ws.position
@@ -296,13 +328,29 @@ func (rt *Runtime) catchUp(ctx context.Context, ws *workspace) error {
 		if len(events) == 0 {
 			return nil
 		}
+		loadedStreams := map[eventlog.StreamID]*Job{}
+		for _, stream := range rt.unknownStreams(ws, events) {
+			job, err := rt.loadStream(ctx, ws, stream)
+			if err != nil {
+				return err
+			}
+			loadedStreams[stream] = &job
+		}
 		rt.mu.Lock()
+		for stream, job := range loadedStreams {
+			if _, ok := ws.jobs[stream]; !ok && job.Head > 0 {
+				ws.jobs[stream] = job
+			}
+		}
 		for _, event := range events {
 			ws.position = event.Position
 			if event.Stream.Type() != StreamType {
 				continue
 			}
 			job, ok := ws.jobs[event.Stream]
+			if ok && event.Version <= job.Head {
+				continue
+			}
 			if !ok {
 				fresh := NewJob(ws.id, event.Stream)
 				job = &fresh
@@ -490,7 +538,7 @@ func (rt *Runtime) run(ws *workspace, kind string, job Job) {
 // used after a lost claim race so a partial history never stands in for
 // the truth.
 func (rt *Runtime) refresh(ws *workspace, stream eventlog.StreamID) {
-	job, err := Load(context.Background(), rt.log, ws.id, stream)
+	job, err := rt.loadStream(context.Background(), ws, stream)
 	if err != nil {
 		rt.opts.Logf("logqueue: refresh %s: %v", stream, err)
 		return

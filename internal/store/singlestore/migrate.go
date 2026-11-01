@@ -191,6 +191,13 @@ func (s *Store) migrate(ctx context.Context) error {
 				return fmt.Errorf("SingleStore migration %s: %w", file.name, err)
 			}
 		}
+		if file.version == 30 {
+			// component-durable-queue (The job index): fold every existing
+			// job stream once; the version is recorded only after the fill.
+			if _, err := s2log.FillJobIndex(ctx, s.db); err != nil {
+				return fmt.Errorf("SingleStore migration %s: fill the job index: %w", file.name, err)
+			}
+		}
 		if file.version == 27 {
 			if err := s.migrateEventsColumnstore(ctx); err != nil {
 				return fmt.Errorf("SingleStore migration %s: %w", file.name, err)

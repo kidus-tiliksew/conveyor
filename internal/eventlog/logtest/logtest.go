@@ -34,6 +34,7 @@ func Run(t *testing.T, factory Factory) {
 	t.Run("workspace_isolation", func(t *testing.T) { testWorkspaceIsolation(t, factory(t)) })
 	t.Run("payload_is_copied", func(t *testing.T) { testPayloadCopied(t, factory(t)) })
 	t.Run("concurrent_appends_serialise", func(t *testing.T) { testConcurrentAppends(t, factory(t)) })
+	t.Run("job_index_matches_fold", func(t *testing.T) { testJobIndexMatchesFold(t, factory(t)) })
 }
 
 func ws(t *testing.T) string {
