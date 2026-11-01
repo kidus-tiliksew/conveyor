@@ -62,4 +62,6 @@ export async function withQueryClient<T, A>(
 export interface QueryClientLike {
   setQueryData(key: readonly unknown[], data: unknown): unknown
   getQueryState(key: readonly unknown[]): { isInvalidated: boolean; dataUpdatedAt: number } | undefined
+  getQueryCache(): { getAll(): Array<{ queryKey: readonly unknown[]; state: { data: unknown } }> }
+  getMutationCache(): { getAll(): Array<{ state: { data: unknown; variables: unknown } }> }
 }
