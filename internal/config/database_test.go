@@ -25,7 +25,7 @@ func TestDatabaseAdmissionConfiguration(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			c := validConfig()
 			c.Database = Database{Backend: name}
-			_, err := normalize(c, "database admission")
+			_, err := normalizeDeployment(c, "database admission")
 			if name == "memory" {
 				if err != nil {
 					t.Fatal(err)
@@ -39,7 +39,7 @@ func TestDatabaseAdmissionConfiguration(t *testing.T) {
 			if name == "singlestore" {
 				c.Database.URL = "singlestore://localhost/conveyor_test"
 			}
-			got, err := normalize(c, "database admission")
+			got, err := normalizeDeployment(c, "database admission")
 			if err != nil || got.Database.Backend != name {
 				t.Fatalf("backend=%s err=%v", name, err)
 			}
@@ -47,7 +47,7 @@ func TestDatabaseAdmissionConfiguration(t *testing.T) {
 	}
 	c := validConfig()
 	c.Database = Database{Backend: "unsupported"}
-	_, err := normalize(c, "database admission")
+	_, err := normalizeDeployment(c, "database admission")
 	if err == nil {
 		t.Fatal("unsupported backend accepted")
 	}

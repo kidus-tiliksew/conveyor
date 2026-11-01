@@ -39,7 +39,7 @@ type planSeatsEnv struct {
 
 // newPlanSeatsEnv creates a queued plan-stage task with the given frozen
 // setup and workspace seat list, and dispatches its first MCP plan order.
-func newPlanSeatsEnv(t *testing.T, id string, gate bool, setup config.ExecutionSetup, workspaceSeats int) *planSeatsEnv {
+func newPlanSeatsEnv(t *testing.T, id string, gate bool, setup config.PolicyContract, workspaceSeats int) *planSeatsEnv {
 	t.Helper()
 	ctx := store.WithWorkspace(store.WithActor(t.Context(), store.SystemActor()), "demo")
 	st := store.NewMemory()
@@ -253,8 +253,8 @@ func describeSeats(value *int) string {
 
 func planSeats(value int) *int { return &value }
 
-func frozenSeats(count int) config.ExecutionSetup {
-	return config.ExecutionSetup{Review: config.ReviewPanel{Seats: make([]config.ReviewSeat, count)}}
+func frozenSeats(count int) config.PolicyContract {
+	return config.PolicyContract{Review: config.ReviewPanel{Seats: make([]config.ReviewSeat, count)}}
 }
 
 // TestSubmitPlanReviewSeatsMinimum covers the minimum for a frozen, frozen
@@ -264,12 +264,12 @@ func frozenSeats(count int) config.ExecutionSetup {
 func TestSubmitPlanReviewSeatsMinimum(t *testing.T) {
 	for _, tc := range []struct {
 		name           string
-		setup          config.ExecutionSetup
+		setup          config.PolicyContract
 		workspaceSeats int
 		minimum        int
 	}{
 		{name: "frozen", setup: frozenSeats(3), workspaceSeats: 1, minimum: 3},
-		{name: "frozen empty", setup: config.ExecutionSetup{Review: config.ReviewPanel{Seats: []config.ReviewSeat{}}}, workspaceSeats: 4, minimum: 1},
+		{name: "frozen empty", setup: config.PolicyContract{Review: config.ReviewPanel{Seats: []config.ReviewSeat{}}}, workspaceSeats: 4, minimum: 1},
 		{name: "absent uses workspace", workspaceSeats: 3, minimum: 3},
 		{name: "absent zero workspace", workspaceSeats: 0, minimum: 1},
 	} {
@@ -314,7 +314,7 @@ func TestSubmitPlanReviewSeatsMinimum(t *testing.T) {
 // leaves the same claim usable for a corrected submission, and that a stated
 // count requires the workspace configuration while an omitted one does not.
 func TestSubmitPlanReviewSeatsCorrectionRetainsClaim(t *testing.T) {
-	env := newPlanSeatsEnv(t, "plan-seats-correction", true, config.ExecutionSetup{}, 2)
+	env := newPlanSeatsEnv(t, "plan-seats-correction", true, config.PolicyContract{}, 2)
 	order := env.claimPlan(t)
 	before := env.snapshot(t, order.ID)
 	_, err := env.submit(order, planSeats(1))
@@ -335,7 +335,7 @@ func TestSubmitPlanReviewSeatsCorrectionRetainsClaim(t *testing.T) {
 	}
 	env.requireStored(t, result, 1, planSeats(3), false)
 
-	omitted := newPlanSeatsEnv(t, "plan-seats-no-config", true, config.ExecutionSetup{}, 2)
+	omitted := newPlanSeatsEnv(t, "plan-seats-no-config", true, config.PolicyContract{}, 2)
 	omitted.service.ConfigProvider = nil
 	result, err = omitted.submit(omitted.claimPlan(t), nil)
 	if err != nil {

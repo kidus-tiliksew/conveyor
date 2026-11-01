@@ -33,7 +33,7 @@ func TestPolicyOnlyReviewRoundFreezesSeatShapeNotExecution(t *testing.T) {
 		WorkOrderQueueTimeout: time.Hour,
 		Review:                config.ReviewPanel{Seats: []config.ReviewSeat{{Model: "one", Harness: "codex"}, {Model: "two", Harness: "claude", Effort: "high"}}},
 	}
-	minimum := store.ReviewSeatMinimum(config.ExecutionSetup{}, len(cfg.Review.Seats))
+	minimum := store.ReviewSeatMinimum(config.PolicyContract{}, len(cfg.Review.Seats))
 	_, orders, err := BuildReviewRound(cfg, core.Task{ID: "policy-review"}, config.StageRoute{TimeoutText: "45m"}, 1, minimum, minimum)
 	if err != nil || len(orders) != 2 {
 		t.Fatalf("orders=%+v err=%v", orders, err)

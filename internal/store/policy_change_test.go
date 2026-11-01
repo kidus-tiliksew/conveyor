@@ -65,7 +65,7 @@ func TestPolicyHandoffVerificationBinding(t *testing.T) {
 	t.Run("ResolvedSeats", func(t *testing.T) {
 		disabled := false
 		task := core.Task{ID: "task", State: core.TaskRunning, NextStage: core.StageVerify, ReviewedHeadSHA: "head",
-			SetupContract: config.ExecutionSetup{VerifyStage: true, Review: config.ReviewPanel{Seats: make([]config.ReviewSeat, 2)}}}
+			SetupContract: config.PolicyContract{VerifyStage: true, Review: config.ReviewPanel{Seats: make([]config.ReviewSeat, 2)}}}
 		verify := core.WorkOrder{ID: "verify", TaskID: task.ID, Stage: core.StageVerify, State: core.WorkOrderQueued, HeadSHA: "head", BaselineSHA: "base"}
 		previous := core.WorkOrder{ID: "task-review-1-seat-1", TaskID: task.ID, Stage: core.StageReview, State: core.WorkOrderCompleted, ReviewRound: 1, ReviewSeat: 1, HeadSHA: "head", BaselineSHA: "base"}
 		record := ReviewRoundSeats{TaskID: task.ID, ReviewRound: 1, SeatCount: 3, SeatCountSource: ReviewSeatSourcePlanned, MinimumSeatCount: 2, ImplementationWorkOrderID: "impl"}

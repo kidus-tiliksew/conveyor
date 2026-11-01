@@ -208,6 +208,9 @@ func runWorkspaceControl(t *testing.T, x Fixture) {
 		runPolicyOnlyPlanningRejectsMissingDeploymentControlPlane(t, x)
 	})
 	t.Run("BootstrapAndCredentialLifecycleActorsExplicit", func(t *testing.T) { runBootstrapAndCredentialLifecycleActorsExplicit(t, x) })
+	// A stored row an earlier release wrote with harness and setup keys
+	// still loads unchanged on every backend (runtime_planning.go).
+	t.Run("LegacyWorkspaceRowLoads", func(t *testing.T) { runLegacyWorkspaceRowLoads(t, x) })
 }
 
 // runBootstrapAndCredentialLifecycleActorsExplicit proves startup and

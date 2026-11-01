@@ -124,10 +124,7 @@ func cliContextualWorkspaceDocument() config.WorkspaceDocument {
 			"implement": {Model: "gpt-implement", ModelPolicy: config.ModelPolicyExplicit, Harness: "codex", TimeoutText: "2h", Execution: config.ExecutionMCP},
 			"review":    {Model: "fallback", Harness: "codex", TimeoutText: "1h", Execution: config.ExecutionMCP},
 		}},
-		Harnesses: []config.Harness{
-			{Name: "codex", Command: []string{"codex", "{prompt}", "{mcp_config}"}, ModelArgs: []string{"--model", "{model}"}, EffortArgs: map[string][]string{"high": {"--effort", "high"}}, ProbeCommand: []string{"codex", "--version"}, ProbeTimeoutText: "5s"},
-			{Name: "claude", Command: []string{"claude", "{prompt}", "{mcp_config}"}, ModelArgs: []string{"--model", "{model}"}, EffortArgs: map[string][]string{"high": {"--effort", "high"}}, ProbeCommand: []string{"claude", "--version"}, ProbeTimeoutText: "5s"},
-		},
+
 		Review: config.ReviewPanel{Seats: []config.ReviewSeat{
 			{Model: "gpt-review", Effort: "high"},
 			{Model: "claude-review", Harness: "claude", Effort: "high"},

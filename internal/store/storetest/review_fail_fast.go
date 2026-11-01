@@ -47,7 +47,7 @@ func ffTask(t *testing.T, x Fixture, seats int, failFast bool) core.Task {
 	t.Helper()
 	task := core.Task{ID: core.NewTaskID(), Workspace: x.Workspace, Repo: "conveyor", BaseBranch: "main", State: core.TaskRunning, NextStage: core.StageReview, ReviewedHeadSHA: seatFixtureHead, CreatedAt: time.Now().UTC()}
 	task.Branch = "conveyor/task-" + task.ID
-	task.SetupContract = config.ExecutionSetup{MaxBounces: 3, Review: config.ReviewPanel{Seats: make([]config.ReviewSeat, seats), FailFast: failFast}, ExecutionSettings: config.ContextualExecutionSettings{Review: config.ReviewExecutionSettings{TimeoutText: "1h"}}}
+	task.SetupContract = config.PolicyContract{MaxBounces: 3, Review: config.ReviewPanel{Seats: make([]config.ReviewSeat, seats), FailFast: failFast}, StageTimeouts: config.PolicyStageTimeouts{Review: "1h"}}
 	requireOK(t, x.Backend.CreateTask(x.Context, task))
 	stored, err := x.Backend.GetTask(x.Context, task.ID)
 	requireOK(t, err)

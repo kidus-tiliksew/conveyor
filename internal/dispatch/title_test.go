@@ -57,12 +57,10 @@ func TestGenerateTaskTitleIgnoresFrozenTaskPolicy(t *testing.T) {
 	d := New(store.NewMemory(), &config.Config{Workspace: "demo", Routing: config.Routing{Stages: map[string]config.StageRoute{
 		"triage": {Model: "deployment-title-model", Timeout: time.Second},
 	}}}, agent)
-	policy := config.ExecutionSetup{
-		MaxBounces: 3,
-		ExecutionSettings: config.ContextualExecutionSettings{
-			Implementation: config.ImplementationSettings{TimeoutText: "2h"},
-		},
-		Review: config.ReviewPanel{Seats: []config.ReviewSeat{{}}},
+	policy := config.PolicyContract{
+		MaxBounces:    3,
+		StageTimeouts: config.PolicyStageTimeouts{Implement: "2h"},
+		Review:        config.ReviewPanel{Seats: []config.ReviewSeat{{}}},
 	}
 	title, err := d.GenerateTaskTitle(t.Context(), core.Task{Body: "Create a normal task", SetupContract: policy})
 	if err != nil {

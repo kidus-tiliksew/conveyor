@@ -46,17 +46,23 @@ func newHarness(t *testing.T, st store.Backend, name string, recovery config.Rec
 	t.Helper()
 	workspace := "stalemint-" + core.NewTaskID()
 	settings := config.ContextualExecutionSettings{
-		ControlPlane:   config.ControlPlaneSettings{Triage: config.ModelTimeoutSettings{Model: "control", TimeoutText: "20m"}, Spec: config.ModelTimeoutSettings{Model: "control", TimeoutText: "30m"}},
-		Implementation: config.ImplementationSettings{Harness: "codex", Model: "gpt", ModelPolicy: config.ModelPolicyExplicit, Effort: "high", TimeoutText: "2h"},
-		Review:         config.ReviewExecutionSettings{Execution: config.ExecutionMCP, TimeoutText: "45m"},
-		Verify:         config.ImplementationSettings{Harness: "codex", Model: "gpt", ModelPolicy: config.ModelPolicyExplicit, Effort: "high", TimeoutText: "1h"},
+		ControlPlane: config.ControlPlaneSettings{Triage: config.ModelTimeoutSettings{Model: "control", TimeoutText: "20m"}},
 	}
-	h := config.Harness{Name: "codex", Command: []string{"codex", "{prompt}", "{mcp_config}"}, ModelArgs: []string{"--model", "{model}"}, EffortArgs: map[string][]string{"high": {"--effort", "high"}}, ProbeCommand: []string{"codex", "--version"}, ProbeTimeoutText: "5s"}
-	setup := config.ExecutionSetup{Name: "backend", ExecutionSettings: settings, Review: config.ReviewPanel{Seats: []config.ReviewSeat{{Model: "gpt-review", Harness: "codex"}}}}
+	routes := map[string]config.StageRoute{
+		"triage":    {Model: "control", TimeoutText: "20m", Timeout: 20 * time.Minute, Execution: config.ExecutionInProcess, ModelPolicy: config.ModelPolicyExplicit},
+		"spec":      {Execution: config.ExecutionMCP},
+		"implement": {Execution: config.ExecutionMCP},
+		"review":    {Execution: config.ExecutionMCP},
+	}
+	setup := config.PolicyContract{
+		StageTimeouts: config.PolicyStageTimeouts{Spec: "30m", Implement: "2h", Review: "45m", Verify: "1h"},
+		Review:        config.ReviewPanel{Seats: []config.ReviewSeat{{}}},
+		RefreshReview: config.RefreshReviewDelta,
+	}
 	if task.SetupContract.VerifyStage {
 		setup.VerifyStage = true
 	}
-	cfg := (&config.Config{Workspace: workspace, Repos: []config.Repo{{Name: "conveyor", URL: "https://github.com/fixture/conveyor", GitHub: "fixture/conveyor", Base: "main"}}, WorkOrderQueueTimeout: time.Hour, WorkOrderQueueTimeoutText: "1h", MaxBounces: 3, Recovery: recovery, Harnesses: []config.Harness{h}, Setups: []config.ExecutionSetup{setup}, DefaultSetup: "backend"}).WithSetup(setup)
+	cfg := (&config.Config{Workspace: workspace, Repos: []config.Repo{{Name: "conveyor", URL: "https://github.com/fixture/conveyor", GitHub: "fixture/conveyor", Base: "main"}}, WorkOrderQueueTimeout: time.Hour, WorkOrderQueueTimeoutText: "1h", MaxBounces: 3, Recovery: recovery, ExecutionSettings: &settings, Routing: config.Routing{Stages: routes}, Review: config.ReviewPanel{Seats: []config.ReviewSeat{{Model: "gpt-review"}}}}).WithPolicy(setup)
 	human := store.WithActor(t.Context(), store.Actor{ID: "test", Role: core.ActorHuman})
 	if _, err := st.CreateWorkspace(human, workspace, "Stale mint "+workspace, cfg); err != nil {
 		t.Fatalf("create workspace: %v", err)
@@ -64,7 +70,7 @@ func newHarness(t *testing.T, st store.Backend, name string, recovery config.Rec
 	ctx := store.WithWorkspace(store.WithActor(t.Context(), store.SystemActor()), workspace)
 	task.ID = name + "-" + core.NewTaskID()
 	task.Repo, task.BaseBranch, task.Branch = "conveyor", "main", "conveyor/task-"+task.ID
-	task.Workspace, task.Title, task.SetupName, task.SetupContract, task.CreatedAt = workspace, "Stale mint", setup.Name, setup, time.Now().UTC()
+	task.Workspace, task.Title, task.SetupName, task.SetupContract, task.CreatedAt = workspace, "Stale mint", "backend", setup, time.Now().UTC()
 	if task.State == "" {
 		task.State = core.TaskQueued
 	}
@@ -351,7 +357,7 @@ func runRecoveryDisabled(t *testing.T, st store.Backend) {
 // A stale verify order whose head no longer matches the verify head is
 // refused by recovery policy; it still holds the stage for the operator.
 func runRefusedVerify(t *testing.T, st store.Backend) {
-	h := newHarness(t, st, "verify", config.DefaultRecoveryPolicy(), core.Task{NextStage: core.StageVerify, ReviewedHeadSHA: "head-new", SetupContract: config.ExecutionSetup{VerifyStage: true}})
+	h := newHarness(t, st, "verify", config.DefaultRecoveryPolicy(), core.Task{NextStage: core.StageVerify, ReviewedHeadSHA: "head-new", SetupContract: config.PolicyContract{VerifyStage: true}})
 	id := h.task.ID + "-verify-1"
 	now := time.Now().UTC()
 	if err := h.st.CreateJob(h.ctx, core.Job{ID: id, TaskID: h.task.ID, Stage: core.StageVerify, State: core.JobPending}); err != nil {

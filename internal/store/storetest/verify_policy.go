@@ -20,7 +20,7 @@ func runVerifyPolicy(t *testing.T, x Fixture) {
 	task := core.Task{ID: core.NewTaskID(), Workspace: x.Workspace, Repo: "conveyor", State: core.TaskRunning, NextStage: core.StageReview, ReviewedHeadSHA: "submitted-head", CreatedAt: time.Now().UTC()}
 	task.Branch = "conveyor/task-" + task.ID
 	task.SetupName = "legacy-setup"
-	task.SetupContract = config.ExecutionSetup{Name: "legacy-setup", MaxBounces: 3, Review: config.ReviewPanel{Seats: []config.ReviewSeat{{}}}, ExecutionSettings: config.ContextualExecutionSettings{Review: config.ReviewExecutionSettings{TimeoutText: "1h"}}}
+	task.SetupContract = config.PolicyContract{MaxBounces: 3, Review: config.ReviewPanel{Seats: []config.ReviewSeat{{}}}, StageTimeouts: config.PolicyStageTimeouts{Review: "1h"}}
 	requireOK(t, st.CreateTask(ctx, task))
 	enabled := true
 	request := store.SetupChangeRequest{TaskID: task.ID, RequestID: core.NewTaskID(), Reason: "enable verification", Policy: &store.TaskPolicyChange{VerifyStage: &enabled, StageTimeouts: map[string]string{"verify": "45m"}}}
@@ -61,7 +61,7 @@ func runVerifyPolicy(t *testing.T, x Fixture) {
 	// A caller-supplied execution setup or order plan never reaches the store's
 	// derived plan; the replay identity covers only the policy inputs.
 	smuggled := request
-	smuggled.Setup = config.ExecutionSetup{Name: "reassigned", MaxBounces: 9, Review: config.ReviewPanel{Seats: []config.ReviewSeat{{Harness: "other", Model: "other"}, {Harness: "other", Model: "other"}}}}
+	smuggled.Setup = config.PolicyContract{MaxBounces: 9, Review: config.ReviewPanel{Seats: []config.ReviewSeat{{}, {}}}}
 	smuggled.NextStage = core.StageImplement
 	smuggled.SupersedeWorkOrderIDs = []string{ambiguous.ID}
 	smuggled.NewJobs = []core.Job{{ID: task.ID + "-smuggled", TaskID: task.ID, Stage: core.StageReview}}
@@ -78,7 +78,7 @@ func runVerifyPolicy(t *testing.T, x Fixture) {
 	}
 	stored, err := st.GetTask(ctx, task.ID)
 	requireOK(t, err)
-	if stored.SetupName != "legacy-setup" || stored.SetupContract.MaxBounces != 3 || len(stored.SetupContract.Review.Seats) != 1 || !stored.SetupContract.VerifyStage || stored.SetupContract.ExecutionSettings.Verify.TimeoutText != "45m" {
+	if stored.SetupName != "legacy-setup" || stored.SetupContract.MaxBounces != 3 || len(stored.SetupContract.Review.Seats) != 1 || !stored.SetupContract.VerifyStage || stored.SetupContract.StageTimeouts.Verify != "45m" {
 		t.Fatalf("stored policy: name=%q contract=%+v", stored.SetupName, stored.SetupContract)
 	}
 	if _, err := st.GetWorkOrder(ctx, task.ID+"-smuggled"); err == nil {
@@ -253,13 +253,10 @@ func runVerifyPolicyStranded(t *testing.T, x Fixture) {
 			NextStage: core.StageReview, ReviewedHeadSHA: "submitted-head", CreatedAt: time.Now().UTC(),
 		}
 		task.Branch = "conveyor/task-" + task.ID
-		task.SetupContract = config.ExecutionSetup{
-			VerifyStage: false,
-			Review:      config.ReviewPanel{Seats: []config.ReviewSeat{{}}},
-			ExecutionSettings: config.ContextualExecutionSettings{
-				Review: config.ReviewExecutionSettings{TimeoutText: "1h"},
-				Verify: config.ImplementationSettings{TimeoutText: "30m"},
-			},
+		task.SetupContract = config.PolicyContract{
+			VerifyStage:   false,
+			Review:        config.ReviewPanel{Seats: []config.ReviewSeat{{}}},
+			StageTimeouts: config.PolicyStageTimeouts{Review: "1h", Verify: "30m"},
 		}
 		requireOK(t, st.CreateTask(ctx, task))
 		source := core.WorkOrder{

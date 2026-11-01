@@ -120,7 +120,7 @@ func ReviewRoundCreatedPayload(round int, seats ReviewRoundSeatResolution) map[s
 // workspace seat-list length, and 1 when either is zero. A seat list frozen
 // empty therefore has minimum 1, and a task without a frozen seat list
 // resolves against its workspace policy without persisting one.
-func ReviewSeatMinimum(setup config.ExecutionSetup, workspaceSeats int) int {
+func ReviewSeatMinimum(setup config.PolicyContract, workspaceSeats int) int {
 	count := workspaceSeats
 	if setup.Review.Seats != nil {
 		count = len(setup.Review.Seats)
@@ -254,7 +254,7 @@ func LoadReviewRoundSeatInputs(ctx context.Context, reader ReviewRoundSeatReader
 // CheckReviewRoundSeats revalidates caller-resolved metadata inside the
 // round-building command's task transaction, against the stored setup, the
 // approved plan count, and the persisted records read in that transaction.
-func CheckReviewRoundSeats(want ReviewRoundSeatResolution, setup config.ExecutionSetup, planned *int, records []ReviewRoundSeats, orderCount int) error {
+func CheckReviewRoundSeats(want ReviewRoundSeatResolution, setup config.PolicyContract, planned *int, records []ReviewRoundSeats, orderCount int) error {
 	invalid := func(format string, args ...any) error {
 		return fmt.Errorf("%w: "+format, append([]any{ErrReviewRoundSeatsInvalid}, args...)...)
 	}

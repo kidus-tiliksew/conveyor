@@ -60,7 +60,7 @@ monitor: {enabled: true, repositories: [workspace-repo]}
 // control-plane settings and allowlist must not win over the deployment's.
 func runtimeLegacyDocument(t *testing.T) []byte {
 	t.Helper()
-	seed, err := normalize(validConfig(), "legacy seed")
+	seed, err := normalizeDeployment(validConfig(), "legacy seed")
 	if err != nil {
 		t.Fatal(err)
 	}

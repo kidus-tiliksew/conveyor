@@ -46,8 +46,8 @@ func TestRequestChangesBouncesThroughSharedContextAndAttention(t *testing.T) {
 		Routing: config.Routing{Stages: map[string]config.StageRoute{
 			"implement": {Model: "implementer", Harness: "codex", Execution: config.ExecutionMCP, Timeout: time.Hour, TimeoutText: "1h"},
 		}},
-		Harnesses: []config.Harness{{Name: "codex"}},
-		Repos:     []config.Repo{{Name: "conveyor", Base: "main"}},
+
+		Repos: []config.Repo{{Name: "conveyor", Base: "main"}},
 	}
 	dispatcher := dispatch.New(st, cfg, nil)
 	server := NewServer(st)

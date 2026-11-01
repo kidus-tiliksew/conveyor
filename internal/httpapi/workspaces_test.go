@@ -147,19 +147,16 @@ func TestCreateWorkspaceDoesNotPersistWhenQueueRegistrationFails(t *testing.T) {
 // legacyExecutorDeployment is a deployment value that still carries execution
 // detail, as a file loaded before DEC-56 did.
 func legacyExecutorDeployment() *config.Config {
-	harness := config.HarnessTemplates()[0].Harness
+	const harness = "codex"
 	return &config.Config{
 		Workspace: "demo", MaxBounces: 2, Database: config.Database{Backend: "memory"},
-		Harnesses:    []config.Harness{harness},
-		Setups:       []config.ExecutionSetup{{Name: "default"}},
-		DefaultSetup: "default",
 		Routing: config.Routing{Stages: map[string]config.StageRoute{
 			"triage":    {Model: "gpt", TimeoutText: "1h", Execution: config.ExecutionInProcess},
-			"spec":      {Model: "gpt-sol", Harness: harness.Name, Effort: "high", TimeoutText: "30m", Execution: config.ExecutionMCP},
-			"implement": {Model: "gpt-sol", Harness: harness.Name, Effort: "high", TimeoutText: "4h", Execution: config.ExecutionMCP},
-			"review":    {Model: "gpt-terra", Harness: harness.Name, TimeoutText: "1h", Execution: config.ExecutionMCP},
+			"spec":      {Model: "gpt-sol", Harness: harness, Effort: "high", TimeoutText: "30m", Execution: config.ExecutionMCP},
+			"implement": {Model: "gpt-sol", Harness: harness, Effort: "high", TimeoutText: "4h", Execution: config.ExecutionMCP},
+			"review":    {Model: "gpt-terra", Harness: harness, TimeoutText: "1h", Execution: config.ExecutionMCP},
 		}},
-		Review:         config.ReviewPanel{Seats: []config.ReviewSeat{{Model: "gpt-terra", Harness: harness.Name, Effort: "high"}}},
+		Review:         config.ReviewPanel{Seats: []config.ReviewSeat{{Model: "gpt-terra", Harness: harness, Effort: "high"}}},
 		PlanningModels: []string{"gpt"},
 		Repos:          []config.Repo{{Name: "repo", URL: "https://example.test/repo", Base: "main"}},
 	}
@@ -167,8 +164,8 @@ func legacyExecutorDeployment() *config.Config {
 
 func assertCandidateHasNoExecutionDetail(t *testing.T, candidate *config.Config) {
 	t.Helper()
-	if candidate.Harnesses != nil || candidate.Setups != nil || candidate.DefaultSetup != "" || candidate.ExecutionSettings != nil || candidate.PlanningModels != nil {
-		t.Fatalf("candidate inherited execution detail: harnesses=%v setups=%v default=%q settings=%v planning=%v", candidate.Harnesses, candidate.Setups, candidate.DefaultSetup, candidate.ExecutionSettings, candidate.PlanningModels)
+	if candidate.ExecutionSettings != nil || candidate.PlanningModels != nil {
+		t.Fatalf("candidate inherited execution detail: settings=%v planning=%v", candidate.ExecutionSettings, candidate.PlanningModels)
 	}
 	for _, stage := range []string{"spec", "implement", "review", "verify"} {
 		route := candidate.Routing.Stages[stage]

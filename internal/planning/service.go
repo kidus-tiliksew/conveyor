@@ -2555,9 +2555,11 @@ func (s *Service) bundleTool(ctx context.Context, session core.PlanningSession, 
 		if err != nil {
 			return toolExecution{}, &planningInfrastructureError{err: err}
 		}
-		setup, ok := cfg.Setup("")
+		// Members carry the workspace default pipeline policy; no member
+		// selects an execution setup (DEC-96(2); component-planning).
+		policy, ok := cfg.DefaultPolicy()
 		if !ok {
-			return toolExecution{}, fmt.Errorf("workspace default execution setup is unavailable")
+			return toolExecution{}, fmt.Errorf("workspace default pipeline policy is unavailable")
 		}
 		for i := range bundle.Tasks {
 			repo, exists := cfg.Repo(bundle.Tasks[i].Repo)
@@ -2567,7 +2569,7 @@ func (s *Service) bundleTool(ctx context.Context, session core.PlanningSession, 
 			if bundle.Tasks[i].BaseBranch == "" {
 				bundle.Tasks[i].BaseBranch = repo.Base
 			}
-			bundle.Tasks[i].SetupName, bundle.Tasks[i].SetupContract = setup.Name, setup
+			bundle.Tasks[i].SetupName, bundle.Tasks[i].SetupContract = "default", policy
 			bundle.Tasks[i].SpecApproval, bundle.Tasks[i].MergeApproval = cfg.Execution.SpecApproval, cfg.Execution.MergeApproval
 		}
 	}
