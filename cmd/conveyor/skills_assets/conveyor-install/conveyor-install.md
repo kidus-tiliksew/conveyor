@@ -4,7 +4,7 @@ You are setting up Conveyor with a person. You interview them about their
 situation, agree a setup with them, and then perform it yourself through the
 release installer, `conveyor`, `conveyord`, and the REST API (AC-3.1),
 handing them only the acts that need their secrets, their browser, or their
-decision. This playbook is the only setup procedure (DEC-92). The reference
+decision. This playbook is the only setup procedure (DEC-93). The reference
 pages it links describe commands, settings, and behavior in more detail.
 
 You can follow this playbook before Conveyor is installed. It is published
@@ -23,10 +23,10 @@ These rules hold in every section.
   accepts the setup summary in section 5 (REQ-2).
 - **Confirm each act that changes deployment state.** Before factory
   initialization, service installation, workspace creation, repository
-  registration, an invitation, or worker enrollment, name the act and wait
+  registration, or an invitation, name the act and wait
   for the person's confirmation in the session (AC-3.2).
 - **Never handle a secret value.** Do not read, display, store, or transmit
-  a password, personal access token, sign-in link, pairing token, database
+  a password, personal access token, sign-in link, database
   password, model provider API key, GitHub App private key, or SMTP
   credential (AC-3.3). Give the person the exact command or page that takes
   the secret and resume when they report completion. You may generate a new
@@ -101,12 +101,11 @@ Read observable state first, without changing it. For each answer you can
 determine, state what you found and ask the person to confirm it (AC-2.2).
 
 ```sh
-command -v conveyor conveyord git docker claude codex cursor-agent opencode grok
+command -v conveyor conveyord git docker claude codex cursor-agent opencode
 conveyor --version
 conveyord status
 conveyor auth status
 conveyor config list
-conveyor setup list
 conveyor skills install --list
 conveyor mcp install --list
 ```
@@ -115,8 +114,8 @@ conveyor mcp install --list
   machine.
 - `conveyor auth status` reports the effective server, the signed-in
   identity, and the credential's source, never its value.
-- `conveyor config list` reports the effective server, workspace, and local
-  execution configuration, with the source of each.
+- `conveyor config list` reports the effective server, workspace, local
+  configuration file, and worktree location, with the source of each.
 - For a server address the person names, read
   `curl -fsS <server-url>/v1/version`. It needs no credential.
 - If a `~/.conveyor/server` directory exists, list its file names with
@@ -133,7 +132,7 @@ establish each of these (AC-2.1):
 1. **Join or host.** Does the person join an existing factory, or host a
    new one? To join, ask for the server URL, the workspace ID, and the
    repository names they will work on, skip questions 2 to 5, and build the
-   summary in section 5 from the join steps in section 12.
+   summary in section 5 from the join steps in section 11.
 2. **Where the server runs.** For a new factory: on this machine as a
    foreground process, as a long-running user service on a host
    (`conveyord install`), or on a container platform from the release
@@ -149,10 +148,8 @@ establish each of these (AC-2.1):
    default branch. Conveyor works with GitHub repositories through the
    workspace GitHub App.
 7. **Agent tools.** Which coding-agent tools to connect: Claude Code, Codex,
-   Cursor, or OpenCode for skills and MCP, and which harness runs each stage
-   (Codex, Claude, Grok, Cursor, or OpenCode).
-8. **Execution.** Do tasks run in local agent sessions (`conveyor run`),
-   under a background worker, or both?
+   Cursor, or OpenCode. Each gets the skills and an MCP registration, and the
+   person works tasks in sessions they start in these tools.
 
 For a team server, also ask for the public HTTPS URL people will use, and
 whether invitations should be emailed through SMTP or delivered by hand.
@@ -193,9 +190,13 @@ include:
   and structured output), such as a chat-completions-only endpoint, for the
   in-process triage and planning stages;
 - a forge other than GitHub for the workspace GitHub App;
-- a root or system-wide service manager unit; `conveyord install` and
-  `conveyor worker install` install per-user services only, so offer a user
-  service, with Linux user lingering when it must run without a login;
+- a root or system-wide service manager unit; `conveyord install` installs a
+  per-user service only, so offer a user service, with Linux user lingering
+  when it must run without a login;
+- a background worker, daemon, or service that claims and runs tasks on its
+  own; Conveyor has none, so offer agent sessions the person starts, or one
+  session that coordinates several tasks with the `conveyor-coordinate`
+  skill;
 - one workspace spread across several servers; offer one server per team or
   one shared server;
 - self-registration; accounts exist through bootstrap, invitation, or the
@@ -207,7 +208,7 @@ Before the first change, present a summary and proceed only after the person
 accepts it (AC-2.3). Name:
 
 - each component (database, server, client CLI, skills, MCP registrations,
-  workspaces, repositories, execution setups, worker) and where it runs;
+  workspaces, repositories, worktree location) and where it runs;
 - each step in order, marking the steps the person performs: entering a
   secret, a browser act, or a confirmation;
 - what the setup leaves out.
@@ -414,8 +415,9 @@ The credential model is described in
 
 ## 7. Connect this machine
 
-Run this section on each machine that operates Conveyor or runs agents,
-including the server host when the person works there. Work outside the
+Run this section on each machine that operates Conveyor or where the person
+works tasks in agent sessions, including the server host when the person
+works there. Work outside the
 server directory.
 
 ### 7.1 Sign in
@@ -460,7 +462,7 @@ and in [Authentication](https://github.com/kidus-tiliksew/conveyor/blob/main/doc
 
 ### 7.3 Clone the repositories
 
-A machine that runs tasks needs a clone of each repository it works on and a
+A machine where agent sessions work tasks needs a clone of each repository it works on and a
 Git credential for the repository host, such as SSH or a credential helper.
 The person sets up the credential when it needs a secret. Check access
 without a prompt:
@@ -581,76 +583,48 @@ failed. For `fallback` or `failed`, the person copies the invitation link
 from the Workspace page in the dashboard and delivers it, or resends the
 invitation there. Never read the link yourself, from the response or the
 dashboard. Each
-invitee then follows section 12 on their own machine. Roles and capabilities
+invitee then follows section 11 on their own machine. Roles and capabilities
 are in [Authentication](https://github.com/kidus-tiliksew/conveyor/blob/main/docs/auth.md#roles-and-capabilities).
 
-## 9. Create the execution setup
+## 9. Work tasks in agent sessions
 
-A machine that runs tasks needs a local execution configuration. It names the
-harness, model, and effort for each stage, the review seats, and where task
-worktrees go. Its contents never leave the machine. Ask the person for the
-worktree location: `repository` places worktrees under the primary checkout
-at `_worktrees`, and `machine` places them under `~/.conveyor/worktrees`.
+Conveyor launches no agent and keeps no execution setup: the person starts
+each agent session in a tool connected in section 7.2 and chooses its harness
+and model there, and that session claims the task's work order itself over
+MCP (DEC-96; DEC-97). Nothing claims work automatically, so there is no
+worker or service to enroll for task execution.
+
+A machine where the person works tasks needs a worktree location, because
+`conveyor checkout` creates nothing until one is recorded. Ask the person:
+`repository` places task worktrees under the primary checkout at
+`_worktrees`, and `machine` places them under `~/.conveyor/worktrees`. Then
+record the answer:
 
 ```sh
 mkdir -p "$HOME/.conveyor/client"
-conveyor config init-execution --config "$HOME/.conveyor/client/conveyor.yaml" \
-  --defaults --worktree-location machine
+conveyor config set worktree_location machine --config "$HOME/.conveyor/client/conveyor.yaml"
 ```
 
-`--defaults` writes the first healthy detected harness without prompting.
-To choose harnesses and models per stage, create or change a named setup
-with field flags; each harness is probed before the file is written
-(AC-5.2):
+Ask the person whether to add
+`export CONVEYOR_CONFIG="$HOME/.conveyor/client/conveyor.yaml"` to their
+shell startup file. The file holds the worktree location and local
+verification records, never a harness or model; see
+[Configuration](https://github.com/kidus-tiliksew/conveyor/blob/main/docs/configuration.md#local-configuration-agent-machine).
 
-```sh
-conveyor setup create main --config "$HOME/.conveyor/client/conveyor.yaml" \
-  --implement-harness claude --implement-effort high \
-  --review-harness codex --review-effort high --worktree-location machine
-conveyor setup default main --config "$HOME/.conveyor/client/conveyor.yaml"
-conveyor setup edit main --config "$HOME/.conveyor/client/conveyor.yaml" --implement-model <model-id>
+To work a task, the person opens an agent session in the repository's clone
+from section 7.3 and asks it, in their own words or with this prompt:
+
+```text
+Use the conveyor-work skill to work Conveyor task <task-id> in workspace
+`<workspace-id>` on <server-url>.
 ```
 
-Add a `repos:` entry to the file for each registered repository the machine
-works on, with the registered `name`, the `url`, the absolute `checkout`
-path of the clone from section 7.3, and `base`. Ask the person whether to
-add `export CONVEYOR_CONFIG="$HOME/.conveyor/client/conveyor.yaml"` to their
-shell startup file. Harness definitions and stage settings are in
-[Configuration](https://github.com/kidus-tiliksew/conveyor/blob/main/docs/configuration.md#local-execution-config-executor-machine);
-harness-specific setup is in the
-[Cursor](https://github.com/kidus-tiliksew/conveyor/blob/main/docs/cursor-build.md),
-[OpenCode](https://github.com/kidus-tiliksew/conveyor/blob/main/docs/opencode-build.md),
-and [Grok](https://github.com/kidus-tiliksew/conveyor/blob/main/docs/grok-build.md)
-pages.
+The session claims the order, works in the task worktree, submits, starts an
+isolated reviewer, and offers each gate to the person in the conversation. To
+keep several tasks moving, the person asks a session to coordinate them with
+the `conveyor-coordinate` skill.
 
-For local agent sessions, the person runs a task with
-`conveyor --server <server-url> --workspace <workspace-id> run <task-id>`,
-which probes the setup's harnesses before it claims and asks the person at
-each gate.
-
-## 10. Enroll a worker
-
-When tasks run under a background worker, confirm the act first. The
-pairing token is a secret, so capture it into a shell variable and pass it
-on without displaying it:
-
-```sh
-pairing_token=$(conveyor --server <server-url> --workspace <workspace-id> worker pair | sed -n 's/^pairing_token=//p')
-conveyor --server <server-url> --workspace <workspace-id> worker run \
-  --config "$HOME/.conveyor/client/conveyor.yaml" --pairing-token "$pairing_token" --once
-unset pairing_token
-conveyor --server <server-url> --workspace <workspace-id> worker install \
-  --config "$HOME/.conveyor/client/conveyor.yaml"
-```
-
-The first `worker run` enrolls the machine and saves an owner-only worker
-credential; later runs reuse it. `worker install` installs a user service
-for the workspace. Git credentials and the agent CLI login must work in the
-service's environment, which does not inherit shell exports. Pairing,
-headless Git credentials, and recovery are in
-[Worker operations](https://github.com/kidus-tiliksew/conveyor/blob/main/docs/worker-operations.md).
-
-## 11. Verify the setup
+## 10. Verify the setup
 
 After the setup steps, check each component the setup included and report
 each result to the person (AC-3.7):
@@ -665,18 +639,12 @@ each result to the person (AC-3.7):
   session and confirm the registered connection lists Conveyor's tools; for
   Claude Code, `claude mcp list` reports each connection's state.
   `conveyor mcp install --list` reports the registration on disk only.
-- **Harness probes.** For each execution setup, run every harness's
-  `probe_command` from the setup's `harnesses` entries, such as
-  `claude --version`. `conveyor run` repeats the probe before it claims.
-- **Workers.** `conveyor --server <server-url> --workspace <workspace-id> worker status`
-  reports `local_service` as running and `remote_worker` as live, with its
-  harness probes.
 
 A healthy server and a sign-in do not prove that agents can deliver. Suggest
-a first small task, such as the repository's install task, as the end-to-end
-check.
+a first small task, such as the repository's install task, worked in an agent
+session as section 9 describes, as the end-to-end check.
 
-## 12. Extend an existing setup
+## 11. Extend an existing setup
 
 When a setup already exists, read the current state with section 2 first,
 perform only the steps the requested change needs, and leave unrelated
@@ -689,9 +657,8 @@ in section 5.
 | Add a repository | 8.3, then the GitHub App installation in 6.5 |
 | Invite a person | 8.4 |
 | Connect another agent tool | 7.2 with `--tool` |
-| Add or change an execution setup | 9 |
-| Add a worker | 10 |
-| Upgrade | 1 on every machine, then restart the server and each worker; rerun `conveyor skills install` |
+| Choose or change the worktree location | 9 |
+| Upgrade | 1 on every machine, then restart the server; rerun `conveyor skills install` |
 
 ### Join an existing factory from a new machine
 
@@ -706,9 +673,8 @@ workspace ID, the repository names, and their invitation, then:
 3. Sign in and select the workspace (section 7.1).
 4. Register MCP for each chosen tool (section 7.2).
 5. Clone the repositories it will work on (section 7.3).
-6. Create the execution setup (section 9).
-7. Optionally, enroll a worker (section 10).
-8. Verify (section 11), skipping the server host checks.
+6. Record the worktree location (section 9).
+7. Verify (section 10), skipping the server host checks.
 
 ## Reference
 
@@ -716,8 +682,4 @@ workspace ID, the repository names, and their invitation, then:
 - [Configuration](https://github.com/kidus-tiliksew/conveyor/blob/main/docs/configuration.md)
 - [Authentication](https://github.com/kidus-tiliksew/conveyor/blob/main/docs/auth.md)
 - [MCP reference](https://github.com/kidus-tiliksew/conveyor/blob/main/docs/mcp.md)
-- [Worker operations](https://github.com/kidus-tiliksew/conveyor/blob/main/docs/worker-operations.md)
 - [SingleStore operations](https://github.com/kidus-tiliksew/conveyor/blob/main/docs/singlestore.md)
-- Harness pages: [Cursor](https://github.com/kidus-tiliksew/conveyor/blob/main/docs/cursor-build.md),
-  [OpenCode](https://github.com/kidus-tiliksew/conveyor/blob/main/docs/opencode-build.md),
-  [Grok](https://github.com/kidus-tiliksew/conveyor/blob/main/docs/grok-build.md)

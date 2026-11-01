@@ -1,6 +1,6 @@
 ---
 name: conveyor-install
-description: Install and configure Conveyor with the person — interview them about their situation (join or host, server hosting, database, team topology, repositories, agent tools, execution), present a setup summary they accept, then perform the setup through the release installer, `conveyor`, `conveyord`, and the REST API, and verify it. Use when the person asks to set up, install, configure, extend, or join a Conveyor factory, or to add a machine, workspace, repository, person, execution setup, or worker.
+description: Install and configure Conveyor with the person — interview them about their situation (join or host, server hosting, database, team topology, repositories, agent tools), present a setup summary they accept, then perform the setup through the release installer, `conveyor`, `conveyord`, and the REST API, and verify it. Use when the person asks to set up, install, configure, extend, or join a Conveyor factory, or to add a machine, workspace, repository, or person.
 ---
 
 # Conveyor setup
