@@ -43,7 +43,10 @@ func (s *Store) RenewWorkerClaimCommand(ctx context.Context, taskLease taskops.T
 	if _, err := store.RequireActor(ctx); err != nil {
 		return core.WorkOrder{}, err
 	}
-	current, err := s.GetWorkOrder(ctx, workOrderID)
+	// Refusals are decided from the order without its authority snapshots;
+	// only a successful renewal or a completed-order acknowledgement returns
+	// the full order (component-work-orders, Snapshot-free fold reads).
+	current, err := s.GetWorkOrderWithoutSnapshots(ctx, workOrderID)
 	if err != nil {
 		return core.WorkOrder{}, err
 	}
@@ -55,7 +58,7 @@ func (s *Store) RenewWorkerClaimCommand(ctx context.Context, taskLease taskops.T
 	row := s.boundary.QueryRow(ctx, `UPDATE work_orders SET lease_expires_at=CASE WHEN execution_deadline IS NULL THEN $1 ELSE LEAST($1,execution_deadline) END,updated_at=$2 WHERE workspace_id=$3 AND id=$4 AND worker_id=$5 AND claimant_id=$6 AND session_id=$7 AND state='claimed' AND lease_expires_at>$2 AND (execution_deadline IS NULL OR execution_deadline>$2) RETURNING `+workOrderColumns, expires, now, workspace(ctx), workOrderID, claim.WorkerID, claim.ClaimantID, claim.SessionID)
 	order, err := scanWorkOrder(row)
 	if errors.Is(err, pgx.ErrNoRows) {
-		current, getErr := s.GetWorkOrder(ctx, workOrderID)
+		current, getErr := s.GetWorkOrderWithoutSnapshots(ctx, workOrderID)
 		if getErr == nil && current.State == core.WorkOrderCancelled {
 			matches, matchErr := cancelledSessionMatches(ctx, s.boundary, workspace(ctx), current.TaskID, current.JobID, claim.SessionID)
 			if matchErr != nil {
@@ -67,7 +70,7 @@ func (s *Store) RenewWorkerClaimCommand(ctx context.Context, taskLease taskops.T
 			}
 		}
 		if getErr == nil && current.WorkerID == claim.WorkerID && current.ClaimantID == claim.ClaimantID && current.SessionID == claim.SessionID && (current.State == core.WorkOrderSubmitted || current.State == core.WorkOrderCompleted) {
-			return current, nil
+			return s.GetWorkOrder(ctx, workOrderID)
 		}
 		if getErr == nil && current.State == core.WorkOrderQueued && current.WorkerID == "" && current.ClaimantID == "" && current.SessionID == "" &&
 			(current.LastFailureMessage == core.WorkOrderReleaseReasonOperatorCheckpointReached ||

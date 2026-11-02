@@ -676,19 +676,14 @@ func (s *Server) mcpTaskStatus(ctx context.Context, taskID, workOrderID, session
 // authorizeClaimantSession binds a presented session ID to its authenticated
 // claimant without imposing a lifecycle state. The called work-order operation
 // remains responsible for its existing state, lease, and deadline checks.
+// store.ResolveClaimSession reads the named order and, for a mismatched or
+// missing order, asks whether another order of the workspace holds the
+// session; neither read selects a snapshot or the workspace's orders
+// (component-work-orders, Snapshot-free fold reads).
 func (s *Server) authorizeClaimantSession(ctx context.Context, workOrderID, sessionID string) (core.WorkOrderClaimIdentity, error) {
-	order, err := s.Store.GetWorkOrder(ctx, workOrderID)
-	if err != nil || order.SessionID == "" || order.SessionID != sessionID {
-		orders, listErr := s.Store.ListWorkOrders(ctx)
-		if listErr != nil {
-			return core.WorkOrderClaimIdentity{}, listErr
-		}
-		for _, candidate := range orders {
-			if sessionID != "" && candidate.ID != workOrderID && candidate.SessionID == sessionID {
-				return core.WorkOrderClaimIdentity{}, store.ErrWorkOrderClaimUnauthorized
-			}
-		}
-		return core.WorkOrderClaimIdentity{}, store.ErrWorkOrderClaimLost
+	order, err := store.ResolveClaimSession(ctx, s.Store, workOrderID, sessionID)
+	if err != nil {
+		return core.WorkOrderClaimIdentity{}, err
 	}
 	credential, ok := store.CredentialFromContext(ctx)
 	if !ok {

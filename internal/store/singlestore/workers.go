@@ -40,21 +40,29 @@ func cancelledSessionMatches(ctx context.Context, tx *sql.Tx, ws, task, job, ses
 func (s *Store) RenewWorkerClaimCommand(ctx context.Context, lease taskops.TaskLease, id string, c core.WorkOrderClaimIdentity, duration time.Duration) (core.WorkOrder, error) {
 	ctx = dbmetrics.WithReadLabel(ctx, "RenewWorkerClaimCommand")
 	var result core.WorkOrder
-	err := s.orderTx(ctx, id, func(tx *sql.Tx, o core.WorkOrder) error {
+	// Refusals are decided from the stored order without its authority
+	// snapshots. A successful renewal reads the full row before it writes, so
+	// the write keeps both snapshots, and a completed-order acknowledgement
+	// returns the full row (component-work-orders, Snapshot-free fold reads).
+	err := s.orderTxColumns(ctx, id, activityWorkOrderColumns, func(tx *sql.Tx, o core.WorkOrder) error {
 		if !lease.ValidForCommand(o.TaskID, string(core.WorkOrderCmdRenew)) {
 			return fmt.Errorf("work-order renewal requires a valid taskops lease")
 		}
 		now := time.Now().UTC()
 		if claimAlive(o, c, now) {
+			full, err := getOrderRow(ctx, tx, id)
+			if err != nil {
+				return err
+			}
+			o = full
 			o.LeaseExpiresAt = now.Add(duration)
 			if !o.ExecutionDeadline.IsZero() && o.LeaseExpiresAt.After(o.ExecutionDeadline) {
 				o.LeaseExpiresAt = o.ExecutionDeadline
 			}
 			o.UpdatedAt = now
-			if err := orderWrite(ctx, tx, o); err != nil {
+			if err = orderWrite(ctx, tx, o); err != nil {
 				return err
 			}
-			var err error
 			result, err = getOrderRow(ctx, tx, id)
 			if err != nil {
 				return err
@@ -71,7 +79,11 @@ func (s *Store) RenewWorkerClaimCommand(ctx context.Context, lease taskops.TaskL
 			}
 		}
 		if claimMatches(o, c) && (o.State == core.WorkOrderSubmitted || o.State == core.WorkOrderCompleted) {
-			result = o
+			full, err := getOrderRow(ctx, tx, id)
+			if err != nil {
+				return err
+			}
+			result = full
 			return nil
 		}
 		if o.State == core.WorkOrderQueued && o.WorkerID == "" && o.ClaimantID == "" && o.SessionID == "" && (o.LastFailureMessage == core.WorkOrderReleaseReasonOperatorCheckpointReached || o.LastFailureMessage == core.WorkOrderReleaseReasonPlanRevisionRequested) && o.LastAttemptID != "" {
