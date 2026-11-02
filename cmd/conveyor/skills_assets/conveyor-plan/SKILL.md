@@ -1,6 +1,6 @@
 ---
 name: conveyor-plan
-description: Draft and push Conveyor planning documents from a local session — requirements (v2 REQ→AC), System Design documents, DEC-n decision records, task items, and product-overview uploads — through a local draft that `conveyor plan` checks, approves item by item, and pushes as proposals, with the propose→confirm discipline intact. Use when the operator wants to plan features, write or revise any document tier, promote an overview claim into a requirement, or record a decision, without using the in-product planning chat.
+description: Draft and push Conveyor planning documents from a local session — requirements (v2 REQ→AC), System Design documents, DEC-n decision records, task items, and product-overview uploads — through a local draft that `conveyor plan` checks, approves item by item, and pushes as proposals, with the propose→confirm discipline intact. Use when the operator wants to plan features, write or revise any document tier, promote an overview claim into a requirement, or record a decision, without using the in-product planning chat; for testing-strategy documents use conveyor-testing-doc.
 ---
 
 # Conveyor local planning

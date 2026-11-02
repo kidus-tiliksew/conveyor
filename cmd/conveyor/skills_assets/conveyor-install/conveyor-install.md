@@ -660,6 +660,15 @@ in section 5.
 | Choose or change the worktree location | 9 |
 | Upgrade | 1 on every machine, then restart the server; rerun `conveyor skills install` |
 
+The installer never deletes an installed file. `conveyor skills install`
+writes only the files the current release ships, so a skill file that an
+earlier release installed and the current release no longer ships stays behind
+after an upgrade. A leftover in a skills directory carries a
+`conveyor:skills-install` marker that names an older version than the refreshed
+files beside it, or carries no marker at all. A file without a marker can also
+be the person's own skill, so show the person each candidate. The person
+removes leftovers by hand.
+
 ### Join an existing factory from a new machine
 
 A machine that joins hosts nothing: it needs no database, `conveyor init`,
