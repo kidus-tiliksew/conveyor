@@ -410,6 +410,7 @@ func TestReleasedColumnstoreOperatorCopyIntegration(t *testing.T) {
 		}
 	}
 	check(0)
-	exec("UPDATE events_columnstore SET event_shard_key='wrong' WHERE workspace_id='released' AND id=123")
+	exec("DELETE FROM events_columnstore WHERE workspace_id='released' AND id=123")
+	exec("INSERT INTO events_columnstore (" + eventColumns + ",event_shard_key) SELECT " + eventColumns + ",'wrong' FROM events WHERE workspace_id='released' AND id=123")
 	check(1)
 }
