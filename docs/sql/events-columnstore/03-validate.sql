@@ -1,5 +1,6 @@
 -- Operator-run only, while all application traffic remains stopped.
 -- Every discrepancy count must be zero; counts alone are not proof.
+-- Also run the layout-specific shard-key check in the cutover guide.
 SELECT
  (SELECT COUNT(*) FROM events) AS source_rows,
  (SELECT COUNT(*) FROM events_columnstore) AS destination_rows,
@@ -18,8 +19,7 @@ SELECT
       OR NOT (BINARY d.actor_role <=> BINARY s.actor_role)
       OR NOT (BINARY CAST(d.payload_json AS CHAR) <=> BINARY CAST(s.payload_json AS CHAR))
       OR NOT (d.at <=> s.at)
-      OR NOT (BINARY d.workspace_id <=> BINARY s.workspace_id)
-      OR NOT (BINARY d.event_shard_key <=> BINARY COALESCE(NULLIF(s.task_id, ''), CONCAT('event/', CAST(s.id AS CHAR))))) AS changed_rows,
+      OR NOT (BINARY d.workspace_id <=> BINARY s.workspace_id)) AS changed_rows,
  (SELECT COUNT(*) FROM (
    SELECT workspace_id,id FROM events_columnstore GROUP BY workspace_id,id HAVING COUNT(*)<>1
  ) duplicate_ids) AS duplicate_workspace_ids;

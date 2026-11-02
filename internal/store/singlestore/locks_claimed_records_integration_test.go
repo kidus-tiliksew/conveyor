@@ -339,3 +339,37 @@ func countTaskEvents(t *testing.T, st *Store, workspace, taskID string) int {
 	}
 	return n
 }
+
+// A released install has old physical table names in durable claim holders.
+// After cutover they resolve only against the copied stable table.
+func TestLegacyClaimedRecordResolvesStableEventsIntegration(t *testing.T) {
+	st := integrationStore(t)
+	ctx, ws, task := seedClaimTask(t, st, "legacy-holder")
+	key := "legacy-holder:" + ws
+	var record claimedRecord
+	if err := st.withTx(ctx, func(tx *sql.Tx) error {
+		if _, err := claimKey(ctx, tx, key); err != nil {
+			return err
+		}
+		if err := taskEvent(ctx, tx, core.Event{TaskID: task.ID, Kind: "legacy.holder"}); err != nil {
+			return err
+		}
+		var err error
+		record, err = lastInsertedRecord(ctx, tx, claimedEventsTable, ws, true)
+		if err != nil {
+			return err
+		}
+		return setClaim(ctx, tx, key, "events:"+strconv.FormatInt(record.ID, 10)+"::")
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.withTx(ctx, func(tx *sql.Tx) error {
+		got, found, err := awaitClaimedRecord(ctx, tx, key, ws, task.ID)
+		if err == nil && (!found || got != record) {
+			t.Fatalf("resolved %+v, found=%v; want %+v", got, found, record)
+		}
+		return err
+	}); err != nil {
+		t.Fatal(err)
+	}
+}

@@ -126,3 +126,14 @@ func TestApplicationSQLDoesNotReadLegacyEvents(t *testing.T) {
 		t.Fatalf("claimed event lookups target %q", claimedEventsTable)
 	}
 }
+
+func TestLegacyClaimedEventHolderUsesStableTable(t *testing.T) {
+	record, err := parseClaimedRecord("events:42:event/42:3")
+	want := claimedRecord{Table: claimedEventsTable, ID: 42, Shard: "event/42", Note: "3"}
+	if err != nil || record != want {
+		t.Fatalf("legacy holder = %+v, %v; want %+v", record, err, want)
+	}
+	if record.holder() != "events_columnstore:42:event/42:3" {
+		t.Fatal(record.holder())
+	}
+}

@@ -116,6 +116,12 @@ func (r claimedRecord) holder() string {
 
 func parseClaimedRecord(holder string) (claimedRecord, error) {
 	parts := strings.SplitN(holder, ":", 4)
+	// Released versions recorded the old physical table name in durable
+	// holders. Resolve those identities in the copied stable table, never
+	// by querying legacy events.
+	if parts[0] == "events" {
+		parts[0] = claimedEventsTable
+	}
 	if len(parts) != 4 || (parts[0] != claimedEventsTable && parts[0] != claimedMonitorActivityTable) {
 		return claimedRecord{}, fmt.Errorf("claim holder %q names no record", holder)
 	}

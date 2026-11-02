@@ -24,6 +24,16 @@ Do not deploy the corrected code before the copy is complete.
 Run [03-validate.sql](sql/events-columnstore/03-validate.sql).
 Source and destination row counts must match, and `missing_rows`, `extra_rows`, `changed_rows`, and `duplicate_workspace_ids` must all be zero.
 The per-workspace summaries must also match.
+For the legacy rowstore copy, additionally require this derived shard check to return zero:
+
+```sql
+SELECT COUNT(*) AS changed_shard_keys
+FROM events s JOIN events_columnstore d ON s.workspace_id=d.workspace_id AND s.id=d.id
+WHERE NOT (BINARY d.event_shard_key <=>
+ BINARY COALESCE(NULLIF(s.task_id, ''), CONCAT('event/', CAST(s.id AS CHAR))));
+```
+
+For the already-converted v0.55.0 layout use its source-shard check below instead.
 Equal total counts alone are not sufficient.
 Stop on any discrepancy; do not synchronize allocators or resume writes.
 
@@ -75,7 +85,7 @@ Run `03-validate.sql` and also require this shard comparison to return zero:
 ```sql
 SELECT COUNT(*) AS changed_shard_keys
 FROM events s JOIN events_columnstore d ON s.workspace_id=d.workspace_id AND s.id=d.id
-WHERE NOT (s.event_shard_key <=> d.event_shard_key);
+WHERE NOT (BINARY s.event_shard_key <=> BINARY d.event_shard_key);
 ```
 
 Stop on any discrepancy. Then run `04-allocator.sql` with the actual database placeholder replaced, retaining `ALL`.
