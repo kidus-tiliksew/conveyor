@@ -83,9 +83,9 @@ func (b *peerCountingBackend) ReadTaskEventStream(ctx context.Context, q store.T
 	return b.Backend.ReadTaskEventStream(ctx, q)
 }
 
-func (b *peerCountingBackend) ListEvents(ctx context.Context, taskID string) ([]core.Event, error) {
-	b.counts.add("ListEvents")
-	return b.Backend.ListEvents(ctx, taskID)
+func (b *peerCountingBackend) ListCompactEvents(ctx context.Context, taskID string) ([]core.Event, error) {
+	b.counts.add("ListCompactEvents")
+	return b.Backend.ListCompactEvents(ctx, taskID)
 }
 
 func (b *peerCountingBackend) GetTask(ctx context.Context, id string) (core.Task, error) {
@@ -370,10 +370,10 @@ func TestPeerCheckIdleDaemon(t *testing.T) {
 	}
 	doneB := startAwait("peer-b", orderB, "session-b")
 	doneC := startAwait("peer-c", orderC, "session-c")
-	// Wait for the first reads: one ListEvents per await_review and one
+	// Wait for the first reads: one ListCompactEvents per await_review and one
 	// catch-up per workspace.
 	deadline := time.Now().Add(5 * time.Second)
-	for counts.get("ListEvents") < 2 || counts.get("Tail") < len(workspaces) {
+	for counts.get("ListCompactEvents") < 2 || counts.get("Tail") < len(workspaces) {
 		if time.Now().After(deadline) {
 			t.Fatalf("first reads did not finish: %v", counts.snapshot())
 		}
