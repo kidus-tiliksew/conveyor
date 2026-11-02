@@ -28,27 +28,55 @@ each one proves:
 5. Map the scoped change kinds to the checks that exercise them. Mark missing
    coverage explicitly instead of assigning a plausible command.
 
-For this repository, the inventory begins with these concrete surfaces:
+The tables below are this repository's example, not a template: they record the
+Conveyor repository's own surfaces. Its testing strategy,
+`component-verification-strategy`, is the model document for the result. It
+names each tier, the CI job that evidences it, and what a green job proves.
+Discover another repository's surfaces instead of copying these rows.
 
 | Tier | Entrypoint | What it establishes |
 | --- | --- | --- |
-| Supported ordinary session | `make validate` | One shared dependency install and bundle build for build, vet, formatting and the complete ordinary aggregate; standalone target contracts remain intact. |
 | Build and static analysis | `make build`, `make vet`, `make fmt-check` | The Go binaries and dashboard build; Go vet; Go formatting. The dashboard build performs TypeScript checking and Vite compilation. |
-| Ordinary tests | `make test` | Compose-isolation validation, generated-dashboard freshness, release-install fixtures, Go tests with PostgreSQL disabled, Biome lint/format checks, and Playwright browser scenarios. |
-| Focused web checks | `make test-web` and `web/package.json` | Explicit TypeScript typechecking, Biome lint/format checking, and Playwright end-to-end tests. These checks do not establish PostgreSQL behavior. |
-| Local integration | `make test-integration` | The PostgreSQL suites in `cmd/conveyor`, `internal/store/postgres`, and `internal/dispatch` against a PostgreSQL container owned by one managed validation invocation, which the target creates, seals in a durable inventory, and removes by ID. |
-| Validation resources | `make test-validation`, `make test-validation-docker` | Owned process-group, container, network, database, and temporary-path lifecycles: concurrent isolation, cleanup on every exit class, explicit recovery after forced termination, and refusal of active or identity-mismatched resources. |
-| CI integration | `make test-integration-ci` | The same PostgreSQL suites against the database URL and PostgreSQL service supplied by CI; the target deliberately rejects a missing URL. |
+| Ordinary tests | `make test` | Its prerequisites (`compose-check`, `dashboard-fresh`, `test-release`, `test-validation`, `test-validation-environment`, `vk10-runtime`), then Go tests with both database URLs empty, Biome lint/format checks, and Playwright browser scenarios. |
+| CI split of ordinary tests | `make test-go`, `make test-playwright-shard PLAYWRIGHT_SHARD=<i>` | `make test-go` runs the same prerequisites, the Go tests, and Biome lint. The four Playwright shards together run the Playwright suite. |
+| Focused web checks | `make test-web` and `web/package.json` | Explicit TypeScript typechecking, Biome lint/format checking, and Playwright end-to-end tests. These checks do not establish database behavior. |
+| PostgreSQL integration | `make test-integration`, `make test-integration-ci`, `POSTGRES_INTEGRATION_SHARD` | The PostgreSQL suites in three shards: `store` (`internal/store/postgres`), `cli` (`cmd/conveyor`), and `daemon` (`cmd/conveyord` and `internal/dispatch`). `make test-integration` runs them against a container one managed validation invocation creates, seals in a durable inventory, and removes by ID. `make test-integration-ci` runs them against the database URL and service CI supplies and rejects a missing URL. |
+| SingleStore integration | `make test-integration-singlestore-ci`, `SINGLESTORE_INTEGRATION_SHARD` | The SingleStore suites in four shards against a configured SingleStore server: `conformance-1` and `conformance-2` (complementary halves of the `internal/store/singlestore` conformance test), `packages` (`internal/eventlog/s2log`, `internal/store/storetest`, and the rest of `internal/store/singlestore`), and `commands` (the SingleStore command tests in `cmd/conveyor` and `cmd/conveyord`). The target rejects a missing URL. |
+| Image | `make test-image IMAGE=<tag>` | The container image reports its version and carries `conveyor` and `git` but not `gh`. |
+| Validation resources | `make test-validation`, `make test-validation-docker` | Owned process-group, container, network, database, and temporary-path lifecycles: concurrent isolation, cleanup on every exit class, explicit recovery after forced termination, and refusal of active or identity-mismatched resources. CI runs `make test-validation` through `make test-go`, and does not run `make test-validation-docker`. |
+| Local aggregate | `make validate` | One shared dependency install and bundle build for build, vet, formatting and the complete ordinary aggregate in one local session; standalone target contracts remain intact. |
 
-`.github/workflows/ci.yml` composes those into separate build/static,
-Go/web/Playwright, and PostgreSQL integration jobs. `web/tests`,
-`cmd/conveyor/testdata`, Go `httptest` servers, temporary Git repositories, and
-the database-backed suites are reproducible fixtures worth naming when they
-cover the proposed scope. Typecheck, lint, formatting, and build success find
-structural defects; only executable tests establish behavior, and only the
-PostgreSQL tier establishes database-backed behavior. Anything outside those
-surfaces remains unverified until an authenticated surface or reproducible
-fixture exists.
+`.github/workflows/ci.yml` runs these jobs on every pull request and every push
+to `main`. The Makefile is the only definition of the shards: the `plan` job
+prints its shard lists with `make ci-shard-matrix`, and each matrix entry is
+its own job record.
+
+| Job (`ci.yml` key) | Matrix | Runs |
+| --- | --- | --- |
+| Build container image (`container-image`) | None | The image build, then `make test-image` |
+| Build, vet, and formatting (`build-and-static`) | None | `make build`, `make vet`, `make fmt-check` |
+| Plan CI shards (`plan`) | None | `make ci-shard-matrix` |
+| Go tests and web lint (`go-test`) | None | `make test-go` |
+| Playwright tests (`playwright`) | Shards `1` to `4` | `make test-playwright-shard` |
+| PostgreSQL integration tests (`postgres-integration`) | `store`, `cli`, `daemon` | `make test-integration-ci` for the shard |
+| SingleStore integration tests (`singlestore-integration`) | `conformance-1`, `conformance-2`, `packages`, `commands` | `make test-integration-singlestore-ci` for the shard |
+
+For every gate a CI job runs, exact-head CI is the review evidence: the record
+of every `ci.yml` job on the task's pull request at the exact reviewed head
+commit (DEC-72). Implementers do not run `make validate`,
+`make test-integration`, or `make test-integration-singlestore-ci` locally to
+satisfy review. Local runs serve focused iteration, CI-failure diagnosis, and
+gates CI does not run, such as `make test-validation-docker`. A green job
+proves only what its row states.
+
+`web/tests`, `cmd/conveyor/testdata`, Go `httptest` servers, temporary Git
+repositories, and the database-backed suites are reproducible fixtures worth
+naming when they cover the proposed scope. Typecheck, lint, formatting, and
+build success find structural defects; only executable tests establish
+behavior, and only the PostgreSQL and SingleStore tiers establish
+database-backed behavior on their backends. Anything outside those surfaces
+remains unverified until an authenticated surface or reproducible fixture
+exists.
 
 ## Use a stable document skeleton
 
@@ -111,7 +139,8 @@ must come from repository-backed reproducible fixtures or the deployment's own
 authenticated API, MCP, metrics, logs, or response metadata. Never require
 deployment-host access. If a production-shaped quantity is necessary but not
 surfaced, exposing it or defining a reproducible fixture is work to be planned;
-the reviewer must not demand impossible evidence (REQ-7 and AC-7.1/AC-7.2).
+the reviewer must not demand impossible evidence (`req-review-gates-evidence`
+REQ-7, AC-7.1 and AC-7.2).
 
 For local evidence equivalence, document the audited input boundary and use the
 repository's own record/check/bind evidence workflow, such as

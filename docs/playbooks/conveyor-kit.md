@@ -298,8 +298,9 @@ citation, description and immutable exercise contract. An ordinary
 typed outputs instead of argv. A missing demonstrated replay basis defaults
 to `operator_action_required`. Coverage must map governing instructions and
 done criteria to selected exercises or ordinary obligations, including a
-justified empty set when appropriate. See the execution playbook for the
-registration and coverage wire fields (`component-verification-service`).
+justified empty set when appropriate. See the `conveyor-kit-verify` execution
+playbook for the registration and coverage wire fields
+(`component-verification-service`).
 
 Script-only kits need no UI. An optional `ui` declares argv, a loopback port
 from 1 through 65535 and kit-relative assets. `--ui` launches it alongside the
