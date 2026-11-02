@@ -1106,7 +1106,7 @@ test('a failed refresh after a successful load keeps the map with a dismissible 
   const reads = seen.reads.length
   await notice.getByRole('button', { name: 'Retry' }).click()
   await expect(notice).toHaveCount(0)
-  expect(seen.reads.length).toBeGreaterThan(reads)
+  await expect.poll(() => seen.reads.length).toBeGreaterThan(reads)
   await expect(group(page, 'req-alpha')).toBeVisible()
 })
 

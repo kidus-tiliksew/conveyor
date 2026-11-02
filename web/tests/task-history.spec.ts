@@ -15,6 +15,7 @@ import { callerIdentity } from './helpers/caller-identity'
 import { serveNextActionsFromActivity } from './helpers/next-action-stub'
 import { installQueryClientProbe, withQueryClient } from './helpers/query-client'
 import { activityFrame, controlTaskStreams, readyFrame } from './helpers/task-streams'
+import { controlWorkspaceChanges } from './helpers/workspace-changes'
 
 // Bounded task detail and history pages (component-web-task-surfaces, History
 // pages, Live updates; component-http-api, Bounded detail view and Task history
@@ -241,6 +242,9 @@ function detailScope(page: Page, surface: Surface): Locator {
 }
 
 async function openDetail(page: Page, surface: Surface, generated: GeneratedLedger) {
+  // The Board sheet and permalink open the Board; the fake workspace change
+  // stream keeps every surface off the dev server proxy's refused stream.
+  await controlWorkspaceChanges(page)
   await page.goto(surfaceURL(surface, generated.taskId))
   const scope = detailScope(page, surface)
   // History lives on the Timeline tab; select it so a persisted Flow choice
@@ -328,7 +332,7 @@ test('Older, Newer, and Newest replace the page and keep at most 50 rows', async
   await expect(mountedEventRows(page)).toHaveCount(50)
   await expect(newest).toBeFocused()
   await expect(newest).toHaveAttribute('aria-disabled', 'true')
-  expect(server.calls.at(-1)?.cursor).toBeNull()
+  await expect.poll(() => server.calls.at(-1)?.cursor).toBeNull()
 })
 
 // Hold events recorded before the retirement stay readable exactly as stored,
@@ -408,7 +412,7 @@ test('history states: loading, empty, error with Retry, end of history, and rest
   )
   await pager(scope, 'Technical activity history').getByRole('button', { name: 'Restart from newest' }).click()
   await expect(technicalRows(scope)).toHaveCount(50)
-  expect(server.calls.at(-1)?.cursor).toBeNull()
+  await expect.poll(() => server.calls.at(-1)?.cursor).toBeNull()
 
   // A task with no stored events says so.
   scope = await openDetail(page, 'full route', empty)
