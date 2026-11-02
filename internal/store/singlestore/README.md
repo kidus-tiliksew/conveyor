@@ -28,4 +28,4 @@ Event ledgers are append-only.
 
 The store and event-log conformance packs exercise the backend contract, with PostgreSQL as the reference.
 Integration fixtures create their own `_test` databases and explicitly create the event target before normal startup.
-The regression tests cover exact operator copy validation, allocator synchronization, event-table prerequisites, retained history, and compact continuation events.
+The regression tests cover exact operator copy validation, allocator synchronization, event-table prerequisites, retained history, and compact work-order events and released claim-holder compatibility.

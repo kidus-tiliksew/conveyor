@@ -377,3 +377,39 @@ func TestEventsColumnstoreTasklessKeysIntegration(t *testing.T) {
 		t.Fatalf("task-less rows=%d independent keys=%d NULL task IDs=%d", count, keys, nullTasks)
 	}
 }
+
+// Released 0027 already made events a columnstore, including random taskless
+// shard keys. The operator copy must preserve these rather than derive new ones.
+func TestReleasedColumnstoreOperatorCopyIntegration(t *testing.T) {
+	st := integrationStore(t)
+	ctx := store.WithActor(t.Context(), store.SystemActor())
+	exec := func(q string) {
+		t.Helper()
+		if _, err := st.db.ExecContext(ctx, q); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// Reconstruct only this isolated fixture's released source layout.
+	exec("DROP TABLE events")
+	create, err := eventsOperatorStatements("01-create.sql")
+	if err != nil || len(create) != 1 {
+		t.Fatalf("create script: %v, %v", create, err)
+	}
+	exec(strings.Replace(create[0], "events_columnstore", "events", 1))
+	exec("INSERT INTO events (id,event_shard_key,task_id,kind,actor_id,actor_role,payload_json,at,workspace_id) VALUES (123,'random-shard',NULL,'released.test','fixture','system','{}','2026-01-01','released')")
+	// Start with the empty destination this runbook requires.
+	exec("DELETE FROM events_columnstore")
+	exec("INSERT INTO events_columnstore (" + eventColumns + ",event_shard_key) SELECT " + eventColumns + ",event_shard_key FROM events")
+	assertEventsCopyValid(t, ctx, st)
+	shardCheck := "SELECT COUNT(*) FROM events s JOIN events_columnstore d ON s.workspace_id=d.workspace_id AND s.id=d.id WHERE NOT (BINARY s.event_shard_key <=> BINARY d.event_shard_key)"
+	check := func(want int) {
+		t.Helper()
+		var got int
+		if err := st.db.QueryRowContext(ctx, shardCheck).Scan(&got); err != nil || got != want {
+			t.Fatalf("changed shards=%d, err=%v, want %d", got, err, want)
+		}
+	}
+	check(0)
+	exec("UPDATE events_columnstore SET event_shard_key='wrong' WHERE workspace_id='released' AND id=123")
+	check(1)
+}
