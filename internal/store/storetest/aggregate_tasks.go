@@ -3,6 +3,8 @@ package storetest
 import (
 	"encoding/json"
 	"reflect"
+	"strconv"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -12,9 +14,25 @@ import (
 	"github.com/kidus-tiliksew/conveyor/internal/taskops"
 )
 
+// fixtureTaskIDSequence numbers every fixture task ID handed out in this
+// process. It starts at zero and only increases.
+var fixtureTaskIDSequence atomic.Uint64
+
+// fixtureTaskID returns a task ID that no other call in this process returns:
+// core.NewTaskID() followed by a process-wide sequence number, shaped
+// <yymmdd>-<6 hex>-<n>. core.NewTaskID() alone draws from about 16.7 million
+// values a day, so the roughly 1,000 tasks the review-summary stress cases
+// create in one store collided a few percent of runs. The sequence makes
+// repeats impossible within a process; the random part keeps IDs spread across
+// SingleStore partitions, which those stress cases need. Production task IDs
+// keep the core.NewTaskID() format (component-task-lifecycle).
+func fixtureTaskID() string {
+	return core.NewTaskID() + "-" + strconv.FormatUint(fixtureTaskIDSequence.Add(1), 10)
+}
+
 func newAggregateTask(t *testing.T, x Fixture, stages ...core.Stage) core.Task {
 	t.Helper()
-	id := core.NewTaskID()
+	id := fixtureTaskID()
 	stage := core.StageImplement
 	if len(stages) > 0 {
 		stage = stages[0]
