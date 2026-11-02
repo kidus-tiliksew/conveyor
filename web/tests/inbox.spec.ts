@@ -389,7 +389,7 @@ test('a choice sends one request as stated, refetches the inbox and the badge, a
   expect(post.method()).toBe('POST')
   expect(new URL(post.url()).pathname).toBe('/v1/tasks/T-zeta/spec/review')
   expect(post.headers()['x-conveyor-csrf']).toBe('1')
-  expect(harness.inboxRequests.length).toBeGreaterThan(before)
+  await expect.poll(() => harness.inboxRequests.length).toBeGreaterThan(before)
   await expect(inbox.getByText('2', { exact: true })).toBeVisible()
 
   // The task detail's next-action card reads the same, now-changed state.
@@ -2522,7 +2522,7 @@ test('resolving the selected item selects the next one, or the previous when it 
   await expect(decisionDetail(page).locator('[data-detail-title]')).toHaveText('Operator attention')
   await footer().getByRole('button', { name: 'Confirm' }).click()
   await expect(page.locator('[data-no-decisions]')).toContainText('No decisions are waiting.')
-  expect(harness.posts.length).toBeGreaterThanOrEqual(5)
+  await expect.poll(() => harness.posts.length).toBeGreaterThanOrEqual(5)
 })
 
 test('keys move the selection and act through the selected item’s own controls', async ({ page }) => {

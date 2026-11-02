@@ -333,17 +333,23 @@ func (s *Server) publicReceiverURL(workspace string) string {
 // gitHubWebhookView is the secret-free webhook settings projection
 // (component-identity-membership; req-quiet-idle-runtime AC-3.6). A
 // workspace has webhook delivery from its first accepted delivery.
+// SilenceFallbackActive reports whether this daemon's timed GitHub checks
+// run because the workspace's deliveries have gone silent (AC-3.8).
 type gitHubWebhookView struct {
-	ReceiverURL      string     `json:"receiver_url"`
-	Events           []string   `json:"events"`
-	SecretConfigured bool       `json:"secret_configured"`
-	SecretSetAt      *time.Time `json:"secret_set_at"`
-	LastDeliveryAt   *time.Time `json:"last_delivery_at"`
-	Configured       bool       `json:"configured"`
+	ReceiverURL           string     `json:"receiver_url"`
+	Events                []string   `json:"events"`
+	SecretConfigured      bool       `json:"secret_configured"`
+	SecretSetAt           *time.Time `json:"secret_set_at"`
+	LastDeliveryAt        *time.Time `json:"last_delivery_at"`
+	Configured            bool       `json:"configured"`
+	SilenceFallbackActive bool       `json:"silence_fallback_active"`
 }
 
 func (s *Server) workspaceGitHubWebhookView(r *http.Request, workspace string) (gitHubWebhookView, error) {
 	view := gitHubWebhookView{ReceiverURL: s.publicReceiverURL(workspace), Events: append([]string(nil), github.WebhookEvents...)}
+	if s.GitHubSilenceFallback != nil {
+		view.SilenceFallbackActive = s.GitHubSilenceFallback(workspace)
+	}
 	if s.GitHubWebhooks == nil {
 		return view, nil
 	}

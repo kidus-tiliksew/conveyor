@@ -98,6 +98,9 @@ type fallbackFixture struct {
 	reads    atomic.Int32
 	polls    atomic.Int32
 	webhook  atomic.Bool
+	// delivery, when set, is the stored last accepted delivery time the
+	// Webhooks read reports; it takes precedence over webhook.
+	delivery atomic.Pointer[time.Time]
 	monitor  atomic.Bool
 	interval atomic.Int64
 	// onMonitor runs inside the Monitor settings read, which a fire makes
@@ -126,6 +129,10 @@ func newFallbackFixture(t *testing.T) *fallbackFixture {
 		Dispatcher: d, Hub: hub,
 		Workspaces: func(context.Context) ([]string, error) { return []string{"test"}, nil },
 		Webhooks: func(context.Context, string) (core.GitHubWebhookStatus, error) {
+			if at := f.delivery.Load(); at != nil {
+				delivered := *at
+				return core.GitHubWebhookStatus{LastDeliveryAt: &delivered}, nil
+			}
 			if f.webhook.Load() {
 				at := f.clock.Now()
 				return core.GitHubWebhookStatus{LastDeliveryAt: &at}, nil

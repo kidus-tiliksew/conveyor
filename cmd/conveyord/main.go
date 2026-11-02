@@ -393,6 +393,7 @@ func main() {
 	webhookApplier.Start(ctx)
 	srv.GitHubWebhooks = st
 	srv.GitHubWebhookApplier = webhookApplier
+	srv.GitHubSilenceFallback = gitHubFallback.SilenceActive
 	fallbackWorkspaces := startupWorkspaceIDs
 	if !st.IsDurable() {
 		fallbackWorkspaces, _ = listWorkspaceIDs(ctx)

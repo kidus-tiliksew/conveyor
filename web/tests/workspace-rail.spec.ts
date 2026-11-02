@@ -336,6 +336,6 @@ test('the creation-right read stays unscoped', async ({ page }) => {
   await expect.poll(() => identityRequests.filter((request) => request.query === null).length).toBeGreaterThanOrEqual(2)
   const unscoped = identityRequests.filter((request) => request.query === null)
   expect(unscoped.every((request) => request.header === undefined)).toBe(true)
-  expect(identityRequests.some((request) => request.query === 'design')).toBe(true)
-  expect(identityRequests.some((request) => request.query === 'funnel')).toBe(true)
+  await expect.poll(() => identityRequests.some((request) => request.query === 'design')).toBe(true)
+  await expect.poll(() => identityRequests.some((request) => request.query === 'funnel')).toBe(true)
 })

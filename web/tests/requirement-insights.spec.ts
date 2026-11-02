@@ -656,7 +656,7 @@ test('current and unauthorized headlines disable Regenerate while stale authoriz
   await regenerate().click()
   await expect(regenerate()).toBeDisabled()
   await expect(panel(page)).not.toContainText('Out of date')
-  expect(count('POST', 'summary')).toBe(1)
+  await expect.poll(() => count('POST', 'summary')).toBe(1)
 })
 
 test('a generation conflict refetches summary without an error notice', async ({ page }) => {
@@ -1015,7 +1015,7 @@ test('workspace switching isolates insight requests and late generation results'
   })
   await page.goto('/?view=map&scope=req-alpha&insight=summary')
   await expect(panel(page)).toContainText('Generating a summary')
-  expect(seen.filter((entry) => entry.method === 'POST')).toHaveLength(1)
+  await expect.poll(() => seen.filter((entry) => entry.method === 'POST')).toHaveLength(1)
 
   // A switch lands on the Board; the other workspace's panel opens from its
   // own map.

@@ -509,7 +509,7 @@ for (const tier of ['requirements', 'system-design'] as const) {
     await page.getByRole('button', { name: 'Review changes · v3', exact: true }).click()
     await page.getByRole('button', { name: 'Confirm version 3', exact: true }).click()
     await expect(page.getByRole('button', { name: /Confirm version/ })).toHaveCount(0)
-    expect(seed.calls.at(-1)?.path).toContain('/versions/3/confirm')
+    await expect.poll(() => seed.calls.at(-1)?.path).toContain('/versions/3/confirm')
   })
 
   test(`${tier}: first proposal, no-note dismissal, invalid selection and keyboard tabs`, async ({ page }) => {
