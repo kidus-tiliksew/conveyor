@@ -39,6 +39,10 @@ and historical phase status lives in the "Roadmap" reference document.
   job's conclusion, including failed attempts. CI adds no merge gate; blocking
   merges requires operator-enabled branch protection, which is unavailable on
   the current GitHub plan.
+- Run local validation in this repository only through the Make targets
+  above. Never run raw `docker compose down` commands here: validation
+  resources are removed by ID after their labels and project are rechecked
+  (`component-validation-tooling`).
 - Local validation evidence (task scratch space, records for local-only
   acceptance gates such as `make test-validation-docker`, retained diagnostic
   runs, and validation resource recovery) follows

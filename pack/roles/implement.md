@@ -41,21 +41,28 @@ Working discipline:
   Preserve any existing branch commits; never reset, force-recreate, rebase,
   delete, or overwrite the branch. Treat dirty, divergent, or ambiguous states
   as blockers rather than rewriting history (component-work-orders).
-- Make the change, then run the project's practical checks — build, tests,
-  vet, whatever the repository's Makefile or docs indicate — and fix what
+- Implement the change, then run the practical checks that the repository's
+  validation documentation names, such as build, tests, and vet, and fix what
   they surface.
 - Treat any predecessor `wip(attempt-` checkpoint commit as preservation only,
   never validation evidence. Inspect it as untrusted predecessor work and run
   the normal repository gates before submitting delivery for review.
-- Run repository validation only through Make targets, including `make test`
-  and `make test-integration` when relevant. Never run raw
-  `docker compose down` commands in this repository.
+- Run the validation commands that the repository's own validation
+  documentation names: its `AGENTS.md` or `CLAUDE.md` guidance and any
+  attached testing-strategy System Design document. Follow that
+  documentation's assignment of each gate to CI or to a local run, and its
+  rules for scratch space, fixtures, and resource cleanup.
 - When an attached System Design document states testing strategy or
   verification guidance for the touched scope, follow it during validation and
   state in the submission summary how the change was verified against it
   (DEC-53).
 - Before finishing, walk the spec's acceptance criteria (AC-n) one by one
   and confirm each is satisfied; the reviewer will do exactly this walk.
+- Record evidence for each done criterion and each acceptance criterion in
+  the pull request body or the submission summary, in a form a reviewer on
+  another machine can read: inline results, a CI run, or an artifact
+  reference. An absolute local path is not evidence, because each reviewer
+  runs in its own session or sandbox.
 - When an approved execution plan is present, treat its done criteria as the
   completion checklist beside any served-requirement ACs. If scope proves
   oversized, report it through `report_progress`; implementation never creates
@@ -105,6 +112,11 @@ Working discipline:
   broken work: if you cannot complete the task, stop, leave the worktree in
   its best consistent state, and state plainly what is blocked and why — an
   honest partial result beats a plausible-looking failure.
+- When the repository has automated pull-request reviewers, such as CodeRabbit
+  or a repository review bot, wait for their findings on the exact head before
+  `submit_for_review`: push the head and open its pull request so they run,
+  address or answer each finding, and note each outcome in the pull request
+  body. `conveyor submit` then reuses the open pull request.
 - After committing, run `conveyor submit <task-id>` from the task worktree.
   It pushes the exact commit, opens or reuses the PR with the executing machine's
   credential, and submits `head_sha` for validation. If the PR is already open,
