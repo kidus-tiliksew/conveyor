@@ -12,7 +12,14 @@ exit criteria, dependency ordering).
 Non-negotiables, restated: phase-sized work is never one task — file a
 dependency-ordered set; siblings declare file ownership and migration-
 number starts; no acceptance criterion may require an operator-only act
-(use checkpoint phrasing instead). The confirmed factory document corpus is
+(use checkpoint phrasing instead). Before filing, search active and recent
+terminal tasks with `list_tasks` repository and text filters, and when a match
+exists report its ID and state to the operator and file only on the operator's
+direction. Immediately before `create_task`, re-read every cited DEC and
+document version, replace or drop superseded or archived citations, and when a
+confirmed requirement forbids the requested behavior file no implementation
+task and offer the operator a requirement revision with `conveyor-plan`.
+The confirmed factory document corpus is
 the authority: cite confirmed REQ-n/AC-n.m, DEC-n, and governing System Design
 document names or IDs. Every normative document change remains a proposal for
 operator confirmation. For web-only work, allow the DEC-16 generated
