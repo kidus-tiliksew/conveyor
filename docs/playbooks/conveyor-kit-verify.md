@@ -19,24 +19,40 @@ revocations").
 
 ## Establish the exact context
 
-1. Fetch `get_work_order` with the exact workspace, order and session. Resolve
-   relevant artifacts and keep the lease renewed. Only a task whose frozen
-   `verify_stage` policy is enabled enters this stage. Do not add verification
-   obligations to tasks whose policy keeps the implement-to-review route.
-2. Use the dedicated task worktree on its attached task branch. Verify clean
+1. Call `list_work_orders` in the task's workspace and select the claimable
+   pending `verify` order whose `task_id` matches the task. Create a fresh
+   session ID and secret client token, then call `claim_work_order` for that
+   exact order with `agent` and `model` as
+   [Claim identity and usage](#claim-identity-and-usage) describes. A failed or
+   declined claim is a stop condition.
+2. Set `lease_seconds` on the claim to cover the longest expected step, up to
+   the 3600-second maximum. Call `renew_work_order` with the same
+   `lease_seconds` at each progress milestone and before any step that may
+   outlast one third of the remaining lease, such as the grant wait or a kit
+   run. This is the cadence `conveyor-work` states. Renewal never extends the
+   fixed execution deadline. If renewal fails or the server no longer reports
+   the order claimed by this session, stop.
+3. Run `conveyor checkout <task-id>` and use the dedicated worktree it prints
+   for every step below.
+4. Fetch `get_work_order` with the exact workspace, order and session. Resolve
+   relevant artifacts and renew the lease as step 2 describes. Only a task
+   whose frozen `verify_stage` policy is enabled enters this stage. Do not add
+   verification obligations to tasks whose policy keeps the implement-to-review
+   route.
+5. Use the dedicated task worktree on its attached task branch. Verify clean
    Git status, submitted HEAD and repository identity. Do not detach HEAD,
    edit or commit implementation files, move the branch or write output into
    checkout inputs.
-3. Call `prepare_verification` with an idempotent `request_key`, or inspect an
+6. Call `prepare_verification` with an idempotent `request_key`, or inspect an
    existing context with `get_verification_context`. Read exact revisions,
    pins, discovery, selected/excluded kits, reasons, obligations, grants,
    operations and attempts. The server reads the manifest and kit tree from
    the exact forge revision. Never substitute local discovery for that receipt.
-4. Call `get_evidence_schemas` for current payload and provenance schemas.
+7. Call `get_evidence_schemas` for current payload and provenance schemas.
    Register ordinary obligations and build coverage before execution. Obtain
    operator-issued grants through the grant wait below and inspect the local
    configuration file.
-5. Call `refresh_work_order_context` before you execute anything and again
+8. Call `refresh_work_order_context` before you execute anything and again
    before you seal. Follow [Late task context](#late-task-context) when it
    reports `comparison_status: authority_diverged`.
 
@@ -94,20 +110,21 @@ When the harness exposes token counts, call `report_usage` with the cumulative
 `tokens_in` and `tokens_out` for the verify order at natural checkpoints and
 immediately before `submit_verification` or `release_work_order`. Each report
 replaces the order's previous figures. Omit `cost_usd`: the server ignores it,
-and an unknown cost is never recorded as zero (req-usage-telemetry AC-2.1). A
-session without figures skips the call and invents none. Missing usage never
+and an unknown cost is never recorded as zero (req-usage-telemetry AC-2.1).
+Leave `source` unset or `self_reported`; `worker_fallback` belongs to workers.
+A session without figures skips the call and invents none. Missing usage never
 delays or blocks a verification submission (DEC-1).
 
 ## Manifest and selection checks
 
-The schema-1 manifest lives at `.conveyor/kits/manifest.yaml`. A kit declares
-`id`, `name`, `version`, `path`, `governing_pins`, `exercises` and optional `ui`.
-An exercise declares `id`, `stages: [verify]`, `kind`, `argv`, `cwd`, positive
-`timeout_seconds`, prerequisites, permissions, typed inputs,
-`required_assertions`, `retry_policy`, `operations`, evidence outputs and
-`supports`. Safe replay also needs `safety_basis`; reconciliation policy needs
-a bounded reconciliation entrypoint for every operation. Both assertion and
-operation lists are explicit, even when empty.
+The manifest lives at `.conveyor/kits/manifest.yaml` and declares
+`schema_version` 1 or 2. Schema 2 is schema 1 plus descriptions: every kit and
+exercise declares `description`, and every `required_assertions` entry is a
+mapping of exactly `id` and `description`. Under schema 1, a `description` key
+or a mapping-form assertion is an invalid entry. Assertion results and
+required-assertion checks key on the assertion ID alone under both schemas.
+The `conveyor-kit` skill carries the full field contract
+(`component-verification-kit-contract`).
 
 All declared requirement/design pins must match the authoritative context by
 kind, ID and immutable version; extra context pins are allowed. No pins or a
@@ -119,7 +136,7 @@ block complete success, and only success: the same context can still seal
 checks. A malformed manifest's diagnostics appear in the selection receipt as
 `discovery.<repository>.<field path>` with the manifest path, kit and exercise
 in the message, for example
-`discovery.flux-saas-runtime.manifest.kits[0].exercises[2].supports[0]`. The runner checks the local
+`discovery.example-service.manifest.kits[0].exercises[2].supports[0]`. The runner checks the local
 kit digest against the server receipt before launching it
 (`component-verification-kit-contract`).
 
@@ -189,7 +206,11 @@ of releasing at once:
 1. Call `report_progress` naming the work-order ID, context ID, each subject
    (`kit:<kit-id>/<exercise-id>` or `ordinary:<obligation-id>`) with its
    declared action kinds and bindings, and the operator command
-   `conveyor verification permissions inspect <work-order-id>`.
+   `conveyor verification permissions inspect <work-order-id>`. Grants and
+   `report_progress` name a kit subject `kit:<kit-id>/<exercise-id>`, with a
+   slash; `--inputs` keys use `kit:<kit-id>:<exercise-id>`, with a colon, as
+   [Toolchain environment and preflight](#toolchain-environment-and-preflight)
+   shows.
 2. Keep renewing the claim. Reread `get_verification_context` at most every
    30 seconds.
 3. Continue when every selected subject has a grant. Stop waiting when the
@@ -291,7 +312,7 @@ record to operator configuration outside the checkout.
 verification_toolchains:
   - server: https://conveyor.example
     workspace: demo
-    repository: funnelflux
+    repository: example-service
     search_paths: [/opt/homebrew/bin, /Users/operator/go/bin, /usr/local/bin, /usr/bin, /bin]
     home: /Users/operator          # optional; omit to keep the private HOME
     settings:                      # optional; only these keys are accepted
@@ -455,8 +476,11 @@ declared operation must be completed or reconciled as applied. Neither
 The runner registers the closed `operations` set before launch. A child sends
 `operation.dispatching` with its step ID and capture time through the local
 channel, waits for `DispatchAuthorized: true`, performs the provider call,
-then sends `operation.completed` with a sanitized reference. A lost response
-or an unresolved operation requires inspection, not another provider call.
+then sends `operation.completed` with a sanitized reference. The runner, not
+the verifier, calls `prepare_verification_operation`: it prepares each
+operation before launch and relays each child signal. A verifier never calls
+that tool itself. A lost response or an unresolved operation requires
+inspection, not another provider call.
 
 Read operation history with `get_verification_context`. For
 `reconciliation_required`, execute the declared bounded observation-only
@@ -476,10 +500,11 @@ After replay admission, use an explicit new `--retry-key`. When the latest
 attempt's retry policy is `operator_action_required`, the start is refused with
 `verification_retry_authorization_required` until an operator issues a one-use
 authorization: `conveyor order recover <order-id> --disposition
-applied|not_applied` with the binding's context, run, input digest, and a
-reason, or the order's disposition card. The command prints the authorization
-ID `recovery:<request_id>`; pass it as `--replay-authorization` on the next
-start. A verifier never issues the authorization itself. Safe replay needs
+applied|not_applied|unknown` with the binding's context, run, input digest, a
+reason, and one `--operation-id` per unresolved operation the disposition
+covers (none sends `[]`), or the order's disposition card. The command prints
+the authorization ID `recovery:<request_id>`; pass it as
+`--replay-authorization` on the next start. A verifier never issues the authorization itself. Safe replay needs
 the declared safety basis. A relayed upload failure in a passing exercise is
 one such case: when the child's own assertions passed but an attempt ended
 `failed` because a relay was refused, and the contract's retry policy is

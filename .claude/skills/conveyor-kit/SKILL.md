@@ -1,6 +1,6 @@
 ---
 name: conveyor-kit
-description: Author or extend repository verification kits, manifests, operations, evidence contracts and optional UIs under an approved implementation claim.
+description: Author or extend repository verification kits, manifests, operations, evidence contracts and optional UIs under an approved implementation claim. Use when a task adds or changes `.conveyor/kits/manifest.yaml` or a kit it declares.
 ---
 
 # Author a verification kit
