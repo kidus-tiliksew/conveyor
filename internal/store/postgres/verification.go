@@ -11,7 +11,6 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	"github.com/kidus-tiliksew/conveyor/internal/core"
-	"github.com/kidus-tiliksew/conveyor/internal/eventlog/pglog"
 	"github.com/kidus-tiliksew/conveyor/internal/queue/logqueue"
 	"github.com/kidus-tiliksew/conveyor/internal/store"
 	"github.com/kidus-tiliksew/conveyor/internal/store/postgres/db"
@@ -358,7 +357,7 @@ func (s *Store) deliveryIntentTx(ctx context.Context, tx pgx.Tx, q *db.Queries, 
 		}
 		if d.State == "pending" {
 			a := store.VerificationDeliveryArgs(d)
-			if _, err = logqueue.Enqueue(pglog.WithTx(ctx, tx), s.log, workspace(ctx), a.Kind(), a.UniqueKey(), a, 5, time.Now().UTC()); err != nil {
+			if _, err = logqueue.Enqueue(logTx(ctx, tx), s.log, workspace(ctx), a.Kind(), a.UniqueKey(), a, 5, time.Now().UTC()); err != nil {
 				return err
 			}
 		}
@@ -494,11 +493,19 @@ func (s *Store) RunVerificationDelivery(ctx context.Context, a queue.Verificatio
 	}
 	return tx.Commit(ctx)
 }
+
+// ReconcileVerificationDeliveries enqueues each pending or retrying delivery
+// and each failed one whose next_attempt_at passed. A pending or retrying
+// delivery whose job it enqueues is drift and is reported to the context's
+// drift recorder after the commit; a failed one is a due deadline
+// (component-persistence, Drift repair reports).
 func (s *Store) ReconcileVerificationDeliveries(ctx context.Context) error {
 	if _, ok := store.WorkspaceFromContext(ctx); !ok {
 		return store.ErrVerificationAccess
 	}
-	return s.inTx(ctx, func(tx pgx.Tx, q *db.Queries) error {
+	var repaired []string
+	err := s.inTx(ctx, func(tx pgx.Tx, q *db.Queries) error {
+		repaired = repaired[:0]
 		if _, err := tx.Exec(ctx, "SELECT pg_advisory_xact_lock(hashtext($1))", "conveyor:verification:"+workspace(ctx)); err != nil {
 			return err
 		}
@@ -526,7 +533,8 @@ func (s *Store) ReconcileVerificationDeliveries(ctx context.Context) error {
 			return err
 		}
 		for _, d := range ds {
-			if d.State == "failed" {
+			due := d.State == "failed"
+			if due {
 				next, e := store.AdvanceVerificationDelivery(d, "retry", d, time.Now().UTC())
 				if e != nil {
 					return e
@@ -537,10 +545,21 @@ func (s *Store) ReconcileVerificationDeliveries(ctx context.Context) error {
 				d = next
 			}
 			a := store.VerificationDeliveryArgs(d)
-			if _, err = logqueue.Enqueue(pglog.WithTx(ctx, tx), s.log, workspace(ctx), a.Kind(), a.UniqueKey(), a, 5, time.Now().UTC()); err != nil {
+			inserted, err := logqueue.Enqueue(logTx(ctx, tx), s.log, workspace(ctx), a.Kind(), a.UniqueKey(), a, 5, time.Now().UTC())
+			if err != nil {
 				return err
+			}
+			if inserted && !due {
+				repaired = append(repaired, d.TaskID)
 			}
 		}
 		return nil
 	})
+	if err != nil {
+		return err
+	}
+	for _, taskID := range repaired {
+		store.ReportDriftRepair(ctx, store.DriftVerificationDeliveryWithoutJob.For(taskID))
+	}
+	return nil
 }

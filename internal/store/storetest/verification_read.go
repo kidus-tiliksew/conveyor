@@ -219,7 +219,7 @@ func RunVerificationRead(t *testing.T, x Fixture) {
 		}
 		var header map[string]string
 		requireOK(t, json.Unmarshal(page.Items[0].Metadata, &header))
-		if header["outcome"] != "succeeded" || header["sealed_at"] == "" || header["deciding_actor"] != "worker:worker" {
+		if header["outcome"] != "succeeded" || header["sealed_at"] == "" || header["deciding_actor"] != "user:worker" {
 			t.Fatalf("seal projection: %+v", header)
 		}
 		if _, err = r.ReadVerificationDetail(ctx, a, oldContext, "read-one"); err != nil {

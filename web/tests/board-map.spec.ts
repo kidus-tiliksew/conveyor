@@ -10,6 +10,7 @@ import {
 import type { NextActionCompact, TaskMapItem, TaskMapRequirement, TaskMapResponse } from '../src/lib/types'
 import { test } from './helpers/bounded-detail'
 import { callerIdentity } from './helpers/caller-identity'
+import { controlWorkspaceChanges, type WorkspaceChangeControl } from './helpers/workspace-changes'
 import { waitForSheetSettled } from './helpers/sheet'
 
 // The Board map (req-board-map v3; req-operator-next-action AC-1.7, AC-3.4,
@@ -213,8 +214,6 @@ async function mockMap(page: Page, server: MapServer = defaultServer) {
       })
     }
     if (path.endsWith('/stream')) return route.fulfill({ status: 204 })
-    if (path === '/v1/workers')
-      return route.fulfill({ json: { workers: [], worker_expected: false, worker_available: false } })
     return route.fulfill({ json: [] })
   })
   return seen
@@ -1038,12 +1037,15 @@ async function failMapReads(page: Page) {
   return control
 }
 
-// Polls fire on the page's clock: a refresh at 60 seconds, then React
-// Query's one retry a second later. Reads keep failing until the spec says.
-async function failRefresh(page: Page, control: { failing: boolean; failed: number }) {
+// A workspace change frame refreshes the map after 250 ms; there is no timer
+// (component-web-dashboard, Workspace change stream). React Query's one retry
+// follows a second later on the page's clock. Reads keep failing until the
+// spec says.
+async function failRefresh(page: Page, changes: WorkspaceChangeControl, control: { failing: boolean; failed: number }) {
   const before = control.failed
   control.failing = true
-  await page.clock.fastForward(60_000)
+  await changes.activity('a1')
+  await page.clock.fastForward(250)
   await expect.poll(() => control.failed).toBeGreaterThan(before)
   await page.clock.fastForward(2_000)
   await expect.poll(() => control.failed).toBeGreaterThan(before + 1)
@@ -1066,6 +1068,7 @@ test('a failed first read offers Retry, which loads the map', async ({ page }) =
 })
 
 test('a failed refresh after a successful load keeps the map with a dismissible notice and Retry', async ({ page }) => {
+  const changes = await controlWorkspaceChanges(page)
   await page.clock.install()
   const seen = await mockMap(page)
   const control = await failMapReads(page)
@@ -1073,8 +1076,17 @@ test('a failed refresh after a successful load keeps the map with a dismissible 
   await expect(group(page, 'req-alpha')).toBeVisible()
   const notice = page.getByRole('status').filter({ hasText: 'Could not refresh the map' })
   await expect(notice).toHaveCount(0)
+  const loaded = seen.reads.length
+  await changes.ready()
+  await page.clock.fastForward(250)
+  await expect.poll(() => seen.reads.length).toBeGreaterThan(loaded)
 
-  await failRefresh(page, control)
+  // The clock alone never rereads the map.
+  const settled = seen.reads.length
+  await page.clock.fastForward(120_000)
+  expect(seen.reads.length).toBe(settled)
+
+  await failRefresh(page, changes, control)
   // The map that loaded stays on the canvas; only a notice says the refresh
   // failed, and the full error state does not replace it.
   await expect(notice).toBeVisible()
@@ -1085,7 +1097,7 @@ test('a failed refresh after a successful load keeps the map with a dismissible 
   // Dismissed, it stays hidden until a later refresh fails.
   await notice.getByRole('button', { name: 'Dismiss' }).click()
   await expect(notice).toHaveCount(0)
-  await failRefresh(page, control)
+  await failRefresh(page, changes, control)
   await expect(notice).toBeVisible()
   await expect(groups(page)).toHaveCount(4)
 
@@ -1094,7 +1106,7 @@ test('a failed refresh after a successful load keeps the map with a dismissible 
   const reads = seen.reads.length
   await notice.getByRole('button', { name: 'Retry' }).click()
   await expect(notice).toHaveCount(0)
-  expect(seen.reads.length).toBeGreaterThan(reads)
+  await expect.poll(() => seen.reads.length).toBeGreaterThan(reads)
   await expect(group(page, 'req-alpha')).toBeVisible()
 })
 

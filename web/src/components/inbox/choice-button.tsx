@@ -1,5 +1,5 @@
 import { useMutation, useQueryClient } from '@tanstack/react-query'
-import { type ReactNode, useRef, useState } from 'react'
+import { type ReactNode, useId, useRef, useState } from 'react'
 import { GateMutationError, postNextActionChoice } from '../../lib/api'
 import { errorMessage } from '../../lib/errors'
 import { type MutationWorkspace, taskDetailQueryKey } from '../../lib/query-keys'
@@ -14,15 +14,30 @@ import { choiceBody } from './choice-bodies'
 import { Kbd, useShortcutChoice } from './inbox-keyboard'
 import { nextActionQueryKey, nextActionsQueryKey } from './use-next-actions'
 
+// Every choice button shares one height and one class, so a disabled choice
+// never changes the row's alignment; `choiceButtonClass` is exported for the
+// merge-at-gate button, which renders in the same row.
+export const choiceButtonClass = 'h-auto min-h-8 max-w-full py-1.5 text-left whitespace-normal [overflow-wrap:anywhere]'
+
+// A disabled choice's reason as the reasons block under the row prints it.
+export type ChoiceReason = { id: string; label: string; text: string; choice?: string }
+
 // The server's choices for one next action, rendered generically on the inbox,
 // the task-detail next-action card and the human gate (AC-1.4, AC-1.7, AC-1.8).
 // Every server choice renders (DEC-61): its label, its effect and its endpoint.
 // A choice the caller may not take, or whose input this client cannot build,
-// renders disabled with the reason beside it rather than disappearing.
+// renders disabled with its reason. The reasons print as one block under the
+// row, one line per disabled choice naming it, and each disabled button points
+// at its line through aria-describedby; a reason never sits under its own
+// button, where it would change the row's height and alignment.
 // Every choice shares one wrapping row with exactly one primary button
 // (feature-operator-next-action NA-6): `primaryId` names it when the caller
 // knows the decision's primary, as GateChoices does, and otherwise the first
-// choice that renders enabled takes it. `leading` renders first in the row.
+// choice that renders enabled takes it. `leading` renders first in the row and
+// `leadingReason` joins the reasons block for it. `status` renders above the
+// row. The `grid` layout, which only the merge-approval gate uses, puts
+// `leading` on its own full-width line with the other choices in two
+// equal-width columns below it (component-web-task-surfaces, Next-action card).
 export function NextActionChoices({
   taskId,
   choices,
@@ -30,6 +45,9 @@ export function NextActionChoices({
   onActed,
   primaryId,
   leading,
+  leadingReason,
+  status,
+  layout = 'row',
   routeVariant = 'sheet',
   onRestarted,
 }: {
@@ -39,9 +57,13 @@ export function NextActionChoices({
   onActed?: (choice: NextActionChoice) => void
   primaryId?: string | null
   leading?: ReactNode
+  leadingReason?: ChoiceReason
+  status?: ReactNode
+  layout?: 'row' | 'grid'
   routeVariant?: TaskRouteVariant
   onRestarted?: () => void
 }) {
+  const reasonPrefix = useId()
   const { workspace } = useWorkspaceSelection()
   const client = useQueryClient()
   const [composing, setComposing] = useState<NextActionChoice | null>(null)
@@ -106,10 +128,26 @@ export function NextActionChoices({
         : (body.unavailable?.(details) ?? '')
   })
   const primary = primaryId !== undefined ? primaryId : (choices.find((_, index) => reasons[index] === '')?.id ?? null)
+  const grid = layout === 'grid'
+  const reasonId = (index: number) => `${reasonPrefix}-reason-${index}`
+  const reasonLines: ChoiceReason[] = [
+    ...(leadingReason ? [leadingReason] : []),
+    ...choices.flatMap((choice, index) =>
+      reasons[index] ? [{ id: reasonId(index), label: choice.label, text: reasons[index], choice: choice.id }] : [],
+    ),
+  ]
   return (
     <div data-next-action-choices className="min-w-0 space-y-2">
-      <div className="flex min-w-0 flex-wrap items-center gap-2">
-        {leading}
+      {status}
+      <div
+        data-choice-row={layout}
+        className={
+          grid
+            ? 'grid w-full max-w-md min-w-0 grid-cols-2 items-stretch gap-2'
+            : 'flex min-w-0 flex-wrap items-stretch gap-2'
+        }
+      >
+        {leading && (grid ? <div className="col-span-2 flex min-w-0">{leading}</div> : leading)}
         {choices.map((choice, index) => {
           const body = choiceBody(choice.id)
           const reason = reasons[index]
@@ -117,45 +155,56 @@ export function NextActionChoices({
           return (
             // A long server label (a task-context choice names its target)
             // wraps inside the button rather than overflowing a phone-width
-            // card; the label and endpoint stay whole.
-            <span key={choice.id} className="inline-flex max-w-full min-w-0 flex-col gap-0.5">
-              <span className="inline-flex max-w-full min-w-0 items-center gap-1.5">
-                <Button
-                  size="sm"
-                  className="h-auto min-h-8 max-w-full py-1.5 text-left whitespace-normal [overflow-wrap:anywhere]"
-                  variant={
-                    choice.id === 'reject' ? 'ghost' : choice.id === primary && reason === '' ? 'default' : 'secondary'
+            // card; the label and endpoint stay whole. The wrapper stretches
+            // to the line's height, so every button on a line is equally tall.
+            <span
+              key={choice.id}
+              className={`inline-flex max-w-full min-w-0 items-stretch gap-1.5${grid ? ' w-full' : ''}`}
+            >
+              <Button
+                size="sm"
+                className={grid ? `${choiceButtonClass} flex-1 justify-center` : choiceButtonClass}
+                variant={
+                  choice.id === 'reject' ? 'ghost' : choice.id === primary && reason === '' ? 'default' : 'secondary'
+                }
+                title={`${choice.effect} (${choice.method} ${choice.path})`}
+                data-choice={choice.id}
+                data-shortcut={keyed ? 'c' : undefined}
+                data-endpoint={`${choice.method} ${choice.path}`}
+                aria-expanded={body?.input ? composing?.id === choice.id : undefined}
+                aria-describedby={reason ? reasonId(index) : undefined}
+                disabled={mutation.isPending || reason !== ''}
+                onClick={() => {
+                  mutation.reset()
+                  if (body?.dialog === 'restart') {
+                    setComposing(null)
+                    setRestarting(true)
+                    return
                   }
-                  title={`${choice.effect} (${choice.method} ${choice.path})`}
-                  data-choice={choice.id}
-                  data-shortcut={keyed ? 'c' : undefined}
-                  data-endpoint={`${choice.method} ${choice.path}`}
-                  aria-expanded={body?.input ? composing?.id === choice.id : undefined}
-                  disabled={mutation.isPending || reason !== ''}
-                  onClick={() => {
-                    mutation.reset()
-                    if (body?.dialog === 'restart') {
-                      setComposing(null)
-                      setRestarting(true)
-                      return
-                    }
-                    if (body?.input) {
-                      setComposing((current) => (current?.id === choice.id ? null : choice))
-                      setInput('')
-                      return
-                    }
-                    send(choice, '')
-                  }}
-                >
-                  {mutation.isPending && mutation.variables?.choice.id === choice.id ? 'Recording…' : choice.label}
-                </Button>
-                {keyed && <Kbd>c</Kbd>}
-              </span>
-              {reason && <span className="text-[11px] text-muted">{reason}</span>}
+                  if (body?.input) {
+                    setComposing((current) => (current?.id === choice.id ? null : choice))
+                    setInput('')
+                    return
+                  }
+                  send(choice, '')
+                }}
+              >
+                {mutation.isPending && mutation.variables?.choice.id === choice.id ? 'Recording…' : choice.label}
+              </Button>
+              {keyed && <Kbd className="self-center">c</Kbd>}
             </span>
           )
         })}
       </div>
+      {reasonLines.length > 0 && (
+        <ul data-choice-reasons className="space-y-0.5 text-[11px] leading-4 text-muted">
+          {reasonLines.map((line) => (
+            <li key={line.id} id={line.id} data-choice-reason={line.choice}>
+              <span className="font-medium text-foreground/80">{line.label}:</span> {line.text}
+            </li>
+          ))}
+        </ul>
+      )}
       {composing && contract?.input && (
         <div className="space-y-2">
           <p className="text-xs text-muted">{composing.effect}</p>

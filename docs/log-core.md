@@ -17,9 +17,9 @@ Two drivers implement the contract. `memlog` is in-process and is the test
 double; `pglog` is PostgreSQL. `logtest` is the conformance suite, and
 passing it is what "implements the contract" means.
 
-The PostgreSQL driver owns three tables (`event_log`, `event_log_streams`,
-`event_log_positions`). The startup migration runner
-creates them when they are missing. They carry no foreign keys, no CHECK
+The PostgreSQL driver owns four tables (`event_log`, `event_log_streams`,
+`event_log_positions`, and the job index `event_log_job_index`). The startup
+migration runner creates them when they are missing. They carry no foreign keys, no CHECK
 constraints, and no triggers. Serialization is two row locks in a fixed
 order: the partition's position row, then the stream's head row. Holding
 the position row until commit is what makes positions visible in order. A
@@ -38,10 +38,20 @@ the last attempt are events on the same stream. The runtime tails each
 workspace's log into an in-memory job index and drains it one job at a time
 per kind.
 
+Each driver also keeps one row per job stream in `event_log_job_index`,
+written in the same transaction as every job append and folded with the
+same transition table as the runtime (`internal/eventlog/jobindex`). At
+start the runtime reads only the unfinished rows and the events of those
+jobs' current generation, then tails from the head it read first, so a
+restart does not replay finished jobs. Finished job events stay in
+`event_log` and remain readable.
+
 Enqueues from the store run inside the store's own transaction by binding it
 to the log driver, so a lifecycle command's rows and its job commit together.
-The order clock is a process-local ticker that writes nothing: a tick is not
-a fact, and its handler is idempotent under concurrent replicas.
+One deadline alarm per workspace runs the order clock at the earliest
+recorded deadline, scheduled job, or deadline notice, and never on a fixed
+timer. A fire writes nothing to the log: a tick is not a fact, and its
+handler is idempotent under concurrent replicas.
 
 The dispatcher sees only `queue.Runtime` and the handler contract: return
 nil to complete a job, `queue.Snooze` to reschedule it, any other error to
@@ -53,5 +63,8 @@ fails a running task whose job was discarded after its last attempt.
 Nothing beyond the ordinary upgrade. The first start of a binary with the
 log core runs migration 121, which moves every job River still held onto its
 log stream and drops River's tables; an upgrade with work queued or in
-flight loses nothing. The log tables are part of the database from then on
+flight loses nothing. Migration 155 (SingleStore 0030) fills the job index by
+folding every existing job stream once. At each start the runtime also
+rebuilds any index row whose version differs from its stream's head, which
+covers jobs that a daemon older than 155 appended after the upgrade. The log tables are part of the database from then on
 and are dumped and restored with it.

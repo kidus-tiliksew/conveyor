@@ -46,8 +46,8 @@ func TestRequestChangesBouncesThroughSharedContextAndAttention(t *testing.T) {
 		Routing: config.Routing{Stages: map[string]config.StageRoute{
 			"implement": {Model: "implementer", Harness: "codex", Execution: config.ExecutionMCP, Timeout: time.Hour, TimeoutText: "1h"},
 		}},
-		Harnesses: []config.Harness{{Name: "codex"}},
-		Repos:     []config.Repo{{Name: "conveyor", Base: "main"}},
+
+		Repos: []config.Repo{{Name: "conveyor", Base: "main"}},
 	}
 	dispatcher := dispatch.New(st, cfg, nil)
 	server := NewServer(st)
@@ -122,8 +122,7 @@ func TestRequestChangesBouncesThroughSharedContextAndAttention(t *testing.T) {
 		t.Fatalf("prior feedback=%q err=%v", assembled.PriorFeedback, err)
 	}
 	claimed, err := storetest.For(st).ClaimWorkOrder(ctx, orders[0].ID, core.WorkOrderClaim{
-		ClaimantID: "worker-1", SessionID: "worker-session", ClientToken: "worker-secret",
-		WorkerID: "worker-1", Agent: "codex", Model: "implementer", Lease: time.Minute,
+		ClaimantID: "worker-1", SessionID: "worker-session", ClientToken: "worker-secret", Agent: "codex", Model: "implementer", Lease: time.Minute,
 	})
 	if err != nil || claimed.State != core.WorkOrderClaimed {
 		t.Fatalf("worker claim=%+v err=%v", claimed, err)

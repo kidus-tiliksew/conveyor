@@ -18,7 +18,6 @@ import (
 	"github.com/kidus-tiliksew/conveyor/internal/config"
 	"github.com/kidus-tiliksew/conveyor/internal/core"
 	"github.com/kidus-tiliksew/conveyor/internal/corpus"
-	"github.com/kidus-tiliksew/conveyor/internal/gitx"
 	"github.com/kidus-tiliksew/conveyor/internal/inprocess"
 	"github.com/kidus-tiliksew/conveyor/internal/lineagecontext"
 	"github.com/kidus-tiliksew/conveyor/internal/monitor"
@@ -30,6 +29,10 @@ import (
 )
 
 type Dispatcher struct {
+	// AutomaticReviewRecovery is the order clock handler's review-round
+	// recovery pass, installed by the daemon before the queue starts
+	// (component-durable-queue, The deadline alarm).
+	AutomaticReviewRecovery     func(context.Context, time.Time) (int, error)
 	ReadVerificationPR          func(context.Context, string, int) (github.VerificationPullRequest, error)
 	WriteVerificationPR         func(context.Context, string, int, string) error
 	Store                       store.Store
@@ -1841,19 +1844,10 @@ func (d *Dispatcher) pendingSpecGate(
 	return spec, true, nil
 }
 
-// PollGitHub preserves issue intake while execution ownership moves to MCP.
-func (d *Dispatcher) PollGitHub(ctx context.Context, interval time.Duration) {
-	ticker := time.NewTicker(interval)
-	defer ticker.Stop()
-	for {
-		d.pollOnce(ctx)
-		select {
-		case <-ctx.Done():
-			return
-		case <-ticker.C:
-		}
-	}
-}
+// pollOnce reads every repository's ready-labeled issues once. The
+// dispatcher keeps no timer: conveyord's startIssueIntakePoll drives it
+// through PollOnce only when timed issue intake is enabled
+// (component-runtime, Timed issue intake; req-quiet-idle-runtime AC-3.7).
 func (d *Dispatcher) pollOnce(ctx context.Context) {
 	forgeCtx, forgeErr := d.workspaceForgeContext(ctx)
 	if forgeErr != nil {
@@ -1874,20 +1868,9 @@ func (d *Dispatcher) pollOnce(ctx context.Context) {
 			continue
 		}
 		for _, issue := range issues {
-			source := fmt.Sprintf("github:%s#%d", repo.GitHub, issue.Number)
-			if d.sourceTaskExists(ctx, source) {
-				continue
-			}
-			id := core.NewTaskID()
-			task := core.Task{ID: id, Workspace: cfg.Workspace, Source: source, Title: issue.Title, Body: issue.Body, Level: core.L2, Repo: repo.Name, BaseBranch: repo.Base, Branch: gitx.BranchName(id), State: core.TaskClaiming, NextStage: core.StageTriage, CreatedAt: time.Now().UTC()}
-			if err = d.Store.CreateTask(ctx, task); err != nil {
-				continue
-			}
-			if err = github.MarkIssueDispatched(forgeCtx, repo.GitHub, issue.Number, id); err != nil {
-				continue
-			}
-			_, _ = taskops.New(d.Store).Perform(ctx, id, taskops.Command{Kind: core.TaskIntakeFinalize})
-			d.Enqueue(ctx, id)
+			// The intake body is shared with the issues webhook delivery
+			// (component-runtime, Timed issue intake).
+			_ = d.intakeReadyIssue(ctx, forgeCtx, cfg.Workspace, repo, issue)
 		}
 	}
 }

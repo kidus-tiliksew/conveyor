@@ -9,14 +9,9 @@ import (
 )
 
 func TestFrozenPolicyJSONContainsNoExecutionDetail(t *testing.T) {
-	contract := ExecutionSetup{
-		Name:       "legacy-name",
-		MaxBounces: 7,
-		ExecutionSettings: ContextualExecutionSettings{
-			Spec:           ImplementationSettings{Harness: "codex", Model: "spec-model", Effort: "high", TimeoutText: "30m"},
-			Implementation: ImplementationSettings{Harness: "claude", Model: "implementation-model", Effort: "high", TimeoutText: "4h"},
-			Review:         ReviewExecutionSettings{FallbackModel: "review-model", FallbackHarness: "codex", TimeoutText: "1h"},
-		},
+	contract := PolicyContract{
+		MaxBounces:    7,
+		StageTimeouts: PolicyStageTimeouts{Spec: "30m", Implement: "4h", Review: "1h"},
 		Review:        ReviewPanel{Seats: []ReviewSeat{{Model: "review-model", Harness: "codex", Effort: "high"}}},
 		RefreshReview: RefreshReviewDelta,
 	}
@@ -49,7 +44,7 @@ func TestFrozenSeatCountEncodings(t *testing.T) {
 		{"empty", `{"max_bounces":0,"stage_timeouts":{},"review":{"seats":[]}}`, true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			var decoded ExecutionSetup
+			var decoded PolicyContract
 			if err := json.Unmarshal([]byte(tc.data), &decoded); err != nil {
 				t.Fatal(err)
 			}
@@ -63,7 +58,7 @@ func TestFrozenSeatCountEncodings(t *testing.T) {
 			if strings.Contains(string(encoded), `"seats":null`) || strings.Contains(string(encoded), `"seats":[]`) != tc.frozen {
 				t.Fatalf("encoded %s, want frozen=%t", encoded, tc.frozen)
 			}
-			var again ExecutionSetup
+			var again PolicyContract
 			if err := json.Unmarshal(encoded, &again); err != nil {
 				t.Fatal(err)
 			}
@@ -85,7 +80,7 @@ func TestVerifyPolicyFreezesAndRoundTrips(t *testing.T) {
 	if strings.Contains(string(data), "private-model") || strings.Contains(string(data), "local") {
 		t.Fatalf("execution leaked: %s", data)
 	}
-	var restored ExecutionSetup
+	var restored PolicyContract
 	if err := json.Unmarshal(data, &restored); err != nil {
 		t.Fatal(err)
 	}
@@ -98,7 +93,7 @@ func TestVerifyPolicyFreezesAndRoundTrips(t *testing.T) {
 	if (&Config{}).FreezePolicy().VerifyStage {
 		t.Fatal("verify must default off")
 	}
-	if got := (&Config{}).FreezePolicy().ExecutionSettings.Verify.TimeoutText; got != "1h" {
+	if got := (&Config{}).FreezePolicy().StageTimeouts.Verify; got != "1h" {
 		t.Fatalf("default timeout = %q", got)
 	}
 }
@@ -118,7 +113,7 @@ func TestReviewFailFastFreezesAndRoundTrips(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		var restored ExecutionSetup
+		var restored PolicyContract
 		if err := json.Unmarshal(data, &restored); err != nil {
 			t.Fatal(err)
 		}
@@ -131,26 +126,22 @@ func TestReviewFailFastFreezesAndRoundTrips(t *testing.T) {
 		}
 	}
 	legacy := &Config{Review: ReviewPanel{FailFast: true}}
-	if legacy.WithPolicy(ExecutionSetup{}).Review.FailFast {
+	if legacy.WithPolicy(PolicyContract{}).Review.FailFast {
 		t.Fatal("legacy contract inherited workspace fail_fast")
 	}
 }
 
 // case: FF-001
 // case: FF-003
-// The operator's workspace toggle survives the stored-document round trip,
-// including configurations whose review seats come from execution setups,
+// The operator's workspace toggle survives the stored-document round trip
 // and is what the next task freezes.
 func TestReviewFailFastSurvivesWorkspaceDocument(t *testing.T) {
 	base := validConfig()
-	normalized, err := normalize(base, "test")
+	normalized, err := normalizeDeployment(base, "test")
 	if err != nil {
 		t.Fatal(err)
 	}
 	document := normalized.WorkspaceDocument()
-	if len(document.Setups) == 0 {
-		t.Fatal("fixture must exercise setup-owned review seats")
-	}
 	document.Review.FailFast = true
 	raw, err := yaml.Marshal(document)
 	if err != nil {
@@ -166,7 +157,46 @@ func TestReviewFailFastSurvivesWorkspaceDocument(t *testing.T) {
 	if !parsed.WorkspaceDocument().Review.FailFast || !parsed.PolicyDocument().Review.FailFast {
 		t.Fatal("re-emitted workspace document dropped fail_fast")
 	}
-	if !parsed.WithSetup(parsed.Setups[0]).FreezePolicy().Review.FailFast {
-		t.Fatal("selecting an execution setup dropped workspace fail_fast")
+}
+
+// component-runtime: a task row written in the earlier full-setup encoding
+// still decodes, keeps only its policy members, counts as frozen when it
+// named a setup, and re-encodes in the unchanged policy_contract shape.
+func TestPolicyContractDecodesLegacySetupRows(t *testing.T) {
+	legacy := `{"name":"backend","verify_stage":true,"max_bounces":4,"refresh_review":"full",
+		"execution_settings":{"spec":{"harness":"codex","model":"m","effort":"high","timeout":"25m"},
+		"implementation":{"harness":"codex","model":"m","model_policy":"bogus","timeout":"3h"},
+		"review":{"execution":"mcp","fallback_harness":"codex","timeout":"50m"},"verify":{"timeout":"40m"}},
+		"review":{"seats":[{"model":"a","harness":"codex"},{"model":"b"}],"fail_fast":true}}`
+	var decoded PolicyContract
+	if err := json.Unmarshal([]byte(legacy), &decoded); err != nil {
+		t.Fatal(err)
+	}
+	want := PolicyStageTimeouts{Spec: "25m", Implement: "3h", Review: "50m", Verify: "40m"}
+	if !decoded.VerifyStage || decoded.MaxBounces != 4 || decoded.RefreshReview != RefreshReviewFull || decoded.StageTimeouts != want ||
+		len(decoded.Review.Seats) != 2 || decoded.Review.Seats[0] != (ReviewSeat{}) || !decoded.Review.FailFast || !decoded.HasFrozenPolicy() {
+		t.Fatalf("legacy contract decoded as %+v", decoded)
+	}
+	encoded, err := json.Marshal(decoded)
+	if err != nil {
+		t.Fatal(err)
+	}
+	const shape = `{"verify_stage":true,"max_bounces":4,"stage_timeouts":{"implement":"3h","review":"50m","spec":"25m","verify":"40m"},"review":{"seats":[{},{}],"fail_fast":true},"refresh_review":"full"}`
+	if string(encoded) != shape {
+		t.Fatalf("encoded %s, want %s", encoded, shape)
+	}
+	var named PolicyContract
+	if err := json.Unmarshal([]byte(`{"name":"kept"}`), &named); err != nil {
+		t.Fatal(err)
+	}
+	if !named.HasFrozenPolicy() {
+		t.Fatal("a legacy row that named its setup lost its frozen status")
+	}
+	var zero PolicyContract
+	if err := json.Unmarshal([]byte(`{}`), &zero); err != nil {
+		t.Fatal(err)
+	}
+	if zero.HasFrozenPolicy() {
+		t.Fatalf("an empty legacy row decoded as frozen: %+v", zero)
 	}
 }

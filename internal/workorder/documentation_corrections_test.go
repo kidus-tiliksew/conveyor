@@ -217,7 +217,7 @@ func TestDocumentationCorrectionRegressions(t *testing.T) {
 			})
 			t.Run("dispatched-conflict-fix-still-runs-gate", func(t *testing.T) {
 				st := documentationCorrectionStore(t, backend)
-				f := newConflictSubmission(t, config.ExecutionSetup{}, func(store.Store) store.Store { return st })
+				f := newConflictSubmission(t, config.PolicyContract{}, func(store.Store) store.Store { return st })
 				head, base := strings.Repeat("a", 40), strings.Repeat("b", 40)
 				f.prHead = func(int) string { return head }
 				f.service.SubmissionPR = func(_ context.Context, _, branch string) (githubtrigger.SubmissionPullRequest, error) {
@@ -252,7 +252,7 @@ func TestDocumentationCorrectionRegressions(t *testing.T) {
 					for _, failure := range []string{"pr", "forge"} {
 						t.Run(state+"/"+failure, func(t *testing.T) {
 							st := documentationCorrectionStore(t, backend)
-							f := newConflictSubmission(t, config.ExecutionSetup{}, func(store.Store) store.Store { return st })
+							f := newConflictSubmission(t, config.PolicyContract{}, func(store.Store) store.Store { return st })
 							head, base := strings.Repeat("a", 40), strings.Repeat("b", 40)
 							f.prHead = func(int) string { return head }
 							f.dispatchExistingRefresh(t, head, config.RefreshReviewDelta)
@@ -292,7 +292,7 @@ func TestDocumentationCorrectionRegressions(t *testing.T) {
 			})
 			t.Run("known-policy-retries-transient-conflict-pr-read", func(t *testing.T) {
 				st := documentationCorrectionStore(t, backend)
-				f := newConflictSubmission(t, config.ExecutionSetup{}, func(store.Store) store.Store { return st })
+				f := newConflictSubmission(t, config.PolicyContract{}, func(store.Store) store.Store { return st })
 				head, base := strings.Repeat("a", 40), strings.Repeat("b", 40)
 				f.prHead = func(int) string { return head }
 				f.dispatchExistingRefresh(t, head, config.RefreshReviewDelta)
@@ -550,7 +550,7 @@ func TestProductionConflictFixDocumentationDiscovery(t *testing.T) {
 			for _, persistent := range []bool{false, true} {
 				t.Run(fmt.Sprintf("persistent-5xx=%t", persistent), func(t *testing.T) {
 					st := documentationCorrectionStore(t, backend)
-					f := newConflictSubmission(t, config.ExecutionSetup{}, func(store.Store) store.Store { return st })
+					f := newConflictSubmission(t, config.PolicyContract{}, func(store.Store) store.Store { return st })
 					head, base := strings.Repeat("a", 40), strings.Repeat("b", 40)
 					tree, directory, blob := strings.Repeat("c", 40), strings.Repeat("d", 40), strings.Repeat("e", 40)
 					f.prHead = func(int) string { return head }

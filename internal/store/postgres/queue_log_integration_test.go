@@ -57,15 +57,22 @@ func TestLogQueueEnqueuesInsideStoreTransactions(t *testing.T) {
 	// queued, so reconciliation re-enqueues it: generation 2.
 	appendQueueEvent(t, st, workspace, job.Stream, job.Head, logqueue.KindClaimed, map[string]any{"attempt": 1, "worker": "test", "claimed_at": time.Now().UTC()})
 	appendQueueEvent(t, st, workspace, job.Stream, job.Head+1, logqueue.KindCompleted, map[string]any{"attempt": 1})
-	repaired, err = st.ReconcileQueuedTasks(ctx)
+	// The repair is reported to the bound drift recorder after the commit,
+	// and the pass writes no dispatch.reconciled event: the start-up check
+	// records drift.repaired (component-persistence, Drift repair reports).
+	var reported []store.DriftRepair
+	repaired, err = st.ReconcileQueuedTasks(store.WithDriftRecorder(ctx, func(r store.DriftRepair) { reported = append(reported, r) }))
 	if err != nil || repaired != 1 {
 		t.Fatalf("reconcile after completion repaired=%d err=%v", repaired, err)
 	}
 	if job, _ = logqueue.Load(ctx, log, workspace, job.Stream); job.Generation != 2 || job.State != logqueue.StateAvailable {
 		t.Fatalf("job after reconcile=%+v", job)
 	}
-	if count, err := st.CountEvents(ctx, taskID, "dispatch.reconciled"); err != nil || count != 1 {
-		t.Fatalf("dispatch.reconciled events=%d err=%v", count, err)
+	if len(reported) != 1 || reported[0] != store.DriftQueuedTaskWithoutJob.For(taskID) {
+		t.Fatalf("reported repairs=%+v, want one queued-task repair", reported)
+	}
+	if count, err := st.CountEvents(ctx, taskID, "dispatch.reconciled"); err != nil || count != 0 {
+		t.Fatalf("dispatch.reconciled events=%d err=%v, want none from reconciliation", count, err)
 	}
 
 	// The job events are the workspace's log: nothing else writes to it.

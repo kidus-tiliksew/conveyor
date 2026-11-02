@@ -349,150 +349,6 @@ func ReviewRecoveryNeeded(orders []core.WorkOrder, eventSets ...[]core.Event) *R
 	return state
 }
 
-func (m *memory) CreateWorkerPairing(ctx context.Context, pairing core.WorkerPairing) error {
-	if _, err := RequireActor(ctx); err != nil {
-		return err
-	}
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	if pairing.Workspace != workspaceOrDefault(ctx, pairing.Workspace) {
-		return fmt.Errorf("pairing workspace mismatch")
-	}
-	if _, exists := m.pairings[pairing.TokenHash]; exists {
-		return fmt.Errorf("pairing already exists")
-	}
-	if pairing.CreatedAt.IsZero() {
-		pairing.CreatedAt = time.Now().UTC()
-	}
-	m.pairings[pairing.TokenHash] = pairing
-	m.appendEventLocked(ctx, core.Event{Kind: "worker.pairing_issued", Payload: core.JSONPayload(map[string]any{"expires_at": pairing.ExpiresAt})})
-	return nil
-}
-
-func (m *memory) ConsumeWorkerPairing(_ context.Context, tokenHash string, now time.Time) (core.WorkerPairing, error) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	pairing, ok := m.pairings[tokenHash]
-	if !ok || !pairing.ConsumedAt.IsZero() || !pairing.ExpiresAt.After(now) {
-		return core.WorkerPairing{}, ErrPairingInvalid
-	}
-	pairing.ConsumedAt = now
-	m.pairings[tokenHash] = pairing
-	return pairing, nil
-}
-
-func (m *memory) CreateWorker(ctx context.Context, worker core.Worker) error {
-	if _, err := RequireActor(ctx); err != nil {
-		return err
-	}
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	if worker.Workspace != workspaceOrDefault(ctx, worker.Workspace) {
-		return fmt.Errorf("worker workspace mismatch")
-	}
-	for _, existing := range m.workers {
-		if existing.Workspace == worker.Workspace && existing.Name == worker.Name && existing.RevokedAt.IsZero() {
-			return fmt.Errorf("worker name %q already exists", worker.Name)
-		}
-	}
-	if worker.CreatedAt.IsZero() {
-		worker.CreatedAt = time.Now().UTC()
-	}
-	m.workers[worker.ID] = worker
-	m.appendEventLocked(ctx, core.Event{Kind: "worker.enrolled", ActorRole: core.ActorWorker, ActorID: WorkerActorID(worker.ID), Payload: core.JSONPayload(map[string]string{"worker_id": worker.ID, "name": worker.Name})})
-	return nil
-}
-
-func (m *memory) ListWorkers(ctx context.Context) ([]core.Worker, error) {
-	m.mu.RLock()
-	defer m.mu.RUnlock()
-	workspace, _ := WorkspaceFromContext(ctx)
-	var result []core.Worker
-	for _, worker := range m.workers {
-		if worker.Workspace == workspace {
-			result = append(result, worker)
-		}
-	}
-	sort.Slice(result, func(i, j int) bool { return result[i].CreatedAt.Before(result[j].CreatedAt) })
-	return result, nil
-}
-
-// workerOwnerActiveLocked reports whether a worker has a nonblank owner with
-// an active membership in the worker's workspace. The volatile backend's
-// membership projection stands in for the durable users and bindings rows;
-// NewVolatileBackend derives it under the mutex and NewMemory fixtures seed it
-// explicitly (component-work-orders, Workers: Admission).
-func (m *memory) workerOwnerActiveLocked(worker core.Worker) bool {
-	owner := strings.TrimSpace(worker.OwnerUserID)
-	return owner != "" && m.workspaceMembers[memoryScopedKey{workspace: worker.Workspace, id: owner}]
-}
-
-func (m *memory) AuthenticateWorker(ctx context.Context, credentialHash string) (core.Worker, error) {
-	m.mu.RLock()
-	defer m.mu.RUnlock()
-	workspace, _ := WorkspaceFromContext(ctx)
-	for _, worker := range m.workers {
-		if (workspace == "" || worker.Workspace == workspace) && worker.CredentialHash == credentialHash && worker.RevokedAt.IsZero() && m.workerOwnerActiveLocked(worker) {
-			return worker, nil
-		}
-	}
-	return core.Worker{}, ErrWorkerUnauthorized
-}
-
-func (m *memory) HeartbeatWorker(ctx context.Context, id string, leaseExpires time.Time, probes []core.HarnessProbe) (core.Worker, error) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	worker, ok := m.workers[id]
-	workspace, _ := WorkspaceFromContext(ctx)
-	if !ok || worker.Workspace != workspace || !worker.RevokedAt.IsZero() || !m.workerOwnerActiveLocked(worker) {
-		return core.Worker{}, ErrWorkerUnauthorized
-	}
-	worker.LastSeenAt = time.Now().UTC()
-	worker.LeaseExpiresAt = leaseExpires
-	worker.Probes = append([]core.HarnessProbe(nil), probes...)
-	m.workers[id] = worker
-	return worker, nil
-}
-
-func (m *memory) ListHarnessModelFailures(ctx context.Context) ([]core.HarnessModelFailure, error) {
-	m.mu.RLock()
-	defer m.mu.RUnlock()
-	workspace, _ := WorkspaceFromContext(ctx)
-	result := make([]core.HarnessModelFailure, 0, len(m.harnessModelFailures))
-	for key, failure := range m.harnessModelFailures {
-		if strings.HasPrefix(key, workspace+"\x00") {
-			result = append(result, failure)
-		}
-	}
-	sort.Slice(result, func(i, j int) bool {
-		if result[i].Harness != result[j].Harness {
-			return result[i].Harness < result[j].Harness
-		}
-		return result[i].Model < result[j].Model
-	})
-	return result, nil
-}
-
-func (m *memory) RevokeWorker(ctx context.Context, id string) error {
-	if _, err := RequireActor(ctx); err != nil {
-		return err
-	}
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	worker, ok := m.workers[id]
-	workspace, _ := WorkspaceFromContext(ctx)
-	if !ok || worker.Workspace != workspace {
-		return fmt.Errorf("worker %s not found", id)
-	}
-	if worker.RevokedAt.IsZero() {
-		worker.RevokedAt = time.Now().UTC()
-		worker.LeaseExpiresAt = time.Time{}
-		m.workers[id] = worker
-	}
-	m.appendEventLocked(ctx, core.Event{Kind: "worker.revoked", Payload: core.JSONPayload(map[string]string{"worker_id": id})})
-	return nil
-}
-
 func (m *memory) RenewWorkerClaimCommand(ctx context.Context, taskLease taskops.TaskLease, workOrderID string, claim core.WorkOrderClaimIdentity, lease time.Duration) (core.WorkOrder, error) {
 	if _, err := RequireActor(ctx); err != nil {
 		return core.WorkOrder{}, err
@@ -546,46 +402,7 @@ func (m *memory) RenewWorkerClaimCommand(ctx context.Context, taskLease taskops.
 	order.LeaseExpiresAt = expires
 	order.UpdatedAt = now
 	m.workOrders[workOrderID] = order
-	m.appendEventLocked(workerClaimActorContext(ctx, claim.WorkerID), core.Event{TaskID: order.TaskID, JobID: order.JobID, Kind: "work_order.lease_renewed", Payload: core.JSONPayload(map[string]any{"attempt_id": order.AttemptID, "lease_expires_at": expires})})
-	return order, nil
-}
-
-func (m *memory) RecordWorkOrderContinuation(ctx context.Context, workOrderID string, claim core.WorkOrderClaimIdentity, continuation core.WorkOrderContinuation) (core.WorkOrder, error) {
-	if _, err := RequireActor(ctx); err != nil {
-		return core.WorkOrder{}, err
-	}
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	order, ok := m.workOrders[workOrderID]
-	now := time.Now().UTC()
-	if ok {
-		order = m.refreshWorkOrderLocked(ctx, order, now)
-	}
-	if !ok || order.Stage != core.StageImplement || order.State != core.WorkOrderClaimed || order.SessionID == "" ||
-		order.SessionID != claim.SessionID || order.WorkerID != claim.WorkerID || order.ClaimantID != claim.ClaimantID ||
-		!order.LeaseExpiresAt.After(now) || (!order.ExecutionDeadline.IsZero() && !order.ExecutionDeadline.After(now)) {
-		return core.WorkOrder{}, ErrWorkOrderClaimLost
-	}
-	if continuation.AttemptID != order.AttemptID {
-		return core.WorkOrder{}, fmt.Errorf("continuation attempt does not match the active work-order attempt")
-	}
-	expectedHarness := order.Agent
-	if expectedHarness == "" {
-		expectedHarness = order.RequiredHarness
-	}
-	if expectedHarness != "" && continuation.Harness != expectedHarness {
-		return core.WorkOrder{}, fmt.Errorf("continuation harness %q does not match active harness %q", continuation.Harness, expectedHarness)
-	}
-	order.ContinuationSessionID = continuation.SessionID
-	order.ContinuationAttemptID = continuation.AttemptID
-	order.ContinuationHarness = continuation.Harness
-	order.ContinuationLaunchEnvironment = continuation.LaunchEnvironment
-	order.UpdatedAt = now
-	m.workOrders[workOrderID] = order
-	m.appendEventLocked(ctx, core.Event{TaskID: order.TaskID, JobID: order.JobID, Kind: "work_order.continuation_reported", Payload: core.JSONPayload(map[string]any{
-		"work_order_id": order.ID, "attempt_id": continuation.AttemptID, "harness": continuation.Harness,
-		"launch_environment": continuation.LaunchEnvironment,
-	}), At: now})
+	m.appendEventLocked(ctx, core.Event{TaskID: order.TaskID, JobID: order.JobID, Kind: "work_order.lease_renewed", Payload: core.JSONPayload(map[string]any{"attempt_id": order.AttemptID, "lease_expires_at": expires})})
 	return order, nil
 }
 
@@ -677,11 +494,6 @@ func (m *memory) ReleaseWorkerClaimCommand(ctx context.Context, taskLease taskop
 			order.RetrySuppressed = true
 			order.RetrySuppressionReason = core.AttemptRetriesExhaustedReason
 		}
-		if release.ModelRejection && order.RequiredHarness != "" && order.RequiredModel != "" && detail != "" {
-			workspace, _ := WorkspaceFromContext(ctx)
-			key := workspace + "\x00" + order.RequiredHarness + "\x00" + order.RequiredModel
-			m.harnessModelFailures[key] = core.HarnessModelFailure{Harness: order.RequiredHarness, Model: order.RequiredModel, Detail: detail, WorkOrderID: order.ID, ObservedAt: now}
-		}
 		if transientConnectivity {
 			order.LastFailureDetail = core.TransientConnectivityFailureDetail(detail, consecutiveTransientFailures, order.NextRetryAt)
 		}
@@ -719,7 +531,7 @@ func (m *memory) ReleaseWorkerClaimCommand(ctx context.Context, taskLease taskop
 	if release.Checkpoint != nil {
 		payload["checkpoint"] = release.Checkpoint
 	}
-	m.appendEventLocked(workerClaimActorContext(ctx, claim.WorkerID), core.Event{TaskID: order.TaskID, JobID: order.JobID, Kind: kind, Payload: core.JSONPayload(payload), At: now})
+	m.appendEventLocked(ctx, core.Event{TaskID: order.TaskID, JobID: order.JobID, Kind: kind, Payload: core.JSONPayload(payload), At: now})
 	return order, nil
 }
 
@@ -759,200 +571,6 @@ func (m *memory) previousTransientFailuresLocked(order core.WorkOrder) int {
 		return 0
 	}
 	return 0
-}
-
-func (m *memory) RecordWorkOrderAttemptCheckpoint(ctx context.Context, workOrderID, workerID string, checkpoint core.WorkOrderAttemptCheckpoint) (bool, error) {
-	if _, err := RequireActor(ctx); err != nil {
-		return false, err
-	}
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	order, ok := m.workOrders[workOrderID]
-	if !ok {
-		return false, ErrWorkOrderClaimLost
-	}
-	for _, event := range m.events[order.TaskID] {
-		if event.Kind == "work_order.writer_admitted" {
-			return false, ErrWorkOrderClaimLost
-		}
-	}
-	authorized := order.AuthorizesAttemptCheckpoint(workerID, checkpoint, time.Now().UTC())
-	if !authorized {
-		for _, event := range m.events[order.TaskID] {
-			if AttemptCheckpointClaimEventMatches(event, order.ID, workerID, checkpoint) {
-				authorized = true
-				break
-			}
-		}
-	}
-	if !authorized {
-		return false, ErrWorkOrderClaimLost
-	}
-	for _, event := range m.events[order.TaskID] {
-		if AttemptCheckpointEventMatches(event, order.ID, checkpoint.AttemptID, checkpoint.CommitSHA) {
-			return false, nil
-		}
-	}
-	m.appendEventLocked(workerClaimActorContext(ctx, workerID), core.Event{
-		TaskID: order.TaskID, JobID: order.JobID, Kind: "work_order.attempt_checkpointed",
-		Payload: AttemptCheckpointPayload(order, checkpoint), At: time.Now().UTC(),
-	})
-	return true, nil
-}
-
-func (m *memory) UpsertWorkOrderActivitySnapshot(ctx context.Context, workOrderID string, claim core.WorkOrderClaimIdentity, content string) error {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	order, ok := m.workOrders[workOrderID]
-	if !ok || order.State != core.WorkOrderClaimed || order.WorkerID != claim.WorkerID ||
-		order.ClaimantID != claim.ClaimantID || order.SessionID != claim.SessionID ||
-		order.AttemptID == "" || !order.LeaseExpiresAt.After(time.Now().UTC()) {
-		return ErrWorkOrderClaimLost
-	}
-	if selected, hasWorkspace := WorkspaceFromContext(ctx); hasWorkspace && m.tasks[order.TaskID].Workspace != selected {
-		return ErrWorkOrderClaimLost
-	}
-	m.workOrderActivitySnapshots[workOrderID] = core.WorkOrderActivitySnapshot{
-		AttemptID: order.AttemptID, Content: content, CapturedAt: time.Now().UTC(),
-	}
-	return nil
-}
-
-func (m *memory) FinalizeWorkOrderAttemptObservability(ctx context.Context, workOrderID, workerID string, checkpoint core.WorkOrderAttemptCheckpoint) error {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	order, ok := m.workOrders[workOrderID]
-	if !ok {
-		return ErrWorkOrderClaimLost
-	}
-	if selected, hasWorkspace := WorkspaceFromContext(ctx); hasWorkspace && m.tasks[order.TaskID].Workspace != selected {
-		return ErrWorkOrderClaimLost
-	}
-	claimed, checkpointed := false, false
-	for _, event := range m.events[order.TaskID] {
-		if AttemptCheckpointClaimEventMatches(event, order.ID, workerID, checkpoint) {
-			claimed = true
-		}
-		if AttemptCheckpointEventMatches(event, order.ID, checkpoint.AttemptID, checkpoint.CommitSHA) {
-			checkpointed = true
-		}
-	}
-	if !claimed || !checkpointed {
-		return ErrWorkOrderClaimLost
-	}
-	if current, exists := m.workOrderActivitySnapshots[workOrderID]; exists && current.AttemptID == checkpoint.AttemptID {
-		delete(m.workOrderActivitySnapshots, workOrderID)
-	}
-	if checkpoint.Transcript == nil {
-		return nil
-	}
-	for _, capture := range m.workOrderTranscriptCaptures[workOrderID] {
-		if capture.AttemptID == checkpoint.AttemptID {
-			return nil
-		}
-	}
-	m.workOrderTranscriptCaptures[workOrderID] = append(m.workOrderTranscriptCaptures[workOrderID], core.WorkOrderTranscriptCapture{
-		AttemptID: checkpoint.AttemptID, Content: checkpoint.Transcript.Content,
-		TerminationReason: checkpoint.TerminationReason, Truncated: checkpoint.Transcript.Truncated,
-		CapturedAt: time.Now().UTC(),
-	})
-	return nil
-}
-
-func (m *memory) RecordWorkOrderAttemptCapture(ctx context.Context, workOrderID string, claim core.WorkOrderClaimIdentity, capture core.WorkOrderAttemptCapture) (core.WorkOrderAttemptCaptureResult, error) {
-	capture = NormalizeAttemptCapture(capture)
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	order, ok := m.workOrders[workOrderID]
-	if !ok {
-		return core.WorkOrderAttemptCaptureResult{}, ErrWorkOrderClaimUnauthorized
-	}
-	if selected, hasWorkspace := WorkspaceFromContext(ctx); hasWorkspace && m.tasks[order.TaskID].Workspace != selected {
-		return core.WorkOrderAttemptCaptureResult{}, ErrWorkOrderClaimUnauthorized
-	}
-	authorized := false
-	for _, event := range m.events[order.TaskID] {
-		if AttemptCaptureClaimEventMatches(event, order, claim, capture) {
-			authorized = true
-			break
-		}
-	}
-	if !authorized {
-		return core.WorkOrderAttemptCaptureResult{}, ErrWorkOrderClaimUnauthorized
-	}
-	existingReason, existing := "", false
-	for _, prior := range m.workOrderTranscriptCaptures[workOrderID] {
-		if prior.AttemptID == capture.AttemptID {
-			existingReason, existing = prior.TerminationReason, true
-			break
-		}
-	}
-	reason, err := AttemptCaptureReason(order, capture, existingReason, existing)
-	if err != nil {
-		return core.WorkOrderAttemptCaptureResult{}, err
-	}
-	if current, exists := m.workOrderActivitySnapshots[workOrderID]; exists && current.AttemptID == capture.AttemptID {
-		delete(m.workOrderActivitySnapshots, workOrderID)
-	}
-	result := core.WorkOrderAttemptCaptureResult{TerminationReason: reason}
-	if capture.Transcript == nil || existing {
-		return result, nil
-	}
-	m.workOrderTranscriptCaptures[workOrderID] = append(m.workOrderTranscriptCaptures[workOrderID], core.WorkOrderTranscriptCapture{
-		AttemptID: capture.AttemptID, Content: capture.Transcript.Content, TerminationReason: reason,
-		Truncated: capture.Transcript.Truncated, CapturedAt: time.Now().UTC(),
-	})
-	result.Created = true
-	return result, nil
-}
-
-func (m *memory) GetWorkOrderActivitySnapshot(ctx context.Context, workOrderID string) (core.WorkOrderActivitySnapshot, bool, error) {
-	m.mu.RLock()
-	defer m.mu.RUnlock()
-	order, ok := m.workOrders[workOrderID]
-	if !ok {
-		return core.WorkOrderActivitySnapshot{}, false, nil
-	}
-	if selected, hasWorkspace := WorkspaceFromContext(ctx); hasWorkspace && m.tasks[order.TaskID].Workspace != selected {
-		return core.WorkOrderActivitySnapshot{}, false, nil
-	}
-	snapshot, exists := m.workOrderActivitySnapshots[workOrderID]
-	return snapshot, exists, nil
-}
-
-func (m *memory) ListWorkOrderTranscriptCaptures(ctx context.Context, workOrderID string) ([]core.WorkOrderTranscriptCapture, error) {
-	m.mu.RLock()
-	defer m.mu.RUnlock()
-	order, ok := m.workOrders[workOrderID]
-	if !ok {
-		return []core.WorkOrderTranscriptCapture{}, nil
-	}
-	if selected, hasWorkspace := WorkspaceFromContext(ctx); hasWorkspace && m.tasks[order.TaskID].Workspace != selected {
-		return []core.WorkOrderTranscriptCapture{}, nil
-	}
-	return append([]core.WorkOrderTranscriptCapture(nil), m.workOrderTranscriptCaptures[workOrderID]...), nil
-}
-
-func workerClaimActorContext(ctx context.Context, workerID string) context.Context {
-	if workerID == "" {
-		return ctx
-	}
-	return WithActor(ctx, Actor{ID: WorkerActorID(workerID), Role: core.ActorWorker})
-}
-
-// AttemptCheckpointClaimEventMatches authorizes late audit reconciliation
-// only from the immutable claim event for the exact worker, session, and
-// attempt that created the preservation commit. This lets an attempt record a
-// successful push after observing authority loss without restoring lifecycle
-// authority or admitting a different task attempt.
-func AttemptCheckpointClaimEventMatches(event core.Event, workOrderID, workerID string, checkpoint core.WorkOrderAttemptCheckpoint) bool {
-	if event.Kind != "work_order.claimed" {
-		return false
-	}
-	var claimed core.WorkOrder
-	return json.Unmarshal(event.Payload, &claimed) == nil && claimed.ID == workOrderID &&
-		claimed.Stage == core.StageImplement && claimed.WorkerID == workerID &&
-		claimed.SessionID == checkpoint.SessionID && claimed.AttemptID == checkpoint.AttemptID
 }
 
 // ReleasedCheckpointClaimEventMatches binds a post-release renewal outcome to
@@ -998,27 +616,6 @@ func deliberateCheckpointRelease(order core.WorkOrder) bool {
 	return order.State == core.WorkOrderQueued && order.WorkerID == "" && order.ClaimantID == "" && order.SessionID == "" &&
 		(order.LastFailureMessage == core.WorkOrderReleaseReasonOperatorCheckpointReached ||
 			order.LastFailureMessage == core.WorkOrderReleaseReasonPlanRevisionRequested)
-}
-
-func AttemptCheckpointPayload(order core.WorkOrder, checkpoint core.WorkOrderAttemptCheckpoint) json.RawMessage {
-	return core.JSONPayload(map[string]any{
-		"task_id": order.TaskID, "work_order_id": order.ID, "attempt_id": checkpoint.AttemptID,
-		"termination_reason": checkpoint.TerminationReason, "commit_sha": checkpoint.CommitSHA,
-		"push_result": checkpoint.PushResult,
-	})
-}
-
-func AttemptCheckpointEventMatches(event core.Event, workOrderID, attemptID, commitSHA string) bool {
-	if event.Kind != "work_order.attempt_checkpointed" {
-		return false
-	}
-	var payload struct {
-		WorkOrderID string `json:"work_order_id"`
-		AttemptID   string `json:"attempt_id"`
-		CommitSHA   string `json:"commit_sha"`
-	}
-	return json.Unmarshal(event.Payload, &payload) == nil && payload.WorkOrderID == workOrderID &&
-		payload.AttemptID == attemptID && payload.CommitSHA == commitSHA
 }
 
 func clearActiveAttempt(order *core.WorkOrder) {
@@ -1282,8 +879,6 @@ func (m *memory) settleAcceptedReviewLocked(ctx context.Context, decision core.R
 			return err
 		}
 		order.State, order.Claimable, order.OperatorDirection, order.UpdatedAt = next, false, "", now
-		order.ContinuationSessionID, order.ContinuationAttemptID = "", ""
-		order.ContinuationHarness, order.ContinuationLaunchEnvironment = "", ""
 		m.workOrders[order.ID] = order
 		m.appendEventLocked(ctx, core.Event{TaskID: order.TaskID, JobID: order.JobID, Kind: "work_order.updated", Payload: WorkOrderEventPayload(order), At: now})
 	}
@@ -1299,20 +894,6 @@ func (m *memory) settleAcceptedReviewLocked(ctx context.Context, decision core.R
 		_, index, _ := m.findJobLocked(job.ID)
 		m.jobs[job.TaskID][index] = job
 		m.appendEventLocked(ctx, core.Event{TaskID: job.TaskID, JobID: job.ID, Kind: "job.updated", Payload: core.JSONPayload(job), At: now})
-	}
-	for id, implementation := range m.workOrders {
-		if implementation.TaskID != decision.TaskID || implementation.Stage != core.StageImplement || implementation.State != core.WorkOrderSubmitted {
-			continue
-		}
-		if implementation.ContinuationSessionID == "" && implementation.ContinuationAttemptID == "" &&
-			implementation.ContinuationHarness == "" && implementation.ContinuationLaunchEnvironment == "" {
-			continue
-		}
-		implementation.ContinuationSessionID, implementation.ContinuationAttemptID = "", ""
-		implementation.ContinuationHarness, implementation.ContinuationLaunchEnvironment = "", ""
-		implementation.UpdatedAt = now
-		m.workOrders[id] = implementation
-		m.appendEventLocked(ctx, core.Event{TaskID: implementation.TaskID, JobID: implementation.JobID, Kind: "work_order.updated", Payload: WorkOrderEventPayload(implementation), At: now})
 	}
 	return nil
 }
@@ -2232,29 +1813,6 @@ func (m *memory) ClaimWorkOrderCommand(ctx context.Context, lifecycleLease tasko
 	if !lifecycleLease.ValidForCommand(order.TaskID, string(core.WorkOrderCmdClaim)) {
 		return core.WorkOrder{}, fmt.Errorf("work-order claim requires a valid taskops lease")
 	}
-	if claim.WorkerID != "" {
-		// Worker owner admission under the mutex: the enrollment must exist,
-		// be unrevoked, and have an active owner. Its owner replaces any
-		// client-supplied owner (component-work-orders, Worker owner
-		// admission).
-		worker, ok := m.workers[claim.WorkerID]
-		if !ok || worker.Workspace != m.tasks[order.TaskID].Workspace {
-			return core.WorkOrder{}, fmt.Errorf("%w: worker %s is not enrolled", ErrWorkerUnauthorized, claim.WorkerID)
-		}
-		if !worker.RevokedAt.IsZero() {
-			return core.WorkOrder{}, fmt.Errorf("%w: worker %s", ErrWorkerUnauthorized, claim.WorkerID)
-		}
-		if err := RunWorkerOwnerTestHook(ctx, WorkerOwnerHookClaimOwnerRead); err != nil {
-			return core.WorkOrder{}, err
-		}
-		if !m.workerOwnerActiveLocked(worker) {
-			return core.WorkOrder{}, fmt.Errorf("%w: worker %s owner has no active workspace membership", ErrWorkerUnauthorized, claim.WorkerID)
-		}
-		claim.OwnerUserID = strings.TrimSpace(worker.OwnerUserID)
-		if err := RunWorkerOwnerTestHook(ctx, WorkerOwnerHookClaimOwnerLocked); err != nil {
-			return core.WorkOrder{}, err
-		}
-	}
 	if task := m.tasks[order.TaskID]; task.Assignee != nil && task.Assignee.UserID != claim.OwnerUserID {
 		return core.WorkOrder{}, fmt.Errorf("task %s is assigned to %s; only that assignee may claim its work orders", order.TaskID, task.Assignee.UserID)
 	}
@@ -2367,14 +1925,7 @@ func (m *memory) ClaimWorkOrderCommand(ctx context.Context, lifecycleLease tasko
 				return core.WorkOrder{}, fmt.Errorf("self-review forbidden: review session independence requires a session not used by another seat or the implementer")
 			}
 		}
-		if claim.WorkerID != "" {
-			if order.RequiredModel != "" && claim.Model != order.RequiredModel {
-				return core.WorkOrder{}, fmt.Errorf("worker review model %q does not match pinned seat model %q", claim.Model, order.RequiredModel)
-			}
-			order.ModelEnforcement = "worker-pinned"
-		} else {
-			order.ModelEnforcement = "self-reported"
-		}
+		order.ModelEnforcement = "self-reported"
 	}
 	if !order.ExecutionStartedAt.IsZero() && order.ExecutionDeadline.IsZero() && claim.ExecutionTimeout > 0 {
 		order.ExecutionDeadline = order.ExecutionStartedAt.Add(claim.ExecutionTimeout)
@@ -2393,7 +1944,7 @@ func (m *memory) ClaimWorkOrderCommand(ctx context.Context, lifecycleLease tasko
 		return core.WorkOrder{}, transitionErr
 	}
 	order.State, order.ClaimantID, order.SessionID, order.AttemptID = next, claim.ClaimantID, claim.SessionID, core.NewWorkOrderAttemptID()
-	order.Agent, order.Model, order.WorkerID, order.LeaseExpiresAt, order.UpdatedAt = claim.Agent, claim.Model, claim.WorkerID, now.Add(lease), now
+	order.Agent, order.Model, order.WorkerID, order.LeaseExpiresAt, order.UpdatedAt = claim.Agent, claim.Model, "", now.Add(lease), now
 	if claim.ClientToken != "" {
 		order.ClientTokenHash = tokenHash(claim.ClientToken)
 	}
@@ -2734,8 +2285,6 @@ func (m *memory) updateWorkOrderSubmissionLocked(ctx context.Context, lease task
 	}
 	if order.State == core.WorkOrderCompleted {
 		order.OperatorDirection = ""
-		order.ContinuationSessionID, order.ContinuationAttemptID = "", ""
-		order.ContinuationHarness, order.ContinuationLaunchEnvironment = "", ""
 	}
 	if command == core.WorkOrderCmdSubmitForReview && order.Stage == core.StageImplement && order.HeadSHA != "" {
 		task := m.tasks[order.TaskID]

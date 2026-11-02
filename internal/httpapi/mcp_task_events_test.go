@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"maps"
 	"net/http"
-	"net/http/httptest"
 	"reflect"
 	"slices"
 	"strings"
@@ -310,10 +309,6 @@ func TestMCPTaskEventsCursorRefusalsAndAuthorization(t *testing.T) {
 		if _, e := mcpReadCall(t, s, tc.token, "list_task_events", tc.args); !strings.Contains(e, tc.want) {
 			t.Fatalf("%s: err=%q want %q", name, e, tc.want)
 		}
-	}
-	request := httptest.NewRequest(http.MethodPost, "/mcp", nil).WithContext(context.WithValue(store.WithActor(t.Context(), store.SystemActor()), workerContextKey{}, core.Worker{ID: "worker", Workspace: "demo"}))
-	if _, e := s.callMCPTool(request, "list_task_events", base); e == nil {
-		t.Fatal("worker cursor read accepted")
 	}
 	if len(*queries) != reads {
 		t.Fatal("a refused cursor reached the store")

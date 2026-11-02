@@ -3,6 +3,7 @@ import type { NextAction, TaskFlow, TaskFlowAttempt, TaskFlowSideName, TaskFlowS
 import { callerIdentity } from './helpers/caller-identity'
 import { waitForSheetSettled } from './helpers/sheet'
 import { activityFrame, controlTaskStreams } from './helpers/task-streams'
+import { controlWorkspaceChanges } from './helpers/workspace-changes'
 
 // Task detail's Timeline and Flow tabs and the task flowchart
 // (req-operator-next-action AC-7.4 to AC-7.7; feature-operator-next-action
@@ -233,8 +234,6 @@ async function mockAPI(
         json: items.map((item) => ({ ...item, next_action: { ...action, choices: undefined } })),
         headers: { 'X-Conveyor-Total': '2', 'X-Conveyor-Limit': '100', 'X-Conveyor-Offset': '0' },
       })
-    if (path === '/v1/workers')
-      return route.fulfill({ json: { workers: [], worker_expected: false, worker_available: false } })
     return route.fulfill({ json: [] })
   })
   return {
@@ -266,6 +265,9 @@ const gateNode = (page: Page, id: string) => page.locator(`[data-flow-gate="${id
 const sideNode = (scope: Page | Locator, name: TaskFlowSideName) => scope.locator(`[data-flow-side="${name}"]`)
 
 async function openFlow(page: Page, url: string) {
+  // A Board sheet URL opens the Board; the fake workspace change stream keeps
+  // every surface off the dev server proxy's refused stream.
+  await controlWorkspaceChanges(page)
   await page.goto(url)
   await tab(page, 'Flow').click()
   await expect(chart(page)).toBeVisible()

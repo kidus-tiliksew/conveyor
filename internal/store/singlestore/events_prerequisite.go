@@ -13,7 +13,7 @@ const eventColumns = "id,task_id,job_id,kind,actor_id,actor_role,payload_json,at
 // writer freeze and allocator preparation belong to the operator procedure;
 // startup must not copy, rename, drop or synchronize any event table.
 func (s *Store) checkEventsPrerequisite(ctx context.Context) error {
-	const procedure = "complete the operator procedure in docs/sql/events-columnstore before starting Conveyor"
+	const procedure = "complete the operator procedure in docs/singlestore-events-cutover.md (including the v0.55.0 layout section) before starting Conveyor"
 	storage, err := s.eventTableStorage(ctx, "events_columnstore")
 	if err != nil {
 		return fmt.Errorf("check events_columnstore prerequisite: %w", err)

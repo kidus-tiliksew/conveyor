@@ -35,7 +35,12 @@ func (s *Store) ResolveCausalSystemDesignMerge(ctx context.Context, documentID, 
 		}
 		result.CausalEventValid = true
 		mergeKey := "conveyor:design-merge-judgment:" + documentID + ":" + strconv.FormatInt(causalEventID, 10)
-		if err := lockKey(ctx, tx, documentWorkspace(ctx)+":"+mergeKey); err != nil {
+		// The judgment's lock row also names its last suppression row or
+		// consulted event, so the next judgment waits until that record is
+		// visible before it decides (component-persistence, SingleStore
+		// claimed records).
+		claim := documentWorkspace(ctx) + ":" + mergeKey
+		if _, _, err := awaitClaimedRecord(ctx, tx, claim, documentWorkspace(ctx), ""); err != nil {
 			return err
 		}
 		var eventID int64
@@ -76,6 +81,9 @@ func (s *Store) ResolveCausalSystemDesignMerge(ctx context.Context, documentID, 
 				if _, insertErr := documentExec(ctx, tx, `INSERT INTO monitor_activity(workspace_id,kind,payload_json) VALUES(?,'system_design.drift_suppressed',?)`, documentWorkspace(ctx), string(payload)); insertErr != nil {
 					return insertErr
 				}
+				if insertErr := recordLastInserted(ctx, tx, claim, claimedMonitorActivityTable); insertErr != nil {
+					return insertErr
+				}
 				result.Proposal = monitor.ProposalSuppression{EventID: eventID, Status: status}
 				return nil
 			}
@@ -108,6 +116,9 @@ func (s *Store) ResolveCausalSystemDesignMerge(ctx context.Context, documentID, 
 				"delivery_task_id": causalTaskID, "merge_event_id": causalEventID, "merge_head_sha": commitSHA,
 				"matching_paths": matchingPaths, "consultation": "delivery_no_revision",
 			})}); err != nil {
+				return err
+			}
+			if err := recordLastInserted(ctx, tx, claim, claimedEventsTable); err != nil {
 				return err
 			}
 		}

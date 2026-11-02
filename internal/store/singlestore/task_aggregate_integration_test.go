@@ -202,7 +202,21 @@ func TestTaskAggregateConstraintsIntegration(t *testing.T) {
 		task := aggregateTask(ctx, "queue-failure")
 		task.State = core.TaskQueued
 		stream := logqueue.StreamFor(queue.DispatchTaskArgs{}.Kind(), task.ID)
-		_, err := s.log.Append(ctx, documentWorkspace(ctx), stream, 0, []eventlog.NewEvent{{Kind: logqueue.KindEnqueued, Payload: []byte(`{"max_attempts":"invalid"}`), At: time.Now().UTC()}})
+		malformed := []byte(`{"max_attempts":"invalid"}`)
+		// The driver refuses an append its job index fold cannot apply
+		// (component-durable-queue, The job index), so the malformed stream
+		// a database written before the index could hold is seeded below it.
+		if _, err := s.log.Append(ctx, documentWorkspace(ctx), stream, 0, []eventlog.NewEvent{{Kind: logqueue.KindEnqueued, Payload: malformed, At: time.Now().UTC()}}); err == nil {
+			t.Fatal("the log accepted an enqueue its fold cannot apply")
+		}
+		var position int64
+		taskTestOK(t, s.db.QueryRowContext(ctx, `SELECT COALESCE(MAX(position), 0) FROM event_log WHERE workspace_id=?`, documentWorkspace(ctx)).Scan(&position))
+		_, err := s.db.ExecContext(ctx, `INSERT INTO event_log (workspace_id, position, stream_id, version, kind, actor_id, actor_role, payload, at) VALUES (?, ?, ?, 1, ?, '', '', ?, ?)`,
+			documentWorkspace(ctx), position+1, string(stream), logqueue.KindEnqueued, malformed, time.Now().UTC())
+		taskTestOK(t, err)
+		_, err = s.db.ExecContext(ctx, `INSERT INTO event_log_streams (workspace_id, stream_id, version) VALUES (?, ?, 1) ON DUPLICATE KEY UPDATE version = 1`, documentWorkspace(ctx), string(stream))
+		taskTestOK(t, err)
+		_, err = s.db.ExecContext(ctx, `INSERT INTO event_log_positions (workspace_id, position) VALUES (?, ?) ON DUPLICATE KEY UPDATE position = VALUES(position)`, documentWorkspace(ctx), position+1)
 		taskTestOK(t, err)
 		if err = s.CreateTask(ctx, task); err == nil {
 			t.Fatal("malformed queue stream did not reject enqueue")

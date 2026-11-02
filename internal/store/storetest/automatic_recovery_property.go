@@ -176,7 +176,7 @@ func applyPropertyCondition(t *testing.T, st store.Store, ctx context.Context, i
 	t.Helper()
 	switch condition {
 	case "timed_out":
-		if _, err := ClaimWorkOrder(ctx, st, id, core.WorkOrderClaim{WorkerID: "worker", ClaimantID: "worker", SessionID: "timeout-" + id, ClientToken: "timeout-" + id, Lease: time.Hour, ExecutionTimeout: time.Millisecond}); err != nil {
+		if _, err := ClaimWorkOrder(ctx, st, id, core.WorkOrderClaim{ClaimantID: "worker", SessionID: "timeout-" + id, ClientToken: "timeout-" + id, Lease: time.Hour, ExecutionTimeout: time.Millisecond}); err != nil {
 			t.Fatal(err)
 		}
 		if _, err := taskops.New(st).TickOrderClock(ctx, time.Now().UTC().Add(time.Second)); err != nil {
@@ -191,7 +191,7 @@ func applyPropertyCondition(t *testing.T, st store.Store, ctx context.Context, i
 			t.Fatal(err)
 		}
 	case "expired":
-		if _, err := ClaimWorkOrder(ctx, st, id, core.WorkOrderClaim{WorkerID: "worker", ClaimantID: "worker", SessionID: "expire-" + id, ClientToken: "expire-" + id, Lease: time.Millisecond, ExecutionTimeout: time.Hour}); err != nil {
+		if _, err := ClaimWorkOrder(ctx, st, id, core.WorkOrderClaim{ClaimantID: "worker", SessionID: "expire-" + id, ClientToken: "expire-" + id, Lease: time.Millisecond, ExecutionTimeout: time.Hour}); err != nil {
 			t.Fatal(err)
 		}
 		if _, err := taskops.New(st).TickOrderClock(ctx, time.Now().UTC().Add(time.Second)); err != nil {
@@ -200,7 +200,7 @@ func applyPropertyCondition(t *testing.T, st store.Store, ctx context.Context, i
 	case "retry_limit":
 		claimAndRelease(t, st, ctx, id, "limit-"+id, core.WorkOrderRelease{SessionID: "limit-" + id, Outcome: core.WorkOrderOutcomeChildFailure, Reason: "once-" + id, FailureDetail: "once", AutomaticRetryLimit: 1, InitialRetryDelay: time.Nanosecond, MaximumRetryDelay: time.Nanosecond})
 		time.Sleep(time.Millisecond)
-		if _, err := ClaimWorkOrder(ctx, st, id, core.WorkOrderClaim{WorkerID: "worker", ClaimantID: "worker", SessionID: "limit-2-" + id, ClientToken: "limit-2-" + id, Lease: time.Hour, ExecutionTimeout: time.Hour}); err != nil {
+		if _, err := ClaimWorkOrder(ctx, st, id, core.WorkOrderClaim{ClaimantID: "worker", SessionID: "limit-2-" + id, ClientToken: "limit-2-" + id, Lease: time.Hour, ExecutionTimeout: time.Hour}); err != nil {
 			t.Fatal(err)
 		}
 		released, err := ReleaseWorkerClaim(ctx, st, id, "worker", core.WorkOrderRelease{SessionID: "limit-2-" + id, Outcome: core.WorkOrderOutcomeChildFailure, Reason: "twice-" + id, FailureDetail: "twice", AutomaticRetryLimit: 1})
@@ -208,7 +208,7 @@ func applyPropertyCondition(t *testing.T, st store.Store, ctx context.Context, i
 			t.Fatalf("retry limit %s=%+v err=%v", id, released, err)
 		}
 	case "claimed_lease":
-		if _, err := ClaimWorkOrder(ctx, st, id, core.WorkOrderClaim{WorkerID: "worker", ClaimantID: "worker", SessionID: "lease-" + id, ClientToken: "lease-" + id, Lease: time.Millisecond, ExecutionTimeout: time.Hour}); err != nil {
+		if _, err := ClaimWorkOrder(ctx, st, id, core.WorkOrderClaim{ClaimantID: "worker", SessionID: "lease-" + id, ClientToken: "lease-" + id, Lease: time.Millisecond, ExecutionTimeout: time.Hour}); err != nil {
 			t.Fatal(err)
 		}
 	default:
@@ -219,7 +219,7 @@ func applyPropertyCondition(t *testing.T, st store.Store, ctx context.Context, i
 func seedLiveClaim(t *testing.T, st store.Store, ctx context.Context, workspace string) string {
 	t.Helper()
 	id := seedRunningOrder(t, st, ctx, workspace)
-	if _, err := ClaimWorkOrder(ctx, st, id, core.WorkOrderClaim{WorkerID: "worker", ClaimantID: "worker", SessionID: "live-property", ClientToken: "live-property", Lease: 48 * time.Hour, ExecutionTimeout: 48 * time.Hour}); err != nil {
+	if _, err := ClaimWorkOrder(ctx, st, id, core.WorkOrderClaim{ClaimantID: "worker", SessionID: "live-property", ClientToken: "live-property", Lease: 48 * time.Hour, ExecutionTimeout: 48 * time.Hour}); err != nil {
 		t.Fatal(err)
 	}
 	return id

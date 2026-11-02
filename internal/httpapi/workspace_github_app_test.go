@@ -87,7 +87,7 @@ func TestWorkspaceGitHubAppHTTPFlow(t *testing.T) {
 		switch r.URL.Path {
 		case "/app-manifests/code/conversions":
 			conversions++
-			_ = json.NewEncoder(w).Encode(map[string]any{"id": 41, "slug": "conveyor-alpha", "client_id": "client", "pem": private})
+			_ = json.NewEncoder(w).Encode(map[string]any{"id": 41, "slug": "conveyor-alpha", "client_id": "client", "pem": private, "webhook_secret": "conversion-webhook-secret-from-github"})
 		case "/app/installations/12":
 			fmt.Fprint(w, `{"id":12,"app_id":41,"account":{"login":"org"}}`)
 		case "/app/installations/99":
@@ -117,7 +117,7 @@ func TestWorkspaceGitHubAppHTTPFlow(t *testing.T) {
 		}
 		w := httptest.NewRecorder()
 		server.Handler().ServeHTTP(w, r)
-		if strings.Contains(w.Body.String(), private) || strings.Contains(w.Body.String(), "http-installation-private-token") {
+		if strings.Contains(w.Body.String(), private) || strings.Contains(w.Body.String(), "http-installation-private-token") || strings.Contains(w.Body.String(), "conversion-webhook-secret-from-github") {
 			t.Fatal("HTTP response contains app secret")
 		}
 		return w
@@ -193,11 +193,20 @@ func TestWorkspaceGitHubAppHTTPFlow(t *testing.T) {
 		if result.Manifest["name"] != "Conveyor Alpha" || result.Manifest["public"] != true || result.Manifest["setup_on_update"] != true || result.Manifest["redirect_url"] != "https://conveyor.example/v1/workspaces/alpha/github-app/callback" {
 			t.Fatal("manifest contract")
 		}
-		// GitHub requires hook_attributes.url even with active=false.
-		// Assert the serialized HTTP response, not the construction map.
+		// Webhook delivery is active at the workspace receiver with the six
+		// events and checks read (component-identity-membership). Assert
+		// the serialized HTTP response, not the construction map.
 		hook, ok := result.Manifest["hook_attributes"].(map[string]any)
-		if !ok || hook["active"] != false || hook["url"] != "https://conveyor.example" {
-			t.Fatal("GitHub requires a URL for the disabled webhook")
+		if !ok || hook["active"] != true || hook["url"] != "https://conveyor.example/v1/github/webhook/alpha" {
+			t.Fatalf("manifest webhook=%v", result.Manifest["hook_attributes"])
+		}
+		events, _ := json.Marshal(result.Manifest["default_events"])
+		if string(events) != `["pull_request","check_suite","check_run","status","push","issues"]` {
+			t.Fatalf("manifest events=%s", events)
+		}
+		permissions, _ := result.Manifest["default_permissions"].(map[string]any)
+		if permissions["checks"] != "read" || permissions["statuses"] != "write" {
+			t.Fatalf("manifest permissions=%v", permissions)
 		}
 		if result.Manifest["url"] != "https://conveyor.example" || result.Manifest["setup_url"] != "https://conveyor.example/v1/workspaces/alpha/github-app/setup" {
 			t.Fatal("manifest homepage/setup URLs")
@@ -223,6 +232,11 @@ func TestWorkspaceGitHubAppHTTPFlow(t *testing.T) {
 	setupState := installationURL.Query().Get("state")
 	if got := call("GET", callback, "session-a", "", false); got.Code != 400 || conversions != 1 {
 		t.Fatal("callback replay")
+	}
+	// The callback stores the webhook secret GitHub's conversion returned
+	// (component-identity-membership, The webhook secret).
+	if secret, err := st.GetWorkspaceGitHubWebhookSecretForUse(t.Context(), "alpha"); err != nil || secret != "conversion-webhook-secret-from-github" {
+		t.Fatalf("conversion webhook secret not stored: err=%v", err)
 	}
 	if got := call("GET", "/setup?installation_id=99&setup_action=install&state="+setupState, "session-a", "", false); got.Code != 422 {
 		t.Fatal("foreign app installation accepted")

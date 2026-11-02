@@ -2,21 +2,21 @@
 
 Conveyor's MCP server is the protocol boundary agents work through. It lives
 at `<server>/mcp`, speaks streamable HTTP, and authenticates with a bearer
-token: a personal access token for interactive sessions, or the worker
-credential the launcher injects for dispatched ones. `conveyor mcp install`
+token: the personal access token of the person who started the agent
+session. Every work order is claimed by such a session over MCP; Conveyor
+launches no agent and has no worker or run-order plane (DEC-97(1)).
+`conveyor mcp install`
 creates a named personal connection for each saved server. Codex and Claude
 retrieve the saved credential through native header helpers; Cursor and OpenCode
 use separate server-specific token variables. Endpoints are literal canonical
 URLs. [Personal connections](#personal-connections) describes naming,
 two-server installation, migration, restart, and native connection
 troubleshooting. Config/parser acceptance is separate from native
-initialization and tools-list results. Personal installation does not replace
-worker credential attachments.
+initialization and tools-list results.
 
 Workspace scope follows the same rule as REST: pass `workspace_id`, or omit
 it only when the credential belongs to exactly one workspace. The operator
-investigation tools below always require an explicit `workspace_id`. Worker
-credentials are pinned to their own workspace automatically.
+investigation tools below always require an explicit `workspace_id`.
 
 Every tool names one capability, checked against the live role binding of the
 credential's owning user on every call. A refusal answers `workspace_not_found`,
@@ -29,10 +29,9 @@ from the role bundles, not from a list of tool names, so a tool added under a
 higher capability is refused for agents automatically. That refuses
 `add_task_dependency` and `attach_task_branch` (`operate_gates`), `set_assignee`
 (`set_assignee`), and `redispatch_work_order` (`recover_work`) with
-`<tool> requires an operator-scoped user credential`. Two separate rules refuse
+`<tool> requires an operator-scoped user credential`. A separate rule refuses
 agents the same way: the operator investigation tools below admit user
-credentials only, and `report_continuation` belongs to the launching client
-(`conveyor run` or a worker). `create_task` is the one maintainer act an agent
+credentials only. `create_task` is the one maintainer act an agent
 credential may perform, under the rules in its row below (DEC-60).
 
 The agent-facing discipline for using these tools well is the
@@ -102,9 +101,7 @@ launches.
 
 The ordinary `auth token` form remains explicit raw-token output for command
 substitution. Neither output form belongs in a config, log, or transcript.
-The CLI's normal server-bound environment precedence and worker child
-credentials are unchanged. Personal installation does not set up a worker's
-environment attachment; the harness pages describe that registration.
+The CLI's normal server-bound environment precedence is unchanged.
 
 ### Migration and connection checks
 
@@ -117,10 +114,9 @@ Unsupported TOML layouts, duplicate members, ambiguous endpoints, and name
 collisions are refused before publication. Codex adoption needs conventional
 `[mcp_servers.name]` tables.
 
-Legacy Cursor and OpenCode shared-environment registrations may serve a
-worker. Migration requires `--adopt` and a matching `CONVEYOR_ADDR` endpoint;
-otherwise they remain intact. The installer never repairs a worker attachment
-during a launch. Files are written atomically with owner-only permissions, and
+Legacy Cursor and OpenCode shared-environment registrations that an earlier
+worker attachment wrote migrate only with `--adopt` and a matching
+`CONVEYOR_ADDR` endpoint; otherwise they remain intact. Files are written atomically with owner-only permissions, and
 failed validation preserves the prior file. OpenCode keeps its owner marker
 inside each entry and refuses comments it cannot preserve.
 
@@ -157,8 +153,8 @@ native registration migration.
 ## Operator investigation (read only)
 
 These tools require a human session or PAT and the selected workspace's
-`view_workspace` capability. A viewer can use them without a claim. Agent,
-run-child, and worker credentials are refused. Missing membership and missing
+`view_workspace` capability. A viewer can use them without a claim. Agent
+credentials are refused. Missing membership and missing
 capability both return `workspace_not_found`, including on snapshot reuse.
 Reads never call lifecycle reconciliation, claim work, renew leases, enqueue
 jobs, record consultation events, or create/confirm proposals.
@@ -335,7 +331,7 @@ for how to turn the evidence into a separately authorized follow-up.
 | `list_work_orders` | List active, stale, or execution-timed-out spec, implement, and review orders, with their distinct queue, execution, and lease clocks, claimability, and refusal reasons. |
 | `claim_work_order` | Claim one order with a fresh `session_id` and secret `client_token`, optionally choosing a lease up to one hour. Claimant identity comes from the credential. Self-review is refused, as is any session or client token already used by the implementer or another seat. |
 | `get_work_order` | The full stage context: role prompt, task, served requirements, governance snapshot, approved plan, triage brief, bounce history, lineage context, artifact references, and (for review) the diff and PR description. `authority_source` says whether authority is `pinned` (claim-time snapshot) or `live`. |
-| `get_task_status` | The task's next action exactly as `GET /v1/tasks/{id}/next-action` returns it: label, who acts next, kind, judgment, summary, question, choices with their effects, what happens if nobody acts, deadline, blockers, and the current order and attempt. For an agent question, `details` carries the checkpoint's decision request, `checkpoint_class`, `citations`, and the cited documents' `pending_proposals`; an `authority_conflict` checkpoint lists confirm and dismiss for each cited pending version before the answer choice. A human credential reads any task in the workspace. An agent or run-child credential must pass the `work_order_id` and `session_id` of an order its session claimed or submitted for that task; every refusal is the same error, whether or not the task exists. Read only: it never renews the lease or records an observation. Worker credentials are refused. |
+| `get_task_status` | The task's next action exactly as `GET /v1/tasks/{id}/next-action` returns it: label, who acts next, kind, judgment, summary, question, choices with their effects, what happens if nobody acts, deadline, blockers, and the current order and attempt. For an agent question, `details` carries the checkpoint's decision request, `checkpoint_class`, `citations`, and the cited documents' `pending_proposals`; an `authority_conflict` checkpoint lists confirm and dismiss for each cited pending version before the answer choice. A human credential reads any task in the workspace. An agent or run-child credential must pass the `work_order_id` and `session_id` of an order its session claimed or submitted for that task; every refusal is the same error, whether or not the task exists. Read only: it never renews the lease or records an observation. |
 | `read_artifact` | Fetch one artifact's content, base64-encoded. Scoped to the claim and to the bounded lineage selection that served the reference; an artifact ID alone is not enough. |
 | `renew_work_order` | Renew the claim lease. Never extends the fixed execution deadline. Requires `claim_work`. |
 | `report_progress` | Report progress text for the operator's timeline. Requires `claim_work`. |
@@ -351,9 +347,9 @@ the binding is restored.
 | Tool | What it does |
 |---|---|
 | `submit_plan` | Submit a Markdown execution plan for a claimed plan-stage order. Requires the Approach, Files touched, Ordering, Risks, and Done criteria headings; decomposition must be empty. Validation failures leave the order claimed for correction. |
-| `submit_for_review` | End of implementation: opens or reuses the pushed branch's PR and dispatches the independent review round. A successful call ends the implementation claim. A launched session then exits; a self-claimed session continues the `conveyor-work` delivery loop. |
+| `submit_for_review` | End of implementation: opens or reuses the pushed branch's PR and dispatches the independent review round. A successful call ends the implementation claim, and the session continues the `conveyor-work` delivery loop. |
 | `submit_review_verdict` | Submit `approve` or `changes_requested` with a reason code, summary, feedback, requirement citations, done-criteria coverage, and a governance assessment, all validated against the pinned snapshot. |
-| `await_review` | Long-poll for the round's verdict on a submitted implementation order. A self-claimed implementation session calls it after submission; a session launched by `conveyor run` or a worker does not, because its launcher owns verdicts. |
+| `await_review` | Long-poll for the round's verdict on a submitted implementation order. The implementation session calls it after submission; a verifier or reviewer it started does not. |
 | `request_plan_revision` | The repository-reality escape hatch: the approved plan cannot be executed as written. Requires `claim_work`, the caller's own live implement claim, and a rationale; the order returns to the queue behind an operator gate. |
 
 ## Proposing authority
@@ -382,9 +378,8 @@ fire-and-forget. The server records nothing from the flag.
 
 | Tool | What it does |
 |---|---|
-| `report_usage` | Cumulative self-reported tokens and optional provider rate-limit status. Observational only; missing usage never blocks lifecycle progress. |
+| `report_usage` | Cumulative self-reported tokens and optional provider rate-limit status, stored with the usage record on the order. Observational only; missing usage never blocks lifecycle progress. `source` admits only `self_reported`; `worker_fallback` is refused. |
 | `upload_transcript` | Optional self-reported session transcript, capped at 4 MiB, passed through redaction, and stored as an audit artifact. |
-| `report_continuation` | Advisory harness-native continuation metadata for the active attempt, enabling resume after checkpoint or plan-revision releases. Requires `claim_work`; the launching client's user or worker credential only, never the agent session it launched. |
 
 ## Filing and operating
 

@@ -747,7 +747,7 @@ const flowMaxWait = 5 * time.Second
 
 func flowClaim(t *testing.T, st store.Store, ctx context.Context, id, session string, bound time.Duration) core.WorkOrder {
 	t.Helper()
-	order, err := ClaimWorkOrder(ctx, st, id, core.WorkOrderClaim{WorkerID: "worker-flow", ClaimantID: "worker-flow", SessionID: "session-" + session, ClientToken: "token-" + session, Lease: time.Hour, ExecutionTimeout: bound, Agent: "omp", Model: "opus"})
+	order, err := ClaimWorkOrder(ctx, st, id, core.WorkOrderClaim{ClaimantID: "worker-flow", SessionID: "session-" + session, ClientToken: "token-" + session, Lease: time.Hour, ExecutionTimeout: bound, Agent: "omp", Model: "opus"})
 	requireOK(t, err)
 	return order
 }

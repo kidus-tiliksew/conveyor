@@ -12,6 +12,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
+
 	"github.com/kidus-tiliksew/conveyor/internal/config"
 	"github.com/kidus-tiliksew/conveyor/internal/core"
 	"github.com/kidus-tiliksew/conveyor/internal/dispatch"
@@ -19,7 +20,6 @@ import (
 	"github.com/kidus-tiliksew/conveyor/internal/store"
 	"github.com/kidus-tiliksew/conveyor/internal/store/storetest"
 	githubtrigger "github.com/kidus-tiliksew/conveyor/internal/trigger/github"
-	"github.com/kidus-tiliksew/conveyor/internal/worker"
 	"github.com/kidus-tiliksew/conveyor/internal/workorder"
 )
 
@@ -251,6 +251,18 @@ func TestPostgresConformanceIntegration(t *testing.T) {
 				}
 			}, SeedEvents: func(t *testing.T, ctx context.Context, base int64, events []core.Event) []core.Event {
 				return postgresSeedEvents(t, st, ctx, base, events)
+			}, SeedWorkspaceConfigYAML: func(t *testing.T, ctx context.Context, raw string) {
+				// A row an earlier release wrote; the version is unchanged.
+				tag, err := st.pool.Exec(ctx, `UPDATE workspaces SET config_yaml=$1 WHERE id=$2`, raw, workspace)
+				if err != nil || tag.RowsAffected() != 1 {
+					t.Fatalf("seed workspace config: rows=%d err=%v", tag.RowsAffected(), err)
+				}
+			}, WorkspaceConfigYAML: func(t *testing.T, ctx context.Context) string {
+				var raw string
+				if err := st.pool.QueryRow(ctx, `SELECT config_yaml FROM workspaces WHERE id=$1`, workspace).Scan(&raw); err != nil {
+					t.Fatal(err)
+				}
+				return raw
 			}, SeedSetupContract: func(t *testing.T, ctx context.Context, taskID, raw string) {
 				if _, err := st.pool.Exec(ctx, `UPDATE tasks SET setup_contract=$1::jsonb WHERE workspace_id=$2 AND id=$3`, raw, workspace, taskID); err != nil {
 					t.Fatal(err)
@@ -295,8 +307,6 @@ func TestPostgresConformanceIntegration(t *testing.T) {
 					return time.Time{}
 				}
 				return lastUsed.UTC()
-			}, WorkerService: func(*testing.T) storetest.WorkerExercise {
-				return conformanceWorkerExercise(st, cfg)
 			}, LineageHTTP: func(*testing.T) http.Handler {
 				// The shared-token operator fixture (component-lineage).
 				server := httpapi.NewServer(st)
@@ -311,26 +321,6 @@ func TestPostgresConformanceIntegration(t *testing.T) {
 func workspaceFromArtifactContext(ctx context.Context) string {
 	ws, _ := store.WorkspaceFromContext(ctx)
 	return ws
-}
-
-// conformanceWorkerExercise builds the real worker service over one
-// conformance fixture; storetest cannot import internal/worker
-// (component-verification-strategy).
-func conformanceWorkerExercise(st store.Store, cfg *config.Config) storetest.WorkerExercise {
-	provider := func(context.Context) (*config.Config, error) { return cfg, nil }
-	service := &worker.Service{Store: st, WorkOrders: &workorder.Service{Store: st, ConfigProvider: provider}, ConfigProvider: provider}
-	return storetest.WorkerExercise{
-		ListClaimable: func(ctx context.Context, enrolled core.Worker) ([]core.WorkOrder, error) {
-			items, err := service.ListClaimable(ctx, enrolled)
-			orders := make([]core.WorkOrder, 0, len(items))
-			for _, item := range items {
-				orders = append(orders, item.Order)
-			}
-			return orders, err
-		},
-		ListVisibleOrders: service.ListVisibleOrders,
-		ClaimForWorker:    service.ClaimForWorker,
-	}
 }
 
 // verificationClaimReadWorkspaces routes the backend's verification claim

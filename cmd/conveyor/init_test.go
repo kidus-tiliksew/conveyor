@@ -118,8 +118,8 @@ func TestDefaultInitConfigWritesPolicyOnly(t *testing.T) {
 			t.Fatalf("%s timeout = %q, want %q", stage, got, want)
 		}
 	}
-	if len(loaded.Review.Seats) != 1 || loaded.MaxBounces != 10 || loaded.Harnesses != nil || loaded.Setups != nil {
-		t.Fatalf("generated policy = seats %d bounces %d harnesses %v setups %v", len(loaded.Review.Seats), loaded.MaxBounces, loaded.Harnesses, loaded.Setups)
+	if len(loaded.Review.Seats) != 1 || loaded.MaxBounces != 10 || loaded.Review.Seats[0] != (config.ReviewSeat{}) {
+		t.Fatalf("generated policy = seats %+v bounces %d", loaded.Review.Seats, loaded.MaxBounces)
 	}
 	if loaded.Database.URL != "postgres://init@db.invalid/conveyor" || loaded.Workspace != "demo" || loaded.Repos[0].Base != "trunk" || loaded.Repos[0].GitHub != "example/app" {
 		t.Fatalf("deployment identity = database %+v workspace %q repos %+v", loaded.Database, loaded.Workspace, loaded.Repos)
@@ -130,31 +130,51 @@ func TestDefaultInitConfigWritesPolicyOnly(t *testing.T) {
 // DEC-56, with a harness, a default setup, and executor models.
 func legacyExecutorInitConfig(t *testing.T, databaseURL string, answers initAnswers) []byte {
 	t.Helper()
-	harness := config.HarnessTemplates()[0].Harness
+	const harness = "codex"
 	settings := config.ContextualExecutionSettings{
 		ControlPlane: config.ControlPlaneSettings{
 			Triage:   config.ModelTimeoutSettings{Model: "gpt-5.6-luna", Effort: "high", TimeoutText: "20m"},
 			Planning: config.PlanningSettings{Model: "gpt-5.6-luna", Effort: "high", TimeoutText: "20m"},
 		},
-		Spec:           config.ImplementationSettings{Harness: harness.Name, Model: "gpt-5.6-sol", ModelPolicy: config.ModelPolicyExplicit, Effort: "high", TimeoutText: "30m"},
-		Implementation: config.ImplementationSettings{Harness: harness.Name, Model: "gpt-5.6-sol", ModelPolicy: config.ModelPolicyExplicit, Effort: "high", TimeoutText: "4h"},
+		Spec:           config.ImplementationSettings{Harness: harness, Model: "gpt-5.6-sol", ModelPolicy: config.ModelPolicyExplicit, Effort: "high", TimeoutText: "30m"},
+		Implementation: config.ImplementationSettings{Harness: harness, Model: "gpt-5.6-sol", ModelPolicy: config.ModelPolicyExplicit, Effort: "high", TimeoutText: "4h"},
 		Review:         config.ReviewExecutionSettings{Execution: config.ExecutionMCP, TimeoutText: "1h"},
 	}
-	review := config.ReviewPanel{Seats: []config.ReviewSeat{{Model: "gpt-5.6-terra", Harness: harness.Name, Effort: "high"}}}
+	review := config.ReviewPanel{Seats: []config.ReviewSeat{{Model: "gpt-5.6-terra", Harness: harness, Effort: "high"}}}
 	data, err := yaml.Marshal(config.Config{
 		Workspace: answers.WorkspaceID, MaxBounces: 10,
 		WorkOrderQueueTimeoutText: config.DefaultWorkOrderQueueTimeoutText,
 		Database:                  config.DatabaseForURL(databaseURL),
 		ExecutionSettings:         &settings,
-		Harnesses:                 []config.Harness{harness},
 		Review:                    review,
-		Setups:                    []config.ExecutionSetup{{Name: "default", ExecutionSettings: settings, Review: review, RefreshReview: config.RefreshReviewDelta}},
-		DefaultSetup:              "default",
 		Execution:                 config.ExecutionPolicy{SpecApproval: true, MergeApproval: true, ImplementConcurrency: 1, ReviewConcurrency: 1, FirstActivityTimeoutText: config.DefaultFirstActivityTimeoutText},
 		Repos:                     []config.Repo{{Name: answers.RepositoryName, URL: answers.RepositoryURL, GitHub: initGitHubSlug(answers.RepositoryURL), Base: answers.BaseBranch, InstallConveyor: config.InstallSwitch(true)}},
 		Monitor:                   config.MonitorConfig{PollIntervalText: "1m", StartupWindowText: "24h"},
 	})
 	if err != nil {
+		t.Fatal(err)
+	}
+	// The retired harness registry and setups stay authored YAML only.
+	var root map[string]any
+	if err = yaml.Unmarshal(data, &root); err != nil {
+		t.Fatal(err)
+	}
+	asYAML := func(value any) any {
+		encoded, marshalErr := yaml.Marshal(value)
+		if marshalErr != nil {
+			t.Fatal(marshalErr)
+		}
+		var decoded any
+		if marshalErr = yaml.Unmarshal(encoded, &decoded); marshalErr != nil {
+			t.Fatal(marshalErr)
+		}
+		return decoded
+	}
+	setting, panel := asYAML(settings), asYAML(review)
+	root["harnesses"] = []any{map[string]any{"name": harness, "mcp_transport": "toml_override", "command": []any{"codex", "exec", "{prompt}", "{mcp_config}"}, "probe_command": []any{"codex", "--version"}, "probe_timeout": "10s"}}
+	root["setups"] = []any{map[string]any{"name": "default", "execution_settings": setting, "review": panel, "refresh_review": config.RefreshReviewDelta}}
+	root["default_setup"] = "default"
+	if data, err = yaml.Marshal(root); err != nil {
 		t.Fatal(err)
 	}
 	return data
@@ -181,7 +201,7 @@ func TestInitializeDeploymentLoadsLegacyExecutorConfig(t *testing.T) {
 	if readErr != nil || string(after) != string(legacy) {
 		t.Fatalf("legacy config was rewritten: %v", readErr)
 	}
-	if _, loadErr := config.Load(path); loadErr != nil {
+	if _, loadErr := config.LoadClient(path, nil); loadErr != nil {
 		t.Fatalf("legacy file no longer loads as a client document: %v", loadErr)
 	}
 }

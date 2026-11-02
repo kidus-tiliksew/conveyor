@@ -45,7 +45,7 @@ func RunZeroSetupReviewSeatsConformance(t *testing.T, x Fixture, sweep ReviewSwe
 			stored, err := st.GetTask(ctx, task.ID)
 			requireOK(t, err)
 			if stored.SetupContract.HasFrozenPolicy() != tc.frozen || (stored.SetupContract.Review.Seats != nil) != tc.frozen ||
-				(!tc.frozen && !reflect.DeepEqual(stored.SetupContract, config.ExecutionSetup{})) {
+				(!tc.frozen && !reflect.DeepEqual(stored.SetupContract, config.PolicyContract{})) {
 				t.Fatalf("setup contract read back as %+v, want frozen=%t", stored.SetupContract, tc.frozen)
 			}
 			if _, err := sweep(ctx, st, cfg, automaticSweepHead, time.Now().UTC().Add(time.Hour)); err != nil {
@@ -58,7 +58,7 @@ func RunZeroSetupReviewSeatsConformance(t *testing.T, x Fixture, sweep ReviewSwe
 	}
 	t.Run("FrozenSeatCountsSurvive", func(t *testing.T) {
 		for _, want := range []int{0, 2} {
-			setup := config.ExecutionSetup{Review: config.ReviewPanel{Seats: make([]config.ReviewSeat, want)}}
+			setup := config.PolicyContract{Review: config.ReviewPanel{Seats: make([]config.ReviewSeat, want)}}
 			task := core.Task{ID: core.NewTaskID(), Workspace: workspace, Repo: "conveyor", BaseBranch: "main", State: core.TaskRunning, NextStage: core.StageReview, SetupContract: setup, CreatedAt: time.Now().UTC()}
 			task.Branch = "conveyor/task-" + task.ID
 			requireOK(t, st.CreateTask(ctx, task))

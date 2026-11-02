@@ -99,8 +99,6 @@ async function mockAPI(page: Page) {
       })
     if (path === '/v1/system-designs') return route.fulfill({ json: [design] })
     if (path === '/v1/system-designs/design-old') return route.fulfill({ json: design })
-    if (path === '/v1/workers')
-      return route.fulfill({ json: { workers: [], worker_expected: false, worker_available: false } })
     return route.fulfill({ json: [] })
   })
 }

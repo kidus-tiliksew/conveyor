@@ -51,7 +51,7 @@ func approvedMergeFixtureWithScopeAndGate(t *testing.T, githubRepo, scope string
 	t.Helper()
 	ctx := store.WithWorkspace(store.WithActor(context.Background(), store.SystemActor()), "test")
 	st := store.NewMemory()
-	task := core.Task{ID: "merge-task", Workspace: "test", Repo: "app", BaseBranch: "main", Branch: "conveyor/merge-task", State: core.TaskApproved, MergeApproval: mergeApproval, SetupContract: config.ExecutionSetup{RefreshReview: scope}, CreatedAt: time.Now()}
+	task := core.Task{ID: "merge-task", Workspace: "test", Repo: "app", BaseBranch: "main", Branch: "conveyor/merge-task", State: core.TaskApproved, MergeApproval: mergeApproval, SetupContract: config.PolicyContract{RefreshReview: scope}, CreatedAt: time.Now()}
 	if err := st.CreateTask(ctx, task); err != nil {
 		t.Fatal(err)
 	}

@@ -89,9 +89,6 @@ async function mockServer(page: Page, server: Server) {
         json: items,
       })
     }
-    if (url.pathname === '/v1/workers') {
-      return route.fulfill({ json: { workers: [], worker_expected: false, worker_available: false } })
-    }
     if (url.pathname === '/v1/tasks' && request.method() === 'POST') {
       return route.fulfill({ status: 201, json: { ...task(workspace), id: `${workspace}-created` } })
     }

@@ -118,8 +118,6 @@ async function mockAPI(page: Page, detail: () => object, action: () => NextActio
         json: [detail()],
         headers: { 'X-Conveyor-Total': '1', 'X-Conveyor-Limit': '50', 'X-Conveyor-Offset': '0' },
       })
-    if (path === '/v1/workers')
-      return route.fulfill({ json: { workers: [], worker_expected: false, worker_available: false } })
     if (request.method() !== 'GET') {
       // The workspace scope is the client's own query parameter; everything
       // else must be the server's method and path verbatim.
@@ -193,6 +191,8 @@ const runningOrder = {
   created_at: timestamp,
   queue_entered_at: timestamp,
   updated_at: timestamp,
+  // The server records no activity snapshot (DEC-97(1)); a stale response
+  // that still carries one renders nothing from it.
   activity_snapshot: {
     attempt_id: 'attempt-running',
     content: 'running focused tests\nall green so far',
@@ -262,11 +262,11 @@ for (const surface of [
       await expect(page.getByText(empty)).toHaveCount(0)
     }
 
-    // The stop affordance and the client machine activity render once, in the box.
+    // The stop affordance renders once, in the box, with no client machine activity.
     await expect(page.getByRole('button', { name: 'Stop attempt' })).toHaveCount(1)
     await expect(card.getByRole('button', { name: 'Stop attempt' })).toBeVisible()
-    await expect(page.getByRole('region', { name: 'Client machine activity' })).toHaveCount(1)
-    await expect(card.getByRole('region', { name: 'Client machine activity' })).toBeVisible()
+    await expect(page.getByRole('region', { name: 'Client machine activity' })).toHaveCount(0)
+    await expect(page.getByText('running focused tests')).toHaveCount(0)
 
     // The box sits directly above the Activity heading.
     const activityHeading = page.getByRole('heading', { name: 'Activity', exact: true })
@@ -335,6 +335,76 @@ for (const surface of [`/w/demo/tasks/${taskId}`, `/w/demo/tasks/${taskId}/full`
   })
 }
 
+// A disabled choice's reason prints in one block under the row, naming the
+// choice, so every button on the row keeps one height and one line
+// (feature-operator-next-action NA-6; component-web-task-surfaces).
+for (const width of [390, 1280]) {
+  test(`disabled choices keep the row aligned and list their reasons under it at ${width} px`, async ({ page }) => {
+    await page.setViewportSize({ width, height: 900 })
+    const parked: NextAction = {
+      label: 'Decide on a parked task',
+      actor: 'operator',
+      kind: 'parked',
+      judgment: true,
+      summary: 'This task is parked.',
+      question: 'Put it back, or close it?',
+      deadline: null,
+      choices: [
+        ['recover', 'Recover', 'redispatch', 'recover_work', true],
+        ['close', 'Close', 'close', 'operate_gates', false],
+        ['start_over', 'Start over', 'restart', 'operate_gates', false],
+      ].map(([id, label, route, capability, allowed]) => ({
+        id: String(id),
+        label: String(label),
+        effect: `${label} effect.`,
+        method: 'POST',
+        path: `/v1/tasks/${taskId}/${route}`,
+        capability: String(capability),
+        allowed: Boolean(allowed),
+      })),
+      details: {},
+    }
+    await mockAPI(
+      page,
+      () => activity('parked', parked),
+      () => parked,
+    )
+    await page.goto(`/w/demo/tasks/${taskId}/full`)
+    const card = page.getByRole('region', { name: 'Next action' })
+    const row = card.locator('[data-choice-row]')
+    await expect(row).toHaveAttribute('data-choice-row', 'row')
+    const buttons = row.getByRole('button')
+    await expect(buttons).toHaveText(['Recover', 'Close', 'Start over'])
+    const reasons = card.locator('[data-choice-reasons] li')
+    await expect(reasons).toHaveText([
+      'Close: Needs the operate gates capability.',
+      'Start over: Needs the operate gates capability.',
+    ])
+    for (const [index, choice] of [
+      [1, 'close'],
+      [2, 'start_over'],
+    ] as const) {
+      const id = await card.locator(`[data-choice-reason="${choice}"]`).getAttribute('id')
+      await expect(buttons.nth(index)).toHaveAttribute('aria-describedby', id ?? '')
+    }
+    await expect(buttons.nth(0)).not.toHaveAttribute('aria-describedby')
+    // No reason sits inside the row, and every button shares one line and height.
+    await expect(row.getByText('Needs the operate gates capability.')).toHaveCount(0)
+    const boxes = await buttons.evaluateAll((elements) =>
+      elements.map((element) => {
+        const box = element.getBoundingClientRect()
+        return { top: box.top, height: box.height }
+      }),
+    )
+    for (const box of boxes) {
+      expect(Math.abs(box.top - boxes[0].top)).toBeLessThanOrEqual(1)
+      expect(Math.abs(box.height - boxes[0].height)).toBeLessThanOrEqual(1)
+    }
+    const overflow = await page.evaluate(() => document.documentElement.scrollWidth - window.innerWidth)
+    expect(overflow).toBeLessThanOrEqual(0)
+  })
+}
+
 test('the card carries the choices of an operator action outside the human gate', async ({ page }) => {
   const question: NextAction = {
     label: 'Agent question',
@@ -374,12 +444,13 @@ test('the card carries the choices of an operator action outside the human gate'
   await page.goto(`/w/demo/tasks/${taskId}`)
   await expect(page.getByRole('region', { name: 'Human gate' })).toHaveCount(0)
   const card = page.getByRole('region', { name: 'Next action' })
-  // Every server choice renders; one the caller may not take is disabled with
-  // the reason beside it, and each carries the server's endpoint.
+  // Every server choice renders; one the caller may not take is disabled, its
+  // reason prints in the block under the row, and each carries the server's
+  // endpoint.
   const choices = card.locator('[data-next-action-choices]').getByRole('button')
   await expect(choices).toHaveText(['Answer', 'Close'])
   await expect(choices.nth(1)).toBeDisabled()
-  await expect(card.getByText('Needs the operate gates capability.')).toBeVisible()
+  await expect(card.locator('[data-choice-reason="close"]')).toHaveText('Close: Needs the operate gates capability.')
   await expect(choices.nth(0)).toHaveAttribute('data-endpoint', 'POST /v1/work-orders/order-impl-1/answer')
 
   // A choice that carries typed input asks for it before sending, and a
@@ -598,8 +669,19 @@ function mergeGateActivity(state: string) {
   }
 }
 
-for (const state of ['CONFLICTING', 'STALE', 'UNKNOWN']) {
-  test(`the merge_approval gate refuses Merge at ${state} with the server's reason`, async ({ page }) => {
+// The merge readiness in plain words above the merge-approval choices
+// (component-web-task-surfaces, Next-action card).
+const mergeStatusCopy: Record<string, string> = {
+  UNKNOWN: "Merge not available yet. GitHub hasn't reported whether #42 can merge. Open #42",
+  CONFLICTING: "Can't merge. #42 conflicts with its base branch. Open #42",
+  STALE: "Can't merge. #42 moved since review. Open #42",
+  // Any other refusal prints the server's text verbatim.
+  MERGED_HEAD_MISMATCH:
+    'Merge is offered only when the pull request is MERGEABLE; it is MERGED_HEAD_MISMATCH. Open #42',
+}
+
+for (const [state, copy] of Object.entries(mergeStatusCopy)) {
+  test(`the merge_approval gate refuses Merge at ${state} and states why above the choices`, async ({ page }) => {
     await mockAPI(
       page,
       () => mergeGateActivity(state),
@@ -607,9 +689,64 @@ for (const state of ['CONFLICTING', 'STALE', 'UNKNOWN']) {
     )
     await page.goto(`/w/demo/tasks/${taskId}/full`)
     const gate = page.getByRole('region', { name: 'Human gate' })
-    await expect(gate.locator('[data-choice="approve"]')).toBeEnabled()
-    await expect(gate.locator('[data-merge-at-gate]')).toBeDisabled()
-    await expect(gate.getByText(`it is ${state}.`)).toBeVisible()
+    const approve = gate.locator('[data-choice="approve"]')
+    await expect(approve).toBeEnabled()
+    // With Merge refused, the first enabled choice is the one primary.
+    await expect(approve).toHaveClass(/bg-primary/)
+    const merge = gate.locator('[data-merge-at-gate]')
+    await expect(merge).toBeDisabled()
+    const status = gate.locator('[data-merge-status]')
+    await expect(status).toHaveAttribute('data-merge-status', state)
+    await expect(status).toHaveText(copy)
+    await expect(merge).toHaveAttribute('aria-describedby', (await status.getAttribute('id')) ?? '')
+    // The status line carries the refusal, so no reason line repeats it.
+    await expect(gate.locator('[data-choice-reasons]')).toHaveCount(0)
+  })
+}
+
+test('a merge refusal without a readiness read reads as not available yet', async ({ page }) => {
+  await mockAPI(
+    page,
+    () => ({ ...activity('awaiting_human', mergeApproval('UNKNOWN')), at_merge_gate: true }),
+    () => mergeApproval('UNKNOWN'),
+  )
+  await page.goto(`/w/demo/tasks/${taskId}/full`)
+  const status = page.getByRole('region', { name: 'Human gate' }).locator('[data-merge-status]')
+  await expect(status).toHaveAttribute('data-merge-status', 'UNKNOWN')
+  await expect(status).toHaveText("Merge not available yet. GitHub hasn't reported whether the pull request can merge.")
+})
+
+for (const width of [390, 1280]) {
+  test(`the merge_approval grid puts Merge on its own line at ${width} px`, async ({ page }) => {
+    await page.setViewportSize({ width, height: 900 })
+    for (const state of ['MERGEABLE', 'UNKNOWN']) {
+      await page.unrouteAll({ behavior: 'ignoreErrors' })
+      await mockAPI(
+        page,
+        () => mergeGateActivity(state),
+        () => mergeApproval(state),
+      )
+      await page.goto(`/w/demo/tasks/${taskId}/full`)
+      const gate = page.getByRole('region', { name: 'Human gate' })
+      const row = gate.locator('[data-choice-row]')
+      await expect(row).toHaveAttribute('data-choice-row', 'grid')
+      const merge = gate.locator('[data-merge-at-gate]')
+      const approve = gate.locator('[data-choice="approve"]')
+      await expect(merge).toBeVisible()
+      await expect(row.locator('button.bg-primary')).toHaveCount(1)
+      await expect(state === 'MERGEABLE' ? merge : approve).toHaveClass(/bg-primary/)
+      const rowBox = await row.boundingBox()
+      const mergeBox = await merge.boundingBox()
+      const approveBox = await approve.boundingBox()
+      if (!rowBox || !mergeBox || !approveBox) throw new Error('missing layout box')
+      // Merge spans the grid; Approve sits on the next line in a half-width cell.
+      expect(Math.abs(mergeBox.width - rowBox.width)).toBeLessThanOrEqual(1)
+      expect(approveBox.y).toBeGreaterThanOrEqual(mergeBox.y + mergeBox.height)
+      expect(approveBox.width).toBeLessThan(rowBox.width * 0.6)
+      expect(Math.abs(approveBox.height - mergeBox.height)).toBeLessThanOrEqual(1)
+      const overflow = await page.evaluate(() => document.documentElement.scrollWidth - window.innerWidth)
+      expect(overflow).toBeLessThanOrEqual(0)
+    }
   })
 }
 
@@ -633,6 +770,10 @@ test('Merge at MERGEABLE confirms the reviewed head and PR, then posts the choic
   // Approve stays beside Merge, and the merge choice is not also a one-click button.
   await expect(gate.locator('[data-choice="approve"]')).toBeEnabled()
   await expect(gate.locator('[data-choice="merge"]')).toHaveCount(0)
+  await expect(gate.locator('[data-merge-status]')).toHaveText(
+    `Ready to merge at reviewed head ${reviewedHead.slice(0, 7)}. Open #42`,
+  )
+  await expect(gate.locator('[data-merge-at-gate]')).toHaveClass(/bg-primary/)
   await gate.locator('[data-merge-at-gate]').click()
   // Opening the confirm sends nothing.
   const dialog = page.getByRole('dialog', { name: 'Confirm merge' })

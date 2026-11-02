@@ -162,7 +162,6 @@ async function mockAPIs(page: Page, role = 'operator', body: unknown = registry)
       }
       return route.fulfill({ json: { document: config, version: 1 } })
     }
-    if (path === '/v1/workers') return route.fulfill({ json: { workers: [], worker_expected: false } })
     if (path === '/v1/workspace')
       return route.fulfill({ json: { workspace: 'demo', max_bounces: 3, database: 'postgres', repos: [] } })
     return route.fulfill({ json: [] })
@@ -182,7 +181,7 @@ async function openVerification(page: Page) {
 test('manager tab orders tabs, has no evidence switch and saves verify_stage', async ({ page }) => {
   const api = await mockAPIs(page)
   await page.goto('/w/demo/workspace')
-  await expect(page.getByRole('tab')).toHaveText([/^General/, /^Policy/, /^Verification/, /^Workers/, /^Members/])
+  await expect(page.getByRole('tab')).toHaveText([/^General/, /^Policy/, /^Verification/, /^Members/])
   await expect(page.getByLabel('Require verification evidence')).toHaveCount(0)
 
   await page.getByRole('tab', { name: 'Verification' }).click()

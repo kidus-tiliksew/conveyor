@@ -622,7 +622,7 @@ func TestUniqueClaimsOutliveUnseenRowsIntegration(t *testing.T) {
 		}
 	})
 	t.Run("intake key padded spelling is distinct", func(t *testing.T) {
-		padded := intakeTask("padded-winner", "padded ", "padded-a")
+		padded := intakeTask("padded-intake-winner", "padded ", "padded-a")
 		if err := st.CreateTask(intakeCtx, padded); err != nil {
 			t.Fatal(err)
 		}

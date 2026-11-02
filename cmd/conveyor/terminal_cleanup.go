@@ -6,17 +6,13 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
-	"strings"
 
-	"github.com/kidus-tiliksew/conveyor/internal/config"
 	"github.com/kidus-tiliksew/conveyor/internal/core"
-	workerservice "github.com/kidus-tiliksew/conveyor/internal/worker"
 )
 
-type terminalCleanupStatus struct {
-	Terminal  bool `json:"terminal"`
-	Completed bool `json:"completed"`
-}
+// conveyor done records each local cleanup on the user route
+// POST /v1/tasks/{id}/worktree-cleanup with the caller's credential. The CLI
+// calls no worker route (DEC-95; component-git-delivery).
 
 type terminalCleanupRecord struct {
 	Repository      string   `json:"repository"`
@@ -32,125 +28,35 @@ type terminalCleanupReceipt struct {
 	Recorded  bool `json:"recorded"`
 }
 
-type terminalCleanupAttempt struct {
-	Completed bool
-	Pending   bool
-	Cleanup   worktreeCleanupResult
+func terminalCleanupPath(taskID string) string {
+	return "/v1/tasks/" + url.PathEscape(taskID) + "/worktree-cleanup"
 }
 
-func terminalCleanupPath(dispatch, taskID string) (string, error) {
-	escaped := url.PathEscape(taskID)
-	switch dispatch {
-	case "run":
-		return "/v1/tasks/" + escaped + "/worktree-cleanup", nil
-	case "worker":
-		return "/v1/worker/tasks/" + escaped + "/worktree-cleanup", nil
-	default:
-		return "", fmt.Errorf("unsupported cleanup dispatch %q", dispatch)
-	}
-}
-
-func (c *client) terminalCleanupStatusContext(ctx context.Context, credential, dispatch, taskID string) (terminalCleanupStatus, error) {
-	var result terminalCleanupStatus
-	path, err := terminalCleanupPath(dispatch, taskID)
-	if err != nil {
-		return result, err
-	}
-	err = c.workerDoContext(ctx, http.MethodGet, path, nil, &result, credential)
-	return result, err
-}
-
-func (c *client) recordTerminalCleanupContext(ctx context.Context, credential, dispatch, taskID string, record terminalCleanupRecord) (terminalCleanupReceipt, error) {
+func (c *client) recordTerminalCleanupContext(ctx context.Context, taskID string, record terminalCleanupRecord) (terminalCleanupReceipt, error) {
 	var result terminalCleanupReceipt
-	path, err := terminalCleanupPath(dispatch, taskID)
-	if err != nil {
-		return result, err
-	}
 	payload, err := json.Marshal(record)
 	if err != nil {
 		return result, err
 	}
-	err = c.workerDoContext(ctx, http.MethodPost, path, payload, &result, credential)
+	err = c.workerDoContext(ctx, http.MethodPost, terminalCleanupPath(taskID), payload, &result, c.token)
 	return result, err
 }
 
-var cleanupTerminalTaskWorktree = func(ctx context.Context, local *config.Config, item workerservice.DispatchOrder) (worktreeCleanupResult, error) {
-	if local == nil {
-		return worktreeCleanupResult{}, fmt.Errorf("local execution configuration is unavailable")
-	}
-	if strings.TrimSpace(item.Repository.URL) == "" {
-		if repository, ok := local.Repo(item.Task.Repo); ok {
-			item.Repository = repository
-		}
-	}
-	primary, err := resolveHarnessWorkingDirectory(ctx, local, item)
-	if err != nil {
-		return worktreeCleanupResult{}, err
-	}
-	return removeTaskWorktreeAtPrimary(ctx, primary, item.Task.Branch, item.Task.State)
-}
-
-// attemptTerminalWorktreeCleanup checks the durable completion marker before
-// touching Git. Cleanup and completion recording are separate so a temporary
-// recording failure retries safely after the local worktree is already gone.
-func attemptTerminalWorktreeCleanup(ctx context.Context, c *client, credential string, item workerservice.DispatchOrder, local *config.Config) (terminalCleanupAttempt, error) {
-	status, err := c.terminalCleanupStatusContext(ctx, credential, item.Dispatch, item.Task.ID)
-	if err != nil {
-		return terminalCleanupAttempt{}, fmt.Errorf("check recorded completion: %w", err)
-	}
-	if status.Completed {
-		return terminalCleanupAttempt{Completed: true}, nil
-	}
-	if !status.Terminal {
-		return terminalCleanupAttempt{Pending: true}, nil
-	}
-	if item.Task.State != core.TaskMerged && item.Task.State != core.TaskClosed {
-		item.Task.State = core.TaskMerged
-	}
-	tasks, listErr := c.listOpenTasksHoldingBranch(item.Task.Repo, item.Task.Branch)
-	if listErr != nil {
-		cleanup := skippedOccupiedWorktreeCleanup()
-		receipt, err := c.recordTerminalCleanupContext(ctx, credential, item.Dispatch, item.Task.ID, terminalCleanupRecord{
-			Repository: item.Task.Repo, Branch: item.Task.Branch,
-			Worktree: cleanup.Worktree, BranchResult: cleanup.Branch, Path: cleanup.Path,
-		})
-		if err != nil {
-			return terminalCleanupAttempt{Cleanup: cleanup}, fmt.Errorf("record completion: %w", err)
-		}
-		if !receipt.Completed {
-			return terminalCleanupAttempt{Cleanup: cleanup}, fmt.Errorf("record completion: server did not confirm completion")
-		}
-		return terminalCleanupAttempt{Completed: true, Cleanup: cleanup}, nil
-	}
-	if _, occupied := otherOpenTaskHoldingBranch(tasks, item.Task.ID, item.Task.Repo, item.Task.Branch); occupied {
-		cleanup := skippedOccupiedWorktreeCleanup()
-		receipt, err := c.recordTerminalCleanupContext(ctx, credential, item.Dispatch, item.Task.ID, terminalCleanupRecord{
-			Repository: item.Task.Repo, Branch: item.Task.Branch,
-			Worktree: cleanup.Worktree, BranchResult: cleanup.Branch, Path: cleanup.Path,
-		})
-		if err != nil {
-			return terminalCleanupAttempt{Cleanup: cleanup}, fmt.Errorf("record completion: %w", err)
-		}
-		if !receipt.Completed {
-			return terminalCleanupAttempt{Cleanup: cleanup}, fmt.Errorf("record completion: server did not confirm completion")
-		}
-		return terminalCleanupAttempt{Completed: true, Cleanup: cleanup}, nil
-	}
-	cleanup, err := cleanupTerminalTaskWorktree(ctx, local, item)
-	if err != nil {
-		return terminalCleanupAttempt{}, fmt.Errorf("remove local task worktree: %w", err)
-	}
-
-	receipt, err := c.recordTerminalCleanupContext(ctx, credential, item.Dispatch, item.Task.ID, terminalCleanupRecord{
-		Repository: item.Task.Repo, Branch: item.Task.Branch,
+// recordDoneCleanup records the result of one conveyor done run. A refused or
+// failed recording never changes the local result or the exit status; it
+// returns the warning line done prints, or "" when the server confirmed the
+// completion (req-task-branch-assignment AC-3.5).
+func recordDoneCleanup(ctx context.Context, c *client, task core.Task, cleanup worktreeCleanupResult) string {
+	receipt, err := c.recordTerminalCleanupContext(ctx, task.ID, terminalCleanupRecord{
+		Repository: task.Repo, Branch: task.Branch,
 		Worktree: cleanup.Worktree, BranchResult: cleanup.Branch, Path: cleanup.Path,
 		ProcessWarnings: cleanup.ProcessWarnings,
 	})
-	if err != nil {
-		return terminalCleanupAttempt{Cleanup: cleanup}, fmt.Errorf("record completion: %w", err)
+	switch {
+	case err != nil:
+		return fmt.Sprintf("worktree cleanup not recorded: %v", err)
+	case !receipt.Completed:
+		return "worktree cleanup not recorded: server did not confirm completion"
 	}
-	if !receipt.Completed {
-		return terminalCleanupAttempt{Cleanup: cleanup}, fmt.Errorf("record completion: server did not confirm completion")
-	}
-	return terminalCleanupAttempt{Completed: true, Cleanup: cleanup}, nil
+	return ""
 }

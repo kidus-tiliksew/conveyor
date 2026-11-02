@@ -1,8 +1,12 @@
 package storetest
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
+	"regexp"
+	"strings"
 	"testing"
 	"time"
 
@@ -46,7 +50,7 @@ func runWorkOrders(t *testing.T, x Fixture) {
 	t.Run("LiveListing", func(t *testing.T) { runLiveWorkOrderListing(t, x) })
 	st, ctx := x.Backend, x.Context
 	order := newAggregateOrder(t, x)
-	claim := core.WorkOrderClaim{WorkerID: "worker", ClaimantID: "worker", SessionID: "session", ClientToken: "fixture", Lease: time.Minute, ExecutionTimeout: time.Hour}
+	claim := core.WorkOrderClaim{ClaimantID: "worker", SessionID: "session", ClientToken: "fixture", Lease: time.Minute, ExecutionTimeout: time.Hour}
 	claimed, err := ClaimWorkOrder(ctx, st, order.ID, claim)
 	requireOK(t, err)
 	if claimed.AttemptID == "" || claimed.State != core.WorkOrderClaimed {
@@ -57,33 +61,8 @@ func runWorkOrders(t *testing.T, x Fixture) {
 	if renewed.AttemptID != claimed.AttemptID || !renewed.ExecutionDeadline.Equal(claimed.ExecutionDeadline) || !renewed.LeaseExpiresAt.After(claimed.LeaseExpiresAt) {
 		t.Fatal("renewal changed the attempt or failed to extend its lease")
 	}
-	identity := core.WorkOrderClaimIdentity{WorkerID: "worker", ClaimantID: "worker", SessionID: "session"}
-	continued, err := st.RecordWorkOrderContinuation(ctx, order.ID, identity, core.WorkOrderContinuation{SessionID: "native-session", AttemptID: claimed.AttemptID, Harness: "codex", LaunchEnvironment: "test"})
-	requireOK(t, err)
-	if continued.AttemptID != claimed.AttemptID {
-		t.Fatal("continuation changed attempt identity")
-	}
-	requireOK(t, st.UpsertWorkOrderActivitySnapshot(ctx, order.ID, identity, "first output"))
-	requireOK(t, st.UpsertWorkOrderActivitySnapshot(ctx, order.ID, identity, "latest output"))
-	snapshot, found, err := st.GetWorkOrderActivitySnapshot(ctx, order.ID)
-	requireOK(t, err)
-	if !found || snapshot.Content != "latest output" {
-		t.Fatal("activity snapshot is not latest-only")
-	}
 	_, err = ReleaseWorkerClaim(ctx, st, order.ID, "worker", core.WorkOrderRelease{SessionID: "session", Reason: "fixture released", Outcome: core.WorkOrderOutcomeReleased})
 	requireOK(t, err)
-	checkpoint := core.WorkOrderAttemptCheckpoint{SessionID: "session", AttemptID: claimed.AttemptID, TerminationReason: "fixture released", Transcript: &core.WorkOrderAttemptTranscript{Content: "fixture transcript"}}
-	recorded, err := st.RecordWorkOrderAttemptCheckpoint(ctx, order.ID, "worker", checkpoint)
-	requireOK(t, err)
-	if !recorded {
-		t.Fatal("attempt checkpoint missing")
-	}
-	requireOK(t, st.FinalizeWorkOrderAttemptObservability(ctx, order.ID, "worker", checkpoint))
-	captures, err := st.ListWorkOrderTranscriptCaptures(ctx, order.ID)
-	requireOK(t, err)
-	if len(captures) != 1 {
-		t.Fatal("attempt transcript was not captured exactly once")
-	}
 	recovered, err := RecoverWorkOrder(ctx, st, order.ID, "recover-1", time.Hour)
 	requireOK(t, err)
 	if recovered.State != core.WorkOrderQueued {
@@ -180,7 +159,7 @@ func runStoredReadKeepsExpiredClaim(t *testing.T, x Fixture) {
 		t.Run(tc.name, func(t *testing.T) {
 			st, ctx := x.Backend, x.Context
 			order := newAggregateOrder(t, x)
-			claim := core.WorkOrderClaim{WorkerID: "worker", ClaimantID: "worker", SessionID: "expired", ClientToken: "fixture", Lease: tc.lease, ExecutionTimeout: tc.window}
+			claim := core.WorkOrderClaim{ClaimantID: "worker", SessionID: "expired", ClientToken: "fixture", Lease: tc.lease, ExecutionTimeout: tc.window}
 			claimed, err := ClaimWorkOrder(ctx, st, order.ID, claim)
 			requireOK(t, err)
 			find := func(orders []core.WorkOrder) core.WorkOrder {
@@ -558,4 +537,272 @@ func equalStrings(a, b []string) bool {
 		}
 	}
 	return true
+}
+
+type identityDeactivator interface {
+	DeactivateIdentityUser(context.Context, string) (core.IdentityUser, error)
+}
+
+// deactivateUser marks an account inactive through the backend's deactivation
+// operation, or through the fixture's hook where the backend has none.
+func deactivateUser(t *testing.T, x Fixture, ctx context.Context, userID string) {
+	t.Helper()
+	if x.DeactivateUser != nil {
+		x.DeactivateUser(t, ctx, userID)
+		return
+	}
+	deactivator, ok := x.Backend.(identityDeactivator)
+	if !ok {
+		t.Fatal("backend cannot deactivate identities and the fixture supplies no hook")
+	}
+	_, err := deactivator.DeactivateIdentityUser(ctx, userID)
+	requireOK(t, err)
+}
+
+// runHoldRetirement proves a stored historical hold reserves nothing: an
+// order of a held task, and the fresh implement order a merge-gate bounce
+// mints, are listed claimable and claimed through the real work-order claim
+// service as a run:<owner> session (component-work-orders, Claim lifecycle;
+// component-task-lifecycle; DEC-74(3), DEC-97(1)).
+func runHoldRetirement(t *testing.T, x Fixture, claimService ClaimServiceFunc) {
+	if claimService == nil {
+		t.Fatal("conformance factory must provide ClaimService for the hold-retirement cases (DEC-74(3))")
+	}
+	claim := claimService(x.Backend, x.Config)
+	t.Run("StoredTaskHoldIsClaimable", func(t *testing.T) { runStoredTaskHoldIsClaimable(t, x, claim) })
+	t.Run("RequestChangesRemainsClaimable", func(t *testing.T) { runRequestChangesRemainsClaimable(t, x, claim, false) })
+	t.Run("RequestChangesRemainsClaimableWithStoredHold", func(t *testing.T) { runRequestChangesRemainsClaimable(t, x, claim, true) })
+	t.Run("HistoricalHoldEventsRemainReadable", func(t *testing.T) { runHistoricalHoldEventsRemainReadable(t, x) })
+}
+
+type holdRetirementClaim = func(ctx context.Context, id string, claim core.WorkOrderClaim) (core.WorkOrder, error)
+
+func holdRetirementSessionClaim(owner, session string) core.WorkOrderClaim {
+	return core.WorkOrderClaim{SessionID: session, ClientToken: session + "-token", ClaimantID: core.TaskRunClaimantID(owner), OwnerUserID: owner, Agent: "codex", Model: "model", Lease: time.Minute, ExecutionTimeout: time.Hour}
+}
+
+func queuedHoldRetirementOrder(t *testing.T, x Fixture, ctx context.Context, name string) core.WorkOrder {
+	t.Helper()
+	task := core.Task{ID: "hold-" + name + "-" + core.NewTaskID(), Workspace: x.Workspace, Title: "hold retirement " + name, State: core.TaskQueued, NextStage: core.StageImplement, Repo: "conveyor", BaseBranch: "main", Branch: "conveyor/task-hold-" + name + "-" + core.NewTaskID(), CreatedAt: time.Now().UTC()}
+	requireOK(t, x.Backend.CreateTask(ctx, task))
+	job := core.Job{ID: task.ID + "-implement", TaskID: task.ID, Stage: core.StageImplement, State: core.JobPending, StartedAt: time.Now().UTC()}
+	order := core.WorkOrder{ID: job.ID, TaskID: task.ID, JobID: job.ID, Stage: core.StageImplement, State: core.WorkOrderQueued}
+	created, err := For(x.Backend).CreateStageWorkOrder(ctx, job, order)
+	requireOK(t, err)
+	if !created {
+		t.Fatal("stage work order was not created")
+	}
+	return order
+}
+
+// requireListedClaimable checks the live work-order listing's claimability
+// of one order.
+func requireListedClaimable(t *testing.T, x Fixture, ctx context.Context, orderID string, claimable bool) {
+	t.Helper()
+	orders, err := x.Backend.ListLiveWorkOrders(ctx)
+	requireOK(t, err)
+	for _, order := range orders {
+		if order.ID == orderID {
+			if got := order.State == core.WorkOrderQueued && order.ClaimableAt(time.Now().UTC()); got != claimable {
+				t.Fatalf("listed order %s claimable=%v, want %v: %+v", orderID, got, claimable, order)
+			}
+			return
+		}
+	}
+	t.Fatalf("live listing omits %s", orderID)
+}
+
+// requireNoHoldEvents proves no hold event was appended for the task: the
+// retired reservation has no writer (DEC-74(3)).
+func requireNoHoldEvents(t *testing.T, x Fixture, taskID string) {
+	t.Helper()
+	events, err := x.Backend.ListEvents(x.Context, taskID)
+	requireOK(t, err)
+	for _, event := range events {
+		if strings.HasPrefix(event.Kind, "task.hold") {
+			t.Fatalf("hold event appended after the retirement: %+v", event)
+		}
+	}
+}
+
+// requireTaskJSONOmitsHold proves the task projection carries no hold key.
+func requireTaskJSONOmitsHold(t *testing.T, x Fixture, taskID string) {
+	t.Helper()
+	task, err := x.Backend.GetTask(x.Context, taskID)
+	requireOK(t, err)
+	encoded, err := json.Marshal(task)
+	requireOK(t, err)
+	var fields map[string]json.RawMessage
+	requireOK(t, json.Unmarshal(encoded, &fields))
+	if _, present := fields["hold"]; present {
+		t.Fatalf("task JSON still carries hold: %s", encoded)
+	}
+}
+
+func runStoredTaskHoldIsClaimable(t *testing.T, x Fixture, claim holdRetirementClaim) {
+	seed := requireStoredTaskHoldSeed(t, x.SeedStoredTaskHold)
+	st, ctx := x.Backend, x.Context
+	owner := "hold-owner-" + core.NewTaskID()
+	held := queuedHoldRetirementOrder(t, x, ctx, "stored")
+	seed(t, ctx, held.TaskID)
+	assertStoredHold(t, ctx, st, held.TaskID, true)
+	requireListedClaimable(t, x, ctx, held.ID, true)
+	claimed, err := claim(ctx, held.ID, holdRetirementSessionClaim(owner, "hold-stored-session"))
+	requireOK(t, err)
+	if claimed.WorkerID != "" || claimed.ClaimantID != core.TaskRunClaimantID(owner) || claimed.State != core.WorkOrderClaimed {
+		t.Fatalf("claim=%+v", claimed)
+	}
+	assertStoredHold(t, ctx, st, held.TaskID, true)
+	requireTaskJSONOmitsHold(t, x, held.TaskID)
+	requireNoHoldEvents(t, x, held.TaskID)
+
+	// Assignment to another user still refuses, so the retirement broadens
+	// no other eligibility (DEC-74(4)).
+	theirs := queuedHoldRetirementOrder(t, x, ctx, "theirs")
+	seed(t, ctx, theirs.TaskID)
+	operatorCtx, _ := bootstrapOwner(t, x)
+	otherEmail := "hold-other-" + strings.ToLower(core.NewTaskID()) + "@hold.test"
+	other, err := st.ProvisionIdentityUser(operatorCtx, otherEmail, "Other assignee")
+	requireOK(t, err)
+	_, err = st.GrantWorkspaceRole(operatorCtx, otherEmail, x.Workspace, core.WorkspaceRoleContributor)
+	requireOK(t, err)
+	_, err = taskops.New(st).SetAssignee(ctx, theirs.TaskID, other.ID)
+	requireOK(t, err)
+	if _, err := claim(ctx, theirs.ID, holdRetirementSessionClaim(owner, "hold-theirs-session")); err == nil {
+		t.Fatal("a session claimed a task assigned to another user")
+	}
+	if persisted, err := st.GetWorkOrder(ctx, theirs.ID); err != nil || persisted.State != core.WorkOrderQueued {
+		t.Fatalf("refused claim changed order: %+v %v", persisted, err)
+	}
+}
+
+// runRequestChangesRemainsClaimable reaches the merge gate after a
+// run:<owner> implement claim, requests changes, and proves the fresh
+// implement order is an ordinary eligible order: listed claimable, claimed
+// through the claim service, and clearing the returned-for-changes attention,
+// with no hold written (DEC-74(3)).
+func runRequestChangesRemainsClaimable(t *testing.T, x Fixture, claim holdRetirementClaim, seedHold bool) {
+	name := "bounce"
+	if seedHold {
+		name += "-held"
+	}
+	st := x.Backend
+	requester := "requester-" + core.NewTaskID()
+	ctx := store.WithActor(x.Context, store.Actor{ID: store.UserActorID(requester), Role: core.ActorUser})
+	now := time.Now().UTC()
+	task := core.Task{ID: "hold-" + name + "-" + core.NewTaskID(), Workspace: x.Workspace, Title: "bounce " + name, Repo: "conveyor", BaseBranch: "main", Branch: "conveyor/task-hold-" + name + "-" + core.NewTaskID(), State: core.TaskRunning, NextStage: core.StageReview, RecoveryStage: core.StageImplement, CreatedAt: now}
+	requireOK(t, st.CreateTask(ctx, task))
+	reviewJob := core.Job{ID: task.ID + "-review-1-seat-1", TaskID: task.ID, Stage: core.StageReview, State: core.JobDone, StartedAt: now}
+	requireOK(t, st.CreateJob(ctx, reviewJob))
+	requireOK(t, st.AppendEvent(ctx, core.Event{TaskID: task.ID, Kind: "work_order.claimed", Payload: core.JSONPayload(core.WorkOrder{ID: task.ID + "-implement-1", Stage: core.StageImplement, ClaimantID: core.TaskRunClaimantID(requester)})}))
+	if seedHold {
+		requireStoredTaskHoldSeed(t, x.SeedStoredTaskHold)(t, ctx, task.ID)
+	}
+	_, err := taskops.New(st).Perform(ctx, task.ID, taskops.Command{Kind: core.TaskGateMerge, RecoveryStage: core.StageImplement, ProjectStages: true})
+	requireOK(t, err)
+
+	feedback := "Line one.\n\n  exact indentation for " + name
+	updated, err := taskops.New(st).RequestChanges(ctx, taskops.RequestChanges{TaskID: task.ID, JobID: reviewJob.ID, Feedback: feedback, MaxBounces: 3})
+	requireOK(t, err)
+	if updated.State != core.TaskQueued || updated.NextStage != core.StageImplement {
+		t.Fatalf("bounced task=%+v", updated)
+	}
+	interventions, err := st.ListInterventions(ctx, task.ID)
+	requireOK(t, err)
+	if len(interventions) != 1 || interventions[0].Comment != feedback {
+		t.Fatalf("interventions=%+v, want the feedback verbatim", interventions)
+	}
+	markers, err := st.ListActivityMarkersForTasks(ctx, []string{task.ID})
+	requireOK(t, err)
+	if len(markers) != 1 || !markers[0].UserChangesRequested {
+		t.Fatalf("markers after bounce=%+v", markers)
+	}
+	requireNoHoldEvents(t, x, task.ID)
+	assertStoredHold(t, ctx, st, task.ID, seedHold)
+
+	// The dispatcher mints the fresh implement order; storetest cannot import
+	// dispatch, so the case mints it through the same store command.
+	job := core.Job{ID: task.ID + "-implement-2", TaskID: task.ID, Stage: core.StageImplement, State: core.JobPending, StartedAt: time.Now().UTC()}
+	order := core.WorkOrder{ID: job.ID, TaskID: task.ID, JobID: job.ID, Stage: core.StageImplement, State: core.WorkOrderQueued}
+	created, err := For(st).CreateStageWorkOrder(ctx, job, order)
+	requireOK(t, err)
+	if !created {
+		t.Fatal("fresh implement order was not created")
+	}
+	requireListedClaimable(t, x, ctx, order.ID, true)
+	claimed, err := claim(ctx, order.ID, holdRetirementSessionClaim(requester, name+"-session"))
+	requireOK(t, err)
+	if claimed.ClaimantID != core.TaskRunClaimantID(requester) || claimed.State != core.WorkOrderClaimed {
+		t.Fatalf("claim=%+v", claimed)
+	}
+	markers, err = st.ListActivityMarkersForTasks(ctx, []string{task.ID})
+	requireOK(t, err)
+	if len(markers) != 1 || markers[0].UserChangesRequested {
+		t.Fatalf("markers after the claim=%+v", markers)
+	}
+	requireNoHoldEvents(t, x, task.ID)
+	assertStoredHold(t, ctx, st, task.ID, seedHold)
+	requireTaskJSONOmitsHold(t, x, task.ID)
+}
+
+// runHistoricalHoldEventsRemainReadable proves events recorded before the
+// retirement stay in the ledger exactly as stored (DEC-10, DEC-74(3)).
+func runHistoricalHoldEventsRemainReadable(t *testing.T, x Fixture) {
+	st, ctx := x.Backend, x.Context
+	task := newAggregateTask(t, x)
+	historical := []core.Event{
+		{TaskID: task.ID, Kind: "task.hold.set", Payload: core.JSONPayload(map[string]any{"hold": true})},
+		{TaskID: task.ID, Kind: "task.hold.cleared", Payload: core.JSONPayload(map[string]any{"hold": false})},
+		{TaskID: task.ID, Kind: "task.hold_changed", Payload: core.JSONPayload(map[string]any{"hold": true, "reason_code": store.UserRequestChangesReason})},
+	}
+	for _, event := range historical {
+		requireOK(t, st.AppendEvent(ctx, event))
+	}
+	events, err := st.ListEvents(ctx, task.ID)
+	requireOK(t, err)
+	for _, want := range historical {
+		found := false
+		for _, event := range events {
+			if event.Kind != want.Kind {
+				continue
+			}
+			var got, expected map[string]any
+			requireOK(t, json.Unmarshal(event.Payload, &got))
+			requireOK(t, json.Unmarshal(want.Payload, &expected))
+			found = found || fmt.Sprint(got) == fmt.Sprint(expected)
+		}
+		if !found {
+			t.Fatalf("historical %s event is not readable as stored: %+v", want.Kind, events)
+		}
+	}
+	requireTaskJSONOmitsHold(t, x, task.ID)
+}
+
+type fixtureMemberProvisioner interface {
+	ProvisionIdentityUser(context.Context, string, string) (core.IdentityUser, error)
+	GrantWorkspaceRole(context.Context, string, string, core.WorkspaceRole) (core.MembershipGrant, error)
+}
+
+var fixtureEmailUnsafe = regexp.MustCompile(`[^a-z0-9-]+`)
+
+// enrollFixtureOwner gives a fixture an active contributor of workspace and
+// returns its user ID. Backends with identity provisioning get a provisioned
+// account; the plain memory store gets its membership projection seeded.
+func enrollFixtureOwner(ctx context.Context, st store.Store, workspace, name string) (string, error) {
+	provisioner, ok := st.(fixtureMemberProvisioner)
+	if !ok {
+		owner := "owner-" + name
+		return owner, store.SetMemoryWorkspaceMember(st, workspace, owner, true)
+	}
+	local := strings.Trim(fixtureEmailUnsafe.ReplaceAllString(strings.ToLower(workspace+"-"+name), "-"), "-")
+	email := local + "@fixture-member.test"
+	user, err := provisioner.ProvisionIdentityUser(ctx, email, "Fixture member "+name)
+	if err != nil {
+		return "", err
+	}
+	operatorCtx := store.WithCredential(ctx, core.AuthenticatedCredential{ID: "fixture-operator", OwnerUserID: user.ID, Kind: core.CredentialUser, Scope: core.CredentialScopeOperator})
+	if _, err := provisioner.GrantWorkspaceRole(operatorCtx, email, workspace, core.WorkspaceRoleContributor); err != nil {
+		return "", err
+	}
+	return user.ID, nil
 }

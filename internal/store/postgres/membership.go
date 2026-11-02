@@ -209,9 +209,6 @@ func (s *Store) GrantWorkspaceRole(ctx context.Context, email, workspaceID strin
 				if err := clearMemberAssignmentsTx(ctx, tx, q, workspaceID, userID); err != nil {
 					return err
 				}
-				if err := revokeOwnedWorkersTx(ctx, tx, q, userID, workspaceID, "workspace_membership_demoted"); err != nil {
-					return err
-				}
 			}
 			if _, err := tx.Exec(ctx, `DELETE FROM workspace_membership_invitations WHERE workspace_id=$1 AND email=$2`, workspaceID, email); err != nil {
 				return err
@@ -293,9 +290,6 @@ func (s *Store) RevokeWorkspaceRole(ctx context.Context, userID, workspaceID str
 			return fmt.Errorf("%w: workspace membership", store.ErrNotFound)
 		}
 		if err := clearMemberAssignmentsTx(ctx, tx, q, workspaceID, userID); err != nil {
-			return err
-		}
-		if err := revokeOwnedWorkersTx(ctx, tx, q, userID, workspaceID, "workspace_membership_revoked"); err != nil {
 			return err
 		}
 		return insertWorkspaceEvent(store.WithWorkspace(ctx, workspaceID), q, core.Event{Kind: "workspace.membership_revoked", Payload: core.JSONPayload(map[string]any{

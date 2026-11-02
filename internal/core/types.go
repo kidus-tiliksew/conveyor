@@ -16,52 +16,12 @@ import (
 	"github.com/kidus-tiliksew/conveyor/internal/config"
 )
 
-const (
-	MaxWorkOrderOperatorDirectionRunes       = 4096
-	MaxWorkOrderContinuationSessionIDRunes   = 512
-	MaxWorkOrderContinuationAttemptIDRunes   = 128
-	MaxWorkOrderContinuationHarnessRunes     = 128
-	MaxWorkOrderContinuationEnvironmentRunes = 512
-)
+const MaxWorkOrderOperatorDirectionRunes = 4096
 
 func NormalizeWorkOrderOperatorDirection(value string) (string, error) {
 	value = strings.TrimSpace(value)
 	if utf8.RuneCountInString(value) > MaxWorkOrderOperatorDirectionRunes {
 		return "", fmt.Errorf("operator direction must be at most %d characters", MaxWorkOrderOperatorDirectionRunes)
-	}
-	return value, nil
-}
-
-// WorkOrderContinuation is advisory identity observed by the launching client.
-// It contains no harness launch command or other execution authority.
-type WorkOrderContinuation struct {
-	SessionID         string `json:"session_id"`
-	AttemptID         string `json:"attempt_id"`
-	Harness           string `json:"harness"`
-	LaunchEnvironment string `json:"launch_environment"`
-}
-
-func NormalizeWorkOrderContinuation(value WorkOrderContinuation) (WorkOrderContinuation, error) {
-	value.SessionID = strings.TrimSpace(value.SessionID)
-	value.AttemptID = strings.TrimSpace(value.AttemptID)
-	value.Harness = strings.TrimSpace(value.Harness)
-	value.LaunchEnvironment = strings.TrimSpace(value.LaunchEnvironment)
-	for _, field := range []struct {
-		name  string
-		value string
-		limit int
-	}{
-		{"continuation_session_id", value.SessionID, MaxWorkOrderContinuationSessionIDRunes},
-		{"continuation_attempt_id", value.AttemptID, MaxWorkOrderContinuationAttemptIDRunes},
-		{"continuation_harness", value.Harness, MaxWorkOrderContinuationHarnessRunes},
-		{"continuation_launch_environment", value.LaunchEnvironment, MaxWorkOrderContinuationEnvironmentRunes},
-	} {
-		if field.value == "" {
-			return WorkOrderContinuation{}, fmt.Errorf("%s is required", field.name)
-		}
-		if utf8.RuneCountInString(field.value) > field.limit {
-			return WorkOrderContinuation{}, fmt.Errorf("%s must be at most %d characters", field.name, field.limit)
-		}
 	}
 	return value, nil
 }
@@ -196,7 +156,7 @@ type Task struct {
 	MergeApproval         bool                  `json:"merge_approval"`
 	PolicyVersion         int                   `json:"policy_version"`
 	SetupName             string                `json:"-"` // retired live selector; retained for legacy row decoding
-	SetupContract         config.ExecutionSetup `json:"policy_contract"`
+	SetupContract         config.PolicyContract `json:"policy_contract"`
 	ReviewedHeadSHA       string                `json:"reviewed_head_sha,omitempty"`
 	ApprovedHeadSHA       string                `json:"approved_head_sha,omitempty"`
 	ApprovalStale         bool                  `json:"approval_stale,omitempty"`
@@ -429,12 +389,6 @@ type AuthenticatedCredential struct {
 	// Method distinguishes browser sessions from bearer credentials without
 	// changing the user actor or live capability model.
 	Method CredentialMethod
-	// Run bindings are populated only for short-lived conveyor-run agent
-	// credentials. They keep one child structurally confined to the exact
-	// workspace and already-claimed session for which its parent issued it.
-	RunWorkspaceID string
-	RunWorkOrderID string
-	RunSessionID   string
 	// SessionExpiresAt and SessionEstablishedByLink are populated only for
 	// browser sessions. They let the HTTP boundary refresh the opaque cookie and
 	// enforce link-authorized password recovery without widening bearer access.
@@ -667,15 +621,6 @@ type RateLimitStatus struct {
 	ResetAt   *time.Time `json:"reset_at,omitempty"`
 }
 
-type RateLimitHealth struct {
-	WorkOrderID string          `json:"work_order_id"`
-	WorkerID    string          `json:"worker_id,omitempty"`
-	Harness     string          `json:"harness"`
-	Model       string          `json:"model,omitempty"`
-	RateLimit   RateLimitStatus `json:"rate_limit"`
-	ObservedAt  time.Time       `json:"observed_at"`
-}
-
 // WorkOrder is the durable protocol boundary between Conveyor and an
 // operator-owned spec, implementation, or review agent.
 // DeclaredReviewSeats is an implement order's declared review seat count,
@@ -739,11 +684,6 @@ type WorkOrder struct {
 	RedispatchCount                  int                  `json:"redispatch_count"`
 	OperatorDirection                string               `json:"operator_direction,omitempty"`
 	Checkpoint                       *WorkOrderCheckpoint `json:"checkpoint,omitempty"`
-	ContinuationSessionID            string               `json:"continuation_session_id,omitempty"`
-	ContinuationAttemptID            string               `json:"continuation_attempt_id,omitempty"`
-	ContinuationHarness              string               `json:"continuation_harness,omitempty"`
-	ContinuationLaunchEnvironment    string               `json:"continuation_launch_environment,omitempty"`
-	ContinuationResumeEligible       bool                 `json:"continuation_resume_eligible"`
 	Progress                         string               `json:"progress,omitempty"`
 	CostUSD                          float64              `json:"cost_usd,omitempty"`
 	TokensIn                         int64                `json:"tokens_in"`
@@ -764,11 +704,6 @@ type WorkOrder struct {
 	// separately non-authoritative task proposal evidence refreshed for this
 	// review claim. Nil is reserved for legacy compatibility handling.
 	GovernanceSnapshot *GovernanceSnapshot `json:"governance_snapshot,omitempty"`
-	// ActivitySnapshot and TranscriptCaptures are observational detail fields.
-	// Store list/claim paths leave them empty so they cannot become execution
-	// context or lifecycle input.
-	ActivitySnapshot   *WorkOrderActivitySnapshot   `json:"activity_snapshot,omitempty"`
-	TranscriptCaptures []WorkOrderTranscriptCapture `json:"transcript_captures,omitempty"`
 }
 
 // ClearExecutionPins removes every harness, model, and effort pin, including a
@@ -785,7 +720,6 @@ func (w *WorkOrder) ClearExecutionPins() {
 // omits clocks that have not started. A queued order must not look as though
 // execution or a claim lease has begun.
 func (w WorkOrder) MarshalJSON() ([]byte, error) {
-	w.ContinuationResumeEligible = w.CanResumeContinuation()
 	type workOrderAlias WorkOrder
 	wired := struct {
 		workOrderAlias
@@ -838,17 +772,6 @@ func (w WorkOrder) HistoricalCostUSD() *float64 {
 	return &cost
 }
 
-// CanResumeContinuation derives advisory resume eligibility only from the
-// exact predecessor capture and deliberate release provenance.
-func (w WorkOrder) CanResumeContinuation() bool {
-	if w.Stage != StageImplement || w.ContinuationSessionID == "" || w.ContinuationAttemptID == "" ||
-		w.ContinuationHarness == "" || w.ContinuationLaunchEnvironment == "" || w.ContinuationAttemptID != w.LastAttemptID {
-		return false
-	}
-	return w.LastFailureMessage == WorkOrderReleaseReasonOperatorCheckpointReached ||
-		w.LastFailureMessage == WorkOrderReleaseReasonPlanRevisionRequested
-}
-
 func (w WorkOrder) ClaimableAt(at time.Time) bool {
 	return w.State == WorkOrderQueued && !w.RetrySuppressed &&
 		(w.NextRetryAt.IsZero() || !w.NextRetryAt.After(at))
@@ -862,15 +785,15 @@ type WorkOrderClaim struct {
 	Model            string
 	Lease            time.Duration
 	ExecutionTimeout time.Duration
-	WorkerID         string
 	OwnerUserID      string
 	Requirements     []ServedRequirementContext
 	Governance       *GovernanceSnapshot
 }
 
 // WorkOrderClaimIdentity names the authenticated owner of one active claim.
-// Mutations compare all three fields so an agent child can act through its
-// worker-dispatched claim without weakening session or cross-order isolation.
+// Mutations compare all three fields. WorkerID is empty for every claim since
+// DEC-97; an order claimed by a worker before then keeps its historical
+// worker_id, which no current identity matches.
 type WorkOrderClaimIdentity struct {
 	WorkerID   string
 	ClaimantID string
@@ -1021,178 +944,9 @@ type WorkOrderRelease struct {
 	FailureCategory     string
 	ExitStatus          *int
 	FailureDetail       string
-	ModelRejection      bool
 	InitialRetryDelay   time.Duration
 	MaximumRetryDelay   time.Duration
 	AutomaticRetryLimit int
-}
-
-// WorkOrderAttemptCheckpoint identifies one additive Git preservation commit
-// made for an implementation attempt. SessionID authorizes the caller's
-// current claim; AttemptID identifies the predecessor work being preserved.
-type WorkOrderAttemptCheckpoint struct {
-	SessionID         string                      `json:"session_id"`
-	AttemptID         string                      `json:"attempt_id"`
-	TerminationReason string                      `json:"termination_reason"`
-	CommitSHA         string                      `json:"commit_sha"`
-	PushResult        string                      `json:"push_result"`
-	Transcript        *WorkOrderAttemptTranscript `json:"transcript,omitempty"`
-}
-
-// WorkOrderActivitySnapshotInput is the optional renewal-borne tail supplied
-// by a launcher. It is normalized, redacted, and bounded by the worker service
-// before the store sees it.
-type WorkOrderActivitySnapshotInput struct {
-	Content string `json:"content"`
-}
-
-// WorkOrderAttemptTranscript is the optional launcher capture supplied at the
-// existing attempt-checkpoint boundary.
-type WorkOrderAttemptTranscript struct {
-	Content   string `json:"content"`
-	Truncated bool   `json:"truncated"`
-}
-
-// WorkOrderAttemptCapture is a parent launcher's observational capture of one
-// already-ended attempt, delivered for every stage independently of Git
-// preservation (req-260820-221be8 AC-2.1; DEC-26; component-work-orders).
-// TerminationReason is the launcher's declaration; Conveyor derives the
-// authoritative reason from the attempt's persisted ending and refuses a
-// conflicting declaration.
-type WorkOrderAttemptCapture struct {
-	SessionID         string                      `json:"session_id"`
-	AttemptID         string                      `json:"attempt_id"`
-	TerminationReason string                      `json:"termination_reason"`
-	Transcript        *WorkOrderAttemptTranscript `json:"transcript,omitempty"`
-}
-
-// WorkOrderAttemptCaptureResult reports whether a capture row was inserted
-// and the persisted ending reason it was bound to.
-type WorkOrderAttemptCaptureResult struct {
-	Created           bool   `json:"created"`
-	TerminationReason string `json:"termination_reason"`
-}
-
-// AttemptHandoffTerminationReason names a terminal stage handoff (submitted
-// or completed) as an attempt ending reason.
-func AttemptHandoffTerminationReason(state WorkOrderState) string {
-	return "work order " + string(state)
-}
-
-// AttemptEndingReason derives the durable ending reason of attemptID from the
-// persisted order row. It reports false while the attempt is still the active
-// claim, after an unmediated lease expiry (req-260820-221be8 AC-2.3), or when
-// the row no longer identifies the attempt's ending.
-//
-// Only transitions that write last_attempt_id together with the outcome and
-// last_failure_message are trusted: worker or agent release (including
-// operator-checkpoint and plan-revision self-release), the verification
-// checkpoint release, and preemption, on every backend. Execution-clock
-// timeout, task cancellation, sibling retirement, and verification head
-// supersession move the order to timed_out or cancelled while leaving the
-// outcome or message from an earlier attempt, and recovery or setup change
-// clears the outcome while keeping the message. Those rows cannot name the
-// attempt's ending, so no reason is derived from them.
-func (w WorkOrder) AttemptEndingReason(attemptID string) (string, bool) {
-	attemptID = strings.TrimSpace(attemptID)
-	if attemptID == "" {
-		return "", false
-	}
-	if w.AttemptID == attemptID {
-		if w.State == WorkOrderSubmitted || w.State == WorkOrderCompleted {
-			return AttemptHandoffTerminationReason(w.State), true
-		}
-		return "", false
-	}
-	if w.LastAttemptID != attemptID || w.State == WorkOrderTimedOut || w.State == WorkOrderCancelled {
-		return "", false
-	}
-	switch outcome := strings.TrimSpace(w.LastAttemptOutcome); outcome {
-	case WorkOrderOutcomeReleased, WorkOrderOutcomeChildFailure, WorkOrderOutcomeStalled,
-		WorkOrderOutcomeCancelled, WorkOrderOutcomePreempted:
-		if reason := strings.TrimSpace(w.LastFailureMessage); reason != "" {
-			return reason, true
-		}
-		return outcome, true
-	default:
-		// Expired is unmediated recovery; an empty outcome follows recovery
-		// or setup change, which keeps an earlier attempt's message.
-		return "", false
-	}
-}
-
-// WorkOrderActivitySnapshot is the latest-only running-attempt projection.
-type WorkOrderActivitySnapshot struct {
-	AttemptID  string    `json:"attempt_id"`
-	Content    string    `json:"content"`
-	CapturedAt time.Time `json:"captured_at"`
-}
-
-// WorkOrderTranscriptCapture is an immutable, bounded termination capture for
-// one attempt. CapturedAt is stamped by Conveyor rather than the launcher.
-type WorkOrderTranscriptCapture struct {
-	AttemptID         string    `json:"attempt_id"`
-	Content           string    `json:"content"`
-	TerminationReason string    `json:"termination_reason"`
-	Truncated         bool      `json:"truncated"`
-	CapturedAt        time.Time `json:"captured_at"`
-}
-
-// AuthorizesAttemptCheckpoint permits either the active attempt to preserve
-// its own work or its active successor to preserve the immediately recorded
-// predecessor. It never grants authority to an inactive or different task
-// session.
-func (w WorkOrder) AuthorizesAttemptCheckpoint(workerID string, checkpoint WorkOrderAttemptCheckpoint, now time.Time) bool {
-	if w.Stage != StageImplement || w.State != WorkOrderClaimed || w.WorkerID != workerID ||
-		w.SessionID == "" || w.SessionID != checkpoint.SessionID || !w.LeaseExpiresAt.After(now) {
-		return false
-	}
-	return checkpoint.AttemptID != "" && (checkpoint.AttemptID == w.AttemptID || checkpoint.AttemptID == w.LastAttemptID)
-}
-
-// HarnessModelFailure is retained evidence that one frozen harness/model pair
-// was rejected by its provider. It is advisory only and never changes routing.
-type HarnessModelFailure struct {
-	Harness     string    `json:"harness"`
-	Model       string    `json:"model"`
-	Detail      string    `json:"detail"`
-	WorkOrderID string    `json:"work_order_id"`
-	ObservedAt  time.Time `json:"observed_at"`
-}
-
-type HarnessProbe struct {
-	Harness     string    `json:"harness"`
-	Fingerprint string    `json:"fingerprint,omitempty"`
-	Healthy     bool      `json:"healthy"`
-	Message     string    `json:"message,omitempty"`
-	CheckedAt   time.Time `json:"checked_at"`
-	Transition  string    `json:"transition,omitempty"`
-}
-
-type WorkerPairing struct {
-	TokenHash   string    `json:"-"`
-	Workspace   string    `json:"workspace"`
-	OwnerUserID string    `json:"owner_user_id,omitempty"`
-	ExpiresAt   time.Time `json:"expires_at"`
-	ConsumedAt  time.Time `json:"consumed_at,omitempty"`
-	CreatedAt   time.Time `json:"created_at"`
-}
-
-type Worker struct {
-	ID             string         `json:"id"`
-	Workspace      string         `json:"workspace"`
-	OwnerUserID    string         `json:"owner_user_id,omitempty"`
-	Name           string         `json:"name"`
-	CredentialHash string         `json:"-"`
-	LeaseExpiresAt time.Time      `json:"lease_expires_at,omitempty"`
-	LastSeenAt     time.Time      `json:"last_seen_at,omitempty"`
-	RevokedAt      time.Time      `json:"revoked_at,omitempty"`
-	Probes         []HarnessProbe `json:"probes"`
-	CreatedAt      time.Time      `json:"created_at"`
-}
-
-func (w Worker) Live(at time.Time) bool {
-	return w.RevokedAt.IsZero() && w.LeaseExpiresAt.After(at)
 }
 
 type ReviewPublicationState string

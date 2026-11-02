@@ -47,7 +47,7 @@ type Fixture struct {
 	SeedEvents func(t *testing.T, ctx context.Context, base int64, events []core.Event) []core.Event
 	// DeactivateUser marks one account inactive for backends that expose no
 	// deactivation operation, such as SingleStore. Others use their
-	// DeactivateIdentityUser method (component-work-orders, Workers).
+	// DeactivateIdentityUser method (component-identity-membership).
 	DeactivateUser func(t *testing.T, ctx context.Context, userID string)
 	// SeedSetupContract replaces one task's stored setup contract with raw
 	// JSON, modelling rows an earlier encoding wrote. No public writer accepts
@@ -58,12 +58,14 @@ type Fixture struct {
 	// No public writer can; each backend seeds it directly in its test
 	// binary. The hold-retirement cases require it and never skip.
 	SeedStoredTaskHold func(t *testing.T, ctx context.Context, taskID string)
-	// WorkerService exercises the real worker.Service over this fixture's
-	// backend and configuration. storetest cannot import internal/worker,
-	// because worker tests import storetest, so each conformance entry point
-	// constructs it (component-verification-strategy). The hold-retirement
-	// cases require it and never skip.
-	WorkerService func(t *testing.T) WorkerExercise
+	// SeedWorkspaceConfigYAML replaces the bound workspace's stored
+	// configuration document with raw YAML without changing its version,
+	// modelling a row an earlier release wrote, and WorkspaceConfigYAML
+	// returns the stored document's bytes. No public writer or read exposes
+	// either, so each test binary supplies both. The WorkspaceControl
+	// legacy-row case requires them and never skips (component-persistence).
+	SeedWorkspaceConfigYAML func(t *testing.T, ctx context.Context, raw string)
+	WorkspaceConfigYAML     func(t *testing.T, ctx context.Context) string
 	// LineageHTTP returns the real httpapi handler over Backend, bound to
 	// Workspace and accepting LineageHTTPToken as its operator bearer, so the
 	// Lineage suite reads GET /v1/lineage/{type}/{id}. storetest cannot
@@ -95,15 +97,6 @@ type Fixture struct {
 	// (component-identity-membership).
 	SeedCredentialLastUsed func(t *testing.T, ctx context.Context, credentialID string, lastUsedAgo time.Duration)
 	CredentialLastUsed     func(t *testing.T, ctx context.Context, credentialID string) time.Time
-}
-
-// WorkerExercise is the worker-service surface the Workers hold-retirement
-// cases call: listing, visible orders, and claim, each through the real
-// service rather than the store (component-work-orders, Workers).
-type WorkerExercise struct {
-	ListClaimable     func(ctx context.Context, worker core.Worker) ([]core.WorkOrder, error)
-	ListVisibleOrders func(ctx context.Context, worker core.Worker) ([]core.WorkOrder, error)
-	ClaimForWorker    func(ctx context.Context, worker core.Worker, id string, claim core.WorkOrderClaim) (core.WorkOrder, error)
 }
 
 // requireStoredTaskHoldSeed returns the fixture's historical hold seed or
@@ -192,7 +185,9 @@ func RunAll(t *testing.T, factory Factory) {
 			return BlueprintFixture{x.Backend, x.Context, x.Workspace, x.SeedStoredTaskHold}
 		})
 	})
+	run("ChangeNotices", func(t *testing.T) { RunChangeNoticeConformance(t, factory.fresh(t, nil)) })
 	run("ClaimFailureStall", func(t *testing.T) { runClaimFailureStall(t, factory.fresh(t, nil), factory.ClaimService) })
+	run("HoldRetirement", func(t *testing.T) { runHoldRetirement(t, factory.fresh(t, nil), factory.ClaimService) })
 	run("TaskStartOver", func(t *testing.T) { runTaskStartOver(t, factory) })
 	run("TaskMap", func(t *testing.T) { RunTaskMapConformance(t, factory.fresh(t, nil)) })
 	run("ActivityValidation", func(t *testing.T) { RunActivityValidationConformance(t, factory.fresh(t, nil)) })
@@ -299,14 +294,11 @@ func RunAll(t *testing.T, factory Factory) {
 		{"Verification", true, runVerification},
 		{"ArtifactIntake", true, runArtifactIntake},
 		{"LegacyVerificationEvidence", true, runLegacyVerificationEvidence},
-		{"Workers", true, runWorkers},
 		{"WorkOrders", true, runWorkOrders},
-		{"AttemptObservability", true, runAttemptObservability},
 		{"MergeTaskAtGate", true, runMergeTaskAtGate},
 		{"ClaimBlockingProposals", true, runClaimBlockingProposals},
 		{"LargeArgumentWrites", true, runLargeArgumentWrites},
 		{"AutomaticRecoveryAuthority", true, runAutomaticRecoveryAuthority},
-		{"WorktreeHandoff", true, runWorktreeHandoff},
 		{"ContextFreshness", true, runContextFreshness},
 		{"WorkOrderClocks", true, runWorkOrderClocks},
 		{"QueueReentryPins", true, runQueueReentryPins},

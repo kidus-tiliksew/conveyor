@@ -51,7 +51,7 @@ export function WorkOrderPreemptControl({ order }: { order: WorkOrder }) {
         <div id={panelID} className="space-y-2.5 rounded-lg border border-border bg-surface/50 px-3 py-3">
           <p
             className="text-xs leading-5 text-muted"
-            title="Preemption revokes only this work order. The worker discovers it at the next renewal and checkpoints dirty implementation work before the next claim."
+            title="Preemption revokes only this work order. The agent session sees the loss at its next lease renewal."
           >
             The agent stops within about a minute. Work it has already done is saved first. The task itself is not
             cancelled — it can run again.

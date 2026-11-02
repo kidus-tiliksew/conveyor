@@ -12,8 +12,9 @@
 # seat count, and the in-process control-plane models, and ignores and logs
 # by name every execution key: harnesses, setups, default_setup, stage
 # harness/model/model_policy/effort, review fallbacks, and seat contents
-# (DEC-56). Those sections belong in a client's local execution config, which
-# conveyor run and the worker read. conveyor init writes a policy-only file.
+# (DEC-96). Conveyor keeps no harness registry or execution setup anywhere;
+# the sections below remain only to show what an earlier file held.
+# conveyor init writes a policy-only file.
 workspace: demo
 # pack_dir: /path/to/custom/pack  # optional strict override; omitted uses the embedded canonical role pack
 # Review rounds before human check-in (component-task-lifecycle): the window resets after
@@ -35,6 +36,10 @@ worktree_location:
 database:
   # backend: postgres
   # url: postgres://conveyor:conveyor@localhost:5432/conveyor?sslmode=disable
+
+# Set when several conveyord processes share one database (default false).
+# runtime:
+#   peers: true
 
 # Default-setup projection for older clients (component-harness-execution). The setup block
 # below is authoritative; this and routing remain readable compatibility data.
@@ -151,11 +156,6 @@ setups:
       seats:
         - {model: gpt-5.6, harness: local-agent}
         - {model: claude-opus-4.1, harness: local-agent}
-
-# Built-in Codex, Claude, and Grok harness starting points are maintained in
-# internal/config/harness_templates.go and are available from the Workspace UI.
-# Copy and customize a catalog entry here only when a deployment needs a
-# checked-in harness configuration; workspaces are not seeded automatically.
 
 repos:
   - name: api

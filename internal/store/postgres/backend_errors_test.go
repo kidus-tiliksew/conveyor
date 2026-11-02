@@ -165,7 +165,7 @@ func (f fakeTx) Commit(context.Context) error { return f.err }
 
 func TestBoundaryTranslatesEveryQueryPath(t *testing.T) {
 	driver := fmt.Errorf("wrapped: %w", &pgconn.PgError{Code: "23503", Message: "insert or update violates foreign key constraint"})
-	db := boundaryDB{fakeQuerier{err: driver}}
+	db := boundaryDB{q: fakeQuerier{err: driver}}
 	ctx := store.WithActor(t.Context(), store.SystemActor())
 	_, execErr := db.Exec(ctx, "UPDATE")
 	rows, queryErr := db.Query(ctx, "SELECT")
@@ -181,7 +181,7 @@ func TestBoundaryTranslatesEveryQueryPath(t *testing.T) {
 		}
 		requireNoDriverType(t, err)
 	}
-	if noRow := (boundaryDB{fakeQuerier{err: pgx.ErrNoRows}}).QueryRow(ctx, "SELECT").Scan(); !errors.Is(noRow, store.ErrNotFound) || !errors.Is(noRow, pgx.ErrNoRows) {
+	if noRow := (boundaryDB{q: fakeQuerier{err: pgx.ErrNoRows}}).QueryRow(ctx, "SELECT").Scan(); !errors.Is(noRow, store.ErrNotFound) || !errors.Is(noRow, pgx.ErrNoRows) {
 		t.Fatalf("row no-row=%v", noRow)
 	}
 	tx := newBoundaryTx(fakeTx{})
@@ -213,6 +213,31 @@ func TestPackageQueriesUseTranslatingBoundary(t *testing.T) {
 			}
 			if file != "tx.go" && rawBegin.MatchString(line) {
 				t.Errorf("%s:%d begins a transaction outside tx.go: %s", file, number+1, strings.TrimSpace(line))
+			}
+		}
+	}
+}
+
+// TestPackageBindsLogThroughNoticeBatch: a store transaction binds the log
+// only through logTx, which also binds the transaction's notice batch, so a
+// job appended inside it raises its notice only after commit
+// (component-persistence, Change notices).
+func TestPackageBindsLogThroughNoticeBatch(t *testing.T) {
+	files, err := filepath.Glob("*.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, file := range files {
+		if strings.HasSuffix(file, "_test.go") || file == "change_notices.go" {
+			continue
+		}
+		body, err := os.ReadFile(file)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for number, line := range strings.Split(string(body), "\n") {
+			if strings.Contains(line, "pglog.WithTx(") {
+				t.Errorf("%s:%d binds the log without its notice batch; use logTx: %s", file, number+1, strings.TrimSpace(line))
 			}
 		}
 	}

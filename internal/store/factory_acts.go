@@ -19,6 +19,9 @@ var factoryActKinds = map[string]bool{
 	"review.refresh_round_created":  true,
 	"review.seat_recovered":         true,
 	"merge.confirmed":               true,
+	// A start-up check's repair (feature-operator-next-action NA-5;
+	// req-quiet-idle-runtime AC-4.2).
+	DriftRepairedEvent: true,
 }
 
 // SelectFactoryActs keeps the factory's own acts. Callers pass candidates
@@ -67,12 +70,28 @@ func SelectFactoryActs(events []core.Event, since time.Time, limit int) []nextac
 		if !kept[event.ID] {
 			continue
 		}
-		acts = append(acts, nextaction.Act{ID: event.ID, TaskID: event.TaskID, Kind: event.Kind, At: event.At, Automatic: true})
+		acts = append(acts, nextaction.Act{ID: event.ID, TaskID: event.TaskID, Kind: event.Kind, At: event.At, Automatic: true, Summary: factoryActSummary(event)})
 		if len(acts) == limit {
 			break
 		}
 	}
 	return acts
+}
+
+// factoryActSummary is "<mismatch>: <repair>" for a drift.repaired act and
+// empty for every other act.
+func factoryActSummary(event core.Event) string {
+	if event.Kind != DriftRepairedEvent {
+		return ""
+	}
+	var payload struct {
+		Mismatch string `json:"mismatch"`
+		Repair   string `json:"repair"`
+	}
+	if json.Unmarshal(event.Payload, &payload) != nil || payload.Mismatch == "" || payload.Repair == "" {
+		return ""
+	}
+	return payload.Mismatch + ": " + payload.Repair
 }
 
 func factoryActor(event core.Event) bool {

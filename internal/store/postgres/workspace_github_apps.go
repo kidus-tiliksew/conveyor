@@ -65,6 +65,11 @@ func (s *Store) StoreWorkspaceGitHubApp(ctx context.Context, id string, app core
 		if err != nil {
 			return err
 		}
+		// The conversion's webhook secret replaces the earlier App's; a
+		// replacement without one removes it (component-identity-membership).
+		if err := s.storeWebhookSecretTx(ctx, tx, id, app.WebhookSecret, result.ConnectedAt); err != nil {
+			return err
+		}
 		kind := "workspace.github_app_connected"
 		if count > 0 {
 			kind = "workspace.github_app_replaced"
@@ -75,6 +80,9 @@ func (s *Store) StoreWorkspaceGitHubApp(ctx context.Context, id string, app core
 		return core.WorkspaceGitHubAppStatus{}, translateBackendConflict(err)
 	}
 	redact.RegisterSecret(app.PrivateKey, time.Time{})
+	if app.WebhookSecret != "" {
+		redact.RegisterSecret(app.WebhookSecret, time.Time{})
+	}
 	return result, nil
 }
 func (s *Store) RecordWorkspaceGitHubAppInstallation(ctx context.Context, id string, appID, installationID int64, account string) (core.WorkspaceGitHubAppStatus, error) {

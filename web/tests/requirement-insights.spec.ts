@@ -307,8 +307,6 @@ async function mockBoard(page: Page, server: Server = {}) {
       return route.fulfill({ json: (server.documents ?? (() => documentsView))() })
     }
     if (path.endsWith('/stream')) return route.fulfill({ status: 204 })
-    if (path === '/v1/workers')
-      return route.fulfill({ json: { workers: [], worker_expected: false, worker_available: false } })
     return route.fulfill({ json: [] })
   })
   const count = (method: string, view: string) =>
@@ -658,7 +656,7 @@ test('current and unauthorized headlines disable Regenerate while stale authoriz
   await regenerate().click()
   await expect(regenerate()).toBeDisabled()
   await expect(panel(page)).not.toContainText('Out of date')
-  expect(count('POST', 'summary')).toBe(1)
+  await expect.poll(() => count('POST', 'summary')).toBe(1)
 })
 
 test('a generation conflict refetches summary without an error notice', async ({ page }) => {
@@ -1017,7 +1015,7 @@ test('workspace switching isolates insight requests and late generation results'
   })
   await page.goto('/?view=map&scope=req-alpha&insight=summary')
   await expect(panel(page)).toContainText('Generating a summary')
-  expect(seen.filter((entry) => entry.method === 'POST')).toHaveLength(1)
+  await expect.poll(() => seen.filter((entry) => entry.method === 'POST')).toHaveLength(1)
 
   // A switch lands on the Board; the other workspace's panel opens from its
   // own map.

@@ -8,8 +8,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"github.com/kidus-tiliksew/conveyor/internal/store/storetest"
-	"github.com/kidus-tiliksew/conveyor/internal/testimage"
 	"io"
 	"mime/multipart"
 	"net"
@@ -24,6 +22,9 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"github.com/kidus-tiliksew/conveyor/internal/store/storetest"
+	"github.com/kidus-tiliksew/conveyor/internal/testimage"
+
 	"github.com/kidus-tiliksew/conveyor/internal/config"
 	"github.com/kidus-tiliksew/conveyor/internal/core"
 	"github.com/kidus-tiliksew/conveyor/internal/dispatch"
@@ -33,7 +34,6 @@ import (
 	"github.com/kidus-tiliksew/conveyor/internal/store"
 	"github.com/kidus-tiliksew/conveyor/internal/taskops"
 	githubtrigger "github.com/kidus-tiliksew/conveyor/internal/trigger/github"
-	workerservice "github.com/kidus-tiliksew/conveyor/internal/worker"
 	"github.com/kidus-tiliksew/conveyor/internal/workorder"
 )
 
@@ -55,7 +55,7 @@ func createMemoryWorkOrderInState(t *testing.T, st store.Store, ctx context.Cont
 		if target == core.WorkOrderClaimed && order.LeaseExpiresAt.After(time.Now()) {
 			lease = time.Until(order.LeaseExpiresAt)
 		}
-		claimed, err := storetest.For(st).ClaimWorkOrder(ctx, order.ID, core.WorkOrderClaim{SessionID: order.ID + "-session", ClientToken: "test-token", ClaimantID: "worker", WorkerID: "worker", Lease: lease})
+		claimed, err := storetest.For(st).ClaimWorkOrder(ctx, order.ID, core.WorkOrderClaim{SessionID: order.ID + "-session", ClientToken: "test-token", ClaimantID: "worker", Lease: lease})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -330,7 +330,7 @@ func TestWorkOrderRecoveryHTTPIsAuthorizedFailClosedAndIdempotent(t *testing.T) 
 	if err := storetest.For(st).CreateWorkOrder(ctx, core.WorkOrder{ID: job.ID, TaskID: task.ID, JobID: job.ID, Stage: core.StageReview, State: core.WorkOrderQueued}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := storetest.For(st).ClaimWorkOrder(ctx, job.ID, core.WorkOrderClaim{SessionID: "child", ClientToken: "secret", ClaimantID: "worker", WorkerID: "worker", Lease: time.Minute}); err != nil {
+	if _, err := storetest.For(st).ClaimWorkOrder(ctx, job.ID, core.WorkOrderClaim{SessionID: "child", ClientToken: "secret", ClaimantID: "worker", Lease: time.Minute}); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := storetest.For(st).ReleaseWorkerClaim(ctx, job.ID, "worker", core.WorkOrderRelease{SessionID: "child", Outcome: core.WorkOrderOutcomeCancelled, Reason: "worker shutting down"}); err != nil {
@@ -526,10 +526,10 @@ func TestReviewRoundRetryHTTPIsAuthorizedActionableAndIdempotent(t *testing.T) {
 	}
 	cfg := &config.Config{
 		Workspace: "demo", WorkOrderQueueTimeout: time.Hour,
-		Repos:     []config.Repo{{Name: "api", GitHub: "acme/api", Base: "main"}},
-		Routing:   config.Routing{Stages: map[string]config.StageRoute{"review": {Execution: config.ExecutionMCP, Harness: "codex", TimeoutText: "1h"}}},
-		Harnesses: []config.Harness{{Name: "codex", Command: []string{"codex", "{prompt}"}, ProbeCommand: []string{"codex", "--version"}, ProbeTimeoutText: "5s"}},
-		Review:    config.ReviewPanel{Seats: []config.ReviewSeat{{Model: "gpt-a", Harness: "codex"}, {Model: "gpt-b", Harness: "codex"}}},
+		Repos:   []config.Repo{{Name: "api", GitHub: "acme/api", Base: "main"}},
+		Routing: config.Routing{Stages: map[string]config.StageRoute{"review": {Execution: config.ExecutionMCP, Harness: "codex", TimeoutText: "1h"}}},
+
+		Review: config.ReviewPanel{Seats: []config.ReviewSeat{{Model: "gpt-a", Harness: "codex"}, {Model: "gpt-b", Harness: "codex"}}},
 	}
 	provider := func(context.Context) (*config.Config, error) { return cfg, nil }
 	service := &workorder.Service{Store: st, ConfigProvider: provider, ReviewTarget: func(context.Context, string, string) (githubtrigger.ReviewTarget, error) {
@@ -706,13 +706,11 @@ func TestRetiredTaskHoldRouteAnswersGone(t *testing.T) {
 // live worker and refuses the retired hold input (DEC-74(3)).
 func TestTaskIntakeIsNotHealthGatedAndRefusesHold(t *testing.T) {
 	st := store.NewMemory()
-	now := time.Now().UTC()
-	cfg := &config.Config{Workspace: "demo", Execution: config.ExecutionPolicy{DefaultMode: "auto", SpecApproval: true, MergeApproval: true, ImplementConcurrency: 1, ReviewConcurrency: 1}, Harnesses: []config.Harness{{Name: "codex"}}, Routing: config.Routing{Stages: map[string]config.StageRoute{"implement": {Harness: "codex"}, "review": {Harness: "codex", Execution: config.ExecutionMCP}}}, Repos: []config.Repo{{Name: "api", Base: "main"}}}
+	cfg := &config.Config{Workspace: "demo", Execution: config.ExecutionPolicy{DefaultMode: "auto", SpecApproval: true, MergeApproval: true, ImplementConcurrency: 1, ReviewConcurrency: 1}, Routing: config.Routing{Stages: map[string]config.StageRoute{"implement": {Harness: "codex"}, "review": {Harness: "codex", Execution: config.ExecutionMCP}}}, Repos: []config.Repo{{Name: "api", Base: "main"}}}
 	provider := func(context.Context) (*config.Config, error) { return cfg, nil }
 	orders := &workorder.Service{Store: st, ConfigProvider: provider}
-	workers := &workerservice.Service{Store: st, WorkOrders: orders, ConfigProvider: provider, Now: func() time.Time { return now }}
 	server := NewServer(st)
-	server.BearerToken, server.Workspace, server.ConfigProvider, server.Workers = "token", "demo", provider, workers
+	server.BearerToken, server.Workspace, server.ConfigProvider, server.WorkOrders = "token", "demo", provider, orders
 	server.GenerateTaskTitle = func(_ context.Context, task core.Task) (string, error) { return task.Body, nil }
 	historical, err := json.Marshal(core.Task{ID: "historical", Mode: core.TaskModeAuto})
 	if err != nil || bytes.Contains(historical, []byte(`"mode"`)) {
@@ -1435,7 +1433,7 @@ func TestPendingProposalsProjectionAttentionAndTaskWarning(t *testing.T) {
 	if err = storetest.For(st).CreateWorkOrder(ctx, order); err != nil {
 		t.Fatal(err)
 	}
-	claimed, err := storetest.For(st).ClaimWorkOrder(ctx, order.ID, core.WorkOrderClaim{SessionID: "proposal-session", ClientToken: "token", WorkerID: "worker", Lease: time.Minute})
+	claimed, err := storetest.For(st).ClaimWorkOrder(ctx, order.ID, core.WorkOrderClaim{SessionID: "proposal-session", ClientToken: "token", Lease: time.Minute})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1613,7 +1611,7 @@ func TestTaskContextProposalSignalsAttentionWithoutPendingAuthority(t *testing.T
 	if err = storetest.For(st).CreateWorkOrder(ctx, order); err != nil {
 		t.Fatal(err)
 	}
-	claimed, claimErr := storetest.For(st).ClaimWorkOrder(ctx, order.ID, core.WorkOrderClaim{SessionID: "context-attention-session", ClientToken: "token", WorkerID: "worker", Lease: time.Minute})
+	claimed, claimErr := storetest.For(st).ClaimWorkOrder(ctx, order.ID, core.WorkOrderClaim{SessionID: "context-attention-session", ClientToken: "token", Lease: time.Minute})
 	if claimErr != nil {
 		t.Fatal(claimErr)
 	}
@@ -1686,7 +1684,7 @@ func TestActivityUsesHumanGateAfterSubmittedOrderRecoversFromRetries(t *testing.
 		t.Fatal(err)
 	}
 	claimed, err := storetest.For(st).ClaimWorkOrder(ctx, job.ID, core.WorkOrderClaim{
-		SessionID: "recovered-session", ClientToken: "test-token", WorkerID: "worker",
+		SessionID: "recovered-session", ClientToken: "test-token",
 		Lease: time.Minute,
 	})
 	if err != nil {
@@ -2211,7 +2209,7 @@ func TestPlanRevisionApprovalIsDurableBeforeImmediatePlanClaim(t *testing.T) {
 			return err
 		}
 		planOrder := orders[len(orders)-1]
-		claimed, err := storetest.For(st).ClaimWorkOrder(ctx, planOrder.ID, core.WorkOrderClaim{SessionID: "immediate-plan-session", ClientToken: "plan-token", WorkerID: "plan-worker", Agent: "codex", Model: "planner", Lease: time.Minute, ExecutionTimeout: time.Hour})
+		claimed, err := storetest.For(st).ClaimWorkOrder(ctx, planOrder.ID, core.WorkOrderClaim{SessionID: "immediate-plan-session", ClientToken: "plan-token", Agent: "codex", Model: "planner", Lease: time.Minute, ExecutionTimeout: time.Hour})
 		if err != nil {
 			return err
 		}
@@ -2232,57 +2230,6 @@ func TestPlanRevisionApprovalIsDurableBeforeImmediatePlanClaim(t *testing.T) {
 	for _, required := range []string{"# Plan revision context", "the API changed", "# Operator direction\n\nKeep compatibility."} {
 		if !strings.Contains(immediate.RolePrompt, required) {
 			t.Errorf("immediate plan prompt missing %q: %s", required, immediate.RolePrompt)
-		}
-	}
-}
-
-func TestTaskActivityExposesOnlyRunningSnapshotAndAttemptTranscriptHistory(t *testing.T) {
-	ctx := store.WithWorkspace(store.WithActor(t.Context(), store.SystemActor()), "demo")
-	st := store.NewMemory()
-	now := time.Now().UTC()
-	task := core.Task{ID: "attempt-observability", Workspace: "demo", State: core.TaskRunning, NextStage: core.StageImplement, CreatedAt: now}
-	job := core.Job{ID: task.ID + "-implement-1", TaskID: task.ID, Stage: core.StageImplement, State: core.JobPending}
-	if err := st.CreateTask(ctx, task); err != nil {
-		t.Fatal(err)
-	}
-	if err := st.CreateJob(ctx, job); err != nil {
-		t.Fatal(err)
-	}
-	if err := storetest.For(st).CreateWorkOrder(ctx, core.WorkOrder{ID: job.ID, TaskID: task.ID, JobID: job.ID, Stage: core.StageImplement, State: core.WorkOrderQueued, QueueEnteredAt: now, QueueDeadline: now.Add(time.Hour), CreatedAt: now}); err != nil {
-		t.Fatal(err)
-	}
-	worker := core.Worker{ID: "worker", Workspace: "demo"}
-	claimed, err := storetest.For(st).ClaimWorkOrder(ctx, job.ID, core.WorkOrderClaim{WorkerID: worker.ID, ClaimantID: worker.ID, SessionID: "session", ClientToken: "token", Lease: time.Minute, ExecutionTimeout: time.Hour})
-	if err != nil {
-		t.Fatal(err)
-	}
-	service := &workerservice.Service{Store: st}
-	if _, err = service.Renew(ctx, worker, job.ID, "session", &core.WorkOrderActivitySnapshotInput{Content: "running tail"}); err != nil {
-		t.Fatal(err)
-	}
-	server := NewServer(st)
-	server.Workspace = "demo"
-	running := httptest.NewRecorder()
-	server.Handler().ServeHTTP(running, authenticatedMemoryRead(server, httptest.NewRequest(http.MethodGet, "/v1/tasks/"+task.ID+"/activity?workspace_id=demo", nil)))
-	if running.Code != http.StatusOK || !strings.Contains(running.Body.String(), `"activity_snapshot":{"attempt_id":"`+claimed.AttemptID+`","content":"running tail"`) || strings.Contains(running.Body.String(), "transcript_captures") {
-		t.Fatalf("running detail status=%d body=%s", running.Code, running.Body.String())
-	}
-	checkpoint := core.WorkOrderAttemptCheckpoint{SessionID: "session", AttemptID: claimed.AttemptID, TerminationReason: "harness exited", CommitSHA: strings.Repeat("b", 40), PushResult: "pushed", Transcript: &core.WorkOrderAttemptTranscript{Content: "completed transcript"}}
-	if created, checkpointErr := service.CheckpointAttempt(ctx, worker, job.ID, checkpoint); checkpointErr != nil || !created {
-		t.Fatalf("checkpoint created=%v err=%v", created, checkpointErr)
-	}
-	after := httptest.NewRecorder()
-	server.Handler().ServeHTTP(after, authenticatedMemoryRead(server, httptest.NewRequest(http.MethodGet, "/v1/tasks/"+task.ID+"/activity?workspace_id=demo", nil)))
-	if after.Code != http.StatusOK || strings.Contains(after.Body.String(), "activity_snapshot") || !strings.Contains(after.Body.String(), `"transcript_captures":[{"attempt_id":"`+claimed.AttemptID+`","content":"completed transcript","termination_reason":"harness exited"`) {
-		t.Fatalf("completed detail status=%d body=%s", after.Code, after.Body.String())
-	}
-	events, err := st.ListEvents(ctx, task.ID)
-	if err != nil {
-		t.Fatal(err)
-	}
-	for _, event := range events {
-		if strings.Contains(string(event.Payload), "running tail") || strings.Contains(string(event.Payload), "completed transcript") {
-			t.Fatalf("observability leaked into event %s: %s", event.Kind, event.Payload)
 		}
 	}
 }
@@ -2309,12 +2256,12 @@ func newPlanRevisionReviewServer(t *testing.T) (context.Context, store.Store, *S
 	if _, err = storetest.For(st).CreateStageWorkOrder(ctx, job, order); err != nil {
 		t.Fatal(err)
 	}
-	claimed, err := storetest.For(st).ClaimWorkOrder(ctx, orderID, core.WorkOrderClaim{SessionID: "session", ClientToken: "token", WorkerID: "worker", Agent: "codex", Model: "model", Lease: time.Minute, ExecutionTimeout: time.Hour})
+	claimed, err := storetest.For(st).ClaimWorkOrder(ctx, orderID, core.WorkOrderClaim{SessionID: "session", ClientToken: "token", Agent: "codex", Model: "model", Lease: time.Minute, ExecutionTimeout: time.Hour})
 	if err != nil {
 		t.Fatal(err)
 	}
 	if _, err = taskops.ExecuteWorkOrder(ctx, st, taskID, core.WorkOrderCmdRequestPlanRevision, func(lease taskops.TaskLease) (store.PlanRevisionRequestResult, error) {
-		return st.RequestPlanRevisionCommand(ctx, lease, orderID, core.WorkOrderClaimIdentity{WorkerID: "worker", ClaimantID: claimed.ClaimantID, SessionID: claimed.SessionID}, "the API changed")
+		return st.RequestPlanRevisionCommand(ctx, lease, orderID, core.WorkOrderClaimIdentity{ClaimantID: claimed.ClaimantID, SessionID: claimed.SessionID}, "the API changed")
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -3163,12 +3110,12 @@ func TestActivityConditionalInvalidation(t *testing.T) {
 		}},
 		{name: "new page member", change: func(f *activityConditionalFixture) { f.task("inv-new", core.TaskQueued) }},
 		{name: "work-order transition", change: func(f *activityConditionalFixture) {
-			if _, err := storetest.For(f.base).ClaimWorkOrder(f.ctx, "inv-order", core.WorkOrderClaim{SessionID: "inv-session", ClientToken: "secret", ClaimantID: "worker", WorkerID: "worker", Lease: time.Hour}); err != nil {
+			if _, err := storetest.For(f.base).ClaimWorkOrder(f.ctx, "inv-order", core.WorkOrderClaim{SessionID: "inv-session", ClientToken: "secret", ClaimantID: "worker", Lease: time.Hour}); err != nil {
 				f.t.Fatal(err)
 			}
 		}},
 		{name: "lease renewal before its event", change: func(f *activityConditionalFixture) {
-			claim := core.WorkOrderClaim{SessionID: "inv-session", ClientToken: "secret", ClaimantID: "worker", WorkerID: "worker", Lease: time.Hour}
+			claim := core.WorkOrderClaim{SessionID: "inv-session", ClientToken: "secret", ClaimantID: "worker", Lease: time.Hour}
 			if _, err := storetest.For(f.base).ClaimWorkOrder(f.ctx, "inv-order", claim); err != nil {
 				f.t.Fatal(err)
 			}
@@ -3625,7 +3572,7 @@ func TestTaskActivityLoadsOneHistoryAndOmitsRunningEnd(t *testing.T) {
 	}
 }
 
-func TestTaskActivityScopesWorkerStatusToActionableTaskOrders(t *testing.T) {
+func TestTaskActivityCarriesNoWorkerStatus(t *testing.T) {
 	st := store.NewMemory()
 	ctx := store.WithWorkspace(store.WithActor(t.Context(), store.SystemActor()), "demo")
 	for _, task := range []core.Task{
@@ -3660,16 +3607,10 @@ func TestTaskActivityScopesWorkerStatusToActionableTaskOrders(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	// The claimed review fixture enrolls its worker; revoke it so the
-	// pull-only case below has no unrevoked enrolled worker.
-	if err := st.RevokeWorker(ctx, "worker"); err != nil {
-		t.Fatal(err)
-	}
 	server := NewServer(st)
 	server.Workspace = "demo"
-	server.Workers = &workerservice.Service{Store: st}
 	server.ConfigProvider = func(context.Context) (*config.Config, error) {
-		return &config.Config{Workspace: "demo", Harnesses: []config.Harness{{Name: "codex"}}}, nil
+		return &config.Config{Workspace: "demo"}, nil
 	}
 
 	queued := httptest.NewRecorder()
@@ -3678,19 +3619,6 @@ func TestTaskActivityScopesWorkerStatusToActionableTaskOrders(t *testing.T) {
 		bytes.Contains(queued.Body.Bytes(), []byte(`"needs_attention":true`)) {
 		t.Fatalf("pull-only queued activity status=%d body=%s", queued.Code, queued.Body.String())
 	}
-	if err := createOwnedWorker(st, ctx, core.Worker{ID: "stale-worker", Workspace: "demo", OwnerUserID: "owner", Name: "stale-codex", CreatedAt: time.Now().UTC()}); err != nil {
-		t.Fatal(err)
-	}
-	queued = httptest.NewRecorder()
-	server.Handler().ServeHTTP(queued, authenticatedMemoryRead(server, httptest.NewRequest(http.MethodGet, "/v1/tasks/queued-auto/activity?workspace_id=demo", nil)))
-	if queued.Code != http.StatusOK || !bytes.Contains(queued.Body.Bytes(), []byte(`"worker_status"`)) ||
-		!bytes.Contains(queued.Body.Bytes(), []byte(`"required_harnesses":[]`)) ||
-		!bytes.Contains(queued.Body.Bytes(), []byte(`"queue_context":"never_started"`)) ||
-		!bytes.Contains(queued.Body.Bytes(), []byte(`no live enrolled worker`)) ||
-		bytes.Contains(queued.Body.Bytes(), []byte(`"needs_attention":true`)) {
-		t.Fatalf("queued activity status=%d body=%s", queued.Code, queued.Body.String())
-	}
-
 	for _, taskID := range []string{"awaiting-auto", "approved-auto"} {
 		response := httptest.NewRecorder()
 		server.Handler().ServeHTTP(response, authenticatedMemoryRead(server, httptest.NewRequest(http.MethodGet, "/v1/tasks/"+taskID+"/activity?workspace_id=demo", nil)))
@@ -4972,5 +4900,94 @@ func TestTaskActivityDocumentationAssessment(t *testing.T) {
 				t.Fatalf("activity review.completed events=%d", completed)
 			}
 		})
+	}
+}
+
+// TestRetiredWorkerAndRunOrderRoutesAreNotMounted proves every retired worker,
+// run-order, attempt-observability, worktree-handoff, and transcript-capture
+// route answers what an unknown /v1/ path answers, with no store write
+// (DEC-97(1); DEC-98; component-http-api, Route index).
+func TestRetiredWorkerAndRunOrderRoutesAreNotMounted(t *testing.T) {
+	st := store.NewMemory()
+	server := NewServer(st)
+	server.Workspace = "demo"
+	server.BearerToken = "token"
+	handler := server.Handler()
+	ctx := store.WithWorkspace(store.WithActor(t.Context(), store.SystemActor()), "demo")
+	before, err := st.ListEvents(ctx, "task")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, route := range []struct{ method, path string }{
+		{http.MethodPost, "/v1/worker/enroll"},
+		{http.MethodPost, "/v1/worker/heartbeat"},
+		{http.MethodGet, "/v1/worker/config"},
+		{http.MethodGet, "/v1/worker/work-orders"},
+		{http.MethodPost, "/v1/worker/work-orders/order/claim"},
+		{http.MethodPost, "/v1/worker/work-orders/order/renew"},
+		{http.MethodGet, "/v1/worker/work-orders/order/reconcile"},
+		{http.MethodPost, "/v1/worker/work-orders/order/release"},
+		{http.MethodPost, "/v1/worker/work-orders/order/attempt-checkpoint"},
+		{http.MethodPost, "/v1/worker/work-orders/order/attempt-observability"},
+		{http.MethodPost, "/v1/worker/work-orders/order/worktree-handoff"},
+		{http.MethodPost, "/v1/worker/work-orders/order/verification-evidence"},
+		{http.MethodPost, "/v1/worker/work-orders/order/submit-for-review"},
+		{http.MethodGet, "/v1/worker/work-orders/order/pull-request-template"},
+		{http.MethodPost, "/v1/worker/work-orders/order/context-refresh"},
+		{http.MethodPost, "/v1/worker/work-orders/order/verification/prepare_verification"},
+		{http.MethodGet, "/v1/worker/tasks/task/worktree-cleanup"},
+		{http.MethodGet, "/v1/workers"},
+		{http.MethodPost, "/v1/workers/pairings"},
+		{http.MethodDelete, "/v1/workers/worker"},
+		{http.MethodGet, "/v1/tasks/task/run-order"},
+		{http.MethodPost, "/v1/tasks/task/run-orders/order/claim"},
+		{http.MethodPost, "/v1/tasks/task/run-orders/order/agent-credential"},
+		{http.MethodDelete, "/v1/tasks/task/run-orders/order/agent-credential"},
+		{http.MethodPost, "/v1/tasks/task/run-orders/order/renew"},
+		{http.MethodGet, "/v1/tasks/task/run-orders/order/reconcile"},
+		{http.MethodPost, "/v1/tasks/task/run-orders/order/release"},
+		{http.MethodPost, "/v1/tasks/task/run-orders/order/attempt-checkpoint"},
+		{http.MethodPost, "/v1/tasks/task/run-orders/order/attempt-observability"},
+		{http.MethodPost, "/v1/tasks/task/run-orders/order/worktree-handoff"},
+		{http.MethodGet, "/v1/tasks/task/work-orders/order/transcript-captures/attempt"},
+	} {
+		request := httptest.NewRequest(route.method, route.path+"?workspace_id=demo", strings.NewReader(`{}`))
+		request.Header.Set("Authorization", "Bearer token")
+		response := httptest.NewRecorder()
+		handler.ServeHTTP(response, request)
+		if response.Code != http.StatusNotFound && response.Code != http.StatusMethodNotAllowed {
+			t.Fatalf("%s %s status=%d body=%s, want the unknown-path answer", route.method, route.path, response.Code, response.Body.String())
+		}
+		if strings.Contains(response.Body.String(), "<html") {
+			t.Fatalf("%s %s served the dashboard", route.method, route.path)
+		}
+	}
+	after, err := st.ListEvents(ctx, "task")
+	if err != nil || len(after) != len(before) {
+		t.Fatalf("retired routes wrote events: before=%d after=%d err=%v", len(before), len(after), err)
+	}
+}
+
+// TestFormerWorkerCredentialIsUnauthenticated proves a bearer that matches no
+// stored user or agent credential, as a former worker enrollment secret does,
+// answers 401 on /mcp and on a user route (DEC-97(1); req-security-boundaries
+// REQ-1).
+func TestFormerWorkerCredentialIsUnauthenticated(t *testing.T) {
+	server := NewServer(store.NewMemory())
+	server.Workspace = "demo"
+	server.Credentials = staticCredentialVerifier{"user-token": {ID: "pat_user", OwnerUserID: "user", Kind: core.CredentialUser, Scope: core.CredentialScopeUser}}
+	handler := server.Handler()
+	initialize := `{"jsonrpc":"2.0","id":1,"method":"tools/list"}`
+	for _, request := range []*http.Request{
+		httptest.NewRequest(http.MethodPost, "/mcp", strings.NewReader(initialize)),
+		httptest.NewRequest(http.MethodGet, "/v1/tasks?workspace_id=demo", nil),
+		httptest.NewRequest(http.MethodGet, "/v1/tasks/task/worktree-cleanup?workspace_id=demo", nil),
+	} {
+		request.Header.Set("Authorization", "Bearer cv_wkr_former_worker_secret")
+		response := httptest.NewRecorder()
+		handler.ServeHTTP(response, request)
+		if response.Code != http.StatusUnauthorized || response.Header().Get("WWW-Authenticate") != "Bearer" {
+			t.Fatalf("%s %s status=%d headers=%v, want 401 with a Bearer challenge", request.Method, request.URL.Path, response.Code, response.Header())
+		}
 	}
 }

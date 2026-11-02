@@ -18,7 +18,6 @@ import (
 func TestWorktreeCleanupRecordsCredentialActorOnce(t *testing.T) {
 	for _, actor := range []store.Actor{
 		{ID: store.UserActorID("runner"), Role: core.ActorUser},
-		{ID: store.WorkerActorID("worker-a"), Role: core.ActorWorker},
 	} {
 		t.Run(string(actor.Role), func(t *testing.T) {
 			st := store.NewMemory()

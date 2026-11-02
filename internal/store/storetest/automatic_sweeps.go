@@ -26,10 +26,7 @@ func automaticReviewSweepConfig(workspace string, policy config.RecoveryPolicy) 
 		Workspace: workspace, WorkOrderQueueTimeout: time.Hour, Recovery: policy,
 		Repos:   []config.Repo{{Name: "conveyor", Base: "main", GitHub: "acme/conveyor"}},
 		Routing: config.Routing{Stages: map[string]config.StageRoute{"review": {Execution: config.ExecutionMCP, Harness: "codex", TimeoutText: "45m"}}},
-		Harnesses: []config.Harness{
-			{Name: "codex", Command: []string{"codex", "{prompt}"}, ProbeCommand: []string{"codex", "--version"}, ProbeTimeoutText: "5s"},
-		},
-		Review: config.ReviewPanel{Seats: []config.ReviewSeat{{Model: "gpt-current", Harness: "codex"}, {Model: "gpt-second", Harness: "codex"}}},
+		Review:  config.ReviewPanel{Seats: []config.ReviewSeat{{Model: "gpt-current", Harness: "codex"}, {Model: "gpt-second", Harness: "codex"}}},
 	}
 }
 

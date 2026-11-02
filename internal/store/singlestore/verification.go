@@ -11,7 +11,6 @@ import (
 	"time"
 
 	"github.com/kidus-tiliksew/conveyor/internal/core"
-	"github.com/kidus-tiliksew/conveyor/internal/eventlog/s2log"
 	"github.com/kidus-tiliksew/conveyor/internal/queue/logqueue"
 	"github.com/kidus-tiliksew/conveyor/internal/store"
 	"github.com/kidus-tiliksew/conveyor/internal/taskops"
@@ -407,7 +406,7 @@ func (s *Store) deliveryIntentTx(ctx context.Context, tx *sql.Tx, task string, r
 		}
 		if d.State == "pending" {
 			a := store.VerificationDeliveryArgs(d)
-			if _, err = logqueue.Enqueue(s2log.WithTx(ctx, tx), s.log, ws, a.Kind(), a.UniqueKey(), a, 5, time.Now().UTC()); err != nil {
+			if _, err = logqueue.Enqueue(logTx(ctx, tx), s.log, ws, a.Kind(), a.UniqueKey(), a, 5, time.Now().UTC()); err != nil {
 				return err
 			}
 		}
@@ -469,13 +468,21 @@ func (s *Store) RunVerificationDelivery(ctx context.Context, a queue.Verificatio
 		if e != nil {
 			return e
 		}
+		s.beginNotices(tx)
 		return lockKey(ctx, tx, "verification-publication:"+ws+":"+key)
 	}
 	defer func() {
 		if tx != nil {
 			_ = tx.Rollback()
+			finishNotices(tx, false)
 		}
 	}()
+	// commit publishes the transaction's notices only after it committed.
+	commit := func() error {
+		e := tx.Commit()
+		finishNotices(tx, e == nil)
+		return e
+	}
 	if err = begin(); err != nil {
 		return err
 	}
@@ -492,7 +499,7 @@ func (s *Store) RunVerificationDelivery(ctx context.Context, a queue.Verificatio
 		return err
 	}
 	if !ok {
-		return tx.Commit()
+		return commit()
 	}
 	view := current
 	check := func() error {
@@ -519,7 +526,7 @@ func (s *Store) RunVerificationDelivery(ctx context.Context, a queue.Verificatio
 		current = updated
 		view = updated
 		if command == "attempt" {
-			if e = tx.Commit(); e != nil {
+			if e = commit(); e != nil {
 				return e
 			}
 			tx = nil
@@ -533,14 +540,22 @@ func (s *Store) RunVerificationDelivery(ctx context.Context, a queue.Verificatio
 	if err = fn(&view, save); err != nil {
 		return err
 	}
-	return tx.Commit()
+	return commit()
 }
+
+// ReconcileVerificationDeliveries enqueues each pending or retrying delivery
+// and each failed one whose next_attempt_at passed. A pending or retrying
+// delivery whose job it enqueues is drift and is reported to the context's
+// drift recorder after the commit (component-persistence, Drift repair
+// reports).
 func (s *Store) ReconcileVerificationDeliveries(ctx context.Context) error {
 	ws, err := workspace(ctx)
 	if err != nil {
 		return err
 	}
-	return s.withTx(ctx, func(tx *sql.Tx) error {
+	var repaired []string
+	err = s.withTx(ctx, func(tx *sql.Tx) error {
+		repaired = repaired[:0]
 		if err := lockKey(ctx, tx, "verification:"+ws); err != nil {
 			return err
 		}
@@ -568,7 +583,8 @@ func (s *Store) ReconcileVerificationDeliveries(ctx context.Context) error {
 			return err
 		}
 		for _, d := range ds {
-			if d.State == "failed" {
+			due := d.State == "failed"
+			if due {
 				next, e := store.AdvanceVerificationDelivery(d, "retry", d, time.Now().UTC())
 				if e != nil {
 					return e
@@ -579,10 +595,21 @@ func (s *Store) ReconcileVerificationDeliveries(ctx context.Context) error {
 				d = next
 			}
 			a := store.VerificationDeliveryArgs(d)
-			if _, err = logqueue.Enqueue(s2log.WithTx(ctx, tx), s.log, ws, a.Kind(), a.UniqueKey(), a, 5, time.Now().UTC()); err != nil {
+			inserted, err := logqueue.Enqueue(logTx(ctx, tx), s.log, ws, a.Kind(), a.UniqueKey(), a, 5, time.Now().UTC())
+			if err != nil {
 				return err
+			}
+			if inserted && !due {
+				repaired = append(repaired, d.TaskID)
 			}
 		}
 		return nil
 	})
+	if err != nil {
+		return err
+	}
+	for _, taskID := range repaired {
+		store.ReportDriftRepair(ctx, store.DriftVerificationDeliveryWithoutJob.For(taskID))
+	}
+	return nil
 }

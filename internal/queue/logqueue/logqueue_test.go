@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/kidus-tiliksew/conveyor/internal/changes"
 	"github.com/kidus-tiliksew/conveyor/internal/core"
 	"github.com/kidus-tiliksew/conveyor/internal/eventlog"
 	"github.com/kidus-tiliksew/conveyor/internal/eventlog/memlog"
@@ -130,10 +131,14 @@ func appendKind(t *testing.T, log eventlog.Store, workspace string, stream event
 	}
 }
 
-// runtimeFixture builds a runtime with fast polling and a handler that
+// notifyingLog is a memlog that raises job notices, as every backend's Log()
+// does; the runtime wakes only on those notices.
+func notifyingLog() *NotifyingLog { return Notify(memlog.New(), changes.NewHub()) }
+
+// runtimeFixture builds a runtime on a notifying log and a handler that
 // records what it saw.
 type runtimeFixture struct {
-	log     *memlog.Store
+	log     *NotifyingLog
 	rt      *Runtime
 	mu      sync.Mutex
 	calls   []queue.Job
@@ -142,11 +147,7 @@ type runtimeFixture struct {
 
 func newRuntimeFixture(t *testing.T, opts Options) *runtimeFixture {
 	t.Helper()
-	f := &runtimeFixture{log: memlog.New()}
-	opts.PollInterval = 20 * time.Millisecond
-	if opts.ClockInterval == 0 {
-		opts.ClockInterval = -1
-	}
+	f := &runtimeFixture{log: notifyingLog()}
 	if len(opts.Workspaces) == 0 {
 		opts.Workspaces = []string{"ws"}
 	}
@@ -287,7 +288,7 @@ func TestRuntimeRetriesThenDiscardsAndSnoozeDoesNotCount(t *testing.T) {
 }
 
 func TestRuntimeReplicasClaimEachJobOnce(t *testing.T) {
-	log := memlog.New()
+	log := notifyingLog()
 	var calls int32
 	handler := func(_ context.Context, job queue.Job) error {
 		atomic.AddInt32(&calls, 1)
@@ -296,7 +297,7 @@ func TestRuntimeReplicasClaimEachJobOnce(t *testing.T) {
 	}
 	var runtimes []*Runtime
 	for i := 0; i < 3; i++ {
-		rt := NewRuntime(log, Options{Workspaces: []string{"ws"}, PollInterval: 10 * time.Millisecond, ClockInterval: -1, WorkerID: fmt.Sprintf("replica-%d", i)})
+		rt := NewRuntime(log, Options{Workspaces: []string{"ws"}, WorkerID: fmt.Sprintf("replica-%d", i)})
 		rt.Register(queue.Registration{Kind: "demo", Handle: handler})
 		runtimes = append(runtimes, rt)
 	}
@@ -351,7 +352,7 @@ func TestRuntimeReplicasClaimEachJobOnce(t *testing.T) {
 }
 
 func TestRuntimeRescuesStuckClaims(t *testing.T) {
-	log := memlog.New()
+	log := notifyingLog()
 	now := time.Now().UTC()
 	// A claim left behind by a dead worker, older than the threshold.
 	if _, err := Enqueue(context.Background(), log, "ws", "demo", "k", demoArgs{}, 3, now.Add(-time.Hour)); err != nil {
@@ -360,7 +361,7 @@ func TestRuntimeRescuesStuckClaims(t *testing.T) {
 	stream := StreamFor("demo", "k")
 	appendKind(t, log, "ws", stream, 1, KindClaimed, claimedPayload{Attempt: 1, Worker: "dead", ClaimedAt: now.Add(-time.Hour)})
 	f := &runtimeFixture{log: log}
-	f.rt = NewRuntime(log, Options{Workspaces: []string{"ws"}, PollInterval: 10 * time.Millisecond, ClockInterval: -1, RescueStuckAfter: time.Minute})
+	f.rt = NewRuntime(log, Options{Workspaces: []string{"ws"}, RescueStuckAfter: time.Minute})
 	f.rt.Register(queue.Registration{Kind: "demo", Handle: func(_ context.Context, job queue.Job) error {
 		f.mu.Lock()
 		f.calls = append(f.calls, job)
@@ -414,9 +415,18 @@ func TestRuntimeStopAndCancelInterruptsHandlerAndRecordsSnooze(t *testing.T) {
 }
 
 func TestRuntimeEnsureWorkspaceAfterStartAndClock(t *testing.T) {
-	log := memlog.New()
+	log := notifyingLog()
 	var ticks int32
-	rt := NewRuntime(log, Options{PollInterval: 10 * time.Millisecond, ClockInterval: 15 * time.Millisecond})
+	// One stored deadline just after start drives the second fire; like a
+	// store, the source returns it until a fire passes it.
+	stored := time.Now().UTC().Add(20 * time.Millisecond)
+	deadlines := func(_ context.Context, workspace string, after time.Time) (time.Time, bool, error) {
+		if after.Before(stored) {
+			return stored, true, nil
+		}
+		return time.Time{}, false, nil
+	}
+	rt := NewRuntime(log, Options{Deadlines: deadlines})
 	rt.Register(queue.Registration{Kind: queue.OrderClockArgs{}.Kind(), Handle: func(_ context.Context, job queue.Job) error {
 		args, err := queue.DecodeArgs[queue.OrderClockArgs](job)
 		if err != nil || args.WorkspaceID != "late" || job.WorkspaceID != "late" {
@@ -465,30 +475,23 @@ func TestDefaultRetryDelayDoublesAndCaps(t *testing.T) {
 	}
 }
 
-func TestRuntimeTrustedWorkspaceAndPublicationWakeup(t *testing.T) {
-	log := memlog.New()
+// TestRuntimeHandlersSeeTrustedPartition: jobs enqueued in a starting
+// workspace and in one added to a running runtime run with the trusted
+// partition, and a job a handler enqueues wakes the runtime on its notice
+// (component-durable-queue).
+func TestRuntimeHandlersSeeTrustedPartition(t *testing.T) {
+	log := notifyingLog()
 	var completed atomic.Int32
-	var pending atomic.Bool
-	pending.Store(true)
-	rt := NewRuntime(log, Options{Workspaces: []string{"alpha"}, PollInterval: time.Millisecond * 5})
+	rt := NewRuntime(log, Options{Workspaces: []string{"alpha"}})
 	rt.Register(queue.Registration{Kind: "publication", Handle: func(ctx context.Context, job queue.Job) error {
-		if job.WorkspaceID != "alpha" {
+		if job.WorkspaceID != "alpha" && job.WorkspaceID != "beta" {
 			t.Errorf("untrusted partition: %q", job.WorkspaceID)
 		}
-		pending.Store(false)
 		if completed.Add(1) == 1 {
-			// New evidence commits after reconciliation but before queue completion.
-			pending.Store(true)
-			inserted, err := Enqueue(ctx, log, "alpha", "publication", "same-pr", map[string]string{"workspace_id": "forged"}, 5, time.Now())
-			if err != nil || inserted {
-				t.Errorf("active enqueue=%t err=%v", inserted, err)
+			// A second job enqueued by a handler wakes the runtime on its notice.
+			if _, err := Enqueue(ctx, log, job.WorkspaceID, "publication", "second", map[string]string{"workspace_id": "forged"}, 5, time.Now()); err != nil {
+				t.Errorf("enqueue second: %v", err)
 			}
-		}
-		return nil
-	}, Reconcile: func(ctx context.Context, ws string) error {
-		if pending.Load() {
-			_, err := Enqueue(ctx, log, ws, "publication", "same-pr", map[string]string{"workspace_id": "forged"}, 5, time.Now())
-			return err
 		}
 		return nil
 	}})
@@ -496,13 +499,212 @@ func TestRuntimeTrustedWorkspaceAndPublicationWakeup(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer rt.Stop(context.Background())
+	if err := rt.EnsureWorkspace("beta"); err != nil {
+		t.Fatal(err)
+	}
+	for _, ws := range []string{"alpha", "beta"} {
+		if _, err := Enqueue(t.Context(), log, ws, "publication", "same-pr", map[string]string{"workspace_id": "forged"}, 5, time.Now()); err != nil {
+			t.Fatal(err)
+		}
+	}
 	deadline := time.After(3 * time.Second)
-	for completed.Load() < 2 {
+	for completed.Load() < 3 {
 		select {
 		case <-deadline:
-			t.Fatal("suppressed generation lost its wakeup")
-		case <-time.After(time.Millisecond * 5):
+			t.Fatalf("completed=%d, want the two enqueued jobs and the handler's job", completed.Load())
+		case <-time.After(5 * time.Millisecond):
 		}
+	}
+}
+
+// countingLog counts Tail calls, the statement a catch-up sends.
+type countingLog struct {
+	*NotifyingLog
+	tails atomic.Int32
+}
+
+func (l *countingLog) Tail(ctx context.Context, workspace string, after eventlog.Position, limit int) ([]eventlog.Event, error) {
+	l.tails.Add(1)
+	return l.NotifyingLog.Tail(ctx, workspace, after, limit)
+}
+
+// TestRuntimeStartsJobWithinOneSecondAndStaysQuietWhileIdle: with no poll
+// interval a job committed after start runs on its notice, well inside the
+// one-second bound, and an idle runtime sends no Tail (req-quiet-idle-runtime
+// AC-1.1, AC-2.1).
+func TestRuntimeStartsJobWithinOneSecondAndStaysQuietWhileIdle(t *testing.T) {
+	log := &countingLog{NotifyingLog: notifyingLog()}
+	started := make(chan time.Time, 1)
+	rt := NewRuntime(log, Options{Workspaces: []string{"ws"}})
+	rt.Register(queue.Registration{Kind: "demo", Handle: func(context.Context, queue.Job) error {
+		started <- time.Now()
+		return nil
+	}})
+	if err := rt.Start(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	defer rt.Stop(context.Background())
+	settle := func() int32 {
+		// Wait until the tail count stops moving, observed twice in a row.
+		last := log.tails.Load()
+		for stable := 0; stable < 2; {
+			time.Sleep(50 * time.Millisecond)
+			if now := log.tails.Load(); now == last {
+				stable++
+			} else {
+				last, stable = now, 0
+			}
+		}
+		return last
+	}
+	idle := settle()
+	if idle == 0 {
+		t.Fatal("no catch-up at start")
+	}
+	time.Sleep(300 * time.Millisecond)
+	if got := log.tails.Load(); got != idle {
+		t.Fatalf("idle runtime tailed %d more times", got-idle)
+	}
+	committed := time.Now()
+	if _, err := Enqueue(context.Background(), log, "ws", "demo", "k", demoArgs{}, 3, committed.UTC()); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case at := <-started:
+		if latency := at.Sub(committed); latency > 600*time.Millisecond {
+			t.Fatalf("job started %s after commit; the bound is one second", latency)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("job did not start within one second of its commit")
+	}
+}
+
+// TestRuntimeCatchesUpUnnotifiedAppendOnPeerNotice: an append that raised
+// no notice in this process, as another daemon's commit on SingleStore, is
+// found by the catch-up that the daemon-wide peer check's job notice wakes.
+// The runtime keeps no peer timer of its own, so without that notice it
+// never tails (feature-quiet-idle-runtime, Peers; req-quiet-idle-runtime
+// AC-1.3, AC-2.5).
+func TestRuntimeCatchesUpUnnotifiedAppendOnPeerNotice(t *testing.T) {
+	raw := memlog.New()
+	hub := changes.NewHub()
+	counted := &tailCountingLog{Store: Notify(raw, hub)}
+	ran := make(chan struct{}, 1)
+	rt := NewRuntime(counted, Options{Workspaces: []string{"ws"}, Changes: hub})
+	rt.Register(queue.Registration{Kind: "demo", Handle: func(context.Context, queue.Job) error {
+		ran <- struct{}{}
+		return nil
+	}})
+	if err := rt.Start(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	defer rt.Stop(context.Background())
+	deadline := time.Now().Add(5 * time.Second)
+	for counted.count() == 0 {
+		if time.Now().After(deadline) {
+			t.Fatal("the runtime made no first catch-up")
+		}
+		time.Sleep(time.Millisecond)
+	}
+	tails := counted.count()
+	if _, err := Enqueue(context.Background(), raw, "ws", "demo", "peer", demoArgs{}, 3, time.Now().UTC()); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-ran:
+		t.Fatal("an unnotified append ran before any notice")
+	case <-time.After(100 * time.Millisecond):
+	}
+	if got := counted.count(); got != tails {
+		t.Fatalf("the runtime tailed %d times without a notice", got-tails)
+	}
+	// The peer check publishes one job notice for the workspace.
+	hub.Publish(changes.Notice{Workspace: "ws", Kind: changes.Job})
+	select {
+	case <-ran:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the peer notice did not catch up the unnotified append")
+	}
+}
+
+// tailCountingLog counts Tail calls.
+type tailCountingLog struct {
+	eventlog.Store
+	mu    sync.Mutex
+	tails int
+}
+
+func (l *tailCountingLog) Tail(ctx context.Context, workspace string, after eventlog.Position, limit int) ([]eventlog.Event, error) {
+	l.mu.Lock()
+	l.tails++
+	l.mu.Unlock()
+	return l.Store.Tail(ctx, workspace, after, limit)
+}
+
+func (l *tailCountingLog) count() int {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.tails
+}
+
+// TestNotifyRaisesJobNoticesAfterAppend: enqueue, failure, snooze, and
+// rescue appends raise one job notice; a claim, completion, discard, other
+// stream, suppressed enqueue, or version conflict raises none; and a batch
+// in the context holds the notice until it commits.
+func TestNotifyRaisesJobNoticesAfterAppend(t *testing.T) {
+	hub := changes.NewHub()
+	log := Notify(memlog.New(), hub)
+	notices := hub.Subscribe("ws", changes.Job)
+	defer notices.Close()
+	got := func() bool {
+		select {
+		case <-notices.C():
+			return true
+		default:
+			return false
+		}
+	}
+	ctx := context.Background()
+	now := time.Now().UTC()
+	if inserted, err := Enqueue(ctx, log, "ws", "demo", "k", demoArgs{}, 3, now); err != nil || !inserted || !got() {
+		t.Fatalf("enqueue inserted=%t err=%v, want a notice", inserted, err)
+	}
+	if inserted, err := Enqueue(ctx, log, "ws", "demo", "k", demoArgs{}, 3, now); err != nil || inserted || got() {
+		t.Fatalf("suppressed enqueue inserted=%t err=%v raised a notice", inserted, err)
+	}
+	stream := StreamFor("demo", "k")
+	for i, step := range []struct {
+		kind  string
+		raise bool
+	}{{KindClaimed, false}, {KindFailed, true}, {KindClaimed, false}, {KindSnoozed, true}, {KindClaimed, false}, {KindRescued, true}, {KindClaimed, false}, {KindCompleted, false}} {
+		appendKind(t, log, "ws", stream, eventlog.Version(i+1), step.kind, outcomePayload{Attempt: 1})
+		if got() != step.raise {
+			t.Fatalf("%s raised=%t, want %t", step.kind, !step.raise, step.raise)
+		}
+	}
+	if _, err := log.Append(ctx, "ws", stream, 1, []eventlog.NewEvent{{Kind: KindEnqueued}}); !eventlog.IsVersionConflict(err) || got() {
+		t.Fatalf("conflicting append err=%v raised a notice", err)
+	}
+	appendKind(t, log, "ws", "task/t1", 0, KindEnqueued, struct{}{})
+	if got() {
+		t.Fatal("a non-job stream raised a job notice")
+	}
+	batch := hub.Begin()
+	if _, err := Enqueue(changes.WithBatch(ctx, batch), log, "ws", "demo", "batched", demoArgs{}, 3, now); err != nil {
+		t.Fatal(err)
+	}
+	if got() {
+		t.Fatal("a batched notice published before commit")
+	}
+	batch.Commit()
+	if !got() {
+		t.Fatal("committed batch did not publish the job notice")
+	}
+	if log.Changes() != hub {
+		t.Fatal("Changes() does not expose the hub")
+	}
+	if rt := NewRuntime(log, Options{}); rt.hub != hub {
+		t.Fatal("runtime did not take the log's hub")
 	}
 }
 

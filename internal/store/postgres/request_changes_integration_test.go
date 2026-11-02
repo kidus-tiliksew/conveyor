@@ -133,7 +133,7 @@ func TestWorkerRequestChangesBounceIsClaimableAndClearsAttentionIntegration(t *t
 	// Worker IDs are global; a per-workspace ID keeps reruns on a kept
 	// database from colliding.
 	workerID := "worker-2-" + workspace
-	claimed, err := storetest.For(st).ClaimWorkOrder(ctx, orders[0].ID, core.WorkOrderClaim{ClaimantID: workerID, WorkerID: workerID, SessionID: "worker-session", ClientToken: "worker-secret", Agent: "codex", Model: "test", Lease: time.Minute})
+	claimed, err := storetest.For(st).ClaimWorkOrder(ctx, orders[0].ID, core.WorkOrderClaim{ClaimantID: workerID, SessionID: "worker-session", ClientToken: "worker-secret", Agent: "codex", Model: "test", Lease: time.Minute})
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/kidus-tiliksew/conveyor/internal/core"
+	"github.com/kidus-tiliksew/conveyor/internal/store"
 )
 
 // PRBodyContext carries the deployment and repository facts the pull-request
@@ -149,7 +150,12 @@ func (d *Dispatcher) queueApprovedIssue(ctx context.Context, task core.Task, spe
 // superseded task stays a candidate for the pull-request close it queues, and
 // an approved plan without a lifecycle row is repaired whatever the task's
 // state. Every other task skipped the loop body before the store read
-// narrowed (component-runtime, Reconcile tick; component-persistence).
+// narrowed (component-persistence, Reconcile sweep reads).
+//
+// The daemon's start-up checks run it once at start as the
+// github_lifecycle_intents pass. Each intent it creates is reported to the
+// context's drift recorder after its write commits (component-runtime,
+// Start-up checks and background loops; req-quiet-idle-runtime AC-4.1).
 func (d *Dispatcher) ReconcileGitHubLifecycles(ctx context.Context) (int, error) {
 	cfg, err := d.currentConfig(ctx)
 	if err != nil {
@@ -170,8 +176,19 @@ func (d *Dispatcher) ReconcileGitHubLifecycles(ctx context.Context) (int, error)
 			return repaired, err
 		}
 		if task.SupersededBy != "" {
+			_, closeQueued, getErr := d.Store.GetPullRequestClose(ctx, task.ID)
+			if getErr != nil {
+				return repaired, getErr
+			}
 			if err = d.queueStartedOverPR(ctx, task); err != nil {
 				return repaired, err
+			}
+			if !closeQueued {
+				if _, closeQueued, getErr = d.Store.GetPullRequestClose(ctx, task.ID); getErr != nil {
+					return repaired, getErr
+				} else if closeQueued {
+					store.ReportDriftRepair(ctx, store.DriftStartedOverWithoutPullRequestClose.For(task.ID))
+				}
 			}
 		}
 		spec, ok, getErr := d.Store.GetLatestSpecVersion(ctx, task.ID)
@@ -193,6 +210,7 @@ func (d *Dispatcher) ReconcileGitHubLifecycles(ctx context.Context) (int, error)
 			return repaired, getErr
 		} else if exists {
 			repaired++
+			store.ReportDriftRepair(ctx, store.DriftApprovedPlanWithoutIssuePublication.For(task.ID))
 		}
 	}
 	return repaired, nil

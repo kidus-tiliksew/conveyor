@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log"
 	"reflect"
 	"strconv"
 	"strings"
@@ -18,11 +19,13 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/kidus-tiliksew/conveyor/internal/changes"
 	"github.com/kidus-tiliksew/conveyor/internal/config"
 	"github.com/kidus-tiliksew/conveyor/internal/core"
 	"github.com/kidus-tiliksew/conveyor/internal/eventlog"
 	"github.com/kidus-tiliksew/conveyor/internal/eventlog/pglog"
 	"github.com/kidus-tiliksew/conveyor/internal/nextaction"
+	"github.com/kidus-tiliksew/conveyor/internal/queue/logqueue"
 	"github.com/kidus-tiliksew/conveyor/internal/store"
 	"github.com/kidus-tiliksew/conveyor/internal/store/postgres/db"
 	"gopkg.in/yaml.v3"
@@ -36,7 +39,9 @@ type Store struct {
 	boundary               boundaryDB
 	queries                *db.Queries
 	queue                  *logDispatchQueue
-	log                    *pglog.Store
+	log                    *txLog
+	changes                *changes.Hub
+	peers                  *peerListener
 	knownTables            sync.Map // table name -> true once seen to exist
 	gitHubAppEncryptionKey []byte
 }
@@ -101,12 +106,19 @@ func openWithOptions(ctx context.Context, databaseURL string, options openOption
 
 // newStore assembles a store over a migrated pool.
 func newStore(pool *pgxpool.Pool) *Store {
-	log := pglog.New(pool)
-	boundary := boundaryDB{pool}
-	return &Store{pool: pool, boundary: boundary, queries: db.New(boundary), queue: newLogDispatchQueue(boundary, log), log: log}
+	hub := changes.NewHub()
+	s := &Store{pool: pool, changes: hub, peers: newPeerListener(log.Printf)}
+	s.boundary = boundaryDB{q: pool, use: s.notePeerUse}
+	s.queries = db.New(s.boundary)
+	s.log = &txLog{NotifyingLog: logqueue.Notify(pglog.New(pool), hub), store: s}
+	s.queue = newLogDispatchQueue(s.boundary, s.log)
+	return s
 }
 
-func (s *Store) Close() { s.pool.Close() }
+func (s *Store) Close() {
+	s.peers.close()
+	s.pool.Close()
+}
 
 func (s *Store) Pool() *pgxpool.Pool { return s.pool }
 
@@ -124,6 +136,7 @@ func (s *Store) WithTaskSideEffectLock(ctx context.Context, taskID string, fn fu
 }
 
 func (s *Store) withAdvisoryLock(ctx context.Context, key string, fn func(context.Context) error) error {
+	s.notePeerUse()
 	// Keep nested branch and task advisories on one session. inTx must keep
 	// using the connection that owns the outer task lock (AC-3.5).
 	if conn, ok := ctx.Value(sideEffectConnKey{}).(*pgxpool.Conn); ok {
@@ -170,6 +183,7 @@ func (s *Store) withAdvisoryLock(ctx context.Context, key string, fn func(contex
 // The detached connection is always closed, which also releases the session
 // lock if the explicit unlock fails.
 func (s *Store) withDetachedAdvisoryLock(ctx context.Context, key string, fn func(context.Context) error) error {
+	s.notePeerUse()
 	pooled, err := s.pool.Acquire(ctx)
 	if err != nil {
 		return translateDriverError(err)
@@ -242,6 +256,7 @@ func (s *Store) BootstrapWorkspaceConfig(ctx context.Context, cfg *config.Config
 		return false, err
 	}
 	if seeded {
+		raiseTx(tx, changes.Notice{Workspace: cfg.Workspace, Kind: changes.Workspace})
 		// Historical migration fixtures stop before the new column exists.
 		// Normal startup finishes migrations before bootstrapping configuration.
 		var installSchema bool
@@ -359,6 +374,7 @@ func (s *Store) CreateWorkspace(ctx context.Context, id, name string, cfg *confi
 		if err != nil {
 			return err
 		}
+		raiseTx(tx, changes.Notice{Workspace: id, Kind: changes.Workspace})
 		created = core.Workspace{ID: row.ID, Name: row.Name, ConfigVersion: row.ConfigVersion, CreatedAt: row.CreatedAt.Time}
 		return nil
 	})
@@ -377,16 +393,13 @@ func (s *Store) WorkspaceConfig(ctx context.Context) (config.VersionedDocument, 
 	if err != nil {
 		return config.VersionedDocument{}, notFound(err, "workspace %s", workspace(ctx))
 	}
-	var document config.WorkspaceDocument
-	decoder := yaml.NewDecoder(strings.NewReader(row.ConfigYaml))
-	decoder.KnownFields(true)
-	if err := decoder.Decode(&document); err != nil {
+	// Legacy harness, setup, and executor keys are dropped before strict
+	// decoding (component-runtime; component-persistence).
+	document, err := config.DecodeStoredWorkspaceDocument([]byte(row.ConfigYaml))
+	if err != nil {
 		return config.VersionedDocument{}, fmt.Errorf("decode stored workspace config: %w", err)
 	}
 	config.StoredRepositoryDefaults(document.Repos)
-	if document.Harnesses == nil {
-		document.Harnesses = []config.Harness{}
-	}
 	if document.Repos == nil {
 		document.Repos = []config.Repo{}
 	}
@@ -448,6 +461,9 @@ func (s *Store) UpdateWorkspaceConfig(ctx context.Context, expectedVersion int64
 			}
 		}
 		sections := configDiff(previous, next.PolicyDocument())
+		// A configuration change, such as enabling the monitor, reaches the
+		// timed GitHub fallback (component-persistence, Change notices).
+		raiseTx(tx, changes.Notice{Workspace: workspace(ctx), Kind: changes.Workspace})
 		actor := store.ActorFromContext(ctx)
 		event, err := insertWorkspaceEventRow(ctx, q, db.InsertWorkspaceEventParams{
 			WorkspaceID: workspace(ctx), Kind: "config.updated", ActorID: actor.ID,
@@ -493,14 +509,8 @@ func configDiff(before, after config.WorkspaceDocument) []string {
 	if before.IssuePublication.Enabled != after.IssuePublication.Enabled || !before.IssuePublication.EnabledAt.Equal(after.IssuePublication.EnabledAt) {
 		sections = append(sections, "issue_publication")
 	}
-	if !reflect.DeepEqual(before.Harnesses, after.Harnesses) {
-		sections = append(sections, "harnesses")
-	}
 	if !reflect.DeepEqual(before.Review, after.Review) {
 		sections = append(sections, "review")
-	}
-	if !reflect.DeepEqual(before.Setups, after.Setups) || before.DefaultSetup != after.DefaultSetup {
-		sections = append(sections, "setups")
 	}
 	if !reflect.DeepEqual(before.Execution, after.Execution) {
 		sections = append(sections, "execution")
@@ -556,7 +566,8 @@ func (s *Store) ListFactoryActs(ctx context.Context, since time.Time, limit int)
 		  AND e.at >= $2
 		  AND e.kind IN (
 		    'pipeline.bounced','work_order.expired','work_order.released','work_order.requeued',
-		    'merge.conflict_fix_dispatched','review.refresh_round_created','review.seat_recovered','merge.confirmed')
+		    'merge.conflict_fix_dispatched','review.refresh_round_created','review.seat_recovered','merge.confirmed',
+		    'drift.repaired')
 		ORDER BY e.at DESC, e.id DESC
 		LIMIT $3`, workspace(ctx), since, limit*8)
 	if err != nil {
@@ -923,7 +934,7 @@ queue_entered_at, queue_deadline, queue_blocked_at, execution_started_at, execut
 last_attempt_id, last_attempt_outcome, last_failure_category, last_failure_message, last_failure_detail, last_failure_exit_status, last_failure_at,
 automatic_retry_count, next_retry_at, retry_suppressed, retry_suppression_reason,
 COALESCE(automatic_recovery_count, 0), automatic_recovery_window_started_at, next_automatic_recovery_at, base_conflict_checked_at,
-redispatch_count, operator_direction, checkpoint, continuation_session_id, continuation_attempt_id, continuation_harness, continuation_launch_environment, progress, cost_usd, tokens_in, tokens_out, usage_reported, self_reported,
+redispatch_count, operator_direction, checkpoint, progress, cost_usd, tokens_in, tokens_out, usage_reported, self_reported,
 rate_limit, rate_limit_observed_at, created_at, updated_at, NULL::jsonb, NULL::jsonb, declared_review_seats`
 
 func nullableTimeValue(value time.Time) any {
@@ -970,7 +981,11 @@ func insertWorkspaceEventRow(ctx context.Context, q *db.Queries, arg db.InsertWo
 	if _, err := store.RequireActor(ctx); err != nil {
 		return db.Event{}, fmt.Errorf("workspace event %q: %w", arg.Kind, err)
 	}
-	return q.InsertWorkspaceEvent(ctx, arg)
+	inserted, err := q.InsertWorkspaceEvent(ctx, arg)
+	if err == nil {
+		raiseEventDeadline(q.DB(), arg.WorkspaceID, arg.Kind, arg.PayloadJson, arg.At.Time)
+	}
+	return inserted, err
 }
 
 func insertDeploymentEvent(ctx context.Context, q *db.Queries, arg db.InsertDeploymentEventParams) error {
@@ -1008,6 +1023,8 @@ func insertEventWithID(ctx context.Context, q *db.Queries, event core.Event) (in
 	if err != nil {
 		return 0, err
 	}
+	raiseTaskNotice(ctx, q.DB(), event.TaskID)
+	raiseEventDeadline(q.DB(), workspace(ctx), event.Kind, event.Payload, event.At)
 	event.ID, event.At = inserted.ID, inserted.At.Time
 	projection := store.ProjectLineageEvent(inserted.WorkspaceID, event)
 	for _, link := range projection.Suppresses {
@@ -1058,6 +1075,7 @@ func insertWorkspaceEvent(ctx context.Context, q *db.Queries, event core.Event) 
 	if err != nil {
 		return err
 	}
+	raiseEventDeadline(q.DB(), workspace(ctx), event.Kind, event.Payload, event.At)
 	event.ID, event.At = inserted.ID, inserted.At.Time
 	projection := store.ProjectLineageEvent(inserted.WorkspaceID, event)
 	for _, link := range projection.Suppresses {

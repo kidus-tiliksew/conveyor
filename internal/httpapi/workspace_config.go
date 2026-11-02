@@ -121,10 +121,6 @@ func (s *Server) putWorkspaceConfigLocked(w http.ResponseWriter, r *http.Request
 		writeValidationError(w, "review", errors.New("review.seats must contain at least one seat"))
 		return
 	}
-	if request.Document.Setups != nil && len(request.Document.Setups) == 0 {
-		writeValidationError(w, "setups", errors.New("setups must contain at least one setup"))
-		return
-	}
 	for i := range request.Document.Repos {
 		repo := &request.Document.Repos[i]
 		derived := gitx.GitHubSlug(repo.URL)

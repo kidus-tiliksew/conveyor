@@ -327,10 +327,9 @@ func requireInitAPIKey(candidate config.Config) error {
 }
 
 // defaultInitConfig is the generated deployment configuration: pipeline
-// policy and the in-process control-plane settings only (DEC-56(1), DEC-56(3)).
-// Harnesses, setups, and executor models belong to client-local execution
-// setups, which `conveyor config init-execution` creates on an executing
-// machine (component-harness-execution).
+// policy and the in-process control-plane settings only (DEC-96(1), DEC-96(3)).
+// Conveyor holds no harness, setup, or executor model anywhere; the person who
+// starts an agent session chooses them (DEC-96(2)).
 func defaultInitConfig(databaseURL string, answers initAnswers) (config.Config, error) {
 	settings := config.ContextualExecutionSettings{
 		ControlPlane: config.ControlPlaneSettings{

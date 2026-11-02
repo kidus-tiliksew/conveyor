@@ -4,7 +4,6 @@ import (
 	"encoding/json"
 	"strconv"
 	"testing"
-	"time"
 
 	"github.com/kidus-tiliksew/conveyor/internal/config"
 	"github.com/kidus-tiliksew/conveyor/internal/eventlog"
@@ -23,7 +22,7 @@ func testJob(args interface{ Kind() string }, id int64, attempt, maxAttempts int
 }
 
 // testRuntime builds the queue runtime the daemon would, with every
-// registration bound, polling fast enough for tests. adjust may rewrite a
+// registration bound and the store as its deadline source. adjust may rewrite a
 // registration before it is bound, for tests that shorten a retry policy.
 func testRuntime(t *testing.T, log eventlog.Store, d *Dispatcher, shutdown *ShutdownMarker, workspaces []string, configs map[string]*config.Config, adjust func(*queue.Registration)) (*logqueue.Runtime, error) {
 	t.Helper()
@@ -32,8 +31,8 @@ func testRuntime(t *testing.T, log eventlog.Store, d *Dispatcher, shutdown *Shut
 		return nil, err
 	}
 	runtime := logqueue.NewRuntime(log, logqueue.Options{
-		Workspaces: workspaces, RescueStuckAfter: rescueAfter, PollInterval: 50 * time.Millisecond,
-		ClockInterval: 200 * time.Millisecond, WorkerID: "test", Logf: t.Logf,
+		Workspaces: workspaces, RescueStuckAfter: rescueAfter,
+		Deadlines: StoreDeadlines(d.Store), WorkerID: "test", Logf: t.Logf,
 	})
 	for _, registration := range d.Registrations(shutdown) {
 		if adjust != nil {

@@ -189,7 +189,7 @@ func (s *Service) verificationAccess(ctx context.Context, id, session, token str
 	if err != nil || task.Workspace != ws {
 		return refuse()
 	}
-	a := store.VerificationAccess{TaskID: task.ID, WorkOrderID: o.ID, WorkOrderAttemptID: o.AttemptID, ClientToken: token, Claim: core.WorkOrderClaimIdentity{WorkerID: o.WorkerID, ClaimantID: o.ClaimantID, SessionID: session}}
+	a := store.VerificationAccess{TaskID: task.ID, WorkOrderID: o.ID, WorkOrderAttemptID: o.AttemptID, ClientToken: token, Claim: core.WorkOrderClaimIdentity{ClaimantID: o.ClaimantID, SessionID: session}}
 	actor := store.ActorFromContext(ctx)
 	if !write && session == "" && actor.Role == core.ActorUser {
 		a.UserID = strings.TrimPrefix(actor.ID, "user:")
@@ -235,7 +235,7 @@ func (s *Service) verificationCheckpointReplayAccess(ctx context.Context, id, se
 		if events[i].Kind != "work_order.claimed" || events[i].JobID != o.JobID || json.Unmarshal(events[i].Payload, &claimed) != nil || claimed.ID != o.ID || claimed.AttemptID != o.LastAttemptID || claimed.SessionID != session {
 			continue
 		}
-		a := store.VerificationAccess{TaskID: task.ID, WorkOrderID: o.ID, WorkOrderAttemptID: o.LastAttemptID, ClientToken: token, Claim: core.WorkOrderClaimIdentity{WorkerID: claimed.WorkerID, ClaimantID: claimed.ClaimantID, SessionID: session}}
+		a := store.VerificationAccess{TaskID: task.ID, WorkOrderID: o.ID, WorkOrderAttemptID: o.LastAttemptID, ClientToken: token, Claim: core.WorkOrderClaimIdentity{ClaimantID: claimed.ClaimantID, SessionID: session}}
 		return backend, a, o, nil
 	}
 	return refuse()
@@ -620,35 +620,6 @@ func validVerificationSubject(s core.VerificationSubject) bool {
 // (component-verification-service; req-verification-kits REQ-4).
 func ValidateVerificationSuccess(snapshot store.VerificationSnapshot, runID string, exit *int) error {
 	return store.ValidateVerificationSuccess(snapshot, runID, exit)
-}
-
-// ReconcileVerificationClaims is called by the daemon workspace reconciliation
-// loop. It never impersonates a worker or renews an abandoned execution.
-func (s *Service) ReconcileVerificationClaims(ctx context.Context) (int, error) {
-	b, ok := s.Store.(store.VerificationStore)
-	if !ok {
-		return 0, nil
-	}
-	actor := store.ActorFromContext(ctx)
-	if actor.Role != core.ActorSystem {
-		return 0, store.ErrVerificationAccess
-	}
-	return b.ReconcileVerificationClaims(store.WithActor(ctx, store.SystemActor("verification-reconciler")))
-}
-
-// ExpireVerificationChunks is called by the daemon workspace reconciliation
-// loop. It reaches the store only as the internal verification-reconciler
-// actor, so no route, MCP tool, or worker can delete staging rows
-// (component-verification-evidence; component-runtime).
-func (s *Service) ExpireVerificationChunks(ctx context.Context, limit int) (int, error) {
-	if store.ActorFromContext(ctx).Role != core.ActorSystem {
-		return 0, store.ErrVerificationAccess
-	}
-	b, ok := s.Store.(store.VerificationStore)
-	if !ok {
-		return 0, nil
-	}
-	return b.ExpireVerificationChunks(store.WithActor(ctx, store.SystemActor("verification-reconciler")), limit)
 }
 
 // Bounds for copied declaration diagnostics (component-verification-service).

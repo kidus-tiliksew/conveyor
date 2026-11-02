@@ -19,7 +19,6 @@ func RunCheckpointRenewalConformance(t *testing.T, st store.Store, ctx context.C
 		workerID   string
 		claimantID string
 	}{
-		{name: "worker claim", workerID: "worker-checkpoint", claimantID: "worker-checkpoint"},
 		{name: "run claim without worker id", claimantID: core.TaskRunClaimantID("checkpoint-user")},
 	}
 	for _, shape := range claimShapes {
@@ -42,8 +41,7 @@ func RunCheckpointRenewalConformance(t *testing.T, st store.Store, ctx context.C
 					t.Fatal(err)
 				}
 				const sessionID = "session-checkpoint"
-				if _, err := ClaimWorkOrder(ctx, st, orderID, core.WorkOrderClaim{
-					WorkerID: shape.workerID, ClaimantID: shape.claimantID, SessionID: sessionID,
+				if _, err := ClaimWorkOrder(ctx, st, orderID, core.WorkOrderClaim{ClaimantID: shape.claimantID, SessionID: sessionID,
 					ClientToken: "checkpoint-secret", Lease: time.Minute, ExecutionTimeout: time.Hour,
 				}); err != nil {
 					t.Fatal(err)
@@ -60,7 +58,7 @@ func RunCheckpointRenewalConformance(t *testing.T, st store.Store, ctx context.C
 					})
 					return err
 				}
-				claim := core.WorkOrderClaimIdentity{WorkerID: shape.workerID, ClaimantID: shape.claimantID, SessionID: sessionID}
+				claim := core.WorkOrderClaimIdentity{ClaimantID: shape.claimantID, SessionID: sessionID}
 				if err := renew(claim); !errors.Is(err, store.ErrWorkOrderReleasedAtCheckpoint) {
 					t.Fatalf("same-session renew error=%v", err)
 				}

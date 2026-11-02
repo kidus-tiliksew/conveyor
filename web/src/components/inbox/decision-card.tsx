@@ -1,10 +1,11 @@
 import { Link } from '@tanstack/react-router'
+import { ArrowUpRight, CornerDownRight, Sparkles } from 'lucide-react'
 import { errorMessage } from '../../lib/errors'
 import type { InboxItem, InboxPullRequest, NextActionBlocker, Task } from '../../lib/types'
-import { relativeTime } from '../../lib/utils'
+import { cn, relativeTime } from '../../lib/utils'
 import { useWorkspaceSelection } from '../app-shell'
 import { GateChoices } from '../task/merge-at-gate'
-import { NextActionDeadline, NextActionIDs } from '../task/next-action-parts'
+import { NextActionIDs } from '../task/next-action-parts'
 import { Button } from '../ui/button'
 import { Disclosure } from '../ui/disclosure'
 import { Skeleton } from '../ui/skeleton'
@@ -16,7 +17,8 @@ import {
   useContextProposalSends,
 } from './context-proposal-rows'
 import { DecisionContext } from './inbox-context'
-import { ShortcutChoiceProvider, shortcutChoiceId } from './inbox-keyboard'
+import { Kbd, ShortcutChoiceProvider, shortcutChoiceId } from './inbox-keyboard'
+import { DueChip, KindPill, timeOfDay } from './inbox-kind'
 import { useNextAction } from './use-next-actions'
 
 // What the detail's context section holds, by next-action kind (AC-2.3).
@@ -30,6 +32,9 @@ const contextHeadings: Record<string, string> = {
   parked: 'Why it is parked',
   dispatch_exhausted: 'Why dispatch stopped',
 }
+
+const pill =
+  'inline-flex min-w-0 max-w-full items-center gap-1 rounded-md border border-border bg-background/40 px-1.5 py-0.5'
 
 // A recorded pull request as the inbox names it: "<repository> PR #<n>", or
 // "PR" when the event stated no number (feature-operator-next-action NA-6).
@@ -60,26 +65,27 @@ export function DecisionDetail({ item, task, onActed }: { item: InboxItem; task:
   // of the flat choice row, with Apply and Dismiss all in the footer (NA-6).
   const contextRows = kind === 'context_proposal' && action?.details?.context_proposals ? action : undefined
   const shortcut = action ? shortcutChoiceId(action) : null
+  const deadline = action ? action.deadline : (item.deadline ?? compact?.deadline)
+  const validDeadline = deadline && Number.isFinite(new Date(deadline).getTime()) ? deadline : undefined
   return (
     <ShortcutChoiceProvider choiceId={shortcut}>
       <article
         data-inbox-item={task.id}
         aria-label={task.title}
-        className="flex min-h-0 min-w-0 flex-1 flex-col rounded-lg border border-border bg-card md:overflow-hidden"
+        className="flex min-h-0 min-w-0 flex-1 flex-col rounded-xl border border-border bg-card md:overflow-hidden"
       >
-        <div className="min-h-0 min-w-0 flex-1 space-y-3 overflow-y-auto px-4 pb-4 pt-4">
+        <div className="min-h-0 min-w-0 flex-1 space-y-3 overflow-y-auto px-5 pb-5 pt-5">
           <div className="flex flex-wrap items-center gap-2">
-            <span data-decision-label className="text-[11px] font-semibold uppercase tracking-[0.08em] text-attention">
-              {action?.label ?? compact?.label}
-            </span>
+            <KindPill kind={kind} label={action?.label ?? compact?.label ?? ''} />
             {blocks.length > 0 && <BlocksChip blocks={blocks} />}
+            <DueChip deadline={validDeadline} className="py-0.5 text-xs" />
             {item.last_event_at && (
               <time dateTime={item.last_event_at} className="ml-auto text-xs text-faint">
                 {relativeTime(item.last_event_at)}
               </time>
             )}
           </div>
-          <h2 data-detail-title className="break-words text-base font-semibold leading-6">
+          <h2 data-detail-title className="break-words text-[17px] font-semibold leading-snug">
             <Link
               to="/w/$workspaceId/tasks/$taskId"
               params={{ workspaceId: workspace, taskId: task.id }}
@@ -88,34 +94,30 @@ export function DecisionDetail({ item, task, onActed }: { item: InboxItem; task:
               {task.title}
             </Link>
           </h2>
-          <div className="flex min-w-0 flex-wrap items-center gap-2 text-xs text-muted">
+          <div className="flex min-w-0 flex-wrap items-center gap-1.5 text-xs text-muted">
             {pullRequest ? (
-              <a data-pull-request href={pullRequest.url} className="font-mono text-primary hover:underline">
+              <a
+                data-pull-request
+                href={pullRequest.url}
+                className={cn(pill, 'font-mono text-primary hover:border-primary/40')}
+              >
                 {pullRequestLabel(pullRequest)}
               </a>
             ) : (
-              <span>No PR yet</span>
+              <span className={pill}>No PR yet</span>
             )}
             {issue &&
               (issue.issue_url ? (
-                <a
-                  data-issue
-                  href={issue.issue_url}
-                  className="rounded border border-border px-1.5 py-0.5 hover:text-foreground hover:underline"
-                >
+                <a data-issue href={issue.issue_url} className={cn(pill, 'hover:text-foreground hover:underline')}>
                   Issue #{issue.issue_number}
                 </a>
               ) : (
-                <span data-issue className="rounded border border-border px-1.5 py-0.5">
+                <span data-issue className={pill}>
                   Issue #{issue.issue_number}
                 </span>
               ))}
             {item.serves?.map((id) => (
-              <span
-                key={id}
-                data-serves={id}
-                className="inline-flex min-w-0 max-w-full items-center gap-1 rounded border border-border px-1.5 py-0.5 text-foreground"
-              >
+              <span key={id} data-serves={id} className={cn(pill, 'text-foreground')}>
                 <span className="font-mono text-primary">{id}</span>
                 {titles.get(id) && <span className="min-w-0 truncate">{titles.get(id)}</span>}
               </span>
@@ -123,9 +125,10 @@ export function DecisionDetail({ item, task, onActed }: { item: InboxItem; task:
             <Link
               to="/w/$workspaceId/tasks/$taskId/full"
               params={{ workspaceId: workspace, taskId: task.id }}
-              className="ml-auto font-medium text-primary hover:underline"
+              className="ml-auto inline-flex items-center gap-0.5 font-medium text-muted hover:text-foreground"
             >
-              Open task →
+              Open task
+              <ArrowUpRight className="size-3.5" aria-hidden />
             </Link>
           </div>
           {isLoading && <Skeleton className="h-12" />}
@@ -137,18 +140,34 @@ export function DecisionDetail({ item, task, onActed }: { item: InboxItem; task:
               </Button>
             </div>
           )}
-          {action?.question && <p className="text-sm leading-6">{action.question}</p>}
+          {action?.question && (
+            <p data-decision-question className="break-words pt-1 text-[15px] font-medium leading-relaxed">
+              {action.question}
+            </p>
+          )}
           {contextRows && (
             <div className="space-y-2">
               <MonitorOriginLine action={contextRows} />
               <ContextProposalChecklist action={contextRows} selection={selection} sends={sends} />
             </div>
           )}
-          {item.recommendation && <p className="text-sm text-muted">Recommendation: {item.recommendation}</p>}
+          {item.recommendation && (
+            <div
+              data-recommendation
+              className="flex gap-2.5 rounded-lg border border-primary/25 bg-primary-soft/50 px-3 py-2.5 text-sm"
+            >
+              <Sparkles className="mt-0.5 size-4 shrink-0 text-primary" aria-hidden />
+              <div className="min-w-0">
+                <span className="text-xs font-semibold text-primary">Agent recommends</span>
+                <p className="mt-0.5 break-words leading-6">{item.recommendation}</p>
+              </div>
+            </div>
+          )}
           {kind && (
-            <div className="space-y-2 border-t border-border pt-3">
-              <h3 data-context-heading className="text-[11px] font-semibold uppercase tracking-[0.08em] text-muted">
-                {contextHeadings[kind] ?? 'Context'}
+            <div className="space-y-2 pt-2">
+              <h3 className="flex items-center gap-2 text-xs font-semibold text-muted">
+                <span data-context-heading>{contextHeadings[kind] ?? 'Context'}</span>
+                <span aria-hidden className="h-px flex-1 bg-border" />
               </h3>
               <DecisionContext taskId={task.id} kind={kind} />
             </div>
@@ -157,30 +176,52 @@ export function DecisionDetail({ item, task, onActed }: { item: InboxItem; task:
         <div
           data-decision-footer
           data-shortcut-merge={shortcut === 'merge' ? '' : undefined}
-          className="z-10 shrink-0 space-y-2 rounded-b-lg border-t border-border bg-surface px-4 py-3 max-md:sticky max-md:bottom-0"
+          className="z-10 shrink-0 space-y-2.5 rounded-b-xl border-t border-border bg-surface px-5 py-3 max-md:sticky max-md:bottom-0"
         >
-          {/* Buttons inherit their font (styles.css), so the wrapper sets their size. */}
-          {contextRows ? (
-            <ContextProposalFooter action={contextRows} selection={selection} sends={sends} />
-          ) : (
-            action && (
-              <div className="text-[13px]">
-                <GateChoices taskId={task.id} action={action} onActed={onActed} onRestarted={onActed} />
-              </div>
-            )
+          {action?.if_ignored && (
+            <p data-if-ignored className="flex min-w-0 items-start gap-1.5 text-xs text-muted">
+              <CornerDownRight className="mt-0.5 size-3.5 shrink-0" aria-hidden />
+              <span className="min-w-0 break-words">
+                {validDeadline ? (
+                  <>
+                    If nobody acts by{' '}
+                    <time
+                      data-next-action-deadline
+                      dateTime={validDeadline}
+                      title={new Date(validDeadline).toLocaleString()}
+                    >
+                      {timeOfDay(validDeadline)}
+                    </time>
+                    :{' '}
+                  </>
+                ) : (
+                  'If nobody acts: '
+                )}
+                <span className="font-medium text-foreground">{action.if_ignored}</span>
+              </span>
+            </p>
           )}
-          <div className="flex min-w-0 flex-wrap items-start gap-x-3 gap-y-1 text-xs text-muted">
-            {action?.if_ignored && (
-              <p className="min-w-0 break-words">
-                If you do nothing: <span className="font-medium text-foreground">{action.if_ignored}</span>
-              </p>
-            )}
-            <NextActionDeadline deadline={action ? action.deadline : (item.deadline ?? compact?.deadline)} />
-            {action && (
-              <div className="ml-auto">
-                <NextActionIDs value={{ details: action.details, current_order: action.current_order }} />
-              </div>
-            )}
+          <div className="flex min-w-0 flex-wrap items-end gap-x-3 gap-y-2">
+            {/* Buttons inherit their font (styles.css), so the wrapper sets their size. */}
+            <div className="min-w-0 flex-1">
+              {contextRows ? (
+                <ContextProposalFooter action={contextRows} selection={selection} sends={sends} />
+              ) : (
+                action && (
+                  <div className="text-[13px]">
+                    <GateChoices taskId={task.id} action={action} onActed={onActed} onRestarted={onActed} />
+                  </div>
+                )
+              )}
+            </div>
+            <div className="ml-auto flex shrink-0 items-center gap-3 text-[11px] text-faint">
+              <span className="hidden items-center gap-1 lg:flex" data-footer-move-hint>
+                <Kbd>j</Kbd>
+                <Kbd>k</Kbd>
+                move
+              </span>
+              {action && <NextActionIDs value={{ details: action.details, current_order: action.current_order }} />}
+            </div>
           </div>
         </div>
       </article>
@@ -188,13 +229,13 @@ export function DecisionDetail({ item, task, onActed }: { item: InboxItem; task:
   )
 }
 
-// The tasks waiting on this decision, named on hover, focus or tap.
+// The tasks this decision unblocks, named on hover, focus or tap.
 export function BlocksChip({ blocks }: { blocks: NextActionBlocker[] }) {
   return (
     <Disclosure
       className="text-[11px]"
-      label={`Blocks ${blocks.length} ${blocks.length === 1 ? 'task' : 'tasks'}`}
-      triggerClassName="gap-1.5 rounded bg-attention-soft px-1.5 py-0.5 text-[11px] font-medium text-attention"
+      label={`Unblocks ${blocks.length} ${blocks.length === 1 ? 'task' : 'tasks'}`}
+      triggerClassName="gap-1.5 rounded-md bg-attention-soft px-2 py-0.5 text-xs font-medium text-attention"
       content={
         <ul className="space-y-0.5" data-blocks-list>
           {blocks.map((blocker) => (
@@ -206,7 +247,7 @@ export function BlocksChip({ blocks }: { blocks: NextActionBlocker[] }) {
       }
     >
       <span aria-hidden className="size-1.5 rounded-full bg-attention-dot" />
-      Blocks {blocks.length} {blocks.length === 1 ? 'task' : 'tasks'}
+      Unblocks {blocks.length} {blocks.length === 1 ? 'task' : 'tasks'}
     </Disclosure>
   )
 }

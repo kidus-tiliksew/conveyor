@@ -2,6 +2,7 @@ import { expect, type Page } from '@playwright/test'
 import { test } from './helpers/bounded-detail'
 import { callerIdentity } from './helpers/caller-identity'
 import { serveNextActionsFromActivity } from './helpers/next-action-stub'
+import { controlWorkspaceChanges } from './helpers/workspace-changes'
 
 // Task detail opens on its Timeline tab; pin it so a persisted Flow choice
 // can never hide the activity these cases check (component-web-task-surfaces,
@@ -170,9 +171,6 @@ async function routeBoard(page: Page, seen: string[]) {
       ],
     }),
   )
-  await page.route('**/v1/workers**', (route) =>
-    route.fulfill({ json: { workers: [], worker_expected: false, worker_available: false, setup_serviceability: {} } }),
-  )
   await page.route('**/v1/tasks?**', (route) => {
     if (route.request().method() !== 'POST') return route.fallback()
     return route.fulfill({
@@ -232,6 +230,10 @@ async function routeBoard(page: Page, seen: string[]) {
 }
 
 async function openBoard(page: Page, seen: string[], workspace = 'demo') {
+  // The fake workspace change stream stays connecting until a spec sends
+  // `ready`, so no case waits on the dev server proxy's refused stream and its
+  // reconnect backoff (component-web-dashboard, Workspace change stream).
+  await controlWorkspaceChanges(page)
   // Seed the selection only once: the workspace-scoping case below switches
   // workspaces and reloads, and an unconditional init script would put the
   // original one back before the app read it.
@@ -266,6 +268,7 @@ test('board orders each stage by creation time rather than latest activity', asy
 
 test('running cards use the in-flight stage when latest stage is stale', async ({ page }) => {
   const seen: string[] = []
+  await controlWorkspaceChanges(page)
   await page.addInitScript(() => {
     localStorage.setItem('conveyor-workspace', 'demo')
   })
@@ -300,6 +303,7 @@ test('running cards use the in-flight stage when latest stage is stale', async (
 
 test('board pages beyond the 200th activity item and walks back without blanking', async ({ page }) => {
   const seen: string[] = []
+  await controlWorkspaceChanges(page)
   await page.addInitScript(() => {
     localStorage.setItem('conveyor-workspace', 'demo')
   })
@@ -353,8 +357,8 @@ test('board pages beyond the 200th activity item and walks back without blanking
   await page.getByRole('button', { name: 'Previous' }).click()
   await expect(page.getByText('201–300 of 323')).toBeVisible()
   await expect(cards(page)).toHaveCount(100)
-  expect(seen.some((url) => new URL(url).searchParams.get('offset') === '200')).toBe(true)
-  expect(seen.some((url) => new URL(url).searchParams.get('offset') === '300')).toBe(true)
+  await expect.poll(() => seen.some((url) => new URL(url).searchParams.get('offset') === '200')).toBe(true)
+  await expect.poll(() => seen.some((url) => new URL(url).searchParams.get('offset') === '300')).toBe(true)
 })
 
 // The Kanban toolbar's pager is one group: the range, then icon buttons that
@@ -431,10 +435,10 @@ test('board opens on the last month and remembers the operator adjustment per wo
   // The Board owns the only activity refresh lifecycle; the rail reads the
   // pending-proposals attention projection instead of mounting a second,
   // unfiltered activity request.
-  expect(seen).toHaveLength(1)
+  await expect.poll(() => seen).toHaveLength(1)
   expect(seen[0]).toContain('updated_from=')
-  expect(requests.filter((path) => path === '/v1/workspaces/demo/members')).toHaveLength(1)
-  expect(requests.filter((path) => path === '/v1/pending-proposals')).toHaveLength(1)
+  await expect.poll(() => requests.filter((path) => path === '/v1/workspaces/demo/members')).toHaveLength(1)
+  await expect.poll(() => requests.filter((path) => path === '/v1/pending-proposals')).toHaveLength(1)
 
   // Adjusting it is what gets remembered — including across a reload.
   await page.getByRole('button', { name: 'Filters', exact: true }).click()
@@ -466,6 +470,7 @@ test('board opens on the last month and remembers the operator adjustment per wo
 test('saved Created windows migrate to Updated per workspace', async ({ page }) => {
   await page.clock.setFixedTime(new Date('2026-08-20T12:00:00Z'))
   const seen: string[] = []
+  await controlWorkspaceChanges(page)
   // Seeded once: the init script runs again on reload and must not undo the
   // workspace switch or the persisted migration.
   await page.addInitScript(() => {
@@ -483,11 +488,17 @@ test('saved Created windows migrate to Updated per workspace', async ({ page }) 
   await routeBoard(page, seen)
   await page.goto('/')
 
-  await expect.poll(() => seen.length).toBeGreaterThan(0)
-  const demo = new URL(seen.at(-1) ?? '', 'http://localhost').searchParams
-  expect(demo.has('updated_from')).toBe(true)
-  expect(demo.has('created_from')).toBe(false)
-  expect(demo.getAll('repository')).toEqual(['conveyor'])
+  const latest = () => new URL(seen.at(-1) ?? '', 'http://localhost').searchParams
+  await expect
+    .poll(() => {
+      const demo = latest()
+      return {
+        updatedFrom: demo.has('updated_from'),
+        createdFrom: demo.has('created_from'),
+        repositories: demo.getAll('repository'),
+      }
+    })
+    .toEqual({ updatedFrom: true, createdFrom: false, repositories: ['conveyor'] })
   await page.getByRole('button', { name: 'Filters', exact: true }).click()
   await page.getByRole('tab', { name: 'Updated' }).click()
   await expect(page.getByRole('option', { name: 'Last 7 days' })).toHaveAttribute('aria-selected', 'true')
@@ -505,9 +516,10 @@ test('saved Created windows migrate to Updated per workspace', async ({ page }) 
   await expect(page.getByRole('option', { name: 'Custom range' })).toHaveAttribute('aria-selected', 'true')
   await expect(page.getByLabel('Updated from')).toHaveValue('2026-08-08')
   await expect(page.getByLabel('Updated to')).toHaveValue('2026-08-09')
-  const other = new URL(seen.at(-1) ?? '', 'http://localhost').searchParams
-  expect(other.get('updated_from')).toBe(await page.evaluate(() => new Date(2026, 7, 8).toISOString()))
-  expect(other.get('updated_to')).toBe(await page.evaluate(() => new Date(2026, 7, 10).toISOString()))
+  const otherFrom = await page.evaluate(() => new Date(2026, 7, 8).toISOString())
+  const otherTo = await page.evaluate(() => new Date(2026, 7, 10).toISOString())
+  await expect.poll(() => latest().get('updated_from')).toBe(otherFrom)
+  await expect.poll(() => latest().get('updated_to')).toBe(otherTo)
   // Older busy conveyor change was created on 5 August but last active on the
   // 9th, so the migrated window selects it by activity.
   await expect(cards(page).filter({ hasText: 'Older busy conveyor change' })).toHaveCount(1)
@@ -520,7 +532,7 @@ test('board sends the shared filter family to the whole-workspace activity query
 
   await page.getByRole('searchbox', { name: 'Search tasks' }).fill('ancient')
   await expect(cards(page)).toHaveCount(0)
-  expect(seen.some((url) => url.includes('q=ancient'))).toBe(true)
+  await expect.poll(() => seen.some((url) => url.includes('q=ancient'))).toBe(true)
   await page.getByRole('searchbox', { name: 'Search tasks' }).fill('')
 
   await page.getByRole('button', { name: 'Filters', exact: true }).click()
@@ -555,16 +567,21 @@ test('board sends the shared filter family to the whole-workspace activity query
   // member rather than accumulating beside it.
   await page.getByRole('option', { name: 'Unassigned' }).click()
   await expect(cards(page).filter({ hasText: 'Ancient web change' })).toHaveCount(1)
-  expect(seen.some((url) => url.includes('assignee=usr_bo'))).toBe(true)
-  expect(seen.some((url) => url.includes('assignee=unassigned'))).toBe(true)
+  await expect.poll(() => seen.some((url) => url.includes('assignee=usr_bo'))).toBe(true)
+  await expect.poll(() => seen.some((url) => url.includes('assignee=unassigned'))).toBe(true)
 
   // AC-6.14 stands on this surface too: no barred field is offered as a filter.
   await expect(page.getByRole('tab', { name: 'Priority' })).toHaveCount(0)
   await expect(page.getByRole('tab', { name: 'Phase' })).toHaveCount(0)
 })
 
-test('activity polling is serialized, pauses while hidden, and cold-refreshes on resume', async ({ page }) => {
+// The workspace change stream drives the Board's activity passes; there is no
+// timer (component-web-dashboard, Workspace change stream).
+test('change-driven activity passes are serialized, pause while hidden, and cold-refresh on reconnect', async ({
+  page,
+}) => {
   const seen: string[] = []
+  const changes = await controlWorkspaceChanges(page)
   await page.addInitScript(() => {
     localStorage.setItem('conveyor-workspace', 'demo')
     localStorage.setItem('conveyor-task-filters:board:demo', JSON.stringify({ created: 'any' }))
@@ -577,9 +594,6 @@ test('activity polling is serialized, pauses while hidden, and cold-refreshes on
       visible = next
       document.dispatchEvent(new Event('visibilitychange'))
     }
-    const nativeSetInterval = window.setInterval.bind(window)
-    window.setInterval = ((handler: TimerHandler, timeout?: number, ...args: unknown[]) =>
-      nativeSetInterval(handler, timeout === 15_000 ? 50 : timeout, ...args)) as typeof window.setInterval
   })
   await routeBoard(page, seen)
   let requests = 0
@@ -615,13 +629,25 @@ test('activity polling is serialized, pauses while hidden, and cold-refreshes on
   await page.goto('/')
   await expect(page.getByRole('heading', { name: 'Board' })).toBeVisible()
   await expect(page.getByText(/Activity feed unavailable:/)).toHaveCount(0)
-  await expect.poll(() => requests).toBeGreaterThanOrEqual(3)
+  await expect.poll(() => requests).toBe(1)
+  // The connect refresh is a cold pass, and the frames that follow while a
+  // read is held run as one serialized follow-up each, with the cursor.
+  await changes.ready()
+  await expect.poll(() => requests).toBe(2)
+  await expect.poll(() => active).toBe(0)
+  for (let frame = 0; frame < 3; frame++) {
+    await changes.activity('task-recent')
+    await expect.poll(() => requests).toBeGreaterThanOrEqual(3 + frame)
+  }
+  await expect.poll(() => active).toBe(0)
   expect(maxActive).toBe(1)
   expect(urls.every((url) => Number(new URL(url).searchParams.get('limit')) === 100)).toBe(true)
-  expect(urls.some((url) => new URL(url).searchParams.has('since'))).toBe(true)
+  expect(new URL(urls[1]).searchParams.has('since')).toBe(false)
+  expect(urls.slice(2).every((url) => new URL(url).searchParams.has('since'))).toBe(true)
   await page.evaluate(() =>
     (window as unknown as { setActivityVisible: (next: boolean) => void }).setActivityVisible(false),
   )
+  expect(await changes.open()).toBe(0)
   await expect.poll(() => active).toBe(0)
   const hiddenCount = requests
   await page.waitForTimeout(200)
@@ -629,7 +655,10 @@ test('activity polling is serialized, pauses while hidden, and cold-refreshes on
   await page.evaluate(() =>
     (window as unknown as { setActivityVisible: (next: boolean) => void }).setActivityVisible(true),
   )
-  await expect.poll(() => requests).toBeGreaterThan(hiddenCount)
+  expect(await changes.open()).toBe(1)
+  expect(requests).toBe(hiddenCount)
+  await changes.ready()
+  await expect.poll(() => requests).toBe(hiddenCount + 1)
   expect(urls.every((url) => Number(new URL(url).searchParams.get('limit')) === 100)).toBe(true)
   expect(new URL(urls.at(-1) ?? '').searchParams.has('since')).toBe(false)
 })
@@ -640,6 +669,7 @@ test('activity polling is serialized, pauses while hidden, and cold-refreshes on
 // held (component-web-task-surfaces, Board navigation).
 test('a Board sheet adds no unfiltered activity read and the Board pass stays serialized', async ({ page }) => {
   const seen: string[] = []
+  const changes = await controlWorkspaceChanges(page)
   await page.addInitScript(() => {
     localStorage.setItem('conveyor-workspace', 'demo')
   })
@@ -689,9 +719,14 @@ test('a Board sheet adds no unfiltered activity read and the Board pass stays se
   await release()
   await expect(page.getByRole('dialog', { name: 'Task detail' }).getByRole('note')).toHaveCount(0)
 
-  // A clock tick and a cold focus pass while the tick's read is held: the
-  // focus pass waits for the held read instead of overlapping it.
-  await page.clock.runFor(15_000)
+  // The clock alone starts no pass.
+  await page.clock.runFor(60_000)
+  expect(urls).toHaveLength(1)
+
+  // A change frame and a cold focus pass while the change's read is held:
+  // the focus pass waits for the held read instead of overlapping it.
+  await changes.activity('task-recent')
+  await page.clock.runFor(250)
   await expect.poll(() => urls.length).toBe(2)
   await page.evaluate(() => window.dispatchEvent(new Event('focus')))
   await page.clock.runFor(1_000)
@@ -699,6 +734,16 @@ test('a Board sheet adds no unfiltered activity read and the Board pass stays se
   expect(held).toHaveLength(1)
   await release()
   await expect.poll(() => urls.length).toBe(3)
+  expect(held).toHaveLength(1)
+
+  // A change frame while that pass is held queues one follow-up pass, which
+  // reads after the held one settles and never beside it.
+  await changes.activity('task-recent')
+  await page.clock.runFor(250)
+  await page.clock.runFor(1_000)
+  expect(urls).toHaveLength(3)
+  await release()
+  await expect.poll(() => urls.length).toBe(4)
   expect(held).toHaveLength(1)
   await release()
 
@@ -801,7 +846,7 @@ test('Board sheet keeps lazy audit reads isolated across workspace changes', asy
   panel = page.getByRole('dialog', { name: 'Task detail' })
   await expect(panel.getByText('Board retained plan')).toBeVisible()
   await expect(panel.getByText('demo complete authority')).toHaveCount(0)
-  expect(requests).toEqual(['demo'])
+  await expect.poll(() => requests).toEqual(['demo'])
   await panel.getByText('Show technical activity').click()
   await panel.getByText('Event payload', { exact: true }).click()
   await expect(panel.locator('pre').filter({ hasText: 'other complete authority' })).toBeVisible()
@@ -812,6 +857,7 @@ test('Board sheet keeps lazy audit reads isolated across workspace changes', asy
 test('failed triage Board badge distinguishes failure from genuine review gates', async ({ page }, testInfo) => {
   // The card states the server's next action: a failed triage is a job
   // failure for the operator, never a review gate.
+  await controlWorkspaceChanges(page)
   await serveNextActionsFromActivity(page)
   await page.addInitScript(() => localStorage.setItem('conveyor-workspace', 'demo'))
   await routeBoard(page, [])
@@ -900,6 +946,7 @@ const columnCases: Array<{ kind: string; state: string; latest: string; next?: s
 ]
 
 test('each next-action kind lands in its stage column', async ({ page }) => {
+  await controlWorkspaceChanges(page)
   await page.addInitScript(() => localStorage.setItem('conveyor-workspace', 'demo'))
   await routeBoard(page, [])
   await page.route('**/v1/activity?**', (route) =>

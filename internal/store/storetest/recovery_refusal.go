@@ -43,7 +43,7 @@ func runRecoverEligibility(t *testing.T, x Fixture) {
 		t.Helper()
 		claimed, err := ClaimWorkOrder(ctx, st, order.ID, core.WorkOrderClaim{
 			SessionID: "eligibility-" + order.ID, ClientToken: "eligibility-" + order.ID,
-			ClaimantID: "worker", WorkerID: "worker", Lease: time.Minute, ExecutionTimeout: time.Hour,
+			ClaimantID: "worker", Lease: time.Minute, ExecutionTimeout: time.Hour,
 		})
 		requireOK(t, err)
 		return claimed
@@ -166,7 +166,7 @@ func timeoutQueuedOrder(t *testing.T, x Fixture, order core.WorkOrder) core.Work
 	t.Helper()
 	claim := core.WorkOrderClaim{
 		SessionID: "timeout-" + order.ID, ClientToken: "timeout-" + order.ID,
-		ClaimantID: "worker", WorkerID: "worker", Lease: time.Minute, ExecutionTimeout: time.Nanosecond,
+		ClaimantID: "worker", Lease: time.Minute, ExecutionTimeout: time.Nanosecond,
 	}
 	claimed, err := ClaimWorkOrder(x.Context, x.Backend, order.ID, claim)
 	requireOK(t, err)
@@ -198,12 +198,10 @@ func runRecoveryKeepsEnabledPolicy(t *testing.T, x Fixture) {
 		NextStage: core.StageReview, ReviewedHeadSHA: "submitted-head", CreatedAt: time.Now().UTC(),
 	}
 	task.Branch = "conveyor/task-" + task.ID
-	task.SetupContract = config.ExecutionSetup{
-		MaxBounces: 3,
-		Review:     config.ReviewPanel{Seats: []config.ReviewSeat{{}}},
-		ExecutionSettings: config.ContextualExecutionSettings{
-			Review: config.ReviewExecutionSettings{TimeoutText: "1h"},
-		},
+	task.SetupContract = config.PolicyContract{
+		MaxBounces:    3,
+		Review:        config.ReviewPanel{Seats: []config.ReviewSeat{{}}},
+		StageTimeouts: config.PolicyStageTimeouts{Review: "1h"},
 	}
 	requireOK(t, st.CreateTask(ctx, task))
 	createReviewSource(t, x, task)
@@ -223,12 +221,12 @@ func runRecoveryKeepsEnabledPolicy(t *testing.T, x Fixture) {
 	}
 	stored, err := st.GetTask(ctx, task.ID)
 	requireOK(t, err)
-	if !stored.SetupContract.VerifyStage || stored.SetupContract.ExecutionSettings.Verify.TimeoutText != "45m" {
+	if !stored.SetupContract.VerifyStage || stored.SetupContract.StageTimeouts.Verify != "45m" {
 		t.Fatalf("frozen policy changed: %+v", stored.SetupContract)
 	}
 	requireNoSetupRefreeze(t, x, task.ID)
 	claimed, err := ClaimWorkOrder(ctx, st, recovered.ID, core.WorkOrderClaim{
-		SessionID: "claim-enabled", ClientToken: "claim-enabled", ClaimantID: "worker", WorkerID: "worker", Lease: time.Minute,
+		SessionID: "claim-enabled", ClientToken: "claim-enabled", ClaimantID: "worker", Lease: time.Minute,
 	})
 	requireOK(t, err)
 	if claimed.HeadSHA != "submitted-head" || claimed.State != core.WorkOrderClaimed {
@@ -243,11 +241,9 @@ func runRecoveryKeepsIntakePolicy(t *testing.T, x Fixture) {
 		NextStage: core.StageVerify, ReviewedHeadSHA: "submitted-head", CreatedAt: time.Now().UTC(),
 	}
 	task.Branch = "conveyor/task-" + task.ID
-	task.SetupContract = config.ExecutionSetup{
-		VerifyStage: true,
-		ExecutionSettings: config.ContextualExecutionSettings{
-			Verify: config.ImplementationSettings{TimeoutText: "45m"},
-		},
+	task.SetupContract = config.PolicyContract{
+		VerifyStage:   true,
+		StageTimeouts: config.PolicyStageTimeouts{Verify: "45m"},
 	}
 	requireOK(t, st.CreateTask(ctx, task))
 	order := core.WorkOrder{
@@ -265,12 +261,12 @@ func runRecoveryKeepsIntakePolicy(t *testing.T, x Fixture) {
 	}
 	stored, err := st.GetTask(ctx, task.ID)
 	requireOK(t, err)
-	if !stored.SetupContract.VerifyStage || stored.SetupContract.ExecutionSettings.Verify.TimeoutText != "45m" {
+	if !stored.SetupContract.VerifyStage || stored.SetupContract.StageTimeouts.Verify != "45m" {
 		t.Fatalf("intake policy changed: %+v", stored.SetupContract)
 	}
 	requireNoSetupRefreeze(t, x, task.ID)
 	if _, err = ClaimWorkOrder(ctx, st, recovered.ID, core.WorkOrderClaim{
-		SessionID: "claim-intake", ClientToken: "claim-intake", ClaimantID: "worker", WorkerID: "worker", Lease: time.Minute,
+		SessionID: "claim-intake", ClientToken: "claim-intake", ClaimantID: "worker", Lease: time.Minute,
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -409,7 +405,7 @@ func runRecoveryRefusalMatrix(t *testing.T, x Fixture) {
 	cells := []cell{
 		{
 			name:        "running/verify-on/equal/verify/queued",
-			task:        core.Task{State: core.TaskRunning, NextStage: core.StageVerify, ReviewedHeadSHA: "head", SetupContract: config.ExecutionSetup{VerifyStage: true}},
+			task:        core.Task{State: core.TaskRunning, NextStage: core.StageVerify, ReviewedHeadSHA: "head", SetupContract: config.PolicyContract{VerifyStage: true}},
 			order:       core.WorkOrder{Stage: core.StageVerify, HeadSHA: "head"},
 			clock:       core.WorkOrderQueued,
 			queuedRetry: true,
@@ -417,7 +413,7 @@ func runRecoveryRefusalMatrix(t *testing.T, x Fixture) {
 		},
 		{
 			name:  "running/verify-on/equal/verify/stale",
-			task:  core.Task{State: core.TaskRunning, NextStage: core.StageVerify, ReviewedHeadSHA: "head", SetupContract: config.ExecutionSetup{VerifyStage: true}},
+			task:  core.Task{State: core.TaskRunning, NextStage: core.StageVerify, ReviewedHeadSHA: "head", SetupContract: config.PolicyContract{VerifyStage: true}},
 			order: core.WorkOrder{Stage: core.StageVerify, HeadSHA: "head"},
 			clock: core.WorkOrderStale,
 			want:  func(string, string, string) string { return "" },
@@ -433,7 +429,7 @@ func runRecoveryRefusalMatrix(t *testing.T, x Fixture) {
 		},
 		{
 			name:  "running/verify-on/mismatch/verify/stale",
-			task:  core.Task{State: core.TaskRunning, NextStage: core.StageVerify, ReviewedHeadSHA: "task-head", SetupContract: config.ExecutionSetup{VerifyStage: true}},
+			task:  core.Task{State: core.TaskRunning, NextStage: core.StageVerify, ReviewedHeadSHA: "task-head", SetupContract: config.PolicyContract{VerifyStage: true}},
 			order: core.WorkOrder{Stage: core.StageVerify, HeadSHA: "order-head"},
 			clock: core.WorkOrderStale,
 			want: func(_, orderID, _ string) string {
@@ -442,7 +438,7 @@ func runRecoveryRefusalMatrix(t *testing.T, x Fixture) {
 		},
 		{
 			name:  "running/verify-on/empty/verify/stale",
-			task:  core.Task{State: core.TaskRunning, NextStage: core.StageVerify, SetupContract: config.ExecutionSetup{VerifyStage: true}},
+			task:  core.Task{State: core.TaskRunning, NextStage: core.StageVerify, SetupContract: config.PolicyContract{VerifyStage: true}},
 			order: core.WorkOrder{Stage: core.StageVerify},
 			clock: core.WorkOrderStale,
 			want: func(_, orderID, _ string) string {
@@ -451,7 +447,7 @@ func runRecoveryRefusalMatrix(t *testing.T, x Fixture) {
 		},
 		{
 			name:  "running/verify-on/refresh/verify/stale",
-			task:  core.Task{State: core.TaskRunning, NextStage: core.StageVerify, ReviewedHeadSHA: "reviewed", ApprovalStale: true, RefreshHeadSHA: "refresh", SetupContract: config.ExecutionSetup{VerifyStage: true}},
+			task:  core.Task{State: core.TaskRunning, NextStage: core.StageVerify, ReviewedHeadSHA: "reviewed", ApprovalStale: true, RefreshHeadSHA: "refresh", SetupContract: config.PolicyContract{VerifyStage: true}},
 			order: core.WorkOrder{Stage: core.StageVerify, HeadSHA: "order"},
 			clock: core.WorkOrderStale,
 			want: func(_, orderID, _ string) string {
@@ -460,7 +456,7 @@ func runRecoveryRefusalMatrix(t *testing.T, x Fixture) {
 		},
 		{
 			name:  "running/next-review/verify/stale",
-			task:  core.Task{State: core.TaskRunning, NextStage: core.StageReview, ReviewedHeadSHA: "head", SetupContract: config.ExecutionSetup{VerifyStage: true}},
+			task:  core.Task{State: core.TaskRunning, NextStage: core.StageReview, ReviewedHeadSHA: "head", SetupContract: config.PolicyContract{VerifyStage: true}},
 			order: core.WorkOrder{Stage: core.StageVerify, HeadSHA: "head"},
 			clock: core.WorkOrderStale,
 			want: func(taskID, orderID, _ string) string {
@@ -496,7 +492,7 @@ func runRecoveryRefusalMatrix(t *testing.T, x Fixture) {
 		},
 		{
 			name:      "running/verify-on/equal/verify/stale/successor",
-			task:      core.Task{State: core.TaskRunning, NextStage: core.StageVerify, ReviewedHeadSHA: "head", SetupContract: config.ExecutionSetup{VerifyStage: true}},
+			task:      core.Task{State: core.TaskRunning, NextStage: core.StageVerify, ReviewedHeadSHA: "head", SetupContract: config.PolicyContract{VerifyStage: true}},
 			order:     core.WorkOrder{Stage: core.StageVerify, HeadSHA: "head"},
 			clock:     core.WorkOrderStale,
 			successor: true,
@@ -528,7 +524,7 @@ func runRecoveryRefusalMatrix(t *testing.T, x Fixture) {
 			if item.queuedRetry {
 				claimed, err := ClaimWorkOrder(ctx, st, order.ID, core.WorkOrderClaim{
 					SessionID: "retry-" + order.ID, ClientToken: "retry-" + order.ID,
-					ClaimantID: "worker", WorkerID: "worker", Lease: time.Minute,
+					ClaimantID: "worker", Lease: time.Minute,
 				})
 				requireOK(t, err)
 				_, err = ReleaseWorkerClaim(ctx, st, order.ID, claimed.WorkerID, core.WorkOrderRelease{SessionID: claimed.SessionID})
@@ -583,7 +579,7 @@ func runRecoveryRefusalMatrix(t *testing.T, x Fixture) {
 			requireOK(t, getErr)
 			_, claimErr := ClaimWorkOrder(ctx, st, recovered.ID, core.WorkOrderClaim{
 				SessionID: "matrix-claim-" + recovered.ID, ClientToken: "matrix-claim-" + recovered.ID,
-				ClaimantID: "worker", WorkerID: "worker", Lease: time.Minute,
+				ClaimantID: "worker", Lease: time.Minute,
 			})
 			if claimErr != nil && deterministicClaimRefusal(claimErr) {
 				t.Fatalf("claim refused after successful recover: %v", claimErr)
@@ -622,13 +618,13 @@ func runPlainQueuedClaimRefusal(t *testing.T, x Fixture) {
 	requireOK(t, st.CreateJob(ctx, core.Job{ID: older.JobID, TaskID: task.ID, Stage: older.Stage, State: core.JobPending}))
 	requireOK(t, CreateWorkOrder(ctx, st, older))
 	_, err := ClaimWorkOrder(ctx, st, older.ID, core.WorkOrderClaim{
-		SessionID: "plain-queued", ClientToken: "plain-queued", ClaimantID: "worker", WorkerID: "worker", Lease: time.Minute,
+		SessionID: "plain-queued", ClientToken: "plain-queued", ClaimantID: "worker", Lease: time.Minute,
 	})
 	if err == nil || !strings.Contains(err.Error(), "was superseded by same-stage successor") {
 		t.Fatalf("claim err=%v", err)
 	}
 	_, err = ClaimWorkOrder(ctx, st, newer.ID, core.WorkOrderClaim{
-		SessionID: "plain-queued-next", ClientToken: "plain-queued-next", ClaimantID: "worker", WorkerID: "worker", Lease: time.Minute,
+		SessionID: "plain-queued-next", ClientToken: "plain-queued-next", ClaimantID: "worker", Lease: time.Minute,
 	})
 	if err == nil || !strings.Contains(err.Error(), "next_stage is implement, not verify") {
 		t.Fatalf("newer claim err=%v", err)
@@ -669,13 +665,10 @@ func runQueuedStrandedVerifyCancelled(t *testing.T, x Fixture) {
 		NextStage: core.StageReview, ReviewedHeadSHA: "submitted-head", CreatedAt: time.Now().UTC(),
 	}
 	task.Branch = "conveyor/task-" + task.ID
-	task.SetupContract = config.ExecutionSetup{
-		VerifyStage: false,
-		Review:      config.ReviewPanel{Seats: []config.ReviewSeat{{}}},
-		ExecutionSettings: config.ContextualExecutionSettings{
-			Review: config.ReviewExecutionSettings{TimeoutText: "1h"},
-			Verify: config.ImplementationSettings{TimeoutText: "30m"},
-		},
+	task.SetupContract = config.PolicyContract{
+		VerifyStage:   false,
+		Review:        config.ReviewPanel{Seats: []config.ReviewSeat{{}}},
+		StageTimeouts: config.PolicyStageTimeouts{Review: "1h", Verify: "30m"},
 	}
 	requireOK(t, st.CreateTask(ctx, task))
 	createReviewSource(t, x, task)
@@ -766,7 +759,7 @@ func runAdvancedStageQueuedClaimRefusal(t *testing.T, x Fixture) {
 	requireOK(t, st.CreateJob(ctx, core.Job{ID: order.JobID, TaskID: task.ID, Stage: order.Stage, State: core.JobPending}))
 	requireOK(t, CreateWorkOrder(ctx, st, order))
 	_, err := ClaimWorkOrder(ctx, st, order.ID, core.WorkOrderClaim{
-		SessionID: "advanced-stage", ClientToken: "advanced-stage", ClaimantID: "worker", WorkerID: "worker", Lease: time.Minute,
+		SessionID: "advanced-stage", ClientToken: "advanced-stage", ClaimantID: "worker", Lease: time.Minute,
 	})
 	if err == nil || !strings.Contains(err.Error(), "has advanced to review") {
 		t.Fatalf("claim error=%v", err)
@@ -795,7 +788,7 @@ func runClaimPlanRevisionAfterListing(t *testing.T, x Fixture) {
 		t.Fatalf("plan-revision gate err=%v", err)
 	}
 	_, err := ClaimWorkOrder(ctx, st, order.ID, core.WorkOrderClaim{
-		SessionID: "plan-revision-after-list", ClientToken: "plan-revision-after-list", ClaimantID: "worker", WorkerID: "worker", Lease: time.Minute,
+		SessionID: "plan-revision-after-list", ClientToken: "plan-revision-after-list", ClaimantID: "worker", Lease: time.Minute,
 	})
 	if err == nil || !strings.Contains(err.Error(), "unreadable plan-revision request") {
 		t.Fatalf("claim error=%v", err)

@@ -138,11 +138,8 @@ func userSummaryContext(base context.Context, owner string) context.Context {
 	return store.WithCredential(ctx, core.AuthenticatedCredential{ID: "pat_" + owner, OwnerUserID: owner, Kind: core.CredentialUser, Scope: core.CredentialScopeUser})
 }
 
-func agentSummaryContext(base context.Context, owner string, bind ...string) context.Context {
+func agentSummaryContext(base context.Context, owner string) context.Context {
 	credential := core.AuthenticatedCredential{ID: "agt_" + owner, OwnerUserID: owner, Kind: core.CredentialAgent, Scope: core.CredentialScopeUser}
-	if len(bind) == 3 {
-		credential.RunWorkspaceID, credential.RunWorkOrderID, credential.RunSessionID = bind[0], bind[1], bind[2]
-	}
 	ctx := store.WithActor(base, store.Actor{ID: store.AgentActorID(credential.ID), Role: core.ActorAgent})
 	return store.WithCredential(ctx, credential)
 }
@@ -208,7 +205,6 @@ func TestRecordReviewSummaryAuthorization(t *testing.T) {
 		{"completed changes-requested seat", agentSummaryContext(f.base, "usr_seat"), seat1, "seat-1-session"},
 		{"completed approving seat", agentSummaryContext(f.base, "usr_seat"), seat2, "seat-2-session"},
 		{"claimed live order", agentSummaryContext(f.base, "usr_owner"), live.ID, "live-session"},
-		{"run child bound to its order", agentSummaryContext(f.base, "usr_owner", summaryWorkspace, live.ID, "live-session"), live.ID, "live-session"},
 	}
 	implementOrder, err := f.st.GetWorkOrder(f.base, implement)
 	f.ok(err)
@@ -267,7 +263,6 @@ func TestRecordReviewSummaryAuthorization(t *testing.T) {
 		order.ID, order.TaskID, order.Stage, order.SessionID = "summary-"+state, f.taskID, core.StageReview, state+"-session"
 		f.st.overrides[order.ID] = order
 	}
-	workerCtx := store.WithActor(f.base, store.Actor{ID: store.WorkerActorID("worker-1"), Role: core.ActorWorker})
 	foreign := store.WithWorkspace(agentSummaryContext(f.base, "usr_seat"), "beta")
 	refusals := []struct {
 		name    string
@@ -293,9 +288,6 @@ func TestRecordReviewSummaryAuthorization(t *testing.T) {
 		{"agent with a stale order", agentSummaryContext(f.base, "usr_owner"), "", 1, "summary-stale", "stale-session"},
 		{"agent with a timed-out order", agentSummaryContext(f.base, "usr_owner"), "", 1, "summary-timed-out", "timed-out-session"},
 		{"agent with a cancelled order", agentSummaryContext(f.base, "usr_owner"), "", 1, "summary-cancelled", "cancelled-session"},
-		{"run child naming another order", agentSummaryContext(f.base, "usr_owner", summaryWorkspace, live.ID, "live-session"), "", 1, seat1, "seat-1-session"},
-		{"run child bound to another workspace", agentSummaryContext(f.base, "usr_owner", "beta", live.ID, "live-session"), "", 1, live.ID, "live-session"},
-		{"worker credential", workerCtx, "", 1, seat1, "seat-1-session"},
 		{"missing credential", store.WithActor(f.base, store.Actor{ID: store.UserActorID("usr_executor"), Role: core.ActorUser}), "", 1, "", ""},
 	}
 	before := len(f.events(f.taskID))

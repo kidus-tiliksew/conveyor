@@ -38,18 +38,18 @@ func TestReviewRoundSeatsDispatchParity(t *testing.T) {
 // TestReviewRoundSeatsCheck covers the in-transaction revalidation each
 // round-building command runs before it writes.
 func TestReviewRoundSeatsCheck(t *testing.T) {
-	frozenTwo := config.ExecutionSetup{Review: config.ReviewPanel{Seats: make([]config.ReviewSeat, 2)}}
+	frozenTwo := config.PolicyContract{Review: config.ReviewPanel{Seats: make([]config.ReviewSeat, 2)}}
 	used := []store.ReviewRoundSeats{{TaskID: "task", ReviewRound: 1, SeatCount: 4, SeatCountSource: store.ReviewSeatSourceDeclared, MinimumSeatCount: 2, ImplementationWorkOrderID: "impl-used"}}
 	for _, tc := range []struct {
 		name    string
 		seats   store.ReviewRoundSeatResolution
-		setup   config.ExecutionSetup
+		setup   config.PolicyContract
 		planned *int
 		orders  int
 		ok      bool
 	}{
 		{"Minimum", store.ReviewRoundSeatResolution{SeatCount: 2, Source: store.ReviewSeatSourceMinimum, MinimumSeatCount: 2}, frozenTwo, nil, 2, true},
-		{"WorkspaceMinimumTrusted", store.ReviewRoundSeatResolution{SeatCount: 3, Source: store.ReviewSeatSourceMinimum, MinimumSeatCount: 3}, config.ExecutionSetup{}, nil, 3, true},
+		{"WorkspaceMinimumTrusted", store.ReviewRoundSeatResolution{SeatCount: 3, Source: store.ReviewSeatSourceMinimum, MinimumSeatCount: 3}, config.PolicyContract{}, nil, 3, true},
 		{"FrozenMinimumMismatch", store.ReviewRoundSeatResolution{SeatCount: 3, Source: store.ReviewSeatSourceMinimum, MinimumSeatCount: 3}, frozenTwo, nil, 3, false},
 		{"OrderCountMismatch", store.ReviewRoundSeatResolution{SeatCount: 2, Source: store.ReviewSeatSourceMinimum, MinimumSeatCount: 2}, frozenTwo, nil, 1, false},
 		{"UnknownSource", store.ReviewRoundSeatResolution{SeatCount: 2, Source: "workspace", MinimumSeatCount: 2}, frozenTwo, nil, 2, false},
@@ -188,7 +188,7 @@ func TestReviewSeatAdditionValidation(t *testing.T) {
 // the ledger row and event payload; and arithmetic overflow.
 func TestReviewSeatAdditionPlan(t *testing.T) {
 	now := time.Date(2026, 10, 20, 9, 0, 0, 0, time.UTC)
-	task := core.Task{ID: "task", State: core.TaskRunning, NextStage: core.StageReview, SetupContract: config.ExecutionSetup{Review: config.ReviewPanel{Seats: make([]config.ReviewSeat, 2)}}}
+	task := core.Task{ID: "task", State: core.TaskRunning, NextStage: core.StageReview, SetupContract: config.PolicyContract{Review: config.ReviewPanel{Seats: make([]config.ReviewSeat, 2)}}}
 	seat := func(round, number int) core.WorkOrder {
 		id := fmt.Sprintf("task-review-%d-seat-%d", round, number)
 		return core.WorkOrder{ID: id, JobID: id, TaskID: "task", Stage: core.StageReview, State: core.WorkOrderCompleted, ReviewRound: round, ReviewSeat: number,
@@ -243,7 +243,7 @@ func TestReviewSeatAdditionPlan(t *testing.T) {
 
 	t.Run("LegacyCarried", func(t *testing.T) {
 		legacy := in
-		legacy.Records, legacy.Task.SetupContract = nil, config.ExecutionSetup{}
+		legacy.Records, legacy.Task.SetupContract = nil, config.PolicyContract{}
 		legacy.Request.QueueTimeout = 0
 		plan, err := store.PlanReviewSeatAddition(legacy)
 		if err != nil {

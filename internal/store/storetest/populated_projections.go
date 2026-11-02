@@ -19,7 +19,7 @@ func runPopulatedProjections(t *testing.T, x Fixture) {
 	x.Context = ctx
 	st := x.Backend
 	order := newAggregateOrder(t, x)
-	_, err := ClaimWorkOrder(ctx, st, order.ID, core.WorkOrderClaim{WorkerID: "worker", ClaimantID: "worker", SessionID: "session", ClientToken: "fixture", Lease: time.Minute, ExecutionTimeout: time.Hour})
+	_, err := ClaimWorkOrder(ctx, st, order.ID, core.WorkOrderClaim{ClaimantID: "worker", SessionID: "session", ClientToken: "fixture", Lease: time.Minute, ExecutionTimeout: time.Hour})
 	requireOK(t, err)
 	_, err = ReleaseWorkerClaim(ctx, st, order.ID, "worker", core.WorkOrderRelease{SessionID: "session", Reason: "operator checkpoint reached", Outcome: core.WorkOrderOutcomeReleased, Checkpoint: &core.WorkOrderCheckpoint{DecisionRequest: "Confirm the fixture proposal"}})
 	requireOK(t, err)
@@ -47,15 +47,29 @@ func runPopulatedProjections(t *testing.T, x Fixture) {
 		t.Fatal("caller attention leaked an assignee")
 	}
 	requireOK(t, st.QueueGitHubLifecycle(ctx, core.GitHubLifecycle{TaskID: order.TaskID, Repository: "acme/conveyor", SpecVersion: 1}))
-	wantPending := 0
-	if st.IsDurable() {
-		wantPending = 1
-	}
+	// A queued publication whose job is active is no drift: the pass counts
+	// only a row whose job it enqueues (component-persistence, Drift repair
+	// reports). A durable backend whose job completed while the row stayed
+	// queued repairs it once.
 	for range 2 {
 		n, err := st.ReconcileGitHubLifecycles(ctx)
 		requireOK(t, err)
-		if n != wantPending {
-			t.Fatalf("pending forge count=%d", n)
+		if n != 0 {
+			t.Fatalf("pending forge count with an active job=%d", n)
+		}
+	}
+	if st.IsDurable() {
+		stream := logqueue.StreamFor(queue.GitHubIssuePublicationArgs{}.Kind(), order.TaskID)
+		job, err := logqueue.Load(ctx, st.Log(), x.Workspace, stream)
+		requireOK(t, err)
+		_, err = st.Log().Append(ctx, x.Workspace, stream, job.Head, []eventlog.NewEvent{{Kind: logqueue.KindCompleted, Payload: []byte(`{}`), At: time.Now().UTC()}})
+		requireOK(t, err)
+		for want := range []int{1, 0} {
+			n, err := st.ReconcileGitHubLifecycles(ctx)
+			requireOK(t, err)
+			if n != 1-want {
+				t.Fatalf("forge repair pass %d count=%d", want, n)
+			}
 		}
 	}
 	events, err := st.ListEvents(ctx, order.TaskID)

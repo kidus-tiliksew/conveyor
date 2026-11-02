@@ -11,7 +11,6 @@ import (
 
 	"github.com/go-sql-driver/mysql"
 	"github.com/kidus-tiliksew/conveyor/internal/core"
-	"github.com/kidus-tiliksew/conveyor/internal/eventlog/s2log"
 	"github.com/kidus-tiliksew/conveyor/internal/gitx"
 	"github.com/kidus-tiliksew/conveyor/internal/queue"
 	"github.com/kidus-tiliksew/conveyor/internal/queue/logqueue"
@@ -669,7 +668,7 @@ func (s *Store) WithPlanningSessionFinalization(ctx context.Context, id string, 
 	})
 }
 func (s *Store) enqueueTaskTx(ctx context.Context, tx *sql.Tx, taskID, ws string) (bool, error) {
-	return logqueue.Enqueue(s2log.WithTx(ctx, tx), s.log, ws, queue.DispatchTaskArgs{}.Kind(), taskID, queue.DispatchTaskArgs{WorkspaceID: ws, TaskID: taskID}, queue.DispatchTaskMaxAttempts, time.Now().UTC())
+	return logqueue.Enqueue(logTx(ctx, tx), s.log, ws, queue.DispatchTaskArgs{}.Kind(), taskID, queue.DispatchTaskArgs{WorkspaceID: ws, TaskID: taskID}, queue.DispatchTaskMaxAttempts, time.Now().UTC())
 }
 func lockDependencyEdgesTx(ctx context.Context, tx *sql.Tx, ws string) error {
 	return lockKey(ctx, tx, "dependency-edges:"+ws)

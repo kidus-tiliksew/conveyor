@@ -29,7 +29,7 @@ func TestWorkOrderPreemptHTTPRequiresOperatorReasonAndIdempotency(t *testing.T) 
 	if err := storetest.For(st).CreateWorkOrder(ctx, core.WorkOrder{ID: job.ID, TaskID: task.ID, JobID: job.ID, Stage: core.StageImplement, State: core.WorkOrderQueued, QueueEnteredAt: time.Now().UTC(), QueueDeadline: time.Now().Add(time.Hour)}); err != nil {
 		t.Fatal(err)
 	}
-	claimed, err := storetest.For(st).ClaimWorkOrder(ctx, job.ID, core.WorkOrderClaim{SessionID: "http-session", ClientToken: "secret", ClaimantID: "worker", WorkerID: "worker", Lease: time.Minute, ExecutionTimeout: time.Hour})
+	claimed, err := storetest.For(st).ClaimWorkOrder(ctx, job.ID, core.WorkOrderClaim{SessionID: "http-session", ClientToken: "secret", ClaimantID: "worker", Lease: time.Minute, ExecutionTimeout: time.Hour})
 	if err != nil {
 		t.Fatal(err)
 	}

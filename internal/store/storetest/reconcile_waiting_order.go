@@ -40,6 +40,7 @@ type queueReconciler interface {
 // also prove repair after the clock persists timeout (component-durable-queue
 // "Reconciliation between tasks and jobs"; DEC-62).
 func RunReconcileWaitingOrderConformance(t *testing.T, st store.Store, ctx context.Context, workspace string, production bool) {
+	ctx, reconciledCount := countReconciled(ctx, st)
 	var durable durableQueue
 	if production {
 		var ok bool
@@ -143,7 +144,7 @@ func RunReconcileWaitingOrderConformance(t *testing.T, st store.Store, ctx conte
 	if err := st.EnsureTaskEnqueued(ctx, claimed); !errors.Is(err, store.ErrTaskHeldByWorkOrder) || !strings.Contains(err.Error(), claimedOrder) {
 		t.Fatalf("claimed historical task enqueue err=%v, want holder %s", err, claimedOrder)
 	}
-	claimedReconciled, err := st.CountEvents(ctx, claimed, "dispatch.reconciled")
+	claimedReconciled, err := reconciledCount(claimed)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -174,7 +175,7 @@ func RunReconcileWaitingOrderConformance(t *testing.T, st store.Store, ctx conte
 				t.Fatalf("memory tick %d repaired=%d want 0", tick, repaired)
 			}
 		}
-		if got, err := st.CountEvents(ctx, claimed, "dispatch.reconciled"); err != nil || got != claimedReconciled {
+		if got, err := reconciledCount(claimed); err != nil || got != claimedReconciled {
 			t.Fatalf("memory dispatch.reconciled=%d err=%v, want %d", got, err, claimedReconciled)
 		}
 		return
@@ -189,7 +190,7 @@ func RunReconcileWaitingOrderConformance(t *testing.T, st store.Store, ctx conte
 			t.Fatalf("claimed historical tick %d repaired=%d want 0", tick, repaired)
 		}
 	}
-	if got, err := st.CountEvents(ctx, claimed, "dispatch.reconciled"); err != nil || got != claimedReconciled {
+	if got, err := reconciledCount(claimed); err != nil || got != claimedReconciled {
 		t.Fatalf("claimed historical dispatch.reconciled=%d err=%v, want %d", got, err, claimedReconciled)
 	}
 	for _, id := range []string{differentSpec, differentVerify} {
@@ -203,11 +204,11 @@ func RunReconcileWaitingOrderConformance(t *testing.T, st store.Store, ctx conte
 		t.Fatalf("different-stage claims repaired=%d, want 2", repaired)
 	}
 	for _, id := range []string{differentSpec, differentVerify} {
-		if got, err := st.CountEvents(ctx, id, "dispatch.reconciled"); err != nil || got != 1 {
+		if got, err := reconciledCount(id); err != nil || got != 1 {
 			t.Fatalf("different-stage task %s dispatch.reconciled=%d err=%v, want 1", id, got, err)
 		}
 	}
-	if got, err := st.CountEvents(ctx, claimed, "dispatch.reconciled"); err != nil || got != claimedReconciled {
+	if got, err := reconciledCount(claimed); err != nil || got != claimedReconciled {
 		t.Fatalf("claimed historical dispatch.reconciled=%d err=%v, want %d", got, err, claimedReconciled)
 	}
 	waiting := newQueued(core.StageSpec)
@@ -266,7 +267,7 @@ func RunReconcileWaitingOrderConformance(t *testing.T, st store.Store, ctx conte
 		}
 	}
 	for id, want := range map[string]int{waiting: 0, stale: 0, review: 0, drifted: 1, bounced: 1, claimed: claimedReconciled} {
-		if n, err := st.CountEvents(ctx, id, "dispatch.reconciled"); err != nil || n != want {
+		if n, err := reconciledCount(id); err != nil || n != want {
 			t.Fatalf("task %s dispatch.reconciled=%d want %d err=%v", id, n, want, err)
 		}
 	}
@@ -283,7 +284,7 @@ func RunReconcileWaitingOrderConformance(t *testing.T, st store.Store, ctx conte
 	if _, err := durable.ReconcileQueuedTasks(ctx); err != nil {
 		t.Fatal(err)
 	}
-	reconciled, err := st.CountEvents(ctx, claimed, "dispatch.reconciled")
+	reconciled, err := reconciledCount(claimed)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -314,8 +315,30 @@ func RunReconcileWaitingOrderConformance(t *testing.T, st store.Store, ctx conte
 // per-workspace queue-reconcile lock serializes them and the second pass finds
 // an active job (component-durable-queue "Reconciliation between tasks and
 // jobs"; DEC-62; req-task-lifecycle-and-queue AC-1.2, AC-1.3).
+// countReconciled binds a drift recorder to ctx and returns a count of each
+// task's queue repairs: the dispatch.reconciled events operator redispatch
+// writes plus the repairs ReconcileQueuedTasks reported, which the start-up
+// check records as drift.repaired (component-durable-queue, Reconciliation
+// between tasks and jobs; component-persistence, Drift repair reports).
+func countReconciled(ctx context.Context, st store.Store) (context.Context, func(string) (int, error)) {
+	var mu sync.Mutex
+	reported := map[string]int{}
+	ctx = store.WithDriftRecorder(ctx, func(repair store.DriftRepair) {
+		mu.Lock()
+		reported[repair.TaskID]++
+		mu.Unlock()
+	})
+	return ctx, func(taskID string) (int, error) {
+		events, err := st.CountEvents(ctx, taskID, "dispatch.reconciled")
+		mu.Lock()
+		defer mu.Unlock()
+		return events + reported[taskID], err
+	}
+}
+
 func runReconcileStoredHoldsAndConcurrentRepair(t *testing.T, st store.Store, ctx context.Context, workspace string, durable durableQueue, newQueued func(core.Stage) string, withOrder func(string, core.Stage, time.Time), now time.Time) {
 	t.Helper()
+	ctx, reconciledCount := countReconciled(ctx, st)
 	transition := func(orderID string, state core.WorkOrderState, command core.WorkOrderCommand) {
 		t.Helper()
 		order, err := st.GetWorkOrder(ctx, orderID)
@@ -380,7 +403,7 @@ func runReconcileStoredHoldsAndConcurrentRepair(t *testing.T, st store.Store, ct
 	}
 	kind := queue.DispatchTaskArgs{}.Kind()
 	for _, id := range held {
-		if n, err := st.CountEvents(ctx, id, "dispatch.reconciled"); err != nil || n != 0 {
+		if n, err := reconciledCount(id); err != nil || n != 0 {
 			t.Fatalf("held task %s dispatch.reconciled=%d err=%v, want 0", id, n, err)
 		}
 		job, err := logqueue.Load(ctx, durable.Log(), workspace, logqueue.StreamFor(kind, id))
@@ -391,7 +414,7 @@ func runReconcileStoredHoldsAndConcurrentRepair(t *testing.T, st store.Store, ct
 			t.Fatalf("held task %s redispatch err=%v, want ErrTaskHeldByWorkOrder", id, err)
 		}
 	}
-	if n, err := st.CountEvents(ctx, missing, "dispatch.reconciled"); err != nil || n != 1 {
+	if n, err := reconciledCount(missing); err != nil || n != 1 {
 		t.Fatalf("missing task dispatch.reconciled=%d err=%v, want exactly 1 after concurrent passes", n, err)
 	}
 	job, err := logqueue.Load(ctx, durable.Log(), workspace, logqueue.StreamFor(kind, missing))

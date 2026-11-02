@@ -122,23 +122,16 @@ func runSubmittedImplementationContinuationAcceptance(t *testing.T, x Fixture) {
 			job := core.Job{ID: id + "-implement-1", TaskID: id, Stage: core.StageImplement, State: core.JobPending}
 			requireOK(t, st.CreateJob(ctx, job))
 			requireOK(t, CreateWorkOrder(ctx, st, core.WorkOrder{ID: job.ID, JobID: job.ID, TaskID: id, Stage: core.StageImplement}))
-			claimed, err := ClaimWorkOrder(ctx, st, job.ID, core.WorkOrderClaim{WorkerID: "worker", ClaimantID: "worker", SessionID: "implement-" + id, ClientToken: "implement-token-" + id, Lease: time.Minute, ExecutionTimeout: time.Hour})
+			claimed, err := ClaimWorkOrder(ctx, st, job.ID, core.WorkOrderClaim{ClaimantID: "worker", SessionID: "implement-" + id, ClientToken: "implement-token-" + id, Lease: time.Minute, ExecutionTimeout: time.Hour})
 			requireOK(t, err)
-			identity := core.WorkOrderClaimIdentity{WorkerID: claimed.WorkerID, ClaimantID: claimed.ClaimantID, SessionID: claimed.SessionID}
-			want := core.WorkOrderContinuation{SessionID: "native-session", AttemptID: claimed.AttemptID, Harness: "claude", LaunchEnvironment: "worker/env"}
-			_, err = st.RecordWorkOrderContinuation(ctx, claimed.ID, identity, want)
-			requireOK(t, err)
-			// Submit the persisted row; the claim-time value would overwrite the
-			// recorded continuation and make acceptance clear nothing.
 			implement, err := st.GetWorkOrder(ctx, claimed.ID)
 			requireOK(t, err)
 			implement.State = core.WorkOrderSubmitted
 			requireOK(t, UpdateWorkOrder(ctx, st, implement, core.WorkOrderCmdSubmitForReview))
 			submitted, err := st.GetWorkOrder(ctx, implement.ID)
 			requireOK(t, err)
-			if submitted.State != core.WorkOrderSubmitted || submitted.ContinuationSessionID != want.SessionID || submitted.ContinuationAttemptID != want.AttemptID ||
-				submitted.ContinuationHarness != want.Harness || submitted.ContinuationLaunchEnvironment != want.LaunchEnvironment {
-				t.Fatalf("submitted implementation lost continuation before review acceptance: %+v", submitted)
+			if submitted.State != core.WorkOrderSubmitted {
+				t.Fatalf("implementation was not submitted: %+v", submitted)
 			}
 			job.State = core.JobDone
 			requireOK(t, st.UpdateJob(ctx, job))
@@ -160,7 +153,7 @@ func runSubmittedImplementationContinuationAcceptance(t *testing.T, x Fixture) {
 				reviewClaim.CostUSD = historicalCost
 				requireOK(t, UpdateWorkOrder(ctx, st, reviewClaim, taskops.WorkOrderMetadataCommand))
 			}
-			decision := core.ReviewDecision{TaskID: id, JobID: jobs[0].ID, ReviewWorkOrderID: orders[0].ID, ReviewRound: 1, ReviewSeat: 1, ClaimSession: session, Verdict: verdict, ReasonCode: "verified", Summary: "continuation fixture", PolicyVersion: 1, MaxBounces: 3}
+			decision := core.ReviewDecision{TaskID: id, JobID: jobs[0].ID, ReviewWorkOrderID: orders[0].ID, ReviewRound: 1, ReviewSeat: 1, ClaimSession: session, Verdict: verdict, ReasonCode: "verified", Summary: "acceptance fixture", PolicyVersion: 1, MaxBounces: 3}
 			if verdict == "changes_requested" {
 				decision.ReasonCode, decision.Feedback = "defect", "Fix the defect"
 			}
@@ -168,12 +161,13 @@ func runSubmittedImplementationContinuationAcceptance(t *testing.T, x Fixture) {
 
 			persisted, err := st.GetWorkOrder(ctx, implement.ID)
 			requireOK(t, err)
-			if persisted.State != core.WorkOrderSubmitted || persisted.ContinuationSessionID != "" || persisted.ContinuationAttemptID != "" ||
-				persisted.ContinuationHarness != "" || persisted.ContinuationLaunchEnvironment != "" {
-				t.Fatalf("review acceptance did not clear submitted implementation continuation: %+v", persisted)
+			if persisted.State != core.WorkOrderSubmitted {
+				t.Fatalf("review acceptance changed the submitted implementation: %+v", persisted)
 			}
-			if after := countWorkOrderUpdated(t, x, id, implement.ID); after != before+1 {
-				t.Fatalf("implementation work_order.updated events before=%d after=%d, want one clearing event", before, after)
+			// No continuation metadata exists, so acceptance appends no
+			// implementation update (DEC-94; component-work-orders).
+			if after := countWorkOrderUpdated(t, x, id, implement.ID); after != before {
+				t.Fatalf("implementation work_order.updated events before=%d after=%d, want none", before, after)
 			}
 			review, err := st.GetWorkOrder(ctx, decision.ReviewWorkOrderID)
 			requireOK(t, err)

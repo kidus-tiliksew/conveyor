@@ -38,7 +38,6 @@ import (
 	"github.com/kidus-tiliksew/conveyor/internal/store"
 	"github.com/kidus-tiliksew/conveyor/internal/trigger/github"
 	"github.com/kidus-tiliksew/conveyor/internal/verification"
-	"github.com/kidus-tiliksew/conveyor/internal/worker"
 	"github.com/kidus-tiliksew/conveyor/internal/workorder"
 )
 
@@ -267,7 +266,6 @@ func newFixture(t *testing.T, b store.Backend, mode string) *fixture {
 
 	server := httpapi.NewServer(b)
 	server.WorkOrders, server.Workspaces, server.Workspace = f.s, b, f.ws
-	server.Workers = &worker.Service{Store: b, WorkOrders: f.s}
 	server.ConfigProvider = f.s.ConfigProvider
 	f.api = httptest.NewServer(server.Handler())
 	t.Cleanup(f.api.Close)
@@ -508,16 +506,8 @@ func (f *fixture) prepareRunner() (string, string, string) {
 	write(t, coveragePath, core.JSONPayload(f.coverage))
 	write(t, inputsPath, core.JSONPayload(inputs))
 	grants := []config.KitPermissionGrant{{Server: f.api.URL, Workspace: f.ws, Repository: "conveyor", Binding: "fixture", Actions: []verification.VerificationPermission{network}}, {Server: f.api.URL, Workspace: f.ws, Repository: "conveyor", Binding: "conveyor", Actions: []verification.VerificationPermission{interaction}}}
-	routes := map[string]any{}
-	for _, stage := range []string{"triage", "spec", "implement", "verify", "review"} {
-		execution := "mcp"
-		if stage == "triage" {
-			execution = "in_process"
-		}
-		routes[stage] = map[string]string{"model": "fixture", "execution": execution, "timeout": "1h"}
-	}
-	write(t, configPath, core.JSONPayload(map[string]any{"kit_permissions": grants, "routing": map[string]any{"stages": routes}}))
-	_, err := config.Load(configPath)
+	write(t, configPath, core.JSONPayload(map[string]any{"kit_permissions": grants}))
+	_, err := config.LoadClient(configPath, nil)
 	must(t, err)
 	return coveragePath, inputsPath, configPath
 }
@@ -554,7 +544,7 @@ func (f *fixture) unavailableToolchain(coveragePath, inputsPath, configPath stri
 	must(t, json.Unmarshal(data, &document))
 	document["verification_toolchains"] = []config.VerificationToolchain{{Server: f.api.URL, Workspace: f.ws, Repository: "conveyor", SearchPaths: search}}
 	write(t, configPath, core.JSONPayload(document))
-	_, err = config.Load(configPath)
+	_, err = config.LoadClient(configPath, nil)
 	must(t, err)
 	if out, err := f.runner(coveragePath, inputsPath, configPath, false).CombinedOutput(); err != nil {
 		t.Fatalf("configured toolchain CLI: %v: %s", err, out)

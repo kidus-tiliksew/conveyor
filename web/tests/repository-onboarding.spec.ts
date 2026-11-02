@@ -58,7 +58,6 @@ async function mockRepositories(page: Page, initial: WorkspaceConfigRepo[] = [],
       workspaceReads++
       return route.fulfill({ json: { workspace: 'demo', database: 'postgres', max_bounces: 3, repos: document.repos } })
     }
-    if (path === '/v1/workers') return route.fulfill({ json: { workers: [], worker_expected: false } })
     if (path === '/v1/activity') return route.fulfill({ json: [], headers: { 'X-Conveyor-Total': '0' } })
     return route.fulfill({ json: [] })
   })

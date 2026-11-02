@@ -16,34 +16,82 @@ import (
 // wrote before DEC-56: control-plane models plus a full executor setup.
 func legacyInitShapedDeployment(t *testing.T) []byte {
 	t.Helper()
-	harness := HarnessTemplates()[0].Harness
+	harness := legacyHarnessYAML()["name"].(string)
 	settings := ContextualExecutionSettings{
 		ControlPlane: ControlPlaneSettings{
 			Triage:   ModelTimeoutSettings{Model: "gpt-5.6-luna", Effort: "high", TimeoutText: "20m"},
 			Planning: PlanningSettings{Model: "gpt-5.6-luna", Effort: "high", TimeoutText: "20m"},
 		},
-		Spec:           ImplementationSettings{Harness: harness.Name, Model: "gpt-5.6-sol", ModelPolicy: ModelPolicyExplicit, Effort: "high", TimeoutText: "30m"},
-		Implementation: ImplementationSettings{Harness: harness.Name, Model: "gpt-5.6-sol", ModelPolicy: ModelPolicyExplicit, Effort: "high", TimeoutText: "4h"},
+		Spec:           ImplementationSettings{Harness: harness, Model: "gpt-5.6-sol", ModelPolicy: ModelPolicyExplicit, Effort: "high", TimeoutText: "30m"},
+		Implementation: ImplementationSettings{Harness: harness, Model: "gpt-5.6-sol", ModelPolicy: ModelPolicyExplicit, Effort: "high", TimeoutText: "4h"},
 		Review:         ReviewExecutionSettings{Execution: ExecutionMCP, TimeoutText: "1h"},
 	}
-	review := ReviewPanel{Seats: []ReviewSeat{{Model: "gpt-5.6-terra", Harness: harness.Name, Effort: "high"}}}
-	data, err := yaml.Marshal(Config{
+	review := ReviewPanel{Seats: []ReviewSeat{{Model: "gpt-5.6-terra", Harness: harness, Effort: "high"}}}
+	return withLegacyExecutorKeys(t, Config{
 		Workspace: "default", MaxBounces: 7,
 		WorkOrderQueueTimeoutText: DefaultWorkOrderQueueTimeoutText,
 		Database:                  DatabaseForURL("postgres://conveyor@db.invalid/conveyor"),
 		ExecutionSettings:         &settings,
-		Harnesses:                 []Harness{harness},
 		Review:                    review,
-		Setups:                    []ExecutionSetup{{Name: "default", ExecutionSettings: settings, Review: review, RefreshReview: RefreshReviewDelta}},
-		DefaultSetup:              "default",
 		Execution:                 ExecutionPolicy{SpecApproval: true, MergeApproval: false, ImplementConcurrency: 2, ReviewConcurrency: 1, FirstActivityTimeoutText: DefaultFirstActivityTimeoutText},
 		Repos:                     []Repo{{Name: "conveyor", URL: "https://github.com/acme/conveyor.git", GitHub: "acme/conveyor", Base: "trunk", InstallConveyor: InstallSwitch(true)}},
 		Monitor:                   MonitorConfig{PollIntervalText: "1m", StartupWindowText: "24h"},
-	})
+	}, []map[string]any{legacySetupYAML(t, "default", settings, review, RefreshReviewDelta)}, "default")
+}
+
+// legacyHarnessYAML is one harness registry entry as earlier files wrote it.
+// The registry is retired (DEC-96(2)); fixtures keep it only as authored YAML.
+func legacyHarnessYAML() map[string]any {
+	return map[string]any{
+		"name": "codex", "mcp_transport": "toml_override",
+		"command":       []any{"codex", "exec", "{prompt}", "{mcp_config}"},
+		"probe_command": []any{"codex", "--version"}, "probe_timeout": "10s",
+	}
+}
+
+// legacySetupYAML renders one execution setup entry as earlier files wrote it.
+func legacySetupYAML(t *testing.T, name string, settings ContextualExecutionSettings, review ReviewPanel, refresh string) map[string]any {
+	t.Helper()
+	setup := map[string]any{"name": name, "execution_settings": yamlValue(t, settings), "review": yamlValue(t, review)}
+	if refresh != "" {
+		setup["refresh_review"] = refresh
+	}
+	return setup
+}
+
+// withLegacyExecutorKeys adds the retired harnesses, setups, and
+// default_setup keys to a marshaled document.
+func withLegacyExecutorKeys(t *testing.T, document Config, setups []map[string]any, defaultSetup string) []byte {
+	t.Helper()
+	root, ok := yamlValue(t, document).(map[string]any)
+	if !ok {
+		t.Fatal("document did not marshal to a mapping")
+	}
+	root["harnesses"] = []any{legacyHarnessYAML()}
+	entries := make([]any, len(setups))
+	for i, setup := range setups {
+		entries[i] = setup
+	}
+	root["setups"] = entries
+	root["default_setup"] = defaultSetup
+	data, err := yaml.Marshal(root)
 	if err != nil {
 		t.Fatal(err)
 	}
 	return data
+}
+
+func yamlValue(t *testing.T, value any) any {
+	t.Helper()
+	data, err := yaml.Marshal(value)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var decoded any
+	if err := yaml.Unmarshal(data, &decoded); err != nil {
+		t.Fatal(err)
+	}
+	return decoded
 }
 
 func writeDeploymentFixture(t *testing.T, data []byte) string {
@@ -74,12 +122,9 @@ func (l *warningLog) all() []string {
 
 func assertNoExecutorDetail(t *testing.T, cfg *Config) {
 	t.Helper()
-	if cfg.Harnesses != nil || cfg.Setups != nil || cfg.DefaultSetup != "" {
-		t.Fatalf("deployment kept execution setup state: harnesses=%v setups=%v default=%q", cfg.Harnesses, cfg.Setups, cfg.DefaultSetup)
-	}
 	for _, stage := range []string{"spec", "implement", "review", "verify"} {
 		route := cfg.Routing.Stages[stage]
-		if route.Model != "" || route.Harness != "" || route.Effort != "" || route.ModelPolicy != "" || route.EffectiveModel != "" {
+		if route.Model != "" || route.Harness != "" || route.Effort != "" || route.ModelPolicy != "" {
 			t.Fatalf("deployment kept %s executor routing: %+v", stage, route)
 		}
 		if route.Execution != ExecutionMCP {
@@ -282,33 +327,29 @@ review:
 	})
 }
 
-// component-harness-execution "The local execution document": the client
-// loader keeps and validates the same authored YAML that the deployment
-// loader strips.
-func TestDeploymentAndLocalLoadHaveSeparateSemantics(t *testing.T) {
+// component-runtime "The client loader": LoadClient keeps only client-local
+// settings of the same authored YAML that the deployment loader strips to
+// policy, and neither loader validates a retired executor value.
+func TestDeploymentAndClientLoadHaveSeparateSemantics(t *testing.T) {
 	path := writeDeploymentFixture(t, legacyInitShapedDeployment(t))
-	local, err := Load(path)
+	local, err := LoadClient(path, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(local.Harnesses) != 1 || local.Harnesses[0].Name != "codex" || len(local.Setups) != 1 || local.DefaultSetup != "default" {
-		t.Fatalf("client loader lost local execution setup: harnesses=%+v setups=%+v", local.Harnesses, local.Setups)
-	}
-	if local.Routing.Stages["implement"].Model != "gpt-5.6-sol" || local.Review.Seats[0].Model != "gpt-5.6-terra" {
-		t.Fatalf("client loader lost models: %+v seats=%+v", local.Routing.Stages["implement"], local.Review.Seats)
+	if local.ExecutionSettings != nil || len(local.Routing.Stages) != 0 || len(local.Review.Seats) != 0 || len(local.PlanningModels) != 0 {
+		t.Fatalf("client loader kept execution detail: settings=%+v routes=%+v seats=%+v", local.ExecutionSettings, local.Routing.Stages, local.Review.Seats)
 	}
 	deployment, err := LoadDeployment(path, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
 	assertNoExecutorDetail(t, deployment)
-	// A client-local invalid value still fails the client loader.
 	invalid := strings.ReplaceAll(string(legacyInitShapedDeployment(t)), "model_policy: explicit", "model_policy: bogus")
 	if invalid == string(legacyInitShapedDeployment(t)) {
 		t.Fatal("fixture replacement did not apply")
 	}
-	if _, err := Load(writeDeploymentFixture(t, []byte(invalid))); err == nil {
-		t.Fatal("client loader accepted an invalid model policy")
+	if _, err := LoadClient(writeDeploymentFixture(t, []byte(invalid)), nil); err != nil {
+		t.Fatalf("client loader validated a retired value: %v", err)
 	}
 	if _, err := ParseDeployment([]byte(invalid), "invalid.yaml", nil); err != nil {
 		t.Fatalf("deployment loader validated a retired value: %v", err)
@@ -429,8 +470,8 @@ func assertDeploymentYAMLHasNoExecutorDetail(t *testing.T, data []byte) {
 	walk("", root)
 }
 
-// The annotated combined example loads on both sides: the client loader keeps
-// its setups and the deployment loader ignores them.
+// The annotated combined example loads on both sides: each loader ignores its
+// setups and harnesses.
 func TestDeploymentLoadsAnnotatedExample(t *testing.T) {
 	path := filepath.Join("..", "..", "conveyor.example.yaml")
 	var warnings warningLog
@@ -442,7 +483,7 @@ func TestDeploymentLoadsAnnotatedExample(t *testing.T) {
 	if lines := warnings.all(); len(lines) != 1 || !strings.Contains(lines[0], "harnesses") || !strings.Contains(lines[0], "setups") {
 		t.Fatalf("warnings = %q", lines)
 	}
-	if _, err := Load(path); err != nil {
+	if _, err := LoadClient(path, nil); err != nil {
 		t.Fatalf("client loader refused the annotated example: %v", err)
 	}
 }
@@ -495,9 +536,9 @@ func policyView(t *testing.T, cfg *Config) deploymentPolicyView {
 // top-level projection and routing that disagree with that setup.
 func legacySetupDeployment(t *testing.T, withProjection bool) []byte {
 	t.Helper()
-	harness := HarnessTemplates()[0].Harness
+	harness := legacyHarnessYAML()["name"].(string)
 	stage := func(model, timeout string) ImplementationSettings {
-		return ImplementationSettings{Harness: harness.Name, Model: model, ModelPolicy: ModelPolicyExplicit, Effort: "high", TimeoutText: timeout}
+		return ImplementationSettings{Harness: harness, Model: model, ModelPolicy: ModelPolicyExplicit, Effort: "high", TimeoutText: timeout}
 	}
 	fast := ContextualExecutionSettings{
 		ControlPlane: ControlPlaneSettings{
@@ -507,9 +548,9 @@ func legacySetupDeployment(t *testing.T, withProjection bool) []byte {
 		Spec:           stage("setup-spec-model", "45m"),
 		Implementation: stage("setup-implement-model", "5h"),
 		Verify:         stage("setup-verify-model", "90m"),
-		Review:         ReviewExecutionSettings{Execution: ExecutionMCP, TimeoutText: "2h", FallbackHarness: harness.Name, FallbackModel: "setup-fallback-model"},
+		Review:         ReviewExecutionSettings{Execution: ExecutionMCP, TimeoutText: "2h", FallbackHarness: harness, FallbackModel: "setup-fallback-model"},
 	}
-	fastReview := ReviewPanel{Seats: []ReviewSeat{{Model: "seat-a"}, {Model: "seat-b", Harness: harness.Name}, {Model: "seat-c", Effort: "high"}}}
+	fastReview := ReviewPanel{Seats: []ReviewSeat{{Model: "seat-a"}, {Model: "seat-b", Harness: harness}, {Model: "seat-c", Effort: "high"}}}
 	other := ContextualExecutionSettings{
 		ControlPlane:   ControlPlaneSettings{Triage: ModelTimeoutSettings{Model: "other-triage-model", TimeoutText: "5m"}},
 		Spec:           stage("other-spec-model", "11m"),
@@ -518,12 +559,9 @@ func legacySetupDeployment(t *testing.T, withProjection bool) []byte {
 	}
 	document := Config{
 		Workspace: "default", MaxBounces: 6,
-		Database:     DatabaseForURL("postgres://conveyor@db.invalid/conveyor"),
-		Harnesses:    []Harness{harness},
-		Setups:       []ExecutionSetup{{Name: "other", ExecutionSettings: other, Review: ReviewPanel{Seats: []ReviewSeat{{Model: "other-seat"}}}}, {Name: "fast", ExecutionSettings: fast, Review: fastReview, RefreshReview: RefreshReviewFull}},
-		DefaultSetup: "fast",
-		Execution:    ExecutionPolicy{SpecApproval: false, MergeApproval: true, VerifyStage: true, ImplementConcurrency: 3, ReviewConcurrency: 2},
-		Repos:        []Repo{{Name: "conveyor", URL: "https://github.com/acme/conveyor.git", Base: "main"}},
+		Database:  DatabaseForURL("postgres://conveyor@db.invalid/conveyor"),
+		Execution: ExecutionPolicy{SpecApproval: false, MergeApproval: true, VerifyStage: true, ImplementConcurrency: 3, ReviewConcurrency: 2},
+		Repos:     []Repo{{Name: "conveyor", URL: "https://github.com/acme/conveyor.git", Base: "main"}},
 	}
 	if withProjection {
 		stale := ContextualExecutionSettings{
@@ -536,14 +574,13 @@ func legacySetupDeployment(t *testing.T, withProjection bool) []byte {
 		document.Review = ReviewPanel{Seats: []ReviewSeat{{Model: "stale-seat"}}}
 		document.Routing = Routing{Stages: map[string]StageRoute{
 			"triage":    {Model: "stale-routing-model", TimeoutText: "3m", Execution: ExecutionInProcess},
-			"implement": {Model: "stale-routing-implement", Harness: harness.Name, TimeoutText: "9m", Execution: ExecutionMCP},
+			"implement": {Model: "stale-routing-implement", Harness: harness, TimeoutText: "9m", Execution: ExecutionMCP},
 		}}
 	}
-	data, err := yaml.Marshal(document)
-	if err != nil {
-		t.Fatal(err)
-	}
-	return data
+	return withLegacyExecutorKeys(t, document, []map[string]any{
+		legacySetupYAML(t, "other", other, ReviewPanel{Seats: []ReviewSeat{{Model: "other-seat"}}}, ""),
+		legacySetupYAML(t, "fast", fast, fastReview, RefreshReviewFull),
+	}, "fast")
 }
 
 // component-runtime "Configuration scopes": a pre-DEC-56 file keeps every
@@ -555,28 +592,40 @@ func TestDeploymentLoadKeepsLegacyDefaultSetupPolicy(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	fixtures := map[string][]byte{
-		"setup-only default setup":                    legacySetupDeployment(t, false),
-		"default setup overriding a stale projection": legacySetupDeployment(t, true),
-		"earlier init output":                         legacyInitShapedDeployment(t),
-		"annotated example":                           example,
+	// Each want is what the file declares in the setup its default_setup
+	// names; a stage without a timeout takes the policy default.
+	type declared struct {
+		data          []byte
+		stageTimeouts map[string]string
+		reviewSeats   int
+		triage        StageRoute
+		planningModel string
 	}
-	for name, data := range fixtures {
+	fast := declared{stageTimeouts: map[string]string{"spec": "45m", "implement": "5h", "review": "2h", "verify": "90m"}, reviewSeats: 3,
+		triage: StageRoute{Model: "setup-triage-model", Effort: "medium", TimeoutText: "25m"}, planningModel: "setup-planning-model"}
+	setupOnly, overriding := fast, fast
+	setupOnly.data, overriding.data = legacySetupDeployment(t, false), legacySetupDeployment(t, true)
+	fixtures := map[string]declared{
+		"setup-only default setup":                    setupOnly,
+		"default setup overriding a stale projection": overriding,
+		"earlier init output": {data: legacyInitShapedDeployment(t), stageTimeouts: map[string]string{"spec": "30m", "implement": "4h", "review": "1h", "verify": "1h"}, reviewSeats: 1,
+			triage: StageRoute{Model: "gpt-5.6-luna", Effort: "high", TimeoutText: "20m"}, planningModel: "gpt-5.6-luna"},
+		"annotated example": {data: example, stageTimeouts: map[string]string{"spec": "30m", "implement": "4h", "review": "1h", "verify": "1h"}, reviewSeats: 2,
+			triage: StageRoute{Model: "gpt-5.6-luna", TimeoutText: "20m"}, planningModel: "gpt-5.6-luna"},
+	}
+	for name, want := range fixtures {
 		t.Run(name, func(t *testing.T) {
-			path := writeDeploymentFixture(t, data)
-			local, err := Load(path)
-			if err != nil {
-				t.Fatalf("fixture is not a valid pre-DEC-56 file: %v", err)
-			}
+			path := writeDeploymentFixture(t, want.data)
 			var warnings warningLog
 			deployment, err := LoadDeployment(path, warnings.logf)
 			if err != nil {
 				t.Fatalf("deployment loader refused a previously valid file: %v", err)
 			}
 			assertNoExecutorDetail(t, deployment)
-			want, got := policyView(t, local), policyView(t, deployment)
-			if !reflect.DeepEqual(got, want) {
-				t.Fatalf("policy changed:\n got %+v\nwant %+v", got, want)
+			got := policyView(t, deployment)
+			if !reflect.DeepEqual(got.StageTimeouts, want.stageTimeouts) || got.ReviewSeats != want.reviewSeats || !reflect.DeepEqual(got.Triage, want.triage) || got.Planning.Model != want.planningModel {
+				t.Fatalf("policy changed:\n got timeouts=%v seats=%d triage=%+v planning=%q\nwant timeouts=%v seats=%d triage=%+v planning=%q",
+					got.StageTimeouts, got.ReviewSeats, got.Triage, got.Planning.Model, want.stageTimeouts, want.reviewSeats, want.triage, want.planningModel)
 			}
 			lines := warnings.all()
 			if len(lines) != 1 || !strings.Contains(lines[0], "setups") || !strings.Contains(lines[0], "default_setup") {

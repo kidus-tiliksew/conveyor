@@ -132,7 +132,7 @@ func TestGetRenewsClaimOnlyWhileContextAssemblyIsActive(t *testing.T) {
 		t.Fatal(err)
 	}
 	claimed, err := storetest.For(st).ClaimWorkOrder(ctx, job.ID, core.WorkOrderClaim{
-		SessionID: "guard-session", ClientToken: "secret", ClaimantID: "run:user", WorkerID: "worker-a",
+		SessionID: "guard-session", ClientToken: "secret", ClaimantID: "run:user",
 		Lease: 80 * time.Millisecond, ExecutionTimeout: 2 * time.Second,
 	})
 	if err != nil {
@@ -212,7 +212,7 @@ func TestGetContextActivityStopsAtExecutionDeadline(t *testing.T) {
 		t.Fatal(err)
 	}
 	claimed, err := storetest.For(st).ClaimWorkOrder(ctx, job.ID, core.WorkOrderClaim{
-		SessionID: "deadline-session", ClientToken: "secret", ClaimantID: "run:user", WorkerID: "worker-a",
+		SessionID: "deadline-session", ClientToken: "secret", ClaimantID: "run:user",
 		Lease: 300 * time.Millisecond, ExecutionTimeout: 90 * time.Millisecond,
 	})
 	if err != nil {
@@ -388,24 +388,6 @@ func (s *scopedListObservationStore) GetTask(_ context.Context, id string) (core
 
 func (s *scopedListObservationStore) ListEvents(context.Context, string) ([]core.Event, error) {
 	return nil, nil
-}
-
-func TestListForTaskUsesOnlyScopedReadsAndPreservesProjection(t *testing.T) {
-	st := &scopedListObservationStore{orders: []core.WorkOrder{
-		{ID: "queued-implement", TaskID: "task-a", Stage: core.StageImplement, State: core.WorkOrderQueued, Claimable: true},
-		{ID: "queued-review", TaskID: "task-a", Stage: core.StageReview, State: core.WorkOrderQueued, Claimable: true},
-		{ID: "unrelated-review", TaskID: "task-b", Stage: core.StageReview, State: core.WorkOrderQueued, Claimable: true},
-	}}
-	orders, err := (&Service{Store: st}).ListForTask(store.WithActor(t.Context(), store.SystemActor()), "task-a")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if st.workspaceReads != 0 || st.taskReads != 1 || st.designReads != 1 || !reflect.DeepEqual(st.blockerTaskIDs, [][]string{{"task-a"}}) {
-		t.Fatalf("workspace=%d task=%d design=%d blockers=%v", st.workspaceReads, st.taskReads, st.designReads, st.blockerTaskIDs)
-	}
-	if len(orders) != 2 || orders[0].TaskID != "task-a" || orders[1].TaskID != "task-a" || orders[0].Claimable || orders[1].Claimable {
-		t.Fatalf("scoped projection=%+v", orders)
-	}
 }
 
 func TestReadArtifactIsBoundToClaimedWorkOrderContext(t *testing.T) {
@@ -889,7 +871,7 @@ func TestRetryReviewRoundVerifiesPRHeadAndSnapshotsCurrentPanel(t *testing.T) {
 			t.Fatal(err)
 		}
 		if state == core.WorkOrderCompleted {
-			claimed, err := storetest.For(st).ClaimWorkOrder(ctx, id, core.WorkOrderClaim{SessionID: id + "-session", ClientToken: "test-token", ClaimantID: "worker", WorkerID: "worker", Lease: time.Minute})
+			claimed, err := storetest.For(st).ClaimWorkOrder(ctx, id, core.WorkOrderClaim{SessionID: id + "-session", ClientToken: "test-token", ClaimantID: "worker", Lease: time.Minute})
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -908,10 +890,7 @@ func TestRetryReviewRoundVerifiesPRHeadAndSnapshotsCurrentPanel(t *testing.T) {
 		Workspace: "demo", WorkOrderQueueTimeout: time.Hour,
 		Repos:   []config.Repo{{Name: "app", Base: "main", GitHub: "acme/app"}},
 		Routing: config.Routing{Stages: map[string]config.StageRoute{"review": {Execution: config.ExecutionMCP, Harness: "codex", TimeoutText: "45m"}}},
-		Harnesses: []config.Harness{
-			{Name: "codex", Command: []string{"current-codex", "{prompt}"}, ProbeCommand: []string{"codex", "--version"}, ProbeTimeoutText: "5s"},
-			{Name: "claude", Command: []string{"current-claude", "{prompt}"}, ProbeCommand: []string{"claude", "--version"}, ProbeTimeoutText: "5s"},
-		},
+
 		Review: config.ReviewPanel{Seats: []config.ReviewSeat{{Model: "gpt-current", Harness: "codex", Effort: "high"}, {Model: "claude-current", Harness: "claude"}}},
 	}
 	currentHead := "changed-head"
@@ -1023,9 +1002,10 @@ func TestReviewWorkOrderContextUsesMCPCompletionContract(t *testing.T) {
 	}
 }
 
-// The delivered implement contract names both session modes and the
-// self-claimed lease cadence (req-agent-skills AC-2.2, AC-3.1, AC-3.8; DEC-44).
-func TestImplementWorkOrderContextStatesSessionModesAndLeaseCadence(t *testing.T) {
+// The delivered implement contract states the self-claimed delivery loop and
+// lease cadence and describes no launched session (req-agent-skills AC-2.2,
+// AC-3.1; DEC-97(1), DEC-97(2)).
+func TestImplementWorkOrderContextStatesSelfClaimedLoopAndLeaseCadence(t *testing.T) {
 	ctx := store.WithWorkspace(store.WithActor(t.Context(), store.SystemActor()), "demo")
 	st := store.NewMemory()
 	task := core.Task{ID: "session-modes", Workspace: "demo", State: core.TaskRunning, NextStage: core.StageImplement, CreatedAt: time.Now().UTC()}
@@ -1053,8 +1033,8 @@ func TestImplementWorkOrderContextStatesSessionModesAndLeaseCadence(t *testing.T
 	}
 	normalized := strings.Join(strings.Fields(got.RolePrompt), " ")
 	for name, required := range map[string]string{
-		"launched exit":             "A launched session reports the handoff and exits; it never polls `await_review`",
-		"self-claimed continuation": "A self-claimed session reports the handoff and continues with the `conveyor-work` playbook's self-claimed delivery loop",
+		"self-claimed claim":        "You called `claim_work_order` yourself. Conveyor launches no agent session",
+		"self-claimed continuation": "the self-claimed session reports the handoff and continues with the `conveyor-work` playbook's self-claimed delivery loop",
 		"self-claimed await":        "awaits the verdict with `await_review`",
 		"lease sizing":              "Claim with a `lease_seconds` that covers the longest expected step, up to the 3600-second maximum",
 		"milestone renewal":         "Call `renew_work_order` at each progress milestone and before any step expected to outlast one third of the remaining lease",
@@ -1065,6 +1045,9 @@ func TestImplementWorkOrderContextStatesSessionModesAndLeaseCadence(t *testing.T
 	}
 	if strings.Contains(normalized, "Never poll `await_review` from an implementation stage session") {
 		t.Errorf("delivered implement role still forbids await_review for every session: %s", got.RolePrompt)
+	}
+	if strings.Contains(strings.ToLower(normalized), "launched session") {
+		t.Errorf("delivered implement role still describes a launched session: %s", got.RolePrompt)
 	}
 }
 
@@ -1981,78 +1964,6 @@ func TestUsageStoresNoCostAndPreservesHistoricalCost(t *testing.T) {
 	}
 }
 
-func TestWorkerFallbackUsageAdmitsSameTerminalSessionAndMarksProvenance(t *testing.T) {
-	t.Parallel()
-	ctx, st, service, order := newLifecycleService(t, "worker-fallback-usage")
-	claimed, err := service.Claim(ctx, order.ID, core.WorkOrderClaim{
-		SessionID: "worker-session", ClientToken: "token", ClaimantID: "worker", Agent: "codex", Model: "gpt", Lease: time.Minute,
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	claimed.State = core.WorkOrderSubmitted
-	if err = storetest.For(st).UpdateWorkOrder(ctx, claimed, core.WorkOrderCmdSubmitForReview); err != nil {
-		t.Fatal(err)
-	}
-	reported, err := service.UsageFromWorkerFallback(ctx, claimed.ID, "worker-session", 144, 21)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if reported.TokensIn != 144 || reported.TokensOut != 21 || !reported.UsageReported || reported.SelfReported {
-		t.Fatalf("reported fallback = %+v", reported)
-	}
-	if _, err = service.UsageFromWorkerFallback(ctx, claimed.ID, "other-session", 1, 1); err == nil {
-		t.Fatal("fallback accepted another session")
-	}
-	events, err := st.ListEvents(ctx, order.TaskID)
-	if err != nil {
-		t.Fatal(err)
-	}
-	found := false
-	for _, event := range events {
-		if event.Kind == "work_order.usage_reported" && strings.Contains(string(event.Payload), `"self_reported":false`) {
-			found = true
-		}
-	}
-	if !found {
-		t.Fatalf("fallback provenance event missing: %+v", events)
-	}
-}
-
-func TestWorkerFallbackUsagePreservesExistingAgentReport(t *testing.T) {
-	t.Parallel()
-	ctx, st, service, order := newLifecycleService(t, "worker-fallback-preserves-agent-usage")
-	claimed, err := service.Claim(ctx, order.ID, core.WorkOrderClaim{
-		SessionID: "worker-session", ClientToken: "token", ClaimantID: "worker", Agent: "codex", Model: "gpt", Lease: time.Minute,
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err = service.Usage(ctx, claimed.ID, "worker-session", 0, 0); err != nil {
-		t.Fatal(err)
-	}
-	reported, err := service.UsageFromWorkerFallback(ctx, claimed.ID, "worker-session", 144, 21)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if reported.TokensIn != 0 || reported.TokensOut != 0 || !reported.UsageReported || !reported.SelfReported {
-		t.Fatalf("fallback replaced measured-zero agent report: %+v", reported)
-	}
-	events, err := st.ListEvents(ctx, order.TaskID)
-	if err != nil {
-		t.Fatal(err)
-	}
-	usageEvents := 0
-	for _, event := range events {
-		if event.Kind == "work_order.usage_reported" {
-			usageEvents++
-		}
-	}
-	if usageEvents != 1 {
-		t.Fatalf("usage events=%d want=1", usageEvents)
-	}
-}
-
 func TestQueuedTimeDoesNotConsumeExecutionTimeout(t *testing.T) {
 	t.Parallel()
 	ctx := store.WithActor(context.Background(), store.SystemActor())
@@ -2157,7 +2068,7 @@ func TestOperatorRecoveryDirectionIsTrustedContextAndClearsAtLifecycleBoundaries
 		t.Fatal(err)
 	}
 	service.Pack = bundle
-	claimed, err := storetest.For(st).ClaimWorkOrder(ctx, order.ID, core.WorkOrderClaim{SessionID: "first", ClientToken: "first-token", ClaimantID: "worker", WorkerID: "worker", Agent: "codex", Model: "gpt", Lease: time.Minute})
+	claimed, err := storetest.For(st).ClaimWorkOrder(ctx, order.ID, core.WorkOrderClaim{SessionID: "first", ClientToken: "first-token", ClaimantID: "worker", Agent: "codex", Model: "gpt", Lease: time.Minute})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -2201,7 +2112,7 @@ func TestOperatorRecoveryDirectionIsTrustedContextAndClearsAtLifecycleBoundaries
 	if err != nil || duplicate.OperatorDirection != direction || duplicate.RedispatchCount != recovered.RedispatchCount {
 		t.Fatalf("duplicate=%+v err=%v", duplicate, err)
 	}
-	resumed, err := storetest.For(st).ClaimWorkOrder(ctx, order.ID, core.WorkOrderClaim{SessionID: "second", ClientToken: "second-token", ClaimantID: "worker", WorkerID: "worker", Agent: "codex", Model: "gpt", Lease: time.Minute})
+	resumed, err := storetest.For(st).ClaimWorkOrder(ctx, order.ID, core.WorkOrderClaim{SessionID: "second", ClientToken: "second-token", ClaimantID: "worker", Agent: "codex", Model: "gpt", Lease: time.Minute})
 	if err != nil || resumed.OperatorDirection != direction {
 		t.Fatalf("resumed=%+v err=%v", resumed, err)
 	}
@@ -2259,7 +2170,7 @@ func TestOperatorRecoveryDirectionIsTrustedContextAndClearsAtLifecycleBoundaries
 func TestOperatorRecoveryRetainsFrozenSetupWhenNamedDefinitionIsMissing(t *testing.T) {
 	ctx := store.WithWorkspace(store.WithActor(t.Context(), store.SystemActor()), "demo")
 	st := store.NewMemory()
-	frozen := config.ExecutionSetup{Name: "removed", ExecutionSettings: config.ContextualExecutionSettings{Implementation: config.ImplementationSettings{Harness: "codex", Model: "frozen-model", ModelPolicy: config.ModelPolicyExplicit, TimeoutText: "1h"}}}
+	frozen := config.PolicyContract{StageTimeouts: config.PolicyStageTimeouts{Implement: "1h"}}
 	task := core.Task{ID: "missing-setup-task", Workspace: "demo", State: core.TaskRunning, SetupName: "removed", SetupContract: frozen, CreatedAt: time.Now().UTC()}
 	job := core.Job{ID: "missing-setup-order", TaskID: task.ID, Stage: core.StageImplement, State: core.JobPending}
 	if err := st.CreateTask(ctx, task); err != nil {
@@ -2284,7 +2195,7 @@ func TestOperatorRecoveryRetainsFrozenSetupWhenNamedDefinitionIsMissing(t *testi
 	if err != nil || recovered.State != core.WorkOrderQueued || recovered.RequiredModel != "" || recovered.RequiredHarness != "" || recovered.ExecutionTimeoutText != "1h" {
 		t.Fatalf("recovered=%+v err=%v", recovered, err)
 	}
-	if current, taskErr := st.GetTask(ctx, task.ID); taskErr != nil || current.SetupName != "removed" || current.SetupContract.ExecutionSettings.Implementation.Model != "frozen-model" {
+	if current, taskErr := st.GetTask(ctx, task.ID); taskErr != nil || current.SetupName != "removed" || current.SetupContract.StageTimeouts.Implement != "1h" {
 		t.Fatalf("frozen setup changed: task=%+v err=%v", current, taskErr)
 	}
 	events, _ := st.CountEvents(ctx, task.ID, "task.setup.refrozen")
@@ -2424,7 +2335,7 @@ func TestRecoverWorkOrderAfterChangesRequestedBounce(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	claimedImplementOne, err := storetest.For(st).ClaimWorkOrder(ctx, implementOne.ID, core.WorkOrderClaim{SessionID: "implement-1-session", ClientToken: "implement-1-token", ClaimantID: "run:implementer", WorkerID: "worker-implement-1", Lease: time.Minute, ExecutionTimeout: time.Hour})
+	claimedImplementOne, err := storetest.For(st).ClaimWorkOrder(ctx, implementOne.ID, core.WorkOrderClaim{SessionID: "implement-1-session", ClientToken: "implement-1-token", ClaimantID: "run:implementer", Lease: time.Minute, ExecutionTimeout: time.Hour})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -2432,7 +2343,7 @@ func TestRecoverWorkOrderAfterChangesRequestedBounce(t *testing.T) {
 	if err = storetest.For(st).UpdateWorkOrder(ctx, claimedImplementOne, core.WorkOrderCmdSubmitForReview); err != nil {
 		t.Fatal(err)
 	}
-	claimedReview, err := storetest.For(st).ClaimWorkOrder(ctx, review.ID, core.WorkOrderClaim{SessionID: "review-session", ClientToken: "review-token", ClaimantID: "run:reviewer", WorkerID: "worker-review", Lease: time.Minute, ExecutionTimeout: time.Hour})
+	claimedReview, err := storetest.For(st).ClaimWorkOrder(ctx, review.ID, core.WorkOrderClaim{SessionID: "review-session", ClientToken: "review-token", ClaimantID: "run:reviewer", Lease: time.Minute, ExecutionTimeout: time.Hour})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -2446,7 +2357,7 @@ func TestRecoverWorkOrderAfterChangesRequestedBounce(t *testing.T) {
 	if err := storetest.For(st).CreateWorkOrder(ctx, implementTwo); err != nil {
 		t.Fatal(err)
 	}
-	claimedImplementTwo, err := storetest.For(st).ClaimWorkOrder(ctx, implementTwo.ID, core.WorkOrderClaim{SessionID: "implement-2-session", ClientToken: "implement-2-token", ClaimantID: "run:implementer", WorkerID: "worker-implement-2", Lease: time.Minute, ExecutionTimeout: time.Hour})
+	claimedImplementTwo, err := storetest.For(st).ClaimWorkOrder(ctx, implementTwo.ID, core.WorkOrderClaim{SessionID: "implement-2-session", ClientToken: "implement-2-token", ClaimantID: "run:implementer", Lease: time.Minute, ExecutionTimeout: time.Hour})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -2528,7 +2439,6 @@ func TestRedispatchClearsLegacyExecutionPinsWithoutHarnessRegistry(t *testing.T)
 		return &config.Config{
 			WorkOrderQueueTimeout: config.DefaultWorkOrderQueueTimeout,
 			Routing:               config.Routing{Stages: map[string]config.StageRoute{"implement": {Timeout: time.Hour}}},
-			Harnesses:             []config.Harness{{Name: "claude", Command: []string{"claude", "-p", "{prompt}", "{mcp_config}", "--dangerously-skip-permissions"}}},
 		}, nil
 	}
 	redispatched, err := service.Redispatch(ctx, order.ID)
@@ -2653,7 +2563,7 @@ func TestExpiredWorkerSessionsCannotRenewReleaseOrSubmit(t *testing.T) {
 		if err := storetest.For(st).CreateWorkOrder(ctx, order); err != nil {
 			t.Fatal(err)
 		}
-		if _, err := storetest.For(st).ClaimWorkOrder(ctx, id, core.WorkOrderClaim{SessionID: "expired-" + string(stage), ClientToken: "token-" + string(stage), WorkerID: "worker", ClaimantID: "worker", Lease: time.Nanosecond, ExecutionTimeout: time.Hour}); err != nil {
+		if _, err := storetest.For(st).ClaimWorkOrder(ctx, id, core.WorkOrderClaim{SessionID: "expired-" + string(stage), ClientToken: "token-" + string(stage), ClaimantID: "worker", Lease: time.Nanosecond, ExecutionTimeout: time.Hour}); err != nil {
 			t.Fatal(err)
 		}
 		session := "expired-" + string(stage)
@@ -3483,14 +3393,10 @@ func TestClaimBlockingProposalsMatchListingAndClaim(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			taskOrders, err := service.ListForTask(ctx, task.ID)
-			if err != nil {
-				t.Fatal(err)
+			if len(workspaceOrders) != 1 {
+				t.Fatalf("workspace listing=%+v", workspaceOrders)
 			}
-			if len(workspaceOrders) != 1 || len(taskOrders) != 1 || workspaceOrders[0].Claimable != taskOrders[0].Claimable {
-				t.Fatalf("workspace listing=%+v task listing=%+v", workspaceOrders, taskOrders)
-			}
-			claimable := taskOrders[0].Claimable
+			claimable := workspaceOrders[0].Claimable
 			_, claimErr := service.Claim(ctx, job.ID, core.WorkOrderClaim{SessionID: "claim-session", ClientToken: "claim-token", ClaimantID: "claimant", Lease: time.Minute})
 			if tc.want == "" {
 				if !claimable || claimErr != nil {
@@ -3521,9 +3427,6 @@ func TestClaimBlockingProposalsMatchListingAndClaim(t *testing.T) {
 		service := &Service{Store: failingClaimBlockingStore{base}}
 		if _, err := service.List(ctx); err == nil || !strings.Contains(err.Error(), "claim-blocking read failed") {
 			t.Fatalf("workspace listing err=%v", err)
-		}
-		if _, err := service.ListForTask(ctx, task.ID); err == nil || !strings.Contains(err.Error(), "claim-blocking read failed") {
-			t.Fatalf("task listing err=%v", err)
 		}
 		if _, err := service.Claim(ctx, job.ID, core.WorkOrderClaim{SessionID: "s", ClientToken: "c", ClaimantID: "claimant", Lease: time.Minute}); err == nil || !strings.Contains(err.Error(), "claim-blocking read failed") {
 			t.Fatalf("claim err=%v", err)
@@ -3569,13 +3472,6 @@ func TestListRecoveryRefusal(t *testing.T) {
 	}
 	if listed[0].Claimable {
 		t.Fatal("refusal stayed claimable")
-	}
-	byTask, err := svc.ListForTask(ctx, task.ID)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(byTask) != 1 || byTask[0].RecoveryRefusal != want || byTask[0].Claimable {
-		t.Fatalf("task listing=%+v", byTask)
 	}
 }
 
@@ -3675,7 +3571,7 @@ func seedListedOrder(t *testing.T, ctx context.Context, st store.Store, taskID s
 	case core.WorkOrderTimedOut:
 		move(core.WorkOrderTimedOut, core.WorkOrderCmdTimeout)
 	case core.WorkOrderClaimed, core.WorkOrderSubmitted, core.WorkOrderCompleted:
-		if _, err := storetest.ClaimWorkOrder(ctx, st, id, core.WorkOrderClaim{ClaimantID: "worker", WorkerID: "worker", SessionID: "session-" + id, ClientToken: "token-" + id, Lease: time.Hour, ExecutionTimeout: time.Hour}); err != nil {
+		if _, err := storetest.ClaimWorkOrder(ctx, st, id, core.WorkOrderClaim{ClaimantID: "worker", SessionID: "session-" + id, ClientToken: "token-" + id, Lease: time.Hour, ExecutionTimeout: time.Hour}); err != nil {
 			t.Fatal(err)
 		}
 		switch state {

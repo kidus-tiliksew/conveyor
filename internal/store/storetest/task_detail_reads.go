@@ -13,100 +13,13 @@ import (
 	"github.com/kidus-tiliksew/conveyor/internal/store"
 )
 
-// runTaskDetailReads proves the task-detail batch reads on every backend:
-// each equals the same backend's single-item reads for its selection and
-// never returns another task's or workspace's rows (component-persistence,
+// runTaskDetailReads proves the task-detail document metadata read on every
+// backend: it equals the same backend's single-item reads for its selection
+// and never returns another workspace's rows (component-persistence,
 // Task-detail batch reads).
 func runTaskDetailReads(t *testing.T, x Fixture) {
 	st, ctx := x.Backend, x.Context
 	foreign := store.WithWorkspace(ctx, "task-detail-foreign")
-
-	t.Run("CapturesAndSnapshotsFollowTheTasksOrders", func(t *testing.T) {
-		task := newAggregateTask(t, x)
-		other := newAggregateTask(t, x)
-		order := func(task core.Task, index int) core.WorkOrder {
-			t.Helper()
-			id := task.ID + "-implement-detail-" + string(rune('a'+index))
-			requireOK(t, st.CreateJob(ctx, core.Job{ID: id, TaskID: task.ID, Stage: core.StageImplement, State: core.JobPending}))
-			created := core.WorkOrder{ID: id, TaskID: task.ID, JobID: id, Stage: core.StageImplement, State: core.WorkOrderQueued, QueueEnteredAt: task.CreatedAt, QueueDeadline: task.CreatedAt.Add(time.Hour), CreatedAt: task.CreatedAt.Add(time.Duration(index) * time.Second)}
-			requireOK(t, CreateWorkOrder(ctx, st, created))
-			return created
-		}
-		// ended runs one attempt to a release with a capture; the live
-		// snapshot of the last open attempt is the one a read selects.
-		ended := func(order core.WorkOrder, session string) core.WorkOrder {
-			t.Helper()
-			claimed := claimForCapture(t, x, order.ID, session)
-			identity := workerCaptureIdentity(claimed.SessionID)
-			requireOK(t, st.UpsertWorkOrderActivitySnapshot(ctx, order.ID, identity, "tail "+session))
-			_, err := ReleaseWorkerClaim(ctx, st, order.ID, captureWorker, core.WorkOrderRelease{SessionID: claimed.SessionID, Outcome: core.WorkOrderOutcomeChildFailure, Reason: "harness exited", InitialRetryDelay: time.Nanosecond, MaximumRetryDelay: time.Nanosecond})
-			requireOK(t, err)
-			_, err = st.RecordWorkOrderAttemptCapture(ctx, order.ID, identity, captureOf(claimed, "", "transcript "+session))
-			requireOK(t, err)
-			return claimed
-		}
-		// Only a task's newest order is claimable, and creating one retires
-		// its open siblings, so each order is created just before its attempts.
-		quiet := order(task, 0)
-		second := order(task, 1)
-		ended(second, "detail-second-"+second.ID)
-		foreignOrder := order(other, 0)
-		ended(foreignOrder, "detail-other-"+foreignOrder.ID)
-		first := order(task, 2)
-		ended(first, "detail-first-a-"+first.ID)
-		ended(first, "detail-first-b-"+first.ID)
-		live := claimForCapture(t, x, first.ID, "detail-first-c-"+first.ID)
-		requireOK(t, st.UpsertWorkOrderActivitySnapshot(ctx, first.ID, workerCaptureIdentity(live.SessionID), "live tail"))
-
-		captures, err := st.ListTaskTranscriptCaptures(ctx, task.ID)
-		requireOK(t, err)
-		want := map[string][]core.WorkOrderTranscriptCapture{}
-		for _, id := range []string{first.ID, second.ID, quiet.ID} {
-			single, singleErr := st.ListWorkOrderTranscriptCaptures(ctx, id)
-			requireOK(t, singleErr)
-			if len(single) > 0 {
-				want[id] = single
-			}
-		}
-		if len(want[first.ID]) != 2 || len(want[second.ID]) != 1 || !reflect.DeepEqual(captures, want) {
-			t.Fatalf("task captures = %+v, want %+v", captures, want)
-		}
-
-		requested := []string{first.ID, second.ID, quiet.ID, foreignOrder.ID, "missing-order", first.ID}
-		snapshots, err := st.ListTaskActivitySnapshots(ctx, task.ID, requested)
-		requireOK(t, err)
-		wantSnapshots := map[string]core.WorkOrderActivitySnapshot{}
-		for _, id := range []string{first.ID, second.ID, quiet.ID} {
-			snapshot, found, singleErr := st.GetWorkOrderActivitySnapshot(ctx, id)
-			requireOK(t, singleErr)
-			if found {
-				wantSnapshots[id] = snapshot
-			}
-		}
-		if wantSnapshots[first.ID].AttemptID != live.AttemptID || !reflect.DeepEqual(snapshots, wantSnapshots) {
-			t.Fatalf("task snapshots = %+v, want %+v", snapshots, wantSnapshots)
-		}
-
-		for label, read := range map[string]func() (int, error){
-			"empty snapshot selection": func() (int, error) { got, err := st.ListTaskActivitySnapshots(ctx, task.ID, nil); return len(got), err },
-			"foreign captures":         func() (int, error) { got, err := st.ListTaskTranscriptCaptures(foreign, task.ID); return len(got), err },
-			"foreign snapshots": func() (int, error) {
-				got, err := st.ListTaskActivitySnapshots(foreign, task.ID, requested)
-				return len(got), err
-			},
-			"missing task captures": func() (int, error) {
-				got, err := st.ListTaskTranscriptCaptures(ctx, "missing-task")
-				return len(got), err
-			},
-		} {
-			if n, readErr := read(); readErr != nil || n != 0 {
-				t.Fatalf("%s: %d rows, err %v", label, n, readErr)
-			}
-		}
-		if got, err := st.ListTaskActivitySnapshots(ctx, task.ID, nil); err != nil || got == nil {
-			t.Fatalf("empty selection = %v, %v; want an empty map", got, err)
-		}
-	})
 
 	t.Run("UnrelatedHistoryLeavesSelectionsUnchanged", func(t *testing.T) {
 		seed := SeedTaskDetailReads(t, st, ctx, "detail-"+strings.ToLower(core.NewTaskID()))
@@ -120,25 +33,16 @@ func runTaskDetailReads(t *testing.T, x Fixture) {
 
 	t.Run("SelectedGrowthFollowsTheOutputBounds", func(t *testing.T) {
 		seed := SeedTaskDetailReads(t, st, ctx, "detail-grow-"+strings.ToLower(core.NewTaskID()))
-		count := func() (int, int, int) {
+		count := func() int {
 			t.Helper()
-			captures, err := st.ListTaskTranscriptCaptures(ctx, seed.TaskID)
-			requireOK(t, err)
-			snapshots, err := st.ListTaskActivitySnapshots(ctx, seed.TaskID, seed.OrderIDs)
-			requireOK(t, err)
 			metadata, err := st.ListDocumentMetadata(ctx, seed.DocumentIDs)
 			requireOK(t, err)
-			total := 0
-			for _, list := range captures {
-				total += len(list)
-			}
-			return total, len(snapshots), len(metadata.Requirements) + len(metadata.Designs)
+			return len(metadata.Requirements) + len(metadata.Designs)
 		}
-		captures, snapshots, documents := count()
+		documents := count()
 		GrowSelectedTaskDetail(t, st, ctx, &seed, 3)
-		grownCaptures, grownSnapshots, grownDocuments := count()
-		if grownCaptures != captures+3 || grownSnapshots != snapshots || snapshots != 1 || grownDocuments != documents+3 {
-			t.Fatalf("selected growth: captures %d->%d, snapshots %d->%d, documents %d->%d", captures, grownCaptures, snapshots, grownSnapshots, documents, grownDocuments)
+		if grown := count(); grown != documents+3 {
+			t.Fatalf("selected growth: documents %d->%d", documents, grown)
 		}
 		ReadTaskDetailSelections(t, st, ctx, seed)
 	})
@@ -147,12 +51,6 @@ func runTaskDetailReads(t *testing.T, x Fixture) {
 		seed := SeedTaskDetailReads(t, st, ctx, "detail-fail-"+strings.ToLower(core.NewTaskID()))
 		done, cancel := context.WithCancel(ctx)
 		cancel()
-		if captures, err := st.ListTaskTranscriptCaptures(done, seed.TaskID); err == nil || captures != nil {
-			t.Fatalf("captures with a done context = %v, %v; want no result and an error", captures, err)
-		}
-		if snapshots, err := st.ListTaskActivitySnapshots(done, seed.TaskID, seed.OrderIDs); err == nil || snapshots != nil {
-			t.Fatalf("snapshots with a done context = %v, %v; want no result and an error", snapshots, err)
-		}
 		if metadata, err := st.ListDocumentMetadata(done, seed.DocumentIDs); err == nil || metadata.Requirements != nil || metadata.Designs != nil {
 			t.Fatalf("metadata with a done context = %+v, %v; want no result and an error", metadata, err)
 		}
@@ -220,9 +118,8 @@ func runTaskDetailReads(t *testing.T, x Fixture) {
 	})
 }
 
-// TaskDetailReadsSeed names one task whose detail selections the durable
-// observers read: its orders, with one ended attempt's capture and one live
-// snapshot, and one confirmed requirement and System Design.
+// TaskDetailReadsSeed names one task whose detail selection the durable
+// observers read: its orders and one confirmed requirement and System Design.
 type TaskDetailReadsSeed struct {
 	TaskID      string
 	OrderIDs    []string
@@ -239,11 +136,10 @@ func SeedTaskDetailReads(t *testing.T, st store.Store, ctx context.Context, pref
 	task := core.Task{ID: prefix + "-task", Workspace: workspace, Repo: "conveyor", Title: prefix, BaseBranch: "main", Branch: "conveyor/task-" + prefix, State: core.TaskRunning, NextStage: core.StageImplement, CreatedAt: now}
 	requireOK(t, st.CreateTask(ctx, task))
 	seed := TaskDetailReadsSeed{TaskID: task.ID}
-	for i, live := range []bool{false, true} {
+	for i := 0; i < 2; i++ {
 		id := fmt.Sprintf("%s-implement-%d", task.ID, i+1)
 		requireOK(t, st.CreateJob(ctx, core.Job{ID: id, TaskID: task.ID, Stage: core.StageImplement, State: core.JobPending}))
 		requireOK(t, CreateWorkOrder(ctx, st, core.WorkOrder{ID: id, TaskID: task.ID, JobID: id, Stage: core.StageImplement, State: core.WorkOrderQueued, QueueEnteredAt: now, QueueDeadline: now.Add(time.Hour), CreatedAt: now.Add(time.Duration(i) * time.Second)}))
-		seedTaskDetailAttempt(t, st, ctx, id, "selected transcript "+id, live)
 		seed.OrderIDs = append(seed.OrderIDs, id)
 	}
 	human := store.WithActor(ctx, store.Actor{ID: "operator", Role: core.ActorHuman})
@@ -261,7 +157,7 @@ func SeedTaskDetailReads(t *testing.T, st store.Store, ctx context.Context, pref
 }
 
 // GrowUnrelatedTaskDetailHistory adds, around a seed, history no selection
-// may read: another task's captured attempts, new unconfirmed versions of the
+// may read: another task's orders, new unconfirmed versions of the
 // selected documents, other documents, and artifact blobs, every body
 // carrying sentinel and growing with size.
 func GrowUnrelatedTaskDetailHistory(t *testing.T, st store.Store, ctx context.Context, seed TaskDetailReadsSeed, sentinel string, size int) {
@@ -275,7 +171,6 @@ func GrowUnrelatedTaskDetailHistory(t *testing.T, st store.Store, ctx context.Co
 		id := fmt.Sprintf("%s-implement-%d", other.ID, i+1)
 		requireOK(t, st.CreateJob(ctx, core.Job{ID: id, TaskID: other.ID, Stage: core.StageImplement, State: core.JobPending}))
 		requireOK(t, CreateWorkOrder(ctx, st, core.WorkOrder{ID: id, TaskID: other.ID, JobID: id, Stage: core.StageImplement, State: core.WorkOrderQueued, QueueEnteredAt: now, QueueDeadline: now.Add(time.Hour), CreatedAt: now.Add(time.Duration(i) * time.Second)}))
-		seedTaskDetailAttempt(t, st, ctx, id, body, false)
 	}
 	human := store.WithActor(ctx, store.Actor{ID: "operator", Role: core.ActorHuman})
 	for i := 0; i < size; i++ {
@@ -291,77 +186,28 @@ func GrowUnrelatedTaskDetailHistory(t *testing.T, st store.Store, ctx context.Co
 	}
 }
 
-// seedTaskDetailAttempt ends one attempt of a queued order with a capture of
-// content and, when live, opens another whose snapshot stays current.
-func seedTaskDetailAttempt(t *testing.T, st store.Store, ctx context.Context, orderID, content string, live bool) {
-	t.Helper()
-	claim := func(session string) core.WorkOrder {
-		t.Helper()
-		claimed, err := ClaimWorkOrder(ctx, st, orderID, core.WorkOrderClaim{WorkerID: captureWorker, ClaimantID: captureWorker, SessionID: session, ClientToken: session, Lease: time.Hour, ExecutionTimeout: time.Hour})
-		requireOK(t, err)
-		return claimed
-	}
-	ended := claim("detail-ended-" + orderID)
-	identity := workerCaptureIdentity(ended.SessionID)
-	_, err := ReleaseWorkerClaim(ctx, st, orderID, captureWorker, core.WorkOrderRelease{SessionID: ended.SessionID, Outcome: core.WorkOrderOutcomeChildFailure, Reason: "harness exited", InitialRetryDelay: time.Nanosecond, MaximumRetryDelay: time.Nanosecond})
-	requireOK(t, err)
-	_, err = st.RecordWorkOrderAttemptCapture(ctx, orderID, identity, captureOf(ended, "", content))
-	requireOK(t, err)
-	if live {
-		current := claim("detail-live-" + orderID)
-		requireOK(t, st.UpsertWorkOrderActivitySnapshot(ctx, orderID, workerCaptureIdentity(current.SessionID), "live tail "+orderID))
-	}
-}
-
-// ReadTaskDetailSelections reads the seed's three selections and returns them
+// ReadTaskDetailSelections reads the seed's document selection and returns it
 // as one canonical JSON document.
 func ReadTaskDetailSelections(t *testing.T, st store.Store, ctx context.Context, seed TaskDetailReadsSeed) string {
 	t.Helper()
-	captures, err := st.ListTaskTranscriptCaptures(ctx, seed.TaskID)
-	requireOK(t, err)
-	snapshots, err := st.ListTaskActivitySnapshots(ctx, seed.TaskID, seed.OrderIDs)
-	requireOK(t, err)
 	metadata, err := st.ListDocumentMetadata(ctx, seed.DocumentIDs)
 	requireOK(t, err)
-	// Every order but the live one has ended with a capture; the seed's
-	// live order also holds the capture of its first attempt.
-	if len(captures) < len(seed.OrderIDs)-1 || len(snapshots) != 1 || len(metadata.Requirements)+len(metadata.Designs) != len(seed.DocumentIDs) {
-		t.Fatalf("seed selections: captures=%d snapshots=%d metadata=%+v", len(captures), len(snapshots), metadata)
+	if len(metadata.Requirements)+len(metadata.Designs) != len(seed.DocumentIDs) {
+		t.Fatalf("seed selection: metadata=%+v", metadata)
 	}
 	out, err := json.Marshal(struct {
-		Captures  map[string][]core.WorkOrderTranscriptCapture
-		Snapshots map[string]core.WorkOrderActivitySnapshot
-		Metadata  store.DocumentMetadataSet
-	}{captures, snapshots, metadata})
+		Metadata store.DocumentMetadataSet
+	}{metadata})
 	requireOK(t, err)
 	return string(out)
 }
 
-// GrowSelectedTaskDetail ends the seed's live attempt with a capture and
-// opens a new live order n times, and adds n confirmed requirements to the
-// requested metadata. The selections then return n more capture rows, still
-// one snapshot row, and n more metadata rows.
+// GrowSelectedTaskDetail adds n confirmed requirements to the requested
+// metadata, so the selection returns n more metadata rows.
 func GrowSelectedTaskDetail(t *testing.T, st store.Store, ctx context.Context, seed *TaskDetailReadsSeed, n int) {
 	t.Helper()
 	human := store.WithActor(ctx, store.Actor{ID: "operator", Role: core.ActorHuman})
 	for i := 0; i < n; i++ {
-		live := seed.OrderIDs[len(seed.OrderIDs)-1]
-		order, err := st.GetWorkOrder(ctx, live)
-		requireOK(t, err)
-		_, err = ReleaseWorkerClaim(ctx, st, live, captureWorker, core.WorkOrderRelease{SessionID: order.SessionID, Outcome: core.WorkOrderOutcomeChildFailure, Reason: "harness exited", InitialRetryDelay: time.Nanosecond, MaximumRetryDelay: time.Nanosecond})
-		requireOK(t, err)
-		_, err = st.RecordWorkOrderAttemptCapture(ctx, live, workerCaptureIdentity(order.SessionID), captureOf(order, "", fmt.Sprintf("selected transcript %s %d", live, i)))
-		requireOK(t, err)
-		next := fmt.Sprintf("%s-implement-grown-%d", seed.TaskID, len(seed.OrderIDs)+1)
-		// Each grown order is created strictly after every earlier one.
-		now := time.Now().UTC().Truncate(time.Microsecond).Add(time.Duration(len(seed.OrderIDs)) * time.Minute)
-		requireOK(t, st.CreateJob(ctx, core.Job{ID: next, TaskID: seed.TaskID, Stage: core.StageImplement, State: core.JobPending}))
-		requireOK(t, CreateWorkOrder(ctx, st, core.WorkOrder{ID: next, TaskID: seed.TaskID, JobID: next, Stage: core.StageImplement, State: core.WorkOrderQueued, QueueEnteredAt: now, QueueDeadline: now.Add(time.Hour), CreatedAt: now}))
-		session := "detail-grow-" + next
-		current, err := ClaimWorkOrder(ctx, st, next, core.WorkOrderClaim{WorkerID: captureWorker, ClaimantID: captureWorker, SessionID: session, ClientToken: session, Lease: time.Hour, ExecutionTimeout: time.Hour})
-		requireOK(t, err)
-		requireOK(t, st.UpsertWorkOrderActivitySnapshot(ctx, next, workerCaptureIdentity(current.SessionID), "live tail "+next))
-		seed.OrderIDs = append(seed.OrderIDs, next)
 		id := fmt.Sprintf("%s-grown-%d", seed.DocumentIDs[0], len(seed.DocumentIDs))
 		_, version, err := st.CreateRequirement(human, core.Requirement{ID: id, Title: "Detail " + id}, core.RequirementVersion{Content: "# Detail " + id, Origin: core.RequirementOriginOperator, Statements: []core.RequirementStatement{{ID: "REQ-1", Statement: "Keep grown metadata."}}})
 		requireOK(t, err)

@@ -43,7 +43,7 @@ func completeVerificationAtHead(t *testing.T, st store.Store, ctx context.Contex
 	if err := storetest.For(st).CreateWorkOrder(ctx, order); err != nil {
 		t.Fatal(err)
 	}
-	claimed, err := storetest.For(st).ClaimWorkOrder(ctx, order.ID, core.WorkOrderClaim{SessionID: "verify-session", ClientToken: "verify-token", WorkerID: "worker-verify", Lease: time.Minute, ExecutionTimeout: time.Hour})
+	claimed, err := storetest.For(st).ClaimWorkOrder(ctx, order.ID, core.WorkOrderClaim{SessionID: "verify-session", ClientToken: "verify-token", Lease: time.Minute, ExecutionTimeout: time.Hour})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -247,7 +247,7 @@ func TestObservedMergeAtMergeGateReconcilesToMerged(t *testing.T) {
 		verified := core.Task{
 			ID: "gate-verified", Workspace: "test", Repo: "app", BaseBranch: "main", Branch: "conveyor/gate-verified",
 			State: core.TaskRunning, NextStage: core.StageVerify, ReviewedHeadSHA: "verified-head", MergeApproval: true,
-			SetupContract: config.ExecutionSetup{VerifyStage: true}, CreatedAt: time.Now().UTC(),
+			SetupContract: config.PolicyContract{VerifyStage: true}, CreatedAt: time.Now().UTC(),
 		}
 		if err := st.CreateTask(ctx, verified); err != nil {
 			t.Fatal(err)

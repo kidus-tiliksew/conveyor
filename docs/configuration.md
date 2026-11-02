@@ -2,18 +2,17 @@
 
 Conveyor has three configuration surfaces, and most confusion comes from
 treating them as one. The deployment config describes a server. The local
-execution config describes a machine that runs agents. The credentials file
-remembers who you are per server. The
+configuration file holds a machine's worktree location and verification
+records. The credentials file remembers who you are per server. The
 [setup playbook](playbooks/conveyor-install.md) keeps the server and client
-files separate, including on a solo machine. A combined `conveyor.yaml` still
-loads on both sides, because `conveyord` ignores its execution keys, but
-select the intended file explicitly when a host also runs agents.
+files separate, including on a solo machine, so select the intended file
+explicitly when a host also runs agent sessions.
 
 ## Deployment config (server)
 
 Read by `conveyord` (and written by `conveyor init`). It holds pipeline
 policy and the settings of the stages that run inside `conveyord` (triage,
-title generation, and planning), never harnesses or executor models (DEC-56).
+title generation, and planning), never harnesses or executor models (DEC-96).
 The annotated [conveyor.example.yaml](../conveyor.example.yaml) documents
 every field inline; the shape:
 
@@ -74,7 +73,7 @@ model is not configured", set `execution_settings.control_plane.planning.model`
 (and `planning_models` for alternate models) in this file and restart
 `conveyord`.
 
-A deployment file written before DEC-56 may still carry `harnesses`,
+A deployment file written before DEC-96 may still carry `harnesses`,
 `setups`, `default_setup`, `routing` models, stage `harness`, `model`,
 `model_policy`, or `effort`, review fallbacks, or seat models. `conveyord`
 and `conveyor init` ignore those keys, never validate them, and log one line
@@ -82,7 +81,8 @@ naming each ignored field without its value. When `default_setup` names one of
 the file's `setups`, that setup's stage timeouts, review seat count, and
 control-plane settings apply, as they did before, and its executor detail is
 dropped. Other unknown keys still fail
-the load. Move execution detail into a local execution config.
+the load. Conveyor keeps execution detail nowhere, so remove those keys when
+convenient.
 
 ### Database selection
 
@@ -103,6 +103,36 @@ SingleStore URL schemes and MySQL TCP/socket DSNs select SingleStore; other
 connection strings retain PostgreSQL selection. `conveyor init` and
 `conveyor user issue-link` apply the same inference to `CONVEYOR_DATABASE_URL`.
 See [SingleStore operations](singlestore.md) before creating its database.
+
+#### Several daemons on one database
+
+`runtime.peers: true` declares that this `conveyord` runs beside other
+daemons on the same database. The default is `false`: a single daemon learns
+of new work from its own commits and sends no statement to the database
+while idle.
+
+```yaml
+runtime:
+  peers: true
+```
+
+- **PostgreSQL.** Each notice-raising transaction also sends
+  `pg_notify('conveyor_changes', ...)`, and each daemon holds one direct,
+  unpooled connection that runs `LISTEN conveyor_changes`. When the database
+  closes that connection, for example when a scale-to-zero database suspends,
+  the daemon reconnects on its next request and then catches up every
+  workspace once. Use a direct connection string, not a transaction pooler:
+  `LISTEN` needs a session.
+- **SingleStore.** There is no change notification, so each daemon runs one
+  peer check every 30 seconds: a single statement that reads every
+  workspace's job log head and task-event position, however many workspaces,
+  open dashboard streams, and pending `await_review` calls the daemon serves.
+  Work another daemon commits starts within 30 seconds, and an open stream or
+  `await_review` sees another daemon's change within 30 seconds.
+
+The daemon logs its peer mode at startup: `runtime peers: off`,
+`runtime peers: PostgreSQL change notification`, or
+`runtime peers: one peer check every 30s for the whole daemon`.
 
 #### PostgreSQL pool size
 
@@ -144,25 +174,16 @@ connections). SingleStore omits `db_acquire`. The header holds only durations
 and counts, never SQL, identifiers, or workspace data. A streamed response
 reports the database activity before its first byte.
 
-## Local execution config (executor machine)
+## Local configuration (agent machine)
 
-Read by `conveyor run`, `conveyor worker`, and `conveyor checkout`. Created
-by `conveyor config init-execution`, edited with `conveyor config set` and
-`conveyor setup`. It describes the agent CLIs on this machine and how each
-stage runs:
+Read by `conveyor checkout`, `conveyor config`, and `conveyor kit verify` on a
+machine where you start agent sessions. It holds no harness, model, effort, or
+execution setup: you choose the harness and model when you start an agent
+session, and the session claims its work order itself over MCP (DEC-96(2),
+DEC-97(1)). The file holds:
 
-- `harnesses`: how each agent CLI is launched. The argv (executed directly,
-  never through a shell), the MCP transport it supports, model and effort
-  flag mappings, and a probe command. Built-in starting points exist for
-  Codex, Claude, Grok, Cursor, and OpenCode.
-- `execution_settings`: harness, model, effort, and timeout per stage
-  (`spec`, `implementation`, `review`).
-- `review.seats`: the ordered review panel; one durable review order is
-  created per seat.
-- `setups`: named bundles of the above, switchable per run with
-  `conveyor run --setup <name>`.
 - `worktree_location`: where new task worktrees are created. Required on a
-  machine that runs `conveyor checkout`, `conveyor run`, or the worker:
+  machine that runs `conveyor checkout`:
   `mode: repository` places them at `<primary checkout>/<dir>` (`dir`
   defaults to `_worktrees`, which checkout adds to `.git/info/exclude`);
   `mode: machine` places them under `root` (default `~/.conveyor/worktrees`).
@@ -171,105 +192,22 @@ stage runs:
   contexts, also see them. Machine placement keeps every repository's
   worktrees in one place outside the project folders.
   Record it with `conveyor config set worktree_location <value>` (`repository`,
-  `repository:<dir>`, `machine`, or `machine:<root>`) or the
-  `conveyor config init-execution` step. The legacy `worktree_root: <path>`
-  still reads as `mode: machine`.
+  `repository:<dir>`, `machine`, or `machine:<root>`). The legacy
+  `worktree_root: <path>` still reads as `mode: machine`.
 
   Upgrading: earlier releases silently used `~/.conveyor/worktrees` when
-  neither key was set. Such a file is now unconfigured, so `conveyor run` and
-  the worker refuse to start and checkout creates nothing until you choose.
-  `conveyor config set worktree_location machine` keeps the old placement.
-  Existing worktrees are never moved.
+  neither key was set. Such a file is now unconfigured, so checkout creates
+  nothing until you choose. `conveyor config set worktree_location machine`
+  keeps the old placement. Existing worktrees are never moved.
 
-- `repos`: one entry per registered repository the machine works on, with
-  the registered `name`, the `url`, the absolute `checkout` path of a clone
-  whose remote matches, and `base`. Running from inside the repository also
-  permits discovery, but the explicit `checkout` mapping lets a worker find
-  the clone when it starts elsewhere. `worktree_location` does not provide
-  the primary clone.
+- `kit_permissions` and `verification_toolchains`: the operator's local
+  verification records that `conveyor kit verify` intersects with server
+  grants, described in the `conveyor-kit-verify` playbook.
 
-Setup contents never leave the machine. The server learns whether a
-serviceable harness is present, not what it is.
-
-### Example
-
-For a machine with Claude Code installed, `conveyor config init-execution`
-writes a file like this:
-
-```yaml
-execution_settings:
-  spec:
-    harness: claude
-    model: claude-opus-5
-    effort: high
-    timeout: 30m
-  implementation:
-    harness: claude
-    effort: high
-    timeout: 4h
-  review:
-    timeout: 1h
-
-harnesses:
-  - name: claude
-    mcp_transport: json_file
-    command:
-      [claude, -p, "{prompt}", --mcp-config, "{mcp_config}", --strict-mcp-config,
-       --allowedTools, "mcp__conveyor__*", --output-format, stream-json,
-       --verbose, --permission-mode, bypassPermissions, --add-dir, ..]
-    model_args: [--model, "{model}"]
-    effort_args:
-      high: [--effort, high]
-    probe_command: [claude, --version]
-
-review:
-  seats:
-    - {model: claude-opus-5, harness: claude}
-```
-
-Each stage names the harness that runs it, the model, and a wall-clock
-timeout. The harness entry is the launch recipe: the exact argv with
-placeholders for the prompt and the generated MCP config, and a probe command
-that Conveyor runs to verify the CLI is present before it claims anything.
-The probe only checks that the CLI launches; it does not prove account or
-model access. The review seats are the review panel: one independent review
-order per seat, in order, so a second seat with a different model gives a
-second opinion on every delivery.
-
-### Harness MCP transports
-
-The generated MCP config for a `json_file` harness holds no credential. It
-names one `conveyor` HTTP server whose header is the reference
-`Authorization: Bearer ${CONVEYOR_API_TOKEN}`, and the launcher supplies the
-scoped token only in the child's environment. Claude Code expands `${VAR}` in
-remote MCP headers loaded through `--mcp-config`
-([Claude Code MCP](https://code.claude.com/docs/en/mcp#environment-variable-expansion-in-mcp-json)).
-Before trusting the child, the launcher requires Claude's stream-json
-initialization event to report that the `conveyor` server is `connected`
-with the stage's lifecycle tools, within the harness `probe_timeout`. A
-missing or failed receipt stops the child and releases the claim; it never
-falls back to a literal token or another configuration source.
-
-| Harness definition | `json_file` support |
-| --- | --- |
-| Built-in `claude` template, the example above, and the harness in `conveyor.example.yaml` | Supported |
-| A renamed definition whose command runs `claude` with `-p`, one `--mcp-config "{mcp_config}"`, `--output-format stream-json`, and `--verbose` | Supported; `--strict-mcp-config` is added at launch when missing |
-| Any definition that omits `mcp_transport` | Treated as `json_file` and checked the same way |
-| A wrapper script or another agent CLI on `json_file`, including Codex, Grok, Cursor, or OpenCode | Refused before claiming, naming the harness |
-| Built-in Codex (`toml_override`), Grok, Cursor, and OpenCode (`environment`) | Not `json_file`; unchanged |
-
-A refused harness is recreated from the built-in `claude` template with
-`conveyor config init-execution`, or its stage moves to the Codex
-`toml_override` setup or a Grok, Cursor, or OpenCode environment setup. A
-token never belongs in a harness definition or in the harness's own
-configuration. The environment transports are described on the
-[Cursor](cursor-build.md), [Grok](grok-build.md), and
-[OpenCode](opencode-build.md) pages.
-
-The file is resolved in this order: explicit `--config`, `CONVEYOR_CONFIG`,
-an existing `./conveyor.yaml`, then the per-user default at
-`<user-config-dir>/conveyor/conveyor.yaml`. `conveyor config list` prints
-the resolved path and which rule selected it.
+A file that an earlier release wrote may still carry `harnesses`,
+`execution_settings`, `execution`, `review`, `routing`, `setups`,
+`default_setup`, or `planning_models`. The CLI ignores those keys, never
+validates them, and logs one line naming them without their values.
 
 ## Credentials file
 
@@ -278,7 +216,7 @@ the resolved path and which rule selected it.
 server: the personal access token and the default workspace. Plaintext by
 design (the same trust model as `gh` and kubeconfig), file mode 0600,
 directory 0700. Environment variables override it, which is the intended
-mechanism for CI, workers, and MCP clients.
+mechanism for CI and MCP clients.
 
 ## Files on a machine
 
@@ -286,14 +224,13 @@ mechanism for CI, workers, and MCP clients.
 |---|---|
 | Binaries | `~/.local/bin` (or `CONVEYOR_INSTALL_DIR`) |
 | CLI credentials and per-server defaults | `<user-config-dir>/conveyor/credentials.json` |
-| Default per-user execution config | `<user-config-dir>/conveyor/conveyor.yaml` |
-| Worker enrollment credentials | `<user-config-dir>/conveyor/workers/<workspace>.json` |
+| Default per-user local configuration | `<user-config-dir>/conveyor/conveyor.yaml` |
 | Task worktrees | The `worktree_location`: `<primary checkout>/_worktrees` (repository) or `~/.conveyor/worktrees` (machine); no default |
 
 `<user-config-dir>` is `~/Library/Application Support` on macOS and
 `~/.config` on Linux. Credential files are created with mode 0600 in 0700
 directories. The setup playbook places the server's `.env` and deployment
-`conveyor.yaml` in `~/.conveyor/server` and the local execution config in
+`conveyor.yaml` in `~/.conveyor/server` and the local configuration in
 `~/.conveyor/client/conveyor.yaml`, selected with `CONVEYOR_CONFIG`.
 
 ## Environment variables
@@ -325,9 +262,8 @@ Client (read by `conveyor`):
 | `CONVEYOR_ADDR` | Server URL (default `http://localhost:8080`). |
 | `CONVEYOR_API_TOKEN` | Bearer token for the environment server (normalized `CONVEYOR_ADDR`, else `http://localhost:8080`); ignored for any other resolved server, which uses its stored credential. |
 | `CONVEYOR_WORKSPACE` | Workspace id; overrides the stored default. |
-| `CONVEYOR_CONFIG` | Local execution config path. |
-| `CONVEYOR_WORKTREE_ROOT` | Overrides the worktree container for `checkout`; run and the worker set it for their children to the resolved container. |
-| `CONVEYOR_WORKER_TOKEN` | Pre-supplied worker enrollment credential (bypasses the saved file). |
+| `CONVEYOR_CONFIG` | Local configuration file path. |
+| `CONVEYOR_WORK_ORDER_ID`, `CONVEYOR_SESSION_ID` | The claimed order and the claim's session ID, which a self-claimed agent session sets on `conveyor submit`. |
 | `CONVEYOR_ENV_FILE` | Dotenv path (default `./.env`). |
 
 Both binaries load the dotenv file first, and real environment values always
@@ -349,11 +285,10 @@ ten-second termination window, so set `-shutdown-timeout` or
 `CONVEYOR_SHUTDOWN_TIMEOUT` below ten seconds, such as `8s`. An explicit flag
 takes precedence over the environment value.
 
-Dispatched agent sessions additionally receive their assignment in the
-environment (`CONVEYOR_TASK_ID`, `CONVEYOR_TASK_BRANCH`,
-`CONVEYOR_TASK_BASE_BRANCH`, `CONVEYOR_TASK_REPO`, `CONVEYOR_TASK_REPO_URL`,
-`CONVEYOR_WORK_ORDER_ID`, `CONVEYOR_SESSION_ID`, and attempt identifiers).
-These are set by the launcher; you never set them yourself.
+`conveyor checkout` and `conveyor submit` read the task's repository, base,
+and branch from the task with your credential. Checkout ignores every
+`CONVEYOR_TASK_*`, `CONVEYOR_WRITER_*`, `CONVEYOR_PREVIOUS_ATTEMPT_*`, and
+`CONVEYOR_WORKTREE_ROOT` variable that earlier launchers set.
 
 ## Container image
 
@@ -449,11 +384,33 @@ can be consumed once. Installation returns use separate single-use state. The
 normal session cookie stays Strict; a ten-minute cookie scoped to the app
 endpoints permits the GitHub return navigation. Operator status responses include
 an `installation_url` to resume installation or update access. The app requests
-metadata read access and contents, pull requests, issues, and commit statuses
-write access. The server stores only the private key, encrypted with AES-256
-under `CONVEYOR_GITHUB_APP_KEY_ENCRYPTION_KEY`, and app metadata. Installation tokens expire within one hour and remain in a process-local
+metadata and checks read access and contents, pull requests, issues, and commit
+statuses write access. The server stores the private key and the webhook
+secret, each encrypted with AES-256 under
+`CONVEYOR_GITHUB_APP_KEY_ENCRYPTION_KEY`, and app metadata. Installation tokens expire within one hour and remain in a process-local
 cache until five minutes before expiry. App replacement and disconnect invalidate
 the cache. No GitHub credential belongs in `conveyor.yaml`.
+
+### Webhook delivery
+
+GitHub tells Conveyor about pull requests, checks, commit statuses, pushes, and
+`conveyor:ready` labels through the app's signed webhook at
+`<public URL>/v1/github/webhook/<workspace>`. An app created from the manifest
+subscribes `pull_request`, `check_suite`, `check_run`, `status`, `push`, and
+`issues` and gets its webhook secret from GitHub, so it needs no setup. For an
+app connected before webhook delivery existed, generate a secret in Workspace
+settings (`POST /v1/workspaces/{id}/github-app/webhook-secret`, shown once) and
+enter it, the receiver URL, those six events, and checks read permission in the
+app's GitHub settings. Workspace settings show the receiver URL, the events,
+whether a secret is set, and when the last delivery was accepted; a workspace
+has webhook delivery from its first accepted delivery.
+
+A workspace without webhook delivery keeps a timed GitHub check, at most once a
+minute, only while one of its tasks waits on GitHub or its monitor is enabled.
+A workspace with webhook delivery makes no timed GitHub call; each daemon start
+still reads every task that waits on GitHub once and polls each enabled
+monitor once. Timed `conveyor:ready` issue intake runs only when `conveyord`
+is started with `-poll-github`.
 
 The dispatcher, work-order reads, and monitor resolve the workspace app without
 host credentials. Stored personal and workspace forge tokens are retired; the

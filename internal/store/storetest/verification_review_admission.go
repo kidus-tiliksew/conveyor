@@ -44,7 +44,7 @@ func runVerifyReviewRoundAdmission(t *testing.T, x Fixture) {
 	}
 	t.Run("CompletedWithoutContextRefused", func(t *testing.T) {
 		order := newAggregateOrder(t, x, core.StageVerify)
-		claimed, err := ClaimWorkOrder(ctx, st, order.ID, core.WorkOrderClaim{WorkerID: "worker", ClaimantID: "worker", SessionID: "unsealed", ClientToken: "unsealed", Lease: time.Minute, ExecutionTimeout: time.Hour})
+		claimed, err := ClaimWorkOrder(ctx, st, order.ID, core.WorkOrderClaim{ClaimantID: core.TaskRunClaimantID("worker"), SessionID: "unsealed", ClientToken: "unsealed", Lease: time.Minute, ExecutionTimeout: time.Hour})
 		requireOK(t, err)
 		claimed.State = core.WorkOrderCompleted
 		requireOK(t, UpdateWorkOrder(ctx, st, claimed, core.WorkOrderCmdSubmitVerification))
@@ -195,12 +195,12 @@ func resealAtHead(t *testing.T, x Fixture, v verificationFixture, head string) v
 	o := core.WorkOrder{ID: job.ID, JobID: job.ID, TaskID: task.ID, Stage: core.StageVerify, State: core.WorkOrderQueued, HeadSHA: head, ReviewScope: task.RefreshReviewScope, BaselineSHA: task.RefreshBaselineSHA, QueueEnteredAt: time.Now().UTC(), QueueDeadline: time.Now().UTC().Add(time.Hour), CreatedAt: time.Now().UTC()}
 	_, err = CreateStageWorkOrder(ctx, st, job, o)
 	requireOK(t, err)
-	claim := core.WorkOrderClaim{WorkerID: "worker", ClaimantID: "worker", SessionID: "reseal", ClientToken: "reseal-token", Lease: time.Hour, ExecutionTimeout: time.Hour}
+	claim := core.WorkOrderClaim{ClaimantID: core.TaskRunClaimantID("worker"), SessionID: "reseal", ClientToken: "reseal-token", Lease: time.Hour, ExecutionTimeout: time.Hour}
 	claim.Requirements = []core.ServedRequirementContext{{ID: "req-fixture", Version: 1, Statements: []core.RequirementStatement{{ID: "REQ-1", Statement: "Observe the state", AcceptanceCriteria: []core.AcceptanceCriterion{{ID: "AC-1.1", Statement: "Retain the observation"}}}}}}
 	o, err = ClaimWorkOrder(ctx, st, o.ID, claim)
 	requireOK(t, err)
 	next := v
-	next.access = store.VerificationAccess{TaskID: o.TaskID, WorkOrderID: o.ID, WorkOrderAttemptID: o.AttemptID, ClientToken: claim.ClientToken, Claim: core.WorkOrderClaimIdentity{WorkerID: claim.WorkerID, ClaimantID: claim.ClaimantID, SessionID: claim.SessionID}}
+	next.access = store.VerificationAccess{TaskID: o.TaskID, WorkOrderID: o.ID, WorkOrderAttemptID: o.AttemptID, ClientToken: claim.ClientToken, Claim: core.WorkOrderClaimIdentity{ClaimantID: claim.ClaimantID, SessionID: claim.SessionID}}
 	next.revisions = []core.VerificationRevision{{Repository: v.revisions[0].Repository, RemoteIdentity: v.revisions[0].RemoteIdentity, SHA: head}}
 	next.contextID, next.runID = "", ""
 	r := next.apply(t, store.VerificationCommand{Kind: store.VerificationCreateContext, Key: "reseal", Context: &store.VerificationContext{ReviewScope: o.ReviewScope, BaselineSHA: o.BaselineSHA, Revisions: next.revisions, GoverningPins: next.pins, Discovery: []json.RawMessage{core.JSONPayload(map[string]any{"repository": next.revisions[0].Repository, "revision": head, "state": "no_manifest"})}}})

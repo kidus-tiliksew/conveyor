@@ -15,238 +15,6 @@ import (
 	"github.com/kidus-tiliksew/conveyor/internal/taskops"
 )
 
-// Worker persistence follows the PostgreSQL reference (DEC-38,
-// component-persistence). Pairings are consumed once under a row lock.
-const workerColumns = `id,workspace_id,COALESCE(owner_user_id,''),name,credential_hash,lease_expires_at,last_seen_at,revoked_at,probe_results,created_at`
-
-// activeWorkerOwner admits a worker only with a nonnull owner who is an active
-// user with a binding in the worker's workspace. SingleStore has no foreign
-// keys, so a dangling owner reference also fails the EXISTS (component-work-
-// orders, Workers: Admission).
-const activeWorkerOwner = `(owner_user_id IS NOT NULL AND EXISTS (SELECT 1 FROM users u JOIN workspace_role_bindings b ON b.user_id=u.id AND b.workspace_id=workers.workspace_id WHERE u.id=workers.owner_user_id AND u.status='active'))`
-
-func (s *Store) CreateWorkerPairing(ctx context.Context, pairing core.WorkerPairing) error {
-	ws, err := workspace(ctx)
-	if err != nil {
-		return err
-	}
-	return s.withTx(ctx, func(tx *sql.Tx) error {
-		if err := workerWorkspaceExists(ctx, tx, ws); err != nil {
-			return err
-		}
-		if pairing.OwnerUserID != "" {
-			if err := deploymentUserExists(ctx, tx, pairing.OwnerUserID); err != nil {
-				return err
-			}
-		}
-		if err := lockKey(ctx, tx, "worker-pairing:"+pairing.TokenHash); err != nil {
-			return err
-		}
-		var count int
-		if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM worker_pairings WHERE token_hash=?`, pairing.TokenHash).Scan(&count); err != nil {
-			return err
-		}
-		if count != 0 {
-			return fmt.Errorf("worker pairing already exists")
-		}
-		if _, err := tx.ExecContext(ctx, `INSERT INTO worker_pairings (token_hash,workspace_id,owner_user_id,expires_at,created_at) VALUES (?,?,?,?,?)`, pairing.TokenHash, ws, nullString(pairing.OwnerUserID), pairing.ExpiresAt, pairing.CreatedAt); err != nil {
-			return err
-		}
-		return insertWorkspaceEvent(ctx, tx, core.Event{Kind: "worker.pairing_issued", Payload: core.JSONPayload(map[string]any{"expires_at": pairing.ExpiresAt})})
-	})
-}
-func deploymentUserExists(ctx context.Context, tx *sql.Tx, id string) error {
-	var exists int
-	return notFound(tx.QueryRowContext(ctx, `SELECT 1 FROM users WHERE id=?`, id).Scan(&exists), "user %s", id)
-}
-func (s *Store) ConsumeWorkerPairing(ctx context.Context, tokenHash string, now time.Time) (core.WorkerPairing, error) {
-	var p core.WorkerPairing
-	err := s.withTx(ctx, func(tx *sql.Tx) error {
-		if err := lockKey(ctx, tx, "worker-pairing:"+tokenHash); err != nil {
-			return err
-		}
-		err := tx.QueryRowContext(ctx, `SELECT token_hash,workspace_id,COALESCE(owner_user_id,''),expires_at,created_at FROM worker_pairings WHERE token_hash=? AND consumed_at IS NULL AND expires_at>? FOR UPDATE`, tokenHash, now).Scan(&p.TokenHash, &p.Workspace, &p.OwnerUserID, &p.ExpiresAt, &p.CreatedAt)
-		if errors.Is(err, sql.ErrNoRows) {
-			return store.ErrPairingInvalid
-		}
-		if err != nil {
-			return err
-		}
-		_, err = tx.ExecContext(ctx, `UPDATE worker_pairings SET consumed_at=? WHERE workspace_id=? AND token_hash=?`, now, p.Workspace, tokenHash)
-		p.ConsumedAt = now.UTC().Truncate(time.Microsecond)
-		return err
-	})
-	if err != nil {
-		return core.WorkerPairing{}, err
-	}
-	return p, nil
-}
-func (s *Store) CreateWorker(ctx context.Context, worker core.Worker) error {
-	ws, err := workspace(ctx)
-	if err != nil {
-		return err
-	}
-	probes, err := json.Marshal(worker.Probes)
-	if err != nil {
-		return err
-	}
-	return s.withTx(ctx, func(tx *sql.Tx) error {
-		if err := workerWorkspaceExists(ctx, tx, ws); err != nil {
-			return err
-		}
-		if worker.OwnerUserID != "" {
-			if err := deploymentUserExists(ctx, tx, worker.OwnerUserID); err != nil {
-				return err
-			}
-		}
-		// The PostgreSQL credential and worker identifiers are deployment-unique.
-		// SingleStore's sharding key cannot enforce those two constraints.
-		for _, key := range []string{"worker-id:" + worker.ID, "worker-credential:" + worker.CredentialHash} {
-			if err := lockKey(ctx, tx, key); err != nil {
-				return err
-			}
-		}
-		var count int
-		if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM workers WHERE id=? OR credential_hash=?`, worker.ID, worker.CredentialHash).Scan(&count); err != nil {
-			return err
-		}
-		if count != 0 {
-			return fmt.Errorf("worker identifier or credential already exists")
-		}
-		if _, err := tx.ExecContext(ctx, `INSERT INTO workers (id,workspace_id,owner_user_id,name,credential_hash,lease_expires_at,last_seen_at,probe_results,created_at) VALUES (?,?,?,?,?,?,?,?,?)`, worker.ID, ws, nullString(worker.OwnerUserID), worker.Name, worker.CredentialHash, nullableTimeValue(worker.LeaseExpiresAt), nullableTimeValue(worker.LastSeenAt), probes, worker.CreatedAt); err != nil {
-			return err
-		}
-		return insertWorkspaceEvent(ctx, tx, core.Event{Kind: "worker.enrolled", ActorID: store.WorkerActorID(worker.ID), ActorRole: core.ActorWorker, Payload: core.JSONPayload(map[string]string{"worker_id": worker.ID, "name": worker.Name})})
-	})
-}
-func (s *Store) ListWorkers(ctx context.Context) ([]core.Worker, error) {
-	ws, err := workspace(ctx)
-	if err != nil {
-		return nil, err
-	}
-	rows, err := s.db.QueryContext(ctx, `SELECT `+workerColumns+` FROM workers WHERE workspace_id=? ORDER BY created_at,id`, ws)
-	if err != nil {
-		return nil, translateBackendConflict(err)
-	}
-	defer rows.Close()
-	var result []core.Worker
-	for rows.Next() {
-		w, err := scanWorker(rows)
-		if err != nil {
-			return nil, err
-		}
-		result = append(result, w)
-	}
-	return result, rows.Err()
-}
-func (s *Store) ListHarnessModelFailures(ctx context.Context) ([]core.HarnessModelFailure, error) {
-	return nil, nil
-}
-func (s *Store) AuthenticateWorker(ctx context.Context, credentialHash string) (core.Worker, error) {
-	ws, _ := store.WorkspaceFromContext(ctx)
-	query := `SELECT ` + workerColumns + ` FROM workers WHERE credential_hash=? AND revoked_at IS NULL AND ` + activeWorkerOwner
-	args := []any{credentialHash}
-	if ws != "" {
-		query += ` AND workspace_id=?`
-		args = append(args, ws)
-	}
-	w, err := scanWorker(s.db.QueryRowContext(ctx, query, args...))
-	if errors.Is(err, sql.ErrNoRows) {
-		return core.Worker{}, store.ErrWorkerUnauthorized
-	}
-	return w, translateBackendConflict(err)
-}
-func (s *Store) HeartbeatWorker(ctx context.Context, id string, leaseExpires time.Time, probes []core.HarnessProbe) (core.Worker, error) {
-	ws, err := workspace(ctx)
-	if err != nil {
-		return core.Worker{}, err
-	}
-	data, err := json.Marshal(probes)
-	if err != nil {
-		return core.Worker{}, err
-	}
-	var w core.Worker
-	err = s.withTx(ctx, func(tx *sql.Tx) error {
-		var err error
-		w, err = scanWorker(tx.QueryRowContext(ctx, `SELECT `+workerColumns+` FROM workers WHERE workspace_id=? AND id=? AND revoked_at IS NULL FOR UPDATE`, ws, id))
-		if errors.Is(err, sql.ErrNoRows) {
-			return store.ErrWorkerUnauthorized
-		}
-		if err != nil {
-			return err
-		}
-		if strings.TrimSpace(w.OwnerUserID) == "" {
-			return store.ErrWorkerUnauthorized
-		}
-		var active bool
-		if err = tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM users u JOIN workspace_role_bindings b ON b.user_id=u.id WHERE u.id=? AND u.status='active' AND b.workspace_id=?)`, w.OwnerUserID, ws).Scan(&active); err != nil {
-			return err
-		}
-		if !active {
-			return store.ErrWorkerUnauthorized
-		}
-		now := time.Now().UTC().Truncate(time.Microsecond)
-		if _, err = tx.ExecContext(ctx, `UPDATE workers SET lease_expires_at=?,last_seen_at=?,probe_results=? WHERE workspace_id=? AND id=?`, leaseExpires, now, data, ws, id); err != nil {
-			return err
-		}
-		w.LeaseExpiresAt = leaseExpires.UTC().Truncate(time.Microsecond)
-		w.LastSeenAt = now
-		w.Probes = probes
-		return nil
-	})
-	if err != nil {
-		return core.Worker{}, err
-	}
-	return w, nil
-}
-func (s *Store) RevokeWorker(ctx context.Context, id string) error {
-	ws, err := workspace(ctx)
-	if err != nil {
-		return err
-	}
-	if _, err := store.RequireActor(ctx); err != nil {
-		return err
-	}
-	return s.withTx(ctx, func(tx *sql.Tx) error {
-		var exists int
-		if err := tx.QueryRowContext(ctx, `SELECT 1 FROM workers WHERE workspace_id=? AND id=? FOR UPDATE`, ws, id).Scan(&exists); err != nil {
-			return notFound(err, "worker %s", id)
-		}
-		now := time.Now().UTC()
-		if _, err := tx.ExecContext(ctx, `UPDATE workers SET revoked_at=COALESCE(revoked_at,?),lease_expires_at=NULL WHERE workspace_id=? AND id=?`, now, ws, id); err != nil {
-			return err
-		}
-		actor, err := store.RequireActor(ctx)
-		if err != nil {
-			return err
-		}
-		return insertWorkspaceEvent(ctx, tx, core.Event{Kind: "worker.revoked", ActorID: actor.ID, ActorRole: actor.Role, Payload: core.JSONPayload(map[string]string{"worker_id": id}), At: now})
-	})
-}
-func scanWorker(row interface{ Scan(...any) error }) (core.Worker, error) {
-	var worker core.Worker
-	var lease, seen, revoked *time.Time
-	var probes []byte
-	err := row.Scan(&worker.ID, &worker.Workspace, &worker.OwnerUserID, &worker.Name, &worker.CredentialHash, &lease, &seen, &revoked, &probes, &worker.CreatedAt)
-	if err != nil {
-		return core.Worker{}, err
-	}
-	if lease != nil {
-		worker.LeaseExpiresAt = *lease
-	}
-	if seen != nil {
-		worker.LastSeenAt = *seen
-	}
-	if revoked != nil {
-		worker.RevokedAt = *revoked
-	}
-	if len(probes) > 0 {
-		if err = json.Unmarshal(probes, &worker.Probes); err != nil {
-			return core.Worker{}, err
-		}
-	}
-	return worker, nil
-}
 func nullableTimeValue(v time.Time) any {
 	if v.IsZero() {
 		return nil
@@ -254,17 +22,6 @@ func nullableTimeValue(v time.Time) any {
 	return v
 }
 
-func workerWorkspaceExists(ctx context.Context, tx *sql.Tx, ws string) error {
-	var exists int
-	return notFound(tx.QueryRowContext(ctx, `SELECT 1 FROM workspaces WHERE id=?`, ws).Scan(&exists), "workspace %s", ws)
-}
-
-func workerClaimActorContext(ctx context.Context, id string) context.Context {
-	if id == "" {
-		return ctx
-	}
-	return store.WithActor(ctx, store.Actor{ID: store.WorkerActorID(id), Role: core.ActorWorker})
-}
 func claimMatches(o core.WorkOrder, c core.WorkOrderClaimIdentity) bool {
 	return o.WorkerID == c.WorkerID && o.ClaimantID == c.ClaimantID && o.SessionID == c.SessionID
 }
@@ -300,7 +57,7 @@ func (s *Store) RenewWorkerClaimCommand(ctx context.Context, lease taskops.TaskL
 			if err != nil {
 				return err
 			}
-			return taskEvent(workerClaimActorContext(ctx, c.WorkerID), tx, core.Event{TaskID: o.TaskID, JobID: o.JobID, Kind: "work_order.lease_renewed", Payload: core.JSONPayload(map[string]any{"attempt_id": o.AttemptID, "lease_expires_at": result.LeaseExpiresAt})})
+			return taskEvent(ctx, tx, core.Event{TaskID: o.TaskID, JobID: o.JobID, Kind: "work_order.lease_renewed", Payload: core.JSONPayload(map[string]any{"attempt_id": o.AttemptID, "lease_expires_at": result.LeaseExpiresAt})})
 		}
 		if o.State == core.WorkOrderCancelled {
 			match, err := cancelledSessionMatches(ctx, tx, documentWorkspace(ctx), o.TaskID, o.JobID, c.SessionID)
@@ -344,40 +101,6 @@ func (s *Store) RenewWorkerClaimCommand(ctx context.Context, lease taskops.TaskL
 	})
 	return result, err
 }
-func (s *Store) RecordWorkOrderContinuation(ctx context.Context, id string, c core.WorkOrderClaimIdentity, v core.WorkOrderContinuation) (core.WorkOrder, error) {
-	var result core.WorkOrder
-	err := s.orderTx(ctx, id, func(tx *sql.Tx, o core.WorkOrder) error {
-		if o.Stage != core.StageImplement || !claimAlive(o, c, time.Now().UTC()) {
-			return store.ErrWorkOrderClaimLost
-		}
-		if v.AttemptID != o.AttemptID {
-			return fmt.Errorf("continuation attempt does not match the active work-order attempt")
-		}
-		h := o.Agent
-		if h == "" {
-			h = o.RequiredHarness
-		}
-		if h != "" && v.Harness != h {
-			return fmt.Errorf("continuation harness %q does not match active harness %q", v.Harness, h)
-		}
-		o.ContinuationSessionID = v.SessionID
-		o.ContinuationAttemptID = v.AttemptID
-		o.ContinuationHarness = v.Harness
-		o.ContinuationLaunchEnvironment = v.LaunchEnvironment
-		o.UpdatedAt = time.Now().UTC()
-		if err := orderWrite(ctx, tx, o); err != nil {
-			return err
-		}
-		if err := taskEvent(ctx, tx, core.Event{TaskID: o.TaskID, JobID: o.JobID, Kind: "work_order.continuation_reported", At: o.UpdatedAt, Payload: core.JSONPayload(map[string]any{"work_order_id": o.ID, "attempt_id": v.AttemptID, "harness": v.Harness, "launch_environment": v.LaunchEnvironment})}); err != nil {
-			return err
-		}
-		var err error
-		result, err = getOrderRow(ctx, tx, id)
-		return err
-	})
-	return result, err
-}
-
 func (s *Store) ReleaseWorkerClaimCommand(ctx context.Context, taskLease taskops.TaskLease, id string, claim core.WorkOrderClaimIdentity, release core.WorkOrderRelease) (core.WorkOrder, error) {
 	var result core.WorkOrder
 	var lifecycleErr error
@@ -534,7 +257,7 @@ func (s *Store) ReleaseWorkerClaimCommand(ctx context.Context, taskLease taskops
 		if release.Checkpoint != nil {
 			payload["checkpoint"] = release.Checkpoint
 		}
-		if err = taskEvent(workerClaimActorContext(ctx, claim.WorkerID), tx, core.Event{TaskID: order.TaskID, JobID: order.JobID, Kind: kind, At: now, Payload: core.JSONPayload(payload)}); err != nil {
+		if err = taskEvent(ctx, tx, core.Event{TaskID: order.TaskID, JobID: order.JobID, Kind: kind, At: now, Payload: core.JSONPayload(payload)}); err != nil {
 			return err
 		}
 		result, err = getOrderRow(ctx, tx, id)
@@ -562,4 +285,10 @@ func workerRetryDelay(release core.WorkOrderRelease, retry int) time.Duration {
 		}
 	}
 	return delay
+}
+
+// workspaceRowExists reports a missing workspace row as not found.
+func workspaceRowExists(ctx context.Context, tx *sql.Tx, ws string) error {
+	var exists int
+	return notFound(tx.QueryRowContext(ctx, `SELECT 1 FROM workspaces WHERE id=?`, ws).Scan(&exists), "workspace %s", ws)
 }

@@ -14,7 +14,6 @@ PLUGIN = ROOT / "plugins" / "conveyor"
 MARKETPLACE = ROOT / ".agents" / "plugins" / "marketplace.json"
 SKILL = PLUGIN / "skills" / "conveyor-operator" / "SKILL.md"
 SKILL_METADATA = PLUGIN / "skills" / "conveyor-operator" / "agents" / "openai.yaml"
-WORKER_COMMAND = ROOT / "cmd" / "conveyor" / "worker_cmd.go"
 
 
 def load_json(path: Path) -> object:
@@ -123,19 +122,6 @@ def main() -> int:
             "before resolving the checkout, inspecting\n   files, or starting implementation",
             "continue\n   automatically without asking for confirmation, waiting for a user response,\n   or pausing",
             "Resolve the dedicated checkout",
-        ),
-    )
-
-    worker_source = WORKER_COMMAND.read_text(encoding="utf-8")
-    require_ordered(
-        worker_source,
-        "Auto-mode worker launch prompt",
-        (
-            "First call get_work_order",
-            "Immediately after get_work_order returns",
-            "plain-language summary of what the work order is about and what you will do next",
-            "before running checkout, inspecting files, or starting implementation",
-            "continue automatically without asking for confirmation, waiting for a user response, or pausing",
         ),
     )
 

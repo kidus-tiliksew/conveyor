@@ -2,15 +2,19 @@ package dispatch
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"log"
 	"sort"
 	"sync"
 	"sync/atomic"
 	"time"
 
+	"github.com/kidus-tiliksew/conveyor/internal/changes"
 	"github.com/kidus-tiliksew/conveyor/internal/config"
 	"github.com/kidus-tiliksew/conveyor/internal/core"
 	"github.com/kidus-tiliksew/conveyor/internal/queue"
+	"github.com/kidus-tiliksew/conveyor/internal/queue/logqueue"
 	"github.com/kidus-tiliksew/conveyor/internal/store"
 	"github.com/kidus-tiliksew/conveyor/internal/taskops"
 )
@@ -99,6 +103,11 @@ type orderClockWorker struct {
 	dispatcher *Dispatcher
 }
 
+// Work is the order clock handler the deadline alarm runs at each fire. It
+// runs six passes for the workspace and logs each error and each non-zero
+// count without skipping the later passes; every pass keeps its per-task lock
+// and its idempotent request IDs (component-durable-queue, The deadline
+// alarm; req-quiet-idle-runtime AC-2.4).
 func (w *orderClockWorker) Work(ctx context.Context, job queue.Job) error {
 	args, err := queue.DecodeArgs[queue.OrderClockArgs](job)
 	if err != nil {
@@ -106,8 +115,88 @@ func (w *orderClockWorker) Work(ctx context.Context, job queue.Job) error {
 	}
 	ctx = store.WithActor(ctx, store.SystemActor(fmt.Sprintf("queue:%s", job.ID)))
 	ctx = store.WithWorkspace(ctx, args.WorkspaceID)
-	_, err = taskops.New(w.dispatcher.Store).TickOrderClock(ctx, time.Now().UTC())
-	return err
+	st := w.dispatcher.Store
+	var errs []error
+	now := time.Now().UTC()
+	if _, err = taskops.New(st).TickOrderClock(ctx, now); err != nil {
+		errs = append(errs, fmt.Errorf("order clock: %w", err))
+	}
+	// Bounded automatic recovery AR-5 (feature-bounded-automatic-recovery).
+	if reenqueued, reenqueueErr := store.ReconcileFailedPublications(ctx, st, now); reenqueueErr != nil {
+		log.Printf("automatic publication recovery in workspace %s: %v", args.WorkspaceID, reenqueueErr)
+		errs = append(errs, fmt.Errorf("automatic publication recovery: %w", reenqueueErr))
+	} else if reenqueued != 0 {
+		log.Printf("automatically re-enqueued %d failed publication(s) in workspace %s", reenqueued, args.WorkspaceID)
+	}
+	if recover := w.dispatcher.AutomaticReviewRecovery; recover != nil {
+		if reviewActs, reviewErr := recover(ctx, now); reviewErr != nil {
+			log.Printf("automatic review recovery in workspace %s: %v", args.WorkspaceID, reviewErr)
+			errs = append(errs, fmt.Errorf("automatic review recovery: %w", reviewErr))
+		} else if reviewActs != 0 {
+			log.Printf("automatically recovered %d review round(s) in workspace %s", reviewActs, args.WorkspaceID)
+		}
+	}
+	// A failed verification delivery whose next_attempt_at passed is enqueued
+	// again (component-verification-publication).
+	if deliveries, ok := st.(store.VerificationDeliveryStore); ok {
+		deliveryCtx := store.WithActor(ctx, store.SystemActor("verification-publication"))
+		if deliveryErr := deliveries.ReconcileVerificationDeliveries(deliveryCtx); deliveryErr != nil {
+			log.Printf("verification delivery recovery in workspace %s: %v", args.WorkspaceID, deliveryErr)
+			errs = append(errs, fmt.Errorf("verification delivery recovery: %w", deliveryErr))
+		}
+	}
+	if err := reconcileVerificationHousekeeping(ctx, st, args.WorkspaceID); err != nil {
+		errs = append(errs, err)
+	}
+	return errors.Join(errs...)
+}
+
+// reconcileVerificationHousekeeping runs the order clock handler's verification
+// passes, which the removed minute reconcile tick ran: claim-loss
+// reconciliation, then expiry of at most VerificationChunkExpiryLimit staging
+// upload chunks under VerificationChunkExpiryBudget. A claim error does not
+// skip expiry. A full page publishes a deadline notice, so the next fire
+// drains the next page (component-durable-queue, The deadline alarm;
+// component-verification-evidence).
+func reconcileVerificationHousekeeping(ctx context.Context, st store.Store, workspace string) error {
+	verification, ok := st.(store.VerificationStore)
+	if !ok {
+		return nil
+	}
+	ctx = store.WithActor(ctx, store.SystemActor("verification-reconciler"))
+	var errs []error
+	if reconciled, err := verification.ReconcileVerificationClaims(ctx); err != nil {
+		log.Printf("reconcile verification claims in workspace %s: %v", workspace, err)
+		errs = append(errs, fmt.Errorf("verification claim reconciliation: %w", err))
+	} else if reconciled != 0 {
+		log.Printf("reconciled %d lost verification claim(s) in workspace %s", reconciled, workspace)
+	}
+	expiryCtx, cancel := context.WithTimeout(ctx, store.VerificationChunkExpiryBudget)
+	defer cancel()
+	expired, err := verification.ExpireVerificationChunks(expiryCtx, store.VerificationChunkExpiryLimit)
+	if err != nil {
+		log.Printf("expire verification upload chunks in workspace %s: %v", workspace, err)
+		errs = append(errs, fmt.Errorf("verification chunk expiry: %w", err))
+	}
+	if expired != 0 {
+		log.Printf("expired %d verification upload chunk(s) in workspace %s", expired, workspace)
+	}
+	if expired >= store.VerificationChunkExpiryLimit {
+		if notifier, ok := st.(interface{ Changes() *changes.Hub }); ok {
+			notifier.Changes().Publish(changes.Notice{Workspace: workspace, Kind: changes.Deadline, At: time.Now().UTC()})
+		}
+	}
+	return errors.Join(errs...)
+}
+
+// StoreDeadlines binds the store's NextDeadline to each workspace as the
+// deadline alarm's source, under the system actor deadline-alarm
+// (component-runtime, Daemon startup order).
+func StoreDeadlines(st store.DeadlineReader) logqueue.DeadlineSource {
+	return func(ctx context.Context, workspace string, after time.Time) (time.Time, bool, error) {
+		ctx = store.WithWorkspace(store.WithActor(ctx, store.SystemActor("deadline-alarm")), workspace)
+		return st.NextDeadline(ctx, after)
+	}
 }
 
 type reviewPublicationWorker struct {
@@ -123,7 +212,7 @@ type githubIssuePublicationWorker struct {
 func (d *Dispatcher) Registrations(shutdown *ShutdownMarker) []queue.Registration {
 	publications := &verificationPublicationWorker{dispatcher: d}
 	return []queue.Registration{
-		{Kind: queue.VerificationPublicationArgs{}.Kind(), Handle: publications.Work, Reconcile: publications.Reconcile},
+		{Kind: queue.VerificationPublicationArgs{}.Kind(), Handle: publications.Work},
 		{Kind: "verification_publication", Handle: publications.Legacy},
 		{
 			Kind:   queue.DispatchTaskArgs{}.Kind(),

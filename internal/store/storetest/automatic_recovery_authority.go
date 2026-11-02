@@ -148,7 +148,7 @@ func (f authorityFixture) release(t *testing.T, orderID string, checkpoint *core
 	st, ctx := f.x.Backend, f.x.Context
 	session := "session-" + core.NewTaskID()
 	const worker = "worker-authority"
-	_, err := ClaimWorkOrder(ctx, st, orderID, core.WorkOrderClaim{WorkerID: worker, ClaimantID: worker, SessionID: session, ClientToken: session + "-token", Lease: time.Hour, ExecutionTimeout: time.Hour})
+	_, err := ClaimWorkOrder(ctx, st, orderID, core.WorkOrderClaim{ClaimantID: worker, SessionID: session, ClientToken: session + "-token", Lease: time.Hour, ExecutionTimeout: time.Hour})
 	requireOK(t, err)
 	released, err := ReleaseWorkerClaim(ctx, st, orderID, worker, core.WorkOrderRelease{SessionID: session, Reason: core.WorkOrderReleaseReasonOperatorCheckpointReached, Checkpoint: checkpoint, Cause: core.WorkOrderReleaseCauseOperatorAction, Outcome: core.WorkOrderOutcomeReleased})
 	requireOK(t, err)
@@ -233,7 +233,7 @@ func (f authorityFixture) answersAfterLastConfirmation(t *testing.T) {
 
 	// A mechanical recovery first leaves nonzero ledger values on the order.
 	session := "session-ledger-" + core.NewTaskID()
-	_, err := ClaimWorkOrder(ctx, st, orderID, core.WorkOrderClaim{WorkerID: "worker-ledger", ClaimantID: "worker-ledger", SessionID: session, ClientToken: session, Lease: time.Minute, ExecutionTimeout: time.Minute})
+	_, err := ClaimWorkOrder(ctx, st, orderID, core.WorkOrderClaim{ClaimantID: "worker-ledger", SessionID: session, ClientToken: session, Lease: time.Minute, ExecutionTimeout: time.Minute})
 	requireOK(t, err)
 	_, err = taskops.New(st).TickOrderClock(ctx, time.Now().UTC().Add(2*time.Minute))
 	requireOK(t, err)
@@ -511,7 +511,7 @@ func (f authorityFixture) staysReleased(t *testing.T) {
 		_, err := RecoverWorkOrderWithDirection(ctx, st, orderID, "operator-live", "operator direction", time.Hour)
 		requireOK(t, err)
 		session := "session-live-" + core.NewTaskID()
-		claimed, err := ClaimWorkOrder(ctx, st, orderID, core.WorkOrderClaim{WorkerID: "worker-live", ClaimantID: "worker-live", SessionID: session, ClientToken: session, Lease: time.Hour, ExecutionTimeout: time.Hour})
+		claimed, err := ClaimWorkOrder(ctx, st, orderID, core.WorkOrderClaim{ClaimantID: "worker-live", SessionID: session, ClientToken: session, Lease: time.Hour, ExecutionTimeout: time.Hour})
 		requireOK(t, err)
 		f.tick(t)
 		after, err := st.GetWorkOrder(ctx, orderID)

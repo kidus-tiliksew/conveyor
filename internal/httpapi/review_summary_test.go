@@ -7,8 +7,6 @@ package httpapi
 
 import (
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -344,13 +342,6 @@ func TestReviewSummarySurfaceAuthorization(t *testing.T) {
 	_, seatAgent := f.user("usr_seat", core.WorkspaceRoleExecutor)
 	taskID, seats := f.settledSummaryTask("summary-auth")
 	otherTask, otherSeats := f.settledSummaryTask("summary-auth-other")
-	childToken := "child-summary"
-	f.credentials[childToken] = core.AuthenticatedCredential{ID: "agt_child_summary", OwnerUserID: "usr_seat", Kind: core.CredentialAgent, Scope: core.CredentialScopeUser, RunWorkspaceID: governanceWorkspace, RunWorkOrderID: seats[1], RunSessionID: seats[1] + "-session"}
-	workerToken := "worker-summary-token"
-	sum := sha256.Sum256([]byte(workerToken))
-	if err := createOwnedWorker(f.store, f.ctx, core.Worker{ID: "worker-summary", Workspace: governanceWorkspace, OwnerUserID: "usr_seat", Name: "worker-summary", CredentialHash: hex.EncodeToString(sum[:]), CreatedAt: time.Now()}); err != nil {
-		t.Fatal(err)
-	}
 	seatArgs := func(order int, request string) map[string]any {
 		return summaryArgs(taskID, request, map[string]any{"work_order_id": seats[order], "session_id": seats[order] + "-session"})
 	}
@@ -360,10 +351,9 @@ func TestReviewSummarySurfaceAuthorization(t *testing.T) {
 		token string
 		args  map[string]any
 	}{
-		"user without an order":       {userToken, summaryArgs(taskID, "admit-user", nil)},
-		"completed seat agent":        {seatAgent, seatArgs(0, "admit-seat")},
-		"run child bound to its seat": {childToken, seatArgs(1, "admit-child")},
-		"submitted implementation":    {seatAgent, summaryArgs(taskID, "admit-implement", map[string]any{"work_order_id": "gov-order-summary-auth", "session_id": "gov-order-summary-auth-session"})},
+		"user without an order":    {userToken, summaryArgs(taskID, "admit-user", nil)},
+		"completed seat agent":     {seatAgent, seatArgs(0, "admit-seat")},
+		"submitted implementation": {seatAgent, summaryArgs(taskID, "admit-implement", map[string]any{"work_order_id": "gov-order-summary-auth", "session_id": "gov-order-summary-auth-session"})},
 	} {
 		if text, isErr := f.call(tc.token, "submit_review_summary", tc.args); isErr {
 			t.Fatalf("%s refused: %s", label, text)
@@ -389,8 +379,6 @@ func TestReviewSummarySurfaceAuthorization(t *testing.T) {
 		"agent with another session":     {seatAgent, summaryArgs(taskID, "other-session", map[string]any{"work_order_id": seats[0], "session_id": seats[1] + "-session"})},
 		"agent with another task's seat": {seatAgent, summaryArgs(taskID, "other-task", map[string]any{"work_order_id": otherSeats[0], "session_id": otherSeats[0] + "-session"})},
 		"agent naming a missing task":    {seatAgent, summaryArgs("gov-task-summary-absent", "agent-absent", map[string]any{"work_order_id": seats[0], "session_id": seats[0] + "-session"})},
-		"run child naming another seat":  {childToken, seatArgs(0, "child-other")},
-		"worker credential":              {workerToken, seatArgs(0, "worker")},
 	} {
 		text, isErr := f.call(tc.token, "submit_review_summary", tc.args)
 		if !isErr || text != uniform {

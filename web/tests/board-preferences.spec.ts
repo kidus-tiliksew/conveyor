@@ -89,8 +89,6 @@ async function mockAPI(page: Page, { stored }: { stored?: string } = {}) {
         headers: { 'X-Conveyor-Total': '1', 'X-Conveyor-Limit': '100', 'X-Conveyor-Offset': '0' },
       })
     }
-    if (path === '/v1/workers')
-      return route.fulfill({ json: { workers: [], worker_expected: false, worker_available: false } })
     return route.fulfill({ json: [] })
   })
   return writes

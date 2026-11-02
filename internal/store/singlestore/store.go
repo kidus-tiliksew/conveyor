@@ -12,15 +12,18 @@ import (
 	"time"
 
 	"github.com/go-sql-driver/mysql"
+	"github.com/kidus-tiliksew/conveyor/internal/changes"
 	"github.com/kidus-tiliksew/conveyor/internal/eventlog"
 	"github.com/kidus-tiliksew/conveyor/internal/eventlog/s2log"
+	"github.com/kidus-tiliksew/conveyor/internal/queue/logqueue"
 	"github.com/kidus-tiliksew/conveyor/internal/store"
 )
 
 type Store struct {
 	gitHubAppKeyEncryptionState
-	db  *sql.DB
-	log *s2log.Store
+	db      *sql.DB
+	log     eventlog.Store
+	changes *changes.Hub
 }
 
 var _ store.Backend = (*Store)(nil)
@@ -95,7 +98,8 @@ func Open(ctx context.Context, raw string) (*Store, error) {
 	db.SetMaxOpenConns(16)
 	db.SetMaxIdleConns(4)
 	db.SetConnMaxLifetime(5 * time.Minute)
-	st := &Store{db: db, log: s2log.New(db)}
+	hub := changes.NewHub()
+	st := &Store{db: db, log: logqueue.Notify(s2log.New(db), hub), changes: hub}
 	if err = db.PingContext(ctx); err == nil {
 		// SingleStore accepts SET time_zone but ignores it. Refuse a non-UTC
 		// server instead of interpreting local DATETIME defaults as UTC.
@@ -128,11 +132,22 @@ func (s *Store) withTx(ctx context.Context, fn func(*sql.Tx) error) error {
 	if err != nil {
 		return translateBackendConflict(err)
 	}
-	defer tx.Rollback()
+	s.beginNotices(tx)
+	committed := false
+	defer func() {
+		if !committed {
+			_ = tx.Rollback()
+		}
+		finishNotices(tx, committed)
+	}()
 	if err = fn(tx); err != nil {
 		return translateBackendConflict(err)
 	}
-	return translateBackendConflict(tx.Commit())
+	if err = tx.Commit(); err != nil {
+		return translateBackendConflict(err)
+	}
+	committed = true
+	return nil
 }
 func workspace(ctx context.Context) (string, error) {
 	id, ok := store.WorkspaceFromContext(ctx)

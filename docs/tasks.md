@@ -1,10 +1,5 @@
 # Tasks
 
-<a href="assets/screenshots/conveyor-run-auto.png">
-  <img src="assets/screenshots/conveyor-run-auto.png" width="100%" alt="Four conveyor run sessions working tasks in parallel, each showing stage progress, an approval gate, and live agent output">
-</a>
-<sub>Four tasks running in parallel with <code>conveyor run</code></sub>
-
 A task is the unit of intended change: one branch, one eventual pull
 request, one thread of judgment from intent to merge. This page follows a
 task through its whole life: creation, context, governance, execution,
@@ -22,7 +17,7 @@ Four words are used precisely throughout:
 Every creation route funnels into one intake path, so a task made from the
 dashboard, the CLI, an agent's `create_task` call, the monitor, or a
 staleness follow-up all behaves identically:
-context is validated, the workspace execution setup is frozen onto the task,
+context is validated, the workspace pipeline policy is frozen onto the task,
 gates are resolved, the title is generated, and triage is enqueued.
 
 The routes:
@@ -61,13 +56,14 @@ request is idempotent, and an already-present dependency returns success
 without another audit event. A late dependency pauses queued implementation
 orders in place and affects future claims, but never interrupts claimed work.
 
-A task carries no hold or other worker reservation (DEC-74): dependencies and
+A task carries no hold or other reservation (DEC-74): dependencies and
 assignment are the only narrowing of who may claim its work. Intake refuses a
 new `hold: true` with `task_hold_retired`, and `PUT /v1/tasks/{id}/hold`
 answers 410. Hold values and `task.hold.*` events recorded before the
 retirement stay readable as history and affect nothing. A request-changes
-bounce re-queues the implementation order like any other: the person who ran
-it can resume it with `conveyor run`, or an eligible worker can claim it.
+bounce re-queues the implementation order like any other: the agent session
+that implemented it claims the successor order, or any eligible member's
+session can claim it.
 
 An assignee narrows claim eligibility to one person: assigned tasks are
 claimable only by the assignee, unassigned tasks are first-come. Assignment
@@ -115,19 +111,21 @@ explicit state (`queued`, `claimed`, `submitted`, `completed`, `cancelled`,
   deadline, so a wedged agent cannot hold a task forever.
 
 Spec, implement, and verify stages get one order per dispatch. Review gets one order
-per configured review seat, so a two-seat setup means two independent
+per review seat in the frozen policy, so a two-seat policy means two independent
 reviews per round.
 
-Nothing is pushed to agents. You run a task with `conveyor run <task-id>`:
-it claims each stage on your machine, launches the agent from your local
-execution setup with its work-order identity and task assignment in the
-environment and the Conveyor MCP endpoint configured, shows you the output,
-and surfaces gates inline. Claimable stages chain by default; plan and merge
-gates still apply. Pass `--step` to confirm each stage before it is claimed.
-
-A durable worker (`conveyor worker run`) can do the same thing unattended,
-polling the queue and running eligible orders around the clock; see
-[Worker operations](worker-operations.md) if you want one.
+Nothing is pushed to agents, and Conveyor launches none (DEC-97). You start
+an agent session in your own harness, such as Claude Code, Codex, Cursor, or
+OpenCode, with the Conveyor MCP connection and skills installed, and ask it to
+work a task. Following the `conveyor-work` skill, the session claims the
+task's current order over MCP, resolves the task worktree with
+`conveyor checkout`, does the stage's work, and submits. After an
+implementation submission it starts an isolated verifier or reviewer agent for
+each verification or review order, awaits the verdict, claims any
+changes-requested successor, and offers each human gate to you in the
+conversation. You choose the harness and model when you start the session;
+Conveyor stores no execution setup (DEC-96). To keep several tasks moving, ask
+a session to coordinate them with the `conveyor-coordinate` skill.
 
 ## What a work order carries
 
@@ -186,20 +184,19 @@ Markdown plan with required headings (Approach, Files touched, Ordering,
 Risks, Done criteria). With the gate on, an operator approves or rejects the
 plan; approval also publishes a GitHub issue carrying the approved spec.
 
-An attached `conveyor run` surfaces task-authored requirement proposals alongside
-design proposals and offers inline confirmation to an operator. Review waits
-until those proposals are confirmed or dismissed. If a proposal blocks a
-review claim after the run read its state, the run refreshes and waits without
-holding a claim. A credential without confirmation capability sees who can act.
+Task-authored requirement and design proposals wait for an operator on the
+dashboard's pending proposals page, and the working session offers them to
+you in the conversation. Review waits until those proposals are confirmed or
+dismissed; a reviewer whose claim a proposal blocks is refused and claims
+again later. A credential without confirmation capability sees who can act.
 
 Implementation works the plan, validates through the repository's Make
 targets, walks the done criteria and acceptance criteria, commits, pushes the
 exact assigned branch, and calls `submit_for_review`. Conveyor then opens or
 reuses the pull request (as the executing user's GitHub identity) and
 dispatches the review round. Agents never open PRs themselves. A successful
-submit ends the implementation claim: a session launched by `conveyor run` or a
-worker exits, and a session that claimed its order itself continues the
-self-claimed delivery loop in the `conveyor-work` playbook.
+submit ends the implementation claim, and the session continues the delivery
+loop in the `conveyor-work` playbook.
 
 When the task's frozen `verify_stage` policy is on, a verify order sits
 between submission and review. A verifier claims it in a fresh session,
@@ -225,7 +222,7 @@ stays claimed for correction.
 An approved round moves the task to the merge gate (or straight to merge if
 the gate is off). At the gate, the operator's merge is a single act: Conveyor
 checks the pull request's readiness and merges it, whether the act comes
-from the dashboard inbox, `conveyor run`, or `conveyor task merge`. `changes_requested` bounces: the feedback is recorded, and
+from the dashboard inbox or `conveyor task merge`. `changes_requested` bounces: the feedback is recorded, and
 a new implementation order is created in a fresh session with that feedback
 delivered as context. The bounced order is never revived. Bounces are counted
 since the last human intervention, and hitting `max_bounces` (default 10)
@@ -384,14 +381,10 @@ attempt, outcome, failure category and bounded detail, retry counts, and
 pacing. Live activity from a running attempt is surfaced on the task
 timeline.
 
-Transcripts arrive on three channels: agents may self-report one through
-`upload_transcript` (redacted, size-capped, stored as an audit artifact);
-the parent launcher (`conveyor run` or the worker) delivers one bounded,
-redacted capture (newest 4 MiB) at every mediated attempt ending of every
-stage, bound to the attempt's persisted ending reason and independent of Git
-preservation (worker crashes, killed processes, interrupted runs, and
-unmediated lease expiry produce none); and
-in-process stages persist their full model transcript content-addressed.
+Transcripts arrive on two channels: agents may self-report one through
+`upload_transcript` (redacted, size-capped, stored as an audit artifact), and
+in-process stages persist their full model transcript content-addressed. The
+control plane captures no harness output of its own (DEC-98).
 Redaction counts are recorded alongside.
 
 Agents self-report cumulative token usage through `report_usage`. Usage is

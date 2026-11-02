@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/kidus-tiliksew/conveyor/internal/changes"
 	"github.com/kidus-tiliksew/conveyor/internal/config"
 	"github.com/kidus-tiliksew/conveyor/internal/core"
 	"github.com/kidus-tiliksew/conveyor/internal/store"
@@ -97,6 +98,7 @@ func (s *Store) BootstrapWorkspaceConfig(ctx context.Context, cfg *config.Config
 			}
 		}
 		seeded = true
+		raiseTx(tx, changes.Notice{Workspace: cfg.Workspace, Kind: changes.Workspace})
 		return nil
 	})
 	return seeded && err == nil, err
@@ -139,6 +141,7 @@ func (s *Store) CreateWorkspace(ctx context.Context, id, name string, cfg *confi
 			return err
 		}
 		w = core.Workspace{ID: id, Name: name, ConfigVersion: 1, CreatedAt: now}
+		raiseTx(tx, changes.Notice{Workspace: id, Kind: changes.Workspace})
 		return nil
 	})
 	return w, err
@@ -161,16 +164,13 @@ func (s *Store) WorkspaceConfig(ctx context.Context) (config.VersionedDocument, 
 	if err != nil {
 		return config.VersionedDocument{}, err
 	}
-	var doc config.WorkspaceDocument
-	dec := yaml.NewDecoder(strings.NewReader(data))
-	dec.KnownFields(true)
-	if err = dec.Decode(&doc); err != nil {
+	// Legacy harness, setup, and executor keys are dropped before strict
+	// decoding (component-runtime; component-persistence).
+	doc, err := config.DecodeStoredWorkspaceDocument([]byte(data))
+	if err != nil {
 		return config.VersionedDocument{}, err
 	}
 	config.StoredRepositoryDefaults(doc.Repos)
-	if doc.Harnesses == nil {
-		doc.Harnesses = []config.Harness{}
-	}
 	if doc.Repos == nil {
 		doc.Repos = []config.Repo{}
 	}
@@ -231,6 +231,9 @@ func (s *Store) UpdateWorkspaceConfig(ctx context.Context, expected int64, next 
 			return err
 		}
 		sections := configDiff(before, next.PolicyDocument())
+		// A configuration change, such as enabling the monitor, reaches the
+		// timed GitHub fallback (component-persistence, Change notices).
+		raiseTx(tx, changes.Notice{Workspace: ws, Kind: changes.Workspace})
 		eventID, err := appendWorkspaceEvent(ctx, tx, ws, "config.updated", map[string]any{"from_version": version, "to_version": version + 1, "sections": sections})
 		if err != nil {
 			return err
@@ -273,14 +276,8 @@ func configDiff(before, after config.WorkspaceDocument) []string {
 	if before.IssuePublication.Enabled != after.IssuePublication.Enabled || !before.IssuePublication.EnabledAt.Equal(after.IssuePublication.EnabledAt) {
 		sections = append(sections, "issue_publication")
 	}
-	if !reflect.DeepEqual(before.Harnesses, after.Harnesses) {
-		sections = append(sections, "harnesses")
-	}
 	if !reflect.DeepEqual(before.Review, after.Review) {
 		sections = append(sections, "review")
-	}
-	if !reflect.DeepEqual(before.Setups, after.Setups) || before.DefaultSetup != after.DefaultSetup {
-		sections = append(sections, "setups")
 	}
 	if !reflect.DeepEqual(before.Execution, after.Execution) {
 		sections = append(sections, "execution")

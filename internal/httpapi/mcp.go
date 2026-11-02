@@ -211,7 +211,6 @@ func (s *Server) callMCPTool(r *http.Request, name string, args map[string]any) 
 		}
 		return result
 	}
-	worker, workerAuth := workerFromContext(r.Context())
 	if credential, ok := store.CredentialFromContext(r.Context()); ok && credential.Kind == core.CredentialAgent {
 		// The agent ceiling is derived from the tool's capability, never from
 		// a tool-name list, so a new tool above contributor is refused without
@@ -229,20 +228,6 @@ func (s *Server) callMCPTool(r *http.Request, name string, args map[string]any) 
 	}
 	session := stringArg("session_id")
 	ctx := store.WithWorkspace(r.Context(), workspace)
-	// A conveyor-run child credential is narrower than the general agent class:
-	// it cannot escape the exact parent-claimed session that minted it
-	// (req-security-boundaries REQ-1/AC-1.1; component-mcp-protocol).
-	if credential, ok := store.CredentialFromContext(ctx); ok && credential.Kind == core.CredentialAgent && credential.RunWorkOrderID != "" {
-		if credential.RunWorkspaceID != workspace {
-			return nil, errWorkspaceNotVisible
-		}
-		if name == "claim_work_order" {
-			return nil, fmt.Errorf("claim_work_order is unavailable to a session-bound run child credential")
-		}
-		if workOrderID := stringArg("work_order_id"); workOrderID != "" && (workOrderID != credential.RunWorkOrderID || session != credential.RunSessionID) {
-			return nil, store.ErrWorkOrderClaimUnauthorized
-		}
-	}
 	if name == "submit_spec" {
 		return nil, fmt.Errorf("MCP tool submit_spec not found; use submit_plan")
 	}
@@ -250,7 +235,7 @@ func (s *Server) callMCPTool(r *http.Request, name string, args map[string]any) 
 	if !capabilityMapped {
 		return nil, fmt.Errorf("unknown tool %q", name)
 	}
-	if !workerAuth && s.Workspaces != nil {
+	if s.Workspaces != nil {
 		if s.Memberships == nil {
 			return nil, errWorkspaceNotVisible
 		}
@@ -268,9 +253,6 @@ func (s *Server) callMCPTool(r *http.Request, name string, args map[string]any) 
 	}
 	switch name {
 	case "create_task":
-		if workerAuth {
-			return nil, fmt.Errorf("worker credentials cannot create tasks")
-		}
 		if credential, ok := store.CredentialFromContext(ctx); ok && credential.Kind == core.CredentialAgent {
 			// boolArg and stringArg drop a mistyped value, which would let a
 			// null or string gate fall back to an off workspace default. An
@@ -325,22 +307,13 @@ func (s *Server) callMCPTool(r *http.Request, name string, args map[string]any) 
 		}
 		return map[string]any{"task": result.Task, "created": result.Created}, nil
 	case "add_task_dependency":
-		if workerAuth {
-			return nil, fmt.Errorf("worker credentials cannot add task dependencies")
-		}
 		return s.Store.AddTaskDependency(ctx, store.DependencyAdditionRequest{
 			TaskID: stringArg("task_id"), DependsOnTaskID: stringArg("depends_on_task_id"),
 			Reason: stringArg("reason"), RequestID: stringArg("request_id"),
 		})
 	case "set_assignee":
-		if workerAuth {
-			return nil, fmt.Errorf("worker credentials cannot assign tasks")
-		}
 		return taskops.New(s.Store).SetAssignee(ctx, stringArg("task_id"), stringArg("assignee_user_id"))
 	case "attach_task_branch":
-		if workerAuth {
-			return nil, fmt.Errorf("worker credentials cannot attach task branches")
-		}
 		task, err := s.Store.AttachTaskBranch(ctx, stringArg("task_id"), stringArg("branch"))
 		if err != nil {
 			return nil, taskBranchAttachMCPError(err)
@@ -351,87 +324,52 @@ func (s *Server) callMCPTool(r *http.Request, name string, args map[string]any) 
 		return nil, fmt.Errorf("work-order service unavailable")
 	}
 	usageSource, _ := args["source"].(string)
-	if claimantBoundMCPTools[name] && !(name == "report_usage" && usageSource == "worker_fallback") {
-		if _, err := s.authorizeClaimantSession(ctx, workerAuth, worker, stringArg("work_order_id"), session); err != nil {
+	if name == "report_usage" && usageSource == "worker_fallback" {
+		// Worker usage fallback reports are retired with workers; usage stored
+		// earlier with that provenance keeps it (req-usage-telemetry REQ-2;
+		// DEC-97(1)).
+		return nil, fmt.Errorf("worker_fallback usage reports are retired (DEC-97)")
+	}
+	if claimantBoundMCPTools[name] {
+		if _, err := s.authorizeClaimantSession(ctx, stringArg("work_order_id"), session); err != nil {
 			return nil, err
 		}
 	}
 	switch name {
 	case "list_work_orders":
-		if workerAuth {
-			orders, listErr := s.Workers.ListVisibleOrders(ctx, worker)
-			if listErr != nil {
-				return nil, listErr
-			}
-			return s.projectWorkOrderSessions(ctx, orders, true, worker)
-		}
 		orders, listErr := s.WorkOrders.List(ctx)
 		if listErr != nil {
 			return nil, listErr
 		}
 		orders = projectAssigneeClaimability(ctx, orders)
-		if credential, ok := store.CredentialFromContext(ctx); ok && credential.Kind == core.CredentialAgent && credential.RunWorkOrderID != "" {
-			filtered := orders[:0]
-			for _, order := range orders {
-				if order.ID == credential.RunWorkOrderID {
-					filtered = append(filtered, order)
-				}
-			}
-			orders = filtered
-		}
-		return s.projectWorkOrderSessions(ctx, orders, false, core.Worker{})
+		return s.projectWorkOrderSessions(ctx, orders)
 	case "claim_work_order":
 		claim := core.WorkOrderClaim{SessionID: session, ClientToken: stringArg("client_token"), Agent: stringArg("agent"), Model: stringArg("model"), Lease: leaseArg(args)}
 		if credential, ok := store.CredentialFromContext(ctx); ok {
 			claim.OwnerUserID = credential.OwnerUserID
-			if !workerAuth {
-				// REQ-2/AC-2.1: claimant identity is credential-derived. Keep
-				// accepting claimant_id in the wire schema for compatibility,
-				// but never use or persist the client assertion.
-				claim.ClaimantID = core.TaskRunClaimantID(credential.OwnerUserID)
-			}
-		}
-		if workerAuth {
-			return s.Workers.ClaimForWorker(ctx, worker, stringArg("work_order_id"), claim)
+			// REQ-2/AC-2.1: claimant identity is credential-derived. Keep
+			// accepting claimant_id in the wire schema for compatibility,
+			// but never use or persist the client assertion.
+			claim.ClaimantID = core.TaskRunClaimantID(credential.OwnerUserID)
 		}
 		return s.WorkOrders.Claim(ctx, stringArg("work_order_id"), claim)
 	case "redispatch_work_order":
-		if workerAuth {
-			return nil, fmt.Errorf("worker credentials cannot redispatch work orders")
-		}
 		return s.WorkOrders.Redispatch(ctx, stringArg("work_order_id"))
 	case "renew_work_order":
-		if workerAuth {
-			return s.Workers.Renew(ctx, worker, stringArg("work_order_id"), session)
-		}
+		// Only a user credential renews: its owner-derived run:<owner> claimant
+		// is the identity the claim recorded. An agent credential carries no
+		// run binding, so its renewal is refused as a lost claim
+		// (req-security-boundaries REQ-1; component-mcp-protocol, Renewal lease).
 		credential, ok := store.CredentialFromContext(ctx)
-		if !ok {
+		if !ok || credential.Kind != core.CredentialUser {
 			return nil, store.ErrWorkOrderClaimLost
 		}
-		var claim core.WorkOrderClaimIdentity
-		if credential.Kind == core.CredentialUser {
-			claim = core.WorkOrderClaimIdentity{ClaimantID: core.TaskRunClaimantID(credential.OwnerUserID), SessionID: session}
-		} else {
-			// A session-bound run child renews only the exact live non-worker
-			// claim its owner minted it for, through the same owner-derived
-			// run identity the claim lifecycle records
-			// (req-security-boundaries REQ-1/AC-1.1; req-260818-24dd3a).
-			order, err := s.Store.GetWorkOrder(ctx, stringArg("work_order_id"))
-			if err != nil {
-				return nil, store.ErrWorkOrderClaimLost
-			}
-			var authorized bool
-			claim, authorized = taskRunLifecycleClaim(ctx, credential, order, session)
-			if !authorized {
-				return nil, store.ErrWorkOrderClaimLost
-			}
-		}
-		// Non-worker renewal honors the session's chosen lease_seconds with the
-		// claim's bounds; worker renewal above keeps the default lease
-		// (req-agent-skills AC-2.2; req-delegated-execution AC-1.1).
-		return s.Workers.RenewClaimWithLease(ctx, claim, stringArg("work_order_id"), leaseArg(args))
+		claim := core.WorkOrderClaimIdentity{ClaimantID: core.TaskRunClaimantID(credential.OwnerUserID), SessionID: session}
+		// Renewal honors the session's chosen lease_seconds within the claim's
+		// bounds (req-agent-skills AC-2.2; req-delegated-execution AC-1.1).
+		return s.WorkOrders.RenewClaimWithLease(ctx, claim, stringArg("work_order_id"), leaseArg(args))
 	case "release_work_order":
-		claim, err := s.authorizeClaimMutation(ctx, workerAuth, worker, stringArg("work_order_id"), session)
+		claim, err := s.authorizeClaimMutation(ctx, stringArg("work_order_id"), session)
 		if err != nil {
 			return nil, err
 		}
@@ -439,46 +377,23 @@ func (s *Server) callMCPTool(r *http.Request, name string, args map[string]any) 
 		if err != nil {
 			return nil, err
 		}
-		return s.Workers.ReleaseClaim(ctx, claim, stringArg("work_order_id"), core.WorkOrderRelease{SessionID: session, Reason: stringArg("reason"), Checkpoint: checkpoint, Cause: core.WorkOrderReleaseCauseOperatorAction, Outcome: core.WorkOrderOutcomeReleased})
+		return s.WorkOrders.ReleaseClaim(ctx, claim, stringArg("work_order_id"), core.WorkOrderRelease{SessionID: session, Reason: stringArg("reason"), Checkpoint: checkpoint, Cause: core.WorkOrderReleaseCauseOperatorAction, Outcome: core.WorkOrderOutcomeReleased})
 	case "request_plan_revision":
-		claim, err := s.authorizeClaimMutation(ctx, workerAuth, worker, stringArg("work_order_id"), session)
+		claim, err := s.authorizeClaimMutation(ctx, stringArg("work_order_id"), session)
 		if err != nil {
 			return nil, err
 		}
-		return s.Workers.RequestPlanRevisionClaim(ctx, claim, stringArg("work_order_id"), stringArg("rationale"))
+		return s.WorkOrders.RequestPlanRevisionClaim(ctx, claim, stringArg("work_order_id"), stringArg("rationale"))
 	case "get_task_status":
-		return s.mcpTaskStatus(ctx, workerAuth, stringArg("task_id"), stringArg("work_order_id"), session)
+		return s.mcpTaskStatus(ctx, stringArg("task_id"), stringArg("work_order_id"), session)
 	case "get_work_order":
-		if workerAuth {
-			workOrderID := stringArg("work_order_id")
-			visible, listErr := s.Workers.ListVisibleOrders(ctx, worker)
-			if listErr != nil {
-				return nil, listErr
-			}
-			for _, order := range visible {
-				if order.ID != workOrderID {
-					continue
-				}
-				if order.WorkerID == worker.ID {
-					return s.WorkOrders.Get(ctx, workOrderID, session)
-				}
-				return s.WorkOrders.GetVisible(ctx, workOrderID)
-			}
-			return nil, store.ErrWorkOrderClaimLost
-		}
 		return s.WorkOrders.Get(ctx, stringArg("work_order_id"), session)
 	case "refresh_work_order_context":
-		if _, err := s.authorizeClaimMutation(ctx, workerAuth, worker, stringArg("work_order_id"), session); err != nil {
+		if _, err := s.authorizeClaimMutation(ctx, stringArg("work_order_id"), session); err != nil {
 			return nil, err
-		}
-		if workerAuth {
-			return s.Workers.RefreshContext(ctx, worker, stringArg("work_order_id"), session, stringArg("prior_revision"))
 		}
 		return s.WorkOrders.RefreshContext(ctx, stringArg("work_order_id"), session, stringArg("prior_revision"))
 	case "read_artifact":
-		if err := s.authorizeWorkerOrder(ctx, workerAuth, worker, stringArg("work_order_id")); err != nil {
-			return nil, err
-		}
 		return s.WorkOrders.ReadArtifact(ctx, stringArg("work_order_id"), session, stringArg("artifact_id"))
 	case "report_progress":
 		return s.WorkOrders.Progress(ctx, stringArg("work_order_id"), session, stringArg("message"))
@@ -501,37 +416,9 @@ func (s *Server) callMCPTool(r *http.Request, name string, args map[string]any) 
 			}
 			rateLimit = &status
 		}
-		if usageSource == "worker_fallback" {
-			if !workerAuth {
-				return nil, fmt.Errorf("worker_fallback usage requires a worker credential")
-			}
-			if rateLimit != nil {
-				return nil, fmt.Errorf("worker_fallback usage cannot include rate_limit")
-			}
-			if err := s.authorizeWorkerOrder(ctx, true, worker, stringArg("work_order_id")); err != nil {
-				return nil, err
-			}
-			return s.WorkOrders.UsageFromWorkerFallback(ctx, stringArg("work_order_id"), session, in, out)
-		}
 		return s.WorkOrders.UsageWithRateLimit(ctx, stringArg("work_order_id"), session, in, out, rateLimit)
-	case "report_continuation":
-		// Continuation metadata belongs to the launching client (the conveyor
-		// run parent or a worker), never to the agent session it launched. This
-		// is a launcher-origin rule, independent of the capability-derived agent
-		// ceiling (component-mcp-protocol).
-		if credential, ok := store.CredentialFromContext(ctx); ok && !workerAuth && credential.Kind == core.CredentialAgent {
-			return nil, fmt.Errorf("%s requires an operator-scoped user credential", name)
-		}
-		claim, err := s.authorizeClaimMutation(ctx, workerAuth, worker, stringArg("work_order_id"), session)
-		if err != nil {
-			return nil, err
-		}
-		return s.WorkOrders.ReportContinuation(ctx, stringArg("work_order_id"), claim, core.WorkOrderContinuation{
-			SessionID: stringArg("continuation_session_id"), AttemptID: stringArg("attempt_id"),
-			Harness: stringArg("harness"), LaunchEnvironment: stringArg("launch_environment"),
-		})
 	case "propose_system_design_revision":
-		order, err := s.implementationGovernanceOrder(ctx, workerAuth, worker, stringArg("work_order_id"), session)
+		order, err := s.implementationGovernanceOrder(ctx, stringArg("work_order_id"), session)
 		if err != nil {
 			return nil, err
 		}
@@ -548,7 +435,7 @@ func (s *Server) callMCPTool(r *http.Request, name string, args map[string]any) 
 		}
 		return systemDesignProposalResult{SystemDesignVersion: version, Guidance: guidance}, nil
 	case "propose_requirement_revision":
-		order, err := s.implementationGovernanceOrder(ctx, workerAuth, worker, stringArg("work_order_id"), session)
+		order, err := s.implementationGovernanceOrder(ctx, stringArg("work_order_id"), session)
 		if err != nil {
 			return nil, err
 		}
@@ -569,7 +456,7 @@ func (s *Server) callMCPTool(r *http.Request, name string, args map[string]any) 
 		}
 		return requirementProposalResult{RequirementVersion: version, Guidance: guidance}, nil
 	case "propose_decision":
-		order, err := s.implementationGovernanceOrder(ctx, workerAuth, worker, stringArg("work_order_id"), session)
+		order, err := s.implementationGovernanceOrder(ctx, stringArg("work_order_id"), session)
 		if err != nil {
 			return nil, err
 		}
@@ -729,7 +616,6 @@ var mcpCapabilities = map[string]core.Capability{
 	"refresh_work_order_context":     core.CapabilityClaimWork,
 	"report_progress":                core.CapabilityClaimWork,
 	"report_usage":                   core.CapabilityClaimWork,
-	"report_continuation":            core.CapabilityClaimWork,
 	"propose_system_design_revision": core.CapabilityClaimWork,
 	"propose_requirement_revision":   core.CapabilityClaimWork,
 	"propose_decision":               core.CapabilityClaimWork,
@@ -755,32 +641,14 @@ var claimantBoundMCPTools = map[string]bool{
 	"submit_review_verdict":      true,
 }
 
-// authorizeWorkerOrder scopes worker-credentialed MCP calls to orders the
-// worker currently holds. A mismatch is a lost or reassigned claim — e.g.
-// the lease expired and ownership returned to the queue (component-mcp-protocol) — not a
-// credential failure, which requireMCPAuth already rejected.
-func (s *Server) authorizeWorkerOrder(ctx context.Context, workerAuth bool, worker core.Worker, workOrderID string) error {
-	if !workerAuth {
-		return nil
-	}
-	order, err := s.Store.GetWorkOrder(ctx, workOrderID)
-	if err != nil || order.WorkerID != worker.ID {
-		return store.ErrWorkOrderClaimLost
-	}
-	return nil
-}
-
 // mcpTaskStatus returns the next action GET /v1/tasks/{id}/next-action
 // returns (req-operator-next-action AC-5.3, AC-1.7; DEC-61). A user reads any
-// task in the workspace. An agent or run-child credential reads only the task
+// task in the workspace. An agent credential reads only the task
 // of an order its session claimed or submitted, through get_work_order's
 // observation check without its lease renewal. Every agent refusal is the
 // same error, so it never discloses whether a task exists (DEC-19;
 // feature-operator-next-action NA-8).
-func (s *Server) mcpTaskStatus(ctx context.Context, workerAuth bool, taskID, workOrderID, sessionID string) (nextaction.NextAction, error) {
-	if workerAuth {
-		return nextaction.NextAction{}, fmt.Errorf("get_task_status requires a user or agent credential")
-	}
+func (s *Server) mcpTaskStatus(ctx context.Context, taskID, workOrderID, sessionID string) (nextaction.NextAction, error) {
 	credential, ok := store.CredentialFromContext(ctx)
 	if !ok {
 		return nextaction.NextAction{}, errWorkspaceNotVisible
@@ -805,22 +673,10 @@ func (s *Server) mcpTaskStatus(ctx context.Context, workerAuth bool, taskID, wor
 	return store.ReadNextAction(ctx, s.Store, task.ID, opts)
 }
 
-func (s *Server) authorizeUserRunMCPOrder(ctx context.Context, workOrderID, sessionID string) error {
-	credential, ok := store.CredentialFromContext(ctx)
-	if !ok || credential.Kind != core.CredentialUser {
-		return store.ErrWorkOrderClaimLost
-	}
-	order, err := s.Store.GetWorkOrder(ctx, workOrderID)
-	if err != nil || order.WorkerID != "" || order.ClaimantID != core.TaskRunClaimantID(credential.OwnerUserID) || order.SessionID != sessionID {
-		return store.ErrWorkOrderClaimLost
-	}
-	return nil
-}
-
 // authorizeClaimantSession binds a presented session ID to its authenticated
 // claimant without imposing a lifecycle state. The called work-order operation
 // remains responsible for its existing state, lease, and deadline checks.
-func (s *Server) authorizeClaimantSession(ctx context.Context, workerAuth bool, worker core.Worker, workOrderID, sessionID string) (core.WorkOrderClaimIdentity, error) {
+func (s *Server) authorizeClaimantSession(ctx context.Context, workOrderID, sessionID string) (core.WorkOrderClaimIdentity, error) {
 	order, err := s.Store.GetWorkOrder(ctx, workOrderID)
 	if err != nil || order.SessionID == "" || order.SessionID != sessionID {
 		orders, listErr := s.Store.ListWorkOrders(ctx)
@@ -834,48 +690,27 @@ func (s *Server) authorizeClaimantSession(ctx context.Context, workerAuth bool, 
 		}
 		return core.WorkOrderClaimIdentity{}, store.ErrWorkOrderClaimLost
 	}
-	if workerAuth {
-		if order.WorkerID == "" || order.WorkerID != worker.ID {
-			return core.WorkOrderClaimIdentity{}, store.ErrWorkOrderClaimLost
-		}
-		return claimIdentity(order), nil
-	}
 	credential, ok := store.CredentialFromContext(ctx)
 	if !ok {
 		return core.WorkOrderClaimIdentity{}, store.ErrWorkOrderClaimUnauthorized
 	}
-	if credential.Kind == core.CredentialAgent && credential.RunWorkOrderID != "" &&
-		(credential.RunWorkOrderID != workOrderID || credential.RunSessionID != sessionID) {
-		return core.WorkOrderClaimIdentity{}, store.ErrWorkOrderClaimUnauthorized
+	// An order claimed by a worker before DEC-97 keeps its historical
+	// worker_id and matches no current credential (component-mcp-protocol,
+	// Claim-bound authorization).
+	if order.WorkerID != "" {
+		return core.WorkOrderClaimIdentity{}, store.ErrWorkOrderClaimLost
 	}
-	if order.WorkerID == "" {
-		if (credential.Kind == core.CredentialUser || credential.Kind == core.CredentialAgent) && order.ClaimantID == core.TaskRunClaimantID(credential.OwnerUserID) {
-			return claimIdentity(order), nil
-		}
-		return core.WorkOrderClaimIdentity{}, store.ErrWorkOrderClaimUnauthorized
-	}
-	if credential.Kind != core.CredentialAgent {
-		return core.WorkOrderClaimIdentity{}, store.ErrWorkOrderClaimUnauthorized
-	}
-	workers, err := s.Store.ListWorkers(ctx)
-	if err != nil {
-		return core.WorkOrderClaimIdentity{}, err
-	}
-	for _, claimedWorker := range workers {
-		if claimedWorker.ID == order.WorkerID && claimedWorker.OwnerUserID != "" && claimedWorker.OwnerUserID == credential.OwnerUserID {
-			return claimIdentity(order), nil
-		}
+	if (credential.Kind == core.CredentialUser || credential.Kind == core.CredentialAgent) && order.ClaimantID == core.TaskRunClaimantID(credential.OwnerUserID) {
+		return claimIdentity(order), nil
 	}
 	return core.WorkOrderClaimIdentity{}, store.ErrWorkOrderClaimUnauthorized
 }
 
-// authorizeClaimMutation resolves the authenticated owner of one live claim.
-// Worker credentials retain worker ownership checks, user and agent credentials
-// retain owner-derived conveyor-run identity, and worker-dispatched agent
-// children are admitted only through the exact live session their owner's
-// worker already holds.
-func (s *Server) authorizeClaimMutation(ctx context.Context, workerAuth bool, worker core.Worker, workOrderID, sessionID string) (core.WorkOrderClaimIdentity, error) {
-	claim, err := s.authorizeClaimantSession(ctx, workerAuth, worker, workOrderID, sessionID)
+// authorizeClaimMutation resolves the authenticated owner of one live claim
+// through the owner-derived run:<owner> identity of user and agent
+// credentials.
+func (s *Server) authorizeClaimMutation(ctx context.Context, workOrderID, sessionID string) (core.WorkOrderClaimIdentity, error) {
+	claim, err := s.authorizeClaimantSession(ctx, workOrderID, sessionID)
 	if err != nil {
 		return core.WorkOrderClaimIdentity{}, err
 	}
@@ -887,7 +722,7 @@ func (s *Server) authorizeClaimMutation(ctx context.Context, workerAuth bool, wo
 }
 
 func claimIdentity(order core.WorkOrder) core.WorkOrderClaimIdentity {
-	return core.WorkOrderClaimIdentity{WorkerID: order.WorkerID, ClaimantID: order.ClaimantID, SessionID: order.SessionID}
+	return core.WorkOrderClaimIdentity{ClaimantID: order.ClaimantID, SessionID: order.SessionID}
 }
 
 func liveWorkOrderClaim(order core.WorkOrder, now time.Time) bool {
@@ -895,8 +730,8 @@ func liveWorkOrderClaim(order core.WorkOrder, now time.Time) bool {
 		(order.ExecutionDeadline.IsZero() || order.ExecutionDeadline.After(now))
 }
 
-func (s *Server) implementationGovernanceOrder(ctx context.Context, workerAuth bool, worker core.Worker, workOrderID, sessionID string) (core.WorkOrder, error) {
-	if _, err := s.authorizeClaimMutation(ctx, workerAuth, worker, workOrderID, sessionID); err != nil {
+func (s *Server) implementationGovernanceOrder(ctx context.Context, workOrderID, sessionID string) (core.WorkOrder, error) {
+	if _, err := s.authorizeClaimMutation(ctx, workOrderID, sessionID); err != nil {
 		return core.WorkOrder{}, err
 	}
 	order, err := s.WorkOrders.AuthorizeClaimed(ctx, workOrderID, sessionID)
@@ -911,12 +746,6 @@ func (s *Server) implementationGovernanceOrder(ctx context.Context, workerAuth b
 
 func (s *Server) resolveMCPWorkspace(ctx context.Context, explicit string) (string, error) {
 	explicit = strings.TrimSpace(explicit)
-	if worker, ok := workerFromContext(ctx); ok {
-		if explicit == "" || explicit == worker.Workspace {
-			return worker.Workspace, nil
-		}
-		return "", errWorkspaceNotVisible
-	}
 	var items []core.Workspace
 	if s.Workspaces != nil {
 		if s.Memberships == nil {
@@ -1201,15 +1030,14 @@ func mcpTools() []map[string]any {
 		{"name": "list_work_orders", "description": "List active, stale, or execution-timed-out spec, implement, and review work orders in one workspace with distinct queue, execution, and lease clocks.", "inputSchema": object(map[string]any{"workspace_id": str})},
 		{"name": "claim_work_order", "description": "Claim a work order with a bounded lease. Review self-claim is forbidden. claimant_id is accepted for wire compatibility but ignored; claimant identity is derived from the authenticated credential.", "inputSchema": object(map[string]any{"workspace_id": str, "work_order_id": str, "session_id": str, "client_token": str, "claimant_id": str, "agent": str, "model": str, "lease_seconds": num}, "work_order_id", "session_id", "client_token", "agent", "model")},
 		{"name": "redispatch_work_order", "description": "Return a stale queued work order in one workspace to the queue with a fresh queue deadline. Active and execution-timed-out work orders are rejected.", "inputSchema": object(map[string]any{"workspace_id": str, "work_order_id": str}, "work_order_id")},
-		{"name": "renew_work_order", "description": "Renew the exact execution child session lease without extending its fixed attempt deadline. Pass the claim's lease_seconds on every renewal to keep that lease; an absent value, or one outside 1-3600, renews for the five-minute default. Worker renewals always use the default. The renewed lease never passes the execution deadline.", "inputSchema": object(map[string]any{"workspace_id": str, "work_order_id": str, "session_id": str, "lease_seconds": map[string]string{"type": "integer"}}, "work_order_id", "session_id")},
+		{"name": "renew_work_order", "description": "Renew the exact execution child session lease without extending its fixed attempt deadline. Pass the claim's lease_seconds on every renewal to keep that lease; an absent value, or one outside 1-3600, renews for the five-minute default. The renewed lease never passes the execution deadline.", "inputSchema": object(map[string]any{"workspace_id": str, "work_order_id": str, "session_id": str, "lease_seconds": map[string]string{"type": "integer"}}, "work_order_id", "session_id")},
 		{"name": "release_work_order", "description": "Release the exact execution child session without allowing a stale child to alter a newer claim. Operator checkpoints require checkpoint.decision_request.", "inputSchema": object(map[string]any{"workspace_id": str, "work_order_id": str, "session_id": str, "reason": str, "checkpoint": object(map[string]any{"decision_request": decisionRequestSchema, "class": map[string]any{"type": "string", "enum": []string{core.WorkOrderCheckpointClassAuthorityConflict}}, "citations": map[string]any{"type": "array", "items": object(map[string]any{"document_id": str, "cited_version": citedVersionSchema, "statement_or_section_id": str}, "document_id", "cited_version")}})}, "work_order_id", "session_id")},
 		{"name": "request_plan_revision", "description": "Request operator-gated revision of the approved execution plan for the exact claimed implement session.", "inputSchema": object(map[string]any{"workspace_id": str, "work_order_id": str, "session_id": str, "rationale": str}, "work_order_id", "session_id", "rationale")},
 		{"name": "get_work_order", "description": "Get the claimed order contract, spec, branch, feedback, artifacts, and review diff. The authority_source response field is live for a provisional queued-review peek and pinned for claim-time snapshot authority.", "inputSchema": object(identity, "work_order_id", "session_id")},
 		{"name": "refresh_work_order_context", "description": "Refresh bounded artifact context for the exact live claim. Returns nonblocking delivery diagnostics; does not acknowledge understanding or change authority pins.", "inputSchema": object(map[string]any{"workspace_id": map[string]any{"type": "string", "minLength": 1, "maxLength": 256}, "work_order_id": map[string]any{"type": "string", "minLength": 1, "maxLength": 256}, "session_id": map[string]any{"type": "string", "minLength": 1, "maxLength": 256}, "prior_revision": map[string]any{"type": "string", "pattern": "^([0-9a-f]{64})?$"}}, "workspace_id", "work_order_id", "session_id")},
 		{"name": "read_artifact", "description": "Read one artifact authorized for the claimed work order. The workspace, work order, session, and artifact ownership must all match; content is returned as base64.", "inputSchema": object(map[string]any{"workspace_id": str, "work_order_id": str, "session_id": str, "artifact_id": str}, "workspace_id", "work_order_id", "session_id", "artifact_id")},
 		{"name": "report_progress", "description": "Record self-reported progress for a claimed order.", "inputSchema": object(map[string]any{"workspace_id": str, "work_order_id": str, "session_id": str, "message": str}, "work_order_id", "session_id", "message")},
-		{"name": "report_usage", "description": "Record best-effort cumulative self-reported token and optional provider rate-limit status as observational audit telemetry. Report at natural checkpoints and immediately before the stage's terminal lifecycle tool when figures are available; missing usage never blocks lifecycle progress (DEC-1).", "inputSchema": object(map[string]any{"workspace_id": str, "work_order_id": str, "session_id": str, "tokens_in": num, "tokens_out": num, "rate_limit": rateLimit, "source": map[string]any{"type": "string", "enum": []string{"self_reported", "worker_fallback"}, "description": "Reserved worker provenance; agents omit this or use self_reported."}}, "work_order_id", "session_id", "tokens_in", "tokens_out")},
-		{"name": "report_continuation", "description": "Record best-effort advisory harness-native continuation metadata for the exact active attempt. Only the launching worker or conveyor run client may report it; failure or absence never changes lifecycle outcome.", "inputSchema": object(map[string]any{"workspace_id": str, "work_order_id": str, "session_id": str, "continuation_session_id": str, "attempt_id": str, "harness": str, "launch_environment": str}, "work_order_id", "session_id", "continuation_session_id", "attempt_id", "harness", "launch_environment")},
+		{"name": "report_usage", "description": "Record best-effort cumulative self-reported token and optional provider rate-limit status as observational audit telemetry. Report at natural checkpoints and immediately before the stage's terminal lifecycle tool when figures are available; missing usage never blocks lifecycle progress (DEC-1).", "inputSchema": object(map[string]any{"workspace_id": str, "work_order_id": str, "session_id": str, "tokens_in": num, "tokens_out": num, "rate_limit": rateLimit, "source": map[string]any{"type": "string", "enum": []string{"self_reported"}, "description": "Reserved worker provenance; agents omit this or use self_reported."}}, "work_order_id", "session_id", "tokens_in", "tokens_out")},
 		{"name": "propose_system_design_revision", "description": "Propose a complete immutable System Design revision from the current claimed implementation. The operator alone confirms after submission; confirmation never blocks implementation.", "inputSchema": object(map[string]any{"workspace_id": str, "work_order_id": str, "session_id": str, "document_id": str, "content": str, "authority_conflict_checkpoint": checkpointFlagSchema}, "work_order_id", "session_id", "document_id", "content")},
 		{"name": "propose_requirement_revision", "description": "Propose a complete immutable requirement revision from the current claimed implementation. The operator alone confirms after submission; confirmation never blocks implementation.", "inputSchema": object(map[string]any{"workspace_id": str, "work_order_id": str, "session_id": str, "document_id": str, "content": str, "authority_conflict_checkpoint": checkpointFlagSchema}, "work_order_id", "session_id", "document_id", "content")},
 		{"name": "propose_decision", "description": "Propose the next stable DEC-n record from implementation deliberation. The operator alone confirms after submission; confirmation never blocks implementation.", "inputSchema": object(map[string]any{"workspace_id": str, "work_order_id": str, "session_id": str, "statement": str, "context": str, "alternatives_rejected": str, "supersedes": str, "authority_conflict_checkpoint": checkpointFlagSchema}, "work_order_id", "session_id", "statement", "context", "alternatives_rejected")},

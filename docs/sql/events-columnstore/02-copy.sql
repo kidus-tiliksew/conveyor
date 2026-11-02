@@ -1,4 +1,6 @@
--- Operator-run only, AFTER all numbered schema migrations and legacy helpers.
+-- Operator-run only, BEFORE corrected application startup.
+-- Existing databases at 0026: copy, validate, sync, then startup applies 0027-0030.
+-- Those pending migrations do not write application events.
 -- Stop every old and corrected writer/reader before this statement; comments
 -- do not enforce the freeze. The target must be empty and the source immutable.
 -- One full scan, not repeated global id-only range scans of a workspace/id key.

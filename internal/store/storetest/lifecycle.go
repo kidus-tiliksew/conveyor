@@ -110,26 +110,11 @@ func RecoverInterruptedReviewRound(ctx context.Context, st store.Store, request 
 	})
 }
 
-// ClaimWorkOrder claims through the taskops plane. A worker claim needs a real
-// enrollment with an active owner, so a fixture worker ID that has no row in
-// the bound workspace is enrolled first; an existing row keeps its state.
+// ClaimWorkOrder claims through the taskops plane.
 func ClaimWorkOrder(ctx context.Context, st store.Store, id string, claim core.WorkOrderClaim) (core.WorkOrder, error) {
 	order, err := st.GetWorkOrder(ctx, id)
 	if err != nil {
 		return core.WorkOrder{}, err
-	}
-	if claim.WorkerID != "" {
-		enrollCtx := ctx
-		if _, ok := store.WorkspaceFromContext(ctx); !ok {
-			task, err := st.GetTask(ctx, order.TaskID)
-			if err != nil {
-				return core.WorkOrder{}, err
-			}
-			enrollCtx = store.WithWorkspace(ctx, task.Workspace)
-		}
-		if _, err := EnsureWorkerEnrollment(enrollCtx, st, claim.WorkerID); err != nil {
-			return core.WorkOrder{}, err
-		}
 	}
 	return taskops.New(st).ClaimWorkOrder(ctx, order.TaskID, id, claim)
 }
@@ -189,7 +174,7 @@ func RenewWorkerClaim(ctx context.Context, st store.Store, id, workerID, session
 		return core.WorkOrder{}, err
 	}
 	return taskops.ExecuteWorkOrder(ctx, st, order.TaskID, core.WorkOrderCmdRenew, func(lease taskops.TaskLease) (core.WorkOrder, error) {
-		claim := core.WorkOrderClaimIdentity{WorkerID: workerID, ClaimantID: order.ClaimantID, SessionID: sessionID}
+		claim := core.WorkOrderClaimIdentity{ClaimantID: order.ClaimantID, SessionID: sessionID}
 		return st.RenewWorkerClaimCommand(ctx, lease, id, claim, duration)
 	})
 }
@@ -200,7 +185,7 @@ func ReleaseWorkerClaim(ctx context.Context, st store.Store, id, workerID string
 		return core.WorkOrder{}, err
 	}
 	return taskops.ExecuteWorkOrder(ctx, st, order.TaskID, core.WorkOrderCmdRelease, func(lease taskops.TaskLease) (core.WorkOrder, error) {
-		claim := core.WorkOrderClaimIdentity{WorkerID: workerID, ClaimantID: order.ClaimantID, SessionID: release.SessionID}
+		claim := core.WorkOrderClaimIdentity{ClaimantID: order.ClaimantID, SessionID: release.SessionID}
 		return st.ReleaseWorkerClaimCommand(ctx, lease, id, claim, release)
 	})
 }

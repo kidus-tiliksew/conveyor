@@ -88,3 +88,41 @@ func TestLedgerMutationSQLDetection(t *testing.T) {
 		}
 	}
 }
+
+// All live queries use the approved stable table. Migration 16's legacy
+// writer is deliberately separate; it predates the columnstore prerequisite.
+func TestApplicationSQLDoesNotReadLegacyEvents(t *testing.T) {
+	legacySQL := regexp.MustCompile("(?i)\\b(?:FROM|JOIN|INTO|UPDATE)\\s+events\\b")
+	entries, err := os.ReadDir(".")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, entry := range entries {
+		name := entry.Name()
+		if !strings.HasSuffix(name, ".go") || strings.HasSuffix(name, "_test.go") {
+			continue
+		}
+		positions := token.NewFileSet()
+		file, err := parser.ParseFile(positions, name, nil, 0)
+		if err != nil {
+			t.Fatal(err)
+		}
+		ast.Inspect(file, func(node ast.Node) bool {
+			lit, ok := node.(*ast.BasicLit)
+			if !ok || lit.Kind != token.STRING {
+				return true
+			}
+			query, err := strconv.Unquote(lit.Value)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if legacySQL.MatchString(strings.ReplaceAll(query, "`", "")) {
+				t.Errorf("%s: application SQL targets legacy events", positions.Position(lit.Pos()))
+			}
+			return true
+		})
+	}
+	if claimedEventsTable != "events_columnstore" {
+		t.Fatalf("claimed event lookups target %q", claimedEventsTable)
+	}
+}

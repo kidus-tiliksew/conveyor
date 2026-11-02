@@ -10,6 +10,7 @@ import (
 
 	"gopkg.in/yaml.v3"
 
+	"github.com/kidus-tiliksew/conveyor/internal/changes"
 	"github.com/kidus-tiliksew/conveyor/internal/config"
 	"github.com/kidus-tiliksew/conveyor/internal/core"
 )
@@ -71,6 +72,7 @@ func (m *volatileMemory) CreateWorkspace(ctx context.Context, id, name string, c
 		m.memberships[memoryScopedKey{workspace: id, id: credential.OwnerUserID}] = workspaceBinding{Role: core.WorkspaceRoleOperator, CreatedAt: record.CreatedAt}
 	}
 	m.workspaceEventLocked(ctx, id, core.Event{Kind: "workspace.created", Payload: core.JSONPayload(map[string]any{"id": id, "name": name, "config_version": record.ConfigVersion})})
+	m.raiseLocked(changes.Notice{Workspace: id, Kind: changes.Workspace})
 	return record.Workspace, nil
 }
 
@@ -128,6 +130,7 @@ func (m *volatileMemory) BootstrapWorkspaceConfig(_ context.Context, cfg *config
 			m.memberships[key] = workspaceBinding{Role: core.WorkspaceRoleOperator, CreatedAt: now}
 		}
 	}
+	m.raiseLocked(changes.Notice{Workspace: cfg.Workspace, Kind: changes.Workspace})
 	return true, nil
 }
 
@@ -140,16 +143,13 @@ func (m *volatileMemory) WorkspaceConfig(ctx context.Context) (config.VersionedD
 	if !ok {
 		return config.VersionedDocument{}, fmt.Errorf("%w: workspace %s", ErrNotFound, id)
 	}
-	var document config.WorkspaceDocument
-	decoder := yaml.NewDecoder(strings.NewReader(record.ConfigYAML))
-	decoder.KnownFields(true)
-	if err := decoder.Decode(&document); err != nil {
+	// Legacy harness, setup, and executor keys are dropped before strict
+	// decoding (component-runtime; component-persistence).
+	document, err := config.DecodeStoredWorkspaceDocument([]byte(record.ConfigYAML))
+	if err != nil {
 		return config.VersionedDocument{}, fmt.Errorf("decode stored workspace config: %w", err)
 	}
 	config.StoredRepositoryDefaults(document.Repos)
-	if document.Harnesses == nil {
-		document.Harnesses = []config.Harness{}
-	}
 	if document.Repos == nil {
 		document.Repos = []config.Repo{}
 	}
@@ -211,6 +211,12 @@ func (m *volatileMemory) UpdateWorkspaceConfig(ctx context.Context, expectedVers
 	event := m.workspaceEventLocked(ctx, id, core.Event{Kind: "config.updated", Payload: core.JSONPayload(map[string]any{
 		"from_version": from, "to_version": record.ConfigVersion, "sections": sections,
 	})})
+	// The next order clock run applies the changed setting
+	// (component-persistence, Deadlines; req-bounded-automatic-recovery AC-5.1).
+	m.raiseEventDeadlineLocked(id, event)
+	// A configuration change, such as enabling the monitor, reaches the timed
+	// GitHub fallback (component-persistence, Change notices).
+	m.raiseLocked(changes.Notice{Workspace: id, Kind: changes.Workspace})
 	return config.UpdateReceipt{
 		VersionedDocument: config.VersionedDocument{Document: next.PolicyDocument(), Version: record.ConfigVersion},
 		EventID:           event.ID, ActorID: actor.ID, Sections: sections,
@@ -241,14 +247,8 @@ func configDiff(before, after config.WorkspaceDocument) []string {
 	if before.IssuePublication.Enabled != after.IssuePublication.Enabled || !before.IssuePublication.EnabledAt.Equal(after.IssuePublication.EnabledAt) {
 		sections = append(sections, "issue_publication")
 	}
-	if !reflect.DeepEqual(before.Harnesses, after.Harnesses) {
-		sections = append(sections, "harnesses")
-	}
 	if !reflect.DeepEqual(before.Review, after.Review) {
 		sections = append(sections, "review")
-	}
-	if !reflect.DeepEqual(before.Setups, after.Setups) || before.DefaultSetup != after.DefaultSetup {
-		sections = append(sections, "setups")
 	}
 	if !reflect.DeepEqual(before.Execution, after.Execution) {
 		sections = append(sections, "execution")
@@ -263,7 +263,6 @@ func (m *volatileMemory) ReconcileBlueprintClosures(ctx context.Context) (int, e
 		return 0, err
 	}
 	m.mu.Lock()
-	defer m.mu.Unlock()
 	workspace := workspaceOrDefault(ctx, "")
 	var parents []core.Task
 	for _, task := range m.tasks {
@@ -277,13 +276,19 @@ func (m *volatileMemory) ReconcileBlueprintClosures(ctx context.Context) (int, e
 		}
 		return parents[i].ID < parents[j].ID
 	})
-	closed := 0
+	var closed []string
 	for _, parent := range parents {
 		if m.closeBlueprintParentLocked(ctx, parent.ID) {
-			closed++
+			closed = append(closed, parent.ID)
 		}
 	}
-	return closed, nil
+	m.mu.Unlock()
+	// Repairs are reported once the lock is released (component-persistence,
+	// Drift repair reports).
+	for _, id := range closed {
+		ReportDriftRepair(ctx, DriftBlueprintParentOpen.For(id))
+	}
+	return len(closed), nil
 }
 
 // Volatile dispatch uses the in-process queue and has no durable jobs to repair.

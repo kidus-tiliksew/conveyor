@@ -45,14 +45,8 @@ func (s *Store) RecordContextObservation(ctx context.Context, lease taskops.Task
 		for i := range rows {
 			events[i] = eventFromDB(rows[i])
 		}
-		owner := ""
-		if order.WorkerID != "" {
-			if err = tx.QueryRow(ctx, "SELECT COALESCE(owner_user_id,'') FROM workers WHERE workspace_id=$1 AND id=$2 AND revoked_at IS NULL", workspace(ctx), order.WorkerID).Scan(&owner); err != nil {
-				return store.ErrWorkOrderClaimUnauthorized
-			}
-		}
 		var event *core.Event
-		result, event, err = store.EvaluateContextObservation(ctx, task, order, owner, events, observation, time.Now().UTC())
+		result, event, err = store.EvaluateContextObservation(ctx, task, order, events, observation, time.Now().UTC())
 		if err != nil {
 			return err
 		}

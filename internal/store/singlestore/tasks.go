@@ -102,7 +102,7 @@ func (s *Store) CreateTaskWithDependenciesAndContext(ctx context.Context, t core
 }
 func (s *Store) createTaskTx(ctx context.Context, tx *sql.Tx, t core.Task, ids []string, attached store.TaskContextInput, pinned map[string]int) error {
 	ws := documentWorkspace(ctx)
-	if err := workerWorkspaceExists(ctx, tx, ws); err != nil {
+	if err := workspaceRowExists(ctx, tx, ws); err != nil {
 		return err
 	}
 	if t.ParentTaskID != "" {

@@ -8,6 +8,7 @@ import { Button } from '../ui/button'
 import { Card, CardContent, CardHeader, CardTitle } from '../ui/card'
 import { Dialog } from '../ui/dialog'
 import { Input } from '../ui/input'
+import { WorkspaceGitHubWebhookPanel } from './workspace-github-webhook-panel'
 
 export function WorkspaceGitHubAppCard() {
   const organizationID = useId()
@@ -164,6 +165,15 @@ export function WorkspaceGitHubAppCard() {
                 Disconnect
               </Button>
             </div>
+            {current.webhook && (
+              <WorkspaceGitHubWebhookPanel
+                workspace={workspace}
+                appSlug={current.app_slug}
+                installationAccount={current.installation_account}
+                webhook={current.webhook}
+                onSecretGenerated={() => void queryClient.invalidateQueries({ queryKey })}
+              />
+            )}
           </>
         )}
         {connect.error && (

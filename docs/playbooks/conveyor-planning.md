@@ -201,7 +201,7 @@ ID and version `conveyor plan status` shows in its `PUSHED` column (AC-4.5).
    `GET /v1/system-designs/{id}/versions`, or `GET /v1/decisions/{id}`. When
    it is no longer pending, record nothing and report its state.
 2. Otherwise send the act with the operator's own user credential from
-   `conveyor --server <url> auth token`, never an agent or worker credential,
+   `conveyor --server <url> auth token`, never an agent credential,
    with `X-Conveyor-CSRF: 1` and `?workspace_id=<ws>`:
    - requirement: `POST /v1/requirements/{id}/versions/{version}/confirm` or
      `.../dismiss`;

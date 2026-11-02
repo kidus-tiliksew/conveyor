@@ -396,15 +396,11 @@ func (detail boundedTaskDetailProjection) MarshalJSON() ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
-	body, err := json.Marshal(struct {
+	return json.Marshal(struct {
 		reviewItem
 		Events     []json.RawMessage   `json:"events"`
 		EventPage  taskEventPageView   `json:"event_page"`
 		Summaries  taskDetailSummaries `json:"summaries"`
 		WorkOrders []json.RawMessage   `json:"work_orders"`
 	}{detail.reviewItem, detail.events, detail.eventPage, detail.summaries, orders})
-	if err != nil {
-		return nil, err
-	}
-	return projectBoundedDetailCaptures(body)
 }

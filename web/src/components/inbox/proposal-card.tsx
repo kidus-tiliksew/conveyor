@@ -21,6 +21,7 @@ import { type ReviseTarget, VersionReviseDialog } from '../documents/version-rev
 import { NextActionIDs } from '../task/next-action-parts'
 import { Button } from '../ui/button'
 import { Kbd } from './inbox-keyboard'
+import { KindPill } from './inbox-kind'
 import { ProposalContext } from './proposal-context'
 import { nextActionsQueryKey } from './use-next-actions'
 
@@ -108,7 +109,7 @@ export function ProposalDetail({
     <article
       data-inbox-item="document_proposal"
       aria-label={proposal.title}
-      className="flex min-h-0 min-w-0 flex-1 flex-col rounded-lg border border-border bg-card md:overflow-hidden"
+      className="flex min-h-0 min-w-0 flex-1 flex-col rounded-xl border border-border bg-card md:overflow-hidden"
     >
       {reviseTarget && (
         <VersionReviseDialog
@@ -129,11 +130,9 @@ export function ProposalDetail({
           onConfirm={(note) => resolve.mutate({ action: 'dismiss', note })}
         />
       )}
-      <div className="min-h-0 min-w-0 flex-1 space-y-3 overflow-y-auto px-4 pb-4 pt-4">
+      <div className="min-h-0 min-w-0 flex-1 space-y-3 overflow-y-auto px-5 pb-5 pt-5">
         <div className="flex flex-wrap items-center gap-2">
-          <span data-decision-label className="text-[11px] font-semibold uppercase tracking-[0.08em] text-attention">
-            {label}
-          </span>
+          <KindPill kind="document_proposal" label={label} />
           {proposal.version != null && (
             <span data-proposal-version className="font-mono text-[11px] text-muted">
               v{proposal.version}
@@ -161,7 +160,7 @@ export function ProposalDetail({
       </div>
       <div
         data-decision-footer
-        className="z-10 shrink-0 space-y-2 rounded-b-lg border-t border-border bg-surface px-4 py-3 max-md:sticky max-md:bottom-0"
+        className="z-10 shrink-0 space-y-2 rounded-b-xl border-t border-border bg-surface px-5 py-3 max-md:sticky max-md:bottom-0"
       >
         {resolve.error && !dismissing && (
           <p className="text-xs text-failure">{errorMessage(resolve.error, 'Could not resolve this proposal.')}</p>
@@ -252,6 +251,7 @@ export function proposalAge(proposal: Pick<PendingProposal, 'proposed_at' | 'age
   if (!since) return null
   return {
     relative: relativeTime(since.toISOString()),
+    since: since.toISOString(),
     dateTime: (validAt ?? since).toISOString(),
     absolute: validAt?.toLocaleString(),
   }

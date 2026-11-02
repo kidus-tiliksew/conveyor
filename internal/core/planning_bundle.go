@@ -47,7 +47,7 @@ type PlanningBundleTask struct {
 	SpecApproval  bool                      `json:"spec_approval"`
 	MergeApproval bool                      `json:"merge_approval"`
 	SetupName     string                    `json:"setup,omitempty"`
-	SetupContract config.ExecutionSetup     `json:"setup_contract,omitempty"`
+	SetupContract config.PolicyContract     `json:"setup_contract,omitempty"`
 }
 
 // PlanningBundle is one immutable operator preview. Approving it creates its

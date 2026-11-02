@@ -74,7 +74,7 @@ func Run(t *testing.T, open func(*testing.T) store.Backend) {
 		return githubtrigger.ReviewPublicationResult{CommentID: 71, ReviewedCommitSHA: "head-1"}, nil
 	}
 	runtime := logqueue.NewRuntime(st.Log(), logqueue.Options{
-		Workspaces: []string{workspace}, PollInterval: 20 * time.Millisecond, RescueStuckAfter: time.Minute, WorkerID: "publication-fixture",
+		Workspaces: []string{workspace}, RescueStuckAfter: time.Minute, WorkerID: "publication-fixture",
 	})
 	for _, registration := range dispatcher.Registrations(nil) {
 		if registration.Kind == (queue.GitHubIssuePublicationArgs{}).Kind() || registration.Kind == (queue.ReviewPublicationArgs{}).Kind() {

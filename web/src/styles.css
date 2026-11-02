@@ -28,6 +28,12 @@
   --color-positive-soft: #e9f7ee;
   --color-failure: #b3261e;
   --color-failure-soft: #fdeeed;
+  /* Kind tones for the inbox (feature-operator-next-action NA-6): a question
+     and a document proposal. Neither is an alarm; amber stays the only one. */
+  --color-info: #0369a1;
+  --color-info-soft: #e6f3fb;
+  --color-document: #6d28d9;
+  --color-document-soft: #f1ebfd;
 
   --color-rail: #f7f8fa;
   --color-rail-raised: #e9ebf0;
@@ -97,6 +103,10 @@
   --color-positive-soft: #163524;
   --color-failure: #ff8a83;
   --color-failure-soft: #3d1f20;
+  --color-info: #7dd3fc;
+  --color-info-soft: #102a3a;
+  --color-document: #c4b5fd;
+  --color-document-soft: #2a2045;
 
   --color-rail: #12151a;
   --color-rail-raised: #252b34;

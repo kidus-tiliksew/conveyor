@@ -11,18 +11,6 @@ import (
 	"github.com/kidus-tiliksew/conveyor/internal/core"
 )
 
-// ClaimedVerificationEvidenceRequest carries only claim identity and file
-// metadata. Task, workspace, and artifact role are always derived by the
-// store from the matching live implement order.
-type ClaimedVerificationEvidenceRequest struct {
-	WorkOrderID string
-	WorkerID    string
-	SessionID   string
-	ClientToken string
-	Name        string
-	ContentType string
-}
-
 type memoryArtifact struct {
 	meta    core.Artifact
 	content []byte
@@ -114,37 +102,6 @@ func (m *memory) createArtifactLocked(ctx context.Context, artifact core.Artifac
 	}
 	m.artifacts[key] = memoryArtifact{meta: artifact, content: append([]byte(nil), content...), links: []core.Artifact{artifact}}
 	return artifact, nil
-}
-
-func (m *memory) CreateClaimedVerificationEvidence(ctx context.Context, request ClaimedVerificationEvidenceRequest, content []byte) (core.Artifact, error) {
-	if _, err := RequireActor(ctx); err != nil {
-		return core.Artifact{}, err
-	}
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	workspace := workspaceOrDefault(ctx, "")
-	order, ok := m.workOrders[request.WorkOrderID]
-	if !ok {
-		return core.Artifact{}, ErrVerificationEvidenceClaimConflict
-	}
-	now := time.Now().UTC()
-	order = m.refreshWorkOrderLocked(ctx, order, now)
-	if order.State != core.WorkOrderClaimed || order.Stage != core.StageImplement ||
-		order.WorkerID == "" || order.WorkerID != request.WorkerID ||
-		request.SessionID == "" || order.SessionID != request.SessionID ||
-		request.ClientToken == "" || order.ClientTokenHash != tokenHash(request.ClientToken) ||
-		!order.LeaseExpiresAt.After(now) ||
-		(!order.ExecutionDeadline.IsZero() && !order.ExecutionDeadline.After(now)) {
-		return core.Artifact{}, ErrVerificationEvidenceClaimConflict
-	}
-	task, ok := m.tasks[order.TaskID]
-	if !ok || task.Workspace != workspace {
-		return core.Artifact{}, ErrVerificationEvidenceClaimConflict
-	}
-	return m.createArtifactLocked(ctx, core.Artifact{
-		Workspace: workspace, Name: request.Name, ContentType: request.ContentType,
-		Role: core.ArtifactRoleVerificationEvidence, TaskID: order.TaskID, CreatedAt: now,
-	}, content)
 }
 
 func (m *memory) artifactForRead(ctx context.Context, id string) (memoryArtifact, bool) {

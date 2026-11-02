@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/kidus-tiliksew/conveyor/internal/changes"
 	"github.com/kidus-tiliksew/conveyor/internal/core"
 	"github.com/kidus-tiliksew/conveyor/internal/store"
 )
@@ -74,7 +75,10 @@ func runVerificationChunkExpiry(t *testing.T, x Fixture) {
 			"user":            at(store.WithActor(x.Context, store.Actor{ID: "owner", Role: core.ActorUser}), 25*time.Hour),
 			"reconciler role": at(store.WithActor(x.Context, store.Actor{ID: "verification-reconciler", Role: core.ActorWorker}), 25*time.Hour),
 		} {
-			if _, err := x.Backend.ExpireVerificationChunks(ctx, 100); !errors.Is(err, store.ErrVerificationAccess) {
+			// A worker-role actor is refused before any write because worker
+			// actors are retired (DEC-97(4)); every other actor is refused
+			// by the reconciler-only rule.
+			if _, err := x.Backend.ExpireVerificationChunks(ctx, 100); !errors.Is(err, store.ErrVerificationAccess) && !errors.Is(err, store.ErrRetiredWorkerActor) {
 				t.Fatalf("%s expired chunks: %v", name, err)
 			}
 		}
@@ -83,6 +87,40 @@ func runVerificationChunkExpiry(t *testing.T, x Fixture) {
 		}
 		if n := expire(t, at(reconciler, 25*time.Hour), 100); n != 1 {
 			t.Fatalf("reconciler expired %d chunk(s), want 1", n)
+		}
+	})
+	// A staging chunk's expiry is a stored deadline: NextDeadline returns it
+	// and drops it once the chunk is expired, and staging the first chunk
+	// raises a deadline notice, so the deadline alarm deletes it on time
+	// (component-persistence, Deadlines; req-quiet-idle-runtime AC-2.4).
+	t.Run("StagingExpiryIsANextDeadline", func(t *testing.T) {
+		v := newVerificationFixture(t, x)
+		drain(t)
+		notices := x.Backend.Changes().Subscribe(x.Workspace, changes.Deadline)
+		defer notices.Close()
+		stage(t, &v, "deadline", 0)
+		expiry := staged.Add(store.VerificationUploadLifetime)
+		raised := false
+		for wait := time.After(2 * time.Second); !raised; {
+			select {
+			case n := <-notices.C():
+				// The notice carries the event time plus the upload lifetime,
+				// or no time when a peer listener republished it.
+				raised = n.At.IsZero() || !n.At.Before(expiry.Add(-time.Hour))
+			case <-wait:
+				t.Fatal("staging a chunk raised no deadline notice for its expiry")
+			}
+		}
+		next, ok, err := x.Backend.NextDeadline(x.Context, expiry.Add(-time.Microsecond))
+		if err != nil || !ok || !next.Equal(expiry) {
+			t.Fatalf("NextDeadline=%s ok=%t err=%v, want the staging expiry %s", next, ok, err, expiry)
+		}
+		if n := expire(t, at(reconciler, 25*time.Hour), 100); n != 1 {
+			t.Fatalf("expired=%d, want the staged chunk", n)
+		}
+		next, ok, err = x.Backend.NextDeadline(x.Context, expiry.Add(-time.Microsecond))
+		if err != nil || ok && next.Equal(expiry) {
+			t.Fatalf("NextDeadline after expiry=%s ok=%t err=%v, still the deleted chunk", next, ok, err)
 		}
 	})
 	t.Run("CutoffAndReplay", func(t *testing.T) {

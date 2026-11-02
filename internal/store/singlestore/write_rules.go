@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/kidus-tiliksew/conveyor/internal/changes"
 	"github.com/kidus-tiliksew/conveyor/internal/core"
 	"github.com/kidus-tiliksew/conveyor/internal/store"
 )
@@ -106,7 +107,7 @@ func sortedColumns(values map[string]any) ([]string, error) {
 // writeRow enforces the rules that SingleStore cannot express as constraints.
 // A unique rule claims its value on a lock row (claimKey) and also counts the
 // committed rows, which covers rows written before claims existed.
-func writeRow(ctx context.Context, tx *sql.Tx, w rowWrite) (sql.Result, error) {
+func writeRow(ctx context.Context, tx *sql.Tx, w rowWrite) (result sql.Result, err error) {
 	if err := checkWrite(w); err != nil {
 		return nil, err
 	}
@@ -121,6 +122,20 @@ func writeRow(ctx context.Context, tx *sql.Tx, w rowWrite) (sql.Result, error) {
 	if w.table == "events_columnstore" {
 		taskID, _ := w.values["task_id"].(string)
 		w.values["event_shard_key"] = eventShardKey(taskID)
+		if w.operation == "INSERT" {
+			defer func() {
+				if err == nil {
+					raiseEventDeadline(tx, w.values)
+				}
+			}()
+		}
+		if workspaceID, _ := w.values["workspace_id"].(string); taskID != "" && w.operation == "INSERT" {
+			defer func() {
+				if err == nil {
+					raiseTx(tx, changes.Notice{Workspace: workspaceID, Kind: changes.Task, TaskID: taskID})
+				}
+			}()
+		}
 	}
 	if !validIdentifier(w.table) {
 		return nil, fmt.Errorf("invalid SQL table")
@@ -261,6 +276,10 @@ func writeRow(ctx context.Context, tx *sql.Tx, w rowWrite) (sql.Result, error) {
 			return nil, err
 		}
 	}
+	// After the task rules, which validate their inputs before any SQL.
+	if err := identifierRule(ctx, tx, w); err != nil {
+		return nil, err
+	}
 	names, err := sortedColumns(w.values)
 	if err != nil {
 		return nil, err
@@ -304,6 +323,45 @@ func writeRow(ctx context.Context, tx *sql.Tx, w rowWrite) (sql.Result, error) {
 		query += " WHERE " + strings.Join(conditions, " AND ")
 	}
 	return tx.ExecContext(ctx, query, args...)
+}
+
+// identifierClaimPrefixes name the lock rows that claim task, job, and
+// work-order identifiers across workspaces. insertTaskRow, insertJobRow, and
+// insertOrderTx lock the same rows before they count committed rows
+// (component-persistence, Ledgers).
+var identifierClaimPrefixes = map[string]string{"tasks": "task-id:", "jobs": "job-id:", "work_orders": "work-order-id:"}
+
+// identifierRule keeps task, job, and work-order identifiers unique across
+// workspaces, whose primary keys include the workspace. The rows of another
+// workspace live on another partition, so the caller's committed-row count
+// can miss one its predecessor just wrote; the claim names the inserting
+// workspace on the lock row itself. Identifiers are never reused, so claims
+// are never released (DEC-70).
+func identifierRule(ctx context.Context, tx *sql.Tx, w rowWrite) error {
+	prefix, ok := identifierClaimPrefixes[w.table]
+	if !ok || w.operation != "INSERT" {
+		return nil
+	}
+	id, _ := w.values["id"].(string)
+	ws, _ := w.values["workspace_id"].(string)
+	if id == "" || ws == "" {
+		return fmt.Errorf("%s insert requires id and workspace_id", w.table)
+	}
+	holder, err := claimKey(ctx, tx, prefix+id)
+	if err != nil {
+		return err
+	}
+	if holder != "" && holder != ws {
+		switch w.table {
+		case "tasks":
+			return fmt.Errorf("task identifier already exists")
+		case "jobs":
+			return store.ErrDispatchJobConflict
+		default:
+			return fmt.Errorf("work order %s already exists", id)
+		}
+	}
+	return setClaim(ctx, tx, prefix+id, ws)
 }
 
 // taskBranchClaimKey names the lock row that serializes and claims one open

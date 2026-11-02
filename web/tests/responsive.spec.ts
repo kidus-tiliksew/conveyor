@@ -138,10 +138,6 @@ async function mockShell(page: Page) {
     if (path === '/v1/activity') return paged(activity)
     if (path === '/v1/system-designs') return route.fulfill({ json: [designSummary] })
     if (path === '/v1/system-designs/design-dispatch') return route.fulfill({ json: design })
-    if (path === '/v1/workers')
-      return route.fulfill({
-        json: { workers: [], worker_expected: false, worker_available: false, setup_serviceability: {} },
-      })
     return route.fulfill({ json: [] })
   })
 }

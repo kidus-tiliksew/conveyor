@@ -28,9 +28,9 @@ func TestTaskPolicyChangeSingleStoreScopesExclusionToExecutingAttempts(t *testin
 	if _, err = st.BootstrapWorkspaceConfig(ctx, &config.Config{Workspace: workspace, Database: config.Database{Backend: "singlestore"}, Repos: []config.Repo{{Name: "repo", Base: "main"}}}); err != nil {
 		t.Fatal(err)
 	}
-	legacy := config.ExecutionSetup{Name: "legacy", ExecutionSettings: config.ContextualExecutionSettings{Implementation: config.ImplementationSettings{Harness: "codex", Model: "old", TimeoutText: "1h"}}}
+	legacy := config.PolicyContract{StageTimeouts: config.PolicyStageTimeouts{Implement: "1h"}}
 	now := time.Now().UTC()
-	task := core.Task{ID: core.NewTaskID(), Workspace: workspace, Repo: "repo", BaseBranch: "main", State: core.TaskRunning, NextStage: core.StageImplement, SetupName: legacy.Name, SetupContract: legacy, CreatedAt: now}
+	task := core.Task{ID: core.NewTaskID(), Workspace: workspace, Repo: "repo", BaseBranch: "main", State: core.TaskRunning, NextStage: core.StageImplement, SetupName: "legacy", SetupContract: legacy, CreatedAt: now}
 	task.Branch = "conveyor/task-" + task.ID
 	if err = st.CreateTask(ctx, task); err != nil {
 		t.Fatal(err)
@@ -57,11 +57,11 @@ func TestTaskPolicyChangeSingleStoreScopesExclusionToExecutingAttempts(t *testin
 	}
 	request.RequestID = "policy-s2-excl-submitted"
 	result, err := changeTaskPolicy(t, st, ctx, request)
-	if err != nil || result.ReviewTransition != "policy_only" || result.Task.SetupContract.ExecutionSettings.Verify.TimeoutText != "2h" {
+	if err != nil || result.ReviewTransition != "policy_only" || result.Task.SetupContract.StageTimeouts.Verify != "2h" {
 		t.Fatalf("submitted implement attempt should not block: result=%+v err=%v", result, err)
 	}
 	stored, err := st.GetTask(ctx, task.ID)
-	if err != nil || stored.SetupName != legacy.Name || stored.SetupContract.ExecutionSettings.Implementation.TimeoutText != "1h" || stored.SetupContract.ExecutionSettings.Verify.TimeoutText != "2h" {
+	if err != nil || stored.SetupName != "legacy" || stored.SetupContract.StageTimeouts.Implement != "1h" || stored.SetupContract.StageTimeouts.Verify != "2h" {
 		t.Fatalf("stored policy name=%q contract=%+v err=%v", stored.SetupName, stored.SetupContract, err)
 	}
 	untouched, _ := st.GetWorkOrder(ctx, order.ID)
@@ -100,8 +100,8 @@ func TestHistoricalSetupSupersessionSingleStoreReaggregatesReplacementSeats(t *t
 		t.Fatal(err)
 	}
 	now := time.Now().UTC()
-	panel := config.ExecutionSetup{Name: "panel", Review: config.ReviewPanel{Seats: []config.ReviewSeat{{}, {}}}}
-	task := core.Task{ID: core.NewTaskID(), Workspace: workspace, Repo: "repo", BaseBranch: "main", State: core.TaskRunning, NextStage: core.StageReview, SetupName: panel.Name, SetupContract: panel, CreatedAt: now}
+	panel := config.PolicyContract{Review: config.ReviewPanel{Seats: []config.ReviewSeat{{}, {}}}}
+	task := core.Task{ID: core.NewTaskID(), Workspace: workspace, Repo: "repo", BaseBranch: "main", State: core.TaskRunning, NextStage: core.StageReview, SetupName: "panel", SetupContract: panel, CreatedAt: now}
 	task.Branch = "conveyor/task-" + task.ID
 	if err = st.CreateTask(ctx, task); err != nil {
 		t.Fatal(err)

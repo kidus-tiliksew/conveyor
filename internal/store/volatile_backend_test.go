@@ -115,7 +115,7 @@ func TestMemoryDispatchJobConflict(t *testing.T) {
 
 // TestAppendEventRequiresActor proves the volatile backend refuses a write
 // whose context carries no actor before it changes any state: events,
-// lineage, tasks, and workers stay unchanged, and an actor named on the event
+// lineage, and tasks stay unchanged, and an actor named on the event
 // envelope does not bypass the check (component-persistence, Actor context).
 func TestAppendEventRequiresActor(t *testing.T) {
 	st := NewVolatileBackend()
@@ -125,9 +125,6 @@ func TestAppendEventRequiresActor(t *testing.T) {
 	}
 	task := core.Task{ID: "task-actor", Workspace: "one", Title: "actor", State: core.TaskQueued, CreatedAt: time.Now().UTC()}
 	if err := st.CreateTask(systemCtx, task); err != nil {
-		t.Fatal(err)
-	}
-	if err := st.CreateWorker(systemCtx, core.Worker{ID: "worker-actor", Workspace: "one", OwnerUserID: "usr-1", Name: "w", CredentialHash: "hash", CreatedAt: time.Now().UTC()}); err != nil {
 		t.Fatal(err)
 	}
 	memory := st.(*volatileMemory)
@@ -153,19 +150,12 @@ func TestAppendEventRequiresActor(t *testing.T) {
 		if _, err := taskops.New(st).Cancel(ctx, core.Intervention{TaskID: task.ID, Action: core.InterventionCancel, ReasonCode: "operator_cancel"}); !errors.Is(err, ErrMissingActor) {
 			t.Fatalf("%s CancelTaskCommand: %v", name, err)
 		}
-		if err := st.RevokeWorker(ctx, "worker-actor"); !errors.Is(err, ErrMissingActor) {
-			t.Fatalf("%s RevokeWorker: %v", name, err)
-		}
 	}
 	if events, lineage, tasks := snapshot(); events != beforeEvents || lineage != beforeLineage || tasks != beforeTasks {
 		t.Fatalf("refused writes changed state: events %d->%d lineage %d->%d tasks %d->%d", beforeEvents, events, beforeLineage, lineage, beforeTasks, tasks)
 	}
 	if got, err := st.GetTask(systemCtx, task.ID); err != nil || got.State != task.State {
 		t.Fatalf("refused cancellation changed task: %+v %v", got, err)
-	}
-	workers, err := st.ListWorkers(systemCtx)
-	if err != nil || len(workers) != 1 || !workers[0].RevokedAt.IsZero() {
-		t.Fatalf("refused revocation changed worker: %+v %v", workers, err)
 	}
 	userCtx := WithActor(bare, Actor{ID: UserActorID("usr-1"), Role: core.ActorUser})
 	if err := st.AppendEvent(userCtx, core.Event{TaskID: task.ID, Kind: "test.event"}); err != nil {
@@ -520,7 +510,7 @@ func TestRequestPlanRevisionRequiresActorBeforeMutation(t *testing.T) {
 		return st, task, claimed
 	}
 	request := func(ctx context.Context, st Store, order core.WorkOrder) (PlanRevisionRequestResult, error) {
-		identity := core.WorkOrderClaimIdentity{WorkerID: order.WorkerID, ClaimantID: order.ClaimantID, SessionID: order.SessionID}
+		identity := core.WorkOrderClaimIdentity{ClaimantID: order.ClaimantID, SessionID: order.SessionID}
 		return taskops.ExecuteWorkOrder(ctx, st, order.TaskID, core.WorkOrderCmdRequestPlanRevision, func(lease taskops.TaskLease) (PlanRevisionRequestResult, error) {
 			return st.RequestPlanRevisionCommand(ctx, lease, order.ID, identity, "the plan conflicts with the API")
 		})
@@ -554,16 +544,6 @@ func TestRequestPlanRevisionRequiresActorBeforeMutation(t *testing.T) {
 		requireEventActor(t, st, explicit, task.ID, "work_order.plan_revision_requested", AgentActorID("run-agent"))
 	})
 
-	t.Run("worker claim derives its actor", func(t *testing.T) {
-		workerClaim := runClaim
-		workerClaim.ClaimantID, workerClaim.WorkerID, workerClaim.OwnerUserID, workerClaim.SessionID = "probe-worker", "probe-worker", "", "worker-session"
-		st, task, order := setup(t, "probe-worker-task", workerClaim)
-		result, err := request(bare, st, order)
-		if err != nil || result.WorkOrder.State != core.WorkOrderQueued || result.Task.State != core.TaskAwaiting {
-			t.Fatalf("worker request result=%+v err=%v", result, err)
-		}
-		requireEventActor(t, st, explicit, task.ID, "work_order.plan_revision_requested", WorkerActorID("probe-worker"))
-	})
 }
 
 func requireEventActor(t *testing.T, st Store, ctx context.Context, taskID, kind, actorID string) {

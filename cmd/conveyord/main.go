@@ -17,9 +17,11 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"time"
 
+	"github.com/kidus-tiliksew/conveyor/internal/changes"
 	"github.com/kidus-tiliksew/conveyor/internal/config"
 	"github.com/kidus-tiliksew/conveyor/internal/dispatch"
 	"github.com/kidus-tiliksew/conveyor/internal/envfile"
@@ -33,7 +35,6 @@ import (
 	"github.com/kidus-tiliksew/conveyor/internal/store"
 	"github.com/kidus-tiliksew/conveyor/internal/store/backend"
 	githubtrigger "github.com/kidus-tiliksew/conveyor/internal/trigger/github"
-	workerservice "github.com/kidus-tiliksew/conveyor/internal/worker"
 	"github.com/kidus-tiliksew/conveyor/internal/workorder"
 )
 
@@ -51,8 +52,8 @@ func registerDaemonFlags(flags *flag.FlagSet) conveyordFlags {
 		addr:               flags.String("addr", "127.0.0.1:8080", "listen address"),
 		configPath:         flags.String("config", "conveyor.yaml", "path to deployment config"),
 		pollGitHub:         flags.Duration("poll-github", 0, "poll interval for conveyor:ready issues (0 disables)"),
-		workerRetryDelay:   flags.Duration("worker-retry-delay", workerservice.DefaultRetryDelay, "initial supervised-child retry delay"),
-		workerRetryMaximum: flags.Duration("worker-retry-max", workerservice.DefaultRetryMaximum, "maximum supervised-child retry delay"),
+		workerRetryDelay:   flags.Duration("worker-retry-delay", workorder.DefaultReleaseRetryDelay, "initial automatic retry delay after a failed or stalled release"),
+		workerRetryMaximum: flags.Duration("worker-retry-max", workorder.DefaultReleaseRetryMaximum, "maximum automatic retry delay after a failed or stalled release"),
 		shutdownTimeout:    flags.Duration("shutdown-timeout", defaultConveyordShutdownTimeout, "total graceful shutdown budget"),
 		debugAddr:          flags.String(debugAddrFlag, "", "opt-in net/http/pprof listen address (loopback only unless -"+debugAllowRemoteFlag+"; empty disables)"),
 		debugAllowRemote:   flags.Bool(debugAllowRemoteFlag, false, "allow -"+debugAddrFlag+" to bind a non-loopback address"),
@@ -179,6 +180,11 @@ func main() {
 	var queueRuntime shutdownQueue
 	var addWorkspaceQueue func(string, *config.Config) error
 	var workspaceQueues *dispatch.WorkspaceQueueRegistrar
+	startupChecks := &dispatch.StartupChecks{Dispatcher: d, Store: st, Logf: log.Printf}
+	// startupWorkspaceIDs are the workspaces the start-up checks cover; a
+	// workspace created after this read has no task to check.
+	var startupWorkspaceIDs []string
+	var reviewRecovery atomic.Pointer[workorder.Service]
 	if st.IsDurable() {
 		d.ConfigProvider = func(ctx context.Context) (*config.Config, error) {
 			return st.RuntimeConfig(ctx, deployment)
@@ -206,14 +212,44 @@ func main() {
 		log.Printf("queue stuck-job rescue threshold %s", rescueAfter)
 		queueShutdown := &dispatch.ShutdownMarker{}
 		hostname, _ := os.Hostname()
+		// One peer check serves the whole daemon on a backend without change
+		// notification; the runtime, streams, and await_review keep no peer
+		// timer and wake on the notices it republishes (component-runtime,
+		// Peers; feature-quiet-idle-runtime, Peers).
+		peerCheck := changes.SelectPeerCheck(ctx, deployment.Runtime.Peers, st, st.Changes(), logqueue.PeerTailInterval, log.Printf)
+		// The order clock handler's review-round recovery pass reads the
+		// work-order service once step 9 installs it (component-runtime,
+		// Daemon startup order).
+		d.AutomaticReviewRecovery = func(ctx context.Context, now time.Time) (int, error) {
+			service := reviewRecovery.Load()
+			if service == nil {
+				return 0, nil
+			}
+			return service.SweepAutomaticReviewRecovery(ctx, now)
+		}
 		runtime := logqueue.NewRuntime(st.Log(), logqueue.Options{
 			Workspaces: workspaceIDs, RescueStuckAfter: rescueAfter, WorkerID: hostname, Logf: log.Printf,
+			Changes: st.Changes(), Deadlines: dispatch.StoreDeadlines(st),
 		})
 		for _, registration := range d.Registrations(queueShutdown) {
 			runtime.Register(registration)
 		}
+		// The drift-repair start-up checks run before the runtime starts, so
+		// no alarm fire or worker here repairs drift a check must report
+		// (component-runtime, Start-up checks and background loops).
+		startupWorkspaceIDs = workspaceIDs
+		startupChecks.RunDrift(ctx, startupWorkspaceIDs)
+		// The peer check's first statement runs before the runtime's first
+		// catch-up and before the server serves, so every first read follows
+		// the marks it holds; a failure is logged and the next check retries.
+		if peerCheck != nil {
+			_ = peerCheck.Check(ctx)
+		}
 		if startErr := runtime.Start(context.Background()); startErr != nil {
 			log.Fatalf("start queue runtime: %v", startErr)
+		}
+		if peerCheck != nil {
+			go peerCheck.Run(ctx)
 		}
 		workspaceQueues = dispatch.NewWorkspaceQueueRegistrar(workspaceIDs, func(workspace string) error {
 			workspaceConfig, configErr := st.RuntimeConfig(store.WithWorkspace(ctx, workspace), deployment)
@@ -245,7 +281,6 @@ func main() {
 	srv.CallerIdentities = st
 	srv.OwnProfiles = st
 	srv.PersonalTokens = st
-	srv.AgentCredentials = st
 	srv.WorkspaceGitHubApps = st
 	srv.InvitationSessions = st
 	srv.Release = releaseinfo.Version
@@ -307,9 +342,11 @@ func main() {
 			return err
 		}
 	}
-	srv.Workers = &workerservice.Service{Store: st, WorkOrders: workOrders, ConfigProvider: workOrders.ConfigProvider, RetryDelay: *workerRetryDelay, RetryMaximum: *workerRetryMaximum}
-	srv.Workers.IdentityUsers = st
-	srv.Workers.RedactionSecrets = st
+	workOrders.RetryDelay, workOrders.RetryMaximum = *workerRetryDelay, *workerRetryMaximum
+	// Every workspace's deadline alarm fires once with the review-round
+	// recovery sweep in place (component-runtime, Daemon startup order).
+	reviewRecovery.Store(workOrders)
+	st.Changes().Publish(changes.Notice{Kind: changes.Deadline, At: time.Now().UTC()})
 	if st.IsDurable() {
 		srv.Workspaces = st
 		srv.EnsureWorkspaceQueues = addWorkspaceQueue
@@ -317,207 +354,52 @@ func main() {
 		srv.ConfigProvider = func(ctx context.Context) (*config.Config, error) {
 			return st.RuntimeConfig(ctx, deployment)
 		}
-		reconcile := func() {
-			workspaces, listErr := st.ListWorkspaces(ctx)
-			if listErr != nil {
-				log.Printf("list workspaces for reconciliation: %v", listErr)
-				return
+		// Workspace queue registration converges at start, on creation, and
+		// on each workspace notice, including a peer's; the start-up GitHub
+		// reads run once. No repair pass runs on a timer (component-runtime,
+		// Start-up checks and background loops; req-quiet-idle-runtime AC-4.3).
+		startWorkspaceRegistrationWatcher(ctx, workspaceRegistrationWatcher{
+			notices: st.Changes().SubscribeAll(changes.Workspace), list: st.ListWorkspaces,
+			converge: workspaceQueues.Converge, logf: log.Printf,
+		})
+		startupChecks.RunGitHub(ctx, startupWorkspaceIDs)
+	}
+
+	// GitHub observation while running: webhook deliveries for every
+	// workspace, the timed fallback for a workspace without webhook
+	// delivery, and timed issue intake only with -poll-github. No monitor
+	// loop runs (component-runtime, Start-up checks and background loops;
+	// req-quiet-idle-runtime AC-3.1, AC-3.5, AC-3.7).
+	listWorkspaceIDs := func(ctx context.Context) ([]string, error) {
+		if !st.IsDurable() {
+			if cfg.Workspace == "" {
+				return nil, nil
 			}
-			if queueErr := workspaceQueues.Converge(workspaces); queueErr != nil {
-				log.Printf("%v", queueErr)
-				return
-			}
-			for _, workspace := range workspaces {
-				workspaceCtx := store.WithWorkspace(ctx, workspace.ID)
-				reconcileWorkspaceVerification(workspaceCtx, workOrders, workspace.ID, log.Printf)
-				mergeReadiness, mergeErr := d.ReconcileMergeReadiness(workspaceCtx)
-				if mergeErr != nil {
-					// A readiness failure is logged and never skips the later
-					// lifecycle and publication reconciles in this tick.
-					log.Printf("reconcile merge readiness: %v", mergeErr)
-				}
-				if mergeReadiness != 0 {
-					log.Printf("reconciled %d merge-ready task(s) in workspace %s", mergeReadiness, workspace.ID)
-				}
-				lifecycles, lifecycleErr := d.ReconcileGitHubLifecycles(workspaceCtx)
-				if lifecycleErr != nil {
-					log.Printf("reconcile GitHub lifecycle intents: %v", lifecycleErr)
-					return
-				}
-				if lifecycles != 0 {
-					log.Printf("reconciled %d approved task GitHub lifecycle intent(s) in workspace %s", lifecycles, workspace.ID)
-				}
-				issueJobs, issueErr := st.ReconcileGitHubLifecycles(workspaceCtx)
-				if issueErr != nil {
-					log.Printf("reconcile GitHub issue publications: %v", issueErr)
-					return
-				}
-				if issueJobs != 0 {
-					log.Printf("reconciled %d GitHub issue publication job(s) in workspace %s", issueJobs, workspace.ID)
-				}
-				repaired, err := st.ReconcileQueuedTasks(workspaceCtx)
-				if err != nil {
-					log.Printf("reconcile queued tasks: %v", err)
-					return
-				}
-				if repaired != 0 {
-					log.Printf("reconciled %d queued task(s) missing queue jobs", repaired)
-				}
-				closedBlueprints, closeErr := st.ReconcileBlueprintClosures(workspaceCtx)
-				if closeErr != nil {
-					log.Printf("reconcile blueprint closures: %v", closeErr)
-					return
-				}
-				if closedBlueprints != 0 {
-					log.Printf("reconciled %d blueprint parent closure(s) in workspace %s", closedBlueprints, workspace.ID)
-				}
-				publications, publicationErr := st.ReconcileReviewPublications(workspaceCtx)
-				if publicationErr != nil {
-					log.Printf("reconcile review publications: %v", publicationErr)
-					return
-				}
-				if publications != 0 {
-					log.Printf("reconciled %d completed review publication(s) in workspace %s", publications, workspace.ID)
-				}
-				// Bounded automatic recovery AR-5 runs last; a failure is logged
-				// so it never blocks the remaining workspaces.
-				now := time.Now().UTC()
-				if reenqueued, reenqueueErr := store.ReconcileFailedPublications(workspaceCtx, st, now); reenqueueErr != nil {
-					log.Printf("automatic publication recovery in workspace %s: %v", workspace.ID, reenqueueErr)
-				} else if reenqueued != 0 {
-					log.Printf("automatically re-enqueued %d failed publication(s) in workspace %s", reenqueued, workspace.ID)
-				}
-				if reviewActs, reviewErr := workOrders.SweepAutomaticReviewRecovery(workspaceCtx, now); reviewErr != nil {
-					log.Printf("automatic review recovery in workspace %s: %v", workspace.ID, reviewErr)
-				} else if reviewActs != 0 {
-					log.Printf("automatically recovered %d review round(s) in workspace %s", reviewActs, workspace.ID)
-				}
-			}
+			return []string{cfg.Workspace}, nil
 		}
-		reconcile()
-		go func() {
-			ticker := time.NewTicker(time.Minute)
-			defer ticker.Stop()
-			for {
-				select {
-				case <-ctx.Done():
-					return
-				case <-ticker.C:
-					reconcile()
-				}
-			}
-		}()
+		items, listErr := st.ListWorkspaces(ctx)
+		if listErr != nil {
+			return nil, listErr
+		}
+		ids := make([]string, 0, len(items))
+		for _, item := range items {
+			ids = append(ids, item.ID)
+		}
+		return ids, nil
 	}
-
-	if *pollGitHub > 0 {
-		log.Printf("polling GitHub for %s issues in every workspace every %s", "conveyor:ready", *pollGitHub)
-		go func() {
-			ticker := time.NewTicker(*pollGitHub)
-			defer ticker.Stop()
-			for {
-				if st.IsDurable() {
-					items, listErr := st.ListWorkspaces(ctx)
-					if listErr == nil {
-						for _, item := range items {
-							d.PollOnce(store.WithWorkspace(ctx, item.ID))
-						}
-					}
-				} else if cfg.Workspace != "" {
-					d.PollOnce(store.WithWorkspace(ctx, cfg.Workspace))
-				}
-				select {
-				case <-ctx.Done():
-					return
-				case <-ticker.C:
-				}
-			}
-		}()
+	monitorPolls := &monitorPoller{Store: st, Dispatcher: d, Service: srv.Monitor, Config: workOrders.ConfigProvider}
+	gitHubFallback := newGitHubFallback(st, d, listWorkspaceIDs, monitorPolls, log.Printf)
+	webhookApplier := newGitHubWebhookApplier(st, d, monitorPolls.PushedRef, gitHubFallback.WebhookDelivered, log.Printf)
+	webhookApplier.Start(ctx)
+	srv.GitHubWebhooks = st
+	srv.GitHubWebhookApplier = webhookApplier
+	srv.GitHubSilenceFallback = gitHubFallback.SilenceActive
+	fallbackWorkspaces := startupWorkspaceIDs
+	if !st.IsDurable() {
+		fallbackWorkspaces, _ = listWorkspaceIDs(ctx)
 	}
-
-	if srv.Monitor != nil {
-		go func() {
-			lastPoll := map[string]time.Time{}
-			ticker := time.NewTicker(5 * time.Second)
-			defer ticker.Stop()
-			for {
-				var workspaceIDs []string
-				if st.IsDurable() {
-					items, listErr := st.ListWorkspaces(ctx)
-					if listErr != nil {
-						log.Printf("list workspaces for monitor: %v", listErr)
-					} else {
-						for _, item := range items {
-							workspaceIDs = append(workspaceIDs, item.ID)
-						}
-					}
-				} else if cfg.Workspace != "" {
-					workspaceIDs = append(workspaceIDs, cfg.Workspace)
-				}
-				for _, workspaceID := range workspaceIDs {
-					workspaceCtx := store.WithWorkspace(ctx, workspaceID)
-					current, configErr := workOrders.ConfigProvider(workspaceCtx)
-					if configErr != nil || !current.Monitor.Enabled {
-						continue
-					}
-					if previous := lastPoll[workspaceID]; !previous.IsZero() && time.Since(previous) < current.Monitor.PollInterval {
-						continue
-					}
-					lastPoll[workspaceID] = time.Now()
-					for _, repositoryName := range current.Monitor.Repositories {
-						repository, ok := current.Repo(repositoryName)
-						if !ok || repository.GitHub == "" {
-							_ = srv.Monitor.Store.RecordMonitorFailure(workspaceCtx, "forge_response",
-								"monitored repository requires a GitHub slug", time.Now().Add(current.Monitor.PollInterval))
-							continue
-						}
-						runGitHub, tokenErr := workspaceMonitorGitHubRunner(workspaceCtx, st, workspaceID, repository.GitHub, githubtrigger.DefaultAppClient)
-						if tokenErr != nil {
-							_ = srv.Monitor.Store.RecordMonitorFailure(workspaceCtx, string(githubtrigger.ErrorCategory(tokenErr)), tokenErr.Error(), time.Now().Add(current.Monitor.PollInterval))
-							continue
-						}
-						source := monitor.GitHubSource{
-							WorkspaceID: workspaceID, Repository: repositoryName, GitHubSlug: repository.GitHub, Run: runGitHub,
-							NewTaskResolver: assignmentResolveTask(st, repositoryName, repository.GitHub),
-							ReconcileMerged: func(callCtx context.Context, taskID string, pr githubtrigger.PullRequest) (bool, error) {
-								return d.ReconcileObservedPullRequest(callCtx, repositoryName, repository.GitHub, taskID, pr)
-							},
-						}
-						bound := current.Monitor.MergeDeferralBound
-						monitorStore := srv.Monitor.Store
-						source.MergeCommitState = func(ctx context.Context, repository, commitSHA string, committedAt time.Time) (monitor.MergeState, string, error) {
-							return monitorStore.MonitorMergeCommitState(ctx, repository, commitSHA, committedAt, time.Now().UTC(), bound)
-						}
-						source.OnSuppressed = func(ctx context.Context, payload map[string]any) error {
-							return srv.Monitor.Store.AuditMonitor(ctx, "monitor.suppressed", payload)
-						}
-						source.LoadHints = func(ctx context.Context, revision string) (*monitor.HintContext, error) {
-							return monitor.FetchGitHubHints(ctx, repository.GitHub, revision, runGitHub)
-						}
-						poller := monitor.Poller{
-							Service: srv.Monitor, Source: source, StartupWindow: current.Monitor.StartupWindow,
-							RetryInitial: time.Second, RetryMaximum: 30 * time.Second,
-							Sleep: func(ctx context.Context, delay time.Duration) error {
-								select {
-								case <-ctx.Done():
-									return ctx.Err()
-								case <-time.After(delay):
-									return nil
-								}
-							},
-						}
-						if pollErr := poller.Poll(workspaceCtx); pollErr != nil {
-							log.Printf("monitor workspace %s repository %s: %v", workspaceID, repositoryName, pollErr)
-						}
-					}
-				}
-				select {
-				case <-ctx.Done():
-					return
-				case <-ticker.C:
-				}
-			}
-		}()
-	}
+	gitHubFallback.Start(ctx, fallbackWorkspaces)
+	startIssueIntakePoll(ctx, *pollGitHub, listWorkspaceIDs, d.PollOnce, nil, log.Printf)
 
 	if poolStats != nil {
 		// The wrapped close stops and joins the worker, then logs the final

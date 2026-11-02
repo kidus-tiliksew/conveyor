@@ -8,7 +8,7 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/kidus-tiliksew/conveyor/internal/core"
-	"github.com/kidus-tiliksew/conveyor/internal/eventlog/pglog"
+	"github.com/kidus-tiliksew/conveyor/internal/eventlog"
 	"github.com/kidus-tiliksew/conveyor/internal/queue"
 	"github.com/kidus-tiliksew/conveyor/internal/queue/logqueue"
 )
@@ -26,18 +26,18 @@ type exhaustedDispatch struct {
 // fold each candidate's job stream for the queue half of the answer.
 type logDispatchQueue struct {
 	boundary boundaryDB
-	log      *pglog.Store
+	log      eventlog.Store
 	now      func() time.Time
 }
 
-func newLogDispatchQueue(boundary boundaryDB, log *pglog.Store) *logDispatchQueue {
+func newLogDispatchQueue(boundary boundaryDB, log eventlog.Store) *logDispatchQueue {
 	return &logDispatchQueue{boundary: boundary, log: log, now: time.Now}
 }
 
 const publicationMaxAttempts = 5
 
 func (q *logDispatchQueue) enqueueDispatchTx(ctx context.Context, tx pgx.Tx, workspace, taskID string) (bool, error) {
-	inserted, err := logqueue.Enqueue(pglog.WithTx(ctx, tx), q.log, workspace,
+	inserted, err := logqueue.Enqueue(logTx(ctx, tx), q.log, workspace,
 		queue.DispatchTaskArgs{}.Kind(), taskID,
 		queue.DispatchTaskArgs{WorkspaceID: workspace, TaskID: taskID},
 		queue.DispatchTaskMaxAttempts, q.now().UTC())
@@ -50,7 +50,7 @@ func (q *logDispatchQueue) enqueueDispatchTx(ctx context.Context, tx pgx.Tx, wor
 // enqueueReviewPublicationTx reports whether a new job was inserted; false
 // means a job for the same publication is still active on its stream.
 func (q *logDispatchQueue) enqueueReviewPublicationTx(ctx context.Context, tx pgx.Tx, workspace, reviewWorkOrderID string) (bool, error) {
-	return logqueue.Enqueue(pglog.WithTx(ctx, tx), q.log, workspace,
+	return logqueue.Enqueue(logTx(ctx, tx), q.log, workspace,
 		queue.ReviewPublicationArgs{}.Kind(), reviewWorkOrderID,
 		queue.ReviewPublicationArgs{WorkspaceID: workspace, ReviewWorkOrderID: reviewWorkOrderID},
 		publicationMaxAttempts, q.now().UTC())
@@ -58,7 +58,7 @@ func (q *logDispatchQueue) enqueueReviewPublicationTx(ctx context.Context, tx pg
 
 // enqueueGitHubIssuePublicationTx reports whether a new job was inserted.
 func (q *logDispatchQueue) enqueueGitHubIssuePublicationTx(ctx context.Context, tx pgx.Tx, workspace, taskID string) (bool, error) {
-	return logqueue.Enqueue(pglog.WithTx(ctx, tx), q.log, workspace,
+	return logqueue.Enqueue(logTx(ctx, tx), q.log, workspace,
 		queue.GitHubIssuePublicationArgs{}.Kind(), taskID,
 		queue.GitHubIssuePublicationArgs{WorkspaceID: workspace, TaskID: taskID},
 		publicationMaxAttempts, q.now().UTC())
@@ -134,7 +134,7 @@ ORDER BY t.created_at, t.id`, workspace)
 	if err := rows.Err(); err != nil {
 		return nil, err
 	}
-	logCtx := pglog.WithTx(ctx, tx)
+	logCtx := logTx(ctx, tx)
 	kind := queue.DispatchTaskArgs{}.Kind()
 	var out []string
 	for _, taskID := range candidates {

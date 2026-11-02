@@ -786,6 +786,7 @@ ORDER BY parent.created_at,parent.id`, workspace(ctx))
 		}
 		if didClose {
 			closed++
+			store.ReportDriftRepair(ctx, store.DriftBlueprintParentOpen.For(parentID))
 		}
 	}
 	return closed, nil
@@ -1619,7 +1620,7 @@ func taskInsertParams(task core.Task) db.InsertTaskParams {
 }
 
 func taskFromDB(task db.Task) core.Task {
-	var setup config.ExecutionSetup
+	var setup config.PolicyContract
 	_ = json.Unmarshal(task.SetupContract, &setup)
 	return core.Task{
 		ID: task.ID, Workspace: task.WorkspaceID, Source: task.Source, IntakeKey: task.IntakeKey.String,
@@ -1638,7 +1639,7 @@ func taskFromDB(task db.Task) core.Task {
 	}
 }
 
-func setupContractJSON(setup config.ExecutionSetup) []byte {
+func setupContractJSON(setup config.PolicyContract) []byte {
 	data, _ := json.Marshal(setup)
 	return data
 }

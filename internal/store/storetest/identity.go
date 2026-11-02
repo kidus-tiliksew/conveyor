@@ -477,10 +477,7 @@ func runSessionRefresh(t *testing.T, x Fixture, ctx context.Context) {
 func runTokens(t *testing.T, x Fixture) {
 	st := x.Backend
 	ctx, owner := bootstrapOwner(t, x)
-	binding := store.RunAgentCredentialBinding{WorkspaceID: x.Workspace, WorkOrderID: "fixture-order", SessionID: "fixture-session"}
-	label, err := store.RunAgentCredentialLabel(binding)
-	requireOK(t, err)
-	agent, err := st.IssueAgentCredential(ctx, owner.ID, label)
+	agent, err := st.IssueAgentCredential(ctx, owner.ID, "fixture agent")
 	requireOK(t, err)
 	auth, err := st.VerifyCredential(ctx, agent.Value)
 	requireOK(t, err)
@@ -489,15 +486,6 @@ func runTokens(t *testing.T, x Fixture) {
 	}
 	if _, err := st.VerifyPersonalAccessToken(ctx, agent.Value); err == nil {
 		t.Fatal("agent credential accepted as a human PAT")
-	}
-	wrong := binding
-	wrong.SessionID = "foreign"
-	if err := st.RevokeRunAgentCredential(ctx, owner.ID, agent.ID, wrong); !errors.Is(err, store.ErrRunAgentCredentialBindingMismatch) {
-		t.Fatalf("agent binding error=%v", err)
-	}
-	requireOK(t, st.RevokeRunAgentCredential(ctx, owner.ID, agent.ID, binding))
-	if _, err := st.VerifyCredential(ctx, agent.Value); err == nil {
-		t.Fatal("revoked agent authenticates")
 	}
 	issued, err := st.IssueOwnPersonalAccessToken(ctx, owner.ID, "conformance")
 	requireOK(t, err)
@@ -538,7 +526,6 @@ func runCredentialUseStamp(t *testing.T, x Fixture, ctx context.Context, owner c
 		id, value string
 		user      core.IdentityUser
 		agent     bool
-		binding   store.RunAgentCredentialBinding
 	}
 	provision := func(t *testing.T, email string) core.IdentityUser {
 		t.Helper()
@@ -554,12 +541,9 @@ func runCredentialUseStamp(t *testing.T, x Fixture, ctx context.Context, owner c
 	}
 	agent := func(t *testing.T, user core.IdentityUser, session string) credential {
 		t.Helper()
-		binding := store.RunAgentCredentialBinding{WorkspaceID: x.Workspace, WorkOrderID: "stamp-order", SessionID: session}
-		label, err := store.RunAgentCredentialLabel(binding)
+		issued, err := st.IssueAgentCredential(ctx, user.ID, "stamp "+session)
 		requireOK(t, err)
-		issued, err := st.IssueAgentCredential(ctx, user.ID, label)
-		requireOK(t, err)
-		return credential{id: issued.ID, value: issued.Value, user: user, agent: true, binding: binding}
+		return credential{id: issued.ID, value: issued.Value, user: user, agent: true}
 	}
 	verify := func(t *testing.T, ctx context.Context, c credential) {
 		t.Helper()
@@ -668,19 +652,20 @@ func runCredentialUseStamp(t *testing.T, x Fixture, ctx context.Context, owner c
 
 	t.Run("RefusedNextUse", func(t *testing.T) {
 		revokedUser := provision(t, "stamp-revoked@example.test")
-		token, run := personal(t, revokedUser), agent(t, revokedUser, "stamp-revoked")
+		// Agent credentials have no revocation route since the run-order
+		// plane was removed (DEC-97(1)); the deactivation case below covers
+		// an agent credential's refusal at its next use.
+		token := personal(t, revokedUser)
 		verify(t, ctx, token)
-		verify(t, ctx, run)
 		_, err := st.RevokeOwnPersonalAccessToken(ctx, revokedUser.ID, token.id)
 		requireOK(t, err)
-		requireOK(t, st.RevokeRunAgentCredential(ctx, revokedUser.ID, run.id, run.binding))
-		for _, c := range []credential{token, run} {
+		for _, c := range []credential{token} {
 			_, err := st.VerifyCredential(ctx, c.value)
 			requireRefusal(t, err, fmt.Sprintf("revoked credential (agent=%t) inside the stamp interval", c.agent))
 		}
 
 		deactivatedUser := provision(t, "stamp-deactivated@example.test")
-		token, run = personal(t, deactivatedUser), agent(t, deactivatedUser, "stamp-deactivated")
+		token, run := personal(t, deactivatedUser), agent(t, deactivatedUser, "stamp-deactivated")
 		verify(t, ctx, token)
 		verify(t, ctx, run)
 		deactivateUser(t, x, ctx, deactivatedUser.ID)

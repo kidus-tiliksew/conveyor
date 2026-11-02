@@ -4,6 +4,7 @@ import (
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/base64"
+	"encoding/hex"
 	"errors"
 	"github.com/go-chi/chi/v5/middleware"
 	"net/http"
@@ -127,11 +128,11 @@ func (s *Server) createWorkspaceGitHubAppManifest(w http.ResponseWriter, r *http
 		return
 	}
 	path := base.String() + "/v1/workspaces/" + url.PathEscape(workspace) + "/github-app"
-	// GitHub requires hook_attributes.url even when delivery is disabled.
-	// Reuse the public homepage to satisfy the manifest contract; this is
-	// not a webhook receiver and no events are subscribed
-	// (component-identity-membership).
-	manifest := map[string]any{"name": "Conveyor " + record.Name, "url": base.String(), "public": true, "redirect_url": path + "/callback", "setup_url": path + "/setup", "setup_on_update": true, "hook_attributes": map[string]any{"active": false, "url": base.String()}, "default_permissions": map[string]string{"metadata": "read", "contents": "write", "pull_requests": "write", "issues": "write", "statuses": "write"}}
+	// Webhook delivery is active: GitHub signs each delivery with the secret
+	// the conversion returns, and checks read admits check_suite and
+	// check_run deliveries (component-identity-membership; req-quiet-idle-runtime
+	// AC-3.1).
+	manifest := map[string]any{"name": "Conveyor " + record.Name, "url": base.String(), "public": true, "redirect_url": path + "/callback", "setup_url": path + "/setup", "setup_on_update": true, "hook_attributes": map[string]any{"active": true, "url": gitHubWebhookReceiverURL(base.String(), workspace)}, "default_events": append([]string(nil), github.WebhookEvents...), "default_permissions": map[string]string{"metadata": "read", "checks": "read", "contents": "write", "pull_requests": "write", "issues": "write", "statuses": "write"}}
 	s.setAppReturnCookie(w, r, workspace, cookie)
 	w.Header().Set("Cache-Control", "no-store")
 	writeJSON(w, http.StatusOK, map[string]any{"manifest": manifest, "state": state})
@@ -251,6 +252,12 @@ func (s *Server) getWorkspaceGitHubApp(w http.ResponseWriter, r *http.Request) {
 	}
 	w.Header().Set("Cache-Control", "no-store")
 	result := map[string]any{"connected": status.Connected, "app_slug": status.AppSlug, "installation_account": status.InstallationAccount, "repositories": repositories}
+	webhook, err := s.workspaceGitHubWebhookView(r, workspace)
+	if err != nil {
+		appHTTPError(w, http.StatusInternalServerError, "github_webhook_status_failed")
+		return
+	}
+	result["webhook"] = webhook
 	// An operator can resume installation from settings without registering a
 	// replacement app. The state also protects setup_action=update returns.
 	if cookie, ok := appSession(r); ok && status.Connected && s.Memberships != nil {
@@ -305,4 +312,80 @@ func githubAppRequestLogger(next http.Handler) http.Handler {
 func (s *Server) setAppReturnCookie(w http.ResponseWriter, r *http.Request, workspace, value string) {
 	secure := r.TLS != nil || strings.EqualFold(r.Header.Get("X-Forwarded-Proto"), "https") || strings.HasPrefix(strings.ToLower(s.InvitationDelivery.PublicURL), "https://")
 	http.SetCookie(w, &http.Cookie{Name: dashboardSessionCookie, Value: value, Path: "/v1/workspaces/" + url.PathEscape(workspace) + "/github-app", HttpOnly: true, Secure: secure, SameSite: http.SameSiteLaxMode, MaxAge: 600, Expires: time.Now().Add(10 * time.Minute)})
+}
+
+// gitHubWebhookReceiverURL is the workspace's webhook receiver
+// (component-http-api, GitHub webhook receiver).
+func gitHubWebhookReceiverURL(base, workspace string) string {
+	return strings.TrimRight(base, "/") + "/v1/github/webhook/" + url.PathEscape(workspace)
+}
+
+// publicReceiverURL returns the receiver URL, or empty without a valid
+// public URL.
+func (s *Server) publicReceiverURL(workspace string) string {
+	base, err := url.Parse(strings.TrimRight(s.InvitationDelivery.PublicURL, "/"))
+	if err != nil || base.Host == "" || (base.Scheme != "https" && base.Scheme != "http") || base.RawQuery != "" || base.Fragment != "" {
+		return ""
+	}
+	return gitHubWebhookReceiverURL(base.String(), workspace)
+}
+
+// gitHubWebhookView is the secret-free webhook settings projection
+// (component-identity-membership; req-quiet-idle-runtime AC-3.6). A
+// workspace has webhook delivery from its first accepted delivery.
+// SilenceFallbackActive reports whether this daemon's timed GitHub checks
+// run because the workspace's deliveries have gone silent (AC-3.8).
+type gitHubWebhookView struct {
+	ReceiverURL           string     `json:"receiver_url"`
+	Events                []string   `json:"events"`
+	SecretConfigured      bool       `json:"secret_configured"`
+	SecretSetAt           *time.Time `json:"secret_set_at"`
+	LastDeliveryAt        *time.Time `json:"last_delivery_at"`
+	Configured            bool       `json:"configured"`
+	SilenceFallbackActive bool       `json:"silence_fallback_active"`
+}
+
+func (s *Server) workspaceGitHubWebhookView(r *http.Request, workspace string) (gitHubWebhookView, error) {
+	view := gitHubWebhookView{ReceiverURL: s.publicReceiverURL(workspace), Events: append([]string(nil), github.WebhookEvents...)}
+	if s.GitHubSilenceFallback != nil {
+		view.SilenceFallbackActive = s.GitHubSilenceFallback(workspace)
+	}
+	if s.GitHubWebhooks == nil {
+		return view, nil
+	}
+	status, err := s.GitHubWebhooks.GitHubWebhookStatus(r.Context(), workspace)
+	if err != nil {
+		return view, err
+	}
+	view.SecretConfigured, view.SecretSetAt = status.SecretConfigured, status.SecretSetAt
+	view.LastDeliveryAt, view.Configured = status.LastDeliveryAt, status.HasWebhookDelivery()
+	return view, nil
+}
+
+// createWorkspaceGitHubWebhookSecret generates the workspace's webhook
+// secret and returns it once. No later response carries it; calling the
+// route again regenerates it (component-identity-membership).
+func (s *Server) createWorkspaceGitHubWebhookSecret(w http.ResponseWriter, r *http.Request) {
+	workspace, _ := store.WorkspaceFromContext(r.Context())
+	if s.GitHubWebhooks == nil {
+		appHTTPError(w, http.StatusNotFound, "github_app_unavailable")
+		return
+	}
+	raw := make([]byte, 32)
+	if _, err := rand.Read(raw); err != nil {
+		appHTTPError(w, http.StatusInternalServerError, "github_webhook_secret_failed")
+		return
+	}
+	secret := hex.EncodeToString(raw)
+	setAt, err := s.GitHubWebhooks.SetWorkspaceGitHubWebhookSecret(r.Context(), workspace, secret)
+	if errors.Is(err, store.ErrNotFound) {
+		appHTTPError(w, http.StatusNotFound, "github_app_not_connected")
+		return
+	}
+	if err != nil {
+		appHTTPError(w, http.StatusInternalServerError, "github_webhook_secret_failed")
+		return
+	}
+	w.Header().Set("Cache-Control", "no-store")
+	writeJSON(w, http.StatusOK, map[string]any{"secret": secret, "secret_set_at": setAt, "receiver_url": s.publicReceiverURL(workspace), "events": append([]string(nil), github.WebhookEvents...)})
 }

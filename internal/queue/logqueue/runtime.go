@@ -4,26 +4,39 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"sort"
 	"sync"
 	"time"
 
+	"github.com/kidus-tiliksew/conveyor/internal/changes"
 	"github.com/kidus-tiliksew/conveyor/internal/eventlog"
 	"github.com/kidus-tiliksew/conveyor/internal/queue"
 )
 
+// PeerTailInterval is how often a daemon that runs beside other daemons on a
+// backend without change notification runs its one daemon-wide peer check,
+// which publishes a job notice for each workspace whose log advanced
+// (DEC-99(3); feature-quiet-idle-runtime, Peers; req-quiet-idle-runtime
+// AC-1.3, AC-2.5). The runtime itself keeps no peer timer.
+const PeerTailInterval = 30 * time.Second
+
 // Runtime is queue.Runtime on the event log.
 //
-// One goroutine per workspace tails the log and folds job streams into an
-// in-memory index; one goroutine per (workspace, kind) drains that index one
-// job at a time, so a workspace never runs two jobs of one kind at once. A
+// One goroutine per workspace catches up on the log, folding job streams
+// into an in-memory index, once at start and then only when a job change
+// notice wakes it, including one the daemon-wide peer check republishes; one goroutine per (workspace, kind)
+// drains that index one job at a time, so a workspace never runs two jobs of
+// one kind at once (DEC-99(1); component-durable-queue). A
 // claim is an expected-version append, so any number of replicas may run
-// the same runtime against the same log. The periodic order clock runs
-// in-process on a ticker and writes nothing to the log: a tick is not a
-// fact, and the tick handler is idempotent under concurrent replicas.
+// the same runtime against the same log. One deadline alarm per workspace
+// runs the order clock at the earliest recorded deadline and writes nothing
+// to the log: a tick is not a fact, and the tick handler is idempotent under
+// concurrent replicas.
 type Runtime struct {
 	log     eventlog.Store
 	opts    Options
+	hub     *changes.Hub
 	mu      sync.Mutex
 	regs    map[string]queue.Registration
 	spaces  map[string]*workspace
@@ -40,13 +53,16 @@ type Runtime struct {
 // Options configure the runtime.
 type Options struct {
 	Workspaces []string
-	// RescueStuckAfter is how long a claimed job may run before the poll
-	// loop treats its worker as dead and reschedules or discards it.
+	// RescueStuckAfter is how long a claimed job may run before a catch-up
+	// treats its worker as dead and reschedules or discards it.
 	RescueStuckAfter time.Duration
-	// PollInterval is how often each workspace tails the log. Default 1s.
-	PollInterval time.Duration
-	// ClockInterval is the order clock's period. Default 5s; zero disables.
-	ClockInterval time.Duration
+	// Changes is the hub whose job notices wake each workspace's catch-up.
+	// Nil selects the hub of a log that exposes Changes(), such as a
+	// backend's Log(), and otherwise a private hub.
+	Changes *changes.Hub
+	// Deadlines is the deadline alarm's source of stored deadlines; nil
+	// means the alarm serves only the index and notices.
+	Deadlines DeadlineSource
 	// WorkerID names this process in claims.
 	WorkerID string
 	// Now is the clock; tests replace it.
@@ -65,8 +81,23 @@ type workspace struct {
 	// worker agree on "one at a time" even before the claim event is read
 	// back from the log.
 	running map[string]bool
-	wake    chan struct{}
-	stopped bool
+	// wakes holds one channel per worker kind, so every worker learns of
+	// every catch-up; a shared channel would let one kind take another's.
+	wakes map[string]chan struct{}
+	// fold asks the poll loop to catch up after this process recorded an
+	// outcome, so its own completions and discards, which raise no notice,
+	// reach the index.
+	fold chan struct{}
+	// alarmIndex tells the deadline alarm the index changed; alarmReread
+	// asks it to read the stored deadline again after a local job outcome.
+	alarmIndex  chan struct{}
+	alarmReread chan struct{}
+	alarmTarget time.Time
+	stopped     bool
+	// loaded is set once the unfinished jobs are loaded from the job index
+	// and position is the head read before them; until then the poll loop
+	// does not tail.
+	loaded bool
 }
 
 // Default retry backoff when a registration sets none: doubling from one
@@ -83,12 +114,6 @@ func defaultRetryDelay(attempt int) time.Duration {
 }
 
 func NewRuntime(log eventlog.Store, opts Options) *Runtime {
-	if opts.PollInterval <= 0 {
-		opts.PollInterval = time.Second
-	}
-	if opts.ClockInterval == 0 {
-		opts.ClockInterval = 5 * time.Second
-	}
 	if opts.Now == nil {
 		opts.Now = time.Now
 	}
@@ -98,7 +123,16 @@ func NewRuntime(log eventlog.Store, opts Options) *Runtime {
 	if opts.WorkerID == "" {
 		opts.WorkerID = "conveyord"
 	}
-	rt := &Runtime{log: log, opts: opts, regs: map[string]queue.Registration{}, spaces: map[string]*workspace{}}
+	hub := opts.Changes
+	if hub == nil {
+		if source, ok := log.(interface{ Changes() *changes.Hub }); ok {
+			hub = source.Changes()
+		}
+	}
+	if hub == nil {
+		hub = changes.NewHub()
+	}
+	rt := &Runtime{log: log, opts: opts, hub: hub, regs: map[string]queue.Registration{}, spaces: map[string]*workspace{}}
 	rt.clockKind = queue.OrderClockArgs{}.Kind()
 	for _, id := range opts.Workspaces {
 		rt.spaces[id] = newWorkspace(id)
@@ -107,7 +141,8 @@ func NewRuntime(log eventlog.Store, opts Options) *Runtime {
 }
 
 func newWorkspace(id string) *workspace {
-	return &workspace{id: id, jobs: map[eventlog.StreamID]*Job{}, running: map[string]bool{}, wake: make(chan struct{}, 1)}
+	return &workspace{id: id, jobs: map[eventlog.StreamID]*Job{}, running: map[string]bool{}, wakes: map[string]chan struct{}{}, fold: make(chan struct{}, 1),
+		alarmIndex: make(chan struct{}, 1), alarmReread: make(chan struct{}, 1)}
 }
 
 func (rt *Runtime) Register(registration queue.Registration) {
@@ -163,21 +198,16 @@ func (rt *Runtime) Start(ctx context.Context) error {
 
 func (rt *Runtime) startWorkspace(ws *workspace) {
 	kinds := rt.workerKinds()
-	rt.wg.Add(1 + len(kinds))
+	rt.wg.Add(2 + len(kinds))
 	go rt.pollLoop(ws)
+	go rt.alarmLoop(ws)
 	for _, kind := range kinds {
 		go rt.workerLoop(ws, kind)
 	}
-	if rt.opts.ClockInterval > 0 {
-		if _, ok := rt.registration(rt.clockKind); ok {
-			rt.wg.Add(1)
-			go rt.clockLoop(ws)
-		}
-	}
 }
 
-// workerKinds are the registered kinds that run as queued jobs; the clock
-// runs on its own loop.
+// workerKinds are the registered kinds that run as queued jobs; the order
+// clock runs on the deadline alarm.
 func (rt *Runtime) workerKinds() []string {
 	rt.mu.Lock()
 	defer rt.mu.Unlock()
@@ -232,42 +262,61 @@ func (rt *Runtime) wait(ctx context.Context) error {
 	}
 }
 
-// pollLoop tails the workspace's log into the job index and rescues
-// stuck jobs.
+// pollLoop catches up once and then waits: it catches up again only on a job
+// notice for the workspace (or for every workspace, after a peer listener
+// reconnects), including one the daemon-wide peer check republishes, and on
+// its own fold signal. It keeps no peer timer, so while idle it sends no
+// statement (req-quiet-idle-runtime AC-1.1, AC-1.3, AC-2.1). Rescue runs
+// after every catch-up.
 func (rt *Runtime) pollLoop(ws *workspace) {
 	defer rt.wg.Done()
-	ticker := time.NewTicker(rt.opts.PollInterval)
-	defer ticker.Stop()
+	notices := rt.hub.Subscribe(ws.id, changes.Job)
+	defer notices.Close()
+	// A failed load is retried on the next wake and on its own delay, which
+	// runs only while the load keeps failing.
+	var loadDelay time.Duration
+	var loadRetry *time.Timer
+	defer func() {
+		if loadRetry != nil {
+			loadRetry.Stop()
+		}
+	}()
 	for {
 		if err := rt.catchUp(rt.loopCtx, ws); err != nil && !errors.Is(err, context.Canceled) {
 			rt.opts.Logf("logqueue: workspace %s: tail: %v", ws.id, err)
 		}
-		if err := rt.rescue(rt.loopCtx, ws); err != nil && !errors.Is(err, context.Canceled) {
+		var retry <-chan time.Time
+		if !rt.loaded(ws) {
+			loadDelay = nextLoadRetry(loadDelay)
+			if loadRetry == nil {
+				loadRetry = time.NewTimer(loadDelay)
+			} else {
+				loadRetry.Reset(loadDelay)
+			}
+			retry = loadRetry.C
+		} else if err := rt.rescue(rt.loopCtx, ws); err != nil && !errors.Is(err, context.Canceled) {
 			rt.opts.Logf("logqueue: workspace %s: rescue: %v", ws.id, err)
-		}
-		rt.mu.Lock()
-		var reconcilers []func(context.Context, string) error
-		for _, reg := range rt.regs {
-			if reg.Reconcile != nil {
-				reconcilers = append(reconcilers, reg.Reconcile)
-			}
-		}
-		rt.mu.Unlock()
-		for _, reconcile := range reconcilers {
-			if err := reconcile(rt.loopCtx, ws.id); err != nil && !errors.Is(err, context.Canceled) {
-				rt.opts.Logf("logqueue: workspace %s: reconcile: %v", ws.id, err)
-			}
 		}
 		select {
 		case <-rt.loopCtx.Done():
 			return
-		case <-ticker.C:
+		case <-notices.C():
+		case <-ws.fold:
+		case <-retry:
 		}
 	}
 }
 
-// catchUp applies every job event after the workspace's position.
+// catchUp applies every job event after the workspace's position. The
+// first catch-up loads the unfinished jobs from the job index. An event a
+// job in memory already reflects, because its index row was read after
+// the event committed, is skipped, so every event folds once.
 func (rt *Runtime) catchUp(ctx context.Context, ws *workspace) error {
+	if !rt.loaded(ws) {
+		if err := rt.load(ctx, ws); err != nil {
+			return fmt.Errorf("load job index: %w", err)
+		}
+	}
 	for {
 		rt.mu.Lock()
 		after := ws.position
@@ -279,13 +328,29 @@ func (rt *Runtime) catchUp(ctx context.Context, ws *workspace) error {
 		if len(events) == 0 {
 			return nil
 		}
+		loadedStreams := map[eventlog.StreamID]*Job{}
+		for _, stream := range rt.unknownStreams(ws, events) {
+			job, err := rt.loadStream(ctx, ws, stream)
+			if err != nil {
+				return err
+			}
+			loadedStreams[stream] = &job
+		}
 		rt.mu.Lock()
+		for stream, job := range loadedStreams {
+			if _, ok := ws.jobs[stream]; !ok && job.Head > 0 {
+				ws.jobs[stream] = job
+			}
+		}
 		for _, event := range events {
 			ws.position = event.Position
 			if event.Stream.Type() != StreamType {
 				continue
 			}
 			job, ok := ws.jobs[event.Stream]
+			if ok && event.Version <= job.Head {
+				continue
+			}
 			if !ok {
 				fresh := NewJob(ws.id, event.Stream)
 				job = &fresh
@@ -298,6 +363,7 @@ func (rt *Runtime) catchUp(ctx context.Context, ws *workspace) error {
 		}
 		rt.mu.Unlock()
 		rt.wakeWorkers(ws)
+		signal(ws.alarmIndex)
 		if len(events) < 1000 {
 			return nil
 		}
@@ -305,10 +371,26 @@ func (rt *Runtime) catchUp(ctx context.Context, ws *workspace) error {
 }
 
 func (rt *Runtime) wakeWorkers(ws *workspace) {
-	select {
-	case ws.wake <- struct{}{}:
-	default:
+	rt.mu.Lock()
+	defer rt.mu.Unlock()
+	for _, wake := range ws.wakes {
+		select {
+		case wake <- struct{}{}:
+		default:
+		}
 	}
+}
+
+// wakeChannel is the worker kind's wake channel in the workspace.
+func (rt *Runtime) wakeChannel(ws *workspace, kind string) chan struct{} {
+	rt.mu.Lock()
+	defer rt.mu.Unlock()
+	wake, ok := ws.wakes[kind]
+	if !ok {
+		wake = make(chan struct{}, 1)
+		ws.wakes[kind] = wake
+	}
+	return wake
 }
 
 func (rt *Runtime) retryDelay(kind string, attempt int) time.Duration {
@@ -329,17 +411,19 @@ func (rt *Runtime) appendOutcome(ctx context.Context, job Job, kind string, payl
 	return err
 }
 
-// workerLoop drains one kind in one workspace, one job at a time.
+// workerLoop drains one kind in one workspace, one job at a time. With
+// nothing claimable it waits for a wake: a catch-up's, or the deadline
+// alarm's when a scheduled job falls due. It sets no timer of its own.
 func (rt *Runtime) workerLoop(ws *workspace, kind string) {
 	defer rt.wg.Done()
+	wake := rt.wakeChannel(ws, kind)
 	for {
 		job, ok := rt.next(ws, kind)
 		if !ok {
 			select {
 			case <-rt.loopCtx.Done():
 				return
-			case <-ws.wake:
-			case <-time.After(rt.opts.PollInterval):
+			case <-wake:
 			}
 			continue
 		}
@@ -446,13 +530,15 @@ func (rt *Runtime) run(ws *workspace, kind string, job Job) {
 	if err := rt.appendOutcome(context.Background(), job, outcomeKind, outcome, finished); err != nil {
 		rt.opts.Logf("logqueue: record %s for %s: %v", outcomeKind, job.ID(), err)
 	}
+	signal(ws.fold)
+	signal(ws.alarmReread)
 }
 
 // refresh replaces a job's index entry with a full fold of its stream,
 // used after a lost claim race so a partial history never stands in for
 // the truth.
 func (rt *Runtime) refresh(ws *workspace, stream eventlog.StreamID) {
-	job, err := Load(context.Background(), rt.log, ws.id, stream)
+	job, err := rt.loadStream(context.Background(), ws, stream)
 	if err != nil {
 		rt.opts.Logf("logqueue: refresh %s: %v", stream, err)
 		return

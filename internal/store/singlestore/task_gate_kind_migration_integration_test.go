@@ -30,10 +30,10 @@ func TestTaskGateKindCrossWorkspaceBackfillIntegration(t *testing.T) {
 	}
 	insertEvent := func(workspace, taskID string, id int64, at time.Time, command core.TaskCommand) {
 		t.Helper()
-		if _, err := st.db.ExecContext(ctx, `INSERT INTO events
-			(id,workspace_id,task_id,kind,actor_id,actor_role,payload_json,at)
-			VALUES(?,?,?,'task.state_changed','migration','system',?,?)`,
-			id, workspace, taskID, `{"command":"`+string(command)+`"}`, at); err != nil {
+		if _, err := st.db.ExecContext(ctx, `INSERT INTO events_columnstore
+			(id,workspace_id,task_id,kind,actor_id,actor_role,payload_json,at,event_shard_key)
+			VALUES(?,?,?,'task.state_changed','migration','system',?,?,?)`,
+			id, workspace, taskID, `{"command":"`+string(command)+`"}`, at, taskID); err != nil {
 			t.Fatal(err)
 		}
 	}

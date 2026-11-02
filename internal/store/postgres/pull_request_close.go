@@ -8,7 +8,6 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	"github.com/kidus-tiliksew/conveyor/internal/core"
-	"github.com/kidus-tiliksew/conveyor/internal/eventlog/pglog"
 	"github.com/kidus-tiliksew/conveyor/internal/queue"
 	"github.com/kidus-tiliksew/conveyor/internal/queue/logqueue"
 	"github.com/kidus-tiliksew/conveyor/internal/store"
@@ -46,7 +45,7 @@ func (s *Store) QueuePullRequestClose(ctx context.Context, p core.PullRequestClo
 		if p.Terminal() {
 			return nil
 		}
-		_, err = logqueue.Enqueue(pglog.WithTx(ctx, tx), s.queue.log, workspace(ctx), queue.PullRequestCloseArgs{}.Kind(), p.TaskID, queue.PullRequestCloseArgs{WorkspaceID: workspace(ctx), TaskID: p.TaskID}, core.PullRequestCloseMaxAttempts, time.Now().UTC())
+		_, err = logqueue.Enqueue(logTx(ctx, tx), s.queue.log, workspace(ctx), queue.PullRequestCloseArgs{}.Kind(), p.TaskID, queue.PullRequestCloseArgs{WorkspaceID: workspace(ctx), TaskID: p.TaskID}, core.PullRequestCloseMaxAttempts, time.Now().UTC())
 		return err
 	})
 }

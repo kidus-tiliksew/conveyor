@@ -40,7 +40,7 @@ func intPtr(value int) *int { return &value }
 
 // newReviewSeatsFixture freezes setup on the task (an absent seat list stays
 // absent) and gives the workspace workspaceSeats configured review seats.
-func newReviewSeatsFixture(t *testing.T, name string, setup config.ExecutionSetup, workspaceSeats int) *reviewSeatsFixture {
+func newReviewSeatsFixture(t *testing.T, name string, setup config.PolicyContract, workspaceSeats int) *reviewSeatsFixture {
 	t.Helper()
 	st := store.NewVolatileBackend()
 	t.Cleanup(st.Close)
@@ -242,12 +242,12 @@ func (f *reviewSeatsFixture) submissionPayload(t *testing.T, id string) map[stri
 // submission surface unchanged with the order still claimed
 // (req-review-gates-evidence AC-2.3; DEC-78; feature-review-seat-minimum RS-4).
 func TestSubmitForReviewReviewSeatsFloor(t *testing.T) {
-	frozen := func(seats int) config.ExecutionSetup {
-		return config.ExecutionSetup{Review: config.ReviewPanel{Seats: make([]config.ReviewSeat, seats)}}
+	frozen := func(seats int) config.PolicyContract {
+		return config.PolicyContract{Review: config.ReviewPanel{Seats: make([]config.ReviewSeat, seats)}}
 	}
 	for _, test := range []struct {
 		name           string
-		setup          config.ExecutionSetup
+		setup          config.PolicyContract
 		workspaceSeats int
 		plans          func(*testing.T, *reviewSeatsFixture)
 		refused        int
@@ -268,7 +268,7 @@ func TestSubmitForReviewReviewSeatsFloor(t *testing.T) {
 			f.plan(t, intPtr(4), true)
 			f.plan(t, nil, true)
 		}, refused: 1, floor: 2, minimum: 2},
-		{name: "absent-seat-list-uses-workspace", setup: config.ExecutionSetup{MaxBounces: 3}, workspaceSeats: 3, refused: 2, floor: 3, minimum: 3},
+		{name: "absent-seat-list-uses-workspace", setup: config.PolicyContract{MaxBounces: 3}, workspaceSeats: 3, refused: 2, floor: 3, minimum: 3},
 		{name: "frozen-empty-seat-list", setup: frozen(0), workspaceSeats: 3, plans: func(t *testing.T, f *reviewSeatsFixture) { f.plan(t, intPtr(2), true) }, refused: 1, floor: 2, minimum: 1, planned: 2},
 	} {
 		t.Run(test.name, func(t *testing.T) {
@@ -311,7 +311,7 @@ func TestSubmitForReviewReviewSeatsFloor(t *testing.T) {
 // declaration carry it, and an explicit declaration may choose the floor
 // below a larger previous round (feature-review-seat-minimum RS-4, RS-2).
 func TestSubmitForReviewReviewSeatsOpenAndCarry(t *testing.T) {
-	f := newReviewSeatsFixture(t, "open-carry", config.ExecutionSetup{Review: config.ReviewPanel{Seats: make([]config.ReviewSeat, 1)}}, 0)
+	f := newReviewSeatsFixture(t, "open-carry", config.PolicyContract{Review: config.ReviewPanel{Seats: make([]config.ReviewSeat, 1)}}, 0)
 	first := f.implement
 	result, err := f.submit(intPtr(3))
 	if err != nil || result["review_seats"] != 3 || result["review_seats_applied"] != true || result["await_review"] != true {
@@ -368,7 +368,7 @@ func TestSubmitForReviewReviewSeatsOpenAndCarry(t *testing.T) {
 // TestSubmitForReviewReviewSeatsOmittedKeepsDefaults proves an omitted count
 // keeps RS-2 default resolution and today's result and event shapes.
 func TestSubmitForReviewReviewSeatsOmittedKeepsDefaults(t *testing.T) {
-	f := newReviewSeatsFixture(t, "omitted", config.ExecutionSetup{Review: config.ReviewPanel{Seats: make([]config.ReviewSeat, 2)}}, 0)
+	f := newReviewSeatsFixture(t, "omitted", config.PolicyContract{Review: config.ReviewPanel{Seats: make([]config.ReviewSeat, 2)}}, 0)
 	result, err := f.service.SubmitForReview(f.ctx, f.implement, reviewSeatsSession, reviewSeatsHead)
 	if err != nil {
 		t.Fatal(err)
@@ -397,7 +397,7 @@ func TestSubmitForReviewReviewSeatsOmittedKeepsDefaults(t *testing.T) {
 // verification the dispatcher opens the declared seats from the submitting
 // implement order, not the verify order.
 func TestSubmitForReviewReviewSeatsAfterVerify(t *testing.T) {
-	f := newReviewSeatsFixture(t, "after-verify", config.ExecutionSetup{VerifyStage: true, Review: config.ReviewPanel{Seats: make([]config.ReviewSeat, 1)}}, 0)
+	f := newReviewSeatsFixture(t, "after-verify", config.PolicyContract{VerifyStage: true, Review: config.ReviewPanel{Seats: make([]config.ReviewSeat, 1)}}, 0)
 	implement := f.implement
 	if _, err := f.st.BootstrapWorkspaceConfig(f.ctx, f.cfg); err != nil {
 		t.Fatal(err)
@@ -428,13 +428,13 @@ func TestSubmitForReviewReviewSeatsAfterVerify(t *testing.T) {
 	if records, _ := f.st.ListReviewRoundSeats(f.ctx, f.task.ID); len(records) != 0 {
 		t.Fatalf("records before verification: %+v", records)
 	}
-	claim := core.WorkOrderClaim{WorkerID: "verifier", ClaimantID: "verifier", SessionID: "rs4-verify", ClientToken: "rs4-verify-token", Lease: time.Hour, ExecutionTimeout: time.Hour,
+	claim := core.WorkOrderClaim{ClaimantID: core.TaskRunClaimantID("verifier"), SessionID: "rs4-verify", ClientToken: "rs4-verify-token", Lease: time.Hour, ExecutionTimeout: time.Hour,
 		Requirements: []core.ServedRequirementContext{{ID: "req-fixture", Version: 1, Statements: []core.RequirementStatement{{ID: "REQ-1", Statement: "Observe", AcceptanceCriteria: []core.AcceptanceCriterion{{ID: "AC-1.1", Statement: "Observed"}}}}}}}
 	verify, err = storetest.ClaimWorkOrder(f.ctx, f.st, verify.ID, claim)
 	if err != nil {
 		t.Fatal(err)
 	}
-	workerCtx := store.WithActor(f.ctx, store.Actor{ID: "worker:verifier", Role: core.ActorWorker})
+	workerCtx := store.WithActor(f.ctx, store.Actor{ID: store.UserActorID("verifier"), Role: core.ActorUser})
 	raw, err := json.Marshal(VerificationPrepareRequest{RequestKey: "rs4-prepare"})
 	if err != nil {
 		t.Fatal(err)
@@ -444,7 +444,7 @@ func TestSubmitForReviewReviewSeatsAfterVerify(t *testing.T) {
 		t.Fatal(err)
 	}
 	snapshot := prepared.(store.VerificationSnapshot)
-	access := store.VerificationAccess{TaskID: f.task.ID, WorkOrderID: verify.ID, WorkOrderAttemptID: verify.AttemptID, ClientToken: claim.ClientToken, Claim: core.WorkOrderClaimIdentity{WorkerID: claim.WorkerID, ClaimantID: claim.ClaimantID, SessionID: claim.SessionID}}
+	access := store.VerificationAccess{TaskID: f.task.ID, WorkOrderID: verify.ID, WorkOrderAttemptID: verify.AttemptID, ClientToken: claim.ClientToken, Claim: core.WorkOrderClaimIdentity{ClaimantID: claim.ClaimantID, SessionID: claim.SessionID}}
 	storetest.SealEmptyVerificationFixture(t, workerCtx, f.st, access, snapshot.Contexts[0], "AC-1.1")
 	if err = f.dispatcher.DispatchNow(f.ctx, f.task.ID); err != nil {
 		t.Fatal(err)
@@ -461,7 +461,7 @@ func TestSubmitForReviewReviewSeatsAfterVerify(t *testing.T) {
 // false on submission and replay, and leaves no declaration a later round can
 // consume.
 func TestSubmitForReviewReviewSeatsRefreshUnused(t *testing.T) {
-	f := newConflictSubmission(t, config.ExecutionSetup{RefreshReview: config.RefreshReviewDelta})
+	f := newConflictSubmission(t, config.PolicyContract{RefreshReview: config.RefreshReviewDelta})
 	f.dispatchExistingRefresh(t, "fix-head", config.RefreshReviewDelta)
 	plan, err := f.st.CreateSpecVersion(f.ctx, core.SpecVersion{TaskID: f.task.ID, Content: "plan", ReviewSeats: intPtr(3)})
 	if err != nil {
@@ -540,7 +540,7 @@ func TestSubmitForReviewReviewSeatsRefreshUnused(t *testing.T) {
 // different supplied count, and never rewrites it; changed-head and
 // foreign-session replays stay refused.
 func TestSubmitForReviewReviewSeatsReplay(t *testing.T) {
-	f := newReviewSeatsFixture(t, "replay", config.ExecutionSetup{Review: config.ReviewPanel{Seats: make([]config.ReviewSeat, 1)}}, 0)
+	f := newReviewSeatsFixture(t, "replay", config.PolicyContract{Review: config.ReviewPanel{Seats: make([]config.ReviewSeat, 1)}}, 0)
 	if _, err := f.submit(intPtr(2)); err != nil {
 		t.Fatal(err)
 	}

@@ -98,14 +98,14 @@ func RunActivityValidationConformance(t *testing.T, x Fixture) {
 			t.Fatal(err)
 		}
 	})
-	claim := core.WorkOrderClaim{SessionID: "activity-session", ClientToken: "activity-secret", ClaimantID: "activity-worker", WorkerID: "activity-worker", Lease: time.Hour}
+	claim := core.WorkOrderClaim{SessionID: "activity-session", ClientToken: "activity-secret", ClaimantID: "activity-worker", Lease: time.Hour}
 	expectChange("work-order transition", func() {
 		if _, err := For(st).ClaimWorkOrder(ctx, orderA, claim); err != nil {
 			t.Fatal(err)
 		}
 	})
 	expectChange("lease renewal", func() {
-		if _, err := For(st).RenewWorkerClaim(ctx, orderA, claim.WorkerID, claim.SessionID, 2*time.Hour); err != nil {
+		if _, err := For(st).RenewWorkerClaim(ctx, orderA, "", claim.SessionID, 2*time.Hour); err != nil {
 			t.Fatal(err)
 		}
 	})

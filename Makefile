@@ -102,7 +102,7 @@ test-validation-environment:
 
 test-worker-environment:
 	CONVEYOR_TEST_DATABASE_URL= CONVEYOR_TEST_SINGLESTORE_URL= $(VALIDATION_CHILD_ENV) go test ./cmd/conveyor \
-		-run '^(TestCheckoutCmdSkipsAttachForWorkerAssignment|TestIsolatedChildEnvironmentReplacesLaunchIdentity)$$' -count=1
+		-run '^(TestCheckoutTakesWriterLockWithoutLauncherEnvironment|TestIsolatedChildEnvironmentReplacesLaunchIdentity)$$' -count=1
 
 build: conveyor-cli
 	go build $(LDFLAGS) -o $(BIN)/conveyord ./cmd/conveyord
@@ -316,7 +316,7 @@ SINGLESTORE_CONFORMANCE_FIRST = ^(Verification|Requirements|NextAction|Lineage|A
 SINGLESTORE_INTEGRATION_ARGS_conformance-1 = ./internal/store/singlestore -run '$(SINGLESTORE_CONFORMANCE_TEST)/$(SINGLESTORE_CONFORMANCE_FIRST)' -timeout=20m
 SINGLESTORE_INTEGRATION_ARGS_conformance-2 = ./internal/store/singlestore -run '$(SINGLESTORE_CONFORMANCE_TEST)' -skip '$(SINGLESTORE_CONFORMANCE_TEST)/$(SINGLESTORE_CONFORMANCE_FIRST)' -timeout=20m
 SINGLESTORE_INTEGRATION_ARGS_packages = ./internal/eventlog/s2log ./internal/store/storetest ./internal/store/singlestore -skip '$(SINGLESTORE_CONFORMANCE_TEST)' -timeout=20m
-SINGLESTORE_INTEGRATION_ARGS_commands = ./cmd/conveyor ./cmd/conveyord -run 'TestSingleStoreInitAndUserIntegration|TestConveyordDurableStartupIntegration' -timeout=10m
+SINGLESTORE_INTEGRATION_ARGS_commands = ./cmd/conveyor ./cmd/conveyord -run 'TestSingleStoreInitAndUserIntegration|TestConveyordDurableStartupIntegration|TestConveyordIdleRuntimeIntegration' -timeout=10m
 SINGLESTORE_INTEGRATION_RUNTIME_packages = vk10-runtime
 SINGLESTORE_INTEGRATION_SHARD ?=
 singlestore_integration_selected = $(or $(SINGLESTORE_INTEGRATION_SHARD),$(SINGLESTORE_INTEGRATION_SHARDS))

@@ -19,8 +19,9 @@ const document = {
   monitor: { enabled: false, repositories: [], poll_interval: '1m', startup_window: '24h' },
 }
 
-async function mockAPIs(page: Page, reject = false, workers: Record<string, unknown> = {}) {
+async function mockAPIs(page: Page, reject = false) {
   let submitted: Record<string, unknown> | undefined
+  const workerRequests: string[] = []
   await page.addInitScript(() => {
     localStorage.setItem('conveyor-workspace', 'demo')
   })
@@ -45,13 +46,16 @@ async function mockAPIs(page: Page, reject = false, workers: Record<string, unkn
       }
       return route.fulfill({ json: { document, version: 1 } })
     }
-    if (path === '/v1/workers')
-      return route.fulfill({ json: { workers: [], worker_expected: false, worker_available: false, ...workers } })
+    // The server serves no worker routes (DEC-97(1)); a read here is a regression.
+    if (path.startsWith('/v1/workers')) {
+      workerRequests.push(path)
+      return route.fulfill({ status: 404, json: { error: 'not_found' } })
+    }
     if (path === '/v1/workspace')
       return route.fulfill({ json: { workspace: 'demo', max_bounces: 3, database: 'postgres', repos: [] } })
     return route.fulfill({ json: [] })
   })
-  return () => submitted
+  return Object.assign(() => submitted, { workerRequests: () => workerRequests })
 }
 
 test('workspace edits policy only and sends no retired execution detail', async ({ page }) => {
@@ -100,37 +104,39 @@ test('workspace surfaces named policy rejections verbatim', async ({ page }) => 
   await expect(page.getByText('stage_timeouts.review: stage_timeouts.review must be positive')).toBeVisible()
 })
 
-test('workspace retains operational worker health and provider limits', async ({ page }) => {
-  await mockAPIs(page, false, {
-    worker_expected: true,
-    worker_available: true,
-    workers: [
-      {
-        id: 'worker-1',
-        name: 'Build worker',
-        last_seen_at: '2026-08-17T07:00:00Z',
-        lease_expires_at: '2026-08-17T08:00:00Z',
-        probes: [{ harness: 'codex', healthy: true, checked_at: '2026-08-17T07:00:00Z' }],
-      },
-    ],
-    rate_limits: [
-      {
-        provider: 'openai',
-        rate_limit: { status: 'available', remaining: 80, limit: 100 },
-      },
-    ],
-  })
-  await page.goto('/w/demo/workspace')
-  await page.getByRole('tab', { name: 'Workers' }).click()
-
-  await expect(page.getByText('Worker available')).toBeVisible()
-  await expect(page.getByText('Provider rate limits')).toBeVisible()
-  await expect(page.getByText('80 of 100 remaining')).toBeVisible()
-  await expect(page.getByText('Build worker')).toBeVisible()
+test('workspace shows no worker surface', async ({ page }) => {
+  const mocks = await mockAPIs(page)
+  // Ordinary navigation opens on Policy. A link saved while the retired
+  // Workers tab was open (`?tab=workers`) opens General as a bounded
+  // compatibility fallback; any other tab value selects nothing.
+  for (const [address, opens] of [
+    ['/w/demo/workspace', 'Policy'],
+    ['/w/demo/workspace?tab=policy', 'Policy'],
+    ['/w/demo/workspace?tab=members', 'Policy'],
+    ['/w/demo/workspace?tab=workers', 'General'],
+  ] as const) {
+    await page.goto(address)
+    await expect(page.getByRole('tab')).toHaveText(['General', 'Policy', 'Verification', 'Members'])
+    await expect(page.getByRole('tab', { name: opens })).toHaveAttribute('aria-selected', 'true')
+    await expect(page.getByRole('tab', { name: 'Workers' })).toHaveCount(0)
+    if (opens === 'General') {
+      await expect(page.getByText('Work-order queue timeout')).toBeVisible()
+      await expect(page.getByText('Pipeline policy')).toHaveCount(0)
+    } else {
+      await expect(page.getByText('Pipeline policy')).toBeVisible()
+    }
+    for (const tab of ['General', 'Policy', 'Verification', 'Members']) {
+      await page.getByRole('tab', { name: tab }).click()
+      await expect(page.getByRole('tab', { name: tab })).toHaveAttribute('aria-selected', 'true')
+      await expect(page.getByText(/worker|pairing|pull claiming|rate limit/i)).toHaveCount(0)
+      await expect(page.getByRole('button', { name: 'Issue pairing token' })).toHaveCount(0)
+    }
+  }
+  expect(mocks.workerRequests()).toEqual([])
 })
 
 test('scoped configuration sources contain no retired vocabulary or API paths', () => {
-  const workspace = readFileSync('src/pages/workspace.tsx', 'utf8').split('\nfunction WorkersTab(')[0]
+  const workspace = readFileSync('src/pages/workspace.tsx', 'utf8')
   const taskCreate = readFileSync('src/components/task/task-create-sheet.tsx', 'utf8')
   const taskHeader = readFileSync('src/components/task/task-header.tsx', 'utf8')
   const api = readFileSync('src/lib/api.ts', 'utf8')

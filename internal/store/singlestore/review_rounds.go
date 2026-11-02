@@ -11,7 +11,6 @@ import (
 	"time"
 
 	"github.com/kidus-tiliksew/conveyor/internal/core"
-	"github.com/kidus-tiliksew/conveyor/internal/eventlog/s2log"
 	"github.com/kidus-tiliksew/conveyor/internal/queue"
 	"github.com/kidus-tiliksew/conveyor/internal/queue/logqueue"
 	"github.com/kidus-tiliksew/conveyor/internal/store"
@@ -174,10 +173,6 @@ func (s *Store) settleAcceptedReviewTx(ctx context.Context, tx *sql.Tx, o core.W
 		o.Claimable = false
 		o.OperatorDirection = ""
 		o.UpdatedAt = now
-		o.ContinuationSessionID = ""
-		o.ContinuationAttemptID = ""
-		o.ContinuationHarness = ""
-		o.ContinuationLaunchEnvironment = ""
 		if err = orderWrite(ctx, tx, o); err != nil {
 			return err
 		}
@@ -202,26 +197,6 @@ func (s *Store) settleAcceptedReviewTx(ctx context.Context, tx *sql.Tx, o core.W
 			return err
 		}
 		if err := taskEvent(ctx, tx, core.Event{TaskID: j.TaskID, JobID: j.ID, Kind: "job.updated", Payload: core.JSONPayload(j), At: now}); err != nil {
-			return err
-		}
-	}
-	orders, err := s.listOrders(ctx, tx, []string{o.TaskID})
-	if err != nil {
-		return err
-	}
-	for _, i := range orders {
-		if i.Stage != core.StageImplement || i.State != core.WorkOrderSubmitted || (i.ContinuationSessionID == "" && i.ContinuationAttemptID == "" && i.ContinuationHarness == "" && i.ContinuationLaunchEnvironment == "") {
-			continue
-		}
-		i.ContinuationSessionID = ""
-		i.ContinuationAttemptID = ""
-		i.ContinuationHarness = ""
-		i.ContinuationLaunchEnvironment = ""
-		i.UpdatedAt = now
-		if err = orderWrite(ctx, tx, i); err != nil {
-			return err
-		}
-		if err = taskEvent(ctx, tx, core.Event{TaskID: i.TaskID, JobID: i.JobID, Kind: "work_order.updated", Payload: store.WorkOrderEventPayload(i), At: now}); err != nil {
 			return err
 		}
 	}
@@ -585,7 +560,7 @@ func (s *Store) queueReviewPublicationTx(ctx context.Context, tx *sql.Tx, p core
 	if err = taskEvent(ctx, tx, core.Event{TaskID: p.TaskID, JobID: p.JobID, Kind: "review.publication_queued", Payload: core.JSONPayload(p)}); err != nil {
 		return err
 	}
-	_, err = logqueue.Enqueue(s2log.WithTx(ctx, tx), s.log, documentWorkspace(ctx), queue.ReviewPublicationArgs{}.Kind(), p.ReviewWorkOrderID, queue.ReviewPublicationArgs{WorkspaceID: documentWorkspace(ctx), ReviewWorkOrderID: p.ReviewWorkOrderID}, 5, time.Now().UTC())
+	_, err = logqueue.Enqueue(logTx(ctx, tx), s.log, documentWorkspace(ctx), queue.ReviewPublicationArgs{}.Kind(), p.ReviewWorkOrderID, queue.ReviewPublicationArgs{WorkspaceID: documentWorkspace(ctx), ReviewWorkOrderID: p.ReviewWorkOrderID}, 5, time.Now().UTC())
 	return err
 }
 

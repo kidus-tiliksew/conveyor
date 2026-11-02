@@ -59,9 +59,9 @@ func TestInstallPlaybookCommandCheckRefusesMisspellings(t *testing.T) {
 		"```sh\n" +
 		"conveyor skils install\n" +
 		"conveyor --server <server-url> mcp install --nmae factory\n" +
-		"conveyor --server <server-url> worker pair --tll 5m\n" +
+		"conveyor --server <server-url> task wait --tiemout 5m 261101-abc123\n" +
 		"```\n\n" +
-		"Change a setup with `conveyor setup create|edti main`.\n"
+		"Check a draft with `conveyor plan check|chekc`.\n"
 	invocations := playbookcheck.Extract([]byte(fixture))
 	if len(invocations) != 5 {
 		t.Fatalf("fixture invocations = %d, want 5", len(invocations))
@@ -75,8 +75,8 @@ func TestInstallPlaybookCommandCheckRefusesMisspellings(t *testing.T) {
 	}{
 		{invocation: invocations[1], want: `unknown command "skils" for "conveyor"`},
 		{invocation: invocations[2], want: `unknown flag "--nmae" for "conveyor mcp install"`},
-		{invocation: invocations[3], want: `unknown flag "--tll" for "conveyor worker pair"`},
-		{invocation: invocations[4], want: `unknown command "create|edti" for "conveyor setup"`},
+		{invocation: invocations[3], want: `unknown flag "--tiemout" for "conveyor task wait"`},
+		{invocation: invocations[4], want: `unknown command "check|chekc" for "conveyor plan"`},
 	} {
 		err := playbookcheck.CheckCobra(newRootCmd(), test.invocation.Args)
 		if err == nil || !strings.Contains(err.Error(), test.want) {
@@ -153,7 +153,7 @@ func TestConveyorInstallSkillInstallsForEveryTool(t *testing.T) {
 // section.
 func TestInstallPlaybookCitesSetupCriteria(t *testing.T) {
 	playbook := readInstallPlaybook(t)
-	for _, criterion := range []string{"AC-1.1", "AC-1.3", "AC-2.1", "AC-2.2", "AC-2.3", "AC-2.4", "AC-3.1", "AC-3.2", "AC-3.3", "AC-3.4", "AC-3.5", "AC-3.6", "AC-3.7", "AC-4.1", "AC-4.2", "AC-5.1", "AC-5.2"} {
+	for _, criterion := range []string{"AC-1.1", "AC-1.3", "AC-2.1", "AC-2.2", "AC-2.3", "AC-2.4", "AC-3.1", "AC-3.2", "AC-3.3", "AC-3.4", "AC-3.5", "AC-3.6", "AC-3.7", "AC-4.1", "AC-4.2", "AC-5.1"} {
 		if !bytes.Contains(playbook, []byte(criterion)) {
 			t.Errorf("%s does not cite req-agent-guided-setup %s", installPlaybookSource, criterion)
 		}

@@ -102,16 +102,18 @@ for the long tail of chores.
 Conveyor treats the light level as configuration.
 
 Running light, a person is in the loop at every step. Plan approval and
-merge approval are on, and the operator runs `conveyor run <task-id>`,
-watches the output live, and answers gates inline. A task carries no
-reservation: to keep work on one person's machine, assign it to them and run
-no worker for them (DEC-74). Claimable stages chain by default. Per-stage
-confirmation is available with `--step`.
+merge approval are on, and the operator starts an agent session in their own
+harness, asks it to work the task with the `conveyor-work` skill, watches it
+work, and answers each gate in the conversation or on the dashboard. A task
+carries no reservation: to keep work on one person's machines, assign it to
+them (DEC-74).
 
-Running dark, the queue drives itself. Gates are off (per task or workspace
-default), durable [workers](worker-operations.md) poll and execute around
-the clock, review rounds are staffed by configured agent seats, and approved
-work merges without a click. The [monitor](misalignment.md#the-monitor)
+Running dark, the queue moves with little attention. Gates are off (per task
+or workspace default), a coordinating agent session following the
+`conveyor-coordinate` skill starts a separate agent thread for each claimable
+order, review rounds are staffed by isolated reviewer agents, and approved
+work merges without a click. Every order is still claimed by an agent session
+a person started; nothing claims work automatically (DEC-97). The [monitor](misalignment.md#the-monitor)
 watches the repository and post-merge CI, and files reconciliation tasks for
 what it finds. The operator's job collapses to the attention queues:
 pending proposals, drift, staleness.

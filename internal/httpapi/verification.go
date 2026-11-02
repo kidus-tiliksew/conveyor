@@ -73,12 +73,7 @@ func (s *Server) callVerificationMCP(r *http.Request, name string, args map[stri
 		return nil, store.ErrVerificationAccess
 	}
 	ctx := store.WithWorkspace(r.Context(), ws)
-	if credential, ok := store.CredentialFromContext(ctx); ok && credential.Kind == core.CredentialAgent && credential.RunWorkOrderID != "" {
-		if credential.RunWorkspaceID != ws || (name != "get_evidence_schemas" && (credential.RunWorkOrderID != get("work_order_id") || credential.RunSessionID != get("session_id"))) {
-			return nil, store.ErrVerificationAccess
-		}
-	}
-	if _, worker := workerFromContext(ctx); !worker && s.Workspaces != nil {
+	if s.Workspaces != nil {
 		credential, ok := store.CredentialFromContext(ctx)
 		if !ok || s.Memberships == nil {
 			return nil, store.ErrVerificationAccess
@@ -89,9 +84,6 @@ func (s *Server) callVerificationMCP(r *http.Request, name string, args map[stri
 		}
 	}
 
-	if worker, ok := workerFromContext(ctx); ok {
-		ctx = store.WithActor(ctx, store.Actor{ID: store.WorkerActorID(worker.ID), Role: core.ActorWorker})
-	}
 	payload := map[string]any{}
 	for k, v := range args {
 		switch k {

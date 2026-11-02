@@ -288,6 +288,15 @@ func sameReviewSummaryContent(recorded ReviewSummaryPayload, request ReviewSumma
 // validated request becomes the next version of the round. Versions count
 // the round's earlier summary events, never global event IDs.
 func PlanReviewSummary(workspace string, request ReviewSummaryRequest, events []core.Event) (ReviewSummaryPlan, error) {
+	return PlanReviewSummaryAfter(workspace, request, events, 0)
+}
+
+// PlanReviewSummaryAfter is PlanReviewSummary for a backend that also records
+// the round's latest version outside the event history. SingleStore records
+// it on the round's claim row (component-persistence, SingleStore claimed
+// records; feature-review-round-summary SU-2): the next version is one more
+// than the larger of recorded and the round's earlier summary events.
+func PlanReviewSummaryAfter(workspace string, request ReviewSummaryRequest, events []core.Event, recorded int) (ReviewSummaryPlan, error) {
 	request = normalizeReviewSummaryRequest(request)
 	earlier := 0
 	for _, event := range events {
@@ -314,7 +323,7 @@ func PlanReviewSummary(workspace string, request ReviewSummaryRequest, events []
 		return ReviewSummaryPlan{}, err
 	}
 	payload := ReviewSummaryPayload{
-		WorkspaceID: workspace, ReviewRound: request.ReviewRound, Version: earlier + 1, RequestID: request.RequestID,
+		WorkspaceID: workspace, ReviewRound: request.ReviewRound, Version: max(earlier, recorded) + 1, RequestID: request.RequestID,
 		Summary: request.Summary, Findings: request.Findings, Author: request.Author,
 	}
 	return ReviewSummaryPlan{Event: core.Event{TaskID: request.TaskID, Kind: ReviewSummaryRecordedEvent, Payload: core.JSONPayload(payload)}}, nil

@@ -103,16 +103,16 @@ func newVerificationReadFixture(t *testing.T) *verificationReadFixture {
 	if _, err = storetest.CreateStageWorkOrder(ctx, s, job, order); err != nil {
 		t.Fatal(err)
 	}
-	claim := core.WorkOrderClaim{WorkerID: "worker", ClaimantID: "worker", SessionID: "verification", ClientToken: "verification-read-token", Lease: time.Hour, ExecutionTimeout: time.Hour}
+	claim := core.WorkOrderClaim{ClaimantID: core.TaskRunClaimantID("worker"), SessionID: "verification", ClientToken: "verification-read-token", Lease: time.Hour, ExecutionTimeout: time.Hour}
 	claim.Requirements = []core.ServedRequirementContext{{ID: "req-fixture", Version: 1, Statements: []core.RequirementStatement{{ID: "REQ-1", Statement: "Observe the state", AcceptanceCriteria: []core.AcceptanceCriterion{{ID: "AC-1.1", Statement: "Retain the observation"}}}}}}
 	if order, err = storetest.ClaimWorkOrder(ctx, s, order.ID, claim); err != nil {
 		t.Fatal(err)
 	}
 	f := &verificationReadFixture{
 		s: s, ws: ws, system: ctx, member: member,
-		worker:    store.WithActor(ctx, store.Actor{ID: "worker:worker", Role: core.ActorWorker}),
+		worker:    store.WithActor(ctx, store.Actor{ID: store.UserActorID("worker"), Role: core.ActorUser}),
 		user:      store.VerificationAccess{TaskID: id, UserID: owner.ID},
-		claim:     store.VerificationAccess{TaskID: id, WorkOrderID: order.ID, WorkOrderAttemptID: order.AttemptID, ClientToken: claim.ClientToken, Claim: core.WorkOrderClaimIdentity{WorkerID: claim.WorkerID, ClaimantID: claim.ClaimantID, SessionID: claim.SessionID}},
+		claim:     store.VerificationAccess{TaskID: id, WorkOrderID: order.ID, WorkOrderAttemptID: order.AttemptID, ClientToken: claim.ClientToken, Claim: core.WorkOrderClaimIdentity{ClaimantID: claim.ClaimantID, SessionID: claim.SessionID}},
 		revisions: []core.VerificationRevision{{Repository: "conveyor", RemoteIdentity: "https://example.test/conveyor", SHA: head}},
 		pins:      []core.VerificationPin{{Kind: "requirement", DocumentID: "req-fixture", Version: 1}},
 	}
@@ -152,7 +152,7 @@ func (f *verificationReadFixture) apply(t *testing.T, c store.VerificationComman
 func (f *verificationReadFixture) writeEvidence(t *testing.T, id string, artifacts []store.VerificationArtifactInput) string {
 	t.Helper()
 	at := time.Now().UTC().Format(time.RFC3339Nano)
-	e := core.VerificationEvidence{SchemaVersion: 1, ID: id, SubmissionKey: id, Type: "state_observation", CapturedAt: at, ReceivedAt: at, SubmittedBy: "worker:worker", CapturedBy: core.VerificationCaptureActor{Identity: "fixture-tool", Kind: "tool", Version: "1", Attribution: "self_reported"}, WorkspaceID: f.ws, TaskID: f.claim.TaskID, WorkOrderID: f.claim.WorkOrderID, WorkOrderAttemptID: f.claim.WorkOrderAttemptID, ContextID: f.contextID, RunID: f.runID, Subject: f.subject, Revisions: f.revisions, GoverningPins: f.pins, SafeInputs: map[string]json.RawMessage{}, Environment: verificationReadEnvironment(), Payload: core.JSONPayload(core.StateObservationPayload{Target: "fixture", Method: "read", CapturedAt: at, Value: core.JSONPayload("observed")})}
+	e := core.VerificationEvidence{SchemaVersion: 1, ID: id, SubmissionKey: id, Type: "state_observation", CapturedAt: at, ReceivedAt: at, SubmittedBy: "user:worker", CapturedBy: core.VerificationCaptureActor{Identity: "fixture-tool", Kind: "tool", Version: "1", Attribution: "self_reported"}, WorkspaceID: f.ws, TaskID: f.claim.TaskID, WorkOrderID: f.claim.WorkOrderID, WorkOrderAttemptID: f.claim.WorkOrderAttemptID, ContextID: f.contextID, RunID: f.runID, Subject: f.subject, Revisions: f.revisions, GoverningPins: f.pins, SafeInputs: map[string]json.RawMessage{}, Environment: verificationReadEnvironment(), Payload: core.JSONPayload(core.StateObservationPayload{Target: "fixture", Method: "read", CapturedAt: at, Value: core.JSONPayload("observed")})}
 	for _, a := range artifacts {
 		e.Artifacts = append(e.Artifacts, core.VerificationArtifactReference{ArtifactID: a.SHA256, SHA256: a.SHA256, MediaType: a.ContentType})
 	}

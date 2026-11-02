@@ -41,7 +41,7 @@ func TestPlanRevisionApproveReentersPlanAndBindsFreshImplementationToV2(t *testi
 	if len(jobs) != 2 || jobs[0].State != core.JobFailed || cancelledEvents != 1 {
 		t.Fatalf("contested job/events jobs=%+v cancelled_events=%d", jobs, cancelledEvents)
 	}
-	planOrder, err := storetest.For(st).ClaimWorkOrder(ctx, orders[1].ID, core.WorkOrderClaim{SessionID: "plan-session", ClientToken: "plan-token", WorkerID: "plan-worker", Agent: "codex", Model: "planner", Lease: time.Minute, ExecutionTimeout: time.Hour})
+	planOrder, err := storetest.For(st).ClaimWorkOrder(ctx, orders[1].ID, core.WorkOrderClaim{SessionID: "plan-session", ClientToken: "plan-token", Agent: "codex", Model: "planner", Lease: time.Minute, ExecutionTimeout: time.Hour})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -83,13 +83,13 @@ func TestPlanRevisionApproveReentersPlanAndBindsFreshImplementationToV2(t *testi
 	if err != nil || !ok || approved.Version != 2 || approved.Content != strings.TrimSpace(revised.Markdown) {
 		t.Fatalf("approved plan=%+v ok=%t err=%v", approved, ok, err)
 	}
-	resumed, err := storetest.For(st).ClaimWorkOrder(ctx, orders[2].ID, core.WorkOrderClaim{SessionID: "resumed-implementation", ClientToken: "resumed-token", WorkerID: "implement-worker-approve", Lease: time.Minute, ExecutionTimeout: time.Hour})
+	resumed, err := storetest.For(st).ClaimWorkOrder(ctx, orders[2].ID, core.WorkOrderClaim{SessionID: "resumed-implementation", ClientToken: "resumed-token", Lease: time.Minute, ExecutionTimeout: time.Hour})
 	if err != nil {
 		t.Fatal(err)
 	}
 	resumedContext, err := service.Get(ctx, resumed.ID, resumed.SessionID)
-	if err != nil || resumedContext.Predecessor == nil || resumedContext.Predecessor.WorkOrderID != contested.ID || resumedContext.Predecessor.AttemptID != contested.LastAttemptID {
-		t.Fatalf("resumed predecessor=%+v err=%v", resumedContext.Predecessor, err)
+	if err != nil || resumedContext.Order.ID != resumed.ID {
+		t.Fatalf("resumed context=%+v err=%v", resumedContext.Order, err)
 	}
 }
 
@@ -109,7 +109,7 @@ func TestPlanRevisionDeclineRecoversImplementationWithDirection(t *testing.T) {
 	if err != nil || recovered.State != core.WorkOrderQueued || !recovered.Claimable || recovered.AutomaticRetryCount != 0 || recovered.OperatorDirection != direction {
 		t.Fatalf("recovered order=%+v err=%v", recovered, err)
 	}
-	claimed, err := storetest.For(st).ClaimWorkOrder(ctx, recovered.ID, core.WorkOrderClaim{SessionID: "retry-session", ClientToken: "retry-token", WorkerID: "retry-worker", Agent: "codex", Model: "implementer", Lease: time.Minute, ExecutionTimeout: time.Hour})
+	claimed, err := storetest.For(st).ClaimWorkOrder(ctx, recovered.ID, core.WorkOrderClaim{SessionID: "retry-session", ClientToken: "retry-token", Agent: "codex", Model: "implementer", Lease: time.Minute, ExecutionTimeout: time.Hour})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -145,10 +145,7 @@ func newPlanRevisionLoopWithStore(t *testing.T, ctx context.Context, st store.St
 	if _, err = storetest.For(st).CreateStageWorkOrder(ctx, job, order); err != nil {
 		t.Fatal(err)
 	}
-	// Worker IDs are global, so a fixed ID collides when the PostgreSQL
-	// integration run reuses a database; the per-run suffix keeps it unique.
-	workerID := "implement-worker-" + suffix
-	claimed, err := storetest.For(st).ClaimWorkOrder(ctx, order.ID, core.WorkOrderClaim{SessionID: "implement-session", ClientToken: "implement-token", WorkerID: workerID, Agent: "codex", Model: "implementer", Lease: time.Minute, ExecutionTimeout: time.Hour})
+	claimed, err := storetest.For(st).ClaimWorkOrder(ctx, order.ID, core.WorkOrderClaim{SessionID: "implement-session", ClientToken: "implement-token", Agent: "codex", Model: "implementer", Lease: time.Minute, ExecutionTimeout: time.Hour})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -157,7 +154,7 @@ func newPlanRevisionLoopWithStore(t *testing.T, ctx context.Context, st store.St
 		t.Fatal(err)
 	}
 	result, err := taskops.ExecuteWorkOrder(ctx, st, task.ID, core.WorkOrderCmdRequestPlanRevision, func(lease taskops.TaskLease) (store.PlanRevisionRequestResult, error) {
-		return st.RequestPlanRevisionCommand(ctx, lease, order.ID, core.WorkOrderClaimIdentity{WorkerID: workerID, ClaimantID: claimed.ClaimantID, SessionID: claimed.SessionID}, "the public API changed")
+		return st.RequestPlanRevisionCommand(ctx, lease, order.ID, core.WorkOrderClaimIdentity{ClaimantID: claimed.ClaimantID, SessionID: claimed.SessionID}, "the public API changed")
 	})
 	if err != nil {
 		t.Fatal(err)

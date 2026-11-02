@@ -32,7 +32,7 @@ func taskRoot() *cobra.Command {
 	return root
 }
 
-// DEC-56(2); component-harness-execution "Setup acts": task creation has no
+// DEC-96(2); component-runtime: task creation has no
 // setup selection, and the flag is refused before any request.
 func TestTaskNewRejectsSetupFlag(t *testing.T) {
 	requests := retiredSetupServer(t)

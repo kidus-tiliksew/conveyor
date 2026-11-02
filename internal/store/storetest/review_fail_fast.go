@@ -47,7 +47,7 @@ func ffTask(t *testing.T, x Fixture, seats int, failFast bool) core.Task {
 	t.Helper()
 	task := core.Task{ID: core.NewTaskID(), Workspace: x.Workspace, Repo: "conveyor", BaseBranch: "main", State: core.TaskRunning, NextStage: core.StageReview, ReviewedHeadSHA: seatFixtureHead, CreatedAt: time.Now().UTC()}
 	task.Branch = "conveyor/task-" + task.ID
-	task.SetupContract = config.ExecutionSetup{MaxBounces: 3, Review: config.ReviewPanel{Seats: make([]config.ReviewSeat, seats), FailFast: failFast}, ExecutionSettings: config.ContextualExecutionSettings{Review: config.ReviewExecutionSettings{TimeoutText: "1h"}}}
+	task.SetupContract = config.PolicyContract{MaxBounces: 3, Review: config.ReviewPanel{Seats: make([]config.ReviewSeat, seats), FailFast: failFast}, StageTimeouts: config.PolicyStageTimeouts{Review: "1h"}}
 	requireOK(t, x.Backend.CreateTask(x.Context, task))
 	stored, err := x.Backend.GetTask(x.Context, task.ID)
 	requireOK(t, err)
@@ -69,7 +69,7 @@ func ffRound(t *testing.T, x Fixture, seats int, failFast bool) (core.Task, []co
 func ffClaim(t *testing.T, x Fixture, order core.WorkOrder) string {
 	t.Helper()
 	session := order.ID + "-session"
-	_, err := ClaimWorkOrder(x.Context, x.Backend, order.ID, core.WorkOrderClaim{WorkerID: ffWorker, ClaimantID: ffWorker, SessionID: session, ClientToken: session + "-token", Lease: time.Hour, ExecutionTimeout: time.Hour})
+	_, err := ClaimWorkOrder(x.Context, x.Backend, order.ID, core.WorkOrderClaim{ClaimantID: ffWorker, SessionID: session, ClientToken: session + "-token", Lease: time.Hour, ExecutionTimeout: time.Hour})
 	requireOK(t, err)
 	return session
 }
@@ -356,7 +356,7 @@ func runFailFastLateClaim(t *testing.T, x Fixture) {
 	if _, err := RenewWorkerClaim(x.Context, x.Backend, orders[1].ID, ffWorker, claimed, time.Hour); err == nil {
 		t.Fatal("renewal of a seat cancelled by settlement succeeded")
 	}
-	if _, err := ClaimWorkOrder(x.Context, x.Backend, orders[2].ID, core.WorkOrderClaim{WorkerID: ffWorker, ClaimantID: ffWorker, SessionID: "late", ClientToken: "late-token", Lease: time.Hour, ExecutionTimeout: time.Hour}); err == nil {
+	if _, err := ClaimWorkOrder(x.Context, x.Backend, orders[2].ID, core.WorkOrderClaim{ClaimantID: ffWorker, SessionID: "late", ClientToken: "late-token", Lease: time.Hour, ExecutionTimeout: time.Hour}); err == nil {
 		t.Fatal("claim of a seat cancelled by settlement succeeded")
 	}
 	ffRequireUnchanged(t, "late claims", ffSnapshot(t, x, task.ID), before)

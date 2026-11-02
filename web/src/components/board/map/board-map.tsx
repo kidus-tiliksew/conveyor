@@ -90,7 +90,8 @@ function BoardMapView() {
     queryFn: ({ signal }) =>
       fetchTaskMap(workspace, { repositories: repo ? [repo] : [], includeFinished: showDone }, signal),
     enabled: Boolean(workspace),
-    refetchInterval: 60_000,
+    // No interval: the workspace change stream refreshes the map after each
+    // task change (component-web-dashboard, Workspace change stream).
     placeholderData: sameWorkspacePlaceholder(workspace),
   })
   const model = useMemo(() => buildModel(data?.tasks ?? []), [data])

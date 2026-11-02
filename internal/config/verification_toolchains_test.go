@@ -109,7 +109,7 @@ func TestVerificationToolchainsLoadAndStayLocal(t *testing.T) {
 		if err := os.WriteFile(path, append(append([]byte(nil), example...), []byte(suffix)...), 0o600); err != nil {
 			t.Fatal(err)
 		}
-		return Load(path)
+		return LoadClient(path, nil)
 	}
 	section := "\nverification_toolchains:\n  - server: https://factory.test\n    workspace: demo\n    repository: repo\n    search_paths: [/opt/homebrew/bin, /usr/bin]\n    home: /Users/operator\n    settings:\n      GOPATH: /Users/operator/go\n"
 	cfg, err := load(section)

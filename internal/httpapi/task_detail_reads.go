@@ -100,7 +100,7 @@ func taskDetailArtifacts(taskID string, artifacts []core.Artifact) ([]core.Artif
 // nextActionOptionsFor does, with one membership decision instead of one per
 // capability. Nothing is inferred from a claim.
 func (s *Server) detailNextActionOptions(ctx context.Context) (store.NextActionOptions, error) {
-	opts := store.NextActionOptions{Now: time.Now().UTC(), Capabilities: map[core.Capability]bool{}, MergeReadiness: s.taskRunReadiness.lastKnown}
+	opts := store.NextActionOptions{Now: time.Now().UTC(), Capabilities: map[core.Capability]bool{}, MergeReadiness: s.mergeReadiness.lastKnown}
 	credential, ok := store.CredentialFromContext(ctx)
 	if !ok || credential.Kind != core.CredentialUser {
 		return opts, nil
