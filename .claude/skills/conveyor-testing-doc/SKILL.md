@@ -1,6 +1,6 @@
 ---
 name: conveyor-testing-doc
-description: Create or revise a testing-strategy System Design document for a project or repository scope by discovering its real verification surfaces, evidence boundaries, and known gaps first.
+description: Create or revise a testing-strategy System Design document for a project or repository scope by discovering its real verification surfaces, evidence boundaries, and known gaps first. Use when the operator asks to write or revise a project's or repository's testing strategy, or a task needs a testing-strategy System Design document.
 ---
 
 # Conveyor testing-strategy documents
