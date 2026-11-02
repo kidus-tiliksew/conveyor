@@ -10,10 +10,12 @@ import (
 
 	"github.com/kidus-tiliksew/conveyor/internal/core"
 	"github.com/kidus-tiliksew/conveyor/internal/store"
+	"github.com/kidus-tiliksew/conveyor/internal/store/dbmetrics"
 	"github.com/kidus-tiliksew/conveyor/internal/store/postgres/db"
 )
 
 func (s *Store) CreateArtifact(ctx context.Context, artifact core.Artifact, content []byte) (core.Artifact, error) {
+	ctx = dbmetrics.WithReadLabel(ctx, "CreateArtifact")
 	if artifact.Role == core.ArtifactRoleTypedVerificationEvidence {
 		return core.Artifact{}, store.ErrVerificationAccess
 	}
@@ -99,6 +101,7 @@ func (s *Store) createArtifactTx(ctx context.Context, tx pgx.Tx, artifact core.A
 }
 
 func (s *Store) GetArtifact(ctx context.Context, id string) (core.Artifact, []byte, error) {
+	ctx = dbmetrics.WithReadLabel(ctx, "GetArtifact")
 	var artifact core.Artifact
 	var content []byte
 	err := s.boundary.QueryRow(ctx, `SELECT a.id,a.workspace_id,a.name,a.content_type,a.size_bytes,a.content,a.created_at,COALESCE(l.role,'task_context'),COALESCE(l.task_id,''),COALESCE(l.requirement_id,''),COALESCE(l.planning_session_id,'') FROM artifacts a LEFT JOIN artifact_links l ON l.workspace_id=a.workspace_id AND l.artifact_id=a.id WHERE a.workspace_id=$1 AND a.id=$2 ORDER BY (l.role='typed_verification_evidence') DESC,l.role LIMIT 1`, workspace(ctx), id).Scan(&artifact.ID, &artifact.Workspace, &artifact.Name, &artifact.ContentType, &artifact.SizeBytes, &content, &artifact.CreatedAt, &artifact.Role, &artifact.TaskID, &artifact.RequirementID, &artifact.PlanningSessionID)
@@ -112,6 +115,7 @@ func (s *Store) GetArtifact(ctx context.Context, id string) (core.Artifact, []by
 }
 
 func (s *Store) GetArtifactForPlanningSession(ctx context.Context, id, sessionID string) (core.Artifact, []byte, error) {
+	ctx = dbmetrics.WithReadLabel(ctx, "GetArtifactForPlanningSession")
 	var artifact core.Artifact
 	var content []byte
 	err := s.boundary.QueryRow(ctx, `SELECT a.id,a.workspace_id,a.name,a.content_type,a.size_bytes,a.content,a.created_at,l.role,COALESCE(l.task_id,''),COALESCE(l.requirement_id,''),COALESCE(l.planning_session_id,'')
@@ -130,6 +134,7 @@ func (s *Store) GetArtifactForPlanningSession(ctx context.Context, id, sessionID
 }
 
 func (s *Store) ListArtifacts(ctx context.Context) ([]core.Artifact, error) {
+	ctx = dbmetrics.WithReadLabel(ctx, "ListArtifacts")
 	rows, err := s.boundary.Query(ctx, `SELECT a.id,a.workspace_id,a.name,a.content_type,a.size_bytes,a.created_at,COALESCE(l.role,'task_context'),COALESCE(l.task_id,''),COALESCE(l.requirement_id,''),COALESCE(l.planning_session_id,'') FROM artifacts a LEFT JOIN artifact_links l ON l.workspace_id=a.workspace_id AND l.artifact_id=a.id WHERE a.workspace_id=$1 ORDER BY a.created_at,a.id,l.role`, workspace(ctx))
 	if err != nil {
 		return nil, err
@@ -172,6 +177,7 @@ SELECT id,workspace_id,name,content_type,size_bytes,created_at,role,
 FROM dedup ORDER BY ord,created_at,id,role`
 
 func (s *Store) ListArtifactsForLineage(ctx context.Context, nodes []core.LineageNode) ([]core.Artifact, error) {
+	ctx = dbmetrics.WithReadLabel(ctx, "ListArtifactsForLineage")
 	types, ids := make([]string, 0, len(nodes)), make([]string, 0, len(nodes))
 	for _, node := range nodes {
 		if node.Valid() {

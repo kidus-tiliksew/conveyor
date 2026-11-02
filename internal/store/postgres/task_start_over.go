@@ -9,6 +9,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/kidus-tiliksew/conveyor/internal/core"
 	"github.com/kidus-tiliksew/conveyor/internal/store"
+	"github.com/kidus-tiliksew/conveyor/internal/store/dbmetrics"
 	"github.com/kidus-tiliksew/conveyor/internal/store/postgres/db"
 	"github.com/kidus-tiliksew/conveyor/internal/taskops"
 )
@@ -16,6 +17,7 @@ import (
 // StartOverTaskCommand commits cancellation, dismissals, successor context and
 // dispatch intent together (req-task-lifecycle-and-queue REQ-7).
 func (s *Store) StartOverTaskCommand(ctx context.Context, lease taskops.TaskLease, r core.TaskStartOverRequest) (core.TaskStartOverResult, error) {
+	ctx = dbmetrics.WithReadLabel(ctx, "StartOverTaskCommand")
 	var result core.TaskStartOverResult
 	if !lease.ValidForCommand(r.TaskID, string(core.TaskStartOver)) {
 		return result, fmt.Errorf("task start over requires a valid taskops lease")

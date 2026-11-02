@@ -13,10 +13,12 @@ import (
 	"github.com/kidus-tiliksew/conveyor/internal/config"
 	"github.com/kidus-tiliksew/conveyor/internal/core"
 	"github.com/kidus-tiliksew/conveyor/internal/store"
+	"github.com/kidus-tiliksew/conveyor/internal/store/dbmetrics"
 	"gopkg.in/yaml.v3"
 )
 
 func (s *Store) ListWorkspaces(ctx context.Context) ([]core.Workspace, error) {
+	ctx = dbmetrics.WithReadLabel(ctx, "ListWorkspaces")
 	rows, err := s.db.QueryContext(ctx, `SELECT id,name,config_version,created_at FROM workspaces ORDER BY LOWER(name),id`)
 	if err != nil {
 		return nil, translateBackendConflict(err)
@@ -33,6 +35,7 @@ func (s *Store) ListWorkspaces(ctx context.Context) ([]core.Workspace, error) {
 	return result, rows.Err()
 }
 func (s *Store) GetWorkspace(ctx context.Context, id string) (core.Workspace, error) {
+	ctx = dbmetrics.WithReadLabel(ctx, "GetWorkspace")
 	var w core.Workspace
 	err := s.db.QueryRowContext(ctx, `SELECT id,name,config_version,created_at FROM workspaces WHERE id=?`, id).Scan(&w.ID, &w.Name, &w.ConfigVersion, &w.CreatedAt)
 	if errors.Is(err, sql.ErrNoRows) {
@@ -49,6 +52,7 @@ func upsertRepos(ctx context.Context, tx *sql.Tx, ws string, repos []config.Repo
 	return nil
 }
 func (s *Store) BootstrapWorkspaceConfig(ctx context.Context, cfg *config.Config) (bool, error) {
+	ctx = dbmetrics.WithReadLabel(ctx, "BootstrapWorkspaceConfig")
 	if cfg == nil || cfg.Workspace == "" {
 		return false, store.ErrWorkspaceRequired
 	}
@@ -104,6 +108,7 @@ func (s *Store) BootstrapWorkspaceConfig(ctx context.Context, cfg *config.Config
 	return seeded && err == nil, err
 }
 func (s *Store) CreateWorkspace(ctx context.Context, id, name string, cfg *config.Config) (core.Workspace, error) {
+	ctx = dbmetrics.WithReadLabel(ctx, "CreateWorkspace")
 	if id == "" || strings.TrimSpace(name) == "" || cfg == nil {
 		return core.Workspace{}, fmt.Errorf("workspace id, name and configuration are required")
 	}
@@ -160,6 +165,7 @@ func (s *Store) configRow(ctx context.Context) (string, int64, error) {
 	return data, version, translateBackendConflict(err)
 }
 func (s *Store) WorkspaceConfig(ctx context.Context) (config.VersionedDocument, error) {
+	ctx = dbmetrics.WithReadLabel(ctx, "WorkspaceConfig")
 	data, version, err := s.configRow(ctx)
 	if err != nil {
 		return config.VersionedDocument{}, err
@@ -181,6 +187,7 @@ func (s *Store) WorkspaceConfig(ctx context.Context) (config.VersionedDocument, 
 // control-plane settings through the shared runtime helper
 // (component-runtime; component-persistence).
 func (s *Store) RuntimeConfig(ctx context.Context, deployment *config.Config) (*config.Config, error) {
+	ctx = dbmetrics.WithReadLabel(ctx, "RuntimeConfig")
 	if deployment == nil {
 		return nil, fmt.Errorf("deployment configuration is required")
 	}
@@ -193,6 +200,7 @@ func (s *Store) RuntimeConfig(ctx context.Context, deployment *config.Config) (*
 	return config.ParseRuntimeWorkspaceDocument([]byte(data), &base, "stored workspace config")
 }
 func (s *Store) UpdateWorkspaceConfig(ctx context.Context, expected int64, next *config.Config) (config.UpdateReceipt, error) {
+	ctx = dbmetrics.WithReadLabel(ctx, "UpdateWorkspaceConfig")
 	ws, err := workspace(ctx)
 	if err != nil {
 		return config.UpdateReceipt{}, err

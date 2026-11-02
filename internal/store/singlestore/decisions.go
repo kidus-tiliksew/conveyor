@@ -13,9 +13,11 @@ import (
 	"github.com/go-sql-driver/mysql"
 	"github.com/kidus-tiliksew/conveyor/internal/core"
 	"github.com/kidus-tiliksew/conveyor/internal/store"
+	"github.com/kidus-tiliksew/conveyor/internal/store/dbmetrics"
 )
 
 func (s *Store) ProposeDecision(ctx context.Context, decision core.Decision) (core.Decision, error) {
+	ctx = dbmetrics.WithReadLabel(ctx, "ProposeDecision")
 	if err := core.ValidateDecision(decision); err != nil {
 		return decision, err
 	}
@@ -74,6 +76,7 @@ func (s *Store) ProposeDecision(ctx context.Context, decision core.Decision) (co
 }
 
 func (s *Store) ConfirmDecision(ctx context.Context, id string) (core.Decision, error) {
+	ctx = dbmetrics.WithReadLabel(ctx, "ConfirmDecision")
 	var decision core.Decision
 	err := s.documentTx(ctx, func(tx *sql.Tx) error {
 		var err error
@@ -122,6 +125,7 @@ func (s *Store) ConfirmDecision(ctx context.Context, id string) (core.Decision, 
 }
 
 func (s *Store) DismissDecision(ctx context.Context, id string) (core.Decision, error) {
+	ctx = dbmetrics.WithReadLabel(ctx, "DismissDecision")
 	var decision core.Decision
 	err := s.documentTx(ctx, func(tx *sql.Tx) error {
 		var err error
@@ -168,6 +172,7 @@ func scanDecision(row documentScanner, id string) (core.Decision, error) {
 	return item, err
 }
 func (s *Store) GetDecision(ctx context.Context, id string) (core.Decision, error) {
+	ctx = dbmetrics.WithReadLabel(ctx, "GetDecision")
 	item, err := scanDecision(documentRow(ctx, s.db, decisionSelect+` WHERE workspace_id=? AND id=?`, documentWorkspace(ctx), id), id)
 	if err != nil {
 		return item, err
@@ -177,6 +182,7 @@ func (s *Store) GetDecision(ctx context.Context, id string) (core.Decision, erro
 	return item, err
 }
 func (s *Store) ListDecisions(ctx context.Context) ([]core.Decision, error) {
+	ctx = dbmetrics.WithReadLabel(ctx, "ListDecisions")
 	rows, err := documentRows(ctx, s.db, decisionSelect+` WHERE workspace_id=? ORDER BY CAST(SUBSTRING(id,5) AS SIGNED)`, documentWorkspace(ctx))
 	if err != nil {
 		return nil, err
@@ -214,6 +220,7 @@ func (s *Store) ListDecisions(ctx context.Context) ([]core.Decision, error) {
 // core.DeriveDecisionCitations's (component-document-corpus, Decision
 // citations).
 func (s *Store) ListDecisionCitations(ctx context.Context) ([]core.DecisionCitation, error) {
+	ctx = dbmetrics.WithReadLabel(ctx, "ListDecisionCitations")
 	rows, err := documentRows(ctx, s.db, `SELECT id FROM decisions WHERE workspace_id=?`, documentWorkspace(ctx))
 	if err != nil {
 		return nil, err
@@ -421,6 +428,7 @@ func recomputeDecisionSweepsForDocumentTx(ctx context.Context, tx *sql.Tx, tier,
 }
 
 func (s *Store) DismissDecisionSupersessionSweep(ctx context.Context, decisionID, documentTier, documentID string) (core.DecisionSupersessionSweepEntry, error) {
+	ctx = dbmetrics.WithReadLabel(ctx, "DismissDecisionSupersessionSweep")
 	var entry core.DecisionSupersessionSweepEntry
 	err := s.documentTx(ctx, func(tx *sql.Tx) error {
 		actor, now := store.ActorFromContext(ctx), time.Now().UTC()

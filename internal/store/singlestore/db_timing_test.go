@@ -6,6 +6,7 @@ import (
 	"database/sql/driver"
 	"errors"
 	"io"
+	"net"
 	"reflect"
 	"strings"
 	"sync"
@@ -573,5 +574,141 @@ func TestMeteredConnectorAbsentInterfaceFallbacks(t *testing.T) {
 func TestSingleStoreRequestMetricsOmitAcquire(t *testing.T) {
 	if got := (&Store{}).RequestMetrics(); got != dbmetrics.QueryCount|dbmetrics.QueryDuration {
 		t.Fatalf("capability = %b", got)
+	}
+}
+
+// readingConnector binds a counting pipe to each connection through the
+// connect slot, as countingDialFunc does, and its connections read
+// readChunk bytes from the pipe in every execution, query, preparation,
+// and begin, so each operation's bytes land under its label.
+type readingConnector struct {
+	driver *fullDriver
+	reads  *dbmetrics.ReadLedger
+}
+
+const readChunk = 64
+
+func (c readingConnector) Connect(ctx context.Context) (driver.Conn, error) {
+	server, client := net.Pipe()
+	go func() {
+		chunk := make([]byte, readChunk)
+		for {
+			if _, err := server.Write(chunk); err != nil {
+				return
+			}
+		}
+	}()
+	wrapped := c.reads.WrapConn(client)
+	if slot, ok := ctx.Value(readConnSlotKey{}).(*readConnSlot); ok {
+		slot.conn = dbmetrics.ReadConnOf(wrapped)
+	}
+	return &readingConn{fullConn: &fullConn{driver: c.driver}, wire: wrapped, server: server}, nil
+}
+func (c readingConnector) Driver() driver.Driver { return nil }
+
+type readingConn struct {
+	*fullConn
+	wire, server net.Conn
+}
+
+func (c *readingConn) consume() error {
+	_, err := io.ReadFull(c.wire, make([]byte, readChunk))
+	return err
+}
+func (c *readingConn) Close() error { c.server.Close(); return c.wire.Close() }
+func (c *readingConn) ExecContext(ctx context.Context, query string, args []driver.NamedValue) (driver.Result, error) {
+	if len(args) == 0 {
+		if err := c.consume(); err != nil {
+			return nil, err
+		}
+	}
+	return c.fullConn.ExecContext(ctx, query, args)
+}
+func (c *readingConn) QueryContext(ctx context.Context, query string, args []driver.NamedValue) (driver.Rows, error) {
+	if len(args) == 0 {
+		if err := c.consume(); err != nil {
+			return nil, err
+		}
+	}
+	return c.fullConn.QueryContext(ctx, query, args)
+}
+func (c *readingConn) PrepareContext(ctx context.Context, query string) (driver.Stmt, error) {
+	if err := c.consume(); err != nil {
+		return nil, err
+	}
+	return c.fullConn.PrepareContext(ctx, query)
+}
+func (c *readingConn) BeginTx(ctx context.Context, opts driver.TxOptions) (driver.Tx, error) {
+	if err := c.consume(); err != nil {
+		return nil, err
+	}
+	return c.fullConn.BeginTx(ctx, opts)
+}
+
+// TestMeteredConnCountsReadOperations covers read accounting through the
+// metered connection with and without a request collector
+// (component-persistence, Database read accounting).
+func TestMeteredConnCountsReadOperations(t *testing.T) {
+	reads := dbmetrics.NewReadLedger()
+	db, _ := openFixture(t, readingConnector{driver: &fullDriver{log: &fixtureLog{}}, reads: reads})
+	labeled := func(label string) context.Context {
+		return dbmetrics.WithReadLabel(context.Background(), label)
+	}
+	if _, err := db.ExecContext(labeled("ExecLabel"), "UPDATE t"); err != nil {
+		t.Fatal(err)
+	}
+	rows, err := db.QueryContext(labeled("QueryLabel"), "SELECT n")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for rows.Next() {
+	}
+	rows.Close()
+	rows.Close()
+	rows, err = db.QueryContext(labeled("EarlyLabel"), "SELECT n")
+	if err != nil {
+		t.Fatal(err)
+	}
+	rows.Next()
+	rows.Close()
+	// Arguments make the connection answer driver.ErrSkip, which records
+	// nothing; the preparation's bytes count without a query and the
+	// statement execution counts the query once.
+	if _, err := db.ExecContext(labeled("SkipLabel"), "UPDATE t SET n=?", 1); err != nil {
+		t.Fatal(err)
+	}
+	// A transaction's begin, statement, and commit count under the label
+	// it began with, and a request collector changes nothing.
+	requestCtx, collector := requestContext()
+	tx, err := db.BeginTx(dbmetrics.WithReadLabel(requestCtx, "TxLabel"), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := tx.ExecContext(dbmetrics.WithReadLabel(requestCtx, "TxLabel"), "UPDATE t"); err != nil {
+		t.Fatal(err)
+	}
+	if err := tx.Commit(); err != nil {
+		t.Fatal(err)
+	}
+	if got := collector.Snapshot(); got.Queries != 3 {
+		t.Fatalf("collector = %+v", got)
+	}
+	if _, err := db.ExecContext(context.Background(), "UPDATE t"); err != nil {
+		t.Fatal(err)
+	}
+	got := map[string]dbmetrics.ReadTotal{}
+	for _, total := range reads.Drain(100).Top {
+		got[total.Label] = total
+	}
+	want := map[string]dbmetrics.ReadTotal{
+		"ExecLabel":             {Label: "ExecLabel", Bytes: readChunk, Queries: 1},
+		"QueryLabel":            {Label: "QueryLabel", Bytes: readChunk, Rows: 3, Queries: 1},
+		"EarlyLabel":            {Label: "EarlyLabel", Bytes: readChunk, Rows: 1, Queries: 1},
+		"SkipLabel":             {Label: "SkipLabel", Bytes: readChunk, Queries: 1},
+		"TxLabel":               {Label: "TxLabel", Bytes: 2 * readChunk, Queries: 3},
+		dbmetrics.UnlabeledRead: {Label: dbmetrics.UnlabeledRead, Bytes: readChunk, Queries: 1},
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("read totals = %+v", got)
 	}
 }

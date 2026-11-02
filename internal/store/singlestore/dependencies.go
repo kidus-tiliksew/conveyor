@@ -10,9 +10,11 @@ import (
 
 	"github.com/kidus-tiliksew/conveyor/internal/core"
 	"github.com/kidus-tiliksew/conveyor/internal/store"
+	"github.com/kidus-tiliksew/conveyor/internal/store/dbmetrics"
 )
 
 func (s *Store) ListBlockingTaskIDs(ctx context.Context, taskID string) ([]string, error) {
+	ctx = dbmetrics.WithReadLabel(ctx, "ListBlockingTaskIDs")
 	rows, err := documentRows(ctx, s.db, `SELECT dependency.id
 		FROM task_dependencies edge
 		JOIN tasks dependency ON dependency.workspace_id=edge.workspace_id
@@ -35,6 +37,7 @@ func (s *Store) ListBlockingTaskIDs(ctx context.Context, taskID string) ([]strin
 }
 
 func (s *Store) ValidateTaskDependencies(ctx context.Context, dependencyIDs []string) error {
+	ctx = dbmetrics.WithReadLabel(ctx, "ValidateTaskDependencies")
 	seen := map[string]bool{}
 	for _, dependencyID := range dependencyIDs {
 		dependencyID = strings.TrimSpace(dependencyID)
@@ -58,6 +61,7 @@ func (s *Store) ValidateTaskDependencies(ctx context.Context, dependencyIDs []st
 }
 
 func (s *Store) ListDependentTaskIDs(ctx context.Context, taskID string) ([]string, error) {
+	ctx = dbmetrics.WithReadLabel(ctx, "ListDependentTaskIDs")
 	rows, err := documentRows(ctx, s.db, `SELECT task_id FROM task_dependencies
 		WHERE workspace_id=? AND depends_on_task_id=? ORDER BY task_id`, documentWorkspace(ctx), taskID)
 	if err != nil {
@@ -76,6 +80,7 @@ func (s *Store) ListDependentTaskIDs(ctx context.Context, taskID string) ([]stri
 }
 
 func (s *Store) ListDependencyBlockers(ctx context.Context, taskIDs []string) (map[string]store.DependencyBlockers, error) {
+	ctx = dbmetrics.WithReadLabel(ctx, "ListDependencyBlockers")
 	if len(taskIDs) == 0 {
 		return map[string]store.DependencyBlockers{}, nil
 	}
@@ -107,6 +112,7 @@ func (s *Store) ListDependencyBlockers(ctx context.Context, taskIDs []string) (m
 }
 
 func (s *Store) AddTaskDependency(ctx context.Context, request store.DependencyAdditionRequest) (store.DependencyAdditionResult, error) {
+	ctx = dbmetrics.WithReadLabel(ctx, "AddTaskDependency")
 	request.TaskID = strings.TrimSpace(request.TaskID)
 	request.DependsOnTaskID = strings.TrimSpace(request.DependsOnTaskID)
 	request.Reason = strings.TrimSpace(request.Reason)
@@ -230,6 +236,7 @@ func (s *Store) AddTaskDependency(ctx context.Context, request store.DependencyA
 }
 
 func (s *Store) RemoveTaskDependency(ctx context.Context, request store.DependencyRemovalRequest) (store.DependencyRemovalResult, error) {
+	ctx = dbmetrics.WithReadLabel(ctx, "RemoveTaskDependency")
 	request.TaskID = strings.TrimSpace(request.TaskID)
 	request.DependsOnTaskID = strings.TrimSpace(request.DependsOnTaskID)
 	request.Reason = strings.TrimSpace(request.Reason)

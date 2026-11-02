@@ -13,9 +13,11 @@ import (
 	"github.com/kidus-tiliksew/conveyor/internal/core"
 	"github.com/kidus-tiliksew/conveyor/internal/eventlog/s2log"
 	"github.com/kidus-tiliksew/conveyor/internal/store"
+	"github.com/kidus-tiliksew/conveyor/internal/store/dbmetrics"
 )
 
 func (s *Store) LineageNodeExists(ctx context.Context, node core.LineageNode) (bool, error) {
+	ctx = dbmetrics.WithReadLabel(ctx, "LineageNodeExists")
 	if !node.Valid() {
 		return false, nil
 	}
@@ -28,6 +30,7 @@ func (s *Store) LineageNodeExists(ctx context.Context, node core.LineageNode) (b
 }
 
 func (s *Store) ListLineageNodeRecords(ctx context.Context, nodes []core.LineageNode) (map[core.LineageNode]store.LineageNodeRecord, error) {
+	ctx = dbmetrics.WithReadLabel(ctx, "ListLineageNodeRecords")
 	taskNodes := map[string][]core.LineageNode{}
 	requirementNodes := map[string][]core.LineageNode{}
 	referenceNodes := map[string][]core.LineageNode{}
@@ -168,6 +171,7 @@ func (s *Store) lineageStatusQuery(ctx context.Context, query string, ids []stri
 // ListLineageNodeStatuses reads one batch per node class, only for the
 // supplied nodes (component-lineage).
 func (s *Store) ListLineageNodeStatuses(ctx context.Context, nodes []core.LineageNode) (map[core.LineageNode]core.LineageNodeStatus, error) {
+	ctx = dbmetrics.WithReadLabel(ctx, "ListLineageNodeStatuses")
 	request := store.LineageStatusIDs(nodes)
 	ids := request.IDs
 	rows := store.LineageStatusRows{
@@ -308,6 +312,7 @@ var observeLineageStatusVerdictRow atomic.Pointer[func(orderID string)]
 // core.SortLineageKindLinks order under the table's binary collation
 // (component-lineage).
 func (s *Store) ListLineageKindLinks(ctx context.Context, query core.LineageKindLinkQuery) ([]core.LineageLink, error) {
+	ctx = dbmetrics.WithReadLabel(ctx, "ListLineageKindLinks")
 	if err := query.Validate(); err != nil {
 		return nil, err
 	}
@@ -516,6 +521,7 @@ func lineageNeighborPrefixQuery(ws string, nodes []core.LineageNode, limit int) 
 // node's first limit links in the walk's ranking under the table's binary
 // collation, so returned rows follow the budget (component-lineage).
 func (s *Store) ListLineageNeighborhood(ctx context.Context, roots []core.LineageNode, budget core.LineageTraversalBudget) ([]core.LineageLink, error) {
+	ctx = dbmetrics.WithReadLabel(ctx, "ListLineageNeighborhood")
 	if budget.MaxDepth < 0 || budget.MaxNodes <= 0 {
 		return nil, fmt.Errorf("lineage neighborhood requires bounded depth and nodes")
 	}
@@ -545,6 +551,7 @@ func (s *Store) ListLineageNeighborhood(ctx context.Context, roots []core.Lineag
 }
 
 func (s *Store) ListRequirementDeliveryLineage(ctx context.Context, requirementID string, budget core.LineageTraversalBudget) ([]core.LineageLink, error) {
+	ctx = dbmetrics.WithReadLabel(ctx, "ListRequirementDeliveryLineage")
 	if strings.TrimSpace(requirementID) == "" || budget.MaxDepth < 0 || budget.MaxNodes <= 0 || budget.MaxLinks <= 0 {
 		return nil, fmt.Errorf("requirement delivery lineage requires a requirement id and bounded depth, nodes, and links")
 	}
@@ -556,6 +563,7 @@ func (s *Store) ListRequirementDeliveryLineage(ctx context.Context, requirementI
 }
 
 func (s *Store) ListRequirementDeliveryLineageByRequirement(ctx context.Context, requirementIDs []string, budget core.LineageTraversalBudget) (map[string][]core.LineageLink, error) {
+	ctx = dbmetrics.WithReadLabel(ctx, "ListRequirementDeliveryLineageByRequirement")
 	out := make(map[string][]core.LineageLink, len(requirementIDs))
 	if len(requirementIDs) == 0 {
 		return out, nil
@@ -630,6 +638,7 @@ func requirementDeliveryLink(link core.LineageLink) bool {
 }
 
 func (s *Store) RebuildLineage(ctx context.Context, request core.LineageRebuildRequest) (core.LineageRebuildResult, error) {
+	ctx = dbmetrics.WithReadLabel(ctx, "RebuildLineage")
 	var result core.LineageRebuildResult
 	if strings.TrimSpace(request.Reason) == "" || strings.TrimSpace(request.RequestID) == "" {
 		return result, fmt.Errorf("%w: reason and request_id are required", store.ErrLineageRebuildValidation)
@@ -788,6 +797,7 @@ func documentLineageLinks(ctx context.Context, db s2log.Executor) ([]core.Lineag
 	return out, rows.Err()
 }
 func (s *Store) ListLineageLinks(ctx context.Context) ([]core.LineageLink, error) {
+	ctx = dbmetrics.WithReadLabel(ctx, "ListLineageLinks")
 	return documentLineageLinks(ctx, s.db)
 }
 func deleteDocumentLineage(ctx context.Context, tx *sql.Tx) (sql.Result, error) {
@@ -818,6 +828,7 @@ func documentAllEvents(ctx context.Context, db s2log.Executor) ([]core.Event, er
 }
 
 func (s *Store) ListLineageContextRecords(ctx context.Context, nodes []core.LineageNode) (store.LineageContextRecords, error) {
+	ctx = dbmetrics.WithReadLabel(ctx, "ListLineageContextRecords")
 	taskIDs, requirementIDs := map[string]bool{}, map[string]bool{}
 	for _, node := range nodes {
 		switch node.Type {
@@ -931,6 +942,7 @@ func (s *Store) ListLineageContextRecords(ctx context.Context, nodes []core.Line
 }
 
 func (s *Store) ListArtifactsForLineage(ctx context.Context, nodes []core.LineageNode) ([]core.Artifact, error) {
+	ctx = dbmetrics.WithReadLabel(ctx, "ListArtifactsForLineage")
 	ws, err := workspace(ctx)
 	if err != nil {
 		return nil, err

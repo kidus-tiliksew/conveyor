@@ -12,10 +12,12 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/kidus-tiliksew/conveyor/internal/core"
 	"github.com/kidus-tiliksew/conveyor/internal/store"
+	"github.com/kidus-tiliksew/conveyor/internal/store/dbmetrics"
 	"github.com/kidus-tiliksew/conveyor/internal/store/postgres/db"
 )
 
 func (s *Store) ProposeTaskContext(ctx context.Context, input core.TaskContextProposalInput) (core.TaskContextProposal, bool, error) {
+	ctx = dbmetrics.WithReadLabel(ctx, "ProposeTaskContext")
 	return s.proposeTaskContext(ctx, input, false)
 }
 
@@ -102,9 +104,11 @@ func (s *Store) proposeTaskContext(ctx context.Context, input core.TaskContextPr
 }
 
 func (s *Store) ConfirmTaskContextProposal(ctx context.Context, taskID string, kind core.TaskContextProposalTargetKind, targetID string) (core.TaskContextProposal, error) {
+	ctx = dbmetrics.WithReadLabel(ctx, "ConfirmTaskContextProposal")
 	return s.transitionTaskContextProposal(ctx, taskID, kind, targetID, core.TaskContextProposalConfirmed, false)
 }
 func (s *Store) DismissTaskContextProposal(ctx context.Context, taskID string, kind core.TaskContextProposalTargetKind, targetID string) (core.TaskContextProposal, error) {
+	ctx = dbmetrics.WithReadLabel(ctx, "DismissTaskContextProposal")
 	return s.transitionTaskContextProposal(ctx, taskID, kind, targetID, core.TaskContextProposalDismissed, false)
 }
 
@@ -199,6 +203,7 @@ func (s *Store) transitionTaskContextProposal(ctx context.Context, taskID string
 }
 
 func (s *Store) ListTaskContextProposals(ctx context.Context, taskID string, state core.TaskContextProposalState) ([]core.TaskContextProposal, error) {
+	ctx = dbmetrics.WithReadLabel(ctx, "ListTaskContextProposals")
 	query := taskContextProposalSelect + ` WHERE workspace_id=$1`
 	args := []any{workspace(ctx)}
 	if taskID != "" {

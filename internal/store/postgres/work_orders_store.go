@@ -18,11 +18,13 @@ import (
 	"github.com/kidus-tiliksew/conveyor/internal/config"
 	"github.com/kidus-tiliksew/conveyor/internal/core"
 	"github.com/kidus-tiliksew/conveyor/internal/store"
+	"github.com/kidus-tiliksew/conveyor/internal/store/dbmetrics"
 	"github.com/kidus-tiliksew/conveyor/internal/store/postgres/db"
 	"github.com/kidus-tiliksew/conveyor/internal/taskops"
 )
 
 func (s *Store) CreateSpecVersion(ctx context.Context, spec core.SpecVersion) (core.SpecVersion, error) {
+	ctx = dbmetrics.WithReadLabel(ctx, "CreateSpecVersion")
 	if spec.CreatedAt.IsZero() {
 		spec.CreatedAt = time.Now().UTC()
 	}
@@ -48,6 +50,7 @@ func (s *Store) CreateSpecVersion(ctx context.Context, spec core.SpecVersion) (c
 }
 
 func (s *Store) GetLatestSpecVersion(ctx context.Context, taskID string) (core.SpecVersion, bool, error) {
+	ctx = dbmetrics.WithReadLabel(ctx, "GetLatestSpecVersion")
 	row, err := s.queries.GetLatestSpecVersion(ctx, db.GetLatestSpecVersionParams{TaskID: taskID, WorkspaceID: workspace(ctx)})
 	if errors.Is(err, pgx.ErrNoRows) {
 		return core.SpecVersion{}, false, nil
@@ -61,6 +64,7 @@ func (s *Store) GetLatestSpecVersion(ctx context.Context, taskID string) (core.S
 }
 
 func (s *Store) GetSpecVersion(ctx context.Context, taskID string, version int) (core.SpecVersion, bool, error) {
+	ctx = dbmetrics.WithReadLabel(ctx, "GetSpecVersion")
 	var row db.TaskSpec
 	err := s.boundary.QueryRow(ctx, `SELECT s.task_id,s.version,s.content,s.acceptance_count,
 	s.acceptance,s.decomposition,s.approved,s.created_at,s.approved_at,s.agent,s.model,s.review_seats
@@ -88,6 +92,7 @@ WHERE s.task_id = $1 AND s.version = $2 AND t.workspace_id = $3`, taskID, versio
 // query is hand-written rather than generated because sqlc cannot parse this
 // schema's migration set.
 func (s *Store) GetApprovedSpecVersion(ctx context.Context, taskID string) (core.SpecVersion, bool, error) {
+	ctx = dbmetrics.WithReadLabel(ctx, "GetApprovedSpecVersion")
 	var row db.TaskSpec
 	err := s.boundary.QueryRow(ctx, `SELECT s.task_id,s.version,s.content,s.acceptance_count,
 	s.acceptance,s.decomposition,s.approved,s.created_at,s.approved_at,s.agent,s.model,s.review_seats
@@ -119,6 +124,7 @@ func (s *Store) legacySpecGateVersion(ctx context.Context, taskID string, versio
 }
 
 func (s *Store) ApproveSpecVersion(ctx context.Context, taskID string, version int) error {
+	ctx = dbmetrics.WithReadLabel(ctx, "ApproveSpecVersion")
 	return s.inTx(ctx, func(_ pgx.Tx, q *db.Queries) error {
 		if _, err := q.ApproveLatestSpecVersion(ctx, db.ApproveLatestSpecVersionParams{
 			TaskID: taskID, Version: int32(version), WorkspaceID: workspace(ctx),
@@ -130,6 +136,7 @@ func (s *Store) ApproveSpecVersion(ctx context.Context, taskID string, version i
 }
 
 func (s *Store) ListWorkOrdersForTasks(ctx context.Context, taskIDs []string) ([]core.WorkOrder, error) {
+	ctx = dbmetrics.WithReadLabel(ctx, "ListWorkOrdersForTasks")
 	if len(taskIDs) == 0 {
 		return []core.WorkOrder{}, nil
 	}
@@ -169,6 +176,7 @@ func checkpointJSON(checkpoint *core.WorkOrderCheckpoint) any {
 }
 
 func (s *Store) CreateWorkOrderCommand(ctx context.Context, lease taskops.TaskLease, order core.WorkOrder) error {
+	ctx = dbmetrics.WithReadLabel(ctx, "CreateWorkOrderCommand")
 	if !lease.ValidForCommand(order.TaskID, string(core.WorkOrderCmdCreate)) {
 		return fmt.Errorf("work-order create requires a valid taskops lease")
 	}
@@ -291,6 +299,7 @@ func reviewVerificationContextIDTx(ctx context.Context, tx pgx.Tx, workspaceID s
 }
 
 func (s *Store) CreateReviewRoundCommand(ctx context.Context, lease taskops.TaskLease, taskID string, seats store.ReviewRoundSeatResolution, jobs []core.Job, orders []core.WorkOrder) error {
+	ctx = dbmetrics.WithReadLabel(ctx, "CreateReviewRoundCommand")
 	if !lease.ValidForCommand(taskID, string(core.WorkOrderCmdCreate)) {
 		return fmt.Errorf("review-round create requires a valid taskops lease")
 	}
@@ -397,6 +406,7 @@ func (s *Store) CreateReviewRoundCommand(ctx context.Context, lease taskops.Task
 }
 
 func (s *Store) CreateStageWorkOrderCommand(ctx context.Context, lease taskops.TaskLease, job core.Job, order core.WorkOrder) (bool, error) {
+	ctx = dbmetrics.WithReadLabel(ctx, "CreateStageWorkOrderCommand")
 	if !lease.ValidForCommand(job.TaskID, string(core.WorkOrderCmdCreate)) {
 		return false, fmt.Errorf("stage work-order create requires a valid taskops lease")
 	}
@@ -508,6 +518,7 @@ func (s *Store) CreateStageWorkOrderCommand(ctx context.Context, lease taskops.T
 const reviewSeatRecoveryExhaustedSQL = `state='queued' AND retry_suppressed AND retry_suppression_reason='` + core.AutomaticRecoveryExhaustedReason + `' AND session_id='' AND worker_id=''`
 
 func (s *Store) RetryReviewRoundCommand(ctx context.Context, lease taskops.TaskLease, request store.ReviewRoundRetryRequest, seats store.ReviewRoundSeatResolution, jobs []core.Job, orders []core.WorkOrder) (store.ReviewRoundRetryResult, error) {
+	ctx = dbmetrics.WithReadLabel(ctx, "RetryReviewRoundCommand")
 	if !lease.ValidForCommand(request.TaskID, string(core.WorkOrderCmdCreate)) {
 		return store.ReviewRoundRetryResult{}, fmt.Errorf("review retry requires a valid taskops lease")
 	}
@@ -702,6 +713,7 @@ func (s *Store) RetryReviewRoundCommand(ctx context.Context, lease taskops.TaskL
 }
 
 func (s *Store) RecoverInterruptedReviewRoundCommand(ctx context.Context, lease taskops.TaskLease, request store.InterruptedReviewRecoveryRequest, queueTimeout time.Duration) (store.InterruptedReviewRecoveryResult, error) {
+	ctx = dbmetrics.WithReadLabel(ctx, "RecoverInterruptedReviewRoundCommand")
 	if !lease.ValidForCommand(request.TaskID, string(core.WorkOrderCmdRecover)) {
 		return store.InterruptedReviewRecoveryResult{}, fmt.Errorf("interrupted review recovery requires a valid taskops lease")
 	}
@@ -885,6 +897,7 @@ func reviewRoundOrdersTx(ctx context.Context, tx pgx.Tx, workspaceID, taskID str
 }
 
 func (s *Store) GetWorkOrder(ctx context.Context, id string) (core.WorkOrder, error) {
+	ctx = dbmetrics.WithReadLabel(ctx, "GetWorkOrder")
 	order, err := scanWorkOrder(s.boundary.QueryRow(ctx, "SELECT "+workOrderColumns+" FROM work_orders WHERE workspace_id=$1 AND id=$2", workspace(ctx), id))
 	if err != nil {
 		return core.WorkOrder{}, notFound(err, "work order %s", id)
@@ -898,6 +911,7 @@ func (s *Store) GetWorkOrder(ctx context.Context, id string) (core.WorkOrder, er
 }
 
 func (s *Store) ListWorkOrders(ctx context.Context) ([]core.WorkOrder, error) {
+	ctx = dbmetrics.WithReadLabel(ctx, "ListWorkOrders")
 	rows, err := s.boundary.Query(ctx, "SELECT "+workOrderColumns+" FROM work_orders WHERE workspace_id=$1 ORDER BY created_at,id", workspace(ctx))
 	if err != nil {
 		return nil, err
@@ -924,6 +938,7 @@ func (s *Store) ListWorkOrders(ctx context.Context) ([]core.WorkOrder, error) {
 // cancelled, and submitted history is never read (component-work-orders,
 // Listing).
 func (s *Store) ListLiveWorkOrders(ctx context.Context) ([]core.WorkOrder, error) {
+	ctx = dbmetrics.WithReadLabel(ctx, "ListLiveWorkOrders")
 	rows, err := s.boundary.Query(ctx, "SELECT "+workOrderColumns+" FROM work_orders WHERE workspace_id=$1 AND state = ANY($2::text[]) ORDER BY created_at,id", workspace(ctx), liveWorkOrderStates())
 	if err != nil {
 		return nil, err
@@ -988,6 +1003,7 @@ func (s *Store) hydrateWorkOrderAssignees(ctx context.Context, orders []core.Wor
 }
 
 func (s *Store) ListCheckpointContextCandidates(ctx context.Context, requirementID string) ([]store.CheckpointContextCandidate, error) {
+	ctx = dbmetrics.WithReadLabel(ctx, "ListCheckpointContextCandidates")
 	rows, err := s.queries.ListCheckpointContextCandidates(ctx, db.ListCheckpointContextCandidatesParams{
 		WorkspaceID: workspace(ctx), RequirementID: requirementID,
 	})
@@ -1025,6 +1041,7 @@ func (s *Store) listWorkOrdersForTasks(ctx context.Context, taskIDs []string) ([
 }
 
 func (s *Store) ListTaskWorkOrders(ctx context.Context, taskID string) ([]core.WorkOrder, error) {
+	ctx = dbmetrics.WithReadLabel(ctx, "ListTaskWorkOrders")
 	rows, err := s.boundary.Query(ctx, "SELECT "+workOrderColumns+" FROM work_orders WHERE workspace_id=$1 AND task_id=$2 ORDER BY created_at,id", workspace(ctx), taskID)
 	if err != nil {
 		return nil, err
@@ -1041,6 +1058,7 @@ func (s *Store) ListTaskWorkOrders(ctx context.Context, taskID string) ([]core.W
 	return orders, rows.Err()
 }
 func (s *Store) ListTaskWorkOrdersStored(ctx context.Context, taskID string) ([]core.WorkOrder, error) {
+	ctx = dbmetrics.WithReadLabel(ctx, "ListTaskWorkOrdersStored")
 	rows, err := s.boundary.Query(ctx, "SELECT "+workOrderColumns+" FROM work_orders WHERE workspace_id=$1 AND task_id=$2 ORDER BY created_at,id", workspace(ctx), taskID)
 	if err != nil {
 		return nil, err
@@ -1058,6 +1076,7 @@ func (s *Store) ListTaskWorkOrdersStored(ctx context.Context, taskID string) ([]
 }
 
 func (s *Store) ListTaskWorkOrdersSnapshot(ctx context.Context, taskID string) ([]core.WorkOrder, error) {
+	ctx = dbmetrics.WithReadLabel(ctx, "ListTaskWorkOrdersSnapshot")
 	rows, err := s.boundary.Query(ctx, "SELECT "+workOrderColumns+" FROM work_orders WHERE workspace_id=$1 AND task_id=$2 ORDER BY created_at,id", workspace(ctx), taskID)
 	if err != nil {
 		return nil, err
@@ -1092,6 +1111,7 @@ func workOrderTaskIDTx(ctx context.Context, tx pgx.Tx, workspaceID, id string) (
 }
 
 func (s *Store) ClaimWorkOrderCommand(ctx context.Context, lifecycleLease taskops.TaskLease, id string, claim core.WorkOrderClaim) (core.WorkOrder, error) {
+	ctx = dbmetrics.WithReadLabel(ctx, "ClaimWorkOrderCommand")
 	tx, err := s.begin(ctx)
 	if err != nil {
 		return core.WorkOrder{}, err
@@ -1404,6 +1424,7 @@ func (s *Store) ClaimWorkOrderCommand(ctx context.Context, lifecycleLease taskop
 }
 
 func (s *Store) RedispatchWorkOrderCommand(ctx context.Context, lease taskops.TaskLease, id string, queueTimeout time.Duration) (core.WorkOrder, error) {
+	ctx = dbmetrics.WithReadLabel(ctx, "RedispatchWorkOrderCommand")
 	if queueTimeout <= 0 {
 		return core.WorkOrder{}, fmt.Errorf("work-order queue timeout must be positive")
 	}
@@ -1491,6 +1512,7 @@ func reviewSeatAcceptedTx(ctx context.Context, tx pgx.Tx, workspaceID, taskID, w
 }
 
 func (s *Store) RecoverWorkOrderCommand(ctx context.Context, lease taskops.TaskLease, id, requestID, direction string, queueTimeout time.Duration, refreeze ...*store.RecoveryRefreeze) (core.WorkOrder, error) {
+	ctx = dbmetrics.WithReadLabel(ctx, "RecoverWorkOrderCommand")
 	clean, sanitationErr := store.SanitizeVerificationRecovery(ctx, s)
 	if sanitationErr != nil {
 		return core.WorkOrder{}, sanitationErr
@@ -1653,6 +1675,7 @@ const terminalOrphanTasksSQL = `SELECT t.id FROM tasks t WHERE t.workspace_id=$1
 		ORDER BY t.id LIMIT $3`
 
 func (s *Store) ListElapsedWorkOrderTaskIDs(ctx context.Context, now time.Time) ([]string, error) {
+	ctx = dbmetrics.WithReadLabel(ctx, "ListElapsedWorkOrderTaskIDs")
 	bound, policyErr := clockPolicyBound(ctx, s)
 	if policyErr != nil {
 		return nil, policyErr
@@ -1684,6 +1707,7 @@ func (s *Store) ListElapsedWorkOrderTaskIDs(ctx context.Context, now time.Time) 
 }
 
 func (s *Store) ApplyWorkOrderClock(ctx context.Context, lease taskops.TaskLease, taskID string, now time.Time) (int, error) {
+	ctx = dbmetrics.WithReadLabel(ctx, "ApplyWorkOrderClock")
 	if !lease.ValidFor(taskID) {
 		return 0, fmt.Errorf("work-order lifecycle mutation requires a valid taskops lease")
 	}
@@ -1847,6 +1871,7 @@ func (s *Store) transitionWorkOrderTx(ctx context.Context, tx pgx.Tx, order core
 }
 
 func (s *Store) UpdateWorkOrderCommand(ctx context.Context, lease taskops.TaskLease, order core.WorkOrder, commands ...core.WorkOrderCommand) error {
+	ctx = dbmetrics.WithReadLabel(ctx, "UpdateWorkOrderCommand")
 	var lifecycleErr error
 	err := s.inTx(ctx, func(tx pgx.Tx, q *db.Queries) error {
 		var err error
@@ -2012,6 +2037,7 @@ func updateRequiresClaim(next, current core.WorkOrderState) bool {
 // eligible GitHub publication job as one transaction. A retry therefore sees
 // either the entire accepted decision or none of it.
 func (s *Store) AcceptReviewDecisionCommand(ctx context.Context, lease taskops.TaskLease, decision core.ReviewDecision) error {
+	ctx = dbmetrics.WithReadLabel(ctx, "AcceptReviewDecisionCommand")
 	if !lease.ValidFor(decision.TaskID) {
 		return fmt.Errorf("review lifecycle mutation requires a valid taskops lease")
 	}

@@ -16,6 +16,7 @@ import (
 	"github.com/kidus-tiliksew/conveyor/internal/core"
 	"github.com/kidus-tiliksew/conveyor/internal/eventlog/s2log"
 	"github.com/kidus-tiliksew/conveyor/internal/store"
+	"github.com/kidus-tiliksew/conveyor/internal/store/dbmetrics"
 	"github.com/kidus-tiliksew/conveyor/internal/taskops"
 )
 
@@ -257,6 +258,7 @@ func (s *Store) orderTx(ctx context.Context, id string, fn func(*sql.Tx, core.Wo
 	})
 }
 func (s *Store) GetWorkOrder(ctx context.Context, id string) (core.WorkOrder, error) {
+	ctx = dbmetrics.WithReadLabel(ctx, "GetWorkOrder")
 	o, err := getOrderRow(ctx, s.db, id)
 	if err != nil {
 		return core.WorkOrder{}, err
@@ -306,6 +308,7 @@ func (s *Store) listOrderColumns(ctx context.Context, db s2log.Executor, columns
 	return out, rows.Err()
 }
 func (s *Store) ListWorkOrders(ctx context.Context) ([]core.WorkOrder, error) {
+	ctx = dbmetrics.WithReadLabel(ctx, "ListWorkOrders")
 	orders, err := s.listOrders(ctx, s.db, nil)
 	if err == nil {
 		projectOrders(orders)
@@ -318,6 +321,7 @@ func (s *Store) ListWorkOrders(ctx context.Context) ([]core.WorkOrder, error) {
 // cancelled, and submitted history is never read (component-work-orders,
 // Listing).
 func (s *Store) ListLiveWorkOrders(ctx context.Context) ([]core.WorkOrder, error) {
+	ctx = dbmetrics.WithReadLabel(ctx, "ListLiveWorkOrders")
 	query := `SELECT ` + workOrderColumns + ` FROM work_orders WHERE workspace_id=? AND state IN (` + strings.TrimSuffix(strings.Repeat("?,", len(store.LiveWorkOrderStates)), ",") + `) ORDER BY created_at,id`
 	args := []any{documentWorkspace(ctx)}
 	for _, state := range store.LiveWorkOrderStates {
@@ -346,6 +350,7 @@ func (s *Store) ListLiveWorkOrders(ctx context.Context) ([]core.WorkOrder, error
 // ListWorkOrdersForTasks is the batch projection read of activity, markers,
 // and next actions. Like PostgreSQL's, it omits the authority snapshots.
 func (s *Store) ListWorkOrdersForTasks(ctx context.Context, ids []string) ([]core.WorkOrder, error) {
+	ctx = dbmetrics.WithReadLabel(ctx, "ListWorkOrdersForTasks")
 	if len(ids) == 0 {
 		return []core.WorkOrder{}, nil
 	}
@@ -354,15 +359,18 @@ func (s *Store) ListWorkOrdersForTasks(ctx context.Context, ids []string) ([]cor
 	return orders, err
 }
 func (s *Store) ListTaskWorkOrders(ctx context.Context, id string) ([]core.WorkOrder, error) {
+	ctx = dbmetrics.WithReadLabel(ctx, "ListTaskWorkOrders")
 	orders, err := s.listOrders(ctx, s.db, []string{id})
 	projectOrders(orders)
 	return orders, err
 }
 func (s *Store) ListTaskWorkOrdersStored(ctx context.Context, id string) ([]core.WorkOrder, error) {
+	ctx = dbmetrics.WithReadLabel(ctx, "ListTaskWorkOrdersStored")
 	return s.listOrders(ctx, s.db, []string{id})
 }
 
 func (s *Store) ListTaskWorkOrdersSnapshot(ctx context.Context, id string) ([]core.WorkOrder, error) {
+	ctx = dbmetrics.WithReadLabel(ctx, "ListTaskWorkOrdersSnapshot")
 	orders, err := s.listOrders(ctx, s.db, []string{id})
 	projectOrders(orders)
 	return orders, err
@@ -483,6 +491,7 @@ func (s *Store) insertOrderTx(ctx context.Context, tx *sql.Tx, o core.WorkOrder,
 	return taskEvent(ctx, tx, core.Event{TaskID: o.TaskID, JobID: o.JobID, Kind: "work_order.created", Payload: store.WorkOrderEventPayload(o)})
 }
 func (s *Store) CreateWorkOrderCommand(ctx context.Context, lease taskops.TaskLease, o core.WorkOrder) error {
+	ctx = dbmetrics.WithReadLabel(ctx, "CreateWorkOrderCommand")
 	if !lease.ValidForCommand(o.TaskID, string(core.WorkOrderCmdCreate)) {
 		return fmt.Errorf("work-order create requires a valid taskops lease")
 	}
@@ -508,6 +517,7 @@ func (s *Store) CreateWorkOrderCommand(ctx context.Context, lease taskops.TaskLe
 	})
 }
 func (s *Store) CreateStageWorkOrderCommand(ctx context.Context, lease taskops.TaskLease, j core.Job, o core.WorkOrder) (bool, error) {
+	ctx = dbmetrics.WithReadLabel(ctx, "CreateStageWorkOrderCommand")
 	if !lease.ValidForCommand(j.TaskID, string(core.WorkOrderCmdCreate)) {
 		return false, fmt.Errorf("stage work-order create requires a valid taskops lease")
 	}
@@ -672,6 +682,7 @@ func reviewSeatAcceptedTx(ctx context.Context, tx *sql.Tx, ws, task, id string) 
 	return accepted, err
 }
 func (s *Store) ListElapsedWorkOrderTaskIDs(ctx context.Context, now time.Time) ([]string, error) {
+	ctx = dbmetrics.WithReadLabel(ctx, "ListElapsedWorkOrderTaskIDs")
 	bound := 0
 	if policy, _, policyErr := s.readClockPolicy(ctx); policyErr != nil {
 		return nil, policyErr
@@ -721,6 +732,7 @@ func (s *Store) ListElapsedWorkOrderTaskIDs(ctx context.Context, now time.Time) 
 	return out, nil
 }
 func (s *Store) ApplyWorkOrderClock(ctx context.Context, lease taskops.TaskLease, id string, now time.Time) (int, error) {
+	ctx = dbmetrics.WithReadLabel(ctx, "ApplyWorkOrderClock")
 	if !lease.ValidFor(id) {
 		return 0, fmt.Errorf("work-order lifecycle mutation requires a valid taskops lease")
 	}
@@ -793,6 +805,7 @@ func (s *Store) ApplyWorkOrderClock(ctx context.Context, lease taskops.TaskLease
 }
 
 func (s *Store) UpdateWorkOrderCommand(ctx context.Context, lease taskops.TaskLease, order core.WorkOrder, commands ...core.WorkOrderCommand) error {
+	ctx = dbmetrics.WithReadLabel(ctx, "UpdateWorkOrderCommand")
 	var lifecycleErr error
 	err := s.orderTx(ctx, order.ID, func(tx *sql.Tx, current core.WorkOrder) error {
 		var err error
@@ -810,6 +823,7 @@ func (s *Store) UpdateWorkOrderCommand(ctx context.Context, lease taskops.TaskLe
 // order update, missing job, or non-running job rolls back every write
 // (component-work-orders).
 func (s *Store) SubmitImplementationCommand(ctx context.Context, lease taskops.TaskLease, request store.ImplementationSubmission) (core.Job, error) {
+	ctx = dbmetrics.WithReadLabel(ctx, "SubmitImplementationCommand")
 	request, err := store.NormalizeImplementationSubmission(ctx, request)
 	if err != nil {
 		return core.Job{}, err
@@ -1005,6 +1019,7 @@ func (s *Store) claimOwnerTx(ctx context.Context, tx *sql.Tx, claim *core.WorkOr
 // predicate. The locked claim calls the same helper inside its transaction
 // (req-260810-70ce2f AC-1.1; component-work-orders).
 func (s *Store) ListClaimBlockingProposalsForTask(ctx context.Context, taskID string) ([]store.ClaimBlockingProposal, error) {
+	ctx = dbmetrics.WithReadLabel(ctx, "ListClaimBlockingProposalsForTask")
 	ws, err := workspace(ctx)
 	if err != nil {
 		return nil, err
@@ -1091,6 +1106,7 @@ func (s *Store) reviewClaimGuardTx(ctx context.Context, tx *sql.Tx, o core.WorkO
 	return nil
 }
 func (s *Store) ClaimWorkOrderCommand(ctx context.Context, lease taskops.TaskLease, id string, claim core.WorkOrderClaim) (core.WorkOrder, error) {
+	ctx = dbmetrics.WithReadLabel(ctx, "ClaimWorkOrderCommand")
 	var result core.WorkOrder
 	var lifecycleErr error
 	err := s.orderTx(ctx, id, func(tx *sql.Tx, o core.WorkOrder) error {
@@ -1320,6 +1336,7 @@ func (s *Store) orderSupersessionGuardTx(ctx context.Context, tx *sql.Tx, o core
 	return store.WorkOrderPlanRevisionRefusal(t, events, o.ID)
 }
 func (s *Store) RedispatchWorkOrderCommand(ctx context.Context, lease taskops.TaskLease, id string, timeout time.Duration) (core.WorkOrder, error) {
+	ctx = dbmetrics.WithReadLabel(ctx, "RedispatchWorkOrderCommand")
 	if timeout <= 0 {
 		return core.WorkOrder{}, fmt.Errorf("work-order queue timeout must be positive")
 	}
@@ -1391,6 +1408,7 @@ func (s *Store) RedispatchWorkOrderCommand(ctx context.Context, lease taskops.Ta
 	return result, err
 }
 func (s *Store) RecoverWorkOrderCommand(ctx context.Context, lease taskops.TaskLease, id, requestID, direction string, timeout time.Duration, refreeze ...*store.RecoveryRefreeze) (core.WorkOrder, error) {
+	ctx = dbmetrics.WithReadLabel(ctx, "RecoverWorkOrderCommand")
 	clean, sanitationErr := store.SanitizeVerificationRecovery(ctx, s)
 	if sanitationErr != nil {
 		return core.WorkOrder{}, sanitationErr
@@ -1527,6 +1545,7 @@ func (s *Store) RecoverWorkOrderCommand(ctx context.Context, lease taskops.TaskL
 }
 
 func (s *Store) RequestPlanRevisionCommand(ctx context.Context, lease taskops.TaskLease, id string, claim core.WorkOrderClaimIdentity, rationale string) (store.PlanRevisionRequestResult, error) {
+	ctx = dbmetrics.WithReadLabel(ctx, "RequestPlanRevisionCommand")
 	var result store.PlanRevisionRequestResult
 	rationale = strings.TrimSpace(rationale)
 	if rationale == "" {
@@ -1617,6 +1636,7 @@ func (s *Store) RequestPlanRevisionCommand(ctx context.Context, lease taskops.Ta
 	return result, err
 }
 func (s *Store) CancelPlanRevisionWorkOrderCommand(ctx context.Context, lease taskops.TaskLease, id, attempt string) (core.WorkOrder, error) {
+	ctx = dbmetrics.WithReadLabel(ctx, "CancelPlanRevisionWorkOrderCommand")
 	var result core.WorkOrder
 	err := s.orderTx(ctx, id, func(tx *sql.Tx, o core.WorkOrder) error {
 		if !lease.ValidForCommand(o.TaskID, string(core.WorkOrderCmdCancel)) {
@@ -1660,6 +1680,7 @@ func equalJSON(a, b []byte) bool {
 	return json.Unmarshal(a, &x) == nil && json.Unmarshal(b, &y) == nil && reflect.DeepEqual(x, y)
 }
 func (s *Store) PreemptWorkOrderCommand(ctx context.Context, lease taskops.TaskLease, raw store.WorkOrderPreemptRequest) (store.WorkOrderPreemptResult, error) {
+	ctx = dbmetrics.WithReadLabel(ctx, "PreemptWorkOrderCommand")
 	var result store.WorkOrderPreemptResult
 	r, err := store.PrepareWorkOrderPreemptRequest(raw)
 	if err != nil {
@@ -1784,6 +1805,7 @@ func (s *Store) PreemptWorkOrderCommand(ctx context.Context, lease taskops.TaskL
 // ClaimBaseConflictCheck is a single conditional UPDATE, so concurrent
 // dispatchers race on the row and exactly one sees one affected row.
 func (s *Store) ClaimBaseConflictCheck(ctx context.Context, workOrderID string, at time.Time) (bool, error) {
+	ctx = dbmetrics.WithReadLabel(ctx, "ClaimBaseConflictCheck")
 	ws, err := workspace(ctx)
 	if err != nil {
 		return false, err
@@ -1798,6 +1820,7 @@ func (s *Store) ClaimBaseConflictCheck(ctx context.Context, workOrderID string, 
 }
 
 func (s *Store) CreateConflictFixCommand(ctx context.Context, lease taskops.TaskLease, request store.ConflictFixRequest) (store.ConflictFixResult, error) {
+	ctx = dbmetrics.WithReadLabel(ctx, "CreateConflictFixCommand")
 	if !lease.ValidForCommand(request.TaskID, string(core.WorkOrderCmdCreate)) {
 		return store.ConflictFixResult{}, fmt.Errorf("conflict-fix create requires a valid taskops lease")
 	}
@@ -1906,6 +1929,7 @@ func projectOrders(orders []core.WorkOrder) {
 // PostgreSQL's CHECK constraints enforce (component-work-orders, Claim
 // admission; component-persistence, Schema domains).
 func (s *Store) RecordWorkOrderClaimFailure(ctx context.Context, workOrderID, errorClass string, at time.Time) (core.WorkOrderClaimFailure, error) {
+	ctx = dbmetrics.WithReadLabel(ctx, "RecordWorkOrderClaimFailure")
 	if err := store.ValidateWorkOrderClaimFailure(workOrderID, errorClass, at); err != nil {
 		return core.WorkOrderClaimFailure{}, err
 	}
@@ -1937,6 +1961,7 @@ func (s *Store) RecordWorkOrderClaimFailure(ctx context.Context, workOrderID, er
 // ListWorkOrderClaimFailures reads the given orders' records in one
 // workspace-scoped query through the primary key.
 func (s *Store) ListWorkOrderClaimFailures(ctx context.Context, workOrderIDs []string) ([]core.WorkOrderClaimFailure, error) {
+	ctx = dbmetrics.WithReadLabel(ctx, "ListWorkOrderClaimFailures")
 	out := []core.WorkOrderClaimFailure{}
 	if len(workOrderIDs) == 0 {
 		return out, nil

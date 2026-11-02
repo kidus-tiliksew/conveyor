@@ -7,10 +7,12 @@ import (
 
 	"github.com/kidus-tiliksew/conveyor/internal/core"
 	"github.com/kidus-tiliksew/conveyor/internal/store"
+	"github.com/kidus-tiliksew/conveyor/internal/store/dbmetrics"
 )
 
 // component-verification-evidence / DEC-43: backend-bounded metadata selection, separate from claim-bound snapshots.
 func (s *Store) ReadVerificationPage(ctx context.Context, a store.VerificationAccess, p store.VerificationPageRequest) (store.VerificationReadPage, error) {
+	ctx = dbmetrics.WithReadLabel(ctx, "ReadVerificationPage")
 	cursor, err := store.ValidateVerificationPage(ctx, a, &p)
 	if err != nil {
 		return store.VerificationReadPage{}, err
@@ -68,6 +70,7 @@ func (s *Store) ReadVerificationPage(ctx context.Context, a store.VerificationAc
 }
 
 func (s *Store) ReadVerificationDetail(ctx context.Context, a store.VerificationAccess, contextID, evidenceID string) (store.VerificationEvidenceRecord, error) {
+	ctx = dbmetrics.WithReadLabel(ctx, "ReadVerificationDetail")
 	if a.UserID == "" {
 		return store.VerificationEvidenceRecord{}, store.ErrVerificationAccess
 	}

@@ -13,6 +13,7 @@ import (
 	"github.com/kidus-tiliksew/conveyor/internal/config"
 	"github.com/kidus-tiliksew/conveyor/internal/core"
 	"github.com/kidus-tiliksew/conveyor/internal/store"
+	"github.com/kidus-tiliksew/conveyor/internal/store/dbmetrics"
 	"github.com/kidus-tiliksew/conveyor/internal/store/postgres/db"
 	"github.com/kidus-tiliksew/conveyor/internal/taskops"
 )
@@ -22,6 +23,7 @@ import (
 // verify/review handoff, audit events, and the task_setup_changes replay record
 // (DEC-47, DEC-43; component-task-lifecycle, component-persistence).
 func (s *Store) ChangeTaskPolicyCommand(ctx context.Context, lease taskops.TaskLease, raw store.SetupChangeRequest) (store.SetupChangeResult, error) {
+	ctx = dbmetrics.WithReadLabel(ctx, "ChangeTaskPolicyCommand")
 	request, validationErr := store.PrepareSetupChangeRequest(raw)
 	request.PolicyActor = store.ActorFromContext(ctx)
 	if !lease.ValidForCommand(request.TaskID, taskops.SetupChangeCommand) {

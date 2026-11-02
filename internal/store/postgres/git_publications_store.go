@@ -12,6 +12,7 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/kidus-tiliksew/conveyor/internal/core"
 	"github.com/kidus-tiliksew/conveyor/internal/store"
+	"github.com/kidus-tiliksew/conveyor/internal/store/dbmetrics"
 	"github.com/kidus-tiliksew/conveyor/internal/store/postgres/db"
 )
 
@@ -83,6 +84,7 @@ forge_author_class, forge_author_user_id,
 created_at, updated_at, automatic_reenqueue_at`
 
 func (s *Store) QueueGitHubLifecycle(ctx context.Context, lifecycle core.GitHubLifecycle) error {
+	ctx = dbmetrics.WithReadLabel(ctx, "QueueGitHubLifecycle")
 	return s.queueGitHubLifecycle(ctx, lifecycle, nil)
 }
 
@@ -127,6 +129,7 @@ func (s *Store) queueGitHubLifecycle(ctx context.Context, lifecycle core.GitHubL
 }
 
 func (s *Store) GetGitHubLifecycle(ctx context.Context, taskID string) (core.GitHubLifecycle, bool, error) {
+	ctx = dbmetrics.WithReadLabel(ctx, "GetGitHubLifecycle")
 	lifecycle, err := scanGitHubLifecycle(s.boundary.QueryRow(ctx, "SELECT "+githubLifecycleColumns+" FROM github_lifecycles WHERE workspace_id=$1 AND task_id=$2", workspace(ctx), taskID))
 	if errors.Is(err, pgx.ErrNoRows) {
 		return core.GitHubLifecycle{}, false, nil
@@ -135,6 +138,7 @@ func (s *Store) GetGitHubLifecycle(ctx context.Context, taskID string) (core.Git
 }
 
 func (s *Store) UpdateGitHubLifecycle(ctx context.Context, lifecycle core.GitHubLifecycle) error {
+	ctx = dbmetrics.WithReadLabel(ctx, "UpdateGitHubLifecycle")
 	if err := store.NormalizeForgeAuthorProjectionForWrite(&lifecycle.ForgeAuthorClass, &lifecycle.ForgeAuthorUserID, core.ForgeAuthorWorkspace); err != nil {
 		return err
 	}
@@ -184,6 +188,7 @@ func (s *Store) UpdateGitHubLifecycle(ctx context.Context, lifecycle core.GitHub
 // the context's drift recorder after its transaction commits
 // (component-persistence, Drift repair reports).
 func (s *Store) ReconcileGitHubLifecycles(ctx context.Context) (int, error) {
+	ctx = dbmetrics.WithReadLabel(ctx, "ReconcileGitHubLifecycles")
 	rows, err := s.boundary.Query(ctx, `SELECT `+githubLifecycleColumns+` FROM github_lifecycles
 		WHERE workspace_id=$1 AND state IN ('queued','retrying') ORDER BY created_at`, workspace(ctx))
 	if err != nil {
@@ -244,6 +249,7 @@ comment_id, forge_error_category, last_error, forge_author_class, forge_author_u
 automatic_reenqueue_at`
 
 func (s *Store) QueueReviewPublication(ctx context.Context, publication core.ReviewPublication) error {
+	ctx = dbmetrics.WithReadLabel(ctx, "QueueReviewPublication")
 	return s.inTx(ctx, func(tx pgx.Tx, q *db.Queries) error {
 		return s.queueReviewPublicationTx(ctx, tx, q, publication)
 	})
@@ -292,6 +298,7 @@ func (s *Store) enqueueReviewPublicationJobTx(ctx context.Context, tx pgx.Tx, re
 }
 
 func (s *Store) GetReviewPublication(ctx context.Context, id string) (core.ReviewPublication, error) {
+	ctx = dbmetrics.WithReadLabel(ctx, "GetReviewPublication")
 	publication, err := scanReviewPublication(s.boundary.QueryRow(ctx, "SELECT "+reviewPublicationColumns+" FROM review_publications WHERE workspace_id=$1 AND review_work_order_id=$2", workspace(ctx), id))
 	if err != nil {
 		return core.ReviewPublication{}, notFound(err, "review publication %s", id)
@@ -300,6 +307,7 @@ func (s *Store) GetReviewPublication(ctx context.Context, id string) (core.Revie
 }
 
 func (s *Store) UpdateReviewPublication(ctx context.Context, publication core.ReviewPublication) error {
+	ctx = dbmetrics.WithReadLabel(ctx, "UpdateReviewPublication")
 	if err := store.NormalizeForgeAuthorProjectionForWrite(&publication.ForgeAuthorClass, &publication.ForgeAuthorUserID, core.ForgeAuthorWorkspace); err != nil {
 		return err
 	}
@@ -336,6 +344,7 @@ func (s *Store) UpdateReviewPublication(ctx context.Context, publication core.Re
 }
 
 func (s *Store) ReconcileReviewPublications(ctx context.Context) (int, error) {
+	ctx = dbmetrics.WithReadLabel(ctx, "ReconcileReviewPublications")
 	rows, err := s.boundary.Query(ctx, `SELECT e.task_id, COALESCE(e.job_id,''), e.payload_json
 		FROM events e
 		JOIN tasks t ON t.id=e.task_id

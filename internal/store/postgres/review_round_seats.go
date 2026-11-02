@@ -10,6 +10,7 @@ import (
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/kidus-tiliksew/conveyor/internal/core"
 	"github.com/kidus-tiliksew/conveyor/internal/store"
+	"github.com/kidus-tiliksew/conveyor/internal/store/dbmetrics"
 	"github.com/kidus-tiliksew/conveyor/internal/store/postgres/db"
 	"github.com/kidus-tiliksew/conveyor/internal/taskops"
 )
@@ -17,6 +18,7 @@ import (
 // ListReviewRoundSeats returns the selected workspace's review round seat
 // records for a task, ordered by round (feature-review-seat-minimum RS-2).
 func (s *Store) ListReviewRoundSeats(ctx context.Context, taskID string) ([]store.ReviewRoundSeats, error) {
+	ctx = dbmetrics.WithReadLabel(ctx, "ListReviewRoundSeats")
 	return reviewRoundSeatsTx(ctx, s.boundary, workspace(ctx), taskID)
 }
 
@@ -112,6 +114,7 @@ var errReviewSeatAdditionCollision = errors.New("review seat addition request co
 // AcceptReviewDecisionCommand takes first, so an addition and a final verdict
 // serialize. Members, record, ledger row, and events commit together.
 func (s *Store) AddReviewSeatsCommand(ctx context.Context, lease taskops.TaskLease, request store.ReviewSeatAdditionRequest) (store.ReviewSeatAdditionResult, error) {
+	ctx = dbmetrics.WithReadLabel(ctx, "AddReviewSeatsCommand")
 	if err := request.Validate(); err != nil {
 		return store.ReviewSeatAdditionResult{}, err
 	}

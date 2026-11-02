@@ -8,6 +8,7 @@ import (
 
 	"github.com/kidus-tiliksew/conveyor/internal/config"
 	"github.com/kidus-tiliksew/conveyor/internal/store"
+	"github.com/kidus-tiliksew/conveyor/internal/store/dbmetrics"
 )
 
 // Stored deadlines on PostgreSQL (component-persistence, Deadlines;
@@ -45,6 +46,7 @@ UNION ALL SELECT 'config', NULL::timestamptz, config_yaml FROM workspaces WHERE 
 // NextDeadline returns the earliest stored deadline after after for the
 // context's workspace.
 func (s *Store) NextDeadline(ctx context.Context, after time.Time) (time.Time, bool, error) {
+	ctx = dbmetrics.WithReadLabel(ctx, "NextDeadline")
 	rows, err := s.boundary.Query(ctx, nextDeadlineSQL, workspace(ctx), after.UTC())
 	if err != nil {
 		return time.Time{}, false, err

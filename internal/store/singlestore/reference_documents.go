@@ -10,9 +10,11 @@ import (
 
 	"github.com/kidus-tiliksew/conveyor/internal/core"
 	"github.com/kidus-tiliksew/conveyor/internal/store"
+	"github.com/kidus-tiliksew/conveyor/internal/store/dbmetrics"
 )
 
 func (s *Store) CreateReferenceDocument(ctx context.Context, document core.ReferenceDocument, version core.ReferenceDocumentVersion) (core.ReferenceDocument, core.ReferenceDocumentVersion, error) {
+	ctx = dbmetrics.WithReadLabel(ctx, "CreateReferenceDocument")
 	if document.ID == "" {
 		return document, version, fmt.Errorf("reference document id and name are required")
 	}
@@ -40,6 +42,7 @@ func (s *Store) CreateReferenceDocument(ctx context.Context, document core.Refer
 }
 
 func (s *Store) SupersedeReferenceDocument(ctx context.Context, documentID string, version core.ReferenceDocumentVersion) (core.ReferenceDocumentVersion, error) {
+	ctx = dbmetrics.WithReadLabel(ctx, "SupersedeReferenceDocument")
 	err := s.documentTx(ctx, func(tx *sql.Tx) error {
 		var current int
 		if err := documentRow(ctx, tx, `SELECT current_version FROM reference_documents WHERE workspace_id=? AND id=? AND deleted_at IS NULL FOR UPDATE`, documentWorkspace(ctx), documentID).Scan(&current); err != nil {
@@ -64,6 +67,7 @@ func (s *Store) SupersedeReferenceDocument(ctx context.Context, documentID strin
 }
 
 func (s *Store) ListReferenceDocuments(ctx context.Context, includeDeleted bool) ([]core.ReferenceDocument, error) {
+	ctx = dbmetrics.WithReadLabel(ctx, "ListReferenceDocuments")
 	rows, err := documentRows(ctx, s.db, `SELECT id,name,current_version,deleted_at,created_at,updated_at FROM reference_documents WHERE workspace_id=? AND (? OR deleted_at IS NULL) ORDER BY name`, documentWorkspace(ctx), includeDeleted)
 	if err != nil {
 		return nil, err
@@ -86,6 +90,7 @@ func (s *Store) ListReferenceDocuments(ctx context.Context, includeDeleted bool)
 }
 
 func (s *Store) GetReferenceDocument(ctx context.Context, documentID string) (core.ReferenceDocument, error) {
+	ctx = dbmetrics.WithReadLabel(ctx, "GetReferenceDocument")
 	item := core.ReferenceDocument{Workspace: documentWorkspace(ctx), ID: documentID}
 	var deleted *time.Time
 	err := documentRow(ctx, s.db, `SELECT name,current_version,deleted_at,created_at,updated_at FROM reference_documents WHERE workspace_id=? AND id=?`, documentWorkspace(ctx), documentID).
@@ -100,6 +105,7 @@ func (s *Store) GetReferenceDocument(ctx context.Context, documentID string) (co
 }
 
 func (s *Store) ListReferenceDocumentVersions(ctx context.Context, documentID string) ([]core.ReferenceDocumentVersion, error) {
+	ctx = dbmetrics.WithReadLabel(ctx, "ListReferenceDocumentVersions")
 	rows, err := documentRows(ctx, s.db, `SELECT version,filename,content_type,content,coalesce(supersedes_version,0),created_by,created_at FROM reference_document_versions WHERE workspace_id=? AND document_id=? ORDER BY version`, documentWorkspace(ctx), documentID)
 	if err != nil {
 		return nil, err
@@ -120,6 +126,7 @@ func (s *Store) ListReferenceDocumentVersions(ctx context.Context, documentID st
 }
 
 func (s *Store) GetReferenceDocumentVersion(ctx context.Context, documentID string, version int) (core.ReferenceDocumentVersion, error) {
+	ctx = dbmetrics.WithReadLabel(ctx, "GetReferenceDocumentVersion")
 	item := core.ReferenceDocumentVersion{Workspace: documentWorkspace(ctx), DocumentID: documentID}
 	var supersedes *int
 	err := documentRow(ctx, s.db, `SELECT version,filename,content_type,content,supersedes_version,created_by,created_at FROM reference_document_versions WHERE workspace_id=? AND document_id=? AND version=?`, documentWorkspace(ctx), documentID, version).Scan(&item.Version, &item.Filename, &item.ContentType, &item.Content, &supersedes, &item.CreatedBy, &item.CreatedAt)
@@ -133,6 +140,7 @@ func (s *Store) GetReferenceDocumentVersion(ctx context.Context, documentID stri
 }
 
 func (s *Store) ListReferenceDocumentEvents(ctx context.Context, documentID string) ([]core.Event, error) {
+	ctx = dbmetrics.WithReadLabel(ctx, "ListReferenceDocumentEvents")
 	rows, err := documentRows(ctx, s.db, `SELECT id,COALESCE(task_id,''),COALESCE(job_id,''),kind,actor_id,actor_role,payload_json,at,workspace_id
 		FROM events_columnstore WHERE workspace_id=? AND kind LIKE 'reference_document.%' ORDER BY id`, documentWorkspace(ctx))
 	if err != nil {
@@ -156,6 +164,7 @@ func (s *Store) ListReferenceDocumentEvents(ctx context.Context, documentID stri
 }
 
 func (s *Store) DeleteReferenceDocument(ctx context.Context, documentID string) error {
+	ctx = dbmetrics.WithReadLabel(ctx, "DeleteReferenceDocument")
 	return s.documentTx(ctx, func(tx *sql.Tx) error {
 		var currentVersion int
 		var name string
@@ -175,6 +184,7 @@ func (s *Store) DeleteReferenceDocument(ctx context.Context, documentID string) 
 }
 
 func (s *Store) RecordReferenceDocumentConsulted(ctx context.Context, documentID string, version int, sessionID string) error {
+	ctx = dbmetrics.WithReadLabel(ctx, "RecordReferenceDocumentConsulted")
 	return s.documentTx(ctx, func(tx *sql.Tx) error {
 		var exists bool
 		if err := documentRow(ctx, tx, `SELECT EXISTS(SELECT 1 FROM reference_document_versions WHERE workspace_id=? AND document_id=? AND version=?) AND EXISTS(SELECT 1 FROM planning_sessions WHERE workspace_id=? AND id=?)`, documentWorkspace(ctx), documentID, version, documentWorkspace(ctx), sessionID).Scan(&exists); err != nil {

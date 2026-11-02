@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/kidus-tiliksew/conveyor/internal/store"
+	"github.com/kidus-tiliksew/conveyor/internal/store/dbmetrics"
 )
 
 // reviewSummaryClaimKey names the claim row that records a round's latest
@@ -31,6 +32,7 @@ func reviewSummaryClaimKey(workspace, taskID string, round int) string {
 // is visible before it reads the history, and the next version also counts
 // from the recorded one.
 func (s *Store) RecordReviewSummaryCommand(ctx context.Context, request store.ReviewSummaryRequest) (store.ReviewSummaryResult, error) {
+	ctx = dbmetrics.WithReadLabel(ctx, "RecordReviewSummaryCommand")
 	if _, err := store.RequireActor(ctx); err != nil {
 		return store.ReviewSummaryResult{}, err
 	}

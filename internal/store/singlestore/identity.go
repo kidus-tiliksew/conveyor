@@ -18,6 +18,7 @@ import (
 	"github.com/kidus-tiliksew/conveyor/internal/config"
 	"github.com/kidus-tiliksew/conveyor/internal/core"
 	"github.com/kidus-tiliksew/conveyor/internal/store"
+	"github.com/kidus-tiliksew/conveyor/internal/store/dbmetrics"
 )
 
 // Identity writes share a deployment lock because email and hash uniqueness
@@ -167,6 +168,7 @@ func identityWorkspace(ctx context.Context, tx *sql.Tx, ws string) error {
 	return nil
 }
 func (s *Store) ProvisionIdentityUser(ctx context.Context, email, name string) (core.IdentityUser, error) {
+	ctx = dbmetrics.WithReadLabel(ctx, "ProvisionIdentityUser")
 	email, err := normalizeIdentityEmail(email)
 	if err != nil {
 		return core.IdentityUser{}, translateBackendConflict(err)
@@ -194,6 +196,7 @@ func (s *Store) ProvisionIdentityUser(ctx context.Context, email, name string) (
 // operator becomes the owner. It never writes a workspace binding, so
 // demotions and exclusions survive every restart (DEC-75(3), DEC-75(4)).
 func (s *Store) BootstrapIdentity(ctx context.Context, identity config.FirstOperatorIdentity, legacyToken string) (bool, error) {
+	ctx = dbmetrics.WithReadLabel(ctx, "BootstrapIdentity")
 	email, err := normalizeIdentityEmail(identity.Email)
 	if err != nil {
 		return false, translateBackendConflict(err)
@@ -310,6 +313,7 @@ func deploymentOwner(ctx context.Context, tx *sql.Tx) (string, bool, error) {
 	return owner, true, nil
 }
 func (s *Store) GetCallerIdentity(ctx context.Context, userID, workspaceID string) (core.CallerIdentity, error) {
+	ctx = dbmetrics.WithReadLabel(ctx, "GetCallerIdentity")
 	var r core.CallerIdentity
 	var err error
 	if workspaceID == "" {

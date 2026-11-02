@@ -14,6 +14,7 @@ import (
 	"github.com/kidus-tiliksew/conveyor/internal/eventlog"
 	"github.com/kidus-tiliksew/conveyor/internal/eventlog/pglog"
 	"github.com/kidus-tiliksew/conveyor/internal/queue/logqueue"
+	"github.com/kidus-tiliksew/conveyor/internal/store/dbmetrics"
 	"github.com/kidus-tiliksew/conveyor/internal/store/postgres/db"
 )
 
@@ -139,6 +140,7 @@ func (s *Store) Changes() *changes.Hub { return s.changes }
 // EnablePeers turns on pg_notify for every notice-raising transaction and
 // opens the LISTEN connection. It reports true: PostgreSQL notifies peers.
 func (s *Store) EnablePeers(ctx context.Context) bool {
+	ctx = dbmetrics.WithReadLabel(ctx, "EnablePeers")
 	if s.peers.enabled.Swap(true) {
 		return true
 	}

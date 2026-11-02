@@ -5,10 +5,12 @@ import (
 
 	"github.com/kidus-tiliksew/conveyor/internal/core"
 	"github.com/kidus-tiliksew/conveyor/internal/monitor"
+	"github.com/kidus-tiliksew/conveyor/internal/store/dbmetrics"
 	"github.com/kidus-tiliksew/conveyor/internal/store/postgres/db"
 )
 
 func (s *Store) ListMonitorPullRequestEventsForTasks(ctx context.Context, taskIDs []string) (map[string][]core.Event, error) {
+	ctx = dbmetrics.WithReadLabel(ctx, "ListMonitorPullRequestEventsForTasks")
 	result := make(map[string][]core.Event, len(taskIDs))
 	if len(taskIDs) == 0 {
 		return result, nil
@@ -34,6 +36,7 @@ func (s *Store) ListMonitorPullRequestEventsForTasks(ctx context.Context, taskID
 }
 
 func (s *Store) MonitorOriginsForTasks(ctx context.Context, taskIDs []string) (map[string]monitor.ObservationRecord, error) {
+	ctx = dbmetrics.WithReadLabel(ctx, "MonitorOriginsForTasks")
 	result := make(map[string]monitor.ObservationRecord, len(taskIDs))
 	if len(taskIDs) == 0 {
 		return result, nil

@@ -10,6 +10,7 @@ import (
 	"github.com/kidus-tiliksew/conveyor/internal/core"
 	"github.com/kidus-tiliksew/conveyor/internal/redact"
 	"github.com/kidus-tiliksew/conveyor/internal/store"
+	"github.com/kidus-tiliksew/conveyor/internal/store/dbmetrics"
 )
 
 // The workspace GitHub webhook secret and accepted deliveries
@@ -42,6 +43,7 @@ func (s *Store) storeWebhookSecretTx(ctx context.Context, tx *sql.Tx, workspace,
 }
 
 func (s *Store) SetWorkspaceGitHubWebhookSecret(ctx context.Context, id, secret string) (time.Time, error) {
+	ctx = dbmetrics.WithReadLabel(ctx, "SetWorkspaceGitHubWebhookSecret")
 	if err := store.ValidateGitHubWebhookSecret(id, secret); err != nil {
 		return time.Time{}, translateBackendConflict(err)
 	}
@@ -78,6 +80,7 @@ func (s *Store) SetWorkspaceGitHubWebhookSecret(ctx context.Context, id, secret 
 }
 
 func (s *Store) GetWorkspaceGitHubWebhookSecretForUse(ctx context.Context, id string) (string, error) {
+	ctx = dbmetrics.WithReadLabel(ctx, "GetWorkspaceGitHubWebhookSecretForUse")
 	var nonce, ciphertext []byte
 	err := s.db.QueryRowContext(ctx, `SELECT secret_nonce,secret_ciphertext FROM workspace_github_webhook_secrets WHERE workspace_id=?`, id).Scan(&nonce, &ciphertext)
 	if errors.Is(err, sql.ErrNoRows) {
@@ -103,6 +106,7 @@ func (s *Store) GetWorkspaceGitHubWebhookSecretForUse(ctx context.Context, id st
 }
 
 func (s *Store) RecordGitHubWebhookDelivery(ctx context.Context, id, deliveryID, event string, receivedAt time.Time) (bool, error) {
+	ctx = dbmetrics.WithReadLabel(ctx, "RecordGitHubWebhookDelivery")
 	if err := store.ValidateGitHubWebhookDelivery(id, deliveryID, event); err != nil {
 		return false, translateBackendConflict(err)
 	}
@@ -125,11 +129,13 @@ func (s *Store) RecordGitHubWebhookDelivery(ctx context.Context, id, deliveryID,
 }
 
 func (s *Store) ForgetGitHubWebhookDelivery(ctx context.Context, id, deliveryID string) error {
+	ctx = dbmetrics.WithReadLabel(ctx, "ForgetGitHubWebhookDelivery")
 	_, err := s.db.ExecContext(ctx, `DELETE FROM github_webhook_deliveries WHERE workspace_id=? AND delivery_id=?`, id, deliveryID)
 	return translateBackendConflict(err)
 }
 
 func (s *Store) GitHubWebhookStatus(ctx context.Context, id string) (core.GitHubWebhookStatus, error) {
+	ctx = dbmetrics.WithReadLabel(ctx, "GitHubWebhookStatus")
 	var status core.GitHubWebhookStatus
 	var exists string
 	if err := s.db.QueryRowContext(ctx, `SELECT id FROM workspaces WHERE id=?`, id).Scan(&exists); err != nil {

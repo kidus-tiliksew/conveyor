@@ -11,6 +11,7 @@ import (
 
 	"github.com/kidus-tiliksew/conveyor/internal/core"
 	"github.com/kidus-tiliksew/conveyor/internal/store"
+	"github.com/kidus-tiliksew/conveyor/internal/store/dbmetrics"
 )
 
 // taskEventWindowSelect seeks the (task_id, at, id) timeline index and charges
@@ -68,6 +69,7 @@ func taskEventKindFilter(q store.TaskEventWindowQuery, column string, n int) (st
 var observeTaskEventWindowFetch atomic.Pointer[func(eventID int64, variableBytes int)]
 
 func (s *Store) ReadTaskEventWindow(ctx context.Context, q store.TaskEventWindowQuery) (store.TaskEventWindow, error) {
+	ctx = dbmetrics.WithReadLabel(ctx, "ReadTaskEventWindow")
 	if err := store.ValidateTaskEventWindowQuery(q); err != nil {
 		return store.TaskEventWindow{}, err
 	}

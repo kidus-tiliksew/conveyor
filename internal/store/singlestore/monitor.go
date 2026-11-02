@@ -14,6 +14,7 @@ import (
 	"github.com/kidus-tiliksew/conveyor/internal/core"
 	"github.com/kidus-tiliksew/conveyor/internal/monitor"
 	"github.com/kidus-tiliksew/conveyor/internal/store"
+	"github.com/kidus-tiliksew/conveyor/internal/store/dbmetrics"
 )
 
 func (s *Store) WithMonitorSignalClassLock(ctx context.Context, repository string, kind monitor.SignalKind, fn func(context.Context) error) error {
@@ -91,6 +92,7 @@ func scanObservation(row interface{ Scan(...any) error }, ws string) (monitor.Ob
 	return r, nil
 }
 func (s *Store) Observe(ctx context.Context, o monitor.Observation) (monitor.ObservationRecord, bool, error) {
+	ctx = dbmetrics.WithReadLabel(ctx, "Observe")
 	// The record must name the bound workspace before any lookup or write
 	// (component-monitor-drift).
 	if _, err := store.MonitorRecordWorkspace(ctx, o.WorkspaceID); err != nil {
@@ -146,6 +148,7 @@ func (s *Store) Observe(ctx context.Context, o monitor.Observation) (monitor.Obs
 	return r, fresh && err == nil, translateBackendConflict(err)
 }
 func (s *Store) FindOpenMonitorTask(ctx context.Context, repository string, kind monitor.SignalKind) (string, bool, error) {
+	ctx = dbmetrics.WithReadLabel(ctx, "FindOpenMonitorTask")
 	ws, err := workspace(ctx)
 	if err != nil {
 		return "", false, translateBackendConflict(err)
@@ -159,6 +162,7 @@ func (s *Store) FindOpenMonitorTask(ctx context.Context, repository string, kind
 }
 
 func (s *Store) MonitorMergeCommitState(ctx context.Context, repository, commitSHA string, committedAt, now time.Time, bound time.Duration) (monitor.MergeState, string, error) {
+	ctx = dbmetrics.WithReadLabel(ctx, "MonitorMergeCommitState")
 	commitSHA = strings.TrimSpace(commitSHA)
 	repository = strings.TrimSpace(repository)
 	if commitSHA == "" || repository == "" {
@@ -229,6 +233,7 @@ func monitorTaskCapacity(ctx context.Context, tx *sql.Tx, ws, taskID string) err
 	return checkDriftSaturation(taskID, count)
 }
 func (s *Store) LinkTask(ctx context.Context, identity, taskID, outcome string) (monitor.ObservationRecord, error) {
+	ctx = dbmetrics.WithReadLabel(ctx, "LinkTask")
 	var r monitor.ObservationRecord
 	err := s.monitorTx(ctx, func(tx *sql.Tx, ws string) error {
 		var err error
@@ -275,6 +280,7 @@ func scanDrift(row interface{ Scan(...any) error }, ws string) (monitor.Drift, e
 	return d, translateBackendConflict(err)
 }
 func (s *Store) RecordDrift(ctx context.Context, d monitor.Drift) (monitor.Drift, bool, error) {
+	ctx = dbmetrics.WithReadLabel(ctx, "RecordDrift")
 	// The record must name the bound workspace before any lookup or write
 	// (component-monitor-drift).
 	if _, err := store.MonitorRecordWorkspace(ctx, d.WorkspaceID); err != nil {
@@ -325,6 +331,7 @@ func (s *Store) RecordDrift(ctx context.Context, d monitor.Drift) (monitor.Drift
 	return r, fresh && err == nil, translateBackendConflict(err)
 }
 func (s *Store) AuditMonitor(ctx context.Context, kind string, payload map[string]any) error {
+	ctx = dbmetrics.WithReadLabel(ctx, "AuditMonitor")
 	data, err := json.Marshal(payload)
 	if err != nil {
 		return translateBackendConflict(err)
@@ -347,21 +354,25 @@ func auditMonitorTask(ctx context.Context, tx *sql.Tx, ws, taskID, kind string, 
 	return translateBackendConflict(err)
 }
 func (s *Store) AuditTask(ctx context.Context, taskID, kind string, payload map[string]any) error {
+	ctx = dbmetrics.WithReadLabel(ctx, "AuditTask")
 	return s.monitorTx(ctx, func(tx *sql.Tx, ws string) error { return auditMonitorTask(ctx, tx, ws, taskID, kind, payload) })
 }
 func (s *Store) RecordMonitorSuccess(ctx context.Context, at time.Time) error {
+	ctx = dbmetrics.WithReadLabel(ctx, "RecordMonitorSuccess")
 	return s.monitorTx(ctx, func(tx *sql.Tx, ws string) error {
 		_, err := tx.ExecContext(ctx, "INSERT INTO monitor_status(workspace_id,last_successful_at) VALUES(?,?) ON DUPLICATE KEY UPDATE last_successful_at=VALUES(last_successful_at),current_error='',forge_error_category='',backoff_until=NULL", ws, at)
 		return translateBackendConflict(err)
 	})
 }
 func (s *Store) RecordMonitorFailure(ctx context.Context, category, detail string, backoff time.Time) error {
+	ctx = dbmetrics.WithReadLabel(ctx, "RecordMonitorFailure")
 	return s.monitorTx(ctx, func(tx *sql.Tx, ws string) error {
 		_, err := tx.ExecContext(ctx, "INSERT INTO monitor_status(workspace_id,current_error,forge_error_category,backoff_until) VALUES(?,?,?,?) ON DUPLICATE KEY UPDATE current_error=VALUES(current_error),forge_error_category=VALUES(forge_error_category),backoff_until=VALUES(backoff_until)", ws, detail, category, backoff)
 		return translateBackendConflict(err)
 	})
 }
 func (s *Store) MonitorStatus(ctx context.Context, enabled bool, now time.Time) (monitor.Status, error) {
+	ctx = dbmetrics.WithReadLabel(ctx, "MonitorStatus")
 	ws, err := workspace(ctx)
 	if err != nil {
 		return monitor.Status{}, translateBackendConflict(err)
@@ -427,6 +438,7 @@ func (s *Store) MonitorStatus(ctx context.Context, enabled bool, now time.Time) 
 }
 
 func (s *Store) ListUnresolvedDrift(ctx context.Context) ([]monitor.Drift, error) {
+	ctx = dbmetrics.WithReadLabel(ctx, "ListUnresolvedDrift")
 	ws, err := workspace(ctx)
 	if err != nil {
 		return nil, translateBackendConflict(err)
@@ -448,6 +460,7 @@ func (s *Store) ListUnresolvedDrift(ctx context.Context) ([]monitor.Drift, error
 }
 
 func (s *Store) ResolveDrift(ctx context.Context, id, outcome, requirementID string) (monitor.Drift, error) {
+	ctx = dbmetrics.WithReadLabel(ctx, "ResolveDrift")
 	requirementID = strings.TrimSpace(requirementID)
 	if outcome != "requirements_amended" && outcome != "design_document_updated" && outcome != "conflict_resolved" && outcome != "change_reverted" {
 		return monitor.Drift{}, fmt.Errorf("unsupported audited reconciliation outcome %q", outcome)
@@ -701,6 +714,7 @@ func proposeDriftRequirement(ctx context.Context, tx *sql.Tx, ws string, d monit
 }
 
 func (s *Store) MonitorOriginsForTasks(ctx context.Context, taskIDs []string) (map[string]monitor.ObservationRecord, error) {
+	ctx = dbmetrics.WithReadLabel(ctx, "MonitorOriginsForTasks")
 	result := make(map[string]monitor.ObservationRecord, len(taskIDs))
 	if len(taskIDs) == 0 {
 		return result, nil

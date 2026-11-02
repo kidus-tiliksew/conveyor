@@ -3,9 +3,11 @@ package singlestore
 import (
 	"context"
 	"github.com/kidus-tiliksew/conveyor/internal/core"
+	"github.com/kidus-tiliksew/conveyor/internal/store/dbmetrics"
 )
 
 func (s *Store) ListRepositoryInstallTasks(ctx context.Context, repository string) ([]core.RepositoryInstallTask, error) {
+	ctx = dbmetrics.WithReadLabel(ctx, "ListRepositoryInstallTasks")
 	ws, err := workspace(ctx)
 	if err != nil {
 		return nil, err
