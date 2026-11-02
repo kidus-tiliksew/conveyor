@@ -73,17 +73,70 @@ type fallbackStep struct {
 	due   time.Time
 }
 
-// failingTasksStore fails task listing while fail is set.
+// failingTasksStore fails task listing while fail is set. Its task and
+// event reads wait while a fixture write holds write, so a fixture write
+// that spans several store calls is seen whole, as one production
+// transaction is.
 type failingTasksStore struct {
 	store.Store
 	fail atomic.Bool
+	// write is held by a fixture write that spans several store calls.
+	write sync.RWMutex
+	// observed, when set before the fallback starts, receives each read
+	// that waited for a fixture write and each finished event read.
+	observed chan gatedRead
+}
+
+// gatedRead is one read the store reports on observed: waited is true when
+// the read waited for a fixture write, and false when an event read of the
+// task finished.
+type gatedRead struct {
+	taskID string
+	waited bool
+}
+
+// read takes the read side of write for one task or event read.
+func (s *failingTasksStore) read(taskID string) func() {
+	if !s.write.TryRLock() {
+		s.observe(gatedRead{taskID: taskID, waited: true})
+		s.write.RLock()
+	}
+	return s.write.RUnlock
+}
+
+func (s *failingTasksStore) observe(r gatedRead) {
+	if s.observed == nil {
+		return
+	}
+	select {
+	case s.observed <- r:
+	default:
+	}
 }
 
 func (s *failingTasksStore) ListTasksFiltered(ctx context.Context, filter store.TaskFilter) ([]core.Task, error) {
+	defer s.read("")()
 	if s.fail.Load() {
 		return nil, errors.New("database unavailable")
 	}
 	return s.Store.ListTasksFiltered(ctx, filter)
+}
+
+func (s *failingTasksStore) GetTask(ctx context.Context, id string) (core.Task, error) {
+	defer s.read(id)()
+	return s.Store.GetTask(ctx, id)
+}
+
+func (s *failingTasksStore) ListCompactEvents(ctx context.Context, taskID string) ([]core.Event, error) {
+	defer s.observe(gatedRead{taskID: taskID})
+	defer s.read(taskID)()
+	return s.Store.ListCompactEvents(ctx, taskID)
+}
+
+func (s *failingTasksStore) ListEventsAfter(ctx context.Context, taskID string, afterID int64) ([]core.Event, error) {
+	defer s.observe(gatedRead{taskID: taskID})
+	defer s.read(taskID)()
+	return s.Store.ListEventsAfter(ctx, taskID, afterID)
 }
 
 type fallbackFixture struct {
@@ -106,9 +159,12 @@ type fallbackFixture struct {
 	// onMonitor runs inside the Monitor settings read, which a fire makes
 	// after its merge-readiness read.
 	onMonitor atomic.Pointer[func()]
-	logMu     sync.Mutex
-	lines     []string
-	start     time.Time
+	// betweenApprovalWrites, when set, runs in approveTask after the task
+	// write and before its approval event.
+	betweenApprovalWrites func()
+	logMu                 sync.Mutex
+	lines                 []string
+	start                 time.Time
 }
 
 func newFallbackFixture(t *testing.T) *fallbackFixture {
