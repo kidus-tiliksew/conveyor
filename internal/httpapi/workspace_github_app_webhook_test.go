@@ -19,10 +19,11 @@ import (
 // requires manage_workspace and a connected App, returns a new secret once
 // with the receiver URL and the six events, and regenerates it on a second
 // call; GET .../github-app reports the webhook object without the secret,
-// and configured turns true with the first accepted delivery. No response,
-// workspace event, or log line after creation carries the secret
-// (component-identity-membership, The webhook secret; req-quiet-idle-runtime
-// AC-3.2, AC-3.6).
+// and configured turns true with the first accepted delivery;
+// silence_fallback_active is false without a fallback function and follows
+// it once set. No response, workspace event, or log line after creation
+// carries the secret (component-identity-membership, The webhook secret;
+// req-quiet-idle-runtime AC-3.2, AC-3.6, AC-3.8).
 func TestWorkspaceGitHubWebhookSettings(t *testing.T) {
 	logs := captureLog(t)
 	st := store.NewVolatileBackend()
@@ -66,6 +67,7 @@ func TestWorkspaceGitHubWebhookSettings(t *testing.T) {
 			SecretConfigured bool       `json:"secret_configured"`
 			LastDeliveryAt   *time.Time `json:"last_delivery_at"`
 			Configured       bool       `json:"configured"`
+			SilenceActive    *bool      `json:"silence_fallback_active"`
 		} `json:"webhook"`
 	}
 	read := func() view {
@@ -110,8 +112,17 @@ func TestWorkspaceGitHubWebhookSettings(t *testing.T) {
 	if _, err := st.RecordGitHubWebhookDelivery(t.Context(), "alpha", "first-delivery", "ping", time.Now()); err != nil {
 		t.Fatal(err)
 	}
-	if delivered := read(); !delivered.Webhook.Configured || delivered.Webhook.LastDeliveryAt == nil {
-		t.Fatalf("webhook after a delivery=%+v", delivered.Webhook)
+	if delivered := read(); !delivered.Webhook.Configured || delivered.Webhook.LastDeliveryAt == nil || delivered.Webhook.SilenceActive == nil || *delivered.Webhook.SilenceActive {
+		t.Fatalf("webhook after a delivery=%+v, want silence_fallback_active false without a fallback", delivered.Webhook)
+	}
+	silent := map[string]bool{"alpha": false}
+	server.GitHubSilenceFallback = func(workspace string) bool { return silent[workspace] }
+	if quiet := read(); quiet.Webhook.SilenceActive == nil || *quiet.Webhook.SilenceActive {
+		t.Fatalf("webhook while deliveries arrive=%+v, want silence_fallback_active false", quiet.Webhook)
+	}
+	silent["alpha"] = true
+	if active := read(); active.Webhook.SilenceActive == nil || !*active.Webhook.SilenceActive {
+		t.Fatalf("webhook while the silence fallback runs=%+v, want silence_fallback_active true", active.Webhook)
 	}
 	regenerated := call("POST", "/webhook-secret", "operator")
 	var second struct {
