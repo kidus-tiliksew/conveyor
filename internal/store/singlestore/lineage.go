@@ -635,6 +635,13 @@ func (s *Store) RebuildLineage(ctx context.Context, request core.LineageRebuildR
 		return result, fmt.Errorf("%w: reason and request_id are required", store.ErrLineageRebuildValidation)
 	}
 	err := s.documentTx(ctx, func(tx *sql.Tx) error {
+		// The request's claim row names its lineage.rebuilt event, so a
+		// replay waits until that event is visible (component-persistence,
+		// SingleStore claimed records).
+		claim := "lineage-rebuild:" + documentWorkspace(ctx) + ":" + request.RequestID
+		if _, _, err := awaitClaimedRecord(ctx, tx, claim, documentWorkspace(ctx), ""); err != nil {
+			return err
+		}
 		var prior []byte
 		err := documentRow(ctx, tx, `SELECT payload_json FROM events WHERE workspace_id=? AND kind='lineage.rebuilt'
 			AND JSON_EXTRACT_STRING(payload_json,'request_id')=? ORDER BY id DESC LIMIT 1`, documentWorkspace(ctx), request.RequestID).Scan(&prior)
@@ -745,7 +752,7 @@ func (s *Store) RebuildLineage(ctx context.Context, request core.LineageRebuildR
 		if err != nil {
 			return err
 		}
-		return nil
+		return recordLastInserted(ctx, tx, claim, claimedEventsTable)
 	})
 	return result, err
 }

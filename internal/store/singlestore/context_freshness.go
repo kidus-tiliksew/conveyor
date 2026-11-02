@@ -22,6 +22,10 @@ func (s *Store) RecordContextObservation(ctx context.Context, lease taskops.Task
 		if err != nil {
 			return err
 		}
+		key, err := awaitContextObservations(ctx, tx, order.TaskID)
+		if err != nil {
+			return err
+		}
 		events, err := documentTaskEvents(ctx, tx, order.TaskID)
 		if err != nil {
 			return err
@@ -32,9 +36,7 @@ func (s *Store) RecordContextObservation(ctx context.Context, lease taskops.Task
 			return err
 		}
 		if event != nil {
-			if err = taskEvent(ctx, tx, *event); err != nil {
-				return err
-			}
+			return appendContextObservation(ctx, tx, key, *event)
 		}
 		return nil
 	})
@@ -55,6 +57,10 @@ func (s *Store) RecordInProcessContextObservation(ctx context.Context, lease tas
 		if err != nil {
 			return err
 		}
+		key, err := awaitContextObservations(ctx, tx, o.TaskID)
+		if err != nil {
+			return err
+		}
 		events, err := documentTaskEvents(ctx, tx, o.TaskID)
 		if err != nil {
 			return err
@@ -65,9 +71,37 @@ func (s *Store) RecordInProcessContextObservation(ctx context.Context, lease tas
 			return err
 		}
 		if event != nil {
-			return taskEvent(ctx, tx, *event)
+			return appendContextObservation(ctx, tx, key, *event)
 		}
 		return nil
 	})
 	return result, err
+}
+
+// contextObservationClaimKey names the claim row that names a task's latest
+// context observation event (component-persistence, SingleStore claimed
+// records).
+func contextObservationClaimKey(workspace, taskID string) string {
+	return "context-observation:" + workspace + ":" + taskID
+}
+
+// awaitContextObservations waits until the task's latest recorded
+// observation is visible, so an identical replay finds it in the history.
+func awaitContextObservations(ctx context.Context, tx *sql.Tx, taskID string) (string, error) {
+	ws := documentWorkspace(ctx)
+	key := contextObservationClaimKey(ws, taskID)
+	_, _, err := awaitClaimedRecord(ctx, tx, key, ws, taskID)
+	return key, err
+}
+
+// appendContextObservation appends event and names it on the claim row.
+func appendContextObservation(ctx context.Context, tx *sql.Tx, key string, event core.Event) error {
+	if err := taskEvent(ctx, tx, event); err != nil {
+		return err
+	}
+	appended, err := lastInsertedRecord(ctx, tx, claimedEventsTable, documentWorkspace(ctx), true)
+	if err != nil {
+		return err
+	}
+	return recordClaimedRecord(ctx, tx, key, appended)
 }
