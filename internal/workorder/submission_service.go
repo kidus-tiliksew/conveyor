@@ -533,7 +533,7 @@ func (s *Service) dispatchedConflictRefresh(ctx context.Context, task core.Task,
 	if err != nil {
 		return dispatchedRefresh{}, false, err
 	}
-	events, err := s.Store.ListEvents(ctx, task.ID)
+	events, err := s.Store.ListCompactEvents(ctx, task.ID)
 	if err != nil {
 		return dispatchedRefresh{}, false, err
 	}
@@ -677,7 +677,7 @@ func (s *Service) submissionReplayResult(ctx context.Context, order core.WorkOrd
 // running. Stale marking and refresh-head advancement precede that advance in
 // the same locked handoff, so the advance proves them too.
 func (s *Service) submissionStageAdvanced(ctx context.Context, order core.WorkOrder) (bool, error) {
-	events, err := s.Store.ListEvents(ctx, order.TaskID)
+	events, err := s.Store.ListCompactEvents(ctx, order.TaskID)
 	if err != nil {
 		return false, err
 	}
@@ -718,7 +718,7 @@ func (s *Service) submissionStageAdvanced(ctx context.Context, order core.WorkOr
 // recordedPRURL reads the newest recorded pull_request.opened URL, optionally
 // for one work order.
 func (s *Service) recordedPRURL(ctx context.Context, taskID string, workOrderID ...string) string {
-	events, err := s.Store.ListEvents(ctx, taskID)
+	events, err := s.Store.ListCompactEvents(ctx, taskID)
 	if err != nil {
 		return ""
 	}

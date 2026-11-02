@@ -75,7 +75,7 @@ func (d *Dispatcher) refreshInProcessVerdict(ctx context.Context, cfg *config.Co
 	if input.ContextFreshness.Snapshot.AuthoritySource != "" {
 		r.Snapshot = core.WithContextAuthority(r.Snapshot, input.ContextFreshness.Snapshot.AuthoritySource, input.ServedRequirementSnapshot, input.GovernanceSnapshot)
 	}
-	events, e := d.Store.ListEvents(ctx, task.ID)
+	events, e := d.Store.ListCompactEvents(ctx, task.ID)
 	f := store.ProjectContext(r.Snapshot, store.ContextHistory(events, core.WorkOrder{TaskID: task.ID, AttemptID: job.ID}), input.ContextFreshness.SelectionRevision)
 	snapshot := core.BoundContextFreshness(f).Snapshot
 	receipt, recordErr := d.recordInputObservation(ctx, task, job, core.ContextObservation{Kind: "context.verdict_refresh_observed", PriorRevision: input.ContextFreshness.SelectionRevision, SelectionRevision: snapshot.Revision, Snapshot: &snapshot, Outcome: "available", ComparisonStatus: f.ComparisonStatus, UnfetchedAdditions: f.UnfetchedAdditions, Truncated: f.Truncated || snapshot.IncompleteCoverage})
@@ -93,7 +93,7 @@ func (d *Dispatcher) refreshInProcessVerdict(ctx context.Context, cfg *config.Co
 // The next ordinary input may report the prior verdict boundary. This is not
 // a cross-attempt fetch receipt or a reason to start another provider loop.
 func (d *Dispatcher) priorContextDiagnostic(ctx context.Context, task core.Task) string {
-	events, err := d.Store.ListEvents(ctx, task.ID)
+	events, err := d.Store.ListCompactEvents(ctx, task.ID)
 	if err != nil {
 		return ""
 	}

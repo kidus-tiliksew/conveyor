@@ -440,6 +440,13 @@ func (s *windowCountingStore) ListEvents(ctx context.Context, taskID string) ([]
 	return s.Store.ListEvents(ctx, taskID)
 }
 
+func (s *windowCountingStore) ListCompactEvents(ctx context.Context, taskID string) ([]core.Event, error) {
+	s.mu.Lock()
+	s.pageReads++
+	s.mu.Unlock()
+	return s.Store.ListCompactEvents(ctx, taskID)
+}
+
 func (s *windowCountingStore) counts() (int, int) {
 	s.mu.Lock()
 	defer s.mu.Unlock()

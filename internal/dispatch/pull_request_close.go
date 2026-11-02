@@ -34,7 +34,7 @@ func (d *Dispatcher) queueStartedOverPR(ctx context.Context, retired core.Task) 
 	if !ok || repo.GitHub == "" {
 		return fmt.Errorf("GitHub repository is not configured for %s", retired.Repo)
 	}
-	events, err := d.Store.ListEvents(ctx, retired.ID)
+	events, err := d.Store.ListCompactEvents(ctx, retired.ID)
 	if err != nil {
 		return err
 	}
@@ -101,7 +101,7 @@ func (w *pullRequestCloseWorker) Work(ctx context.Context, job queue.Job) error 
 		if err != nil || !ok || p.Terminal() {
 			return err
 		}
-		events, err := w.dispatcher.Store.ListEvents(ctx, p.TaskID)
+		events, err := w.dispatcher.Store.ListCompactEvents(ctx, p.TaskID)
 		if err != nil {
 			return err
 		}
@@ -320,7 +320,7 @@ func (w *pullRequestCloseWorker) checkCloseOwnership(ctx context.Context, retire
 		if p.Number == 0 {
 			continue
 		}
-		events, err := w.dispatcher.Store.ListEvents(ctx, task.ID)
+		events, err := w.dispatcher.Store.ListCompactEvents(ctx, task.ID)
 		if err != nil {
 			return err
 		}

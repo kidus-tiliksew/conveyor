@@ -299,7 +299,7 @@ func (d *Dispatcher) creditVisibleGateMergeLocked(ctx context.Context, task core
 	if task.State != core.TaskAwaiting || task.GateKind != core.GateKindMergeApproval {
 		return false, nil
 	}
-	events, err := d.Store.ListEvents(ctx, task.ID)
+	events, err := d.Store.ListCompactEvents(ctx, task.ID)
 	if err != nil {
 		return false, err
 	}

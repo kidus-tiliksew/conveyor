@@ -34,6 +34,7 @@ func runEventRecency(t *testing.T, x Fixture) {
 	t.Run("causal merge windows compare (at,id) tuples", func(t *testing.T) { runCausalMergeRecency(t, x) })
 	t.Run("checkpoint candidates fold requirement context chronologically", func(t *testing.T) { runCheckpointCandidateRecency(t, x) })
 	t.Run("recovery reads the newest transient failure by (at,id)", func(t *testing.T) { runRecoveryTransientRecency(t, x) })
+	t.Run("CompactEvents: compact reads leave historical snapshot bodies in the database", func(t *testing.T) { runCompactEventReads(t, x) })
 }
 
 // seedTime is a microsecond-precise time after every ordinary fixture event,

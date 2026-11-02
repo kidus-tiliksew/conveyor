@@ -226,7 +226,7 @@ func (s *Service) verificationCheckpointReplayAccess(ctx context.Context, id, se
 	if err != nil || task.Workspace != ws {
 		return refuse()
 	}
-	events, err := s.Store.ListEvents(ctx, o.TaskID)
+	events, err := s.Store.ListCompactEvents(ctx, o.TaskID)
 	if err != nil {
 		return refuse()
 	}

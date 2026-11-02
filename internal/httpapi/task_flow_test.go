@@ -19,7 +19,7 @@ import (
 
 type failingFlowEventsStore struct{ store.Store }
 
-func (failingFlowEventsStore) ListEvents(context.Context, string) ([]core.Event, error) {
+func (failingFlowEventsStore) ListCompactEvents(context.Context, string) ([]core.Event, error) {
 	return nil, errors.New("ledger unavailable")
 }
 

@@ -290,6 +290,10 @@ func (s *dependencyBatchObservationStore) ListEvents(context.Context, string) ([
 	return nil, nil
 }
 
+func (s *dependencyBatchObservationStore) ListCompactEvents(context.Context, string) ([]core.Event, error) {
+	return nil, nil
+}
+
 func TestListBatchesBlockersOnlyForQueuedImplementationOrders(t *testing.T) {
 	st := &dependencyBatchObservationStore{
 		orders: []core.WorkOrder{
@@ -387,6 +391,10 @@ func (s *scopedListObservationStore) GetTask(_ context.Context, id string) (core
 }
 
 func (s *scopedListObservationStore) ListEvents(context.Context, string) ([]core.Event, error) {
+	return nil, nil
+}
+
+func (s *scopedListObservationStore) ListCompactEvents(context.Context, string) ([]core.Event, error) {
 	return nil, nil
 }
 

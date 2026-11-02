@@ -447,6 +447,14 @@ func (r *ReadRecorder) ListEvents(ctx context.Context, taskID string) ([]core.Ev
 	return r.Store.ListEvents(ctx, taskID)
 }
 
+// ListCompactEvents records a task ledger read like ListEvents.
+func (r *ReadRecorder) ListCompactEvents(ctx context.Context, taskID string) ([]core.Event, error) {
+	r.mu.Lock()
+	r.eventReads[taskID]++
+	r.mu.Unlock()
+	return r.Store.ListCompactEvents(ctx, taskID)
+}
+
 func (r *ReadRecorder) ListTaskWorkOrders(ctx context.Context, taskID string) ([]core.WorkOrder, error) {
 	r.mu.Lock()
 	r.orderReads[taskID]++

@@ -173,7 +173,7 @@ func (w *reviewPublicationWorker) Work(ctx context.Context, job queue.Job) error
 		return fmt.Errorf("GitHub repository is not configured for %s", task.Repo)
 	}
 	var bounceHistory []string
-	events, _ := w.dispatcher.Store.ListEvents(ctx, task.ID)
+	events, _ := w.dispatcher.Store.ListCompactEvents(ctx, task.ID)
 	for _, event := range events {
 		if event.Kind != "pipeline.bounced" {
 			continue

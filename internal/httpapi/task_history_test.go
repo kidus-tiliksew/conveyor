@@ -508,6 +508,16 @@ func (l *ledgerStore) ListEvents(_ context.Context, taskID string) ([]core.Event
 	return sortedTaskEvents(l.ledger[taskID]), nil
 }
 
+func (l *ledgerStore) ListCompactEvents(_ context.Context, taskID string) ([]core.Event, error) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	events := sortedTaskEvents(l.ledger[taskID])
+	for i := range events {
+		events[i].Payload = store.CompactEventPayload(events[i].Kind, events[i].Payload)
+	}
+	return events, nil
+}
+
 func (l *ledgerStore) ReadTaskEventWindow(ctx context.Context, q store.TaskEventWindowQuery) (store.TaskEventWindow, error) {
 	if err := store.ValidateTaskEventWindowQuery(q); err != nil {
 		return store.TaskEventWindow{}, err

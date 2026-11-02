@@ -28,7 +28,7 @@ func (s *Server) getTaskFlow(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "internal server error", http.StatusInternalServerError)
 		return
 	}
-	events, err := s.Store.ListEvents(r.Context(), id)
+	events, err := s.Store.ListCompactEvents(r.Context(), id)
 	if err != nil {
 		log.Printf("task flow events %s: %v", id, err)
 		http.Error(w, "internal server error", http.StatusInternalServerError)

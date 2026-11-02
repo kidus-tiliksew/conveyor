@@ -593,6 +593,11 @@ func (c *taskDetailCountingStore) ListEvents(a0 context.Context, a1 string) ([]c
 	return c.Store.ListEvents(a0, a1)
 }
 
+func (c *taskDetailCountingStore) ListCompactEvents(a0 context.Context, a1 string) ([]core.Event, error) {
+	c.count("ListCompactEvents")
+	return c.Store.ListCompactEvents(a0, a1)
+}
+
 func (c *taskDetailCountingStore) ListEventsAfter(a0 context.Context, a1 string, a2 int64) ([]core.Event, error) {
 	c.count("ListEventsAfter")
 	return c.Store.ListEventsAfter(a0, a1, a2)

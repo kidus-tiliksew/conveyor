@@ -12,7 +12,7 @@ import (
 
 type taskContextReadErrorStore struct{ store.Store }
 
-func (s taskContextReadErrorStore) ListEvents(context.Context, string) ([]core.Event, error) {
+func (s taskContextReadErrorStore) ListCompactEvents(context.Context, string) ([]core.Event, error) {
 	return nil, fmt.Errorf("context read unavailable")
 }
 
@@ -33,7 +33,7 @@ func (s *intakeRaceContextReadErrorStore) CreateTaskWithDependenciesAndContext(c
 	return fmt.Errorf("duplicate intake key")
 }
 
-func (s *intakeRaceContextReadErrorStore) ListEvents(context.Context, string) ([]core.Event, error) {
+func (s *intakeRaceContextReadErrorStore) ListCompactEvents(context.Context, string) ([]core.Event, error) {
 	return nil, fmt.Errorf("context read unavailable")
 }
 

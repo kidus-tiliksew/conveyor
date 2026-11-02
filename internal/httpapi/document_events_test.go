@@ -131,6 +131,10 @@ func (s *boundedDocumentDetailStore) ListEvents(context.Context, string) ([]core
 	s.t.Fatal("detail read full task events")
 	return nil, nil
 }
+func (s *boundedDocumentDetailStore) ListCompactEvents(context.Context, string) ([]core.Event, error) {
+	s.t.Fatal("detail read compact task events")
+	return nil, nil
+}
 func (s *boundedDocumentDetailStore) ListSystemDesignEvents(context.Context, string) ([]core.Event, error) {
 	s.t.Fatal("detail read full System Design events")
 	return nil, nil

@@ -31,7 +31,7 @@ type MergeReadiness struct {
 }
 
 func (d *Dispatcher) reviewedHeadFromEvents(ctx context.Context, taskID string) string {
-	events, _ := d.Store.ListEvents(ctx, taskID)
+	events, _ := d.Store.ListCompactEvents(ctx, taskID)
 	for i := len(events) - 1; i >= 0; i-- {
 		if events[i].Kind != "review.round_completed" && events[i].Kind != "review.completed" {
 			continue
@@ -145,7 +145,7 @@ func mergedHeadMismatchRecorded(events []core.Event, pr github.PullRequest) bool
 // A match confirms the merge. A mismatch records drift and leaves the state.
 func (d *Dispatcher) reconcileForgeMergeLocked(ctx context.Context, task core.Task, githubRepo string, pr github.PullRequest, expectedHead, result string) (bool, error) {
 	if expectedHead != "" && expectedHead == pr.HeadSHA {
-		events, err := d.Store.ListEvents(ctx, task.ID)
+		events, err := d.Store.ListCompactEvents(ctx, task.ID)
 		if err != nil {
 			return false, err
 		}
@@ -173,7 +173,7 @@ func (d *Dispatcher) reconcileForgeMergeLocked(ctx context.Context, task core.Ta
 		}
 		return true, nil
 	}
-	events, err := d.Store.ListEvents(ctx, task.ID)
+	events, err := d.Store.ListCompactEvents(ctx, task.ID)
 	if err != nil {
 		return false, err
 	}
@@ -517,7 +517,7 @@ type mergeConflictDispatchState struct {
 // approved/head pair ends the prior episode; terminal attempts remain inside
 // the unresolved episode and may be retried under its backoff budget.
 func (d *Dispatcher) currentMergeConflictEpisode(ctx context.Context, taskID string) (mergeConflictEpisode, bool, error) {
-	events, err := d.Store.ListEvents(ctx, taskID)
+	events, err := d.Store.ListCompactEvents(ctx, taskID)
 	if err != nil {
 		return mergeConflictEpisode{}, false, err
 	}
@@ -543,7 +543,7 @@ func sameConflictEpisode(payload json.RawMessage, episode mergeConflictEpisode) 
 }
 
 func (d *Dispatcher) conflictDispatchState(ctx context.Context, taskID string, episode mergeConflictEpisode, orders []core.WorkOrder) (mergeConflictDispatchState, error) {
-	events, err := d.Store.ListEvents(ctx, taskID)
+	events, err := d.Store.ListCompactEvents(ctx, taskID)
 	if err != nil {
 		return mergeConflictDispatchState{}, err
 	}
@@ -658,7 +658,7 @@ func (d *Dispatcher) dispatchConflictFixLocked(ctx context.Context, current core
 	if err != nil {
 		return core.WorkOrder{}, err
 	}
-	events, err := d.Store.ListEvents(ctx, current.ID)
+	events, err := d.Store.ListCompactEvents(ctx, current.ID)
 	if err != nil {
 		return core.WorkOrder{}, err
 	}
@@ -964,7 +964,7 @@ func (d *Dispatcher) ReconcileObservedPullRequest(ctx context.Context, repositor
 		if !pr.Merged {
 			return nil
 		}
-		events, err := d.Store.ListEvents(lockedCtx, taskID)
+		events, err := d.Store.ListCompactEvents(lockedCtx, taskID)
 		if err != nil {
 			return err
 		}
@@ -1009,7 +1009,7 @@ func (d *Dispatcher) observeConfirmedMerge(ctx context.Context, task core.Task, 
 	if d.ObserveDesignMerge == nil {
 		return
 	}
-	events, err := d.Store.ListEvents(ctx, task.ID)
+	events, err := d.Store.ListCompactEvents(ctx, task.ID)
 	eventID := int64(0)
 	if err == nil {
 		for i := len(events) - 1; i >= 0; i-- {
@@ -1049,7 +1049,7 @@ func (d *Dispatcher) hasRecoverableApprovedReview(ctx context.Context, task core
 	if task.ApprovedHeadSHA == "" && task.ReviewedHeadSHA == "" {
 		return false, nil
 	}
-	events, err := d.Store.ListEvents(ctx, task.ID)
+	events, err := d.Store.ListCompactEvents(ctx, task.ID)
 	if err != nil {
 		return false, err
 	}

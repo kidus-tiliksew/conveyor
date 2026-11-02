@@ -497,6 +497,19 @@ JOIN tasks t ON t.id = e.task_id
 WHERE e.task_id = $1 AND t.workspace_id = $2
 ORDER BY e.at, e.id;
 
+-- name: ListCompactEvents :many
+-- ListEvents with the snapshot bodies left out of work_order.* object
+-- payloads in the database (component-persistence, Compact task event reads).
+SELECT e.id, e.task_id, e.job_id, e.kind, e.actor_id, e.actor_role,
+  CASE WHEN left(e.kind, 11) = 'work_order.' AND jsonb_typeof(e.payload_json) = 'object'
+    THEN e.payload_json - 'governance_snapshot' - 'served_requirement_snapshot'
+    ELSE e.payload_json END::jsonb AS payload_json,
+  e.at, e.workspace_id
+FROM events e
+JOIN tasks t ON t.id = e.task_id
+WHERE e.task_id = $1 AND t.workspace_id = $2
+ORDER BY e.at, e.id;
+
 -- name: ListRequirementEvents :many
 SELECT e.* FROM events e
 WHERE e.workspace_id = sqlc.arg(workspace_id)
