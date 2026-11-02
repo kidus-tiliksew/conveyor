@@ -935,11 +935,12 @@ func (s *Store) ListWorkOrders(ctx context.Context) ([]core.WorkOrder, error) {
 }
 
 // ListLiveWorkOrders applies the live-state predicate in SQL, so completed,
-// cancelled, and submitted history is never read (component-work-orders,
-// Listing).
+// cancelled, and submitted history is never read, and selects
+// activityWorkOrderColumns, so no authority snapshot leaves the database
+// (component-work-orders, Listing).
 func (s *Store) ListLiveWorkOrders(ctx context.Context) ([]core.WorkOrder, error) {
 	ctx = dbmetrics.WithReadLabel(ctx, "ListLiveWorkOrders")
-	rows, err := s.boundary.Query(ctx, "SELECT "+workOrderColumns+" FROM work_orders WHERE workspace_id=$1 AND state = ANY($2::text[]) ORDER BY created_at,id", workspace(ctx), liveWorkOrderStates())
+	rows, err := s.boundary.Query(ctx, "SELECT "+activityWorkOrderColumns+" FROM work_orders WHERE workspace_id=$1 AND state = ANY($2::text[]) ORDER BY created_at,id", workspace(ctx), liveWorkOrderStates())
 	if err != nil {
 		return nil, err
 	}
@@ -1057,9 +1058,13 @@ func (s *Store) ListTaskWorkOrders(ctx context.Context, taskID string) ([]core.W
 	}
 	return orders, rows.Err()
 }
+
+// ListTaskWorkOrdersStored backs the dispatcher's stage-hold fold, which reads
+// no authority snapshot, so it selects activityWorkOrderColumns
+// (component-work-orders, Snapshot-free fold reads).
 func (s *Store) ListTaskWorkOrdersStored(ctx context.Context, taskID string) ([]core.WorkOrder, error) {
 	ctx = dbmetrics.WithReadLabel(ctx, "ListTaskWorkOrdersStored")
-	rows, err := s.boundary.Query(ctx, "SELECT "+workOrderColumns+" FROM work_orders WHERE workspace_id=$1 AND task_id=$2 ORDER BY created_at,id", workspace(ctx), taskID)
+	rows, err := s.boundary.Query(ctx, "SELECT "+activityWorkOrderColumns+" FROM work_orders WHERE workspace_id=$1 AND task_id=$2 ORDER BY created_at,id", workspace(ctx), taskID)
 	if err != nil {
 		return nil, err
 	}

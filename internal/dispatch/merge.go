@@ -654,7 +654,7 @@ func (d *Dispatcher) dispatchConflictFixLocked(ctx context.Context, current core
 		}
 		episode = mergeConflictEpisode{ApprovedHead: approved, NewHead: pr.HeadSHA}
 	}
-	orders, err := d.Store.ListTaskWorkOrders(ctx, current.ID)
+	orders, err := d.taskOrders(ctx, current.ID)
 	if err != nil {
 		return core.WorkOrder{}, err
 	}
@@ -779,7 +779,7 @@ func (d *Dispatcher) gateOnConflictMergeError(ctx context.Context, current core.
 		return err
 	}
 	if present {
-		orders, listErr := d.Store.ListTaskWorkOrders(ctx, current.ID)
+		orders, listErr := d.taskOrders(ctx, current.ID)
 		if listErr != nil {
 			return listErr
 		}
