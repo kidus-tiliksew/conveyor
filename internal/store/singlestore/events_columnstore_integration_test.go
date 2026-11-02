@@ -41,6 +41,32 @@ func eventsOperatorStatements(name string) ([]string, error) {
 	return statements, nil
 }
 
+// legacyEventsCreateStatement returns migration 0001's CREATE for the legacy
+// events table; no later numbered migration alters that table.
+func legacyEventsCreateStatement(t *testing.T) string {
+	t.Helper()
+	raw, err := migrationFiles.ReadFile("migrations/0001_schema.sql")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, statement := range strings.Split(string(raw), ";") {
+		if statement = strings.TrimSpace(statement); strings.HasPrefix(statement, "CREATE ROWSTORE TABLE IF NOT EXISTS `events` (") {
+			return statement
+		}
+	}
+	t.Fatal("migration 0001 defines no legacy events table")
+	return ""
+}
+
+// eventsTableLayout reads the events table's storage type, columns, and index
+// columns, so a test that replaces the table can prove it restored the layout.
+func eventsTableLayout(t *testing.T, st *Store, ctx context.Context) []string {
+	t.Helper()
+	layout := queryRows(t, st, ctx, `SELECT storage_type FROM information_schema.tables WHERE table_schema=DATABASE() AND table_name='events'`)
+	layout = append(layout, queryRows(t, st, ctx, `SELECT column_name,column_type,is_nullable,COALESCE(column_default,'<null>'),extra FROM information_schema.columns WHERE table_schema=DATABASE() AND table_name='events' ORDER BY ordinal_position`)...)
+	return append(layout, queryRows(t, st, ctx, `SELECT index_name,seq_in_index,column_name,non_unique FROM information_schema.statistics WHERE table_schema=DATABASE() AND table_name='events' ORDER BY index_name,seq_in_index`)...)
+}
+
 func execEventsOperatorScript(ctx context.Context, db *sql.DB, name string) error {
 	statements, err := eventsOperatorStatements(name)
 	if err != nil {
@@ -389,7 +415,24 @@ func TestReleasedColumnstoreOperatorCopyIntegration(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	// Reconstruct only this isolated fixture's released source layout.
+	// The integration database is shared and reset only by DELETE, so restore
+	// migration 0001's legacy events layout for later tests that run
+	// historical migrations against it.
+	legacy := legacyEventsCreateStatement(t)
+	legacyLayout := eventsTableLayout(t, st, ctx)
+	t.Cleanup(func() {
+		cleanupCtx := context.Background()
+		for _, q := range []string{"DROP TABLE IF EXISTS events", legacy} {
+			if _, err := st.db.ExecContext(cleanupCtx, q); err != nil {
+				t.Errorf("restore legacy events layout: %v", err)
+				return
+			}
+		}
+		if restored := eventsTableLayout(t, st, cleanupCtx); !reflect.DeepEqual(legacyLayout, restored) {
+			t.Errorf("legacy events layout not restored:\nbefore %v\nafter  %v", legacyLayout, restored)
+		}
+	})
+	// Reconstruct the released source layout for this test only.
 	exec("DROP TABLE events")
 	create, err := eventsOperatorStatements("01-create.sql")
 	if err != nil || len(create) != 1 {
