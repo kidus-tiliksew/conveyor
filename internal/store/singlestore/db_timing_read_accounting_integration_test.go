@@ -32,7 +32,7 @@ func TestReadAccountingIntegration(t *testing.T) {
 	}{{"ReadAccountingLarge", 1 << 20}, {"ReadAccountingSmall", 64 << 10}}
 	for _, read := range reads {
 		var payload string
-		if err := st.db.QueryRowContext(dbmetrics.WithReadLabel(ctx, read.label), "SELECT REPEAT('a', ?)", read.size).Scan(&payload); err != nil {
+		if err := st.db.QueryRowContext(dbmetrics.WithReadLabel(ctx, read.label), "SELECT RPAD('', ?, 'a')", read.size).Scan(&payload); err != nil {
 			t.Fatal(err)
 		}
 		if len(payload) != read.size {
