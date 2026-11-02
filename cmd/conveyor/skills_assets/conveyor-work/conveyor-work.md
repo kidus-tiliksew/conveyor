@@ -412,6 +412,9 @@ the registration instead of sending another field.
    conversation, summarize its reasoning, or pass its session ID, client
    token, or plan notes. The agent reads everything else from its own
    delivered contract.
+5. Start each agent through its harness's own subagent or separate-process
+   mechanism, with a fresh context and the launch prompt as its only input.
+   Never pass a token as an argument.
 
 ```text
 Conveyor server <server-url>, workspace <workspace>, task <task-id>,
@@ -522,28 +525,6 @@ An extra reviewer that a seat's agent runs inside its own seat is not a seat.
 The seat still submits one verdict, the extra reviewer stays self-reported,
 and it adds no server-counted verdict. Only a separately opened seat, claimed
 by its own session, does (DEC-77).
-
-### Launch examples
-
-Each in-harness example starts a subagent with a fresh context. Each headless
-example runs a separate CLI process that reaches Conveyor through the
-harness's own registration from `conveyor mcp install`; run
-`conveyor mcp install --list` to read the registration name and endpoint.
-`$LAUNCH_PROMPT` holds the launch prompt above and nothing else. Add model
-and permission flags as the operator's preference states. No example passes a
-token as an argument.
-
-| Harness | In-harness subagent | Headless CLI |
-| --- | --- | --- |
-| Claude Code | Call the Agent tool with `subagent_type: general-purpose` and the launch prompt as its prompt. | `claude -p "$LAUNCH_PROMPT" --allowedTools 'mcp__<registration>__*'` |
-| Codex | Ask Codex to spawn a new agent through its multi-agent tool with the launch prompt as the only message, without forking the current thread. | `codex exec "$LAUNCH_PROMPT"` |
-| OpenCode | Call the `task` tool with the built-in `general` subagent and the launch prompt. | `opencode run "$LAUNCH_PROMPT"` |
-| Cursor | Delegate to a Cursor subagent with the launch prompt as its task. | `cursor-agent -p "$LAUNCH_PROMPT"` |
-
-Claude Code and Codex read the stored credential through the registration's
-header helper. OpenCode and Cursor read it from the server-specific
-environment variable that `conveyor mcp install` prints; export it in the
-launching shell with the printed command instead of typing the token.
 
 ### Await the verdict
 

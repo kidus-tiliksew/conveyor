@@ -440,12 +440,8 @@ func TestConveyorWorkSkillShipsStageCheckoutAndSessionModeDiscipline(t *testing.
 		"start an isolated subagent of the session's own harness and report that default",
 		"Change a recorded preference only on the operator's direct instruction",
 		"name the harness and model used for each verifier and reviewer",
-		// Launch examples for every supported harness.
-		"`claude -p \"$LAUNCH_PROMPT\"",
-		"`codex exec \"$LAUNCH_PROMPT\"`",
-		"`opencode run \"$LAUNCH_PROMPT\"`",
-		"`cursor-agent -p \"$LAUNCH_PROMPT\"`",
-		"No example passes a token as an argument",
+		// Harness-neutral agent start: the harness owns its launch mechanism.
+		"Start each agent through its harness's own subagent or separate-process mechanism, with a fresh context and the launch prompt as its only input. Never pass a token as an argument.",
 		// Waiting, bounces, approval, and gates.
 		"Keep calling `await_review` until that deadline",
 		"Claim it under a fresh session ID and client token",
@@ -525,6 +521,13 @@ func TestConveyorWorkSkillShipsStageCheckoutAndSessionModeDiscipline(t *testing.
 		"The session never runs `conveyor done` itself",
 		"tells the operator to run `conveyor done",
 		"branch deletion, or any edit in the primary checkout",
+		// The playbook names no harness-specific launch command.
+		"### Launch examples",
+		"$LAUNCH_PROMPT",
+		"claude -p",
+		"codex exec",
+		"opencode run",
+		"cursor-agent -p",
 	}
 	wrapperRequired := []string{
 		"Every session claims its own order: a person started it in their own harness, and Conveyor launches no agent session, so no launcher renews the lease or owns a later stage (DEC-97(1))",
