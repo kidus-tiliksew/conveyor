@@ -10,6 +10,7 @@ import (
 
 	"github.com/kidus-tiliksew/conveyor/internal/core"
 	"github.com/kidus-tiliksew/conveyor/internal/store"
+	"github.com/kidus-tiliksew/conveyor/internal/store/dbmetrics"
 )
 
 const joinedJobColumns = `j.id,j.task_id,j.stage,j.harness,j.model_tier,j.auth_mode,j.runner,j.pack_version,j.confinement_tier,j.cost_usd,j.tokens_in,j.tokens_out,j.state,j.started_at,j.ended_at`
@@ -66,6 +67,7 @@ func insertJobRow(ctx context.Context, tx *sql.Tx, j core.Job) error {
 	return err
 }
 func (s *Store) CreateJob(ctx context.Context, j core.Job) error {
+	ctx = dbmetrics.WithReadLabel(ctx, "CreateJob")
 	return s.taskTx(ctx, j.TaskID, func(tx *sql.Tx) error {
 		if err := insertJobRow(ctx, tx, j); err != nil {
 			return err
@@ -74,6 +76,7 @@ func (s *Store) CreateJob(ctx context.Context, j core.Job) error {
 	})
 }
 func (s *Store) UpdateJob(ctx context.Context, j core.Job) error {
+	ctx = dbmetrics.WithReadLabel(ctx, "UpdateJob")
 	var id string
 	if err := documentRow(ctx, s.db, `SELECT task_id FROM jobs WHERE workspace_id=? AND id=?`, documentWorkspace(ctx), j.ID).Scan(&id); err != nil {
 		return notFound(err, "job %s", j.ID)
@@ -95,6 +98,7 @@ func (s *Store) UpdateJob(ctx context.Context, j core.Job) error {
 	})
 }
 func (s *Store) ListJobs(ctx context.Context, id string) ([]core.Job, error) {
+	ctx = dbmetrics.WithReadLabel(ctx, "ListJobs")
 	rows, err := documentRows(ctx, s.db, `SELECT `+joinedJobColumns+` FROM jobs j LEFT JOIN work_orders wo ON wo.workspace_id=j.workspace_id AND wo.job_id=j.id WHERE j.workspace_id=? AND j.task_id=? ORDER BY COALESCE(j.started_at,wo.queue_entered_at) IS NULL,COALESCE(j.started_at,wo.queue_entered_at),j.id`, documentWorkspace(ctx), id)
 	if err != nil {
 		return nil, err
@@ -111,6 +115,7 @@ func (s *Store) ListJobs(ctx context.Context, id string) ([]core.Job, error) {
 	return out, rows.Err()
 }
 func (s *Store) GetLatestJob(ctx context.Context, id string) (core.Job, bool, error) {
+	ctx = dbmetrics.WithReadLabel(ctx, "GetLatestJob")
 	j, err := scanJob(documentRow(ctx, s.db, `SELECT `+joinedJobColumns+` FROM jobs j LEFT JOIN work_orders wo ON wo.workspace_id=j.workspace_id AND wo.job_id=j.id WHERE j.workspace_id=? AND j.task_id=? ORDER BY COALESCE(j.started_at,wo.queue_entered_at) IS NULL DESC,COALESCE(j.started_at,wo.queue_entered_at) DESC,j.id DESC LIMIT 1`, documentWorkspace(ctx), id))
 	if errors.Is(err, sql.ErrNoRows) {
 		return core.Job{}, false, nil
@@ -132,6 +137,7 @@ func scanSpec(row interface{ Scan(...any) error }) (core.SpecVersion, error) {
 	return s, err
 }
 func (s *Store) CreateSpecVersion(ctx context.Context, spec core.SpecVersion) (core.SpecVersion, error) {
+	ctx = dbmetrics.WithReadLabel(ctx, "CreateSpecVersion")
 	if spec.CreatedAt.IsZero() {
 		spec.CreatedAt = time.Now().UTC()
 	}
@@ -183,12 +189,15 @@ func (s *Store) readSpec(ctx context.Context, id string, version int, approved b
 	return spec, true, err
 }
 func (s *Store) GetLatestSpecVersion(ctx context.Context, id string) (core.SpecVersion, bool, error) {
+	ctx = dbmetrics.WithReadLabel(ctx, "GetLatestSpecVersion")
 	return s.readSpec(ctx, id, 0, false)
 }
 func (s *Store) GetApprovedSpecVersion(ctx context.Context, id string) (core.SpecVersion, bool, error) {
+	ctx = dbmetrics.WithReadLabel(ctx, "GetApprovedSpecVersion")
 	return s.readSpec(ctx, id, 0, true)
 }
 func (s *Store) GetSpecVersion(ctx context.Context, id string, version int) (core.SpecVersion, bool, error) {
+	ctx = dbmetrics.WithReadLabel(ctx, "GetSpecVersion")
 	if version <= 0 {
 		return core.SpecVersion{}, false, nil
 	}
@@ -209,6 +218,7 @@ func approveSpecTx(ctx context.Context, tx *sql.Tx, id string, version int) erro
 	return err
 }
 func (s *Store) ApproveSpecVersion(ctx context.Context, id string, version int) error {
+	ctx = dbmetrics.WithReadLabel(ctx, "ApproveSpecVersion")
 	return s.taskTx(ctx, id, func(tx *sql.Tx) error {
 		if err := approveSpecTx(ctx, tx, id, version); err != nil {
 			return err

@@ -12,6 +12,7 @@ import (
 	"github.com/kidus-tiliksew/conveyor/internal/config"
 	"github.com/kidus-tiliksew/conveyor/internal/core"
 	"github.com/kidus-tiliksew/conveyor/internal/store"
+	"github.com/kidus-tiliksew/conveyor/internal/store/dbmetrics"
 	"github.com/kidus-tiliksew/conveyor/internal/store/postgres/db"
 	"github.com/kidus-tiliksew/conveyor/internal/taskops"
 )
@@ -35,6 +36,7 @@ func cancelledSessionMatches(ctx context.Context, q workOrderRowQuerier, workspa
 }
 
 func (s *Store) RenewWorkerClaimCommand(ctx context.Context, taskLease taskops.TaskLease, workOrderID string, claim core.WorkOrderClaimIdentity, lease time.Duration) (core.WorkOrder, error) {
+	ctx = dbmetrics.WithReadLabel(ctx, "RenewWorkerClaimCommand")
 	// The renewal and its lease_renewed event are separate statements, so the
 	// event actor (the worker, or the caller for a run claim) is checked before
 	// the lease changes (component-persistence, Actor context).
@@ -107,6 +109,7 @@ func (s *Store) RenewWorkerClaimCommand(ctx context.Context, taskLease taskops.T
 }
 
 func (s *Store) ReleaseWorkerClaimCommand(ctx context.Context, taskLease taskops.TaskLease, workOrderID string, claim core.WorkOrderClaimIdentity, release core.WorkOrderRelease) (core.WorkOrder, error) {
+	ctx = dbmetrics.WithReadLabel(ctx, "ReleaseWorkerClaimCommand")
 	tx, err := s.begin(ctx)
 	if err != nil {
 		return core.WorkOrder{}, err
@@ -270,6 +273,7 @@ func (s *Store) ReleaseWorkerClaimCommand(ctx context.Context, taskLease taskops
 }
 
 func (s *Store) RequestPlanRevisionCommand(ctx context.Context, taskLease taskops.TaskLease, workOrderID string, claim core.WorkOrderClaimIdentity, rationale string) (store.PlanRevisionRequestResult, error) {
+	ctx = dbmetrics.WithReadLabel(ctx, "RequestPlanRevisionCommand")
 	rationale = strings.TrimSpace(rationale)
 	if rationale == "" {
 		return store.PlanRevisionRequestResult{}, fmt.Errorf("rationale is required")
@@ -373,6 +377,7 @@ func (s *Store) RequestPlanRevisionCommand(ctx context.Context, taskLease taskop
 }
 
 func (s *Store) CancelPlanRevisionWorkOrderCommand(ctx context.Context, taskLease taskops.TaskLease, workOrderID, attemptID string) (core.WorkOrder, error) {
+	ctx = dbmetrics.WithReadLabel(ctx, "CancelPlanRevisionWorkOrderCommand")
 	tx, err := s.begin(ctx)
 	if err != nil {
 		return core.WorkOrder{}, err
@@ -459,6 +464,7 @@ func postgresRetryDelay(release core.WorkOrderRelease, retry int) time.Duration 
 // predicate. The locked claim calls the same helper inside its transaction
 // (req-260810-70ce2f AC-1.1; component-work-orders).
 func (s *Store) ListClaimBlockingProposalsForTask(ctx context.Context, taskID string) ([]store.ClaimBlockingProposal, error) {
+	ctx = dbmetrics.WithReadLabel(ctx, "ListClaimBlockingProposalsForTask")
 	return claimBlockingProposalsTx(ctx, s.boundary, workspace(ctx), taskID)
 }
 

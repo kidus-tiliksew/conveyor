@@ -8,6 +8,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/kidus-tiliksew/conveyor/internal/core"
 	"github.com/kidus-tiliksew/conveyor/internal/store"
+	"github.com/kidus-tiliksew/conveyor/internal/store/dbmetrics"
 	"github.com/kidus-tiliksew/conveyor/internal/store/postgres/db"
 )
 
@@ -16,6 +17,7 @@ var _ store.ReconcileReadStore = (*Store)(nil)
 // ListAutomaticReviewEvents reads only the AR-5 fold's event kinds for the
 // requested tasks in one query, in the (at, id) order ListEvents returns.
 func (s *Store) ListAutomaticReviewEvents(ctx context.Context, taskIDs []string) (map[string][]core.Event, error) {
+	ctx = dbmetrics.WithReadLabel(ctx, "ListAutomaticReviewEvents")
 	out := map[string][]core.Event{}
 	if len(taskIDs) == 0 {
 		return out, nil
@@ -43,6 +45,7 @@ ORDER BY e.task_id, e.at, e.id`, workspace(ctx), taskIDs, store.AutomaticReviewE
 // candidate predicate in one query. The latest plan version is the one
 // GetLatestSpecVersion returns, and the order is ListTasks's.
 func (s *Store) ListGitHubLifecycleReconcileTaskIDs(ctx context.Context, approvedSince *time.Time) ([]string, error) {
+	ctx = dbmetrics.WithReadLabel(ctx, "ListGitHubLifecycleReconcileTaskIDs")
 	rows, err := s.boundary.Query(ctx, `SELECT t.id
 FROM tasks t
 LEFT JOIN github_lifecycles g ON g.workspace_id = t.workspace_id AND g.task_id = t.id

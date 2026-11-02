@@ -11,10 +11,12 @@ import (
 
 	"github.com/kidus-tiliksew/conveyor/internal/core"
 	"github.com/kidus-tiliksew/conveyor/internal/store"
+	"github.com/kidus-tiliksew/conveyor/internal/store/dbmetrics"
 	"github.com/kidus-tiliksew/conveyor/internal/taskops"
 )
 
 func (s *Store) PreemptWorkOrderCommand(ctx context.Context, lease taskops.TaskLease, raw store.WorkOrderPreemptRequest) (store.WorkOrderPreemptResult, error) {
+	ctx = dbmetrics.WithReadLabel(ctx, "PreemptWorkOrderCommand")
 	request, validationErr := store.PrepareWorkOrderPreemptRequest(raw)
 	if validationErr != nil {
 		return store.WorkOrderPreemptResult{}, validationErr

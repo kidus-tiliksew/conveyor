@@ -10,6 +10,7 @@ import (
 	"github.com/kidus-tiliksew/conveyor/internal/core"
 	"github.com/kidus-tiliksew/conveyor/internal/gitx"
 	"github.com/kidus-tiliksew/conveyor/internal/store"
+	"github.com/kidus-tiliksew/conveyor/internal/store/dbmetrics"
 	"github.com/kidus-tiliksew/conveyor/internal/store/postgres/db"
 )
 
@@ -47,6 +48,7 @@ func writeOccupyingBranch(ctx context.Context, tx pgx.Tx, repo, branch, id strin
 }
 
 func (s *Store) AttachTaskBranch(ctx context.Context, taskID, branch string) (core.Task, error) {
+	ctx = dbmetrics.WithReadLabel(ctx, "AttachTaskBranch")
 	branch = strings.TrimSpace(branch)
 	if !gitx.LegalBranchName(branch) {
 		return core.Task{}, fmt.Errorf("%w", store.ErrInvalidBranch)

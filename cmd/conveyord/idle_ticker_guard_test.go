@@ -31,8 +31,8 @@ type tickerAllowance struct {
 var idleTickerAllowList = []tickerAllowance{
 	{
 		file: "cmd/conveyord/main.go", function: "main", interval: "poolStatsInterval",
-		timer:       "PostgreSQL pool statistics snapshot every 30 seconds",
-		permittedBy: "reads pgxpool.Stat() in process and sends no statement (req-quiet-idle-runtime AC-1.1; component-runtime, Observability)",
+		timer:       "pool and database read statistics snapshot every 30 seconds: the PostgreSQL pool line, then the read line on both durable backends",
+		permittedBy: "reads pgxpool.Stat() and the store's in-process read ledger, and sends no statement (req-quiet-idle-runtime AC-1.1, AC-1.3; component-runtime, Observability)",
 	},
 	{
 		file: "cmd/conveyord/main_github.go", function: "startIssueIntakePoll", interval: "d",

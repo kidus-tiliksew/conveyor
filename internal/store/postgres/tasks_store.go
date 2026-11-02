@@ -14,19 +14,23 @@ import (
 	"github.com/kidus-tiliksew/conveyor/internal/core"
 	"github.com/kidus-tiliksew/conveyor/internal/gitx"
 	"github.com/kidus-tiliksew/conveyor/internal/store"
+	"github.com/kidus-tiliksew/conveyor/internal/store/dbmetrics"
 	"github.com/kidus-tiliksew/conveyor/internal/store/postgres/db"
 	"github.com/kidus-tiliksew/conveyor/internal/taskops"
 )
 
 func (s *Store) CreateTask(ctx context.Context, task core.Task) error {
+	ctx = dbmetrics.WithReadLabel(ctx, "CreateTask")
 	return s.CreateTaskWithDependencies(ctx, task, nil)
 }
 
 func (s *Store) CreateTaskWithDependencies(ctx context.Context, task core.Task, dependencyIDs []string) error {
+	ctx = dbmetrics.WithReadLabel(ctx, "CreateTaskWithDependencies")
 	return s.CreateTaskWithDependenciesAndContext(ctx, task, dependencyIDs, store.TaskContextInput{})
 }
 
 func (s *Store) CreateTaskWithDependenciesAndContext(ctx context.Context, task core.Task, dependencyIDs []string, attached store.TaskContextInput) error {
+	ctx = dbmetrics.WithReadLabel(ctx, "CreateTaskWithDependenciesAndContext")
 	if task.Workspace != workspace(ctx) {
 		return fmt.Errorf("task workspace %q does not match store workspace %q", task.Workspace, workspace(ctx))
 	}
@@ -145,6 +149,7 @@ func (s *Store) createTaskTx(ctx context.Context, tx pgx.Tx, q *db.Queries, task
 }
 
 func (s *Store) GetTask(ctx context.Context, id string) (core.Task, error) {
+	ctx = dbmetrics.WithReadLabel(ctx, "GetTask")
 	task, err := s.queries.GetTask(ctx, db.GetTaskParams{ID: id, WorkspaceID: workspace(ctx)})
 	if err != nil {
 		return core.Task{}, notFound(err, "task %s", id)
@@ -160,6 +165,7 @@ func (s *Store) GetTask(ctx context.Context, id string) (core.Task, error) {
 }
 
 func (s *Store) GetTaskByIntakeKey(ctx context.Context, key string) (core.Task, bool, error) {
+	ctx = dbmetrics.WithReadLabel(ctx, "GetTaskByIntakeKey")
 	task, err := s.queries.GetTaskByIntakeKey(ctx, db.GetTaskByIntakeKeyParams{WorkspaceID: workspace(ctx), IntakeKey: nullableText(key)})
 	if errors.Is(err, pgx.ErrNoRows) {
 		return core.Task{}, false, nil
@@ -178,6 +184,7 @@ func (s *Store) GetTaskByIntakeKey(ctx context.Context, key string) (core.Task, 
 }
 
 func (s *Store) ListTasks(ctx context.Context) ([]core.Task, error) {
+	ctx = dbmetrics.WithReadLabel(ctx, "ListTasks")
 	rows, err := s.queries.ListTasks(ctx, workspace(ctx))
 	if err != nil {
 		return nil, err
@@ -207,6 +214,7 @@ func (s *Store) ListTasks(ctx context.Context) ([]core.Task, error) {
 // (AC-2.4). An inactive filter routes to ListTasks so the many callers that
 // never filter keep their existing plan.
 func (s *Store) ListTasksFiltered(ctx context.Context, filter store.TaskFilter) ([]core.Task, error) {
+	ctx = dbmetrics.WithReadLabel(ctx, "ListTasksFiltered")
 	if err := filter.Validate(); err != nil {
 		return nil, err
 	}
@@ -279,6 +287,7 @@ func (s *Store) hydrateTaskRows(ctx context.Context, rows []db.ListTaskOperation
 }
 
 func (s *Store) ListTaskOperations(ctx context.Context, query store.TaskOperationsQuery) (store.TaskOperationsPage, error) {
+	ctx = dbmetrics.WithReadLabel(ctx, "ListTaskOperations")
 	if err := query.Validate(); err != nil {
 		return store.TaskOperationsPage{}, err
 	}
@@ -363,6 +372,7 @@ func (s *Store) taskOperationsDetails(ctx context.Context, page *store.TaskOpera
 }
 
 func (s *Store) ListTaskPage(ctx context.Context, query store.TaskOperationsQuery) (store.TaskPage, error) {
+	ctx = dbmetrics.WithReadLabel(ctx, "ListTaskPage")
 	if err := query.Validate(); err != nil {
 		return store.TaskPage{}, err
 	}
@@ -383,6 +393,7 @@ func (s *Store) ListTaskPage(ctx context.Context, query store.TaskOperationsQuer
 }
 
 func (s *Store) ListCallerAttentionTaskPage(ctx context.Context, query store.CallerAttentionQuery) (store.TaskPage, error) {
+	ctx = dbmetrics.WithReadLabel(ctx, "ListCallerAttentionTaskPage")
 	if err := query.Validate(); err != nil {
 		return store.TaskPage{}, err
 	}
@@ -566,6 +577,7 @@ func (s *Store) hydrateTaskAssignees(ctx context.Context, tasks []core.Task) err
 }
 
 func (s *Store) SetTaskAssigneeCommand(ctx context.Context, lease taskops.TaskLease, id, assigneeUserID string) (core.Task, error) {
+	ctx = dbmetrics.WithReadLabel(ctx, "SetTaskAssigneeCommand")
 	if !lease.ValidForCommand(id, taskops.SetAssigneeCommand) {
 		return core.Task{}, fmt.Errorf("task assignment requires a valid taskops lease")
 	}
@@ -609,6 +621,7 @@ func (s *Store) SetTaskAssigneeCommand(ctx context.Context, lease taskops.TaskLe
 }
 
 func (s *Store) RequestChangesCommand(ctx context.Context, lease taskops.TaskLease, request taskops.RequestChanges) (core.Task, error) {
+	ctx = dbmetrics.WithReadLabel(ctx, "RequestChangesCommand")
 	if !lease.ValidForCommand(request.TaskID, taskops.RequestChangesCommand) {
 		return core.Task{}, fmt.Errorf("request changes requires a valid taskops lease")
 	}
@@ -688,6 +701,7 @@ func (s *Store) RequestChangesCommand(ctx context.Context, lease taskops.TaskLea
 }
 
 func (s *Store) UpdateTaskClassification(ctx context.Context, id, class string) error {
+	ctx = dbmetrics.WithReadLabel(ctx, "UpdateTaskClassification")
 	return s.inTx(ctx, func(_ pgx.Tx, q *db.Queries) error {
 		if _, err := q.UpdateTaskClassification(ctx, db.UpdateTaskClassificationParams{ID: id, WorkspaceID: workspace(ctx), Class: class}); err != nil {
 			return notFound(err, "task %s", id)
@@ -697,6 +711,7 @@ func (s *Store) UpdateTaskClassification(ctx context.Context, id, class string) 
 }
 
 func (s *Store) EnsureTaskEnqueued(ctx context.Context, id string) error {
+	ctx = dbmetrics.WithReadLabel(ctx, "EnsureTaskEnqueued")
 	return s.inTx(ctx, func(tx pgx.Tx, q *db.Queries) error {
 		task, err := q.GetTask(ctx, db.GetTaskParams{ID: id, WorkspaceID: workspace(ctx)})
 		if err != nil {
@@ -738,6 +753,7 @@ ORDER BY CASE WHEN wo.stage=t.next_stage AND wo.state='claimed' THEN 0 ELSE 1 EN
 // parent's lifecycle and row locks so concurrent ticks and commands are
 // exactly-once.
 func (s *Store) ReconcileBlueprintClosures(ctx context.Context) (int, error) {
+	ctx = dbmetrics.WithReadLabel(ctx, "ReconcileBlueprintClosures")
 	rows, err := s.boundary.Query(ctx, `
 SELECT parent.id
 FROM tasks parent
@@ -793,6 +809,7 @@ ORDER BY parent.created_at,parent.id`, workspace(ctx))
 }
 
 func (s *Store) CreateJob(ctx context.Context, job core.Job) error {
+	ctx = dbmetrics.WithReadLabel(ctx, "CreateJob")
 	return s.inTx(ctx, func(_ pgx.Tx, q *db.Queries) error {
 		if _, err := q.GetTask(ctx, db.GetTaskParams{ID: job.TaskID, WorkspaceID: workspace(ctx)}); err != nil {
 			return notFound(err, "task %s", job.TaskID)
@@ -808,6 +825,7 @@ func (s *Store) CreateJob(ctx context.Context, job core.Job) error {
 }
 
 func (s *Store) UpdateJob(ctx context.Context, job core.Job) error {
+	ctx = dbmetrics.WithReadLabel(ctx, "UpdateJob")
 	return s.inTx(ctx, func(tx pgx.Tx, q *db.Queries) error {
 		var current core.JobState
 		if err := tx.QueryRow(ctx, `SELECT j.state
@@ -831,6 +849,7 @@ func (s *Store) UpdateJob(ctx context.Context, job core.Job) error {
 }
 
 func (s *Store) ListJobs(ctx context.Context, taskID string) ([]core.Job, error) {
+	ctx = dbmetrics.WithReadLabel(ctx, "ListJobs")
 	rows, err := s.queries.ListJobs(ctx, db.ListJobsParams{TaskID: taskID, WorkspaceID: workspace(ctx)})
 	if err != nil {
 		return nil, err
@@ -843,6 +862,7 @@ func (s *Store) ListJobs(ctx context.Context, taskID string) ([]core.Job, error)
 }
 
 func (s *Store) GetLatestJob(ctx context.Context, taskID string) (core.Job, bool, error) {
+	ctx = dbmetrics.WithReadLabel(ctx, "GetLatestJob")
 	row, err := s.queries.GetLatestJob(ctx, db.GetLatestJobParams{TaskID: taskID, WorkspaceID: workspace(ctx)})
 	if errors.Is(err, pgx.ErrNoRows) {
 		return core.Job{}, false, nil
@@ -854,6 +874,7 @@ func (s *Store) GetLatestJob(ctx context.Context, taskID string) (core.Job, bool
 }
 
 func (s *Store) ApproveSpecVersionAndMaterialize(ctx context.Context, taskID string, version int) ([]core.Task, error) {
+	ctx = dbmetrics.WithReadLabel(ctx, "ApproveSpecVersionAndMaterialize")
 	var children []core.Task
 	err := s.inTx(ctx, func(tx pgx.Tx, q *db.Queries) error {
 		if err := lockDependencyEdgesTx(ctx, tx, workspace(ctx)); err != nil {
@@ -1020,6 +1041,7 @@ func (s *Store) ApproveSpecVersionAndMaterialize(ctx context.Context, taskID str
 }
 
 func (s *Store) ListBlockingTaskIDs(ctx context.Context, taskID string) ([]string, error) {
+	ctx = dbmetrics.WithReadLabel(ctx, "ListBlockingTaskIDs")
 	rows, err := s.boundary.Query(ctx, `SELECT dependency.id
 		FROM task_dependencies edge
 		JOIN tasks dependency ON dependency.workspace_id=edge.workspace_id
@@ -1042,6 +1064,7 @@ func (s *Store) ListBlockingTaskIDs(ctx context.Context, taskID string) ([]strin
 }
 
 func (s *Store) ValidateTaskDependencies(ctx context.Context, dependencyIDs []string) error {
+	ctx = dbmetrics.WithReadLabel(ctx, "ValidateTaskDependencies")
 	seen := map[string]bool{}
 	for _, dependencyID := range dependencyIDs {
 		dependencyID = strings.TrimSpace(dependencyID)
@@ -1065,6 +1088,7 @@ func (s *Store) ValidateTaskDependencies(ctx context.Context, dependencyIDs []st
 }
 
 func (s *Store) ListDependentTaskIDs(ctx context.Context, taskID string) ([]string, error) {
+	ctx = dbmetrics.WithReadLabel(ctx, "ListDependentTaskIDs")
 	rows, err := s.boundary.Query(ctx, `SELECT task_id FROM task_dependencies
 		WHERE workspace_id=$1 AND depends_on_task_id=$2 ORDER BY task_id`, workspace(ctx), taskID)
 	if err != nil {
@@ -1083,6 +1107,7 @@ func (s *Store) ListDependentTaskIDs(ctx context.Context, taskID string) ([]stri
 }
 
 func (s *Store) ListDependencyBlockers(ctx context.Context, taskIDs []string) (map[string]store.DependencyBlockers, error) {
+	ctx = dbmetrics.WithReadLabel(ctx, "ListDependencyBlockers")
 	if len(taskIDs) == 0 {
 		return map[string]store.DependencyBlockers{}, nil
 	}
@@ -1114,6 +1139,7 @@ func (s *Store) ListDependencyBlockers(ctx context.Context, taskIDs []string) (m
 }
 
 func (s *Store) AddTaskDependency(ctx context.Context, request store.DependencyAdditionRequest) (store.DependencyAdditionResult, error) {
+	ctx = dbmetrics.WithReadLabel(ctx, "AddTaskDependency")
 	request.TaskID = strings.TrimSpace(request.TaskID)
 	request.DependsOnTaskID = strings.TrimSpace(request.DependsOnTaskID)
 	request.Reason = strings.TrimSpace(request.Reason)
@@ -1243,6 +1269,7 @@ func (s *Store) AddTaskDependency(ctx context.Context, request store.DependencyA
 }
 
 func (s *Store) RemoveTaskDependency(ctx context.Context, request store.DependencyRemovalRequest) (store.DependencyRemovalResult, error) {
+	ctx = dbmetrics.WithReadLabel(ctx, "RemoveTaskDependency")
 	request.TaskID = strings.TrimSpace(request.TaskID)
 	request.DependsOnTaskID = strings.TrimSpace(request.DependsOnTaskID)
 	request.Reason = strings.TrimSpace(request.Reason)
@@ -1315,6 +1342,7 @@ func (s *Store) RemoveTaskDependency(ctx context.Context, request store.Dependen
 }
 
 func (s *Store) CreateIntervention(ctx context.Context, intervention core.Intervention) error {
+	ctx = dbmetrics.WithReadLabel(ctx, "CreateIntervention")
 	if !intervention.Action.Valid() {
 		return fmt.Errorf("invalid intervention action %q", intervention.Action)
 	}
@@ -1361,6 +1389,7 @@ func (s *Store) CreateIntervention(ctx context.Context, intervention core.Interv
 }
 
 func (s *Store) CancelTaskCommand(ctx context.Context, lease taskops.TaskLease, intervention core.Intervention) (core.Task, error) {
+	ctx = dbmetrics.WithReadLabel(ctx, "CancelTaskCommand")
 	if !lease.ValidFor(intervention.TaskID) {
 		return core.Task{}, fmt.Errorf("task cancellation requires a valid taskops lease")
 	}
@@ -1379,6 +1408,7 @@ func (s *Store) CancelTaskCommand(ctx context.Context, lease taskops.TaskLease, 
 // (DEC-64(1,7); component-task-lifecycle): approve intervention, approval
 // binding, merge.confirmed, then intervention.merge.
 func (s *Store) MergeTaskAtGateCommand(ctx context.Context, lease taskops.TaskLease, intervention core.Intervention, approvedHead string, confirmed core.Event) (core.Task, error) {
+	ctx = dbmetrics.WithReadLabel(ctx, "MergeTaskAtGateCommand")
 	if !lease.ValidFor(intervention.TaskID) {
 		return core.Task{}, fmt.Errorf("gate merge requires a valid taskops lease")
 	}
@@ -1581,6 +1611,7 @@ func cancelWorkOrdersTx(ctx context.Context, tx pgx.Tx, q *db.Queries, taskID st
 }
 
 func (s *Store) ListInterventions(ctx context.Context, taskID string) ([]core.Intervention, error) {
+	ctx = dbmetrics.WithReadLabel(ctx, "ListInterventions")
 	rows, err := s.queries.ListInterventions(ctx, db.ListInterventionsParams{TaskID: taskID, WorkspaceID: workspace(ctx)})
 	if err != nil {
 		return nil, err

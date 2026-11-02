@@ -3,9 +3,11 @@ package postgres
 import (
 	"context"
 	"github.com/kidus-tiliksew/conveyor/internal/core"
+	"github.com/kidus-tiliksew/conveyor/internal/store/dbmetrics"
 )
 
 func (s *Store) ListRepositoryInstallTasks(ctx context.Context, repository string) ([]core.RepositoryInstallTask, error) {
+	ctx = dbmetrics.WithReadLabel(ctx, "ListRepositoryInstallTasks")
 	rows, err := s.boundary.Query(ctx, `SELECT i.task_id,i.attempt,t.state FROM repository_install_tasks i JOIN tasks t ON t.workspace_id=i.workspace_id AND t.id=i.task_id WHERE i.workspace_id=$1 AND i.repository_name=$2 ORDER BY i.attempt`, workspace(ctx), repository)
 	if err != nil {
 		return nil, err

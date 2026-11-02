@@ -15,6 +15,7 @@ import (
 	"github.com/kidus-tiliksew/conveyor/internal/queue"
 	"github.com/kidus-tiliksew/conveyor/internal/queue/logqueue"
 	"github.com/kidus-tiliksew/conveyor/internal/store"
+	"github.com/kidus-tiliksew/conveyor/internal/store/dbmetrics"
 )
 
 const githubLifecycleColumns = `task_id, repository, spec_version, source,
@@ -31,6 +32,7 @@ comment_id, forge_error_category, last_error, forge_author_class, forge_author_u
 automatic_reenqueue_at`
 
 func (s *Store) GetGitHubLifecycle(ctx context.Context, taskID string) (core.GitHubLifecycle, bool, error) {
+	ctx = dbmetrics.WithReadLabel(ctx, "GetGitHubLifecycle")
 	lifecycle, err := scanGitHubLifecycle(documentRow(ctx, s.db, "SELECT "+githubLifecycleColumns+" FROM github_lifecycles WHERE workspace_id=? AND task_id=?", documentWorkspace(ctx), taskID))
 	if errors.Is(err, sql.ErrNoRows) {
 		return core.GitHubLifecycle{}, false, nil
@@ -39,6 +41,7 @@ func (s *Store) GetGitHubLifecycle(ctx context.Context, taskID string) (core.Git
 }
 
 func (s *Store) UpdateGitHubLifecycle(ctx context.Context, lifecycle core.GitHubLifecycle) error {
+	ctx = dbmetrics.WithReadLabel(ctx, "UpdateGitHubLifecycle")
 	if err := store.NormalizeForgeAuthorProjectionForWrite(&lifecycle.ForgeAuthorClass, &lifecycle.ForgeAuthorUserID, core.ForgeAuthorWorkspace); err != nil {
 		return err
 	}
@@ -101,6 +104,7 @@ func (s *Store) UpdateGitHubLifecycle(ctx context.Context, lifecycle core.GitHub
 // context's drift recorder after its transaction commits
 // (component-persistence, Drift repair reports).
 func (s *Store) ReconcileGitHubLifecycles(ctx context.Context) (int, error) {
+	ctx = dbmetrics.WithReadLabel(ctx, "ReconcileGitHubLifecycles")
 	rows, err := documentRows(ctx, s.db, `SELECT `+githubLifecycleColumns+` FROM github_lifecycles
 		WHERE workspace_id=? AND state IN ('queued','retrying') ORDER BY created_at`, documentWorkspace(ctx))
 	if err != nil {
@@ -154,6 +158,7 @@ func scanGitHubLifecycle(row interface{ Scan(...any) error }) (core.GitHubLifecy
 }
 
 func (s *Store) GetReviewPublication(ctx context.Context, id string) (core.ReviewPublication, error) {
+	ctx = dbmetrics.WithReadLabel(ctx, "GetReviewPublication")
 	publication, err := scanReviewPublication(documentRow(ctx, s.db, "SELECT "+reviewPublicationColumns+" FROM review_publications WHERE workspace_id=? AND review_work_order_id=?", documentWorkspace(ctx), id))
 	if err != nil {
 		return core.ReviewPublication{}, notFound(err, "review publication %s", id)
@@ -162,6 +167,7 @@ func (s *Store) GetReviewPublication(ctx context.Context, id string) (core.Revie
 }
 
 func (s *Store) UpdateReviewPublication(ctx context.Context, publication core.ReviewPublication) error {
+	ctx = dbmetrics.WithReadLabel(ctx, "UpdateReviewPublication")
 	if err := store.NormalizeForgeAuthorProjectionForWrite(&publication.ForgeAuthorClass, &publication.ForgeAuthorUserID, core.ForgeAuthorWorkspace); err != nil {
 		return err
 	}
@@ -195,6 +201,7 @@ func (s *Store) UpdateReviewPublication(ctx context.Context, publication core.Re
 }
 
 func (s *Store) ReconcileReviewPublications(ctx context.Context) (int, error) {
+	ctx = dbmetrics.WithReadLabel(ctx, "ReconcileReviewPublications")
 	rows, err := documentRows(ctx, s.db, `SELECT e.task_id, COALESCE(e.job_id,''), e.payload_json
 		FROM events_columnstore e
 		JOIN tasks t ON t.workspace_id=e.workspace_id AND t.id=e.task_id
@@ -325,6 +332,7 @@ func scanReviewPublication(row interface{ Scan(...any) error }) (core.ReviewPubl
 }
 
 func (s *Store) QueueReviewPublication(ctx context.Context, publication core.ReviewPublication) error {
+	ctx = dbmetrics.WithReadLabel(ctx, "QueueReviewPublication")
 	if publication.State != "" && publication.State != core.ReviewPublicationQueued && publication.State != core.ReviewPublicationRetrying && publication.State != core.ReviewPublicationPublished && publication.State != core.ReviewPublicationFailed {
 		return fmt.Errorf("invalid review publication state")
 	}
@@ -358,6 +366,7 @@ func (s *Store) enqueueGitHubIssuePublicationTx(ctx context.Context, tx *sql.Tx,
 	return logqueue.Enqueue(logTx(ctx, tx), s.log, documentWorkspace(ctx), queue.GitHubIssuePublicationArgs{}.Kind(), taskID, queue.GitHubIssuePublicationArgs{WorkspaceID: documentWorkspace(ctx), TaskID: taskID}, 5, time.Now().UTC())
 }
 func (s *Store) QueueGitHubLifecycle(ctx context.Context, p core.GitHubLifecycle) error {
+	ctx = dbmetrics.WithReadLabel(ctx, "QueueGitHubLifecycle")
 	return s.queueGitHubLifecycle(ctx, p, nil)
 }
 

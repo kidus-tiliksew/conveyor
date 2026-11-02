@@ -9,12 +9,14 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/kidus-tiliksew/conveyor/internal/core"
 	"github.com/kidus-tiliksew/conveyor/internal/store"
+	"github.com/kidus-tiliksew/conveyor/internal/store/dbmetrics"
 )
 
 // RecordWorkOrderClaimFailure upserts the order's claim-failure record in one
 // statement outside the failed claim transaction (component-work-orders,
 // Claim admission; component-persistence, Schema domains).
 func (s *Store) RecordWorkOrderClaimFailure(ctx context.Context, workOrderID, errorClass string, at time.Time) (core.WorkOrderClaimFailure, error) {
+	ctx = dbmetrics.WithReadLabel(ctx, "RecordWorkOrderClaimFailure")
 	if err := store.ValidateWorkOrderClaimFailure(workOrderID, errorClass, at); err != nil {
 		return core.WorkOrderClaimFailure{}, err
 	}
@@ -43,6 +45,7 @@ func (s *Store) RecordWorkOrderClaimFailure(ctx context.Context, workOrderID, er
 // ListWorkOrderClaimFailures reads the given orders' records in one
 // workspace-scoped query through the primary key.
 func (s *Store) ListWorkOrderClaimFailures(ctx context.Context, workOrderIDs []string) ([]core.WorkOrderClaimFailure, error) {
+	ctx = dbmetrics.WithReadLabel(ctx, "ListWorkOrderClaimFailures")
 	out := []core.WorkOrderClaimFailure{}
 	if len(workOrderIDs) == 0 {
 		return out, nil

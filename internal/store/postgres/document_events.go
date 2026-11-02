@@ -6,11 +6,13 @@ import (
 
 	"github.com/kidus-tiliksew/conveyor/internal/core"
 	"github.com/kidus-tiliksew/conveyor/internal/store"
+	"github.com/kidus-tiliksew/conveyor/internal/store/dbmetrics"
 )
 
 // Match the historical detail membership, but fetch payloads only for the page.
 // One statement keeps the count and page on the same database snapshot.
 func (s *Store) ListDocumentEventPage(ctx context.Context, kind core.LineageNodeType, id string, q store.DocumentEventQuery) (store.DocumentEventPage, error) {
+	ctx = dbmetrics.WithReadLabel(ctx, "ListDocumentEventPage")
 	if err := store.ValidateDocumentEventQuery(kind, q); err != nil {
 		return store.DocumentEventPage{}, err
 	}

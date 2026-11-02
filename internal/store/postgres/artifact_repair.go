@@ -9,10 +9,12 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/kidus-tiliksew/conveyor/internal/core"
 	"github.com/kidus-tiliksew/conveyor/internal/store"
+	"github.com/kidus-tiliksew/conveyor/internal/store/dbmetrics"
 	"github.com/kidus-tiliksew/conveyor/internal/store/postgres/db"
 )
 
 func (s *Store) RepairArtifactMetadata(ctx context.Context, r store.ArtifactRepairRequest) (store.ArtifactRepairResult, error) {
+	ctx = dbmetrics.WithReadLabel(ctx, "RepairArtifactMetadata")
 	var result store.ArtifactRepairResult
 	r, err := store.NormalizeArtifactRepair(ctx, r)
 	if err != nil {

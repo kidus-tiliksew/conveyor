@@ -27,6 +27,7 @@ import (
 	"github.com/kidus-tiliksew/conveyor/internal/nextaction"
 	"github.com/kidus-tiliksew/conveyor/internal/queue/logqueue"
 	"github.com/kidus-tiliksew/conveyor/internal/store"
+	"github.com/kidus-tiliksew/conveyor/internal/store/dbmetrics"
 	"github.com/kidus-tiliksew/conveyor/internal/store/postgres/db"
 	"gopkg.in/yaml.v3"
 )
@@ -44,6 +45,10 @@ type Store struct {
 	peers                  *peerListener
 	knownTables            sync.Map // table name -> true once seen to exist
 	gitHubAppEncryptionKey []byte
+	// reads attributes received bytes to store-method labels; nil for a
+	// store assembled without openWithOptions (component-persistence,
+	// Database read accounting).
+	reads *dbmetrics.ReadLedger
 }
 
 type sideEffectConnKey struct{}
@@ -81,6 +86,9 @@ func Open(ctx context.Context, databaseURL string, options ...OpenOption) (*Stor
 }
 
 func openWithOptions(ctx context.Context, databaseURL string, options openOptions) (*Store, error) {
+	if options.reads == nil {
+		options.reads = dbmetrics.NewReadLedger()
+	}
 	poolCfg, err := poolConfig(databaseURL, options)
 	if err != nil {
 		return nil, err
@@ -101,7 +109,9 @@ func openWithOptions(ctx context.Context, databaseURL string, options openOption
 		pool.Close()
 		return nil, err
 	}
-	return newStore(pool), nil
+	st := newStore(pool)
+	st.reads = options.reads
+	return st, nil
 }
 
 // newStore assembles a store over a migrated pool.
@@ -203,6 +213,7 @@ func (s *Store) withDetachedAdvisoryLock(ctx context.Context, key string, fn fun
 }
 
 func (s *Store) BootstrapConfig(ctx context.Context, cfg *config.Config) error {
+	ctx = dbmetrics.WithReadLabel(ctx, "BootstrapConfig")
 	_, err := s.BootstrapWorkspaceConfig(ctx, cfg)
 	return err
 }
@@ -211,6 +222,7 @@ func (s *Store) BootstrapConfig(ctx context.Context, cfg *config.Config) error {
 // empty. Subsequent starts reconcile only the file-owned capacity metadata
 // and report seeded=false so callers can emit the required startup notice
 func (s *Store) BootstrapWorkspaceConfig(ctx context.Context, cfg *config.Config) (bool, error) {
+	ctx = dbmetrics.WithReadLabel(ctx, "BootstrapWorkspaceConfig")
 	_, configYAML, err := store.StampPolicyDocument(config.IssuePublication{}, cfg)
 	if err != nil {
 		return false, err
@@ -306,6 +318,7 @@ func workspace(ctx context.Context) string {
 }
 
 func (s *Store) ListWorkspaces(ctx context.Context) ([]core.Workspace, error) {
+	ctx = dbmetrics.WithReadLabel(ctx, "ListWorkspaces")
 	rows, err := s.boundary.Query(ctx, `SELECT id,name,config_version,created_at FROM workspaces ORDER BY lower(name),id`)
 	if err != nil {
 		return nil, err
@@ -323,6 +336,7 @@ func (s *Store) ListWorkspaces(ctx context.Context) ([]core.Workspace, error) {
 }
 
 func (s *Store) GetWorkspace(ctx context.Context, id string) (core.Workspace, error) {
+	ctx = dbmetrics.WithReadLabel(ctx, "GetWorkspace")
 	var item core.Workspace
 	err := s.boundary.QueryRow(ctx, `SELECT id,name,config_version,created_at FROM workspaces WHERE id=$1`, id).
 		Scan(&item.ID, &item.Name, &item.ConfigVersion, &item.CreatedAt)
@@ -335,6 +349,7 @@ func (s *Store) GetWorkspace(ctx context.Context, id string) (core.Workspace, er
 // CreateWorkspace commits identity, configuration, repositories, and the
 // workspace.created audit event atomically.
 func (s *Store) CreateWorkspace(ctx context.Context, id, name string, cfg *config.Config) (core.Workspace, error) {
+	ctx = dbmetrics.WithReadLabel(ctx, "CreateWorkspace")
 	_, data, err := store.StampPolicyDocument(config.IssuePublication{}, cfg)
 	if err != nil {
 		return core.Workspace{}, err
@@ -389,6 +404,7 @@ func upsertRepo(ctx context.Context, q *db.Queries, workspace string, repo confi
 }
 
 func (s *Store) WorkspaceConfig(ctx context.Context) (config.VersionedDocument, error) {
+	ctx = dbmetrics.WithReadLabel(ctx, "WorkspaceConfig")
 	row, err := s.queries.GetWorkspaceConfig(ctx, workspace(ctx))
 	if err != nil {
 		return config.VersionedDocument{}, notFound(err, "workspace %s", workspace(ctx))
@@ -411,6 +427,7 @@ func (s *Store) WorkspaceConfig(ctx context.Context) (config.VersionedDocument, 
 // (component-runtime; component-persistence). Callers take one value per
 // dispatch so running jobs do not observe mid-flight policy changes.
 func (s *Store) RuntimeConfig(ctx context.Context, deployment *config.Config) (*config.Config, error) {
+	ctx = dbmetrics.WithReadLabel(ctx, "RuntimeConfig")
 	if deployment == nil {
 		return nil, fmt.Errorf("deployment configuration is required")
 	}
@@ -425,6 +442,7 @@ func (s *Store) RuntimeConfig(ctx context.Context, deployment *config.Config) (*
 }
 
 func (s *Store) UpdateWorkspaceConfig(ctx context.Context, expectedVersion int64, next *config.Config) (config.UpdateReceipt, error) {
+	ctx = dbmetrics.WithReadLabel(ctx, "UpdateWorkspaceConfig")
 	var result config.UpdateReceipt
 	err := s.inTx(ctx, func(tx pgx.Tx, q *db.Queries) error {
 		// FOR UPDATE holds the row from this read through the versioned
@@ -526,6 +544,7 @@ func emptyIfNil(values []string) []string {
 }
 
 func (s *Store) AppendEvent(ctx context.Context, event core.Event) error {
+	ctx = dbmetrics.WithReadLabel(ctx, "AppendEvent")
 	var taskID string
 	err := s.boundary.QueryRow(ctx, `SELECT id FROM tasks WHERE workspace_id=$1 AND id=$2`, workspace(ctx), event.TaskID).Scan(&taskID)
 	if err != nil {
@@ -543,6 +562,7 @@ func (s *Store) AppendEvent(ctx context.Context, event core.Event) error {
 }
 
 func (s *Store) ListEvents(ctx context.Context, taskID string) ([]core.Event, error) {
+	ctx = dbmetrics.WithReadLabel(ctx, "ListEvents")
 	rows, err := s.queries.ListEvents(ctx, db.ListEventsParams{TaskID: nullableText(taskID), WorkspaceID: workspace(ctx)})
 	if err != nil {
 		return nil, err
@@ -555,6 +575,7 @@ func (s *Store) ListEvents(ctx context.Context, taskID string) ([]core.Event, er
 }
 
 func (s *Store) ListFactoryActs(ctx context.Context, since time.Time, limit int) ([]nextaction.Act, error) {
+	ctx = dbmetrics.WithReadLabel(ctx, "ListFactoryActs")
 	if limit <= 0 || limit > 100 {
 		limit = 100
 	}
@@ -592,6 +613,7 @@ func (s *Store) ListFactoryActs(ctx context.Context, since time.Time, limit int)
 // task in this workspace and returns the events strictly after its (at, id)
 // tuple in ascending (at, id) order (component-persistence; DEC-39).
 func (s *Store) ListEventsAfter(ctx context.Context, taskID string, afterID int64) ([]core.Event, error) {
+	ctx = dbmetrics.WithReadLabel(ctx, "ListEventsAfter")
 	if afterID != 0 {
 		var exists int
 		err := s.boundary.QueryRow(ctx, `SELECT 1 FROM events e JOIN tasks t ON t.id = e.task_id WHERE e.task_id = $1 AND t.workspace_id = $2 AND e.id = $3`, taskID, workspace(ctx), afterID).Scan(&exists)
@@ -618,6 +640,7 @@ func (s *Store) ListEventsAfter(ctx context.Context, taskID string, afterID int6
 // ReadTaskEventStream selects one bounded (at, id) page on the task timeline
 // index with one lookahead row.
 func (s *Store) ReadTaskEventStream(ctx context.Context, q store.TaskEventStreamQuery) (store.TaskEventStreamPage, error) {
+	ctx = dbmetrics.WithReadLabel(ctx, "ReadTaskEventStream")
 	if err := store.ValidateTaskEventStreamQuery(q); err != nil {
 		return store.TaskEventStreamPage{}, err
 	}
@@ -658,6 +681,7 @@ LIMIT $6`, q.TaskID, since, seek, afterAt, afterID, q.Limit+1)
 }
 
 func (s *Store) CountEventsSinceHumanIntervention(ctx context.Context, taskID, kind string) (int, error) {
+	ctx = dbmetrics.WithReadLabel(ctx, "CountEventsSinceHumanIntervention")
 	count, err := s.queries.CountEventsSinceHumanIntervention(ctx, db.CountEventsSinceHumanInterventionParams{TaskID: nullableText(taskID), Kind: kind, WorkspaceID: workspace(ctx)})
 	if err != nil {
 		return 0, err
@@ -666,16 +690,19 @@ func (s *Store) CountEventsSinceHumanIntervention(ctx context.Context, taskID, k
 }
 
 func (s *Store) CountEvents(ctx context.Context, taskID, kind string) (int, error) {
+	ctx = dbmetrics.WithReadLabel(ctx, "CountEvents")
 	count, err := s.queries.CountEvents(ctx, db.CountEventsParams{TaskID: nullableText(taskID), Kind: kind, WorkspaceID: workspace(ctx)})
 	return int(count), err
 }
 
 func (s *Store) ListActivityMarkers(ctx context.Context) ([]store.ActivityMarker, error) {
+	ctx = dbmetrics.WithReadLabel(ctx, "ListActivityMarkers")
 	markers, _, _, err := s.listActivityMarkers(ctx, nil, time.Now().UTC())
 	return markers, err
 }
 
 func (s *Store) ListActivityMarkersForTasks(ctx context.Context, taskIDs []string) ([]store.ActivityMarker, error) {
+	ctx = dbmetrics.WithReadLabel(ctx, "ListActivityMarkersForTasks")
 	if taskIDs != nil && len(taskIDs) == 0 {
 		return []store.ActivityMarker{}, nil
 	}
@@ -877,6 +904,7 @@ func (s *Store) listActivityMarkers(ctx context.Context, taskIDs []string, now t
 }
 
 func (s *Store) UpsertTranscript(ctx context.Context, transcript core.Transcript) error {
+	ctx = dbmetrics.WithReadLabel(ctx, "UpsertTranscript")
 	if transcript.CreatedAt.IsZero() {
 		transcript.CreatedAt = time.Now().UTC()
 	}
@@ -912,6 +940,7 @@ func (s *Store) UpsertTranscript(ctx context.Context, transcript core.Transcript
 }
 
 func (s *Store) GetTranscript(ctx context.Context, jobID string) (core.Transcript, error) {
+	ctx = dbmetrics.WithReadLabel(ctx, "GetTranscript")
 	row, err := s.queries.GetTranscript(ctx, db.GetTranscriptParams{JobID: jobID, WorkspaceID: workspace(ctx)})
 	if err != nil {
 		return core.Transcript{}, notFound(err, "transcript for job %s", jobID)

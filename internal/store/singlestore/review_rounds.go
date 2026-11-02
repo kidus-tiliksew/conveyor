@@ -14,6 +14,7 @@ import (
 	"github.com/kidus-tiliksew/conveyor/internal/queue"
 	"github.com/kidus-tiliksew/conveyor/internal/queue/logqueue"
 	"github.com/kidus-tiliksew/conveyor/internal/store"
+	"github.com/kidus-tiliksew/conveyor/internal/store/dbmetrics"
 	"github.com/kidus-tiliksew/conveyor/internal/taskops"
 )
 
@@ -35,6 +36,7 @@ func reviewVerificationContextIDTx(ctx context.Context, tx *sql.Tx, task core.Ta
 }
 
 func (s *Store) CreateReviewRoundCommand(ctx context.Context, lease taskops.TaskLease, id string, seats store.ReviewRoundSeatResolution, jobs []core.Job, orders []core.WorkOrder) error {
+	ctx = dbmetrics.WithReadLabel(ctx, "CreateReviewRoundCommand")
 	if !lease.ValidForCommand(id, string(core.WorkOrderCmdCreate)) {
 		return fmt.Errorf("review-round create requires a valid taskops lease")
 	}
@@ -305,6 +307,7 @@ func reviewPublicationFromDecision(decision core.ReviewDecision) core.ReviewPubl
 }
 
 func (s *Store) AcceptReviewDecisionCommand(ctx context.Context, lease taskops.TaskLease, decision core.ReviewDecision) error {
+	ctx = dbmetrics.WithReadLabel(ctx, "AcceptReviewDecisionCommand")
 	if !lease.ValidFor(decision.TaskID) {
 		return fmt.Errorf("review lifecycle mutation requires a valid taskops lease")
 	}
@@ -581,6 +584,7 @@ func reviewRoundOrdersTx(ctx context.Context, tx *sql.Tx, id string, round int) 
 	return out, rows.Err()
 }
 func (s *Store) RetryReviewRoundCommand(ctx context.Context, lease taskops.TaskLease, r store.ReviewRoundRetryRequest, seats store.ReviewRoundSeatResolution, jobs []core.Job, orders []core.WorkOrder) (store.ReviewRoundRetryResult, error) {
+	ctx = dbmetrics.WithReadLabel(ctx, "RetryReviewRoundCommand")
 	var result store.ReviewRoundRetryResult
 	if !lease.ValidForCommand(r.TaskID, string(core.WorkOrderCmdCreate)) {
 		return result, fmt.Errorf("review retry requires a valid taskops lease")
@@ -714,6 +718,7 @@ func (s *Store) RetryReviewRoundCommand(ctx context.Context, lease taskops.TaskL
 	return result, err
 }
 func (s *Store) RecoverInterruptedReviewRoundCommand(ctx context.Context, lease taskops.TaskLease, r store.InterruptedReviewRecoveryRequest, timeout time.Duration) (store.InterruptedReviewRecoveryResult, error) {
+	ctx = dbmetrics.WithReadLabel(ctx, "RecoverInterruptedReviewRoundCommand")
 	var result store.InterruptedReviewRecoveryResult
 	if !lease.ValidForCommand(r.TaskID, string(core.WorkOrderCmdRecover)) {
 		return result, fmt.Errorf("interrupted review recovery requires a valid taskops lease")

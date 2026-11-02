@@ -19,6 +19,7 @@ import (
 
 	"github.com/kidus-tiliksew/conveyor/internal/eventlog"
 	"github.com/kidus-tiliksew/conveyor/internal/eventlog/jobindex"
+	"github.com/kidus-tiliksew/conveyor/internal/store/dbmetrics"
 )
 
 // Executor is the subset of pgx a driver call needs. Both *pgxpool.Pool and
@@ -108,6 +109,7 @@ func (s *Store) executor(ctx context.Context) Executor {
 }
 
 func (s *Store) Append(ctx context.Context, workspace string, stream eventlog.StreamID, expected eventlog.Version, events []eventlog.NewEvent) (eventlog.Version, error) {
+	ctx = dbmetrics.WithReadLabel(ctx, "eventlog.Append")
 	if err := eventlog.ValidateAppend(workspace, stream, events); err != nil {
 		return 0, err
 	}
@@ -209,6 +211,7 @@ VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
 const selectColumns = `workspace_id, position, stream_id, version, kind, actor_id, actor_role, payload, at`
 
 func (s *Store) Read(ctx context.Context, workspace string, stream eventlog.StreamID, after eventlog.Version, limit int) ([]eventlog.Event, error) {
+	ctx = dbmetrics.WithReadLabel(ctx, "eventlog.Read")
 	rows, err := s.executor(ctx).Query(ctx, `
 SELECT `+selectColumns+`
 FROM event_log
@@ -223,6 +226,7 @@ LIMIT NULLIF($4, 0)`, workspace, string(stream), int64(after), limit)
 }
 
 func (s *Store) Head(ctx context.Context, workspace string, stream eventlog.StreamID) (eventlog.Version, error) {
+	ctx = dbmetrics.WithReadLabel(ctx, "eventlog.Head")
 	var head int64
 	err := s.executor(ctx).QueryRow(ctx, `SELECT version FROM event_log_streams WHERE workspace_id = $1 AND stream_id = $2`, workspace, string(stream)).Scan(&head)
 	if errors.Is(err, pgx.ErrNoRows) {
@@ -235,6 +239,7 @@ func (s *Store) Head(ctx context.Context, workspace string, stream eventlog.Stre
 }
 
 func (s *Store) Tail(ctx context.Context, workspace string, after eventlog.Position, limit int) ([]eventlog.Event, error) {
+	ctx = dbmetrics.WithReadLabel(ctx, "eventlog.Tail")
 	rows, err := s.executor(ctx).Query(ctx, `
 SELECT `+selectColumns+`
 FROM event_log

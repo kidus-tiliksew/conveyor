@@ -11,9 +11,11 @@ import (
 	"github.com/kidus-tiliksew/conveyor/internal/core"
 	"github.com/kidus-tiliksew/conveyor/internal/monitor"
 	"github.com/kidus-tiliksew/conveyor/internal/store"
+	"github.com/kidus-tiliksew/conveyor/internal/store/dbmetrics"
 )
 
 func (s *Store) ResolveCausalSystemDesignMerge(ctx context.Context, documentID, repository, commitSHA string, causalEventID int64, driftID string, matchingPaths []string, recordConsulted bool) (monitor.SystemDesignMergeJudgment, error) {
+	ctx = dbmetrics.WithReadLabel(ctx, "ResolveCausalSystemDesignMerge")
 	if causalEventID <= 0 || commitSHA == "" {
 		return monitor.SystemDesignMergeJudgment{}, nil
 	}

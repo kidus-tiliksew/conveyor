@@ -9,12 +9,14 @@ import (
 
 	"github.com/kidus-tiliksew/conveyor/internal/core"
 	"github.com/kidus-tiliksew/conveyor/internal/store"
+	"github.com/kidus-tiliksew/conveyor/internal/store/dbmetrics"
 )
 
 // AuthorizeDeployment derives deployment authority from the active account's
 // current operator bindings. Persisted credential scope is only a protocol
 // boundary and never sufficient authority on its own.
 func (s *Store) AuthorizeDeployment(ctx context.Context, userID string, capability core.Capability) (bool, error) {
+	ctx = dbmetrics.WithReadLabel(ctx, "AuthorizeDeployment")
 	// Deployment-scoped calls are restricted to live workspace operators, but
 	// they may exercise any capability in the operator bundle. This preserves
 	// legacy/non-workspace-scoped factory operations while keeping capabilities
@@ -36,6 +38,7 @@ func (s *Store) AuthorizeDeployment(ctx context.Context, userID string, capabili
 // sole deployment_credential marker. No role, binding, or credential scope
 // participates (DEC-75(1)).
 func (s *Store) AuthorizeInstanceAdministration(ctx context.Context, userID string) (bool, error) {
+	ctx = dbmetrics.WithReadLabel(ctx, "AuthorizeInstanceAdministration")
 	if userID == "" {
 		return false, nil
 	}
@@ -50,6 +53,7 @@ func (s *Store) AuthorizeInstanceAdministration(ctx context.Context, userID stri
 }
 
 func (s *Store) AuthorizeWorkspace(ctx context.Context, userID, workspaceID string, capability core.Capability) (bool, error) {
+	ctx = dbmetrics.WithReadLabel(ctx, "AuthorizeWorkspace")
 	var role core.WorkspaceRole
 	err := s.db.QueryRowContext(ctx, `SELECT role FROM workspace_role_bindings WHERE workspace_id=? AND user_id=?`, workspaceID, userID).Scan(&role)
 	if errors.Is(err, sql.ErrNoRows) {
@@ -65,6 +69,7 @@ func (s *Store) AuthorizeWorkspace(ctx context.Context, userID, workspaceID stri
 // read once and answers every requested capability from that role
 // (component-identity-membership, Capability batches).
 func (s *Store) AuthorizeWorkspaceCapabilities(ctx context.Context, userID, workspaceID string, capabilities []core.Capability) (map[core.Capability]bool, error) {
+	ctx = dbmetrics.WithReadLabel(ctx, "AuthorizeWorkspaceCapabilities")
 	out := make(map[core.Capability]bool, len(capabilities))
 	if len(capabilities) == 0 {
 		return out, nil
@@ -85,6 +90,7 @@ func (s *Store) AuthorizeWorkspaceCapabilities(ctx context.Context, userID, work
 }
 
 func (s *Store) ListWorkspacesForUser(ctx context.Context, userID string) ([]core.Workspace, error) {
+	ctx = dbmetrics.WithReadLabel(ctx, "ListWorkspacesForUser")
 	rows, err := s.db.QueryContext(ctx, `SELECT w.id,w.name,w.config_version,w.created_at
 		FROM workspaces w JOIN workspace_role_bindings b ON b.workspace_id=w.id
 		WHERE b.user_id=? ORDER BY lower(w.name),w.id`, userID)
@@ -104,6 +110,7 @@ func (s *Store) ListWorkspacesForUser(ctx context.Context, userID string) ([]cor
 }
 
 func (s *Store) ListWorkspaceMembers(ctx context.Context, requesterUserID, workspaceID string) ([]core.WorkspaceMembership, error) {
+	ctx = dbmetrics.WithReadLabel(ctx, "ListWorkspaceMembers")
 	allowed, err := s.AuthorizeWorkspace(ctx, requesterUserID, workspaceID, core.CapabilityViewWorkspace)
 	if err != nil || !allowed {
 		return nil, translateBackendConflict(err)
@@ -131,6 +138,7 @@ func (s *Store) ListWorkspaceMembers(ctx context.Context, requesterUserID, works
 // invitations only and the read needs no status predicate. The caller is
 // authorized at the HTTP capability boundary, like RevokeWorkspaceInvitation.
 func (s *Store) ListWorkspaceInvitations(ctx context.Context, workspaceID string) ([]core.WorkspaceInvitation, error) {
+	ctx = dbmetrics.WithReadLabel(ctx, "ListWorkspaceInvitations")
 	rows, err := s.db.QueryContext(ctx, `SELECT i.workspace_id,i.email,i.role,i.invited_by,COALESCE(u.display_name,''),i.created_at
 		FROM workspace_membership_invitations i LEFT JOIN users u ON u.id=i.invited_by
 		WHERE i.workspace_id=? ORDER BY i.created_at DESC,i.email`, workspaceID)
@@ -150,6 +158,7 @@ func (s *Store) ListWorkspaceInvitations(ctx context.Context, workspaceID string
 }
 
 func (s *Store) GrantWorkspaceRole(ctx context.Context, email, workspaceID string, role core.WorkspaceRole) (core.MembershipGrant, error) {
+	ctx = dbmetrics.WithReadLabel(ctx, "GrantWorkspaceRole")
 	email, err := normalizeIdentityEmail(email)
 	if err != nil {
 		return core.MembershipGrant{}, translateBackendConflict(err)
@@ -220,6 +229,7 @@ func guardLastOperator(ctx context.Context, tx *sql.Tx, ws string) error {
 	return nil
 }
 func (s *Store) RevokeWorkspaceInvitation(ctx context.Context, email, workspaceID string) error {
+	ctx = dbmetrics.WithReadLabel(ctx, "RevokeWorkspaceInvitation")
 	email, err := normalizeIdentityEmail(email)
 	if err != nil {
 		return translateBackendConflict(err)
@@ -248,6 +258,7 @@ func (s *Store) RevokeWorkspaceInvitation(ctx context.Context, email, workspaceI
 	})
 }
 func (s *Store) RevokeWorkspaceRole(ctx context.Context, userID, workspaceID string) error {
+	ctx = dbmetrics.WithReadLabel(ctx, "RevokeWorkspaceRole")
 	return s.identityTx(ctx, func(tx *sql.Tx) error {
 		if err := identityWorkspace(ctx, tx, workspaceID); err != nil {
 			return translateBackendConflict(err)

@@ -11,6 +11,7 @@ import (
 
 	"github.com/kidus-tiliksew/conveyor/internal/core"
 	"github.com/kidus-tiliksew/conveyor/internal/store"
+	"github.com/kidus-tiliksew/conveyor/internal/store/dbmetrics"
 	"github.com/kidus-tiliksew/conveyor/internal/store/postgres/db"
 )
 
@@ -20,6 +21,7 @@ import (
 // advisory locks, so concurrent requests for a task serialize and receive
 // consecutive versions.
 func (s *Store) RecordReviewSummaryCommand(ctx context.Context, request store.ReviewSummaryRequest) (store.ReviewSummaryResult, error) {
+	ctx = dbmetrics.WithReadLabel(ctx, "RecordReviewSummaryCommand")
 	if _, err := store.RequireActor(ctx); err != nil {
 		return store.ReviewSummaryResult{}, err
 	}

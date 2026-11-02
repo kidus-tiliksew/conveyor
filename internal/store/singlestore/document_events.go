@@ -13,6 +13,7 @@ import (
 	"github.com/kidus-tiliksew/conveyor/internal/eventlog/s2log"
 	"github.com/kidus-tiliksew/conveyor/internal/nextaction"
 	"github.com/kidus-tiliksew/conveyor/internal/store"
+	"github.com/kidus-tiliksew/conveyor/internal/store/dbmetrics"
 )
 
 // Document commands serialize their projections and event-derived lineage in
@@ -151,11 +152,13 @@ func scanDocumentEvents(rows *documentResultSet) ([]core.Event, error) {
 }
 
 func (s *Store) ListActivityMarkers(ctx context.Context) ([]store.ActivityMarker, error) {
+	ctx = dbmetrics.WithReadLabel(ctx, "ListActivityMarkers")
 	markers, _, _, err := s.listActivityMarkers(ctx, nil, time.Now().UTC())
 	return markers, err
 }
 
 func (s *Store) ListActivityMarkersForTasks(ctx context.Context, taskIDs []string) ([]store.ActivityMarker, error) {
+	ctx = dbmetrics.WithReadLabel(ctx, "ListActivityMarkersForTasks")
 	if taskIDs != nil && len(taskIDs) == 0 {
 		return []store.ActivityMarker{}, nil
 	}
@@ -372,6 +375,7 @@ func (s *Store) listActivityMarkers(ctx context.Context, taskIDs []string, now t
 }
 
 func (s *Store) AppendEvent(ctx context.Context, e core.Event) error {
+	ctx = dbmetrics.WithReadLabel(ctx, "AppendEvent")
 	return s.documentTx(ctx, func(tx *sql.Tx) error {
 		if e.JobID != "" {
 			var taskID string
@@ -383,10 +387,12 @@ func (s *Store) AppendEvent(ctx context.Context, e core.Event) error {
 	})
 }
 func (s *Store) ListEvents(ctx context.Context, id string) ([]core.Event, error) {
+	ctx = dbmetrics.WithReadLabel(ctx, "ListEvents")
 	return documentTaskEvents(ctx, s.db, id)
 }
 
 func (s *Store) ListFactoryActs(ctx context.Context, since time.Time, limit int) ([]nextaction.Act, error) {
+	ctx = dbmetrics.WithReadLabel(ctx, "ListFactoryActs")
 	if limit <= 0 || limit > 100 {
 		limit = 100
 	}
@@ -414,6 +420,7 @@ func (s *Store) ListFactoryActs(ctx context.Context, since time.Time, limit int)
 // from per-aggregator AUTO_INCREMENT ranges, so numeric order is not insertion
 // order and never selects the tail (component-persistence; DEC-39).
 func (s *Store) ListEventsAfter(ctx context.Context, id string, after int64) ([]core.Event, error) {
+	ctx = dbmetrics.WithReadLabel(ctx, "ListEventsAfter")
 	query := `SELECT id,COALESCE(task_id,''),COALESCE(job_id,''),kind,actor_id,actor_role,payload_json,at FROM events_columnstore WHERE workspace_id=? AND event_shard_key=? AND task_id=event_shard_key ORDER BY at,id`
 	args := []any{documentWorkspace(ctx), id}
 	if after != 0 {
@@ -438,6 +445,7 @@ func (s *Store) ListEventsAfter(ctx context.Context, id string, after int64) ([]
 // ReadTaskEventStream selects one bounded (at, id) page on the task timeline
 // index with one lookahead row.
 func (s *Store) ReadTaskEventStream(ctx context.Context, q store.TaskEventStreamQuery) (store.TaskEventStreamPage, error) {
+	ctx = dbmetrics.WithReadLabel(ctx, "ReadTaskEventStream")
 	if err := store.ValidateTaskEventStreamQuery(q); err != nil {
 		return store.TaskEventStreamPage{}, err
 	}
@@ -472,11 +480,13 @@ func (s *Store) ReadTaskEventStream(ctx context.Context, q store.TaskEventStream
 	return page, nil
 }
 func (s *Store) CountEvents(ctx context.Context, id, kind string) (int, error) {
+	ctx = dbmetrics.WithReadLabel(ctx, "CountEvents")
 	var n int
 	err := documentRow(ctx, s.db, `SELECT COUNT(*) FROM events_columnstore WHERE workspace_id=? AND event_shard_key=? AND task_id=event_shard_key AND kind=?`, documentWorkspace(ctx), id, kind).Scan(&n)
 	return n, err
 }
 func (s *Store) CountEventsSinceHumanIntervention(ctx context.Context, id, kind string) (int, error) {
+	ctx = dbmetrics.WithReadLabel(ctx, "CountEventsSinceHumanIntervention")
 	var n int
 	err := documentRow(ctx, s.db, `SELECT COUNT(*) FROM events_columnstore e
 		LEFT JOIN (SELECT MAX(at) AS last_at FROM interventions WHERE workspace_id=? AND task_id=? AND actor_role='human') i ON 1=1
@@ -484,10 +494,12 @@ func (s *Store) CountEventsSinceHumanIntervention(ctx context.Context, id, kind 
 	return n, err
 }
 func (s *Store) ListRequirementEvents(ctx context.Context, id string) ([]core.Event, error) {
+	ctx = dbmetrics.WithReadLabel(ctx, "ListRequirementEvents")
 	all, err := s.ListRequirementEventsByRequirement(ctx)
 	return append([]core.Event{}, all[id]...), err
 }
 func (s *Store) ListRequirementEventsByRequirement(ctx context.Context) (map[string][]core.Event, error) {
+	ctx = dbmetrics.WithReadLabel(ctx, "ListRequirementEventsByRequirement")
 	rows, err := documentRows(ctx, s.db, `SELECT id,kind,actor_id,actor_role,payload_json,at,JSON_EXTRACT_STRING(payload_json,'requirement_id') FROM events_columnstore WHERE workspace_id=? AND task_id IS NULL AND JSON_EXTRACT_STRING(payload_json,'requirement_id') IS NOT NULL ORDER BY at,id`, documentWorkspace(ctx))
 	if err != nil {
 		return nil, err
@@ -505,6 +517,7 @@ func (s *Store) ListRequirementEventsByRequirement(ctx context.Context) (map[str
 	return out, rows.Err()
 }
 func (s *Store) ListRequirementDeliveryEventsForTasks(ctx context.Context, ids []string) (map[string][]core.Event, error) {
+	ctx = dbmetrics.WithReadLabel(ctx, "ListRequirementDeliveryEventsForTasks")
 	out := map[string][]core.Event{}
 	if len(ids) == 0 {
 		return out, nil
@@ -524,6 +537,7 @@ func (s *Store) ListRequirementDeliveryEventsForTasks(ctx context.Context, ids [
 	return out, rows.Err()
 }
 func (s *Store) ListMonitorPullRequestEventsForTasks(ctx context.Context, ids []string) (map[string][]core.Event, error) {
+	ctx = dbmetrics.WithReadLabel(ctx, "ListMonitorPullRequestEventsForTasks")
 	out := map[string][]core.Event{}
 	if len(ids) == 0 {
 		return out, nil
@@ -543,6 +557,7 @@ func (s *Store) ListMonitorPullRequestEventsForTasks(ctx context.Context, ids []
 	return out, rows.Err()
 }
 func (s *Store) ListDocumentEventPage(ctx context.Context, kind core.LineageNodeType, id string, q store.DocumentEventQuery) (store.DocumentEventPage, error) {
+	ctx = dbmetrics.WithReadLabel(ctx, "ListDocumentEventPage")
 	page := store.DocumentEventPage{Events: []core.Event{}, Limit: q.Limit, Offset: q.Offset}
 	if err := store.ValidateDocumentEventQuery(kind, q); err != nil {
 		return page, err

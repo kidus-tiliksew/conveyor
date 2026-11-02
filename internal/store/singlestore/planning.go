@@ -15,11 +15,13 @@ import (
 	"github.com/kidus-tiliksew/conveyor/internal/queue"
 	"github.com/kidus-tiliksew/conveyor/internal/queue/logqueue"
 	"github.com/kidus-tiliksew/conveyor/internal/store"
+	"github.com/kidus-tiliksew/conveyor/internal/store/dbmetrics"
 )
 
 const planningBundleSelect = `SELECT id,session_id,title,documents,tasks,status,COALESCE(created_by,''),COALESCE(decided_by,''),created_at,decided_at,workspace_id FROM planning_bundles`
 
 func (s *Store) CreatePlanningBundle(ctx context.Context, bundle core.PlanningBundle) (core.PlanningBundle, error) {
+	ctx = dbmetrics.WithReadLabel(ctx, "CreatePlanningBundle")
 	bundle.Workspace = documentWorkspace(ctx)
 	// Resolve the deterministic identity before the locked lookup. Full shape
 	// validation follows identity adoption because a retry may omit the task IDs
@@ -228,6 +230,7 @@ func scanPlanningBundle(row documentScanner) (core.PlanningBundle, error) {
 }
 
 func (s *Store) GetPlanningBundle(ctx context.Context, id string) (core.PlanningBundle, error) {
+	ctx = dbmetrics.WithReadLabel(ctx, "GetPlanningBundle")
 	b, err := scanPlanningBundle(documentRow(ctx, s.db, planningBundleSelect+` WHERE workspace_id=? AND id=?`, documentWorkspace(ctx), id))
 	if errors.Is(err, sql.ErrNoRows) {
 		return core.PlanningBundle{}, fmt.Errorf("planning bundle %s: %w", id, store.ErrNotFound)
@@ -236,6 +239,7 @@ func (s *Store) GetPlanningBundle(ctx context.Context, id string) (core.Planning
 }
 
 func (s *Store) ListPlanningBundles(ctx context.Context) ([]core.PlanningBundle, error) {
+	ctx = dbmetrics.WithReadLabel(ctx, "ListPlanningBundles")
 	rows, err := documentRows(ctx, s.db, planningBundleSelect+` WHERE workspace_id=? ORDER BY created_at DESC,id`, documentWorkspace(ctx))
 	if err != nil {
 		return nil, err
@@ -253,6 +257,7 @@ func (s *Store) ListPlanningBundles(ctx context.Context) ([]core.PlanningBundle,
 }
 
 func (s *Store) ApprovePlanningBundle(ctx context.Context, id string) (core.PlanningBundle, error) {
+	ctx = dbmetrics.WithReadLabel(ctx, "ApprovePlanningBundle")
 	var result core.PlanningBundle
 	err := s.documentTx(ctx, func(tx *sql.Tx) error {
 		bundle, err := scanPlanningBundle(documentRow(ctx, tx, planningBundleSelect+` WHERE workspace_id=? AND id=? FOR UPDATE`, documentWorkspace(ctx), id))
@@ -357,6 +362,7 @@ func (s *Store) ApprovePlanningBundle(ctx context.Context, id string) (core.Plan
 }
 
 func (s *Store) RejectPlanningBundle(ctx context.Context, id string) (core.PlanningBundle, error) {
+	ctx = dbmetrics.WithReadLabel(ctx, "RejectPlanningBundle")
 	var result core.PlanningBundle
 	err := s.documentTx(ctx, func(tx *sql.Tx) error {
 		bundle, err := scanPlanningBundle(documentRow(ctx, tx, planningBundleSelect+` WHERE workspace_id=? AND id=? FOR UPDATE`, documentWorkspace(ctx), id))
@@ -684,6 +690,7 @@ func insertPlanningBundleTask(ctx context.Context, tx *sql.Tx, t core.Task) (sql
 }
 
 func (s *Store) ListPendingProposals(ctx context.Context) ([]core.PendingProposal, error) {
+	ctx = dbmetrics.WithReadLabel(ctx, "ListPendingProposals")
 	rows, err := documentRows(ctx, s.db, `
 		SELECT proposal_id,title,tier,version,origin_type,origin_id,target_kind,justification,proposed_at
 		FROM (
@@ -734,6 +741,7 @@ func (s *Store) ListPendingProposals(ctx context.Context) ([]core.PendingProposa
 }
 
 func (s *Store) ListPendingAuthorityProposalsForTask(ctx context.Context, taskID string) ([]core.PendingProposal, error) {
+	ctx = dbmetrics.WithReadLabel(ctx, "ListPendingAuthorityProposalsForTask")
 	rows, err := documentRows(ctx, s.db, `
 		SELECT proposal_id,title,tier,version,origin_type,origin_id,target_kind,justification,proposed_at
 		FROM (
@@ -777,6 +785,7 @@ func (s *Store) ListPendingAuthorityProposalsForTask(ctx context.Context, taskID
 }
 
 func (s *Store) PendingProposalsProjection(ctx context.Context) (store.PendingProposalsProjection, error) {
+	ctx = dbmetrics.WithReadLabel(ctx, "PendingProposalsProjection")
 	items, err := s.ListPendingProposals(ctx)
 	if err != nil {
 		return store.PendingProposalsProjection{}, err
@@ -785,6 +794,7 @@ func (s *Store) PendingProposalsProjection(ctx context.Context) (store.PendingPr
 }
 
 func (s *Store) CountOperatorAttention(ctx context.Context) (int, error) {
+	ctx = dbmetrics.WithReadLabel(ctx, "CountOperatorAttention")
 	return store.CountOperatorAttention(ctx, s)
 }
 

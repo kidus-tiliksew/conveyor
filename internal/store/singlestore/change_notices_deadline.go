@@ -8,6 +8,7 @@ import (
 
 	"github.com/kidus-tiliksew/conveyor/internal/config"
 	"github.com/kidus-tiliksew/conveyor/internal/store"
+	"github.com/kidus-tiliksew/conveyor/internal/store/dbmetrics"
 )
 
 // Stored deadlines on SingleStore (component-persistence, Deadlines;
@@ -47,6 +48,7 @@ UNION ALL SELECT 'config' AS kind, NULL AS at, config_yaml FROM workspaces WHERE
 // NextDeadline returns the earliest stored deadline after after for the
 // context's workspace.
 func (s *Store) NextDeadline(ctx context.Context, after time.Time) (time.Time, bool, error) {
+	ctx = dbmetrics.WithReadLabel(ctx, "NextDeadline")
 	ws := documentWorkspace(ctx)
 	// SingleStore refuses a DATETIME conversion of Go's zero time, so an
 	// unbounded read compares against the Unix epoch, before every stored

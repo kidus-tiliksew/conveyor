@@ -11,6 +11,7 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/kidus-tiliksew/conveyor/internal/core"
 	"github.com/kidus-tiliksew/conveyor/internal/store"
+	"github.com/kidus-tiliksew/conveyor/internal/store/dbmetrics"
 	"github.com/kidus-tiliksew/conveyor/internal/store/postgres/db"
 )
 
@@ -134,6 +135,7 @@ func validateTaskContextTx(ctx context.Context, tx pgx.Tx, workspaceID string, i
 }
 
 func (s *Store) UpdateTaskContext(ctx context.Context, taskID string, change store.TaskContextChange) (core.TaskContext, error) {
+	ctx = dbmetrics.WithReadLabel(ctx, "UpdateTaskContext")
 	add, err := store.NormalizeTaskContextInput(change.Add)
 	if err != nil {
 		return core.TaskContext{}, err
@@ -214,6 +216,7 @@ func (s *Store) UpdateTaskContext(ctx context.Context, taskID string, change sto
 }
 
 func (s *Store) AttachSubmissionGovernance(ctx context.Context, taskID, repository string, changedPaths []string, attribution store.SubmissionGovernanceAttribution) ([]core.TaskDesignContext, error) {
+	ctx = dbmetrics.WithReadLabel(ctx, "AttachSubmissionGovernance")
 	attached := make([]core.TaskDesignContext, 0)
 	err := s.inTx(ctx, func(tx pgx.Tx, q *db.Queries) error {
 		var state string

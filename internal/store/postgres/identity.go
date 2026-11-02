@@ -17,6 +17,7 @@ import (
 	"github.com/kidus-tiliksew/conveyor/internal/config"
 	"github.com/kidus-tiliksew/conveyor/internal/core"
 	"github.com/kidus-tiliksew/conveyor/internal/store"
+	"github.com/kidus-tiliksew/conveyor/internal/store/dbmetrics"
 	"github.com/kidus-tiliksew/conveyor/internal/store/postgres/db"
 )
 
@@ -36,6 +37,7 @@ type IssuedAgentCredential = store.IssuedAgentCredential
 // role is joined only when the HTTP boundary has supplied an authorized
 // workspace context; the join also closes membership-revocation races.
 func (s *Store) GetCallerIdentity(ctx context.Context, userID, workspaceID string) (core.CallerIdentity, error) {
+	ctx = dbmetrics.WithReadLabel(ctx, "GetCallerIdentity")
 	var identity core.CallerIdentity
 	if workspaceID == "" {
 		err := s.boundary.QueryRow(ctx, `SELECT id,email,display_name FROM users WHERE id=$1 AND status='active'`, userID).
@@ -59,6 +61,7 @@ func (s *Store) GetCallerIdentity(ctx context.Context, userID, workspaceID strin
 // dashboard session and records the credential-derived self-service act in the
 // same transaction (REQ-10/AC-10.8).
 func (s *Store) SetOwnDisplayName(ctx context.Context, userID, sessionID, displayName string) (core.CallerIdentity, error) {
+	ctx = dbmetrics.WithReadLabel(ctx, "SetOwnDisplayName")
 	var identity core.CallerIdentity
 	err := s.inTx(ctx, func(tx pgx.Tx, q *db.Queries) error {
 		if err := tx.QueryRow(ctx, `UPDATE users u SET display_name=$3
@@ -91,6 +94,7 @@ func (s *Store) SetOwnDisplayName(ctx context.Context, userID, sessionID, displa
 // workspace binding, so demotions and exclusions survive every restart
 // (DEC-75(3), DEC-75(4)).
 func (s *Store) BootstrapIdentity(ctx context.Context, identity config.FirstOperatorIdentity, legacyToken string) (bool, error) {
+	ctx = dbmetrics.WithReadLabel(ctx, "BootstrapIdentity")
 	identity.Email = strings.ToLower(strings.TrimSpace(identity.Email))
 	identity.DisplayName = strings.TrimSpace(identity.DisplayName)
 	identity.OrganizationName = strings.TrimSpace(identity.OrganizationName)
@@ -220,6 +224,7 @@ func (s *Store) BootstrapIdentity(ctx context.Context, identity config.FirstOper
 // instance-administration seam only; it is intentionally not exposed as a
 // self-registration HTTP route (REQ-1/AC-1.2).
 func (s *Store) ProvisionIdentityUser(ctx context.Context, email, displayName string) (IdentityUser, error) {
+	ctx = dbmetrics.WithReadLabel(ctx, "ProvisionIdentityUser")
 	email, err := normalizeIdentityEmail(email)
 	if err != nil {
 		return IdentityUser{}, err
@@ -377,6 +382,7 @@ func auditPersonalAccessTokenLifecycle(ctx context.Context, q *db.Queries, row d
 }
 
 func (s *Store) IssuePersonalAccessToken(ctx context.Context, userID, label string) (IssuedPersonalAccessToken, error) {
+	ctx = dbmetrics.WithReadLabel(ctx, "IssuePersonalAccessToken")
 	tokenID, err := randomIdentityID("pat", 12)
 	if err != nil {
 		return IssuedPersonalAccessToken{}, err
@@ -424,6 +430,7 @@ func (s *Store) IssuePersonalAccessToken(ctx context.Context, userID, label stri
 // user. It reuses user_tokens so ownership remains enforced by the existing
 // foreign key and no post-083 schema change is required (REQ-2/AC-2.2).
 func (s *Store) IssueAgentCredential(ctx context.Context, userID, label string) (IssuedAgentCredential, error) {
+	ctx = dbmetrics.WithReadLabel(ctx, "IssueAgentCredential")
 	id, err := randomIdentityID("agt", 12)
 	if err != nil {
 		return IssuedAgentCredential{}, err
@@ -460,6 +467,7 @@ func (s *Store) IssueAgentCredential(ctx context.Context, userID, label string) 
 // authenticated run parent. The kind and owner predicates make human PATs and
 // credentials belonging to another user unaddressable through this boundary.
 func (s *Store) RevokeAgentCredential(ctx context.Context, userID, credentialID string) error {
+	ctx = dbmetrics.WithReadLabel(ctx, "RevokeAgentCredential")
 	result, err := s.boundary.Exec(ctx, `UPDATE user_tokens SET revoked_at=COALESCE(revoked_at, now())
 		WHERE id=$1 AND user_id=$2 AND kind=$3`, credentialID, userID, string(core.CredentialAgent))
 	if err != nil {
@@ -472,6 +480,7 @@ func (s *Store) RevokeAgentCredential(ctx context.Context, userID, credentialID 
 }
 
 func (s *Store) VerifyPersonalAccessToken(ctx context.Context, candidate string) (IdentityUser, error) {
+	ctx = dbmetrics.WithReadLabel(ctx, "VerifyPersonalAccessToken")
 	credential, user, err := s.verifyCredential(ctx, candidate)
 	if err != nil {
 		return IdentityUser{}, err
@@ -485,6 +494,7 @@ func (s *Store) VerifyPersonalAccessToken(ctx context.Context, candidate string)
 // VerifyCredential resolves identity and scope solely from the persisted
 // credential record. The presented secret is never returned or logged.
 func (s *Store) VerifyCredential(ctx context.Context, candidate string) (core.AuthenticatedCredential, error) {
+	ctx = dbmetrics.WithReadLabel(ctx, "VerifyCredential")
 	credential, _, err := s.verifyCredential(ctx, candidate)
 	if err == nil && credential.Method == "" {
 		credential.Method = core.CredentialMethodBearer
@@ -502,6 +512,7 @@ const (
 // registration boundary. It serves only host-local issuance
 // (req-invitations-and-sign-in REQ-3).
 func (s *Store) IssueSignInLink(ctx context.Context, email string) (core.IssuedSignInLink, error) {
+	ctx = dbmetrics.WithReadLabel(ctx, "IssueSignInLink")
 	email, err := normalizeIdentityEmail(email)
 	if err != nil {
 		return core.IssuedSignInLink{}, err
@@ -523,6 +534,7 @@ func (s *Store) IssueSignInLink(ctx context.Context, email string) (core.IssuedS
 // audit event share one transaction under the identity email lock, which
 // revocation and redemption also take (component-identity-membership).
 func (s *Store) IssueInvitationSignInLink(ctx context.Context, workspaceID, email string, purpose store.SignInLinkPurpose) (core.IssuedSignInLink, error) {
+	ctx = dbmetrics.WithReadLabel(ctx, "IssueInvitationSignInLink")
 	if !purpose.Valid() {
 		return core.IssuedSignInLink{}, errors.New("invalid sign-in link purpose")
 	}
@@ -614,6 +626,7 @@ func (s *Store) issueSignInLink(ctx context.Context, email string, admit func(pg
 // RedeemSignInLink consumes the link and creates its browser session in one
 // transaction. Concurrent or repeated redemption therefore has one winner.
 func (s *Store) RedeemSignInLink(ctx context.Context, candidate string) (core.DashboardSession, core.IdentityUser, error) {
+	ctx = dbmetrics.WithReadLabel(ctx, "RedeemSignInLink")
 	hash := sha256.Sum256([]byte(candidate))
 	var session core.DashboardSession
 	var user core.IdentityUser
@@ -670,6 +683,7 @@ func (s *Store) RedeemSignInLink(ctx context.Context, candidate string) (core.Da
 // passwordless accounts all take the same Argon2id path and return the same
 // credential error as an incorrect password (REQ-10/AC-10.2, AC-10.5).
 func (s *Store) SignInWithPassword(ctx context.Context, email, password string) (core.DashboardSession, core.IdentityUser, error) {
+	ctx = dbmetrics.WithReadLabel(ctx, "SignInWithPassword")
 	normalized, normalizeErr := normalizeIdentityEmail(email)
 	dummyHash := fixedDummyPasswordHash()
 	encoded := dummyHash
@@ -716,6 +730,7 @@ func (s *Store) SignInWithPassword(ctx context.Context, email, password string) 
 // cookie. Link-established sessions authorize recovery; every other session
 // must prove the current password when one is already present (AC-10.4-10.6).
 func (s *Store) SetOwnPassword(ctx context.Context, userID, sessionID, currentPassword, newPassword string) error {
+	ctx = dbmetrics.WithReadLabel(ctx, "SetOwnPassword")
 	if !validNewPassword(newPassword) {
 		return store.ErrInvalidPassword
 	}
@@ -799,6 +814,7 @@ func (s *Store) readDashboardSession(ctx context.Context, hash []byte) (dashboar
 // changes nothing rereads the session and succeeds without refresh output or
 // fails as invalid (component-identity-membership).
 func (s *Store) VerifyDashboardSession(ctx context.Context, candidate string) (core.AuthenticatedCredential, error) {
+	ctx = dbmetrics.WithReadLabel(ctx, "VerifyDashboardSession")
 	hash := sha256.Sum256([]byte(candidate))
 	session, err := s.readDashboardSession(ctx, hash[:])
 	if err != nil {
@@ -837,6 +853,7 @@ func (s *Store) VerifyDashboardSession(ctx context.Context, candidate string) (c
 }
 
 func (s *Store) RevokeDashboardSession(ctx context.Context, userID, sessionID string) error {
+	ctx = dbmetrics.WithReadLabel(ctx, "RevokeDashboardSession")
 	return s.inTx(ctx, func(tx pgx.Tx, q *db.Queries) error {
 		result, err := tx.Exec(ctx, `UPDATE dashboard_sessions SET revoked_at=COALESCE(revoked_at,now()) WHERE id=$1 AND user_id=$2 AND revoked_at IS NULL`, sessionID, userID)
 		if err != nil {
@@ -850,6 +867,7 @@ func (s *Store) RevokeDashboardSession(ctx context.Context, userID, sessionID st
 }
 
 func (s *Store) RecordInvitationDelivery(ctx context.Context, email, outcome string) error {
+	ctx = dbmetrics.WithReadLabel(ctx, "RecordInvitationDelivery")
 	if outcome != "sent" && outcome != "failed" && outcome != "fallback" {
 		return errors.New("invalid invitation delivery outcome")
 	}
@@ -934,6 +952,7 @@ func (s *Store) verifyCredential(ctx context.Context, candidate string) (core.Au
 }
 
 func (s *Store) RevokePersonalAccessToken(ctx context.Context, tokenID string) (PersonalAccessToken, error) {
+	ctx = dbmetrics.WithReadLabel(ctx, "RevokePersonalAccessToken")
 	var row db.UserToken
 	err := s.inTx(ctx, func(_ pgx.Tx, q *db.Queries) error {
 		var revokeErr error
@@ -953,6 +972,7 @@ func (s *Store) RevokePersonalAccessToken(ctx context.Context, tokenID string) (
 // their values: the query selects no hash column, and the cleartext value only
 // ever existed in the issuance response (REQ-2, req-security-boundaries AC-2.1).
 func (s *Store) ListOwnPersonalAccessTokens(ctx context.Context, userID string) ([]PersonalAccessToken, error) {
+	ctx = dbmetrics.WithReadLabel(ctx, "ListOwnPersonalAccessTokens")
 	rows, err := s.queries.ListOwnUserTokens(ctx, userID)
 	if err != nil {
 		return nil, err
@@ -967,6 +987,7 @@ func (s *Store) ListOwnPersonalAccessTokens(ctx context.Context, userID string) 
 // IssueOwnPersonalAccessToken mints a credential for the caller through the
 // existing opaque-hash issuer; self-service adds no second issuance path.
 func (s *Store) IssueOwnPersonalAccessToken(ctx context.Context, userID, label string) (IssuedPersonalAccessToken, error) {
+	ctx = dbmetrics.WithReadLabel(ctx, "IssueOwnPersonalAccessToken")
 	return s.IssuePersonalAccessToken(ctx, userID, label)
 }
 
@@ -974,6 +995,7 @@ func (s *Store) IssueOwnPersonalAccessToken(ctx context.Context, userID, label s
 // is a predicate of the statement rather than a check around it, so another
 // user's token is reported exactly like a token that does not exist.
 func (s *Store) RevokeOwnPersonalAccessToken(ctx context.Context, userID, tokenID string) (PersonalAccessToken, error) {
+	ctx = dbmetrics.WithReadLabel(ctx, "RevokeOwnPersonalAccessToken")
 	var row db.UserToken
 	err := s.inTx(ctx, func(_ pgx.Tx, q *db.Queries) error {
 		var revokeErr error
@@ -990,6 +1012,7 @@ func (s *Store) RevokeOwnPersonalAccessToken(ctx context.Context, userID, tokenI
 }
 
 func (s *Store) DeactivateIdentityUser(ctx context.Context, userID string) (IdentityUser, error) {
+	ctx = dbmetrics.WithReadLabel(ctx, "DeactivateIdentityUser")
 	var row db.User
 	err := s.inTx(ctx, func(tx pgx.Tx, q *db.Queries) error {
 		if err := tx.QueryRow(ctx, `UPDATE users SET status='deactivated' WHERE id=$1

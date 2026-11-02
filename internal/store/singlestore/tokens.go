@@ -13,6 +13,7 @@ import (
 
 	"github.com/kidus-tiliksew/conveyor/internal/core"
 	"github.com/kidus-tiliksew/conveyor/internal/store"
+	"github.com/kidus-tiliksew/conveyor/internal/store/dbmetrics"
 )
 
 func (s *Store) issueCredential(ctx context.Context, userID, label string, agent bool) (core.IssuedPersonalAccessToken, error) {
@@ -74,9 +75,11 @@ func auditPersonalToken(ctx context.Context, tx *sql.Tx, row core.PersonalAccess
 	return appendDeploymentEvent(store.WithActor(ctx, store.Actor{ID: store.UserActorID(owner), Role: core.ActorUser}), tx, kind, map[string]any{"credential_id": row.ID, "label": row.Label})
 }
 func (s *Store) IssueOwnPersonalAccessToken(ctx context.Context, userID, label string) (core.IssuedPersonalAccessToken, error) {
+	ctx = dbmetrics.WithReadLabel(ctx, "IssueOwnPersonalAccessToken")
 	return s.issueCredential(ctx, userID, label, false)
 }
 func (s *Store) IssueAgentCredential(ctx context.Context, userID, label string) (store.IssuedAgentCredential, error) {
+	ctx = dbmetrics.WithReadLabel(ctx, "IssueAgentCredential")
 	r, err := s.issueCredential(ctx, userID, label, true)
 	return store.IssuedAgentCredential{ID: r.ID, UserID: r.UserID, Label: r.Label, Value: r.Value}, translateBackendConflict(err)
 }
@@ -160,10 +163,12 @@ func (s *Store) verifyCredential(ctx context.Context, candidate string) (core.Au
 	return read.credential, read.user, nil
 }
 func (s *Store) VerifyCredential(ctx context.Context, candidate string) (core.AuthenticatedCredential, error) {
+	ctx = dbmetrics.WithReadLabel(ctx, "VerifyCredential")
 	c, _, err := s.verifyCredential(ctx, candidate)
 	return c, translateBackendConflict(err)
 }
 func (s *Store) VerifyPersonalAccessToken(ctx context.Context, candidate string) (core.IdentityUser, error) {
+	ctx = dbmetrics.WithReadLabel(ctx, "VerifyPersonalAccessToken")
 	c, u, err := s.verifyCredential(ctx, candidate)
 	if err != nil {
 		return core.IdentityUser{}, translateBackendConflict(err)
@@ -189,6 +194,7 @@ func scanPersonalToken(row interface{ Scan(...any) error }) (core.PersonalAccess
 const personalTokenColumns = "id,user_id,label,deployment_credential,created_at,last_used_at,revoked_at"
 
 func (s *Store) ListOwnPersonalAccessTokens(ctx context.Context, userID string) ([]core.PersonalAccessToken, error) {
+	ctx = dbmetrics.WithReadLabel(ctx, "ListOwnPersonalAccessTokens")
 	rows, err := s.db.QueryContext(ctx, "SELECT "+personalTokenColumns+" FROM user_tokens WHERE user_id=? AND kind='user' ORDER BY created_at DESC,id", userID)
 	if err != nil {
 		return nil, translateBackendConflict(err)
@@ -205,6 +211,7 @@ func (s *Store) ListOwnPersonalAccessTokens(ctx context.Context, userID string) 
 	return items, translateBackendConflict(rows.Err())
 }
 func (s *Store) RevokeOwnPersonalAccessToken(ctx context.Context, userID, id string) (core.PersonalAccessToken, error) {
+	ctx = dbmetrics.WithReadLabel(ctx, "RevokeOwnPersonalAccessToken")
 	var r core.PersonalAccessToken
 	err := s.identityTx(ctx, func(tx *sql.Tx) error {
 		var err error

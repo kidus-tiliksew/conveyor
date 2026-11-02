@@ -13,6 +13,7 @@ import (
 	"github.com/kidus-tiliksew/conveyor/internal/core"
 	"github.com/kidus-tiliksew/conveyor/internal/queue/logqueue"
 	"github.com/kidus-tiliksew/conveyor/internal/store"
+	"github.com/kidus-tiliksew/conveyor/internal/store/dbmetrics"
 	"github.com/kidus-tiliksew/conveyor/internal/taskops"
 )
 
@@ -104,6 +105,7 @@ func (s verificationSecretSnapshot) ListGitHubAppKeysForRedaction(context.Contex
 	return s, nil
 }
 func (s *Store) ApplyVerification(ctx context.Context, c store.VerificationCommand) (store.VerificationReceipt, error) {
+	ctx = dbmetrics.WithReadLabel(ctx, "ApplyVerification")
 	return taskops.ExecuteVerification(ctx, s, c.Access.TaskID, c.Kind, func(lease taskops.TaskLease) (store.VerificationReceipt, error) {
 		return s.applyVerification(ctx, lease, c)
 	})
@@ -236,6 +238,7 @@ func (s *Store) applyVerification(ctx context.Context, lease taskops.TaskLease, 
 	return result, nil
 }
 func (s *Store) ReadVerification(ctx context.Context, a store.VerificationAccess, id string) (store.VerificationSnapshot, error) {
+	ctx = dbmetrics.WithReadLabel(ctx, "ReadVerification")
 	if err := store.AuthorizeVerificationUserRead(ctx, s, a); err != nil {
 		return store.VerificationSnapshot{}, err
 	}
@@ -268,6 +271,7 @@ func (s *Store) ReadVerification(ctx context.Context, a store.VerificationAccess
 	return result, err
 }
 func (s *Store) ReadVerificationArtifact(ctx context.Context, a store.VerificationAccess, evidenceID, artifactID string) (core.Artifact, []byte, error) {
+	ctx = dbmetrics.WithReadLabel(ctx, "ReadVerificationArtifact")
 	if err := store.AuthorizeVerificationUserRead(ctx, s, a); err != nil {
 		return core.Artifact{}, nil, err
 	}
@@ -307,6 +311,7 @@ func (s *Store) ReadVerificationArtifact(ctx context.Context, a store.Verificati
 }
 
 func (s *Store) ReconcileVerificationClaims(ctx context.Context) (int, error) {
+	ctx = dbmetrics.WithReadLabel(ctx, "ReconcileVerificationClaims")
 	if _, err := store.VerificationReconciliationCommands(ctx, nil); err != nil {
 		return 0, err
 	}
@@ -414,6 +419,7 @@ func (s *Store) deliveryIntentTx(ctx context.Context, tx *sql.Tx, task string, r
 	return nil
 }
 func (s *Store) RecordVerificationPullRequest(ctx context.Context, e core.Event) error {
+	ctx = dbmetrics.WithReadLabel(ctx, "RecordVerificationPullRequest")
 	if _, ok := store.WorkspaceFromContext(ctx); !ok || e.Kind != "pull_request.opened" {
 		return store.ErrVerificationAccess
 	}
@@ -441,6 +447,7 @@ func (s *Store) RecordVerificationPullRequest(ctx context.Context, e core.Event)
 	})
 }
 func (s *Store) TranslateVerificationPublication(ctx context.Context, p store.VerificationPublication) error {
+	ctx = dbmetrics.WithReadLabel(ctx, "TranslateVerificationPublication")
 	if _, ok := store.WorkspaceFromContext(ctx); !ok {
 		return store.ErrVerificationAccess
 	}
@@ -456,6 +463,7 @@ func (s *Store) TranslateVerificationPublication(ctx context.Context, p store.Ve
 	})
 }
 func (s *Store) RunVerificationDelivery(ctx context.Context, a queue.VerificationPublicationArgs, fn func(*core.VerificationDelivery, func(string, core.VerificationDelivery) error) error) error {
+	ctx = dbmetrics.WithReadLabel(ctx, "RunVerificationDelivery")
 	ws, err := workspace(ctx)
 	if err != nil || !a.ValidWorkspace(ws) {
 		return store.ErrVerificationAccess
@@ -549,6 +557,7 @@ func (s *Store) RunVerificationDelivery(ctx context.Context, a queue.Verificatio
 // drift recorder after the commit (component-persistence, Drift repair
 // reports).
 func (s *Store) ReconcileVerificationDeliveries(ctx context.Context) error {
+	ctx = dbmetrics.WithReadLabel(ctx, "ReconcileVerificationDeliveries")
 	ws, err := workspace(ctx)
 	if err != nil {
 		return err

@@ -12,6 +12,7 @@ import (
 
 	"github.com/kidus-tiliksew/conveyor/internal/core"
 	"github.com/kidus-tiliksew/conveyor/internal/store"
+	"github.com/kidus-tiliksew/conveyor/internal/store/dbmetrics"
 )
 
 const (
@@ -22,6 +23,7 @@ const (
 // IssueSignInLink admits any active account or pending invitation. It serves
 // only host-local issuance (req-invitations-and-sign-in REQ-3).
 func (s *Store) IssueSignInLink(ctx context.Context, email string) (core.IssuedSignInLink, error) {
+	ctx = dbmetrics.WithReadLabel(ctx, "IssueSignInLink")
 	email, err := normalizeIdentityEmail(email)
 	if err != nil {
 		return core.IssuedSignInLink{}, translateBackendConflict(err)
@@ -43,6 +45,7 @@ func (s *Store) IssueSignInLink(ctx context.Context, email string) (core.IssuedS
 // identity-registry lock rows serialize it with revocation and redemption, and
 // the resend audit event commits with the link (component-identity-membership).
 func (s *Store) IssueInvitationSignInLink(ctx context.Context, workspaceID, email string, purpose store.SignInLinkPurpose) (core.IssuedSignInLink, error) {
+	ctx = dbmetrics.WithReadLabel(ctx, "IssueInvitationSignInLink")
 	if !purpose.Valid() {
 		return core.IssuedSignInLink{}, errors.New("invalid sign-in link purpose")
 	}
@@ -159,6 +162,7 @@ func userActorContext(ctx context.Context, uid string) context.Context {
 	return store.WithActor(ctx, store.Actor{ID: store.UserActorID(uid), Role: core.ActorUser})
 }
 func (s *Store) RedeemSignInLink(ctx context.Context, candidate string) (core.DashboardSession, core.IdentityUser, error) {
+	ctx = dbmetrics.WithReadLabel(ctx, "RedeemSignInLink")
 	hash := sha256.Sum256([]byte(candidate))
 	var session core.DashboardSession
 	var user core.IdentityUser
@@ -205,6 +209,7 @@ func (s *Store) RedeemSignInLink(ctx context.Context, candidate string) (core.Da
 	return session, user, nil
 }
 func (s *Store) SignInWithPassword(ctx context.Context, email, password string) (core.DashboardSession, core.IdentityUser, error) {
+	ctx = dbmetrics.WithReadLabel(ctx, "SignInWithPassword")
 	email, normalizeErr := normalizeIdentityEmail(email)
 	dummy := fixedDummyPasswordHash()
 	encoded := dummy
@@ -247,6 +252,7 @@ func (s *Store) SignInWithPassword(ctx context.Context, email, password string) 
 	return session, user, nil
 }
 func (s *Store) SetOwnPassword(ctx context.Context, userID, sessionID, currentPassword, newPassword string) error {
+	ctx = dbmetrics.WithReadLabel(ctx, "SetOwnPassword")
 	if !validNewPassword(newPassword) {
 		return store.ErrInvalidPassword
 	}
@@ -278,6 +284,7 @@ func (s *Store) SetOwnPassword(ctx context.Context, userID, sessionID, currentPa
 	})
 }
 func (s *Store) SetOwnDisplayName(ctx context.Context, userID, sessionID, name string) (core.CallerIdentity, error) {
+	ctx = dbmetrics.WithReadLabel(ctx, "SetOwnDisplayName")
 	var r core.CallerIdentity
 	err := s.identityTx(ctx, func(tx *sql.Tx) error {
 		err := tx.QueryRowContext(ctx, "SELECT u.id,u.email,u.display_name FROM users u JOIN dashboard_sessions s ON s.user_id=u.id WHERE u.id=? AND u.status='active' AND s.id=? AND s.revoked_at IS NULL AND s.expires_at>CURRENT_TIMESTAMP(6)", userID, sessionID).Scan(&r.ID, &r.Email, &r.DisplayName)
@@ -333,6 +340,7 @@ func (s *Store) readDashboardSession(ctx context.Context, hash []byte) (dashboar
 // call that changes nothing rereads the session and succeeds without refresh
 // output or fails as invalid (component-identity-membership).
 func (s *Store) VerifyDashboardSession(ctx context.Context, candidate string) (core.AuthenticatedCredential, error) {
+	ctx = dbmetrics.WithReadLabel(ctx, "VerifyDashboardSession")
 	hash := sha256.Sum256([]byte(candidate))
 	session, err := s.readDashboardSession(ctx, hash[:])
 	if err != nil {
@@ -378,6 +386,7 @@ func (s *Store) VerifyDashboardSession(ctx context.Context, candidate string) (c
 	return core.AuthenticatedCredential{ID: session.id, OwnerUserID: session.userID, Kind: core.CredentialUser, Scope: scope, Method: core.CredentialMethodSession, SessionExpiresAt: refreshed, SessionEstablishedByLink: session.establishedByLink}, nil
 }
 func (s *Store) RevokeDashboardSession(ctx context.Context, uid, id string) error {
+	ctx = dbmetrics.WithReadLabel(ctx, "RevokeDashboardSession")
 	return s.identityTx(ctx, func(tx *sql.Tx) error {
 		r, err := tx.ExecContext(ctx, "UPDATE dashboard_sessions SET revoked_at=CURRENT_TIMESTAMP(6) WHERE id=? AND user_id=? AND revoked_at IS NULL", id, uid)
 		if err != nil {
@@ -394,6 +403,7 @@ func (s *Store) RevokeDashboardSession(ctx context.Context, uid, id string) erro
 	})
 }
 func (s *Store) RecordInvitationDelivery(ctx context.Context, email, outcome string) error {
+	ctx = dbmetrics.WithReadLabel(ctx, "RecordInvitationDelivery")
 	if outcome != "sent" && outcome != "failed" && outcome != "fallback" {
 		return errors.New("invalid invitation delivery outcome")
 	}

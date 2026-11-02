@@ -8,10 +8,12 @@ import (
 
 	"github.com/kidus-tiliksew/conveyor/internal/core"
 	"github.com/kidus-tiliksew/conveyor/internal/store"
+	"github.com/kidus-tiliksew/conveyor/internal/store/dbmetrics"
 	"github.com/kidus-tiliksew/conveyor/internal/taskops"
 )
 
 func (s *Store) RecordContextObservation(ctx context.Context, lease taskops.TaskLease, observation core.ContextObservation) (core.ContextObservation, error) {
+	ctx = dbmetrics.WithReadLabel(ctx, "RecordContextObservation")
 	var result core.ContextObservation
 	id := observation.WorkOrderID
 	err := s.orderTx(ctx, id, func(tx *sql.Tx, order core.WorkOrder) error {
@@ -44,6 +46,7 @@ func (s *Store) RecordContextObservation(ctx context.Context, lease taskops.Task
 }
 
 func (s *Store) RecordInProcessContextObservation(ctx context.Context, lease taskops.TaskLease, o core.ContextObservation) (core.ContextObservation, error) {
+	ctx = dbmetrics.WithReadLabel(ctx, "RecordInProcessContextObservation")
 	var result core.ContextObservation
 	if !lease.ValidForCommand(o.TaskID, string(store.ContextObservationCommand)) {
 		return result, store.ErrWorkOrderClaimUnauthorized

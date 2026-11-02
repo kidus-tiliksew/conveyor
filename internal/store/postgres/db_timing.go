@@ -47,6 +47,9 @@ func (t *requestTracer) TraceQueryStart(ctx context.Context, conn *pgx.Conn, dat
 	if t.next != nil {
 		ctx = t.next.TraceQueryStart(ctx, conn, data)
 	}
+	// Read accounting runs with or without a request collector
+	// (component-persistence, Database read accounting).
+	readConnOf(conn).Begin(dbmetrics.ReadLabel(ctx))
 	if dbmetrics.FromContext(ctx) == nil {
 		return ctx
 	}
@@ -56,6 +59,11 @@ func (t *requestTracer) TraceQueryStart(ctx context.Context, conn *pgx.Conn, dat
 // TraceQueryEnd runs once per operation: when Exec completes, and when the
 // rows of Query or QueryRow close, so the duration includes row consumption.
 func (t *requestTracer) TraceQueryEnd(ctx context.Context, conn *pgx.Conn, data pgx.TraceQueryEndData) {
+	var rows uint64
+	if data.CommandTag.Select() {
+		rows = uint64(max(data.CommandTag.RowsAffected(), 0))
+	}
+	readConnOf(conn).End(1, rows)
 	if collector := dbmetrics.FromContext(ctx); collector != nil {
 		if started, ok := ctx.Value(queryStartKey{}).(time.Time); ok {
 			collector.AddQuery(t.now().Sub(started))
@@ -91,6 +99,21 @@ func (t *requestTracer) TraceAcquireEnd(ctx context.Context, pool *pgxpool.Pool,
 	if t.nextAcquire != nil {
 		t.nextAcquire.TraceAcquireEnd(ctx, pool, data)
 	}
+}
+
+// readConnOf finds the counting wrapper under the connection, TLS included;
+// nil when the connection was not dialed through the counting dialer.
+func readConnOf(conn *pgx.Conn) *dbmetrics.ReadConn {
+	if conn == nil || conn.PgConn() == nil {
+		return nil
+	}
+	return dbmetrics.ReadConnOf(conn.PgConn().Conn())
+}
+
+// ReadStats drains the store's read ledger for the daemon's read statistics
+// line (component-persistence, Database read accounting).
+func (s *Store) ReadStats(top int) dbmetrics.ReadInterval {
+	return s.reads.Drain(top)
 }
 
 // RequestMetrics reports that PostgreSQL measures all three request fields.

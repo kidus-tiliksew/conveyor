@@ -16,10 +16,12 @@ import (
 	"github.com/kidus-tiliksew/conveyor/internal/queue"
 	"github.com/kidus-tiliksew/conveyor/internal/queue/logqueue"
 	"github.com/kidus-tiliksew/conveyor/internal/store"
+	"github.com/kidus-tiliksew/conveyor/internal/store/dbmetrics"
 	"github.com/kidus-tiliksew/conveyor/internal/taskops"
 )
 
 func (s *Store) SetTaskAssigneeCommand(ctx context.Context, lease taskops.TaskLease, id, assigneeUserID string) (core.Task, error) {
+	ctx = dbmetrics.WithReadLabel(ctx, "SetTaskAssigneeCommand")
 	if !lease.ValidForCommand(id, taskops.SetAssigneeCommand) {
 		return core.Task{}, fmt.Errorf("task assignment requires a valid taskops lease")
 	}
@@ -66,6 +68,7 @@ func (s *Store) SetTaskAssigneeCommand(ctx context.Context, lease taskops.TaskLe
 }
 
 func (s *Store) AttachSubmissionGovernance(ctx context.Context, taskID, repository string, changedPaths []string, attribution store.SubmissionGovernanceAttribution) ([]core.TaskDesignContext, error) {
+	ctx = dbmetrics.WithReadLabel(ctx, "AttachSubmissionGovernance")
 	attached := []core.TaskDesignContext{}
 	err := s.documentTx(ctx, func(tx *sql.Tx) error {
 		if err := s.lockTaskOperation(ctx, tx, documentWorkspace(ctx), taskID); err != nil {
@@ -125,6 +128,7 @@ func (s *Store) AttachSubmissionGovernance(ctx context.Context, taskID, reposito
 }
 
 func (s *Store) ListCallerAttentionTaskPage(ctx context.Context, q store.CallerAttentionQuery) (store.TaskPage, error) {
+	ctx = dbmetrics.WithReadLabel(ctx, "ListCallerAttentionTaskPage")
 	if err := q.Validate(); err != nil {
 		return store.TaskPage{}, err
 	}
@@ -193,6 +197,7 @@ func (s *Store) ListCallerAttentionTaskPage(ctx context.Context, q store.CallerA
 }
 
 func (s *Store) ListCheckpointContextCandidates(ctx context.Context, requirementID string) ([]store.CheckpointContextCandidate, error) {
+	ctx = dbmetrics.WithReadLabel(ctx, "ListCheckpointContextCandidates")
 	rows, err := documentRows(ctx, s.db, `SELECT t.id,t.title,t.state FROM tasks t JOIN work_orders w ON w.workspace_id=t.workspace_id AND w.task_id=t.id WHERE t.workspace_id=? AND t.state NOT IN ('merged','closed') AND w.state='queued' AND w.last_attempt_outcome='released' AND w.last_failure_message='operator checkpoint reached' AND NOT EXISTS(SELECT 1 FROM work_orders newer WHERE newer.workspace_id=w.workspace_id AND newer.task_id=w.task_id AND (newer.created_at>w.created_at OR (newer.created_at=w.created_at AND newer.id>w.id))) ORDER BY t.id`, documentWorkspace(ctx))
 	if err != nil {
 		return nil, err
@@ -226,6 +231,7 @@ func (s *Store) ListCheckpointContextCandidates(ctx context.Context, requirement
 }
 
 func (s *Store) ReconcileBlueprintClosures(ctx context.Context) (int, error) {
+	ctx = dbmetrics.WithReadLabel(ctx, "ReconcileBlueprintClosures")
 	rows, err := documentRows(ctx, s.db, `SELECT p.id FROM tasks p WHERE p.workspace_id=? AND p.state='queued' AND EXISTS(SELECT 1 FROM tasks c WHERE c.workspace_id=p.workspace_id AND c.parent_task_id=p.id) AND NOT EXISTS(SELECT 1 FROM tasks c WHERE c.workspace_id=p.workspace_id AND c.parent_task_id=p.id AND c.state NOT IN ('merged','closed')) ORDER BY p.created_at,p.id`, documentWorkspace(ctx))
 	if err != nil {
 		return 0, err
@@ -260,6 +266,7 @@ func (s *Store) ReconcileBlueprintClosures(ctx context.Context) (int, error) {
 }
 
 func (s *Store) ReconcileQueuedTasks(ctx context.Context) (int, error) {
+	ctx = dbmetrics.WithReadLabel(ctx, "ReconcileQueuedTasks")
 	ws, err := workspace(ctx)
 	if err != nil {
 		return 0, err

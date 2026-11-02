@@ -11,10 +11,12 @@ import (
 	"github.com/kidus-tiliksew/conveyor/internal/queue"
 	"github.com/kidus-tiliksew/conveyor/internal/queue/logqueue"
 	"github.com/kidus-tiliksew/conveyor/internal/store"
+	"github.com/kidus-tiliksew/conveyor/internal/store/dbmetrics"
 	"github.com/kidus-tiliksew/conveyor/internal/store/postgres/db"
 )
 
 func (s *Store) QueuePullRequestClose(ctx context.Context, p core.PullRequestClose) error {
+	ctx = dbmetrics.WithReadLabel(ctx, "QueuePullRequestClose")
 	if err := store.ValidatePullRequestCloseActor(ctx); err != nil {
 		return err
 	}
@@ -50,6 +52,7 @@ func (s *Store) QueuePullRequestClose(ctx context.Context, p core.PullRequestClo
 	})
 }
 func (s *Store) GetPullRequestClose(ctx context.Context, id string) (core.PullRequestClose, bool, error) {
+	ctx = dbmetrics.WithReadLabel(ctx, "GetPullRequestClose")
 	var raw []byte
 	var p core.PullRequestClose
 	err := s.boundary.QueryRow(ctx, `SELECT payload_json FROM pull_request_closes WHERE workspace_id=$1 AND task_id=$2`, workspace(ctx), id).Scan(&raw)
@@ -63,6 +66,7 @@ func (s *Store) GetPullRequestClose(ctx context.Context, id string) (core.PullRe
 	return p, err == nil, err
 }
 func (s *Store) UpdatePullRequestClose(ctx context.Context, p core.PullRequestClose) error {
+	ctx = dbmetrics.WithReadLabel(ctx, "UpdatePullRequestClose")
 	if err := store.ValidatePullRequestCloseActor(ctx); err != nil {
 		return err
 	}

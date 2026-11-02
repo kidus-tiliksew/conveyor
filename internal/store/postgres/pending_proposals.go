@@ -5,12 +5,14 @@ import (
 
 	"github.com/kidus-tiliksew/conveyor/internal/core"
 	"github.com/kidus-tiliksew/conveyor/internal/store"
+	"github.com/kidus-tiliksew/conveyor/internal/store/dbmetrics"
 )
 
 // ListPendingProposals is one workspace-scoped read over the three durable
 // authority tiers. Confirmation/dismissal changes the source rows, so the
 // projection clears without stored attention state (REQ-1, REQ-3).
 func (s *Store) ListPendingProposals(ctx context.Context) ([]core.PendingProposal, error) {
+	ctx = dbmetrics.WithReadLabel(ctx, "ListPendingProposals")
 	rows, err := s.boundary.Query(ctx, `
 		SELECT proposal_id,title,tier,version,origin_type,origin_id,target_kind,justification,proposed_at
 		FROM (
@@ -61,6 +63,7 @@ func (s *Store) ListPendingProposals(ctx context.Context) ([]core.PendingProposa
 }
 
 func (s *Store) ListPendingAuthorityProposalsForTask(ctx context.Context, taskID string) ([]core.PendingProposal, error) {
+	ctx = dbmetrics.WithReadLabel(ctx, "ListPendingAuthorityProposalsForTask")
 	rows, err := s.boundary.Query(ctx, `
 		SELECT proposal_id,title,tier,version,origin_type,origin_id,target_kind,justification,proposed_at
 		FROM (
@@ -103,6 +106,7 @@ func (s *Store) ListPendingAuthorityProposalsForTask(ctx context.Context, taskID
 }
 
 func (s *Store) PendingProposalsProjection(ctx context.Context) (store.PendingProposalsProjection, error) {
+	ctx = dbmetrics.WithReadLabel(ctx, "PendingProposalsProjection")
 	items, err := s.ListPendingProposals(ctx)
 	if err != nil {
 		return store.PendingProposalsProjection{}, err
@@ -111,5 +115,6 @@ func (s *Store) PendingProposalsProjection(ctx context.Context) (store.PendingPr
 }
 
 func (s *Store) CountOperatorAttention(ctx context.Context) (int, error) {
+	ctx = dbmetrics.WithReadLabel(ctx, "CountOperatorAttention")
 	return store.CountOperatorAttention(ctx, s)
 }

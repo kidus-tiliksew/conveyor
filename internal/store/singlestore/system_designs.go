@@ -12,9 +12,11 @@ import (
 	"github.com/go-sql-driver/mysql"
 	"github.com/kidus-tiliksew/conveyor/internal/core"
 	"github.com/kidus-tiliksew/conveyor/internal/store"
+	"github.com/kidus-tiliksew/conveyor/internal/store/dbmetrics"
 )
 
 func (s *Store) CreateSystemDesign(ctx context.Context, document core.SystemDesign, first core.SystemDesignVersion) (core.SystemDesign, core.SystemDesignVersion, error) {
+	ctx = dbmetrics.WithReadLabel(ctx, "CreateSystemDesign")
 	document.ID, document.Title, document.Category = strings.TrimSpace(document.ID), strings.TrimSpace(document.Title), strings.TrimSpace(document.Category)
 	if document.ID == "" || document.Title == "" || document.Category == "" {
 		return document, first, fmt.Errorf("system design id, title, and category are required")
@@ -77,6 +79,7 @@ func (s *Store) CreateSystemDesign(ctx context.Context, document core.SystemDesi
 }
 
 func (s *Store) GetSystemDesign(ctx context.Context, id string) (core.SystemDesign, error) {
+	ctx = dbmetrics.WithReadLabel(ctx, "GetSystemDesign")
 	item := core.SystemDesign{Workspace: documentWorkspace(ctx), ID: id}
 	var current *int
 	var archivedAt *time.Time
@@ -94,6 +97,7 @@ func (s *Store) GetSystemDesign(ctx context.Context, id string) (core.SystemDesi
 }
 
 func (s *Store) ListSystemDesigns(ctx context.Context, includeArchived bool) ([]core.SystemDesign, error) {
+	ctx = dbmetrics.WithReadLabel(ctx, "ListSystemDesigns")
 	rows, err := documentRows(ctx, s.db, systemDesignSelect+` WHERE workspace_id=? AND (? OR archived_at IS NULL) ORDER BY category,title,id`, documentWorkspace(ctx), includeArchived)
 	if err != nil {
 		return nil, err
@@ -111,9 +115,11 @@ func (s *Store) ListSystemDesigns(ctx context.Context, includeArchived bool) ([]
 }
 
 func (s *Store) ArchiveSystemDesign(ctx context.Context, id, actor string, supersededBy []string) error {
+	ctx = dbmetrics.WithReadLabel(ctx, "ArchiveSystemDesign")
 	return s.setSystemDesignArchived(ctx, id, actor, true, supersededBy)
 }
 func (s *Store) RestoreSystemDesign(ctx context.Context, id, actor string) error {
+	ctx = dbmetrics.WithReadLabel(ctx, "RestoreSystemDesign")
 	return s.setSystemDesignArchived(ctx, id, actor, false, nil)
 }
 func (s *Store) setSystemDesignArchived(ctx context.Context, id, actor string, archived bool, supersededBy []string) error {
@@ -161,6 +167,7 @@ func (s *Store) setSystemDesignArchived(ctx context.Context, id, actor string, a
 }
 
 func (s *Store) ProposeSystemDesignVersion(ctx context.Context, version core.SystemDesignVersion) (core.SystemDesignVersion, error) {
+	ctx = dbmetrics.WithReadLabel(ctx, "ProposeSystemDesignVersion")
 	if err := core.NormalizeSystemDesignVersion(&version); err != nil {
 		return version, err
 	}
@@ -222,6 +229,7 @@ func insertSystemDesignProposalEvent(ctx context.Context, tx *sql.Tx, version co
 }
 
 func (s *Store) ConfirmSystemDesignVersion(ctx context.Context, documentID string, version int, expectedCurrentVersion ...int) (core.SystemDesign, core.SystemDesignVersion, error) {
+	ctx = dbmetrics.WithReadLabel(ctx, "ConfirmSystemDesignVersion")
 	var document core.SystemDesign
 	var confirmed core.SystemDesignVersion
 	err := s.documentTx(ctx, func(tx *sql.Tx) error {
@@ -329,6 +337,7 @@ func (s *Store) ConfirmSystemDesignVersion(ctx context.Context, documentID strin
 }
 
 func (s *Store) DismissSystemDesignVersion(ctx context.Context, documentID string, version int) (core.SystemDesign, core.SystemDesignVersion, error) {
+	ctx = dbmetrics.WithReadLabel(ctx, "DismissSystemDesignVersion")
 	var (
 		document  core.SystemDesign
 		dismissed core.SystemDesignVersion
@@ -549,9 +558,11 @@ func archivalColumnExistsTx(ctx context.Context, tx *sql.Tx, table string) (bool
 }
 
 func (s *Store) GetSystemDesignVersion(ctx context.Context, id string, version int) (core.SystemDesignVersion, error) {
+	ctx = dbmetrics.WithReadLabel(ctx, "GetSystemDesignVersion")
 	return scanSystemDesignVersion(documentRow(ctx, s.db, systemDesignVersionSelect+` WHERE workspace_id=? AND document_id=? AND version=?`, documentWorkspace(ctx), id, version), id, version)
 }
 func (s *Store) ListSystemDesignVersions(ctx context.Context, id string) ([]core.SystemDesignVersion, error) {
+	ctx = dbmetrics.WithReadLabel(ctx, "ListSystemDesignVersions")
 	rows, err := documentRows(ctx, s.db, systemDesignVersionSelect+` WHERE workspace_id=? AND document_id=? ORDER BY version`, documentWorkspace(ctx), id)
 	if err != nil {
 		return nil, err
@@ -569,6 +580,7 @@ func (s *Store) ListSystemDesignVersions(ctx context.Context, id string) ([]core
 }
 
 func (s *Store) ListGovernanceDesigns(ctx context.Context, repository string) ([]core.GovernanceDesignContext, error) {
+	ctx = dbmetrics.WithReadLabel(ctx, "ListGovernanceDesigns")
 	rows, err := documentRows(ctx, s.db, `SELECT d.id,d.title,d.category,v.version,v.content,v.governs
 		FROM system_designs d JOIN system_design_versions v
 		  ON v.workspace_id=d.workspace_id AND v.document_id=d.id AND v.version=d.current_version
@@ -598,6 +610,7 @@ func (s *Store) ListGovernanceDesigns(ctx context.Context, repository string) ([
 }
 
 func (s *Store) ListPendingSystemDesignVersionsForTask(ctx context.Context, taskID string) ([]core.SystemDesignVersion, error) {
+	ctx = dbmetrics.WithReadLabel(ctx, "ListPendingSystemDesignVersionsForTask")
 	rows, err := documentRows(ctx, s.db, systemDesignVersionSelect+` WHERE workspace_id=? AND origin=? AND origin_task_id=? AND NOT confirmed AND NOT dismissed ORDER BY document_id,version`, documentWorkspace(ctx), string(core.SystemDesignOriginImplementation), taskID)
 	if err != nil {
 		return nil, err
@@ -615,6 +628,7 @@ func (s *Store) ListPendingSystemDesignVersionsForTask(ctx context.Context, task
 }
 
 func (s *Store) ListSystemDesignProposalVersionsForTask(ctx context.Context, taskID string) ([]core.SystemDesignVersion, error) {
+	ctx = dbmetrics.WithReadLabel(ctx, "ListSystemDesignProposalVersionsForTask")
 	rows, err := documentRows(ctx, s.db, systemDesignVersionSelect+` WHERE workspace_id=? AND origin=? AND origin_task_id=? AND NOT dismissed ORDER BY document_id,version`, documentWorkspace(ctx), string(core.SystemDesignOriginImplementation), taskID)
 	if err != nil {
 		return nil, err
@@ -632,6 +646,7 @@ func (s *Store) ListSystemDesignProposalVersionsForTask(ctx context.Context, tas
 }
 
 func (s *Store) ListSystemDesignProposalEventsForTask(ctx context.Context, taskID string) ([]core.Event, error) {
+	ctx = dbmetrics.WithReadLabel(ctx, "ListSystemDesignProposalEventsForTask")
 	rows, err := documentRows(ctx, s.db, `SELECT id,COALESCE(task_id,''),COALESCE(job_id,''),kind,actor_id,actor_role,payload_json,at,workspace_id FROM events_columnstore WHERE workspace_id=? AND kind='system_design.version_proposed' AND JSON_EXTRACT_STRING(payload_json,'origin_task_id')=? ORDER BY id`, documentWorkspace(ctx), taskID)
 	if err != nil {
 		return nil, err
@@ -649,6 +664,7 @@ func (s *Store) ListSystemDesignProposalEventsForTask(ctx context.Context, taskI
 	return out, rows.Err()
 }
 func (s *Store) ListSystemDesignVersionsByDocument(ctx context.Context) (map[string][]core.SystemDesignVersion, error) {
+	ctx = dbmetrics.WithReadLabel(ctx, "ListSystemDesignVersionsByDocument")
 	rows, err := documentRows(ctx, s.db, systemDesignVersionSelect+` WHERE workspace_id=? ORDER BY document_id,version`, documentWorkspace(ctx))
 	if err != nil {
 		return nil, err
@@ -665,6 +681,7 @@ func (s *Store) ListSystemDesignVersionsByDocument(ctx context.Context) (map[str
 	return out, rows.Err()
 }
 func (s *Store) ListSystemDesignEvents(ctx context.Context, id string) ([]core.Event, error) {
+	ctx = dbmetrics.WithReadLabel(ctx, "ListSystemDesignEvents")
 	rows, err := documentRows(ctx, s.db, `SELECT id,COALESCE(task_id,''),COALESCE(job_id,''),kind,actor_id,actor_role,payload_json,at,workspace_id FROM events_columnstore WHERE workspace_id=? AND kind LIKE 'system_design.%' AND JSON_EXTRACT_STRING(payload_json,'document_id')=? ORDER BY id`, documentWorkspace(ctx), id)
 	if err != nil {
 		return nil, err
@@ -683,6 +700,7 @@ func (s *Store) ListSystemDesignEvents(ctx context.Context, id string) ([]core.E
 }
 
 func (s *Store) ListSystemDesignEventsByDocument(ctx context.Context) (map[string][]core.Event, error) {
+	ctx = dbmetrics.WithReadLabel(ctx, "ListSystemDesignEventsByDocument")
 	rows, err := documentRows(ctx, s.db, `SELECT id,COALESCE(task_id,''),COALESCE(job_id,''),kind,actor_id,actor_role,payload_json,at,workspace_id FROM events_columnstore WHERE workspace_id=? AND kind LIKE 'system_design.%' ORDER BY id`, documentWorkspace(ctx))
 	if err != nil {
 		return nil, err
@@ -707,6 +725,7 @@ func (s *Store) ListSystemDesignEventsByDocument(ctx context.Context) (map[strin
 }
 
 func (s *Store) RecordSystemDesignConsulted(ctx context.Context, documentID string, version int, sessionID, workOrderID string) error {
+	ctx = dbmetrics.WithReadLabel(ctx, "RecordSystemDesignConsulted")
 	return s.documentTx(ctx, func(tx *sql.Tx) error {
 		var exists bool
 		if err := documentRow(ctx, tx, `SELECT EXISTS(SELECT 1 FROM system_design_versions WHERE workspace_id=? AND document_id=? AND version=?)
@@ -725,6 +744,7 @@ func (s *Store) RecordSystemDesignConsulted(ctx context.Context, documentID stri
 }
 
 func (s *Store) ListActiveSystemDesignDriftCounts(ctx context.Context) (map[string]int, error) {
+	ctx = dbmetrics.WithReadLabel(ctx, "ListActiveSystemDesignDriftCounts")
 	rows, err := documentRows(ctx, s.db, `SELECT system_design_id,COUNT(*) FROM repository_drift WHERE workspace_id=? AND resolved_at IS NULL AND system_design_id IS NOT NULL GROUP BY system_design_id`, documentWorkspace(ctx))
 	if err != nil {
 		return nil, err

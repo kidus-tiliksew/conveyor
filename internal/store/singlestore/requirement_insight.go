@@ -14,6 +14,7 @@ import (
 	"github.com/go-sql-driver/mysql"
 	"github.com/kidus-tiliksew/conveyor/internal/core"
 	"github.com/kidus-tiliksew/conveyor/internal/store"
+	"github.com/kidus-tiliksew/conveyor/internal/store/dbmetrics"
 )
 
 var _ store.RequirementInsightStore = (*Store)(nil)
@@ -27,6 +28,7 @@ var _ store.RequirementInsightStore = (*Store)(nil)
 // and the task context's: store.LatestRequirementServing and
 // store.ActiveTaskContextReferences.
 func (s *Store) ReadRequirementInsightInputs(ctx context.Context, requirementID string) (store.RequirementInsightInputs, error) {
+	ctx = dbmetrics.WithReadLabel(ctx, "ReadRequirementInsightInputs")
 	ws, err := workspace(ctx)
 	if err != nil {
 		return store.RequirementInsightInputs{}, err
@@ -205,6 +207,7 @@ func scanRequirementInsightHeadline(row requirementInsightScanner) (store.Requir
 
 // GetRequirementInsightHeadline reads the bound workspace's stored headline.
 func (s *Store) GetRequirementInsightHeadline(ctx context.Context, requirementID string) (store.RequirementInsightHeadline, error) {
+	ctx = dbmetrics.WithReadLabel(ctx, "GetRequirementInsightHeadline")
 	ws, err := workspace(ctx)
 	if err != nil {
 		return store.RequirementInsightHeadline{}, err
@@ -230,6 +233,7 @@ func (s *Store) GetRequirementInsightHeadline(ctx context.Context, requirementID
 // counts are never read. The concurrent integration tests exercise the
 // duplicate-key path.
 func (s *Store) RecordRequirementInsightHeadline(ctx context.Context, headline store.RequirementInsightHeadline) (store.RequirementInsightHeadline, error) {
+	ctx = dbmetrics.WithReadLabel(ctx, "RecordRequirementInsightHeadline")
 	if err := store.ValidateRequirementInsightHeadline(headline); err != nil {
 		return store.RequirementInsightHeadline{}, err
 	}
