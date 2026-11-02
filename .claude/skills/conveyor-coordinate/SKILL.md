@@ -12,11 +12,12 @@ supervision, delegated decisions, bounded-queue policy and outcomes,
 validation honesty, readable timeline text, and the coordination record.
 
 Non-negotiables, restated: the coordinator never claims a work order or edits
-a task repository; each stage order runs in its own thread under
-`conveyor-work`. Threads never start other threads, wait for verdicts, or
-record a gate or proposal decision. The coordinator records only routine
-decisions within the scope the operator delegated, with the operator's own
-credential, and brings product, scope, risk, validation-waiver, and
+a task repository; each stage order runs in its own thread. Verification
+threads follow `conveyor-kit-verify`, and plan, implementation, and review
+threads follow `conveyor-work`. Threads never start other threads, wait for
+verdicts, or record a gate or proposal decision. The coordinator records only
+routine decisions within the scope the operator delegated, with the operator's
+own credential, and brings product, scope, risk, validation-waiver, and
 operator-reserved decisions to the operator. The first sentence of every
 progress message, decision reason, and review summary says in plain language
 what happened and what happens next, with no internal identifiers.
