@@ -2777,3 +2777,244 @@ func TestSourceTaskExistsReadsOnlyMatchingTasks(t *testing.T) {
 	}
 	recorder.RequireNoTerminalReads(t, terminal, taken.ID)
 }
+
+// snapshotFixtureBytes is the design body each seeded snapshot pins. A read
+// that decodes even one snapshot reports at least this many bytes.
+const snapshotFixtureBytes = 64 << 10
+
+// snapshotFixtureOrders is the number of snapshot-bearing orders of other
+// tasks in the review-dispatch fixture: 200 orders of 64 KiB, about 13 MB that
+// a workspace-wide or snapshot-bearing read would decode.
+const snapshotFixtureOrders = 200
+
+func snapshotFixtureGovernance() core.GovernanceSnapshot {
+	return core.GovernanceSnapshot{
+		Designs:                []core.GovernanceDesignContext{{ID: "component-fixture", Title: "Fixture", Category: "component", Version: 1, Content: strings.Repeat("g", snapshotFixtureBytes), Governs: []core.GovernedScope{}}},
+		Decisions:              []core.Decision{},
+		PendingDesignProposals: []core.PendingSystemDesignProposal{},
+	}
+}
+
+func snapshotFixtureRequirements() []core.ServedRequirementContext {
+	return []core.ServedRequirementContext{{ID: "req-fixture", Version: 1, Statements: []core.RequirementStatement{{ID: "REQ-1", Statement: "Observe the dispatch"}}}}
+}
+
+// workOrderReadRecorder counts what every work-order read returned to the
+// dispatcher: rows, rows of other tasks, and encoded snapshot bytes. A durable
+// backend fills a snapshot field only by decoding its selected column, so zero
+// snapshot bytes means no read selected a snapshot body.
+type workOrderReadRecorder struct {
+	store.Store
+	taskID string
+
+	mu            sync.Mutex
+	calls         map[string]int
+	rows          int
+	foreignRows   int
+	snapshotBytes int
+}
+
+func newWorkOrderReadRecorder(st store.Store, taskID string) *workOrderReadRecorder {
+	return &workOrderReadRecorder{Store: st, taskID: taskID, calls: map[string]int{}}
+}
+
+func (r *workOrderReadRecorder) record(method string, orders []core.WorkOrder) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.calls[method]++
+	for _, order := range orders {
+		r.rows++
+		if order.TaskID != r.taskID {
+			r.foreignRows++
+		}
+		if order.ServedRequirementSnapshot != nil {
+			encoded, _ := json.Marshal(order.ServedRequirementSnapshot)
+			r.snapshotBytes += len(encoded)
+		}
+		if order.GovernanceSnapshot != nil {
+			encoded, _ := json.Marshal(order.GovernanceSnapshot)
+			r.snapshotBytes += len(encoded)
+		}
+	}
+}
+
+func (r *workOrderReadRecorder) ListWorkOrders(ctx context.Context) ([]core.WorkOrder, error) {
+	orders, err := r.Store.ListWorkOrders(ctx)
+	r.record("ListWorkOrders", orders)
+	return orders, err
+}
+
+func (r *workOrderReadRecorder) ListLiveWorkOrders(ctx context.Context) ([]core.WorkOrder, error) {
+	orders, err := r.Store.ListLiveWorkOrders(ctx)
+	r.record("ListLiveWorkOrders", orders)
+	return orders, err
+}
+
+func (r *workOrderReadRecorder) ListWorkOrdersForTasks(ctx context.Context, taskIDs []string) ([]core.WorkOrder, error) {
+	orders, err := r.Store.ListWorkOrdersForTasks(ctx, taskIDs)
+	r.record("ListWorkOrdersForTasks", orders)
+	return orders, err
+}
+
+func (r *workOrderReadRecorder) ListTaskWorkOrders(ctx context.Context, taskID string) ([]core.WorkOrder, error) {
+	orders, err := r.Store.ListTaskWorkOrders(ctx, taskID)
+	r.record("ListTaskWorkOrders", orders)
+	return orders, err
+}
+
+func (r *workOrderReadRecorder) ListTaskWorkOrdersStored(ctx context.Context, taskID string) ([]core.WorkOrder, error) {
+	orders, err := r.Store.ListTaskWorkOrdersStored(ctx, taskID)
+	r.record("ListTaskWorkOrdersStored", orders)
+	return orders, err
+}
+
+func (r *workOrderReadRecorder) ListTaskWorkOrdersSnapshot(ctx context.Context, taskID string) ([]core.WorkOrder, error) {
+	orders, err := r.Store.ListTaskWorkOrdersSnapshot(ctx, taskID)
+	r.record("ListTaskWorkOrdersSnapshot", orders)
+	return orders, err
+}
+
+func (r *workOrderReadRecorder) GetWorkOrder(ctx context.Context, id string) (core.WorkOrder, error) {
+	order, err := r.Store.GetWorkOrder(ctx, id)
+	if err == nil {
+		r.record("GetWorkOrder", []core.WorkOrder{order})
+	}
+	return order, err
+}
+
+// requireReviewDispatchReadsOnlyTaskOrders dispatches the task's review stage
+// through a recorder and requires that its work-order reads returned only the
+// task's own rows, no snapshot byte, and no workspace-wide read. wantRefusal
+// selects the readiness answer: a refused dispatch must fail with the
+// readiness error, an admitted one must create the review round
+// (component-work-orders, Snapshot-free fold reads).
+func requireReviewDispatchReadsOnlyTaskOrders(t *testing.T, ctx context.Context, st store.Store, cfg *config.Config, taskID string, wantRefusal bool) {
+	t.Helper()
+	recorder := newWorkOrderReadRecorder(st, taskID)
+	d := New(recorder, cfg, nil)
+	var err error
+	if wantRefusal {
+		// The command plane routes a task without a sealed verify order back
+		// to verify, so only a stale queue snapshot of the task reaches the
+		// dispatcher's readiness refusal. Dispatch that snapshot.
+		var task core.Task
+		if task, err = st.GetTask(ctx, taskID); err != nil {
+			t.Fatal(err)
+		}
+		task.NextStage = core.StageReview
+		err = d.runTaskForSnapshot(store.WithActor(ctx, store.SystemActor("dispatcher")), task)
+	} else {
+		err = d.DispatchNow(ctx, taskID)
+	}
+	if wantRefusal {
+		if err == nil || !strings.Contains(err.Error(), "review requires completed verification") {
+			t.Fatalf("review dispatch without a sealed verify order: err=%v, want the readiness refusal", err)
+		}
+	} else if err != nil {
+		t.Fatalf("review dispatch with a sealed verify order: %v", err)
+	}
+	recorder.mu.Lock()
+	defer recorder.mu.Unlock()
+	if recorder.calls["ListWorkOrders"] != 0 || recorder.calls["ListLiveWorkOrders"] != 0 {
+		t.Fatalf("review dispatch read workspace-wide orders: %v", recorder.calls)
+	}
+	if recorder.rows == 0 || recorder.foreignRows != 0 || recorder.snapshotBytes != 0 {
+		t.Fatalf("review dispatch work-order reads returned %d rows, %d of other tasks, and %d snapshot bytes; want only the task's rows and 0 snapshot bytes (calls %v)",
+			recorder.rows, recorder.foreignRows, recorder.snapshotBytes, recorder.calls)
+	}
+	if wantRefusal {
+		return
+	}
+	orders, err := st.ListTaskWorkOrders(ctx, taskID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, order := range orders {
+		if order.Stage == core.StageReview {
+			return
+		}
+	}
+	t.Fatalf("admitted review dispatch created no review order: %+v", orders)
+}
+
+// TestReviewDispatchReadsOnlyTaskOrdersWithoutSnapshots dispatches review for
+// a verify-stage task in a volatile workspace where 200 other tasks' orders
+// and the task's own verify order each pin a 64 KiB governance snapshot. The
+// readiness read used to return every one of them (about 13 MB); the
+// dispatch must read only the task's orders and decode no snapshot byte, for
+// the refused and the admitted readiness answer (component-work-orders,
+// Snapshot-free fold reads).
+func TestReviewDispatchReadsOnlyTaskOrdersWithoutSnapshots(t *testing.T) {
+	ctx := store.WithWorkspace(store.WithActor(t.Context(), store.SystemActor()), "demo")
+	st := store.NewVolatileBackend()
+	defer st.Close()
+	cfg := &config.Config{Workspace: "demo", Routing: config.Routing{Stages: map[string]config.StageRoute{
+		"review": {Execution: config.ExecutionMCP, Timeout: time.Hour, TimeoutText: "1h"},
+	}}}
+	governance := snapshotFixtureGovernance()
+	pinnedVerifyOrder := func(t *testing.T, task core.Task) core.WorkOrder {
+		t.Helper()
+		if err := st.CreateTask(ctx, task); err != nil {
+			t.Fatal(err)
+		}
+		job := core.Job{ID: task.ID + "-verify-1", TaskID: task.ID, Stage: core.StageVerify, State: core.JobPending}
+		order := core.WorkOrder{ID: job.ID, TaskID: task.ID, JobID: job.ID, Stage: core.StageVerify, State: core.WorkOrderQueued, HeadSHA: "head", QueueEnteredAt: time.Now().UTC(), QueueDeadline: time.Now().UTC().Add(time.Hour), CreatedAt: time.Now().UTC()}
+		if _, err := storetest.CreateStageWorkOrder(ctx, st, job, order); err != nil {
+			t.Fatal(err)
+		}
+		claimed, err := storetest.ClaimWorkOrder(ctx, st, order.ID, core.WorkOrderClaim{ClaimantID: core.TaskRunClaimantID("verifier"), SessionID: "verify-" + task.ID, ClientToken: "verify-" + task.ID, Lease: time.Hour, ExecutionTimeout: time.Hour, Requirements: snapshotFixtureRequirements(), Governance: &governance})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return claimed
+	}
+	newTask := func(id string, stage core.Stage) core.Task {
+		task := core.Task{ID: id, Workspace: "demo", Repo: "repo", Title: id, BaseBranch: "main", Branch: "conveyor/task-" + id, State: core.TaskRunning, NextStage: stage, ReviewedHeadSHA: "head", CreatedAt: time.Now().UTC()}
+		task.SetupContract.VerifyStage = true
+		return task
+	}
+	for i := range snapshotFixtureOrders {
+		pinnedVerifyOrder(t, newTask(fmt.Sprintf("foreign-%03d-%s", i, core.NewTaskID()), core.StageVerify))
+	}
+	task := newTask("review-"+core.NewTaskID(), core.StageVerify)
+	verify := pinnedVerifyOrder(t, task)
+	full, err := st.ListWorkOrders(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	seeded := newWorkOrderReadRecorder(st, task.ID)
+	seeded.record("seed", full)
+	if seeded.foreignRows != snapshotFixtureOrders || seeded.snapshotBytes < (snapshotFixtureOrders+1)*snapshotFixtureBytes {
+		t.Fatalf("fixture holds %d foreign rows and %d snapshot bytes, want %d rows and at least %d bytes", seeded.foreignRows, seeded.snapshotBytes, snapshotFixtureOrders, (snapshotFixtureOrders+1)*snapshotFixtureBytes)
+	}
+
+	t.Run("Refused", func(t *testing.T) {
+		requireReviewDispatchReadsOnlyTaskOrders(t, ctx, st, cfg, task.ID, true)
+	})
+	t.Run("Admitted", func(t *testing.T) {
+		stored, err := st.GetWorkOrder(ctx, verify.ID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		stored.State = core.WorkOrderCompleted
+		stored.VerificationContextID = "context-fixture"
+		if err = storetest.UpdateWorkOrder(ctx, st, stored, core.WorkOrderCmdSubmitVerification); err != nil {
+			t.Fatal(err)
+		}
+		if after, err := st.GetWorkOrder(ctx, verify.ID); err != nil || after.GovernanceSnapshot == nil || after.VerificationContextID != "context-fixture" {
+			t.Fatalf("sealed fixture order lost its snapshot or context: %+v %v", after, err)
+		}
+		if current, err := st.GetTask(ctx, task.ID); err == nil && current.State == core.TaskQueued {
+			if _, err = taskops.New(st).Perform(ctx, task.ID, taskops.Command{Kind: core.TaskDispatchStart}); err != nil {
+				t.Fatal(err)
+			}
+		}
+		if _, err = taskops.New(st).Perform(ctx, task.ID, taskops.Command{Kind: core.TaskStageAdvance, NextStage: core.StageReview, ProjectStages: true}); err != nil {
+			t.Fatal(err)
+		}
+		if current, err := st.GetTask(ctx, task.ID); err != nil || current.NextStage != core.StageReview {
+			t.Fatalf("sealed fixture task did not reach review: next=%s err=%v", current.NextStage, err)
+		}
+		requireReviewDispatchReadsOnlyTaskOrders(t, ctx, st, cfg, task.ID, false)
+	})
+}

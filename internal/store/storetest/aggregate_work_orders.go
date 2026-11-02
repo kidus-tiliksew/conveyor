@@ -48,6 +48,7 @@ func runWorkOrders(t *testing.T, x Fixture) {
 	t.Run("BaseConflictCheck", func(t *testing.T) { runBaseConflictCheck(t, x) })
 	t.Run("StoredReadKeepsExpiredClaimUnprojected", func(t *testing.T) { runStoredReadKeepsExpiredClaim(t, x) })
 	t.Run("LiveListing", func(t *testing.T) { runLiveWorkOrderListing(t, x) })
+	t.Run("SnapshotFreeFoldReads", func(t *testing.T) { runSnapshotFreeFoldReads(t, x) })
 	st, ctx := x.Backend, x.Context
 	order := newAggregateOrder(t, x)
 	claim := core.WorkOrderClaim{ClaimantID: "worker", SessionID: "session", ClientToken: "fixture", Lease: time.Minute, ExecutionTimeout: time.Hour}
@@ -524,6 +525,198 @@ func runLiveWorkOrderListing(t *testing.T, x Fixture) {
 		if _, ok := seeded[order.ID]; ok {
 			t.Fatalf("foreign workspace listed order %s", order.ID)
 		}
+	}
+}
+
+// foldGovernanceBytes is the size of the design body each snapshot-bearing
+// fixture order pins. It dominates the encoded snapshot, so a read that
+// decodes even one snapshot reports at least this many bytes.
+const foldGovernanceBytes = 64 << 10
+
+// snapshotBytes sums the encoded served-requirement and governance snapshots
+// that a read returned. A durable backend fills either field only by decoding
+// the selected column, so zero means the read selected neither body.
+func snapshotBytes(t *testing.T, orders []core.WorkOrder) int {
+	t.Helper()
+	total := 0
+	for _, order := range orders {
+		if order.ServedRequirementSnapshot != nil {
+			encoded, err := json.Marshal(order.ServedRequirementSnapshot)
+			requireOK(t, err)
+			total += len(encoded)
+		}
+		if order.GovernanceSnapshot != nil {
+			encoded, err := json.Marshal(order.GovernanceSnapshot)
+			requireOK(t, err)
+			total += len(encoded)
+		}
+	}
+	return total
+}
+
+// withoutSnapshots returns copies of orders with both authority snapshots
+// cleared, the shape every snapshot-free read must return.
+func withoutSnapshots(orders []core.WorkOrder) []core.WorkOrder {
+	out := make([]core.WorkOrder, len(orders))
+	for i, order := range orders {
+		order.ServedRequirementSnapshot, order.GovernanceSnapshot = nil, nil
+		out[i] = order
+	}
+	return out
+}
+
+func ordersOfTasks(orders []core.WorkOrder, taskIDs ...string) []core.WorkOrder {
+	wanted := map[string]bool{}
+	for _, id := range taskIDs {
+		wanted[id] = true
+	}
+	out := []core.WorkOrder{}
+	for _, order := range orders {
+		if wanted[order.TaskID] {
+			out = append(out, order)
+		}
+	}
+	return out
+}
+
+func requireSameOrders(t *testing.T, label string, got, want []core.WorkOrder) {
+	t.Helper()
+	gotJSON, err := json.Marshal(got)
+	requireOK(t, err)
+	wantJSON, err := json.Marshal(want)
+	requireOK(t, err)
+	if string(gotJSON) != string(wantJSON) {
+		t.Fatalf("%s differs from the full read without snapshots:\ngot  %s\nwant %s", label, gotJSON, wantJSON)
+	}
+}
+
+// runSnapshotFreeFoldReads seeds orders that pin served-requirement and
+// 64 KiB governance snapshots on several tasks, and proves the fold reads the
+// dispatcher and the live list use decode no snapshot byte, return only the
+// requested task's rows, and otherwise equal the full read. Review readiness
+// gives the same answer over the task-scoped read as over the workspace read,
+// for a pending and a sealed verify order (component-work-orders,
+// Snapshot-free fold reads and Listing).
+func runSnapshotFreeFoldReads(t *testing.T, x Fixture) {
+	st, ctx := x.Backend, x.Context
+	governance := core.GovernanceSnapshot{
+		Designs:                []core.GovernanceDesignContext{{ID: "component-fold-fixture", Title: "Fold fixture", Category: "component", Version: 1, Content: strings.Repeat("g", foldGovernanceBytes), Governs: []core.GovernedScope{}}},
+		Decisions:              []core.Decision{},
+		PendingDesignProposals: []core.PendingSystemDesignProposal{},
+	}
+	served := []core.ServedRequirementContext{{ID: "req-fold-fixture", Version: 1, Statements: []core.RequirementStatement{{ID: "REQ-1", Statement: "Observe the fold"}}}}
+	pinned := func(name string, complete bool) core.WorkOrder {
+		t.Helper()
+		order := newAggregateOrder(t, x, core.StageVerify)
+		claimed, err := ClaimWorkOrder(ctx, st, order.ID, core.WorkOrderClaim{ClaimantID: core.TaskRunClaimantID("worker"), SessionID: "fold-" + name, ClientToken: "fold-" + name, Lease: time.Hour, ExecutionTimeout: time.Hour, Requirements: served, Governance: &governance})
+		requireOK(t, err)
+		if complete {
+			claimed.State = core.WorkOrderCompleted
+			requireOK(t, UpdateWorkOrder(ctx, st, claimed, core.WorkOrderCmdSubmitVerification))
+		}
+		stored, err := st.GetWorkOrder(ctx, order.ID)
+		requireOK(t, err)
+		if stored.GovernanceSnapshot == nil || len(stored.GovernanceSnapshot.Designs) != 1 || len(stored.GovernanceSnapshot.Designs[0].Content) != foldGovernanceBytes || stored.ServedRequirementSnapshot == nil {
+			t.Fatalf("GetWorkOrder lost the pinned snapshots of %s: %+v", order.ID, stored.GovernanceSnapshot)
+		}
+		return stored
+	}
+	live := pinned("live", false)
+	completed := pinned("completed", true)
+	foreign := pinned("foreign", false)
+	pending := newVerificationFixture(t, x, true)
+	sealed := sealedVerifyFixture(t, x)
+	taskIDs := []string{live.TaskID, completed.TaskID, foreign.TaskID, pending.access.TaskID, sealed.access.TaskID}
+
+	full, err := st.ListWorkOrders(ctx)
+	requireOK(t, err)
+	if seeded := snapshotBytes(t, ordersOfTasks(full, live.TaskID, completed.TaskID, foreign.TaskID)); seeded < 3*foldGovernanceBytes {
+		t.Fatalf("full read decoded %d snapshot bytes of the three pinned orders, want at least %d", seeded, 3*foldGovernanceBytes)
+	}
+	for _, id := range []string{pending.access.TaskID, sealed.access.TaskID} {
+		if snapshotBytes(t, ordersOfTasks(full, id)) == 0 {
+			t.Fatalf("full read decoded no served-requirement snapshot for verification task %s", id)
+		}
+	}
+
+	listed, err := st.ListLiveWorkOrders(ctx)
+	requireOK(t, err)
+	if n := snapshotBytes(t, listed); n != 0 {
+		t.Fatalf("ListLiveWorkOrders decoded %d snapshot bytes, want 0", n)
+	}
+	var wantLive []core.WorkOrder
+	for _, order := range ordersOfTasks(full, taskIDs...) {
+		if order.State == core.WorkOrderQueued || order.State == core.WorkOrderClaimed || order.State == core.WorkOrderStale || order.State == core.WorkOrderTimedOut {
+			wantLive = append(wantLive, order)
+		}
+	}
+	requireSameOrders(t, "ListLiveWorkOrders", ordersOfTasks(listed, taskIDs...), withoutSnapshots(wantLive))
+
+	for _, id := range taskIDs {
+		task, err := st.GetTask(ctx, id)
+		requireOK(t, err)
+		scoped, err := st.ListWorkOrdersForTasks(ctx, []string{id})
+		requireOK(t, err)
+		if n := snapshotBytes(t, scoped); n != 0 {
+			t.Fatalf("ListWorkOrdersForTasks(%s) decoded %d snapshot bytes, want 0", id, n)
+		}
+		if len(ordersOfTasks(scoped, id)) != len(scoped) || len(scoped) == 0 {
+			t.Fatalf("ListWorkOrdersForTasks(%s) returned %d rows, %d of them the task's", id, len(scoped), len(ordersOfTasks(scoped, id)))
+		}
+		requireSameOrders(t, "ListWorkOrdersForTasks("+id+")", scoped, withoutSnapshots(ordersOfTasks(full, id)))
+
+		stored, err := st.ListTaskWorkOrdersStored(ctx, id)
+		requireOK(t, err)
+		if n := snapshotBytes(t, stored); n != 0 {
+			t.Fatalf("ListTaskWorkOrdersStored(%s) decoded %d snapshot bytes, want 0", id, n)
+		}
+		want := ordersOfTasks(full, id)
+		if len(stored) != len(want) {
+			t.Fatalf("ListTaskWorkOrdersStored(%s) returned %d rows, want the task's %d", id, len(stored), len(want))
+		}
+		for i := range stored {
+			got, wanted := stored[i], want[i]
+			if got.TaskID != id || got.ID != wanted.ID || got.Stage != wanted.Stage || got.State != wanted.State || got.HeadSHA != wanted.HeadSHA ||
+				got.VerificationContextID != wanted.VerificationContextID || got.AttemptID != wanted.AttemptID || got.SessionID != wanted.SessionID ||
+				got.ReasonCode != wanted.ReasonCode || got.ReviewRound != wanted.ReviewRound || !got.CreatedAt.Equal(wanted.CreatedAt) ||
+				!got.LeaseExpiresAt.Equal(wanted.LeaseExpiresAt) || !got.ExecutionDeadline.Equal(wanted.ExecutionDeadline) {
+				t.Fatalf("ListTaskWorkOrdersStored(%s)[%d] fold fields differ:\ngot  %+v\nwant %+v", id, i, got, wanted)
+			}
+		}
+
+		// Readiness folds the same answer from the task-scoped read as from
+		// the workspace read the dispatcher used before.
+		if scopedReady, workspaceReady := core.VerifyReviewReady(task, scoped), core.VerifyReviewReady(task, full); scopedReady != workspaceReady {
+			t.Fatalf("VerifyReviewReady(%s) over the task read=%v, over the workspace read=%v", id, scopedReady, workspaceReady)
+		}
+	}
+	readiness := func(id string) bool {
+		t.Helper()
+		task, err := st.GetTask(ctx, id)
+		requireOK(t, err)
+		orders, err := st.ListWorkOrdersForTasks(ctx, []string{id})
+		requireOK(t, err)
+		return core.VerifyReviewReady(task, orders)
+	}
+	if readiness(pending.access.TaskID) || readiness(completed.TaskID) || !readiness(sealed.access.TaskID) {
+		t.Fatalf("readiness pending=%v completed-unsealed=%v sealed=%v, want false false true", readiness(pending.access.TaskID), readiness(completed.TaskID), readiness(sealed.access.TaskID))
+	}
+
+	pair, err := st.ListWorkOrdersForTasks(ctx, []string{live.TaskID, sealed.access.TaskID})
+	requireOK(t, err)
+	if len(ordersOfTasks(pair, live.TaskID, sealed.access.TaskID)) != len(pair) || snapshotBytes(t, pair) != 0 {
+		t.Fatalf("ListWorkOrdersForTasks of two tasks returned other tasks' rows or snapshots: %d rows", len(pair))
+	}
+	requireSameOrders(t, "ListWorkOrdersForTasks(pair)", pair, withoutSnapshots(ordersOfTasks(full, live.TaskID, sealed.access.TaskID)))
+
+	// The full per-task read keeps the pins for the readers that need them.
+	kept, err := st.ListTaskWorkOrders(ctx, live.TaskID)
+	requireOK(t, err)
+	if snapshotBytes(t, kept) < foldGovernanceBytes {
+		t.Fatal("ListTaskWorkOrders dropped the pinned snapshots its claim-time readers need")
+	}
+	if other, err := st.ListWorkOrdersForTasks(store.WithWorkspace(ctx, x.Workspace+"-fold-foreign"), taskIDs); err != nil || len(other) != 0 {
+		t.Fatalf("another workspace read %d of the fixture's orders: %v", len(other), err)
 	}
 }
 
