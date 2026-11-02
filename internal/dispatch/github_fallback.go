@@ -6,6 +6,7 @@ import (
 	"log"
 	"slices"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/kidus-tiliksew/conveyor/internal/changes"
@@ -17,9 +18,10 @@ import (
 // webhook delivery (component-runtime, Timed GitHub fallback;
 // req-quiet-idle-runtime AC-3.5; DEC-99(5)). Each workspace has one
 // goroutine and one timer. The timer is armed only while a task waits on
-// GitHub or the workspace's monitor is enabled, fires at most once a
-// minute, and is never armed for a workspace that has accepted a webhook
-// delivery.
+// GitHub or the workspace's monitor is enabled, and fires at most once a
+// minute. For a workspace that has accepted a webhook delivery the timer is
+// armed only for the silence fallback (github_fallback_silence.go;
+// req-quiet-idle-runtime AC-3.8).
 
 // GitHubFallbackInterval is the shortest time between two fires.
 const GitHubFallbackInterval = time.Minute
@@ -60,6 +62,8 @@ type GitHubFallback struct {
 
 type fallbackWorker struct {
 	delivered chan struct{}
+	// silent mirrors fallbackState.silent for SilenceActive.
+	silent atomic.Bool
 }
 
 // fallbackState is owned by one workspace goroutine.
@@ -75,6 +79,18 @@ type fallbackState struct {
 	due         time.Time
 	timer       <-chan time.Time
 	stop        func()
+
+	// Silence fallback state (github_fallback_silence.go). lastDelivery is
+	// the workspace's last accepted delivery; silent is set while timed
+	// checks run for a webhook workspace; silenceDue is when the earliest
+	// watched task that began waiting after lastDelivery reaches
+	// GitHubSilenceWindow, and silenceSince is when that task began
+	// waiting; since memoizes each watched task's stored waiting time.
+	lastDelivery time.Time
+	silent       bool
+	silenceDue   time.Time
+	silenceSince time.Time
+	since        map[string]waitingSince
 }
 
 // Start runs one goroutine per workspace and adds a goroutine for each
@@ -124,7 +140,7 @@ func (f *GitHubFallback) Start(ctx context.Context, workspaces []string) {
 func (f *GitHubFallback) Wait() { f.running.Wait() }
 
 // WebhookDelivered stops the workspace's timer: the workspace has accepted
-// a webhook delivery and makes no timed GitHub call from now on.
+// a webhook delivery now, which also ends a running silence fallback.
 func (f *GitHubFallback) WebhookDelivered(workspace string) {
 	f.mu.Lock()
 	worker := f.workers[workspace]
@@ -162,9 +178,10 @@ func (f *GitHubFallback) ensure(workspace string) {
 }
 
 func (f *GitHubFallback) run(ctx context.Context, workspace string, worker *fallbackWorker, tasks, settings *changes.Subscription) {
-	st := &fallbackState{}
+	st := &fallbackState{since: map[string]waitingSince{}}
 	defer st.disarm()
 	f.begin(ctx, workspace, st)
+	worker.silent.Store(st.silent)
 	f.stepped(workspace, "start", st)
 	for {
 		var event string
@@ -173,8 +190,7 @@ func (f *GitHubFallback) run(ctx context.Context, workspace string, worker *fall
 			return
 		case <-worker.delivered:
 			event = "delivered"
-			st.webhook = true
-			st.disarm()
+			f.deliveryAccepted(workspace, st, f.now())
 		case notice := <-tasks.C():
 			event = "task"
 			f.onTask(ctx, workspace, st, notice)
@@ -185,17 +201,21 @@ func (f *GitHubFallback) run(ctx context.Context, workspace string, worker *fall
 			event = "fire"
 			f.fire(ctx, workspace, st)
 		}
+		worker.silent.Store(st.silent)
 		f.stepped(workspace, event, st)
 	}
 }
 
 // begin polls the monitor once at start, then arms the timer for a
 // workspace without webhook delivery that has a waiting task or an enabled
-// monitor. The start-up GitHub reads have just read every waiting task, so
-// the first fire comes one minute later.
+// monitor, and for a workspace with webhook delivery computes the silence
+// from stored times. The start-up GitHub reads have just read every waiting
+// task, so the first fire comes one minute later.
 func (f *GitHubFallback) begin(ctx context.Context, workspace string, st *fallbackState) {
 	now := f.now()
-	st.webhook = f.hasWebhook(ctx, workspace)
+	if status, ok := f.webhookStatus(ctx, workspace); ok && status.HasWebhookDelivery() {
+		st.webhook, st.lastDelivery = true, *status.LastDeliveryAt
+	}
 	enabled, interval, err := f.monitor(ctx, workspace)
 	if err != nil {
 		f.logf(`level=error msg="timed GitHub check failed" workspace=%s step=monitor_settings err=%v`, workspace, err)
@@ -204,10 +224,13 @@ func (f *GitHubFallback) begin(ctx context.Context, workspace string, st *fallba
 		f.pollMonitor(ctx, workspace)
 		st.lastMonitor = now
 	}
+	st.monitoring, st.interval = enabled || err != nil, interval
 	if st.webhook {
+		st.lastRead, st.lastFire = now, now
+		f.evaluateSilence(ctx, workspace, st, now, true)
+		f.schedule(st, now)
 		return
 	}
-	st.monitoring, st.interval = enabled || err != nil, interval
 	waiting, err := f.anyWaiting(ctx)
 	if err != nil {
 		f.logf(`level=error msg="timed GitHub check failed" workspace=%s step=waiting_tasks err=%v`, workspace, err)
@@ -222,7 +245,11 @@ func (f *GitHubFallback) begin(ctx context.Context, workspace string, st *fallba
 // when the noticed task waits on GitHub. A notice without a task ID reads
 // the whole union.
 func (f *GitHubFallback) onTask(ctx context.Context, workspace string, st *fallbackState, notice changes.Notice) {
-	if st.webhook || st.waiting {
+	if st.webhook && !st.silent {
+		f.onSilenceTask(ctx, workspace, st, notice)
+		return
+	}
+	if st.waiting {
 		return
 	}
 	var waits bool
@@ -250,7 +277,7 @@ func (f *GitHubFallback) onTask(ctx context.Context, workspace string, st *fallb
 // onSettings re-reads the monitor setting and the union after a workspace
 // notice, raised on creation and on every configuration update.
 func (f *GitHubFallback) onSettings(ctx context.Context, workspace string, st *fallbackState) {
-	if st.webhook {
+	if st.webhook && !st.silent {
 		return
 	}
 	now := f.now()
@@ -277,7 +304,8 @@ func (f *GitHubFallback) onSettings(ctx context.Context, workspace string, st *f
 
 // fire runs the due merge-readiness read and monitor poll, then re-arms for
 // the next due one or stops when no task waits and the monitor is off. A
-// failure keeps the timer armed.
+// failure keeps the timer armed. For a webhook workspace it first decides
+// whether the silence fallback runs.
 func (f *GitHubFallback) fire(ctx context.Context, workspace string, st *fallbackState) {
 	now := f.now()
 	st.armed, st.timer, st.lastFire = false, nil, now
@@ -285,9 +313,22 @@ func (f *GitHubFallback) fire(ctx context.Context, workspace string, st *fallbac
 		st.stop()
 		st.stop = nil
 	}
-	if f.hasWebhook(ctx, workspace) {
-		// A delivery accepted here or on a peer daemon ends the fallback.
-		st.webhook = true
+	if status, ok := f.webhookStatus(ctx, workspace); ok && status.HasWebhookDelivery() && (!st.webhook || status.LastDeliveryAt.After(st.lastDelivery)) {
+		// A delivery accepted here or on a peer daemon ends the fallback
+		// and a running silence fallback.
+		f.deliveryAccepted(workspace, st, *status.LastDeliveryAt)
+	}
+	if st.webhook && !st.silent {
+		if !f.evaluateSilence(ctx, workspace, st, now, true) {
+			f.schedule(st, now)
+			return
+		}
+		// The silence fallback started: read GitHub in this fire.
+		st.lastRead = now.Add(-GitHubFallbackInterval)
+	}
+	if st.silent && !f.anyWatched(ctx, workspace) {
+		st.endSilence()
+		f.schedule(st, now)
 		return
 	}
 	if st.waiting && !now.Before(st.lastRead.Add(GitHubFallbackInterval)) {
@@ -301,6 +342,11 @@ func (f *GitHubFallback) fire(ctx context.Context, workspace string, st *fallbac
 			waiting = true
 		}
 		st.waiting = waiting
+		if st.silent && !waiting {
+			st.endSilence()
+			f.schedule(st, now)
+			return
+		}
 	}
 	enabled, interval, err := f.monitor(ctx, workspace)
 	if err != nil {
@@ -319,7 +365,15 @@ func (f *GitHubFallback) fire(ctx context.Context, workspace string, st *fallbac
 // than one minute after the previous fire, or stops it when neither
 // condition holds.
 func (f *GitHubFallback) schedule(st *fallbackState, now time.Time) {
-	if st.webhook || (!st.waiting && !st.monitoring) {
+	if st.webhook && !st.silent {
+		if st.silenceDue.IsZero() {
+			st.disarm()
+			return
+		}
+		f.arm(st, now, st.silenceDue)
+		return
+	}
+	if !st.waiting && !st.monitoring {
 		st.disarm()
 		return
 	}
@@ -333,6 +387,12 @@ func (f *GitHubFallback) schedule(st *fallbackState, now time.Time) {
 			due = next
 		}
 	}
+	f.arm(st, now, due)
+}
+
+// arm sets the timer for due, never earlier than one minute after the
+// previous fire, and keeps a timer already armed for the same time.
+func (f *GitHubFallback) arm(st *fallbackState, now, due time.Time) {
 	if earliest := st.lastFire.Add(GitHubFallbackInterval); !st.lastFire.IsZero() && due.Before(earliest) {
 		due = earliest
 	}
@@ -402,18 +462,20 @@ func (f *GitHubFallback) taskWaits(ctx context.Context, taskID string) (bool, er
 	return len(recorded[taskID]) > 0, err
 }
 
-func (f *GitHubFallback) hasWebhook(ctx context.Context, workspace string) bool {
+// webhookStatus reads the workspace's webhook status; a failed read writes
+// one error line and reports false.
+func (f *GitHubFallback) webhookStatus(ctx context.Context, workspace string) (core.GitHubWebhookStatus, bool) {
 	if f.Webhooks == nil {
-		return false
+		return core.GitHubWebhookStatus{}, false
 	}
 	status, err := f.Webhooks(ctx, workspace)
 	if err != nil {
 		if ctx.Err() == nil {
 			f.logf(`level=error msg="timed GitHub check failed" workspace=%s step=webhook_status err=%v`, workspace, err)
 		}
-		return false
+		return core.GitHubWebhookStatus{}, false
 	}
-	return status.HasWebhookDelivery()
+	return status, true
 }
 
 func (f *GitHubFallback) monitor(ctx context.Context, workspace string) (bool, time.Duration, error) {

@@ -117,6 +117,10 @@ type Server struct {
 	// (component-http-api, GitHub webhook receiver).
 	GitHubWebhooks       store.GitHubWebhookStore
 	GitHubWebhookApplier GitHubWebhookApplier
+	// GitHubSilenceFallback reports whether this daemon's timed GitHub
+	// silence fallback runs for a workspace (component-identity-membership;
+	// req-quiet-idle-runtime AC-3.8); nil reports false.
+	GitHubSilenceFallback func(workspace string) bool
 	// verificationKitMemo caches exact-commit kit discovery for the workspace
 	// kit registry (component-verification-kit-contract).
 	verificationKitMemo   kitRegistryMemo
