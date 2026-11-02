@@ -2937,3 +2937,171 @@ func TestMCPUsageStoresRateLimitWithReport(t *testing.T) {
 		t.Fatalf("stored usage=%+v rate_limit=%+v err=%v", order, order.RateLimit, err)
 	}
 }
+
+// claimSessionFixture is a volatile workspace of ClaimSessionScaleOrders
+// claimed orders that each pin a 64 KiB governance snapshot, beside the
+// owner's named implement order and another user's holder order. The server's
+// store and work-order service read through one recorder.
+type claimSessionFixture struct {
+	memory   store.Store
+	recorder *storetest.WorkOrderReadRecorder
+	server   *Server
+	request  *http.Request
+	named    string
+}
+
+func newClaimSessionFixture(t *testing.T) claimSessionFixture {
+	t.Helper()
+	ctx := store.WithWorkspace(store.WithActor(t.Context(), store.SystemActor()), "demo")
+	memory := store.NewMemory()
+	governance := storetest.ClaimSessionGovernance()
+	claimed := func(id, claimant, session string) {
+		t.Helper()
+		task := core.Task{ID: id, Workspace: "demo", Repo: "app", Title: id, Branch: "conveyor/task-" + id, BaseBranch: "main", State: core.TaskRunning, NextStage: core.StageImplement, CreatedAt: time.Now()}
+		if err := memory.CreateTask(ctx, task); err != nil {
+			t.Fatal(err)
+		}
+		job := core.Job{ID: id + "-implement-1", TaskID: id, Stage: core.StageImplement, State: core.JobPending}
+		if err := memory.CreateJob(ctx, job); err != nil {
+			t.Fatal(err)
+		}
+		if err := storetest.For(memory).CreateWorkOrder(ctx, core.WorkOrder{ID: job.ID, TaskID: id, JobID: job.ID, Stage: core.StageImplement, State: core.WorkOrderQueued, QueueEnteredAt: time.Now(), QueueDeadline: time.Now().Add(time.Hour)}); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := storetest.For(memory).ClaimWorkOrder(ctx, job.ID, core.WorkOrderClaim{SessionID: session, ClientToken: session, ClaimantID: claimant, Lease: time.Hour, ExecutionTimeout: time.Hour, Requirements: storetest.ClaimSessionRequirements(), Governance: &governance}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	claimed("named", core.TaskRunClaimantID("usr-owner"), "own-session")
+	claimed("holder", core.TaskRunClaimantID("usr-other"), "holder-session")
+	for i := range storetest.ClaimSessionScaleOrders {
+		claimed(fmt.Sprintf("seed-%03d", i), core.TaskRunClaimantID("usr-other"), fmt.Sprintf("seed-session-%03d", i))
+	}
+	orders, err := memory.ListWorkOrders(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(orders) != storetest.ClaimSessionScaleOrders+2 {
+		t.Fatalf("fixture holds %d orders, want %d", len(orders), storetest.ClaimSessionScaleOrders+2)
+	}
+	recorder := storetest.NewWorkOrderReadRecorder(memory)
+	server := NewServer(recorder)
+	server.Workspace = "demo"
+	cfg := &config.Config{Workspace: "demo", Repos: []config.Repo{{Name: "app", URL: "https://github.com/acme/app.git", GitHub: "acme/app", Base: "main"}}}
+	server.WorkOrders = &workorder.Service{Store: recorder, ConfigProvider: func(context.Context) (*config.Config, error) { return cfg, nil }}
+	server.Credentials = staticCredentialVerifier{"owner-token": {ID: "pat-owner", OwnerUserID: "usr-owner", Kind: core.CredentialUser, Scope: core.CredentialScopeUser}}
+	request := httptest.NewRequest(http.MethodPost, "/mcp", nil).WithContext(withCredentialActor(ctx, core.AuthenticatedCredential{ID: "pat-owner", OwnerUserID: "usr-owner", Kind: core.CredentialUser, Scope: core.CredentialScopeUser}))
+	return claimSessionFixture{memory: memory, recorder: recorder, server: server, request: request, named: "named-implement-1"}
+}
+
+// TestClaimSessionCheckReadsNoWorkspaceOrders drives each caller of
+// Server.authorizeClaimantSession, the claim-bound tool report_progress, the
+// live-claim mutation release_work_order, and the submission template, with a
+// mismatched, missing-order, foreign, empty, and own session over a
+// 200-order workspace whose orders each pin a 64 KiB governance snapshot. Each
+// call must return the error the former ListWorkOrders scan returns for the
+// same rows, make no ListWorkOrders call, and, when the session check refuses,
+// decode zero snapshot bytes. renew_work_order does not use the session check;
+// a mismatched, missing-order, or foreign renewal must return its former error,
+// make no ListWorkOrders call, and decode zero snapshot bytes
+// (component-work-orders, Snapshot-free fold reads; component-mcp-protocol,
+// Claim-bound authorization).
+func TestClaimSessionCheckReadsNoWorkspaceOrders(t *testing.T) {
+	inputs := []struct {
+		name, workOrder, session string
+	}{
+		{"mismatched", "named-implement-1", "unknown-session"},
+		{"missing order", "missing-implement-1", "unknown-session"},
+		{"missing order with a held session", "missing-implement-1", "holder-session"},
+		{"foreign", "named-implement-1", "holder-session"},
+		{"empty", "named-implement-1", ""},
+		{"own", "named-implement-1", "own-session"},
+	}
+	callers := map[string]func(f claimSessionFixture, workOrder, session string) error{
+		"report_progress": func(f claimSessionFixture, workOrder, session string) error {
+			_, err := f.server.callMCPTool(f.request, "report_progress", map[string]any{"workspace_id": "demo", "work_order_id": workOrder, "session_id": session, "message": "progress"})
+			return err
+		},
+		"release_work_order": func(f claimSessionFixture, workOrder, session string) error {
+			_, err := f.server.callMCPTool(f.request, "release_work_order", map[string]any{"workspace_id": "demo", "work_order_id": workOrder, "session_id": session, "reason": "done"})
+			return err
+		},
+		"submission_template": func(f claimSessionFixture, workOrder, session string) error {
+			request := httptest.NewRequest(http.MethodGet, "/v1/work-orders/"+workOrder+"/pull-request-template?workspace_id=demo&session_id="+session, nil)
+			request.Header.Set("Authorization", "Bearer owner-token")
+			response := httptest.NewRecorder()
+			f.server.Handler().ServeHTTP(response, request)
+			if response.Code == http.StatusOK {
+				return nil
+			}
+			return errors.New(strings.TrimSpace(response.Body.String()))
+		},
+	}
+	for _, caller := range slices.Sorted(maps.Keys(callers)) {
+		for _, input := range inputs {
+			t.Run(caller+"/"+input.name, func(t *testing.T) {
+				f := newClaimSessionFixture(t)
+				want := storetest.LegacyClaimSessionAnswer(f.request.Context(), f.memory, input.workOrder, input.session)
+				f.recorder.Reset()
+				err := callers[caller](f, input.workOrder, input.session)
+				if f.recorder.Calls("ListWorkOrders") != 0 {
+					t.Fatalf("%s made %d ListWorkOrders calls", caller, f.recorder.Calls("ListWorkOrders"))
+				}
+				if want == nil {
+					// The session check admitted the owner and the operation
+					// succeeded.
+					t.Logf("%s own session: %v", caller, err)
+					if err != nil {
+						t.Fatalf("%s refused the own session: %v", caller, err)
+					}
+					return
+				}
+				if err == nil || (!errors.Is(err, want) && err.Error() != want.Error()) {
+					t.Fatalf("%s returned %v, want the former answer %v", caller, err, want)
+				}
+				if f.recorder.SnapshotBytes() != 0 || f.recorder.Rows() > 1 {
+					t.Fatalf("%s decoded %d snapshot bytes over %d rows, want 0 bytes and at most the named order", caller, f.recorder.SnapshotBytes(), f.recorder.Rows())
+				}
+			})
+		}
+	}
+
+	for _, test := range []struct {
+		name, workOrder, session string
+		want                     error
+	}{
+		{"mismatched", "named-implement-1", "unknown-session", store.ErrWorkOrderClaimLost},
+		{"missing order", "missing-implement-1", "unknown-session", store.ErrNotFound},
+		{"foreign", "named-implement-1", "holder-session", store.ErrWorkOrderClaimLost},
+	} {
+		t.Run("renew_work_order/"+test.name, func(t *testing.T) {
+			f := newClaimSessionFixture(t)
+			f.recorder.Reset()
+			_, err := f.server.callMCPTool(f.request, "renew_work_order", map[string]any{"workspace_id": "demo", "work_order_id": test.workOrder, "session_id": test.session})
+			if !errors.Is(err, test.want) {
+				t.Fatalf("renew returned %v, want %v", err, test.want)
+			}
+			if f.recorder.Calls("ListWorkOrders") != 0 || f.recorder.Rows() > 1 || f.recorder.SnapshotBytes() != 0 {
+				t.Fatalf("renew made %d ListWorkOrders calls and decoded %d snapshot bytes over %d rows, want no workspace read and 0 snapshot bytes", f.recorder.Calls("ListWorkOrders"), f.recorder.SnapshotBytes(), f.recorder.Rows())
+			}
+		})
+	}
+	t.Run("renew_work_order/own", func(t *testing.T) {
+		f := newClaimSessionFixture(t)
+		before, err := f.memory.GetWorkOrder(f.request.Context(), "named-implement-1")
+		if err != nil {
+			t.Fatal(err)
+		}
+		result, err := f.server.callMCPTool(f.request, "renew_work_order", map[string]any{"workspace_id": "demo", "work_order_id": "named-implement-1", "session_id": "own-session", "lease_seconds": float64(3600)})
+		if err != nil {
+			t.Fatal(err)
+		}
+		renewed, ok := result.(core.WorkOrder)
+		if !ok || renewed.State != core.WorkOrderClaimed || renewed.AttemptID != before.AttemptID || !renewed.ExecutionDeadline.Equal(before.ExecutionDeadline) || !renewed.LeaseExpiresAt.Equal(before.ExecutionDeadline) {
+			t.Fatalf("own renewal = %+v, want the claimed order with its attempt and the one-hour lease capped at the fixed deadline %s", result, before.ExecutionDeadline)
+		}
+		if f.recorder.Calls("ListWorkOrders") != 0 {
+			t.Fatalf("own renewal made %d ListWorkOrders calls", f.recorder.Calls("ListWorkOrders"))
+		}
+	})
+}
