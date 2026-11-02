@@ -573,7 +573,7 @@ func (s *Service) recoverInterruptedReviewRound(ctx context.Context, taskID, req
 	if err != nil {
 		return store.InterruptedReviewRecoveryResult{}, err
 	}
-	events, err := s.Store.ListEvents(ctx, taskID)
+	events, err := s.Store.ListCompactEvents(ctx, taskID)
 	if err != nil {
 		return store.InterruptedReviewRecoveryResult{}, err
 	}
@@ -635,7 +635,7 @@ func (s *Service) retryReviewRound(ctx context.Context, taskID, requestID, reaso
 	}
 	// Durable audit data also provides a fast idempotent response after the new
 	// round becomes active and is no longer itself recovery-eligible.
-	events, err := s.Store.ListEvents(ctx, taskID)
+	events, err := s.Store.ListCompactEvents(ctx, taskID)
 	if err != nil {
 		return store.ReviewRoundRetryResult{}, err
 	}
@@ -932,7 +932,7 @@ func (s *Service) contextForOrder(ctx context.Context, order core.WorkOrder) (Co
 		servedRequirements = servedAuthority.Requirements
 	}
 	role = pack.WithRequirementCitationContract(role, order.Stage, servedRequirements)
-	events, _ := s.Store.ListEvents(ctx, task.ID)
+	events, _ := s.Store.ListCompactEvents(ctx, task.ID)
 	role += historicalCheckpointProgressContract(order, events)
 	planRevision, revisionContract, revisionErr := s.planRevisionContextForOrder(ctx, order, events)
 	if revisionErr != nil {
@@ -1345,7 +1345,7 @@ func (s *Service) ReadArtifact(ctx context.Context, id, session, artifactID stri
 		result.Data = base64.StdEncoding.EncodeToString(content)
 	}
 	receipt, recordErr := s.recordContext(ctx, order, observation)
-	events, eventsErr := s.Store.ListEvents(ctx, order.TaskID)
+	events, eventsErr := s.Store.ListCompactEvents(ctx, order.TaskID)
 	result.ContextFreshness = store.ProjectContext(snapshot, store.ContextHistory(events, order), snapshot.Revision)
 	if recordErr == nil && eventsErr == nil {
 		result.ContextFreshness.ObservationRecorded = true
@@ -1772,7 +1772,7 @@ func (s *Service) authorizedSession(ctx context.Context, id, session string, all
 }
 
 func (s *Service) latestReviewResult(ctx context.Context, taskID string, after time.Time) (map[string]any, error) {
-	events, err := s.Store.ListEvents(ctx, taskID)
+	events, err := s.Store.ListCompactEvents(ctx, taskID)
 	if err != nil {
 		return nil, err
 	}
@@ -1869,7 +1869,7 @@ func (s *Service) SubmitVerdict(ctx context.Context, id, session string, review 
 }
 
 func (s *Service) reviewRoundResult(ctx context.Context, taskID string, round int) (map[string]any, error) {
-	events, err := s.Store.ListEvents(ctx, taskID)
+	events, err := s.Store.ListCompactEvents(ctx, taskID)
 	if err != nil {
 		return nil, err
 	}

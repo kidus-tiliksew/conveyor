@@ -1047,6 +1047,56 @@ func (q *Queries) ListEvents(ctx context.Context, arg ListEventsParams) ([]Event
 	return items, nil
 }
 
+const listCompactEvents = `-- name: ListCompactEvents :many
+SELECT e.id, e.task_id, e.job_id, e.kind, e.actor_id, e.actor_role,
+  CASE WHEN left(e.kind, 11) = 'work_order.' AND jsonb_typeof(e.payload_json) = 'object'
+    THEN e.payload_json - 'governance_snapshot' - 'served_requirement_snapshot'
+    ELSE e.payload_json END::jsonb AS payload_json,
+  e.at, e.workspace_id
+FROM events e
+JOIN tasks t ON t.id = e.task_id
+WHERE e.task_id = $1 AND t.workspace_id = $2
+ORDER BY e.at, e.id
+`
+
+type ListCompactEventsParams struct {
+	TaskID      pgtype.Text `json:"task_id"`
+	WorkspaceID string      `json:"workspace_id"`
+}
+
+// ListCompactEvents is ListEvents with the governance and served-requirement
+// snapshot bodies removed from work_order.* object payloads by the database
+// (component-persistence, Compact task event reads).
+func (q *Queries) ListCompactEvents(ctx context.Context, arg ListCompactEventsParams) ([]Event, error) {
+	rows, err := q.db.Query(ctx, listCompactEvents, arg.TaskID, arg.WorkspaceID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []Event{}
+	for rows.Next() {
+		var i Event
+		if err := rows.Scan(
+			&i.ID,
+			&i.TaskID,
+			&i.JobID,
+			&i.Kind,
+			&i.ActorID,
+			&i.ActorRole,
+			&i.PayloadJson,
+			&i.At,
+			&i.WorkspaceID,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listRequirementEvents = `-- name: ListRequirementEvents :many
 SELECT e.id, e.task_id, e.job_id, e.kind, e.actor_id, e.actor_role, e.payload_json, e.at, e.workspace_id FROM events e
 WHERE e.workspace_id = $1

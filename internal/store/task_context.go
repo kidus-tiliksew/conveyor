@@ -117,7 +117,7 @@ func NormalizeTaskContextInput(input TaskContextInput) (TaskContextInput, error)
 // active read model. Requirement versions remain live; designs retain the
 // confirmed version pinned by the add event.
 func TaskContextForTask(ctx context.Context, st Store, taskID string) (core.TaskContext, error) {
-	events, err := st.ListEvents(ctx, taskID)
+	events, err := st.ListCompactEvents(ctx, taskID)
 	if err != nil {
 		return core.TaskContext{}, err
 	}

@@ -57,6 +57,9 @@ func (s *countingMonitorStore) ListTasks(context.Context) ([]core.Task, error) {
 func (s *countingMonitorStore) ListEvents(context.Context, string) ([]core.Event, error) {
 	panic("monitor must batch opened events")
 }
+func (s *countingMonitorStore) ListCompactEvents(context.Context, string) ([]core.Event, error) {
+	panic("monitor must batch opened events")
+}
 func (s *countingMonitorStore) ListTasksFiltered(ctx context.Context, filter store.TaskFilter) ([]core.Task, error) {
 	s.taskReads++
 	if s.taskErr != nil {

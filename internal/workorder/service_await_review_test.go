@@ -27,8 +27,8 @@ type awaitReadStore struct {
 	afterRead func(read int)
 }
 
-func (s *awaitReadStore) ListEvents(ctx context.Context, taskID string) ([]core.Event, error) {
-	events, err := s.Store.ListEvents(ctx, taskID)
+func (s *awaitReadStore) ListCompactEvents(ctx context.Context, taskID string) ([]core.Event, error) {
+	events, err := s.Store.ListCompactEvents(ctx, taskID)
 	s.mu.Lock()
 	s.reads++
 	read, hook := s.reads, s.afterRead

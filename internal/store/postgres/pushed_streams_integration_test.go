@@ -117,8 +117,8 @@ type awaitSignalStore struct {
 	reads chan struct{}
 }
 
-func (s *awaitSignalStore) ListEvents(ctx context.Context, taskID string) ([]core.Event, error) {
-	events, err := s.Store.ListEvents(ctx, taskID)
+func (s *awaitSignalStore) ListCompactEvents(ctx context.Context, taskID string) ([]core.Event, error) {
+	events, err := s.Store.ListCompactEvents(ctx, taskID)
 	s.reads <- struct{}{}
 	return events, err
 }

@@ -61,7 +61,7 @@ func (s *Service) recordContext(ctx context.Context, order core.WorkOrder, o cor
 	})
 }
 func (s *Service) observeContext(ctx context.Context, order core.WorkOrder, snapshot core.ContextSnapshot, prior, kind string, divergence []core.ContextAuthorityDivergence) core.ContextFreshness {
-	events, err := s.Store.ListEvents(ctx, order.TaskID)
+	events, err := s.Store.ListCompactEvents(ctx, order.TaskID)
 	history := store.ContextHistory(events, order)
 	f := core.WithAuthorityDivergence(store.ProjectContext(snapshot, history, prior), divergence)
 	f.ObservedAt = time.Now().UTC()

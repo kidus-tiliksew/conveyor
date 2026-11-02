@@ -344,7 +344,7 @@ func intakeTaskContext(input store.TaskContextInput) core.TaskContext {
 }
 
 func (s *Server) taskContextsForRetry(ctx context.Context, taskID string) (core.TaskContext, store.TaskContextInput, error) {
-	events, err := s.Store.ListEvents(ctx, taskID)
+	events, err := s.Store.ListCompactEvents(ctx, taskID)
 	if err != nil {
 		return core.TaskContext{}, store.TaskContextInput{}, err
 	}

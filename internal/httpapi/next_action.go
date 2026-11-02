@@ -154,7 +154,7 @@ func (s *Server) listFactoryActs(w http.ResponseWriter, r *http.Request) {
 	}
 	var events []core.Event
 	for _, task := range tasks {
-		taskEvents, listErr := s.Store.ListEvents(r.Context(), task.ID)
+		taskEvents, listErr := s.Store.ListCompactEvents(r.Context(), task.ID)
 		if listErr != nil {
 			http.Error(w, "internal server error", http.StatusInternalServerError)
 			return

@@ -156,7 +156,7 @@ func (s *Server) authorizedWorktreeCleanupTask(r *http.Request) (core.Task, bool
 	if strings.TrimSpace(actor.ID) == "" || actor.Role != core.ActorUser {
 		return core.Task{}, false, nil
 	}
-	events, err := s.Store.ListEvents(r.Context(), task.ID)
+	events, err := s.Store.ListCompactEvents(r.Context(), task.ID)
 	if err != nil {
 		return core.Task{}, false, err
 	}

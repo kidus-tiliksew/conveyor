@@ -47,6 +47,11 @@ func (s *storeCallCounter) ListEvents(ctx context.Context, taskID string) ([]cor
 	return s.Store.ListEvents(ctx, taskID)
 }
 
+func (s *storeCallCounter) ListCompactEvents(ctx context.Context, taskID string) ([]core.Event, error) {
+	s.bump()
+	return s.Store.ListCompactEvents(ctx, taskID)
+}
+
 func (s *storeCallCounter) ReadTaskEventWindow(ctx context.Context, q store.TaskEventWindowQuery) (store.TaskEventWindow, error) {
 	s.bump()
 	return s.Store.ReadTaskEventWindow(ctx, q)

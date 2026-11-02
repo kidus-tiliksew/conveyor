@@ -2554,6 +2554,12 @@ func (s *observedStore) ListEvents(ctx context.Context, taskID string) ([]core.E
 	return s.Store.ListEvents(ctx, taskID)
 }
 
+// ListCompactEvents counts as a ledger read beside ListEvents.
+func (s *observedStore) ListCompactEvents(ctx context.Context, taskID string) ([]core.Event, error) {
+	s.listEventsCalls++
+	return s.Store.ListCompactEvents(ctx, taskID)
+}
+
 func (s *observedStore) ListInterventions(ctx context.Context, taskID string) ([]core.Intervention, error) {
 	s.listInterventionsCalls++
 	return s.Store.ListInterventions(ctx, taskID)
@@ -3789,6 +3795,11 @@ type taskOperationsBoundedStore struct {
 func (st *taskOperationsBoundedStore) ListEvents(ctx context.Context, taskID string) ([]core.Event, error) {
 	st.listEventsCalls++
 	return nil, fmt.Errorf("per-task ListEvents forbidden for %s", taskID)
+}
+
+func (st *taskOperationsBoundedStore) ListCompactEvents(ctx context.Context, taskID string) ([]core.Event, error) {
+	st.listEventsCalls++
+	return nil, fmt.Errorf("per-task ListCompactEvents forbidden for %s", taskID)
 }
 
 func (st *taskOperationsBoundedStore) GetLatestSpecVersion(ctx context.Context, taskID string) (core.SpecVersion, bool, error) {

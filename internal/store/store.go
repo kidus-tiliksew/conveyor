@@ -493,6 +493,12 @@ type ActivityStore interface {
 	AppendEvent(ctx context.Context, event core.Event) error
 	// ListEvents returns the per-task ledger ordered by event time, then ID.
 	ListEvents(ctx context.Context, taskID string) ([]core.Event, error)
+	// ListCompactEvents returns the ListEvents rows and order with the
+	// governance and served-requirement snapshot bodies left out of every
+	// work_order.* object payload before the rows leave the database. It is
+	// the ledger read for consumers that decode no snapshot body
+	// (component-persistence, Compact task event reads).
+	ListCompactEvents(ctx context.Context, taskID string) ([]core.Event, error)
 	// ListFactoryActs returns the workspace factory log, newest first, after the
 	// Go filter. The query may only narrow candidates.
 	ListFactoryActs(ctx context.Context, since time.Time, limit int) ([]nextaction.Act, error)

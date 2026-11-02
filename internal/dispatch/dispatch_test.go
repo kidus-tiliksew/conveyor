@@ -2778,6 +2778,109 @@ func TestSourceTaskExistsReadsOnlyMatchingTasks(t *testing.T) {
 	recorder.RequireNoTerminalReads(t, terminal, taken.ID)
 }
 
+// fullLedgerStore serves the complete ledger through ListCompactEvents: the
+// read every switched dispatch fold made before the compact read existed
+// (component-persistence, Compact task event reads).
+type fullLedgerStore struct{ store.Store }
+
+func (s fullLedgerStore) ListCompactEvents(ctx context.Context, taskID string) ([]core.Event, error) {
+	return s.Store.ListEvents(ctx, taskID)
+}
+
+// TestDispatchFoldsMatchOverCompactEvents runs the dispatcher's own event
+// folds over a ledger holding historical work-order events with embedded
+// snapshot bodies and compares each result between the complete and the
+// compact read. The store conformance case proves the compact read on every
+// backend; this test pins the folds outside the store package.
+func TestDispatchFoldsMatchOverCompactEvents(t *testing.T) {
+	st := store.NewMemory()
+	ctx := store.WithWorkspace(store.WithActor(context.Background(), store.SystemActor()), "demo")
+	id := core.NewTaskID()
+	task := core.Task{ID: id, Workspace: "demo", Repo: "conveyor", Title: id, BaseBranch: "main", Branch: "conveyor/task-" + id, State: core.TaskRunning, NextStage: core.StageImplement, ApprovedHeadSHA: "approved-head", ReviewedHeadSHA: "reviewed-head", CreatedAt: time.Now().UTC()}
+	if err := st.CreateTask(ctx, task); err != nil {
+		t.Fatal(err)
+	}
+	job := core.Job{ID: id + "-implement-1", TaskID: id, Stage: core.StageImplement, State: core.JobPending}
+	order := core.WorkOrder{ID: job.ID, TaskID: id, JobID: job.ID, Stage: job.Stage, State: core.WorkOrderQueued, QueueEnteredAt: task.CreatedAt, QueueDeadline: task.CreatedAt.Add(time.Hour), CreatedAt: task.CreatedAt}
+	if _, err := storetest.CreateStageWorkOrder(ctx, st, job, order); err != nil {
+		t.Fatal(err)
+	}
+	claimed, err := storetest.ClaimWorkOrder(ctx, st, order.ID, core.WorkOrderClaim{ClaimantID: core.TaskRunClaimantID("fold-worker"), SessionID: "fold-session", ClientToken: "fold-token", Lease: time.Minute, ExecutionTimeout: time.Hour})
+	if err != nil {
+		t.Fatal(err)
+	}
+	const marker = "dispatch-fold-snapshot-marker:"
+	historical := claimed
+	historical.GovernanceSnapshot = &core.GovernanceSnapshot{Designs: []core.GovernanceDesignContext{{ID: "design-fold", Version: 1, Content: marker + strings.Repeat("d", 256<<10)}}}
+	historical.ServedRequirementSnapshot = []core.ServedRequirementContext{{ID: "req-fold", Version: 1}}
+	revision := map[string]any{"work_order_id": order.ID, "attempt_id": claimed.AttemptID, "rationale": "historical plan revision", "plan_version": 1, "governance_snapshot": historical.GovernanceSnapshot, "served_requirement_snapshot": historical.ServedRequirementSnapshot}
+	for _, event := range []core.Event{
+		{TaskID: id, JobID: job.ID, Kind: "work_order.claimed", Payload: core.JSONPayload(historical)},
+		{TaskID: id, JobID: job.ID, Kind: "work_order.updated", Payload: core.JSONPayload(historical)},
+		{TaskID: id, JobID: job.ID, Kind: "work_order.plan_revision_requested", Payload: core.JSONPayload(revision)},
+		{TaskID: id, Kind: "pull_request.opened", Payload: core.JSONPayload(map[string]any{"number": 7, "url": "https://github.com/acme/conveyor/pull/7", "head_sha": "reviewed-head", "base_sha": "base-sha"})},
+		{TaskID: id, Kind: "review.round_completed", Payload: core.JSONPayload(map[string]any{"review_round": 1, "verdict": "approve", "approved_head_sha": "approved-head", "reviews": []map[string]any{{"verdict": "approve", "reviewed_commit_sha": "reviewed-head", "review_seat": 1}}})},
+		{TaskID: id, Kind: "merge.blocked", Payload: core.JSONPayload(map[string]any{"approved_head": "approved-head", "new_head": "new-head"})},
+		{TaskID: id, Kind: "merge.failed", Payload: core.JSONPayload(map[string]any{"reason_code": "merged_head_mismatch", "pull_request": 7, "merged_head_sha": "other-head", "merge_commit_sha": "merge-sha"})},
+		{TaskID: id, Kind: "task.state_changed", Payload: core.JSONPayload(map[string]any{"command": core.TaskGateSpec})},
+	} {
+		if err := st.AppendEvent(ctx, event); err != nil {
+			t.Fatal(err)
+		}
+	}
+	fullEvents, err := st.ListEvents(ctx, id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	compactEvents, err := st.ListCompactEvents(ctx, id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	embedded := 0
+	for i := range fullEvents {
+		if bytes.Contains(fullEvents[i].Payload, []byte(marker)) {
+			embedded++
+		}
+		if bytes.Contains(compactEvents[i].Payload, []byte(marker)) {
+			t.Fatalf("compact %s event carries the snapshot body", compactEvents[i].Kind)
+		}
+	}
+	if embedded != 3 {
+		t.Fatalf("full read holds %d embedded bodies, want the three historical work_order.* events", embedded)
+	}
+	same := func(name string, full, compact any) {
+		t.Helper()
+		if !reflect.DeepEqual(full, compact) {
+			t.Fatalf("%s differs between the reads:\nfull:    %#v\ncompact: %#v", name, full, compact)
+		}
+	}
+	results := func(values ...any) []any { return values }
+	full, compact := &Dispatcher{Store: fullLedgerStore{st}}, &Dispatcher{Store: st}
+	same("reviewedHeadFromEvents", full.reviewedHeadFromEvents(ctx, id), compact.reviewedHeadFromEvents(ctx, id))
+	fullEpisode, fullOK, fullErr := full.currentMergeConflictEpisode(ctx, id)
+	compactEpisode, compactOK, compactErr := compact.currentMergeConflictEpisode(ctx, id)
+	same("currentMergeConflictEpisode", results(fullEpisode, fullOK, fullErr), results(compactEpisode, compactOK, compactErr))
+	if !fullOK {
+		t.Fatal("fixture opens no merge-conflict episode")
+	}
+	orders, err := st.ListTaskWorkOrders(ctx, id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	same("conflictDispatchState", results(full.conflictDispatchState(ctx, id, fullEpisode, orders)), results(compact.conflictDispatchState(ctx, id, compactEpisode, orders)))
+	same("hasRecoverableApprovedReview", results(full.hasRecoverableApprovedReview(ctx, task)), results(compact.hasRecoverableApprovedReview(ctx, task)))
+	same("pendingSpecGate", results(full.pendingSpecGate(ctx, id)), results(compact.pendingSpecGate(ctx, id)))
+	same("PendingPlanRevisionGate", results(PendingPlanRevisionGate(ctx, fullLedgerStore{st}, id)), results(PendingPlanRevisionGate(ctx, st, id)))
+	same("RecordedReviewComparison", results(RecordedReviewComparison(task, fullEvents)), results(RecordedReviewComparison(task, compactEvents)))
+	same("RecordedReviewComparisonContext", results(RecordedReviewComparisonContext(task, fullEvents)), results(RecordedReviewComparisonContext(task, compactEvents)))
+	same("reviewHistory", reviewHistory(fullEvents), reviewHistory(compactEvents))
+	same("reviewRoundStatus", reviewRoundStatus(fullEvents, 1, "approve"), reviewRoundStatus(compactEvents, 1, "approve"))
+	same("pendingGateMergeRequest", results(pendingGateMergeRequest(fullEvents)), results(pendingGateMergeRequest(compactEvents)))
+	pr := githubtrigger.PullRequest{Number: 7, Merged: true, HeadSHA: "reviewed-head", MergeCommitSHA: "merge-sha"}
+	same("forgeMergeReconciled", forgeMergeReconciled(fullEvents, "conveyor", pr), forgeMergeReconciled(compactEvents, "conveyor", pr))
+	same("mergedHeadMismatchRecorded", mergedHeadMismatchRecorded(fullEvents, pr), mergedHeadMismatchRecorded(compactEvents, pr))
+}
+
 // snapshotFixtureBytes is the design body each seeded snapshot pins. A read
 // that decodes even one snapshot reports at least this many bytes.
 const snapshotFixtureBytes = 64 << 10

@@ -83,7 +83,7 @@ func withReviewSeatsResult(result map[string]any, count *int, applied bool) map[
 // recordedUnusedReviewSeats reads the count a refresh-completing submission
 // recorded unused from that submission's own work_order.updated payload.
 func (s *Service) recordedUnusedReviewSeats(ctx context.Context, order core.WorkOrder) (*int, error) {
-	events, err := s.Store.ListEvents(ctx, order.TaskID)
+	events, err := s.Store.ListCompactEvents(ctx, order.TaskID)
 	if err != nil {
 		return nil, err
 	}

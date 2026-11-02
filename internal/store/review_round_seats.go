@@ -220,7 +220,7 @@ func ReviewRoundSeatInputsFor(minimum, round int, orders []core.WorkOrder, event
 // from outside a backend transaction.
 type ReviewRoundSeatReader interface {
 	ListWorkOrdersForTasks(ctx context.Context, taskIDs []string) ([]core.WorkOrder, error)
-	ListEvents(ctx context.Context, taskID string) ([]core.Event, error)
+	ListCompactEvents(ctx context.Context, taskID string) ([]core.Event, error)
 	ListReviewRoundSeats(ctx context.Context, taskID string) ([]ReviewRoundSeats, error)
 	GetApprovedSpecVersion(ctx context.Context, taskID string) (core.SpecVersion, bool, error)
 }
@@ -234,7 +234,7 @@ func LoadReviewRoundSeatInputs(ctx context.Context, reader ReviewRoundSeatReader
 	if err != nil {
 		return ReviewRoundSeatInputs{}, err
 	}
-	events, err := reader.ListEvents(ctx, taskID)
+	events, err := reader.ListCompactEvents(ctx, taskID)
 	if err != nil {
 		return ReviewRoundSeatInputs{}, err
 	}

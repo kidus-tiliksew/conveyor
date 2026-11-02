@@ -208,8 +208,8 @@ type peerIdleAwaitStore struct {
 	reads chan struct{}
 }
 
-func (s *peerIdleAwaitStore) ListEvents(ctx context.Context, taskID string) ([]core.Event, error) {
-	events, err := s.Store.ListEvents(ctx, taskID)
+func (s *peerIdleAwaitStore) ListCompactEvents(ctx context.Context, taskID string) ([]core.Event, error) {
+	events, err := s.Store.ListCompactEvents(ctx, taskID)
 	s.reads <- struct{}{}
 	return events, err
 }

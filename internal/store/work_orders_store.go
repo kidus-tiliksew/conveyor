@@ -600,7 +600,7 @@ func ReleasedCheckpointClaimMatches(ctx context.Context, st Store, order core.Wo
 	if !deliberateCheckpointRelease(order) {
 		return false, nil
 	}
-	events, err := st.ListEvents(ctx, order.TaskID)
+	events, err := st.ListCompactEvents(ctx, order.TaskID)
 	if err != nil {
 		return false, err
 	}

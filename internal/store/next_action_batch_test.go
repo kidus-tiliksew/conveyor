@@ -64,6 +64,11 @@ func (c *countingStore) ListEvents(ctx context.Context, id string) ([]core.Event
 	return c.Store.ListEvents(ctx, id)
 }
 
+func (c *countingStore) ListCompactEvents(ctx context.Context, id string) ([]core.Event, error) {
+	c.count("ListCompactEvents", []string{id})
+	return c.Store.ListCompactEvents(ctx, id)
+}
+
 func (c *countingStore) ListWorkOrdersForTasks(ctx context.Context, ids []string) ([]core.WorkOrder, error) {
 	c.count("ListWorkOrdersForTasks", ids)
 	return c.Store.ListWorkOrdersForTasks(ctx, ids)
@@ -175,7 +180,7 @@ func maxBatchCalls(name string) int {
 
 // perTaskReads are the reads a batching store never issues from the
 // assembler (component-work-orders, Next action, Bounded store calls).
-var perTaskReads = []string{"GetTask", "ListEvents", "GetLatestSpecVersion", "GetRequirement", "GetSystemDesign", "ListClaimBlockingProposalsForTask", "ReadVerificationReview", "ListNextActionEvents"}
+var perTaskReads = []string{"GetTask", "ListEvents", "ListCompactEvents", "GetLatestSpecVersion", "GetRequirement", "GetSystemDesign", "ListClaimBlockingProposalsForTask", "ReadVerificationReview", "ListNextActionEvents"}
 
 // fullHistoryStore is the oracle: it replaces the bounded history read with
 // the previous fold over each task's full ListEvents history.

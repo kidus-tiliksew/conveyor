@@ -46,6 +46,10 @@ func (s mcpWindowStore) ListEvents(context.Context, string) ([]core.Event, error
 	s.t.Error("list_task_events called the unbounded ledger")
 	return nil, fmt.Errorf("unbounded ledger read")
 }
+func (s mcpWindowStore) ListCompactEvents(context.Context, string) ([]core.Event, error) {
+	s.t.Error("list_task_events called the unbounded compact ledger")
+	return nil, fmt.Errorf("unbounded ledger read")
+}
 func (s mcpWindowStore) ListEventsAfter(context.Context, string, int64) ([]core.Event, error) {
 	s.t.Error("list_task_events called the unbounded ID cursor")
 	return nil, fmt.Errorf("unbounded ledger read")

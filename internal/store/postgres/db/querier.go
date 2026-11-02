@@ -51,6 +51,7 @@ type Querier interface {
 	InsertWorkspaceEvent(ctx context.Context, arg InsertWorkspaceEventParams) (Event, error)
 	ListActivityMarkers(ctx context.Context, workspaceID string) ([]ListActivityMarkersRow, error)
 	ListEvents(ctx context.Context, arg ListEventsParams) ([]Event, error)
+	ListCompactEvents(ctx context.Context, arg ListCompactEventsParams) ([]Event, error)
 	ListEventsAfter(ctx context.Context, arg ListEventsAfterParams) ([]Event, error)
 	ListRequirementEvents(ctx context.Context, arg ListRequirementEventsParams) ([]Event, error)
 	ListTaskOperationsEvents(ctx context.Context, arg ListTaskOperationsEventsParams) ([]Event, error)

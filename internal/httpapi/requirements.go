@@ -646,7 +646,7 @@ func (s *Server) requirementViews(r *http.Request, requirements []core.Requireme
 		if events, ok := eventsByTask[taskID]; ok {
 			return events, nil
 		}
-		events, listErr := s.Store.ListEvents(r.Context(), taskID)
+		events, listErr := s.Store.ListCompactEvents(r.Context(), taskID)
 		if listErr == nil {
 			eventsByTask[taskID] = events
 		}

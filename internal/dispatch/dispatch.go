@@ -103,7 +103,7 @@ func New(st store.Store, cfg *config.Config, agent inprocess.Agent) *Dispatcher 
 		if !ok {
 			return "", fmt.Errorf("repository %q is not configured", task.Repo)
 		}
-		events, err := d.Store.ListEvents(ctx, task.ID)
+		events, err := d.Store.ListCompactEvents(ctx, task.ID)
 		if err != nil {
 			return "", err
 		}
@@ -513,7 +513,7 @@ func (d *Dispatcher) createReviewRound(ctx context.Context, cfg *config.Config, 
 		return err
 	}
 	if !task.ApprovalStale {
-		events, eventErr := d.Store.ListEvents(ctx, task.ID)
+		events, eventErr := d.Store.ListCompactEvents(ctx, task.ID)
 		if eventErr != nil {
 			return eventErr
 		}
@@ -637,7 +637,7 @@ func (d *Dispatcher) createWorkOrder(ctx context.Context, cfg *config.Config, ta
 		order.HeadSHA = core.VerifyStageHead(task)
 		order.ReviewScope, order.BaselineSHA = task.RefreshReviewScope, task.RefreshBaselineSHA
 		if !task.ApprovalStale {
-			events, err := d.Store.ListEvents(ctx, task.ID)
+			events, err := d.Store.ListCompactEvents(ctx, task.ID)
 			if err != nil {
 				return err
 			}
@@ -825,7 +825,7 @@ func (d *Dispatcher) buildStageInput(ctx context.Context, cfg *config.Config, st
 		}
 		fmt.Fprintf(&prompt, "\n# Confirmed corpus tools\n\nOnly these read-only tools are available. List results contain summaries; bodies require an explicit read. Hard limits: %d tool calls across %d model iterations.\n\n%s\n", maxTriageToolCalls, maxTriageIterations, tools)
 	}
-	events, _ := d.Store.ListEvents(ctx, task.ID)
+	events, _ := d.Store.ListCompactEvents(ctx, task.ID)
 	invalidKind := string(stage) + ".output_invalid"
 	for i := len(events) - 1; i >= 0; i-- {
 		if events[i].Kind != invalidKind {
@@ -1319,7 +1319,7 @@ func (d *Dispatcher) applyReview(ctx context.Context, cfg *config.Config, task c
 		}
 		reviewedCommitSHA = decisionHead
 	} else {
-		events, _ := d.Store.ListEvents(ctx, task.ID)
+		events, _ := d.Store.ListCompactEvents(ctx, task.ID)
 		for i := len(events) - 1; i >= 0; i-- {
 			if events[i].Kind != "pull_request.opened" {
 				continue
@@ -1787,7 +1787,7 @@ func PendingPlanRevisionGate(ctx context.Context, st store.Store, taskID string)
 	if task.State != core.TaskAwaiting {
 		return PlanRevisionGateContext{}, false, nil
 	}
-	events, err := st.ListEvents(ctx, taskID)
+	events, err := st.ListCompactEvents(ctx, taskID)
 	if err != nil {
 		return PlanRevisionGateContext{}, false, err
 	}
@@ -1818,7 +1818,7 @@ func (d *Dispatcher) pendingSpecGate(
 	if task.State != core.TaskAwaiting {
 		return core.SpecVersion{}, false, nil
 	}
-	events, err := d.Store.ListEvents(ctx, task.ID)
+	events, err := d.Store.ListCompactEvents(ctx, task.ID)
 	if err != nil {
 		return core.SpecVersion{}, false, err
 	}

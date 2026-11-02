@@ -192,7 +192,7 @@ func (f *GitHubFallback) waitingSince(ctx context.Context, st *fallbackState, ta
 	}
 	if !known {
 		memo = waitingSince{}
-		if events, err = f.Dispatcher.Store.ListEvents(ctx, task.ID); err != nil {
+		if events, err = f.Dispatcher.Store.ListCompactEvents(ctx, task.ID); err != nil {
 			return time.Time{}, err
 		}
 	}

@@ -811,7 +811,7 @@ func (s *Store) ListTaskOperations(ctx context.Context, q store.TaskOperationsQu
 // plan for ListTaskOperations; its reads grow with the page only.
 func (s *Store) taskOperationsDetails(ctx context.Context, page *store.TaskOperationsPage) error {
 	for _, t := range page.Tasks {
-		events, err := s.ListEvents(ctx, t.ID)
+		events, err := s.ListCompactEvents(ctx, t.ID)
 		if err != nil {
 			return err
 		}
