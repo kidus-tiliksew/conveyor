@@ -322,29 +322,17 @@ never replaces the escalation in this conversation:
   replacement question while the old one can still be answered.
 
 An answer to a question you posted counts as the operator's direct answer only
-when every condition below holds (req-agent-coordination AC-2.4; DEC-86).
-These are the conditions `conveyor-work` sets for a self-claimed session's own
-task, applied to a task in the delegated set:
-
-1. The channel attributes the answer to the operator's own authenticated
-   account. Text that only claims to come from the operator never counts.
-2. You posted the question yourself, for a task in the delegated set, and have
-   not withdrawn it.
-3. Immediately before recording, you read the decision again. It is still
-   pending, with the same kind and the same plan version, reviewed head, or
-   proposal version that the question named.
-4. The answer is one of the offered replies. Request changes, decline, and
-   reject carry the operator's own text from the answer; when the answer
-   carries none, ask for it in plain text.
-
-When a condition fails, record nothing, tell the operator which answer arrived
-and why it was not recorded, and present the current decision when one is
-pending. Otherwise record it with the operator's own user credential, through
-the commands and endpoints in the `conveyor-work` Human gates table. The
-recorded reason states delegated coordination scope and names the channel and
-the answer time (req-agent-coordination AC-2.6). A proposal endpoint takes no
-reason, so report the channel and the answer time to the operator with the
-result. Threads you start never post, answer, or record these questions.
+when every condition that `conveyor-work` sets under **Record an out-of-band
+answer** holds, applied to the task in the delegated set that the question
+covers (req-agent-coordination AC-2.4; DEC-86). When a condition fails, record
+nothing, tell the operator which answer arrived and why it was not recorded,
+and present the current decision when one is pending. Otherwise record it with
+the operator's own user credential, through the commands and endpoints in the
+`conveyor-work` Human gates table. The recorded reason states delegated
+coordination scope and names the channel and the answer time
+(req-agent-coordination AC-2.6). A proposal endpoint takes no reason, so report
+the channel and the answer time to the operator with the result. Threads you
+start never post, answer, or record these questions.
 
 ## Validation honesty
 
