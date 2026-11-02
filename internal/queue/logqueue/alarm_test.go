@@ -1,8 +1,12 @@
 package logqueue
 
 import (
+	"bytes"
 	"context"
 	"errors"
+	"fmt"
+	"runtime"
+	"strconv"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -22,14 +26,123 @@ import (
 // seconds.
 const alarmBudget = 5 * time.Second
 
+// alarmFire is one fire as the order clock handler saw it. start is the
+// clock reading the alarm took when the fire began, which AlarmSpacing
+// governs (alarm.go, the fire closure in alarmLoop). entered is the handler's
+// own reading on entry, which lags start by the fire's start-to-handler
+// latency.
+type alarmFire struct {
+	start   time.Time
+	entered time.Time
+}
+
+// fireClock is an Options.Now that remembers the last reading each goroutine
+// took. A fire reads the clock once at its start and then calls the order
+// clock handler on the same goroutine with no reading between: runClock only
+// looks up the registration and encodes the job. The last reading on the
+// handler's goroutine is therefore its fire's start. Worker goroutines read
+// the clock concurrently, so readings are keyed by goroutine.
+type fireClock struct {
+	now  func() time.Time
+	mu   sync.Mutex
+	last map[uint64]time.Time
+}
+
+func newFireClock(now func() time.Time) *fireClock {
+	if now == nil {
+		now = time.Now
+	}
+	return &fireClock{now: now, last: map[uint64]time.Time{}}
+}
+
+func (c *fireClock) Now() time.Time {
+	at := c.now()
+	id := goroutineID()
+	c.mu.Lock()
+	c.last[id] = at
+	c.mu.Unlock()
+	return at
+}
+
+// fireStart returns and forgets the start of the fire that runs the calling
+// order clock handler. It returns zero when the goroutine took no reading.
+func (c *fireClock) fireStart() time.Time {
+	id := goroutineID()
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	at, ok := c.last[id]
+	if !ok {
+		return time.Time{}
+	}
+	delete(c.last, id)
+	return at.UTC()
+}
+
+// goroutineID parses the calling goroutine's ID from its stack header,
+// "goroutine N [running]:".
+func goroutineID() uint64 {
+	var buf [64]byte
+	header := bytes.TrimPrefix(buf[:runtime.Stack(buf[:], false)], []byte("goroutine "))
+	if end := bytes.IndexByte(header, ' '); end > 0 {
+		header = header[:end]
+	}
+	id, err := strconv.ParseUint(string(header), 10, 64)
+	if err != nil {
+		panic("goroutine ID: " + err.Error())
+	}
+	return id
+}
+
+// manualClock moves only when the test sets it.
+type manualClock struct {
+	mu  sync.Mutex
+	now time.Time
+}
+
+func (c *manualClock) Now() time.Time {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.now
+}
+
+func (c *manualClock) set(at time.Time) {
+	c.mu.Lock()
+	c.now = at
+	c.mu.Unlock()
+}
+
+// spacingError checks the alarm's spacing rule where the alarm defines it:
+// two fires start at least AlarmSpacing apart. A positive limit also bounds
+// the gap from above. Handler-entry times are not compared. Their gap is
+// AlarmSpacing plus the second fire's start-to-handler latency minus the
+// first's, so it drops below AlarmSpacing whenever the first fire's latency
+// is the larger.
+func spacingError(first, second alarmFire, limit time.Duration) error {
+	if first.start.IsZero() || second.start.IsZero() {
+		return fmt.Errorf("fire start not recorded: first=%s second=%s", first.start, second.start)
+	}
+	gap := second.start.Sub(first.start)
+	if gap < AlarmSpacing {
+		return fmt.Errorf("fires started %s apart, want at least %s", gap, AlarmSpacing)
+	}
+	if limit > 0 && gap > limit {
+		return fmt.Errorf("fires started %s apart, want at most %s", gap, limit)
+	}
+	return nil
+}
+
 // alarmFixture is a runtime whose order clock handler reports each fire.
 type alarmFixture struct {
 	log   *NotifyingLog
 	hub   *changes.Hub
 	rt    *Runtime
-	fires chan time.Time
-	// block, when set, holds the next fire until it is closed.
+	clock *fireClock
+	fires chan alarmFire
 	mu    sync.Mutex
+	// hold, when set, runs once in the next fire's handler before the
+	// handler's entry reading.
+	hold func()
+	// block, when set, holds the next fire until it is closed.
 	block chan struct{}
 	reads atomic.Int32
 }
@@ -70,20 +183,26 @@ func (s *storedDeadline) source(f *alarmFixture) DeadlineSource {
 
 func newAlarmFixture(t *testing.T, deadlines *storedDeadline, opts Options) *alarmFixture {
 	t.Helper()
-	f := &alarmFixture{fires: make(chan time.Time, 64)}
+	f := &alarmFixture{fires: make(chan alarmFire, 64)}
 	f.hub = changes.NewHub()
 	f.log = Notify(notifyingLog().Store, f.hub)
+	f.clock = newFireClock(opts.Now)
+	opts.Now = f.clock.Now
 	opts.Workspaces = []string{"ws"}
 	if deadlines != nil {
 		opts.Deadlines = deadlines.source(f)
 	}
 	f.rt = NewRuntime(f.log, opts)
 	f.rt.Register(queue.Registration{Kind: queue.OrderClockArgs{}.Kind(), Handle: func(context.Context, queue.Job) error {
+		start := f.clock.fireStart()
 		f.mu.Lock()
-		block := f.block
-		f.block = nil
+		hold, block := f.hold, f.block
+		f.hold, f.block = nil, nil
 		f.mu.Unlock()
-		f.fires <- time.Now().UTC()
+		if hold != nil {
+			hold()
+		}
+		f.fires <- alarmFire{start: start, entered: f.clock.Now().UTC()}
 		if block != nil {
 			<-block
 		}
@@ -105,15 +224,15 @@ func (f *alarmFixture) start(t *testing.T) {
 }
 
 // fire waits for the next fire within within.
-func (f *alarmFixture) fire(t *testing.T, what string, within time.Duration) time.Time {
+func (f *alarmFixture) fire(t *testing.T, what string, within time.Duration) alarmFire {
 	t.Helper()
 	select {
-	case at := <-f.fires:
-		return at
+	case fired := <-f.fires:
+		return fired
 	case <-time.After(within):
 		t.Fatalf("no fire for %s within %s", what, within)
 	}
-	return time.Time{}
+	return alarmFire{}
 }
 
 // idle waits until the alarm arms no timer, then proves no fire follows.
@@ -130,8 +249,8 @@ func (f *alarmFixture) idle(t *testing.T, what string) {
 		time.Sleep(5 * time.Millisecond)
 	}
 	select {
-	case at := <-f.fires:
-		t.Fatalf("%s: unexpected fire at %s", what, at)
+	case fired := <-f.fires:
+		t.Fatalf("%s: unexpected fire at %s", what, fired.entered)
 	case <-time.After(200 * time.Millisecond):
 	}
 }
@@ -156,7 +275,7 @@ func TestAlarmFiresAtStartAndAtStoredDeadline(t *testing.T) {
 	deadlines.set(due)
 	f.start(t)
 	f.fire(t, "start", alarmBudget)
-	within(t, "stored deadline", due, f.fire(t, "stored deadline", alarmBudget+time.Second))
+	within(t, "stored deadline", due, f.fire(t, "stored deadline", alarmBudget+time.Second).entered)
 	// The fire at the deadline reads the next target: none.
 	f.idle(t, "after the only deadline")
 }
@@ -173,8 +292,8 @@ func TestAlarmWithNoDeadlineSendsNoStatement(t *testing.T) {
 	}
 	// Nothing reads the source while idle.
 	select {
-	case at := <-f.fires:
-		t.Fatalf("idle alarm fired at %s", at)
+	case fired := <-f.fires:
+		t.Fatalf("idle alarm fired at %s", fired.entered)
 	case <-time.After(300 * time.Millisecond):
 	}
 	if got := f.reads.Load(); got != reads {
@@ -195,7 +314,7 @@ func TestAlarmEarlierNoticeMovesTargetForward(t *testing.T) {
 	due := time.Now().UTC().Add(1200 * time.Millisecond)
 	deadlines.set(far, due)
 	f.hub.Publish(changes.Notice{Workspace: "ws", Kind: changes.Deadline, At: due})
-	within(t, "earlier deadline", due, f.fire(t, "earlier deadline", alarmBudget+time.Second))
+	within(t, "earlier deadline", due, f.fire(t, "earlier deadline", alarmBudget+time.Second).entered)
 	waitTarget(t, f.rt, far)
 	// A later notice moves nothing.
 	f.hub.Publish(changes.Notice{Workspace: "ws", Kind: changes.Deadline, At: far.Add(time.Hour)})
@@ -212,9 +331,9 @@ func TestAlarmTimelessOrPastNoticeFiresAtOnce(t *testing.T) {
 			sent := time.Now().UTC()
 			f.hub.Publish(changes.Notice{Workspace: "ws", Kind: changes.Deadline, At: at})
 			fired := f.fire(t, name+" notice", alarmBudget)
-			within(t, name+" notice", sent, fired)
-			if gap := fired.Sub(first); gap < AlarmSpacing {
-				t.Fatalf("fires %s apart, want at least %s", gap, AlarmSpacing)
+			within(t, name+" notice", sent, fired.entered)
+			if err := spacingError(first, fired, 0); err != nil {
+				t.Fatal(err)
 			}
 			f.idle(t, "after the notice")
 		})
@@ -234,7 +353,7 @@ func TestAlarmServesNoticeRaisedDuringFire(t *testing.T) {
 	due := time.Now().UTC().Add(-time.Millisecond)
 	f.hub.Publish(changes.Notice{Workspace: "ws", Kind: changes.Deadline, At: due})
 	close(release)
-	within(t, "notice raised during a fire", due, f.fire(t, "notice raised during a fire", alarmBudget))
+	within(t, "notice raised during a fire", due, f.fire(t, "notice raised during a fire", alarmBudget).entered)
 	f.idle(t, "after serving it")
 }
 
@@ -251,7 +370,7 @@ func TestAlarmCoalescedNoticesFireOnce(t *testing.T) {
 	f.hub.Publish(changes.Notice{Workspace: "ws", Kind: changes.Deadline, At: sent.Add(time.Hour)})
 	f.hub.Publish(changes.Notice{Workspace: "ws", Kind: changes.Deadline})
 	close(release)
-	within(t, "coalesced notices", sent, f.fire(t, "coalesced notices", alarmBudget))
+	within(t, "coalesced notices", sent, f.fire(t, "coalesced notices", alarmBudget).entered)
 	f.idle(t, "after the coalesced fire")
 }
 
@@ -265,10 +384,47 @@ func TestAlarmRetriesAfterAnError(t *testing.T) {
 	first := f.fire(t, "start", alarmBudget)
 	// The failed read schedules a retry; the spacing still applies.
 	retried := f.fire(t, "retry", alarmBudget)
-	if gap := retried.Sub(first); gap < AlarmSpacing || gap > alarmBudget*6/10 {
-		t.Fatalf("retry %s after the failed fire", gap)
+	if err := spacingError(first, retried, alarmBudget*6/10); err != nil {
+		t.Fatalf("retry after the failed fire: %v", err)
 	}
 	f.idle(t, "after a successful retry")
+}
+
+// TestAlarmSpacingToleratesHandlerEntryLatency drives the interleaving that
+// made the handler-entry spacing assertion flake, on a manual clock with no
+// sleep. The first fire's handler takes its entry reading 5ms after the fire
+// started. A timeless notice then arrives exactly AlarmSpacing after that
+// start, so the second fire starts at once and its handler adds no latency.
+// The fire-start check passes; the handler-entry gap is 995ms, which the
+// former assertion rejected.
+func TestAlarmSpacingToleratesHandlerEntryLatency(t *testing.T) {
+	const latency = 5 * time.Millisecond
+	t0 := time.Date(2026, 11, 2, 12, 0, 0, 0, time.UTC)
+	manual := &manualClock{now: t0}
+	f := newAlarmFixture(t, &storedDeadline{}, Options{Now: manual.Now})
+	f.hold = func() { manual.set(t0.Add(latency)) }
+	f.start(t)
+	first := f.fire(t, "start", alarmBudget)
+	// The first fire takes no clock reading after its handler's entry reading,
+	// and with no deadline, retry, or job it arms no timer. The clock moves
+	// only here, so the second fire's start reads exactly this time.
+	manual.set(t0.Add(AlarmSpacing))
+	f.hub.Publish(changes.Notice{Workspace: "ws", Kind: changes.Deadline})
+	second := f.fire(t, "notice", alarmBudget)
+
+	want := []alarmFire{{start: t0, entered: t0.Add(latency)}, {start: t0.Add(AlarmSpacing), entered: t0.Add(AlarmSpacing)}}
+	for i, got := range []alarmFire{first, second} {
+		if !got.start.Equal(want[i].start) || !got.entered.Equal(want[i].entered) {
+			t.Fatalf("fire %d start=%s entered=%s, want start=%s entered=%s", i+1, got.start, got.entered, want[i].start, want[i].entered)
+		}
+	}
+	if err := spacingError(first, second, alarmBudget*6/10); err != nil {
+		t.Fatalf("fire-start spacing rejected handler-entry latency: %v", err)
+	}
+	// The former assertion compared handler-entry times.
+	if gap := second.entered.Sub(first.entered); gap >= AlarmSpacing {
+		t.Fatalf("handler entries %s apart; the interleaving must put them under %s", gap, AlarmSpacing)
+	}
 }
 
 func TestAlarmWakesWorkersForAJobRetryWithoutWorkerTimer(t *testing.T) {
@@ -436,11 +592,12 @@ func TestAlarmRetriesAFailedOrderClock(t *testing.T) {
 	alarmRetryMin = 50 * time.Millisecond
 	t.Cleanup(func() { alarmRetryMin = previous })
 	log := notifyingLog()
-	rt := NewRuntime(log, Options{Workspaces: []string{"ws"}})
-	fires := make(chan time.Time, 8)
+	clock := newFireClock(nil)
+	rt := NewRuntime(log, Options{Workspaces: []string{"ws"}, Now: clock.Now})
+	fires := make(chan alarmFire, 8)
 	var calls atomic.Int32
 	rt.Register(queue.Registration{Kind: queue.OrderClockArgs{}.Kind(), Handle: func(context.Context, queue.Job) error {
-		fires <- time.Now().UTC()
+		fires <- alarmFire{start: clock.fireStart(), entered: time.Now().UTC()}
 		if calls.Add(1) == 1 {
 			return errors.New("database unavailable")
 		}
@@ -457,8 +614,8 @@ func TestAlarmRetriesAFailedOrderClock(t *testing.T) {
 	first := <-fires
 	select {
 	case retried := <-fires:
-		if gap := retried.Sub(first); gap < AlarmSpacing || gap > alarmBudget*6/10 {
-			t.Fatalf("retry %s after the failed fire", gap)
+		if err := spacingError(first, retried, alarmBudget*6/10); err != nil {
+			t.Fatalf("retry after the failed fire: %v", err)
 		}
 	case <-time.After(alarmBudget):
 		t.Fatal("failed order clock fire was never retried")
