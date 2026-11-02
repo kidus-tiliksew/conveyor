@@ -8,8 +8,8 @@ description: Coordinate several Conveyor tasks or a continuing delivery queue, r
 Read and follow
 [docs/playbooks/conveyor-coordinate.md](../../../docs/playbooks/conveyor-coordinate.md)
 — it is the canonical, tool-neutral playbook for setups, thread prompts,
-supervision, delegated decisions, validation honesty, readable timeline text,
-and the coordination record.
+supervision, delegated decisions, bounded-queue policy and outcomes,
+validation honesty, readable timeline text, and the coordination record.
 
 Non-negotiables, restated: the coordinator never claims a work order or edits
 a task repository; each stage order runs in its own thread under

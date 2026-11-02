@@ -271,6 +271,12 @@ func TestConveyorWorkSkillOmitsRepositoryValidationProcedure(t *testing.T) {
 				"missing, cancelled, or failed on the submitted head leaves its gate unsatisfied",
 				"only when the pull request body lists the failed attempts",
 				"CI evidence is review evidence, not a merge gate",
+			},
+		},
+		{
+			// The bounded-queue rules live in the coordination playbook.
+			path: filepath.Join("conveyor-coordinate", "conveyor-coordinate.md"),
+			required: []string{
 				"Neither source creates a merge gate, changes branch protection",
 			},
 		},
@@ -406,7 +412,7 @@ func TestConveyorWorkSkillShipsStageCheckoutAndSessionModeDiscipline(t *testing.
 
 	playbookRequired := []string{
 		"never run `conveyor checkout` for a spec order",
-		"implementation or review order, run `conveyor checkout <task-id>`",
+		"implementation, verification, or review order, run `conveyor checkout <task-id>`",
 		// One session mode: the session claims its own order and no launcher
 		// owns a later stage (DEC-97(1), DEC-97(2)).
 		"Every session that follows this playbook claims its order itself",
@@ -690,8 +696,10 @@ func TestQueueOversightSkillsShipFrozenPolicyAndExactHeadDiscipline(t *testing.T
 			},
 		},
 		{
-			path: filepath.Join("conveyor-work", "conveyor-work.md"),
+			path: filepath.Join("conveyor-coordinate", "conveyor-coordinate.md"),
 			required: []string{
+				"Before admitting a task to work, display its frozen plan and merge policy",
+				"merge approval moves the task to `approved`, and the merge act (`conveyor task merge`) lands it",
 				"Duplicate reply:",
 				"Changed head:",
 				"never repeats the intervention",
@@ -1375,7 +1383,6 @@ func TestConveyorWorkSkillShipsApproveThenMergeSequence(t *testing.T) {
 		"(kind `merge_execution` with its `merge_readiness` for the pending merge act)",
 		"report that state and the remedy the gate summary names instead of merging",
 		"never repeat the merge blindly. Report a merge only after the session observes `merged`",
-		"merge approval moves the task to `approved`, and the merge act (`conveyor task merge`) lands it",
 	}
 	for _, destination := range destinations {
 		playbook, err := os.ReadFile(filepath.Join(destination.root, "conveyor-work", "conveyor-work.md"))
@@ -1580,6 +1587,67 @@ func TestExecutionPlaybooksShipOutOfBandGateRules(t *testing.T) {
 				}
 				if name := productNames.FindString(normalized); name != "" {
 					t.Errorf("%s (project=%t) %s names channel product %q", destination.tool.name, project, playbook.file, name)
+				}
+			}
+		}
+	}
+}
+
+// The execution loop maps evidence a reviewer elsewhere can read, answers
+// repository review bots, merges the base as a merge commit, releases a seat
+// that cannot finish, and checks out verification orders
+// (component-cli-onboarding; DEC-10; DEC-11).
+func TestConveyorWorkSkillShipsEvidenceReviewBotBaseMergeAndSeatFailureRules(t *testing.T) {
+	t.Parallel()
+	base := t.TempDir()
+	destinations := skillDestinations(base, supportedSkillTools, false)
+	if _, _, err := installEmbeddedSkillsForDestinations(base, destinations, "v1", false); err != nil {
+		t.Fatal(err)
+	}
+
+	required := map[string][]string{
+		"conveyor-work/conveyor-work.md": {
+			"Map every approved-plan done criterion and every served acceptance criterion to its evidence in the pull request body",
+			"Record evidence for each done criterion and each acceptance criterion in the pull request body or the submission summary, in a form a reviewer on another machine can read: inline results, a CI run, or an artifact reference. An absolute local path is not evidence, because each reviewer runs in its own session or sandbox.",
+			"When the repository runs automated pull-request reviewers",
+			"Address or answer each finding, and record each outcome in the pull request body",
+			"Never push to the task branch after submission outside a successor order",
+			"merge `origin/<base>` into the task branch as a merge commit",
+			"A merge-conflict order directs the same merge",
+			"#### A seat that cannot finish",
+			"The agent releases its order with `release_work_order` and a truthful reason that names the failure",
+			"It then starts a new agent for the redispatched order",
+			"The starting session never submits a verdict or a verification result for the seat itself",
+			"A verification order follows the `conveyor-kit-verify` skill",
+			"The default lease is five minutes (300 seconds)",
+			"Supervising a bounded task queue under each task's frozen policy follows the `conveyor-coordinate` skill.",
+		},
+		"conveyor-work/SKILL.md": {
+			"A verification order follows conveyor-kit-verify in the same dedicated task worktree.",
+		},
+	}
+	forbidden := map[string][]string{
+		"conveyor-work/conveyor-work.md": {
+			"internal/core.DefaultWorkOrderClaimLease",
+			"## Coordinate a bounded queue without changing its policy",
+			"Duplicate reply:",
+		},
+	}
+	for _, destination := range destinations {
+		for file, fragments := range required {
+			content, err := os.ReadFile(filepath.Join(destination.root, filepath.FromSlash(file)))
+			if err != nil {
+				t.Fatal(err)
+			}
+			normalized := strings.Join(strings.Fields(string(content)), " ")
+			for _, fragment := range fragments {
+				if !strings.Contains(normalized, fragment) {
+					t.Errorf("%s installed %s missing %q", destination.tool.name, file, fragment)
+				}
+			}
+			for _, fragment := range forbidden[file] {
+				if strings.Contains(normalized, fragment) {
+					t.Errorf("%s installed %s still contains %q", destination.tool.name, file, fragment)
 				}
 			}
 		}
