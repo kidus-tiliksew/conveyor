@@ -1,6 +1,6 @@
 ---
 name: conveyor-work
-description: Work an existing Conveyor task through its live claim, dedicated checkout, validation, delivery, and review-bounce lifecycle. Use when the operator asks a harness session to work on or implement a Conveyor task ID.
+description: Work an existing Conveyor task through its live claim, dedicated checkout, validation, delivery, and review-bounce lifecycle. Use when the operator asks a harness session to work on or implement a Conveyor task ID. A verification order follows conveyor-kit-verify in the same dedicated task worktree.
 ---
 
 # Work a Conveyor task
@@ -13,7 +13,8 @@ and review-bounce discipline.
 Non-negotiables, restated: never edit or push for a task without holding its
 live claim; never bypass a failed, declined, expired, or lost claim by working
 bare. Fetch the delivered work-order contract before repository work, use
-`conveyor checkout <task-id>` only for implementation and review orders, and
+`conveyor checkout <task-id>` only for implementation, verification, and
+review orders, follow `conveyor-kit-verify` for a verification order, and
 keep spec work read-only in the checkout where it started. Work only in the path
 `conveyor checkout` prints inside the configured worktree location; never work
 from a checkout path outside it, and never create a separate clone to get
