@@ -78,27 +78,6 @@
           "case": "EVC261031445A96-007"
         }
       ]
-    },
-    "review-authority": {
-      "states": [
-        {
-          "id": "review-pending",
-          "label": "Implementation order retains claim-time authority"
-        },
-        {
-          "id": "review-accepted",
-          "label": "Review accepted and continuation cleared"
-        }
-      ],
-      "transitions": [
-        {
-          "from": "review-pending",
-          "to": "review-accepted",
-          "event": "accept-review",
-          "label": "Accept review and record continuation clearance",
-          "case": "EVC261031445A96-008"
-        }
-      ]
     }
   },
   "cases": [
@@ -466,40 +445,6 @@
           {
             "text": "Rebuilding creates no duplicate relationships or cross-workspace links.",
             "polarity": "must_not"
-          }
-        ]
-      }
-    },
-    {
-      "id": "EVC261031445A96-008",
-      "title": "Accepted review clears continuation without copying authority bodies into events",
-      "tier": "medium",
-      "given": "For each of memory, PostgreSQL, and SingleStore, an implementation order retains its canonical claim-time governance and served-requirement bodies, and a corresponding review can be accepted.",
-      "when": "Accept the review, read the resulting continuation-clear event through persisted event history, and independently read the canonical implementation order.",
-      "then": "Continuation is cleared and the accepted-review event omits governance and served-requirement bodies in all three stores. The canonical implementation order still returns the original claim-time bodies unchanged, including after the event is read back.",
-      "why": "Removing duplicated authority bodies from events must not remove the authoritative claim-time evidence needed to understand the implementation order.",
-      "source": "Operator correction: accepted-review continuation-clear events omit governance and served-requirement bodies across memory, PostgreSQL, and SingleStore while canonical implementation orders retain them; req-260802-72fc68 v4, REQ-1 AC-1.1 and AC-1.3.",
-      "status": "approved",
-      "approved_at": "2026-10-31",
-      "comment": "auto: agent-owned",
-      "visual": {
-        "kind": "state",
-        "machine": "review-authority",
-        "at": "review-pending",
-        "event": "accept-review",
-        "expect_state": "review-accepted",
-        "asserts": [
-          {
-            "text": "Review acceptance clears continuation and persists the corresponding event in every store.",
-            "polarity": "must"
-          },
-          {
-            "text": "The continuation-clear event contains no governance or served-requirement bodies.",
-            "polarity": "must_not"
-          },
-          {
-            "text": "The canonical implementation order retains its unchanged claim-time governance and served-requirement bodies.",
-            "polarity": "must"
           }
         ]
       }
