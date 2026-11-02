@@ -142,9 +142,7 @@ export function NextActionChoices({
       <div
         data-choice-row={layout}
         className={
-          grid
-            ? 'grid w-full max-w-md min-w-0 grid-cols-2 items-stretch gap-2'
-            : 'flex min-w-0 flex-wrap items-stretch gap-2'
+          grid ? 'grid w-full min-w-0 grid-cols-2 items-stretch gap-2' : 'flex min-w-0 flex-wrap items-stretch gap-2'
         }
       >
         {leading && (grid ? <div className="col-span-2 flex min-w-0">{leading}</div> : leading)}
