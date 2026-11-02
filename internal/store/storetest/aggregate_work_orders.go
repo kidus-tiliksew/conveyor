@@ -49,6 +49,7 @@ func runWorkOrders(t *testing.T, x Fixture) {
 	t.Run("StoredReadKeepsExpiredClaimUnprojected", func(t *testing.T) { runStoredReadKeepsExpiredClaim(t, x) })
 	t.Run("LiveListing", func(t *testing.T) { runLiveWorkOrderListing(t, x) })
 	t.Run("SnapshotFreeFoldReads", func(t *testing.T) { runSnapshotFreeFoldReads(t, x) })
+	t.Run("ClaimSessionReads", func(t *testing.T) { runClaimSessionReads(t, x) })
 	st, ctx := x.Backend, x.Context
 	order := newAggregateOrder(t, x)
 	claim := core.WorkOrderClaim{ClaimantID: "worker", SessionID: "session", ClientToken: "fixture", Lease: time.Minute, ExecutionTimeout: time.Hour}

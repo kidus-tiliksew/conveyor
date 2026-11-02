@@ -254,6 +254,19 @@ type WorkOrderStore interface {
 	ListReviewRoundSeats(ctx context.Context, taskID string) ([]ReviewRoundSeats, error)
 	RecoverInterruptedReviewRoundCommand(ctx context.Context, lease taskops.TaskLease, request InterruptedReviewRecoveryRequest, queueTimeout time.Duration) (InterruptedReviewRecoveryResult, error)
 	GetWorkOrder(ctx context.Context, id string) (core.WorkOrder, error)
+	// GetWorkOrderWithoutSnapshots is GetWorkOrder without the
+	// served-requirement and governance snapshots and without assignee
+	// hydration: one order of the selected workspace, projected at read time,
+	// with the same not-found answer (component-work-orders, Snapshot-free
+	// fold reads).
+	GetWorkOrderWithoutSnapshots(ctx context.Context, id string) (core.WorkOrder, error)
+	// OtherWorkOrderHoldsSession reports whether an order other than
+	// workOrderID, in the selected workspace, holds the non-empty sessionID
+	// after read-time clock projection. An empty sessionID answers false
+	// without a read. Every backend evaluates the predicate in its own read
+	// and returns no order body (component-work-orders, Snapshot-free fold
+	// reads).
+	OtherWorkOrderHoldsSession(ctx context.Context, workOrderID, sessionID string) (bool, error)
 	ListWorkOrders(ctx context.Context) ([]core.WorkOrder, error)
 	// ListLiveWorkOrders returns the workspace's orders whose stored state is
 	// queued, claimed, stale, or timed out, projected at read time and ordered

@@ -200,14 +200,17 @@ func (m *memory) ReadActivityInputs(ctx context.Context, taskIDs []string, now t
 	return out, nil
 }
 
-// workOrdersAt is ListWorkOrders projected at one instant.
+// workOrdersAt is ListWorkOrders projected at one instant, with both
+// authority snapshots cleared as the durable backends' activityWorkOrderColumns
+// read leaves them, so no activity read returns a snapshot body
+// (component-persistence, Board activity validation reads).
 func (m *memory) workOrdersAt(now time.Time) []core.WorkOrder {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 	orders := make([]core.WorkOrder, 0, len(m.workOrders))
 	for _, order := range m.workOrders {
 		order.Assignee = m.tasks[order.TaskID].Assignee
-		orders = append(orders, ProjectWorkOrderAt(order, now))
+		orders = append(orders, withoutAuthoritySnapshots(ProjectWorkOrderAt(order, now)))
 	}
 	sort.Slice(orders, func(i, j int) bool {
 		if orders[i].CreatedAt.Equal(orders[j].CreatedAt) {

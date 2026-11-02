@@ -910,9 +910,48 @@ func (s *Store) GetWorkOrder(ctx context.Context, id string) (core.WorkOrder, er
 	return items[0], nil
 }
 
+// GetWorkOrderWithoutSnapshots is GetWorkOrder over activityWorkOrderColumns
+// without assignee hydration, so neither authority snapshot leaves the
+// database (component-work-orders, Snapshot-free fold reads).
+func (s *Store) GetWorkOrderWithoutSnapshots(ctx context.Context, id string) (core.WorkOrder, error) {
+	ctx = dbmetrics.WithReadLabel(ctx, "GetWorkOrderWithoutSnapshots")
+	order, err := scanWorkOrder(s.boundary.QueryRow(ctx, "SELECT "+activityWorkOrderColumns+" FROM work_orders WHERE workspace_id=$1 AND id=$2", workspace(ctx), id))
+	if err != nil {
+		return core.WorkOrder{}, notFound(err, "work order %s", id)
+	}
+	return store.ProjectWorkOrderAt(order, time.Now().UTC()), nil
+}
+
+// OtherWorkOrderHoldsSession evaluates the claim session check's predicate in
+// one statement that returns one boolean. A claimed order whose lease or
+// execution deadline has passed holds no session, because
+// store.ProjectWorkOrderAt clears it (component-work-orders, Snapshot-free
+// fold reads).
+func (s *Store) OtherWorkOrderHoldsSession(ctx context.Context, workOrderID, sessionID string) (bool, error) {
+	ctx = dbmetrics.WithReadLabel(ctx, "OtherWorkOrderHoldsSession")
+	if sessionID == "" {
+		return false, nil
+	}
+	var held bool
+	err := s.boundary.QueryRow(ctx, `SELECT EXISTS (
+		SELECT 1 FROM work_orders WHERE workspace_id=$1 AND session_id=$2 AND id<>$3
+		AND NOT (state='claimed' AND ((execution_deadline IS NOT NULL AND execution_deadline<=$4) OR (lease_expires_at IS NOT NULL AND lease_expires_at<=$4)))
+	)`, workspace(ctx), sessionID, workOrderID, time.Now().UTC()).Scan(&held)
+	return held, err
+}
+
 func (s *Store) ListWorkOrders(ctx context.Context) ([]core.WorkOrder, error) {
 	ctx = dbmetrics.WithReadLabel(ctx, "ListWorkOrders")
-	rows, err := s.boundary.Query(ctx, "SELECT "+workOrderColumns+" FROM work_orders WHERE workspace_id=$1 ORDER BY created_at,id", workspace(ctx))
+	return s.listWorkspaceWorkOrders(ctx, workOrderColumns, time.Now().UTC())
+}
+
+// listWorkspaceWorkOrders reads every order of the bound workspace with the
+// given column list, projects it at now, and hydrates assignees. ListWorkOrders
+// passes workOrderColumns; the whole-workspace activity read passes
+// activityWorkOrderColumns, so it returns the same orders without either
+// snapshot (component-persistence, Board activity validation reads).
+func (s *Store) listWorkspaceWorkOrders(ctx context.Context, columns string, now time.Time) ([]core.WorkOrder, error) {
+	rows, err := s.boundary.Query(ctx, "SELECT "+columns+" FROM work_orders WHERE workspace_id=$1 ORDER BY created_at,id", workspace(ctx))
 	if err != nil {
 		return nil, err
 	}
@@ -923,7 +962,7 @@ func (s *Store) ListWorkOrders(ctx context.Context) ([]core.WorkOrder, error) {
 		if scanErr != nil {
 			return nil, scanErr
 		}
-		orders = append(orders, store.ProjectWorkOrderAt(order, time.Now().UTC()))
+		orders = append(orders, store.ProjectWorkOrderAt(order, now))
 	}
 	if err = rows.Err(); err != nil {
 		return nil, err
@@ -1019,11 +1058,13 @@ func (s *Store) ListCheckpointContextCandidates(ctx context.Context, requirement
 }
 
 // listWorkOrdersForTasks reads the orders of an explicit task set, or the whole
-// workspace when the set is empty. It backs the activity-marker projection so a
-// page-scoped caller pays for its page only.
+// workspace when the set is empty, over activityWorkOrderColumns either way. It
+// backs the activity-marker projection so a page-scoped caller pays for its
+// page only and no caller reads a snapshot body (component-work-orders,
+// Snapshot-free fold reads).
 func (s *Store) listWorkOrdersForTasks(ctx context.Context, taskIDs []string) ([]core.WorkOrder, error) {
 	if len(taskIDs) == 0 {
-		return s.ListWorkOrders(ctx)
+		return s.listWorkspaceWorkOrders(ctx, activityWorkOrderColumns, time.Now().UTC())
 	}
 	rows, err := s.boundary.Query(ctx, "SELECT "+activityWorkOrderColumns+" FROM work_orders WHERE workspace_id=$1 AND task_id=ANY($2::text[]) ORDER BY created_at,id", workspace(ctx), taskIDs)
 	if err != nil {
