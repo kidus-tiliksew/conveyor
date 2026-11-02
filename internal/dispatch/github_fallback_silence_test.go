@@ -24,12 +24,21 @@ func (f *fallbackFixture) deliveredAt(at time.Time) {
 }
 
 // approveTask creates a task in state approved, created at created, with
-// its task.state_changed event to approved recorded at approved.
+// its task.state_changed event to approved recorded at approved. The
+// fallback reads neither write until both are done: the creation's task
+// notice can wake it first, and production never shows an approved task
+// without its approval event, because a backend writes the state and its
+// event in one transaction.
 func (f *fallbackFixture) approveTask(id string, mergeApproval bool, created, approved time.Time) {
 	f.t.Helper()
+	f.st.write.Lock()
+	defer f.st.write.Unlock()
 	task := core.Task{ID: id, Workspace: "test", Repo: "app", BaseBranch: "main", Branch: "conveyor/" + id, State: core.TaskApproved, MergeApproval: mergeApproval, CreatedAt: created}
 	if err := f.st.CreateTask(f.ctx, task); err != nil {
 		f.t.Fatal(err)
+	}
+	if hook := f.betweenApprovalWrites; hook != nil {
+		hook()
 	}
 	if err := f.st.AppendEvent(f.ctx, core.Event{TaskID: id, Kind: "task.state_changed", At: approved, Payload: core.JSONPayload(map[string]any{"from": core.TaskRunning, "to": core.TaskApproved})}); err != nil {
 		f.t.Fatal(err)
@@ -227,5 +236,41 @@ func TestGitHubFallbackSilenceIgnoresUnwatchedTasks(t *testing.T) {
 	}
 	if s, fired := f.advance(GitHubSilenceWindow); !fired || !f.fallback.SilenceActive("test") || f.reads.Load() == 0 {
 		t.Fatalf("watched fire=%+v fired=%t reads=%d, want the silence fallback running", s, fired, f.reads.Load())
+	}
+}
+
+// TestGitHubFallbackSilenceApprovalWritesSeenTogether: the creation notice
+// of a gate-off approved task wakes the fallback while approveTask is
+// between the task write and the approval event, and the armed due time
+// is still the approval plus 15 minutes. approveTask pauses until the
+// fallback has read the task's events or waits behind the write, so the
+// interleaving is forced without sleeps.
+func TestGitHubFallbackSilenceApprovalWritesSeenTogether(t *testing.T) {
+	f := newFallbackFixture(t)
+	f.deliveredAt(f.start.Add(-2 * time.Hour))
+	f.st.observed = make(chan gatedRead, 64)
+	if s := f.run(); s.armed {
+		t.Fatalf("start step=%+v, want no timer without a watched task", s)
+	}
+	if _, fired := f.advance(time.Hour); fired {
+		t.Fatal("timer fired without a watched task")
+	}
+	approved := f.clock.Now()
+	f.betweenApprovalWrites = func() {
+		deadline := time.After(5 * time.Second)
+		for {
+			select {
+			case r := <-f.st.observed:
+				if r.waited || r.taskID == "gate-off" {
+					return
+				}
+			case <-deadline:
+				t.Fatal("the fallback neither read the task's events nor waited for the approval write")
+			}
+		}
+	}
+	f.approveTask("gate-off", false, f.start, approved)
+	if s := f.awaitTask(true); !s.due.Equal(approved.Add(GitHubSilenceWindow)) {
+		t.Fatalf("approval step due at %s, want %s (the approval plus 15 minutes)", s.due.UTC(), approved.Add(GitHubSilenceWindow))
 	}
 }
