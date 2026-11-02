@@ -1199,7 +1199,7 @@ test('finalize immediately reveals a complete bundle preview, approval, and crea
   await expect(preview.getByText('Implement bounded retries')).toBeVisible()
   await expect(preview.getByText(/depends on: task-prerequisite/)).toBeVisible()
   await expect(preview.getByText(/req-retries, design-runtime/)).toBeVisible()
-  expect(bundleReads).toBeGreaterThan(1)
+  await expect.poll(() => bundleReads).toBeGreaterThan(1)
   await preview.getByRole('button', { name: 'Approve task set' }).click()
   await expect.poll(() => approved).toBe(true)
   await page.getByRole('navigation', { name: 'Primary' }).getByRole('link', { name: 'Board' }).click()

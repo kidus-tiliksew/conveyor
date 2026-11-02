@@ -210,7 +210,7 @@ test('connected status shows mixed coverage and disconnect requires confirmation
   await expect(dialog).toHaveCount(0)
   await expect(page.getByRole('button', { name: 'Connect GitHub', exact: true })).toBeVisible()
   expect(state.deletes).toBe(1)
-  expect(state.gets.length).toBeGreaterThan(1)
+  await expect.poll(() => state.gets.length).toBeGreaterThan(1)
 })
 
 test('setup return selects the returned workspace and refreshes status, including a restored page', async ({
@@ -222,7 +222,7 @@ test('setup return selects the returned workspace and refreshes status, includin
   state.status = { ...connected, app_slug: 'conveyor-second' }
   await page.goto('/w/demo/settings?workspace=second')
   await expect(page.getByText('conveyor-second', { exact: true })).toBeVisible()
-  expect(state.gets.at(-1)).toBe('/v1/workspaces/second/github-app')
+  await expect.poll(() => state.gets.at(-1)).toBe('/v1/workspaces/second/github-app')
   state.status = { ...disconnected }
   await page.evaluate(() => window.dispatchEvent(new PageTransitionEvent('pageshow', { persisted: true })))
   await expect(page.getByRole('button', { name: 'Connect GitHub', exact: true })).toBeVisible()
