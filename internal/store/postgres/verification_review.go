@@ -4,10 +4,12 @@ import (
 	"context"
 	"github.com/jackc/pgx/v5"
 	"github.com/kidus-tiliksew/conveyor/internal/store"
+	"github.com/kidus-tiliksew/conveyor/internal/store/dbmetrics"
 	"github.com/kidus-tiliksew/conveyor/internal/store/postgres/db"
 )
 
 func (s *Store) ReadVerificationReview(ctx context.Context, taskID, orderID string) (store.VerificationReviewState, error) {
+	ctx = dbmetrics.WithReadLabel(ctx, "ReadVerificationReview")
 	var state store.VerificationReviewState
 	err := s.inTx(ctx, func(tx pgx.Tx, q *db.Queries) error {
 		records, err := q.ListVerificationRecords(ctx, workspace(ctx), taskID)

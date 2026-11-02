@@ -6,6 +6,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	"github.com/kidus-tiliksew/conveyor/internal/store"
+	"github.com/kidus-tiliksew/conveyor/internal/store/dbmetrics"
 	"github.com/kidus-tiliksew/conveyor/internal/store/postgres/db"
 	"github.com/kidus-tiliksew/conveyor/internal/taskops"
 )
@@ -17,6 +18,7 @@ import (
 // locks every verification command takes, in the same order, rechecks the
 // selected rows, deletes them, and appends one audit event in one transaction.
 func (s *Store) ExpireVerificationChunks(ctx context.Context, limit int) (int, error) {
+	ctx = dbmetrics.WithReadLabel(ctx, "ExpireVerificationChunks")
 	ws, cutoff, err := store.AuthorizeVerificationChunkExpiry(ctx)
 	if err != nil {
 		return 0, err

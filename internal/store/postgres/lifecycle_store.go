@@ -10,11 +10,13 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/kidus-tiliksew/conveyor/internal/core"
 	"github.com/kidus-tiliksew/conveyor/internal/store"
+	"github.com/kidus-tiliksew/conveyor/internal/store/dbmetrics"
 	"github.com/kidus-tiliksew/conveyor/internal/store/postgres/db"
 	"github.com/kidus-tiliksew/conveyor/internal/taskops"
 )
 
 func (s *Store) ApplyTaskCommand(ctx context.Context, lease taskops.TaskLease, id string, command taskops.Command) (core.Task, error) {
+	ctx = dbmetrics.WithReadLabel(ctx, "ApplyTaskCommand")
 	if command.Kind == core.TaskStartOver {
 		return core.Task{}, fmt.Errorf("task start over requires StartOverTaskCommand")
 	}

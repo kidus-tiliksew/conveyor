@@ -4,9 +4,11 @@ import (
 	"context"
 
 	"github.com/kidus-tiliksew/conveyor/internal/core"
+	"github.com/kidus-tiliksew/conveyor/internal/store/dbmetrics"
 )
 
 func (s *Store) ListDocumentOperatorNotesForTask(ctx context.Context, taskID string) ([]core.OperatorNote, error) {
+	ctx = dbmetrics.WithReadLabel(ctx, "ListDocumentOperatorNotesForTask")
 	rows, err := s.queries.ListDocumentOperatorNotesForTask(ctx, workspace(ctx), taskID)
 	if err != nil {
 		return nil, err

@@ -10,6 +10,7 @@ import (
 	"github.com/kidus-tiliksew/conveyor/internal/core"
 	"github.com/kidus-tiliksew/conveyor/internal/redact"
 	"github.com/kidus-tiliksew/conveyor/internal/store"
+	"github.com/kidus-tiliksew/conveyor/internal/store/dbmetrics"
 )
 
 // DEC-59; component-identity-membership. Mutations serialize on the workspace
@@ -35,6 +36,7 @@ func scanAppStatus(row appScanner) (core.WorkspaceGitHubAppStatus, error) {
 	return r, nil
 }
 func (s *Store) StoreWorkspaceGitHubApp(ctx context.Context, id string, app core.WorkspaceGitHubAppCredential) (core.WorkspaceGitHubAppStatus, error) {
+	ctx = dbmetrics.WithReadLabel(ctx, "StoreWorkspaceGitHubApp")
 	if err := store.ValidateWorkspaceGitHubApp(id, app); err != nil {
 		return core.WorkspaceGitHubAppStatus{}, translateBackendConflict(err)
 	}
@@ -85,6 +87,7 @@ func (s *Store) StoreWorkspaceGitHubApp(ctx context.Context, id string, app core
 	return result, nil
 }
 func (s *Store) RecordWorkspaceGitHubAppInstallation(ctx context.Context, id string, appID, installationID int64, account string) (core.WorkspaceGitHubAppStatus, error) {
+	ctx = dbmetrics.WithReadLabel(ctx, "RecordWorkspaceGitHubAppInstallation")
 	var result core.WorkspaceGitHubAppStatus
 	if installationID <= 0 || account == "" {
 		return result, store.ErrNotFound
@@ -121,6 +124,7 @@ func (s *Store) RecordWorkspaceGitHubAppInstallation(ctx context.Context, id str
 	return result, nil
 }
 func (s *Store) GetWorkspaceGitHubAppStatus(ctx context.Context, id string) (core.WorkspaceGitHubAppStatus, error) {
+	ctx = dbmetrics.WithReadLabel(ctx, "GetWorkspaceGitHubAppStatus")
 	result, err := scanAppStatus(s.db.QueryRowContext(ctx, `SELECT `+appStatusColumns+` FROM workspace_github_apps WHERE workspace_id=?`, id))
 	if errors.Is(err, store.ErrNotFound) {
 		var exists string
@@ -135,6 +139,7 @@ func (s *Store) GetWorkspaceGitHubAppStatus(ctx context.Context, id string) (cor
 	return result, translateBackendConflict(err)
 }
 func (s *Store) GetWorkspaceGitHubAppForUse(ctx context.Context, id string) (core.WorkspaceGitHubAppCredential, error) {
+	ctx = dbmetrics.WithReadLabel(ctx, "GetWorkspaceGitHubAppForUse")
 	var r core.WorkspaceGitHubAppCredential
 	var at sql.NullTime
 	var nonce, ciphertext []byte
@@ -165,6 +170,7 @@ func (s *Store) GetWorkspaceGitHubAppForUse(ctx context.Context, id string) (cor
 	return r, nil
 }
 func (s *Store) DeleteWorkspaceGitHubApp(ctx context.Context, id string) error {
+	ctx = dbmetrics.WithReadLabel(ctx, "DeleteWorkspaceGitHubApp")
 	if id == "" {
 		return store.ErrNotFound
 	}

@@ -11,9 +11,11 @@ import (
 
 	"github.com/kidus-tiliksew/conveyor/internal/core"
 	"github.com/kidus-tiliksew/conveyor/internal/store"
+	"github.com/kidus-tiliksew/conveyor/internal/store/dbmetrics"
 )
 
 func (s *Store) UpsertTranscript(ctx context.Context, t core.Transcript) error {
+	ctx = dbmetrics.WithReadLabel(ctx, "UpsertTranscript")
 	if t.CreatedAt.IsZero() {
 		t.CreatedAt = time.Now().UTC()
 	}
@@ -40,6 +42,7 @@ func (s *Store) UpsertTranscript(ctx context.Context, t core.Transcript) error {
 	})
 }
 func (s *Store) GetTranscript(ctx context.Context, id string) (core.Transcript, error) {
+	ctx = dbmetrics.WithReadLabel(ctx, "GetTranscript")
 	var t core.Transcript
 	var stats []byte
 	err := documentRow(ctx, s.db, `SELECT job_id,uri,redaction_stats,created_at FROM transcripts WHERE workspace_id=? AND job_id=?`, documentWorkspace(ctx), id).Scan(&t.JobID, &t.URI, &stats, &t.CreatedAt)
@@ -128,6 +131,7 @@ func insertArtifactTx(ctx context.Context, tx *sql.Tx, a core.Artifact, content 
 	return err
 }
 func (s *Store) CreateArtifact(ctx context.Context, a core.Artifact, content []byte) (core.Artifact, error) {
+	ctx = dbmetrics.WithReadLabel(ctx, "CreateArtifact")
 	if a.Role == core.ArtifactRoleTypedVerificationEvidence {
 		return core.Artifact{}, store.ErrVerificationAccess
 	}
@@ -147,6 +151,7 @@ func (s *Store) CreateArtifact(ctx context.Context, a core.Artifact, content []b
 	return a, nil
 }
 func (s *Store) GetArtifact(ctx context.Context, id string) (core.Artifact, []byte, error) {
+	ctx = dbmetrics.WithReadLabel(ctx, "GetArtifact")
 	var artifact core.Artifact
 	var content []byte
 	err := documentRow(ctx, s.db, `SELECT a.id,a.workspace_id,a.name,a.content_type,a.size_bytes,a.content,a.created_at,COALESCE(l.role,'task_context'),COALESCE(l.task_id,''),COALESCE(l.requirement_id,''),COALESCE(l.planning_session_id,'') FROM artifacts a LEFT JOIN artifact_links l ON l.workspace_id=a.workspace_id AND l.artifact_id=a.id WHERE a.workspace_id=? AND a.id=? ORDER BY (l.role='typed_verification_evidence') DESC,l.role LIMIT 1`, documentWorkspace(ctx), id).Scan(&artifact.ID, &artifact.Workspace, &artifact.Name, &artifact.ContentType, &artifact.SizeBytes, &content, &artifact.CreatedAt, &artifact.Role, &artifact.TaskID, &artifact.RequirementID, &artifact.PlanningSessionID)
@@ -160,6 +165,7 @@ func (s *Store) GetArtifact(ctx context.Context, id string) (core.Artifact, []by
 }
 
 func (s *Store) GetArtifactForPlanningSession(ctx context.Context, id, sessionID string) (core.Artifact, []byte, error) {
+	ctx = dbmetrics.WithReadLabel(ctx, "GetArtifactForPlanningSession")
 	var artifact core.Artifact
 	var content []byte
 	err := documentRow(ctx, s.db, `SELECT a.id,a.workspace_id,a.name,a.content_type,a.size_bytes,a.content,a.created_at,l.role,COALESCE(l.task_id,''),COALESCE(l.requirement_id,''),COALESCE(l.planning_session_id,'')
@@ -178,6 +184,7 @@ func (s *Store) GetArtifactForPlanningSession(ctx context.Context, id, sessionID
 }
 
 func (s *Store) ListArtifacts(ctx context.Context) ([]core.Artifact, error) {
+	ctx = dbmetrics.WithReadLabel(ctx, "ListArtifacts")
 	rows, err := documentRows(ctx, s.db, `SELECT a.id,a.workspace_id,a.name,a.content_type,a.size_bytes,a.created_at,COALESCE(l.role,'task_context'),COALESCE(l.task_id,''),COALESCE(l.requirement_id,''),COALESCE(l.planning_session_id,'') FROM artifacts a LEFT JOIN artifact_links l ON l.workspace_id=a.workspace_id AND l.artifact_id=a.id WHERE a.workspace_id=? ORDER BY a.created_at,a.id,l.role`, documentWorkspace(ctx))
 	if err != nil {
 		return nil, err

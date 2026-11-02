@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/kidus-tiliksew/conveyor/internal/store"
+	"github.com/kidus-tiliksew/conveyor/internal/store/dbmetrics"
 	"github.com/kidus-tiliksew/conveyor/internal/taskops"
 )
 
@@ -33,6 +34,7 @@ func (s *Store) migrateVerificationChunkExpiryIndex(ctx context.Context) error {
 // order every verification command uses, then rechecks, deletes, and appends
 // one audit event in one transaction.
 func (s *Store) ExpireVerificationChunks(ctx context.Context, limit int) (int, error) {
+	ctx = dbmetrics.WithReadLabel(ctx, "ExpireVerificationChunks")
 	ws, cutoff, err := store.AuthorizeVerificationChunkExpiry(ctx)
 	if err != nil {
 		return 0, err

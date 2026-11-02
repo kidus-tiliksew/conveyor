@@ -11,11 +11,13 @@ import (
 	"github.com/kidus-tiliksew/conveyor/internal/config"
 	"github.com/kidus-tiliksew/conveyor/internal/core"
 	"github.com/kidus-tiliksew/conveyor/internal/store"
+	"github.com/kidus-tiliksew/conveyor/internal/store/dbmetrics"
 	"github.com/kidus-tiliksew/conveyor/internal/store/postgres/db"
 	"github.com/kidus-tiliksew/conveyor/internal/taskops"
 )
 
 func (s *Store) BindTaskApproval(ctx context.Context, id, headSHA string) error {
+	ctx = dbmetrics.WithReadLabel(ctx, "BindTaskApproval")
 	headSHA = strings.TrimSpace(headSHA)
 	if headSHA == "" {
 		return fmt.Errorf("approved head SHA is required")
@@ -30,6 +32,7 @@ func (s *Store) BindTaskApproval(ctx context.Context, id, headSHA string) error 
 }
 
 func (s *Store) MarkTaskApprovalStale(ctx context.Context, id, approvedHeadSHA, newHeadSHA, scope, reason string) (bool, error) {
+	ctx = dbmetrics.WithReadLabel(ctx, "MarkTaskApprovalStale")
 	if approvedHeadSHA == "" || newHeadSHA == "" || approvedHeadSHA == newHeadSHA {
 		return false, fmt.Errorf("distinct approved and new head SHAs are required")
 	}
@@ -63,6 +66,7 @@ func (s *Store) MarkTaskApprovalStale(ctx context.Context, id, approvedHeadSHA, 
 // . Re-advancing to the current refresh head is an idempotent
 // no-op.
 func (s *Store) AdvanceTaskRefreshHead(ctx context.Context, id, newHeadSHA string) error {
+	ctx = dbmetrics.WithReadLabel(ctx, "AdvanceTaskRefreshHead")
 	newHeadSHA = strings.TrimSpace(newHeadSHA)
 	if newHeadSHA == "" {
 		return fmt.Errorf("new head SHA is required")
@@ -92,6 +96,7 @@ func (s *Store) AdvanceTaskRefreshHead(ctx context.Context, id, newHeadSHA strin
 }
 
 func (s *Store) SkipTaskRefresh(ctx context.Context, id, newHeadSHA, reason string) error {
+	ctx = dbmetrics.WithReadLabel(ctx, "SkipTaskRefresh")
 	return s.inTx(ctx, func(tx pgx.Tx, q *db.Queries) error {
 		before, err := q.GetTask(ctx, db.GetTaskParams{ID: id, WorkspaceID: workspace(ctx)})
 		if err != nil {
@@ -110,6 +115,7 @@ func (s *Store) SkipTaskRefresh(ctx context.Context, id, newHeadSHA, reason stri
 // ClaimBaseConflictCheck is a single conditional UPDATE, so concurrent
 // dispatchers race on the row and exactly one sees RowsAffected()==1.
 func (s *Store) ClaimBaseConflictCheck(ctx context.Context, workOrderID string, at time.Time) (bool, error) {
+	ctx = dbmetrics.WithReadLabel(ctx, "ClaimBaseConflictCheck")
 	tag, err := s.boundary.Exec(ctx, `UPDATE work_orders SET base_conflict_checked_at=$3
 		WHERE workspace_id=$1 AND id=$2 AND base_conflict_checked_at IS NULL`, workspace(ctx), workOrderID, at.UTC())
 	if err != nil {
@@ -119,6 +125,7 @@ func (s *Store) ClaimBaseConflictCheck(ctx context.Context, workOrderID string, 
 }
 
 func (s *Store) CreateConflictFixCommand(ctx context.Context, lease taskops.TaskLease, request store.ConflictFixRequest) (store.ConflictFixResult, error) {
+	ctx = dbmetrics.WithReadLabel(ctx, "CreateConflictFixCommand")
 	if !lease.ValidForCommand(request.TaskID, string(core.WorkOrderCmdCreate)) {
 		return store.ConflictFixResult{}, fmt.Errorf("conflict-fix create requires a valid taskops lease")
 	}
@@ -274,6 +281,7 @@ func (s *Store) CreateConflictFixCommand(ctx context.Context, lease taskops.Task
 // update, missing job, or non-running job rolls back every write
 // (component-work-orders).
 func (s *Store) SubmitImplementationCommand(ctx context.Context, lease taskops.TaskLease, request store.ImplementationSubmission) (core.Job, error) {
+	ctx = dbmetrics.WithReadLabel(ctx, "SubmitImplementationCommand")
 	request, err := store.NormalizeImplementationSubmission(ctx, request)
 	if err != nil {
 		return core.Job{}, err

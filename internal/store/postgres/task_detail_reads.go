@@ -4,6 +4,7 @@ import (
 	"context"
 
 	"github.com/kidus-tiliksew/conveyor/internal/store"
+	"github.com/kidus-tiliksew/conveyor/internal/store/dbmetrics"
 )
 
 // Task-detail batch reads (component-persistence, Task-detail batch reads):
@@ -19,6 +20,7 @@ type detailRows interface {
 }
 
 func (s *Store) ListDocumentMetadata(ctx context.Context, ids []string) (store.DocumentMetadataSet, error) {
+	ctx = dbmetrics.WithReadLabel(ctx, "ListDocumentMetadata")
 	if len(ids) == 0 {
 		return store.NewDocumentMetadataSet(), nil
 	}

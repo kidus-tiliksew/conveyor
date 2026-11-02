@@ -6,6 +6,7 @@ import (
 	"crypto/cipher"
 
 	"github.com/kidus-tiliksew/conveyor/internal/store"
+	"github.com/kidus-tiliksew/conveyor/internal/store/dbmetrics"
 )
 
 func (s *Store) gitHubAppKeyAEAD() (cipher.AEAD, error) {
@@ -24,6 +25,7 @@ func (s *Store) gitHubAppKeyAEAD() (cipher.AEAD, error) {
 }
 
 func (s *Store) ListGitHubAppKeysForRedaction(ctx context.Context) ([]string, error) {
+	ctx = dbmetrics.WithReadLabel(ctx, "ListGitHubAppKeysForRedaction")
 	var values []string
 	appRows, err := s.boundary.Query(ctx, `SELECT workspace_id,private_key_nonce,private_key_ciphertext FROM workspace_github_apps`)
 	if err != nil {

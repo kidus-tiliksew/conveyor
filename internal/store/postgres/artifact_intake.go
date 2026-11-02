@@ -8,11 +8,13 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/kidus-tiliksew/conveyor/internal/core"
 	"github.com/kidus-tiliksew/conveyor/internal/store"
+	"github.com/kidus-tiliksew/conveyor/internal/store/dbmetrics"
 	"github.com/kidus-tiliksew/conveyor/internal/store/postgres/db"
 )
 
 // component-artifacts; component-persistence: all intake writes share the queue's tx.
 func (s *Store) CreateTaskWithAttachments(ctx context.Context, t core.Task, ids []string, attached store.TaskContextInput, uploads []store.ArtifactUpload) error {
+	ctx = dbmetrics.WithReadLabel(ctx, "CreateTaskWithAttachments")
 	if t.Workspace != workspace(ctx) {
 		return fmt.Errorf("task workspace mismatch")
 	}

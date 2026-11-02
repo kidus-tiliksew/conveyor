@@ -12,6 +12,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/kidus-tiliksew/conveyor/internal/core"
 	"github.com/kidus-tiliksew/conveyor/internal/store"
+	"github.com/kidus-tiliksew/conveyor/internal/store/dbmetrics"
 	"github.com/kidus-tiliksew/conveyor/internal/store/postgres/db"
 )
 
@@ -34,6 +35,7 @@ const requirementInsightTaskColumns = `t.supersedes, t.superseded_by, t.intake_o
 // design attachments joined to existing documents, and their earliest
 // merged and closed transition times.
 func (s *Store) ReadRequirementInsightInputs(ctx context.Context, requirementID string) (store.RequirementInsightInputs, error) {
+	ctx = dbmetrics.WithReadLabel(ctx, "ReadRequirementInsightInputs")
 	workspaceID := workspace(ctx)
 	requirement, err := scanRequirement(s.boundary.QueryRow(ctx, requirementSelect+` WHERE workspace_id=$1 AND id=$2`, workspaceID, requirementID), requirementID)
 	if errors.Is(err, store.ErrNotFound) || (err == nil && (requirement.Archived || requirement.CurrentVersion <= 0)) {
@@ -188,6 +190,7 @@ func requirementInsightHeadlineFromDB(row db.RequirementInsightHeadline) store.R
 
 // GetRequirementInsightHeadline reads the bound workspace's stored headline.
 func (s *Store) GetRequirementInsightHeadline(ctx context.Context, requirementID string) (store.RequirementInsightHeadline, error) {
+	ctx = dbmetrics.WithReadLabel(ctx, "GetRequirementInsightHeadline")
 	row, err := s.queries.GetRequirementInsightHeadline(ctx, db.GetRequirementInsightHeadlineParams{WorkspaceID: workspace(ctx), RequirementID: requirementID})
 	if err != nil {
 		return store.RequirementInsightHeadline{}, notFound(err, "requirement insight headline %s", requirementID)
@@ -202,6 +205,7 @@ func (s *Store) GetRequirementInsightHeadline(ctx context.Context, requirementID
 // winner. An equal fingerprint returns ErrInsightHeadlineCurrent and the
 // rolled-back transaction writes nothing.
 func (s *Store) RecordRequirementInsightHeadline(ctx context.Context, headline store.RequirementInsightHeadline) (store.RequirementInsightHeadline, error) {
+	ctx = dbmetrics.WithReadLabel(ctx, "RecordRequirementInsightHeadline")
 	if err := store.ValidateRequirementInsightHeadline(headline); err != nil {
 		return store.RequirementInsightHeadline{}, err
 	}

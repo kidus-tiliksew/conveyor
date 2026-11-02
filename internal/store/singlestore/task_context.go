@@ -9,9 +9,11 @@ import (
 
 	"github.com/kidus-tiliksew/conveyor/internal/core"
 	"github.com/kidus-tiliksew/conveyor/internal/store"
+	"github.com/kidus-tiliksew/conveyor/internal/store/dbmetrics"
 )
 
 func (s *Store) UpdateTaskContext(ctx context.Context, taskID string, change store.TaskContextChange) (core.TaskContext, error) {
+	ctx = dbmetrics.WithReadLabel(ctx, "UpdateTaskContext")
 	add, err := store.NormalizeTaskContextInput(change.Add)
 	if err != nil {
 		return core.TaskContext{}, err
@@ -115,15 +117,19 @@ func repinTaskDesignContextTx(ctx context.Context, tx *sql.Tx, ws, id string, at
 	return nil
 }
 func (s *Store) ProposeTaskContext(ctx context.Context, input core.TaskContextProposalInput) (core.TaskContextProposal, bool, error) {
+	ctx = dbmetrics.WithReadLabel(ctx, "ProposeTaskContext")
 	return s.proposeTaskContext(ctx, input, false)
 }
 func (s *Store) ConfirmTaskContextProposal(ctx context.Context, id string, kind core.TaskContextProposalTargetKind, target string) (core.TaskContextProposal, error) {
+	ctx = dbmetrics.WithReadLabel(ctx, "ConfirmTaskContextProposal")
 	return s.transitionTaskContextProposal(ctx, id, kind, target, core.TaskContextProposalConfirmed, false)
 }
 func (s *Store) DismissTaskContextProposal(ctx context.Context, id string, kind core.TaskContextProposalTargetKind, target string) (core.TaskContextProposal, error) {
+	ctx = dbmetrics.WithReadLabel(ctx, "DismissTaskContextProposal")
 	return s.transitionTaskContextProposal(ctx, id, kind, target, core.TaskContextProposalDismissed, false)
 }
 func (s *Store) ListTaskContextProposals(ctx context.Context, id string, state core.TaskContextProposalState) ([]core.TaskContextProposal, error) {
+	ctx = dbmetrics.WithReadLabel(ctx, "ListTaskContextProposals")
 	q := taskContextProposalSelect + ` WHERE workspace_id=?`
 	args := []any{documentWorkspace(ctx)}
 	if id != "" {

@@ -10,6 +10,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/kidus-tiliksew/conveyor/internal/core"
 	"github.com/kidus-tiliksew/conveyor/internal/store"
+	"github.com/kidus-tiliksew/conveyor/internal/store/dbmetrics"
 	"github.com/kidus-tiliksew/conveyor/internal/store/postgres/db"
 )
 
@@ -30,6 +31,7 @@ const taskMapColumns = `t.supersedes, t.superseded_by, t.intake_operator_directi
 // because the next-action dependency view needs dependents outside the
 // repository selection; finished rows load only when the scope selects them.
 func (s *Store) ListTaskMap(ctx context.Context, query store.TaskMapQuery) (store.TaskMap, error) {
+	ctx = dbmetrics.WithReadLabel(ctx, "ListTaskMap")
 	workspaceID := workspace(ctx)
 	repositories := emptyIfNil(query.Repositories)
 	rows, err := s.boundary.Query(ctx, `SELECT `+taskMapColumns+`
@@ -133,6 +135,7 @@ ORDER BY latest.task_id, r.id`, workspaceID)
 // ListNextActionEvents reads only the assembler's event kinds for the
 // requested tasks in one query, in the (at, id) order ListEvents returns.
 func (s *Store) ListNextActionEvents(ctx context.Context, taskIDs []string) (map[string][]core.Event, error) {
+	ctx = dbmetrics.WithReadLabel(ctx, "ListNextActionEvents")
 	out := map[string][]core.Event{}
 	if len(taskIDs) == 0 {
 		return out, nil
@@ -159,6 +162,7 @@ ORDER BY e.task_id, e.at, e.id`, workspace(ctx), taskIDs, store.NextActionEventK
 // ListLatestSpecVersionNumbers reads each requested task's latest plan
 // version in one query, the version GetLatestSpecVersion returns.
 func (s *Store) ListLatestSpecVersionNumbers(ctx context.Context, taskIDs []string) (map[string]int, error) {
+	ctx = dbmetrics.WithReadLabel(ctx, "ListLatestSpecVersionNumbers")
 	out := map[string]int{}
 	if len(taskIDs) == 0 {
 		return out, nil
@@ -186,6 +190,7 @@ GROUP BY s.task_id`, workspace(ctx), taskIDs)
 // ListClaimBlockingProposalsForTasks applies claimBlockingProposalsTx's
 // predicate to every requested task in one query.
 func (s *Store) ListClaimBlockingProposalsForTasks(ctx context.Context, taskIDs []string) (map[string][]store.ClaimBlockingProposal, error) {
+	ctx = dbmetrics.WithReadLabel(ctx, "ListClaimBlockingProposalsForTasks")
 	out := map[string][]store.ClaimBlockingProposal{}
 	if len(taskIDs) == 0 {
 		return out, nil
@@ -218,6 +223,7 @@ WHERE workspace_id=$1 AND origin=$4 AND origin_task_id=ANY($3::text[]) AND NOT c
 // ListTaskHeads reads the requested tasks' identity, title, and state in one
 // query.
 func (s *Store) ListTaskHeads(ctx context.Context, taskIDs []string) (map[string]store.TaskHead, error) {
+	ctx = dbmetrics.WithReadLabel(ctx, "ListTaskHeads")
 	out := map[string]store.TaskHead{}
 	if len(taskIDs) == 0 {
 		return out, nil
@@ -368,6 +374,7 @@ ORDER BY e.task_id, e.kind, e.at DESC, e.id DESC`
 // the typed latest values of the park-command, pull-request, and bounce
 // folds, and the fixed-size merge-conflict summary (component-persistence).
 func (s *Store) ListNextActionHistory(ctx context.Context, taskIDs []string) (map[string]store.NextActionHistory, error) {
+	ctx = dbmetrics.WithReadLabel(ctx, "ListNextActionHistory")
 	out := map[string]store.NextActionHistory{}
 	if len(taskIDs) == 0 {
 		return out, nil
@@ -430,6 +437,7 @@ func (s *Store) ListNextActionHistory(ctx context.Context, taskIDs []string) (ma
 // ListOpenDependents reads, in one query, the heads of the workspace's open
 // tasks with a dependency edge to any requested task.
 func (s *Store) ListOpenDependents(ctx context.Context, taskIDs []string) ([]store.TaskHead, error) {
+	ctx = dbmetrics.WithReadLabel(ctx, "ListOpenDependents")
 	out := []store.TaskHead{}
 	if len(taskIDs) == 0 {
 		return out, nil
@@ -479,6 +487,7 @@ WHERE kind = $3`
 // design add or remove per task and design ID and keeps the adds, so only
 // current pins cross the boundary (component-persistence).
 func (s *Store) ListTaskContextDesignPins(ctx context.Context, taskIDs, documentIDs []string) (map[string]map[string]int, error) {
+	ctx = dbmetrics.WithReadLabel(ctx, "ListTaskContextDesignPins")
 	out := map[string]map[string]int{}
 	if len(taskIDs) == 0 || len(documentIDs) == 0 {
 		return out, nil
@@ -505,6 +514,7 @@ func (s *Store) ListTaskContextDesignPins(ctx context.Context, taskIDs, document
 // ListDocumentHeads reads requirement and System Design heads in one query;
 // a requirement wins over a System Design with the same ID.
 func (s *Store) ListDocumentHeads(ctx context.Context, ids []string) (map[string]store.DocumentHead, error) {
+	ctx = dbmetrics.WithReadLabel(ctx, "ListDocumentHeads")
 	out := map[string]store.DocumentHead{}
 	if len(ids) == 0 {
 		return out, nil
@@ -535,6 +545,7 @@ WHERE workspace_id=$1 AND id=ANY($2::text[])`, workspace(ctx), ids)
 // requested tasks and the requested orders in one query, inside one
 // transaction, with ReadVerificationReview's per-pair result and errors.
 func (s *Store) ReadVerificationReviews(ctx context.Context, refs []store.VerificationReviewRef) (map[string]store.VerificationReviewState, error) {
+	ctx = dbmetrics.WithReadLabel(ctx, "ReadVerificationReviews")
 	out := make(map[string]store.VerificationReviewState, len(refs))
 	if len(refs) == 0 {
 		return out, nil

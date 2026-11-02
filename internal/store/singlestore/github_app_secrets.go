@@ -14,6 +14,7 @@ import (
 
 	"github.com/kidus-tiliksew/conveyor/internal/core"
 	"github.com/kidus-tiliksew/conveyor/internal/store"
+	"github.com/kidus-tiliksew/conveyor/internal/store/dbmetrics"
 )
 
 // DEC-38, component-identity-membership: each Store owns a defensive key copy.
@@ -79,6 +80,7 @@ func appendDeploymentEvent(ctx context.Context, tx *sql.Tx, kind string, payload
 	return translateBackendConflict(err)
 }
 func (s *Store) ListGitHubAppKeysForRedaction(ctx context.Context) ([]string, error) {
+	ctx = dbmetrics.WithReadLabel(ctx, "ListGitHubAppKeysForRedaction")
 	values := []string{}
 	for _, q := range []string{"SELECT CONCAT('workspace-app:',workspace_id),private_key_nonce,private_key_ciphertext FROM workspace_github_apps ORDER BY workspace_id"} {
 		rows, err := s.db.QueryContext(ctx, q)

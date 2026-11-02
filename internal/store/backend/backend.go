@@ -28,48 +28,59 @@ var _ store.Backend = (*postgres.Store)(nil)
 var _ store.Backend = (*singlestore.Store)(nil)
 
 func Open(ctx context.Context, database config.Database, options ...Option) (store.Backend, error) {
-	st, _, err := OpenWithPoolStats(ctx, database, options...)
+	st, _, err := OpenWithStats(ctx, database, options...)
 	return st, err
 }
 
 // PoolStatsFunc reads a backend's process-wide pool counters.
 type PoolStatsFunc func() dbmetrics.PoolStats
 
+// ReadStatsFunc drains a backend's read ledger: the bytes, rows, and queries
+// received since the previous drain and the top labels by bytes.
+type ReadStatsFunc func(top int) dbmetrics.ReadInterval
+
+// Stats holds the statistics an opened backend reports; a nil function
+// reports nothing (component-runtime, Durable backend selection).
+type Stats struct {
+	Pool  PoolStatsFunc
+	Reads ReadStatsFunc
+}
+
 var errMaxConnsRange = errors.New("database.max_conns must be an integer from 1 to 2147483647")
 
-// OpenWithPoolStats is Open plus the opened backend's pool statistics
-// function, which is nil for backends that report none. The capability is a
-// compiler-checked method value, not a discovered interface
-// (component-runtime, Durable backend selection).
-func OpenWithPoolStats(ctx context.Context, database config.Database, options ...Option) (store.Backend, PoolStatsFunc, error) {
+// OpenWithStats is Open plus the opened backend's statistics functions:
+// pool statistics for PostgreSQL and read statistics for both durable
+// backends. Each capability is a compiler-checked method value, not a
+// discovered interface (component-runtime, Durable backend selection).
+func OpenWithStats(ctx context.Context, database config.Database, options ...Option) (store.Backend, Stats, error) {
 	switch database.Backend {
 	case "postgres":
 		var postgresOptions []postgres.OpenOption
 		if database.MaxConns != nil {
 			if *database.MaxConns < 1 || *database.MaxConns > math.MaxInt32 {
-				return nil, nil, errMaxConnsRange
+				return nil, Stats{}, errMaxConnsRange
 			}
 			postgresOptions = append(postgresOptions, postgres.WithMaxConns(int32(*database.MaxConns)))
 		}
 		st, err := postgres.Open(ctx, database.URL, postgresOptions...)
 		if err != nil {
-			return nil, nil, err
+			return nil, Stats{}, err
 		}
-		return st, st.PoolStats, nil
+		return st, Stats{Pool: st.PoolStats, Reads: st.ReadStats}, nil
 	case "singlestore":
 		st, err := singlestore.Open(ctx, database.URL)
 		if err != nil {
-			return nil, nil, err
+			return nil, Stats{}, err
 		}
-		return st, nil, nil
+		return st, Stats{Reads: st.ReadStats}, nil
 	case "memory":
 		for _, option := range options {
 			if option == AllowVolatile {
-				return store.NewVolatileBackend(), nil, nil
+				return store.NewVolatileBackend(), Stats{}, nil
 			}
 		}
-		return nil, nil, ErrVolatileBackend
+		return nil, Stats{}, ErrVolatileBackend
 	default:
-		return nil, nil, fmt.Errorf("%w: %q", ErrUnknownBackend, database.Backend)
+		return nil, Stats{}, fmt.Errorf("%w: %q", ErrUnknownBackend, database.Backend)
 	}
 }

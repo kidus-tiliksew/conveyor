@@ -12,12 +12,14 @@ import (
 	"github.com/go-sql-driver/mysql"
 	"github.com/kidus-tiliksew/conveyor/internal/core"
 	"github.com/kidus-tiliksew/conveyor/internal/store"
+	"github.com/kidus-tiliksew/conveyor/internal/store/dbmetrics"
 )
 
 // Requirement and planning-session persistence. Every mutation commits its projection update and audit
 // event in one transaction, under component-document-corpus and component-persistence.
 
 func (s *Store) CreateRequirement(ctx context.Context, requirement core.Requirement, first core.RequirementVersion) (core.Requirement, core.RequirementVersion, error) {
+	ctx = dbmetrics.WithReadLabel(ctx, "CreateRequirement")
 	if requirement.ID == "" {
 		return core.Requirement{}, core.RequirementVersion{}, fmt.Errorf("requirement id is required")
 	}
@@ -111,10 +113,12 @@ func (s *Store) CreateRequirement(ctx context.Context, requirement core.Requirem
 }
 
 func (s *Store) GetRequirement(ctx context.Context, id string) (core.Requirement, error) {
+	ctx = dbmetrics.WithReadLabel(ctx, "GetRequirement")
 	return scanRequirement(documentRow(ctx, s.db, requirementSelect+` WHERE workspace_id=? AND id=?`, documentWorkspace(ctx), id), id)
 }
 
 func (s *Store) ListRequirements(ctx context.Context, includeArchived bool) ([]core.Requirement, error) {
+	ctx = dbmetrics.WithReadLabel(ctx, "ListRequirements")
 	rows, err := documentRows(ctx, s.db, requirementSelect+` WHERE workspace_id=? AND (? OR archived_at IS NULL) ORDER BY title,id`, documentWorkspace(ctx), includeArchived)
 	if err != nil {
 		return nil, err
@@ -132,10 +136,12 @@ func (s *Store) ListRequirements(ctx context.Context, includeArchived bool) ([]c
 }
 
 func (s *Store) ArchiveRequirement(ctx context.Context, id, actor string, supersededBy []string) error {
+	ctx = dbmetrics.WithReadLabel(ctx, "ArchiveRequirement")
 	return s.setRequirementArchived(ctx, id, actor, true, supersededBy)
 }
 
 func (s *Store) RestoreRequirement(ctx context.Context, id, actor string) error {
+	ctx = dbmetrics.WithReadLabel(ctx, "RestoreRequirement")
 	return s.setRequirementArchived(ctx, id, actor, false, nil)
 }
 
@@ -184,6 +190,7 @@ func (s *Store) setRequirementArchived(ctx context.Context, id, actor string, ar
 }
 
 func (s *Store) AcknowledgeRequirementStaleness(ctx context.Context, acknowledgment core.RequirementStalenessAcknowledgment) (core.RequirementStalenessAcknowledgment, error) {
+	ctx = dbmetrics.WithReadLabel(ctx, "AcknowledgeRequirementStaleness")
 	actor := store.ActorFromContext(ctx)
 	if actor.Role != core.ActorHuman {
 		return core.RequirementStalenessAcknowledgment{}, fmt.Errorf("requirement staleness acknowledgments require a human operator")
@@ -212,6 +219,7 @@ func (s *Store) AcknowledgeRequirementStaleness(ctx context.Context, acknowledgm
 }
 
 func (s *Store) ProposeRequirementVersion(ctx context.Context, version core.RequirementVersion) (core.RequirementVersion, error) {
+	ctx = dbmetrics.WithReadLabel(ctx, "ProposeRequirementVersion")
 	if err := core.ValidateRequirementOrigin(version); err != nil {
 		return core.RequirementVersion{}, err
 	}
@@ -345,6 +353,7 @@ func (s *Store) ProposeRequirementVersion(ctx context.Context, version core.Requ
 }
 
 func (s *Store) ConfirmRequirementVersion(ctx context.Context, requirementID string, version int, expectedCurrentVersion ...int) (core.Requirement, core.RequirementVersion, error) {
+	ctx = dbmetrics.WithReadLabel(ctx, "ConfirmRequirementVersion")
 	var (
 		requirement core.Requirement
 		confirmed   core.RequirementVersion
@@ -489,6 +498,7 @@ func (s *Store) ConfirmRequirementVersion(ctx context.Context, requirementID str
 }
 
 func (s *Store) DismissRequirementVersion(ctx context.Context, requirementID string, version int) (core.Requirement, core.RequirementVersion, error) {
+	ctx = dbmetrics.WithReadLabel(ctx, "DismissRequirementVersion")
 	var (
 		requirement core.Requirement
 		dismissed   core.RequirementVersion
@@ -561,11 +571,13 @@ func dismissRequirementVersionTx(ctx context.Context, tx *sql.Tx, requirementID 
 }
 
 func (s *Store) GetRequirementVersion(ctx context.Context, requirementID string, version int) (core.RequirementVersion, error) {
+	ctx = dbmetrics.WithReadLabel(ctx, "GetRequirementVersion")
 	return scanRequirementVersion(documentRow(ctx, s.db, requirementVersionSelect+
 		` WHERE workspace_id=? AND requirement_id=? AND version=?`, documentWorkspace(ctx), requirementID, version), requirementID, version)
 }
 
 func (s *Store) ListRequirementVersions(ctx context.Context, requirementID string) ([]core.RequirementVersion, error) {
+	ctx = dbmetrics.WithReadLabel(ctx, "ListRequirementVersions")
 	rows, err := documentRows(ctx, s.db, requirementVersionSelect+
 		` WHERE workspace_id=? AND requirement_id=? ORDER BY version`, documentWorkspace(ctx), requirementID)
 	if err != nil {
@@ -584,6 +596,7 @@ func (s *Store) ListRequirementVersions(ctx context.Context, requirementID strin
 }
 
 func (s *Store) ListRequirementVersionsByRequirement(ctx context.Context) (map[string][]core.RequirementVersion, error) {
+	ctx = dbmetrics.WithReadLabel(ctx, "ListRequirementVersionsByRequirement")
 	rows, err := documentRows(ctx, s.db, requirementVersionSelect+
 		` WHERE workspace_id=? ORDER BY requirement_id,version`, documentWorkspace(ctx))
 	if err != nil {
@@ -602,6 +615,7 @@ func (s *Store) ListRequirementVersionsByRequirement(ctx context.Context) (map[s
 }
 
 func (s *Store) ProposeRequirementServes(ctx context.Context, blueprintTaskID, requirementID string, source core.RequirementServesSource, confirm bool) (core.RequirementServesLink, error) {
+	ctx = dbmetrics.WithReadLabel(ctx, "ProposeRequirementServes")
 	proposal, _, err := s.proposeTaskContext(ctx, core.TaskContextProposalInput{TaskID: blueprintTaskID, TargetKind: core.TaskContextProposalRequirement,
 		TargetID: requirementID, Source: core.TaskContextProposalSource(source), Justification: "This confirmed requirement is relevant task context."}, true)
 	if err != nil {
@@ -614,16 +628,19 @@ func (s *Store) ProposeRequirementServes(ctx context.Context, blueprintTaskID, r
 }
 
 func (s *Store) ConfirmRequirementServes(ctx context.Context, blueprintTaskID, requirementID string) (core.RequirementServesLink, error) {
+	ctx = dbmetrics.WithReadLabel(ctx, "ConfirmRequirementServes")
 	proposal, err := s.transitionTaskContextProposal(ctx, blueprintTaskID, core.TaskContextProposalRequirement, requirementID, core.TaskContextProposalConfirmed, true)
 	return requirementServesFromTaskContextProposal(proposal), err
 }
 
 func (s *Store) DismissRequirementServes(ctx context.Context, blueprintTaskID, requirementID string) (core.RequirementServesLink, error) {
+	ctx = dbmetrics.WithReadLabel(ctx, "DismissRequirementServes")
 	proposal, err := s.transitionTaskContextProposal(ctx, blueprintTaskID, core.TaskContextProposalRequirement, requirementID, core.TaskContextProposalDismissed, true)
 	return requirementServesFromTaskContextProposal(proposal), err
 }
 
 func (s *Store) ListRequirementServes(ctx context.Context) ([]core.RequirementServesLink, error) {
+	ctx = dbmetrics.WithReadLabel(ctx, "ListRequirementServes")
 	proposals, err := s.listDocumentContextProposals(ctx)
 	if err != nil {
 		return nil, err
@@ -644,6 +661,7 @@ func requirementServesFromTaskContextProposal(proposal core.TaskContextProposal)
 }
 
 func (s *Store) CreatePlanningSession(ctx context.Context, session core.PlanningSession) (core.PlanningSession, error) {
+	ctx = dbmetrics.WithReadLabel(ctx, "CreatePlanningSession")
 	if session.ID == "" {
 		return core.PlanningSession{}, fmt.Errorf("planning session id is required")
 	}
@@ -707,11 +725,13 @@ func (s *Store) CreatePlanningSession(ctx context.Context, session core.Planning
 }
 
 func (s *Store) GetPlanningSession(ctx context.Context, id string) (core.PlanningSession, error) {
+	ctx = dbmetrics.WithReadLabel(ctx, "GetPlanningSession")
 	return scanPlanningSession(documentRow(ctx, s.db, planningSessionSelect+
 		` WHERE workspace_id=? AND id=?`, documentWorkspace(ctx), id), id)
 }
 
 func (s *Store) ListPlanningSessions(ctx context.Context) ([]core.PlanningSession, error) {
+	ctx = dbmetrics.WithReadLabel(ctx, "ListPlanningSessions")
 	rows, err := documentRows(ctx, s.db, planningSessionSelect+
 		` WHERE workspace_id=? ORDER BY updated_at DESC, id`, documentWorkspace(ctx))
 	if err != nil {
@@ -730,6 +750,7 @@ func (s *Store) ListPlanningSessions(ctx context.Context) ([]core.PlanningSessio
 }
 
 func (s *Store) PinPlanningSessionRepo(ctx context.Context, sessionID, repo, revision string) (core.PlanningSession, error) {
+	ctx = dbmetrics.WithReadLabel(ctx, "PinPlanningSessionRepo")
 	var session core.PlanningSession
 	var conflict error
 	err := s.documentTx(ctx, func(tx *sql.Tx) error {
@@ -777,6 +798,7 @@ func (s *Store) PinPlanningSessionRepo(ctx context.Context, sessionID, repo, rev
 }
 
 func (s *Store) RecordPlanningExplorationTokens(ctx context.Context, sessionID string, tokens int) (core.PlanningSession, error) {
+	ctx = dbmetrics.WithReadLabel(ctx, "RecordPlanningExplorationTokens")
 	if tokens < 0 {
 		return core.PlanningSession{}, fmt.Errorf("planning exploration tokens must not be negative")
 	}
@@ -789,6 +811,7 @@ func (s *Store) RecordPlanningExplorationTokens(ctx context.Context, sessionID s
 }
 
 func (s *Store) AppendPlanningMessage(ctx context.Context, message core.PlanningMessage) (core.PlanningMessage, error) {
+	ctx = dbmetrics.WithReadLabel(ctx, "AppendPlanningMessage")
 	if !message.Role.Valid() {
 		return core.PlanningMessage{}, fmt.Errorf("invalid planning message role %q", message.Role)
 	}
@@ -835,6 +858,7 @@ func (s *Store) AppendPlanningMessage(ctx context.Context, message core.Planning
 }
 
 func (s *Store) ListPlanningMessages(ctx context.Context, sessionID string) ([]core.PlanningMessage, error) {
+	ctx = dbmetrics.WithReadLabel(ctx, "ListPlanningMessages")
 	rows, err := documentRows(ctx, s.db, `SELECT workspace_id,session_id,seq,role,content,parts_json,created_at
 		 FROM planning_messages WHERE workspace_id=? AND session_id=? ORDER BY seq`, documentWorkspace(ctx), sessionID)
 	if err != nil {
@@ -878,6 +902,7 @@ func (s *Store) ListPlanningMessages(ctx context.Context, sessionID string) ([]c
 }
 
 func (s *Store) FinalizePlanningSession(ctx context.Context, request store.PlanningFinalizeRequest) (core.PlanningSession, error) {
+	ctx = dbmetrics.WithReadLabel(ctx, "FinalizePlanningSession")
 	if err := request.Validate(); err != nil {
 		return core.PlanningSession{}, err
 	}
@@ -990,6 +1015,7 @@ func (s *Store) FinalizePlanningSession(ctx context.Context, request store.Plann
 }
 
 func (s *Store) AbandonPlanningSession(ctx context.Context, sessionID string, reasons ...string) (core.PlanningSession, error) {
+	ctx = dbmetrics.WithReadLabel(ctx, "AbandonPlanningSession")
 	var session core.PlanningSession
 	err := s.withPlanningSessionLock(ctx, sessionID, func(lockedCtx context.Context) error {
 		return s.documentTx(lockedCtx, func(tx *sql.Tx) error {
@@ -1036,6 +1062,7 @@ func firstTrimmed(values []string) string {
 }
 
 func (s *Store) ListPlanningSessionEvents(ctx context.Context, sessionID string) ([]core.Event, error) {
+	ctx = dbmetrics.WithReadLabel(ctx, "ListPlanningSessionEvents")
 	rows, err := documentRows(ctx, s.db, `SELECT id,COALESCE(task_id,''),COALESCE(job_id,''),kind,actor_id,actor_role,payload_json,at
 		FROM events_columnstore WHERE workspace_id=? AND JSON_EXTRACT_STRING(payload_json,'session_id')=? ORDER BY id`, documentWorkspace(ctx), sessionID)
 	if err != nil {
@@ -1222,6 +1249,7 @@ func insertRequirementEvent(ctx context.Context, tx *sql.Tx, kind string, payloa
 }
 
 func (s *Store) RequirementExists(ctx context.Context, id string) (bool, error) {
+	ctx = dbmetrics.WithReadLabel(ctx, "RequirementExists")
 	var exists bool
 	err := documentRow(ctx, s.db, `SELECT EXISTS(SELECT 1 FROM requirements WHERE workspace_id=? AND id=?)`, documentWorkspace(ctx), id).Scan(&exists)
 	return exists, err

@@ -4,9 +4,11 @@ import (
 	"context"
 
 	"github.com/kidus-tiliksew/conveyor/internal/core"
+	"github.com/kidus-tiliksew/conveyor/internal/store/dbmetrics"
 )
 
 func (s *Store) ListDocumentOperatorNotesForTask(ctx context.Context, taskID string) ([]core.OperatorNote, error) {
+	ctx = dbmetrics.WithReadLabel(ctx, "ListDocumentOperatorNotesForTask")
 	rows, err := documentRows(ctx, s.db, `SELECT requirement_id AS document_id, version, 'requirement' AS tier,
  dismissal_note, retired_at AS dismissed_at
  FROM requirement_versions

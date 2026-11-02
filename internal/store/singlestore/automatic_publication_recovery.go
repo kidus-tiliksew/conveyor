@@ -9,12 +9,14 @@ import (
 
 	"github.com/kidus-tiliksew/conveyor/internal/core"
 	"github.com/kidus-tiliksew/conveyor/internal/store"
+	"github.com/kidus-tiliksew/conveyor/internal/store/dbmetrics"
 	"github.com/kidus-tiliksew/conveyor/internal/taskops"
 )
 
 // ListAutomaticPublicationRetries lists failed publications due for their
 // bounded automatic re-enqueue (feature-bounded-automatic-recovery AR-5).
 func (s *Store) ListAutomaticPublicationRetries(ctx context.Context, now time.Time) ([]store.AutomaticPublicationRetry, error) {
+	ctx = dbmetrics.WithReadLabel(ctx, "ListAutomaticPublicationRetries")
 	policy, _, err := s.readClockPolicy(ctx)
 	if err != nil {
 		return nil, err
@@ -54,6 +56,7 @@ ORDER BY kind, publication_key`, documentWorkspace(ctx), documentWorkspace(ctx))
 // AutomaticPublicationRetryCommand re-checks one due publication under the
 // task lock and its row lock, then re-enqueues it at most once per window.
 func (s *Store) AutomaticPublicationRetryCommand(ctx context.Context, lease taskops.TaskLease, retry store.AutomaticPublicationRetry, now time.Time) (bool, error) {
+	ctx = dbmetrics.WithReadLabel(ctx, "AutomaticPublicationRetryCommand")
 	if _, err := store.RequireActor(ctx); err != nil {
 		return false, err
 	}

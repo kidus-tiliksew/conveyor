@@ -17,6 +17,7 @@ import (
 	"github.com/kidus-tiliksew/conveyor/internal/eventlog/s2log"
 	"github.com/kidus-tiliksew/conveyor/internal/queue/logqueue"
 	"github.com/kidus-tiliksew/conveyor/internal/store"
+	"github.com/kidus-tiliksew/conveyor/internal/store/dbmetrics"
 )
 
 type Store struct {
@@ -24,6 +25,10 @@ type Store struct {
 	db      *sql.DB
 	log     eventlog.Store
 	changes *changes.Hub
+	// reads attributes received bytes to store-method labels; nil for a
+	// store assembled without Open (component-persistence, Database read
+	// accounting).
+	reads *dbmetrics.ReadLedger
 }
 
 var _ store.Backend = (*Store)(nil)
@@ -88,6 +93,10 @@ func Open(ctx context.Context, raw string) (*Store, error) {
 	if err != nil {
 		return nil, err
 	}
+	// The counting dial attributes received bytes to store-method labels
+	// (component-persistence, Database read accounting).
+	reads := dbmetrics.NewReadLedger()
+	cfg.DialFunc = countingDialFunc(reads)
 	connector, err := mysql.NewConnector(cfg)
 	if err != nil {
 		return nil, fmt.Errorf("invalid SingleStore connection configuration")
@@ -99,7 +108,7 @@ func Open(ctx context.Context, raw string) (*Store, error) {
 	db.SetMaxIdleConns(4)
 	db.SetConnMaxLifetime(5 * time.Minute)
 	hub := changes.NewHub()
-	st := &Store{db: db, log: logqueue.Notify(s2log.New(db), hub), changes: hub}
+	st := &Store{db: db, log: logqueue.Notify(s2log.New(db), hub), changes: hub, reads: reads}
 	if err = db.PingContext(ctx); err == nil {
 		// SingleStore accepts SET time_zone but ignores it. Refuse a non-UTC
 		// server instead of interpreting local DATETIME defaults as UTC.

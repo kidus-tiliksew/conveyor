@@ -8,9 +8,11 @@ import (
 
 	"github.com/kidus-tiliksew/conveyor/internal/core"
 	"github.com/kidus-tiliksew/conveyor/internal/store"
+	"github.com/kidus-tiliksew/conveyor/internal/store/dbmetrics"
 )
 
 func (s *Store) CreateTaskWithAttachments(ctx context.Context, t core.Task, ids []string, attached store.TaskContextInput, uploads []store.ArtifactUpload) error {
+	ctx = dbmetrics.WithReadLabel(ctx, "CreateTaskWithAttachments")
 	ws, err := workspace(ctx)
 	if err != nil {
 		return err

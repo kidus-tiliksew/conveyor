@@ -6,6 +6,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/kidus-tiliksew/conveyor/internal/core"
 	"github.com/kidus-tiliksew/conveyor/internal/store"
+	"github.com/kidus-tiliksew/conveyor/internal/store/dbmetrics"
 	"github.com/kidus-tiliksew/conveyor/internal/store/postgres/db"
 	"github.com/kidus-tiliksew/conveyor/internal/taskops"
 )
@@ -17,6 +18,7 @@ import (
 // records it as drift.repaired (component-durable-queue, Reconciliation
 // between tasks and jobs; req-quiet-idle-runtime AC-4.1).
 func (s *Store) ReconcileQueuedTasks(ctx context.Context) (int, error) {
+	ctx = dbmetrics.WithReadLabel(ctx, "ReconcileQueuedTasks")
 	repaired := 0
 	// Repairs are reported after the transaction commits, so a rolled-back
 	// repair reports nothing (component-persistence, Drift repair reports).

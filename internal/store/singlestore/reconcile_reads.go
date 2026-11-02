@@ -7,6 +7,7 @@ import (
 
 	"github.com/kidus-tiliksew/conveyor/internal/core"
 	"github.com/kidus-tiliksew/conveyor/internal/store"
+	"github.com/kidus-tiliksew/conveyor/internal/store/dbmetrics"
 )
 
 var _ store.ReconcileReadStore = (*Store)(nil)
@@ -14,6 +15,7 @@ var _ store.ReconcileReadStore = (*Store)(nil)
 // ListAutomaticReviewEvents reads only the AR-5 fold's event kinds for the
 // requested tasks in one query, in the (at, id) order ListEvents returns.
 func (s *Store) ListAutomaticReviewEvents(ctx context.Context, taskIDs []string) (map[string][]core.Event, error) {
+	ctx = dbmetrics.WithReadLabel(ctx, "ListAutomaticReviewEvents")
 	out := map[string][]core.Event{}
 	if len(taskIDs) == 0 {
 		return out, nil
@@ -45,6 +47,7 @@ ORDER BY task_id,at,id`, args...)
 // plan version is the one GetLatestSpecVersion returns, and the order is
 // ListTasks's.
 func (s *Store) ListGitHubLifecycleReconcileTaskIDs(ctx context.Context, approvedSince *time.Time) ([]string, error) {
+	ctx = dbmetrics.WithReadLabel(ctx, "ListGitHubLifecycleReconcileTaskIDs")
 	ws, err := workspace(ctx)
 	if err != nil {
 		return nil, err

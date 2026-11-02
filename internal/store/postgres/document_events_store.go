@@ -4,10 +4,12 @@ import (
 	"context"
 
 	"github.com/kidus-tiliksew/conveyor/internal/core"
+	"github.com/kidus-tiliksew/conveyor/internal/store/dbmetrics"
 	"github.com/kidus-tiliksew/conveyor/internal/store/postgres/db"
 )
 
 func (s *Store) ListRequirementEvents(ctx context.Context, requirementID string) ([]core.Event, error) {
+	ctx = dbmetrics.WithReadLabel(ctx, "ListRequirementEvents")
 	rows, err := s.queries.ListRequirementEvents(ctx, db.ListRequirementEventsParams{
 		WorkspaceID: workspace(ctx), RequirementID: requirementID,
 	})
@@ -22,6 +24,7 @@ func (s *Store) ListRequirementEvents(ctx context.Context, requirementID string)
 }
 
 func (s *Store) ListRequirementEventsByRequirement(ctx context.Context) (map[string][]core.Event, error) {
+	ctx = dbmetrics.WithReadLabel(ctx, "ListRequirementEventsByRequirement")
 	rows, err := s.boundary.Query(ctx, `SELECT e.id,e.task_id,e.job_id,e.kind,e.actor_id,e.actor_role,e.payload_json,e.at,e.workspace_id,
 		e.payload_json->>'requirement_id'
 		FROM events e

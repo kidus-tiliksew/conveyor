@@ -12,6 +12,7 @@ import (
 	"github.com/kidus-tiliksew/conveyor/internal/config"
 	"github.com/kidus-tiliksew/conveyor/internal/core"
 	"github.com/kidus-tiliksew/conveyor/internal/store"
+	"github.com/kidus-tiliksew/conveyor/internal/store/dbmetrics"
 	"github.com/kidus-tiliksew/conveyor/internal/taskops"
 )
 
@@ -37,6 +38,7 @@ func cancelledSessionMatches(ctx context.Context, tx *sql.Tx, ws, task, job, ses
 	return match, err
 }
 func (s *Store) RenewWorkerClaimCommand(ctx context.Context, lease taskops.TaskLease, id string, c core.WorkOrderClaimIdentity, duration time.Duration) (core.WorkOrder, error) {
+	ctx = dbmetrics.WithReadLabel(ctx, "RenewWorkerClaimCommand")
 	var result core.WorkOrder
 	err := s.orderTx(ctx, id, func(tx *sql.Tx, o core.WorkOrder) error {
 		if !lease.ValidForCommand(o.TaskID, string(core.WorkOrderCmdRenew)) {
@@ -102,6 +104,7 @@ func (s *Store) RenewWorkerClaimCommand(ctx context.Context, lease taskops.TaskL
 	return result, err
 }
 func (s *Store) ReleaseWorkerClaimCommand(ctx context.Context, taskLease taskops.TaskLease, id string, claim core.WorkOrderClaimIdentity, release core.WorkOrderRelease) (core.WorkOrder, error) {
+	ctx = dbmetrics.WithReadLabel(ctx, "ReleaseWorkerClaimCommand")
 	var result core.WorkOrder
 	var lifecycleErr error
 	err := s.orderTx(ctx, id, func(tx *sql.Tx, current core.WorkOrder) error {

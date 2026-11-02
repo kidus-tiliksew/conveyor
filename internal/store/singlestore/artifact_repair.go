@@ -10,11 +10,13 @@ import (
 
 	"github.com/kidus-tiliksew/conveyor/internal/core"
 	"github.com/kidus-tiliksew/conveyor/internal/store"
+	"github.com/kidus-tiliksew/conveyor/internal/store/dbmetrics"
 )
 
 var errArtifactRepairPreview = errors.New("artifact repair preview rollback")
 
 func (s *Store) RepairArtifactMetadata(ctx context.Context, r store.ArtifactRepairRequest) (store.ArtifactRepairResult, error) {
+	ctx = dbmetrics.WithReadLabel(ctx, "RepairArtifactMetadata")
 	var result store.ArtifactRepairResult
 	r, err := store.NormalizeArtifactRepair(ctx, r)
 	if err != nil {

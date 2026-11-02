@@ -12,12 +12,14 @@ import (
 	"github.com/kidus-tiliksew/conveyor/internal/core"
 	"github.com/kidus-tiliksew/conveyor/internal/gitx"
 	"github.com/kidus-tiliksew/conveyor/internal/store"
+	"github.com/kidus-tiliksew/conveyor/internal/store/dbmetrics"
 	"github.com/kidus-tiliksew/conveyor/internal/store/postgres/db"
 )
 
 const planningBundleSelect = `SELECT id,session_id,title,documents,tasks,status,COALESCE(created_by,''),COALESCE(decided_by,''),created_at,decided_at,workspace_id FROM planning_bundles`
 
 func (s *Store) CreatePlanningBundle(ctx context.Context, bundle core.PlanningBundle) (core.PlanningBundle, error) {
+	ctx = dbmetrics.WithReadLabel(ctx, "CreatePlanningBundle")
 	bundle.Workspace = workspace(ctx)
 	// Resolve the deterministic identity before the locked lookup. Full shape
 	// validation follows identity adoption because a retry may omit the task IDs
@@ -222,6 +224,7 @@ func scanPlanningBundle(row pgx.Row) (core.PlanningBundle, error) {
 }
 
 func (s *Store) GetPlanningBundle(ctx context.Context, id string) (core.PlanningBundle, error) {
+	ctx = dbmetrics.WithReadLabel(ctx, "GetPlanningBundle")
 	b, err := scanPlanningBundle(s.boundary.QueryRow(ctx, planningBundleSelect+` WHERE workspace_id=$1 AND id=$2`, workspace(ctx), id))
 	if errors.Is(err, pgx.ErrNoRows) {
 		return core.PlanningBundle{}, fmt.Errorf("planning bundle %s: %w", id, store.ErrNotFound)
@@ -230,6 +233,7 @@ func (s *Store) GetPlanningBundle(ctx context.Context, id string) (core.Planning
 }
 
 func (s *Store) ListPlanningBundles(ctx context.Context) ([]core.PlanningBundle, error) {
+	ctx = dbmetrics.WithReadLabel(ctx, "ListPlanningBundles")
 	rows, err := s.boundary.Query(ctx, planningBundleSelect+` WHERE workspace_id=$1 ORDER BY created_at DESC,id`, workspace(ctx))
 	if err != nil {
 		return nil, err
@@ -247,6 +251,7 @@ func (s *Store) ListPlanningBundles(ctx context.Context) ([]core.PlanningBundle,
 }
 
 func (s *Store) ApprovePlanningBundle(ctx context.Context, id string) (core.PlanningBundle, error) {
+	ctx = dbmetrics.WithReadLabel(ctx, "ApprovePlanningBundle")
 	var result core.PlanningBundle
 	err := s.inTx(ctx, func(tx pgx.Tx, q *db.Queries) error {
 		bundle, err := scanPlanningBundle(tx.QueryRow(ctx, planningBundleSelect+` WHERE workspace_id=$1 AND id=$2 FOR UPDATE`, workspace(ctx), id))
@@ -351,6 +356,7 @@ func (s *Store) ApprovePlanningBundle(ctx context.Context, id string) (core.Plan
 }
 
 func (s *Store) RejectPlanningBundle(ctx context.Context, id string) (core.PlanningBundle, error) {
+	ctx = dbmetrics.WithReadLabel(ctx, "RejectPlanningBundle")
 	var result core.PlanningBundle
 	err := s.inTx(ctx, func(tx pgx.Tx, q *db.Queries) error {
 		bundle, err := scanPlanningBundle(tx.QueryRow(ctx, planningBundleSelect+` WHERE workspace_id=$1 AND id=$2 FOR UPDATE`, workspace(ctx), id))

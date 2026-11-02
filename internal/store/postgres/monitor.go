@@ -13,6 +13,7 @@ import (
 	"github.com/kidus-tiliksew/conveyor/internal/core"
 	"github.com/kidus-tiliksew/conveyor/internal/monitor"
 	"github.com/kidus-tiliksew/conveyor/internal/store"
+	"github.com/kidus-tiliksew/conveyor/internal/store/dbmetrics"
 	"github.com/kidus-tiliksew/conveyor/internal/store/postgres/db"
 )
 
@@ -34,10 +35,12 @@ const monitorInFlightMergeQuery = `SELECT e.task_id, e.at FROM events e
 			ORDER BY e.at, e.id LIMIT 1`
 
 func (s *Store) AuditTask(ctx context.Context, taskID, kind string, payload map[string]any) error {
+	ctx = dbmetrics.WithReadLabel(ctx, "AuditTask")
 	return s.AppendEvent(ctx, core.Event{TaskID: taskID, Kind: kind, Payload: core.JSONPayload(payload)})
 }
 
 func (s *Store) AuditMonitor(ctx context.Context, kind string, payload map[string]any) error {
+	ctx = dbmetrics.WithReadLabel(ctx, "AuditMonitor")
 	data, err := json.Marshal(payload)
 	if err != nil {
 		return err
@@ -54,6 +57,7 @@ func (s *Store) WithMonitorSignalClassLock(ctx context.Context, repository strin
 }
 
 func (s *Store) FindOpenMonitorTask(ctx context.Context, repository string, kind monitor.SignalKind) (string, bool, error) {
+	ctx = dbmetrics.WithReadLabel(ctx, "FindOpenMonitorTask")
 	query := `SELECT id FROM tasks
 		WHERE workspace_id=$1 AND repo_name=$2 AND source=$3 AND state NOT IN ('merged','closed')
 		ORDER BY created_at,id LIMIT 1`
@@ -67,6 +71,7 @@ func (s *Store) FindOpenMonitorTask(ctx context.Context, repository string, kind
 }
 
 func (s *Store) MonitorMergeCommitState(ctx context.Context, repository, commitSHA string, committedAt, now time.Time, bound time.Duration) (monitor.MergeState, string, error) {
+	ctx = dbmetrics.WithReadLabel(ctx, "MonitorMergeCommitState")
 	commitSHA = strings.TrimSpace(commitSHA)
 	repository = strings.TrimSpace(repository)
 	if commitSHA == "" || repository == "" {
@@ -96,6 +101,7 @@ func (s *Store) MonitorMergeCommitState(ctx context.Context, repository, commitS
 }
 
 func (s *Store) RequirementExists(ctx context.Context, id string) (bool, error) {
+	ctx = dbmetrics.WithReadLabel(ctx, "RequirementExists")
 	var exists bool
 	err := s.boundary.QueryRow(ctx, `SELECT EXISTS (
 		SELECT 1 FROM requirements WHERE workspace_id=$1 AND id=$2
@@ -104,6 +110,7 @@ func (s *Store) RequirementExists(ctx context.Context, id string) (bool, error) 
 }
 
 func (s *Store) ResolveCausalSystemDesignMerge(ctx context.Context, documentID, repository, commitSHA string, causalEventID int64, driftID string, matchingPaths []string, recordConsulted bool) (monitor.SystemDesignMergeJudgment, error) {
+	ctx = dbmetrics.WithReadLabel(ctx, "ResolveCausalSystemDesignMerge")
 	if causalEventID <= 0 || commitSHA == "" {
 		return monitor.SystemDesignMergeJudgment{}, nil
 	}
@@ -206,6 +213,7 @@ func (s *Store) ResolveCausalSystemDesignMerge(ctx context.Context, documentID, 
 }
 
 func (s *Store) Observe(ctx context.Context, observation monitor.Observation) (monitor.ObservationRecord, bool, error) {
+	ctx = dbmetrics.WithReadLabel(ctx, "Observe")
 	// The record must name the bound workspace before any insert or
 	// deduplication; SQL below predicates on that same value
 	// (component-monitor-drift).
@@ -289,6 +297,7 @@ func scanObservation(row interface{ Scan(...any) error }, ws string) (monitor.Ob
 }
 
 func (s *Store) LinkTask(ctx context.Context, identity, taskID, outcome string) (monitor.ObservationRecord, error) {
+	ctx = dbmetrics.WithReadLabel(ctx, "LinkTask")
 	err := s.inTx(ctx, func(tx pgx.Tx, _ *db.Queries) error {
 		var linkedTask *string
 		var kind string
@@ -330,6 +339,7 @@ func (s *Store) LinkTask(ctx context.Context, identity, taskID, outcome string) 
 }
 
 func (s *Store) RecordDrift(ctx context.Context, drift monitor.Drift) (monitor.Drift, bool, error) {
+	ctx = dbmetrics.WithReadLabel(ctx, "RecordDrift")
 	if _, err := store.MonitorRecordWorkspace(ctx, drift.WorkspaceID); err != nil {
 		return monitor.Drift{}, false, err
 	}
@@ -433,6 +443,7 @@ func scanResolutionDrift(ctx context.Context, tx pgx.Tx, id, suffix string) (mon
 }
 
 func (s *Store) ResolveDrift(ctx context.Context, id, outcome, requirementID string) (monitor.Drift, error) {
+	ctx = dbmetrics.WithReadLabel(ctx, "ResolveDrift")
 	requirementID = strings.TrimSpace(requirementID)
 	if outcome != "requirements_amended" && outcome != "design_document_updated" && outcome != "conflict_resolved" && outcome != "change_reverted" {
 		return monitor.Drift{}, fmt.Errorf("unsupported audited reconciliation outcome %q", outcome)
@@ -660,6 +671,7 @@ func nullableMonitorEventID(id int64) any {
 }
 
 func (s *Store) MonitorStatus(ctx context.Context, enabled bool, now time.Time) (monitor.Status, error) {
+	ctx = dbmetrics.WithReadLabel(ctx, "MonitorStatus")
 	status := monitor.Status{WorkspaceID: workspace(ctx), Enabled: enabled}
 	var lastSuccess, backoff *time.Time
 	err := s.boundary.QueryRow(ctx, `
@@ -728,6 +740,7 @@ WHERE workspace_id=$1 ORDER BY at,id`, workspace(ctx))
 }
 
 func (s *Store) ListUnresolvedDrift(ctx context.Context) ([]monitor.Drift, error) {
+	ctx = dbmetrics.WithReadLabel(ctx, "ListUnresolvedDrift")
 	rows, err := s.boundary.Query(ctx, "SELECT "+driftColumns+" FROM repository_drift WHERE workspace_id=$1 AND resolved_at IS NULL ORDER BY detected_at,id", workspace(ctx))
 	if err != nil {
 		return nil, err
@@ -745,6 +758,7 @@ func (s *Store) ListUnresolvedDrift(ctx context.Context) ([]monitor.Drift, error
 }
 
 func (s *Store) ListActiveSystemDesignDriftCounts(ctx context.Context) (map[string]int, error) {
+	ctx = dbmetrics.WithReadLabel(ctx, "ListActiveSystemDesignDriftCounts")
 	rows, err := s.boundary.Query(ctx, `SELECT system_design_id,count(*)
 		FROM repository_drift
 		WHERE workspace_id=$1 AND resolved_at IS NULL AND system_design_id IS NOT NULL
@@ -766,6 +780,7 @@ func (s *Store) ListActiveSystemDesignDriftCounts(ctx context.Context) (map[stri
 }
 
 func (s *Store) RecordMonitorSuccess(ctx context.Context, at time.Time) error {
+	ctx = dbmetrics.WithReadLabel(ctx, "RecordMonitorSuccess")
 	_, err := s.boundary.Exec(ctx, `
 INSERT INTO monitor_status (workspace_id,last_successful_at) VALUES ($1,$2)
 ON CONFLICT (workspace_id) DO UPDATE SET last_successful_at=$2,current_error='',forge_error_category='',backoff_until=NULL`,
@@ -774,6 +789,7 @@ ON CONFLICT (workspace_id) DO UPDATE SET last_successful_at=$2,current_error='',
 }
 
 func (s *Store) RecordMonitorFailure(ctx context.Context, category, detail string, backoffUntil time.Time) error {
+	ctx = dbmetrics.WithReadLabel(ctx, "RecordMonitorFailure")
 	_, err := s.boundary.Exec(ctx, `
 INSERT INTO monitor_status (workspace_id,current_error,forge_error_category,backoff_until)
 VALUES ($1,$2,$3,$4)

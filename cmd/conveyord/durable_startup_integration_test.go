@@ -15,6 +15,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"testing"
 	"time"
@@ -80,6 +81,7 @@ func TestConveyordDurableStartupIntegration(t *testing.T) {
 			if !strings.Contains(string(b), "using durable "+label+" store with the event log") {
 				t.Fatalf("startup log missing backend: %s", b)
 			}
+			requireReadStatsLogged(t, string(b))
 			deprecationWarning := config.DeprecatedGitHubAppKeyEncryptionKeyEnv + " is deprecated; rename it to " + config.GitHubAppKeyEncryptionKeyEnv
 			// The routing-only fixture carries executor models; the deployment
 			// loader ignores and names them (component-runtime).
@@ -530,5 +532,33 @@ func emptyDurableStartupDatabase(t *testing.T, raw string) {
 		if _, err = db.ExecContext(t.Context(), "DELETE FROM `"+table+"`"); err != nil {
 			t.Fatalf("empty %s: %v", table, err)
 		}
+	}
+}
+
+var durableReadStatsLine = regexp.MustCompile(`database read stats \((periodic|final)\): bytes=(\d+) rows=\d+ queries=(\d+) labels=(\d+) top=(.*)`)
+
+// requireReadStatsLogged checks that a running daemon logged its database
+// read attribution: a final read line, and a line with positive bytes,
+// queries, and labels that names at least one store-method label
+// (component-runtime, Start-up checks and background loops).
+func requireReadStatsLogged(t *testing.T, daemonLog string) {
+	t.Helper()
+	final, attributed := false, false
+	for _, match := range durableReadStatsLine.FindAllStringSubmatch(daemonLog, -1) {
+		if match[1] == "final" {
+			final = true
+			t.Logf("%s", match[0])
+		}
+		if match[2] == "0" || match[3] == "0" || match[4] == "0" {
+			continue
+		}
+		for _, group := range regexp.MustCompile(`\[(\S+) bytes=\d+ rows=\d+ queries=\d+\]`).FindAllStringSubmatch(match[5], -1) {
+			if group[1] != "unlabeled" {
+				attributed = true
+			}
+		}
+	}
+	if !final || !attributed {
+		t.Fatalf("daemon log lacks database read attribution (final %t, labeled %t): %s", final, attributed, daemonLog)
 	}
 }

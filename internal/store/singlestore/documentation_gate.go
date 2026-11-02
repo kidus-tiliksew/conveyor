@@ -8,9 +8,11 @@ import (
 
 	"github.com/kidus-tiliksew/conveyor/internal/core"
 	"github.com/kidus-tiliksew/conveyor/internal/store"
+	"github.com/kidus-tiliksew/conveyor/internal/store/dbmetrics"
 )
 
 func (s *Store) RecordDocumentationGateEvidence(ctx context.Context, e core.DocumentationGateEvidence) error {
+	ctx = dbmetrics.WithReadLabel(ctx, "RecordDocumentationGateEvidence")
 	if _, err := store.RequireActor(ctx); err != nil {
 		return err
 	}
@@ -27,6 +29,7 @@ func (s *Store) RecordDocumentationGateEvidence(ctx context.Context, e core.Docu
 	})
 }
 func (s *Store) GetDocumentationGateEvidence(ctx context.Context, taskID, headSHA string) (core.DocumentationGateEvidence, error) {
+	ctx = dbmetrics.WithReadLabel(ctx, "GetDocumentationGateEvidence")
 	var e core.DocumentationGateEvidence
 	var raw []byte
 	err := documentRow(ctx, s.db, `SELECT payload_json FROM documentation_gate_evidence WHERE workspace_id=? AND task_id=? AND head_sha=?`, documentWorkspace(ctx), taskID, headSHA).Scan(&raw)

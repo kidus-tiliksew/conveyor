@@ -10,6 +10,7 @@ import (
 
 	"github.com/kidus-tiliksew/conveyor/internal/eventlog"
 	"github.com/kidus-tiliksew/conveyor/internal/eventlog/jobindex"
+	"github.com/kidus-tiliksew/conveyor/internal/store/dbmetrics"
 )
 
 // JobIndexSchema is the job index's DDL: one row per job stream, written in
@@ -142,6 +143,7 @@ func scanJobIndexRows(rows *sql.Rows) ([]jobindex.Row, error) {
 // the rows, so every event at or below it is reflected in them; the
 // runtime skips events a row already reflects.
 func (s *Store) UnfinishedJobs(ctx context.Context, workspace string) (eventlog.Position, []jobindex.Row, error) {
+	ctx = dbmetrics.WithReadLabel(ctx, "eventlog.UnfinishedJobs")
 	exec := s.executor(ctx)
 	var position int64
 	err := exec.QueryRowContext(ctx, `SELECT position FROM event_log_positions WHERE workspace_id = ?`, workspace).Scan(&position)
@@ -163,6 +165,7 @@ ORDER BY stream_id`, workspace)
 
 // JobIndexRow implements jobindex.Reader.
 func (s *Store) JobIndexRow(ctx context.Context, workspace string, stream eventlog.StreamID) (jobindex.Row, bool, error) {
+	ctx = dbmetrics.WithReadLabel(ctx, "eventlog.JobIndexRow")
 	return readJobIndexRow(ctx, s.executor(ctx), workspace, stream)
 }
 
@@ -170,6 +173,7 @@ func (s *Store) JobIndexRow(ctx context.Context, workspace string, stream eventl
 // last job.enqueued at or below version; the second returns only the events
 // from there through version.
 func (s *Store) ReadGeneration(ctx context.Context, workspace string, stream eventlog.StreamID, version eventlog.Version) ([]eventlog.Event, error) {
+	ctx = dbmetrics.WithReadLabel(ctx, "eventlog.ReadGeneration")
 	exec := s.executor(ctx)
 	from := int64(1)
 	err := exec.QueryRowContext(ctx, `
@@ -198,6 +202,7 @@ ORDER BY version`, workspace, string(stream), from, int64(version))
 // mismatched stream IDs reach the daemon. Each is rebuilt under the
 // workspace and stream locks that appends take, in the same order.
 func (s *Store) RepairJobIndex(ctx context.Context, workspace string) (int, error) {
+	ctx = dbmetrics.WithReadLabel(ctx, "eventlog.RepairJobIndex")
 	rows, err := s.executor(ctx).QueryContext(ctx, `
 SELECT s.stream_id
 FROM event_log_streams s

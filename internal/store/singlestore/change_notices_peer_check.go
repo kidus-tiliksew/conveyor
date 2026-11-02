@@ -5,6 +5,7 @@ import (
 	"database/sql"
 
 	"github.com/kidus-tiliksew/conveyor/internal/changes"
+	"github.com/kidus-tiliksew/conveyor/internal/store/dbmetrics"
 )
 
 // The peer check read on SingleStore (component-persistence, Change notices;
@@ -27,6 +28,7 @@ var _ changes.PeerReader = (*Store)(nil)
 // highest ID of its task events, in one statement. A failed read returns no
 // marks.
 func (s *Store) PeerMarks(ctx context.Context) (map[string]changes.PeerMark, error) {
+	ctx = dbmetrics.WithReadLabel(ctx, "PeerMarks")
 	rows, err := s.db.QueryContext(ctx, peerMarksSQL)
 	if err != nil {
 		return nil, translateBackendConflict(err)

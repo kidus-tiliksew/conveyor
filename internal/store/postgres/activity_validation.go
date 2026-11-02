@@ -11,6 +11,7 @@ import (
 
 	"github.com/kidus-tiliksew/conveyor/internal/core"
 	"github.com/kidus-tiliksew/conveyor/internal/store"
+	"github.com/kidus-tiliksew/conveyor/internal/store/dbmetrics"
 )
 
 // activityValidationColumns caches each store's discovered column lists. The
@@ -30,6 +31,7 @@ type activityValidationSchema struct {
 // statement, so every row comes from one snapshot (component-persistence,
 // Board activity validation reads).
 func (s *Store) ReadActivityValidation(ctx context.Context, now time.Time) (store.ActivityValidation, error) {
+	ctx = dbmetrics.WithReadLabel(ctx, "ReadActivityValidation")
 	schema, err := s.activityValidationSchema(ctx)
 	if err != nil {
 		return store.ActivityValidation{}, err
@@ -150,6 +152,7 @@ func (s *Store) activityValidationSchema(ctx context.Context) (*activityValidati
 // ReadActivityInputs returns the markers and the one order selection they
 // fold, both at now, and the review lease horizon.
 func (s *Store) ReadActivityInputs(ctx context.Context, taskIDs []string, now time.Time) (store.ActivityInputs, error) {
+	ctx = dbmetrics.WithReadLabel(ctx, "ReadActivityInputs")
 	if taskIDs != nil && len(taskIDs) == 0 {
 		return store.ActivityInputs{Markers: []store.ActivityMarker{}, Orders: []core.WorkOrder{}}, nil
 	}

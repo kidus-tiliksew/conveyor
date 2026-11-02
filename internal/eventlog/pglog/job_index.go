@@ -10,6 +10,7 @@ import (
 
 	"github.com/kidus-tiliksew/conveyor/internal/eventlog"
 	"github.com/kidus-tiliksew/conveyor/internal/eventlog/jobindex"
+	"github.com/kidus-tiliksew/conveyor/internal/store/dbmetrics"
 )
 
 // JobIndexSchema is the job index's DDL: one row per job stream, written in
@@ -142,6 +143,7 @@ func scanJobIndexRows(rows pgx.Rows) ([]jobindex.Row, error) {
 // transaction, so the rows reflect exactly the events at or below the
 // position.
 func (s *Store) UnfinishedJobs(ctx context.Context, workspace string) (eventlog.Position, []jobindex.Row, error) {
+	ctx = dbmetrics.WithReadLabel(ctx, "eventlog.UnfinishedJobs")
 	if tx, ok := txFrom(ctx); ok {
 		return unfinishedJobs(ctx, tx, workspace)
 	}
@@ -181,6 +183,7 @@ ORDER BY stream_id`, workspace)
 
 // JobIndexRow implements jobindex.Reader.
 func (s *Store) JobIndexRow(ctx context.Context, workspace string, stream eventlog.StreamID) (jobindex.Row, bool, error) {
+	ctx = dbmetrics.WithReadLabel(ctx, "eventlog.JobIndexRow")
 	return readJobIndexRow(ctx, s.executor(ctx), workspace, stream)
 }
 
@@ -189,6 +192,7 @@ func (s *Store) JobIndexRow(ctx context.Context, workspace string, stream eventl
 // through its (workspace_id, stream_id, version) key; the second returns
 // only the events from there through version.
 func (s *Store) ReadGeneration(ctx context.Context, workspace string, stream eventlog.StreamID, version eventlog.Version) ([]eventlog.Event, error) {
+	ctx = dbmetrics.WithReadLabel(ctx, "eventlog.ReadGeneration")
 	exec := s.executor(ctx)
 	from := int64(1)
 	err := exec.QueryRow(ctx, `
@@ -218,6 +222,7 @@ ORDER BY version`, workspace, string(stream), from, int64(version))
 // whose row matches. Each mismatched stream is rebuilt under the workspace
 // and stream locks that appends take, in the same order.
 func (s *Store) RepairJobIndex(ctx context.Context, workspace string) (int, error) {
+	ctx = dbmetrics.WithReadLabel(ctx, "eventlog.RepairJobIndex")
 	rows, err := s.executor(ctx).Query(ctx, `
 SELECT s.stream_id
 FROM event_log_streams s

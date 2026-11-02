@@ -9,6 +9,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/kidus-tiliksew/conveyor/internal/core"
 	"github.com/kidus-tiliksew/conveyor/internal/store"
+	"github.com/kidus-tiliksew/conveyor/internal/store/dbmetrics"
 	"github.com/kidus-tiliksew/conveyor/internal/store/postgres/db"
 )
 
@@ -97,6 +98,7 @@ func verificationReadScoped(ctx context.Context) {
 
 // component-verification-evidence / DEC-43: this boundary never calls ListVerificationRecords or the snapshot reader.
 func (s *Store) ReadVerificationPage(ctx context.Context, a store.VerificationAccess, p store.VerificationPageRequest) (store.VerificationReadPage, error) {
+	ctx = dbmetrics.WithReadLabel(ctx, "ReadVerificationPage")
 	cursor, err := store.ValidateVerificationPage(ctx, a, &p)
 	if err != nil {
 		return store.VerificationReadPage{}, err
@@ -140,6 +142,7 @@ func (s *Store) ReadVerificationPage(ctx context.Context, a store.VerificationAc
 }
 
 func (s *Store) ReadVerificationDetail(ctx context.Context, a store.VerificationAccess, contextID, evidenceID string) (store.VerificationEvidenceRecord, error) {
+	ctx = dbmetrics.WithReadLabel(ctx, "ReadVerificationDetail")
 	if a.UserID == "" {
 		return store.VerificationEvidenceRecord{}, store.ErrVerificationAccess
 	}
