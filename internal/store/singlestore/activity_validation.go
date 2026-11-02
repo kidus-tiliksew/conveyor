@@ -175,10 +175,12 @@ func (s *Store) ReadActivityInputs(ctx context.Context, taskIDs []string, now ti
 }
 
 // activityWorkOrdersAt is ListWorkOrdersForTasks projected at now. A whole
-// workspace read keeps ListWorkOrders.
+// workspace read selects the same activityWorkOrderColumns and hydrates
+// assignees as ListWorkOrders does, so no activity read decodes a snapshot
+// body (component-persistence, Board activity validation reads).
 func (s *Store) activityWorkOrdersAt(ctx context.Context, taskIDs []string, now time.Time) ([]core.WorkOrder, error) {
 	if len(taskIDs) == 0 {
-		return s.ListWorkOrders(ctx)
+		return s.listWorkspaceOrders(ctx, activityWorkOrderColumns, now)
 	}
 	orders, err := s.listOrderColumns(ctx, s.db, activityWorkOrderColumns, taskIDs)
 	if err != nil {

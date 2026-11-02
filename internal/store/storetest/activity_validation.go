@@ -253,4 +253,53 @@ func RunActivityValidationConformance(t *testing.T, x Fixture) {
 	if empty, err := st.ReadActivityInputs(ctx, []string{}, now); err != nil || len(empty.Markers) != 0 || len(empty.Orders) != 0 || !empty.ValidUntil.IsZero() {
 		t.Fatalf("empty input read = %+v, %v", empty, err)
 	}
+
+	// The whole-workspace reads select no snapshot body. With claimed orders
+	// that pin a served-requirement and a 64 KiB governance snapshot, a nil
+	// task list decodes zero snapshot bytes, returns the orders of
+	// ListWorkOrders with both snapshots cleared, and returns the markers of
+	// the task-scoped read at the same instant (component-persistence, Board
+	// activity validation reads).
+	pinned := Fixture{Backend: st, Context: ctx, Workspace: ws, Config: x.Config}
+	pinnedSuffix := core.NewTaskID()
+	claimSessionOrder(t, pinned, "activity-first-"+pinnedSuffix, time.Hour)
+	claimSessionOrder(t, pinned, "activity-second-"+pinnedSuffix, time.Hour)
+	full, err := st.ListWorkOrders(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if seeded := encodedSnapshotBytes(full); seeded < 2*ClaimSessionSnapshotBytes {
+		t.Fatalf("ListWorkOrders decoded %d snapshot bytes of the pinned orders, want at least %d", seeded, 2*ClaimSessionSnapshotBytes)
+	}
+	whole, err := st.ReadActivityInputs(ctx, nil, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n := encodedSnapshotBytes(whole.Orders); n != 0 {
+		t.Fatalf("ReadActivityInputs(nil) decoded %d snapshot bytes, want 0", n)
+	}
+	requireSameOrders(t, "ReadActivityInputs(nil).Orders", whole.Orders, withoutSnapshots(full))
+	allTasks := make([]string, 0, len(whole.Markers))
+	for _, marker := range whole.Markers {
+		allTasks = append(allTasks, marker.TaskID)
+	}
+	scoped, err := st.ReadActivityInputs(ctx, allTasks, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	requireSameMarkers(t, "ReadActivityInputs(nil).Markers", whole.Markers, scoped.Markers)
+	if !whole.ValidUntil.Equal(scoped.ValidUntil) {
+		t.Fatalf("whole-workspace horizon %s, task-scoped horizon %s", whole.ValidUntil, scoped.ValidUntil)
+	}
+	wholeMarkers, err := st.ListActivityMarkers(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	scopedMarkers, err := st.ListActivityMarkersForTasks(ctx, allTasks)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, want := markerKey(wholeMarkers), markerKey(scopedMarkers); !slices.Equal(got, want) || len(got) != len(allTasks) {
+		t.Fatalf("ListActivityMarkers = %v, want the task-scoped markers %v", got, want)
+	}
 }

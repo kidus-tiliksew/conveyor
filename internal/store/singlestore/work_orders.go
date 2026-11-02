@@ -309,12 +309,54 @@ func (s *Store) listOrderColumns(ctx context.Context, db s2log.Executor, columns
 }
 func (s *Store) ListWorkOrders(ctx context.Context) ([]core.WorkOrder, error) {
 	ctx = dbmetrics.WithReadLabel(ctx, "ListWorkOrders")
-	orders, err := s.listOrders(ctx, s.db, nil)
-	if err == nil {
-		projectOrders(orders)
-		err = s.hydrateWorkOrderAssignees(ctx, orders)
+	return s.listWorkspaceOrders(ctx, workOrderColumns, time.Now().UTC())
+}
+
+// listWorkspaceOrders reads every order of the bound workspace with the given
+// column list, projects it at now, and hydrates assignees. ListWorkOrders
+// passes workOrderColumns; the whole-workspace activity read passes
+// activityWorkOrderColumns, so it returns the same orders without either
+// snapshot (component-persistence, Board activity validation reads).
+func (s *Store) listWorkspaceOrders(ctx context.Context, columns string, now time.Time) ([]core.WorkOrder, error) {
+	orders, err := s.listOrderColumns(ctx, s.db, columns, nil)
+	if err != nil {
+		return orders, err
 	}
-	return orders, err
+	for i := range orders {
+		orders[i] = store.ProjectWorkOrderAt(orders[i], now)
+	}
+	return orders, s.hydrateWorkOrderAssignees(ctx, orders)
+}
+
+// GetWorkOrderWithoutSnapshots is GetWorkOrder over activityWorkOrderColumns
+// without assignee hydration, so neither authority snapshot leaves the
+// database (component-work-orders, Snapshot-free fold reads).
+func (s *Store) GetWorkOrderWithoutSnapshots(ctx context.Context, id string) (core.WorkOrder, error) {
+	ctx = dbmetrics.WithReadLabel(ctx, "GetWorkOrderWithoutSnapshots")
+	o, err := scanWorkOrder(documentRow(ctx, s.db, `SELECT `+activityWorkOrderColumns+` FROM work_orders WHERE workspace_id=? AND id=?`, documentWorkspace(ctx), id))
+	if err != nil {
+		return core.WorkOrder{}, notFound(err, "work order %s", id)
+	}
+	return store.ProjectWorkOrderAt(o, time.Now().UTC()), nil
+}
+
+// OtherWorkOrderHoldsSession evaluates the claim session check's predicate in
+// one statement that returns one boolean. A claimed order whose lease or
+// execution deadline has passed holds no session, because
+// store.ProjectWorkOrderAt clears it (component-work-orders, Snapshot-free
+// fold reads).
+func (s *Store) OtherWorkOrderHoldsSession(ctx context.Context, workOrderID, sessionID string) (bool, error) {
+	ctx = dbmetrics.WithReadLabel(ctx, "OtherWorkOrderHoldsSession")
+	if sessionID == "" {
+		return false, nil
+	}
+	now := time.Now().UTC()
+	var held bool
+	err := documentRow(ctx, s.db, `SELECT EXISTS (
+		SELECT 1 FROM work_orders WHERE workspace_id=? AND session_id=? AND id<>?
+		AND NOT (state='claimed' AND ((execution_deadline IS NOT NULL AND execution_deadline<=?) OR (lease_expires_at IS NOT NULL AND lease_expires_at<=?)))
+	)`, documentWorkspace(ctx), sessionID, workOrderID, now, now).Scan(&held)
+	return held, err
 }
 
 // ListLiveWorkOrders applies the live-state predicate in SQL, so completed,
