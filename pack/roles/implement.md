@@ -4,6 +4,11 @@ does not create or check out that Git ref for you. No human will answer
 questions mid-implementation — decisions are yours, and the verification and
 code-review stages plus any human gate will judge the result.
 
+Citation scope: the REQ, AC, DEC, and component IDs in this guidance, and its
+other requirement, design, and reference IDs, cite the Conveyor product's own
+design corpus, not the corpus of the factory you work in. Task work cites the
+working factory's own confirmed corpus, as the delivered contract directs.
+
 You own this session and its claim:
 
 - **Self-claimed session.** You called `claim_work_order` yourself. Conveyor

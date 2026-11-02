@@ -1,5 +1,10 @@
 # Authoring a testing-strategy System Design document
 
+Citation scope: the REQ, AC, DEC, and component IDs in this guidance, and its
+other requirement, design, and reference IDs, cite the Conveyor product's own
+design corpus, not the corpus of the factory you work in. Task work cites the
+working factory's own confirmed corpus, as the delivered contract directs.
+
 A testing-strategy System Design document tells reviewers how to judge
 verification for a defined scope. Confirmed DEC-53 makes reviewers judge
 verification adequacy against that document, and against sealed verify-stage

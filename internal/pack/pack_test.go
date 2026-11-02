@@ -684,3 +684,39 @@ func TestStageRolesStateSelfClaimedMode(t *testing.T) {
 		}
 	}
 }
+
+// citationScopeStatement matches the statement that
+// cmd/conveyor/skills_test.go requires in every embedded playbook and wrapper.
+// Each work-order stage role carries it once, so the role's rationale IDs read
+// as the Conveyor product's own corpus while the appended contracts keep
+// citing the working factory's confirmed corpus (component-work-orders, Role
+// prompt; component-cli-onboarding, What the skills direct).
+const citationScopeStatement = `Citation scope: the REQ, AC, DEC, and component IDs in this guidance, and its
+other requirement, design, and reference IDs, cite the Conveyor product's own
+design corpus, not the corpus of the factory you work in. Task work cites the
+working factory's own confirmed corpus, as the delivered contract directs.
+`
+
+func TestStageRolesCarryCitationScopeStatement(t *testing.T) {
+	bundle, err := Load("")
+	if err != nil {
+		t.Fatal(err)
+	}
+	checked := 0
+	for _, stage := range pipelineStages {
+		if !core.ValidWorkOrderStage(stage) {
+			continue
+		}
+		role, err := bundle.Role(stage)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if count := strings.Count(role, citationScopeStatement); count != 1 {
+			t.Errorf("%s role carries the citation scope statement %d times, want 1", stage, count)
+		}
+		checked++
+	}
+	if checked != 4 {
+		t.Fatalf("checked %d work-order stage roles, want 4", checked)
+	}
+}

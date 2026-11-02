@@ -4,12 +4,16 @@ import (
 	"bytes"
 	"io/fs"
 	"os"
+	"path"
 	"path/filepath"
 	"regexp"
 	"runtime"
 	"sort"
 	"strings"
 	"testing"
+
+	"github.com/kidus-tiliksew/conveyor/internal/core"
+	embeddedpack "github.com/kidus-tiliksew/conveyor/pack"
 )
 
 func TestEmbeddedSkillsMatchRepositorySources(t *testing.T) {
@@ -1676,5 +1680,72 @@ func TestConveyorWorkSkillShipsEvidenceReviewBotBaseMergeAndSeatFailureRules(t *
 				}
 			}
 		}
+	}
+}
+
+// citationScopeStatement is the statement every embedded playbook, wrapper,
+// and work-order stage role carries byte for byte. The guidance ships
+// unchanged to every factory (req-agent-guidance-install REQ-1, AC-1.1), so
+// its rationale IDs must read as the Conveyor product's own corpus
+// (component-cli-onboarding, What the skills direct).
+// internal/pack/pack_test.go holds the same text for the role pack.
+const citationScopeStatement = `Citation scope: the REQ, AC, DEC, and component IDs in this guidance, and its
+other requirement, design, and reference IDs, cite the Conveyor product's own
+design corpus, not the corpus of the factory you work in. Task work cites the
+working factory's own confirmed corpus, as the delivered contract directs.
+`
+
+// The file set comes from the embed sources themselves: every
+// embeddedSkillManifest entry and every pack role whose stage is a work-order
+// stage, so a newly registered playbook, wrapper, or stage role cannot escape
+// the guard. Repository-only filing rules live in this repository's
+// CLAUDE.md, so no shipped text names them.
+func TestEmbeddedGuidanceCarriesCitationScopeStatement(t *testing.T) {
+	t.Parallel()
+	forbidden := []string{"internal/httpapi/dashboard", "funnelflux"}
+	check := func(name string, content []byte) {
+		t.Helper()
+		if count := bytes.Count(content, []byte(citationScopeStatement)); count != 1 {
+			t.Errorf("%s carries the citation scope statement %d times, want 1", name, count)
+		}
+		lower := strings.ToLower(string(content))
+		for _, term := range forbidden {
+			if strings.Contains(lower, term) {
+				t.Errorf("%s names repository- or factory-specific %q", name, term)
+			}
+		}
+	}
+
+	if len(embeddedSkillManifest) == 0 {
+		t.Fatal("embedded skill manifest is empty")
+	}
+	for _, asset := range embeddedSkillManifest {
+		content, err := embeddedSkills.ReadFile(asset.assetPath)
+		if err != nil {
+			t.Fatalf("read embedded %s: %v", asset.assetPath, err)
+		}
+		check(asset.assetPath, content)
+	}
+
+	roles, err := fs.Glob(embeddedpack.RoleFiles, "roles/*.md")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var stages []string
+	for _, role := range roles {
+		stage := core.Stage(strings.TrimSuffix(path.Base(role), ".md"))
+		if !core.ValidWorkOrderStage(stage) {
+			continue
+		}
+		content, err := fs.ReadFile(embeddedpack.RoleFiles, role)
+		if err != nil {
+			t.Fatal(err)
+		}
+		stages = append(stages, string(stage))
+		check("pack/"+role, content)
+	}
+	sort.Strings(stages)
+	if got, want := strings.Join(stages, ","), "implement,review,spec,verify"; got != want {
+		t.Fatalf("checked stage roles %s, want %s", got, want)
 	}
 }

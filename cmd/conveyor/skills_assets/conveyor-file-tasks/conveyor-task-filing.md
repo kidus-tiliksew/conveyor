@@ -1,5 +1,10 @@
 # Filing Conveyor tasks
 
+Citation scope: the REQ, AC, DEC, and component IDs in this guidance, and its
+other requirement, design, and reference IDs, cite the Conveyor product's own
+design corpus, not the corpus of the factory you work in. Task work cites the
+working factory's own confirmed corpus, as the delivered contract directs.
+
 Tasks are the factory's only transition object. The body you write is the
 contract the spec, implement, and review agents are held to — write it
 for them, not for the operator.
@@ -109,7 +114,7 @@ cites:
   it never changes branches or interrupts claimed work.
 - **Phase-sized work is never one task.** File a dependency-ordered set —
   each task one coherent slice with its own exit criterion, `depends_on`
-  expressing the real order. (Lesson: 8.2 shipped as a single 11-item
+  expressing the real order. (Lesson: a phase filed as a single 11-item
   task → one 4-hour session, whole-phase review, migration collision.)
 - Parallel tasks collide on the shared namespaces nobody owns. State it
   explicitly in each body: which files each sibling owns ("Do NOT touch X
@@ -174,8 +179,8 @@ Structure that has survived contact with the agents:
    ones that apply: both gates untouched; no priority/assignee/
    phase fields; events append-only; propose→confirm authority unchanged;
    drift is a signal never a gate; conformance suites extend, never
-   shrink; new edge kinds ship with projector + two-store conformance +
-   vocabulary lockstep + rebuild proof on day one.
+   shrink. Add the standing boundaries the target repository's own filing
+   guidance names.
 4. `## Exit` — observable, agent-satisfiable criteria ending with the
    gates the repository's validation documentation names for the touched
    scope. Where that documentation designates CI as a gate's evidence, the
@@ -207,12 +212,13 @@ repository reality, direct the implementer to call the operator-gated
 `request_plan_revision` surface. Never turn the conflict into an acceptance-
 criteria exception or authorize a prose-only departure from the approved plan.
 
-## Source boundaries
+## Repository filing guidance
 
-For web-only work, state that regenerating `internal/httpapi/dashboard` is
-expected build output of the web change under DEC-16. Never impose a blanket
-"no changes under `internal/**`" boundary; exclude unrelated internal source
-explicitly without excluding the generated dashboard bundle.
+Follow the target repository's own filing and generated-artifact guidance,
+such as its `AGENTS.md` or `CLAUDE.md`. When a change regenerates committed
+build output, state that the regenerated output is expected. Never impose a
+blanket boundary that excludes a directory the change must regenerate; exclude
+unrelated source explicitly instead.
 
 ## Citations and context
 

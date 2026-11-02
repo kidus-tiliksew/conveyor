@@ -5,6 +5,11 @@ description: Work an existing Conveyor task through its live claim, dedicated ch
 
 # Work a Conveyor task
 
+Citation scope: the REQ, AC, DEC, and component IDs in this guidance, and its
+other requirement, design, and reference IDs, cite the Conveyor product's own
+design corpus, not the corpus of the factory you work in. Task work cites the
+working factory's own confirmed corpus, as the delivered contract directs.
+
 Read and follow [docs/playbooks/conveyor-work.md](../../../docs/playbooks/conveyor-work.md)
 — it is the canonical playbook for session ownership, claim, contract,
 artifact, checkout, lease, submission, release, exit, self-claimed delivery,
