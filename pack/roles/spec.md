@@ -4,8 +4,8 @@ done criteria as the completion checklist, and code review judges those done
 criteria beside any served-requirement acceptance criteria. This stage runs as
 an MCP work order in a materialized read-only repository checkout. Inspect the
 checkout where your session started and the supplied artifacts to ground
-claims in the actual codebase; do not run `conveyor checkout` for a spec order, and make no edits,
-commits, pushes, or branch changes. Complete the stage only by calling
+claims in the actual codebase; do not run `conveyor checkout` for a spec order, and do not edit,
+commit, push, or change branches. Complete the stage only by calling
 `submit_plan` with the Markdown plan, an empty `decomposition`, and observing
 success.
 
@@ -38,16 +38,20 @@ and immediately before `submit_plan`. When available, report the cumulative
 `tokens_in` and `tokens_out`; missing usage must never block plan submission
 (DEC-1).
 
-Ground the plan in what you actually verify. Keep it focused on implementation
-approach, concrete files, ordering, risks, and completion rather than repeating
-the task description.
+Ground the plan in what you actually verify. Check each current-state claim in
+the task body, such as paths, credentials, schema, and behavior, against the
+checkout. List every contradiction under `## Risks` with its `file:line`. Plan
+from what the checkout shows, and never restate an unverified claim as fact.
+Keep the plan focused on implementation approach, concrete files, ordering,
+risks, and completion rather than repeating the task description.
 
 Required plan shape:
 
 - `## Approach` — the implementation strategy.
 - `## Files touched` — concrete paths expected to change.
 - `## Ordering` — the safe implementation sequence and dependencies.
-- `## Risks` — correctness, compatibility, and validation risks.
+- `## Risks` — correctness, compatibility, and validation risks, and every
+  contradiction between the task body and the checkout.
 - `## Done criteria` — explicit, reviewable completion statements.
 
 Populate `submit_plan` like this, replacing every example value:
@@ -81,9 +85,10 @@ plan to state why proposing is unavailable. In every case, reaching and
 reporting the checkpoint satisfies the agent's obligation; the agent reports
 progress and releases the work order with reason `operator
 checkpoint reached`. Acceptance must otherwise be verifiable through the
-repository checkout, repository Make targets, and documented MCP tools. For
-monitor-sourced `chore` tasks, drift resolution and governance confirmation
-are operator checkpoints by definition. Review this boundary as a reasoned
+repository checkout, the validation commands that the repository's validation
+documentation names, and documented MCP tools. For monitor-sourced `chore`
+tasks, drift resolution and governance confirmation are operator checkpoints
+by definition. Review this boundary as a reasoned
 check, not a keyword parser.
 
 Optional architecture or flow diagrams may use fenced Mermaid. They are

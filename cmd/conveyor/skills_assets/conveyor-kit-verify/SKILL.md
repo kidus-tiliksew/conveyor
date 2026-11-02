@@ -1,6 +1,6 @@
 ---
 name: conveyor-kit-verify
-description: Execute selected kits and ordinary obligations under a live verify claim, collect typed evidence, reconcile operations and submit the verification result.
+description: Execute selected kits and ordinary obligations under a live verify claim, collect typed evidence, reconcile operations and submit the verification result. Use when claiming or running a Conveyor verification order.
 ---
 
 # Verify a submitted revision

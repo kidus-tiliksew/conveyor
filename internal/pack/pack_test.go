@@ -246,7 +246,7 @@ func TestRolePromptsEnforceOperatorAuthorityBoundary(t *testing.T) {
 	}
 	normalizedSpec := strings.Join(strings.Fields(spec), " ")
 	for _, required := range []string{
-		"repository checkout, repository Make targets",
+		"repository checkout, the validation commands that the repository's validation documentation names",
 		"Gate approval, repository-drift resolution",
 		"requirement-clause revision, System Design revision, or decision",
 		"task-authored governance proposal tools",
@@ -476,23 +476,102 @@ func TestGovernanceContractBudgetsResolutionNotes(t *testing.T) {
 	}
 }
 
+// Role prompts are served to every workspace, so validation wording defers to
+// each repository's own validation documentation and names no Make target or
+// repository-specific command; this repository's Make-target and
+// docker compose rules live in its CLAUDE.md (DEC-53; DEC-72).
 func TestAgentRolesRequireSafeRepositoryValidation(t *testing.T) {
 	loader := Loader{Dir: filepath.Join("..", "..", "pack")}
-	for _, stage := range []core.Stage{core.StageImplement, core.StageReview} {
+	for _, stage := range []core.Stage{core.StageImplement, core.StageReview, core.StageSpec} {
 		role, err := loader.Role(stage)
 		if err != nil {
 			t.Fatal(err)
 		}
 		normalized := strings.Join(strings.Fields(role), " ")
-		for _, required := range []string{
-			"validation only through Make targets",
-			"`make test`",
-			"`make test-integration`",
-			"Never run raw `docker compose down` commands",
-		} {
-			if !strings.Contains(normalized, required) {
-				t.Errorf("%s role is missing %q", stage, required)
+		required := []string{
+			"Run the validation commands that the repository's own validation documentation names: its `AGENTS.md` or `CLAUDE.md` guidance and any attached testing-strategy System Design document",
+			"Follow that documentation's assignment of each gate to CI or to a local run",
+		}
+		if stage == core.StageSpec {
+			required = []string{"verifiable through the repository checkout, the validation commands that the repository's validation documentation names, and documented MCP tools"}
+		}
+		for _, fragment := range required {
+			if !strings.Contains(normalized, fragment) {
+				t.Errorf("%s role is missing %q", stage, fragment)
 			}
+		}
+		lower := strings.ToLower(normalized)
+		for _, forbidden := range []string{"make ", "makefile", "make targets", "`make", "this repository", "docker compose down"} {
+			if strings.Contains(lower, forbidden) {
+				t.Errorf("%s role keeps repository-specific validation wording %q", stage, forbidden)
+			}
+		}
+	}
+}
+
+// The reviewer requires retained manifest and complete-log references only for
+// gates the repository assigns to local runs; a CI-assigned gate's evidence is
+// the exact-head CI record (DEC-72). Unresolvable evidence is reported apart
+// from code defects, and repository review-bot findings are read.
+func TestReviewRoleScopesEvidenceToGateAssignment(t *testing.T) {
+	role, err := (Loader{Dir: filepath.Join("..", "..", "pack")}).Role(core.StageReview)
+	if err != nil {
+		t.Fatal(err)
+	}
+	normalized := strings.Join(strings.Fields(role), " ")
+	for _, required := range []string{
+		"For every claimed mandatory run of a gate that the repository's validation documentation assigns to a local run, require resolvable retained manifest and complete-log references",
+		"A transcript tail is diagnostic context, not the original complete log and not proof that the mandatory run passed",
+		"For a gate that the documentation assigns to CI, the evidence is the exact-head CI record in the pull request body",
+		"including failed attempts (DEC-72)",
+		"Do not require local manifest or complete-log references for that gate",
+		"state in the verdict that the evidence is unresolvable and why, separately from any code defect",
+		"such as CodeRabbit or a repository review bot, read their findings on the pull request at the reviewed head",
+	} {
+		if !strings.Contains(normalized, required) {
+			t.Errorf("review role is missing %q", required)
+		}
+	}
+	if strings.Contains(normalized, "For every claimed mandatory run, require") {
+		t.Error("review role still requires retained manifests for every claimed mandatory run")
+	}
+}
+
+// The implementer records reviewer-readable evidence for every criterion and
+// settles repository review-bot findings on the exact head before submission.
+func TestImplementRoleRequiresPortableEvidenceAndReviewBotOutcomes(t *testing.T) {
+	role, err := (Loader{Dir: filepath.Join("..", "..", "pack")}).Role(core.StageImplement)
+	if err != nil {
+		t.Fatal(err)
+	}
+	normalized := strings.Join(strings.Fields(role), " ")
+	for _, required := range []string{
+		"Record evidence for each done criterion and each acceptance criterion in the pull request body or the submission summary, in a form a reviewer on another machine can read: inline results, a CI run, or an artifact reference.",
+		"An absolute local path is not evidence, because each reviewer runs in its own session or sandbox.",
+		"such as CodeRabbit or a repository review bot, wait for their findings on the exact head before `submit_for_review`",
+		"address or answer each finding, and note each outcome in the pull request body",
+	} {
+		if !strings.Contains(normalized, required) {
+			t.Errorf("implement role is missing %q", required)
+		}
+	}
+}
+
+// The planner checks each current-state claim of the task body against the
+// checkout and lists contradictions under Risks.
+func TestSpecRoleVerifiesCurrentStateClaims(t *testing.T) {
+	role, err := (Loader{Dir: filepath.Join("..", "..", "pack")}).Role(core.StageSpec)
+	if err != nil {
+		t.Fatal(err)
+	}
+	normalized := strings.Join(strings.Fields(role), " ")
+	for _, required := range []string{
+		"Check each current-state claim in the task body, such as paths, credentials, schema, and behavior, against the checkout.",
+		"List every contradiction under `## Risks` with its `file:line`.",
+		"never restate an unverified claim as fact",
+	} {
+		if !strings.Contains(normalized, required) {
+			t.Errorf("spec role is missing %q", required)
 		}
 	}
 }

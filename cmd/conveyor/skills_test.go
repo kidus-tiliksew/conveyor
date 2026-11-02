@@ -622,6 +622,8 @@ func TestClaimingSkillsShipClaimIdentityAndUsageReporting(t *testing.T) {
 			"Omit `cost_usd`",
 			"A session without figures skips the call and invents none",
 			"Missing usage never delays or blocks a verification submission",
+			// The verifier's usage source rule matches conveyor-work.
+			"Leave `source` unset or `self_reported`",
 		}, claimIdentity...),
 		"conveyor-kit-verify/SKILL.md": {
 			"A verifier's claim names the harness in `agent` and the runtime's concrete model ID in `model`, or the harness's reported value such as `auto` verbatim when the harness does not expose one; never guess a model ID",
