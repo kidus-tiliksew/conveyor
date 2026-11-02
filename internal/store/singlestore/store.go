@@ -111,6 +111,9 @@ func Open(ctx context.Context, raw string) (*Store, error) {
 		if err == nil {
 			err = st.migrate(ctx)
 		}
+		if err == nil {
+			err = st.checkEventsPrerequisite(ctx)
+		}
 	}
 	if err != nil {
 		db.Close()

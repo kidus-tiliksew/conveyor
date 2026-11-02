@@ -95,7 +95,7 @@ func setClaim(ctx context.Context, tx *sql.Tx, key, holder string) error {
 
 // claimedRecord is the record a claim row's holder names: the last record a
 // decision under the claim appended (component-persistence, SingleStore
-// claimed records). Table is "events" or "monitor_activity". Shard is the
+// claimed records). Table is "events_columnstore" or "monitor_activity". Shard is the
 // event's shard key; "" means the claim's own task. Note is an optional value
 // the decision reads back, such as a review summary version.
 type claimedRecord struct {
@@ -106,7 +106,7 @@ type claimedRecord struct {
 }
 
 const (
-	claimedEventsTable          = "events"
+	claimedEventsTable          = "events_columnstore"
 	claimedMonitorActivityTable = "monitor_activity"
 )
 
@@ -116,6 +116,12 @@ func (r claimedRecord) holder() string {
 
 func parseClaimedRecord(holder string) (claimedRecord, error) {
 	parts := strings.SplitN(holder, ":", 4)
+	// Released versions recorded the old physical table name in durable
+	// holders. Resolve those identities in the copied stable table, never
+	// by querying legacy events.
+	if parts[0] == "events" {
+		parts[0] = claimedEventsTable
+	}
 	if len(parts) != 4 || (parts[0] != claimedEventsTable && parts[0] != claimedMonitorActivityTable) {
 		return claimedRecord{}, fmt.Errorf("claim holder %q names no record", holder)
 	}
@@ -177,7 +183,7 @@ func awaitClaimedRecord(ctx context.Context, tx *sql.Tx, key, workspace, taskSha
 		if shard == "" {
 			shard = taskShard
 		}
-		query, args = "SELECT COUNT(*) FROM events WHERE workspace_id=? AND event_shard_key=? AND id=?", []any{workspace, shard, record.ID}
+		query, args = "SELECT COUNT(*) FROM events_columnstore WHERE workspace_id=? AND event_shard_key=? AND id=?", []any{workspace, shard, record.ID}
 	}
 	deadline := time.Now().Add(claimedRecordWaitLimit)
 	delay := claimedRecordFirstDelay
@@ -219,7 +225,7 @@ func lastInsertedRecord(ctx context.Context, tx *sql.Tx, table, workspace string
 		return claimedRecord{}, err
 	}
 	if table == claimedEventsTable && !taskEvent {
-		if err := tx.QueryRowContext(ctx, `SELECT event_shard_key FROM events WHERE workspace_id=? AND id=?`, workspace, record.ID).Scan(&record.Shard); err != nil {
+		if err := tx.QueryRowContext(ctx, `SELECT event_shard_key FROM events_columnstore WHERE workspace_id=? AND id=?`, workspace, record.ID).Scan(&record.Shard); err != nil {
 			return claimedRecord{}, err
 		}
 	}

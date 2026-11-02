@@ -522,7 +522,7 @@ func (s *Store) AttachTaskBranch(ctx context.Context, taskID, branch string) (co
 				return err
 			}
 			var claimed, prOpened bool
-			if err := tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM work_orders WHERE workspace_id=? AND task_id=? AND state='claimed'), EXISTS(SELECT 1 FROM events WHERE workspace_id=? AND task_id=? AND kind='pull_request.opened')`, ws, taskID, ws, taskID).Scan(&claimed, &prOpened); err != nil {
+			if err := tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM work_orders WHERE workspace_id=? AND task_id=? AND state='claimed'), EXISTS(SELECT 1 FROM events_columnstore WHERE workspace_id=? AND task_id=? AND kind='pull_request.opened')`, ws, taskID, ws, taskID).Scan(&claimed, &prOpened); err != nil {
 				return err
 			}
 			// Lock the old and new branch rows in one order so concurrent swaps
@@ -695,7 +695,7 @@ func taskPredicate(ctx context.Context, f store.TaskFilter) (string, []any) {
 	// Updated is the task's last activity: the newest event time in its own
 	// workspace (the maximum (at, id) tuple has the maximum at), or created_at
 	// before any event — the instant activity markers report as LastEventAt.
-	const lastActivity = "COALESCE((SELECT MAX(e.at) FROM events e WHERE e.workspace_id=tasks.workspace_id AND e.task_id=tasks.id),created_at)"
+	const lastActivity = "COALESCE((SELECT MAX(e.at) FROM events_columnstore e WHERE e.workspace_id=tasks.workspace_id AND e.task_id=tasks.id),created_at)"
 	if !f.UpdatedFrom.IsZero() {
 		q += " AND " + lastActivity + ">=?"
 		args = append(args, f.UpdatedFrom)
@@ -719,7 +719,7 @@ func taskPredicate(ctx context.Context, f store.TaskFilter) (string, []any) {
 		if len(pair.ids) == 0 {
 			continue
 		}
-		q += ` AND EXISTS (SELECT 1 FROM events e WHERE e.workspace_id=tasks.workspace_id AND e.task_id=tasks.id AND e.kind=? AND JSON_EXTRACT_STRING(e.payload_json,'id') IN (` + strings.TrimSuffix(strings.Repeat("?,", len(pair.ids)), ",") + `) AND NOT EXISTS (SELECT 1 FROM events later WHERE later.workspace_id=e.workspace_id AND later.task_id=e.task_id AND (later.at>e.at OR later.at=e.at AND later.id>e.id) AND later.kind IN (?,?) AND JSON_EXTRACT_STRING(later.payload_json,'id')=JSON_EXTRACT_STRING(e.payload_json,'id')))`
+		q += ` AND EXISTS (SELECT 1 FROM events_columnstore e WHERE e.workspace_id=tasks.workspace_id AND e.task_id=tasks.id AND e.kind=? AND JSON_EXTRACT_STRING(e.payload_json,'id') IN (` + strings.TrimSuffix(strings.Repeat("?,", len(pair.ids)), ",") + `) AND NOT EXISTS (SELECT 1 FROM events_columnstore later WHERE later.workspace_id=e.workspace_id AND later.task_id=e.task_id AND (later.at>e.at OR later.at=e.at AND later.id>e.id) AND later.kind IN (?,?) AND JSON_EXTRACT_STRING(later.payload_json,'id')=JSON_EXTRACT_STRING(e.payload_json,'id')))`
 		args = append(args, pair.added)
 		for _, id := range pair.ids {
 			args = append(args, id)
@@ -1426,7 +1426,7 @@ func (s *Store) RequestChangesCommand(ctx context.Context, lease taskops.TaskLea
 
 		var latestPayload []byte
 		events := []core.Event{}
-		if err = tx.QueryRowContext(ctx, `SELECT payload_json FROM events WHERE workspace_id=? AND task_id=? AND kind='task.state_changed' ORDER BY at DESC,id DESC LIMIT 1`, documentWorkspace(ctx), request.TaskID).Scan(&latestPayload); err != nil {
+		if err = tx.QueryRowContext(ctx, `SELECT payload_json FROM events_columnstore WHERE workspace_id=? AND task_id=? AND kind='task.state_changed' ORDER BY at DESC,id DESC LIMIT 1`, documentWorkspace(ctx), request.TaskID).Scan(&latestPayload); err != nil {
 			return err
 		}
 		events = append(events, core.Event{Kind: "task.state_changed", Payload: latestPayload})

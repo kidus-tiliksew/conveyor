@@ -23,7 +23,7 @@ func (s *Store) ResolveCausalSystemDesignMerge(ctx context.Context, documentID, 
 	err := s.withTx(ctx, func(tx *sql.Tx) error {
 		var causalTaskID string
 		var causalAt time.Time
-		if err := documentRow(ctx, tx, `SELECT causal.task_id,causal.at FROM events causal
+		if err := documentRow(ctx, tx, `SELECT causal.task_id,causal.at FROM events_columnstore causal
 			JOIN tasks causal_task ON causal_task.workspace_id=causal.workspace_id AND causal_task.id=causal.task_id
 			WHERE causal.workspace_id=? AND causal.id=? AND causal_task.repo_name=?
 			AND causal.kind IN ('merge.confirmed','merge.reconciled')
@@ -47,7 +47,7 @@ func (s *Store) ResolveCausalSystemDesignMerge(ctx context.Context, documentID, 
 		var version int
 		var confirmed bool
 		proposalErr := documentRow(ctx, tx, `SELECT proposal.id,CAST(JSON_EXTRACT_STRING(proposal.payload_json,'version') AS SIGNED),version.confirmed
-			FROM events proposal
+			FROM events_columnstore proposal
 			JOIN system_design_versions version ON version.workspace_id=proposal.workspace_id
 			 AND version.document_id=JSON_EXTRACT_STRING(proposal.payload_json,'document_id')
 			 AND version.version=CAST(JSON_EXTRACT_STRING(proposal.payload_json,'version') AS SIGNED)
@@ -92,7 +92,7 @@ func (s *Store) ResolveCausalSystemDesignMerge(ctx context.Context, documentID, 
 		var contextKind string
 		var attachedVersion int
 		contextErr := documentRow(ctx, tx, `SELECT kind,COALESCE(CAST(JSON_EXTRACT_STRING(payload_json,'version') AS SIGNED),0)
-			FROM events WHERE workspace_id=? AND task_id=? AND (at<? OR at=? AND id<?)
+			FROM events_columnstore WHERE workspace_id=? AND task_id=? AND (at<? OR at=? AND id<?)
 				AND kind IN ('task.context_design_added','task.context_design_removed')
 				AND JSON_EXTRACT_STRING(payload_json,'id')=? ORDER BY at DESC,id DESC LIMIT 1`, documentWorkspace(ctx), causalTaskID, causalAt, causalAt, causalEventID, documentID).Scan(&contextKind, &attachedVersion)
 		if contextErr != nil && !errors.Is(contextErr, sql.ErrNoRows) {
@@ -105,7 +105,7 @@ func (s *Store) ResolveCausalSystemDesignMerge(ctx context.Context, documentID, 
 			return nil
 		}
 		var exists bool
-		if err := documentRow(ctx, tx, `SELECT EXISTS(SELECT 1 FROM events WHERE workspace_id=?
+		if err := documentRow(ctx, tx, `SELECT EXISTS(SELECT 1 FROM events_columnstore WHERE workspace_id=?
 			AND kind='system_design.consulted' AND JSON_EXTRACT_STRING(payload_json,'document_id')=?
 			AND JSON_EXTRACT_STRING(payload_json,'merge_event_id')=?)`, documentWorkspace(ctx), documentID, strconv.FormatInt(causalEventID, 10)).Scan(&exists); err != nil {
 			return err

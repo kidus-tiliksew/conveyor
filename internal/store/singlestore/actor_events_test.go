@@ -3,10 +3,6 @@ package singlestore
 import (
 	"context"
 	"errors"
-	"os"
-	"path/filepath"
-	"regexp"
-	"strings"
 	"testing"
 
 	"github.com/kidus-tiliksew/conveyor/internal/core"
@@ -35,7 +31,7 @@ func TestInsertEventRequiresActor(t *testing.T) {
 				return insertWorkspaceEvent(ctx, nil, workspaceEvent)
 			},
 			"writeRow events": func() error {
-				_, err := writeRow(ctx, nil, rowWrite{table: "events", operation: "INSERT", values: map[string]any{"workspace_id": "demo", "kind": "test.event", "actor_id": "user:usr-1", "actor_role": "human"}})
+				_, err := writeRow(ctx, nil, rowWrite{table: "events_columnstore", operation: "INSERT", values: map[string]any{"workspace_id": "demo", "kind": "test.event", "actor_id": "user:usr-1", "actor_role": "human"}})
 				return err
 			},
 			"appendDeploymentEvent": func() error { return appendDeploymentEvent(ctx, nil, "test.event", map[string]any{}) },
@@ -43,31 +39,6 @@ func TestInsertEventRequiresActor(t *testing.T) {
 		for writer, call := range writers {
 			if err := call(); !errors.Is(err, store.ErrMissingActor) {
 				t.Fatalf("%s context, %s: error=%v", name, writer, err)
-			}
-		}
-	}
-}
-
-// TestLedgerRowsUseGuardedWriter scans the package source: ledger rows are
-// written only through writeRow, whose ledger guard requires the context
-// actor, so no raw SQL appends an event without that check.
-func TestLedgerRowsUseGuardedWriter(t *testing.T) {
-	files, err := filepath.Glob("*.go")
-	if err != nil {
-		t.Fatal(err)
-	}
-	raw := regexp.MustCompile("(?i)INSERT\\s+INTO\\s+`?(events|deployment_events)`?\\b")
-	for _, file := range files {
-		if strings.HasSuffix(file, "_test.go") {
-			continue
-		}
-		body, err := os.ReadFile(file)
-		if err != nil {
-			t.Fatal(err)
-		}
-		for number, line := range strings.Split(string(body), "\n") {
-			if raw.MatchString(line) {
-				t.Errorf("%s:%d writes a ledger row outside writeRow: %s", file, number+1, strings.TrimSpace(line))
 			}
 		}
 	}

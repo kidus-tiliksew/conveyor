@@ -169,7 +169,7 @@ func (s *Store) MonitorMergeCommitState(ctx context.Context, repository, commitS
 		return monitor.MergeNone, "", translateBackendConflict(err)
 	}
 	var recordedTask string
-	err = s.db.QueryRowContext(ctx, `SELECT e.task_id FROM events e
+	err = s.db.QueryRowContext(ctx, `SELECT e.task_id FROM events_columnstore e
 		WHERE e.workspace_id=?
 		  AND e.kind IN ('merge.confirmed','merge.reconciled')
 		  AND JSON_EXTRACT_STRING(e.payload_json,'repository')=?
@@ -184,12 +184,12 @@ func (s *Store) MonitorMergeCommitState(ctx context.Context, repository, commitS
 	var inFlightTask string
 	var requestAt time.Time
 	if recordedTask == "" && bound > 0 && now.Sub(committedAt) < bound {
-		err = s.db.QueryRowContext(ctx, `SELECT e.task_id, e.at FROM events e
+		err = s.db.QueryRowContext(ctx, `SELECT e.task_id, e.at FROM events_columnstore e
 			WHERE e.workspace_id=? AND e.kind='merge.requested'
 			  AND JSON_EXTRACT_STRING(e.payload_json,'repository')=?
 			  AND e.at > ?
 			  AND NOT EXISTS (
-				SELECT 1 FROM events later
+				SELECT 1 FROM events_columnstore later
 				WHERE later.workspace_id=e.workspace_id AND later.task_id=e.task_id
 				  AND (
 					later.kind IN ('merge.confirmed','merge.reconciled')
@@ -343,7 +343,7 @@ func auditMonitorTask(ctx context.Context, tx *sql.Tx, ws, taskID, kind string, 
 		return translateBackendConflict(err)
 	}
 	actor := store.ActorFromContext(ctx)
-	_, err = writeRow(ctx, tx, rowWrite{table: "events", operation: "INSERT", values: map[string]any{"workspace_id": ws, "task_id": taskID, "kind": kind, "payload_json": data, "actor_id": actor.ID, "actor_role": string(actor.Role), "at": time.Now().UTC()}})
+	_, err = writeRow(ctx, tx, rowWrite{table: "events_columnstore", operation: "INSERT", values: map[string]any{"workspace_id": ws, "task_id": taskID, "kind": kind, "payload_json": data, "actor_id": actor.ID, "actor_role": string(actor.Role), "at": time.Now().UTC()}})
 	return translateBackendConflict(err)
 }
 func (s *Store) AuditTask(ctx context.Context, taskID, kind string, payload map[string]any) error {

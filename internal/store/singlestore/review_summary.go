@@ -71,7 +71,7 @@ func (s *Store) RecordReviewSummaryCommand(ctx context.Context, request store.Re
 			return err
 		}
 		var recordedAt time.Time
-		if err = tx.QueryRowContext(ctx, `SELECT at FROM events WHERE workspace_id=? AND id=?`, ws, appended.ID).Scan(&recordedAt); err != nil {
+		if err = tx.QueryRowContext(ctx, `SELECT at FROM events_columnstore WHERE workspace_id=? AND id=?`, ws, appended.ID).Scan(&recordedAt); err != nil {
 			return err
 		}
 		result = plan.Result(request.TaskID, appended.ID, recordedAt)

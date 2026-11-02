@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"log/slog"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -12,6 +13,7 @@ import (
 	"github.com/kidus-tiliksew/conveyor/internal/store"
 )
 
+// case: EVC261031445A96-003
 func TestDocumentDismissalArchivalMigrationIntegration(t *testing.T) {
 	st := integrationStore(t)
 	ctx := store.WithActor(t.Context(), store.SystemActor())
@@ -81,6 +83,28 @@ func TestDocumentDismissalArchivalMigrationIntegration(t *testing.T) {
 			}
 		}
 	}
+	// Reconstruct the pre-16 writer boundary: legacy events has no shard key.
+	// Move the fixture's initial events back before running the historical
+	// helper, then perform the final operator copy only after it completes.
+	if _, err := st.db.ExecContext(ctx, `INSERT INTO events (`+eventColumns+`) SELECT `+eventColumns+` FROM events_columnstore`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.db.ExecContext(ctx, `DELETE FROM events_columnstore`); err != nil {
+		t.Fatal(err)
+	}
+	// The reverse-seeded fixture needs the allocator state a real legacy
+	// writer would already have maintained before migration 16.
+	var database string
+	if err := st.db.QueryRowContext(ctx, "SELECT DATABASE()").Scan(&database); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.db.ExecContext(ctx, "AGGREGATOR SYNC AUTO_INCREMENT ON `"+strings.ReplaceAll(database, "`", "``")+"`.`events` ALL"); err != nil {
+		t.Fatal(err)
+	}
+	var shardColumns int
+	if err := st.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM information_schema.columns WHERE table_schema=DATABASE() AND table_name='events' AND column_name='event_shard_key'`).Scan(&shardColumns); err != nil || shardColumns != 0 {
+		t.Fatalf("historical events shard columns=%d err=%v", shardColumns, err)
+	}
 	// Simulate a restart after only some DDL committed. The current test DB
 	// belongs to this fixture; no historical published migration is rewritten.
 	if _, err := st.db.ExecContext(ctx, "DELETE FROM conveyor_singlestore_migrations WHERE version=16"); err != nil {
@@ -102,6 +126,17 @@ func TestDocumentDismissalArchivalMigrationIntegration(t *testing.T) {
 
 	if err := st.migrate(ctx); err != nil {
 		t.Fatal(err)
+	}
+	beforeCopy := queryRows(t, st, ctx, `SELECT `+eventColumns+` FROM events ORDER BY workspace_id,id`)
+	if err := execEventsOperatorScript(ctx, st.db, "02-copy.sql"); err != nil {
+		t.Fatal(err)
+	}
+	assertEventsCopyValid(t, ctx, st)
+	if afterCopy := queryRows(t, st, ctx, `SELECT `+eventColumns+` FROM events_columnstore ORDER BY workspace_id,id`); !reflect.DeepEqual(beforeCopy, afterCopy) {
+		t.Fatal("operator copy changed historical dismissal events")
+	}
+	if retained := queryRows(t, st, ctx, `SELECT `+eventColumns+` FROM events ORDER BY workspace_id,id`); !reflect.DeepEqual(beforeCopy, retained) {
+		t.Fatal("operator copy changed retained historical events")
 	}
 	for _, ws := range []string{"dismissal-a", "dismissal-b"} {
 		scoped := store.WithWorkspace(ctx, ws)

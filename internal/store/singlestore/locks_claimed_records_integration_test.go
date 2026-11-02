@@ -35,12 +35,12 @@ type hiddenEvent struct {
 func hideEvent(t *testing.T, st *Store, workspace string, id int64) hiddenEvent {
 	t.Helper()
 	h := hiddenEvent{id: id, workspace: workspace}
-	err := st.db.QueryRowContext(t.Context(), `SELECT event_shard_key,task_id,job_id,kind,actor_id,actor_role,payload_json,at FROM events WHERE workspace_id=? AND id=?`, workspace, id).
+	err := st.db.QueryRowContext(t.Context(), `SELECT event_shard_key,task_id,job_id,kind,actor_id,actor_role,payload_json,at FROM events_columnstore WHERE workspace_id=? AND id=?`, workspace, id).
 		Scan(&h.shard, &h.taskID, &h.jobID, &h.kind, &h.actorID, &h.actorRole, &h.payload, &h.at)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err = st.db.ExecContext(t.Context(), `DELETE FROM events WHERE workspace_id=? AND id=?`, workspace, id); err != nil {
+	if _, err = st.db.ExecContext(t.Context(), `DELETE FROM events_columnstore WHERE workspace_id=? AND id=?`, workspace, id); err != nil {
 		t.Fatal(err)
 	}
 	return h
@@ -49,7 +49,7 @@ func hideEvent(t *testing.T, st *Store, workspace string, id int64) hiddenEvent 
 // restore inserts the hidden row again with its original identity.
 func (h hiddenEvent) restore(t *testing.T, st *Store) {
 	t.Helper()
-	if _, err := st.db.ExecContext(t.Context(), `INSERT INTO events (id,event_shard_key,task_id,job_id,kind,actor_id,actor_role,payload_json,at,workspace_id) VALUES (?,?,?,?,?,?,?,?,?,?)`,
+	if _, err := st.db.ExecContext(t.Context(), `INSERT INTO events_columnstore (id,event_shard_key,task_id,job_id,kind,actor_id,actor_role,payload_json,at,workspace_id) VALUES (?,?,?,?,?,?,?,?,?,?)`,
 		h.id, h.shard, h.taskID, h.jobID, h.kind, h.actorID, h.actorRole, h.payload, h.at, h.workspace); err != nil {
 		t.Fatal(err)
 	}
@@ -217,7 +217,7 @@ func TestClaimedRecordTimesOutIntegration(t *testing.T) {
 			t.Fatalf("err=%v, want ErrRetryable", err)
 		}
 		var rebuilt int
-		if err := st.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM events WHERE workspace_id=? AND kind='lineage.rebuilt'`, ws).Scan(&rebuilt); err != nil || rebuilt != 0 {
+		if err := st.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM events_columnstore WHERE workspace_id=? AND kind='lineage.rebuilt'`, ws).Scan(&rebuilt); err != nil || rebuilt != 0 {
 			t.Fatalf("rebuilt events=%d err=%v", rebuilt, err)
 		}
 	})
@@ -257,7 +257,7 @@ func TestClaimedObservationAndRebuildNameTheirRecordsIntegration(t *testing.T) {
 		t.Fatal(err)
 	}
 	var kind string
-	if err = st.db.QueryRowContext(ctx, `SELECT kind FROM events WHERE workspace_id=? AND event_shard_key=? AND id=?`, ws, record.Shard, record.ID).Scan(&kind); err != nil || kind != "lineage.rebuilt" {
+	if err = st.db.QueryRowContext(ctx, `SELECT kind FROM events_columnstore WHERE workspace_id=? AND event_shard_key=? AND id=?`, ws, record.Shard, record.ID).Scan(&kind); err != nil || kind != "lineage.rebuilt" {
 		t.Fatalf("claim names %+v (kind %q, err %v), want the lineage.rebuilt event", record, kind, err)
 	}
 	hidden := hideEvent(t, st, ws, record.ID)
@@ -278,7 +278,7 @@ func TestClaimedObservationAndRebuildNameTheirRecordsIntegration(t *testing.T) {
 		t.Fatalf("replay=%+v err=%v, want the recorded result %+v", o.result, o.err, result)
 	}
 	var rebuilt int
-	if err = st.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM events WHERE workspace_id=? AND kind='lineage.rebuilt'`, ws).Scan(&rebuilt); err != nil || rebuilt != 1 {
+	if err = st.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM events_columnstore WHERE workspace_id=? AND kind='lineage.rebuilt'`, ws).Scan(&rebuilt); err != nil || rebuilt != 1 {
 		t.Fatalf("rebuilt events=%d err=%v, want one", rebuilt, err)
 	}
 }
@@ -334,8 +334,42 @@ func TestIdentifierClaimsOutliveUnseenRowsIntegration(t *testing.T) {
 func countTaskEvents(t *testing.T, st *Store, workspace, taskID string) int {
 	t.Helper()
 	var n int
-	if err := st.db.QueryRowContext(t.Context(), `SELECT COUNT(*) FROM events WHERE workspace_id=? AND task_id=?`, workspace, taskID).Scan(&n); err != nil {
+	if err := st.db.QueryRowContext(t.Context(), `SELECT COUNT(*) FROM events_columnstore WHERE workspace_id=? AND task_id=?`, workspace, taskID).Scan(&n); err != nil {
 		t.Fatal(err)
 	}
 	return n
+}
+
+// A released install has old physical table names in durable claim holders.
+// After cutover they resolve only against the copied stable table.
+func TestLegacyClaimedRecordResolvesStableEventsIntegration(t *testing.T) {
+	st := integrationStore(t)
+	ctx, ws, task := seedClaimTask(t, st, "legacy-holder")
+	key := "legacy-holder:" + ws
+	var record claimedRecord
+	if err := st.withTx(ctx, func(tx *sql.Tx) error {
+		if _, err := claimKey(ctx, tx, key); err != nil {
+			return err
+		}
+		if err := taskEvent(ctx, tx, core.Event{TaskID: task.ID, Kind: "legacy.holder"}); err != nil {
+			return err
+		}
+		var err error
+		record, err = lastInsertedRecord(ctx, tx, claimedEventsTable, ws, true)
+		if err != nil {
+			return err
+		}
+		return setClaim(ctx, tx, key, "events:"+strconv.FormatInt(record.ID, 10)+"::")
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.withTx(ctx, func(tx *sql.Tx) error {
+		got, found, err := awaitClaimedRecord(ctx, tx, key, ws, task.ID)
+		if err == nil && (!found || got != record) {
+			t.Fatalf("resolved %+v, found=%v; want %+v", got, found, record)
+		}
+		return err
+	}); err != nil {
+		t.Fatal(err)
+	}
 }

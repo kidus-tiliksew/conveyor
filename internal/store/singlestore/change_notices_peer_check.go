@@ -19,7 +19,7 @@ import (
 // read too, so a deletion paired with an insert still moves a value.
 const peerMarksSQL = `SELECT workspace_id, 0 AS source, position AS n, 0 AS last_id FROM event_log_positions
 UNION ALL
-SELECT workspace_id, 1 AS source, COUNT(*) AS n, MAX(id) AS last_id FROM events WHERE task_id IS NOT NULL GROUP BY workspace_id`
+SELECT workspace_id, 1 AS source, COUNT(*) AS n, MAX(id) AS last_id FROM events_columnstore WHERE task_id IS NOT NULL GROUP BY workspace_id`
 
 var _ changes.PeerReader = (*Store)(nil)
 

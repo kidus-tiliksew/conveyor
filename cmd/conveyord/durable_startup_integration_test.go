@@ -477,6 +477,19 @@ func durableStartupDatabaseFor(t, owner *testing.T, name string) string {
 		}
 	})
 	cfg.DBName = database
+	preparationConnector, err := mysql.NewConnector(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	preparation := sql.OpenDB(preparationConnector)
+	createEvents, err := os.ReadFile("../../docs/sql/events-columnstore/01-create.sql")
+	if err == nil {
+		_, err = preparation.ExecContext(t.Context(), string(createEvents))
+	}
+	preparation.Close()
+	if err != nil {
+		t.Fatal(err)
+	}
 	return cfg.FormatDSN()
 }
 

@@ -41,6 +41,10 @@ func insertEventWithID(ctx context.Context, tx *sql.Tx, e core.Event) (int64, er
 }
 
 func insertWorkspaceEvent(ctx context.Context, tx *sql.Tx, event core.Event) error {
+	return insertWorkspaceEventInto(ctx, tx, event, "events_columnstore")
+}
+
+func insertWorkspaceEventInto(ctx context.Context, tx *sql.Tx, event core.Event, table string) error {
 	ws, err := workspace(ctx)
 	if err != nil {
 		return err
@@ -61,7 +65,7 @@ func insertWorkspaceEvent(ctx context.Context, tx *sql.Tx, event core.Event) err
 	if event.Payload == nil {
 		event.Payload = json.RawMessage(`{}`)
 	}
-	result, err := writeRow(logTx(ctx, tx), tx, rowWrite{table: "events", operation: "INSERT", values: map[string]any{"workspace_id": ws, "task_id": nullString(event.TaskID), "job_id": nullString(event.JobID), "kind": event.Kind, "actor_id": event.ActorID, "actor_role": string(event.ActorRole), "payload_json": []byte(event.Payload), "at": event.At}})
+	result, err := writeRow(logTx(ctx, tx), tx, rowWrite{table: table, operation: "INSERT", values: map[string]any{"workspace_id": ws, "task_id": nullString(event.TaskID), "job_id": nullString(event.JobID), "kind": event.Kind, "actor_id": event.ActorID, "actor_role": string(event.ActorRole), "payload_json": []byte(event.Payload), "at": event.At}})
 	if err != nil {
 		return err
 	}

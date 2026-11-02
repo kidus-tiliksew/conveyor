@@ -96,7 +96,7 @@ func TestReviewSummaryWaitsForUnseenPredecessorIntegration(t *testing.T) {
 		t.Fatalf("third=%+v err=%v, want version 6 after a recorded 5", third, err)
 	}
 	var summaries int
-	if err = st.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM events WHERE workspace_id=? AND task_id=? AND kind=?`, ws, task.ID, store.ReviewSummaryRecordedEvent).Scan(&summaries); err != nil || summaries != 3 {
+	if err = st.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM events_columnstore WHERE workspace_id=? AND task_id=? AND kind=?`, ws, task.ID, store.ReviewSummaryRecordedEvent).Scan(&summaries); err != nil || summaries != 3 {
 		t.Fatalf("summary events=%d err=%v, want 3", summaries, err)
 	}
 }

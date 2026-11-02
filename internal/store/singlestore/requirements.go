@@ -1037,7 +1037,7 @@ func firstTrimmed(values []string) string {
 
 func (s *Store) ListPlanningSessionEvents(ctx context.Context, sessionID string) ([]core.Event, error) {
 	rows, err := documentRows(ctx, s.db, `SELECT id,COALESCE(task_id,''),COALESCE(job_id,''),kind,actor_id,actor_role,payload_json,at
-		FROM events WHERE workspace_id=? AND JSON_EXTRACT_STRING(payload_json,'session_id')=? ORDER BY id`, documentWorkspace(ctx), sessionID)
+		FROM events_columnstore WHERE workspace_id=? AND JSON_EXTRACT_STRING(payload_json,'session_id')=? ORDER BY id`, documentWorkspace(ctx), sessionID)
 	if err != nil {
 		return nil, err
 	}

@@ -32,7 +32,7 @@ func TestTaskEventWindowDelayedCommitIntegration(t *testing.T) {
 		t.Fatal(err)
 	}
 	at := time.Date(2026, 10, 2, 5, 0, 0, 0, time.UTC)
-	insert := "INSERT INTO events (workspace_id, task_id, kind, actor_id, actor_role, payload_json, at, event_shard_key) VALUES (?, ?, 'test.delayed', 'fixture', 'system', '{}', ?, ?)"
+	insert := "INSERT INTO events_columnstore (workspace_id, task_id, kind, actor_id, actor_role, payload_json, at, event_shard_key) VALUES (?, ?, 'test.delayed', 'fixture', 'system', '{}', ?, ?)"
 	for i := 0; i < 3; i++ {
 		if _, err := st.db.ExecContext(ctx, insert, ws, task.ID, at.Add(time.Duration(i)*time.Second), task.ID); err != nil {
 			t.Fatal(err)
@@ -135,7 +135,7 @@ func TestTaskEventWindowFetchBoundsIntegration(t *testing.T) {
 	}
 	at := time.Date(2026, 10, 2, 6, 0, 0, 0, time.UTC)
 	huge := strings.Repeat("x", 2<<20)
-	insert := "INSERT INTO events (workspace_id, task_id, kind, actor_id, actor_role, payload_json, at, event_shard_key) VALUES (?, ?, ?, ?, 'system', '{}', ?, ?)"
+	insert := "INSERT INTO events_columnstore (workspace_id, task_id, kind, actor_id, actor_role, payload_json, at, event_shard_key) VALUES (?, ?, ?, ?, 'system', '{}', ?, ?)"
 	ids := make([]int64, 4)
 	for i, row := range []struct{ kind, actor string }{{"test.fetch", "fixture"}, {"test.fetch", "fixture"}, {"test.fetch", huge}, {huge, "fixture"}} {
 		result, err := st.db.ExecContext(ctx, insert, ws, task.ID, row.kind, row.actor, at.Add(time.Duration(i)*time.Second), task.ID)
@@ -215,7 +215,7 @@ func TestTaskEventWindowFetchBoundsIntegration(t *testing.T) {
 	payloadIDs := make([]int64, 2)
 	small := `{"n":1}`
 	for i, payload := range []string{`{"blob":"` + strings.Repeat("y", 2<<20) + `"}`, small} {
-		result, err := st.db.ExecContext(ctx, "INSERT INTO events (workspace_id, task_id, kind, actor_id, actor_role, payload_json, at, event_shard_key) VALUES (?, ?, 'test.payload', 'fixture', 'system', ?, ?, ?)", ws, payloadTask.ID, payload, later.Add(time.Duration(i)*time.Second), payloadTask.ID)
+		result, err := st.db.ExecContext(ctx, "INSERT INTO events_columnstore (workspace_id, task_id, kind, actor_id, actor_role, payload_json, at, event_shard_key) VALUES (?, ?, 'test.payload', 'fixture', 'system', ?, ?, ?)", ws, payloadTask.ID, payload, later.Add(time.Duration(i)*time.Second), payloadTask.ID)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -224,10 +224,10 @@ func TestTaskEventWindowFetchBoundsIntegration(t *testing.T) {
 		}
 	}
 	var storedBytes, smallBytes int
-	if err := st.db.QueryRowContext(ctx, "SELECT LENGTH(payload_json) FROM events WHERE workspace_id = ? AND id = ?", ws, payloadIDs[0]).Scan(&storedBytes); err != nil {
+	if err := st.db.QueryRowContext(ctx, "SELECT LENGTH(payload_json) FROM events_columnstore WHERE workspace_id = ? AND id = ?", ws, payloadIDs[0]).Scan(&storedBytes); err != nil {
 		t.Fatal(err)
 	}
-	if err := st.db.QueryRowContext(ctx, "SELECT LENGTH(payload_json) FROM events WHERE workspace_id = ? AND id = ?", ws, payloadIDs[1]).Scan(&smallBytes); err != nil {
+	if err := st.db.QueryRowContext(ctx, "SELECT LENGTH(payload_json) FROM events_columnstore WHERE workspace_id = ? AND id = ?", ws, payloadIDs[1]).Scan(&smallBytes); err != nil {
 		t.Fatal(err)
 	}
 	columnBytes := len(payloadTask.ID) + len("test.payload") + len("fixture") + len("system")

@@ -1,0 +1,453 @@
+{
+  "area": "events-correction",
+  "machines": {
+    "event-storage": {
+      "states": [
+        {
+          "id": "stable-ready",
+          "label": "Stable event table is ready"
+        },
+        {
+          "id": "stable-unavailable",
+          "label": "Stable event table is unavailable"
+        },
+        {
+          "id": "operator-layout",
+          "label": "Operator-controlled table layout and migration history"
+        }
+      ],
+      "transitions": [
+        {
+          "from": "stable-ready",
+          "to": "stable-ready",
+          "event": "read-write",
+          "label": "Read and write application events",
+          "case": "EVC261031445A96-001"
+        },
+        {
+          "from": "stable-unavailable",
+          "to": "stable-unavailable",
+          "event": "read-write",
+          "label": "Attempt event access without the stable table",
+          "case": "EVC261031445A96-001"
+        },
+        {
+          "from": "operator-layout",
+          "to": "operator-layout",
+          "event": "restart",
+          "label": "Restart the application without an operator cutover",
+          "case": "EVC261031445A96-002"
+        }
+      ]
+    },
+    "task-history": {
+      "states": [
+        {
+          "id": "before-transition",
+          "label": "Task and lineage before a transition"
+        },
+        {
+          "id": "committed",
+          "label": "Task transition, event, and lineage committed together"
+        },
+        {
+          "id": "recorded",
+          "label": "Existing event history and lineage relationships"
+        }
+      ],
+      "transitions": [
+        {
+          "from": "before-transition",
+          "to": "before-transition",
+          "event": "failed-transition",
+          "label": "Fail the transaction before it commits",
+          "case": "EVC261031445A96-006"
+        },
+        {
+          "from": "before-transition",
+          "to": "committed",
+          "event": "successful-transition",
+          "label": "Commit the complete transition",
+          "case": "EVC261031445A96-006"
+        },
+        {
+          "from": "recorded",
+          "to": "recorded",
+          "event": "rebuild",
+          "label": "Rebuild history after the operator copy",
+          "case": "EVC261031445A96-007"
+        }
+      ]
+    }
+  },
+  "cases": [
+    {
+      "id": "EVC261031445A96-001",
+      "title": "Application event access uses only the stable table",
+      "tier": "medium",
+      "given": "The old events table and events_columnstore contain distinguishable histories for the same workspace, and the application is configured for normal event access.",
+      "when": "Read history and commit a real task transition, then repeat event access with events_columnstore unavailable while the old table remains readable.",
+      "then": "Reads return only the stable table's history and committed transitions append there. When that table is unavailable, event access reports failure rather than reading or writing the old table; a failed transition leaves task state and lineage unchanged.",
+      "why": "Operators must be able to identify the authoritative history and detect an incomplete cutover instead of silently splitting task history between tables.",
+      "source": "Operator correction: application event reads and writes use stable events_columnstore without fallback; req-260802-72fc68 v4, REQ-1 AC-1.1.",
+      "status": "approved",
+      "approved_at": "2026-10-31",
+      "comment": "auto: agent-owned",
+      "visual": {
+        "kind": "state",
+        "machine": "event-storage",
+        "at": "stable-ready",
+        "event": "read-write",
+        "expect_state": "stable-ready",
+        "asserts": [
+          {
+            "text": "Application history and newly committed events use events_columnstore.",
+            "polarity": "must"
+          },
+          {
+            "text": "The old table receives no application event writes.",
+            "polarity": "must_not"
+          },
+          {
+            "text": "Unavailable stable storage produces an access failure and preserves the task and lineage.",
+            "polarity": "must"
+          },
+          {
+            "text": "Old-table history is not returned as a fallback.",
+            "polarity": "must_not"
+          }
+        ]
+      }
+    },
+    {
+      "id": "EVC261031445A96-002",
+      "title": "Startup leaves cutover and existing migration history under operator control",
+      "tier": "medium",
+      "given": "A database has recorded migration history and retained old event data. Exercise both an old-table-only layout and a layout where events_columnstore also exists with different contents.",
+      "when": "Start and restart the application without an operator running a copy or cutover operation.",
+      "then": "Startup preserves recorded migration history and existing event contents and table identities. It performs no automatic event copy, rename, drop, synchronization, or staging, and does not choose a different application event table based on which tables exist.",
+      "why": "An application restart must not silently alter the operator's recovery data or perform an irreversible cutover.",
+      "source": "Operator correction: startup preserves migration history, never switches tables behind the operator's back, and performs no automatic event copy, rename, drop, synchronization, or staging; req-260802-72fc68 v4, REQ-1 AC-1.3.",
+      "status": "approved",
+      "approved_at": "2026-10-31",
+      "comment": "auto: agent-owned",
+      "visual": {
+        "kind": "state",
+        "machine": "event-storage",
+        "at": "operator-layout",
+        "event": "restart",
+        "expect_state": "operator-layout",
+        "asserts": [
+          {
+            "text": "Existing migration records, event rows, and table identities survive startup unchanged.",
+            "polarity": "must"
+          },
+          {
+            "text": "Startup performs no event-table copy, rename, drop, synchronization, or staging.",
+            "polarity": "must_not"
+          },
+          {
+            "text": "Startup does not select the old table as an application fallback.",
+            "polarity": "must_not"
+          }
+        ]
+      }
+    },
+    {
+      "id": "EVC261031445A96-003",
+      "title": "Historical dismissal archives reach the final copy from the old schema",
+      "tier": "medium",
+      "given": "A database is at the historical pre-columnstore events schema immediately before migration 16, with document dismissals that require archive events.",
+      "when": "Apply the historical document-dismissal archive migration against that schema, then have the operator perform the final event copy into events_columnstore.",
+      "then": "The historical migration writes compatible archive events before the copy. The stable table contains those archive events with their original identities and payloads, and the retained old table still contains them.",
+      "why": "Older installations must carry their dismissal history through the supported upgrade path rather than lose events created during the historical migration.",
+      "source": "Operator correction: historical migration16 document-dismissal archive events remain compatible with the pre-columnstore events schema and are included before final copy; req-260802-72fc68 v4, REQ-1 AC-1.3.",
+      "status": "approved",
+      "approved_at": "2026-10-31",
+      "comment": "auto: agent-owned",
+      "visual": {
+        "kind": "sequence",
+        "actors": [
+          {
+            "id": "operator",
+            "label": "Operator"
+          },
+          {
+            "id": "migration",
+            "label": "Historical migration"
+          },
+          {
+            "id": "old",
+            "label": "Old events table"
+          },
+          {
+            "id": "stable",
+            "label": "events_columnstore"
+          }
+        ],
+        "setup": [
+          {
+            "actor": "old",
+            "text": "Uses the pre-columnstore schema before migration 16."
+          }
+        ],
+        "steps": [
+          {
+            "from": "operator",
+            "to": "migration",
+            "text": "Apply the historical dismissal migration.",
+            "kind": "action"
+          },
+          {
+            "from": "migration",
+            "to": "old",
+            "text": "Persist document-dismissal archive events in the historical schema.",
+            "kind": "call"
+          },
+          {
+            "from": "operator",
+            "to": "stable",
+            "text": "Copy the completed old event history into the stable table.",
+            "kind": "action"
+          }
+        ],
+        "asserts": [
+          {
+            "text": "The historical migration completes against the pre-columnstore events schema.",
+            "polarity": "must"
+          },
+          {
+            "text": "The final copy includes the dismissal archive events with their original identities and payloads.",
+            "polarity": "must"
+          },
+          {
+            "text": "The old table remains available after the copy.",
+            "polarity": "must"
+          }
+        ]
+      }
+    },
+    {
+      "id": "EVC261031445A96-004",
+      "title": "One-pass operator copy preserves complete workspace histories",
+      "tier": "medium",
+      "given": "The old table contains interleaved events from two workspaces, sparse IDs, taskless events, task events, large payloads, and lineage references.",
+      "when": "The operator copies events with the supplied single-pass INSERT SELECT script, validates the result, and reads each workspace through the application.",
+      "then": "The target contains the complete event set with original IDs, workspace ownership, taskless associations, payloads, and lineage references. Each workspace read returns only its own events, and the old table remains intact.",
+      "why": "The copy must preserve actual history rather than merely reproduce a total row count.",
+      "source": "Operator correction: operators retain the old table and use one INSERT SELECT pass or workspace/key-compatible traversal, preserving IDs, taskless events, workspace isolation, payloads, and lineage; req-260802-72fc68 v4, REQ-1 AC-1.3.",
+      "status": "approved",
+      "approved_at": "2026-10-31",
+      "comment": "auto: agent-owned",
+      "visual": {
+        "kind": "sequence",
+        "actors": [
+          {
+            "id": "operator",
+            "label": "Operator"
+          },
+          {
+            "id": "old",
+            "label": "Old events table"
+          },
+          {
+            "id": "stable",
+            "label": "events_columnstore"
+          },
+          {
+            "id": "application",
+            "label": "Application history reader"
+          }
+        ],
+        "setup": [
+          {
+            "actor": "old",
+            "text": "Contains mixed workspace, taskless, large-payload, and lineage data with sparse IDs."
+          }
+        ],
+        "steps": [
+          {
+            "from": "operator",
+            "to": "old",
+            "text": "Copy the entire frozen source in one server-side pass.",
+            "kind": "action"
+          },
+          {
+            "from": "old",
+            "to": "stable",
+            "text": "Copy all original event records without changing their ownership or contents.",
+            "kind": "call"
+          },
+          {
+            "from": "application",
+            "to": "stable",
+            "text": "Read each workspace's copied history.",
+            "kind": "call"
+          }
+        ],
+        "asserts": [
+          {
+            "text": "The copy preserves every original event ID, payload, workspace, task association, and lineage reference.",
+            "polarity": "must"
+          },
+          {
+            "text": "Taskless events remain readable in their original workspace.",
+            "polarity": "must"
+          },
+          {
+            "text": "Workspace reads do not expose another workspace's events.",
+            "polarity": "must_not"
+          },
+          {
+            "text": "The old table's records remain unchanged.",
+            "polarity": "must"
+          }
+        ]
+      }
+    },
+    {
+      "id": "EVC261031445A96-005",
+      "title": "Validated copies and prepared allocation allow lossless resumed writes",
+      "tier": "medium",
+      "given": "An operator copy includes sparse event IDs and historical IDs above the destination's initial allocation position, across multiple workspaces.",
+      "when": "Validate copied records against the source and prepare the destination allocator, resume application writes, then restart the application and write again.",
+      "then": "Validation detects an intentionally omitted or altered source record in a separate incomplete-copy fixture. For the complete prepared copy, new committed events have collision-free identities, copied history remains unchanged, and both pre-restart and post-restart writes remain readable in their correct workspaces.",
+      "why": "A successful copy must support continued work without overwriting historical events, losing new events, or trusting an incomplete copy.",
+      "source": "Operator correction: copy validation and allocator preparation permit resumed writes without collision or loss while preserving IDs and workspace isolation; req-260802-72fc68 v4, REQ-1 AC-1.1 and AC-1.3.",
+      "status": "approved",
+      "approved_at": "2026-10-31",
+      "comment": "auto: agent-owned",
+      "visual": {
+        "kind": "sequence",
+        "actors": [
+          {
+            "id": "operator",
+            "label": "Operator"
+          },
+          {
+            "id": "destination",
+            "label": "Copied history and allocator"
+          },
+          {
+            "id": "application",
+            "label": "Application"
+          }
+        ],
+        "setup": [
+          {
+            "actor": "destination",
+            "text": "Contains copied sparse historical IDs above the initial allocation position."
+          }
+        ],
+        "steps": [
+          {
+            "from": "operator",
+            "to": "destination",
+            "text": "Validate source records and prepare allocation for resumed writes.",
+            "kind": "action"
+          },
+          {
+            "from": "application",
+            "to": "destination",
+            "text": "Commit new events after cutover.",
+            "kind": "call"
+          },
+          {
+            "from": "operator",
+            "to": "application",
+            "text": "Restart the application and resume work again.",
+            "kind": "action"
+          },
+          {
+            "from": "application",
+            "to": "destination",
+            "text": "Commit and read further events alongside copied history.",
+            "kind": "call"
+          }
+        ],
+        "asserts": [
+          {
+            "text": "Copy validation identifies an omitted or altered source record.",
+            "polarity": "must"
+          },
+          {
+            "text": "New events use identities that do not collide with copied events or one another.",
+            "polarity": "must"
+          },
+          {
+            "text": "Historical records and all committed resumed writes remain readable in their original workspaces after restart.",
+            "polarity": "must"
+          }
+        ]
+      }
+    },
+    {
+      "id": "EVC261031445A96-006",
+      "title": "Task transitions, stable events, and lineage remain one transaction",
+      "tier": "medium",
+      "given": "A real task transition changes task state and creates a lineage relationship, with events_columnstore serving application events.",
+      "when": "Exercise a successful transition and failures before commit after a task, event, or lineage write has been attempted, using independent fixtures.",
+      "then": "The successful transaction makes the new task state, event, and lineage relationship visible together. Every failed transaction leaves all three at their prior state, including when the stable event write fails.",
+      "why": "History must not describe a transition that never happened, and a committed transition must not lose its event or lineage relationship.",
+      "source": "req-260802-72fc68 v4, REQ-1 AC-1.1: transitions and lineage are recorded together or neither; operator correction: preserve transactions when using events_columnstore.",
+      "status": "approved",
+      "approved_at": "2026-10-31",
+      "comment": "auto: agent-owned",
+      "visual": {
+        "kind": "state",
+        "machine": "task-history",
+        "at": "before-transition",
+        "event": "failed-transition",
+        "expect_state": "before-transition",
+        "asserts": [
+          {
+            "text": "A successful commit exposes the task transition, stable event, and lineage relationship together.",
+            "polarity": "must"
+          },
+          {
+            "text": "A failed transaction preserves the previous task, event history, and lineage.",
+            "polarity": "must"
+          },
+          {
+            "text": "No partial transition or orphaned event or lineage relationship becomes visible.",
+            "polarity": "must_not"
+          }
+        ]
+      }
+    },
+    {
+      "id": "EVC261031445A96-007",
+      "title": "Rebuilding copied history preserves prior lineage relationships",
+      "tier": "medium",
+      "given": "Copied history contains multiple transitions and existing lineage relationships in two workspaces, including events without a task. Record the authoritative relationships before rebuilding.",
+      "when": "Rebuild history from events_columnstore and repeat the rebuild against the same history.",
+      "then": "Both rebuilds preserve the original relationship identities, endpoints, and workspace ownership. Taskless history remains available and the rebuild adds no duplicate relationships or cross-workspace links.",
+      "why": "Moving event storage must not reinterpret old history or change the relationships operators and agents rely on.",
+      "source": "req-260802-72fc68 v4, REQ-1 AC-1.3: rebuilding history leaves prior relationships unchanged; operator correction: preserve taskless events, workspace isolation, and lineage.",
+      "status": "approved",
+      "approved_at": "2026-10-31",
+      "comment": "auto: agent-owned",
+      "visual": {
+        "kind": "state",
+        "machine": "task-history",
+        "at": "recorded",
+        "event": "rebuild",
+        "expect_state": "recorded",
+        "asserts": [
+          {
+            "text": "Each rebuild preserves the original lineage identities, endpoints, and workspace ownership.",
+            "polarity": "must"
+          },
+          {
+            "text": "Taskless event history remains available.",
+            "polarity": "must"
+          },
+          {
+            "text": "Rebuilding creates no duplicate relationships or cross-workspace links.",
+            "polarity": "must_not"
+          }
+        ]
+      }
+    }
+  ]
+}

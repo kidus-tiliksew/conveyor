@@ -130,7 +130,7 @@ func insertLineageLink(ctx context.Context, tx *sql.Tx, l core.LineageLink) erro
 }
 
 func documentTaskEvents(ctx context.Context, db s2log.Executor, taskID string) ([]core.Event, error) {
-	rows, err := documentRows(ctx, db, `SELECT id,COALESCE(task_id,''),COALESCE(job_id,''),kind,actor_id,actor_role,payload_json,at FROM events WHERE workspace_id=? AND event_shard_key=? AND task_id=event_shard_key ORDER BY at,id`, documentWorkspace(ctx), taskID)
+	rows, err := documentRows(ctx, db, `SELECT id,COALESCE(task_id,''),COALESCE(job_id,''),kind,actor_id,actor_role,payload_json,at FROM events_columnstore WHERE workspace_id=? AND event_shard_key=? AND task_id=event_shard_key ORDER BY at,id`, documentWorkspace(ctx), taskID)
 	if err != nil {
 		return nil, err
 	}
@@ -204,7 +204,7 @@ func (s *Store) listActivityMarkers(ctx context.Context, taskIDs []string, now t
 	), latest_events AS (
 		SELECT e.workspace_id,e.task_id,e.at,e.id,
 			ROW_NUMBER() OVER (PARTITION BY e.workspace_id,e.event_shard_key ORDER BY e.at DESC,e.id DESC) AS position
-		FROM events e JOIN scoped_tasks t ON t.workspace_id=e.workspace_id AND t.id=e.event_shard_key AND t.id=e.task_id
+		FROM events_columnstore e JOIN scoped_tasks t ON t.workspace_id=e.workspace_id AND t.id=e.event_shard_key AND t.id=e.task_id
 	)
 	SELECT t.id,COALESCE(w.stage,j.stage,''),COALESCE(e.at,t.created_at),COALESCE(e.id,0)
 	FROM scoped_tasks t
@@ -292,7 +292,7 @@ func (s *Store) listActivityMarkers(ctx context.Context, taskIDs []string, now t
 	if hasReviewOrders {
 		kinds = append(kinds, activityMarkerReviewKinds...)
 	}
-	markerQuery := `SELECT e.id,e.task_id,COALESCE(e.job_id,''),e.kind,e.payload_json,e.at FROM events e WHERE e.workspace_id=? AND e.task_id IS NOT NULL AND e.kind IN (` + taskMapMarks(len(kinds)) + `)`
+	markerQuery := `SELECT e.id,e.task_id,COALESCE(e.job_id,''),e.kind,e.payload_json,e.at FROM events_columnstore e WHERE e.workspace_id=? AND e.task_id IS NOT NULL AND e.kind IN (` + taskMapMarks(len(kinds)) + `)`
 	markerArgs := append([]any{documentWorkspace(ctx)}, taskMapArgs(kinds)...)
 	if len(taskIDs) > 0 {
 		markerQuery += ` AND e.task_id IN (` + taskMapMarks(len(taskIDs)) + `)`
@@ -390,7 +390,7 @@ func (s *Store) ListFactoryActs(ctx context.Context, since time.Time, limit int)
 	if limit <= 0 || limit > 100 {
 		limit = 100
 	}
-	rows, err := documentRows(ctx, s.db, `SELECT id,COALESCE(task_id,''),kind,actor_role,payload_json,at FROM events WHERE workspace_id=? AND at>=? AND kind IN ('pipeline.bounced','work_order.expired','work_order.released','work_order.requeued','merge.conflict_fix_dispatched','review.refresh_round_created','review.seat_recovered','merge.confirmed','drift.repaired') ORDER BY at DESC, id DESC LIMIT ?`, documentWorkspace(ctx), since, limit*8)
+	rows, err := documentRows(ctx, s.db, `SELECT id,COALESCE(task_id,''),kind,actor_role,payload_json,at FROM events_columnstore WHERE workspace_id=? AND at>=? AND kind IN ('pipeline.bounced','work_order.expired','work_order.released','work_order.requeued','merge.conflict_fix_dispatched','review.refresh_round_created','review.seat_recovered','merge.confirmed','drift.repaired') ORDER BY at DESC, id DESC LIMIT ?`, documentWorkspace(ctx), since, limit*8)
 	if err != nil {
 		return nil, err
 	}
@@ -414,18 +414,18 @@ func (s *Store) ListFactoryActs(ctx context.Context, since time.Time, limit int)
 // from per-aggregator AUTO_INCREMENT ranges, so numeric order is not insertion
 // order and never selects the tail (component-persistence; DEC-39).
 func (s *Store) ListEventsAfter(ctx context.Context, id string, after int64) ([]core.Event, error) {
-	query := `SELECT id,COALESCE(task_id,''),COALESCE(job_id,''),kind,actor_id,actor_role,payload_json,at FROM events WHERE workspace_id=? AND event_shard_key=? AND task_id=event_shard_key ORDER BY at,id`
+	query := `SELECT id,COALESCE(task_id,''),COALESCE(job_id,''),kind,actor_id,actor_role,payload_json,at FROM events_columnstore WHERE workspace_id=? AND event_shard_key=? AND task_id=event_shard_key ORDER BY at,id`
 	args := []any{documentWorkspace(ctx), id}
 	if after != 0 {
 		var anchorAt time.Time
-		err := documentRow(ctx, s.db, `SELECT at FROM events WHERE workspace_id=? AND event_shard_key=? AND task_id=event_shard_key AND id=?`, documentWorkspace(ctx), id, after).Scan(&anchorAt)
+		err := documentRow(ctx, s.db, `SELECT at FROM events_columnstore WHERE workspace_id=? AND event_shard_key=? AND task_id=event_shard_key AND id=?`, documentWorkspace(ctx), id, after).Scan(&anchorAt)
 		if errors.Is(err, sql.ErrNoRows) {
 			return nil, store.ErrEventAnchorNotFound
 		}
 		if err != nil {
 			return nil, err
 		}
-		query = `SELECT id,COALESCE(task_id,''),COALESCE(job_id,''),kind,actor_id,actor_role,payload_json,at FROM events WHERE workspace_id=? AND event_shard_key=? AND task_id=event_shard_key AND (at>? OR at=? AND id>?) ORDER BY at,id`
+		query = `SELECT id,COALESCE(task_id,''),COALESCE(job_id,''),kind,actor_id,actor_role,payload_json,at FROM events_columnstore WHERE workspace_id=? AND event_shard_key=? AND task_id=event_shard_key AND (at>? OR at=? AND id>?) ORDER BY at,id`
 		args = append(args, anchorAt, anchorAt, after)
 	}
 	rows, err := documentRows(ctx, s.db, query, args...)
@@ -445,7 +445,7 @@ func (s *Store) ReadTaskEventStream(ctx context.Context, q store.TaskEventStream
 	if err := documentRow(ctx, s.db, `SELECT 1 FROM tasks WHERE workspace_id=? AND id=?`, documentWorkspace(ctx), q.TaskID).Scan(&exists); err != nil {
 		return store.TaskEventStreamPage{}, notFound(err, "task %s", q.TaskID)
 	}
-	query := `SELECT id,COALESCE(task_id,''),COALESCE(job_id,''),kind,actor_id,actor_role,payload_json,at FROM events WHERE workspace_id=? AND event_shard_key=? AND task_id=event_shard_key`
+	query := `SELECT id,COALESCE(task_id,''),COALESCE(job_id,''),kind,actor_id,actor_role,payload_json,at FROM events_columnstore WHERE workspace_id=? AND event_shard_key=? AND task_id=event_shard_key`
 	args := []any{documentWorkspace(ctx), q.TaskID}
 	if !q.Since.IsZero() {
 		query += ` AND at>=?`
@@ -473,12 +473,12 @@ func (s *Store) ReadTaskEventStream(ctx context.Context, q store.TaskEventStream
 }
 func (s *Store) CountEvents(ctx context.Context, id, kind string) (int, error) {
 	var n int
-	err := documentRow(ctx, s.db, `SELECT COUNT(*) FROM events WHERE workspace_id=? AND event_shard_key=? AND task_id=event_shard_key AND kind=?`, documentWorkspace(ctx), id, kind).Scan(&n)
+	err := documentRow(ctx, s.db, `SELECT COUNT(*) FROM events_columnstore WHERE workspace_id=? AND event_shard_key=? AND task_id=event_shard_key AND kind=?`, documentWorkspace(ctx), id, kind).Scan(&n)
 	return n, err
 }
 func (s *Store) CountEventsSinceHumanIntervention(ctx context.Context, id, kind string) (int, error) {
 	var n int
-	err := documentRow(ctx, s.db, `SELECT COUNT(*) FROM events e
+	err := documentRow(ctx, s.db, `SELECT COUNT(*) FROM events_columnstore e
 		LEFT JOIN (SELECT MAX(at) AS last_at FROM interventions WHERE workspace_id=? AND task_id=? AND actor_role='human') i ON 1=1
 		WHERE e.workspace_id=? AND e.event_shard_key=? AND e.task_id=e.event_shard_key AND e.kind=? AND (i.last_at IS NULL OR e.at>i.last_at)`, documentWorkspace(ctx), id, documentWorkspace(ctx), id, kind).Scan(&n)
 	return n, err
@@ -488,7 +488,7 @@ func (s *Store) ListRequirementEvents(ctx context.Context, id string) ([]core.Ev
 	return append([]core.Event{}, all[id]...), err
 }
 func (s *Store) ListRequirementEventsByRequirement(ctx context.Context) (map[string][]core.Event, error) {
-	rows, err := documentRows(ctx, s.db, `SELECT id,kind,actor_id,actor_role,payload_json,at,JSON_EXTRACT_STRING(payload_json,'requirement_id') FROM events WHERE workspace_id=? AND task_id IS NULL AND JSON_EXTRACT_STRING(payload_json,'requirement_id') IS NOT NULL ORDER BY at,id`, documentWorkspace(ctx))
+	rows, err := documentRows(ctx, s.db, `SELECT id,kind,actor_id,actor_role,payload_json,at,JSON_EXTRACT_STRING(payload_json,'requirement_id') FROM events_columnstore WHERE workspace_id=? AND task_id IS NULL AND JSON_EXTRACT_STRING(payload_json,'requirement_id') IS NOT NULL ORDER BY at,id`, documentWorkspace(ctx))
 	if err != nil {
 		return nil, err
 	}
@@ -509,7 +509,7 @@ func (s *Store) ListRequirementDeliveryEventsForTasks(ctx context.Context, ids [
 	if len(ids) == 0 {
 		return out, nil
 	}
-	rows, err := documentBatchRows(ctx, s.db, `SELECT id,task_id,COALESCE(job_id,''),kind,actor_id,actor_role,payload_json,at FROM events WHERE workspace_id=? AND task_id IN (%s) AND kind IN ('merge.confirmed','merge.reconciled','review.round_completed','task.context_requirement_added','task.context_requirement_activated','task.context_requirement_removed') ORDER BY task_id,at,id`, documentWorkspace(ctx), ids)
+	rows, err := documentBatchRows(ctx, s.db, `SELECT id,task_id,COALESCE(job_id,''),kind,actor_id,actor_role,payload_json,at FROM events_columnstore WHERE workspace_id=? AND task_id IN (%s) AND kind IN ('merge.confirmed','merge.reconciled','review.round_completed','task.context_requirement_added','task.context_requirement_activated','task.context_requirement_removed') ORDER BY task_id,at,id`, documentWorkspace(ctx), ids)
 	if err != nil {
 		return nil, err
 	}
@@ -528,7 +528,7 @@ func (s *Store) ListMonitorPullRequestEventsForTasks(ctx context.Context, ids []
 	if len(ids) == 0 {
 		return out, nil
 	}
-	rows, err := documentBatchRows(ctx, s.db, `SELECT id,task_id,COALESCE(job_id,''),kind,actor_id,actor_role,payload_json,at FROM events WHERE workspace_id=? AND task_id IN (%s) AND kind='pull_request.opened' ORDER BY task_id,at,id`, documentWorkspace(ctx), ids)
+	rows, err := documentBatchRows(ctx, s.db, `SELECT id,task_id,COALESCE(job_id,''),kind,actor_id,actor_role,payload_json,at FROM events_columnstore WHERE workspace_id=? AND task_id IN (%s) AND kind='pull_request.opened' ORDER BY task_id,at,id`, documentWorkspace(ctx), ids)
 	if err != nil {
 		return nil, err
 	}
@@ -550,7 +550,7 @@ func (s *Store) ListDocumentEventPage(ctx context.Context, kind core.LineageNode
 	// One statement pins count, snapshot, and page membership together. Only
 	// selected event payloads cross the database boundary.
 	rows, err := documentRows(ctx, s.db, `WITH matched AS (
- SELECT e.id,e.at FROM events e WHERE e.workspace_id=? AND (?=0 OR e.id<=?) AND (
+ SELECT e.id,e.at FROM events_columnstore e WHERE e.workspace_id=? AND (?=0 OR e.id<=?) AND (
  (?='requirement' AND ((e.task_id IS NULL AND JSON_EXTRACT_STRING(e.payload_json,'requirement_id')=?) OR EXISTS (
  SELECT 1 FROM task_context_proposals p WHERE p.workspace_id=e.workspace_id AND p.task_id=e.task_id AND p.target_kind='requirement' AND p.target_id=? AND p.state='confirmed')))
  OR (?='system_design' AND e.kind LIKE 'system_design.%' AND JSON_EXTRACT_STRING(e.payload_json,'document_id')=?))
@@ -558,7 +558,7 @@ func (s *Store) ListDocumentEventPage(ctx context.Context, kind core.LineageNode
  totals AS (SELECT COUNT(*) AS total,COALESCE(MAX(id),0) AS snapshot FROM matched)
  SELECT totals.total,CASE WHEN ?>0 THEN ? ELSE totals.snapshot END,
  e.id,COALESCE(e.task_id,''),COALESCE(e.job_id,''),COALESCE(e.kind,''),COALESCE(e.actor_id,''),COALESCE(e.actor_role,''),e.payload_json,e.at
- FROM totals LEFT JOIN selected p ON 1=1 LEFT JOIN events e ON e.workspace_id=? AND e.id=p.id ORDER BY e.at DESC,e.id DESC`,
+ FROM totals LEFT JOIN selected p ON 1=1 LEFT JOIN events_columnstore e ON e.workspace_id=? AND e.id=p.id ORDER BY e.at DESC,e.id DESC`,
 		documentWorkspace(ctx), q.SnapshotID, q.SnapshotID, string(kind), id, id, string(kind), id, q.Limit, q.Offset, q.SnapshotID, q.SnapshotID, documentWorkspace(ctx))
 	if err != nil {
 		return page, err

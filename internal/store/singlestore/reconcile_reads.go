@@ -24,7 +24,7 @@ func (s *Store) ListAutomaticReviewEvents(ctx context.Context, taskIDs []string)
 	}
 	args := append([]any{ws}, taskMapArgs(taskIDs)...)
 	args = append(args, taskMapArgs(store.AutomaticReviewEventKinds)...)
-	rows, err := documentRows(ctx, s.db, `SELECT id,COALESCE(task_id,''),COALESCE(job_id,''),kind,actor_id,actor_role,payload_json,at FROM events
+	rows, err := documentRows(ctx, s.db, `SELECT id,COALESCE(task_id,''),COALESCE(job_id,''),kind,actor_id,actor_role,payload_json,at FROM events_columnstore
 WHERE workspace_id=? AND task_id IN (`+taskMapMarks(len(taskIDs))+`) AND kind IN (`+taskMapMarks(len(store.AutomaticReviewEventKinds))+`)
 ORDER BY task_id,at,id`, args...)
 	if err != nil {

@@ -183,24 +183,22 @@ func (s *Store) migrate(ctx context.Context) error {
 				return fmt.Errorf("SingleStore migration %s: %w", file.name, err)
 			}
 		}
-		for _, statement := range strings.Split(file.sql, ";") {
-			if strings.TrimSpace(statement) == "" {
-				continue
-			}
-			if _, err = s.db.ExecContext(ctx, statement); err != nil {
-				return fmt.Errorf("SingleStore migration %s: %w", file.name, err)
+		// Preserve migration 27's published checksum without executing its
+		// retired staging DDL or automatic events cutover.
+		if file.version != 27 {
+			for _, statement := range strings.Split(file.sql, ";") {
+				if strings.TrimSpace(statement) == "" {
+					continue
+				}
+				if _, err = s.db.ExecContext(ctx, statement); err != nil {
+					return fmt.Errorf("SingleStore migration %s: %w", file.name, err)
+				}
 			}
 		}
 		if file.version == 30 {
-			// component-durable-queue (The job index): fold every existing
-			// job stream once; the version is recorded only after the fill.
+			// Fold every existing job stream once; record the version only after the fill.
 			if _, err := s2log.FillJobIndex(ctx, s.db); err != nil {
 				return fmt.Errorf("SingleStore migration %s: fill the job index: %w", file.name, err)
-			}
-		}
-		if file.version == 27 {
-			if err := s.migrateEventsColumnstore(ctx); err != nil {
-				return fmt.Errorf("SingleStore migration %s: %w", file.name, err)
 			}
 		}
 		if _, err = s.db.ExecContext(ctx, `INSERT INTO conveyor_singlestore_migrations(version,name,checksum) VALUES (?,?,?)`, file.version, file.name, file.checksum); err != nil {

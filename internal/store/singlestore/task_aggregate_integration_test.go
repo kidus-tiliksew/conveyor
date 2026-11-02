@@ -166,7 +166,7 @@ func TestTaskAggregateConstraintsIntegration(t *testing.T) {
 			t.Fatalf("uniqueness winners=%d", success)
 		}
 		var count int
-		taskTestOK(t, s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM events WHERE workspace_id=? AND kind='task.created'`, documentWorkspace(ctx)).Scan(&count))
+		taskTestOK(t, s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM events_columnstore WHERE workspace_id=? AND kind='task.created'`, documentWorkspace(ctx)).Scan(&count))
 		if count != 1 {
 			t.Fatalf("events after competing create=%d", count)
 		}
@@ -184,7 +184,7 @@ func TestTaskAggregateConstraintsIntegration(t *testing.T) {
 		}
 	})
 	t.Run("ledger rules reject mutation before SQL", func(t *testing.T) {
-		for _, table := range []string{"events", "interventions"} {
+		for _, table := range []string{"events_columnstore", "interventions"} {
 			for _, op := range []string{"UPDATE", "DELETE"} {
 				err := s.taskTx(ctx, "order-task", func(tx *sql.Tx) error {
 					_, err := writeRow(ctx, tx, rowWrite{table: table, operation: op, values: map[string]any{"actor_id": "changed"}, where: map[string]any{"workspace_id": documentWorkspace(ctx)}})
@@ -196,7 +196,9 @@ func TestTaskAggregateConstraintsIntegration(t *testing.T) {
 			}
 		}
 	})
+	// case: EVC261031445A96-006
 	t.Run("queue fold failure rolls back task and audit event", func(t *testing.T) {
+		linksBefore := queryRows(t, s, ctx, `SELECT * FROM links`)
 		task := aggregateTask(ctx, "queue-failure")
 		task.State = core.TaskQueued
 		stream := logqueue.StreamFor(queue.DispatchTaskArgs{}.Kind(), task.ID)
@@ -228,6 +230,9 @@ func TestTaskAggregateConstraintsIntegration(t *testing.T) {
 		taskTestOK(t, err)
 		if len(events) != 0 {
 			t.Fatal("queue failure committed audit event")
+		}
+		if linksAfter := queryRows(t, s, ctx, `SELECT * FROM links`); !reflect.DeepEqual(linksBefore, linksAfter) {
+			t.Fatal("queue failure committed lineage")
 		}
 	})
 }

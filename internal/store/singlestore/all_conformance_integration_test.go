@@ -82,8 +82,17 @@ func openSharedDatabase() error {
 	sharedDatabase.name = name
 	cfg.DBName = name
 	sharedDatabase.cfg = cfg
-	// One Store for the whole binary: Open migrates once, and its pool stays
-	// warm so compiled query plans are reused across fixtures.
+	// Fresh installs create the operator-owned event table before normal startup.
+	preparationConnector, err := mysql.NewConnector(cfg)
+	if err != nil {
+		return err
+	}
+	preparation := sql.OpenDB(preparationConnector)
+	err = execEventsOperatorScript(ctx, preparation, "01-create.sql")
+	preparation.Close()
+	if err != nil {
+		return err
+	}
 	st, err := Open(ctx, cfg.FormatDSN())
 	if err != nil {
 		return err
@@ -191,7 +200,7 @@ func TestSingleStoreConformanceIntegration(t *testing.T) {
 				return reopened
 			}, Backend: st, Context: ctx, Workspace: ws, Config: cfg, ArtifactRepairEvents: func(ctx context.Context) ([]core.Event, error) {
 				ws, _ := store.WorkspaceFromContext(ctx)
-				rows, err := st.db.QueryContext(ctx, `SELECT kind,actor_id,payload_json FROM events WHERE workspace_id=? AND kind='artifact.metadata_repaired' ORDER BY id`, ws)
+				rows, err := st.db.QueryContext(ctx, `SELECT kind,actor_id,payload_json FROM events_columnstore WHERE workspace_id=? AND kind='artifact.metadata_repaired' ORDER BY id`, ws)
 				if err != nil {
 					return nil, err
 				}
@@ -207,7 +216,7 @@ func TestSingleStoreConformanceIntegration(t *testing.T) {
 				return result, rows.Err()
 			}, WorkspaceEvents: func(ctx context.Context, kindPrefix string) ([]core.Event, error) {
 				ws, _ := store.WorkspaceFromContext(ctx)
-				rows, err := st.db.QueryContext(ctx, `SELECT id,kind,actor_id,actor_role,payload_json,at FROM events WHERE workspace_id=? AND task_id IS NULL AND LEFT(kind,CHAR_LENGTH(?))=? ORDER BY at,id`, ws, kindPrefix, kindPrefix)
+				rows, err := st.db.QueryContext(ctx, `SELECT id,kind,actor_id,actor_role,payload_json,at FROM events_columnstore WHERE workspace_id=? AND task_id IS NULL AND LEFT(kind,CHAR_LENGTH(?))=? ORDER BY at,id`, ws, kindPrefix, kindPrefix)
 				if err != nil {
 					return nil, err
 				}

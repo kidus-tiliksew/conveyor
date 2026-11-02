@@ -276,7 +276,7 @@ func (s *Store) ListLineageNodeStatuses(ctx context.Context, nodes []core.Lineag
 				COALESCE(JSON_EXTRACT_BIGINT(e.payload_json,'review_seat'),0) AS review_seat,
 				ROW_NUMBER() OVER (PARTITION BY wo.id ORDER BY e.id DESC) AS rn
 			FROM work_orders wo
-			JOIN events e ON e.workspace_id=wo.workspace_id AND e.task_id=wo.task_id AND e.kind='review.completed' AND JSON_EXTRACT_STRING(e.payload_json,'review_work_order_id')=wo.id
+			JOIN events_columnstore e ON e.workspace_id=wo.workspace_id AND e.task_id=wo.task_id AND e.kind='review.completed' AND JSON_EXTRACT_STRING(e.payload_json,'review_work_order_id')=wo.id
 			WHERE wo.workspace_id=? AND wo.id IN (%s)
 		) x WHERE x.rn=1`, ids[core.LineageVerdict], func(r *documentResultSet) error {
 		var orderID string
@@ -643,7 +643,7 @@ func (s *Store) RebuildLineage(ctx context.Context, request core.LineageRebuildR
 			return err
 		}
 		var prior []byte
-		err := documentRow(ctx, tx, `SELECT payload_json FROM events WHERE workspace_id=? AND kind='lineage.rebuilt'
+		err := documentRow(ctx, tx, `SELECT payload_json FROM events_columnstore WHERE workspace_id=? AND kind='lineage.rebuilt'
 			AND JSON_EXTRACT_STRING(payload_json,'request_id')=? ORDER BY id DESC LIMIT 1`, documentWorkspace(ctx), request.RequestID).Scan(&prior)
 		if err == nil {
 			var payload struct {
@@ -801,7 +801,7 @@ func deleteDocumentLineage(ctx context.Context, tx *sql.Tx) (sql.Result, error) 
 	return tx.ExecContext(ctx, `DELETE FROM links WHERE workspace_id=? AND created_by_event_id IS NOT NULL AND kind IN (`+strings.Join(marks, ",")+`)`, args...)
 }
 func documentAllEvents(ctx context.Context, db s2log.Executor) ([]core.Event, error) {
-	rows, err := documentRows(ctx, db, `SELECT id,COALESCE(task_id,''),COALESCE(job_id,''),kind,actor_id,actor_role,payload_json,at FROM events WHERE workspace_id=? ORDER BY id`, documentWorkspace(ctx))
+	rows, err := documentRows(ctx, db, `SELECT id,COALESCE(task_id,''),COALESCE(job_id,''),kind,actor_id,actor_role,payload_json,at FROM events_columnstore WHERE workspace_id=? ORDER BY id`, documentWorkspace(ctx))
 	if err != nil {
 		return nil, err
 	}
@@ -863,7 +863,7 @@ func (s *Store) ListLineageContextRecords(ctx context.Context, nodes []core.Line
 		for id := range taskIDs {
 			ids = append(ids, id)
 		}
-		rows, err := documentBatchRows(ctx, s.db, `SELECT task_id,payload_json FROM events WHERE workspace_id=? AND task_id IN (%s) AND kind IN ('review.completed','review.round_completed') ORDER BY task_id,at,id`, documentWorkspace(ctx), ids)
+		rows, err := documentBatchRows(ctx, s.db, `SELECT task_id,payload_json FROM events_columnstore WHERE workspace_id=? AND task_id IN (%s) AND kind IN ('review.completed','review.round_completed') ORDER BY task_id,at,id`, documentWorkspace(ctx), ids)
 		if err != nil {
 			return result, err
 		}
