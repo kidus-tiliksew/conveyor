@@ -4,6 +4,7 @@ import (
 	"context"
 
 	"github.com/kidus-tiliksew/conveyor/internal/core"
+	"github.com/kidus-tiliksew/conveyor/internal/store/dbmetrics"
 	"github.com/kidus-tiliksew/conveyor/internal/store/postgres/db"
 )
 
@@ -12,6 +13,7 @@ import (
 // object payloads in the database, so they never cross the connection
 // (component-persistence, Compact task event reads).
 func (s *Store) ListCompactEvents(ctx context.Context, taskID string) ([]core.Event, error) {
+	ctx = dbmetrics.WithReadLabel(ctx, "ListCompactEvents")
 	rows, err := s.queries.ListCompactEvents(ctx, db.ListCompactEventsParams{TaskID: nullableText(taskID), WorkspaceID: workspace(ctx)})
 	if err != nil {
 		return nil, err

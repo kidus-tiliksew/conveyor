@@ -4,6 +4,7 @@ import (
 	"context"
 
 	"github.com/kidus-tiliksew/conveyor/internal/core"
+	"github.com/kidus-tiliksew/conveyor/internal/store/dbmetrics"
 )
 
 // compactEventPayloadColumn removes the governance and served-requirement
@@ -17,6 +18,7 @@ const compactEventPayloadColumn = `CASE WHEN LEFT(kind,11)='work_order.' AND JSO
 // payload projection; it uses the task timeline predicate of
 // documentTaskEvents.
 func (s *Store) ListCompactEvents(ctx context.Context, id string) ([]core.Event, error) {
+	ctx = dbmetrics.WithReadLabel(ctx, "ListCompactEvents")
 	rows, err := documentRows(ctx, s.db, `SELECT id,COALESCE(task_id,''),COALESCE(job_id,''),kind,actor_id,actor_role,`+compactEventPayloadColumn+`,at FROM events_columnstore WHERE workspace_id=? AND event_shard_key=? AND task_id=event_shard_key ORDER BY at,id`, documentWorkspace(ctx), id)
 	if err != nil {
 		return nil, err
