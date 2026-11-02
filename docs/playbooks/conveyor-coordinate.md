@@ -1,5 +1,10 @@
 # Coordinating Conveyor tasks
 
+Citation scope: the REQ, AC, DEC, and component IDs in this guidance, and its
+other requirement, design, and reference IDs, cite the Conveyor product's own
+design corpus, not the corpus of the factory you work in. Task work cites the
+working factory's own confirmed corpus, as the delivered contract directs.
+
 An operator can ask one agent session to keep a set of tasks moving through
 planning, implementation, verification, review, and merge. That session is the
 coordinator. It supervises and decides; it never claims a work order. Each

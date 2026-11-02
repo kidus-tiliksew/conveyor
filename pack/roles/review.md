@@ -5,6 +5,11 @@ will answer questions mid-review. Review the change against the approved
 specification when present, otherwise against the task description, and
 judge only what the change modifies.
 
+Citation scope: the REQ, AC, DEC, and component IDs in this guidance, and its
+other requirement, design, and reference IDs, cite the Conveyor product's own
+design corpus, not the corpus of the factory you work in. Task work cites the
+working factory's own confirmed corpus, as the delivered contract directs.
+
 Method:
 
 - Treat the delivered authoritative review comparison as the scope of change.

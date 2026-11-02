@@ -69,6 +69,19 @@ this file so Codex and other AGENTS.md-convention tools read the same guidance.
 Every push is a proposal — operators confirm; agents never perform
 operator-only acts.
 
+## Filing tasks for this repository
+
+These rules extend the filing playbook's body house style for this repository:
+
+- Standing boundary: new edge kinds ship with projector + two-store
+  conformance + vocabulary lockstep + rebuild proof on day one. List it under
+  a task's `## Boundaries` when the task touches edge kinds.
+- Source boundaries: for web-only work, state that regenerating
+  `internal/httpapi/dashboard` is expected build output of the web change
+  under DEC-16. Never impose a blanket "no changes under `internal/**`"
+  boundary; exclude unrelated internal source explicitly without excluding the
+  generated dashboard bundle.
+
 ## Scope bars
 
 - Memory-store scope is defined by DEC-9.

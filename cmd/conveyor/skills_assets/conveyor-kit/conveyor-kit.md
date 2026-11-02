@@ -1,5 +1,10 @@
 # Authoring verification kits
 
+Citation scope: the REQ, AC, DEC, and component IDs in this guidance, and its
+other requirement, design, and reference IDs, cite the Conveyor product's own
+design corpus, not the corpus of the factory you work in. Task work cites the
+working factory's own confirmed corpus, as the delivered contract directs.
+
 Use this playbook to author a repository kit under an approved implementation
 claim. The `conveyor-kit-verify` skill covers execution under a separate verify
 claim. Kit outcomes supply evidence; they never grant acceptance or operator

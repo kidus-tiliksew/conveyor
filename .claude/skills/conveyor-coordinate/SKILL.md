@@ -5,6 +5,11 @@ description: Coordinate several Conveyor tasks or a continuing delivery queue, r
 
 # Coordinate Conveyor tasks
 
+Citation scope: the REQ, AC, DEC, and component IDs in this guidance, and its
+other requirement, design, and reference IDs, cite the Conveyor product's own
+design corpus, not the corpus of the factory you work in. Task work cites the
+working factory's own confirmed corpus, as the delivered contract directs.
+
 Read and follow
 [docs/playbooks/conveyor-coordinate.md](../../../docs/playbooks/conveyor-coordinate.md)
 — it is the canonical, tool-neutral playbook for setups, thread prompts,

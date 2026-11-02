@@ -5,6 +5,11 @@ description: Install and configure Conveyor with the person — interview them a
 
 # Conveyor setup
 
+Citation scope: the REQ, AC, DEC, and component IDs in this guidance, and its
+other requirement, design, and reference IDs, cite the Conveyor product's own
+design corpus, not the corpus of the factory you work in. Task work cites the
+working factory's own confirmed corpus, as the delivered contract directs.
+
 Read and follow [docs/playbooks/conveyor-install.md](../../../docs/playbooks/conveyor-install.md)
 — it is the canonical, tool-neutral setup playbook (interview, supported
 topologies, per-step procedure, verification, and extending a setup).

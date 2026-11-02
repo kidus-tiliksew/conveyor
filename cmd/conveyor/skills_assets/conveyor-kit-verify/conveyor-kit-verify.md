@@ -1,5 +1,10 @@
 # Executing verification kits and ordinary checks
 
+Citation scope: the REQ, AC, DEC, and component IDs in this guidance, and its
+other requirement, design, and reference IDs, cite the Conveyor product's own
+design corpus, not the corpus of the factory you work in. Task work cites the
+working factory's own confirmed corpus, as the delivered contract directs.
+
 Use this playbook under a live `verify` claim. Follow the delivered contract,
 approved plan and pinned authority. Implementation ends at submission; review
 assesses sealed evidence. A successful kit supplies evidence and never grants

@@ -9,6 +9,11 @@ commit, push, or change branches. Complete the stage only by calling
 `submit_plan` with the Markdown plan, an empty `decomposition`, and observing
 success.
 
+Citation scope: the REQ, AC, DEC, and component IDs in this guidance, and its
+other requirement, design, and reference IDs, cite the Conveyor product's own
+design corpus, not the corpus of the factory you work in. Task work cites the
+working factory's own confirmed corpus, as the delivered contract directs.
+
 Who started you decides what happens after `submit_plan` succeeds:
 
 - **Self-claimed session.** You called `claim_work_order` yourself. Conveyor

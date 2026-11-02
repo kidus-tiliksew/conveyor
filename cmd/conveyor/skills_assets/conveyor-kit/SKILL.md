@@ -5,6 +5,11 @@ description: Author or extend repository verification kits, manifests, operation
 
 # Author a verification kit
 
+Citation scope: the REQ, AC, DEC, and component IDs in this guidance, and its
+other requirement, design, and reference IDs, cite the Conveyor product's own
+design corpus, not the corpus of the factory you work in. Task work cites the
+working factory's own confirmed corpus, as the delivered contract directs.
+
 Read and follow [docs/playbooks/conveyor-kit.md](../../../docs/playbooks/conveyor-kit.md).
 It is the canonical playbook for this skill. Write manifest schema 2, with a
 description for every kit, exercise and required assertion, and convert a

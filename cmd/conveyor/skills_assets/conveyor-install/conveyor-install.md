@@ -1,5 +1,10 @@
 # Conveyor setup
 
+Citation scope: the REQ, AC, DEC, and component IDs in this guidance, and its
+other requirement, design, and reference IDs, cite the Conveyor product's own
+design corpus, not the corpus of the factory you work in. Task work cites the
+working factory's own confirmed corpus, as the delivered contract directs.
+
 You are setting up Conveyor with a person. You interview them about their
 situation, agree a setup with them, and then perform it yourself through the
 release installer, `conveyor`, `conveyord`, and the REST API (AC-3.1),

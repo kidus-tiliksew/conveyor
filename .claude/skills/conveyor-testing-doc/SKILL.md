@@ -5,6 +5,11 @@ description: Create or revise a testing-strategy System Design document for a pr
 
 # Conveyor testing-strategy documents
 
+Citation scope: the REQ, AC, DEC, and component IDs in this guidance, and its
+other requirement, design, and reference IDs, cite the Conveyor product's own
+design corpus, not the corpus of the factory you work in. Task work cites the
+working factory's own confirmed corpus, as the delivered contract directs.
+
 Read and follow
 [docs/playbooks/conveyor-testing-doc.md](../../../docs/playbooks/conveyor-testing-doc.md)
 — it is the canonical, tool-neutral method for discovery, testing taxonomy,

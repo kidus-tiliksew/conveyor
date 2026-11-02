@@ -5,6 +5,11 @@ description: File implementation work on the Conveyor factory — single tasks o
 
 # Filing Conveyor tasks
 
+Citation scope: the REQ, AC, DEC, and component IDs in this guidance, and its
+other requirement, design, and reference IDs, cite the Conveyor product's own
+design corpus, not the corpus of the factory you work in. Task work cites the
+working factory's own confirmed corpus, as the delivered contract directs.
+
 Read and follow [docs/playbooks/conveyor-task-filing.md](../../../docs/playbooks/conveyor-task-filing.md)
 — the canonical, tool-neutral playbook (body house style, boundaries,
 exit criteria, dependency ordering).
@@ -22,10 +27,11 @@ task and offer the operator a requirement revision with `conveyor-plan`.
 The confirmed factory document corpus is
 the authority: cite confirmed REQ-n/AC-n.m, DEC-n, and governing System Design
 document names or IDs. Every normative document change remains a proposal for
-operator confirmation. For web-only work, allow the DEC-16 generated
-`internal/httpapi/dashboard` bundle rather than banning `internal/**`; if
-implementation discovers an approved-plan conflict, require the operator-gated
-`request_plan_revision` path rather than an acceptance-criteria exception.
+operator confirmation. Follow the target repository's own filing and
+generated-artifact guidance, and never ban a directory whose generated output
+the change must regenerate; if implementation discovers an approved-plan
+conflict, require the operator-gated `request_plan_revision` path rather than
+an acceptance-criteria exception.
 Write task bodies for people and agents who never saw the filing session:
 attribute actions and observations to people by name, never personal host aliases,
 SSH config names, home-directory paths, or IP addresses; carry evidence inline or

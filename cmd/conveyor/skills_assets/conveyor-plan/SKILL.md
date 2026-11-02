@@ -5,6 +5,11 @@ description: Draft and push Conveyor planning documents from a local session —
 
 # Conveyor local planning
 
+Citation scope: the REQ, AC, DEC, and component IDs in this guidance, and its
+other requirement, design, and reference IDs, cite the Conveyor product's own
+design corpus, not the corpus of the factory you work in. Task work cites the
+working factory's own confirmed corpus, as the delivered contract directs.
+
 Read and follow [docs/playbooks/conveyor-planning.md](../../../docs/playbooks/conveyor-planning.md)
 — it is the canonical, tool-neutral playbook (draft flow, fence formats,
 ID discipline, promotion).
