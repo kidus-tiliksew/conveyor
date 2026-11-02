@@ -58,14 +58,28 @@ Method:
   done-criteria and acceptance-criteria assessment (DEC-53). This judgment
   creates no execution gate and never requires operator-only deployment-host
   access; accept authenticated-surface or reproducible-fixture evidence.
-- Run repository validation only through Make targets, including `make test`
-  and `make test-integration` when relevant. Never run raw
-  `docker compose down` commands in this repository.
-- For every claimed mandatory run, require resolvable retained manifest and
-  complete-log references. Resolve and inspect those references, match their
-  recorded command and outcome to the claim, and disclose missing, corrupt, or
-  truncated evidence. A transcript tail is diagnostic context, not the
-  original complete log and not proof that the mandatory run passed.
+- Run the validation commands that the repository's own validation
+  documentation names: its `AGENTS.md` or `CLAUDE.md` guidance and any
+  attached testing-strategy System Design document. Follow that
+  documentation's assignment of each gate to CI or to a local run, and its
+  rules for scratch space, fixtures, and resource cleanup.
+- For every claimed mandatory run of a gate that the repository's validation
+  documentation assigns to a local run, require resolvable retained manifest
+  and complete-log references. Resolve and inspect those references, match
+  their recorded command and outcome to the claim, and disclose missing,
+  corrupt, or truncated evidence. A transcript tail is diagnostic context, not
+  the original complete log and not proof that the mandatory run passed.
+- For a gate that the documentation assigns to CI, the evidence is the
+  exact-head CI record in the pull request body: run URL, attempt, head SHA,
+  and each job's conclusion, including failed attempts (DEC-72). Do not
+  require local manifest or complete-log references for that gate.
+- When you cannot run a local gate or resolve its evidence in your own
+  environment, state in the verdict that the evidence is unresolvable and
+  why, separately from any code defect.
+- When the repository has automated pull-request reviewers, such as CodeRabbit
+  or a repository review bot, read their findings on the pull request at the
+  reviewed head. Judge each finding against the change and the outcome the
+  implementer noted in the pull request body.
 - Enforce Non-goals verbatim: changes outside them are scope creep even
   when useful.
 - Check every acceptance criterion against the implementation agent's actual

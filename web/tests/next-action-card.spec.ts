@@ -744,6 +744,13 @@ for (const width of [390, 1280]) {
       expect(approveBox.y).toBeGreaterThanOrEqual(mergeBox.y + mergeBox.height)
       expect(approveBox.width).toBeLessThan(rowBox.width * 0.6)
       expect(Math.abs(approveBox.height - mergeBox.height)).toBeLessThanOrEqual(1)
+      // The status line and the grid fill the gate's choices container: no
+      // width cap leaves them in a narrow left column (component-web-task-surfaces).
+      const choicesBox = await gate.locator('[data-next-action-choices]').boundingBox()
+      const statusBox = await gate.locator('[data-merge-status]').boundingBox()
+      if (!choicesBox || !statusBox) throw new Error('missing layout box')
+      expect(Math.abs(rowBox.width - choicesBox.width)).toBeLessThanOrEqual(1)
+      expect(Math.abs(statusBox.width - choicesBox.width)).toBeLessThanOrEqual(1)
       const overflow = await page.evaluate(() => document.documentElement.scrollWidth - window.innerWidth)
       expect(overflow).toBeLessThanOrEqual(0)
     }
