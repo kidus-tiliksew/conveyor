@@ -1,0 +1,94 @@
+{
+  "schema": 1,
+  "task": "261101-9c939d",
+  "layer": "local",
+  "command": [
+    "make",
+    "test-web",
+    "PLAYWRIGHT_ARGS=tests/board-filters.spec.ts --repeat-each=20"
+  ],
+  "environment": [
+    "PATH",
+    "HOME",
+    "LANG",
+    "LC_ALL",
+    "TZ",
+    "CONVEYOR_TASK_ID",
+    "CONVEYOR_TASK_CACHE",
+    "GOCACHE",
+    "GOTMPDIR",
+    "TMPDIR",
+    "PLAYWRIGHT_BROWSERS_PATH",
+    "npm_config_cache",
+    "XDG_CACHE_HOME",
+    "XDG_STATE_HOME",
+    "CI",
+    "PLAYWRIGHT_WORKERS",
+    "PLAYWRIGHT_PORT",
+    "PLAYWRIGHT_PREVIEW_PORT",
+    "PLAYWRIGHT_OUTPUT_DIR",
+    "PLAYWRIGHT_REPORT_DIR",
+    "PLAYWRIGHT_ARGS",
+    "PLAYWRIGHT_INSTALL_ARGS",
+    "NODE_OPTIONS",
+    "NODE_ENV",
+    "DEBUG",
+    "PWDEBUG",
+    "DISPLAY"
+  ],
+  "tools": {
+    "make": [
+      "make",
+      "--version"
+    ],
+    "git": [
+      "git",
+      "--version"
+    ],
+    "python3": [
+      "python3",
+      "--version"
+    ],
+    "sh": [
+      "sh",
+      "-c",
+      "printf POSIX-shell"
+    ],
+    "node": [
+      "node",
+      "--version"
+    ],
+    "npm": [
+      "npm",
+      "--version"
+    ],
+    "npx": [
+      "npx",
+      "--version"
+    ]
+  },
+  "external_inputs": [
+    "/home/user/.nvm/versions/node/v24.22.1",
+    "/usr/lib/python3.12",
+    "/home/user/.cache/conveyor/261101-9c939d/playwright",
+    "/usr/lib/x86_64-linux-gnu",
+    "/etc/fonts",
+    "/usr/share/fonts",
+    "/etc/hosts",
+    "/etc/python3.12",
+    "/usr/lib/llvm-18/lib/libLLVM.so.1",
+    "/usr/lib/llvm-18/lib/libclang-cpp.so.18.1",
+    "/usr/share/fontconfig",
+    "/usr/share/poppler"
+  ],
+  "exclude": {
+    "web/test-results": "Playwright per-test output directory written by the run and never read by it"
+  },
+  "audit": {
+    "inputs_complete": true,
+    "input_rationale": "Command is make test-web (Makefile: web-deps runs npm ci from web/package-lock.json; web-typecheck runs tsc; browser-runtime runs npx playwright install chromium into PLAYWRIGHT_BROWSERS_PATH; then Biome lint/format and playwright test with PLAYWRIGHT_ARGS). Worktree inputs, including web/node_modules, are hashed by the helper. External inputs: the Node.js v24.22.1 install that provides node/npm/npx (/usr/local/bin links resolve there), the Python 3.12 standard library used by scripts/validation_resources.py, the task-cache Chromium and headless shell build 1228 prewarmed by make browser-runtime before this run, the system shared libraries Chromium, Node, and Python load, fontconfig configuration and system fonts used by the failed-triage screenshot, /etc/hosts for 127.0.0.1, and the out-of-root targets of symlinks inside those roots (Python sitecustomize in /etc/python3.12, LLVM libraries linked from the shared-library directory, fontconfig's conf.avail, and poppler cMap data). HOME holds no .npmrc or .gitconfig; no HOME config is read by this command. The npm cache (npm_config_cache) is not an input: npm ci installs exactly the lockfile's integrity-pinned packages, and the installed tree is hashed in the worktree. Excluded outputs: web/test-results (Playwright output, not read).",
+    "git_metadata": "dependent",
+    "git_rationale": "The Makefile evaluates VERSION with git describe --dirty at parse time, so the record is treated as Git-metadata dependent and binds only to the exact recorded head."
+  },
+  "backend": null
+}
