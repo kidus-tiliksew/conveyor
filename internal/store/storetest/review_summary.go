@@ -35,6 +35,8 @@ func runReviewSummary(t *testing.T, x Fixture) {
 	t.Run("WorkspaceIsolation", func(t *testing.T) { runReviewSummaryWorkspaceIsolation(t, x) })
 	t.Run("ConcurrentVersions", func(t *testing.T) { runReviewSummaryConcurrentVersions(t, x) })
 	t.Run("ConcurrentIdenticalReplay", func(t *testing.T) { runReviewSummaryConcurrentReplay(t, x) })
+	t.Run("ConcurrentVersionsStress", func(t *testing.T) { runReviewSummaryConcurrentVersionsStress(t, x) })
+	t.Run("ConcurrentReplayStress", func(t *testing.T) { runReviewSummaryConcurrentReplayStress(t, x) })
 	t.Run("InformativeOnly", func(t *testing.T) { runReviewSummaryInformativeOnly(t, x) })
 }
 
@@ -399,20 +401,66 @@ func concurrentSummaries(t *testing.T, x Fixture, requests []store.ReviewSummary
 }
 
 func runReviewSummaryConcurrentVersions(t *testing.T, x Fixture) {
+	requireConcurrentSummaryVersions(t, x, 6)
+}
+
+func runReviewSummaryConcurrentReplay(t *testing.T, x Fixture) {
+	requireConcurrentSummaryReplay(t, x, 6)
+}
+
+// Stress shape (task 261101-187e02): a duplicate SingleStore version needs a
+// writer to take the task lock inside the short window in which its
+// predecessor's lock row is released but its event is not yet visible, and
+// only a task whose lock row and events land on different partitions has that
+// window. Twenty writers give nineteen lock handoffs per settled round, and
+// every repetition uses a fresh task, so one case exercises
+// reviewSummaryStressRounds tasks and reviewSummaryStressRounds*19 handoffs.
+const (
+	reviewSummaryStressWriters = 20
+	reviewSummaryStressRounds  = 500
+)
+
+func runReviewSummaryConcurrentVersionsStress(t *testing.T, x Fixture) {
+	repeatSummaryStress(t, func() { requireConcurrentSummaryVersions(t, x, reviewSummaryStressWriters) })
+}
+
+func runReviewSummaryConcurrentReplayStress(t *testing.T, x Fixture) {
+	repeatSummaryStress(t, func() { requireConcurrentSummaryReplay(t, x, reviewSummaryStressWriters) })
+}
+
+// repeatSummaryStress runs one stress repetition reviewSummaryStressRounds
+// times and names the failing repetition.
+func repeatSummaryStress(t *testing.T, repetition func()) {
+	t.Helper()
+	current := 0
+	defer func() {
+		if t.Failed() {
+			t.Logf("failed in repetition %d of %d", current, reviewSummaryStressRounds)
+		}
+	}()
+	for current = 1; current <= reviewSummaryStressRounds; current++ {
+		repetition()
+	}
+}
+
+// requireConcurrentSummaryVersions records n distinct requests at once on a
+// fresh settled round and requires versions 1..n, each exactly once, and n
+// summary events.
+func requireConcurrentSummaryVersions(t *testing.T, x Fixture, n int) {
+	t.Helper()
 	task := settledSummaryTask(t, x, "approve")
-	const n = 6
 	var requests []store.ReviewSummaryRequest
 	for i := range n {
 		requests = append(requests, summaryActorRequest(task, 1, fmt.Sprintf("concurrent-%d", i)))
 	}
 	results := concurrentSummaries(t, x, requests)
-	versions := map[int]bool{}
+	versions := map[int]int{}
 	for _, result := range results {
-		versions[result.Version] = true
+		versions[result.Version]++
 	}
 	for version := 1; version <= n; version++ {
-		if !versions[version] {
-			t.Fatalf("concurrent versions=%v, want 1..%d", versions, n)
+		if versions[version] != 1 {
+			t.Fatalf("concurrent versions=%v, want 1..%d once each", versions, n)
 		}
 	}
 	if events := summaryEvents(t, x, task.ID); len(events) != n {
@@ -420,9 +468,11 @@ func runReviewSummaryConcurrentVersions(t *testing.T, x Fixture) {
 	}
 }
 
-func runReviewSummaryConcurrentReplay(t *testing.T, x Fixture) {
+// requireConcurrentSummaryReplay records n identical requests at once and
+// requires one event, the original result for every caller, and n-1 replays.
+func requireConcurrentSummaryReplay(t *testing.T, x Fixture, n int) {
+	t.Helper()
 	task := settledSummaryTask(t, x, "approve")
-	const n = 6
 	var requests []store.ReviewSummaryRequest
 	for range n {
 		requests = append(requests, summaryActorRequest(task, 1, "same-request"))
