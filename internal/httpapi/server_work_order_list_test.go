@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"reflect"
 	"slices"
+	"strings"
 	"testing"
 	"time"
 
@@ -203,5 +204,57 @@ func TestWorkOrderExactRead(t *testing.T) {
 		if response, _ := read(missing); response.Code != http.StatusNotFound {
 			t.Fatalf("exact read of %s status=%d, want 404", missing, response.Code)
 		}
+	}
+}
+
+// TestWorkOrderListOmitsAuthoritySnapshots pins a 64 KiB governance snapshot
+// and a served-requirement snapshot on a claimed verify order. The list
+// response carries neither field and stays far below the snapshot's size; the
+// exact read GET /v1/work-orders/{id} still returns both (component-work-orders,
+// Listing).
+func TestWorkOrderListOmitsAuthoritySnapshots(t *testing.T) {
+	ctx := store.WithWorkspace(store.WithActor(t.Context(), store.SystemActor()), "demo")
+	memory := store.NewMemory()
+	const designBytes = 64 << 10
+	task := core.Task{ID: "pinned-verify", Workspace: "demo", Repo: "conveyor", BaseBranch: "main", Branch: "conveyor/task-pinned-verify", State: core.TaskRunning, NextStage: core.StageVerify, ReviewedHeadSHA: "head", CreatedAt: time.Now().UTC()}
+	task.SetupContract.VerifyStage = true
+	if err := memory.CreateTask(ctx, task); err != nil {
+		t.Fatal(err)
+	}
+	job := core.Job{ID: task.ID + "-verify-1", TaskID: task.ID, Stage: core.StageVerify, State: core.JobPending}
+	now := time.Now().UTC()
+	if _, err := storetest.CreateStageWorkOrder(ctx, memory, job, core.WorkOrder{ID: job.ID, TaskID: task.ID, JobID: job.ID, Stage: core.StageVerify, State: core.WorkOrderQueued, HeadSHA: "head", CreatedAt: now, QueueEnteredAt: now, QueueDeadline: now.Add(time.Hour)}); err != nil {
+		t.Fatal(err)
+	}
+	governance := core.GovernanceSnapshot{Designs: []core.GovernanceDesignContext{{ID: "component-pinned", Version: 1, Content: strings.Repeat("g", designBytes), Governs: []core.GovernedScope{}}}, Decisions: []core.Decision{}, PendingDesignProposals: []core.PendingSystemDesignProposal{}}
+	served := []core.ServedRequirementContext{{ID: "req-pinned", Version: 1, Statements: []core.RequirementStatement{{ID: "REQ-1", Statement: "Pin the requirement"}}}}
+	if _, err := storetest.ClaimWorkOrder(ctx, memory, job.ID, core.WorkOrderClaim{ClaimantID: "worker", SessionID: "pinned", ClientToken: "pinned", Lease: time.Hour, ExecutionTimeout: time.Hour, Requirements: served, Governance: &governance}); err != nil {
+		t.Fatal(err)
+	}
+	server := NewServer(memory)
+	server.Workspace = "demo"
+	server.WorkOrders = &workorder.Service{Store: memory}
+	handler := authenticatedMemoryHandler(server)
+
+	response, orders := getWorkOrders(t, handler, "/v1/work-orders")
+	body := response.Body.String()
+	if strings.Contains(body, "governance_snapshot") || strings.Contains(body, "served_requirement_snapshot") || len(body) >= designBytes {
+		t.Fatalf("list response carries authority snapshots: %d bytes", len(body))
+	}
+	if len(orders) != 1 || orders[0].ID != job.ID || orders[0].State != core.WorkOrderClaimed {
+		t.Fatalf("list=%+v, want the claimed verify order", orders)
+	}
+
+	exact := httptest.NewRecorder()
+	handler.ServeHTTP(exact, httptest.NewRequest(http.MethodGet, "/v1/work-orders/"+job.ID, nil))
+	var order core.WorkOrder
+	if exact.Code != http.StatusOK {
+		t.Fatalf("exact read status=%d body=%s", exact.Code, exact.Body.String())
+	}
+	if err := json.Unmarshal(exact.Body.Bytes(), &order); err != nil {
+		t.Fatal(err)
+	}
+	if order.GovernanceSnapshot == nil || len(order.GovernanceSnapshot.Designs) != 1 || len(order.GovernanceSnapshot.Designs[0].Content) != designBytes || len(order.ServedRequirementSnapshot) != 1 {
+		t.Fatalf("exact read lost the pinned snapshots: %d bytes", exact.Body.Len())
 	}
 }

@@ -258,14 +258,19 @@ type WorkOrderStore interface {
 	// ListLiveWorkOrders returns the workspace's orders whose stored state is
 	// queued, claimed, stale, or timed out, projected at read time and ordered
 	// as ListWorkOrders orders them. Every backend applies the state predicate
-	// in its own read (component-work-orders, Listing).
+	// in its own read and returns no authority snapshot (component-work-orders,
+	// Listing).
 	ListLiveWorkOrders(ctx context.Context) ([]core.WorkOrder, error)
+	// ListWorkOrdersForTasks returns the requested tasks' orders of the
+	// selected workspace, projected at read time, without the served-requirement
+	// and governance snapshots (component-work-orders, Snapshot-free fold reads).
 	ListWorkOrdersForTasks(ctx context.Context, taskIDs []string) ([]core.WorkOrder, error)
 	ListTaskWorkOrders(ctx context.Context, taskID string) ([]core.WorkOrder, error)
 	// ListTaskWorkOrdersStored returns persisted work-order states without
 	// read-time clock projection. Dispatch stage holds use it so a dead claim
 	// remains a hold until the order clock persists its expiry
-	// (component-work-orders "Stages and order minting"; DEC-62).
+	// (component-work-orders "Stages and order minting"; DEC-62). It returns no
+	// authority snapshot (component-work-orders, Snapshot-free fold reads).
 	ListTaskWorkOrdersStored(ctx context.Context, taskID string) ([]core.WorkOrder, error)
 	// ListTaskWorkOrdersSnapshot returns order state with elapsed clocks
 	// projected but never persisted. It is for observational responses whose

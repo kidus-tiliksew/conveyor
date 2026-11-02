@@ -1547,7 +1547,7 @@ func (m *memory) ListLiveWorkOrders(ctx context.Context) ([]core.WorkOrder, erro
 			continue
 		}
 		order.Assignee = m.tasks[order.TaskID].Assignee
-		orders = append(orders, ProjectWorkOrderAt(order, now))
+		orders = append(orders, withoutAuthoritySnapshots(ProjectWorkOrderAt(order, now)))
 	}
 	sort.Slice(orders, func(i, j int) bool {
 		if orders[i].CreatedAt.Equal(orders[j].CreatedAt) {
@@ -1558,6 +1558,18 @@ func (m *memory) ListLiveWorkOrders(ctx context.Context) ([]core.WorkOrder, erro
 	return orders, nil
 }
 
+// withoutAuthoritySnapshots clears the served-requirement and governance
+// snapshots on a copy, as the durable backends' activityWorkOrderColumns
+// leave them NULL, so a fold read returns the same order on every backend
+// (component-work-orders, Snapshot-free fold reads).
+func withoutAuthoritySnapshots(order core.WorkOrder) core.WorkOrder {
+	order.ServedRequirementSnapshot = nil
+	order.GovernanceSnapshot = nil
+	return order
+}
+
+// ListWorkOrdersForTasks reads the requested tasks' orders of the selected
+// workspace without authority snapshots, as PostgreSQL and SingleStore do.
 func (m *memory) ListWorkOrdersForTasks(ctx context.Context, taskIDs []string) ([]core.WorkOrder, error) {
 	if len(taskIDs) == 0 {
 		return []core.WorkOrder{}, nil
@@ -1566,11 +1578,26 @@ func (m *memory) ListWorkOrdersForTasks(ctx context.Context, taskIDs []string) (
 	for _, taskID := range taskIDs {
 		wanted[taskID] = true
 	}
-	orders, err := m.ListWorkOrders(ctx)
-	if err != nil {
-		return nil, err
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	selected, scoped := WorkspaceFromContext(ctx)
+	now := time.Now()
+	orders := make([]core.WorkOrder, 0)
+	for _, order := range m.workOrders {
+		task, ok := m.tasks[order.TaskID]
+		if !wanted[order.TaskID] || scoped && selected != "" && (!ok || task.Workspace != selected) {
+			continue
+		}
+		order.Assignee = task.Assignee
+		orders = append(orders, withoutAuthoritySnapshots(ProjectWorkOrderAt(order, now)))
 	}
-	return slices.DeleteFunc(orders, func(order core.WorkOrder) bool { return !wanted[order.TaskID] }), nil
+	sort.Slice(orders, func(i, j int) bool {
+		if orders[i].CreatedAt.Equal(orders[j].CreatedAt) {
+			return orders[i].ID < orders[j].ID
+		}
+		return orders[i].CreatedAt.Before(orders[j].CreatedAt)
+	})
+	return orders, nil
 }
 
 func (m *memory) ListCheckpointContextCandidates(ctx context.Context, requirementID string) ([]CheckpointContextCandidate, error) {
@@ -1684,7 +1711,7 @@ func (m *memory) ListTaskWorkOrdersStored(ctx context.Context, taskID string) ([
 		}
 		order.Assignee = task.Assignee
 		order.DeclaredReviewSeats = copySeatCount(order.DeclaredReviewSeats)
-		out = append(out, order)
+		out = append(out, withoutAuthoritySnapshots(order))
 	}
 	sort.Slice(out, func(i, j int) bool {
 		if out[i].CreatedAt.Equal(out[j].CreatedAt) {

@@ -219,16 +219,18 @@ func ReviewRoundSeatInputsFor(minimum, round int, orders []core.WorkOrder, event
 // ReviewRoundSeatReader is the public read surface the resolution inputs come
 // from outside a backend transaction.
 type ReviewRoundSeatReader interface {
-	ListTaskWorkOrders(ctx context.Context, taskID string) ([]core.WorkOrder, error)
+	ListWorkOrdersForTasks(ctx context.Context, taskIDs []string) ([]core.WorkOrder, error)
 	ListCompactEvents(ctx context.Context, taskID string) ([]core.Event, error)
 	ListReviewRoundSeats(ctx context.Context, taskID string) ([]ReviewRoundSeats, error)
 	GetApprovedSpecVersion(ctx context.Context, taskID string) (core.SpecVersion, bool, error)
 }
 
 // LoadReviewRoundSeatInputs reads the resolution inputs for round through the
-// public store surface.
+// public store surface. The builder reads no authority snapshot, so the order
+// read omits them (feature-review-seat-minimum; component-work-orders,
+// Snapshot-free fold reads).
 func LoadReviewRoundSeatInputs(ctx context.Context, reader ReviewRoundSeatReader, taskID string, minimum, round int) (ReviewRoundSeatInputs, error) {
-	orders, err := reader.ListTaskWorkOrders(ctx, taskID)
+	orders, err := reader.ListWorkOrdersForTasks(ctx, []string{taskID})
 	if err != nil {
 		return ReviewRoundSeatInputs{}, err
 	}
