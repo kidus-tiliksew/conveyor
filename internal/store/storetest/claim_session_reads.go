@@ -14,6 +14,7 @@ import (
 	"github.com/kidus-tiliksew/conveyor/internal/core"
 	"github.com/kidus-tiliksew/conveyor/internal/store"
 	"github.com/kidus-tiliksew/conveyor/internal/store/dbmetrics"
+	"github.com/kidus-tiliksew/conveyor/internal/taskops"
 )
 
 // ClaimSessionSnapshotBytes is the design body every snapshot-bearing order
@@ -352,6 +353,33 @@ type ClaimSessionScale struct {
 	DrainReadBytes func() map[string]uint64
 }
 
+// RenewFunc is workorder.Service.RenewClaimWithLease over the given store.
+// storetest cannot import workorder, because workorder tests import
+// storetest, so each test binary supplies it.
+type RenewFunc func(st store.Store) func(ctx context.Context, claim core.WorkOrderClaimIdentity, workOrderID string, lease time.Duration) (core.WorkOrder, error)
+
+// seedClaimSessionScale adds ClaimSessionScaleOrders snapshot-bearing orders
+// to the bound workspace beside the queued template order.
+func seedClaimSessionScale(t *testing.T, x Fixture, scale ClaimSessionScale, template core.WorkOrder, suffix string) {
+	t.Helper()
+	if scale.Seed != nil {
+		governanceJSON, err := json.Marshal(ClaimSessionGovernance())
+		requireOK(t, err)
+		servedJSON, err := json.Marshal(ClaimSessionRequirements())
+		requireOK(t, err)
+		scale.Seed(t, x.Context, template, ClaimSessionScaleOrders, governanceJSON, servedJSON)
+	} else {
+		for i := range ClaimSessionScaleOrders {
+			claimSessionOrder(t, x, fmt.Sprintf("seed-%s-%d", suffix, i), time.Hour)
+		}
+	}
+	full, err := x.Backend.ListWorkOrders(x.Context)
+	requireOK(t, err)
+	if len(full) < ClaimSessionScaleOrders+2 || encodedSnapshotBytes(full) < ClaimSessionScaleOrders*ClaimSessionSnapshotBytes {
+		t.Fatalf("fixture holds %d orders and %d snapshot bytes, want at least %d orders and %d bytes", len(full), encodedSnapshotBytes(full), ClaimSessionScaleOrders+2, ClaimSessionScaleOrders*ClaimSessionSnapshotBytes)
+	}
+}
+
 // RunClaimSessionAndActivityReadsAtScale seeds ClaimSessionScaleOrders orders
 // that each pin a ClaimSessionSnapshotBytes governance snapshot, wraps the
 // store in a WorkOrderReadRecorder, and requires the claim session check and
@@ -367,23 +395,7 @@ func RunClaimSessionAndActivityReadsAtScale(t *testing.T, x Fixture, scale Claim
 	named := claimSessionOrder(t, x, "named-"+suffix, time.Hour)
 	holder := claimSessionOrder(t, x, "holder-"+suffix, time.Hour)
 	template := claimSessionOrder(t, x, "", 0)
-	governance := ClaimSessionGovernance()
-	if scale.Seed != nil {
-		governanceJSON, err := json.Marshal(governance)
-		requireOK(t, err)
-		servedJSON, err := json.Marshal(ClaimSessionRequirements())
-		requireOK(t, err)
-		scale.Seed(t, ctx, template, ClaimSessionScaleOrders, governanceJSON, servedJSON)
-	} else {
-		for i := range ClaimSessionScaleOrders {
-			claimSessionOrder(t, x, fmt.Sprintf("seed-%s-%d", suffix, i), time.Hour)
-		}
-	}
-	full, err := x.Backend.ListWorkOrders(ctx)
-	requireOK(t, err)
-	if len(full) < ClaimSessionScaleOrders+2 || encodedSnapshotBytes(full) < ClaimSessionScaleOrders*ClaimSessionSnapshotBytes {
-		t.Fatalf("fixture holds %d orders and %d snapshot bytes, want at least %d orders and %d bytes", len(full), encodedSnapshotBytes(full), ClaimSessionScaleOrders+2, ClaimSessionScaleOrders*ClaimSessionSnapshotBytes)
-	}
+	seedClaimSessionScale(t, x, scale, template, suffix)
 	drain := func() map[string]uint64 {
 		if scale.DrainReadBytes == nil {
 			return nil
@@ -443,7 +455,7 @@ func RunClaimSessionAndActivityReadsAtScale(t *testing.T, x Fixture, scale Claim
 	// the full read's orders without snapshots and the task-scoped read's
 	// markers.
 	bound := uint64(ClaimSessionScaleOrders * ClaimSessionSnapshotBytes / 8)
-	full, err = x.Backend.ListWorkOrders(ctx)
+	full, err := x.Backend.ListWorkOrders(ctx)
 	requireOK(t, err)
 	now := time.Now().UTC()
 	recorder.Reset()
@@ -495,5 +507,146 @@ func requireSameMarkers(t *testing.T, label string, got, want []store.ActivityMa
 	requireOK(t, err)
 	if string(gotJSON) != string(wantJSON) {
 		t.Fatalf("%s differs:\ngot  %s\nwant %s", label, gotJSON, wantJSON)
+	}
+}
+
+// RenewWorkerClaimCommand records the order a renewal command returns, so a
+// refusal that returned a snapshot-bearing order would count.
+func (r *WorkOrderReadRecorder) RenewWorkerClaimCommand(ctx context.Context, lease taskops.TaskLease, workOrderID string, claim core.WorkOrderClaimIdentity, duration time.Duration) (core.WorkOrder, error) {
+	order, err := r.Store.RenewWorkerClaimCommand(ctx, lease, workOrderID, claim, duration)
+	var rows []core.WorkOrder
+	if order.ID != "" {
+		rows = []core.WorkOrder{order}
+	}
+	r.record("RenewWorkerClaimCommand", rows)
+	return order, err
+}
+
+// RunRenewalReads renews through renew, workorder.Service.RenewClaimWithLease,
+// over a WorkOrderReadRecorder in a workspace that holds
+// ClaimSessionScaleOrders snapshot-bearing orders. Every refusal must return
+// the error the renewal returned before (claim lost, not found, released at a
+// checkpoint, preempted, or cancelled), decode zero snapshot bytes, and make
+// no ListWorkOrders call. With DrainReadBytes each refusal must also receive
+// fewer bytes than one snapshot from the database, which bounds the command's
+// own reads. A renewal of the own live claim must extend the lease without
+// passing the fixed execution deadline, keep the attempt, persist the lease,
+// and keep both snapshots; a renewal of the same claim's completed order
+// returns that order with its snapshots (component-work-orders, Snapshot-free
+// fold reads; req-delegated-execution AC-1.1).
+func RunRenewalReads(t *testing.T, x Fixture, scale ClaimSessionScale, renew RenewFunc) {
+	st, ctx := x.Backend, x.Context
+	suffix := core.NewTaskID()
+	claimant := core.TaskRunClaimantID("claim-session")
+	live := claimSessionOrder(t, x, "live-"+suffix, time.Hour)
+	holder := claimSessionOrder(t, x, "holder-"+suffix, time.Hour)
+	expired := claimSessionOrder(t, x, "expired-"+suffix, time.Millisecond)
+	released := claimSessionOrder(t, x, "released-"+suffix, time.Hour)
+	_, err := ReleaseWorkerClaim(ctx, st, released.ID, "", core.WorkOrderRelease{SessionID: released.SessionID, Reason: "fixture released", Cause: core.WorkOrderReleaseCauseOperatorAction, Outcome: core.WorkOrderOutcomeReleased})
+	requireOK(t, err)
+	checkpoint := claimSessionOrder(t, x, "checkpoint-"+suffix, time.Hour)
+	_, err = ReleaseWorkerClaim(ctx, st, checkpoint.ID, "", core.WorkOrderRelease{SessionID: checkpoint.SessionID, Reason: core.WorkOrderReleaseReasonOperatorCheckpointReached, Cause: core.WorkOrderReleaseCauseOperatorAction, Outcome: core.WorkOrderOutcomeReleased})
+	requireOK(t, err)
+	preempted := claimSessionOrder(t, x, "preempted-"+suffix, time.Hour)
+	_, err = taskops.ExecuteWorkOrder(ctx, st, preempted.TaskID, core.WorkOrderCmdPreempt, func(lease taskops.TaskLease) (store.WorkOrderPreemptResult, error) {
+		return st.PreemptWorkOrderCommand(ctx, lease, store.WorkOrderPreemptRequest{WorkOrderID: preempted.ID, RequestID: "preempt-" + suffix, Reason: "fixture preempt"})
+	})
+	requireOK(t, err)
+	cancelled := claimSessionOrder(t, x, "cancelled-"+suffix, time.Hour)
+	_, err = taskops.New(st).Cancel(ctx, core.Intervention{TaskID: cancelled.TaskID, Action: core.InterventionCancel, ReasonCode: "obsolete"})
+	requireOK(t, err)
+	completed := claimSessionOrder(t, x, "completed-"+suffix, time.Hour)
+	completed.State = core.WorkOrderCompleted
+	requireOK(t, UpdateWorkOrder(ctx, st, completed, core.WorkOrderCmdSubmitVerification))
+	seedClaimSessionScale(t, x, scale, claimSessionOrder(t, x, "", 0), suffix)
+	time.Sleep(20 * time.Millisecond) // the expired order's lease passes
+
+	drain := func() map[string]uint64 {
+		if scale.DrainReadBytes == nil {
+			return nil
+		}
+		return scale.DrainReadBytes()
+	}
+	recorder := NewWorkOrderReadRecorder(st)
+	renewThrough := renew(recorder)
+	identity := func(session string) core.WorkOrderClaimIdentity {
+		return core.WorkOrderClaimIdentity{ClaimantID: claimant, SessionID: session}
+	}
+	for _, test := range []struct {
+		name      string
+		workOrder string
+		claim     core.WorkOrderClaimIdentity
+		want      error
+		message   string
+	}{
+		{name: "mismatched", workOrder: live.ID, claim: identity("nobody-" + suffix), want: store.ErrWorkOrderClaimLost},
+		{name: "missing", workOrder: "missing-" + suffix, claim: identity(live.SessionID), want: store.ErrNotFound},
+		{name: "foreign", workOrder: live.ID, claim: identity(holder.SessionID), want: store.ErrWorkOrderClaimLost},
+		{name: "other-claimant", workOrder: live.ID, claim: core.WorkOrderClaimIdentity{ClaimantID: core.TaskRunClaimantID("other"), SessionID: live.SessionID}, want: store.ErrWorkOrderClaimLost},
+		{name: "empty", workOrder: live.ID, claim: identity(""), message: "session_id is required"},
+		{name: "expired", workOrder: expired.ID, claim: identity(expired.SessionID), want: store.ErrWorkOrderClaimLost},
+		{name: "released", workOrder: released.ID, claim: identity(released.SessionID), want: store.ErrWorkOrderClaimLost},
+		{name: "checkpoint", workOrder: checkpoint.ID, claim: identity(checkpoint.SessionID), want: store.ErrWorkOrderReleasedAtCheckpoint},
+		{name: "preempted", workOrder: preempted.ID, claim: identity(preempted.SessionID), want: store.ErrWorkOrderPreempted},
+		{name: "cancelled", workOrder: cancelled.ID, claim: identity(cancelled.SessionID), want: store.ErrWorkOrderCancelled},
+	} {
+		recorder.Reset()
+		drain()
+		label := "renewal-refusal-" + test.name
+		order, err := renewThrough(dbmetrics.WithReadLabel(ctx, label), test.claim, test.workOrder, time.Hour)
+		switch {
+		case test.message != "":
+			if err == nil || err.Error() != test.message {
+				t.Fatalf("%s renewal = %v, want %q", test.name, err, test.message)
+			}
+		case !errors.Is(err, test.want):
+			t.Fatalf("%s renewal = %v, want %v", test.name, err, test.want)
+		}
+		if order.ID != "" {
+			t.Errorf("%s renewal returned order %s with its refusal", test.name, order.ID)
+		}
+		if recorder.Calls("ListWorkOrders") != 0 || recorder.SnapshotBytes() != 0 {
+			t.Errorf("%s renewal made %d ListWorkOrders calls and decoded %d snapshot bytes, want 0 and 0", test.name, recorder.Calls("ListWorkOrders"), recorder.SnapshotBytes())
+		}
+		if bytes := drain(); bytes != nil {
+			got := bytes[label]
+			if got >= ClaimSessionSnapshotBytes {
+				t.Errorf("%s renewal received %d bytes from the database, want fewer than one %d-byte snapshot", test.name, got, ClaimSessionSnapshotBytes)
+			}
+			t.Logf("%s renewal refusal received %d bytes", test.name, got)
+		}
+	}
+
+	// The same claim's completed order is acknowledged with the stored order.
+	acknowledged, err := renewThrough(ctx, identity(completed.SessionID), completed.ID, time.Hour)
+	requireOK(t, err)
+	if acknowledged.ID != completed.ID || acknowledged.State != core.WorkOrderCompleted || acknowledged.GovernanceSnapshot == nil || len(acknowledged.GovernanceSnapshot.Designs[0].Content) != ClaimSessionSnapshotBytes {
+		t.Fatalf("completed-order renewal returned %s in state %s, want the completed order with its snapshots", acknowledged.ID, acknowledged.State)
+	}
+
+	// The own live claim renews: the lease grows up to the fixed execution
+	// deadline, the attempt stays, the lease persists, and both snapshots stay.
+	before, err := st.GetWorkOrder(ctx, live.ID)
+	requireOK(t, err)
+	renewed, err := renewThrough(ctx, identity(live.SessionID), live.ID, 10*time.Hour)
+	requireOK(t, err)
+	if !renewed.ExecutionDeadline.Equal(before.ExecutionDeadline) || renewed.ExecutionDeadline.IsZero() || !renewed.LeaseExpiresAt.Equal(before.ExecutionDeadline) || renewed.AttemptID != before.AttemptID || renewed.State != core.WorkOrderClaimed {
+		t.Fatalf("renewal = lease %s deadline %s attempt %s state %s; want the lease capped at the fixed deadline %s and attempt %s", renewed.LeaseExpiresAt, renewed.ExecutionDeadline, renewed.AttemptID, renewed.State, before.ExecutionDeadline, before.AttemptID)
+	}
+	short, err := renewThrough(ctx, identity(live.SessionID), live.ID, time.Minute)
+	requireOK(t, err)
+	if !short.LeaseExpiresAt.Before(before.ExecutionDeadline) || !short.ExecutionDeadline.Equal(before.ExecutionDeadline) {
+		t.Fatalf("one-minute renewal = lease %s deadline %s, want a lease before the fixed deadline %s", short.LeaseExpiresAt, short.ExecutionDeadline, before.ExecutionDeadline)
+	}
+	stored, err := st.GetWorkOrder(ctx, live.ID)
+	requireOK(t, err)
+	if !stored.LeaseExpiresAt.Equal(short.LeaseExpiresAt) || !stored.ExecutionDeadline.Equal(before.ExecutionDeadline) || stored.SessionID != live.SessionID {
+		t.Fatalf("stored renewal = lease %s deadline %s session %q, want lease %s deadline %s", stored.LeaseExpiresAt, stored.ExecutionDeadline, stored.SessionID, short.LeaseExpiresAt, before.ExecutionDeadline)
+	}
+	if stored.GovernanceSnapshot == nil || len(stored.GovernanceSnapshot.Designs[0].Content) != ClaimSessionSnapshotBytes || len(stored.ServedRequirementSnapshot) != 1 {
+		t.Fatal("renewal lost the order's pinned snapshots")
+	}
+	if short.GovernanceSnapshot == nil || len(short.GovernanceSnapshot.Designs[0].Content) != ClaimSessionSnapshotBytes {
+		t.Fatal("the renewed order no longer carries its pinned snapshots")
 	}
 }

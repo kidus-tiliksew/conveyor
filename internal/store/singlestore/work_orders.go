@@ -232,7 +232,13 @@ func orderValues(o core.WorkOrder) map[string]any {
 	}
 }
 func getOrderRow(ctx context.Context, db s2log.Executor, id string) (core.WorkOrder, error) {
-	o, err := scanWorkOrder(documentRow(ctx, db, `SELECT `+workOrderColumns+` FROM work_orders WHERE workspace_id=? AND id=?`, documentWorkspace(ctx), id))
+	return getOrderRowColumns(ctx, db, workOrderColumns, id)
+}
+
+// getOrderRowColumns reads one stored order of the bound workspace with the
+// given column list; activityWorkOrderColumns leaves both snapshots unread.
+func getOrderRowColumns(ctx context.Context, db s2log.Executor, columns, id string) (core.WorkOrder, error) {
+	o, err := scanWorkOrder(documentRow(ctx, db, `SELECT `+columns+` FROM work_orders WHERE workspace_id=? AND id=?`, documentWorkspace(ctx), id))
 	return o, notFound(err, "work order %s", id)
 }
 func orderWrite(ctx context.Context, tx *sql.Tx, o core.WorkOrder) error {
@@ -245,12 +251,19 @@ func orderWrite(ctx context.Context, tx *sql.Tx, o core.WorkOrder) error {
 	return err
 }
 func (s *Store) orderTx(ctx context.Context, id string, fn func(*sql.Tx, core.WorkOrder) error) error {
+	return s.orderTxColumns(ctx, id, workOrderColumns, fn)
+}
+
+// orderTxColumns is orderTx reading the stored order with the given column
+// list. A caller that passes activityWorkOrderColumns receives the order
+// without its snapshots and must read the full row before it writes one.
+func (s *Store) orderTxColumns(ctx context.Context, id, columns string, fn func(*sql.Tx, core.WorkOrder) error) error {
 	var task string
 	if err := documentRow(ctx, s.db, `SELECT task_id FROM work_orders WHERE workspace_id=? AND id=?`, documentWorkspace(ctx), id).Scan(&task); err != nil {
 		return notFound(err, "work order %s", id)
 	}
 	return s.taskTx(ctx, task, func(tx *sql.Tx) error {
-		o, err := getOrderRow(ctx, tx, id)
+		o, err := getOrderRowColumns(ctx, tx, columns, id)
 		if err != nil {
 			return err
 		}

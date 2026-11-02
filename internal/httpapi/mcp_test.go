@@ -3002,7 +3002,8 @@ func newClaimSessionFixture(t *testing.T) claimSessionFixture {
 // call must return the error the former ListWorkOrders scan returns for the
 // same rows, make no ListWorkOrders call, and, when the session check refuses,
 // decode zero snapshot bytes. renew_work_order does not use the session check;
-// it must make no ListWorkOrders call and read at most the named order
+// a mismatched, missing-order, or foreign renewal must return its former error,
+// make no ListWorkOrders call, and decode zero snapshot bytes
 // (component-work-orders, Snapshot-free fold reads; component-mcp-protocol,
 // Claim-bound authorization).
 func TestClaimSessionCheckReadsNoWorkspaceOrders(t *testing.T) {
@@ -3075,13 +3076,32 @@ func TestClaimSessionCheckReadsNoWorkspaceOrders(t *testing.T) {
 	} {
 		t.Run("renew_work_order/"+test.name, func(t *testing.T) {
 			f := newClaimSessionFixture(t)
+			f.recorder.Reset()
 			_, err := f.server.callMCPTool(f.request, "renew_work_order", map[string]any{"workspace_id": "demo", "work_order_id": test.workOrder, "session_id": test.session})
 			if !errors.Is(err, test.want) {
 				t.Fatalf("renew returned %v, want %v", err, test.want)
 			}
-			if f.recorder.Calls("ListWorkOrders") != 0 || f.recorder.Rows() > 1 || f.recorder.SnapshotBytes() > storetest.ClaimSessionSnapshotBytes*2 {
-				t.Fatalf("renew made %d ListWorkOrders calls and decoded %d snapshot bytes over %d rows, want no workspace read", f.recorder.Calls("ListWorkOrders"), f.recorder.SnapshotBytes(), f.recorder.Rows())
+			if f.recorder.Calls("ListWorkOrders") != 0 || f.recorder.Rows() > 1 || f.recorder.SnapshotBytes() != 0 {
+				t.Fatalf("renew made %d ListWorkOrders calls and decoded %d snapshot bytes over %d rows, want no workspace read and 0 snapshot bytes", f.recorder.Calls("ListWorkOrders"), f.recorder.SnapshotBytes(), f.recorder.Rows())
 			}
 		})
 	}
+	t.Run("renew_work_order/own", func(t *testing.T) {
+		f := newClaimSessionFixture(t)
+		before, err := f.memory.GetWorkOrder(f.request.Context(), "named-implement-1")
+		if err != nil {
+			t.Fatal(err)
+		}
+		result, err := f.server.callMCPTool(f.request, "renew_work_order", map[string]any{"workspace_id": "demo", "work_order_id": "named-implement-1", "session_id": "own-session", "lease_seconds": float64(3600)})
+		if err != nil {
+			t.Fatal(err)
+		}
+		renewed, ok := result.(core.WorkOrder)
+		if !ok || renewed.State != core.WorkOrderClaimed || renewed.AttemptID != before.AttemptID || !renewed.ExecutionDeadline.Equal(before.ExecutionDeadline) || !renewed.LeaseExpiresAt.Equal(before.ExecutionDeadline) {
+			t.Fatalf("own renewal = %+v, want the claimed order with its attempt and the one-hour lease capped at the fixed deadline %s", result, before.ExecutionDeadline)
+		}
+		if f.recorder.Calls("ListWorkOrders") != 0 {
+			t.Fatalf("own renewal made %d ListWorkOrders calls", f.recorder.Calls("ListWorkOrders"))
+		}
+	})
 }

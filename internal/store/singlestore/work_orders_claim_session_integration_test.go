@@ -4,11 +4,13 @@ import (
 	"context"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/kidus-tiliksew/conveyor/internal/config"
 	"github.com/kidus-tiliksew/conveyor/internal/core"
 	"github.com/kidus-tiliksew/conveyor/internal/store"
 	"github.com/kidus-tiliksew/conveyor/internal/store/storetest"
+	"github.com/kidus-tiliksew/conveyor/internal/workorder"
 )
 
 // claimSessionDigits numbers 0 through 999 from three cross-joined digit
@@ -30,7 +32,33 @@ func TestClaimSessionAndActivityReadsAtScaleSingleStoreIntegration(t *testing.T)
 	if _, err := st.BootstrapWorkspaceConfig(ctx, cfg); err != nil {
 		t.Fatal(err)
 	}
-	storetest.RunClaimSessionAndActivityReadsAtScale(t, storetest.Fixture{Backend: st, Context: ctx, Workspace: workspace, Config: cfg}, storetest.ClaimSessionScale{
+	storetest.RunClaimSessionAndActivityReadsAtScale(t, storetest.Fixture{Backend: st, Context: ctx, Workspace: workspace, Config: cfg}, claimSessionScaleSingleStore(st, workspace))
+}
+
+// TestRenewalReadsAtScaleSingleStoreIntegration renews through
+// workorder.Service.RenewClaimWithLease over
+// the same 200-order fixture. Every refusal must keep its former error and
+// decode zero snapshot bytes, and the read ledger bounds the bytes the
+// service and RenewWorkerClaimCommand receive below one snapshot; a
+// successful renewal keeps the fixed deadline and both snapshots
+// (component-work-orders, Snapshot-free fold reads).
+func TestRenewalReadsAtScaleSingleStoreIntegration(t *testing.T) {
+	st := openOwnedStore(t)
+	workspace := "claim-session-scale-" + core.NewTaskID()
+	ctx := store.WithWorkspace(store.WithActor(t.Context(), store.SystemActor()), workspace)
+	cfg := &config.Config{Workspace: workspace, Repos: []config.Repo{{Name: "conveyor", URL: "https://example.test/conveyor", Base: "main"}}}
+	if _, err := st.BootstrapWorkspaceConfig(ctx, cfg); err != nil {
+		t.Fatal(err)
+	}
+	storetest.RunRenewalReads(t, storetest.Fixture{Backend: st, Context: ctx, Workspace: workspace, Config: cfg}, claimSessionScaleSingleStore(st, workspace), func(st store.Store) func(context.Context, core.WorkOrderClaimIdentity, string, time.Duration) (core.WorkOrder, error) {
+		return (&workorder.Service{Store: st}).RenewClaimWithLease
+	})
+}
+
+// claimSessionScaleSingleStore seeds with set-based SQL and drains the store's read
+// ledger.
+func claimSessionScaleSingleStore(st *Store, workspace string) storetest.ClaimSessionScale {
+	return storetest.ClaimSessionScale{
 		Seed: func(t *testing.T, ctx context.Context, template core.WorkOrder, count int, governance, served []byte) {
 			t.Helper()
 			rows, err := st.db.QueryContext(ctx, `SELECT column_name FROM information_schema.columns WHERE table_schema = DATABASE() AND table_name = 'work_orders' ORDER BY ordinal_position`)
@@ -78,5 +106,5 @@ func TestClaimSessionAndActivityReadsAtScaleSingleStoreIntegration(t *testing.T)
 			}
 			return bytes
 		},
-	})
+	}
 }

@@ -4,11 +4,13 @@ import (
 	"context"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/kidus-tiliksew/conveyor/internal/config"
 	"github.com/kidus-tiliksew/conveyor/internal/core"
 	"github.com/kidus-tiliksew/conveyor/internal/store"
 	"github.com/kidus-tiliksew/conveyor/internal/store/storetest"
+	"github.com/kidus-tiliksew/conveyor/internal/workorder"
 )
 
 // TestClaimSessionAndActivityReadsAtScalePostgresIntegration runs the claim
@@ -32,7 +34,39 @@ func TestClaimSessionAndActivityReadsAtScalePostgresIntegration(t *testing.T) {
 	if _, err = st.BootstrapWorkspaceConfig(ctx, cfg); err != nil {
 		t.Fatal(err)
 	}
-	storetest.RunClaimSessionAndActivityReadsAtScale(t, storetest.Fixture{Backend: st, Context: ctx, Workspace: workspace, Config: cfg}, storetest.ClaimSessionScale{
+	storetest.RunClaimSessionAndActivityReadsAtScale(t, storetest.Fixture{Backend: st, Context: ctx, Workspace: workspace, Config: cfg}, claimSessionScalePostgres(st, workspace))
+}
+
+// TestRenewalReadsAtScalePostgresIntegration renews through
+// workorder.Service.RenewClaimWithLease over
+// the same 200-order fixture. Every refusal must keep its former error and
+// decode zero snapshot bytes, and the read ledger bounds the bytes the
+// service and RenewWorkerClaimCommand receive below one snapshot; a
+// successful renewal keeps the fixed deadline and both snapshots
+// (component-work-orders, Snapshot-free fold reads).
+func TestRenewalReadsAtScalePostgresIntegration(t *testing.T) {
+	databaseURL := integrationDatabaseURL(t)
+	root := store.WithActor(t.Context(), store.SystemActor())
+	st, err := Open(root, databaseURL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	workspace := "claim-session-scale-" + core.NewTaskID()
+	ctx := store.WithWorkspace(root, workspace)
+	cfg := &config.Config{Workspace: workspace, Repos: []config.Repo{{Name: "conveyor", URL: "https://example.test/conveyor", Base: "main"}}}
+	if _, err = st.BootstrapWorkspaceConfig(ctx, cfg); err != nil {
+		t.Fatal(err)
+	}
+	storetest.RunRenewalReads(t, storetest.Fixture{Backend: st, Context: ctx, Workspace: workspace, Config: cfg}, claimSessionScalePostgres(st, workspace), func(st store.Store) func(context.Context, core.WorkOrderClaimIdentity, string, time.Duration) (core.WorkOrder, error) {
+		return (&workorder.Service{Store: st}).RenewClaimWithLease
+	})
+}
+
+// claimSessionScalePostgres seeds with set-based SQL and drains the store's read
+// ledger.
+func claimSessionScalePostgres(st *Store, workspace string) storetest.ClaimSessionScale {
+	return storetest.ClaimSessionScale{
 		Seed: func(t *testing.T, ctx context.Context, template core.WorkOrder, count int, governance, served []byte) {
 			t.Helper()
 			rows, err := st.Pool().Query(ctx, `SELECT column_name FROM information_schema.columns WHERE table_schema = current_schema() AND table_name = 'work_orders' AND is_generated = 'NEVER' ORDER BY ordinal_position`)
@@ -79,5 +113,5 @@ func TestClaimSessionAndActivityReadsAtScalePostgresIntegration(t *testing.T) {
 			}
 			return bytes
 		},
-	})
+	}
 }
