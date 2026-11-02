@@ -299,6 +299,10 @@ func (f fixedOrders) ListTaskWorkOrdersStored(context.Context, string) ([]core.W
 	return f.orders, nil
 }
 
+func (f fixedOrders) ListWorkOrdersForTasks(context.Context, []string) ([]core.WorkOrder, error) {
+	return f.orders, nil
+}
+
 // projectingOrders mirrors the backend read contract pinned by storetest
 // StoredReadKeepsExpiredClaimUnprojected: the stored read returns rows as
 // persisted, the task read projects elapsed clocks.
@@ -314,6 +318,10 @@ func (p projectingOrders) ListTaskWorkOrders(context.Context, string) ([]core.Wo
 		out = append(out, store.ProjectWorkOrderAt(order, now))
 	}
 	return out, nil
+}
+
+func (p projectingOrders) ListWorkOrdersForTasks(ctx context.Context, _ []string) ([]core.WorkOrder, error) {
+	return p.ListTaskWorkOrders(ctx, "")
 }
 
 func (p projectingOrders) ListTaskWorkOrdersStored(context.Context, string) ([]core.WorkOrder, error) {

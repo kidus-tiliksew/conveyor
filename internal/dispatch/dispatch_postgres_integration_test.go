@@ -2,6 +2,7 @@ package dispatch
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"net/url"
 	"os"
@@ -425,4 +426,123 @@ func dispatchRaceConfig(workspace string) *config.Config {
 		}},
 		Repos: []config.Repo{{Name: "repo", URL: "https://example.test/repo.git", GitHub: "acme/repo", Base: "main"}},
 	}
+}
+
+// TestReviewDispatchReadsOnlyTaskOrdersWithoutSnapshotsPostgresIntegration is
+// the PostgreSQL form of TestReviewDispatchReadsOnlyTaskOrdersWithoutSnapshots.
+// It copies one template order of another task into 200 rows with one
+// set-based INSERT and pins a 64 KiB governance snapshot on every order of the
+// workspace, the task's own verify order included, with one set-based UPDATE.
+// The review dispatch must read only the task's rows and decode no snapshot
+// byte, for the refused and the admitted readiness answer
+// (component-work-orders, Snapshot-free fold reads).
+func TestReviewDispatchReadsOnlyTaskOrdersWithoutSnapshotsPostgresIntegration(t *testing.T) {
+	databaseURL := dispatchIntegrationDatabaseURL(t)
+	root := store.WithActor(t.Context(), store.SystemActor())
+	st, err := storepg.Open(root, databaseURL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	suffix := core.NewTaskID()
+	workspace := "snapshot-free-" + suffix
+	cfg := dispatchRaceConfig(workspace)
+	cfg.Routing.Stages["review"] = config.StageRoute{Execution: config.ExecutionMCP, Timeout: time.Hour, TimeoutText: "1h"}
+	if _, err = st.CreateWorkspace(store.WithActor(root, store.Actor{ID: "test", Role: core.ActorHuman}), workspace, "Snapshot-free reads "+suffix, cfg); err != nil {
+		t.Fatal(err)
+	}
+	ctx := store.WithWorkspace(root, workspace)
+	verifyOrder := func(t *testing.T, id string) core.WorkOrder {
+		t.Helper()
+		task := core.Task{ID: id, Workspace: workspace, Repo: "repo", Title: id, BaseBranch: "main", Branch: "conveyor/task-" + id, State: core.TaskRunning, NextStage: core.StageVerify, ReviewedHeadSHA: "head", CreatedAt: time.Now().UTC()}
+		task.SetupContract.VerifyStage = true
+		if err := st.CreateTask(ctx, task); err != nil {
+			t.Fatal(err)
+		}
+		job := core.Job{ID: id + "-verify-1", TaskID: id, Stage: core.StageVerify, State: core.JobPending}
+		order := core.WorkOrder{ID: job.ID, TaskID: id, JobID: job.ID, Stage: core.StageVerify, State: core.WorkOrderQueued, HeadSHA: "head", QueueEnteredAt: time.Now().UTC(), QueueDeadline: time.Now().UTC().Add(time.Hour), CreatedAt: time.Now().UTC()}
+		if _, err := storetest.CreateStageWorkOrder(ctx, st, job, order); err != nil {
+			t.Fatal(err)
+		}
+		return order
+	}
+	template := verifyOrder(t, "foreign-"+suffix)
+	task := core.Task{ID: "review-" + suffix}
+	verify := verifyOrder(t, task.ID)
+	if _, err = storetest.ClaimWorkOrder(ctx, st, verify.ID, core.WorkOrderClaim{ClaimantID: core.TaskRunClaimantID("verifier"), SessionID: "verify-" + suffix, ClientToken: "verify-" + suffix, Lease: time.Hour, ExecutionTimeout: time.Hour}); err != nil {
+		t.Fatal(err)
+	}
+
+	// Copy the template into snapshotFixtureOrders rows of the other task.
+	rows, err := st.Pool().Query(ctx, `SELECT column_name FROM information_schema.columns WHERE table_schema = current_schema() AND table_name = 'work_orders' AND is_generated = 'NEVER' ORDER BY ordinal_position`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var columns, values []string
+	for rows.Next() {
+		var column string
+		if err = rows.Scan(&column); err != nil {
+			t.Fatal(err)
+		}
+		columns = append(columns, column)
+		if column == "id" {
+			values = append(values, "template.id || '-copy-' || copy.n")
+		} else {
+			values = append(values, "template."+column)
+		}
+	}
+	rows.Close()
+	if err = rows.Err(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = st.Pool().Exec(ctx, `INSERT INTO work_orders (`+strings.Join(columns, ", ")+`) SELECT `+strings.Join(values, ", ")+
+		` FROM work_orders template CROSS JOIN generate_series(1, $3::int) AS copy(n) WHERE template.workspace_id = $1 AND template.id = $2`,
+		workspace, template.ID, snapshotFixtureOrders); err != nil {
+		t.Fatal(err)
+	}
+	governance, err := json.Marshal(snapshotFixtureGovernance())
+	if err != nil {
+		t.Fatal(err)
+	}
+	served, err := json.Marshal(snapshotFixtureRequirements())
+	if err != nil {
+		t.Fatal(err)
+	}
+	tag, err := st.Pool().Exec(ctx, `UPDATE work_orders SET governance_snapshot = $2::jsonb, served_requirement_snapshot = $3::jsonb WHERE workspace_id = $1`, workspace, string(governance), string(served))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := int64(snapshotFixtureOrders + 2); tag.RowsAffected() != want {
+		t.Fatalf("seeded snapshots on %d orders, want %d", tag.RowsAffected(), want)
+	}
+	full, err := st.ListWorkOrders(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	seeded := newWorkOrderReadRecorder(st, task.ID)
+	seeded.record("seed", full)
+	if seeded.foreignRows != snapshotFixtureOrders+1 || seeded.snapshotBytes < (snapshotFixtureOrders+2)*snapshotFixtureBytes {
+		t.Fatalf("fixture holds %d foreign rows and %d snapshot bytes, want %d rows and at least %d bytes", seeded.foreignRows, seeded.snapshotBytes, snapshotFixtureOrders+1, (snapshotFixtureOrders+2)*snapshotFixtureBytes)
+	}
+
+	t.Run("Refused", func(t *testing.T) {
+		requireReviewDispatchReadsOnlyTaskOrders(t, ctx, st, cfg, task.ID, true)
+	})
+	t.Run("Admitted", func(t *testing.T) {
+		if _, err := st.Pool().Exec(ctx, `UPDATE work_orders SET state = 'completed', verification_context_id = 'context-fixture' WHERE workspace_id = $1 AND id = $2`, workspace, verify.ID); err != nil {
+			t.Fatal(err)
+		}
+		if current, err := st.GetTask(ctx, task.ID); err == nil && current.State == core.TaskQueued {
+			if _, err = taskops.New(st).Perform(ctx, task.ID, taskops.Command{Kind: core.TaskDispatchStart}); err != nil {
+				t.Fatal(err)
+			}
+		}
+		if _, err := taskops.New(st).Perform(ctx, task.ID, taskops.Command{Kind: core.TaskStageAdvance, NextStage: core.StageReview, ProjectStages: true}); err != nil {
+			t.Fatal(err)
+		}
+		if current, err := st.GetTask(ctx, task.ID); err != nil || current.NextStage != core.StageReview {
+			t.Fatalf("sealed fixture task did not reach review: next=%s err=%v", current.NextStage, err)
+		}
+		requireReviewDispatchReadsOnlyTaskOrders(t, ctx, st, cfg, task.ID, false)
+	})
 }
