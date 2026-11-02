@@ -186,10 +186,7 @@ function MergeStatusLine({
     <p
       id={id}
       data-merge-status={status.state}
-      className={cn(
-        'flex max-w-md items-start gap-2 rounded-lg px-2.5 py-2 text-xs leading-5',
-        mergeToneClass[status.tone],
-      )}
+      className={cn('flex items-start gap-2 rounded-lg px-2.5 py-2 text-xs leading-5', mergeToneClass[status.tone])}
     >
       <span aria-hidden="true" className={cn('mt-[7px] size-1.5 shrink-0 rounded-full', mergeDotClass[status.tone])} />
       <span className="min-w-0">
