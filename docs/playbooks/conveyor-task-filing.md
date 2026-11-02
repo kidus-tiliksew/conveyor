@@ -49,6 +49,50 @@ requests filing, use the separate `create_task` mutation with the evidence and
 confirmed authority IDs. Preserve the task's gate defaults and propose-confirm
 boundary; investigation never grants permission to mutate.
 
+### Search for an existing task first
+
+Before drafting a body, search for a task that already covers the same scope.
+This step is required for every task and for every task in a set:
+
+1. Call `list_tasks` with the destination `repository` and `state: active`.
+2. Call `list_tasks` with the same `repository` and `state: terminal`. Read
+   the terminal tasks whose `created_at` falls in the recent window: the
+   window the operator names, or the last 30 days when the operator names
+   none.
+3. Pass a `query` for each distinct term that names the scope. `query`
+   matches task ID, title, source, or branch, never the body, so use the words
+   a generated title for this work would carry.
+
+When a returned task covers the same scope, do not file. Report each match to
+the operator with its task ID and state. File only on the operator's
+direction, and cite each related task ID in the new body's opening paragraph.
+An agent credential is refused these reads; ask the operator for the search
+result instead of skipping the step.
+
+### Investigate the current base
+
+Run `git fetch origin <base>` before reading repository code. Take every
+`file:line` anchor and every claim about current behavior from
+`origin/<base>`, for example through `git show origin/<base>:<path>` or
+`git grep <pattern> origin/<base>`. Never take them from a local checkout,
+which may lag the base. Record the `origin/<base>` commit the investigation
+read in the body's opening paragraph.
+
+### Recheck cited authority before `create_task`
+
+Immediately before each `create_task` call, recheck the authority the body
+cites:
+
+1. Re-read every cited DEC-n with `get_decision` and every cited document
+   version with `get_document`. Replace a superseded decision, an archived
+   document, or a version older than `current_version` with the current
+   confirmed version, or drop the citation.
+2. Read the confirmed requirements of the touched scope and check the
+   requested behavior against them. When a confirmed requirement forbids the
+   behavior, do not file an implementation task. Tell the operator that a
+   requirement revision comes first, and offer to draft it with the
+   `conveyor-plan` skill.
+
 ## Mechanics
 
 - File via MCP `create_task`: `body`, `repo`, `idempotency_key`
@@ -91,6 +135,19 @@ contract.
   App's cached installation token (DEC-59), and relies on configured branch
   protection for any required checks. It has no universal separate CI-status
   gate and does not promise a later merge gate.
+
+Settle the gate values before filing, not after. Before the first
+`create_task` of a task or a set, read the workspace's effective defaults: the
+`execution.spec_approval` and `execution.merge_approval` values of the
+workspace configuration, which `conveyor config export` prints. When the
+filer cannot read them, ask the operator for them. An agent credential cannot
+turn a gate off (DEC-60): `create_task` refuses `false` with
+`agent_gate_disable_forbidden`, and an omitted gate takes the workspace
+default. When the operator wants a value other than the default, ask the
+operator before filing; never file and then refile a task to change a gate.
+An agent filer can set a gate `true`. A gate the operator wants off under an
+agent credential needs the operator's own act before filing, such as filing
+that task with their own credential.
 
 A queue that requires one decision per pull request must set
 `merge_approval: true` at intake. A repository's validation documentation may
