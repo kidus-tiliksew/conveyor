@@ -230,13 +230,11 @@ func (s *Server) getWorkspaceGitHubApp(w http.ResponseWriter, r *http.Request) {
 	covered := map[string]bool{}
 	if status.Connected && status.InstallationID > 0 {
 		token, err := s.appClient().WorkspaceToken(r.Context(), s.WorkspaceGitHubApps, workspace)
-		if err != nil {
-			writeJSON(w, http.StatusForbidden, map[string]string{"error": "github_app_permission", "forge_error_category": string(github.ForgePermission), "message": github.AppPermission(workspace).Error()})
-			return
+		if err == nil {
+			covered, err = s.appClient().Repositories(r.Context(), workspace, token)
 		}
-		covered, err = s.appClient().Repositories(r.Context(), workspace, token)
 		if err != nil {
-			writeJSON(w, http.StatusForbidden, map[string]string{"error": "github_app_permission", "forge_error_category": string(github.ForgePermission), "message": github.AppPermission(workspace).Error()})
+			writeGitHubAppStatusFailure(w, workspace, err)
 			return
 		}
 	}
@@ -273,6 +271,31 @@ func (s *Server) getWorkspaceGitHubApp(w http.ResponseWriter, r *http.Request) {
 	}
 	writeJSON(w, http.StatusOK, result)
 }
+
+// writeGitHubAppStatusFailure answers a failed installation token or
+// coverage read. A rate-limited read answers 503 github_app_rate_limited
+// with the time GitHub allows the next request, because the installation is
+// healthy and only its GitHub allowance is spent. Every other failure keeps
+// the 403 github_app_permission answer (component-identity-membership).
+func writeGitHubAppStatusFailure(w http.ResponseWriter, workspace string, err error) {
+	retryAt, limited := github.RateLimitRetryAt(err)
+	if !limited {
+		writeJSON(w, http.StatusForbidden, map[string]string{"error": "github_app_permission", "forge_error_category": string(github.ForgePermission), "message": github.AppPermission(workspace).Error()})
+		return
+	}
+	message := "workspace " + workspace + " GitHub App has exhausted its GitHub rate limit; retry after GitHub resets it"
+	body := map[string]string{"error": "github_app_rate_limited", "forge_error_category": string(github.ForgeRateLimited), "message": message}
+	if !retryAt.IsZero() {
+		retryAt = retryAt.UTC().Truncate(time.Second)
+		body["retry_at"] = retryAt.Format(time.RFC3339)
+		body["message"] = "workspace " + workspace + " GitHub App has exhausted its GitHub rate limit; retry after " + retryAt.Format(time.RFC3339)
+		if wait := time.Until(retryAt); wait > 0 {
+			w.Header().Set("Retry-After", strconv.Itoa(int((wait+time.Second-1)/time.Second)))
+		}
+	}
+	writeJSON(w, http.StatusServiceUnavailable, body)
+}
+
 func (s *Server) deleteWorkspaceGitHubApp(w http.ResponseWriter, r *http.Request) {
 	workspace, _ := store.WorkspaceFromContext(r.Context())
 	if s.WorkspaceGitHubApps == nil {

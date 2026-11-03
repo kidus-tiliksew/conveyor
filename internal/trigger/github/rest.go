@@ -11,6 +11,7 @@ import (
 	"net/url"
 	"strconv"
 	"strings"
+	"time"
 )
 
 const githubAPIBaseURL = "https://api.github.com"
@@ -140,7 +141,11 @@ func (c *restClient) request(ctx context.Context, method, endpoint, accept strin
 		if category == ForgePermission {
 			return nil, response.Header, response.StatusCode, &Error{Category: category, status: response.StatusCode, Err: fmt.Errorf("%s is expired, revoked, or lacks permission; replace it in settings (GitHub HTTP %d)", c.identityLabel(), response.StatusCode)}
 		}
-		return nil, response.Header, response.StatusCode, &Error{Category: category, status: response.StatusCode, Err: fmt.Errorf("GitHub REST status %d: %s", response.StatusCode, c.secretSafe(secretSafeMessage(raw)))}
+		failure := &Error{Category: category, status: response.StatusCode, Err: fmt.Errorf("GitHub REST status %d: %s", response.StatusCode, c.secretSafe(secretSafeMessage(raw)))}
+		if category == ForgeRateLimited {
+			failure.RetryAt = rateLimitRetryAt(response.Header, time.Now())
+		}
+		return nil, response.Header, response.StatusCode, failure
 	}
 	return raw, response.Header, response.StatusCode, nil
 }

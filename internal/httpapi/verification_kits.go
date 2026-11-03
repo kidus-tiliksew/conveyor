@@ -183,7 +183,7 @@ func kitRegistryReason(ctx context.Context, state string) string {
 		return "transport"
 	}
 	switch state {
-	case "permission", "unknown_revision", "truncated":
+	case "permission", "unknown_revision", "truncated", "rate_limited":
 		return state
 	}
 	return "transport"

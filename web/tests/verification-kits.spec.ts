@@ -131,15 +131,17 @@ const registry = {
         }),
       ],
     },
-    ...(['no_app', 'permission', 'unknown_revision', 'truncated', 'transport'] as const).map((reason) => ({
-      repository: `blocked-${reason}`,
-      base: 'main',
-      commit_sha: '',
-      state: 'unavailable',
-      reason,
-      diagnostics: [],
-      kits: [],
-    })),
+    ...(['no_app', 'permission', 'unknown_revision', 'truncated', 'rate_limited', 'transport'] as const).map(
+      (reason) => ({
+        repository: `blocked-${reason}`,
+        base: 'main',
+        commit_sha: '',
+        state: 'unavailable',
+        reason,
+        diagnostics: [],
+        kits: [],
+      }),
+    ),
   ],
 }
 
@@ -226,6 +228,10 @@ test('repository sections render every state, reason and status chip', async ({ 
     'base branch was not found',
   )
   await expect(page.getByRole('region', { name: 'blocked-truncated' })).toContainText('GitHub read failed')
+  const rateLimited = page.getByRole('region', { name: 'blocked-rate_limited' })
+  await expect(rateLimited).toContainText("GitHub's rate limit for the workspace GitHub App is exhausted")
+  await expect(rateLimited).toContainText('Refresh after GitHub resets it')
+  await expect(rateLimited).not.toContainText('GitHub read failed')
   await expect(page.getByRole('region', { name: 'blocked-transport' })).toContainText('GitHub read failed')
 })
 

@@ -15,6 +15,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -31,9 +32,13 @@ import (
 // and, per commit, the manifest text and the kit roots present in the tree.
 type kitForgeRepo struct {
 	truncated bool
-	head      string
-	manifests map[string]string
-	roots     map[string][]string
+	// limitedHead and limitedManifest answer the branch-head or the
+	// manifest blob read as GitHub does when the installation's rate limit
+	// is exhausted: 403 with X-RateLimit-Remaining 0.
+	limitedHead, limitedManifest bool
+	head                         string
+	manifests                    map[string]string
+	roots                        map[string][]string
 }
 
 type kitForge struct {
@@ -84,6 +89,9 @@ func newKitForge(t *testing.T, private string, repos map[string]*kitForgeRepo) *
 		switch {
 		case repo == nil:
 			w.WriteHeader(404)
+		case strings.HasPrefix(tail, "/git/ref/heads/") && repo.limitedHead,
+			strings.HasPrefix(tail, "/git/blobs/") && repo.limitedManifest:
+			writeRateLimited(w)
 		case strings.HasPrefix(tail, "/git/ref/heads/"):
 			if strings.TrimPrefix(tail, "/git/ref/heads/") != "main" {
 				w.WriteHeader(404)
@@ -136,6 +144,15 @@ func newKitForge(t *testing.T, private string, repos map[string]*kitForgeRepo) *
 	}))
 	t.Cleanup(f.server.Close)
 	return f
+}
+
+// writeRateLimited answers as GitHub does once an installation's REST
+// allowance is exhausted.
+func writeRateLimited(w http.ResponseWriter) {
+	w.Header().Set("X-RateLimit-Remaining", "0")
+	w.Header().Set("X-RateLimit-Reset", strconv.FormatInt(time.Now().Add(20*time.Minute).Unix(), 10))
+	w.WriteHeader(http.StatusForbidden)
+	fmt.Fprint(w, `{"message":"API rate limit exceeded for installation ID 12."}`)
 }
 
 // kitManifest renders a schema-2 manifest; each kit is {id, pins YAML}.
@@ -234,6 +251,8 @@ func TestWorkspaceVerificationKits(t *testing.T) {
 		{Name: "pin-versions", GitHub: "org/pin-versions", Base: "main"},
 		{Name: "pin-slow", GitHub: "org/pin-slow", Base: "main"},
 		{Name: "pin-design-versions", GitHub: "org/pin-design-versions", Base: "main"},
+		{Name: "limited", GitHub: "org/limited", Base: "main"},
+		{Name: "limited-manifest", GitHub: "org/limited-manifest", Base: "main"},
 	}}
 	if _, err := st.BootstrapWorkspaceConfig(store.WithActor(t.Context(), store.SystemActor()), cfg); err != nil {
 		t.Fatal(err)
@@ -317,6 +336,8 @@ func TestWorkspaceVerificationKits(t *testing.T) {
 		"org/pin-versions":        pinRepo("pin-versions", pinsYAML("{document_id: req-versions-fail, version: 1}", "")),
 		"org/pin-slow":            pinRepo("pin-slow", pinsYAML("", "{document_id: design-slow, version: 1}")),
 		"org/pin-design-versions": pinRepo("pin-design-versions", pinsYAML("", "{document_id: design-versions-fail, version: 1}")),
+		"org/limited":             {limitedHead: true, manifests: map[string]string{}, roots: map[string][]string{}},
+		"org/limited-manifest":    {limitedManifest: true, head: fixtureSHA("limited-manifest"), manifests: map[string]string{fixtureSHA("limited-manifest"): kitManifest(2, [2]string{"k-limited", pinsYAML("", "")})}, roots: map[string][]string{fixtureSHA("limited-manifest"): {".conveyor/kits/k-limited"}}},
 		"org/future":              {head: futureHead, manifests: map[string]string{futureHead: strings.Replace(kitManifest(2, [2]string{"k-future", pinsYAML("{document_id: req-a, version: 2}", "")}), "schema_version: 2", "schema_version: 3", 1)}, roots: map[string][]string{futureHead: {".conveyor/kits/k-future"}}},
 	})
 
@@ -401,6 +422,9 @@ func TestWorkspaceVerificationKits(t *testing.T) {
 			"gone": {"unavailable", "unknown_revision"}, "denied": {"unavailable", "permission"}, "flaky": {"unavailable", "transport"}, "cut": {"unavailable", "truncated"},
 			"pin-fail": {"unavailable", "transport"}, "pin-versions": {"unavailable", "transport"},
 			"pin-slow": {"unavailable", "transport"}, "pin-design-versions": {"unavailable", "transport"},
+			// A rate-limited branch-head or manifest read is reported as
+			// rate_limited, not transport or permission (AC-1.4).
+			"limited": {"unavailable", "rate_limited"}, "limited-manifest": {"unavailable", "rate_limited"},
 		} {
 			repo := byName[name]
 			if repo.State != want[0] || repo.Reason != want[1] {

@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"log"
-	"slices"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -12,6 +11,7 @@ import (
 	"github.com/kidus-tiliksew/conveyor/internal/changes"
 	"github.com/kidus-tiliksew/conveyor/internal/core"
 	"github.com/kidus-tiliksew/conveyor/internal/store"
+	"github.com/kidus-tiliksew/conveyor/internal/trigger/github"
 )
 
 // The timed GitHub fallback keeps GitHub observation for a workspace without
@@ -25,6 +25,15 @@ import (
 
 // GitHubFallbackInterval is the shortest time between two fires.
 const GitHubFallbackInterval = time.Minute
+
+// A rate-limited GitHub answer pauses the workspace's timed reads until
+// GitHub's reset time. GitHubRateLimitPause applies when the answer names no
+// reset time, and GitHubRateLimitMaxPause bounds a named one: GitHub's REST
+// allowance resets within an hour.
+const (
+	GitHubRateLimitPause    = 5 * time.Minute
+	GitHubRateLimitMaxPause = time.Hour
+)
 
 // FallbackActor is the system actor the fallback reads and applies under.
 const FallbackActor = "github-fallback"
@@ -79,6 +88,10 @@ type fallbackState struct {
 	due         time.Time
 	timer       <-chan time.Time
 	stop        func()
+	// pausedUntil is GitHub's reset time after a rate-limited read. The
+	// timer is never armed before it, and the pause is held only here, in
+	// memory, per workspace.
+	pausedUntil time.Time
 
 	// Silence fallback state (github_fallback_silence.go). lastDelivery is
 	// the workspace's last accepted delivery; silent is set while timed
@@ -221,7 +234,7 @@ func (f *GitHubFallback) begin(ctx context.Context, workspace string, st *fallba
 		f.logf(`level=error msg="timed GitHub check failed" workspace=%s step=monitor_settings err=%v`, workspace, err)
 	}
 	if enabled {
-		f.pollMonitor(ctx, workspace)
+		f.pollMonitor(ctx, workspace, st, now)
 		st.lastMonitor = now
 	}
 	st.monitoring, st.interval = enabled || err != nil, interval
@@ -331,9 +344,14 @@ func (f *GitHubFallback) fire(ctx context.Context, workspace string, st *fallbac
 		f.schedule(st, now)
 		return
 	}
-	if st.waiting && !now.Before(st.lastRead.Add(GitHubFallbackInterval)) {
+	if st.waiting && !now.Before(st.lastRead.Add(GitHubFallbackInterval)) && !st.paused(now) {
 		waiting, err := f.readWaiting(ctx, workspace)
 		st.lastRead = now
+		if f.rateLimited(workspace, st, now, err) {
+			// The fire's remaining GitHub reads would fail too; the tasks
+			// still wait, and the next read follows GitHub's reset.
+			waiting, err = true, nil
+		}
 		if err != nil {
 			if ctx.Err() != nil {
 				return
@@ -354,11 +372,36 @@ func (f *GitHubFallback) fire(ctx context.Context, workspace string, st *fallbac
 	} else {
 		st.monitoring, st.interval = enabled, interval
 	}
-	if st.monitoring && err == nil && !now.Before(st.lastMonitor.Add(monitorInterval(st.interval))) {
-		f.pollMonitor(ctx, workspace)
+	if st.monitoring && err == nil && !now.Before(st.lastMonitor.Add(monitorInterval(st.interval))) && !st.paused(now) {
+		f.pollMonitor(ctx, workspace, st, now)
 		st.lastMonitor = now
 	}
 	f.schedule(st, now)
+}
+
+// rateLimited reports whether err is a rate-limited GitHub answer. It then
+// pauses the workspace's timed reads until GitHub's reset time, bounded by
+// GitHubRateLimitMaxPause, or for GitHubRateLimitPause when the answer named
+// none, and writes one error line naming the workspace and the reset time.
+func (f *GitHubFallback) rateLimited(workspace string, st *fallbackState, now time.Time, err error) bool {
+	retryAt, limited := github.RateLimitRetryAt(err)
+	if !limited {
+		return false
+	}
+	switch {
+	case retryAt.IsZero():
+		retryAt = now.Add(GitHubRateLimitPause)
+	case retryAt.After(now.Add(GitHubRateLimitMaxPause)):
+		retryAt = now.Add(GitHubRateLimitMaxPause)
+	}
+	st.pausedUntil = retryAt
+	f.logf(`level=error msg="timed GitHub checks paused: GitHub rate limit exhausted" workspace=%s reset_at=%s err=%v`, workspace, retryAt.UTC().Format(time.RFC3339), err)
+	return true
+}
+
+// paused reports whether a rate-limit pause holds at now.
+func (st *fallbackState) paused(now time.Time) bool {
+	return now.Before(st.pausedUntil)
 }
 
 // schedule arms the timer for the earliest due read or poll, never earlier
@@ -391,10 +434,14 @@ func (f *GitHubFallback) schedule(st *fallbackState, now time.Time) {
 }
 
 // arm sets the timer for due, never earlier than one minute after the
-// previous fire, and keeps a timer already armed for the same time.
+// previous fire or before a rate-limit pause ends, and keeps a timer already
+// armed for the same time.
 func (f *GitHubFallback) arm(st *fallbackState, now, due time.Time) {
 	if earliest := st.lastFire.Add(GitHubFallbackInterval); !st.lastFire.IsZero() && due.Before(earliest) {
 		due = earliest
+	}
+	if due.Before(st.pausedUntil) {
+		due = st.pausedUntil
 	}
 	if st.armed && st.due.Equal(due) {
 		return
@@ -420,8 +467,9 @@ func monitorInterval(interval time.Duration) time.Duration {
 }
 
 // readWaiting runs the start-up GitHub reads for the workspace's waiting
-// tasks, unchanged, and reports whether any task waited. With no waiting
-// task it makes no GitHub call.
+// tasks and reports whether any task waited. With no waiting task it makes
+// no GitHub call. The pull-request read stops at the first rate-limited
+// answer and returns it.
 func (f *GitHubFallback) readWaiting(ctx context.Context, workspace string) (bool, error) {
 	waiting, err := f.anyWaiting(ctx)
 	if err != nil || !waiting {
@@ -436,14 +484,16 @@ func (f *GitHubFallback) readWaiting(ctx context.Context, workspace string) (boo
 	return true, err
 }
 
-// anyWaiting reports whether a task waits on GitHub: the union the start-up
-// pull_requests pass reads.
+// anyWaiting reports whether a task waits on GitHub: the set the start-up
+// pull_requests pass and each fire read (waitsOnGitHub).
 func (f *GitHubFallback) anyWaiting(ctx context.Context) (bool, error) {
 	candidates, err := startupPullRequestCandidates(ctx, f.Dispatcher.Store)
 	return len(candidates) > 0, err
 }
 
-// taskWaits reports whether one task is in that union.
+// taskWaits reports whether one task waits on GitHub, with the predicate
+// anyWaiting and the per-fire read use: one GetTask, and one batched
+// pull-request event read when the task fields alone do not decide.
 func (f *GitHubFallback) taskWaits(ctx context.Context, taskID string) (bool, error) {
 	task, err := f.Dispatcher.Store.GetTask(ctx, taskID)
 	if errors.Is(err, store.ErrNotFound) {
@@ -452,14 +502,14 @@ func (f *GitHubFallback) taskWaits(ctx context.Context, taskID string) (bool, er
 	if err != nil {
 		return false, err
 	}
-	if slices.Contains(mergeReadinessTaskStates, task.State) {
+	if waitsOnGitHub(task, false) {
 		return true, nil
 	}
 	if task.State == core.TaskMerged || task.State == core.TaskClosed {
 		return false, nil
 	}
 	recorded, err := f.Dispatcher.Store.ListMonitorPullRequestEventsForTasks(ctx, []string{taskID})
-	return len(recorded[taskID]) > 0, err
+	return waitsOnGitHub(task, len(recorded[taskID]) > 0), err
 }
 
 // webhookStatus reads the workspace's webhook status; a failed read writes
@@ -485,13 +535,15 @@ func (f *GitHubFallback) monitor(ctx context.Context, workspace string) (bool, t
 	return f.Monitor(ctx, workspace)
 }
 
-func (f *GitHubFallback) pollMonitor(ctx context.Context, workspace string) {
+func (f *GitHubFallback) pollMonitor(ctx context.Context, workspace string, st *fallbackState, now time.Time) {
 	if f.PollMonitor == nil {
 		return
 	}
-	if err := f.PollMonitor(ctx, workspace); err != nil && ctx.Err() == nil {
-		f.logf(`level=error msg="timed GitHub check failed" workspace=%s step=monitor err=%v`, workspace, err)
+	err := f.PollMonitor(ctx, workspace)
+	if err == nil || ctx.Err() != nil || f.rateLimited(workspace, st, now, err) {
+		return
 	}
+	f.logf(`level=error msg="timed GitHub check failed" workspace=%s step=monitor err=%v`, workspace, err)
 }
 
 func (f *GitHubFallback) stepped(workspace, event string, st *fallbackState) {

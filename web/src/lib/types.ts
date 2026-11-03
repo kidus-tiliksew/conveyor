@@ -1934,7 +1934,13 @@ export interface DocumentEventPage {
 
 // Workspace verification kit registry (component-verification-kit-contract).
 export type VerificationKitRepositoryState = 'ok' | 'no_manifest' | 'invalid' | 'unavailable'
-export type VerificationKitUnavailableReason = 'no_app' | 'permission' | 'unknown_revision' | 'truncated' | 'transport'
+export type VerificationKitUnavailableReason =
+  | 'no_app'
+  | 'permission'
+  | 'unknown_revision'
+  | 'truncated'
+  | 'rate_limited'
+  | 'transport'
 export type VerificationKitStatus = 'current' | 'behind' | 'pending' | 'unresolved' | 'unpinned' | 'invalid'
 export type VerificationKitPinStatus = 'current' | 'behind' | 'pending' | 'unresolved'
 

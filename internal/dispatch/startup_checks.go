@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"log"
+	"slices"
 	"sync"
 	"time"
 
@@ -92,13 +93,12 @@ func (c *StartupChecks) RunDrift(ctx context.Context, workspaces []string) {
 // RunGitHub reads GitHub once for every task that waits on it in each
 // workspace (req-quiet-idle-runtime AC-3.4). ReconcileMergeReadiness runs
 // unchanged; the pull_requests pass then reads the pull request of every task
-// in the union of mergeReadinessTaskStates and the open tasks with a recorded
-// pull request. The daemon calls it once the server is wired and before it
+// that waits on GitHub (waitsOnGitHub). The daemon calls it once the server is wired and before it
 // serves requests (component-runtime, Start-up checks and background loops).
 func (c *StartupChecks) RunGitHub(ctx context.Context, workspaces []string) {
 	for _, workspace := range workspaces {
 		c.run(ctx, workspace, startupPass{StartupMergeReadinessPass, c.Dispatcher.ReconcileMergeReadiness})
-		c.run(ctx, workspace, startupPass{StartupPullRequestsPass, c.readPullRequests})
+		c.run(ctx, workspace, startupPass{StartupPullRequestsPass, c.readPullRequestsAtStart})
 	}
 }
 
@@ -109,8 +109,9 @@ func (c *StartupChecks) RunGitHub(ctx context.Context, workspaces []string) {
 // task its eligibility rules accept and never requests one, so reading a
 // parked, queued, or running task never merges it. A failed read writes one
 // error line and is not retried, so no GitHub call repeats on a timer; a
-// failed candidate read fails the pass, which retries it. It returns the
-// number of pull requests read.
+// failed candidate read fails the pass, which retries it. A rate-limited read
+// ends the reads and is returned, because every later read would fail until
+// GitHub's reset. It returns the number of pull requests read.
 func (c *StartupChecks) readPullRequests(ctx context.Context) (int, error) {
 	d := c.Dispatcher
 	candidates, err := startupPullRequestCandidates(ctx, d.Store)
@@ -140,6 +141,11 @@ func (c *StartupChecks) readPullRequests(ctx context.Context) (int, error) {
 			// GitHub answered: the branch has no pull request to apply.
 			read++
 		case viewErr != nil:
+			if _, limited := github.RateLimitRetryAt(viewErr); limited {
+				// Every later read would fail until GitHub's reset; the
+				// caller writes the one line for it.
+				return read, viewErr
+			}
 			c.logf(`level=error msg="start-up GitHub read failed" workspace=%s task=%s repository=%s err=%v`, workspace, task.ID, repo.GitHub, viewErr)
 		default:
 			read++
@@ -151,11 +157,34 @@ func (c *StartupChecks) readPullRequests(ctx context.Context) (int, error) {
 	return read, nil
 }
 
-// startupPullRequestCandidates is the union, in store order and without
-// duplicates, of the tasks in a state mergeReadinessTaskStates selects and the
-// open tasks, parked included, with a recorded pull_request.opened event.
+// readPullRequestsAtStart runs the start-up pull_requests pass. A
+// rate-limited read stops the pass with one error line naming the workspace
+// and GitHub's reset time and is not retried, as no failed read is; the next
+// start or the timed fallback reads the tasks again.
+func (c *StartupChecks) readPullRequestsAtStart(ctx context.Context) (int, error) {
+	read, err := c.readPullRequests(ctx)
+	if retryAt, limited := github.RateLimitRetryAt(err); limited {
+		workspace, _ := store.WorkspaceFromContext(ctx)
+		reset := "unknown"
+		if !retryAt.IsZero() {
+			reset = retryAt.UTC().Format(time.RFC3339)
+		}
+		c.logf(`level=error msg="start-up GitHub reads stopped: GitHub rate limit exhausted" workspace=%s reset_at=%s err=%v`, workspace, reset, err)
+		return read, nil
+	}
+	return read, err
+}
+
+// startupPullRequestCandidates lists, in store order and without duplicates,
+// the tasks that wait on GitHub (waitsOnGitHub) among the tasks in a state
+// mergeReadinessTaskStates selects and the open tasks, parked included. It
+// makes two ListTasksFiltered calls and one batched
+// ListMonitorPullRequestEventsForTasks call, and no GitHub call. The
+// start-up pull_requests pass, the timed fallback's per-fire read, and the
+// fallback's arming all use this set (component-runtime, Timed GitHub
+// fallback; req-quiet-idle-runtime AC-3.4, AC-3.5).
 func startupPullRequestCandidates(ctx context.Context, st store.Store) ([]core.Task, error) {
-	waiting, err := st.ListTasksFiltered(ctx, store.TaskFilter{States: mergeReadinessTaskStates})
+	live, err := st.ListTasksFiltered(ctx, store.TaskFilter{States: mergeReadinessTaskStates})
 	if err != nil {
 		return nil, err
 	}
@@ -163,27 +192,58 @@ func startupPullRequestCandidates(ctx context.Context, st store.Store) ([]core.T
 	if err != nil {
 		return nil, err
 	}
-	ids := make([]string, 0, len(open))
-	for _, task := range open {
+	tasks := make([]core.Task, 0, len(live)+len(open))
+	seen := make(map[string]bool, len(live)+len(open))
+	for _, task := range append(live, open...) {
+		if !seen[task.ID] {
+			seen[task.ID] = true
+			tasks = append(tasks, task)
+		}
+	}
+	ids := make([]string, 0, len(tasks))
+	for _, task := range tasks {
 		ids = append(ids, task.ID)
 	}
 	recorded, err := st.ListMonitorPullRequestEventsForTasks(ctx, ids)
 	if err != nil {
 		return nil, err
 	}
-	seen := make(map[string]bool, len(waiting)+len(open))
-	candidates := make([]core.Task, 0, len(waiting))
-	for _, task := range waiting {
-		seen[task.ID] = true
-		candidates = append(candidates, task)
-	}
-	for _, task := range open {
-		if !seen[task.ID] && len(recorded[task.ID]) > 0 {
-			seen[task.ID] = true
+	candidates := make([]core.Task, 0, len(recorded))
+	for _, task := range tasks {
+		if waitsOnGitHub(task, len(recorded[task.ID]) > 0) {
 			candidates = append(candidates, task)
 		}
 	}
 	return candidates, nil
+}
+
+// waitsOnGitHub reports whether a task waits on GitHub: it is neither
+// merged nor closed, and it has a recorded pull_request.opened event or a
+// merge-readiness pass can act on it. A task without a recorded pull
+// request has nothing GitHub can report that ReconcileObservedPullRequest
+// would apply, because monitor.RecordedLineage requires that event, so the
+// 285 queued backlog tasks of a workspace cost no GitHub call. A queued task
+// bounced back after it opened a pull request still waits. The check reads
+// only stored task fields and events.
+func waitsOnGitHub(task core.Task, recordedPullRequest bool) bool {
+	if task.State == core.TaskMerged || task.State == core.TaskClosed {
+		return false
+	}
+	return recordedPullRequest || mergeReadinessCanAct(task)
+}
+
+// mergeReadinessCanAct reports, from stored task fields alone, whether a
+// ReconcileMergeReadiness pass can act on a task: the gate-on pass's
+// approved or merge-gated task, or a gate-off task that is approved or has
+// a review head the accepted-review recovery reads.
+func mergeReadinessCanAct(task core.Task) bool {
+	if task.MergeApproval {
+		return task.State == core.TaskApproved || task.State == core.TaskAwaiting && task.GateKind == core.GateKindMergeApproval
+	}
+	if !slices.Contains(mergeReadinessTaskStates, task.State) || !gateOffMergeReadinessCandidate(task) {
+		return false
+	}
+	return task.State == core.TaskApproved || task.ApprovedHeadSHA != "" || task.ReviewedHeadSHA != ""
 }
 
 // Wait returns once every background retry has ended.

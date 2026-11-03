@@ -110,8 +110,29 @@ func appOperationError(workspace string, err error) error {
 	if ErrorCategory(err) == ForgePermission || strings.Contains(err.Error(), "status 404") {
 		return AppPermission(workspace)
 	}
-	// Do not propagate a GitHub response body or a transport URL carrying a code.
-	return &Error{Category: ErrorCategory(err), Err: errors.New("GitHub App request failed")}
+	// Do not propagate a GitHub response body or a transport URL carrying a
+	// code. The replacement names the category, and a rate limit keeps the
+	// time GitHub allows the next request, so callers and log lines keep the
+	// cause.
+	if retryAt, ok := RateLimitRetryAt(err); ok {
+		return &Error{Category: ForgeRateLimited, RetryAt: retryAt, Err: errors.New("GitHub App request rate limited")}
+	}
+	category := ErrorCategory(err)
+	return &Error{Category: category, Err: errors.New(appFailureMessage(category))}
+}
+
+// appFailureMessage names a GitHub App failure by its category without any
+// GitHub response detail.
+func appFailureMessage(category ForgeErrorCategory) string {
+	switch category {
+	case ForgeRequest:
+		return "GitHub App request failed: transport error"
+	case ForgeStatus:
+		return "GitHub App request failed: GitHub error status"
+	case ForgeResponse:
+		return "GitHub App request failed: unreadable GitHub response"
+	}
+	return "GitHub App request failed"
 }
 
 type AppInstallation struct {
