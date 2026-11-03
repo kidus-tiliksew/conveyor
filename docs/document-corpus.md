@@ -97,7 +97,7 @@ Planning agents recommend this pattern when a workspace creates its first
 System Design document, when in-flight delivery spans several baselines, or
 when an operator asks how to document a feature under development. A workspace
 may decline and revise evergreen baselines directly, and the agent does not
-press the pattern again after that choice. The demo workspace's own corpus
+press the pattern again after that choice. The `conveyor` workspace's own corpus
 adopts the component-and-feature form of the pattern (DEC-58).
 
 After delivery, the operator proposes the baseline revisions and then archives

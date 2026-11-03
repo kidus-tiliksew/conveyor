@@ -331,7 +331,7 @@ Dismissing the only proposal of a created document archives that document, as
 [Dismissed and changed items](#dismissed-and-changed-items) describes.
 
 A component baseline, the evergreen half of the baseline-and-overlay
-pattern, takes this shape. The demo workspace adopts it as its convention
+pattern, takes this shape. The `conveyor` workspace adopts it as its convention
 (DEC-58); elsewhere it is a recommendation the operator may decline.
 
 ````markdown
