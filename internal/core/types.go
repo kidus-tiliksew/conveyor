@@ -704,6 +704,9 @@ type WorkOrder struct {
 	// separately non-authoritative task proposal evidence refreshed for this
 	// review claim. Nil is reserved for legacy compatibility handling.
 	GovernanceSnapshot *GovernanceSnapshot `json:"governance_snapshot,omitempty"`
+	// GovernanceSnapshotDigest is the content-addressed identity of GovernanceSnapshot.
+	// Claim events carry this instead of document bodies.
+	GovernanceSnapshotDigest string `json:"governance_snapshot_digest,omitempty"`
 }
 
 // ClearExecutionPins removes every harness, model, and effort pin, including a

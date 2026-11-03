@@ -17,12 +17,31 @@ import (
 )
 
 // WorkOrderEventPayload preserves lifecycle and attempt identity without
-// duplicating execution authority. The event's id identifies the work order
-// whose persisted snapshots supply the complete document bodies.
+// duplicating execution authority. The event names the work order and the
+// content-addressed governance digest; persisted snapshots supply the bodies.
 func WorkOrderEventPayload(order core.WorkOrder) json.RawMessage {
+	digest := order.GovernanceSnapshotDigest
+	if digest == "" {
+		digest, _ = EncodeGovernanceSnapshot(order.GovernanceSnapshot)
+	}
 	order.GovernanceSnapshot = nil
 	order.ServedRequirementSnapshot = nil
+	order.GovernanceSnapshotDigest = digest
 	return core.JSONPayload(order)
+}
+
+func (m *memory) persistGovernanceSnapshotLocked(order *core.WorkOrder) {
+	digest, content := EncodeGovernanceSnapshot(order.GovernanceSnapshot)
+	if digest == "" {
+		return
+	}
+	if m.governanceSnapshots == nil {
+		m.governanceSnapshots = map[string][]byte{}
+	}
+	if _, ok := m.governanceSnapshots[digest]; !ok {
+		m.governanceSnapshots[digest] = append([]byte(nil), content...)
+	}
+	order.GovernanceSnapshotDigest = digest
 }
 
 const (
@@ -1074,6 +1093,8 @@ func (m *memory) CreateWorkOrderCommand(ctx context.Context, lease taskops.TaskL
 		order.Claimable = false
 	}
 	order.OperatorDirection = m.firstOrderDirectionLocked(order.TaskID, order.OperatorDirection)
+	m.persistGovernanceSnapshotLocked(&order)
+
 	m.workOrders[order.ID] = order
 	m.appendEventLocked(ctx, core.Event{TaskID: order.TaskID, JobID: order.JobID, Kind: "work_order.created", Payload: WorkOrderEventPayload(order)})
 	m.retireWorkOrderSiblingsLocked(ctx, order, "superseded by successor creation", now, true)
@@ -1565,6 +1586,7 @@ func (m *memory) ListLiveWorkOrders(ctx context.Context) ([]core.WorkOrder, erro
 func withoutAuthoritySnapshots(order core.WorkOrder) core.WorkOrder {
 	order.ServedRequirementSnapshot = nil
 	order.GovernanceSnapshot = nil
+	order.GovernanceSnapshotDigest = ""
 	return order
 }
 
@@ -1918,20 +1940,10 @@ func (m *memory) ClaimWorkOrderCommand(ctx context.Context, lifecycleLease tasko
 			order.ServedRequirementSnapshot = append([]core.ServedRequirementContext{}, claim.Requirements...)
 		}
 		if claim.Governance != nil {
-			if order.GovernanceSnapshot == nil || repin {
-				copy := *claim.Governance
-				copy.Designs = append([]core.GovernanceDesignContext(nil), claim.Governance.Designs...)
-				copy.Decisions = append([]core.Decision(nil), claim.Governance.Decisions...)
-				copy.PendingDesignProposals = append([]core.PendingSystemDesignProposal(nil), claim.Governance.PendingDesignProposals...)
-				copy.ResolutionNotes = append([]string(nil), claim.Governance.ResolutionNotes...)
-				order.GovernanceSnapshot = &copy
-			} else {
-				// Proposal observations are claim-time-fresh, unlike the frozen
-				// System Design and decision authority.
-				order.GovernanceSnapshot.PendingDesignProposals = append([]core.PendingSystemDesignProposal(nil), claim.Governance.PendingDesignProposals...)
-				order.GovernanceSnapshot.ResolutionNotes = append([]string(nil), claim.Governance.ResolutionNotes...)
-			}
+			PinClaimGovernance(&order, claim.Governance, repin)
 		}
+		m.persistGovernanceSnapshotLocked(&order)
+
 	}
 	if order.Stage == core.StageReview {
 		for _, candidate := range m.workOrders {

@@ -79,7 +79,12 @@ func seedActivityValidationScale(t *testing.T, st *Store, ctx context.Context, w
 			t.Fatal(err)
 		}
 	}
-	if _, err := st.pool.Exec(ctx, `UPDATE work_orders SET governance_snapshot=jsonb_build_object('pad',$2::text), served_requirement_snapshot=jsonb_build_array($2::text) WHERE workspace_id=$1`, workspace, padding); err != nil {
+	padSnap := &core.GovernanceSnapshot{ResolutionNotes: []string{padding}}
+	digest, content := store.EncodeGovernanceSnapshot(padSnap)
+	if _, err := st.pool.Exec(ctx, `INSERT INTO governance_snapshots (workspace_id, digest, content) VALUES ($1,$2,$3::jsonb) ON CONFLICT DO NOTHING`, workspace, digest, content); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.pool.Exec(ctx, `UPDATE work_orders SET governance_snapshot_digest=$2, served_requirement_snapshot=jsonb_build_array($3::text) WHERE workspace_id=$1`, workspace, digest, padding); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := st.pool.Exec(ctx, `INSERT INTO events (task_id, kind, actor_id, actor_role, payload_json, at, workspace_id)

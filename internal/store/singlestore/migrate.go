@@ -201,6 +201,11 @@ func (s *Store) migrate(ctx context.Context) error {
 				return fmt.Errorf("SingleStore migration %s: fill the job index: %w", file.name, err)
 			}
 		}
+		if file.version == 31 {
+			if err := s.migrateGovernanceSnapshots(ctx); err != nil {
+				return fmt.Errorf("SingleStore migration %s: %w", file.name, err)
+			}
+		}
 		if _, err = s.db.ExecContext(ctx, `INSERT INTO conveyor_singlestore_migrations(version,name,checksum) VALUES (?,?,?)`, file.version, file.name, file.checksum); err != nil {
 			return err
 		}
@@ -326,6 +331,33 @@ func (s *Store) migrateLauncherRetirement(ctx context.Context) error {
 		}
 	}
 	return nil
+}
+
+// migrateGovernanceSnapshots stores inline work-order snapshots once, keyed by
+// SHA-256 of the stored JSON, then drops the duplicated column.
+func (s *Store) migrateGovernanceSnapshots(ctx context.Context) error {
+	if err := s.addNullableColumns(ctx, nullableColumn{"work_orders", "governance_snapshot_digest", "CHAR(64) NULL"}); err != nil {
+		return err
+	}
+	exists, err := s.columnExists(ctx, "work_orders", "governance_snapshot")
+	if err != nil {
+		return err
+	}
+	if !exists {
+		return nil
+	}
+	if _, err := s.db.ExecContext(ctx, `INSERT IGNORE INTO governance_snapshots (workspace_id, digest, content)
+SELECT workspace_id, LOWER(SHA2(CAST(governance_snapshot AS CHAR), 256)), governance_snapshot
+FROM work_orders WHERE governance_snapshot IS NOT NULL`); err != nil {
+		return err
+	}
+	if _, err := s.db.ExecContext(ctx, `UPDATE work_orders
+SET governance_snapshot_digest = LOWER(SHA2(CAST(governance_snapshot AS CHAR), 256))
+WHERE governance_snapshot IS NOT NULL AND governance_snapshot_digest IS NULL`); err != nil {
+		return err
+	}
+	_, err = s.db.ExecContext(ctx, `ALTER TABLE work_orders DROP COLUMN governance_snapshot`)
+	return err
 }
 
 type nullableColumn struct{ table, name, definition string }

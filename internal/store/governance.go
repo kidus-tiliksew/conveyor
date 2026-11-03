@@ -2,6 +2,8 @@ package store
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"sort"
@@ -177,4 +179,37 @@ func (m *memory) ListDocumentOperatorNotesForTask(ctx context.Context, taskID st
 		return a.Version < b.Version
 	})
 	return notes, nil
+}
+
+// EncodeGovernanceSnapshot returns the lowercase hex SHA-256 of the canonical
+// JSON already produced for work-order rows, plus those bytes. A nil snapshot
+// has no digest and is not stored.
+func EncodeGovernanceSnapshot(snapshot *core.GovernanceSnapshot) (digest string, content []byte) {
+	if snapshot == nil {
+		return "", nil
+	}
+	content = core.JSONPayload(snapshot)
+	sum := sha256.Sum256(content)
+	return hex.EncodeToString(sum[:]), content
+}
+
+// PinClaimGovernance applies the claim-time governance pin. A missing pin or
+// a verify repin replaces the whole snapshot; otherwise only claim-time-fresh
+// proposal observations and resolution notes change, leaving frozen design
+// and decision authority untouched (component-work-orders).
+func PinClaimGovernance(order *core.WorkOrder, governance *core.GovernanceSnapshot, repin bool) {
+	if governance == nil {
+		return
+	}
+	if order.GovernanceSnapshot == nil || repin {
+		copy := *governance
+		copy.Designs = append([]core.GovernanceDesignContext(nil), governance.Designs...)
+		copy.Decisions = append([]core.Decision(nil), governance.Decisions...)
+		copy.PendingDesignProposals = append([]core.PendingSystemDesignProposal(nil), governance.PendingDesignProposals...)
+		copy.ResolutionNotes = append([]string(nil), governance.ResolutionNotes...)
+		order.GovernanceSnapshot = &copy
+		return
+	}
+	order.GovernanceSnapshot.PendingDesignProposals = append([]core.PendingSystemDesignProposal(nil), governance.PendingDesignProposals...)
+	order.GovernanceSnapshot.ResolutionNotes = append([]string(nil), governance.ResolutionNotes...)
 }

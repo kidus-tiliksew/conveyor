@@ -2,6 +2,7 @@ package postgres
 
 import (
 	"context"
+	"encoding/json"
 	"strings"
 	"testing"
 	"time"
@@ -99,7 +100,11 @@ func claimSessionScalePostgres(st *Store, workspace string) storetest.ClaimSessi
 			if tag.RowsAffected() != int64(count) {
 				t.Fatalf("copied %d orders, want %d", tag.RowsAffected(), count)
 			}
-			if tag, err = st.Pool().Exec(ctx, `UPDATE work_orders SET governance_snapshot = $2::jsonb, served_requirement_snapshot = $3::jsonb WHERE workspace_id = $1`, workspace, string(governance), string(served)); err != nil {
+			digest, content := store.EncodeGovernanceSnapshot(mustGovernance(t, governance))
+			if _, err = st.Pool().Exec(ctx, `INSERT INTO governance_snapshots (workspace_id, digest, content) VALUES ($1,$2,$3::jsonb) ON CONFLICT DO NOTHING`, workspace, digest, content); err != nil {
+				t.Fatal(err)
+			}
+			if tag, err = st.Pool().Exec(ctx, `UPDATE work_orders SET governance_snapshot_digest = $2, served_requirement_snapshot = $3::jsonb WHERE workspace_id = $1`, workspace, digest, string(served)); err != nil {
 				t.Fatal(err)
 			}
 			if tag.RowsAffected() < int64(count+1) {
@@ -114,4 +119,13 @@ func claimSessionScalePostgres(st *Store, workspace string) storetest.ClaimSessi
 			return bytes
 		},
 	}
+}
+
+func mustGovernance(t *testing.T, raw []byte) *core.GovernanceSnapshot {
+	t.Helper()
+	var snapshot core.GovernanceSnapshot
+	if err := json.Unmarshal(raw, &snapshot); err != nil {
+		t.Fatal(err)
+	}
+	return &snapshot
 }
