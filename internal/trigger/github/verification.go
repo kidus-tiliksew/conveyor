@@ -43,17 +43,11 @@ func (c *AppClient) DiscoverVerification(ctx context.Context, st AppStore, works
 	}
 	token, err := c.WorkspaceToken(ctx, st, workspace)
 	if err != nil {
-		d.State = "transport"
-		if ErrorCategory(err) == ForgePermission {
-			d.State = "permission"
-		}
+		d.State = readFailureState(err, 0)
 		return d
 	}
 	if err = c.RequireRepository(ctx, workspace, token, slug); err != nil {
-		d.State = "transport"
-		if ErrorCategory(err) == ForgePermission {
-			d.State = "permission"
-		}
+		d.State = readFailureState(err, 0)
 		return d
 	}
 	client, base := c.HTTP, c.BaseURL
@@ -67,13 +61,7 @@ func (c *AppClient) DiscoverVerification(ctx context.Context, st AppStore, works
 	get := func(endpoint string, target any) bool {
 		raw, _, status, err := r.request(ctx, http.MethodGet, endpoint, "application/vnd.github+json", nil)
 		if err != nil {
-			d.State = "transport"
-			if status == 401 || status == 403 {
-				d.State = "permission"
-			}
-			if status == 404 || status == 422 {
-				d.State = "unknown_revision"
-			}
+			d.State = readFailureState(err, status)
 			return false
 		}
 		if json.Unmarshal(raw, target) != nil {
@@ -210,6 +198,12 @@ func (c *AppClient) DiscoverVerification(ctx context.Context, st AppStore, works
 	if err != nil && d.State == "present" {
 		d.State = "malformed"
 	}
+	if d.State == "rate_limited" {
+		// A rate-limited symlink read ends discovery: every later read fails
+		// until GitHub's reset, and the registry reports the cause
+		// (req-verification-kit-inventory AC-1.4).
+		return d
+	}
 	d.Trees = map[string][]verification.TreeEntry{}
 	if d.Manifest != nil {
 		for _, kit := range d.Manifest.Kits {
@@ -219,6 +213,11 @@ func (c *AppClient) DiscoverVerification(ctx context.Context, st AppStore, works
 					continue
 				}
 				if e.Mode == "160000" || (e.Mode == "120000" && check(kit.Path, p) != nil) {
+					if d.State == "rate_limited" {
+						// The symlink read was rate limited, not refused;
+						// keep the cause and stop reading.
+						return d
+					}
 					d.State = "unavailable"
 					continue
 				}
@@ -231,11 +230,28 @@ func (c *AppClient) DiscoverVerification(ctx context.Context, st AppStore, works
 	return d
 }
 
+// readFailureState maps a failed App token, coverage, or REST read onto a
+// discovery state. A rate-limited answer, including a rate-limited 403, is
+// rate_limited rather than permission or transport, so the kit view shows
+// the cause (req-verification-kit-inventory AC-1.4;
+// component-verification-kit-contract).
+func readFailureState(err error, status int) string {
+	switch category := ErrorCategory(err); {
+	case category == ForgeRateLimited:
+		return "rate_limited"
+	case category == ForgePermission || status == http.StatusUnauthorized || status == http.StatusForbidden:
+		return "permission"
+	case status == http.StatusNotFound || status == http.StatusUnprocessableEntity:
+		return "unknown_revision"
+	}
+	return "transport"
+}
+
 // ResolveBranchHead reads the commit a branch currently names through the
 // workspace GitHub App, a control-plane forge read act under DEC-59 (DEC-43).
 // The workspace kit registry reads manifests at that commit
 // (component-verification-kit-contract); no local checkout participates. States are present, permission,
-// unknown_revision or transport.
+// unknown_revision, rate_limited or transport.
 func (c *AppClient) ResolveBranchHead(ctx context.Context, st AppStore, workspace, slug, branch string) (string, string) {
 	return c.resolveBranchHead(ctx, st, workspace, slug, branch, 1)
 }
@@ -260,16 +276,10 @@ func (c *AppClient) resolveBranchHead(ctx context.Context, st AppStore, workspac
 	}
 	token, err := c.WorkspaceToken(ctx, st, workspace)
 	if err != nil {
-		if ErrorCategory(err) == ForgePermission {
-			return "", "permission"
-		}
-		return "", "transport"
+		return "", readFailureState(err, 0)
 	}
 	if err = c.RequireRepository(ctx, workspace, token, slug); err != nil {
-		if ErrorCategory(err) == ForgePermission {
-			return "", "permission"
-		}
-		return "", "transport"
+		return "", readFailureState(err, 0)
 	}
 	client, base := c.HTTP, c.BaseURL
 	if client == nil {
@@ -292,14 +302,8 @@ func (c *AppClient) resolveBranchHead(ctx context.Context, st AppStore, workspac
 		case <-time.After(time.Duration(attempt+1) * 100 * time.Millisecond):
 		}
 	}
-	switch {
-	case err == nil:
-	case status == 401 || status == 403:
-		return "", "permission"
-	case status == 404 || status == 422:
-		return "", "unknown_revision"
-	default:
-		return "", "transport"
+	if err != nil {
+		return "", readFailureState(err, status)
 	}
 	var ref struct {
 		Object struct {

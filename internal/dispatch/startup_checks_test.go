@@ -303,13 +303,16 @@ func TestStartupGitHubReadAppliesMergedPullRequest(t *testing.T) {
 
 // TestStartupPullRequestReadCoversWaitingTasks: the start-up pull_requests
 // pass reads, against a fake forge, the pull request of a parked task with
-// an open recorded pull request that GitHub reports merged and of a running
-// task without an approved review. Each observation goes through
-// ReconcileObservedPullRequest, so neither task changes state and no merge is
-// requested. A closed task and a parked task without a recorded pull request
-// are not read. A branch without a pull request writes nothing; a failed read
-// writes one error line and is not retried (req-quiet-idle-runtime AC-3.4;
-// component-runtime, Start-up checks and background loops).
+// an open recorded pull request that GitHub reports merged, of a running
+// task with a recorded pull request and no approved review, and of a queued
+// task bounced back after it opened a pull request. Each observation goes
+// through ReconcileObservedPullRequest, so no task changes state and no
+// merge is requested. A closed task, and a parked, running, or queued task
+// without a recorded pull request, are not read: none of them waits on
+// GitHub (waitsOnGitHub). A branch without a pull request writes nothing; a
+// failed read writes one error line and is not retried
+// (req-quiet-idle-runtime AC-3.4; component-runtime, Start-up checks and
+// background loops).
 func TestStartupPullRequestReadCoversWaitingTasks(t *testing.T) {
 	ctx := forgeReconcileCtx()
 	st := store.NewMemory()
@@ -324,11 +327,16 @@ func TestStartupPullRequestReadCoversWaitingTasks(t *testing.T) {
 	parked := create("parked-open-pr", core.TaskParked)
 	openPullRequest(t, st, ctx, parked.ID, 51, "parked-head")
 	running := create("running-unreviewed", core.TaskRunning)
-	queued := create("queued-no-pr", core.TaskQueued)
+	openPullRequest(t, st, ctx, running.ID, 53, "running-head")
+	queued := create("queued-bounced", core.TaskQueued)
+	openPullRequest(t, st, ctx, queued.ID, 54, "queued-head")
 	failing := create("running-forge-error", core.TaskRunning)
+	openPullRequest(t, st, ctx, failing.ID, 55, "failing-head")
 	closed := create("closed-with-pr", core.TaskClosed)
 	openPullRequest(t, st, ctx, closed.ID, 52, "closed-head")
 	create("parked-no-pr", core.TaskParked)
+	create("running-no-pr", core.TaskRunning)
+	create("queued-no-pr", core.TaskQueued)
 	for _, task := range []core.Task{parked, running, queued, failing, closed} {
 		current, err := st.GetTask(ctx, task.ID)
 		if err != nil || current.State != task.State {
@@ -398,5 +406,46 @@ func TestStartupPullRequestReadCoversWaitingTasks(t *testing.T) {
 	}
 	if all := log.matching(""); len(all) != 1 || sleeps != 0 {
 		t.Fatalf("lines=%v sleeps=%d, want only the failed read and no retry", all, sleeps)
+	}
+}
+
+// TestStartupPullRequestReadStopsOnRateLimit: a rate-limited start-up read
+// stops the pull_requests pass after that read, writes one error line naming
+// the workspace and GitHub's reset time, and is not retried, because every
+// later read would fail until the reset (component-runtime, Start-up checks
+// and background loops).
+func TestStartupPullRequestReadStopsOnRateLimit(t *testing.T) {
+	ctx := forgeReconcileCtx()
+	st := store.NewMemory()
+	for i, id := range []string{"first", "second", "third"} {
+		if err := st.CreateTask(ctx, core.Task{ID: id, Workspace: "test", Repo: "app", BaseBranch: "main", Branch: "conveyor/" + id, State: core.TaskQueued, NextStage: core.StageImplement, CreatedAt: time.Now().UTC()}); err != nil {
+			t.Fatal(err)
+		}
+		openPullRequest(t, st, ctx, id, 60+i, "head-"+id)
+	}
+	d := newForgeDispatcher(st)
+	forbidMergeCalls(t, d)
+	reset := time.Date(2026, 11, 3, 7, 0, 0, 0, time.UTC)
+	views := 0
+	d.ViewPullRequest = func(context.Context, string, string) (githubtrigger.PullRequest, error) {
+		views++
+		return githubtrigger.PullRequest{}, githubtrigger.RateLimitedError(reset, errors.New("GitHub REST status 403: API rate limit exceeded for installation"))
+	}
+	log := &lines{}
+	sleeps := 0
+	checks := &StartupChecks{Dispatcher: d, Logf: log.logf, Sleep: func(ctx context.Context, _ time.Duration) error {
+		sleeps++
+		return ctx.Err()
+	}}
+	checks.RunGitHub(ctx, []string{"test"})
+	checks.Wait()
+	if views != 1 || sleeps != 0 {
+		t.Fatalf("views=%d sleeps=%d, want one read and no retry", views, sleeps)
+	}
+	if got := log.matching("level=error", "start-up GitHub reads stopped: GitHub rate limit exhausted", "workspace=test", "reset_at="+reset.Format(time.RFC3339)); len(got) != 1 {
+		t.Fatalf("lines=%v", log.matching(""))
+	}
+	if all := log.matching(""); len(all) != 1 {
+		t.Fatalf("lines=%v, want only the rate-limit line", all)
 	}
 }

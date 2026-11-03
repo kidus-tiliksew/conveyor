@@ -72,11 +72,56 @@ const (
 type Error struct {
 	Category ForgeErrorCategory
 	status   int // REST status, used only to distinguish definitive PATCH refusal.
-	Err      error
+	// RetryAt is when GitHub allows the next request after a rate-limited
+	// answer, from its Retry-After or X-RateLimit-Reset header. It is zero
+	// when the category is not ForgeRateLimited or GitHub named no time.
+	RetryAt time.Time
+	Err     error
 }
 
 func (e *Error) Error() string { return e.Err.Error() }
 func (e *Error) Unwrap() error { return e.Err }
+
+// RateLimitedError returns a rate-limited failure that GitHub allows to be
+// retried at retryAt; a zero retryAt names no time. Forge stubs use it to
+// answer as a rate-limited REST response does.
+func RateLimitedError(retryAt time.Time, err error) error {
+	return &Error{Category: ForgeRateLimited, RetryAt: retryAt, Err: err}
+}
+
+// RateLimitRetryAt reports whether err is a rate-limited GitHub failure and
+// when GitHub allows the next request. The time is zero when the response
+// named none.
+func RateLimitRetryAt(err error) (time.Time, bool) {
+	var categorized *Error
+	if !errors.As(err, &categorized) || categorized.Category != ForgeRateLimited {
+		return time.Time{}, false
+	}
+	return categorized.RetryAt, true
+}
+
+// rateLimitRetryAt reads when GitHub allows the next request from a
+// rate-limited response: the later of Retry-After, in seconds or as an HTTP
+// date, and X-RateLimit-Reset, in Unix seconds. It is zero when neither
+// header parses.
+func rateLimitRetryAt(header http.Header, now time.Time) time.Time {
+	var at time.Time
+	if value := strings.TrimSpace(header.Get("Retry-After")); value != "" {
+		if seconds, err := strconv.ParseInt(value, 10, 64); err == nil && seconds >= 0 {
+			at = now.Add(time.Duration(seconds) * time.Second)
+		} else if date, err := http.ParseTime(value); err == nil {
+			at = date
+		}
+	}
+	if value := strings.TrimSpace(header.Get("X-RateLimit-Reset")); value != "" {
+		if seconds, err := strconv.ParseInt(value, 10, 64); err == nil && seconds > 0 {
+			if reset := time.Unix(seconds, 0); reset.After(at) {
+				at = reset
+			}
+		}
+	}
+	return at.UTC()
+}
 
 // ErrorCategory returns the stable category carried by a GitHub boundary
 // failure. Empty means the error did not originate from a forge call.

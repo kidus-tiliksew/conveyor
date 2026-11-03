@@ -14,6 +14,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -83,6 +84,10 @@ func TestWorkspaceGitHubAppHTTPFlow(t *testing.T) {
 	}
 	private := string(pem.EncodeToMemory(&pem.Block{Type: "RSA PRIVATE KEY", Bytes: x509.MarshalPKCS1PrivateKey(key)}))
 	var conversions int
+	// limitRepositories and denyRepositories make the coverage read answer
+	// as GitHub does for an exhausted rate limit or a revoked installation.
+	var limitRepositories, denyRepositories atomic.Bool
+	reset := time.Now().Add(20 * time.Minute).Truncate(time.Second).UTC()
 	provider := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case "/app-manifests/code/conversions":
@@ -95,7 +100,18 @@ func TestWorkspaceGitHubAppHTTPFlow(t *testing.T) {
 		case "/app/installations/12/access_tokens":
 			_ = json.NewEncoder(w).Encode(map[string]any{"token": "http-installation-private-token", "expires_at": time.Now().Add(time.Hour).Truncate(time.Second)})
 		case "/installation/repositories":
-			fmt.Fprint(w, `{"repositories":[{"full_name":"org/repo"}]}`)
+			switch {
+			case limitRepositories.Load():
+				w.Header().Set("X-RateLimit-Remaining", "0")
+				w.Header().Set("X-RateLimit-Reset", strconv.FormatInt(reset.Unix(), 10))
+				w.WriteHeader(http.StatusForbidden)
+				fmt.Fprint(w, `{"message":"API rate limit exceeded for installation ID 12."}`)
+			case denyRepositories.Load():
+				w.WriteHeader(http.StatusForbidden)
+				fmt.Fprint(w, `{"message":"Resource not accessible by integration"}`)
+			default:
+				fmt.Fprint(w, `{"repositories":[{"full_name":"org/repo"}]}`)
+			}
 		default:
 			w.WriteHeader(401)
 		}
@@ -266,6 +282,29 @@ func TestWorkspaceGitHubAppHTTPFlow(t *testing.T) {
 	if got.Code != 200 || !strings.Contains(got.Body.String(), `"covered":true`) || !strings.Contains(got.Body.String(), `"covered":false`) {
 		t.Fatalf("coverage %d %s", got.Code, got.Body.String())
 	}
+	// A rate-limited coverage read answers 503 github_app_rate_limited with
+	// GitHub's reset time; a genuine permission failure keeps the 403
+	// github_app_permission answer (component-identity-membership).
+	limitRepositories.Store(true)
+	got = call("GET", "", "", "maintainer", false)
+	var limited map[string]string
+	if err := json.Unmarshal(got.Body.Bytes(), &limited); err != nil {
+		t.Fatalf("rate-limited status %d %s", got.Code, got.Body.String())
+	}
+	if got.Code != http.StatusServiceUnavailable || limited["error"] != "github_app_rate_limited" || limited["forge_error_category"] != string(github.ForgeRateLimited) ||
+		limited["retry_at"] != reset.Format(time.RFC3339) || !strings.Contains(limited["message"], "rate limit") || got.Header().Get("Retry-After") == "" {
+		t.Fatalf("rate-limited status %d %v Retry-After=%q", got.Code, limited, got.Header().Get("Retry-After"))
+	}
+	if strings.Contains(got.Body.String(), "API rate limit exceeded for installation") {
+		t.Fatalf("rate-limited status leaked the GitHub response body: %s", got.Body.String())
+	}
+	limitRepositories.Store(false)
+	denyRepositories.Store(true)
+	got = call("GET", "", "", "maintainer", false)
+	if got.Code != http.StatusForbidden || !strings.Contains(got.Body.String(), `"error":"github_app_permission"`) || !strings.Contains(got.Body.String(), `"forge_error_category":"forge_permission"`) {
+		t.Fatalf("permission status %d %s", got.Code, got.Body.String())
+	}
+	denyRepositories.Store(false)
 	state = manifest()
 	got = call("GET", "/callback?code=bad-code&state="+state, "session-a", "", false)
 	if got.Code != 422 {

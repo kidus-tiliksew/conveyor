@@ -150,7 +150,15 @@ type fallbackFixture struct {
 	steps    chan fallbackStep
 	reads    atomic.Int32
 	polls    atomic.Int32
-	webhook  atomic.Bool
+	// pullRequests numbers the pull requests createWaitingTask records.
+	pullRequests atomic.Int32
+	// readMu guards readBranches, the branches ViewPullRequest read.
+	readMu       sync.Mutex
+	readBranches []string
+	// limited, when set, makes ViewPullRequest answer rate limited with the
+	// reset time it holds; a zero time names no reset time.
+	limited atomic.Pointer[time.Time]
+	webhook atomic.Bool
 	// delivery, when set, is the stored last accepted delivery time the
 	// Webhooks read reports; it takes precedence over webhook.
 	delivery atomic.Pointer[time.Time]
@@ -179,6 +187,12 @@ func newFallbackFixture(t *testing.T) *fallbackFixture {
 	forbidMergeCalls(t, d)
 	d.ViewPullRequest = func(_ context.Context, _, branch string) (githubtrigger.PullRequest, error) {
 		f.reads.Add(1)
+		f.readMu.Lock()
+		f.readBranches = append(f.readBranches, branch)
+		f.readMu.Unlock()
+		if reset := f.limited.Load(); reset != nil {
+			return githubtrigger.PullRequest{}, fmt.Errorf("view pull request for branch %s: %w", branch, githubtrigger.RateLimitedError(*reset, errors.New("GitHub REST status 403: API rate limit exceeded for installation")))
+		}
 		return githubtrigger.PullRequest{}, fmt.Errorf("%w for branch %s", githubtrigger.ErrPullRequestNotFound, branch)
 	}
 	f.fallback = &GitHubFallback{
@@ -304,6 +318,14 @@ func (f *fallbackFixture) createTask(id string, state core.TaskState) {
 	}
 }
 
+// createWaitingTask creates a task with a recorded pull request, so it
+// waits on GitHub in any open state (waitsOnGitHub).
+func (f *fallbackFixture) createWaitingTask(id string, state core.TaskState) {
+	f.t.Helper()
+	f.createTask(id, state)
+	openPullRequest(f.t, f.st, f.ctx, id, 100+int(f.pullRequests.Add(1)), "head-"+id)
+}
+
 func (f *fallbackFixture) closeTask(id string) {
 	f.t.Helper()
 	if _, err := taskops.New(f.st.Store).Perform(f.ctx, id, taskops.Command{Kind: core.TaskCancel}); err != nil {
@@ -332,11 +354,11 @@ func TestGitHubFallbackWebhookWorkspaceMakesNoTimedCall(t *testing.T) {
 	f := newFallbackFixture(t)
 	f.webhook.Store(true)
 	f.monitor.Store(true)
-	f.createTask("waiting", core.TaskQueued)
+	f.createWaitingTask("waiting", core.TaskQueued)
 	if s := f.run(); s.armed {
 		t.Fatalf("webhook workspace armed: %+v", s)
 	}
-	f.createTask("another", core.TaskRunning)
+	f.createWaitingTask("another", core.TaskRunning)
 	if s := f.awaitTask(false); s.armed {
 		t.Fatalf("task notice armed a webhook workspace: %+v", s)
 	}
@@ -364,7 +386,7 @@ func TestGitHubFallbackRunsOnlyWhileATaskWaits(t *testing.T) {
 		t.Fatalf("idle workspace fired or read: reads=%d", f.reads.Load())
 	}
 	notice := f.clock.Now()
-	f.createTask("waiting", core.TaskQueued)
+	f.createWaitingTask("waiting", core.TaskQueued)
 	s := f.awaitTask(true)
 	if !s.armed || !s.due.Equal(notice.Add(time.Minute)) {
 		t.Fatalf("notice step=%+v, want armed for %s", s, notice.Add(time.Minute))
@@ -391,7 +413,7 @@ func TestGitHubFallbackRunsOnlyWhileATaskWaits(t *testing.T) {
 	if _, fired := f.advance(10 * time.Minute); fired {
 		t.Fatal("stopped timer fired")
 	}
-	f.createTask("again", core.TaskRunning)
+	f.createWaitingTask("again", core.TaskRunning)
 	if s := f.awaitTask(true); !s.armed {
 		t.Fatalf("restart step=%+v", s)
 	}
@@ -421,13 +443,13 @@ func TestGitHubFallbackArmsForTaskWaitingAtStart(t *testing.T) {
 // timer from its buffered notice instead of being lost.
 func TestGitHubFallbackNoticeDuringFireRearms(t *testing.T) {
 	f := newFallbackFixture(t)
-	f.createTask("first", core.TaskQueued)
+	f.createWaitingTask("first", core.TaskQueued)
 	if s := f.run(); !s.armed {
 		t.Fatalf("start step=%+v", s)
 	}
 	f.closeTask("first")
 	f.awaitTask(true)
-	hook := func() { f.createTask("during-fire", core.TaskQueued) }
+	hook := func() { f.createWaitingTask("during-fire", core.TaskQueued) }
 	f.onMonitor.Store(&hook)
 	if s, fired := f.advance(time.Minute); !fired || s.armed {
 		t.Fatalf("fire step=%+v fired=%t, want stopped", s, fired)
@@ -445,7 +467,7 @@ func TestGitHubFallbackNoticeDuringFireRearms(t *testing.T) {
 // again.
 func TestGitHubFallbackFailedReadKeepsTimer(t *testing.T) {
 	f := newFallbackFixture(t)
-	f.createTask("waiting", core.TaskQueued)
+	f.createWaitingTask("waiting", core.TaskQueued)
 	if s := f.run(); !s.armed {
 		t.Fatalf("start step=%+v", s)
 	}
@@ -507,7 +529,7 @@ func TestGitHubFallbackMonitorCadence(t *testing.T) {
 // delivery stops it at once.
 func TestGitHubFallbackStopsOnWebhookDelivery(t *testing.T) {
 	f := newFallbackFixture(t)
-	f.createTask("waiting", core.TaskQueued)
+	f.createWaitingTask("waiting", core.TaskQueued)
 	if s := f.run(); !s.armed {
 		t.Fatalf("start step=%+v", s)
 	}
@@ -515,13 +537,13 @@ func TestGitHubFallbackStopsOnWebhookDelivery(t *testing.T) {
 	if s, fired := f.advance(time.Minute); !fired || s.armed || f.reads.Load() != 0 {
 		t.Fatalf("peer delivery fire=%+v reads=%d", s, f.reads.Load())
 	}
-	f.createTask("later", core.TaskQueued)
+	f.createWaitingTask("later", core.TaskQueued)
 	if s := f.awaitTask(false); s.armed {
 		t.Fatalf("notice after delivery armed: %+v", s)
 	}
 
 	g := newFallbackFixture(t)
-	g.createTask("waiting", core.TaskQueued)
+	g.createWaitingTask("waiting", core.TaskQueued)
 	if s := g.run(); !s.armed {
 		t.Fatalf("start step=%+v", s)
 	}

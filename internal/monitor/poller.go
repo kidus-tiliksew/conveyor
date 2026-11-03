@@ -24,6 +24,11 @@ type Poller struct {
 	Attempts      int
 	Sleep         func(context.Context, time.Duration) error
 	Now           func() time.Time
+	// StopOnRateLimit ends the poll at a rate-limited GitHub answer instead
+	// of retrying it, because a retry before GitHub's reset fails too. The
+	// timed GitHub fallback sets it; push deliveries keep the bounded
+	// retries (component-runtime, Timed GitHub fallback).
+	StopOnRateLimit bool
 }
 
 // Poll performs startup reconciliation and bounded forge retries. Persisted
@@ -61,14 +66,19 @@ func (p *Poller) Poll(ctx context.Context) error {
 		if category == "" {
 			category = string(githubtrigger.ForgeRequest)
 		}
+		retryAt, limited := githubtrigger.RateLimitRetryAt(err)
+		final := attempt == attempts || limited && p.StopOnRateLimit
 		backoffUntil := now.Add(delay)
+		if limited && retryAt.After(backoffUntil) {
+			backoffUntil = retryAt
+		}
 		detail, _, redactErr := redact.Text(ctx, p.Service.RedactionSecrets, err.Error())
 		if redactErr != nil {
 			return fmt.Errorf("resolve monitor redaction credentials: %w", redactErr)
 		}
 		_ = p.Service.Store.RecordMonitorFailure(ctx, category, detail, backoffUntil)
 		kind := "monitor.retry"
-		if attempt == attempts {
+		if final {
 			kind = "monitor.terminal_failure"
 		}
 		_ = p.Service.Store.AuditMonitor(ctx, kind, map[string]any{
@@ -76,8 +86,14 @@ func (p *Poller) Poll(ctx context.Context) error {
 			"forge_error_category": category, "error": detail,
 			"backoff_until": backoffUntil,
 		})
-		if attempt == attempts {
-			return fmt.Errorf("observe GitHub after %d attempt(s): %s", attempt, detail)
+		if final {
+			failure := fmt.Errorf("observe GitHub after %d attempt(s): %s", attempt, detail)
+			if limited {
+				// Keep the category and GitHub's reset time for the caller;
+				// the message stays the redacted detail.
+				return githubtrigger.RateLimitedError(retryAt, failure)
+			}
+			return failure
 		}
 		if p.Sleep != nil {
 			if sleepErr := p.Sleep(ctx, delay); sleepErr != nil {

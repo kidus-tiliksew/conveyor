@@ -1076,8 +1076,19 @@ var mergeReadinessTaskStates = []core.TaskState{core.TaskClaiming, core.TaskQueu
 // ReconcileMergeReadiness sweeps gate-on approved and merge-gate tasks for an
 // already-merged pull request, then recovers gate-off accepted reviews whose
 // approved-to-merge edge was interrupted. The gate-on pass never requests a
-// merge. Every candidate is revalidated under the task side-effect lock.
+// merge. Every candidate is revalidated under the task side-effect lock. A
+// failed task is logged and the sweep continues.
 func (d *Dispatcher) ReconcileMergeReadiness(ctx context.Context) (int, error) {
+	return d.reconcileMergeReadiness(ctx, false)
+}
+
+// reconcileMergeReadiness runs the ReconcileMergeReadiness sweep. With
+// stopOnRateLimit set, the first task whose read GitHub answers rate limited
+// ends the sweep, and that error is returned, because every later GitHub read
+// for the workspace would fail until GitHub's reset. Only the timed GitHub
+// fallback sets it (component-runtime, Timed GitHub fallback). Eligibility
+// and every other failure are handled as the sweep handles them.
+func (d *Dispatcher) reconcileMergeReadiness(ctx context.Context, stopOnRateLimit bool) (int, error) {
 	// Neither pass acts on a merged, closed, or parked task, so the store
 	// selects only the states either pass can act on (component-runtime,
 	// Reconcile tick).
@@ -1094,6 +1105,9 @@ func (d *Dispatcher) ReconcileMergeReadiness(ctx context.Context) (int, error) {
 		// sweep: later tasks and the daemon's later steps still run.
 		changed, err := d.gateOnMergeReadiness(ctx, task)
 		if err != nil {
+			if stopOnRateLimit && rateLimited(err) {
+				return reconciled, fmt.Errorf("task %s gate-on merge readiness: %w", task.ID, err)
+			}
 			log.Printf("[task %s] gate-on merge readiness: %v", task.ID, err)
 			continue
 		}
@@ -1110,6 +1124,9 @@ func (d *Dispatcher) ReconcileMergeReadiness(ctx context.Context) (int, error) {
 		}
 		changed, err := d.gateOffMergeReadiness(ctx, task)
 		if err != nil {
+			if stopOnRateLimit && rateLimited(err) {
+				return reconciled, fmt.Errorf("task %s merge readiness: %w", task.ID, err)
+			}
 			log.Printf("[task %s] merge readiness: %v", task.ID, err)
 			continue
 		}
@@ -1160,6 +1177,12 @@ func (d *Dispatcher) gateOnMergeReadiness(ctx context.Context, task core.Task) (
 		return false, err
 	}
 	return before != after.State, nil
+}
+
+// rateLimited reports whether err carries a rate-limited GitHub answer.
+func rateLimited(err error) bool {
+	_, limited := github.RateLimitRetryAt(err)
+	return limited
 }
 
 func gateOffMergeReadinessCandidate(task core.Task) bool {

@@ -10,6 +10,7 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"time"
 )
 
 // SnapshotClient uses only the request's workspace installation credential.
@@ -106,7 +107,11 @@ func (c *SnapshotClient) request(ctx context.Context, slug, endpoint string, arc
 		if category == ForgePermission {
 			return nil, PermissionError(fmt.Errorf("repository %s is unavailable to the workspace GitHub App; check installation coverage in workspace settings (HTTP %d)", slug, response.StatusCode))
 		}
-		return nil, &Error{Category: category, Err: fmt.Errorf("repository %s snapshot HTTP %d", slug, response.StatusCode)}
+		failure := &Error{Category: category, Err: fmt.Errorf("repository %s snapshot HTTP %d", slug, response.StatusCode)}
+		if category == ForgeRateLimited {
+			failure.RetryAt = rateLimitRetryAt(response.Header, time.Now())
+		}
+		return nil, failure
 	}
 	return response, nil
 }
