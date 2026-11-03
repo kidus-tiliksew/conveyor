@@ -63,9 +63,13 @@ func TestGitHubFallbackSkipsBacklogWithoutPullRequests(t *testing.T) {
 			t.Fatalf("after fire %d reads=%d, want exactly one pull-request read per fire", fire, got)
 		}
 	}
-	for _, branch := range f.branchesRead() {
+	reads := f.branchesRead()
+	if len(reads) != 3 {
+		t.Fatalf("reads=%v, want three reads", reads)
+	}
+	for _, branch := range reads {
 		if branch != "conveyor/bounced" {
-			t.Fatalf("read branch %s; reads=%v", branch, f.branchesRead())
+			t.Fatalf("read branch %s; reads=%v", branch, reads)
 		}
 	}
 }
@@ -120,6 +124,71 @@ func TestGitHubFallbackPausesOnRateLimit(t *testing.T) {
 	}
 	if lines := f.errorLines("timed GitHub checks paused"); len(lines) != 1 {
 		t.Fatalf("pause lines after the reset=%v", lines)
+	}
+}
+
+// TestGitHubFallbackMergeReadinessStopsOnRateLimit: with several
+// merge-readiness-eligible tasks (gate-on approved and merge-gated, none with
+// a recorded pull request), the fire's ReconcileMergeReadiness sweep stops at
+// its first rate-limited GitHub read. No later task and no pull-request read
+// follows; one error line names the workspace and reset time; nothing is read
+// before the reset; and the sweep and the pull-request read resume at the
+// reset (component-runtime, Timed GitHub fallback).
+func TestGitHubFallbackMergeReadinessStopsOnRateLimit(t *testing.T) {
+	f := newFallbackFixture(t)
+	eligible := []core.Task{
+		{ID: "approved-a", State: core.TaskApproved},
+		{ID: "approved-b", State: core.TaskApproved},
+		{ID: "merge-gate-a", State: core.TaskAwaiting, GateKind: core.GateKindMergeApproval},
+		{ID: "merge-gate-b", State: core.TaskAwaiting, GateKind: core.GateKindMergeApproval},
+	}
+	for _, task := range eligible {
+		task.Workspace, task.Repo, task.BaseBranch, task.Branch = "test", "app", "main", "conveyor/"+task.ID
+		task.MergeApproval, task.NextStage, task.CreatedAt = true, core.StageImplement, time.Now().UTC()
+		if err := f.st.CreateTask(f.ctx, task); err != nil {
+			t.Fatal(err)
+		}
+		if !waitsOnGitHub(task, false) {
+			t.Fatalf("fixture task %s does not wait on GitHub", task.ID)
+		}
+	}
+	if s := f.run(); !s.armed {
+		t.Fatalf("start step=%+v", s)
+	}
+	reset := f.start.Add(31 * time.Minute)
+	f.limited.Store(&reset)
+	if s, fired := f.advance(time.Minute); !fired || !s.armed || !s.due.Equal(reset) {
+		t.Fatalf("rate-limited fire=%+v fired=%t, want armed for the reset %s", s, fired, reset)
+	}
+	if got := f.branchesRead(); len(got) != 1 {
+		t.Fatalf("reads=%v, want only the first merge-readiness read", got)
+	}
+	if lines := f.errorLines("level=error"); len(lines) != 1 || !strings.Contains(lines[0], `msg="timed GitHub checks paused: GitHub rate limit exhausted" workspace=test reset_at=`+reset.Format(time.RFC3339)) {
+		t.Fatalf("error lines=%v, want one pause line naming the workspace and reset", lines)
+	}
+	if _, fired := f.advance(29 * time.Minute); fired || len(f.branchesRead()) != 1 {
+		t.Fatalf("fired=%t reads=%v before GitHub's reset", fired, f.branchesRead())
+	}
+	f.limited.Store(nil)
+	if s, fired := f.advance(time.Minute); !fired || !s.armed {
+		t.Fatalf("fire at the reset=%+v fired=%t", s, fired)
+	}
+	// The resumed fire reads each eligible task in the sweep and again in the
+	// pull-request read.
+	counts := map[string]int{}
+	for _, branch := range f.branchesRead()[1:] {
+		counts[branch]++
+	}
+	if len(counts) != len(eligible) {
+		t.Fatalf("resumed reads=%v, want every eligible task", counts)
+	}
+	for _, task := range eligible {
+		if counts["conveyor/"+task.ID] != 2 {
+			t.Fatalf("resumed reads=%v, want two reads of %s", counts, task.ID)
+		}
+	}
+	if lines := f.errorLines("timed GitHub checks paused"); len(lines) != 1 {
+		t.Fatalf("pause lines=%v", lines)
 	}
 }
 

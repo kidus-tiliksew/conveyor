@@ -468,15 +468,18 @@ func monitorInterval(interval time.Duration) time.Duration {
 
 // readWaiting runs the start-up GitHub reads for the workspace's waiting
 // tasks and reports whether any task waited. With no waiting task it makes
-// no GitHub call. The pull-request read stops at the first rate-limited
-// answer and returns it.
+// no GitHub call. The merge-readiness sweep and the pull-request read each
+// stop at the first rate-limited answer and return it, and a rate-limited
+// sweep skips the pull-request read.
 func (f *GitHubFallback) readWaiting(ctx context.Context, workspace string) (bool, error) {
 	waiting, err := f.anyWaiting(ctx)
 	if err != nil || !waiting {
 		return waiting, err
 	}
 	d := f.Dispatcher
-	if _, err := d.ReconcileMergeReadiness(ctx); err != nil {
+	// The merge-readiness sweep stops at its first rate-limited read and
+	// returns it, so no later task or pull-request read follows it.
+	if _, err := d.reconcileMergeReadiness(ctx, true); err != nil {
 		return true, err
 	}
 	reader := &StartupChecks{Dispatcher: d, Logf: f.Logf}
