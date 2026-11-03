@@ -154,7 +154,7 @@ last_attempt_id, last_attempt_outcome, last_failure_category, last_failure_messa
 automatic_retry_count, next_retry_at, retry_suppressed, retry_suppression_reason,
 COALESCE(automatic_recovery_count, 0), automatic_recovery_window_started_at, next_automatic_recovery_at, base_conflict_checked_at,
 redispatch_count, operator_direction, checkpoint, progress, cost_usd, tokens_in, tokens_out, usage_reported, self_reported,
-rate_limit, rate_limit_observed_at, created_at, updated_at, served_requirement_snapshot, ` + governanceSnapshotContentSQL + ` AS governance_snapshot, declared_review_seats`
+rate_limit, rate_limit_observed_at, created_at, updated_at, served_requirement_snapshot, governance_snapshot_digest, ` + governanceSnapshotContentSQL + ` AS governance_snapshot, declared_review_seats`
 
 func servedRequirementSnapshotJSON(snapshot []core.ServedRequirementContext) any {
 	if snapshot == nil {
@@ -2536,6 +2536,7 @@ func scanWorkOrder(row interface{ Scan(...any) error }) (core.WorkOrder, error) 
 	var order core.WorkOrder
 	var stage, state string
 	var harnessConfig, checkpoint, rateLimit, servedRequirementSnapshot, governanceSnapshot []byte
+	var digest *string
 	var lease, queueEntered, queueDeadline, queueBlockedAt, executionStarted, executionDeadline, lastFailureAt, nextRetryAt, recoveryWindow, nextAutomaticRecovery, baseConflictChecked, rateLimitObservedAt pgtype.Timestamptz
 	err := row.Scan(&order.ID, &order.TaskID, &order.JobID, &stage, &state, &order.ClaimantID,
 		&order.SessionID, &order.AttemptID, &order.ClientTokenHash, &order.Agent, &order.Model, &order.WorkerID, &lease,
@@ -2546,8 +2547,9 @@ func scanWorkOrder(row interface{ Scan(...any) error }) (core.WorkOrder, error) 
 		&order.AutomaticRetryCount, &nextRetryAt, &order.RetrySuppressed, &order.RetrySuppressionReason,
 		&order.AutomaticRecoveryCount, &recoveryWindow, &nextAutomaticRecovery, &baseConflictChecked,
 		&order.RedispatchCount, &order.OperatorDirection, &checkpoint, &order.Progress, &order.CostUSD, &order.TokensIn,
-		&order.TokensOut, &order.UsageReported, &order.SelfReported, &rateLimit, &rateLimitObservedAt, &order.CreatedAt, &order.UpdatedAt, &servedRequirementSnapshot, &governanceSnapshot,
+		&order.TokensOut, &order.UsageReported, &order.SelfReported, &rateLimit, &rateLimitObservedAt, &order.CreatedAt, &order.UpdatedAt, &servedRequirementSnapshot, &digest, &governanceSnapshot,
 		&order.DeclaredReviewSeats)
+
 	order.Stage, order.State = core.Stage(stage), core.WorkOrderState(state)
 	if len(checkpoint) > 0 && string(checkpoint) != "{}" {
 		var value core.WorkOrderCheckpoint
@@ -2616,11 +2618,14 @@ func scanWorkOrder(row interface{ Scan(...any) error }) (core.WorkOrder, error) 
 	if servedRequirementSnapshot != nil && err == nil {
 		err = json.Unmarshal(servedRequirementSnapshot, &order.ServedRequirementSnapshot)
 	}
+
+	if digest != nil {
+		order.GovernanceSnapshotDigest = *digest
+	}
 	if governanceSnapshot != nil && err == nil {
 		var snapshot core.GovernanceSnapshot
 		err = json.Unmarshal(governanceSnapshot, &snapshot)
 		order.GovernanceSnapshot = &snapshot
-		order.GovernanceSnapshotDigest, _ = store.EncodeGovernanceSnapshot(&snapshot)
 	}
 
 	order.Claimable = order.ClaimableAt(time.Now().UTC())

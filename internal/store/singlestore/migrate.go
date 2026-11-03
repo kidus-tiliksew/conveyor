@@ -4,13 +4,16 @@ import (
 	"context"
 	"crypto/sha256"
 	"embed"
+	"encoding/json"
 	"fmt"
 	"path"
 	"sort"
 	"strconv"
 	"strings"
 
+	"github.com/kidus-tiliksew/conveyor/internal/core"
 	"github.com/kidus-tiliksew/conveyor/internal/eventlog/s2log"
+	"github.com/kidus-tiliksew/conveyor/internal/store"
 )
 
 //go:embed migrations/*.sql
@@ -334,7 +337,8 @@ func (s *Store) migrateLauncherRetirement(ctx context.Context) error {
 }
 
 // migrateGovernanceSnapshots stores inline work-order snapshots once, keyed by
-// SHA-256 of the stored JSON, then drops the duplicated column.
+// EncodeGovernanceSnapshot, then drops the duplicated column. Replay is a
+// no-op once the inline column is gone.
 func (s *Store) migrateGovernanceSnapshots(ctx context.Context) error {
 	if err := s.addNullableColumns(ctx, nullableColumn{"work_orders", "governance_snapshot_digest", "CHAR(64) NULL"}); err != nil {
 		return err
@@ -346,15 +350,53 @@ func (s *Store) migrateGovernanceSnapshots(ctx context.Context) error {
 	if !exists {
 		return nil
 	}
-	if _, err := s.db.ExecContext(ctx, `INSERT IGNORE INTO governance_snapshots (workspace_id, digest, content)
-SELECT workspace_id, LOWER(SHA2(CAST(governance_snapshot AS CHAR), 256)), governance_snapshot
-FROM work_orders WHERE governance_snapshot IS NOT NULL`); err != nil {
-		return err
-	}
-	if _, err := s.db.ExecContext(ctx, `UPDATE work_orders
-SET governance_snapshot_digest = LOWER(SHA2(CAST(governance_snapshot AS CHAR), 256))
-WHERE governance_snapshot IS NOT NULL AND governance_snapshot_digest IS NULL`); err != nil {
-		return err
+	for {
+		rows, err := s.db.QueryContext(ctx, `SELECT id, workspace_id, governance_snapshot
+FROM work_orders
+WHERE governance_snapshot IS NOT NULL AND governance_snapshot_digest IS NULL
+LIMIT ?`, 8)
+		if err != nil {
+			return err
+		}
+		type item struct {
+			id, workspace string
+			raw           []byte
+		}
+		var batch []item
+		for rows.Next() {
+			var it item
+			if err := rows.Scan(&it.id, &it.workspace, &it.raw); err != nil {
+				rows.Close()
+				return err
+			}
+			batch = append(batch, it)
+		}
+		if err := rows.Err(); err != nil {
+			rows.Close()
+			return err
+		}
+		if err := rows.Close(); err != nil {
+			return err
+		}
+		if len(batch) == 0 {
+			break
+		}
+		for _, it := range batch {
+			var snapshot core.GovernanceSnapshot
+			if err := json.Unmarshal(it.raw, &snapshot); err != nil {
+				return fmt.Errorf("unmarshal work order %s snapshot: %w", it.id, err)
+			}
+			digest, content := store.EncodeGovernanceSnapshot(&snapshot)
+			if digest == "" {
+				continue
+			}
+			if _, err := s.db.ExecContext(ctx, `INSERT IGNORE INTO governance_snapshots (workspace_id, digest, content) VALUES (?, ?, ?)`, it.workspace, digest, content); err != nil {
+				return err
+			}
+			if _, err := s.db.ExecContext(ctx, `UPDATE work_orders SET governance_snapshot_digest = ? WHERE workspace_id = ? AND id = ?`, digest, it.workspace, it.id); err != nil {
+				return err
+			}
+		}
 	}
 	_, err = s.db.ExecContext(ctx, `ALTER TABLE work_orders DROP COLUMN governance_snapshot`)
 	return err

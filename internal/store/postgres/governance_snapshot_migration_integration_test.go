@@ -2,6 +2,7 @@ package postgres
 
 import (
 	"context"
+	"encoding/json"
 	"strings"
 	"testing"
 	"time"
@@ -10,6 +11,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/kidus-tiliksew/conveyor/internal/core"
 	"github.com/kidus-tiliksew/conveyor/internal/store"
+	"github.com/kidus-tiliksew/conveyor/internal/store/storetest"
 )
 
 func TestGovernanceSnapshotMigrationMovesInlineRowsIntegration(t *testing.T) {
@@ -102,15 +104,41 @@ func TestGovernanceSnapshotMigrationMovesInlineRowsIntegration(t *testing.T) {
 	if len(digest) != 64 || !strings.Contains(string(content), "inline-body") {
 		t.Fatalf("migrated digest=%q content=%s", digest, content)
 	}
-	var rows int
-	if err = pool.QueryRow(ctx, `SELECT count(*) FROM governance_snapshots WHERE workspace_id=$1`, workspace).Scan(&rows); err != nil {
+	var snapshot core.GovernanceSnapshot
+	if err = json.Unmarshal(content, &snapshot); err != nil {
 		t.Fatal(err)
 	}
-	if rows != 1 {
-		t.Fatalf("snapshot rows=%d want 1", rows)
+	wantDigest, _ := store.EncodeGovernanceSnapshot(&snapshot)
+	if digest != wantDigest {
+		t.Fatalf("migrated digest=%q, want EncodeGovernanceSnapshot %q", digest, wantDigest)
+	}
+	wsCtx := store.WithWorkspace(ctx, workspace)
+	st := newStore(pool)
+	got, err := st.GetWorkOrder(wsCtx, orderID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.GovernanceSnapshotDigest != digest {
+		t.Fatalf("GetWorkOrder digest=%q, want stored %q", got.GovernanceSnapshotDigest, digest)
+	}
+	if got.GovernanceSnapshot == nil || got.GovernanceSnapshot.Designs[0].Content != "inline-body" {
+		t.Fatalf("GetWorkOrder snapshot=%+v", got.GovernanceSnapshot)
+	}
+	if _, err = storetest.ClaimWorkOrder(wsCtx, st, orderID, core.WorkOrderClaim{
+		ClaimantID: core.TaskRunClaimantID("migration-worker"), SessionID: "migration-session", ClientToken: "migration-token",
+		Lease: time.Hour, ExecutionTimeout: time.Hour, Governance: &snapshot,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	var bodies int
+	if err = pool.QueryRow(ctx, `SELECT count(*) FROM governance_snapshots WHERE workspace_id=$1 AND digest=$2`, workspace, digest).Scan(&bodies); err != nil {
+		t.Fatal(err)
+	}
+	if bodies != 1 {
+		t.Fatalf("claim duplicated snapshot bodies: %d", bodies)
 	}
 	var payload []byte
-	if err = pool.QueryRow(ctx, `SELECT payload_json FROM events WHERE task_id=$1 AND kind='work_order.claimed'`, taskID).Scan(&payload); err != nil {
+	if err = pool.QueryRow(ctx, `SELECT payload_json FROM events WHERE task_id=$1 AND kind='work_order.claimed' AND payload_json::text LIKE '%inline-body%'`, taskID).Scan(&payload); err != nil {
 		t.Fatal(err)
 	}
 	if !strings.Contains(string(payload), `"governance_snapshot"`) || !strings.Contains(string(payload), "inline-body") {

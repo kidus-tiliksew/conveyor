@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"embed"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io/fs"
@@ -166,6 +167,11 @@ CREATE TABLE IF NOT EXISTS conveyor_schema_migrations (
 		if _, err := tx.Exec(ctx, string(sql)); err != nil {
 			return fmt.Errorf("apply migration %s: %w", name, err)
 		}
+		if version == 156 {
+			if err := backfillGovernanceSnapshots(ctx, tx); err != nil {
+				return fmt.Errorf("backfill governance snapshots after migration %s: %w", name, err)
+			}
+		}
 		if version == 155 {
 			// component-durable-queue (The job index): fold every existing
 			// job stream once into the index this migration declares.
@@ -173,6 +179,7 @@ CREATE TABLE IF NOT EXISTS conveyor_schema_migrations (
 				return fmt.Errorf("fill the job index after migration %s: %w", name, err)
 			}
 		}
+
 		if version == 137 {
 			dismissalArchives, err = repairDismissalArchives(ctx, tx)
 			if err != nil {
@@ -625,4 +632,73 @@ func migrationVersion(name string) (int, error) {
 		return 0, fmt.Errorf("migration %q has invalid version", base)
 	}
 	return version, nil
+}
+
+const governanceSnapshotBackfillBatch = 8
+
+// backfillGovernanceSnapshots copies each inline work-order snapshot through
+// EncodeGovernanceSnapshot so migrated digests match runtime claims, then
+// drops the duplicated column.
+func backfillGovernanceSnapshots(ctx context.Context, tx pgx.Tx) error {
+	var exists bool
+	if err := tx.QueryRow(ctx, `SELECT EXISTS (
+		SELECT 1 FROM information_schema.columns
+		WHERE table_schema = current_schema() AND table_name = 'work_orders' AND column_name = 'governance_snapshot'
+	)`).Scan(&exists); err != nil {
+		return err
+	}
+	if !exists {
+		return nil
+	}
+	for {
+		rows, err := tx.Query(ctx, `SELECT id, workspace_id, governance_snapshot
+			FROM work_orders
+			WHERE governance_snapshot IS NOT NULL AND governance_snapshot_digest IS NULL
+			LIMIT $1`, governanceSnapshotBackfillBatch)
+		if err != nil {
+			return err
+		}
+		type item struct {
+			id, workspace string
+			raw           []byte
+		}
+		var batch []item
+		for rows.Next() {
+			var it item
+			if err := rows.Scan(&it.id, &it.workspace, &it.raw); err != nil {
+				rows.Close()
+				return err
+			}
+			batch = append(batch, it)
+		}
+		if err := rows.Err(); err != nil {
+			rows.Close()
+			return err
+		}
+		rows.Close()
+		if len(batch) == 0 {
+			break
+		}
+		for _, it := range batch {
+			var snapshot core.GovernanceSnapshot
+			if err := json.Unmarshal(it.raw, &snapshot); err != nil {
+				return fmt.Errorf("unmarshal work order %s snapshot: %w", it.id, err)
+			}
+			digest, content := controlstore.EncodeGovernanceSnapshot(&snapshot)
+			if digest == "" {
+				continue
+			}
+			if _, err := tx.Exec(ctx, `INSERT INTO governance_snapshots (workspace_id, digest, content) VALUES ($1, $2, $3::jsonb) ON CONFLICT (workspace_id, digest) DO NOTHING`, it.workspace, digest, content); err != nil {
+				return err
+			}
+			if _, err := tx.Exec(ctx, `UPDATE work_orders SET governance_snapshot_digest = $1 WHERE workspace_id = $2 AND id = $3`, digest, it.workspace, it.id); err != nil {
+				return err
+			}
+		}
+	}
+	if _, err := tx.Exec(ctx, `ALTER TABLE work_orders DROP CONSTRAINT IF EXISTS work_orders_governance_snapshot_object_check`); err != nil {
+		return err
+	}
+	_, err := tx.Exec(ctx, `ALTER TABLE work_orders DROP COLUMN IF EXISTS governance_snapshot`)
+	return err
 }
