@@ -13,7 +13,7 @@ delivered context, including the operator's direction (DEC-94; DEC-97(1)). The
 session may be the harness conversation that released the order. Conveyor
 records no harness session ID and resumes no harness session.
 
-The examples use server `https://conveyor.kidus.sh` and workspace `demo`;
+The examples use server `https://conveyor.kidus.sh` and workspace `conveyor`;
 substitute your own.
 
 ## Procedure
@@ -29,7 +29,7 @@ substitute your own.
 4. In that session, resolve the worktree:
 
    ```sh
-   conveyor --server https://conveyor.kidus.sh --workspace demo checkout <task-id>
+   conveyor --server https://conveyor.kidus.sh --workspace conveyor checkout <task-id>
    ```
 
    Checkout reuses the task's registered worktree and branch. It takes the
