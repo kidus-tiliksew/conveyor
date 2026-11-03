@@ -89,17 +89,17 @@ These rules extend the filing playbook's body house style for this repository:
 
 This repository maintains the Conveyor skill sources and uses `AGENTS.md ->
 CLAUDE.md`. Refresh its guidance directly in the task worktree with
-`conveyor --server 'https://conveyor.kidus.sh' --workspace 'demo' repo init --guidance-only`.
+`conveyor --server 'https://conveyor.kidus.sh' --workspace 'conveyor' repo init --guidance-only`.
 This preserves the source skill wrappers and existing symlink. Deliver the
 updated guidance through the task's review lifecycle.
-<!-- conveyor:repo-init owner=v1 version=e8fa365e -->
+<!-- conveyor:repo-init owner=v1 version=7a13243e -->
 ## Conveyor factory work
 
 Repository: `conveyor`. Base branch: `main`.
-Server: `https://conveyor.kidus.sh`. Workspace: `demo`.
-Select a native MCP connection whose endpoint matches this server and pass workspace `demo` on every call. MCP registration names vary by machine; registering MCP does not set CLI defaults.
-CLI example: `conveyor --server 'https://conveyor.kidus.sh' --workspace 'demo' task list`.
-Refresh this owned section and the project-scoped skills through ordinary task delivery with `conveyor --server 'https://conveyor.kidus.sh' --workspace 'demo' repo init`. To preserve maintained source skill wrappers, refresh only guidance with `conveyor --server 'https://conveyor.kidus.sh' --workspace 'demo' repo init --guidance-only`.
+Server: `https://conveyor.kidus.sh`. Workspace: `conveyor`.
+Select a native MCP connection whose endpoint matches this server and pass workspace `conveyor` on every call. MCP registration names vary by machine; registering MCP does not set CLI defaults.
+CLI example: `conveyor --server 'https://conveyor.kidus.sh' --workspace 'conveyor' task list`.
+Refresh this owned section and the project-scoped skills through ordinary task delivery with `conveyor --server 'https://conveyor.kidus.sh' --workspace 'conveyor' repo init`. To preserve maintained source skill wrappers, refresh only guidance with `conveyor --server 'https://conveyor.kidus.sh' --workspace 'conveyor' repo init --guidance-only`.
 On connection failure, report the failed endpoint and missing context. Do not infer a replacement host from localhost defaults, SSH configuration, or release instructions.
 
 The confirmed document corpus is the design authority: Requirements, System Design documents, and DEC-n decisions.
