@@ -2,6 +2,7 @@ package singlestore
 
 import (
 	"context"
+	"encoding/json"
 	"strings"
 	"testing"
 	"time"
@@ -92,7 +93,11 @@ func claimSessionScaleSingleStore(st *Store, workspace string) storetest.ClaimSe
 			if copied, err := result.RowsAffected(); err != nil || copied != int64(count) {
 				t.Fatalf("copied %d orders (%v), want %d", copied, err, count)
 			}
-			if result, err = st.db.ExecContext(ctx, `UPDATE work_orders SET governance_snapshot = ?, served_requirement_snapshot = ? WHERE workspace_id = ?`, string(governance), string(served), workspace); err != nil {
+			digest, content := store.EncodeGovernanceSnapshot(mustGovernance(t, governance))
+			if _, err = st.db.ExecContext(ctx, `INSERT IGNORE INTO governance_snapshots (workspace_id, digest, content) VALUES (?, ?, ?)`, workspace, digest, content); err != nil {
+				t.Fatal(err)
+			}
+			if result, err = st.db.ExecContext(ctx, `UPDATE work_orders SET governance_snapshot_digest = ?, served_requirement_snapshot = ? WHERE workspace_id = ?`, digest, string(served), workspace); err != nil {
 				t.Fatal(err)
 			}
 			if pinned, err := result.RowsAffected(); err != nil || pinned < int64(count+1) {
@@ -107,4 +112,13 @@ func claimSessionScaleSingleStore(st *Store, workspace string) storetest.ClaimSe
 			return bytes
 		},
 	}
+}
+
+func mustGovernance(t *testing.T, raw []byte) *core.GovernanceSnapshot {
+	t.Helper()
+	var snapshot core.GovernanceSnapshot
+	if err := json.Unmarshal(raw, &snapshot); err != nil {
+		t.Fatal(err)
+	}
+	return &snapshot
 }

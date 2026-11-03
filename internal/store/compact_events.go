@@ -15,7 +15,8 @@ import (
 const compactEventKindPrefix = "work_order."
 
 // compactEventOmittedKeys are the top-level work-order payload keys the
-// compact read leaves out. WorkOrderEventPayload omits the same two keys.
+// compact read leaves out. WorkOrderEventPayload omits the same two keys
+// and names the digest; historical rows may still embed the bodies.
 var compactEventOmittedKeys = [...]string{"governance_snapshot", "served_requirement_snapshot"}
 
 // CompactEventPayload returns payload as ListCompactEvents serves it for an

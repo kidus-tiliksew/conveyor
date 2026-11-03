@@ -594,6 +594,7 @@ func NewMemoryWithConfig(cfg *config.Config) Store {
 		transcripts:                 map[string]core.Transcript{},
 		specs:                       map[string][]core.SpecVersion{},
 		workOrders:                  map[string]core.WorkOrder{},
+		governanceSnapshots:         map[string][]byte{},
 		publications:                map[string]core.ReviewPublication{},
 		github:                      map[string]core.GitHubLifecycle{},
 		requirements:                map[memoryScopedKey]core.Requirement{},
@@ -664,6 +665,7 @@ type memory struct {
 	transcripts                 map[string]core.Transcript
 	specs                       map[string][]core.SpecVersion
 	workOrders                  map[string]core.WorkOrder
+	governanceSnapshots         map[string][]byte
 	publications                map[string]core.ReviewPublication
 	pullRequestCloses           map[string]core.PullRequestClose
 	github                      map[string]core.GitHubLifecycle

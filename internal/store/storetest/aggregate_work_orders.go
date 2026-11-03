@@ -49,6 +49,7 @@ func runWorkOrders(t *testing.T, x Fixture) {
 	t.Run("StoredReadKeepsExpiredClaimUnprojected", func(t *testing.T) { runStoredReadKeepsExpiredClaim(t, x) })
 	t.Run("LiveListing", func(t *testing.T) { runLiveWorkOrderListing(t, x) })
 	t.Run("SnapshotFreeFoldReads", func(t *testing.T) { runSnapshotFreeFoldReads(t, x) })
+	t.Run("GovernanceSnapshotDedup", func(t *testing.T) { runGovernanceSnapshotDedup(t, x) })
 	t.Run("ClaimSessionReads", func(t *testing.T) { runClaimSessionReads(t, x) })
 	st, ctx := x.Backend, x.Context
 	order := newAggregateOrder(t, x)
@@ -561,6 +562,7 @@ func withoutSnapshots(orders []core.WorkOrder) []core.WorkOrder {
 	out := make([]core.WorkOrder, len(orders))
 	for i, order := range orders {
 		order.ServedRequirementSnapshot, order.GovernanceSnapshot = nil, nil
+		order.GovernanceSnapshotDigest = ""
 		out[i] = order
 	}
 	return out
@@ -999,4 +1001,51 @@ func enrollFixtureOwner(ctx context.Context, st store.Store, workspace, name str
 		return "", err
 	}
 	return user.ID, nil
+}
+
+func runGovernanceSnapshotDedup(t *testing.T, x Fixture) {
+	st, ctx := x.Backend, x.Context
+	governance := core.GovernanceSnapshot{
+		Designs:                []core.GovernanceDesignContext{{ID: "component-snapshot-dedup", Title: "Dedup", Category: "component", Version: 1, Content: "shared-governance-body"}},
+		Decisions:              []core.Decision{},
+		PendingDesignProposals: []core.PendingSystemDesignProposal{},
+	}
+	first := newAggregateOrder(t, x, core.StageVerify)
+	second := newAggregateOrder(t, x, core.StageVerify)
+	claimed1, err := ClaimWorkOrder(ctx, st, first.ID, core.WorkOrderClaim{ClaimantID: core.TaskRunClaimantID("worker"), SessionID: "dedup-1", ClientToken: "dedup-1", Lease: time.Hour, ExecutionTimeout: time.Hour, Governance: &governance})
+	requireOK(t, err)
+	claimed2, err := ClaimWorkOrder(ctx, st, second.ID, core.WorkOrderClaim{ClaimantID: core.TaskRunClaimantID("worker"), SessionID: "dedup-2", ClientToken: "dedup-2", Lease: time.Hour, ExecutionTimeout: time.Hour, Governance: &governance})
+	requireOK(t, err)
+	got1, err := st.GetWorkOrder(ctx, claimed1.ID)
+	requireOK(t, err)
+	got2, err := st.GetWorkOrder(ctx, claimed2.ID)
+	requireOK(t, err)
+	if got1.GovernanceSnapshotDigest == "" || got1.GovernanceSnapshotDigest != got2.GovernanceSnapshotDigest {
+		t.Fatalf("digests %q %q", got1.GovernanceSnapshotDigest, got2.GovernanceSnapshotDigest)
+	}
+	if got1.GovernanceSnapshot == nil || got2.GovernanceSnapshot == nil || got1.GovernanceSnapshot.Designs[0].Content != "shared-governance-body" || got2.GovernanceSnapshot.Designs[0].Content != got1.GovernanceSnapshot.Designs[0].Content {
+		t.Fatalf("orders lost shared snapshot: %+v %+v", got1.GovernanceSnapshot, got2.GovernanceSnapshot)
+	}
+	events, err := st.ListEvents(ctx, claimed1.TaskID)
+	requireOK(t, err)
+	found := false
+	for _, event := range events {
+		if event.Kind != "work_order.claimed" {
+			continue
+		}
+		found = true
+		var payload map[string]any
+		if err := json.Unmarshal(event.Payload, &payload); err != nil {
+			t.Fatal(err)
+		}
+		if _, ok := payload["governance_snapshot"]; ok {
+			t.Fatalf("claim event embedded snapshot: %s", event.Payload)
+		}
+		if digest, _ := payload["governance_snapshot_digest"].(string); digest == "" {
+			t.Fatalf("claim event missing digest: %s", event.Payload)
+		}
+	}
+	if !found {
+		t.Fatal("missing work_order.claimed event")
+	}
 }

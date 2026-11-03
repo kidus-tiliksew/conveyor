@@ -283,8 +283,12 @@ func TestTaskMapSelectsNoBodiesHistoriesOrSnapshotsIntegration(t *testing.T) {
 		}
 	}
 	served := core.JSONPayload([]map[string]any{{"id": "req-map-bytes", "title": "Map bytes", "content": taskMapSelectedSnapshotSentinel}})
-	governance := core.JSONPayload(map[string]any{"designs": []map[string]any{{"id": "component-persistence", "content": strings.Repeat(taskMapSelectedSnapshotSentinel+" ", 64)}}})
-	if _, err = sharedDatabase.admin.ExecContext(t.Context(), "UPDATE `"+sharedDatabase.name+"`.work_orders SET served_requirement_snapshot=?, governance_snapshot=? WHERE workspace_id=?", served, governance, workspace); err != nil {
+	snapshot := &core.GovernanceSnapshot{Designs: []core.GovernanceDesignContext{{ID: "component-persistence", Content: strings.Repeat(taskMapSelectedSnapshotSentinel+" ", 64)}}}
+	digest, content := store.EncodeGovernanceSnapshot(snapshot)
+	if _, err = sharedDatabase.admin.ExecContext(t.Context(), "INSERT IGNORE INTO `"+sharedDatabase.name+"`.governance_snapshots (workspace_id, digest, content) VALUES (?, ?, ?)", workspace, digest, content); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = sharedDatabase.admin.ExecContext(t.Context(), "UPDATE `"+sharedDatabase.name+"`.work_orders SET served_requirement_snapshot=?, governance_snapshot_digest=? WHERE workspace_id=?", served, digest, workspace); err != nil {
 		t.Fatal(err)
 	}
 

@@ -7,7 +7,9 @@ Normal startup applies pending numbered migrations under the backend migration l
 Migration 0027 keeps its original ledger identity but its retired automatic event conversion is not executed.
 
 Current audit events use operator-created `events_columnstore`; legacy `events` remains historical input.
+`governance_snapshots` is columnstore: append-only, write-once, keyed by `(workspace_id, digest)`.
 See the [events preparation guide](../../../../docs/singlestore-events-cutover.md) for existing databases and fresh installations.
+
 
 Keep workspace shard keys and unique keys aligned.
 Go aggregate writers enforce the constraints unavailable in SingleStore; see the [backend rules](../README.md#go-enforced-rules-for-aggregate-writers).

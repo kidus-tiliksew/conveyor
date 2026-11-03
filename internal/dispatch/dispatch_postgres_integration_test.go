@@ -500,15 +500,16 @@ func TestReviewDispatchReadsOnlyTaskOrdersWithoutSnapshotsPostgresIntegration(t 
 		workspace, template.ID, snapshotFixtureOrders); err != nil {
 		t.Fatal(err)
 	}
-	governance, err := json.Marshal(snapshotFixtureGovernance())
-	if err != nil {
-		t.Fatal(err)
-	}
+	gov := snapshotFixtureGovernance()
+	digest, content := store.EncodeGovernanceSnapshot(&gov)
 	served, err := json.Marshal(snapshotFixtureRequirements())
 	if err != nil {
 		t.Fatal(err)
 	}
-	tag, err := st.Pool().Exec(ctx, `UPDATE work_orders SET governance_snapshot = $2::jsonb, served_requirement_snapshot = $3::jsonb WHERE workspace_id = $1`, workspace, string(governance), string(served))
+	if _, err = st.Pool().Exec(ctx, `INSERT INTO governance_snapshots (workspace_id, digest, content) VALUES ($1,$2,$3::jsonb) ON CONFLICT DO NOTHING`, workspace, digest, content); err != nil {
+		t.Fatal(err)
+	}
+	tag, err := st.Pool().Exec(ctx, `UPDATE work_orders SET governance_snapshot_digest = $2, served_requirement_snapshot = $3::jsonb WHERE workspace_id = $1`, workspace, digest, string(served))
 	if err != nil {
 		t.Fatal(err)
 	}

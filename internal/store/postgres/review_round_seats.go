@@ -266,7 +266,11 @@ func taskReviewOrdersTx(ctx context.Context, tx pgx.Tx, workspaceID, taskID stri
 // insertReviewSeatAdditionOrderTx inserts one queued, content-free seat order
 // with the same column set CreateReviewRoundCommand writes.
 func insertReviewSeatAdditionOrderTx(ctx context.Context, tx pgx.Tx, workspaceID string, order core.WorkOrder) error {
-	_, err := tx.Exec(ctx, `INSERT INTO work_orders (
+	digest, err := persistGovernanceSnapshot(ctx, tx, workspaceID, order.GovernanceSnapshot)
+	if err != nil {
+		return err
+	}
+	_, err = tx.Exec(ctx, `INSERT INTO work_orders (
 		id, workspace_id, task_id, job_id, stage, state, claimant_id,
 		session_id, client_token_hash, agent, model, worker_id, lease_expires_at,
 		review_round, review_seat, required_model, required_harness, required_harness_config, execution_timeout, model_enforcement,
@@ -275,12 +279,12 @@ func insertReviewSeatAdditionOrderTx(ctx context.Context, tx pgx.Tx, workspaceID
 		last_attempt_outcome, last_failure_message, last_failure_exit_status, last_failure_at,
 		automatic_retry_count, next_retry_at, retry_suppressed,
 		redispatch_count, progress, cost_usd, tokens_in, tokens_out,
-		usage_reported, self_reported, created_at, updated_at, served_requirement_snapshot, governance_snapshot
+		usage_reported, self_reported, created_at, updated_at, served_requirement_snapshot, governance_snapshot_digest
 	) VALUES ($1,$2,$3,$4,$5,$6,'','','','','','',NULL,$7,$8,$9,$10,$11,$12,'',$13,$14,$15,$16,$17,$23,$18,$19,NULL,NULL,'','',NULL,NULL,0,NULL,false,0,'',0,0,0,false,false,$20,$20,$21,$22)`,
 		order.ID, workspaceID, order.TaskID, order.JobID, core.StageReview, order.State,
 		order.ReviewRound, order.ReviewSeat, order.RequiredModel, order.RequiredHarness,
 		harnessSnapshotJSON(order.RequiredHarnessConfig), order.ExecutionTimeoutText,
 		order.ReasonCode, order.ReviewKind, order.ReviewScope, order.BaselineSHA, order.HeadSHA,
-		order.QueueEnteredAt, order.QueueDeadline, order.CreatedAt, servedRequirementSnapshotJSON(order.ServedRequirementSnapshot), governanceSnapshotJSON(order.GovernanceSnapshot), order.VerificationContextID)
+		order.QueueEnteredAt, order.QueueDeadline, order.CreatedAt, servedRequirementSnapshotJSON(order.ServedRequirementSnapshot), digest, order.VerificationContextID)
 	return err
 }

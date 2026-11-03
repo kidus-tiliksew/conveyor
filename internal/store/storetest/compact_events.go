@@ -68,9 +68,11 @@ func runCompactEventReads(t *testing.T, x Fixture) {
 	}
 
 	historicalWant := map[string]json.RawMessage{
-		"work_order.claimed": store.WorkOrderEventPayload(historical),
-		"work_order.updated": store.WorkOrderEventPayload(updated),
+		"work_order.claimed": store.CompactEventPayload("work_order.claimed", core.JSONPayload(historical)),
+		"work_order.updated": store.CompactEventPayload("work_order.updated", core.JSONPayload(updated)),
 	}
+	liveWant := store.WorkOrderEventPayload(claimed)
+
 	fullBytes, compactBytes, historicalSeen, compactWorkOrderEvents := 0, 0, 0, 0
 	for i := range full {
 		f, c := full[i], compact[i]
@@ -95,11 +97,17 @@ func runCompactEventReads(t *testing.T, x Fixture) {
 		if bytes.Contains(f.Payload, []byte(compactSnapshotMarker)) {
 			historicalSeen++
 			if got, want := exactJSON(t, c.Payload), exactJSON(t, historicalWant[f.Kind]); !reflect.DeepEqual(got, want) {
-				t.Fatalf("historical %s event %d decodes to %v, want WorkOrderEventPayload %v", f.Kind, f.ID, got, want)
+				t.Fatalf("historical %s event %d decodes to %v, want CompactEventPayload %v", f.Kind, f.ID, got, want)
 			}
 		} else if strings.HasPrefix(f.Kind, "work_order.") {
 			compactWorkOrderEvents++
+			if f.Kind == "work_order.claimed" {
+				if got, want := exactJSON(t, f.Payload), exactJSON(t, liveWant); !reflect.DeepEqual(got, want) {
+					t.Fatalf("live %s event %d decodes to %v, want WorkOrderEventPayload %v", f.Kind, f.ID, got, want)
+				}
+			}
 		}
+
 		if f.Kind == "review.completed" && !bytes.Contains(c.Payload, []byte("kept on other kinds")) {
 			t.Fatalf("compact read projected a review.completed payload: %s", c.Payload)
 		}

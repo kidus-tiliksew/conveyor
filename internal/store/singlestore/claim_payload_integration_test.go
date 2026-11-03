@@ -91,7 +91,7 @@ func TestSingleStoreLargeGovernanceClaimIntegration(t *testing.T) {
 				}
 			}
 			var stored []byte
-			if err := st.db.QueryRowContext(ctx, "SELECT governance_snapshot FROM work_orders WHERE workspace_id=? AND id=?", "large-claim", job.ID).Scan(&stored); err != nil {
+			if err := st.db.QueryRowContext(ctx, "SELECT gs.content FROM work_orders wo JOIN governance_snapshots gs ON gs.workspace_id=wo.workspace_id AND gs.digest=wo.governance_snapshot_digest WHERE wo.workspace_id=? AND wo.id=?", "large-claim", job.ID).Scan(&stored); err != nil {
 				t.Fatal(err)
 			}
 			if len(stored) <= 1<<20 || !json.Valid(stored) {
@@ -125,7 +125,7 @@ func TestSingleStoreLargeGovernanceClaimIntegration(t *testing.T) {
 					continue
 				}
 				maxEventBytes = max(maxEventBytes, len(event.Payload))
-				if len(event.Payload) > 16<<10 || strings.Contains(string(event.Payload), "governance_snapshot") || strings.Contains(string(event.Payload), "served_requirement_snapshot") || strings.Contains(string(event.Payload), content[:100]) {
+				if len(event.Payload) > 16<<10 || strings.Contains(string(event.Payload), `"governance_snapshot":`) || strings.Contains(string(event.Payload), `"served_requirement_snapshot":`) || strings.Contains(string(event.Payload), content[:100]) {
 					t.Fatalf("%s duplicated authority: %d bytes", event.Kind, len(event.Payload))
 				}
 				if event.Kind == "work_order.claimed" {

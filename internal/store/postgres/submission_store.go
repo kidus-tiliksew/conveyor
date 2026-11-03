@@ -240,6 +240,10 @@ func (s *Store) CreateConflictFixCommand(ctx context.Context, lease taskops.Task
 		if blocked {
 			order.QueueBlockedAt, order.Claimable = order.QueueEnteredAt, false
 		}
+		digest, persistErr := persistGovernanceSnapshot(ctx, tx, workspaceID, order.GovernanceSnapshot)
+		if persistErr != nil {
+			return persistErr
+		}
 		_, err = tx.Exec(ctx, `INSERT INTO work_orders (
 			id, workspace_id, task_id, job_id, stage, state, claimant_id,
 			session_id, client_token_hash, agent, model, worker_id, lease_expires_at,
@@ -249,12 +253,12 @@ func (s *Store) CreateConflictFixCommand(ctx context.Context, lease taskops.Task
 			last_attempt_outcome, last_failure_message, last_failure_exit_status, last_failure_at,
 			automatic_retry_count, next_retry_at, retry_suppressed,
 			redispatch_count, progress, cost_usd, tokens_in, tokens_out,
-			usage_reported, self_reported, created_at, updated_at, served_requirement_snapshot, governance_snapshot
+			usage_reported, self_reported, created_at, updated_at, served_requirement_snapshot, governance_snapshot_digest
 		) VALUES ($1,$2,$3,$4,$5,$6,'','','','','','',NULL,0,0,$7,$8,$9,$10,'',$11,'','',$12,'',$13,$14,$15,NULL,NULL,'','',NULL,NULL,0,NULL,false,0,'',0,0,0,false,false,$16,$16,$17,$18)`,
 			order.ID, workspaceID, request.TaskID, request.Job.ID, order.Stage, order.State,
 			order.RequiredModel, order.RequiredHarness, harnessSnapshotJSON(order.RequiredHarnessConfig), order.ExecutionTimeoutText,
 			order.ReasonCode, order.BaselineSHA, order.QueueEnteredAt, order.QueueDeadline,
-			nullableTimeValue(order.QueueBlockedAt), order.CreatedAt, servedRequirementSnapshotJSON(order.ServedRequirementSnapshot), governanceSnapshotJSON(order.GovernanceSnapshot))
+			nullableTimeValue(order.QueueBlockedAt), order.CreatedAt, servedRequirementSnapshotJSON(order.ServedRequirementSnapshot), digest)
 		if err != nil {
 			return err
 		}

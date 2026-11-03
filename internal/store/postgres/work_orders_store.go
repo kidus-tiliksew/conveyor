@@ -143,6 +143,8 @@ func (s *Store) ListWorkOrdersForTasks(ctx context.Context, taskIDs []string) ([
 	return s.listWorkOrdersForTasks(ctx, taskIDs)
 }
 
+const governanceSnapshotContentSQL = `(SELECT gs.content FROM governance_snapshots gs WHERE gs.workspace_id = work_orders.workspace_id AND gs.digest = work_orders.governance_snapshot_digest)`
+
 const workOrderColumns = `id, task_id, job_id, stage, state, claimant_id,
 session_id, attempt_id, client_token_hash, agent, model, worker_id, lease_expires_at,
 				review_round, review_seat, required_model, required_harness, required_effort, required_harness_config, execution_timeout, model_enforcement,
@@ -152,7 +154,7 @@ last_attempt_id, last_attempt_outcome, last_failure_category, last_failure_messa
 automatic_retry_count, next_retry_at, retry_suppressed, retry_suppression_reason,
 COALESCE(automatic_recovery_count, 0), automatic_recovery_window_started_at, next_automatic_recovery_at, base_conflict_checked_at,
 redispatch_count, operator_direction, checkpoint, progress, cost_usd, tokens_in, tokens_out, usage_reported, self_reported,
-rate_limit, rate_limit_observed_at, created_at, updated_at, served_requirement_snapshot, governance_snapshot, declared_review_seats`
+rate_limit, rate_limit_observed_at, created_at, updated_at, served_requirement_snapshot, governance_snapshot_digest, ` + governanceSnapshotContentSQL + ` AS governance_snapshot, declared_review_seats`
 
 func servedRequirementSnapshotJSON(snapshot []core.ServedRequirementContext) any {
 	if snapshot == nil {
@@ -161,11 +163,16 @@ func servedRequirementSnapshotJSON(snapshot []core.ServedRequirementContext) any
 	return core.JSONPayload(snapshot)
 }
 
-func governanceSnapshotJSON(snapshot *core.GovernanceSnapshot) any {
-	if snapshot == nil {
-		return nil
+func persistGovernanceSnapshot(ctx context.Context, tx pgx.Tx, workspaceID string, snapshot *core.GovernanceSnapshot) (any, error) {
+	digest, content := store.EncodeGovernanceSnapshot(snapshot)
+	if digest == "" {
+		return nil, nil
 	}
-	return core.JSONPayload(snapshot)
+	_, err := tx.Exec(ctx, `INSERT INTO governance_snapshots (workspace_id, digest, content) VALUES ($1, $2, $3::jsonb) ON CONFLICT (workspace_id, digest) DO NOTHING`, workspaceID, digest, content)
+	if err != nil {
+		return nil, err
+	}
+	return digest, nil
 }
 
 func checkpointJSON(checkpoint *core.WorkOrderCheckpoint) any {
@@ -246,7 +253,11 @@ func (s *Store) CreateWorkOrderCommand(ctx context.Context, lease taskops.TaskLe
 				return err
 			}
 		}
-		_, err := tx.Exec(ctx, `INSERT INTO work_orders (
+		digest, err := persistGovernanceSnapshot(ctx, tx, workspace(ctx), order.GovernanceSnapshot)
+		if err != nil {
+			return err
+		}
+		_, err = tx.Exec(ctx, `INSERT INTO work_orders (
 			id, workspace_id, task_id, job_id, stage, state, claimant_id,
 			session_id, client_token_hash, agent, model, worker_id, lease_expires_at,
 				review_round, review_seat, required_model, required_harness, required_harness_config, execution_timeout, model_enforcement,
@@ -255,7 +266,7 @@ func (s *Store) CreateWorkOrderCommand(ctx context.Context, lease taskops.TaskLe
 			last_attempt_outcome, last_failure_message, last_failure_exit_status, last_failure_at,
 			automatic_retry_count, next_retry_at, retry_suppressed,
 			redispatch_count, progress, cost_usd, tokens_in, tokens_out,
-			usage_reported, self_reported, created_at, updated_at, served_requirement_snapshot, governance_snapshot
+			usage_reported, self_reported, created_at, updated_at, served_requirement_snapshot, governance_snapshot_digest
 		) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28,$29,$30,$31,$32,$33,$34,$35,$36,$37,$38,$39,$40,$41,$42,false,false,$43,$43,$44,$45)`,
 			order.ID, workspace(ctx), order.TaskID, order.JobID, order.Stage, order.State,
 			order.ClaimantID, order.SessionID, order.ClientTokenHash, order.Agent, order.Model, order.WorkerID,
@@ -267,7 +278,7 @@ func (s *Store) CreateWorkOrderCommand(ctx context.Context, lease taskops.TaskLe
 			order.LastAttemptOutcome, order.LastFailureMessage, order.LastFailureExitStatus, nullableTimeValue(order.LastFailureAt),
 			order.AutomaticRetryCount, nullableTimeValue(order.NextRetryAt), order.RetrySuppressed,
 			order.RedispatchCount, order.Progress, order.CostUSD, order.TokensIn,
-			order.TokensOut, order.CreatedAt, servedRequirementSnapshotJSON(order.ServedRequirementSnapshot), governanceSnapshotJSON(order.GovernanceSnapshot))
+			order.TokensOut, order.CreatedAt, servedRequirementSnapshotJSON(order.ServedRequirementSnapshot), digest)
 		if err != nil {
 			return err
 		}
@@ -375,6 +386,10 @@ func (s *Store) CreateReviewRoundCommand(ctx context.Context, lease taskops.Task
 			}
 			order.State, order.Claimable = state, true
 			order.VerificationContextID = contextID
+			digest, persistErr := persistGovernanceSnapshot(ctx, tx, workspace(ctx), order.GovernanceSnapshot)
+			if persistErr != nil {
+				return persistErr
+			}
 			_, err = tx.Exec(ctx, `INSERT INTO work_orders (
 				id, workspace_id, task_id, job_id, stage, state, claimant_id,
 				session_id, client_token_hash, agent, model, worker_id, lease_expires_at,
@@ -384,13 +399,13 @@ func (s *Store) CreateReviewRoundCommand(ctx context.Context, lease taskops.Task
 				last_attempt_outcome, last_failure_message, last_failure_exit_status, last_failure_at,
 				automatic_retry_count, next_retry_at, retry_suppressed,
 				redispatch_count, progress, cost_usd, tokens_in, tokens_out,
-				usage_reported, self_reported, created_at, updated_at, served_requirement_snapshot, governance_snapshot
+				usage_reported, self_reported, created_at, updated_at, served_requirement_snapshot, governance_snapshot_digest
 			) VALUES ($1,$2,$3,$4,$5,$6,'','','','','','',NULL,$7,$8,$9,$10,$11,$12,'',$13,$14,$15,$16,$17,$23,$18,$19,NULL,NULL,'','',NULL,NULL,0,NULL,false,0,'',0,0,0,false,false,$20,$20,$21,$22)`,
 				order.ID, workspace(ctx), taskID, job.ID, core.StageReview, order.State,
 				order.ReviewRound, order.ReviewSeat, order.RequiredModel, order.RequiredHarness,
 				harnessSnapshotJSON(order.RequiredHarnessConfig), order.ExecutionTimeoutText,
 				order.ReasonCode, order.ReviewKind, order.ReviewScope, order.BaselineSHA, order.HeadSHA,
-				order.QueueEnteredAt, order.QueueDeadline, order.CreatedAt, servedRequirementSnapshotJSON(order.ServedRequirementSnapshot), governanceSnapshotJSON(order.GovernanceSnapshot), order.VerificationContextID)
+				order.QueueEnteredAt, order.QueueDeadline, order.CreatedAt, servedRequirementSnapshotJSON(order.ServedRequirementSnapshot), digest, order.VerificationContextID)
 			if err != nil {
 				return err
 			}
@@ -483,6 +498,10 @@ func (s *Store) CreateStageWorkOrderCommand(ctx context.Context, lease taskops.T
 				order.QueueBlockedAt, order.Claimable = order.QueueEnteredAt, false
 			}
 		}
+		digest, persistErr := persistGovernanceSnapshot(ctx, tx, workspaceID, order.GovernanceSnapshot)
+		if persistErr != nil {
+			return persistErr
+		}
 		_, err = tx.Exec(ctx, `INSERT INTO work_orders (
 			id, workspace_id, task_id, job_id, stage, state, claimant_id,
 			session_id, client_token_hash, agent, model, worker_id, lease_expires_at,
@@ -492,12 +511,12 @@ func (s *Store) CreateStageWorkOrderCommand(ctx context.Context, lease taskops.T
 			last_attempt_outcome, last_failure_message, last_failure_exit_status, last_failure_at,
 			automatic_retry_count, next_retry_at, retry_suppressed,
 			redispatch_count, progress, cost_usd, tokens_in, tokens_out,
-			usage_reported, self_reported, created_at, updated_at, served_requirement_snapshot, governance_snapshot
+			usage_reported, self_reported, created_at, updated_at, served_requirement_snapshot, governance_snapshot_digest
 		) VALUES ($1,$2,$3,$4,$5,$6,'','','','','','',NULL,0,0,$7,$8,$9,$10,'',$11,'','',$12,$19,$13,$14,$15,NULL,NULL,'','',NULL,NULL,0,NULL,false,0,'',0,0,0,false,false,$16,$16,$17,$18)`,
 			order.ID, workspaceID, job.TaskID, job.ID, order.Stage, order.State,
 			order.RequiredModel, order.RequiredHarness, harnessSnapshotJSON(order.RequiredHarnessConfig), order.ExecutionTimeoutText,
 			order.ReasonCode, order.BaselineSHA, order.QueueEnteredAt, order.QueueDeadline,
-			nullableTimeValue(order.QueueBlockedAt), order.CreatedAt, servedRequirementSnapshotJSON(order.ServedRequirementSnapshot), governanceSnapshotJSON(order.GovernanceSnapshot), order.HeadSHA)
+			nullableTimeValue(order.QueueBlockedAt), order.CreatedAt, servedRequirementSnapshotJSON(order.ServedRequirementSnapshot), digest, order.HeadSHA)
 		if err != nil {
 			return err
 		}
@@ -644,6 +663,10 @@ func (s *Store) RetryReviewRoundCommand(ctx context.Context, lease taskops.TaskL
 		}
 		order.State, order.Claimable, order.UpdatedAt = state, true, now
 		order.VerificationContextID = contextID
+		digest, persistErr := persistGovernanceSnapshot(ctx, tx, workspaceID, order.GovernanceSnapshot)
+		if persistErr != nil {
+			return store.ReviewRoundRetryResult{}, persistErr
+		}
 		_, err = tx.Exec(ctx, `INSERT INTO work_orders (
 			id, workspace_id, task_id, job_id, stage, state, claimant_id,
 			session_id, client_token_hash, agent, model, worker_id, lease_expires_at,
@@ -653,13 +676,13 @@ func (s *Store) RetryReviewRoundCommand(ctx context.Context, lease taskops.TaskL
 			last_attempt_outcome, last_failure_message, last_failure_exit_status, last_failure_at,
 			automatic_retry_count, next_retry_at, retry_suppressed,
 			redispatch_count, progress, cost_usd, tokens_in, tokens_out,
-			usage_reported, self_reported, created_at, updated_at, served_requirement_snapshot, governance_snapshot
+			usage_reported, self_reported, created_at, updated_at, served_requirement_snapshot, governance_snapshot_digest
 		) VALUES ($1,$2,$3,$4,$5,$6,'','','','','','',NULL,$7,$8,$9,$10,$11,$12,'',$13,$14,$15,$16,$17,$23,$18,$19,NULL,NULL,'','',NULL,NULL,0,NULL,false,0,'',0,0,0,false,false,$20,$20,$21,$22)`,
 			order.ID, workspaceID, request.TaskID, job.ID, core.StageReview, core.WorkOrderQueued,
 			order.ReviewRound, order.ReviewSeat, order.RequiredModel, order.RequiredHarness,
 			harnessSnapshotJSON(order.RequiredHarnessConfig), order.ExecutionTimeoutText,
 			order.ReasonCode, order.ReviewKind, order.ReviewScope, order.BaselineSHA, order.HeadSHA,
-			order.QueueEnteredAt, order.QueueDeadline, order.CreatedAt, servedRequirementSnapshotJSON(order.ServedRequirementSnapshot), governanceSnapshotJSON(order.GovernanceSnapshot), order.VerificationContextID)
+			order.QueueEnteredAt, order.QueueDeadline, order.CreatedAt, servedRequirementSnapshotJSON(order.ServedRequirementSnapshot), digest, order.VerificationContextID)
 		if err != nil {
 			return store.ReviewRoundRetryResult{}, err
 		}
@@ -1427,9 +1450,14 @@ func (s *Store) ClaimWorkOrderCommand(ctx context.Context, lifecycleLease taskop
 		}
 		repin = store.VerifyClaimRepinsAuthority(order, verificationRows(records))
 	}
-	row := tx.QueryRow(ctx, "UPDATE work_orders SET state='claimed', claimant_id=$1, session_id=$2, attempt_id=$3, client_token_hash=$4, agent=$5, model=$6, worker_id=$7, lease_expires_at=$8, execution_started_at=$9, execution_deadline=$10, model_enforcement=$11, updated_at=$12, served_requirement_snapshot=CASE WHEN $17 AND $13::jsonb IS NOT NULL THEN $13::jsonb ELSE COALESCE(served_requirement_snapshot,$13::jsonb) END, governance_snapshot=CASE WHEN $14::jsonb IS NULL THEN governance_snapshot WHEN $17 OR governance_snapshot IS NULL THEN $14::jsonb ELSE jsonb_set(jsonb_set(governance_snapshot, '{pending_design_proposals}', COALESCE($14::jsonb->'pending_design_proposals','[]'::jsonb), true), '{resolution_notes}', COALESCE($14::jsonb->'resolution_notes','[]'::jsonb), true) END WHERE workspace_id=$15 AND id=$16 RETURNING "+workOrderColumns,
+	store.PinClaimGovernance(&order, claim.Governance, repin)
+	digest, persistErr := persistGovernanceSnapshot(ctx, tx, workspace(ctx), order.GovernanceSnapshot)
+	if persistErr != nil {
+		return core.WorkOrder{}, persistErr
+	}
+	row := tx.QueryRow(ctx, "UPDATE work_orders SET state='claimed', claimant_id=$1, session_id=$2, attempt_id=$3, client_token_hash=$4, agent=$5, model=$6, worker_id=$7, lease_expires_at=$8, execution_started_at=$9, execution_deadline=$10, model_enforcement=$11, updated_at=$12, served_requirement_snapshot=CASE WHEN $17 AND $13::jsonb IS NOT NULL THEN $13::jsonb ELSE COALESCE(served_requirement_snapshot,$13::jsonb) END, governance_snapshot_digest=COALESCE($14, governance_snapshot_digest) WHERE workspace_id=$15 AND id=$16 RETURNING "+workOrderColumns,
 		claim.ClaimantID, claim.SessionID, attemptID, hash, claim.Agent, claim.Model, "", expires,
-		executionStarted, nullableTimeValue(executionDeadline), order.ModelEnforcement, now, servedRequirementSnapshotJSON(claim.Requirements), governanceSnapshotJSON(claim.Governance), workspace(ctx), id, repin)
+		executionStarted, nullableTimeValue(executionDeadline), order.ModelEnforcement, now, servedRequirementSnapshotJSON(claim.Requirements), digest, workspace(ctx), id, repin)
 	order, err = scanWorkOrder(row)
 	if err != nil {
 		return core.WorkOrder{}, err
@@ -2508,6 +2536,7 @@ func scanWorkOrder(row interface{ Scan(...any) error }) (core.WorkOrder, error) 
 	var order core.WorkOrder
 	var stage, state string
 	var harnessConfig, checkpoint, rateLimit, servedRequirementSnapshot, governanceSnapshot []byte
+	var digest *string
 	var lease, queueEntered, queueDeadline, queueBlockedAt, executionStarted, executionDeadline, lastFailureAt, nextRetryAt, recoveryWindow, nextAutomaticRecovery, baseConflictChecked, rateLimitObservedAt pgtype.Timestamptz
 	err := row.Scan(&order.ID, &order.TaskID, &order.JobID, &stage, &state, &order.ClaimantID,
 		&order.SessionID, &order.AttemptID, &order.ClientTokenHash, &order.Agent, &order.Model, &order.WorkerID, &lease,
@@ -2518,8 +2547,9 @@ func scanWorkOrder(row interface{ Scan(...any) error }) (core.WorkOrder, error) 
 		&order.AutomaticRetryCount, &nextRetryAt, &order.RetrySuppressed, &order.RetrySuppressionReason,
 		&order.AutomaticRecoveryCount, &recoveryWindow, &nextAutomaticRecovery, &baseConflictChecked,
 		&order.RedispatchCount, &order.OperatorDirection, &checkpoint, &order.Progress, &order.CostUSD, &order.TokensIn,
-		&order.TokensOut, &order.UsageReported, &order.SelfReported, &rateLimit, &rateLimitObservedAt, &order.CreatedAt, &order.UpdatedAt, &servedRequirementSnapshot, &governanceSnapshot,
+		&order.TokensOut, &order.UsageReported, &order.SelfReported, &rateLimit, &rateLimitObservedAt, &order.CreatedAt, &order.UpdatedAt, &servedRequirementSnapshot, &digest, &governanceSnapshot,
 		&order.DeclaredReviewSeats)
+
 	order.Stage, order.State = core.Stage(stage), core.WorkOrderState(state)
 	if len(checkpoint) > 0 && string(checkpoint) != "{}" {
 		var value core.WorkOrderCheckpoint
@@ -2588,11 +2618,16 @@ func scanWorkOrder(row interface{ Scan(...any) error }) (core.WorkOrder, error) 
 	if servedRequirementSnapshot != nil && err == nil {
 		err = json.Unmarshal(servedRequirementSnapshot, &order.ServedRequirementSnapshot)
 	}
+
+	if digest != nil {
+		order.GovernanceSnapshotDigest = *digest
+	}
 	if governanceSnapshot != nil && err == nil {
 		var snapshot core.GovernanceSnapshot
 		err = json.Unmarshal(governanceSnapshot, &snapshot)
 		order.GovernanceSnapshot = &snapshot
 	}
+
 	order.Claimable = order.ClaimableAt(time.Now().UTC())
 	return order, err
 }

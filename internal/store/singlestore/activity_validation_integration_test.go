@@ -86,7 +86,12 @@ func seedActivityValidationScale(t *testing.T, st *Store, ctx context.Context, w
 	if t.Failed() {
 		t.FailNow()
 	}
-	if _, err := sharedDatabase.admin.ExecContext(ctx, "UPDATE `"+sharedDatabase.name+"`.work_orders SET served_requirement_snapshot=?, governance_snapshot=? WHERE workspace_id=?", core.JSONPayload([]string{padding}), core.JSONPayload(map[string]string{"pad": padding}), workspace); err != nil {
+	padSnap := &core.GovernanceSnapshot{ResolutionNotes: []string{padding}}
+	digest, content := store.EncodeGovernanceSnapshot(padSnap)
+	if _, err := sharedDatabase.admin.ExecContext(ctx, "INSERT IGNORE INTO `"+sharedDatabase.name+"`.governance_snapshots (workspace_id, digest, content) VALUES (?, ?, ?)", workspace, digest, content); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := sharedDatabase.admin.ExecContext(ctx, "UPDATE `"+sharedDatabase.name+"`.work_orders SET served_requirement_snapshot=?, governance_snapshot_digest=? WHERE workspace_id=?", core.JSONPayload([]string{padding}), digest, workspace); err != nil {
 		t.Fatal(err)
 	}
 	payload := string(core.JSONPayload(map[string]string{"pad": padding}))

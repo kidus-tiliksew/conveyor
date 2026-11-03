@@ -20,6 +20,8 @@ import (
 	"github.com/kidus-tiliksew/conveyor/internal/taskops"
 )
 
+const governanceSnapshotContentSQL = `(SELECT gs.content FROM governance_snapshots gs WHERE gs.workspace_id = work_orders.workspace_id AND gs.digest = work_orders.governance_snapshot_digest)`
+
 const workOrderColumns = `id, task_id, job_id, stage, state, claimant_id,
 session_id, attempt_id, client_token_hash, agent, model, worker_id, lease_expires_at,
 				review_round, review_seat, required_model, required_harness, required_effort, required_harness_config, execution_timeout, model_enforcement,
@@ -29,7 +31,7 @@ last_attempt_id, last_attempt_outcome, last_failure_category, last_failure_messa
 automatic_retry_count, next_retry_at, retry_suppressed, retry_suppression_reason,
 COALESCE(automatic_recovery_count, 0), automatic_recovery_window_started_at, next_automatic_recovery_at, base_conflict_checked_at,
 redispatch_count, operator_direction, checkpoint, progress, cost_usd, tokens_in, tokens_out, usage_reported, self_reported,
-rate_limit, rate_limit_observed_at, created_at, updated_at, served_requirement_snapshot, governance_snapshot, declared_review_seats`
+rate_limit, rate_limit_observed_at, created_at, updated_at, served_requirement_snapshot, governance_snapshot_digest, ` + governanceSnapshotContentSQL + ` AS governance_snapshot, declared_review_seats`
 
 func servedRequirementSnapshotJSON(snapshot []core.ServedRequirementContext) any {
 	if snapshot == nil {
@@ -38,11 +40,21 @@ func servedRequirementSnapshotJSON(snapshot []core.ServedRequirementContext) any
 	return core.JSONPayload(snapshot)
 }
 
-func governanceSnapshotJSON(snapshot *core.GovernanceSnapshot) any {
-	if snapshot == nil {
+func persistGovernanceSnapshot(ctx context.Context, db s2log.Executor, snapshot *core.GovernanceSnapshot) (string, error) {
+	digest, content := store.EncodeGovernanceSnapshot(snapshot)
+	if digest == "" {
+		return "", nil
+	}
+	_, err := db.ExecContext(ctx, `INSERT IGNORE INTO governance_snapshots (workspace_id, digest, content) VALUES (?, ?, ?)`, documentWorkspace(ctx), digest, content)
+	return digest, err
+}
+
+func governanceSnapshotDigestValue(snapshot *core.GovernanceSnapshot) any {
+	digest, _ := store.EncodeGovernanceSnapshot(snapshot)
+	if digest == "" {
 		return nil
 	}
-	return core.JSONPayload(snapshot)
+	return digest
 }
 
 func checkpointJSON(checkpoint *core.WorkOrderCheckpoint) any {
@@ -56,6 +68,7 @@ func scanWorkOrder(row interface{ Scan(...any) error }) (core.WorkOrder, error) 
 	var order core.WorkOrder
 	var stage, state string
 	var harnessConfig, checkpoint, rateLimit, servedRequirementSnapshot, governanceSnapshot []byte
+	var digest sql.NullString
 	var lease, queueEntered, queueDeadline, queueBlockedAt, executionStarted, executionDeadline, lastFailureAt, nextRetryAt, recoveryWindow, nextAutomaticRecovery, baseConflictChecked, rateLimitObservedAt sql.NullTime
 	err := row.Scan(&order.ID, &order.TaskID, &order.JobID, &stage, &state, &order.ClaimantID,
 		&order.SessionID, &order.AttemptID, &order.ClientTokenHash, &order.Agent, &order.Model, &order.WorkerID, &lease,
@@ -66,8 +79,9 @@ func scanWorkOrder(row interface{ Scan(...any) error }) (core.WorkOrder, error) 
 		&order.AutomaticRetryCount, &nextRetryAt, &order.RetrySuppressed, &order.RetrySuppressionReason,
 		&order.AutomaticRecoveryCount, &recoveryWindow, &nextAutomaticRecovery, &baseConflictChecked,
 		&order.RedispatchCount, &order.OperatorDirection, &checkpoint, &order.Progress, &order.CostUSD, &order.TokensIn,
-		&order.TokensOut, &order.UsageReported, &order.SelfReported, &rateLimit, &rateLimitObservedAt, &order.CreatedAt, &order.UpdatedAt, &servedRequirementSnapshot, &governanceSnapshot,
+		&order.TokensOut, &order.UsageReported, &order.SelfReported, &rateLimit, &rateLimitObservedAt, &order.CreatedAt, &order.UpdatedAt, &servedRequirementSnapshot, &digest, &governanceSnapshot,
 		&order.DeclaredReviewSeats)
+
 	order.Stage, order.State = core.Stage(stage), core.WorkOrderState(state)
 	if len(checkpoint) > 0 && string(checkpoint) != "{}" {
 		var value core.WorkOrderCheckpoint
@@ -136,11 +150,16 @@ func scanWorkOrder(row interface{ Scan(...any) error }) (core.WorkOrder, error) 
 	if servedRequirementSnapshot != nil && err == nil {
 		err = json.Unmarshal(servedRequirementSnapshot, &order.ServedRequirementSnapshot)
 	}
+
+	if digest.Valid {
+		order.GovernanceSnapshotDigest = digest.String
+	}
 	if governanceSnapshot != nil && err == nil {
 		var snapshot core.GovernanceSnapshot
 		err = json.Unmarshal(governanceSnapshot, &snapshot)
 		order.GovernanceSnapshot = &snapshot
 	}
+
 	order.Claimable = order.ClaimableAt(time.Now().UTC())
 	return order, err
 }
@@ -228,7 +247,7 @@ func orderValues(o core.WorkOrder) map[string]any {
 		"created_at":                           o.CreatedAt,
 		"updated_at":                           o.UpdatedAt,
 		"served_requirement_snapshot":          servedRequirementSnapshotJSON(o.ServedRequirementSnapshot),
-		"governance_snapshot":                  governanceSnapshotJSON(o.GovernanceSnapshot),
+		"governance_snapshot_digest":           governanceSnapshotDigestValue(o.GovernanceSnapshot),
 	}
 }
 func getOrderRow(ctx context.Context, db s2log.Executor, id string) (core.WorkOrder, error) {
@@ -242,12 +261,19 @@ func getOrderRowColumns(ctx context.Context, db s2log.Executor, columns, id stri
 	return o, notFound(err, "work order %s", id)
 }
 func orderWrite(ctx context.Context, tx *sql.Tx, o core.WorkOrder) error {
+	digest, err := persistGovernanceSnapshot(ctx, tx, o.GovernanceSnapshot)
+	if err != nil {
+		return err
+	}
 	values := orderValues(o)
 	delete(values, "id")
 	delete(values, "task_id")
 	delete(values, "job_id")
 	delete(values, "created_at")
-	_, err := writeRow(ctx, tx, rowWrite{table: "work_orders", operation: "UPDATE", values: values, where: map[string]any{"workspace_id": documentWorkspace(ctx), "id": o.ID}})
+	if digest == "" {
+		delete(values, "governance_snapshot_digest")
+	}
+	_, err = writeRow(ctx, tx, rowWrite{table: "work_orders", operation: "UPDATE", values: values, where: map[string]any{"workspace_id": documentWorkspace(ctx), "id": o.ID}})
 	return err
 }
 func (s *Store) orderTx(ctx context.Context, id string, fn func(*sql.Tx, core.WorkOrder) error) error {
@@ -287,7 +313,7 @@ func (s *Store) GetWorkOrder(ctx context.Context, id string) (core.WorkOrder, er
 // activityWorkOrderColumns preserves scanWorkOrder's shape while omitting the
 // served-requirement and governance snapshots, which list projections never
 // read; the PostgreSQL batch read omits them the same way.
-var activityWorkOrderColumns = strings.Replace(workOrderColumns, "served_requirement_snapshot, governance_snapshot", "NULL, NULL", 1)
+var activityWorkOrderColumns = strings.Replace(workOrderColumns, "served_requirement_snapshot, governance_snapshot_digest, "+governanceSnapshotContentSQL+" AS governance_snapshot", "NULL, NULL, NULL", 1)
 
 func (s *Store) listOrders(ctx context.Context, db s2log.Executor, ids []string) ([]core.WorkOrder, error) {
 	return s.listOrderColumns(ctx, db, workOrderColumns, ids)
@@ -541,6 +567,9 @@ func (s *Store) insertOrderTx(ctx context.Context, tx *sql.Tx, o core.WorkOrder,
 		if task.IntakeOperatorDirection != "" {
 			o.OperatorDirection = task.IntakeOperatorDirection
 		}
+	}
+	if _, err := persistGovernanceSnapshot(ctx, tx, o.GovernanceSnapshot); err != nil {
+		return err
 	}
 	values := orderValues(o)
 	values["workspace_id"] = documentWorkspace(ctx)
@@ -1331,12 +1360,7 @@ func (s *Store) ClaimWorkOrderCommand(ctx context.Context, lease taskops.TaskLea
 			o.ServedRequirementSnapshot = claim.Requirements
 		}
 		if claim.Governance != nil {
-			if o.GovernanceSnapshot == nil || repin {
-				o.GovernanceSnapshot = claim.Governance
-			} else {
-				o.GovernanceSnapshot.PendingDesignProposals = claim.Governance.PendingDesignProposals
-				o.GovernanceSnapshot.ResolutionNotes = claim.Governance.ResolutionNotes
-			}
+			store.PinClaimGovernance(&o, claim.Governance, repin)
 		}
 		if err = orderWrite(ctx, tx, o); err != nil {
 			return err

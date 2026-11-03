@@ -82,7 +82,7 @@ var ActivityValidationTables = []ActivityValidationTable{
 	{Name: "task_dependencies", Scope: ActivityScopeWorkspace},
 	{Name: "task_dependency_additions", Scope: ActivityScopeWorkspace},
 	{Name: "jobs", Scope: ActivityScopeTask},
-	{Name: "work_orders", Scope: ActivityScopeWorkspace, Exclude: []string{"served_requirement_snapshot", "governance_snapshot"}},
+	{Name: "work_orders", Scope: ActivityScopeWorkspace, Exclude: []string{"served_requirement_snapshot"}},
 	{Name: "task_specs", Scope: ActivityScopeTask, Exclude: []string{"content", "acceptance", "decomposition"}},
 	{Name: "requirements", Scope: ActivityScopeWorkspace},
 	{Name: "requirement_versions", Scope: ActivityScopeWorkspace, Exclude: []string{"content", "statements_json", "derived_from"}},
