@@ -193,8 +193,10 @@ func TestGitHubFallbackMergeReadinessStopsOnRateLimit(t *testing.T) {
 }
 
 // TestGitHubFallbackRateLimitWithoutResetUsesDefaultPause: a rate-limited
-// answer that names no reset time pauses for GitHubRateLimitPause, and one
-// that names a time beyond GitHubRateLimitMaxPause is bounded by it.
+// answer that names no reset time pauses for GitHubRateLimitPause. A reset
+// that GitHub names more than one hour away (Retry-After: 7200) is honored
+// as supplied: the line names it, nothing is read before it, and reads
+// resume at it.
 func TestGitHubFallbackRateLimitWithoutResetUsesDefaultPause(t *testing.T) {
 	f := newFallbackFixture(t)
 	f.createWaitingTask("waiting", core.TaskRunning)
@@ -209,11 +211,29 @@ func TestGitHubFallbackRateLimitWithoutResetUsesDefaultPause(t *testing.T) {
 	if lines := f.errorLines("reset_at=" + fire.Add(GitHubRateLimitPause).Format(time.RFC3339)); len(lines) != 1 {
 		t.Fatalf("lines=%v", f.lines)
 	}
-	far := fire.Add(GitHubRateLimitPause).Add(3 * time.Hour)
-	f.limited.Store(&far)
+
 	second := fire.Add(GitHubRateLimitPause)
-	if s, fired := f.advance(GitHubRateLimitPause); !fired || !s.due.Equal(second.Add(GitHubRateLimitMaxPause)) {
-		t.Fatalf("bounded fire=%+v fired=%t, want due %s", s, fired, second.Add(GitHubRateLimitMaxPause))
+	far := second.Add(7200 * time.Second)
+	f.limited.Store(&far)
+	if s, fired := f.advance(GitHubRateLimitPause); !fired || !s.armed || !s.due.Equal(far) {
+		t.Fatalf("long-reset fire=%+v fired=%t, want due at the supplied reset %s", s, fired, far)
+	}
+	reads := f.reads.Load()
+	if lines := f.errorLines("reset_at=" + far.Format(time.RFC3339)); len(lines) != 1 {
+		t.Fatalf("lines=%v, want the supplied reset logged", f.lines)
+	}
+	if _, fired := f.advance(time.Hour); fired {
+		t.Fatal("fired one hour into a two-hour reset")
+	}
+	if _, fired := f.advance(time.Hour - time.Second); fired || f.reads.Load() != reads {
+		t.Fatalf("fired=%t reads=%d before the supplied reset", fired, f.reads.Load())
+	}
+	f.limited.Store(nil)
+	if s, fired := f.advance(time.Second); !fired || !s.armed || f.reads.Load() != reads+1 {
+		t.Fatalf("fire at the supplied reset=%+v fired=%t reads=%d", s, fired, f.reads.Load())
+	}
+	if lines := f.errorLines("timed GitHub checks paused"); len(lines) != 2 {
+		t.Fatalf("pause lines=%v", lines)
 	}
 }
 

@@ -57,12 +57,7 @@ function UnavailableReason({ reason }: { reason?: VerificationKitUnavailableReas
     case 'unknown_revision':
       return <>The base branch was not found on GitHub. Check the repository's base branch in General.</>
     case 'rate_limited':
-      return (
-        <>
-          GitHub's rate limit for the workspace GitHub App is exhausted. Refresh after GitHub resets it, within the
-          hour.
-        </>
-      )
+      return <>GitHub's rate limit for the workspace GitHub App is exhausted. Refresh after GitHub resets it.</>
     default:
       return <>The GitHub read failed. Refresh to try again.</>
   }

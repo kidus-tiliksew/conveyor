@@ -26,14 +26,10 @@ import (
 // GitHubFallbackInterval is the shortest time between two fires.
 const GitHubFallbackInterval = time.Minute
 
-// A rate-limited GitHub answer pauses the workspace's timed reads until
-// GitHub's reset time. GitHubRateLimitPause applies when the answer names no
-// reset time, and GitHubRateLimitMaxPause bounds a named one: GitHub's REST
-// allowance resets within an hour.
-const (
-	GitHubRateLimitPause    = 5 * time.Minute
-	GitHubRateLimitMaxPause = time.Hour
-)
+// GitHubRateLimitPause is the pause after a rate-limited GitHub answer that
+// names no reset time in Retry-After or X-RateLimit-Reset. A named reset time
+// is honored as GitHub supplied it, however far away.
+const GitHubRateLimitPause = 5 * time.Minute
 
 // FallbackActor is the system actor the fallback reads and applies under.
 const FallbackActor = "github-fallback"
@@ -380,19 +376,17 @@ func (f *GitHubFallback) fire(ctx context.Context, workspace string, st *fallbac
 }
 
 // rateLimited reports whether err is a rate-limited GitHub answer. It then
-// pauses the workspace's timed reads until GitHub's reset time, bounded by
-// GitHubRateLimitMaxPause, or for GitHubRateLimitPause when the answer named
-// none, and writes one error line naming the workspace and the reset time.
+// pauses the workspace's timed reads until GitHub's reset time, or for
+// GitHubRateLimitPause when the answer named none, and writes one error line
+// naming the workspace and that reset time. No fire is armed before it, and
+// arm keeps the one-minute spacing after the previous fire.
 func (f *GitHubFallback) rateLimited(workspace string, st *fallbackState, now time.Time, err error) bool {
 	retryAt, limited := github.RateLimitRetryAt(err)
 	if !limited {
 		return false
 	}
-	switch {
-	case retryAt.IsZero():
+	if retryAt.IsZero() {
 		retryAt = now.Add(GitHubRateLimitPause)
-	case retryAt.After(now.Add(GitHubRateLimitMaxPause)):
-		retryAt = now.Add(GitHubRateLimitMaxPause)
 	}
 	st.pausedUntil = retryAt
 	f.logf(`level=error msg="timed GitHub checks paused: GitHub rate limit exhausted" workspace=%s reset_at=%s err=%v`, workspace, retryAt.UTC().Format(time.RFC3339), err)

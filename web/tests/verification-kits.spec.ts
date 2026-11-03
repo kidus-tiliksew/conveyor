@@ -230,7 +230,9 @@ test('repository sections render every state, reason and status chip', async ({ 
   await expect(page.getByRole('region', { name: 'blocked-truncated' })).toContainText('GitHub read failed')
   const rateLimited = page.getByRole('region', { name: 'blocked-rate_limited' })
   await expect(rateLimited).toContainText("GitHub's rate limit for the workspace GitHub App is exhausted")
-  await expect(rateLimited).toContainText('Refresh after GitHub resets it')
+  await expect(rateLimited).toContainText('Refresh after GitHub resets it.')
+  // GitHub names the reset time; the copy promises no fixed window.
+  await expect(rateLimited).not.toContainText('within the hour')
   await expect(rateLimited).not.toContainText('GitHub read failed')
   await expect(page.getByRole('region', { name: 'blocked-transport' })).toContainText('GitHub read failed')
 })
