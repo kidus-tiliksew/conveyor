@@ -198,6 +198,12 @@ func (c *AppClient) DiscoverVerification(ctx context.Context, st AppStore, works
 	if err != nil && d.State == "present" {
 		d.State = "malformed"
 	}
+	if d.State == "rate_limited" {
+		// A rate-limited symlink read ends discovery: every later read fails
+		// until GitHub's reset, and the registry reports the cause
+		// (req-verification-kit-inventory AC-1.4).
+		return d
+	}
 	d.Trees = map[string][]verification.TreeEntry{}
 	if d.Manifest != nil {
 		for _, kit := range d.Manifest.Kits {
@@ -207,6 +213,11 @@ func (c *AppClient) DiscoverVerification(ctx context.Context, st AppStore, works
 					continue
 				}
 				if e.Mode == "160000" || (e.Mode == "120000" && check(kit.Path, p) != nil) {
+					if d.State == "rate_limited" {
+						// The symlink read was rate limited, not refused;
+						// keep the cause and stop reading.
+						return d
+					}
 					d.State = "unavailable"
 					continue
 				}

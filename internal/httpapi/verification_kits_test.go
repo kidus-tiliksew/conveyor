@@ -36,9 +36,12 @@ type kitForgeRepo struct {
 	// manifest blob read as GitHub does when the installation's rate limit
 	// is exhausted: 403 with X-RateLimit-Remaining 0.
 	limitedHead, limitedManifest bool
-	head                         string
-	manifests                    map[string]string
-	roots                        map[string][]string
+	// limitedSymlink adds a symlink to each kit root whose blob read
+	// answers rate limited.
+	limitedSymlink bool
+	head           string
+	manifests      map[string]string
+	roots          map[string][]string
 }
 
 type kitForge struct {
@@ -123,6 +126,9 @@ func newKitForge(t *testing.T, private string, repos map[string]*kitForgeRepo) *
 					entries = append(entries,
 						map[string]string{"path": root, "mode": "040000", "type": "tree", "sha": fixtureSHA("dir", root)},
 						map[string]string{"path": root + "/check.sh", "mode": "100755", "type": "blob", "sha": fixtureSHA("script", root)})
+					if repo.limitedSymlink {
+						entries = append(entries, map[string]string{"path": root + "/link.sh", "mode": "120000", "type": "blob", "sha": fixtureSHA("link", slug, root)})
+					}
 				}
 				_ = json.NewEncoder(w).Encode(map[string]any{"sha": tree, "truncated": repo.truncated, "tree": entries})
 				return
@@ -130,6 +136,16 @@ func newKitForge(t *testing.T, private string, repos map[string]*kitForgeRepo) *
 			w.WriteHeader(404)
 		case strings.HasPrefix(tail, "/git/blobs/"):
 			blob := strings.TrimPrefix(tail, "/git/blobs/")
+			if repo.limitedSymlink {
+				for _, roots := range repo.roots {
+					for _, root := range roots {
+						if fixtureSHA("link", slug, root) == blob {
+							writeRateLimited(w)
+							return
+						}
+					}
+				}
+			}
 			for sha, manifest := range repo.manifests {
 				if fixtureSHA("manifest", slug, sha) == blob {
 					_ = json.NewEncoder(w).Encode(map[string]any{"encoding": "base64", "content": base64.StdEncoding.EncodeToString([]byte(manifest)), "size": len(manifest)})
@@ -253,6 +269,7 @@ func TestWorkspaceVerificationKits(t *testing.T) {
 		{Name: "pin-design-versions", GitHub: "org/pin-design-versions", Base: "main"},
 		{Name: "limited", GitHub: "org/limited", Base: "main"},
 		{Name: "limited-manifest", GitHub: "org/limited-manifest", Base: "main"},
+		{Name: "limited-symlink", GitHub: "org/limited-symlink", Base: "main"},
 	}}
 	if _, err := st.BootstrapWorkspaceConfig(store.WithActor(t.Context(), store.SystemActor()), cfg); err != nil {
 		t.Fatal(err)
@@ -338,6 +355,7 @@ func TestWorkspaceVerificationKits(t *testing.T) {
 		"org/pin-design-versions": pinRepo("pin-design-versions", pinsYAML("", "{document_id: design-versions-fail, version: 1}")),
 		"org/limited":             {limitedHead: true, manifests: map[string]string{}, roots: map[string][]string{}},
 		"org/limited-manifest":    {limitedManifest: true, head: fixtureSHA("limited-manifest"), manifests: map[string]string{fixtureSHA("limited-manifest"): kitManifest(2, [2]string{"k-limited", pinsYAML("", "")})}, roots: map[string][]string{fixtureSHA("limited-manifest"): {".conveyor/kits/k-limited"}}},
+		"org/limited-symlink":     {limitedSymlink: true, head: fixtureSHA("limited-symlink"), manifests: map[string]string{fixtureSHA("limited-symlink"): kitManifest(2, [2]string{"k-symlink", pinsYAML("", "")})}, roots: map[string][]string{fixtureSHA("limited-symlink"): {".conveyor/kits/k-symlink"}}},
 		"org/future":              {head: futureHead, manifests: map[string]string{futureHead: strings.Replace(kitManifest(2, [2]string{"k-future", pinsYAML("{document_id: req-a, version: 2}", "")}), "schema_version: 2", "schema_version: 3", 1)}, roots: map[string][]string{futureHead: {".conveyor/kits/k-future"}}},
 	})
 
@@ -425,6 +443,9 @@ func TestWorkspaceVerificationKits(t *testing.T) {
 			// A rate-limited branch-head or manifest read is reported as
 			// rate_limited, not transport or permission (AC-1.4).
 			"limited": {"unavailable", "rate_limited"}, "limited-manifest": {"unavailable", "rate_limited"},
+			// A rate-limited kit-tree symlink blob read keeps rate_limited
+			// rather than unavailable/transport.
+			"limited-symlink": {"unavailable", "rate_limited"},
 		} {
 			repo := byName[name]
 			if repo.State != want[0] || repo.Reason != want[1] {

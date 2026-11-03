@@ -42,7 +42,12 @@ func (p *monitorPoller) Settings(ctx context.Context, workspace string) (bool, t
 	return current.Monitor.Enabled, current.Monitor.PollInterval, nil
 }
 
-// PollWorkspace polls every monitored repository of an enabled monitor once.
+// PollWorkspace polls every monitored repository of an enabled monitor once,
+// for the timed GitHub fallback. The first rate-limited GitHub answer ends
+// the sweep without a retry and is returned with its category and GitHub's
+// reset time, so the fallback pauses the workspace until that reset
+// (component-runtime, Timed GitHub fallback). Other failures are collected
+// and the sweep continues.
 func (p *monitorPoller) PollWorkspace(ctx context.Context, workspace string) error {
 	workspaceCtx := store.WithWorkspace(ctx, workspace)
 	current, err := p.Config(workspaceCtx)
@@ -54,9 +59,14 @@ func (p *monitorPoller) PollWorkspace(ctx context.Context, workspace string) err
 	}
 	var failures []string
 	for _, repositoryName := range current.Monitor.Repositories {
-		if pollErr := p.pollRepository(workspaceCtx, workspace, current, repositoryName); pollErr != nil {
-			failures = append(failures, fmt.Sprintf("%s: %v", repositoryName, pollErr))
+		pollErr := p.pollRepository(workspaceCtx, workspace, current, repositoryName, true)
+		if pollErr == nil {
+			continue
 		}
+		if _, limited := githubtrigger.RateLimitRetryAt(pollErr); limited {
+			return fmt.Errorf("monitor poll: %s: %w", strings.Join(append(failures, repositoryName), "; "), pollErr)
+		}
+		failures = append(failures, fmt.Sprintf("%s: %v", repositoryName, pollErr))
 	}
 	if len(failures) > 0 {
 		return fmt.Errorf("monitor poll: %s", strings.Join(failures, "; "))
@@ -88,14 +98,15 @@ func (p *monitorPoller) PushedRef(ctx context.Context, githubRepo, ref string) e
 		if ref != "refs/heads/"+base {
 			return nil
 		}
-		return p.pollRepository(ctx, workspace, current, repositoryName)
+		return p.pollRepository(ctx, workspace, current, repositoryName, false)
 	}
 	return nil
 }
 
 // pollRepository is one poll of one monitored repository, as the removed
-// five-second loop ran it.
-func (p *monitorPoller) pollRepository(workspaceCtx context.Context, workspaceID string, current *config.Config, repositoryName string) error {
+// five-second loop ran it. A timed poll stops at a rate-limited answer
+// instead of retrying it; a push delivery's poll keeps the bounded retries.
+func (p *monitorPoller) pollRepository(workspaceCtx context.Context, workspaceID string, current *config.Config, repositoryName string, timed bool) error {
 	st, d := p.Store, p.Dispatcher
 	repository, ok := current.Repo(repositoryName)
 	if !ok || repository.GitHub == "" {
@@ -152,6 +163,7 @@ func (p *monitorPoller) pollRepository(workspaceCtx context.Context, workspaceID
 	poller := monitor.Poller{
 		Service: p.Service, Source: source, StartupWindow: current.Monitor.StartupWindow,
 		RetryInitial: time.Second, RetryMaximum: 30 * time.Second, Sleep: sleep,
+		StopOnRateLimit: timed,
 	}
 	return poller.Poll(workspaceCtx)
 }
