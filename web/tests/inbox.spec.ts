@@ -1514,12 +1514,18 @@ test('an agent question shows the pending proposals its citations name, not ones
   page,
 }) => {
   const fixture = decisionsFixture()
-  const citation = (document_id: string, document_kind: string, document_title: string, version?: number) => ({
+  const citation = (
+    document_id: string,
+    document_kind: string,
+    document_title: string,
+    version?: number,
+    confirmed = 2,
+  ) => ({
     document_id,
     document_kind,
     document_title,
     cited_version: 2,
-    current_confirmed_version: 2,
+    current_confirmed_version: confirmed,
     newer_confirmed: false,
     pending_proposals:
       version == null
@@ -1555,6 +1561,7 @@ test('an agent question shows the pending proposals its citations name, not ones
               citation('sd-cache', 'system_design', 'Cache design', 3),
               citation('req-cache', 'requirement', 'Cache requirement', 4),
               citation('sd-quiet', 'system_design', 'Quiet design'),
+              citation('sd-first', 'system_design', 'First design', 1, 0),
             ],
           },
         },
@@ -1584,21 +1591,38 @@ test('an agent question shows the pending proposals its citations name, not ones
       ],
     }),
   )
+  // Until the server names the current order, the context claims nothing about
+  // what the agent asked.
+  let releaseAction = () => {}
+  const actionHeld = new Promise<void>((resolve) => {
+    releaseAction = resolve
+  })
+  await page.route('**/v1/tasks/T-alpha/next-action*', async (route) => {
+    await actionHeld
+    await route.fallback()
+  })
   await page.goto('/w/demo/inbox')
   await select(page, 'Alpha agent question')
 
   const context = decisionDetail(page).getByRole('region', { name: 'Decision context' })
+  await expect(context).toHaveAttribute('aria-busy', 'false')
+  await expect(context.getByText('The agent stopped without a structured question.')).toHaveCount(0)
+  releaseAction()
   const pending = context.getByRole('region', { name: 'Pending revisions of cited documents' })
-  await expect(pending.getByRole('listitem')).toHaveCount(2)
+  await expect(pending.getByRole('listitem')).toHaveCount(3)
   await expect(pending.getByRole('link', { name: 'Cache design' })).toHaveAttribute(
     'href',
     /system-design.*document=sd-cache.*tab=changes.*target=3/,
   )
   await expect(pending.getByRole('link', { name: 'Cache requirement' })).toHaveAttribute(
     'href',
-    /requirements.*requirement=req-cache/,
+    /requirements.*requirement=req-cache.*tab=changes.*target=4/,
   )
   await expect(pending).not.toContainText('Quiet design')
+  // A first proposal has no confirmed base to compare, so it offers only its link.
+  const first = pending.getByRole('listitem').filter({ hasText: 'First design' })
+  await expect(first.getByRole('link', { name: 'First design' })).toBeVisible()
+  await expect(first.getByText(/Show changes/)).toHaveCount(0)
   await pending.getByText('Show changes in v3').click()
   await expect(pending.getByText('Proposed v3')).toBeVisible()
   await expect(context.getByText('Own uncited design')).toHaveCount(0)

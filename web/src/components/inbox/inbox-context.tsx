@@ -156,12 +156,13 @@ function CheckpointContext({ item }: { item: ActivityItem }) {
   const { workspace } = useWorkspaceSelection()
   // The server names the order the agent is waiting in; its checkpoint is
   // the question and the documents it cites.
-  const { data: action } = useNextAction(item.task.id)
+  const { data: action, isPending } = useNextAction(item.task.id)
   const checkpoint = item.work_orders?.find((order) => order.id === action?.current_order?.id)?.checkpoint
   // The cited documents decide which proposals this question shows, whoever
   // authored them (req-operator-next-action AC-1.6, AC-2.3; req-260820-394cac
   // AC-2.3).
   const proposed = citedDocumentsOf(checkpoint?.citations ?? []).filter((document) => document.proposals.length > 0)
+  if (isPending) return <Skeleton className="h-24" />
   return (
     <div className="space-y-3">
       <section aria-label="Agent checkpoint" className="rounded-lg border border-border px-3 py-3">
@@ -197,7 +198,7 @@ function CheckpointContext({ item }: { item: ActivityItem }) {
                       <Link
                         to="/w/$workspaceId/requirements"
                         params={{ workspaceId: workspace }}
-                        search={{ requirement: first.document_id }}
+                        search={{ requirement: first.document_id, tab: 'changes', target: proposal.version }}
                         className="text-primary hover:underline"
                       >
                         {documentName(document)}
@@ -213,7 +214,8 @@ function CheckpointContext({ item }: { item: ActivityItem }) {
                       </Link>
                     )}
                     {proposal.version != null && ` v${proposal.version}`}
-                    {proposal.version != null && (
+                    {/* With no confirmed version there is no base to compare; the link opens the proposal. */}
+                    {proposal.version != null && document.currentConfirmedVersion > 0 && (
                       <CheckpointProposalDiff
                         kind={first.document_kind}
                         documentId={first.document_id}

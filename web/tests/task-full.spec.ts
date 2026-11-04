@@ -6662,11 +6662,19 @@ for (const tier of ['requirement', 'system_design']) {
 
 test('start over does not wait for pending proposals to load', async ({ page }) => {
   await mockRestart(page)
-  await page.route('**/v1/pending-proposals*', (route) => route.fulfill({ status: 503, body: 'Unavailable' }))
+  let release = () => {}
+  const held = new Promise<void>((resolve) => {
+    release = resolve
+  })
+  await page.route('**/v1/pending-proposals*', async (route) => {
+    await held
+    await route.fulfill({ status: 503, body: 'Unavailable' })
+  })
   const dialog = await openRestart(page)
   await dialog.getByLabel('Reason', { exact: false }).fill('Try again')
   await expectNoRestartProposalCopy(dialog)
   await expect(dialog.getByRole('button', { name: 'Start over', exact: true })).toBeEnabled()
+  release()
 })
 
 for (const [status, code, message] of [
