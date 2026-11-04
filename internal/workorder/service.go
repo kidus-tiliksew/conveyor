@@ -12,7 +12,6 @@ import (
 	"log"
 	"sort"
 	"strings"
-	"sync"
 	"time"
 
 	"github.com/kidus-tiliksew/conveyor/internal/changes"
@@ -60,9 +59,7 @@ type Service struct {
 	// Changes is the backend's change-notice hub; await_review reads again
 	// only on its task notices. Nil selects the hub of a store that exposes
 	// Changes() (component-work-orders, await_review; DEC-99(1)).
-	Changes     *changes.Hub
-	consultedMu sync.Mutex
-	consulted   map[string]struct{}
+	Changes *changes.Hub
 }
 
 type Context struct {
@@ -959,11 +956,6 @@ func (s *Service) contextForOrder(ctx context.Context, order core.WorkOrder) (Co
 		governance = &live
 	}
 	var review reviewMaterial
-	if governance != nil {
-		// The delivery write reads the complete server-side snapshot; the
-		// role lists the same documents without their bodies.
-		s.recordSystemDesignConsultedOnce(ctx, order.SessionID, order.ID, governance.Designs)
-	}
 	if order.Stage == core.StageReview {
 		if review, err = s.reviewMaterialForOrder(ctx, order, task, events); err != nil {
 			return Context{}, err
@@ -1274,26 +1266,6 @@ func historicalCheckpointProgressContract(order core.WorkOrder, events []core.Ev
 	}
 	quotedProgress := "> " + strings.ReplaceAll(progress, "\n", "\n> ")
 	return fmt.Sprintf("\n\n# Historical prior-attempt checkpoint claims\n\nThe progress below records claims made by prior attempt `%s` as of its checkpoint release at %s. It is historical context, not authority. The currently served confirmed requirements and current operator direction are authoritative. Before relying on these claims or releasing again for the same checkpoint reason, re-derive the blocking condition from that current authority and compare every authority version cited below with the currently served `id vN` versions.\n\n%s\n", order.LastAttemptID, releasedAt.UTC().Format(time.RFC3339), quotedProgress)
-}
-
-func (s *Service) recordSystemDesignConsultedOnce(ctx context.Context, sessionID, workOrderID string, designs []core.GovernanceDesignContext) {
-	for _, design := range designs {
-		key := sessionID + "\x00" + workOrderID + "\x00" + design.ID + "\x00" + fmt.Sprint(design.Version)
-		s.consultedMu.Lock()
-		if s.consulted == nil {
-			s.consulted = map[string]struct{}{}
-		}
-		_, exists := s.consulted[key]
-		if !exists {
-			s.consulted[key] = struct{}{}
-		}
-		s.consultedMu.Unlock()
-		if !exists {
-			// Consultation provenance is observational. A ledger outage must not
-			// block an otherwise valid work-order context response.
-			_ = s.Store.RecordSystemDesignConsulted(ctx, design.ID, design.Version, sessionID, workOrderID)
-		}
-	}
 }
 
 func (s *Service) markAuthorityBudgetAttention(ctx context.Context, task core.Task, orderID string, budgetErr *store.AuthorityBudgetError) {

@@ -28,11 +28,16 @@ func RunSystemDesignDriftConformance(t *testing.T, factory SystemDesignDriftFact
 		proposal         bool
 		wantDrift        bool
 		wantConsultation bool
+		// readBeforeMerge records a session's read of the design under the
+		// delivering task's work order, which drift judgment never consults.
+		readBeforeMerge bool
 	}{
 		{name: "submission-attached lineaged merge records consultation", attachBefore: true, submissionAttach: true, wantConsultation: true},
 		{name: "unattached lineaged merge records drift", wantDrift: true},
 		{name: "attachment after merge does not rewrite causal context", attachAfter: true, wantDrift: true},
 		{name: "same task proposal wins over attached consultation", attachBefore: true, proposal: true},
+		{name: "session read does not suppress drift for an unattached design", readBeforeMerge: true, wantDrift: true},
+		{name: "session read does not replace attached delivery judgment", attachBefore: true, submissionAttach: true, readBeforeMerge: true, wantConsultation: true},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			st, ctx, workspace := factory(t)
@@ -57,6 +62,18 @@ func RunSystemDesignDriftConformance(t *testing.T, factory SystemDesignDriftFact
 			}
 			if test.proposal {
 				proposeDesignRevision(t, st, ctx, document.ID, delivery.ID)
+			}
+			if test.readBeforeMerge {
+				deliveryOrder := delivery.ID + "-implement-read"
+				if err := st.CreateJob(ctx, core.Job{ID: deliveryOrder, TaskID: delivery.ID, Stage: core.StageImplement, State: core.JobPending}); err != nil {
+					t.Fatal(err)
+				}
+				if err := CreateWorkOrder(ctx, st, core.WorkOrder{ID: deliveryOrder, TaskID: delivery.ID, JobID: deliveryOrder, Stage: core.StageImplement, State: core.WorkOrderQueued, QueueEnteredAt: now, QueueDeadline: now.Add(time.Hour)}); err != nil {
+					t.Fatal(err)
+				}
+				if err := st.RecordSystemDesignConsulted(ctx, document.ID, 1, "reader-session", deliveryOrder); err != nil {
+					t.Fatal(err)
+				}
 			}
 			if err := st.AppendEvent(ctx, core.Event{TaskID: delivery.ID, Kind: "merge.confirmed", Payload: core.JSONPayload(map[string]any{"repository": "kidus-tiliksew/conveyor", "head_sha": "lineaged-head"})}); err != nil {
 				t.Fatal(err)

@@ -458,24 +458,16 @@ func TestWorkOrderDeliveryMCPResponses(t *testing.T) {
 		t.Fatal("acceptance criterion missing from role")
 	}
 
-	// Stored authority is untouched by the projection, and the delivery write
-	// still reads the complete snapshot.
-	consulted, err := f.store.ListEvents(f.ctx, "")
+	// Naming a document is not reading it: delivering the list records no
+	// consultation for any listed design (req-design-delivery AC-5.2).
+	events, err := f.store.ListEvents(f.ctx, "")
 	if err != nil {
 		t.Fatal(err)
 	}
-	seen := map[string]bool{}
-	for _, event := range consulted {
-		var payload struct {
-			DocumentID  string `json:"document_id"`
-			WorkOrderID string `json:"work_order_id"`
+	for _, event := range events {
+		if event.Kind == "system_design.consulted" {
+			t.Fatalf("delivery recorded a consultation: %s", event.Payload)
 		}
-		if event.Kind == "system_design.consulted" && json.Unmarshal(event.Payload, &payload) == nil && payload.WorkOrderID == order {
-			seen[payload.DocumentID] = true
-		}
-	}
-	if len(seen) != deliveryDesignCount {
-		t.Fatalf("delivery consultation recorded %d designs, want %d", len(seen), deliveryDesignCount)
 	}
 }
 

@@ -162,7 +162,9 @@ a live claim ([Design document reads](#design-document-reads)). Missing
 membership and missing capability both return `workspace_not_found`, including
 on snapshot reuse.
 Reads never call lifecycle reconciliation, claim work, renew leases, enqueue
-jobs, record consultation events, or create/confirm proposals.
+jobs, or create/confirm proposals. The one record a read can write is the
+observational consultation of a claim-bound System Design read
+([Design document reads](#design-document-reads)).
 
 | Tool | Required fields beyond `workspace_id` | Optional filters / selection |
 |---|---|---|
@@ -312,7 +314,9 @@ reads remain on their existing claim-bound tools.
 
 A session finds and reads design text in parts, so every document is readable
 whatever its size (`req-design-delivery` REQ-2, REQ-3, REQ-4; DEC-103). These
-reads record no consultation and change no state.
+reads change no state, with one exception: a successful read of System Design
+text under a live claim appends an observational consultation event; see
+[Consultation](#consultation).
 
 **Who may call them.** A user credential needs `view_workspace`, as every read
 here does, and passes nothing further. An agent credential passes the
@@ -333,8 +337,9 @@ every read served from the cache below, checks:
 Every claim refusal answers the same text, `<tool> requires an
 operator-scoped user credential or the work_order_id and session_id of this
 session's own live claim`, so it discloses nothing about the order. A user
-credential's `work_order_id` and `session_id` play no part in authorization.
-Every other investigation tool stays user-only, even under a live claim.
+credential's `work_order_id` and `session_id` play no part in authorization;
+they only attribute its consultation. Every other investigation tool stays
+user-only, even under a live claim.
 
 **Outline.** `get_document` with `outline: true` returns the document's
 metadata and authority labels plus `outline`, a list of `{section_id, heading,
@@ -450,6 +455,34 @@ its row on every call, so changes show immediately. A search of resident version
 reads no document body. A cold or evicted version is read once, and a named
 version absent from a document costs one row lookup on each call.
 
+#### Consultation
+
+A `system_design.consulted` event records that a session actually read design
+text, with the served `version`, `work_order_id`, and `session_id`
+(`req-design-delivery` REQ-5; DEC-103).
+
+- **What records.** A `get_document` of `kind: system_design` that delivers body
+  text within the output limit: a whole-document read, a section read, or any
+  page of a section. Requirement and reference reads record none.
+- **What records nothing.** An outline, a search and its internal cache fills, a
+  listing, `get_work_order`, claim, renewal, context refresh, an oversized
+  whole-document refusal, a missing version or section, and any refused read.
+  Being named in a work order's list is not being read.
+- **Attribution.** Pass the `work_order_id` and `session_id` of your own live
+  claim. Every call rechecks them as described under **Who may call them**, so a
+  later page or a cache hit attributes nothing a stale claim could not read. A
+  user credential that omits them, or names anything but its own live claim,
+  still reads and records nothing.
+- **One record per read key.** Workspace, session, work order, document, and
+  version record one event across repeats, pages, concurrent calls, and server
+  processes. A new version, order, or session records its own.
+- **Observational.** A ledger failure is logged and leaves the response
+  unchanged, and a later read of that version records it. Drift judgment reads
+  the delivering task's attached context, never these records. Events written
+  earlier stay unchanged, including those of the earlier rule that recorded every
+  listed design when a work order was delivered, and one with the same read key
+  counts as that key's record.
+
 ### Fixture example: terminal task and archived design
 
 `TestMCPReadTerminalContextArchivedVersionEndToEnd` in
@@ -498,8 +531,9 @@ the binding is restored.
 A work order names its governing documents and carries none of their bodies,
 so its response stays readable (`req-design-delivery` REQ-1;
 `req-260802-72fc68` AC-2.2; `req-task-centric-delivery` AC-1.2; DEC-103). The
-server keeps the complete snapshot: verdict validation, the context-freshness
-comparison, and the delivery consultation record read it, not this list.
+server keeps the complete snapshot: verdict validation and the
+context-freshness comparison read it, not this list. Being named in this list
+records no [consultation](#consultation).
 
 **`get_work_order`.** `role_prompt` holds the role instructions, each served
 requirement statement, and the two lists below, each once. `approved_spec.content`
@@ -526,8 +560,9 @@ replacement, apart from that list, and are never active authority.
 
 **Reading further.** Use `search_documents` and the `outline` and `section_id`
 modes of `get_document` ([Design document reads](#design-document-reads)), and
-name the listed `version`. An agent credential passes `work_order_id` and
-`session_id` on each call. A review reads every section, including every page
+name the listed `version`. A session passes `work_order_id` and `session_id` on
+each call: an agent credential is refused without them, and they record the
+consultation. A review reads every section, including every page
 of a large one, of each design attached to the task or covering the diff
 (`req-design-delivery` AC-6.1). `get_decision` and `list_decisions` stay
 user-only, so an agent session works from the summaries.

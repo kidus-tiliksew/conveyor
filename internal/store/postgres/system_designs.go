@@ -725,6 +725,27 @@ func (s *Store) RecordSystemDesignConsulted(ctx context.Context, documentID stri
 		if !exists {
 			return fmt.Errorf("%w: system design consultation target", store.ErrNotFound)
 		}
+		if workOrderID != "" {
+			// One read key records once across concurrent calls and service
+			// instances: the work-order row serializes the check and the write.
+			// Planning-session and delivery_no_revision records carry no work
+			// order and never match (req-design-delivery REQ-5).
+			var locked string
+			if err := tx.QueryRow(ctx, `SELECT id FROM work_orders WHERE workspace_id=$1 AND id=$2 FOR NO KEY UPDATE`, workspace(ctx), workOrderID).Scan(&locked); err != nil {
+				return notFound(err, "work order %s", workOrderID)
+			}
+			// The LIKE predicate selects events_system_design_document_idx.
+			var consulted bool
+			if err := tx.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM events WHERE workspace_id=$1
+				AND kind LIKE 'system_design.%' AND kind='system_design.consulted' AND payload_json->>'document_id'=$2
+				AND payload_json->>'version'=$3 AND payload_json->>'session_id'=$4 AND payload_json->>'work_order_id'=$5)`,
+				workspace(ctx), documentID, strconv.Itoa(version), sessionID, workOrderID).Scan(&consulted); err != nil {
+				return err
+			}
+			if consulted {
+				return nil
+			}
+		}
 		return insertWorkspaceEvent(ctx, q, core.Event{Kind: "system_design.consulted", Payload: core.JSONPayload(map[string]any{
 			"workspace_id": workspace(ctx), "document_id": documentID, "version": version,
 			"session_id": sessionID, "work_order_id": workOrderID,

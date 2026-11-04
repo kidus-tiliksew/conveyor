@@ -58,9 +58,10 @@ follows that prompt, which ends it after its own submission.
    title, and version, and confirmed decisions by ID with a one-line summary
    (`req-design-delivery` REQ-1; DEC-103). Read design text with
    `search_documents` and `get_document`'s `outline` and `section_id` modes at
-   the listed `version`. An agent credential passes the order's `work_order_id`
-   and `session_id` on each of those calls, or it is refused. An agent credential
-   cannot call `get_decision` or `list_decisions`, so it works from the
+   the listed `version`. Pass the order's `work_order_id` and `session_id` on
+   each of those calls: a read of design text under that claim records your
+   consultation (`req-design-delivery` REQ-5), and an agent credential is refused
+   without them. An agent credential cannot call `get_decision` or `list_decisions`, so it works from the
    summaries. A reviewer reads every section, including every page of a large
    one, of each design attached to the task or covering the diff
    (`req-design-delivery` AC-6.1).
