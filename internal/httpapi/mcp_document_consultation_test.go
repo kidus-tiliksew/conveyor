@@ -273,8 +273,8 @@ func TestMCPOnlySystemDesignReadsRecordConsultation(t *testing.T) {
 	f.wantConsultations("requirement and reference reads")
 }
 
-// consultationLedgerStore fails or stalls the ledger write on demand and
-// reports whether the boundary bounded it.
+// consultationLedgerStore fails the ledger write on demand and reports whether
+// the boundary set a deadline on it.
 type consultationLedgerStore struct {
 	store.Store
 	failing  atomic.Bool

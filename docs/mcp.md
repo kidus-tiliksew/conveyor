@@ -314,8 +314,9 @@ reads remain on their existing claim-bound tools.
 
 A session finds and reads design text in parts, so every document is readable
 whatever its size (`req-design-delivery` REQ-2, REQ-3, REQ-4; DEC-103). These
-reads change no state. A successful read of System Design text under a live
-claim also records a consultation; see [Consultation](#consultation).
+reads change no state, with one exception: a successful read of System Design
+text under a live claim appends an observational consultation event; see
+[Consultation](#consultation).
 
 **Who may call them.** A user credential needs `view_workspace`, as every read
 here does, and passes nothing further. An agent credential passes the
