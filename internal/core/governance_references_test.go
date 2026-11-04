@@ -146,9 +146,12 @@ func TestDiffChangedPathsReadsHeadersOnly(t *testing.T) {
 	diff := "diff --git a/internal/a.go b/internal/a.go\n--- a/internal/a.go\n+++ b/internal/a.go\n@@ -1,2 +1,2 @@\n--- a/not/a/header.go\n+++ b/not/a/header.go\n" +
 		"diff --git a/old.go b/new.go\nsimilarity index 90%\nrename from old.go\nrename to new.go\n" +
 		"diff --git a/added.go b/added.go\nnew file mode 100644\n--- /dev/null\n+++ b/added.go\n" +
-		"diff --git a/mode only.sh b/mode only.sh\nold mode 100644\nnew mode 100755\n"
+		"diff --git a/mode only.sh b/mode only.sh\nold mode 100644\nnew mode 100755\n" +
+		"diff --git \"a/caf\\303\\251.go\" \"b/caf\\303\\251.go\"\n--- \"a/caf\\303\\251.go\"\n+++ \"b/caf\\303\\251.go\"\n" +
+		"diff --git \"a/tab\\there.go\" \"b/tab\\there.go\"\nold mode 100644\nnew mode 100755\n" +
+		"diff --git \"a/from\\\"q.go\" \"b/to\\\\q.go\"\nrename from \"from\\\"q.go\"\nrename to \"to\\\\q.go\"\n"
 	got := DiffChangedPaths(diff)
-	want := []string{"added.go", "internal/a.go", "mode only.sh", "new.go", "old.go"}
+	want := []string{"added.go", "café.go", "from\"q.go", "internal/a.go", "mode only.sh", "new.go", "old.go", "tab\there.go", "to\\q.go"}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("paths=%v want %v", got, want)
 	}

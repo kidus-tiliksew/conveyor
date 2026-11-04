@@ -3,6 +3,7 @@ package core
 import (
 	"bytes"
 	"sort"
+	"strconv"
 	"strings"
 	"unicode/utf8"
 )
@@ -226,34 +227,43 @@ func AppendJSONObjectField(payload []byte, field string) []byte {
 // DiffChangedPaths reads the changed paths from a unified diff's file headers,
 // so a review order's list can apply the governed-scope resolver to the diff
 // it already holds. Hunk bodies are skipped, because a changed line can look
-// like a header.
+// like a header. Git C-quotes a path holding a tab, quote, backslash, or
+// non-ASCII byte; quoted names are decoded.
 func DiffChangedPaths(diff string) []string {
 	seen := map[string]bool{}
-	add := func(path string) {
-		if path != "" && path != "/dev/null" {
+	add := func(raw, prefix string) {
+		path, ok := decodeDiffPath(raw, prefix)
+		if ok && path != "" {
 			seen[path] = true
 		}
 	}
 	inHeader := false
 	for _, line := range strings.Split(diff, "\n") {
 		switch {
-		case strings.HasPrefix(line, "diff --git a/"):
+		case strings.HasPrefix(line, "diff --git "):
 			inHeader = true
-			rest := strings.TrimPrefix(line, "diff --git a/")
-			if half := (len(rest) - len(" b/")) / 2; half > 0 && rest[half:] == " b/"+rest[:half] {
-				add(rest[:half])
+			rest := strings.TrimPrefix(line, "diff --git ")
+			if strings.HasPrefix(rest, `"`) {
+				if first, err := strconv.QuotedPrefix(rest); err == nil {
+					add(first, "a/")
+					add(strings.TrimPrefix(rest[len(first):], " "), "b/")
+				}
+			} else if plain := strings.TrimPrefix(rest, "a/"); plain != rest {
+				if half := (len(plain) - len(" b/")) / 2; half > 0 && plain[half:] == " b/"+plain[:half] {
+					add(plain[:half], "")
+				}
 			}
 		case strings.HasPrefix(line, "@@"):
 			inHeader = false
 		case !inHeader:
-		case strings.HasPrefix(line, "--- a/"):
-			add(strings.TrimPrefix(line, "--- a/"))
-		case strings.HasPrefix(line, "+++ b/"):
-			add(strings.TrimPrefix(line, "+++ b/"))
+		case strings.HasPrefix(line, "--- "):
+			add(strings.TrimPrefix(line, "--- "), "a/")
+		case strings.HasPrefix(line, "+++ "):
+			add(strings.TrimPrefix(line, "+++ "), "b/")
 		case strings.HasPrefix(line, "rename from "):
-			add(strings.TrimPrefix(line, "rename from "))
+			add(strings.TrimPrefix(line, "rename from "), "")
 		case strings.HasPrefix(line, "rename to "):
-			add(strings.TrimPrefix(line, "rename to "))
+			add(strings.TrimPrefix(line, "rename to "), "")
 		}
 	}
 	paths := make([]string, 0, len(seen))
@@ -262,4 +272,21 @@ func DiffChangedPaths(diff string) []string {
 	}
 	sort.Strings(paths)
 	return paths
+}
+
+// decodeDiffPath unquotes one header name and removes its side prefix. It
+// refuses /dev/null, a name without the prefix, and a malformed quoted name.
+func decodeDiffPath(raw, prefix string) (string, bool) {
+	path := raw
+	if strings.HasPrefix(raw, `"`) {
+		decoded, err := strconv.Unquote(raw)
+		if err != nil {
+			return "", false
+		}
+		path = decoded
+	}
+	if path == "/dev/null" || !strings.HasPrefix(path, prefix) {
+		return "", false
+	}
+	return strings.TrimPrefix(path, prefix), true
 }

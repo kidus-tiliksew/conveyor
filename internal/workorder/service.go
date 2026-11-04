@@ -1092,7 +1092,10 @@ type reviewMaterial struct {
 }
 
 func (s *Service) reviewMaterialForOrder(ctx context.Context, order core.WorkOrder, task core.Task, events []core.Event) (reviewMaterial, error) {
-	cfg, _ := s.config(ctx)
+	cfg, err := s.config(ctx)
+	if err != nil {
+		return reviewMaterial{}, err
+	}
 	repo, ok := cfg.Repo(task.Repo)
 	if !ok || repo.GitHub == "" {
 		return reviewMaterial{}, nil

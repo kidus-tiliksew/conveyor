@@ -1067,7 +1067,22 @@ func runWorkOrderEventsNameAuthority(t *testing.T, x Fixture) {
 	if seen != 1 {
 		t.Fatalf("claimed events=%d", seen)
 	}
-	checkPayload("work_order.updated", store.WorkOrderEventPayload(stored))
+	// A real update persists the event the live path writes.
+	updated := stored
+	updated.Progress = "naming authority"
+	requireOK(t, UpdateWorkOrder(ctx, st, updated))
+	events, err = st.ListEvents(ctx, claimed.TaskID)
+	requireOK(t, err)
+	seen = 0
+	for _, event := range events {
+		if event.Kind == "work_order.updated" {
+			checkPayload(event.Kind, event.Payload)
+			seen++
+		}
+	}
+	if seen == 0 {
+		t.Fatal("the update persisted no work_order.updated event")
+	}
 	// A snapshot-free order still names its pin by digest.
 	withoutSnapshot := stored
 	withoutSnapshot.GovernanceSnapshot = nil

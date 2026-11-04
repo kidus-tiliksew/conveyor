@@ -139,8 +139,9 @@ layers:
   implementation to cite IDs in code comments and tells review to classify
   its citations.
 - The governance lists: every governing System Design by ID, title, and
-  version (pinned versions where an attachment or a review pin holds one),
-  attached documents first, and every confirmed decision by ID with a one-line
+  version (pinned versions where an attachment holds one and, for a review or
+  verify order, the versions pinned at its claim), attached documents first,
+  and every confirmed decision by ID with a one-line
   summary. Bodies stay on the server; sessions read them through
   `search_documents` and `get_document` (see
   [Work order delivery](mcp.md#work-order-delivery)).
