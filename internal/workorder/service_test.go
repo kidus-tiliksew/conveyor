@@ -1597,7 +1597,7 @@ func TestReviewClaimPinsGovernanceVersionsAndDecisionAuthority(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(context.RolePrompt, `document="DESIGN-runtime" version=1`) || strings.Contains(context.RolePrompt, `document="DESIGN-runtime" version=2`) || !strings.Contains(context.RolePrompt, "# Pinned decision authority") {
+	if !strings.Contains(context.RolePrompt, "DESIGN-runtime v1:") || strings.Contains(context.RolePrompt, "DESIGN-runtime v2:") || !strings.Contains(context.RolePrompt, "# Pinned decision authority") {
 		t.Fatalf("review role did not use pinned governance authority: %s", context.RolePrompt)
 	}
 	if _, err = service.Get(ctx, job.ID, "governance-pin-session"); err != nil {
@@ -1615,6 +1615,97 @@ func TestReviewClaimPinsGovernanceVersionsAndDecisionAuthority(t *testing.T) {
 	}
 	if consulted != 1 {
 		t.Fatalf("work-order consultation events=%d, want one", consulted)
+	}
+}
+
+// TestReviewVerdictValidatesAgainstPinsAfterLiveAuthorityMoves proves a review
+// verdict is still judged by the pinned snapshot once the order delivers only
+// names: a citation of authority confirmed after the pin is refused, and the
+// pinned citation is accepted (req-design-delivery AC-1.4).
+func TestReviewVerdictValidatesAgainstPinsAfterLiveAuthorityMoves(t *testing.T) {
+	ctx := store.WithWorkspace(store.WithActor(t.Context(), store.SystemActor()), "test")
+	st := store.NewMemory()
+	task := core.Task{ID: "verdict-pin-task", Workspace: "test", Repo: "app", State: core.TaskRunning, NextStage: core.StageReview, CreatedAt: time.Now().UTC()}
+	if err := st.CreateTask(ctx, task); err != nil {
+		t.Fatal(err)
+	}
+	content := "# Runtime v1\n\nPINNED-BODY\n\n```conveyor:governs\n- repo: app\n  paths:\n    - internal/**\n```"
+	document, first, err := st.CreateSystemDesign(ctx, core.SystemDesign{ID: "DESIGN-pin", Title: "Runtime", Category: "Architecture"}, core.SystemDesignVersion{Content: content, Origin: core.SystemDesignOriginOperator})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err = st.ConfirmSystemDesignVersion(ctx, document.ID, first.Version); err != nil {
+		t.Fatal(err)
+	}
+	pinnedDecision, err := st.ProposeDecision(ctx, core.Decision{Statement: "Pinned decision.", Context: "Pin.", AlternativesRejected: "None.", Origin: core.DecisionOriginOperator})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = st.ConfirmDecision(ctx, pinnedDecision.ID); err != nil {
+		t.Fatal(err)
+	}
+	job := core.Job{ID: task.ID + "-review-1", TaskID: task.ID, Stage: core.StageReview, State: core.JobPending, ModelTier: "reviewer"}
+	if err = st.CreateJob(ctx, job); err != nil {
+		t.Fatal(err)
+	}
+	if err = storetest.For(st).CreateWorkOrder(ctx, core.WorkOrder{ID: job.ID, TaskID: task.ID, JobID: job.ID, Stage: core.StageReview, ReviewRound: 1, ReviewSeat: 1}); err != nil {
+		t.Fatal(err)
+	}
+	bundle, err := pack.Load("../../pack")
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg := &config.Config{Workspace: "test", MaxBounces: 2, Routing: config.Routing{Stages: map[string]config.StageRoute{"review": {Execution: config.ExecutionMCP, Timeout: time.Hour}}}}
+	dispatcher := dispatch.New(st, cfg, nil)
+	dispatcher.DisableMemoryQueueForTest()
+	service := &Service{Store: st, Pack: bundle, Dispatcher: dispatcher, ConfigProvider: func(context.Context) (*config.Config, error) { return cfg, nil }}
+	const session = "verdict-pin-session"
+	if _, err = service.Claim(ctx, job.ID, core.WorkOrderClaim{SessionID: session, ClientToken: "secret", ClaimantID: "reviewer", Agent: "codex", Model: "reviewer", Lease: time.Minute}); err != nil {
+		t.Fatal(err)
+	}
+
+	// The live corpus moves past the pin: a new design version and two decisions.
+	second, err := st.ProposeSystemDesignVersion(ctx, core.SystemDesignVersion{DocumentID: document.ID, Content: strings.ReplaceAll(content, "v1", "v2"), Origin: core.SystemDesignOriginOperator})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err = st.ConfirmSystemDesignVersion(ctx, document.ID, second.Version); err != nil {
+		t.Fatal(err)
+	}
+	laterDecision, err := st.ProposeDecision(ctx, core.Decision{Statement: "Later decision.", Context: "Later.", AlternativesRejected: "None.", Origin: core.DecisionOriginOperator})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = st.ConfirmDecision(ctx, laterDecision.ID); err != nil {
+		t.Fatal(err)
+	}
+
+	contract, err := service.Get(ctx, job.ID, session)
+	if err != nil {
+		t.Fatal(err)
+	}
+	outbound := contract.Outbound()
+	if outbound.GovernanceSnapshot != nil || outbound.Order.GovernanceSnapshot != nil || contract.Order.GovernanceSnapshot == nil {
+		t.Fatalf("outbound snapshot=%+v order=%+v source=%+v", outbound.GovernanceSnapshot, outbound.Order.GovernanceSnapshot, contract.Order.GovernanceSnapshot)
+	}
+	if !strings.Contains(outbound.RolePrompt, "DESIGN-pin v1:") || strings.Contains(outbound.RolePrompt, "DESIGN-pin v2:") || strings.Contains(outbound.RolePrompt, "PINNED-BODY") || strings.Contains(outbound.RolePrompt, "- "+laterDecision.ID+":") || !strings.Contains(outbound.RolePrompt, "- "+pinnedDecision.ID+":") {
+		t.Fatalf("review role does not list only the pins: %s", outbound.RolePrompt)
+	}
+
+	designApplicable, decisionCitable := true, true
+	verdict := func(cited ...string) pipeline.Review {
+		return pipeline.Review{
+			Verdict: "approve", ReasonCode: "approved", Summary: "judged against the pins",
+			RequirementCitations: &core.RequirementCitationAssessment{CitedIDs: []string{}, UnknownIDs: []string{}, UnservedIDs: []string{}, Conflicts: []string{}},
+			DoneCriteriaCoverage: &core.DoneCriteriaAssessment{Summary: "fallback", Satisfied: []string{}, Unsatisfied: []string{}, Unverified: []string{}, Conflicts: []string{}},
+			GovernanceAssessment: &core.GovernanceAssessment{DesignApplicable: &designApplicable, DecisionCitable: &decisionCitable, CitedIDs: cited, UnknownIDs: []string{}, UngovernedIDs: []string{}, SupersededIDs: []string{}, Conflicts: []string{}},
+		}
+	}
+	if _, err = service.SubmitVerdict(ctx, job.ID, session, verdict(laterDecision.ID)); err == nil || !strings.Contains(err.Error(), "not confirmed governing authority in the pinned snapshot") {
+		t.Fatalf("verdict citing a decision newer than the pin: %v", err)
+	}
+	if _, err = service.SubmitVerdict(ctx, job.ID, session, verdict(document.ID, pinnedDecision.ID)); err != nil {
+		t.Fatalf("verdict citing the pins: %v", err)
 	}
 }
 
@@ -1823,7 +1914,7 @@ func TestSubmitVerdictUsesParentPlanAfterProposalDecision(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if context.ApprovedSpec == nil || context.ApprovedSpec.TaskID != parent.ID || !strings.Contains(context.RolePrompt, "applicable=true") || !strings.Contains(context.RolePrompt, "Pending design proposal is present") {
+	if context.ApprovedSpec == nil || context.ApprovedSpec.TaskID != parent.ID || !strings.Contains(context.RolePrompt, "applicable=true") || !strings.Contains(context.ApprovedSpec.Content, "Pending design proposal is present") {
 		t.Fatalf("parent plan review context=%+v role=%s", context.ApprovedSpec, context.RolePrompt)
 	}
 	if claimed.GovernanceSnapshot == nil || len(claimed.GovernanceSnapshot.PendingDesignProposals) != 1 || !claimed.GovernanceSnapshot.PendingDesignProposals[0].Confirmed {

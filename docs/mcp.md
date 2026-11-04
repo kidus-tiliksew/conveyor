@@ -479,11 +479,11 @@ for how to turn the evidence into a separately authorized follow-up.
 | Tool | What it does |
 |---|---|
 | `list_work_orders` | List active, stale, or execution-timed-out spec, implement, and review orders, with their distinct queue, execution, and lease clocks, claimability, and refusal reasons. |
-| `claim_work_order` | Claim one order with a fresh `session_id` and secret `client_token`, optionally choosing a lease up to one hour. Claimant identity comes from the credential. Self-review is refused, as is any session or client token already used by the implementer or another seat. |
-| `get_work_order` | The full stage context: role prompt, task, served requirements, governance snapshot, approved plan, triage brief, bounce history, lineage context, artifact references, and (for review) the diff and PR description. `authority_source` says whether authority is `pinned` (claim-time snapshot) or `live`. |
+| `claim_work_order` | Claim one order with a fresh `session_id` and secret `client_token`, optionally choosing a lease up to one hour. Claimant identity comes from the credential. Self-review is refused, as is any session or client token already used by the implementer or another seat. The response is the order without pinned bodies, plus `governance_references`; see [Work order delivery](#work-order-delivery). |
+| `get_work_order` | The stage context: role prompt with the served requirement statements and the design and decision lists, task, approved plan, triage brief, bounce history, lineage context, artifact references, and (for review) the diff and PR description. It carries no document body; see [Work order delivery](#work-order-delivery). `authority_source` says whether authority is `pinned` (claim-time snapshot) or `live`. |
 | `get_task_status` | The task's next action exactly as `GET /v1/tasks/{id}/next-action` returns it: label, who acts next, kind, judgment, summary, question, choices with their effects, what happens if nobody acts, deadline, blockers, and the current order and attempt. For an agent question, `details` carries the checkpoint's decision request, `checkpoint_class`, `citations`, and the cited documents' `pending_proposals`; an `authority_conflict` checkpoint lists confirm and dismiss for each cited pending version before the answer choice. A human credential reads any task in the workspace. An agent or run-child credential must pass the `work_order_id` and `session_id` of an order its session claimed or submitted for that task; every refusal is the same error, whether or not the task exists. Read only: it never renews the lease or records an observation. |
 | `read_artifact` | Fetch one artifact's content, base64-encoded. Scoped to the claim and to the bounded lineage selection that served the reference; an artifact ID alone is not enough. |
-| `renew_work_order` | Renew the claim lease. Never extends the fixed execution deadline. Requires `claim_work`. |
+| `renew_work_order` | Renew the claim lease. Never extends the fixed execution deadline. The response adds `governance_references`, as a claim's does. Requires `claim_work`. |
 | `report_progress` | Report progress text for the operator's timeline. Requires `claim_work`. |
 | `release_work_order` | Release the claim with an outcome, reason, and cause. Also the vehicle for operator checkpoints: release with reason `operator checkpoint reached` and a structured `checkpoint` carrying the decision request (at most 1024 Unicode characters), `class: authority_conflict`, and document citations of the confirmed versions in conflict. A System Design clause may name a code-formatted heading. Requires `claim_work`. |
 
@@ -491,6 +491,71 @@ Every claim-bound tool requires `claim_work`, so a live claim never outlasts
 its holder's binding: a user demoted to viewer keeps the claim (demotion
 releases nothing) but every call under it is refused until the lease expires or
 the binding is restored.
+
+
+### Work order delivery
+
+A work order names its governing documents and carries none of their bodies,
+so its response stays readable (`req-design-delivery` REQ-1;
+`req-260802-72fc68` AC-2.2; `req-task-centric-delivery` AC-1.2; DEC-103). The
+server keeps the complete snapshot: verdict validation, the context-freshness
+comparison, and the delivery consultation record read it, not this list.
+
+**`get_work_order`.** `role_prompt` holds the role instructions, each served
+requirement statement, and the two lists below, each once. `approved_spec.content`
+holds the whole plan; the role points at its `## Done criteria` section rather
+than repeating it. The response has no `governance_snapshot`, no
+`served_requirements`, and no snapshot on `work_order`, which still names its
+pin by `governance_snapshot_digest`. `lineage_context` keeps sibling and
+dependency outcomes, evidence, and omission counts, without served requirement
+text or the walk's node and link lists. With a plan of 12 KiB, 37 designs, and
+103 long decisions, the response stays under 64 KiB excluding the review diff.
+
+**Designs.** Each design is listed by ID, title, and version, in three labeled
+groups: attached to the task, in attachment order; covering the task's diff;
+then every other design governing the repository, both by ID. A design in two
+groups is listed once, and attachment wins. A submission's diff-derived
+attachments form the diff group, joined on a review order by the designs its
+delivered diff reaches. With no diff that group is absent. A review or verify
+order lists its pinned versions, never newer ones.
+
+**Decisions.** Each confirmed decision is one line: its ID and a summary of its
+statement, with whitespace normalized and cut at 240 characters and 240 UTF-8
+bytes, ellipsis included. Superseded decisions are named with their status and
+replacement, apart from that list, and are never active authority.
+
+**Reading further.** Use `search_documents` and the `outline` and `section_id`
+modes of `get_document` ([Design document reads](#design-document-reads)), and
+name the listed `version`. An agent credential passes `work_order_id` and
+`session_id` on each call. A review reads every section, including every page
+of a large one, of each design attached to the task or covering the diff
+(`req-design-delivery` AC-6.1). `get_decision` and `list_decisions` stay
+user-only, so an agent session works from the summaries.
+
+**Claim, renewal, and refresh.** `claim_work_order`, `renew_work_order`, and
+`refresh_work_order_context` carry no role prompt, so each adds one list at the
+response root:
+
+```json
+{"governance_references": {
+  "designs": [{"id": "component-http-api", "title": "HTTP API", "version": 82, "group": "attached"}],
+  "decisions": [{"id": "DEC-103", "status": "confirmed", "summary": "Work orders name documents…"},
+                {"id": "DEC-9", "status": "superseded", "superseded_by": "DEC-40"}]}}
+```
+
+`group` is `attached`, `diff_scoped`, or `repository`. The lifecycle act has
+already succeeded when this list is read, so a failed read adds
+`governance_references_error` instead of failing the call; `get_work_order`
+delivers the list. These responses have no diff to read, so their diff group
+holds submission attachments only. Refresh and `get_work_order` omit the current
+`authority_references` from `context_freshness.snapshot` and keep
+`authority_digest`, and `prior_authority_references` names only what changed.
+
+**Events.** New `work_order.claimed` and `work_order.updated` events name the
+order's pin by `governance_snapshot_digest` and, when the writer holds the pin,
+in `governance_references` by ID, title, version, and status, without a summary
+or group. Events already written stay unchanged, and readers keep accepting
+their embedded snapshots.
 
 ## Delivering
 

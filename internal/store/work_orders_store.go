@@ -17,17 +17,28 @@ import (
 )
 
 // WorkOrderEventPayload preserves lifecycle and attempt identity without
-// duplicating execution authority. The event names the work order and the
-// content-addressed governance digest; persisted snapshots supply the bodies.
+// duplicating execution authority. The event names the work order, the
+// content-addressed governance digest, and, when the order holds a pin, each
+// pinned document and decision by identity; persisted snapshots supply the
+// bodies (req-design-delivery REQ-1; DEC-103).
 func WorkOrderEventPayload(order core.WorkOrder) json.RawMessage {
 	digest := order.GovernanceSnapshotDigest
 	if digest == "" {
 		digest, _ = EncodeGovernanceSnapshot(order.GovernanceSnapshot)
 	}
+	var references *core.GovernanceReferences
+	if order.GovernanceSnapshot != nil {
+		projected := core.GovernanceEventReferences(*order.GovernanceSnapshot)
+		references = &projected
+	}
 	order.GovernanceSnapshot = nil
 	order.ServedRequirementSnapshot = nil
 	order.GovernanceSnapshotDigest = digest
-	return core.JSONPayload(order)
+	payload := core.JSONPayload(order)
+	if references == nil {
+		return payload
+	}
+	return core.AppendJSONObjectField(payload, fmt.Sprintf(`"governance_references":%s`, core.JSONPayload(references)))
 }
 
 func (m *memory) persistGovernanceSnapshotLocked(order *core.WorkOrder) {

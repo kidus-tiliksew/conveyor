@@ -180,6 +180,15 @@ func mcpToolErrorResult(requestID, tool string, err error) map[string]any {
 	return map[string]any{"content": []map[string]string{{"type": "text", "text": text}}, "isError": true}
 }
 
+// outboundWorkOrderResult keeps a lifecycle tool's order response free of the
+// pinned bodies its review or verify order holds (req-design-delivery AC-1.1).
+func outboundWorkOrderResult(order core.WorkOrder, err error) (any, error) {
+	if err != nil {
+		return nil, err
+	}
+	return core.OutboundWorkOrder(order), nil
+}
+
 func writeRPC(w http.ResponseWriter, response rpcResponse) {
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(response)
@@ -352,9 +361,13 @@ func (s *Server) callMCPTool(r *http.Request, name string, args map[string]any) 
 			// but never use or persist the client assertion.
 			claim.ClaimantID = core.TaskRunClaimantID(credential.OwnerUserID)
 		}
-		return s.WorkOrders.Claim(ctx, stringArg("work_order_id"), claim)
+		order, err := s.WorkOrders.Claim(ctx, stringArg("work_order_id"), claim)
+		if err != nil {
+			return nil, err
+		}
+		return s.WorkOrders.DeliverOrder(ctx, order), nil
 	case "redispatch_work_order":
-		return s.WorkOrders.Redispatch(ctx, stringArg("work_order_id"))
+		return outboundWorkOrderResult(s.WorkOrders.Redispatch(ctx, stringArg("work_order_id")))
 	case "renew_work_order":
 		// Only a user credential renews: its owner-derived run:<owner> claimant
 		// is the identity the claim recorded. An agent credential carries no
@@ -367,7 +380,11 @@ func (s *Server) callMCPTool(r *http.Request, name string, args map[string]any) 
 		claim := core.WorkOrderClaimIdentity{ClaimantID: core.TaskRunClaimantID(credential.OwnerUserID), SessionID: session}
 		// Renewal honors the session's chosen lease_seconds within the claim's
 		// bounds (req-agent-skills AC-2.2; req-delegated-execution AC-1.1).
-		return s.WorkOrders.RenewClaimWithLease(ctx, claim, stringArg("work_order_id"), leaseArg(args))
+		order, err := s.WorkOrders.RenewClaimWithLease(ctx, claim, stringArg("work_order_id"), leaseArg(args))
+		if err != nil {
+			return nil, err
+		}
+		return s.WorkOrders.DeliverOrder(ctx, order), nil
 	case "release_work_order":
 		claim, err := s.authorizeClaimMutation(ctx, stringArg("work_order_id"), session)
 		if err != nil {
@@ -377,7 +394,7 @@ func (s *Server) callMCPTool(r *http.Request, name string, args map[string]any) 
 		if err != nil {
 			return nil, err
 		}
-		return s.WorkOrders.ReleaseClaim(ctx, claim, stringArg("work_order_id"), core.WorkOrderRelease{SessionID: session, Reason: stringArg("reason"), Checkpoint: checkpoint, Cause: core.WorkOrderReleaseCauseOperatorAction, Outcome: core.WorkOrderOutcomeReleased})
+		return outboundWorkOrderResult(s.WorkOrders.ReleaseClaim(ctx, claim, stringArg("work_order_id"), core.WorkOrderRelease{SessionID: session, Reason: stringArg("reason"), Checkpoint: checkpoint, Cause: core.WorkOrderReleaseCauseOperatorAction, Outcome: core.WorkOrderOutcomeReleased}))
 	case "request_plan_revision":
 		claim, err := s.authorizeClaimMutation(ctx, stringArg("work_order_id"), session)
 		if err != nil {
@@ -387,16 +404,24 @@ func (s *Server) callMCPTool(r *http.Request, name string, args map[string]any) 
 	case "get_task_status":
 		return s.mcpTaskStatus(ctx, stringArg("task_id"), stringArg("work_order_id"), session)
 	case "get_work_order":
-		return s.WorkOrders.Get(ctx, stringArg("work_order_id"), session)
+		contract, err := s.WorkOrders.Get(ctx, stringArg("work_order_id"), session)
+		if err != nil {
+			return nil, err
+		}
+		return contract.Outbound(), nil
 	case "refresh_work_order_context":
 		if _, err := s.authorizeClaimMutation(ctx, stringArg("work_order_id"), session); err != nil {
 			return nil, err
 		}
-		return s.WorkOrders.RefreshContext(ctx, stringArg("work_order_id"), session, stringArg("prior_revision"))
+		freshness, err := s.WorkOrders.RefreshContext(ctx, stringArg("work_order_id"), session, stringArg("prior_revision"))
+		if err != nil {
+			return nil, err
+		}
+		return s.WorkOrders.DeliverFreshness(ctx, stringArg("work_order_id"), freshness), nil
 	case "read_artifact":
 		return s.WorkOrders.ReadArtifact(ctx, stringArg("work_order_id"), session, stringArg("artifact_id"))
 	case "report_progress":
-		return s.WorkOrders.Progress(ctx, stringArg("work_order_id"), session, stringArg("message"))
+		return outboundWorkOrderResult(s.WorkOrders.Progress(ctx, stringArg("work_order_id"), session, stringArg("message")))
 	case "report_usage":
 		in, _ := numberArg(args["tokens_in"])
 		out, _ := numberArg(args["tokens_out"])
@@ -416,7 +441,7 @@ func (s *Server) callMCPTool(r *http.Request, name string, args map[string]any) 
 			}
 			rateLimit = &status
 		}
-		return s.WorkOrders.UsageWithRateLimit(ctx, stringArg("work_order_id"), session, in, out, rateLimit)
+		return outboundWorkOrderResult(s.WorkOrders.UsageWithRateLimit(ctx, stringArg("work_order_id"), session, in, out, rateLimit))
 	case "propose_system_design_revision":
 		order, err := s.implementationGovernanceOrder(ctx, stringArg("work_order_id"), session)
 		if err != nil {
@@ -1034,12 +1059,12 @@ func mcpTools() []map[string]any {
 		{"name": "attach_task_branch", "description": "Replace a non-terminal task's assigned git branch name as an audited operator act. Same-name is a no-op. Refused when a pull request is recorded, a work order is claimed, the name is illegal, not attachable, or already held by another open task.", "inputSchema": object(map[string]any{"workspace_id": str, "task_id": str, "branch": str}, "task_id", "branch", "workspace_id")},
 		{"name": "get_task_status", "description": "Read one task's server-stated next action: its label, who acts next, the kind, whether operator judgment is needed, the summary, the question, each choice with its effect, what happens if nobody acts, the deadline, blockers, and the current order and attempt. A user credential reads any task in the workspace. An agent or run-child credential must pass the work_order_id and session_id of an order its session claimed or submitted for this task. Read-only; it never renews a claim.", "inputSchema": object(map[string]any{"workspace_id": str, "task_id": str, "work_order_id": str, "session_id": str}, "task_id")},
 		{"name": "list_work_orders", "description": "List active, stale, or execution-timed-out spec, implement, and review work orders in one workspace with distinct queue, execution, and lease clocks.", "inputSchema": object(map[string]any{"workspace_id": str})},
-		{"name": "claim_work_order", "description": "Claim a work order with a bounded lease. Review self-claim is forbidden. claimant_id is accepted for wire compatibility but ignored; claimant identity is derived from the authenticated credential.", "inputSchema": object(map[string]any{"workspace_id": str, "work_order_id": str, "session_id": str, "client_token": str, "claimant_id": str, "agent": str, "model": str, "lease_seconds": num}, "work_order_id", "session_id", "client_token", "agent", "model")},
+		{"name": "claim_work_order", "description": "Claim a work order with a bounded lease. Review self-claim is forbidden. claimant_id is accepted for wire compatibility but ignored; claimant identity is derived from the authenticated credential. For implement, review, and verify claims, the response names governing documents in governance_references, without their bodies.", "inputSchema": object(map[string]any{"workspace_id": str, "work_order_id": str, "session_id": str, "client_token": str, "claimant_id": str, "agent": str, "model": str, "lease_seconds": num}, "work_order_id", "session_id", "client_token", "agent", "model")},
 		{"name": "redispatch_work_order", "description": "Return a stale queued work order in one workspace to the queue with a fresh queue deadline. Active and execution-timed-out work orders are rejected.", "inputSchema": object(map[string]any{"workspace_id": str, "work_order_id": str}, "work_order_id")},
 		{"name": "renew_work_order", "description": "Renew the exact execution child session lease without extending its fixed attempt deadline. Pass the claim's lease_seconds on every renewal to keep that lease; an absent value, or one outside 1-3600, renews for the five-minute default. The renewed lease never passes the execution deadline.", "inputSchema": object(map[string]any{"workspace_id": str, "work_order_id": str, "session_id": str, "lease_seconds": map[string]string{"type": "integer"}}, "work_order_id", "session_id")},
 		{"name": "release_work_order", "description": "Release the exact execution child session without allowing a stale child to alter a newer claim. Operator checkpoints require checkpoint.decision_request.", "inputSchema": object(map[string]any{"workspace_id": str, "work_order_id": str, "session_id": str, "reason": str, "checkpoint": object(map[string]any{"decision_request": decisionRequestSchema, "class": map[string]any{"type": "string", "enum": []string{core.WorkOrderCheckpointClassAuthorityConflict}}, "citations": map[string]any{"type": "array", "items": object(map[string]any{"document_id": str, "cited_version": citedVersionSchema, "statement_or_section_id": str}, "document_id", "cited_version")}})}, "work_order_id", "session_id")},
 		{"name": "request_plan_revision", "description": "Request operator-gated revision of the approved execution plan for the exact claimed implement session.", "inputSchema": object(map[string]any{"workspace_id": str, "work_order_id": str, "session_id": str, "rationale": str}, "work_order_id", "session_id", "rationale")},
-		{"name": "get_work_order", "description": "Get the claimed order contract, spec, branch, feedback, artifacts, and review diff. The authority_source response field is live for a provisional queued-review peek and pinned for claim-time snapshot authority.", "inputSchema": object(identity, "work_order_id", "session_id")},
+		{"name": "get_work_order", "description": "Get the claimed order contract, spec, branch, feedback, artifacts, and review diff. Governing documents are named by ID, title, and version, and confirmed decisions by ID with a one-line summary; read design text with search_documents and get_document. The authority_source response field is live for a provisional queued-review peek and pinned for claim-time snapshot authority.", "inputSchema": object(identity, "work_order_id", "session_id")},
 		{"name": "refresh_work_order_context", "description": "Refresh bounded artifact context for the exact live claim. Returns nonblocking delivery diagnostics; does not acknowledge understanding or change authority pins.", "inputSchema": object(map[string]any{"workspace_id": map[string]any{"type": "string", "minLength": 1, "maxLength": 256}, "work_order_id": map[string]any{"type": "string", "minLength": 1, "maxLength": 256}, "session_id": map[string]any{"type": "string", "minLength": 1, "maxLength": 256}, "prior_revision": map[string]any{"type": "string", "pattern": "^([0-9a-f]{64})?$"}}, "workspace_id", "work_order_id", "session_id")},
 		{"name": "read_artifact", "description": "Read one artifact authorized for the claimed work order. The workspace, work order, session, and artifact ownership must all match; content is returned as base64.", "inputSchema": object(map[string]any{"workspace_id": str, "work_order_id": str, "session_id": str, "artifact_id": str}, "workspace_id", "work_order_id", "session_id", "artifact_id")},
 		{"name": "report_progress", "description": "Record self-reported progress for a claimed order.", "inputSchema": object(map[string]any{"workspace_id": str, "work_order_id": str, "session_id": str, "message": str}, "work_order_id", "session_id", "message")},

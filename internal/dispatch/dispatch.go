@@ -805,7 +805,11 @@ func (d *Dispatcher) buildStageInput(ctx context.Context, cfg *config.Config, st
 			input.GovernanceSnapshot = &pinned
 		}
 		contextGovernance = &governance
-		role = pack.WithGovernanceContract(role, stage, governance)
+		// Submission attached every design its diff reached before review
+		// dispatch (req-task-centric-delivery AC-6.2), so provenance orders the
+		// list here without reading the forge (req-design-delivery AC-1.2).
+		events, _ := d.Store.ListCompactEvents(ctx, task.ID)
+		role = pack.WithGovernanceContract(role, stage, core.ProjectGovernanceReferences(governance, task.Repo, store.TaskDesignProvenance(events), nil), pack.GovernanceDeliveryInProcess)
 	}
 	if stage == core.StageReview {
 		evidence, evidenceErr := d.Store.GetDocumentationGateEvidence(ctx, task.ID, task.ReviewedHeadSHA)

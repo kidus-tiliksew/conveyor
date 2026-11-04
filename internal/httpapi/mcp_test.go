@@ -537,7 +537,7 @@ func TestMCPClaimDefaultsToFiveMinuteLease(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	claimed := result.(core.WorkOrder)
+	claimed := result.(workorder.OrderDelivery).WorkOrder
 	if got := claimed.LeaseExpiresAt.Sub(claimed.ExecutionStartedAt); got != core.DefaultWorkOrderClaimLease {
 		t.Fatalf("MCP default claim lease = %s, want %s", got, core.DefaultWorkOrderClaimLease)
 	}
@@ -585,7 +585,7 @@ func TestMCPClaimWorksWithoutStoredForgeTokens(t *testing.T) {
 	if err != nil {
 		t.Fatalf("configured-token MCP claim: %v", err)
 	}
-	if claimed := result.(core.WorkOrder); claimed.ClaimantID != core.TaskRunClaimantID("usr-owner") {
+	if claimed := result.(workorder.OrderDelivery).WorkOrder; claimed.ClaimantID != core.TaskRunClaimantID("usr-owner") {
 		t.Fatalf("MCP claim identity=%q", claimed.ClaimantID)
 	}
 }
@@ -643,7 +643,7 @@ func TestMCPClaimUsesCredentialOwnerForAssigneeEligibility(t *testing.T) {
 	if err != nil {
 		t.Fatalf("assignee MCP claim: %v", err)
 	}
-	claimed := result.(core.WorkOrder)
+	claimed := result.(workorder.OrderDelivery).WorkOrder
 	if claimed.ClaimantID != core.TaskRunClaimantID("usr-alice") {
 		t.Fatalf("assignee MCP claim identity = %q", claimed.ClaimantID)
 	}
@@ -1537,14 +1537,14 @@ func TestMCPRenewHonorsLeaseSeconds(t *testing.T) {
 		if err != nil {
 			t.Fatalf("renew lease_seconds=%v: %v", leaseSeconds, err)
 		}
-		order, ok := result.(core.WorkOrder)
+		order, ok := result.(workorder.OrderDelivery)
 		if !ok || order.State != core.WorkOrderClaimed || order.SessionID != "session-a" {
 			t.Fatalf("renewed=%+v", result)
 		}
 		if !order.ExecutionDeadline.Equal(f.deadline) {
 			t.Fatalf("execution deadline moved from %s to %s", f.deadline, order.ExecutionDeadline)
 		}
-		return order, before, after
+		return order.WorkOrder, before, after
 	}
 	assertLease := func(t *testing.T, order core.WorkOrder, before, after time.Time, want time.Duration) {
 		t.Helper()
@@ -3098,7 +3098,7 @@ func TestClaimSessionCheckReadsNoWorkspaceOrders(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		renewed, ok := result.(core.WorkOrder)
+		renewed, ok := result.(workorder.OrderDelivery)
 		if !ok || renewed.State != core.WorkOrderClaimed || renewed.AttemptID != before.AttemptID || !renewed.ExecutionDeadline.Equal(before.ExecutionDeadline) || !renewed.LeaseExpiresAt.Equal(before.ExecutionDeadline) {
 			t.Fatalf("own renewal = %+v, want the claimed order with its attempt and the one-hour lease capped at the fixed deadline %s", result, before.ExecutionDeadline)
 		}

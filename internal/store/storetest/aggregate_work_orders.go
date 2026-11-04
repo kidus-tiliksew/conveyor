@@ -50,6 +50,7 @@ func runWorkOrders(t *testing.T, x Fixture) {
 	t.Run("LiveListing", func(t *testing.T) { runLiveWorkOrderListing(t, x) })
 	t.Run("SnapshotFreeFoldReads", func(t *testing.T) { runSnapshotFreeFoldReads(t, x) })
 	t.Run("GovernanceSnapshotDedup", func(t *testing.T) { runGovernanceSnapshotDedup(t, x) })
+	t.Run("WorkOrderEventsNameAuthority", func(t *testing.T) { runWorkOrderEventsNameAuthority(t, x) })
 	t.Run("ClaimSessionReads", func(t *testing.T) { runClaimSessionReads(t, x) })
 	st, ctx := x.Backend, x.Context
 	order := newAggregateOrder(t, x)
@@ -1001,6 +1002,94 @@ func enrollFixtureOwner(ctx context.Context, st store.Store, workspace, name str
 		return "", err
 	}
 	return user.ID, nil
+}
+
+// runWorkOrderEventsNameAuthority proves new claimed and updated events name a
+// pinned order's authority without its bodies and keep lifecycle identity,
+// while the persisted pin stays complete (req-design-delivery REQ-1; DEC-103).
+func runWorkOrderEventsNameAuthority(t *testing.T, x Fixture) {
+	st, ctx := x.Backend, x.Context
+	const (
+		designBody    = "pinned-design-body-marker"
+		decisionBody  = "pinned-decision-statement-marker"
+		decisionExtra = "pinned-decision-context-marker"
+	)
+	governance := core.GovernanceSnapshot{
+		Designs:                []core.GovernanceDesignContext{{ID: "component-event-names", Title: "Event names", Category: "component", Version: 3, Content: designBody}},
+		Decisions:              []core.Decision{{ID: "DEC-77", Status: core.DecisionConfirmed, Statement: decisionBody, Context: decisionExtra}},
+		PendingDesignProposals: []core.PendingSystemDesignProposal{},
+	}
+	order := newAggregateOrder(t, x, core.StageVerify)
+	claimed, err := ClaimWorkOrder(ctx, st, order.ID, core.WorkOrderClaim{ClaimantID: core.TaskRunClaimantID("worker"), SessionID: "event-names", ClientToken: "event-names", Lease: time.Hour, ExecutionTimeout: time.Hour, Governance: &governance, Requirements: []core.ServedRequirementContext{}})
+	requireOK(t, err)
+	stored, err := st.GetWorkOrder(ctx, claimed.ID)
+	requireOK(t, err)
+	if stored.GovernanceSnapshot == nil || stored.GovernanceSnapshot.Designs[0].Content != designBody || stored.GovernanceSnapshot.Decisions[0].Context != decisionExtra {
+		t.Fatalf("the persisted pin lost its bodies: %+v", stored.GovernanceSnapshot)
+	}
+	checkPayload := func(kind string, payload []byte) {
+		t.Helper()
+		for _, forbidden := range []string{designBody, decisionBody, decisionExtra, `"governance_snapshot":`, `"served_requirement_snapshot":`} {
+			if strings.Contains(string(payload), forbidden) {
+				t.Fatalf("%s payload carries %q: %s", kind, forbidden, payload)
+			}
+		}
+		// The order's own decoder is what replay and event consumers use.
+		var replayed core.WorkOrder
+		if err := json.Unmarshal(payload, &replayed); err != nil {
+			t.Fatalf("%s payload does not decode as a work order: %v", kind, err)
+		}
+		if replayed.ID != claimed.ID || replayed.SessionID != "event-names" || replayed.AttemptID == "" || replayed.GovernanceSnapshotDigest != stored.GovernanceSnapshotDigest {
+			t.Fatalf("%s payload lost lifecycle identity: %+v", kind, replayed)
+		}
+		var fields struct {
+			References core.GovernanceReferences `json:"governance_references"`
+		}
+		if err := json.Unmarshal(payload, &fields); err != nil {
+			t.Fatal(err)
+		}
+		if len(fields.References.Designs) != 1 || fields.References.Designs[0].ID != "component-event-names" || fields.References.Designs[0].Title != "Event names" || fields.References.Designs[0].Version != 3 {
+			t.Fatalf("%s references=%+v", kind, fields.References.Designs)
+		}
+		if len(fields.References.Decisions) != 1 || fields.References.Decisions[0].ID != "DEC-77" || fields.References.Decisions[0].Status != core.DecisionConfirmed || fields.References.Decisions[0].Summary != "" {
+			t.Fatalf("%s references=%+v", kind, fields.References.Decisions)
+		}
+	}
+	events, err := st.ListEvents(ctx, claimed.TaskID)
+	requireOK(t, err)
+	seen := 0
+	for _, event := range events {
+		if event.Kind == "work_order.claimed" {
+			checkPayload(event.Kind, event.Payload)
+			seen++
+		}
+	}
+	if seen != 1 {
+		t.Fatalf("claimed events=%d", seen)
+	}
+	// A real update persists the event the live path writes.
+	updated := stored
+	updated.Progress = "naming authority"
+	requireOK(t, UpdateWorkOrder(ctx, st, updated))
+	events, err = st.ListEvents(ctx, claimed.TaskID)
+	requireOK(t, err)
+	seen = 0
+	for _, event := range events {
+		if event.Kind == "work_order.updated" {
+			checkPayload(event.Kind, event.Payload)
+			seen++
+		}
+	}
+	if seen == 0 {
+		t.Fatal("the update persisted no work_order.updated event")
+	}
+	// A snapshot-free order still names its pin by digest.
+	withoutSnapshot := stored
+	withoutSnapshot.GovernanceSnapshot = nil
+	bare := store.WorkOrderEventPayload(withoutSnapshot)
+	if strings.Contains(string(bare), "governance_references") || !strings.Contains(string(bare), stored.GovernanceSnapshotDigest) {
+		t.Fatalf("snapshot-free payload=%s", bare)
+	}
 }
 
 func runGovernanceSnapshotDedup(t *testing.T, x Fixture) {

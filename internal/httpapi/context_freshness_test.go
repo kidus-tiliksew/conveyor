@@ -55,7 +55,7 @@ func TestContextRefreshTransportParityAndConfinement(t *testing.T) {
 			if e != nil {
 				t.Fatal(e)
 			}
-			first := raw.(core.ContextFreshness)
+			first := raw.(workorder.FreshnessDelivery).ContextFreshness
 			if !first.ObservationRecorded {
 				t.Fatal(first)
 			}
@@ -68,7 +68,7 @@ func TestContextRefreshTransportParityAndConfinement(t *testing.T) {
 			if e != nil {
 				t.Fatal(e)
 			}
-			next := raw.(core.ContextFreshness)
+			next := raw.(workorder.FreshnessDelivery).ContextFreshness
 			if next.Additions.Count != 1 || next.Additions.Items[0].ArtifactID != artifact.ID || next.UnfetchedAdditions != 1 {
 				t.Fatal(next)
 			}
