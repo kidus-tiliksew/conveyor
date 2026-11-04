@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strconv"
 	"strings"
 	"time"
 
@@ -723,21 +724,70 @@ func (s *Store) ListSystemDesignEventsByDocument(ctx context.Context) (map[strin
 
 func (s *Store) RecordSystemDesignConsulted(ctx context.Context, documentID string, version int, sessionID, workOrderID string) error {
 	ctx = dbmetrics.WithReadLabel(ctx, "RecordSystemDesignConsulted")
+	if workOrderID != "" {
+		return s.recordSystemDesignRead(ctx, documentID, version, sessionID, workOrderID)
+	}
 	return s.documentTx(ctx, func(tx *sql.Tx) error {
-		var exists bool
-		if err := documentRow(ctx, tx, `SELECT EXISTS(SELECT 1 FROM system_design_versions WHERE workspace_id=? AND document_id=? AND version=?)
-			AND CASE WHEN ? <> '' THEN EXISTS(SELECT 1 FROM work_orders WHERE workspace_id=? AND id=?)
-			ELSE EXISTS(SELECT 1 FROM planning_sessions WHERE workspace_id=? AND id=?) END`, documentWorkspace(ctx), documentID, version, workOrderID, documentWorkspace(ctx), workOrderID, documentWorkspace(ctx), sessionID).Scan(&exists); err != nil {
+		if err := requireSystemDesignConsultationTarget(ctx, tx, documentID, version, sessionID, workOrderID); err != nil {
 			return err
 		}
-		if !exists {
-			return fmt.Errorf("%w: system design consultation target", store.ErrNotFound)
-		}
-		return insertWorkspaceEvent(ctx, tx, core.Event{Kind: "system_design.consulted", Payload: core.JSONPayload(map[string]any{
-			"workspace_id": documentWorkspace(ctx), "document_id": documentID, "version": version,
-			"session_id": sessionID, "work_order_id": workOrderID,
-		})})
+		return insertSystemDesignConsulted(ctx, tx, documentID, version, sessionID, workOrderID)
 	})
+}
+
+// recordSystemDesignRead records one read key once across concurrent calls and
+// service instances. Workspace events spread across partitions, so a lock and
+// a count alone can miss a predecessor's event: the key's claim row names the
+// event and each holder waits until it is visible (component-persistence,
+// SingleStore claimed records). A section read takes no corpus-wide lock
+// (req-design-delivery REQ-5).
+func (s *Store) recordSystemDesignRead(ctx context.Context, documentID string, version int, sessionID, workOrderID string) error {
+	ws, err := workspace(ctx)
+	if err != nil {
+		return err
+	}
+	return s.withTx(ctx, func(tx *sql.Tx) error {
+		if err := requireSystemDesignConsultationTarget(ctx, tx, documentID, version, sessionID, workOrderID); err != nil {
+			return err
+		}
+		claim := strings.Join([]string{ws, "conveyor:design-read-consulted", sessionID, workOrderID, documentID, strconv.Itoa(version)}, "\x00")
+		if _, found, err := awaitClaimedRecord(ctx, tx, claim, ws, ""); err != nil || found {
+			return err
+		}
+		// A key without a claim can still have an event written before claims
+		// named these records. Those events stay unchanged and still count.
+		var consulted bool
+		if err := documentRow(ctx, tx, `SELECT EXISTS(SELECT 1 FROM events_columnstore WHERE workspace_id=?
+			AND kind='system_design.consulted' AND JSON_EXTRACT_STRING(payload_json,'document_id')=?
+			AND JSON_EXTRACT_STRING(payload_json,'version')=? AND JSON_EXTRACT_STRING(payload_json,'session_id')=?
+			AND JSON_EXTRACT_STRING(payload_json,'work_order_id')=?)`, ws, documentID, strconv.Itoa(version), sessionID, workOrderID).Scan(&consulted); err != nil || consulted {
+			return err
+		}
+		if err := insertSystemDesignConsulted(ctx, tx, documentID, version, sessionID, workOrderID); err != nil {
+			return err
+		}
+		return recordLastInserted(ctx, tx, claim, claimedEventsTable)
+	})
+}
+
+func requireSystemDesignConsultationTarget(ctx context.Context, tx *sql.Tx, documentID string, version int, sessionID, workOrderID string) error {
+	var exists bool
+	if err := documentRow(ctx, tx, `SELECT EXISTS(SELECT 1 FROM system_design_versions WHERE workspace_id=? AND document_id=? AND version=?)
+		AND CASE WHEN ? <> '' THEN EXISTS(SELECT 1 FROM work_orders WHERE workspace_id=? AND id=?)
+		ELSE EXISTS(SELECT 1 FROM planning_sessions WHERE workspace_id=? AND id=?) END`, documentWorkspace(ctx), documentID, version, workOrderID, documentWorkspace(ctx), workOrderID, documentWorkspace(ctx), sessionID).Scan(&exists); err != nil {
+		return err
+	}
+	if !exists {
+		return fmt.Errorf("%w: system design consultation target", store.ErrNotFound)
+	}
+	return nil
+}
+
+func insertSystemDesignConsulted(ctx context.Context, tx *sql.Tx, documentID string, version int, sessionID, workOrderID string) error {
+	return insertWorkspaceEvent(ctx, tx, core.Event{Kind: "system_design.consulted", Payload: core.JSONPayload(map[string]any{
+		"workspace_id": documentWorkspace(ctx), "document_id": documentID, "version": version,
+		"session_id": sessionID, "work_order_id": workOrderID,
+	})})
 }
 
 func (s *Store) ListActiveSystemDesignDriftCounts(ctx context.Context) (map[string]int, error) {

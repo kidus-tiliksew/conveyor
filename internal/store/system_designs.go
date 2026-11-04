@@ -519,11 +519,37 @@ func (m *memory) RecordSystemDesignConsulted(ctx context.Context, documentID str
 	} else if _, ok := m.planningSessions[memoryScopedKey{workspace: workspace, id: sessionID}]; !ok {
 		return fmt.Errorf("%w: planning session %s", ErrNotFound, sessionID)
 	}
+	if workOrderID != "" && m.systemDesignReadConsultedLocked(workspace, documentID, version, sessionID, workOrderID) {
+		return nil
+	}
 	m.appendEventLocked(ctx, core.Event{Kind: "system_design.consulted", Payload: core.JSONPayload(map[string]any{
 		"workspace_id": workspace, "document_id": documentID, "version": version,
 		"session_id": sessionID, "work_order_id": workOrderID,
 	})})
 	return nil
+}
+
+// systemDesignReadConsultedLocked reports whether this exact read key already
+// has a consultation event. Planning-session and delivery_no_revision records
+// carry no work order, so they never match (req-design-delivery REQ-5).
+func (m *memory) systemDesignReadConsultedLocked(workspace, documentID string, version int, sessionID, workOrderID string) bool {
+	for _, event := range m.events[""] {
+		if event.Kind != "system_design.consulted" {
+			continue
+		}
+		var payload struct {
+			WorkspaceID string `json:"workspace_id"`
+			DocumentID  string `json:"document_id"`
+			Version     int    `json:"version"`
+			SessionID   string `json:"session_id"`
+			WorkOrderID string `json:"work_order_id"`
+		}
+		if json.Unmarshal(event.Payload, &payload) == nil && payload.WorkspaceID == workspace && payload.DocumentID == documentID &&
+			payload.Version == version && payload.SessionID == sessionID && payload.WorkOrderID == workOrderID {
+			return true
+		}
+	}
+	return false
 }
 
 func (m *memory) ProposeDecision(ctx context.Context, decision core.Decision) (core.Decision, error) {

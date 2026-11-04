@@ -11,7 +11,7 @@ import (
 )
 
 // Outbound is the view get_work_order delivers. The internal Context keeps the
-// complete snapshot for consultation and validation; this copy names documents
+// complete snapshot for validation; this copy names documents
 // only in the role prompt and carries each list once. Served requirement
 // statements stay in the role prompt, and the whole plan stays in
 // approved_spec (req-design-delivery AC-1.1; req-260802-72fc68 AC-2.2; DEC-103).

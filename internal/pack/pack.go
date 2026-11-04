@@ -229,8 +229,9 @@ func RenderGovernanceContract(stage core.Stage, references core.GovernanceRefere
 	return out.String()
 }
 
-// designReadGuidance directs a session to the read tools. An agent credential
-// has no session binding, so every read names the live claim; a review reads
+// designReadGuidance directs a session to the read tools. No credential carries
+// a session binding, so every read names the live claim, which attributes its
+// consultation (req-design-delivery REQ-5); a review reads
 // each governing document in full (req-design-delivery REQ-2 through REQ-4,
 // AC-6.1; DEC-103). An in-process call has no tools and must not be told to
 // use them.
@@ -238,7 +239,7 @@ func designReadGuidance(stage core.Stage, delivery GovernanceDelivery) string {
 	if delivery == GovernanceDeliveryInProcess {
 		return "\nThis in-process call has no document read tools, so this list is all it receives of these documents. Do not infer their content; record what you could not verify.\n"
 	}
-	const reads = "\nThis list carries no document bodies. Find text with `search_documents` and read parts with `get_document` (`kind: system_design`): `outline: true` lists each section, and `section_id` reads one, paging a large section by `next_byte_offset`. Pass the listed `version`. An agent credential must also pass this order's `work_order_id` and `session_id` on every such call, or it is refused. `kind: requirement` reads a served requirement's full text the same way.\n"
+	const reads = "\nThis list carries no document bodies. Find text with `search_documents` and read parts with `get_document` (`kind: system_design`): `outline: true` lists each section, and `section_id` reads one, paging a large section by `next_byte_offset`. Pass the listed `version` and this order's `work_order_id` and `session_id` on every such call: a read of body text records your consultation, and an agent credential is refused without them. `kind: requirement` reads a served requirement's full text the same way.\n"
 	switch stage {
 	case core.StageReview:
 		return reads + "\nBefore your verdict, read every section, including every page of a large one, of each design listed as attached to the task or covering the diff, at its listed version, and judge the change against that text.\n"

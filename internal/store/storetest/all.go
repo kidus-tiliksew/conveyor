@@ -234,6 +234,7 @@ func RunAll(t *testing.T, factory Factory) {
 			return x.Backend, x.Context, x.Workspace
 		})
 	})
+	run("SystemDesignConsultation", func(t *testing.T) { RunSystemDesignConsultationConformance(t, factory.fresh(t, nil)) })
 	run("SystemDesignDrift", func(t *testing.T) {
 		RunSystemDesignDriftConformance(t, func(t *testing.T) (store.Store, context.Context, string) {
 			x := factory.fresh(t, nil)

@@ -1607,14 +1607,12 @@ func TestReviewClaimPinsGovernanceVersionsAndDecisionAuthority(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	consulted := 0
+	// Building the context reads no document on the session's behalf, so it
+	// records no consultation (req-design-delivery AC-5.2).
 	for _, event := range events {
-		if event.Kind == "system_design.consulted" && strings.Contains(string(event.Payload), `"work_order_id":"`+job.ID+`"`) && strings.Contains(string(event.Payload), `"version":1`) {
-			consulted++
+		if event.Kind == "system_design.consulted" {
+			t.Fatalf("work-order context recorded a consultation: %s", event.Payload)
 		}
-	}
-	if consulted != 1 {
-		t.Fatalf("work-order consultation events=%d, want one", consulted)
 	}
 }
 
