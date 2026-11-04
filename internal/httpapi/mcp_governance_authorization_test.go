@@ -30,10 +30,10 @@ const (
 	governanceReqID     = "req-governance-auth"
 )
 
-var governanceMCPTools = []string{"request_plan_revision", "propose_system_design_revision", "propose_requirement_revision", "propose_decision"}
+var governanceMCPTools = []string{"request_plan_revision"}
 
-// claimMutationMCPTools are the seven mutations a live claim admits for its
-// holder; a viewer binding must refuse every one of them.
+// claimMutationMCPTools are the mutations a live claim admits for its holder; a
+// viewer binding must refuse every one of them.
 var claimMutationMCPTools = append(slices.Clone(governanceMCPTools), "renew_work_order", "report_progress", "release_work_order")
 
 type governanceAuthFixture struct {
@@ -155,16 +155,6 @@ func governanceCallArgs(tool, workspace, orderID, session string) map[string]any
 	switch tool {
 	case "request_plan_revision":
 		args["rationale"] = "the approved plan conflicts with the API"
-	case "propose_system_design_revision":
-		args["document_id"] = governanceDesignID
-		args["content"] = "# Governance revision\n\n```conveyor:governs\n- repo: conveyor\n  paths:\n    - internal/httpapi/**\n```"
-	case "propose_requirement_revision":
-		args["document_id"] = governanceReqID
-		args["content"] = "# Governance\n\n```conveyor:requirements\n- id: REQ-1\n  statement: Keep executor claims exact.\n```"
-	case "propose_decision":
-		args["statement"] = "Keep governance claims exact."
-		args["context"] = "Claims may propose task-local governance."
-		args["alternatives_rejected"] = "Grant freestanding proposal authority."
 	case "renew_work_order":
 		args["lease_seconds"] = 600
 	case "report_progress":
@@ -292,21 +282,6 @@ func TestMCPGovernanceCapabilityAndClaimMatrix(t *testing.T) {
 		t.Helper()
 		taskID := strings.Replace(orderID, "gov-order-", "gov-task-", 1)
 		switch tool {
-		case "propose_system_design_revision":
-			var version core.SystemDesignVersion
-			if err := json.Unmarshal([]byte(text), &version); err != nil || version.Origin != core.SystemDesignOriginImplementation || version.OriginTaskID != taskID || version.Confirmed {
-				t.Fatalf("design proposal=%+v err=%v", version, err)
-			}
-		case "propose_requirement_revision":
-			var version core.RequirementVersion
-			if err := json.Unmarshal([]byte(text), &version); err != nil || version.Origin != core.RequirementOriginImplementation || version.OriginTaskID != taskID || version.Confirmed {
-				t.Fatalf("requirement proposal=%+v err=%v", version, err)
-			}
-		case "propose_decision":
-			var decision core.Decision
-			if err := json.Unmarshal([]byte(text), &decision); err != nil || decision.Origin != core.DecisionOriginImplementation || decision.OriginTaskID != taskID || decision.Status != core.DecisionProposed {
-				t.Fatalf("decision proposal=%+v err=%v", decision, err)
-			}
 		case "request_plan_revision":
 			events, err := f.store.ListEvents(f.ctx, taskID)
 			if err != nil || !slices.ContainsFunc(events, func(event core.Event) bool { return strings.Contains(string(event.Kind), "plan_revision") }) {

@@ -156,13 +156,12 @@ premise.
 
 No document changes directly. Every write is a proposed version, and a
 proposal confers no authority until an operator confirms it. This one rule is
-load-bearing enough that it shows up in four different places:
+load-bearing enough that it shows up in several places:
 
-- Agents mid-implementation propose through the MCP tools
-  (`propose_requirement_revision`, `propose_system_design_revision`,
-  `propose_decision`), which require a live claim on an implement-stage work
-  order. The tools are explicitly fire-and-forget: the agent proposes, cites
-  the pending ID, and keeps working. Waiting for confirmation is forbidden.
+- A task never proposes. A session holding a work order implements confirmed
+  documents and authors no version (DEC-102); when its work would require
+  changing one, it stops at an authority-conflict checkpoint and describes the
+  conflict. Versions a task authored earlier keep that origin in history.
 - Planning sessions push proposals over REST: an operator-side agent session
   drafts the document and submits it, following the
   [planning playbook](playbooks/conveyor-planning.md).
@@ -209,8 +208,8 @@ the dialog directs the operator to review it again. Decisions have no Revise act
 
 The Pending proposals page collects every undecided proposal, with its age,
 its origin, and confirm and dismiss actions, so an operator can see at a glance how
-much authority the factory is waiting on. A pending task-authored
-proposal also blocks that task's review from being claimed until it is
+much authority the factory is waiting on. A pending proposal a task authored
+before DEC-102 also blocks that task's review from being claimed until it is
 decided either way, which is the one place a proposal touches the pipeline;
 see [Misalignment](misalignment.md#pending-proposals).
 

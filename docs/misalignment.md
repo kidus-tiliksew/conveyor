@@ -110,10 +110,9 @@ versions, System Design versions, decisions, and suggested task context)
 is projected onto one Pending proposals page with its origin and age, and
 rolled into the sidebar and board attention counts.
 
-Proposals never gate work in general; agents propose fire-and-forget and
-keep implementing. The one exception, noted above: a review cannot be
-claimed while the task under review has its own authored proposals still
-undecided. The task page shows this state directly, with the confirm action
+Proposals never gate work in general, and a task no longer authors them
+(DEC-102). The one exception, noted above: a review cannot be claimed while the
+task under review has its own earlier proposals still undecided. The task page shows this state directly, with the confirm action
 in place. Deciding the proposal either way, confirm or dismiss, releases the
 review. Dismissing a pending requirement or System Design version requires an
 explicit confirmation step, retains the version in history, and makes that
@@ -135,9 +134,10 @@ findings when no authority exists, and cannot wave through a superseded
 citation as current.
 
 Proposal evidence from the task rides along, explicitly marked as conferring
-no authority. A plan that reduces a proposable authority conflict to a bare
-"pause and ask the operator" without proposing anything is itself a blocking
-review finding: the factory's posture is propose first, then ask.
+no authority. Review requests changes to work that contradicts a pinned confirmed
+document or the approved plan, and never asks the task for a document revision. A
+pinned document that itself appears wrong goes in the governance assessment's
+conflicts, so the operator sees it.
 
 ## The monitor
 

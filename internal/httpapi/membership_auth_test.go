@@ -681,11 +681,11 @@ func TestViewerMCPToolsRefuseNamedCapabilities(t *testing.T) {
 			t.Fatalf("viewer MCP tool %s calls=%v want %q", tool, fixture.capabilityCalls, want)
 		}
 	}
-	// The governance tools need claim_work, so a viewer is refused by the
+	// The governance tool needs claim_work, so a viewer is refused by the
 	// capability check before any claim lookup (req-accounts-and-membership
 	// AC-2.2). Live-claim demotion is covered in
 	// mcp_governance_authorization_test.go.
-	for _, tool := range []string{"request_plan_revision", "propose_system_design_revision", "propose_requirement_revision", "propose_decision"} {
+	for _, tool := range []string{"request_plan_revision"} {
 		fixture.capabilityCalls = nil
 		_, err := server.callMCPTool(request, tool, map[string]any{"workspace_id": "alpha", "work_order_id": "missing", "session_id": "missing"})
 		if err == nil || !strings.Contains(err.Error(), "workspace_not_found") {
@@ -717,7 +717,7 @@ func TestMCPGovernanceToolsRemainClaimGatedForEveryRole(t *testing.T) {
 			server.WorkOrders = &workorder.Service{Store: st}
 			request := httptest.NewRequest(http.MethodPost, "/mcp", nil)
 			request = request.WithContext(withCredentialActor(request.Context(), core.AuthenticatedCredential{ID: "pat", OwnerUserID: "user", Kind: core.CredentialUser, Scope: core.CredentialScopeUser}))
-			for _, tool := range []string{"request_plan_revision", "propose_system_design_revision", "propose_requirement_revision", "propose_decision"} {
+			for _, tool := range []string{"request_plan_revision"} {
 				fixture.capabilityCalls = nil
 				_, err := server.callMCPTool(request, tool, map[string]any{"workspace_id": "alpha", "work_order_id": "missing", "session_id": "missing"})
 				// A viewer lacks claim_work and is refused before the claim

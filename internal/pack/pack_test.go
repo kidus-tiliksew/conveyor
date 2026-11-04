@@ -340,16 +340,15 @@ func TestRolePromptsEnforceOperatorAuthorityBoundary(t *testing.T) {
 	for _, required := range []string{
 		"repository checkout, the validation commands that the repository's validation documentation names",
 		"Gate approval, repository-drift resolution",
-		"requirement-clause revision, System Design revision, or decision",
-		"task-authored governance proposal tools",
-		"complete revision proposals first",
-		"pending proposal identifiers",
-		"proposals already pending",
+		"authors no requirement, System Design, or decision version",
+		"never directs its implementer to propose or revise a document",
+		"conflict with the repository while confirmed documents stand",
+		"`request_plan_revision`",
+		"changing a confirmed document",
+		"authority-conflict checkpoint that cites the clauses in conflict and describes the conflict",
 		"For gate approval, repository-drift resolution, and task cancellation",
 		"task cancellation",
-		"no applicable task-authored proposal surface is available",
-		`"pause and report until the operator has done X,"`,
-		"state why proposing is unavailable",
+		`"pause and report until the operator has done X."`,
 		"reaching and reporting the checkpoint satisfies the agent's obligation",
 		"operator checkpoint reached",
 		"monitor-sourced `chore` tasks",
@@ -370,27 +369,18 @@ func TestRolePromptsEnforceOperatorAuthorityBoundary(t *testing.T) {
 		"report_progress",
 		"release_work_order",
 		core.WorkOrderReleaseReasonOperatorCheckpointReached,
-		"currently confirmed corpus authority",
-		"complete revision proposals",
-		"task-authored governance proposal tools",
-		"propose_requirement_revision",
-		"propose_system_design_revision",
-		"propose_decision",
-		"pending for operator confirmation",
+		"author no requirement, System Design, or decision version",
+		"would require changing a confirmed document, stop and release at an authority-conflict checkpoint",
 		"decision_request",
 		"distinct from the progress report",
-		"pending proposal identifier",
+		"describing the conflict",
+		"needs no proposal identifier",
 		"class: authority_conflict",
 		"document_id",
 		"cited_version",
 		"statement_or_section_id",
-		"proposal tools are unavailable",
-		"credential lacks the proposal capability",
-		"proposal call fails",
-		"release anyway",
-		"truthful checkpoint release is never blocked on proposal authorship",
 		"request_plan_revision",
-		"repository reality conflicts with the approved plan",
+		"repository reality conflicts with the approved plan while confirmed documents stand",
 		"never authorize changing or departing from the approved plan",
 		"existing `released` outcome",
 		"do not enter an automatic recovery loop",
@@ -415,16 +405,18 @@ func TestRolePromptsEnforceOperatorAuthorityBoundary(t *testing.T) {
 	}
 	normalizedReview := strings.Join(strings.Fields(review), " ")
 	for _, required := range []string{
+		"pinned confirmed documents and the approved plan",
+		"Request changes to work that contradicts either one",
+		"Never ask the task for a document revision or accept one as the remedy",
+		"confirmed document itself appears wrong",
+		"governance assessment's `conflicts`",
 		"blocking authority-boundary finding",
-		"task-authored requirement, System Design, or decision revision proposal surface",
-		"accept propose-first checkpoint phrasing",
-		"author complete proposals",
-		"cite their pending identifiers",
-		"bare pause-and-report checkpoint",
-		"neither a proposal step nor a stated reason why proposing is unavailable",
+		"directs the implementer to propose or revise a document",
+		"authority-conflict checkpoint that cites the clauses and describes the conflict",
+		"`request_plan_revision`",
 		"gate approval, repository-drift resolution, task cancellation",
 		"task cancellation",
-		"without an applicable proposal surface",
+		"operator-only act",
 		"agent obligation ends when reached",
 		"reasoned reviewer check, not a text parser",
 	} {
@@ -538,14 +530,78 @@ func TestGovernanceContractHeadsPinsAndKeepsReviewEvidence(t *testing.T) {
 	}
 }
 
-func TestImplementGovernanceContractMakesProposalsFireAndForget(t *testing.T) {
-	t.Parallel()
-	contract := RenderGovernanceContract(core.StageImplement, core.GovernanceReferences{}, GovernanceDeliveryMCP)
-	for _, required := range []string{"Authority-conflict proposal discipline", "approved authority-conflict checkpoint", "author complete proposals first", "propose_requirement_revision", "propose_system_design_revision", "propose_decision", "pending proposal identifier", "checkpoint-release instructions without waiting", "`authority_conflict_checkpoint: true`", "cite the confirmed version in conflict, never the proposed version", "genuinely unavailable or fails", "explains why no proposal was authored", "Outside an approved authority-conflict checkpoint", "fire-and-forget", "report the proposal identifier in progress and the implementation handoff", "proceed immediately to `submit_for_review`", "Never wait for, request, or condition progress on operator confirmation"} {
-		if !strings.Contains(contract, required) {
-			t.Fatalf("implement governance contract missing %q: %s", required, contract)
+// retiredProposeFirstWording is the task-authored proposal direction DEC-102
+// retired; no delivered implement, plan, or review text may carry it
+// (req-task-authority-boundary REQ-2, REQ-3).
+var retiredProposeFirstWording = []string{
+	"propose_requirement_revision",
+	"propose_system_design_revision",
+	"propose_decision",
+	"authority_conflict_checkpoint",
+	"fire-and-forget",
+	"propose-first",
+	"propose a complete revision",
+	"complete revision proposals",
+	"author complete proposals",
+	"task-authored",
+	"Authority-conflict proposal discipline",
+	"pending proposal identifier",
+	"proposing is unavailable",
+}
+
+func requireNoRetiredProposeFirstWording(t *testing.T, label, text string) {
+	t.Helper()
+	normalized := strings.Join(strings.Fields(text), " ")
+	for _, retired := range retiredProposeFirstWording {
+		if strings.Contains(normalized, retired) {
+			t.Errorf("%s carries retired wording %q", label, retired)
 		}
 	}
+}
+
+func TestRolesRefuseRetiredProposeFirstWording(t *testing.T) {
+	t.Parallel()
+	loader := Loader{Dir: filepath.Join("..", "..", "pack")}
+	for _, stage := range []core.Stage{core.StageImplement, core.StageSpec, core.StageReview} {
+		role, err := loader.Role(stage)
+		if err != nil {
+			t.Fatal(err)
+		}
+		requireNoRetiredProposeFirstWording(t, string(stage)+" role", role)
+	}
+	// The in-process planning session keeps its own propose_decision tool
+	// (req-task-authority-boundary AC-1.3).
+	planning, err := os.ReadFile(filepath.Join("..", "..", "pack", "roles", "planning.md"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(planning), "propose_decision") {
+		t.Fatal("planning role lost its propose_decision tool")
+	}
+}
+
+func TestImplementGovernanceContractRoutesAuthorityConflicts(t *testing.T) {
+	t.Parallel()
+	references := core.GovernanceReferences{Designs: []core.GovernanceDesignReference{{ID: "DESIGN-runtime", Version: 3, Title: "Runtime", Group: core.GovernanceDesignAttached}}}
+	contract := RenderGovernanceContract(core.StageImplement, references, GovernanceDeliveryMCP)
+	for _, required := range []string{"# Authority conflicts", "author no requirement, System Design, or decision version", "conflicts with the repository while confirmed documents stand", "`request_plan_revision`", "stop and release at an authority-conflict checkpoint", "citing the confirmed clauses in conflict", "describing the conflict in the decision request", "never revises them"} {
+		if !strings.Contains(contract, required) {
+			t.Errorf("implement governance contract missing %q: %s", required, contract)
+		}
+	}
+	requireNoRetiredProposeFirstWording(t, "implement contract", contract)
+	requireNoRetiredProposeFirstWording(t, "spec contract", RenderGovernanceContract(core.StageSpec, references, GovernanceDeliveryMCP))
+
+	// A proposal recorded before this rule stays listed for the resumed
+	// session, with no direction to author another.
+	references.PendingDesignProposals = []core.PendingSystemDesignProposal{{DocumentID: "DESIGN-runtime", Version: 4, ProposalEventID: 42, OriginTaskID: "task-design"}}
+	resumed := RenderGovernanceContract(core.StageImplement, references, GovernanceDeliveryMCP)
+	for _, required := range []string{"Earlier System Design proposals from this task", "confer no authority", "DESIGN-runtime v4 (pending"} {
+		if !strings.Contains(resumed, required) {
+			t.Errorf("resumed contract missing %q: %s", required, resumed)
+		}
+	}
+	requireNoRetiredProposeFirstWording(t, "resumed contract", resumed)
 }
 
 func TestGovernanceContractListsResolutionNotes(t *testing.T) {

@@ -23,7 +23,6 @@ import (
 	"github.com/kidus-tiliksew/conveyor/internal/config"
 	"github.com/kidus-tiliksew/conveyor/internal/core"
 	"github.com/kidus-tiliksew/conveyor/internal/dispatch"
-	"github.com/kidus-tiliksew/conveyor/internal/pipeline"
 	"github.com/kidus-tiliksew/conveyor/internal/store"
 	"github.com/kidus-tiliksew/conveyor/internal/store/storetest"
 	"github.com/kidus-tiliksew/conveyor/internal/taskops"
@@ -167,345 +166,6 @@ func TestMCPRenewReportsSameSessionCheckpointRelease(t *testing.T) {
 // false, the fire-and-forget guidance is unchanged; a non-boolean flag is
 // refused before anything is written (component-mcp-protocol, Governance
 // proposal tools; req-260820-6a468a AC-1.3; req-260820-394cac REQ-3).
-func TestMCPProposalGuidanceFollowsCheckpointFlag(t *testing.T) {
-	ctx := store.WithWorkspace(store.WithActor(t.Context(), store.SystemActor()), "demo")
-	st := store.NewMemory()
-	task := core.Task{ID: "task-checkpoint-guidance", Workspace: "demo", Repo: "conveyor", State: core.TaskRunning, CreatedAt: time.Now()}
-	job := core.Job{ID: "order-checkpoint-guidance", TaskID: task.ID, Stage: core.StageImplement, State: core.JobPending}
-	if err := st.CreateTask(ctx, task); err != nil {
-		t.Fatal(err)
-	}
-	if err := st.CreateJob(ctx, job); err != nil {
-		t.Fatal(err)
-	}
-	if err := storetest.For(st).CreateWorkOrder(ctx, core.WorkOrder{ID: job.ID, TaskID: task.ID, JobID: job.ID, Stage: core.StageImplement, State: core.WorkOrderQueued}); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := storetest.For(st).ClaimWorkOrder(ctx, job.ID, core.WorkOrderClaim{SessionID: "session-checkpoint", ClientToken: "secret", ClaimantID: core.TaskRunClaimantID("implementer"), Lease: time.Minute}); err != nil {
-		t.Fatal(err)
-	}
-	document, _, err := st.CreateSystemDesign(ctx, core.SystemDesign{ID: "design-checkpoint", Title: "Checkpoint", Category: "Architecture"}, core.SystemDesignVersion{Content: "# Checkpoint\n\n```conveyor:governs\n- repo: conveyor\n  paths:\n    - internal/dispatch/**\n```", Origin: core.SystemDesignOriginOperator})
-	if err != nil {
-		t.Fatal(err)
-	}
-	requirement, _, err := st.CreateRequirement(ctx, core.Requirement{ID: "req-checkpoint", Title: "Checkpoint requirements"}, core.RequirementVersion{
-		Content:    "# Checkpoint\n\n```conveyor:requirements\n- id: REQ-1\n  statement: Every session calls the service.\n```",
-		Statements: []core.RequirementStatement{{ID: "REQ-1", Statement: "Every session calls the service."}}, Origin: core.RequirementOriginOperator,
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	server := NewServer(st)
-	server.Workspace = "demo"
-	server.WorkOrders = &workorder.Service{Store: st}
-	request := httptest.NewRequest(http.MethodPost, "/mcp", nil)
-	request = request.WithContext(withCredentialActor(request.Context(), core.AuthenticatedCredential{ID: "pat-implementer", OwnerUserID: "implementer", Kind: core.CredentialUser, Scope: core.CredentialScopeUser}))
-	identity := map[string]any{"workspace_id": "demo", "work_order_id": job.ID, "session_id": "session-checkpoint"}
-	designArgs := func(content string, flag any) map[string]any {
-		args := maps.Clone(identity)
-		args["document_id"], args["content"] = document.ID, "# Checkpoint "+content+"\n\n```conveyor:governs\n- repo: conveyor\n  paths:\n    - internal/dispatch/**\n```"
-		if flag != nil {
-			args["authority_conflict_checkpoint"] = flag
-		}
-		return args
-	}
-
-	result, err := server.callMCPTool(request, "propose_system_design_revision", designArgs("v2", true))
-	if err != nil {
-		t.Fatal(err)
-	}
-	guidance := result.(systemDesignProposalResult).Guidance
-	if guidance != checkpointProposalGuidance("System Design") || guidance == systemDesignProposalGuidance {
-		t.Fatalf("checkpoint guidance = %q", guidance)
-	}
-	for _, phrase := range []string{"release_work_order", "operator checkpoint reached", "authority_conflict", "checkpoint.decision_request", "do not wait for operator confirmation", "confirmed versions in conflict"} {
-		if !strings.Contains(guidance, phrase) {
-			t.Fatalf("checkpoint guidance lacks %q: %q", phrase, guidance)
-		}
-	}
-	if strings.Contains(guidance, "Proceed now to commit") || strings.Contains(guidance, "Do not checkpoint") {
-		t.Fatalf("checkpoint guidance directs submission: %q", guidance)
-	}
-	assertProposalResultJSON(t, result.(systemDesignProposalResult), map[string]any{"guidance": guidance})
-
-	for name, flag := range map[string]any{"absent": nil, "false": false} {
-		result, err = server.callMCPTool(request, "propose_system_design_revision", designArgs("v3 "+name, flag))
-		if err != nil {
-			t.Fatal(err)
-		}
-		if got := result.(systemDesignProposalResult).Guidance; got != systemDesignProposalGuidance {
-			t.Fatalf("%s flag guidance = %q", name, got)
-		}
-	}
-
-	before, err := st.GetSystemDesign(ctx, document.ID)
-	if err != nil {
-		t.Fatal(err)
-	}
-	beforeVersions, err := st.ListSystemDesignVersions(ctx, document.ID)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := server.callMCPTool(request, "propose_system_design_revision", designArgs("v4", "yes")); err == nil || !strings.Contains(err.Error(), "authority_conflict_checkpoint must be a boolean") {
-		t.Fatalf("string flag error = %v", err)
-	}
-	afterVersions, err := st.ListSystemDesignVersions(ctx, document.ID)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if after, _ := st.GetSystemDesign(ctx, document.ID); after.CurrentVersion != before.CurrentVersion || len(afterVersions) != len(beforeVersions) {
-		t.Fatalf("refused flag wrote a version: %d -> %d versions", len(beforeVersions), len(afterVersions))
-	}
-
-	requirementArgs := maps.Clone(identity)
-	requirementArgs["document_id"] = requirement.ID
-	requirementArgs["content"] = "# Checkpoint\n\n```conveyor:requirements\n- id: REQ-1\n  statement: A child session reports through its parent.\n```"
-	requirementArgs["authority_conflict_checkpoint"] = true
-	result, err = server.callMCPTool(request, "propose_requirement_revision", requirementArgs)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if got := result.(requirementProposalResult).Guidance; got != checkpointProposalGuidance("requirement") {
-		t.Fatalf("requirement checkpoint guidance = %q", got)
-	}
-	decisionArgs := maps.Clone(identity)
-	decisionArgs["statement"], decisionArgs["context"], decisionArgs["alternatives_rejected"] = "Child sessions report through the parent.", "Checkpoint test.", "Direct calls."
-	decisionArgs["authority_conflict_checkpoint"] = true
-	result, err = server.callMCPTool(request, "propose_decision", decisionArgs)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if got := result.(decisionProposalResult).Guidance; got != checkpointProposalGuidance("decision") {
-		t.Fatalf("decision checkpoint guidance = %q", got)
-	}
-}
-
-func TestMCPImplementationGovernanceProposalsBindToClaimedTask(t *testing.T) {
-	ctx := store.WithWorkspace(store.WithActor(t.Context(), store.SystemActor()), "demo")
-	st := store.NewMemory()
-	task := core.Task{ID: "task-governance", Workspace: "demo", Repo: "conveyor", State: core.TaskRunning, CreatedAt: time.Now()}
-	job := core.Job{ID: "order-governance", TaskID: task.ID, Stage: core.StageImplement, State: core.JobPending}
-	if err := st.CreateTask(ctx, task); err != nil {
-		t.Fatal(err)
-	}
-	if err := st.CreateJob(ctx, job); err != nil {
-		t.Fatal(err)
-	}
-	if err := storetest.For(st).CreateWorkOrder(ctx, core.WorkOrder{ID: job.ID, TaskID: task.ID, JobID: job.ID, Stage: core.StageImplement, State: core.WorkOrderQueued}); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := storetest.For(st).ClaimWorkOrder(ctx, job.ID, core.WorkOrderClaim{SessionID: "session-governance", ClientToken: "secret", ClaimantID: core.TaskRunClaimantID("implementer"), Lease: time.Minute}); err != nil {
-		t.Fatal(err)
-	}
-	document, _, err := st.CreateSystemDesign(ctx, core.SystemDesign{ID: "design-dispatch", Title: "Dispatch", Category: "Architecture"}, core.SystemDesignVersion{Content: "# Dispatch\n\n```conveyor:governs\n- repo: conveyor\n  paths:\n    - internal/dispatch/**\n```", Origin: core.SystemDesignOriginOperator})
-	if err != nil {
-		t.Fatal(err)
-	}
-	requirement, _, err := st.CreateRequirement(ctx, core.Requirement{ID: "req-dispatch", Title: "Dispatch requirements"}, core.RequirementVersion{
-		Content:    "# Dispatch\n\n```conveyor:requirements\n- id: REQ-1\n  statement: Dispatch work safely.\n```",
-		Statements: []core.RequirementStatement{{ID: "REQ-1", Statement: "Dispatch work safely."}}, Origin: core.RequirementOriginOperator,
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	server := NewServer(st)
-	server.Workspace = "demo"
-	server.WorkOrders = &workorder.Service{Store: st}
-	request := httptest.NewRequest(http.MethodPost, "/mcp", nil)
-	request = request.WithContext(withCredentialActor(request.Context(), core.AuthenticatedCredential{ID: "pat-implementer", OwnerUserID: "implementer", Kind: core.CredentialUser, Scope: core.CredentialScopeUser}))
-	identity := map[string]any{"workspace_id": "demo", "work_order_id": job.ID, "session_id": "session-governance"}
-	revisionArgs := maps.Clone(identity)
-	revisionArgs["document_id"] = document.ID
-	revisionArgs["content"] = "# Dispatch v2\n\n```conveyor:governs\n- repo: conveyor\n  paths:\n    - internal/dispatch/**\n    - internal/workorder/**\n```"
-	result, err := server.callMCPTool(request, "propose_system_design_revision", revisionArgs)
-	if err != nil {
-		t.Fatal(err)
-	}
-	revisionResult := result.(systemDesignProposalResult)
-	revision := revisionResult.SystemDesignVersion
-	if revision.Origin != core.SystemDesignOriginImplementation || revision.OriginTaskID != task.ID || revision.Confirmed || revision.Deduplicated {
-		t.Fatalf("revision=%+v", revision)
-	}
-	if revisionResult.Guidance != systemDesignProposalGuidance {
-		t.Fatalf("revision guidance=%q", revisionResult.Guidance)
-	}
-	assertProposalResultJSON(t, revisionResult, map[string]any{
-		"document_id": revision.DocumentID,
-		"version":     float64(revision.Version),
-		"origin":      string(core.SystemDesignOriginImplementation),
-		"guidance":    systemDesignProposalGuidance,
-	})
-	repeatedArgs := maps.Clone(revisionArgs)
-	repeatedArgs["content"] = " \r\n" + strings.ReplaceAll(revisionArgs["content"].(string), "\n", "\r\n") + "\r\n"
-	result, err = server.callMCPTool(request, "propose_system_design_revision", repeatedArgs)
-	if err != nil {
-		t.Fatal(err)
-	}
-	reusedResult := result.(systemDesignProposalResult)
-	reused := reusedResult.SystemDesignVersion
-	if !reused.Deduplicated || reused.Version != revision.Version {
-		t.Fatalf("reused revision=%+v original=%+v", reused, revision)
-	}
-	if reusedResult.Guidance != systemDesignProposalGuidance {
-		t.Fatalf("reused revision guidance=%q", reusedResult.Guidance)
-	}
-	assertProposalResultJSON(t, reusedResult, map[string]any{
-		"document_id":  reused.DocumentID,
-		"version":      float64(reused.Version),
-		"deduplicated": true,
-		"guidance":     systemDesignProposalGuidance,
-	})
-	requirementArgs := maps.Clone(identity)
-	requirementArgs["document_id"] = requirement.ID
-	requirementArgs["content"] = "# Dispatch\n\n```conveyor:requirements\n- id: REQ-1\n  statement: Dispatch work safely with exact claims.\n```"
-	result, err = server.callMCPTool(request, "propose_requirement_revision", requirementArgs)
-	if err != nil {
-		t.Fatal(err)
-	}
-	requirementResult := result.(requirementProposalResult)
-	proposedRequirement := requirementResult.RequirementVersion
-	if proposedRequirement.Origin != core.RequirementOriginImplementation || proposedRequirement.OriginTaskID != task.ID || proposedRequirement.Confirmed || proposedRequirement.Deduplicated {
-		t.Fatalf("requirement revision=%+v", proposedRequirement)
-	}
-	if requirementResult.Guidance != requirementProposalGuidance {
-		t.Fatalf("requirement guidance=%q", requirementResult.Guidance)
-	}
-	result, err = server.callMCPTool(request, "propose_requirement_revision", requirementArgs)
-	if err != nil {
-		t.Fatal(err)
-	}
-	reusedRequirement := result.(requirementProposalResult).RequirementVersion
-	if !reusedRequirement.Deduplicated || reusedRequirement.Version != proposedRequirement.Version {
-		t.Fatalf("reused requirement=%+v original=%+v", reusedRequirement, proposedRequirement)
-	}
-
-	// Shared parser refusals must be in-band tool results so the live agent can repair them.
-	withoutPreamble := strings.TrimPrefix(historicalCLIAuthenticationV2, "CLI authentication (proposed v2)\n")
-	_, historicalHeadingErr := pipeline.ParseRequirementDocument(historicalCLIAuthenticationV2)
-	_, historicalStatementErr := pipeline.ParseRequirementDocument(withoutPreamble)
-	if historicalHeadingErr == nil || historicalStatementErr == nil {
-		t.Fatal("historical proposal must be refused")
-	}
-	for _, invalid := range []struct{ content, want string }{
-		{historicalCLIAuthenticationV2, historicalHeadingErr.Error()},
-		{withoutPreamble, historicalStatementErr.Error()},
-		{"CLI authentication (proposed v2)\n" + requirementArgs["content"].(string), `requirement content must begin with its "# <title>" heading; line 1 is "CLI authentication (proposed v2)"`},
-		{requirementArgs["content"].(string) + "\nREQ-1: Duplicate.", `requirement content line 7 is "REQ-1: Duplicate.": statement identifiers belong inside the conveyor:requirements fence`},
-	} {
-		args := maps.Clone(requirementArgs)
-		args["content"] = invalid.content
-		payload, marshalErr := json.Marshal(map[string]any{"jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": map[string]any{"name": "propose_requirement_revision", "arguments": args}})
-		if marshalErr != nil {
-			t.Fatal(marshalErr)
-		}
-		wireRequest := httptest.NewRequest(http.MethodPost, "/mcp", bytes.NewReader(payload)).WithContext(request.Context())
-		response := httptest.NewRecorder()
-		server.handleMCP(response, wireRequest)
-		var envelope struct {
-			Result struct {
-				IsError bool `json:"isError"`
-				Content []struct {
-					Text string `json:"text"`
-				} `json:"content"`
-			} `json:"result"`
-			Error *rpcError `json:"error"`
-		}
-		if err := json.Unmarshal(response.Body.Bytes(), &envelope); err != nil {
-			t.Fatal(err)
-		}
-		if response.Code != http.StatusOK || envelope.Error != nil || !envelope.Result.IsError || len(envelope.Result.Content) != 1 || envelope.Result.Content[0].Text != invalid.want {
-			t.Fatalf("refusal status=%d body=%s, want %q", response.Code, response.Body.String(), invalid.want)
-		}
-	}
-	invalidRequirementArgs := maps.Clone(requirementArgs)
-	invalidRequirementArgs["content"] = "# Missing the conveyor:requirements fence"
-	if _, err = server.callMCPTool(request, "propose_requirement_revision", invalidRequirementArgs); err == nil {
-		t.Fatal("invalid requirement proposal was accepted")
-	}
-	versions, listErr := st.ListRequirementVersions(ctx, requirement.ID)
-	if listErr != nil || len(versions) != 2 {
-		t.Fatalf("invalid proposal partially wrote versions=%+v err=%v", versions, listErr)
-	}
-	correctedArgs := maps.Clone(requirementArgs)
-	correctedArgs["content"], _, _ = strings.Cut(withoutPreamble, "\nREQ-1:")
-	correctedResult, err := server.callMCPTool(request, "propose_requirement_revision", correctedArgs)
-	if err != nil {
-		t.Fatalf("corrected historical proposal: %v", err)
-	}
-	correctedVersion := correctedResult.(requirementProposalResult).RequirementVersion
-	if correctedVersion.Version != 3 || correctedVersion.Content != correctedArgs["content"] || len(correctedVersion.Statements) != 4 {
-		t.Fatalf("corrected historical proposal=%+v", correctedVersion)
-	}
-	staleRequirementArgs := maps.Clone(requirementArgs)
-	staleRequirementArgs["session_id"] = "stale-session"
-	if _, err = server.callMCPTool(request, "propose_requirement_revision", staleRequirementArgs); err == nil {
-		t.Fatal("stale implementation session proposed a requirement revision")
-	}
-	decisionArgs := maps.Clone(identity)
-	decisionArgs["statement"] = "Project governance from events."
-	decisionArgs["context"] = "Lineage must rebuild."
-	decisionArgs["alternatives_rejected"] = "Mutable edges drift."
-	result, err = server.callMCPTool(request, "propose_decision", decisionArgs)
-	if err != nil {
-		t.Fatal(err)
-	}
-	decisionResult := result.(decisionProposalResult)
-	decision := decisionResult.Decision
-	if decision.ID != "DEC-1" || decision.Origin != core.DecisionOriginImplementation || decision.OriginTaskID != task.ID || decision.Status != core.DecisionProposed {
-		t.Fatalf("decision=%+v", decision)
-	}
-	if decisionResult.Guidance != decisionProposalGuidance {
-		t.Fatalf("decision guidance=%q", decisionResult.Guidance)
-	}
-	assertProposalResultJSON(t, decisionResult, map[string]any{
-		"id":       decision.ID,
-		"status":   string(core.DecisionProposed),
-		"origin":   string(core.DecisionOriginImplementation),
-		"guidance": decisionProposalGuidance,
-	})
-	wrongSession := maps.Clone(decisionArgs)
-	wrongSession["session_id"] = "stale-session"
-	if _, err = server.callMCPTool(request, "propose_decision", wrongSession); err == nil {
-		t.Fatal("stale implementation session proposed a decision")
-	}
-	reviewOrderID := "order-governance-review"
-	reviewTask := core.Task{ID: "task-governance-review", Workspace: "demo", Repo: "conveyor", State: core.TaskRunning, CreatedAt: time.Now()}
-	if err = st.CreateTask(ctx, reviewTask); err != nil {
-		t.Fatal(err)
-	}
-	if err = st.CreateJob(ctx, core.Job{ID: reviewOrderID, TaskID: reviewTask.ID, Stage: core.StageReview, State: core.JobPending}); err != nil {
-		t.Fatal(err)
-	}
-	if err = storetest.For(st).CreateWorkOrder(ctx, core.WorkOrder{ID: reviewOrderID, TaskID: reviewTask.ID, JobID: reviewOrderID, Stage: core.StageReview, State: core.WorkOrderQueued}); err != nil {
-		t.Fatal(err)
-	}
-	if _, err = storetest.For(st).ClaimWorkOrder(ctx, reviewOrderID, core.WorkOrderClaim{SessionID: "review-session", ClientToken: "review-secret", ClaimantID: core.TaskRunClaimantID("implementer"), Lease: time.Minute}); err != nil {
-		t.Fatal(err)
-	}
-	reviewRequirementArgs := maps.Clone(requirementArgs)
-	reviewRequirementArgs["work_order_id"], reviewRequirementArgs["session_id"] = reviewOrderID, "review-session"
-	if _, err = server.callMCPTool(request, "propose_requirement_revision", reviewRequirementArgs); err == nil || !strings.Contains(err.Error(), "claimed implement work order") {
-		t.Fatalf("review-stage requirement proposal error=%v", err)
-	}
-}
-
-func assertProposalResultJSON(t *testing.T, result any, want map[string]any) {
-	t.Helper()
-	data, err := json.Marshal(result)
-	if err != nil {
-		t.Fatal(err)
-	}
-	var got map[string]any
-	if err := json.Unmarshal(data, &got); err != nil {
-		t.Fatal(err)
-	}
-	for field, value := range want {
-		if got[field] != value {
-			t.Errorf("result %s=%v, want %v; JSON=%s", field, got[field], value, data)
-		}
-	}
-}
-
 func TestMCPClaimDefaultsToFiveMinuteLease(t *testing.T) {
 	t.Parallel()
 	ctx := store.WithWorkspace(store.WithActor(t.Context(), store.SystemActor()), "demo")
@@ -956,7 +616,7 @@ func TestMCPToolsListRequiresAuthAndPublishesLifecycle(t *testing.T) {
 	if err := json.Unmarshal(response.Body.Bytes(), &envelope); err != nil {
 		t.Fatal(err)
 	}
-	want := []string{"list_workspaces", "list_repositories", "list_tasks", "get_task", "list_operator_inbox", "list_task_events", "get_task_context", "list_documents", "get_document", "search_documents", "list_document_events", "list_decisions", "get_decision", "get_lineage", "create_task", "add_task_dependency", "set_assignee", "attach_task_branch", "get_task_status", "list_work_orders", "claim_work_order", "redispatch_work_order", "renew_work_order", "release_work_order", "request_plan_revision", "get_work_order", "refresh_work_order_context", "read_artifact", "report_progress", "report_usage", "propose_system_design_revision", "propose_requirement_revision", "propose_decision", "upload_transcript", "submit_plan", "submit_for_review", "await_review", "submit_review_verdict", "submit_review_summary"}
+	want := []string{"list_workspaces", "list_repositories", "list_tasks", "get_task", "list_operator_inbox", "list_task_events", "get_task_context", "list_documents", "get_document", "search_documents", "list_document_events", "list_decisions", "get_decision", "get_lineage", "create_task", "add_task_dependency", "set_assignee", "attach_task_branch", "get_task_status", "list_work_orders", "claim_work_order", "redispatch_work_order", "renew_work_order", "release_work_order", "request_plan_revision", "get_work_order", "refresh_work_order_context", "read_artifact", "report_progress", "report_usage", "upload_transcript", "submit_plan", "submit_for_review", "await_review", "submit_review_verdict", "submit_review_summary"}
 	want = append(append(append([]string{}, want[:14]...), verificationTools...), want[14:]...)
 	if len(envelope.Result.Tools) != len(want) {
 		t.Fatalf("tools = %d, want %d", len(envelope.Result.Tools), len(want))
@@ -967,12 +627,6 @@ func TestMCPToolsListRequiresAuthAndPublishesLifecycle(t *testing.T) {
 		}
 		if strings.Contains(name, "preempt") {
 			t.Fatalf("operator-only preempt leaked into MCP tool %q", name)
-		}
-		if name == "propose_system_design_revision" || name == "propose_requirement_revision" || name == "propose_decision" {
-			description := envelope.Result.Tools[i].Description
-			if !strings.Contains(description, "operator alone confirms after submission") || !strings.Contains(description, "confirmation never blocks implementation") {
-				t.Fatalf("%s description=%q", name, description)
-			}
 		}
 		if name == "create_task" && !strings.Contains(envelope.Result.Tools[i].Description, "agent_gate_disable_forbidden") {
 			t.Fatalf("create_task description omits the agent gate rule: %q", envelope.Result.Tools[i].Description)
@@ -1183,9 +837,6 @@ var mcpAgentSafeReasons = map[string]string{
 	"read_artifact":                    "reads only an artifact authorized by claimed-order context",
 	"report_progress":                  "records self-reported progress only after claimant-bound admission",
 	"report_usage":                     "records self-reported observational usage only after claimant-bound admission",
-	"propose_system_design_revision":   "creates an unconfirmed proposal that grants no authority",
-	"propose_requirement_revision":     "creates an unconfirmed proposal that grants no authority",
-	"propose_decision":                 "creates an unconfirmed proposal that grants no authority",
 	"upload_transcript":                "attaches redacted evidence only after claimant-bound admission",
 	"submit_plan":                      "submits a plan-stage deliverable only after claimant-bound admission",
 	"submit_for_review":                "submits an implementation only after claimant-bound admission",
@@ -1639,7 +1290,7 @@ func TestMCPRenewToolPublishesOptionalLeaseSeconds(t *testing.T) {
 
 func TestMCPUserRunExecutorClaimGovernance(t *testing.T) {
 	t.Parallel()
-	setup := func(t *testing.T, ownLease time.Duration) (*Server, *http.Request, *membershipFixture, string, string, string) {
+	setup := func(t *testing.T, ownLease time.Duration) (*Server, *http.Request, *membershipFixture, string, string) {
 		t.Helper()
 		ctx := store.WithWorkspace(store.WithActor(t.Context(), store.SystemActor()), "demo")
 		st := store.NewMemory()
@@ -1673,7 +1324,7 @@ func TestMCPUserRunExecutorClaimGovernance(t *testing.T) {
 			}
 			orderIDs = append(orderIDs, orderID)
 		}
-		document, _, err := st.CreateSystemDesign(ctx, core.SystemDesign{ID: "design-run-claim", Title: "Run", Category: "Architecture"}, core.SystemDesignVersion{Content: "# Run\n\n```conveyor:governs\n- repo: conveyor\n  paths:\n    - internal/httpapi/**\n```", Origin: core.SystemDesignOriginOperator})
+		_, _, err := st.CreateSystemDesign(ctx, core.SystemDesign{ID: "design-run-claim", Title: "Run", Category: "Architecture"}, core.SystemDesignVersion{Content: "# Run\n\n```conveyor:governs\n- repo: conveyor\n  paths:\n    - internal/httpapi/**\n```", Origin: core.SystemDesignOriginOperator})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -1713,25 +1364,12 @@ func TestMCPUserRunExecutorClaimGovernance(t *testing.T) {
 		if ownLease <= time.Nanosecond {
 			time.Sleep(time.Millisecond)
 		}
-		return server, request, membership, orderIDs[0], orderIDs[1], document.ID
+		return server, request, membership, orderIDs[0], orderIDs[1]
 	}
-	argsFor := func(tool, orderID, sessionID, documentID string) map[string]any {
-		args := map[string]any{"workspace_id": "demo", "work_order_id": orderID, "session_id": sessionID, "rationale": "plan changed"}
-		switch tool {
-		case "propose_system_design_revision":
-			args["document_id"] = documentID
-			args["content"] = "# Run claim revision\n\n```conveyor:governs\n- repo: conveyor\n  paths:\n    - internal/httpapi/**\n```"
-		case "propose_requirement_revision":
-			args["document_id"] = "req-run-claim"
-			args["content"] = "# Run claim\n\n```conveyor:requirements\n- id: REQ-1\n  statement: Keep user run claims exact.\n```"
-		case "propose_decision":
-			args["statement"] = "Keep run claims exact."
-			args["context"] = "Run claims may propose task-local governance."
-			args["alternatives_rejected"] = "Grant freestanding proposal authority."
-		}
-		return args
+	argsFor := func(orderID, sessionID string) map[string]any {
+		return map[string]any{"workspace_id": "demo", "work_order_id": orderID, "session_id": sessionID, "rationale": "plan changed"}
 	}
-	governanceTools := []string{"request_plan_revision", "propose_system_design_revision", "propose_requirement_revision", "propose_decision"}
+	governanceTools := []string{"request_plan_revision"}
 	for _, test := range []struct {
 		name            string
 		lease           time.Duration
@@ -1747,7 +1385,7 @@ func TestMCPUserRunExecutorClaimGovernance(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 			for _, tool := range governanceTools {
 				t.Run(tool, func(t *testing.T) {
-					server, request, membership, ownOrder, otherOrder, documentID := setup(t, test.lease)
+					server, request, membership, ownOrder, otherOrder := setup(t, test.lease)
 					if test.otherCredential {
 						request = request.WithContext(withCredentialActor(request.Context(), core.AuthenticatedCredential{ID: "other-token", OwnerUserID: "user-b", Kind: core.CredentialUser, Scope: core.CredentialScopeUser}))
 					}
@@ -1755,7 +1393,7 @@ func TestMCPUserRunExecutorClaimGovernance(t *testing.T) {
 					if test.otherOrder {
 						target = otherOrder
 					}
-					_, err := server.callMCPTool(request, tool, argsFor(tool, target, "run-session-a", documentID))
+					_, err := server.callMCPTool(request, tool, argsFor(target, "run-session-a"))
 					wantErr := store.ErrWorkOrderClaimUnauthorized
 					if test.lease <= time.Nanosecond {
 						wantErr = store.ErrWorkOrderClaimLost
@@ -2704,9 +2342,9 @@ func TestMCPExactReviewSeatsArgument(t *testing.T) {
 }
 
 // The release schema states the decision request's rune limit and asks for
-// confirmed citation versions; each proposal tool declares the optional
-// checkpoint flag (component-mcp-protocol; req-260820-394cac REQ-1, AC-2.6).
-func TestMCPReleaseAndProposalSchemasStateCheckpointContract(t *testing.T) {
+// confirmed citation versions (component-mcp-protocol; req-260820-394cac REQ-1,
+// AC-2.6).
+func TestMCPReleaseSchemaStatesCheckpointContract(t *testing.T) {
 	properties := func(tool map[string]any) map[string]any {
 		return tool["inputSchema"].(map[string]any)["properties"].(map[string]any)
 	}
@@ -2730,20 +2368,9 @@ func TestMCPReleaseAndProposalSchemasStateCheckpointContract(t *testing.T) {
 				t.Fatalf("release schema does not marshal: %v", err)
 			}
 			seen[name] = true
-		case "propose_system_design_revision", "propose_requirement_revision", "propose_decision":
-			flag, ok := properties(tool)["authority_conflict_checkpoint"].(map[string]any)
-			if !ok || flag["type"] != "boolean" || !strings.Contains(flag["description"].(string), "authority-conflict checkpoint") {
-				t.Fatalf("%s checkpoint flag schema = %+v", name, properties(tool)["authority_conflict_checkpoint"])
-			}
-			for _, required := range tool["inputSchema"].(map[string]any)["required"].([]string) {
-				if required == "authority_conflict_checkpoint" {
-					t.Fatalf("%s requires the optional checkpoint flag", name)
-				}
-			}
-			seen[name] = true
 		}
 	}
-	if len(seen) != 4 {
+	if len(seen) != 1 {
 		t.Fatalf("schemas checked = %v", seen)
 	}
 }

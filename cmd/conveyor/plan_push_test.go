@@ -21,7 +21,9 @@ import (
 	"time"
 
 	"github.com/kidus-tiliksew/conveyor/internal/core"
+	"github.com/kidus-tiliksew/conveyor/internal/httpapi"
 	"github.com/kidus-tiliksew/conveyor/internal/pipeline"
+	"github.com/kidus-tiliksew/conveyor/internal/store"
 )
 
 // planFakeFactory is an httptest stand-in for the factory routes push uses
@@ -1486,5 +1488,61 @@ func TestPlanPushRefusesSameLayerCycles(t *testing.T) {
 				t.Fatalf("a refused layer posted %d request(s) or changed state", f.postCount()-posts)
 			}
 		})
+	}
+}
+
+// req-task-authority-boundary AC-1.3: retiring the work-order proposal tools
+// leaves `conveyor plan push` proposing through the real routes. The fake
+// factory above cannot show this, so the layers post to a real server here, and
+// each stays pending until the operator's confirmation.
+func TestPlanPushProposesThroughRealRoutes(t *testing.T) {
+	ctx := store.WithWorkspace(store.WithActor(t.Context(), store.SystemActor()), "demo")
+	st := store.NewMemory()
+	server := httpapi.NewServer(st)
+	server.Workspace, server.BearerToken = "demo", "plan-token"
+	httpServer := httptest.NewServer(server.Handler())
+	t.Cleanup(httpServer.Close)
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(home, ".config"))
+	t.Setenv("CONVEYOR_ADDR", httpServer.URL)
+	t.Setenv("CONVEYOR_API_TOKEN", "plan-token")
+	t.Setenv("CONVEYOR_WORKSPACE", "demo")
+
+	root := newPlanFixture(t)
+	approveAllPlanItems(t, root)
+
+	out := mustPushPlan(t, root, PlanLayerRequirements)
+	expectPlanLine(t, out, "posted req-demo:", "req-demo v1 (pending)")
+	requirement, err := st.GetRequirement(ctx, "req-demo")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if requirement.CurrentVersion != 0 {
+		t.Fatalf("push confirmed the requirement: %+v", requirement)
+	}
+	if _, _, err = st.ConfirmRequirementVersion(ctx, "req-demo", 1); err != nil {
+		t.Fatal(err)
+	}
+
+	mustPushPlan(t, root, PlanLayerDecisions)
+	decisions, err := st.ListDecisions(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(decisions) != 1 || decisions[0].Status != core.DecisionProposed {
+		t.Fatalf("pushed decisions = %+v", decisions)
+	}
+	if _, err = st.ConfirmDecision(ctx, decisions[0].ID); err != nil {
+		t.Fatal(err)
+	}
+
+	mustPushPlan(t, root, PlanLayerSystemDesigns)
+	versions, err := st.ListSystemDesignVersions(ctx, "feature-demo")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(versions) != 1 || versions[0].Confirmed {
+		t.Fatalf("pushed design versions = %+v", versions)
 	}
 }
