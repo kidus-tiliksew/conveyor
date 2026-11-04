@@ -694,13 +694,6 @@ export interface ActivitySummary {
   latest_stage?: Stage
   last_event_at: string
   needs_attention: boolean
-  /** Operator-attention signal: any pending proposal this task authored while it is in review. */
-  pending_authority: boolean
-  /**
-   * True only while a task-authored, implementation-origin requirement or System
-   * Design proposal withholds this task's verify and review claims.
-   */
-  proposal_claim_waiting?: boolean
   forge_failure?: ForgeFailure
   review_diagnostics?: ReviewVerdictDiagnostic[]
   review_recovery?: ReviewRecoveryState
@@ -1181,21 +1174,12 @@ export interface WorkspaceConfigReceipt extends VersionedWorkspaceConfig {
   sections: string[]
 }
 
-export interface OperatorNote {
-  document_id: string
-  version: number
-  tier: 'requirement' | 'system_design'
-  note: string
-  dismissed_at: string
-}
-
 /**
  * The bounded task-detail view (`GET /v1/tasks/{id}/activity?view=bounded`):
  * `events` holds at most the newest 100 human-timeline events, and current
  * facts come from `summaries`, never from the page.
  */
 export interface ActivityItem {
-  operator_notes?: OperatorNote[]
   task: Task
   jobs: Job[]
   events: TaskEventView[]
@@ -1207,12 +1191,6 @@ export interface ActivityItem {
   checkout_guidance: string
   needs_attention: boolean
   at_merge_gate: boolean
-  /** Operator-attention signal: any pending proposal this task authored while it is in review. */
-  pending_authority?: boolean
-  /** True only while a qualifying proposal withholds this task's verify and review claims. */
-  proposal_claim_waiting?: boolean
-  /** The proposals that withhold this task's verify and review claims. */
-  waiting_proposals?: WaitingProposal[]
   forge_failure?: ForgeFailure
   spec?: SpecVersion
   attachments?: Artifact[]
@@ -1242,13 +1220,6 @@ export interface PendingProposal {
   /** Whole seconds since proposed_at at the read's clock; absent when the
    * proposal has no proposed time or the response predates the field. */
   age_seconds?: number
-}
-
-/** A task-authored proposal that withholds its task's verify and review claims. */
-export interface WaitingProposal {
-  tier: 'requirement' | 'system_design'
-  id: string
-  version: number
 }
 
 export interface PendingProposalsResponse {

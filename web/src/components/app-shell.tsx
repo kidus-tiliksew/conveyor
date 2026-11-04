@@ -30,7 +30,6 @@ import {
   fetchBlueprints,
   fetchCallerIdentity,
   fetchPendingProposals,
-  fetchSystemDesigns,
   fetchWorkspace,
   fetchWorkspaceMembers,
   fetchWorkspaces,
@@ -143,17 +142,6 @@ export function blueprintsQueryOptions(workspace: string) {
   return queryOptions({
     queryKey: ['blueprints', workspace],
     queryFn: () => fetchBlueprints(workspace),
-    enabled: Boolean(workspace),
-    staleTime: slowReadStaleTime,
-  })
-}
-
-// The non-archived System Design collection as the task sheet reads it;
-// useSystemDesignProposals keeps the same key and request with this stale time.
-export function systemDesignsQueryOptions(workspace: string) {
-  return queryOptions({
-    queryKey: ['system-designs', workspace],
-    queryFn: () => fetchSystemDesigns(workspace),
     enabled: Boolean(workspace),
     staleTime: slowReadStaleTime,
   })

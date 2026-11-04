@@ -1,12 +1,12 @@
 import { skipToken, useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { useNavigate } from '@tanstack/react-router'
 import { useEffect, useId, useState } from 'react'
-import { restartOrderCount, restartPullRequestURL, taskPendingRestartProposals } from '../../lib/activity'
+import { restartOrderCount, restartPullRequestURL } from '../../lib/activity'
 import { restartTask, TaskRestartError } from '../../lib/api'
 import { errorMessage } from '../../lib/errors'
 import { relatedTaskRoute, type TaskRouteVariant } from '../../lib/task-route'
 import type { ActivityItem, TaskRestartInput } from '../../lib/types'
-import { usePendingProposals, useWorkspaceCapability, useWorkspaceSelection } from '../app-shell'
+import { useWorkspaceCapability, useWorkspaceSelection } from '../app-shell'
 import { Button } from '../ui/button'
 import { Dialog } from '../ui/dialog'
 import { Input, Textarea } from '../ui/input'
@@ -47,14 +47,9 @@ function TaskRestartDialog({
   const [note, setNote] = useState('')
   const [requestId] = useState(() => crypto.randomUUID())
   const [submitted, setSubmitted] = useState<TaskRestartInput | null>(null)
-  const canConfirm = useWorkspaceCapability('confirm_documents')
-  const pending = usePendingProposals()
   const queryClient = useQueryClient()
   const { workspace } = useWorkspaceSelection()
   const navigate = useNavigate()
-  const proposalsUsable = !pending.isPending && !pending.isError && Array.isArray(pending.data?.items)
-  const proposals = taskPendingRestartProposals(pending.data?.items ?? [], item.task.id)
-  const missingAuthority = proposals.length > 0 && !canConfirm
   const orderCount = restartOrderCount(item)
   const pr = restartPullRequestURL(item)
   const reasonLength = Array.from(reason.trim()).length
@@ -77,13 +72,7 @@ function TaskRestartDialog({
       onClose()
     },
   })
-  const disabled =
-    mutation.isPending ||
-    !proposalsUsable ||
-    missingAuthority ||
-    reasonLength === 0 ||
-    reasonLength > 200 ||
-    noteLength > 2000
+  const disabled = mutation.isPending || reasonLength === 0 || reasonLength > 200 || noteLength > 2000
   return (
     <Dialog
       label="Start over"
@@ -106,37 +95,6 @@ function TaskRestartDialog({
         <section className="space-y-2 text-sm text-muted" aria-label="Restart preview">
           <p>This task will be cancelled.</p>
           {orderCount !== undefined && <p>{orderCount} non-terminal work orders will be cancelled.</p>}
-          {proposalsUsable ? (
-            proposals.length > 0 ? (
-              <div>
-                <p>
-                  {proposals.length} pending document {proposals.length === 1 ? 'proposal' : 'proposals'} from this task
-                  will be dismissed with your note:
-                </p>
-                <ul className="mt-1 list-disc pl-5">
-                  {proposals.map((proposal) => (
-                    <li key={`${proposal.tier}/${proposal.id}/${proposal.version}`}>
-                      {proposal.title || proposal.id}
-                      {proposal.version ? ` v${proposal.version}` : ''}
-                    </li>
-                  ))}
-                </ul>
-              </div>
-            ) : (
-              <p>No pending document proposals from this task.</p>
-            )
-          ) : (
-            <p role="status">
-              {pending.isError
-                ? 'Pending proposals could not be loaded. Retry before starting over.'
-                : 'Loading pending proposals…'}
-            </p>
-          )}
-          {pending.isError && (
-            <Button type="button" variant="outline" size="sm" onClick={() => void pending.refetch()}>
-              Retry preview
-            </Button>
-          )}
           {pr && (
             <p>
               Pull request{' '}
@@ -151,11 +109,6 @@ function TaskRestartDialog({
             frozen policy.
           </p>
         </section>
-        {missingAuthority && (
-          <p role="alert" className="text-sm text-attention">
-            An operator with confirm_documents must start over this task because it has pending document proposals.
-          </p>
-        )}
         <div>
           <label htmlFor={`${id}-reason`} className="text-sm font-medium">
             Reason (required, up to 200 characters)

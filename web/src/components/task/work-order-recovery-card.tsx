@@ -1,6 +1,6 @@
 import { useMutation, useQueryClient } from '@tanstack/react-query'
 import { Link } from '@tanstack/react-router'
-import { Check, Clock3, FileText, Link2, RotateCcw, TriangleAlert } from 'lucide-react'
+import { Check, Clock3, Link2, RotateCcw, TriangleAlert } from 'lucide-react'
 import { useEffect, useId, useRef, useState } from 'react'
 import type { CurrentExecutionState } from '../../lib/activity'
 import { confirmRequirementVersion, confirmSystemDesignVersion, recoverWorkOrder } from '../../lib/api'
@@ -12,7 +12,6 @@ import { useWorkspaceCapability, useWorkspaceSelection } from '../app-shell'
 import { Badge } from '../ui/badge'
 import { Button } from '../ui/button'
 import { CheckpointProposalDiff } from './checkpoint-proposal-diff'
-import { type Proposal, proposalIdentity } from './system-design-proposal-card'
 import { TaskContextAttachmentDialog } from './task-context-attachment-dialog'
 import { VerificationCheckpointGrounds } from './verification-checkpoint-grounds'
 
@@ -26,138 +25,6 @@ export function hasOrderRecovery(item: ActivityItem, state: CurrentExecutionStat
     state.kind !== 'running' &&
     state.kind !== 'dependency_waiting' &&
     state.kind !== 'dependency_attention'
-  )
-}
-
-export function isCheckpointReleasedRecovery(state: CurrentExecutionState | undefined) {
-  return (
-    state != null &&
-    state.order.stage === 'implement' &&
-    state.order.last_failure_message === 'operator checkpoint reached' &&
-    state.kind !== 'running' &&
-    state.kind !== 'dependency_waiting' &&
-    state.kind !== 'dependency_attention'
-  )
-}
-
-export function CheckpointProposalRecoveryCard({
-  item,
-  state,
-  proposals,
-}: {
-  item: ActivityItem
-  state: CurrentExecutionState
-  proposals: Proposal[]
-}) {
-  const canConfirm = useWorkspaceCapability('confirm_documents')
-  const canRecover = useWorkspaceCapability('recover_work')
-  const { workspace } = useWorkspaceSelection()
-  const queryClient = useQueryClient()
-  const requestId = useRef(crypto.randomUUID())
-  const orderedProposals = [...proposals].sort(
-    (left, right) => left.document.id.localeCompare(right.document.id) || left.version.version - right.version.version,
-  )
-  const mutation = useMutation({
-    mutationFn: async () => {
-      // Freeze the click's inputs. Query invalidation can replace proposal
-      // records while this sequence is running, but it must not alter which
-      // decisions this operator action confirms or the audit direction it
-      // records. Multiple pending versions for one document advance If-Match
-      // from the version confirmed immediately before them.
-      const snapshot = orderedProposals.map((proposal) => ({ ...proposal }))
-      const expectedByDocument = new Map<string, number>()
-      for (const proposal of snapshot) {
-        const expected = expectedByDocument.get(proposal.document.id) ?? proposal.expected
-        await confirmSystemDesignVersion(workspace, proposal.document.id, proposal.version.version, expected)
-        expectedByDocument.set(proposal.document.id, proposal.version.version)
-      }
-      const direction = snapshot
-        .map((proposal) => `Operator confirmed ${proposal.document.id} v${proposal.version.version}.`)
-        .join(' ')
-      return recoverWorkOrder(workspace, state.order.id, requestId.current, direction)
-    },
-    onMutate: (): MutationWorkspace => ({ workspace }),
-    onSuccess: (_data, _variables, started) => {
-      if (started) void queryClient.invalidateQueries({ queryKey: taskDetailQueryKey(started.workspace, item.task.id) })
-      void queryClient.invalidateQueries({ queryKey: ['activity'] })
-    },
-    // This also refreshes after a partial multi-proposal sequence: confirmed
-    // rows disappear even when a later confirmation failed and recovery was
-    // correctly withheld.
-    onSettled: () => {
-      void queryClient.invalidateQueries({ queryKey: ['system-designs', workspace] })
-    },
-  })
-
-  if (!isCheckpointReleasedRecovery(state) || orderedProposals.length === 0) return null
-
-  const actionLabel =
-    orderedProposals.length === 1
-      ? `Confirm v${orderedProposals[0].version.version} and recover`
-      : `Confirm ${orderedProposals.length} proposals and recover`
-
-  return (
-    <section
-      aria-label="Confirm proposals and recover work order"
-      className="space-y-3 rounded-lg border border-border bg-card px-3 py-3"
-    >
-      <div className="flex items-start gap-2">
-        <TriangleAlert className="mt-0.5 size-4 shrink-0 text-attention" aria-hidden />
-        <div className="min-w-0 space-y-1 text-xs leading-5 text-muted">
-          <p className="font-medium text-attention">{state.title}</p>
-          <p>Confirm the task&apos;s pending System Design proposal before recovering this checkpoint.</p>
-        </div>
-      </div>
-      {state.order.progress?.trim() && (
-        <div className="space-y-1.5 text-xs leading-5 text-muted">
-          <p className="font-medium text-foreground">Agent checkpoint message</p>
-          <pre className="max-h-48 overflow-auto whitespace-pre-wrap rounded border border-edge bg-surface p-2 font-sans text-sm text-foreground">
-            {state.order.progress}
-          </pre>
-        </div>
-      )}
-      <div className="space-y-3">
-        {orderedProposals.map((proposal) => (
-          <div key={proposalIdentity(proposal)} className="flex items-start gap-2">
-            <FileText className="mt-0.5 size-4 shrink-0 text-attention" aria-hidden />
-            <div className="min-w-0 flex-1 text-xs leading-5 text-muted">
-              <p className="font-medium text-attention">System Design update proposed</p>
-              <p>
-                Version {proposal.version.version} proposed by this task for{' '}
-                <Link
-                  to="/w/$workspaceId/system-design"
-                  params={{ workspaceId: workspace }}
-                  search={{ document: proposal.document.id, tab: 'changes', target: proposal.version.version }}
-                  className="text-primary hover:underline"
-                >
-                  {proposal.document.title}
-                </Link>
-                .
-              </p>
-            </div>
-          </div>
-        ))}
-      </div>
-      <div className="flex flex-wrap items-center gap-3">
-        <Button size="sm" disabled={!canConfirm || !canRecover || mutation.isPending} onClick={() => mutation.mutate()}>
-          <Check aria-hidden />
-          {mutation.isPending ? 'Confirming and recovering…' : actionLabel}
-        </Button>
-        <Link
-          to="/w/$workspaceId/inbox"
-          params={{ workspaceId: workspace }}
-          search={{ task: item.task.id }}
-          className="text-xs font-medium text-primary hover:underline"
-        >
-          Review or dismiss proposals
-        </Link>
-      </div>
-      {!canConfirm && <p className="text-xs text-muted">Document confirmation capability is required.</p>}
-      {!canRecover && <p className="text-xs text-muted">Work recovery capability is required.</p>}
-      {mutation.error != null && (
-        <p className="text-xs text-failure">{errorMessage(mutation.error, 'Could not confirm and recover.')}</p>
-      )}
-    </section>
   )
 }
 
@@ -719,7 +586,7 @@ interface CitedDocument {
   proposals: WorkOrderCheckpointPendingProposal[]
 }
 
-function citedDocumentsOf(citations: WorkOrderCheckpointCitation[]): CitedDocument[] {
+export function citedDocumentsOf(citations: WorkOrderCheckpointCitation[]): CitedDocument[] {
   const documents = new Map<string, CitedDocument>()
   for (const citation of citations) {
     const key = `${citation.document_kind}:${citation.document_id}`
@@ -747,7 +614,7 @@ function citedDocumentsOf(citations: WorkOrderCheckpointCitation[]): CitedDocume
   return [...documents.values()]
 }
 
-function documentName(document: CitedDocument) {
+export function documentName(document: CitedDocument) {
   return document.citations[0].document_title || document.citations[0].document_id
 }
 

@@ -39,11 +39,11 @@ function card(
 }
 
 const proposal = {
-  label: 'Document proposal',
+  label: 'Context proposal',
   actor: 'operator',
-  kind: 'document_proposal',
+  kind: 'context_proposal',
   judgment: true,
-  summary: 'Server summary: a document proposal is withholding the next claim.',
+  summary: 'Server summary: a context proposal is waiting for a decision.',
   deadline: null,
 }
 const working = {
@@ -288,7 +288,7 @@ test('a card leads with the server label behind a status mark, and keeps the sum
   await mockBoard(page)
   await page.goto('/')
   const operator = cardFor(page, 'Confirm the dashboard proposal')
-  await expect(operator.locator('[data-next-action-label]')).toHaveText('Document proposal')
+  await expect(operator.locator('[data-next-action-label]')).toHaveText('Context proposal')
   await expect(operator.locator('[data-status-mark]')).toHaveAttribute('data-status-mark', 'operator')
   // The card face prints no summary sentence, task ID, repository hue, or actor word.
   const summary = operator.locator('[data-next-action-summary]')
@@ -310,7 +310,7 @@ test('status marks follow the server actor and kind, with a recorded failure fir
   await mockBoard(page)
   await page.goto('/')
   const tones: [string, string, string][] = [
-    ['Confirm the dashboard proposal', 'operator', 'Document proposal'],
+    ['Confirm the dashboard proposal', 'operator', 'Context proposal'],
     ['Build the opt-in stripe', 'working', 'Working'],
     ['Ship touch tooltips', 'merging', 'Merging'],
     ['Paginate lineage reads', 'waiting', 'Queued'],
