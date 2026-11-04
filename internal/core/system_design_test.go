@@ -1,6 +1,7 @@
 package core
 
 import (
+	"encoding/json"
 	"reflect"
 	"strings"
 	"testing"
@@ -50,7 +51,6 @@ func TestSystemDesignGovernedScopeParsingAndMatching(t *testing.T) {
 	}
 	for _, content := range []string{
 		"# Missing",
-		"```conveyor:governs\n- repo: conveyor\n  paths: []\n```",
 		"```conveyor:governs\n- repo: conveyor\n  paths: [../secret]\n```",
 		"```conveyor:governs\n- repo: conveyor\n  paths: [internal/**]\n```\n```conveyor:governs\n- repo: other\n  paths: [cmd/**]\n```",
 	} {
@@ -62,6 +62,104 @@ func TestSystemDesignGovernedScopeParsingAndMatching(t *testing.T) {
 		content := "# Design\n\n```conveyor:governs\n- repo: conveyor\n  paths:\n    - " + glob + "\n```"
 		if _, err := ParseGovernedScopes(content); err == nil || !strings.Contains(err.Error(), "unsupported character-class syntax") {
 			t.Fatalf("character-class glob %q error=%v", glob, err)
+		}
+	}
+}
+
+// A declared repository with an empty path list governs no paths; every other
+// fence rule stays enforced (req-task-authority-boundary AC-5.1; DEC-101(5)).
+func TestParseGovernedScopesAcceptsEmptyPathList(t *testing.T) {
+	for name, test := range map[string]struct {
+		fence string
+		want  []GovernedScope
+	}{
+		"flow list": {"- repo: conveyor\n  paths: []", []GovernedScope{{Repository: "conveyor", Paths: []string{}}}},
+		"empty beside non-empty scope": {
+			"- repo: other\n  paths: [cmd/**, internal/**]\n- repo: conveyor\n  paths: []",
+			[]GovernedScope{{Repository: "conveyor", Paths: []string{}}, {Repository: "other", Paths: []string{"cmd/**", "internal/**"}}},
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			content := "# Design\n\n```conveyor:governs\n" + test.fence + "\n```"
+			scopes, err := ParseGovernedScopes(content)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !reflect.DeepEqual(scopes, test.want) {
+				t.Fatalf("scopes=%#v want %#v", scopes, test.want)
+			}
+			version := SystemDesignVersion{DocumentID: "feature-demo", Content: content, Origin: SystemDesignOriginOperator}
+			if err = NormalizeSystemDesignVersion(&version); err != nil {
+				t.Fatal(err)
+			}
+			if !reflect.DeepEqual(version.Governs, test.want) {
+				t.Fatalf("normalized governs=%#v want %#v", version.Governs, test.want)
+			}
+			encoded, err := json.Marshal(version.Governs[0])
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !strings.Contains(string(encoded), `"paths":[]`) {
+				t.Fatalf("empty list must persist as an array: %s", encoded)
+			}
+		})
+	}
+	for name, test := range map[string]struct{ content, reason string }{
+		"no fence":          {"# Design", "exactly one conveyor:governs fence"},
+		"two empty fences":  {"```conveyor:governs\n- repo: conveyor\n  paths: []\n```\n```conveyor:governs\n- repo: other\n  paths: []\n```", "exactly one conveyor:governs fence"},
+		"no repository":     {"```conveyor:governs\n[]\n```", "at least one repository scope"},
+		"absent paths":      {"```conveyor:governs\n- repo: conveyor\n```", "must declare a paths list"},
+		"null paths":        {"```conveyor:governs\n- repo: conveyor\n  paths:\n```", "must declare a paths list"},
+		"misspelled key":    {"```conveyor:governs\n- repo: conveyor\n  path: [internal/**]\n```", "must declare a paths list"},
+		"duplicate empty":   {"```conveyor:governs\n- repo: conveyor\n  paths: []\n- repo: conveyor\n  paths: []\n```", "declared more than once"},
+		"invalid repo name": {"```conveyor:governs\n- repo: acme/conveyor\n  paths: []\n```", "configured repository name"},
+		"escaping glob":     {"```conveyor:governs\n- repo: conveyor\n  paths: [../secret]\n```", "must be repository-relative"},
+		"character class":   {"```conveyor:governs\n- repo: conveyor\n  paths: [\"src/[ab]/*.go\"]\n```", "unsupported character-class syntax"},
+		"blank glob":        {"```conveyor:governs\n- repo: conveyor\n  paths: [\"\"]\n```", "must be repository-relative"},
+		"duplicate glob":    {"```conveyor:governs\n- repo: conveyor\n  paths: [cmd/**, cmd/**]\n```", "is duplicated"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			if _, err := ParseGovernedScopes(test.content); err == nil || !strings.Contains(err.Error(), test.reason) {
+				t.Fatalf("error=%v want %q", err, test.reason)
+			}
+		})
+	}
+}
+
+// An empty list matches nothing, in its own repository and across repositories
+// (req-task-authority-boundary REQ-5, AC-5.2).
+func TestEmptyPathListIsNotARepositoryWildcard(t *testing.T) {
+	noPath := GovernanceDesignContext{ID: "no-path", Governs: []GovernedScope{{Repository: "conveyor", Paths: []string{}}}}
+	emptyHere := GovernanceDesignContext{ID: "empty-here", Governs: []GovernedScope{{Repository: "conveyor", Paths: []string{}}, {Repository: "other", Paths: []string{"**"}}}}
+	emptyElsewhere := GovernanceDesignContext{ID: "empty-elsewhere", Governs: []GovernedScope{{Repository: "conveyor", Paths: []string{"internal/**"}}, {Repository: "other", Paths: []string{}}}}
+	designs := []GovernanceDesignContext{noPath, emptyHere, emptyElsewhere}
+	matchIDs := func(repository string, changed ...string) []string {
+		ids := []string{}
+		for _, match := range ResolveGovernedDesigns(designs, repository, changed) {
+			ids = append(ids, match.Design.ID)
+		}
+		return ids
+	}
+	if got := matchIDs("conveyor", "internal/core/types.go", "README.md"); !reflect.DeepEqual(got, []string{"empty-elsewhere"}) {
+		t.Fatalf("conveyor matches=%v", got)
+	}
+	if got := matchIDs("other", "internal/core/types.go"); !reflect.DeepEqual(got, []string{"empty-here"}) {
+		t.Fatalf("other matches=%v", got)
+	}
+	for _, test := range []struct {
+		design     GovernanceDesignContext
+		repository string
+		want       bool
+	}{
+		{noPath, "conveyor", false},
+		{noPath, "other", false},
+		{emptyHere, "conveyor", false},
+		{emptyHere, "other", true},
+		{emptyElsewhere, "conveyor", true},
+		{emptyElsewhere, "other", false},
+	} {
+		if got := GovernsRepositoryPaths(test.design.Governs, test.repository); got != test.want {
+			t.Errorf("GovernsRepositoryPaths(%s,%s)=%t want %t", test.design.ID, test.repository, got, test.want)
 		}
 	}
 }

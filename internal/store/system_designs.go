@@ -373,11 +373,8 @@ func (m *memory) ListGovernanceDesigns(ctx context.Context, repository string) (
 			continue
 		}
 		version := versions[document.CurrentVersion-1]
-		for _, scope := range version.Governs {
-			if scope.Repository == repository {
-				out = append(out, core.GovernanceDesignContext{ID: document.ID, Title: document.Title, Category: document.Category, Version: version.Version, Content: version.Content, Governs: append([]core.GovernedScope(nil), version.Governs...)})
-				break
-			}
+		if core.GovernsRepositoryPaths(version.Governs, repository) {
+			out = append(out, core.GovernanceDesignContext{ID: document.ID, Title: document.Title, Category: document.Category, Version: version.Version, Content: version.Content, Governs: append([]core.GovernedScope(nil), version.Governs...)})
 		}
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].ID < out[j].ID })

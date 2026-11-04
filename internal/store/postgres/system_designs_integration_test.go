@@ -1,6 +1,7 @@
 package postgres
 
 import (
+	"slices"
 	"testing"
 
 	"github.com/kidus-tiliksew/conveyor/internal/config"
@@ -54,8 +55,17 @@ func TestListGovernanceDesignsFiltersBeforeLoadingContentIntegration(t *testing.
 	if _, err = st.BootstrapWorkspaceConfig(ctx, &config.Config{Workspace: workspace, Repos: []config.Repo{{Name: "conveyor", Base: "main"}, {Name: "other", Base: "main"}}}); err != nil {
 		t.Fatal(err)
 	}
-	for _, fixture := range []struct{ id, repo string }{{"design-conveyor", "conveyor"}, {"design-other", "other"}} {
-		document, version, createErr := st.CreateSystemDesign(ctx, core.SystemDesign{ID: fixture.id, Title: fixture.id, Category: "Architecture"}, core.SystemDesignVersion{Content: "# " + fixture.id + "\n\n```conveyor:governs\n- repo: " + fixture.repo + "\n  paths:\n    - internal/**\n```", Origin: core.SystemDesignOriginOperator})
+	// The two mixed fixtures hold the repository and a non-empty list on
+	// different scope elements, so a filter testing them independently fails
+	// (req-task-authority-boundary REQ-5).
+	for _, fixture := range []struct{ id, fence string }{
+		{"design-conveyor", "- repo: conveyor\n  paths:\n    - internal/**"},
+		{"design-other", "- repo: other\n  paths:\n    - internal/**"},
+		{"design-no-path", "- repo: conveyor\n  paths: []"},
+		{"design-empty-here", "- repo: conveyor\n  paths: []\n- repo: other\n  paths:\n    - internal/**"},
+		{"design-empty-elsewhere", "- repo: conveyor\n  paths:\n    - cmd/**\n- repo: other\n  paths: []"},
+	} {
+		document, version, createErr := st.CreateSystemDesign(ctx, core.SystemDesign{ID: fixture.id, Title: fixture.id, Category: "Architecture"}, core.SystemDesignVersion{Content: "# " + fixture.id + "\n\n```conveyor:governs\n" + fixture.fence + "\n```", Origin: core.SystemDesignOriginOperator})
 		if createErr != nil {
 			t.Fatal(createErr)
 		}
@@ -63,8 +73,24 @@ func TestListGovernanceDesignsFiltersBeforeLoadingContentIntegration(t *testing.
 			t.Fatal(createErr)
 		}
 	}
-	designs, err := st.ListGovernanceDesigns(ctx, "conveyor")
-	if err != nil || len(designs) != 1 || designs[0].ID != "design-conveyor" || designs[0].Content == "" {
-		t.Fatalf("repository-scoped governance=%+v err=%v", designs, err)
+	for repository, want := range map[string][]string{
+		"conveyor": {"design-conveyor", "design-empty-elsewhere"},
+		"other":    {"design-empty-here", "design-other"},
+		"absent":   {},
+	} {
+		designs, listErr := st.ListGovernanceDesigns(ctx, repository)
+		if listErr != nil {
+			t.Fatal(listErr)
+		}
+		got := make([]string, 0, len(designs))
+		for _, design := range designs {
+			if design.Content == "" {
+				t.Fatalf("%s governance omitted content: %+v", repository, design)
+			}
+			got = append(got, design.ID)
+		}
+		if !slices.Equal(got, want) {
+			t.Fatalf("%s governance=%v want %v", repository, got, want)
+		}
 	}
 }

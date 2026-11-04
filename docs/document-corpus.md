@@ -85,6 +85,24 @@ pinned authority when a task touches those paths, and it arms
 without the delivering task having consulted or proposed a revision to the
 design raises a drift signal.
 
+A document that owns no code, such as a feature design (DEC-101(5)), declares
+its repository with an empty path list:
+
+````markdown
+```conveyor:governs
+- repo: api
+  paths: []
+```
+````
+
+The empty list is a scope that matches nothing, not a repository-wide wildcard
+(`req-task-authority-boundary` REQ-5). Conveyor does not serve the document as
+repository authority, no submitted diff attaches it, and no merge raises drift
+against it. A task receives the document only through explicit attachment,
+which pins a version as usual. The document still has exactly one code block,
+and the list must be written out: a repository entry with an absent or null
+`paths` is refused, so a misspelled key cannot empty a scope.
+
 ## Baselines and overlays
 
 DEC-57(5) recommends evergreen System Design documents as component baselines

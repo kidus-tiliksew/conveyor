@@ -599,11 +599,8 @@ func (s *Store) ListGovernanceDesigns(ctx context.Context, repository string) ([
 		if err = json.Unmarshal(governs, &item.Governs); err != nil {
 			return nil, err
 		}
-		for _, scope := range item.Governs {
-			if scope.Repository == repository {
-				out = append(out, item)
-				break
-			}
+		if core.GovernsRepositoryPaths(item.Governs, repository) {
+			out = append(out, item)
 		}
 	}
 	return out, rows.Err()

@@ -488,6 +488,7 @@ func RunSystemDesignDriftConformance(t *testing.T, factory SystemDesignDriftFact
 	})
 
 	runSubmissionGovernanceArchiveEligibility(t, factory)
+	runNoPathSystemDesignConformance(t, factory)
 }
 
 // runSubmissionGovernanceArchiveEligibility proves submission-diff governance
@@ -496,23 +497,6 @@ func RunSystemDesignDriftConformance(t *testing.T, factory SystemDesignDriftFact
 func runSubmissionGovernanceArchiveEligibility(t *testing.T, factory SystemDesignDriftFactory) {
 	t.Helper()
 	paths := []string{"internal/dispatch/dispatch.go"}
-	designAdded := func(t *testing.T, st store.Store, ctx context.Context, taskID, documentID string) []core.Event {
-		t.Helper()
-		events, err := st.ListEvents(ctx, taskID)
-		if err != nil {
-			t.Fatal(err)
-		}
-		var matched []core.Event
-		for _, event := range events {
-			var payload struct {
-				ID string `json:"id"`
-			}
-			if event.Kind == store.TaskContextDesignAdded && json.Unmarshal(event.Payload, &payload) == nil && payload.ID == documentID {
-				matched = append(matched, event)
-			}
-		}
-		return matched
-	}
 
 	t.Run("submission attachment excludes archived designs", func(t *testing.T) {
 		st, ctx, workspace := factory(t)
@@ -593,6 +577,317 @@ func runSubmissionGovernanceArchiveEligibility(t *testing.T, factory SystemDesig
 	})
 }
 
+// runNoPathSystemDesignConformance proves that a document declaring a
+// repository with an empty path list can be created and confirmed, is not
+// repository governance, attaches to a task only explicitly, and raises no
+// drift, while non-empty controls keep the existing rules
+// (req-task-authority-boundary REQ-5, AC-5.1, AC-5.2; DEC-101(5)).
+func runNoPathSystemDesignConformance(t *testing.T, factory SystemDesignDriftFactory) {
+	t.Helper()
+	const (
+		noPath         = "DESIGN-no-path"
+		emptyHere      = "DESIGN-empty-here"
+		emptyElsewhere = "DESIGN-empty-elsewhere"
+		control        = "DESIGN-control"
+		noPathFence    = "- repo: conveyor\n  paths: []"
+	)
+	dispatchPath := "internal/dispatch/dispatch.go"
+	seed := func(t *testing.T, st store.Store, ctx context.Context) {
+		t.Helper()
+		createConfirmedFencedDesign(t, st, ctx, noPath, noPathFence)
+		createConfirmedFencedDesign(t, st, ctx, emptyHere, "- repo: conveyor\n  paths: []\n- repo: other\n  paths:\n    - internal/dispatch/**")
+		createConfirmedFencedDesign(t, st, ctx, emptyElsewhere, "- repo: conveyor\n  paths:\n    - internal/dispatch/**\n- repo: other\n  paths: []")
+		createConfirmedFencedDesign(t, st, ctx, control, "- repo: conveyor\n  paths:\n    - internal/dispatch/**")
+	}
+	listed := func(t *testing.T, st store.Store, ctx context.Context, repository string) []string {
+		t.Helper()
+		designs, err := st.ListGovernanceDesigns(ctx, repository)
+		if err != nil {
+			t.Fatal(err)
+		}
+		ids := make([]string, 0, len(designs))
+		for _, design := range designs {
+			if design.Content == "" {
+				t.Fatalf("governance listing omitted content: %+v", design)
+			}
+			ids = append(ids, design.ID)
+		}
+		return ids
+	}
+	governanceIDs := func(designs []core.GovernanceDesignContext) []string {
+		ids := make([]string, 0, len(designs))
+		for _, design := range designs {
+			ids = append(ids, design.ID)
+		}
+		return ids
+	}
+
+	t.Run("no-path document is created and confirmed", func(t *testing.T) {
+		st, ctx, _ := factory(t)
+		document, version, err := st.CreateSystemDesign(ctx, core.SystemDesign{ID: noPath, Title: "No path", Category: "Feature design"}, core.SystemDesignVersion{Content: fencedDesignContent(noPathFence), Origin: core.SystemDesignOriginOperator})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, _, err = st.ConfirmSystemDesignVersion(ctx, document.ID, version.Version); err != nil {
+			t.Fatal(err)
+		}
+		stored, err := st.GetSystemDesign(ctx, document.ID)
+		if err != nil || stored.CurrentVersion != 1 {
+			t.Fatalf("document=%+v err=%v", stored, err)
+		}
+		confirmed, err := st.GetSystemDesignVersion(ctx, document.ID, 1)
+		if err != nil || !confirmed.Confirmed {
+			t.Fatalf("version=%+v err=%v", confirmed, err)
+		}
+		if len(confirmed.Governs) != 1 || confirmed.Governs[0].Repository != "conveyor" || len(confirmed.Governs[0].Paths) != 0 {
+			t.Fatalf("stored governs=%+v", confirmed.Governs)
+		}
+		for name, test := range map[string]struct{ content, reason string }{
+			"no fence":        {"# Design", "exactly one conveyor:governs fence"},
+			"two fences":      {fencedDesignContent(noPathFence) + "\n" + fencedDesignContent("- repo: other\n  paths: []"), "exactly one conveyor:governs fence"},
+			"no repository":   {fencedDesignContent("[]"), "at least one repository scope"},
+			"absent paths":    {fencedDesignContent("- repo: conveyor"), "must declare a paths list"},
+			"character class": {fencedDesignContent("- repo: conveyor\n  paths:\n    - src/[ab]/*.go"), "unsupported character-class syntax"},
+		} {
+			id := "DESIGN-refused-" + strings.ReplaceAll(name, " ", "-")
+			if _, _, refused := st.CreateSystemDesign(ctx, core.SystemDesign{ID: id, Title: name, Category: "Feature design"}, core.SystemDesignVersion{Content: test.content, Origin: core.SystemDesignOriginOperator}); refused == nil || !strings.Contains(refused.Error(), test.reason) {
+				t.Fatalf("%s error=%v want %q", name, refused, test.reason)
+			}
+		}
+	})
+
+	t.Run("governance listing requires paths in the requested repository", func(t *testing.T) {
+		st, ctx, workspace := factory(t)
+		seed(t, st, ctx)
+		for repository, want := range map[string][]string{
+			"conveyor": {control, emptyElsewhere},
+			"other":    {emptyHere},
+			"absent":   {},
+		} {
+			if got := listed(t, st, ctx, repository); !slices.Equal(got, want) {
+				t.Fatalf("%s listing=%v want %v", repository, got, want)
+			}
+			snapshot, err := store.GovernanceForRepository(ctx, st, repository)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got := governanceIDs(snapshot.Designs); !slices.Equal(got, want) {
+				t.Fatalf("%s repository snapshot=%v want %v", repository, got, want)
+			}
+		}
+		if got := listed(t, st, store.WithWorkspace(ctx, workspace+"-sibling"), "conveyor"); len(got) != 0 {
+			t.Fatalf("sibling workspace listing=%v", got)
+		}
+		if err := st.ArchiveSystemDesign(ctx, control, "operator", nil); err != nil {
+			t.Fatal(err)
+		}
+		if got := listed(t, st, ctx, "conveyor"); !slices.Equal(got, []string{emptyElsewhere}) {
+			t.Fatalf("listing after archive=%v", got)
+		}
+	})
+
+	t.Run("governance listing follows the current confirmed version", func(t *testing.T) {
+		st, ctx, _ := factory(t)
+		createConfirmedFencedDesign(t, st, ctx, control, "- repo: conveyor\n  paths:\n    - internal/dispatch/**")
+		createConfirmedFencedDesign(t, st, ctx, noPath, noPathFence)
+		retiring, err := st.ProposeSystemDesignVersion(ctx, core.SystemDesignVersion{DocumentID: control, Content: fencedDesignContent(noPathFence), Origin: core.SystemDesignOriginOperator})
+		if err != nil {
+			t.Fatal(err)
+		}
+		gaining, err := st.ProposeSystemDesignVersion(ctx, core.SystemDesignVersion{DocumentID: noPath, Content: fencedDesignContent("- repo: conveyor\n  paths:\n    - cmd/**"), Origin: core.SystemDesignOriginOperator})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got := listed(t, st, ctx, "conveyor"); !slices.Equal(got, []string{control}) {
+			t.Fatalf("pending proposals changed listing: %v", got)
+		}
+		if _, _, err = st.ConfirmSystemDesignVersion(ctx, control, retiring.Version); err != nil {
+			t.Fatal(err)
+		}
+		if _, _, err = st.ConfirmSystemDesignVersion(ctx, noPath, gaining.Version); err != nil {
+			t.Fatal(err)
+		}
+		if got := listed(t, st, ctx, "conveyor"); !slices.Equal(got, []string{noPath}) {
+			t.Fatalf("listing after confirmation=%v", got)
+		}
+	})
+
+	t.Run("submitted diff attaches only path matches", func(t *testing.T) {
+		st, ctx, workspace := factory(t)
+		seed(t, st, ctx)
+		delivery := createDriftTask(t, st, ctx, workspace, "no-path-submission")
+		attribution := store.SubmissionGovernanceAttribution{WorkOrderID: delivery.ID + "-implement", SessionID: "worker-session"}
+		attached, err := st.AttachSubmissionGovernance(ctx, delivery.ID, "conveyor", []string{dispatchPath, "README.md"}, attribution)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(attached) != 2 || attached[0].ID != control || attached[1].ID != emptyElsewhere {
+			t.Fatalf("conveyor submission attachment=%+v", attached)
+		}
+		for _, id := range []string{noPath, emptyHere} {
+			if events := designAdded(t, st, ctx, delivery.ID, id); len(events) != 0 {
+				t.Fatalf("%s attached by diff: %+v", id, events)
+			}
+		}
+		snapshot, err := store.GovernanceForTask(ctx, st, delivery.ID, "conveyor")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got := governanceIDs(snapshot.Designs); !slices.Equal(got, []string{control, emptyElsewhere}) {
+			t.Fatalf("task governance=%v", got)
+		}
+		other := createDriftTask(t, st, ctx, workspace, "no-path-submission-other-repository")
+		attached, err = st.AttachSubmissionGovernance(ctx, other.ID, "other", []string{dispatchPath}, store.SubmissionGovernanceAttribution{WorkOrderID: other.ID + "-implement", SessionID: "worker-session"})
+		if err != nil || len(attached) != 1 || attached[0].ID != emptyHere {
+			t.Fatalf("other submission attachment=%+v err=%v", attached, err)
+		}
+	})
+
+	t.Run("explicit attachment pins and delivers a no-path document", func(t *testing.T) {
+		st, ctx, workspace := factory(t)
+		seed(t, st, ctx)
+		attachedTask := createDriftTask(t, st, ctx, workspace, "no-path-explicit")
+		unattachedTask := createDriftTask(t, st, ctx, workspace, "no-path-unattached")
+		if err := st.AppendEvent(ctx, core.Event{TaskID: attachedTask.ID, Kind: store.TaskContextDesignAdded, Payload: core.JSONPayload(map[string]any{"id": noPath, "version": 1})}); err != nil {
+			t.Fatal(err)
+		}
+		// The submission path neither duplicates nor removes the explicit pin.
+		if _, err := st.AttachSubmissionGovernance(ctx, attachedTask.ID, "conveyor", []string{dispatchPath}, store.SubmissionGovernanceAttribution{WorkOrderID: attachedTask.ID + "-implement", SessionID: "worker-session"}); err != nil {
+			t.Fatal(err)
+		}
+		if events := designAdded(t, st, ctx, attachedTask.ID, noPath); len(events) != 1 {
+			t.Fatalf("explicit attachment events=%+v", events)
+		}
+		revision, err := st.ProposeSystemDesignVersion(ctx, core.SystemDesignVersion{DocumentID: noPath, Content: "# Revised\n\n```conveyor:governs\n" + noPathFence + "\n```", Origin: core.SystemDesignOriginOperator})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, _, err = st.ConfirmSystemDesignVersion(ctx, noPath, revision.Version); err != nil {
+			t.Fatal(err)
+		}
+		taskContext, err := store.TaskContextForTask(ctx, st, attachedTask.ID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		pinned := false
+		for _, design := range taskContext.Designs {
+			pinned = pinned || (design.ID == noPath && design.Version == 1)
+		}
+		if !pinned {
+			t.Fatalf("task context=%+v", taskContext.Designs)
+		}
+		snapshot, err := store.GovernanceForTask(ctx, st, attachedTask.ID, "conveyor")
+		if err != nil {
+			t.Fatal(err)
+		}
+		delivered := false
+		for _, design := range snapshot.Designs {
+			if design.ID == noPath {
+				delivered = design.Version == 1 && design.Content == fencedDesignContent(noPathFence)
+			}
+		}
+		if !delivered {
+			t.Fatalf("attached governance=%+v", snapshot.Designs)
+		}
+		snapshot, err = store.GovernanceForTask(ctx, st, unattachedTask.ID, "conveyor")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got := governanceIDs(snapshot.Designs); !slices.Equal(got, []string{control, emptyElsewhere}) {
+			t.Fatalf("unattached governance=%v", got)
+		}
+	})
+
+	for _, test := range []struct {
+		name     string
+		kind     monitor.SignalKind
+		attached bool
+	}{
+		{name: "lineaged merge of an unattached task", kind: monitor.LineagedMerge},
+		{name: "lineaged merge of an attached task", kind: monitor.LineagedMerge, attached: true},
+		{name: "external merge with no attachment", kind: monitor.ExternalPRMerge},
+		{name: "external merge with an attachment", kind: monitor.ExternalPRMerge, attached: true},
+	} {
+		t.Run(test.name+" raises no drift against a no-path document", func(t *testing.T) {
+			st, ctx, workspace := factory(t)
+			service := driftService(t, st, ctx, workspace, time.Date(2026, 11, 4, 8, 0, 0, 0, time.UTC))
+			seed(t, st, ctx)
+			delivery := createDriftTask(t, st, ctx, workspace, "no-path-merge")
+			if test.attached {
+				for _, id := range []string{noPath, emptyHere} {
+					if err := st.AppendEvent(ctx, core.Event{TaskID: delivery.ID, Kind: store.TaskContextDesignAdded, Payload: core.JSONPayload(map[string]any{"id": id, "version": 1})}); err != nil {
+						t.Fatal(err)
+					}
+				}
+			}
+			if err := st.AppendEvent(ctx, core.Event{TaskID: delivery.ID, Kind: "merge.confirmed", Payload: core.JSONPayload(map[string]any{"repository": "kidus-tiliksew/conveyor", "head_sha": "no-path-head"})}); err != nil {
+				t.Fatal(err)
+			}
+			observation := monitor.Observation{Repository: "conveyor", Kind: test.kind, OccurrenceID: "pr:900", SourceURL: "https://example.test/pull/900", CommitSHA: "no-path-head", ChangedPaths: []string{dispatchPath, "README.md"}, CausalEventID: latestEventID(t, st, ctx, delivery.ID, "merge.confirmed")}
+			// Re-evaluation is expected after recovery and stays free of drift.
+			for range 2 {
+				var err error
+				if test.kind == monitor.LineagedMerge {
+					_, err = service.ProcessDesignMerge(ctx, observation, delivery.ID)
+				} else {
+					_, err = service.Process(ctx, observation)
+				}
+				if err != nil {
+					t.Fatal(err)
+				}
+			}
+			status, err := service.Status(ctx)
+			if err != nil {
+				t.Fatal(err)
+			}
+			drifted := []string{}
+			for _, drift := range status.Drift {
+				if drift.SystemDesignID == "" {
+					continue
+				}
+				drifted = append(drifted, drift.SystemDesignID)
+				if !slices.Equal(drift.MatchingPaths, []string{dispatchPath}) {
+					t.Fatalf("drift matching paths=%+v", drift)
+				}
+			}
+			slices.Sort(drifted)
+			if !slices.Equal(drifted, []string{control, emptyElsewhere}) {
+				t.Fatalf("design drift=%v status=%+v", drifted, status.Drift)
+			}
+			for _, id := range []string{noPath, emptyHere} {
+				events, err := st.ListSystemDesignEvents(ctx, id)
+				if err != nil {
+					t.Fatal(err)
+				}
+				for _, event := range events {
+					if strings.HasPrefix(event.Kind, "system_design.drift") || event.Kind == "system_design.consulted" {
+						t.Fatalf("%s merge event %s: %s", id, event.Kind, event.Payload)
+					}
+				}
+			}
+		})
+	}
+}
+
+// designAdded returns the task's context-attachment events for one document.
+func designAdded(t *testing.T, st store.Store, ctx context.Context, taskID, documentID string) []core.Event {
+	t.Helper()
+	events, err := st.ListEvents(ctx, taskID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var matched []core.Event
+	for _, event := range events {
+		var payload struct {
+			ID string `json:"id"`
+		}
+		if event.Kind == store.TaskContextDesignAdded && json.Unmarshal(event.Payload, &payload) == nil && payload.ID == documentID {
+			matched = append(matched, event)
+		}
+	}
+	return matched
+}
+
 func driftService(t *testing.T, st store.Store, ctx context.Context, workspace string, now time.Time) *monitor.Service {
 	t.Helper()
 	service := &monitor.Service{Store: st.(monitor.Store), WorkspaceID: workspace, Enabled: true, Repositories: map[string]struct{}{"conveyor": {}}, Now: func() time.Time { return now }}
@@ -616,8 +911,16 @@ func createDriftTask(t *testing.T, st store.Store, ctx context.Context, workspac
 
 func createConfirmedDesign(t *testing.T, st store.Store, ctx context.Context, id, path string) core.SystemDesign {
 	t.Helper()
-	content := fmt.Sprintf("# Design\n\n```conveyor:governs\n- repo: conveyor\n  paths:\n    - %s\n```", path)
-	document, version, err := st.CreateSystemDesign(ctx, core.SystemDesign{ID: id, Title: strings.ReplaceAll(id, "-", " "), Category: "Architecture"}, core.SystemDesignVersion{Content: content, Origin: core.SystemDesignOriginOperator})
+	return createConfirmedFencedDesign(t, st, ctx, id, "- repo: conveyor\n  paths:\n    - "+path)
+}
+
+func fencedDesignContent(fence string) string {
+	return "# Design\n\n```conveyor:governs\n" + fence + "\n```"
+}
+
+func createConfirmedFencedDesign(t *testing.T, st store.Store, ctx context.Context, id, fence string) core.SystemDesign {
+	t.Helper()
+	document, version, err := st.CreateSystemDesign(ctx, core.SystemDesign{ID: id, Title: strings.ReplaceAll(id, "-", " "), Category: "Architecture"}, core.SystemDesignVersion{Content: fencedDesignContent(fence), Origin: core.SystemDesignOriginOperator})
 	if err != nil {
 		t.Fatal(err)
 	}
