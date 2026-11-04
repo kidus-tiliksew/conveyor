@@ -314,6 +314,14 @@ paths:
 - Governed scope is load-bearing: merges touching those paths without a
   proposed revision raise the drift signal. Scope only what the document
   genuinely describes.
+- A document that owns no code, such as a feature design (DEC-101(5)), writes
+  `paths: []` for its repository. The empty list is a scope that matches
+  nothing, not a repository-wide wildcard: the document is not repository
+  authority, no submitted diff attaches it, and no merge raises drift against
+  it. A task receives it only through explicit attachment
+  (req-task-authority-boundary AC-5.1, AC-5.2). It still has exactly one fence.
+  `conveyor plan check` refuses a repository entry whose `paths` is absent or
+  null, so a misspelled key cannot empty a scope.
 - Every source, test, build, configuration, and mechanism-documentation path
   is governed by exactly one document. Only historical evidence
   (point-in-time measurements, incident reconciliations, retained

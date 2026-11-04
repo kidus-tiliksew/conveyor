@@ -571,11 +571,16 @@ func (s *Store) ListSystemDesignVersions(ctx context.Context, id string) ([]core
 
 func (s *Store) ListGovernanceDesigns(ctx context.Context, repository string) ([]core.GovernanceDesignContext, error) {
 	ctx = dbmetrics.WithReadLabel(ctx, "ListGovernanceDesigns")
-	scope, _ := json.Marshal([]map[string]string{{"repository": repository}})
+	// Repository identity and a non-empty path list are tested on one scope
+	// element, so another repository's paths cannot admit a document that
+	// governs no path here (req-task-authority-boundary REQ-5).
 	rows, err := s.boundary.Query(ctx, `SELECT d.id,d.title,d.category,v.version,v.content,v.governs
 		FROM system_designs d JOIN system_design_versions v
 		  ON v.workspace_id=d.workspace_id AND v.document_id=d.id AND v.version=d.current_version
-		WHERE d.workspace_id=$1 AND d.archived_at IS NULL AND v.governs @> $2::jsonb ORDER BY d.id`, workspace(ctx), scope)
+		WHERE d.workspace_id=$1 AND d.archived_at IS NULL AND EXISTS (
+			SELECT 1 FROM jsonb_array_elements(v.governs) AS governed_scope
+			WHERE governed_scope->>'repository'=$2 AND jsonb_typeof(governed_scope->'paths')='array' AND governed_scope->'paths'<>'[]'::jsonb
+		) ORDER BY d.id`, workspace(ctx), repository)
 	if err != nil {
 		return nil, err
 	}

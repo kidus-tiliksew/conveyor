@@ -120,8 +120,11 @@ func ParseGovernedScopes(content string) ([]GovernedScope, error) {
 			return nil, fmt.Errorf("governed repository %q is declared more than once", scopes[i].Repository)
 		}
 		seenRepo[scopes[i].Repository] = true
-		if len(scopes[i].Paths) == 0 {
-			return nil, fmt.Errorf("governed repository %q requires at least one path glob", scopes[i].Repository)
+		// An explicit empty list governs no paths (req-task-authority-boundary
+		// AC-5.1; DEC-101(5)). An absent or null list stays refused, so a
+		// misspelled key cannot silently empty a document's scope.
+		if scopes[i].Paths == nil {
+			return nil, fmt.Errorf("governed repository %q must declare a paths list; use paths: [] to govern no paths", scopes[i].Repository)
 		}
 		seenPath := map[string]bool{}
 		for j, glob := range scopes[i].Paths {
@@ -228,6 +231,18 @@ func CompileGovernedPath(glob string) (GovernedPathMatcher, error) {
 func MatchGovernedPath(glob, changedPath string) bool {
 	matcher, err := CompileGovernedPath(glob)
 	return err == nil && matcher.Match(changedPath)
+}
+
+// GovernsRepositoryPaths reports whether scopes give repository at least one
+// path glob. A scope with an empty list matches nothing and is never a
+// repository-wide wildcard (req-task-authority-boundary REQ-5).
+func GovernsRepositoryPaths(scopes []GovernedScope, repository string) bool {
+	for _, scope := range scopes {
+		if scope.Repository == repository && len(scope.Paths) > 0 {
+			return true
+		}
+	}
+	return false
 }
 
 // GovernedDesignMatch carries the deterministic changed paths that place one

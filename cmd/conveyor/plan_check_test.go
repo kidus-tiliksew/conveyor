@@ -320,6 +320,36 @@ func TestPlanCheckRules(t *testing.T) {
 				expectPlanFailure(t, root, tc.file+": AC-1.4: "+tc.reason)
 			})
 		}
+		// req-task-authority-boundary AC-5.1: a declared repository with an
+		// empty path list passes, with no glob warning, inside and outside a
+		// repository whose name the fence declares.
+		emptyList := strings.Replace(planFixtureDesign, "- repo: elsewhere\n  paths:\n    - src/**\n", "- repo: repo\n  paths: []\n", 1)
+		t.Run("empty path list outside git", func(t *testing.T) {
+			root := newPlanFixture(t)
+			writePlanFile(t, root, "system-designs/feature-demo.md", emptyList)
+			if lines, err := checkPlanLines(t, root); err != nil || len(lines) != 0 {
+				t.Fatalf("empty path list refused: %v %q", err, lines)
+			}
+		})
+		t.Run("empty path list inside its repository", func(t *testing.T) {
+			_, draft := newPlanRepo(t, true)
+			writePlanFile(t, draft, "system-designs/feature-demo.md", emptyList)
+			if lines, err := checkPlanLines(t, draft); err != nil || len(lines) != 0 {
+				t.Fatalf("empty path list refused: %v %q", err, lines)
+			}
+		})
+		for name, tc := range map[string]struct{ fence, reason string }{
+			"absent path list":       {"```conveyor:governs\n- repo: a\n```\n", `governed repository "a" must declare a paths list`},
+			"no repository":          {"```conveyor:governs\n[]\n```\n", "conveyor:governs must declare at least one repository scope"},
+			"two fences, both empty": {"```conveyor:governs\n- repo: a\n  paths: []\n```\n\n```conveyor:governs\n- repo: b\n  paths: []\n```\n", "system design must contain exactly one conveyor:governs fence"},
+			"escaping glob":          {"```conveyor:governs\n- repo: a\n  paths: [../secret]\n```\n", `governed path "../secret" must be repository-relative`},
+		} {
+			t.Run(name, func(t *testing.T) {
+				root := newPlanFixture(t)
+				writePlanFile(t, root, "system-designs/feature-demo.md", designWith(tc.fence))
+				expectPlanFailure(t, root, "feature-demo: AC-1.4: "+tc.reason)
+			})
+		}
 	})
 
 	t.Run("AC_1_5", func(t *testing.T) {
