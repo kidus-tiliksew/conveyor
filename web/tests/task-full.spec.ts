@@ -81,14 +81,6 @@ const attachedContext: Record<
   'design-proposal-queued': {
     designs: [{ id: 'design-lifecycle', title: 'Work-order lifecycle', version: 1 }],
   },
-  'proposal-only': {
-    designs: [{ id: 'design-lifecycle', title: 'Work-order lifecycle', version: 1 }],
-  },
-  // Carries a different document than the one it proposed against, so its own
-  // pending version stays on the document's attention surface.
-  'unattached-proposal': {
-    designs: [{ id: 'design-delivery', title: 'Delivery tiers', version: 4 }],
-  },
 }
 
 function activity(taskId: string, overflowing: boolean, liveEventCount = 18) {
@@ -1727,12 +1719,6 @@ function activity(taskId: string, overflowing: boolean, liveEventCount = 18) {
       created_at: createdAt,
       context: attachedContext[taskId],
     },
-    pending_authority: taskId === 'design-proposal' || taskId === 'design-proposal-queued',
-    proposal_claim_waiting: taskId === 'design-proposal' || taskId === 'design-proposal-queued',
-    waiting_proposals:
-      taskId === 'design-proposal' || taskId === 'design-proposal-queued'
-        ? [{ tier: 'system_design', id: 'design-lifecycle', version: 2 }]
-        : undefined,
     jobs: reviewActivity.jobs,
     events:
       taskId === 'blueprint-parent'
@@ -1787,7 +1773,7 @@ function activity(taskId: string, overflowing: boolean, liveEventCount = 18) {
     checkout_command: taskId.startsWith('work-on-this-') ? `conveyor run ${taskId}` : undefined,
     checkout_available: taskId.startsWith('work-on-this-'),
     checkout_guidance: taskId.startsWith('work-on-this-') ? '' : 'Use the assigned worktree.',
-    needs_attention: taskId === 'forge-failure' || taskId === 'unsatisfiable' || taskId === 'design-proposal',
+    needs_attention: taskId === 'forge-failure' || taskId === 'unsatisfiable',
     at_merge_gate: taskId === 'merge-request-changes',
     forge_failure:
       taskId === 'forge-failure'
@@ -2818,16 +2804,13 @@ test('structured authority checkpoint leads with the decision and resolves throu
     card.getByText('No revision is waiting for a decision. Author one if the conflict remains.'),
   ).toBeVisible()
   await expect(card.getByText('A revision is waiting for your decision.')).toBeVisible()
-  const standalone = page.getByRole('region', { name: 'System Design proposals from this task' })
-  await expect(standalone).toHaveCount(1)
-  await expect(standalone).not.toHaveClass(/bg-attention-soft/)
-  await expect(standalone.getByRole('link', { name: 'Checkpoint design' })).toHaveCount(0)
-  await expect(standalone.getByRole('link', { name: 'Uncited design' })).toHaveCount(1)
-  await expect(standalone.getByRole('link', { name: 'Requirement identity design' })).toHaveCount(1)
+  // Citations alone choose the proposals: this task's uncited ones are decided
+  // in the Inbox and add no card here (req-260820-394cac AC-2.3, AC-3.2).
+  await expectNoTaskProposalSurface(page)
   await expect(card.getByRole('button', { name: 'Confirm v2', exact: true })).toHaveCount(1)
-  await expect(page.getByRole('button', { name: 'Confirm version 2' })).toHaveCount(0)
-  await expect(standalone.getByRole('button', { name: 'Confirm version 3' })).toHaveCount(1)
-  await expect(standalone.getByRole('button', { name: 'Confirm version 4' })).toHaveCount(1)
+  await expect(
+    page.getByLabel('Execution event timeline').getByText(/Uncited design|Requirement identity design/),
+  ).toHaveCount(0)
   const dismissPath = card.getByRole('link', { name: 'Review or dismiss v2' })
   await expect(dismissPath).toHaveAttribute('href', /\/inbox\?.*document=design-checkpoint.*tier=system_design/)
   await dismissPath.click()
@@ -3704,25 +3687,23 @@ test('the board keeps a superseded task stalled while its sheet offers only Redi
 
 // A pending proposal is decided in the Inbox; the board does not reroute the
 // task that authored it, so it stays in its stage column either way.
-test('pending authority keeps a live task in its stage column', async ({ page }) => {
+test('a task with a pending proposal stays in its stage column', async ({ page }) => {
   await showAllBoardTasks(page)
   const item = activity('design-proposal', false)
   await page.route('**/v1/activity*', async (route) => {
     await route.fulfill({
       json: [
         {
-          task: { ...item.task, title: 'Proposal-gated task', next_stage: 'review' },
+          task: { ...item.task, title: 'Task with a proposal', next_stage: 'review' },
           latest_stage: 'review',
           last_event_at: createdAt,
           needs_attention: true,
-          pending_authority: true,
         },
         {
           task: { ...item.task, id: 'resolved-terminal', title: 'Completed proposal task', state: 'merged' },
           latest_stage: 'review',
           last_event_at: createdAt,
           needs_attention: true,
-          pending_authority: true,
         },
       ],
     })
@@ -3730,7 +3711,7 @@ test('pending authority keeps a live task in its stage column', async ({ page })
 
   await page.goto('/')
   const review = page.getByRole('region', { name: 'Review' })
-  await expect(review.getByText('Proposal-gated task')).toBeVisible()
+  await expect(review.getByText('Task with a proposal')).toBeVisible()
   await expect(review.getByText('Completed proposal task')).toHaveCount(0)
   await expect(page.getByRole('region', { name: 'Completed' }).getByText('Completed proposal task')).toBeVisible()
 })
@@ -6069,8 +6050,8 @@ test('task header links an open dependency with one stable audited request', asy
   await expect(page.getByRole('link', { name: 'Candidate API · Waiting' })).toBeVisible()
 })
 
-// The origin-task System Design proposal card. The decision a
-// task raised is confirmable from that task, without leaving for the document.
+// A pending System Design version a task raised before task-authored proposals
+// were retired (DEC-102). Its record survives, and no task surface shows it.
 function designCollection(originTaskId: string, resolved: boolean) {
   return [designProposalSummary(originTaskId, 'design-lifecycle', 'Work-order lifecycle', 2, resolved)]
 }
@@ -6123,14 +6104,98 @@ function designProposalSummary(
   }
 }
 
-test('checkpoint proposal confirmation completes before recovery with an audited direction', async ({ page }) => {
+// The retired task-side proposal surfaces. A pending proposal holds no task's
+// work, so task detail says nothing about one (req-260810-23b69f REQ-3;
+// req-operator-next-action AC-1.7).
+async function expectNoTaskProposalSurface(page: Page) {
+  for (const name of [
+    'Verification and review are waiting on a document decision',
+    'Pending proposals from this task',
+    'System Design proposals from this task',
+    'Confirm proposals and recover work order',
+  ])
+    await expect(page.getByRole('region', { name })).toHaveCount(0)
+  await expect(
+    page.getByText(
+      /System Design update proposed|proposed by this task|Review will not include|cannot be claimed|(are|is) waiting on a .* decision|not waiting on (it|them)|Confirm or dismiss the proposal|Review or dismiss proposals/,
+    ),
+  ).toHaveCount(0)
+  await expect(page.getByRole('button', { name: /^Confirm version \d+$|and recover$/ })).toHaveCount(0)
+}
+
+for (const { surface, path } of [
+  { surface: 'full task page', path: '/w/demo/tasks/design-proposal/full' },
+  { surface: 'Board sheet', path: '/w/demo/tasks/design-proposal' },
+]) {
+  test(`the ${surface} shows no proposal card or wait for a task-origin pending proposal, only the stated next action`, async ({
+    page,
+  }) => {
+    await page.route('**/v1/workspaces', (route) => route.fulfill({ json: [{ id: 'demo', name: 'Demo' }] }))
+    await page.route('**/v1/system-designs**', (route) =>
+      route.fulfill({ json: designCollection('design-proposal', false) }),
+    )
+    await page.route('**/v1/pending-proposals*', (route) =>
+      route.fulfill({
+        json: pendingQueue('design-proposal', [
+          { id: 'req-claims', tier: 'requirement', version: 3, title: 'Claim waits' },
+          { id: 'design-lifecycle', tier: 'system_design', version: 2, title: 'Work-order lifecycle' },
+          { id: 'DEC-71', tier: 'decision', title: 'Keep the gate narrow.' },
+        ]),
+      }),
+    )
+    await page.goto(path)
+    // The stated next action stays, and task detail derives no other reason
+    // (req-operator-next-action AC-1.7, AC-7.1).
+    await expect(nextActionBox(page).getByRole('heading', { name: 'An agent is working on this task.' })).toBeVisible()
+    await expect(page.getByRole('heading', { name: 'Activity', exact: true })).toBeVisible()
+    await expectNoTaskProposalSurface(page)
+    await expect(page.getByText(/Claim waits|Keep the gate narrow|DEC-71|req-claims/)).toHaveCount(0)
+  })
+}
+
+// Redispatch reads no proposal state, including a payload from a server that
+// still sends the retired fields.
+for (const stage of ['implement', 'verify', 'review'] as const) {
+  test(`redispatch stays available for a queued ${stage} order with a task-origin pending proposal`, async ({
+    page,
+  }) => {
+    const taskId = 'design-proposal-queued'
+    await page.route('**/v1/system-designs**', (route) => route.fulfill({ json: designCollection(taskId, false) }))
+    await page.route('**/v1/pending-proposals*', (route) =>
+      route.fulfill({
+        json: pendingQueue(taskId, [
+          { id: 'design-lifecycle', tier: 'system_design', version: 2, title: 'Work-order lifecycle' },
+        ]),
+      }),
+    )
+    await page.route('**/v1/tasks/design-proposal-queued/activity*', (route) =>
+      route.fulfill({
+        json: {
+          ...activity(taskId, false),
+          pending_authority: true,
+          proposal_claim_waiting: true,
+          waiting_proposals: [{ tier: 'system_design', id: 'design-lifecycle', version: 2 }],
+          work_orders: [{ ...queuedOrder(taskId, stage), claimable: true }],
+        },
+      }),
+    )
+    await page.goto(`/w/demo/tasks/${taskId}/full`)
+    await expect(page.getByRole('button', { name: 'Redispatch', exact: true })).toBeVisible()
+    await expect(page.getByText('Queued — re-enqueue if dispatch stalled.')).toBeVisible()
+    await expectNoTaskProposalSurface(page)
+  })
+}
+
+// A checkpoint is presented from its citations, never from what the task
+// authored, so a released order without a structured question takes the
+// ordinary recovery form and confirms nothing.
+test('an unstructured checkpoint with a task-origin proposal recovers through the ordinary form', async ({ page }) => {
   await page.route('**/v1/workspaces', (route) => route.fulfill({ json: [{ id: 'demo', name: 'Demo' }] }))
   const item = activity('operator-checkpoint', false)
   item.task.context = {
     designs: [{ id: 'design-lifecycle', title: 'Work-order lifecycle', version: 1 }],
   }
   const calls: string[] = []
-  let confirmHeaders: Record<string, string> = {}
   let recoveryBody: Record<string, unknown> | undefined
   await page.route('**/v1/tasks/operator-checkpoint/activity*', (route) => route.fulfill({ json: item }))
   await page.route('**/v1/system-designs**', (route) =>
@@ -6138,7 +6203,6 @@ test('checkpoint proposal confirmation completes before recovery with an audited
   )
   await page.route('**/v1/system-designs/design-lifecycle/versions/2/confirm**', async (route) => {
     calls.push('confirm')
-    confirmHeaders = route.request().headers()
     await route.fulfill({ json: {} })
   })
   await page.route('**/v1/work-orders/attempt-recovery-implement-1/recover*', async (route) => {
@@ -6148,190 +6212,25 @@ test('checkpoint proposal confirmation completes before recovery with an audited
   })
 
   await page.goto('/w/demo/tasks/operator-checkpoint/full')
-  const card = page.getByRole('region', { name: 'Confirm proposals and recover work order' })
-  await expect(card).toHaveCount(1)
-  await expect(card.getByText(checkpointProgress, { exact: true })).toBeVisible()
-  await expect(card.getByText('Version 2 proposed by this task')).toBeVisible()
-  await expect(card.getByRole('link', { name: 'Review or dismiss proposals' })).toHaveAttribute(
-    'href',
-    /\/inbox\?.*task=operator-checkpoint/,
-  )
-  await expect(page.getByLabel('Operator direction')).toHaveCount(0)
-  await expect(page.getByRole('region', { name: 'System Design proposals from this task' })).toHaveCount(0)
-
-  await card.getByRole('button', { name: 'Confirm v2 and recover' }).click()
-  await expect.poll(() => calls).toEqual(['confirm', 'recover'])
-  expect(confirmHeaders.authorization).toBeUndefined()
-  expect(confirmHeaders['if-match']).toBe('"1"')
-  expect(recoveryBody?.direction).toBe('Operator confirmed design-lifecycle v2.')
-  expect(recoveryBody?.request_id).toBeTruthy()
-})
-
-test('checkpoint proposal confirmation failure is visible and does not recover', async ({ page }) => {
-  await page.route('**/v1/workspaces', (route) => route.fulfill({ json: [{ id: 'demo', name: 'Demo' }] }))
-  const item = activity('operator-checkpoint', false)
-  item.task.context = {
-    designs: [{ id: 'design-lifecycle', title: 'Work-order lifecycle', version: 1 }],
-  }
-  let recoveryCalls = 0
-  await page.route('**/v1/tasks/operator-checkpoint/activity*', (route) => route.fulfill({ json: item }))
-  await page.route('**/v1/system-designs**', (route) =>
-    route.fulfill({ json: designCollection('operator-checkpoint', false) }),
-  )
-  await page.route('**/v1/system-designs/design-lifecycle/versions/2/confirm**', (route) =>
-    route.fulfill({ status: 500, json: { message: 'Confirmation rejected by operator policy.' } }),
-  )
-  await page.route('**/v1/work-orders/attempt-recovery-implement-1/recover*', (route) => {
-    recoveryCalls++
-    return route.fulfill({ json: {} })
-  })
-
-  await page.goto('/w/demo/tasks/operator-checkpoint/full')
-  const card = page.getByRole('region', { name: 'Confirm proposals and recover work order' })
-  await card.getByRole('button', { name: 'Confirm v2 and recover' }).click()
-  await expect(card.getByText('Confirmation rejected by operator policy.')).toBeVisible()
-  expect(recoveryCalls).toBe(0)
-})
-
-test("a task's own System Design proposal is confirmable from its detail and clears in place", async ({ page }) => {
-  await page.route('**/v1/workspaces', (route) => route.fulfill({ json: [{ id: 'demo', name: 'Demo' }] }))
-  let confirmed = false
-  let pendingAuthority = true
-  let confirmHeaders: Record<string, string> = {}
-  let releaseActivityEvent = () => {}
-  const activityEvent = new Promise<void>((resolve) => {
-    releaseActivityEvent = resolve
-  })
-  await page.route('**/v1/tasks/design-proposal/activity*', (route) => {
-    const item = activity('design-proposal', false)
-    return route.fulfill({
-      json: { ...item, pending_authority: pendingAuthority, proposal_claim_waiting: pendingAuthority },
-    })
-  })
-  await page.route('**/v1/tasks/design-proposal/events/stream*', async (route) => {
-    await activityEvent
-    await route.fulfill({ contentType: 'text/event-stream', body: 'event: activity\ndata: {}\n\n' })
-  })
-  await page.route('**/v1/system-designs**', (route) =>
-    route.fulfill({ json: designCollection('design-proposal', confirmed) }),
-  )
-  await page.route('**/v1/system-designs/design-lifecycle/versions/2/confirm**', async (route) => {
-    confirmHeaders = route.request().headers()
-    confirmed = true
-    pendingAuthority = false
-    await route.fulfill({ json: {} })
-    releaseActivityEvent()
-  })
-
-  await page.goto('/w/demo/tasks/design-proposal/full')
-  const card = page.getByRole('region', { name: 'Verification and review are waiting on a document decision' })
-  await expect(card).toHaveCount(1)
-  await expect(card).toContainText('Verification and review cannot be claimed until you confirm or dismiss')
-  await expect(card.getByRole('list', { name: 'Proposals verification and review are waiting on' })).toContainText(
-    'System Design design-lifecycle v2',
-  )
-  await expect(card).toContainText('System Design update proposed')
-  await expect(card).toContainText('Version 2 proposed by this task')
-  await expect(card.getByRole('link', { name: 'Confirm or dismiss the proposal' })).toHaveAttribute(
-    'href',
-    /\/inbox\?.*task=design-proposal/,
-  )
-  await expect(card.getByRole('link', { name: 'Work-order lifecycle' })).toHaveAttribute(
-    'href',
-    /system-design.*document=design-lifecycle/,
-  )
-
-  // A confirm that clears the card without a full-page reload keeps this marker.
-  await page.evaluate(() => ((window as unknown as { noReload?: boolean }).noReload = true))
-  await card.getByRole('button', { name: 'Confirm version 2' }).click()
-  await expect(card).toHaveCount(0)
-  await expect(page.getByText('Verification and review are waiting on a System Design decision')).toHaveCount(0)
-  expect(await page.evaluate(() => (window as unknown as { noReload?: boolean }).noReload)).toBe(true)
-  expect(confirmHeaders.authorization).toBeUndefined()
-  expect(confirmHeaders['if-match']).toBe('"1"')
-
-  // The same composition carries it on the sheet route, not just the full page.
-  confirmed = false
-  pendingAuthority = true
-  await page.goto('/w/demo/tasks/design-proposal')
-  await expect(
-    page
-      .getByRole('region', { name: 'Verification and review are waiting on a document decision' })
-      .getByRole('button', {
-        name: 'Confirm version 2',
-      }),
-  ).toBeVisible()
-})
-
-test('maintainer sees a pending task System Design proposal without an enabled Confirm action', async ({ page }) => {
-  await page.route('**/v1/workspaces', (route) => route.fulfill({ json: [{ id: 'demo', name: 'Demo' }] }))
-  await page.route('**/v1/me**', (route) =>
-    route.fulfill({ json: callerIdentity({ id: 'usr_maintainer', role: 'maintainer' }, route.request()) }),
-  )
-  await page.route('**/v1/tasks/design-proposal/activity*', (route) => {
-    const item = activity('design-proposal', false)
-    return route.fulfill({ json: { ...item, pending_authority: true } })
-  })
-  await page.route('**/v1/tasks/design-proposal/events/stream*', (route) => route.fulfill({ status: 204 }))
-  await page.route('**/v1/system-designs**', (route) =>
-    route.fulfill({ json: designCollection('design-proposal', false) }),
-  )
-
-  await page.goto('/w/demo/tasks/design-proposal/full')
-  const card = page.getByRole('region', { name: 'Verification and review are waiting on a document decision' })
-  await expect(card).toHaveCount(1)
-  await expect(card).toContainText('System Design update proposed')
-  await expect(card.getByRole('button', { name: 'Confirm version 2' })).toBeDisabled()
-  await expect(card.getByText('Document confirmation capability is required.')).toBeVisible()
-})
-
-test('task detail renders no proposal card for a pending version another task raised', async ({ page }) => {
-  await page.route('**/v1/workspaces', (route) => route.fulfill({ json: [{ id: 'demo', name: 'Demo' }] }))
-  await page.route('**/v1/system-designs**', (route) => route.fulfill({ json: designCollection('other-task', false) }))
-
-  await page.goto('/w/demo/tasks/design-proposal/full')
-  await expect(page.getByRole('region', { name: 'Activity' })).toBeVisible()
-  await expect(
-    page.getByRole('region', { name: 'Verification and review are waiting on a document decision' }),
-  ).toContainText('Confirm or dismiss the proposal')
-  await expect(page.getByRole('region', { name: 'System Design proposals from this task' })).toHaveCount(0)
-  await expect(page.getByText('System Design update proposed')).toHaveCount(0)
-})
-
-test('task detail renders a proposal-only card without the review-gate headline', async ({ page }) => {
-  await page.route('**/v1/workspaces', (route) => route.fulfill({ json: [{ id: 'demo', name: 'Demo' }] }))
-  await page.route('**/v1/system-designs**', (route) =>
-    route.fulfill({ json: designCollection('proposal-only', false) }),
-  )
-
-  await page.goto('/w/demo/tasks/proposal-only/full')
-  const card = page.getByRole('region', { name: 'System Design proposals from this task' })
-  await expect(card).toContainText('System Design update proposed')
-  await expect(card.getByRole('button', { name: 'Confirm version 2' })).toBeVisible()
-  await expect(card).not.toContainText('Verification and review are waiting on a System Design decision')
+  await expect(page.getByText(/A decision is required before this work can continue/)).toBeVisible()
+  await expectNoTaskProposalSurface(page)
+  const action = page.getByRole('button', { name: 'Recover work order' })
+  await expect(action).toBeDisabled()
+  await page.getByLabel('Operator direction').fill('Continue under the current design.')
+  await action.click()
+  await expect.poll(() => calls).toEqual(['recover'])
+  expect(recoveryBody?.direction).toBe('Continue under the current design.')
 })
 
 function pendingQueue(taskId: string, items: Array<{ id: string; tier: string; version?: number; title?: string }>) {
-  const queued = [
-    ...items.map((item) => ({
-      title: 'Pending document',
-      ...item,
-      origin_type: 'task',
-      origin_id: taskId,
-      proposed_at: createdAt,
-      age_seconds: 1,
-    })),
-    // Neither another task nor a non-task origin changes this task's notice.
-    ...['task', 'operator'].map((origin_type) => ({
-      id: `unrelated-${origin_type}`,
-      title: 'Unrelated proposal',
-      tier: 'decision',
-      origin_type,
-      origin_id: origin_type === 'task' ? 'other-task' : taskId,
-      proposed_at: createdAt,
-      age_seconds: 1,
-    })),
-  ]
+  const queued = items.map((item) => ({
+    title: 'Pending document',
+    ...item,
+    origin_type: 'task',
+    origin_id: taskId,
+    proposed_at: createdAt,
+    age_seconds: 1,
+  }))
   return {
     items: queued,
     attention: { task_count: 1, pending_proposal_count: queued.length, total: queued.length + 1 },
@@ -6350,192 +6249,6 @@ function queuedOrder(taskId: string, stage: 'implement' | 'verify' | 'review') {
     updated_at: createdAt,
   }
 }
-
-// req-260810-70ce2f REQ-1 and req-260810-23b69f AC-2.1: the wait copy is read
-// from the server's waiting_proposals, never from the tiers the task authored.
-for (const withDesignCard of [false, true]) {
-  for (const { tiers, noun } of [
-    { tiers: ['requirement'], noun: 'requirement' },
-    { tiers: ['system_design'], noun: 'System Design' },
-    { tiers: ['requirement', 'system_design'], noun: 'document' },
-    { tiers: ['future_kind'], noun: 'document' },
-    { tiers: ['system_design', 'future_kind'], noun: 'document' },
-    { tiers: [], noun: 'document' },
-  ]) {
-    test(`verification and review wait copy uses ${noun} for ${tiers.join('+') || 'missing kinds'} with design card ${withDesignCard}`, async ({
-      page,
-    }) => {
-      const taskId = 'design-proposal-queued'
-      const blockers = tiers.map((tier, index) => ({ tier, id: `pending-${index}`, version: 2 }))
-      await page.route('**/v1/workspaces', (route) => route.fulfill({ json: [{ id: 'demo', name: 'Demo' }] }))
-      await page.route('**/v1/system-designs**', (route) =>
-        route.fulfill({ json: withDesignCard ? designCollection(taskId, false) : [] }),
-      )
-      await page.route('**/v1/pending-proposals*', (route) => route.fulfill({ json: pendingQueue(taskId, blockers) }))
-      await page.route('**/v1/tasks/design-proposal-queued/activity*', (route) =>
-        route.fulfill({
-          json: {
-            ...activity(taskId, false),
-            proposal_claim_waiting: true,
-            waiting_proposals: blockers,
-            work_orders: [queuedOrder(taskId, 'review')],
-          },
-        }),
-      )
-      await page.goto(`/w/demo/tasks/${taskId}/full`)
-      const card = page.getByRole('region', { name: 'Verification and review are waiting on a document decision' })
-      await expect(
-        card.getByText(`Verification and review are waiting on a ${noun} decision`, { exact: true }),
-      ).toBeVisible()
-      const proposal = tiers.length > 1 ? 'proposals' : 'proposal'
-      await expect(card).toContainText(
-        `Verification and review cannot be claimed until you confirm or dismiss the task's pending ${proposal}.`,
-      )
-      await expect(card.getByRole('link', { name: `Confirm or dismiss the ${proposal}`, exact: true })).toHaveAttribute(
-        'href',
-        /\/inbox\?.*task=design-proposal-queued/,
-      )
-      await expect(card.getByText('System Design update proposed')).toHaveCount(withDesignCard ? 1 : 0)
-      await expect(card.getByRole('list', { name: 'Proposals review will not include' })).toHaveCount(0)
-      await expect(page.getByRole('button', { name: 'Redispatch', exact: true })).toHaveCount(0)
-      await expect(page.getByText('Queued — re-enqueue if dispatch stalled.')).toHaveCount(0)
-    })
-  }
-}
-
-// A task-authored decision proposal is listed and flagged, but it never holds
-// verification or review, so no surface may say a claim is blocked
-// (req-260810-23b69f AC-2.1, AC-2.2; REQ-3).
-for (const stage of ['verify', 'review'] as const) {
-  test(`a pending decision proposal says review will not include it with a queued ${stage} order`, async ({ page }) => {
-    const taskId = 'design-proposal-queued'
-    await page.route('**/v1/workspaces', (route) => route.fulfill({ json: [{ id: 'demo', name: 'Demo' }] }))
-    await page.route('**/v1/system-designs**', (route) => route.fulfill({ json: [] }))
-    await page.route('**/v1/pending-proposals*', (route) =>
-      route.fulfill({
-        json: pendingQueue(taskId, [{ id: 'DEC-71', tier: 'decision', title: 'Keep the gate narrow.' }]),
-      }),
-    )
-    await page.route('**/v1/tasks/design-proposal-queued/activity*', (route) =>
-      route.fulfill({
-        json: {
-          ...activity(taskId, false),
-          needs_attention: true,
-          pending_authority: true,
-          proposal_claim_waiting: false,
-          waiting_proposals: undefined,
-          work_orders: [queuedOrder(taskId, stage)],
-        },
-      }),
-    )
-    await page.goto(`/w/demo/tasks/${taskId}/full`)
-    const card = page.getByRole('region', { name: 'Pending proposals from this task' })
-    await expect(
-      card.getByText('Review will not include this pending decision proposal', { exact: true }),
-    ).toBeVisible()
-    await expect(card).toContainText('Verification and review are not waiting on it.')
-    await expect(card.getByRole('list', { name: 'Proposals review will not include' })).toContainText(
-      'Decision DEC-71 — Keep the gate narrow.',
-    )
-    await expect(card).not.toContainText('Unrelated proposal')
-    await expect(card.getByRole('link', { name: 'Confirm or dismiss the proposal', exact: true })).toHaveAttribute(
-      'href',
-      /\/inbox\?.*task=design-proposal-queued/,
-    )
-    await expect(page.getByText(/cannot be claimed/)).toHaveCount(0)
-    await expect(page.getByText(/(Review is|are) waiting on/)).toHaveCount(0)
-    await expect(
-      page.getByRole('region', { name: 'Verification and review are waiting on a document decision' }),
-    ).toHaveCount(0)
-    // The decision is an attention signal, not a claim wait, so recovery stays available.
-    await expect(page.getByRole('button', { name: 'Redispatch', exact: true })).toBeVisible()
-  })
-}
-
-test('a mixed proposal notice attributes the wait only to the requirement', async ({ page }) => {
-  const taskId = 'design-proposal-queued'
-  await page.route('**/v1/workspaces', (route) => route.fulfill({ json: [{ id: 'demo', name: 'Demo' }] }))
-  await page.route('**/v1/system-designs**', (route) => route.fulfill({ json: [] }))
-  await page.route('**/v1/pending-proposals*', (route) =>
-    route.fulfill({
-      json: pendingQueue(taskId, [
-        { id: 'req-claims', tier: 'requirement', version: 3, title: 'Claim waits' },
-        { id: 'DEC-72', tier: 'decision', title: 'Record the dashboard wording.' },
-      ]),
-    }),
-  )
-  await page.route('**/v1/tasks/design-proposal-queued/activity*', (route) =>
-    route.fulfill({
-      json: {
-        ...activity(taskId, false),
-        proposal_claim_waiting: true,
-        waiting_proposals: [{ tier: 'requirement', id: 'req-claims', version: 3 }],
-        work_orders: [queuedOrder(taskId, 'verify')],
-      },
-    }),
-  )
-  await page.goto(`/w/demo/tasks/${taskId}/full`)
-  const card = page.getByRole('region', { name: 'Verification and review are waiting on a document decision' })
-  await expect(
-    card.getByText('Verification and review are waiting on a requirement decision', { exact: true }),
-  ).toBeVisible()
-  const blockers = card.getByRole('list', { name: 'Proposals verification and review are waiting on' })
-  await expect(blockers).toContainText('Requirement req-claims v3 — Claim waits')
-  await expect(blockers).not.toContainText('DEC-72')
-  const signalOnly = card.getByRole('list', { name: 'Proposals review will not include' })
-  await expect(signalOnly).toContainText('Decision DEC-72 — Record the dashboard wording.')
-  await expect(signalOnly).not.toContainText('req-claims')
-  await expect(card).toContainText('Review will not include this pending decision proposal')
-  await expect(card).toContainText('Verification and review are not waiting on it.')
-  await expect(card.getByRole('link', { name: 'Confirm or dismiss the proposals', exact: true })).toBeVisible()
-  await expect(page.getByRole('button', { name: 'Redispatch', exact: true })).toHaveCount(0)
-})
-
-for (const { waiting, stage } of [
-  { waiting: false, stage: 'review' },
-  { waiting: false, stage: 'verify' },
-  { waiting: true, stage: 'implement' },
-] as const) {
-  test(`redispatch remains available for queued ${stage} with claim waiting ${waiting}`, async ({ page }) => {
-    const taskId = 'design-proposal-queued'
-    await page.route('**/v1/tasks/design-proposal-queued/activity*', (route) =>
-      route.fulfill({
-        json: {
-          ...activity(taskId, false),
-          // The attention signal stays on: only the claim wait suppresses recovery.
-          pending_authority: true,
-          proposal_claim_waiting: waiting,
-          waiting_proposals: waiting ? [{ tier: 'system_design', id: 'design-lifecycle', version: 2 }] : undefined,
-          work_orders: [{ ...queuedOrder(taskId, stage), claimable: true }],
-        },
-      }),
-    )
-    await page.goto(`/w/demo/tasks/${taskId}/full`)
-    await expect(page.getByRole('button', { name: 'Redispatch', exact: true })).toBeVisible()
-    await expect(page.getByText('Queued — re-enqueue if dispatch stalled.')).toBeVisible()
-    if (!waiting)
-      await expect(
-        page.getByRole('region', { name: 'Verification and review are waiting on a document decision' }),
-      ).toHaveCount(0)
-  })
-}
-
-// The read is the workspace-wide collection, so origin alone would carry a
-// proposal onto a task that does not hold the document. Attachment is the other
-// half of the own-proposal scope: 'unattached-proposal' raised this pending version,
-// but carries a different document, so the decision stays on the document's own
-// attention surface.
-test('task detail renders no proposal card for a document the task does not carry', async ({ page }) => {
-  await page.route('**/v1/workspaces', (route) => route.fulfill({ json: [{ id: 'demo', name: 'Demo' }] }))
-  await page.route('**/v1/system-designs**', (route) =>
-    route.fulfill({ json: designCollection('unattached-proposal', false) }),
-  )
-
-  await page.goto('/w/demo/tasks/unattached-proposal/full')
-  await expect(page.getByRole('region', { name: 'Activity' })).toBeVisible()
-  await expect(page.getByRole('region', { name: 'System Design proposals from this task' })).toHaveCount(0)
-  await expect(page.getByText('System Design update proposed')).toHaveCount(0)
-})
 
 // The workspace's own co-members, which is all the assignment picker may ever
 // offer: there is no user directory to search (AC-3.2).
@@ -6736,48 +6449,31 @@ test('a claim refusal names the assignee rather than showing the transport sente
   await expect(card).not.toContainText('usr_bo')
 })
 
-for (const withNotes of [true, false]) {
-  test(`review card renders optional operator notes: ${withNotes}`, async ({ page }) => {
-    await page.route('**/v1/tasks/reviews/activity*', (route) =>
-      route.fulfill({
-        json: {
-          ...activity('reviews', false),
-          ...(withNotes
-            ? {
-                operator_notes: [
-                  {
-                    document_id: 'req-intent',
-                    tier: 'requirement',
-                    version: 2,
-                    note: 'Preserve <original> intent.\nKeep the scope.',
-                    dismissed_at: createdAt,
-                  },
-                  {
-                    document_id: 'design-owner',
-                    tier: 'system_design',
-                    version: 4,
-                    note: 'Correct the owner.',
-                    dismissed_at: createdAt,
-                  },
-                ],
-              }
-            : {}),
-        },
-      }),
-    )
-    await page.goto('/w/demo/tasks/reviews/full')
-    const panel = page.locator('article').filter({ hasText: /Panel of 2\b.*unanimous to pass/ })
-    await expect(panel).toBeVisible()
-    const notes = panel.getByRole('region', { name: "Operator notes on this task's proposals" })
-    if (withNotes) {
-      await expect(notes).toContainText('Requirement req-intent · v2')
-      await expect(notes).toContainText('System Design design-owner · v4')
-      await expect(notes).toContainText("Operator's reason: Preserve <original> intent.")
-      await expect(notes).toContainText('Keep the scope.')
-      await expect(notes).toContainText("Operator's reason: Correct the owner.")
-    } else await expect(notes).toHaveCount(0)
-  })
-}
+// Dismissal notes stay on the version's history; a task's review card shows
+// none, even from a server that still sends them (req-260810-23b69f AC-5.3).
+test('a review card shows no dismissal notes', async ({ page }) => {
+  await page.route('**/v1/tasks/reviews/activity*', (route) =>
+    route.fulfill({
+      json: {
+        ...activity('reviews', false),
+        operator_notes: [
+          {
+            document_id: 'req-intent',
+            tier: 'requirement',
+            version: 2,
+            note: 'Preserve the original intent.',
+            dismissed_at: createdAt,
+          },
+        ],
+      },
+    }),
+  )
+  await page.goto('/w/demo/tasks/reviews/full')
+  const panel = page.locator('article').filter({ hasText: /Panel of 2\b.*unanimous to pass/ })
+  await expect(panel).toBeVisible()
+  await expect(panel.getByRole('region', { name: "Operator notes on this task's proposals" })).toHaveCount(0)
+  await expect(page.getByText('Preserve the original intent.')).toHaveCount(0)
+})
 
 function restartFixture(taskId = 'restart-source') {
   const base = activity(taskId, false)
@@ -6833,6 +6529,14 @@ async function mockRestart(page: Page, options: { role?: string; proposals?: (ty
   )
 }
 
+// Starting over dismisses no proposal and needs no document capability, so its
+// dialog mentions neither (req-260810-23b69f REQ-3; DEC-102).
+async function expectNoRestartProposalCopy(dialog: Locator) {
+  await expect(
+    dialog.getByText(/proposal|Restart lifecycle|confirm_documents|will be dismissed|Retry preview/i),
+  ).toHaveCount(0)
+}
+
 async function openRestart(page: Page) {
   await page.goto('/w/demo/tasks/restart-source/full')
   await page.getByRole('button', { name: 'Task actions' }).click()
@@ -6840,17 +6544,8 @@ async function openRestart(page: Page) {
   return page.getByRole('dialog', { name: 'Start over', exact: true })
 }
 
-test('start over previews orders, task-owned proposal versions and the PR, then navigates with one idempotent request', async ({
-  page,
-}) => {
-  await mockRestart(page, {
-    proposals: [
-      restartProposal,
-      { ...restartProposal, id: 'unrelated-task', title: 'Other task proposal', origin_id: 'another-task' },
-      { ...restartProposal, id: 'unrelated-origin', title: 'Operator proposal', origin_type: 'operator' },
-      { ...restartProposal, id: 'unrelated-tier', title: 'Decision proposal', tier: 'decision' },
-    ],
-  })
+test('start over previews orders and the PR, then navigates with one idempotent request', async ({ page }) => {
+  await mockRestart(page)
   const requests: Array<{ body: Record<string, unknown>; headers: Record<string, string> }> = []
   const successor = {
     ...restartFixture('restart-next'),
@@ -6875,11 +6570,7 @@ test('start over previews orders, task-owned proposal versions and the PR, then 
   })
   const dialog = await openRestart(page)
   await expect(dialog.getByText('2 non-terminal work orders will be cancelled.')).toBeVisible()
-  await expect(
-    dialog.getByText('1 pending document proposal from this task will be dismissed with your note:'),
-  ).toBeVisible()
-  await expect(dialog.getByText('Restart lifecycle v7')).toBeVisible()
-  await expect(dialog.getByText(/Other task proposal|Operator proposal|Decision proposal/)).toHaveCount(0)
+  await expectNoRestartProposalCopy(dialog)
   await expect(dialog.getByRole('link')).toHaveAttribute('href', 'https://github.com/example/conveyor/pull/42')
   await expect(dialog.getByText(/new task with a new branch/)).toBeVisible()
   await dialog.getByLabel('Reason', { exact: false }).fill('  Wrong approach  ')
@@ -6951,48 +6642,34 @@ test('start over enforces reason and note limits including Unicode character cou
 })
 
 for (const tier of ['requirement', 'system_design']) {
-  test(`start over requires confirm_documents for task-owned ${tier} proposals`, async ({ page }) => {
+  test(`a maintainer starts over a task with a task-owned ${tier} proposal`, async ({ page }) => {
     await mockRestart(page, { role: 'maintainer', proposals: [{ ...restartProposal, tier }] })
+    const requests: Array<Record<string, unknown>> = []
+    await page.route('**/v1/tasks/restart-source/restart*', async (route) => {
+      requests.push(route.request().postDataJSON())
+      await route.fulfill({ status: 409, json: { error: 'task_terminal', message: 'Stop after the request.' } })
+    })
     const dialog = await openRestart(page)
+    await expectNoRestartProposalCopy(dialog)
     await dialog.getByLabel('Reason', { exact: false }).fill('Try again')
-    await expect(dialog.getByRole('alert')).toContainText('An operator with confirm_documents')
-    await expect(dialog.getByRole('button', { name: 'Start over', exact: true })).toBeDisabled()
+    await dialog.getByLabel('What went wrong', { exact: false }).fill('Keep the confirmed pins.')
+    await dialog.getByRole('button', { name: 'Start over', exact: true }).click()
+    await expect(dialog.getByRole('alert')).toHaveText('Stop after the request.')
+    expect(requests).toHaveLength(1)
+    expect(requests[0]).toMatchObject({ reason: 'Try again', note: 'Keep the confirmed pins.' })
   })
 }
 
-test('start over permits a maintainer when proposals belong only to other tasks', async ({ page }) => {
-  await mockRestart(page, { role: 'maintainer', proposals: [{ ...restartProposal, origin_id: 'another-task' }] })
-  const dialog = await openRestart(page)
-  await dialog.getByLabel('Reason', { exact: false }).fill('Try again')
-  await expect(dialog.getByRole('button', { name: 'Start over', exact: true })).toBeEnabled()
-})
-
-test('start over blocks loading and failed proposal reads and can retry the preview', async ({ page }) => {
+test('start over does not wait for pending proposals to load', async ({ page }) => {
   await mockRestart(page)
-  let release = () => {}
-  const response = new Promise<void>((resolve) => {
-    release = resolve
-  })
-  let failing = true
-  await page.route('**/v1/pending-proposals*', async (route) => {
-    await response
-    if (failing) return route.fulfill({ status: 503, body: 'Unavailable' })
-    return route.fulfill({ json: { items: [], attention: { task_count: 0, pending_proposal_count: 0, total: 0 } } })
-  })
+  await page.route('**/v1/pending-proposals*', (route) => route.fulfill({ status: 503, body: 'Unavailable' }))
   const dialog = await openRestart(page)
   await dialog.getByLabel('Reason', { exact: false }).fill('Try again')
-  await expect(dialog.getByText('Loading pending proposals…')).toBeVisible()
-  await expect(dialog.getByRole('button', { name: 'Start over', exact: true })).toBeDisabled()
-  release()
-  await expect(dialog.getByText('Pending proposals could not be loaded. Retry before starting over.')).toBeVisible()
-  await expect(dialog.getByRole('button', { name: 'Start over', exact: true })).toBeDisabled()
-  failing = false
-  await dialog.getByRole('button', { name: 'Retry preview' }).click()
+  await expectNoRestartProposalCopy(dialog)
   await expect(dialog.getByRole('button', { name: 'Start over', exact: true })).toBeEnabled()
 })
 
 for (const [status, code, message] of [
-  [403, 'start_over_confirm_documents', 'task has pending proposals: confirm_documents capability is required'],
   [409, 'start_over_request_conflict', 'request_id was already used with a different reason or note'],
   [409, 'task_terminal', 'terminal tasks cannot start over; create a task with POST /v1/tasks'],
 ] as const) {
@@ -8232,24 +7909,14 @@ interface RecoveryRefreshCase {
 
 const recoveryRefreshCases: RecoveryRefreshCase[] = [
   {
-    name: 'checkpoint proposal recovery',
+    name: 'checkpoint recovery',
     taskId: 'operator-checkpoint',
     mutation: '**/v1/work-orders/attempt-recovery-implement-1/recover*',
     respond: { id: 'operator-checkpoint-implement-1', state: 'queued', claimable: true },
-    prepare: async (page, item) => {
-      item.task.context = { designs: [{ id: 'design-lifecycle', title: 'Work-order lifecycle', version: 1 }] }
-      await page.route('**/v1/system-designs**', (route) =>
-        route.fulfill({ json: designCollection('operator-checkpoint', false) }),
-      )
-      await page.route('**/v1/system-designs/design-lifecycle/versions/2/confirm**', (route) =>
-        route.fulfill({ json: {} }),
-      )
+    act: async (page) => {
+      await page.getByLabel('Operator direction').fill('Continue under the current design.')
+      await page.getByRole('button', { name: 'Recover work order' }).click()
     },
-    act: (page) =>
-      page
-        .getByRole('region', { name: 'Confirm proposals and recover work order' })
-        .getByRole('button', { name: 'Confirm v2 and recover' })
-        .click(),
   },
   {
     name: 'work-order recovery',

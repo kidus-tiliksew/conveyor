@@ -51,7 +51,6 @@ function taskItem({ id, title, created, stage = 'implement', verify = false, blo
     latest_stage: stage,
     last_event_at: at(50),
     needs_attention: false,
-    pending_authority: false,
     next_action: {
       label: 'Agent working',
       actor: 'agent',
@@ -211,8 +210,6 @@ const reads = {
   members: (path: string) => path === '/v1/workspaces/demo/members',
   blueprints: (path: string) => path === '/v1/blueprints',
   nextAction: (taskId: string) => (path: string) => path === `/v1/tasks/${taskId}/next-action`,
-  systemDesigns: (path: string, search: URLSearchParams) =>
-    path === '/v1/system-designs' && !search.has('include_archived'),
   summary: (taskId: string) => (path: string) => path === `/v1/tasks/${taskId}/verification`,
   detail: (taskId: string) => (path: string) => path === `/v1/tasks/${taskId}/activity`,
   activity: (path: string) => path === '/v1/activity',
@@ -238,7 +235,6 @@ function independentCounts(server: Server, taskId: string) {
     members: server.count(reads.members),
     blueprints: server.count(reads.blueprints),
     nextAction: server.count(reads.nextAction(taskId)),
-    systemDesigns: server.count(reads.systemDesigns),
     summary: server.count(reads.summary(taskId)),
   }
 }
@@ -256,7 +252,7 @@ test('opening a Board sheet starts its independent reads before the detail retur
   // With the detail still held, every detail-independent read is already out.
   await expect
     .poll(() => independentCounts(server, sheetTask.id))
-    .toEqual({ identity: 1, members: 1, blueprints: 1, nextAction: 1, systemDesigns: 1, summary: 1 })
+    .toEqual({ identity: 1, members: 1, blueprints: 1, nextAction: 1, summary: 1 })
   expect(server.hits(reads.detail(sheetTask.id))).toBe(1)
   expect(server.count(reads.detail(sheetTask.id))).toBe(0)
   await expect(nextActionRegion(page)).toHaveCount(0)
@@ -269,7 +265,6 @@ test('opening a Board sheet starts its independent reads before the detail retur
     members: 1,
     blueprints: 1,
     nextAction: 1,
-    systemDesigns: 1,
     summary: 1,
   })
   expect(server.count(reads.detail(sheetTask.id))).toBe(1)
@@ -552,10 +547,9 @@ test.describe('slow reads', () => {
       identity: server.count(reads.identity),
       members: server.count(reads.members),
       blueprints: server.count(reads.blueprints),
-      systemDesigns: server.count(reads.systemDesigns),
     })
     const first = slow()
-    expect(first).toEqual({ identity: 1, members: 1, blueprints: 1, systemDesigns: 1 })
+    expect(first).toEqual({ identity: 1, members: 1, blueprints: 1 })
 
     // A sheet left open sends no blueprint read on the clock, on the change
     // stream's connect, or on a change frame.

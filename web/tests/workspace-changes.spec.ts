@@ -39,7 +39,6 @@ function taskItem({ id, title, blocking }: Fixture, titles: Map<string, string>)
     latest_stage: 'implement',
     last_event_at: at(30),
     needs_attention: false,
-    pending_authority: false,
     next_action: {
       label: 'Agent working',
       actor: 'agent',

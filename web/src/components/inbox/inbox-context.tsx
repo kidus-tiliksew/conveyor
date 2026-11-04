@@ -4,11 +4,12 @@ import { buildTimeline, type TimelineEntry } from '../../lib/activity'
 import { errorMessage } from '../../lib/errors'
 import type { ActivityItem, SpecVersion } from '../../lib/types'
 import { absoluteTime, relativeTime } from '../../lib/utils'
-import { usePendingProposals, useWorkspaceSelection } from '../app-shell'
+import { useWorkspaceSelection } from '../app-shell'
+import { CheckpointProposalDiff } from '../task/checkpoint-proposal-diff'
 import { SpecCard } from '../task/spec-card'
-import { SystemDesignProposalCard, useSystemDesignProposals } from '../task/system-design-proposal-card'
 import { useTaskDetail } from '../task/use-task-detail'
 import { VerificationEntry } from '../task/verification-entry'
+import { citedDocumentsOf, documentName } from '../task/work-order-recovery-card'
 import { Button } from '../ui/button'
 import { MarkdownProse } from '../ui/markdown-prose'
 import { Skeleton } from '../ui/skeleton'
@@ -152,12 +153,15 @@ function DispatchFailure({ item }: { item: ActivityItem }) {
 }
 
 function CheckpointContext({ item }: { item: ActivityItem }) {
-  const proposals = useSystemDesignProposals(item.task)
-  const pending = usePendingProposals().data?.items ?? []
+  const { workspace } = useWorkspaceSelection()
   // The server names the order the agent is waiting in; its checkpoint is
   // the question and the documents it cites.
   const { data: action } = useNextAction(item.task.id)
   const checkpoint = item.work_orders?.find((order) => order.id === action?.current_order?.id)?.checkpoint
+  // The cited documents decide which proposals this question shows, whoever
+  // authored them (req-operator-next-action AC-1.6, AC-2.3; req-260820-394cac
+  // AC-2.3).
+  const proposed = citedDocumentsOf(checkpoint?.citations ?? []).filter((document) => document.proposals.length > 0)
   return (
     <div className="space-y-3">
       <section aria-label="Agent checkpoint" className="rounded-lg border border-border px-3 py-3">
@@ -177,7 +181,53 @@ function CheckpointContext({ item }: { item: ActivityItem }) {
           </ul>
         )}
       </section>
-      <SystemDesignProposalCard task={item.task} proposals={proposals} pending={pending} />
+      {proposed.length > 0 && (
+        <section
+          aria-label="Pending revisions of cited documents"
+          className="rounded-lg border border-border px-3 py-3"
+        >
+          <h3 className="text-xs font-medium text-muted">Pending revisions of the cited documents</h3>
+          <ul className="mt-1 space-y-2 text-sm">
+            {proposed.flatMap((document) =>
+              document.proposals.map((proposal) => {
+                const [first] = document.citations
+                return (
+                  <li key={`${document.key}:${proposal.version ?? 0}`} className="space-y-1 break-words">
+                    {first.document_kind === 'requirement' ? (
+                      <Link
+                        to="/w/$workspaceId/requirements"
+                        params={{ workspaceId: workspace }}
+                        search={{ requirement: first.document_id }}
+                        className="text-primary hover:underline"
+                      >
+                        {documentName(document)}
+                      </Link>
+                    ) : (
+                      <Link
+                        to="/w/$workspaceId/system-design"
+                        params={{ workspaceId: workspace }}
+                        search={{ document: first.document_id, tab: 'changes', target: proposal.version }}
+                        className="text-primary hover:underline"
+                      >
+                        {documentName(document)}
+                      </Link>
+                    )}
+                    {proposal.version != null && ` v${proposal.version}`}
+                    {proposal.version != null && (
+                      <CheckpointProposalDiff
+                        kind={first.document_kind}
+                        documentId={first.document_id}
+                        baseVersion={document.currentConfirmedVersion}
+                        proposedVersion={proposal.version}
+                      />
+                    )}
+                  </li>
+                )
+              }),
+            )}
+          </ul>
+        </section>
+      )}
     </div>
   )
 }

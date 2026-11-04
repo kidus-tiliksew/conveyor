@@ -1507,6 +1507,104 @@ test('selecting each decision shows its context in place without leaving the inb
 
 // The inbox has no stream of its own; a task's event stream moves that task's
 // next action, so it refreshes the inbox listing it (lib/use-task-stream.ts).
+// An agent question presents the proposals on the documents it cites, whoever
+// authored them, and never an uncited proposal the asking task authored
+// (req-operator-next-action AC-1.6, AC-2.3; req-260820-394cac AC-2.3).
+test('an agent question shows the pending proposals its citations name, not ones its task authored', async ({
+  page,
+}) => {
+  const fixture = decisionsFixture()
+  const citation = (document_id: string, document_kind: string, document_title: string, version?: number) => ({
+    document_id,
+    document_kind,
+    document_title,
+    cited_version: 2,
+    current_confirmed_version: 2,
+    newer_confirmed: false,
+    pending_proposals:
+      version == null
+        ? []
+        : [
+            {
+              id: document_id,
+              title: document_title,
+              tier: document_kind,
+              version,
+              origin_type: 'operator',
+              proposed_at: proposedAt,
+            },
+          ],
+  })
+  fixture.activity = {
+    'T-alpha': {
+      task: task('T-alpha', 'Alpha agent question'),
+      events: [],
+      jobs: [],
+      interventions: [],
+      work_orders: [
+        {
+          id: 'wo-alpha',
+          task_id: 'T-alpha',
+          job_id: 'job-alpha',
+          stage: 'implement',
+          state: 'released',
+          checkpoint: {
+            decision_request: 'Which cache should it use?',
+            class: 'authority_conflict',
+            citations: [
+              citation('sd-cache', 'system_design', 'Cache design', 3),
+              citation('req-cache', 'requirement', 'Cache requirement', 4),
+              citation('sd-quiet', 'system_design', 'Quiet design'),
+            ],
+          },
+        },
+      ],
+    },
+  }
+  fixture.proposals = [
+    {
+      id: 'sd-own',
+      title: 'Own uncited design',
+      tier: 'system_design',
+      version: 9,
+      origin_type: 'task',
+      origin_id: 'T-alpha',
+      proposed_at: proposedAt,
+    },
+  ]
+  fixture.documents = { '/v1/system-designs/sd-cache': versionView('system_design', 'sd-cache', 2, 3) }
+  await serve(page, fixture)
+  await page.route('**/v1/system-designs?*', (route) =>
+    route.fulfill({
+      json: [
+        {
+          document: { id: 'sd-own', title: 'Own uncited design', current_version: 1 },
+          pending_versions: [{ version: 9, origin_task_id: 'T-alpha', confirmed: false, dismissed: false }],
+        },
+      ],
+    }),
+  )
+  await page.goto('/w/demo/inbox')
+  await select(page, 'Alpha agent question')
+
+  const context = decisionDetail(page).getByRole('region', { name: 'Decision context' })
+  const pending = context.getByRole('region', { name: 'Pending revisions of cited documents' })
+  await expect(pending.getByRole('listitem')).toHaveCount(2)
+  await expect(pending.getByRole('link', { name: 'Cache design' })).toHaveAttribute(
+    'href',
+    /system-design.*document=sd-cache.*tab=changes.*target=3/,
+  )
+  await expect(pending.getByRole('link', { name: 'Cache requirement' })).toHaveAttribute(
+    'href',
+    /requirements.*requirement=req-cache/,
+  )
+  await expect(pending).not.toContainText('Quiet design')
+  await pending.getByText('Show changes in v3').click()
+  await expect(pending.getByText('Proposed v3')).toBeVisible()
+  await expect(context.getByText('Own uncited design')).toHaveCount(0)
+  await expect(page.getByText(/System Design update proposed|proposed by this task/)).toHaveCount(0)
+})
+
 test('a task stream event refreshes the inbox listing while its decision is selected', async ({ page }) => {
   const fixture = decisionsFixture()
   fixture.activity = {
@@ -1617,7 +1715,6 @@ function proposalFixture(): Fixture {
     items: [
       {
         ...proposal('req-attention', 'Operator attention', 'requirement', 3, 'review-task'),
-        if_ignored: 'The claim stays withheld.',
         sentence: 'Confirming a later one dismisses the earlier ones.',
       },
       // An older server sends no age: the card reads proposed_at instead.
@@ -1680,6 +1777,83 @@ test('proposal details keep the retired queue rules for every tier', async ({ pa
   await expect(page.getByRole('dialog')).toHaveCount(0)
 })
 
+// The Inbox keeps deciding pending proposals of every tier, with a dialog
+// before a version dismissal, and says nothing about a task waiting on one
+// (req-260810-23b69f REQ-1, REQ-3, AC-4.3; req-operator-next-action AC-2.6).
+test('every proposal tier still confirms and dismisses from the inbox without task wait copy', async ({ page }) => {
+  const fixture = proposalFixture()
+  fixture.documents = {
+    '/v1/requirements/req-attention': versionView('requirement', 'req-attention', 2, 3),
+    '/v1/requirements/req-other': versionView('requirement', 'req-other', null, 1),
+    '/v1/system-designs/design-dashboard': versionView('system_design', 'design-dashboard', 3, 4),
+    '/v1/decisions/DEC-16': {
+      id: 'DEC-16',
+      statement: longDecision,
+      context: 'Each repository ships its own kit.',
+      alternatives_rejected: 'One shared kit was rejected: repositories diverge.',
+      status: 'proposed',
+    },
+  }
+  const posted: string[] = []
+  const harness = await serve(page, fixture, (request, path) => {
+    posted.push(`${request.url().includes('dismiss') ? 'dismiss' : 'confirm'} ${path}`)
+    const id = path.split('/')[3]
+    fixture.items = fixture.items.filter((item) => item.proposal?.id !== id)
+    return undefined
+  })
+  await page.goto('/w/demo/inbox')
+  await expect(decisionRows(page)).toHaveCount(5)
+  const footer = () => decisionDetail(page).locator('[data-decision-footer]')
+
+  const requirement = await select(page, 'Operator attention')
+  await expect(requirement.locator('[data-proposal-version]')).toHaveText('v3')
+  await expect(requirement.locator('[data-proposal-age]')).toHaveText(/ago$/)
+  await expect(requirement.getByRole('link', { name: 'Task' })).toHaveAttribute(
+    'href',
+    '/w/demo/tasks/review-task/full',
+  )
+  await expect(requirement.getByRole('link', { name: 'View changes →' })).toBeVisible()
+  await expect(requirement.getByRole('region', { name: 'Proposed changes' })).toBeVisible()
+  await expect(page.locator('body')).not.toContainText(/withheld|withholding|cannot be claimed|waiting on a/i)
+
+  // Canceling a version dismissal sends nothing.
+  await footer().getByRole('button', { name: 'Dismiss' }).click()
+  const dialog = page.getByRole('dialog')
+  await expect(dialog).toContainText('Operator attention')
+  await expect(dialog).toContainText('Dismiss version 3?')
+  await expect(dialog).toContainText('stay in version history, but it cannot be confirmed later')
+  const before = harness.posts.length
+  await dialog.getByRole('button', { name: 'Cancel' }).click()
+  expect(harness.posts.length).toBe(before)
+  await footer().getByRole('button', { name: 'Confirm' }).click()
+  await expect(decisionRows(page)).toHaveCount(4)
+
+  await select(page, 'Dashboard architecture')
+  await footer().getByRole('button', { name: 'Confirm' }).click()
+  await expect(decisionRows(page)).toHaveCount(3)
+
+  const decision = await select(page, 'All FunnelFlux repositories')
+  await expect(decision.getByRole('region', { name: 'Proposed decision' })).toContainText(
+    'One shared kit was rejected: repositories diverge.',
+  )
+  await footer().getByRole('button', { name: 'Confirm' }).click()
+  await expect(decisionRows(page)).toHaveCount(2)
+
+  await select(page, 'Other requirement')
+  await footer().getByRole('button', { name: 'Dismiss' }).click()
+  await page
+    .getByRole('dialog')
+    .getByRole('button', { name: /Dismiss/ })
+    .click()
+  await expect(decisionRows(page)).toHaveCount(1)
+  expect(posted).toEqual([
+    'confirm /v1/requirements/req-attention/versions/3/confirm',
+    'confirm /v1/system-designs/design-dashboard/versions/4/confirm',
+    'confirm /v1/decisions/DEC-16/confirm',
+    'dismiss /v1/requirements/req-other/versions/1/dismiss',
+  ])
+})
+
 test('task, document and tier narrow the decisions band', async ({ page }) => {
   await serve(page, proposalFixture())
   await page.goto('/w/demo/inbox?task=review-task')
@@ -1739,7 +1913,7 @@ test('proposal details use the decision layout with server copy and a safe age',
   await expect(footer.getByRole('button')).toHaveText(['Confirm', 'Revise', 'Dismiss'])
   await expect(footer.getByRole('button', { name: 'Confirm' })).toHaveClass(/bg-primary/)
   await expect(footer.getByRole('button', { name: 'Dismiss' })).not.toHaveClass(/bg-failure/)
-  await expect(footer).toContainText('If you do nothing: The claim stays withheld.')
+  await expect(footer).toContainText('If you do nothing: The proposal stays pending.')
   await expect(footer).toContainText('Confirming a later one dismisses the earlier ones.')
 
   // Raw document and origin IDs appear only inside the IDs disclosure.

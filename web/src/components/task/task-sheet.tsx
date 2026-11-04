@@ -6,7 +6,6 @@ import type { ActivityItem } from '../../lib/types'
 import {
   blueprintsQueryOptions,
   callerIdentityQueryOptions,
-  systemDesignsQueryOptions,
   useWorkspaceSelection,
   workspaceMembersQueryOptions,
 } from '../app-shell'
@@ -115,7 +114,6 @@ function useSheetPrefetch(taskId: string) {
     void queryClient.prefetchQuery(workspaceMembersQueryOptions(workspace))
     void queryClient.prefetchQuery(blueprintsQueryOptions(workspace))
     void queryClient.prefetchQuery(nextActionQueryOptions(workspace, taskId))
-    void queryClient.prefetchQuery(systemDesignsQueryOptions(workspace))
   }, [queryClient, workspace, taskId])
 }
 

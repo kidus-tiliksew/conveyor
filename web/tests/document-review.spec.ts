@@ -316,6 +316,10 @@ async function seedReview(
     dismissed: version === 4,
     origin: 'operator',
     created_at: '2026-09-17T08:00:00Z',
+    // Versions recorded before task-authored proposals were retired keep their
+    // origin in history (req-task-authority-boundary AC-1.4).
+    ...(version === 3 ? { origin: 'implementation_deliberation', origin_task_id: 'legacy-task' } : {}),
+    ...(version === 4 ? { origin: 'planning_session', origin_session_id: 'legacy-session' } : {}),
     ...(version === 4
       ? {
           dismissed_by: 'Alex',
@@ -469,6 +473,10 @@ for (const tier of ['requirements', 'system-design'] as const) {
     await expect(page.getByRole('button', { name: /Confirm version/ })).toHaveCount(0)
     await page.getByRole('tab', { name: 'history', exact: true }).click()
     await expect(page.getByText("Operator's reason: Keep the existing behavior.")).toBeVisible()
+    const history = page.getByRole('region', { name: 'Version history' })
+    await expect(history).toContainText('implementation deliberation · Task legacy-task')
+    await expect(history).toContainText('planning session · Session legacy-session')
+    await expect(history).not.toContainText(/waiting on|cannot be claimed|withheld/i)
     await page.getByRole('button', { name: 'Compare version 1', exact: true }).click()
     await expect(page.getByLabel('Target version', { exact: true })).toHaveValue('1')
     await expect(page.getByRole('button', { name: /Confirm version/ })).toHaveCount(0)

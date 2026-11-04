@@ -5,7 +5,6 @@ import type {
   Intervention,
   Job,
   NextAction,
-  PendingProposal,
   Task,
   TaskAssignee,
   TaskEventView,
@@ -1722,15 +1721,6 @@ export function taskWasRestarted(task: Pick<Task, 'supersedes' | 'superseded_by'
 export function restartOrderCount(item: ActivityItem): number | undefined {
   if (!item.work_orders?.length) return undefined
   return item.work_orders.filter((order) => order.state !== 'completed' && order.state !== 'cancelled').length
-}
-
-export function taskPendingRestartProposals(proposals: PendingProposal[], taskId: string) {
-  return proposals.filter(
-    (proposal) =>
-      proposal.origin_type === 'task' &&
-      proposal.origin_id === taskId &&
-      (proposal.tier === 'requirement' || proposal.tier === 'system_design'),
-  )
 }
 
 export function restartPullRequestURL(item: ActivityItem) {

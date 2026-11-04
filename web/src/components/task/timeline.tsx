@@ -41,7 +41,7 @@ import type {
   WorkOrder,
 } from '../../lib/types'
 import { absoluteTime, cn, compactTokens, duration } from '../../lib/utils'
-import { usePendingProposals, useWorkspaceCapability, useWorkspaceMembers, useWorkspaceSelection } from '../app-shell'
+import { useWorkspaceCapability, useWorkspaceMembers, useWorkspaceSelection } from '../app-shell'
 import { useNextAction } from '../inbox/use-next-actions'
 import { Badge } from '../ui/badge'
 import { Disclosure } from '../ui/disclosure'
@@ -60,23 +60,10 @@ import {
 import { hasReviewRoundRetry, ReviewRoundRetryCard } from './review-round-retry-card'
 import { ReviewRoundSummary } from './review-round-summary'
 import { ReviewSeatAdd } from './review-seat-add'
-import {
-  hasProposalReviewNotice,
-  ProposalReviewNotice,
-  proposalNoticeLabel,
-  proposalReviewEffect,
-  SystemDesignProposalCard,
-  useSystemDesignProposals,
-} from './system-design-proposal-card'
 import { useTaskAudit } from './use-task-detail'
 import { isHistoryRestart, useTaskHistory } from './use-task-history'
 import { VerificationEntry } from './verification-entry'
-import {
-  CheckpointProposalRecoveryCard,
-  hasOrderRecovery,
-  isCheckpointReleasedRecovery,
-  WorkOrderRecoveryCard,
-} from './work-order-recovery-card'
+import { hasOrderRecovery, WorkOrderRecoveryCard } from './work-order-recovery-card'
 
 // The gate dot pulses — the timeline's one "waiting on you" signal — in the
 // gate card's own tone.
@@ -112,31 +99,6 @@ export function Timeline({ item, executionActions = true }: { item: ActivityItem
   const timelineRef = useRef<HTMLElement>(null)
   const gateRef = useRef<HTMLLIElement>(null)
   const [decisionScrollRequest, setDecisionScrollRequest] = useState(0)
-  // A System Design revision this task proposed is a decision waiting on the
-  // operator, so it belongs in the live tail beside the other ones
-  // (component-web-task-surfaces). A blueprint anchor runs no session and proposes nothing, which is
-  // why this rides `executionActions` like the rest of the tail.
-  const designProposals = useSystemDesignProposals(item.task)
-  const pendingProposals = usePendingProposals()
-  const pendingItems = pendingProposals.data?.items ?? []
-  // The attention signal decides whether the task states a proposal effect;
-  // the server's claim-wait projection alone decides whether anything waits
-  // (req-260810-23b69f AC-2.1; req-260810-70ce2f REQ-1).
-  const proposalEffect = proposalReviewEffect(item, pendingItems)
-  const structuredCheckpoint = Boolean(currentExecution?.order.checkpoint?.decision_request?.trim())
-  const citedSystemDesigns = new Set(
-    structuredCheckpoint && currentExecution?.order.checkpoint?.class === 'authority_conflict'
-      ? (currentExecution.order.checkpoint.citations ?? [])
-          .filter((citation) => citation.document_kind === 'system_design')
-          .map((citation) => citation.document_id)
-      : [],
-  )
-  const standaloneDesignProposals = designProposals.filter((proposal) => !citedSystemDesigns.has(proposal.document.id))
-  const combineCheckpointProposal =
-    !structuredCheckpoint &&
-    hasOrderRecovery(item, currentExecution) &&
-    isCheckpointReleasedRecovery(currentExecution) &&
-    designProposals.length > 0
   const priorExecutionStatus = useRef(currentExecution?.status)
   const [executionAnnouncement, setExecutionAnnouncement] = useState('')
 
@@ -184,20 +146,6 @@ export function Timeline({ item, executionActions = true }: { item: ActivityItem
   const tail = (
     executionActions
       ? [
-          canOperate &&
-            hasProposalReviewNotice(proposalEffect) &&
-            designProposals.length === 0 && {
-              key: 'pending-authority',
-              dot: 'bg-attention-dot',
-              card: (
-                <section
-                  aria-label={proposalNoticeLabel(proposalEffect)}
-                  className="rounded-lg border border-border bg-card px-3 py-3"
-                >
-                  <ProposalReviewNotice effect={proposalEffect} taskId={item.task.id} pending={pendingItems} />
-                </section>
-              ),
-            },
           canRecover &&
             hasInterruptedReviewRecovery(item) && {
               key: 'interrupted-review',
@@ -214,26 +162,7 @@ export function Timeline({ item, executionActions = true }: { item: ActivityItem
             hasOrderRecovery(item, currentExecution) && {
               key: 'order-recovery',
               dot: 'bg-attention-dot',
-              card:
-                combineCheckpointProposal && currentExecution ? (
-                  <CheckpointProposalRecoveryCard item={item} state={currentExecution} proposals={designProposals} />
-                ) : (
-                  <WorkOrderRecoveryCard item={item} state={currentExecution} />
-                ),
-            },
-          canOperate &&
-            standaloneDesignProposals.length > 0 &&
-            !combineCheckpointProposal && {
-              key: 'design-proposal',
-              dot: 'bg-attention-dot',
-              card: (
-                <SystemDesignProposalCard
-                  task={item.task}
-                  proposals={standaloneDesignProposals}
-                  effect={proposalEffect}
-                  pending={pendingItems}
-                />
-              ),
+              card: <WorkOrderRecoveryCard item={item} state={currentExecution} />,
             },
           Boolean(failedTriage(item)) && {
             key: 'failed-triage',
@@ -261,13 +190,7 @@ export function Timeline({ item, executionActions = true }: { item: ActivityItem
         <h2 className="mb-4 mt-5 text-sm font-semibold tracking-tight">Activity</h2>
         <ol className="relative space-y-4 before:absolute before:bottom-4 before:left-[7px] before:top-4 before:w-px before:bg-border">
           {entries.map((entry) => (
-            <TimelineRow
-              key={keyFor(entry)}
-              entry={entry}
-              item={item}
-              usageReportedOrderIDs={usageReportedOrderIDs}
-              operatorNotes={item.operator_notes}
-            />
+            <TimelineRow key={keyFor(entry)} entry={entry} item={item} usageReportedOrderIDs={usageReportedOrderIDs} />
           ))}
           {item.event_page?.has_older && item.event_page.older_cursor && (
             // Remounted closed for another task or workspace, which aborts its read.
@@ -478,7 +401,6 @@ function EarlierHistory({
                       entry={entry}
                       item={item}
                       usageReportedOrderIDs={usageReportedOrderIDs}
-                      operatorNotes={item.operator_notes}
                     />
                   ))}
                 </ol>
@@ -753,12 +675,10 @@ function TimelineRow({
   entry,
   item,
   usageReportedOrderIDs,
-  operatorNotes,
 }: {
   entry: TimelineEntry
   item: ActivityItem
   usageReportedOrderIDs: Set<string>
-  operatorNotes?: ActivityItem['operator_notes']
 }) {
   // The verify stage is a structured result, so like review it gets its own
   // entry: the sealed outcome, the assertions by exercise, and the pull
@@ -823,14 +743,7 @@ function TimelineRow({
       />
     )
   if (entry.type === 'panel')
-    return (
-      <PanelEntry
-        entry={entry}
-        taskId={item.task.id}
-        usageReportedOrderIDs={usageReportedOrderIDs}
-        operatorNotes={operatorNotes}
-      />
-    )
+    return <PanelEntry entry={entry} taskId={item.task.id} usageReportedOrderIDs={usageReportedOrderIDs} />
   // A work-order entry carries no usage; per-order usage stays in TaskUsage
   // inside technical activity (component-web-task-surfaces, Work-order
   // timeline entries).
@@ -942,12 +855,10 @@ function PanelEntry({
   entry,
   taskId,
   usageReportedOrderIDs,
-  operatorNotes,
 }: {
   entry: Extract<TimelineEntry, { type: 'panel' }>
   taskId: string
   usageReportedOrderIDs: Set<string>
-  operatorNotes?: ActivityItem['operator_notes']
 }) {
   const { seats, resolution, seatMetadata } = entry
   const verdictsIn = seats.filter((seat) => seat.review).length
@@ -1037,21 +948,6 @@ function PanelEntry({
             />
           ))}
         </div>
-        {!!operatorNotes?.length && (
-          <section aria-label="Operator notes on this task's proposals" className="border-t border-border px-4 py-3">
-            <h3 className="text-sm font-medium">Operator notes on this task's proposals</h3>
-            <ul className="mt-2 space-y-2 text-sm">
-              {operatorNotes.map((note) => (
-                <li key={`${note.tier}:${note.document_id}:${note.version}`}>
-                  <span className="font-medium">
-                    {note.tier === 'requirement' ? 'Requirement' : 'System Design'} {note.document_id} · v{note.version}
-                  </span>
-                  <p className="whitespace-pre-wrap break-words text-muted">Operator's reason: {note.note}</p>
-                </li>
-              ))}
-            </ul>
-          </section>
-        )}
         {notes.length > 0 && (
           <div className="border-t border-border px-4 py-3">
             <div className="mb-1.5 flex flex-wrap items-baseline gap-x-3 gap-y-0.5">

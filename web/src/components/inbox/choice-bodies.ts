@@ -70,8 +70,7 @@ export const choiceBodies: Record<string, ChoiceBody> = {
   fix_merge_conflict: { body: () => undefined },
   redispatch: { body: () => undefined },
   // Start over opens the task's restart dialog, which builds the request with
-  // its reason, note, request ID and pending-proposal preview
-  // (component-web-task-surfaces, Task header).
+  // its reason, note and request ID (component-web-task-surfaces, Task header).
   start_over: { dialog: 'restart', body: () => undefined },
   close: { input: { label: 'Reason', required: true }, body: (input) => ({ reason: input.trim() }) },
   answer: {
