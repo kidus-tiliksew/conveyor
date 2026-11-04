@@ -287,22 +287,22 @@ After the stage's submission tool succeeds:
 
 ### Release at an authority-conflict checkpoint
 
-When the approved plan or work-order contract directs an authority-conflict
-checkpoint, the delivered implement role states the release. In brief
-(`req-260820-394cac` REQ-1–REQ-3):
+A task implements confirmed authority and never changes it, so a session holding
+a work order authors no requirement, System Design, or decision version (DEC-102;
+`req-task-authority-boundary` REQ-1, REQ-2). When the approved plan conflicts with
+the repository while confirmed documents stand, use `request_plan_revision`. When
+the work would require changing a confirmed document, or the approved plan or
+work-order contract directs an authority-conflict checkpoint, stop and release.
+The delivered implement role states the release. In brief (`req-260820-394cac`
+REQ-1–REQ-3):
 
-- Author each complete proposal with `propose_requirement_revision`,
-  `propose_system_design_revision`, or `propose_decision`, and pass
-  `authority_conflict_checkpoint: true`. The tool's guidance then directs the
-  checkpoint release instead of `submit_for_review`.
 - Release with `release_work_order`, reason `operator checkpoint reached`, and
   a checkpoint of class `authority_conflict`. Its `decision_request` is at most
-  1024 Unicode characters (runes) and cites every pending proposal
-  identifier.
-- In each citation, cite the confirmed version in conflict, never the
-  proposed version. When every cited document then gains a newer confirmed
-  version and none has a pending proposal, the factory recovers the order once
-  by itself (AC-2.6).
+  1024 Unicode characters (runes), describes the conflict, and states the
+  operator decision needed. It needs no proposal identifier.
+- In each citation, cite the confirmed version in conflict. When every cited
+  document then gains a newer confirmed version and none has a pending proposal,
+  the factory recovers the order once by itself (AC-2.6; DEC-73).
 - A System Design clause may name a heading with or without its code
   formatting, or by its anchor.
 
@@ -881,8 +881,8 @@ before the next wait.
 ## Authority boundary
 
 An executor's claim confers only the stage-scoped capabilities registered for
-that order; the proposals it allows confer no authority and do not pause
-delivery. Gate approval, requirement, design, and decision confirmation,
+that order, and none of them creates a requirement, System Design, or decision
+version (DEC-102). Gate approval, requirement, design, and decision confirmation,
 assignment changes, drift resolution, review seat additions, review judgment by
 the implementer, and merge are operator or independent-review acts that no
 claim confers. Outside [Human gates](#human-gates) and [seat

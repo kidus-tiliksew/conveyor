@@ -187,8 +187,9 @@ Markdown plan with required headings (Approach, Files touched, Ordering,
 Risks, Done criteria). With the gate on, an operator approves or rejects the
 plan; approval also publishes a GitHub issue carrying the approved spec.
 
-Task-authored requirement and design proposals wait for an operator on the
-dashboard's pending proposals page, and the working session offers them to
+A task implements confirmed documents and proposes none of its own. Requirement
+and design proposals a task authored before that rule wait for an operator on
+the dashboard's pending proposals page, and the working session offers them to
 you in the conversation. Review waits until those proposals are confirmed or
 dismissed; a reviewer whose claim a proposal blocks is refused and claims
 again later. A credential without confirmation capability sees who can act.
@@ -252,17 +253,17 @@ worktree and does not close its pull request.
 
 Two escape hatches let an agent stop without failing:
 
-An **operator checkpoint** is for authority conflicts: the plan collides with
-confirmed corpus authority, or an approved criterion explicitly requires an
-operator decision. The agent first authors the relevant proposals
-(requirement, design, or decision revisions), then releases the order with a
-structured decision request citing the documents and the pending proposal
-IDs. The release is a successful handoff, and the enriched citations show the
-operator exactly which document versions are involved and what is already
-pending.
+An **operator checkpoint** is for authority conflicts: the work would require
+changing a confirmed document, or an approved criterion explicitly requires an
+operator decision. The agent authors no document version. It releases the order
+with a structured decision request that describes the conflict and citations of
+the confirmed clauses in conflict. The release is a successful handoff, and the
+enriched citations show the operator exactly which document versions are
+involved and whether a revision is already pending. Once a confirmed revision
+answers every citation, the factory resumes the order.
 
 A **plan revision request** is for repository reality: the approved plan
-cannot be executed as written. The agent releases with a rationale and the
+cannot be executed as written while confirmed documents stand. The agent releases with a rationale and the
 task waits at an operator gate for a revised plan.
 
 Around those, the lifecycle is built to survive failure. Attempts that die

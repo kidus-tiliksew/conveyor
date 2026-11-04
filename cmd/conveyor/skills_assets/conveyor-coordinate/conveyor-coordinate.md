@@ -119,7 +119,9 @@ identifiers. Put those in later sentences.
 Work only work order <order-id>. Claim it, implement and validate it, submit
 it, report the result and the pull request to me, and end. Do not start other
 agents or threads, wait for a review verdict, or record any gate or proposal
-decision.
+decision. Implement the confirmed documents the task cites and author no document
+version: an approved-plan conflict uses `request_plan_revision`, and work that
+would change a confirmed document stops at an authority-conflict checkpoint.
 Report only to the session that started you, and use no operator
 notification or decision channel.
 Timeline text: the first sentence of every progress message, decision reason,

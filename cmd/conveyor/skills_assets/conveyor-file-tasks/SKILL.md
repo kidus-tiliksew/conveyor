@@ -26,8 +26,8 @@ confirmed requirement forbids the requested behavior file no implementation
 task and offer the operator a requirement revision with `conveyor-plan`.
 The confirmed factory document corpus is
 the authority: cite confirmed REQ-n/AC-n.m, DEC-n, and governing System Design
-document names or IDs. Every normative document change remains a proposal for
-operator confirmation. Follow the target repository's own filing and
+document names or IDs, and never direct a task to propose or revise a document;
+a document change goes through `conveyor-plan` and is confirmed first. Follow the target repository's own filing and
 generated-artifact guidance, and never ban a directory whose generated output
 the change must regenerate; if implementation discovers an approved-plan
 conflict, require the operator-gated `request_plan_revision` path rather than

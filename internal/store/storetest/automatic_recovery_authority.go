@@ -22,6 +22,7 @@ func runAutomaticRecoveryAuthority(t *testing.T, x Fixture) {
 	t.Run("AnswersAfterLastConfirmation", f.answersAfterLastConfirmation)
 	t.Run("OperatorRace", f.operatorRace)
 	t.Run("StaysReleased", f.staysReleased)
+	t.Run("ReleasedWithoutAnyProposal", f.releasedWithoutAnyProposal)
 }
 
 type authorityFixture struct {
@@ -355,6 +356,30 @@ func (f authorityFixture) answersAfterLastConfirmation(t *testing.T) {
 	authority, _, _ = f.recoveries(t, task.ID)
 	if len(authority) != 2 || authority[1].payload.RequestID != store.AuthorityConfirmedRequestID(orderID, second.LastAttemptID) || second.LastAttemptID == released.LastAttemptID {
 		t.Fatalf("second release recoveries=%+v", authority)
+	}
+}
+
+// releasedWithoutAnyProposal is the checkpoint a session reaches now that it
+// authors no document version (DEC-102; req-260820-394cac AC-3.1). The order
+// stays released until an operator-side revision answers the citation, and a
+// pending revision alone never recovers it (AC-2.6, AC-2.7; DEC-73).
+func (f authorityFixture) releasedWithoutAnyProposal(t *testing.T) {
+	for _, kind := range []string{"requirement", "system_design"} {
+		t.Run(kind, func(t *testing.T) {
+			document := f.document(t, kind)
+			task, orderID := f.task(t, core.StageImplement)
+			f.release(t, orderID, authorityCheckpoint(cite(document, 1, "REQ-1")))
+			f.tick(t)
+			f.requireReleased(t, task.ID, orderID)
+
+			version := f.propose(t, document, "session", "")
+			f.tick(t)
+			f.requireReleased(t, task.ID, orderID)
+
+			f.confirm(t, document, version)
+			f.tick(t)
+			f.requireAuthorityCount(t, task.ID, 1)
+		})
 	}
 }
 

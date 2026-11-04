@@ -74,22 +74,20 @@ risk in the plan; implementation reports it through progress/check-in and does
 not create child tasks.
 
 Gate approval, repository-drift resolution, requirement/decision/System Design
-confirmation, and task cancellation are operator-only actions, but plans must
-distinguish conflicts for which an implementation order can author a proposal.
-When confirmation of a requirement-clause revision, System Design revision, or
-decision is needed and the task-authored governance proposal tools apply,
-direct the implementer to author the complete revision proposals first, cite
-the resulting pending proposal identifiers in the checkpoint report, and then
-pause for operator confirmation. Reaching the checkpoint with those proposals
-already pending is the implementer's success condition.
+confirmation, and task cancellation are operator-only actions, and a session
+holding a work order authors no requirement, System Design, or decision version
+(DEC-102). A plan never directs its implementer to propose or revise a document.
+If the plan may conflict with the repository while confirmed documents stand,
+direct the implementer to `request_plan_revision`. If the work would require
+changing a confirmed document, direct the implementer to stop and release at an
+authority-conflict checkpoint that cites the clauses in conflict and describes
+the conflict.
 
-For gate approval, repository-drift resolution, and task cancellation, no
-applicable task-authored proposal surface is available. Express the checkpoint
-exactly as "pause and report until the operator has done X," and require the
-plan to state why proposing is unavailable. In every case, reaching and
-reporting the checkpoint satisfies the agent's obligation; the agent reports
-progress and releases the work order with reason `operator
-checkpoint reached`. Acceptance must otherwise be verifiable through the
+For gate approval, repository-drift resolution, and task cancellation, express
+the checkpoint exactly as "pause and report until the operator has done X." In
+every case, reaching and reporting the checkpoint satisfies the agent's
+obligation; the agent reports progress and releases the work order with reason
+`operator checkpoint reached`. Acceptance must otherwise be verifiable through the
 repository checkout, the validation commands that the repository's validation
 documentation names, and documented MCP tools. For monitor-sourced `chore`
 tasks, drift resolution and governance confirmation are operator checkpoints

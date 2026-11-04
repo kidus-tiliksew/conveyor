@@ -842,13 +842,6 @@ func (s *Service) logf(format string, args ...any) {
 	log.Printf(format, args...)
 }
 
-// AuthorizeClaimed returns the exact currently leased order without assembling
-// its prompt/artifact context. Narrow in-session mutations such as governance
-// proposals use it to retain the normal claim, session, and lease checks.
-func (s *Service) AuthorizeClaimed(ctx context.Context, id, session string) (core.WorkOrder, error) {
-	return s.authorized(ctx, id, session)
-}
-
 // GetVisible returns read-only context for an order already authorized by a
 // worker-facing visibility check. It does not relax mutation or artifact
 // authorization for an unclaimed order (component-work-orders).
