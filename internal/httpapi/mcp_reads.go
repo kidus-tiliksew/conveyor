@@ -4,7 +4,9 @@ import (
 	"context"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"math"
 	"net/http"
 	"net/url"
 	"sort"
@@ -37,6 +39,17 @@ func mcpReadSingleItem(name string) bool {
 	return name == "get_task" || name == "get_document" || name == "get_decision"
 }
 
+// mcpClaimBoundDocumentRead names the reads an agent credential may call under
+// its own live claim. Every other investigation read stays user-only
+// (req-design-delivery REQ-2 to REQ-4; DEC-103(3)).
+func mcpClaimBoundDocumentRead(name string) bool {
+	return name == "get_document" || name == "search_documents"
+}
+
+// mcpReadRefusesSnapshot names reads that return one bounded page and state
+// truncation, so their schema has no offset or snapshot.
+func mcpReadRefusesSnapshot(name string) bool { return name == "search_documents" }
+
 type mcpReadDefinition struct {
 	name, description string
 	fields            map[string]any
@@ -47,6 +60,7 @@ func mcpReadDefinitions() []mcpReadDefinition {
 	str := func() map[string]any { return map[string]any{"type": "string", "minLength": 1, "maxLength": 256} }
 	enum := func(values ...string) map[string]any { return map[string]any{"type": "string", "enum": values} }
 	boolean := map[string]any{"type": "boolean"}
+	version := map[string]any{"type": "integer", "minimum": 1, "maximum": 1000000}
 	return []mcpReadDefinition{
 		{"list_workspaces", "List only your own workspace memberships. Supply a known workspace_id to authorize this bounded discovery read.", nil, nil},
 		{"list_repositories", "List repository names and base branches in the selected workspace; excludes local paths and configuration.", nil, nil},
@@ -56,7 +70,8 @@ func mcpReadDefinitions() []mcpReadDefinition {
 		{"list_task_events", "Read recorded task events in chronological order with event-ID tie-breaks; actor/source are not inferred. Payload fields are allowlisted. Long histories arrive as bounded windows of at most 1000 events: total and offset page within one window, history_total counts the captured history, and next_cursor (never combined with any snapshot or offset argument, including offset 0) opens the next window. Restart on 'restart read'.", map[string]any{"task_id": str(), "event_kind": str(), "cursor": map[string]any{"type": "string", "minLength": 32, "maxLength": 32}}, []string{"task_id"}},
 		{"get_task_context", "Read attached pins and all proposal states. Archived references remain labeled and readable; proposals confer no authority.", map[string]any{"task_id": str(), "proposal_state": enum("all", "proposed", "confirmed", "dismissed")}, []string{"task_id"}},
 		{"list_documents", "Discover confirmed requirement, design, or informative reference document identities. Archived history requires include_archived=true.", map[string]any{"kind": enum("requirement", "system_design", "reference"), "include_archived": boolean, "query": str()}, []string{"kind"}},
-		{"get_document", "Read current or explicit immutable document version. Explicit version can be proposed or historical; archive inclusion never makes it active authority. The complete single-item result retains no snapshot and has no next_offset; restart the read for a fresh observation instead of paging.", map[string]any{"kind": enum("requirement", "system_design", "reference"), "document_id": str(), "version": map[string]any{"type": "integer", "minimum": 1, "maximum": 1000000}, "include_archived": boolean}, []string{"kind", "document_id"}},
+		{"get_document", "Read current or explicit immutable document version. Explicit version can be proposed or historical; archive inclusion never makes it active authority. outline=true returns every heading with its section_id and size_bytes and no body text. section_id returns that section's text and the version it came from; a section over the output limit arrives in pages through next_byte_offset and byte_offset, and every later page names the returned version. Section IDs are valid only within one version. A whole-document read over the output limit is refused and names these modes. An agent credential passes work_order_id and session_id of its own live claim on every call. A complete whole-document result retains no snapshot and has no next_offset; restart the read for a fresh observation instead of paging.", map[string]any{"kind": enum("requirement", "system_design", "reference"), "document_id": str(), "version": version, "include_archived": boolean, "outline": boolean, "section_id": str(), "byte_offset": map[string]any{"type": "integer", "minimum": 0, "maximum": math.MaxInt32}, "section_offset": map[string]any{"type": "integer", "minimum": 0, "maximum": math.MaxInt32}, "work_order_id": str(), "session_id": str()}, []string{"kind", "document_id"}},
+		{"search_documents", "Search document text for a literal, case-insensitive query, one match per line. Each match carries document_id, kind, version, section_id, heading, line, section_size_bytes, and authority labels. Searches confirmed current requirement and design versions and current informative references unless version names another; document_ids and kind limit the search and intersect. Archived documents need include_archived. A response that cannot hold every match sets truncated with advice on narrowing; search has no continuation. An agent credential passes work_order_id and session_id of its own live claim on every call.", map[string]any{"query": str(), "document_ids": map[string]any{"type": "array", "items": str(), "minItems": 1, "maxItems": mcpDocumentSearchMaxIDs}, "kind": enum("requirement", "system_design", "reference"), "version": version, "include_archived": boolean, "work_order_id": str(), "session_id": str()}, []string{"query"}},
 		{"list_document_events", "Read recorded document history, including archive/restore events, with chronological ID tie-breaks. Archived documents require explicit inclusion.", map[string]any{"kind": enum("requirement", "system_design", "reference"), "document_id": str(), "include_archived": boolean, "event_kind": str()}, []string{"kind", "document_id"}},
 		{"list_decisions", "Discover confirmed decisions; include_history explicitly includes superseded decisions, which are not active authority.", map[string]any{"include_history": boolean, "query": str()}, nil},
 		{"get_decision", "Read a decision by stable DEC identifier. Superseded records require include_history=true; pending decisions are not confirmed authority. The complete single-item result retains no snapshot and has no next_offset; restart the read for a fresh observation instead of paging.", map[string]any{"decision_id": str(), "include_history": boolean}, []string{"decision_id"}},
@@ -71,6 +86,10 @@ func mcpReadTools() []map[string]any {
 			"limit":        map[string]any{"type": "integer", "minimum": 1, "maximum": 100, "default": 25},
 			"offset":       map[string]any{"type": "integer", "minimum": 0, "maximum": mcpReadMaxItems, "default": 0},
 			"snapshot":     map[string]any{"type": "string", "minLength": 32, "maxLength": 32},
+		}
+		if mcpReadRefusesSnapshot(d.name) {
+			delete(p, "offset")
+			delete(p, "snapshot")
 		}
 		for k, v := range d.fields {
 			p[k] = v
@@ -166,6 +185,17 @@ func validateMCPRead(name string, args map[string]any) (int, int, string, error)
 			if json.Unmarshal(b, &n) != nil || n < p["minimum"].(int) || n > p["maximum"].(int) {
 				return 0, 0, "", fmt.Errorf("invalid %s", k)
 			}
+		case "array":
+			values, ok := v.([]any)
+			if !ok || len(values) < p["minItems"].(int) || len(values) > p["maxItems"].(int) {
+				return 0, 0, "", fmt.Errorf("invalid %s", k)
+			}
+			for _, value := range values {
+				s, ok := value.(string)
+				if !ok || strings.TrimSpace(s) == "" || len(s) > 256 {
+					return 0, 0, "", fmt.Errorf("invalid %s", k)
+				}
+			}
 		}
 	}
 	limit, offset := 25, 0
@@ -191,8 +221,12 @@ func validateMCPRead(name string, args map[string]any) (int, int, string, error)
 }
 func (s *Server) callMCPRead(r *http.Request, name string, args map[string]any) (any, error) {
 	credential, ok := store.CredentialFromContext(r.Context())
-	if !ok || credential.Kind != core.CredentialUser {
+	agentRead := ok && credential.Kind == core.CredentialAgent && mcpClaimBoundDocumentRead(name)
+	if !ok || (credential.Kind != core.CredentialUser && !agentRead) {
 		return nil, fmt.Errorf("%s requires an operator-scoped user credential", name)
+	}
+	if agentRead && (readString(args, "work_order_id") == "" || readString(args, "session_id") == "") {
+		return nil, mcpAgentDocumentReadRefusal(name)
 	}
 	// Read capacity and tokens belong to one credential; an unidentified
 	// credential is refused instead of sharing an anonymous owner.
@@ -212,6 +246,17 @@ func (s *Server) callMCPRead(r *http.Request, name string, args map[string]any) 
 		return nil, fmt.Errorf("workspace_not_found: workspace not found")
 	}
 	ctx := store.WithWorkspace(r.Context(), workspace)
+	if agentRead {
+		if err = s.authorizeAgentDocumentRead(ctx, name, credential, workspace, args); err != nil {
+			return nil, err
+		}
+	}
+	if name == "search_documents" {
+		return s.mcpDocumentSearch(ctx, args, limit)
+	}
+	if name == "get_document" && mcpDocumentPartialRead(args) {
+		return s.mcpDocumentPartial(ctx, args, limit)
+	}
 	queryArgs := map[string]any{"tool": name}
 	for k, v := range args {
 		if k != "limit" && k != "offset" && k != "snapshot" && k != "cursor" {
@@ -266,6 +311,9 @@ func (s *Server) callMCPRead(r *http.Request, name string, args map[string]any) 
 			}
 			size += len(data)
 			if size > mcpReadSnapshotBytes {
+				if name == "get_document" {
+					return nil, errMCPDocumentOverBudget
+				}
 				return nil, fmt.Errorf("read exceeds snapshot byte budget: narrow filters")
 			}
 			snapshot.items = append(snapshot.items, data)
@@ -309,6 +357,9 @@ func (s *Server) callMCPRead(r *http.Request, name string, args map[string]any) 
 		return nil, err
 	}
 	if len(data) > mcpReadMaxBytes {
+		if name == "get_document" {
+			return nil, errMCPDocumentOverBudget
+		}
 		return nil, fmt.Errorf("read exceeds 65536-byte output budget: reduce limit or narrow request")
 	}
 	switch {
@@ -320,6 +371,40 @@ func (s *Server) callMCPRead(r *http.Request, name string, args map[string]any) 
 		}
 	}
 	return page, nil
+}
+
+// errMCPDocumentOverBudget names the reads that deliver a document too large
+// for one response (req-design-delivery AC-4.4).
+var errMCPDocumentOverBudget = errors.New("read exceeds 65536-byte output budget: this document is too large for a whole-document read; call get_document with outline=true for its section IDs and sizes, then get_document with section_id and the returned version for each section")
+
+// mcpAgentDocumentReadRefusal is the one answer to every agent read without a
+// live claim of its own, so a refusal discloses nothing about an order.
+func mcpAgentDocumentReadRefusal(name string) error {
+	return fmt.Errorf("%s requires an operator-scoped user credential or the work_order_id and session_id of this session's own live claim", name)
+}
+
+// authorizeAgentDocumentRead admits one agent document read under its owner's
+// claim_work binding and live claim. It runs on every call, before any snapshot,
+// cache, or store body access, so a later page or a cache hit never outlives the
+// claim (req-design-delivery REQ-2 to REQ-4; DEC-103(3); req-security-boundaries
+// REQ-1). Read dispatch precedes callMCPTool's general authorization, so this
+// path carries the check itself.
+func (s *Server) authorizeAgentDocumentRead(ctx context.Context, name string, credential core.AuthenticatedCredential, workspace string, args map[string]any) error {
+	allowed, err := s.Memberships.AuthorizeWorkspace(ctx, credential.OwnerUserID, workspace, core.CapabilityClaimWork)
+	if err != nil || !allowed {
+		return fmt.Errorf("workspace_not_found: workspace not found")
+	}
+	order, err := s.claimantSessionOrder(ctx, readString(args, "work_order_id"), readString(args, "session_id"))
+	if err != nil {
+		if errors.Is(err, store.ErrBackendOperation) {
+			return err
+		}
+		return mcpAgentDocumentReadRefusal(name)
+	}
+	if !liveWorkOrderClaim(order, time.Now()) {
+		return mcpAgentDocumentReadRefusal(name)
+	}
+	return nil
 }
 
 func readString(a map[string]any, k string) string { v, _ := a[k].(string); return v }

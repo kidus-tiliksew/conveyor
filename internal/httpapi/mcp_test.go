@@ -956,8 +956,8 @@ func TestMCPToolsListRequiresAuthAndPublishesLifecycle(t *testing.T) {
 	if err := json.Unmarshal(response.Body.Bytes(), &envelope); err != nil {
 		t.Fatal(err)
 	}
-	want := []string{"list_workspaces", "list_repositories", "list_tasks", "get_task", "list_operator_inbox", "list_task_events", "get_task_context", "list_documents", "get_document", "list_document_events", "list_decisions", "get_decision", "get_lineage", "create_task", "add_task_dependency", "set_assignee", "attach_task_branch", "get_task_status", "list_work_orders", "claim_work_order", "redispatch_work_order", "renew_work_order", "release_work_order", "request_plan_revision", "get_work_order", "refresh_work_order_context", "read_artifact", "report_progress", "report_usage", "propose_system_design_revision", "propose_requirement_revision", "propose_decision", "upload_transcript", "submit_plan", "submit_for_review", "await_review", "submit_review_verdict", "submit_review_summary"}
-	want = append(append(append([]string{}, want[:13]...), verificationTools...), want[13:]...)
+	want := []string{"list_workspaces", "list_repositories", "list_tasks", "get_task", "list_operator_inbox", "list_task_events", "get_task_context", "list_documents", "get_document", "search_documents", "list_document_events", "list_decisions", "get_decision", "get_lineage", "create_task", "add_task_dependency", "set_assignee", "attach_task_branch", "get_task_status", "list_work_orders", "claim_work_order", "redispatch_work_order", "renew_work_order", "release_work_order", "request_plan_revision", "get_work_order", "refresh_work_order_context", "read_artifact", "report_progress", "report_usage", "propose_system_design_revision", "propose_requirement_revision", "propose_decision", "upload_transcript", "submit_plan", "submit_for_review", "await_review", "submit_review_verdict", "submit_review_summary"}
+	want = append(append(append([]string{}, want[:14]...), verificationTools...), want[14:]...)
 	if len(envelope.Result.Tools) != len(want) {
 		t.Fatalf("tools = %d, want %d", len(envelope.Result.Tools), len(want))
 	}
@@ -1017,7 +1017,7 @@ func TestMCPAgentCredentialCannotInvokeHumanReservedTools(t *testing.T) {
 	literal := []string{
 		"add_task_dependency", "set_assignee", "redispatch_work_order", "attach_task_branch",
 		"list_workspaces", "list_repositories", "list_tasks", "get_task", "list_operator_inbox", "list_task_events", "get_task_context",
-		"list_documents", "get_document", "list_document_events", "list_decisions", "get_decision", "get_lineage",
+		"list_documents", "get_document", "search_documents", "list_document_events", "list_decisions", "get_decision", "get_lineage",
 	}
 	for _, name := range literal {
 		if !agentRefusedMCPTool(name) {
@@ -1039,7 +1039,9 @@ func TestMCPAgentCredentialCannotInvokeHumanReservedTools(t *testing.T) {
 }
 
 // agentRefusedMCPTool classifies a registered tool by the two independent
-// agent-credential rules: investigation reads are user-only, and every other
+// agent-credential rules: investigation reads are user-only without a live
+// claim (get_document and search_documents admit one; see
+// mcp_governance_authorization_test.go), and every other
 // tool is refused exactly when its mapped
 // capability is outside the capability-derived agent ceiling
 // (req-accounts-and-membership AC-3.4, AC-5.1; component-mcp-protocol). An

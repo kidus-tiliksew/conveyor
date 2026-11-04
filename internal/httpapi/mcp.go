@@ -592,6 +592,7 @@ var mcpCapabilities = map[string]core.Capability{
 	"list_decisions":                 core.CapabilityViewWorkspace,
 	"list_document_events":           core.CapabilityViewWorkspace,
 	"get_document":                   core.CapabilityViewWorkspace,
+	"search_documents":               core.CapabilityViewWorkspace,
 	"list_documents":                 core.CapabilityViewWorkspace,
 	"get_task_context":               core.CapabilityViewWorkspace,
 	"list_task_events":               core.CapabilityViewWorkspace,
@@ -681,24 +682,34 @@ func (s *Server) mcpTaskStatus(ctx context.Context, taskID, workOrderID, session
 // session; neither read selects a snapshot or the workspace's orders
 // (component-work-orders, Snapshot-free fold reads).
 func (s *Server) authorizeClaimantSession(ctx context.Context, workOrderID, sessionID string) (core.WorkOrderClaimIdentity, error) {
-	order, err := store.ResolveClaimSession(ctx, s.Store, workOrderID, sessionID)
+	order, err := s.claimantSessionOrder(ctx, workOrderID, sessionID)
 	if err != nil {
 		return core.WorkOrderClaimIdentity{}, err
 	}
+	return claimIdentity(order), nil
+}
+
+// claimantSessionOrder returns the snapshot-free order whose claimant matches
+// the authenticated owner.
+func (s *Server) claimantSessionOrder(ctx context.Context, workOrderID, sessionID string) (core.WorkOrder, error) {
+	order, err := store.ResolveClaimSession(ctx, s.Store, workOrderID, sessionID)
+	if err != nil {
+		return core.WorkOrder{}, err
+	}
 	credential, ok := store.CredentialFromContext(ctx)
 	if !ok {
-		return core.WorkOrderClaimIdentity{}, store.ErrWorkOrderClaimUnauthorized
+		return core.WorkOrder{}, store.ErrWorkOrderClaimUnauthorized
 	}
 	// An order claimed by a worker before DEC-97 keeps its historical
 	// worker_id and matches no current credential (component-mcp-protocol,
 	// Claim-bound authorization).
 	if order.WorkerID != "" {
-		return core.WorkOrderClaimIdentity{}, store.ErrWorkOrderClaimLost
+		return core.WorkOrder{}, store.ErrWorkOrderClaimLost
 	}
 	if (credential.Kind == core.CredentialUser || credential.Kind == core.CredentialAgent) && order.ClaimantID == core.TaskRunClaimantID(credential.OwnerUserID) {
-		return claimIdentity(order), nil
+		return order, nil
 	}
-	return core.WorkOrderClaimIdentity{}, store.ErrWorkOrderClaimUnauthorized
+	return core.WorkOrder{}, store.ErrWorkOrderClaimUnauthorized
 }
 
 // authorizeClaimMutation resolves the authenticated owner of one live claim

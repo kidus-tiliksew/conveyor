@@ -31,8 +31,11 @@ higher capability is refused for agents automatically. That refuses
 (`set_assignee`), and `redispatch_work_order` (`recover_work`) with
 `<tool> requires an operator-scoped user credential`. A separate rule refuses
 agents the same way: the operator investigation tools below admit user
-credentials only. `create_task` is the one maintainer act an agent
-credential may perform, under the rules in its row below (DEC-60).
+credentials only, except that `get_document` and `search_documents` admit an
+agent credential under its own live claim, as
+[Design document reads](#design-document-reads) describes. `create_task` is the
+one maintainer act an agent credential may perform, under the rules in its row
+below (DEC-60).
 
 The agent-facing discipline for using these tools well is the
 [work playbook](playbooks/conveyor-work.md); this page is the tool
@@ -154,8 +157,10 @@ native registration migration.
 
 These tools require a human session or PAT and the selected workspace's
 `view_workspace` capability. A viewer can use them without a claim. Agent
-credentials are refused. Missing membership and missing
-capability both return `workspace_not_found`, including on snapshot reuse.
+credentials are refused, except on `get_document` and `search_documents` under
+a live claim ([Design document reads](#design-document-reads)). Missing
+membership and missing capability both return `workspace_not_found`, including
+on snapshot reuse.
 Reads never call lifecycle reconciliation, claim work, renew leases, enqueue
 jobs, record consultation events, or create/confirm proposals.
 
@@ -169,13 +174,15 @@ jobs, record consultation events, or create/confirm proposals.
 | `list_task_events` | `task_id` | Exact `event_kind`; oldest timestamp first, then ascending event ID. Long histories arrive in bounded windows; see [Task event windows](#task-event-windows). |
 | `get_task_context` | `task_id` | `proposal_state`: `all` (default), `proposed`, `confirmed`, or `dismissed`. Attachments are always included. |
 | `list_documents` | `kind`: `requirement`, `system_design`, or `reference` | `query` matches ID/title; `include_archived` defaults false. Requirement/design listings contain confirmed document identities only. |
-| `get_document` | `kind`, `document_id` | Positive integer `version` selects an explicit immutable version; omission selects current. `include_archived` is required for archived/deleted content. |
+| `get_document` | `kind`, `document_id` | Positive integer `version` selects an explicit immutable version; omission selects current. `include_archived` is required for archived/deleted content. `outline` and `section_id` read part of a document; see [Design document reads](#design-document-reads). |
+| `search_documents` | `query` | Literal, case-insensitive text search; see [Design document reads](#design-document-reads). `document_ids`, `kind`, `version`, `include_archived`. |
 | `list_document_events` | `kind`, `document_id` | `event_kind`, `include_archived`; includes archive/restore history with recorded actors and times. |
 | `list_decisions` | None | `query`; `include_history` adds superseded decisions to the default confirmed list. |
 | `get_decision` | `decision_id` | `include_history` is required for superseded or pending records; neither grants active authority. |
 
-Every tool accepts `limit` (integer 1–100, default 25), `offset` (integer
-0–1000, default 0), and `snapshot` (opaque 32-character hex token). Unknown
+Every tool accepts `limit` (integer 1–100, default 25). Every tool except
+`search_documents` also accepts `offset` (integer 0–1000, default 0) and
+`snapshot` (opaque 32-character hex token). Unknown
 fields, wrong types, fractional numbers, identifiers/text over 256 UTF-8 bytes,
 and argument objects over 8192 bytes fail validation. Document versions are
 integers from 1 through 1000000. An offset above zero requires a snapshot.
@@ -203,9 +210,10 @@ ceiling a new read is refused with `snapshot capacity reached: process limit
 the `event cursor capacity reached: process limit 64 retained cursors` form),
 naming the earliest expiry; pages of existing snapshots still work. Each
 response's JSON text is capped at 64 KiB. Oversized reads fail without partial
-results: narrow filters or reduce the page size. A single document/task too
-large for that response must be read through its existing authenticated REST
-surface. Task candidates are collected through existing 200-row store pages;
+results: narrow filters or reduce the page size. A document too large for that
+response is refused with a message naming the outline and section reads. A
+single task too large for it must be read through its existing authenticated
+REST surface. Task candidates are collected through existing 200-row store pages;
 more than 1000 matching candidates requires a narrower filter. Existing
 collection services may materialize more source rows before MCP applies its
 rendered-result budget; this is not a database transaction or a store-wide
@@ -299,6 +307,148 @@ over native JSON-RPC and compares it with the complete ledger order.
 An empty `list_work_orders` result does **not** establish that no tasks exist.
 Use `list_tasks` or `get_task` for investigation. Artifact and execution-session
 reads remain on their existing claim-bound tools.
+
+### Design document reads
+
+A session finds and reads design text in parts, so every document is readable
+whatever its size (`req-design-delivery` REQ-2, REQ-3, REQ-4; DEC-103). These
+reads record no consultation and change no state.
+
+**Who may call them.** A user credential needs `view_workspace`, as every read
+here does, and passes nothing further. An agent credential passes the
+`work_order_id` and `session_id` of its own live claim on every `get_document`
+and `search_documents` call. Agent credentials carry no session binding, so the
+two arguments are always explicit. Each call, including every later page and
+every read served from the cache below, checks:
+
+- the owning user's live binding in the workspace holds `view_workspace` and
+  `claim_work`, so a user demoted to viewer loses these reads under a live
+  claim, as on every other claim-bound tool; a refusal answers
+  `workspace_not_found`;
+- the named order exists in that workspace, its session is the named session,
+  its claimant is the credential's owner, and no worker owns it; and
+- the claim is live: state `claimed`, an unexpired lease, and an unelapsed
+  execution deadline.
+
+Every claim refusal answers the same text, `<tool> requires an
+operator-scoped user credential or the work_order_id and session_id of this
+session's own live claim`, so it discloses nothing about the order. A user
+credential's `work_order_id` and `session_id` play no part in authorization.
+Every other investigation tool stays user-only, even under a live claim.
+
+**Outline.** `get_document` with `outline: true` returns the document's
+metadata and authority labels plus `outline`, a list of `{section_id, heading,
+level, size_bytes}`, and no content, statements, or other body-derived payload:
+
+```json
+{"workspace_id": "demo", "kind": "system_design", "document_id": "component-http-api", "outline": true}
+```
+
+```json
+{"items": [{"id": "component-http-api", "version": 82, "selection": "current", "version_status": "confirmed", "active_authority": true,
+  "outline": [{"section_id": "s0", "heading": "", "level": 0, "size_bytes": 412},
+              {"section_id": "s1", "heading": "Router", "level": 2, "size_bytes": 2048}],
+  "section_offset": 0, "total_sections": 2, "complete": true, "truncated": false}],
+ "total": 1, "offset": 0, "limit": 25, "evidence": "..."}
+```
+
+An outline too large for one response sets `truncated: true` and
+`next_section_offset`. Repeat the call with `section_offset` set to that value
+and `version` set to the returned version; the pages together return every
+heading. A heading over 4 KiB is cut and labeled `heading_truncated: true`; its
+section's text keeps it whole. A document with no confirmed version returns
+`authority_absent: true` and an empty outline unless a `version` is named.
+
+**Sections.** A section runs from its heading through the next recognized
+heading. Sections split at ATX `##` and `###` headings, including those with a
+closing `#` sequence or CRLF line ends, and never inside a backtick or tilde
+code fence; an unclosed fence runs to the end of the document. `#` and `####`
+headings stay inside their section. Text before the first heading is one section
+with an empty `heading` and `level: 0`, and a heading-free document is one such
+section. Empty content has no sections. `section_id` is the source-order
+ordinal `s0`, `s1`, and so on, so duplicate headings stay distinct. **An ID is
+valid only within one version:** name the same `version` when using IDs from an
+earlier read. `size_bytes` is the UTF-8 byte size of the redacted text.
+
+**Section read.** `get_document` with `section_id` returns `text`, the
+`version` it came from, `section_id`, `heading`, `level`, `size_bytes`, and the
+same authority labels as a whole-document read. `outline` and `section_id` are
+mutually exclusive. An unknown ID is refused with a pointer to the outline.
+
+```json
+{"workspace_id": "demo", "kind": "system_design", "document_id": "component-http-api", "section_id": "s1"}
+```
+
+**Paging a large section.** Sections page by `byte_offset`, apart from the
+`snapshot` and `offset` protocol, which these modes refuse. A page that does
+not finish the section sets `truncated: true`, `complete: false`, and
+`next_byte_offset`. The first response supplies the version, and every later
+page must name it:
+
+```json
+{"workspace_id": "demo", "kind": "system_design", "document_id": "component-http-api", "section_id": "s1", "version": 82, "byte_offset": 61440}
+```
+
+The last page sets `complete: true`, `truncated: false`, and has no
+`next_byte_offset`. Offsets count bytes of the redacted text. Pages end on UTF-8
+boundaries and fit the 64 KiB response after redaction and JSON escaping, so a
+page can hold fewer bytes than the limit. Concatenating the pages' `text`
+reproduces the redacted section. An offset inside a character or past the end
+is refused.
+
+**Oversized whole documents.** A `get_document` with neither option behaves as
+it always has for a document within the limit. Over the limit it answers
+`read exceeds 65536-byte output budget: this document is too large for a
+whole-document read; call get_document with outline=true ...`.
+
+**Search.** `search_documents` takes `query` (required, at most 256 bytes),
+`document_ids` (1–32 IDs), `kind`, `version`, `include_archived`, `limit`
+(1–100, default 25), and no `offset` or `snapshot`. Omitting `kind` searches
+every kind; `document_ids` and `kind` intersect.
+
+```json
+{"workspace_id": "demo", "query": "lease renewal", "kind": "system_design"}
+```
+
+```json
+{"items": [{"document_id": "component-work-orders", "kind": "system_design", "version": 85, "selection": "current", "historical": false,
+            "version_status": "confirmed", "active_authority": true, "informative": false, "archived": false,
+            "section_id": "s12", "heading": "Claims", "section_size_bytes": 3120, "line": "Lease renewal never extends the deadline."}],
+ "total": 1, "limit": 25, "documents_searched": 37, "truncated": false, "excerpts_truncated": 0, "evidence": "..."}
+```
+
+- **Matching.** The query is literal text, never a pattern, and matches
+  case-insensitively within one line. Each matching line is one match, in
+  document ID, section, and line order. Matching runs on redacted text, so a
+  query cannot probe a hidden secret and cannot match a redaction marker.
+- **Versions.** Without `version`, a search covers confirmed current requirement
+  and design versions and current informative references, which keep
+  `informative: true` and `active_authority: false`. A named `version` searches
+  that version of each document in scope and may be proposed or historical,
+  with the same labels and no more authority than a `get_document` of it.
+  Archived or deleted documents need `include_archived`.
+- **Truncation.** A response stops at `limit` or at the 64 KiB budget, then sets
+  `truncated: true`, `truncated_by` (`limit` or `output_bytes`), and `advice` on
+  narrowing by `document_ids`, `kind`, `version`, or `query`. Search has no
+  continuation. `total` counts the matches this response holds.
+- **Long lines.** A matching line over 2 KiB arrives as an excerpt containing
+  the match, labeled `line_truncated: true` with the full `line_bytes`.
+  `excerpts_truncated` counts them, apart from `truncated`.
+- **Empty results.** No match returns `items: []`, `total: 0`, and `advice`.
+  `skipped_documents` lists each named document that was not searched and why:
+  `not_found`, `archived: include_archived required`, `no_confirmed_version:
+  name a version`, or `version_not_found`.
+
+**Cache.** Each server process holds parsed versions in a least-recently-used
+cache keyed by workspace, kind, document ID, and version, bounded at 16 MiB of
+body and derived text and 128 entries. A version larger than the bound is served
+but not retained. Concurrent misses of one version share one store read. The
+cache holds immutable content and a settled status only: confirmed, dismissed,
+and retired are terminal. Membership, claims, archive state, and the current
+version are read on every call, and a pending proposal named explicitly rereads
+its row on every call, so changes show immediately. A search of resident versions
+reads no document body. A cold or evicted version is read once, and a named
+version absent from a document costs one row lookup on each call.
 
 ### Fixture example: terminal task and archived design
 
