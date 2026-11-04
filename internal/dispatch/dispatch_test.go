@@ -2299,9 +2299,20 @@ func TestInProcessReviewUsesTaskScopedGovernanceForPromptAndValidation(t *testin
 	if input.GovernanceSnapshot == nil || len(input.GovernanceSnapshot.Designs) != 1 || input.GovernanceSnapshot.Designs[0].Version != attached.Version || !input.GovernanceSnapshot.Designs[0].PinnedAtAttachment || len(input.GovernanceSnapshot.PendingDesignProposals) != 1 || input.GovernanceSnapshot.PendingDesignProposals[0].DocumentID != pending.ID {
 		t.Fatalf("task-scoped in-process governance=%+v", input.GovernanceSnapshot)
 	}
-	for _, required := range []string{"pinned_at_attachment=true", "older confirmed version is binding", "DESIGN-pending-inprocess"} {
+	for _, required := range []string{"older version pinned by the task attachment", "it stays binding", "DESIGN-pending-inprocess", "no document read tools"} {
 		if !strings.Contains(input.Prompt, required) {
 			t.Fatalf("in-process prompt missing %q: %s", required, input.Prompt)
+		}
+	}
+	// The prompt names documents; the pinned input keeps the bodies for validation.
+	for _, designInput := range input.GovernanceSnapshot.Designs {
+		if designInput.Content == "" || strings.Contains(input.Prompt, designInput.Content) {
+			t.Fatalf("in-process prompt and snapshot disagree on the body of %s", designInput.ID)
+		}
+	}
+	for _, forbidden := range []string{"search_documents", "get_document", "get_decision"} {
+		if strings.Contains(input.Prompt, forbidden) {
+			t.Fatalf("in-process prompt names read tool %q it does not have", forbidden)
 		}
 	}
 	designApplicable, decisionCitable := true, false

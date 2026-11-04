@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"slices"
 	"sort"
 	"strings"
 
@@ -19,6 +20,9 @@ const (
 	TaskContextDesignRemoved      = "task.context_design_removed"
 	ContextReasonUnconfirmed      = "has no confirmed version"
 	ContextReasonNotFound         = "was not found in this workspace"
+	// TaskContextSourceSubmissionDiff marks a design attachment a submission
+	// made because its diff reached the design (req-task-centric-delivery AC-6.3).
+	TaskContextSourceSubmissionDiff = "submission_diff"
 )
 
 type TaskContextInput struct {
@@ -177,6 +181,41 @@ func ActiveTaskContextReferences(events []core.Event) (map[string]bool, map[stri
 		}
 	}
 	return requirements, designs
+}
+
+// TaskDesignProvenance folds a task's attachment events into the provenance a
+// work order's design list orders by: operator and intake attachments in
+// attachment order, and diff-derived attachments, which the existing
+// governed-scope resolver chose at submission (req-task-centric-delivery
+// AC-6.3; req-design-delivery AC-1.2). A later operator attachment of a
+// diff-derived design makes it attached.
+func TaskDesignProvenance(events []core.Event) core.GovernanceDesignProvenance {
+	var attached, diff []string
+	without := func(ids []string, id string) []string {
+		return slices.DeleteFunc(ids, func(candidate string) bool { return candidate == id })
+	}
+	for _, event := range events {
+		if event.Kind != TaskContextDesignAdded && event.Kind != TaskContextDesignRemoved {
+			continue
+		}
+		var payload struct {
+			ID     string `json:"id"`
+			Source string `json:"source"`
+		}
+		if json.Unmarshal(event.Payload, &payload) != nil {
+			continue
+		}
+		attached, diff = without(attached, payload.ID), without(diff, payload.ID)
+		if event.Kind == TaskContextDesignRemoved {
+			continue
+		}
+		if payload.Source == TaskContextSourceSubmissionDiff {
+			diff = append(diff, payload.ID)
+		} else {
+			attached = append(attached, payload.ID)
+		}
+	}
+	return core.GovernanceDesignProvenance{Attached: attached, DiffScoped: diff}
 }
 
 // ActiveTaskContextRequirementVersions folds the confirmed versions each

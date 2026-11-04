@@ -3,6 +3,7 @@ package store
 import (
 	"encoding/json"
 	"errors"
+	"slices"
 	"strconv"
 	"strings"
 	"testing"
@@ -190,5 +191,35 @@ func TestTaskContextRejectsUnknownReferenceWithoutCreatingTask(t *testing.T) {
 	}
 	if _, err = st.GetTask(ctx, task.ID); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("partial task err=%v", err)
+	}
+}
+
+// TestTaskDesignProvenanceFoldsAttachmentHistory keeps attachment order and
+// reads the submission attribution (req-design-delivery AC-1.2;
+// req-task-centric-delivery AC-6.3).
+func TestTaskDesignProvenanceFoldsAttachmentHistory(t *testing.T) {
+	t.Parallel()
+	event := func(kind, id, source string) core.Event {
+		return core.Event{Kind: kind, Payload: core.JSONPayload(map[string]any{"id": id, "version": 1, "source": source})}
+	}
+	got := TaskDesignProvenance([]core.Event{
+		event(TaskContextDesignAdded, "z-first", ""),
+		event(TaskContextDesignAdded, "a-second", ""),
+		event(TaskContextDesignAdded, "removed", ""),
+		event(TaskContextDesignAdded, "diff-kept", TaskContextSourceSubmissionDiff),
+		event(TaskContextDesignAdded, "diff-removed", TaskContextSourceSubmissionDiff),
+		event(TaskContextDesignAdded, "diff-then-operator", TaskContextSourceSubmissionDiff),
+		event(TaskContextDesignRemoved, "removed", ""),
+		event(TaskContextDesignRemoved, "diff-removed", ""),
+		event(TaskContextDesignRemoved, "diff-then-operator", ""),
+		event(TaskContextDesignAdded, "diff-then-operator", ""),
+		{Kind: TaskContextRequirementAdded, Payload: core.JSONPayload(map[string]any{"id": "req-ignored"})},
+		{Kind: TaskContextDesignAdded, Payload: []byte("not json")},
+	})
+	if want := []string{"z-first", "a-second", "diff-then-operator"}; !slices.Equal(got.Attached, want) {
+		t.Fatalf("attached=%v want %v", got.Attached, want)
+	}
+	if want := []string{"diff-kept"}; !slices.Equal(got.DiffScoped, want) {
+		t.Fatalf("diff=%v want %v", got.DiffScoped, want)
 	}
 }

@@ -519,3 +519,26 @@ func TestAssembleReportsOmissionsPerAxis(t *testing.T) {
 		t.Fatalf("serialized omissions missing: %s err=%v", encoded, err)
 	}
 }
+
+// TestOutboundDropsRepeatedRequirementTextOnly keeps outcomes and artifacts,
+// and leaves the assembled result for the freshness snapshot untouched.
+func TestOutboundDropsRepeatedRequirementTextOnly(t *testing.T) {
+	t.Parallel()
+	result := Result{
+		Items: []Item{
+			{Node: core.LineageNode{Type: core.LineageRequirement, ID: "req"}, SelectionReason: "served_requirement", Content: "REQUIREMENT TEXT"},
+			{Node: core.LineageNode{Type: core.LineageTask, ID: "dep"}, SelectionReason: "dependency_outcome", Content: "outcome"},
+		},
+		Traversal: core.LineageTraversal{Roots: []core.LineageNode{{Type: core.LineageTask, ID: "t"}}, Nodes: []core.LineageNode{{Type: core.LineageTask, ID: "t"}}, Links: []core.LineageLink{{SrcID: "a"}}, Truncated: true, OmittedNodes: 3},
+	}
+	outbound := Outbound(result)
+	if len(outbound.Items) != 1 || outbound.Items[0].SelectionReason != "dependency_outcome" || outbound.Items[0].Content != "outcome" {
+		t.Fatalf("items=%+v", outbound.Items)
+	}
+	if len(outbound.Traversal.Nodes) != 0 || len(outbound.Traversal.Links) != 0 || !outbound.Traversal.Truncated || outbound.Traversal.OmittedNodes != 3 {
+		t.Fatalf("traversal=%+v", outbound.Traversal)
+	}
+	if len(result.Items) != 2 || result.Items[0].Content == "" || len(result.Traversal.Nodes) != 1 || len(result.Traversal.Links) != 1 {
+		t.Fatalf("projection changed the source: %+v", result)
+	}
+}

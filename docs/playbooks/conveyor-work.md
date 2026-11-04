@@ -53,7 +53,17 @@ follows that prompt, which ends it after its own submission.
    stop condition.
 3. Immediately call `get_work_order` with the claimed order and session. Follow
    its approved plan, acceptance criteria, assigned repository, base, exact
-   task branch, deadlines, feedback, role prompt, and artifact references.
+   task branch, deadlines, feedback, role prompt, and artifact references. The
+   response names governing documents without their bodies: designs by ID,
+   title, and version, and confirmed decisions by ID with a one-line summary
+   (`req-design-delivery` REQ-1; DEC-103). Read design text with
+   `search_documents` and `get_document`'s `outline` and `section_id` modes at
+   the listed `version`. An agent credential passes the order's `work_order_id`
+   and `session_id` on each of those calls, or it is refused. An agent credential
+   cannot call `get_decision` or `list_decisions`, so it works from the
+   summaries. A reviewer reads every section, including every page of a large
+   one, of each design attached to the task or covering the diff
+   (`req-design-delivery` AC-6.1).
 4. Resolve every relevant artifact reference with `read_artifact` under the
    same workspace, order, and session. Decode its returned base64 content by
    MIME type. Missing required artifact content is a blocker; filename metadata

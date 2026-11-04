@@ -138,10 +138,12 @@ layers:
   requirement attached to the task, with the citation contract that tells
   implementation to cite IDs in code comments and tells review to classify
   its citations.
-- The governance snapshot: full content of the confirmed System Design
-  versions governing the task (pinned versions where an attachment pinned
-  one), plus every confirmed and superseded decision, under a 64 KiB budget
-  that reports anything it had to drop.
+- The governance lists: every governing System Design by ID, title, and
+  version (pinned versions where an attachment or a review pin holds one),
+  attached documents first, and every confirmed decision by ID with a one-line
+  summary. Bodies stay on the server; sessions read them through
+  `search_documents` and `get_document` (see
+  [Work order delivery](mcp.md#work-order-delivery)).
 - The approved execution plan, whose `## Done criteria` become the
   implementation checklist and the review coverage contract.
 - The triage brief, bounce history, and prior feedback.

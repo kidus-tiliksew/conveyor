@@ -1,7 +1,6 @@
 package store
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -187,17 +186,7 @@ func SubmissionWorkOrderEventPayload(order core.WorkOrder, seats SubmissionRevie
 	if seats.Unused == nil {
 		return payload
 	}
-	trimmed := bytes.TrimRight(payload, " \n")
-	if len(trimmed) < 2 || trimmed[0] != '{' || trimmed[len(trimmed)-1] != '}' {
-		return payload
-	}
-	separator := ","
-	if len(bytes.TrimSpace(trimmed[1:len(trimmed)-1])) == 0 {
-		separator = ""
-	}
-	extended := append([]byte(nil), trimmed[:len(trimmed)-1]...)
-	extended = append(extended, fmt.Sprintf(`%s"review_seats":%d,"review_seats_applied":false}`, separator, *seats.Unused)...)
-	return extended
+	return core.AppendJSONObjectField(payload, fmt.Sprintf(`"review_seats":%d,"review_seats_applied":false`, *seats.Unused))
 }
 
 // NormalizeImplementationSubmission validates the exact head and documentation
@@ -465,7 +454,7 @@ func (m *memory) AttachSubmissionGovernance(ctx context.Context, taskID, reposit
 			continue
 		}
 		m.appendEventLocked(ctx, core.Event{TaskID: taskID, Kind: TaskContextDesignAdded, At: now, Payload: core.JSONPayload(map[string]any{
-			"id": match.Design.ID, "version": match.Design.Version, "source": "submission_diff",
+			"id": match.Design.ID, "version": match.Design.Version, "source": TaskContextSourceSubmissionDiff,
 			"work_order_id": attribution.WorkOrderID, "session_id": attribution.SessionID, "matching_paths": match.MatchingPaths,
 		})})
 		active[match.Design.ID] = match.Design.Version

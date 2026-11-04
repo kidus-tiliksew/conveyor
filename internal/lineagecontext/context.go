@@ -345,6 +345,26 @@ func AssembleWithOptions(ctx context.Context, st store.Store, budget Budget, roo
 	return result, nil
 }
 
+// Outbound is the view a work-order response carries. A served requirement's
+// statements travel once in the role prompt, so its item is dropped rather
+// than repeated, and the walk's node and link lists reduce to the counts and
+// omissions beside them. Assembly and the freshness snapshot keep the full
+// result (req-design-delivery AC-1.1; req-260802-72fc68 AC-2.1; DEC-103).
+func Outbound(result Result) Result {
+	items := make([]Item, 0, len(result.Items))
+	for _, item := range result.Items {
+		if item.SelectionReason != "served_requirement" {
+			items = append(items, item)
+		}
+	}
+	result.Items = items
+	result.Traversal.Roots = []core.LineageNode{}
+	result.Traversal.Nodes = []core.LineageNode{}
+	result.Traversal.Links = []core.LineageLink{}
+	result.Traversal.ExhaustionReasons = nil
+	return result
+}
+
 func RenderUntrusted(result Result) string {
 	if len(result.Items) == 0 {
 		return ""

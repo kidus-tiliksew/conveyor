@@ -113,7 +113,7 @@ func (s *Store) AttachSubmissionGovernance(ctx context.Context, taskID, reposito
 			if active[match.Design.ID] > 0 {
 				continue
 			}
-			if err = taskEvent(ctx, tx, core.Event{TaskID: taskID, Kind: store.TaskContextDesignAdded, At: time.Now().UTC(), Payload: core.JSONPayload(map[string]any{"id": match.Design.ID, "version": match.Design.Version, "source": "submission_diff", "work_order_id": attribution.WorkOrderID, "session_id": attribution.SessionID, "matching_paths": match.MatchingPaths})}); err != nil {
+			if err = taskEvent(ctx, tx, core.Event{TaskID: taskID, Kind: store.TaskContextDesignAdded, At: time.Now().UTC(), Payload: core.JSONPayload(map[string]any{"id": match.Design.ID, "version": match.Design.Version, "source": store.TaskContextSourceSubmissionDiff, "work_order_id": attribution.WorkOrderID, "session_id": attribution.SessionID, "matching_paths": match.MatchingPaths})}); err != nil {
 				return err
 			}
 			active[match.Design.ID] = match.Design.Version
