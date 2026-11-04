@@ -1111,7 +1111,7 @@ func assertVersionPlanAndSuccessorLineage(t *testing.T, fixture LineageFixture) 
 		}
 	}
 
-	result, err := taskops.New(st).StartOver(ctx, core.TaskStartOverRequest{TaskID: task.ID, RequestID: "lineage-start-over-" + task.ID, Reason: "retry", CanConfirmDocuments: true})
+	result, err := taskops.New(st).StartOver(ctx, core.TaskStartOverRequest{TaskID: task.ID, RequestID: "lineage-start-over-" + task.ID, Reason: "retry"})
 	if err != nil {
 		t.Fatal(err)
 	}

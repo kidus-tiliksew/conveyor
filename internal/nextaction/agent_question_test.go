@@ -109,7 +109,7 @@ func TestAgentQuestionUnclassifiedCheckpointKeepsBaseEntry(t *testing.T) {
 	}
 }
 
-// Cited proposals are presentation only: they never select row 8. A
+// Cited proposals are presentation only: they never select a row. A
 // checkpoint release that also matches row 14 stays an agent question and
 // records the stall as a secondary signal.
 func TestAgentQuestionPrecedenceWithCitedProposalsAndStall(t *testing.T) {
@@ -121,7 +121,7 @@ func TestAgentQuestionPrecedenceWithCitedProposalsAndStall(t *testing.T) {
 	if got.Kind != KindAgentQuestion {
 		t.Fatalf("kind = %s, want agent_question", got.Kind)
 	}
-	if hasSecondary(got, KindDocumentProposal) || !hasSecondary(got, KindStalled) {
+	if hasSecondary(got, "document_proposal") || !hasSecondary(got, KindStalled) {
 		t.Fatalf("secondary = %+v, want stalled and no document_proposal", got.Details.Secondary)
 	}
 }

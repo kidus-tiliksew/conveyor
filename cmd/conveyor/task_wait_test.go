@@ -285,19 +285,27 @@ func TestTaskWaitReturnsWhenNextOrderAppears(t *testing.T) {
 	}
 }
 
-func TestTaskWaitReturnsWhenProposalResolves(t *testing.T) {
+// A pending document proposal is no task gate: its arrival, version change, or
+// resolution never ends a wait, and the wait never reads the proposal queue
+// (req-260810-23b69f REQ-3; req-agent-skills AC-4.1).
+func TestTaskWaitIgnoresDocumentProposals(t *testing.T) {
 	proposal := taskWaitTestProposal{Kind: "design", DocumentID: "component-runtime", Title: "Runtime", Version: 17, CanConfirm: true}
+	revised := taskWaitTestProposal{Kind: "design", DocumentID: "component-runtime", Title: "Runtime", Version: 18}
 	f := newTaskWaitFixture(t,
+		taskWaitStep{state: core.TaskRunning},
 		taskWaitStep{state: core.TaskRunning, proposals: []taskWaitTestProposal{proposal}},
-		taskWaitStep{state: core.TaskRunning, proposals: []taskWaitTestProposal{proposal}},
+		taskWaitStep{state: core.TaskRunning, proposals: []taskWaitTestProposal{revised}},
 		taskWaitStep{state: core.TaskRunning},
 	)
-	result, err := runTaskWaitJSON(t, f, 5*time.Second)
-	if err != nil {
-		t.Fatal(err)
+	result, err := runTaskWaitJSON(t, f, 60*time.Millisecond)
+	var timedOut *taskWaitTimeoutError
+	if !errors.As(err, &timedOut) || result.Reason != taskWaitReasonTimeout {
+		t.Fatalf("a proposal change ended the wait: err=%v result=%+v", err, result)
 	}
-	if result.Reason != taskWaitReasonChanged || result.PendingProposals == nil || len(result.PendingProposals) != 0 {
-		t.Fatalf("result = %+v", result)
+	for _, path := range f.requestPaths() {
+		if path == "/v1/pending-proposals" {
+			t.Fatal("task wait read the pending-proposal queue")
+		}
 	}
 }
 
@@ -439,19 +447,10 @@ func TestTaskWaitFailsOnMalformedResponse(t *testing.T) {
 }
 
 func TestTaskWaitIgnoresPresentationChurnAndNormalizesOrder(t *testing.T) {
-	first := []taskWaitTestProposal{
-		{Kind: "requirement", DocumentID: "req-agent-skills", Title: "Skills", Version: 4},
-		{Kind: "design", DocumentID: "component-runtime", Title: "Runtime", Version: 17},
-		{Kind: "design", DocumentID: "component-runtime", Title: "Runtime duplicate", Version: 17},
-	}
-	second := []taskWaitTestProposal{
-		{Kind: "design", DocumentID: "component-runtime", Title: "Runtime renamed", Version: 17, CanConfirm: true, ActorHint: "an operator can confirm"},
-		{Kind: "requirement", DocumentID: "req-agent-skills", Title: "Skills renamed", Version: 4},
-	}
 	f := newTaskWaitFixture(t,
-		taskWaitStep{state: core.TaskAwaiting, title: "one", proposals: first,
+		taskWaitStep{state: core.TaskAwaiting, title: "one",
 			gate: &taskWaitTestGate{Kind: "spec", Label: "spec approval gate", Summary: "submitted execution plan v2", SpecVersion: 2}},
-		taskWaitStep{state: core.TaskAwaiting, title: "two", proposals: second,
+		taskWaitStep{state: core.TaskAwaiting, title: "two",
 			gate: &taskWaitTestGate{Kind: "spec", Label: "relabelled", Summary: "other", SpecVersion: 2, CanOperate: true, CanRequestChanges: true}},
 	)
 	result, err := runTaskWaitJSON(t, f, 60*time.Millisecond)
@@ -462,13 +461,9 @@ func TestTaskWaitIgnoresPresentationChurnAndNormalizesOrder(t *testing.T) {
 	if result.PendingGate == nil || *result.PendingGate != (taskWaitGate{Kind: "plan", PlanVersion: 2}) {
 		t.Fatalf("gate = %+v", result.PendingGate)
 	}
-	want := []taskWaitProposal{{Kind: "design", DocumentID: "component-runtime", Version: 17}, {Kind: "requirement", DocumentID: "req-agent-skills", Version: 4}}
-	if len(result.PendingProposals) != len(want) || result.PendingProposals[0] != want[0] || result.PendingProposals[1] != want[1] {
-		t.Fatalf("proposals = %+v", result.PendingProposals)
-	}
 }
 
-func TestTaskWaitDetectsGateAndProposalVersionChanges(t *testing.T) {
+func TestTaskWaitDetectsGateVersionChanges(t *testing.T) {
 	for name, steps := range map[string][]taskWaitStep{
 		"plan version": {
 			{state: core.TaskAwaiting, gate: &taskWaitTestGate{Kind: "spec", SpecVersion: 1}},
@@ -478,13 +473,9 @@ func TestTaskWaitDetectsGateAndProposalVersionChanges(t *testing.T) {
 			{state: core.TaskAwaiting, gate: &taskWaitTestGate{Kind: "merge"}},
 			{state: core.TaskAwaiting, gate: &taskWaitTestGate{Kind: "plan_revision", PlanVersion: 1}},
 		},
-		"proposal version": {
-			{state: core.TaskRunning, proposals: []taskWaitTestProposal{{Kind: "design", DocumentID: "component-runtime", Version: 17}}},
-			{state: core.TaskRunning, proposals: []taskWaitTestProposal{{Kind: "design", DocumentID: "component-runtime", Version: 18}}},
-		},
-		"proposal tier": {
-			{state: core.TaskRunning, proposals: []taskWaitTestProposal{{Kind: "design", DocumentID: "x", Version: 1}}},
-			{state: core.TaskRunning, proposals: []taskWaitTestProposal{{Kind: "requirement", DocumentID: "x", Version: 1}}},
+		"plan revision version": {
+			{state: core.TaskAwaiting, gate: &taskWaitTestGate{Kind: "plan_revision", PlanVersion: 3}},
+			{state: core.TaskAwaiting, gate: &taskWaitTestGate{Kind: "plan_revision", PlanVersion: 4}},
 		},
 	} {
 		t.Run(name, func(t *testing.T) {
@@ -512,7 +503,7 @@ func TestTaskWaitJSONNormalizesAbsentFields(t *testing.T) {
 	}
 	for field, want := range map[string]string{
 		"task_id": `"` + taskWaitTestTaskID + `"`, "state": `"merged"`, "pending_gate": "null", "next_order": "null",
-		"pending_proposals": "[]", "observed_at": `"2026-10-04T08:00:00Z"`, "reason": `"terminal"`, "timed_out": "false",
+		"observed_at": `"2026-10-04T08:00:00Z"`, "reason": `"terminal"`, "timed_out": "false",
 	} {
 		if got := string(raw[field]); got != want {
 			t.Errorf("%s = %s, want %s", field, got, want)
@@ -521,13 +512,15 @@ func TestTaskWaitJSONNormalizesAbsentFields(t *testing.T) {
 	if _, ok := raw["last_read_error"]; ok {
 		t.Errorf("last_read_error present without a failed read: %s", out.String())
 	}
+	if _, ok := raw["pending_proposals"]; ok {
+		t.Errorf("pending_proposals is retired: %s", out.String())
+	}
 }
 
 func TestTaskWaitHumanOutputMatchesJSONFields(t *testing.T) {
 	steps := []taskWaitStep{
 		{state: core.TaskRunning},
-		{state: core.TaskAwaiting, gate: &taskWaitTestGate{Kind: "spec", SpecVersion: 3},
-			proposals: []taskWaitTestProposal{{Kind: "design", DocumentID: "component-runtime", Version: 17}}},
+		{state: core.TaskAwaiting, gate: &taskWaitTestGate{Kind: "spec", SpecVersion: 3}},
 	}
 	var out bytes.Buffer
 	if err := runTaskWait(t.Context(), newTaskWaitFixture(t, steps...).client(), &out, taskWaitTestTaskID, false, taskWaitTestOptions(5*time.Second)); err != nil {
@@ -538,7 +531,6 @@ func TestTaskWaitHumanOutputMatchesJSONFields(t *testing.T) {
 		"state:             awaiting_human",
 		"pending gate:      plan v3",
 		"next order:        none",
-		"pending proposals: design component-runtime v17",
 		"observed at:       2026-10-04T08:00:00Z",
 		"wait ended:        changed",
 		"timed out:         false",
@@ -949,7 +941,7 @@ func TestTaskWaitUntil(t *testing.T) {
 		if err := runTaskWait(t.Context(), newTaskWaitFixture(t, steps...).client(), &out, taskWaitTestTaskID, true, taskWaitTestOptions(5*time.Second)); err != nil {
 			t.Fatal(err)
 		}
-		wantJSON := `{"task_id":"261004-abc123","state":"queued","pending_gate":null,"next_order":null,"pending_proposals":[],"observed_at":"2026-10-04T08:00:00Z","reason":"changed","timed_out":false}` + "\n"
+		wantJSON := `{"task_id":"261004-abc123","state":"queued","pending_gate":null,"next_order":null,"observed_at":"2026-10-04T08:00:00Z","reason":"changed","timed_out":false}` + "\n"
 		if out.String() != wantJSON {
 			t.Fatalf("json = %q\nwant %q", out.String(), wantJSON)
 		}
@@ -962,7 +954,6 @@ func TestTaskWaitUntil(t *testing.T) {
 			"state:             queued",
 			"pending gate:      none",
 			"next order:        none",
-			"pending proposals: none",
 			"observed at:       2026-10-04T08:00:00Z",
 			"wait ended:        changed",
 			"timed out:         false",
@@ -988,7 +979,6 @@ func TestTaskWaitReadsOnlySurvivingRoutes(t *testing.T) {
 	allowed := map[string]bool{
 		"/v1/tasks/" + taskWaitTestTaskID:                            true,
 		"/v1/work-orders":                                            true,
-		"/v1/pending-proposals":                                      true,
 		"/v1/tasks/" + taskWaitTestTaskID + "/spec":                  true,
 		"/v1/tasks/" + taskWaitTestTaskID + "/activity?view=bounded": true,
 	}
@@ -1008,12 +998,25 @@ func TestTaskWaitReadsOnlySurvivingRoutes(t *testing.T) {
 		taskWaitStep{state: core.TaskQueued, order: core.WorkOrder{ID: "261004-abc123-review-1-seat-1", Stage: core.StageReview}},
 	), 20*time.Millisecond)
 	var timedOut *taskWaitTimeoutError
-	if !errors.As(err, &timedOut) || result.NextOrder == nil || result.NextOrder.ID != "261004-abc123-review-1-seat-1" || len(result.PendingProposals) != 0 {
-		t.Fatalf("err=%v result=%+v; want only this task's claimable order and none of the decoy proposals", err, result)
+	if !errors.As(err, &timedOut) || result.NextOrder == nil || result.NextOrder.ID != "261004-abc123-review-1-seat-1" {
+		t.Fatalf("err=%v result=%+v; want only this task's claimable order", err, result)
 	}
 }
 
-func TestTaskWaitReportsPlanRevisionProposalAndNextOrderPrecedence(t *testing.T) {
+// A plan revision stays observed beside a claimable order, so a new plan version
+// still ends the wait (req-agent-skills AC-4.1).
+func TestTaskWaitPlanRevisionVersionBesideNextOrderEndsWait(t *testing.T) {
+	order := core.WorkOrder{ID: "261004-abc123-implement-1", Stage: core.StageImplement}
+	result, err := runTaskWaitJSON(t, newTaskWaitFixture(t,
+		taskWaitStep{state: core.TaskAwaiting, order: order, gate: &taskWaitTestGate{Kind: "plan_revision", PlanVersion: 4}},
+		taskWaitStep{state: core.TaskAwaiting, order: order, gate: &taskWaitTestGate{Kind: "plan_revision", PlanVersion: 5}},
+	), 5*time.Second)
+	if err != nil || result.Reason != taskWaitReasonChanged || result.NextOrder == nil || result.PendingGate == nil || result.PendingGate.PlanVersion != 5 {
+		t.Fatalf("err=%v result=%+v", err, result)
+	}
+}
+
+func TestTaskWaitReportsPlanRevisionGateAndNextOrderPrecedence(t *testing.T) {
 	result, err := runTaskWaitJSON(t, newTaskWaitFixture(t,
 		taskWaitStep{state: core.TaskAwaiting, gate: &taskWaitTestGate{Kind: "plan_revision", PlanVersion: 4}},
 	), 20*time.Millisecond)
@@ -1021,8 +1024,7 @@ func TestTaskWaitReportsPlanRevisionProposalAndNextOrderPrecedence(t *testing.T)
 	if !errors.As(err, &timedOut) {
 		t.Fatal(err)
 	}
-	if result.PendingGate == nil || result.PendingGate.Kind != "plan_revision" || len(result.PendingProposals) != 1 ||
-		result.PendingProposals[0] != (taskWaitProposal{Kind: "plan_revision", DocumentID: taskWaitTestTaskID, Version: 4}) {
+	if result.PendingGate == nil || *result.PendingGate != (taskWaitGate{Kind: "plan_revision", PlanVersion: 4}) {
 		t.Fatalf("result = %+v", result)
 	}
 	orders := []core.WorkOrder{

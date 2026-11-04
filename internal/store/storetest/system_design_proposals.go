@@ -90,24 +90,34 @@ func RunSystemDesignProposalConformance(t *testing.T, st store.Store, ctx contex
 	if different.Deduplicated || different.Version != first.Version+1 {
 		t.Fatalf("different=%+v first=%+v", different, first)
 	}
-	taskVersions, err := st.ListPendingSystemDesignVersionsForTask(ctx, "proposal-task")
-	if err != nil || len(taskVersions) != 2 || taskVersions[0].Version != first.Version || taskVersions[1].Version != different.Version {
-		t.Fatalf("task-scoped pending versions=%+v err=%v", taskVersions, err)
+	pendingForTask := func() []int {
+		t.Helper()
+		proposals, err := st.ListPendingProposals(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		versions := []int{}
+		for _, proposal := range proposals {
+			if proposal.Tier == "system_design" && proposal.ID == document.ID && proposal.OriginType == "task" && proposal.OriginID == "proposal-task" {
+				versions = append(versions, proposal.Version)
+			}
+		}
+		return versions
 	}
-	taskEvents, err := st.ListSystemDesignProposalEventsForTask(ctx, "proposal-task")
-	if err != nil || len(taskEvents) != 2 {
-		t.Fatalf("task-scoped proposal events=%+v err=%v", taskEvents, err)
+	if got := pendingForTask(); len(got) != 2 || got[0] != first.Version || got[1] != different.Version {
+		t.Fatalf("task-origin pending versions=%v want %d, %d", got, first.Version, different.Version)
 	}
 	if _, _, err = st.ConfirmSystemDesignVersion(ctx, document.ID, different.Version); err != nil {
 		t.Fatal(err)
 	}
-	evidence, err := st.ListSystemDesignProposalVersionsForTask(ctx, "proposal-task")
-	if err != nil || len(evidence) != 1 || evidence[0].Version != different.Version || !evidence[0].Confirmed {
-		t.Fatalf("task-scoped proposal evidence=%+v err=%v", evidence, err)
+	if got := pendingForTask(); len(got) != 0 {
+		t.Fatalf("task-origin pending versions after confirmation=%v", got)
 	}
-	pendingAfterConfirm, err := st.ListPendingSystemDesignVersionsForTask(ctx, "proposal-task")
-	if err != nil || len(pendingAfterConfirm) != 0 {
-		t.Fatalf("task-scoped pending versions after confirmation=%+v err=%v", pendingAfterConfirm, err)
+	// The confirmed version keeps its recorded task origin in history
+	// (req-task-authority-boundary AC-1.4).
+	confirmed, err := st.GetSystemDesignVersion(ctx, document.ID, different.Version)
+	if err != nil || !confirmed.Confirmed || confirmed.Origin != core.SystemDesignOriginImplementation || confirmed.OriginTaskID != "proposal-task" {
+		t.Fatalf("confirmed version=%+v err=%v", confirmed, err)
 	}
 }
 

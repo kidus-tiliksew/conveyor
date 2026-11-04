@@ -98,17 +98,6 @@ func runTaskStartOver(t *testing.T, factory Factory) {
 				}
 			}
 			request := core.TaskStartOverRequest{TaskID: old.ID, RequestID: "restart-1", Reason: "Try a fresh approach", Note: "Keep the API small."}
-			before, err := st.ListEvents(ctx, old.ID)
-			requireOK(t, err)
-			if _, err = taskops.New(st).StartOver(ctx, request); !errors.Is(err, store.ErrStartOverConfirmDocuments) {
-				t.Fatalf("missing capability: %v", err)
-			}
-			after, err := st.ListEvents(ctx, old.ID)
-			requireOK(t, err)
-			if len(before) != len(after) {
-				t.Fatal("capability refusal changed events")
-			}
-			request.CanConfirmDocuments = true
 			got, err := taskops.New(st).StartOver(ctx, request)
 			if err != nil {
 				t.Fatal(err)
@@ -140,17 +129,41 @@ func runTaskStartOver(t *testing.T, factory Factory) {
 			if len(context.Requirements) != 1 || context.Requirements[0].Version != updated.Version || len(context.Designs) != 1 || context.Designs[0].Version != 1 {
 				t.Fatalf("context=%+v", context)
 			}
-			dismissedReq, err := st.GetRequirementVersion(ctx, req.ID, ownReq.Version)
-			if err != nil || !dismissedReq.Retired || dismissedReq.DismissalNote != request.Note {
-				t.Fatalf("requirement=%+v err=%v", dismissedReq, err)
+			// Starting over decides no proposal: each stays pending with its
+			// origin and no dismissal record, and stays decidable
+			// (req-260810-23b69f REQ-3, REQ-4; req-task-authority-boundary AC-1.4).
+			pendingReq, err := st.GetRequirementVersion(ctx, req.ID, ownReq.Version)
+			if err != nil || pendingReq.Retired || pendingReq.Confirmed || pendingReq.DismissalNote != "" || pendingReq.OriginTaskID != old.ID {
+				t.Fatalf("requirement=%+v err=%v", pendingReq, err)
 			}
-			dismissedDesign, err := st.GetSystemDesignVersion(ctx, design.ID, ownDesign.Version)
-			if err != nil || !dismissedDesign.Dismissed || dismissedDesign.DismissalNote != request.Note {
-				t.Fatalf("design=%+v err=%v", dismissedDesign, err)
+			pendingDesign, err := st.GetSystemDesignVersion(ctx, design.ID, ownDesign.Version)
+			if err != nil || pendingDesign.Dismissed || pendingDesign.Confirmed || pendingDesign.DismissalNote != "" || pendingDesign.OriginTaskID != old.ID {
+				t.Fatalf("design=%+v err=%v", pendingDesign, err)
 			}
 			other, err := st.GetRequirementVersion(ctx, req.ID, otherReq.Version)
 			if err != nil || other.Retired {
 				t.Fatal("another task's proposal was dismissed")
+			}
+			retiredEvents, err := st.ListEvents(ctx, old.ID)
+			requireOK(t, err)
+			for _, event := range retiredEvents {
+				if strings.Contains(event.Kind, "dismissed") || strings.Contains(event.Kind, "retired") {
+					t.Fatalf("start over recorded a proposal decision: %+v", event)
+				}
+			}
+			pending, err := st.ListPendingProposals(ctx)
+			requireOK(t, err)
+			listed := map[string]bool{}
+			for _, proposal := range pending {
+				if proposal.OriginType == "task" && proposal.OriginID == old.ID {
+					listed[proposal.Tier] = true
+				}
+			}
+			if !listed["requirement"] || !listed["system_design"] {
+				t.Fatalf("pending list after start over=%+v", pending)
+			}
+			if _, _, err = st.DismissSystemDesignVersion(ctx, design.ID, ownDesign.Version); err != nil {
+				t.Fatalf("pending design not decidable after start over: %v", err)
 			}
 			cancelled, err := st.GetWorkOrder(ctx, order.ID)
 			if err != nil || cancelled.State != core.WorkOrderCancelled {
@@ -180,16 +193,19 @@ func runTaskStartOver(t *testing.T, factory Factory) {
 			if err != nil || !strings.Contains(first.OperatorDirection, request.Reason) || !strings.Contains(first.OperatorDirection, request.Note) {
 				t.Fatalf("first direction=%q err=%v", first.OperatorDirection, err)
 			}
-			before, err = st.ListEvents(ctx, old.ID)
+			before, err := st.ListEvents(ctx, old.ID)
 			requireOK(t, err)
 			replay, err := taskops.New(st).StartOver(ctx, request)
 			if err != nil || replay.Created || replay.Successor.ID != successor.ID {
 				t.Fatalf("replay=%+v err=%v", replay, err)
 			}
-			after, err = st.ListEvents(ctx, old.ID)
+			after, err := st.ListEvents(ctx, old.ID)
 			requireOK(t, err)
 			if len(before) != len(after) {
 				t.Fatal("replay appended events")
+			}
+			if stillPending, err := st.GetRequirementVersion(ctx, req.ID, ownReq.Version); err != nil || stillPending.Retired || stillPending.Confirmed {
+				t.Fatalf("replay decided a pending proposal: %+v err=%v", stillPending, err)
 			}
 			request.Note = "changed"
 			if _, err = taskops.New(st).StartOver(ctx, request); !errors.Is(err, store.ErrStartOverRequestConflict) {
@@ -365,7 +381,7 @@ func runTaskStartOver(t *testing.T, factory Factory) {
 			}
 			return nil
 		})
-		if _, err = taskops.New(st).StartOver(faultCtx, core.TaskStartOverRequest{TaskID: old.ID, RequestID: "rollback", Reason: "retry", CanConfirmDocuments: true}); err == nil {
+		if _, err = taskops.New(st).StartOver(faultCtx, core.TaskStartOverRequest{TaskID: old.ID, RequestID: "rollback", Reason: "retry"}); err == nil {
 			t.Fatal("injected successor failure accepted")
 		}
 		after, err := st.ListEvents(ctx, old.ID)

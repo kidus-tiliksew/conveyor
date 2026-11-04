@@ -40,7 +40,7 @@ type taskMapScaleFixture struct {
 // seedTaskMapScale seeds open, merged, and closed tasks with dependencies and
 // requirement attachments. Every fixture carries the exceptional next-action
 // states: plan gates with plans, parked tasks with park commands, approved
-// tasks, claim-window review orders with task-authored proposals, and closed
+// tasks, review orders with task-origin proposals, and closed
 // blockers, so a query that runs per task in any of those paths shows up as
 // a count difference between fixture sizes.
 func seedTaskMapScale(t *testing.T, st *Store, openCount, mergedCount, closedCount, exceptional int) taskMapScaleFixture {

@@ -34,11 +34,6 @@ type NextActionOptions struct {
 	// caller already holds every open task in the workspace.
 	OpenTasksLoaded bool
 	OpenTasks       []core.Task
-	// ClaimWaitingLoaded skips the claim-wait read when the caller already
-	// computed ClaimWaitingProposals for the same orders. An empty map is a
-	// loaded empty selection, never a reason to read again.
-	ClaimWaitingLoaded bool
-	ClaimWaiting       map[string][]ClaimBlockingProposal
 	// CompactOnly marks a caller that consumes only nextaction.CompactFrom.
 	// The row-10 disposition binding feeds only details and choices, so its
 	// per-order verification read is skipped; every compact field is
@@ -117,12 +112,6 @@ func ReadNextActions(ctx context.Context, st Store, tasks []core.Task, opts Next
 	if err != nil {
 		return nil, err
 	}
-	waiting := opts.ClaimWaiting
-	if !opts.ClaimWaitingLoaded {
-		if waiting, err = ClaimWaitingProposals(ctx, st, orders); err != nil {
-			return nil, err
-		}
-	}
 	contexts, err := readContextProposals(ctx, st, tasks)
 	if err != nil {
 		return nil, err
@@ -146,7 +135,7 @@ func ReadNextActions(ctx context.Context, st Store, tasks []core.Task, opts Next
 	inputs := make([]nextaction.Input, len(tasks))
 	var checkpointed []int
 	for i, task := range tasks {
-		input := assembleInput(ctx, task, ordersByTask[task.ID], markerByTask[task.ID], proposals, waiting[task.ID], histories[task.ID], specs, opts)
+		input := assembleInput(ctx, task, ordersByTask[task.ID], markerByTask[task.ID], proposals, histories[task.ID], specs, opts)
 		input.Blockers = dependencies.forward[task.ID]
 		input.Blocks = dependencies.blocks[task.ID]
 		input.ContextProposals = contexts[task.ID]
@@ -478,7 +467,7 @@ func withDependencyBlockers(order core.WorkOrder, blockers DependencyBlockers) c
 // assembleInput builds one task's projection input from batched reads.
 // history is the task's bounded NextActionHistory, and specs the latest plan
 // version of awaiting tasks.
-func assembleInput(ctx context.Context, task core.Task, orders []core.WorkOrder, marker ActivityMarker, proposals []core.PendingProposal, waiting []ClaimBlockingProposal, history NextActionHistory, specs map[string]int, opts NextActionOptions) nextaction.Input {
+func assembleInput(ctx context.Context, task core.Task, orders []core.WorkOrder, marker ActivityMarker, proposals []core.PendingProposal, history NextActionHistory, specs map[string]int, opts NextActionOptions) nextaction.Input {
 	specVersion, found := 0, false
 	if task.State == core.TaskAwaiting {
 		specVersion, found = specs[task.ID]
@@ -490,8 +479,8 @@ func assembleInput(ctx context.Context, task core.Task, orders []core.WorkOrder,
 	conflict := MergeConflictFromHistory(history.MergeConflict, orders)
 	input := nextaction.Input{
 		Task: task, Orders: orders, Markers: markersFromHistory(marker, history.ParkCommand, orders), Assignee: task.Assignee,
-		ClaimWaiting: claimWaitingRefs(waiting), PendingProposals: pendingProposalRefs(proposals),
-		MergeConflict: conflict, Recovery: AutomaticRecoveryFor(orders),
+		PendingProposals: pendingProposalRefs(proposals),
+		MergeConflict:    conflict, Recovery: AutomaticRecoveryFor(orders),
 		Now: opts.Now, Capabilities: opts.Capabilities, LiveClaimants: opts.LiveClaimants,
 		PullRequest: history.PullRequest, BounceCount: history.BounceCount,
 	}
@@ -587,17 +576,6 @@ func parkCommand(events []core.Event) string {
 		}
 	}
 	return ""
-}
-
-// claimWaitingRefs carries the task's claim-wait selection to row 8, so the
-// next action waits on a proposal exactly when a verify or review claim is
-// withheld (req-operator-next-action AC-1.7; req-260810-70ce2f AC-1.3).
-func claimWaitingRefs(waiting []ClaimBlockingProposal) []nextaction.ProposalRef {
-	var out []nextaction.ProposalRef
-	for _, item := range waiting {
-		out = append(out, nextaction.ProposalRef{Tier: item.Tier, ID: item.ID, Version: item.Version})
-	}
-	return out
 }
 
 // readContextProposals reads the batch's pending task-context proposals with

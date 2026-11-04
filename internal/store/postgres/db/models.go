@@ -465,15 +465,6 @@ type Workspace struct {
 	OrgID         string             `json:"org_id"`
 }
 
-// DocumentOperatorNote is hand-maintained with the task-origin history query.
-type DocumentOperatorNote struct {
-	DocumentID    string
-	Version       int
-	Tier          string
-	DismissalNote string
-	DismissedAt   pgtype.Timestamptz
-}
-
 // VerificationRecord is maintained by hand with migration 132 (component-verification-evidence).
 type VerificationRecord struct {
 	Table, WorkspaceID, ID, TaskID, ContextID, RunID, LogicalKey, KeyHash, State string

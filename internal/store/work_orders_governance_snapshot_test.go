@@ -39,8 +39,10 @@ func TestPinClaimGovernanceFreezesAuthority(t *testing.T) {
 		PendingDesignProposals: []core.PendingSystemDesignProposal{{DocumentID: "fresh"}},
 		ResolutionNotes:        []string{"fresh"},
 	}, false)
-	if order.GovernanceSnapshot.Designs[0].ID != "pinned" || order.GovernanceSnapshot.PendingDesignProposals[0].DocumentID != "fresh" || order.GovernanceSnapshot.ResolutionNotes[0] != "fresh" {
-		t.Fatalf("merge=%+v", order.GovernanceSnapshot)
+	// A frozen pin stays exactly as recorded, including an older pin's retired
+	// evidence, so its digest never moves (DEC-102(6)).
+	if order.GovernanceSnapshot.Designs[0].ID != "pinned" || order.GovernanceSnapshot.PendingDesignProposals[0].DocumentID != "old" || order.GovernanceSnapshot.ResolutionNotes[0] != "old" {
+		t.Fatalf("frozen pin changed=%+v", order.GovernanceSnapshot)
 	}
 	PinClaimGovernance(&order, &core.GovernanceSnapshot{
 		Designs: []core.GovernanceDesignContext{{ID: "live", Version: 2, Content: "new"}},

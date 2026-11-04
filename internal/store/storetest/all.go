@@ -297,7 +297,7 @@ func RunAll(t *testing.T, factory Factory) {
 		{"LegacyVerificationEvidence", true, runLegacyVerificationEvidence},
 		{"WorkOrders", true, runWorkOrders},
 		{"MergeTaskAtGate", true, runMergeTaskAtGate},
-		{"ClaimBlockingProposals", true, runClaimBlockingProposals},
+		{"ClaimsProceedWithPendingProposals", true, runClaimsProceedWithPendingProposals},
 		{"LargeArgumentWrites", true, runLargeArgumentWrites},
 		{"AutomaticRecoveryAuthority", true, runAutomaticRecoveryAuthority},
 		{"ContextFreshness", true, runContextFreshness},

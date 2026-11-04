@@ -226,7 +226,7 @@ func TestWorkOrderListOmitsAuthoritySnapshots(t *testing.T) {
 	if _, err := storetest.CreateStageWorkOrder(ctx, memory, job, core.WorkOrder{ID: job.ID, TaskID: task.ID, JobID: job.ID, Stage: core.StageVerify, State: core.WorkOrderQueued, HeadSHA: "head", CreatedAt: now, QueueEnteredAt: now, QueueDeadline: now.Add(time.Hour)}); err != nil {
 		t.Fatal(err)
 	}
-	governance := core.GovernanceSnapshot{Designs: []core.GovernanceDesignContext{{ID: "component-pinned", Version: 1, Content: strings.Repeat("g", designBytes), Governs: []core.GovernedScope{}}}, Decisions: []core.Decision{}, PendingDesignProposals: []core.PendingSystemDesignProposal{}}
+	governance := core.GovernanceSnapshot{ResolutionNotes: []string{"retained resolution note"}, PendingDesignProposals: []core.PendingSystemDesignProposal{{DocumentID: "design-evidence", Version: 2, ProposalEventID: 7, OriginTaskID: task.ID}}, Designs: []core.GovernanceDesignContext{{ID: "component-pinned", Version: 1, Content: strings.Repeat("g", designBytes), Governs: []core.GovernedScope{}}}, Decisions: []core.Decision{}}
 	served := []core.ServedRequirementContext{{ID: "req-pinned", Version: 1, Statements: []core.RequirementStatement{{ID: "REQ-1", Statement: "Pin the requirement"}}}}
 	if _, err := storetest.ClaimWorkOrder(ctx, memory, job.ID, core.WorkOrderClaim{ClaimantID: "worker", SessionID: "pinned", ClientToken: "pinned", Lease: time.Hour, ExecutionTimeout: time.Hour, Requirements: served, Governance: &governance}); err != nil {
 		t.Fatal(err)
@@ -256,5 +256,8 @@ func TestWorkOrderListOmitsAuthoritySnapshots(t *testing.T) {
 	}
 	if order.GovernanceSnapshot == nil || len(order.GovernanceSnapshot.Designs) != 1 || len(order.GovernanceSnapshot.Designs[0].Content) != designBytes || len(order.ServedRequirementSnapshot) != 1 {
 		t.Fatalf("exact read lost the pinned snapshots: %d bytes", exact.Body.Len())
+	}
+	if strings.Contains(exact.Body.String(), "retained resolution note") || strings.Contains(exact.Body.String(), "design-evidence") {
+		t.Fatalf("exact read presents retired proposal evidence: %d bytes", exact.Body.Len())
 	}
 }

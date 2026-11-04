@@ -134,21 +134,11 @@ func (s *Server) readInbox(ctx context.Context, opts store.NextActionOptions, ba
 	for _, marker := range markers {
 		lastEvent[marker.TaskID] = marker.LastEventAt
 	}
-	folded := map[string]bool{}
-	withholding := map[string]bool{}
-	for _, task := range candidates {
-		if action := projected[task.ID]; action.Kind == nextaction.KindDocumentProposal {
-			folded[task.ID] = true
-			for _, ref := range action.Details.PendingProposals {
-				withholding[proposalKey(ref.Tier, ref.ID, ref.Version)] = true
-			}
-		}
-	}
-	items := inboxTaskItems(candidates, projected, lastEvent, folded)
+	items := inboxTaskItems(candidates, projected, lastEvent)
 	if err := s.attachInboxPullRequests(ctx, items); err != nil {
 		return nil, err
 	}
-	items = append(items, documentProposalItems(proposals, withholding, opts.Now)...)
+	items = append(items, documentProposalItems(proposals, opts.Now)...)
 	if band != "" {
 		filtered := make([]inboxItem, 0, len(items))
 		for _, item := range items {
@@ -162,12 +152,9 @@ func (s *Server) readInbox(ctx context.Context, opts store.NextActionOptions, ba
 	return items, nil
 }
 
-func inboxTaskItems(candidates []core.Task, projected map[string]nextaction.NextAction, lastEvent map[string]time.Time, folded map[string]bool) []inboxItem {
+func inboxTaskItems(candidates []core.Task, projected map[string]nextaction.NextAction, lastEvent map[string]time.Time) []inboxItem {
 	var items []inboxItem
 	for _, task := range candidates {
-		if folded[task.ID] {
-			continue
-		}
 		action := projected[task.ID]
 		item := inboxItem{
 			Task: &task, NextAction: compactPtr(action),
@@ -241,10 +228,8 @@ func serves(task core.Task) []string {
 }
 
 // documentProposalItems lists each pending document proposal as a decision.
-// withholding holds the versions a folded row-8 task waits on, keyed by
-// proposalKey; now is the read's clock (feature-operator-next-action NA-4,
-// NA-5).
-func documentProposalItems(proposals []core.PendingProposal, withholding map[string]bool, now time.Time) []inboxItem {
+// now is the read's clock (feature-operator-next-action NA-4, NA-5).
+func documentProposalItems(proposals []core.PendingProposal, now time.Time) []inboxItem {
 	counts := map[string]int{}
 	for _, proposal := range proposals {
 		if proposal.Tier == "task_context" {
@@ -257,7 +242,7 @@ func documentProposalItems(proposals []core.PendingProposal, withholding map[str
 		if proposal.Tier == "task_context" {
 			continue
 		}
-		label, question, ifIgnored := nextaction.DocumentProposalCopy(proposal.Tier, withholding[proposalKey(proposal.Tier, proposal.ID, proposal.Version)])
+		label, question, ifIgnored := nextaction.DocumentProposalCopy(proposal.Tier)
 		item := inboxItem{
 			Kind: "document_proposal", Band: "decisions",
 			Proposal: &inboxProposal{PendingProposal: proposal, AgeSeconds: proposalAge(proposal.ProposedAt, now)},
@@ -270,10 +255,6 @@ func documentProposalItems(proposals []core.PendingProposal, withholding map[str
 		items = append(items, item)
 	}
 	return items
-}
-
-func proposalKey(tier, id string, version int) string {
-	return tier + "/" + id + "/" + strconv.Itoa(version)
 }
 
 // proposalAge is the whole seconds from proposedAt to now, clamped at zero

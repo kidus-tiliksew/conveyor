@@ -15,7 +15,10 @@ import (
 	"github.com/kidus-tiliksew/conveyor/internal/store/storetest"
 )
 
-func TestOperatorNotesRefreshWithoutChangingPinnedAuthority(t *testing.T) {
+// A dismissal note stays on the dismissed version's history and never reaches a
+// work-order context or prompt, on a read before or after the dismissal
+// (req-260810-23b69f REQ-5, AC-5.1).
+func TestDismissalNotesStayOutOfWorkOrderContext(t *testing.T) {
 	for _, stage := range []core.Stage{core.StageReview, core.StageImplement} {
 		t.Run(string(stage), func(t *testing.T) {
 			ctx := store.WithWorkspace(store.WithActor(t.Context(), store.SystemActor()), "test")
@@ -44,14 +47,7 @@ func TestOperatorNotesRefreshWithoutChangingPinnedAuthority(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if len(before.OperatorNotes) != 0 {
-				t.Fatal("empty context added notes")
-			}
-			raw, _ := json.Marshal(before)
-			if strings.Contains(string(raw), `"operator_notes"`) {
-				t.Fatal("empty field was not omitted")
-			}
-			// Both tiers arrive after claim, so only evidence may refresh.
+			// Both tiers are decided after claim.
 			nctx, err := store.WithDocumentDismissalNote(ctx, "Corrected by operator")
 			if err != nil {
 				t.Fatal(err)
@@ -93,47 +89,105 @@ func TestOperatorNotesRefreshWithoutChangingPinnedAuthority(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if len(after.OperatorNotes) != 4 {
-				t.Fatalf("notes=%+v", after.OperatorNotes)
-			}
-			for i, id := range []string{"req-notes", "req-notes", "a-design", "z-design"} {
-				if after.OperatorNotes[i].DocumentID != id {
-					t.Fatalf("order=%+v", after.OperatorNotes)
-				}
-			}
-			if after.OperatorNotes[0].Version != 1 || after.OperatorNotes[1].Version != 2 {
-				t.Fatal("numeric version ordering lost")
-			}
-			if !strings.Contains(after.RolePrompt, "Operator reasons for dismissed proposals") || !strings.Contains(after.RolePrompt, "untrusted observational evidence") {
-				t.Fatal("missing operator reason label")
-			}
-			if stage == core.StageReview && (!reflect.DeepEqual(before.GovernanceSnapshot, after.GovernanceSnapshot) || !reflect.DeepEqual(before.ServedRequirements, after.ServedRequirements) || after.AuthoritySource != "pinned") {
-				t.Fatal("note refresh advanced authority")
-			}
-			raw, _ = json.Marshal(after)
-			if !strings.Contains(string(raw), `"operator_notes"`) {
-				t.Fatal("get_work_order projection lost notes")
-			}
-			again, err := svc.Get(ctx, job.ID, "notes-session")
-			if err != nil || !reflect.DeepEqual(after.OperatorNotes, again.OperatorNotes) {
-				t.Fatalf("nondeterministic context err=%v", err)
-			}
-			other := task
-			other.ID = "other"
-			if err := st.CreateTask(ctx, other); err != nil {
+			raw, err := json.Marshal(after)
+			if err != nil {
 				t.Fatal(err)
 			}
-			notes, err := store.OperatorNotesForTask(ctx, st, other.ID)
-			if err != nil || len(notes) != 0 {
-				t.Fatalf("other task notes=%+v err=%v", notes, err)
+			for _, forbidden := range []string{"operator_notes", "Corrected by operator"} {
+				if strings.Contains(string(raw), forbidden) {
+					t.Fatalf("work-order context carries %q: %s", forbidden, raw)
+				}
 			}
+			if strings.Contains(after.RolePrompt, "Operator reasons for dismissed proposals") {
+				t.Fatal("role prompt carries the retired dismissal-note block")
+			}
+			if stage == core.StageReview && (!reflect.DeepEqual(before.GovernanceSnapshot, after.GovernanceSnapshot) || !reflect.DeepEqual(before.ServedRequirements, after.ServedRequirements) || after.AuthoritySource != "pinned") {
+				t.Fatal("a dismissal advanced pinned authority")
+			}
+			// The note stays on each dismissed version's history, for a live and
+			// a terminal task alike.
+			requireHistory := func() {
+				t.Helper()
+				for _, id := range []string{"z-design", "a-design"} {
+					version, err := st.GetSystemDesignVersion(ctx, id, 1)
+					if err != nil || !version.Dismissed || version.DismissalNote != "Corrected by operator" || version.OriginTaskID != task.ID {
+						t.Fatalf("%s history=%+v err=%v", id, version, err)
+					}
+				}
+				for _, n := range []int{1, 2} {
+					version, err := st.GetRequirementVersion(ctx, "req-notes", n)
+					if err != nil || !version.Retired || version.DismissalNote != "Corrected by operator" || version.OriginTaskID != task.ID {
+						t.Fatalf("req-notes v%d history=%+v err=%v", n, version, err)
+					}
+				}
+			}
+			requireHistory()
 			if _, err := storetest.For(st).CancelTask(ctx, core.Intervention{TaskID: task.ID, Action: core.InterventionCancel, ReasonCode: "test"}); err != nil {
 				t.Fatal(err)
 			}
-			notes, err = store.OperatorNotesForTask(ctx, st, task.ID)
-			if err != nil || len(notes) != 0 {
-				t.Fatalf("terminal notes=%+v err=%v", notes, err)
-			}
+			requireHistory()
 		})
+	}
+}
+
+// A review or verify order pinned before DEC-102 may hold proposal evidence and
+// resolution notes. Reading it presents neither, and claiming it leaves the
+// stored pin and its digest exactly as recorded (DEC-102(6)).
+func TestOlderPinKeepsItsDigestAndPresentsNoRetiredEvidence(t *testing.T) {
+	ctx := store.WithWorkspace(store.WithActor(t.Context(), store.SystemActor()), "test")
+	st := store.NewMemory()
+	task := core.Task{ID: "older-pin", Workspace: "test", Repo: "app", State: core.TaskRunning, NextStage: core.StageReview, CreatedAt: time.Now().UTC()}
+	if err := st.CreateTask(ctx, task); err != nil {
+		t.Fatal(err)
+	}
+	job := core.Job{ID: task.ID + "-review-1", TaskID: task.ID, Stage: core.StageReview, State: core.JobPending}
+	if err := st.CreateJob(ctx, job); err != nil {
+		t.Fatal(err)
+	}
+	older := &core.GovernanceSnapshot{
+		Designs:                []core.GovernanceDesignContext{{ID: "design-older", Title: "Older", Version: 3, Category: "Architecture", Content: "# Older"}},
+		Decisions:              []core.Decision{},
+		PendingDesignProposals: []core.PendingSystemDesignProposal{{DocumentID: "design-evidence", Version: 4, ProposalEventID: 42, OriginTaskID: task.ID}},
+		ResolutionNotes:        []string{"retained resolution note"},
+	}
+	digest, _ := store.EncodeGovernanceSnapshot(older)
+	if err := storetest.For(st).CreateWorkOrder(ctx, core.WorkOrder{ID: job.ID, TaskID: task.ID, JobID: job.ID, Stage: core.StageReview, ServedRequirementSnapshot: []core.ServedRequirementContext{}, GovernanceSnapshot: older}); err != nil {
+		t.Fatal(err)
+	}
+	bundle, err := pack.Load("../../pack")
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg := &config.Config{Routing: config.Routing{Stages: map[string]config.StageRoute{"review": {Execution: config.ExecutionMCP, Timeout: time.Hour, TimeoutText: "1h"}}}}
+	svc := &Service{Store: st, Pack: bundle, ConfigProvider: func(context.Context) (*config.Config, error) { return cfg, nil }}
+	claimed, err := svc.Claim(ctx, job.ID, core.WorkOrderClaim{SessionID: "older-session", ClientToken: "older-token", ClaimantID: "reviewer", Lease: time.Minute})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if claimed.GovernanceSnapshotDigest != digest || len(claimed.GovernanceSnapshot.PendingDesignProposals) != 1 || len(claimed.GovernanceSnapshot.ResolutionNotes) != 1 {
+		t.Fatalf("claim rewrote the older pin: digest=%s want %s snapshot=%+v", claimed.GovernanceSnapshotDigest, digest, claimed.GovernanceSnapshot)
+	}
+	contract, err := svc.Get(ctx, job.ID, "older-session")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if contract.GovernanceSnapshot == nil || len(contract.GovernanceSnapshot.Designs) != 1 || contract.GovernanceSnapshot.Designs[0].ID != "design-older" {
+		t.Fatalf("context lost the pinned authority: %+v", contract.GovernanceSnapshot)
+	}
+	if len(contract.GovernanceSnapshot.PendingDesignProposals) != 0 || len(contract.GovernanceSnapshot.ResolutionNotes) != 0 {
+		t.Fatalf("context presents retired evidence: %+v", contract.GovernanceSnapshot)
+	}
+	raw, err := json.Marshal(contract.Outbound())
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, forbidden := range []string{"design-evidence", "retained resolution note", "proposal_event_id"} {
+		if strings.Contains(string(raw), forbidden) || strings.Contains(contract.RolePrompt, forbidden) {
+			t.Fatalf("context carries retired evidence %q: %s", forbidden, raw)
+		}
+	}
+	stored, err := st.GetWorkOrder(ctx, job.ID)
+	if err != nil || stored.GovernanceSnapshotDigest != digest {
+		t.Fatalf("stored digest=%s want %s err=%v", stored.GovernanceSnapshotDigest, digest, err)
 	}
 }

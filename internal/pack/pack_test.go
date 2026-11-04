@@ -178,10 +178,9 @@ func TestDoneCriteriaContractRendersPlanAndTaskFallback(t *testing.T) {
 func TestGovernanceContractExplainsAttachmentPinDowngrade(t *testing.T) {
 	t.Parallel()
 	contract := RenderGovernanceContract(core.StageReview, core.ProjectGovernanceReferences(core.GovernanceSnapshot{
-		Designs:         []core.GovernanceDesignContext{{ID: "DESIGN-runtime", Title: "Runtime", Version: 2, Category: "Architecture", Content: "# Runtime", PinnedAtAttachment: true}},
-		ResolutionNotes: []string{"pending proposal DESIGN-runtime v3 has no valid proposal event and was omitted"},
+		Designs: []core.GovernanceDesignContext{{ID: "DESIGN-runtime", Title: "Runtime", Version: 2, Category: "Architecture", Content: "# Runtime", PinnedAtAttachment: true}},
 	}, "conveyor", core.GovernanceDesignProvenance{Attached: []string{"DESIGN-runtime"}}, nil), GovernanceDeliveryMCP)
-	for _, required := range []string{"DESIGN-runtime v2: Runtime", "older version pinned by the task attachment", "Governance resolution notes", "confer no authority"} {
+	for _, required := range []string{"DESIGN-runtime v2: Runtime", "older version pinned by the task attachment"} {
 		if !strings.Contains(contract, required) {
 			t.Fatalf("governance contract missing %q: %s", required, contract)
 		}
@@ -503,7 +502,7 @@ func TestArchivedPinnedAuthorityNamesSuccessorsBeforeContent(t *testing.T) {
 	}
 }
 
-func TestGovernanceContractHeadsPinsAndKeepsReviewEvidence(t *testing.T) {
+func TestGovernanceContractHeadsPinsAndOmitsRetiredReviewEvidence(t *testing.T) {
 	t.Parallel()
 	design := core.GovernanceDesignContext{ID: "DESIGN-runtime", Title: "Runtime", Version: 3, Category: "Architecture", Content: strings.Repeat("BODYWORD ", 64<<10)}
 	snapshot := core.GovernanceSnapshot{
@@ -515,9 +514,15 @@ func TestGovernanceContractHeadsPinsAndKeepsReviewEvidence(t *testing.T) {
 	if strings.Contains(contract, "BODYWORD") || strings.Contains(contract, "omitted by prompt budget") {
 		t.Fatalf("contract carries a body or the retired budget notice: %s", contract)
 	}
-	for _, required := range []string{"Pinned System Design authority", "DESIGN-runtime v3: Runtime", "Pinned decision authority", "- DEC-2: Use pinned authority.", "System Design proposal evidence from this task", "DESIGN-runtime v4 (pending", "DESIGN-runtime v5 (confirmed after proposal", "matching pending or confirmed proposal", "confer no authority", "Operator confirmation is not a bounce condition", "design_applicable", "decision_citable"} {
+	for _, required := range []string{"Pinned System Design authority", "DESIGN-runtime v3: Runtime", "Pinned decision authority", "- DEC-2: Use pinned authority.", "design_applicable", "decision_citable"} {
 		if !strings.Contains(contract, required) {
 			t.Fatalf("contract missing %q: %s", required, contract)
+		}
+	}
+	// An older pin may still hold proposal evidence; no contract renders it.
+	for _, retired := range []string{"proposal evidence", "DESIGN-runtime v4", "DESIGN-runtime v5", "Operator confirmation", "Governance resolution notes"} {
+		if strings.Contains(contract, retired) {
+			t.Fatalf("review contract carries retired evidence %q: %s", retired, contract)
 		}
 	}
 	decisionsOnly := RenderGovernanceContract(core.StageReview, core.ProjectGovernanceReferences(core.GovernanceSnapshot{Designs: []core.GovernanceDesignContext{}, Decisions: snapshot.Decisions}, "conveyor", core.GovernanceDesignProvenance{}, nil), GovernanceDeliveryMCP)
@@ -591,27 +596,27 @@ func TestImplementGovernanceContractRoutesAuthorityConflicts(t *testing.T) {
 	}
 	requireNoRetiredProposeFirstWording(t, "implement contract", contract)
 	requireNoRetiredProposeFirstWording(t, "spec contract", RenderGovernanceContract(core.StageSpec, references, GovernanceDeliveryMCP))
-
-	// A proposal recorded before this rule stays listed for the resumed
-	// session, with no direction to author another.
-	references.PendingDesignProposals = []core.PendingSystemDesignProposal{{DocumentID: "DESIGN-runtime", Version: 4, ProposalEventID: 42, OriginTaskID: "task-design"}}
-	resumed := RenderGovernanceContract(core.StageImplement, references, GovernanceDeliveryMCP)
-	for _, required := range []string{"Earlier System Design proposals from this task", "confer no authority", "DESIGN-runtime v4 (pending"} {
-		if !strings.Contains(resumed, required) {
-			t.Errorf("resumed contract missing %q: %s", required, resumed)
-		}
-	}
-	requireNoRetiredProposeFirstWording(t, "resumed contract", resumed)
 }
 
-func TestGovernanceContractListsResolutionNotes(t *testing.T) {
+// A pin recorded before DEC-102 can hold proposal evidence and resolution notes.
+// Every stage's contract reads it without rendering either (DEC-102(6)).
+func TestGovernanceContractIgnoresRetiredEvidenceOfOlderPins(t *testing.T) {
 	t.Parallel()
-	contract := RenderGovernanceContract(core.StageReview, core.GovernanceReferences{
-		ResolutionNotes: []string{"first retained note", "last retained note"},
-	}, GovernanceDeliveryMCP)
-	for _, required := range []string{"first retained note", "last retained note", "Governance resolution notes"} {
-		if !strings.Contains(contract, required) {
-			t.Fatalf("contract missing %q: %s", required, contract)
+	older := core.GovernanceSnapshot{
+		Designs:                []core.GovernanceDesignContext{{ID: "DESIGN-runtime", Title: "Runtime", Version: 3, Category: "Architecture", Content: "# Runtime"}},
+		Decisions:              []core.Decision{{ID: "DEC-2", Status: core.DecisionConfirmed, Statement: "Use pinned authority."}},
+		PendingDesignProposals: []core.PendingSystemDesignProposal{{DocumentID: "DESIGN-runtime", Version: 4, ProposalEventID: 42, OriginTaskID: "task-design"}},
+		ResolutionNotes:        []string{"first retained note"},
+	}
+	for _, stage := range []core.Stage{core.StageImplement, core.StageVerify, core.StageReview} {
+		contract := RenderGovernanceContract(stage, core.ProjectGovernanceReferences(older, "conveyor", core.GovernanceDesignProvenance{}, nil), GovernanceDeliveryMCP)
+		if !strings.Contains(contract, "DESIGN-runtime v3: Runtime") {
+			t.Fatalf("%s contract lost the pinned design: %s", stage, contract)
+		}
+		for _, retired := range []string{"DESIGN-runtime v4", "first retained note", "Governance resolution notes", "Earlier System Design proposals", "proposal evidence"} {
+			if strings.Contains(contract, retired) {
+				t.Errorf("%s contract carries retired evidence %q: %s", stage, retired, contract)
+			}
 		}
 	}
 }

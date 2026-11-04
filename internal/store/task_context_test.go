@@ -4,8 +4,6 @@ import (
 	"encoding/json"
 	"errors"
 	"slices"
-	"strconv"
-	"strings"
 	"testing"
 	"time"
 
@@ -133,7 +131,7 @@ func TestTaskContextFeedsRequirementAndGovernanceAuthority(t *testing.T) {
 	}
 }
 
-func TestGovernanceMarksAttachmentDowngradeAndOmitsMalformedProposalHistory(t *testing.T) {
+func TestGovernanceMarksAttachmentDowngradeAndCarriesNoProposalEvidence(t *testing.T) {
 	ctx := WithWorkspace(WithActor(t.Context(), SystemActor()), "demo")
 	st := NewMemory().(*memory)
 	design, first, err := st.CreateSystemDesign(ctx, core.SystemDesign{ID: "design-pin", Title: "Pinned mechanism", Category: "Architecture"}, core.SystemDesignVersion{
@@ -156,18 +154,10 @@ func TestGovernanceMarksAttachmentDowngradeAndOmitsMalformedProposalHistory(t *t
 	if _, _, err = st.ConfirmSystemDesignVersion(ctx, design.ID, second.Version, first.Version); err != nil {
 		t.Fatal(err)
 	}
-	pending, err := st.ProposeSystemDesignVersion(ctx, core.SystemDesignVersion{DocumentID: design.ID, Content: "# Pending\n\n```conveyor:governs\n- repo: conveyor\n  paths:\n    - cmd/**\n```", Origin: core.SystemDesignOriginImplementation, OriginTaskID: task.ID})
+	_, err = st.ProposeSystemDesignVersion(ctx, core.SystemDesignVersion{DocumentID: design.ID, Content: "# Pending\n\n```conveyor:governs\n- repo: conveyor\n  paths:\n    - cmd/**\n```", Origin: core.SystemDesignOriginImplementation, OriginTaskID: task.ID})
 	if err != nil {
 		t.Fatal(err)
 	}
-	st.mu.Lock()
-	for index := range st.events[""] {
-		if st.events[""][index].Kind == "system_design.version_proposed" && strings.Contains(string(st.events[""][index].Payload), `"version":`+strconv.Itoa(pending.Version)) {
-			st.events[""][index].Payload = core.JSONPayload(map[string]any{"workspace_id": "demo", "origin_task_id": task.ID, "document_id": design.ID, "version": "bad"})
-		}
-	}
-	st.mu.Unlock()
-
 	governance, err := GovernanceForTask(ctx, st, task.ID, task.Repo)
 	if err != nil {
 		t.Fatal(err)
@@ -175,8 +165,8 @@ func TestGovernanceMarksAttachmentDowngradeAndOmitsMalformedProposalHistory(t *t
 	if len(governance.Designs) != 1 || governance.Designs[0].Version != first.Version || !governance.Designs[0].PinnedAtAttachment {
 		t.Fatalf("attachment downgrade provenance=%+v", governance.Designs)
 	}
-	if len(governance.PendingDesignProposals) != 0 || len(governance.ResolutionNotes) == 0 || !strings.Contains(strings.Join(governance.ResolutionNotes, " "), "omitted") {
-		t.Fatalf("malformed proposal handling=%+v", governance)
+	if governance.PendingDesignProposals == nil || len(governance.PendingDesignProposals) != 0 || len(governance.ResolutionNotes) != 0 {
+		t.Fatalf("a pending task-origin version reached the governance snapshot: %+v", governance)
 	}
 }
 

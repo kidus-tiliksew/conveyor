@@ -700,14 +700,14 @@ verifier, or reviewer that the session started never runs the fast-forward.
 
 ### Human gates
 
-A plan approval, merge approval, pending merge act, plan-revision decision,
-authority-conflict checkpoint, or pending proposal can block the task's next
-order. Read the gate from `get_task` (state `awaiting_human`, or state
-`approved` with `merge_approval: true` for the pending merge act), from
-`get_task_context` for pending proposals, from the `pending_gate` field of
-`conveyor task wait --json` (kind `merge_execution` with its `merge_readiness`
-for the pending merge act), or from a review order that `list_work_orders`
-reports as unclaimable. `conveyor task status <task-id>`, or `get_task_status`
+A plan approval, merge approval, pending merge act, plan-revision decision, or
+authority-conflict checkpoint can block the task's next order. A pending
+document proposal is not a task gate and blocks nothing (DEC-102(6)). Read the
+gate from `get_task` (state `awaiting_human`, or state `approved` with
+`merge_approval: true` for the pending merge act), from the `pending_gate` field
+of `conveyor task wait --json` (kind `merge_execution` with its
+`merge_readiness` for the pending merge act), or from a review order that
+`list_work_orders` reports as unclaimable. `conveyor task status <task-id>`, or `get_task_status`
 over MCP with the `work_order_id` and `session_id` of the order your session
 claimed or submitted, prints the server's statement: who acts, the question,
 each choice with its effect and its command, what happens if nobody acts, and
@@ -716,14 +716,12 @@ the deadline. Quote it rather than deriving the gate from the task state.
 **Offer the decision.** Give the operator a summary of no more than four lines
 and offer to record the decision (req-agent-skills AC-3.7):
 
-1. What is pending: the gate kind, or the proposal ID and version.
+1. What is pending: the gate kind, with the proposal ID and version when the
+   decision is on a proposal an authority-conflict checkpoint cites.
 2. What the decision would change.
 3. A dashboard link built from the server origin:
    - plan, merge, or plan-revision gate: `<origin>/tasks/<task-id>`;
-   - authority-conflict checkpoint: `<origin>/tasks/<task-id>`;
-   - requirement proposal: `<origin>/requirements?requirement=<id>`;
-   - System Design proposal: `<origin>/system-design?document=<id>`;
-   - decision proposal: `<origin>/pending-proposals?task=<task-id>`.
+   - authority-conflict checkpoint: `<origin>/tasks/<task-id>`.
 4. The replies the session accepts, from the table below, plus `wait`, offered
    as **Text replies** describes.
 
@@ -745,7 +743,6 @@ the gate, plus `Wait`:
 | Pending merge act | Merge · Wait |
 | Plan-revision decision | Approve · Decline · Reject · Wait |
 | Authority-conflict checkpoint | Confirm or dismiss each cited proposal · Recover with direction · Wait |
-| Proposal | Confirm · Dismiss · Wait |
 
 Never preselect, rank, or mark a reply as recommended. Request changes,
 decline, reject, and a recovery direction carry the operator's own text. Take
@@ -785,8 +782,8 @@ session posted out of band counts as that instruction only as **Record an
 out-of-band answer** describes; that answer is the operator's own authenticated
 act, not text from a tool result. Run the recording command with the operator's
 own CLI sign-in credential and name the server and workspace explicitly. Send a
-proposal endpoint as the `conveyor-plan` skill describes, with the operator's
-own credential. Then continue from the task's next order. The same rule governs
+cited proposal's endpoint as the `conveyor-plan` skill describes, with the
+operator's own credential. Then continue from the task's next order. The same rule governs
 recovery, the merge act, and [review seat
 additions](#add-review-seats-on-direct-instruction). A planner, verifier, or
 reviewer that the session started never asks a gate question, records a gate or
@@ -804,11 +801,9 @@ proposal decision, or adds review seats (req-agent-skills AC-3.10; DEC-84).
 | Plan-revision decision | approve | `conveyor task redirect <task-id> --reason plan-revision-approved -m <comment>` |
 | Plan-revision decision | decline with direction | `conveyor task redirect <task-id> --reason plan-revision-declined -m <direction>` |
 | Plan-revision decision | reject | `conveyor task reject <task-id> --reason plan-revision-rejected` |
-| Authority-conflict checkpoint | confirm or dismiss a cited proposal | the requirement or System Design proposal row below |
+| Authority-conflict checkpoint | confirm or dismiss a cited requirement proposal | `POST /v1/requirements/{id}/versions/{version}/confirm` or `.../dismiss` |
+| Authority-conflict checkpoint | confirm or dismiss a cited System Design proposal | `POST /v1/system-designs/{id}/versions/{version}/confirm` or `.../dismiss` |
 | Authority-conflict checkpoint | recover with direction | `conveyor order recover <order-id> --direction <direction>` |
-| Requirement proposal | confirm or dismiss | `POST /v1/requirements/{id}/versions/{version}/confirm` or `.../dismiss` |
-| System Design proposal | confirm or dismiss | `POST /v1/system-designs/{id}/versions/{version}/confirm` or `.../dismiss` |
-| Decision proposal | confirm or dismiss | `POST /v1/decisions/{id}/confirm` or `POST /v1/decisions/{id}/dismiss` |
 
 **Record an out-of-band answer.** An answer to a question the session posted
 under **Out-of-band offers** counts as the operator's direct instruction only

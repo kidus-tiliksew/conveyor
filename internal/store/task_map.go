@@ -227,10 +227,6 @@ type NextActionInputStore interface {
 	// ListLatestSpecVersionNumbers returns each requested task's latest plan
 	// version number. Tasks without a plan are absent.
 	ListLatestSpecVersionNumbers(ctx context.Context, taskIDs []string) (map[string]int, error)
-	// ListClaimBlockingProposalsForTasks applies the claim-blocking
-	// predicate of ListClaimBlockingProposalsForTask to every requested task
-	// in one read. Tasks without a withholding version are absent.
-	ListClaimBlockingProposalsForTasks(ctx context.Context, taskIDs []string) (map[string][]ClaimBlockingProposal, error)
 	// ListTaskHeads returns the requested workspace tasks' heads. A missing
 	// task is absent; callers that require it report not found.
 	ListTaskHeads(ctx context.Context, taskIDs []string) (map[string]TaskHead, error)
@@ -556,19 +552,6 @@ func (m *memory) ListLatestSpecVersionNumbers(ctx context.Context, taskIDs []str
 	return out, nil
 }
 
-func (m *memory) ListClaimBlockingProposalsForTasks(ctx context.Context, taskIDs []string) (map[string][]ClaimBlockingProposal, error) {
-	m.mu.RLock()
-	defer m.mu.RUnlock()
-	workspace := workspaceOrDefault(ctx, "")
-	out := map[string][]ClaimBlockingProposal{}
-	for _, id := range taskIDs {
-		if items := m.claimBlockingProposalsLocked(workspace, id); len(items) > 0 {
-			out[id] = items
-		}
-	}
-	return out, nil
-}
-
 func (m *memory) ListTaskHeads(ctx context.Context, taskIDs []string) (map[string]TaskHead, error) {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
@@ -582,15 +565,6 @@ func (m *memory) ListTaskHeads(ctx context.Context, taskIDs []string) (map[strin
 		out[id] = TaskHead{ID: task.ID, Title: task.Title, State: task.State}
 	}
 	return out, nil
-}
-
-// GroupClaimBlockingProposals orders each task's rows with
-// SortClaimBlockingProposals, the order every backend returns.
-func GroupClaimBlockingProposals(rows map[string][]ClaimBlockingProposal) map[string][]ClaimBlockingProposal {
-	for id := range rows {
-		SortClaimBlockingProposals(rows[id])
-	}
-	return rows
 }
 
 func (m *memory) ListNextActionHistory(ctx context.Context, taskIDs []string) (map[string]NextActionHistory, error) {

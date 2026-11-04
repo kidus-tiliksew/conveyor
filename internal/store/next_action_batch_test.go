@@ -119,16 +119,6 @@ func (c *countingStore) GetLatestSpecVersion(ctx context.Context, id string) (co
 	return c.Store.GetLatestSpecVersion(ctx, id)
 }
 
-func (c *countingStore) ListClaimBlockingProposalsForTasks(ctx context.Context, ids []string) (map[string][]store.ClaimBlockingProposal, error) {
-	c.count("ListClaimBlockingProposalsForTasks", ids)
-	return c.Store.ListClaimBlockingProposalsForTasks(ctx, ids)
-}
-
-func (c *countingStore) ListClaimBlockingProposalsForTask(ctx context.Context, id string) ([]store.ClaimBlockingProposal, error) {
-	c.count("ListClaimBlockingProposalsForTask", []string{id})
-	return c.Store.ListClaimBlockingProposalsForTask(ctx, id)
-}
-
 func (c *countingStore) ListTaskContextProposals(ctx context.Context, taskID string, state core.TaskContextProposalState) ([]core.TaskContextProposal, error) {
 	c.count("ListTaskContextProposals", []string{taskID})
 	return c.Store.ListTaskContextProposals(ctx, taskID, state)
@@ -180,7 +170,7 @@ func maxBatchCalls(name string) int {
 
 // perTaskReads are the reads a batching store never issues from the
 // assembler (component-work-orders, Next action, Bounded store calls).
-var perTaskReads = []string{"GetTask", "ListEvents", "ListCompactEvents", "GetLatestSpecVersion", "GetRequirement", "GetSystemDesign", "ListClaimBlockingProposalsForTask", "ReadVerificationReview", "ListNextActionEvents"}
+var perTaskReads = []string{"GetTask", "ListEvents", "ListCompactEvents", "GetLatestSpecVersion", "GetRequirement", "GetSystemDesign", "ReadVerificationReview", "ListNextActionEvents"}
 
 // fullHistoryStore is the oracle: it replaces the bounded history read with
 // the previous fold over each task's full ListEvents history.
@@ -344,7 +334,7 @@ func (f *batchFixture) add(t *testing.T, long bool) {
 	if _, err := f.st.ProposeRequirementVersion(f.ctx, core.RequirementVersion{RequirementID: served, Content: "# Claim wait v2", Statements: []core.RequirementStatement{{ID: "REQ-1", Statement: "The batch waits."}}, Origin: core.RequirementOriginImplementation, OriginTaskID: waiting.ID}); err != nil {
 		t.Fatal(err)
 	}
-	f.kinds[waiting.ID] = nextaction.KindDocumentProposal
+	f.kinds[waiting.ID] = nextaction.KindStalled
 
 	blocker := f.task(t, "blocker", core.TaskRunning, "")
 	f.order(t, blocker, core.StageImplement, 1, nil)
@@ -455,7 +445,7 @@ func TestReadNextActionsStoreCallsDoNotGrowWithTasksOrHistory(t *testing.T) {
 			})
 		}
 	}
-	for _, name := range []string{"ListNextActionHistory", "ListOpenDependents", "ListDocumentHeads", "ListTaskContextDesignPins", "ReadVerificationReviews", "ListClaimBlockingProposalsForTasks", "ListTaskHeads"} {
+	for _, name := range []string{"ListNextActionHistory", "ListOpenDependents", "ListDocumentHeads", "ListTaskContextDesignPins", "ReadVerificationReviews", "ListTaskHeads"} {
 		if baseline[name] != 1 {
 			t.Fatalf("fixture did not reach %s: %v", name, baseline)
 		}
@@ -546,49 +536,6 @@ func TestCountOperatorAttentionStoreCallsDoNotGrowWithTasks(t *testing.T) {
 			baseline = calls
 		} else if !maps.Equal(calls, baseline) {
 			t.Fatalf("copies=%d store calls grew: %v, baseline %v", copies, calls, baseline)
-		}
-	}
-}
-
-func TestLoadedClaimWaitingSkipsRead(t *testing.T) {
-	f := newBatchFixture(t)
-	f.add(t, false)
-	counter := newCountingStore(f.st)
-	computed, err := store.ReadNextActions(f.ctx, counter, f.requested, store.NextActionOptions{Now: f.now, Capabilities: batchCapabilities})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if calls := counter.reset(); calls["ListClaimBlockingProposalsForTasks"] != 1 {
-		t.Fatalf("unloaded selection calls=%v", calls)
-	}
-	orders, err := f.st.ListWorkOrdersForTasks(f.ctx, taskIDs(f.requested))
-	if err != nil {
-		t.Fatal(err)
-	}
-	selection, err := store.ClaimWaitingProposals(f.ctx, f.st, orders)
-	if err != nil {
-		t.Fatal(err)
-	}
-	supplied, err := store.ReadNextActions(f.ctx, counter, f.requested, store.NextActionOptions{Now: f.now, Capabilities: batchCapabilities, ClaimWaitingLoaded: true, ClaimWaiting: selection})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if calls := counter.reset(); calls["ListClaimBlockingProposalsForTasks"] != 0 || calls["ListClaimBlockingProposalsForTask"] != 0 {
-		t.Fatalf("loaded selection read again: %v", calls)
-	}
-	if !reflect.DeepEqual(supplied, computed) {
-		t.Fatal("a supplied selection projected differently from the computed one")
-	}
-	empty, err := store.ReadNextActions(f.ctx, counter, f.requested, store.NextActionOptions{Now: f.now, Capabilities: batchCapabilities, ClaimWaitingLoaded: true, ClaimWaiting: map[string][]store.ClaimBlockingProposal{}})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if calls := counter.reset(); calls["ListClaimBlockingProposalsForTasks"] != 0 || calls["ListClaimBlockingProposalsForTask"] != 0 {
-		t.Fatalf("loaded empty selection read again: %v", calls)
-	}
-	for id, kind := range f.kinds {
-		if kind == nextaction.KindDocumentProposal && empty[id].Kind == nextaction.KindDocumentProposal {
-			t.Fatalf("task %s used a read selection instead of the supplied empty one", id)
 		}
 	}
 }

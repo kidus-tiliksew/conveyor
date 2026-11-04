@@ -93,7 +93,7 @@ func RunNextActionConformance(t *testing.T, st store.Store, ctx context.Context)
 	runNextActionReadFixtures(t, st, ctx, workspace)
 	runAgentQuestionCheckpoint(t, st, ctx, workspace)
 	runAgentQuestionConfirmedCitations(t, st, ctx, workspace)
-	runClaimWaitRow8(t, st, ctx, workspace)
+	runNoProposalClaimWait(t, st, ctx, workspace)
 	runContextProposalRow(t, st, ctx, workspace)
 	runDependencyEdges(t, st, ctx, workspace)
 }
@@ -429,23 +429,22 @@ func requireResumedQueuedAction(t *testing.T, st store.Store, ctx context.Contex
 	}
 }
 
-// runClaimWaitRow8 pins next-action row 8 to the claim gate: row 8 matches
-// exactly when store.ClaimWaitingProposals selects a version for the task,
-// which happens only for an undecided task-authored requirement or System
-// Design version while a verify or review claim is pending. Each selected
-// version yields confirm and dismiss on its version route. A task-context or
-// decision proposal never matches, and the 261015-676ea5 shape resolves to
-// its agent question (req-operator-next-action AC-1.4, AC-1.7;
-// req-260810-70ce2f AC-1.1, AC-1.2, AC-1.3; component-work-orders, Next
-// action).
-func runClaimWaitRow8(t *testing.T, st store.Store, ctx context.Context, workspace string) {
+// runNoProposalClaimWait pins on every backend that no next action waits on a
+// document proposal: a pending requirement or System Design version, a decision
+// proposal, or a version of an archived document leaves the task on the row its
+// orders state, at any stage, and adds no operator attention. A task-context
+// proposal keeps its own row. An authority_conflict checkpoint still presents
+// exactly the pending versions of its cited documents, with confirm and dismiss
+// choices that never recover the order (req-260810-23b69f REQ-3; DEC-102(6);
+// req-operator-next-action AC-1.3, AC-1.6, AC-2.3).
+func runNoProposalClaimWait(t *testing.T, st store.Store, ctx context.Context, workspace string) {
 	t.Helper()
 	now := time.Now().UTC().Truncate(time.Second)
 	suffix := core.NewTaskID()[:8]
 	confirmDocs := map[core.Capability]bool{core.CapabilityConfirmDocuments: true}
 	design := func(id string) string {
 		t.Helper()
-		created, initial, err := st.CreateSystemDesign(ctx, core.SystemDesign{ID: id, Title: "Claim wait " + id, Category: "Component design"}, core.SystemDesignVersion{Content: designContent("initial"), Origin: core.SystemDesignOriginOperator})
+		created, initial, err := st.CreateSystemDesign(ctx, core.SystemDesign{ID: id, Title: "No claim wait " + id, Category: "Component design"}, core.SystemDesignVersion{Content: designContent("initial"), Origin: core.SystemDesignOriginOperator})
 		requireOK(t, err)
 		_, _, err = st.ConfirmSystemDesignVersion(ctx, created.ID, initial.Version)
 		requireOK(t, err)
@@ -458,31 +457,30 @@ func runClaimWaitRow8(t *testing.T, st store.Store, ctx context.Context, workspa
 		return proposed.Version
 	}
 	requirementVersion := func(statement string) core.RequirementVersion {
-		return core.RequirementVersion{Content: "# Claim wait\n\n```conveyor:requirements\n- id: REQ-1\n  statement: " + statement + "\n```", Statements: []core.RequirementStatement{{ID: "REQ-1", Statement: statement}}}
+		return core.RequirementVersion{Content: "# No claim wait\n\n```conveyor:requirements\n- id: REQ-1\n  statement: " + statement + "\n```", Statements: []core.RequirementStatement{{ID: "REQ-1", Statement: statement}}}
 	}
-	requirement, initial, err := st.CreateRequirement(ctx, core.Requirement{ID: "req-claim-wait-" + suffix, Title: "Claim wait"}, func() core.RequirementVersion {
-		version := requirementVersion("Row 8 follows the claim gate.")
+	requirement, initial, err := st.CreateRequirement(ctx, core.Requirement{ID: "req-no-claim-wait-" + suffix, Title: "No claim wait"}, func() core.RequirementVersion {
+		version := requirementVersion("A pending proposal holds no task's work.")
 		version.Origin = core.RequirementOriginOperator
 		return version
 	}())
 	requireOK(t, err)
 	_, _, err = st.ConfirmRequirementVersion(ctx, requirement.ID, initial.Version)
 	requireOK(t, err)
-	proposeRequirement := func(taskID, statement string) int {
+	proposeRequirement := func(taskID, statement string) {
 		t.Helper()
 		version := requirementVersion(statement)
 		version.RequirementID, version.Origin, version.OriginTaskID = requirement.ID, core.RequirementOriginImplementation, taskID
-		proposed, err := st.ProposeRequirementVersion(ctx, version)
+		_, err := st.ProposeRequirementVersion(ctx, version)
 		requireOK(t, err)
-		return proposed.Version
 	}
 	proposeContext := func(taskID, target string) {
 		t.Helper()
 		_, _, err := st.ProposeTaskContext(ctx, core.TaskContextProposalInput{TaskID: taskID, TargetKind: core.TaskContextProposalSystemDesign, TargetID: target, Source: core.TaskContextProposalTriage, Justification: "Triage suggests this design."})
 		requireOK(t, err)
 	}
-	// Window fixtures: a queued review or verify order puts the task inside
-	// its claim window; a queued implement order or no order leaves it out.
+	// A queued review or verify order is where the retired wait applied; a
+	// queued implement order or no order never did.
 	stageTask := func(stage core.Stage) string {
 		t.Helper()
 		if stage == "" {
@@ -511,40 +509,21 @@ func runClaimWaitRow8(t *testing.T, st store.Store, ctx context.Context, workspa
 		requireOK(t, err)
 		return action
 	}
-	// requireRow8 asserts the shared parity: row 8 matches exactly when the
-	// claim-wait selection names a version for the task, and then lists those
-	// versions in order.
-	requireRow8 := func(taskID string, want ...nextaction.ProposalRef) nextaction.NextAction {
+	requireNoWait := func(taskID string) nextaction.NextAction {
 		t.Helper()
-		orders, err := st.ListWorkOrdersForTasks(ctx, []string{taskID})
-		requireOK(t, err)
-		selected, err := store.ClaimWaitingProposals(ctx, st, orders)
-		requireOK(t, err)
 		action := read(taskID, confirmDocs)
-		if (action.Kind == nextaction.KindDocumentProposal) != (len(selected[taskID]) > 0) {
-			t.Fatalf("task %s kind=%s selection=%+v: row 8 and the claim-wait selection disagree", taskID, action.Kind, selected[taskID])
+		if action.Kind == "document_proposal" || len(action.Details.PendingProposals) != 0 {
+			t.Fatalf("task %s waits on a proposal: kind=%s pending=%+v", taskID, action.Kind, action.Details.PendingProposals)
 		}
-		if len(want) == 0 {
-			if action.Kind == nextaction.KindDocumentProposal {
-				t.Fatalf("task %s matched row 8 with %+v", taskID, action.Details.PendingProposals)
+		for _, secondary := range action.Details.Secondary {
+			if secondary.Kind == "document_proposal" {
+				t.Fatalf("task %s records document_proposal as secondary: %+v", taskID, action.Details.Secondary)
 			}
-			for _, secondary := range action.Details.Secondary {
-				if secondary.Kind == nextaction.KindDocumentProposal {
-					t.Fatalf("task %s records document_proposal as secondary: %+v", taskID, action.Details.Secondary)
-				}
-			}
-			return action
-		}
-		if action.Kind != nextaction.KindDocumentProposal || action.Actor != nextaction.ActorOperator || !action.Judgment {
-			t.Fatalf("task %s next action=%s/%s, want operator document_proposal", taskID, action.Actor, action.Kind)
-		}
-		if !reflect.DeepEqual(action.Details.PendingProposals, want) {
-			t.Fatalf("task %s pending_proposals=%+v want %+v", taskID, action.Details.PendingProposals, want)
 		}
 		return action
 	}
 
-	// A task-context proposal alone never matches row 8, in any stage.
+	// A task-context proposal keeps its own row, in any stage.
 	contextTarget := design("cw-context-" + suffix)
 	for _, stage := range []core.Stage{"", core.StageImplement, core.StageVerify, core.StageReview} {
 		var id string
@@ -554,85 +533,58 @@ func runClaimWaitRow8(t *testing.T, st store.Store, ctx context.Context, workspa
 			id = stageTask(stage)
 		}
 		proposeContext(id, contextTarget)
-		if action := requireRow8(id); action.Kind != nextaction.KindContextProposal {
+		if action := requireNoWait(id); action.Kind != nextaction.KindContextProposal {
 			t.Fatalf("stage %q task %s with a context proposal = %s, want context_proposal", stage, id, action.Kind)
 		}
 	}
 
-	// A decision proposal alone never matches row 8, inside the window.
-	decisionTask := stageTask(core.StageReview)
-	_, err = st.ProposeDecision(ctx, core.Decision{Statement: "Decide later.", Context: "Fixture.", AlternativesRejected: "None.", Origin: core.DecisionOriginImplementation, OriginTaskID: decisionTask})
-	requireOK(t, err)
-	requireRow8(decisionTask)
-
-	// Operator-origin and other-task versions never match row 8.
+	// No proposal of any tier or origin moves a task off its row or adds
+	// attention, whether or not its verify or review claim is pending.
 	shared := design("cw-shared-" + suffix)
-	reviewed, other := stageTask(core.StageReview), stageTask(core.StageReview)
-	proposeDesign(shared, core.SystemDesignOriginOperator, "", "operator alternative")
-	otherVersion := proposeDesign(shared, core.SystemDesignOriginImplementation, other, "another task's revision")
-	requireRow8(reviewed)
-	requireRow8(other, nextaction.ProposalRef{Tier: "system_design", ID: shared, Version: otherVersion})
-
-	// A withholding version outside the window does not match row 8.
-	early := createRunningTask(t, st, ctx, workspace)
-	earlyDesign := design("cw-early-" + suffix)
-	proposeDesign(earlyDesign, core.SystemDesignOriginImplementation, early, "too early")
-	requireRow8(early)
-
-	// Inside a verify window, both tiers match, System Design versions first,
-	// each with confirm and dismiss on its version route.
-	verified := stageTask(core.StageVerify)
-	proposeContext(verified, contextTarget)
-	withheld := design("cw-withheld-" + suffix)
-	designVersion := proposeDesign(withheld, core.SystemDesignOriginImplementation, verified, "withheld revision")
-	requirementVersionNumber := proposeRequirement(verified, "The verified task's alternative.")
-	wantDesign := nextaction.ProposalRef{Tier: "system_design", ID: withheld, Version: designVersion}
-	wantRequirement := nextaction.ProposalRef{Tier: "requirement", ID: requirement.ID, Version: requirementVersionNumber}
-	action := requireRow8(verified, wantDesign, wantRequirement)
-	designRoute := fmt.Sprintf("/v1/system-designs/%s/versions/%d", withheld, designVersion)
-	requirementRoute := fmt.Sprintf("/v1/requirements/%s/versions/%d", requirement.ID, requirementVersionNumber)
-	wantChoices := []nextaction.Choice{
-		{ID: fmt.Sprintf("confirm:system_design:%s:%d", withheld, designVersion), Label: fmt.Sprintf("Confirm %s v%d", withheld, designVersion), Effect: "Confirms this pending revision.", Method: "POST", Path: designRoute + "/confirm", Capability: string(core.CapabilityConfirmDocuments), Allowed: true},
-		{ID: fmt.Sprintf("dismiss:system_design:%s:%d", withheld, designVersion), Label: fmt.Sprintf("Dismiss %s v%d", withheld, designVersion), Effect: "Dismisses this pending revision.", Method: "POST", Path: designRoute + "/dismiss", Capability: string(core.CapabilityConfirmDocuments), Allowed: true},
-		{ID: fmt.Sprintf("confirm:requirement:%s:%d", requirement.ID, requirementVersionNumber), Label: fmt.Sprintf("Confirm %s v%d", requirement.ID, requirementVersionNumber), Effect: "Confirms this pending revision.", Method: "POST", Path: requirementRoute + "/confirm", Capability: string(core.CapabilityConfirmDocuments), Allowed: true},
-		{ID: fmt.Sprintf("dismiss:requirement:%s:%d", requirement.ID, requirementVersionNumber), Label: fmt.Sprintf("Dismiss %s v%d", requirement.ID, requirementVersionNumber), Effect: "Dismisses this pending revision.", Method: "POST", Path: requirementRoute + "/dismiss", Capability: string(core.CapabilityConfirmDocuments), Allowed: true},
-	}
-	if !reflect.DeepEqual(action.Choices, wantChoices) {
-		t.Fatalf("row 8 choices=%+v want %+v", action.Choices, wantChoices)
-	}
-	for _, choice := range read(verified, nil).Choices {
-		if choice.Allowed {
-			t.Fatalf("choice %s allowed without confirm_documents", choice.ID)
+	for _, stage := range []core.Stage{"", core.StageVerify, core.StageReview} {
+		id := stageTask(stage)
+		want := read(id, confirmDocs)
+		attention, err := st.CountOperatorAttention(ctx)
+		requireOK(t, err)
+		proposeDesign(shared, core.SystemDesignOriginImplementation, id, "revision from "+id)
+		proposeDesign(shared, core.SystemDesignOriginOperator, "", "operator alternative for "+id)
+		proposeRequirement(id, "The alternative from "+id+".")
+		_, err = st.ProposeDecision(ctx, core.Decision{Statement: "Decide later for " + id + ".", Context: "Fixture.", AlternativesRejected: "None.", Origin: core.DecisionOriginImplementation, OriginTaskID: id})
+		requireOK(t, err)
+		got := requireNoWait(id)
+		if got.Kind != want.Kind || got.Actor != want.Actor || got.Judgment != want.Judgment {
+			t.Fatalf("stage %q task %s moved to %s/%s/%t, want %s/%s/%t", stage, id, got.Actor, got.Kind, got.Judgment, want.Actor, want.Kind, want.Judgment)
+		}
+		after, err := st.CountOperatorAttention(ctx)
+		requireOK(t, err)
+		if after != attention {
+			t.Fatalf("stage %q proposals moved task attention from %d to %d", stage, attention, after)
 		}
 	}
 
-	// A pending version of an archived document still withholds the claim,
-	// so row 8 still lists it.
-	requireOK(t, st.ArchiveSystemDesign(ctx, withheld, "operator", nil))
-	requireRow8(verified, wantDesign, wantRequirement)
-	requireOK(t, st.RestoreSystemDesign(ctx, withheld, "operator"))
-
-	// Deciding each version narrows the wait; deciding the last one ends it.
-	_, _, err = st.DismissSystemDesignVersion(ctx, withheld, designVersion)
-	requireOK(t, err)
-	requireRow8(verified, wantRequirement)
-	_, _, err = st.ConfirmRequirementVersion(ctx, requirement.ID, requirementVersionNumber)
-	requireOK(t, err)
-	requireRow8(verified)
+	// A pending version of an archived document holds nothing either.
+	archived := design("cw-archived-" + suffix)
+	archivedTask := stageTask(core.StageVerify)
+	proposeDesign(archived, core.SystemDesignOriginImplementation, archivedTask, "archived revision")
+	requireOK(t, st.ArchiveSystemDesign(ctx, archived, "operator", nil))
+	requireNoWait(archivedTask)
+	requireOK(t, st.RestoreSystemDesign(ctx, archived, "operator"))
+	requireNoWait(archivedTask)
 
 	// The 261015-676ea5 shape: a triage task-context proposal plus an
 	// authority_conflict checkpoint that cites two System Design documents
-	// with pending task-authored versions, while the task's latest order is a
-	// released implement order outside the claim window.
+	// with pending task-authored versions on a released implement order. The
+	// question presents the cited versions and only those.
 	conflictTask := createRunningTask(t, st, ctx, workspace)
 	proposeContext(conflictTask, contextTarget)
-	first, second := design("cw-cited-a-"+suffix), design("cw-cited-b-"+suffix)
+	first, second, uncited := design("cw-cited-a-"+suffix), design("cw-cited-b-"+suffix), design("cw-uncited-"+suffix)
 	firstVersion := proposeDesign(first, core.SystemDesignOriginImplementation, conflictTask, "first cited revision")
 	secondVersion := proposeDesign(second, core.SystemDesignOriginImplementation, conflictTask, "second cited revision")
+	proposeDesign(uncited, core.SystemDesignOriginImplementation, conflictTask, "uncited revision")
 	orderID := conflictTask + "-implement-1"
 	requireOK(t, st.CreateJob(ctx, core.Job{ID: orderID, TaskID: conflictTask, Stage: core.StageImplement, State: core.JobPending}))
-	requireOK(t, CreateWorkOrder(ctx, st, core.WorkOrder{ID: orderID, TaskID: conflictTask, JobID: orderID, Stage: core.StageImplement, State: core.WorkOrderQueued, QueueEnteredAt: now, QueueDeadline: now.Add(time.Hour)}))
-	worker, session := "worker-claim-wait-"+conflictTask, "session-claim-wait-"+conflictTask
+	requireOK(t, CreateWorkOrder(ctx, st, core.WorkOrder{ID: orderID, TaskID: conflictTask, JobID: orderID, Stage: core.StageImplement, State: core.WorkOrderQueued, QueueEnteredAt: now, QueueDeadline: now.Add(time.Hour), CreatedAt: now}))
+	worker, session := "worker-no-claim-wait-"+conflictTask, "session-no-claim-wait-"+conflictTask
 	_, err = ClaimWorkOrder(ctx, st, orderID, core.WorkOrderClaim{ClaimantID: worker, SessionID: session, ClientToken: "secret", Lease: time.Minute, ExecutionTimeout: time.Hour})
 	requireOK(t, err)
 	_, err = ReleaseWorkerClaim(ctx, st, orderID, worker, core.WorkOrderRelease{
@@ -643,7 +595,7 @@ func runClaimWaitRow8(t *testing.T, st store.Store, ctx context.Context, workspa
 		}},
 	})
 	requireOK(t, err)
-	question := requireRow8(conflictTask)
+	question := read(conflictTask, confirmDocs)
 	wantCited := []nextaction.ProposalRef{{Tier: "system_design", ID: first, Version: firstVersion}, {Tier: "system_design", ID: second, Version: secondVersion}}
 	contextSecondary := false
 	for _, secondary := range question.Details.Secondary {
@@ -655,7 +607,16 @@ func runClaimWaitRow8(t *testing.T, st store.Store, ctx context.Context, workspa
 	if question.Kind != nextaction.KindAgentQuestion || question.Details.CheckpointClass != core.WorkOrderCheckpointClassAuthorityConflict || len(question.Details.Citations) != 2 || !reflect.DeepEqual(question.Details.PendingProposals, wantCited) {
 		t.Fatalf("676ea5 shape next action=%s details=%+v, want agent_question with only the cited versions", question.Kind, question.Details)
 	}
-	if _, err := RecoverWorkOrderWithDirection(ctx, st, orderID, "recover-claim-wait-"+conflictTask, "Proceed under the current authority.", time.Hour); err != nil {
+	confirmFirst := fmt.Sprintf("confirm:system_design:%s:%d", first, firstVersion)
+	dismissSecond := fmt.Sprintf("dismiss:system_design:%s:%d", second, secondVersion)
+	found := map[string]bool{}
+	for _, choice := range question.Choices {
+		found[choice.ID] = choice.Allowed
+	}
+	if !found[confirmFirst] || !found[dismissSecond] {
+		t.Fatalf("cited choices=%+v, want allowed %s and %s", question.Choices, confirmFirst, dismissSecond)
+	}
+	if _, err := RecoverWorkOrderWithDirection(ctx, st, orderID, "recover-no-claim-wait-"+conflictTask, "Proceed under the current authority.", time.Hour); err != nil {
 		t.Fatalf("free-text recovery without a proposal decision: %v", err)
 	}
 }

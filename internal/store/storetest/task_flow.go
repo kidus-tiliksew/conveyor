@@ -516,9 +516,9 @@ func runTaskFlow(t *testing.T, factory Factory) {
 			kinds       []string
 			plan, merge string
 		}{
-			{"plan approval", core.StageSpec, []string{nextaction.KindDocumentProposal, nextaction.KindAgentQuestion, nextaction.KindContextProposal}, store.FlowWaiting, store.FlowUpcoming},
-			{"plan revision", core.StageSpec, []string{nextaction.KindDocumentProposal, nextaction.KindAgentQuestion}, store.FlowWaiting, store.FlowUpcoming},
-			{"merge approval", core.StageMerge, []string{nextaction.KindDocumentProposal, nextaction.KindAgentQuestion}, store.FlowDone, store.FlowWaiting},
+			{"plan approval", core.StageSpec, []string{nextaction.KindAgentQuestion, nextaction.KindContextProposal}, store.FlowWaiting, store.FlowUpcoming},
+			{"plan revision", core.StageSpec, []string{nextaction.KindAgentQuestion}, store.FlowWaiting, store.FlowUpcoming},
+			{"merge approval", core.StageMerge, []string{nextaction.KindAgentQuestion}, store.FlowDone, store.FlowWaiting},
 		} {
 			id := ids[tc.scenario]
 			if id == "" {

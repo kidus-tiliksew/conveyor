@@ -58,19 +58,6 @@ func TestTaskStartOverHTTP(t *testing.T) {
 				}
 				return
 			}
-			if role == core.WorkspaceRoleMaintainer {
-				if response.Code != http.StatusForbidden || !strings.Contains(response.Body.String(), "confirm_documents") {
-					t.Fatalf("missing capability: %d %s", response.Code, response.Body.String())
-				}
-				task, _ := st.GetTask(ctx, old.ID)
-				if task.State != old.State || created != 0 {
-					t.Fatal("refusal mutated task")
-				}
-				if _, _, err := st.DismissRequirementVersion(ctx, requirement.ID, pending.Version); err != nil {
-					t.Fatal(err)
-				}
-				response = call(payload, "request-1", "operator-token")
-			}
 			if response.Code != http.StatusCreated {
 				t.Fatalf("start: %d %s", response.Code, response.Body.String())
 			}
@@ -80,6 +67,12 @@ func TestTaskStartOverHTTP(t *testing.T) {
 			}
 			if got.Task.SupersededBy != got.Successor.ID || got.Successor.Supersedes != old.ID || created != 1 {
 				t.Fatalf("response=%+v callbacks=%d", got, created)
+			}
+			// No document capability is needed because a proposal exists, and the
+			// pending version stays pending and decidable (req-260810-23b69f REQ-3).
+			stillPending, err := st.GetRequirementVersion(ctx, requirement.ID, pending.Version)
+			if err != nil || stillPending.Retired || stillPending.Confirmed || stillPending.DismissalNote != "" {
+				t.Fatalf("pending version=%+v err=%v", stillPending, err)
 			}
 			response = call(payload, "request-1", "operator-token")
 			if response.Code != http.StatusOK || created != 1 {
@@ -92,6 +85,9 @@ func TestTaskStartOverHTTP(t *testing.T) {
 			summary, _ := json.Marshal(summarizeActivityTask(got.Task))
 			if !bytes.Contains(summary, []byte(`"superseded_by"`)) {
 				t.Fatalf("activity=%s", summary)
+			}
+			if _, _, err := st.DismissRequirementVersion(ctx, requirement.ID, pending.Version); err != nil {
+				t.Fatalf("pending version not decidable after start over: %v", err)
 			}
 		})
 	}
@@ -200,7 +196,6 @@ func TestTaskStartOverErrorMapping(t *testing.T) {
 	}{
 		{store.ErrTaskTerminal, http.StatusConflict, "task_terminal", false},
 		{store.ErrStartOverRequestConflict, http.StatusConflict, "start_over_request_conflict", false},
-		{store.ErrStartOverConfirmDocuments, http.StatusForbidden, "start_over_confirm_documents", false},
 		{store.NewTaskDependencyError("dep", "is not open"), http.StatusConflict, "task_dependency", false},
 		{&core.ErrInvalidTransition{Space: core.TaskLifecycle, From: string(core.TaskRunning), Command: string(core.TaskStartOver)}, http.StatusConflict, "invalid_transition", false},
 		{&store.RequirementArchivedError{RequirementID: "req-1"}, http.StatusConflict, "requirement_archived", false},

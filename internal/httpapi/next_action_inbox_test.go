@@ -13,21 +13,22 @@ import (
 	"github.com/kidus-tiliksew/conveyor/internal/store"
 )
 
-func TestInboxFoldsDocumentProposalTasks(t *testing.T) {
-	task := core.Task{ID: "folded", State: core.TaskRunning}
+// A task keeps its own inbox row: no document proposal folds it away
+// (req-260810-23b69f REQ-3; req-operator-next-action AC-2.6).
+func TestInboxListsTheTaskBesideItsProposal(t *testing.T) {
+	task := core.Task{ID: "asks", State: core.TaskRunning}
 	projected := map[string]nextaction.NextAction{
-		task.ID: {Actor: nextaction.ActorOperator, Kind: nextaction.KindDocumentProposal, Judgment: true},
+		task.ID: {Actor: nextaction.ActorOperator, Kind: nextaction.KindAgentQuestion, Judgment: true},
 	}
-	items := inboxTaskItems([]core.Task{task}, projected, map[string]time.Time{}, map[string]bool{task.ID: true})
-	if len(items) != 0 {
-		t.Fatalf("folded task still listed: %+v", items)
+	items := inboxTaskItems([]core.Task{task}, projected, map[string]time.Time{})
+	if len(items) != 1 || items[0].Band != "decisions" {
+		t.Fatalf("items=%+v", items)
 	}
 }
 
-// Each document-proposal item states its age at the read's clock and the
-// NA-4 inbox copy; only a folded row-8 withholding version says the claim
-// stays withheld (feature-operator-next-action NA-4, NA-5;
-// req-operator-next-action AC-1.8, AC-2.6).
+// Each document-proposal item states its age at the read's clock and the NA-4
+// inbox copy, and none claims to hold any task's work (feature-operator-next-action
+// NA-4, NA-5; req-operator-next-action AC-2.6; req-260810-23b69f REQ-3).
 func TestDocumentProposalItemsStateAgeAndCopy(t *testing.T) {
 	now := time.Date(2026, 10, 17, 12, 0, 0, 0, time.UTC)
 	proposals := []core.PendingProposal{
@@ -37,8 +38,7 @@ func TestDocumentProposalItemsStateAgeAndCopy(t *testing.T) {
 		{ID: "DEC-9", Title: "Decision nine", Tier: "decision", OriginType: "session", OriginID: "session-1"},
 		{ID: "ctx", Title: "Context", Tier: "task_context", ProposedAt: now},
 	}
-	withholding := map[string]bool{proposalKey("requirement", "req-a", 2): true}
-	items := documentProposalItems(proposals, withholding, now)
+	items := documentProposalItems(proposals, now)
 	if len(items) != 4 {
 		t.Fatalf("items=%+v", items)
 	}
@@ -49,7 +49,7 @@ func TestDocumentProposalItemsStateAgeAndCopy(t *testing.T) {
 	}
 	ages := []int64{5400, 1, 0}
 	wants := []want{
-		{&ages[0], "Requirement proposal", "Confirm or dismiss this proposed version?", "The claim stays withheld.", dismissEarlierVersions},
+		{&ages[0], "Requirement proposal", "Confirm or dismiss this proposed version?", "The proposal stays pending.", dismissEarlierVersions},
 		{&ages[1], "Requirement proposal", "Confirm or dismiss this proposed version?", "The proposal stays pending.", dismissEarlierVersions},
 		{&ages[2], "System Design proposal", "Confirm or dismiss this proposed version?", "The proposal stays pending.", ""},
 		{nil, "Decision proposal", "Confirm or dismiss this proposed decision?", "The proposal stays pending.", ""},
@@ -68,8 +68,8 @@ func TestDocumentProposalItemsStateAgeAndCopy(t *testing.T) {
 	}
 }
 
-func TestDocumentProposalCopyUnknownTierReadsRowEight(t *testing.T) {
-	label, question, ifIgnored := nextaction.DocumentProposalCopy("other", false)
+func TestDocumentProposalCopyUnknownTier(t *testing.T) {
+	label, question, ifIgnored := nextaction.DocumentProposalCopy("other")
 	if label != "Document proposal" || question != "Confirm or dismiss the proposal?" || ifIgnored != "The proposal stays pending." {
 		t.Fatalf("copy=%q %q %q", label, question, ifIgnored)
 	}

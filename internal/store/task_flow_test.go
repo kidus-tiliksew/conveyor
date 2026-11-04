@@ -332,9 +332,9 @@ func TestFoldTaskFlowCurrentAttemptFromLedger(t *testing.T) {
 	renewedLease := flowT0.Add(5 * time.Hour)
 	ledger.add("work_order.lease_renewed", core.ActorAgent, "job-impl-1", core.WorkOrder{ID: "impl-1", Stage: core.StageImplement, State: core.WorkOrderClaimed, AttemptID: "a1", LeaseExpiresAt: renewedLease})
 	ledger.add("work_order.progress_reported", core.ActorAgent, "job-impl-1", map[string]any{"work_order_id": "impl-1", "message": "tests green"})
-	// The next action ranks a document proposal above the claim and names
+	// The next action ranks a context proposal above the claim and names
 	// another order; the stage's attempt still comes from its own claim.
-	action := nextaction.NextAction{Actor: nextaction.ActorOperator, Kind: nextaction.KindDocumentProposal, CurrentOrder: &nextaction.OrderView{ID: "spec-9"}}
+	action := nextaction.NextAction{Actor: nextaction.ActorOperator, Kind: nextaction.KindContextProposal, CurrentOrder: &nextaction.OrderView{ID: "spec-9"}}
 	view := flowStage(t, ledger.fold(action), core.StageImplement).CurrentAttempt
 	if view == nil {
 		t.Fatal("claimed implement stage has no current_attempt")
@@ -597,13 +597,13 @@ func TestFoldTaskFlowGateMarks(t *testing.T) {
 		rowStage    core.Stage
 		plan, merge string
 	}{
-		"plan approval":                 {planGate, operator(nextaction.KindPlanApproval), core.StageSpec, FlowNeedsOperator, FlowUpcoming},
-		"plan revision":                 {revision, operator(nextaction.KindPlanRevision), core.StageSpec, FlowNeedsOperator, FlowUpcoming},
-		"merge approval":                {mergeGate, operator(nextaction.KindMergeApproval), core.StageMerge, FlowDone, FlowNeedsOperator},
-		"document proposal at the gate": {planGate, operator(nextaction.KindDocumentProposal), core.StageSpec, FlowWaiting, FlowUpcoming},
-		"agent question at the gate":    {mergeGate, operator(nextaction.KindAgentQuestion), core.StageMerge, FlowDone, FlowWaiting},
-		"context proposal at Plan":      {atPlan, operator(nextaction.KindContextProposal), core.StageSpec, FlowUpcoming, FlowUpcoming},
-		"agent question at Plan":        {atPlan, operator(nextaction.KindAgentQuestion), core.StageSpec, FlowUpcoming, FlowUpcoming},
+		"plan approval":                {planGate, operator(nextaction.KindPlanApproval), core.StageSpec, FlowNeedsOperator, FlowUpcoming},
+		"plan revision":                {revision, operator(nextaction.KindPlanRevision), core.StageSpec, FlowNeedsOperator, FlowUpcoming},
+		"merge approval":               {mergeGate, operator(nextaction.KindMergeApproval), core.StageMerge, FlowDone, FlowNeedsOperator},
+		"context proposal at the gate": {planGate, operator(nextaction.KindContextProposal), core.StageSpec, FlowWaiting, FlowUpcoming},
+		"agent question at the gate":   {mergeGate, operator(nextaction.KindAgentQuestion), core.StageMerge, FlowDone, FlowWaiting},
+		"context proposal at Plan":     {atPlan, operator(nextaction.KindContextProposal), core.StageSpec, FlowUpcoming, FlowUpcoming},
+		"agent question at Plan":       {atPlan, operator(nextaction.KindAgentQuestion), core.StageSpec, FlowUpcoming, FlowUpcoming},
 	} {
 		t.Run(name, func(t *testing.T) {
 			flow := tc.ledger.fold(tc.action)

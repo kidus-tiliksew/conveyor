@@ -531,22 +531,6 @@ func (c *client) taskRestartActivity(id string) (taskRestartActivity, error) {
 	return activity, err
 }
 
-func (c *client) taskRestartProposals(id string) ([]core.PendingProposal, error) {
-	var response struct {
-		Items []core.PendingProposal `json:"items"`
-	}
-	if err := c.do(http.MethodGet, "/v1/pending-proposals", nil, &response); err != nil {
-		return nil, err
-	}
-	var result []core.PendingProposal
-	for _, p := range response.Items {
-		if p.OriginType == "task" && p.OriginID == id && p.Tier != "task_context" {
-			result = append(result, p)
-		}
-	}
-	return result, nil
-}
-
 func (c *client) restartTask(request core.TaskStartOverRequest) (core.TaskStartOverResult, error) {
 	var result core.TaskStartOverResult
 	if c.token == "" {

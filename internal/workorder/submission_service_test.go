@@ -179,7 +179,7 @@ func TestSubmitForReviewGovernanceFailuresPrecedeReviewSideEffects(t *testing.T)
 	}
 }
 
-func TestSubmissionDerivedGovernanceEngagesTaskProposalReviewGate(t *testing.T) {
+func TestSubmissionDerivedGovernanceAttachesWithoutAProposalWait(t *testing.T) {
 	ctx := store.WithWorkspace(store.WithActor(t.Context(), store.SystemActor()), "test")
 	st := store.NewMemory()
 	design, confirmed, err := st.CreateSystemDesign(ctx, core.SystemDesign{ID: "design-derived-gate", Title: "Derived gate", Category: "Architecture"}, core.SystemDesignVersion{
@@ -240,8 +240,18 @@ func TestSubmissionDerivedGovernanceEngagesTaskProposalReviewGate(t *testing.T) 
 	if review.ID == "" {
 		t.Fatalf("review order missing: %+v", orders)
 	}
-	if _, err = service.Claim(ctx, review.ID, core.WorkOrderClaim{SessionID: "reviewer", ClientToken: "review-secret", ClaimantID: "reviewer", Lease: time.Minute}); err == nil || !strings.Contains(err.Error(), "waiting on task-authored System Design proposal "+design.ID+" v") {
-		t.Fatalf("review proposal gate error=%v", err)
+	// Diff-derived attachment stays and only the proposal wait goes
+	// (req-task-centric-delivery AC-6.1, AC-6.2; req-260810-23b69f REQ-3).
+	claimed, err := service.Claim(ctx, review.ID, core.WorkOrderClaim{SessionID: "reviewer", ClientToken: "review-secret", ClaimantID: "reviewer", Lease: time.Minute})
+	if err != nil {
+		t.Fatalf("pending proposal withheld the derived review claim: %v", err)
+	}
+	pinned := false
+	for _, pin := range claimed.GovernanceSnapshot.Designs {
+		pinned = pinned || (pin.ID == design.ID && pin.Version == confirmed.Version)
+	}
+	if !pinned {
+		t.Fatalf("diff-derived design was not pinned at its confirmed version: %+v", claimed.GovernanceSnapshot.Designs)
 	}
 }
 

@@ -327,8 +327,6 @@ type WorkOrderStore interface {
 
 // DocumentStore owns the document and decision contract.
 type DocumentStore interface {
-	// ListDocumentOperatorNotesForTask reads dismissed implementation-origin history in this workspace.
-	ListDocumentOperatorNotesForTask(ctx context.Context, taskID string) ([]core.OperatorNote, error)
 	// ListRequirementDeliveryEventsForTasks batches only the ordered task
 	// context, aggregate review-round, and merge events used by
 	// requirement-delivery classification.
@@ -387,13 +385,6 @@ type DocumentStore interface {
 	ListSystemDesignVersions(ctx context.Context, documentID string) ([]core.SystemDesignVersion, error)
 	ListSystemDesignEvents(ctx context.Context, documentID string) ([]core.Event, error)
 	ListGovernanceDesigns(ctx context.Context, repository string) ([]core.GovernanceDesignContext, error)
-	ListPendingSystemDesignVersionsForTask(ctx context.Context, taskID string) ([]core.SystemDesignVersion, error)
-	// ListClaimBlockingProposalsForTask returns the task's undecided
-	// task-authored requirement and System Design versions in the bound
-	// workspace, the predicate that withholds its verify and review claims.
-	ListClaimBlockingProposalsForTask(ctx context.Context, taskID string) ([]ClaimBlockingProposal, error)
-	ListSystemDesignProposalVersionsForTask(ctx context.Context, taskID string) ([]core.SystemDesignVersion, error)
-	ListSystemDesignProposalEventsForTask(ctx context.Context, taskID string) ([]core.Event, error)
 	ListSystemDesignVersionsByDocument(ctx context.Context) (map[string][]core.SystemDesignVersion, error)
 	ListSystemDesignEventsByDocument(ctx context.Context) (map[string][]core.Event, error)
 	// ListActiveSystemDesignDriftCounts is the metadata-only projection used by
@@ -415,11 +406,6 @@ type DocumentStore interface {
 	// ListPendingProposals normalizes unresolved proposals across the
 	// requirement, System Design, and decision tiers (REQ-1, AC-1.2).
 	ListPendingProposals(ctx context.Context) ([]core.PendingProposal, error)
-	// ListPendingAuthorityProposalsForTask returns only unresolved requirement,
-	// System Design, and decision proposals authored by one task. The workspace
-	// and task predicates belong to the store boundary so task-run polling never
-	// materializes the workspace proposal queue.
-	ListPendingAuthorityProposalsForTask(ctx context.Context, taskID string) ([]core.PendingProposal, error)
 	// PendingProposalsProjection returns the workspace proposal queue together
 	// with the exact task-attention count without materializing the general task,
 	// activity, or work-order list projections (REQ-1, REQ-3).

@@ -6,14 +6,12 @@ import (
 	"unicode/utf8"
 )
 
-// TaskStartOverRequest carries operator input and server-resolved permission.
-// CanConfirmDocuments is never accepted from an HTTP request body.
+// TaskStartOverRequest carries operator input.
 type TaskStartOverRequest struct {
-	TaskID              string `json:"-"`
-	RequestID           string `json:"request_id"`
-	Reason              string `json:"reason"`
-	Note                string `json:"note"`
-	CanConfirmDocuments bool   `json:"-"`
+	TaskID    string `json:"-"`
+	RequestID string `json:"request_id"`
+	Reason    string `json:"reason"`
+	Note      string `json:"note"`
 }
 
 func (r TaskStartOverRequest) Validate() error {

@@ -1,163 +1,179 @@
 package storetest
 
 import (
-	"reflect"
 	"strings"
 	"testing"
 	"time"
 
-	"github.com/kidus-tiliksew/conveyor/internal/config"
 	"github.com/kidus-tiliksew/conveyor/internal/core"
-	"github.com/kidus-tiliksew/conveyor/internal/store"
 )
 
-// runClaimBlockingProposals pins the claim-blocking read against both stage
-// claims on every backend: the read returns exactly the versions the locked
-// verify and review claims refuse on, for both proposal tiers, raw origins,
-// archived documents, resolution, other tasks, and other workspaces
-// (req-260810-70ce2f REQ-1; component-work-orders).
-func runClaimBlockingProposals(t *testing.T, x Fixture) {
+// runClaimsProceedWithPendingProposals pins on every backend that a pending
+// document proposal holds no task's work: verify and review claims proceed
+// while a task-origin version of either tier is pending, on a live or archived
+// document, and that version stays pending and decidable afterward. The other
+// claim restrictions still refuse (req-260810-23b69f REQ-3; DEC-102(6)).
+func runClaimsProceedWithPendingProposals(t *testing.T, x Fixture) {
 	st, ctx := x.Backend, x.Context
 	now := time.Now().UTC().Truncate(time.Microsecond)
-	reviewTask := func() core.Task {
+	newTask := func(stage core.Stage, dependencies ...string) core.Task {
 		t.Helper()
 		id := core.NewTaskID()
-		task := core.Task{ID: id, Workspace: x.Workspace, Repo: "conveyor", Title: id, BaseBranch: "main", Branch: "conveyor/task-" + id, State: core.TaskRunning, NextStage: core.StageReview, CreatedAt: now}
-		requireOK(t, st.CreateTask(ctx, task))
-		job := core.Job{ID: id + "-review-1", TaskID: id, Stage: core.StageReview, State: core.JobPending}
-		requireOK(t, st.CreateJob(ctx, job))
-		requireOK(t, For(st).CreateWorkOrder(ctx, core.WorkOrder{ID: job.ID, TaskID: id, JobID: job.ID, Stage: core.StageReview, State: core.WorkOrderQueued}))
-		return task
-	}
-	verifyTask := func() core.Task {
-		t.Helper()
-		id := core.NewTaskID()
-		task := core.Task{ID: id, Workspace: x.Workspace, Repo: "conveyor", Title: id, BaseBranch: "main", Branch: "conveyor/task-" + id, State: core.TaskRunning, NextStage: core.StageVerify, ReviewedHeadSHA: "submitted-head", CreatedAt: now}
+		task := core.Task{ID: id, Workspace: x.Workspace, Repo: "conveyor", Title: id, BaseBranch: "main", Branch: "conveyor/task-" + id, State: core.TaskRunning, NextStage: stage, CreatedAt: now}
+		job := core.Job{ID: id + "-" + string(stage) + "-1", TaskID: id, Stage: stage, State: core.JobPending}
+		if stage == core.StageReview {
+			requireOK(t, st.CreateTask(ctx, task))
+			requireOK(t, st.CreateJob(ctx, job))
+			requireOK(t, For(st).CreateWorkOrder(ctx, core.WorkOrder{ID: job.ID, TaskID: id, JobID: job.ID, Stage: stage, State: core.WorkOrderQueued}))
+			return task
+		}
+		task.ReviewedHeadSHA = "submitted-head"
 		task.SetupContract.VerifyStage = true
-		requireOK(t, st.CreateTask(ctx, task))
-		job := core.Job{ID: id + "-verify-1", TaskID: id, Stage: core.StageVerify, State: core.JobPending}
-		_, err := CreateStageWorkOrder(ctx, st, job, core.WorkOrder{ID: job.ID, JobID: job.ID, TaskID: id, Stage: core.StageVerify, State: core.WorkOrderQueued, HeadSHA: task.ReviewedHeadSHA, QueueEnteredAt: now, QueueDeadline: now.Add(time.Hour), CreatedAt: now})
+		requireOK(t, st.CreateTaskWithDependencies(ctx, task, dependencies))
+		_, err := CreateStageWorkOrder(ctx, st, job, core.WorkOrder{ID: job.ID, JobID: job.ID, TaskID: id, Stage: stage, State: core.WorkOrderQueued, HeadSHA: task.ReviewedHeadSHA, QueueEnteredAt: now, QueueDeadline: now.Add(time.Hour), CreatedAt: now})
 		requireOK(t, err)
 		return task
 	}
-	blocking := func(taskID string) []store.ClaimBlockingProposal {
+	claim := func(task core.Task, stage core.Stage) (core.WorkOrder, error) {
 		t.Helper()
-		items, err := st.ListClaimBlockingProposalsForTask(ctx, taskID)
+		session := "pending-" + core.NewTaskID()
+		return For(st).ClaimWorkOrder(ctx, task.ID+"-"+string(stage)+"-1", core.WorkOrderClaim{SessionID: session, ClientToken: session + "-token", Lease: time.Minute, ExecutionTimeout: time.Hour})
+	}
+	requireClaimed := func(t *testing.T, task core.Task, stage core.Stage) {
+		t.Helper()
+		order, err := claim(task, stage)
+		if err != nil {
+			t.Fatalf("%s claim refused while a proposal is pending: %v", stage, err)
+		}
+		if order.State != core.WorkOrderClaimed {
+			t.Fatalf("%s claim state=%s", stage, order.State)
+		}
+	}
+	requirementVersion := func(statement string) core.RequirementVersion {
+		return core.RequirementVersion{Content: "# Claims proceed\n\n```conveyor:requirements\n- id: REQ-1\n  statement: " + statement + "\n```", Statements: []core.RequirementStatement{{ID: "REQ-1", Statement: statement}}}
+	}
+	newRequirement := func(t *testing.T) string {
+		t.Helper()
+		version := requirementVersion("Claims proceed past pending proposals.")
+		version.Origin = core.RequirementOriginOperator
+		requirement, initial, err := st.CreateRequirement(ctx, core.Requirement{ID: "req-claim-" + core.NewTaskID(), Title: "Claims proceed " + core.NewTaskID()}, version)
 		requireOK(t, err)
-		return items
+		_, _, err = st.ConfirmRequirementVersion(ctx, requirement.ID, initial.Version)
+		requireOK(t, err)
+		return requirement.ID
 	}
-	requireBlocking := func(taskID string, want ...store.ClaimBlockingProposal) {
+	newDesign := func(t *testing.T) string {
 		t.Helper()
-		got := blocking(taskID)
-		if len(want) == 0 {
-			want = []store.ClaimBlockingProposal{}
-		}
-		if len(got) == 0 {
-			got = []store.ClaimBlockingProposal{}
-		}
-		if !reflect.DeepEqual(got, want) {
-			t.Fatalf("claim-blocking proposals for %s=%+v want %+v", taskID, got, want)
-		}
+		design, initial, err := st.CreateSystemDesign(ctx, core.SystemDesign{ID: "design-claim-" + core.NewTaskID(), Title: "Claims proceed " + core.NewTaskID(), Category: "Component design"}, core.SystemDesignVersion{Content: designContent("initial"), Origin: core.SystemDesignOriginOperator})
+		requireOK(t, err)
+		_, _, err = st.ConfirmSystemDesignVersion(ctx, design.ID, initial.Version)
+		requireOK(t, err)
+		return design.ID
 	}
-	claim := func(task core.Task, stage core.Stage, session string) error {
+	proposeRequirement := func(t *testing.T, id, taskID string) int {
 		t.Helper()
-		_, err := For(st).ClaimWorkOrder(ctx, task.ID+"-"+string(stage)+"-1", core.WorkOrderClaim{SessionID: session, ClientToken: session + "-token", Lease: time.Minute, ExecutionTimeout: time.Hour})
-		return err
-	}
-	requireRefusedOn := func(task core.Task, stage core.Stage, first store.ClaimBlockingProposal) {
-		t.Helper()
-		err := claim(task, stage, "blocked-"+core.NewTaskID()[:6])
-		if err == nil || !strings.Contains(err.Error(), store.ClaimBlockingProposalError(task.ID, first).Error()) {
-			t.Fatalf("%s claim err=%v, want refusal naming %+v", stage, err, first)
-		}
-	}
-	requirementContent := func(statement string) core.RequirementVersion {
-		return core.RequirementVersion{Content: "# Claim gate\n\n```conveyor:requirements\n- id: REQ-1\n  statement: " + statement + "\n```", Statements: []core.RequirementStatement{{ID: "REQ-1", Statement: statement}}}
-	}
-	proposeRequirement := func(id string, origin core.RequirementOrigin, taskID, statement string) core.RequirementVersion {
-		t.Helper()
-		version := requirementContent(statement)
-		version.RequirementID, version.Origin, version.OriginTaskID = id, origin, taskID
-		if origin == core.RequirementOriginChat {
-			version.OriginTaskID, version.OriginSessionID = "", "session-"+core.NewTaskID()
-		}
+		version := requirementVersion("A task-authored revision recorded before DEC-102.")
+		version.RequirementID, version.Origin, version.OriginTaskID = id, core.RequirementOriginImplementation, taskID
 		proposed, err := st.ProposeRequirementVersion(ctx, version)
 		requireOK(t, err)
-		return proposed
+		return proposed.Version
 	}
-	proposeDesign := func(id string, origin core.SystemDesignOrigin, taskID, label string) core.SystemDesignVersion {
+	proposeDesign := func(t *testing.T, id, taskID string) int {
 		t.Helper()
-		proposed, err := st.ProposeSystemDesignVersion(ctx, core.SystemDesignVersion{DocumentID: id, Content: designContent(label), Origin: origin, OriginTaskID: taskID})
+		proposed, err := st.ProposeSystemDesignVersion(ctx, core.SystemDesignVersion{DocumentID: id, Content: designContent("task-authored revision"), Origin: core.SystemDesignOriginImplementation, OriginTaskID: taskID})
 		requireOK(t, err)
-		return proposed
+		return proposed.Version
+	}
+	requireRequirementPending := func(t *testing.T, id, taskID string, version int) {
+		t.Helper()
+		got, err := st.GetRequirementVersion(ctx, id, version)
+		requireOK(t, err)
+		if got.Confirmed || got.Retired || got.Origin != core.RequirementOriginImplementation || got.OriginTaskID != taskID {
+			t.Fatalf("requirement version after claim=%+v, want pending with its task origin", got)
+		}
+	}
+	requireDesignPending := func(t *testing.T, id, taskID string, version int) {
+		t.Helper()
+		got, err := st.GetSystemDesignVersion(ctx, id, version)
+		requireOK(t, err)
+		if got.Confirmed || got.Dismissed || got.Origin != core.SystemDesignOriginImplementation || got.OriginTaskID != taskID {
+			t.Fatalf("design version after claim=%+v, want pending with its task origin", got)
+		}
 	}
 
-	reviewed, other, verified := reviewTask(), reviewTask(), verifyTask()
-	requirement, initial, err := st.CreateRequirement(ctx, core.Requirement{ID: "req-claim-" + core.NewTaskID(), Title: "Claim gate"}, func() core.RequirementVersion {
-		version := requirementContent("Claims wait for task-authored proposals.")
-		version.Origin = core.RequirementOriginOperator
-		return version
-	}())
-	requireOK(t, err)
-	_, _, err = st.ConfirmRequirementVersion(ctx, requirement.ID, initial.Version)
-	requireOK(t, err)
-	design, designInitial, err := st.CreateSystemDesign(ctx, core.SystemDesign{ID: "design-claim-" + core.NewTaskID()[:8], Title: "Claim gate", Category: "Component design"}, core.SystemDesignVersion{Content: designContent("initial"), Origin: core.SystemDesignOriginOperator})
-	requireOK(t, err)
-	_, _, err = st.ConfirmSystemDesignVersion(ctx, design.ID, designInitial.Version)
-	requireOK(t, err)
-	requireBlocking(reviewed.ID)
-
-	// Nonblocking proposals: a task-authored decision, operator and session
-	// origins, and another task's implementation versions.
-	_, err = st.ProposeDecision(ctx, core.Decision{Statement: "Decide later.", Context: "Fixture.", AlternativesRejected: "None.", Origin: core.DecisionOriginImplementation, OriginTaskID: reviewed.ID})
-	requireOK(t, err)
-	proposeRequirement(requirement.ID, core.RequirementOriginOperator, "", "An operator alternative.")
-	proposeRequirement(requirement.ID, core.RequirementOriginChat, "", "A planning-session alternative.")
-	otherRequirement := proposeRequirement(requirement.ID, core.RequirementOriginImplementation, other.ID, "Another task's alternative.")
-	proposeDesign(design.ID, core.SystemDesignOriginOperator, "", "operator alternative")
-	requireBlocking(reviewed.ID)
-	requireOK(t, claim(reviewed, core.StageReview, "nonblocking"))
-	requireBlocking(other.ID, store.ClaimBlockingProposal{Tier: store.ClaimBlockingTierRequirement, ID: requirement.ID, Version: otherRequirement.Version})
-	requireRefusedOn(other, core.StageReview, store.ClaimBlockingProposal{Tier: store.ClaimBlockingTierRequirement, ID: requirement.ID, Version: otherRequirement.Version})
-
-	// Both tiers block the verify claim; the System Design tier is named first.
-	verifiedRequirement := proposeRequirement(requirement.ID, core.RequirementOriginImplementation, verified.ID, "The verified task's alternative.")
-	verifiedDesign := proposeDesign(design.ID, core.SystemDesignOriginImplementation, verified.ID, "verified task revision")
-	wantDesign := store.ClaimBlockingProposal{Tier: store.ClaimBlockingTierSystemDesign, ID: design.ID, Version: verifiedDesign.Version}
-	wantRequirement := store.ClaimBlockingProposal{Tier: store.ClaimBlockingTierRequirement, ID: requirement.ID, Version: verifiedRequirement.Version}
-	requireBlocking(verified.ID, wantDesign, wantRequirement)
-	requireRefusedOn(verified, core.StageVerify, wantDesign)
-
-	// Another workspace reads none of this workspace's proposals.
-	foreign := x.Workspace + "-claims-" + core.NewTaskID()[:6]
-	foreignCtx := store.WithWorkspace(x.Context, foreign)
-	_, err = st.BootstrapWorkspaceConfig(foreignCtx, &config.Config{Workspace: foreign, Repos: x.Config.Repos})
-	requireOK(t, err)
-	foreignItems, err := st.ListClaimBlockingProposalsForTask(foreignCtx, verified.ID)
-	requireOK(t, err)
-	if len(foreignItems) != 0 {
-		t.Fatalf("another workspace read claim-blocking proposals: %+v", foreignItems)
+	for _, stage := range []core.Stage{core.StageVerify, core.StageReview} {
+		t.Run(string(stage)+"_claim_proceeds_with_pending_requirement", func(t *testing.T) {
+			task, id := newTask(stage), newRequirement(t)
+			version := proposeRequirement(t, id, task.ID)
+			requireClaimed(t, task, stage)
+			requireRequirementPending(t, id, task.ID, version)
+			_, _, err := st.ConfirmRequirementVersion(ctx, id, version)
+			requireOK(t, err)
+		})
+		t.Run(string(stage)+"_claim_proceeds_with_pending_system_design", func(t *testing.T) {
+			task, id := newTask(stage), newDesign(t)
+			version := proposeDesign(t, id, task.ID)
+			requireClaimed(t, task, stage)
+			requireDesignPending(t, id, task.ID, version)
+			_, _, err := st.DismissSystemDesignVersion(ctx, id, version)
+			requireOK(t, err)
+		})
+		t.Run(string(stage)+"_claim_proceeds_with_pending_version_of_archived_document", func(t *testing.T) {
+			task, id := newTask(stage), newDesign(t)
+			version := proposeDesign(t, id, task.ID)
+			requireOK(t, st.ArchiveSystemDesign(ctx, id, "operator", nil))
+			requireClaimed(t, task, stage)
+			requireDesignPending(t, id, task.ID, version)
+			requireOK(t, st.RestoreSystemDesign(ctx, id, "operator"))
+		})
+		t.Run(string(stage)+"_claim_proceeds_with_every_other_origin_pending", func(t *testing.T) {
+			task, other := newTask(stage), newTask(stage)
+			requirement, design := newRequirement(t), newDesign(t)
+			_, err := st.ProposeDecision(ctx, core.Decision{Statement: "Decide later.", Context: "Fixture.", AlternativesRejected: "None.", Origin: core.DecisionOriginImplementation, OriginTaskID: task.ID})
+			requireOK(t, err)
+			operator := requirementVersion("An operator alternative.")
+			operator.RequirementID, operator.Origin = requirement, core.RequirementOriginOperator
+			_, err = st.ProposeRequirementVersion(ctx, operator)
+			requireOK(t, err)
+			session := requirementVersion("A planning-session alternative.")
+			session.RequirementID, session.Origin, session.OriginSessionID = requirement, core.RequirementOriginChat, "session-"+core.NewTaskID()
+			_, err = st.ProposeRequirementVersion(ctx, session)
+			requireOK(t, err)
+			_, err = st.ProposeSystemDesignVersion(ctx, core.SystemDesignVersion{DocumentID: design, Content: designContent("operator alternative"), Origin: core.SystemDesignOriginOperator})
+			requireOK(t, err)
+			otherVersion := proposeRequirement(t, requirement, other.ID)
+			requireClaimed(t, task, stage)
+			requireClaimed(t, other, stage)
+			requireRequirementPending(t, requirement, other.ID, otherVersion)
+		})
+		t.Run(string(stage)+"_claim_still_refuses_an_already_claimed_order", func(t *testing.T) {
+			task, id := newTask(stage), newDesign(t)
+			proposeDesign(t, id, task.ID)
+			requireClaimed(t, task, stage)
+			if _, err := claim(task, stage); err == nil || !strings.Contains(err.Error(), "already claimed") {
+				t.Fatalf("second %s claim err=%v, want already claimed", stage, err)
+			}
+		})
 	}
-
-	// A pending version of an archived document still blocks.
-	requireOK(t, st.ArchiveSystemDesign(ctx, design.ID, "operator", nil))
-	requireBlocking(verified.ID, wantDesign, wantRequirement)
-	requireRefusedOn(verified, core.StageVerify, wantDesign)
-	requireOK(t, st.RestoreSystemDesign(ctx, design.ID, "operator"))
-
-	// Deciding each version releases the claim: dismissal of the design,
-	// then confirmation of the requirement.
-	_, _, err = st.DismissSystemDesignVersion(ctx, design.ID, verifiedDesign.Version)
-	requireOK(t, err)
-	requireBlocking(verified.ID, wantRequirement)
-	requireRefusedOn(verified, core.StageVerify, wantRequirement)
-	_, _, err = st.ConfirmRequirementVersion(ctx, requirement.ID, verifiedRequirement.Version)
-	requireOK(t, err)
-	requireBlocking(verified.ID)
-	if err := claim(verified, core.StageVerify, "released"); err != nil && strings.Contains(err.Error(), "waiting on") {
-		t.Fatalf("verify claim still waits after both decisions: %v", err)
-	}
-	// Confirming the newer requirement version retired the other task's
-	// pending version, which no longer blocks.
-	requireBlocking(other.ID)
+	t.Run("verify_claim_still_refuses_an_unmerged_dependency", func(t *testing.T) {
+		dependency := newTask(core.StageReview)
+		task, id := newTask(core.StageVerify, dependency.ID), newDesign(t)
+		proposeDesign(t, id, task.ID)
+		if _, err := claim(task, core.StageVerify); err == nil || !strings.Contains(err.Error(), "unmerged") {
+			t.Fatalf("blocked verify claim err=%v, want the dependency refusal", err)
+		}
+	})
+	t.Run("pending_proposals_stay_listed_after_a_claim", func(t *testing.T) {
+		task, id := newTask(core.StageReview), newDesign(t)
+		version := proposeDesign(t, id, task.ID)
+		requireClaimed(t, task, core.StageReview)
+		pending, err := st.ListPendingProposals(ctx)
+		requireOK(t, err)
+		for _, proposal := range pending {
+			if proposal.Tier == "system_design" && proposal.ID == id && proposal.Version == version && proposal.OriginType == "task" && proposal.OriginID == task.ID {
+				return
+			}
+		}
+		t.Fatalf("pending list lost %s v%d: %+v", id, version, pending)
+	})
 }

@@ -89,7 +89,6 @@ func init() {
 		{KindMergeConflict, "Merge conflict", "Automatic conflict fixes are exhausted.", "", "The conflict stays until someone fixes it.", conflictChoices(), &RunGate{Kind: "merge_execution", Label: "merge execution pending"}},
 		{KindMergeExecution, "Merge branch", "The merge gate is on and the branch is ready to merge.", "", "Conveyor does not merge it.", mergeExecutionChoices(), &RunGate{Kind: "merge_execution", Label: "merge execution pending"}},
 		{KindMerging, "Merging", "Conveyor is merging this branch.", "", "The merge continues.", nil, nil},
-		{KindDocumentProposal, "Document proposal", "A document proposal is withholding the next claim.", "Confirm or dismiss the proposal?", "The claim stays withheld.", nil, nil},
 		{KindContextProposal, "Context proposal", "A context proposal is waiting for a decision.", "Confirm or dismiss the proposed context?", "The proposal stays pending.", nil, nil},
 		{KindAgentQuestion, "Agent question", "The agent stopped for a decision.", "Answer the agent?", "The order stays released.", answerChoices(), nil},
 		{KindVerificationDisposition, "Confirm an outcome", "Verification needs a disposition.", "Did the change apply? The verify agent could not observe the result.", "The verify order stays at the checkpoint.", dispositionChoices(), nil},
@@ -210,7 +209,7 @@ func Kinds() []string {
 	return []string{
 		KindTerminal, KindParked, KindDispatchExhausted, KindPlanApproval, KindPlanRevision,
 		KindMergeApproval, KindReviewBounceLimit, KindJobFailure, KindMergeConflict, KindMergeExecution,
-		KindMerging, KindDocumentProposal, KindContextProposal, KindAgentQuestion, KindVerificationDisposition, KindForgeFailure,
+		KindMerging, KindContextProposal, KindAgentQuestion, KindVerificationDisposition, KindForgeFailure,
 		KindReviewRecovery, KindDependencyUnsatisfiable, KindStalled, KindBlocked, KindWorking, KindQueued, KindRetrying,
 	}
 }
@@ -342,13 +341,11 @@ func MonitorOriginSummary(kind string) string {
 	return "Filed by the monitor"
 }
 
-// DocumentProposalCopy is the copy of one inbox document-proposal item,
-// keyed by tier and by whether the version withholds a task's claim
-// (feature-operator-next-action NA-4, NA-5; req-operator-next-action AC-1.8,
-// AC-2.6). Only a withholding version says the claim stays withheld, so an
-// operator-origin or planning proposal never claims to withhold one.
-func DocumentProposalCopy(tier string, withholding bool) (label, question, ifIgnored string) {
-	row8, _ := Lookup(KindDocumentProposal, "", "", "")
+// DocumentProposalCopy is the copy of one inbox document-proposal item, keyed
+// by tier (feature-operator-next-action NA-4, NA-5; req-operator-next-action
+// AC-2.6). A pending proposal holds no task's work (req-260810-23b69f REQ-3;
+// DEC-102(6)), so ignoring one leaves only the proposal pending.
+func DocumentProposalCopy(tier string) (label, question, ifIgnored string) {
 	switch tier {
 	case "requirement":
 		label, question = "Requirement proposal", "Confirm or dismiss this proposed version?"
@@ -357,10 +354,7 @@ func DocumentProposalCopy(tier string, withholding bool) (label, question, ifIgn
 	case "decision":
 		label, question = "Decision proposal", "Confirm or dismiss this proposed decision?"
 	default:
-		label, question = row8.Label, render(row8.Question, Vars{})
-	}
-	if withholding {
-		return label, question, render(row8.IfIgnored, Vars{})
+		label, question = "Document proposal", "Confirm or dismiss the proposal?"
 	}
 	return label, question, "The proposal stays pending."
 }

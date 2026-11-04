@@ -1408,7 +1408,6 @@ func materializedChildrenForSpec(children []core.TaskRelation, version int) []co
 }
 
 type reviewItem struct {
-	OperatorNotes             []core.OperatorNote                   `json:"operator_notes,omitempty"`
 	Task                      core.Task                             `json:"task"`
 	Jobs                      []core.Job                            `json:"jobs"`
 	Events                    []core.Event                          `json:"events"`
@@ -1419,9 +1418,6 @@ type reviewItem struct {
 	NeedsAttention            bool                                  `json:"needs_attention"`
 	NextAction                *nextaction.Compact                   `json:"next_action,omitempty"`
 	AtMergeGate               bool                                  `json:"at_merge_gate"`
-	PendingAuthority          bool                                  `json:"pending_authority"`
-	ProposalClaimWaiting      bool                                  `json:"proposal_claim_waiting"`
-	WaitingProposals          []waitingProposal                     `json:"waiting_proposals,omitempty"`
 	ForgeFailure              *store.ForgeFailure                   `json:"forge_failure,omitempty"`
 	Spec                      *core.SpecVersion                     `json:"spec,omitempty"`
 	WorkOrders                []workOrderActivityView               `json:"work_orders"`
@@ -1440,8 +1436,6 @@ type activityItem struct {
 	LastEventAt               time.Time                             `json:"last_event_at"`
 	NeedsAttention            bool                                  `json:"needs_attention"`
 	NextAction                *nextaction.Compact                   `json:"next_action,omitempty"`
-	PendingAuthority          bool                                  `json:"pending_authority"`
-	ProposalClaimWaiting      bool                                  `json:"proposal_claim_waiting"`
 	ForgeFailure              *store.ForgeFailure                   `json:"forge_failure,omitempty"`
 	ReviewDiagnostics         []store.ReviewVerdictDiagnostic       `json:"review_diagnostics,omitempty"`
 	ReviewRecovery            *store.ReviewRecoveryState            `json:"review_recovery,omitempty"`
@@ -1637,9 +1631,8 @@ func (s *Server) writeActivityItems(w http.ResponseWriter, r *http.Request, task
 			return
 		}
 	}
-	// One order selection feeds the markers, pending authority, the
-	// claim-wait selection, and the next action (component-persistence,
-	// Board activity validation reads).
+	// One order selection feeds the markers and the next action
+	// (component-persistence, Board activity validation reads).
 	inputs, err := s.Store.ReadActivityInputs(r.Context(), taskIDs, opts.Now)
 	if err != nil {
 		log.Printf("handle API request: %v", err)
@@ -1651,31 +1644,8 @@ func (s *Server) writeActivityItems(w http.ResponseWriter, r *http.Request, task
 	for _, marker := range markers {
 		markerByTask[marker.TaskID] = marker
 	}
-	proposals, err := s.Store.ListPendingProposals(r.Context())
-	if err != nil {
-		log.Printf("handle API request: %v", err)
-		http.Error(w, "internal server error", http.StatusInternalServerError)
-		return
-	}
-	selectedClaimWaiting, err := store.ClaimWaitingProposals(r.Context(), s.Store, orders)
-	if err != nil {
-		log.Printf("handle API request: %v", err)
-		http.Error(w, "internal server error", http.StatusInternalServerError)
-		return
-	}
-	// The one selection feeds both proposal_claim_waiting and the next
-	// action, so the request reads it once (component-http-api, Activity and
-	// attention reads).
-	claimWaiting := make(map[string][]waitingProposal, len(selectedClaimWaiting))
-	for taskID, items := range selectedClaimWaiting {
-		for _, item := range items {
-			claimWaiting[taskID] = append(claimWaiting[taskID], waitingProposal{Tier: item.Tier, ID: item.ID, Version: item.Version})
-		}
-	}
-	pendingAuthority := pendingAuthorityByTask(orders, proposals)
 	opts.MarkersLoaded, opts.Markers = true, markers
 	opts.OrdersLoaded, opts.Orders = true, orders
-	opts.ClaimWaitingLoaded, opts.ClaimWaiting = true, selectedClaimWaiting
 	projected, err := store.ReadNextActions(r.Context(), s.Store, tasks, opts)
 	if err != nil {
 		log.Printf("handle API request: %v", err)
@@ -1697,7 +1667,7 @@ func (s *Server) writeActivityItems(w http.ResponseWriter, r *http.Request, task
 		if core.TaskTerminal(task.State) {
 			marker.Stalled = nil
 		}
-		if reviewsOnly && !reviewable(task.State) && marker.ForgeFailure == nil && marker.ReviewRecovery == nil && marker.InterruptedReviewRecovery == nil && marker.Stalled == nil && !marker.UserChangesRequested && !pendingAuthority[task.ID] {
+		if reviewsOnly && !reviewable(task.State) && marker.ForgeFailure == nil && marker.ReviewRecovery == nil && marker.InterruptedReviewRecovery == nil && marker.Stalled == nil && !marker.UserChangesRequested {
 			continue
 		}
 		compact := nextaction.CompactFrom(projected[task.ID])
@@ -1705,8 +1675,6 @@ func (s *Server) writeActivityItems(w http.ResponseWriter, r *http.Request, task
 			Task: summarizeActivityTask(task), LatestStage: marker.LatestStage, LastEventAt: marker.LastEventAt,
 			NeedsAttention:            projected[task.ID].Actor == nextaction.ActorOperator,
 			NextAction:                &compact,
-			PendingAuthority:          pendingAuthority[task.ID],
-			ProposalClaimWaiting:      len(claimWaiting[task.ID]) > 0,
 			ForgeFailure:              marker.ForgeFailure,
 			ReviewDiagnostics:         marker.ReviewDiagnostics,
 			ReviewRecovery:            marker.ReviewRecovery,
@@ -2528,34 +2496,12 @@ func (s *Server) getTaskActivity(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "internal server error", http.StatusInternalServerError)
 		return
 	}
-	// req-260810-23b69f AC-5.2: refresh observational notes in the authorized
-	// workspace context and suppress them after terminal task cleanup.
-	var operatorNotes []core.OperatorNote
-	if !core.TaskTerminal(task.State) {
-		if operatorNotes, err = s.Store.ListDocumentOperatorNotesForTask(r.Context(), id); err != nil {
-			log.Printf("load task operator notes: %v", err)
-			http.Error(w, "internal server error", http.StatusInternalServerError)
-			return
-		}
-	}
-	pendingAuthority := pendingAuthorityForTask(id, workOrders, proposals)
-	claimSelection, err := store.ClaimWaitingProposals(r.Context(), s.Store, workOrders)
-	if err != nil {
-		log.Printf("project proposal claim wait: %v", err)
-		http.Error(w, "internal server error", http.StatusInternalServerError)
-		return
-	}
-	var waitingProposals []waitingProposal
-	for _, item := range claimSelection[id] {
-		waitingProposals = append(waitingProposals, waitingProposal{Tier: item.Tier, ID: item.ID, Version: item.Version})
-	}
 	opts, err := s.detailNextActionOptions(r.Context())
 	if err != nil {
 		log.Printf("handle API request: %v", err)
 		http.Error(w, "internal server error", http.StatusInternalServerError)
 		return
 	}
-	opts.ClaimWaitingLoaded, opts.ClaimWaiting = true, claimSelection
 	action, err := store.ReadNextActionForTask(r.Context(), s.Store, task, projectionOrders, opts)
 	if err != nil {
 		log.Printf("handle API request: %v", err)
@@ -2569,9 +2515,6 @@ func (s *Server) getTaskActivity(w http.ResponseWriter, r *http.Request) {
 		NeedsAttention:            action.Actor == nextaction.ActorOperator,
 		NextAction:                &compact,
 		AtMergeGate:               store.AtMergeGate(task, events),
-		PendingAuthority:          pendingAuthority,
-		ProposalClaimWaiting:      len(waitingProposals) > 0,
-		WaitingProposals:          waitingProposals,
 		ForgeFailure:              store.LatestForgeFailure(events),
 		Spec:                      specPointer,
 		WorkOrders:                workOrderViews,
@@ -2582,7 +2525,6 @@ func (s *Server) getTaskActivity(w http.ResponseWriter, r *http.Request) {
 		MergeReadiness:            mergeReadiness,
 		Attachments:               attachments,
 		VerificationEvidence:      verificationEvidence,
-		OperatorNotes:             operatorNotes,
 	}
 	if !bounded {
 		writeJSON(w, http.StatusOK, taskDetailProjection{item})

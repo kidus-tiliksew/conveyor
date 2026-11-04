@@ -191,37 +191,13 @@ func RenderGovernanceContract(stage core.Stage, references core.GovernanceRefere
 	} else if stage == core.StageReview {
 		out.WriteString("\n\n# Pinned System Design authority\n\nNo confirmed System Design governed this repository when this review authority was pinned.\n")
 	}
-	if len(references.ResolutionNotes) > 0 {
-		out.WriteString("\n# Governance resolution notes\n\nThe resolver omitted malformed or incomplete non-authoritative proposal history; these notes are audit context and confer no authority:\n")
-		for _, note := range references.ResolutionNotes {
-			fmt.Fprintf(&out, "- %s\n", note)
-		}
-	}
 	if len(references.Decisions) > 0 {
 		renderDecisions(&out, references.Decisions, delivery)
 	} else if stage == core.StageReview {
 		out.WriteString("\n# Pinned decision authority\n\nNo confirmed or superseded decisions existed when this review authority was pinned.\n")
 	}
-	pending := references.PendingDesignProposals
-	if stage == core.StageReview {
-		out.WriteString("\n# System Design proposal evidence from this task\n\nPending and subsequently confirmed proposals confer no authority and are never valid governance citations. A criterion requiring the task to propose a System Design revision is satisfied when the matching pending or confirmed proposal below exists or its identifier is present in the implementation handoff. Operator confirmation is not a bounce condition and must never be requested as implementation feedback.\n")
-		if len(pending) == 0 {
-			out.WriteString("\nNo implementation-originated System Design proposal evidence from this task was present when this review was claimed.\n")
-		}
-	} else if stage == core.StageImplement {
+	if stage == core.StageImplement {
 		out.WriteString("\n# Authority conflicts\n\nA task implements confirmed authority and never changes it: author no requirement, System Design, or decision version. If the approved plan conflicts with the repository while confirmed documents stand, use `request_plan_revision`. If the work would require changing a confirmed document, stop and release at an authority-conflict checkpoint as the role states, citing the confirmed clauses in conflict and describing the conflict in the decision request.\n")
-		if len(pending) > 0 {
-			out.WriteString("\n# Earlier System Design proposals from this task\n\nThese proposals predate this rule and confer no authority. An operator decides them.\n")
-		}
-	}
-	if stage == core.StageReview || stage == core.StageImplement {
-		for _, proposal := range pending {
-			status := "pending"
-			if proposal.Confirmed {
-				status = "confirmed after proposal"
-			}
-			fmt.Fprintf(&out, "\n- %s v%d (%s; proposal event %d, origin task %s)\n", proposal.DocumentID, proposal.Version, status, proposal.ProposalEventID, proposal.OriginTaskID)
-		}
 	}
 	if stage == core.StageReview {
 		out.WriteString("\nRecord governance_assessment as a reasoned, non-exhaustive assessment. design_applicable means pinned System Design authority governs this repository; decision_citable means the pin contains confirmed decisions. cited_ids names pinned governing System Design IDs or confirmed DEC-n IDs; unknown_ids resolve nowhere; ungoverned_ids exist but do not govern this change; superseded_ids contains pinned superseded decisions; conflicts describes contradictions. All lists must be disjoint, and an ID present in pinned governing or confirmed authority belongs only in cited_ids.\n")

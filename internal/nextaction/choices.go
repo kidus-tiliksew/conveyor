@@ -69,22 +69,12 @@ func dispositionChoices() []ChoiceSpec {
 	}
 }
 
-// Shared effect copy of the proposal choices, one pair per kind
-// (feature-operator-next-action NA-4). Deciding the last withholding version
-// releases a document_proposal wait by itself (req-260810-70ce2f AC-1.2), so
-// only the agent-question pair names recovery.
+// Effect copy of the cited-proposal choices (feature-operator-next-action
+// NA-4): deciding a cited version never recovers the order.
 const (
-	withheldConfirmEffect = "Confirms this pending revision."
-	withheldDismissEffect = "Dismisses this pending revision."
-	citedConfirmEffect    = "Confirms this pending revision. The order stays released until you recover it."
-	citedDismissEffect    = "Dismisses this pending revision. The order stays released until you recover it."
+	citedConfirmEffect = "Confirms this pending revision. The order stays released until you recover it."
+	citedDismissEffect = "Dismisses this pending revision. The order stays released until you recover it."
 )
-
-// withheldProposalChoices offers confirm and dismiss for each version that
-// withholds the task's verify and review claims (row 8).
-func withheldProposalChoices(refs []ProposalRef) []ChoiceSpec {
-	return versionProposalChoices(refs, withheldConfirmEffect, withheldDismissEffect)
-}
 
 // citedProposalChoices offers confirm and dismiss for each cited pending
 // version. They precede the answer choice and never recover the order

@@ -26,7 +26,6 @@ const (
 	KindMergeConflict           = "merge_conflict"
 	KindMergeExecution          = "merge_execution"
 	KindMerging                 = "merging"
-	KindDocumentProposal        = "document_proposal"
 	KindContextProposal         = "context_proposal"
 	KindAgentQuestion           = "agent_question"
 	KindVerificationDisposition = "verification_disposition"
@@ -73,11 +72,10 @@ type Input struct {
 	LatestSpec      *SpecRef
 	GateSpecVersion int
 	Markers         Markers
-	ClaimWaiting    []ProposalRef
 	// PendingProposals is the workspace's pending document proposals, read
-	// for agent-question presentation only. Unlike ClaimWaiting it never
-	// selects the document_proposal row or changes claim eligibility
-	// (component-work-orders, Next action).
+	// for agent-question presentation only. It never selects a row or changes
+	// claim eligibility (req-260810-23b69f REQ-3; DEC-102(6);
+	// req-operator-next-action AC-1.6, AC-2.3).
 	PendingProposals []ProposalRef
 	// CitedDocuments is filled for an authority_conflict checkpoint only:
 	// each cited document's current confirmed version and, for a System
@@ -86,9 +84,8 @@ type Input struct {
 	// Agent-question presentation).
 	CitedDocuments map[string]CitedDocument
 	// ContextProposals is the task's pending task-context proposals. It
-	// selects only the context_proposal row and never enters ClaimWaiting or
-	// PendingProposals (req-intake-and-triage AC-7.3; req-260810-70ce2f
-	// AC-1.3).
+	// selects only the context_proposal row and never enters PendingProposals
+	// (req-intake-and-triage AC-7.3).
 	ContextProposals []ContextProposalRef
 	// MonitorObservation is the originating observation of a monitor-filed
 	// task with a pending context proposal, or nil when none is linked.

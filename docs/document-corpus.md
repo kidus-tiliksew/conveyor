@@ -208,10 +208,9 @@ the dialog directs the operator to review it again. Decisions have no Revise act
 
 The Pending proposals page collects every undecided proposal, with its age,
 its origin, and confirm and dismiss actions, so an operator can see at a glance how
-much authority the factory is waiting on. A pending proposal a task authored
-before DEC-102 also blocks that task's review from being claimed until it is
-decided either way, which is the one place a proposal touches the pipeline;
-see [Misalignment](misalignment.md#pending-proposals).
+much authority is undecided. A pending proposal holds no task's work, including
+one a task authored before DEC-102; see
+[Misalignment](misalignment.md#pending-proposals).
 
 ## How documents reach a task
 
@@ -272,5 +271,6 @@ every earlier pending version dismissed by the transaction. History exposes
 `dismissal_note` beside the existing actor and timestamp, without changing
 content or statement identifiers. The existing dismissal events add `note`
 only when present; requirement supersession keeps `requirement.version_retired`.
-These notes are observational task evidence under `component-work-orders`,
-not document authority (req-260810-23b69f AC-5.1, AC-5.2, AC-5.4).
+A note stays on the dismissed version's history. It is not document authority,
+and no task or work-order context carries it (req-260810-23b69f REQ-5, AC-5.1,
+AC-5.3, AC-5.4).

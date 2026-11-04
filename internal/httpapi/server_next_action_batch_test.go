@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
-	"sync"
 	"testing"
 	"time"
 
@@ -16,34 +15,17 @@ import (
 	"github.com/kidus-tiliksew/conveyor/internal/store/storetest"
 )
 
-// claimWaitCountingStore counts the claim-blocking reads a request issues
-// (component-http-api, Activity and attention reads).
-type claimWaitCountingStore struct {
+// batchedReadStore is the store with the batched verification read a request
+// reaches through (component-http-api, Activity and attention reads).
+type batchedReadStore struct {
 	store.Store
-	mu      sync.Mutex
-	batched int
-	single  int
 }
 
-func (c *claimWaitCountingStore) ListClaimBlockingProposalsForTasks(ctx context.Context, ids []string) (map[string][]store.ClaimBlockingProposal, error) {
-	c.mu.Lock()
-	c.batched++
-	c.mu.Unlock()
-	return c.Store.ListClaimBlockingProposalsForTasks(ctx, ids)
-}
-
-func (c *claimWaitCountingStore) ListClaimBlockingProposalsForTask(ctx context.Context, id string) ([]store.ClaimBlockingProposal, error) {
-	c.mu.Lock()
-	c.single++
-	c.mu.Unlock()
-	return c.Store.ListClaimBlockingProposalsForTask(ctx, id)
-}
-
-func (c *claimWaitCountingStore) ReadVerificationReviews(ctx context.Context, refs []store.VerificationReviewRef) (map[string]store.VerificationReviewState, error) {
+func (c *batchedReadStore) ReadVerificationReviews(ctx context.Context, refs []store.VerificationReviewRef) (map[string]store.VerificationReviewState, error) {
 	return c.Store.(store.VerificationReviewBatchReader).ReadVerificationReviews(ctx, refs)
 }
 
-func (c *claimWaitCountingStore) ReadVerificationReview(ctx context.Context, taskID, orderID string) (store.VerificationReviewState, error) {
+func (c *batchedReadStore) ReadVerificationReview(ctx context.Context, taskID, orderID string) (store.VerificationReviewState, error) {
 	return c.Store.(store.VerificationReviewReader).ReadVerificationReview(ctx, taskID, orderID)
 }
 
@@ -143,7 +125,7 @@ func batchHTTPGet(t *testing.T, server *Server, path string, out any) {
 	}
 }
 
-func TestActivityReadsClaimWaitOnce(t *testing.T) {
+func TestActivityStatesNoProposalWait(t *testing.T) {
 	f := newBatchHTTPFixture(t)
 	waiting := f.task(t, "claim wait", core.TaskRunning, "")
 	f.order(t, waiting, core.StageVerify, nil)
@@ -154,14 +136,11 @@ func TestActivityReadsClaimWaitOnce(t *testing.T) {
 	other := f.task(t, "queued", core.TaskQueued, "")
 	f.order(t, other, core.StageImplement, nil)
 
-	counter := &claimWaitCountingStore{Store: f.st}
+	counter := &batchedReadStore{Store: f.st}
 	server := NewServer(counter)
 	server.BearerToken, server.Workspace = "operator-token", "demo"
 	var items []activityItem
 	batchHTTPGet(t, server, "/v1/activity?workspace_id=demo", &items)
-	if counter.batched != 1 || counter.single != 0 {
-		t.Fatalf("activity claim-blocking reads batched=%d single=%d, want one batched read", counter.batched, counter.single)
-	}
 	byID := map[string]activityItem{}
 	for _, item := range items {
 		byID[item.Task.ID] = item
@@ -180,8 +159,8 @@ func TestActivityReadsClaimWaitOnce(t *testing.T) {
 			t.Fatalf("task %s activity next_action=%+v want %s/%s", task.ID, item.NextAction, want.Kind, want.Actor)
 		}
 	}
-	if !byID[waiting.ID].ProposalClaimWaiting || byID[waiting.ID].NextAction.Kind != nextaction.KindDocumentProposal || byID[other.ID].ProposalClaimWaiting {
-		t.Fatalf("claim-wait items=%+v", byID)
+	if byID[waiting.ID].NextAction.Kind == "document_proposal" {
+		t.Fatalf("activity names a proposal wait: %+v", byID[waiting.ID].NextAction)
 	}
 }
 
@@ -300,8 +279,8 @@ func TestNextActionReadsStayEqualThroughBatchedLoaders(t *testing.T) {
 	for _, item := range projection.Items {
 		proposalIDs[item.ID]++
 	}
-	if projection.Attention.TaskCount != operatorTasks || projection.Attention.Total != operatorTasks || operatorTasks == 0 {
-		t.Fatalf("attention=%+v want task total %d", projection.Attention, operatorTasks)
+	if projection.Attention.TaskCount != operatorTasks || projection.Attention.Total != operatorTasks+len(projection.Items) || projection.Attention.OperatorDecisions != projection.Attention.Total || operatorTasks == 0 {
+		t.Fatalf("attention=%+v want task total %d plus %d proposals", projection.Attention, operatorTasks, len(projection.Items))
 	}
 	if proposalIDs[standalone] != 1 || proposalIDs[design.ID] != 2 || projection.Attention.PendingProposalCount != len(projection.Items) {
 		t.Fatalf("pending proposals=%+v attention=%+v", proposalIDs, projection.Attention)

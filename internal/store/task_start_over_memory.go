@@ -31,11 +31,6 @@ func (m *memory) StartOverTaskCommand(ctx context.Context, lease taskops.TaskLea
 	if err := r.Validate(); err != nil {
 		return result, err
 	}
-	var err error
-	ctx, err = WithDocumentDismissalNote(ctx, r.Note)
-	if err != nil {
-		return result, err
-	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	old, ok := m.tasks[r.TaskID]
@@ -68,38 +63,9 @@ func (m *memory) StartOverTaskCommand(ctx context.Context, lease taskops.TaskLea
 		return result, err
 	}
 	// Stage copies of every projection this command can mutate. Failed context,
-	// dismissal, cancellation or artifact writes never publish a partial image.
+	// cancellation or artifact writes never publish a partial image.
 	staged := memory{tasks: maps.Clone(m.tasks), dependencies: maps.Clone(m.dependencies), jobs: cloneStartOverSlices(m.jobs), events: cloneStartOverSlices(m.events), lineage: m.lineage.clone(), interventions: cloneStartOverSlices(m.interventions), workOrders: maps.Clone(m.workOrders), governanceSnapshots: maps.Clone(m.governanceSnapshots), requirements: maps.Clone(m.requirements), requirementVersions: cloneStartOverSlices(m.requirementVersions), systemDesigns: maps.Clone(m.systemDesigns), systemDesignVersions: cloneStartOverSlices(m.systemDesignVersions), taskContextProposals: maps.Clone(m.taskContextProposals), artifacts: maps.Clone(m.artifacts), nextEventID: m.nextEventID, nextReviewID: m.nextReviewID}
 	stageNotices(&staged)
-	type proposal struct {
-		id      string
-		version int
-		design  bool
-	}
-	var proposals []proposal
-	for key, versions := range staged.requirementVersions {
-		if key.workspace != old.Workspace {
-			continue
-		}
-		for _, v := range versions {
-			if v.OriginTaskID == old.ID && v.Origin == core.RequirementOriginImplementation && !v.Confirmed && !v.Retired {
-				proposals = append(proposals, proposal{key.id, v.Version, false})
-			}
-		}
-	}
-	for key, versions := range staged.systemDesignVersions {
-		if key.workspace != old.Workspace {
-			continue
-		}
-		for _, v := range versions {
-			if v.OriginTaskID == old.ID && v.Origin == core.SystemDesignOriginImplementation && !v.Confirmed && !v.Dismissed {
-				proposals = append(proposals, proposal{key.id, v.Version, true})
-			}
-		}
-	}
-	if len(proposals) > 0 && !r.CanConfirmDocuments {
-		return result, ErrStartOverConfirmDocuments
-	}
 	actor := ActorFromContext(ctx)
 	if strings.ContainsRune(actor.ID, 0) {
 		return result, fmt.Errorf("audit actor contains NUL")
@@ -128,17 +94,6 @@ func (m *memory) StartOverTaskCommand(ctx context.Context, lease taskops.TaskLea
 	next := StartOverSuccessor(old, r)
 	if _, err := staged.cancelTaskLocked(ctx, core.Intervention{TaskID: old.ID, Action: core.InterventionCancel, ReasonCode: r.Reason, Comment: r.Note, At: next.CreatedAt}); err != nil {
 		return result, err
-	}
-	for _, p := range proposals {
-		var err error
-		if p.design {
-			_, _, err = staged.dismissSystemDesignVersionLocked(ctx, p.id, p.version)
-		} else {
-			_, _, err = staged.dismissRequirementVersionLocked(ctx, p.id, p.version)
-		}
-		if err != nil && !StartOverDismissalDecided(err) {
-			return result, err
-		}
 	}
 	if err := TaskStartOverFault(ctx, "successor"); err != nil {
 		return result, err

@@ -12,8 +12,9 @@ import (
 	"github.com/kidus-tiliksew/conveyor/internal/taskops"
 )
 
-// StartOverTaskCommand commits cancellation, dismissals, successor context and
-// dispatch intent together (req-task-lifecycle-and-queue REQ-7).
+// StartOverTaskCommand commits cancellation, successor context and dispatch
+// intent together and leaves pending document proposals for the operator to
+// decide (req-task-lifecycle-and-queue REQ-7; req-260810-23b69f REQ-3).
 func (s *Store) StartOverTaskCommand(ctx context.Context, lease taskops.TaskLease, r core.TaskStartOverRequest) (core.TaskStartOverResult, error) {
 	ctx = dbmetrics.WithReadLabel(ctx, "StartOverTaskCommand")
 	var result core.TaskStartOverResult
@@ -23,11 +24,6 @@ func (s *Store) StartOverTaskCommand(ctx context.Context, lease taskops.TaskLeas
 	if err := r.Validate(); err != nil {
 		return result, err
 	}
-	var noteErr error
-	ctx, noteErr = store.WithDocumentDismissalNote(ctx, r.Note)
-	if noteErr != nil {
-		return result, noteErr
-	}
 	err := s.withTx(ctx, func(tx *sql.Tx) error {
 		ws := documentWorkspace(ctx)
 		// Match dependency writers: task operation before the workspace graph lock.
@@ -35,9 +31,6 @@ func (s *Store) StartOverTaskCommand(ctx context.Context, lease taskops.TaskLeas
 			return err
 		}
 		if err := lockDependencyEdgesTx(ctx, tx, ws); err != nil {
-			return err
-		}
-		if err := lockKey(ctx, tx, "document-corpus:"+ws); err != nil {
 			return err
 		}
 		var locked string
@@ -73,38 +66,6 @@ func (s *Store) StartOverTaskCommand(ctx context.Context, lease taskops.TaskLeas
 		}
 		if _, err := core.TransitionTask(old.State, core.TaskStartOver); err != nil {
 			return err
-		}
-		type proposal struct {
-			id      string
-			version int
-			design  bool
-		}
-		var proposals []proposal
-		for _, design := range []bool{false, true} {
-			query := `SELECT v.requirement_id,v.version FROM requirement_versions v WHERE v.workspace_id=? AND v.origin_task_id=? AND v.origin='implementation' AND NOT v.confirmed AND NOT v.retired ORDER BY v.requirement_id,v.version`
-			if design {
-				query = `SELECT v.document_id,v.version FROM system_design_versions v WHERE v.workspace_id=? AND v.origin_task_id=? AND v.origin='implementation_deliberation' AND NOT v.confirmed AND NOT v.dismissed ORDER BY v.document_id,v.version`
-			}
-			rows, err := tx.QueryContext(ctx, query, ws, r.TaskID)
-			if err != nil {
-				return err
-			}
-			for rows.Next() {
-				p := proposal{design: design}
-				if err := rows.Scan(&p.id, &p.version); err != nil {
-					rows.Close()
-					return err
-				}
-				proposals = append(proposals, p)
-			}
-			err = rows.Err()
-			rows.Close()
-			if err != nil {
-				return err
-			}
-		}
-		if len(proposals) > 0 && !r.CanConfirmDocuments {
-			return store.ErrStartOverConfirmDocuments
 		}
 		rows, err := tx.QueryContext(ctx, `SELECT kind,payload_json FROM events_columnstore WHERE workspace_id=? AND task_id=? ORDER BY at,id`, ws, r.TaskID)
 		if err != nil {
@@ -167,17 +128,6 @@ func (s *Store) StartOverTaskCommand(ctx context.Context, lease taskops.TaskLeas
 		intervention := core.Intervention{TaskID: old.ID, Action: core.InterventionCancel, ReasonCode: r.Reason, Comment: r.Note, At: next.CreatedAt}
 		if err := s.cancelTaskTx(ctx, tx, normalizeIntervention(ctx, intervention)); err != nil {
 			return err
-		}
-		for _, p := range proposals {
-			var err error
-			if p.design {
-				_, _, err = dismissSystemDesignVersionTx(ctx, tx, p.id, p.version)
-			} else {
-				_, _, err = dismissRequirementVersionTx(ctx, tx, p.id, p.version)
-			}
-			if err != nil && !store.StartOverDismissalDecided(err) {
-				return err
-			}
 		}
 		if err := store.TaskStartOverFault(ctx, "successor"); err != nil {
 			return err

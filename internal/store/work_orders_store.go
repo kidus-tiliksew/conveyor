@@ -1908,13 +1908,6 @@ func (m *memory) ClaimWorkOrderCommand(ctx context.Context, lifecycleLease tasko
 	if order.Stage == core.StageReview && m.reviewSeatAcceptedLocked(order) {
 		return core.WorkOrder{}, fmt.Errorf("accepted review seat %s is terminal and cannot be claimed", id)
 	}
-	if order.Stage == core.StageReview || order.Stage == core.StageVerify {
-		// The same predicate and read the listing uses (req-260810-70ce2f
-		// AC-1.1; component-work-orders).
-		if blocking := m.claimBlockingProposalsLocked(workspaceOrDefault(ctx, ""), order.TaskID); len(blocking) > 0 {
-			return core.WorkOrder{}, ClaimBlockingProposalError(order.TaskID, blocking[0])
-		}
-	}
 	if order.State == core.WorkOrderStale {
 		return core.WorkOrder{}, fmt.Errorf("%w: %s", ErrWorkOrderStale, id)
 	}

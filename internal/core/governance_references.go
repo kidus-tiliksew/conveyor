@@ -53,10 +53,8 @@ type GovernanceDecisionReference struct {
 // GovernanceSnapshot, which stays complete on the server for verdict
 // validation and freshness comparison (req-design-delivery REQ-1; DEC-103).
 type GovernanceReferences struct {
-	Designs                []GovernanceDesignReference   `json:"designs"`
-	Decisions              []GovernanceDecisionReference `json:"decisions"`
-	PendingDesignProposals []PendingSystemDesignProposal `json:"pending_design_proposals,omitempty"`
-	ResolutionNotes        []string                      `json:"resolution_notes,omitempty"`
+	Designs   []GovernanceDesignReference   `json:"designs"`
+	Decisions []GovernanceDecisionReference `json:"decisions"`
 }
 
 // GovernanceDesignProvenance is what a task's attachment history says about
@@ -144,14 +142,7 @@ func ProjectGovernanceReferences(snapshot GovernanceSnapshot, repository string,
 		}
 		decisions = append(decisions, reference)
 	}
-	pending := append([]PendingSystemDesignProposal(nil), snapshot.PendingDesignProposals...)
-	sort.Slice(pending, func(i, j int) bool {
-		if pending[i].DocumentID != pending[j].DocumentID {
-			return pending[i].DocumentID < pending[j].DocumentID
-		}
-		return pending[i].Version < pending[j].Version
-	})
-	return GovernanceReferences{Designs: designs, Decisions: decisions, PendingDesignProposals: pending, ResolutionNotes: append([]string(nil), snapshot.ResolutionNotes...)}
+	return GovernanceReferences{Designs: designs, Decisions: decisions}
 }
 
 // GovernanceEventReferences is the identity-only list a new work_order.claimed

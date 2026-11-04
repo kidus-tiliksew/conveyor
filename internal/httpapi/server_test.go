@@ -1395,7 +1395,10 @@ func TestTaskActivityEnrichesAuthorityConflictCheckpoint(t *testing.T) {
 	}
 }
 
-func TestPendingProposalsProjectionAttentionAndTaskWarning(t *testing.T) {
+// Pending proposals keep their workspace projection and count as operator
+// decisions, and their origin task carries no warning or attention of its own
+// (req-260810-23b69f REQ-1, REQ-3, AC-1.1; req-operator-next-action AC-2.7).
+func TestPendingProposalsProjectionAttentionWithoutATaskWarning(t *testing.T) {
 	ctx := store.WithWorkspace(store.WithActor(t.Context(), store.SystemActor()), "demo")
 	st := store.NewMemory()
 	task := core.Task{ID: "proposal-origin", Workspace: "demo", State: core.TaskRunning, NextStage: core.StageImplement, CreatedAt: time.Now().UTC()}
@@ -1455,7 +1458,7 @@ func TestPendingProposalsProjectionAttentionAndTaskWarning(t *testing.T) {
 	if err = json.Unmarshal(response.Body.Bytes(), &projection); err != nil {
 		t.Fatal(err)
 	}
-	if len(projection.Items) != 3 || projection.Attention.TaskCount != 2 || projection.Attention.OperatorDecisions != 2 || projection.Attention.PendingProposalCount != 3 || projection.Attention.Total != projection.Attention.OperatorDecisions {
+	if len(projection.Items) != 3 || projection.Attention.TaskCount != 1 || projection.Attention.OperatorDecisions != 4 || projection.Attention.PendingProposalCount != 3 || projection.Attention.Total != projection.Attention.OperatorDecisions {
 		t.Fatalf("projection=%+v", projection)
 	}
 	for _, item := range projection.Items {
@@ -1470,24 +1473,23 @@ func TestPendingProposalsProjectionAttentionAndTaskWarning(t *testing.T) {
 	}
 	detail := httptest.NewRecorder()
 	server.Handler().ServeHTTP(detail, authenticatedMemoryRead(server, httptest.NewRequest(http.MethodGet, "/v1/tasks/"+task.ID+"/activity?workspace_id=demo", nil)))
-	if detail.Code != http.StatusOK || !strings.Contains(detail.Body.String(), `"pending_authority":true`) || !strings.Contains(detail.Body.String(), `"needs_attention":true`) ||
-		!strings.Contains(detail.Body.String(), `"proposal_claim_waiting":true`) ||
-		!strings.Contains(detail.Body.String(), `"waiting_proposals":[{"tier":"system_design","id":"`+design.ID+`","version":1}]`) {
+	if detail.Code != http.StatusOK || strings.Contains(detail.Body.String(), `"pending_authority"`) || strings.Contains(detail.Body.String(), `"needs_attention":true`) ||
+		strings.Contains(detail.Body.String(), `"proposal_claim_waiting"`) || strings.Contains(detail.Body.String(), `"waiting_proposals"`) {
 		t.Fatalf("detail status=%d body=%s", detail.Code, detail.Body.String())
 	}
 	activity := httptest.NewRecorder()
 	server.Handler().ServeHTTP(activity, authenticatedMemoryRead(server, httptest.NewRequest(http.MethodGet, "/v1/activity?workspace_id=demo", nil)))
-	if activity.Code != http.StatusOK || !strings.Contains(activity.Body.String(), `"id":"`+task.ID+`"`) || !strings.Contains(activity.Body.String(), `"needs_attention":true`) || !strings.Contains(activity.Body.String(), `"pending_authority":true`) {
+	if activity.Code != http.StatusOK || !strings.Contains(activity.Body.String(), `"id":"`+task.ID+`"`) || strings.Contains(activity.Body.String(), `"pending_authority"`) || strings.Contains(activity.Body.String(), `"proposal_claim_waiting"`) {
 		t.Fatalf("activity status=%d body=%s", activity.Code, activity.Body.String())
 	}
 	reviews := httptest.NewRecorder()
 	server.Handler().ServeHTTP(reviews, authenticatedMemoryRead(server, httptest.NewRequest(http.MethodGet, "/v1/reviews?workspace_id=demo", nil)))
-	if reviews.Code != http.StatusOK || !strings.Contains(reviews.Body.String(), `"id":"`+task.ID+`"`) || !strings.Contains(reviews.Body.String(), `"needs_attention":true`) || !strings.Contains(reviews.Body.String(), `"pending_authority":true`) {
-		t.Fatalf("reviews status=%d body=%s", reviews.Code, reviews.Body.String())
+	if reviews.Code != http.StatusOK || strings.Contains(reviews.Body.String(), `"id":"`+task.ID+`"`) {
+		t.Fatalf("reviews listed a task for its pending proposal: status=%d body=%s", reviews.Code, reviews.Body.String())
 	}
 	operations := httptest.NewRecorder()
 	server.Handler().ServeHTTP(operations, authenticatedMemoryRead(server, httptest.NewRequest(http.MethodGet, "/v1/task-operations?workspace_id=demo", nil)))
-	if operations.Code != http.StatusOK || !strings.Contains(operations.Body.String(), `"id":"`+task.ID+`"`) || !strings.Contains(operations.Body.String(), `"needs_attention":true`) {
+	if operations.Code != http.StatusOK || !strings.Contains(operations.Body.String(), `"id":"`+task.ID+`"`) {
 		t.Fatalf("task operations status=%d body=%s", operations.Code, operations.Body.String())
 	}
 
@@ -1502,13 +1504,13 @@ func TestPendingProposalsProjectionAttentionAndTaskWarning(t *testing.T) {
 	}
 	detail = httptest.NewRecorder()
 	server.Handler().ServeHTTP(detail, authenticatedMemoryRead(server, httptest.NewRequest(http.MethodGet, "/v1/tasks/"+task.ID+"/activity?workspace_id=demo", nil)))
-	if detail.Code != http.StatusOK || !strings.Contains(detail.Body.String(), `"pending_authority":false`) ||
-		!strings.Contains(detail.Body.String(), `"proposal_claim_waiting":false`) || strings.Contains(detail.Body.String(), `"waiting_proposals"`) {
+	if detail.Code != http.StatusOK || strings.Contains(detail.Body.String(), `"pending_authority"`) ||
+		strings.Contains(detail.Body.String(), `"proposal_claim_waiting"`) || strings.Contains(detail.Body.String(), `"waiting_proposals"`) {
 		t.Fatalf("resolved detail status=%d body=%s", detail.Code, detail.Body.String())
 	}
 	activity = httptest.NewRecorder()
 	server.Handler().ServeHTTP(activity, authenticatedMemoryRead(server, httptest.NewRequest(http.MethodGet, "/v1/activity?workspace_id=demo", nil)))
-	if activity.Code != http.StatusOK || !strings.Contains(activity.Body.String(), `"id":"`+task.ID+`"`) || !strings.Contains(activity.Body.String(), `"pending_authority":false`) {
+	if activity.Code != http.StatusOK || !strings.Contains(activity.Body.String(), `"id":"`+task.ID+`"`) || strings.Contains(activity.Body.String(), `"pending_authority"`) {
 		t.Fatalf("resolved activity status=%d body=%s", activity.Code, activity.Body.String())
 	}
 	reviews = httptest.NewRecorder()
@@ -1532,7 +1534,7 @@ func TestPendingProposalsProjectionAttentionAndTaskWarning(t *testing.T) {
 	}
 }
 
-func TestTaskContextProposalSignalsAttentionWithoutPendingAuthority(t *testing.T) {
+func TestTaskContextProposalSignalsAttention(t *testing.T) {
 	ctx := store.WithWorkspace(store.WithActor(t.Context(), store.SystemActor()), "demo")
 	st := store.NewMemory()
 	task := core.Task{ID: "context-attention", Workspace: "demo", Repo: "conveyor", State: core.TaskRunning, CreatedAt: time.Now().UTC()}
@@ -1573,14 +1575,12 @@ func TestTaskContextProposalSignalsAttentionWithoutPendingAuthority(t *testing.T
 	}
 	detail := request("/v1/tasks/" + task.ID + "/activity")
 	if detail.Code != http.StatusOK || !strings.Contains(detail.Body.String(), `"needs_attention":true`) ||
-		!strings.Contains(detail.Body.String(), `"pending_authority":false`) ||
 		!strings.Contains(detail.Body.String(), `"target_id":"`+requirement.ID+`"`) {
 		t.Fatalf("detail status=%d body=%s", detail.Code, detail.Body.String())
 	}
-	// The attention comes from the context_proposal row, never from the
-	// claim-wait row: nothing is withheld (req-intake-and-triage AC-7.3;
-	// req-260810-70ce2f AC-1.3; feature-operator-next-action NA-3).
-	if !strings.Contains(detail.Body.String(), `"proposal_claim_waiting":false`) {
+	// The attention comes from the context_proposal row, and nothing is withheld
+	// (req-intake-and-triage AC-7.3; feature-operator-next-action NA-3).
+	if strings.Contains(detail.Body.String(), `"proposal_claim_waiting"`) || strings.Contains(detail.Body.String(), `"pending_authority"`) {
 		t.Fatalf("context proposal reported a claim wait: %s", detail.Body.String())
 	}
 	action := readNextActionKind(t, server, task.ID)
@@ -1591,7 +1591,7 @@ func TestTaskContextProposalSignalsAttentionWithoutPendingAuthority(t *testing.T
 	}
 	activity := request("/v1/activity")
 	if activity.Code != http.StatusOK || !strings.Contains(activity.Body.String(), `"id":"`+task.ID+`"`) ||
-		!strings.Contains(activity.Body.String(), `"needs_attention":true`) || !strings.Contains(activity.Body.String(), `"pending_authority":false`) {
+		!strings.Contains(activity.Body.String(), `"needs_attention":true`) {
 		t.Fatalf("activity status=%d body=%s", activity.Code, activity.Body.String())
 	}
 	operations := request("/v1/task-operations")
@@ -1620,7 +1620,7 @@ func TestTaskContextProposalSignalsAttentionWithoutPendingAuthority(t *testing.T
 		t.Fatal(err)
 	}
 	detail = request("/v1/tasks/" + task.ID + "/activity")
-	if detail.Code != http.StatusOK || !strings.Contains(detail.Body.String(), `"pending_authority":true`) {
+	if detail.Code != http.StatusOK || !strings.Contains(detail.Body.String(), `"needs_attention":true`) {
 		t.Fatalf("submitted detail status=%d body=%s", detail.Code, detail.Body.String())
 	}
 
@@ -2772,11 +2772,11 @@ func (s *activityConditionalStore) reset() map[string]int {
 	return calls
 }
 
-// activityProjectionReads are the marker, order, proposal, claim-wait, and
-// next-action reads a 304 must not issue.
+// activityProjectionReads are the marker, order, proposal, and next-action
+// reads a 304 must not issue.
 var activityProjectionReads = []string{
 	"ReadActivityInputs", "ListActivityMarkers", "ListActivityMarkersForTasks", "ListWorkOrders", "ListWorkOrdersForTasks",
-	"ListPendingProposals", "ListClaimBlockingProposalsForTasks", "ListNextActionHistory", "ListOpenDependents",
+	"ListPendingProposals", "ListNextActionHistory", "ListOpenDependents",
 	"ListDependencyBlockers", "ListTaskHeads", "ListLatestSpecVersionNumbers", "ListTaskContextProposals",
 	"MonitorOriginsForTasks", "ListDocumentHeads", "ListTaskContextDesignPins",
 }
@@ -2825,11 +2825,6 @@ func (s *activityConditionalStore) ListWorkOrdersForTasks(ctx context.Context, i
 func (s *activityConditionalStore) ListPendingProposals(ctx context.Context) ([]core.PendingProposal, error) {
 	s.count("ListPendingProposals")
 	return s.Store.ListPendingProposals(ctx)
-}
-
-func (s *activityConditionalStore) ListClaimBlockingProposalsForTasks(ctx context.Context, ids []string) (map[string][]store.ClaimBlockingProposal, error) {
-	s.count("ListClaimBlockingProposalsForTasks")
-	return s.Store.ListClaimBlockingProposalsForTasks(ctx, ids)
 }
 
 func (s *activityConditionalStore) ListNextActionHistory(ctx context.Context, ids []string) (map[string]store.NextActionHistory, error) {

@@ -65,12 +65,6 @@ func newRestartFixture(t *testing.T) *restartFixture {
 				return
 			}
 			io.WriteString(w, `{"work_orders":[{"id":"queued","state":"queued","stage":"implement"},{"id":"claimed","state":"claimed"},{"id":"submitted","state":"submitted"},{"id":"stale","state":"stale"},{"id":"timed-out","state":"timed_out"},{"id":"finished-order","state":"completed"},{"id":"cancelled-order","state":"cancelled"}],"events":[{"kind":"pull_request.opened","payload":{"number":7,"url":"https://github.com/acme/app/pull/7"}}]}`)
-		case "/v1/pending-proposals":
-			if f.empty {
-				io.WriteString(w, `{}`)
-				return
-			}
-			io.WriteString(w, `{"items":[{"id":"design-one","title":"Runtime","tier":"system_design","version":2,"origin_type":"task","origin_id":"old"},{"id":"other-task-proposal","origin_type":"task","origin_id":"another"},{"id":"operator-proposal","origin_type":"operator","origin_id":"old"}]}`)
 		case "/v1/workspace/config":
 			io.WriteString(w, `{"document":{"repos":[{"name":"app","github":"acme/app"}]}}`)
 		case "/v1/tasks/old/restart":
@@ -149,12 +143,14 @@ func TestTaskRestartPreviewAndRetry(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, want := range []string{"Repair preview", "queued (implement, queued)", "claimed", "submitted", "stale", "timed-out", "design-one v2", "Recorded pull request: #7", "Open pull request to close: #7", "Successor: next", "Branch: conveyor/task-next", "Next: work task next in workspace demo from an agent session with the conveyor-work skill"} {
+	for _, want := range []string{"Repair preview", "queued (implement, queued)", "claimed", "submitted", "stale", "timed-out", "Recorded pull request: #7", "Open pull request to close: #7", "Successor: next", "Branch: conveyor/task-next", "Next: work task next in workspace demo from an agent session with the conveyor-work skill"} {
 		if !strings.Contains(output, want) {
 			t.Errorf("missing %q in %s", want, output)
 		}
 	}
-	for _, unwanted := range []string{"finished-order", "cancelled-order", "other-task-proposal", "operator-proposal"} {
+	// Starting over decides no document proposal, so the preview names none
+	// (req-260810-23b69f REQ-3).
+	for _, unwanted := range []string{"finished-order", "cancelled-order", "design-one", "other-task-proposal", "operator-proposal", "to dismiss"} {
 		if strings.Contains(output, unwanted) {
 			t.Errorf("unexpected %s", unwanted)
 		}
@@ -208,7 +204,7 @@ func TestTaskRestartRefusals(t *testing.T) {
 	for _, tc := range []struct {
 		path   string
 		status int
-	}{{"/v1/tasks/old", 404}, {"/v1/tasks/old/activity", 500}, {"/v1/pending-proposals", 403}, {"/v1/workspace/config", 403}, {"/v1/tasks/old/restart", 409}, {"/v1/tasks/old/restart", 403}, {"/v1/tasks/old/restart", 400}} {
+	}{{"/v1/tasks/old", 404}, {"/v1/tasks/old/activity", 500}, {"/v1/workspace/config", 403}, {"/v1/tasks/old/restart", 409}, {"/v1/tasks/old/restart", 403}, {"/v1/tasks/old/restart", 400}} {
 		t.Run(fmt.Sprintf("%s-%d", tc.path, tc.status), func(t *testing.T) {
 			f := newRestartFixture(t)
 			f.failPath = tc.path

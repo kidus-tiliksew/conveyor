@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/kidus-tiliksew/conveyor/internal/core"
@@ -11,9 +12,9 @@ import (
 	"github.com/kidus-tiliksew/conveyor/internal/store/storetest"
 )
 
-// req-260810-23b69f AC-5.2: browser activity carries workspace-scoped notes
-// only while the proposing task remains non-terminal.
-func TestTaskActivityOperatorNotes(t *testing.T) {
+// A dismissal note stays on the dismissed version's history and never reaches
+// task activity, for a live or terminal task (req-260810-23b69f REQ-5, AC-5.1).
+func TestTaskActivityCarriesNoDismissalNotes(t *testing.T) {
 	st := store.NewMemory()
 	ctx := store.WithWorkspace(store.WithActor(t.Context(), store.SystemActor()), "demo")
 	for _, id := range []string{"noted-task", "bare-task"} {
@@ -65,20 +66,17 @@ func TestTaskActivityOperatorNotes(t *testing.T) {
 	if response.Code != http.StatusOK {
 		t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
 	}
-	var item reviewItem
-	if err := json.Unmarshal(response.Body.Bytes(), &item); err != nil {
-		t.Fatal(err)
+	if strings.Contains(response.Body.String(), "operator_notes") || strings.Contains(response.Body.String(), "demo reason") {
+		t.Fatalf("task activity carries a dismissal note: %s", response.Body.String())
 	}
-	if len(item.OperatorNotes) != 2 {
-		t.Fatalf("notes=%+v", item.OperatorNotes)
+	demo := store.WithWorkspace(ctx, "demo")
+	requirement, err := st.GetRequirementVersion(demo, "req-note", 1)
+	if err != nil || requirement.DismissalNote != "demo reason" {
+		t.Fatalf("requirement history=%+v err=%v", requirement, err)
 	}
-	for _, note := range item.OperatorNotes {
-		if note.Note != "demo reason" || note.Version != 1 || note.DismissedAt.IsZero() {
-			t.Fatalf("note=%+v", note)
-		}
-	}
-	if item.OperatorNotes[0].DocumentID != "req-note" || item.OperatorNotes[0].Tier != "requirement" || item.OperatorNotes[1].DocumentID != "design-note" || item.OperatorNotes[1].Tier != "system_design" {
-		t.Fatalf("notes=%+v", item.OperatorNotes)
+	design, err := st.GetSystemDesignVersion(demo, "design-note", 1)
+	if err != nil || design.DismissalNote != "demo reason" {
+		t.Fatalf("design history=%+v err=%v", design, err)
 	}
 	for _, tc := range []struct {
 		id, workspace string
