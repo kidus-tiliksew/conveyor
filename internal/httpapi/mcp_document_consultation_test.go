@@ -234,6 +234,29 @@ func TestMCPConsultationRequiresTheCallersOwnLiveClaim(t *testing.T) {
 	f.wantConsultations("cross-workspace read")
 }
 
+// TestMCPReadsWithoutBodyTextRecordNoConsultation covers successful responses
+// that deliver no design text, so no session read anything (AC-5.1).
+func TestMCPReadsWithoutBodyTextRecordNoConsultation(t *testing.T) {
+	f := newDocumentReadFixture(t)
+	callers, _, _ := f.claimedConsultationCallers("nobody")
+	agent := callers[1]
+	if _, first, err := f.store.CreateSystemDesign(f.ctx, core.SystemDesign{ID: "design-draft", Title: "Draft", Category: "Component"}, core.SystemDesignVersion{Content: designBody("## Draft\ntext\n"), Origin: core.SystemDesignOriginOperator}); err != nil || first.Version != 1 {
+		t.Fatalf("version=%d err=%v", first.Version, err)
+	}
+	absent := f.readItem(agent, "get_document", documentReadArgs("design-draft"))
+	if absent["authority_absent"] != true {
+		t.Fatalf("draft read=%v", absent)
+	}
+	f.design("design-end", designBody("## One\ntext\n"))
+	section := f.readItem(agent, "get_document", documentReadArgs("design-end", "outline", true))
+	size := outlineEntries(t, section)[0]["size_bytes"]
+	end := f.readItem(agent, "get_document", documentReadArgs("design-end", "section_id", "s0", "version", 1, "byte_offset", size))
+	if end["text"] != "" || end["complete"] != true {
+		t.Fatalf("end page=%v", end)
+	}
+	f.wantConsultations("responses without body text")
+}
+
 func TestMCPOnlySystemDesignReadsRecordConsultation(t *testing.T) {
 	f := newDocumentReadFixture(t)
 	callers, _, _ := f.claimedConsultationCallers("kinds")
