@@ -124,7 +124,7 @@ architecture carry gates or an assignee. Bounce limits are the
 backstop for the dark end: review rounds that keep failing park the task at
 a human gate after `max_bounces` rounds rather than burning tokens forever.
 
-Document confirmation is operator-only at every light level; agents propose and keep working, and nothing they propose becomes authority on its own. Misalignment signals are
+Document confirmation is operator-only at every light level; a task implements confirmed documents and proposes none (DEC-102), and no proposal becomes authority on its own. Misalignment signals are
 likewise never auto-resolved. 
 
 The darkest configuration Conveyor supports is a factory that writes, reviews, and merges its own code all night, and still cannot change what it is supposed to be building without a human saying so in the morning.

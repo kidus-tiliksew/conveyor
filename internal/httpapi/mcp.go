@@ -54,52 +54,19 @@ type mcpToolCallEnvelope struct {
 	Meta      map[string]any `json:"_meta,omitempty"`
 }
 
-const (
-	systemDesignProposalGuidance = "This System Design proposal is fire-and-forget and confers no authority. Do not checkpoint, pause, or wait for operator confirmation. Proceed now to commit, push, and `submit_for_review`; review dispatch waits on the operator's decision automatically."
-	requirementProposalGuidance  = "This requirement proposal is fire-and-forget and confers no authority. Do not checkpoint, pause, or wait for operator confirmation. Proceed now to commit, push, and `submit_for_review`; review dispatch waits on the operator's decision automatically."
-	decisionProposalGuidance     = "This decision proposal is fire-and-forget and confers no authority. Do not checkpoint, pause, or wait for operator confirmation. Proceed now to commit, push, and `submit_for_review`; review dispatch waits on the operator's decision automatically."
-)
-
-// checkpointProposalGuidance is the guidance a proposal tool returns when the
-// session declares authority_conflict_checkpoint: it directs the checkpoint
-// release instead of submission, still without waiting for confirmation
-// (component-mcp-protocol, Governance proposal tools; req-260820-6a468a
-// AC-1.3; req-260820-394cac REQ-3).
-func checkpointProposalGuidance(tier string) string {
-	return "This " + tier + " proposal confers no authority. Your approved plan or work-order contract calls for an authority-conflict checkpoint at this step, so do not wait for operator confirmation and do not commit, push, or call `submit_for_review` against the unconfirmed text. Author any remaining proposals, then cite every pending proposal identifier in `checkpoint.decision_request` and call `release_work_order` with reason `operator checkpoint reached`, class `authority_conflict`, and citations of the confirmed versions in conflict, not the proposed versions."
+// retiredProposalTools are the task-authored proposal tools a work-order session
+// no longer has. A task implements confirmed authority and never changes it, so
+// a call is refused before anything is resolved or written (DEC-102;
+// req-task-authority-boundary REQ-1, AC-1.2). The in-process planning tool of
+// the same name is a separate surface and stays.
+var retiredProposalTools = map[string]bool{
+	"propose_system_design_revision": true,
+	"propose_requirement_revision":   true,
+	"propose_decision":               true,
 }
 
-// proposalGuidance selects a proposal tool's guidance from the optional
-// authority_conflict_checkpoint flag. A non-boolean value is refused before
-// anything is written; the flag is never recorded.
-func proposalGuidance(args map[string]any, tier, fireAndForget string) (string, error) {
-	value, supplied := args["authority_conflict_checkpoint"]
-	if !supplied || value == nil {
-		return fireAndForget, nil
-	}
-	checkpoint, ok := value.(bool)
-	if !ok {
-		return "", fmt.Errorf("authority_conflict_checkpoint must be a boolean")
-	}
-	if checkpoint {
-		return checkpointProposalGuidance(tier), nil
-	}
-	return fireAndForget, nil
-}
-
-type systemDesignProposalResult struct {
-	core.SystemDesignVersion
-	Guidance string `json:"guidance"`
-}
-
-type requirementProposalResult struct {
-	core.RequirementVersion
-	Guidance string `json:"guidance"`
-}
-
-type decisionProposalResult struct {
-	core.Decision
-	Guidance string `json:"guidance"`
+func retiredProposalToolError(name string) error {
+	return fmt.Errorf("MCP tool %s is retired: a session holding a work order authors no requirement, System Design, or decision version (DEC-102). If the approved plan conflicts with the repository while confirmed documents stand, use request_plan_revision. If the work would require changing a confirmed document, stop at the authority-conflict checkpoint: call release_work_order with reason %q and a checkpoint of class %s that cites the confirmed clauses in conflict and describes the conflict in its decision_request", name, core.WorkOrderReleaseReasonOperatorCheckpointReached, core.WorkOrderCheckpointClassAuthorityConflict)
 }
 
 func (s *Server) handleMCP(w http.ResponseWriter, r *http.Request) {
@@ -195,6 +162,9 @@ func writeRPC(w http.ResponseWriter, response rpcResponse) {
 }
 
 func (s *Server) callMCPTool(r *http.Request, name string, args map[string]any) (any, error) {
+	if retiredProposalTools[name] {
+		return nil, retiredProposalToolError(name)
+	}
 	if name == "refresh_work_order_context" {
 		if err := validateContextRefreshArgs(args); err != nil {
 			return nil, err
@@ -442,61 +412,6 @@ func (s *Server) callMCPTool(r *http.Request, name string, args map[string]any) 
 			rateLimit = &status
 		}
 		return outboundWorkOrderResult(s.WorkOrders.UsageWithRateLimit(ctx, stringArg("work_order_id"), session, in, out, rateLimit))
-	case "propose_system_design_revision":
-		order, err := s.implementationGovernanceOrder(ctx, stringArg("work_order_id"), session)
-		if err != nil {
-			return nil, err
-		}
-		guidance, err := proposalGuidance(args, "System Design", systemDesignProposalGuidance)
-		if err != nil {
-			return nil, err
-		}
-		version, err := s.Store.ProposeSystemDesignVersion(ctx, core.SystemDesignVersion{
-			DocumentID: stringArg("document_id"), Content: stringArg("content"),
-			Origin: core.SystemDesignOriginImplementation, OriginTaskID: order.TaskID,
-		})
-		if err != nil {
-			return nil, err
-		}
-		return systemDesignProposalResult{SystemDesignVersion: version, Guidance: guidance}, nil
-	case "propose_requirement_revision":
-		order, err := s.implementationGovernanceOrder(ctx, stringArg("work_order_id"), session)
-		if err != nil {
-			return nil, err
-		}
-		guidance, err := proposalGuidance(args, "requirement", requirementProposalGuidance)
-		if err != nil {
-			return nil, err
-		}
-		document, err := pipeline.ParseRequirementDocument(stringArg("content"))
-		if err != nil {
-			return nil, err
-		}
-		version, err := s.Store.ProposeRequirementVersion(ctx, core.RequirementVersion{
-			RequirementID: stringArg("document_id"), Content: document.Markdown, Statements: document.Statements,
-			Origin: core.RequirementOriginImplementation, OriginTaskID: order.TaskID,
-		})
-		if err != nil {
-			return nil, err
-		}
-		return requirementProposalResult{RequirementVersion: version, Guidance: guidance}, nil
-	case "propose_decision":
-		order, err := s.implementationGovernanceOrder(ctx, stringArg("work_order_id"), session)
-		if err != nil {
-			return nil, err
-		}
-		guidance, err := proposalGuidance(args, "decision", decisionProposalGuidance)
-		if err != nil {
-			return nil, err
-		}
-		decision, err := s.Store.ProposeDecision(ctx, core.Decision{
-			Statement: stringArg("statement"), Context: stringArg("context"), AlternativesRejected: stringArg("alternatives_rejected"),
-			Supersedes: stringArg("supersedes"), Origin: core.DecisionOriginImplementation, OriginTaskID: order.TaskID,
-		})
-		if err != nil {
-			return nil, err
-		}
-		return decisionProposalResult{Decision: decision, Guidance: guidance}, nil
 	case "upload_transcript":
 		return s.WorkOrders.UploadTranscript(ctx, stringArg("work_order_id"), session, stringArg("transcript"))
 	case "submit_plan":
@@ -592,11 +507,11 @@ func agentMayExerciseCapability(capability core.Capability) bool {
 }
 
 // mcpCapabilities names each tool's capability, checked against the live
-// binding of the credential's owning user on every call. The four claim-bound
-// governance tools (request_plan_revision and the three proposal tools) need
-// claim_work, so a caller demoted to viewer is refused even while it still
-// holds a live claim; the claim remains the second gate
-// (req-accounts-and-membership AC-2.2-AC-2.4; component-mcp-protocol).
+// binding of the credential's owning user on every call. The claim-bound
+// governance tool request_plan_revision needs claim_work, so a caller demoted
+// to viewer is refused even while it still holds a live claim; the claim remains
+// the second gate (req-accounts-and-membership AC-2.2, AC-2.3;
+// component-mcp-protocol).
 var mcpCapabilities = map[string]core.Capability{
 	"get_verification_context":         core.CapabilityViewWorkspace,
 	"prepare_verification_operation":   core.CapabilityClaimWork,
@@ -612,45 +527,42 @@ var mcpCapabilities = map[string]core.Capability{
 	"read_verification_evidence":       core.CapabilityViewWorkspace,
 	"get_verification_publication":     core.CapabilityViewWorkspace,
 
-	"get_decision":                   core.CapabilityViewWorkspace,
-	"get_lineage":                    core.CapabilityViewWorkspace,
-	"list_decisions":                 core.CapabilityViewWorkspace,
-	"list_document_events":           core.CapabilityViewWorkspace,
-	"get_document":                   core.CapabilityViewWorkspace,
-	"search_documents":               core.CapabilityViewWorkspace,
-	"list_documents":                 core.CapabilityViewWorkspace,
-	"get_task_context":               core.CapabilityViewWorkspace,
-	"list_task_events":               core.CapabilityViewWorkspace,
-	"get_task":                       core.CapabilityViewWorkspace,
-	"get_task_status":                core.CapabilityViewWorkspace,
-	"list_operator_inbox":            core.CapabilityViewWorkspace,
-	"list_tasks":                     core.CapabilityViewWorkspace,
-	"list_repositories":              core.CapabilityViewWorkspace,
-	"list_workspaces":                core.CapabilityViewWorkspace,
-	"create_task":                    core.CapabilityCreateTasks,
-	"add_task_dependency":            core.CapabilityOperateGates,
-	"set_assignee":                   core.CapabilitySetAssignee,
-	"attach_task_branch":             core.CapabilityOperateGates,
-	"list_work_orders":               core.CapabilityViewWorkspace,
-	"claim_work_order":               core.CapabilityClaimWork,
-	"redispatch_work_order":          core.CapabilityRecoverWork,
-	"renew_work_order":               core.CapabilityClaimWork,
-	"release_work_order":             core.CapabilityClaimWork,
-	"request_plan_revision":          core.CapabilityClaimWork,
-	"get_work_order":                 core.CapabilityClaimWork,
-	"read_artifact":                  core.CapabilityClaimWork,
-	"refresh_work_order_context":     core.CapabilityClaimWork,
-	"report_progress":                core.CapabilityClaimWork,
-	"report_usage":                   core.CapabilityClaimWork,
-	"propose_system_design_revision": core.CapabilityClaimWork,
-	"propose_requirement_revision":   core.CapabilityClaimWork,
-	"propose_decision":               core.CapabilityClaimWork,
-	"upload_transcript":              core.CapabilityClaimWork,
-	"submit_plan":                    core.CapabilityClaimWork,
-	"submit_for_review":              core.CapabilityClaimWork,
-	"await_review":                   core.CapabilityClaimWork,
-	"submit_review_verdict":          core.CapabilityClaimWork,
-	"submit_review_summary":          core.CapabilityClaimWork,
+	"get_decision":               core.CapabilityViewWorkspace,
+	"get_lineage":                core.CapabilityViewWorkspace,
+	"list_decisions":             core.CapabilityViewWorkspace,
+	"list_document_events":       core.CapabilityViewWorkspace,
+	"get_document":               core.CapabilityViewWorkspace,
+	"search_documents":           core.CapabilityViewWorkspace,
+	"list_documents":             core.CapabilityViewWorkspace,
+	"get_task_context":           core.CapabilityViewWorkspace,
+	"list_task_events":           core.CapabilityViewWorkspace,
+	"get_task":                   core.CapabilityViewWorkspace,
+	"get_task_status":            core.CapabilityViewWorkspace,
+	"list_operator_inbox":        core.CapabilityViewWorkspace,
+	"list_tasks":                 core.CapabilityViewWorkspace,
+	"list_repositories":          core.CapabilityViewWorkspace,
+	"list_workspaces":            core.CapabilityViewWorkspace,
+	"create_task":                core.CapabilityCreateTasks,
+	"add_task_dependency":        core.CapabilityOperateGates,
+	"set_assignee":               core.CapabilitySetAssignee,
+	"attach_task_branch":         core.CapabilityOperateGates,
+	"list_work_orders":           core.CapabilityViewWorkspace,
+	"claim_work_order":           core.CapabilityClaimWork,
+	"redispatch_work_order":      core.CapabilityRecoverWork,
+	"renew_work_order":           core.CapabilityClaimWork,
+	"release_work_order":         core.CapabilityClaimWork,
+	"request_plan_revision":      core.CapabilityClaimWork,
+	"get_work_order":             core.CapabilityClaimWork,
+	"read_artifact":              core.CapabilityClaimWork,
+	"refresh_work_order_context": core.CapabilityClaimWork,
+	"report_progress":            core.CapabilityClaimWork,
+	"report_usage":               core.CapabilityClaimWork,
+	"upload_transcript":          core.CapabilityClaimWork,
+	"submit_plan":                core.CapabilityClaimWork,
+	"submit_for_review":          core.CapabilityClaimWork,
+	"await_review":               core.CapabilityClaimWork,
+	"submit_review_verdict":      core.CapabilityClaimWork,
+	"submit_review_summary":      core.CapabilityClaimWork,
 }
 
 func mcpCapability(name string) core.Capability { return mcpCapabilities[name] }
@@ -759,20 +671,6 @@ func claimIdentity(order core.WorkOrder) core.WorkOrderClaimIdentity {
 func liveWorkOrderClaim(order core.WorkOrder, now time.Time) bool {
 	return order.State == core.WorkOrderClaimed && order.SessionID != "" && order.LeaseExpiresAt.After(now) &&
 		(order.ExecutionDeadline.IsZero() || order.ExecutionDeadline.After(now))
-}
-
-func (s *Server) implementationGovernanceOrder(ctx context.Context, workOrderID, sessionID string) (core.WorkOrder, error) {
-	if _, err := s.authorizeClaimMutation(ctx, workOrderID, sessionID); err != nil {
-		return core.WorkOrder{}, err
-	}
-	order, err := s.WorkOrders.AuthorizeClaimed(ctx, workOrderID, sessionID)
-	if err != nil {
-		return core.WorkOrder{}, err
-	}
-	if order.Stage != core.StageImplement {
-		return core.WorkOrder{}, fmt.Errorf("governance proposals require a claimed implement work order")
-	}
-	return order, nil
 }
 
 func (s *Server) resolveMCPWorkspace(ctx context.Context, explicit string) (string, error) {
@@ -891,16 +789,10 @@ var decisionRequestSchema = map[string]any{
 	"description": fmt.Sprintf("The operator-facing decision or act needed, at most %d Unicode characters (runes). Required when reason is `operator checkpoint reached`.", core.WorkOrderDecisionRequestLimit),
 }
 
-// citedVersionSchema asks for the confirmed version in conflict, so that
-// confirming the proposals answers the citation (req-260820-394cac AC-2.6).
+// citedVersionSchema asks for the confirmed version in conflict, so that a newer
+// confirmed version answers the citation (req-260820-394cac AC-2.6).
 var citedVersionSchema = map[string]any{
 	"type": "number", "description": "The confirmed version whose clause is in conflict. Cite a confirmed version, never a pending proposal's version.",
-}
-
-// checkpointFlagSchema is the proposal tools' optional checkpoint declaration
-// (component-mcp-protocol, Governance proposal tools).
-var checkpointFlagSchema = map[string]any{
-	"type": "boolean", "description": "Set true only when your approved plan or work-order contract directs an authority-conflict checkpoint at this step. The guidance then directs the checkpoint release instead of submit_for_review. Nothing is recorded from it.",
 }
 
 // reviewSeatsSchema is submit_for_review's optional declared review seat
@@ -1069,9 +961,6 @@ func mcpTools() []map[string]any {
 		{"name": "read_artifact", "description": "Read one artifact authorized for the claimed work order. The workspace, work order, session, and artifact ownership must all match; content is returned as base64.", "inputSchema": object(map[string]any{"workspace_id": str, "work_order_id": str, "session_id": str, "artifact_id": str}, "workspace_id", "work_order_id", "session_id", "artifact_id")},
 		{"name": "report_progress", "description": "Record self-reported progress for a claimed order.", "inputSchema": object(map[string]any{"workspace_id": str, "work_order_id": str, "session_id": str, "message": str}, "work_order_id", "session_id", "message")},
 		{"name": "report_usage", "description": "Record best-effort cumulative self-reported token and optional provider rate-limit status as observational audit telemetry. Report at natural checkpoints and immediately before the stage's terminal lifecycle tool when figures are available; missing usage never blocks lifecycle progress (DEC-1).", "inputSchema": object(map[string]any{"workspace_id": str, "work_order_id": str, "session_id": str, "tokens_in": num, "tokens_out": num, "rate_limit": rateLimit, "source": map[string]any{"type": "string", "enum": []string{"self_reported"}, "description": "Reserved worker provenance; agents omit this or use self_reported."}}, "work_order_id", "session_id", "tokens_in", "tokens_out")},
-		{"name": "propose_system_design_revision", "description": "Propose a complete immutable System Design revision from the current claimed implementation. The operator alone confirms after submission; confirmation never blocks implementation.", "inputSchema": object(map[string]any{"workspace_id": str, "work_order_id": str, "session_id": str, "document_id": str, "content": str, "authority_conflict_checkpoint": checkpointFlagSchema}, "work_order_id", "session_id", "document_id", "content")},
-		{"name": "propose_requirement_revision", "description": "Propose a complete immutable requirement revision from the current claimed implementation. The operator alone confirms after submission; confirmation never blocks implementation.", "inputSchema": object(map[string]any{"workspace_id": str, "work_order_id": str, "session_id": str, "document_id": str, "content": str, "authority_conflict_checkpoint": checkpointFlagSchema}, "work_order_id", "session_id", "document_id", "content")},
-		{"name": "propose_decision", "description": "Propose the next stable DEC-n record from implementation deliberation. The operator alone confirms after submission; confirmation never blocks implementation.", "inputSchema": object(map[string]any{"workspace_id": str, "work_order_id": str, "session_id": str, "statement": str, "context": str, "alternatives_rejected": str, "supersedes": str, "authority_conflict_checkpoint": checkpointFlagSchema}, "work_order_id", "session_id", "statement", "context", "alternatives_rejected")},
 		{"name": "upload_transcript", "description": "Upload an optional self-reported transcript through Conveyor redaction.", "inputSchema": object(map[string]any{"workspace_id": str, "work_order_id": str, "session_id": str, "transcript": str}, "work_order_id", "session_id", "transcript")},
 		{"name": "submit_plan", "description": "Validate and submit a Markdown execution plan for a claimed plan-stage order. Include Approach, Files touched, Ordering, Risks, and Done criteria headings. Plans never create child tasks; decomposition must be empty. Optional review_seats states the planned review seat count; a count below the task's minimum is refused with review_seats_below_minimum. Validation errors leave the order claimed for correction.", "inputSchema": object(map[string]any{"workspace_id": str, "work_order_id": str, "session_id": str, "review_seats": map[string]any{"type": "integer", "minimum": 1, "description": "Optional planned review seat count, at least the task's minimum review seat count. Omit it to plan no count."}, "markdown": map[string]any{"type": "string", "description": "Example: ## Approach\\nImplement the shared handler.\\n\\n## Files touched\\n- internal/httpapi/mcp.go\\n\\n## Ordering\\n1. Validate, then persist.\\n\\n## Risks\\n- Preserve gate events.\\n\\n## Done criteria\\n- submit_plan persists the task execution plan."}, "decomposition": map[string]any{"type": "array", "description": "Must be empty; plans cannot fan out tasks.", "items": map[string]any{"type": "object", "properties": map[string]any{"id": str, "repo": str, "summary": str, "depends_on": map[string]any{"type": "array", "items": str}}, "required": []string{"id", "repo", "summary", "depends_on"}, "additionalProperties": false}}}, "work_order_id", "session_id", "markdown", "decomposition")},
 		{"name": "submit_for_review", "description": "Validate the existing pull request at head_sha, record it, and dispatch independent review. Optional review_seats declares the next round's review seat count; a count below the task's seat floor is refused with review_seats_below_floor and the order stays claimed.", "inputSchema": object(map[string]any{"workspace_id": str, "work_order_id": str, "session_id": str, "head_sha": str, "review_seats": reviewSeatsSchema}, "work_order_id", "session_id", "head_sha")},

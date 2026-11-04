@@ -20,7 +20,8 @@ Non-negotiables, restated: the coordinator never claims a work order or edits
 a task repository; each stage order runs in its own thread. Verification
 threads follow `conveyor-kit-verify`, and plan, implementation, and review
 threads follow `conveyor-work`. Threads never start other threads, wait for
-verdicts, or record a gate or proposal decision. The coordinator records only
+verdicts, or record a gate or proposal decision, and an implementation thread
+never proposes or revises a document. The coordinator records only
 routine decisions within the scope the operator delegated, with the operator's
 own credential, and brings product, scope, risk, validation-waiver, and
 operator-reserved decisions to the operator. The first sentence of every

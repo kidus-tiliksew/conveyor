@@ -517,7 +517,7 @@ for how to turn the evidence into a separately authorized follow-up.
 | `read_artifact` | Fetch one artifact's content, base64-encoded. Scoped to the claim and to the bounded lineage selection that served the reference; an artifact ID alone is not enough. |
 | `renew_work_order` | Renew the claim lease. Never extends the fixed execution deadline. The response adds `governance_references`, as a claim's does. Requires `claim_work`. |
 | `report_progress` | Report progress text for the operator's timeline. Requires `claim_work`. |
-| `release_work_order` | Release the claim with an outcome, reason, and cause. Also the vehicle for operator checkpoints: release with reason `operator checkpoint reached` and a structured `checkpoint` carrying the decision request (at most 1024 Unicode characters), `class: authority_conflict`, and document citations of the confirmed versions in conflict. A System Design clause may name a code-formatted heading. Requires `claim_work`. |
+| `release_work_order` | Release the claim with an outcome, reason, and cause. Also the vehicle for operator checkpoints: release with reason `operator checkpoint reached` and a structured `checkpoint` carrying the decision request (at most 1024 Unicode characters), `class: authority_conflict`, and document citations of the confirmed versions in conflict. No proposal needs to exist. A System Design clause may name a code-formatted heading. Requires `claim_work`. |
 
 Every claim-bound tool requires `claim_work`, so a live claim never outlasts
 its holder's binding: a user demoted to viewer keeps the claim (demotion
@@ -602,25 +602,19 @@ their embedded snapshots.
 
 ## Proposing authority
 
-All three require `claim_work` and the caller's own live claim on an
-implement-stage order, and all three are fire-and-forget: propose, cite the
-pending ID, keep working. A viewer is refused even while it holds a live claim.
-The operator alone confirms, and confirmation never blocks implementation.
-Proposals outside a claim go through the REST routes, which require
-`propose_documents`.
+A session holding a work order authors no requirement, System Design, or
+decision version (DEC-102). The MCP surface has no tool that creates one.
 
-At an authority-conflict checkpoint that the approved plan or work-order
-contract directs, pass the optional boolean `authority_conflict_checkpoint:
-true`. The result's guidance then directs the checkpoint release: cite the
-pending ID in `checkpoint.decision_request` and call `release_work_order`
-instead of `submit_for_review`. Without the flag the guidance stays
-fire-and-forget. The server records nothing from the flag.
+`propose_requirement_revision`, `propose_system_design_revision`, and
+`propose_decision` are retired. A call to one is refused and its error names the
+two remedies: `request_plan_revision` when the approved plan conflicts with the
+repository while confirmed documents stand, and the authority-conflict checkpoint
+on `release_work_order` when the work would require changing a confirmed
+document. The checkpoint needs no pending proposal.
 
-| Tool | What it does |
-|---|---|
-| `propose_requirement_revision` | Propose a full revised requirement document (the written text plus the `conveyor:requirements` code block) for an existing document. |
-| `propose_system_design_revision` | Propose a full revised System Design document, including its `conveyor:governs` code block. |
-| `propose_decision` | Propose a DEC-n with statement, context, and alternatives rejected, optionally superseding a confirmed decision. The server mints the ID. |
+Document changes go through operator-side planning: `conveyor plan push`,
+in-product planning sessions, and the REST routes, which require
+`propose_documents`. Only an operator confirms them.
 
 ## Telemetry
 

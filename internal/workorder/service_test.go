@@ -1766,7 +1766,7 @@ func TestTaskAuthoredDesignProposalWithholdsReviewUntilDecision(t *testing.T) {
 	}
 	if implementContext.GovernanceSnapshot == nil || len(implementContext.GovernanceSnapshot.PendingDesignProposals) != 2 ||
 		implementContext.GovernanceSnapshot.PendingDesignProposals[0].Version != first.Version ||
-		!strings.Contains(implementContext.RolePrompt, "report an existing identical proposal identifier") {
+		!strings.Contains(implementContext.RolePrompt, "Earlier System Design proposals from this task") {
 		t.Fatalf("implement pending context=%+v role=%s", implementContext.GovernanceSnapshot, implementContext.RolePrompt)
 	}
 

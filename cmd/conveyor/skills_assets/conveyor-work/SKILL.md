@@ -25,8 +25,8 @@ keep spec work read-only in the checkout where it started. Work only in the path
 from a checkout path outside it, and never create a separate clone to get
 around a primary checkout that has uncommitted changes. Keep the lease alive for
 the life of each claim and finish through the registered stage lifecycle tool
-or an explicit truthful release. Executor claims confer proposal capability
-only; operator confirmations, gates, assignment, drift resolution, and merge
+or an explicit truthful release. Executor claims confer no way to propose or revise
+a document; operator confirmations, gates, assignment, drift resolution, and merge
 remain outside the executor's authority. A self-claimed session records an
 operator's gate or proposal decision only on the operator's direct instruction
 in the same conversation, for its own task, with the operator's own credential

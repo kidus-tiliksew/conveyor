@@ -87,18 +87,20 @@ Method:
   implementer noted in the pull request body.
 - Enforce Non-goals verbatim: changes outside them are scope creep even
   when useful.
+- Judge the work against the pinned confirmed documents and the approved plan.
+  Request changes to work that contradicts either one. Never ask the task for a
+  document revision or accept one as the remedy (DEC-102). When a pinned
+  confirmed document itself appears wrong, record the conflict in the governance
+  assessment's `conflicts` so the operator sees it.
 - Check every acceptance criterion against the implementation agent's actual
-  authority. For a conflict with an available task-authored requirement,
-  System Design, or decision revision proposal surface, accept propose-first
-  checkpoint phrasing that directs the implementer to author complete
-  proposals, cite their pending identifiers, and then pause for operator
-  confirmation. Record a blocking authority-boundary finding when a plan
-  reduces such a proposable conflict to a bare pause-and-report checkpoint with
-  neither a proposal step nor a stated reason why proposing is unavailable. For
-  gate approval, repository-drift resolution, task cancellation, or another act
-  without an applicable proposal surface, accept a pause-and-report checkpoint
-  whose agent obligation ends when reached and whose plan states why proposing
-  is unavailable. This is a reasoned reviewer check, not a text parser.
+  authority. Record a blocking authority-boundary finding when a plan directs
+  the implementer to propose or revise a document. Accept a stop at an
+  authority-conflict checkpoint that cites the clauses and describes the
+  conflict, and a `request_plan_revision` for a plan that conflicts with the
+  repository. For gate approval, repository-drift resolution, task cancellation,
+  or another operator-only act, accept a pause-and-report checkpoint whose agent
+  obligation ends when reached. This is a reasoned reviewer check, not a text
+  parser.
 - Weigh correctness over style: broken behavior, hallucinated APIs, missing
   error handling, tests that do not actually test their criterion.
 
