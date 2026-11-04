@@ -239,14 +239,13 @@ removes the local worktree, keeping the branch.
 An operator can start an open task over with `POST /v1/tasks/{id}/restart`,
 providing `request_id`, a required `reason` of at most 200 characters, and an
 optional `note` of at most 2000 characters. The request cancels the task and its
-non-terminal work orders, dismisses its own pending requirement and System
-Design proposals with the note, and creates one linked successor carrying its
+non-terminal work orders and creates one linked successor carrying its
 body, repository, base branch, open dependencies, attached context, frozen
 policy, and previous approved plan as reference context. The successor starts
 at triage on a new assigned branch and receives the reason and note as operator
-direction on its first work order. The API requires `operate_gates`, plus
-`confirm_documents` when pending proposals must be dismissed. An identical
-request ID replays the original result; terminal tasks otherwise require
+direction on its first work order. The API requires `operate_gates`. Pending
+document proposals stay pending for an operator with `confirm_documents` to
+decide. An identical request ID replays the original result; terminal tasks otherwise require
 `POST /v1/tasks`. This API never resets or changes the retired branch or
 worktree and does not close its pull request.
 
@@ -417,23 +416,6 @@ task detail's `summaries.park_reason` states what triage recorded when it
 parked the task, and `summaries.dispatch_failure` the latest dispatch failure.
 Pending proposals expose `attention.task_count` and
 `attention.operator_decisions` from that same projection.
-
-### Operator reasons in work-order context
-
-Review orders and later implement attempts receive `operator_notes` when an
-implementation-origin requirement or System Design version from that task
-was dismissed with a note. Each entry contains `document_id`, `version`,
-`tier` (`requirement` or `system_design`), `note`, and `dismissed_at`. Entries
-sort by tier, document ID, then numeric version. The role prompt labels them
-as operator reasons and untrusted observational evidence.
-
-Context assembly refreshes notes even when review authority stays pinned.
-Only the originating task in the same workspace receives them. An empty
-collection is omitted, and terminal tasks drop the collection while version
-history remains readable. Notes do not alter admission, dispatch, claiming,
-gates, or document authority. The claim-bound `get_work_order` response
-projects the same collection (req-260810-23b69f AC-5.2 and AC-5.4;
-`component-work-orders`).
 
 ## Repository documentation closure
 

@@ -111,7 +111,7 @@ Create and inspect tasks. Titles are always generated from the body.
 | `conveyor task show <id>` | Show a task and its jobs as JSON on stdout. Supersession links and successor operator reason/note also appear on stderr. |
 | `conveyor task status <id>` | Print the server's next-action statement for the task (`GET /v1/tasks/{id}/next-action`). `--json` prints the server body verbatim. See [task status](#task-status). |
 | `conveyor task wait <id>` | Block until the task's state, pending gate, or next claimable order changes, the task is merged, closed, or parked, or the timeout elapses. `--timeout` (default `5m`, must be positive), `--json`, and `--until operator\|terminal\|stage=<stage>`. See [task wait](#task-wait). |
-| `conveyor task restart <id>` | Start a non-terminal task over. Required `--reason <text>`; optional `--note <text>` or `--note-file <path>`, `--request-id <id>`, and `--yes`. Preview affected orders, proposals, and the open pull request, then require terminal confirmation. |
+| `conveyor task restart <id>` | Start a non-terminal task over. Required `--reason <text>`; optional `--note <text>` or `--note-file <path>`, `--request-id <id>`, and `--yes`. Preview affected orders and the open pull request, then require terminal confirmation. |
 | `conveyor task close <id>` | Cancel a non-terminal task. `--reason` is required. |
 | `conveyor task link <task> <dependency>` | Make an existing open task depend on another open task. `--reason` and `--request-id` are required; cycles are rejected. |
 | `conveyor task unlink <task> <dependency>` | Remove one blocking dependency edge. `--reason` and `--request-id` required. |
@@ -137,9 +137,8 @@ Non-terminal stdin exits without restarting. After confirmation, the CLI sends
 one restart request and prints the successor ID and branch. Its third output
 line, `Next:`, names the successor task and workspace and the `conveyor-work`
 skill: work the successor from an agent session that claims its orders. The
-server cancels the retired task and its non-terminal orders,
-dismisses its pending document proposals, and attempts to close its open pull
-request. Its branch and worktree are preserved. Server refusals retain the
+server cancels the retired task and its non-terminal orders and attempts to
+close its open pull request. Its pending document proposals stay pending. Its branch and worktree are preserved. Server refusals retain the
 server's message and exit non-zero.
 
 A task carries no execution setup. The person who starts the agent session

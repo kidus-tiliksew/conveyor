@@ -271,5 +271,6 @@ every earlier pending version dismissed by the transaction. History exposes
 `dismissal_note` beside the existing actor and timestamp, without changing
 content or statement identifiers. The existing dismissal events add `note`
 only when present; requirement supersession keeps `requirement.version_retired`.
-These notes are observational task evidence under `component-work-orders`,
-not document authority (req-260810-23b69f AC-5.1, AC-5.2, AC-5.4).
+A note stays on the dismissed version's history. It is not document authority,
+and no task or work-order context carries it (req-260810-23b69f REQ-5, AC-5.1,
+AC-5.3, AC-5.4).
