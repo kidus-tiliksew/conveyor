@@ -530,8 +530,9 @@ the binding is restored.
 A work order names its governing documents and carries none of their bodies,
 so its response stays readable (`req-design-delivery` REQ-1;
 `req-260802-72fc68` AC-2.2; `req-task-centric-delivery` AC-1.2; DEC-103). The
-server keeps the complete snapshot: verdict validation, the context-freshness
-comparison, and the delivery consultation record read it, not this list.
+server keeps the complete snapshot: verdict validation and the
+context-freshness comparison read it, not this list. Being named in this list
+records no [consultation](#consultation).
 
 **`get_work_order`.** `role_prompt` holds the role instructions, each served
 requirement statement, and the two lists below, each once. `approved_spec.content`
