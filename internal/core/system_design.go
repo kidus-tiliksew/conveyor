@@ -388,11 +388,9 @@ type GovernanceDesignContext struct {
 	SupersededBy       []string        `json:"superseded_by,omitempty"`
 }
 
-// PendingSystemDesignProposal is observable review/implementation context,
-// never governance authority. ProposalEventID identifies the append-only event
-// that created the immutable version. Confirmed distinguishes proposal evidence
-// that an operator confirmed after the task proposed it; dismissed versions are
-// never included.
+// PendingSystemDesignProposal is retired task-authored proposal evidence an
+// older pinned GovernanceSnapshot may still hold. Nothing writes or delivers it
+// (DEC-102(6)); it stays decodable so an older pin round-trips to its digest.
 type PendingSystemDesignProposal struct {
 	DocumentID      string `json:"document_id"`
 	Version         int    `json:"version"`
@@ -402,14 +400,25 @@ type PendingSystemDesignProposal struct {
 }
 
 // GovernanceSnapshot pins repository-scoped design authority and workspace-wide
-// decision authority. Its separately non-authoritative task-origin proposal
-// observations refresh at review claim time. Non-nil empty slices distinguish
-// a current empty snapshot from a legacy missing pin.
+// decision authority. PendingDesignProposals and ResolutionNotes are retired
+// evidence: new snapshots hold none, and an older pin keeps its recorded values
+// only so its bytes and digest stay unchanged, so no read delivers them
+// (DEC-102(6); see WithoutRetiredEvidence). Non-nil empty slices distinguish a
+// current empty snapshot from a legacy missing pin.
 type GovernanceSnapshot struct {
 	Designs                []GovernanceDesignContext     `json:"designs"`
 	Decisions              []Decision                    `json:"decisions"`
 	PendingDesignProposals []PendingSystemDesignProposal `json:"pending_design_proposals"`
 	ResolutionNotes        []string                      `json:"resolution_notes,omitempty"`
+}
+
+// WithoutRetiredEvidence returns the snapshot a read may present: its pinned
+// authority, without the retired proposal evidence an older pin may hold. The
+// stored pin is never rewritten.
+func (s GovernanceSnapshot) WithoutRetiredEvidence() GovernanceSnapshot {
+	s.PendingDesignProposals = []PendingSystemDesignProposal{}
+	s.ResolutionNotes = nil
+	return s
 }
 
 var decisionIDPattern = regexp.MustCompile(`^DEC-[1-9][0-9]*$`)

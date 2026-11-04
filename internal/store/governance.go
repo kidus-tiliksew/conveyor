@@ -4,10 +4,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
-	"encoding/json"
-	"fmt"
 	"sort"
-	"strconv"
 
 	"github.com/kidus-tiliksew/conveyor/internal/core"
 )
@@ -76,109 +73,7 @@ func GovernanceForTask(ctx context.Context, st Store, taskID, repository string)
 		snapshot.Designs = append(snapshot.Designs, design)
 	}
 	sort.Slice(snapshot.Designs, func(i, j int) bool { return snapshot.Designs[i].ID < snapshot.Designs[j].ID })
-	snapshot.PendingDesignProposals, snapshot.ResolutionNotes, err = SystemDesignProposalEvidenceForTask(ctx, st, taskID)
-	if err != nil {
-		return snapshot, err
-	}
 	return snapshot, nil
-}
-
-// SystemDesignProposalEvidenceForTask resolves non-authoritative task-origin
-// proposal observations independently from pinned governance authority.
-func SystemDesignProposalEvidenceForTask(ctx context.Context, st Store, taskID string) ([]core.PendingSystemDesignProposal, []string, error) {
-	versions, err := st.ListSystemDesignProposalVersionsForTask(ctx, taskID)
-	if err != nil {
-		return nil, nil, err
-	}
-	events, err := st.ListSystemDesignProposalEventsForTask(ctx, taskID)
-	if err != nil {
-		return nil, nil, err
-	}
-	proposalEvents := make(map[string]int64)
-	notes := make([]string, 0)
-	for _, event := range events {
-		var payload struct {
-			DocumentID   string `json:"document_id"`
-			Version      int    `json:"version"`
-			OriginTaskID string `json:"origin_task_id"`
-		}
-		if json.Unmarshal(event.Payload, &payload) != nil || payload.DocumentID == "" || payload.Version < 1 || payload.OriginTaskID != taskID {
-			notes = append(notes, fmt.Sprintf("proposal event %d was malformed and omitted", event.ID))
-			continue
-		}
-		proposalEvents[payload.DocumentID+":"+strconv.Itoa(payload.Version)] = event.ID
-	}
-	out := make([]core.PendingSystemDesignProposal, 0)
-	for _, version := range versions {
-		eventID := proposalEvents[version.DocumentID+":"+strconv.Itoa(version.Version)]
-		if eventID == 0 {
-			notes = append(notes, fmt.Sprintf("pending proposal %s v%d has no valid proposal event and was omitted", version.DocumentID, version.Version))
-			continue
-		}
-		out = append(out, core.PendingSystemDesignProposal{
-			DocumentID: version.DocumentID, Version: version.Version,
-			ProposalEventID: eventID, OriginTaskID: taskID, Confirmed: version.Confirmed,
-		})
-	}
-	sort.Slice(out, func(i, j int) bool {
-		if out[i].DocumentID != out[j].DocumentID {
-			return out[i].DocumentID < out[j].DocumentID
-		}
-		return out[i].Version < out[j].Version
-	})
-	sort.Strings(notes)
-	return out, notes, nil
-}
-
-// OperatorNotesForTask refreshes only observational evidence, independently of
-// pinned review authority. Never carry snapshot notes past terminal cleanup.
-func OperatorNotesForTask(ctx context.Context, st Store, taskID string) ([]core.OperatorNote, error) {
-	task, err := st.GetTask(ctx, taskID)
-	if err != nil {
-		return nil, err
-	}
-	if core.TaskTerminal(task.State) {
-		return nil, nil
-	}
-	return st.ListDocumentOperatorNotesForTask(ctx, taskID)
-}
-
-func (m *memory) ListDocumentOperatorNotesForTask(ctx context.Context, taskID string) ([]core.OperatorNote, error) {
-	m.mu.RLock()
-	defer m.mu.RUnlock()
-	workspace := workspaceOrDefault(ctx, "")
-	var notes []core.OperatorNote
-	for key, versions := range m.requirementVersions {
-		if key.workspace != workspace {
-			continue
-		}
-		for _, v := range versions {
-			if v.Origin == core.RequirementOriginImplementation && v.OriginTaskID == taskID && v.Retired && v.DismissalNote != "" {
-				notes = append(notes, core.OperatorNote{DocumentID: v.RequirementID, Version: v.Version, Tier: "requirement", Note: v.DismissalNote, DismissedAt: v.RetiredAt})
-			}
-		}
-	}
-	for key, versions := range m.systemDesignVersions {
-		if key.workspace != workspace {
-			continue
-		}
-		for _, v := range versions {
-			if v.Origin == core.SystemDesignOriginImplementation && v.OriginTaskID == taskID && v.Dismissed && v.DismissalNote != "" {
-				notes = append(notes, core.OperatorNote{DocumentID: v.DocumentID, Version: v.Version, Tier: "system_design", Note: v.DismissalNote, DismissedAt: v.DismissedAt})
-			}
-		}
-	}
-	sort.Slice(notes, func(i, j int) bool {
-		a, b := notes[i], notes[j]
-		if a.Tier != b.Tier {
-			return a.Tier < b.Tier
-		}
-		if a.DocumentID != b.DocumentID {
-			return a.DocumentID < b.DocumentID
-		}
-		return a.Version < b.Version
-	})
-	return notes, nil
 }
 
 // EncodeGovernanceSnapshot returns the lowercase hex SHA-256 of the canonical
@@ -194,9 +89,8 @@ func EncodeGovernanceSnapshot(snapshot *core.GovernanceSnapshot) (digest string,
 }
 
 // PinClaimGovernance applies the claim-time governance pin. A missing pin or
-// a verify repin replaces the whole snapshot; otherwise only claim-time-fresh
-// proposal observations and resolution notes change, leaving frozen design
-// and decision authority untouched (component-work-orders).
+// a verify repin replaces the whole snapshot; otherwise the frozen snapshot
+// stays exactly as pinned (component-work-orders).
 func PinClaimGovernance(order *core.WorkOrder, governance *core.GovernanceSnapshot, repin bool) {
 	if governance == nil {
 		return
@@ -208,8 +102,5 @@ func PinClaimGovernance(order *core.WorkOrder, governance *core.GovernanceSnapsh
 		copy.PendingDesignProposals = append([]core.PendingSystemDesignProposal(nil), governance.PendingDesignProposals...)
 		copy.ResolutionNotes = append([]string(nil), governance.ResolutionNotes...)
 		order.GovernanceSnapshot = &copy
-		return
 	}
-	order.GovernanceSnapshot.PendingDesignProposals = append([]core.PendingSystemDesignProposal(nil), governance.PendingDesignProposals...)
-	order.GovernanceSnapshot.ResolutionNotes = append([]string(nil), governance.ResolutionNotes...)
 }

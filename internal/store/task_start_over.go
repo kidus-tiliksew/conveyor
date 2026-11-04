@@ -13,7 +13,6 @@ import (
 	"github.com/kidus-tiliksew/conveyor/internal/gitx"
 )
 
-var ErrStartOverConfirmDocuments = errors.New("task has pending proposals: confirm_documents capability is required")
 var ErrStartOverRequestConflict = errors.New("request_id was already used with a different reason or note")
 
 const TaskStartOverContextDropped = "task.start_over_context_dropped"
@@ -131,10 +130,4 @@ func StartOverSuccessor(old core.Task, r core.TaskStartOverRequest) core.Task {
 
 func StartOverPlanContent(taskID string, version int, content string) []byte {
 	return []byte(fmt.Sprintf("# Previous approved execution plan (reference only)\n\nRetired task: %s\nPlan version: %d\n\nThis plan is reference context, not approval for the successor task.\n\n%s\n", taskID, version, content))
-}
-
-func StartOverDismissalDecided(err error) bool {
-	var requirement *RequirementVersionDismissalConflict
-	var design *SystemDesignVersionDismissalConflict
-	return errors.As(err, &requirement) || errors.As(err, &design)
 }

@@ -77,16 +77,19 @@ func TestContextProposalRowAndChoices(t *testing.T) {
 		}
 	}
 	// operate_gates grants no document act.
-	documents := Project(Input{
-		Task:         core.Task{ID: "task-1", State: core.TaskRunning},
-		ClaimWaiting: []ProposalRef{{Tier: "system_design", ID: "component-work-orders", Version: 51}},
-		Capabilities: map[core.Capability]bool{core.CapabilityOperateGates: true},
-		Now:          now,
-	})
-	for _, choice := range documents.Choices {
-		if choice.Allowed {
-			t.Fatalf("document choice %s allowed with operate_gates alone", choice.ID)
+	cited := checkpointInput(now, core.WorkOrderCheckpointClassAuthorityConflict, []core.WorkOrderAuthorityConflictCitation{{DocumentID: "component-work-orders", CitedVersion: 50}}, []ProposalRef{{Tier: "system_design", ID: "component-work-orders", Version: 51}})
+	cited.Capabilities = map[core.Capability]bool{core.CapabilityOperateGates: true}
+	checked := 0
+	for _, choice := range Project(cited).Choices {
+		if strings.HasPrefix(choice.ID, "confirm:") || strings.HasPrefix(choice.ID, "dismiss:") {
+			checked++
+			if choice.Allowed {
+				t.Fatalf("document choice %s allowed with operate_gates alone", choice.ID)
+			}
 		}
+	}
+	if checked != 2 {
+		t.Fatalf("checked %d document choices, want confirm and dismiss", checked)
 	}
 }
 
@@ -106,8 +109,8 @@ func TestContextProposalPrecedence(t *testing.T) {
 		name, kind, secondary string
 		in                    Input
 	}{
-		{name: "claim wait over context", kind: KindDocumentProposal, secondary: KindContextProposal,
-			in: withContext(Input{Task: core.Task{State: core.TaskRunning}, ClaimWaiting: []ProposalRef{{Tier: "requirement", ID: "req-y", Version: 2}}, Now: now})},
+		{name: "pending document proposal leaves context first", kind: KindContextProposal, secondary: KindWorking,
+			in: withContext(Input{Task: core.Task{State: core.TaskRunning}, PendingProposals: []ProposalRef{{Tier: "requirement", ID: "req-y", Version: 2}}, Now: now})},
 		{name: "agent question over context", kind: KindAgentQuestion, secondary: KindContextProposal,
 			in: withContext(checkpointInput(now, core.WorkOrderCheckpointClassAuthorityConflict, []core.WorkOrderAuthorityConflictCitation{{DocumentID: "component-x", CitedVersion: 1}}, nil))},
 		{name: "stalled over context", kind: KindStalled, secondary: KindContextProposal,

@@ -90,8 +90,22 @@ func TestProjectGovernanceReferencesOrdersAndCarriesNoBody(t *testing.T) {
 	if references.Decisions[0].ID != "DEC-1" || references.Decisions[0].Summary != "Current rule." || references.Decisions[1].Summary != "" || references.Decisions[1].SupersededBy != "DEC-1" {
 		t.Fatalf("decisions=%+v", references.Decisions)
 	}
-	if references.PendingDesignProposals[0].DocumentID != "a" || snapshot.PendingDesignProposals[0].DocumentID != "z" {
-		t.Fatalf("pending order=%+v source=%+v", references.PendingDesignProposals, snapshot.PendingDesignProposals)
+	// An older pin's retired proposal evidence and resolution notes never reach
+	// a reference list, and the pin itself is left as recorded (DEC-102(6)).
+	for _, forbidden := range []string{"pending_design_proposals", "resolution_notes", "proposal_event_id", "note"} {
+		if strings.Contains(encoded, forbidden) {
+			t.Fatalf("references carry retired evidence %q: %s", forbidden, encoded)
+		}
+	}
+	if len(snapshot.PendingDesignProposals) != 2 || len(snapshot.ResolutionNotes) != 1 {
+		t.Fatalf("projection changed the recorded pin: %+v", snapshot)
+	}
+	presented := snapshot.WithoutRetiredEvidence()
+	if presented.PendingDesignProposals == nil || len(presented.PendingDesignProposals) != 0 || presented.ResolutionNotes != nil || len(presented.Designs) != len(snapshot.Designs) || len(presented.Decisions) != len(snapshot.Decisions) {
+		t.Fatalf("presented snapshot=%+v", presented)
+	}
+	if len(snapshot.PendingDesignProposals) != 2 || len(snapshot.ResolutionNotes) != 1 {
+		t.Fatalf("WithoutRetiredEvidence changed the recorded pin: %+v", snapshot)
 	}
 	// No diff and no provenance: the diff group is absent and repository order is by ID.
 	plain := ProjectGovernanceReferences(snapshot, "app", GovernanceDesignProvenance{}, nil)

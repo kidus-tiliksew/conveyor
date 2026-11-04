@@ -74,10 +74,9 @@ review seats taking precedence.
 The dashboard's **Start over** action is available on non-terminal tasks to
 members with `operate_gates`. Its dialog requires a reason (up to 200
 characters), accepts an optional note for the next session (up to 2000), and
-previews work-order cancellation, task-authored pending document dismissals,
-and the known pull request to close. Pending proposals must load before
-submission; dismissing them also requires an operator with `confirm_documents`.
-A retry reuses the request ID and input so it returns the same successor. The
+previews work-order cancellation and the known pull request to close. Starting
+over decides no document proposal: a pending version stays pending and stays
+decidable by an operator with `confirm_documents`. A retry reuses the request ID and input so it returns the same successor. The
 new task starts on a new branch with the same body and pins, carries the
 operator's reason and note, and links back to the retired task; both have a
 `restarted` marker. The retired task links forward and shows the recorded PR
@@ -410,7 +409,7 @@ bands, paging headers, `document_proposal` items, and an `acts` log. Each
 `document_proposal` item carries `proposal.age_seconds`, the whole seconds since
 `proposed_at` at read time (zero for a future time, omitted without one), and
 the server's `label`, `question`, and `if_ignored` text. `if_ignored` reads
-"The claim stays withheld." only for a version a task's claim waits on.
+"The proposal stays pending.", because a pending proposal holds no task's work.
 Each task item's `pull_request` is the task's recorded pull request (`url`,
 `number`, `repository` from its latest `pull_request.opened`), omitted when
 none is recorded; the task's GitHub issue stays on `task.github`. The bounded

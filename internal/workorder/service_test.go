@@ -278,10 +278,6 @@ func (s *dependencyBatchObservationStore) ListDependencyBlockers(_ context.Conte
 	return s.blockers, nil
 }
 
-func (s *dependencyBatchObservationStore) ListClaimBlockingProposalsForTask(context.Context, string) ([]store.ClaimBlockingProposal, error) {
-	return nil, nil
-}
-
 func (s *dependencyBatchObservationStore) GetTask(_ context.Context, id string) (core.Task, error) {
 	return core.Task{ID: id, State: core.TaskRunning}, nil
 }
@@ -347,9 +343,9 @@ func TestListBatchesBlockersOnlyForQueuedImplementationOrders(t *testing.T) {
 
 type scopedListObservationStore struct {
 	store.Store
-	orders                                 []core.WorkOrder
-	workspaceReads, taskReads, designReads int
-	blockerTaskIDs                         [][]string
+	orders                    []core.WorkOrder
+	workspaceReads, taskReads int
+	blockerTaskIDs            [][]string
 }
 
 func (s *scopedListObservationStore) ListWorkOrders(context.Context) ([]core.WorkOrder, error) {
@@ -376,14 +372,6 @@ func (s *scopedListObservationStore) ListTaskWorkOrders(_ context.Context, taskI
 func (s *scopedListObservationStore) ListDependencyBlockers(_ context.Context, taskIDs []string) (map[string]store.DependencyBlockers, error) {
 	s.blockerTaskIDs = append(s.blockerTaskIDs, append([]string(nil), taskIDs...))
 	return map[string]store.DependencyBlockers{"task-a": {BlockingTaskIDs: []string{"dependency"}}}, nil
-}
-
-func (s *scopedListObservationStore) ListClaimBlockingProposalsForTask(_ context.Context, taskID string) ([]store.ClaimBlockingProposal, error) {
-	s.designReads++
-	if taskID != "task-a" {
-		return nil, fmt.Errorf("unexpected proposal lookup for %s", taskID)
-	}
-	return []store.ClaimBlockingProposal{{Tier: store.ClaimBlockingTierSystemDesign, ID: "pending-design", Version: 2}}, nil
 }
 
 func (s *scopedListObservationStore) GetTask(_ context.Context, id string) (core.Task, error) {
@@ -1707,7 +1695,11 @@ func TestReviewVerdictValidatesAgainstPinsAfterLiveAuthorityMoves(t *testing.T) 
 	}
 }
 
-func TestTaskAuthoredDesignProposalWithholdsReviewUntilDecision(t *testing.T) {
+// A pending task-origin version holds no review: the order lists as claimable,
+// the claim proceeds with the version still pending, no context or prompt
+// carries it as evidence, and the operator decides it independently
+// (req-260810-23b69f REQ-3; DEC-102(6)).
+func TestTaskAuthoredDesignProposalHoldsNoReview(t *testing.T) {
 	ctx := store.WithWorkspace(store.WithActor(t.Context(), store.SystemActor()), "test")
 	st := store.NewMemory()
 	task := core.Task{ID: "pending-design-context", Workspace: "test", Repo: "app", State: core.TaskRunning, NextStage: core.StageImplement, CreatedAt: time.Now().UTC()}
@@ -1736,12 +1728,6 @@ func TestTaskAuthoredDesignProposalWithholdsReviewUntilDecision(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err = st.ProposeSystemDesignVersion(ctx, core.SystemDesignVersion{
-		DocumentID: document.ID, Content: "# Other task\n\n```conveyor:governs\n- repo: app\n  paths:\n    - cmd/**\n```",
-		Origin: core.SystemDesignOriginImplementation, OriginTaskID: "another-task",
-	}); err != nil {
-		t.Fatal(err)
-	}
 	bundle, err := pack.Load("../../pack")
 	if err != nil {
 		t.Fatal(err)
@@ -1750,6 +1736,17 @@ func TestTaskAuthoredDesignProposalWithholdsReviewUntilDecision(t *testing.T) {
 		"review": {Execution: config.ExecutionMCP, Timeout: time.Hour, TimeoutText: "1h"},
 	}}}
 	service := &Service{Store: st, Pack: bundle, ConfigProvider: func(context.Context) (*config.Config, error) { return cfg, nil }}
+	requireNoEvidence := func(label string, contract Context) {
+		t.Helper()
+		if contract.GovernanceSnapshot == nil || len(contract.GovernanceSnapshot.PendingDesignProposals) != 0 || len(contract.GovernanceSnapshot.ResolutionNotes) != 0 {
+			t.Fatalf("%s context carries proposal evidence: %+v", label, contract.GovernanceSnapshot)
+		}
+		for _, retired := range []string{"Earlier System Design proposals from this task", "System Design proposal evidence from this task", "Governance resolution notes", "matching pending or confirmed proposal", "DESIGN-pending-second v"} {
+			if strings.Contains(contract.RolePrompt, retired) {
+				t.Fatalf("%s role carries %q: %s", label, retired, contract.RolePrompt)
+			}
+		}
+	}
 	implementJob := core.Job{ID: task.ID + "-implement-2", TaskID: task.ID, Stage: core.StageImplement, State: core.JobPending}
 	if err = st.CreateJob(ctx, implementJob); err != nil {
 		t.Fatal(err)
@@ -1764,11 +1761,7 @@ func TestTaskAuthoredDesignProposalWithholdsReviewUntilDecision(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if implementContext.GovernanceSnapshot == nil || len(implementContext.GovernanceSnapshot.PendingDesignProposals) != 2 ||
-		implementContext.GovernanceSnapshot.PendingDesignProposals[0].Version != first.Version ||
-		!strings.Contains(implementContext.RolePrompt, "Earlier System Design proposals from this task") {
-		t.Fatalf("implement pending context=%+v role=%s", implementContext.GovernanceSnapshot, implementContext.RolePrompt)
-	}
+	requireNoEvidence("implement", implementContext)
 
 	reviewJob := core.Job{ID: task.ID + "-review-1", TaskID: task.ID, Stage: core.StageReview, State: core.JobPending}
 	if err = st.CreateJob(ctx, reviewJob); err != nil {
@@ -1778,34 +1771,44 @@ func TestTaskAuthoredDesignProposalWithholdsReviewUntilDecision(t *testing.T) {
 		t.Fatal(err)
 	}
 	listed, err := service.List(ctx)
-	if err != nil || len(listed) != 2 || listed[1].Claimable {
-		t.Fatalf("withheld review listing=%+v err=%v", listed, err)
+	if err != nil || len(listed) != 2 || !listed[1].Claimable {
+		t.Fatalf("review listing=%+v err=%v", listed, err)
 	}
-	if _, err = service.Claim(ctx, reviewJob.ID, core.WorkOrderClaim{SessionID: "review-session-pending", ClientToken: "review-token-pending", ClaimantID: "reviewer", Lease: time.Minute}); err == nil || !strings.Contains(err.Error(), "waiting on") {
-		t.Fatalf("pending review claim error=%v", err)
+	claimed, err := service.Claim(ctx, reviewJob.ID, core.WorkOrderClaim{SessionID: "review-session-pending", ClientToken: "review-token-pending", ClaimantID: "reviewer", Lease: time.Minute})
+	if err != nil {
+		t.Fatalf("pending proposal withheld the review claim: %v", err)
 	}
-	if _, err = storetest.For(st).ClaimWorkOrder(ctx, reviewJob.ID, core.WorkOrderClaim{SessionID: "direct-review-session", ClientToken: "direct-review-token", Lease: time.Minute}); err == nil || !strings.Contains(err.Error(), "waiting on") {
-		t.Fatalf("direct pending review claim error=%v", err)
+	if claimed.GovernanceSnapshot == nil || len(claimed.GovernanceSnapshot.PendingDesignProposals) != 0 || len(claimed.GovernanceSnapshot.Designs) != 1 || claimed.GovernanceSnapshot.Designs[0].Version != initial.Version {
+		t.Fatalf("pinned governance=%+v", claimed.GovernanceSnapshot)
+	}
+	reviewContext, err := service.Get(ctx, reviewJob.ID, "review-session-pending")
+	if err != nil {
+		t.Fatal(err)
+	}
+	requireNoEvidence("review", reviewContext)
+
+	// The versions stay pending and decidable after the claim, and deciding one
+	// never moves the frozen pin.
+	pending, err := st.GetSystemDesignVersion(ctx, document.ID, first.Version)
+	if err != nil || pending.Confirmed || pending.Dismissed || pending.OriginTaskID != task.ID {
+		t.Fatalf("pending version=%+v err=%v", pending, err)
 	}
 	if _, _, err = st.ConfirmSystemDesignVersion(ctx, document.ID, first.Version, initial.Version); err != nil {
 		t.Fatal(err)
 	}
-	if _, err = service.Claim(ctx, reviewJob.ID, core.WorkOrderClaim{SessionID: "review-session-still-pending", ClientToken: "review-token-still-pending", ClaimantID: "reviewer", Lease: time.Minute}); err == nil || !strings.Contains(err.Error(), "waiting on") {
-		t.Fatalf("review released before final proposal decision error=%v", err)
-	}
-	if _, _, err = st.ConfirmSystemDesignVersion(ctx, secondDocument.ID, secondDocumentProposal.Version); err != nil {
+	if _, _, err = st.DismissSystemDesignVersion(ctx, secondDocument.ID, secondDocumentProposal.Version); err != nil {
 		t.Fatal(err)
 	}
-	claimed, err := service.Claim(ctx, reviewJob.ID, core.WorkOrderClaim{SessionID: "review-session-pending", ClientToken: "review-token-pending", ClaimantID: "reviewer", Lease: time.Minute})
+	after, err := service.Get(ctx, reviewJob.ID, "review-session-pending")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if claimed.GovernanceSnapshot == nil || len(claimed.GovernanceSnapshot.PendingDesignProposals) != 2 || !claimed.GovernanceSnapshot.PendingDesignProposals[0].Confirmed || !claimed.GovernanceSnapshot.PendingDesignProposals[1].Confirmed || claimed.GovernanceSnapshot.PendingDesignProposals[0].ProposalEventID == 0 {
-		t.Fatalf("pinned pending proposals=%+v", claimed.GovernanceSnapshot)
+	if after.GovernanceSnapshot == nil || len(after.GovernanceSnapshot.Designs) != 1 || after.GovernanceSnapshot.Designs[0].Version != initial.Version {
+		t.Fatalf("a decision moved the frozen pin: %+v", after.GovernanceSnapshot)
 	}
-	if len(claimed.GovernanceSnapshot.Designs) != 2 {
-		t.Fatalf("first claim authority=%+v", claimed.GovernanceSnapshot.Designs)
-	}
+	requireNoEvidence("review after decisions", after)
+
+	// A later review round pins the then-confirmed authority, still with no evidence.
 	_, err = st.ProposeSystemDesignVersion(ctx, core.SystemDesignVersion{
 		DocumentID: document.ID, Content: "# Pending two\n\n```conveyor:governs\n- repo: app\n  paths:\n    - internal/httpapi/**\n```",
 		Origin: core.SystemDesignOriginImplementation, OriginTaskID: task.ID,
@@ -1813,40 +1816,19 @@ func TestTaskAuthoredDesignProposalWithholdsReviewUntilDecision(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-
 	reviewJob2 := core.Job{ID: task.ID + "-review-2", TaskID: task.ID, Stage: core.StageReview, State: core.JobPending}
 	if err = st.CreateJob(ctx, reviewJob2); err != nil {
 		t.Fatal(err)
 	}
-	if err = storetest.For(st).CreateWorkOrder(ctx, core.WorkOrder{ID: reviewJob2.ID, TaskID: task.ID, JobID: reviewJob2.ID, Stage: core.StageReview, ReviewRound: 2, ReviewSeat: 1, ServedRequirementSnapshot: []core.ServedRequirementContext{}}); err != nil {
+	if err = storetest.For(st).CreateWorkOrder(ctx, core.WorkOrder{ID: reviewJob2.ID, TaskID: task.ID, JobID: reviewJob2.ID, Stage: core.StageReview, ReviewRound: 2, ReviewSeat: 1}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err = service.Claim(ctx, reviewJob2.ID, core.WorkOrderClaim{SessionID: "review-session-refreshed", ClientToken: "review-token-refreshed", ClaimantID: "reviewer", Lease: time.Minute}); err == nil || !strings.Contains(err.Error(), "waiting on") {
-		t.Fatalf("second pending review claim error=%v", err)
-	}
-	replacement, err := st.ProposeSystemDesignVersion(ctx, core.SystemDesignVersion{
-		DocumentID: document.ID, Content: "# Operator replacement\n\n```conveyor:governs\n- repo: app\n  paths:\n    - internal/**\n```",
-		Origin: core.SystemDesignOriginOperator,
-	})
+	claimed2, err := service.Claim(ctx, reviewJob2.ID, core.WorkOrderClaim{SessionID: "review-session-second", ClientToken: "review-token-second", ClaimantID: "reviewer", Lease: time.Minute})
 	if err != nil {
-		t.Fatal(err)
+		t.Fatalf("second review claim: %v", err)
 	}
-	if _, _, err = st.ConfirmSystemDesignVersion(ctx, document.ID, replacement.Version, first.Version); err != nil {
-		t.Fatal(err)
-	}
-	claimed2, err := service.Claim(ctx, reviewJob2.ID, core.WorkOrderClaim{SessionID: "review-session-refreshed", ClientToken: "review-token-refreshed", ClaimantID: "reviewer", Lease: time.Minute})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if claimed2.GovernanceSnapshot == nil || len(claimed2.GovernanceSnapshot.Designs) != 2 || len(claimed2.GovernanceSnapshot.PendingDesignProposals) != 2 {
-		t.Fatalf("refreshed claim governance=%+v", claimed2.GovernanceSnapshot)
-	}
-	reviewContext, err := service.Get(ctx, reviewJob2.ID, "review-session-refreshed")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !strings.Contains(reviewContext.RolePrompt, "confirmed after proposal") || !strings.Contains(reviewContext.RolePrompt, "matching pending or confirmed proposal") {
-		t.Fatalf("review proposal context=%+v role=%s", reviewContext.GovernanceSnapshot, reviewContext.RolePrompt)
+	if claimed2.GovernanceSnapshot == nil || len(claimed2.GovernanceSnapshot.Designs) != 1 || claimed2.GovernanceSnapshot.Designs[0].Version != first.Version || len(claimed2.GovernanceSnapshot.PendingDesignProposals) != 0 {
+		t.Fatalf("second claim governance=%+v", claimed2.GovernanceSnapshot)
 	}
 }
 
@@ -1915,8 +1897,8 @@ func TestSubmitVerdictUsesParentPlanAfterProposalDecision(t *testing.T) {
 	if context.ApprovedSpec == nil || context.ApprovedSpec.TaskID != parent.ID || !strings.Contains(context.RolePrompt, "applicable=true") || !strings.Contains(context.ApprovedSpec.Content, "Pending design proposal is present") {
 		t.Fatalf("parent plan review context=%+v role=%s", context.ApprovedSpec, context.RolePrompt)
 	}
-	if claimed.GovernanceSnapshot == nil || len(claimed.GovernanceSnapshot.PendingDesignProposals) != 1 || !claimed.GovernanceSnapshot.PendingDesignProposals[0].Confirmed {
-		t.Fatalf("decided proposal was not pinned: %+v", claimed.GovernanceSnapshot)
+	if claimed.GovernanceSnapshot == nil || len(claimed.GovernanceSnapshot.PendingDesignProposals) != 0 {
+		t.Fatalf("a decided proposal reached the pin as evidence: %+v", claimed.GovernanceSnapshot)
 	}
 	designApplicable, decisionCitable := true, false
 	base := pipeline.Review{
@@ -3340,18 +3322,10 @@ func TestSubmitVerdictPreservesFencedDoneCriteria(t *testing.T) {
 	}
 }
 
-// failingClaimBlockingStore fails the claim-blocking read.
-type failingClaimBlockingStore struct{ store.Store }
-
-func (failingClaimBlockingStore) ListClaimBlockingProposalsForTask(context.Context, string) ([]store.ClaimBlockingProposal, error) {
-	return nil, errors.New("claim-blocking read failed")
-}
-
-// TestClaimBlockingProposalsMatchListingAndClaim proves the workspace and
-// task listings advertise a verify or review order as claimable exactly when
-// Service.Claim admits it, across both proposal tiers and every nonblocking
-// origin (req-260810-70ce2f AC-1.1–AC-1.4; component-work-orders).
-func TestClaimBlockingProposalsMatchListingAndClaim(t *testing.T) {
+// Workspace listing and Service.Claim admit a verify or review order whatever
+// document proposals are pending: both tiers, every origin, archived documents,
+// and decided or foreign versions (req-260810-23b69f REQ-3; DEC-102(6)).
+func TestListingAndClaimAdmitOrdersWithPendingProposals(t *testing.T) {
 	const designContent = "# Claim gate\n\n```conveyor:governs\n- repo: app\n  paths:\n    - internal/**\n```"
 	requirementVersion := func(statement string) core.RequirementVersion {
 		return core.RequirementVersion{Content: "# Claim gate\n\n```conveyor:requirements\n- id: REQ-1\n  statement: " + statement + "\n```", Statements: []core.RequirementStatement{{ID: "REQ-1", Statement: statement}}}
@@ -3387,22 +3361,21 @@ func TestClaimBlockingProposalsMatchListingAndClaim(t *testing.T) {
 		name  string
 		stage core.Stage
 		seed  func(*testing.T, fixture)
-		want  string // the proposal the refusal names; empty when claimable
 	}{
 		{name: "no proposal", stage: core.StageReview, seed: func(*testing.T, fixture) {}},
 		{name: "pending requirement", stage: core.StageReview, seed: func(t *testing.T, f fixture) {
 			proposeRequirement(t, f, core.RequirementOriginImplementation, f.task.ID)
-		}, want: "requirement proposal req-claim v2"},
+		}},
 		{name: "pending requirement on verify", stage: core.StageVerify, seed: func(t *testing.T, f fixture) {
 			proposeRequirement(t, f, core.RequirementOriginImplementation, f.task.ID)
-		}, want: "requirement proposal req-claim v2"},
+		}},
 		{name: "pending design", stage: core.StageReview, seed: func(t *testing.T, f fixture) {
 			proposeDesign(t, f, core.SystemDesignOriginImplementation, f.task.ID)
-		}, want: "System Design proposal design-claim v2"},
-		{name: "mixed tiers name the design", stage: core.StageReview, seed: func(t *testing.T, f fixture) {
+		}},
+		{name: "mixed tiers", stage: core.StageReview, seed: func(t *testing.T, f fixture) {
 			proposeRequirement(t, f, core.RequirementOriginImplementation, f.task.ID)
 			proposeDesign(t, f, core.SystemDesignOriginImplementation, f.task.ID)
-		}, want: "System Design proposal design-claim v2"},
+		}},
 		{name: "decision only", stage: core.StageReview, seed: func(t *testing.T, f fixture) {
 			if _, err := f.st.ProposeDecision(f.ctx, core.Decision{Statement: "Decide.", Context: "Fixture.", AlternativesRejected: "None.", Origin: core.DecisionOriginImplementation, OriginTaskID: f.task.ID}); err != nil {
 				t.Fatal(err)
@@ -3420,7 +3393,7 @@ func TestClaimBlockingProposalsMatchListingAndClaim(t *testing.T) {
 			if err := f.st.ArchiveSystemDesign(f.ctx, f.designID, "operator", nil); err != nil {
 				t.Fatal(err)
 			}
-		}, want: "System Design proposal design-claim v2"},
+		}},
 		{name: "confirmed requirement", stage: core.StageReview, seed: func(t *testing.T, f fixture) {
 			proposed := proposeRequirement(t, f, core.RequirementOriginImplementation, f.task.ID)
 			if _, _, err := f.st.ConfirmRequirementVersion(f.ctx, f.requirementID, proposed.Version); err != nil {
@@ -3455,7 +3428,7 @@ func TestClaimBlockingProposalsMatchListingAndClaim(t *testing.T) {
 			if err := st.CreateTask(ctx, task); err != nil {
 				t.Fatal(err)
 			}
-			requirement := requirementVersion("Claims wait for task-authored proposals.")
+			requirement := requirementVersion("Claims proceed past pending proposals.")
 			requirement.Origin = core.RequirementOriginOperator
 			if _, _, err := st.CreateRequirement(ctx, core.Requirement{ID: "req-claim", Title: "Claim gate"}, requirement); err != nil {
 				t.Fatal(err)
@@ -3495,40 +3468,11 @@ func TestClaimBlockingProposalsMatchListingAndClaim(t *testing.T) {
 			}
 			claimable := workspaceOrders[0].Claimable
 			_, claimErr := service.Claim(ctx, job.ID, core.WorkOrderClaim{SessionID: "claim-session", ClientToken: "claim-token", ClaimantID: "claimant", Lease: time.Minute})
-			if tc.want == "" {
-				if !claimable || claimErr != nil {
-					t.Fatalf("claimable=%v claim err=%v, want an admitted claim", claimable, claimErr)
-				}
-				return
-			}
-			if claimable || claimErr == nil || !strings.Contains(claimErr.Error(), "waiting on task-authored "+tc.want) {
-				t.Fatalf("claimable=%v claim err=%v, want a withheld order naming %s", claimable, claimErr, tc.want)
+			if !claimable || claimErr != nil {
+				t.Fatalf("claimable=%v claim err=%v, want an admitted claim", claimable, claimErr)
 			}
 		})
 	}
-
-	t.Run("failed read", func(t *testing.T) {
-		ctx := store.WithWorkspace(store.WithActor(t.Context(), store.SystemActor()), "test")
-		base := store.NewMemory()
-		task := core.Task{ID: "claim-read-failure", Workspace: "test", Repo: "app", State: core.TaskRunning, NextStage: core.StageReview, CreatedAt: time.Now().UTC()}
-		if err := base.CreateTask(ctx, task); err != nil {
-			t.Fatal(err)
-		}
-		job := core.Job{ID: task.ID + "-review-1", TaskID: task.ID, Stage: core.StageReview, State: core.JobPending}
-		if err := base.CreateJob(ctx, job); err != nil {
-			t.Fatal(err)
-		}
-		if err := storetest.For(base).CreateWorkOrder(ctx, core.WorkOrder{ID: job.ID, TaskID: task.ID, JobID: job.ID, Stage: core.StageReview}); err != nil {
-			t.Fatal(err)
-		}
-		service := &Service{Store: failingClaimBlockingStore{base}}
-		if _, err := service.List(ctx); err == nil || !strings.Contains(err.Error(), "claim-blocking read failed") {
-			t.Fatalf("workspace listing err=%v", err)
-		}
-		if _, err := service.Claim(ctx, job.ID, core.WorkOrderClaim{SessionID: "s", ClientToken: "c", ClaimantID: "claimant", Lease: time.Minute}); err == nil || !strings.Contains(err.Error(), "claim-blocking read failed") {
-			t.Fatalf("claim err=%v", err)
-		}
-	})
 }
 
 func TestListRecoveryRefusal(t *testing.T) {

@@ -2296,13 +2296,16 @@ func TestInProcessReviewUsesTaskScopedGovernanceForPromptAndValidation(t *testin
 	if err != nil {
 		t.Fatal(err)
 	}
-	if input.GovernanceSnapshot == nil || len(input.GovernanceSnapshot.Designs) != 1 || input.GovernanceSnapshot.Designs[0].Version != attached.Version || !input.GovernanceSnapshot.Designs[0].PinnedAtAttachment || len(input.GovernanceSnapshot.PendingDesignProposals) != 1 || input.GovernanceSnapshot.PendingDesignProposals[0].DocumentID != pending.ID {
+	if input.GovernanceSnapshot == nil || len(input.GovernanceSnapshot.Designs) != 1 || input.GovernanceSnapshot.Designs[0].Version != attached.Version || !input.GovernanceSnapshot.Designs[0].PinnedAtAttachment || len(input.GovernanceSnapshot.PendingDesignProposals) != 0 {
 		t.Fatalf("task-scoped in-process governance=%+v", input.GovernanceSnapshot)
 	}
-	for _, required := range []string{"older version pinned by the task attachment", "it stays binding", "DESIGN-pending-inprocess", "no document read tools"} {
+	for _, required := range []string{"older version pinned by the task attachment", "it stays binding", "no document read tools"} {
 		if !strings.Contains(input.Prompt, required) {
 			t.Fatalf("in-process prompt missing %q: %s", required, input.Prompt)
 		}
+	}
+	if strings.Contains(input.Prompt, pending.ID) {
+		t.Fatalf("in-process prompt carries the pending proposal %s: %s", pending.ID, input.Prompt)
 	}
 	// The prompt names documents; the pinned input keeps the bodies for validation.
 	for _, designInput := range input.GovernanceSnapshot.Designs {

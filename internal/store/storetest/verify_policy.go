@@ -230,16 +230,14 @@ func runVerifyAdmission(t *testing.T, x Fixture) {
 	}
 	document, proposal, err := st.CreateSystemDesign(ctx, core.SystemDesign{ID: "verify-" + core.NewTaskID(), Title: "Verify proposal", Category: "Architecture"}, core.SystemDesignVersion{Content: designProposalContent("verify"), Origin: core.SystemDesignOriginImplementation, OriginTaskID: order.TaskID})
 	requireOK(t, err)
-	if _, err = ClaimWorkOrder(ctx, st, order.ID, claim); err == nil {
-		t.Fatal("verify bypassed undecided proposal")
-	}
-	_, _, err = st.ConfirmSystemDesignVersion(ctx, document.ID, proposal.Version)
-	requireOK(t, err)
+	// A pending proposal holds no verify claim (req-260810-23b69f REQ-3).
 	claimed, err := ClaimWorkOrder(ctx, st, order.ID, claim)
 	requireOK(t, err)
 	if _, err = ClaimWorkOrder(ctx, st, order.ID, claim); err == nil {
 		t.Fatal("verify admitted a concurrent claim")
 	}
+	_, _, err = st.ConfirmSystemDesignVersion(ctx, document.ID, proposal.Version)
+	requireOK(t, err)
 	claimed.State = core.WorkOrderCancelled
 	requireOK(t, UpdateWorkOrder(ctx, st, claimed, core.WorkOrderCmdCancel))
 }

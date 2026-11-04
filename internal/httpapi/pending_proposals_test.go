@@ -3,7 +3,6 @@ package httpapi
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -18,44 +17,6 @@ import (
 	"github.com/kidus-tiliksew/conveyor/internal/store/storetest"
 	"github.com/kidus-tiliksew/conveyor/internal/workorder"
 )
-
-// The claim-wait predicate is judged over durable versions. A task ID alone
-// never makes a version withhold claims: only the implementation origin does,
-// and only while the version is unresolved (req-260810-70ce2f AC-1.1–AC-1.4).
-func TestProposalClaimWaitingPredicate(t *testing.T) {
-	const task = "task-a"
-	for name, tc := range map[string]struct {
-		version core.RequirementVersion
-		want    bool
-	}{
-		"implementation origin":            {core.RequirementVersion{Origin: core.RequirementOriginImplementation, OriginTaskID: task}, true},
-		"implementation from another task": {core.RequirementVersion{Origin: core.RequirementOriginImplementation, OriginTaskID: "task-b"}, false},
-		"task ID without implementation":   {core.RequirementVersion{Origin: core.RequirementOriginOperator, OriginTaskID: task}, false},
-		"chat session origin":              {core.RequirementVersion{Origin: core.RequirementOriginChat, OriginSessionID: "session"}, false},
-		"drift origin":                     {core.RequirementVersion{Origin: core.RequirementOriginDriftAmendment, OriginDriftID: "drift"}, false},
-		"confirmed":                        {core.RequirementVersion{Origin: core.RequirementOriginImplementation, OriginTaskID: task, Confirmed: true}, false},
-		"retired or dismissed":             {core.RequirementVersion{Origin: core.RequirementOriginImplementation, OriginTaskID: task, Retired: true}, false},
-	} {
-		if got := store.RequirementVersionWithholdsClaims(task, tc.version); got != tc.want {
-			t.Errorf("requirement %s: got %t want %t", name, got, tc.want)
-		}
-	}
-	for name, tc := range map[string]struct {
-		version core.SystemDesignVersion
-		want    bool
-	}{
-		"implementation origin":            {core.SystemDesignVersion{Origin: core.SystemDesignOriginImplementation, OriginTaskID: task}, true},
-		"implementation from another task": {core.SystemDesignVersion{Origin: core.SystemDesignOriginImplementation, OriginTaskID: "task-b"}, false},
-		"task ID without implementation":   {core.SystemDesignVersion{Origin: core.SystemDesignOriginOperator, OriginTaskID: task}, false},
-		"planning session origin":          {core.SystemDesignVersion{Origin: core.SystemDesignOriginPlanning, OriginSessionID: "session"}, false},
-		"confirmed":                        {core.SystemDesignVersion{Origin: core.SystemDesignOriginImplementation, OriginTaskID: task, Confirmed: true}, false},
-		"dismissed":                        {core.SystemDesignVersion{Origin: core.SystemDesignOriginImplementation, OriginTaskID: task, Dismissed: true}, false},
-	} {
-		if got := store.SystemDesignVersionWithholdsClaims(task, tc.version); got != tc.want {
-			t.Errorf("system design %s: got %t want %t", name, got, tc.want)
-		}
-	}
-}
 
 const claimParityTask = "claim-parity"
 
@@ -150,21 +111,20 @@ func readNextActionKind(t *testing.T, server *Server, taskID string) nextaction.
 	return action
 }
 
-type claimParityView struct {
-	PendingAuthority     bool              `json:"pending_authority"`
-	ProposalClaimWaiting bool              `json:"proposal_claim_waiting"`
-	WaitingProposals     []waitingProposal `json:"waiting_proposals"`
-}
+// retiredProposalWaitFields are the task-read fields the retired wait fed.
+var retiredProposalWaitFields = []string{"pending_authority", "proposal_claim_waiting", "waiting_proposals", "operator_notes"}
 
-func readClaimParity(t *testing.T, server *Server, taskID string) (claimParityView, claimParityView) {
+// requireNoProposalWaitFields reads the task detail and activity row and refuses
+// any retired wait or dismissal-note field (req-260810-23b69f REQ-3, REQ-5).
+func requireNoProposalWaitFields(t *testing.T, server *Server, taskID string) {
 	t.Helper()
 	detail := httptest.NewRecorder()
 	server.Handler().ServeHTTP(detail, authenticatedMemoryRead(server, httptest.NewRequest(http.MethodGet, "/v1/tasks/"+taskID+"/activity?workspace_id=demo", nil)))
 	if detail.Code != http.StatusOK {
 		t.Fatalf("detail status=%d body=%s", detail.Code, detail.Body.String())
 	}
-	var detailView claimParityView
-	if err := json.Unmarshal(detail.Body.Bytes(), &detailView); err != nil {
+	var detailBody map[string]json.RawMessage
+	if err := json.Unmarshal(detail.Body.Bytes(), &detailBody); err != nil {
 		t.Fatal(err)
 	}
 	activity := httptest.NewRecorder()
@@ -172,74 +132,66 @@ func readClaimParity(t *testing.T, server *Server, taskID string) (claimParityVi
 	if activity.Code != http.StatusOK {
 		t.Fatalf("activity status=%d body=%s", activity.Code, activity.Body.String())
 	}
-	var rows []struct {
-		Task struct {
-			ID string `json:"id"`
-		} `json:"task"`
-		claimParityView
-	}
+	var rows []map[string]json.RawMessage
 	if err := json.Unmarshal(activity.Body.Bytes(), &rows); err != nil {
 		t.Fatal(err)
 	}
+	for _, field := range retiredProposalWaitFields {
+		if _, present := detailBody[field]; present {
+			t.Fatalf("task detail still serves %s: %s", field, detail.Body.String())
+		}
+		for _, row := range rows {
+			if _, present := row[field]; present {
+				t.Fatalf("activity row still serves %s: %s", field, activity.Body.String())
+			}
+		}
+	}
 	for _, row := range rows {
-		if row.Task.ID == taskID {
-			return detailView, row.claimParityView
+		if strings.Contains(string(row["task"]), `"`+taskID+`"`) {
+			return
 		}
 	}
 	t.Fatalf("activity omitted %s: %s", taskID, activity.Body.String())
-	return claimParityView{}, claimParityView{}
 }
 
-// The projection agrees with the real claim gates. Each fixture is classified
-// by the read model, then the same task's queued verify or review order is
-// claimed through the work-order service (its System Design pre-check) and the
-// store transaction (the full requirement and System Design gate). A claim is
-// refused exactly when the projection says the task is waiting
-// (req-260810-70ce2f AC-1.1–AC-1.4; req-260810-23b69f AC-2.1, AC-2.2).
-func TestProposalClaimWaitingMatchesVerifyAndReviewClaims(t *testing.T) {
-	type expectation struct {
-		waiting          []waitingProposal
-		pendingAuthority bool
-	}
-	cases := map[string]func(f claimParityFixture) expectation{
-		"implementation System Design": func(f claimParityFixture) expectation {
+// No proposal shape holds a claim. For each one, the task reads serve no wait
+// field, the next action names no document proposal, the order lists as
+// claimable, and the claim through the work-order service is admitted, for both
+// verify and review (req-260810-23b69f REQ-3; DEC-102(6);
+// req-operator-next-action AC-1.3).
+func TestVerifyAndReviewClaimsProceedForEveryProposalShape(t *testing.T) {
+	cases := map[string]func(f claimParityFixture){
+		"implementation System Design": func(f claimParityFixture) {
 			document := f.design("design-impl")
-			version := f.proposeDesign(document, core.SystemDesignVersion{Origin: core.SystemDesignOriginImplementation, OriginTaskID: claimParityTask})
-			return expectation{waiting: []waitingProposal{{Tier: "system_design", ID: document.ID, Version: version.Version}}, pendingAuthority: true}
+			f.proposeDesign(document, core.SystemDesignVersion{Origin: core.SystemDesignOriginImplementation, OriginTaskID: claimParityTask})
 		},
-		"implementation requirement": func(f claimParityFixture) expectation {
+		"implementation requirement": func(f claimParityFixture) {
 			requirement := f.requirement("req-impl")
-			version := f.proposeRequirement(requirement, core.RequirementVersion{Origin: core.RequirementOriginImplementation, OriginTaskID: claimParityTask})
-			return expectation{waiting: []waitingProposal{{Tier: "requirement", ID: requirement.ID, Version: version.Version}}, pendingAuthority: true}
+			f.proposeRequirement(requirement, core.RequirementVersion{Origin: core.RequirementOriginImplementation, OriginTaskID: claimParityTask})
 		},
-		"decision only": func(f claimParityFixture) expectation {
+		"decision only": func(f claimParityFixture) {
 			if _, err := f.st.ProposeDecision(f.ctx, core.Decision{Statement: "Pending decision", Context: "Signal only", AlternativesRejected: "Holding review", Origin: core.DecisionOriginImplementation, OriginTaskID: claimParityTask}); err != nil {
 				f.t.Fatal(err)
 			}
-			return expectation{pendingAuthority: true}
 		},
-		"requirement and decision": func(f claimParityFixture) expectation {
+		"requirement and decision": func(f claimParityFixture) {
 			requirement := f.requirement("req-mixed")
-			version := f.proposeRequirement(requirement, core.RequirementVersion{Origin: core.RequirementOriginImplementation, OriginTaskID: claimParityTask})
+			f.proposeRequirement(requirement, core.RequirementVersion{Origin: core.RequirementOriginImplementation, OriginTaskID: claimParityTask})
 			if _, err := f.st.ProposeDecision(f.ctx, core.Decision{Statement: "Mixed decision", Context: "Signal only", AlternativesRejected: "Holding review", Origin: core.DecisionOriginImplementation, OriginTaskID: claimParityTask}); err != nil {
 				f.t.Fatal(err)
 			}
-			return expectation{waiting: []waitingProposal{{Tier: "requirement", ID: requirement.ID, Version: version.Version}}, pendingAuthority: true}
 		},
-		"another task's System Design": func(f claimParityFixture) expectation {
+		"another task's System Design": func(f claimParityFixture) {
 			document := f.design("design-other")
 			f.proposeDesign(document, core.SystemDesignVersion{Origin: core.SystemDesignOriginImplementation, OriginTaskID: "claim-parity-other"})
-			return expectation{}
 		},
-		"operator requirement": func(f claimParityFixture) expectation {
+		"operator requirement": func(f claimParityFixture) {
 			f.proposeRequirement(f.requirement("req-operator"), core.RequirementVersion{Origin: core.RequirementOriginOperator})
-			return expectation{}
 		},
-		"planning session System Design": func(f claimParityFixture) expectation {
+		"planning session System Design": func(f claimParityFixture) {
 			f.proposeDesign(f.design("design-session"), core.SystemDesignVersion{Origin: core.SystemDesignOriginPlanning, OriginSessionID: "planning-session"})
-			return expectation{}
 		},
-		"task-context suggestion": func(f claimParityFixture) expectation {
+		"task-context suggestion": func(f claimParityFixture) {
 			requirement := f.requirement("req-context")
 			if _, suppressed, err := f.st.ProposeTaskContext(f.ctx, core.TaskContextProposalInput{
 				TaskID: claimParityTask, TargetKind: core.TaskContextProposalRequirement, TargetID: requirement.ID,
@@ -247,58 +199,47 @@ func TestProposalClaimWaitingMatchesVerifyAndReviewClaims(t *testing.T) {
 			}); err != nil || suppressed {
 				f.t.Fatalf("suppressed=%t err=%v", suppressed, err)
 			}
-			// Task-context suggestions keep their existing attention signal and
-			// never withhold a claim.
-			return expectation{pendingAuthority: true}
 		},
-		"confirmed System Design": func(f claimParityFixture) expectation {
+		"confirmed System Design": func(f claimParityFixture) {
 			document := f.design("design-confirmed")
 			version := f.proposeDesign(document, core.SystemDesignVersion{Origin: core.SystemDesignOriginImplementation, OriginTaskID: claimParityTask})
 			if _, _, err := f.st.ConfirmSystemDesignVersion(f.ctx, document.ID, version.Version); err != nil {
 				f.t.Fatal(err)
 			}
-			return expectation{}
 		},
-		"dismissed System Design": func(f claimParityFixture) expectation {
+		"dismissed System Design": func(f claimParityFixture) {
 			document := f.design("design-dismissed")
 			version := f.proposeDesign(document, core.SystemDesignVersion{Origin: core.SystemDesignOriginImplementation, OriginTaskID: claimParityTask})
 			if _, _, err := f.st.DismissSystemDesignVersion(f.ctx, document.ID, version.Version); err != nil {
 				f.t.Fatal(err)
 			}
-			return expectation{}
 		},
-		"dismissed requirement": func(f claimParityFixture) expectation {
+		"dismissed requirement": func(f claimParityFixture) {
 			requirement := f.requirement("req-dismissed")
 			version := f.proposeRequirement(requirement, core.RequirementVersion{Origin: core.RequirementOriginImplementation, OriginTaskID: claimParityTask})
 			if _, _, err := f.st.DismissRequirementVersion(f.ctx, requirement.ID, version.Version); err != nil {
 				f.t.Fatal(err)
 			}
-			return expectation{}
 		},
-		"requirement retired by a later confirmation": func(f claimParityFixture) expectation {
+		"requirement retired by a later confirmation": func(f claimParityFixture) {
 			requirement := f.requirement("req-retired")
 			f.proposeRequirement(requirement, core.RequirementVersion{Origin: core.RequirementOriginImplementation, OriginTaskID: claimParityTask})
 			later := f.proposeRequirement(requirement, core.RequirementVersion{Origin: core.RequirementOriginOperator})
 			if _, _, err := f.st.ConfirmRequirementVersion(f.ctx, requirement.ID, later.Version); err != nil {
 				f.t.Fatal(err)
 			}
-			return expectation{}
 		},
-		"archived System Design": func(f claimParityFixture) expectation {
+		"archived System Design": func(f claimParityFixture) {
 			document := f.design("design-archived")
-			version := f.proposeDesign(document, core.SystemDesignVersion{Origin: core.SystemDesignOriginImplementation, OriginTaskID: claimParityTask})
+			f.proposeDesign(document, core.SystemDesignVersion{Origin: core.SystemDesignOriginImplementation, OriginTaskID: claimParityTask})
 			if err := f.st.ArchiveSystemDesign(f.ctx, document.ID, "operator", nil); err != nil {
 				f.t.Fatal(err)
 			}
-			// The claim still counts a pending version of an archived document;
-			// the pending list, and so the attention signal, omits it.
-			return expectation{waiting: []waitingProposal{{Tier: "system_design", ID: document.ID, Version: version.Version}}}
 		},
-		"another workspace's System Design": func(f claimParityFixture) expectation {
+		"another workspace's System Design": func(f claimParityFixture) {
 			sibling := claimParityFixture{ctx: store.WithWorkspace(store.WithActor(f.t.Context(), store.SystemActor()), "sibling"), st: f.st, t: f.t}
 			document := sibling.design("design-sibling")
 			sibling.proposeDesign(document, core.SystemDesignVersion{Origin: core.SystemDesignOriginImplementation, OriginTaskID: claimParityTask})
-			return expectation{}
 		},
 	}
 	for name, setup := range cases {
@@ -325,7 +266,7 @@ func TestProposalClaimWaitingMatchesVerifyAndReviewClaims(t *testing.T) {
 				if err := storetest.ProjectTaskNextStage(ctx, st, "claim-parity-other", stage); err != nil {
 					t.Fatal(err)
 				}
-				want := setup(fixture)
+				setup(fixture)
 				orderID := fmt.Sprintf("%s-%s-1", claimParityTask, stage)
 				if err := st.CreateJob(ctx, core.Job{ID: orderID, TaskID: claimParityTask, Stage: stage, State: core.JobPending}); err != nil {
 					t.Fatal(err)
@@ -340,153 +281,94 @@ func TestProposalClaimWaitingMatchesVerifyAndReviewClaims(t *testing.T) {
 
 				server := NewServer(st)
 				server.BearerToken, server.Workspace = "operator-token", "demo"
-				detail, row := readClaimParity(t, server, claimParityTask)
-				waiting := len(want.waiting) > 0
-				if detail.ProposalClaimWaiting != waiting || row.ProposalClaimWaiting != waiting {
-					t.Fatalf("waiting detail=%t activity=%t want %t", detail.ProposalClaimWaiting, row.ProposalClaimWaiting, waiting)
-				}
-				if fmt.Sprint(detail.WaitingProposals) != fmt.Sprint(want.waiting) {
-					t.Fatalf("waiting proposals=%+v want %+v", detail.WaitingProposals, want.waiting)
-				}
-				if detail.PendingAuthority != want.pendingAuthority || row.PendingAuthority != want.pendingAuthority {
-					t.Fatalf("pending authority detail=%t activity=%t want %t", detail.PendingAuthority, row.PendingAuthority, want.pendingAuthority)
-				}
-				// Next-action row 8 reads the same selection, so it matches exactly
-				// when proposal_claim_waiting is true (req-operator-next-action
-				// AC-1.7; feature-operator-next-action NA-3).
-				if action := readNextActionKind(t, server, claimParityTask); (action.Kind == nextaction.KindDocumentProposal) != waiting {
-					t.Fatalf("next action kind=%s pending_proposals=%+v, proposal_claim_waiting=%t", action.Kind, action.Details.PendingProposals, waiting)
-				} else if waiting && fmt.Sprint(action.Details.PendingProposals) != fmt.Sprint(want.waiting) {
-					t.Fatalf("row 8 pending_proposals=%+v want %+v", action.Details.PendingProposals, want.waiting)
+				requireNoProposalWaitFields(t, server, claimParityTask)
+				if action := readNextActionKind(t, server, claimParityTask); action.Kind == "document_proposal" || len(action.Details.PendingProposals) != 0 {
+					t.Fatalf("next action kind=%s pending_proposals=%+v", action.Kind, action.Details.PendingProposals)
 				}
 
 				cfg := &config.Config{Routing: config.Routing{Stages: map[string]config.StageRoute{
 					string(stage): {Execution: config.ExecutionMCP, Timeout: time.Hour, TimeoutText: "1h"},
 				}}}
 				service := &workorder.Service{Store: st, ConfigProvider: func(context.Context) (*config.Config, error) { return cfg, nil }}
-				_, serviceErr := service.Claim(ctx, orderID, core.WorkOrderClaim{SessionID: "service-" + string(stage), ClientToken: "service-token", ClaimantID: "claimant", Lease: time.Minute})
-				_, storeErr := storetest.For(st).ClaimWorkOrder(ctx, orderID, core.WorkOrderClaim{SessionID: "store-" + string(stage), ClientToken: "store-token", Lease: time.Minute})
-				if waiting {
-					if storeErr == nil || !strings.Contains(storeErr.Error(), "waiting on task-authored") {
-						t.Fatalf("store claim error=%v; projection said waiting", storeErr)
-					}
-					if serviceErr == nil || !strings.Contains(serviceErr.Error(), "waiting on") {
-						t.Fatalf("service claim error=%v; projection said waiting", serviceErr)
-					}
-					return
+				listed, err := service.List(ctx)
+				if err != nil {
+					t.Fatal(err)
 				}
-				// The service claims first; the store's own claim then meets a live
-				// lease rather than a proposal wait, which is still not a wait.
-				if serviceErr != nil {
-					t.Fatalf("service claim error=%v; projection said not waiting", serviceErr)
+				for _, order := range listed {
+					if order.ID == orderID && !order.Claimable {
+						t.Fatalf("listing withheld %s: %+v", orderID, order)
+					}
 				}
-				if storeErr != nil && strings.Contains(storeErr.Error(), "waiting on") {
-					t.Fatalf("store claim error=%v; projection said not waiting", storeErr)
+				if _, err := service.Claim(ctx, orderID, core.WorkOrderClaim{SessionID: "service-" + string(stage), ClientToken: "service-token", ClaimantID: "claimant", Lease: time.Minute}); err != nil {
+					t.Fatalf("service claim error=%v", err)
 				}
 			})
 		}
 	}
 }
 
-// A task outside its claim window is not waiting even with a qualifying
-// proposal: nothing has been submitted for verification or review yet.
-func TestProposalClaimWaitingRequiresSubmittedWork(t *testing.T) {
+// A pending proposal leaves the operator inbox and attention counts as they
+// were: it stays listed among the decisions with confirm and dismiss, and
+// deciding it lowers the count by exactly one, while the origin task's own row
+// never folds into it (req-260810-23b69f REQ-1, AC-1.1, AC-4.2;
+// req-operator-next-action AC-2.6, AC-2.7).
+func TestPendingProposalStaysAnInboxDecisionWithoutHoldingItsTask(t *testing.T) {
 	ctx := store.WithWorkspace(store.WithActor(t.Context(), store.SystemActor()), "demo")
 	st := store.NewMemory()
-	if err := st.CreateTask(ctx, core.Task{ID: claimParityTask, Workspace: "demo", Repo: "conveyor", State: core.TaskRunning, CreatedAt: time.Now().UTC()}); err != nil {
+	if err := st.CreateTask(ctx, core.Task{ID: claimParityTask, Workspace: "demo", Repo: "conveyor", State: core.TaskRunning, NextStage: core.StageImplement, CreatedAt: time.Now().UTC()}); err != nil {
 		t.Fatal(err)
 	}
 	fixture := claimParityFixture{ctx: ctx, st: st, t: t}
-	fixture.proposeDesign(fixture.design("design-early"), core.SystemDesignVersion{Origin: core.SystemDesignOriginImplementation, OriginTaskID: claimParityTask})
+	fixture.submitImplementation(claimParityTask)
+	design := fixture.design("design-inbox")
+	version := fixture.proposeDesign(design, core.SystemDesignVersion{Origin: core.SystemDesignOriginImplementation, OriginTaskID: claimParityTask})
 	server := NewServer(st)
 	server.BearerToken, server.Workspace = "operator-token", "demo"
-	detail, row := readClaimParity(t, server, claimParityTask)
-	if detail.ProposalClaimWaiting || row.ProposalClaimWaiting || len(detail.WaitingProposals) != 0 || detail.PendingAuthority {
-		t.Fatalf("detail=%+v activity=%+v", detail, row)
-	}
-}
-
-type blockingReadStore struct {
-	store.Store
-	tasks []string
-	err   error
-}
-
-func (s *blockingReadStore) ListClaimBlockingProposalsForTask(ctx context.Context, taskID string) ([]store.ClaimBlockingProposal, error) {
-	s.tasks = append(s.tasks, taskID)
-	if s.err != nil {
-		return nil, s.err
-	}
-	return s.Store.ListClaimBlockingProposalsForTask(ctx, taskID)
-}
-
-// ListClaimBlockingProposalsForTasks records the batched read's tasks, so the
-// bound below covers the batch the selection issues for stores that offer it.
-func (s *blockingReadStore) ListClaimBlockingProposalsForTasks(ctx context.Context, taskIDs []string) (map[string][]store.ClaimBlockingProposal, error) {
-	s.tasks = append(s.tasks, taskIDs...)
-	if s.err != nil {
-		return nil, s.err
-	}
-	return s.Store.ListClaimBlockingProposalsForTasks(ctx, taskIDs)
-}
-
-// The claim-wait read is store.ClaimWaitingProposals: one batched
-// claim-blocking read naming only the tasks inside their claim window, none
-// for a task outside it, the decided
-// state of each version as the claim sees it, and a storage failure as a read
-// error, never "not waiting" (component-document-corpus).
-func TestProposalClaimWaitingReadsAreBoundedAndTruthful(t *testing.T) {
-	ctx := store.WithWorkspace(store.WithActor(t.Context(), store.SystemActor()), "demo")
-	base := store.NewMemory()
-	for _, id := range []string{claimParityTask, "claim-parity-idle"} {
-		if err := base.CreateTask(ctx, core.Task{ID: id, Workspace: "demo", Repo: "conveyor", State: core.TaskRunning, CreatedAt: time.Now().UTC()}); err != nil {
+	requireNoProposalWaitFields(t, server, claimParityTask)
+	read := func() (inbox struct {
+		Items []inboxItem `json:"items"`
+	}, attention attentionSummary) {
+		t.Helper()
+		response := httptest.NewRecorder()
+		server.Handler().ServeHTTP(response, authenticatedMemoryRead(server, httptest.NewRequest(http.MethodGet, "/v1/next-actions?workspace_id=demo", nil)))
+		if response.Code != http.StatusOK {
+			t.Fatalf("inbox status=%d body=%s", response.Code, response.Body.String())
+		}
+		if err := json.Unmarshal(response.Body.Bytes(), &inbox); err != nil {
 			t.Fatal(err)
 		}
+		pending := httptest.NewRecorder()
+		server.Handler().ServeHTTP(pending, authenticatedMemoryRead(server, httptest.NewRequest(http.MethodGet, "/v1/pending-proposals?workspace_id=demo", nil)))
+		var body pendingProposalsResponse
+		if err := json.Unmarshal(pending.Body.Bytes(), &body); err != nil {
+			t.Fatal(err)
+		}
+		return inbox, body.Attention
 	}
-	fixture := claimParityFixture{ctx: ctx, st: base, t: t}
-	fixture.submitImplementation(claimParityTask)
-	design := fixture.design("design-bounded")
-	designVersion := fixture.proposeDesign(design, core.SystemDesignVersion{Origin: core.SystemDesignOriginImplementation, OriginTaskID: claimParityTask})
-	requirement := fixture.requirement("req-bounded")
-	fixture.proposeRequirement(requirement, core.RequirementVersion{Origin: core.RequirementOriginImplementation, OriginTaskID: claimParityTask})
-	// The idle task has submitted nothing, so its proposals cost no reads.
-	for index := range 5 {
-		fixture.proposeDesign(fixture.design(fmt.Sprintf("design-idle-%d", index)), core.SystemDesignVersion{Origin: core.SystemDesignOriginImplementation, OriginTaskID: "claim-parity-idle"})
-	}
-	if _, err := base.ProposeDecision(ctx, core.Decision{Statement: "No read", Context: "Decisions are never candidates", AlternativesRejected: "Reading them", Origin: core.DecisionOriginImplementation, OriginTaskID: claimParityTask}); err != nil {
-		t.Fatal(err)
-	}
-
-	counting := &blockingReadStore{Store: base}
-	server := NewServer(counting)
-	server.BearerToken, server.Workspace = "operator-token", "demo"
-	detail, row := readClaimParity(t, server, claimParityTask)
-	if len(counting.tasks) == 0 {
-		t.Fatal("claim-wait read issued no claim-blocking read")
-	}
-	for _, taskID := range counting.tasks {
-		if taskID != claimParityTask {
-			t.Fatalf("claim-blocking reads=%v, want only the windowed task %s", counting.tasks, claimParityTask)
+	inbox, before := read()
+	found := false
+	for _, item := range inbox.Items {
+		if item.Kind == "document_proposal" && item.Proposal != nil && item.Proposal.ID == design.ID && item.Proposal.Version == version.Version && item.Band == "decisions" && item.IfIgnored == "The proposal stays pending." {
+			found = true
 		}
 	}
-	if !detail.ProposalClaimWaiting || !row.ProposalClaimWaiting || len(detail.WaitingProposals) != 2 || detail.WaitingProposals[0].Tier != "system_design" {
-		t.Fatalf("detail=%+v activity=%+v", detail, row)
+	if !found || before.PendingProposalCount != 1 {
+		t.Fatalf("inbox lost the pending proposal: %+v attention=%+v", inbox.Items, before)
 	}
-
-	if _, _, err := base.DismissSystemDesignVersion(ctx, design.ID, designVersion.Version); err != nil {
+	decisions := 0
+	for _, item := range inbox.Items {
+		if item.Band == "decisions" {
+			decisions++
+		}
+	}
+	if before.OperatorDecisions != decisions || before.Total != decisions || decisions == 0 {
+		t.Fatalf("badge %+v differs from the %d inbox decisions", before, decisions)
+	}
+	if _, _, err := st.DismissSystemDesignVersion(ctx, design.ID, version.Version); err != nil {
 		t.Fatal(err)
 	}
-	detail, row = readClaimParity(t, server, claimParityTask)
-	if !detail.ProposalClaimWaiting || !row.ProposalClaimWaiting || len(detail.WaitingProposals) != 1 || detail.WaitingProposals[0].Tier != "requirement" {
-		t.Fatalf("dismissed design still counted: detail=%+v activity=%+v", detail, row)
-	}
-
-	counting.err = errors.New("claim-blocking read failed")
-	for _, path := range []string{"/v1/tasks/" + claimParityTask + "/activity", "/v1/activity", "/v1/reviews"} {
-		response := httptest.NewRecorder()
-		server.Handler().ServeHTTP(response, authenticatedMemoryRead(server, httptest.NewRequest(http.MethodGet, path+"?workspace_id=demo", nil)))
-		if response.Code != http.StatusInternalServerError {
-			t.Fatalf("%s status=%d body=%s", path, response.Code, response.Body.String())
-		}
+	_, after := read()
+	if after.PendingProposalCount != before.PendingProposalCount-1 || after.OperatorDecisions != before.OperatorDecisions-1 {
+		t.Fatalf("attention before=%+v after=%+v", before, after)
 	}
 }

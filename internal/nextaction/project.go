@@ -76,9 +76,6 @@ func rules() []rule {
 			return built{actor: ActorOperator, kind: KindMergeExecution, judgment: true, order: currentOrder(in)}
 		}},
 		{match: gateOffApproved, build: func(Input) built { return built{actor: ActorFactory, kind: KindMerging} }},
-		{match: claimWaiting, build: func(in Input) built {
-			return built{actor: ActorOperator, kind: KindDocumentProposal, judgment: true, proposals: append([]ProposalRef(nil), in.ClaimWaiting...)}
-		}},
 		{match: agentQuestion, build: agentQuestionBuild},
 		{match: verificationDisposition, build: func(in Input) built {
 			return built{actor: ActorOperator, kind: KindVerificationDisposition, judgment: true, deadline: in.Markers.VerificationHoldDeadline, order: dispositionOrder(in.Orders)}
@@ -161,8 +158,6 @@ func gateOnApproved(in Input) bool {
 func gateOffApproved(in Input) bool {
 	return in.Task.State == core.TaskApproved && !in.Task.MergeApproval
 }
-
-func claimWaiting(in Input) bool { return len(in.ClaimWaiting) > 0 }
 
 // agentQuestion matches row 9 only while the latest queued order is still
 // released at its checkpoint, so a resumed order never asks its answered
@@ -258,8 +253,6 @@ func finish(in Input, row built, secondary []Secondary) NextAction {
 	}
 	specs := entry.Choices
 	switch {
-	case row.kind == KindDocumentProposal:
-		specs = withheldProposalChoices(row.proposals)
 	case row.kind == KindContextProposal:
 		specs = contextProposalChoices(in.Task.ID, in.ContextProposals)
 	case row.kind == KindAgentQuestion && row.class == core.WorkOrderCheckpointClassAuthorityConflict:

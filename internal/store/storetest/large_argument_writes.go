@@ -44,7 +44,7 @@ func runLargeArgumentWrites(t *testing.T, x Fixture) {
 			job := core.Job{ID: id + "-" + string(stage) + "-1", TaskID: id, Stage: stage, State: core.JobPending}
 			order := core.WorkOrder{ID: job.ID, JobID: job.ID, TaskID: id, Stage: stage, State: core.WorkOrderQueued, HeadSHA: task.ReviewedHeadSHA, QueueEnteredAt: now, QueueDeadline: now.Add(time.Hour), CreatedAt: now}
 			// The stage command creates verify orders; review orders enter
-			// through a job and a plain order, as ClaimBlockingProposals does.
+			// through a job and a plain order, as ClaimsProceedWithPendingProposals does.
 			if stage == core.StageVerify {
 				_, err := CreateStageWorkOrder(ctx, st, job, order)
 				requireOK(t, err)

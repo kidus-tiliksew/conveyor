@@ -246,23 +246,25 @@ func TestTaskStatusJSONVerbatim(t *testing.T) {
 	}
 }
 
-// TestTaskStatusPrintsRealServerClaimWait runs task status against the real
-// handler for a row-8 claim wait: --json prints the statement GET
-// /v1/tasks/{id}/next-action returns, and the text names the withholding
-// version and its version routes, never a /v1/documents/ route
-// (req-operator-next-action AC-1.4, AC-5.1; feature-operator-next-action NA-8).
-func TestTaskStatusPrintsRealServerClaimWait(t *testing.T) {
+// TestTaskStatusPrintsRealServerCitedProposal runs task status against the real
+// handler for an authority-conflict checkpoint with a pending cited version:
+// --json prints the statement GET /v1/tasks/{id}/next-action returns, and the
+// text names the cited version and its version routes, never a /v1/documents/
+// route (req-operator-next-action AC-1.4, AC-1.6, AC-5.1;
+// feature-operator-next-action NA-8).
+func TestTaskStatusPrintsRealServerCitedProposal(t *testing.T) {
 	isolateLocalAuthTest(t)
 	st := store.NewMemory()
 	ctx := store.WithWorkspace(store.WithActor(t.Context(), store.SystemActor()), "demo")
 	const taskID = "261015-claimw"
-	if err := st.CreateTask(ctx, core.Task{ID: taskID, Workspace: "demo", Repo: "conveyor", State: core.TaskRunning, NextStage: core.StageReview}); err != nil {
+	if err := st.CreateTask(ctx, core.Task{ID: taskID, Workspace: "demo", Repo: "conveyor", State: core.TaskRunning}); err != nil {
 		t.Fatal(err)
 	}
-	if err := st.CreateJob(ctx, core.Job{ID: taskID + "-review-1", TaskID: taskID, Stage: core.StageReview, State: core.JobPending}); err != nil {
+	if err := st.CreateJob(ctx, core.Job{ID: taskID + "-implement-1", TaskID: taskID, Stage: core.StageImplement, State: core.JobPending}); err != nil {
 		t.Fatal(err)
 	}
-	if err := storetest.For(st).CreateWorkOrder(ctx, core.WorkOrder{ID: taskID + "-review-1", TaskID: taskID, JobID: taskID + "-review-1", Stage: core.StageReview, State: core.WorkOrderQueued}); err != nil {
+	if err := storetest.For(st).CreateWorkOrder(ctx, core.WorkOrder{ID: taskID + "-implement-1", TaskID: taskID, JobID: taskID + "-implement-1", Stage: core.StageImplement, State: core.WorkOrderQueued, LastAttemptID: "attempt-claimw", LastAttemptOutcome: core.WorkOrderOutcomeReleased,
+		Checkpoint: &core.WorkOrderCheckpoint{DecisionRequest: "Decide the cited revision.", Class: core.WorkOrderCheckpointClassAuthorityConflict, Citations: []core.WorkOrderAuthorityConflictCitation{{DocumentID: "component-claim-wait", CitedVersion: 1, StatementOrSectionID: "Claim"}}}}); err != nil {
 		t.Fatal(err)
 	}
 	governs := "```conveyor:governs\n- repo: conveyor\n  paths:\n    - internal/**\n```"
@@ -319,15 +321,12 @@ func TestTaskStatusPrintsRealServerClaimWait(t *testing.T) {
 	}
 	text := out.String()
 	ordered := []string{
-		"Document proposal\nA document proposal is withholding the next claim.\n",
-		"question:      Confirm or dismiss the proposal?",
 		"proposal:      component-claim-wait v2 (system_design, pending)",
-		"  - Confirm component-claim-wait v2: Confirms this pending revision.",
+		"  - Confirm component-claim-wait v2: Confirms this pending revision. The order stays released until you recover it.",
 		"      no CLI command; use the dashboard: POST /v1/system-designs/component-claim-wait/versions/2/confirm",
-		"  - Dismiss component-claim-wait v2: Dismisses this pending revision.",
+		"  - Dismiss component-claim-wait v2: Dismisses this pending revision. The order stays released until you recover it.",
 		"      no CLI command; use the dashboard: POST /v1/system-designs/component-claim-wait/versions/2/dismiss",
-		"if ignored:    The claim stays withheld.",
-		"kind:          document_proposal",
+		"kind:          agent_question",
 	}
 	at := 0
 	for _, line := range ordered {

@@ -190,13 +190,13 @@ func TestMCPGetTaskStatusAgentQuestionParity(t *testing.T) {
 	}
 }
 
-// TestMCPGetTaskStatusClaimWaitParity pins one statement for a row-8 claim
-// wait and for the 261015-676ea5 shape: GET /v1/tasks/{id}/next-action and MCP
-// get_task_status agree, row 8 lists the withholding version on its version
-// route, a triage task-context proposal never selects row 8, and no choice
-// names /v1/documents/ (req-operator-next-action AC-1.4, AC-1.7, AC-5.3;
-// req-260810-70ce2f AC-1.1, AC-1.3).
-func TestMCPGetTaskStatusClaimWaitParity(t *testing.T) {
+// TestMCPGetTaskStatusNoProposalWaitParity pins one statement for a task with a
+// pending document proposal and for the 261015-676ea5 shape: GET
+// /v1/tasks/{id}/next-action and MCP get_task_status agree, the proposal holds
+// no row and stays one inbox decision, a triage task-context proposal keeps its
+// own row, and no choice names /v1/documents/ (req-operator-next-action AC-1.4,
+// AC-2.6, AC-5.3; req-260810-23b69f REQ-3).
+func TestMCPGetTaskStatusNoProposalWaitParity(t *testing.T) {
 	f := newGovernanceAuthFixture(t)
 	userToken, _ := f.user("usr_claim_wait", core.WorkspaceRoleOperator)
 	governs := "```conveyor:governs\n- repo: conveyor\n  paths:\n    - internal/**\n```"
@@ -246,18 +246,12 @@ func TestMCPGetTaskStatusClaimWaitParity(t *testing.T) {
 	}
 
 	suggested := design("component-claim-wait-context")
-	withheld := design("component-claim-wait")
+	pending := design("component-claim-wait")
 	f.order("claim-wait", core.StageReview)
-	suggest("gov-task-claim-wait", suggested.ID)
-	version := propose(withheld.ID, "gov-task-claim-wait")
+	version := propose(pending.ID, "gov-task-claim-wait")
 	action := read("gov-task-claim-wait")
-	route := fmt.Sprintf("/v1/system-designs/%s/versions/%d", withheld.ID, version)
-	wantProposals := []nextaction.ProposalRef{{Tier: "system_design", ID: withheld.ID, Version: version}}
-	if action.Kind != nextaction.KindDocumentProposal || !reflect.DeepEqual(action.Details.PendingProposals, wantProposals) {
-		t.Fatalf("row 8 = %s details %+v", action.Kind, action.Details)
-	}
-	if len(action.Choices) != 2 || action.Choices[0].Path != route+"/confirm" || action.Choices[1].Path != route+"/dismiss" || !action.Choices[0].Allowed || !action.Choices[1].Allowed {
-		t.Fatalf("row 8 choices = %+v", action.Choices)
+	if action.Kind == "document_proposal" || action.Actor == nextaction.ActorOperator || len(action.Details.PendingProposals) != 0 || len(action.Choices) != 0 {
+		t.Fatalf("pending proposal held the task: %s/%s details %+v choices %+v", action.Actor, action.Kind, action.Details, action.Choices)
 	}
 
 	// A context-only task keeps operator attention through the context row,
@@ -275,10 +269,10 @@ func TestMCPGetTaskStatusClaimWaitParity(t *testing.T) {
 	if isErr || !strings.Contains(inbox, `"gov-task-context-only"`) || !strings.Contains(inbox, `"context_proposal"`) {
 		t.Fatalf("inbox decisions omit the context-only task: err=%t %s", isErr, inbox)
 	}
-	// The folded row-8 task's withholding version is the one inbox proposal
-	// that says the claim stays withheld (feature-operator-next-action NA-4).
-	if strings.Count(inbox, `"if_ignored":"The claim stays withheld."`) != 1 || !strings.Contains(inbox, `"label":"System Design proposal"`) {
-		t.Fatalf("inbox withholding copy: %s", inbox)
+	// The pending version is one inbox decision that says only it stays pending
+	// (feature-operator-next-action NA-4).
+	if strings.Contains(inbox, "claim stays withheld") || !strings.Contains(inbox, `"label":"System Design proposal"`) || !strings.Contains(inbox, `"if_ignored":"The proposal stays pending."`) || !strings.Contains(inbox, fmt.Sprintf(`"version":%d`, version)) {
+		t.Fatalf("inbox proposal copy: %s", inbox)
 	}
 
 	first, second := design("component-cited-a"), design("component-cited-b")
@@ -301,7 +295,7 @@ func TestMCPGetTaskStatusClaimWaitParity(t *testing.T) {
 		t.Fatalf("676ea5 shape = %s details %+v", question.Kind, question.Details)
 	}
 	for _, secondary := range question.Details.Secondary {
-		if secondary.Kind == nextaction.KindDocumentProposal {
+		if secondary.Kind == "document_proposal" {
 			t.Fatalf("task-context proposal recorded as document_proposal: %+v", question.Details.Secondary)
 		}
 	}

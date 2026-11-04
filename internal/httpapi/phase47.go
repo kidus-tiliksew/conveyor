@@ -70,6 +70,12 @@ func (s *Server) getWorkOrder(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
+	// An older pin may hold retired proposal evidence; a read presents only its
+	// authority and never rewrites it (DEC-102(6)).
+	if order.GovernanceSnapshot != nil {
+		presented := order.GovernanceSnapshot.WithoutRetiredEvidence()
+		order.GovernanceSnapshot = &presented
+	}
 	orders := projectAssigneeClaimability(r.Context(), []core.WorkOrder{order})
 	orders, err = s.projectWorkOrderSessions(r.Context(), orders)
 	if err != nil {

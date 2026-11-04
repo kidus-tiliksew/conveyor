@@ -22,9 +22,10 @@ import (
 // position moves, the task reaches a terminal state, or the timeout elapses
 // (req-agent-skills REQ-4, AC-4.1 through AC-4.3; DEC-84;
 // component-cli-onboarding). It reads only routes a self-claimed session's
-// credential holds: the task, the workspace work-order listing, the pending
-// proposals, and, at a gate, the latest plan or the task activity. It reads no
-// run-order or worker route (DEC-97(1)) and never mutates the task.
+// credential holds: the task, the workspace work-order listing, and, at a gate,
+// the latest plan or the task activity. It reads no run-order or worker route
+// (DEC-97(1)) and never mutates the task. A pending document proposal is no task
+// gate, so it never enters an observation (req-260810-23b69f REQ-3).
 
 const (
 	taskWaitDefaultTimeout    = 5 * time.Minute
@@ -41,13 +42,11 @@ state, or the timeout elapses.
 
 Each observation holds the task state, the pending human gate (plan, merge,
 merge execution, plan revision, or human recovery, with the plan version when
-one applies and the merge readiness state for merge execution),
-the next claimable work order ID and stage, and the pending task-authored
-proposals (kind, document ID, and version). The command reads
-GET /v1/tasks/{id}, GET /v1/work-orders, and GET /v1/pending-proposals, plus
-GET /v1/tasks/{id}/spec at a plan gate and GET /v1/tasks/{id}/activity at a
-merge-execution gate, with the ordinary server, workspace, and credential
-resolution. It re-reads with jittered backoff from
+one applies and the merge readiness state for merge execution), and the next
+claimable work order ID and stage. The command reads GET /v1/tasks/{id} and
+GET /v1/work-orders, plus GET /v1/tasks/{id}/spec at a plan or plan-revision
+gate and GET /v1/tasks/{id}/activity at a merge-execution gate, with the
+ordinary server, workspace, and credential resolution. It re-reads with jittered backoff from
 250ms to a 2s ceiling and returns when any observed field differs from the
 first observation. A merged, closed, or parked task returns at once, at start
 or during the wait.
@@ -100,12 +99,6 @@ type taskWaitOrder struct {
 	Stage core.Stage `json:"stage"`
 }
 
-type taskWaitProposal struct {
-	Kind       string `json:"kind"`
-	DocumentID string `json:"document_id"`
-	Version    int    `json:"version"`
-}
-
 // taskWaitNextAction is the part of the server's next_action a --until wait
 // compares and prints. It is set only when --until is given.
 type taskWaitNextAction struct {
@@ -119,13 +112,12 @@ type taskWaitNextAction struct {
 // time. Titles, labels, capability flags, and progress are excluded so that
 // presentation churn never ends a wait.
 type taskWaitObservation struct {
-	TaskID           string              `json:"task_id"`
-	State            core.TaskState      `json:"state"`
-	PendingGate      *taskWaitGate       `json:"pending_gate"`
-	NextOrder        *taskWaitOrder      `json:"next_order"`
-	PendingProposals []taskWaitProposal  `json:"pending_proposals"`
-	NextAction       *taskWaitNextAction `json:"next_action,omitempty"`
-	ObservedAt       time.Time           `json:"observed_at"`
+	TaskID      string              `json:"task_id"`
+	State       core.TaskState      `json:"state"`
+	PendingGate *taskWaitGate       `json:"pending_gate"`
+	NextOrder   *taskWaitOrder      `json:"next_order"`
+	NextAction  *taskWaitNextAction `json:"next_action,omitempty"`
+	ObservedAt  time.Time           `json:"observed_at"`
 }
 
 type taskWaitResult struct {
@@ -192,7 +184,7 @@ func taskWaitCmd() *cobra.Command {
 	until := ""
 	cmd := &cobra.Command{
 		Use:   "wait <task-id>",
-		Short: "Block until a task's state, gate, next order, or proposals change",
+		Short: "Block until a task's state, gate, or next order changes",
 		Long:  taskWaitLong,
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
@@ -473,9 +465,9 @@ func taskWaitAwaitingGate(kind string) string {
 	}
 }
 
-// observeTaskWait reads the task with its embedded next action, the
-// workspace work-order listing, and the pending proposals, and at a gate the
-// latest plan version or the merge readiness (component-cli-onboarding).
+// observeTaskWait reads the task with its embedded next action and the
+// workspace work-order listing, and at a gate the latest plan version or the
+// merge readiness (component-cli-onboarding).
 func (c *client) observeTaskWait(ctx context.Context, taskID string, now func() time.Time, withNextAction bool) (taskWaitObservation, error) {
 	var task struct {
 		core.Task
@@ -495,13 +487,7 @@ func (c *client) observeTaskWait(ctx context.Context, taskID string, now func() 
 	if err := c.workerDoContext(ctx, http.MethodGet, "/v1/work-orders", nil, &orders, c.token); err != nil {
 		return taskWaitObservation{}, err
 	}
-	var pending struct {
-		Items []core.PendingProposal `json:"items"`
-	}
-	if err := c.workerDoContext(ctx, http.MethodGet, "/v1/pending-proposals", nil, &pending, c.token); err != nil {
-		return taskWaitObservation{}, err
-	}
-	observation := taskWaitObservation{TaskID: task.ID, State: task.State, PendingProposals: []taskWaitProposal{}, ObservedAt: now().UTC()}
+	observation := taskWaitObservation{TaskID: task.ID, State: task.State, ObservedAt: now().UTC()}
 	action := task.NextAction
 	if withNextAction {
 		if action == nil || strings.TrimSpace(action.Actor) == "" {
@@ -516,57 +502,17 @@ func (c *client) observeTaskWait(ctx context.Context, taskID string, now func() 
 	if action != nil {
 		actionKind = action.Kind
 	}
-	if order := taskWaitNextOrder(orders, task.ID); order != nil {
-		observation.NextOrder = order
-	} else {
+	observation.NextOrder = taskWaitNextOrder(orders, task.ID)
+	// A pending plan revision is read even beside a claimable order, so a new
+	// plan version ends the wait wherever the order stands (AC-4.1).
+	planRevision := task.State == core.TaskAwaiting && actionKind == nextaction.KindPlanRevision
+	if observation.NextOrder == nil || planRevision {
 		gate, err := c.taskWaitGate(ctx, task.Task, actionKind)
 		if err != nil {
 			return taskWaitObservation{}, err
 		}
 		observation.PendingGate = gate
 	}
-	seen := map[taskWaitProposal]bool{}
-	add := func(identity taskWaitProposal) {
-		if !seen[identity] {
-			seen[identity] = true
-			observation.PendingProposals = append(observation.PendingProposals, identity)
-		}
-	}
-	for _, proposal := range pending.Items {
-		if proposal.OriginType != "task" || proposal.OriginID != task.ID {
-			continue
-		}
-		identity := taskWaitProposal{DocumentID: proposal.ID, Version: proposal.Version}
-		switch proposal.Tier {
-		case "requirement":
-			identity.Kind = "requirement"
-		case "system_design":
-			identity.Kind = "design"
-		case "decision":
-			// A decision is one immutable record, reported as v1.
-			identity.Kind, identity.Version = "decision", 1
-		default:
-			continue
-		}
-		add(identity)
-	}
-	if task.State == core.TaskAwaiting && actionKind == nextaction.KindPlanRevision {
-		version, err := c.taskWaitPlanVersion(ctx, task.ID)
-		if err != nil {
-			return taskWaitObservation{}, err
-		}
-		add(taskWaitProposal{Kind: "plan_revision", DocumentID: task.ID, Version: version})
-	}
-	sort.Slice(observation.PendingProposals, func(i, j int) bool {
-		a, b := observation.PendingProposals[i], observation.PendingProposals[j]
-		if a.Kind != b.Kind {
-			return a.Kind < b.Kind
-		}
-		if a.DocumentID != b.DocumentID {
-			return a.DocumentID < b.DocumentID
-		}
-		return a.Version < b.Version
-	})
 	return observation, nil
 }
 
@@ -610,7 +556,7 @@ func (c *client) taskWaitGate(ctx context.Context, task core.Task, actionKind st
 		return nil, nil
 	}
 	gate := &taskWaitGate{Kind: taskWaitAwaitingGate(actionKind)}
-	if gate.Kind == "plan" {
+	if gate.Kind == "plan" || gate.Kind == "plan_revision" {
 		version, err := c.taskWaitPlanVersion(ctx, task.ID)
 		if err != nil {
 			return nil, err
@@ -666,14 +612,6 @@ func (o taskWaitObservation) sameAs(other taskWaitObservation) bool {
 	if o.NextOrder != nil && *o.NextOrder != *other.NextOrder {
 		return false
 	}
-	if len(o.PendingProposals) != len(other.PendingProposals) {
-		return false
-	}
-	for i := range o.PendingProposals {
-		if o.PendingProposals[i] != other.PendingProposals[i] {
-			return false
-		}
-	}
 	return true
 }
 
@@ -716,14 +654,6 @@ func writeTaskWaitResult(w io.Writer, result taskWaitResult, timeout time.Durati
 	if result.NextOrder != nil {
 		order = fmt.Sprintf("%s (%s)", result.NextOrder.ID, result.NextOrder.Stage)
 	}
-	proposals := "none"
-	if len(result.PendingProposals) > 0 {
-		names := make([]string, 0, len(result.PendingProposals))
-		for _, proposal := range result.PendingProposals {
-			names = append(names, fmt.Sprintf("%s %s v%d", proposal.Kind, proposal.DocumentID, proposal.Version))
-		}
-		proposals = strings.Join(names, ", ")
-	}
 	ended := result.Reason
 	if result.TimedOut {
 		ended = fmt.Sprintf("%s after %s; the values above are the last successful observation", result.Reason, timeout)
@@ -733,7 +663,6 @@ func writeTaskWaitResult(w io.Writer, result taskWaitResult, timeout time.Durati
 		fmt.Sprintf("state:             %s", result.State),
 		fmt.Sprintf("pending gate:      %s", gate),
 		fmt.Sprintf("next order:        %s", order),
-		fmt.Sprintf("pending proposals: %s", proposals),
 		fmt.Sprintf("observed at:       %s", result.ObservedAt.Format(time.RFC3339)),
 		fmt.Sprintf("wait ended:        %s", ended),
 		fmt.Sprintf("timed out:         %t", result.TimedOut),

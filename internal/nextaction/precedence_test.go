@@ -20,12 +20,8 @@ func TestOverlappingRowsKeepEarlierWinner(t *testing.T) {
 			in: conflictInput(true, now),
 		},
 		{
-			name: "rows 8 and 9", kind: KindMerging, secondary: KindDocumentProposal,
-			in: Input{Task: core.Task{State: core.TaskApproved}, ClaimWaiting: []ProposalRef{{Tier: "requirement", ID: "REQ-1", Version: 1}}, Now: now},
-		},
-		{
-			name: "rows 9 and 10", kind: KindDocumentProposal, secondary: KindAgentQuestion,
-			in: waitingAndQuestion(now),
+			name: "merging over agent question", kind: KindMerging, secondary: KindAgentQuestion,
+			in: mergingAndQuestion(now),
 		},
 		{
 			name: "rows 11 and 12", kind: KindVerificationDisposition, secondary: KindForgeFailure,

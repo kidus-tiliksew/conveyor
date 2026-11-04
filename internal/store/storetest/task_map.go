@@ -212,10 +212,6 @@ func RunTaskMapConformance(t *testing.T, x Fixture) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		blocking, err := st.ListClaimBlockingProposalsForTasks(ctx, ids)
-		if err != nil {
-			t.Fatal(err)
-		}
 		heads, err := st.ListTaskHeads(ctx, ids)
 		if err != nil {
 			t.Fatal(err)
@@ -241,16 +237,6 @@ func RunTaskMapConformance(t *testing.T, x Fixture) {
 			if got, ok := specs[id]; ok != found || (found && got != spec.Version) {
 				t.Fatalf("task %s latest spec=%d/%t want %d/%t", id, got, ok, spec.Version, found)
 			}
-			one, err := st.ListClaimBlockingProposalsForTask(ctx, id)
-			if err != nil {
-				t.Fatal(err)
-			}
-			if len(one) == 0 {
-				one = nil
-			}
-			if !reflect.DeepEqual(blocking[id], one) {
-				t.Fatalf("task %s batched claim blockers=%+v want %+v", id, blocking[id], one)
-			}
 			task, err := st.GetTask(ctx, id)
 			if err != nil {
 				t.Fatal(err)
@@ -259,8 +245,8 @@ func RunTaskMapConformance(t *testing.T, x Fixture) {
 				t.Fatalf("task %s head=%+v", id, heads[id])
 			}
 		}
-		if len(blocking[openApp.ID]) != 1 || specs[openApp.ID] != 2 || len(events[openApp.ID]) != 2 {
-			t.Fatalf("fixture did not exercise batched reads: blocking=%+v specs=%v events=%d", blocking, specs, len(events[openApp.ID]))
+		if specs[openApp.ID] != 2 || len(events[openApp.ID]) != 2 {
+			t.Fatalf("fixture did not exercise batched reads: specs=%v events=%d", specs, len(events[openApp.ID]))
 		}
 		if _, ok := heads[ids[4]]; ok {
 			t.Fatal("missing task returned a head")

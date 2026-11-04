@@ -1281,17 +1281,6 @@ func (s *Store) ClaimWorkOrderCommand(ctx context.Context, lifecycleLease taskop
 	if assigneeUserID.Valid && assigneeUserID.String != claim.OwnerUserID {
 		return core.WorkOrder{}, fmt.Errorf("task %s is assigned to %s; only that assignee may claim its work orders", order.TaskID, assigneeUserID.String)
 	}
-	if order.Stage == core.StageReview || order.Stage == core.StageVerify {
-		// The listing's helper, inside the claim's transaction
-		// (req-260810-70ce2f AC-1.1; component-work-orders).
-		blocking, blockingErr := claimBlockingProposalsTx(ctx, tx, workspace(ctx), order.TaskID)
-		if blockingErr != nil {
-			return core.WorkOrder{}, blockingErr
-		}
-		if len(blocking) > 0 {
-			return core.WorkOrder{}, store.ClaimBlockingProposalError(order.TaskID, blocking[0])
-		}
-	}
 	if order.Stage == core.StageReview {
 		accepted, acceptedErr := reviewSeatAcceptedTx(ctx, tx, workspace(ctx), order.TaskID, order.ID)
 		if acceptedErr != nil {

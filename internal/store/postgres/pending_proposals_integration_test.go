@@ -51,14 +51,13 @@ func TestTaskAuthoredDesignProposalDismissalReleasesReviewAcrossRestartIntegrati
 		t.Fatal(err)
 	}
 	defer st.Close()
-	if _, err = storetest.For(st).ClaimWorkOrder(ctx, job.ID, core.WorkOrderClaim{SessionID: "blocked", ClientToken: "blocked-token", Lease: time.Minute}); err == nil || !strings.Contains(err.Error(), "waiting on") {
+	// A pending proposal holds no review claim, across a reopened store, and the
+	// operator decides it afterward (req-260810-23b69f REQ-3; DEC-102(6)).
+	if _, err = storetest.For(st).ClaimWorkOrder(ctx, job.ID, core.WorkOrderClaim{SessionID: "proceeds", ClientToken: "proceeds-token", Lease: time.Minute}); err != nil {
 		t.Fatalf("claim while proposal pending error=%v", err)
 	}
 	if _, _, err = st.DismissSystemDesignVersion(ctx, design.ID, proposal.Version); err != nil {
 		t.Fatal(err)
-	}
-	if _, err = storetest.For(st).ClaimWorkOrder(ctx, job.ID, core.WorkOrderClaim{SessionID: "released", ClientToken: "released-token", Lease: time.Minute}); err != nil {
-		t.Fatalf("claim after proposal dismissal: %v", err)
 	}
 }
 

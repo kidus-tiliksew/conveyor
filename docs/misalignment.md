@@ -14,10 +14,7 @@ observed repository. When two of them disagree, it raises a signal.
 Nothing here blocks a merge, rewrites a document,
 or reverts a commit. A signal puts a disagreement in front of a human operator
 with enough context to judge it, and every path forward runs through the
-normal machinery. The one exception is narrow and deliberate: a
-task's own undecided proposals block that task's review claim, because
-reviewing against authority the task itself is trying to change would be
-circular.
+normal machinery.
 
 There are three detection machines:
 
@@ -110,11 +107,10 @@ versions, System Design versions, decisions, and suggested task context)
 is projected onto one Pending proposals page with its origin and age, and
 rolled into the sidebar and board attention counts.
 
-Proposals never gate work in general, and a task no longer authors them
-(DEC-102). The one exception, noted above: a review cannot be claimed while the
-task under review has its own earlier proposals still undecided. The task page shows this state directly, with the confirm action
-in place. Deciding the proposal either way, confirm or dismiss, releases the
-review. Dismissing a pending requirement or System Design version requires an
+Proposals never gate work, and a task no longer authors them (DEC-102). A
+version a task authored earlier holds nothing either: verify and review claims
+proceed, and starting that task over leaves the version pending for the operator
+to decide. Dismissing a pending requirement or System Design version requires an
 explicit confirmation step, retains the version in history, and makes that
 version permanently unavailable for later confirmation.
 
@@ -133,8 +129,7 @@ validates. A reviewer cannot cite authority that was not pinned, cannot file
 findings when no authority exists, and cannot wave through a superseded
 citation as current.
 
-Proposal evidence from the task rides along, explicitly marked as conferring
-no authority. Review requests changes to work that contradicts a pinned confirmed
+Review requests changes to work that contradicts a pinned confirmed
 document or the approved plan, and never asks the task for a document revision. A
 pinned document that itself appears wrong goes in the governance assessment's
 conflicts, so the operator sees it.

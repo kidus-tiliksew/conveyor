@@ -187,39 +187,6 @@ GROUP BY s.task_id`, workspace(ctx), taskIDs)
 	return out, rows.Err()
 }
 
-// ListClaimBlockingProposalsForTasks applies claimBlockingProposalsTx's
-// predicate to every requested task in one query.
-func (s *Store) ListClaimBlockingProposalsForTasks(ctx context.Context, taskIDs []string) (map[string][]store.ClaimBlockingProposal, error) {
-	ctx = dbmetrics.WithReadLabel(ctx, "ListClaimBlockingProposalsForTasks")
-	out := map[string][]store.ClaimBlockingProposal{}
-	if len(taskIDs) == 0 {
-		return out, nil
-	}
-	rows, err := s.boundary.Query(ctx, `
-SELECT origin_task_id, 'system_design'::text AS tier, document_id AS id, version FROM system_design_versions
-WHERE workspace_id=$1 AND origin=$2 AND origin_task_id=ANY($3::text[]) AND NOT confirmed AND NOT dismissed
-UNION ALL
-SELECT origin_task_id, 'requirement'::text, requirement_id, version FROM requirement_versions
-WHERE workspace_id=$1 AND origin=$4 AND origin_task_id=ANY($3::text[]) AND NOT confirmed AND NOT retired`,
-		workspace(ctx), string(core.SystemDesignOriginImplementation), taskIDs, string(core.RequirementOriginImplementation))
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	for rows.Next() {
-		var taskID string
-		var item store.ClaimBlockingProposal
-		if err = rows.Scan(&taskID, &item.Tier, &item.ID, &item.Version); err != nil {
-			return nil, err
-		}
-		out[taskID] = append(out[taskID], item)
-	}
-	if err = rows.Err(); err != nil {
-		return nil, err
-	}
-	return store.GroupClaimBlockingProposals(out), nil
-}
-
 // ListTaskHeads reads the requested tasks' identity, title, and state in one
 // query.
 func (s *Store) ListTaskHeads(ctx context.Context, taskIDs []string) (map[string]store.TaskHead, error) {

@@ -37,22 +37,6 @@ func (s *Server) restartTask(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid_restart_request", "message": err.Error()})
 		return
 	}
-	credential, _ := store.CredentialFromContext(r.Context())
-	if s.Memberships != nil {
-		var err error
-		if ws, ok := store.WorkspaceFromContext(r.Context()); ok && s.Workspaces != nil {
-			request.CanConfirmDocuments, err = s.Memberships.AuthorizeWorkspace(r.Context(), credential.OwnerUserID, ws, core.CapabilityConfirmDocuments)
-		} else {
-			request.CanConfirmDocuments, err = s.Memberships.AuthorizeDeployment(r.Context(), credential.OwnerUserID, core.CapabilityConfirmDocuments)
-		}
-		if err != nil {
-			log.Printf("authorize task start over: %v", err)
-			writeRestartInternalError(w, r)
-			return
-		}
-	} else {
-		request.CanConfirmDocuments = credential.Scope == core.CredentialScopeOperator
-	}
 	result, err := taskops.New(s.Store).StartOver(r.Context(), request)
 	if err != nil {
 		writeRestartError(w, r, err)
@@ -82,8 +66,6 @@ func writeRestartError(w http.ResponseWriter, r *http.Request, err error) {
 		writeJSON(w, http.StatusConflict, map[string]string{"error": "task_terminal", "message": "terminal tasks cannot start over; create a task with POST /v1/tasks"})
 	case errors.Is(err, store.ErrStartOverRequestConflict):
 		writeJSON(w, http.StatusConflict, map[string]string{"error": "start_over_request_conflict", "message": err.Error()})
-	case errors.Is(err, store.ErrStartOverConfirmDocuments):
-		writeJSON(w, http.StatusForbidden, map[string]string{"error": "start_over_confirm_documents", "message": err.Error()})
 	case errors.As(err, &dependencyErr):
 		writeJSON(w, http.StatusConflict, map[string]string{"error": "task_dependency", "message": dependencyErr.Error()})
 	case errors.As(err, &invalidTransition):

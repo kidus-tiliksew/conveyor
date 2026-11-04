@@ -186,42 +186,8 @@ func runDismissalNotesConformance(t *testing.T, factory RequirementFactory) {
 				if count != 3 {
 					t.Fatalf("dismissal events=%d", count)
 				}
-				notes, err := st.ListDocumentOperatorNotesForTask(ctx, taskID)
-				if err != nil {
-					t.Fatal(err)
-				}
-				expected := 0
-				if want != "" {
-					expected = 3
-				}
-				if len(notes) != expected {
-					t.Fatalf("operator notes=%+v", notes)
-				}
-				for i, n := range notes {
-					if n.DocumentID != id || n.Version != i+1 || n.Tier != tier || n.Note != want || n.DismissedAt.IsZero() {
-						t.Fatalf("note=%+v", n)
-					}
-				}
-				for _, c := range []context.Context{ctx, store.WithWorkspace(ctx, "unrelated")} {
-					otherTask := taskID
-					if c == ctx {
-						otherTask = "unrelated"
-					}
-					other, err := st.ListDocumentOperatorNotesForTask(c, otherTask)
-					if err != nil || len(other) != 0 {
-						t.Fatalf("unrelated notes=%+v err=%v", other, err)
-					}
-				}
-				projected, err := store.OperatorNotesForTask(ctx, st, taskID)
-				if err != nil || len(projected) != expected {
-					t.Fatalf("projected=%+v err=%v", projected, err)
-				}
 				if _, err := For(st).CancelTask(ctx, core.Intervention{TaskID: taskID, Action: core.InterventionCancel, ReasonCode: "terminal-notes-test"}); err != nil {
 					t.Fatal(err)
-				}
-				projected, err = store.OperatorNotesForTask(ctx, st, taskID)
-				if err != nil || len(projected) != 0 {
-					t.Fatalf("terminal notes=%+v err=%v", projected, err)
 				}
 				for n := 1; n <= 3; n++ {
 					check(n, want)

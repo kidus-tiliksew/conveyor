@@ -2,7 +2,6 @@ package postgres
 
 import (
 	"context"
-	"strings"
 	"testing"
 	"time"
 
@@ -72,7 +71,7 @@ func TestReviewRequirementSnapshotSurvivesPostgresReload(t *testing.T) {
 	}
 }
 
-func TestReviewClaimRefreshesProposalEvidenceWithoutRefreshingPinnedAuthorityIntegration(t *testing.T) {
+func TestReviewClaimProceedsAndPinsNoProposalEvidenceIntegration(t *testing.T) {
 	databaseURL := integrationDatabaseURL(t)
 	ctx := store.WithActor(context.Background(), store.SystemActor())
 	st, err := Open(ctx, databaseURL)
@@ -125,17 +124,34 @@ func TestReviewClaimRefreshesProposalEvidenceWithoutRefreshingPinnedAuthorityInt
 		t.Fatal(err)
 	}
 	createReview(task.ID+"-review-2", 2, nil)
-	if _, err = service.Claim(ctx, task.ID+"-review-2", core.WorkOrderClaim{SessionID: "review-refresh-2", ClientToken: "secret-2", ClaimantID: "reviewer-2", Lease: time.Minute}); err == nil || !strings.Contains(err.Error(), "waiting on") {
+	secondClaim, err := service.Claim(ctx, task.ID+"-review-2", core.WorkOrderClaim{SessionID: "review-refresh-2", ClientToken: "secret-2", ClaimantID: "reviewer-2", Lease: time.Minute})
+	if err != nil {
 		t.Fatalf("pending proposal review claim error=%v", err)
+	}
+	if secondClaim.GovernanceSnapshot == nil || len(secondClaim.GovernanceSnapshot.Designs) != 1 || secondClaim.GovernanceSnapshot.Designs[0].Version != initial.Version || len(secondClaim.GovernanceSnapshot.PendingDesignProposals) != 0 {
+		t.Fatalf("pending proposal claim=%+v", secondClaim.GovernanceSnapshot)
 	}
 	if _, _, err = st.ConfirmSystemDesignVersion(ctx, document.ID, proposal.Version, initial.Version); err != nil {
 		t.Fatal(err)
 	}
-	secondClaim, err := service.Claim(ctx, task.ID+"-review-2", core.WorkOrderClaim{SessionID: "review-refresh-2", ClientToken: "secret-2", ClaimantID: "reviewer-2", Lease: time.Minute})
-	if err != nil {
-		t.Fatal(err)
+	// An order pinned before DEC-102 keeps its recorded evidence and digest
+	// through the claim, and its context presents neither (DEC-102(6)).
+	older := &core.GovernanceSnapshot{
+		Designs: []core.GovernanceDesignContext{{ID: document.ID, Title: document.Title, Category: document.Category, Version: initial.Version, Content: initial.Content, Governs: []core.GovernedScope{}}}, Decisions: []core.Decision{},
+		PendingDesignProposals: []core.PendingSystemDesignProposal{{DocumentID: document.ID, Version: proposal.Version, ProposalEventID: 42, OriginTaskID: task.ID}},
+		ResolutionNotes:        []string{"retained resolution note"},
 	}
-	if secondClaim.GovernanceSnapshot == nil || len(secondClaim.GovernanceSnapshot.Designs) != 1 || secondClaim.GovernanceSnapshot.Designs[0].Version != proposal.Version || len(secondClaim.GovernanceSnapshot.PendingDesignProposals) != 1 || !secondClaim.GovernanceSnapshot.PendingDesignProposals[0].Confirmed {
-		t.Fatalf("confirmed proposal claim=%+v", secondClaim.GovernanceSnapshot)
+	digest, _ := store.EncodeGovernanceSnapshot(older)
+	createReview(task.ID+"-review-3", 3, older)
+	thirdClaim, err := service.Claim(ctx, task.ID+"-review-3", core.WorkOrderClaim{SessionID: "review-refresh-3", ClientToken: "secret-3", ClaimantID: "reviewer-3", Lease: time.Minute})
+	if err != nil {
+		t.Fatalf("older pin review claim error=%v", err)
+	}
+	if thirdClaim.GovernanceSnapshotDigest != digest {
+		t.Fatalf("claim rewrote the older pin: digest=%s want %s", thirdClaim.GovernanceSnapshotDigest, digest)
+	}
+	stored, err := st.GetWorkOrder(ctx, task.ID+"-review-3")
+	if err != nil || stored.GovernanceSnapshotDigest != digest || stored.GovernanceSnapshot == nil || len(stored.GovernanceSnapshot.PendingDesignProposals) != 1 {
+		t.Fatalf("stored older pin=%+v digest=%s err=%v", stored.GovernanceSnapshot, stored.GovernanceSnapshotDigest, err)
 	}
 }

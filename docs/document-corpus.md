@@ -208,10 +208,9 @@ the dialog directs the operator to review it again. Decisions have no Revise act
 
 The Pending proposals page collects every undecided proposal, with its age,
 its origin, and confirm and dismiss actions, so an operator can see at a glance how
-much authority the factory is waiting on. A pending proposal a task authored
-before DEC-102 also blocks that task's review from being claimed until it is
-decided either way, which is the one place a proposal touches the pipeline;
-see [Misalignment](misalignment.md#pending-proposals).
+much authority is undecided. A pending proposal holds no task's work, including
+one a task authored before DEC-102; see
+[Misalignment](misalignment.md#pending-proposals).
 
 ## How documents reach a task
 

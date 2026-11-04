@@ -41,27 +41,26 @@ func TestNextActionChoicesFollowWorkspaceRole(t *testing.T) {
 	if err := f.store.CreateTask(f.ctx, core.Task{ID: "gov-task-role-merge", Workspace: governanceWorkspace, Repo: "conveyor", Branch: "gov-task-role-merge", State: core.TaskAwaiting, GateKind: core.GateKindMergeApproval, CreatedAt: time.Now().UTC()}); err != nil {
 		t.Fatal(err)
 	}
-	// A task-authored requirement version withholds the queued review claim;
-	// its confirm and dismiss choices need confirm_documents, which only the
-	// operator holds.
-	requirement, version, err := f.store.CreateRequirement(f.ctx, core.Requirement{ID: "req-role-proposal", Title: "Role proposal"}, core.RequirementVersion{Content: "# Role proposal", Origin: core.RequirementOriginOperator, Statements: []core.RequirementStatement{{ID: "REQ-1", Statement: "Gate confirmation on role."}}})
+	// An authority-conflict checkpoint cites a requirement with a pending
+	// version; its confirm and dismiss choices need confirm_documents, which only
+	// the operator holds.
+	requirement, version, err := f.store.CreateRequirement(f.ctx, core.Requirement{ID: "req-role-proposal", Title: "Role proposal"}, core.RequirementVersion{Content: "# Role proposal", Origin: core.RequirementOriginOperator, Statements: []core.RequirementStatement{{ID: "REQ-1", Statement: "Role proposal."}}})
 	if err != nil {
 		t.Fatal(err)
 	}
 	if _, _, err := f.store.ConfirmRequirementVersion(f.ctx, requirement.ID, version.Version); err != nil {
 		t.Fatal(err)
 	}
-	if err := f.store.CreateTask(f.ctx, core.Task{ID: "gov-task-role-proposal", Workspace: governanceWorkspace, Repo: "conveyor", Branch: "gov-task-role-proposal", State: core.TaskRunning, NextStage: core.StageReview, CreatedAt: time.Now().UTC()}); err != nil {
-		t.Fatal(err)
-	}
-	if err := f.store.CreateJob(f.ctx, core.Job{ID: "gov-task-role-proposal-review-1", TaskID: "gov-task-role-proposal", Stage: core.StageReview, State: core.JobPending}); err != nil {
-		t.Fatal(err)
-	}
-	if err := storetest.For(f.store).CreateWorkOrder(f.ctx, core.WorkOrder{ID: "gov-task-role-proposal-review-1", TaskID: "gov-task-role-proposal", JobID: "gov-task-role-proposal-review-1", Stage: core.StageReview, State: core.WorkOrderQueued}); err != nil {
-		t.Fatal(err)
-	}
-	withheld, err := f.store.ProposeRequirementVersion(f.ctx, core.RequirementVersion{RequirementID: requirement.ID, Content: "# Role proposal", Origin: core.RequirementOriginImplementation, OriginTaskID: "gov-task-role-proposal", Statements: []core.RequirementStatement{{ID: "REQ-1", Statement: "Gate confirmation on the workspace role."}}})
+	roleOrder := f.order("role-proposal", core.StageImplement)
+	withheld, err := f.store.ProposeRequirementVersion(f.ctx, core.RequirementVersion{RequirementID: requirement.ID, Content: "# Role proposal revised", Origin: core.RequirementOriginImplementation, OriginTaskID: "gov-task-role-proposal", Statements: []core.RequirementStatement{{ID: "REQ-1", Statement: "Role proposal revised."}}})
 	if err != nil {
+		t.Fatal(err)
+	}
+	f.claimRun(roleOrder, "usr_role_holder", "role-proposal-session")
+	if _, err := storetest.ReleaseWorkerClaim(f.ctx, f.store, roleOrder, "worker-role-proposal", core.WorkOrderRelease{
+		SessionID: "role-proposal-session", Reason: core.WorkOrderReleaseReasonOperatorCheckpointReached, Cause: core.WorkOrderReleaseCauseOperatorAction, Outcome: core.WorkOrderOutcomeReleased,
+		Checkpoint: &core.WorkOrderCheckpoint{DecisionRequest: "Decide the cited revision.", Class: core.WorkOrderCheckpointClassAuthorityConflict, Citations: []core.WorkOrderAuthorityConflictCitation{{DocumentID: requirement.ID, CitedVersion: version.Version, StatementOrSectionID: "REQ-1"}}},
+	}); err != nil {
 		t.Fatal(err)
 	}
 	confirmID := fmt.Sprintf("confirm:requirement:%s:%d", requirement.ID, withheld.Version)
@@ -73,10 +72,10 @@ func TestNextActionChoicesFollowWorkspaceRole(t *testing.T) {
 		merge    map[string]bool
 		proposal map[string]bool
 	}{
-		{core.WorkspaceRoleOperator, map[string]bool{"approve": true, "redirect": true, "reject": true}, map[string]bool{"approve": true, "request_changes": true}, map[string]bool{confirmID: true, dismissID: true}},
-		{core.WorkspaceRoleMaintainer, map[string]bool{"approve": true, "redirect": true, "reject": true}, map[string]bool{"approve": true, "request_changes": true}, map[string]bool{confirmID: false, dismissID: false}},
-		{core.WorkspaceRoleContributor, map[string]bool{"approve": false, "redirect": false, "reject": false}, map[string]bool{"approve": false, "request_changes": true}, map[string]bool{confirmID: false, dismissID: false}},
-		{core.WorkspaceRoleViewer, map[string]bool{"approve": false, "redirect": false, "reject": false}, map[string]bool{"approve": false, "request_changes": false}, map[string]bool{confirmID: false, dismissID: false}},
+		{core.WorkspaceRoleOperator, map[string]bool{"approve": true, "redirect": true, "reject": true}, map[string]bool{"approve": true, "request_changes": true}, map[string]bool{confirmID: true, dismissID: true, "answer": true}},
+		{core.WorkspaceRoleMaintainer, map[string]bool{"approve": true, "redirect": true, "reject": true}, map[string]bool{"approve": true, "request_changes": true}, map[string]bool{confirmID: false, dismissID: false, "answer": true}},
+		{core.WorkspaceRoleContributor, map[string]bool{"approve": false, "redirect": false, "reject": false}, map[string]bool{"approve": false, "request_changes": true}, map[string]bool{confirmID: false, dismissID: false, "answer": false}},
+		{core.WorkspaceRoleViewer, map[string]bool{"approve": false, "redirect": false, "reject": false}, map[string]bool{"approve": false, "request_changes": false}, map[string]bool{confirmID: false, dismissID: false, "answer": false}},
 	}
 	var inboxes []string
 	for _, tc := range cases {

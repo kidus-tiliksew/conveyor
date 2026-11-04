@@ -235,18 +235,19 @@ func TestNextActionRouteIsTheGroupBoundary(t *testing.T) {
 	if _, _, err = st.ConfirmRequirementVersion(ctx, requirement.ID, requirementVersion.Version); err != nil {
 		t.Fatal(err)
 	}
-	// Row 8: a task-authored requirement version withholds the queued review
-	// claim, so details.pending_proposals names it with its version.
-	if err := st.CreateTask(ctx, core.Task{ID: "proposal", Workspace: "demo", Repo: "conveyor", Branch: "proposal", State: core.TaskRunning, NextStage: core.StageReview}); err != nil {
+	// An authority-conflict checkpoint cites the requirement, so
+	// details.pending_proposals names its pending version with that version.
+	if err := st.CreateTask(ctx, core.Task{ID: "proposal", Workspace: "demo", Repo: "conveyor", Branch: "proposal", State: core.TaskRunning}); err != nil {
 		t.Fatal(err)
 	}
-	if err := st.CreateJob(ctx, core.Job{ID: "proposal-review-1", TaskID: "proposal", Stage: core.StageReview, State: core.JobPending}); err != nil {
+	if err := st.CreateJob(ctx, core.Job{ID: "proposal-implement-1", TaskID: "proposal", Stage: core.StageImplement, State: core.JobPending}); err != nil {
 		t.Fatal(err)
 	}
-	if err := storetest.For(st).CreateWorkOrder(ctx, core.WorkOrder{ID: "proposal-review-1", TaskID: "proposal", JobID: "proposal-review-1", Stage: core.StageReview, State: core.WorkOrderQueued}); err != nil {
+	if err := storetest.For(st).CreateWorkOrder(ctx, core.WorkOrder{ID: "proposal-implement-1", TaskID: "proposal", JobID: "proposal-implement-1", Stage: core.StageImplement, State: core.WorkOrderQueued, LastAttemptID: "attempt-proposal", LastAttemptOutcome: core.WorkOrderOutcomeReleased,
+		Checkpoint: &core.WorkOrderCheckpoint{DecisionRequest: "Decide the cited requirement.", Class: core.WorkOrderCheckpointClassAuthorityConflict, Citations: []core.WorkOrderAuthorityConflictCitation{{DocumentID: requirement.ID, CitedVersion: requirementVersion.Version, StatementOrSectionID: "REQ-1"}}}}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := st.ProposeRequirementVersion(ctx, core.RequirementVersion{RequirementID: requirement.ID, Content: "# Shape", Origin: core.RequirementOriginImplementation, OriginTaskID: "proposal", Statements: []core.RequirementStatement{{ID: "REQ-1", Statement: "Pin the field and its version."}}}); err != nil {
+	if _, err := st.ProposeRequirementVersion(ctx, core.RequirementVersion{RequirementID: requirement.ID, Content: "# Shape", Origin: core.RequirementOriginImplementation, OriginTaskID: "proposal", Statements: []core.RequirementStatement{{ID: "REQ-1", Statement: "Pin the field again."}}}); err != nil {
 		t.Fatal(err)
 	}
 	proposals := requireRaw(t, objectField(t, nextActionObject(t, server, "proposal"), "details"), "pending_proposals")

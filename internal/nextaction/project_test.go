@@ -32,7 +32,7 @@ func TestProjectRowsAndLabel(t *testing.T) {
 		{name: "row5 pre", in: conflictInput(false, now), actor: ActorFactory, kind: KindRetrying},
 		{name: "row6", in: Input{Task: core.Task{State: core.TaskApproved, MergeApproval: true}, Now: now}, actor: ActorOperator, kind: KindMergeExecution},
 		{name: "row7", in: Input{Task: core.Task{State: core.TaskApproved}, Markers: Markers{ForgeFailure: true}, Now: now}, actor: ActorFactory, kind: KindMerging},
-		{name: "row8", in: waitingAndQuestion(now), actor: ActorOperator, kind: KindDocumentProposal, secondary: KindAgentQuestion},
+		{name: "row7 over question", in: mergingAndQuestion(now), actor: ActorFactory, kind: KindMerging, secondary: KindAgentQuestion},
 		{name: "row9-10", in: questionAndVerify(now), actor: ActorOperator, kind: KindAgentQuestion, secondary: KindVerificationDisposition},
 		{name: "row11-12", in: Input{Task: core.Task{State: core.TaskRunning}, Markers: Markers{ForgeFailure: true, ReviewRecovery: true}, Now: now}, actor: ActorOperator, kind: KindForgeFailure, secondary: KindReviewRecovery},
 		{name: "row13-14", in: unsatisfiableAndSuppressed(now), actor: ActorOperator, kind: KindDependencyUnsatisfiable, secondary: KindStalled},
@@ -112,7 +112,7 @@ func TestCatalogueCoversEveryKind(t *testing.T) {
 			t.Fatalf("kind %s missing catalogue", kind)
 		}
 	}
-	for _, kind := range []string{KindParked, KindPlanApproval, KindPlanRevision, KindMergeApproval, KindReviewBounceLimit, KindMergeExecution, KindDocumentProposal, KindContextProposal, KindAgentQuestion, KindVerificationDisposition, KindDependencyUnsatisfiable} {
+	for _, kind := range []string{KindParked, KindPlanApproval, KindPlanRevision, KindMergeApproval, KindReviewBounceLimit, KindMergeExecution, KindContextProposal, KindAgentQuestion, KindVerificationDisposition, KindDependencyUnsatisfiable} {
 		entry, _ := Lookup(kind, "", "", "")
 		if entry.Question == nil || entry.Question(Vars{}) == "" || entry.IfIgnored == nil {
 			t.Fatalf("judgment kind %s missing question or if_ignored", kind)
@@ -336,8 +336,8 @@ func conflictInput(exhausted bool, now time.Time) Input {
 	return Input{Task: core.Task{State: core.TaskApproved, MergeApproval: true}, MergeConflict: MergeConflict{Open: true, Exhausted: exhausted, NextRetryAt: now.Add(time.Minute)}, Now: now}
 }
 
-func waitingAndQuestion(now time.Time) Input {
-	return Input{Task: core.Task{State: core.TaskRunning}, ClaimWaiting: []ProposalRef{{Tier: "requirement", ID: "req", Version: 1}}, Markers: Markers{CheckpointDecision: true}, Orders: []core.WorkOrder{{ID: "q", State: core.WorkOrderQueued, LastAttemptID: "a", LastAttemptOutcome: core.WorkOrderOutcomeReleased}}, Now: now}
+func mergingAndQuestion(now time.Time) Input {
+	return Input{Task: core.Task{State: core.TaskApproved}, PendingProposals: []ProposalRef{{Tier: "requirement", ID: "req", Version: 1}}, Markers: Markers{CheckpointDecision: true}, Orders: []core.WorkOrder{{ID: "q", State: core.WorkOrderQueued, LastAttemptID: "a", LastAttemptOutcome: core.WorkOrderOutcomeReleased}}, Now: now}
 }
 
 func questionAndVerify(now time.Time) Input {

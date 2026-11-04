@@ -807,17 +807,6 @@ func runTaskRestart(cmd *cobra.Command, c *client, request core.TaskStartOverReq
 	if count == 0 {
 		fmt.Fprintln(out, "  none")
 	}
-	proposals, err := c.taskRestartProposals(request.TaskID)
-	if err != nil {
-		return fmt.Errorf("read pending-proposal preview: %w", err)
-	}
-	fmt.Fprintln(out, "Pending task-authored proposals to dismiss:")
-	for _, p := range proposals {
-		fmt.Fprintf(out, "  %s v%d (%s): %s\n", p.ID, p.Version, p.Tier, p.Title)
-	}
-	if len(proposals) == 0 {
-		fmt.Fprintln(out, "  none")
-	}
 	// Recorded events are historical context, not proof of current forge state.
 	for _, event := range activity.Events {
 		if event.Kind != "pull_request.opened" {

@@ -69,7 +69,7 @@ func TestTaskStartOverRollbackAtWriteBoundariesIntegration(t *testing.T) {
 			driverLog := &lockedBuffer{}
 			previousLog := log.Writer()
 			log.SetOutput(driverLog)
-			_, err = taskops.New(st).StartOver(ctx, core.TaskStartOverRequest{TaskID: old.ID, RequestID: "failure", Reason: "restart", Note: "dismiss note", CanConfirmDocuments: true})
+			_, err = taskops.New(st).StartOver(ctx, core.TaskStartOverRequest{TaskID: old.ID, RequestID: "failure", Reason: "restart", Note: "start over note"})
 			log.SetOutput(previousLog)
 			if !errors.Is(err, store.ErrBackendOperation) || strings.Contains(err.Error(), "restart injected failure") || !strings.Contains(driverLog.String(), "restart injected failure") {
 				t.Fatalf("injection did not run behind the store boundary: err=%v log=%q", err, driverLog.String())

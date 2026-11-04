@@ -600,59 +600,6 @@ func (s *Store) ListGovernanceDesigns(ctx context.Context, repository string) ([
 	return out, rows.Err()
 }
 
-func (s *Store) ListPendingSystemDesignVersionsForTask(ctx context.Context, taskID string) ([]core.SystemDesignVersion, error) {
-	ctx = dbmetrics.WithReadLabel(ctx, "ListPendingSystemDesignVersionsForTask")
-	rows, err := s.boundary.Query(ctx, systemDesignVersionSelect+` WHERE workspace_id=$1 AND origin=$2 AND origin_task_id=$3 AND NOT confirmed AND NOT dismissed ORDER BY document_id,version`, workspace(ctx), string(core.SystemDesignOriginImplementation), taskID)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	out := make([]core.SystemDesignVersion, 0)
-	for rows.Next() {
-		item, scanErr := scanSystemDesignVersion(rows, "", 0)
-		if scanErr != nil {
-			return nil, scanErr
-		}
-		out = append(out, item)
-	}
-	return out, rows.Err()
-}
-
-func (s *Store) ListSystemDesignProposalVersionsForTask(ctx context.Context, taskID string) ([]core.SystemDesignVersion, error) {
-	ctx = dbmetrics.WithReadLabel(ctx, "ListSystemDesignProposalVersionsForTask")
-	rows, err := s.boundary.Query(ctx, systemDesignVersionSelect+` WHERE workspace_id=$1 AND origin=$2 AND origin_task_id=$3 AND NOT dismissed ORDER BY document_id,version`, workspace(ctx), string(core.SystemDesignOriginImplementation), taskID)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	out := make([]core.SystemDesignVersion, 0)
-	for rows.Next() {
-		item, scanErr := scanSystemDesignVersion(rows, "", 0)
-		if scanErr != nil {
-			return nil, scanErr
-		}
-		out = append(out, item)
-	}
-	return out, rows.Err()
-}
-
-func (s *Store) ListSystemDesignProposalEventsForTask(ctx context.Context, taskID string) ([]core.Event, error) {
-	ctx = dbmetrics.WithReadLabel(ctx, "ListSystemDesignProposalEventsForTask")
-	rows, err := s.boundary.Query(ctx, `SELECT id,task_id,job_id,kind,actor_id,actor_role,payload_json,at,workspace_id FROM events WHERE workspace_id=$1 AND kind='system_design.version_proposed' AND payload_json->>'origin_task_id'=$2 ORDER BY id`, workspace(ctx), taskID)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	out := make([]core.Event, 0)
-	for rows.Next() {
-		var row db.Event
-		if err = rows.Scan(&row.ID, &row.TaskID, &row.JobID, &row.Kind, &row.ActorID, &row.ActorRole, &row.PayloadJson, &row.At, &row.WorkspaceID); err != nil {
-			return nil, err
-		}
-		out = append(out, eventFromDB(row))
-	}
-	return out, rows.Err()
-}
 func (s *Store) ListSystemDesignVersionsByDocument(ctx context.Context) (map[string][]core.SystemDesignVersion, error) {
 	ctx = dbmetrics.WithReadLabel(ctx, "ListSystemDesignVersionsByDocument")
 	rows, err := s.boundary.Query(ctx, systemDesignVersionSelect+` WHERE workspace_id=$1 ORDER BY document_id,version`, workspace(ctx))
