@@ -18,7 +18,7 @@ import (
 // Inject database failures at successive writes, including after dispatch was
 // enqueued, to prove the compound operation has one commit boundary.
 func TestTaskStartOverRollbackAtWriteBoundariesIntegration(t *testing.T) {
-	for _, phase := range []string{"cancel", "dismiss", "create", "artifact", "links", "final_event"} {
+	for _, phase := range []string{"cancel", "create", "artifact", "links", "final_event"} {
 		t.Run(phase, func(t *testing.T) {
 			st := newIdentityIntegrationStore(t, 0)
 			ctx := store.WithWorkspace(store.WithActor(t.Context(), store.SystemActor()), "restart-rollback")
@@ -44,8 +44,6 @@ func TestTaskStartOverRollbackAtWriteBoundariesIntegration(t *testing.T) {
 			}
 			table, operation, condition := "events", "INSERT", "NEW.kind='task.cancelled'"
 			switch phase {
-			case "dismiss":
-				condition = "NEW.kind='requirement.version_dismissed'"
 			case "create":
 				condition = "NEW.kind='task.created'"
 			case "artifact":
@@ -80,7 +78,7 @@ func TestTaskStartOverRollbackAtWriteBoundariesIntegration(t *testing.T) {
 			}
 			version, err := st.GetRequirementVersion(ctx, requirement.ID, pending.Version)
 			if err != nil || version.Retired || version.DismissalNote != "" {
-				t.Fatalf("partial dismissal: %+v %v", version, err)
+				t.Fatalf("start over touched the pending version: %+v %v", version, err)
 			}
 			eventsAfter, _ := st.ListEvents(ctx, old.ID)
 			if len(eventsBefore) != len(eventsAfter) {
