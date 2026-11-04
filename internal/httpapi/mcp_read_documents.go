@@ -96,24 +96,13 @@ func (s *Server) mcpDocumentRead(ctx context.Context, a map[string]any) (map[str
 	if err != nil {
 		return nil, err
 	}
-	version := p["current_version"].(int)
-	explicit := false
-	if v, ok := a["version"]; ok {
-		b, _ := json.Marshal(v)
-		_ = json.Unmarshal(b, &version)
-		explicit = true
-	}
+	version, explicit := selectDocumentVersion(a, p)
 	if version == 0 {
 		p["authority_absent"] = true
 		p["version_status"] = "no_confirmed_version"
 		return p, nil
 	}
-	p["version"] = version
-	p["selection"] = "current"
-	if explicit {
-		p["selection"] = "explicit_version"
-	}
-	p["historical"] = version != p["current_version"].(int)
+	labelDocumentVersion(p, version, explicit)
 	var confirmed, retired bool
 	switch readString(a, "kind") {
 	case "requirement":
@@ -153,6 +142,35 @@ func (s *Server) mcpDocumentRead(ctx context.Context, a map[string]any) (map[str
 		p["created_at"] = v.CreatedAt
 		p["content_type"] = v.ContentType
 	}
+	applyDocumentVersionStatus(p, readString(a, "kind"), confirmed, retired)
+	return p, nil
+}
+
+// selectDocumentVersion returns the version a read names, or the document's
+// current version when it names none.
+func selectDocumentVersion(a, p map[string]any) (int, bool) {
+	version := p["current_version"].(int)
+	v, explicit := a["version"]
+	if explicit {
+		b, _ := json.Marshal(v)
+		_ = json.Unmarshal(b, &version)
+	}
+	return version, explicit
+}
+
+func labelDocumentVersion(p map[string]any, version int, explicit bool) {
+	p["version"] = version
+	p["selection"] = "current"
+	if explicit {
+		p["selection"] = "explicit_version"
+	}
+	p["historical"] = version != p["current_version"].(int)
+}
+
+// applyDocumentVersionStatus labels a selected version's authority. Every read
+// mode shares it, so an outline, section, or search result can never claim more
+// authority than the whole-document read of that version.
+func applyDocumentVersionStatus(p map[string]any, kind string, confirmed, retired bool) {
 	p["confirmed"] = confirmed
 	p["version_status"] = "proposed"
 	if retired {
@@ -161,11 +179,10 @@ func (s *Server) mcpDocumentRead(ctx context.Context, a map[string]any) (map[str
 	if confirmed {
 		p["version_status"] = "confirmed"
 	}
-	if readString(a, "kind") == "reference" {
+	if kind == "reference" {
 		p["version_status"] = "informative"
 	}
 	p["active_authority"] = p["active_authority"] == true && confirmed && !retired && p["historical"] == false
-	return p, nil
 }
 
 func addDocumentArchiveReason(p map[string]any, reason, note string) {

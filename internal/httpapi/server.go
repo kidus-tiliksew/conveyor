@@ -43,6 +43,9 @@ import (
 
 type Server struct {
 	mcpReads mcpReadCache
+	// documentVersions holds parsed immutable document versions for section
+	// reads and search (mcp_document_cache.go).
+	documentVersions mcpDocumentCache
 	// mergeReadiness bounds merge-readiness reads of task detail and next
 	// actions (component-http-api, Request-scoped detail reads).
 	mergeReadiness mergeReadinessCache

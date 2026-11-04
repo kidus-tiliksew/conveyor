@@ -526,3 +526,237 @@ func TestMCPAgentCapabilityCeilingUsesToolTable(t *testing.T) {
 		t.Fatalf("unmapped tool isError=%v text=%q", isErr, text)
 	}
 }
+
+// TestMCPDocumentReadsRequireAgentsLiveClaim is the refusal matrix for agent
+// document reads (req-design-delivery REQ-2 to REQ-4; DEC-103(3);
+// req-security-boundaries REQ-1). Every refusal holds on the first page, a later
+// page, and a resident cache hit, and refuses before any body read. Agent
+// credentials carry no session binding (DEC-97), so a mismatched child binding
+// is the explicit arguments naming another session's order.
+func TestMCPDocumentReadsRequireAgentsLiveClaim(t *testing.T) {
+	type refusalCase struct {
+		name string
+		// want is the refusal text. Every claim refusal shares one answer.
+		want  string
+		setup func(f *documentReadFixture) (agentToken string, claim map[string]any)
+	}
+	claimRefusal := func(tool string) string {
+		return tool + " requires an operator-scoped user credential or the work_order_id and session_id of this session's own live claim"
+	}
+	liveClaim := func(f *documentReadFixture, owner, name string, role core.WorkspaceRole) (string, string, string) {
+		_, agentToken := f.user(owner, role)
+		orderID := f.order(name, core.StageImplement)
+		f.claimRun(orderID, owner, name+"-session")
+		return agentToken, orderID, name + "-session"
+	}
+	cases := []refusalCase{
+		{name: "no claim arguments", want: "claim", setup: func(f *documentReadFixture) (string, map[string]any) {
+			_, agentToken := f.user("usr_none", core.WorkspaceRoleOperator)
+			return agentToken, nil
+		}},
+		{name: "work order without session", want: "claim", setup: func(f *documentReadFixture) (string, map[string]any) {
+			agentToken, orderID, _ := liveClaim(f, "usr_partial", "partial", core.WorkspaceRoleOperator)
+			return agentToken, map[string]any{"work_order_id": orderID}
+		}},
+		{name: "session without work order", want: "claim", setup: func(f *documentReadFixture) (string, map[string]any) {
+			agentToken, _, session := liveClaim(f, "usr_partial", "partial", core.WorkspaceRoleOperator)
+			return agentToken, map[string]any{"session_id": session}
+		}},
+		{name: "unknown order", want: "claim", setup: func(f *documentReadFixture) (string, map[string]any) {
+			_, agentToken := f.user("usr_unknown", core.WorkspaceRoleOperator)
+			return agentToken, map[string]any{"work_order_id": "gov-order-absent", "session_id": "absent-session"}
+		}},
+		{name: "unclaimed order", want: "claim", setup: func(f *documentReadFixture) (string, map[string]any) {
+			_, agentToken := f.user("usr_queued", core.WorkspaceRoleOperator)
+			return agentToken, map[string]any{"work_order_id": f.order("queued", core.StageImplement), "session_id": "queued-session"}
+		}},
+		{name: "foreign claim", want: "claim", setup: func(f *documentReadFixture) (string, map[string]any) {
+			_, orderID, session := liveClaim(f, "usr_owner", "foreign", core.WorkspaceRoleOperator)
+			_, agentToken := f.user("usr_other", core.WorkspaceRoleOperator)
+			return agentToken, map[string]any{"work_order_id": orderID, "session_id": session}
+		}},
+		{name: "another session of the own order", want: "claim", setup: func(f *documentReadFixture) (string, map[string]any) {
+			agentToken, orderID, _ := liveClaim(f, "usr_session", "session", core.WorkspaceRoleOperator)
+			return agentToken, map[string]any{"work_order_id": orderID, "session_id": "not-this-session"}
+		}},
+		{name: "session of another order", want: "claim", setup: func(f *documentReadFixture) (string, map[string]any) {
+			agentToken, _, session := liveClaim(f, "usr_cross", "cross-a", core.WorkspaceRoleOperator)
+			other := f.order("cross-b", core.StageImplement)
+			f.claimRun(other, "usr_cross", "cross-b-session")
+			return agentToken, map[string]any{"work_order_id": other, "session_id": session}
+		}},
+		{name: "expired lease", want: "claim", setup: func(f *documentReadFixture) (string, map[string]any) {
+			agentToken, orderID, session := liveClaim(f, "usr_expired", "expired", core.WorkspaceRoleOperator)
+			f.ageClaim(orderID, func(order *core.WorkOrder) { order.LeaseExpiresAt = time.Now().Add(-time.Minute) })
+			return agentToken, map[string]any{"work_order_id": orderID, "session_id": session}
+		}},
+		{name: "elapsed execution deadline", want: "claim", setup: func(f *documentReadFixture) (string, map[string]any) {
+			agentToken, orderID, session := liveClaim(f, "usr_deadline", "deadline", core.WorkspaceRoleOperator)
+			f.ageClaim(orderID, func(order *core.WorkOrder) { order.ExecutionDeadline = time.Now().Add(-time.Minute) })
+			return agentToken, map[string]any{"work_order_id": orderID, "session_id": session}
+		}},
+		{name: "released claim", want: "claim", setup: func(f *documentReadFixture) (string, map[string]any) {
+			agentToken, orderID, session := liveClaim(f, "usr_released", "released", core.WorkspaceRoleOperator)
+			if text, isErr := f.call(agentToken, "release_work_order", map[string]any{"workspace_id": governanceWorkspace, "work_order_id": orderID, "session_id": session, "reason": "handoff"}); isErr {
+				f.t.Fatal(text)
+			}
+			return agentToken, map[string]any{"work_order_id": orderID, "session_id": session}
+		}},
+		{name: "historical worker owned order", want: "claim", setup: func(f *documentReadFixture) (string, map[string]any) {
+			agentToken, orderID, session := liveClaim(f, "usr_worker", "worker", core.WorkspaceRoleOperator)
+			order, err := f.store.GetWorkOrder(f.ctx, orderID)
+			if err != nil {
+				f.t.Fatal(err)
+			}
+			order.WorkerID = "historical-worker"
+			if err = storetest.For(f.store).UpdateWorkOrder(f.ctx, order); err != nil {
+				f.t.Fatal(err)
+			}
+			return agentToken, map[string]any{"work_order_id": orderID, "session_id": session}
+		}},
+		{name: "owner lost membership", want: "workspace_not_found", setup: func(f *documentReadFixture) (string, map[string]any) {
+			agentToken, orderID, session := liveClaim(f, "usr_removed", "removed", core.WorkspaceRoleOperator)
+			f.members.setRole("usr_removed", governanceWorkspace, "")
+			return agentToken, map[string]any{"work_order_id": orderID, "session_id": session}
+		}},
+		{name: "owner demoted to viewer", want: "workspace_not_found", setup: func(f *documentReadFixture) (string, map[string]any) {
+			agentToken, orderID, session := liveClaim(f, "usr_demoted", "demoted", core.WorkspaceRoleOperator)
+			f.members.setRole("usr_demoted", governanceWorkspace, core.WorkspaceRoleViewer)
+			return agentToken, map[string]any{"work_order_id": orderID, "session_id": session}
+		}},
+	}
+	type readMode struct {
+		name, tool string
+		args       map[string]any
+	}
+	section := func(extra ...any) map[string]any {
+		return documentReadArgs("design-refusal", append([]any{"section_id", "s0"}, extra...)...)
+	}
+	modes := []readMode{
+		{"whole document", "get_document", documentReadArgs("design-refusal")},
+		{"outline", "get_document", documentReadArgs("design-refusal", "outline", true)},
+		{"outline later page", "get_document", documentReadArgs("design-refusal", "outline", true, "version", 1, "section_offset", 1)},
+		{"section", "get_document", section()},
+		{"section later page", "get_document", section("version", 1, "byte_offset", 3)},
+		{"named version section", "get_document", section("version", 1)},
+		{"search", "search_documents", map[string]any{"workspace_id": governanceWorkspace, "query": "refusal-needle"}},
+		{"named version search", "search_documents", map[string]any{"workspace_id": governanceWorkspace, "query": "refusal-needle", "version": 1, "document_ids": []string{"design-refusal"}}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			f := newDocumentReadFixture(t)
+			f.design("design-refusal", designBody("## Refusal\nrefusal-needle\n"))
+			counter := f.countDocumentReads()
+			userToken, _ := f.user("usr_warm", core.WorkspaceRoleViewer)
+			agentToken, claim := tc.setup(f)
+			caller := documentCaller{name: tc.name, token: agentToken, claim: claim}
+			// Cold, then warmed by an authorized user: a resident body and a
+			// refused read differ only in the cache, never in the answer.
+			for _, warmed := range []bool{false, true} {
+				for _, mode := range modes {
+					if warmed {
+						if text, isErr := f.call(userToken, mode.tool, mode.args); isErr {
+							t.Fatalf("warm %s: %s", mode.name, text)
+						}
+					}
+					before := counter.reads.Load()
+					text, isErr := f.call(agentToken, mode.tool, caller.args(mode.args))
+					want := tc.want
+					if want == "claim" {
+						want = claimRefusal(mode.tool)
+					}
+					if !isErr || !strings.Contains(text, want) {
+						t.Fatalf("warmed=%v %s: isError=%v text=%q, want %q", warmed, mode.name, isErr, text, want)
+					}
+					if strings.Contains(text, "refusal-needle") {
+						t.Fatalf("%s leaked text: %s", mode.name, text)
+					}
+					if got := counter.reads.Load() - before; got != 0 {
+						t.Fatalf("%s refused after %d body reads", mode.name, got)
+					}
+				}
+			}
+		})
+	}
+
+	t.Run("a claim lost between pages refuses the next page and the cache hit", func(t *testing.T) {
+		f := newDocumentReadFixture(t)
+		f.design("design-refusal", designBody("## Refusal\n"+strings.Repeat("refusal-needle \"x\"\n", 8000)))
+		agentToken, orderID, session := liveClaim(f, "usr_pages", "pages", core.WorkspaceRoleOperator)
+		caller := documentCaller{name: "agent", token: agentToken, claim: map[string]any{"work_order_id": orderID, "session_id": session}}
+		first := f.readItem(caller, "get_document", section())
+		if first["truncated"] != true {
+			t.Fatalf("first page=%v", first["truncated"])
+		}
+		next := section("version", first["version"], "byte_offset", first["next_byte_offset"])
+		second := f.readItem(caller, "get_document", next)
+		if second["byte_offset"] != first["next_byte_offset"] {
+			t.Fatalf("second page offset=%v", second["byte_offset"])
+		}
+		if result := f.search(caller, "refusal-needle", "limit", 1); result.Total != 1 {
+			t.Fatalf("search=%+v", result)
+		}
+		f.ageClaim(orderID, func(order *core.WorkOrder) { order.LeaseExpiresAt = time.Now().Add(-time.Minute) })
+		for _, call := range []struct {
+			tool string
+			args map[string]any
+		}{
+			{"get_document", next},
+			{"get_document", documentReadArgs("design-refusal", "outline", true)},
+			{"search_documents", map[string]any{"workspace_id": governanceWorkspace, "query": "refusal-needle"}},
+		} {
+			if text, isErr := f.call(agentToken, call.tool, caller.args(call.args)); !isErr || !strings.Contains(text, claimRefusal(call.tool)) {
+				t.Fatalf("%s after expiry: isError=%v text=%q", call.tool, isErr, text)
+			}
+		}
+	})
+
+	t.Run("a claim does not widen other investigation reads", func(t *testing.T) {
+		f := newDocumentReadFixture(t)
+		agentToken, orderID, session := liveClaim(f, "usr_narrow", "narrow", core.WorkspaceRoleOperator)
+		for _, tool := range []string{"list_workspaces", "list_repositories", "list_tasks", "get_task", "list_operator_inbox", "list_task_events", "get_task_context", "list_documents", "list_document_events", "list_decisions", "get_decision", "get_lineage"} {
+			args := map[string]any{"workspace_id": governanceWorkspace, "work_order_id": orderID, "session_id": session}
+			if text, isErr := f.call(agentToken, tool, args); !isErr || !strings.Contains(text, tool+" requires an operator-scoped user credential") {
+				t.Fatalf("%s isError=%v text=%q", tool, isErr, text)
+			}
+		}
+	})
+
+	t.Run("reads leave the claim and task unchanged", func(t *testing.T) {
+		f := newDocumentReadFixture(t)
+		f.design("design-refusal", designBody("## Refusal\nrefusal-needle\n"))
+		agentToken, orderID, session := liveClaim(f, "usr_observe", "observe", core.WorkspaceRoleOperator)
+		caller := documentCaller{name: "agent", token: agentToken, claim: map[string]any{"work_order_id": orderID, "session_id": session}}
+		before := f.snapshot(orderID)
+		f.readItem(caller, "get_document", documentReadArgs("design-refusal", "outline", true))
+		f.readItem(caller, "get_document", section())
+		f.search(caller, "refusal-needle")
+		if text, isErr := f.call(agentToken, "get_document", caller.args(documentReadArgs("design-refusal"))); isErr {
+			t.Fatal(text)
+		}
+		f.requireUnchanged("document reads", before)
+		order, err := f.store.GetWorkOrder(f.ctx, orderID)
+		if err != nil || !liveWorkOrderClaim(order, time.Now()) {
+			t.Fatalf("claim disturbed: %+v err=%v", order, err)
+		}
+	})
+
+	t.Run("a user credential needs no claim and ignores claim arguments", func(t *testing.T) {
+		f := newDocumentReadFixture(t)
+		f.design("design-refusal", designBody("## Refusal\nrefusal-needle\n"))
+		userToken, _ := f.user("usr_viewer", core.WorkspaceRoleViewer)
+		viewer := documentCaller{name: "viewer", token: userToken}
+		if item := f.readItem(viewer, "get_document", section()); item["heading"] != "Refusal" {
+			t.Fatalf("viewer section=%v", item)
+		}
+		named := documentCaller{name: "viewer", token: userToken, claim: map[string]any{"work_order_id": "gov-order-absent", "session_id": "absent"}}
+		if result := f.search(named, "refusal-needle"); result.Total != 1 {
+			t.Fatalf("viewer search=%+v", result)
+		}
+		nonMember, _ := f.user("usr_gone", core.WorkspaceRoleViewer)
+		f.members.setRole("usr_gone", governanceWorkspace, "")
+		if text, isErr := f.call(nonMember, "search_documents", map[string]any{"workspace_id": governanceWorkspace, "query": "refusal-needle"}); !isErr || !strings.Contains(text, "workspace_not_found") {
+			t.Fatalf("nonmember: isError=%v text=%q", isErr, text)
+		}
+	})
+}
