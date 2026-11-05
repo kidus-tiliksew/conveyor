@@ -34,6 +34,12 @@ func TestTaskPolicyHTTPBoundary(t *testing.T) {
 		{`{"stage_timeouts":{"verify":"0s"},"reason":"x","request_id":"timeout"}`, http.StatusBadRequest},
 		{`{"setup":"default","reason":"x","request_id":"setup"}`, http.StatusBadRequest},
 		{`{"verify_stage":true,"reason":"x","request_id":"two"} {}`, http.StatusBadRequest},
+		{`{"review_distinct_models":true,"reason":"panel repeats a model","request_id":"distinct-1"}`, http.StatusOK},
+		{`{"review_distinct_models":true,"reason":"panel repeats a model","request_id":"distinct-1"}`, http.StatusOK},
+		{`{"review_distinct_models":false,"reason":"panel repeats a model","request_id":"distinct-1"}`, http.StatusConflict},
+		{`{"review_distinct_models":"on","reason":"x","request_id":"distinct-2"}`, http.StatusBadRequest},
+		{`{"review_distinct_models":false,"reason":" ","request_id":"distinct-3"}`, http.StatusBadRequest},
+		{`{"reason":"no policy field","request_id":"distinct-4"}`, http.StatusBadRequest},
 	} {
 		req := httptest.NewRequest(http.MethodPost, "/v1/tasks/policy-task/policy", strings.NewReader(tc.body))
 		req.Header.Set("Authorization", "Bearer user-token")
@@ -42,6 +48,13 @@ func TestTaskPolicyHTTPBoundary(t *testing.T) {
 		if response.Code != tc.status {
 			t.Fatalf("%s: %d %s", tc.body, response.Code, response.Body)
 		}
+	}
+	stored, err := st.GetTask(ctx, "policy-task")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !stored.SetupContract.Review.DistinctModels {
+		t.Fatalf("frozen policy after the change: %+v", stored.SetupContract.Review)
 	}
 	req := httptest.NewRequest(http.MethodPost, "/v1/tasks/policy-task/setup", strings.NewReader(`{"setup":"default"}`))
 	req.Header.Set("Authorization", "Bearer user-token")

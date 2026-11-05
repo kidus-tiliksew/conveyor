@@ -40,7 +40,7 @@ func legacyInitShapedDeployment(t *testing.T) []byte {
 }
 
 // legacyHarnessYAML is one harness registry entry as earlier files wrote it.
-// The registry is retired (DEC-96(2)); fixtures keep it only as authored YAML.
+// The registry is retired (DEC-104(2)); fixtures keep it only as authored YAML.
 func legacyHarnessYAML() map[string]any {
 	return map[string]any{
 		"name": "codex", "mcp_transport": "toml_override",

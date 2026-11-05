@@ -400,6 +400,8 @@ export interface TaskReviewResult {
   at: string
   event_id: string
   truncated?: boolean
+  // The verdict's recorded value: 'true', 'false', or 'unknown'.
+  same_model_as_implementer?: string
 }
 
 export interface TaskReviewRound {
@@ -1078,7 +1080,7 @@ export interface TaskPolicyContract {
   verify_stage?: boolean
   max_bounces: number
   stage_timeouts: Record<'spec' | 'implement' | 'review', string>
-  review: { seats?: WorkspaceReviewSeat[]; fail_fast?: boolean }
+  review: { seats?: WorkspaceReviewSeat[]; fail_fast?: boolean; distinct_models?: boolean }
   refresh_review: 'delta' | 'full' | 'none'
 }
 
@@ -1087,7 +1089,7 @@ export interface WorkspaceConfigDocument {
   max_bounces: number
   work_order_queue_timeout: string
   stage_timeouts: Record<'spec' | 'implement' | 'review', string>
-  review: { seats: WorkspaceReviewSeat[]; fail_fast?: boolean }
+  review: { seats: WorkspaceReviewSeat[]; fail_fast?: boolean; distinct_models?: boolean }
   execution: ExecutionPolicy
   repos: WorkspaceConfigRepo[]
   monitor?: {

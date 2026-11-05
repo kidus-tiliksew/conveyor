@@ -123,7 +123,7 @@ implementation submission it starts an isolated verifier or reviewer agent for
 each verification or review order, awaits the verdict, claims any
 changes-requested successor, and offers each human gate to you in the
 conversation. You choose the harness and model when you start the session;
-Conveyor stores no execution setup (DEC-96). To keep several tasks moving, ask
+Conveyor stores no execution setup (DEC-104). To keep several tasks moving, ask
 a session to coordinate them with the `conveyor-coordinate` skill.
 
 ## What a work order carries

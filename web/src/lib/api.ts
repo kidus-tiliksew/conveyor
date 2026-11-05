@@ -1630,6 +1630,8 @@ export function fetchWorkspaceConfig(workspace: string) {
           review: {
             seats: result.document.review?.seats ?? [{}],
             fail_fast: result.document.review?.fail_fast ?? false,
+            // Kept only when on, so a save that leaves it off sends no new key.
+            ...(result.document.review?.distinct_models ? { distinct_models: true } : {}),
           },
           stage_timeouts: {
             spec: result.document.stage_timeouts?.spec ?? '30m',

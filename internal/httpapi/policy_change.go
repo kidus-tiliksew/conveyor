@@ -13,10 +13,11 @@ import (
 
 func (s *Server) changeTaskPolicy(w http.ResponseWriter, r *http.Request) {
 	var input struct {
-		VerifyStage   *bool             `json:"verify_stage"`
-		StageTimeouts map[string]string `json:"stage_timeouts"`
-		Reason        string            `json:"reason"`
-		RequestID     string            `json:"request_id"`
+		VerifyStage          *bool             `json:"verify_stage"`
+		StageTimeouts        map[string]string `json:"stage_timeouts"`
+		ReviewDistinctModels *bool             `json:"review_distinct_models"`
+		Reason               string            `json:"reason"`
+		RequestID            string            `json:"request_id"`
 	}
 	decoder := json.NewDecoder(http.MaxBytesReader(w, r.Body, 16384))
 	decoder.DisallowUnknownFields()
@@ -28,7 +29,7 @@ func (s *Server) changeTaskPolicy(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "expected one policy object"})
 		return
 	}
-	policy := store.TaskPolicyChange{VerifyStage: input.VerifyStage, StageTimeouts: input.StageTimeouts}
+	policy := store.TaskPolicyChange{VerifyStage: input.VerifyStage, StageTimeouts: input.StageTimeouts, ReviewDistinctModels: input.ReviewDistinctModels}
 	if err := policy.Validate(); err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
 		return

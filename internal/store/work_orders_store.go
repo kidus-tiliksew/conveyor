@@ -1968,6 +1968,9 @@ func (m *memory) ClaimWorkOrderCommand(ctx context.Context, lifecycleLease tasko
 				return core.WorkOrder{}, fmt.Errorf("self-review forbidden: review session independence requires a session not used by another seat or the implementer")
 			}
 		}
+		if err := ReviewSeatModelRefusal(m.tasks[order.TaskID], order, claim.Model, claimOrders, now); err != nil {
+			return core.WorkOrder{}, err
+		}
 		order.ModelEnforcement = "self-reported"
 	}
 	if !order.ExecutionStartedAt.IsZero() && order.ExecutionDeadline.IsZero() && claim.ExecutionTimeout > 0 {

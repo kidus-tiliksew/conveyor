@@ -10,15 +10,24 @@ import (
 )
 
 // TaskPolicyChange contains only the explicit, audited frozen-policy exception
-// admitted by DEC-47 and DEC-43 (component-task-lifecycle).
+// admitted by DEC-47 and DEC-43 (component-task-lifecycle). An absent
+// ReviewDistinctModels leaves the stored replay identity of earlier changes
+// unchanged.
 type TaskPolicyChange struct {
-	VerifyStage   *bool             `json:"verify_stage,omitempty"`
-	StageTimeouts map[string]string `json:"stage_timeouts,omitempty"`
+	VerifyStage          *bool             `json:"verify_stage,omitempty"`
+	StageTimeouts        map[string]string `json:"stage_timeouts,omitempty"`
+	ReviewDistinctModels *bool             `json:"review_distinct_models,omitempty"`
+}
+
+// OnlyDistinctModels reports a change holding review_distinct_models and no
+// field that can move the task's stage (req-review-gates-evidence AC-2.11).
+func (p TaskPolicyChange) OnlyDistinctModels() bool {
+	return p.ReviewDistinctModels != nil && p.VerifyStage == nil && len(p.StageTimeouts) == 0
 }
 
 func (p TaskPolicyChange) Validate() error {
-	if p.VerifyStage == nil && len(p.StageTimeouts) == 0 {
-		return fmt.Errorf("verify_stage or stage_timeouts.verify is required")
+	if p.VerifyStage == nil && len(p.StageTimeouts) == 0 && p.ReviewDistinctModels == nil {
+		return fmt.Errorf("verify_stage, stage_timeouts.verify, or review_distinct_models is required")
 	}
 	for stage, value := range p.StageTimeouts {
 		if stage != "verify" {
@@ -38,7 +47,11 @@ func (p TaskPolicyChange) Validate() error {
 // order update, or review plan never reaches persistence (DEC-56). A handoff
 // to review resolves its round's seats through ResolveReviewRoundSeats from
 // the seat inputs the backend loaded in the same transaction
-// (feature-review-seat-minimum RS-2).
+// (feature-review-seat-minimum RS-2). A change holding only
+// review_distinct_models returns before handoff resolution: it sets the frozen
+// value for later seat claims and changes no order and opens no round, even on
+// a task with verify_stage true waiting at review (req-review-gates-evidence
+// AC-2.11).
 func PlanTaskPolicyChange(task core.Task, orders []core.WorkOrder, r SetupChangeRequest, seats PolicyHandoffSeatInputs) (SetupChangeRequest, error) {
 	if r.Policy == nil {
 		return r, fmt.Errorf("a frozen-policy change is required")
@@ -56,7 +69,11 @@ func PlanTaskPolicyChange(task core.Task, orders []core.WorkOrder, r SetupChange
 	if value, ok := r.Policy.StageTimeouts["verify"]; ok {
 		r.Setup.StageTimeouts.Verify = strings.TrimSpace(value)
 	}
-	if r.Setup.StageTimeouts.Verify == "" {
+	if r.Policy.ReviewDistinctModels != nil {
+		r.Setup.Review.DistinctModels = *r.Policy.ReviewDistinctModels
+	}
+	onlyDistinctModels := r.Policy.OnlyDistinctModels()
+	if r.Setup.StageTimeouts.Verify == "" && !onlyDistinctModels {
 		r.Setup.StageTimeouts.Verify = "1h"
 	}
 	r.ReviewTransition = "policy_only"
@@ -68,6 +85,9 @@ func PlanTaskPolicyChange(task core.Task, orders []core.WorkOrder, r SetupChange
 		if order.State == core.WorkOrderClaimed || (order.Stage == core.StageReview && order.State == core.WorkOrderSubmitted) {
 			return r, fmt.Errorf("%w: task has an executing attempt or in-flight review verdict", ErrSetupChangeConflict)
 		}
+	}
+	if onlyDistinctModels {
+		return r, nil
 	}
 	if task.NextStage != core.StageReview && task.NextStage != core.StageVerify {
 		return r, nil

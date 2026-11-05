@@ -636,6 +636,9 @@ func TestClaimingSkillsShipClaimIdentityAndUsageReporting(t *testing.T) {
 			"Omit `cost_usd`",
 			"A session without figures skips the call and invents none",
 			"Missing usage never delays or blocks a lifecycle submission",
+			// Seats under a frozen distinct-models policy (DEC-104(4)).
+			"give each seat a different model when you start it",
+			"never changes its reported name to pass the comparison",
 			// Session-run terminal cleanup stays intact.
 			"### Worktree cleanup",
 			"The session runs `done` only for its own task and only after it observes that task `merged` or `closed`",

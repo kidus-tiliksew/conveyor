@@ -384,6 +384,10 @@ type taskReviewResult struct {
 	At        string `json:"at"`
 	EventID   string `json:"event_id"`
 	Truncated bool   `json:"truncated,omitempty"`
+	// SameModelAsImplementer is the verdict's recorded value, "true", "false",
+	// or "unknown", and is absent from an event that recorded none. The review
+	// card shows the match only (req-review-gates-evidence AC-2.12).
+	SameModelAsImplementer string `json:"same_model_as_implementer,omitempty"`
 }
 
 type taskReviewResults struct {
@@ -713,6 +717,7 @@ func deriveTaskDetailSummaries(events []core.Event, jobs []core.Job, orders []co
 			feedback, _ := payload.str("feedback")
 			review.Feedback, cutFeedback = truncateSummaryText(feedback)
 			review.Truncated = cutSummary || cutFeedback
+			review.SameModelAsImplementer, _ = payload.str("same_model_as_implementer")
 			if orderID, ok := payload.str("review_work_order_id"); ok {
 				summaries.ReviewResults.ByOrder[orderID] = review
 			}

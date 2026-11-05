@@ -302,6 +302,21 @@ func TestTaskDetailSummariesMatchDashboardRules(t *testing.T) {
 			t.Fatalf("job results=%s\nwant %s", summaryJSON(t, got), want)
 		}
 	})
+	t.Run("review results carry the recorded implementer model match", func(t *testing.T) {
+		got := derive(
+			summaryEvent(1, 0, "review.completed", "job-1", `{"verdict":"approve","review_work_order_id":"order-1","same_model_as_implementer":"true"}`),
+			summaryEvent(2, 1, "review.completed", "job-2", `{"verdict":"approve","review_work_order_id":"order-2","same_model_as_implementer":"unknown"}`),
+			summaryEvent(3, 2, "review.completed", "job-3", `{"verdict":"approve","review_work_order_id":"order-3"}`),
+		)
+		for order, want := range map[string]string{"order-1": "true", "order-2": "unknown", "order-3": ""} {
+			if value := got.ReviewResults.ByOrder[order].SameModelAsImplementer; value != want {
+				t.Fatalf("%s same_model_as_implementer=%q, want %q", order, value, want)
+			}
+		}
+		if value := got.ReviewResults.ByJob["job-1"].SameModelAsImplementer; value != "true" {
+			t.Fatalf("job-1 same_model_as_implementer=%q", value)
+		}
+	})
 	t.Run("review results and rounds follow buildReviewPanels", func(t *testing.T) {
 		got := derive(
 			summaryEvent(1, 0, "review.completed", "job-1", `{"verdict":"changes_requested","summary":"s1","feedback":" f1 ","review_work_order_id":"order-1"}`),

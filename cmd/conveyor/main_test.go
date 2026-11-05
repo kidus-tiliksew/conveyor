@@ -1316,7 +1316,7 @@ func TestCheckoutWorktreeLocationReusesRegisteredWorktreeWithoutLocation(t *test
 
 // conveyor run, conveyor worker, and conveyor setup are retired with the
 // launcher, and conveyor config keeps no execution setup acts (DEC-97(1);
-// DEC-96(2); component-runtime).
+// DEC-104(2); component-runtime).
 func TestRetiredLauncherCommandsAreUnknown(t *testing.T) {
 	root := newRootCmd()
 	for _, command := range root.Commands() {

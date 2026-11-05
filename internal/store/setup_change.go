@@ -78,6 +78,10 @@ func normalizeSetupChangeRequest(request SetupChangeRequest) SetupChangeRequest 
 			enabled := *policy.VerifyStage
 			policy.VerifyStage = &enabled
 		}
+		if policy.ReviewDistinctModels != nil {
+			enabled := *policy.ReviewDistinctModels
+			policy.ReviewDistinctModels = &enabled
+		}
 		if policy.StageTimeouts != nil {
 			policy.StageTimeouts = map[string]string{}
 			for k, v := range request.Policy.StageTimeouts {

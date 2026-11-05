@@ -2556,7 +2556,7 @@ func (s *Service) bundleTool(ctx context.Context, session core.PlanningSession, 
 			return toolExecution{}, &planningInfrastructureError{err: err}
 		}
 		// Members carry the workspace default pipeline policy; no member
-		// selects an execution setup (DEC-96(2); component-planning).
+		// selects an execution setup (DEC-104(2); component-planning).
 		policy, ok := cfg.DefaultPolicy()
 		if !ok {
 			return toolExecution{}, fmt.Errorf("workspace default pipeline policy is unavailable")

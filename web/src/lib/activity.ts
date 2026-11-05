@@ -835,6 +835,9 @@ export type TimelineEntry =
       // add seats to it now (feature-review-seat-minimum RS-7).
       seatMetadata?: TaskReviewSeatMetadata
       seatAdditionOpen?: boolean
+      // The task's frozen review.distinct_models policy applies to this
+      // numbered round (req-review-gates-evidence AC-2.12).
+      distinctModels?: boolean
     }
 
 // One review round is rendered as a single deliberating body: seats appear
@@ -849,6 +852,8 @@ export interface PanelSeatReview {
   at: string
   // Set when the summary or feedback was cut at 16,384 bytes.
   truncatedEventId?: string
+  // The recorded verdict states the seat reported the implementer's model.
+  sameModelAsImplementer: boolean
 }
 
 export interface PanelSeat {
@@ -931,6 +936,7 @@ function buildReviewPanels(item: ActivityItem): PanelIndex {
       feedback: typeof result.feedback === 'string' ? result.feedback : '',
       at: result.at,
       truncatedEventId: result.truncated ? result.event_id : undefined,
+      sameModelAsImplementer: result.same_model_as_implementer === 'true',
     }
   const roundResolution = (round: TaskReviewRound | undefined): PanelResolution | undefined =>
     round && {
@@ -999,6 +1005,7 @@ function buildReviewPanels(item: ActivityItem): PanelIndex {
       roundSummary: group.round > 0 ? summaries?.review_round_summaries?.[String(group.round)] : undefined,
       seatMetadata,
       seatAdditionOpen,
+      distinctModels: group.round > 0 && item.task.policy_contract?.review?.distinct_models === true,
     })
   }
   return index

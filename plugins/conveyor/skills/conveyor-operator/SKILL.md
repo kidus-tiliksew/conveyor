@@ -174,4 +174,4 @@ Conveyor's review trust boundary.
 Every work order is claimed by an agent session a person started, which claims
 it itself over MCP. Conveyor has no worker, pairing token, worker credential,
 or local execution setup, and personal-client installation configures none
-(DEC-97(1); DEC-96(2)). Preserve operator gates.
+(DEC-97(1); DEC-104(2)). Preserve operator gates.

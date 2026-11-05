@@ -176,7 +176,7 @@ func configCmd() *cobra.Command {
 	cmd := &cobra.Command{Use: "config", Short: "Manage local defaults or database-backed workspace config"}
 	configPath := defaultLocalConfigPath()
 	// The CLI keeps no local execution setup, so set accepts only the
-	// worktree location and the workspace default (DEC-96(2); component-runtime).
+	// worktree location and the workspace default (DEC-104(2); component-runtime).
 	set := &cobra.Command{
 		Use: "set worktree_location <value>", Short: "Set where new task worktrees go", Args: cobra.ExactArgs(2),
 		RunE: func(cmd *cobra.Command, args []string) error {
@@ -403,6 +403,7 @@ func taskCmd() *cobra.Command {
 		requestTaskChangesCmd(),
 		taskReviewSummaryCmd(),
 		taskAddReviewSeatsCmd(),
+		taskSetDistinctModelsCmd(),
 		mergeTaskCmd(),
 		reviewTaskCmd(core.InterventionApprove),
 		reviewTaskCmd(core.InterventionReject),

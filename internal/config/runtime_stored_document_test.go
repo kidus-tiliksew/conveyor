@@ -58,7 +58,7 @@ repos:
 // component-runtime "Configuration scopes": a stored row carrying legacy
 // harness, setup, default-setup, and executor keys loads on every read path
 // without validation or mutation, and yields the policy its named default
-// setup declared (DEC-96(1), DEC-96(2)).
+// setup declared (DEC-104(1), DEC-104(2)).
 func TestStoredWorkspaceDocumentIgnoresLegacyExecutionKeys(t *testing.T) {
 	deployment := runtimeDeployment(t)
 	row := []byte(legacyExecutorWorkspaceRow)
