@@ -1,8 +1,13 @@
 package postgres
 
 import (
+	"context"
+	"encoding/json"
+	"errors"
 	"io/fs"
+	"slices"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -11,6 +16,7 @@ import (
 	"github.com/kidus-tiliksew/conveyor/internal/config"
 	"github.com/kidus-tiliksew/conveyor/internal/core"
 	"github.com/kidus-tiliksew/conveyor/internal/store"
+	"github.com/kidus-tiliksew/conveyor/internal/taskops"
 )
 
 func TestInterventionActionMigrationUpgradesVersion35SchemaIntegration(t *testing.T) {
@@ -274,4 +280,213 @@ func embeddedMigrationHead(t *testing.T) int {
 		t.Fatal("no embedded control-plane migrations found")
 	}
 	return head
+}
+
+// taskOperationLockFixture is a running task on a store whose advisory-lock
+// waiters the interleave tests can observe.
+func taskOperationLockFixture(t *testing.T) (context.Context, *Store, string) {
+	t.Helper()
+	st, err := Open(store.WithActor(t.Context(), store.SystemActor()), integrationDatabaseURL(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(st.Close)
+	workspace := "task-operation-lock-" + core.NewTaskID()
+	ctx, cancel := context.WithTimeout(store.WithWorkspace(store.WithActor(t.Context(), store.Actor{ID: store.UserActorID("operator"), Role: core.ActorUser}), workspace), time.Minute)
+	t.Cleanup(cancel)
+	if seeded, seedErr := st.BootstrapWorkspaceConfig(ctx, isolationConfig(workspace)); seedErr != nil || !seeded {
+		t.Fatalf("workspace seeded=%t err=%v", seeded, seedErr)
+	}
+	taskID := core.NewTaskID()
+	if err = st.CreateTask(ctx, core.Task{
+		ID: taskID, Workspace: workspace, Repo: "repo", BaseBranch: "main", Branch: "conveyor/task-" + taskID,
+		State: core.TaskRunning, NextStage: core.StageReview, CreatedAt: time.Now().UTC(),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	return ctx, st, taskID
+}
+
+// awaitTaskOperationWaiter returns once PostgreSQL reports a session waiting on
+// exactly this task's task-operation lock, read from pg_locks and not inferred
+// from elapsed time. It fails when the waiting command finishes first, because
+// that command took no such lock.
+func awaitTaskOperationWaiter[T any](t *testing.T, ctx context.Context, st *Store, workspace, taskID string, done <-chan T) {
+	t.Helper()
+	key := "conveyor:task-operation:" + workspace + ":" + taskID
+	for {
+		select {
+		case result := <-done:
+			t.Fatalf("command finished without waiting on the task-operation lock: %+v", result)
+		case <-ctx.Done():
+			t.Fatalf("no waiter on the task-operation lock: %v", ctx.Err())
+		default:
+		}
+		var waiting bool
+		if err := st.pool.QueryRow(ctx, `SELECT EXISTS (
+			SELECT 1 FROM pg_locks
+			WHERE locktype='advisory' AND NOT granted AND objsubid=1
+				AND classid::bigint=((hashtext($1)::bigint>>32)&4294967295)
+				AND objid::bigint=(hashtext($1)::bigint&4294967295))`, key).Scan(&waiting); err != nil {
+			t.Fatal(err)
+		}
+		if waiting {
+			return
+		}
+	}
+}
+
+type taskCommandOutcome struct {
+	task core.Task
+	err  error
+}
+
+// A lifecycle command that read `running` holds the task-operation lock until it
+// commits, so a cancel arriving in that window waits and then closes the state
+// the command wrote. The closed state is the last write, and no live task
+// survives with cancelled orders (DEC-50; component-task-lifecycle invariant 8;
+// req-task-lifecycle-and-queue REQ-8).
+func TestCancelWaitsForCommandThatReadRunningIntegration(t *testing.T) {
+	ctx, st, taskID := taskOperationLockFixture(t)
+	workspaceID, _ := store.WorkspaceFromContext(ctx)
+	read, release := make(chan core.TaskState, 1), make(chan struct{})
+	var releaseOnce sync.Once
+	releaseCommand := func() { releaseOnce.Do(func() { close(release) }) }
+	t.Cleanup(releaseCommand)
+	commandCtx := store.WithTaskCommandReadHook(ctx, func(_ string, state core.TaskState) {
+		read <- state
+		<-release
+	})
+	commandDone := make(chan taskCommandOutcome, 1)
+	go func() {
+		outcome, err := taskops.New(st).Perform(commandCtx, taskID, taskops.Command{Kind: core.TaskGateMerge, RecoveryStage: core.StageImplement, ProjectStages: true})
+		commandDone <- taskCommandOutcome{outcome.Task, err}
+	}()
+	select {
+	case state := <-read:
+		if state != core.TaskRunning {
+			t.Fatalf("command read state %s, want running", state)
+		}
+	case <-ctx.Done():
+		t.Fatalf("command never read the task: %v", ctx.Err())
+	}
+
+	cancelDone := make(chan taskCommandOutcome, 1)
+	go func() {
+		task, err := taskops.New(st).Cancel(ctx, core.Intervention{TaskID: taskID, Action: core.InterventionCancel, ReasonCode: "obsolete"})
+		cancelDone <- taskCommandOutcome{task, err}
+	}()
+	awaitTaskOperationWaiter(t, ctx, st, workspaceID, taskID, cancelDone)
+	releaseCommand()
+
+	if outcome := <-commandDone; outcome.err != nil || outcome.task.State != core.TaskAwaiting {
+		t.Fatalf("command outcome=%+v", outcome)
+	}
+	if outcome := <-cancelDone; outcome.err != nil || outcome.task.State != core.TaskClosed {
+		t.Fatalf("cancel outcome=%+v", outcome)
+	}
+	final, err := st.GetTask(ctx, taskID)
+	if err != nil || final.State != core.TaskClosed {
+		t.Fatalf("final task=%+v err=%v", final, err)
+	}
+	events, err := st.ListEvents(ctx, taskID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var commands []string
+	for _, event := range events {
+		if event.Kind != "task.state_changed" {
+			continue
+		}
+		var payload struct {
+			Command string `json:"command"`
+			From    string `json:"from"`
+		}
+		if err = json.Unmarshal(event.Payload, &payload); err != nil {
+			t.Fatal(err)
+		}
+		commands = append(commands, payload.Command+" from "+payload.From)
+	}
+	want := []string{string(core.TaskGateMerge) + " from running", string(core.TaskCancel) + " from " + string(core.TaskAwaiting)}
+	if !slices.Equal(commands, want) {
+		t.Fatalf("state changes=%v, want %v", commands, want)
+	}
+}
+
+// The state guard holds even against a writer outside the task-operation lock.
+// A command that read `running` finds `closed` at write time, refuses with the
+// typed transition error, and commits none of its writes (DEC-50;
+// req-task-lifecycle-and-queue AC-1.1, AC-1.2).
+func TestCommandThatReadRunningCannotOverwriteClosedIntegration(t *testing.T) {
+	for _, test := range []struct {
+		name    string
+		command taskops.Command
+	}{
+		{name: "state update", command: taskops.Command{Kind: core.TaskGateMerge}},
+		{name: "transition update", command: taskops.Command{Kind: core.TaskGateMerge, RecoveryStage: core.StageImplement, ProjectStages: true}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			ctx, st, taskID := taskOperationLockFixture(t)
+			workspaceID, _ := store.WorkspaceFromContext(ctx)
+			var observed core.TaskState
+			commandCtx := store.WithTaskCommandReadHook(ctx, func(_ string, state core.TaskState) {
+				observed = state
+				// The pool's other connection commits while the command's
+				// transaction sits between its read and its write.
+				if _, err := st.pool.Exec(ctx, `UPDATE tasks SET state='closed',gate_kind='',next_stage='',recovery_stage='' WHERE workspace_id=$1 AND id=$2`, workspaceID, taskID); err != nil {
+					t.Errorf("close the task inside the window: %v", err)
+				}
+			})
+			_, err := taskops.New(st).Perform(commandCtx, taskID, test.command)
+			if observed != core.TaskRunning {
+				t.Fatalf("command read state %q, want running", observed)
+			}
+			var invalid *core.ErrInvalidTransition
+			if !errors.As(err, &invalid) || invalid.From != string(core.TaskClosed) || invalid.Command != string(core.TaskGateMerge) {
+				t.Fatalf("command err=%v, want an invalid transition from closed", err)
+			}
+			final, err := st.GetTask(ctx, taskID)
+			if err != nil || final.State != core.TaskClosed {
+				t.Fatalf("final task=%+v err=%v", final, err)
+			}
+			changes, err := st.CountEvents(ctx, taskID, "task.state_changed")
+			if err != nil || changes != 0 {
+				t.Fatalf("the refused command recorded %d state changes, err=%v", changes, err)
+			}
+		})
+	}
+}
+
+// CreateConflictFixCommand holds the same lock as every other lifecycle command.
+// hashtextextended of the same key would be a different lock, and this command
+// would not wait here (DEC-50; component-persistence invariant 7).
+func TestConflictFixTakesTheTaskOperationLockIntegration(t *testing.T) {
+	ctx, st, taskID := taskOperationLockFixture(t)
+	workspaceID, _ := store.WorkspaceFromContext(ctx)
+	holder, err := st.pool.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer holder.Rollback(ctx) //nolint:errcheck
+	if err = lockTaskOperationTx(ctx, holder, workspaceID, taskID); err != nil {
+		t.Fatal(err)
+	}
+	orderID := taskID + "-implement-conflict-1"
+	job := core.Job{ID: orderID, TaskID: taskID, Stage: core.StageImplement, State: core.JobPending}
+	order := core.WorkOrder{ID: orderID, TaskID: taskID, JobID: orderID, Stage: core.StageImplement, State: core.WorkOrderQueued, ReasonCode: "merge-conflict"}
+	intervention := core.Intervention{TaskID: taskID, Action: core.InterventionRedirect, ReasonCode: "merge-conflict"}
+	done := make(chan taskCommandOutcome, 1)
+	go func() {
+		_, commandErr := taskops.ExecuteWorkOrder(ctx, st, taskID, core.WorkOrderCmdCreate, func(lease taskops.TaskLease) (store.ConflictFixResult, error) {
+			return st.CreateConflictFixCommand(ctx, lease, store.ConflictFixRequest{TaskID: taskID, Job: job, WorkOrder: order, Intervention: intervention})
+		})
+		done <- taskCommandOutcome{err: commandErr}
+	}()
+	awaitTaskOperationWaiter(t, ctx, st, workspaceID, taskID, done)
+	if err = holder.Rollback(ctx); err != nil {
+		t.Fatal(err)
+	}
+	// Past the lock the command runs its ordinary legality checks; this test
+	// only asserts that it waited, so it drains the result.
+	<-done
 }

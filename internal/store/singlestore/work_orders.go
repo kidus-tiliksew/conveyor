@@ -1763,6 +1763,9 @@ func (s *Store) PreemptWorkOrderCommand(ctx context.Context, lease taskops.TaskL
 		if !lease.ValidForCommand(o.TaskID, string(core.WorkOrderCmdPreempt)) {
 			return fmt.Errorf("work-order preempt requires a valid taskops lease")
 		}
+		if err := store.RefuseReviewSeatRetirement(o); err != nil {
+			return err
+		}
 		now := time.Now().UTC()
 		conflict := fmt.Errorf("%w: work order %s does not have an active claimed attempt", store.ErrWorkOrderPreemptConflict, o.ID)
 		if o.State == core.WorkOrderClaimed && !o.ExecutionDeadline.IsZero() && !o.ExecutionDeadline.After(now) {
