@@ -177,9 +177,7 @@ func (d *Dispatcher) applyFailedCheckRead(ctx context.Context, task core.Task, h
 	// names each check the last read that found any named.
 	var named []github.Check
 	if hold != nil {
-		for _, check := range hold.Checks {
-			named = append(named, github.Check{Name: check.Name, State: check.State, URL: check.URL})
-		}
+		named = checksFromRefs(hold.Checks)
 	}
 	if err := d.recordCheckHold(ctx, task, head, hold, nextaction.CheckHoldPermission, named, checkReadFailure(readErr)); err != nil {
 		return err
@@ -217,13 +215,10 @@ func (d *Dispatcher) recordPendingDeadline(ctx context.Context, task core.Task, 
 // later read of the same head leaves the deadline where it is. It appends a
 // further event only when the read changes between answered and unanswered, or
 // when reopen is set and a failed read follows the end of the retries, so the
-// wait reads truthfully and the job finds what is due.
+// wait reads truthfully and the job finds what is due. A failed read in a wait
+// keeps naming what that wait found pending, so the deadline can name it.
 func (d *Dispatcher) recordCheckDeadline(ctx context.Context, task core.Task, head string, standing nextaction.CheckStatus, payload map[string]any, reopen bool) error {
-	now := time.Now().UTC()
-	if d.Now != nil {
-		now = d.Now().UTC()
-	}
-	deadline := now.Add(CheckStatusDeadlineWindow)
+	deadline := d.checkClock().Add(CheckStatusDeadlineWindow)
 	payload["deadline"] = deadline
 	event := core.Event{TaskID: task.ID, Kind: store.EventCheckPending, Payload: core.JSONPayload(payload)}
 	recorded, err := d.Store.RecordCheckStatusDeadline(ctx, task.ID, head, deadline, event)
@@ -233,10 +228,14 @@ func (d *Dispatcher) recordCheckDeadline(ctx context.Context, task core.Task, he
 	readFailed, _ := payload["read_failed"].(bool)
 	changed := readFailed != (standing.ReadFailure != "")
 	if !changed && !(reopen && standing.RetriesExhausted) {
+		d.announceCheckDeadline(task)
 		return nil
 	}
 	if task.CheckStatusDeadline != nil {
 		payload["deadline"] = task.CheckStatusDeadline.UTC()
+	}
+	if readFailed {
+		payload["checks"] = waitingChecks(standing)
 	}
 	event.Payload = core.JSONPayload(payload)
 	return d.Store.AppendEvent(ctx, event)
@@ -247,10 +246,18 @@ func (d *Dispatcher) clearCheckDeadline(ctx context.Context, task core.Task) err
 	return err
 }
 
+// waitingChecks is what a standing wait names, as an event payload carries it.
+func waitingChecks(standing nextaction.CheckStatus) []nextaction.CheckRef {
+	if standing.Waiting == nil {
+		return []nextaction.CheckRef{}
+	}
+	return standing.Waiting
+}
+
 // recordCheckHold appends merge.check_hold unless the standing hold already
 // says the same, so a repeated delivery appends nothing.
 func (d *Dispatcher) recordCheckHold(ctx context.Context, task core.Task, head string, standing *nextaction.CheckHold, reason string, checks []github.Check, failure string) error {
-	if standing != nil && standing.Reason == reason && sameChecks(standing.Checks, checks) {
+	if standing != nil && standing.Reason == reason && standing.ReadFailure == failure && sameChecks(standing.Checks, checks) {
 		return nil
 	}
 	payload := checkEventPayload(task, head, reason, checks)
@@ -431,13 +438,10 @@ func (d *Dispatcher) arrangeCheckReadRetry(ctx context.Context, taskID string, r
 // (component-durable-queue invariant 37). It returns an error only for the queue
 // to schedule the next attempt, and it records the end of the retries instead on
 // the final attempt or a rate-limited read. A task with nothing due completes
-// with no read.
+// with no read, which it decides under the task lock, so an attempt that waited
+// on a firing deadline finds the deadline gone and adds no read to it.
 func (d *Dispatcher) readCheckStatusAttempt(ctx context.Context, task core.Task, attempt int, final bool) error {
-	due, _, err := d.checkReadRetryDue(ctx, task)
-	if err != nil || !due {
-		return err
-	}
-	mergeErr := d.readAndMergeAutomatically(ctx, task)
+	mergeErr := d.readAndMergeIfRetryDue(ctx, task.ID)
 	if mergeErr == nil {
 		return nil
 	}
@@ -457,7 +461,8 @@ func (d *Dispatcher) readCheckStatusAttempt(ctx context.Context, task core.Task,
 	if err != nil {
 		return err
 	}
-	if due, _, err = d.checkReadRetryDue(ctx, current); err != nil {
+	due, _, err := d.checkReadRetryDue(ctx, current)
+	if err != nil {
 		return err
 	}
 	if !due {
@@ -465,6 +470,22 @@ func (d *Dispatcher) readCheckStatusAttempt(ctx context.Context, task core.Task,
 		return nil
 	}
 	return mergeErr
+}
+
+// readAndMergeIfRetryDue is one attempt's read and merge, if its read is still
+// due once it holds the task lock.
+func (d *Dispatcher) readAndMergeIfRetryDue(ctx context.Context, taskID string) error {
+	return d.Store.WithTaskSideEffectLock(ctx, taskID, func(lockedCtx context.Context) error {
+		current, err := d.Store.GetTask(lockedCtx, taskID)
+		if err != nil {
+			return err
+		}
+		due, _, err := d.checkReadRetryDue(lockedCtx, current)
+		if err != nil || !due {
+			return err
+		}
+		return d.mergeApprovedTaskLocked(lockedCtx, current, mergeAct{})
+	})
 }
 
 // recordCheckReadRetriesEnded appends merge.check_pending saying the retries
@@ -481,6 +502,7 @@ func (d *Dispatcher) recordCheckReadRetriesEnded(ctx context.Context, taskID str
 			return err
 		}
 		payload := checkEventPayload(task, store.CheckStatusHead(task), "read_failed", nil)
+		payload["checks"] = waitingChecks(status)
 		payload["read_failed"], payload["read_failure"], payload["retries_exhausted"] = true, status.ReadFailure, true
 		payload["attempts"], payload["deadline"] = attempts, task.CheckStatusDeadline.UTC()
 		return d.Store.AppendEvent(lockedCtx, core.Event{TaskID: taskID, Kind: store.EventCheckPending, Payload: core.JSONPayload(payload)})

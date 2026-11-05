@@ -136,6 +136,37 @@ func init() {
 	refused.Question = text("Grant the workspace GitHub App Checks read in workspace settings, or merge without a read?")
 	refused.IfIgnored = text("The merge stays held. A later read that GitHub answers decides it.")
 	catalogueTable[catalogueKey{KindCheckHold, "", "", "", CheckHoldPermission}] = refused
+	stuck := failedHold
+	stuck.Label = "Stuck check holds the merge"
+	stuck.Summary = func(v Vars) string {
+		if v.Checks == "" {
+			return "A check is stuck, so the merge of the approved head is held."
+		}
+		return "A check is stuck, so the merge of the approved head is held: " + v.Checks + "."
+	}
+	stuck.Question = func(v Vars) string {
+		if v.Checks == "" {
+			return "Rerun the stuck check on GitHub, merge the approved head anyway, request changes, or close?"
+		}
+		return "Rerun " + v.Checks + " on GitHub, merge the approved head anyway, request changes, or close?"
+	}
+	stuck.IfIgnored = text("The task stays approved and unmerged until a later read finds no check pending.")
+	catalogueTable[catalogueKey{KindCheckHold, "", "", "", CheckHoldStuck}] = stuck
+	stuckRead := stuck
+	stuckRead.Label = "Unread checks hold the merge"
+	stuckRead.Summary = func(v Vars) string {
+		if v.Checks == "" {
+			return "Conveyor still could not read the approved head's check status at its deadline, so the merge is held."
+		}
+		return "Conveyor still could not read the approved head's check status at its deadline, so the merge is held. It last named: " + v.Checks + "."
+	}
+	stuckRead.Question = func(v Vars) string {
+		if v.Checks == "" {
+			return "Check the approved head on GitHub, merge it anyway, request changes, or close?"
+		}
+		return "Check " + v.Checks + " on GitHub, merge the approved head anyway, request changes, or close?"
+	}
+	catalogueTable[catalogueKey{KindCheckHold, "", "", "", CheckHoldStuckRead}] = stuckRead
 	readFailed := catalogueTable[catalogueKey{KindMerging, "", "", "", ""}]
 	readFailed.Summary = text("Conveyor could not read the approved head's check status and is reading it again.")
 	readFailed.IfIgnored = text("Conveyor reads the check status again, and merges only when that read allows it.")

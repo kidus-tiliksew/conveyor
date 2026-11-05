@@ -67,6 +67,11 @@ func TestEventDeadlineNotice(t *testing.T) {
 		{name: "a claimed verify order keeps its lease", kind: "work_order.claimed", payload: order(func(o *core.WorkOrder) {
 			o.Stage, o.State, o.LeaseExpiresAt, o.ExecutionStartedAt, o.ExecutionDeadline = core.StageVerify, core.WorkOrderClaimed, lease, at, execution
 		}), want: lease},
+		{name: "merge.check_pending raises its recorded deadline", kind: EventCheckPending, payload: core.JSONPayload(map[string]any{"deadline": execution}), want: execution},
+		{name: "a failed read's merge.check_pending raises its recorded deadline", kind: EventCheckPending, payload: core.JSONPayload(map[string]any{"read_failed": true, "deadline": execution}), want: execution},
+		{name: "merge.check_pending without a deadline raises nothing", kind: EventCheckPending, payload: []byte(`{}`), none: true},
+		{name: "merge.check_pending with an unreadable deadline raises nothing", kind: EventCheckPending, payload: []byte(`{"deadline":"soon"}`), none: true},
+		{name: "merge.check_hold raises nothing", kind: EventCheckHold, payload: []byte(`{"reason":"stuck"}`), none: true},
 		{name: "a staged chunk raises its upload expiry", kind: "verification.chunk.stage", payload: []byte(`{}`), want: at.Add(VerificationUploadLifetime)},
 	}
 	for _, tc := range cases {

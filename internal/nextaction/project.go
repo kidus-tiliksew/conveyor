@@ -183,12 +183,18 @@ func checkHold(in Input) bool {
 }
 
 // checkHoldBuild names the operator. A refused read needs a grant, not a
-// judgment about the change (component-next-action, row 8).
+// judgment about the change, and a stuck check reads differently from a failed
+// one (component-next-action, row 8; req-review-gates-evidence AC-1.9).
 func checkHoldBuild(in Input) built {
 	hold := in.CheckStatus.Hold
 	row := built{actor: ActorOperator, kind: KindCheckHold, judgment: true, reason: hold.Reason, order: currentOrder(in)}
-	if hold.Reason == CheckHoldPermission {
+	switch {
+	case hold.Reason == CheckHoldPermission:
 		row.judgment, row.variant = false, CheckHoldPermission
+	case hold.Reason == CheckHoldStuck && hold.ReadFailure != "":
+		row.variant = CheckHoldStuckRead
+	case hold.Reason == CheckHoldStuck:
+		row.variant = CheckHoldStuck
 	}
 	return row
 }

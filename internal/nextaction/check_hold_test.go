@@ -67,6 +67,59 @@ func TestCheckHoldOfARefusedReadNeedsNoJudgment(t *testing.T) {
 	}
 }
 
+// A stuck check reads differently from a failed one, links each stuck check on
+// GitHub in details.checks, and offers the merge act (req-review-gates-evidence
+// AC-1.9; req-operator-next-action AC-1.5).
+func TestStuckCheckHoldReadsDifferentlyAndOffersTheMerge(t *testing.T) {
+	url := "https://github.com/acme/app/runs/3"
+	checks := []CheckRef{{Name: "deploy", State: "pending", URL: url}}
+	failed := Project(checkHoldInput(&CheckHold{Reason: CheckHoldFailed, Checks: checks}, false))
+	na := Project(checkHoldInput(&CheckHold{Reason: CheckHoldStuck, Checks: checks}, false))
+	if na.Actor != ActorOperator || na.Kind != KindCheckHold || !na.Judgment || na.Details.CheckHoldReason != CheckHoldStuck || na.Details.ReasonCode != CheckHoldStuck {
+		t.Fatalf("next action = %+v", na)
+	}
+	if na.Label == failed.Label || na.Summary == failed.Summary || na.Question == failed.Question || na.IfIgnored == failed.IfIgnored {
+		t.Fatalf("stuck reads as failed: %q / %q", na.Summary, failed.Summary)
+	}
+	for _, text := range []string{na.Summary, na.Question} {
+		if !strings.Contains(text, "deploy (pending)") {
+			t.Errorf("%q does not name the stuck check", text)
+		}
+	}
+	if !strings.Contains(na.Question, "approved head") || !strings.Contains(na.IfIgnored, "approved and unmerged") {
+		t.Fatalf("question=%q ignored=%q", na.Question, na.IfIgnored)
+	}
+	if len(na.Details.Checks) != 1 || na.Details.Checks[0].URL != url {
+		t.Fatalf("details.checks = %+v, want each stuck check linked", na.Details.Checks)
+	}
+	if len(na.Choices) == 0 || na.Choices[0].ID != "merge" {
+		t.Fatalf("choices = %+v, want the merge act", na.Choices)
+	}
+	if !strings.Contains(na.Choices[0].Effect, "without reading its checks") {
+		t.Fatalf("merge effect = %q", na.Choices[0].Effect)
+	}
+}
+
+// A deadline read that failed names the failure and what the last read found
+// (req-review-gates-evidence AC-1.9).
+func TestStuckCheckHoldOfAFailedReadNamesTheFailure(t *testing.T) {
+	failure := "The check-status read failed."
+	bare := Project(checkHoldInput(&CheckHold{Reason: CheckHoldStuck, ReadFailure: failure}, false))
+	if bare.Actor != ActorOperator || !bare.Judgment || bare.Details.CheckReadFailure != failure || bare.Details.CheckHoldReason != CheckHoldStuck {
+		t.Fatalf("next action = %+v", bare)
+	}
+	if !strings.Contains(bare.Summary, "could not read") || strings.Contains(bare.Summary, "named") {
+		t.Fatalf("summary = %q", bare.Summary)
+	}
+	named := Project(checkHoldInput(&CheckHold{Reason: CheckHoldStuck, ReadFailure: failure, Checks: []CheckRef{{Name: "deploy", State: "pending"}}}, false))
+	if !strings.Contains(named.Summary, "deploy (pending)") || !strings.Contains(named.Question, "deploy (pending)") {
+		t.Fatalf("summary=%q question=%q", named.Summary, named.Question)
+	}
+	if len(named.Choices) == 0 || named.Choices[0].ID != "merge" {
+		t.Fatalf("choices = %+v", named.Choices)
+	}
+}
+
 func TestCheckHoldAppliesOnlyWithTheMergeGateOff(t *testing.T) {
 	na := Project(checkHoldInput(&CheckHold{Reason: CheckHoldFailed}, true))
 	if na.Kind != KindMergeExecution {

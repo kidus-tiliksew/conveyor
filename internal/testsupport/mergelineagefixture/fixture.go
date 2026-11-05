@@ -540,6 +540,9 @@ type checkScenario struct {
 	operatorID    string
 	onRead        func(context.Context) error
 	onReadCount   func(int)
+	prViews       int
+	mergeCalls    int
+	mergeable     string
 }
 
 func newCheckScenario(t *testing.T, st store.Store) *checkScenario {
@@ -569,13 +572,16 @@ func newCheckScenario(t *testing.T, st store.Store) *checkScenario {
 		}
 		return githubtrigger.CheckStatus{Checks: c.checks}, c.readErr
 	}
+	c.mergeable = "MERGEABLE"
 	c.d.ViewPullRequest = func(context.Context, string, string) (githubtrigger.PullRequest, error) {
+		c.prViews++
 		if c.merged {
 			return githubtrigger.PullRequest{Number: number, URL: pullURL(), State: "closed", Merged: true, BaseSHA: "base", HeadSHA: c.head, HeadRef: c.task.Branch, MergeCommitSHA: landed, MergedBy: "operator"}, nil
 		}
-		return githubtrigger.PullRequest{Number: number, URL: pullURL(), State: "open", Mergeable: "MERGEABLE", BaseSHA: "base", HeadSHA: c.head, HeadRef: c.task.Branch}, nil
+		return githubtrigger.PullRequest{Number: number, URL: pullURL(), State: "open", Mergeable: c.mergeable, BaseSHA: "base", HeadSHA: c.head, HeadRef: c.task.Branch}, nil
 	}
 	c.d.RequestMerge = func(context.Context, string, int) error {
+		c.mergeCalls++
 		if c.mergeRefused {
 			return githubtrigger.StatusError(405, fmt.Errorf("merge refused"))
 		}
@@ -1204,6 +1210,7 @@ func RunCheckStatusRetry(t *testing.T, open func(*testing.T) store.Backend) {
 type retryScenario struct {
 	*checkScenario
 	delays     []time.Duration
+	onDelay    func()
 	realDelays bool
 	fixedDelay time.Duration
 	views      int
@@ -1277,6 +1284,9 @@ func (r *retryScenario) startRuntime(t *testing.T) *logqueue.Runtime {
 		registration.RetryDelay = func(attempt int) time.Duration {
 			delay := kindDelay(attempt)
 			r.delays = append(r.delays, delay)
+			if r.onDelay != nil {
+				r.onDelay()
+			}
 			switch {
 			case r.realDelays:
 				return delay
@@ -1360,4 +1370,660 @@ func (r *retryScenario) requireFinishedWith(t *testing.T, state logqueue.State, 
 	if job := r.job(t); job.State != state || job.Attempt != attempt {
 		t.Fatalf("job = %+v, want state %v at attempt %d", job, state, attempt)
 	}
+}
+
+// RunCheckStatusDeadline proves the check-status deadline pass on a real
+// dispatcher and store (req-review-gates-evidence AC-1.5, AC-1.9;
+// req-quiet-idle-runtime AC-3.9; component-submission-merge invariants 60 to
+// 62). The clock is the scenario's, each step's read is scripted, and each
+// assertion reads the GitHub calls, the ledger, and the assembled next action.
+func RunCheckStatusDeadline(t *testing.T, open func(*testing.T) store.Store) {
+	t.Helper()
+	st := open(t)
+	passed := githubtrigger.Check{Name: "build", State: githubtrigger.CheckPassed, URL: "https://github.com/acme/app/runs/1"}
+	failed := githubtrigger.Check{Name: "e2e", State: githubtrigger.CheckFailed, URL: "https://github.com/acme/app/runs/2"}
+	pending := githubtrigger.Check{Name: "deploy", State: githubtrigger.CheckPending, URL: "https://github.com/acme/app/runs/3"}
+	refused := githubtrigger.PermissionError(fmt.Errorf("resource not accessible by integration"))
+	transient := githubtrigger.StatusError(502, fmt.Errorf("bad gateway"))
+
+	t.Run("a pass before the deadline reads nothing and a later read does not move it", func(t *testing.T) {
+		c := newCheckScenario(t, st)
+		c.answer(nil, pending)
+		c.automatic(t, dispatch.ErrCheckStatusPending)
+		first := c.deadline(t)
+		if want := c.start.Add(dispatch.CheckStatusDeadlineWindow); !first.Equal(want) {
+			t.Fatalf("deadline = %s, want %s", first, want)
+		}
+		c.advance(time.Hour)
+		c.automatic(t, dispatch.ErrCheckStatusPending)
+		if got := c.deadline(t); !got.Equal(first) {
+			t.Fatalf("a later read moved the deadline to %s", got)
+		}
+		reads := c.reads
+		c.advance(time.Hour - time.Second)
+		c.fireDeadline(t)
+		if c.reads != reads || !c.deadline(t).Equal(first) {
+			t.Fatalf("reads = %d, want %d; deadline = %s", c.reads, reads, c.deadline(t))
+		}
+		c.requireAction(t, "factory", "merging", false, "deploy")
+	})
+	t.Run("a deadline that stays stuck causes exactly one GitHub read", func(t *testing.T) {
+		c := newCheckScenario(t, st)
+		c.answer(nil, passed, pending)
+		c.automatic(t, dispatch.ErrCheckStatusPending)
+		reads, views := c.reads, c.prViews
+		c.advance(dispatch.CheckStatusDeadlineWindow)
+		c.fireDeadline(t)
+		if c.reads != reads+1 || c.prViews != views || c.mergeCalls != 0 {
+			t.Fatalf("reads=%d views=%d merges=%d, want exactly the deadline's read after reads=%d views=%d", c.reads, c.prViews, c.mergeCalls, reads, views)
+		}
+		c.requireApprovedUnmerged(t)
+		c.requireDeadlineFired(t, c.head)
+		hold := c.singleHold(t, nextaction.CheckHoldStuck)
+		if len(hold.Checks) != 1 || hold.Checks[0] != (nextaction.CheckRef{Name: pending.Name, State: pending.State, URL: pending.URL}) || hold.Failure != "" {
+			t.Fatalf("hold = %+v, want the stuck check", hold)
+		}
+		action := c.requireAction(t, nextactionOperator, nextactionHold, true, "deploy")
+		if action.Details.CheckHoldReason != nextaction.CheckHoldStuck || action.Details.Checks[0].URL != pending.URL || len(action.Choices) == 0 || action.Choices[0].ID != "merge" {
+			t.Fatalf("next action = %+v", action)
+		}
+		// The fired deadline stops being due: no later fire reads, however late.
+		c.fireDeadline(t)
+		c.advance(48 * time.Hour)
+		c.fireDeadline(t)
+		if c.reads != reads+1 || c.prViews != views {
+			t.Fatalf("a later fire read GitHub: reads=%d views=%d", c.reads, c.prViews)
+		}
+		c.requireCount(t, store.EventCheckHold, 1)
+		c.requireCount(t, store.EventCheckPending, 1)
+		c.requireDeadlineFired(t, c.head)
+	})
+	t.Run("a deadline read finding every check passed merges", func(t *testing.T) {
+		c := newCheckScenario(t, st)
+		c.answer(nil, pending)
+		c.automatic(t, dispatch.ErrCheckStatusPending)
+		reads := c.reads
+		c.answer(nil, passed)
+		c.advance(dispatch.CheckStatusDeadlineWindow)
+		c.fireDeadline(t)
+		c.requireMerged(t)
+		if c.reads != reads+1 || c.mergeCalls != 1 {
+			t.Fatalf("reads=%d merges=%d, want one read after %d and one merge", c.reads, c.mergeCalls, reads)
+		}
+		c.requireRequestedStatus(t, "passed")
+		c.requireCount(t, store.EventCheckHold, 0)
+		c.requireCount(t, store.EventCheckOverride, 0)
+	})
+	t.Run("a deadline read finding none reported merges", func(t *testing.T) {
+		c := newCheckScenario(t, st)
+		c.answer(nil, pending)
+		c.automatic(t, dispatch.ErrCheckStatusPending)
+		reads := c.reads
+		c.answer(nil)
+		c.advance(dispatch.CheckStatusDeadlineWindow)
+		c.fireDeadline(t)
+		c.requireMerged(t)
+		c.requireRequestedStatus(t, "none_reported")
+		if c.reads != reads+1 {
+			t.Fatalf("reads = %d, want %d", c.reads, reads+1)
+		}
+	})
+	t.Run("a failed deadline read is stuck and names the failure and what the last read found pending", func(t *testing.T) {
+		c := newCheckScenario(t, st)
+		c.answer(nil, pending)
+		c.automatic(t, dispatch.ErrCheckStatusPending)
+		c.answer(transient)
+		c.automatic(t, dispatch.ErrCheckStatusUnread)
+		reads, views := c.reads, c.prViews
+		c.advance(dispatch.CheckStatusDeadlineWindow)
+		c.fireDeadline(t)
+		if c.reads != reads+1 || c.prViews != views || c.mergeCalls != 0 {
+			t.Fatalf("reads=%d views=%d merges=%d after reads=%d views=%d", c.reads, c.prViews, c.mergeCalls, reads, views)
+		}
+		c.requireApprovedUnmerged(t)
+		c.requireDeadlineFired(t, c.head)
+		hold := c.singleHold(t, nextaction.CheckHoldStuck)
+		if hold.Failure == "" || !strings.Contains(hold.Failure, "read failed") {
+			t.Fatalf("hold = %+v, want the read failure", hold)
+		}
+		action := c.requireAction(t, nextactionOperator, nextactionHold, true, "deploy")
+		if action.Details.CheckReadFailure == "" || !strings.Contains(action.Summary, "could not read") {
+			t.Fatalf("next action = %+v", action)
+		}
+		c.fireDeadline(t)
+		if c.reads != reads+1 {
+			t.Fatalf("a later fire read GitHub: reads = %d", c.reads)
+		}
+	})
+	t.Run("a failed deadline read with no earlier answer names only the failure", func(t *testing.T) {
+		c := newCheckScenario(t, st)
+		c.answer(transient)
+		c.automatic(t, dispatch.ErrCheckStatusUnread)
+		c.advance(dispatch.CheckStatusDeadlineWindow)
+		c.fireDeadline(t)
+		if hold := c.singleHold(t, nextaction.CheckHoldStuck); len(hold.Checks) != 0 || hold.Failure == "" {
+			t.Fatalf("hold = %+v", hold)
+		}
+		c.requireAction(t, nextactionOperator, nextactionHold, true)
+		c.requireDeadlineFired(t, c.head)
+	})
+	t.Run("a refused deadline read stays a permission hold", func(t *testing.T) {
+		c := newCheckScenario(t, st)
+		c.answer(nil, pending)
+		c.automatic(t, dispatch.ErrCheckStatusPending)
+		reads := c.reads
+		c.answer(refused)
+		c.advance(dispatch.CheckStatusDeadlineWindow)
+		c.fireDeadline(t)
+		if c.reads != reads+1 {
+			t.Fatalf("reads = %d, want %d", c.reads, reads+1)
+		}
+		c.requireDeadlineFired(t, c.head)
+		hold := c.singleHold(t, nextaction.CheckHoldPermission)
+		if hold.Remedy != dispatch.CheckReadRemedy {
+			t.Fatalf("hold = %+v, want the workspace-settings remedy", hold)
+		}
+		action := c.requireAction(t, nextactionOperator, nextactionHold, false, "deploy")
+		if action.Details.CheckHoldReason != nextaction.CheckHoldPermission || action.Details.CheckRemedy == "" {
+			t.Fatalf("next action = %+v", action)
+		}
+		c.fireDeadline(t)
+		if c.reads != reads+1 {
+			t.Fatalf("a later fire read GitHub: reads = %d", c.reads)
+		}
+	})
+	t.Run("a deadline falling due on a refused read's hold appends nothing new", func(t *testing.T) {
+		c := newCheckScenario(t, st)
+		c.answer(refused)
+		c.automatic(t, dispatch.ErrCheckStatusHeld)
+		reads := c.reads
+		c.advance(dispatch.CheckStatusDeadlineWindow)
+		c.fireDeadline(t)
+		if c.reads != reads+1 {
+			t.Fatalf("reads = %d, want %d", c.reads, reads+1)
+		}
+		c.singleHold(t, nextaction.CheckHoldPermission)
+		c.requireDeadlineFired(t, c.head)
+		c.requireAction(t, nextactionOperator, nextactionHold, false)
+	})
+	t.Run("a failed check at the deadline applies the failed hold and records no new deadline", func(t *testing.T) {
+		c := newCheckScenario(t, st)
+		c.answer(nil, pending)
+		c.automatic(t, dispatch.ErrCheckStatusPending)
+		c.answer(nil, failed, pending)
+		c.advance(dispatch.CheckStatusDeadlineWindow)
+		c.fireDeadline(t)
+		c.requireApprovedUnmerged(t)
+		c.requireDeadlineFired(t, c.head)
+		c.singleHold(t, nextaction.CheckHoldFailed)
+		c.requireAction(t, nextactionOperator, nextactionHold, true, "e2e", "deploy")
+	})
+	t.Run("a stuck hold stays through pending and failed reads and records no new deadline", func(t *testing.T) {
+		c := newCheckScenario(t, st)
+		c.answer(nil, pending)
+		c.automatic(t, dispatch.ErrCheckStatusPending)
+		c.advance(dispatch.CheckStatusDeadlineWindow)
+		c.fireDeadline(t)
+		c.advance(time.Hour)
+		c.automatic(t, dispatch.ErrCheckStatusHeld)
+		c.requireDeadlineFired(t, c.head)
+		c.singleHold(t, nextaction.CheckHoldStuck)
+		c.answer(transient)
+		c.automatic(t, dispatch.ErrCheckStatusUnread)
+		c.requireDeadlineFired(t, c.head)
+		c.singleHold(t, nextaction.CheckHoldStuck)
+		c.requireCount(t, store.EventCheckHoldCleared, 0)
+		c.requireCount(t, store.EventCheckPending, 1)
+		c.requireAction(t, nextactionOperator, nextactionHold, true, "deploy")
+	})
+	t.Run("a later answered read replaces the failure a stuck hold named", func(t *testing.T) {
+		c := newCheckScenario(t, st)
+		c.answer(nil, pending)
+		c.automatic(t, dispatch.ErrCheckStatusPending)
+		c.answer(transient)
+		c.automatic(t, dispatch.ErrCheckStatusUnread)
+		c.advance(dispatch.CheckStatusDeadlineWindow)
+		c.fireDeadline(t)
+		c.answer(nil, pending)
+		c.automatic(t, dispatch.ErrCheckStatusHeld)
+		c.requireCount(t, store.EventCheckHold, 2)
+		if action := c.requireAction(t, nextactionOperator, nextactionHold, true, "deploy"); action.Details.CheckReadFailure != "" || strings.Contains(action.Summary, "could not read") {
+			t.Fatalf("next action = %+v, want the answered read", action)
+		}
+	})
+	t.Run("a later read finding no check pending clears a stuck hold and merges", func(t *testing.T) {
+		c := newCheckScenario(t, st)
+		c.answer(nil, pending)
+		c.automatic(t, dispatch.ErrCheckStatusPending)
+		c.advance(dispatch.CheckStatusDeadlineWindow)
+		c.fireDeadline(t)
+		c.answer(nil, passed)
+		c.automatic(t, nil)
+		c.requireMerged(t)
+		c.requireCount(t, store.EventCheckHoldCleared, 1)
+		c.requireCount(t, store.EventCheckOverride, 0)
+	})
+	t.Run("a later failed check replaces a stuck hold and a rerun left pending records a new deadline", func(t *testing.T) {
+		c := newCheckScenario(t, st)
+		c.answer(nil, pending)
+		c.automatic(t, dispatch.ErrCheckStatusPending)
+		c.advance(dispatch.CheckStatusDeadlineWindow)
+		c.fireDeadline(t)
+		c.answer(nil, failed)
+		c.automatic(t, dispatch.ErrCheckStatusHeld)
+		c.requireAction(t, nextactionOperator, nextactionHold, true, "e2e")
+		c.advance(time.Hour)
+		c.answer(nil, pending)
+		c.automatic(t, dispatch.ErrCheckStatusPending)
+		if want := c.now.Add(dispatch.CheckStatusDeadlineWindow); !c.deadline(t).Equal(want) {
+			t.Fatalf("deadline = %s, want %s", c.deadline(t), want)
+		}
+		c.requireAction(t, "factory", "merging", false, "deploy")
+	})
+	t.Run("a check going pending again after a read cleared the stuck hold records a new deadline", func(t *testing.T) {
+		c := newCheckScenario(t, st)
+		c.answer(nil, pending)
+		c.automatic(t, dispatch.ErrCheckStatusPending)
+		c.advance(dispatch.CheckStatusDeadlineWindow)
+		c.fireDeadline(t)
+		c.mergeRefused = true
+		c.answer(nil, passed)
+		if err := c.merge(); err == nil {
+			t.Fatal("scripted forge refusal did not reach the caller")
+		}
+		c.requireDeadlineFired(t, c.head)
+		c.requireCount(t, store.EventCheckHoldCleared, 1)
+		c.advance(time.Hour)
+		c.answer(nil, pending)
+		c.automatic(t, dispatch.ErrCheckStatusPending)
+		if want := c.now.Add(dispatch.CheckStatusDeadlineWindow); !c.deadline(t).Equal(want) {
+			t.Fatalf("deadline = %s, want %s", c.deadline(t), want)
+		}
+		reads := c.reads
+		c.advance(dispatch.CheckStatusDeadlineWindow)
+		c.fireDeadline(t)
+		if c.reads != reads+1 {
+			t.Fatalf("reads = %d, want %d", c.reads, reads+1)
+		}
+		c.requireCount(t, store.EventCheckHold, 2)
+		c.requireAction(t, nextactionOperator, nextactionHold, true, "deploy")
+	})
+	t.Run("a new head starts fresh and an older head's deadline reads and holds nothing", func(t *testing.T) {
+		c := newCheckScenario(t, st)
+		c.answer(nil, pending)
+		c.automatic(t, dispatch.ErrCheckStatusPending)
+		if _, err := c.st.MarkTaskApprovalStale(c.ctx, c.task.ID, headB, headC, config.RefreshReviewDelta, "head-changed"); err != nil {
+			t.Fatal(err)
+		}
+		if err := c.st.BindTaskApproval(c.ctx, c.task.ID, headC); err != nil {
+			t.Fatal(err)
+		}
+		c.head = headC
+		reads := c.reads
+		c.advance(dispatch.CheckStatusDeadlineWindow)
+		c.fireDeadline(t)
+		if c.reads != reads {
+			t.Fatalf("the older head's deadline read GitHub: reads = %d, want %d", c.reads, reads)
+		}
+		c.requireDeadlineFired(t, headB)
+		c.requireCount(t, store.EventCheckHold, 0)
+		c.requireAction(t, "factory", "merging", false)
+		c.automatic(t, dispatch.ErrCheckStatusPending)
+		if got := c.current(t); got.CheckStatusDeadlineHead != headC || !got.CheckStatusDeadline.Equal(c.now.Add(dispatch.CheckStatusDeadlineWindow)) {
+			t.Fatalf("new head deadline = %v at %q", got.CheckStatusDeadline, got.CheckStatusDeadlineHead)
+		}
+	})
+	t.Run("a stale approval's deadline reads nothing", func(t *testing.T) {
+		c := newCheckScenario(t, st)
+		c.answer(nil, pending)
+		c.automatic(t, dispatch.ErrCheckStatusPending)
+		if _, err := c.st.MarkTaskApprovalStale(c.ctx, c.task.ID, headB, headC, config.RefreshReviewDelta, "head-changed"); err != nil {
+			t.Fatal(err)
+		}
+		reads := c.reads
+		c.advance(dispatch.CheckStatusDeadlineWindow)
+		c.fireDeadline(t)
+		if c.reads != reads {
+			t.Fatalf("reads = %d, want %d", c.reads, reads)
+		}
+		c.requireCount(t, store.EventCheckHold, 0)
+		if got := c.current(t); got.CheckStatusDeadline != nil {
+			t.Fatalf("deadline = %v", got.CheckStatusDeadline)
+		}
+	})
+	t.Run("the operator's merge over a stuck hold reads nothing and records the override", func(t *testing.T) {
+		c := newCheckScenario(t, st)
+		c.answer(nil, pending)
+		c.automatic(t, dispatch.ErrCheckStatusPending)
+		c.advance(dispatch.CheckStatusDeadlineWindow)
+		c.fireDeadline(t)
+		reads := c.reads
+		if err := c.d.MergeApprovedTask(c.operatorCtx, c.current(t), c.operator); err != nil {
+			t.Fatal(err)
+		}
+		c.requireMerged(t)
+		if c.reads != reads {
+			t.Fatalf("the merge act read check status: reads = %d, want %d", c.reads, reads)
+		}
+		override := c.single(t, store.EventCheckOverride)
+		for _, want := range []string{c.operatorID, nextaction.CheckHoldStuck, pending.Name} {
+			if !strings.Contains(string(override.Payload), want) {
+				t.Fatalf("override = %s, want %s", override.Payload, want)
+			}
+		}
+	})
+	t.Run("a merge failure a retry can fix keeps the deadline due", func(t *testing.T) {
+		c := newCheckScenario(t, st)
+		c.answer(nil, pending)
+		c.automatic(t, dispatch.ErrCheckStatusPending)
+		first := c.deadline(t)
+		c.answer(nil, passed)
+		c.advance(dispatch.CheckStatusDeadlineWindow)
+		c.mergeable = "UNKNOWN"
+		if err := c.d.ApplyDueCheckStatusDeadlines(c.ctx); !errors.Is(err, dispatch.ErrMergeReadinessPending) {
+			t.Fatalf("err = %v, want the alarm to retry", err)
+		}
+		if got := c.deadline(t); !got.Equal(first) {
+			t.Fatalf("deadline = %s, want it still due at %s", got, first)
+		}
+		c.mergeable = "MERGEABLE"
+		c.fireDeadline(t)
+		c.requireMerged(t)
+		c.requireRequestedStatus(t, "passed")
+	})
+	t.Run("a merge GitHub refuses ends the deadline with the failure recorded", func(t *testing.T) {
+		c := newCheckScenario(t, st)
+		c.answer(nil, pending)
+		c.automatic(t, dispatch.ErrCheckStatusPending)
+		c.answer(nil, passed)
+		c.advance(dispatch.CheckStatusDeadlineWindow)
+		c.mergeRefused = true
+		c.fireDeadline(t)
+		c.requireDeadlineFired(t, c.head)
+		c.requireCount(t, "merge.failed", 1)
+		c.requireCount(t, store.EventCheckHold, 0)
+		reads := c.reads
+		c.fireDeadline(t)
+		if c.reads != reads {
+			t.Fatalf("a later fire read GitHub: reads = %d", c.reads)
+		}
+	})
+	t.Run("dying before the deadline clears reads again and duplicates no hold", func(t *testing.T) {
+		c := newCheckScenario(t, st)
+		c.answer(nil, pending)
+		c.automatic(t, dispatch.ErrCheckStatusPending)
+		reads := c.reads
+		c.advance(dispatch.CheckStatusDeadlineWindow)
+		real := c.d.Store
+		c.d.Store = clearRefusingStore{real}
+		if err := c.d.ApplyDueCheckStatusDeadlines(c.ctx); !errors.Is(err, errClearRefused) {
+			t.Fatalf("err = %v", err)
+		}
+		c.d.Store = real
+		c.singleHold(t, nextaction.CheckHoldStuck)
+		if got := c.current(t); got.CheckStatusDeadline == nil {
+			t.Fatal("the deadline cleared with its clear refused")
+		}
+		c.fireDeadline(t)
+		if c.reads != reads+2 {
+			t.Fatalf("reads = %d, want %d", c.reads, reads+2)
+		}
+		c.singleHold(t, nextaction.CheckHoldStuck)
+		c.requireDeadlineFired(t, c.head)
+	})
+	t.Run("a cancelled read leaves the deadline due and records nothing", func(t *testing.T) {
+		c := newCheckScenario(t, st)
+		c.answer(nil, pending)
+		c.automatic(t, dispatch.ErrCheckStatusPending)
+		c.advance(dispatch.CheckStatusDeadlineWindow)
+		ctx, cancel := context.WithCancel(c.ctx)
+		c.onRead = func(context.Context) error {
+			cancel()
+			return context.Canceled
+		}
+		if err := c.d.ApplyDueCheckStatusDeadlines(ctx); !errors.Is(err, context.Canceled) {
+			t.Fatalf("err = %v", err)
+		}
+		c.onRead = nil
+		c.requireCount(t, store.EventCheckHold, 0)
+		if got := c.current(t); got.CheckStatusDeadline == nil {
+			t.Fatal("a cancelled fire cleared the deadline")
+		}
+	})
+}
+
+// RunCheckStatusDeadlineRetry proves the deadline beside the job retry of an
+// unanswered read on the real queue runtime (component-submission-merge
+// invariants 61 and 62; component-durable-queue invariant 37). The retry delay
+// callback is where the job sits in its backoff, so each deadline fires exactly
+// there, and the job's next attempt then finds nothing due.
+func RunCheckStatusDeadlineRetry(t *testing.T, open func(*testing.T) store.Backend) {
+	t.Helper()
+	st := open(t)
+	passed := githubtrigger.Check{Name: "build", State: githubtrigger.CheckPassed}
+	pending := githubtrigger.Check{Name: "deploy", State: githubtrigger.CheckPending}
+	refused := githubtrigger.PermissionError(fmt.Errorf("resource not accessible by integration"))
+	transient := githubtrigger.StatusError(502, fmt.Errorf("bad gateway"))
+
+	// fireInBackoff fails the job's first attempt, fires the deadline during its
+	// backoff with the read answer sets, and waits for the job to finish.
+	fireInBackoff := func(t *testing.T, r *retryScenario, answer func()) {
+		t.Helper()
+		r.answer(transient)
+		r.automatic(t, dispatch.ErrCheckStatusUnread)
+		fired := false
+		r.onDelay = func() {
+			if fired {
+				return
+			}
+			fired = true
+			answer()
+			r.advance(dispatch.CheckStatusDeadlineWindow)
+			if err := r.d.ApplyDueCheckStatusDeadlines(r.ctx); err != nil {
+				t.Errorf("deadline during the backoff: %v", err)
+			}
+		}
+		r.startRuntime(t)
+		r.requireJobFinished(t, 1)
+		if !fired {
+			t.Fatal("the job finished with no backoff")
+		}
+	}
+	// One read arranged the job, one is its first attempt, one is the deadline's.
+	const readsThroughDeadline = 3
+
+	t.Run("a deadline read that fails during the backoff is one read and the job reads no more", func(t *testing.T) {
+		r := newRetryScenario(t, st)
+		fireInBackoff(t, r, func() {})
+		r.requireFinishedWith(t, logqueue.StateCompleted, 2)
+		if r.reads != readsThroughDeadline {
+			t.Fatalf("reads = %d, want %d", r.reads, readsThroughDeadline)
+		}
+		r.requireApprovedUnmerged(t)
+		r.requireDeadlineFired(t, r.head)
+		if hold := r.singleHold(t, nextaction.CheckHoldStuck); hold.Failure == "" {
+			t.Fatalf("hold = %+v", hold)
+		}
+		r.requireCount(t, store.EventCheckPending, 1)
+		r.requireCount(t, "dispatch.failed", 0)
+		action := r.requireAction(t, nextactionOperator, nextactionHold, true)
+		if action.Details.CheckReadFailure == "" || action.Details.ReasonCode != nextaction.CheckHoldStuck {
+			t.Fatalf("next action = %+v", action)
+		}
+	})
+	t.Run("a deadline read finding a check pending during the backoff holds once", func(t *testing.T) {
+		r := newRetryScenario(t, st)
+		fireInBackoff(t, r, func() { r.answer(nil, pending) })
+		r.requireFinishedWith(t, logqueue.StateCompleted, 2)
+		if r.reads != readsThroughDeadline {
+			t.Fatalf("reads = %d, want %d", r.reads, readsThroughDeadline)
+		}
+		if hold := r.singleHold(t, nextaction.CheckHoldStuck); len(hold.Checks) != 1 || hold.Failure != "" {
+			t.Fatalf("hold = %+v", hold)
+		}
+		r.requireAction(t, nextactionOperator, nextactionHold, true, "deploy")
+	})
+	t.Run("a deadline read that passes during the backoff merges and the job reads no more", func(t *testing.T) {
+		r := newRetryScenario(t, st)
+		fireInBackoff(t, r, func() { r.answer(nil, passed) })
+		if r.reads != readsThroughDeadline {
+			t.Fatalf("reads = %d, want %d", r.reads, readsThroughDeadline)
+		}
+		r.requireMerged(t)
+		r.requireCount(t, "merge.requested", 1)
+		r.requireRequestedStatus(t, "passed")
+		r.requireCount(t, store.EventCheckHold, 0)
+	})
+	t.Run("a refused deadline read during the backoff stays a permission hold", func(t *testing.T) {
+		r := newRetryScenario(t, st)
+		fireInBackoff(t, r, func() { r.answer(refused) })
+		r.requireFinishedWith(t, logqueue.StateCompleted, 2)
+		if r.reads != readsThroughDeadline {
+			t.Fatalf("reads = %d, want %d", r.reads, readsThroughDeadline)
+		}
+		r.singleHold(t, nextaction.CheckHoldPermission)
+		r.requireAction(t, nextactionOperator, nextactionHold, false)
+	})
+	t.Run("a deadline after the retries ended still reads once and arms no job", func(t *testing.T) {
+		r := newRetryScenario(t, st)
+		r.answer(transient)
+		r.automatic(t, dispatch.ErrCheckStatusUnread)
+		r.startRuntime(t)
+		r.requireJobFinished(t, 1)
+		r.stopRuntime(t, r.running)
+		reads := r.reads
+		r.advance(dispatch.CheckStatusDeadlineWindow)
+		if err := r.d.ApplyDueCheckStatusDeadlines(r.ctx); err != nil {
+			t.Fatal(err)
+		}
+		if r.reads != reads+1 {
+			t.Fatalf("reads = %d, want %d", r.reads, reads+1)
+		}
+		if job := r.job(t); job.Generation != 1 || job.Active() {
+			t.Fatalf("job = %+v, want the deadline to arm none", job)
+		}
+		r.singleHold(t, nextaction.CheckHoldStuck)
+	})
+	t.Run("a deadline's failed read arms no job when none is active", func(t *testing.T) {
+		r := newRetryScenario(t, st)
+		r.answer(nil, pending)
+		r.automatic(t, dispatch.ErrCheckStatusPending)
+		r.answer(transient)
+		r.advance(dispatch.CheckStatusDeadlineWindow)
+		if err := r.d.ApplyDueCheckStatusDeadlines(r.ctx); err != nil {
+			t.Fatal(err)
+		}
+		if job := r.job(t); job.State != logqueue.StateNone {
+			t.Fatalf("job = %+v, want none", job)
+		}
+		r.singleHold(t, nextaction.CheckHoldStuck)
+	})
+	t.Run("a later delivery's failed read during a stuck hold arranges no job", func(t *testing.T) {
+		r := newRetryScenario(t, st)
+		r.answer(nil, pending)
+		r.automatic(t, dispatch.ErrCheckStatusPending)
+		r.advance(dispatch.CheckStatusDeadlineWindow)
+		if err := r.d.ApplyDueCheckStatusDeadlines(r.ctx); err != nil {
+			t.Fatal(err)
+		}
+		r.answer(transient)
+		r.automatic(t, dispatch.ErrCheckStatusUnread)
+		if job := r.job(t); job.State != logqueue.StateNone {
+			t.Fatalf("job = %+v, want none", job)
+		}
+		r.requireDeadlineFired(t, r.head)
+		r.singleHold(t, nextaction.CheckHoldStuck)
+	})
+	t.Run("the alarm applies a recorded deadline on its own", func(t *testing.T) {
+		r := newRetryScenario(t, st)
+		r.answer(nil, pending)
+		r.d.Now = func() time.Time { return time.Now().UTC() }
+		runtime := r.startAlarm(t)
+		// The event raises the notice that moves the sleeping alarm, as a real
+		// read's does, with a deadline the test can wait for.
+		deadline := time.Now().UTC().Add(250 * time.Millisecond)
+		recorded, err := r.st.RecordCheckStatusDeadline(r.ctx, r.task.ID, r.head, deadline, core.Event{TaskID: r.task.ID, Kind: store.EventCheckPending, Payload: core.JSONPayload(map[string]any{
+			"workspace": r.ws, "task_id": r.task.ID, "head_sha": r.head, "reason": "pending", "checks": []githubtrigger.Check{pending}, "deadline": deadline,
+		})})
+		if err != nil || !recorded {
+			t.Fatalf("record=%t err=%v", recorded, err)
+		}
+		// AC-2.4 gives the alarm five seconds.
+		for wait := time.After(5 * time.Second); len(r.events(t, store.EventCheckHold)) == 0; {
+			select {
+			case <-wait:
+				t.Fatalf("no hold within five seconds: reads = %d", r.reads)
+			case <-time.After(5 * time.Millisecond):
+			}
+		}
+		r.stopRuntime(t, runtime)
+		if r.reads != 1 {
+			t.Fatalf("reads = %d, want the deadline's one", r.reads)
+		}
+		r.singleHold(t, nextaction.CheckHoldStuck)
+		r.requireDeadlineFired(t, r.head)
+	})
+}
+
+// startAlarm starts the runtime with the deadline alarm and its order clock,
+// the way the daemon does.
+func (r *retryScenario) startAlarm(t *testing.T) *logqueue.Runtime {
+	t.Helper()
+	backend := r.backend()
+	runtime := logqueue.NewRuntime(backend.Log(), logqueue.Options{
+		Workspaces: []string{r.ws}, RescueStuckAfter: time.Hour, WorkerID: "check-alarm", Changes: backend.Changes(), Deadlines: dispatch.StoreDeadlines(backend), Logf: t.Logf,
+	})
+	for _, registration := range r.d.Registrations(r.shutdown) {
+		runtime.Register(registration)
+	}
+	if err := runtime.Start(r.ctx); err != nil {
+		t.Fatal(err)
+	}
+	r.running = runtime
+	return runtime
+}
+
+func (c *checkScenario) fireDeadline(t *testing.T) {
+	t.Helper()
+	if err := c.d.ApplyDueCheckStatusDeadlines(c.ctx); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// requireDeadlineFired requires what a fired deadline leaves: no deadline, and
+// its head kept (component-submission-merge invariant 61).
+func (c *checkScenario) requireDeadlineFired(t *testing.T, head string) {
+	t.Helper()
+	got := c.current(t)
+	if got.CheckStatusDeadline != nil || got.CheckStatusDeadlineHead != head {
+		t.Fatalf("deadline = %v at %q, want none at %q", got.CheckStatusDeadline, got.CheckStatusDeadlineHead, head)
+	}
+}
+
+type recordedHold struct {
+	Reason  string                `json:"reason"`
+	Failure string                `json:"read_failure"`
+	Remedy  string                `json:"remedy"`
+	Checks  []nextaction.CheckRef `json:"checks"`
+}
+
+// singleHold requires exactly one merge.check_hold, with this reason.
+func (c *checkScenario) singleHold(t *testing.T, reason string) recordedHold {
+	t.Helper()
+	var hold recordedHold
+	event := c.single(t, store.EventCheckHold)
+	if err := json.Unmarshal(event.Payload, &hold); err != nil || hold.Reason != reason {
+		t.Fatalf("merge.check_hold = %s, want reason %s (%v)", event.Payload, reason, err)
+	}
+	return hold
+}
+
+var errClearRefused = errors.New("process died before the clear")
+
+// clearRefusingStore is the process that died after the hold and before the
+// deadline cleared.
+type clearRefusingStore struct{ store.Store }
+
+func (clearRefusingStore) ClearCheckStatusDeadline(context.Context, string) (bool, error) {
+	return false, errClearRefused
 }

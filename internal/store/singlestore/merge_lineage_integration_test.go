@@ -27,3 +27,14 @@ func TestAutomaticMergeCheckStatusOutcomesSingleStoreIntegration(t *testing.T) {
 func TestCheckStatusReadRetrySingleStoreIntegration(t *testing.T) {
 	mergelineagefixture.RunCheckStatusRetry(t, func(t *testing.T) store.Backend { return integrationStore(t) })
 }
+
+// SingleStore twin of TestCheckStatusDeadline (req-review-gates-evidence
+// AC-1.5, AC-1.9; req-quiet-idle-runtime AC-3.9).
+func TestCheckStatusDeadlineSingleStoreIntegration(t *testing.T) {
+	mergelineagefixture.RunCheckStatusDeadline(t, func(t *testing.T) store.Store { return integrationStore(t) })
+}
+
+// SingleStore twin of TestCheckStatusDeadlineBesideTheRetry.
+func TestCheckStatusDeadlineBesideTheRetrySingleStoreIntegration(t *testing.T) {
+	mergelineagefixture.RunCheckStatusDeadlineRetry(t, func(t *testing.T) store.Backend { return integrationStore(t) })
+}

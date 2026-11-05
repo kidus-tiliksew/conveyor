@@ -805,8 +805,13 @@ func (d *Dispatcher) gateOnConflictMergeError(ctx context.Context, current core.
 // mergeAct names who asks for a merge. A nil operator is the automatic merge,
 // the only act that reads check status (req-review-gates-evidence AC-1.1,
 // AC-1.8; component-submission-merge invariant 58).
+//
+// checkStatus is the status a check-status deadline's read already found, which
+// merge.requested carries in place of a second read
+// (req-quiet-idle-runtime AC-3.9).
 type mergeAct struct {
-	operator *core.Actor
+	operator    *core.Actor
+	checkStatus string
 }
 
 // MergeApprovedTask is the operator's merge act on an approved task, attributed
@@ -965,6 +970,8 @@ func (d *Dispatcher) mergeApprovedTaskLocked(ctx context.Context, task core.Task
 			return err
 		}
 		requestPayload["operator_act"], requestPayload["head_sha"] = true, approvedHead
+	case act.checkStatus != "":
+		requestPayload["check_status"] = act.checkStatus
 	case !current.MergeApproval:
 		status, checkErr := d.applyCheckStatusLocked(ctx, current, repo.GitHub, approvedHead)
 		if checkErr != nil {
