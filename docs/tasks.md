@@ -416,6 +416,11 @@ task detail's `summaries.park_reason` states what triage recorded when it
 parked the task, and `summaries.dispatch_failure` the latest dispatch failure.
 Pending proposals expose `attention.task_count` and
 `attention.operator_decisions` from that same projection.
+`task_count` counts the tasks in the `decisions` band, and `operator_decisions`
+adds the pending document proposals, so it equals the `decisions` total. A task
+with `actor=operator` and `judgment=false`, such as a stalled one, is listed
+under `automatic` and left out of both. It still has `needs_attention` and
+appears in `GET /v1/attention/tasks` for its assignee.
 
 ## Repository documentation closure
 
