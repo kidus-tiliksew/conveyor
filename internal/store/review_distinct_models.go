@@ -16,10 +16,21 @@ import (
 // claimable and records no claim failure.
 var ErrReviewSeatModelNotDistinct = errors.New("review_seat_model_not_distinct")
 
+// ReviewSeatModelsCompared reports whether a claim of order runs the
+// distinct-model comparison: a seat of a numbered round on a task whose frozen
+// review.distinct_models is true.
+func ReviewSeatModelsCompared(task core.Task, order core.WorkOrder) bool {
+	return order.Stage == core.StageReview && order.ReviewRound > 0 && task.SetupContract.Review.DistinctModels
+}
+
 // ReviewSeatModelRefusal is the one comparison every backend runs inside its
 // claim transaction, directly after the self-review guard, over the task's
 // orders read in that transaction. Per-task claim serialization covers sibling
-// claims, so the comparison takes no lock of its own.
+// claims on PostgreSQL and the memory store, whose transactions see every
+// committed predecessor. A SingleStore lock row can release before a
+// predecessor's rows are visible, so that backend waits for the round's latest
+// claim before it reads the orders it passes here (component-persistence,
+// SingleStore visibility).
 //
 // It refuses a seat of a numbered round whose reported model is blank or
 // matches another seat of that round after trimming whitespace and ignoring
@@ -27,7 +38,7 @@ var ErrReviewSeatModelNotDistinct = errors.New("review_seat_model_not_distinct")
 // accepted verdict counts. Conveyor compares reported names only: it verifies
 // no name, chooses no model, and treats the literal "auto" like any other name.
 func ReviewSeatModelRefusal(task core.Task, order core.WorkOrder, model string, orders []core.WorkOrder, now time.Time) error {
-	if order.Stage != core.StageReview || order.ReviewRound <= 0 || !task.SetupContract.Review.DistinctModels {
+	if !ReviewSeatModelsCompared(task, order) {
 		return nil
 	}
 	seats := make([]core.WorkOrder, 0, len(orders))

@@ -88,7 +88,7 @@ func (f *unsupportedArtifactFixture) artifact(t *testing.T, owner, name, content
 }
 
 func unsupportedOmissionNote(artifact core.Artifact) string {
-	return fmt.Sprintf("Context artifact body omitted as unsupported model input: %s (%s, %d bytes, id %s) from task %s; this attachment kind is not supported model input; the body is unread.", artifact.Name, artifact.ContentType, artifact.SizeBytes, artifact.ID, artifact.TaskID)
+	return fmt.Sprintf("Context artifact body omitted as unsupported model input: %q (%q, %d bytes, id %s) from task %s; this attachment kind is not supported model input; the body is unread;", artifact.Name, artifact.ContentType, artifact.SizeBytes, artifact.ID, artifact.TaskID)
 }
 
 func attachmentByID(attachments []inprocess.Attachment, id string) (inprocess.Attachment, bool) {
@@ -283,7 +283,7 @@ func TestTriageUnsupportedOmissionNoteCountsTowardTextBudget(t *testing.T) {
 	if !strings.Contains(got.Prompt, note) {
 		t.Fatal("unsupported omission note missing after eviction")
 	}
-	if !strings.Contains(got.Prompt, fmt.Sprintf("Context artifact body omitted by triage byte budget: %s (%s, %d bytes, id %s)", text.Name, text.ContentType, len(evidence), text.ID)) {
+	if !strings.Contains(got.Prompt, fmt.Sprintf("Context artifact body omitted by triage byte budget: %q (%q, %d bytes, id %s)", text.Name, text.ContentType, len(evidence), text.ID)) {
 		t.Fatal("evicted supported body has no budget omission note")
 	}
 	if measured := measureTriageInput(got).TextBytes; measured > maxTriageInitialBytes {
