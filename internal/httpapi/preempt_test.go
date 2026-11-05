@@ -88,3 +88,40 @@ func TestWorkOrderPreemptHTTPRequiresOperatorReasonAndIdempotency(t *testing.T) 
 		}
 	}
 }
+
+// The route answers 409 for a queued review seat and leaves the seat queued
+// (req-review-gates-evidence AC-2.6).
+func TestWorkOrderPreemptHTTPRefusesQueuedReviewSeat(t *testing.T) {
+	ctx := store.WithWorkspace(store.WithActor(t.Context(), store.SystemActor()), "demo")
+	st := store.NewMemory()
+	task := core.Task{ID: "preempt-seat-task", Workspace: "demo", State: core.TaskRunning, NextStage: core.StageReview, CreatedAt: time.Now().UTC()}
+	job := core.Job{ID: "preempt-seat-task-review-1-seat-2", TaskID: task.ID, Stage: core.StageReview, State: core.JobPending}
+	if err := st.CreateTask(ctx, task); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.CreateJob(ctx, job); err != nil {
+		t.Fatal(err)
+	}
+	if err := storetest.For(st).CreateWorkOrder(ctx, core.WorkOrder{ID: job.ID, TaskID: task.ID, JobID: job.ID, Stage: core.StageReview, ReviewRound: 1, ReviewSeat: 2, State: core.WorkOrderQueued}); err != nil {
+		t.Fatal(err)
+	}
+	server := NewServer(st)
+	server.BearerToken, server.Workspace = "operator-token", "demo"
+	server.WorkOrders = &workorder.Service{Store: st}
+	request := httptest.NewRequest(http.MethodPost, "/v1/work-orders/"+job.ID+"/preempt?workspace_id=demo", strings.NewReader(`{"reason":"seat is not needed","request_id":"retire-seat-1"}`))
+	request.Header.Set("Authorization", "Bearer operator-token")
+	request.Header.Set("Content-Type", "application/json")
+	request.Header.Set("X-Conveyor-Actor", "operator-http")
+	response := httptest.NewRecorder()
+	server.Handler().ServeHTTP(response, request)
+	if response.Code != http.StatusConflict || !strings.Contains(response.Body.String(), "queued review seat") {
+		t.Fatalf("status=%d body=%s", response.Code, response.Body)
+	}
+	order, err := st.GetWorkOrder(ctx, job.ID)
+	if err != nil || order.State != core.WorkOrderQueued {
+		t.Fatalf("seat=%+v err=%v", order, err)
+	}
+	if retired, countErr := st.CountEvents(ctx, task.ID, "work_order.retired"); countErr != nil || retired != 0 {
+		t.Fatalf("work_order.retired events=%d err=%v", retired, countErr)
+	}
+}

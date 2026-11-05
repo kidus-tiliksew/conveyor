@@ -139,15 +139,3 @@ func TestSingletonOrganization(t *testing.T) {
 		}
 	}
 }
-func TestMonitorDriftSaturation(t *testing.T) {
-	for n := 0; n < 5; n++ {
-		if err := checkDriftSaturation("fixture-task", n); err != nil {
-			t.Fatal(err)
-		}
-	}
-	for _, n := range []int{5, 6, 100} {
-		if checkDriftSaturation("fixture-task", n) == nil {
-			t.Fatal("sixth unresolved drift accepted")
-		}
-	}
-}

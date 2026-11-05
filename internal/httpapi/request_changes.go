@@ -60,7 +60,7 @@ func (s *Server) requestTaskChanges(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if !found || latest.Stage != core.StageReview {
-		http.Error(w, "task is not at the merge gate", http.StatusConflict)
+		http.Error(w, store.NotAtMergeGateError(task).Error(), http.StatusConflict)
 		return
 	}
 	maxBounces := 1
@@ -83,7 +83,7 @@ func (s *Server) requestTaskChanges(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		status := http.StatusInternalServerError
 		var invalid *core.ErrInvalidTransition
-		if errors.As(err, &invalid) || strings.Contains(err.Error(), "not at the merge gate") {
+		if errors.As(err, &invalid) {
 			status = http.StatusConflict
 		}
 		http.Error(w, err.Error(), status)

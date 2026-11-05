@@ -191,7 +191,6 @@ func TestClientCloseTaskUsesAuthenticatedEndpoint(t *testing.T) {
 		if body["reason"] != "obsolete" {
 			t.Fatalf("body = %v", body)
 		}
-		w.WriteHeader(http.StatusAccepted)
 		_ = json.NewEncoder(w).Encode(core.Task{ID: "task-1", State: core.TaskClosed})
 	}))
 	defer srv.Close()

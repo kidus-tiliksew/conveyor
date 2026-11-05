@@ -263,7 +263,7 @@ the server body verbatim.
 |---|---|
 | `conveyor order recover <order-id>` | Post `{request_id, direction}` to `POST /v1/work-orders/{id}/recover`. Optional `--direction <text>`, `--request-id <id>`, and `--json`. |
 | `conveyor order redispatch <order-id>` | Resolve the order's task from `GET /v1/work-orders/{id}`, which serves an order in any state, then post to `POST /v1/tasks/{task_id}/redispatch`. On a 404 the command searches `GET /v1/work-orders` once, so a server without the exact read still resolves a live order. An order found by neither read exits `1` with `work order <id> not found`. Optional `--request-id <id>` and `--json`. |
-| `conveyor order retire <order-id> --reason <text>` | Read the order from `GET /v1/work-orders/{id}`, with the same list fallback on a 404, then post `{reason, request_id}` to `POST /v1/work-orders/{id}/preempt`, which retires a queued or stale order to `cancelled`. Prints `retired work order <id>: state cancelled (request <id>)`. Optional `--request-id <id>` and `--json`. |
+| `conveyor order retire <order-id> --reason <text>` | Read the order from `GET /v1/work-orders/{id}`, with the same list fallback on a 404, then post `{reason, request_id}` to `POST /v1/work-orders/{id}/preempt`, which retires a queued or stale order to `cancelled`, except a review seat, which the command and the route both refuse. Prints `retired work order <id>: state cancelled (request <id>)`. Optional `--request-id <id>` and `--json`. |
 
 Every order command generates a 32-hex request ID unless `--request-id` is
 given and sends it as body `request_id` and as `X-Request-Id` and
@@ -273,8 +273,12 @@ exits `1`.
 
 `order retire` sends nothing and exits `1` when `--reason` is blank, when the
 order is missing from the list (`work order <id> not found`), when it is
-`claimed` (stop a live attempt with operator preemption instead), or when it is
-in any state other than `queued` or `stale`. If the order is claimed between
+`claimed` (stop a live attempt with operator preemption instead), when it is
+in any state other than `queued` or `stale`, or when it is a review seat
+(`work order <id> is a review seat`). A round requires every seat it opened, so
+a retired seat would keep the round from settling; the preempt route answers 409
+for a queued or stale review seat, including when the command's read is out of
+date. If the order is claimed between
 the read and the post, the preempt route revokes the claim and requeues the
 order instead of retiring it. The command then prints the state the server
 returned and exits `1` with `work order <id> was not retired`. Retirement

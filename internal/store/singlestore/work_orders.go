@@ -1206,6 +1206,11 @@ func (s *Store) ClaimWorkOrderCommand(ctx context.Context, lease taskops.TaskLea
 			if err = s.reviewClaimGuardTx(ctx, tx, o, claim, hash); err != nil {
 				return err
 			}
+			if store.ReviewSeatModelsCompared(task, o) {
+				if siblings, err = s.reviewSeatSiblingsTx(ctx, tx, o); err != nil {
+					return err
+				}
+			}
 			if err = store.ReviewSeatModelRefusal(task, o, claim.Model, siblings, time.Now().UTC()); err != nil {
 				return err
 			}
@@ -1286,6 +1291,13 @@ func (s *Store) ClaimWorkOrderCommand(ctx context.Context, lease taskops.TaskLea
 		if err != nil {
 			return err
 		}
+		recordSeatClaim := store.ReviewSeatModelsCompared(task, o)
+		var replacedAt time.Time
+		if recordSeatClaim {
+			if replacedAt, err = lockReviewSeatRowTx(ctx, tx, documentWorkspace(ctx), o.ID); err != nil {
+				return err
+			}
+		}
 		if o.ExecutionStartedAt.IsZero() {
 			o.ExecutionStartedAt = now
 			if claim.ExecutionTimeout > 0 {
@@ -1345,6 +1357,11 @@ func (s *Store) ClaimWorkOrderCommand(ctx context.Context, lease taskops.TaskLea
 		}
 		if err = taskEvent(ctx, tx, core.Event{TaskID: o.TaskID, JobID: o.JobID, Kind: "work_order.claimed", Payload: store.WorkOrderEventPayload(o)}); err != nil {
 			return err
+		}
+		if recordSeatClaim {
+			if err = recordReviewSeatClaimTx(ctx, tx, o, replacedAt); err != nil {
+				return err
+			}
 		}
 		result = o
 		result.Claimable = result.ClaimableAt(now)
@@ -1745,6 +1762,9 @@ func (s *Store) PreemptWorkOrderCommand(ctx context.Context, lease taskops.TaskL
 		}
 		if !lease.ValidForCommand(o.TaskID, string(core.WorkOrderCmdPreempt)) {
 			return fmt.Errorf("work-order preempt requires a valid taskops lease")
+		}
+		if err := store.RefuseReviewSeatRetirement(o); err != nil {
+			return err
 		}
 		now := time.Now().UTC()
 		conflict := fmt.Errorf("%w: work order %s does not have an active claimed attempt", store.ErrWorkOrderPreemptConflict, o.ID)

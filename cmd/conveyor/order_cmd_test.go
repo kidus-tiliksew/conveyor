@@ -363,15 +363,15 @@ func serveRetire(t *testing.T, listed, preempt string) (*client, func() []orderR
 func TestOrderRetireQueuedAndStale(t *testing.T) {
 	for _, state := range []string{"queued", "stale"} {
 		t.Run(state, func(t *testing.T) {
-			preempt := `{"request_id":"r","work_order":{"id":"261011-aaaaaa-review-1-seat-1","task_id":"261011-aaaaaa","state":"cancelled"}}`
-			c, seen := serveRetire(t, `[{"id":"261011-other-spec-1","state":"claimed"},{"id":"261011-aaaaaa-review-1-seat-1","task_id":"261011-aaaaaa","state":"`+state+`"}]`, preempt)
+			preempt := `{"request_id":"r","work_order":{"id":"261011-aaaaaa-implement-2","task_id":"261011-aaaaaa","state":"cancelled"}}`
+			c, seen := serveRetire(t, `[{"id":"261011-other-spec-1","state":"claimed"},{"id":"261011-aaaaaa-implement-2","task_id":"261011-aaaaaa","stage":"implement","state":"`+state+`"}]`, preempt)
 			var out bytes.Buffer
-			if err := runOrderRetire(c, &out, "261011-aaaaaa-review-1-seat-1", "task merged before review", "", false); err != nil {
+			if err := runOrderRetire(c, &out, "261011-aaaaaa-implement-2", "task merged before review", "", false); err != nil {
 				t.Fatal(err)
 			}
 			requests := seen()
-			if len(requests) != 2 || requests[0].method != http.MethodGet || requests[0].path != "/v1/work-orders/261011-aaaaaa-review-1-seat-1" ||
-				requests[1].method != http.MethodPost || requests[1].path != "/v1/work-orders/261011-aaaaaa-review-1-seat-1/preempt" {
+			if len(requests) != 2 || requests[0].method != http.MethodGet || requests[0].path != "/v1/work-orders/261011-aaaaaa-implement-2" ||
+				requests[1].method != http.MethodPost || requests[1].path != "/v1/work-orders/261011-aaaaaa-implement-2/preempt" {
 				t.Fatalf("requests = %+v", requests)
 			}
 			id, _ := requests[1].body["request_id"].(string)
@@ -381,9 +381,29 @@ func TestOrderRetireQueuedAndStale(t *testing.T) {
 			if requests[1].body["reason"] != "task merged before review" || len(requests[1].body) != 2 {
 				t.Fatalf("preempt body = %+v", requests[1].body)
 			}
-			want := "retired work order 261011-aaaaaa-review-1-seat-1: state cancelled (request " + id + ")\n"
+			want := "retired work order 261011-aaaaaa-implement-2: state cancelled (request " + id + ")\n"
 			if out.String() != want {
 				t.Fatalf("output %q, want %q", out.String(), want)
+			}
+		})
+	}
+}
+
+// A review seat refuses before any POST: a round requires every seat it opened,
+// so retiring one would keep it from settling (req-review-gates-evidence AC-2.6).
+func TestOrderRetireRefusesReviewSeatBeforePosting(t *testing.T) {
+	for _, state := range []string{"queued", "stale"} {
+		t.Run(state, func(t *testing.T) {
+			const id = "261011-aaaaaa-review-1-seat-1"
+			c, seen := serveRetire(t, `[{"id":"`+id+`","task_id":"261011-aaaaaa","stage":"review","state":"`+state+`"}]`, `{}`)
+			err := runOrderRetire(c, io.Discard, id, "seat is not needed", "", false)
+			if err == nil || !strings.Contains(err.Error(), "is a review seat") {
+				t.Fatalf("err=%v", err)
+			}
+			for _, request := range seen() {
+				if request.method != http.MethodGet {
+					t.Fatalf("retire sent %s %s for a review seat", request.method, request.path)
+				}
 			}
 		})
 	}

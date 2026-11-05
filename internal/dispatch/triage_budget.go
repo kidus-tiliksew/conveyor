@@ -8,6 +8,7 @@ import (
 
 	"github.com/kidus-tiliksew/conveyor/internal/core"
 	"github.com/kidus-tiliksew/conveyor/internal/inprocess"
+	"github.com/kidus-tiliksew/conveyor/internal/lineagecontext"
 )
 
 // triageBudget separates text/history from raw attachment transport. Every file
@@ -171,12 +172,15 @@ func boundTriageInput(input inprocess.Input, artifacts []core.Artifact, taskID s
 }
 
 func omitTriageAttachment(input *inprocess.Input, attachment inprocess.Attachment, overage *triageBudgetError) {
-	supplied := fmt.Sprintf("Context artifact supplied as %s input: %s (%s, %d bytes, id %s)", attachment.Kind, attachment.Name, attachment.ContentType, len(attachment.Content), attachment.ID)
-	omitted := fmt.Sprintf("Context artifact body omitted by triage byte budget: %s (%s, %d bytes, id %s); %s", attachment.Name, attachment.ContentType, len(attachment.Content), attachment.ID, overage)
-	if strings.Contains(input.Prompt, supplied) {
-		input.Prompt = strings.Replace(input.Prompt, supplied, omitted, 1)
+	identity := artifactIdentity(attachment.Name, attachment.ContentType, len(attachment.Content), attachment.ID)
+	supplied := fmt.Sprintf("Context artifact supplied as %s input: %s", attachment.Kind, identity)
+	omitted := fmt.Sprintf("Context artifact body omitted by triage byte budget: %s; %s", identity, overage)
+	// The artifact notes follow the task body, so the last match is the real
+	// note even when the body quotes one. The note's untrusted label stays.
+	if index := strings.LastIndex(input.Prompt, supplied); index >= 0 {
+		input.Prompt = input.Prompt[:index] + omitted + input.Prompt[index+len(supplied):]
 	} else {
-		input.Prompt += "\n" + omitted + "\n"
+		input.Prompt += "\n" + omitted + "; its name and body are " + lineagecontext.UntrustedStatement("its lineage source") + ".\n"
 	}
 }
 

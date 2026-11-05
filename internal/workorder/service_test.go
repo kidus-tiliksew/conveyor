@@ -16,11 +16,13 @@ import (
 	"github.com/kidus-tiliksew/conveyor/internal/core"
 	"github.com/kidus-tiliksew/conveyor/internal/dispatch"
 	"github.com/kidus-tiliksew/conveyor/internal/inprocess"
+	"github.com/kidus-tiliksew/conveyor/internal/lineagecontext"
 	"github.com/kidus-tiliksew/conveyor/internal/pack"
 	"github.com/kidus-tiliksew/conveyor/internal/pipeline"
 	"github.com/kidus-tiliksew/conveyor/internal/store"
 	"github.com/kidus-tiliksew/conveyor/internal/store/storetest"
 	"github.com/kidus-tiliksew/conveyor/internal/taskops"
+	"github.com/kidus-tiliksew/conveyor/internal/testsupport/untrustedtest"
 	githubtrigger "github.com/kidus-tiliksew/conveyor/internal/trigger/github"
 )
 
@@ -995,6 +997,51 @@ func TestReviewWorkOrderContextUsesMCPCompletionContract(t *testing.T) {
 	}
 	if strings.Contains(result.RolePrompt, "```conveyor:review") {
 		t.Fatalf("MCP review context includes the in-process output contract: %s", result.RolePrompt)
+	}
+}
+
+// Without a plan or served requirements the MCP role prompt carries the task
+// body as the statement of done, inside its label (DoneCriteriaReference;
+// req-security-boundaries REQ-4).
+func TestReviewWorkOrderRolePromptLabelsTheStatementOfDone(t *testing.T) {
+	label := lineagecontext.UntrustedLabel("Task description", "github:acme/app#7")
+	bundle, err := pack.Load("../../pack")
+	if err != nil {
+		t.Fatal(err)
+	}
+	index := 0
+	for name, body := range untrustedtest.HostileBodies(label) {
+		index++
+		t.Run(name, func(t *testing.T) {
+			ctx := store.WithActor(context.Background(), store.SystemActor())
+			st := store.NewMemory()
+			id := fmt.Sprintf("mcp-review-label-%d", index)
+			task := core.Task{ID: id, Workspace: "test", Body: body, Source: "github:acme/app#7", State: core.TaskRunning, NextStage: core.StageReview, CreatedAt: time.Now()}
+			if err := st.CreateTask(ctx, task); err != nil {
+				t.Fatal(err)
+			}
+			job := core.Job{ID: id + "-review-1", TaskID: task.ID, Stage: core.StageReview, State: core.JobPending}
+			if err := st.CreateJob(ctx, job); err != nil {
+				t.Fatal(err)
+			}
+			emptyGovernance := &core.GovernanceSnapshot{Designs: []core.GovernanceDesignContext{}, Decisions: []core.Decision{}}
+			if err := storetest.For(st).CreateWorkOrder(ctx, core.WorkOrder{ID: job.ID, TaskID: task.ID, JobID: job.ID, Stage: core.StageReview, ServedRequirementSnapshot: []core.ServedRequirementContext{}, GovernanceSnapshot: emptyGovernance}); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := storetest.For(st).ClaimWorkOrder(ctx, job.ID, core.WorkOrderClaim{SessionID: "review-session", ClientToken: "review-token", Lease: time.Minute}); err != nil {
+				t.Fatal(err)
+			}
+			service := &Service{Store: st, Pack: bundle, ConfigProvider: func(context.Context) (*config.Config, error) { return &config.Config{}, nil }}
+			result, err := service.Get(ctx, job.ID, "review-session")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !strings.Contains(result.RolePrompt, "# Statement of done") {
+				t.Fatalf("role prompt has no statement of done: %s", result.RolePrompt)
+			}
+			untrustedtest.RequireBlock(t, result.RolePrompt, label, body)
+			untrustedtest.RequireConfined(t, result.RolePrompt, untrustedtest.Injection)
+		})
 	}
 }
 
