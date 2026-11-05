@@ -869,11 +869,13 @@ func (s *Server) closeTask(w http.ResponseWriter, r *http.Request) {
 		_, err = taskops.New(s.Store).Cancel(r.Context(), intervention)
 	}
 	if err != nil {
-		status := http.StatusInternalServerError
-		if errors.Is(err, store.ErrTaskTerminal) {
-			status = http.StatusConflict
+		var invalid *core.ErrInvalidTransition
+		if errors.Is(err, store.ErrTaskTerminal) || errors.As(err, &invalid) {
+			http.Error(w, err.Error(), http.StatusConflict)
+			return
 		}
-		http.Error(w, err.Error(), status)
+		log.Printf("handle API request: %v", err)
+		http.Error(w, "internal server error", http.StatusInternalServerError)
 		return
 	}
 	updated, err := s.Store.GetTask(r.Context(), id)

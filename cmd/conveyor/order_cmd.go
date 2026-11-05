@@ -194,6 +194,7 @@ type resolvedWorkOrder struct {
 	ID     string `json:"id"`
 	TaskID string `json:"task_id"`
 	State  string `json:"state"`
+	Stage  string `json:"stage"`
 }
 
 // resolveWorkOrder reads one order through GET /v1/work-orders/{id}, which
@@ -269,6 +270,10 @@ func runOrderRetire(c *client, w io.Writer, orderID, reason, requestID string, a
 		return fmt.Errorf("work order %s is claimed; retire refuses a live claim, stop its attempt with operator preemption instead", orderID)
 	case state != "queued" && state != "stale":
 		return fmt.Errorf("work order %s is %s; only queued or stale orders can be retired", orderID, state)
+	case order.Stage == "review":
+		// A retired seat would stay in its round's required count, so the
+		// round could never settle (req-review-gates-evidence AC-2.6).
+		return fmt.Errorf("work order %s is a review seat; retire refuses to remove a seat from its round", orderID)
 	}
 	requestID, err = orderRequestID(requestID)
 	if err != nil {

@@ -2179,6 +2179,92 @@ func TestPlanRevisionReviewDecisionsUseFixedAuditedContract(t *testing.T) {
 	}
 }
 
+func postPlanRevisionClose(server *Server, taskID string) *httptest.ResponseRecorder {
+	request := httptest.NewRequest(http.MethodPost, "/v1/tasks/"+taskID+"/close", bytes.NewBufferString(`{"reason":"obsolete"}`))
+	request.Header.Set("Authorization", "Bearer token")
+	request.Header.Set("X-Conveyor-Actor", "operator")
+	response := httptest.NewRecorder()
+	server.Handler().ServeHTTP(response, request)
+	return response
+}
+
+// requirePlanRevisionCancelled proves cancel left the gate through the ordinary
+// terminal sweep: the task closes, the contested queued order is cancelled, and
+// the audit is the one any cancel writes (req-task-lifecycle-and-queue REQ-8,
+// AC-8.1).
+func requirePlanRevisionCancelled(t *testing.T, ctx context.Context, st store.Store, response *httptest.ResponseRecorder, taskID, orderID string) {
+	t.Helper()
+	// The close route answers 202 with the task on every success.
+	if response.Code != http.StatusAccepted || !strings.Contains(response.Body.String(), `"state":"closed"`) {
+		t.Fatalf("close status=%d body=%s", response.Code, response.Body.String())
+	}
+	task, err := st.GetTask(ctx, taskID)
+	if err != nil || task.State != core.TaskClosed {
+		t.Fatalf("task=%+v err=%v", task, err)
+	}
+	order, err := st.GetWorkOrder(ctx, orderID)
+	if err != nil || order.State != core.WorkOrderCancelled {
+		t.Fatalf("contested order=%+v err=%v", order, err)
+	}
+	interventions, err := st.ListInterventions(ctx, taskID)
+	if err != nil || len(interventions) != 1 || interventions[0].Action != core.InterventionCancel || interventions[0].ReasonCode != "obsolete" {
+		t.Fatalf("interventions=%+v err=%v", interventions, err)
+	}
+	for _, kind := range []string{"intervention.cancel", "task.cancelled", "work_order.cancelled"} {
+		if count, countErr := st.CountEvents(ctx, taskID, kind); countErr != nil || count != 1 {
+			t.Fatalf("%s events=%d err=%v", kind, count, countErr)
+		}
+	}
+}
+
+func TestCloseAtPlanRevisionGateCancelsContestedOrder(t *testing.T) {
+	ctx, st, server, taskID, orderID := newPlanRevisionReviewServer(t)
+	order, err := st.GetWorkOrder(ctx, orderID)
+	if err != nil || order.State != core.WorkOrderQueued {
+		t.Fatalf("contested order=%+v err=%v", order, err)
+	}
+	if _, pending, gateErr := dispatch.PendingPlanRevisionGate(ctx, st, taskID); gateErr != nil || !pending {
+		t.Fatalf("plan-revision gate pending=%t err=%v", pending, gateErr)
+	}
+	requirePlanRevisionCancelled(t, ctx, st, postPlanRevisionClose(server, taskID), taskID, orderID)
+}
+
+// An unreadable gate refuses recover, redispatch, and claims, and it does not
+// refuse cancel, which is how an operator leaves it.
+func TestCloseAtUnreadablePlanRevisionGateCancelsContestedOrder(t *testing.T) {
+	ctx, st, server, taskID, orderID := newPlanRevisionReviewServer(t)
+	if err := st.AppendEvent(ctx, core.Event{TaskID: taskID, Kind: "task.state_changed", At: time.Now().UTC().Add(time.Minute), Payload: []byte(`"not an object"`)}); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, gateErr := dispatch.PendingPlanRevisionGate(ctx, st, taskID); !errors.Is(gateErr, store.ErrPlanRevisionGateUnreadable) {
+		t.Fatalf("gate err=%v, want ErrPlanRevisionGateUnreadable", gateErr)
+	}
+	requirePlanRevisionCancelled(t, ctx, st, postPlanRevisionClose(server, taskID), taskID, orderID)
+}
+
+func TestCloseMapsInvalidTransitionToConflictAndHidesOtherFailures(t *testing.T) {
+	for _, test := range []struct {
+		name       string
+		failure    error
+		wantStatus int
+		wantBody   string
+	}{
+		{name: "invalid transition", failure: &core.ErrInvalidTransition{Space: core.TaskLifecycle, From: "running", Command: string(core.TaskCancel)}, wantStatus: http.StatusConflict, wantBody: "invalid"},
+		{name: "wrapped invalid transition", failure: fmt.Errorf("cancel: %w", &core.ErrInvalidTransition{Space: core.TaskLifecycle, From: "running", Command: string(core.TaskCancel)}), wantStatus: http.StatusConflict, wantBody: "invalid"},
+		{name: "terminal", failure: store.ErrTaskTerminal, wantStatus: http.StatusConflict, wantBody: store.ErrTaskTerminal.Error()},
+		{name: "store failure", failure: errors.New("connection detail"), wantStatus: http.StatusInternalServerError, wantBody: "internal server error"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			_, _, server, taskID, _ := newPlanRevisionReviewServer(t)
+			server.OnIntervention = func(context.Context, core.Task, core.Job, core.Intervention) error { return test.failure }
+			response := postPlanRevisionClose(server, taskID)
+			if response.Code != test.wantStatus || !strings.Contains(response.Body.String(), test.wantBody) || strings.Contains(response.Body.String(), "connection detail") {
+				t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
+			}
+		})
+	}
+}
+
 func TestPlanRevisionApprovalIsDurableBeforeImmediatePlanClaim(t *testing.T) {
 	_, st, server, taskID, _ := newPlanRevisionReviewServer(t)
 	cfg := &config.Config{Workspace: "demo", WorkOrderQueueTimeout: time.Hour, Routing: config.Routing{Stages: map[string]config.StageRoute{

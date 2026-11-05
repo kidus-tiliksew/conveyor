@@ -358,9 +358,9 @@ func (s *Store) RequestPlanRevisionCommand(ctx context.Context, taskLease taskop
 	if _, err = tx.Exec(ctx, `UPDATE jobs SET state='pending',started_at=NULL,ended_at=NULL,updated_at=$1 WHERE id=$2`, now, order.JobID); err != nil {
 		return store.PlanRevisionRequestResult{}, err
 	}
-	updatedTask, err := q.UpdateTaskState(ctx, db.UpdateTaskStateParams{ID: current.TaskID, WorkspaceID: workspace(ctx), State: string(nextTask), GateKind: string(core.GateKindFor(nextTask, core.TaskGatePlanRevision))})
+	updatedTask, err := q.UpdateTaskState(ctx, db.UpdateTaskStateParams{ID: current.TaskID, WorkspaceID: workspace(ctx), ExpectedState: taskRow.State, State: string(nextTask), GateKind: string(core.GateKindFor(nextTask, core.TaskGatePlanRevision))})
 	if err != nil {
-		return store.PlanRevisionRequestResult{}, err
+		return store.PlanRevisionRequestResult{}, taskStateGuardError(ctx, q, current.TaskID, string(core.TaskGatePlanRevision), err)
 	}
 	eventCtx := ctx
 	if err = insertEvent(eventCtx, q, core.Event{TaskID: current.TaskID, JobID: current.JobID, Kind: "work_order.plan_revision_requested", Payload: core.JSONPayload(map[string]any{"work_order_id": current.ID, "attempt_id": attemptID, "session_id": claim.SessionID, "rationale": rationale, "plan_version": planVersion}), At: now}); err != nil {
