@@ -861,6 +861,42 @@ func (s *Store) ListJobs(ctx context.Context, taskID string) ([]core.Job, error)
 	return result, nil
 }
 
+// ListJobPage reads one page of ListJobs with its task-wide count. The count
+// runs first, so a page past the end still states it.
+func (s *Store) ListJobPage(ctx context.Context, taskID string, page store.PageQuery) (store.JobPage, error) {
+	ctx = dbmetrics.WithReadLabel(ctx, "ListJobPage")
+	if err := page.Validate(); err != nil {
+		return store.JobPage{}, err
+	}
+	var total int
+	if err := s.boundary.QueryRow(ctx, `
+		SELECT COUNT(*) FROM jobs j
+		JOIN tasks t ON t.id = j.task_id
+		WHERE j.task_id = $1 AND t.workspace_id = $2`, taskID, workspace(ctx)).Scan(&total); err != nil {
+		return store.JobPage{}, err
+	}
+	rows, err := s.boundary.Query(ctx, `
+		SELECT j.id, j.task_id, j.stage, j.harness, j.model_tier, j.runner, j.pack_version, j.confinement_tier, j.cost_usd, j.tokens_in, j.tokens_out, j.state, j.started_at, j.ended_at, j.updated_at, j.auth_mode FROM jobs j
+		JOIN tasks t ON t.id = j.task_id
+		LEFT JOIN work_orders wo ON wo.job_id = j.id
+		WHERE j.task_id = $1 AND t.workspace_id = $2
+		ORDER BY COALESCE(j.started_at, wo.queue_entered_at), j.id
+		LIMIT $3 OFFSET $4`, taskID, workspace(ctx), page.Limit, page.Offset)
+	if err != nil {
+		return store.JobPage{}, err
+	}
+	defer rows.Close()
+	persisted, err := pgx.CollectRows(rows, pgx.RowToStructByName[db.Job])
+	if err != nil {
+		return store.JobPage{}, err
+	}
+	jobs := make([]core.Job, len(persisted))
+	for i := range persisted {
+		jobs[i] = jobFromDB(persisted[i])
+	}
+	return store.JobPage{Jobs: jobs, Total: total}, nil
+}
+
 func (s *Store) GetLatestJob(ctx context.Context, taskID string) (core.Job, bool, error) {
 	ctx = dbmetrics.WithReadLabel(ctx, "GetLatestJob")
 	row, err := s.queries.GetLatestJob(ctx, db.GetLatestJobParams{TaskID: taskID, WorkspaceID: workspace(ctx)})

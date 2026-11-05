@@ -3847,22 +3847,22 @@ func TestTaskOperationsPaginationFiltersAndBatchesProjectionReads(t *testing.T) 
 		t.Fatalf("invalid filter status=%d body=%s", bad.Code, bad.Body.String())
 	}
 
-	// Pagination is additive: a caller that does not opt in still receives the
-	// whole workspace as a bare array, with no pagination metadata attached.
-	compat := httptest.NewRecorder()
-	server.Handler().ServeHTTP(compat, authenticatedMemoryRead(server, httptest.NewRequest(http.MethodGet, "/v1/task-operations?workspace_id=demo", nil)))
-	if compat.Code != http.StatusOK {
-		t.Fatalf("compatibility status=%d body=%s", compat.Code, compat.Body.String())
+	// A caller that names no limit reads the default page, with all three
+	// paging headers, instead of the whole workspace (DEC-105(4)).
+	defaulted := httptest.NewRecorder()
+	server.Handler().ServeHTTP(defaulted, authenticatedMemoryRead(server, httptest.NewRequest(http.MethodGet, "/v1/task-operations?workspace_id=demo", nil)))
+	if defaulted.Code != http.StatusOK {
+		t.Fatalf("default page status=%d body=%s", defaulted.Code, defaulted.Body.String())
 	}
-	if compat.Header().Get("X-Conveyor-Total") != "" || compat.Header().Get("X-Conveyor-Limit") != "" || compat.Header().Get("X-Conveyor-Offset") != "" {
-		t.Fatalf("unpaginated response carried pagination headers: %+v", compat.Header())
+	if defaulted.Header().Get("X-Conveyor-Total") != "3" || defaulted.Header().Get("X-Conveyor-Limit") != strconv.Itoa(defaultTaskListLimit) || defaulted.Header().Get("X-Conveyor-Offset") != "0" {
+		t.Fatalf("default page headers = %+v", defaulted.Header())
 	}
 	var all taskOperationsResponse
-	if err := json.Unmarshal(compat.Body.Bytes(), &all); err != nil {
+	if err := json.Unmarshal(defaulted.Body.Bytes(), &all); err != nil {
 		t.Fatal(err)
 	}
 	if len(all) != 3 || all[0].Task.ID != "third" || all[2].Task.ID != "first" {
-		t.Fatalf("unpaginated rows = %+v", all)
+		t.Fatalf("default page rows = %+v", all)
 	}
 
 	// offset without limit is a caller error rather than a silent full read.
@@ -4520,10 +4520,12 @@ func TestUpdatedTaskFilterValidationAndPagination(t *testing.T) {
 		}
 	}
 
-	// Attention parses the same family; an accepted Updated bound is never
-	// refused as a retired spelling.
-	if accepted := get(t, "/v1/attention/tasks?workspace_id=demo&updated_from=2026-03-15T00:00:00Z&updated_to=2026-07-01T00:00:00Z"); accepted.Code != http.StatusOK {
-		t.Fatalf("attention updated range status=%d body=%s", accepted.Code, accepted.Body.String())
+	// Attention reads no filter, so it refuses an otherwise valid Updated bound
+	// instead of ignoring it, and names the parameter. The refusal is not the
+	// retired-spelling refusal (component-next-action invariant 24).
+	refusedFilter := get(t, "/v1/attention/tasks?workspace_id=demo&updated_from=2026-03-15T00:00:00Z&updated_to=2026-07-01T00:00:00Z")
+	if refusedFilter.Code != http.StatusBadRequest || !strings.Contains(refusedFilter.Body.String(), "updated_from") || strings.Contains(refusedFilter.Body.String(), "retired") {
+		t.Fatalf("attention updated range status=%d body=%s", refusedFilter.Code, refusedFilter.Body.String())
 	}
 	for _, rejected := range []struct {
 		name  string

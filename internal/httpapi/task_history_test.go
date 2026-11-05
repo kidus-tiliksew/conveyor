@@ -299,10 +299,29 @@ func TestTaskHistoryBoundedViewAndTraversalOverReconciliationFixture(t *testing.
 		t.Fatal("complete view gained event_page")
 	}
 
-	eventsResponse := h.get(historyTokenA, "/v1/tasks/incident-task/events")
+	// GET /events reads one page, and paging through it reaches the same ledger
+	// the complete view states (DEC-105(4)).
+	defaultPage := h.get(historyTokenA, "/v1/tasks/incident-task/events")
+	var firstPage []core.Event
+	if defaultPage.Code != http.StatusOK || json.Unmarshal(defaultPage.Body.Bytes(), &firstPage) != nil || len(firstPage) != min(defaultHistoryPageLimit, len(events)) {
+		t.Fatalf("/events default page: %d events=%d", defaultPage.Code, len(firstPage))
+	}
+	if defaultPage.Header().Get("X-Conveyor-Total") != strconv.Itoa(len(events)) || defaultPage.Header().Get("X-Conveyor-Limit") != strconv.Itoa(defaultHistoryPageLimit) {
+		t.Fatalf("/events default page headers = %+v", defaultPage.Header())
+	}
 	var listed []core.Event
-	if eventsResponse.Code != http.StatusOK || json.Unmarshal(eventsResponse.Body.Bytes(), &listed) != nil || len(listed) != len(events) || !bytes.Contains(eventsResponse.Body.Bytes(), []byte(`"id":20219,`)) {
-		t.Fatalf("/events: %d events=%d", eventsResponse.Code, len(listed))
+	sawEvent := false
+	for offset := 0; offset < len(events); offset += store.MaxTaskOperationsLimit {
+		eventsResponse := h.get(historyTokenA, fmt.Sprintf("/v1/tasks/incident-task/events?limit=%d&offset=%d", store.MaxTaskOperationsLimit, offset))
+		var page []core.Event
+		if eventsResponse.Code != http.StatusOK || json.Unmarshal(eventsResponse.Body.Bytes(), &page) != nil {
+			t.Fatalf("/events offset %d: %d", offset, eventsResponse.Code)
+		}
+		listed = append(listed, page...)
+		sawEvent = sawEvent || bytes.Contains(eventsResponse.Body.Bytes(), []byte(`"id":20219,`))
+	}
+	if len(listed) != len(events) || !sawEvent {
+		t.Fatalf("/events pages: events=%d of %d, saw event 20219=%v", len(listed), len(events), sawEvent)
 	}
 
 	detail, bounded := h.bounded("incident-task")

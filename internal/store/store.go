@@ -185,6 +185,9 @@ type TaskStore interface {
 	CreateJob(ctx context.Context, j core.Job) error
 	UpdateJob(ctx context.Context, j core.Job) error
 	ListJobs(ctx context.Context, taskID string) ([]core.Job, error)
+	// ListJobPage returns one page of ListJobs and the task's job count. A
+	// task outside the request's workspace reads as a task without jobs.
+	ListJobPage(ctx context.Context, taskID string, page PageQuery) (JobPage, error)
 	GetLatestJob(ctx context.Context, taskID string) (core.Job, bool, error)
 	// WithTaskSideEffectLock serializes one workspace-scoped external side effect across
 	// concurrent control-plane instances while its callback rechecks durable
@@ -493,6 +496,9 @@ type ActivityStore interface {
 	AppendEvent(ctx context.Context, event core.Event) error
 	// ListEvents returns the per-task ledger ordered by event time, then ID.
 	ListEvents(ctx context.Context, taskID string) ([]core.Event, error)
+	// ListEventPage returns one page of ListEvents and the task's event count.
+	// A task outside the request's workspace reads as a task without events.
+	ListEventPage(ctx context.Context, taskID string, page PageQuery) (EventPage, error)
 	// ListCompactEvents returns the ListEvents rows and order with the
 	// governance and served-requirement snapshot bodies left out of every
 	// work_order.* object payload before the rows leave the database. It is
@@ -502,6 +508,9 @@ type ActivityStore interface {
 	// ListFactoryActs returns the workspace factory log, newest first, after the
 	// Go filter. The query may only narrow candidates.
 	ListFactoryActs(ctx context.Context, since time.Time, limit int) ([]nextaction.Act, error)
+	// ListRecoveryActPage returns one page of the workspace's system recovery
+	// acts, newest first by (at, id), and the count the query selects.
+	ListRecoveryActPage(ctx context.Context, query RecoveryActQuery) (RecoveryActPage, error)
 	// ListEventsAfter treats a nonzero afterID as an anchor event owned by the
 	// requested task and workspace and returns the events strictly after its
 	// (at, id) tuple in ascending (at, id) order. Zero starts at the beginning.

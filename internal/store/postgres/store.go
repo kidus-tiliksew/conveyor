@@ -574,6 +574,82 @@ func (s *Store) ListEvents(ctx context.Context, taskID string) ([]core.Event, er
 	return result, nil
 }
 
+// ListEventPage reads one page of ListEvents with its task-wide count. The
+// count runs first, so a page past the end still states it.
+func (s *Store) ListEventPage(ctx context.Context, taskID string, page store.PageQuery) (store.EventPage, error) {
+	ctx = dbmetrics.WithReadLabel(ctx, "ListEventPage")
+	if err := page.Validate(); err != nil {
+		return store.EventPage{}, err
+	}
+	var total int
+	if err := s.boundary.QueryRow(ctx, `
+		SELECT COUNT(*) FROM events e
+		JOIN tasks t ON t.id = e.task_id
+		WHERE e.task_id = $1 AND t.workspace_id = $2`, taskID, workspace(ctx)).Scan(&total); err != nil {
+		return store.EventPage{}, err
+	}
+	rows, err := s.boundary.Query(ctx, `
+		SELECT e.id, e.task_id, e.job_id, e.kind, e.actor_id, e.actor_role, e.payload_json, e.at, e.workspace_id FROM events e
+		JOIN tasks t ON t.id = e.task_id
+		WHERE e.task_id = $1 AND t.workspace_id = $2
+		ORDER BY e.at, e.id
+		LIMIT $3 OFFSET $4`, taskID, workspace(ctx), page.Limit, page.Offset)
+	if err != nil {
+		return store.EventPage{}, err
+	}
+	defer rows.Close()
+	persisted, err := pgx.CollectRows(rows, pgx.RowToStructByName[db.Event])
+	if err != nil {
+		return store.EventPage{}, err
+	}
+	events := make([]core.Event, len(persisted))
+	for i := range persisted {
+		events[i] = eventFromDB(persisted[i])
+	}
+	return store.EventPage{Events: events, Total: total}, nil
+}
+
+// ListRecoveryActPage reads one page of the workspace's system recovery acts
+// with the count the query selects (component-next-action invariant 21).
+func (s *Store) ListRecoveryActPage(ctx context.Context, query store.RecoveryActQuery) (store.RecoveryActPage, error) {
+	ctx = dbmetrics.WithReadLabel(ctx, "ListRecoveryActPage")
+	if err := query.Page.Validate(); err != nil {
+		return store.RecoveryActPage{}, err
+	}
+	const selected = `
+		FROM events e
+		JOIN tasks t ON t.id = e.task_id AND t.workspace_id = e.workspace_id
+		WHERE e.workspace_id = $1 AND e.at >= $2 AND e.actor_role = $3 AND e.kind = ANY($4::text[])`
+	kinds := store.RecoveryActEventKinds()
+	var total int
+	if err := s.boundary.QueryRow(ctx, `SELECT COUNT(*)`+selected, workspace(ctx), query.Since, string(core.ActorSystem), kinds).Scan(&total); err != nil {
+		return store.RecoveryActPage{}, err
+	}
+	rows, err := s.boundary.Query(ctx, `SELECT e.id, e.task_id, e.kind, e.at`+selected+`
+		ORDER BY e.at DESC, e.id DESC
+		LIMIT $5 OFFSET $6`, workspace(ctx), query.Since, string(core.ActorSystem), kinds, query.Page.Limit, query.Page.Offset)
+	if err != nil {
+		return store.RecoveryActPage{}, err
+	}
+	defer rows.Close()
+	acts := []nextaction.Act{}
+	for rows.Next() {
+		var (
+			id           int64
+			taskID, kind string
+			at           time.Time
+		)
+		if err = rows.Scan(&id, &taskID, &kind, &at); err != nil {
+			return store.RecoveryActPage{}, err
+		}
+		acts = append(acts, store.RecoveryActFromEvent(id, taskID, kind, at.UTC()))
+	}
+	if err = rows.Err(); err != nil {
+		return store.RecoveryActPage{}, err
+	}
+	return store.RecoveryActPage{Acts: acts, Total: total}, nil
+}
+
 func (s *Store) ListFactoryActs(ctx context.Context, since time.Time, limit int) ([]nextaction.Act, error) {
 	ctx = dbmetrics.WithReadLabel(ctx, "ListFactoryActs")
 	if limit <= 0 || limit > 100 {
