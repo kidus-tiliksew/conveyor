@@ -23,6 +23,7 @@ func runAutomaticRecoveryAuthority(t *testing.T, x Fixture) {
 	t.Run("OperatorRace", f.operatorRace)
 	t.Run("StaysReleased", f.staysReleased)
 	t.Run("ReleasedWithoutAnyProposal", f.releasedWithoutAnyProposal)
+	t.Run("NewestReleaseAndPinsByPosition", f.newestReleaseAndPinsByPosition)
 }
 
 type authorityFixture struct {
@@ -381,6 +382,49 @@ func (f authorityFixture) releasedWithoutAnyProposal(t *testing.T) {
 			f.requireAuthorityCount(t, task.ID, 1)
 		})
 	}
+}
+
+// newestReleaseAndPinsByPosition pins the recovery's two event reads to
+// (at,id): the release it names and the design pin it advances are the newest
+// by position, whatever IDs the later-committed events hold
+// (component-persistence; component-work-orders).
+func (f authorityFixture) newestReleaseAndPinsByPosition(t *testing.T) {
+	st, ctx := f.x.Backend, f.x.Context
+	design := f.document(t, "system_design")
+	task, orderID := f.task(t, core.StageImplement)
+	released := f.release(t, orderID, authorityCheckpoint(cite(design, 1, "Recovery")))
+	version := f.propose(t, design, "session", "")
+	at := seedTime()
+	release := func(rank int64, at time.Time) core.Event {
+		return core.Event{ID: rank, TaskID: task.ID, JobID: orderID, Kind: "work_order.released", At: at, Payload: core.JSONPayload(map[string]any{"attempt_id": released.LastAttemptID})}
+	}
+	attachment := func(rank int64, kind string, at time.Time) core.Event {
+		return core.Event{ID: rank, TaskID: task.ID, Kind: kind, At: at, Payload: core.JSONPayload(map[string]any{"id": design.id, "version": 1})}
+	}
+	seeded := f.x.SeedEvents(t, ctx, 0, []core.Event{
+		release(20, at),
+		release(10, at.Add(time.Second)),
+		attachment(40, store.TaskContextDesignRemoved, at),
+		attachment(30, store.TaskContextDesignAdded, at.Add(time.Second)),
+	})
+	f.confirm(t, design, version)
+	f.tick(t)
+	authority, _, _ := f.recoveries(t, task.ID)
+	if len(authority) != 1 || authority[0].payload.ReleaseEventID != seeded[1].ID {
+		t.Fatalf("recoveries=%+v, want one naming release event %d by (at,id)", authority, seeded[1].ID)
+	}
+	events, err := st.ListEvents(ctx, task.ID)
+	requireOK(t, err)
+	for _, event := range events {
+		var pin struct {
+			ID      string `json:"id"`
+			Version int    `json:"version"`
+		}
+		if event.Kind == store.TaskContextDesignAdded && json.Unmarshal(event.Payload, &pin) == nil && pin.ID == design.id && pin.Version == version {
+			return
+		}
+	}
+	t.Fatalf("recovery did not advance the pin that is active by (at,id): %v", eventIDs(events))
 }
 
 func (f authorityFixture) requireAuthorityCount(t *testing.T, taskID string, want int) {

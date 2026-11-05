@@ -35,6 +35,10 @@ func runEventRecency(t *testing.T, x Fixture) {
 	t.Run("causal merge windows compare (at,id) tuples", func(t *testing.T) { runCausalMergeRecency(t, x) })
 	t.Run("checkpoint candidates fold requirement context chronologically", func(t *testing.T) { runCheckpointCandidateRecency(t, x) })
 	t.Run("recovery reads the newest transient failure by (at,id)", func(t *testing.T) { runRecoveryTransientRecency(t, x) })
+	t.Run("start-over folds task context by (at,id)", func(t *testing.T) { runStartOverFoldRecency(t, x) })
+	t.Run("recovery refusal reads the newest state change by (at,id)", func(t *testing.T) { runPlanRevisionRefusalRecency(t, x) })
+	t.Run("confirmation activates pending context by (at,id)", func(t *testing.T) { runPendingContextActivationRecency(t, x) })
+	t.Run("ledger lists and verdict status order by (at,id)", func(t *testing.T) { runEventListPositionOrder(t, x) })
 	t.Run("CompactEvents: compact reads leave historical snapshot bodies in the database", func(t *testing.T) { runCompactEventReads(t, x) })
 }
 
@@ -662,4 +666,182 @@ func runRecoveryTransientRecency(t *testing.T, x Fixture) {
 		return
 	}
 	t.Fatal("recovery event missing")
+}
+
+// runStartOverFoldRecency pins start-over's context folds to event position: a
+// later-committed attachment event with a lower ID decides what the successor
+// inherits, and a replay reads the first recorded drop by (at,id)
+// (component-persistence).
+func runStartOverFoldRecency(t *testing.T, x Fixture) {
+	st, ctx := x.Backend, store.WithActor(x.Context, store.Actor{ID: "operator-recency", Role: core.ActorHuman})
+	removed, kept := recencyRequirement(t, x, true), recencyRequirement(t, x, true)
+	at := seedTime()
+	attachment := func(taskID string, rank int64, kind, id string, at time.Time) core.Event {
+		return core.Event{ID: rank, TaskID: taskID, Kind: kind, At: at, Payload: core.JSONPayload(store.RequirementAttachmentPayload(id, 1))}
+	}
+	task := newAggregateTask(t, x)
+	seeded := x.SeedEvents(t, ctx, 0, []core.Event{
+		attachment(task.ID, 20, store.TaskContextRequirementAdded, removed, at),
+		attachment(task.ID, 10, store.TaskContextRequirementRemoved, removed, at.Add(time.Second)),
+		attachment(task.ID, 40, store.TaskContextRequirementRemoved, kept, at),
+		attachment(task.ID, 30, store.TaskContextRequirementAdded, kept, at.Add(time.Second)),
+	})
+	if seeded[1].ID >= seeded[0].ID || seeded[3].ID >= seeded[2].ID {
+		t.Fatalf("fixture did not produce decreasing IDs: %+v", seeded)
+	}
+	result, err := taskops.New(st).StartOver(ctx, core.TaskStartOverRequest{TaskID: task.ID, RequestID: "fold-recency", Reason: "retry"})
+	requireOK(t, err)
+	inherited, err := store.TaskContextForTask(ctx, st, result.Successor.ID)
+	requireOK(t, err)
+	if len(inherited.Requirements) != 1 || inherited.Requirements[0].ID != kept {
+		t.Fatalf("successor inherited %+v, want only %s by (at,id)", inherited.Requirements, kept)
+	}
+
+	plain := newAggregateTask(t, x)
+	first, err := taskops.New(st).StartOver(ctx, core.TaskStartOverRequest{TaskID: plain.ID, RequestID: "drop-recency", Reason: "retry"})
+	requireOK(t, err)
+	if !first.Created || len(first.DroppedContext) != 0 {
+		t.Fatalf("first start-over=%+v", first)
+	}
+	dropped := func(rank int64, id string, at time.Time) core.Event {
+		return core.Event{ID: rank, TaskID: first.Successor.ID, Kind: store.TaskStartOverContextDropped, At: at, Payload: store.StartOverDroppedContextPayload([]core.TaskStartOverDroppedContext{{Kind: "requirement", ID: id, Reason: "missing"}})}
+	}
+	x.SeedEvents(t, ctx, 0, []core.Event{dropped(20, "first-by-position", at), dropped(10, "lower-id", at.Add(time.Second))})
+	replay, err := taskops.New(st).StartOver(ctx, core.TaskStartOverRequest{TaskID: plain.ID, RequestID: "drop-recency", Reason: "retry"})
+	requireOK(t, err)
+	if replay.Created || len(replay.DroppedContext) != 1 || replay.DroppedContext[0].ID != "first-by-position" {
+		t.Fatalf("replayed drops=%+v, want the first by (at,id)", replay)
+	}
+}
+
+// recencyRequirement creates a requirement with one version, confirmed or
+// pending, and returns its ID.
+func recencyRequirement(t *testing.T, x Fixture, confirm bool) string {
+	t.Helper()
+	label := core.NewTaskID()
+	version := authorityRequirementVersion("Hold event position " + label + ".")
+	version.Origin = core.RequirementOriginOperator
+	requirement, created, err := x.Backend.CreateRequirement(x.Context, core.Requirement{ID: "req-recency-" + label, Title: "Event position " + label}, version)
+	requireOK(t, err)
+	if confirm {
+		_, _, err = x.Backend.ConfirmRequirementVersion(x.Context, requirement.ID, created.Version)
+		requireOK(t, err)
+	}
+	return requirement.ID
+}
+
+// runPlanRevisionRefusalRecency pins the recovery refusal to the newest state
+// change by (at,id): a later-committed plan-revision gate with a lower ID still
+// holds the order at the decision gate (component-persistence).
+func runPlanRevisionRefusalRecency(t *testing.T, x Fixture) {
+	st, ctx := x.Backend, x.Context
+	now := time.Now().UTC()
+	task := core.Task{ID: fixtureTaskID(), Workspace: x.Workspace, Repo: "conveyor", State: core.TaskAwaiting, NextStage: core.StageImplement, CreatedAt: now}
+	task.Branch = "conveyor/task-" + task.ID
+	requireOK(t, st.CreateTask(ctx, task))
+	order := core.WorkOrder{ID: task.ID + "-implement-1", JobID: task.ID + "-implement-1", TaskID: task.ID, Stage: core.StageImplement, State: core.WorkOrderQueued, CreatedAt: now, QueueEnteredAt: now.Add(-2 * time.Hour), QueueDeadline: now.Add(-time.Hour)}
+	requireOK(t, st.CreateJob(ctx, core.Job{ID: order.JobID, TaskID: task.ID, Stage: order.Stage, State: core.JobPending}))
+	requireOK(t, CreateWorkOrder(ctx, st, order))
+	at := seedTime()
+	x.SeedEvents(t, ctx, 0, []core.Event{
+		stateChanged(task.ID, core.TaskOrderClaim, at, 30),
+		{ID: 20, TaskID: task.ID, Kind: "work_order.plan_revision_requested", At: at.Add(time.Second), Payload: core.JSONPayload(map[string]any{"work_order_id": order.ID, "attempt_id": "attempt-1", "rationale": "The API moved.", "plan_version": 1})},
+		stateChanged(task.ID, core.TaskGatePlanRevision, at.Add(2*time.Second), 10),
+	})
+	want := "work order " + order.ID + " cannot be recovered while task " + task.ID + " awaits the pending plan-revision decision; use the plan-revision decision gate"
+	if _, err := RecoverWorkOrder(ctx, st, order.ID, "plan-revision-recency-"+order.ID, time.Hour); err == nil || err.Error() != want {
+		t.Fatalf("recover err=%v want %q", err, want)
+	}
+	if _, err := RedispatchWorkOrder(ctx, st, order.ID, time.Hour); err == nil || err.Error() != want {
+		t.Fatalf("redispatch err=%v want %q", err, want)
+	}
+}
+
+// runPendingContextActivationRecency pins confirmation's activation fold: a
+// later-committed pending attachment with a lower ID activates over an earlier
+// removal with a higher ID (component-persistence).
+func runPendingContextActivationRecency(t *testing.T, x Fixture) {
+	st, ctx := x.Backend, x.Context
+	requirement := recencyRequirement(t, x, false)
+	task := newAggregateTask(t, x)
+	at := seedTime()
+	x.SeedEvents(t, ctx, 0, []core.Event{
+		{ID: 20, TaskID: task.ID, Kind: store.TaskContextRequirementRemoved, At: at, Payload: core.JSONPayload(map[string]any{"id": requirement})},
+		{ID: 10, TaskID: task.ID, Kind: store.TaskContextRequirementAdded, At: at.Add(time.Second), Payload: core.JSONPayload(map[string]any{"id": requirement, "pending_version": 1, "unconfirmed": true})},
+	})
+	_, _, err := st.ConfirmRequirementVersion(ctx, requirement, 1)
+	requireOK(t, err)
+	for _, event := range mustEvents(t, ctx, st, task.ID) {
+		if event.Kind == store.TaskContextRequirementActive {
+			return
+		}
+	}
+	t.Fatal("confirmation did not activate the pending attachment that is newest by (at,id)")
+}
+
+// runEventListPositionOrder pins the ledger lists that return one document's
+// or session's history, a verdict's latest record, and a task's interventions
+// to (at,id) (component-persistence).
+func runEventListPositionOrder(t *testing.T, x Fixture) {
+	st, ctx := x.Backend, x.Context
+	at := seedTime()
+	seedPair := func(taskID, kind string, payload map[string]any) []int64 {
+		t.Helper()
+		seeded := x.SeedEvents(t, ctx, 0, []core.Event{
+			{ID: 20, TaskID: taskID, Kind: kind, At: at, Payload: core.JSONPayload(payload)},
+			{ID: 10, TaskID: taskID, Kind: kind, At: at.Add(time.Second), Payload: core.JSONPayload(payload)},
+		})
+		return eventIDs(seeded)
+	}
+	requireOrder := func(name string, events []core.Event, err error, want []int64) {
+		t.Helper()
+		requireOK(t, err)
+		if got := eventIDs(events); !reflect.DeepEqual(got, want) {
+			t.Fatalf("%s order=%v want %v by (at,id)", name, got, want)
+		}
+	}
+
+	design := "design-" + core.NewTaskID()
+	want := seedPair("", "system_design.title_changed", map[string]any{"workspace_id": x.Workspace, "document_id": design})
+	events, err := st.ListSystemDesignEvents(ctx, design)
+	requireOrder("ListSystemDesignEvents", events, err, want)
+	byDocument, err := st.ListSystemDesignEventsByDocument(ctx)
+	requireOrder("ListSystemDesignEventsByDocument", byDocument[design], err, want)
+
+	reference := "ref-" + core.NewTaskID()
+	want = seedPair("", "reference_document.deleted", map[string]any{"workspace_id": x.Workspace, "document_id": reference})
+	events, err = st.ListReferenceDocumentEvents(ctx, reference)
+	requireOrder("ListReferenceDocumentEvents", events, err, want)
+
+	session := "session-" + core.NewTaskID()
+	want = seedPair(newAggregateTask(t, x).ID, "fixture.window", map[string]any{"workspace_id": x.Workspace, "session_id": session})
+	events, err = st.(interface {
+		ListPlanningSessionEvents(context.Context, string) ([]core.Event, error)
+	}).ListPlanningSessionEvents(ctx, session)
+	requireOrder("ListPlanningSessionEvents", events, err, want)
+
+	order := newAggregateOrder(t, x)
+	verdict := func(rank int64, outcome string, at time.Time) core.Event {
+		return core.Event{ID: rank, TaskID: order.TaskID, JobID: order.JobID, Kind: "review.completed", At: at, Payload: core.JSONPayload(map[string]any{"review_work_order_id": order.ID, "verdict": outcome, "review_round": 1, "review_seat": 1})}
+	}
+	x.SeedEvents(t, ctx, 0, []core.Event{verdict(20, "approve", at), verdict(10, "request_changes", at.Add(time.Second))})
+	node := core.LineageNode{Type: core.LineageVerdict, ID: core.VerdictLineageID(order.ID)}
+	statuses, err := st.ListLineageNodeStatuses(ctx, []core.LineageNode{node})
+	requireOK(t, err)
+	if statuses[node].Outcome != "request_changes" {
+		t.Fatalf("verdict status=%+v, want the newest review.completed by (at,id)", statuses[node])
+	}
+
+	intervened := newAggregateTask(t, x)
+	intervene := func(comment string, at time.Time) {
+		t.Helper()
+		requireOK(t, st.CreateIntervention(store.WithActor(ctx, store.Actor{ID: "operator-window", Role: core.ActorHuman}), core.Intervention{TaskID: intervened.ID, ActorID: "operator-window", ActorRole: core.ActorHuman, Action: core.InterventionRedirect, ReasonCode: "fixture", Comment: comment, At: at}))
+	}
+	intervene("later", at.Add(time.Second))
+	intervene("earlier", at)
+	interventions, err := st.ListInterventions(ctx, intervened.ID)
+	requireOK(t, err)
+	if len(interventions) != 2 || interventions[0].Comment != "earlier" || interventions[1].Comment != "later" {
+		t.Fatalf("interventions=%+v, want (at,id) order", interventions)
+	}
 }
