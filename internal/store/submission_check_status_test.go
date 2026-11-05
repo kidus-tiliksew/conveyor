@@ -37,6 +37,13 @@ func TestFoldCheckStatus(t *testing.T) {
 	if got := FoldCheckStatus([]core.Event{pending, failedRead}, "a"); len(got.Waiting) != 0 || got.ReadFailure == "" {
 		t.Fatalf("failed read = %+v", got)
 	}
+	exhausted := checkEvent(EventCheckPending, `{"head_sha":"a","read_failed":true,"read_failure":"The read failed.","retries_exhausted":true}`)
+	if got := FoldCheckStatus([]core.Event{failedRead, exhausted}, "a"); !got.RetriesExhausted || got.ReadFailure == "" {
+		t.Fatalf("exhausted = %+v", got)
+	}
+	if got := FoldCheckStatus([]core.Event{exhausted, pending}, "a"); got.RetriesExhausted || got.ReadFailure != "" || len(got.Waiting) != 1 {
+		t.Fatalf("a later answered read = %+v", got)
+	}
 	bad := core.Event{Kind: EventCheckHold, Payload: []byte(`not json`)}
 	if got := FoldCheckStatus([]core.Event{bad}, "a"); got.Hold != nil {
 		t.Fatalf("undecodable = %+v", got)

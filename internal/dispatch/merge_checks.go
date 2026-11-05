@@ -5,11 +5,13 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log"
 	"slices"
 	"time"
 
 	"github.com/kidus-tiliksew/conveyor/internal/core"
 	"github.com/kidus-tiliksew/conveyor/internal/nextaction"
+	"github.com/kidus-tiliksew/conveyor/internal/queue"
 	"github.com/kidus-tiliksew/conveyor/internal/store"
 	"github.com/kidus-tiliksew/conveyor/internal/trigger/github"
 )
@@ -99,7 +101,7 @@ func (d *Dispatcher) applyCheckStatusLocked(ctx context.Context, task core.Task,
 		return "", err
 	}
 	if readErr != nil {
-		return "", d.applyFailedCheckRead(ctx, task, head, standing.Hold, readErr)
+		return "", d.applyFailedCheckRead(ctx, task, head, standing, readErr)
 	}
 	failed, pending := read.Named(github.CheckFailed), read.Named(github.CheckPending)
 	stuck := standing.Hold != nil && standing.Hold.Reason == nextaction.CheckHoldStuck
@@ -114,7 +116,7 @@ func (d *Dispatcher) applyCheckStatusLocked(ctx context.Context, task core.Task,
 		return "", fmt.Errorf("%w: head %s", ErrCheckStatusHeld, head)
 	case len(failed) > 0:
 		if len(pending) > 0 {
-			if err := d.recordPendingDeadline(ctx, task, head, pending); err != nil {
+			if err := d.recordPendingDeadline(ctx, task, head, standing, pending); err != nil {
 				return "", err
 			}
 		} else if err := d.clearCheckDeadline(ctx, task); err != nil {
@@ -125,7 +127,7 @@ func (d *Dispatcher) applyCheckStatusLocked(ctx context.Context, task core.Task,
 		}
 		return "", fmt.Errorf("%w: head %s has failed checks", ErrCheckStatusHeld, head)
 	case len(pending) > 0:
-		if err := d.recordPendingDeadline(ctx, task, head, pending); err != nil {
+		if err := d.recordPendingDeadline(ctx, task, head, standing, pending); err != nil {
 			return "", err
 		}
 		if err := d.clearCheckHold(ctx, task, head, standing.Hold, "pending"); err != nil {
@@ -152,7 +154,8 @@ func (d *Dispatcher) applyCheckStatusLocked(ctx context.Context, task core.Task,
 // applyFailedCheckRead applies the two read-failure rows. Both record the
 // deadline AC-1.5 asks of a failed read, unless a stuck hold stands. Only a
 // refused permission names the operator at once; a failed read clears nothing.
-func (d *Dispatcher) applyFailedCheckRead(ctx context.Context, task core.Task, head string, hold *nextaction.CheckHold, readErr error) error {
+func (d *Dispatcher) applyFailedCheckRead(ctx context.Context, task core.Task, head string, standing nextaction.CheckStatus, readErr error) error {
+	hold := standing.Hold
 	permission := github.ErrorCategory(readErr) == github.ForgePermission
 	if hold == nil || hold.Reason != nextaction.CheckHoldStuck {
 		reason := "read_failed"
@@ -164,7 +167,7 @@ func (d *Dispatcher) applyFailedCheckRead(ctx context.Context, task core.Task, h
 		if category := github.ErrorCategory(readErr); category != "" {
 			payload["forge_error_category"] = category
 		}
-		if err := d.recordCheckDeadline(ctx, task, head, payload); err != nil {
+		if err := d.recordCheckDeadline(ctx, task, head, standing, payload); err != nil {
 			return err
 		}
 	}
@@ -207,22 +210,35 @@ func checkEventPayload(task core.Task, head, reason string, checks []github.Chec
 
 // recordPendingDeadline records the deadline of the first read that finds a
 // check pending.
-func (d *Dispatcher) recordPendingDeadline(ctx context.Context, task core.Task, head string, pending []github.Check) error {
-	return d.recordCheckDeadline(ctx, task, head, checkEventPayload(task, head, "pending", pending))
+func (d *Dispatcher) recordPendingDeadline(ctx context.Context, task core.Task, head string, standing nextaction.CheckStatus, pending []github.Check) error {
+	return d.recordCheckDeadline(ctx, task, head, standing, checkEventPayload(task, head, "pending", pending))
 }
 
 // recordCheckDeadline records the deadline and merge.check_pending together. A
-// later read of the same head leaves the deadline where it is and appends
-// nothing, so the event appears once per deadline.
-func (d *Dispatcher) recordCheckDeadline(ctx context.Context, task core.Task, head string, payload map[string]any) error {
+// later read of the same head leaves the deadline where it is. It appends a
+// further event only when the read changes between answered and unanswered, so
+// the wait reads truthfully and a read that answered ends a retry.
+func (d *Dispatcher) recordCheckDeadline(ctx context.Context, task core.Task, head string, standing nextaction.CheckStatus, payload map[string]any) error {
 	now := time.Now().UTC()
 	if d.Now != nil {
 		now = d.Now().UTC()
 	}
 	deadline := now.Add(CheckStatusDeadlineWindow)
 	payload["deadline"] = deadline
-	_, err := d.Store.RecordCheckStatusDeadline(ctx, task.ID, head, deadline, core.Event{TaskID: task.ID, Kind: store.EventCheckPending, Payload: core.JSONPayload(payload)})
-	return err
+	event := core.Event{TaskID: task.ID, Kind: store.EventCheckPending, Payload: core.JSONPayload(payload)}
+	recorded, err := d.Store.RecordCheckStatusDeadline(ctx, task.ID, head, deadline, event)
+	if err != nil || recorded {
+		return err
+	}
+	readFailed, _ := payload["read_failed"].(bool)
+	if readFailed == (standing.ReadFailure != "") {
+		return nil
+	}
+	if task.CheckStatusDeadline != nil {
+		payload["deadline"] = task.CheckStatusDeadline.UTC()
+	}
+	event.Payload = core.JSONPayload(payload)
+	return d.Store.AppendEvent(ctx, event)
 }
 
 func (d *Dispatcher) clearCheckDeadline(ctx context.Context, task core.Task) error {
@@ -349,4 +365,142 @@ func (d *Dispatcher) recoverCheckOverrideLocked(ctx context.Context, task core.T
 		return nil
 	}
 	return d.recordCheckOverrideLocked(ctx, task, head, request.UserID, request.DisplayName)
+}
+
+// The bounded retry of an unanswered check-status read. A failed read at the
+// verdict, or at a delivery whose own retries ran out, may have no later event:
+// every check can have finished already. The retry is the task's dispatch_task
+// job, a new enqueue of an existing kind (component-durable-queue, Extending
+// this component). The job survives a restart, and the handler reads again at
+// that kind's delays. It completes whatever it finds, as invariant 37 states for
+// a task that is not queued, so an exhausted retry neither parks the task nor
+// fails the job. The wakes of req-review-gates-evidence AC-1.5 still apply.
+
+// CheckReadRetries bounds the reads one retry job makes for one failure.
+const CheckReadRetries = 3
+
+// checkReadRetryDue reads the durable state a retry acts on, so a job that
+// fires late does nothing: the head moved, the task merged or closed, a later
+// read answered, the retries ended, or GitHub refused the read, which only the
+// operator's grant changes.
+func (d *Dispatcher) checkReadRetryDue(ctx context.Context, task core.Task) (bool, nextaction.CheckStatus, error) {
+	head := store.CheckStatusHead(task)
+	if task.State != core.TaskApproved || task.MergeApproval || task.ApprovalStale || head == "" ||
+		task.CheckStatusDeadline == nil || task.CheckStatusDeadlineHead != head {
+		return false, nextaction.CheckStatus{}, nil
+	}
+	status, err := d.foldCheckStatus(ctx, task.ID, head)
+	if err != nil {
+		return false, status, err
+	}
+	refused := status.Hold != nil && status.Hold.Reason == nextaction.CheckHoldPermission
+	return status.ReadFailure != "" && !status.RetriesExhausted && !refused, status, nil
+}
+
+// arrangeCheckReadRetry enqueues the retry job when one is due. An active job
+// holds the stream, so repeated failures enqueue one job.
+func (d *Dispatcher) arrangeCheckReadRetry(ctx context.Context, taskID string) error {
+	task, err := d.Store.GetTask(ctx, taskID)
+	if err != nil {
+		return err
+	}
+	due, _, err := d.checkReadRetryDue(ctx, task)
+	if err != nil || !due {
+		return err
+	}
+	if !d.durableQueue {
+		workspace, _ := store.WorkspaceFromContext(ctx)
+		select {
+		case d.memoryQueue <- queuedTask{Workspace: workspace, TaskID: taskID}:
+		default:
+			log.Printf("[task %s] memory queue is full; the check-status retry waits for another wake", taskID)
+		}
+		return nil
+	}
+	_, err = d.Store.EnqueueCheckStatusRetry(ctx, taskID)
+	return err
+}
+
+// retryCheckStatusRead is the job's bounded retry. It holds no lock while it
+// waits, and it reads the task's state again after each wait. It returns only a
+// failure of its own; a read that stays unanswered ends with a recorded
+// merge.check_pending saying so.
+func (d *Dispatcher) retryCheckStatusRead(ctx context.Context, taskID string) error {
+	for attempt := 1; attempt <= CheckReadRetries; attempt++ {
+		if due, _, err := d.loadCheckReadRetry(ctx, taskID); err != nil || !due {
+			return err
+		}
+		if err := d.waitCheckReadRetry(ctx, queue.DispatchTaskRetryDelay(attempt)); err != nil {
+			return err
+		}
+		due, _, err := d.loadCheckReadRetry(ctx, taskID)
+		if err != nil || !due {
+			return err
+		}
+		task, err := d.Store.GetTask(ctx, taskID)
+		if err != nil {
+			return err
+		}
+		mergeErr := d.readAndMergeAutomatically(ctx, task)
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			return ctxErr
+		}
+		if mergeErr == nil || !retryableMergeError(mergeErr) {
+			if mergeErr != nil {
+				log.Printf("[task %s] check-status retry ended: %v", taskID, mergeErr)
+			}
+			return nil
+		}
+		log.Printf("[task %s] check-status retry %d of %d: %v", taskID, attempt, CheckReadRetries, mergeErr)
+		// A rate limit outlasts this retry's delays, and every read spends more
+		// of it. The timed fallback honours the reset GitHub names.
+		if rateLimited(mergeErr) {
+			break
+		}
+	}
+	return d.recordCheckReadRetriesExhausted(ctx, taskID)
+}
+
+func (d *Dispatcher) loadCheckReadRetry(ctx context.Context, taskID string) (bool, nextaction.CheckStatus, error) {
+	task, err := d.Store.GetTask(ctx, taskID)
+	if err != nil {
+		return false, nextaction.CheckStatus{}, err
+	}
+	return d.checkReadRetryDue(ctx, task)
+}
+
+func (d *Dispatcher) waitCheckReadRetry(ctx context.Context, delay time.Duration) error {
+	if d.CheckReadRetryWait != nil {
+		return d.CheckReadRetryWait(ctx, delay)
+	}
+	timer := time.NewTimer(delay)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-timer.C:
+		return nil
+	}
+}
+
+// recordCheckReadRetriesExhausted records that the retries ended, so the task
+// reads truthfully and a later failed read of this episode enqueues no more
+// jobs, which keeps a timed sweep at its one read a minute. A read that answers
+// starts over. It moves no deadline.
+func (d *Dispatcher) recordCheckReadRetriesExhausted(ctx context.Context, taskID string) error {
+	return d.Store.WithTaskSideEffectLock(ctx, taskID, func(lockedCtx context.Context) error {
+		task, err := d.Store.GetTask(lockedCtx, taskID)
+		if err != nil {
+			return err
+		}
+		due, status, err := d.checkReadRetryDue(lockedCtx, task)
+		if err != nil || !due {
+			return err
+		}
+		head := store.CheckStatusHead(task)
+		payload := checkEventPayload(task, head, "read_failed", nil)
+		payload["read_failed"], payload["read_failure"], payload["retries_exhausted"] = true, status.ReadFailure, true
+		payload["retries"], payload["deadline"] = CheckReadRetries, task.CheckStatusDeadline.UTC()
+		return d.Store.AppendEvent(lockedCtx, core.Event{TaskID: taskID, Kind: store.EventCheckPending, Payload: core.JSONPayload(payload)})
+	})
 }

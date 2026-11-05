@@ -136,6 +136,14 @@ func init() {
 	refused.Question = text("Grant the workspace GitHub App Checks read in workspace settings, or merge without a read?")
 	refused.IfIgnored = text("The merge stays held. A later read that GitHub answers decides it.")
 	catalogueTable[catalogueKey{KindCheckHold, "", "", "", CheckHoldPermission}] = refused
+	readFailed := catalogueTable[catalogueKey{KindMerging, "", "", "", ""}]
+	readFailed.Summary = text("Conveyor could not read the approved head's check status and is reading it again.")
+	readFailed.IfIgnored = text("Conveyor reads the check status again, and merges only when that read allows it.")
+	catalogueTable[catalogueKey{KindMerging, "", "", "", CheckReadFailed}] = readFailed
+	readExhausted := readFailed
+	readExhausted.Summary = text("Conveyor could not read the approved head's check status and its retries ended. Nothing merges until a read succeeds.")
+	readExhausted.IfIgnored = text("The next check delivery, timed check, daemon start, or check-status deadline reads it again. The merge act needs no read.")
+	catalogueTable[catalogueKey{KindMerging, "", "", "", CheckReadRetriesExhausted}] = readExhausted
 	for _, item := range []struct{ variant, label, summary, question string }{
 		{AgentQuestionCitedRevisions, "Cited revisions need a decision",
 			"The agent asks you to confirm or dismiss proposed revisions to cited documents, then recover the order with direction.",

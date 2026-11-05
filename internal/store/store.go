@@ -180,6 +180,11 @@ type TaskStore interface {
 	// ClearCheckStatusDeadline clears a recorded deadline, keeps its head, and
 	// reports whether one was set.
 	ClearCheckStatusDeadline(ctx context.Context, id string) (bool, error)
+	// EnqueueCheckStatusRetry enqueues the task's dispatch_task job so it reads
+	// a check status that went unanswered. It enqueues only for an approved task
+	// with the merge gate off, and reports whether it inserted a job: an active
+	// job already holds the stream (component-durable-queue invariant 13).
+	EnqueueCheckStatusRetry(ctx context.Context, id string) (bool, error)
 	MarkTaskApprovalStale(ctx context.Context, id, approvedHeadSHA, newHeadSHA, scope, reason string) (bool, error)
 	// AdvanceTaskRefreshHead moves a stale approval's refresh target to the
 	// head most recently submitted for review, so the next refresh round

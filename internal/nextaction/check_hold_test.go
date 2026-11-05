@@ -88,3 +88,19 @@ func TestMergingNamesWhatItWaitsOn(t *testing.T) {
 		t.Fatalf("next action = %+v", na)
 	}
 }
+
+// A task whose last read went unanswered says so, before and after its retries
+// end, and stays with the factory (req-review-gates-evidence AC-1.7).
+func TestMergingSaysTheReadWentUnanswered(t *testing.T) {
+	in := checkHoldInput(nil, false)
+	in.CheckStatus = CheckStatus{ReadFailure: "The check-status read failed."}
+	na := Project(in)
+	if na.Actor != ActorFactory || na.Kind != KindMerging || na.Judgment || na.Details.ReasonCode != CheckReadFailed || !strings.Contains(na.Summary, "reading it again") {
+		t.Fatalf("next action = %+v", na)
+	}
+	in.CheckStatus.RetriesExhausted = true
+	na = Project(in)
+	if na.Actor != ActorFactory || na.Kind != KindMerging || na.Details.ReasonCode != CheckReadRetriesExhausted || !strings.Contains(na.Summary, "retries ended") || !strings.Contains(na.IfIgnored, "deadline") {
+		t.Fatalf("next action = %+v", na)
+	}
+}

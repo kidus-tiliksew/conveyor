@@ -1785,3 +1785,25 @@ func (s *Store) ClearCheckStatusDeadline(ctx context.Context, id string) (bool, 
 	}
 	return cleared, nil
 }
+
+// EnqueueCheckStatusRetry enqueues the dispatch_task job of an approved task
+// with the merge gate off (component-submission-merge invariant 60).
+func (s *Store) EnqueueCheckStatusRetry(ctx context.Context, id string) (bool, error) {
+	ctx = dbmetrics.WithReadLabel(ctx, "EnqueueCheckStatusRetry")
+	inserted := false
+	err := s.taskTx(ctx, id, func(tx *sql.Tx) error {
+		task, err := getTaskRow(ctx, tx, id)
+		if err != nil {
+			return err
+		}
+		if task.State != core.TaskApproved || task.MergeApproval {
+			return nil
+		}
+		inserted, err = s.enqueueTaskTx(ctx, tx, id, task.Workspace)
+		return err
+	})
+	if err != nil {
+		return false, err
+	}
+	return inserted, nil
+}

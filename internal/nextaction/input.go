@@ -160,6 +160,13 @@ type Markers struct {
 	ReleaseOutcome           string
 }
 
+// Reason codes and catalogue variants of a merging task whose last check-status
+// read went unanswered.
+const (
+	CheckReadFailed           = "check_read_failed"
+	CheckReadRetriesExhausted = "check_read_retries_exhausted"
+)
+
 // Reasons a check-status hold names the operator.
 const (
 	CheckHoldFailed     = "failed"
@@ -185,11 +192,13 @@ type CheckHold struct {
 
 // CheckStatus is the recorded check status of one head, already folded from
 // events. Waiting names what the task waits on while a recorded deadline
-// stands, and ReadFailure names a failed read in that wait.
+// stands, ReadFailure names a failed read in that wait, and RetriesExhausted
+// says the job's bounded retries for that failure ended.
 type CheckStatus struct {
-	Hold        *CheckHold
-	Waiting     []CheckRef
-	ReadFailure string
+	Hold             *CheckHold
+	Waiting          []CheckRef
+	ReadFailure      string
+	RetriesExhausted bool
 }
 
 // MergeConflict is the open conflict episode, already folded from events.

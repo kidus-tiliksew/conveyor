@@ -21,3 +21,9 @@ func TestMonitorLineagesConveyorMergeAfterHeadMovedSingleStoreIntegration(t *tes
 func TestAutomaticMergeCheckStatusOutcomesSingleStoreIntegration(t *testing.T) {
 	mergelineagefixture.RunCheckStatus(t, func(t *testing.T) store.Store { return integrationStore(t) })
 }
+
+// SingleStore twin of TestCheckStatusReadRetry (req-review-gates-evidence
+// AC-1.7).
+func TestCheckStatusReadRetrySingleStoreIntegration(t *testing.T) {
+	mergelineagefixture.RunCheckStatusRetry(t, func(t *testing.T) store.Backend { return integrationStore(t) })
+}

@@ -216,3 +216,150 @@ func TestGateOnApprovedTaskReadsNoCheckStatus(t *testing.T) {
 		t.Fatalf("state = %s", current.State)
 	}
 }
+
+// The feedback's scenario end to end: the reviewer's verdict stands, the first
+// read fails transiently, and the job alone merges the task. No webhook,
+// restart, timed fallback, or deadline runs (req-review-gates-evidence AC-1.7).
+func TestApprovingVerdictMergesThroughTheRetryJob(t *testing.T) {
+	ctx := store.WithWorkspace(store.WithActor(t.Context(), store.SystemActor()), "test")
+	st := store.NewVolatileBackend()
+	task := core.Task{ID: "verdict-retry", Workspace: "test", Repo: "app", Branch: "conveyor/verdict-retry", BaseBranch: "main", State: core.TaskRunning, NextStage: core.StageReview, PolicyVersion: 1, CreatedAt: time.Now()}
+	if err := st.CreateTask(ctx, task); err != nil {
+		t.Fatal(err)
+	}
+	job := core.Job{ID: task.ID + "-review-1-seat-1", TaskID: task.ID, Stage: core.StageReview, State: core.JobDone, ModelTier: "reviewer"}
+	if err := st.CreateJob(ctx, job); err != nil {
+		t.Fatal(err)
+	}
+	order := core.WorkOrder{ID: job.ID, TaskID: task.ID, JobID: job.ID, Stage: core.StageReview, ReviewRound: 1, ReviewSeat: 1, BaselineSHA: "head"}
+	if err := storetest.For(st).CreateWorkOrder(ctx, order); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.AppendEvent(ctx, core.Event{TaskID: task.ID, Kind: "pull_request.opened", Payload: core.JSONPayload(map[string]any{"head_sha": "head"})}); err != nil {
+		t.Fatal(err)
+	}
+	cfg := &config.Config{Workspace: "test", Repos: []config.Repo{{Name: "app", GitHub: "acme/app"}}}
+	d := New(st, cfg, nil)
+	d.DisableMemoryQueueForTest()
+	merged := make(chan struct{})
+	merges, reads := 0, 0
+	d.ViewPullRequest = func(context.Context, string, string) (github.PullRequest, error) {
+		if merges > 0 {
+			return github.PullRequest{Number: 41, State: "closed", Merged: true, HeadSHA: "head", BaseSHA: "base", MergeCommitSHA: "landed"}, nil
+		}
+		return github.PullRequest{Number: 41, State: "open", Mergeable: "MERGEABLE", HeadSHA: "head", BaseSHA: "base"}, nil
+	}
+	d.RequestMerge = func(context.Context, string, int) error { merges++; close(merged); return nil }
+	d.ReadCommitChecks = func(context.Context, string, string) (github.CheckStatus, error) {
+		reads++
+		if reads == 1 {
+			return github.CheckStatus{}, github.StatusError(502, errors.New("bad gateway"))
+		}
+		return github.CheckStatus{Checks: []github.Check{{Name: "build", State: github.CheckPassed}}}, nil
+	}
+	d.CheckReadRetryWait = func(context.Context, time.Duration) error { return nil }
+
+	review := pipeline.Review{Verdict: "approve", ReasonCode: "approved", Summary: "approved"}
+	if err := d.ApplyExternalReviewPinned(ctx, task, job, review, order.ID, "review-session", "reviewer", []core.ServedRequirementContext{}, emptyGovernanceAuthority()); err != nil {
+		t.Fatalf("verdict caller got %v", err)
+	}
+	if current, err := st.GetTask(ctx, task.ID); err != nil || current.State != core.TaskApproved || merges != 0 {
+		t.Fatalf("task=%+v merges=%d err=%v, want approved and unmerged before the job runs", current, merges, err)
+	}
+	reviewEvents := func() int {
+		t.Helper()
+		events, err := st.ListEvents(ctx, task.ID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		count := 0
+		for _, event := range events {
+			if event.Kind == "review.round_completed" || event.Kind == "review.completed" {
+				count++
+			}
+		}
+		return count
+	}
+	accepted := reviewEvents()
+	if accepted == 0 {
+		t.Fatal("the verdict recorded no review")
+	}
+	runtime, err := testRuntime(t, st.Log(), d, &ShutdownMarker{}, []string{"test"}, map[string]*config.Config{"test": cfg}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = runtime.Start(ctx); err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		stopCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		if err := runtime.Stop(stopCtx); err != nil {
+			t.Error(err)
+		}
+	}()
+	select {
+	case <-merged:
+	case <-time.After(30 * time.Second):
+		t.Fatal("the retry job did not merge")
+	}
+	deadline := time.After(30 * time.Second)
+	for {
+		current, err := st.GetTask(ctx, task.ID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if current.State == core.TaskMerged {
+			break
+		}
+		select {
+		case <-deadline:
+			t.Fatalf("task = %+v, want merged", current)
+		case <-time.After(5 * time.Millisecond):
+		}
+	}
+	if reads != 2 || merges != 1 {
+		t.Fatalf("reads=%d merges=%d", reads, merges)
+	}
+	// The retry reads and merges; it never applies the accepted review again.
+	if got := reviewEvents(); got != accepted {
+		t.Fatalf("review events = %d after the job, %d at the verdict", got, accepted)
+	}
+}
+
+// The volatile store has no job, so the memory queue carries the retry.
+func TestFailedReadOnTheMemoryQueueRetries(t *testing.T) {
+	ctx, st, task, d := approvedMergeFixture(t, "acme/app")
+	if err := st.BindTaskApproval(ctx, task.ID, "head"); err != nil {
+		t.Fatal(err)
+	}
+	merged := make(chan struct{})
+	reads, merges := 0, 0
+	d.ViewPullRequest = func(context.Context, string, string) (github.PullRequest, error) {
+		if merges > 0 {
+			return github.PullRequest{Number: 41, State: "closed", Merged: true, HeadSHA: "head", BaseSHA: "base", MergeCommitSHA: "landed"}, nil
+		}
+		return github.PullRequest{Number: 41, State: "open", Mergeable: "MERGEABLE", HeadSHA: "head", BaseSHA: "base"}, nil
+	}
+	d.RequestMerge = func(context.Context, string, int) error { merges++; close(merged); return nil }
+	d.ReadCommitChecks = func(context.Context, string, string) (github.CheckStatus, error) {
+		reads++
+		if reads == 1 {
+			return github.CheckStatus{}, github.StatusError(502, errors.New("bad gateway"))
+		}
+		return github.CheckStatus{}, nil
+	}
+	d.CheckReadRetryWait = func(context.Context, time.Duration) error { return nil }
+	if err := d.MergeApprovedTaskAutomatically(ctx, task); !errors.Is(err, ErrCheckStatusUnread) {
+		t.Fatalf("err = %v", err)
+	}
+	runCtx, stop := context.WithCancel(ctx)
+	done := make(chan struct{})
+	go func() { defer close(done); d.Run(runCtx) }()
+	defer func() { stop(); <-done }()
+	select {
+	case <-merged:
+	case <-time.After(30 * time.Second):
+		t.Fatal("the memory queue did not retry")
+	}
+}

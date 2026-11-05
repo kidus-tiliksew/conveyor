@@ -22,8 +22,23 @@ func (w *dispatchTaskWorker) Work(ctx context.Context, job queue.Job) error {
 	}
 	ctx = store.WithActor(ctx, store.SystemActor(fmt.Sprintf("queue:%s", job.ID)))
 	ctx = store.WithWorkspace(ctx, args.WorkspaceID)
+	// An approved task with an unanswered check-status read gets its bounded
+	// retry here. The task can leave approved during a wait, so a task still
+	// approved afterward completes, and any other runs as usual with this job
+	// (component-durable-queue invariant 37).
+	if err = w.retryCheckStatusRead(ctx, args.TaskID); err != nil {
+		return err
+	}
+	if current, getErr := w.dispatcher.Store.GetTask(ctx, args.TaskID); getErr == nil && current.State == core.TaskApproved {
+		return nil
+	}
 	err = w.dispatcher.runTask(ctx, args.TaskID)
 	if err == nil {
+		// An in-process review may have just approved the task and found the
+		// read unanswered, while this job held the stream.
+		if err = w.retryCheckStatusRead(ctx, args.TaskID); err != nil {
+			return err
+		}
 		task, getErr := w.dispatcher.Store.GetTask(ctx, args.TaskID)
 		if getErr != nil {
 			return getErr
@@ -60,6 +75,21 @@ func (w *dispatchTaskWorker) Work(ctx context.Context, job queue.Job) error {
 		return queue.Snooze(shutdownRetryDelay)
 	}
 	return w.handleFailure(ctx, job, err)
+}
+
+// retryCheckStatusRead runs the bounded retry and returns only what the queue
+// must act on: daemon shutdown hands the attempt back, so a restart resumes the
+// retry. Any other failure is logged, and the task's other wakes remain.
+func (w *dispatchTaskWorker) retryCheckStatusRead(ctx context.Context, taskID string) error {
+	err := w.dispatcher.retryCheckStatusRead(ctx, taskID)
+	if err == nil {
+		return nil
+	}
+	if w.shutdown.Stopping() && errors.Is(err, context.Canceled) {
+		return queue.Snooze(shutdownRetryDelay)
+	}
+	log.Printf("[task %s] check-status retry: %v", taskID, err)
+	return nil
 }
 
 func (w *dispatchTaskWorker) handleFailure(ctx context.Context, job queue.Job, err error) error {

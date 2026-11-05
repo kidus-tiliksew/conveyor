@@ -10,6 +10,8 @@ import (
 
 	"github.com/kidus-tiliksew/conveyor/internal/core"
 	"github.com/kidus-tiliksew/conveyor/internal/nextaction"
+	"github.com/kidus-tiliksew/conveyor/internal/queue"
+	"github.com/kidus-tiliksew/conveyor/internal/queue/logqueue"
 )
 
 // Check-status ledger events (component-submission-merge, Public surfaces).
@@ -38,19 +40,20 @@ func CheckStatusHead(task core.Task) string {
 }
 
 type checkStatusPayload struct {
-	HeadSHA    string                `json:"head_sha"`
-	Reason     string                `json:"reason"`
-	ReadFailed bool                  `json:"read_failed"`
-	Failure    string                `json:"read_failure"`
-	Remedy     string                `json:"remedy"`
-	Checks     []nextaction.CheckRef `json:"checks"`
+	HeadSHA          string                `json:"head_sha"`
+	Reason           string                `json:"reason"`
+	ReadFailed       bool                  `json:"read_failed"`
+	RetriesExhausted bool                  `json:"retries_exhausted"`
+	Failure          string                `json:"read_failure"`
+	Remedy           string                `json:"remedy"`
+	Checks           []nextaction.CheckRef `json:"checks"`
 }
 
 // FoldCheckStatus folds a task's check-status events in (at, id) order for one
 // head. A hold stands from its latest merge.check_hold until a later
 // merge.check_hold_cleared; a later hold of that head replaces it, so the
-// standing hold names what the last deciding read named. Waiting is what the
-// latest merge.check_pending named.
+// standing hold names what the last deciding read named. Waiting, ReadFailure,
+// and RetriesExhausted are what the latest merge.check_pending said.
 func FoldCheckStatus(events []core.Event, head string) nextaction.CheckStatus {
 	var out nextaction.CheckStatus
 	if head == "" {
@@ -72,9 +75,9 @@ func FoldCheckStatus(events []core.Event, head string) nextaction.CheckStatus {
 		case EventCheckHoldCleared:
 			out.Hold = nil
 		case EventCheckPending:
-			out.Waiting, out.ReadFailure = payload.Checks, ""
+			out.Waiting, out.ReadFailure, out.RetriesExhausted = payload.Checks, "", false
 			if payload.ReadFailed {
-				out.ReadFailure = payload.Failure
+				out.ReadFailure, out.RetriesExhausted = payload.Failure, payload.RetriesExhausted
 			}
 		}
 	}
@@ -182,4 +185,39 @@ func (m *memory) ClearCheckStatusDeadline(ctx context.Context, id string) (bool,
 	task.CheckStatusDeadline = nil
 	m.tasks[id] = task
 	return true, nil
+}
+
+// EnqueueCheckStatusRetry on the volatile store enqueues no job, as its
+// lifecycle commands enqueue none (component-durable-queue invariant 42). The
+// dispatcher's memory queue carries the retry instead.
+func (m *memory) EnqueueCheckStatusRetry(ctx context.Context, id string) (bool, error) {
+	if _, err := RequireActor(ctx); err != nil {
+		return false, err
+	}
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	if _, ok := m.tasks[id]; !ok {
+		return false, fmt.Errorf("task %s: %w", id, ErrNotFound)
+	}
+	return false, nil
+}
+
+// EnqueueCheckStatusRetry on the test backend enqueues on its log, so a fixture
+// can run the real queue runtime without a database.
+func (m *volatileMemory) EnqueueCheckStatusRetry(ctx context.Context, id string) (bool, error) {
+	if _, err := RequireActor(ctx); err != nil {
+		return false, err
+	}
+	task, err := m.GetTask(ctx, id)
+	if errors.Is(err, ErrNotFound) {
+		return false, err
+	}
+	if err != nil {
+		return false, fmt.Errorf("task %s: %w", id, ErrNotFound)
+	}
+	if task.State != core.TaskApproved || task.MergeApproval {
+		return false, nil
+	}
+	args := queue.DispatchTaskArgs{WorkspaceID: task.Workspace, TaskID: id}
+	return logqueue.Enqueue(ctx, m.log, task.Workspace, args.Kind(), id, args, queue.DispatchTaskMaxAttempts, time.Now().UTC())
 }

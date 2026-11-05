@@ -1441,7 +1441,10 @@ function noteContent(
         alarm: true,
       }
     case 'merge.check_pending':
-      return { title: 'Merge waits on check status', detail: checkEventDetail(payload) }
+      return {
+        title: payload.retries_exhausted === true ? 'Check status read retries ended' : 'Merge waits on check status',
+        detail: checkEventDetail(payload),
+      }
     case 'merge.check_hold':
       return { title: 'Check status holds the merge', detail: checkEventDetail(payload), alarm: true }
     case 'merge.check_hold_cleared':

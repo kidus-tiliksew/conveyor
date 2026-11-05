@@ -8,6 +8,8 @@ import (
 	"time"
 
 	"github.com/kidus-tiliksew/conveyor/internal/core"
+	"github.com/kidus-tiliksew/conveyor/internal/queue"
+	"github.com/kidus-tiliksew/conveyor/internal/queue/logqueue"
 	"github.com/kidus-tiliksew/conveyor/internal/store"
 	"github.com/kidus-tiliksew/conveyor/internal/taskops"
 )
@@ -243,6 +245,27 @@ func runCheckStatusDeadline(t *testing.T, x Fixture) {
 	}
 	if _, err = st.ClearCheckStatusDeadline(ctx, "missing-task"); !errors.Is(err, store.ErrNotFound) {
 		t.Fatalf("missing task clear err = %v", err)
+	}
+
+	// The retry enqueues one dispatch_task job, only for an approved gate-off
+	// task, and a job that is still active holds the stream.
+	if inserted, err := st.EnqueueCheckStatusRetry(ctx, id); err != nil || inserted {
+		t.Fatalf("running task enqueue inserted=%t err=%v", inserted, err)
+	}
+	if _, err = st.EnqueueCheckStatusRetry(ctx, "missing-task"); !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("missing task enqueue err = %v", err)
+	}
+	approved := createTask(t, st, ctx, workspace, core.TaskApproved, "")
+	stream := logqueue.StreamFor(queue.DispatchTaskArgs{}.Kind(), approved)
+	if inserted, err := st.EnqueueCheckStatusRetry(ctx, approved); err != nil || !inserted {
+		t.Fatalf("approved task enqueue inserted=%t err=%v", inserted, err)
+	}
+	if inserted, err := st.EnqueueCheckStatusRetry(ctx, approved); err != nil || inserted {
+		t.Fatalf("second enqueue inserted=%t err=%v", inserted, err)
+	}
+	job, err := logqueue.Load(ctx, st.Log(), workspace, stream)
+	if err != nil || job.Generation != 1 || job.State != logqueue.StateAvailable || job.MaxAttempts != queue.DispatchTaskMaxAttempts {
+		t.Fatalf("job=%+v err=%v", job, err)
 	}
 
 	// The batch read returns only the check-status kinds in (at, id) order and

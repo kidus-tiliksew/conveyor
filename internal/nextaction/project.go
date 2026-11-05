@@ -76,7 +76,7 @@ func rules() []rule {
 			return built{actor: ActorOperator, kind: KindMergeExecution, judgment: true, order: currentOrder(in)}
 		}},
 		{match: checkHold, build: checkHoldBuild},
-		{match: gateOffApproved, build: func(Input) built { return built{actor: ActorFactory, kind: KindMerging} }},
+		{match: gateOffApproved, build: mergingBuild},
 		{match: agentQuestion, build: agentQuestionBuild},
 		{match: verificationDisposition, build: func(in Input) built {
 			return built{actor: ActorOperator, kind: KindVerificationDisposition, judgment: true, deadline: in.Markers.VerificationHoldDeadline, order: dispositionOrder(in.Orders)}
@@ -158,6 +158,21 @@ func gateOnApproved(in Input) bool {
 
 func gateOffApproved(in Input) bool {
 	return in.Task.State == core.TaskApproved && !in.Task.MergeApproval
+}
+
+// mergingBuild keeps the factory as the actor. A task whose last check-status
+// read went unanswered says so instead of claiming a merge is under way
+// (req-review-gates-evidence AC-1.7).
+func mergingBuild(in Input) built {
+	row := built{actor: ActorFactory, kind: KindMerging}
+	switch {
+	case in.CheckStatus.ReadFailure == "":
+	case in.CheckStatus.RetriesExhausted:
+		row.reason, row.variant = CheckReadRetriesExhausted, CheckReadRetriesExhausted
+	default:
+		row.reason, row.variant = CheckReadFailed, CheckReadFailed
+	}
+	return row
 }
 
 // checkHold matches an approved task with the merge gate off while a failed or

@@ -824,8 +824,20 @@ func (d *Dispatcher) MergeApprovedTask(ctx context.Context, task core.Task, acto
 // MergeApprovedTaskAutomatically is the factory's merge of an approved task
 // with the merge gate off. It reads the approved head's check status first and
 // returns ErrCheckStatusHeld, ErrCheckStatusPending, or ErrCheckStatusUnread
-// when that status does not let it merge.
+// when that status does not let it merge. Every automatic caller shares one
+// answer to an unanswered read: it arranges the bounded retry job.
 func (d *Dispatcher) MergeApprovedTaskAutomatically(ctx context.Context, task core.Task) error {
+	err := d.readAndMergeAutomatically(ctx, task)
+	if errors.Is(err, ErrCheckStatusUnread) {
+		if retryErr := d.arrangeCheckReadRetry(ctx, task.ID); retryErr != nil {
+			return errors.Join(err, fmt.Errorf("arrange check-status retry: %w", retryErr))
+		}
+	}
+	return err
+}
+
+// readAndMergeAutomatically is one attempt, which arranges no retry.
+func (d *Dispatcher) readAndMergeAutomatically(ctx context.Context, task core.Task) error {
 	return d.Store.WithTaskSideEffectLock(ctx, task.ID, func(lockedCtx context.Context) error {
 		return d.mergeApprovedTaskLocked(lockedCtx, task, mergeAct{})
 	})

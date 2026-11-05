@@ -11,6 +11,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -20,7 +21,10 @@ import (
 	"github.com/kidus-tiliksew/conveyor/internal/dispatch"
 	"github.com/kidus-tiliksew/conveyor/internal/monitor"
 	"github.com/kidus-tiliksew/conveyor/internal/nextaction"
+	"github.com/kidus-tiliksew/conveyor/internal/queue"
+	"github.com/kidus-tiliksew/conveyor/internal/queue/logqueue"
 	"github.com/kidus-tiliksew/conveyor/internal/store"
+	"github.com/kidus-tiliksew/conveyor/internal/taskops"
 	githubtrigger "github.com/kidus-tiliksew/conveyor/internal/trigger/github"
 )
 
@@ -539,7 +543,11 @@ type checkScenario struct {
 func newCheckScenario(t *testing.T, st store.Store) *checkScenario {
 	t.Helper()
 	if _, durable := st.(store.IdentityProvisioner); !durable {
-		st = checkIdentityStore{st}
+		if backend, ok := st.(store.Backend); ok {
+			st = checkIdentityBackend{backend}
+		} else {
+			st = checkIdentityStore{st}
+		}
 	}
 	c := &checkScenario{scenario: setup(t, st), head: headB, start: time.Date(2026, 11, 5, 12, 0, 0, 0, time.UTC)}
 	c.now = c.start
@@ -581,6 +589,13 @@ func newCheckScenario(t *testing.T, st store.Store) *checkScenario {
 }
 
 const checkOperatorID = "usr-check-operator"
+
+// checkIdentityBackend is checkIdentityStore for the test backend.
+type checkIdentityBackend struct{ store.Backend }
+
+func (checkIdentityBackend) GetCallerIdentity(_ context.Context, userID, _ string) (core.CallerIdentity, error) {
+	return core.CallerIdentity{ID: userID, Email: "operator@example.com", DisplayName: "Check Operator"}, nil
+}
 
 // checkIdentityStore gives the volatile store the one account the operator's
 // act resolves; a durable store provisions a real one.
@@ -714,4 +729,441 @@ func (c *checkScenario) requireAction(t *testing.T, actor, kind string, judgment
 		}
 	}
 	return action
+}
+
+// RunCheckStatusRetry proves the bounded retry of an unanswered check-status
+// read on a real queue runtime (req-review-gates-evidence AC-1.7;
+// component-submission-merge invariant 60). Only the job wakes the task: no
+// test here delivers a webhook, restarts a sweep, runs a timed fallback, or
+// fires a deadline, unless it is proving that wake still works.
+func RunCheckStatusRetry(t *testing.T, open func(*testing.T) store.Backend) {
+	t.Helper()
+	st := open(t)
+	passed := githubtrigger.Check{Name: "build", State: githubtrigger.CheckPassed}
+	failed := githubtrigger.Check{Name: "e2e", State: githubtrigger.CheckFailed}
+	pending := githubtrigger.Check{Name: "deploy", State: githubtrigger.CheckPending}
+	refused := githubtrigger.PermissionError(fmt.Errorf("resource not accessible by integration"))
+	transient := githubtrigger.StatusError(502, fmt.Errorf("bad gateway"))
+
+	t.Run("a transient read then a good one merges through the job", func(t *testing.T) {
+		r := newRetryScenario(t, st)
+		r.answer(transient)
+		r.automatic(t, dispatch.ErrCheckStatusUnread)
+		r.answer(nil, passed)
+		r.startRuntime(t)
+		r.requireJobFinished(t, 1)
+		r.requireMerged(t)
+		if r.reads != 2 || len(r.waits) != 1 || r.waits[0] != 10*time.Second {
+			t.Fatalf("reads=%d waits=%v, want one retry after 10s", r.reads, r.waits)
+		}
+		r.requireCount(t, "merge.requested", 1)
+		r.requireCount(t, "merge.confirmed", 1)
+		r.requireCount(t, store.EventCheckPending, 1)
+		r.requireRequestedStatus(t, "passed")
+		if job := r.job(t); job.State != logqueue.StateCompleted || job.Attempt != 1 {
+			t.Fatalf("job = %+v", job)
+		}
+	})
+	t.Run("repeated failed reads hold one job", func(t *testing.T) {
+		r := newRetryScenario(t, st)
+		r.answer(transient)
+		r.automatic(t, dispatch.ErrCheckStatusUnread)
+		r.automatic(t, dispatch.ErrCheckStatusUnread)
+		r.automatic(t, dispatch.ErrCheckStatusUnread)
+		if job := r.job(t); job.Generation != 1 || !job.Active() {
+			t.Fatalf("job = %+v, want one active generation", job)
+		}
+		r.requireCount(t, store.EventCheckPending, 1)
+	})
+	t.Run("the bound ends the retries and every other wake still works", func(t *testing.T) {
+		r := newRetryScenario(t, st)
+		r.answer(transient)
+		r.automatic(t, dispatch.ErrCheckStatusUnread)
+		r.startRuntime(t)
+		r.requireJobFinished(t, 1)
+		if r.reads != 1+dispatch.CheckReadRetries {
+			t.Fatalf("reads = %d, want %d", r.reads, 1+dispatch.CheckReadRetries)
+		}
+		if want := []time.Duration{10 * time.Second, 20 * time.Second, 40 * time.Second}; !slices.Equal(r.waits, want) {
+			t.Fatalf("waits = %v, want %v", r.waits, want)
+		}
+		if job := r.job(t); job.State != logqueue.StateCompleted {
+			t.Fatalf("job = %+v, want completed", job)
+		}
+		r.requireApprovedUnmerged(t)
+		r.requireCount(t, store.EventCheckPending, 2)
+		r.requireCount(t, "merge.failed", 0)
+		action := r.requireAction(t, "factory", "merging", false)
+		if action.Details.ReasonCode != nextaction.CheckReadRetriesExhausted || !strings.Contains(action.Summary, "retries ended") || action.Details.CheckReadFailure == "" {
+			t.Fatalf("next action = %+v", action)
+		}
+		// A timed sweep's failed read makes one read, appends nothing, and starts
+		// no further job, so the fallback stays at one read a minute.
+		reads := r.reads
+		r.automatic(t, dispatch.ErrCheckStatusUnread)
+		if r.reads != reads+1 {
+			t.Fatalf("reads = %d, want %d", r.reads, reads+1)
+		}
+		if job := r.job(t); job.Generation != 1 || job.Active() {
+			t.Fatalf("job = %+v, want no new generation", job)
+		}
+		r.requireCount(t, store.EventCheckPending, 2)
+		// A delivery still reaches the task.
+		r.answer(nil, passed)
+		if err := r.d.ApplyChecksDelivery(r.ctx, githubSlug, r.head, nil); err != nil {
+			t.Fatal(err)
+		}
+		r.requireMerged(t)
+	})
+	t.Run("a sweep after the bound still merges", func(t *testing.T) {
+		r := newRetryScenario(t, st)
+		r.answer(transient)
+		r.automatic(t, dispatch.ErrCheckStatusUnread)
+		r.startRuntime(t)
+		r.requireJobFinished(t, 1)
+		r.answer(nil, passed)
+		if _, err := r.d.ReconcileMergeReadiness(r.ctx); err != nil {
+			t.Fatal(err)
+		}
+		r.requireMerged(t)
+	})
+	t.Run("a read that answers starts a later failure over", func(t *testing.T) {
+		r := newRetryScenario(t, st)
+		r.answer(transient)
+		r.automatic(t, dispatch.ErrCheckStatusUnread)
+		r.startRuntime(t)
+		r.requireJobFinished(t, 1)
+		r.answer(nil, pending)
+		r.automatic(t, dispatch.ErrCheckStatusPending)
+		r.answer(transient)
+		r.automatic(t, dispatch.ErrCheckStatusUnread)
+		r.requireJobFinished(t, 2)
+	})
+	t.Run("a refused read queues no job", func(t *testing.T) {
+		r := newRetryScenario(t, st)
+		r.answer(refused)
+		r.automatic(t, dispatch.ErrCheckStatusHeld)
+		r.automatic(t, dispatch.ErrCheckStatusHeld)
+		if job := r.job(t); job.State != logqueue.StateNone {
+			t.Fatalf("job = %+v, want none", job)
+		}
+		r.requireAction(t, nextactionOperator, nextactionHold, false)
+	})
+	t.Run("a refusal during the retry ends it", func(t *testing.T) {
+		r := newRetryScenario(t, st)
+		r.answer(transient)
+		r.automatic(t, dispatch.ErrCheckStatusUnread)
+		r.answer(refused)
+		r.startRuntime(t)
+		r.requireJobFinished(t, 1)
+		if r.reads != 2 || len(r.waits) != 1 {
+			t.Fatalf("reads=%d waits=%v, want one retry", r.reads, r.waits)
+		}
+		r.requireAction(t, nextactionOperator, nextactionHold, false)
+	})
+	t.Run("a failed check found by the retry holds", func(t *testing.T) {
+		r := newRetryScenario(t, st)
+		r.answer(transient)
+		r.automatic(t, dispatch.ErrCheckStatusUnread)
+		r.answer(nil, failed)
+		r.startRuntime(t)
+		r.requireJobFinished(t, 1)
+		r.requireAction(t, nextactionOperator, nextactionHold, true, "e2e")
+	})
+	t.Run("a pending check found by the retry stays with the factory", func(t *testing.T) {
+		r := newRetryScenario(t, st)
+		r.answer(transient)
+		r.automatic(t, dispatch.ErrCheckStatusUnread)
+		r.answer(nil, pending)
+		r.startRuntime(t)
+		r.requireJobFinished(t, 1)
+		if r.reads != 2 {
+			t.Fatalf("reads = %d", r.reads)
+		}
+		action := r.requireAction(t, "factory", "merging", false, "deploy")
+		if action.Details.CheckReadFailure != "" || action.Details.ReasonCode != "" {
+			t.Fatalf("details = %+v", action.Details)
+		}
+	})
+	t.Run("a job firing after a pending read reads nothing", func(t *testing.T) {
+		r := newRetryScenario(t, st)
+		r.answer(transient)
+		r.automatic(t, dispatch.ErrCheckStatusUnread)
+		r.answer(nil, pending)
+		r.automatic(t, dispatch.ErrCheckStatusPending)
+		reads := r.reads
+		r.startRuntime(t)
+		r.requireJobFinished(t, 1)
+		if r.reads != reads || len(r.waits) != 0 {
+			t.Fatalf("reads=%d waits=%v, want no retry", r.reads-reads, r.waits)
+		}
+	})
+	t.Run("a job firing after the head moved reads nothing", func(t *testing.T) {
+		r := newRetryScenario(t, st)
+		r.answer(transient)
+		r.automatic(t, dispatch.ErrCheckStatusUnread)
+		reads := r.reads
+		if _, err := r.st.MarkTaskApprovalStale(r.ctx, r.task.ID, headB, headC, config.RefreshReviewDelta, "head-changed"); err != nil {
+			t.Fatal(err)
+		}
+		if err := r.st.BindTaskApproval(r.ctx, r.task.ID, headC); err != nil {
+			t.Fatal(err)
+		}
+		r.head = headC
+		r.startRuntime(t)
+		r.requireJobFinished(t, 1)
+		if r.reads != reads || len(r.waits) != 0 {
+			t.Fatalf("reads=%d waits=%v, want no retry", r.reads-reads, r.waits)
+		}
+		r.requireApprovedUnmerged(t)
+	})
+	t.Run("a job firing after the merge calls GitHub for nothing", func(t *testing.T) {
+		r := newRetryScenario(t, st)
+		r.answer(transient)
+		r.automatic(t, dispatch.ErrCheckStatusUnread)
+		if err := r.d.MergeApprovedTask(r.operatorCtx, r.current(t), r.operator); err != nil {
+			t.Fatal(err)
+		}
+		r.requireMerged(t)
+		reads, views := r.reads, r.views
+		r.startRuntime(t)
+		r.requireJobFinished(t, 1)
+		if r.reads != reads || r.views != views || len(r.waits) != 0 {
+			t.Fatalf("job called GitHub: reads=%d views=%d waits=%v", r.reads-reads, r.views-views, r.waits)
+		}
+		r.requireCount(t, "merge.confirmed", 1)
+	})
+	t.Run("a job firing after the task closed calls GitHub for nothing", func(t *testing.T) {
+		r := newRetryScenario(t, st)
+		r.answer(transient)
+		r.automatic(t, dispatch.ErrCheckStatusUnread)
+		if _, err := taskops.New(r.st).Perform(r.ctx, r.task.ID, taskops.Command{Kind: core.TaskCancel, ProjectStages: true}); err != nil {
+			t.Fatal(err)
+		}
+		reads, views := r.reads, r.views
+		r.startRuntime(t)
+		r.requireJobFinished(t, 1)
+		if r.reads != reads || r.views != views || len(r.waits) != 0 {
+			t.Fatalf("job called GitHub: reads=%d views=%d waits=%v", r.reads-reads, r.views-views, r.waits)
+		}
+	})
+	t.Run("an act during the wait ends the retry", func(t *testing.T) {
+		r := newRetryScenario(t, st)
+		r.answer(transient)
+		r.automatic(t, dispatch.ErrCheckStatusUnread)
+		reads := r.reads
+		// The operator's act takes the task side-effect lock here, so this also
+		// proves the wait holds no lock.
+		r.onWait = func() {
+			if err := r.d.MergeApprovedTask(r.operatorCtx, r.current(t), r.operator); err != nil {
+				t.Error(err)
+			}
+		}
+		r.startRuntime(t)
+		r.requireJobFinished(t, 1)
+		if r.reads != reads {
+			t.Fatalf("reads = %d, want none after the act", r.reads-reads)
+		}
+		r.requireMerged(t)
+	})
+	t.Run("a delivery's failed read arranges the same retry", func(t *testing.T) {
+		r := newRetryScenario(t, st)
+		r.answer(transient)
+		// The delivery still reports the failure, so the webhook applier's own
+		// retries run. When they run out, the job remains.
+		if err := r.d.ApplyChecksDelivery(r.ctx, githubSlug, r.head, nil); !errors.Is(err, dispatch.ErrCheckStatusUnread) {
+			t.Fatalf("delivery err = %v", err)
+		}
+		if job := r.job(t); job.Generation != 1 || !job.Active() {
+			t.Fatalf("job = %+v, want one active job", job)
+		}
+		r.answer(nil, passed)
+		r.startRuntime(t)
+		r.requireJobFinished(t, 1)
+		r.requireMerged(t)
+	})
+	t.Run("a sweep's failed read arranges the same retry", func(t *testing.T) {
+		r := newRetryScenario(t, st)
+		r.answer(transient)
+		if _, err := r.d.ReconcileMergeReadiness(r.ctx); err != nil {
+			t.Fatal(err)
+		}
+		if job := r.job(t); job.Generation != 1 || !job.Active() {
+			t.Fatalf("job = %+v, want one active job", job)
+		}
+		r.answer(nil, passed)
+		r.startRuntime(t)
+		r.requireJobFinished(t, 1)
+		r.requireMerged(t)
+	})
+	t.Run("a job queued across a restart runs on the next runtime", func(t *testing.T) {
+		r := newRetryScenario(t, st)
+		r.answer(transient)
+		r.automatic(t, dispatch.ErrCheckStatusUnread)
+		if job := r.job(t); job.State != logqueue.StateAvailable {
+			t.Fatalf("job = %+v, want it durable and available before any runtime", job)
+		}
+		// A fresh dispatcher is what a restarted daemon has: only the log and
+		// the store carry the retry over.
+		r.answer(nil, passed)
+		r.d = r.freshDispatcher()
+		r.startRuntime(t)
+		r.requireJobFinished(t, 1)
+		r.requireMerged(t)
+	})
+	t.Run("a shutdown during the wait hands the attempt back and a restart resumes", func(t *testing.T) {
+		r := newRetryScenario(t, st)
+		r.answer(transient)
+		r.automatic(t, dispatch.ErrCheckStatusUnread)
+		waiting := make(chan struct{})
+		r.blockWait = waiting
+		first := r.startRuntime(t)
+		<-waiting
+		r.stopRuntimeHard(t, first)
+		job := r.job(t)
+		if job.State == logqueue.StateCompleted || job.State == logqueue.StateDiscarded || job.Attempt != 0 {
+			t.Fatalf("job after shutdown = %+v, want the attempt handed back", job)
+		}
+		r.requireApprovedUnmerged(t)
+		r.blockWait = nil
+		r.answer(nil, passed)
+		r.d = r.freshDispatcher()
+		r.startRuntime(t)
+		r.requireJobFinished(t, 1)
+		r.requireMerged(t)
+	})
+}
+
+// retryScenario adds the real queue runtime and an injected backoff to a
+// check scenario.
+type retryScenario struct {
+	*checkScenario
+	waits     []time.Duration
+	views     int
+	view      func(context.Context, string, string) (githubtrigger.PullRequest, error)
+	onWait    func()
+	blockWait chan struct{}
+	shutdown  *dispatch.ShutdownMarker
+	running   *logqueue.Runtime
+}
+
+func newRetryScenario(t *testing.T, st store.Backend) *retryScenario {
+	t.Helper()
+	r := &retryScenario{checkScenario: newCheckScenario(t, st), shutdown: &dispatch.ShutdownMarker{}}
+	r.instrument(r.d)
+	t.Cleanup(func() {
+		if r.running != nil {
+			r.stopRuntime(t, r.running)
+		}
+	})
+	return r
+}
+
+// freshDispatcher builds what a restarted daemon has, over the same forge.
+func (r *retryScenario) freshDispatcher() *dispatch.Dispatcher {
+	d := dispatch.New(r.st, r.d.Cfg, nil)
+	d.Now, d.ReadCommitChecks, d.ViewPullRequest, d.RequestMerge = r.d.Now, r.d.ReadCommitChecks, r.view, r.d.RequestMerge
+	r.instrument(d)
+	return d
+}
+
+func (r *retryScenario) instrument(d *dispatch.Dispatcher) {
+	d.DisableMemoryQueueForTest()
+	if r.view == nil {
+		r.view = d.ViewPullRequest
+	}
+	d.ViewPullRequest = func(ctx context.Context, repo, branch string) (githubtrigger.PullRequest, error) {
+		r.views++
+		return r.view(ctx, repo, branch)
+	}
+	d.CheckReadRetryWait = func(ctx context.Context, delay time.Duration) error {
+		r.waits = append(r.waits, delay)
+		if r.onWait != nil {
+			act := r.onWait
+			r.onWait = nil
+			act()
+		}
+		if r.blockWait != nil {
+			close(r.blockWait)
+			<-ctx.Done()
+			return ctx.Err()
+		}
+		return nil
+	}
+}
+
+func (r *retryScenario) startRuntime(t *testing.T) *logqueue.Runtime {
+	t.Helper()
+	backend := r.st.(store.Backend)
+	if identity, wrapped := r.st.(checkIdentityBackend); wrapped {
+		backend = identity.Backend
+	}
+	runtime := logqueue.NewRuntime(backend.Log(), logqueue.Options{
+		Workspaces: []string{r.ws}, RescueStuckAfter: time.Hour, WorkerID: "check-retry", Changes: backend.Changes(), Logf: t.Logf,
+	})
+	for _, registration := range r.d.Registrations(r.shutdown) {
+		if registration.Kind == (queue.DispatchTaskArgs{}).Kind() {
+			runtime.Register(registration)
+		}
+	}
+	if err := runtime.Start(r.ctx); err != nil {
+		t.Fatal(err)
+	}
+	r.running = runtime
+	return runtime
+}
+
+func (r *retryScenario) stopRuntime(t *testing.T, runtime *logqueue.Runtime) {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	if err := runtime.Stop(ctx); err != nil {
+		t.Error(err)
+	}
+	if r.running == runtime {
+		r.running = nil
+	}
+}
+
+// stopRuntimeHard is the daemon's hard shutdown: the marker first, then the
+// cancelled handler context.
+func (r *retryScenario) stopRuntimeHard(t *testing.T, runtime *logqueue.Runtime) {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	if err := dispatch.NewMarkedRuntime(runtime, r.shutdown).StopAndCancel(ctx); err != nil {
+		t.Error(err)
+	}
+	r.running = nil
+	r.shutdown = &dispatch.ShutdownMarker{}
+}
+
+func (r *retryScenario) job(t *testing.T) logqueue.Job {
+	t.Helper()
+	backend := r.st.(store.Backend)
+	if identity, wrapped := r.st.(checkIdentityBackend); wrapped {
+		backend = identity.Backend
+	}
+	job, err := logqueue.Load(r.ctx, backend.Log(), r.ws, logqueue.StreamFor(queue.DispatchTaskArgs{}.Kind(), r.task.ID))
+	if err != nil {
+		t.Fatal(err)
+	}
+	return job
+}
+
+// requireJobFinished waits for the generation's job to leave the active states.
+func (r *retryScenario) requireJobFinished(t *testing.T, generation int) {
+	t.Helper()
+	deadline := time.After(30 * time.Second)
+	for {
+		job := r.job(t)
+		if job.Generation == generation && !job.Active() {
+			return
+		}
+		select {
+		case <-deadline:
+			t.Fatalf("job did not finish: %+v", job)
+		case <-time.After(5 * time.Millisecond):
+		}
+	}
 }

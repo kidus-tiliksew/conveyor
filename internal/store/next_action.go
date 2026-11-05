@@ -474,7 +474,7 @@ func readAssemblerCheckStatus(ctx context.Context, st Store, tasks []core.Task) 
 		if !ok || (task.CheckStatusDeadline != nil && task.CheckStatusDeadlineHead == CheckStatusHead(task)) {
 			continue
 		}
-		status.Waiting, status.ReadFailure = nil, ""
+		status.Waiting, status.ReadFailure, status.RetriesExhausted = nil, "", false
 		statuses[task.ID] = status
 	}
 	return statuses, nil
