@@ -43,6 +43,16 @@ func TestReviewSeatModelRefusalCountsHoldingStates(t *testing.T) {
 	if err := ReviewSeatModelRefusal(distinctModelsTask(), claiming, "gpt-6", []core.WorkOrder{lapsed}, now); err != nil {
 		t.Errorf("lapsed claim counted: %v", err)
 	}
+	overdue := sibling(core.WorkOrderClaimed)
+	overdue.ExecutionDeadline = now.Add(-time.Second)
+	if err := ReviewSeatModelRefusal(distinctModelsTask(), claiming, "gpt-6", []core.WorkOrder{overdue}, now); err != nil {
+		t.Errorf("claim past its execution deadline counted: %v", err)
+	}
+	running := sibling(core.WorkOrderClaimed)
+	running.ExecutionDeadline = now.Add(time.Minute)
+	if err := ReviewSeatModelRefusal(distinctModelsTask(), claiming, "gpt-6", []core.WorkOrder{running}, now); !errors.Is(err, ErrReviewSeatModelNotDistinct) {
+		t.Errorf("claim inside its execution deadline err=%v", err)
+	}
 }
 
 func TestReviewSeatModelRefusalScope(t *testing.T) {

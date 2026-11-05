@@ -580,7 +580,11 @@ function PolicyTab({
               <Switch
                 aria-label="Distinct seat models"
                 checked={draft.review.distinct_models ?? false}
-                onChange={(checked) => update({ review: { ...draft.review, distinct_models: checked } })}
+                onChange={(checked) => {
+                  // Off omits the key, matching the fetched document, so the draft reads as unchanged.
+                  const { distinct_models: _off, ...review } = draft.review
+                  update({ review: checked ? { ...review, distinct_models: true } : review })
+                }}
               />
               <div>
                 <p className="text-sm font-medium">Distinct seat models</p>

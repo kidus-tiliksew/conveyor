@@ -8,6 +8,7 @@ import (
 
 	"github.com/kidus-tiliksew/conveyor/internal/config"
 	"github.com/kidus-tiliksew/conveyor/internal/core"
+	"github.com/kidus-tiliksew/conveyor/internal/dispatch"
 	"github.com/kidus-tiliksew/conveyor/internal/store"
 	"github.com/kidus-tiliksew/conveyor/internal/store/storetest"
 )
@@ -163,5 +164,59 @@ func TestChangeTaskPolicyRejectsInFlightReviewVerdict(t *testing.T) {
 	current, _ := st.GetTask(ctx, task.ID)
 	if current.SetupContract.VerifyStage || current.NextStage != core.StageReview {
 		t.Fatalf("task mutated=%+v", current)
+	}
+}
+
+// enqueueRecordingStore records the task reads Dispatcher.Enqueue starts with.
+// Only the dispatcher holds it, so the service's own reads stay out of the record.
+type enqueueRecordingStore struct {
+	store.Store
+	taskReads []string
+}
+
+func (s *enqueueRecordingStore) GetTask(ctx context.Context, id string) (core.Task, error) {
+	s.taskReads = append(s.taskReads, id)
+	return s.Store.GetTask(ctx, id)
+}
+
+// A change holding only review_distinct_models moves no stage, so it enqueues
+// no dispatch, leaves the queued verify order in place, and stays at verify on
+// a task with verify_stage true. A verify_stage-bearing change still enqueues,
+// which proves the recorder observes dispatch (req-review-gates-evidence
+// AC-2.11).
+func TestChangeTaskPolicyDistinctModelsOnlySkipsDispatch(t *testing.T) {
+	service, st, ctx, task, _, verify := policyChangeFixture(t)
+	recorder := &enqueueRecordingStore{Store: st}
+	service.Dispatcher = dispatch.New(recorder, nil, nil)
+	on := true
+	result, err := service.ChangeTaskPolicy(ctx, task.ID, "panel repeats a model", "distinct-only", store.TaskPolicyChange{ReviewDistinctModels: &on})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(recorder.taskReads) != 0 {
+		t.Fatalf("policy-only change enqueued dispatch: %v", recorder.taskReads)
+	}
+	if result.ReviewTransition != "policy_only" || len(result.CreatedWorkOrders)+len(result.SupersededWorkOrders)+len(result.UpdatedWorkOrders) != 0 {
+		t.Fatalf("policy-only result=%+v", result)
+	}
+	stored, err := st.GetTask(ctx, task.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !stored.SetupContract.Review.DistinctModels || !stored.SetupContract.VerifyStage || stored.NextStage != core.StageVerify {
+		t.Fatalf("task next=%s policy=%+v", stored.NextStage, stored.SetupContract)
+	}
+	order, err := st.GetWorkOrder(ctx, verify.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if order.State != core.WorkOrderQueued {
+		t.Fatalf("verify order state=%s", order.State)
+	}
+	if _, err = service.ChangeTaskPolicy(ctx, task.ID, "shorter verify", "verify-timeout", store.TaskPolicyChange{StageTimeouts: map[string]string{"verify": "45m"}}); err != nil {
+		t.Fatal(err)
+	}
+	if len(recorder.taskReads) == 0 {
+		t.Fatal("a stage-bearing policy change did not enqueue dispatch")
 	}
 }

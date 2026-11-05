@@ -905,7 +905,7 @@ function PanelEntry({
               : `Panel of ${seats.length}`}
           </span>
           {seats.length > 1 && <span className="text-xs text-muted">· unanimous to pass</span>}
-          {entry.distinctModels && <span className="text-xs text-muted">· seats must report different models</span>}
+          {entry.distinctModels && <span className="text-xs text-muted">· task policy: distinct seat models</span>}
           <span className="inline-flex items-center gap-[5px]" title={`${verdictsIn} of ${seats.length} verdicts in`}>
             {seats.map((seat) => (
               <span

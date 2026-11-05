@@ -2,6 +2,7 @@ package config
 
 import (
 	"encoding/json"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -264,5 +265,37 @@ func TestReviewDistinctModelsSurvivesWorkspaceDocument(t *testing.T) {
 	}
 	if !parsed.WorkspaceDocument().Review.DistinctModels || !parsed.PolicyDocument().Review.DistinctModels {
 		t.Fatal("re-emitted workspace document dropped distinct_models")
+	}
+}
+
+// promoteLegacyDefaultSetup replaces the review block with the setup's. The
+// file's top-level distinct_models survives that projection, and a value the
+// setup states wins (req-review-gates-evidence AC-2.9).
+func TestLegacyDefaultSetupKeepsTopLevelDistinctModels(t *testing.T) {
+	seats := []any{map[string]any{}, map[string]any{}}
+	for name, tc := range map[string]struct {
+		setup any
+		want  map[string]any
+	}{
+		"setup review without the key": {map[string]any{"seats": seats}, map[string]any{"seats": seats, "distinct_models": true}},
+		"setup review states the key":  {map[string]any{"seats": seats, "distinct_models": false}, map[string]any{"seats": seats, "distinct_models": false}},
+		"setup without a review":       {nil, map[string]any{"distinct_models": true}},
+	} {
+		t.Run(name, func(t *testing.T) {
+			setup := map[string]any{"name": "default"}
+			if tc.setup != nil {
+				setup["review"] = tc.setup
+			}
+			root := map[string]any{"default_setup": "default", "setups": []any{setup}, "review": map[string]any{"distinct_models": true}}
+			promoteLegacyDefaultSetup(root)
+			if !reflect.DeepEqual(root["review"], tc.want) {
+				t.Fatalf("review=%v, want %v", root["review"], tc.want)
+			}
+		})
+	}
+	root := map[string]any{"default_setup": "default", "setups": []any{map[string]any{"name": "default"}}, "review": map[string]any{"seats": seats}}
+	promoteLegacyDefaultSetup(root)
+	if _, kept := root["review"]; kept {
+		t.Fatalf("a file without the key keeps the earlier projection: %v", root["review"])
 	}
 }

@@ -197,10 +197,23 @@ func promoteLegacyDefaultSetup(root map[string]any) {
 		} else {
 			delete(root, "execution_settings")
 		}
+		topLevel, _ := root["review"].(map[string]any)
+		distinct, hasDistinct := topLevel["distinct_models"]
 		if review, ok := setup["review"]; ok {
 			root["review"] = review
 		} else {
 			delete(root, "review")
+		}
+		// A setup's review block predates review.distinct_models, so the file's
+		// top-level value survives unless the setup states its own (AC-2.9).
+		if hasDistinct {
+			merged := map[string]any{"distinct_models": distinct}
+			if projected, ok := root["review"].(map[string]any); ok {
+				for key, value := range projected {
+					merged[key] = value
+				}
+			}
+			root["review"] = merged
 		}
 		delete(root, "routing")
 		return

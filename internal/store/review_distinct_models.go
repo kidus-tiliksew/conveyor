@@ -63,12 +63,12 @@ func ReviewSeatModelRefusal(task core.Task, order core.WorkOrder, model string, 
 }
 
 // reviewSeatHoldsModel excludes released, expired, and cancelled seats. A
-// claimed seat whose lease has lapsed has expired even before the clock sweep
-// moves its state.
+// claimed seat whose lease or execution deadline has passed has expired even
+// before the clock sweep moves its state.
 func reviewSeatHoldsModel(seat core.WorkOrder, now time.Time) bool {
 	switch seat.State {
 	case core.WorkOrderClaimed:
-		return seat.LeaseExpiresAt.After(now)
+		return seat.LeaseExpiresAt.After(now) && (seat.ExecutionDeadline.IsZero() || seat.ExecutionDeadline.After(now))
 	case core.WorkOrderSubmitted, core.WorkOrderCompleted:
 		return true
 	}

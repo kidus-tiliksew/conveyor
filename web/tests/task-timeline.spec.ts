@@ -1298,7 +1298,7 @@ test('review seats label reported models and the recorded implementer match', as
   const timeline = page.getByRole('region', { name: 'Execution event timeline' })
   const seat = (n: number) => timeline.getByText(`Seat ${n}`, { exact: true }).locator('..')
 
-  await expect(timeline.getByText('· seats must report different models')).toBeVisible()
+  await expect(timeline.getByText('· task policy: distinct seat models')).toBeVisible()
   await expect(seat(1).getByText('claude-sonnet-5-5', { exact: true })).toBeVisible()
   await expect(seat(1).getByText('self-reported', { exact: true })).toBeVisible()
   await expect(seat(1).getByText('same model as implementer', { exact: true })).toBeVisible()
@@ -1315,7 +1315,7 @@ test('the review panel states the distinct-model policy only when the frozen pol
   await page.goto(`/w/demo/tasks/${taskId}/full`)
   const timeline = page.getByRole('region', { name: 'Execution event timeline' })
   await expect(timeline.getByText('Seat 1', { exact: true })).toBeVisible()
-  await expect(timeline.getByText('· seats must report different models')).toHaveCount(0)
+  await expect(timeline.getByText('· task policy: distinct seat models')).toHaveCount(0)
 })
 
 test('review panel shows its current round summary above unchanged seat feedback', async ({ page }, testInfo) => {

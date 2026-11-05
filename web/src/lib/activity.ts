@@ -835,8 +835,9 @@ export type TimelineEntry =
       // add seats to it now (feature-review-seat-minimum RS-7).
       seatMetadata?: TaskReviewSeatMetadata
       seatAdditionOpen?: boolean
-      // The task's frozen review.distinct_models policy applies to this
-      // numbered round (req-review-gates-evidence AC-2.12).
+      // The task's current review.distinct_models policy. An operator can change
+      // it between rounds, so it states the policy now, not what an earlier
+      // round's seats were checked against.
       distinctModels?: boolean
     }
 
