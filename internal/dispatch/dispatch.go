@@ -1604,6 +1604,13 @@ func (d *Dispatcher) HandleIntervention(ctx context.Context, task core.Task, lat
 		return err
 	}
 	task = current
+	// Cancellation is valid from any non-terminal state, so neither a pending
+	// plan-revision gate nor an unreadable one stands in its way. The terminal
+	// sweep cancels the contested order (req-task-lifecycle-and-queue REQ-8).
+	if intervention.Action == core.InterventionCancel {
+		_, err = taskops.New(d.Store).Cancel(ctx, intervention)
+		return err
+	}
 	planRevision, planRevisionGate, err := PendingPlanRevisionGate(ctx, d.Store, task.ID)
 	if err != nil {
 		return err
@@ -1656,9 +1663,6 @@ func (d *Dispatcher) HandleIntervention(ctx context.Context, task core.Task, lat
 		}
 	}
 	switch intervention.Action {
-	case core.InterventionCancel:
-		_, err := taskops.New(d.Store).Cancel(ctx, intervention)
-		return err
 	case core.InterventionReject:
 		return d.transition(ctx, task.ID, core.TaskInterventionReject, "", "")
 	case core.InterventionApprove:

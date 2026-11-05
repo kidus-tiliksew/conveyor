@@ -1,14 +1,18 @@
 package httpapi
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"log"
 	"net/http"
 	"net/http/httptest"
 	"reflect"
 	"slices"
 	"strconv"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -325,5 +329,102 @@ func TestTaskListFiltersAndPages(t *testing.T) {
 		if response.Code != http.StatusBadRequest {
 			t.Fatalf("%s status=%d, want 400", refused, response.Code)
 		}
+	}
+}
+
+// projectionFailingStore fails one store read the next-action projection
+// issues. The task page read beneath it still succeeds, so a test sees a
+// failure of the projection alone.
+type projectionFailingStore struct {
+	store.Store
+	failing string
+	err     error
+}
+
+func (s *projectionFailingStore) ListWorkOrdersForTasks(ctx context.Context, ids []string) ([]core.WorkOrder, error) {
+	if s.failing == "ListWorkOrdersForTasks" {
+		return nil, s.err
+	}
+	return s.Store.ListWorkOrdersForTasks(ctx, ids)
+}
+
+func (s *projectionFailingStore) ListActivityMarkersForTasks(ctx context.Context, ids []string) ([]store.ActivityMarker, error) {
+	if s.failing == "ListActivityMarkersForTasks" {
+		return nil, s.err
+	}
+	return s.Store.ListActivityMarkersForTasks(ctx, ids)
+}
+
+func (s *projectionFailingStore) ListPendingProposals(ctx context.Context) ([]core.PendingProposal, error) {
+	if s.failing == "ListPendingProposals" {
+		return nil, s.err
+	}
+	return s.Store.ListPendingProposals(ctx)
+}
+
+// A failed next-action projection fails the list read: the server logs the
+// redacted cause under the request ID, and the client receives the generic
+// 500 with no task rows and no page headers, instead of tasks that state no
+// next action (req-operator-next-action AC-1.7; component-next-action
+// invariant 1; component-http-api invariant 16).
+func TestTaskListFailsWhenNextActionProjectionFails(t *testing.T) {
+	const (
+		secret    = "hunter2hunter2hunter2hunter2"
+		requestID = "task-list-projection-failure"
+	)
+	for _, failing := range []string{"ListWorkOrdersForTasks", "ListActivityMarkersForTasks", "ListPendingProposals"} {
+		t.Run(failing, func(t *testing.T) {
+			counter, handler, openIDs := seedTaskListWorkspace(t, 0)
+			counter.Store = &projectionFailingStore{
+				Store:   counter.Store,
+				failing: failing,
+				err:     errors.New("driver refused " + failing + " password=" + secret),
+			}
+			var captured bytes.Buffer
+			previous := log.Writer()
+			log.SetOutput(&captured)
+			t.Cleanup(func() { log.SetOutput(previous) })
+
+			request := httptest.NewRequest(http.MethodGet, "/v1/tasks", nil)
+			request.Header.Set("X-Request-Id", requestID)
+			response := httptest.NewRecorder()
+			handler.ServeHTTP(response, request)
+			log.SetOutput(previous)
+
+			if response.Code != http.StatusInternalServerError {
+				t.Fatalf("status=%d body=%s, want 500", response.Code, response.Body.String())
+			}
+			if got, want := response.Body.String(), "internal server error\n"; got != want {
+				t.Fatalf("body=%q, want %q", got, want)
+			}
+			for _, id := range openIDs {
+				if strings.Contains(response.Body.String(), id) {
+					t.Fatalf("500 body carries task row %s: %s", id, response.Body.String())
+				}
+			}
+			for _, name := range []string{"X-Conveyor-Total", "X-Conveyor-Limit", "X-Conveyor-Offset"} {
+				if got := response.Header().Get(name); got != "" {
+					t.Fatalf("%s=%q on a failed read, want absent", name, got)
+				}
+			}
+
+			var line string
+			for candidate := range strings.Lines(captured.String()) {
+				if strings.Contains(candidate, "task list next action") {
+					line = candidate
+				}
+			}
+			if line == "" {
+				t.Fatalf("no task list log line in %q", captured.String())
+			}
+			for _, want := range []string{requestID, "driver refused " + failing} {
+				if !strings.Contains(line, want) {
+					t.Fatalf("log line %q does not name %q", line, want)
+				}
+			}
+			if strings.Contains(captured.String(), secret) {
+				t.Fatalf("log carries the secret: %q", captured.String())
+			}
+		})
 	}
 }
