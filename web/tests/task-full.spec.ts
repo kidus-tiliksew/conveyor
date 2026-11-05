@@ -5009,6 +5009,8 @@ test('review panel hides generated metadata while preserving reported zero usage
     item.work_orders = item.work_orders?.map((order, index) => ({
       ...order,
       task_id: 'review-panel-cleanup',
+      // A claim records the model the seat reports on its order.
+      model: order.required_model,
       model_enforcement: 'self-reported',
       usage_reported: index === 1,
       tokens_in: 0,
