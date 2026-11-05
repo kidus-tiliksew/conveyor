@@ -185,25 +185,42 @@ func awaitClaimedRecord(ctx context.Context, tx *sql.Tx, key, workspace, taskSha
 		}
 		query, args = "SELECT COUNT(*) FROM events_columnstore WHERE workspace_id=? AND event_shard_key=? AND id=?", []any{workspace, shard, record.ID}
 	}
+	visible, err := awaitClaimedVisibility(ctx, func() (bool, error) {
+		var count int
+		if err := tx.QueryRowContext(ctx, query, args...).Scan(&count); err != nil {
+			return false, err
+		}
+		return count > 0, nil
+	})
+	if err != nil {
+		return claimedRecord{}, false, err
+	}
+	if !visible {
+		return claimedRecord{}, false, fmt.Errorf("%w: claimed %s record %d is not visible", store.ErrRetryable, record.Table, record.ID)
+	}
+	return record, true, nil
+}
+
+// awaitClaimedVisibility polls check until it reports the claimed record
+// visible. It returns false after claimedRecordWaitLimit, and the caller
+// returns store.ErrRetryable.
+func awaitClaimedVisibility(ctx context.Context, check func() (bool, error)) (bool, error) {
 	deadline := time.Now().Add(claimedRecordWaitLimit)
 	delay := claimedRecordFirstDelay
 	for {
-		var visible int
-		if err = tx.QueryRowContext(ctx, query, args...).Scan(&visible); err != nil {
-			return claimedRecord{}, false, err
-		}
-		if visible > 0 {
-			return record, true, nil
+		visible, err := check()
+		if err != nil || visible {
+			return visible, err
 		}
 		noteClaimedRecordWait(ctx)
 		if !time.Now().Before(deadline) {
-			return claimedRecord{}, false, fmt.Errorf("%w: claimed %s record %d is not visible", store.ErrRetryable, record.Table, record.ID)
+			return false, nil
 		}
 		timer := time.NewTimer(delay)
 		select {
 		case <-ctx.Done():
 			timer.Stop()
-			return claimedRecord{}, false, ctx.Err()
+			return false, ctx.Err()
 		case <-timer.C:
 		}
 		delay = min(2*delay, claimedRecordMaxDelay)
