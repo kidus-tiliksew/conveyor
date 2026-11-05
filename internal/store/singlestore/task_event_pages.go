@@ -78,7 +78,7 @@ func (s *Store) ReadTaskEventWindow(ctx context.Context, q store.TaskEventWindow
 		return store.TaskEventWindow{}, err
 	}
 	var exists int
-	if err := s.db.QueryRowContext(ctx, `SELECT 1 FROM tasks WHERE workspace_id=? AND id=?`, ws, q.TaskID).Scan(&exists); err != nil {
+	if err := backendRow(ctx, s.db, `SELECT 1 FROM tasks WHERE workspace_id=? AND id=?`, ws, q.TaskID).Scan(&exists); err != nil {
 		return store.TaskEventWindow{}, notFound(err, "task %s", q.TaskID)
 	}
 	// A captured boundary fixes the ceiling; the recount runs in the same
@@ -114,7 +114,7 @@ func (s *Store) ReadTaskEventWindow(ctx context.Context, q store.TaskEventWindow
 		direction = " DESC"
 	}
 	args = append(args, q.Limit+1, ws, q.TaskID)
-	rows, err := s.db.QueryContext(ctx, fmt.Sprintf(taskEventWindowSelect, maxID, kindFilter, boundaryCeiling, windowFilter, direction), args...)
+	rows, err := backendRows(ctx, s.db, fmt.Sprintf(taskEventWindowSelect, maxID, kindFilter, boundaryCeiling, windowFilter, direction), args...)
 	if err != nil {
 		return store.TaskEventWindow{}, translateBackendConflict(err)
 	}

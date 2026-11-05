@@ -14,7 +14,7 @@ import (
 
 func (s *Store) readClockPolicy(ctx context.Context) (config.RecoveryPolicy, time.Duration, error) {
 	var raw string
-	err := s.db.QueryRowContext(ctx, `SELECT config_yaml FROM workspaces WHERE id=?`, documentWorkspace(ctx)).Scan(&raw)
+	err := backendRow(ctx, s.db, `SELECT config_yaml FROM workspaces WHERE id=?`, documentWorkspace(ctx)).Scan(&raw)
 	if errors.Is(err, sql.ErrNoRows) || raw == "" {
 		return config.DefaultRecoveryPolicy(), config.DefaultWorkOrderQueueTimeout, nil
 	}

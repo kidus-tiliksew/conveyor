@@ -474,10 +474,10 @@ func (s *Store) RunVerificationDelivery(ctx context.Context, a queue.Verificatio
 		var e error
 		tx, e = s.db.BeginTx(ctx, nil)
 		if e != nil {
-			return e
+			return translateBackendConflict(e)
 		}
 		s.beginNotices(tx)
-		return lockKey(ctx, tx, "verification-publication:"+ws+":"+key)
+		return translateBackendConflict(lockKey(ctx, tx, "verification-publication:"+ws+":"+key))
 	}
 	defer func() {
 		if tx != nil {
@@ -489,7 +489,7 @@ func (s *Store) RunVerificationDelivery(ctx context.Context, a queue.Verificatio
 	commit := func() error {
 		e := tx.Commit()
 		finishNotices(tx, e == nil)
-		return e
+		return translateBackendConflict(e)
 	}
 	if err = begin(); err != nil {
 		return err
@@ -497,7 +497,7 @@ func (s *Store) RunVerificationDelivery(ctx context.Context, a queue.Verificatio
 	load := func() (core.VerificationDelivery, bool, error) {
 		ds, e := deliveryRowsTx(ctx, tx, ws, key)
 		if e != nil {
-			return core.VerificationDelivery{}, false, e
+			return core.VerificationDelivery{}, false, translateBackendConflict(e)
 		}
 		d, ok := store.VerificationDeliveryLatest(ds)
 		return d, ok, nil
@@ -529,7 +529,7 @@ func (s *Store) RunVerificationDelivery(ctx context.Context, a queue.Verificatio
 			return e
 		}
 		if e = putDelivery(ctx, tx, updated); e != nil {
-			return e
+			return translateBackendConflict(e)
 		}
 		current = updated
 		view = updated
@@ -546,7 +546,7 @@ func (s *Store) RunVerificationDelivery(ctx context.Context, a queue.Verificatio
 		return nil
 	}
 	if err = fn(&view, save); err != nil {
-		return err
+		return translateBackendConflict(err)
 	}
 	return commit()
 }

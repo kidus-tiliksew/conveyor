@@ -79,28 +79,28 @@ type documentResultSet struct{ *sql.Rows }
 func (r *documentResultSet) Scan(dest ...any) error {
 	return (documentResult{documentScanner: r.Rows}).Scan(dest...)
 }
+
+// Err and Close translate like Scan, so row iteration cannot return a driver
+// error through a read outside a transaction (component-persistence).
+func (r *documentResultSet) Err() error   { return translateBackendConflict(r.Rows.Err()) }
+func (r *documentResultSet) Close() error { return translateBackendConflict(r.Rows.Close()) }
 func documentRow(ctx context.Context, db s2log.Executor, query string, args ...any) documentScanner {
 	if _, err := workspace(ctx); err != nil {
 		return documentResult{err: err}
 	}
-	return documentResult{documentScanner: db.QueryRowContext(ctx, query, documentArgs(args)...)}
+	return backendRow(ctx, db, query, documentArgs(args)...)
 }
 func documentRows(ctx context.Context, db s2log.Executor, query string, args ...any) (*documentResultSet, error) {
 	if _, err := workspace(ctx); err != nil {
 		return nil, err
 	}
-	rows, err := db.QueryContext(ctx, query, documentArgs(args)...)
-	if err != nil {
-		return nil, translateBackendConflict(err)
-	}
-	return &documentResultSet{rows}, nil
+	return backendRows(ctx, db, query, documentArgs(args)...)
 }
 func documentExec(ctx context.Context, db s2log.Executor, query string, args ...any) (sql.Result, error) {
 	if _, err := workspace(ctx); err != nil {
 		return nil, err
 	}
-	result, err := db.ExecContext(ctx, query, documentArgs(args)...)
-	return result, translateBackendConflict(err)
+	return backendExec(ctx, db, query, documentArgs(args)...)
 }
 func documentArgs(args []any) []any {
 	out := append([]any(nil), args...)
