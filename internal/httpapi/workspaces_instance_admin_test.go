@@ -190,17 +190,9 @@ func newInstanceAdminHarness(t *testing.T) *instanceAdminHarness {
 		t.Fatal(err)
 	}
 	h.session = session.Value
-	agent, err := st.IssueAgentCredential(ctx, owner.ID, "owner agent")
-	if err != nil {
-		t.Fatal(err)
-	}
-	h.agent = agent.Value
-	operatorAgent, err := st.IssueAgentCredential(ctx, h.users["alpha-operator"].ID, "operator agent")
-	if err != nil {
-		t.Fatal(err)
-	}
-	h.operatorAgent = operatorAgent.Value
-	// Former worker secrets match no stored credential (DEC-97(1)).
+	// Former agent and worker secrets match no credential the store verifies
+	// (DEC-116(1), (3); DEC-97(1)).
+	h.agent, h.operatorAgent = "cv_agent_instance_admin_fixture", "cv_agent_instance_admin_operator"
 	h.worker, h.operatorWorker = "cv_wkr_instance_admin_fixture", "cv_wkr_instance_admin_operator"
 	h.control = &countingWorkspaceControl{WorkspaceControlStore: st}
 	h.provisioner = &countingProvisioner{IdentityProvisioner: st}

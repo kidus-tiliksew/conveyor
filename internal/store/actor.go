@@ -13,6 +13,15 @@ func UserActorID(id string) string   { return "user:" + strings.TrimSpace(id) }
 func AgentActorID(id string) string  { return "agent:" + strings.TrimSpace(id) }
 func WorkerActorID(id string) string { return "worker:" + strings.TrimSpace(id) }
 
+// AgentActorCredentialID returns the credential ID an event's agent:<id> actor
+// names. Any other actor, including the agent actor a review round's settlement
+// records (ReviewRoundActorID), names no credential.
+func AgentActorCredentialID(actorID string) (string, bool) {
+	id, ok := strings.CutPrefix(strings.TrimSpace(actorID), "agent:")
+	id = strings.TrimSpace(id)
+	return id, ok && id != ""
+}
+
 // Actor is the typed event actor (component-persistence, Actor context).
 type Actor = core.Actor
 

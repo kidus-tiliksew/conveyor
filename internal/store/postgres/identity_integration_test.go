@@ -97,28 +97,16 @@ func TestIdentityBootstrapAndPersonalAccessTokenLifecycleIntegration(t *testing.
 	if verified, err := st.VerifyPersonalAccessToken(store.WithActor(t.Context(), store.SystemActor()), issued.Value); err != nil || verified.ID != principal.ID {
 		t.Fatalf("issued token verification principal=%+v err=%v", verified, err)
 	}
-	agent, err := st.IssueAgentCredential(store.WithActor(t.Context(), store.SystemActor()), principal.ID, "Codex")
-	if err != nil {
-		t.Fatal(err)
+	systemCtx := store.WithActor(t.Context(), store.SystemActor())
+	agentID, agentValue := seedStoredAgentCredential(t, systemCtx, st, principal.ID, "Codex", false)
+	if resolved, err := st.VerifyCredential(systemCtx, agentValue); !errors.Is(err, ErrInvalidPersonalAccessToken) {
+		t.Fatalf("stored agent row verified as %+v err=%v, want invalid", resolved, err)
 	}
-	resolved, err := st.VerifyCredential(store.WithActor(t.Context(), store.SystemActor()), agent.Value)
-	if err != nil || resolved.ID != agent.ID || resolved.OwnerUserID != principal.ID || resolved.Kind != core.CredentialAgent || resolved.Scope != core.CredentialScopeUser {
-		t.Fatalf("resolved agent credential=%+v err=%v", resolved, err)
-	}
-	if _, err = st.VerifyPersonalAccessToken(store.WithActor(t.Context(), store.SystemActor()), agent.Value); !errors.Is(err, ErrInvalidPersonalAccessToken) {
+	if _, err = st.VerifyPersonalAccessToken(systemCtx, agentValue); !errors.Is(err, ErrInvalidPersonalAccessToken) {
 		t.Fatalf("agent credential authenticated as PAT: %v", err)
 	}
-	if _, err = st.RevokePersonalAccessToken(store.WithActor(t.Context(), store.SystemActor()), agent.ID); err == nil {
+	if _, err = st.RevokePersonalAccessToken(systemCtx, agentID); err == nil {
 		t.Fatal("personal-token revocation accepted an agent credential")
-	}
-	if resolved, err = st.VerifyCredential(store.WithActor(t.Context(), store.SystemActor()), agent.Value); err != nil || resolved.Kind != core.CredentialAgent {
-		t.Fatalf("agent credential changed by PAT revocation: credential=%+v err=%v", resolved, err)
-	}
-	if err = st.RevokeAgentCredential(store.WithActor(t.Context(), store.SystemActor()), principal.ID, agent.ID); err != nil {
-		t.Fatalf("revoke agent credential: %v", err)
-	}
-	if _, err = st.VerifyCredential(store.WithActor(t.Context(), store.SystemActor()), agent.Value); !errors.Is(err, ErrInvalidPersonalAccessToken) {
-		t.Fatalf("revoked agent verification err=%v, want invalid", err)
 	}
 	if revoked, err := st.RevokePersonalAccessToken(store.WithActor(t.Context(), store.SystemActor()), issued.ID); err != nil || revoked.RevokedAt == nil {
 		t.Fatalf("revoke token=%+v err=%v", revoked, err)
@@ -131,20 +119,14 @@ func TestIdentityBootstrapAndPersonalAccessTokenLifecycleIntegration(t *testing.
 	if err != nil {
 		t.Fatal(err)
 	}
-	ownerBoundAgent, err := st.IssueAgentCredential(store.WithActor(t.Context(), store.SystemActor()), principal.ID, "owner agent")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if credential, verifyErr := st.VerifyCredential(store.WithActor(t.Context(), store.SystemActor()), ownerBoundAgent.Value); verifyErr != nil || credential.Kind != core.CredentialAgent || credential.OwnerUserID != principal.ID {
-		t.Fatalf("agent credential=%+v err=%v", credential, verifyErr)
-	}
+	_, ownerBoundValue := seedStoredAgentCredential(t, systemCtx, st, principal.ID, "owner agent", false)
 	if user, err := st.DeactivateIdentityUser(store.WithActor(t.Context(), store.SystemActor()), principal.ID); err != nil || user.Status != "deactivated" {
 		t.Fatalf("deactivate user=%+v err=%v", user, err)
 	}
 	if _, err := st.VerifyPersonalAccessToken(store.WithActor(t.Context(), store.SystemActor()), second.Value); !errors.Is(err, ErrInvalidPersonalAccessToken) {
 		t.Fatalf("deactivated-user verification err=%v, want invalid", err)
 	}
-	if _, err := st.VerifyCredential(store.WithActor(t.Context(), store.SystemActor()), ownerBoundAgent.Value); !errors.Is(err, ErrInvalidPersonalAccessToken) {
+	if _, err := st.VerifyCredential(store.WithActor(t.Context(), store.SystemActor()), ownerBoundValue); !errors.Is(err, ErrInvalidPersonalAccessToken) {
 		t.Fatalf("deactivated-owner agent verification err=%v, want invalid", err)
 	}
 	if _, err := st.IssuePersonalAccessToken(store.WithActor(t.Context(), store.SystemActor()), principal.ID, "forbidden"); err == nil {
@@ -397,10 +379,7 @@ func TestHTTPMutationDerivesLegacyUserAndRejectsAgentCredentialIntegration(t *te
 	if err != nil {
 		t.Fatal(err)
 	}
-	agent, err := st.IssueAgentCredential(store.WithActor(t.Context(), store.SystemActor()), principal.ID, "integration agent")
-	if err != nil {
-		t.Fatal(err)
-	}
+	_, agentValue := seedStoredAgentCredential(t, store.WithActor(t.Context(), store.SystemActor()), st, principal.ID, "integration agent", false)
 	workspace := "identity-http-" + core.NewTaskID()
 	operatorCtx := store.WithCredential(store.WithActor(t.Context(), store.SystemActor()), core.AuthenticatedCredential{ID: "legacy", OwnerUserID: principal.ID, Kind: core.CredentialUser, Scope: core.CredentialScopeOperator})
 	operatorCtx = store.WithActor(operatorCtx, store.Actor{ID: store.UserActorID(principal.ID), Role: core.ActorUser})
@@ -424,7 +403,7 @@ func TestHTTPMutationDerivesLegacyUserAndRejectsAgentCredentialIntegration(t *te
 		handler.ServeHTTP(response, request)
 		return response
 	}
-	if response := call(agent.Value); response.Code != http.StatusUnauthorized {
+	if response := call(agentValue); response.Code != http.StatusUnauthorized {
 		t.Fatalf("agent mutation status=%d body=%s", response.Code, response.Body.String())
 	}
 	if response := call(legacy); response.Code != http.StatusOK {
@@ -438,7 +417,7 @@ func TestHTTPMutationDerivesLegacyUserAndRejectsAgentCredentialIntegration(t *te
 	for _, event := range events {
 		if event.Kind == "task.cancelled" {
 			found = event.ActorID == store.UserActorID(principal.ID) && event.ActorRole == core.ActorUser
-			if strings.Contains(string(event.Payload), legacy) || strings.Contains(string(event.Payload), agent.Value) || strings.Contains(string(event.Payload), "attacker") {
+			if strings.Contains(string(event.Payload), legacy) || strings.Contains(string(event.Payload), agentValue) || strings.Contains(string(event.Payload), "attacker") {
 				t.Fatalf("credential or asserted actor leaked into event: %s", event.Payload)
 			}
 		}
@@ -460,10 +439,7 @@ func TestCallerIdentityHTTPUsesHumanCredentialAndOptionalWorkspaceRoleIntegratio
 	if err != nil {
 		t.Fatal(err)
 	}
-	agent, err := st.IssueAgentCredential(store.WithActor(t.Context(), store.SystemActor()), principal.ID, "caller identity agent")
-	if err != nil {
-		t.Fatal(err)
-	}
+	_, agentValue := seedStoredAgentCredential(t, store.WithActor(t.Context(), store.SystemActor()), st, principal.ID, "caller identity agent", false)
 	workspace := "caller-identity-" + core.NewTaskID()
 	operatorCtx := store.WithCredential(store.WithActor(t.Context(), store.SystemActor()), core.AuthenticatedCredential{ID: "legacy", OwnerUserID: principal.ID, Kind: core.CredentialUser, Scope: core.CredentialScopeOperator})
 	operatorCtx = store.WithActor(operatorCtx, store.Actor{ID: store.UserActorID(principal.ID), Role: core.ActorUser})
@@ -490,7 +466,7 @@ func TestCallerIdentityHTTPUsesHumanCredentialAndOptionalWorkspaceRoleIntegratio
 	if scoped.Code != http.StatusOK || !strings.Contains(scoped.Body.String(), `"id":"`+principal.ID+`"`) || !strings.Contains(scoped.Body.String(), `"role":"operator"`) {
 		t.Fatalf("scoped status=%d body=%s", scoped.Code, scoped.Body.String())
 	}
-	for name, token := range map[string]string{"agent": agent.Value, "worker": workerCredential} {
+	for name, token := range map[string]string{"agent": agentValue, "worker": workerCredential} {
 		response := call(token, "/v1/me?workspace_id="+workspace)
 		if response.Code != http.StatusUnauthorized || strings.Contains(response.Body.String(), principal.Email) {
 			t.Fatalf("%s status=%d body=%s", name, response.Code, response.Body.String())
@@ -955,18 +931,15 @@ func TestSelfServicePersonalAccessTokensAreOwnerScopedIntegration(t *testing.T) 
 		}
 	}
 
-	// Agent credentials share the user_tokens table but are not human
-	// credentials: they can neither enumerate nor mint their owner's tokens.
-	agent, err := st.IssueAgentCredential(store.WithActor(t.Context(), store.SystemActor()), alice.ID, "execution")
-	if err != nil {
-		t.Fatal(err)
-	}
+	// A stored agent row shares the user_tokens table but is refused at
+	// verification: it can neither enumerate nor mint its owner's tokens.
+	_, agentValue := seedStoredAgentCredential(t, store.WithActor(t.Context(), store.SystemActor()), st, alice.ID, "execution", false)
 	for _, route := range [][3]string{
 		{http.MethodGet, "/v1/tokens", ""},
 		{http.MethodPost, "/v1/tokens", `{"label":"smuggled"}`},
 		{http.MethodDelete, "/v1/tokens/" + aliceSeed.ID, ""},
 	} {
-		if response := call(route[0], route[1], agent.Value, route[2]); response.Code != http.StatusUnauthorized {
+		if response := call(route[0], route[1], agentValue, route[2]); response.Code != http.StatusUnauthorized {
 			t.Fatalf("agent credential %s %s status=%d body=%s", route[0], route[1], response.Code, response.Body.String())
 		}
 	}

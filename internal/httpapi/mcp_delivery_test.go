@@ -83,7 +83,7 @@ func TestSubmissionChannelsValidateHeadAndClaimBeforeSideEffects(t *testing.T) {
 				server := NewServer(st)
 				server.Workspace = "demo"
 				server.WorkOrders = orders
-				server.Credentials = staticCredentialVerifier{"agent-bearer": {ID: "owner-agent", OwnerUserID: "owner", Kind: core.CredentialAgent}}
+				server.Credentials = staticCredentialVerifier{"agent-bearer": {ID: "owner-pat", OwnerUserID: "owner", Kind: core.CredentialUser}}
 				handler := server.Handler()
 				prefix := "/v1/work-orders/"
 				templateRequest := httptest.NewRequest(http.MethodGet, prefix+job.ID+"/pull-request-template?workspace_id=demo&session_id=session", nil)

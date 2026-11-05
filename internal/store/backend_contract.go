@@ -29,7 +29,7 @@ type Backend interface {
 	WorkspaceGitHubAppStore
 	GitHubWebhookStore
 	PersonalAccessTokenStore
-	AgentCredentialStore
+	AgentActorOwnerStore
 	WorkspaceControlStore
 	Close()
 	ConfigureGitHubAppKeyEncryptionKey([]byte)

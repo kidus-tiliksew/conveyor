@@ -147,7 +147,7 @@ func TestProvisionIdentityUserRequiresHumanDeploymentOperator(t *testing.T) {
 	server.Memberships = &membershipFixture{instanceAdmins: map[string]bool{"operator": true}}
 	server.Credentials = staticCredentialVerifier{
 		"operator-token": {ID: "pat_operator", OwnerUserID: "operator", Kind: core.CredentialUser, Scope: core.CredentialScopeOperator},
-		"agent-token":    {ID: "agt_operator", OwnerUserID: "operator", Kind: core.CredentialAgent, Scope: core.CredentialScopeUser},
+		"agent-token":    {ID: "agt_operator", OwnerUserID: "operator", Kind: retiredAgentKind, Scope: core.CredentialScopeUser},
 		"user-token":     {ID: "pat_user", OwnerUserID: "user", Kind: core.CredentialUser, Scope: core.CredentialScopeUser},
 	}
 	call := func(token string) *httptest.ResponseRecorder {
@@ -178,7 +178,7 @@ func TestAgentCredentialCannotReachRepresentativeOperatorRESTRoutes(t *testing.T
 	server := NewServer(store.NewMemory())
 	server.Workspace = "demo"
 	server.Credentials = staticCredentialVerifier{
-		"run-agent": {ID: "agt_run", OwnerUserID: "operator", Kind: core.CredentialAgent, Scope: core.CredentialScopeUser},
+		"run-agent": {ID: "agt_run", OwnerUserID: "operator", Kind: retiredAgentKind, Scope: core.CredentialScopeUser},
 	}
 	handler := server.Handler()
 	for _, route := range []struct {
@@ -467,7 +467,7 @@ func TestMCPUnboundWorkspaceMatchesMissingWorkspace(t *testing.T) {
 	server := NewServer(store.NewMemory())
 	server.Workspaces, server.Memberships = fixture, fixture
 	request := httptest.NewRequest(http.MethodPost, "/mcp", nil)
-	request = request.WithContext(withCredentialActor(request.Context(), core.AuthenticatedCredential{ID: "agt_1", OwnerUserID: "usr_1", Kind: core.CredentialAgent, Scope: core.CredentialScopeUser}))
+	request = request.WithContext(withCredentialActor(request.Context(), core.AuthenticatedCredential{ID: "agt_1", OwnerUserID: "usr_1", Kind: retiredAgentKind, Scope: core.CredentialScopeUser}))
 	_, unbound := server.callMCPTool(request, "list_work_orders", map[string]any{"workspace_id": "beta"})
 	_, missing := server.callMCPTool(request, "list_work_orders", map[string]any{"workspace_id": "does-not-exist"})
 	if unbound == nil || missing == nil || unbound.Error() != missing.Error() {
@@ -883,8 +883,8 @@ func TestReferenceDocumentWritesRequireManageReferenceDocuments(t *testing.T) {
 func TestReferenceDocumentWritesRefuseExecutionCredentials(t *testing.T) {
 	harness := newReferenceDocumentRoleHarness(t)
 	harness.member(core.WorkspaceRoleOperator)
-	harness.credentials["agent-token"] = core.AuthenticatedCredential{ID: "agt_operator", OwnerUserID: "operator", Kind: core.CredentialAgent, Scope: core.CredentialScopeUser}
-	harness.credentials["run-child-token"] = core.AuthenticatedCredential{ID: "agt_child", OwnerUserID: "operator", Kind: core.CredentialAgent, Scope: core.CredentialScopeUser}
+	harness.credentials["agent-token"] = core.AuthenticatedCredential{ID: "agt_operator", OwnerUserID: "operator", Kind: retiredAgentKind, Scope: core.CredentialScopeUser}
+	harness.credentials["run-child-token"] = core.AuthenticatedCredential{ID: "agt_child", OwnerUserID: "operator", Kind: retiredAgentKind, Scope: core.CredentialScopeUser}
 	// Worker credentials authenticate only through the worker surface, so the
 	// human credential boundary does not recognize them.
 	for _, token := range []string{"agent-token", "run-child-token", "worker-token"} {
@@ -1051,7 +1051,7 @@ func canonicalWorkspaceNotFoundBody() string {
 // inputs and the dashboard session's CSRF and origin proof (DEC-60;
 // req-accounts-and-membership AC-2.5).
 func TestHumanTaskCreationCapabilityParity(t *testing.T) {
-	f := newAgentIntakeFixture(t)
+	f := newSessionIntakeFixture(t)
 	f.server.InvitationSessions = &invitationSessionFixture{credential: core.AuthenticatedCredential{
 		ID: "session_maintainer", OwnerUserID: intakeOwner(core.WorkspaceRoleMaintainer), Kind: core.CredentialUser,
 		Scope: core.CredentialScopeUser, Method: core.CredentialMethodSession,
@@ -1079,7 +1079,7 @@ func TestHumanTaskCreationCapabilityParity(t *testing.T) {
 		}
 		return task
 	}
-	for _, role := range agentIntakeRoles {
+	for _, role := range sessionIntakeRoles {
 		allowed := core.RoleAllows(role, core.CapabilityCreateTasks)
 		token := humanIntakeToken(role)
 		tasks := f.taskCount(t)

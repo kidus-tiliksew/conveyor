@@ -93,11 +93,18 @@ type Fixture struct {
 	// SeedCredentialLastUsed sets one bearer credential's stored last use
 	// relative to the backend's own clock, and CredentialLastUsed returns
 	// it, zero when unset. No public writer sets it and no public read
-	// exposes an agent credential's, so each test binary supplies both. The
+	// exposes a stored agent row's, so each test binary supplies both. The
 	// Tokens/CredentialUseStamp cases require them and never skip
 	// (component-identity-membership).
 	SeedCredentialLastUsed func(t *testing.T, ctx context.Context, credentialID string, lastUsedAgo time.Duration)
 	CredentialLastUsed     func(t *testing.T, ctx context.Context, credentialID string) time.Time
+	// SeedStoredAgentCredential writes one user_tokens row of kind agent, as
+	// the retired class stored it, and returns its ID and presented value. No
+	// public writer can, so each test binary supplies it by raw SQL or its own
+	// state. revoked sets revoked_at. The Tokens/RetiredAgentCredential cases
+	// require it and never skip (DEC-116(3); component-identity-membership
+	// invariant 35).
+	SeedStoredAgentCredential func(t *testing.T, ctx context.Context, userID, label string, revoked bool) (id, value string)
 	// DrainReadBytes drains the backend's read ledger and returns the bytes
 	// received per read label. Production-capable backends must provide it;
 	// the volatile backend transfers no bytes and leaves it nil

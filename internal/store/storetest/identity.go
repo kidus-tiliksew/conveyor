@@ -5,6 +5,9 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"maps"
+	"net/http"
+	"net/http/httptest"
 	"slices"
 	"strings"
 	"sync"
@@ -477,16 +480,6 @@ func runSessionRefresh(t *testing.T, x Fixture, ctx context.Context) {
 func runTokens(t *testing.T, x Fixture) {
 	st := x.Backend
 	ctx, owner := bootstrapOwner(t, x)
-	agent, err := st.IssueAgentCredential(ctx, owner.ID, "fixture agent")
-	requireOK(t, err)
-	auth, err := st.VerifyCredential(ctx, agent.Value)
-	requireOK(t, err)
-	if auth.Kind != core.CredentialAgent || auth.Scope != core.CredentialScopeUser {
-		t.Fatal("agent credential gained human operator scope")
-	}
-	if _, err := st.VerifyPersonalAccessToken(ctx, agent.Value); err == nil {
-		t.Fatal("agent credential accepted as a human PAT")
-	}
 	issued, err := st.IssueOwnPersonalAccessToken(ctx, owner.ID, "conformance")
 	requireOK(t, err)
 	user, err := st.VerifyPersonalAccessToken(ctx, issued.Value)
@@ -508,6 +501,205 @@ func runTokens(t *testing.T, x Fixture) {
 		t.Fatal("revoked PAT authenticates")
 	}
 	t.Run("CredentialUseStamp", func(t *testing.T) { runCredentialUseStamp(t, x, ctx, owner) })
+	t.Run("RetiredAgentCredential", func(t *testing.T) { runRetiredAgentCredential(t, x, ctx, owner) })
+}
+
+// runRetiredAgentCredential proves the end of the agent credential class on
+// every backend. A stored agent row is refused whether or not it carries
+// revoked_at, with the error an unknown credential gets, and is never stamped.
+// The row and its owner stay readable. A person's own token and dashboard
+// session keep authenticating (req-security-boundaries AC-1.3, AC-2.1; DEC-116(1)
+// to (3); component-identity-membership invariant 35).
+func runRetiredAgentCredential(t *testing.T, x Fixture, ctx context.Context, owner core.IdentityUser) {
+	if x.SeedStoredAgentCredential == nil {
+		t.Fatal("conformance fixture must provide SeedStoredAgentCredential for the retired agent credential cases")
+	}
+	st := x.Backend
+	liveID, liveValue := x.SeedStoredAgentCredential(t, ctx, owner.ID, "retired live", false)
+	revokedID, revokedValue := x.SeedStoredAgentCredential(t, ctx, owner.ID, "retired revoked", true)
+	_, unknownErr := st.VerifyCredential(ctx, "cv_agent_agt_unknown_fixture-value")
+	if !errors.Is(unknownErr, core.ErrInvalidCredential) {
+		t.Fatalf("unknown credential err=%v, want invalid credential", unknownErr)
+	}
+
+	t.Run("RefusedWithNoKindSpecificCode", func(t *testing.T) {
+		for _, test := range []struct{ name, id, value string }{
+			{"revoked_at NULL", liveID, liveValue},
+			{"revoked_at set", revokedID, revokedValue},
+		} {
+			_, err := st.VerifyCredential(ctx, test.value)
+			if !errors.Is(err, core.ErrInvalidCredential) || err.Error() != unknownErr.Error() {
+				t.Fatalf("%s: VerifyCredential err=%v, want the unknown credential's %v", test.name, err, unknownErr)
+			}
+			if _, err := st.VerifyPersonalAccessToken(ctx, test.value); !errors.Is(err, core.ErrInvalidCredential) || err.Error() != unknownErr.Error() {
+				t.Fatalf("%s: VerifyPersonalAccessToken err=%v, want the unknown credential's %v", test.name, err, unknownErr)
+			}
+			if used := x.CredentialLastUsed(t, ctx, test.id); !used.IsZero() {
+				t.Fatalf("%s: refused credential was stamped at %s", test.name, used)
+			}
+		}
+	})
+
+	t.Run("OutOfSelfService", func(t *testing.T) {
+		listed, err := st.ListOwnPersonalAccessTokens(ctx, owner.ID)
+		requireOK(t, err)
+		if slices.ContainsFunc(listed, func(token core.PersonalAccessToken) bool { return token.ID == liveID || token.ID == revokedID }) {
+			t.Fatal("self-service listing shows an agent row")
+		}
+		if _, err := st.RevokeOwnPersonalAccessToken(ctx, owner.ID, liveID); !errors.Is(err, store.ErrNotFound) {
+			t.Fatalf("self-service revocation of an agent row err=%v, want not found", err)
+		}
+	})
+
+	t.Run("OwnersResolve", func(t *testing.T) {
+		pat, err := st.IssueOwnPersonalAccessToken(ctx, owner.ID, "resolution")
+		requireOK(t, err)
+		other, err := st.ProvisionIdentityUser(ctx, "retired-other@example.test", "Retired Other")
+		requireOK(t, err)
+		otherID, _ := x.SeedStoredAgentCredential(t, ctx, other.ID, "retired other", true)
+		owners, err := st.AgentActorOwners(ctx, []string{liveID, revokedID, otherID, pat.ID, "agt_unknown"})
+		requireOK(t, err)
+		want := map[string]string{liveID: owner.ID, revokedID: owner.ID, otherID: other.ID}
+		if !maps.Equal(owners, want) {
+			t.Fatalf("owners=%v, want %v: a person's token and an unknown ID resolve to nothing", owners, want)
+		}
+		deactivateUser(t, x, ctx, other.ID)
+		owners, err = st.AgentActorOwners(ctx, []string{otherID})
+		requireOK(t, err)
+		if owners[otherID] != other.ID {
+			t.Fatalf("deactivated owner's act no longer resolves: %v", owners)
+		}
+		owners, err = st.AgentActorOwners(ctx, nil)
+		requireOK(t, err)
+		if len(owners) != 0 {
+			t.Fatalf("empty read returned %v", owners)
+		}
+	})
+
+	t.Run("ActsDisplayTheirOwner", func(t *testing.T) { runRetiredAgentActsDisplayOwner(t, x, owner, revokedID) })
+
+	t.Run("PersonalCredentialsKeepWorking", func(t *testing.T) {
+		pat, err := st.IssueOwnPersonalAccessToken(ctx, owner.ID, "still working")
+		requireOK(t, err)
+		auth, err := st.VerifyCredential(ctx, pat.Value)
+		requireOK(t, err)
+		if auth.ID != pat.ID || auth.OwnerUserID != owner.ID || auth.Kind != core.CredentialUser {
+			t.Fatalf("personal token verified as %+v", auth)
+		}
+		user, err := st.VerifyPersonalAccessToken(ctx, pat.Value)
+		requireOK(t, err)
+		if user.ID != owner.ID {
+			t.Fatalf("personal token resolved to user %q", user.ID)
+		}
+		link, err := st.IssueSignInLink(ctx, owner.Email)
+		requireOK(t, err)
+		session, _, err := st.RedeemSignInLink(ctx, link.Value)
+		requireOK(t, err)
+		sessionAuth, err := st.VerifyDashboardSession(ctx, session.Value)
+		requireOK(t, err)
+		if sessionAuth.OwnerUserID != owner.ID || sessionAuth.Kind != core.CredentialUser || sessionAuth.Method != core.CredentialMethodSession {
+			t.Fatalf("dashboard session verified as %+v", sessionAuth)
+		}
+	})
+}
+
+// runRetiredAgentActsDisplayOwner proves AC-1.3 where the actor is displayed, over
+// the real REST handler on every backend. An act under a revoked agent credential
+// stays readable and names its owner on each surface. An unknown agent:<id> and a
+// review round's agent actor stay readable, keep their recorded actor, and invent
+// no owner (req-security-boundaries AC-1.3; DEC-116(3)).
+func runRetiredAgentActsDisplayOwner(t *testing.T, x Fixture, owner core.IdentityUser, revokedID string) {
+	if x.LineageHTTP == nil {
+		t.Fatal("conformance fixture must provide LineageHTTP for the retired agent act display")
+	}
+	handler := x.LineageHTTP(t)
+	st, repo := x.Backend, x.Config.Repos[0].Name
+	file := func(t *testing.T, actor store.Actor) string {
+		t.Helper()
+		id := core.NewTaskID()
+		ctx := store.WithActor(x.Context, actor)
+		requireOK(t, st.CreateTask(ctx, core.Task{ID: id, Workspace: x.Workspace, Source: "mcp", Title: "Act " + id, Body: "Body", Repo: repo, BaseBranch: "main", Branch: "conveyor/task-" + id, PolicyVersion: 1, State: core.TaskQueued, NextStage: core.StageTriage, CreatedAt: time.Now().UTC()}))
+		requireOK(t, st.CreateIntervention(ctx, core.Intervention{TaskID: id, Action: core.InterventionRedirect, ActorID: actor.ID, ActorRole: actor.Role, ReasonCode: "fixture", Comment: "act", At: time.Now().UTC()}))
+		return id
+	}
+	get := func(t *testing.T, path string) []byte {
+		t.Helper()
+		request := httptest.NewRequest(http.MethodGet, path, nil)
+		request.Header.Set("Authorization", "Bearer "+LineageHTTPToken)
+		request.Header.Set("X-Workspace-ID", x.Workspace)
+		response := httptest.NewRecorder()
+		handler.ServeHTTP(response, request)
+		if response.Code != http.StatusOK {
+			t.Fatalf("GET %s status=%d body=%s", path, response.Code, response.Body.String())
+		}
+		return response.Body.Bytes()
+	}
+	type attributed struct {
+		Kind       string `json:"kind"`
+		ActorID    string `json:"actor_id"`
+		OwnerUser  string `json:"actor_owner_user_id"`
+		ReasonCode string `json:"reason_code"`
+	}
+	for _, test := range []struct {
+		name      string
+		actor     store.Actor
+		wantOwner string
+	}{
+		{"revoked credential", store.Actor{ID: store.AgentActorID(revokedID), Role: core.ActorAgent}, owner.ID},
+		{"unknown credential", store.Actor{ID: store.AgentActorID("agt_never_stored"), Role: core.ActorAgent}, ""},
+		{"review round", store.Actor{ID: store.ReviewRoundActorID(1), Role: core.ActorAgent}, ""},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			id := file(t, test.actor)
+			require := func(t *testing.T, surface string, got attributed) {
+				t.Helper()
+				if got.ActorID != test.actor.ID || got.OwnerUser != test.wantOwner {
+					t.Fatalf("%s: actor=%q owner=%q, want %q and %q", surface, got.ActorID, got.OwnerUser, test.actor.ID, test.wantOwner)
+				}
+			}
+			created := func(t *testing.T, surface string, events []attributed) {
+				t.Helper()
+				for _, event := range events {
+					if event.Kind == "task.created" {
+						require(t, surface, event)
+						return
+					}
+				}
+				t.Fatalf("%s: no task.created in %+v", surface, events)
+			}
+			var events []attributed
+			requireOK(t, json.Unmarshal(get(t, "/v1/tasks/"+id+"/events"), &events))
+			created(t, "events", events)
+			var complete struct {
+				Events        []attributed `json:"events"`
+				Interventions []attributed `json:"interventions"`
+			}
+			requireOK(t, json.Unmarshal(get(t, "/v1/tasks/"+id+"/activity"), &complete))
+			created(t, "complete activity", complete.Events)
+			if len(complete.Interventions) != 1 {
+				t.Fatalf("interventions=%+v", complete.Interventions)
+			}
+			require(t, "complete activity intervention", complete.Interventions[0])
+			var history struct {
+				Events []attributed `json:"events"`
+			}
+			requireOK(t, json.Unmarshal(get(t, "/v1/tasks/"+id+"/history"), &history))
+			created(t, "history", history.Events)
+			var bounded struct {
+				Summaries struct {
+					Creator attributed `json:"creator"`
+				} `json:"summaries"`
+			}
+			requireOK(t, json.Unmarshal(get(t, "/v1/tasks/"+id+"/activity?view=bounded"), &bounded))
+			require(t, "bounded creator summary", bounded.Summaries.Creator)
+			var interventions []attributed
+			requireOK(t, json.Unmarshal(get(t, "/v1/tasks/"+id+"/interventions"), &interventions))
+			if len(interventions) != 1 {
+				t.Fatalf("intervention list=%+v", interventions)
+			}
+			require(t, "interventions", interventions[0])
+		})
+	}
 }
 
 // runCredentialUseStamp proves read-first bearer verification: a credential
@@ -525,7 +717,6 @@ func runCredentialUseStamp(t *testing.T, x Fixture, ctx context.Context, owner c
 	type credential struct {
 		id, value string
 		user      core.IdentityUser
-		agent     bool
 	}
 	provision := func(t *testing.T, email string) core.IdentityUser {
 		t.Helper()
@@ -538,12 +729,6 @@ func runCredentialUseStamp(t *testing.T, x Fixture, ctx context.Context, owner c
 		issued, err := st.IssueOwnPersonalAccessToken(ctx, user.ID, "stamp")
 		requireOK(t, err)
 		return credential{id: issued.ID, value: issued.Value, user: user}
-	}
-	agent := func(t *testing.T, user core.IdentityUser, session string) credential {
-		t.Helper()
-		issued, err := st.IssueAgentCredential(ctx, user.ID, "stamp "+session)
-		requireOK(t, err)
-		return credential{id: issued.ID, value: issued.Value, user: user, agent: true}
 	}
 	verify := func(t *testing.T, ctx context.Context, c credential) {
 		t.Helper()
@@ -578,7 +763,7 @@ func runCredentialUseStamp(t *testing.T, x Fixture, ctx context.Context, owner c
 	})
 
 	t.Run("Fresh", func(t *testing.T) {
-		for _, c := range []credential{personal(t, provision(t, "stamp-fresh@example.test")), agent(t, owner, "stamp-fresh")} {
+		for _, c := range []credential{personal(t, provision(t, "stamp-fresh@example.test")), personal(t, owner)} {
 			x.SeedCredentialLastUsed(t, ctx, c.id, 10*time.Second)
 			before := x.CredentialLastUsed(t, ctx, c.id)
 			stages := &sessionStages{}
@@ -652,27 +837,19 @@ func runCredentialUseStamp(t *testing.T, x Fixture, ctx context.Context, owner c
 
 	t.Run("RefusedNextUse", func(t *testing.T) {
 		revokedUser := provision(t, "stamp-revoked@example.test")
-		// Agent credentials have no revocation route since the run-order
-		// plane was removed (DEC-97(1)); the deactivation case below covers
-		// an agent credential's refusal at its next use.
 		token := personal(t, revokedUser)
 		verify(t, ctx, token)
 		_, err := st.RevokeOwnPersonalAccessToken(ctx, revokedUser.ID, token.id)
 		requireOK(t, err)
-		for _, c := range []credential{token} {
-			_, err := st.VerifyCredential(ctx, c.value)
-			requireRefusal(t, err, fmt.Sprintf("revoked credential (agent=%t) inside the stamp interval", c.agent))
-		}
+		_, err = st.VerifyCredential(ctx, token.value)
+		requireRefusal(t, err, "revoked credential inside the stamp interval")
 
 		deactivatedUser := provision(t, "stamp-deactivated@example.test")
-		token, run := personal(t, deactivatedUser), agent(t, deactivatedUser, "stamp-deactivated")
+		token = personal(t, deactivatedUser)
 		verify(t, ctx, token)
-		verify(t, ctx, run)
 		deactivateUser(t, x, ctx, deactivatedUser.ID)
-		for _, c := range []credential{token, run} {
-			_, err := st.VerifyCredential(ctx, c.value)
-			requireRefusal(t, err, fmt.Sprintf("deactivated owner's credential (agent=%t) inside the stamp interval", c.agent))
-		}
+		_, err = st.VerifyCredential(ctx, token.value)
+		requireRefusal(t, err, "deactivated owner's credential inside the stamp interval")
 	})
 
 	t.Run("RefusedDuringStamp", func(t *testing.T) {

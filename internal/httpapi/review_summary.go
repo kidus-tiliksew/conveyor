@@ -19,7 +19,6 @@ import (
 
 	"github.com/go-chi/chi/v5"
 
-	"github.com/kidus-tiliksew/conveyor/internal/core"
 	"github.com/kidus-tiliksew/conveyor/internal/store"
 	"github.com/kidus-tiliksew/conveyor/internal/workorder"
 )
@@ -43,14 +42,14 @@ func reviewSummaryMCPTool() map[string]any {
 	}
 	return map[string]any{
 		"name":        reviewSummaryTool,
-		"description": "Record an informative summary of a settled review round that consolidates its seats' findings. It changes no verdict, bounce, gate, or work order. The round must have settled; every seat that requested changes must be cited by at least one finding. A user credential needs claim_work; an agent credential must pass the work_order_id and session_id of an order of the same task that its session holds claimed, submitted, or completed. Each accepted request becomes the round's next version; repeating a request_id with identical content returns the recorded version.",
+		"description": "Record an informative summary of a settled review round that consolidates its seats' findings. It changes no verdict, bounce, gate, or work order. The round must have settled; every seat that requested changes must be cited by at least one finding. The credential's owner needs claim_work. Each accepted request becomes the round's next version; repeating a request_id with identical content returns the recorded version.",
 		"inputSchema": map[string]any{
 			"type": "object",
 			"properties": map[string]any{
 				"workspace_id": str, "task_id": str, "review_round": map[string]string{"type": "integer"},
 				"request_id": str, "summary": str,
 				"findings":     map[string]any{"type": "array", "items": finding, "maxItems": store.ReviewSummaryMaxFindings},
-				"author_model": str, "work_order_id": str, "session_id": str,
+				"author_model": str,
 			},
 			"required":             []string{"task_id", "review_round", "request_id", "summary", "findings"},
 			"additionalProperties": false,
@@ -59,7 +58,7 @@ func reviewSummaryMCPTool() map[string]any {
 }
 
 // callReviewSummaryMCP admits and records one submit_review_summary call. It
-// applies the generic MCP boundary itself (agent capability ceiling, workspace resolution, and live claim_work membership) so every
+// applies the generic MCP boundary itself (workspace resolution and live claim_work membership) so every
 // admission refusal is the one ErrWorkOrderClaimUnauthorized the service
 // returns, and never discloses whether the task exists (SU-3; DEC-19).
 func (s *Server) callReviewSummaryMCP(r *http.Request, args map[string]any) (any, error) {
@@ -69,9 +68,6 @@ func (s *Server) callReviewSummaryMCP(r *http.Request, args map[string]any) (any
 		return nil, store.ErrWorkOrderClaimUnauthorized
 	}
 	capability := mcpCapability(reviewSummaryTool)
-	if credential.Kind == core.CredentialAgent && !agentMayExerciseCapability(capability) {
-		return nil, store.ErrWorkOrderClaimUnauthorized
-	}
 	explicit, _ := args["workspace_id"].(string)
 	workspace, err := s.resolveMCPWorkspace(ctx, explicit)
 	if errors.Is(err, errWorkspaceNotVisible) {
@@ -125,7 +121,7 @@ func reviewSummaryMCPInput(args map[string]any) (workorder.ReviewSummaryInput, e
 	}
 	for key, target := range map[string]*string{
 		"task_id": &input.TaskID, "request_id": &input.RequestID, "summary": &input.Summary,
-		"author_model": &input.AuthorModel, "work_order_id": &input.WorkOrderID, "session_id": &input.SessionID,
+		"author_model": &input.AuthorModel,
 	} {
 		if err := text(key, target); err != nil {
 			return workorder.ReviewSummaryInput{}, err

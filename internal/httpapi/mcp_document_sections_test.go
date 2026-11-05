@@ -200,16 +200,16 @@ func (c documentCaller) args(args map[string]any) map[string]any {
 	return merged
 }
 
-// callers returns a user credential and an agent credential with a live claim,
+// callers returns a person's credential without a claim and with a live claim,
 // each of which every acceptance criterion runs under.
 func (f *documentReadFixture) callers() []documentCaller {
 	f.t.Helper()
-	userToken, agentToken := f.user("usr_docs", core.WorkspaceRoleContributor)
+	userToken := f.user("usr_docs", core.WorkspaceRoleContributor)
 	orderID := f.order("docs", core.StageImplement)
 	f.claimRun(orderID, "usr_docs", "docs-session")
 	return []documentCaller{
 		{name: "user credential", token: userToken},
-		{name: "agent credential with live claim", token: agentToken, claim: map[string]any{"work_order_id": orderID, "session_id": "docs-session"}},
+		{name: "user credential with live claim", token: userToken, claim: map[string]any{"work_order_id": orderID, "session_id": "docs-session"}},
 	}
 }
 
@@ -719,7 +719,7 @@ func TestMCPDocumentPartialReadsRedactSecrets(t *testing.T) {
 		})
 	}
 	f.server.WorkOrders.RedactionSecrets = mcpReadSecretFixture{fail: true}
-	userToken, _ := f.user("usr_docs_fail", core.WorkspaceRoleViewer)
+	userToken := f.user("usr_docs_fail", core.WorkspaceRoleViewer)
 	if text, isErr := f.call(userToken, "get_document", documentReadArgs("design-secret", "outline", true)); !isErr || text != "read redaction unavailable" {
 		t.Fatalf("redaction did not fail closed: %s", text)
 	}

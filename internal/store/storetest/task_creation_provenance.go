@@ -13,16 +13,17 @@ import (
 	"github.com/kidus-tiliksew/conveyor/internal/store"
 )
 
-// runTaskCreationProvenance proves that task.created names the agent
-// credential and its owning user when an agent files a task, on every backend
-// and inside the creation transaction (req-intake-and-triage AC-4.2, AC-4.3;
-// DEC-60; component-persistence).
+// runTaskCreationProvenance proves that a task a session files names the person
+// whose credential it presents and writes no agent provenance, on every backend
+// and inside the creation transaction, and that an older payload's provenance
+// still decodes (req-intake-and-triage AC-4.2, AC-4.3; DEC-116(2), (3), (5);
+// component-task-lifecycle invariants 21 and 22).
 func runTaskCreationProvenance(t *testing.T, x Fixture) {
 	st, base := x.Backend, x.Context
 	repo := x.Config.Repos[0].Name
 	design := createConfirmedDesign(t, st, base, "provenance-design-"+core.NewTaskID(), "internal/store/**")
-	agent := core.AuthenticatedCredential{ID: "agt_provenance", OwnerUserID: "usr_provenance_owner", Kind: core.CredentialAgent, Scope: core.CredentialScopeUser}
-	agentCtx := store.WithActor(store.WithCredential(base, agent), store.Actor{ID: store.AgentActorID(agent.ID), Role: core.ActorAgent})
+	person := core.AuthenticatedCredential{ID: "pat_provenance_session", OwnerUserID: "usr_provenance_owner", Kind: core.CredentialUser, Scope: core.CredentialScopeUser}
+	sessionCtx := store.WithActor(store.WithCredential(base, person), store.Actor{ID: store.UserActorID(person.OwnerUserID), Role: core.ActorUser})
 	human := core.AuthenticatedCredential{ID: "pat_provenance", OwnerUserID: "usr_provenance_human", Kind: core.CredentialUser, Scope: core.CredentialScopeUser}
 	humanCtx := store.WithActor(store.WithCredential(base, human), store.Actor{ID: store.UserActorID(human.OwnerUserID), Role: core.ActorUser})
 
@@ -88,18 +89,18 @@ func runTaskCreationProvenance(t *testing.T, x Fixture) {
 		}
 	})
 
-	t.Run("agent creation records agent and owner", func(t *testing.T) {
-		task := newTask("mcp", "provenance-agent-"+core.NewTaskID())
+	t.Run("session creation names its person", func(t *testing.T) {
+		task := newTask("mcp", "provenance-session-"+core.NewTaskID())
 		task.Body = strings.Repeat("The complete task body belongs in task storage, not audit events.\n", 20000)
-		requireOK(t, st.CreateTaskWithDependenciesAndContext(agentCtx, task, nil, store.TaskContextInput{DesignIDs: []string{design.ID}}))
+		requireOK(t, st.CreateTaskWithDependenciesAndContext(sessionCtx, task, nil, store.TaskContextInput{DesignIDs: []string{design.ID}}))
 		event := created(t, task.ID)
-		if event.ActorID != store.AgentActorID(agent.ID) || event.ActorRole != core.ActorAgent {
+		if event.ActorID != store.UserActorID(person.OwnerUserID) || event.ActorRole != core.ActorUser {
 			t.Fatalf("actor=%q role=%q", event.ActorID, event.ActorRole)
 		}
 		provenance, ok, err := store.TaskCreatedProvenance(event.Payload)
 		requireOK(t, err)
-		if !ok || provenance.AgentCredentialID != agent.ID || provenance.OwnerUserID != agent.OwnerUserID {
-			t.Fatalf("provenance=%+v ok=%t payload=%s", provenance, ok, event.Payload)
+		if ok {
+			t.Fatalf("session creation wrote agent provenance=%+v payload=%s", provenance, event.Payload)
 		}
 		var decoded store.TaskCreatedEvent
 		requireOK(t, json.Unmarshal(event.Payload, &decoded))
@@ -116,13 +117,29 @@ func runTaskCreationProvenance(t *testing.T, x Fixture) {
 		}
 		t.Logf("stored task body=%d bytes; task.created=%d bytes", len(persisted.Body), len(event.Payload))
 		if persisted.State != core.TaskQueued || persisted.NextStage != core.StageTriage {
-			t.Fatalf("agent task did not enter triage: state=%s next=%s", persisted.State, persisted.NextStage)
+			t.Fatalf("session-filed task did not enter triage: state=%s next=%s", persisted.State, persisted.NextStage)
 		}
 		// The two durable backends commit the dispatch intent in the same
 		// transaction as the task and its creation event.
 		if st.IsDurable() {
 			_, err := logqueue.Load(base, st.Log(), x.Workspace, logqueue.StreamFor(queue.DispatchTaskArgs{}.Kind(), task.ID))
 			requireOK(t, err)
+		}
+	})
+
+	t.Run("provenance on an older payload still decodes", func(t *testing.T) {
+		// Nothing writes this field now, and a task.created stored before the
+		// class was retired keeps naming its credential and owner (DEC-116(3)).
+		older := json.RawMessage(`{"id":"task-older","state":"queued","trigger_provenance":{"agent_credential_id":"agt_older","owner_user_id":"usr_older"}}`)
+		provenance, ok, err := store.TaskCreatedProvenance(older)
+		requireOK(t, err)
+		if !ok || provenance.AgentCredentialID != "agt_older" || provenance.OwnerUserID != "usr_older" {
+			t.Fatalf("older provenance=%+v ok=%t", provenance, ok)
+		}
+		var history store.TaskCreatedEvent
+		requireOK(t, json.Unmarshal(older, &history))
+		if history.TriggerProvenance == nil || history.TriggerProvenance.OwnerUserID != "usr_older" {
+			t.Fatalf("older creation history=%+v", history)
 		}
 	})
 
@@ -159,7 +176,7 @@ func runTaskCreationProvenance(t *testing.T, x Fixture) {
 		version := createBlueprintSpec(t, base, st, parent.ID, []blueprintItem{{
 			ID: "SUB-1", Repo: repo, Summary: strings.Repeat("Child task content. ", 512),
 		}})
-		children := approveBlueprint(t, agentCtx, st, parent.ID, version.Version)
+		children := approveBlueprint(t, sessionCtx, st, parent.ID, version.Version)
 		if len(children) != 1 {
 			t.Fatalf("materialized children=%d", len(children))
 		}
@@ -177,8 +194,11 @@ func runTaskCreationProvenance(t *testing.T, x Fixture) {
 		}
 		provenance, ok, err := store.TaskCreatedProvenance(event.Payload)
 		requireOK(t, err)
-		if !ok || provenance.AgentCredentialID != agent.ID {
-			t.Fatalf("child creation provenance=%+v ok=%t", provenance, ok)
+		if ok {
+			t.Fatalf("child creation provenance=%+v", provenance)
+		}
+		if event.ActorID != store.UserActorID(person.OwnerUserID) {
+			t.Fatalf("child creation actor=%q", event.ActorID)
 		}
 	})
 
@@ -196,7 +216,7 @@ func runTaskCreationProvenance(t *testing.T, x Fixture) {
 			Tasks:     []core.PlanningBundleTask{{MemberID: "one", Title: "Planned task", Body: body, Repo: repo}},
 		})
 		requireOK(t, err)
-		approved, err := st.ApprovePlanningBundle(agentCtx, bundle.ID)
+		approved, err := st.ApprovePlanningBundle(sessionCtx, bundle.ID)
 		requireOK(t, err)
 		event := created(t, approved.Tasks[0].CreatedTaskID)
 		var decoded store.TaskCreatedEvent
@@ -211,38 +231,45 @@ func runTaskCreationProvenance(t *testing.T, x Fixture) {
 		}
 		provenance, ok, err := store.TaskCreatedProvenance(event.Payload)
 		requireOK(t, err)
-		if !ok || provenance.AgentCredentialID != agent.ID {
-			t.Fatalf("planning task creation provenance=%+v ok=%t", provenance, ok)
+		if ok {
+			t.Fatalf("planning task creation provenance=%+v", provenance)
+		}
+		if event.ActorID != store.UserActorID(person.OwnerUserID) {
+			t.Fatalf("planning task creation actor=%q", event.ActorID)
 		}
 	})
 
 	t.Run("incomplete identity and client source invent nothing", func(t *testing.T) {
-		// A credential without an owner is not an authenticated identity, so
-		// no provenance is written even under an agent actor.
-		ownerless := store.WithActor(store.WithCredential(base, core.AuthenticatedCredential{ID: "agt_ownerless", Kind: core.CredentialAgent}), store.Actor{ID: store.AgentActorID("agt_ownerless"), Role: core.ActorAgent})
-		task := newTask("mcp:agent=agt_spoofed;owner=usr_spoofed", "")
-		requireOK(t, st.CreateTaskWithDependenciesAndContext(ownerless, task, nil, store.TaskContextInput{}))
-		event := created(t, task.ID)
-		if _, ok, err := store.TaskCreatedProvenance(event.Payload); err != nil || ok {
-			t.Fatalf("ownerless credential produced provenance ok=%t err=%v", ok, err)
+		// A context naming the retired agent class writes no provenance, with or
+		// without an owner: nothing derives it from a credential any more.
+		for _, owner := range []string{"", person.OwnerUserID} {
+			retired := store.WithActor(store.WithCredential(base, core.AuthenticatedCredential{ID: "agt_retired", OwnerUserID: owner, Kind: core.CredentialKind("agent")}), store.Actor{ID: store.AgentActorID("agt_retired"), Role: core.ActorAgent})
+			task := newTask("mcp:agent=agt_spoofed;owner=usr_spoofed", "")
+			requireOK(t, st.CreateTaskWithDependenciesAndContext(retired, task, nil, store.TaskContextInput{}))
+			event := created(t, task.ID)
+			if _, ok, err := store.TaskCreatedProvenance(event.Payload); err != nil || ok {
+				t.Fatalf("retired agent context owner=%q produced provenance ok=%t err=%v", owner, ok, err)
+			}
 		}
-		// An agent's own source text never replaces the verified identity.
+		// A session's own source text never replaces the verified identity.
 		spoof := newTask("mcp:agent=agt_spoofed;owner=usr_spoofed", "")
-		requireOK(t, st.CreateTaskWithDependenciesAndContext(agentCtx, spoof, nil, store.TaskContextInput{}))
-		provenance, ok, err := store.TaskCreatedProvenance(created(t, spoof.ID).Payload)
-		requireOK(t, err)
-		if !ok || provenance.AgentCredentialID != agent.ID || provenance.OwnerUserID != agent.OwnerUserID {
-			t.Fatalf("provenance followed client source: %+v", provenance)
+		requireOK(t, st.CreateTaskWithDependenciesAndContext(sessionCtx, spoof, nil, store.TaskContextInput{}))
+		event := created(t, spoof.ID)
+		if provenance, ok, err := store.TaskCreatedProvenance(event.Payload); err != nil || ok {
+			t.Fatalf("provenance followed client source: %+v ok=%t err=%v", provenance, ok, err)
+		}
+		if event.ActorID != store.UserActorID(person.OwnerUserID) {
+			t.Fatalf("actor followed client source: %q", event.ActorID)
 		}
 	})
 
 	t.Run("refused creation leaves no task or event", func(t *testing.T) {
 		badDependency := newTask("mcp", "provenance-bad-dependency-"+core.NewTaskID())
-		if err := st.CreateTaskWithDependenciesAndContext(agentCtx, badDependency, []string{"missing-" + core.NewTaskID()}, store.TaskContextInput{}); err == nil {
+		if err := st.CreateTaskWithDependenciesAndContext(sessionCtx, badDependency, []string{"missing-" + core.NewTaskID()}, store.TaskContextInput{}); err == nil {
 			t.Fatal("missing dependency accepted")
 		}
 		badContext := newTask("mcp", "provenance-bad-context-"+core.NewTaskID())
-		if err := st.CreateTaskWithDependenciesAndContext(agentCtx, badContext, nil, store.TaskContextInput{RequirementIDs: []string{"req-missing-" + core.NewTaskID()}}); err == nil {
+		if err := st.CreateTaskWithDependenciesAndContext(sessionCtx, badContext, nil, store.TaskContextInput{RequirementIDs: []string{"req-missing-" + core.NewTaskID()}}); err == nil {
 			t.Fatal("missing context accepted")
 		}
 		for _, task := range []core.Task{badDependency, badContext} {
@@ -260,12 +287,12 @@ func runTaskCreationProvenance(t *testing.T, x Fixture) {
 		}
 	})
 
-	t.Run("duplicate intake key keeps the first provenance", func(t *testing.T) {
+	t.Run("duplicate intake key keeps the first creator", func(t *testing.T) {
 		key := "provenance-duplicate-" + core.NewTaskID()
 		first := newTask("mcp", key)
-		requireOK(t, st.CreateTaskWithDependenciesAndContext(agentCtx, first, nil, store.TaskContextInput{}))
-		other := core.AuthenticatedCredential{ID: "agt_provenance_other", OwnerUserID: agent.OwnerUserID, Kind: core.CredentialAgent, Scope: core.CredentialScopeUser}
-		otherCtx := store.WithActor(store.WithCredential(base, other), store.Actor{ID: store.AgentActorID(other.ID), Role: core.ActorAgent})
+		requireOK(t, st.CreateTaskWithDependenciesAndContext(sessionCtx, first, nil, store.TaskContextInput{}))
+		other := core.AuthenticatedCredential{ID: "pat_provenance_other", OwnerUserID: "usr_provenance_other", Kind: core.CredentialUser, Scope: core.CredentialScopeUser}
+		otherCtx := store.WithActor(store.WithCredential(base, other), store.Actor{ID: store.UserActorID(other.OwnerUserID), Role: core.ActorUser})
 		second := newTask("mcp", key)
 		if err := st.CreateTaskWithDependenciesAndContext(otherCtx, second, nil, store.TaskContextInput{}); err == nil {
 			t.Fatal("duplicate intake key accepted")
@@ -278,18 +305,16 @@ func runTaskCreationProvenance(t *testing.T, x Fixture) {
 		if !found || existing.ID != first.ID {
 			t.Fatalf("intake key resolves to %+v found=%t", existing, found)
 		}
-		provenance, ok, err := store.TaskCreatedProvenance(created(t, first.ID).Payload)
-		requireOK(t, err)
-		if !ok || provenance.AgentCredentialID != agent.ID {
-			t.Fatalf("first provenance changed: %+v", provenance)
+		if event := created(t, first.ID); event.ActorID != store.UserActorID(person.OwnerUserID) {
+			t.Fatalf("first creator changed: %q", event.ActorID)
 		}
 	})
 	t.Run("padded intake keys remain distinct", func(t *testing.T) {
 		baseKey := "provenance-padded-" + core.NewTaskID()
 		padded := newTask("mcp", baseKey+" ")
-		requireOK(t, st.CreateTaskWithDependenciesAndContext(agentCtx, padded, nil, store.TaskContextInput{}))
+		requireOK(t, st.CreateTaskWithDependenciesAndContext(sessionCtx, padded, nil, store.TaskContextInput{}))
 		unpadded := newTask("mcp", baseKey)
-		requireOK(t, st.CreateTaskWithDependenciesAndContext(agentCtx, unpadded, nil, store.TaskContextInput{}))
+		requireOK(t, st.CreateTaskWithDependenciesAndContext(sessionCtx, unpadded, nil, store.TaskContextInput{}))
 		for _, want := range []core.Task{padded, unpadded} {
 			got, found, err := st.GetTaskByIntakeKey(base, want.IntakeKey)
 			requireOK(t, err)

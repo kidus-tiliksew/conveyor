@@ -33,7 +33,7 @@ func TestTaskStartOverHTTP(t *testing.T) {
 			membership := &membershipFixture{workspaces: []core.Workspace{{ID: "demo", Name: "Demo"}}, roles: map[string]map[string]core.WorkspaceRole{"usr_restart": {"demo": role}}}
 			server := NewServer(st)
 			server.Workspaces, server.Memberships = membership, membership
-			server.Credentials = staticCredentialVerifier{"operator-token": {ID: "pat_restart", OwnerUserID: "usr_restart", Kind: core.CredentialUser, Scope: core.CredentialScopeOperator}, "agent-token": {ID: "agent_restart", OwnerUserID: "usr_restart", Kind: core.CredentialAgent, Scope: core.CredentialScopeUser}}
+			server.Credentials = staticCredentialVerifier{"operator-token": {ID: "pat_restart", OwnerUserID: "usr_restart", Kind: core.CredentialUser, Scope: core.CredentialScopeOperator}, "agent-token": {ID: "agent_restart", OwnerUserID: "usr_restart", Kind: retiredAgentKind, Scope: core.CredentialScopeUser}}
 			handler := server.Handler()
 			created := 0
 			server.OnCreate = func(context.Context, string) { created++ }

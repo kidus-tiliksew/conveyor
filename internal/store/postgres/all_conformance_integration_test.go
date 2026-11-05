@@ -306,6 +306,8 @@ func TestPostgresConformanceIntegration(t *testing.T) {
 				if err != nil || tag.RowsAffected() != 1 {
 					t.Fatalf("seed credential last use rows=%d err=%v", tag.RowsAffected(), err)
 				}
+			}, SeedStoredAgentCredential: func(t *testing.T, ctx context.Context, userID, label string, revoked bool) (string, string) {
+				return seedStoredAgentCredential(t, ctx, st, userID, label, revoked)
 			}, CredentialLastUsed: func(t *testing.T, ctx context.Context, credentialID string) time.Time {
 				var lastUsed *time.Time
 				if err := st.pool.QueryRow(ctx, `SELECT last_used_at FROM user_tokens WHERE id=$1`, credentialID).Scan(&lastUsed); err != nil {

@@ -318,6 +318,8 @@ export interface TaskEvent {
   kind: string
   actor_id: string
   actor_role: 'system' | 'human' | 'agent' | 'runner'
+  // The user who owns a retired agent credential; set only on an agent:<id> actor the server resolved.
+  actor_owner_user_id?: string
   payload: Record<string, unknown> | null
   at: string
 }
@@ -346,6 +348,7 @@ export interface TaskEventView {
   kind: string
   actor_id?: string
   actor_role?: TaskEvent['actor_role']
+  actor_owner_user_id?: string
   payload?: Record<string, unknown> | null
   at: string
   audit_available?: boolean
@@ -425,6 +428,7 @@ export interface TaskReviewSummaryFinding {
 export interface TaskReviewSummaryAuthor {
   actor_id: string
   actor_role: string
+  actor_owner_user_id?: string
   work_order_id?: string
   session_id?: string
   model?: string
@@ -453,7 +457,7 @@ export interface TaskReviewRoundSummary {
  * (component-http-api, Bounded detail view).
  */
 export interface TaskSummaries {
-  creator?: { actor_id: string; actor_role: string }
+  creator?: { actor_id: string; actor_role: string; actor_owner_user_id?: string }
   pull_request?: {
     url?: string
     number?: number
@@ -637,6 +641,8 @@ export interface Intervention {
   job_id?: string
   actor_id: string
   actor_role: 'system' | 'human' | 'agent' | 'runner'
+  // The user who owns a retired agent credential; set only on an agent:<id> actor the server resolved.
+  actor_owner_user_id?: string
   action: InterventionAction
   reason_code: string
   comment: string

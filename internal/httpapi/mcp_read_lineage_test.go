@@ -77,11 +77,6 @@ func TestMCPReadLineageWalkBudgetAndAdmission(t *testing.T) {
 			t.Fatalf("%s: error=%q want %q", name, err, refused.want)
 		}
 	}
-	for _, token := range []string{"agent", "child"} {
-		if _, err := mcpReadCall(t, s, token, "get_lineage", map[string]any{"workspace_id": "demo", "root_type": "task", "root_id": task.ID}); !strings.Contains(err, "operator-scoped user credential") {
-			t.Fatalf("%s credential error=%q", token, err)
-		}
-	}
 	if links, err := s.Store.ListLineageLinks(store.WithWorkspace(ctx, "demo")); err != nil || len(links) != 3 {
 		t.Fatalf("read changed lineage: links=%d err=%v", len(links), err)
 	}

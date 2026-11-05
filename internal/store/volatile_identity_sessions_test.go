@@ -3,6 +3,8 @@ package store
 import (
 	"testing"
 	"time"
+
+	"github.com/kidus-tiliksew/conveyor/internal/core"
 )
 
 // SeedDashboardSessionTimesForTest sets one dashboard session's stored last
@@ -52,6 +54,31 @@ func SeedCredentialLastUsedForTest(t *testing.T, st Backend, credentialID string
 	}
 	credential.LastUsedAt = timePtr(time.Now().UTC().Add(-lastUsedAgo))
 	m.credentials[credentialID] = credential
+}
+
+// SeedStoredAgentCredentialForTest writes one credential of the retired agent
+// kind and returns its ID and presented value. No public writer can; the memory
+// conformance entry point supplies it as Fixture.SeedStoredAgentCredential
+// (DEC-116(3); component-identity-membership invariant 35).
+func SeedStoredAgentCredentialForTest(t *testing.T, st Backend, userID, label string, revoked bool) (string, string) {
+	t.Helper()
+	m := st.(*volatileMemory)
+	id, err := randomIdentityID("agt", 12)
+	if err != nil {
+		t.Fatal(err)
+	}
+	value, hash, err := randomSecret("cv_agent_", id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	credential := identityCredential{ID: id, UserID: userID, Label: label, TokenHash: hash, Kind: retiredAgentCredentialKind, Scope: core.CredentialScopeUser, CreatedAt: time.Now().UTC()}
+	if revoked {
+		credential.RevokedAt = timePtr(time.Now().UTC())
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.credentials[id] = credential
+	return id, value
 }
 
 // CredentialLastUsedForTest returns one bearer credential's stored last use,

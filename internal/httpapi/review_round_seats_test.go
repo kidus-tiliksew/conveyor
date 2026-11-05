@@ -63,7 +63,7 @@ func seatHTTPFixture(t *testing.T, wrap func(store.Store) store.Store) (http.Han
 		"operator-token":    {ID: "pat_operator", OwnerUserID: "operator", Kind: core.CredentialUser, Scope: core.CredentialScopeUser},
 		"contributor-token": {ID: "pat_contributor", OwnerUserID: "contributor", Kind: core.CredentialUser, Scope: core.CredentialScopeUser},
 		"outsider-token":    {ID: "pat_outsider", OwnerUserID: "outsider", Kind: core.CredentialUser, Scope: core.CredentialScopeUser},
-		"agent-token":       {ID: "agt_operator", OwnerUserID: "operator", Kind: core.CredentialAgent, Scope: core.CredentialScopeUser},
+		"agent-token":       {ID: "agt_operator", OwnerUserID: "operator", Kind: retiredAgentKind, Scope: core.CredentialScopeUser},
 	}
 	return server.Handler(), base
 }

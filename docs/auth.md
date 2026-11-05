@@ -95,8 +95,7 @@ Only the deployment owner may provision accounts, with their own personal
 access token (any scope) or dashboard session. No workspace role grants it,
 not even `operator`. Creating a workspace is open to the deployment owner and
 to any active account that is an operator of at least one workspace, under the
-same kinds of credential (DEC-75). An agent credential is refused
-for both acts, even when the owner or an operator holds it. Neither right
+same kinds of credential (DEC-75). Neither right
 grants anything inside other workspaces: the owner reads and manages a
 workspace only through a membership there, like anyone else, and the creator
 of a workspace becomes its operator and gains nothing elsewhere.
@@ -105,8 +104,7 @@ Any other signed-in person gets the same `404 workspace_not_found` from
 `POST /v1/users`, and anyone who is neither the owner nor an operator
 somewhere gets it from `POST /v1/workspaces`, whatever they send, before
 anything is created or looked up. A deactivated account is refused even if
-its bindings remain. A missing or invalid credential, or an agent
-credential, gets `401`. `GET /v1/me` reports the caller's own creation right
+its bindings remain. A missing or invalid credential gets `401`. `GET /v1/me` reports the caller's own creation right
 as `can_create_workspaces`.
 
 For the owner, `POST /v1/users` answers `200` with exactly `{"accepted":true}`
@@ -140,9 +138,9 @@ maintainers upload, revise, and remove them through
 workspace can never lose its last operator; the server refuses the demotion.
 
 Filing a task needs `create_tasks`, which maintainers and operators hold. It
-is named apart from `operate_gates` because it is the one maintainer
-capability an agent credential may exercise (DEC-60), as described under
-[What an agent session gets](#what-an-agent-session-gets).
+is named apart from `operate_gates` because filing a task is not a gate
+decision: a session may file one for a person who holds it (DEC-116(5)), as
+described under [What an agent session gets](#what-an-agent-session-gets).
 
 Requests against a workspace you are not a member of return 404, not 403, so
 membership existence is not disclosed.
@@ -186,19 +184,28 @@ injected into prompts is labeled untrusted data. Recording a gate or proposal
 decision remains your own act; a session records one only on your direct
 instruction, with your credential (DEC-84).
 
+An agent session acts as the person whose token it holds. It has that person's
+capabilities, and its acts are recorded as that person's. The server cannot tell
+the person from the session when it authorizes a request, so an instruction
+injected into a session can reach anything that person's role allows. Whether a
+session may record its person's decision or author a document version is a rule
+of conduct, held by the MCP tool list, the work-order instructions, and your
+confirmation of every proposal, not by a credential check (DEC-116(2), (4)).
+
+A session may file a task with the `create_task` MCP tool when its person holds
+`create_tasks` in that workspace. The task records MCP as its source and the
+person as its creator, and enters triage like any other task. An omitted plan or
+merge gate takes the workspace default, and a boolean the caller supplies
+applies, `false` included. Filing the task gives the session nothing further over
+it (DEC-116(5)).
+
 Earlier releases had worker credentials, worker enrollment, and agent-class
-credentials minted for launched children. No worker credential class exists
-any more, and no route, tool, or command issues an agent credential
-(DEC-97(1)). An agent credential that still exists is refused by operator-only
-REST routes and by human-reserved MCP tools. Its one remaining right is the
-`create_task` MCP tool when its owning user's role in that workspace grants
-`create_tasks`. The task records the agent and its owning user as provenance
-and enters triage like any other task. An omitted plan or merge gate takes the
-workspace default, and the agent may turn a gate on but never off: an explicit
-`false`, or a legacy level `L0` or `L1`, is refused with
-`agent_gate_disable_forbidden`. Filing the task gives the agent no right over
-it; every other reserved tool and REST route still refuses the agent
-credential (DEC-60).
+credentials minted for launched children. Neither class exists any more, and no
+route, tool, or command issues either (DEC-97(1), DEC-116(1)). A stored
+`kind='agent'` row is revoked and refused at its next use like any unknown
+credential. The row stays, and the acts recorded under it stay readable: wherever
+Conveyor shows an `agent:<id>` actor, it also names the user who owns that
+credential as `actor_owner_user_id` (DEC-116(3)).
 
 ## Workspace context
 

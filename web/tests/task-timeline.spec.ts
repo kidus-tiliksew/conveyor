@@ -1180,6 +1180,7 @@ const roundOneSummary = {
   author: {
     actor_id: 'agent:agt_coordinator',
     actor_role: 'agent',
+    actor_owner_user_id: 'usr_coordinator_owner',
     model: 'claude-opus-5-5',
     model_enforcement: 'self-reported',
   },
@@ -1339,6 +1340,7 @@ test('review panel shows its current round summary above unchanged seat feedback
   await expect(summary.getByText('version 2 of 2')).toBeVisible()
   const author = summary.locator('[data-review-summary-author]')
   await expect(author).toContainText('By agent:agt_coordinator')
+  await expect(author.locator('[data-review-summary-owner]')).toHaveText(' (owned by usr_coordinator_owner)')
   await expect(author).toContainText('claude-opus-5-5')
   await expect(author).toContainText('(self-reported)')
   const blocking = summary.locator('[data-review-summary-severity="blocking"]')

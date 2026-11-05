@@ -298,6 +298,8 @@ func TestSingleStoreConformanceIntegration(t *testing.T) {
 				if rows, err := result.RowsAffected(); err != nil || rows != 1 {
 					t.Fatalf("seed credential last use rows=%d err=%v", rows, err)
 				}
+			}, SeedStoredAgentCredential: func(t *testing.T, ctx context.Context, userID, label string, revoked bool) (string, string) {
+				return seedStoredAgentCredential(t, ctx, st, userID, label, revoked)
 			}, CredentialLastUsed: func(t *testing.T, ctx context.Context, credentialID string) time.Time {
 				var lastUsed sql.NullTime
 				if err := st.db.QueryRowContext(ctx, `SELECT last_used_at FROM user_tokens WHERE id=?`, credentialID).Scan(&lastUsed); err != nil {

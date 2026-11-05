@@ -744,7 +744,7 @@ func TestMCPDocumentCacheIsolatesWorkspaces(t *testing.T) {
 		t.Fatal(err)
 	}
 	counter := f.countDocumentReads()
-	userToken, _ := f.user("usr_both", core.WorkspaceRoleViewer)
+	userToken := f.user("usr_both", core.WorkspaceRoleViewer)
 	f.members.setRole("usr_both", "beta", core.WorkspaceRoleViewer)
 	userOnly := documentCaller{name: "both", token: userToken}
 	for workspace, want := range map[string]string{governanceWorkspace: "workspace-needle demo", "beta": "workspace-needle beta"} {
@@ -757,11 +757,11 @@ func TestMCPDocumentCacheIsolatesWorkspaces(t *testing.T) {
 		t.Fatalf("two workspaces read %d bodies, want 2", got)
 	}
 	// A credential scoped to one workspace cannot reach the other's residents.
-	_, otherAgent := f.user("usr_demo_only", core.WorkspaceRoleContributor)
+	otherUser := f.user("usr_demo_only", core.WorkspaceRoleContributor)
 	orderID := f.order("demo-only", core.StageImplement)
 	f.claimRun(orderID, "usr_demo_only", "demo-only-session")
-	text, isErr := f.call(otherAgent, "search_documents", map[string]any{"workspace_id": "beta", "query": "workspace-needle", "work_order_id": orderID, "session_id": "demo-only-session"})
+	text, isErr := f.call(otherUser, "search_documents", map[string]any{"workspace_id": "beta", "query": "workspace-needle", "work_order_id": orderID, "session_id": "demo-only-session"})
 	if !isErr || !strings.Contains(text, "workspace_not_found") {
-		t.Fatalf("cross-workspace agent: isError=%v response=%s", isErr, text)
+		t.Fatalf("cross-workspace read: isError=%v response=%s", isErr, text)
 	}
 }

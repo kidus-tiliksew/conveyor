@@ -194,6 +194,7 @@ async function fixture(page: Page, options: { viewer?: boolean; active?: boolean
           kind: 'event',
           event: {
             ...reviewEvent,
+            actor_owner_user_id: 'usr_reviewer_owner',
             payload: {
               ...reviewEvent.payload,
               verification_assessment: {
@@ -493,7 +494,7 @@ test('merge gate shows one verdict line and loads cited evidence independently',
   await expect(page.getByRole('link', { name: 'See the run' })).toBeVisible()
   expect(counts.get('/v1/tasks/verification-fixture/audit/event/4')).toBeUndefined()
   await page.getByRole('button', { name: 'Verification relied on by review' }).click()
-  await expect(page.getByText(/Review deciding actor: user:reviewer/)).toBeVisible()
+  await expect(page.getByText(/Review deciding actor: user:reviewer \(owned by usr_reviewer_owner\)/)).toBeVisible()
   await expect(page.getByRole('button', { name: 'Open evidence e1', exact: true })).toBeVisible()
   expect(counts.get('/v1/tasks/verification-fixture/verification/contexts/current/evidence/e1')).toBeUndefined()
 })
