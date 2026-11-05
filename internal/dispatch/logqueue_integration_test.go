@@ -103,6 +103,111 @@ func TestLogQueueShutdownInterruptionPreservesAttemptIntegration(t *testing.T) {
 	}
 }
 
+// TestDiscardFinalizationRecoversOnPostgresIntegration: rescue of an exhausted
+// dispatch job whose handler's first store read fails parks the running task
+// with no notice and no restart. The job stays claimed until the task parks, so
+// stage.bounce starts no newer generation, and each final step is recorded once
+// (req-task-lifecycle-and-queue AC-6.2; component-durable-queue, Handlers).
+func TestDiscardFinalizationRecoversOnPostgresIntegration(t *testing.T) {
+	databaseURL := dispatchIntegrationDatabaseURL(t)
+	ctx, cancel := context.WithTimeout(store.WithActor(t.Context(), store.SystemActor()), time.Minute)
+	defer cancel()
+	st, err := storepg.Open(ctx, databaseURL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	suffix := core.NewTaskID()
+	workspace := "logqueue-discard-" + suffix
+	cfg := dispatchRaceConfig(workspace)
+	actorCtx := store.WithActor(ctx, store.Actor{ID: "operator", Role: core.ActorHuman})
+	if _, err = st.CreateWorkspace(actorCtx, workspace, "Log queue discard "+suffix, cfg); err != nil {
+		t.Fatal(err)
+	}
+	taskCtx := store.WithWorkspace(ctx, workspace)
+	task := core.Task{
+		ID: "logqueue-discard-" + suffix, Workspace: workspace, Repo: "repo", Title: "Discard dispatch",
+		BaseBranch: "main", Branch: "conveyor/logqueue-discard-" + suffix,
+		State: core.TaskRunning, NextStage: core.StageImplement, CreatedAt: time.Now().UTC(),
+	}
+	if err = st.CreateTask(taskCtx, task); err != nil {
+		t.Fatal(err)
+	}
+	kind := queue.DispatchTaskArgs{}.Kind()
+	stream := logqueue.StreamFor(kind, task.ID)
+	claimedAt := time.Now().UTC().Add(-2 * time.Hour)
+	if _, err = logqueue.Enqueue(ctx, st.Log(), workspace, kind, task.ID, queue.DispatchTaskArgs{WorkspaceID: workspace, TaskID: task.ID}, queue.DispatchTaskMaxAttempts, claimedAt); err != nil {
+		t.Fatal(err)
+	}
+	enqueued, err := logqueue.Load(ctx, st.Log(), workspace, stream)
+	if err != nil {
+		t.Fatal(err)
+	}
+	claim, err := json.Marshal(map[string]any{"attempt": queue.DispatchTaskMaxAttempts, "worker": "dead", "claimed_at": claimedAt})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = st.Log().Append(ctx, workspace, stream, enqueued.Head, []eventlog.NewEvent{{Kind: logqueue.KindClaimed, Payload: claim, At: claimedAt}}); err != nil {
+		t.Fatal(err)
+	}
+	flaky := &flakyStore{Store: st, getTaskID: task.ID}
+	flaky.getTask.Store(1)
+	runtime := logqueue.NewRuntime(st.Log(), logqueue.Options{
+		Workspaces: []string{workspace}, RescueStuckAfter: time.Hour, WorkerID: "test-" + suffix, Logf: t.Logf,
+	})
+	for _, registration := range New(flaky, cfg, nil).Registrations(&ShutdownMarker{}) {
+		runtime.Register(registration)
+	}
+	if err = runtime.Start(store.WithActor(context.Background(), store.SystemActor())); err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		stopCtx, stopCancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer stopCancel()
+		_ = runtime.StopAndCancel(stopCtx)
+	}()
+	for {
+		job, loadErr := logqueue.Load(ctx, st.Log(), workspace, stream)
+		if loadErr != nil {
+			t.Fatal(loadErr)
+		}
+		current, getErr := st.GetTask(taskCtx, task.ID)
+		if getErr != nil {
+			t.Fatal(getErr)
+		}
+		if job.State == logqueue.StateDiscarded && current.State == core.TaskParked {
+			if job.Generation != enqueued.Generation {
+				t.Fatalf("job=%+v started a newer generation", job)
+			}
+			break
+		}
+		select {
+		case <-ctx.Done():
+			t.Fatalf("not finalized: job=%+v task state=%s", job, current.State)
+		case <-time.After(50 * time.Millisecond):
+		}
+	}
+	if flaky.getTask.Load() >= 0 {
+		t.Fatal("the failure was not injected")
+	}
+	if count, countErr := st.CountEvents(taskCtx, task.ID, "dispatch.failed"); countErr != nil || count != 1 {
+		t.Fatalf("dispatch.failed=%d err=%v", count, countErr)
+	}
+	events, err := st.ListEvents(taskCtx, task.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	finals := 0
+	for _, event := range events {
+		if event.Kind == "task.state_changed" && strings.Contains(string(event.Payload), `"dispatch.fail_final"`) {
+			finals++
+		}
+	}
+	if finals != 1 {
+		t.Fatalf("dispatch.fail_final transitions=%d", finals)
+	}
+}
+
 // jobIndexPool opens a pool on schema, or on a fresh schema named after
 // prefix when schema is empty; tracer, when set, sees every statement.
 func jobIndexPool(t *testing.T, databaseURL, prefix, schema string, tracer pgx.QueryTracer) (*pgxpool.Pool, string) {

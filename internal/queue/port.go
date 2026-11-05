@@ -63,13 +63,14 @@ type Registration struct {
 	// RetryDelay, when set, decides how long after a failed attempt the next
 	// one runs. Nil uses the driver's default backoff.
 	RetryDelay func(attempt int) time.Duration
-	// Discarded, when set, runs once after the driver itself discards a job
-	// whose handler never recorded an outcome: rescue found its claim stuck
-	// and its attempts exhausted. reason is the recorded error. Only the
-	// replica whose discard append wins runs it, so it runs once across
-	// replicas; it must still be safe to repeat. A handler that fails its
-	// last attempt applies its own failure outcome, so this never runs then
-	// (component-durable-queue, Handlers).
+	// Discarded, when set, applies the owner's stop for a job that has used
+	// its last attempt, before the driver records the discard: on rescue of a
+	// stuck claim, whose handler recorded no outcome, and after a handler's
+	// failed last attempt, whose own failure outcome may not have persisted.
+	// reason is the error to record. The driver retries it until it returns
+	// nil, with the job still active, so it must be idempotent, and it returns
+	// nil for a failure no retry can repair. Only the replica holding the
+	// job's claim runs it (component-durable-queue, Handlers).
 	Discarded func(ctx context.Context, job Job, reason string) error
 }
 

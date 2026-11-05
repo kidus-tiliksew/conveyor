@@ -36,9 +36,9 @@ SKIP LOCKED. Completion, failure with a retry time, snooze (which hands the
 attempt back), rescue of a claim older than the threshold, and discard after
 the last attempt are events on the same stream. The runtime tails each
 workspace's log into an in-memory job index and drains it one job at a time
-per kind. A failed catch-up, whether its index load or a tail, is retried on
-its own backoff of 5 seconds doubling to one minute, and the next successful
-catch-up stops that timer.
+per kind. A failed catch-up, whether its index load or a tail, and a failed
+rescue are retried on their own backoff of 5 seconds doubling to one minute,
+and the next success stops that timer.
 
 Each driver also keeps one row per job stream in `event_log_job_index`,
 written in the same transaction as every job append and folded with the
@@ -57,10 +57,15 @@ handler is idempotent under concurrent replicas.
 
 The dispatcher sees only `queue.Runtime` and the handler contract: return
 nil to complete a job, `queue.Snooze` to reschedule it, any other error to
-fail it. A registration may also name a `Discarded` handler. Rescue runs it
-once, on the replica whose discard append wins, when it discards a job whose
-handler never recorded an outcome: `dispatch_task` then parks the task, and
-the review and GitHub issue publications mark their row failed.
+fail it. A registration may also name a `Discarded` handler, which applies
+the owner's stop before the discard is recorded: `dispatch_task` parks the
+task, and the review and GitHub issue publications mark their row failed. Rescue
+first appends an expected-version `job.claimed` naming the next attempt, so one
+replica owns the job and a replica with a stale view runs nothing. A handler's
+failed last attempt runs it under its own claim. The job stays running until the
+handler succeeds, so no newer generation can start under it, and a failure is
+retried on the backoff above. The running job is the durable intent: after a
+restart, rescue finds it again once its claim goes stale.
 `ReconcileQueuedTasks` repairs a queued task without a live job and fails a
 running task whose job was discarded after its last attempt.
 

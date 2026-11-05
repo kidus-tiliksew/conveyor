@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log"
 	"strings"
 
 	"github.com/kidus-tiliksew/conveyor/internal/core"
@@ -151,15 +152,15 @@ func (w *githubIssuePublicationWorker) failEarly(ctx context.Context, job queue.
 	return cause
 }
 
-// Discarded is the GitHub issue publication discard handler. Rescue
-// discarded the job after its last attempt without a handler outcome, so an
-// open row becomes failed with the rescue reason and the bounded automatic
-// re-enqueue owns it (req-bounded-automatic-recovery AC-4.1). A finished or
-// failed row is left alone, so a repeat changes nothing.
+// Discarded is the GitHub issue publication discard handler, which the queue
+// retries until it returns nil. An open row becomes failed with the reason and
+// the bounded automatic re-enqueue owns it (req-bounded-automatic-recovery
+// AC-4.1). A finished or failed row is left alone, so a repeat changes nothing.
 func (w *githubIssuePublicationWorker) Discarded(ctx context.Context, job queue.Job, reason string) error {
 	args, err := queue.DecodeArgs[queue.GitHubIssuePublicationArgs](job)
 	if err != nil {
-		return err
+		log.Printf("queue job %s: discard: decode job: %v", job.ID, err)
+		return nil
 	}
 	ctx = store.WithActor(ctx, store.SystemActor(fmt.Sprintf("queue:github-issue-publication:%s", job.ID)))
 	ctx = store.WithWorkspace(ctx, args.WorkspaceID)
@@ -290,19 +291,22 @@ func (w *reviewPublicationWorker) failEarly(ctx context.Context, job queue.Job, 
 	return cause
 }
 
-// Discarded is the review publication discard handler. Rescue discarded the
-// job after its last attempt without a handler outcome, so an open row
-// becomes failed with the rescue reason and the bounded automatic re-enqueue
-// owns it (req-bounded-automatic-recovery AC-4.1). A published or failed row
-// is left alone, so a repeat changes nothing.
+// Discarded is the review publication discard handler, which the queue retries
+// until it returns nil. An open row becomes failed with the reason and the
+// bounded automatic re-enqueue owns it (req-bounded-automatic-recovery AC-4.1).
+// A published or failed row is left alone, so a repeat changes nothing.
 func (w *reviewPublicationWorker) Discarded(ctx context.Context, job queue.Job, reason string) error {
 	args, err := queue.DecodeArgs[queue.ReviewPublicationArgs](job)
 	if err != nil {
-		return err
+		log.Printf("queue job %s: discard: decode job: %v", job.ID, err)
+		return nil
 	}
 	ctx = store.WithActor(ctx, store.SystemActor(fmt.Sprintf("queue:review-publication:%s", job.ID)))
 	ctx = store.WithWorkspace(ctx, args.WorkspaceID)
 	publication, err := w.dispatcher.Store.GetReviewPublication(ctx, args.ReviewWorkOrderID)
+	if errors.Is(err, store.ErrNotFound) {
+		return nil
+	}
 	if err != nil {
 		return err
 	}

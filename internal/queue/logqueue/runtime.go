@@ -81,6 +81,8 @@ type workspace struct {
 	// worker agree on "one at a time" even before the claim event is read
 	// back from the log.
 	running map[string]bool
+	// discards holds the discard handlers this process must retry.
+	discards map[eventlog.StreamID]pendingDiscard
 	// wakes holds one channel per worker kind, so every worker learns of
 	// every catch-up; a shared channel would let one kind take another's.
 	wakes map[string]chan struct{}
@@ -141,7 +143,7 @@ func NewRuntime(log eventlog.Store, opts Options) *Runtime {
 }
 
 func newWorkspace(id string) *workspace {
-	return &workspace{id: id, jobs: map[eventlog.StreamID]*Job{}, running: map[string]bool{}, wakes: map[string]chan struct{}{}, fold: make(chan struct{}, 1),
+	return &workspace{id: id, jobs: map[eventlog.StreamID]*Job{}, running: map[string]bool{}, discards: map[eventlog.StreamID]pendingDiscard{}, wakes: map[string]chan struct{}{}, fold: make(chan struct{}, 1),
 		alarmIndex: make(chan struct{}, 1), alarmReread: make(chan struct{}, 1)}
 }
 
@@ -272,12 +274,13 @@ func (rt *Runtime) pollLoop(ws *workspace) {
 	defer rt.wg.Done()
 	notices := rt.hub.Subscribe(ws.id, changes.Job)
 	defer notices.Close()
-	// A failed catch-up, whether its index load or a later tail failed, is
-	// retried on the next wake and on its own bounded backoff, so a failed
-	// tail does not wait for an unrelated notice (req-quiet-idle-runtime
-	// AC-2.1). The timer is armed only after a failure and stopped by the
-	// next successful catch-up, so an idle daemon sends no statement
-	// (AC-1.1, AC-1.3).
+	// A failed catch-up, whether its index load or a later tail failed, and a
+	// failed rescue, including a discard handler's failure, are retried on the
+	// next wake and on their own bounded backoff, so they do not wait for an
+	// unrelated notice (req-quiet-idle-runtime AC-2.1;
+	// req-task-lifecycle-and-queue AC-6.2). The timer is armed only after a
+	// failure and stopped by the next success, so an idle daemon sends no
+	// statement (AC-1.1, AC-1.3).
 	var retryDelay time.Duration
 	var retryTimer *time.Timer
 	defer func() {
@@ -291,8 +294,15 @@ func (rt *Runtime) pollLoop(ws *workspace) {
 		if failed {
 			rt.opts.Logf("logqueue: workspace %s: tail: %v", ws.id, err)
 		}
+		loaded := rt.loaded(ws)
+		if loaded {
+			if err := rt.rescue(rt.loopCtx, ws); err != nil && !errors.Is(err, context.Canceled) {
+				rt.opts.Logf("logqueue: workspace %s: rescue: %v", ws.id, err)
+				failed = true
+			}
+		}
 		var retry <-chan time.Time
-		if failed || !rt.loaded(ws) {
+		if failed || !loaded {
 			retryDelay = nextLoadRetry(retryDelay)
 			if retryTimer == nil {
 				retryTimer = time.NewTimer(retryDelay)
@@ -304,11 +314,6 @@ func (rt *Runtime) pollLoop(ws *workspace) {
 			retryDelay = 0
 			if retryTimer != nil {
 				retryTimer.Stop()
-			}
-		}
-		if rt.loaded(ws) {
-			if err := rt.rescue(rt.loopCtx, ws); err != nil && !errors.Is(err, context.Canceled) {
-				rt.opts.Logf("logqueue: workspace %s: rescue: %v", ws.id, err)
 			}
 		}
 		select {
@@ -485,7 +490,15 @@ func (rt *Runtime) release(ws *workspace, kind string, stream eventlog.StreamID)
 // run claims a job, works it, and records the outcome. A lost claim race
 // is silent: the other replica owns the job now.
 func (rt *Runtime) run(ws *workspace, kind string, job Job) {
-	defer rt.release(ws, kind, job.Stream)
+	// A discard handler that failed is retried once this worker has released
+	// the job, so the rescue the signal starts can see it.
+	retryDiscard := false
+	defer func() {
+		rt.release(ws, kind, job.Stream)
+		if retryDiscard {
+			signal(ws.fold)
+		}
+	}()
 	reg, ok := rt.registration(kind)
 	if !ok {
 		return
@@ -529,6 +542,17 @@ func (rt *Runtime) run(ws *workspace, kind string, job Job) {
 		outcomeKind = KindSnoozed
 		outcome.Until = finished.Add(snooze.Duration)
 	case attempt >= job.MaxAttempts:
+		if reg.Discarded != nil {
+			// The handler's own failure outcome may not have persisted, so
+			// its idempotent discard handler confirms the stop before the
+			// job is recorded as discarded (req-task-lifecycle-and-queue
+			// AC-6.2; req-bounded-automatic-recovery AC-4.1).
+			if err := rt.finishDiscard(ws, reg, job, handlerErr.Error()); err != nil {
+				rt.opts.Logf("logqueue: workspace %s: %v", ws.id, err)
+				retryDiscard = true
+			}
+			return
+		}
 		outcomeKind = KindDiscarded
 		outcome.Error = handlerErr.Error()
 	default:

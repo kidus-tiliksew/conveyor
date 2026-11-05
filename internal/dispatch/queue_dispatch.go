@@ -78,29 +78,95 @@ func (w *dispatchTaskWorker) handleFailure(ctx context.Context, job queue.Job, e
 			return nil
 		}
 	}
-	if stateErr := w.applyFailure(ctx, args.TaskID, job, err); stateErr != nil {
-		return stateErr
+	if job.Attempt >= job.MaxAttempts {
+		if stateErr := w.parkAfterFinalAttempt(ctx, args.TaskID, job, err); stateErr != nil {
+			return stateErr
+		}
+		return err
+	}
+	payload := core.JSONPayload(map[string]any{
+		"attempt":      job.Attempt,
+		"max_attempts": job.MaxAttempts,
+		"error":        err.Error(),
+	})
+	if eventErr := w.dispatcher.Store.AppendEvent(ctx, core.Event{
+		TaskID: args.TaskID, Kind: "dispatch.failed", Payload: payload,
+	}); eventErr != nil {
+		log.Printf("[task %s] record dispatch failure: %v", args.TaskID, eventErr)
+	}
+	task, taskErr := w.dispatcher.Store.GetTask(ctx, args.TaskID)
+	if taskErr != nil {
+		return fmt.Errorf("dispatch failed: %v; load recovery transition: %w", err, taskErr)
+	}
+	command := core.TaskDispatchFailRetry
+	if task.State == core.TaskRunning {
+		// There is no running-state dispatch-failure retry edge. Preserve the
+		// existing requeue behavior as an explicit table-gap workaround until
+		// the lifecycle table is amended (component-durable-queue).
+		command = core.TaskStageBounce
+	}
+	if _, stateErr := taskops.New(w.dispatcher.Store).Perform(ctx, args.TaskID, taskops.Command{Kind: command, NextStage: w.recoveryStage(ctx, task), ProjectStages: true}); stateErr != nil {
+		return fmt.Errorf("dispatch failed: %v; persist retry transition: %w", err, stateErr)
 	}
 	return err
 }
 
-// Discarded is the dispatch_task discard handler. Rescue discarded the job
-// after its last attempt without a handler outcome, so it applies the
-// final-attempt row of the dispatch outcome table: dispatch.failed, a running
-// task takes stage.bounce, and dispatch.fail_final parks the task
+// parkAfterFinalAttempt applies the final-attempt row of the dispatch outcome
+// table. A running task takes stage.bounce, then dispatch.fail_final parks the
+// task and records dispatch.failed in the same transaction, so a retry after
+// any failed step applies each transition and that evidence once
 // (component-durable-queue, Handlers; req-task-lifecycle-and-queue AC-6.2).
-// A task that a work order holds, a blueprint anchor, and a task that is
-// neither queued nor running are not stuck, so they are left alone, as the
-// start-up reconciliation leaves them (component-durable-queue,
-// Reconciliation); a repeat finds the task parked and changes nothing.
+func (w *dispatchTaskWorker) parkAfterFinalAttempt(ctx context.Context, taskID string, job queue.Job, err error) error {
+	task, taskErr := w.dispatcher.Store.GetTask(ctx, taskID)
+	if taskErr != nil {
+		return fmt.Errorf("dispatch failed: %v; load recovery transition: %w", err, taskErr)
+	}
+	recoveryStage := w.recoveryStage(ctx, task)
+	if task.State == core.TaskRunning {
+		// Return the failed stage to queued before applying T13. This preserves
+		// the canonical queued -> parked edge and records dispatch.fail_final
+		// for operator visibility (component-durable-queue).
+		if _, stateErr := taskops.New(w.dispatcher.Store).Perform(ctx, taskID, taskops.Command{Kind: core.TaskStageBounce, NextStage: recoveryStage, ProjectStages: true}); stateErr != nil {
+			return fmt.Errorf("dispatch failed: %v; requeue before final dispatch failure: %w", err, stateErr)
+		}
+	}
+	if _, stateErr := taskops.New(w.dispatcher.Store).Perform(ctx, taskID, taskops.Command{
+		Kind: core.TaskDispatchFailFinal, RecoveryStage: recoveryStage, ProjectStages: true,
+		FailureMessage: err.Error(), Attempt: job.Attempt, MaxAttempts: job.MaxAttempts,
+	}); stateErr != nil {
+		return fmt.Errorf("dispatch failed: %v; park after final dispatch attempt: %w", err, stateErr)
+	}
+	return nil
+}
+
+func (w *dispatchTaskWorker) recoveryStage(ctx context.Context, task core.Task) core.Stage {
+	if task.NextStage != "" {
+		return task.NextStage
+	}
+	if latest, ok, latestErr := w.dispatcher.Store.GetLatestJob(ctx, task.ID); latestErr == nil && ok {
+		return latest.Stage
+	}
+	return ""
+}
+
+// Discarded is the dispatch_task discard handler, which the queue retries
+// until it returns nil. It parks a queued or running task. A task that a work
+// order holds, a blueprint anchor, and a task in any other state are not
+// stuck, so a retry after a final transition changes nothing. A job whose
+// arguments or task no longer resolve has nothing to finalize
+// (req-task-lifecycle-and-queue AC-6.2).
 func (w *dispatchTaskWorker) Discarded(ctx context.Context, job queue.Job, reason string) error {
 	args, err := queue.DecodeArgs[queue.DispatchTaskArgs](job)
 	if err != nil {
-		return err
+		log.Printf("queue job %s: discard: decode job: %v", job.ID, err)
+		return nil
 	}
 	ctx = store.WithActor(ctx, store.SystemActor(fmt.Sprintf("queue:%s", job.ID)))
 	ctx = store.WithWorkspace(ctx, args.WorkspaceID)
 	task, err := w.dispatcher.Store.GetTask(ctx, args.TaskID)
+	if errors.Is(err, store.ErrNotFound) {
+		return nil
+	}
 	if err != nil {
 		return err
 	}
@@ -112,56 +178,5 @@ func (w *dispatchTaskWorker) Discarded(ctx context.Context, job queue.Job, reaso
 	} else if active {
 		return nil
 	}
-	job.Attempt = max(job.Attempt, job.MaxAttempts)
-	return w.applyFailure(ctx, args.TaskID, job, errors.New(reason))
-}
-
-// applyFailure records dispatch.failed and applies the retry or final
-// transition for one failed attempt. It returns only a persistence failure.
-func (w *dispatchTaskWorker) applyFailure(ctx context.Context, taskID string, job queue.Job, err error) error {
-	payload := core.JSONPayload(map[string]any{
-		"attempt":      job.Attempt,
-		"max_attempts": job.MaxAttempts,
-		"error":        err.Error(),
-	})
-	if eventErr := w.dispatcher.Store.AppendEvent(ctx, core.Event{
-		TaskID: taskID, Kind: "dispatch.failed", Payload: payload,
-	}); eventErr != nil {
-		log.Printf("[task %s] record dispatch failure: %v", taskID, eventErr)
-	}
-	task, taskErr := w.dispatcher.Store.GetTask(ctx, taskID)
-	if taskErr != nil {
-		return fmt.Errorf("dispatch failed: %v; load recovery transition: %w", err, taskErr)
-	}
-	recoveryStage := task.NextStage
-	if recoveryStage == "" {
-		if latest, ok, latestErr := w.dispatcher.Store.GetLatestJob(ctx, taskID); latestErr == nil && ok {
-			recoveryStage = latest.Stage
-		}
-	}
-	if job.Attempt >= job.MaxAttempts {
-		if task.State == core.TaskRunning {
-			// Return the failed stage to queued before applying T13. This preserves
-			// the canonical queued -> parked edge and records dispatch.fail_final
-			// for operator visibility (component-durable-queue).
-			if _, stateErr := taskops.New(w.dispatcher.Store).Perform(ctx, taskID, taskops.Command{Kind: core.TaskStageBounce, NextStage: recoveryStage, ProjectStages: true}); stateErr != nil {
-				return fmt.Errorf("dispatch failed: %v; requeue before final dispatch failure: %w", err, stateErr)
-			}
-		}
-		if _, stateErr := taskops.New(w.dispatcher.Store).Perform(ctx, taskID, taskops.Command{Kind: core.TaskDispatchFailFinal, RecoveryStage: recoveryStage, ProjectStages: true}); stateErr != nil {
-			return fmt.Errorf("dispatch failed: %v; park after final dispatch attempt: %w", err, stateErr)
-		}
-	} else {
-		command := core.TaskDispatchFailRetry
-		if task.State == core.TaskRunning {
-			// There is no running-state dispatch-failure retry edge. Preserve the
-			// existing requeue behavior as an explicit table-gap workaround until
-			// the lifecycle table is amended (component-durable-queue).
-			command = core.TaskStageBounce
-		}
-		if _, stateErr := taskops.New(w.dispatcher.Store).Perform(ctx, taskID, taskops.Command{Kind: command, NextStage: recoveryStage, ProjectStages: true}); stateErr != nil {
-			return fmt.Errorf("dispatch failed: %v; persist retry transition: %w", err, stateErr)
-		}
-	}
-	return nil
+	return w.parkAfterFinalAttempt(ctx, args.TaskID, job, errors.New(reason))
 }
