@@ -707,6 +707,12 @@ type WorkOrder struct {
 	// GovernanceSnapshotDigest is the content-addressed identity of GovernanceSnapshot.
 	// Claim events carry this instead of document bodies.
 	GovernanceSnapshotDigest string `json:"governance_snapshot_digest,omitempty"`
+
+	// ClaimExpiryUnpersisted marks a read-time projection of a stored claim
+	// whose lease or execution deadline has elapsed. The order clock has not
+	// persisted the expiry, so the claim still holds its stage. It is never
+	// stored or emitted (WorkOrderHoldsStage).
+	ClaimExpiryUnpersisted bool `json:"-"`
 }
 
 // ClearExecutionPins removes every harness, model, and effort pin, including a
