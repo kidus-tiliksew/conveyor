@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -382,6 +383,75 @@ func TestRuntimeRescuesStuckClaims(t *testing.T) {
 	defer f.mu.Unlock()
 	if len(f.calls) != 1 || f.calls[0].Attempt != 2 {
 		t.Fatalf("rescued run calls=%+v want one call at attempt 2", f.calls)
+	}
+}
+
+// TestRescueDiscardRunsTheDiscardHandlerOnce: a stuck claim on its last
+// attempt is discarded by rescue, and the registration's discard handler runs
+// once with the job and the rescue reason, across two replicas; the job
+// handler never runs (req-task-lifecycle-and-queue AC-6.2).
+func TestRescueDiscardRunsTheDiscardHandlerOnce(t *testing.T) {
+	log := notifyingLog()
+	now := time.Now().UTC()
+	if _, err := Enqueue(context.Background(), log, "ws", "demo", "k", demoArgs{Key: "k"}, 1, now.Add(-time.Hour)); err != nil {
+		t.Fatal(err)
+	}
+	stream := StreamFor("demo", "k")
+	appendKind(t, log, "ws", stream, 1, KindClaimed, claimedPayload{Attempt: 1, Worker: "dead", ClaimedAt: now.Add(-time.Hour)})
+	var mu sync.Mutex
+	var discarded []queue.Job
+	var reasons []string
+	var handled int32
+	var runtimes []*Runtime
+	for i := 0; i < 2; i++ {
+		rt := NewRuntime(log, Options{Workspaces: []string{"ws"}, RescueStuckAfter: time.Minute, WorkerID: fmt.Sprintf("replica-%d", i)})
+		rt.Register(queue.Registration{Kind: "demo",
+			Handle: func(context.Context, queue.Job) error { atomic.AddInt32(&handled, 1); return nil },
+			Discarded: func(_ context.Context, job queue.Job, reason string) error {
+				mu.Lock()
+				defer mu.Unlock()
+				discarded = append(discarded, job)
+				reasons = append(reasons, reason)
+				return nil
+			}})
+		runtimes = append(runtimes, rt)
+	}
+	for _, rt := range runtimes {
+		if err := rt.Start(context.Background()); err != nil {
+			t.Fatal(err)
+		}
+	}
+	t.Cleanup(func() {
+		for _, rt := range runtimes {
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			_ = rt.StopAndCancel(ctx)
+			cancel()
+		}
+	})
+	waitUntil(t, "the discard handler", func() bool {
+		mu.Lock()
+		defer mu.Unlock()
+		return len(discarded) > 0
+	})
+	// Let both replicas finish their catch-ups and rescues.
+	time.Sleep(100 * time.Millisecond)
+	mu.Lock()
+	defer mu.Unlock()
+	if len(discarded) != 1 {
+		t.Fatalf("discard handler ran %d times, want once", len(discarded))
+	}
+	job := discarded[0]
+	if job.ID != "job/demo:k@1" || job.WorkspaceID != "ws" || job.Kind != "demo" || job.Attempt != 1 || job.MaxAttempts != 1 || !strings.Contains(string(job.Args), `"k"`) {
+		t.Fatalf("discarded job=%+v", job)
+	}
+	if !strings.Contains(reasons[0], "rescued: claim exceeded") {
+		t.Fatalf("reason=%q", reasons[0])
+	}
+	if atomic.LoadInt32(&handled) != 0 {
+		t.Fatalf("job handler ran %d times for a discarded job", handled)
+	}
+	if state, err := Load(context.Background(), log, "ws", stream); err != nil || state.State != StateDiscarded {
+		t.Fatalf("job=%+v err=%v", state, err)
 	}
 }
 

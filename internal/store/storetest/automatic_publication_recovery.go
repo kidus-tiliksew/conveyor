@@ -3,6 +3,7 @@ package storetest
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -158,9 +159,139 @@ func RunAutomaticPublicationRecoveryConformance(t *testing.T, st store.Backend, 
 			assertAutomaticPublicationEvents(t, st, ctx, taskID, 0)
 		})
 	}
+	t.Run("ConcurrentFailedWritesRecordOneEvent", func(t *testing.T) {
+		runConcurrentFailedWrites(t, st, ctx, workspace)
+	})
+	if st.IsDurable() {
+		t.Run("RetryingWithoutJobFailsAtStart", func(t *testing.T) {
+			runRetryingReviewPublicationWithoutJob(t, st, ctx, workspace)
+		})
+	}
 	t.Run("NothingDueChangesNothing", func(t *testing.T) {
 		runNothingDueSweeps(t, st, ctx, sweep)
 	})
+}
+
+// runConcurrentFailedWrites proves the row lock is the last line against a
+// duplicate failure: however many writers read a retrying row and write failed,
+// and however late, one failure records one event on every backend, and the
+// first writer's error stands (req-bounded-automatic-recovery AC-4.1).
+func runConcurrentFailedWrites(t *testing.T, st store.Backend, ctx context.Context, workspace string) {
+	t.Helper()
+	taskID, reviewID := seedFailedPublications(t, st, ctx, workspace, core.TaskRunning)
+	lifecycle, _, err := st.GetGitHubLifecycle(ctx, taskID)
+	requireOK(t, err)
+	publication, err := st.GetReviewPublication(ctx, reviewID)
+	requireOK(t, err)
+	lifecycle.State = core.GitHubPublicationRetrying
+	requireOK(t, st.UpdateGitHubLifecycle(ctx, lifecycle))
+	publication.State = core.ReviewPublicationRetrying
+	requireOK(t, st.UpdateReviewPublication(ctx, publication))
+	baseIssue, err := st.CountEvents(ctx, taskID, "github_issue.publication_failed")
+	requireOK(t, err)
+	baseReview, err := st.CountEvents(ctx, taskID, "review.publication_failed")
+	requireOK(t, err)
+	var wg sync.WaitGroup
+	var issueWrites, reviewWrites atomic.Int64
+	for i := range 4 {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			nextLifecycle, nextPublication := lifecycle, publication
+			nextLifecycle.State, nextLifecycle.LastError = core.GitHubPublicationFailed, fmt.Sprintf("writer %d", i)
+			nextPublication.State, nextPublication.LastError = core.ReviewPublicationFailed, fmt.Sprintf("writer %d", i)
+			if writeErr := st.UpdateGitHubLifecycle(ctx, nextLifecycle); writeErr == nil {
+				issueWrites.Add(1)
+			} else {
+				t.Logf("issue writer %d: %v", i, writeErr)
+			}
+			if writeErr := st.UpdateReviewPublication(ctx, nextPublication); writeErr == nil {
+				reviewWrites.Add(1)
+			} else {
+				t.Logf("review writer %d: %v", i, writeErr)
+			}
+		}()
+	}
+	wg.Wait()
+	if issueWrites.Load() == 0 || reviewWrites.Load() == 0 {
+		t.Fatalf("writes issue=%d review=%d", issueWrites.Load(), reviewWrites.Load())
+	}
+	issue, err := st.CountEvents(ctx, taskID, "github_issue.publication_failed")
+	requireOK(t, err)
+	review, err := st.CountEvents(ctx, taskID, "review.publication_failed")
+	requireOK(t, err)
+	if issue != baseIssue+1 || review != baseReview+1 {
+		t.Fatalf("failure events issue=%d review=%d, want %d and %d", issue, review, baseIssue+1, baseReview+1)
+	}
+}
+
+// runRetryingReviewPublicationWithoutJob proves the start-up review
+// publication pass on a durable backend: a retrying row whose job is still
+// active is left alone; once the job is discarded, the pass marks the row
+// failed, keeps its error, records review.publication_failed, and reports one
+// repair; a second pass repairs nothing; and the failed row is then due for
+// the bounded automatic re-enqueue (req-bounded-automatic-recovery AC-4.1;
+// req-quiet-idle-runtime AC-4.1).
+func runRetryingReviewPublicationWithoutJob(t *testing.T, st store.Backend, ctx context.Context, workspace string) {
+	restore := setAutomaticRecoveryBound(t, st, ctx, 2)
+	defer restore()
+	taskID := "retrying-publication-" + core.NewTaskID()
+	requireOK(t, st.CreateTask(ctx, core.Task{ID: taskID, Workspace: workspace, Repo: "app", Title: "Retrying publication", BaseBranch: "main", Branch: "conveyor/" + taskID, State: core.TaskRunning, NextStage: core.StageReview, CreatedAt: time.Now().UTC()}))
+	reviewID := taskID + "-review"
+	requireOK(t, st.CreateJob(ctx, core.Job{ID: reviewID, TaskID: taskID, Stage: core.StageReview, State: core.JobPending}))
+	requireOK(t, st.QueueReviewPublication(ctx, core.ReviewPublication{ReviewWorkOrderID: reviewID, TaskID: taskID, JobID: reviewID, Verdict: "approve", Summary: "retrying"}))
+	publication, err := st.GetReviewPublication(ctx, reviewID)
+	requireOK(t, err)
+	publication.State, publication.Attempts, publication.LastError = core.ReviewPublicationRetrying, 1, "task read unavailable"
+	requireOK(t, st.UpdateReviewPublication(ctx, publication))
+
+	var reported []store.DriftRepair
+	recorded := store.WithDriftRecorder(ctx, func(repair store.DriftRepair) {
+		if repair.TaskID == taskID {
+			reported = append(reported, repair)
+		}
+	})
+	if _, err = st.ReconcileReviewPublications(recorded); err != nil {
+		t.Fatal(err)
+	}
+	if stored, getErr := st.GetReviewPublication(ctx, reviewID); getErr != nil || stored.State != core.ReviewPublicationRetrying || len(reported) != 0 {
+		t.Fatalf("row with an active job=%+v reported=%v err=%v", stored, reported, getErr)
+	}
+
+	stream := logqueue.StreamFor(queue.ReviewPublicationArgs{}.Kind(), reviewID)
+	job, err := logqueue.Load(ctx, st.Log(), workspace, stream)
+	requireOK(t, err)
+	if !job.Active() {
+		t.Fatalf("queued publication job=%+v", job)
+	}
+	_, err = st.Log().Append(ctx, workspace, stream, job.Head, []eventlog.NewEvent{{Kind: logqueue.KindDiscarded, Payload: []byte(`{"attempt":5,"error":"rescued"}`), At: time.Now().UTC()}})
+	requireOK(t, err)
+
+	if _, err = st.ReconcileReviewPublications(recorded); err != nil {
+		t.Fatal(err)
+	}
+	stored, err := st.GetReviewPublication(ctx, reviewID)
+	requireOK(t, err)
+	if stored.State != core.ReviewPublicationFailed || stored.LastError != "task read unavailable" || stored.Attempts != 1 || stored.Verdict != "approve" {
+		t.Fatalf("repaired publication=%+v", stored)
+	}
+	if len(reported) != 1 || reported[0] != store.DriftReviewPublicationRetryingWithoutJob.For(taskID) {
+		t.Fatalf("reported=%v", reported)
+	}
+	if count, countErr := st.CountEvents(ctx, taskID, "review.publication_failed"); countErr != nil || count != 1 {
+		t.Fatalf("review.publication_failed=%d err=%v", count, countErr)
+	}
+	if _, err = st.ReconcileReviewPublications(recorded); err != nil || len(reported) != 1 {
+		t.Fatalf("repeat pass reported=%v err=%v", reported, err)
+	}
+	retries, err := st.ListAutomaticPublicationRetries(ctx, time.Now().UTC())
+	requireOK(t, err)
+	for _, retry := range retries {
+		if retry.Kind == store.AutomaticPublicationReview && retry.Key == reviewID {
+			return
+		}
+	}
+	t.Fatalf("failed row is not due for automatic re-enqueue: %+v", retries)
 }
 
 func automaticRecoveryWindow(t *testing.T, st store.Store, ctx context.Context) time.Duration {

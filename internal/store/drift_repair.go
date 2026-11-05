@@ -70,6 +70,8 @@ var (
 		Mismatch: "completed review had no publication", Repair: "queued the review publication"}
 	DriftReviewPublicationWithoutComment = DriftRepair{Pass: DriftPassReviewPublications,
 		Mismatch: "published review publication had no comment", Repair: "moved the publication to retrying"}
+	DriftReviewPublicationRetryingWithoutJob = DriftRepair{Pass: DriftPassReviewPublications,
+		Mismatch: "retrying review publication had no active job", Repair: "marked the publication failed"}
 	DriftIssuePublicationWithoutJob = DriftRepair{Pass: DriftPassGitHubIssuePublications,
 		Mismatch: "queued GitHub issue publication had no active job", Repair: "enqueued the publication job"}
 	DriftApprovedPlanWithoutIssuePublication = DriftRepair{Pass: DriftPassGitHubLifecycleIntents,
@@ -85,3 +87,7 @@ func (r DriftRepair) For(taskID string) DriftRepair {
 	r.TaskID = taskID
 	return r
 }
+
+// RetryingWithoutJobError is the error a review publication keeps when the
+// start-up check fails it for having no active job and no recorded error.
+const RetryingWithoutJobError = "the publication job ended while the publication was retrying"
