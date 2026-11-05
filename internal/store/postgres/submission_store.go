@@ -364,3 +364,83 @@ func (s *Store) SubmitImplementationCommand(ctx context.Context, lease taskops.T
 	}
 	return completed, nil
 }
+
+// ListCheckStatusEvents reads only the check-status event kinds of the
+// requested tasks in one query (component-submission-merge, Check status).
+func (s *Store) ListCheckStatusEvents(ctx context.Context, taskIDs []string) (map[string][]core.Event, error) {
+	ctx = dbmetrics.WithReadLabel(ctx, "ListCheckStatusEvents")
+	out := map[string][]core.Event{}
+	if len(taskIDs) == 0 {
+		return out, nil
+	}
+	rows, err := s.boundary.Query(ctx, `SELECT e.id, e.task_id, e.job_id, e.kind, e.actor_id, e.actor_role, e.payload_json, e.at, e.workspace_id
+FROM events e
+JOIN tasks t ON t.id = e.task_id
+WHERE t.workspace_id = $1 AND e.task_id = ANY($2::text[]) AND e.kind = ANY($3::text[])
+ORDER BY e.task_id, e.at, e.id`, workspace(ctx), taskIDs, store.CheckStatusEventKinds)
+	if err != nil {
+		return nil, err
+	}
+	events, err := pgx.CollectRows(rows, pgx.RowToStructByName[db.Event])
+	if err != nil {
+		return nil, err
+	}
+	for _, event := range events {
+		converted := eventFromDB(event)
+		out[converted.TaskID] = append(out[converted.TaskID], converted)
+	}
+	return out, nil
+}
+
+// RecordCheckStatusDeadline records the deadline and its event in one
+// transaction unless the head already holds one (req-review-gates-evidence
+// AC-1.5). The guard is in the update, so a concurrent read never moves it.
+func (s *Store) RecordCheckStatusDeadline(ctx context.Context, id, head string, deadline time.Time, event core.Event) (bool, error) {
+	ctx = dbmetrics.WithReadLabel(ctx, "RecordCheckStatusDeadline")
+	head = strings.TrimSpace(head)
+	if head == "" {
+		return false, store.ErrCheckStatusHeadRequired
+	}
+	recorded := false
+	err := s.inTx(ctx, func(tx pgx.Tx, q *db.Queries) error {
+		if _, err := q.GetTask(ctx, db.GetTaskParams{ID: id, WorkspaceID: workspace(ctx)}); err != nil {
+			return notFound(err, "task %s", id)
+		}
+		tag, err := tx.Exec(ctx, `UPDATE tasks SET check_status_deadline=$1, check_status_deadline_head=$2, updated_at=now()
+WHERE workspace_id=$3 AND id=$4 AND (check_status_deadline IS NULL OR check_status_deadline_head IS DISTINCT FROM $2)`, deadline.UTC(), head, workspace(ctx), id)
+		if err != nil {
+			return err
+		}
+		if tag.RowsAffected() == 0 {
+			return nil
+		}
+		recorded = true
+		event.TaskID = id
+		return insertEvent(ctx, q, event)
+	})
+	if err != nil {
+		return false, err
+	}
+	return recorded, nil
+}
+
+// ClearCheckStatusDeadline clears the deadline and keeps its head.
+func (s *Store) ClearCheckStatusDeadline(ctx context.Context, id string) (bool, error) {
+	ctx = dbmetrics.WithReadLabel(ctx, "ClearCheckStatusDeadline")
+	cleared := false
+	err := s.inTx(ctx, func(tx pgx.Tx, q *db.Queries) error {
+		if _, err := q.GetTask(ctx, db.GetTaskParams{ID: id, WorkspaceID: workspace(ctx)}); err != nil {
+			return notFound(err, "task %s", id)
+		}
+		tag, err := tx.Exec(ctx, `UPDATE tasks SET check_status_deadline=NULL, updated_at=now() WHERE workspace_id=$1 AND id=$2 AND check_status_deadline IS NOT NULL`, workspace(ctx), id)
+		if err != nil {
+			return err
+		}
+		cleared = tag.RowsAffected() != 0
+		return nil
+	})
+	if err != nil {
+		return false, err
+	}
+	return cleared, nil
+}

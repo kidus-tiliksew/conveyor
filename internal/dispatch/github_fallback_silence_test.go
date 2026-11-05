@@ -239,6 +239,62 @@ func TestGitHubFallbackSilenceIgnoresUnwatchedTasks(t *testing.T) {
 	}
 }
 
+// holdTask records a check hold of the task's approved head.
+func (f *fallbackFixture) holdTask(id, reason string) {
+	f.t.Helper()
+	if err := f.st.BindTaskApproval(f.ctx, id, "held-head"); err != nil {
+		f.t.Fatal(err)
+	}
+	if err := f.st.AppendEvent(f.ctx, core.Event{TaskID: id, Kind: store.EventCheckHold, At: f.clock.Now(), Payload: core.JSONPayload(map[string]any{"head_sha": "held-head", "reason": reason})}); err != nil {
+		f.t.Fatal(err)
+	}
+}
+
+// TestGitHubFallbackSilenceExcludesCheckHeldTask: a failed or stuck check names
+// the operator, so the task no longer waits on GitHub. A later read that clears
+// the hold starts the wait again at that read (req-quiet-idle-runtime AC-3.8).
+func TestGitHubFallbackSilenceExcludesCheckHeldTask(t *testing.T) {
+	for _, reason := range []string{"failed", "stuck"} {
+		t.Run(reason, func(t *testing.T) {
+			f := newFallbackFixture(t)
+			f.deliveredAt(f.start.Add(-2 * time.Hour))
+			f.approveTask("held", false, f.start.Add(-time.Hour), f.start.Add(-time.Hour))
+			f.holdTask("held", reason)
+			if s := f.run(); s.armed {
+				t.Fatalf("start step=%+v, want no timer for a held task", s)
+			}
+			for range 30 {
+				if _, fired := f.advance(time.Minute); fired {
+					t.Fatal("timer fired for a held task")
+				}
+			}
+			if f.reads.Load() != 0 || f.fallback.SilenceActive("test") {
+				t.Fatalf("reads=%d active=%t, want no timed call", f.reads.Load(), f.fallback.SilenceActive("test"))
+			}
+			released := f.clock.Now()
+			if err := f.st.AppendEvent(f.ctx, core.Event{TaskID: "held", Kind: store.EventCheckHoldCleared, At: released, Payload: core.JSONPayload(map[string]any{"head_sha": "held-head"})}); err != nil {
+				t.Fatal(err)
+			}
+			if s := f.awaitTask(true); !s.due.Equal(released.Add(GitHubSilenceWindow)) {
+				t.Fatalf("release step=%+v, want due at %s", s, released.Add(GitHubSilenceWindow))
+			}
+		})
+	}
+}
+
+// TestGitHubFallbackSilenceKeepsARefusedReadWatched: a refused read holds no
+// check. The task still waits on GitHub, so the read after the operator's grant
+// happens (AC-3.8 names only failed and stuck checks).
+func TestGitHubFallbackSilenceKeepsARefusedReadWatched(t *testing.T) {
+	f := newFallbackFixture(t)
+	f.deliveredAt(f.start.Add(-2 * time.Hour))
+	f.approveTask("refused", false, f.start.Add(-time.Hour), f.start.Add(-time.Hour))
+	f.holdTask("refused", "permission")
+	if s := f.run(); !s.armed {
+		t.Fatalf("start step=%+v, want a watched task", s)
+	}
+}
+
 // TestGitHubFallbackSilenceApprovalWritesSeenTogether: the creation notice
 // of a gate-off approved task wakes the fallback while approveTask is
 // between the task write and the approval event, and the armed due time

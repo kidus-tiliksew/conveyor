@@ -175,7 +175,7 @@ SET reviewed_head_sha = $1,
     refresh_baseline_sha = '', refresh_head_sha = '', refresh_review_scope = '',
     updated_at = now()
 WHERE id = $2 AND workspace_id = $3
-RETURNING id, workspace_id, source, title, body, class, escalation_level, repo_name, base_branch, branch, state, parent_task_id, created_at, updated_at, next_stage, recovery_stage, intake_key, mode, spec_approval, merge_approval, policy_version, setup_name, setup_contract, hold, reviewed_head_sha, approved_head_sha, approval_stale, refresh_baseline_sha, refresh_head_sha, refresh_review_scope, origin_spec_version, origin_sub_id, supersedes, superseded_by, intake_operator_direction, gate_kind
+RETURNING id, workspace_id, source, title, body, class, escalation_level, repo_name, base_branch, branch, state, parent_task_id, created_at, updated_at, next_stage, recovery_stage, intake_key, mode, spec_approval, merge_approval, policy_version, setup_name, setup_contract, hold, reviewed_head_sha, approved_head_sha, approval_stale, refresh_baseline_sha, refresh_head_sha, refresh_review_scope, origin_spec_version, origin_sub_id, supersedes, superseded_by, intake_operator_direction, gate_kind, check_status_deadline, check_status_deadline_head
 `
 
 type BindTaskApprovalParams struct {
@@ -221,6 +221,8 @@ func (q *Queries) BindTaskApproval(ctx context.Context, arg BindTaskApprovalPara
 		&i.OriginSpecVersion,
 		&i.OriginSubID, &i.Supersedes, &i.SupersededBy, &i.IntakeOperatorDirection,
 		&i.GateKind,
+		&i.CheckStatusDeadline,
+		&i.CheckStatusDeadlineHead,
 	)
 	return i, err
 }
@@ -376,7 +378,7 @@ func (q *Queries) GetLatestSpecVersion(ctx context.Context, arg GetLatestSpecVer
 }
 
 const getTask = `-- name: GetTask :one
-SELECT id, workspace_id, source, title, body, class, escalation_level, repo_name, base_branch, branch, state, parent_task_id, created_at, updated_at, next_stage, recovery_stage, intake_key, mode, spec_approval, merge_approval, policy_version, setup_name, setup_contract, hold, reviewed_head_sha, approved_head_sha, approval_stale, refresh_baseline_sha, refresh_head_sha, refresh_review_scope, origin_spec_version, origin_sub_id, supersedes, superseded_by, intake_operator_direction, gate_kind FROM tasks WHERE id = $1 AND workspace_id = $2
+SELECT id, workspace_id, source, title, body, class, escalation_level, repo_name, base_branch, branch, state, parent_task_id, created_at, updated_at, next_stage, recovery_stage, intake_key, mode, spec_approval, merge_approval, policy_version, setup_name, setup_contract, hold, reviewed_head_sha, approved_head_sha, approval_stale, refresh_baseline_sha, refresh_head_sha, refresh_review_scope, origin_spec_version, origin_sub_id, supersedes, superseded_by, intake_operator_direction, gate_kind, check_status_deadline, check_status_deadline_head FROM tasks WHERE id = $1 AND workspace_id = $2
 `
 
 type GetTaskParams struct {
@@ -421,12 +423,14 @@ func (q *Queries) GetTask(ctx context.Context, arg GetTaskParams) (Task, error) 
 		&i.OriginSpecVersion,
 		&i.OriginSubID, &i.Supersedes, &i.SupersededBy, &i.IntakeOperatorDirection,
 		&i.GateKind,
+		&i.CheckStatusDeadline,
+		&i.CheckStatusDeadlineHead,
 	)
 	return i, err
 }
 
 const getTaskByIntakeKey = `-- name: GetTaskByIntakeKey :one
-SELECT id, workspace_id, source, title, body, class, escalation_level, repo_name, base_branch, branch, state, parent_task_id, created_at, updated_at, next_stage, recovery_stage, intake_key, mode, spec_approval, merge_approval, policy_version, setup_name, setup_contract, hold, reviewed_head_sha, approved_head_sha, approval_stale, refresh_baseline_sha, refresh_head_sha, refresh_review_scope, origin_spec_version, origin_sub_id, supersedes, superseded_by, intake_operator_direction, gate_kind FROM tasks WHERE workspace_id = $1 AND intake_key = $2
+SELECT id, workspace_id, source, title, body, class, escalation_level, repo_name, base_branch, branch, state, parent_task_id, created_at, updated_at, next_stage, recovery_stage, intake_key, mode, spec_approval, merge_approval, policy_version, setup_name, setup_contract, hold, reviewed_head_sha, approved_head_sha, approval_stale, refresh_baseline_sha, refresh_head_sha, refresh_review_scope, origin_spec_version, origin_sub_id, supersedes, superseded_by, intake_operator_direction, gate_kind, check_status_deadline, check_status_deadline_head FROM tasks WHERE workspace_id = $1 AND intake_key = $2
 `
 
 type GetTaskByIntakeKeyParams struct {
@@ -471,6 +475,8 @@ func (q *Queries) GetTaskByIntakeKey(ctx context.Context, arg GetTaskByIntakeKey
 		&i.OriginSpecVersion,
 		&i.OriginSubID, &i.Supersedes, &i.SupersededBy, &i.IntakeOperatorDirection,
 		&i.GateKind,
+		&i.CheckStatusDeadline,
+		&i.CheckStatusDeadlineHead,
 	)
 	return i, err
 }
@@ -1460,7 +1466,7 @@ func (q *Queries) ListTaskOperationsLatestPlans(ctx context.Context, arg ListTas
 }
 
 const listTaskOperationsTasks = `-- name: ListTaskOperationsTasks :many
-SELECT t.id, t.workspace_id, t.source, t.title, t.body, t.class, t.escalation_level, t.repo_name, t.base_branch, t.branch, t.state, t.parent_task_id, t.created_at, t.updated_at, t.next_stage, t.recovery_stage, t.intake_key, t.mode, t.spec_approval, t.merge_approval, t.policy_version, t.setup_name, t.setup_contract, t.hold, t.reviewed_head_sha, t.approved_head_sha, t.approval_stale, t.refresh_baseline_sha, t.refresh_head_sha, t.refresh_review_scope, t.origin_spec_version, t.origin_sub_id, supersedes, superseded_by, intake_operator_direction, gate_kind,
+SELECT t.id, t.workspace_id, t.source, t.title, t.body, t.class, t.escalation_level, t.repo_name, t.base_branch, t.branch, t.state, t.parent_task_id, t.created_at, t.updated_at, t.next_stage, t.recovery_stage, t.intake_key, t.mode, t.spec_approval, t.merge_approval, t.policy_version, t.setup_name, t.setup_contract, t.hold, t.reviewed_head_sha, t.approved_head_sha, t.approval_stale, t.refresh_baseline_sha, t.refresh_head_sha, t.refresh_review_scope, t.origin_spec_version, t.origin_sub_id, supersedes, superseded_by, intake_operator_direction, gate_kind, check_status_deadline, check_status_deadline_head,
        EXISTS (
            SELECT 1 FROM task_dependencies edge
            WHERE edge.workspace_id = t.workspace_id AND edge.task_id = t.id
@@ -1603,6 +1609,8 @@ func (q *Queries) ListTaskOperationsTasks(ctx context.Context, arg ListTaskOpera
 			&i.Task.OriginSpecVersion,
 			&i.Task.OriginSubID, &i.Task.Supersedes, &i.Task.SupersededBy, &i.Task.IntakeOperatorDirection,
 			&i.Task.GateKind,
+			&i.Task.CheckStatusDeadline,
+			&i.Task.CheckStatusDeadlineHead,
 			&i.HasDependencies,
 			&i.HasChildren,
 		); err != nil {
@@ -1617,7 +1625,7 @@ func (q *Queries) ListTaskOperationsTasks(ctx context.Context, arg ListTaskOpera
 }
 
 const listTasks = `-- name: ListTasks :many
-SELECT t.id, t.workspace_id, t.source, t.title, t.body, t.class, t.escalation_level, t.repo_name, t.base_branch, t.branch, t.state, t.parent_task_id, t.created_at, t.updated_at, t.next_stage, t.recovery_stage, t.intake_key, t.mode, t.spec_approval, t.merge_approval, t.policy_version, t.setup_name, t.setup_contract, t.hold, t.reviewed_head_sha, t.approved_head_sha, t.approval_stale, t.refresh_baseline_sha, t.refresh_head_sha, t.refresh_review_scope, t.origin_spec_version, t.origin_sub_id, supersedes, superseded_by, intake_operator_direction, gate_kind,
+SELECT t.id, t.workspace_id, t.source, t.title, t.body, t.class, t.escalation_level, t.repo_name, t.base_branch, t.branch, t.state, t.parent_task_id, t.created_at, t.updated_at, t.next_stage, t.recovery_stage, t.intake_key, t.mode, t.spec_approval, t.merge_approval, t.policy_version, t.setup_name, t.setup_contract, t.hold, t.reviewed_head_sha, t.approved_head_sha, t.approval_stale, t.refresh_baseline_sha, t.refresh_head_sha, t.refresh_review_scope, t.origin_spec_version, t.origin_sub_id, supersedes, superseded_by, intake_operator_direction, gate_kind, check_status_deadline, check_status_deadline_head,
        EXISTS (
            SELECT 1 FROM task_dependencies edge
            WHERE edge.workspace_id = t.workspace_id AND edge.task_id = t.id
@@ -1680,6 +1688,8 @@ func (q *Queries) ListTasks(ctx context.Context, workspaceID string) ([]ListTask
 			&i.Task.OriginSpecVersion,
 			&i.Task.OriginSubID, &i.Task.Supersedes, &i.Task.SupersededBy, &i.Task.IntakeOperatorDirection,
 			&i.Task.GateKind,
+			&i.Task.CheckStatusDeadline,
+			&i.Task.CheckStatusDeadlineHead,
 			&i.HasDependencies,
 			&i.HasChildren,
 		); err != nil {
@@ -1703,7 +1713,7 @@ WHERE id = $4 AND workspace_id = $5
   AND NOT (approval_stale
     AND refresh_baseline_sha = $1
     AND refresh_head_sha = $2)
-RETURNING id, workspace_id, source, title, body, class, escalation_level, repo_name, base_branch, branch, state, parent_task_id, created_at, updated_at, next_stage, recovery_stage, intake_key, mode, spec_approval, merge_approval, policy_version, setup_name, setup_contract, hold, reviewed_head_sha, approved_head_sha, approval_stale, refresh_baseline_sha, refresh_head_sha, refresh_review_scope, origin_spec_version, origin_sub_id, supersedes, superseded_by, intake_operator_direction, gate_kind
+RETURNING id, workspace_id, source, title, body, class, escalation_level, repo_name, base_branch, branch, state, parent_task_id, created_at, updated_at, next_stage, recovery_stage, intake_key, mode, spec_approval, merge_approval, policy_version, setup_name, setup_contract, hold, reviewed_head_sha, approved_head_sha, approval_stale, refresh_baseline_sha, refresh_head_sha, refresh_review_scope, origin_spec_version, origin_sub_id, supersedes, superseded_by, intake_operator_direction, gate_kind, check_status_deadline, check_status_deadline_head
 `
 
 type MarkTaskApprovalStaleParams struct {
@@ -1757,6 +1767,8 @@ func (q *Queries) MarkTaskApprovalStale(ctx context.Context, arg MarkTaskApprova
 		&i.OriginSpecVersion,
 		&i.OriginSubID, &i.Supersedes, &i.SupersededBy, &i.IntakeOperatorDirection,
 		&i.GateKind,
+		&i.CheckStatusDeadline,
+		&i.CheckStatusDeadlineHead,
 	)
 	return i, err
 }
@@ -1767,7 +1779,7 @@ SET reviewed_head_sha = $1, approved_head_sha = $1,
     approval_stale = false, refresh_baseline_sha = '', refresh_head_sha = '',
     refresh_review_scope = '', updated_at = now()
 WHERE id = $2 AND workspace_id = $3
-RETURNING id, workspace_id, source, title, body, class, escalation_level, repo_name, base_branch, branch, state, parent_task_id, created_at, updated_at, next_stage, recovery_stage, intake_key, mode, spec_approval, merge_approval, policy_version, setup_name, setup_contract, hold, reviewed_head_sha, approved_head_sha, approval_stale, refresh_baseline_sha, refresh_head_sha, refresh_review_scope, origin_spec_version, origin_sub_id, supersedes, superseded_by, intake_operator_direction, gate_kind
+RETURNING id, workspace_id, source, title, body, class, escalation_level, repo_name, base_branch, branch, state, parent_task_id, created_at, updated_at, next_stage, recovery_stage, intake_key, mode, spec_approval, merge_approval, policy_version, setup_name, setup_contract, hold, reviewed_head_sha, approved_head_sha, approval_stale, refresh_baseline_sha, refresh_head_sha, refresh_review_scope, origin_spec_version, origin_sub_id, supersedes, superseded_by, intake_operator_direction, gate_kind, check_status_deadline, check_status_deadline_head
 `
 
 type SkipTaskRefreshParams struct {
@@ -1813,6 +1825,8 @@ func (q *Queries) SkipTaskRefresh(ctx context.Context, arg SkipTaskRefreshParams
 		&i.OriginSpecVersion,
 		&i.OriginSubID, &i.Supersedes, &i.SupersededBy, &i.IntakeOperatorDirection,
 		&i.GateKind,
+		&i.CheckStatusDeadline,
+		&i.CheckStatusDeadlineHead,
 	)
 	return i, err
 }
@@ -1904,7 +1918,7 @@ UPDATE tasks
 SET class = $1, updated_at = now()
 WHERE id = $2
   AND workspace_id = $3
-RETURNING id, workspace_id, source, title, body, class, escalation_level, repo_name, base_branch, branch, state, parent_task_id, created_at, updated_at, next_stage, recovery_stage, intake_key, mode, spec_approval, merge_approval, policy_version, setup_name, setup_contract, hold, reviewed_head_sha, approved_head_sha, approval_stale, refresh_baseline_sha, refresh_head_sha, refresh_review_scope, origin_spec_version, origin_sub_id, supersedes, superseded_by, intake_operator_direction, gate_kind
+RETURNING id, workspace_id, source, title, body, class, escalation_level, repo_name, base_branch, branch, state, parent_task_id, created_at, updated_at, next_stage, recovery_stage, intake_key, mode, spec_approval, merge_approval, policy_version, setup_name, setup_contract, hold, reviewed_head_sha, approved_head_sha, approval_stale, refresh_baseline_sha, refresh_head_sha, refresh_review_scope, origin_spec_version, origin_sub_id, supersedes, superseded_by, intake_operator_direction, gate_kind, check_status_deadline, check_status_deadline_head
 `
 
 type UpdateTaskClassificationParams struct {
@@ -1950,6 +1964,8 @@ func (q *Queries) UpdateTaskClassification(ctx context.Context, arg UpdateTaskCl
 		&i.OriginSpecVersion,
 		&i.OriginSubID, &i.Supersedes, &i.SupersededBy, &i.IntakeOperatorDirection,
 		&i.GateKind,
+		&i.CheckStatusDeadline,
+		&i.CheckStatusDeadlineHead,
 	)
 	return i, err
 }
@@ -1982,6 +1998,8 @@ func (q *Queries) UpdateTaskAssignee(ctx context.Context, arg UpdateTaskAssignee
 		&i.RefreshReviewScope, &i.OriginSpecVersion, &i.OriginSubID, &i.Supersedes, &i.SupersededBy, &i.IntakeOperatorDirection,
 		&i.AssigneeUserID,
 		&i.GateKind,
+		&i.CheckStatusDeadline,
+		&i.CheckStatusDeadlineHead,
 	)
 	return i, err
 }
@@ -1991,7 +2009,7 @@ UPDATE tasks
 SET state = $1, gate_kind = $2, updated_at = now()
 WHERE id = $3
   AND workspace_id = $4
-RETURNING id, workspace_id, source, title, body, class, escalation_level, repo_name, base_branch, branch, state, parent_task_id, created_at, updated_at, next_stage, recovery_stage, intake_key, mode, spec_approval, merge_approval, policy_version, setup_name, setup_contract, hold, reviewed_head_sha, approved_head_sha, approval_stale, refresh_baseline_sha, refresh_head_sha, refresh_review_scope, origin_spec_version, origin_sub_id, supersedes, superseded_by, intake_operator_direction, gate_kind
+RETURNING id, workspace_id, source, title, body, class, escalation_level, repo_name, base_branch, branch, state, parent_task_id, created_at, updated_at, next_stage, recovery_stage, intake_key, mode, spec_approval, merge_approval, policy_version, setup_name, setup_contract, hold, reviewed_head_sha, approved_head_sha, approval_stale, refresh_baseline_sha, refresh_head_sha, refresh_review_scope, origin_spec_version, origin_sub_id, supersedes, superseded_by, intake_operator_direction, gate_kind, check_status_deadline, check_status_deadline_head
 `
 
 type UpdateTaskStateParams struct {
@@ -2038,6 +2056,8 @@ func (q *Queries) UpdateTaskState(ctx context.Context, arg UpdateTaskStateParams
 		&i.OriginSpecVersion,
 		&i.OriginSubID, &i.Supersedes, &i.SupersededBy, &i.IntakeOperatorDirection,
 		&i.GateKind,
+		&i.CheckStatusDeadline,
+		&i.CheckStatusDeadlineHead,
 	)
 	return i, err
 }
@@ -2051,7 +2071,7 @@ SET state = $1,
     updated_at = now()
 WHERE id = $5
   AND workspace_id = $6
-RETURNING id, workspace_id, source, title, body, class, escalation_level, repo_name, base_branch, branch, state, parent_task_id, created_at, updated_at, next_stage, recovery_stage, intake_key, mode, spec_approval, merge_approval, policy_version, setup_name, setup_contract, hold, reviewed_head_sha, approved_head_sha, approval_stale, refresh_baseline_sha, refresh_head_sha, refresh_review_scope, origin_spec_version, origin_sub_id, supersedes, superseded_by, intake_operator_direction, gate_kind
+RETURNING id, workspace_id, source, title, body, class, escalation_level, repo_name, base_branch, branch, state, parent_task_id, created_at, updated_at, next_stage, recovery_stage, intake_key, mode, spec_approval, merge_approval, policy_version, setup_name, setup_contract, hold, reviewed_head_sha, approved_head_sha, approval_stale, refresh_baseline_sha, refresh_head_sha, refresh_review_scope, origin_spec_version, origin_sub_id, supersedes, superseded_by, intake_operator_direction, gate_kind, check_status_deadline, check_status_deadline_head
 `
 
 type UpdateTaskTransitionParams struct {
@@ -2107,6 +2127,8 @@ func (q *Queries) UpdateTaskTransition(ctx context.Context, arg UpdateTaskTransi
 		&i.OriginSpecVersion,
 		&i.OriginSubID, &i.Supersedes, &i.SupersededBy, &i.IntakeOperatorDirection,
 		&i.GateKind,
+		&i.CheckStatusDeadline,
+		&i.CheckStatusDeadlineHead,
 	)
 	return i, err
 }

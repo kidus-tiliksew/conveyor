@@ -29,4 +29,16 @@ func TestMonitorLineagesConveyorMergeAfterHeadMovedPostgresIntegration(t *testin
 	t.Run("stale-approval", func(t *testing.T) { mergelineagefixture.RunStaleApproval(t, open) })
 }
 
+// The outcomes of the check status read before an automatic merge, on the
+// volatile store and PostgreSQL. SingleStore runs the same suite
+// (req-review-gates-evidence AC-1.4 to AC-1.8).
+func TestAutomaticMergeCheckStatusOutcomes(t *testing.T) {
+	mergelineagefixture.RunCheckStatus(t, memoryStore)
+}
+
+func TestAutomaticMergeCheckStatusOutcomesPostgresIntegration(t *testing.T) {
+	raw := disposablePostgresURL(t, "Check status outcomes")
+	mergelineagefixture.RunCheckStatus(t, func(t *testing.T) store.Store { return postgresSchemaBackend(t, raw, "checks_") })
+}
+
 func memoryStore(*testing.T) store.Store { return store.NewMemory() }

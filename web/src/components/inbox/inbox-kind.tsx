@@ -27,6 +27,7 @@ const kinds: Record<string, { tone: InboxTone; icon: LucideIcon }> = {
   plan_revision: { tone: 'gate', icon: ClipboardCheck },
   merge_approval: { tone: 'ship', icon: GitMerge },
   merge_execution: { tone: 'ship', icon: GitMerge },
+  check_hold: { tone: 'broken', icon: AlertTriangle },
   agent_question: { tone: 'question', icon: CircleHelp },
   context_proposal: { tone: 'question', icon: FileText },
   review_bounce_limit: { tone: 'broken', icon: RotateCcw },

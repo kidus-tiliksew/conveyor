@@ -195,7 +195,7 @@ reads nor compares proposals. Each observation holds these fields:
 |---|---|
 | `task_id` | The task ID. |
 | `state` | The task state. |
-| `pending_gate` | The pending human gate, or `null`. `kind` is `plan`, `merge`, `merge_execution`, `plan_revision`, or `human`; `plan_version` appears for plan and plan revision gates. `merge_execution` is an approved task behind the merge gate waiting for `conveyor task merge`; its `merge_readiness` is the pull request's readiness state (`MERGEABLE`, `STALE`, `CONFLICTING`, or `UNKNOWN`), absent when the server could not read it. |
+| `pending_gate` | The pending human gate, or `null`. `kind` is `plan`, `merge`, `merge_execution`, `check_hold`, `plan_revision`, or `human`; `plan_version` appears for plan and plan revision gates. `merge_execution` is an approved task behind the merge gate waiting for `conveyor task merge`; its `merge_readiness` is the pull request's readiness state (`MERGEABLE`, `STALE`, `CONFLICTING`, or `UNKNOWN`), absent when the server could not read it. `check_hold` is an approved task with the merge gate off whose merge a failed or stuck check, or a refused check-status read, holds; the next action names each check and offers `conveyor task merge`, request changes, and close. |
 | `next_order` | The next claimable work order `id` and `stage`, or `null`. |
 | `observed_at` | The time of the observation. It is not compared. |
 
@@ -205,7 +205,8 @@ returns when any compared field differs from the baseline. A readiness change
 on a `merge_execution` gate counts. Titles, labels, summaries, capability
 flags, and progress text are not compared. A merged, closed, or
 parked task returns at once, whether it is terminal at start or becomes
-terminal during the wait.
+terminal during the wait. A task at a `check_hold` gate also returns at once,
+with `reason` `held`, because it needs an operator and no wait resolves it.
 
 Transport errors and server 5xx responses after the baseline are retried
 within the timeout and never replace the last successful observation.
@@ -234,7 +235,7 @@ first read. Without `--until`, output is unchanged.
 
 | Exit status | Meaning |
 |---|---|
-| `0` | The observation changed, the `--until` target was reached, or the task is merged, closed, or parked. |
+| `0` | The observation changed, the `--until` target was reached, or the task is merged, closed, parked, or held at a `check_hold` gate. |
 | `2` | The timeout elapsed. The result is printed and nothing is written to stderr. |
 | `1` | Failure: invalid arguments or timeout, configuration, authentication, authorization, not found, malformed response, or a failed first observation. |
 

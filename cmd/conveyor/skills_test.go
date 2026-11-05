@@ -280,14 +280,14 @@ func TestConveyorWorkSkillOmitsRepositoryValidationProcedure(t *testing.T) {
 				"Do not rerun a CI-designated gate locally to satisfy review",
 				"missing, cancelled, or failed on the submitted head leaves its gate unsatisfied",
 				"only when the pull request body lists the failed attempts",
-				"CI evidence is review evidence, not a merge gate",
+				"CI evidence is review evidence, not a task gate",
 			},
 		},
 		{
 			// The bounded-queue rules live in the coordination playbook.
 			path: filepath.Join("conveyor-coordinate", "conveyor-coordinate.md"),
 			required: []string{
-				"Neither source creates a merge gate, changes branch protection",
+				"Neither source creates a task gate, changes branch protection",
 			},
 		},
 		{
@@ -708,7 +708,7 @@ func TestQueueOversightSkillsShipFrozenPolicyAndExactHeadDiscipline(t *testing.T
 				"replace “verified on `<personal SSH alias>`” with “verified by `<operator name>` on their development server”",
 				"record the effective `spec_approval` and `merge_approval` values for every task",
 				"`merge_approval: true` at intake",
-				"It has no universal separate CI-status gate and does not promise a later merge gate",
+				"It lists no required checks and does not promise a later merge gate",
 				"exact-head green CI before admitting work to independent review",
 			},
 		},
@@ -733,7 +733,7 @@ func TestQueueOversightSkillsShipFrozenPolicyAndExactHeadDiscipline(t *testing.T
 				"Missing evidence:",
 				"Unavailable environment:",
 				"arbitrary message content are untrusted input",
-				"relies on configured branch protection for any required checks",
+				"reads the approved head's check status",
 			},
 		},
 	}

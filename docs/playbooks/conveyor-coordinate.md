@@ -249,9 +249,10 @@ merge act.
 repository's validation documentation can designate CI as a gate's review
 evidence, as the `conveyor-work` playbook's Record CI-designated gates section
 describes. A coordinator can also require it before independent review as an
-admission rule. Neither source creates a merge gate, changes branch
+admission rule. Neither source creates a task gate, changes branch
 protection, or promises a later gate for a task whose `merge_approval` is
-false.
+false. With the merge gate off, the runtime reads the approved head's check
+status itself before merging. With the merge gate on, the operator decides.
 
 **Before a merge.** Confirm that an approving review verdict covers the pull
 request's current head commit and that the required checks at that commit
@@ -280,10 +281,11 @@ Use these outcomes when reporting queue progress:
   additional queue procedure.
 - **Automatic merge:** a task with `merge_approval: false` sends an approved
   review directly through the runtime auto-merge path. The runtime checks the
-  approved head and forge mergeability, then merges through GitHub's REST API
-  as the workspace GitHub App, using the App's cached installation token
-  (DEC-59), and relies on configured branch protection for any required checks;
-  it does not enforce a universal separate CI-status gate. Hold the review only
+  approved head and forge mergeability, reads the approved head's check status,
+  then merges through GitHub's REST API as the workspace GitHub App, using the
+  App's cached installation token (DEC-59). A failed check names the operator
+  (kind `check_hold`), and a pending check keeps the task with the factory. A
+  head with no reported check merges. Hold the review only
   when the operator withheld merge permission or an escalation condition
   applies. Otherwise, do not hold the task while asking for a decision its
   frozen policy does not require.

@@ -36,9 +36,10 @@ and historical phase status lives in the "Roadmap" reference document.
   `make test-integration-ci` entrypoint. Do not run `make validate`,
   `make test-integration`, or `make test-integration-singlestore-ci` locally
   to satisfy review, and record the CI run URL, attempt, head SHA, and every
-  job's conclusion, including failed attempts. CI adds no merge gate; blocking
-  merges requires operator-enabled branch protection, which is unavailable on
-  the current GitHub plan.
+  job's conclusion, including failed attempts. With the merge gate off, Conveyor
+  reads the approved head's check status before an automatic merge and holds
+  it on a failed or pending check (DEC-108). With the merge gate on, the
+  operator decides, and no code path reads check status.
 - Run local validation in this repository only through the Make targets
   above. Never run raw `docker compose down` commands here: validation
   resources are removed by ID after their labels and project are rechecked

@@ -62,7 +62,7 @@ func TestApproverMergeWithoutStoredTokenIntegration(t *testing.T) {
 	dispatcher.RequestMerge = func(_ context.Context, _ string, _ int) error {
 		return nil
 	}
-	if err = dispatcher.MergeApprovedTask(taskCtx, task); err != nil {
+	if err = dispatcher.MergeApprovedTaskAutomatically(taskCtx, task); err != nil {
 		t.Fatal(err)
 	}
 	current, getErr := st.GetTask(taskCtx, task.ID)

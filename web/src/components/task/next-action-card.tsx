@@ -15,6 +15,7 @@ import { useNextAction } from '../inbox/use-next-actions'
 import { Badge } from '../ui/badge'
 import { Card, CardContent } from '../ui/card'
 import { Skeleton } from '../ui/skeleton'
+import { CheckStatusList } from './next-action-checks'
 import { ExecutionFactRows, ExecutionStatusLine, ExecutionTitle } from './execution-summary-details'
 import { GateChoices } from './merge-at-gate'
 import { NextActionDeadline, NextActionIDs } from './next-action-parts'
@@ -74,6 +75,7 @@ export function NextActionCard({
           <h2 className="text-sm font-semibold leading-6">{action.summary}</h2>
           {execution && <ExecutionTitle state={execution} />}
           {action.question && <p className="text-sm text-muted">{action.question}</p>}
+          <CheckStatusList action={action} />
           {execution && <ExecutionFactRows state={execution} routeVariant={routeVariant} />}
           {!gateOpen &&
             (action.kind === 'context_proposal' && action.details?.context_proposals?.length ? (

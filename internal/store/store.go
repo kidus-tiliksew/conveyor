@@ -172,6 +172,14 @@ type TaskStore interface {
 	// (DEC-47, DEC-43, DEC-56; component-task-lifecycle).
 	ChangeTaskPolicyCommand(ctx context.Context, lease taskops.TaskLease, request SetupChangeRequest) (SetupChangeResult, error)
 	BindTaskApproval(ctx context.Context, id, headSHA string) error
+	// RecordCheckStatusDeadline records a check-status deadline for head and
+	// appends event in one transaction, unless the task already holds a
+	// deadline for that head, which it leaves in place and appends nothing. It
+	// reports whether it recorded one (req-review-gates-evidence AC-1.5).
+	RecordCheckStatusDeadline(ctx context.Context, id, head string, deadline time.Time, event core.Event) (bool, error)
+	// ClearCheckStatusDeadline clears a recorded deadline, keeps its head, and
+	// reports whether one was set.
+	ClearCheckStatusDeadline(ctx context.Context, id string) (bool, error)
 	MarkTaskApprovalStale(ctx context.Context, id, approvedHeadSHA, newHeadSHA, scope, reason string) (bool, error)
 	// AdvanceTaskRefreshHead moves a stale approval's refresh target to the
 	// head most recently submitted for review, so the next refresh round

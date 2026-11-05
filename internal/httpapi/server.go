@@ -89,7 +89,7 @@ type Server struct {
 	// work-order context is derived from the durable intervention record.
 	OnIntervention func(context.Context, core.Task, core.Job, core.Intervention) error
 	// OnMerge performs and authoritatively confirms the final forge merge.
-	OnMerge func(context.Context, core.Task) error
+	OnMerge func(context.Context, core.Task, core.Actor) error
 	// OnGateMerge is the one-act operator merge at the merge_approval gate,
 	// run as the acting operator (DEC-64(1); component-submission-merge).
 	OnGateMerge      func(context.Context, core.Task, core.Actor) (core.Task, error)
@@ -1045,7 +1045,12 @@ func (s *Server) mergeTask(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "merge operation is not configured", http.StatusNotImplemented)
 		return
 	}
-	if err := s.OnMerge(r.Context(), task); err != nil {
+	actor, err := store.RequireActor(r.Context())
+	if err != nil {
+		http.Error(w, "merge requires an authenticated operator", http.StatusForbidden)
+		return
+	}
+	if err := s.OnMerge(r.Context(), task, actor); err != nil {
 		http.Error(w, err.Error(), http.StatusConflict)
 		return
 	}

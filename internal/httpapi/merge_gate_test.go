@@ -10,6 +10,7 @@ import (
 
 	"github.com/kidus-tiliksew/conveyor/internal/core"
 	"github.com/kidus-tiliksew/conveyor/internal/store"
+	"github.com/kidus-tiliksew/conveyor/internal/taskops"
 )
 
 // Approval and merge are separate operator acts: approve never reaches the
@@ -30,7 +31,7 @@ func TestReviewApproveOnApprovedTaskNamesMergeCommand(t *testing.T) {
 	s := NewServer(st)
 	s.BearerToken = "token"
 	mergeCalls := 0
-	s.OnMerge = func(context.Context, core.Task) error {
+	s.OnMerge = func(context.Context, core.Task, core.Actor) error {
 		mergeCalls++
 		return nil
 	}
@@ -52,5 +53,34 @@ func TestReviewApproveOnApprovedTaskNamesMergeCommand(t *testing.T) {
 	}
 	if mergeCalls != 0 {
 		t.Fatalf("approve reached the merge hook %d times", mergeCalls)
+	}
+}
+
+// The operator's merge act names the authenticated operator, as the gate merge
+// does, because a gate-off task usually records no approving one
+// (req-review-gates-evidence AC-1.8).
+func TestMergeTaskPassesTheAuthenticatedActor(t *testing.T) {
+	st := store.NewMemory()
+	ctx := store.WithActor(context.Background(), store.SystemActor())
+	if err := st.CreateTask(ctx, core.Task{ID: "approved", State: core.TaskApproved, CreatedAt: time.Now()}); err != nil {
+		t.Fatal(err)
+	}
+	s := NewServer(st)
+	s.BearerToken = "token"
+	var acted core.Actor
+	s.OnMerge = func(ctx context.Context, task core.Task, actor core.Actor) error {
+		acted = actor
+		_, err := taskops.New(st).Perform(ctx, task.ID, taskops.Command{Kind: core.TaskMergeConfirm, ProjectStages: true})
+		return err
+	}
+	request := httptest.NewRequest(http.MethodPost, "/v1/tasks/approved/merge", nil)
+	request.Header.Set("Authorization", "Bearer token")
+	response := httptest.NewRecorder()
+	s.Handler().ServeHTTP(response, request)
+	if response.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
+	}
+	if acted.ID == "" {
+		t.Fatal("the merge act named no actor")
 	}
 }

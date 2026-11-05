@@ -24,6 +24,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/kidus-tiliksew/conveyor/internal/config"
 	"github.com/kidus-tiliksew/conveyor/internal/core"
+	"github.com/kidus-tiliksew/conveyor/internal/dispatch"
 	"github.com/kidus-tiliksew/conveyor/internal/docsconfig"
 	"github.com/kidus-tiliksew/conveyor/internal/pipeline"
 	"github.com/kidus-tiliksew/conveyor/internal/store"
@@ -376,6 +377,7 @@ func TestDocumentationCorrectionRegressions(t *testing.T) {
 							merged = true
 							return nil
 						}
+						d.ReadCommitChecks = dispatch.NoChecksReportedForTest
 						d.ViewPullRequest = func(_ context.Context, _, branch string) (githubtrigger.PullRequest, error) {
 							if branch == clean.Branch {
 								return githubtrigger.PullRequest{Number: 55, State: "open", HeadSHA: oldHead, BaseSHA: base, Mergeable: "MERGEABLE", Merged: merged}, nil
@@ -479,6 +481,7 @@ func TestDocumentationCorrectionRegressions(t *testing.T) {
 				f.service.Dispatcher.ReviewChangedPaths = func(context.Context, *config.Config, core.Task) ([]string, error) {
 					return []string{"internal/refresh-only.go"}, nil
 				}
+				f.service.Dispatcher.ReadCommitChecks = dispatch.NoChecksReportedForTest
 				f.service.Dispatcher.ViewPullRequest = func(context.Context, string, string) (githubtrigger.PullRequest, error) {
 					return githubtrigger.PullRequest{Number: 54, HeadSHA: newHead, BaseSHA: strings.Repeat("b", 40), Mergeable: "MERGEABLE"}, nil
 				}

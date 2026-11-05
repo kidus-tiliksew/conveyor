@@ -68,6 +68,16 @@ const catalogue: Record<string, { label: string; summary: string; question?: str
     summary: 'Automatic conflict fixes are exhausted.',
     choices: [['fix_merge_conflict', 'Fix merge conflict', 'POST', '/v1/tasks/{id}/merge-conflict-fix']],
   },
+  check_hold: {
+    label: 'Checks hold the merge',
+    summary: 'A failed check holds the merge of the approved head.',
+    question: 'Rerun the check on GitHub, merge anyway, request changes, or close?',
+    choices: [
+      ['merge', 'Merge', 'POST', '/v1/tasks/{id}/merge'],
+      ['request_changes', 'Request changes…', 'POST', '/v1/tasks/{id}/request-changes'],
+      ['close', 'Close…', 'POST', '/v1/tasks/{id}/close'],
+    ],
+  },
   merge_execution: {
     label: 'Merge',
     summary: 'The merge gate is on and the branch is ready to merge.',
@@ -134,6 +144,7 @@ const operatorKinds: Record<string, true> = {
   job_failure: true,
   merge_conflict: true,
   merge_execution: true,
+  check_hold: true,
   agent_question: true,
   verification_disposition: true,
   dependency_unsatisfiable: true,

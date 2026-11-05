@@ -140,6 +140,7 @@ func TestGitHubWebhookReplayAgainstFakeForge(t *testing.T) {
 	d.DisableMemoryQueueForTest()
 	d.WorkspaceGitHubApps = st
 	d.GitHubApps = githubtrigger.NewAppClient(server.Client(), server.URL)
+	d.ReadCommitChecks = dispatch.NoChecksReportedForTest
 	d.ViewPullRequest = func(_ context.Context, repo, branch string) (githubtrigger.PullRequest, error) {
 		forge.mu.Lock()
 		defer forge.mu.Unlock()
@@ -433,6 +434,7 @@ func newRetryFixture(t *testing.T) *retryFixture {
 	d.DisableMemoryQueueForTest()
 	d.WorkspaceGitHubApps = backend
 	d.GitHubApps = githubtrigger.NewAppClient(server.Client(), server.URL)
+	d.ReadCommitChecks = dispatch.NoChecksReportedForTest
 	d.ViewPullRequest = func(_ context.Context, _, branch string) (githubtrigger.PullRequest, error) {
 		f.mu.Lock()
 		defer f.mu.Unlock()

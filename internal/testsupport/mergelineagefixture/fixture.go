@@ -8,6 +8,7 @@ package mergelineagefixture
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 	"testing"
@@ -17,6 +18,7 @@ import (
 	"github.com/kidus-tiliksew/conveyor/internal/core"
 	"github.com/kidus-tiliksew/conveyor/internal/dispatch"
 	"github.com/kidus-tiliksew/conveyor/internal/monitor"
+	"github.com/kidus-tiliksew/conveyor/internal/nextaction"
 	"github.com/kidus-tiliksew/conveyor/internal/store"
 	githubtrigger "github.com/kidus-tiliksew/conveyor/internal/trigger/github"
 )
@@ -46,6 +48,7 @@ func RunHeadMoved(t *testing.T, open func(*testing.T) store.Store) {
 	t.Helper()
 	s := setup(t, open(t))
 	views, merges := 0, 0
+	s.d.ReadCommitChecks = dispatch.NoChecksReportedForTest
 	s.d.ViewPullRequest = func(context.Context, string, string) (githubtrigger.PullRequest, error) {
 		views++
 		if views == 1 {
@@ -54,7 +57,7 @@ func RunHeadMoved(t *testing.T, open func(*testing.T) store.Store) {
 		return githubtrigger.PullRequest{Number: number, URL: pullURL(), State: "closed", Merged: true, BaseSHA: "base", HeadSHA: headB, HeadRef: s.task.Branch, MergeCommitSHA: landed, MergedBy: "conveyor"}, nil
 	}
 	s.d.RequestMerge = func(context.Context, string, int) error { merges++; return nil }
-	if err := s.d.MergeApprovedTask(s.ctx, s.task); err != nil {
+	if err := s.d.MergeApprovedTaskAutomatically(s.ctx, s.task); err != nil {
 		t.Fatal(err)
 	}
 	if merges != 1 || countKind(t, s, "merge.confirmed") != 1 || taskState(t, s) != core.TaskMerged {
@@ -256,4 +259,453 @@ func countKindIn(t *testing.T, st store.Store, ctx context.Context, taskID, kind
 		}
 	}
 	return count
+}
+
+// RunCheckStatus proves the outcomes of the check status read before an
+// automatic merge on a real dispatcher and store (req-review-gates-evidence
+// AC-1.4 to AC-1.8; component-submission-merge, Check status; DEC-108(5) to
+// (7)). Each step's read is scripted, and each assertion reads the ledger and
+// the next action the store assembles.
+func RunCheckStatus(t *testing.T, open func(*testing.T) store.Store) {
+	t.Helper()
+	passed := githubtrigger.Check{Name: "build", State: githubtrigger.CheckPassed, URL: "https://github.com/acme/app/runs/1"}
+	failed := githubtrigger.Check{Name: "e2e", State: githubtrigger.CheckFailed, URL: "https://github.com/acme/app/runs/2"}
+	pending := githubtrigger.Check{Name: "deploy", State: githubtrigger.CheckPending, URL: "https://github.com/acme/app/runs/3"}
+	other := githubtrigger.Check{Name: "lint", State: githubtrigger.CheckFailed}
+	refused := githubtrigger.PermissionError(fmt.Errorf("resource not accessible by integration"))
+	transient := githubtrigger.StatusError(502, fmt.Errorf("bad gateway"))
+
+	t.Run("every check passed merges", func(t *testing.T) {
+		c := newCheckScenario(t, open(t))
+		c.answer(nil, passed)
+		c.automatic(t, nil)
+		c.requireMerged(t)
+		c.requireRequestedStatus(t, "passed")
+		c.requireCount(t, store.EventCheckPending, 0)
+		c.requireCount(t, store.EventCheckHold, 0)
+	})
+	t.Run("none reported merges", func(t *testing.T) {
+		c := newCheckScenario(t, open(t))
+		c.answer(nil)
+		c.automatic(t, nil)
+		c.requireMerged(t)
+		c.requireRequestedStatus(t, "none_reported")
+	})
+	t.Run("failed beats pending and repeats append nothing", func(t *testing.T) {
+		c := newCheckScenario(t, open(t))
+		c.answer(nil, passed, failed, pending)
+		c.automatic(t, dispatch.ErrCheckStatusHeld)
+		c.automatic(t, dispatch.ErrCheckStatusHeld)
+		c.requireApprovedUnmerged(t)
+		c.requireCount(t, store.EventCheckHold, 1)
+		c.requireCount(t, "merge.failed", 0)
+		c.requireCount(t, "merge.requested", 0)
+		c.requireAction(t, nextactionOperator, nextactionHold, true, "e2e", "deploy")
+	})
+	t.Run("pending stays with the factory and records once", func(t *testing.T) {
+		c := newCheckScenario(t, open(t))
+		c.answer(nil, passed, pending)
+		c.automatic(t, dispatch.ErrCheckStatusPending)
+		first := c.deadline(t)
+		c.advance(time.Hour)
+		c.automatic(t, dispatch.ErrCheckStatusPending)
+		if got := c.deadline(t); !got.Equal(first) {
+			t.Fatalf("a later read moved the deadline from %s to %s", first, got)
+		}
+		if want := c.start.Add(2 * time.Hour); !first.Equal(want) {
+			t.Fatalf("deadline = %s, want %s", first, want)
+		}
+		c.requireCount(t, store.EventCheckPending, 1)
+		c.requireAction(t, "factory", "merging", false, "deploy")
+	})
+	t.Run("read finding nothing pending clears and pending again records anew", func(t *testing.T) {
+		c := newCheckScenario(t, open(t))
+		c.mergeRefused = true
+		c.answer(nil, pending)
+		c.automatic(t, dispatch.ErrCheckStatusPending)
+		c.answer(nil, passed)
+		if err := c.merge(); err == nil {
+			t.Fatal("scripted forge refusal did not reach the caller")
+		}
+		if got := c.current(t); got.CheckStatusDeadline != nil {
+			t.Fatalf("deadline stayed after a read with nothing pending: %v", got.CheckStatusDeadline)
+		}
+		c.advance(time.Hour)
+		c.answer(nil, pending)
+		c.automatic(t, dispatch.ErrCheckStatusPending)
+		if want := c.start.Add(3 * time.Hour); !c.deadline(t).Equal(want) {
+			t.Fatalf("deadline = %s, want %s", c.deadline(t), want)
+		}
+		c.requireCount(t, store.EventCheckPending, 2)
+	})
+	t.Run("a new head starts fresh", func(t *testing.T) {
+		c := newCheckScenario(t, open(t))
+		c.answer(nil, failed, pending)
+		c.automatic(t, dispatch.ErrCheckStatusHeld)
+		first := c.deadline(t)
+		c.advance(time.Hour)
+		if _, err := c.st.MarkTaskApprovalStale(c.ctx, c.task.ID, headB, headC, config.RefreshReviewDelta, "head-changed"); err != nil {
+			t.Fatal(err)
+		}
+		if err := c.st.BindTaskApproval(c.ctx, c.task.ID, headC); err != nil {
+			t.Fatal(err)
+		}
+		c.head = headC
+		c.requireAction(t, "factory", "merging", false)
+		c.answer(nil, pending)
+		c.automatic(t, dispatch.ErrCheckStatusPending)
+		if got := c.deadline(t); got.Equal(first) || !got.Equal(c.start.Add(3*time.Hour)) {
+			t.Fatalf("deadline of the new head = %s", got)
+		}
+		if got := c.current(t); got.CheckStatusDeadlineHead != headC {
+			t.Fatalf("deadline head = %q", got.CheckStatusDeadlineHead)
+		}
+	})
+	t.Run("one rerun passing beside another failure stays held", func(t *testing.T) {
+		c := newCheckScenario(t, open(t))
+		c.answer(nil, failed, other)
+		c.automatic(t, dispatch.ErrCheckStatusHeld)
+		c.answer(nil, githubtrigger.Check{Name: "e2e", State: githubtrigger.CheckPassed}, other)
+		c.automatic(t, dispatch.ErrCheckStatusHeld)
+		c.requireApprovedUnmerged(t)
+		c.requireCount(t, store.EventCheckHold, 2)
+		c.requireCount(t, store.EventCheckHoldCleared, 0)
+		c.requireAction(t, nextactionOperator, nextactionHold, true, "lint")
+	})
+	t.Run("every check passing after a hold merges and clears", func(t *testing.T) {
+		c := newCheckScenario(t, open(t))
+		c.answer(nil, failed)
+		c.automatic(t, dispatch.ErrCheckStatusHeld)
+		c.answer(nil, passed)
+		c.automatic(t, nil)
+		c.requireMerged(t)
+		c.requireCount(t, store.EventCheckHoldCleared, 1)
+		c.requireCount(t, store.EventCheckOverride, 0)
+	})
+	t.Run("a rerun left pending returns a failed hold to the factory", func(t *testing.T) {
+		c := newCheckScenario(t, open(t))
+		c.answer(nil, failed)
+		c.automatic(t, dispatch.ErrCheckStatusHeld)
+		c.requireAction(t, nextactionOperator, nextactionHold, true, "e2e")
+		c.answer(nil, pending)
+		c.automatic(t, dispatch.ErrCheckStatusPending)
+		c.requireCount(t, store.EventCheckHoldCleared, 1)
+		c.requireAction(t, "factory", "merging", false, "deploy")
+	})
+	t.Run("a transient failed read records the deadline and clears nothing", func(t *testing.T) {
+		c := newCheckScenario(t, open(t))
+		c.answer(transient)
+		c.automatic(t, dispatch.ErrCheckStatusUnread)
+		first := c.deadline(t)
+		c.advance(time.Hour)
+		c.automatic(t, dispatch.ErrCheckStatusUnread)
+		if got := c.deadline(t); !got.Equal(first) {
+			t.Fatalf("a later failed read moved the deadline to %s", got)
+		}
+		c.requireCount(t, store.EventCheckPending, 1)
+		c.requireApprovedUnmerged(t)
+		c.requireAction(t, "factory", "merging", false)
+		c.answer(nil, failed)
+		c.automatic(t, dispatch.ErrCheckStatusHeld)
+		c.answer(transient)
+		c.automatic(t, dispatch.ErrCheckStatusUnread)
+		c.requireCount(t, store.EventCheckHoldCleared, 0)
+		c.requireAction(t, nextactionOperator, nextactionHold, true, "e2e")
+	})
+	t.Run("a refused read names the operator and the remedy", func(t *testing.T) {
+		c := newCheckScenario(t, open(t))
+		c.answer(refused)
+		c.automatic(t, dispatch.ErrCheckStatusHeld)
+		c.automatic(t, dispatch.ErrCheckStatusHeld)
+		c.requireCount(t, store.EventCheckHold, 1)
+		action := c.requireAction(t, nextactionOperator, nextactionHold, false)
+		if !strings.Contains(action.Details.CheckRemedy, "workspace settings") || action.Details.CheckHoldReason != "permission" {
+			t.Fatalf("details = %+v", action.Details)
+		}
+		if c.current(t).CheckStatusDeadline == nil {
+			t.Fatal("a refused read recorded no deadline")
+		}
+		c.answer(nil, passed)
+		c.automatic(t, nil)
+		c.requireMerged(t)
+		c.requireCount(t, store.EventCheckHoldCleared, 1)
+	})
+	t.Run("the operator act reads nothing and records the override", func(t *testing.T) {
+		c := newCheckScenario(t, open(t))
+		c.answer(nil, failed, pending)
+		c.automatic(t, dispatch.ErrCheckStatusHeld)
+		reads := c.reads
+		if err := c.d.MergeApprovedTask(c.operatorCtx, c.current(t), c.operator); err != nil {
+			t.Fatal(err)
+		}
+		if c.reads != reads {
+			t.Fatalf("operator act read check status %d times", c.reads-reads)
+		}
+		c.requireMerged(t)
+		override := c.single(t, store.EventCheckOverride)
+		for _, want := range []string{c.operatorID, "e2e", "deploy", headB} {
+			if !strings.Contains(string(override.Payload), want) {
+				t.Fatalf("override %s does not name %s", override.Payload, want)
+			}
+		}
+		requested := c.single(t, "merge.requested")
+		if strings.Contains(string(requested.Payload), "check_status") || !strings.Contains(string(requested.Payload), c.operatorID) {
+			t.Fatalf("operator merge.requested = %s", requested.Payload)
+		}
+	})
+	t.Run("the operator act on an unheld head records no override", func(t *testing.T) {
+		c := newCheckScenario(t, open(t))
+		if err := c.d.MergeApprovedTask(c.operatorCtx, c.current(t), c.operator); err != nil {
+			t.Fatal(err)
+		}
+		c.requireMerged(t)
+		if c.reads != 0 {
+			t.Fatalf("operator act read check status %d times", c.reads)
+		}
+		c.requireCount(t, store.EventCheckOverride, 0)
+	})
+	t.Run("an act that GitHub refuses leaves the hold and records no override", func(t *testing.T) {
+		c := newCheckScenario(t, open(t))
+		c.answer(nil, failed)
+		c.automatic(t, dispatch.ErrCheckStatusHeld)
+		c.mergeRefused = true
+		if err := c.d.MergeApprovedTask(c.operatorCtx, c.current(t), c.operator); err == nil {
+			t.Fatal("scripted forge refusal did not reach the operator")
+		}
+		c.requireApprovedUnmerged(t)
+		c.requireCount(t, store.EventCheckOverride, 0)
+		c.requireAction(t, nextactionOperator, nextactionHold, true, "e2e")
+	})
+	t.Run("a crash after GitHub merged still records the override", func(t *testing.T) {
+		c := newCheckScenario(t, open(t))
+		c.answer(nil, failed)
+		c.automatic(t, dispatch.ErrCheckStatusHeld)
+		c.dieAfterMerge = true
+		if err := c.d.MergeApprovedTask(c.operatorCtx, c.current(t), c.operator); err == nil {
+			t.Fatal("scripted verification failure did not reach the operator")
+		}
+		c.requireCount(t, store.EventCheckOverride, 0)
+		c.dieAfterMerge, c.merged = false, true
+		reads := c.reads
+		if err := c.merge(); err != nil {
+			t.Fatal(err)
+		}
+		if c.reads != reads {
+			t.Fatal("reconciling a merged pull request read check status")
+		}
+		c.requireMerged(t)
+		if override := c.single(t, store.EventCheckOverride); !strings.Contains(string(override.Payload), c.operatorID) {
+			t.Fatalf("override = %s", override.Payload)
+		}
+	})
+	t.Run("a merge on GitHub outside Conveyor records no override", func(t *testing.T) {
+		c := newCheckScenario(t, open(t))
+		c.answer(nil, failed)
+		c.automatic(t, dispatch.ErrCheckStatusHeld)
+		c.merged = true
+		if err := c.merge(); err != nil {
+			t.Fatal(err)
+		}
+		c.requireMerged(t)
+		c.requireCount(t, store.EventCheckOverride, 0)
+	})
+}
+
+const (
+	nextactionOperator = "operator"
+	nextactionHold     = "check_hold"
+)
+
+// checkScenario scripts a dispatcher's forge and clock around one approved
+// gate-off task.
+type checkScenario struct {
+	scenario
+	head          string
+	start, now    time.Time
+	reads         int
+	readErr       error
+	checks        []githubtrigger.Check
+	merged        bool
+	mergeRefused  bool
+	dieAfterMerge bool
+	operator      core.Actor
+	operatorCtx   context.Context
+	operatorID    string
+}
+
+func newCheckScenario(t *testing.T, st store.Store) *checkScenario {
+	t.Helper()
+	if _, durable := st.(store.IdentityProvisioner); !durable {
+		st = checkIdentityStore{st}
+	}
+	c := &checkScenario{scenario: setup(t, st), head: headB, start: time.Date(2026, 11, 5, 12, 0, 0, 0, time.UTC)}
+	c.now = c.start
+	c.d.Now = func() time.Time { return c.now }
+	c.d.ReadCommitChecks = func(_ context.Context, _, sha string) (githubtrigger.CheckStatus, error) {
+		c.reads++
+		if sha != c.head {
+			t.Errorf("check-status read at %s, want %s", sha, c.head)
+		}
+		return githubtrigger.CheckStatus{Checks: c.checks}, c.readErr
+	}
+	c.d.ViewPullRequest = func(context.Context, string, string) (githubtrigger.PullRequest, error) {
+		if c.merged {
+			return githubtrigger.PullRequest{Number: number, URL: pullURL(), State: "closed", Merged: true, BaseSHA: "base", HeadSHA: c.head, HeadRef: c.task.Branch, MergeCommitSHA: landed, MergedBy: "operator"}, nil
+		}
+		return githubtrigger.PullRequest{Number: number, URL: pullURL(), State: "open", Mergeable: "MERGEABLE", BaseSHA: "base", HeadSHA: c.head, HeadRef: c.task.Branch}, nil
+	}
+	c.d.RequestMerge = func(context.Context, string, int) error {
+		if c.mergeRefused {
+			return githubtrigger.StatusError(405, fmt.Errorf("merge refused"))
+		}
+		if c.dieAfterMerge {
+			return nil
+		}
+		c.merged = true
+		return nil
+	}
+	c.operatorID = checkOperatorID
+	if identities, durable := st.(store.IdentityProvisioner); durable {
+		user, err := identities.ProvisionIdentityUser(c.ctx, "operator-"+core.NewTaskID()+"@example.com", "Check Operator")
+		if err != nil {
+			t.Fatal(err)
+		}
+		c.operatorID = user.ID
+	}
+	c.operator = core.Actor{ID: store.UserActorID(c.operatorID), Role: core.ActorUser}
+	c.operatorCtx = store.WithActor(c.ctx, c.operator)
+	return c
+}
+
+const checkOperatorID = "usr-check-operator"
+
+// checkIdentityStore gives the volatile store the one account the operator's
+// act resolves; a durable store provisions a real one.
+type checkIdentityStore struct{ store.Store }
+
+func (checkIdentityStore) GetCallerIdentity(_ context.Context, userID, _ string) (core.CallerIdentity, error) {
+	return core.CallerIdentity{ID: userID, Email: "operator@example.com", DisplayName: "Check Operator"}, nil
+}
+
+func (c *checkScenario) answer(err error, checks ...githubtrigger.Check) {
+	c.readErr, c.checks = err, checks
+}
+
+func (c *checkScenario) advance(by time.Duration) { c.now = c.now.Add(by) }
+
+func (c *checkScenario) merge() error {
+	return c.d.MergeApprovedTaskAutomatically(c.ctx, c.task)
+}
+
+func (c *checkScenario) current(t *testing.T) core.Task {
+	t.Helper()
+	task, err := c.st.GetTask(c.ctx, c.task.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return task
+}
+
+// automatic runs the automatic merge and requires the sentinel it names.
+func (c *checkScenario) automatic(t *testing.T, want error) {
+	t.Helper()
+	err := c.merge()
+	if want == nil {
+		if err != nil {
+			t.Fatalf("automatic merge: %v", err)
+		}
+		return
+	}
+	if !errors.Is(err, want) {
+		t.Fatalf("automatic merge err = %v, want %v", err, want)
+	}
+}
+
+func (c *checkScenario) deadline(t *testing.T) time.Time {
+	t.Helper()
+	task := c.current(t)
+	if task.CheckStatusDeadline == nil {
+		t.Fatal("no check-status deadline recorded")
+	}
+	return task.CheckStatusDeadline.UTC()
+}
+
+func (c *checkScenario) requireMerged(t *testing.T) {
+	t.Helper()
+	if got := c.current(t).State; got != core.TaskMerged {
+		t.Fatalf("state = %s, want merged", got)
+	}
+}
+
+func (c *checkScenario) requireApprovedUnmerged(t *testing.T) {
+	t.Helper()
+	if got := c.current(t).State; got != core.TaskApproved {
+		t.Fatalf("state = %s, want approved", got)
+	}
+	if c.merged {
+		t.Fatal("the forge merged a held head")
+	}
+}
+
+func (c *checkScenario) events(t *testing.T, kind string) []core.Event {
+	t.Helper()
+	events, err := c.st.ListEvents(c.ctx, c.task.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var out []core.Event
+	for _, event := range events {
+		if event.Kind == kind {
+			out = append(out, event)
+		}
+	}
+	return out
+}
+
+func (c *checkScenario) requireCount(t *testing.T, kind string, want int) {
+	t.Helper()
+	if got := len(c.events(t, kind)); got != want {
+		t.Fatalf("%s events = %d, want %d", kind, got, want)
+	}
+}
+
+func (c *checkScenario) single(t *testing.T, kind string) core.Event {
+	t.Helper()
+	events := c.events(t, kind)
+	if len(events) != 1 {
+		t.Fatalf("%s events = %d, want 1", kind, len(events))
+	}
+	return events[0]
+}
+
+func (c *checkScenario) requireRequestedStatus(t *testing.T, want string) {
+	t.Helper()
+	requested := c.single(t, "merge.requested")
+	if !strings.Contains(string(requested.Payload), `"check_status":"`+want+`"`) {
+		t.Fatalf("merge.requested = %s, want check_status %s", requested.Payload, want)
+	}
+}
+
+func (c *checkScenario) requireAction(t *testing.T, actor, kind string, judgment bool, checks ...string) nextaction.NextAction {
+	t.Helper()
+	action, err := store.ReadNextAction(c.ctx, c.st, c.task.ID, store.NextActionOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if action.Actor != actor || action.Kind != kind || action.Judgment != judgment {
+		t.Fatalf("next action = %s/%s judgment=%t, want %s/%s judgment=%t", action.Actor, action.Kind, action.Judgment, actor, kind, judgment)
+	}
+	named := map[string]bool{}
+	for _, check := range action.Details.Checks {
+		named[check.Name] = true
+	}
+	if len(named) != len(checks) {
+		t.Fatalf("details.checks = %+v, want %v", action.Details.Checks, checks)
+	}
+	for _, name := range checks {
+		if !named[name] {
+			t.Fatalf("details.checks = %+v, want %v", action.Details.Checks, checks)
+		}
+	}
+	return action
 }

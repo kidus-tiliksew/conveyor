@@ -224,6 +224,9 @@ type NextActionInputStore interface {
 	// ListNextActionEvents returns each requested task's events of
 	// NextActionEventKinds in (at, id) order. Tasks without one are absent.
 	ListNextActionEvents(ctx context.Context, taskIDs []string) (map[string][]core.Event, error)
+	// ListCheckStatusEvents returns each requested task's events of
+	// CheckStatusEventKinds in (at, id) order. Tasks without one are absent.
+	ListCheckStatusEvents(ctx context.Context, taskIDs []string) (map[string][]core.Event, error)
 	// ListLatestSpecVersionNumbers returns each requested task's latest plan
 	// version number. Tasks without a plan are absent.
 	ListLatestSpecVersionNumbers(ctx context.Context, taskIDs []string) (map[string]int, error)

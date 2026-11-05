@@ -51,15 +51,20 @@ func taskEvent(ctx context.Context, tx *sql.Tx, e core.Event) error {
 	return insertEvent(ctx, tx, e)
 }
 
-const taskColumns = `id,workspace_id,source,COALESCE(intake_key,''),title,body,class,escalation_level,mode,hold,spec_approval,merge_approval,policy_version,setup_name,setup_contract,reviewed_head_sha,approved_head_sha,approval_stale,refresh_baseline_sha,refresh_head_sha,refresh_review_scope,repo_name,base_branch,branch,state,next_stage,recovery_stage,COALESCE(parent_task_id,''),origin_spec_version,origin_sub_id,created_at,COALESCE(assignee_user_id,''),COALESCE(supersedes,''),COALESCE(superseded_by,''),intake_operator_direction,COALESCE(gate_kind,'')`
+const taskColumns = `id,workspace_id,source,COALESCE(intake_key,''),title,body,class,escalation_level,mode,hold,spec_approval,merge_approval,policy_version,setup_name,setup_contract,reviewed_head_sha,approved_head_sha,approval_stale,refresh_baseline_sha,refresh_head_sha,refresh_review_scope,repo_name,base_branch,branch,state,next_stage,recovery_stage,COALESCE(parent_task_id,''),origin_spec_version,origin_sub_id,created_at,COALESCE(assignee_user_id,''),COALESCE(supersedes,''),COALESCE(superseded_by,''),intake_operator_direction,COALESCE(gate_kind,''),check_status_deadline,COALESCE(check_status_deadline_head,'')`
 
 func scanTask(row interface{ Scan(...any) error }) (core.Task, error) {
 	var t core.Task
 	var setup []byte
 	var assignee string
-	err := row.Scan(&t.ID, &t.Workspace, &t.Source, &t.IntakeKey, &t.Title, &t.Body, &t.Class, &t.Level, &t.Mode, &t.Hold, &t.SpecApproval, &t.MergeApproval, &t.PolicyVersion, &t.SetupName, &setup, &t.ReviewedHeadSHA, &t.ApprovedHeadSHA, &t.ApprovalStale, &t.RefreshBaselineSHA, &t.RefreshHeadSHA, &t.RefreshReviewScope, &t.Repo, &t.BaseBranch, &t.Branch, &t.State, &t.NextStage, &t.RecoveryStage, &t.ParentTaskID, &t.OriginSpecVersion, &t.OriginSubID, &t.CreatedAt, &assignee, &t.Supersedes, &t.SupersededBy, &t.IntakeOperatorDirection, &t.GateKind)
+	var checkStatusDeadline sql.NullTime
+	err := row.Scan(&t.ID, &t.Workspace, &t.Source, &t.IntakeKey, &t.Title, &t.Body, &t.Class, &t.Level, &t.Mode, &t.Hold, &t.SpecApproval, &t.MergeApproval, &t.PolicyVersion, &t.SetupName, &setup, &t.ReviewedHeadSHA, &t.ApprovedHeadSHA, &t.ApprovalStale, &t.RefreshBaselineSHA, &t.RefreshHeadSHA, &t.RefreshReviewScope, &t.Repo, &t.BaseBranch, &t.Branch, &t.State, &t.NextStage, &t.RecoveryStage, &t.ParentTaskID, &t.OriginSpecVersion, &t.OriginSubID, &t.CreatedAt, &assignee, &t.Supersedes, &t.SupersededBy, &t.IntakeOperatorDirection, &t.GateKind, &checkStatusDeadline, &t.CheckStatusDeadlineHead)
 	if err != nil {
 		return core.Task{}, err
+	}
+	if checkStatusDeadline.Valid {
+		deadline := checkStatusDeadline.Time.UTC()
+		t.CheckStatusDeadline = &deadline
 	}
 	if len(setup) > 0 {
 		if err = json.Unmarshal(setup, &t.SetupContract); err != nil {
@@ -1694,4 +1699,89 @@ func (s *Store) ChangeTaskPolicyCommand(ctx context.Context, lease taskops.TaskL
 		return err
 	})
 	return result, err
+}
+
+// ListCheckStatusEvents reads only the check-status event kinds of the
+// requested tasks in one query (component-submission-merge, Check status).
+func (s *Store) ListCheckStatusEvents(ctx context.Context, taskIDs []string) (map[string][]core.Event, error) {
+	ctx = dbmetrics.WithReadLabel(ctx, "ListCheckStatusEvents")
+	out := map[string][]core.Event{}
+	if len(taskIDs) == 0 {
+		return out, nil
+	}
+	ws, err := workspace(ctx)
+	if err != nil {
+		return nil, err
+	}
+	args := append([]any{ws}, taskMapArgs(taskIDs)...)
+	args = append(args, taskMapArgs(store.CheckStatusEventKinds)...)
+	rows, err := documentRows(ctx, s.db, `SELECT id,COALESCE(task_id,''),COALESCE(job_id,''),kind,actor_id,actor_role,payload_json,at FROM events_columnstore
+WHERE workspace_id=? AND task_id IN (`+taskMapMarks(len(taskIDs))+`) AND kind IN (`+taskMapMarks(len(store.CheckStatusEventKinds))+`)
+ORDER BY task_id,at,id`, args...)
+	if err != nil {
+		return nil, err
+	}
+	events, err := scanDocumentEvents(rows)
+	if err != nil {
+		return nil, err
+	}
+	for _, event := range events {
+		out[event.TaskID] = append(out[event.TaskID], event)
+	}
+	return out, nil
+}
+
+// RecordCheckStatusDeadline records the deadline and its event in one
+// transaction under the task operation lock unless the head already holds one
+// (req-review-gates-evidence AC-1.5).
+func (s *Store) RecordCheckStatusDeadline(ctx context.Context, id, head string, deadline time.Time, event core.Event) (bool, error) {
+	ctx = dbmetrics.WithReadLabel(ctx, "RecordCheckStatusDeadline")
+	head = strings.TrimSpace(head)
+	if head == "" {
+		return false, store.ErrCheckStatusHeadRequired
+	}
+	recorded := false
+	err := s.taskTx(ctx, id, func(tx *sql.Tx) error {
+		task, err := getTaskRow(ctx, tx, id)
+		if err != nil {
+			return err
+		}
+		if task.CheckStatusDeadline != nil && task.CheckStatusDeadlineHead == head {
+			return nil
+		}
+		if err = taskWrite(ctx, tx, id, map[string]any{"check_status_deadline": deadline.UTC(), "check_status_deadline_head": head}); err != nil {
+			return err
+		}
+		recorded = true
+		event.TaskID = id
+		return taskEvent(ctx, tx, event)
+	})
+	if err != nil {
+		return false, err
+	}
+	return recorded, nil
+}
+
+// ClearCheckStatusDeadline clears the deadline and keeps its head.
+func (s *Store) ClearCheckStatusDeadline(ctx context.Context, id string) (bool, error) {
+	ctx = dbmetrics.WithReadLabel(ctx, "ClearCheckStatusDeadline")
+	cleared := false
+	err := s.taskTx(ctx, id, func(tx *sql.Tx) error {
+		task, err := getTaskRow(ctx, tx, id)
+		if err != nil {
+			return err
+		}
+		if task.CheckStatusDeadline == nil {
+			return nil
+		}
+		if err = taskWrite(ctx, tx, id, map[string]any{"check_status_deadline": nil}); err != nil {
+			return err
+		}
+		cleared = true
+		return nil
+	})
+	if err != nil {
+		return false, err
+	}
+	return cleared, nil
 }

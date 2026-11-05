@@ -1290,12 +1290,24 @@ export interface NextActionDetails {
   secondary?: { kind: string; reason_code?: string }[]
   refusals?: { choice: string; text: string }[]
   merge_readiness?: string
+  // Each check a check_hold names, or what a merging task waits on, and why
+  // (component-next-action, The statement). The URL is how an operator reruns it.
+  checks?: NextActionCheck[]
+  check_hold_reason?: string
+  check_read_failure?: string
+  check_remedy?: string
   // Row 10's binding for the verification recover body (NA-3).
   disposition?: NextActionDisposition
   // Row 15's pending task-context proposals in choice order, and the origin of
   // a monitor-filed task (NA-3, Context-proposal presentation and Monitor origin).
   context_proposals?: NextActionContextProposal[]
   monitor_origin?: NextActionMonitorOrigin
+}
+
+export interface NextActionCheck {
+  name: string
+  state: string
+  url?: string
 }
 
 export interface NextActionContextProposal {

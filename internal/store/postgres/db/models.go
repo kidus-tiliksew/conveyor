@@ -291,6 +291,8 @@ type Task struct {
 	OriginSubID             string             `json:"origin_sub_id"`
 	AssigneeUserID          pgtype.Text        `json:"assignee_user_id"`
 	GateKind                pgtype.Text        `json:"gate_kind"`
+	CheckStatusDeadline     pgtype.Timestamptz `json:"check_status_deadline"`
+	CheckStatusDeadlineHead pgtype.Text        `json:"check_status_deadline_head"`
 }
 
 type TaskDependency struct {

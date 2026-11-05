@@ -169,7 +169,7 @@ func TestWorkspaceGitHubAppResolverUsesInstallationIdentity(t *testing.T) {
 		views++
 		return github.PullRequest{Number: 12, State: "open", Mergeable: "MERGEABLE", Merged: views > 1, HeadSHA: "head"}, nil
 	}
-	if err := d.MergeApprovedTask(ctx, mergeTask); err != nil {
+	if err := d.MergeApprovedTaskAutomatically(ctx, mergeTask); err != nil {
 		t.Fatal(err)
 	}
 	mergeEvents, err := st.ListEvents(ctx, mergeTask.ID)

@@ -89,7 +89,7 @@ export function humanizeClaimRefusal(
 // next action's kind places merge work and recovery holds, and otherwise the
 // stage the task is in or about to enter. A plan approval therefore lands
 // under Plan and a failed job under the stage that failed.
-const mergeKinds = new Set(['merge_approval', 'merge_execution', 'merge_conflict', 'merging'])
+const mergeKinds = new Set(['merge_approval', 'merge_execution', 'check_hold', 'merge_conflict', 'merging'])
 const triageKinds = new Set(['parked', 'dispatch_exhausted'])
 
 export function boardColumnFor(item: ActivitySummary): GroupKey {
@@ -265,6 +265,18 @@ export function reviewDiagnosticBadge(
   return undefined
 }
 
+// Names the checks a check-status event recorded, or the read that failed.
+function checkEventDetail(payload: Record<string, unknown>): string | undefined {
+  const checks = Array.isArray(payload.checks)
+    ? payload.checks.flatMap((check) => {
+        const { name, state } = (check ?? {}) as { name?: unknown; state?: unknown }
+        return typeof name === 'string' ? [typeof state === 'string' ? `${name} (${state})` : name] : []
+      })
+    : []
+  if (checks.length > 0) return checks.join(', ')
+  return typeof payload.read_failure === 'string' ? payload.read_failure : undefined
+}
+
 function forgeFailureDetail(payload: Record<string, unknown>, detailKey: 'last_error' | 'error'): string | undefined {
   const category = typeof payload.forge_error_category === 'string' ? payload.forge_error_category.trim() : ''
   const detail = typeof payload[detailKey] === 'string' ? payload[detailKey].trim() : ''
@@ -322,6 +334,10 @@ export const noteEventKinds = [
   'merge.reconciled',
   'merge.failed',
   'merge.blocked',
+  'merge.check_pending',
+  'merge.check_hold',
+  'merge.check_hold_cleared',
+  'merge.check_override',
   'merge.conflict_fix_dispatched',
   'approval.stale',
   'review.refresh_head_advanced',
@@ -1423,6 +1439,22 @@ function noteContent(
         title: 'Merge blocked — conflict fix required',
         detail: typeof payload.reason_code === 'string' ? `Reason: ${payload.reason_code}` : undefined,
         alarm: true,
+      }
+    case 'merge.check_pending':
+      return { title: 'Merge waits on check status', detail: checkEventDetail(payload) }
+    case 'merge.check_hold':
+      return { title: 'Check status holds the merge', detail: checkEventDetail(payload), alarm: true }
+    case 'merge.check_hold_cleared':
+      return { title: 'Check status no longer holds the merge' }
+    case 'merge.check_override':
+      return {
+        title: 'Operator merged a held head',
+        detail: [
+          typeof payload.operator_display_name === 'string' ? payload.operator_display_name : undefined,
+          checkEventDetail(payload),
+        ]
+          .filter(Boolean)
+          .join(' · '),
       }
     case 'merge.conflict_fix_dispatched':
       return {

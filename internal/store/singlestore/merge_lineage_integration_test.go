@@ -15,3 +15,9 @@ func TestMonitorLineagesConveyorMergeAfterHeadMovedSingleStoreIntegration(t *tes
 	t.Run("unapproved-head", func(t *testing.T) { mergelineagefixture.RunUnapprovedHead(t, open) })
 	t.Run("stale-approval", func(t *testing.T) { mergelineagefixture.RunStaleApproval(t, open) })
 }
+
+// SingleStore twin of TestAutomaticMergeCheckStatusOutcomes
+// (req-review-gates-evidence AC-1.4 to AC-1.8).
+func TestAutomaticMergeCheckStatusOutcomesSingleStoreIntegration(t *testing.T) {
+	mergelineagefixture.RunCheckStatus(t, func(t *testing.T) store.Store { return integrationStore(t) })
+}

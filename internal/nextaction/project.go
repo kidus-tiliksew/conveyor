@@ -75,6 +75,7 @@ func rules() []rule {
 		{match: gateOnApproved, build: func(in Input) built {
 			return built{actor: ActorOperator, kind: KindMergeExecution, judgment: true, order: currentOrder(in)}
 		}},
+		{match: checkHold, build: checkHoldBuild},
 		{match: gateOffApproved, build: func(Input) built { return built{actor: ActorFactory, kind: KindMerging} }},
 		{match: agentQuestion, build: agentQuestionBuild},
 		{match: verificationDisposition, build: func(in Input) built {
@@ -157,6 +158,24 @@ func gateOnApproved(in Input) bool {
 
 func gateOffApproved(in Input) bool {
 	return in.Task.State == core.TaskApproved && !in.Task.MergeApproval
+}
+
+// checkHold matches an approved task with the merge gate off while a failed or
+// stuck check, or a refused check-status read, holds its merge
+// (req-operator-next-action AC-1.5; req-review-gates-evidence AC-1.6, AC-1.7).
+func checkHold(in Input) bool {
+	return gateOffApproved(in) && in.CheckStatus.Hold != nil
+}
+
+// checkHoldBuild names the operator. A refused read needs a grant, not a
+// judgment about the change (component-next-action, row 8).
+func checkHoldBuild(in Input) built {
+	hold := in.CheckStatus.Hold
+	row := built{actor: ActorOperator, kind: KindCheckHold, judgment: true, reason: hold.Reason, order: currentOrder(in)}
+	if hold.Reason == CheckHoldPermission {
+		row.judgment, row.variant = false, CheckHoldPermission
+	}
+	return row
 }
 
 // agentQuestion matches row 9 only while the latest queued order is still
@@ -290,6 +309,14 @@ func finish(in Input, row built, secondary []Secondary) NextAction {
 			na.Details.ClaimFailure = &failure
 		}
 	}
+	switch row.kind {
+	case KindCheckHold:
+		hold := in.CheckStatus.Hold
+		na.Details.Checks = hold.Checks
+		na.Details.CheckHoldReason, na.Details.CheckReadFailure, na.Details.CheckRemedy = hold.Reason, hold.ReadFailure, hold.Remedy
+	case KindMerging:
+		na.Details.Checks, na.Details.CheckReadFailure = in.CheckStatus.Waiting, in.CheckStatus.ReadFailure
+	}
 	if na.Choices == nil {
 		na.Choices = []Choice{}
 	}
@@ -338,7 +365,19 @@ func varsFor(in Input, row built) Vars {
 		vars.Blockers += blocker.Title
 	}
 	vars.Dependents = dependentList(in.Blocks)
+	if row.kind == KindCheckHold {
+		vars.Checks = checkList(in.CheckStatus.Hold.Checks)
+	}
 	return vars
+}
+
+// checkList names a hold's checks in the order the hold recorded them.
+func checkList(checks []CheckRef) string {
+	names := make([]string, 0, len(checks))
+	for _, check := range checks {
+		names = append(names, check.Name+" ("+check.State+")")
+	}
+	return strings.Join(names, ", ")
 }
 
 // dependentList joins the dependents' titles, in blocks order, as a readable

@@ -155,6 +155,9 @@ func (d *Dispatcher) reconcileForgeMergeLocked(ctx context.Context, task core.Ta
 		if credited, creditErr := d.creditPendingGateMergeLocked(ctx, task, githubRepo, pr, events); creditErr != nil || credited {
 			return credited, creditErr
 		}
+		if err := d.recoverCheckOverrideLocked(ctx, task, pr.HeadSHA, events); err != nil {
+			return false, err
+		}
 		if !forgeMergeReconciled(events, githubRepo, pr) {
 			payload := map[string]any{
 				"repository": githubRepo, "pull_request": pr.Number, "url": pr.URL,
@@ -799,17 +802,36 @@ func (d *Dispatcher) gateOnConflictMergeError(ctx context.Context, current core.
 	return fmt.Errorf("pull request %s#%d has merge conflicts; conflict fix not dispatched (%s)", githubRepo, number, reason)
 }
 
-// MergeApprovedTask performs the final human-gate transition. A durable-store
-// task lock serializes browser retries across control-plane instances; the
-// authoritative pre-merge read makes retries after a process restart safe by
-// reconciling a PR that GitHub already merged (component-work-orders).
-func (d *Dispatcher) MergeApprovedTask(ctx context.Context, task core.Task) error {
+// mergeAct names who asks for a merge. A nil operator is the automatic merge,
+// the only act that reads check status (req-review-gates-evidence AC-1.1,
+// AC-1.8; component-submission-merge invariant 58).
+type mergeAct struct {
+	operator *core.Actor
+}
+
+// MergeApprovedTask is the operator's merge act on an approved task, attributed
+// to actor. It reads no check status and refuses nothing because of it. A
+// durable-store task lock serializes browser retries across control-plane
+// instances; the authoritative pre-merge read makes retries after a process
+// restart safe by reconciling a PR that GitHub already merged
+// (component-work-orders).
+func (d *Dispatcher) MergeApprovedTask(ctx context.Context, task core.Task, actor core.Actor) error {
 	return d.Store.WithTaskSideEffectLock(ctx, task.ID, func(lockedCtx context.Context) error {
-		return d.mergeApprovedTaskLocked(lockedCtx, task)
+		return d.mergeApprovedTaskLocked(lockedCtx, task, mergeAct{operator: &actor})
 	})
 }
 
-func (d *Dispatcher) mergeApprovedTaskLocked(ctx context.Context, task core.Task) error {
+// MergeApprovedTaskAutomatically is the factory's merge of an approved task
+// with the merge gate off. It reads the approved head's check status first and
+// returns ErrCheckStatusHeld, ErrCheckStatusPending, or ErrCheckStatusUnread
+// when that status does not let it merge.
+func (d *Dispatcher) MergeApprovedTaskAutomatically(ctx context.Context, task core.Task) error {
+	return d.Store.WithTaskSideEffectLock(ctx, task.ID, func(lockedCtx context.Context) error {
+		return d.mergeApprovedTaskLocked(lockedCtx, task, mergeAct{})
+	})
+}
+
+func (d *Dispatcher) mergeApprovedTaskLocked(ctx context.Context, task core.Task, act mergeAct) error {
 	current, err := d.Store.GetTask(ctx, task.ID)
 	if err != nil {
 		return err
@@ -871,7 +893,7 @@ func (d *Dispatcher) mergeApprovedTaskLocked(ctx context.Context, task core.Task
 	} else if pending {
 		return fmt.Errorf("%w: work order %s is %s", ErrConflictFixPending, active.ID, active.State)
 	}
-	author, mergeMessage, err := d.mergeAuthor(ctx, current)
+	author, mergeMessage, err := d.mergeActAuthor(ctx, current, act)
 	if err != nil {
 		return d.recordMergeFailureWithAuthor(ctx, current, "merge_author_unavailable", err, author)
 	}
@@ -921,6 +943,22 @@ func (d *Dispatcher) mergeApprovedTaskLocked(ctx context.Context, task core.Task
 	}
 	requestPayload := map[string]any{"repository": repo.GitHub, "pull_request": pr.Number, "url": pr.URL}
 	addForgeAuthor(requestPayload, author)
+	var held bool
+	switch {
+	case act.operator != nil:
+		// The operator's act reads no check status. Whether a hold stands comes
+		// from the ledger, so the act can record the override it makes.
+		if held, err = d.checkHoldStands(ctx, current, approvedHead); err != nil {
+			return err
+		}
+		requestPayload["operator_act"], requestPayload["head_sha"] = true, approvedHead
+	case !current.MergeApproval:
+		status, checkErr := d.applyCheckStatusLocked(ctx, current, repo.GitHub, approvedHead)
+		if checkErr != nil {
+			return checkErr
+		}
+		requestPayload["check_status"] = status
+	}
 	if err := d.Store.AppendEvent(ctx, core.Event{TaskID: current.ID, Kind: "merge.requested", Payload: core.JSONPayload(requestPayload)}); err != nil {
 		return err
 	}
@@ -936,6 +974,14 @@ func (d *Dispatcher) mergeApprovedTaskLocked(ctx context.Context, task core.Task
 	}
 	if !confirmed.Merged {
 		return d.recordMergeFailureWithAuthor(ctx, current, "merge_unconfirmed", fmt.Errorf("GitHub did not confirm pull request %s#%d as merged; inspect checks or merge-queue status and retry", repo.GitHub, pr.Number), author)
+	}
+	if held {
+		// The override is written before the confirmation. A crash before it
+		// leaves merge.requested naming the operator, which the observed-merge
+		// path turns into the same event.
+		if err := d.recordCheckOverrideLocked(ctx, current, approvedHead, author.UserID, author.DisplayName); err != nil {
+			return err
+		}
 	}
 	confirmedPayload := map[string]any{"repository": repo.GitHub, "pull_request": confirmed.Number, "url": confirmed.URL, "base_sha": confirmed.BaseSHA, "head_sha": confirmed.HeadSHA, "merged_by": confirmed.MergedBy, "merge_commit_sha": confirmed.MergeCommitSHA}
 	addForgeAuthor(confirmedPayload, author)
@@ -1190,9 +1236,11 @@ func gateOffMergeReadinessCandidate(task core.Task) bool {
 }
 
 // gateOffMergeReadiness recovers or merges a gate-off task with an accepted
-// review through MergeApprovedTask and reports whether the task's state
-// changed. A pending conflict fix and a refresh the merge began are handled
-// outcomes; any other failure is returned for the caller to log or retry.
+// review through MergeApprovedTaskAutomatically and reports whether the task's
+// state changed. A pending conflict fix, a check-status hold or wait, and a
+// refresh the merge began are handled outcomes; any other failure, an
+// unanswered check-status read included, is returned for the caller to log or
+// retry.
 func (d *Dispatcher) gateOffMergeReadiness(ctx context.Context, task core.Task) (bool, error) {
 	if task.State != core.TaskApproved {
 		recoverable, err := d.hasRecoverableApprovedReview(ctx, task)
@@ -1201,8 +1249,8 @@ func (d *Dispatcher) gateOffMergeReadiness(ctx context.Context, task core.Task) 
 		}
 	}
 	before := task.State
-	if mergeErr := d.MergeApprovedTask(ctx, task); mergeErr != nil {
-		if errors.Is(mergeErr, ErrConflictFixPending) {
+	if mergeErr := d.MergeApprovedTaskAutomatically(ctx, task); mergeErr != nil {
+		if errors.Is(mergeErr, ErrConflictFixPending) || errors.Is(mergeErr, ErrCheckStatusHeld) || errors.Is(mergeErr, ErrCheckStatusPending) {
 			return false, nil
 		}
 		after, err := d.Store.GetTask(ctx, task.ID)
