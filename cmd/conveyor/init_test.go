@@ -29,6 +29,7 @@ func TestReadInitAnswersUsesDefaultsAndRequiresRepositoryURL(t *testing.T) {
 }
 
 func TestDefaultInitConfigValidatesWithoutHandEditing(t *testing.T) {
+	t.Setenv("CONVEYOR_DATABASE_URL", "postgres://example")
 	answers := initAnswers{WorkspaceID: "demo", RepositoryName: "app", RepositoryURL: "https://github.com/Example/App.git", BaseBranch: "main"}
 	candidate, err := defaultInitConfig("postgres://example", answers)
 	if err != nil {
@@ -63,6 +64,7 @@ func TestDefaultInitConfigValidatesWithoutHandEditing(t *testing.T) {
 // policy and the in-process control-plane settings, and no executor key at
 // any path.
 func TestDefaultInitConfigWritesPolicyOnly(t *testing.T) {
+	t.Setenv("CONVEYOR_DATABASE_URL", "postgres://init@db.invalid/conveyor")
 	answers := initAnswers{WorkspaceID: "demo", RepositoryName: "app", RepositoryURL: "https://github.com/example/app", BaseBranch: "trunk"}
 	candidate, err := defaultInitConfig("postgres://init@db.invalid/conveyor", answers)
 	if err != nil {
@@ -254,11 +256,30 @@ func TestInitializeDeploymentRejectsMissingAPIKeyBeforeWriting(t *testing.T) {
 	}
 }
 
+// The generated file names the backend the URL selects and holds no URL, and
+// the loader restores the URL from the environment (req-security-boundaries REQ-2).
 func TestDefaultInitConfigSelectsSingleStore(t *testing.T) {
-	for _, raw := range []string{"singlestore://root@localhost/conveyor_test", "mysql://root@localhost/conveyor_test", "root@tcp(localhost:3306)/conveyor_test"} {
+	const password = "fixture-singlestore-pw-41d"
+	for _, raw := range []string{"singlestore://root:" + password + "@localhost/conveyor_test", "mysql://root:" + password + "@localhost/conveyor_test", "root:" + password + "@tcp(localhost:3306)/conveyor_test"} {
 		cfg, err := defaultInitConfig(raw, initAnswers{WorkspaceID: "demo", RepositoryName: "app", RepositoryURL: "https://github.com/example/app", BaseBranch: "main"})
-		if err != nil || cfg.Database.Backend != "singlestore" || cfg.Database.URL != raw {
-			t.Fatalf("init database=%+v err=%v", cfg.Database, err)
+		if err != nil || cfg.Database.Backend != "singlestore" || cfg.Database.URL != "" {
+			t.Fatalf("init database backend=%q holds URL=%t err=%v", cfg.Database.Backend, cfg.Database.URL != "", err)
+		}
+		data, err := config.MarshalDeployment(&cfg)
+		if err != nil {
+			t.Fatal(err)
+		}
+		assertDatabaseNodeIsBackendOnly(t, data, "singlestore")
+		if strings.Contains(string(data), password) {
+			t.Fatal("generated file holds the password")
+		}
+		t.Setenv("CONVEYOR_DATABASE_URL", raw)
+		loaded, err := config.ParseDeployment(data, "generated.yaml", nil)
+		if err != nil {
+			t.Fatalf("generated file does not load: %v", err)
+		}
+		if loaded.Database.Backend != "singlestore" || loaded.Database.URL != raw {
+			t.Fatalf("loaded backend=%q restored URL=%t", loaded.Database.Backend, loaded.Database.URL == raw)
 		}
 	}
 }

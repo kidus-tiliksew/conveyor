@@ -7,14 +7,17 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"net/url"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 
 	"github.com/kidus-tiliksew/conveyor/internal/config"
 	"github.com/kidus-tiliksew/conveyor/internal/core"
 	"github.com/kidus-tiliksew/conveyor/internal/gitx"
 	"github.com/kidus-tiliksew/conveyor/internal/pack"
+	"github.com/kidus-tiliksew/conveyor/internal/redact"
 	"github.com/kidus-tiliksew/conveyor/internal/store"
 	"github.com/kidus-tiliksew/conveyor/internal/store/backend"
 	"github.com/spf13/cobra"
@@ -199,6 +202,12 @@ func configUsesInProcessExecution(candidate config.Config) bool {
 	return false
 }
 
+// initOpenStore opens the store init bootstraps. Tests replace it to reach
+// the staged file while it is on disk and to inject store failures.
+var initOpenStore = func(ctx context.Context, database config.Database) (store.Backend, error) {
+	return backend.Open(ctx, database)
+}
+
 func initializeDeployment(ctx context.Context, output io.Writer, configPath string, answers initAnswers) error {
 	databaseURL := strings.TrimSpace(os.Getenv("CONVEYOR_DATABASE_URL"))
 	if databaseURL == "" {
@@ -208,6 +217,10 @@ func initializeDeployment(ctx context.Context, output io.Writer, configPath stri
 	if apiToken == "" {
 		return errors.New("CONVEYOR_API_TOKEN is required; set the first operator's bearer token and rerun `conveyor init`")
 	}
+	// Text a driver or store wrote passes through scrub, so a refusal repeats
+	// neither the database URL nor its password (req-security-boundaries REQ-2).
+	// Init's own messages hold neither and stay readable.
+	scrub := func(err error) error { return scrubInitError(err, databaseURL, apiToken) }
 	absoluteConfig, err := filepath.Abs(configPath)
 	if err != nil {
 		return fmt.Errorf("resolve config path: %w", err)
@@ -220,18 +233,33 @@ func initializeDeployment(ctx context.Context, output io.Writer, configPath stri
 	directory := filepath.Dir(absoluteConfig)
 	temporaryPath := ""
 	var validated *config.Config
+	fileHoldsDatabaseURL := false
 	if configExists {
+		existing, readErr := os.ReadFile(absoluteConfig)
+		if readErr != nil {
+			return fmt.Errorf("load existing deployment config: %w", readErr)
+		}
 		// A file written before DEC-56 still loads; the deployment loader
 		// ignores and names its execution keys (component-runtime).
-		validated, err = config.LoadDeployment(absoluteConfig, log.Printf)
+		validated, err = config.ParseDeployment(existing, absoluteConfig, log.Printf)
 		if err != nil {
+			return fmt.Errorf("load existing deployment config: %w", err)
+		}
+		if fileHoldsDatabaseURL, err = config.DeploymentHoldsDatabaseURL(existing); err != nil {
 			return fmt.Errorf("load existing deployment config: %w", err)
 		}
 		if err = requireInitAPIKey(*validated); err != nil {
 			return err
 		}
-		if validated.Workspace != answers.WorkspaceID || len(validated.Repos) != 1 || validated.Repos[0].Name != answers.RepositoryName || validated.Repos[0].URL != answers.RepositoryURL || validated.Database.URL != databaseURL {
+		if validated.Workspace != answers.WorkspaceID || len(validated.Repos) != 1 || validated.Repos[0].Name != answers.RepositoryName || validated.Repos[0].URL != answers.RepositoryURL || validated.Database.Backend != config.DatabaseForURL(databaseURL).Backend {
 			return fmt.Errorf("deployment config already exists at %s and does not match these initialization answers; refusing to overwrite it", absoluteConfig)
+		}
+		// A file without a URL takes this environment value from the loader,
+		// untrimmed, so only a URL the file itself states can differ. Init
+		// would bootstrap the environment's database while conveyord reads the
+		// file's (component-identity-membership invariant 14).
+		if strings.TrimSpace(validated.Database.URL) != databaseURL {
+			return fmt.Errorf("deployment config already exists at %s and does not match these initialization answers: its database.url differs from CONVEYOR_DATABASE_URL; refusing to overwrite it. Delete database.url from the file, or set CONVEYOR_DATABASE_URL to the database that file names", absoluteConfig)
 		}
 	} else {
 		candidate, candidateErr := defaultInitConfig(databaseURL, answers)
@@ -276,31 +304,32 @@ func initializeDeployment(ctx context.Context, output io.Writer, configPath stri
 	// Host-local initialization is a system act until the first operator
 	// exists; later workspace creation binds that operator explicitly.
 	ctx = store.WithActor(ctx, store.SystemActor())
-	pgStore, err := backend.Open(ctx, config.DatabaseForURL(databaseURL))
+	pgStore, err := initOpenStore(ctx, config.DatabaseForURL(databaseURL))
 	if err != nil {
-		return fmt.Errorf("initialize %s store: %w", validated.Database.Backend, err)
+		return fmt.Errorf("initialize %s store: %w", validated.Database.Backend, scrub(err))
 	}
 	defer pgStore.Close()
 	seeded, err := pgStore.BootstrapIdentity(ctx, config.FirstOperatorIdentity{
 		OrganizationName: answers.Organization, Email: answers.OperatorEmail, DisplayName: answers.OperatorName,
 	}, apiToken)
 	if err != nil {
-		return err
-	}
-	if !seeded {
-		if _, workspaceErr := pgStore.GetWorkspace(ctx, answers.WorkspaceID); workspaceErr == nil {
-			fmt.Fprintln(output, "Conveyor is already initialized; issuing a fresh first-operator sign-in link.")
-		}
+		return scrub(err)
 	}
 	owner, err := pgStore.VerifyPersonalAccessToken(ctx, apiToken)
 	if err != nil {
-		return fmt.Errorf("resolve first operator after bootstrap: %w", err)
+		return fmt.Errorf("resolve first operator after bootstrap: %w", scrub(err))
 	}
 	operatorCtx := store.WithCredential(ctx, core.AuthenticatedCredential{ID: "bootstrap", OwnerUserID: owner.ID, Kind: core.CredentialUser, Scope: core.CredentialScopeOperator})
 	operatorCtx = store.WithActor(operatorCtx, store.Actor{ID: store.UserActorID(owner.ID), Role: core.ActorUser})
 	if _, err = pgStore.CreateWorkspace(operatorCtx, answers.WorkspaceID, answers.WorkspaceName, validated); err != nil {
 		if !errors.Is(err, store.ErrWorkspaceConflict) {
-			return fmt.Errorf("create first workspace: %w", err)
+			return fmt.Errorf("create first workspace: %w", scrub(err))
+		}
+		if err = requireSameWorkspace(ctx, pgStore, answers, scrub); err != nil {
+			return err
+		}
+		if !seeded {
+			fmt.Fprintln(output, "Conveyor is already initialized; issuing a fresh first-operator sign-in link.")
 		}
 	}
 	if !configExists {
@@ -308,11 +337,90 @@ func initializeDeployment(ctx context.Context, output io.Writer, configPath stri
 			return fmt.Errorf("publish deployment config %s: %w", absoluteConfig, err)
 		}
 	}
-	fmt.Fprintf(output, "Initialized Conveyor organization %q and workspace %q.\nConfig: %s\nNext: run `conveyord install --config %s`.\n", answers.Organization, answers.WorkspaceID, absoluteConfig, absoluteConfig)
+	fmt.Fprintf(output, "Initialized Conveyor organization %q and workspace %q.\nConfig: %s\n", answers.Organization, answers.WorkspaceID, absoluteConfig)
+	if fileHoldsDatabaseURL {
+		// The notice names the key and never its value (req-security-boundaries REQ-2).
+		fmt.Fprintf(output, "Notice: %s holds a database URL in database.url, and init left the file unchanged. Move the URL into CONVEYOR_DATABASE_URL in the owner-only environment file and delete the key.\nNext: run `conveyord install --config %s`.\n", absoluteConfig, absoluteConfig)
+	} else {
+		fmt.Fprintf(output, "Next: run `conveyord install --config %s`. The config holds no database URL, so conveyord needs CONVEYOR_DATABASE_URL: the service reads it from the owner-only %s or the file --env-file names, and a foreground conveyord reads it from CONVEYOR_ENV_FILE or from .env in its working directory.\n", absoluteConfig, filepath.Join(directory, ".env"))
+	}
 	if err = issueAndPrintSignInLink(ctx, output, pgStore, answers.OperatorEmail, config.InvitationDeliveryFromEnvironment().PublicURL); err != nil {
-		return fmt.Errorf("issue first operator sign-in link; initialization state is safe to retry: %w", err)
+		return fmt.Errorf("issue first operator sign-in link; initialization state is safe to retry: %w", scrub(err))
 	}
 	return nil
+}
+
+// requireSameWorkspace decides a workspace conflict. Only the same ID with the
+// same name is a safe rerun. Any other conflict created nothing, so init
+// refuses before it publishes a file or issues a sign-in link
+// (req-deployment-and-releases REQ-2; component-identity-membership invariant 13).
+func requireSameWorkspace(ctx context.Context, workspaces store.Backend, answers initAnswers, scrub func(error) error) error {
+	existing, err := workspaces.GetWorkspace(ctx, answers.WorkspaceID)
+	if errors.Is(err, store.ErrNotFound) {
+		return fmt.Errorf("workspace name %q is taken by another workspace; choose another workspace name and rerun `conveyor init`. No config was published and no sign-in link was issued", answers.WorkspaceName)
+	}
+	if err != nil {
+		return fmt.Errorf("inspect existing workspace %q: %w", answers.WorkspaceID, scrub(err))
+	}
+	if existing.Name != answers.WorkspaceName {
+		return fmt.Errorf("workspace %q already exists with the name %q, not %q; rerun `conveyor init` with its name or another workspace ID. No config was published and no sign-in link was issued", answers.WorkspaceID, existing.Name, answers.WorkspaceName)
+	}
+	return nil
+}
+
+// scrubbedInitError carries an error whose text no longer holds a secret value.
+type scrubbedInitError struct {
+	message string
+	cause   error
+}
+
+func (e *scrubbedInitError) Error() string { return e.message }
+func (e *scrubbedInitError) Unwrap() error { return e.cause }
+
+func scrubInitError(err error, databaseURL, apiToken string) error {
+	if err == nil {
+		return nil
+	}
+	clean, _ := redact.New(append(databaseURLSecrets(databaseURL), apiToken)).Redact(err.Error())
+	return &scrubbedInitError{message: clean, cause: err}
+}
+
+var (
+	databaseKeywordPassword = regexp.MustCompile(`(?i)password\s*=\s*('[^']*'|[^&\s]+)`)
+	databaseUserInfoEnd     = regexp.MustCompile(`@(tcp|unix)\(`)
+)
+
+// databaseURLSecrets returns the connection string and each form of its
+// password: URL or MySQL DSN user information, and a keyword or query
+// password. It reads text and does not require a string a driver would accept,
+// because a malformed string is the one most likely to reach an error message.
+func databaseURLSecrets(raw string) []string {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return nil
+	}
+	values := []string{raw}
+	userInfo := raw
+	if _, afterScheme, ok := strings.Cut(raw, "://"); ok {
+		userInfo = afterScheme
+	}
+	if end := databaseUserInfoEnd.FindStringIndex(userInfo); end != nil {
+		userInfo = userInfo[:end[0]]
+	} else if end := strings.LastIndex(userInfo, "@"); end >= 0 {
+		userInfo = userInfo[:end]
+	} else {
+		userInfo = ""
+	}
+	if _, password, ok := strings.Cut(userInfo, ":"); ok && password != "" {
+		values = append(values, password)
+		if decoded, err := url.PathUnescape(password); err == nil {
+			values = append(values, decoded)
+		}
+	}
+	for _, match := range databaseKeywordPassword.FindAllStringSubmatch(raw, -1) {
+		values = append(values, match[1], strings.Trim(match[1], "'"))
+	}
+	return values
 }
 
 func requireInitAPIKey(candidate config.Config) error {
@@ -329,7 +437,10 @@ func requireInitAPIKey(candidate config.Config) error {
 // defaultInitConfig is the generated deployment configuration: pipeline
 // policy and the in-process control-plane settings only (DEC-104(1), DEC-104(3)).
 // Conveyor holds no harness, setup, or executor model anywhere; the person who
-// starts an agent session chooses them (DEC-104(2)).
+// starts an agent session chooses them (DEC-104(2)). It takes the URL only to
+// select the backend. The URL can hold a password, so the file names the
+// backend, which the loader can't infer without a URL, and conveyord reads the
+// URL from CONVEYOR_DATABASE_URL (req-security-boundaries REQ-2).
 func defaultInitConfig(databaseURL string, answers initAnswers) (config.Config, error) {
 	settings := config.ContextualExecutionSettings{
 		ControlPlane: config.ControlPlaneSettings{
@@ -343,7 +454,7 @@ func defaultInitConfig(databaseURL string, answers initAnswers) (config.Config, 
 	return config.Config{
 		Workspace: answers.WorkspaceID, MaxBounces: 10,
 		WorkOrderQueueTimeoutText: config.DefaultWorkOrderQueueTimeoutText,
-		Database:                  config.DatabaseForURL(databaseURL),
+		Database:                  config.Database{Backend: config.DatabaseForURL(databaseURL).Backend},
 		ExecutionSettings:         &settings,
 		Review:                    config.ReviewPanel{Seats: []config.ReviewSeat{{}}},
 		Execution:                 config.ExecutionPolicy{SpecApproval: true, MergeApproval: true, ImplementConcurrency: 1, ReviewConcurrency: 1},

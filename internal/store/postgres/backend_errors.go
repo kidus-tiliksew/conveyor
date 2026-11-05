@@ -37,8 +37,11 @@ var uniqueConstraintErrors = map[string]error{
 	"system_designs_workspace_id_slug_key":      store.ErrSystemDesignSlugConflict,
 	"decisions_pkey":                            store.ErrDecisionIDConflict,
 	"decisions_confirmed_supersedes_key":        store.ErrDecisionSupersessionConflict,
-	// A case- and space-normalized workspace name collision is the same
-	// generic creation conflict as an ID collision (DEC-75(7)).
+	// A workspace name collision is the same generic creation conflict as an
+	// ID collision (DEC-75(7)). An identical name violates the column's own
+	// constraint first, and any other case- and space-normalized match
+	// violates the expression index.
+	"workspaces_name_key":          store.ErrWorkspaceConflict,
 	"workspaces_name_lower_unique": store.ErrWorkspaceConflict,
 }
 
