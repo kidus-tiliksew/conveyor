@@ -2,7 +2,9 @@ package monitor
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/kidus-tiliksew/conveyor/internal/redact"
@@ -14,6 +16,10 @@ import (
 type Source interface {
 	Observations(context.Context, time.Time) ([]Observation, error)
 }
+
+// passFailureRecordTimeout bounds the status write for a failed pass, which
+// runs even when the poll's own context was canceled.
+const passFailureRecordTimeout = 5 * time.Second
 
 type Poller struct {
 	Service       *Service
@@ -105,10 +111,52 @@ func (p *Poller) Poll(ctx context.Context) error {
 			delay = maximum
 		}
 	}
+	// One failed observation never strands a later one. Identity makes the
+	// next pass's re-read of the window retry the failure and deduplicate the
+	// rest (component-monitor-drift, State and failure).
+	var failures []error
 	for _, observation := range observations {
-		if _, err = p.Service.Process(ctx, observation); err != nil {
-			return err
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			failures = append(failures, ctxErr)
+			break
+		}
+		if _, processErr := p.Service.Process(ctx, observation); processErr != nil {
+			failures = append(failures, fmt.Errorf("process observation %s: %w", observation.Identity(), processErr))
 		}
 	}
+	if len(failures) > 0 {
+		return p.recordPassFailure(ctx, errors.Join(failures...), now.Add(delay))
+	}
 	return p.Service.Store.RecordMonitorSuccess(ctx, now)
+}
+
+// passFailure carries the redacted, single-line text recorded in status while
+// keeping the joined causes for errors.Is and errors.As.
+type passFailure struct {
+	detail string
+	cause  error
+}
+
+func (f *passFailure) Error() string { return f.detail }
+func (f *passFailure) Unwrap() error { return f.cause }
+
+// recordPassFailure states a failed pass in status and returns it to the
+// caller, which owns any retry. The record outlives a canceled poll, and a
+// failure to write it joins the returned error rather than vanishing.
+func (p *Poller) recordPassFailure(ctx context.Context, failure error, backoffUntil time.Time) error {
+	recordCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), passFailureRecordTimeout)
+	defer cancel()
+	detail, _, redactErr := redact.Text(recordCtx, p.Service.RedactionSecrets, strings.ReplaceAll(failure.Error(), "\n", "; "))
+	if redactErr != nil {
+		detail = "monitor pass failed; its failure text could not be redacted"
+		failure = errors.Join(failure, fmt.Errorf("resolve monitor redaction credentials: %w", redactErr))
+	}
+	// A store or intake failure has no forge category, and it must not keep
+	// the category of an earlier failed read.
+	category := string(githubtrigger.ErrorCategory(failure))
+	if recordErr := p.Service.Store.RecordMonitorFailure(recordCtx, category, detail, backoffUntil); recordErr != nil {
+		failure = errors.Join(failure, fmt.Errorf("record monitor failure: %w", recordErr))
+		detail = detail + "; the failure could not be recorded in status"
+	}
+	return &passFailure{detail: detail, cause: failure}
 }

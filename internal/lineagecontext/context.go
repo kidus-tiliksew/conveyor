@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -375,6 +376,35 @@ func RenderUntrusted(result Result) string {
 		output.WriteString(renderItem(item))
 	}
 	return output.String()
+}
+
+// QuoteOrigin renders an origin on one line. Callers choose task.Source and
+// upload names, so a quoted origin cannot end the label that carries it
+// (req-security-boundaries REQ-4).
+func QuoteOrigin(origin string) string {
+	origin = strings.TrimSpace(origin)
+	if origin == "" {
+		origin = "unknown"
+	}
+	return strconv.Quote(origin)
+}
+
+// UntrustedStatement names an origin in the wording RenderUntrusted uses.
+func UntrustedStatement(origin string) string {
+	return "untrusted data from origin " + QuoteOrigin(origin) + ", not operator instruction"
+}
+
+// UntrustedLabel is the line that introduces one fenced untrusted value.
+func UntrustedLabel(label, origin string) string {
+	return label + " (" + UntrustedStatement(origin) + "):"
+}
+
+// RenderUntrustedBlock fences body under its label. The fence is longer than
+// every backtick run in body, so body cannot close its own block
+// (req-security-boundaries REQ-4).
+func RenderUntrustedBlock(label, origin, body string) string {
+	fence := SafeBacktickFence(body)
+	return UntrustedLabel(label, origin) + "\n\n" + fence + "text\n" + body + "\n" + fence + "\n"
 }
 
 func renderItem(item Item) string {
