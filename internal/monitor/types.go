@@ -262,19 +262,12 @@ type Store interface {
 	ResolveCausalSystemDesignMerge(context.Context, string, string, string, int64, string, []string, bool) (SystemDesignMergeJudgment, error)
 }
 
-const MaxUnresolvedDriftPerTask = 5
-
 var (
 	ErrUnknownRequirementID    = errors.New("unknown monitor requirement_id")
 	ErrRequirementIDMissing    = errors.New("monitor requirement_id is missing")
 	ErrRequirementIDInvalid    = errors.New("monitor requirement_id is invalid")
 	ErrRequirementIDNotAllowed = errors.New("monitor requirement_id is only allowed for requirements_amended")
-	ErrTaskDriftSaturated      = errors.New("monitor_task_drift_saturated")
 )
-
-func TaskDriftSaturatedError(taskID string) error {
-	return fmt.Errorf("%w: task %s already has %d unresolved drift signals", ErrTaskDriftSaturated, taskID, MaxUnresolvedDriftPerTask)
-}
 
 type Service struct {
 	Store            Store
@@ -369,10 +362,13 @@ func (s *Service) ProcessDesignMerge(ctx context.Context, observation Observatio
 	if err = s.recordSystemDesignDrift(ctx, observation, deliveryTaskID); err != nil {
 		return ObservationRecord{}, err
 	}
-	_ = s.Store.RecordMonitorSuccess(ctx, now)
 	return record, nil
 }
 
+// Process records one observation. Status success belongs to the pass that
+// read and processed everything, so it is Poller.Poll's to record and never
+// one observation's (component-monitor-drift invariant 15;
+// req-delivery-and-forge AC-4.5).
 func (s *Service) Process(ctx context.Context, observation Observation) (ObservationRecord, error) {
 	workspace, enabled, repositories := s.WorkspaceID, s.Enabled, s.Repositories
 	if s.ResolveScope != nil {
@@ -417,7 +413,6 @@ func (s *Service) Process(ctx context.Context, observation Observation) (Observa
 	})
 	if observation.RecoveryObserved {
 		if !fresh {
-			_ = s.Store.RecordMonitorSuccess(ctx, now)
 			return record, nil
 		}
 		var taskID string
@@ -442,7 +437,6 @@ func (s *Service) Process(ctx context.Context, observation Observation) (Observa
 				"identity": observation.Identity(), "task_id": taskID, "repository": observation.Repository,
 			})
 		}
-		_ = s.Store.RecordMonitorSuccess(ctx, now)
 		return record, nil
 	}
 	if record.TaskID != "" {
@@ -454,12 +448,17 @@ func (s *Service) Process(ctx context.Context, observation Observation) (Observa
 			"identity": observation.Identity(), "occurrence_id": observation.OccurrenceID,
 			"deduplicated_count": record.DeduplicatedCount,
 		})
-		if observation.Kind.Drift() && len(observation.ChangedPaths) > 0 {
+		if observation.Kind.Drift() {
+			// A repeat retries a drift write that failed after the link. The
+			// write is idempotent and never reopens a resolved record, and
+			// this path files no task (req-delivery-and-forge AC-4.10).
+			if err = s.recordRepositoryDrift(ctx, observation, record.TaskID); err != nil {
+				return ObservationRecord{}, err
+			}
 			if err = s.recordSystemDesignDrift(ctx, observation, record.TaskID); err != nil {
 				return ObservationRecord{}, err
 			}
 		}
-		_ = s.Store.RecordMonitorSuccess(ctx, now)
 		return record, nil
 	}
 	body := taskBody(observation)
@@ -528,30 +527,42 @@ func (s *Service) Process(ctx context.Context, observation Observation) (Observa
 		"drift": observation.Kind.Drift(),
 	})
 	if observation.Kind.Drift() {
-		_, _, err = s.Store.RecordDrift(ctx, Drift{
-			ID: observation.Identity(), WorkspaceID: observation.WorkspaceID,
-			Repository: observation.Repository, Kind: observation.Kind,
-			SourceURL: observation.SourceURL, CommitSHA: observation.CommitSHA,
-			RequirementID: observation.RequirementID, TaskID: result.Task.ID,
-			DetectedAt: observation.ObservedAt,
-		})
-		if err != nil {
+		if err = s.recordRepositoryDrift(ctx, observation, result.Task.ID); err != nil {
 			return ObservationRecord{}, err
 		}
-		_ = s.Store.AuditMonitor(ctx, "monitor.drift_detected", map[string]any{
-			"drift_id": observation.Identity(), "task_id": result.Task.ID,
-			"commit_sha": observation.CommitSHA,
-		})
-		_ = s.Store.AuditTask(ctx, result.Task.ID, "monitor.drift_detected", map[string]any{
-			"drift_id": observation.Identity(), "commit_sha": observation.CommitSHA,
-			"requirement_id": observation.RequirementID,
-		})
 		if err = s.recordSystemDesignDrift(ctx, observation, result.Task.ID); err != nil {
 			return ObservationRecord{}, err
 		}
 	}
-	_ = s.Store.RecordMonitorSuccess(ctx, now)
 	return record, nil
+}
+
+// recordRepositoryDrift records the observation's repository drift under its
+// identity and audits only the write that created the record, so a retry adds
+// no second audit (component-monitor-drift invariants 3 and 20).
+func (s *Service) recordRepositoryDrift(ctx context.Context, observation Observation, taskID string) error {
+	_, fresh, err := s.Store.RecordDrift(ctx, Drift{
+		ID: observation.Identity(), WorkspaceID: observation.WorkspaceID,
+		Repository: observation.Repository, Kind: observation.Kind,
+		SourceURL: observation.SourceURL, CommitSHA: observation.CommitSHA,
+		RequirementID: observation.RequirementID, TaskID: taskID,
+		DetectedAt: observation.ObservedAt,
+	})
+	if err != nil {
+		return err
+	}
+	if !fresh {
+		return nil
+	}
+	_ = s.Store.AuditMonitor(ctx, "monitor.drift_detected", map[string]any{
+		"drift_id": observation.Identity(), "task_id": taskID,
+		"commit_sha": observation.CommitSHA,
+	})
+	_ = s.Store.AuditTask(ctx, taskID, "monitor.drift_detected", map[string]any{
+		"drift_id": observation.Identity(), "commit_sha": observation.CommitSHA,
+		"requirement_id": observation.RequirementID,
+	})
+	return nil
 }
 
 func (s *Service) recordSystemDesignDrift(ctx context.Context, observation Observation, taskID string) error {

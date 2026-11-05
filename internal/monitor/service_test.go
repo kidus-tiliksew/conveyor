@@ -503,6 +503,240 @@ func TestPollerRetriesWithBoundedBackoffAndReconcilesStartupWindow(t *testing.T)
 	}
 }
 
+// failingStatusStore fails the status write for a failed pass.
+type failingStatusStore struct {
+	monitor.Store
+	failureErr error
+}
+
+func (s *failingStatusStore) RecordMonitorFailure(ctx context.Context, category, detail string, backoff time.Time) error {
+	if s.failureErr != nil {
+		return s.failureErr
+	}
+	return s.Store.RecordMonitorFailure(ctx, category, detail, backoff)
+}
+
+func directPush(sha string) monitor.Observation {
+	return monitor.Observation{
+		Repository: "conveyor", Kind: monitor.DirectPush, OccurrenceID: sha, CommitSHA: sha,
+		SourceURL: "https://example/commit/" + sha,
+	}
+}
+
+func staticSource(observations ...monitor.Observation) monitor.Source {
+	return sourceFunc(func(context.Context, time.Time) ([]monitor.Observation, error) {
+		return observations, nil
+	})
+}
+
+// failIntakeFor fails intake for the named intake keys while the returned
+// switch holds true.
+func failIntakeFor(service *monitor.Service, failure error, intakeKeys ...string) *bool {
+	failing := true
+	intake := service.Intake
+	service.Intake = func(ctx context.Context, request monitor.TaskRequest) (monitor.IntakeResult, error) {
+		for _, key := range intakeKeys {
+			if failing && request.IntakeKey == key {
+				return monitor.IntakeResult{}, failure
+			}
+		}
+		return intake(ctx, request)
+	}
+	return &failing
+}
+
+// A failed observation strands no newer one, the pass records and returns the
+// failure, and only a later clean pass records success
+// (component-monitor-drift, State and failure; req-delivery-and-forge AC-4.5).
+func TestPollContinuesPastFailedObservationAndRecordsFailure(t *testing.T) {
+	service, st, ctx := testService(t)
+	older, newer := directPush("older"), directPush("newer")
+	errIntake := errors.New("intake unavailable")
+	failing := failIntakeFor(service, errIntake, "monitor:direct_push:conveyor:older")
+	poller := monitor.Poller{Service: service, Source: staticSource(older, newer), StartupWindow: time.Hour}
+
+	err := poller.Poll(ctx)
+	if !errors.Is(err, errIntake) || !strings.Contains(err.Error(), "direct_push:conveyor:older") {
+		t.Fatalf("poll err=%v", err)
+	}
+	status, statusErr := service.Status(ctx)
+	if statusErr != nil {
+		t.Fatal(statusErr)
+	}
+	if !strings.Contains(status.CurrentError, "direct_push:conveyor:older") || !strings.Contains(status.CurrentError, errIntake.Error()) {
+		t.Fatalf("current_error=%q", status.CurrentError)
+	}
+	if status.ForgeErrorCategory != "" || status.BackoffUntil.IsZero() {
+		t.Fatalf("category=%q backoff=%s", status.ForgeErrorCategory, status.BackoffUntil)
+	}
+	if !status.LastSuccessfulAt.IsZero() {
+		t.Fatalf("a failed pass advanced last_successful_observation to %s", status.LastSuccessfulAt)
+	}
+	linked := map[string]string{}
+	for _, observation := range status.Observations {
+		linked[observation.OccurrenceID] = observation.TaskID
+	}
+	if linked["newer"] == "" {
+		t.Fatalf("the newer observation was stranded: %+v", status.Observations)
+	}
+	if taskID, observed := linked["older"]; !observed || taskID != "" {
+		t.Fatalf("the failed observation must stay recorded with no task: %+v", status.Observations)
+	}
+	if status.DriftCount != 1 || status.Drift[0].ID != newer.Identity() {
+		t.Fatalf("drift=%+v", status.Drift)
+	}
+
+	// Outside a pass, an observation neither clears the failure nor counts as
+	// a pass success.
+	if _, err = service.Process(ctx, directPush("submitted")); err != nil {
+		t.Fatal(err)
+	}
+	if status, err = service.Status(ctx); err != nil || status.CurrentError == "" || !status.LastSuccessfulAt.IsZero() {
+		t.Fatalf("a lone observation changed pass status: %+v err=%v", status, err)
+	}
+
+	*failing = false
+	if err = poller.Poll(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if status, err = service.Status(ctx); err != nil || status.CurrentError != "" || status.LastSuccessfulAt.IsZero() {
+		t.Fatalf("a clean pass did not clear the failure: %+v err=%v", status, err)
+	}
+	if status.DriftCount != 3 {
+		t.Fatalf("the retried observation recorded no drift: %+v", status.Drift)
+	}
+	tasks, err := st.ListTasks(ctx)
+	if err != nil || len(tasks) != 1 {
+		t.Fatalf("tasks=%+v err=%v", tasks, err)
+	}
+}
+
+// Every failed observation in a pass is named, not only the first, and a
+// credential in a failure never reaches status or the returned text.
+func TestPollJoinsEveryFailureAndRedactsItsText(t *testing.T) {
+	service, _, ctx := testService(t)
+	const secret = "ghp_abcdefghijklmnopqrstuvwxyz0123456789"
+	errFirst, errSecond := errors.New("first failed "+secret), errors.New("second failed")
+	intake := service.Intake
+	service.Intake = func(ctx context.Context, request monitor.TaskRequest) (monitor.IntakeResult, error) {
+		switch request.IntakeKey {
+		case "monitor:revert:conveyor:one":
+			return monitor.IntakeResult{}, errFirst
+		case "monitor:revert:conveyor:two":
+			return monitor.IntakeResult{}, errSecond
+		}
+		return intake(ctx, request)
+	}
+	revert := func(sha string) monitor.Observation {
+		observation := directPush(sha)
+		observation.Kind = monitor.Revert
+		return observation
+	}
+	poller := monitor.Poller{Service: service, Source: staticSource(revert("one"), revert("two"), revert("three")), StartupWindow: time.Hour}
+	err := poller.Poll(ctx)
+	if !errors.Is(err, errFirst) || !errors.Is(err, errSecond) {
+		t.Fatalf("poll err=%v", err)
+	}
+	status, statusErr := service.Status(ctx)
+	if statusErr != nil {
+		t.Fatal(statusErr)
+	}
+	for _, text := range []string{err.Error(), status.CurrentError} {
+		if strings.Contains(text, secret) || strings.Contains(text, "\n") {
+			t.Fatalf("failure text not redacted to one line: %q", text)
+		}
+		if !strings.Contains(text, "revert:conveyor:one") || !strings.Contains(text, "revert:conveyor:two") {
+			t.Fatalf("failure text does not name each observation: %q", text)
+		}
+	}
+}
+
+// A repository drift write that fails after the link fails the pass with the
+// observation linked, and the next pass records it with no second task
+// (req-delivery-and-forge AC-4.10).
+func TestPollRetriesDriftWriteThatFailedAfterLinking(t *testing.T) {
+	service, st, ctx := testService(t)
+	errWrite := errors.New("drift write unavailable")
+	failing := &failingDriftWrites{Store: service.Store, err: errWrite, identity: directPush("linked").Identity()}
+	service.Store = failing
+	newer := directPush("after-linked")
+	poller := monitor.Poller{Service: service, Source: staticSource(directPush("linked"), newer), StartupWindow: time.Hour}
+	if err := poller.Poll(ctx); !errors.Is(err, errWrite) {
+		t.Fatalf("poll err=%v", err)
+	}
+	status, err := service.Status(ctx)
+	if err != nil || status.DriftCount != 1 || status.Drift[0].ID != newer.Identity() || status.CurrentError == "" {
+		t.Fatalf("status=%+v err=%v", status, err)
+	}
+	failing.err = nil
+	if err = poller.Poll(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if status, err = service.Status(ctx); err != nil || status.DriftCount != 2 || status.CurrentError != "" {
+		t.Fatalf("status=%+v err=%v", status, err)
+	}
+	if tasks, listErr := st.ListTasks(ctx); listErr != nil || len(tasks) != 1 {
+		t.Fatalf("tasks=%+v err=%v", tasks, listErr)
+	}
+}
+
+type failingDriftWrites struct {
+	monitor.Store
+	err      error
+	identity string
+}
+
+func (s *failingDriftWrites) RecordDrift(ctx context.Context, drift monitor.Drift) (monitor.Drift, bool, error) {
+	if s.err != nil && drift.ID == s.identity {
+		return monitor.Drift{}, false, s.err
+	}
+	return s.Store.RecordDrift(ctx, drift)
+}
+
+// A canceled poll stops, keeps its record of the failure, and records no
+// success for the observations it never processed.
+func TestPollCanceledMidPassRecordsFailureNotSuccess(t *testing.T) {
+	service, _, ctx := testService(t)
+	pollCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	intake := service.Intake
+	service.Intake = func(ctx context.Context, request monitor.TaskRequest) (monitor.IntakeResult, error) {
+		result, err := intake(ctx, request)
+		cancel()
+		return result, err
+	}
+	poller := monitor.Poller{Service: service, Source: staticSource(directPush("first"), directPush("second")), StartupWindow: time.Hour}
+	if err := poller.Poll(pollCtx); !errors.Is(err, context.Canceled) {
+		t.Fatalf("poll err=%v", err)
+	}
+	status, err := service.Status(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if status.CurrentError == "" || !status.LastSuccessfulAt.IsZero() {
+		t.Fatalf("status=%+v", status)
+	}
+	for _, observation := range status.Observations {
+		if observation.OccurrenceID == "second" {
+			t.Fatalf("a canceled pass processed a later observation: %+v", status.Observations)
+		}
+	}
+}
+
+// A status write that fails joins the returned error, so the failed pass is
+// never reported as only its first cause or as nothing at all.
+func TestPollReturnsFailureToRecordPassFailure(t *testing.T) {
+	service, _, ctx := testService(t)
+	errIntake, errStatus := errors.New("intake unavailable"), errors.New("status unavailable")
+	failIntakeFor(service, errIntake, "monitor:direct_push:conveyor:only")
+	service.Store = &failingStatusStore{Store: service.Store, failureErr: errStatus}
+	poller := monitor.Poller{Service: service, Source: staticSource(directPush("only")), StartupWindow: time.Hour}
+	err := poller.Poll(ctx)
+	if !errors.Is(err, errIntake) || !errors.Is(err, errStatus) {
+		t.Fatalf("poll err=%v", err)
+	}
+}
+
 func TestListUnresolvedDriftResolvesScopeAndFailsClosed(t *testing.T) {
 	service, _, ctx := testService(t)
 	if _, err := service.Process(ctx, monitor.Observation{Repository: "conveyor", Kind: monitor.DirectPush, OccurrenceID: "scope-drift", SourceURL: "https://example.test/commit/scope"}); err != nil {

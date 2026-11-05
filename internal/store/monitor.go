@@ -317,9 +317,6 @@ func (m *memory) LinkTask(ctx context.Context, identity, taskID, outcome string)
 	if record.TaskID != "" && record.TaskID != taskID {
 		return monitor.ObservationRecord{}, fmt.Errorf("monitor observation %s already links task %s", identity, record.TaskID)
 	}
-	if record.TaskID == "" && record.Kind.Drift() && m.unresolvedTaskDriftCountLocked(workspace, taskID) >= monitor.MaxUnresolvedDriftPerTask {
-		return monitor.ObservationRecord{}, monitor.TaskDriftSaturatedError(taskID)
-	}
 	record.TaskID, record.TaskOutcome, record.State, record.UpdatedAt = taskID, outcome, "task_linked", time.Now().UTC()
 	m.monitorObservations[key] = record
 	return record, nil
@@ -339,9 +336,6 @@ func (m *memory) RecordDrift(ctx context.Context, drift monitor.Drift) (monitor.
 	if current, ok := m.monitorDrift[key]; ok {
 		return current, false, nil
 	}
-	if m.unresolvedTaskDriftCountLocked(workspace, drift.TaskID) >= monitor.MaxUnresolvedDriftPerTask {
-		return monitor.Drift{}, false, monitor.TaskDriftSaturatedError(drift.TaskID)
-	}
 	m.monitorDrift[key] = drift
 	if drift.SystemDesignID != "" {
 		m.appendEventLocked(ctx, core.Event{Kind: "system_design.drift_detected", At: drift.DetectedAt, Payload: core.JSONPayload(map[string]any{
@@ -350,17 +344,6 @@ func (m *memory) RecordDrift(ctx context.Context, drift monitor.Drift) (monitor.
 		})})
 	}
 	return drift, true, nil
-}
-
-func (m *memory) unresolvedTaskDriftCountLocked(workspace, taskID string) int {
-	count := 0
-	prefix := workspace + "\x00"
-	for key, drift := range m.monitorDrift {
-		if strings.HasPrefix(key, prefix) && drift.TaskID == taskID && drift.ResolvedAt.IsZero() {
-			count++
-		}
-	}
-	return count
 }
 
 func (m *memory) reconcileConfirmedSystemDesignDriftLocked(ctx context.Context, documentID string, version int, proposedAt, resolvedAt time.Time) {
