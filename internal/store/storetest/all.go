@@ -98,6 +98,11 @@ type Fixture struct {
 	// (component-identity-membership).
 	SeedCredentialLastUsed func(t *testing.T, ctx context.Context, credentialID string, lastUsedAgo time.Duration)
 	CredentialLastUsed     func(t *testing.T, ctx context.Context, credentialID string) time.Time
+	// DrainReadBytes drains the backend's read ledger and returns the bytes
+	// received per read label. Production-capable backends must provide it;
+	// the volatile backend transfers no bytes and leaves it nil
+	// (component-persistence, Database read accounting).
+	DrainReadBytes func() map[string]uint64
 }
 
 // requireStoredTaskHoldSeed returns the fixture's historical hold seed or
@@ -197,6 +202,13 @@ func RunAll(t *testing.T, factory Factory) {
 	run("TaskStartOver", func(t *testing.T) { runTaskStartOver(t, factory) })
 	run("TaskMap", func(t *testing.T) { RunTaskMapConformance(t, factory.fresh(t, nil)) })
 	run("ActivityValidation", func(t *testing.T) { RunActivityValidationConformance(t, factory.fresh(t, nil)) })
+	run("ActivityMarkerCompactReads", func(t *testing.T) {
+		x := factory.fresh(t, nil)
+		if factory.ProductionCapable && x.DrainReadBytes == nil {
+			t.Fatal("production-capable conformance fixture must provide DrainReadBytes")
+		}
+		runActivityMarkerCompactReads(t, x)
+	})
 	run("DocumentationGate", func(t *testing.T) { runDocumentationGate(t, factory.fresh(t, nil)) })
 	run("TaskFlow", func(t *testing.T) { runTaskFlow(t, factory) })
 	run("GateKind", func(t *testing.T) {
