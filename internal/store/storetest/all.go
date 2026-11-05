@@ -189,6 +189,7 @@ func RunAll(t *testing.T, factory Factory) {
 	})
 	run("ChangeNotices", func(t *testing.T) { RunChangeNoticeConformance(t, factory.fresh(t, nil)) })
 	run("ClaimFailureStall", func(t *testing.T) { runClaimFailureStall(t, factory.fresh(t, nil), factory.ClaimService) })
+	run("RedispatchOfferParity", func(t *testing.T) { runRedispatchOfferParity(t, factory.fresh(t, nil)) })
 	run("InboxAttentionCount", func(t *testing.T) { runInboxAttentionCount(t, factory.fresh(t, nil)) })
 	run("HoldRetirement", func(t *testing.T) { runHoldRetirement(t, factory.fresh(t, nil), factory.ClaimService) })
 	run("ReviewDistinctModelsNoClaimStall", func(t *testing.T) {

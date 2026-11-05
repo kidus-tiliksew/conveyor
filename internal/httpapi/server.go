@@ -398,8 +398,11 @@ func (s *Server) redispatchTask(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusNotFound)
 		return
 	}
+	// core.NextActionRedispatchRefusal states these same refusals to the next
+	// action, so a choice is offered only when this route would accept it
+	// (req-operator-next-action AC-1.4; component-next-action, Invariants 7).
 	if t.State == core.TaskRunning {
-		http.Error(w, "task is already active", http.StatusConflict)
+		http.Error(w, core.TaskRedispatchActiveRefusal, http.StatusConflict)
 		return
 	}
 	if t.State == core.TaskQueued {
@@ -417,23 +420,12 @@ func (s *Server) redispatchTask(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	} else {
-		nextStage := t.NextStage
-		if t.State == core.TaskParked && nextStage == "" {
-			nextStage = t.RecoveryStage
-		}
+		nextStage := core.TaskRedispatchStage(t)
 		if nextStage == "" {
-			http.Error(w, "task has no decided next stage; record an explicit review redirect instead", http.StatusConflict)
+			http.Error(w, core.TaskRedispatchNoStageRefusal, http.StatusConflict)
 			return
 		}
-		command := core.TaskRecover
-		switch t.State {
-		case core.TaskAwaiting:
-			command = core.TaskInterventionRedirect
-		case core.TaskApproved:
-			command = core.TaskRefreshReview
-		case core.TaskClaiming:
-			command = core.TaskIntakeFinalize
-		}
+		command := core.TaskRedispatchCommand(t.State)
 		var transitionErr error
 		if t.State == core.TaskParked {
 			// A triage park records the stage in RecoveryStage and clears
