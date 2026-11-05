@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"fmt"
+	"slices"
 	"strings"
 	"time"
 
@@ -14,9 +15,10 @@ import (
 )
 
 // monitorPoller runs repository-monitor polls when they are triggered: once
-// at daemon start, for a push delivery to a monitored base branch, and from
-// the timed GitHub fallback of a workspace without webhook delivery. No
-// fixed loop schedules them (component-runtime, Start-up checks and
+// at daemon start, for a push delivery to a monitored base branch, for a
+// check or status delivery on a monitored base branch, and from the timed
+// GitHub fallback of a workspace without webhook delivery. No fixed loop
+// schedules them (component-runtime, Start-up checks and
 // background loops; component-monitor-drift, Forge observation;
 // req-quiet-idle-runtime AC-3.1, AC-3.5).
 type monitorPoller struct {
@@ -78,6 +80,22 @@ func (p *monitorPoller) PollWorkspace(ctx context.Context, workspace string) err
 // monitored repository polls that repository once; any other push does
 // nothing (component-monitor-drift, Forge observation).
 func (p *monitorPoller) PushedRef(ctx context.Context, githubRepo, ref string) error {
+	return p.pollForBranches(ctx, githubRepo, func(base string) bool { return ref == "refs/heads/"+base })
+}
+
+// ChecksCompleted applies a completed check or a status delivery: one whose
+// branches include the base of a monitored repository polls that repository
+// once; any other does nothing. The push's own poll runs while the merge
+// commit's checks are unfinished, so this is the poll that reads their result
+// (component-runtime, GitHub webhooks; req-delivery-and-forge REQ-4). An error
+// returns to the applier, which retries the delivery.
+func (p *monitorPoller) ChecksCompleted(ctx context.Context, githubRepo string, branches []string) error {
+	return p.pollForBranches(ctx, githubRepo, func(base string) bool { return slices.Contains(branches, base) })
+}
+
+// pollForBranches polls the monitored repository named by githubRepo once when
+// matches accepts its configured base branch.
+func (p *monitorPoller) pollForBranches(ctx context.Context, githubRepo string, matches func(base string) bool) error {
 	workspace, _ := store.WorkspaceFromContext(ctx)
 	current, err := p.Config(ctx)
 	if err != nil {
@@ -91,16 +109,20 @@ func (p *monitorPoller) PushedRef(ctx context.Context, githubRepo, ref string) e
 		if !ok || repository.GitHub == "" || !strings.EqualFold(repository.GitHub, githubRepo) {
 			continue
 		}
-		base := repository.Base
-		if base == "" {
-			base = "main"
-		}
-		if ref != "refs/heads/"+base {
+		if !matches(monitoredBase(repository)) {
 			return nil
 		}
 		return p.pollRepository(ctx, workspace, current, repositoryName, false)
 	}
 	return nil
+}
+
+// monitoredBase is a repository's configured base branch.
+func monitoredBase(repository config.Repo) string {
+	if repository.Base == "" {
+		return "main"
+	}
+	return repository.Base
 }
 
 // pollRepository is one poll of one monitored repository, as the removed
@@ -130,7 +152,7 @@ func (p *monitorPoller) pollRepository(workspaceCtx context.Context, workspaceID
 		return fmt.Errorf("resolve GitHub runner for %s: %w", repository.GitHub, tokenErr)
 	}
 	source := monitor.GitHubSource{
-		WorkspaceID: workspaceID, Repository: repositoryName, GitHubSlug: repository.GitHub, Run: runGitHub,
+		WorkspaceID: workspaceID, Repository: repositoryName, GitHubSlug: repository.GitHub, Base: monitoredBase(repository), Run: runGitHub,
 		NewTaskResolver: assignmentResolveTask(st, repositoryName, repository.GitHub),
 		ReconcileMerged: func(callCtx context.Context, taskID string, pr githubtrigger.PullRequest) (bool, error) {
 			return d.ReconcileObservedPullRequest(callCtx, repositoryName, repository.GitHub, taskID, pr)

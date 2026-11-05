@@ -83,7 +83,7 @@ func (s *Store) ListGitHubAppKeysForRedaction(ctx context.Context) ([]string, er
 	ctx = dbmetrics.WithReadLabel(ctx, "ListGitHubAppKeysForRedaction")
 	values := []string{}
 	for _, q := range []string{"SELECT CONCAT('workspace-app:',workspace_id),private_key_nonce,private_key_ciphertext FROM workspace_github_apps ORDER BY workspace_id"} {
-		rows, err := s.db.QueryContext(ctx, q)
+		rows, err := backendRows(ctx, s.db, q)
 		if err != nil {
 			return nil, translateBackendConflict(err)
 		}

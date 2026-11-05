@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"slices"
+	"strings"
 	"time"
 
 	"github.com/kidus-tiliksew/conveyor/internal/core"
@@ -79,28 +80,28 @@ type documentResultSet struct{ *sql.Rows }
 func (r *documentResultSet) Scan(dest ...any) error {
 	return (documentResult{documentScanner: r.Rows}).Scan(dest...)
 }
+
+// Err and Close translate like Scan, so row iteration cannot return a driver
+// error through a read outside a transaction (component-persistence).
+func (r *documentResultSet) Err() error   { return translateBackendConflict(r.Rows.Err()) }
+func (r *documentResultSet) Close() error { return translateBackendConflict(r.Rows.Close()) }
 func documentRow(ctx context.Context, db s2log.Executor, query string, args ...any) documentScanner {
 	if _, err := workspace(ctx); err != nil {
 		return documentResult{err: err}
 	}
-	return documentResult{documentScanner: db.QueryRowContext(ctx, query, documentArgs(args)...)}
+	return backendRow(ctx, db, query, documentArgs(args)...)
 }
 func documentRows(ctx context.Context, db s2log.Executor, query string, args ...any) (*documentResultSet, error) {
 	if _, err := workspace(ctx); err != nil {
 		return nil, err
 	}
-	rows, err := db.QueryContext(ctx, query, documentArgs(args)...)
-	if err != nil {
-		return nil, translateBackendConflict(err)
-	}
-	return &documentResultSet{rows}, nil
+	return backendRows(ctx, db, query, documentArgs(args)...)
 }
 func documentExec(ctx context.Context, db s2log.Executor, query string, args ...any) (sql.Result, error) {
 	if _, err := workspace(ctx); err != nil {
 		return nil, err
 	}
-	result, err := db.ExecContext(ctx, query, documentArgs(args)...)
-	return result, translateBackendConflict(err)
+	return backendExec(ctx, db, query, documentArgs(args)...)
 }
 func documentArgs(args []any) []any {
 	out := append([]any(nil), args...)
@@ -392,6 +393,68 @@ func (s *Store) AppendEvent(ctx context.Context, e core.Event) error {
 func (s *Store) ListEvents(ctx context.Context, id string) ([]core.Event, error) {
 	ctx = dbmetrics.WithReadLabel(ctx, "ListEvents")
 	return documentTaskEvents(ctx, s.db, id)
+}
+
+// ListEventPage reads one page of ListEvents with its task-wide count. The
+// count runs first, so a page past the end still states it.
+func (s *Store) ListEventPage(ctx context.Context, id string, page store.PageQuery) (store.EventPage, error) {
+	ctx = dbmetrics.WithReadLabel(ctx, "ListEventPage")
+	if err := page.Validate(); err != nil {
+		return store.EventPage{}, err
+	}
+	var total int
+	if err := documentRow(ctx, s.db, `SELECT COUNT(*) FROM events_columnstore WHERE workspace_id=? AND event_shard_key=? AND task_id=event_shard_key`, documentWorkspace(ctx), id).Scan(&total); err != nil {
+		return store.EventPage{}, err
+	}
+	rows, err := documentRows(ctx, s.db, `SELECT id,COALESCE(task_id,''),COALESCE(job_id,''),kind,actor_id,actor_role,payload_json,at FROM events_columnstore WHERE workspace_id=? AND event_shard_key=? AND task_id=event_shard_key ORDER BY at,id LIMIT ? OFFSET ?`, documentWorkspace(ctx), id, page.Limit, page.Offset)
+	if err != nil {
+		return store.EventPage{}, err
+	}
+	events, err := scanDocumentEvents(rows)
+	if err != nil {
+		return store.EventPage{}, err
+	}
+	return store.EventPage{Events: events, Total: total}, nil
+}
+
+// ListRecoveryActPage reads one page of the workspace's system recovery acts
+// with the count the query selects (component-next-action invariant 21).
+func (s *Store) ListRecoveryActPage(ctx context.Context, query store.RecoveryActQuery) (store.RecoveryActPage, error) {
+	ctx = dbmetrics.WithReadLabel(ctx, "ListRecoveryActPage")
+	if err := query.Page.Validate(); err != nil {
+		return store.RecoveryActPage{}, err
+	}
+	kinds := store.RecoveryActEventKinds()
+	selected := ` FROM events_columnstore WHERE workspace_id=? AND at>=? AND actor_role=? AND task_id IS NOT NULL AND kind IN (?` + strings.Repeat(`,?`, len(kinds)-1) + `)`
+	args := []any{documentWorkspace(ctx), query.Since, string(core.ActorSystem)}
+	for _, kind := range kinds {
+		args = append(args, kind)
+	}
+	var total int
+	if err := documentRow(ctx, s.db, `SELECT COUNT(*)`+selected, args...).Scan(&total); err != nil {
+		return store.RecoveryActPage{}, err
+	}
+	rows, err := documentRows(ctx, s.db, `SELECT id,task_id,kind,at`+selected+` ORDER BY at DESC,id DESC LIMIT ? OFFSET ?`, append(args, query.Page.Limit, query.Page.Offset)...)
+	if err != nil {
+		return store.RecoveryActPage{}, err
+	}
+	defer rows.Close()
+	acts := []nextaction.Act{}
+	for rows.Next() {
+		var (
+			id           int64
+			taskID, kind string
+			at           time.Time
+		)
+		if err = rows.Scan(&id, &taskID, &kind, &at); err != nil {
+			return store.RecoveryActPage{}, err
+		}
+		acts = append(acts, store.RecoveryActFromEvent(id, taskID, kind, at.UTC()))
+	}
+	if err = rows.Err(); err != nil {
+		return store.RecoveryActPage{}, err
+	}
+	return store.RecoveryActPage{Acts: acts, Total: total}, nil
 }
 
 func (s *Store) ListFactoryActs(ctx context.Context, since time.Time, limit int) ([]nextaction.Act, error) {

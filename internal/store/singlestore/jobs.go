@@ -114,6 +114,34 @@ func (s *Store) ListJobs(ctx context.Context, id string) ([]core.Job, error) {
 	}
 	return out, rows.Err()
 }
+
+// ListJobPage reads one page of ListJobs with its task-wide count. The count
+// runs first, so a page past the end still states it.
+func (s *Store) ListJobPage(ctx context.Context, id string, page store.PageQuery) (store.JobPage, error) {
+	ctx = dbmetrics.WithReadLabel(ctx, "ListJobPage")
+	if err := page.Validate(); err != nil {
+		return store.JobPage{}, err
+	}
+	var total int
+	if err := documentRow(ctx, s.db, `SELECT COUNT(*) FROM jobs WHERE workspace_id=? AND task_id=?`, documentWorkspace(ctx), id).Scan(&total); err != nil {
+		return store.JobPage{}, err
+	}
+	rows, err := documentRows(ctx, s.db, `SELECT `+joinedJobColumns+` FROM jobs j LEFT JOIN work_orders wo ON wo.workspace_id=j.workspace_id AND wo.job_id=j.id WHERE j.workspace_id=? AND j.task_id=? ORDER BY COALESCE(j.started_at,wo.queue_entered_at) IS NULL,COALESCE(j.started_at,wo.queue_entered_at),j.id LIMIT ? OFFSET ?`, documentWorkspace(ctx), id, page.Limit, page.Offset)
+	if err != nil {
+		return store.JobPage{}, err
+	}
+	defer rows.Close()
+	jobs := []core.Job{}
+	for rows.Next() {
+		job, err := scanJob(rows)
+		if err != nil {
+			return store.JobPage{}, err
+		}
+		jobs = append(jobs, job)
+	}
+	return store.JobPage{Jobs: jobs, Total: total}, rows.Err()
+}
+
 func (s *Store) GetLatestJob(ctx context.Context, id string) (core.Job, bool, error) {
 	ctx = dbmetrics.WithReadLabel(ctx, "GetLatestJob")
 	j, err := scanJob(documentRow(ctx, s.db, `SELECT `+joinedJobColumns+` FROM jobs j LEFT JOIN work_orders wo ON wo.workspace_id=j.workspace_id AND wo.job_id=j.id WHERE j.workspace_id=? AND j.task_id=? ORDER BY COALESCE(j.started_at,wo.queue_entered_at) IS NULL DESC,COALESCE(j.started_at,wo.queue_entered_at) DESC,j.id DESC LIMIT 1`, documentWorkspace(ctx), id))

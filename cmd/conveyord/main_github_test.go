@@ -198,7 +198,7 @@ func TestGitHubWebhookReplayAgainstFakeForge(t *testing.T) {
 		},
 	}
 	var delivered []string
-	applier := newGitHubWebhookApplier(st, d, polls.PushedRef, func(workspace string) { delivered = append(delivered, workspace) }, t.Logf)
+	applier := newGitHubWebhookApplier(st, d, polls.PushedRef, polls.ChecksCompleted, func(workspace string) { delivered = append(delivered, workspace) }, t.Logf)
 	applier.Start(t.Context())
 	receiver := httpapi.NewServer(st)
 	receiver.GitHubWebhookApplier = applier
@@ -468,7 +468,7 @@ func newRetryFixture(t *testing.T) *retryFixture {
 			return func(context.Context, ...string) ([]byte, error) { return []byte(`[]`), nil }, nil
 		},
 	}
-	f.applier = newGitHubWebhookApplier(backend, d, polls.PushedRef, func(string) {}, func(format string, args ...any) {
+	f.applier = newGitHubWebhookApplier(backend, d, polls.PushedRef, polls.ChecksCompleted, func(string) {}, func(format string, args ...any) {
 		f.mu.Lock()
 		f.lines = append(f.lines, fmt.Sprintf(format, args...))
 		f.mu.Unlock()

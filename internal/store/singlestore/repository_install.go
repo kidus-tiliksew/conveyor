@@ -12,7 +12,7 @@ func (s *Store) ListRepositoryInstallTasks(ctx context.Context, repository strin
 	if err != nil {
 		return nil, err
 	}
-	rows, err := s.db.QueryContext(ctx, `SELECT i.task_id,i.attempt,t.state FROM repository_install_tasks i JOIN tasks t ON t.workspace_id=i.workspace_id AND t.id=i.task_id WHERE i.workspace_id=? AND i.repository_name=? ORDER BY i.attempt`, ws, repository)
+	rows, err := backendRows(ctx, s.db, `SELECT i.task_id,i.attempt,t.state FROM repository_install_tasks i JOIN tasks t ON t.workspace_id=i.workspace_id AND t.id=i.task_id WHERE i.workspace_id=? AND i.repository_name=? ORDER BY i.attempt`, ws, repository)
 	if err != nil {
 		return nil, err
 	}

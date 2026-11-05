@@ -216,7 +216,7 @@ func (s *Store) SignInWithPassword(ctx context.Context, email, password string) 
 	var uid string
 	if normalizeErr == nil {
 		var hash sql.NullString
-		err := s.db.QueryRowContext(ctx, "SELECT id,password_hash FROM users WHERE email=? AND status='active'", email).Scan(&uid, &hash)
+		err := backendRow(ctx, s.db, "SELECT id,password_hash FROM users WHERE email=? AND status='active'", email).Scan(&uid, &hash)
 		if err == nil && hash.Valid {
 			encoded = hash.String
 		} else if err != nil && !errors.Is(err, sql.ErrNoRows) {
@@ -323,7 +323,7 @@ type dashboardSessionRead struct {
 // than the refresh interval.
 func (s *Store) readDashboardSession(ctx context.Context, hash []byte) (dashboardSessionRead, error) {
 	var r dashboardSessionRead
-	err := s.db.QueryRowContext(ctx, "SELECT s.id,s.user_id,s.established_by_link,COALESCE(s.last_used_at,s.created_at)<DATE_SUB(CURRENT_TIMESTAMP(6),INTERVAL ? MICROSECOND),CURRENT_TIMESTAMP(6) FROM dashboard_sessions s JOIN users u ON u.id=s.user_id WHERE s.session_hash=? AND s.revoked_at IS NULL AND s.expires_at>CURRENT_TIMESTAMP(6) AND u.status='active'",
+	err := backendRow(ctx, s.db, "SELECT s.id,s.user_id,s.established_by_link,COALESCE(s.last_used_at,s.created_at)<DATE_SUB(CURRENT_TIMESTAMP(6),INTERVAL ? MICROSECOND),CURRENT_TIMESTAMP(6) FROM dashboard_sessions s JOIN users u ON u.id=s.user_id WHERE s.session_hash=? AND s.revoked_at IS NULL AND s.expires_at>CURRENT_TIMESTAMP(6) AND u.status='active'",
 		dashboardSessionRefreshInterval.Microseconds(), hash).Scan(&r.id, &r.userID, &r.establishedByLink, &r.stale, &r.now)
 	if errors.Is(err, sql.ErrNoRows) {
 		return dashboardSessionRead{}, core.ErrInvalidCredential
@@ -355,7 +355,7 @@ func (s *Store) VerifyDashboardSession(ctx context.Context, candidate string) (c
 			return core.AuthenticatedCredential{}, err
 		}
 		expires := session.now.Add(dashboardSessionLifetime)
-		result, err := s.db.ExecContext(ctx, "UPDATE dashboard_sessions SET last_used_at=?,expires_at=? WHERE id=? AND revoked_at IS NULL AND expires_at>CURRENT_TIMESTAMP(6) AND COALESCE(last_used_at,created_at)<DATE_SUB(CURRENT_TIMESTAMP(6),INTERVAL ? MICROSECOND) AND user_id IN (SELECT id FROM users WHERE status='active')",
+		result, err := backendExec(ctx, s.db, "UPDATE dashboard_sessions SET last_used_at=?,expires_at=? WHERE id=? AND revoked_at IS NULL AND expires_at>CURRENT_TIMESTAMP(6) AND COALESCE(last_used_at,created_at)<DATE_SUB(CURRENT_TIMESTAMP(6),INTERVAL ? MICROSECOND) AND user_id IN (SELECT id FROM users WHERE status='active')",
 			session.now, expires, session.id, dashboardSessionRefreshInterval.Microseconds())
 		if err != nil {
 			return core.AuthenticatedCredential{}, translateBackendConflict(err)
@@ -376,7 +376,7 @@ func (s *Store) VerifyDashboardSession(ctx context.Context, candidate string) (c
 		}
 	}
 	var operator bool
-	if err = s.db.QueryRowContext(ctx, "SELECT EXISTS(SELECT 1 FROM workspace_role_bindings WHERE user_id=? AND role='operator')", session.userID).Scan(&operator); err != nil {
+	if err = backendRow(ctx, s.db, "SELECT EXISTS(SELECT 1 FROM workspace_role_bindings WHERE user_id=? AND role='operator')", session.userID).Scan(&operator); err != nil {
 		return core.AuthenticatedCredential{}, translateBackendConflict(err)
 	}
 	scope := core.CredentialScopeUser

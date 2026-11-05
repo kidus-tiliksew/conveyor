@@ -235,10 +235,26 @@ func (c *client) attachTaskBranch(taskID, branch string) (core.Task, error) {
 	return task, nil
 }
 
+// listJobs reads every page of a task's jobs, because the route serves a
+// default page (DEC-105(4)). A server that states no total served them all.
 func (c *client) listJobs(taskID string) ([]core.Job, error) {
-	var js []core.Job
-	err := c.do(http.MethodGet, "/v1/tasks/"+taskID+"/jobs", nil, &js)
-	return js, err
+	const pageSize = 200
+	var jobs []core.Job
+	for {
+		body, header, err := c.getRawWithHeader(fmt.Sprintf("/v1/tasks/%s/jobs?limit=%d&offset=%d", taskID, pageSize, len(jobs)))
+		if err != nil {
+			return nil, err
+		}
+		var page []core.Job
+		if err := json.Unmarshal(body, &page); err != nil {
+			return nil, err
+		}
+		jobs = append(jobs, page...)
+		total, _ := strconv.Atoi(header.Get("X-Conveyor-Total"))
+		if len(page) == 0 || len(jobs) >= total {
+			return jobs, nil
+		}
+	}
 }
 
 func (c *client) getLatestSpec(taskID string) (core.SpecVersion, error) {

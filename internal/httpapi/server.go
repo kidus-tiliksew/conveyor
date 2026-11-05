@@ -15,9 +15,11 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"maps"
 	"mime/multipart"
 	"net/http"
 	"net/url"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -1313,36 +1315,51 @@ func (s *Server) getTask(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, rendered)
 }
 
+// listJobs serves one store page of a task's jobs (DEC-105(4)).
 func (s *Server) listJobs(w http.ResponseWriter, r *http.Request) {
-	jobs, err := s.Store.ListJobs(r.Context(), chi.URLParam(r, "id"))
-	if err != nil {
-		log.Printf("handle API request: %v", err)
-		http.Error(w, "internal server error", http.StatusInternalServerError)
+	listed, ok := readListPage(w, r, defaultHistoryPageLimit)
+	if !ok {
 		return
 	}
-	writeJSON(w, http.StatusOK, jobs)
+	page, err := s.Store.ListJobPage(r.Context(), chi.URLParam(r, "id"), listed.query())
+	if err != nil {
+		writeStoreFailure(w, r, err)
+		return
+	}
+	listed.writeHeaders(w, page.Total)
+	writeJSON(w, http.StatusOK, page.Jobs)
 }
 
+// listEvents serves one store page of a task's ledger under the request's
+// workspace scope (DEC-105(4); component-http-api invariant 13). The task event
+// window route keeps its own cursor traversal
+// (req-task-lifecycle-and-queue AC-10.1).
 func (s *Server) listEvents(w http.ResponseWriter, r *http.Request) {
-	events, err := s.Store.ListEvents(r.Context(), chi.URLParam(r, "id"))
-	if err != nil {
-		log.Printf("handle API request: %v", err)
-		http.Error(w, "internal server error", http.StatusInternalServerError)
+	listed, ok := readListPage(w, r, defaultHistoryPageLimit)
+	if !ok {
 		return
 	}
+	page, err := s.Store.ListEventPage(r.Context(), chi.URLParam(r, "id"), listed.query())
+	if err != nil {
+		writeStoreFailure(w, r, err)
+		return
+	}
+	// This read may serve a row stored raw, so its text passes the redactor
+	// without rewriting the row (req-security-boundaries REQ-5). The paging
+	// headers go out only with the rows, so a failed read states no page.
 	redactor, err := s.mcpReadRedactor(r.Context())
 	if err != nil {
-		http.Error(w, "internal server error", http.StatusInternalServerError)
+		writeStoreFailure(w, r, err)
 		return
 	}
-	for index, event := range events {
-		if events[index], err = redactEventForRead(event, redactor); err != nil {
-			log.Printf("handle API request: event %d: %v", event.ID, err)
-			http.Error(w, "internal server error", http.StatusInternalServerError)
+	for index, event := range page.Events {
+		if page.Events[index], err = redactEventForRead(event, redactor); err != nil {
+			writeStoreFailure(w, r, fmt.Errorf("event %d: %w", event.ID, err))
 			return
 		}
 	}
-	writeJSON(w, http.StatusOK, events)
+	listed.writeHeaders(w, page.Total)
+	writeJSON(w, http.StatusOK, page.Events)
 }
 
 func (s *Server) streamEvents(w http.ResponseWriter, r *http.Request) {
@@ -1526,15 +1543,20 @@ func (s *Server) listActivity(w http.ResponseWriter, r *http.Request) {
 // listCallerAttentionTasks is a bounded personal inbox. The subject comes
 // only from the authenticated credential; there is deliberately no assignee
 // parameter that could turn another member's attention into an existence
-// oracle (DEC-19, req-260810-23b69f REQ-3).
+// oracle (DEC-19, req-260810-23b69f REQ-3). The route reads no filter, so it
+// refuses every parameter but workspace_id and the page parameters instead of
+// ignoring it (component-next-action invariant 24; DEC-105(2)).
 func (s *Server) listCallerAttentionTasks(w http.ResponseWriter, r *http.Request) {
-	query, _, err := parseTaskOperationsQuery(r)
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
-		return
+	values := r.URL.Query()
+	for _, name := range slices.Sorted(maps.Keys(values)) {
+		if name != "workspace_id" && name != "limit" && name != "offset" {
+			http.Error(w, "attention takes its subject from the credential and accepts no filter: "+name, http.StatusBadRequest)
+			return
+		}
 	}
-	if query.Limit == 0 {
-		query.Limit = 100
+	listed, ok := readListPage(w, r, defaultTaskListLimit)
+	if !ok {
+		return
 	}
 	credential, ok := store.CredentialFromContext(r.Context())
 	if !ok || credential.OwnerUserID == "" {
@@ -1542,16 +1564,13 @@ func (s *Server) listCallerAttentionTasks(w http.ResponseWriter, r *http.Request
 		return
 	}
 	page, err := s.Store.ListCallerAttentionTaskPage(r.Context(), store.CallerAttentionQuery{
-		UserID: credential.OwnerUserID, Limit: query.Limit, Offset: query.Offset,
+		UserID: credential.OwnerUserID, Limit: listed.Limit, Offset: listed.Offset,
 	})
 	if err != nil {
-		log.Printf("list caller attention tasks: %v", err)
-		http.Error(w, "internal server error", http.StatusInternalServerError)
+		writeStoreFailure(w, r, err)
 		return
 	}
-	w.Header().Set("X-Conveyor-Total", strconv.Itoa(page.Total))
-	w.Header().Set("X-Conveyor-Limit", strconv.Itoa(query.Limit))
-	w.Header().Set("X-Conveyor-Offset", strconv.Itoa(query.Offset))
+	listed.writeHeaders(w, page.Total)
 	s.writeActivityItems(w, r, page.Tasks, false, nil)
 }
 
@@ -2048,33 +2067,31 @@ func taskStalledSummaryFor(stalled *store.StalledState) *taskStalledSummary {
 // records the projection batches for those returned tasks. The historical
 // blueprint read path is not a scale precedent for this daily surface. Only
 // the shared filter family, limit, and offset are read, so any other query
-// parameter, including the retired group selector, is ignored.
+// parameter, including the retired group selector, is ignored. A request
+// without limit reads the default page (DEC-105(4)).
 func (s *Server) listTaskOperations(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
-	query, paginated, err := parseTaskOperationsQuery(r)
+	query, _, err := parseTaskOperationsQuery(r)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
+	if query.Limit == 0 {
+		query.Limit = defaultTaskListLimit
+	}
 	page, err := s.Store.ListTaskOperations(ctx, query)
 	if err != nil {
-		log.Printf("handle API request: %v", err)
-		http.Error(w, "internal server error", http.StatusInternalServerError)
+		writeStoreFailure(w, r, err)
 		return
 	}
-	if paginated {
-		w.Header().Set("X-Conveyor-Total", strconv.Itoa(page.Total))
-		w.Header().Set("X-Conveyor-Limit", strconv.Itoa(query.Limit))
-		w.Header().Set("X-Conveyor-Offset", strconv.Itoa(query.Offset))
-	}
+	listPage{Limit: query.Limit, Offset: query.Offset, Paged: true}.writeHeaders(w, page.Total)
 	taskIDs := make([]string, 0, len(page.Tasks))
 	for _, task := range page.Tasks {
 		taskIDs = append(taskIDs, task.ID)
 	}
 	markers, err := s.Store.ListActivityMarkersForTasks(ctx, taskIDs)
 	if err != nil {
-		log.Printf("handle API request: %v", err)
-		http.Error(w, "internal server error", http.StatusInternalServerError)
+		writeStoreFailure(w, r, err)
 		return
 	}
 	markerByTask := make(map[string]store.ActivityMarker, len(markers))
@@ -2083,29 +2100,25 @@ func (s *Server) listTaskOperations(w http.ResponseWriter, r *http.Request) {
 	}
 	opts, err := s.nextActionOptions(r)
 	if err != nil {
-		log.Printf("handle API request: %v", err)
-		http.Error(w, "internal server error", http.StatusInternalServerError)
+		writeStoreFailure(w, r, err)
 		return
 	}
 	opts.MarkersLoaded, opts.Markers = true, markers
 	projected, err := store.ReadNextActions(ctx, s.Store, page.Tasks, opts)
 	if err != nil {
-		log.Printf("handle API request: %v", err)
-		http.Error(w, "internal server error", http.StatusInternalServerError)
+		writeStoreFailure(w, r, err)
 		return
 	}
 	// (component-task-lifecycle); the view reads it, and reads the unsatisfiable edges the
 	// task record itself does not carry.
 	blockers, err := s.Store.ListDependencyBlockers(ctx, taskIDs)
 	if err != nil {
-		log.Printf("handle API request: %v", err)
-		http.Error(w, "internal server error", http.StatusInternalServerError)
+		writeStoreFailure(w, r, err)
 		return
 	}
 	items, err := s.taskOperationsItems(ctx, page.Tasks, page.Events, page.Plans, markerByTask, projected, blockers)
 	if err != nil {
-		log.Printf("handle API request: %v", err)
-		http.Error(w, "internal server error", http.StatusInternalServerError)
+		writeStoreFailure(w, r, err)
 		return
 	}
 	writeJSON(w, http.StatusOK, items)
@@ -2231,32 +2244,12 @@ func parseTaskOperationsQuery(r *http.Request) (store.TaskOperationsQuery, bool,
 		return store.TaskOperationsQuery{}, false, err
 	}
 	query := store.TaskOperationsQuery{TaskFilter: filter}
-	limitValue, paginated := values["limit"]
-	if !paginated {
-		if values.Get("offset") != "" {
-			return query, false, fmt.Errorf("offset requires limit")
-		}
-		return query, false, nil
+	page, err := parseListPage(values, 0)
+	if err != nil {
+		return query, false, err
 	}
-	if len(limitValue) != 1 {
-		return query, false, fmt.Errorf("limit must be supplied once")
-	}
-	limit, err := strconv.Atoi(limitValue[0])
-	if err != nil || limit < 1 || limit > store.MaxTaskOperationsLimit {
-		return query, false, fmt.Errorf("limit must be between 1 and %d", store.MaxTaskOperationsLimit)
-	}
-	offset := 0
-	if value := values.Get("offset"); value != "" {
-		// Bound the offset here, before it reaches a store: past
-		// store.MaxTaskOperationsOffset the two stores disagree, because
-		// Postgres narrows the bind parameter to int32.
-		offset, err = strconv.Atoi(value)
-		if err != nil || offset < 0 || offset > store.MaxTaskOperationsOffset {
-			return query, false, fmt.Errorf("offset must be between 0 and %d", store.MaxTaskOperationsOffset)
-		}
-	}
-	query.Limit, query.Offset = limit, offset
-	return query, true, nil
+	query.Limit, query.Offset = page.Limit, page.Offset
+	return query, page.Paged, nil
 }
 
 // taskContextDocumentCache memoizes the requirement and design reads that
