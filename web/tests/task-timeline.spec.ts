@@ -1279,7 +1279,10 @@ function seatLabelPanel(distinctModels: boolean) {
       seat(2, { model: 'gpt-6', agent: 'codex', model_enforcement: 'self-reported' }),
       seat(3, { model: 'pinned-model', agent: 'codex', model_enforcement: 'worker-pinned' }),
       seat(4, { state: 'queued', required_model: 'required-model' }),
+      seat(5, { state: 'queued' }),
     ],
+    // A released or expired seat's order has no model; its job keeps the earlier one.
+    jobs: [job(`${taskId}-review-1-seat-5`, 'review', 'pending', { model_tier: 'earlier-model' })],
     summaries: {
       review_results: {
         by_order: {
@@ -1308,6 +1311,8 @@ test('review seats label reported models and the recorded implementer match', as
   await expect(seat(3).getByText('same model as implementer')).toHaveCount(0)
   await expect(seat(4).getByText('required-model', { exact: true })).toBeVisible()
   await expect(seat(4).getByText('self-reported')).toHaveCount(0)
+  await expect(seat(5).getByText('earlier-model', { exact: true })).toBeVisible()
+  await expect(seat(5).getByText('self-reported')).toHaveCount(0)
 })
 
 test('the review panel states the distinct-model policy only when the frozen policy is on', async ({ page }) => {
