@@ -14,13 +14,11 @@ import (
 	"strconv"
 	"strings"
 	"time"
-	"unicode/utf8"
 
 	"github.com/go-chi/chi/v5/middleware"
 	"github.com/kidus-tiliksew/conveyor/internal/core"
 	"github.com/kidus-tiliksew/conveyor/internal/nextaction"
 	"github.com/kidus-tiliksew/conveyor/internal/pipeline"
-	"github.com/kidus-tiliksew/conveyor/internal/redact"
 	"github.com/kidus-tiliksew/conveyor/internal/releaseinfo"
 	"github.com/kidus-tiliksew/conveyor/internal/store"
 	"github.com/kidus-tiliksew/conveyor/internal/taskops"
@@ -122,8 +120,6 @@ func (s *Server) handleMCP(w http.ResponseWriter, r *http.Request) {
 }
 
 // mcpToolErrorLogLimit bounds the error text one tool-error log line carries.
-const mcpToolErrorLogLimit = 2048
-
 // mcpToolErrorResult logs a tool error under the request ID that
 // middleware.RequestID assigned and returns it in-band. A backend-operation
 // failure's text also names the request ID, so the agent can report the ID
@@ -132,14 +128,7 @@ const mcpToolErrorLogLimit = 2048
 // req-security-boundaries REQ-2).
 func mcpToolErrorResult(requestID, tool string, err error) map[string]any {
 	text := err.Error()
-	logged, _ := redact.New(nil).Redact(text)
-	if len(logged) > mcpToolErrorLogLimit {
-		cut := mcpToolErrorLogLimit
-		for cut > 0 && !utf8.RuneStart(logged[cut]) {
-			cut--
-		}
-		logged = logged[:cut]
-	}
+	logged := redactedErrorLogText(err)
 	log.Printf("mcp: tool call failed: request_id=%q tool=%q error=%q", requestID, tool, logged)
 	if requestID != "" && errors.Is(err, store.ErrBackendOperation) {
 		text += " (request_id " + requestID + ")"

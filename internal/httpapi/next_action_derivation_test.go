@@ -45,7 +45,14 @@ func TestNextActionDerivationAndAttentionParity(t *testing.T) {
 	activity := decodeItems(t, call("/v1/activity?workspace_id=demo"))
 	operations := decodeItems(t, call("/v1/task-operations?workspace_id=demo"))
 	reviews := decodeItems(t, call("/v1/reviews?workspace_id=demo"))
-	attention := decodeItems(t, call("/v1/attention/tasks?workspace_id=demo&assignee=someone-else&subject=someone-else"))
+	// The subject comes from the credential alone, so a request naming one is
+	// refused instead of ignored (component-next-action invariant 24).
+	for _, refused := range []string{"assignee=someone-else", "subject=someone-else", "state=running"} {
+		if response := call("/v1/attention/tasks?workspace_id=demo&" + refused); response.Code != http.StatusBadRequest {
+			t.Fatalf("attention %s status=%d body=%s", refused, response.Code, response.Body.String())
+		}
+	}
+	attention := decodeItems(t, call("/v1/attention/tasks?workspace_id=demo"))
 	inbox := call("/v1/next-actions?workspace_id=demo")
 	if inbox.Code != http.StatusOK {
 		t.Fatalf("inbox status=%d body=%s", inbox.Code, inbox.Body.String())
