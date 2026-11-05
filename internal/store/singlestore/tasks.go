@@ -1204,7 +1204,7 @@ func (s *Store) CreateIntervention(ctx context.Context, i core.Intervention) err
 }
 func (s *Store) ListInterventions(ctx context.Context, id string) ([]core.Intervention, error) {
 	ctx = dbmetrics.WithReadLabel(ctx, "ListInterventions")
-	rows, err := documentRows(ctx, s.db, `SELECT id,task_id,COALESCE(job_id,''),actor_id,actor_role,action,reason_code,comment,at FROM interventions WHERE workspace_id=? AND task_id=? ORDER BY id`, documentWorkspace(ctx), id)
+	rows, err := documentRows(ctx, s.db, `SELECT id,task_id,COALESCE(job_id,''),actor_id,actor_role,action,reason_code,comment,at FROM interventions WHERE workspace_id=? AND task_id=? ORDER BY at,id`, documentWorkspace(ctx), id)
 	if err != nil {
 		return nil, err
 	}

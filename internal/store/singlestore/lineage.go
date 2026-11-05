@@ -278,7 +278,7 @@ func (s *Store) ListLineageNodeStatuses(ctx context.Context, nodes []core.Lineag
 			SELECT wo.id,COALESCE(JSON_EXTRACT_STRING(e.payload_json,'verdict'),'') AS verdict,
 				COALESCE(JSON_EXTRACT_BIGINT(e.payload_json,'review_round'),0) AS review_round,
 				COALESCE(JSON_EXTRACT_BIGINT(e.payload_json,'review_seat'),0) AS review_seat,
-				ROW_NUMBER() OVER (PARTITION BY wo.id ORDER BY e.id DESC) AS rn
+				ROW_NUMBER() OVER (PARTITION BY wo.id ORDER BY e.at DESC,e.id DESC) AS rn
 			FROM work_orders wo
 			JOIN events_columnstore e ON e.workspace_id=wo.workspace_id AND e.task_id=wo.task_id AND e.kind='review.completed' AND JSON_EXTRACT_STRING(e.payload_json,'review_work_order_id')=wo.id
 			WHERE wo.workspace_id=? AND wo.id IN (%s)
@@ -653,7 +653,7 @@ func (s *Store) RebuildLineage(ctx context.Context, request core.LineageRebuildR
 		}
 		var prior []byte
 		err := documentRow(ctx, tx, `SELECT payload_json FROM events_columnstore WHERE workspace_id=? AND kind='lineage.rebuilt'
-			AND JSON_EXTRACT_STRING(payload_json,'request_id')=? ORDER BY id DESC LIMIT 1`, documentWorkspace(ctx), request.RequestID).Scan(&prior)
+			AND JSON_EXTRACT_STRING(payload_json,'request_id')=? ORDER BY at DESC,id DESC LIMIT 1`, documentWorkspace(ctx), request.RequestID).Scan(&prior)
 		if err == nil {
 			var payload struct {
 				Reason string                    `json:"reason"`

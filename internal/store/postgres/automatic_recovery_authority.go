@@ -39,7 +39,7 @@ func (s *Store) recoverAnsweredAuthorityTx(ctx context.Context, tx pgx.Tx, q *db
 		return false, err
 	}
 	var releaseEventID int64
-	err = tx.QueryRow(ctx, `SELECT id FROM events WHERE workspace_id=$1 AND task_id=$2 AND kind='work_order.released' AND payload_json->>'attempt_id'=$3 ORDER BY id DESC LIMIT 1`, workspace(ctx), order.TaskID, order.LastAttemptID).Scan(&releaseEventID)
+	err = tx.QueryRow(ctx, `SELECT id FROM events WHERE workspace_id=$1 AND task_id=$2 AND kind='work_order.released' AND payload_json->>'attempt_id'=$3 ORDER BY at DESC,id DESC LIMIT 1`, workspace(ctx), order.TaskID, order.LastAttemptID).Scan(&releaseEventID)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return false, nil
 	}

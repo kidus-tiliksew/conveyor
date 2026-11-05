@@ -626,7 +626,7 @@ func (s *Store) ListSystemDesignVersionsByDocument(ctx context.Context) (map[str
 }
 func (s *Store) ListSystemDesignEvents(ctx context.Context, id string) ([]core.Event, error) {
 	ctx = dbmetrics.WithReadLabel(ctx, "ListSystemDesignEvents")
-	rows, err := documentRows(ctx, s.db, `SELECT id,COALESCE(task_id,''),COALESCE(job_id,''),kind,actor_id,actor_role,payload_json,at,workspace_id FROM events_columnstore WHERE workspace_id=? AND kind LIKE 'system_design.%' AND JSON_EXTRACT_STRING(payload_json,'document_id')=? ORDER BY id`, documentWorkspace(ctx), id)
+	rows, err := documentRows(ctx, s.db, `SELECT id,COALESCE(task_id,''),COALESCE(job_id,''),kind,actor_id,actor_role,payload_json,at,workspace_id FROM events_columnstore WHERE workspace_id=? AND kind LIKE 'system_design.%' AND JSON_EXTRACT_STRING(payload_json,'document_id')=? ORDER BY at,id`, documentWorkspace(ctx), id)
 	if err != nil {
 		return nil, err
 	}
@@ -645,7 +645,7 @@ func (s *Store) ListSystemDesignEvents(ctx context.Context, id string) ([]core.E
 
 func (s *Store) ListSystemDesignEventsByDocument(ctx context.Context) (map[string][]core.Event, error) {
 	ctx = dbmetrics.WithReadLabel(ctx, "ListSystemDesignEventsByDocument")
-	rows, err := documentRows(ctx, s.db, `SELECT id,COALESCE(task_id,''),COALESCE(job_id,''),kind,actor_id,actor_role,payload_json,at,workspace_id FROM events_columnstore WHERE workspace_id=? AND kind LIKE 'system_design.%' ORDER BY id`, documentWorkspace(ctx))
+	rows, err := documentRows(ctx, s.db, `SELECT id,COALESCE(task_id,''),COALESCE(job_id,''),kind,actor_id,actor_role,payload_json,at,workspace_id FROM events_columnstore WHERE workspace_id=? AND kind LIKE 'system_design.%' ORDER BY at,id`, documentWorkspace(ctx))
 	if err != nil {
 		return nil, err
 	}

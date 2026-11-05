@@ -22,7 +22,7 @@ func activatePendingTaskContextTx(ctx context.Context, tx pgx.Tx, q *db.Queries,
 	}
 	rows, err := tx.Query(ctx, `SELECT task_id,kind,payload_json FROM events
 		WHERE workspace_id=$1 AND task_id IS NOT NULL AND kind=ANY($2::text[])
-		  AND payload_json->>'id'=$3 ORDER BY task_id,id`, workspaceID, []string{addedKind, removedKind}, documentID)
+		  AND payload_json->>'id'=$3 ORDER BY task_id,at,id`, workspaceID, []string{addedKind, removedKind}, documentID)
 	if err != nil {
 		return err
 	}
@@ -55,7 +55,7 @@ func activatePendingTaskContextTx(ctx context.Context, tx pgx.Tx, q *db.Queries,
 
 func repinTaskDesignContextTx(ctx context.Context, tx pgx.Tx, q *db.Queries, workspaceID, taskID string, at time.Time) error {
 	rows, err := tx.Query(ctx, `SELECT kind,payload_json FROM events
-		WHERE workspace_id=$1 AND task_id=$2 AND kind=ANY($3::text[]) ORDER BY id`,
+		WHERE workspace_id=$1 AND task_id=$2 AND kind=ANY($3::text[]) ORDER BY at,id`,
 		workspaceID, taskID, []string{store.TaskContextDesignAdded, store.TaskContextDesignRemoved})
 	if err != nil {
 		return err

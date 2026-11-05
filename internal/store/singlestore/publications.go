@@ -211,7 +211,7 @@ func (s *Store) ReconcileReviewPublications(ctx context.Context) (int, error) {
 			AND COALESCE(JSON_EXTRACT_STRING(e.payload_json,'review_work_order_id'),'') <> ''
 			AND JSON_EXTRACT_JSON(e.payload_json,'publication_eligible') = 'true'
 			AND p.review_work_order_id IS NULL
-		ORDER BY e.id`, documentWorkspace(ctx))
+		ORDER BY e.at,e.id`, documentWorkspace(ctx))
 	if err != nil {
 		return 0, err
 	}

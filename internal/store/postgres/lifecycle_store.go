@@ -385,7 +385,7 @@ func workOrderSupersessionGuardTx(ctx context.Context, tx pgx.Tx, workspaceID st
 	if err := store.WorkOrderRecoveryRefusal(task, order, taskOrders); err != nil {
 		return err
 	}
-	eventRows, err := tx.Query(ctx, `SELECT kind, payload_json FROM events WHERE workspace_id=$1 AND task_id=$2 ORDER BY id`, workspaceID, order.TaskID)
+	eventRows, err := tx.Query(ctx, `SELECT kind, payload_json FROM events WHERE workspace_id=$1 AND task_id=$2 ORDER BY at,id`, workspaceID, order.TaskID)
 	if err != nil {
 		return err
 	}

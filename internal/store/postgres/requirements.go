@@ -1037,7 +1037,7 @@ func firstTrimmed(values []string) string {
 func (s *Store) ListPlanningSessionEvents(ctx context.Context, sessionID string) ([]core.Event, error) {
 	ctx = dbmetrics.WithReadLabel(ctx, "ListPlanningSessionEvents")
 	rows, err := s.boundary.Query(ctx, `SELECT id,COALESCE(task_id,''),COALESCE(job_id,''),kind,actor_id,actor_role,payload_json,at
-		FROM events WHERE workspace_id=$1 AND payload_json->>'session_id'=$2 ORDER BY id`, workspace(ctx), sessionID)
+		FROM events WHERE workspace_id=$1 AND payload_json->>'session_id'=$2 ORDER BY at,id`, workspace(ctx), sessionID)
 	if err != nil {
 		return nil, err
 	}
