@@ -16,9 +16,9 @@ import (
 // generation, and tails from the position read before those rows, so
 // start-up reads do not grow with finished jobs.
 
-// loadRetryFirst and loadRetryMax bound the delay before a failed load is
-// tried again.
-const (
+// loadRetryFirst and loadRetryMax bound the delay before a failed catch-up,
+// an index load or a tail, is tried again. Tests shorten loadRetryFirst.
+var (
 	loadRetryFirst = 5 * time.Second
 	loadRetryMax   = time.Minute
 )

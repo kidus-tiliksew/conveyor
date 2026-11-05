@@ -267,35 +267,49 @@ func (rt *Runtime) wait(ctx context.Context) error {
 // reconnects), including one the daemon-wide peer check republishes, and on
 // its own fold signal. It keeps no peer timer, so while idle it sends no
 // statement (req-quiet-idle-runtime AC-1.1, AC-1.3, AC-2.1). Rescue runs
-// after every catch-up.
+// after every catch-up once the job index is loaded.
 func (rt *Runtime) pollLoop(ws *workspace) {
 	defer rt.wg.Done()
 	notices := rt.hub.Subscribe(ws.id, changes.Job)
 	defer notices.Close()
-	// A failed load is retried on the next wake and on its own delay, which
-	// runs only while the load keeps failing.
-	var loadDelay time.Duration
-	var loadRetry *time.Timer
+	// A failed catch-up, whether its index load or a later tail failed, is
+	// retried on the next wake and on its own bounded backoff, so a failed
+	// tail does not wait for an unrelated notice (req-quiet-idle-runtime
+	// AC-2.1). The timer is armed only after a failure and stopped by the
+	// next successful catch-up, so an idle daemon sends no statement
+	// (AC-1.1, AC-1.3).
+	var retryDelay time.Duration
+	var retryTimer *time.Timer
 	defer func() {
-		if loadRetry != nil {
-			loadRetry.Stop()
+		if retryTimer != nil {
+			retryTimer.Stop()
 		}
 	}()
 	for {
-		if err := rt.catchUp(rt.loopCtx, ws); err != nil && !errors.Is(err, context.Canceled) {
+		err := rt.catchUp(rt.loopCtx, ws)
+		failed := err != nil && !errors.Is(err, context.Canceled)
+		if failed {
 			rt.opts.Logf("logqueue: workspace %s: tail: %v", ws.id, err)
 		}
 		var retry <-chan time.Time
-		if !rt.loaded(ws) {
-			loadDelay = nextLoadRetry(loadDelay)
-			if loadRetry == nil {
-				loadRetry = time.NewTimer(loadDelay)
+		if failed || !rt.loaded(ws) {
+			retryDelay = nextLoadRetry(retryDelay)
+			if retryTimer == nil {
+				retryTimer = time.NewTimer(retryDelay)
 			} else {
-				loadRetry.Reset(loadDelay)
+				retryTimer.Reset(retryDelay)
 			}
-			retry = loadRetry.C
-		} else if err := rt.rescue(rt.loopCtx, ws); err != nil && !errors.Is(err, context.Canceled) {
-			rt.opts.Logf("logqueue: workspace %s: rescue: %v", ws.id, err)
+			retry = retryTimer.C
+		} else {
+			retryDelay = 0
+			if retryTimer != nil {
+				retryTimer.Stop()
+			}
+		}
+		if rt.loaded(ws) {
+			if err := rt.rescue(rt.loopCtx, ws); err != nil && !errors.Is(err, context.Canceled) {
+				rt.opts.Logf("logqueue: workspace %s: rescue: %v", ws.id, err)
+			}
 		}
 		select {
 		case <-rt.loopCtx.Done():

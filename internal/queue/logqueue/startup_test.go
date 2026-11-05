@@ -33,6 +33,9 @@ type indexedLog struct {
 	beforeRows    func()
 	tailsBeforeOK int
 	loadedOK      bool
+	// tailFailures fails that many following Tail calls.
+	tailFailures int
+	tailCalls    int
 }
 
 func newIndexedLog() *indexedLog {
@@ -50,6 +53,14 @@ func (l *indexedLog) Read(ctx context.Context, workspace string, stream eventlog
 }
 
 func (l *indexedLog) Tail(ctx context.Context, workspace string, after eventlog.Position, limit int) ([]eventlog.Event, error) {
+	l.mu.Lock()
+	l.tailCalls++
+	if l.tailFailures > 0 {
+		l.tailFailures--
+		l.mu.Unlock()
+		return nil, errors.New("tail unavailable")
+	}
+	l.mu.Unlock()
 	events, err := l.NotifyingLog.Tail(ctx, workspace, after, limit)
 	l.mu.Lock()
 	l.tailFrom = append(l.tailFrom, after)
@@ -293,6 +304,51 @@ func TestFailedLoadIsRetriedOnTheNextWake(t *testing.T) {
 	defer log.mu.Unlock()
 	if log.tailsBeforeOK != 0 {
 		t.Fatalf("tailed %d times before the load succeeded", log.tailsBeforeOK)
+	}
+}
+
+// TestFailedTailIsRetriedWithoutAnotherNotice: after a successful load, the
+// tail that a job notice starts fails. The poll loop retries it on its own
+// backoff, with no further notice, and the job runs. Once a catch-up
+// succeeds the retry timer is stopped, so the idle loop tails no more
+// (req-quiet-idle-runtime AC-1.3, AC-2.1).
+func TestFailedTailIsRetriedWithoutAnotherNotice(t *testing.T) {
+	previous := loadRetryFirst
+	loadRetryFirst = 20 * time.Millisecond
+	t.Cleanup(func() { loadRetryFirst = previous })
+	log := newIndexedLog()
+	f := newStartFixture(t, log, Options{})
+	waitUntil(t, "the first catch-up", func() bool {
+		log.mu.Lock()
+		defer log.mu.Unlock()
+		return log.loadedOK && log.tailCalls > 0
+	})
+	log.mu.Lock()
+	log.tailFailures = 2
+	log.mu.Unlock()
+	if _, err := Enqueue(context.Background(), log, "ws", "demo", "late", demoArgs{Key: "late"}, 3, time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	waitUntil(t, "the failed tail to be logged", func() bool { return f.logged("tail unavailable") })
+	waitUntil(t, "the job to run after the retried tail", func() bool { return f.called("job/demo:late@1") })
+	waitUntil(t, "the job to complete", func() bool {
+		for _, job := range f.rt.Snapshot("ws") {
+			if job.Key == "late" {
+				return job.State == StateCompleted
+			}
+		}
+		return false
+	})
+	// Let the completion's own notice fold, then require an idle loop.
+	time.Sleep(100 * time.Millisecond)
+	log.mu.Lock()
+	settled := log.tailCalls
+	log.mu.Unlock()
+	time.Sleep(10 * loadRetryFirst)
+	log.mu.Lock()
+	defer log.mu.Unlock()
+	if log.tailCalls != settled {
+		t.Fatalf("idle poll loop tailed %d more times after a successful catch-up", log.tailCalls-settled)
 	}
 }
 
