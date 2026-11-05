@@ -76,13 +76,12 @@ func TestVolatileCapabilitiesPreserveCredentialAndMembershipBoundaries(t *testin
 	if _, err := st.RevokeOwnPersonalAccessToken(ctx, owner.ID, token.ID); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("another owner's token was addressable: %v", err)
 	}
-	agent, err := st.IssueAgentCredential(ctx, owner.ID, "test agent")
-	if err != nil {
-		t.Fatal(err)
+	agentID, agentValue := SeedStoredAgentCredentialForTest(t, st, owner.ID, "test agent", false)
+	if auth, err := st.VerifyCredential(ctx, agentValue); !errors.Is(err, core.ErrInvalidCredential) {
+		t.Fatalf("stored agent row verified as %+v err=%v, want invalid credential", auth, err)
 	}
-	auth, err := st.VerifyCredential(ctx, agent.Value)
-	if err != nil || auth.Scope != core.CredentialScopeUser || auth.Kind != core.CredentialAgent {
-		t.Fatalf("agent scope: %+v %v", auth, err)
+	if owners, err := st.AgentActorOwners(ctx, []string{agentID, token.ID}); err != nil || owners[agentID] != owner.ID || len(owners) != 1 {
+		t.Fatalf("agent actor owners=%v err=%v", owners, err)
 	}
 	if err := st.RevokeWorkspaceRole(ctx, invitee.ID, "one"); err != nil {
 		t.Fatal(err)

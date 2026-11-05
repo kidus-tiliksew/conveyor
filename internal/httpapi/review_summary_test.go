@@ -185,9 +185,9 @@ func requireSummaryResultFields(t *testing.T, label, text, taskID string, versio
 // and tools/call over the full /mcp handler.
 func TestSubmitReviewSummaryMCP(t *testing.T) {
 	f := newSummarySurfaceFixture(t)
-	userToken, _ := f.user("usr_executor", core.WorkspaceRoleExecutor)
-	_, seatAgent := f.user("usr_seat", core.WorkspaceRoleExecutor)
-	taskID, seats := f.settledSummaryTask("summary-mcp")
+	userToken := f.user("usr_executor", core.WorkspaceRoleExecutor)
+	seatPerson := f.user("usr_seat", core.WorkspaceRoleExecutor)
+	taskID, _ := f.settledSummaryTask("summary-mcp")
 
 	if got := mcpCapabilities["submit_review_summary"]; got != core.CapabilityClaimWork {
 		t.Fatalf("capability=%q, want claim_work", got)
@@ -208,7 +208,7 @@ func TestSubmitReviewSummaryMCP(t *testing.T) {
 		t.Fatalf("required=%v", required)
 	}
 	properties := schema["properties"].(map[string]any)
-	for _, name := range []string{"workspace_id", "task_id", "review_round", "request_id", "summary", "findings", "author_model", "work_order_id", "session_id"} {
+	for _, name := range []string{"workspace_id", "task_id", "review_round", "request_id", "summary", "findings", "author_model"} {
 		if _, ok := properties[name]; !ok {
 			t.Fatalf("schema lacks %s", name)
 		}
@@ -225,8 +225,8 @@ func TestSubmitReviewSummaryMCP(t *testing.T) {
 	if replay := requireSummaryResultFields(t, "replay", text, taskID, 1); !reflect.DeepEqual(replay, first) {
 		t.Fatalf("replay=%v, want %v", replay, first)
 	}
-	if text, isErr = f.call(seatAgent, "submit_review_summary", summaryArgs(taskID, "seat-1", map[string]any{"work_order_id": seats[0], "session_id": seats[0] + "-session"})); isErr {
-		t.Fatalf("completed seat refused: %s", text)
+	if text, isErr = f.call(seatPerson, "submit_review_summary", summaryArgs(taskID, "seat-1", nil)); isErr {
+		t.Fatalf("seat session's person refused: %s", text)
 	}
 	requireSummaryResultFields(t, "seat", text, taskID, 2)
 
@@ -261,8 +261,9 @@ func TestSubmitReviewSummaryMCP(t *testing.T) {
 // lifecycle side effects (AC-10.7).
 func TestReviewSummaryREST(t *testing.T) {
 	f := newSummarySurfaceFixture(t)
-	userToken, agentToken := f.user("usr_executor", core.WorkspaceRoleExecutor)
-	viewerToken, _ := f.user("usr_viewer", core.WorkspaceRoleViewer)
+	userToken := f.user("usr_executor", core.WorkspaceRoleExecutor)
+	viewerToken := f.user("usr_viewer", core.WorkspaceRoleViewer)
+	f.credentials["agent-retired"] = core.AuthenticatedCredential{ID: "agt_executor", OwnerUserID: "usr_executor", Kind: retiredAgentKind, Scope: core.CredentialScopeUser}
 	taskID, _ := f.settledSummaryTask("summary-rest")
 	before := f.lifecycleState(taskID)
 	body := `{"request_id":"rest-1","summary":"  Seat 1 found one defect.  ","author_model":"claude-opus-5-5","findings":[{"severity":"blocking","problem":"Defect.","seats":[1]}]}`
@@ -313,7 +314,7 @@ func TestReviewSummaryREST(t *testing.T) {
 		"conflicting replay": {userToken, taskID, "1", strings.Replace(body, "one defect", "two defects", 1), http.StatusConflict, "review_summary_conflict"},
 		"missing task":       {userToken, "gov-task-summary-absent", "1", body, http.StatusConflict, store.ErrWorkOrderClaimUnauthorized.Error()},
 		"viewer":             {viewerToken, taskID, "1", body, http.StatusNotFound, "workspace_not_found"},
-		"agent credential":   {agentToken, taskID, "1", body, http.StatusUnauthorized, "unauthorized"},
+		"agent credential":   {"agent-retired", taskID, "1", body, http.StatusUnauthorized, "unauthorized"},
 	} {
 		response := f.postSummary(tc.token, tc.task, tc.round, tc.body)
 		if response.Code != tc.status || !strings.Contains(response.Body.String(), tc.want) {
@@ -337,23 +338,19 @@ func TestReviewSummaryREST(t *testing.T) {
 // boundary would otherwise render differently (DEC-19).
 func TestReviewSummarySurfaceAuthorization(t *testing.T) {
 	f := newSummarySurfaceFixture(t)
-	userToken, _ := f.user("usr_executor", core.WorkspaceRoleExecutor)
-	viewerToken, viewerAgent := f.user("usr_viewer", core.WorkspaceRoleViewer)
-	_, seatAgent := f.user("usr_seat", core.WorkspaceRoleExecutor)
-	taskID, seats := f.settledSummaryTask("summary-auth")
-	otherTask, otherSeats := f.settledSummaryTask("summary-auth-other")
-	seatArgs := func(order int, request string) map[string]any {
-		return summaryArgs(taskID, request, map[string]any{"work_order_id": seats[order], "session_id": seats[order] + "-session"})
-	}
+	userToken := f.user("usr_executor", core.WorkspaceRoleExecutor)
+	viewerToken := f.user("usr_viewer", core.WorkspaceRoleViewer)
+	seatPerson := f.user("usr_seat", core.WorkspaceRoleExecutor)
+	taskID, _ := f.settledSummaryTask("summary-auth")
+	otherTask, _ := f.settledSummaryTask("summary-auth-other")
 
 	before := f.lifecycleState(taskID)
 	for label, tc := range map[string]struct {
 		token string
 		args  map[string]any
 	}{
-		"user without an order":    {userToken, summaryArgs(taskID, "admit-user", nil)},
-		"completed seat agent":     {seatAgent, seatArgs(0, "admit-seat")},
-		"submitted implementation": {seatAgent, summaryArgs(taskID, "admit-implement", map[string]any{"work_order_id": "gov-order-summary-auth", "session_id": "gov-order-summary-auth-session"})},
+		"user without an order": {userToken, summaryArgs(taskID, "admit-user", nil)},
+		"seat session's person": {seatPerson, summaryArgs(taskID, "admit-seat", nil)},
 	} {
 		if text, isErr := f.call(tc.token, "submit_review_summary", tc.args); isErr {
 			t.Fatalf("%s refused: %s", label, text)
@@ -370,15 +367,10 @@ func TestReviewSummarySurfaceAuthorization(t *testing.T) {
 		token string
 		args  map[string]any
 	}{
-		"viewer user":                    {viewerToken, summaryArgs(taskID, "viewer", nil)},
-		"viewer user, unsettled round":   {viewerToken, summaryArgs(taskID, "viewer-unsettled", map[string]any{"review_round": 9})},
-		"viewer's agent with a seat":     {viewerAgent, seatArgs(0, "viewer-agent")},
-		"user in a foreign workspace":    {userToken, summaryArgs(taskID, "foreign", map[string]any{"workspace_id": "beta"})},
-		"user naming a missing task":     {userToken, summaryArgs("gov-task-summary-absent", "absent", nil)},
-		"agent without an order":         {seatAgent, summaryArgs(taskID, "no-order", nil)},
-		"agent with another session":     {seatAgent, summaryArgs(taskID, "other-session", map[string]any{"work_order_id": seats[0], "session_id": seats[1] + "-session"})},
-		"agent with another task's seat": {seatAgent, summaryArgs(taskID, "other-task", map[string]any{"work_order_id": otherSeats[0], "session_id": otherSeats[0] + "-session"})},
-		"agent naming a missing task":    {seatAgent, summaryArgs("gov-task-summary-absent", "agent-absent", map[string]any{"work_order_id": seats[0], "session_id": seats[0] + "-session"})},
+		"viewer user":                  {viewerToken, summaryArgs(taskID, "viewer", nil)},
+		"viewer user, unsettled round": {viewerToken, summaryArgs(taskID, "viewer-unsettled", map[string]any{"review_round": 9})},
+		"user in a foreign workspace":  {userToken, summaryArgs(taskID, "foreign", map[string]any{"workspace_id": "beta"})},
+		"user naming a missing task":   {userToken, summaryArgs("gov-task-summary-absent", "absent", nil)},
 	} {
 		text, isErr := f.call(tc.token, "submit_review_summary", tc.args)
 		if !isErr || text != uniform {

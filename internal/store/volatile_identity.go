@@ -26,6 +26,11 @@ type identityUser struct {
 	PasswordHash string `json:"password_hash,omitempty"`
 }
 
+// retiredAgentCredentialKind names the kind of a stored row from the retired
+// agent credential class. Nothing issues it, and verification refuses it
+// (DEC-116(1), (3)).
+const retiredAgentCredentialKind core.CredentialKind = "agent"
+
 type identityCredential struct {
 	ID                   string               `json:"id"`
 	UserID               string               `json:"user_id"`
@@ -457,44 +462,19 @@ func (m *volatileMemory) IssuePersonalAccessToken(ctx context.Context, userID, l
 	return core.IssuedPersonalAccessToken{PersonalAccessToken: personalAccessToken(credential), Value: value}, nil
 }
 
-// IssueAgentCredential implements AgentCredentialStore.
-func (m *volatileMemory) IssueAgentCredential(_ context.Context, userID, label string) (IssuedAgentCredential, error) {
-	id, err := randomIdentityID("agt", 12)
-	if err != nil {
-		return IssuedAgentCredential{}, err
+// AgentActorOwners implements AgentActorOwnerStore. The kind predicate keeps an
+// agent:<id> actor from resolving through a person's token row, and revoked rows
+// stay in scope because the acts outlive the credential.
+func (m *volatileMemory) AgentActorOwners(_ context.Context, credentialIDs []string) (map[string]string, error) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	owners := make(map[string]string, len(credentialIDs))
+	for _, id := range credentialIDs {
+		if credential, ok := m.credentials[id]; ok && credential.Kind == retiredAgentCredentialKind {
+			owners[id] = credential.UserID
+		}
 	}
-	value, hash, err := randomSecret("cv_agent_", id)
-	if err != nil {
-		return IssuedAgentCredential{}, err
-	}
-	m.lock()
-	defer m.unlock()
-	user, ok := m.users[userID]
-	if !ok {
-		return IssuedAgentCredential{}, fmt.Errorf("%w: identity user %s", ErrNotFound, userID)
-	}
-	if user.Status != "active" {
-		return IssuedAgentCredential{}, errors.New("cannot issue a credential for a deactivated user")
-	}
-	label = strings.TrimSpace(label)
-	m.credentials[id] = identityCredential{ID: id, UserID: userID, Label: label, TokenHash: hash, Kind: core.CredentialAgent, Scope: core.CredentialScopeUser, CreatedAt: time.Now().UTC()}
-	return IssuedAgentCredential{ID: id, UserID: userID, Label: label, Value: value}, nil
-}
-
-// RevokeAgentCredential revokes an agent credential the user owns; human
-// credentials and other users' credentials are unaddressable here.
-func (m *volatileMemory) RevokeAgentCredential(_ context.Context, userID, credentialID string) error {
-	m.lock()
-	defer m.unlock()
-	credential, ok := m.credentials[credentialID]
-	if !ok || credential.UserID != userID || credential.Kind != core.CredentialAgent {
-		return ErrNotFound
-	}
-	if credential.RevokedAt == nil {
-		credential.RevokedAt = timePtr(time.Now().UTC())
-		m.credentials[credentialID] = credential
-	}
-	return nil
+	return owners, nil
 }
 
 // VerifyPersonalAccessToken resolves a human credential's user.
@@ -546,7 +526,10 @@ func (m *volatileMemory) verifyCredential(ctx context.Context, candidate string)
 	credential, ok := m.credentialByHash(hash[:])
 	user := m.users[credential.UserID]
 	m.mu.RUnlock()
-	if !ok || credential.RevokedAt != nil || user.Status != "active" {
+	// A stored agent row is refused with the same error as an unknown
+	// credential, so the refusal carries no kind-specific code
+	// (req-security-boundaries AC-1.3; DEC-116(3)).
+	if !ok || credential.RevokedAt != nil || credential.Kind != core.CredentialUser || user.Status != "active" {
 		return core.AuthenticatedCredential{}, core.IdentityUser{}, core.ErrInvalidCredential
 	}
 	if err := RunIdentityTestHook(ctx, IdentityHookCredentialRead); err != nil {
@@ -559,7 +542,7 @@ func (m *volatileMemory) verifyCredential(ctx context.Context, candidate string)
 		m.lock()
 		current, present := m.credentials[credential.ID]
 		owner := m.users[current.UserID]
-		eligible := present && current.RevokedAt == nil && owner.Status == "active" && subtle.ConstantTimeCompare(current.TokenHash, hash[:]) == 1
+		eligible := present && current.RevokedAt == nil && current.Kind == core.CredentialUser && owner.Status == "active" && subtle.ConstantTimeCompare(current.TokenHash, hash[:]) == 1
 		now := time.Now().UTC()
 		stamped := eligible && credentialUseStale(current, now)
 		if stamped {

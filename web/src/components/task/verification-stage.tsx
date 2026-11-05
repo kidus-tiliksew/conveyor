@@ -145,6 +145,7 @@ function VerificationReviewResultBody({ item }: { item: ActivityItem }) {
   const audit = useTaskAudit(item.task.id, 'event', eventId ?? '', open)
   const payload = audit.data?.kind === 'event' ? audit.data.event.payload : undefined
   const assessment = payload?.verification_assessment as VerificationAssessment | undefined
+  const assessmentOwner = audit.data?.kind === 'event' ? audit.data.event.actor_owner_user_id : undefined
   if (
     !eventId ||
     (!item.task.policy_contract?.verify_stage && !(item.work_orders ?? []).some((order) => order.stage === 'verify'))
@@ -160,7 +161,13 @@ function VerificationReviewResultBody({ item }: { item: ActivityItem }) {
           {audit.isPending && <p role="status">Loading review verification…</p>}
           {audit.error && <p role="alert">{audit.error.message}</p>}
           {assessment?.context_ids?.map((contextId) => (
-            <ReviewedContext key={contextId} taskId={item.task.id} contextId={contextId} assessment={assessment} />
+            <ReviewedContext
+              key={contextId}
+              taskId={item.task.id}
+              contextId={contextId}
+              assessment={assessment}
+              assessmentOwner={assessmentOwner}
+            />
           ))}
           {audit.data && !assessment && (
             <p className="text-xs text-muted">This verdict did not cite a sealed verification result.</p>
@@ -175,10 +182,12 @@ function ReviewedContext({
   taskId,
   contextId,
   assessment,
+  assessmentOwner,
 }: {
   taskId: string
   contextId: string
   assessment: VerificationAssessment
+  assessmentOwner?: string
 }) {
   const query = useVerificationPages(taskId, contextId, 'contexts')
   const evidence = useVerificationPages(taskId, contextId, 'evidence')
@@ -195,6 +204,7 @@ function ReviewedContext({
           </p>
           <p className="break-words">
             Sealed by {context.metadata.deciding_actor} · Review deciding actor: {assessment.actor || 'Unknown'}
+            {assessmentOwner && <span data-review-deciding-owner> (owned by {assessmentOwner})</span>}
           </p>
         </>
       )}

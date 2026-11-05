@@ -179,17 +179,12 @@ type PersonalAccessTokenStore interface {
 	RevokeOwnPersonalAccessToken(context.Context, string, string) (core.PersonalAccessToken, error)
 }
 
-// AgentCredentialStore issues agent-kind credentials under an owning user
-// (req-accounts-and-membership AC-3.2, AC-3.3). No route calls it: Conveyor
-// launches no agent session and mints no child credential (DEC-97(1);
-// component-identity-membership).
-type AgentCredentialStore interface {
-	IssueAgentCredential(context.Context, string, string) (IssuedAgentCredential, error)
-}
-
-type IssuedAgentCredential struct {
-	ID     string `json:"credential_id"`
-	UserID string `json:"-"`
-	Label  string `json:"-"`
-	Value  string `json:"credential"`
+// AgentActorOwnerStore resolves the acts recorded under a retired agent
+// credential to the user who owns it. The read covers every stored agent row,
+// revoked ones included, because the acts outlive the credential. An ID naming
+// no stored agent row has no entry: the read never fails on it and never invents
+// an owner (req-security-boundaries AC-1.3; DEC-116(3);
+// component-identity-membership invariant 35).
+type AgentActorOwnerStore interface {
+	AgentActorOwners(ctx context.Context, credentialIDs []string) (map[string]string, error)
 }

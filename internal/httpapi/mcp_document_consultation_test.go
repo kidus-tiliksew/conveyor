@@ -61,16 +61,18 @@ func (f *documentReadFixture) wantConsultations(context string, want ...consulta
 	}
 }
 
-// claimedConsultationCallers returns a user credential and an agent credential
-// of one owner, each passing that owner's live claim.
+// claimedConsultationCallers returns two personal access tokens of one owner,
+// each passing that owner's live claim: the claim binds the person, not one token.
 func (f *documentReadFixture) claimedConsultationCallers(name string) ([]documentCaller, string, string) {
 	f.t.Helper()
 	owner, session := "usr_"+name, name+"-session"
-	userToken, agentToken := f.user(owner, core.WorkspaceRoleContributor)
+	userToken := f.user(owner, core.WorkspaceRoleContributor)
+	secondToken := userToken + "-second"
+	f.credentials[secondToken] = core.AuthenticatedCredential{ID: "pat_second_" + owner, OwnerUserID: owner, Kind: core.CredentialUser, Scope: core.CredentialScopeUser}
 	orderID := f.order(name, core.StageImplement)
 	f.claimRun(orderID, owner, session)
 	claim := map[string]any{"work_order_id": orderID, "session_id": session}
-	return []documentCaller{{name: "user", token: userToken, claim: claim}, {name: "agent", token: agentToken, claim: claim}}, orderID, session
+	return []documentCaller{{name: "user", token: userToken, claim: claim}, {name: "second token", token: secondToken, claim: claim}}, orderID, session
 }
 
 func TestMCPSectionReadRecordsOneConsultationPerReadKey(t *testing.T) {
@@ -183,9 +185,9 @@ func TestMCPListingsOutlinesAndSearchesRecordNoConsultation(t *testing.T) {
 
 func TestMCPConsultationRequiresTheCallersOwnLiveClaim(t *testing.T) {
 	f := newDocumentReadFixture(t)
-	userToken, agentToken := f.user("usr_claim", core.WorkspaceRoleContributor)
-	otherUser, _ := f.user("usr_stranger", core.WorkspaceRoleContributor)
-	viewer, _ := f.user("usr_viewer", core.WorkspaceRoleViewer)
+	userToken := f.user("usr_claim", core.WorkspaceRoleContributor)
+	otherUser := f.user("usr_stranger", core.WorkspaceRoleContributor)
+	viewer := f.user("usr_viewer", core.WorkspaceRoleViewer)
 	orderID := f.order("claim", core.StageImplement)
 	f.claimRun(orderID, "usr_claim", "claim-session")
 	viewerOrder := f.order("viewer", core.StageImplement)
@@ -212,20 +214,8 @@ func TestMCPConsultationRequiresTheCallersOwnLiveClaim(t *testing.T) {
 		f.wantConsultations(name)
 	}
 
-	// An agent credential is refused those same reads and records nothing.
-	for name, claim := range map[string]map[string]any{
-		"wrong session": {"work_order_id": orderID, "session_id": "not-this-session"},
-		"expired lease": {"work_order_id": expired, "session_id": "expired-session"},
-	} {
-		caller := documentCaller{name: name, token: agentToken, claim: claim}
-		if text, isErr := f.call(caller.token, "get_document", caller.args(section)); !isErr {
-			t.Fatalf("%s read succeeded: %s", name, text)
-		}
-		f.wantConsultations("agent " + name)
-	}
-
 	// Another workspace answers as not found before any read.
-	foreign := documentCaller{token: agentToken, claim: map[string]any{"work_order_id": orderID, "session_id": "claim-session"}}
+	foreign := documentCaller{token: userToken, claim: map[string]any{"work_order_id": orderID, "session_id": "claim-session"}}
 	args := documentReadArgs("design-claimed", "section_id", "s0")
 	args["workspace_id"] = "beta"
 	if text, isErr := f.call(foreign.token, "get_document", foreign.args(args)); !isErr {

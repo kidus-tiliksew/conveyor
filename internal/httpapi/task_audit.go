@@ -5,6 +5,7 @@ import (
 	"strconv"
 
 	"github.com/go-chi/chi/v5"
+	"github.com/kidus-tiliksew/conveyor/internal/core"
 	"github.com/kidus-tiliksew/conveyor/internal/store"
 )
 
@@ -35,7 +36,12 @@ func (s *Server) getTaskAudit(w http.ResponseWriter, r *http.Request) {
 		}
 		for _, event := range events {
 			if event.ID == eventID && event.TaskID == taskID {
-				writeJSON(w, http.StatusOK, map[string]any{"kind": kind, "event": event})
+				presented := []core.Event{event}
+				if err := s.annotateEventActorOwners(r.Context(), presented); err != nil {
+					http.Error(w, "internal server error", http.StatusInternalServerError)
+					return
+				}
+				writeJSON(w, http.StatusOK, map[string]any{"kind": kind, "event": presented[0]})
 				return
 			}
 		}

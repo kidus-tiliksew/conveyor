@@ -50,6 +50,18 @@ export function taskCreator(creator: TaskSummaries['creator'], members: Workspac
     const member = members.find((entry) => entry.user_id === identifier)
     return { label: member ? assigneeName(member) : `User · ${identifier}`, detail: `User · ${id}` }
   }
+  // An act under a retired agent credential resolves to the user who owns it
+  // (req-security-boundaries AC-1.3). The server names the owner; an agent:<id>
+  // it could not resolve stays the recorded agent, with no owner invented.
+  const owner =
+    role === 'agent' && typeof event.actor_owner_user_id === 'string' ? event.actor_owner_user_id.trim() : ''
+  if (owner) {
+    const member = members.find((entry) => entry.user_id === owner)
+    return {
+      label: member ? assigneeName(member) : `User · ${owner}`,
+      detail: `Agent · ${id} · owned by User · ${owner}`,
+    }
+  }
   const actorClass = { agent: 'Agent', runner: 'Runner', system: 'System' }[role as 'agent' | 'runner' | 'system']
   return { label: `${actorClass} · ${identifier}`, detail: `${actorClass} · ${id}` }
 }

@@ -252,6 +252,9 @@ func (s *Server) renderTaskEventWindow(ctx context.Context, read store.TaskEvent
 	if err != nil {
 		return nil, err
 	}
+	if err := s.annotateEventActorOwners(ctx, window.Events); err != nil {
+		return nil, err
+	}
 	rendered := make([]json.RawMessage, 0, len(window.Events))
 	for _, event := range window.Events {
 		view, err := renderTaskEventView(event, window.OmittedPayloadBytes[event.ID], full[event.ID])

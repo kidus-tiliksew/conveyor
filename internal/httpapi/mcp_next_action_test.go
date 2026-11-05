@@ -58,67 +58,71 @@ func (f *governanceAuthFixture) dependentOrder(name, dependency string) {
 }
 
 // TestMCPGetTaskStatusAdmission pins who may read a task's next action over
-// MCP (req-operator-next-action AC-5.3). A user reads any workspace task. An
-// agent reads only the task of an order its session claimed or submitted, and
-// every agent refusal is one error, so it never discloses whether the task
-// exists (DEC-19).
+// MCP (req-operator-next-action AC-5.3). With the agent branch gone, view_workspace
+// on the owner's live binding decides: any member reads any task of the workspace
+// with no order named, and anyone else is refused as if it did not exist (DEC-19).
 func TestMCPGetTaskStatusAdmission(t *testing.T) {
 	f := newGovernanceAuthFixture(t)
-	userToken, agentToken := f.user("usr_status", core.WorkspaceRoleContributor)
+	f.order("status-other", core.StageImplement)
 	claimed := f.order("status-claimed", core.StageImplement)
-	f.claimRun(claimed, "usr_status", "claimed-session")
-	submitted := f.order("status-submitted", core.StageImplement)
-	f.claimRun(submitted, "usr_status", "submitted-session")
-	f.ageClaim(submitted, func(order *core.WorkOrder) { order.State = core.WorkOrderSubmitted })
-	other := f.order("status-other", core.StageImplement)
-
+	f.claimRun(claimed, "usr_status_claimant", "claimed-session")
 	read := func(token string, args map[string]any) (string, bool) {
 		args["workspace_id"] = governanceWorkspace
 		return f.call(token, "get_task_status", args)
 	}
-	admit := func(label, token string, args map[string]any) {
-		t.Helper()
-		text, isErr := read(token, args)
-		if isErr {
-			t.Fatalf("%s refused: %s", label, text)
+	for _, role := range []core.WorkspaceRole{core.WorkspaceRoleViewer, core.WorkspaceRoleExecutor, core.WorkspaceRoleContributor, core.WorkspaceRoleMaintainer, core.WorkspaceRoleOperator} {
+		token := f.user("usr_status_"+string(role), role)
+		for _, taskID := range []string{"gov-task-status-other", "gov-task-status-claimed"} {
+			text, isErr := read(token, map[string]any{"task_id": taskID})
+			if isErr {
+				t.Fatalf("%s reading %s refused: %s", role, taskID, text)
+			}
+			var action nextaction.NextAction
+			if err := json.Unmarshal([]byte(text), &action); err != nil || action.Kind == "" || action.Label == "" {
+				t.Fatalf("%s reading %s result=%s err=%v", role, taskID, text, err)
+			}
 		}
-		var action nextaction.NextAction
-		if err := json.Unmarshal([]byte(text), &action); err != nil || action.Kind == "" || action.Label == "" {
-			t.Fatalf("%s result=%s err=%v", label, text, err)
+		if text, isErr := read(token, map[string]any{"task_id": "gov-task-absent"}); !isErr || !strings.Contains(text, store.ErrNotFound.Error()) {
+			t.Fatalf("%s reading an absent task isError=%v text=%q", role, isErr, text)
 		}
 	}
-	admit("user without an order", userToken, map[string]any{"task_id": "gov-task-status-other"})
-	admit("agent with its claimed order", agentToken, map[string]any{"task_id": "gov-task-status-claimed", "work_order_id": claimed, "session_id": "claimed-session"})
-	admit("agent with its submitted order", agentToken, map[string]any{"task_id": "gov-task-status-submitted", "work_order_id": submitted, "session_id": "submitted-session"})
-
-	missing, isErr := read(agentToken, map[string]any{"task_id": "gov-task-absent", "work_order_id": claimed, "session_id": "claimed-session"})
-	if !isErr || missing == "" {
-		t.Fatalf("agent read of a nonexistent task admitted: %s", missing)
+	// The workspace boundary decides, with one answer for an unknown workspace
+	// and one the caller has no binding in. Removing a binding applies at once.
+	f.credentials["pat-outsider"] = core.AuthenticatedCredential{ID: "pat_outsider", OwnerUserID: "usr_outsider", Kind: core.CredentialUser, Scope: core.CredentialScopeUser}
+	outsider, isErr := read("pat-outsider", map[string]any{"task_id": "gov-task-status-other"})
+	if !isErr || !strings.Contains(outsider, "workspace_not_found") {
+		t.Fatalf("non-member isError=%v text=%q", isErr, outsider)
 	}
-	for label, refusal := range map[string]struct {
-		token string
-		args  map[string]any
-	}{
-		"agent naming another task":          {agentToken, map[string]any{"task_id": "gov-task-status-other", "work_order_id": claimed, "session_id": "claimed-session"}},
-		"agent with a wrong session":         {agentToken, map[string]any{"task_id": "gov-task-status-claimed", "work_order_id": claimed, "session_id": "other-session"}},
-		"agent submitted with wrong session": {agentToken, map[string]any{"task_id": "gov-task-status-submitted", "work_order_id": submitted, "session_id": "claimed-session"}},
-		"agent without work_order_id":        {agentToken, map[string]any{"task_id": "gov-task-status-claimed", "session_id": "claimed-session"}},
-		"agent with an unclaimed order":      {agentToken, map[string]any{"task_id": "gov-task-status-other", "work_order_id": other, "session_id": "claimed-session"}},
-	} {
-		text, refused := read(refusal.token, refusal.args)
-		if !refused || text != missing {
-			t.Fatalf("%s isError=%v text=%q, want the nonexistent-task refusal %q", label, refused, text, missing)
-		}
+	absentTask, isErr := read("pat-outsider", map[string]any{"task_id": "gov-task-absent"})
+	if !isErr || absentTask != outsider {
+		t.Fatalf("non-member naming an absent task isError=%v text=%q, want %q", isErr, absentTask, outsider)
+	}
+	removed := f.user("usr_status_removed", core.WorkspaceRoleViewer)
+	if text, isErr := read(removed, map[string]any{"task_id": "gov-task-status-other"}); isErr {
+		t.Fatalf("before removal: %s", text)
+	}
+	f.members.setRole("usr_status_removed", governanceWorkspace, "")
+	if text, isErr := read(removed, map[string]any{"task_id": "gov-task-status-other"}); !isErr || text != outsider {
+		t.Fatalf("removed member isError=%v text=%q, want %q", isErr, text, outsider)
+	}
+	// A member of another workspace cannot read through its own binding.
+	f.members.setRole("usr_status_beta", "beta", core.WorkspaceRoleOperator)
+	f.credentials["pat-beta"] = core.AuthenticatedCredential{ID: "pat_beta", OwnerUserID: "usr_status_beta", Kind: core.CredentialUser, Scope: core.CredentialScopeUser}
+	if text, isErr := read("pat-beta", map[string]any{"task_id": "gov-task-status-other"}); !isErr || text != outsider {
+		t.Fatalf("other workspace's member isError=%v text=%q, want %q", isErr, text, outsider)
+	}
+	if text, isErr := f.call("pat-beta", "get_task_status", map[string]any{"workspace_id": "beta", "task_id": "gov-task-status-other"}); !isErr || !strings.Contains(text, store.ErrNotFound.Error()) {
+		t.Fatalf("task of another workspace isError=%v text=%q", isErr, text)
 	}
 }
 
 // TestMCPGetTaskStatusParity pins one derivation (DEC-61) and a side-effect
 // free read (AC-1.7): the MCP result equals GET /v1/tasks/{id}/next-action
-// for the same credential, and an agent read neither renews the lease nor
+// for the same credential, and a claimant's read neither renews the lease nor
 // records an event.
 func TestMCPGetTaskStatusParity(t *testing.T) {
 	f := newGovernanceAuthFixture(t)
-	userToken, agentToken := f.user("usr_parity", core.WorkspaceRoleContributor)
+	userToken := f.user("usr_parity", core.WorkspaceRoleContributor)
 	f.gateTask("gov-task-parity-gate", time.Now().UTC())
 	text, isErr := f.call(userToken, "get_task_status", map[string]any{"workspace_id": governanceWorkspace, "task_id": "gov-task-parity-gate"})
 	if isErr {
@@ -132,8 +136,8 @@ func TestMCPGetTaskStatusParity(t *testing.T) {
 	claimed := f.order("parity-claimed", core.StageImplement)
 	f.claimRun(claimed, "usr_parity", "parity-session")
 	before := f.snapshot(claimed)
-	if text, isErr = f.call(agentToken, "get_task_status", map[string]any{"workspace_id": governanceWorkspace, "task_id": "gov-task-parity-claimed", "work_order_id": claimed, "session_id": "parity-session"}); isErr {
-		t.Fatalf("agent read refused: %s", text)
+	if text, isErr = f.call(userToken, "get_task_status", map[string]any{"workspace_id": governanceWorkspace, "task_id": "gov-task-parity-claimed", "work_order_id": claimed, "session_id": "parity-session"}); isErr {
+		t.Fatalf("claimant read refused: %s", text)
 	}
 	after := f.snapshot(claimed)
 	if !after.order.LeaseExpiresAt.Equal(before.order.LeaseExpiresAt) || after.events != before.events {
@@ -148,7 +152,7 @@ func TestMCPGetTaskStatusParity(t *testing.T) {
 // AC-1.7, AC-5.3; component-http-api, Next-action and task-flow reads).
 func TestMCPGetTaskStatusAgentQuestionParity(t *testing.T) {
 	f := newGovernanceAuthFixture(t)
-	userToken, _ := f.user("usr_question", core.WorkspaceRoleContributor)
+	userToken := f.user("usr_question", core.WorkspaceRoleContributor)
 	design, initial, err := f.store.CreateSystemDesign(f.ctx, core.SystemDesign{ID: "component-question", Title: "Question", Category: "Component design"}, core.SystemDesignVersion{Content: "# Question\n\n```conveyor:governs\n- repo: conveyor\n  paths:\n    - internal/**\n```", Origin: core.SystemDesignOriginOperator})
 	if err != nil {
 		t.Fatal(err)
@@ -198,7 +202,7 @@ func TestMCPGetTaskStatusAgentQuestionParity(t *testing.T) {
 // AC-2.6, AC-5.3; req-260810-23b69f REQ-3).
 func TestMCPGetTaskStatusNoProposalWaitParity(t *testing.T) {
 	f := newGovernanceAuthFixture(t)
-	userToken, _ := f.user("usr_claim_wait", core.WorkspaceRoleOperator)
+	userToken := f.user("usr_claim_wait", core.WorkspaceRoleOperator)
 	governs := "```conveyor:governs\n- repo: conveyor\n  paths:\n    - internal/**\n```"
 	design := func(id string) core.SystemDesign {
 		t.Helper()
@@ -308,7 +312,7 @@ func TestMCPGetTaskStatusNoProposalWaitParity(t *testing.T) {
 // AR-3a; req-260820-394cac AC-2.6; req-bounded-automatic-recovery AC-5.2).
 func TestMCPGetTaskStatusAfterAuthorityConfirmedRecovery(t *testing.T) {
 	f := newGovernanceAuthFixture(t)
-	userToken, _ := f.user("usr_answered", core.WorkspaceRoleContributor)
+	userToken := f.user("usr_answered", core.WorkspaceRoleContributor)
 	design, initial, err := f.store.CreateSystemDesign(f.ctx, core.SystemDesign{ID: "component-answered", Title: "Answered", Category: "Component design"}, core.SystemDesignVersion{Content: "# Answered\n\n```conveyor:governs\n- repo: conveyor\n  paths:\n    - internal/**\n```", Origin: core.SystemDesignOriginOperator})
 	if err != nil {
 		t.Fatal(err)
@@ -374,7 +378,7 @@ func TestMCPGetTaskStatusAfterAuthorityConfirmedRecovery(t *testing.T) {
 // agent and worker credentials.
 func TestMCPListOperatorInbox(t *testing.T) {
 	f := newGovernanceAuthFixture(t)
-	userToken, agentToken := f.user("usr_inbox", core.WorkspaceRoleContributor)
+	userToken := f.user("usr_inbox", core.WorkspaceRoleContributor)
 	now := time.Now().UTC().Truncate(time.Second)
 	f.gateTask("z-gate", now.Add(-time.Hour))
 	f.gateTask("a-gate", now)
@@ -437,8 +441,5 @@ func TestMCPListOperatorInbox(t *testing.T) {
 				t.Fatalf("z-gate next action = %v, want blocks naming gov-task-inbox-dependent-b and the Approve plan label", action)
 			}
 		}
-	}
-	if text, isErr := f.call(agentToken, "list_operator_inbox", map[string]any{"workspace_id": governanceWorkspace}); !isErr || !strings.Contains(text, "requires an operator-scoped user credential") {
-		t.Fatalf("agent inbox isError=%v text=%q", isErr, text)
 	}
 }

@@ -31,8 +31,6 @@ type PersonalAccessToken = core.PersonalAccessToken
 
 type IssuedPersonalAccessToken = core.IssuedPersonalAccessToken
 
-type IssuedAgentCredential = store.IssuedAgentCredential
-
 // GetCallerIdentity resolves only the credential-derived user. A workspace
 // role is joined only when the HTTP boundary has supplied an authorized
 // workspace context; the join also closes membership-revocation races.
@@ -426,57 +424,31 @@ func (s *Store) IssuePersonalAccessToken(ctx context.Context, userID, label stri
 	return IssuedPersonalAccessToken{PersonalAccessToken: personalAccessToken(row), Value: value}, nil
 }
 
-// IssueAgentCredential creates an execution-only credential under an owning
-// user. It reuses user_tokens so ownership remains enforced by the existing
-// foreign key and no post-083 schema change is required (REQ-2/AC-2.2).
-func (s *Store) IssueAgentCredential(ctx context.Context, userID, label string) (IssuedAgentCredential, error) {
-	ctx = dbmetrics.WithReadLabel(ctx, "IssueAgentCredential")
-	id, err := randomIdentityID("agt", 12)
+// AgentActorOwners implements store.AgentActorOwnerStore. The kind predicate
+// keeps an agent:<id> actor from resolving through a person's token row, and
+// revoked rows stay in scope because the acts outlive the credential.
+func (s *Store) AgentActorOwners(ctx context.Context, credentialIDs []string) (map[string]string, error) {
+	ctx = dbmetrics.WithReadLabel(ctx, "AgentActorOwners")
+	owners := make(map[string]string, len(credentialIDs))
+	if len(credentialIDs) == 0 {
+		return owners, nil
+	}
+	rows, err := s.boundary.Query(ctx, `SELECT id,user_id FROM user_tokens WHERE kind='agent' AND id=ANY($1)`, credentialIDs)
 	if err != nil {
-		return IssuedAgentCredential{}, err
+		return nil, fmt.Errorf("read agent credential owners: %w", err)
 	}
-	secret := make([]byte, 32)
-	if _, err = rand.Read(secret); err != nil {
-		return IssuedAgentCredential{}, fmt.Errorf("generate agent credential: %w", err)
-	}
-	value := "cv_agent_" + id + "_" + base64.RawURLEncoding.EncodeToString(secret)
-	hash := sha256.Sum256([]byte(value))
-	var row db.UserToken
-	err = s.inTx(ctx, func(tx pgx.Tx, q *db.Queries) error {
-		var status string
-		if err := tx.QueryRow(ctx, `SELECT status FROM users WHERE id=$1 FOR UPDATE`, userID).Scan(&status); err != nil {
-			return notFound(err, "identity user %s", userID)
+	defer rows.Close()
+	for rows.Next() {
+		var id, owner string
+		if err := rows.Scan(&id, &owner); err != nil {
+			return nil, fmt.Errorf("read agent credential owners: %w", err)
 		}
-		if status != "active" {
-			return errors.New("cannot issue a credential for a deactivated user")
-		}
-		var insertErr error
-		row, insertErr = q.InsertUserToken(ctx, db.InsertUserTokenParams{
-			ID: id, UserID: userID, Label: strings.TrimSpace(label), TokenHash: hash[:],
-			Kind: string(core.CredentialAgent), Scope: string(core.CredentialScopeUser),
-		})
-		return insertErr
-	})
-	if err != nil {
-		return IssuedAgentCredential{}, err
+		owners[id] = owner
 	}
-	return IssuedAgentCredential{ID: row.ID, UserID: row.UserID, Label: row.Label, Value: value}, nil
-}
-
-// RevokeAgentCredential revokes only an agent-class credential owned by the
-// authenticated run parent. The kind and owner predicates make human PATs and
-// credentials belonging to another user unaddressable through this boundary.
-func (s *Store) RevokeAgentCredential(ctx context.Context, userID, credentialID string) error {
-	ctx = dbmetrics.WithReadLabel(ctx, "RevokeAgentCredential")
-	result, err := s.boundary.Exec(ctx, `UPDATE user_tokens SET revoked_at=COALESCE(revoked_at, now())
-		WHERE id=$1 AND user_id=$2 AND kind=$3`, credentialID, userID, string(core.CredentialAgent))
-	if err != nil {
-		return fmt.Errorf("revoke agent credential: %w", err)
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("read agent credential owners: %w", err)
 	}
-	if result.RowsAffected() != 1 {
-		return store.ErrNotFound
-	}
-	return nil
+	return owners, nil
 }
 
 func (s *Store) VerifyPersonalAccessToken(ctx context.Context, candidate string) (IdentityUser, error) {
@@ -891,8 +863,11 @@ type credentialRead struct {
 }
 
 // readCredential reads a live credential by its unique hash without locking:
-// unrevoked and owned by an active user. It reports whether last_used_at is
-// unset or older than the stamp interval by the database clock.
+// unrevoked, of kind user, and owned by an active user. A stored agent row is
+// refused with the same error as an unknown credential, so the refusal carries
+// no kind-specific code (req-security-boundaries AC-1.3; DEC-116(3)). It reports
+// whether last_used_at is unset or older than the stamp interval by the database
+// clock.
 func (s *Store) readCredential(ctx context.Context, hash []byte) (credentialRead, error) {
 	var r credentialRead
 	var stored []byte
@@ -906,7 +881,7 @@ func (s *Store) readCredential(ctx context.Context, hash []byte) (credentialRead
 	if err != nil {
 		return credentialRead{}, err
 	}
-	if subtle.ConstantTimeCompare(stored, hash) != 1 || revoked.Valid || r.user.Status != "active" {
+	if subtle.ConstantTimeCompare(stored, hash) != 1 || revoked.Valid || kind != string(core.CredentialUser) || r.user.Status != "active" {
 		return credentialRead{}, ErrInvalidPersonalAccessToken
 	}
 	r.user.ID = r.credential.OwnerUserID

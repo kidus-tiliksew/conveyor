@@ -101,6 +101,7 @@ type taskEventView struct {
 	Kind                  string                     `json:"kind"`
 	ActorID               string                     `json:"actor_id"`
 	ActorRole             core.ActorRole             `json:"actor_role"`
+	ActorOwnerUserID      string                     `json:"actor_owner_user_id,omitempty"`
 	Payload               json.RawMessage            `json:"payload"`
 	At                    string                     `json:"at"`
 	AuditAvailable        bool                       `json:"audit_available,omitempty"`
@@ -127,7 +128,7 @@ type minimalTaskEventView struct {
 func renderTaskEventView(event core.Event, omittedBytes int, full json.RawMessage) (json.RawMessage, error) {
 	view := taskEventView{
 		ID: formatTaskEventID(event.ID), TaskID: event.TaskID, JobID: event.JobID, Kind: event.Kind,
-		ActorID: event.ActorID, ActorRole: event.ActorRole, At: formatTaskEventTime(event.At),
+		ActorID: event.ActorID, ActorRole: event.ActorRole, ActorOwnerUserID: event.ActorOwnerUserID, At: formatTaskEventTime(event.At),
 	}
 	if omittedBytes == 0 && len(event.Payload) > taskEventPayloadLimit {
 		omittedBytes, full = len(event.Payload), event.Payload
@@ -271,8 +272,9 @@ type taskDetailSummaries struct {
 }
 
 type taskCreatorSummary struct {
-	ActorID   string         `json:"actor_id"`
-	ActorRole core.ActorRole `json:"actor_role"`
+	ActorID          string         `json:"actor_id"`
+	ActorRole        core.ActorRole `json:"actor_role"`
+	ActorOwnerUserID string         `json:"actor_owner_user_id,omitempty"`
 }
 
 type taskPullRequestSummary struct {
@@ -838,6 +840,7 @@ type taskRoundSummaryFinding struct {
 type taskRoundSummaryAuthor struct {
 	ActorID          string         `json:"actor_id"`
 	ActorRole        core.ActorRole `json:"actor_role"`
+	ActorOwnerUserID string         `json:"actor_owner_user_id,omitempty"`
 	WorkOrderID      string         `json:"work_order_id,omitempty"`
 	SessionID        string         `json:"session_id,omitempty"`
 	Model            string         `json:"model,omitempty"`

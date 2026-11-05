@@ -22,20 +22,14 @@ Every tool names one capability, checked against the live role binding of the
 credential's owning user on every call. A refusal answers `workspace_not_found`,
 exactly like an unknown workspace.
 
-An agent credential may use only tools whose capability every contributor
-holds, plus `create_tasks`: today `view_workspace`, `claim_work`,
-`request_changes`, `propose_documents`, and `create_tasks`. The rule is derived
-from the role bundles, not from a list of tool names, so a tool added under a
-higher capability is refused for agents automatically. That refuses
-`add_task_dependency` and `attach_task_branch` (`operate_gates`), `set_assignee`
-(`set_assignee`), and `redispatch_work_order` (`recover_work`) with
-`<tool> requires an operator-scoped user credential`. A separate rule refuses
-agents the same way: the operator investigation tools below admit user
-credentials only, except that `get_document` and `search_documents` admit an
-agent credential under its own live claim, as
-[Design document reads](#design-document-reads) describes. `create_task` is the
-one maintainer act an agent credential may perform, under the rules in its row
-below (DEC-60).
+A session acts as the person whose token it holds, with that person's
+capabilities, and its acts are recorded as that person's (DEC-116(2)). A stored
+agent-class credential is refused at the mount with the same 401 as an unknown
+bearer. No tool here decides a gate, cancels a task, writes configuration,
+manages users or grants, or issues a token. That tool list, the work-order
+instructions, and the operator's confirmation of every proposal are where the
+rules of conduct hold; they rest on no credential check, and the same token
+reaches any REST route its owner's role allows (DEC-116(4)).
 
 The agent-facing discipline for using these tools well is the
 [work playbook](playbooks/conveyor-work.md); this page is the tool
@@ -230,7 +224,10 @@ and `active_authority`; references are always `informative`. A document with
 no confirmed version explicitly reports `authority_absent`. An empty filtered
 list establishes only that no records matched that bounded query.
 
-Events expose their recorded `actor_id`, `actor_role`, and `at`. Proposal
+Events expose their recorded `actor_id`, `actor_role`, and `at`. An event
+recorded under a retired agent credential also carries `actor_owner_user_id`,
+the user who owns that credential; an unknown `agent:<id>` carries none, and
+its `actor_id` stays as recorded (DEC-116(3)). Proposal
 records retain `source`, `proposed_by`, `decided_by`, decision state, and event
 IDs. Empty attribution is unknown; never infer an actor from task prose or a
 suggestion. Event payloads expose only context/document IDs, versions, source,
@@ -318,28 +315,20 @@ reads change no state, with one exception: a successful read of System Design
 text under a live claim appends an observational consultation event; see
 [Consultation](#consultation).
 
-**Who may call them.** A user credential needs `view_workspace`, as every read
-here does, and passes nothing further. An agent credential passes the
-`work_order_id` and `session_id` of its own live claim on every `get_document`
-and `search_documents` call. Agent credentials carry no session binding, so the
-two arguments are always explicit. Each call, including every later page and
-every read served from the cache below, checks:
+**Who may call them.** A credential's owner needs `view_workspace`, as every read
+here does. A session holding a work order also passes the `work_order_id` and
+`session_id` of its own live claim on every `get_document` and
+`search_documents` call. Those arguments play no part in authorization: they only
+attribute the session's consultation. A `get_document` call attributes one only
+when:
 
-- the owning user's live binding in the workspace holds `view_workspace` and
-  `claim_work`, so a user demoted to viewer loses these reads under a live
-  claim, as on every other claim-bound tool; a refusal answers
-  `workspace_not_found`;
+- the owning user's live binding in the workspace holds `claim_work`;
 - the named order exists in that workspace, its session is the named session,
   its claimant is the credential's owner, and no worker owns it; and
 - the claim is live: state `claimed`, an unexpired lease, and an unelapsed
   execution deadline.
 
-Every claim refusal answers the same text, `<tool> requires an
-operator-scoped user credential or the work_order_id and session_id of this
-session's own live claim`, so it discloses nothing about the order. A user
-credential's `work_order_id` and `session_id` play no part in authorization;
-they only attribute its consultation. Every other investigation tool stays
-user-only, even under a live claim.
+Otherwise the read is served and records nothing.
 
 **Outline.** `get_document` with `outline: true` returns the document's
 metadata and authority labels plus `outline`, a list of `{section_id, heading,
@@ -514,7 +503,7 @@ for how to turn the evidence into a separately authorized follow-up.
 | `list_work_orders` | List active, stale, or execution-timed-out spec, implement, and review orders, with their distinct queue, execution, and lease clocks, claimability, and refusal reasons. |
 | `claim_work_order` | Claim one order with a fresh `session_id` and secret `client_token`, optionally choosing a lease up to one hour. Claimant identity comes from the credential. Self-review is refused, as is any session or client token already used by the implementer or another seat. The response is the order without pinned bodies, plus `governance_references`; see [Work order delivery](#work-order-delivery). |
 | `get_work_order` | The stage context: role prompt with the served requirement statements and the design and decision lists, task, approved plan, triage brief, bounce history, lineage context, artifact references, and (for review) the diff and PR description. It carries no document body; see [Work order delivery](#work-order-delivery). `authority_source` says whether authority is `pinned` (claim-time snapshot) or `live`. |
-| `get_task_status` | The task's next action exactly as `GET /v1/tasks/{id}/next-action` returns it: label, who acts next, kind, judgment, summary, question, choices with their effects, what happens if nobody acts, deadline, blockers, and the current order and attempt. For an agent question, `details` carries the checkpoint's decision request, `checkpoint_class`, `citations`, and the cited documents' `pending_proposals`; an `authority_conflict` checkpoint lists confirm and dismiss for each cited pending version before the answer choice. A human credential reads any task in the workspace. An agent or run-child credential must pass the `work_order_id` and `session_id` of an order its session claimed or submitted for that task; every refusal is the same error, whether or not the task exists. Read only: it never renews the lease or records an observation. |
+| `get_task_status` | The task's next action exactly as `GET /v1/tasks/{id}/next-action` returns it: label, who acts next, kind, judgment, summary, question, choices with their effects, what happens if nobody acts, deadline, blockers, and the current order and attempt. For an agent question, `details` carries the checkpoint's decision request, `checkpoint_class`, `citations`, and the cited documents' `pending_proposals`; an `authority_conflict` checkpoint lists confirm and dismiss for each cited pending version before the answer choice. Any workspace member reads any task in the workspace. Read only: it never renews the lease or records an observation. |
 | `read_artifact` | Fetch one artifact's content, base64-encoded. Scoped to the claim and to the bounded lineage selection that served the reference; an artifact ID alone is not enough. |
 | `renew_work_order` | Renew the claim lease. Never extends the fixed execution deadline. The response adds `governance_references`, as a claim's does. Requires `claim_work`. |
 | `report_progress` | Report progress text for the operator's timeline. Requires `claim_work`. |
@@ -561,11 +550,10 @@ replacement, apart from that list, and are never active authority.
 **Reading further.** Use `search_documents` and the `outline` and `section_id`
 modes of `get_document` ([Design document reads](#design-document-reads)), and
 name the listed `version`. A session passes `work_order_id` and `session_id` on
-each call: an agent credential is refused without them, and they record the
-consultation. A review reads every section, including every page
-of a large one, of each design attached to the task or covering the diff
-(`req-design-delivery` AC-6.1). `get_decision` and `list_decisions` stay
-user-only, so an agent session works from the summaries.
+each call, and they record the consultation. A review reads every section,
+including every page of a large one, of each design attached to the task or
+covering the diff (`req-design-delivery` AC-6.1). `get_decision` and
+`list_decisions` read a decision's full record.
 
 **Claim, renewal, and refresh.** `claim_work_order`, `renew_work_order`, and
 `refresh_work_order_context` carry no role prompt, so each adds one list at the
@@ -629,9 +617,9 @@ in-product planning sessions, and the REST routes, which require
 
 | Tool | What it does |
 |---|---|
-| `create_task` | Create one durable task: `body`, `repo`, and a caller-stable `idempotency_key` required; optional `depends_on`, `requirement_ids`, `system_design_ids`, and gate overrides. A task carries no hold (DEC-74): a new `hold: true` or a non-boolean `hold` is refused with `task_hold_retired`, while a retry whose key names an existing task still returns it. The title is generated; supplying one is an error. Requires `create_tasks`. An agent credential may call it when its owning user holds `create_tasks` in the workspace; for an agent, omitted gates take the workspace defaults, `true` turns a gate on, and `false` or a legacy level `L0` or `L1` is refused with `agent_gate_disable_forbidden` (a null or non-boolean gate is `invalid_agent_gate_override`). The task's `task.created` event records `trigger_provenance` naming the agent and its owning user. Worker credentials are refused. |
-| `add_task_dependency` | Make an existing open task depend on another. Requires `task_id`, `depends_on_task_id`, an audit `reason`, and caller-stable `request_id`; rejects terminal tasks, self-links, and cycles. Requires `operate_gates`; human credentials only. |
-| `set_assignee` | Set or clear a task's assignee as an audited act. Constrains claim eligibility, never queue order. Requires `set_assignee`; human credentials only. |
+| `create_task` | Create one durable task: `body`, `repo`, and a caller-stable `idempotency_key` required; optional `depends_on`, `requirement_ids`, `system_design_ids`, and gate overrides. A task carries no hold (DEC-74): a new `hold: true` or a non-boolean `hold` is refused with `task_hold_retired`, while a retry whose key names an existing task still returns it. The title is generated; supplying one is an error. Requires `create_tasks` on the credential's owner. An omitted gate takes the workspace default and a supplied boolean applies, `false` included. A null or non-boolean gate, a non-string level, or an unrecognized level is refused with `invalid_agent_gate_override` before any lookup, for every caller, so a mistyped gate never takes the workspace default. The task records MCP as its source and the person as its creator, enters triage like any other task, and grants the session nothing further (DEC-116(5)). |
+| `add_task_dependency` | Make an existing open task depend on another. Requires `task_id`, `depends_on_task_id`, an audit `reason`, and caller-stable `request_id`; rejects terminal tasks, self-links, and cycles. Requires `operate_gates`. |
+| `set_assignee` | Set or clear a task's assignee as an audited act. Constrains claim eligibility, never queue order. Requires `set_assignee`. |
 | `redispatch_work_order` | Return a stale queued order to the queue with a fresh deadline. Active and execution-timed-out orders are rejected. Requires `recover_work`; human credentials only. |
 
 ## Contracts worth restating

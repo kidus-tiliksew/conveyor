@@ -97,6 +97,9 @@ func (s *Server) renderEventWindow(ctx context.Context, window store.TaskEventWi
 	if err != nil {
 		return nil, nil, false, err
 	}
+	if err := s.annotateEventActorOwners(ctx, window.Events); err != nil {
+		return nil, nil, false, err
+	}
 	items := []json.RawMessage{}
 	more, size := window.More, 0
 	var last *store.TaskEventPosition

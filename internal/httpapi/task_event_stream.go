@@ -40,6 +40,9 @@ type taskEventStream struct {
 	// redactor is built for each poll, so a frame never predates a secret
 	// that was readable when its poll began.
 	redactor func(context.Context) (*redact.Redactor, error)
+	// annotate sets a frame's read-only attribution on one page. Nil leaves it
+	// unset. A failure ends the poll as a read failure, with nothing marked sent.
+	annotate func(context.Context, []core.Event) error
 	taskID   string
 	window   time.Duration
 	pageSize int
@@ -86,6 +89,11 @@ func (s *taskEventStream) poll(ctx context.Context, w io.Writer) error {
 		if err != nil {
 			return fmt.Errorf("%w: %v", errTaskEventStreamRead, err)
 		}
+		if s.annotate != nil {
+			if err := s.annotate(ctx, page.Events); err != nil {
+				return fmt.Errorf("%w: %v", errTaskEventStreamRead, err)
+			}
+		}
 		for _, event := range page.Events {
 			after = &store.TaskEventPosition{At: event.At, ID: event.ID}
 			if _, seen := s.sent[event.ID]; seen {
@@ -129,6 +137,7 @@ func (s *taskEventStream) evict() {
 // payload with nothing to remove keeps its recorded bytes.
 func redactEventForRead(event core.Event, redactor *redact.Redactor) (core.Event, error) {
 	event.ActorID, _ = redactor.Redact(event.ActorID)
+	event.ActorOwnerUserID, _ = redactor.Redact(event.ActorOwnerUserID)
 	if len(bytes.TrimSpace(event.Payload)) == 0 {
 		return event, nil
 	}

@@ -107,10 +107,13 @@ type Server struct {
 	WorkspaceInfo *WorkspaceInfo
 	// ConfigProvider resolves current database-backed workspace scope while
 	// preserving file-backed deployment fields.
-	ConfigProvider      func(context.Context) (*config.Config, error)
-	ConfigStore         WorkspaceConfigStore
-	Workspaces          store.WorkspaceControlStore
-	Memberships         store.MembershipStore
+	ConfigProvider func(context.Context) (*config.Config, error)
+	ConfigStore    WorkspaceConfigStore
+	Workspaces     store.WorkspaceControlStore
+	Memberships    store.MembershipStore
+	// ActorOwners resolves an agent:<id> actor to its owner on a read
+	// (req-security-boundaries AC-1.3).
+	ActorOwners         store.AgentActorOwnerStore
 	IdentityProvisioner store.IdentityProvisioner
 	CallerIdentities    store.CallerIdentityStore
 	OwnProfiles         store.OwnProfileStore
@@ -155,6 +158,9 @@ func NewServer(s store.Store) *Server {
 	}
 	if memberships, ok := s.(store.MembershipStore); ok {
 		server.Memberships = memberships
+	}
+	if owners, ok := s.(store.AgentActorOwnerStore); ok {
+		server.ActorOwners = owners
 	}
 	if identities, ok := s.(store.IdentityProvisioner); ok {
 		server.IdentityProvisioner = identities
@@ -585,8 +591,7 @@ func (s *Server) withHumanCredential(w http.ResponseWriter, r *http.Request) (*h
 // requireSelfServiceCredential authenticates the human credential that owns a
 // self-service request. It never resolves a workspace and never consults a
 // capability bundle: the caller's authority over the resource is the fact that
-// the resource is theirs. Agent credentials are refused so an execution session
-// cannot enumerate or revoke its owner's tokens (REQ-2/AC-2.2).
+// the resource is theirs.
 func (s *Server) requireSelfServiceCredential(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		credential, err := s.authenticateHumanCredential(w, r)
@@ -657,11 +662,16 @@ func (s *Server) requireMCPAuth(next http.Handler) http.Handler {
 			return
 		}
 		credential, verifyErr := s.verifyCredential(r.Context(), provided)
+		// Every credential is a person's, so anything else is refused like an
+		// unknown one and never stamped as a user's act (component-http-api
+		// invariant 4; DEC-116(1)).
+		if verifyErr == nil && credential.Kind != core.CredentialUser {
+			verifyErr = core.ErrInvalidCredential
+		}
 		if verifyErr == nil {
+			// A session acts as its person, so its acts are that person's
+			// (req-accounts-and-membership AC-3.2; DEC-116(2)).
 			actor := store.Actor{ID: store.UserActorID(credential.OwnerUserID), Role: core.ActorUser}
-			if credential.Kind == core.CredentialAgent {
-				actor = store.Actor{ID: store.AgentActorID(credential.ID), Role: core.ActorAgent}
-			}
 			ctx := store.WithCredential(r.Context(), credential)
 			ctx = store.WithActor(ctx, actor)
 			next.ServeHTTP(w, r.WithContext(ctx))
@@ -1357,6 +1367,10 @@ func (s *Server) listEvents(w http.ResponseWriter, r *http.Request) {
 		writeStoreFailure(w, r, err)
 		return
 	}
+	if err = s.annotateEventActorOwners(r.Context(), page.Events); err != nil {
+		writeStoreFailure(w, r, err)
+		return
+	}
 	for index, event := range page.Events {
 		if page.Events[index], err = redactEventForRead(event, redactor); err != nil {
 			writeStoreFailure(w, r, fmt.Errorf("event %d: %w", event.ID, err))
@@ -1401,6 +1415,7 @@ func (s *Server) streamEvents(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	stream := newTaskEventStream(s.Store, chi.URLParam(r, "id"), s.mcpReadRedactor)
+	stream.annotate = s.annotateEventActorOwners
 	for {
 		if err := stream.poll(r.Context(), w); err != nil {
 			if errors.Is(err, errTaskEventStreamRead) {
@@ -1418,6 +1433,9 @@ func (s *Server) streamEvents(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) listInterventions(w http.ResponseWriter, r *http.Request) {
 	interventions, err := s.Store.ListInterventions(r.Context(), chi.URLParam(r, "id"))
+	if err == nil {
+		err = s.annotateInterventionActorOwners(r.Context(), interventions)
+	}
 	if err != nil {
 		log.Printf("handle API request: %v", err)
 		http.Error(w, "internal server error", http.StatusInternalServerError)
@@ -2423,6 +2441,9 @@ func (s *Server) getTaskActivity(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	interventions, err := s.Store.ListInterventions(r.Context(), id)
+	if err == nil {
+		err = s.annotateInterventionActorOwners(r.Context(), interventions)
+	}
 	if err != nil {
 		log.Printf("handle API request: %v", err)
 		http.Error(w, "internal server error", http.StatusInternalServerError)
@@ -2549,6 +2570,11 @@ func (s *Server) getTaskActivity(w http.ResponseWriter, r *http.Request) {
 		VerificationEvidence:      verificationEvidence,
 	}
 	if !bounded {
+		if err := s.annotateEventActorOwners(r.Context(), item.Events); err != nil {
+			log.Printf("handle API request: %v", err)
+			http.Error(w, "internal server error", http.StatusInternalServerError)
+			return
+		}
 		writeJSON(w, http.StatusOK, taskDetailProjection{item})
 		return
 	}
@@ -2562,6 +2588,11 @@ func (s *Server) getTaskActivity(w http.ResponseWriter, r *http.Request) {
 	}
 	summaries := deriveTaskDetailSummaries(events, jobs, workOrders)
 	if err := s.enrichReviewSeatSummaries(r.Context(), task, workOrders, events, &summaries); err != nil {
+		log.Printf("handle API request: %v", err)
+		http.Error(w, "internal server error", http.StatusInternalServerError)
+		return
+	}
+	if err := s.annotateSummaryActorOwners(r.Context(), &summaries); err != nil {
 		log.Printf("handle API request: %v", err)
 		http.Error(w, "internal server error", http.StatusInternalServerError)
 		return

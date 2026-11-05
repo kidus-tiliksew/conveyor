@@ -28,7 +28,7 @@ func TestArtifactRepairAuthorizationAndValidation(t *testing.T) {
 		members.roles[id] = map[string]core.WorkspaceRole{"demo": role, "other": role}
 		credentials[id] = core.AuthenticatedCredential{ID: id, OwnerUserID: id, Kind: core.CredentialUser, Scope: core.CredentialScopeOperator}
 	}
-	credentials["agent"] = core.AuthenticatedCredential{ID: "agent", OwnerUserID: "operator", Kind: core.CredentialAgent, Scope: core.CredentialScopeUser}
+	credentials["agent"] = core.AuthenticatedCredential{ID: "agent", OwnerUserID: "operator", Kind: retiredAgentKind, Scope: core.CredentialScopeUser}
 	server.Credentials = credentials
 	body := `{"expected_old_content_type":"application/binary","new_content_type":"image/jpeg","request_id":"http-repair","dry_run":true}`
 	call := func(token, query, body string) *httptest.ResponseRecorder {

@@ -39,13 +39,6 @@ func mcpReadSingleItem(name string) bool {
 	return name == "get_task" || name == "get_document" || name == "get_decision"
 }
 
-// mcpClaimBoundDocumentRead names the reads an agent credential may call under
-// its own live claim. Every other investigation read stays user-only
-// (req-design-delivery REQ-2 to REQ-4; DEC-103(3)).
-func mcpClaimBoundDocumentRead(name string) bool {
-	return name == "get_document" || name == "search_documents"
-}
-
 // mcpReadRefusesSnapshot names reads that return one bounded page and state
 // truncation, so their schema has no offset or snapshot.
 func mcpReadRefusesSnapshot(name string) bool { return name == "search_documents" }
@@ -70,8 +63,8 @@ func mcpReadDefinitions() []mcpReadDefinition {
 		{"list_task_events", "Read recorded task events in chronological order with event-ID tie-breaks; actor/source are not inferred. Payload fields are allowlisted. Long histories arrive as bounded windows of at most 1000 events: total and offset page within one window, history_total counts the captured history, and next_cursor (never combined with any snapshot or offset argument, including offset 0) opens the next window. Restart on 'restart read'.", map[string]any{"task_id": str(), "event_kind": str(), "cursor": map[string]any{"type": "string", "minLength": 32, "maxLength": 32}}, []string{"task_id"}},
 		{"get_task_context", "Read attached pins and all proposal states. Archived references remain labeled and readable; proposals confer no authority.", map[string]any{"task_id": str(), "proposal_state": enum("all", "proposed", "confirmed", "dismissed")}, []string{"task_id"}},
 		{"list_documents", "Discover confirmed requirement, design, or informative reference document identities. Archived history requires include_archived=true.", map[string]any{"kind": enum("requirement", "system_design", "reference"), "include_archived": boolean, "query": str()}, []string{"kind"}},
-		{"get_document", "Read current or explicit immutable document version. Explicit version can be proposed or historical; archive inclusion never makes it active authority. outline=true returns every heading with its section_id and size_bytes and no body text. section_id returns that section's text and the version it came from; a section over the output limit arrives in pages through next_byte_offset and byte_offset, and every later page names the returned version. Section IDs are valid only within one version. A whole-document read over the output limit is refused and names these modes. A session holding a work order passes work_order_id and session_id of its own live claim on every call: an agent credential is refused without them, and a System Design body or section read under that claim records one consultation. A complete whole-document result retains no snapshot and has no next_offset; restart the read for a fresh observation instead of paging.", map[string]any{"kind": enum("requirement", "system_design", "reference"), "document_id": str(), "version": version, "include_archived": boolean, "outline": boolean, "section_id": str(), "byte_offset": map[string]any{"type": "integer", "minimum": 0, "maximum": math.MaxInt32}, "section_offset": map[string]any{"type": "integer", "minimum": 0, "maximum": math.MaxInt32}, "work_order_id": str(), "session_id": str()}, []string{"kind", "document_id"}},
-		{"search_documents", "Search document text for a literal, case-insensitive query, one match per line. Each match carries document_id, kind, version, section_id, heading, line, section_size_bytes, and authority labels. Searches confirmed current requirement and design versions and current informative references unless version names another; document_ids and kind limit the search and intersect. Archived documents need include_archived. A response that cannot hold every match sets truncated with advice on narrowing; search has no continuation. An agent credential passes work_order_id and session_id of its own live claim on every call.", map[string]any{"query": str(), "document_ids": map[string]any{"type": "array", "items": str(), "minItems": 1, "maxItems": mcpDocumentSearchMaxIDs}, "kind": enum("requirement", "system_design", "reference"), "version": version, "include_archived": boolean, "work_order_id": str(), "session_id": str()}, []string{"query"}},
+		{"get_document", "Read current or explicit immutable document version. Explicit version can be proposed or historical; archive inclusion never makes it active authority. outline=true returns every heading with its section_id and size_bytes and no body text. section_id returns that section's text and the version it came from; a section over the output limit arrives in pages through next_byte_offset and byte_offset, and every later page names the returned version. Section IDs are valid only within one version. A whole-document read over the output limit is refused and names these modes. A session holding a work order passes work_order_id and session_id of its own live claim on every call, and a System Design body or section read under that claim records one consultation. A complete whole-document result retains no snapshot and has no next_offset; restart the read for a fresh observation instead of paging.", map[string]any{"kind": enum("requirement", "system_design", "reference"), "document_id": str(), "version": version, "include_archived": boolean, "outline": boolean, "section_id": str(), "byte_offset": map[string]any{"type": "integer", "minimum": 0, "maximum": math.MaxInt32}, "section_offset": map[string]any{"type": "integer", "minimum": 0, "maximum": math.MaxInt32}, "work_order_id": str(), "session_id": str()}, []string{"kind", "document_id"}},
+		{"search_documents", "Search document text for a literal, case-insensitive query, one match per line. Each match carries document_id, kind, version, section_id, heading, line, section_size_bytes, and authority labels. Searches confirmed current requirement and design versions and current informative references unless version names another; document_ids and kind limit the search and intersect. Archived documents need include_archived. A response that cannot hold every match sets truncated with advice on narrowing; search has no continuation. A session holding a work order passes work_order_id and session_id of its own live claim on every call.", map[string]any{"query": str(), "document_ids": map[string]any{"type": "array", "items": str(), "minItems": 1, "maxItems": mcpDocumentSearchMaxIDs}, "kind": enum("requirement", "system_design", "reference"), "version": version, "include_archived": boolean, "work_order_id": str(), "session_id": str()}, []string{"query"}},
 		{"list_document_events", "Read recorded document history, including archive/restore events, with chronological ID tie-breaks. Archived documents require explicit inclusion.", map[string]any{"kind": enum("requirement", "system_design", "reference"), "document_id": str(), "include_archived": boolean, "event_kind": str()}, []string{"kind", "document_id"}},
 		{"list_decisions", "Discover confirmed decisions; include_history explicitly includes superseded decisions, which are not active authority.", map[string]any{"include_history": boolean, "query": str()}, nil},
 		{"get_decision", "Read a decision by stable DEC identifier. Superseded records require include_history=true; pending decisions are not confirmed authority. The complete single-item result retains no snapshot and has no next_offset; restart the read for a fresh observation instead of paging.", map[string]any{"decision_id": str(), "include_history": boolean}, []string{"decision_id"}},
@@ -221,12 +214,8 @@ func validateMCPRead(name string, args map[string]any) (int, int, string, error)
 }
 func (s *Server) callMCPRead(r *http.Request, name string, args map[string]any) (any, error) {
 	credential, ok := store.CredentialFromContext(r.Context())
-	agentRead := ok && credential.Kind == core.CredentialAgent && mcpClaimBoundDocumentRead(name)
-	if !ok || (credential.Kind != core.CredentialUser && !agentRead) {
+	if !ok || credential.Kind != core.CredentialUser {
 		return nil, fmt.Errorf("%s requires an operator-scoped user credential", name)
-	}
-	if agentRead && (readString(args, "work_order_id") == "" || readString(args, "session_id") == "") {
-		return nil, mcpAgentDocumentReadRefusal(name)
 	}
 	// Read capacity and tokens belong to one credential; an unidentified
 	// credential is refused instead of sharing an anonymous owner.
@@ -246,11 +235,6 @@ func (s *Server) callMCPRead(r *http.Request, name string, args map[string]any) 
 		return nil, fmt.Errorf("workspace_not_found: workspace not found")
 	}
 	ctx := store.WithWorkspace(r.Context(), workspace)
-	if agentRead {
-		if err = s.authorizeDocumentReadClaim(ctx, name, credential, workspace, args); err != nil {
-			return nil, err
-		}
-	}
 	if name == "search_documents" {
 		return s.mcpDocumentSearch(ctx, args, limit)
 	}
@@ -385,19 +369,16 @@ func (s *Server) callMCPRead(r *http.Request, name string, args map[string]any) 
 // for one response (req-design-delivery AC-4.4).
 var errMCPDocumentOverBudget = errors.New("read exceeds 65536-byte output budget: this document is too large for a whole-document read; call get_document with outline=true for its section IDs and sizes, then get_document with section_id and the returned version for each section")
 
-// mcpAgentDocumentReadRefusal is the one answer to every agent read without a
-// live claim of its own, so a refusal discloses nothing about an order.
-func mcpAgentDocumentReadRefusal(name string) error {
-	return fmt.Errorf("%s requires an operator-scoped user credential or the work_order_id and session_id of this session's own live claim", name)
+// mcpDocumentClaimRefusal is the one answer when a read names no live claim of
+// the caller's own, so a refusal discloses nothing about an order.
+func mcpDocumentClaimRefusal(name string) error {
+	return fmt.Errorf("%s requires the work_order_id and session_id of this session's own live claim", name)
 }
 
 // authorizeDocumentReadClaim admits one document read under its owner's
-// claim_work binding and live claim. For an agent credential it runs on every
-// call, before any snapshot, cache, or store body access, so a later page or a
-// cache hit never outlives the claim (req-design-delivery REQ-2 to REQ-4;
-// DEC-103(3); req-security-boundaries REQ-1). Read dispatch precedes
-// callMCPTool's general authorization, so this path carries the check itself.
-// Consultation attribution passes the same check (mcp_document_consultation.go).
+// claim_work binding and live claim. Consultation attribution runs it on every
+// call, so a later page never records under a claim that has ended
+// (req-design-delivery REQ-5; DEC-103; mcp_document_consultation.go).
 func (s *Server) authorizeDocumentReadClaim(ctx context.Context, name string, credential core.AuthenticatedCredential, workspace string, args map[string]any) error {
 	allowed, err := s.Memberships.AuthorizeWorkspace(ctx, credential.OwnerUserID, workspace, core.CapabilityClaimWork)
 	if err != nil || !allowed {
@@ -408,10 +389,10 @@ func (s *Server) authorizeDocumentReadClaim(ctx context.Context, name string, cr
 		if errors.Is(err, store.ErrBackendOperation) {
 			return err
 		}
-		return mcpAgentDocumentReadRefusal(name)
+		return mcpDocumentClaimRefusal(name)
 	}
 	if !liveWorkOrderClaim(order, time.Now()) {
-		return mcpAgentDocumentReadRefusal(name)
+		return mcpDocumentClaimRefusal(name)
 	}
 	return nil
 }
@@ -585,6 +566,9 @@ func (s *Server) mcpReadItems(ctx context.Context, name string, a map[string]any
 		case "reference":
 			events, e = s.Store.ListReferenceDocumentEvents(ctx, readString(a, "document_id"))
 		}
+		if e == nil {
+			e = s.annotateEventActorOwners(ctx, events)
+		}
 		if e != nil {
 			return nil, e
 		}
@@ -655,7 +639,11 @@ func mcpReadEvents(events []core.Event, kind string) []any {
 				}
 			}
 		}
-		result = append(result, map[string]any{"id": v.ID, "task_id": v.TaskID, "job_id": v.JobID, "kind": v.Kind, "actor_id": v.ActorID, "actor_role": v.ActorRole, "at": v.At, "payload": payload, "payload_projection": "allowlisted; omitted fields are not evidence of absence"})
+		item := map[string]any{"id": v.ID, "task_id": v.TaskID, "job_id": v.JobID, "kind": v.Kind, "actor_id": v.ActorID, "actor_role": v.ActorRole, "at": v.At, "payload": payload, "payload_projection": "allowlisted; omitted fields are not evidence of absence"}
+		if v.ActorOwnerUserID != "" {
+			item["actor_owner_user_id"] = v.ActorOwnerUserID
+		}
+		result = append(result, item)
 	}
 	return result
 }

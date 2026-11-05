@@ -36,14 +36,6 @@ func ValidateContextClaim(ctx context.Context, task core.Task, order core.WorkOr
 		if order.ClaimantID == core.TaskRunClaimantID(strings.TrimPrefix(actor.ID, "user:")) {
 			return nil
 		}
-	case core.ActorAgent:
-		c, ok := CredentialFromContext(ctx)
-		if !ok || c.Kind != core.CredentialAgent || actor.ID != AgentActorID(c.ID) {
-			break
-		}
-		if order.ClaimantID == core.TaskRunClaimantID(c.OwnerUserID) {
-			return nil
-		}
 	}
 	return ErrWorkOrderClaimUnauthorized
 }

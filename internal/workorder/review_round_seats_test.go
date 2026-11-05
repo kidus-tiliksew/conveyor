@@ -76,7 +76,7 @@ func TestAddReviewSeatsRequiresUserCredential(t *testing.T) {
 	request := store.ReviewSeatAdditionRequest{TaskID: "seat-auth", RequestID: "auth-1", Reason: "second opinion", Add: 1}
 	base := store.WithWorkspace(t.Context(), seatAdditionWorkspace)
 	user := core.AuthenticatedCredential{ID: "pat_operator", OwnerUserID: "operator", Kind: core.CredentialUser, Scope: core.CredentialScopeUser}
-	agent := core.AuthenticatedCredential{ID: "agt_operator", OwnerUserID: "operator", Kind: core.CredentialAgent, Scope: core.CredentialScopeUser}
+	agent := core.AuthenticatedCredential{ID: "agt_operator", OwnerUserID: "operator", Kind: core.CredentialKind("agent"), Scope: core.CredentialScopeUser}
 	userActor := store.Actor{ID: store.UserActorID("operator"), Role: core.ActorUser}
 	for name, ctx := range map[string]context.Context{
 		"ActorOnly":        store.WithActor(base, userActor),

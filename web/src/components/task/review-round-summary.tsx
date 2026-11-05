@@ -65,6 +65,9 @@ export function ReviewRoundSummary({
         )}
         <span className="ml-auto text-[11px] text-faint" data-review-summary-author>
           By {summary.author?.actor_id || 'unknown author'}
+          {summary.author?.actor_owner_user_id && (
+            <span data-review-summary-owner> (owned by {summary.author.actor_owner_user_id})</span>
+          )}
           {model && (
             <>
               {' · '}
