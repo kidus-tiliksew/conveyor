@@ -449,10 +449,12 @@ func (s *Service) Process(ctx context.Context, observation Observation) (Observa
 			"deduplicated_count": record.DeduplicatedCount,
 		})
 		if observation.Kind.Drift() {
-			// A repeat retries a drift write that failed after the link. The
-			// write is idempotent and never reopens a resolved record, and
-			// this path files no task (req-delivery-and-forge AC-4.10).
-			if err = s.recordRepositoryDrift(ctx, observation, record.TaskID); err != nil {
+			// A repeat retries a drift write that failed after the link, from
+			// the stored first observation so the record is the one that write
+			// would have made. The write is idempotent and never reopens a
+			// resolved record, and this path files no task
+			// (req-delivery-and-forge AC-4.10).
+			if err = s.recordRepositoryDrift(ctx, record.Observation, record.TaskID); err != nil {
 				return ObservationRecord{}, err
 			}
 			if err = s.recordSystemDesignDrift(ctx, observation, record.TaskID); err != nil {

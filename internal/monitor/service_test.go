@@ -651,6 +651,58 @@ func TestPollJoinsEveryFailureAndRedactsItsText(t *testing.T) {
 	}
 }
 
+type secretSource struct {
+	secrets []string
+	err     error
+}
+
+func (s secretSource) ListGitHubAppKeysForRedaction(context.Context) ([]string, error) {
+	return s.secrets, s.err
+}
+
+// A configured secret that matches no built-in pattern is redacted from a
+// failed pass's status and returned text, and a failed secret lookup still
+// leaves a record that carries no failure text.
+func TestPollRedactsConfiguredSecretsFromPassFailure(t *testing.T) {
+	const opaque = "plain-words-no-pattern-matches"
+	errIntake := errors.New("intake refused " + opaque)
+	t.Run("configured secret", func(t *testing.T) {
+		service, _, ctx := testService(t)
+		service.RedactionSecrets = secretSource{secrets: []string{opaque}}
+		failIntakeFor(service, errIntake, "monitor:direct_push:conveyor:only")
+		poller := monitor.Poller{Service: service, Source: staticSource(directPush("only")), StartupWindow: time.Hour}
+		err := poller.Poll(ctx)
+		if !errors.Is(err, errIntake) {
+			t.Fatalf("poll err=%v", err)
+		}
+		status, statusErr := service.Status(ctx)
+		if statusErr != nil {
+			t.Fatal(statusErr)
+		}
+		if status.CurrentError == "" || strings.Contains(status.CurrentError, opaque) || strings.Contains(err.Error(), opaque) {
+			t.Fatalf("configured secret reached the failure text: status=%q err=%q", status.CurrentError, err)
+		}
+	})
+	t.Run("secret lookup fails", func(t *testing.T) {
+		service, _, ctx := testService(t)
+		errLookup := errors.New("secrets unavailable")
+		service.RedactionSecrets = secretSource{err: errLookup}
+		failIntakeFor(service, errIntake, "monitor:direct_push:conveyor:only")
+		poller := monitor.Poller{Service: service, Source: staticSource(directPush("only")), StartupWindow: time.Hour}
+		err := poller.Poll(ctx)
+		if !errors.Is(err, errIntake) || !errors.Is(err, errLookup) {
+			t.Fatalf("poll err=%v", err)
+		}
+		status, statusErr := service.Status(ctx)
+		if statusErr != nil {
+			t.Fatal(statusErr)
+		}
+		if status.CurrentError == "" || strings.Contains(status.CurrentError, opaque) || strings.Contains(err.Error(), opaque) {
+			t.Fatalf("unredacted failure text: status=%q err=%q", status.CurrentError, err)
+		}
+	})
+}
+
 // A repository drift write that fails after the link fails the pass with the
 // observation linked, and the next pass records it with no second task
 // (req-delivery-and-forge AC-4.10).

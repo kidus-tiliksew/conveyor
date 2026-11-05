@@ -472,9 +472,10 @@ func RunSystemDesignDriftConformance(t *testing.T, factory SystemDesignDriftFact
 		failing := &failingDriftStore{Store: monitorStore}
 		failing.failures.Store(1)
 		service.Store = failing
+		firstObservedAt := now.Add(-time.Minute).Truncate(time.Second)
 		observation := monitor.Observation{
 			Repository: "conveyor", Kind: monitor.DirectPush, OccurrenceID: "failed-drift-write", CommitSHA: "failed-drift-write",
-			SourceURL: "https://example.test/commit/failed-drift-write",
+			SourceURL: "https://example.test/commit/failed-drift-write", ObservedAt: firstObservedAt,
 		}
 		if _, err := service.Process(ctx, observation); !errors.Is(err, errInjectedDriftWrite) {
 			t.Fatalf("first observation err=%v", err)
@@ -524,13 +525,20 @@ func RunSystemDesignDriftConformance(t *testing.T, factory SystemDesignDriftFact
 			return count
 		}
 
-		record, err := service.Process(ctx, observation)
+		// A replay carrying less, and later, than the first observation still
+		// writes the record that first write would have made.
+		replay := observation
+		replay.CommitSHA, replay.ObservedAt = "", now
+		record, err := service.Process(ctx, replay)
 		if err != nil || record.TaskID != taskID {
 			t.Fatalf("retry record=%+v err=%v", record, err)
 		}
 		status, err = monitorStore.MonitorStatus(ctx, true, now)
 		if err != nil || status.DriftCount != 1 || status.Drift[0].ID != observation.Identity() || status.Drift[0].TaskID != taskID {
 			t.Fatalf("after the retry status=%+v err=%v", status, err)
+		}
+		if retried := status.Drift[0]; retried.CommitSHA != observation.CommitSHA || !retried.DetectedAt.Equal(firstObservedAt) {
+			t.Fatalf("the retry did not use the stored observation: %+v", retried)
 		}
 		if onTask, inActivity := audits(); onTask != 1 || inActivity != 1 || monitorTasks() != 1 {
 			t.Fatalf("retry audits task=%d activity=%d tasks=%d", onTask, inActivity, monitorTasks())
@@ -633,6 +641,48 @@ func RunSystemDesignDriftConformance(t *testing.T, factory SystemDesignDriftFact
 		status, err := monitorStore.MonitorStatus(ctx, true, time.Now().UTC())
 		if err != nil || status.DriftCount != driftsPastRetiredCap {
 			t.Fatalf("drift_count=%d err=%v", status.DriftCount, err)
+		}
+	})
+
+	t.Run("concurrent drift writes for one identity record it once", func(t *testing.T) {
+		st, ctx, workspace := factory(t)
+		task := createDriftTask(t, st, ctx, workspace, "concurrent-same-identity")
+		monitorStore := st.(monitor.Store)
+		drift := monitor.Drift{
+			ID: "concurrent-same-identity", WorkspaceID: workspace, Repository: "conveyor", Kind: monitor.DirectPush,
+			SourceURL: "https://example.test/commit/concurrent-same-identity", TaskID: task.ID, DetectedAt: time.Now().UTC(),
+		}
+		type result struct {
+			fresh bool
+			err   error
+		}
+		results := make(chan result, driftsPastRetiredCap)
+		var ready sync.WaitGroup
+		start := make(chan struct{})
+		for index := 0; index < driftsPastRetiredCap; index++ {
+			ready.Add(1)
+			go func() {
+				ready.Done()
+				<-start
+				_, fresh, err := monitorStore.RecordDrift(ctx, drift)
+				results <- result{fresh: fresh, err: err}
+			}()
+		}
+		ready.Wait()
+		close(start)
+		fresh := 0
+		for index := 0; index < driftsPastRetiredCap; index++ {
+			got := <-results
+			if got.err != nil {
+				t.Fatal(got.err)
+			}
+			if got.fresh {
+				fresh++
+			}
+		}
+		status, err := monitorStore.MonitorStatus(ctx, true, time.Now().UTC())
+		if err != nil || fresh != 1 || status.DriftCount != 1 {
+			t.Fatalf("fresh=%d drift_count=%d err=%v", fresh, status.DriftCount, err)
 		}
 	})
 
