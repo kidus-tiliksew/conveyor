@@ -8,6 +8,7 @@ import (
 	"github.com/kidus-tiliksew/conveyor/internal/config"
 	"github.com/kidus-tiliksew/conveyor/internal/core"
 	"github.com/kidus-tiliksew/conveyor/internal/inprocess"
+	"github.com/kidus-tiliksew/conveyor/internal/lineagecontext"
 )
 
 // GenerateTaskTitle resolves an intake title through the same trusted
@@ -47,8 +48,7 @@ Keep it under 200 characters and do not invent requirements absent from the cont
 Repository: %s
 Source: %s
 
-Task description:
-%s`, task.Repo, task.Source, task.Body)
+%s`, task.Repo, lineagecontext.QuoteOrigin(task.Source), lineagecontext.RenderUntrustedBlock("Task description", task.Source, task.Body))
 	result, err := d.Agent.Run(runCtx, model, inprocess.Input{Prompt: prompt})
 	if err != nil {
 		return "", err

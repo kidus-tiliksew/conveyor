@@ -12,6 +12,7 @@ import (
 	"log"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -821,7 +822,9 @@ func (d *Dispatcher) buildStageInput(ctx context.Context, cfg *config.Config, st
 	}
 	var prompt strings.Builder
 	prompt.WriteString(role)
-	fmt.Fprintf(&prompt, "\n\n# Task %s: %s\n\nPlan approval: %t · Merge approval: %t · Repository: %s\n\n%s\n\nBranch: %s (base %s).\n", task.ID, task.Title, task.SpecApproval, task.MergeApproval, task.Repo, task.Body, task.Branch, task.BaseBranch)
+	// The title is generated from the body, so both carry the task's origin
+	// (req-security-boundaries REQ-4; component-triage).
+	fmt.Fprintf(&prompt, "\n\n# Task %s\n\n%s\nPlan approval: %t · Merge approval: %t · Repository: %s\n\n%s\nBranch: %s (base %s).\n", task.ID, lineagecontext.RenderUntrustedBlock("Task title", task.Source, task.Title), task.SpecApproval, task.MergeApproval, task.Repo, lineagecontext.RenderUntrustedBlock("Task body", task.Source, task.Body), task.Branch, task.BaseBranch)
 	if stage == core.StageTriage {
 		tools, marshalErr := json.Marshal(corpus.Tools())
 		if marshalErr != nil {
@@ -839,7 +842,7 @@ func (d *Dispatcher) buildStageInput(ctx context.Context, cfg *config.Config, st
 			Error string `json:"error"`
 		}
 		if json.Unmarshal(events[i].Payload, &prior) == nil && prior.Error != "" {
-			fmt.Fprintf(&prompt, "\n# Previous output rejected\n\nCorrect this validation error in the next response: %s\n", prior.Error)
+			fmt.Fprintf(&prompt, "\n# Previous output rejected\n\nCorrect this validation error in the next response.\n\n%s", lineagecontext.RenderUntrustedBlock("Validation error", "validation of the previous model output", prior.Error))
 		}
 		break
 	}
@@ -850,9 +853,9 @@ func (d *Dispatcher) buildStageInput(ctx context.Context, cfg *config.Config, st
 		}
 		if exists {
 			fmt.Fprintf(&prompt, "\n# Approved specification v%d\n\n%s\n", spec.Version, spec.Content)
-			prompt.WriteString(pack.DoneCriteriaContract(stage, spec.Content, task.Body, len(servedRequirements) > 0))
+			prompt.WriteString(pack.DoneCriteriaContract(stage, spec.Content, task.Body, task.Source, len(servedRequirements) > 0))
 		} else {
-			prompt.WriteString(pack.DoneCriteriaContract(stage, "", task.Body, len(servedRequirements) > 0))
+			prompt.WriteString(pack.DoneCriteriaContract(stage, "", task.Body, task.Source, len(servedRequirements) > 0))
 		}
 	}
 	if stage == core.StageReview {
@@ -878,9 +881,10 @@ func (d *Dispatcher) buildStageInput(ctx context.Context, cfg *config.Config, st
 		if strings.TrimSpace(diff) == "" {
 			fmt.Fprint(&prompt, "\n# Branch diff\n\nThe authoritative comparison completed successfully and contains no changes.\n")
 		} else {
-			// Four-backtick fence so diff hunks that themselves contain
-			// three-backtick lines cannot terminate the block early.
-			fmt.Fprintf(&prompt, "\n# Branch diff (%s...%s)\n\nThe change under review:\n\n````diff\n%s\n````\n", comparison.BaselineSHA, comparison.HeadSHA, strings.TrimRight(diff, "\n"))
+			// At least a four-backtick fence, and always longer than any backtick
+			// run in the diff, so its hunks cannot terminate the block early.
+			fence := lineagecontext.SafeBacktickFence("```" + diff)
+			fmt.Fprintf(&prompt, "\n# Branch diff (%s...%s)\n\n%s\n\n%sdiff\n%s\n%s\n", comparison.BaselineSHA, comparison.HeadSHA, lineagecontext.UntrustedLabel("The change under review", comparison.Source), fence, strings.TrimRight(diff, "\n"), fence)
 		}
 	}
 	if stage == core.StageSpec {
@@ -948,13 +952,13 @@ func (d *Dispatcher) buildStageInput(ctx context.Context, cfg *config.Config, st
 			// An adjacent task's unsupported artifact cannot block triage: its body
 			// is never read, and the note counts toward the text/history budget
 			// like every other omission note (component-triage).
-			fmt.Fprintf(&prompt, "\nContext artifact body omitted as unsupported model input: %s (%s, %d bytes, id %s) from %s; this attachment kind is not supported model input; the body is unread.\n", artifact.Name, artifact.ContentType, artifact.SizeBytes, artifact.ID, contextArtifactSource(artifact))
+			fmt.Fprintf(&prompt, "\nContext artifact body omitted as unsupported model input: %s from %s; this attachment kind is not supported model input; the body is unread; %s\n", artifactIdentity(artifact.Name, artifact.ContentType, int(artifact.SizeBytes), artifact.ID), contextArtifactSource(artifact), artifactUntrustedNote(artifact))
 			markContextDeliveryOmitted(&input.ContextFreshness, artifact.ID)
 			continue
 		}
 		attachment := inprocess.Attachment{ID: artifact.ID, Name: artifact.Name, ContentType: artifact.ContentType, Kind: kind}
 		omit := func(err *triageBudgetError, size int) {
-			fmt.Fprintf(&prompt, "\nContext artifact body omitted by triage byte budget: %s (%s, %d bytes, id %s); %s\n", artifact.Name, artifact.ContentType, size, artifact.ID, err)
+			fmt.Fprintf(&prompt, "\nContext artifact body omitted by triage byte budget: %s; %s; %s\n", artifactIdentity(artifact.Name, artifact.ContentType, size, artifact.ID), err, artifactUntrustedNote(artifact))
 		}
 		if optional {
 			if overage := triageAttachmentOverage(attachment, int(artifact.SizeBytes), maxTriageInitialBytes); overage != nil {
@@ -996,7 +1000,7 @@ func (d *Dispatcher) buildStageInput(ctx context.Context, cfg *config.Config, st
 				return input, fmt.Errorf("context artifact %s (%s) from %s makes task %s exceed the %d-byte combined model input limit", artifact.ID, artifact.Name, contextArtifactSource(artifact), task.ID, maxModelFileBytes)
 			}
 		}
-		fmt.Fprintf(&prompt, "\nContext artifact supplied as %s input: %s (%s, %d bytes, id %s)\n", kind, artifact.Name, artifact.ContentType, len(content), artifact.ID)
+		fmt.Fprintf(&prompt, "\nContext artifact supplied as %s input: %s; %s\n", kind, artifactIdentity(artifact.Name, artifact.ContentType, len(content), artifact.ID), artifactUntrustedNote(artifact))
 		input.Attachments = append(input.Attachments, inprocess.Attachment{ID: artifact.ID, Name: artifact.Name, ContentType: artifact.ContentType, Kind: kind, Content: content})
 	}
 	input.Prompt = prompt.String()
@@ -1020,6 +1024,19 @@ func markContextDeliveryOmitted(f *core.ContextFreshness, artifactID string) {
 		}
 	}
 	f.ObservationRevision = core.ContextDigest(f.Deliveries)
+}
+
+// artifactIdentity renders an artifact's caller-chosen name and type quoted on
+// one line, so neither can end the note that carries them
+// (req-security-boundaries REQ-4).
+func artifactIdentity(name, contentType string, size int, id string) string {
+	return fmt.Sprintf("%s (%s, %d bytes, id %s)", strconv.Quote(name), strconv.Quote(contentType), size, id)
+}
+
+// artifactUntrustedNote labels the artifact's name and its attached body with
+// the artifact's origin (component-triage).
+func artifactUntrustedNote(artifact core.Artifact) string {
+	return "its name and body are " + lineagecontext.UntrustedStatement(contextArtifactSource(artifact)) + "."
 }
 
 func contextArtifactSource(artifact core.Artifact) string {

@@ -48,3 +48,66 @@ func TestRecoverStateRefusalSharesTheRouteEligibility(t *testing.T) {
 		})
 	}
 }
+
+// The predicate states exactly the route's 409 conditions for every task
+// state (req-operator-next-action AC-1.4; component-next-action, Invariants 7).
+func TestNextActionRedispatchRefusalStatesTheRouteConditions(t *testing.T) {
+	held := []WorkOrder{{ID: "o", Stage: StageImplement, State: WorkOrderStale}}
+	cases := []struct {
+		name   string
+		task   Task
+		orders []WorkOrder
+		want   string
+	}{
+		{"running", Task{ID: "t", State: TaskRunning, NextStage: StageImplement}, nil, TaskRedispatchActiveRefusal},
+		{"queued and held", Task{ID: "t", State: TaskQueued, NextStage: StageImplement}, held, TaskHeldByWorkOrderRefusal + ": task t waits on work order o"},
+		{"queued with another stage next", Task{ID: "t", State: TaskQueued, NextStage: StageReview}, held, ""},
+		{"queued with no orders", Task{ID: "t", State: TaskQueued, NextStage: StageImplement}, nil, ""},
+		{"queued with no next stage", Task{ID: "t", State: TaskQueued}, held, ""},
+		{"parked at its recovery stage", Task{ID: "t", State: TaskParked, RecoveryStage: StageImplement}, held, ""},
+		{"parked at its next stage", Task{ID: "t", State: TaskParked, NextStage: StageImplement}, nil, ""},
+		{"parked with no stage", Task{ID: "t", State: TaskParked}, nil, TaskRedispatchNoStageRefusal},
+		{"awaiting with a stage", Task{ID: "t", State: TaskAwaiting, NextStage: StageImplement}, nil, ""},
+		{"awaiting with only a recovery stage", Task{ID: "t", State: TaskAwaiting, RecoveryStage: StageImplement}, nil, TaskRedispatchNoStageRefusal},
+		{"approved with a stage", Task{ID: "t", State: TaskApproved, NextStage: StageReview}, nil, ""},
+		{"approved with no stage", Task{ID: "t", State: TaskApproved}, nil, TaskRedispatchNoStageRefusal},
+		{"claiming with a stage", Task{ID: "t", State: TaskClaiming, NextStage: StageImplement}, nil, ""},
+		{"claiming with no stage", Task{ID: "t", State: TaskClaiming}, nil, TaskRedispatchNoStageRefusal},
+		{"merged with no stage", Task{ID: "t", State: TaskMerged}, nil, TaskRedispatchNoStageRefusal},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := NextActionRedispatchRefusal(tc.task, tc.orders); got != tc.want {
+				t.Fatalf("refusal = %q, want %q", got, tc.want)
+			}
+		})
+	}
+	for _, state := range []TaskState{TaskMerged, TaskClosed} {
+		got := NextActionRedispatchRefusal(Task{ID: "t", State: state, NextStage: StageImplement}, nil)
+		_, err := TransitionTask(state, TaskRecover)
+		if err == nil || got != err.Error() {
+			t.Fatalf("%s refusal = %q, want the transition error %v", state, got, err)
+		}
+	}
+}
+
+// An unpersisted claim expiry holds the stage as the stored claim does, and
+// the caller's projected orders stay unchanged.
+func TestNextActionRedispatchRefusalReadsStoredClaims(t *testing.T) {
+	orders := []WorkOrder{
+		{ID: "claim", Stage: StageImplement, State: WorkOrderQueued, ClaimExpiryUnpersisted: true},
+		{ID: "seat", Stage: StageReview, ReviewRound: 1, State: WorkOrderQueued},
+	}
+	task := Task{ID: "t", State: TaskQueued, NextStage: StageImplement}
+	want := TaskHeldByWorkOrderRefusal + ": task t waits on work order claim"
+	if got := NextActionRedispatchRefusal(task, orders); got != want {
+		t.Fatalf("refusal = %q, want %q", got, want)
+	}
+	if orders[0].State != WorkOrderQueued {
+		t.Fatalf("projected order mutated: %s", orders[0].State)
+	}
+	orders[0].ClaimExpiryUnpersisted = false
+	if got := NextActionRedispatchRefusal(task, orders); got != "" {
+		t.Fatalf("persisted expiry refusal = %q", got)
+	}
+}
