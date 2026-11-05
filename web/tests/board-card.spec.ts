@@ -1,9 +1,9 @@
 import { expect, type Page, test } from '@playwright/test'
-import type { TaskFlow, TaskFlowStage } from '../src/lib/types'
+import type { TaskFlow, TaskFlowStage, TaskFlowStatus } from '../src/lib/types'
 import { callerIdentity } from './helpers/caller-identity'
 
 // The Board card (req-operator-next-action AC-3.1 to AC-3.5;
-// feature-operator-next-action NA-6, NA-7; component-web-task-surfaces).
+// component-next-action invariants 28, 30, 39; component-web-task-surfaces).
 // Activity items carry the server's compact next action; every assertion
 // checks that the card prints the server's label verbatim, tones its status
 // mark from the server's actor and kind, and keeps the summary and blockers
@@ -96,6 +96,15 @@ const agentQuestion = {
   deadline: null,
 }
 
+const planApproval = {
+  label: 'Plan approval',
+  actor: 'operator',
+  kind: 'plan_approval',
+  judgment: true,
+  summary: 'Server summary: the plan is waiting for your approval.',
+  deadline: null,
+}
+
 const items = [
   card('task-proposal', 'Confirm the dashboard proposal', 'spec', proposal),
   card(
@@ -145,18 +154,26 @@ const items = [
   }),
 ]
 
-// The fixture carries the whole wire contract; the stripe reads only id,
-// gate, status, and status_label, and ignores the detail chart's fields.
-function stage(id: TaskFlowStage['id'], status: TaskFlowStage['status'], gate: TaskFlowStage['gate'] = null) {
+// The fixture carries the whole wire contract; the stripe reads only id, gate,
+// gate_label, gate_status, gate_status_label, status, and status_label, and
+// ignores the detail chart's fields. As on the server, the gate's mark is set
+// on the spec and merge rows, also when the gate is off, and is independent of
+// the row's status (component-next-action invariant 28).
+function stage(
+  id: TaskFlowStage['id'],
+  status: TaskFlowStage['status'],
+  gate: TaskFlowStage['gate'] = null,
+  gateStatus: TaskFlowStatus = gate ? 'upcoming' : 'off',
+) {
   const gated = id === 'spec' || id === 'merge'
   return {
     id,
     label: `Server ${id} node`,
     gate,
     gate_label: gated ? `Server ${id} gate` : '',
-    gate_status: gated ? (gate ? 'upcoming' : 'off') : null,
-    gate_status_label: gated ? 'Server gate label' : '',
-    gate_status_text: gated ? 'Server gate sentence.' : '',
+    gate_status: gated ? gateStatus : null,
+    gate_status_label: gated ? `Server ${gateStatus} gate label` : '',
+    gate_status_text: gated ? `Server ${gateStatus} gate sentence.` : '',
     status,
     description: `Server description of ${id}.`,
     status_label: `Server ${status} label`,
@@ -183,7 +200,7 @@ function flowFor(taskId: string): TaskFlow {
         ]
       : [
           stage('triage', 'done'),
-          stage('spec', 'done', 'plan_approval'),
+          stage('spec', 'done', 'plan_approval', 'done'),
           stage('implement', 'in_progress'),
           stage('verify', 'off'),
           stage('review', 'waiting'),
@@ -211,7 +228,13 @@ async function mockBoard(
     stageProgress,
     stream,
     flow: flowOverride,
-  }: { stageProgress?: string; stream?: () => Promise<string | null>; flow?: (taskId: string) => TaskFlow } = {},
+    cards = items,
+  }: {
+    stageProgress?: string
+    stream?: () => Promise<string | null>
+    flow?: (taskId: string) => TaskFlow
+    cards?: typeof items
+  } = {},
 ) {
   const counts = { flow: 0, detail: 0, flowTasks: new Set<string>(), activityQueries: [] as string[] }
   await page.addInitScript((value) => {
@@ -237,13 +260,13 @@ async function mockBoard(
     }
     const action = path.match(/^\/v1\/tasks\/([^/]+)\/next-action$/)
     if (action) {
-      const item = items.find((candidate) => candidate.task.id === action[1])
+      const item = cards.find((candidate) => candidate.task.id === action[1])
       return route.fulfill({ json: { ...item?.next_action, choices: [], details: {} } })
     }
     const detail = path.match(/^\/v1\/tasks\/([^/]+)\/activity$/)
     if (detail) {
       counts.detail++
-      const item = items.find((candidate) => candidate.task.id === detail[1])
+      const item = cards.find((candidate) => candidate.task.id === detail[1])
       return route.fulfill({
         json: {
           ...item,
@@ -265,7 +288,7 @@ async function mockBoard(
     if (path === '/v1/activity') {
       const q = url.searchParams.get('q') ?? ''
       counts.activityQueries.push(q)
-      const matching = items.filter((item) => !q || item.task.id.includes(q) || item.task.title.includes(q))
+      const matching = cards.filter((item) => !q || item.task.id.includes(q) || item.task.title.includes(q))
       return route.fulfill({
         json: matching,
         headers: {
@@ -434,18 +457,22 @@ test('with stage progress on, visible cards draw every served status and policy-
     'data-status',
     'needs_operator',
   )
-  await expect(gated.getByRole('img', { name: 'Plan approval — waiting for you' })).toHaveAttribute(
+  // A context proposal holds the Plan stage without being the gate's decision.
+  await expect(gated.getByRole('img', { name: 'Server spec gate — Server upcoming gate label' })).toHaveAttribute(
     'data-gate-state',
-    'needs_operator',
+    'upcoming',
   )
-  await expect(gated.getByRole('img', { name: 'Merge approval — upcoming' })).toBeVisible()
+  await expect(gated.getByRole('img', { name: 'Server merge gate — Server upcoming gate label' })).toBeVisible()
   await expect(gated.locator('[data-stage="verify"]')).toHaveAttribute('data-status', 'off')
 
   // The stripe reads its flow once the card scrolls into view.
   const running = cardFor(page, 'Build the opt-in stripe')
   expect(counts.flowTasks.has('task-working')).toBe(false)
   await running.scrollIntoViewIfNeeded()
-  await expect(running.getByRole('img', { name: 'Plan approval — passed' })).toBeVisible()
+  await expect(running.getByRole('img', { name: 'Server spec gate — Server done gate label' })).toHaveAttribute(
+    'data-gate-state',
+    'done',
+  )
   await expect(running.locator('[data-stage="implement"]')).toHaveAttribute('data-status', 'in_progress')
   await expect(running.locator('[data-stage="review"]')).toHaveAttribute('data-status', 'waiting')
   // A policy that turned the merge gate off sends no gate, so none is drawn.
@@ -457,6 +484,81 @@ test('with stage progress on, visible cards draw every served status and policy-
   ])
   expect(active?.width ?? 0).toBeGreaterThan(done?.width ?? 0)
   expect(counts.flow).toBeGreaterThan(0)
+})
+
+test('a gate reads as needing the operator only when the served gate mark says so', async ({ page }) => {
+  // Each row carries what the flow projection serves for that stop: every one
+  // holds the Plan row at needs_operator, and only the gate's own decision
+  // sets the gate's mark (req-operator-next-action AC-7.5, AC-7.7;
+  // component-next-action invariant 28).
+  const atPlan = {
+    question: { action: agentQuestion, state: 'running', gateKind: '', gate: 'upcoming', agentQuestion: true },
+    approval: {
+      action: planApproval,
+      state: 'awaiting_human',
+      gateKind: 'plan_approval',
+      gate: 'needs_operator',
+      agentQuestion: false,
+    },
+    masked: {
+      action: agentQuestion,
+      state: 'awaiting_human',
+      gateKind: 'plan_approval',
+      gate: 'waiting',
+      agentQuestion: true,
+    },
+  } as const
+  const flow = (taskId: string): TaskFlow => {
+    const stop = atPlan[taskId as keyof typeof atPlan]
+    const base = flowFor('task-proposal')
+    return {
+      ...base,
+      stages: [
+        stage('triage', 'done'),
+        stage('spec', 'needs_operator', 'plan_approval', stop.gate),
+        stage('implement', 'upcoming'),
+        stage('verify', 'off'),
+        stage('review', 'upcoming'),
+        stage('merge', 'upcoming', 'merge_approval'),
+      ],
+      side: { ...base.side, agent_question: stop.agentQuestion },
+      current_stage: 'spec',
+      next_action: stop.action,
+      raw: { ...base.raw, state: stop.state, next_stage: 'spec', gate_kind: stop.gateKind },
+    }
+  }
+  await mockBoard(page, {
+    stageProgress: 'true',
+    flow,
+    cards: [
+      card('question', 'Answer the planning question', 'spec', agentQuestion),
+      card('approval', 'Approve the stripe plan', 'spec', planApproval, {}, { state: 'awaiting_human' }),
+      card('masked', 'Answer the question at the gate', 'spec', agentQuestion, {}, { state: 'awaiting_human' }),
+    ],
+  })
+  await page.goto('/')
+
+  const question = cardFor(page, 'Answer the planning question')
+  await expect(question.locator('[data-stage="spec"]')).toHaveAttribute('data-status', 'needs_operator')
+  const questionGate = question.getByRole('img', { name: 'Server spec gate — Server upcoming gate label' })
+  await expect(questionGate).toHaveAttribute('data-gate-state', 'upcoming')
+  await expect(questionGate).not.toHaveClass(/bg-attention-dot/)
+  await expect(question.locator('[data-gate-state="needs_operator"]')).toHaveCount(0)
+
+  const approval = cardFor(page, 'Approve the stripe plan')
+  await expect(approval.locator('[data-stage="spec"]')).toHaveAttribute('data-status', 'needs_operator')
+  const approvalGate = approval.getByRole('img', { name: 'Server spec gate — Server needs_operator gate label' })
+  await expect(approvalGate).toHaveAttribute('data-gate-state', 'needs_operator')
+  await expect(approvalGate).toHaveClass(/bg-attention-dot/)
+  // The other gate keeps its own served mark.
+  await expect(approval.locator('[data-gate="merge_approval"]')).toHaveAttribute('data-gate-state', 'upcoming')
+
+  // An agent question leading a gate the task entered reads as the served
+  // waiting mark, still not as the gate's decision.
+  const masked = cardFor(page, 'Answer the question at the gate')
+  const maskedGate = masked.getByRole('img', { name: 'Server spec gate — Server waiting gate label' })
+  await expect(maskedGate).toHaveAttribute('data-gate-state', 'waiting')
+  await expect(maskedGate).not.toHaveClass(/bg-attention-dot/)
 })
 
 test('turning stage progress off unmounts every stripe and stops flow reads', async ({ page }) => {
