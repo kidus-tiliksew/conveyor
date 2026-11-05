@@ -213,10 +213,11 @@ func (d *Dispatcher) recordPendingDeadline(ctx context.Context, task core.Task, 
 
 // recordCheckDeadline records the deadline and merge.check_pending together. A
 // later read of the same head leaves the deadline where it is. It appends a
-// further event only when the read changes between answered and unanswered, or
-// when reopen is set and a failed read follows the end of the retries, so the
-// wait reads truthfully and the job finds what is due. A failed read in a wait
-// keeps naming what that wait found pending, so the deadline can name it.
+// further event only when the read changes between answered and unanswered, when
+// an answered read finds different checks pending, or when reopen is set and a
+// failed read follows the end of the retries, so the wait reads truthfully and
+// the job finds what is due. A failed read in a wait keeps naming what the wait's
+// last answered read found pending, so the deadline can name it.
 func (d *Dispatcher) recordCheckDeadline(ctx context.Context, task core.Task, head string, standing nextaction.CheckStatus, payload map[string]any, reopen bool) error {
 	deadline := d.checkClock().Add(CheckStatusDeadlineWindow)
 	payload["deadline"] = deadline
@@ -227,6 +228,9 @@ func (d *Dispatcher) recordCheckDeadline(ctx context.Context, task core.Task, he
 	}
 	readFailed, _ := payload["read_failed"].(bool)
 	changed := readFailed != (standing.ReadFailure != "")
+	if pending, _ := payload["checks"].([]github.Check); !readFailed && !sameChecks(standing.Waiting, pending) {
+		changed = true
+	}
 	if !changed && !(reopen && standing.RetriesExhausted) {
 		d.announceCheckDeadline(task)
 		return nil

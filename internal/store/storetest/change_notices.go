@@ -309,16 +309,12 @@ func runNextDeadline(t *testing.T, x Fixture) {
 	if err != nil || !ok || !next.Equal(checkDeadline) {
 		t.Fatalf("check-status NextDeadline=%s ok=%t err=%v, want %s", next, ok, err, checkDeadline)
 	}
-	// Clearing it keeps the head and stops it being a source.
-	if cleared, err := st.ClearCheckStatusDeadline(ctx, checkTask); err != nil || !cleared {
-		t.Fatalf("clear=%t err=%v", cleared, err)
-	}
-	next, ok, err = st.NextDeadline(ctx, time.Time{})
+	// The bound is strict for this source too.
+	next, ok, err = st.NextDeadline(ctx, checkDeadline)
 	if err != nil || !ok || !next.Equal(lease) {
-		t.Fatalf("NextDeadline after the clear=%s ok=%t err=%v, want lease %s", next, ok, err, lease)
+		t.Fatalf("NextDeadline after the check-status deadline=%s ok=%t err=%v, want lease %s", next, ok, err, lease)
 	}
-
-	// Another workspace reads none of these.
+	// Another workspace reads none of these, while this source is still eligible.
 	other := ws + "-deadline"
 	systemCtx := store.WithActor(store.WithWorkspace(context.Background(), other), store.SystemActor())
 	if _, err := st.CreateWorkspace(systemCtx, other, "Deadline", &config.Config{Workspace: other}); err != nil {
@@ -326,5 +322,13 @@ func runNextDeadline(t *testing.T, x Fixture) {
 	}
 	if next, ok, err := st.NextDeadline(systemCtx, time.Time{}); err != nil || ok {
 		t.Fatalf("other workspace NextDeadline=%s ok=%t err=%v", next, ok, err)
+	}
+	// Clearing it keeps the head and stops it being a source.
+	if cleared, err := st.ClearCheckStatusDeadline(ctx, checkTask); err != nil || !cleared {
+		t.Fatalf("clear=%t err=%v", cleared, err)
+	}
+	next, ok, err = st.NextDeadline(ctx, time.Time{})
+	if err != nil || !ok || !next.Equal(lease) {
+		t.Fatalf("NextDeadline after the clear=%s ok=%t err=%v, want lease %s", next, ok, err, lease)
 	}
 }

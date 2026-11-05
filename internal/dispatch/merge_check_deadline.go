@@ -133,10 +133,13 @@ func (d *Dispatcher) recordDeadlineHold(ctx context.Context, task core.Task, hea
 		return d.recordCheckHold(ctx, task, head, standing.Hold, reason, checksFromRefs(last), checkReadFailure(readErr))
 	}
 	failed, pending := read.Named(github.CheckFailed), read.Named(github.CheckPending)
-	if len(failed) > 0 {
+	// A stuck hold already standing, which only a fire that died before its clear
+	// leaves here, stays until a read finds no check pending (invariant 62).
+	stuck := standing.Hold != nil && standing.Hold.Reason == nextaction.CheckHoldStuck
+	if len(failed) > 0 && (len(pending) == 0 || !stuck) {
 		return d.recordCheckHold(ctx, task, head, standing.Hold, nextaction.CheckHoldFailed, append(failed, pending...), "")
 	}
-	return d.recordCheckHold(ctx, task, head, standing.Hold, nextaction.CheckHoldStuck, pending, "")
+	return d.recordCheckHold(ctx, task, head, standing.Hold, nextaction.CheckHoldStuck, append(failed, pending...), "")
 }
 
 // mergeAtCheckStatusDeadline merges through the automatic variant with the

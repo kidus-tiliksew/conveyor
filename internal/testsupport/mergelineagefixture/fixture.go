@@ -1771,6 +1771,54 @@ func RunCheckStatusDeadline(t *testing.T, open func(*testing.T) store.Store) {
 		c.singleHold(t, nextaction.CheckHoldStuck)
 		c.requireDeadlineFired(t, c.head)
 	})
+	t.Run("a stuck hold left by a fire that died stays when the next read finds a failed and a pending check", func(t *testing.T) {
+		c := newCheckScenario(t, st)
+		c.answer(nil, pending)
+		c.automatic(t, dispatch.ErrCheckStatusPending)
+		c.advance(dispatch.CheckStatusDeadlineWindow)
+		real := c.d.Store
+		c.d.Store = clearRefusingStore{real}
+		if err := c.d.ApplyDueCheckStatusDeadlines(c.ctx); !errors.Is(err, errClearRefused) {
+			t.Fatalf("err = %v", err)
+		}
+		c.d.Store = real
+		c.answer(nil, failed, pending)
+		c.fireDeadline(t)
+		c.requireDeadlineFired(t, c.head)
+		c.requireCount(t, store.EventCheckHold, 2)
+		c.requireCount(t, store.EventCheckHoldCleared, 0)
+		action := c.requireAction(t, nextactionOperator, nextactionHold, true, "e2e", "deploy")
+		if action.Details.CheckHoldReason != nextaction.CheckHoldStuck {
+			t.Fatalf("next action = %+v, want the stuck hold to stand", action)
+		}
+	})
+	t.Run("a failed deadline read names what the wait's latest answered read found", func(t *testing.T) {
+		c := newCheckScenario(t, st)
+		c.answer(nil, pending)
+		c.automatic(t, dispatch.ErrCheckStatusPending)
+		first := c.deadline(t)
+		rerun := githubtrigger.Check{Name: pending.Name, State: githubtrigger.CheckPending, URL: "https://github.com/acme/app/runs/33"}
+		c.advance(time.Hour)
+		c.answer(nil, rerun)
+		c.automatic(t, dispatch.ErrCheckStatusPending)
+		if got := c.deadline(t); !got.Equal(first) {
+			t.Fatalf("a changed read moved the deadline to %s", got)
+		}
+		c.requireCount(t, store.EventCheckPending, 2)
+		c.automatic(t, dispatch.ErrCheckStatusPending)
+		c.requireCount(t, store.EventCheckPending, 2)
+		if action := c.requireAction(t, "factory", "merging", false, "deploy"); action.Details.Checks[0].URL != rerun.URL {
+			t.Fatalf("next action = %+v, want the rerun's link", action)
+		}
+		c.answer(transient)
+		c.automatic(t, dispatch.ErrCheckStatusUnread)
+		c.advance(time.Hour)
+		c.fireDeadline(t)
+		hold := c.singleHold(t, nextaction.CheckHoldStuck)
+		if len(hold.Checks) != 1 || hold.Checks[0].URL != rerun.URL || hold.Failure == "" {
+			t.Fatalf("hold = %+v, want the rerun's link and the read failure", hold)
+		}
+	})
 	t.Run("a cancelled read leaves the deadline due and records nothing", func(t *testing.T) {
 		c := newCheckScenario(t, st)
 		c.answer(nil, pending)
