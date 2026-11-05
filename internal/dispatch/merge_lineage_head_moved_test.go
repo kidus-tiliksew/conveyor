@@ -53,4 +53,25 @@ func TestCheckStatusReadRetryPostgresIntegration(t *testing.T) {
 	mergelineagefixture.RunCheckStatusRetry(t, func(t *testing.T) store.Backend { return postgresSchemaBackend(t, raw, "check_retry_") })
 }
 
+// The check-status deadline pass, with SingleStore's twins beside the other
+// SingleStore fixtures (req-review-gates-evidence AC-1.5, AC-1.9;
+// req-quiet-idle-runtime AC-3.9).
+func TestCheckStatusDeadline(t *testing.T) {
+	mergelineagefixture.RunCheckStatusDeadline(t, memoryStore)
+}
+
+func TestCheckStatusDeadlinePostgresIntegration(t *testing.T) {
+	raw := disposablePostgresURL(t, "Check status deadline")
+	mergelineagefixture.RunCheckStatusDeadline(t, func(t *testing.T) store.Store { return postgresSchemaBackend(t, raw, "check_deadline_") })
+}
+
+func TestCheckStatusDeadlineBesideTheRetry(t *testing.T) {
+	mergelineagefixture.RunCheckStatusDeadlineRetry(t, func(*testing.T) store.Backend { return store.NewVolatileBackend() })
+}
+
+func TestCheckStatusDeadlineBesideTheRetryPostgresIntegration(t *testing.T) {
+	raw := disposablePostgresURL(t, "Check status deadline beside the retry")
+	mergelineagefixture.RunCheckStatusDeadlineRetry(t, func(t *testing.T) store.Backend { return postgresSchemaBackend(t, raw, "check_deadline_retry_") })
+}
+
 func memoryStore(*testing.T) store.Store { return store.NewMemory() }

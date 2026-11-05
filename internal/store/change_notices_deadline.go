@@ -96,7 +96,9 @@ type deadlineFields struct {
 //     raises the earliest of them;
 //   - a review or GitHub issue publication failure, a workspace
 //     configuration update, and a requirement or System Design confirmation
-//     raise the event time, so the alarm fires at once.
+//     raise the event time, so the alarm fires at once;
+//   - a merge.check_pending event raises the deadline its payload records
+//     (req-quiet-idle-runtime AC-2.4), a failed read's included.
 //
 // The time is in-process only; a peer receives the notice without it.
 func EventDeadlineNotice(workspace, kind string, payload json.RawMessage, at time.Time) (changes.Notice, bool) {
@@ -118,6 +120,14 @@ func EventDeadlineNotice(workspace, kind string, payload json.RawMessage, at tim
 			at = time.Now().UTC()
 		}
 		return notice(at.Add(VerificationUploadLifetime))
+	case EventCheckPending:
+		var recorded struct {
+			Deadline time.Time `json:"deadline"`
+		}
+		if json.Unmarshal(payload, &recorded) != nil || recorded.Deadline.IsZero() {
+			return changes.Notice{}, false
+		}
+		return notice(recorded.Deadline)
 	}
 	if strings.HasPrefix(kind, "work_order.") && verificationClaimMayHaveEnded(kind, payload) {
 		// A verify order that lost its claim may leave a running or pending
@@ -213,6 +223,13 @@ func (m *memory) NextDeadline(ctx context.Context, after time.Time) (time.Time, 
 	inWorkspace := func(taskID string) (core.Task, bool) {
 		task, ok := m.tasks[taskID]
 		return task, ok && (selected == "" || task.Workspace == selected)
+	}
+	for taskID := range m.tasks {
+		// A deadline on a task at another state or behind the merge gate is one
+		// a fire couldn't apply (component-durable-queue invariants 30, 34).
+		if task, ok := inWorkspace(taskID); ok && task.State == core.TaskApproved && !task.MergeApproval && task.CheckStatusDeadline != nil {
+			consider(*task.CheckStatusDeadline, true)
+		}
 	}
 	for _, order := range m.workOrders {
 		if _, ok := inWorkspace(order.TaskID); ok {

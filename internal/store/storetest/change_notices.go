@@ -256,7 +256,65 @@ func runNextDeadline(t *testing.T, x Fixture) {
 		t.Fatalf("NextDeadline with a cancelled order=%s ok=%t err=%v, want lease %s", next, ok, err, lease)
 	}
 
-	// Another workspace reads none of these.
+	// A check-status deadline counts only on an approved task with the merge
+	// gate off, and the merge.check_pending that records it raises its notice
+	// (component-durable-queue invariants 34, 35).
+	checkDeadline := lease.Add(-time.Hour)
+	checkEvent := func(taskID string) core.Event {
+		return core.Event{TaskID: taskID, Kind: store.EventCheckPending, Payload: core.JSONPayload(map[string]any{
+			"workspace": ws, "task_id": taskID, "head_sha": "head", "reason": "pending", "deadline": checkDeadline,
+		})}
+	}
+	withDeadlineTask := func(state core.TaskState, mergeApproval bool) string {
+		t.Helper()
+		id := core.NewTaskID()
+		requireOK(t, st.CreateTask(ctx, core.Task{ID: id, Workspace: ws, Repo: "conveyor", BaseBranch: "main", Branch: "conveyor/task-" + id, State: state, MergeApproval: mergeApproval, CreatedAt: time.Now().UTC()}))
+		return id
+	}
+	for name, id := range map[string]string{
+		"a running task":                 withDeadlineTask(core.TaskRunning, false),
+		"an approved task behind a gate": withDeadlineTask(core.TaskApproved, true),
+	} {
+		if recorded, err := st.RecordCheckStatusDeadline(ctx, id, "head", checkDeadline, checkEvent(id)); err != nil || !recorded {
+			t.Fatalf("%s record=%t err=%v", name, recorded, err)
+		}
+		next, ok, err = st.NextDeadline(ctx, time.Time{})
+		if err != nil || !ok || !next.Equal(lease) {
+			t.Fatalf("NextDeadline with %s=%s ok=%t err=%v, want lease %s", name, next, ok, err, lease)
+		}
+	}
+	checkTask := withDeadlineTask(core.TaskApproved, false)
+	drain := func() {
+		for {
+			select {
+			case <-notices.C():
+			default:
+				return
+			}
+		}
+	}
+	drain()
+	if recorded, err := st.RecordCheckStatusDeadline(ctx, checkTask, "head", checkDeadline, checkEvent(checkTask)); err != nil || !recorded {
+		t.Fatalf("approved task record=%t err=%v", recorded, err)
+	}
+	for wait, got := time.After(2*time.Second), false; !got; {
+		select {
+		case n := <-notices.C():
+			got = n.At.Equal(checkDeadline) || n.At.IsZero()
+		case <-wait:
+			t.Fatal("no deadline notice carrying the check-status deadline")
+		}
+	}
+	next, ok, err = st.NextDeadline(ctx, time.Time{})
+	if err != nil || !ok || !next.Equal(checkDeadline) {
+		t.Fatalf("check-status NextDeadline=%s ok=%t err=%v, want %s", next, ok, err, checkDeadline)
+	}
+	// The bound is strict for this source too.
+	next, ok, err = st.NextDeadline(ctx, checkDeadline)
+	if err != nil || !ok || !next.Equal(lease) {
+		t.Fatalf("NextDeadline after the check-status deadline=%s ok=%t err=%v, want lease %s", next, ok, err, lease)
+	}
+	// Another workspace reads none of these, while this source is still eligible.
 	other := ws + "-deadline"
 	systemCtx := store.WithActor(store.WithWorkspace(context.Background(), other), store.SystemActor())
 	if _, err := st.CreateWorkspace(systemCtx, other, "Deadline", &config.Config{Workspace: other}); err != nil {
@@ -264,5 +322,13 @@ func runNextDeadline(t *testing.T, x Fixture) {
 	}
 	if next, ok, err := st.NextDeadline(systemCtx, time.Time{}); err != nil || ok {
 		t.Fatalf("other workspace NextDeadline=%s ok=%t err=%v", next, ok, err)
+	}
+	// Clearing it keeps the head and stops it being a source.
+	if cleared, err := st.ClearCheckStatusDeadline(ctx, checkTask); err != nil || !cleared {
+		t.Fatalf("clear=%t err=%v", cleared, err)
+	}
+	next, ok, err = st.NextDeadline(ctx, time.Time{})
+	if err != nil || !ok || !next.Equal(lease) {
+		t.Fatalf("NextDeadline after the clear=%s ok=%t err=%v, want lease %s", next, ok, err, lease)
 	}
 }

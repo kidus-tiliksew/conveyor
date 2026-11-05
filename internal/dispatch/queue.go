@@ -104,7 +104,7 @@ type orderClockWorker struct {
 }
 
 // Work is the order clock handler the deadline alarm runs at each fire. It
-// runs six passes for the workspace and logs each error and each non-zero
+// runs seven passes for the workspace and logs each error and each non-zero
 // count without skipping the later passes; every pass keeps its per-task lock
 // and its idempotent request IDs (component-durable-queue, The deadline
 // alarm; req-quiet-idle-runtime AC-2.4).
@@ -135,6 +135,12 @@ func (w *orderClockWorker) Work(ctx context.Context, job queue.Job) error {
 		} else if reviewActs != 0 {
 			log.Printf("automatically recovered %d review round(s) in workspace %s", reviewActs, args.WorkspaceID)
 		}
+	}
+	// A due check-status deadline reads that head once
+	// (component-submission-merge invariant 61).
+	if deadlineErr := w.dispatcher.ApplyDueCheckStatusDeadlines(ctx); deadlineErr != nil {
+		log.Printf("check-status deadlines in workspace %s: %v", args.WorkspaceID, deadlineErr)
+		errs = append(errs, fmt.Errorf("check-status deadlines: %w", deadlineErr))
 	}
 	// A failed verification delivery whose next_attempt_at passed is enqueued
 	// again (component-verification-publication).

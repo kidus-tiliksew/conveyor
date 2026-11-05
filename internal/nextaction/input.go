@@ -174,6 +174,10 @@ const (
 	CheckHoldPermission = "permission"
 )
 
+// CheckHoldStuckRead is the catalogue variant of a stuck hold whose deadline
+// read failed: it names the failure, not a check GitHub reported at that read.
+const CheckHoldStuckRead = "stuck_read_failed"
+
 // CheckRef is one check as a hold or a wait names it. URL is the check's page
 // on GitHub, which is how the operator reruns it.
 type CheckRef struct {
