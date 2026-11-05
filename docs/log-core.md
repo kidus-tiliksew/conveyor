@@ -36,7 +36,9 @@ SKIP LOCKED. Completion, failure with a retry time, snooze (which hands the
 attempt back), rescue of a claim older than the threshold, and discard after
 the last attempt are events on the same stream. The runtime tails each
 workspace's log into an in-memory job index and drains it one job at a time
-per kind.
+per kind. A failed catch-up, whether its index load or a tail, is retried on
+its own backoff of 5 seconds doubling to one minute, and the next successful
+catch-up stops that timer.
 
 Each driver also keeps one row per job stream in `event_log_job_index`,
 written in the same transaction as every job append and folded with the
@@ -55,8 +57,12 @@ handler is idempotent under concurrent replicas.
 
 The dispatcher sees only `queue.Runtime` and the handler contract: return
 nil to complete a job, `queue.Snooze` to reschedule it, any other error to
-fail it. `ReconcileQueuedTasks` repairs a queued task without a live job and
-fails a running task whose job was discarded after its last attempt.
+fail it. A registration may also name a `Discarded` handler. Rescue runs it
+once, on the replica whose discard append wins, when it discards a job whose
+handler never recorded an outcome: `dispatch_task` then parks the task, and
+the review and GitHub issue publications mark their row failed.
+`ReconcileQueuedTasks` repairs a queued task without a live job and fails a
+running task whose job was discarded after its last attempt.
 
 ## Operating it
 
