@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"path"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -40,13 +41,15 @@ type GitHubSource struct {
 	MergeCommitState func(context.Context, string, string, time.Time) (MergeState, string, error)
 }
 
+type githubCommitParent struct {
+	SHA string `json:"sha"`
+}
+
 type githubCommit struct {
-	SHA     string `json:"sha"`
-	HTMLURL string `json:"html_url"`
-	Parents []struct {
-		SHA string `json:"sha"`
-	} `json:"parents"`
-	Commit struct {
+	SHA     string               `json:"sha"`
+	HTMLURL string               `json:"html_url"`
+	Parents []githubCommitParent `json:"parents"`
+	Commit  struct {
 		Message   string `json:"message"`
 		Committer struct {
 			Date time.Time `json:"date"`
@@ -339,7 +342,10 @@ func (s GitHubSource) Observations(ctx context.Context, since time.Time) ([]Obse
 		seen[key] = struct{}{}
 		observations = append(observations, observation)
 	}
-	firstParent := firstParentHistory(commits)
+	firstParent, ancestryErr := firstParentHistory(ctx, commits, s.isAncestor, s.firstParentOf)
+	if ancestryErr != nil {
+		return nil, ancestryErr
+	}
 	for _, commit := range commits {
 		pulls, pullErr := s.pulls(ctx, commit.SHA)
 		if pullErr != nil {
@@ -532,66 +538,171 @@ func (s GitHubSource) Observations(ctx context.Context, since time.Time) ([]Obse
 	return observations, nil
 }
 
-// firstParentHistory returns the listed commits on the base branch's
-// first-parent history. GitHub lists newest first from the requested branch,
-// so the first commit is the tip, and its chain follows Parents[0] until a
-// parent isn't listed. That ordinarily means the parent is older than the
-// window, and each remaining commit is reached through another parent of a
-// chain commit, which places it outside first-parent history.
+// unlistedFirstParentReads is how far past the listed commits one pass reads
+// to settle commits that an old-dated first parent hides. A listed commit needs
+// that only when committer dates run backwards along first-parent history.
+const unlistedFirstParentReads = 16
+
+// firstParentHistory returns the listed commits a pass judges as changes of
+// their own: those on the base branch's first-parent history, and those it
+// can't tell apart from it. The first failed read fails it, so nothing is
+// classified from a partial answer (component-monitor-drift invariant 15, State
+// and failure). GitHub lists newest first from the requested branch, so the
+// first commit is the tip, and the chain follows Parents[0] through the listed
+// commits to a stop, the first parent that isn't listed.
 //
-// A listed commit reached by neither route lies behind an unlisted commit, so
-// a chain broke on a commit older than the window and the listing can't say
-// which parent led to it. It fails toward visibility: it starts a chain of its
-// own, so it is judged as a change rather than skipped.
-func firstParentHistory(commits []githubCommit) map[string]struct{} {
+// A stop says nothing about the commits still open, because first-parent
+// history continues behind it: a commit older than the window can have a listed
+// ancestor with a newer committer date. How an open commit was reached proves
+// nothing either, since a merged branch and the first parent can share an
+// ancestor. The proof that it is outside first-parent history is that it isn't
+// an ancestor of the stop. A parent that is the stop, is on the chain, or is
+// already excluded shows that without a read, because an ancestor of the stop
+// can't descend from any of them, and isAncestor answers the rest.
+//
+// A commit that is an ancestor of the stop stays open, and the chain continues
+// through firstParentOf, so every stop is on first-parent history and every
+// exclusion stays proven. Reads are bounded by one per listed commit plus
+// unlistedFirstParentReads. Past that bound, or at a chain with no stop, the
+// commits still open fail toward visibility.
+func firstParentHistory(ctx context.Context, commits []githubCommit,
+	isAncestor func(ctx context.Context, candidate, descendant string) (bool, error),
+	firstParentOf func(ctx context.Context, sha string) (string, bool, error),
+) (map[string]struct{}, error) {
 	listed := make(map[string]githubCommit, len(commits))
+	unique := make([]githubCommit, 0, len(commits))
 	for _, commit := range commits {
-		listed[commit.SHA] = commit
+		if _, duplicate := listed[commit.SHA]; !duplicate {
+			listed[commit.SHA] = commit
+			unique = append(unique, commit)
+		}
 	}
-	onChain := make(map[string]struct{}, len(commits))
-	reachedOtherwise := make(map[string]struct{})
-	for _, start := range commits {
-		if _, done := onChain[start.SHA]; done {
-			continue
-		}
-		if _, done := reachedOtherwise[start.SHA]; done {
-			continue
-		}
-		var others []string
-		for sha := start.SHA; ; {
+	history := make(map[string]struct{}, len(unique))
+	if len(unique) == 0 {
+		return history, nil
+	}
+	excluded := make(map[string]struct{})
+	settled := func(sha string) bool {
+		_, chained := history[sha]
+		_, outside := excluded[sha]
+		return chained || outside
+	}
+	reads := len(unique) + unlistedFirstParentReads
+	next := unique[0].SHA
+	for {
+		stop := ""
+		for sha := next; ; {
 			commit, isListed := listed[sha]
-			if _, visited := onChain[sha]; !isListed || visited {
+			if !isListed {
+				stop = sha
 				break
 			}
-			onChain[sha] = struct{}{}
+			if _, visited := history[sha]; visited {
+				break
+			}
+			history[sha] = struct{}{}
 			if len(commit.Parents) == 0 {
 				break
 			}
-			for _, parent := range commit.Parents[1:] {
-				others = append(others, parent.SHA)
-			}
 			sha = commit.Parents[0].SHA
 		}
-		for len(others) > 0 {
-			sha := others[len(others)-1]
-			others = others[:len(others)-1]
-			commit, isListed := listed[sha]
-			if !isListed {
+		// Oldest first, so an excluded commit settles its descendants without
+		// a read of their own.
+		open := false
+		for i := len(unique) - 1; i >= 0; i-- {
+			commit := unique[i]
+			if settled(commit.SHA) {
 				continue
 			}
-			if _, visited := onChain[sha]; visited {
+			if slices.ContainsFunc(commit.Parents, func(parent githubCommitParent) bool {
+				return parent.SHA == stop || settled(parent.SHA)
+			}) {
+				excluded[commit.SHA] = struct{}{}
 				continue
 			}
-			if _, visited := reachedOtherwise[sha]; visited {
+			if stop == "" || reads == 0 {
+				open = true
 				continue
 			}
-			reachedOtherwise[sha] = struct{}{}
-			for _, parent := range commit.Parents {
-				others = append(others, parent.SHA)
+			reads--
+			ancestor, err := isAncestor(ctx, commit.SHA, stop)
+			if err != nil {
+				return nil, err
+			}
+			if ancestor {
+				open = true
+			} else {
+				excluded[commit.SHA] = struct{}{}
 			}
 		}
+		if !open || stop == "" || reads == 0 {
+			break
+		}
+		reads--
+		parent, hasParent, err := firstParentOf(ctx, stop)
+		if err != nil {
+			return nil, err
+		}
+		if !hasParent {
+			break
+		}
+		next = parent
 	}
-	return onChain
+	for _, commit := range unique {
+		if !settled(commit.SHA) {
+			history[commit.SHA] = struct{}{}
+		}
+	}
+	return history, nil
+}
+
+// firstParentOf reads one commit below the window and returns its first
+// parent, or false for a root commit.
+func (s GitHubSource) firstParentOf(ctx context.Context, sha string) (string, bool, error) {
+	raw, err := s.Run(ctx, "api", "--method", "GET",
+		"repos/"+s.GitHubSlug+"/commits/"+sha,
+		"-H", "Accept: application/vnd.github+json")
+	if err != nil {
+		return "", false, githubtrigger.CategorizeError(err)
+	}
+	var commit githubCommit
+	if err = json.Unmarshal(raw, &commit); err != nil {
+		return "", false, &githubtrigger.Error{Category: githubtrigger.ForgeResponse, Err: fmt.Errorf("parse monitor commit %s: %w", sha, err)}
+	}
+	if commit.SHA != sha {
+		return "", false, &githubtrigger.Error{Category: githubtrigger.ForgeResponse, Err: fmt.Errorf("monitor commit read for %s answered %q", sha, commit.SHA)}
+	}
+	if len(commit.Parents) == 0 {
+		return "", false, nil
+	}
+	return commit.Parents[0].SHA, true, nil
+}
+
+// isAncestor reports whether candidate is descendant or one of its ancestors,
+// from GitHub's comparison of the two. Any other answer than the four statuses
+// GitHub documents fails the read rather than guessing.
+func (s GitHubSource) isAncestor(ctx context.Context, candidate, descendant string) (bool, error) {
+	raw, err := s.Run(ctx, "api", "--method", "GET",
+		"repos/"+s.GitHubSlug+"/compare/"+descendant+"..."+candidate,
+		"-f", "per_page=1",
+		"-H", "Accept: application/vnd.github+json")
+	if err != nil {
+		return false, githubtrigger.CategorizeError(err)
+	}
+	var comparison struct {
+		Status string `json:"status"`
+	}
+	if err = json.Unmarshal(raw, &comparison); err != nil {
+		return false, &githubtrigger.Error{Category: githubtrigger.ForgeResponse, Err: fmt.Errorf("parse ancestry comparison: %w", err)}
+	}
+	switch comparison.Status {
+	case "behind", "identical":
+		return true, nil
+	case "ahead", "diverged":
+		return false, nil
+	default:
+		return false, &githubtrigger.Error{Category: githubtrigger.ForgeResponse, Err: fmt.Errorf("ancestry comparison of %s and %s has an unknown status %q", descendant, candidate, comparison.Status)}
+	}
 }
 
 func (s GitHubSource) suppressMergeCommit(ctx context.Context, kind SignalKind, commit githubCommit) (bool, error) {

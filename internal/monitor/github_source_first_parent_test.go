@@ -29,10 +29,17 @@ func listedCommit(sha, message string, parents ...string) string {
 // firstParentForge scripts the monitor's GitHub reads and records them. A
 // commit with no scripted pulls has none, as a lagging lookup answers.
 type firstParentForge struct {
-	commits  []string
-	pulls    map[string]string
-	details  map[int]string
-	checks   map[string]string
+	commits []string
+	pulls   map[string]string
+	details map[int]string
+	checks  map[string]string
+	// ancestry answers compare/<stop>...<commit> for a commit outside the
+	// chain, by "<stop>...<commit>". An unscripted one is an error, so a test
+	// states every ancestry read it expects.
+	ancestry map[string]string
+	// unlisted answers GET commits/<sha> for a commit below the window with
+	// its parents. An unscripted one is an error.
+	unlisted map[string][]string
 	requests []string
 }
 
@@ -49,12 +56,24 @@ func (f *firstParentForge) run(_ context.Context, args ...string) ([]byte, error
 			}
 		}
 		return nil, fmt.Errorf("unscripted check runs: %s", request)
+	case strings.Contains(request, "per_page=1 -H"):
+		for pair, status := range f.ancestry {
+			if strings.Contains(request, "/compare/"+pair+" ") {
+				return []byte(fmt.Sprintf(`{"status":%q}`, status)), nil
+			}
+		}
+		return nil, fmt.Errorf("unscripted ancestry read: %s", request)
 	case strings.Contains(request, "/compare/"):
 		return []byte(`{"files":[{"filename":"internal/monitor/types.go"}]}`), nil
 	}
 	for number, detail := range f.details {
 		if strings.HasSuffix(args[3], fmt.Sprintf("/pulls/%d", number)) {
 			return []byte(detail), nil
+		}
+	}
+	for sha, parents := range f.unlisted {
+		if strings.HasSuffix(args[3], "/commits/"+sha) {
+			return []byte(listedCommit(sha, "older than the window", parents...)), nil
 		}
 	}
 	if strings.HasSuffix(args[3], "/pulls") {
@@ -66,6 +85,12 @@ func (f *firstParentForge) run(_ context.Context, args ...string) ([]byte, error
 		return []byte(`[]`), nil
 	}
 	return nil, fmt.Errorf("unscripted request: %s", request)
+}
+
+// ancestryReads counts the comparisons read for ancestry, not for a commit's
+// first-parent paths.
+func (f *firstParentForge) ancestryReads() int {
+	return f.requested("per_page=1 -H")
 }
 
 func (f *firstParentForge) requested(fragment string) int {
@@ -198,6 +223,9 @@ func TestGitHubSourceLaggingLookupOnSecondParentIsNotADirectPush(t *testing.T) {
 		}
 		if forge.requested("/compare/") != 0 || hints != 1 {
 			t.Fatalf("branch commits were read: compares=%d hints=%d", forge.requested("/compare/"), hints)
+		}
+		if forge.ancestryReads() != 0 {
+			t.Fatalf("a branch cut at the chain's stop needs no ancestry read: %v", forge.requests)
 		}
 		// Reconciliation still looks each one up.
 		for _, sha := range []string{"merge", "branch-head", "branch-first"} {
@@ -341,16 +369,72 @@ func TestGitHubSourceBranchCommitRevertMessageCountsForNothing(t *testing.T) {
 	}
 }
 
-// A chain that breaks on a commit older than the window must not silently
-// drop the first-parent commits listed behind it. Only a commit proven to be
-// reached through another parent is skipped (component-monitor-drift
-// invariants 4 and 9; req-delivery-and-forge REQ-4).
+// The review's graph: M has parents [X, B], and X and B share the parent D. X
+// is older than the window, so the listing is [M, B, D] and the walk stops at
+// X. B and D are both reached through M's second parent, yet D is on
+// first-parent history and B isn't. D's direct push stays observed with its
+// paths, and B stays suppressed because ancestry shows it is branch-only
+// (req-260811-228be6 AC-4.3; req-delivery-and-forge REQ-4, AC-4.4).
+func TestGitHubSourceSharedAncestryBehindMissingFirstParentKeepsDirectPush(t *testing.T) {
+	dated := func(sha, message, date string, parents ...string) string {
+		quoted := make([]string, 0, len(parents))
+		for _, parent := range parents {
+			quoted = append(quoted, fmt.Sprintf(`{"sha":%q}`, parent))
+		}
+		return fmt.Sprintf(`{"sha":%q,"html_url":"https://example/%s","parents":[%s],"commit":{"message":%q,"committer":{"date":%q}}}`,
+			sha, sha, strings.Join(quoted, ","), message, date)
+	}
+	forge := &firstParentForge{
+		commits: []string{
+			dated("M", "Merge pull request #9", "2026-11-05T12:00:00Z", "X", "B"),
+			dated("B", "branch work", "2026-11-05T11:00:00Z", "D"),
+			dated("D", "direct push", "2026-11-05T10:00:00Z", "A"),
+		},
+		ancestry: map[string]string{"X...D": "behind", "X...B": "diverged"},
+		unlisted: map[string][]string{"X": {"D"}},
+	}
+	var audits []suppressedAudit
+	source := firstParentSource(forge, &audits)
+	source.MergeCommitState = func(_ context.Context, _, sha string, _ time.Time) (MergeState, string, error) {
+		if sha == "M" {
+			return MergeRecorded, "delivering-task", nil
+		}
+		return MergeNone, "", nil
+	}
+	since, err := time.Parse(time.RFC3339, "2026-11-05T09:00:00Z")
+	if err != nil {
+		t.Fatal(err)
+	}
+	observations, err := source.Observations(t.Context(), since)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := observedOccurrences(observations); !reflect.DeepEqual(got, []string{"direct_push:D"}) {
+		t.Fatalf("observations=%v", got)
+	}
+	if strings.Join(observations[0].ChangedPaths, ",") != "internal/monitor/types.go" || forge.requested("compare/A...D") != 1 {
+		t.Fatalf("D lost its governed paths: %+v requests=%v", observations[0], forge.requests)
+	}
+	if !slices.Contains(audits, suppressedAudit{"outside_first_parent", "B"}) || slices.Contains(audits, suppressedAudit{"outside_first_parent", "D"}) {
+		t.Fatalf("audits=%+v", audits)
+	}
+	if forge.ancestryReads() != 2 || forge.requested("/commits/X ") != 1 {
+		t.Fatalf("ancestry reads=%d: %v", forge.ancestryReads(), forge.requests)
+	}
+}
+
+// A chain that stops at an unlisted commit leaves each other commit open until
+// ancestry settles it. Only a commit shown not to be an ancestor of the stop
+// is skipped (component-monitor-drift invariants 4 and 9).
 func TestGitHubSourceBrokenChainFailsTowardVisibility(t *testing.T) {
 	for _, test := range []struct {
-		name    string
-		commits []string
-		want    []string
-		skipped []string
+		name     string
+		commits  []string
+		ancestry map[string]string
+		unlisted map[string][]string
+		want     []string
+		skipped  []string
+		reads    int
 	}{
 		{
 			name: "commits behind an old-dated first parent stay visible",
@@ -359,7 +443,10 @@ func TestGitHubSourceBrokenChainFailsTowardVisibility(t *testing.T) {
 				listedCommit("behind", "manual", "behind-older"),
 				listedCommit("behind-older", "manual", "unlisted"),
 			},
-			want: []string{"direct_push:behind", "direct_push:behind-older", "direct_push:tip"},
+			ancestry: map[string]string{"old-dated...behind-older": "behind", "old-dated...behind": "behind"},
+			unlisted: map[string][]string{"old-dated": {"behind"}},
+			want:     []string{"direct_push:behind", "direct_push:behind-older", "direct_push:tip"},
+			reads:    2,
 		},
 		{
 			name: "a revert behind the break stays a revert",
@@ -367,7 +454,10 @@ func TestGitHubSourceBrokenChainFailsTowardVisibility(t *testing.T) {
 				listedCommit("tip", "manual", "old-dated"),
 				listedCommit("behind", `Revert "feature"`, "unlisted"),
 			},
-			want: []string{"direct_push:tip", "revert:behind"},
+			ancestry: map[string]string{"old-dated...behind": "behind"},
+			unlisted: map[string][]string{"old-dated": {"behind"}},
+			want:     []string{"direct_push:tip", "revert:behind"},
+			reads:    1,
 		},
 		{
 			name: "a merge behind the break still owns its branch",
@@ -375,31 +465,98 @@ func TestGitHubSourceBrokenChainFailsTowardVisibility(t *testing.T) {
 				listedCommit("tip", "manual", "old-dated"),
 				listedCommit("behind-merge", "Merge branch", "behind-first", "behind-branch"),
 				listedCommit("behind-first", "manual", "unlisted"),
-				listedCommit("behind-branch", "branch", "unlisted"),
+				listedCommit("behind-branch", "branch", "cut-point"),
 			},
-			want:    []string{"direct_push:behind-first", "direct_push:behind-merge", "direct_push:tip"},
-			skipped: []string{"behind-branch"},
+			ancestry: map[string]string{
+				"old-dated...behind-branch": "behind", "old-dated...behind-first": "behind", "old-dated...behind-merge": "behind",
+				"unlisted...behind-branch": "diverged",
+			},
+			unlisted: map[string][]string{"old-dated": {"behind-merge"}},
+			want:     []string{"direct_push:behind-first", "direct_push:behind-merge", "direct_push:tip"},
+			skipped:  []string{"behind-branch"},
+			reads:    4,
 		},
 		{
-			name: "a commit reached only through an unlisted second parent stays visible",
+			name: "a branch behind an old-dated second parent is proven outside",
 			commits: []string{
 				listedCommit("merge", "Merge branch", "main-before", "old-dated-branch"),
 				listedCommit("behind-branch", "branch", "unlisted"),
 			},
-			want: []string{"direct_push:behind-branch", "direct_push:merge"},
+			ancestry: map[string]string{"main-before...behind-branch": "ahead"},
+			want:     []string{"direct_push:merge"},
+			skipped:  []string{"behind-branch"},
+			reads:    1,
 		},
 		{
-			name: "an ordinary window end skips the merged branch",
+			name: "an identical answer is not proof of exclusion",
+			commits: []string{
+				listedCommit("merge", "Merge branch", "main-before", "behind-branch"),
+				listedCommit("behind-branch", "branch", "unlisted"),
+			},
+			ancestry: map[string]string{"main-before...behind-branch": "identical"},
+			unlisted: map[string][]string{"main-before": {}},
+			want:     []string{"direct_push:behind-branch", "direct_push:merge"},
+			reads:    1,
+		},
+		{
+			name: "an ancestor through an old merge's second parent is proven outside by the next stop",
+			commits: []string{
+				listedCommit("tip", "manual", "old-merge"),
+				listedCommit("merged-branch", "branch", "unlisted"),
+			},
+			ancestry: map[string]string{"old-merge...merged-branch": "behind", "old-first...merged-branch": "diverged"},
+			unlisted: map[string][]string{"old-merge": {"old-first", "merged-branch"}},
+			want:     []string{"direct_push:tip"},
+			skipped:  []string{"merged-branch"},
+			reads:    2,
+		},
+		{
+			name: "the date order of a shared ancestor and its child can't hide the child",
+			commits: []string{
+				listedCommit("tip", "manual", "old-dated"),
+				listedCommit("parent-newer", "manual", "unlisted"),
+				listedCommit("child-older", "manual", "parent-newer"),
+			},
+			ancestry: map[string]string{"old-dated...child-older": "behind", "old-dated...parent-newer": "behind"},
+			unlisted: map[string][]string{"old-dated": {"child-older"}},
+			want:     []string{"direct_push:child-older", "direct_push:parent-newer", "direct_push:tip"},
+			reads:    2,
+		},
+		{
+			name: "a branch cut before the window costs one read, whatever its length",
+			commits: []string{
+				listedCommit("merge", "Merge branch", "main-before", "branch-3"),
+				listedCommit("branch-3", "branch", "branch-2"),
+				listedCommit("branch-2", "branch", "branch-1"),
+				listedCommit("branch-1", "branch", "older-than-window"),
+			},
+			ancestry: map[string]string{"main-before...branch-1": "diverged"},
+			want:     []string{"direct_push:merge"},
+			skipped:  []string{"branch-3", "branch-2", "branch-1"},
+			reads:    1,
+		},
+		{
+			name: "a branch cut from the stop needs no read",
 			commits: []string{
 				listedCommit("merge", "Merge branch", "main-before", "branch-head"),
-				listedCommit("branch-head", "branch", "branch-older-than-window"),
+				listedCommit("branch-head", "branch", "main-before"),
 			},
 			want:    []string{"direct_push:merge"},
 			skipped: []string{"branch-head"},
 		},
+		{
+			name: "a branch cut from the chain needs no read",
+			commits: []string{
+				listedCommit("merge", "Merge branch", "first", "branch-head"),
+				listedCommit("branch-head", "branch", "first"),
+				listedCommit("first", "manual", "main-before"),
+			},
+			want:    []string{"direct_push:first", "direct_push:merge"},
+			skipped: []string{"branch-head"},
+		},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			forge := &firstParentForge{commits: test.commits}
+			forge := &firstParentForge{commits: test.commits, ancestry: test.ancestry, unlisted: test.unlisted}
 			var audits []suppressedAudit
 			observations, err := firstParentSource(forge, &audits).Observations(t.Context(), time.Now().Add(-time.Hour))
 			if err != nil {
@@ -416,6 +573,71 @@ func TestGitHubSourceBrokenChainFailsTowardVisibility(t *testing.T) {
 			}
 			if !slices.Equal(skipped, test.skipped) {
 				t.Fatalf("skipped=%v want %v", skipped, test.skipped)
+			}
+			if got := forge.ancestryReads(); got != test.reads {
+				t.Fatalf("ancestry reads=%d want %d: %v", got, test.reads, forge.requests)
+			}
+		})
+	}
+}
+
+// A failed or unreadable ancestry answer classifies nothing. The pass fails
+// with its forge category before any commit is judged, so status states the
+// failure, and the next pass reads the same commits and files the direct push
+// (req-delivery-and-forge AC-4.5; component-monitor-drift invariant 15).
+func TestGitHubSourceAncestryReadFailureClassifiesNothing(t *testing.T) {
+	commits := []string{
+		listedCommit("M", "Merge pull request #9", "X", "B"),
+		listedCommit("B", "branch work", "D"),
+		listedCommit("D", "direct push", "A"),
+	}
+	limited := githubtrigger.RateLimitedError(time.Now().Add(time.Hour), errors.New("API rate limit exceeded"))
+	badGateway := githubtrigger.StatusError(502, errors.New("bad gateway"))
+	const ancestryRead, commitRead = "/compare/X...", "/commits/X "
+	for _, test := range []struct {
+		name     string
+		read     string
+		answer   func() ([]byte, error)
+		category githubtrigger.ForgeErrorCategory
+	}{
+		{"ancestry read: forge failure", ancestryRead, func() ([]byte, error) { return nil, badGateway }, githubtrigger.ErrorCategory(badGateway)},
+		{"ancestry read: rate limit", ancestryRead, func() ([]byte, error) { return nil, limited }, githubtrigger.ErrorCategory(limited)},
+		{"ancestry read: malformed body", ancestryRead, func() ([]byte, error) { return []byte(`not json`), nil }, githubtrigger.ForgeResponse},
+		{"ancestry read: no status", ancestryRead, func() ([]byte, error) { return []byte(`{"files":[]}`), nil }, githubtrigger.ForgeResponse},
+		{"ancestry read: unknown status", ancestryRead, func() ([]byte, error) { return []byte(`{"status":"unrelated"}`), nil }, githubtrigger.ForgeResponse},
+		{"commit read: forge failure", commitRead, func() ([]byte, error) { return nil, badGateway }, githubtrigger.ErrorCategory(badGateway)},
+		{"commit read: rate limit", commitRead, func() ([]byte, error) { return nil, limited }, githubtrigger.ErrorCategory(limited)},
+		{"commit read: malformed body", commitRead, func() ([]byte, error) { return []byte(`not json`), nil }, githubtrigger.ForgeResponse},
+		{"commit read: another commit", commitRead, func() ([]byte, error) { return []byte(`{"sha":"Y","parents":[{"sha":"D"}]}`), nil }, githubtrigger.ForgeResponse},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			forge := &firstParentForge{commits: commits, ancestry: map[string]string{"X...D": "behind", "X...B": "diverged"}, unlisted: map[string][]string{"X": {"D"}}}
+			var audits []suppressedAudit
+			source := firstParentSource(forge, &audits)
+			failing := true
+			source.Run = func(ctx context.Context, args ...string) ([]byte, error) {
+				if failing && strings.Contains(strings.Join(args, " "), test.read) {
+					return test.answer()
+				}
+				return forge.run(ctx, args...)
+			}
+			observations, err := source.Observations(t.Context(), time.Now().Add(-time.Hour))
+			if err == nil || observations != nil || githubtrigger.ErrorCategory(err) != test.category {
+				t.Fatalf("observations=%+v err=%v category=%q want %q", observations, err, githubtrigger.ErrorCategory(err), test.category)
+			}
+			if len(audits) != 0 || forge.requested("/commits/M/pulls") != 0 {
+				t.Fatalf("a commit was judged before the failure settled: audits=%+v requests=%v", audits, forge.requests)
+			}
+			failing = false
+			observations, err = source.Observations(t.Context(), time.Now().Add(-time.Hour))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got := observedOccurrences(observations); !reflect.DeepEqual(got, []string{"direct_push:D", "direct_push:M"}) {
+				t.Fatalf("retried pass observations=%v", got)
+			}
+			if !slices.Contains(audits, suppressedAudit{"outside_first_parent", "B"}) {
+				t.Fatalf("retried pass audits=%+v", audits)
 			}
 		})
 	}
@@ -469,16 +691,17 @@ func TestFirstParentHistory(t *testing.T) {
 	commit := func(sha string, parents ...string) githubCommit {
 		listed := githubCommit{SHA: sha}
 		for _, parent := range parents {
-			listed.Parents = append(listed.Parents, struct {
-				SHA string `json:"sha"`
-			}{SHA: parent})
+			listed.Parents = append(listed.Parents, githubCommitParent{SHA: parent})
 		}
 		return listed
 	}
 	for _, test := range []struct {
-		name    string
-		commits []githubCommit
-		want    []string
+		name      string
+		commits   []githubCommit
+		ancestors map[string]bool
+		unlisted  map[string]string
+		want      []string
+		reads     int
 	}{
 		{name: "empty"},
 		{name: "root commit", commits: []githubCommit{commit("root")}, want: []string{"root"}},
@@ -509,20 +732,112 @@ func TestFirstParentHistory(t *testing.T) {
 			want:    []string{"a", "b", "c"},
 		},
 		{
+			name:      "the review's graph",
+			commits:   []githubCommit{commit("M", "X", "B"), commit("B", "D"), commit("D", "A")},
+			ancestors: map[string]bool{"D...X": true, "B...X": false},
+			unlisted:  map[string]string{"X": "D"},
+			want:      []string{"D", "M"},
+			reads:     3,
+		},
+		{
+			name:      "a first-parent child dated older than its parent is not excluded through that parent",
+			commits:   []githubCommit{commit("M", "X", "B"), commit("B", "D"), commit("D", "A"), commit("C", "D")},
+			ancestors: map[string]bool{"C...X": true, "D...X": true, "B...X": false},
+			unlisted:  map[string]string{"X": "C"},
+			want:      []string{"C", "D", "M"},
+			reads:     4,
+		},
+		{
+			name:      "a walk several commits below the window finds the chain again",
+			commits:   []githubCommit{commit("t", "u1"), commit("d", "a")},
+			ancestors: map[string]bool{"d...u1": true, "d...u2": true},
+			unlisted:  map[string]string{"u1": "u2", "u2": "d"},
+			want:      []string{"d", "t"},
+			reads:     4,
+		},
+		{
+			name:      "an open commit stays visible when the walk reaches a root",
+			commits:   []githubCommit{commit("t", "u1"), commit("d", "a")},
+			ancestors: map[string]bool{"d...u1": true},
+			unlisted:  map[string]string{"u1": ""},
+			want:      []string{"d", "t"},
+			reads:     2,
+		},
+		{
+			name:    "a chain reaching the root leaves an unrelated root visible with no read",
+			commits: []githubCommit{commit("tip", "root"), commit("root"), commit("other")},
+			want:    []string{"other", "root", "tip"},
+		},
+		{
+			name:    "a chain reaching the root excludes a branch cut from it with no read",
+			commits: []githubCommit{commit("m", "root", "branch"), commit("branch", "root"), commit("root")},
+			want:    []string{"m", "root"},
+		},
+		{
 			name:    "a parent cycle in a forged response ends",
 			commits: []githubCommit{commit("a", "b"), commit("b", "a", "c"), commit("c", "c")},
-			want:    []string{"a", "b"},
+			want:    []string{"a", "b", "c"},
 		},
 	} {
 		t.Run(test.name, func(t *testing.T) {
+			reads := 0
+			history, err := firstParentHistory(t.Context(), test.commits,
+				func(_ context.Context, candidate, descendant string) (bool, error) {
+					reads++
+					ancestor, scripted := test.ancestors[candidate+"..."+descendant]
+					if !scripted {
+						t.Errorf("unscripted ancestry read: is %s an ancestor of %s", candidate, descendant)
+					}
+					return ancestor, nil
+				},
+				func(_ context.Context, sha string) (string, bool, error) {
+					reads++
+					parent, scripted := test.unlisted[sha]
+					if !scripted {
+						t.Errorf("unscripted commit read: %s", sha)
+					}
+					return parent, parent != "", nil
+				})
+			if err != nil {
+				t.Fatal(err)
+			}
 			got := make([]string, 0, len(test.commits))
-			for sha := range firstParentHistory(test.commits) {
+			for sha := range history {
 				got = append(got, sha)
 			}
 			sort.Strings(got)
 			if !slices.Equal(got, test.want) && len(got)+len(test.want) != 0 {
 				t.Fatalf("first-parent=%v want %v", got, test.want)
 			}
+			if reads != test.reads {
+				t.Fatalf("reads=%d want %d", reads, test.reads)
+			}
 		})
+	}
+}
+
+// A walk that never settles an open commit ends at the read bound, whatever
+// the forge answers, and the commit stays visible rather than being classified
+// from an answer the pass never got.
+func TestFirstParentHistoryStopsAtTheReadBound(t *testing.T) {
+	commits := []githubCommit{
+		{SHA: "t", Parents: []githubCommitParent{{SHA: "u0"}}},
+		{SHA: "hidden", Parents: []githubCommitParent{{SHA: "a"}}},
+	}
+	reads := 0
+	history, err := firstParentHistory(t.Context(), commits,
+		func(context.Context, string, string) (bool, error) { reads++; return true, nil },
+		func(_ context.Context, sha string) (string, bool, error) {
+			reads++
+			return sha + "'", true, nil
+		})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := len(commits) + unlistedFirstParentReads; reads != want {
+		t.Fatalf("reads=%d want the bound %d", reads, want)
+	}
+	if _, visible := history["hidden"]; !visible {
+		t.Fatalf("the open commit was dropped at the bound: %v", history)
 	}
 }
