@@ -1402,7 +1402,7 @@ func TestPendingProposalsProjectionAttentionWithoutATaskWarning(t *testing.T) {
 	ctx := store.WithWorkspace(store.WithActor(t.Context(), store.SystemActor()), "demo")
 	st := store.NewMemory()
 	task := core.Task{ID: "proposal-origin", Workspace: "demo", State: core.TaskRunning, NextStage: core.StageImplement, CreatedAt: time.Now().UTC()}
-	attentionTask := core.Task{ID: "attention-task", Workspace: "demo", State: core.TaskAwaiting, CreatedAt: time.Now().UTC()}
+	attentionTask := core.Task{ID: "attention-task", Workspace: "demo", State: core.TaskAwaiting, GateKind: core.GateKindPlanApproval, CreatedAt: time.Now().UTC()}
 	for _, candidate := range []core.Task{task, attentionTask} {
 		if err := st.CreateTask(ctx, candidate); err != nil {
 			t.Fatal(err)

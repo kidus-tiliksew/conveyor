@@ -940,16 +940,29 @@ func FilterFactoryActs(events []core.Event, since time.Time, limit int) []nextac
 	return acts
 }
 
-// TaskNeedsAttention is the operator-actor predicate.
+// TaskNeedsAttention is the operator-actor predicate. Caller attention, the
+// needs_attention field, and GET /v1/attention/tasks read it
+// (component-next-action, One attention definition).
 func TaskNeedsAttention(action nextaction.NextAction) bool {
 	return action.Actor == nextaction.ActorOperator
 }
 
-// CountOperatorAttention is the inbox and badge count. It uses the same
-// predicate as caller attention. It reads the workspace's open tasks once and
-// projects them with those tasks preloaded for the dependency view and
-// CompactOnly set, because TaskNeedsAttention reads only the actor
-// (component-work-orders, Next action).
+// TaskIsInboxDecision selects a task for the inbox's decisions band: the
+// operator acts and the act needs judgment. The band and the workspace
+// attention count both read it, so an actor=operator, judgment=false task
+// stays in the automatic band and out of the count
+// (req-operator-next-action AC-2.5, AC-2.7; component-next-action, Band
+// membership).
+func TaskIsInboxDecision(action nextaction.NextAction) bool {
+	return action.Actor == nextaction.ActorOperator && action.Judgment
+}
+
+// CountOperatorAttention is the task part of the workspace attention count:
+// the open tasks, blueprint anchors excluded, that the inbox lists among its
+// decisions. It reads the workspace's open tasks once and projects them with
+// those tasks preloaded for the dependency view and CompactOnly set, because
+// TaskIsInboxDecision reads only compact fields
+// (req-operator-next-action AC-2.7; component-next-action).
 func CountOperatorAttention(ctx context.Context, st Store) (int, error) {
 	tasks, err := st.ListTasksFiltered(ctx, TaskFilter{States: openTaskStates})
 	if err != nil {
@@ -967,20 +980,22 @@ func CountOperatorAttention(ctx context.Context, st Store) (int, error) {
 			candidates = append(candidates, task)
 		}
 	}
-	page, err := pageOperatorAttention(ctx, st, candidates, 0, len(candidates), NextActionOptions{OpenTasksLoaded: true, OpenTasks: open, CompactOnly: true})
+	projected, err := ReadNextActions(ctx, st, candidates, NextActionOptions{OpenTasksLoaded: true, OpenTasks: open, CompactOnly: true})
 	if err != nil {
 		return 0, err
 	}
-	return page.Total, nil
+	total := 0
+	for _, task := range candidates {
+		if TaskIsInboxDecision(projected[task.ID]) {
+			total++
+		}
+	}
+	return total, nil
 }
 
 // PageOperatorAttention keeps candidate order, then keeps only operator-actor tasks.
 func PageOperatorAttention(ctx context.Context, st Store, candidates []core.Task, offset, limit int) (TaskPage, error) {
-	return pageOperatorAttention(ctx, st, candidates, offset, limit, NextActionOptions{})
-}
-
-func pageOperatorAttention(ctx context.Context, st Store, candidates []core.Task, offset, limit int, opts NextActionOptions) (TaskPage, error) {
-	projected, err := ReadNextActions(ctx, st, candidates, opts)
+	projected, err := ReadNextActions(ctx, st, candidates, NextActionOptions{})
 	if err != nil {
 		return TaskPage{}, err
 	}

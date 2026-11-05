@@ -419,6 +419,9 @@ type DocumentStore interface {
 	// with the exact task-attention count without materializing the general task,
 	// activity, or work-order list projections (REQ-1, REQ-3).
 	PendingProposalsProjection(ctx context.Context) (PendingProposalsProjection, error)
+	// CountOperatorAttention counts the tasks in the inbox's decisions band,
+	// not every task satisfying TaskNeedsAttention (req-operator-next-action
+	// AC-2.7).
 	CountOperatorAttention(ctx context.Context) (int, error)
 }
 
