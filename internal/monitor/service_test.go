@@ -33,7 +33,7 @@ func TestReadmeDirectPushPreservesGovernedDriftOnRedelivery(t *testing.T) {
 				t.Fatal(err)
 			}
 			source := monitor.GitHubSource{
-				WorkspaceID: "demo", Repository: "conveyor", GitHubSlug: "kidus-tiliksew/conveyor",
+				WorkspaceID: "demo", Repository: "conveyor", GitHubSlug: "kidus-tiliksew/conveyor", Base: "main",
 				Run: func(_ context.Context, args ...string) ([]byte, error) {
 					request := strings.Join(args, " ")
 					switch {
@@ -119,7 +119,7 @@ func TestExternalMergeAndRevertRaiseGovernedDocumentDrift(t *testing.T) {
 			}
 			compares := 0
 			source := monitor.GitHubSource{
-				WorkspaceID: "demo", Repository: "conveyor", GitHubSlug: "kidus-tiliksew/conveyor",
+				WorkspaceID: "demo", Repository: "conveyor", GitHubSlug: "kidus-tiliksew/conveyor", Base: "main",
 				ResolveTask: func(context.Context, string, int) (string, bool, error) { return "", false, nil },
 				Run: func(_ context.Context, args ...string) ([]byte, error) {
 					request := strings.Join(args, " ")
@@ -811,5 +811,95 @@ func TestListUnresolvedDriftResolvesScopeAndFailsClosed(t *testing.T) {
 	drift, err := service.ListUnresolvedDrift(ctx)
 	if err != nil || !called || len(drift) != 1 {
 		t.Fatalf("drift=%v scope called=%v err=%v", drift, called, err)
+	}
+}
+
+// A lagging commit-to-pull-request lookup on a recorded merge's second parent
+// files no task and records no drift through the poller, source, and service,
+// and repeated polls keep it that way, while a direct push in the same window
+// still files its task (req-260811-228be6 AC-4.1, AC-4.3; task 261104-c2a830).
+func TestLaggingSecondParentLookupFilesNoTaskOrDrift(t *testing.T) {
+	service, st, ctx := testService(t)
+	content := "# Governed\n\n```conveyor:governs\n- repo: conveyor\n  paths:\n    - internal/monitor/**\n```"
+	design, version, err := st.CreateSystemDesign(ctx, core.SystemDesign{ID: "governed", Title: "Governed", Category: "Component design"}, core.SystemDesignVersion{Content: content, Origin: core.SystemDesignOriginOperator})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err = st.ConfirmSystemDesignVersion(ctx, design.ID, version.Version); err != nil {
+		t.Fatal(err)
+	}
+	commit := func(sha, parents string) string {
+		return fmt.Sprintf(`{"sha":%q,"html_url":"https://github.com/acme/conveyor/commit/%s","parents":[%s],"commit":{"message":"work","committer":{"date":"2026-07-28T11:00:00Z"}}}`, sha, sha, parents)
+	}
+	listing := commit("merge", `{"sha":"before"},{"sha":"branch-head"}`) + "," + commit("branch-head", `{"sha":"before"}`)
+	source := monitor.GitHubSource{
+		WorkspaceID: "demo", Repository: "conveyor", GitHubSlug: "acme/conveyor", Base: "main",
+		MergeCommitState: func(_ context.Context, _, sha string, _ time.Time) (monitor.MergeState, string, error) {
+			if sha == "merge" {
+				return monitor.MergeRecorded, "delivering-task", nil
+			}
+			return monitor.MergeNone, "", nil
+		},
+		OnSuppressed: func(ctx context.Context, payload map[string]any) error {
+			return service.Store.AuditMonitor(ctx, "monitor.suppressed", payload)
+		},
+		Run: func(_ context.Context, args ...string) ([]byte, error) {
+			request := strings.Join(args, " ")
+			switch {
+			case strings.Contains(request, "/commits -f"):
+				return []byte("[" + listing + "]"), nil
+			case strings.Contains(request, "/pulls"):
+				return []byte(`[]`), nil
+			case strings.Contains(request, "/compare/"):
+				return []byte(`{"files":[{"filename":"internal/monitor/types.go"}]}`), nil
+			default:
+				return nil, fmt.Errorf("unexpected GitHub request: %s", request)
+			}
+		},
+	}
+	poll := func() {
+		t.Helper()
+		poller := monitor.Poller{Service: service, Source: source, StartupWindow: 24 * time.Hour}
+		if err := poller.Poll(ctx); err != nil {
+			t.Fatal(err)
+		}
+	}
+	poll()
+	poll()
+	status, err := service.Status(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tasks, err := st.ListTasks(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(tasks) != 0 || len(status.Observations) != 0 || len(status.Drift) != 0 {
+		t.Fatalf("tasks=%+v observations=%+v drift=%+v", tasks, status.Observations, status.Drift)
+	}
+	audited := false
+	for _, activity := range status.Activity {
+		if activity.Kind == "monitor.suppressed" && activity.Payload["reason"] == "outside_first_parent" && activity.Payload["commit_sha"] == "branch-head" {
+			audited = true
+		}
+	}
+	if !audited {
+		t.Fatalf("no outside_first_parent audit for the branch commit: %+v", status.Activity)
+	}
+
+	// The same window with a real direct push on first-parent history files
+	// its one task, so the assertions above aren't vacuous.
+	listing = commit("direct", `{"sha":"merge"}`) + "," + listing
+	poll()
+	status, err = service.Status(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tasks, err = st.ListTasks(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(tasks) != 1 || len(status.Observations) != 1 || status.Observations[0].OccurrenceID != "direct" || len(status.Drift) != 2 {
+		t.Fatalf("direct push: tasks=%+v observations=%+v drift=%+v", tasks, status.Observations, status.Drift)
 	}
 }

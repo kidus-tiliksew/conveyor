@@ -23,6 +23,10 @@ type GitHubSource struct {
 	WorkspaceID string
 	Repository  string
 	GitHubSlug  string
+	// Base is the repository's configured base branch, which every commit
+	// read names, whichever branch GitHub reports as the default
+	// (req-delivery-and-forge AC-4.9).
+	Base        string
 	Run         CommandRunner
 	ResolveTask TaskResolver
 	// NewTaskResolver loads a fresh snapshot for each poll and takes precedence over ResolveTask.
@@ -295,8 +299,8 @@ func (s GitHubSource) Observations(ctx context.Context, since time.Time) ([]Obse
 	if s.Run == nil {
 		return nil, githubtrigger.PermissionError(fmt.Errorf("workspace GitHub App is required for monitor reads; connect it in workspace settings"))
 	}
-	if strings.TrimSpace(s.Repository) == "" || strings.TrimSpace(s.GitHubSlug) == "" {
-		return nil, fmt.Errorf("monitor GitHub repository name and slug are required")
+	if strings.TrimSpace(s.Repository) == "" || strings.TrimSpace(s.GitHubSlug) == "" || strings.TrimSpace(s.Base) == "" {
+		return nil, fmt.Errorf("monitor GitHub repository name, slug, and base branch are required")
 	}
 	resolveTask := s.ResolveTask
 	if s.NewTaskResolver != nil {
@@ -310,6 +314,7 @@ func (s GitHubSource) Observations(ctx context.Context, since time.Time) ([]Obse
 	for page := 1; ; page++ {
 		raw, err := s.Run(ctx, "api", "--method", "GET",
 			"repos/"+s.GitHubSlug+"/commits",
+			"-f", "sha="+s.Base,
 			"-f", "since="+since.UTC().Format(time.RFC3339),
 			"-f", "per_page=100", "-f", "page="+strconv.Itoa(page))
 		if err != nil {
@@ -334,6 +339,7 @@ func (s GitHubSource) Observations(ctx context.Context, since time.Time) ([]Obse
 		seen[key] = struct{}{}
 		observations = append(observations, observation)
 	}
+	firstParent := firstParentHistory(commits)
 	for _, commit := range commits {
 		pulls, pullErr := s.pulls(ctx, commit.SHA)
 		if pullErr != nil {
@@ -377,6 +383,25 @@ func (s GitHubSource) Observations(ctx context.Context, since time.Time) ([]Obse
 			if lineaged {
 				break
 			}
+		}
+		// Reconciliation above runs on every listed commit. Everything below
+		// judges a commit as a change of its own, which only first-parent
+		// history is: a commit reached through a merge's other parent counts
+		// for no check signal, revert, external merge, or direct push, and
+		// the merge's first-parent comparison already holds its diff
+		// (req-delivery-and-forge AC-4.6, AC-4.7; req-260811-228be6 AC-4.1;
+		// component-monitor-drift). A lost audit fails the pass, so a skipped
+		// commit is never left unrecorded (req-260811-228be6 AC-4.4).
+		if _, onFirstParent := firstParent[commit.SHA]; !onFirstParent {
+			if s.OnSuppressed != nil {
+				if err := s.OnSuppressed(ctx, map[string]any{
+					"reason": "outside_first_parent", "repository": s.Repository,
+					"commit_sha": commit.SHA,
+				}); err != nil {
+					return nil, fmt.Errorf("audit commit %s outside first-parent history: %w", commit.SHA, err)
+				}
+			}
+			continue
 		}
 		var hints *HintContext
 		if s.LoadHints != nil {
@@ -474,7 +499,7 @@ func (s GitHubSource) Observations(ctx context.Context, since time.Time) ([]Obse
 		// merge at a head no task approval covers, revert) carries the
 		// observed commit's first-parent paths so governed-scope evaluation
 		// raises document drift for it (req-260811-228be6 AC-4.3;
-		// component-monitor-drift). The comparison reads the default-branch
+		// component-monitor-drift). The comparison reads the base-branch
 		// commit against its first parent, never the pull request's branch
 		// head, through the workspace App runner (DEC-59).
 		var changedPaths []string
@@ -505,6 +530,68 @@ func (s GitHubSource) Observations(ctx context.Context, since time.Time) ([]Obse
 		})
 	}
 	return observations, nil
+}
+
+// firstParentHistory returns the listed commits on the base branch's
+// first-parent history. GitHub lists newest first from the requested branch,
+// so the first commit is the tip, and its chain follows Parents[0] until a
+// parent isn't listed. That ordinarily means the parent is older than the
+// window, and each remaining commit is reached through another parent of a
+// chain commit, which places it outside first-parent history.
+//
+// A listed commit reached by neither route lies behind an unlisted commit, so
+// a chain broke on a commit older than the window and the listing can't say
+// which parent led to it. It fails toward visibility: it starts a chain of its
+// own, so it is judged as a change rather than skipped.
+func firstParentHistory(commits []githubCommit) map[string]struct{} {
+	listed := make(map[string]githubCommit, len(commits))
+	for _, commit := range commits {
+		listed[commit.SHA] = commit
+	}
+	onChain := make(map[string]struct{}, len(commits))
+	reachedOtherwise := make(map[string]struct{})
+	for _, start := range commits {
+		if _, done := onChain[start.SHA]; done {
+			continue
+		}
+		if _, done := reachedOtherwise[start.SHA]; done {
+			continue
+		}
+		var others []string
+		for sha := start.SHA; ; {
+			commit, isListed := listed[sha]
+			if _, visited := onChain[sha]; !isListed || visited {
+				break
+			}
+			onChain[sha] = struct{}{}
+			if len(commit.Parents) == 0 {
+				break
+			}
+			for _, parent := range commit.Parents[1:] {
+				others = append(others, parent.SHA)
+			}
+			sha = commit.Parents[0].SHA
+		}
+		for len(others) > 0 {
+			sha := others[len(others)-1]
+			others = others[:len(others)-1]
+			commit, isListed := listed[sha]
+			if !isListed {
+				continue
+			}
+			if _, visited := onChain[sha]; visited {
+				continue
+			}
+			if _, visited := reachedOtherwise[sha]; visited {
+				continue
+			}
+			reachedOtherwise[sha] = struct{}{}
+			for _, parent := range commit.Parents {
+				others = append(others, parent.SHA)
+			}
+		}
+	}
+	return onChain
 }
 
 func (s GitHubSource) suppressMergeCommit(ctx context.Context, kind SignalKind, commit githubCommit) (bool, error) {
