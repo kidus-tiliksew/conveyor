@@ -90,7 +90,7 @@ func refusedWith(refusals []Refusal, id, text string) bool {
 // AC-1.4; task 261021-cd3bf8).
 func TestParkedRecoverNeedsNoOrder(t *testing.T) {
 	now := time.Date(2026, 10, 21, 7, 0, 0, 0, time.UTC)
-	parked := Input{Task: core.Task{ID: "t", State: core.TaskParked}, Markers: Markers{ParkCommand: "triage.park"}, Capabilities: allCaps(), Now: now}
+	parked := Input{Task: core.Task{ID: "t", State: core.TaskParked, RecoveryStage: core.StageImplement}, Markers: Markers{ParkCommand: "triage.park"}, Capabilities: allCaps(), Now: now}
 	got := Project(parked)
 	if got.Kind != KindParked {
 		t.Fatalf("kind = %s, want parked", got.Kind)
