@@ -484,7 +484,7 @@ func TestPipelineIncludesLineageDerivedSiblingArtifact(t *testing.T) {
 	if !names["direct.md"] || !names["sibling.md"] || names["unrelated.md"] || len(names) != 2 {
 		t.Fatalf("lineage-derived attachment names=%v", names)
 	}
-	for _, want := range []string{"untrusted historical context", "sibling_outcome", "Merged sibling [merged]", "```text", "body omitted by triage byte budget: oversized-ci.log"} {
+	for _, want := range []string{"untrusted historical context", "sibling_outcome", "Merged sibling [merged]", "```text", `body omitted by triage byte budget: "oversized-ci.log"`} {
 		if !strings.Contains(agent.input.Prompt, want) {
 			t.Fatalf("dispatch prompt omitted %q:\n%s", want, agent.input.Prompt)
 		}
