@@ -1455,7 +1455,7 @@ func (s *Store) RequestChangesCommand(ctx context.Context, lease taskops.TaskLea
 		}
 		events = append(events, core.Event{Kind: "task.state_changed", Payload: latestPayload})
 		if !store.AtMergeGate(before, events) {
-			return fmt.Errorf("task %s is not at the merge gate", request.TaskID)
+			return store.NotAtMergeGateError(before)
 		}
 		if request.JobID != "" {
 			job, jobErr := scanJob(documentRow(ctx, tx, `SELECT `+jobColumns+` FROM jobs WHERE workspace_id=? AND id=?`, documentWorkspace(ctx), request.JobID))

@@ -12,6 +12,33 @@ import (
 	"github.com/kidus-tiliksew/conveyor/internal/taskops"
 )
 
+// NotAtMergeGateError refuses a request for changes off the merge gate and names
+// what the task's state allows. The text keeps "not at the merge gate", and the
+// wrapped core.ErrInvalidTransition carries the allowed changes
+// (req-task-lifecycle-and-queue AC-1.1).
+func NotAtMergeGateError(task core.Task) error {
+	return fmt.Errorf("task %s is not at the merge gate: %w", task.ID, &core.ErrInvalidTransition{
+		Space: core.TaskLifecycle, From: string(task.State), Command: taskops.RequestChangesCommand,
+		Allowed: core.TaskTransitionAlternatives(task.State),
+	})
+}
+
+type taskCommandReadHookKey struct{}
+
+// WithTaskCommandReadHook runs fn after a durable lifecycle command reads its
+// task's state and before it writes, so an integration test can force another
+// writer into that window. It is an in-process test hook, never a request field.
+func WithTaskCommandReadHook(ctx context.Context, fn func(taskID string, read core.TaskState)) context.Context {
+	return context.WithValue(ctx, taskCommandReadHookKey{}, fn)
+}
+
+// TaskCommandRead fires the hook WithTaskCommandReadHook installed, if any.
+func TaskCommandRead(ctx context.Context, taskID string, read core.TaskState) {
+	if fn, ok := ctx.Value(taskCommandReadHookKey{}).(func(string, core.TaskState)); ok {
+		fn(taskID, read)
+	}
+}
+
 // PlanRevisionRequestResult is the atomic projection committed when an
 // implementer contests its approved execution plan (REQ-1, AC-1.1–AC-1.3).
 type PlanRevisionRequestResult struct {

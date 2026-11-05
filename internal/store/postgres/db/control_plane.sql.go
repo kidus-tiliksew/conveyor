@@ -1991,18 +1991,20 @@ UPDATE tasks
 SET state = $1, gate_kind = $2, updated_at = now()
 WHERE id = $3
   AND workspace_id = $4
+  AND state = $5
 RETURNING id, workspace_id, source, title, body, class, escalation_level, repo_name, base_branch, branch, state, parent_task_id, created_at, updated_at, next_stage, recovery_stage, intake_key, mode, spec_approval, merge_approval, policy_version, setup_name, setup_contract, hold, reviewed_head_sha, approved_head_sha, approval_stale, refresh_baseline_sha, refresh_head_sha, refresh_review_scope, origin_spec_version, origin_sub_id, supersedes, superseded_by, intake_operator_direction, gate_kind
 `
 
 type UpdateTaskStateParams struct {
-	State       string `json:"state"`
-	GateKind    string `json:"gate_kind"`
-	ID          string `json:"id"`
-	WorkspaceID string `json:"workspace_id"`
+	State         string `json:"state"`
+	GateKind      string `json:"gate_kind"`
+	ID            string `json:"id"`
+	WorkspaceID   string `json:"workspace_id"`
+	ExpectedState string `json:"expected_state"`
 }
 
 func (q *Queries) UpdateTaskState(ctx context.Context, arg UpdateTaskStateParams) (Task, error) {
-	row := q.db.QueryRow(ctx, updateTaskState, arg.State, arg.GateKind, arg.ID, arg.WorkspaceID)
+	row := q.db.QueryRow(ctx, updateTaskState, arg.State, arg.GateKind, arg.ID, arg.WorkspaceID, arg.ExpectedState)
 	var i Task
 	err := row.Scan(
 		&i.ID,
@@ -2051,6 +2053,7 @@ SET state = $1,
     updated_at = now()
 WHERE id = $5
   AND workspace_id = $6
+  AND state = $7
 RETURNING id, workspace_id, source, title, body, class, escalation_level, repo_name, base_branch, branch, state, parent_task_id, created_at, updated_at, next_stage, recovery_stage, intake_key, mode, spec_approval, merge_approval, policy_version, setup_name, setup_contract, hold, reviewed_head_sha, approved_head_sha, approval_stale, refresh_baseline_sha, refresh_head_sha, refresh_review_scope, origin_spec_version, origin_sub_id, supersedes, superseded_by, intake_operator_direction, gate_kind
 `
 
@@ -2061,6 +2064,7 @@ type UpdateTaskTransitionParams struct {
 	GateKind      string `json:"gate_kind"`
 	ID            string `json:"id"`
 	WorkspaceID   string `json:"workspace_id"`
+	ExpectedState string `json:"expected_state"`
 }
 
 func (q *Queries) UpdateTaskTransition(ctx context.Context, arg UpdateTaskTransitionParams) (Task, error) {
@@ -2071,6 +2075,7 @@ func (q *Queries) UpdateTaskTransition(ctx context.Context, arg UpdateTaskTransi
 		arg.GateKind,
 		arg.ID,
 		arg.WorkspaceID,
+		arg.ExpectedState,
 	)
 	var i Task
 	err := row.Scan(
