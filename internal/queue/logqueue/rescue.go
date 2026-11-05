@@ -4,6 +4,7 @@ import (
 	"context"
 
 	"github.com/kidus-tiliksew/conveyor/internal/eventlog"
+	"github.com/kidus-tiliksew/conveyor/internal/queue"
 )
 
 // rescue reschedules or discards jobs whose claim is older than the
@@ -29,10 +30,36 @@ func (rt *Runtime) rescue(ctx context.Context, ws *workspace) error {
 		} else {
 			payload.NextAt = now.Add(rt.retryDelay(job.Kind, job.Attempt))
 		}
-		if err := rt.appendOutcome(ctx, job, kind, payload, now); err != nil && !eventlog.IsVersionConflict(err) {
+		if err := rt.appendOutcome(ctx, job, kind, payload, now); err != nil {
+			if eventlog.IsVersionConflict(err) {
+				// Another replica recorded this job's outcome first and owns
+				// its discard handler.
+				continue
+			}
 			return err
 		}
 		rt.opts.Logf("logqueue: rescued %s attempt %d/%d as %s", job.ID(), job.Attempt, job.MaxAttempts, kind)
+		if kind == KindDiscarded {
+			rt.discarded(ctx, ws, job, payload.Error)
+		}
 	}
 	return nil
+}
+
+// discarded runs the registration's discard handler for a job rescue
+// discarded, so the job's owner reaches the stop its handler would have
+// applied on a failed last attempt (req-task-lifecycle-and-queue AC-6.2;
+// req-bounded-automatic-recovery AC-4.1). A failure is logged; the next
+// daemon start's checks repair what it left.
+func (rt *Runtime) discarded(ctx context.Context, ws *workspace, job Job, reason string) {
+	reg, ok := rt.registration(job.Kind)
+	if !ok || reg.Discarded == nil {
+		return
+	}
+	err := reg.Discarded(ctx, queue.Job{
+		WorkspaceID: ws.id, ID: job.ID(), Kind: job.Kind, Attempt: job.Attempt, MaxAttempts: job.MaxAttempts, Args: job.Args,
+	}, reason)
+	if err != nil {
+		rt.opts.Logf("logqueue: discard handler for %s: %v", job.ID(), err)
+	}
 }

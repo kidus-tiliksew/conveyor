@@ -45,7 +45,7 @@ func (w *githubIssuePublicationWorker) Work(ctx context.Context, job queue.Job) 
 		if on {
 			approved, exists, specErr := w.dispatcher.Store.GetLatestSpecVersion(ctx, lifecycle.TaskID)
 			if specErr != nil {
-				return specErr
+				return w.failEarly(ctx, job, lifecycle, specErr, "read approved plan for issue publication setting")
 			}
 			skip = exists && approved.Approved && approved.Version == lifecycle.SpecVersion && approved.ApprovedAt.Before(since)
 		}
@@ -66,21 +66,14 @@ func (w *githubIssuePublicationWorker) Work(ctx context.Context, job queue.Job) 
 	}
 	task, err := w.dispatcher.Store.GetTask(ctx, lifecycle.TaskID)
 	if err != nil {
-		return err
+		return w.failEarly(ctx, job, lifecycle, err, "load task for GitHub issue publication")
 	}
 	spec, exists, err := w.dispatcher.Store.GetLatestSpecVersion(ctx, task.ID)
 	if err != nil || !exists || !spec.Approved || spec.Version != lifecycle.SpecVersion {
 		if err == nil {
 			err = fmt.Errorf("approved spec version %d unavailable for task %s", lifecycle.SpecVersion, task.ID)
 		}
-		lifecycle.LastError = err.Error()
-		if job.Attempt >= job.MaxAttempts {
-			lifecycle.State = core.GitHubPublicationFailed
-		}
-		if updateErr := w.dispatcher.Store.UpdateGitHubLifecycle(ctx, lifecycle); updateErr != nil {
-			return fmt.Errorf("validate approved GitHub issue intent: %v; record retry: %w", err, updateErr)
-		}
-		return err
+		return w.failEarly(ctx, job, lifecycle, err, "validate approved GitHub issue intent")
 	}
 	var result github.IssuePublicationResult
 	publishErr := configErr
@@ -142,6 +135,47 @@ func (w *githubIssuePublicationWorker) Work(ctx context.Context, job queue.Job) 
 	return nil
 }
 
+// failEarly records an attempt that stopped before its forge call. The row
+// keeps the error and becomes failed on the last queue attempt, so the
+// bounded automatic re-enqueue finds it instead of a row left retrying
+// (component-durable-queue, Handlers; req-bounded-automatic-recovery
+// AC-4.1). The error is returned so the queue retries.
+func (w *githubIssuePublicationWorker) failEarly(ctx context.Context, job queue.Job, lifecycle core.GitHubLifecycle, cause error, step string) error {
+	lifecycle.LastError = cause.Error()
+	if job.Attempt >= job.MaxAttempts {
+		lifecycle.State = core.GitHubPublicationFailed
+	}
+	if updateErr := w.dispatcher.Store.UpdateGitHubLifecycle(ctx, lifecycle); updateErr != nil {
+		return fmt.Errorf("%s: %v; record retry: %w", step, cause, updateErr)
+	}
+	return cause
+}
+
+// Discarded is the GitHub issue publication discard handler. Rescue
+// discarded the job after its last attempt without a handler outcome, so an
+// open row becomes failed with the rescue reason and the bounded automatic
+// re-enqueue owns it (req-bounded-automatic-recovery AC-4.1). A finished or
+// failed row is left alone, so a repeat changes nothing.
+func (w *githubIssuePublicationWorker) Discarded(ctx context.Context, job queue.Job, reason string) error {
+	args, err := queue.DecodeArgs[queue.GitHubIssuePublicationArgs](job)
+	if err != nil {
+		return err
+	}
+	ctx = store.WithActor(ctx, store.SystemActor(fmt.Sprintf("queue:github-issue-publication:%s", job.ID)))
+	ctx = store.WithWorkspace(ctx, args.WorkspaceID)
+	lifecycle, ok, err := w.dispatcher.Store.GetGitHubLifecycle(ctx, args.TaskID)
+	if err != nil || !ok {
+		return err
+	}
+	switch lifecycle.State {
+	case core.GitHubPublicationPublished, core.GitHubPublicationSkipped, core.GitHubPublicationFailed:
+		return nil
+	}
+	lifecycle.State = core.GitHubPublicationFailed
+	lifecycle.LastError = reason
+	return w.dispatcher.Store.UpdateGitHubLifecycle(ctx, lifecycle)
+}
+
 func (w *reviewPublicationWorker) Work(ctx context.Context, job queue.Job) error {
 	args, err := queue.DecodeArgs[queue.ReviewPublicationArgs](job)
 	if err != nil {
@@ -162,15 +196,15 @@ func (w *reviewPublicationWorker) Work(ctx context.Context, job queue.Job) error
 	}
 	task, err := w.dispatcher.Store.GetTask(ctx, publication.TaskID)
 	if err != nil {
-		return err
+		return w.failEarly(ctx, job, publication, err, "load task for review publication")
 	}
 	cfg, err := w.dispatcher.currentConfig(ctx)
 	if err != nil {
-		return err
+		return w.failEarly(ctx, job, publication, err, "load configuration for review publication")
 	}
 	repo, ok := cfg.Repo(task.Repo)
 	if !ok || repo.GitHub == "" {
-		return fmt.Errorf("GitHub repository is not configured for %s", task.Repo)
+		return w.failEarly(ctx, job, publication, fmt.Errorf("GitHub repository is not configured for %s", task.Repo), "resolve review publication repository")
 	}
 	var bounceHistory []string
 	events, _ := w.dispatcher.Store.ListCompactEvents(ctx, task.ID)
@@ -237,6 +271,46 @@ func (w *reviewPublicationWorker) Work(ctx context.Context, job queue.Job) error
 	publication.ReviewedCommitSHA = result.ReviewedCommitSHA
 	publication.ForgeErrorCategory = ""
 	publication.LastError = ""
+	return w.dispatcher.Store.UpdateReviewPublication(ctx, publication)
+}
+
+// failEarly records an attempt that stopped before its forge call. The row
+// keeps the error and becomes failed on the last queue attempt, so the
+// bounded automatic re-enqueue finds it instead of a row left retrying
+// (component-durable-queue, Handlers; req-bounded-automatic-recovery
+// AC-4.1). The error is returned so the queue retries.
+func (w *reviewPublicationWorker) failEarly(ctx context.Context, job queue.Job, publication core.ReviewPublication, cause error, step string) error {
+	publication.LastError = cause.Error()
+	if job.Attempt >= job.MaxAttempts {
+		publication.State = core.ReviewPublicationFailed
+	}
+	if updateErr := w.dispatcher.Store.UpdateReviewPublication(ctx, publication); updateErr != nil {
+		return fmt.Errorf("%s: %v; record retry: %w", step, cause, updateErr)
+	}
+	return cause
+}
+
+// Discarded is the review publication discard handler. Rescue discarded the
+// job after its last attempt without a handler outcome, so an open row
+// becomes failed with the rescue reason and the bounded automatic re-enqueue
+// owns it (req-bounded-automatic-recovery AC-4.1). A published or failed row
+// is left alone, so a repeat changes nothing.
+func (w *reviewPublicationWorker) Discarded(ctx context.Context, job queue.Job, reason string) error {
+	args, err := queue.DecodeArgs[queue.ReviewPublicationArgs](job)
+	if err != nil {
+		return err
+	}
+	ctx = store.WithActor(ctx, store.SystemActor(fmt.Sprintf("queue:review-publication:%s", job.ID)))
+	ctx = store.WithWorkspace(ctx, args.WorkspaceID)
+	publication, err := w.dispatcher.Store.GetReviewPublication(ctx, args.ReviewWorkOrderID)
+	if err != nil {
+		return err
+	}
+	if publication.State == core.ReviewPublicationPublished || publication.State == core.ReviewPublicationFailed {
+		return nil
+	}
+	publication.State = core.ReviewPublicationFailed
+	publication.LastError = reason
 	return w.dispatcher.Store.UpdateReviewPublication(ctx, publication)
 }
 
