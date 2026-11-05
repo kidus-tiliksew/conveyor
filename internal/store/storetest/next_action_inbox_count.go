@@ -42,20 +42,30 @@ func runInboxAttentionCount(t *testing.T, x Fixture) {
 	st, ctx := x.Backend, x.Context
 	handler := x.LineageHTTP(t)
 	now := time.Now().UTC().Truncate(time.Microsecond)
-	create := func(state core.TaskState, gate core.GateKind, parent string) string {
+	create := func(state core.TaskState, parent string) string {
 		t.Helper()
 		id := core.NewTaskID()
-		requireOK(t, st.CreateTask(ctx, core.Task{ID: id, Workspace: x.Workspace, Repo: "conveyor", Title: "Inbox count " + id, BaseBranch: "main", Branch: "conveyor/task-" + id, State: state, GateKind: gate, ParentTaskID: parent, CreatedAt: now}))
+		requireOK(t, st.CreateTask(ctx, core.Task{ID: id, Workspace: x.Workspace, Repo: "conveyor", Title: "Inbox count " + id, BaseBranch: "main", Branch: "conveyor/task-" + id, State: state, ParentTaskID: parent, CreatedAt: now}))
+		return id
+	}
+	// A gate is entered through its recording command, the act that names its
+	// kind (req-operator-next-action AC-1.2).
+	plane := taskops.New(st)
+	gated := func(command core.TaskCommand) string {
+		t.Helper()
+		id := create(core.TaskRunning, "")
+		_, err := plane.Perform(ctx, id, taskops.Command{Kind: command})
+		requireOK(t, err)
 		return id
 	}
 
-	decision := create(core.TaskAwaiting, core.GateKindPlanApproval, "")
-	jobFailure := create(core.TaskAwaiting, core.GateKindJobFailure, "")
-	closed := create(core.TaskClosed, "", "")
-	anchor := create(core.TaskAwaiting, core.GateKindPlanApproval, "")
-	child := create(core.TaskRunning, "", anchor)
+	decision := gated(core.TaskGateSpec)
+	jobFailure := gated(core.TaskJobFail)
+	closed := create(core.TaskClosed, "")
+	anchor := gated(core.TaskGateSpec)
+	child := create(core.TaskRunning, anchor)
 
-	stalled := create(core.TaskQueued, "", "")
+	stalled := create(core.TaskQueued, "")
 	order := stalled + "-implement-1"
 	requireOK(t, st.CreateJob(ctx, core.Job{ID: order, TaskID: stalled, Stage: core.StageImplement, State: core.JobPending}))
 	requireOK(t, CreateWorkOrder(ctx, st, core.WorkOrder{ID: order, TaskID: stalled, JobID: order, Stage: core.StageImplement}))
@@ -69,7 +79,7 @@ func runInboxAttentionCount(t *testing.T, x Fixture) {
 	requireOK(t, err)
 	_, _, err = st.ConfirmSystemDesignVersion(ctx, confirmed.ID, initial.Version)
 	requireOK(t, err)
-	contextTask := create(core.TaskRunning, "", "")
+	contextTask := create(core.TaskRunning, "")
 	_, _, err = st.ProposeTaskContext(ctx, core.TaskContextProposalInput{TaskID: contextTask, TargetKind: core.TaskContextProposalSystemDesign, TargetID: confirmed.ID, Source: core.TaskContextProposalTriage, Justification: "Triage suggests this context."})
 	requireOK(t, err)
 	pending, _, err := st.CreateSystemDesign(ctx, core.SystemDesign{ID: "cw-inbox-count-pending-" + suffix, Title: "Inbox count pending", Category: "Component design"}, core.SystemDesignVersion{Content: designContent("proposed"), Origin: core.SystemDesignOriginOperator})
@@ -152,7 +162,7 @@ func runInboxAttentionCount(t *testing.T, x Fixture) {
 	}
 	user, err := enrollFixtureOwner(ctx, st, x.Workspace, "inbox-count-"+suffix)
 	requireOK(t, err)
-	_, err = taskops.New(st).SetAssignee(ctx, stalled, user)
+	_, err = plane.SetAssignee(ctx, stalled, user)
 	requireOK(t, err)
 	page, err := st.ListCallerAttentionTaskPage(ctx, store.CallerAttentionQuery{UserID: user, Limit: 10})
 	requireOK(t, err)
