@@ -517,7 +517,7 @@ func TestCountOperatorAttentionStoreCallsDoNotGrowWithTasks(t *testing.T) {
 		}
 		want := 0
 		for _, task := range open {
-			if store.TaskNeedsAttention(full[task.ID]) {
+			if store.TaskIsInboxDecision(full[task.ID]) {
 				want++
 			}
 		}
