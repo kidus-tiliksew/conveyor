@@ -324,19 +324,24 @@ func stalledChoices() []ChoiceSpec {
 	}
 }
 
-// claimFailingChoices are the acts the routes accept for a queued order
-// whose claims keep failing in the backend. The task-scoped redispatch is
-// not offered: the queued order holds its stage, so the route refuses it
-// (feature-operator-next-action NA-3, Claim-failure stall;
-// req-operator-next-action AC-1.4).
+// claimFailingRedispatchRefusal withholds redispatch from a claim_failing stall
+// whose route would accept it: a queued order behind a return to an earlier
+// stage holds no stage. Repairing the database is not a route, so that stall
+// offers no redispatch (component-next-action, Invariants 6).
+const claimFailingRedispatchRefusal = "redispatch cannot repair the server database error that fails this order's claims"
+
+// claimFailingChoices are the stalled choices with redispatch never offered.
+// The route's predicate alone does not cover this stall, because the route
+// accepts a queued order that holds no stage (req-operator-next-action AC-1.4,
+// AC-1.8; component-next-action, Invariants 6).
 func claimFailingChoices() []ChoiceSpec {
-	var out []ChoiceSpec
-	for _, spec := range stalledChoices() {
-		if spec.ID == "recover" || spec.ID == "start_over" {
-			out = append(out, spec)
+	specs := stalledChoices()
+	for i := range specs {
+		if specs[i].ID == "redispatch" {
+			specs[i].Refusal = claimFailingRedispatchRefusal
 		}
 	}
-	return out
+	return specs
 }
 
 func roundChoices() []ChoiceSpec {
@@ -383,10 +388,11 @@ func refuseChoice(in Input, spec ChoiceSpec, order *core.WorkOrder) string {
 	case "recover", "answer":
 		// The parked recover names the task-scoped redispatch route, which
 		// admits a parked task with no current order and restores its
-		// recovery stage; only the order-scoped recover route needs an order
-		// (feature-operator-next-action NA-3; req-operator-next-action AC-1.4).
+		// recovery stage, so it asks that route's predicate; only the
+		// order-scoped recover route needs an order (component-next-action,
+		// Invariants 7; req-operator-next-action AC-1.4).
 		if strings.HasPrefix(spec.Path, "/v1/tasks/") {
-			return ""
+			return core.NextActionRedispatchRefusal(in.Task, in.Orders)
 		}
 		if order == nil {
 			return "no order to recover"
@@ -410,10 +416,10 @@ func refuseChoice(in Input, spec ChoiceSpec, order *core.WorkOrder) string {
 	case "approve_revision", "decline":
 		return core.NextActionSupersessionRefusal(in.GateSpecVersion, latestVersion(in))
 	case "redispatch":
-		if order == nil {
-			return ""
+		if text := core.NextActionRedispatchRefusal(in.Task, in.Orders); text != "" {
+			return text
 		}
-		return core.NextActionRedispatchRefusal(*order)
+		return spec.Refusal
 	case "change_policy":
 		if order == nil || order.RecoveryRefusal == "" {
 			return core.NextActionChangePolicyRefusal("")

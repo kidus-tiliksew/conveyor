@@ -46,7 +46,7 @@ var (
 	// queued, claimed, stale, or timed_out order (core.WorkOrderHoldsStage).
 	// Task redispatch cannot help; the operator redispatches or recovers the
 	// order itself (component-durable-queue; DEC-62).
-	ErrTaskHeldByWorkOrder      = errors.New("task stage is held by a work order; redispatch or recover the work order instead")
+	ErrTaskHeldByWorkOrder      = errors.New(core.TaskHeldByWorkOrderRefusal)
 	ErrReviewRetryConflict      = errors.New("review round retry conflicts with current state")
 	ErrWorkOrderCancelled       = errors.New("work order was cancelled")
 	ErrWorkOrderPreempted       = errors.New("work order was preempted by an operator")

@@ -45,6 +45,9 @@ type ChoiceSpec struct {
 	Path       string
 	Capability core.Capability
 	Direction  string
+	// Refusal withholds the choice with this text even when its route would
+	// accept it; the route's own refusal is stated first.
+	Refusal string
 }
 
 type RunGate struct {
