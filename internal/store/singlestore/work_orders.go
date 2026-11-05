@@ -45,7 +45,7 @@ func persistGovernanceSnapshot(ctx context.Context, db s2log.Executor, snapshot 
 	if digest == "" {
 		return "", nil
 	}
-	_, err := db.ExecContext(ctx, `INSERT IGNORE INTO governance_snapshots (workspace_id, digest, content) VALUES (?, ?, ?)`, documentWorkspace(ctx), digest, content)
+	_, err := backendExec(ctx, db, `INSERT IGNORE INTO governance_snapshots (workspace_id, digest, content) VALUES (?, ?, ?)`, documentWorkspace(ctx), digest, content)
 	return digest, err
 }
 
@@ -1865,7 +1865,7 @@ func (s *Store) ClaimBaseConflictCheck(ctx context.Context, workOrderID string, 
 	if err != nil {
 		return false, err
 	}
-	result, err := s.db.ExecContext(ctx, `UPDATE work_orders SET base_conflict_checked_at=?
+	result, err := backendExec(ctx, s.db, `UPDATE work_orders SET base_conflict_checked_at=?
 		WHERE workspace_id=? AND id=? AND base_conflict_checked_at IS NULL`, at.UTC(), ws, workOrderID)
 	if err != nil {
 		return false, err

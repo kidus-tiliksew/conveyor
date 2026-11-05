@@ -295,7 +295,7 @@ func (s *Store) sessionLock(ctx context.Context, key string) (func() error, erro
 				releaseErr = translateBackendConflict(err)
 			}
 			if err = conn.Close(); releaseErr == nil {
-				releaseErr = err
+				releaseErr = translateBackendConflict(err)
 			}
 		})
 		return releaseErr
@@ -335,7 +335,7 @@ func (s *Store) lockOnTaskSession(ctx context.Context, ws, task, key string) err
 			if owner.tx == nil {
 				return fmt.Errorf("task lock session has no transaction")
 			}
-			return lockKey(ctx, owner.tx, "task-operation:"+ws+":"+key)
+			return translateBackendConflict(lockKey(ctx, owner.tx, "task-operation:"+ws+":"+key))
 		}
 	}
 	return fmt.Errorf("task lock session required")
@@ -374,5 +374,5 @@ func (s *Store) WithTaskSideEffectLock(ctx context.Context, taskID string, fn fu
 	owner := &taskLockOwner{store: s, workspace: ws, task: taskID, tx: tx, parent: parent}
 	owner.active.Store(true)
 	defer owner.active.Store(false)
-	return fn(context.WithValue(ctx, taskLockOwnerKey{}, owner))
+	return translateBackendConflict(fn(context.WithValue(ctx, taskLockOwnerKey{}, owner)))
 }
