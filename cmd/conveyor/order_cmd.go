@@ -118,8 +118,8 @@ func orderRetireCmd() *cobra.Command {
 	asJSON := false
 	cmd := &cobra.Command{
 		Use:   "retire <order-id> --reason <text>",
-		Short: "Retire a queued or stale work order",
-		Long:  "Reads the order from GET /v1/work-orders and, when it is queued or stale, posts {reason, request_id} to POST /v1/work-orders/{id}/preempt, which retires it to cancelled. A claimed order is refused before anything is sent; stop its attempt with operator preemption instead. The request ID is generated when omitted and is also sent as X-Request-Id and X-Idempotency-Key.",
+		Short: "Retire a queued or stale work order, except a review seat",
+		Long:  "Reads the order from GET /v1/work-orders and, when it is queued or stale and not a review seat, posts {reason, request_id} to POST /v1/work-orders/{id}/preempt, which retires it to cancelled. A claimed order is refused before anything is sent; stop its attempt with operator preemption instead. The request ID is generated when omitted and is also sent as X-Request-Id and X-Idempotency-Key.",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return runOrderRetire(newClient(), cmd.OutOrStdout(), args[0], reason, requestID, asJSON)
