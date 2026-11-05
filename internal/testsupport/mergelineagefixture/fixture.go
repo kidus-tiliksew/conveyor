@@ -268,6 +268,8 @@ func countKindIn(t *testing.T, st store.Store, ctx context.Context, taskID, kind
 // the next action the store assembles.
 func RunCheckStatus(t *testing.T, open func(*testing.T) store.Store) {
 	t.Helper()
+	// Each scenario makes its own workspace, so the suite shares one store.
+	st := open(t)
 	passed := githubtrigger.Check{Name: "build", State: githubtrigger.CheckPassed, URL: "https://github.com/acme/app/runs/1"}
 	failed := githubtrigger.Check{Name: "e2e", State: githubtrigger.CheckFailed, URL: "https://github.com/acme/app/runs/2"}
 	pending := githubtrigger.Check{Name: "deploy", State: githubtrigger.CheckPending, URL: "https://github.com/acme/app/runs/3"}
@@ -276,7 +278,7 @@ func RunCheckStatus(t *testing.T, open func(*testing.T) store.Store) {
 	transient := githubtrigger.StatusError(502, fmt.Errorf("bad gateway"))
 
 	t.Run("every check passed merges", func(t *testing.T) {
-		c := newCheckScenario(t, open(t))
+		c := newCheckScenario(t, st)
 		c.answer(nil, passed)
 		c.automatic(t, nil)
 		c.requireMerged(t)
@@ -285,14 +287,14 @@ func RunCheckStatus(t *testing.T, open func(*testing.T) store.Store) {
 		c.requireCount(t, store.EventCheckHold, 0)
 	})
 	t.Run("none reported merges", func(t *testing.T) {
-		c := newCheckScenario(t, open(t))
+		c := newCheckScenario(t, st)
 		c.answer(nil)
 		c.automatic(t, nil)
 		c.requireMerged(t)
 		c.requireRequestedStatus(t, "none_reported")
 	})
 	t.Run("failed beats pending and repeats append nothing", func(t *testing.T) {
-		c := newCheckScenario(t, open(t))
+		c := newCheckScenario(t, st)
 		c.answer(nil, passed, failed, pending)
 		c.automatic(t, dispatch.ErrCheckStatusHeld)
 		c.automatic(t, dispatch.ErrCheckStatusHeld)
@@ -303,7 +305,7 @@ func RunCheckStatus(t *testing.T, open func(*testing.T) store.Store) {
 		c.requireAction(t, nextactionOperator, nextactionHold, true, "e2e", "deploy")
 	})
 	t.Run("pending stays with the factory and records once", func(t *testing.T) {
-		c := newCheckScenario(t, open(t))
+		c := newCheckScenario(t, st)
 		c.answer(nil, passed, pending)
 		c.automatic(t, dispatch.ErrCheckStatusPending)
 		first := c.deadline(t)
@@ -319,7 +321,7 @@ func RunCheckStatus(t *testing.T, open func(*testing.T) store.Store) {
 		c.requireAction(t, "factory", "merging", false, "deploy")
 	})
 	t.Run("read finding nothing pending clears and pending again records anew", func(t *testing.T) {
-		c := newCheckScenario(t, open(t))
+		c := newCheckScenario(t, st)
 		c.mergeRefused = true
 		c.answer(nil, pending)
 		c.automatic(t, dispatch.ErrCheckStatusPending)
@@ -339,7 +341,7 @@ func RunCheckStatus(t *testing.T, open func(*testing.T) store.Store) {
 		c.requireCount(t, store.EventCheckPending, 2)
 	})
 	t.Run("a new head starts fresh", func(t *testing.T) {
-		c := newCheckScenario(t, open(t))
+		c := newCheckScenario(t, st)
 		c.answer(nil, failed, pending)
 		c.automatic(t, dispatch.ErrCheckStatusHeld)
 		first := c.deadline(t)
@@ -362,7 +364,7 @@ func RunCheckStatus(t *testing.T, open func(*testing.T) store.Store) {
 		}
 	})
 	t.Run("one rerun passing beside another failure stays held", func(t *testing.T) {
-		c := newCheckScenario(t, open(t))
+		c := newCheckScenario(t, st)
 		c.answer(nil, failed, other)
 		c.automatic(t, dispatch.ErrCheckStatusHeld)
 		c.answer(nil, githubtrigger.Check{Name: "e2e", State: githubtrigger.CheckPassed}, other)
@@ -373,7 +375,7 @@ func RunCheckStatus(t *testing.T, open func(*testing.T) store.Store) {
 		c.requireAction(t, nextactionOperator, nextactionHold, true, "lint")
 	})
 	t.Run("every check passing after a hold merges and clears", func(t *testing.T) {
-		c := newCheckScenario(t, open(t))
+		c := newCheckScenario(t, st)
 		c.answer(nil, failed)
 		c.automatic(t, dispatch.ErrCheckStatusHeld)
 		c.answer(nil, passed)
@@ -383,7 +385,7 @@ func RunCheckStatus(t *testing.T, open func(*testing.T) store.Store) {
 		c.requireCount(t, store.EventCheckOverride, 0)
 	})
 	t.Run("a rerun left pending returns a failed hold to the factory", func(t *testing.T) {
-		c := newCheckScenario(t, open(t))
+		c := newCheckScenario(t, st)
 		c.answer(nil, failed)
 		c.automatic(t, dispatch.ErrCheckStatusHeld)
 		c.requireAction(t, nextactionOperator, nextactionHold, true, "e2e")
@@ -393,7 +395,7 @@ func RunCheckStatus(t *testing.T, open func(*testing.T) store.Store) {
 		c.requireAction(t, "factory", "merging", false, "deploy")
 	})
 	t.Run("a transient failed read records the deadline and clears nothing", func(t *testing.T) {
-		c := newCheckScenario(t, open(t))
+		c := newCheckScenario(t, st)
 		c.answer(transient)
 		c.automatic(t, dispatch.ErrCheckStatusUnread)
 		first := c.deadline(t)
@@ -413,7 +415,7 @@ func RunCheckStatus(t *testing.T, open func(*testing.T) store.Store) {
 		c.requireAction(t, nextactionOperator, nextactionHold, true, "e2e")
 	})
 	t.Run("a refused read names the operator and the remedy", func(t *testing.T) {
-		c := newCheckScenario(t, open(t))
+		c := newCheckScenario(t, st)
 		c.answer(refused)
 		c.automatic(t, dispatch.ErrCheckStatusHeld)
 		c.automatic(t, dispatch.ErrCheckStatusHeld)
@@ -431,7 +433,7 @@ func RunCheckStatus(t *testing.T, open func(*testing.T) store.Store) {
 		c.requireCount(t, store.EventCheckHoldCleared, 1)
 	})
 	t.Run("the operator act reads nothing and records the override", func(t *testing.T) {
-		c := newCheckScenario(t, open(t))
+		c := newCheckScenario(t, st)
 		c.answer(nil, failed, pending)
 		c.automatic(t, dispatch.ErrCheckStatusHeld)
 		reads := c.reads
@@ -454,7 +456,7 @@ func RunCheckStatus(t *testing.T, open func(*testing.T) store.Store) {
 		}
 	})
 	t.Run("the operator act on an unheld head records no override", func(t *testing.T) {
-		c := newCheckScenario(t, open(t))
+		c := newCheckScenario(t, st)
 		if err := c.d.MergeApprovedTask(c.operatorCtx, c.current(t), c.operator); err != nil {
 			t.Fatal(err)
 		}
@@ -465,7 +467,7 @@ func RunCheckStatus(t *testing.T, open func(*testing.T) store.Store) {
 		c.requireCount(t, store.EventCheckOverride, 0)
 	})
 	t.Run("an act that GitHub refuses leaves the hold and records no override", func(t *testing.T) {
-		c := newCheckScenario(t, open(t))
+		c := newCheckScenario(t, st)
 		c.answer(nil, failed)
 		c.automatic(t, dispatch.ErrCheckStatusHeld)
 		c.mergeRefused = true
@@ -477,7 +479,7 @@ func RunCheckStatus(t *testing.T, open func(*testing.T) store.Store) {
 		c.requireAction(t, nextactionOperator, nextactionHold, true, "e2e")
 	})
 	t.Run("a crash after GitHub merged still records the override", func(t *testing.T) {
-		c := newCheckScenario(t, open(t))
+		c := newCheckScenario(t, st)
 		c.answer(nil, failed)
 		c.automatic(t, dispatch.ErrCheckStatusHeld)
 		c.dieAfterMerge = true
@@ -499,7 +501,7 @@ func RunCheckStatus(t *testing.T, open func(*testing.T) store.Store) {
 		}
 	})
 	t.Run("a merge on GitHub outside Conveyor records no override", func(t *testing.T) {
-		c := newCheckScenario(t, open(t))
+		c := newCheckScenario(t, st)
 		c.answer(nil, failed)
 		c.automatic(t, dispatch.ErrCheckStatusHeld)
 		c.merged = true

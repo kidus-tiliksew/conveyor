@@ -42,15 +42,15 @@ const taskWaitLong = `Block until a task's observed state changes, the task reac
 state, or the timeout elapses.
 
 Each observation holds the task state, the pending human gate (plan, merge,
-merge execution, plan revision, or human recovery, with the plan version when
-one applies and the merge readiness state for merge execution), and the next
+merge execution, check hold, plan revision, or human recovery, with the plan
+version when one applies and the merge readiness state for merge execution), and the next
 claimable work order ID and stage. The command reads GET /v1/tasks/{id} and
 GET /v1/work-orders, plus GET /v1/tasks/{id}/spec at a plan or plan-revision
 gate and GET /v1/tasks/{id}/activity at a merge-execution gate, with the
 ordinary server, workspace, and credential resolution. It re-reads with jittered backoff from
 250ms to a 2s ceiling and returns when any observed field differs from the
 first observation. A merged, closed, or parked task returns at once, at start
-or during the wait.
+or during the wait, and so does a task at a check hold, which needs an operator.
 
 Transport errors and server 5xx responses after the first observation are
 retried within the timeout. Authentication, authorization, not-found, and
@@ -58,7 +58,7 @@ malformed responses end the wait at once. A failed read never replaces the
 last successful observation.
 
 Output reports the current observation and why the wait ended: changed,
-terminal, or timeout. --json prints the same fields as one JSON object. On
+terminal, held, or timeout. --json prints the same fields as one JSON object. On
 timeout, last_read_error names the most recent failed read when the final
 poll failed.
 
