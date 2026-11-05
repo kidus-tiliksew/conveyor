@@ -204,7 +204,7 @@ type activityMarkerRoles struct {
 	// claimed is an implement task whose user bounce a historical claim cleared
 	// and whose latest merge attempt failed.
 	claimed string
-	// bounced is an implement task whose user bounce follows a historical claim.
+	// bounced is an implement task whose user bounce follows a claim.
 	bounced string
 	// review is a task with one claimed and one queued seat of a review round.
 	review string
@@ -228,8 +228,9 @@ type activityMarkerTimes struct {
 }
 
 // seedActivityMarkerFixture creates the task, order, and event shape the marker
-// folds read. Each historical work_order.claimed event embeds a snapshot body
-// of compactSnapshotBodyBytes, and encode decides the payload the ledger holds.
+// folds read. One implement order's and one review seat's work_order.claimed
+// events embed a snapshot body of compactSnapshotBodyBytes, the only bodies the
+// proof needs, and encode decides the payload the ledger holds.
 func seedActivityMarkerFixture(t *testing.T, x Fixture, times activityMarkerTimes, encode func(kind string, payload json.RawMessage) json.RawMessage) activityMarkerRoles {
 	t.Helper()
 	st, ctx := x.Backend, x.Context
@@ -239,16 +240,20 @@ func seedActivityMarkerFixture(t *testing.T, x Fixture, times activityMarkerTime
 		requireOK(t, err)
 		return claimed
 	}
-	historicalClaim := func(order core.WorkOrder, lease time.Time, rank int64) core.Event {
+	claimEvent := func(order core.WorkOrder, lease time.Time, rank int64) core.Event {
 		t.Helper()
 		order.LeaseExpiresAt = lease
+		return core.Event{ID: rank, TaskID: order.TaskID, JobID: order.JobID, Kind: "work_order.claimed", At: times.at.Add(time.Duration(rank) * time.Second), Payload: encode("work_order.claimed", core.JSONPayload(order))}
+	}
+	historicalClaim := func(order core.WorkOrder, lease time.Time, rank int64) core.Event {
+		t.Helper()
 		order.GovernanceSnapshot = &core.GovernanceSnapshot{Designs: []core.GovernanceDesignContext{{
 			ID: "design-activity-marker", Title: "Activity marker", Category: "Component design", Version: 1,
 			Content: compactSnapshotMarker + strings.Repeat("s", compactSnapshotBodyBytes),
 			Governs: []core.GovernedScope{{Repository: "conveyor", Paths: []string{"internal/**"}}},
 		}}}
 		order.ServedRequirementSnapshot = []core.ServedRequirementContext{{ID: "req-activity-marker", Title: "Activity marker", Version: 1}}
-		return core.Event{ID: rank, TaskID: order.TaskID, JobID: order.JobID, Kind: "work_order.claimed", At: times.at.Add(time.Duration(rank) * time.Second), Payload: encode("work_order.claimed", core.JSONPayload(order))}
+		return claimEvent(order, lease, rank)
 	}
 	userBounce := func(taskID string, rank int64) core.Event {
 		return core.Event{ID: rank, TaskID: taskID, Kind: "pipeline.bounced", At: times.at.Add(time.Duration(rank) * time.Second), Payload: core.JSONPayload(map[string]any{"source": store.UserRequestChangesSource})}
@@ -271,7 +276,7 @@ func seedActivityMarkerFixture(t *testing.T, x Fixture, times activityMarkerTime
 	bouncedOrder := claim(newAggregateOrder(t, x).ID)
 	roles.bounced = bouncedOrder.TaskID
 	seed(roles.bounced,
-		historicalClaim(bouncedOrder, times.claimLease, 1),
+		claimEvent(bouncedOrder, times.claimLease, 1),
 		userBounce(roles.bounced, 2),
 	)
 
@@ -291,7 +296,7 @@ func seedActivityMarkerFixture(t *testing.T, x Fixture, times activityMarkerTime
 	seed(roles.review,
 		historicalClaim(claimedSeat, times.claimLease, 1),
 		core.Event{ID: 2, TaskID: review.ID, JobID: claimedSeat.JobID, Kind: "work_order.lease_renewed", At: times.at.Add(2 * time.Second), Payload: core.JSONPayload(map[string]any{"id": claimedSeat.ID, "lease_expires_at": times.renewedLease})},
-		historicalClaim(queuedSeat, times.expiredLease, 3),
+		claimEvent(queuedSeat, times.expiredLease, 3),
 	)
 	return roles
 }
@@ -351,7 +356,7 @@ func roleMarkers(t *testing.T, label string, roles activityMarkerRoles, markers 
 
 // runActivityMarkerCompactReads pins every entry point that reaches
 // listActivityMarkers over historical work_order.claimed events that embed
-// snapshot bodies, on implement and review orders. The markers and the review
+// snapshot bodies, on an implement order and a review order. The markers and the review
 // lease horizon equal those of the same fixture with compact payloads, and the
 // bytes the database sends under the read label stay below
 // compactReadPayloadBound, so a return to the raw payload column fails
@@ -398,12 +403,12 @@ func runActivityMarkerCompactReads(t *testing.T, x Fixture) {
 			bodies++
 		}
 	}
-	if bodies != 2 {
-		t.Fatalf("review ledger holds %d snapshot bodies, want 2", bodies)
+	if bodies != 1 {
+		t.Fatalf("review ledger holds %d snapshot bodies, want 1", bodies)
 	}
 	if received := drain(); received != nil {
-		if got := received["activity-marker-compact-full"]; got < 2*compactSnapshotBodyBytes {
-			t.Fatalf("the raw read received %d bytes, want at least the %d seeded body bytes", got, 2*compactSnapshotBodyBytes)
+		if got := received["activity-marker-compact-full"]; got < compactSnapshotBodyBytes {
+			t.Fatalf("the raw read received %d bytes, want at least the %d seeded body bytes", got, compactSnapshotBodyBytes)
 		}
 	}
 
@@ -458,7 +463,7 @@ func requireActivityMarkerFolds(t *testing.T, label string, roles activityMarker
 		t.Fatalf("%s: forge failure = %+v, want the seeded merge failure", label, failure)
 	}
 	if !byTask[roles.bounced].UserChangesRequested {
-		t.Fatalf("%s: the user bounce after the historical claim is not pending", label)
+		t.Fatalf("%s: the user bounce after the claim is not pending", label)
 	}
 	diagnostics := byTask[roles.review].ReviewDiagnostics
 	if len(diagnostics) != 2 {
@@ -472,7 +477,7 @@ func requireActivityMarkerFolds(t *testing.T, label string, roles activityMarker
 			}
 		case 2:
 			if diagnostic.Status != store.ReviewExpiredWithoutVerdict || !diagnostic.LeaseExpiresAt.Equal(times.expiredLease) {
-				t.Fatalf("%s: queued seat diagnostic = %+v, want the historical claim's elapsed lease %s", label, diagnostic, times.expiredLease)
+				t.Fatalf("%s: queued seat diagnostic = %+v, want the seeded claim's elapsed lease %s", label, diagnostic, times.expiredLease)
 			}
 		default:
 			t.Fatalf("%s: unexpected review seat diagnostic %+v", label, diagnostic)
