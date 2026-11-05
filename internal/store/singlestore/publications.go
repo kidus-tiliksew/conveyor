@@ -60,6 +60,12 @@ func (s *Store) UpdateGitHubLifecycle(ctx context.Context, lifecycle core.GitHub
 		if err := store.ValidateGitHubPublicationTransition(current, lifecycle.State); err != nil {
 			return err
 		}
+		// A second writer of a failed row changes nothing, so one failure
+		// records one event whatever the timing (req-bounded-automatic-recovery
+		// AC-4.1).
+		if current == core.GitHubPublicationFailed && lifecycle.State == core.GitHubPublicationFailed {
+			return nil
+		}
 		if lifecycle.IssueNumber > 0 {
 			var exists bool
 			if err := documentRow(ctx, tx, `SELECT EXISTS(SELECT 1 FROM github_lifecycles WHERE workspace_id=? AND repository=? AND issue_number=? AND task_id<>?)`, documentWorkspace(ctx), repository, lifecycle.IssueNumber, lifecycle.TaskID).Scan(&exists); err != nil {
@@ -180,6 +186,12 @@ func (s *Store) UpdateReviewPublication(ctx context.Context, publication core.Re
 		current.State = core.ReviewPublicationState(state)
 		if err := store.ValidateReviewPublicationUpdate(current, publication); err != nil {
 			return err
+		}
+		// A second writer of a failed row changes nothing, so one failure
+		// records one event whatever the timing (req-bounded-automatic-recovery
+		// AC-4.1).
+		if current.State == core.ReviewPublicationFailed && publication.State == core.ReviewPublicationFailed {
+			return nil
 		}
 		_, err := documentExec(ctx, tx, `UPDATE review_publications SET state=?, attempts=?,
 			check_run_id=?, comment_id=?, reviewed_commit_sha=?, forge_error_category=?, last_error=?,

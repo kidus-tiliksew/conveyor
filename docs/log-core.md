@@ -59,13 +59,16 @@ The dispatcher sees only `queue.Runtime` and the handler contract: return
 nil to complete a job, `queue.Snooze` to reschedule it, any other error to
 fail it. A registration may also name a `Discarded` handler, which applies
 the owner's stop before the discard is recorded: `dispatch_task` parks the
-task, and the review and GitHub issue publications mark their row failed. Rescue
-first appends an expected-version `job.claimed` naming the next attempt, so one
-replica owns the job and a replica with a stale view runs nothing. A handler's
-failed last attempt runs it under its own claim. The job stays running until the
-handler succeeds, so no newer generation can start under it, and a failure is
-retried on the backoff above. The running job is the durable intent: after a
-restart, rescue finds it again once its claim goes stale.
+task, and the review and GitHub issue publications mark their row failed. Every
+attempt, on rescue, after a handler's last attempt, and on each retry, first
+appends an expected-version `job.claimed` naming the next attempt. That append
+proves the replica's view is current and renews the claim, so a replica with a
+stale view has no effect. The attempt's claim, handler, and discard append share
+one budget of at most 30 seconds and half the rescue threshold, so the handler's
+writes stop before another replica may take the job over. The job stays running
+until the handler succeeds, so no newer generation can start under it, and a
+failure is retried on the backoff above. The running job is the durable intent:
+after a restart, rescue finds it again once its claim goes stale.
 `ReconcileQueuedTasks` repairs a queued task without a live job and fails a
 running task whose job was discarded after its last attempt.
 

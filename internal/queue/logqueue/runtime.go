@@ -547,7 +547,7 @@ func (rt *Runtime) run(ws *workspace, kind string, job Job) {
 			// its idempotent discard handler confirms the stop before the
 			// job is recorded as discarded (req-task-lifecycle-and-queue
 			// AC-6.2; req-bounded-automatic-recovery AC-4.1).
-			if err := rt.finishDiscard(ws, reg, job, handlerErr.Error()); err != nil {
+			if err := rt.finishDiscard(ws, reg, job, handlerErr.Error(), false); err != nil {
 				rt.opts.Logf("logqueue: workspace %s: %v", ws.id, err)
 				retryDiscard = true
 			}

@@ -448,9 +448,11 @@ func TestDiscardedPublicationRecoversFromAStoreFailureWithoutANotice(t *testing.
 		notices := log.Changes().Subscribe("test", changes.Job)
 		defer notices.Close()
 		startDiscardRuntimes(t, log, worker.dispatcher, 1)
+		// The next alarm fire may already have re-enqueued the failed row, which
+		// is the recovery this leads to, so the failure event is the proof.
 		waitForDiscard(t, log, stream, func() bool {
-			stored, err := inner.GetReviewPublication(ctx, publication.ReviewWorkOrderID)
-			return err == nil && stored.State == core.ReviewPublicationFailed
+			count, err := inner.CountEvents(ctx, publication.TaskID, "review.publication_failed")
+			return err == nil && count > 0
 		})
 		requireNoJobNotice(t, notices)
 		if count, err := inner.CountEvents(ctx, publication.TaskID, "review.publication_failed"); err != nil || count != 1 {
@@ -468,8 +470,8 @@ func TestDiscardedPublicationRecoversFromAStoreFailureWithoutANotice(t *testing.
 		defer notices.Close()
 		startDiscardRuntimes(t, log, worker.dispatcher, 1)
 		waitForDiscard(t, log, stream, func() bool {
-			lifecycle, ok, err := inner.GetGitHubLifecycle(ctx, taskID)
-			return err == nil && ok && lifecycle.State == core.GitHubPublicationFailed
+			count, err := inner.CountEvents(ctx, taskID, "github_issue.publication_failed")
+			return err == nil && count > 0
 		})
 		requireNoJobNotice(t, notices)
 		if count, err := inner.CountEvents(ctx, taskID, "github_issue.publication_failed"); err != nil || count != 1 {
@@ -527,4 +529,188 @@ func TestDiscardedDispatchForAMissingTaskEnds(t *testing.T) {
 	if err := worker.Discarded(ctx, dispatchTaskJob("missing", queue.DispatchTaskMaxAttempts, queue.DispatchTaskMaxAttempts), rescueReason); err != nil {
 		t.Fatal(err)
 	}
+}
+
+// blockingStore blocks the first call of one operation until released, then
+// honors the caller's context, as a durable store does, and memory does not.
+type blockingStore struct {
+	store.Store
+	taskID          string
+	entered         chan struct{}
+	release         chan struct{}
+	blockGetTask    atomic.Bool
+	blockReviewPubl atomic.Bool
+}
+
+func (s *blockingStore) wait(ctx context.Context) error {
+	close(s.entered)
+	<-s.release
+	return ctx.Err()
+}
+
+func (s *blockingStore) GetTask(ctx context.Context, id string) (core.Task, error) {
+	if id == s.taskID && s.blockGetTask.CompareAndSwap(true, false) {
+		task, err := s.Store.GetTask(ctx, id)
+		close(s.entered)
+		<-s.release
+		return task, err // The read ended before the block; the handler holds it.
+	}
+	return s.Store.GetTask(ctx, id)
+}
+
+func (s *blockingStore) UpdateReviewPublication(ctx context.Context, publication core.ReviewPublication) error {
+	if s.blockReviewPubl.CompareAndSwap(true, false) {
+		if err := s.wait(ctx); err != nil {
+			return err
+		}
+	}
+	return s.Store.UpdateReviewPublication(ctx, publication)
+}
+
+// startReplica starts one runtime on a short threshold, so its budget ends
+// quickly on the real clock. Its job handlers finish at once.
+func startReplica(t *testing.T, log eventlog.Store, d *Dispatcher, worker string, threshold time.Duration) *logqueue.Runtime {
+	t.Helper()
+	rt := logqueue.NewRuntime(log, logqueue.Options{Workspaces: []string{"test"}, RescueStuckAfter: threshold, WorkerID: worker, Logf: t.Logf})
+	for _, registration := range d.Registrations(&ShutdownMarker{}) {
+		registration.Handle = func(context.Context, queue.Job) error { return nil }
+		rt.Register(registration)
+	}
+	if err := rt.Start(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		_ = rt.StopAndCancel(ctx)
+	})
+	return rt
+}
+
+// A replica blocked in its handler past the end of its claim makes no write when
+// it wakes. Another replica takes over and parks the task, an operator recovers
+// it, and a newer generation runs. The stale handler then parks nothing, and one
+// failure is recorded (req-task-lifecycle-and-queue AC-6.2).
+func TestStaleDispatchHandlerLeavesARecoveredTaskAlone(t *testing.T) {
+	t.Parallel()
+	const threshold = 200 * time.Millisecond
+	ctx := store.WithWorkspace(store.WithActor(t.Context(), store.SystemActor()), "test")
+	inner := store.NewMemory()
+	taskID := "discard-stale-" + core.NewTaskID()
+	if err := inner.CreateTask(ctx, core.Task{ID: taskID, Workspace: "test", Repo: "app", State: core.TaskRunning, NextStage: core.StageImplement, CreatedAt: time.Now()}); err != nil {
+		t.Fatal(err)
+	}
+	blocking := &blockingStore{Store: inner, taskID: taskID, entered: make(chan struct{}), release: make(chan struct{})}
+	blocking.blockGetTask.Store(true)
+	kind := queue.DispatchTaskArgs{}.Kind()
+	args := queue.DispatchTaskArgs{WorkspaceID: "test", TaskID: taskID}
+	log, stream := stuckJobLog(t, kind, taskID, args, queue.DispatchTaskMaxAttempts)
+	startReplica(t, log, New(blocking, &config.Config{Workspace: "test"}, nil), "a", threshold)
+	<-blocking.entered
+	// A's budget ends while it is blocked, and B takes over.
+	startReplica(t, log, New(inner, &config.Config{Workspace: "test"}, nil), "b", threshold)
+	waitForDiscard(t, log, stream, func() bool {
+		task, err := inner.GetTask(ctx, taskID)
+		return err == nil && task.State == core.TaskParked
+	})
+	if _, err := taskops.New(inner).Perform(ctx, taskID, taskops.Command{Kind: core.TaskRecover, NextStage: core.StageImplement, ProjectStages: true}); err != nil {
+		t.Fatal(err)
+	}
+	if inserted, err := logqueue.Enqueue(context.Background(), log, "test", kind, taskID, args, queue.DispatchTaskMaxAttempts, time.Now().UTC()); err != nil || !inserted {
+		t.Fatalf("newer generation inserted=%t err=%v", inserted, err)
+	}
+	close(blocking.release)
+	time.Sleep(2 * threshold)
+	task, err := inner.GetTask(ctx, taskID)
+	if err != nil || task.State != core.TaskQueued {
+		t.Fatalf("recovered task=%+v err=%v", task, err)
+	}
+	if count, countErr := inner.CountEvents(ctx, taskID, "dispatch.failed"); countErr != nil || count != 1 {
+		t.Fatalf("dispatch.failed=%d err=%v", count, countErr)
+	}
+	job, err := logqueue.Load(context.Background(), log, "test", stream)
+	if err != nil || job.Generation != 2 {
+		t.Fatalf("job=%+v err=%v", job, err)
+	}
+}
+
+// A replica blocked inside its failed-state write past the end of its claim
+// writes nothing when it wakes, so a row already retrying again in a newer
+// generation keeps that state, and one failure is recorded.
+func TestStalePublicationHandlerLeavesANewerGenerationAlone(t *testing.T) {
+	t.Parallel()
+	const threshold = 200 * time.Millisecond
+	ctx, inner, worker, publication := reviewPublicationFixture(t, "approve")
+	blocking := &blockingStore{Store: inner, entered: make(chan struct{}), release: make(chan struct{})}
+	blocking.blockReviewPubl.Store(true)
+	worker.dispatcher.Store = blocking
+	kind := queue.ReviewPublicationArgs{}.Kind()
+	args := queue.ReviewPublicationArgs{WorkspaceID: "test", ReviewWorkOrderID: publication.ReviewWorkOrderID}
+	log, stream := stuckJobLog(t, kind, publication.ReviewWorkOrderID, args, 5)
+	startReplica(t, log, worker.dispatcher, "a", threshold)
+	<-blocking.entered
+	startReplica(t, log, New(inner, &config.Config{Workspace: "test", Repos: []config.Repo{{Name: "app", GitHub: "acme/app"}}}, nil), "b", threshold)
+	waitForDiscard(t, log, stream, func() bool {
+		count, err := inner.CountEvents(ctx, publication.TaskID, "review.publication_failed")
+		return err == nil && count > 0
+	})
+	stored, err := inner.GetReviewPublication(ctx, publication.ReviewWorkOrderID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	stored.State = core.ReviewPublicationRetrying
+	if err = inner.UpdateReviewPublication(ctx, stored); err != nil {
+		t.Fatal(err)
+	}
+	close(blocking.release)
+	time.Sleep(2 * threshold)
+	stored, err = inner.GetReviewPublication(ctx, publication.ReviewWorkOrderID)
+	if err != nil || stored.State != core.ReviewPublicationRetrying {
+		t.Fatalf("publication=%+v err=%v", stored, err)
+	}
+	if count, countErr := inner.CountEvents(ctx, publication.TaskID, "review.publication_failed"); countErr != nil || count != 1 {
+		t.Fatalf("review.publication_failed=%d err=%v", count, countErr)
+	}
+}
+
+// The handlers check their context before each write, because a store that
+// ignores it, as memory does, would otherwise accept a write after the claim.
+func TestDiscardHandlersWriteNothingAfterTheirContextEnds(t *testing.T) {
+	t.Parallel()
+	ended := func(parent context.Context) context.Context {
+		ctx, cancel := context.WithCancel(parent)
+		cancel()
+		return ctx
+	}
+	t.Run("Dispatch", func(t *testing.T) {
+		t.Parallel()
+		ctx, st, worker, taskID := dispatchFailureFixture(t, false)
+		job := dispatchTaskJob(taskID, queue.DispatchTaskMaxAttempts, queue.DispatchTaskMaxAttempts)
+		if err := worker.Discarded(ended(ctx), job, rescueReason); !errors.Is(err, context.Canceled) {
+			t.Fatalf("err=%v", err)
+		}
+		if task, err := st.GetTask(ctx, taskID); err != nil || task.State != core.TaskRunning {
+			t.Fatalf("task=%+v err=%v", task, err)
+		}
+	})
+	t.Run("Review", func(t *testing.T) {
+		t.Parallel()
+		ctx, st, worker, publication := reviewPublicationFixture(t, "approve")
+		if err := worker.Discarded(ended(ctx), reviewPublicationJob(publication.ReviewWorkOrderID, 5), rescueReason); !errors.Is(err, context.Canceled) {
+			t.Fatalf("err=%v", err)
+		}
+		if stored, err := st.GetReviewPublication(ctx, publication.ReviewWorkOrderID); err != nil || stored.State == core.ReviewPublicationFailed {
+			t.Fatalf("publication=%+v err=%v", stored, err)
+		}
+	})
+	t.Run("GitHubIssue", func(t *testing.T) {
+		t.Parallel()
+		ctx, st, worker, taskID := githubIssuePublicationFixture(t)
+		if err := worker.Discarded(ended(ctx), githubIssuePublicationJob(taskID, 5), rescueReason); !errors.Is(err, context.Canceled) {
+			t.Fatalf("err=%v", err)
+		}
+		if lifecycle, _, err := st.GetGitHubLifecycle(ctx, taskID); err != nil || lifecycle.State == core.GitHubPublicationFailed {
+			t.Fatalf("lifecycle=%+v err=%v", lifecycle, err)
+		}
+	})
 }

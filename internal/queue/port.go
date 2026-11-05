@@ -69,8 +69,10 @@ type Registration struct {
 	// failed last attempt, whose own failure outcome may not have persisted.
 	// reason is the error to record. The driver retries it until it returns
 	// nil, with the job still active, so it must be idempotent, and it returns
-	// nil for a failure no retry can repair. Only the replica holding the
-	// job's claim runs it (component-durable-queue, Handlers).
+	// nil for a failure no retry can repair. The driver renews the job's claim
+	// with an expected-version append before each call, so only the claim's
+	// holder runs it. ctx ends before that claim can go stale, and the handler
+	// must make no write after ctx ends (component-durable-queue, Handlers).
 	Discarded func(ctx context.Context, job Job, reason string) error
 }
 

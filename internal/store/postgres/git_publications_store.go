@@ -152,6 +152,12 @@ func (s *Store) UpdateGitHubLifecycle(ctx context.Context, lifecycle core.GitHub
 		if err := store.ValidateGitHubPublicationTransition(current, lifecycle.State); err != nil {
 			return err
 		}
+		// A second writer of a failed row changes nothing, so one failure
+		// records one event whatever the timing (req-bounded-automatic-recovery
+		// AC-4.1).
+		if current == core.GitHubPublicationFailed && lifecycle.State == core.GitHubPublicationFailed {
+			return nil
+		}
 		command, err := tx.Exec(ctx, `UPDATE github_lifecycles SET
 			issue_number=$1, issue_url=$2, outcome=$3, state=$4, attempts=$5,
 			forge_error_category=$6, last_error=$7, create_state=$8, create_attempts=$9, reconcile_misses=$10,
@@ -322,6 +328,12 @@ func (s *Store) UpdateReviewPublication(ctx context.Context, publication core.Re
 		current.State = core.ReviewPublicationState(state)
 		if err := store.ValidateReviewPublicationUpdate(current, publication); err != nil {
 			return err
+		}
+		// A second writer of a failed row changes nothing, so one failure
+		// records one event whatever the timing (req-bounded-automatic-recovery
+		// AC-4.1).
+		if current.State == core.ReviewPublicationFailed && publication.State == core.ReviewPublicationFailed {
+			return nil
 		}
 		command, err := tx.Exec(ctx, `UPDATE review_publications SET state=$1, attempts=$2,
 			check_run_id=$3, comment_id=$4, reviewed_commit_sha=$5, forge_error_category=$6, last_error=$7,

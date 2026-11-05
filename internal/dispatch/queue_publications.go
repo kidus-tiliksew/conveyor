@@ -172,6 +172,9 @@ func (w *githubIssuePublicationWorker) Discarded(ctx context.Context, job queue.
 	case core.GitHubPublicationPublished, core.GitHubPublicationSkipped, core.GitHubPublicationFailed:
 		return nil
 	}
+	if err = ctx.Err(); err != nil {
+		return err
+	}
 	lifecycle.State = core.GitHubPublicationFailed
 	lifecycle.LastError = reason
 	return w.dispatcher.Store.UpdateGitHubLifecycle(ctx, lifecycle)
@@ -312,6 +315,9 @@ func (w *reviewPublicationWorker) Discarded(ctx context.Context, job queue.Job, 
 	}
 	if publication.State == core.ReviewPublicationPublished || publication.State == core.ReviewPublicationFailed {
 		return nil
+	}
+	if err = ctx.Err(); err != nil {
+		return err
 	}
 	publication.State = core.ReviewPublicationFailed
 	publication.LastError = reason

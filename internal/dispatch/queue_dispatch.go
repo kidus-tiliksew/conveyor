@@ -122,6 +122,9 @@ func (w *dispatchTaskWorker) parkAfterFinalAttempt(ctx context.Context, taskID s
 		return fmt.Errorf("dispatch failed: %v; load recovery transition: %w", err, taskErr)
 	}
 	recoveryStage := w.recoveryStage(ctx, task)
+	if ctxErr := ctx.Err(); ctxErr != nil {
+		return fmt.Errorf("dispatch failed: %v; before final dispatch transitions: %w", err, ctxErr)
+	}
 	if task.State == core.TaskRunning {
 		// Return the failed stage to queued before applying T13. This preserves
 		// the canonical queued -> parked edge and records dispatch.fail_final
@@ -129,6 +132,9 @@ func (w *dispatchTaskWorker) parkAfterFinalAttempt(ctx context.Context, taskID s
 		if _, stateErr := taskops.New(w.dispatcher.Store).Perform(ctx, taskID, taskops.Command{Kind: core.TaskStageBounce, NextStage: recoveryStage, ProjectStages: true}); stateErr != nil {
 			return fmt.Errorf("dispatch failed: %v; requeue before final dispatch failure: %w", err, stateErr)
 		}
+	}
+	if ctxErr := ctx.Err(); ctxErr != nil {
+		return fmt.Errorf("dispatch failed: %v; before final dispatch failure: %w", err, ctxErr)
 	}
 	if _, stateErr := taskops.New(w.dispatcher.Store).Perform(ctx, taskID, taskops.Command{
 		Kind: core.TaskDispatchFailFinal, RecoveryStage: recoveryStage, ProjectStages: true,
