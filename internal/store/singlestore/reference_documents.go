@@ -142,7 +142,7 @@ func (s *Store) GetReferenceDocumentVersion(ctx context.Context, documentID stri
 func (s *Store) ListReferenceDocumentEvents(ctx context.Context, documentID string) ([]core.Event, error) {
 	ctx = dbmetrics.WithReadLabel(ctx, "ListReferenceDocumentEvents")
 	rows, err := documentRows(ctx, s.db, `SELECT id,COALESCE(task_id,''),COALESCE(job_id,''),kind,actor_id,actor_role,payload_json,at,workspace_id
-		FROM events_columnstore WHERE workspace_id=? AND kind LIKE 'reference_document.%' ORDER BY id`, documentWorkspace(ctx))
+		FROM events_columnstore WHERE workspace_id=? AND kind LIKE 'reference_document.%' ORDER BY at,id`, documentWorkspace(ctx))
 	if err != nil {
 		return nil, err
 	}

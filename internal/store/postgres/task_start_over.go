@@ -69,7 +69,9 @@ func (s *Store) StartOverTaskCommand(ctx context.Context, lease taskops.TaskLeas
 		if _, err := core.TransitionTask(old.State, core.TaskStartOver); err != nil {
 			return err
 		}
-		rows, err := tx.Query(ctx, `SELECT kind,payload_json FROM events WHERE workspace_id=$1 AND task_id=$2 ORDER BY id`, ws, r.TaskID)
+		// An event's position is (at, id); a numeric ID follows neither insertion
+		// nor commit order (component-persistence).
+		rows, err := tx.Query(ctx, `SELECT kind,payload_json FROM events WHERE workspace_id=$1 AND task_id=$2 ORDER BY at,id`, ws, r.TaskID)
 		if err != nil {
 			return err
 		}
@@ -173,7 +175,7 @@ func (s *Store) StartOverTaskCommand(ctx context.Context, lease taskops.TaskLeas
 }
 
 func startOverDroppedContextTx(ctx context.Context, tx pgx.Tx, workspaceID, taskID string) ([]core.TaskStartOverDroppedContext, error) {
-	rows, err := tx.Query(ctx, `SELECT kind,payload_json FROM events WHERE workspace_id=$1 AND task_id=$2 ORDER BY id`, workspaceID, taskID)
+	rows, err := tx.Query(ctx, `SELECT kind,payload_json FROM events WHERE workspace_id=$1 AND task_id=$2 ORDER BY at,id`, workspaceID, taskID)
 	if err != nil {
 		return nil, err
 	}

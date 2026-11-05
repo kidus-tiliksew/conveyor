@@ -42,7 +42,7 @@ func (s *Store) recoverAnsweredAuthorityTx(ctx context.Context, tx *sql.Tx, task
 		return false, err
 	}
 	var releaseEventID int64
-	err = tx.QueryRowContext(ctx, `SELECT id FROM events_columnstore WHERE workspace_id=? AND task_id=? AND kind='work_order.released' AND JSON_EXTRACT_STRING(payload_json,'attempt_id')=? ORDER BY id DESC LIMIT 1`, ws, order.TaskID, order.LastAttemptID).Scan(&releaseEventID)
+	err = tx.QueryRowContext(ctx, `SELECT id FROM events_columnstore WHERE workspace_id=? AND task_id=? AND kind='work_order.released' AND JSON_EXTRACT_STRING(payload_json,'attempt_id')=? ORDER BY at DESC,id DESC LIMIT 1`, ws, order.TaskID, order.LastAttemptID).Scan(&releaseEventID)
 	if errors.Is(err, sql.ErrNoRows) {
 		return false, nil
 	}

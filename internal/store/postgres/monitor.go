@@ -151,7 +151,7 @@ func (s *Store) ResolveCausalSystemDesignMerge(ctx context.Context, documentID, 
 			var existingDrift, existingStatus string
 			existingErr := tx.QueryRow(ctx, `SELECT payload_json->>'drift_id',payload_json->>'proposal_status'
 				FROM monitor_activity WHERE workspace_id=$1 AND kind='system_design.drift_suppressed'
-					 AND payload_json->>'proposal_event_id'=$2 ORDER BY id LIMIT 1`, workspace(ctx), strconv.FormatInt(eventID, 10)).Scan(&existingDrift, &existingStatus)
+					 AND payload_json->>'proposal_event_id'=$2 ORDER BY at,id LIMIT 1`, workspace(ctx), strconv.FormatInt(eventID, 10)).Scan(&existingDrift, &existingStatus)
 			if existingErr == nil {
 				if existingDrift == driftID {
 					result.Proposal = monitor.ProposalSuppression{EventID: eventID, Status: existingStatus}

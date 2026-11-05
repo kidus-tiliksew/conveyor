@@ -273,7 +273,7 @@ func (s *Store) ListLineageNodeStatuses(ctx context.Context, nodes []core.Lineag
 		FROM work_orders wo
 		JOIN events e ON e.workspace_id=wo.workspace_id AND e.task_id=wo.task_id AND e.kind='review.completed' AND e.payload_json->>'review_work_order_id'=wo.id
 		WHERE wo.workspace_id=$1 AND wo.id=ANY($2)
-		ORDER BY wo.id,e.id DESC`, ids[core.LineageVerdict], func(r pgx.Rows) error {
+		ORDER BY wo.id,e.at DESC,e.id DESC`, ids[core.LineageVerdict], func(r pgx.Rows) error {
 		var orderID string
 		var status core.LineageNodeStatus
 		if err := r.Scan(&orderID, &status.Outcome, &status.ReviewRound, &status.ReviewSeat); err != nil {
@@ -796,7 +796,7 @@ func (s *Store) RebuildLineage(ctx context.Context, request core.LineageRebuildR
 	err := s.inTx(ctx, func(_ pgx.Tx, q *db.Queries) error {
 		var prior []byte
 		err := q.QueryRow(ctx, `SELECT payload_json FROM events WHERE workspace_id=$1 AND kind='lineage.rebuilt'
-			AND payload_json->>'request_id'=$2 ORDER BY id DESC LIMIT 1`, workspace(ctx), request.RequestID).Scan(&prior)
+			AND payload_json->>'request_id'=$2 ORDER BY at DESC,id DESC LIMIT 1`, workspace(ctx), request.RequestID).Scan(&prior)
 		if err == nil {
 			var payload struct {
 				Reason string                    `json:"reason"`

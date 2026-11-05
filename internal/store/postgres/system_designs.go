@@ -619,7 +619,7 @@ func (s *Store) ListSystemDesignVersionsByDocument(ctx context.Context) (map[str
 }
 func (s *Store) ListSystemDesignEvents(ctx context.Context, id string) ([]core.Event, error) {
 	ctx = dbmetrics.WithReadLabel(ctx, "ListSystemDesignEvents")
-	rows, err := s.boundary.Query(ctx, `SELECT id,task_id,job_id,kind,actor_id,actor_role,payload_json,at,workspace_id FROM events WHERE workspace_id=$1 AND kind LIKE 'system_design.%' AND payload_json->>'document_id'=$2 ORDER BY id`, workspace(ctx), id)
+	rows, err := s.boundary.Query(ctx, `SELECT id,task_id,job_id,kind,actor_id,actor_role,payload_json,at,workspace_id FROM events WHERE workspace_id=$1 AND kind LIKE 'system_design.%' AND payload_json->>'document_id'=$2 ORDER BY at,id`, workspace(ctx), id)
 	if err != nil {
 		return nil, err
 	}
@@ -637,7 +637,7 @@ func (s *Store) ListSystemDesignEvents(ctx context.Context, id string) ([]core.E
 
 func (s *Store) ListSystemDesignEventsByDocument(ctx context.Context) (map[string][]core.Event, error) {
 	ctx = dbmetrics.WithReadLabel(ctx, "ListSystemDesignEventsByDocument")
-	rows, err := s.boundary.Query(ctx, `SELECT id,task_id,job_id,kind,actor_id,actor_role,payload_json,at,workspace_id FROM events WHERE workspace_id=$1 AND kind LIKE 'system_design.%' ORDER BY id`, workspace(ctx))
+	rows, err := s.boundary.Query(ctx, `SELECT id,task_id,job_id,kind,actor_id,actor_role,payload_json,at,workspace_id FROM events WHERE workspace_id=$1 AND kind LIKE 'system_design.%' ORDER BY at,id`, workspace(ctx))
 	if err != nil {
 		return nil, err
 	}

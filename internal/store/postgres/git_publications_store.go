@@ -368,7 +368,7 @@ func (s *Store) ReconcileReviewPublications(ctx context.Context) (int, error) {
 			AND COALESCE(e.payload_json->>'review_work_order_id','') <> ''
 			AND e.payload_json @> '{"publication_eligible": true}'::jsonb
 			AND p.review_work_order_id IS NULL
-		ORDER BY e.id`, workspace(ctx))
+		ORDER BY e.at,e.id`, workspace(ctx))
 	if err != nil {
 		return 0, err
 	}

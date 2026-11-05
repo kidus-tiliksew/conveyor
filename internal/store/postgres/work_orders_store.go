@@ -1234,7 +1234,7 @@ func (s *Store) ClaimWorkOrderCommand(ctx context.Context, lifecycleLease taskop
 		if err := store.WorkOrderRecoveryRefusal(task, order, taskOrders); err != nil {
 			return core.WorkOrder{}, err
 		}
-		eventRows, eventErr := tx.Query(ctx, `SELECT kind, payload_json FROM events WHERE workspace_id=$1 AND task_id=$2 ORDER BY id`, workspace(ctx), order.TaskID)
+		eventRows, eventErr := tx.Query(ctx, `SELECT kind, payload_json FROM events WHERE workspace_id=$1 AND task_id=$2 ORDER BY at,id`, workspace(ctx), order.TaskID)
 		if eventErr != nil {
 			return core.WorkOrder{}, eventErr
 		}
