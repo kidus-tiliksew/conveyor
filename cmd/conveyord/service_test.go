@@ -175,6 +175,22 @@ func TestRunServiceVerbReportsReleaseIdentity(t *testing.T) {
 	}
 }
 
+// A file conveyor init wrote holds no database URL, so the install output names
+// the variable and the file the service reads it from.
+func TestDaemonServiceInstalledSummaryNamesDatabaseVariable(t *testing.T) {
+	paths := daemonServicePaths{Unit: "/u/conveyord.service", Stdout: "/l/stdout.log", Stderr: "/l/stderr.log", EnvFile: "/opt/deploy/.env"}
+	summary := daemonServiceInstalledSummary(paths)
+	for _, required := range []string{"installed conveyord service\n", "unit=/u/conveyord.service\n", "env_file=/opt/deploy/.env\n", "CONVEYOR_DATABASE_URL"} {
+		if !strings.Contains(summary, required) {
+			t.Fatalf("summary lacks %q:\n%s", required, summary)
+		}
+	}
+	flags, _, _ := newDaemonServiceFlagSet("install")
+	if usage := flags.Lookup("env-file").Usage; !strings.Contains(usage, "CONVEYOR_DATABASE_URL") || !strings.Contains(usage, ".env beside config") {
+		t.Fatalf("--env-file usage = %q", usage)
+	}
+}
+
 func TestInspectDaemonServiceRejectsUnownedDefinition(t *testing.T) {
 	platform := testDaemonPlatform(t)
 	paths, _ := resolveDaemonService(platform, "/etc/conveyor/conveyor.yaml")

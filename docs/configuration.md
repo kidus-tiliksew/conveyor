@@ -24,7 +24,7 @@ work_order_queue_timeout: 24h    # unclaimed orders go stale after this
 # planning_snapshot_max_bytes: 536870912  # cap compressed and extracted snapshot bytes
 
 database:
-  url: postgres://conveyor:conveyor@localhost:5432/conveyor?sslmode=disable
+  backend: postgres              # the URL comes from CONVEYOR_DATABASE_URL
   # max_conns: 32                # PostgreSQL pool size; see Database selection
 
 execution_settings:
@@ -104,6 +104,20 @@ SingleStore URL schemes and MySQL TCP/socket DSNs select SingleStore; other
 connection strings retain PostgreSQL selection. `conveyor init` and
 `conveyor user issue-link` apply the same inference to `CONVEYOR_DATABASE_URL`.
 See [SingleStore operations](singlestore.md) before creating its database.
+
+`conveyor init` writes `database.backend` and no URL, because a URL can hold a
+password. `conveyord` then needs `CONVEYOR_DATABASE_URL`. The installed service
+reads it from the owner-only `.env` beside the config or the file `--env-file`
+names. A foreground `conveyord` reads it from the file `CONVEYOR_ENV_FILE`
+names, or from `.env` in its working directory. Every command trims whitespace
+around the URL when it opens the database, and changes nothing else in it. A
+blank value refuses to open.
+
+A file from an earlier version can hold `database.url`. It still loads, and its
+URL wins over the variable. Rerunning `conveyor init` over it requires the same
+backend and the same URL as `CONVEYOR_DATABASE_URL`, leaves the file unchanged,
+and prints a notice that the file holds a URL, with no part of the URL. To
+retire the URL, move it into the variable and delete the key.
 
 #### Several daemons on one database
 

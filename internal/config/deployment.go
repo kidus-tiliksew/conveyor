@@ -1,6 +1,7 @@
 package config
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"sort"
@@ -63,7 +64,9 @@ func ParseDeployment(data []byte, path string, logf func(string, ...any)) (*Conf
 // MarshalDeployment renders the deployment file that conveyor init writes:
 // policy and control-plane settings only. It never emits harnesses, setups,
 // routing, a stage harness, model, model policy, or effort, review seat
-// contents, or first_activity_timeout.
+// contents, or first_activity_timeout. It never emits database.url, which can
+// hold a password: the file names the backend and the loader takes the URL
+// from CONVEYOR_DATABASE_URL (req-security-boundaries REQ-2).
 func MarshalDeployment(c *Config) ([]byte, error) {
 	data, err := yaml.Marshal(c)
 	if err != nil {
@@ -81,11 +84,30 @@ func MarshalDeployment(c *Config) ([]byte, error) {
 	if execution, ok := root["execution"].(map[string]any); ok {
 		delete(execution, "first_activity_timeout")
 	}
+	if database, ok := root["database"].(map[string]any); ok {
+		delete(database, "url")
+	}
 	data, err = yaml.Marshal(root)
 	if err != nil {
 		return nil, fmt.Errorf("marshal deployment config: %w", err)
 	}
 	return data, nil
+}
+
+// DeploymentHoldsDatabaseURL reports whether a deployment document itself
+// states database.url. A loaded Config can't say, because the loader fills an
+// empty URL from CONVEYOR_DATABASE_URL. It returns no value from the document,
+// and its error carries no parser text, so neither can repeat a password.
+func DeploymentHoldsDatabaseURL(data []byte) (bool, error) {
+	var document struct {
+		Database struct {
+			URL string `yaml:"url"`
+		} `yaml:"database"`
+	}
+	if err := yaml.Unmarshal(data, &document); err != nil {
+		return false, errors.New("read database.url from the deployment document")
+	}
+	return document.Database.URL != "", nil
 }
 
 // stripDeploymentExecutionDetail decodes the document with aliases and merge

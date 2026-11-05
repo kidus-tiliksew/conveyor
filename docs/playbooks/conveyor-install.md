@@ -37,11 +37,12 @@ These rules hold in every section.
   the secret and resume when they report completion. You may generate a new
   secret straight into a file readable only by the person's account, as
   section 6 shows, without displaying it. Never print a file that holds a
-  secret: the server `.env`, the generated deployment `conveyor.yaml`, which
-  records the database URL, or the CLI credentials file. Never print the
-  output of `conveyor auth token`; pipe it straight into a request header as
-  section 8 shows. Never print a REST response body, because some carry
-  secrets: an invitation response holds the invitee's sign-in link. Save the
+  secret: the server `.env`, a deployment `conveyor.yaml` from an earlier
+  version, which can record the database URL, or the CLI credentials file.
+  Never print the output of `conveyor auth token`; pipe it straight into a
+  request header as section 8 shows. Never print a REST response body,
+  because some carry secrets: an invitation response holds the invitee's
+  sign-in link. Save the
   body to an owner-only file, print the HTTP status and only an allowlist of
   nonsecret fields, and delete the file, as section 8 shows.
 - **Hand browser acts to the person.** When a step needs their browser, such
@@ -305,10 +306,12 @@ decrypt stored GitHub App keys. Every variable is described in
 Confirm the act with the person first. `conveyor init` creates the
 organization, the first operator, and the first workspace, registers the
 first repository by name, URL, and default branch, and writes the
-deployment `conveyor.yaml` with mode 0600. Give every answer as a flag, so
-nothing prompts (req-agent-guided-setup AC-5.1). The output carries the
-first sign-in link, which holds a token, so send it to an owner-only file
-and show only the summary lines:
+deployment `conveyor.yaml` with mode 0600. That file names the database
+backend and holds no database URL, so `conveyord` needs
+`CONVEYOR_DATABASE_URL` from the `.env` section 6.1 wrote. Give every answer
+as a flag, so nothing prompts (req-agent-guided-setup AC-5.1). The output
+carries the first sign-in link, which holds a token, so send it to an
+owner-only file and show only the summary lines:
 
 ```sh
 cd "$HOME/.conveyor/server"
@@ -324,6 +327,17 @@ sed -n '/^Initialized/,/^Next:/p' init-output.txt
 Replace each example value with the person's answer. Init exits nonzero and
 names each missing answer when one is blank. Rerunning init with the same
 answers issues a fresh sign-in link and changes nothing else.
+
+Init also exits nonzero when the workspace name is taken by another workspace,
+or when the workspace ID exists under a different name. It then publishes no
+file and issues no sign-in link. Report the error and ask the person for
+another name or ID.
+
+When the summary lines carry a `Notice:` that `conveyor.yaml` holds a database
+URL, the file came from an earlier version and init left it unchanged. The
+notice names the key and prints no part of the URL. Ask the person to move the
+URL into `CONVEYOR_DATABASE_URL` in `.env` and delete `database.url` in their
+editor. Don't print the file.
 
 Review the control-plane models with the person before starting the server.
 Print only the model lines:
@@ -350,9 +364,10 @@ conveyord status
 curl -fsS http://127.0.0.1:8080/healthz
 ```
 
-The service reads the owner-only `.env` beside the config; `--env-file`
-names another file. On Linux, the unit stops at logout unless the person
-enables user lingering, a host policy they decide.
+The service reads `CONVEYOR_DATABASE_URL` and the other variables from the
+owner-only `.env` beside the config; `--env-file` names another file. On
+Linux, the unit stops at logout unless the person enables user lingering, a
+host policy they decide.
 
 **Foreground on this machine.**
 

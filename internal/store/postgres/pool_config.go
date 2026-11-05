@@ -3,7 +3,6 @@ package postgres
 import (
 	"context"
 	"errors"
-	"fmt"
 	"net"
 	"time"
 
@@ -65,15 +64,21 @@ func resolveOpenOptions(options []OpenOption) (openOptions, error) {
 // counts as explicit. Every other parsed option is kept, and the request
 // tracer and the counting dialer are installed before the pool exists.
 // pgconn's parse errors redact the password.
+// errInvalidConnectionString replaces pgx's parse error, whose text repeats
+// the connection string. pgx masks the password only when the string parses
+// as a URL or the password holds no colon or slash, so an unparseable URL can
+// print part of it (req-security-boundaries REQ-2).
+var errInvalidConnectionString = errors.New("configure Postgres pool: the connection string or its pool_max_conns is invalid")
+
 func poolConfig(databaseURL string, options openOptions) (*pgxpool.Config, error) {
 	connConfig, err := pgx.ParseConfig(databaseURL)
 	if err != nil {
-		return nil, fmt.Errorf("configure Postgres pool: %w", err)
+		return nil, errInvalidConnectionString
 	}
 	_, explicit := connConfig.RuntimeParams["pool_max_conns"]
 	config, err := pgxpool.ParseConfig(databaseURL)
 	if err != nil {
-		return nil, fmt.Errorf("configure Postgres pool: %w", err)
+		return nil, errInvalidConnectionString
 	}
 	if !explicit {
 		config.MaxConns = options.maxConns

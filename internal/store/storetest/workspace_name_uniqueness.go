@@ -27,6 +27,7 @@ func runWorkspaceNameUniqueness(t *testing.T, x Fixture) {
 	for _, tc := range []struct {
 		id, name string
 	}{
+		{id: x.Workspace + "-workspace-name-exact", name: "Workspace Alpha"},
 		{id: x.Workspace + "-workspace-name-case", name: "workspace alpha"},
 		{id: x.Workspace + "-workspace-name-space", name: " workspace alpha "},
 	} {

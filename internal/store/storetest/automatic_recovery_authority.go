@@ -1,6 +1,7 @@
 package storetest
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"reflect"
@@ -19,6 +20,8 @@ import (
 // req-260820-394cac AC-2.6, AC-2.7; req-bounded-automatic-recovery AC-2.2).
 func runAutomaticRecoveryAuthority(t *testing.T, x Fixture) {
 	f := authorityFixture{t: t, x: x}
+	// First, so its clock ticks visit only its own task.
+	t.Run("SubmissionGovernanceRace", f.submissionGovernanceRace)
 	t.Run("AnswersAfterLastConfirmation", f.answersAfterLastConfirmation)
 	t.Run("OperatorRace", f.operatorRace)
 	t.Run("StaysReleased", f.staysReleased)
@@ -491,6 +494,77 @@ func (f authorityFixture) operatorRace(t *testing.T) {
 		if again, operatorAgain, _ := f.recoveries(t, task.ID); len(again)+len(operatorAgain) != 1 {
 			t.Fatalf("tick after race recovered again: authority=%d operator=%d", len(again), len(operatorAgain))
 		}
+	}
+}
+
+// submissionGovernanceRace runs submission governance and the answered-authority
+// clock on one task and one design at once. Each path holds the task-operation
+// and document locks together, so neither may fail with a lock error, and the
+// race changes neither result (component-persistence, Lock order). The round
+// deadline turns a deadlock into a failure well inside the store package's
+// timeout.
+func (f authorityFixture) submissionGovernanceRace(t *testing.T) {
+	const (
+		rounds        = 3
+		roundDeadline = time.Minute
+	)
+	st, ctx := f.x.Backend, f.x.Context
+	design := f.document(t, "system_design")
+	task, orderID := f.task(t, core.StageImplement)
+	f.release(t, orderID, authorityCheckpoint(cite(design, 1, "Recovery")))
+	attribution := store.SubmissionGovernanceAttribution{WorkOrderID: orderID, SessionID: "session-governance-race"}
+
+	race := func(round int) []core.TaskDesignContext {
+		t.Helper()
+		ctx, cancel := context.WithTimeout(ctx, roundDeadline)
+		defer cancel()
+		start := make(chan struct{})
+		var wg sync.WaitGroup
+		var attached []core.TaskDesignContext
+		var attachErr, tickErr error
+		wg.Add(2)
+		go func() {
+			defer wg.Done()
+			<-start
+			attached, attachErr = st.AttachSubmissionGovernance(ctx, task.ID, task.Repo, []string{"internal/store/locks.go"}, attribution)
+		}()
+		go func() {
+			defer wg.Done()
+			<-start
+			_, tickErr = taskops.New(st).TickOrderClock(ctx, time.Now().UTC())
+		}()
+		close(start)
+		wg.Wait()
+		if attachErr != nil || tickErr != nil {
+			t.Fatalf("round %d: attach err=%v tick err=%v", round, attachErr, tickErr)
+		}
+		return attached
+	}
+
+	// An unanswered checkpoint stays released, so every round's clock takes
+	// the document lock and only the first round's submission attaches.
+	var attached []core.TaskDesignContext
+	for round := range rounds {
+		attached = append(attached, race(round)...)
+	}
+	if len(attached) != 1 || attached[0].ID != design.id || attached[0].Version != 1 {
+		t.Fatalf("attached=%+v, want %s v1 once", attached, design.id)
+	}
+	f.requireReleased(t, task.ID, orderID)
+
+	// An answered checkpoint recovers exactly once, even raced.
+	f.confirm(t, design, f.propose(t, design, "task", task.ID))
+	if again := race(rounds); len(again) != 0 {
+		t.Fatalf("answered round attached %+v", again)
+	}
+	f.requireAuthorityCount(t, task.ID, 1)
+	recovered, err := st.GetWorkOrder(ctx, orderID)
+	requireOK(t, err)
+	if recovered.State != core.WorkOrderQueued || recovered.LastAttemptOutcome != "" || recovered.Checkpoint != nil {
+		t.Fatalf("recovered order=%+v", recovered)
+	}
+	if pins := designAdded(t, st, ctx, task.ID, design.id); len(pins) != 2 {
+		t.Fatalf("design pins=%+v, want the submission's v1 and the recovery's v2", pins)
 	}
 }
 

@@ -67,9 +67,15 @@ repository. It requires `CONVEYOR_DATABASE_URL` and `CONVEYOR_API_TOKEN` in
 the environment plus `CONVEYOR_LLM_API_KEY` for in-process triage and
 planning. It registers the repository by name, URL, and default branch without
 requiring a local clone or forge tool, writes a policy-only deployment
-`conveyor.yaml` (mode 0600) with no harnesses or executor models, and prints
-the first operator's sign-in link. `--config` names that server file and picks
-a different output path.
+`conveyor.yaml` (mode 0600) with no harnesses, executor models, or database
+URL, and prints the first operator's sign-in link. `--config` names that server
+file and picks a different output path. `conveyord` then needs
+`CONVEYOR_DATABASE_URL`; see
+[Database selection](configuration.md#database-selection).
+
+Init exits nonzero, publishes no file, and issues no sign-in link when the
+workspace name is taken by another workspace or the workspace ID exists under a
+different name. A rerun with the same workspace ID and name stays safe.
 
 Each prompted answer also has a flag:
 
