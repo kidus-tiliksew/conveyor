@@ -17,21 +17,29 @@ import (
 )
 
 func (s *Server) writeTask(w http.ResponseWriter, r *http.Request, task core.Task) {
+	if response, ok := s.taskResponse(w, r, task); ok {
+		writeJSON(w, http.StatusOK, response)
+	}
+}
+
+// taskResponse is a task with its next action. On a failed read it answers the
+// request itself and reports false.
+func (s *Server) taskResponse(w http.ResponseWriter, r *http.Request, task core.Task) (any, bool) {
 	opts, err := s.nextActionOptions(r)
 	if err != nil {
 		log.Printf("next action options: %v", err)
 		http.Error(w, "internal server error", http.StatusInternalServerError)
-		return
+		return nil, false
 	}
 	action, err := store.ReadNextAction(r.Context(), s.Store, task.ID, opts)
 	if err != nil {
 		http.Error(w, "internal server error", http.StatusInternalServerError)
-		return
+		return nil, false
 	}
-	writeJSON(w, http.StatusOK, struct {
+	return struct {
 		core.Task
 		NextAction nextaction.NextAction `json:"next_action"`
-	}{Task: task, NextAction: action})
+	}{Task: task, NextAction: action}, true
 }
 
 // writeTasks answers one task page with each row's compact next action. The

@@ -276,7 +276,9 @@ func (s *Server) streamPlanningMessage(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, "planning session already has a message in progress", http.StatusConflict)
 			return
 		}
-		log.Printf("planning session %s run failed: %v", sessionID, err)
+		// A client that disconnected cancelled the request, and the log line
+		// still needs the secret read (req-security-boundaries REQ-2).
+		log.Printf("planning session %s run failed: %s", sessionID, s.redactedFailureDetail(context.WithoutCancel(r.Context()), err, "detail withheld because redaction is unavailable"))
 		if !started {
 			clearPlanningStreamHeaders(w.Header())
 			http.Error(w, "planning request failed", http.StatusInternalServerError)

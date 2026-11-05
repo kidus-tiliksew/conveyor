@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/kidus-tiliksew/conveyor/internal/core"
+	"github.com/kidus-tiliksew/conveyor/internal/redact"
 	"github.com/kidus-tiliksew/conveyor/internal/store"
 )
 
@@ -70,7 +71,7 @@ func streamEvent(id int64, offset time.Duration) core.Event {
 }
 
 func newTestStream(reader taskEventStreamReader, pageSize int) *taskEventStream {
-	s := newTaskEventStream(reader, "stream-task")
+	s := newTaskEventStream(reader, "stream-task", func(context.Context) (*redact.Redactor, error) { return redact.New(nil), nil })
 	s.pageSize = pageSize
 	return s
 }

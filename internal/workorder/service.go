@@ -1312,6 +1312,9 @@ func artifactReferences(workOrderID string, artifacts []core.Artifact) []Artifac
 	return references
 }
 
+// maxProgressBytes bounds a stored progress message (component-mcp-protocol).
+const maxProgressBytes = 4000
+
 func (s *Service) Progress(ctx context.Context, id, session, message string) (core.WorkOrder, error) {
 	order, err := s.authorizedForObservation(ctx, id, session)
 	if err != nil {
@@ -1320,16 +1323,30 @@ func (s *Service) Progress(ctx context.Context, id, session, message string) (co
 	if err = s.enforce(ctx, order); err != nil {
 		return core.WorkOrder{}, err
 	}
-	order.Progress = strings.TrimSpace(message)
-	if len(order.Progress) > 4000 {
-		order.Progress = order.Progress[:4000]
+	// Redaction runs on the whole message before the trim, so the cut can't
+	// leave a partial secret that no pattern recognizes. A failed secret read
+	// refuses the report and stores nothing; the session can report again
+	// (req-security-boundaries REQ-3; DEC-98).
+	clean, stats, err := redact.Text(ctx, s.RedactionSecrets, strings.TrimSpace(message))
+	if err != nil {
+		return core.WorkOrder{}, fmt.Errorf("resolve redaction credentials: %w", err)
+	}
+	order.Progress = clean
+	if len(order.Progress) > maxProgressBytes {
+		order.Progress = order.Progress[:maxProgressBytes]
 	}
 	if err = guardedUpdateWorkOrder(ctx, s.Store, order, taskops.WorkOrderMetadataCommand); err != nil {
 		return core.WorkOrder{}, err
 	}
+	payload := map[string]any{"work_order_id": order.ID, "message": order.Progress}
+	// A removal is recorded by count and class, never by value
+	// (req-security-boundaries AC-3.1).
+	if stats.Total() > 0 {
+		payload["redactions"] = stats
+	}
 	err = s.Store.AppendEvent(ctx, core.Event{
 		TaskID: order.TaskID, JobID: order.JobID, Kind: "work_order.progress_reported",
-		Payload: core.JSONPayload(map[string]any{"work_order_id": order.ID, "message": order.Progress}),
+		Payload: core.JSONPayload(payload),
 	})
 	return order, err
 }
