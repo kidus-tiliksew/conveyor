@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"log"
 	"strings"
 	"time"
 
@@ -81,6 +82,8 @@ func (s *Server) mcpReadRedactor(ctx context.Context) (*redact.Redactor, error) 
 	}
 	redactor, err := redact.WithSecrets(ctx, secrets, nil)
 	if err != nil {
+		logged, _ := redact.New(nil).Redact(err.Error())
+		log.Printf("read redaction unavailable: %s", logged)
 		return nil, fmt.Errorf("read redaction unavailable")
 	}
 	return redactor, nil
