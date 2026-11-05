@@ -20,7 +20,10 @@ func gateMergeServer(t *testing.T) *Server {
 	}
 	s := NewServer(st)
 	s.BearerToken = "token"
-	s.OnMerge = func(context.Context, core.Task) error { t.Error("approved-task merge used at the gate"); return nil }
+	s.OnMerge = func(context.Context, core.Task, core.Actor) error {
+		t.Error("approved-task merge used at the gate")
+		return nil
+	}
 	return s
 }
 

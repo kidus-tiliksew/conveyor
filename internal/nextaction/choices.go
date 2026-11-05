@@ -47,6 +47,14 @@ func mergeExecutionChoices() []ChoiceSpec {
 	}
 }
 
+// checkHoldChoices are the acts a check hold offers. The merge act reads no
+// check status and records the override (req-review-gates-evidence AC-1.8).
+func checkHoldChoices() []ChoiceSpec {
+	choices := mergeExecutionChoices()
+	choices[0].Effect = "Merges the approved head without reading its checks, and records you and the checks that held it."
+	return choices
+}
+
 func conflictChoices() []ChoiceSpec {
 	return []ChoiceSpec{
 		{ID: "fix_merge_conflict", Label: "Fix merge conflict", Effect: "Dispatches a conflict-fix order.", Method: "POST", Path: "/v1/tasks/{id}/merge-conflict-fix", Capability: core.CapabilityRecoverWork},

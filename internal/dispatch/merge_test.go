@@ -74,7 +74,7 @@ func TestMergeApprovedTaskMergesOnlyAfterAuthoritativeConfirmation(t *testing.T)
 	}
 	d.RequestMerge = func(context.Context, string, int) error { merges++; return nil }
 
-	if err := d.MergeApprovedTask(ctx, task); err != nil {
+	if err := d.MergeApprovedTaskAutomatically(ctx, task); err != nil {
 		t.Fatal(err)
 	}
 	current, err := st.GetTask(ctx, task.ID)
@@ -119,7 +119,7 @@ func TestMergeApprovedTaskMergesOnlyAfterAuthoritativeConfirmation(t *testing.T)
 	if err != nil || len(merged) != 1 || merged[0].DstID != core.CommitRangeLineageID("acme/app", "base-sha", "head-sha") {
 		t.Fatalf("merge lineage=%+v err=%v", links, err)
 	}
-	if err := d.MergeApprovedTask(ctx, task); err != nil {
+	if err := d.MergeApprovedTaskAutomatically(ctx, task); err != nil {
 		t.Fatal(err)
 	}
 	if merges != 1 || views != 2 {
@@ -146,7 +146,7 @@ func TestMergeApprovedTaskUsesApprovingOperatorCredentialAndAuditsIdentity(t *te
 		usedToken = token
 		return nil
 	}
-	if err := d.MergeApprovedTask(ctx, task); err != nil {
+	if err := d.MergeApprovedTaskAutomatically(ctx, task); err != nil {
 		t.Fatal(err)
 	}
 	if usedToken != "workspace-installation-token" {
@@ -209,7 +209,7 @@ func TestMergeApprovedTaskVerificationFailuresAuditApprovingOperatorIdentity(t *
 				return nil
 			}
 
-			if err := d.MergeApprovedTask(ctx, task); err == nil {
+			if err := d.MergeApprovedTaskAutomatically(ctx, task); err == nil {
 				t.Fatal("expected merge verification failure")
 			}
 			events, err := st.ListEvents(ctx, task.ID)
@@ -270,7 +270,7 @@ func TestMergeConfirmedProducesDesignDriftFromAuthoritativePRFiles(t *testing.T)
 		return githubtrigger.PullRequest{Number: 12, URL: "https://github.com/acme/app/pull/12", State: map[bool]string{true: "closed", false: "open"}[views > 1], Mergeable: "MERGEABLE", Merged: views > 1, BaseSHA: "landed-base", HeadSHA: "reviewed-pr-head"}, nil
 	}
 	d.RequestMerge = func(context.Context, string, int) error { return nil }
-	if err = d.MergeApprovedTask(ctx, task); err != nil {
+	if err = d.MergeApprovedTaskAutomatically(ctx, task); err != nil {
 		t.Fatal(err)
 	}
 	status, err := service.Status(ctx)
@@ -298,7 +298,7 @@ func TestMergeFileFailureIsAuditedAndNonGating(t *testing.T) {
 		return githubtrigger.PullRequest{Number: 12, URL: "https://github.com/acme/app/pull/12", State: map[bool]string{true: "closed", false: "open"}[views > 1], Mergeable: "MERGEABLE", Merged: views > 1, HeadSHA: "head"}, nil
 	}
 	d.RequestMerge = func(context.Context, string, int) error { return nil }
-	if err := d.MergeApprovedTask(ctx, task); err != nil {
+	if err := d.MergeApprovedTaskAutomatically(ctx, task); err != nil {
 		t.Fatal(err)
 	}
 	current, _ := st.GetTask(ctx, task.ID)
@@ -325,7 +325,7 @@ func TestMergeApprovedTaskReconcilesAlreadyMergedPR(t *testing.T) {
 	}
 	mergeCalled := false
 	d.RequestMerge = func(context.Context, string, int) error { mergeCalled = true; return nil }
-	if err := d.MergeApprovedTask(ctx, task); err != nil {
+	if err := d.MergeApprovedTaskAutomatically(ctx, task); err != nil {
 		t.Fatal(err)
 	}
 	current, _ := st.GetTask(ctx, task.ID)
@@ -373,7 +373,7 @@ func TestMergeApprovedTaskRefusesChangedObservedHead(t *testing.T) {
 	d.ViewPullRequest = func(context.Context, string, string) (githubtrigger.PullRequest, error) {
 		return githubtrigger.PullRequest{Number: 12, State: "closed", Merged: true, HeadSHA: "outside-head"}, nil
 	}
-	err := d.MergeApprovedTask(ctx, task)
+	err := d.MergeApprovedTaskAutomatically(ctx, task)
 	if err == nil || !strings.Contains(err.Error(), "outside-head") || !strings.Contains(err.Error(), "reviewed-head") {
 		t.Fatalf("changed head error=%v", err)
 	}
@@ -452,7 +452,7 @@ func TestMergeApprovedTaskFailuresStayApprovedAndAreAudited(t *testing.T) {
 			if test.merge != nil {
 				d.RequestMerge = test.merge
 			}
-			if err := d.MergeApprovedTask(ctx, task); err == nil {
+			if err := d.MergeApprovedTaskAutomatically(ctx, task); err == nil {
 				t.Fatal("expected merge error")
 			}
 			current, _ := st.GetTask(ctx, task.ID)
@@ -498,7 +498,7 @@ func TestMergeApprovedTaskSerializesConcurrentRequests(t *testing.T) {
 	for range 2 {
 		go func() {
 			<-start
-			errs <- d.MergeApprovedTask(ctx, task)
+			errs <- d.MergeApprovedTaskAutomatically(ctx, task)
 		}()
 	}
 	close(start)
@@ -848,7 +848,7 @@ func TestStaleApprovalDispatchesDeltaRefreshRound(t *testing.T) {
 	d.ViewPullRequest = func(context.Context, string, string) (githubtrigger.PullRequest, error) {
 		return githubtrigger.PullRequest{Number: 12, State: "open", Mergeable: "MERGEABLE", HeadSHA: "new-head"}, nil
 	}
-	if err := d.MergeApprovedTask(ctx, task); err == nil || !strings.Contains(err.Error(), "refresh review dispatched") {
+	if err := d.MergeApprovedTaskAutomatically(ctx, task); err == nil || !strings.Contains(err.Error(), "refresh review dispatched") {
 		t.Fatalf("err=%v", err)
 	}
 	current, _ := st.GetTask(ctx, task.ID)
@@ -1019,7 +1019,7 @@ func TestCleanStaleApprovalCanSkipRefreshUnderFrozenNone(t *testing.T) {
 	d.ViewPullRequest = func(context.Context, string, string) (githubtrigger.PullRequest, error) {
 		return githubtrigger.PullRequest{Number: 12, State: "open", Mergeable: "MERGEABLE", HeadSHA: "clean-head"}, nil
 	}
-	if err := d.MergeApprovedTask(ctx, task); err == nil {
+	if err := d.MergeApprovedTaskAutomatically(ctx, task); err == nil {
 		t.Fatal("expected fail-closed stale response")
 	}
 	current, _ := st.GetTask(ctx, task.ID)
@@ -1054,7 +1054,7 @@ func TestGateOffConflictingMergeAutomaticallyDispatchesFix(t *testing.T) {
 	d.ViewPullRequest = func(context.Context, string, string) (githubtrigger.PullRequest, error) {
 		return githubtrigger.PullRequest{Number: 12, State: "open", Mergeable: "CONFLICTING", HeadSHA: "approved-head"}, nil
 	}
-	if err := d.MergeApprovedTask(ctx, task); err != nil {
+	if err := d.MergeApprovedTaskAutomatically(ctx, task); err != nil {
 		t.Fatal(err)
 	}
 	orders, _ := st.ListTaskWorkOrders(ctx, task.ID)
@@ -1085,7 +1085,7 @@ func TestConflictingMergeGateRetriesRecordOneBlockedEvent(t *testing.T) {
 		t.Fatalf("repeat readiness=%+v err=%v", repeat, err)
 	}
 	for range 2 {
-		if err := d.MergeApprovedTask(ctx, task); err == nil || !strings.Contains(err.Error(), "not approved for merge") {
+		if err := d.MergeApprovedTaskAutomatically(ctx, task); err == nil || !strings.Contains(err.Error(), "not approved for merge") {
 			t.Fatalf("err=%v", err)
 		}
 	}
@@ -1138,7 +1138,7 @@ func TestChangedHeadConflictingAutoMergeDispatchesFixBeforeRefresh(t *testing.T)
 	d.ViewPullRequest = func(context.Context, string, string) (githubtrigger.PullRequest, error) {
 		return githubtrigger.PullRequest{Number: 12, State: "open", Mergeable: "CONFLICTING", HeadSHA: "conflicting-head"}, nil
 	}
-	if err := d.MergeApprovedTask(ctx, task); err != nil {
+	if err := d.MergeApprovedTaskAutomatically(ctx, task); err != nil {
 		t.Fatal(err)
 	}
 	current, _ := st.GetTask(ctx, task.ID)
@@ -1268,7 +1268,7 @@ func TestGateOnConflictingMergeActDispatchesFixWithoutMerging(t *testing.T) {
 	d.ViewPullRequest = func(context.Context, string, string) (githubtrigger.PullRequest, error) {
 		return githubtrigger.PullRequest{Number: 12, State: "open", Mergeable: "CONFLICTING", HeadSHA: "approved-head"}, nil
 	}
-	err := d.MergeApprovedTask(ctx, task)
+	err := d.MergeApprovedTaskAutomatically(ctx, task)
 	orders, listErr := st.ListTaskWorkOrders(ctx, task.ID)
 	if listErr != nil || len(orders) != 1 || orders[0].ReasonCode != "merge-conflict" || orders[0].BaselineSHA != "approved-head" {
 		t.Fatalf("orders=%+v err=%v", orders, listErr)
@@ -1296,17 +1296,17 @@ func TestGateOnConflictMergeActReportsUndispatchedReason(t *testing.T) {
 	}
 	failing := &failingConflictFixStore{Store: d.Store}
 	d.Store = failing
-	if err := d.MergeApprovedTask(ctx, task); err == nil || !strings.Contains(err.Error(), "forced conflict-fix") {
+	if err := d.MergeApprovedTaskAutomatically(ctx, task); err == nil || !strings.Contains(err.Error(), "forced conflict-fix") {
 		t.Fatalf("first merge act err=%v", err)
 	}
-	err := d.MergeApprovedTask(ctx, task)
+	err := d.MergeApprovedTaskAutomatically(ctx, task)
 	wantBackoff := "backing off until " + now.Add(time.Minute).Format(time.RFC3339)
 	if err == nil || !strings.Contains(err.Error(), "merge conflicts") || !strings.Contains(err.Error(), wantBackoff) || failing.calls != 1 {
 		t.Fatalf("backoff err=%v calls=%d", err, failing.calls)
 	}
 	for _, advance := range []time.Duration{time.Minute, 2 * time.Minute} {
 		now = now.Add(advance)
-		if err = d.MergeApprovedTask(ctx, task); err == nil || !strings.Contains(err.Error(), "forced conflict-fix") {
+		if err = d.MergeApprovedTaskAutomatically(ctx, task); err == nil || !strings.Contains(err.Error(), "forced conflict-fix") {
 			t.Fatalf("retry err=%v calls=%d", err, failing.calls)
 		}
 	}
@@ -1314,7 +1314,7 @@ func TestGateOnConflictMergeActReportsUndispatchedReason(t *testing.T) {
 		t.Fatalf("calls=%d, want 3", failing.calls)
 	}
 	now = now.Add(30 * time.Minute)
-	err = d.MergeApprovedTask(ctx, task)
+	err = d.MergeApprovedTaskAutomatically(ctx, task)
 	if err == nil || !strings.Contains(err.Error(), "conflict fix not dispatched (budget exhausted)") || failing.calls != 3 {
 		t.Fatalf("exhausted err=%v calls=%d", err, failing.calls)
 	}
@@ -1344,7 +1344,7 @@ func TestGateOnConflictMergeActNamesBlockedReviewRecovery(t *testing.T) {
 	d.ViewPullRequest = func(context.Context, string, string) (githubtrigger.PullRequest, error) {
 		return githubtrigger.PullRequest{Number: 12, State: "open", Mergeable: "CONFLICTING", HeadSHA: "conflicting-head"}, nil
 	}
-	err := d.MergeApprovedTask(ctx, task)
+	err := d.MergeApprovedTaskAutomatically(ctx, task)
 	if err == nil || !strings.Contains(err.Error(), "recovery blocked") || strings.Contains(err.Error(), "budget exhausted") || merges != 0 {
 		t.Fatalf("err=%v merges=%d", err, merges)
 	}
@@ -1641,7 +1641,7 @@ func TestGateOnConflictFixRefreshReturnsToMergeGateWithoutMerging(t *testing.T) 
 		}
 		return githubtrigger.PullRequest{Number: 12, State: "closed", Merged: true, HeadSHA: "fix-head", MergeCommitSHA: "landed"}, nil
 	}
-	if err = d.MergeApprovedTask(ctx, current); err != nil || merges != 1 {
+	if err = d.MergeApprovedTaskAutomatically(ctx, current); err != nil || merges != 1 {
 		t.Fatalf("operator merge err=%v merges=%d", err, merges)
 	}
 }
@@ -1879,7 +1879,7 @@ func TestReconcileMergeReadinessDefersWhileConflictFixOrderIsActive(t *testing.T
 			if err != nil || current.State != task.State || current.ApprovalStale || current.ApprovedHeadSHA != "approved-head" || *merges != 0 {
 				t.Fatalf("task=%+v merges=%d err=%v", current, *merges, err)
 			}
-			if err = d.MergeApprovedTask(ctx, current); !errors.Is(err, ErrConflictFixPending) || *merges != 0 {
+			if err = d.MergeApprovedTaskAutomatically(ctx, current); !errors.Is(err, ErrConflictFixPending) || *merges != 0 {
 				t.Fatalf("direct merge err=%v merges=%d", err, *merges)
 			}
 			if after := eventKinds(t, st, ctx, task.ID); !reflect.DeepEqual(before, after) {

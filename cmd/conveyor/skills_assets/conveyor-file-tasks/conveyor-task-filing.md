@@ -136,10 +136,11 @@ contract.
   operator or user merge decision.
 - `merge_approval: false` sends an approved review directly to the runtime
   auto-merge path. That path checks the approved head and forge mergeability,
-  then merges through GitHub's REST API as the workspace GitHub App, using the
-  App's cached installation token (DEC-59), and relies on configured branch
-  protection for any required checks. It has no universal separate CI-status
-  gate and does not promise a later merge gate.
+  reads the approved head's check status, then merges through GitHub's REST API
+  as the workspace GitHub App, using the App's cached installation token
+  (DEC-59). A failed check holds the merge for an operator, and a pending check
+  holds it for the factory. A head with no reported check merges. It lists no
+  required checks and does not promise a later merge gate.
 
 Settle the gate values before filing, not after. Before the first
 `create_task` of a task or a set, read the workspace's effective defaults: the
@@ -158,7 +159,7 @@ A queue that requires one decision per pull request must set
 `merge_approval: true` at intake. A repository's validation documentation may
 designate exact-head green CI as a gate's review evidence. A coordinator may
 also require exact-head green CI before admitting work to independent review.
-Neither is a new runtime gate, and neither changes the frozen merge policy or
+Neither is a new task gate, and neither changes the frozen merge policy or
 branch protection. Never manually hold a gate-off queue while describing it as
 waiting for a later merge decision.
 

@@ -1304,6 +1304,7 @@ func TestConflictFixSubmissionAndReadinessSweepRaceCreateOneRefreshRound(t *test
 				return barrier
 			})
 			d := f.service.Dispatcher
+			d.ReadCommitChecks = dispatch.NoChecksReportedForTest
 			d.ViewPullRequest = func(context.Context, string, string) (githubtrigger.PullRequest, error) {
 				return githubtrigger.PullRequest{Number: 1098, State: "open", Mergeable: "MERGEABLE", HeadSHA: "fix-head", URL: "https://github.com/acme/app/pull/1098"}, nil
 			}

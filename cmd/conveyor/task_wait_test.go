@@ -85,6 +85,8 @@ func (g *taskWaitTestGate) nextActionKind() string {
 		return "merge_approval"
 	case taskWaitGateMergeExecution:
 		return "merge_execution"
+	case taskWaitGateCheckHold:
+		return "check_hold"
 	default:
 		return "job_failure"
 	}
@@ -1036,4 +1038,48 @@ func TestTaskWaitReportsPlanRevisionGateAndNextOrderPrecedence(t *testing.T) {
 	if got := taskWaitNextOrder(orders, "t"); got == nil || got.ID != "a-implement" {
 		t.Fatalf("next order = %+v, want a-implement", got)
 	}
+}
+
+// A wait stops at a check hold, whether the hold was there at the start or
+// arrived during the wait. No later observation would resolve it, because it
+// needs an operator (req-review-gates-evidence AC-1.6).
+func TestTaskWaitStopsAtCheckHold(t *testing.T) {
+	hold := &taskWaitTestGate{Kind: taskWaitGateCheckHold}
+	t.Run("already held", func(t *testing.T) {
+		f := newTaskWaitFixture(t, taskWaitStep{state: core.TaskApproved, gate: hold})
+		result, err := runTaskWaitJSON(t, f, 5*time.Second)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if result.Reason != taskWaitReasonHeld || result.PendingGate == nil || result.PendingGate.Kind != taskWaitGateCheckHold {
+			t.Fatalf("result = %+v", result)
+		}
+	})
+	t.Run("held during the wait", func(t *testing.T) {
+		merging := untilAction("Merging", "factory", "merging", "")
+		f := newTaskWaitFixture(t,
+			taskWaitStep{state: core.TaskApproved, nextAction: merging},
+			taskWaitStep{state: core.TaskApproved, gate: hold},
+		)
+		result, err := runTaskWaitJSON(t, f, 5*time.Second)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if result.Reason != taskWaitReasonHeld {
+			t.Fatalf("result = %+v", result)
+		}
+	})
+	t.Run("until a stage never reached", func(t *testing.T) {
+		f := newTaskWaitFixture(t,
+			taskWaitStep{state: core.TaskApproved, nextAction: untilAction("Merging", "factory", "merging", "")},
+			taskWaitStep{state: core.TaskApproved, nextAction: untilAction("Checks hold the merge", "operator", "check_hold", ""), gate: hold},
+		)
+		result, _, err := runTaskWaitUntil(t, f, "terminal", 5*time.Second)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if result.Reason != taskWaitReasonHeld {
+			t.Fatalf("result = %+v", result)
+		}
+	})
 }

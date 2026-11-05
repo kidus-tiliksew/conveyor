@@ -112,6 +112,10 @@ func ReadNextActions(ctx context.Context, st Store, tasks []core.Task, opts Next
 	if err != nil {
 		return nil, err
 	}
+	checkStatuses, err := readAssemblerCheckStatus(ctx, st, tasks)
+	if err != nil {
+		return nil, err
+	}
 	contexts, err := readContextProposals(ctx, st, tasks)
 	if err != nil {
 		return nil, err
@@ -139,6 +143,7 @@ func ReadNextActions(ctx context.Context, st Store, tasks []core.Task, opts Next
 		input.Blockers = dependencies.forward[task.ID]
 		input.Blocks = dependencies.blocks[task.ID]
 		input.ContextProposals = contexts[task.ID]
+		input.CheckStatus = checkStatuses[task.ID]
 		input.ClaimFailures = claimFailuresFor(ordersByTask[task.ID], claimFailures)
 		if origin, ok := origins[task.ID]; ok {
 			input.MonitorObservation = &nextaction.MonitorObservationRef{Kind: string(origin.Kind), SourceURL: origin.SourceURL, ObservedAt: origin.ObservedAt}
@@ -447,6 +452,32 @@ func readAssemblerHistory(ctx context.Context, st Store, tasks []core.Task) (map
 		}
 	}
 	return histories, specs, nil
+}
+
+// readAssemblerCheckStatus folds the check status of approved tasks with the
+// merge gate off, the only tasks the check_hold row and the merging details
+// read. A wait names what it waits on only while its deadline stands, so a read
+// that found nothing pending stops naming it.
+func readAssemblerCheckStatus(ctx context.Context, st Store, tasks []core.Task) (map[string]nextaction.CheckStatus, error) {
+	var candidates []core.Task
+	for _, task := range tasks {
+		if task.State == core.TaskApproved && !task.MergeApproval {
+			candidates = append(candidates, task)
+		}
+	}
+	statuses, err := ReadCheckStatuses(ctx, st, candidates)
+	if err != nil {
+		return nil, err
+	}
+	for _, task := range candidates {
+		status, ok := statuses[task.ID]
+		if !ok || (task.CheckStatusDeadline != nil && task.CheckStatusDeadlineHead == CheckStatusHead(task)) {
+			continue
+		}
+		status.Waiting, status.ReadFailure, status.RetriesExhausted = nil, "", false
+		statuses[task.ID] = status
+	}
+	return statuses, nil
 }
 
 // withDependencyBlockers returns an implement or verify order carrying the

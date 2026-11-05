@@ -223,7 +223,7 @@ func TestDecisionWording(t *testing.T) {
 	for _, kind := range Kinds() {
 		entry, _ := Lookup(kind, "", "", "")
 		for _, choice := range entry.Choices {
-			typed := choice.ID == "redirect" || choice.ID == "decline" || choice.ID == "request_changes" || choice.ID == "answer" || choice.ID == "applied" || choice.ID == "not_applied" || (kind == KindMergeExecution && choice.ID == "close")
+			typed := choice.ID == "redirect" || choice.ID == "decline" || choice.ID == "request_changes" || choice.ID == "answer" || choice.ID == "applied" || choice.ID == "not_applied" || ((kind == KindMergeExecution || kind == KindCheckHold) && choice.ID == "close")
 			if typed != strings.HasSuffix(choice.Label, "…") {
 				t.Fatalf("%s choice %s label %q: ellipsis must mark typed input", kind, choice.ID, choice.Label)
 			}

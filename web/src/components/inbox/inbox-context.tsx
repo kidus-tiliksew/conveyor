@@ -5,6 +5,7 @@ import { errorMessage } from '../../lib/errors'
 import type { ActivityItem, SpecVersion } from '../../lib/types'
 import { absoluteTime, relativeTime } from '../../lib/utils'
 import { useWorkspaceSelection } from '../app-shell'
+import { CheckStatusList } from '../task/next-action-checks'
 import { CheckpointProposalDiff } from '../task/checkpoint-proposal-diff'
 import { SpecCard } from '../task/spec-card'
 import { useTaskDetail } from '../task/use-task-detail'
@@ -44,6 +45,13 @@ export function DecisionContext({ taskId, kind }: { taskId: string; kind: string
   )
 }
 
+// The inbox item carries the compact next action, so the checks come from the
+// same full statement the task page reads.
+function CheckHoldContext({ item }: { item: ActivityItem }) {
+  const { data: action } = useNextAction(item.task.id)
+  return <CheckStatusList action={action} />
+}
+
 function ContextSection({ item, kind }: { item: ActivityItem; kind: string }) {
   if (planKinds.has(kind))
     return item.spec ? (
@@ -52,6 +60,7 @@ function ContextSection({ item, kind }: { item: ActivityItem; kind: string }) {
       <p className="text-sm text-muted">No plan has been submitted.</p>
     )
   if (kind === 'agent_question') return <CheckpointContext item={item} />
+  if (kind === 'check_hold') return <CheckHoldContext item={item} />
   if (kind === 'context_proposal') return <ProposedContext item={item} />
   if (kind === 'parked') return <ParkReason item={item} />
   if (kind === 'dispatch_exhausted') return <DispatchFailure item={item} />

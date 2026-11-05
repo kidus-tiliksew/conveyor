@@ -1,0 +1,106 @@
+package nextaction
+
+import (
+	"strings"
+	"testing"
+	"time"
+
+	"github.com/kidus-tiliksew/conveyor/internal/core"
+)
+
+func checkHoldInput(hold *CheckHold, mergeApproval bool) Input {
+	return Input{
+		Task:        core.Task{ID: "held", State: core.TaskApproved, MergeApproval: mergeApproval},
+		CheckStatus: CheckStatus{Hold: hold},
+		Now:         time.Now().UTC(),
+		Capabilities: map[core.Capability]bool{
+			core.CapabilityOperateGates: true, core.CapabilityRequestChanges: true,
+		},
+	}
+}
+
+// component-next-action row 8; req-operator-next-action AC-1.5.
+func TestCheckHoldNamesTheOperatorAndEachCheck(t *testing.T) {
+	checks := []CheckRef{
+		{Name: "e2e", State: "failed", URL: "https://github.com/acme/app/runs/2"},
+		{Name: "deploy", State: "pending", URL: "https://github.com/acme/app/runs/3"},
+	}
+	na := Project(checkHoldInput(&CheckHold{Reason: CheckHoldFailed, Checks: checks}, false))
+	if na.Actor != ActorOperator || na.Kind != KindCheckHold || !na.Judgment {
+		t.Fatalf("next action = %+v", na)
+	}
+	for _, name := range []string{"e2e (failed)", "deploy (pending)"} {
+		if !strings.Contains(na.Summary, name) {
+			t.Errorf("summary %q does not name %s", na.Summary, name)
+		}
+	}
+	if len(na.Details.Checks) != 2 || na.Details.Checks[0].URL != checks[0].URL || na.Details.CheckHoldReason != CheckHoldFailed {
+		t.Fatalf("details = %+v", na.Details)
+	}
+	var ids []string
+	for _, choice := range na.Choices {
+		ids = append(ids, choice.ID)
+	}
+	if strings.Join(ids, ",") != "merge,request_changes,close" {
+		t.Fatalf("choices = %v", ids)
+	}
+	if len(na.Details.Secondary) != 1 || na.Details.Secondary[0].Kind != KindMerging {
+		t.Fatalf("secondary = %+v", na.Details.Secondary)
+	}
+}
+
+// A refused read needs a grant, not a judgment about the change, and names the
+// workspace-settings remedy (req-review-gates-evidence AC-1.7).
+func TestCheckHoldOfARefusedReadNeedsNoJudgment(t *testing.T) {
+	na := Project(checkHoldInput(&CheckHold{Reason: CheckHoldPermission, ReadFailure: "refused", Remedy: "Open workspace settings."}, false))
+	if na.Actor != ActorOperator || na.Kind != KindCheckHold || na.Judgment {
+		t.Fatalf("next action = %+v", na)
+	}
+	if na.Label != "Grant Checks read" || !strings.Contains(na.Question, "workspace settings") {
+		t.Fatalf("label=%q question=%q", na.Label, na.Question)
+	}
+	if na.Details.CheckRemedy != "Open workspace settings." || na.Details.CheckReadFailure != "refused" {
+		t.Fatalf("details = %+v", na.Details)
+	}
+	if len(na.Choices) == 0 || na.Choices[0].ID != "merge" {
+		t.Fatalf("choices = %+v", na.Choices)
+	}
+}
+
+func TestCheckHoldAppliesOnlyWithTheMergeGateOff(t *testing.T) {
+	na := Project(checkHoldInput(&CheckHold{Reason: CheckHoldFailed}, true))
+	if na.Kind != KindMergeExecution {
+		t.Fatalf("kind = %s", na.Kind)
+	}
+}
+
+// A task waiting on a pending check stays with the factory and names what it
+// waits on (req-review-gates-evidence AC-1.5).
+func TestMergingNamesWhatItWaitsOn(t *testing.T) {
+	in := checkHoldInput(nil, false)
+	in.CheckStatus.Waiting = []CheckRef{{Name: "deploy", State: "pending"}}
+	na := Project(in)
+	if na.Actor != ActorFactory || na.Kind != KindMerging || na.Judgment || len(na.Details.Checks) != 1 {
+		t.Fatalf("next action = %+v", na)
+	}
+	in.CheckStatus = CheckStatus{ReadFailure: "The check-status read failed."}
+	if na = Project(in); na.Kind != KindMerging || na.Details.CheckReadFailure == "" {
+		t.Fatalf("next action = %+v", na)
+	}
+}
+
+// A task whose last read went unanswered says so, before and after its retries
+// end, and stays with the factory (req-review-gates-evidence AC-1.7).
+func TestMergingSaysTheReadWentUnanswered(t *testing.T) {
+	in := checkHoldInput(nil, false)
+	in.CheckStatus = CheckStatus{ReadFailure: "The check-status read failed."}
+	na := Project(in)
+	if na.Actor != ActorFactory || na.Kind != KindMerging || na.Judgment || na.Details.ReasonCode != CheckReadFailed || !strings.Contains(na.Summary, "reading it again") {
+		t.Fatalf("next action = %+v", na)
+	}
+	in.CheckStatus.RetriesExhausted = true
+	na = Project(in)
+	if na.Actor != ActorFactory || na.Kind != KindMerging || na.Details.ReasonCode != CheckReadRetriesExhausted || !strings.Contains(na.Summary, "retries ended") || !strings.Contains(na.IfIgnored, "deadline") {
+		t.Fatalf("next action = %+v", na)
+	}
+}

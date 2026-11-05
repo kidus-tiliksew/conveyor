@@ -63,6 +63,11 @@ func TestReviewRoundSeatsMigrationIntegration(t *testing.T) {
 		VALUES ($1,1,'plan',0,'[]','[]',true,$2,$2,'','')`, taskID, now); err != nil {
 		t.Fatal(err)
 	}
+	// CreateJob reads today's task row. The columns migration 157 adds are
+	// nullable and unrelated to this migration, and it replays over them.
+	if _, err = pool.Exec(ctx, `ALTER TABLE tasks ADD COLUMN IF NOT EXISTS check_status_deadline timestamptz, ADD COLUMN IF NOT EXISTS check_status_deadline_head text`); err != nil {
+		t.Fatal(err)
+	}
 	legacy := newStore(pool)
 	jobID := taskID + "-implement-1"
 	if err = legacy.CreateJob(ctx, core.Job{ID: jobID, TaskID: taskID, Stage: core.StageImplement, State: core.JobDone, StartedAt: now}); err != nil {

@@ -33,6 +33,7 @@ func TestReviewApproveReconcilesMergedPullRequestAtReviewedHead(t *testing.T) {
 		t.Fatal(err)
 	}
 	d := dispatch.New(st, &config.Config{Workspace: "demo", Repos: []config.Repo{{Name: "api", GitHub: "acme/api"}}}, nil)
+	d.ReadCommitChecks = dispatch.NoChecksReportedForTest
 	d.ViewPullRequest = func(context.Context, string, string) (githubtrigger.PullRequest, error) {
 		return githubtrigger.PullRequest{
 			Number: 1608, State: "closed", Merged: true, HeadSHA: "reviewed-head", HeadRef: task.Branch,
@@ -77,6 +78,7 @@ func TestReviewApproveRacingForgeMergeAnswersConflict(t *testing.T) {
 		t.Fatal(err)
 	}
 	d := dispatch.New(st, &config.Config{Workspace: "demo", Repos: []config.Repo{{Name: "api", GitHub: "acme/api"}}}, nil)
+	d.ReadCommitChecks = dispatch.NoChecksReportedForTest
 	d.ViewPullRequest = func(context.Context, string, string) (githubtrigger.PullRequest, error) {
 		return githubtrigger.PullRequest{
 			Number: 1609, State: "closed", Merged: true, Mergeable: "UNKNOWN", HeadSHA: "reviewed-head", HeadRef: task.Branch,

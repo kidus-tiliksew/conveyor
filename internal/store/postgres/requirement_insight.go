@@ -25,7 +25,7 @@ const requirementInsightTaskColumns = `t.supersedes, t.superseded_by, t.intake_o
 	t.state, t.parent_task_id, t.created_at, t.updated_at, t.next_stage, t.recovery_stage, t.intake_key,
 	t.mode, t.spec_approval, t.merge_approval, t.policy_version, t.setup_name, t.setup_contract, t.hold,
 	t.reviewed_head_sha, t.approved_head_sha, t.approval_stale, t.refresh_baseline_sha, t.refresh_head_sha,
-	t.refresh_review_scope, t.origin_spec_version, t.origin_sub_id, t.assignee_user_id, t.gate_kind`
+	t.refresh_review_scope, t.origin_spec_version, t.origin_sub_id, t.assignee_user_id, t.gate_kind, t.check_status_deadline, t.check_status_deadline_head`
 
 // ReadRequirementInsightInputs answers in at most eight set-based queries
 // through the translating boundary, whatever the serving-task count: the

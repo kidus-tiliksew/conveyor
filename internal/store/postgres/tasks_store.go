@@ -1696,7 +1696,13 @@ func taskInsertParams(task core.Task) db.InsertTaskParams {
 func taskFromDB(task db.Task) core.Task {
 	var setup config.PolicyContract
 	_ = json.Unmarshal(task.SetupContract, &setup)
+	var checkStatusDeadline *time.Time
+	if task.CheckStatusDeadline.Valid {
+		deadline := task.CheckStatusDeadline.Time.UTC()
+		checkStatusDeadline = &deadline
+	}
 	return core.Task{
+		CheckStatusDeadline: checkStatusDeadline, CheckStatusDeadlineHead: task.CheckStatusDeadlineHead.String,
 		ID: task.ID, Workspace: task.WorkspaceID, Source: task.Source, IntakeKey: task.IntakeKey.String,
 		Supersedes: task.Supersedes.String, SupersededBy: task.SupersededBy.String, IntakeOperatorDirection: task.IntakeOperatorDirection,
 		Title: task.Title, Body: task.Body, Class: task.Class,

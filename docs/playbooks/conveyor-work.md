@@ -178,8 +178,10 @@ own evidence rules.
 A designated job that is missing, cancelled, or failed on the submitted head
 leaves its gate unsatisfied. A passing rerun attempt on the same head satisfies
 the gate only when the pull request body lists the failed attempts. A new
-commit needs its own green run. CI evidence is review evidence, not a merge
-gate. It changes neither task gate nor the frozen merge policy.
+commit needs its own green run. CI evidence is review evidence, not a task
+gate. It changes neither task gate nor the frozen merge policy. Separately,
+with the merge gate off the runtime reads the approved head's check status
+before an automatic merge. With the merge gate on, the operator decides.
 
 ### Map evidence before submission
 

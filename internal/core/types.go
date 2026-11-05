@@ -141,46 +141,51 @@ type Task struct {
 
 	RepositoryInstallAttempt int `json:"repository_install_attempt,omitempty"`
 
-	ID                    string                `json:"id"`
-	Workspace             string                `json:"workspace"`
-	Source                string                `json:"source"` // provenance: github:<slug>#<n>, cli, cron, monitor
-	IntakeKey             string                `json:"-"`      // workspace-scoped MCP retry key
-	Title                 string                `json:"title"`
-	Body                  string                `json:"body"`  // free-form description; becomes part of the prompt
-	Class                 string                `json:"class"` // bug | feature | chore
-	Level                 EscalationLevel       `json:"level"`
-	Mode                  TaskMode              `json:"-"`                  // legacy persistence only; never emitted or read for behavior
-	Hold                  bool                  `json:"-"`                  // historical stored value only; read by no decision (DEC-74(3))
-	Assignee              *TaskAssignee         `json:"assignee,omitempty"` // claim-eligibility identity; never an ordering field
-	SpecApproval          bool                  `json:"spec_approval"`
-	MergeApproval         bool                  `json:"merge_approval"`
-	PolicyVersion         int                   `json:"policy_version"`
-	SetupName             string                `json:"-"` // retired live selector; retained for legacy row decoding
-	SetupContract         config.PolicyContract `json:"policy_contract"`
-	ReviewedHeadSHA       string                `json:"reviewed_head_sha,omitempty"`
-	ApprovedHeadSHA       string                `json:"approved_head_sha,omitempty"`
-	ApprovalStale         bool                  `json:"approval_stale,omitempty"`
-	RefreshBaselineSHA    string                `json:"refresh_baseline_sha,omitempty"`
-	RefreshHeadSHA        string                `json:"refresh_head_sha,omitempty"`
-	RefreshReviewScope    string                `json:"refresh_review_scope,omitempty"`
-	Repo                  string                `json:"repo"` // repo name within the workspace; multi-repo sets are Phase 8
-	BaseBranch            string                `json:"base_branch"`
-	Branch                string                `json:"branch"` // current assigned branch; intake default is conveyor/task-<id>
-	State                 TaskState             `json:"state"`
-	GateKind              GateKind              `json:"gate_kind,omitempty"`
-	NextStage             Stage                 `json:"next_stage,omitempty"`     // durable pipeline transition selected at the preceding gate
-	RecoveryStage         Stage                 `json:"recovery_stage,omitempty"` // explicit human redirect/pull target while the pipeline is halted
-	ParentTaskID          string                `json:"parent_task_id,omitempty"` // blueprint parent
-	OriginSpecVersion     int                   `json:"origin_spec_version,omitempty"`
-	OriginSubID           string                `json:"origin_sub_id,omitempty"`
-	Dependencies          []TaskRelation        `json:"dependencies,omitempty"`
-	BlockingTaskIDs       []string              `json:"blocking_task_ids,omitempty"`
-	Children              []TaskRelation        `json:"children,omitempty"`
-	Context               TaskContext           `json:"context,omitempty"`
-	PullRequestClose      *PullRequestClose     `json:"pull_request_close,omitempty"`
-	PullRequestCloseState string                `json:"pull_request_close_state,omitempty"`
-	GitHub                *GitHubLifecycle      `json:"github,omitempty"` // durable forge projection
-	CreatedAt             time.Time             `json:"created_at"`
+	ID                 string                `json:"id"`
+	Workspace          string                `json:"workspace"`
+	Source             string                `json:"source"` // provenance: github:<slug>#<n>, cli, cron, monitor
+	IntakeKey          string                `json:"-"`      // workspace-scoped MCP retry key
+	Title              string                `json:"title"`
+	Body               string                `json:"body"`  // free-form description; becomes part of the prompt
+	Class              string                `json:"class"` // bug | feature | chore
+	Level              EscalationLevel       `json:"level"`
+	Mode               TaskMode              `json:"-"`                  // legacy persistence only; never emitted or read for behavior
+	Hold               bool                  `json:"-"`                  // historical stored value only; read by no decision (DEC-74(3))
+	Assignee           *TaskAssignee         `json:"assignee,omitempty"` // claim-eligibility identity; never an ordering field
+	SpecApproval       bool                  `json:"spec_approval"`
+	MergeApproval      bool                  `json:"merge_approval"`
+	PolicyVersion      int                   `json:"policy_version"`
+	SetupName          string                `json:"-"` // retired live selector; retained for legacy row decoding
+	SetupContract      config.PolicyContract `json:"policy_contract"`
+	ReviewedHeadSHA    string                `json:"reviewed_head_sha,omitempty"`
+	ApprovedHeadSHA    string                `json:"approved_head_sha,omitempty"`
+	ApprovalStale      bool                  `json:"approval_stale,omitempty"`
+	RefreshBaselineSHA string                `json:"refresh_baseline_sha,omitempty"`
+	RefreshHeadSHA     string                `json:"refresh_head_sha,omitempty"`
+	RefreshReviewScope string                `json:"refresh_review_scope,omitempty"`
+	Repo               string                `json:"repo"` // repo name within the workspace; multi-repo sets are Phase 8
+	BaseBranch         string                `json:"base_branch"`
+	Branch             string                `json:"branch"` // current assigned branch; intake default is conveyor/task-<id>
+	State              TaskState             `json:"state"`
+	GateKind           GateKind              `json:"gate_kind,omitempty"`
+	// CheckStatusDeadline is when the recorded check-status wait of
+	// CheckStatusDeadlineHead falls due (req-review-gates-evidence AC-1.5). A
+	// head other than the task's approved head starts fresh.
+	CheckStatusDeadline     *time.Time        `json:"check_status_deadline,omitempty"`
+	CheckStatusDeadlineHead string            `json:"check_status_deadline_head,omitempty"`
+	NextStage               Stage             `json:"next_stage,omitempty"`     // durable pipeline transition selected at the preceding gate
+	RecoveryStage           Stage             `json:"recovery_stage,omitempty"` // explicit human redirect/pull target while the pipeline is halted
+	ParentTaskID            string            `json:"parent_task_id,omitempty"` // blueprint parent
+	OriginSpecVersion       int               `json:"origin_spec_version,omitempty"`
+	OriginSubID             string            `json:"origin_sub_id,omitempty"`
+	Dependencies            []TaskRelation    `json:"dependencies,omitempty"`
+	BlockingTaskIDs         []string          `json:"blocking_task_ids,omitempty"`
+	Children                []TaskRelation    `json:"children,omitempty"`
+	Context                 TaskContext       `json:"context,omitempty"`
+	PullRequestClose        *PullRequestClose `json:"pull_request_close,omitempty"`
+	PullRequestCloseState   string            `json:"pull_request_close_state,omitempty"`
+	GitHub                  *GitHubLifecycle  `json:"github,omitempty"` // durable forge projection
+	CreatedAt               time.Time         `json:"created_at"`
 }
 
 // TaskAssignee is the member-safe identity rendered on task and work-order

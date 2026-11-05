@@ -209,6 +209,14 @@ func (s *Store) migrate(ctx context.Context) error {
 				return fmt.Errorf("SingleStore migration %s: %w", file.name, err)
 			}
 		}
+		if file.version == 32 {
+			if err := s.addNullableColumns(ctx,
+				nullableColumn{"tasks", "check_status_deadline", "DATETIME(6) NULL"},
+				nullableColumn{"tasks", "check_status_deadline_head", "VARCHAR(255) NULL"},
+			); err != nil {
+				return fmt.Errorf("SingleStore migration %s: %w", file.name, err)
+			}
+		}
 		if _, err = s.db.ExecContext(ctx, `INSERT INTO conveyor_singlestore_migrations(version,name,checksum) VALUES (?,?,?)`, file.version, file.name, file.checksum); err != nil {
 			return err
 		}

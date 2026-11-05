@@ -35,21 +35,22 @@ const (
 	taskWaitReasonTerminal = "terminal"
 	taskWaitReasonTimeout  = "timeout"
 	taskWaitReasonReached  = "reached"
+	taskWaitReasonHeld     = "held"
 )
 
 const taskWaitLong = `Block until a task's observed state changes, the task reaches a terminal
 state, or the timeout elapses.
 
 Each observation holds the task state, the pending human gate (plan, merge,
-merge execution, plan revision, or human recovery, with the plan version when
-one applies and the merge readiness state for merge execution), and the next
+merge execution, check hold, plan revision, or human recovery, with the plan
+version when one applies and the merge readiness state for merge execution), and the next
 claimable work order ID and stage. The command reads GET /v1/tasks/{id} and
 GET /v1/work-orders, plus GET /v1/tasks/{id}/spec at a plan or plan-revision
 gate and GET /v1/tasks/{id}/activity at a merge-execution gate, with the
 ordinary server, workspace, and credential resolution. It re-reads with jittered backoff from
 250ms to a 2s ceiling and returns when any observed field differs from the
 first observation. A merged, closed, or parked task returns at once, at start
-or during the wait.
+or during the wait, and so does a task at a check hold, which needs an operator.
 
 Transport errors and server 5xx responses after the first observation are
 retried within the timeout. Authentication, authorization, not-found, and
@@ -57,7 +58,7 @@ malformed responses end the wait at once. A failed read never replaces the
 last successful observation.
 
 Output reports the current observation and why the wait ended: changed,
-terminal, or timeout. --json prints the same fields as one JSON object. On
+terminal, held, or timeout. --json prints the same fields as one JSON object. On
 timeout, last_read_error names the most recent failed read when the final
 poll failed.
 
@@ -268,6 +269,9 @@ func waitForTask(ctx context.Context, c *client, taskID string, options taskWait
 	if taskWaitTerminal(baseline.State) {
 		return taskWaitResult{taskWaitObservation: baseline, Reason: taskWaitReasonTerminal}, nil
 	}
+	if taskWaitHeld(baseline) {
+		return taskWaitResult{taskWaitObservation: baseline, Reason: taskWaitReasonHeld}, nil
+	}
 
 	latest := baseline
 	var lastErr error
@@ -295,6 +299,9 @@ func waitForTask(ctx context.Context, c *client, taskID string, options taskWait
 		latest, lastErr = current, nil
 		if taskWaitTerminal(current.State) {
 			return taskWaitResult{taskWaitObservation: current, Reason: taskWaitReasonTerminal}, nil
+		}
+		if taskWaitHeld(current) {
+			return taskWaitResult{taskWaitObservation: current, Reason: taskWaitReasonHeld}, nil
 		}
 		if !current.sameAs(baseline) {
 			return taskWaitResult{taskWaitObservation: current, Reason: taskWaitReasonChanged}, nil
@@ -336,6 +343,8 @@ func waitForTaskTarget(ctx context.Context, c *client, taskID string, target tas
 			return taskWaitReasonTerminal, nil
 		case target.reached(o):
 			return taskWaitReasonReached, nil
+		case taskWaitHeld(o):
+			return taskWaitReasonHeld, nil
 		}
 		return "", nil
 	}
@@ -443,7 +452,10 @@ func (p *taskWaitPoller) observe(changed bool) {
 	p.current = min(p.current*2, p.maximum)
 }
 
-const taskWaitGateMergeExecution = "merge_execution"
+const (
+	taskWaitGateMergeExecution = "merge_execution"
+	taskWaitGateCheckHold      = "check_hold"
+)
 
 // taskWaitStageOrder ranks claimable stages the way a session works them.
 var taskWaitStageOrder = map[core.Stage]int{core.StageSpec: 0, core.StageImplement: 1, core.StageVerify: 2, core.StageReview: 3}
@@ -552,6 +564,11 @@ func (c *client) taskWaitGate(ctx context.Context, task core.Task, actionKind st
 			return nil, err
 		}
 		return &taskWaitGate{Kind: taskWaitGateMergeExecution, MergeReadiness: readiness}, nil
+	case task.State == core.TaskApproved && actionKind == nextaction.KindCheckHold:
+		// A check hold names the operator on an approved task with the merge
+		// gate off, so no wait state alone reveals it (req-review-gates-evidence
+		// AC-1.6).
+		return &taskWaitGate{Kind: taskWaitGateCheckHold}, nil
 	case task.State != core.TaskAwaiting:
 		return nil, nil
 	}
@@ -613,6 +630,13 @@ func (o taskWaitObservation) sameAs(other taskWaitObservation) bool {
 		return false
 	}
 	return true
+}
+
+// taskWaitHeld reports a task a check-status hold keeps at the operator. The
+// wait stops at it, as it stops at a parked task (req-review-gates-evidence
+// AC-1.6).
+func taskWaitHeld(o taskWaitObservation) bool {
+	return o.PendingGate != nil && o.PendingGate.Kind == taskWaitGateCheckHold
 }
 
 func taskWaitTerminal(state core.TaskState) bool {

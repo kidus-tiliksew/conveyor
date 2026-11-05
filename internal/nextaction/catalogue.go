@@ -9,6 +9,8 @@ import (
 
 // Vars are the only values a catalogue template may read.
 type Vars struct {
+	// Checks names a hold's checks, each with its state.
+	Checks   string
 	Title    string
 	PR       int
 	Stage    string
@@ -91,6 +93,7 @@ func init() {
 		{KindJobFailure, "Job failure", "A job failed and needs a person.", "", "The failure stays at the human gate.", reviewChoices("Approve"), &RunGate{Kind: "human", Label: "human recovery gate"}},
 		{KindMergeConflict, "Merge conflict", "Automatic conflict fixes are exhausted.", "", "The conflict stays until someone fixes it.", conflictChoices(), &RunGate{Kind: "merge_execution", Label: "merge execution pending"}},
 		{KindMergeExecution, "Merge branch", "The merge gate is on and the branch is ready to merge.", "", "Conveyor does not merge it.", mergeExecutionChoices(), &RunGate{Kind: "merge_execution", Label: "merge execution pending"}},
+		{KindCheckHold, "Checks hold the merge", "A failed check holds the merge of the approved head.", "Rerun the check on GitHub, merge anyway, request changes, or close?", "The merge stays held. A later read that finds nothing failed lets it continue.", checkHoldChoices(), &RunGate{Kind: "merge_execution", Label: "merge execution pending"}},
 		{KindMerging, "Merging", "Conveyor is merging this branch.", "", "The merge continues.", nil, nil},
 		{KindContextProposal, "Context proposal", "A context proposal is waiting for a decision.", "Confirm or dismiss the proposed context?", "The proposal stays pending.", nil, nil},
 		{KindAgentQuestion, "Agent question", "The agent stopped for a decision.", "Answer the agent?", "The order stays released.", answerChoices(), nil},
@@ -117,6 +120,30 @@ func init() {
 		put(item.kind, "", "", "", entry)
 	}
 	decisionWording(text)
+	// The hold's sentence names each check; AC-1.5 requires it on every surface
+	// that shows the summary, the compact list shape included.
+	failedHold := catalogueTable[catalogueKey{KindCheckHold, "", "", "", ""}]
+	failedHold.Summary = func(v Vars) string {
+		if v.Checks == "" {
+			return "A failed check holds the merge of the approved head."
+		}
+		return "A failed check holds the merge of the approved head: " + v.Checks + "."
+	}
+	catalogueTable[catalogueKey{KindCheckHold, "", "", "", ""}] = failedHold
+	refused := failedHold
+	refused.Label = "Grant Checks read"
+	refused.Summary = text("GitHub refused the check-status read, so Conveyor cannot tell whether the approved head may merge.")
+	refused.Question = text("Grant the workspace GitHub App Checks read in workspace settings, or merge without a read?")
+	refused.IfIgnored = text("The merge stays held. A later read that GitHub answers decides it.")
+	catalogueTable[catalogueKey{KindCheckHold, "", "", "", CheckHoldPermission}] = refused
+	readFailed := catalogueTable[catalogueKey{KindMerging, "", "", "", ""}]
+	readFailed.Summary = text("Conveyor could not read the approved head's check status and is reading it again.")
+	readFailed.IfIgnored = text("Conveyor reads the check status again, and merges only when that read allows it.")
+	catalogueTable[catalogueKey{KindMerging, "", "", "", CheckReadFailed}] = readFailed
+	readExhausted := readFailed
+	readExhausted.Summary = text("Conveyor could not read the approved head's check status and its retries ended. Nothing merges until a read succeeds.")
+	readExhausted.IfIgnored = text("The next check delivery, timed check, daemon start, or check-status deadline reads it again. The merge act needs no read.")
+	catalogueTable[catalogueKey{KindMerging, "", "", "", CheckReadRetriesExhausted}] = readExhausted
 	for _, item := range []struct{ variant, label, summary, question string }{
 		{AgentQuestionCitedRevisions, "Cited revisions need a decision",
 			"The agent asks you to confirm or dismiss proposed revisions to cited documents, then recover the order with direction.",
@@ -212,7 +239,7 @@ func Kinds() []string {
 	return []string{
 		KindTerminal, KindParked, KindDispatchExhausted, KindPlanApproval, KindPlanRevision,
 		KindMergeApproval, KindReviewBounceLimit, KindJobFailure, KindMergeConflict, KindMergeExecution,
-		KindMerging, KindContextProposal, KindAgentQuestion, KindVerificationDisposition, KindForgeFailure,
+		KindCheckHold, KindMerging, KindContextProposal, KindAgentQuestion, KindVerificationDisposition, KindForgeFailure,
 		KindReviewRecovery, KindDependencyUnsatisfiable, KindStalled, KindBlocked, KindWorking, KindQueued, KindRetrying,
 	}
 }

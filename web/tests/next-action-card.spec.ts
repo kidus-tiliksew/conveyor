@@ -611,6 +611,47 @@ test('an approved task with the merge gate off shows the server merging summary 
   await expect(page.getByRole('button', { name: /merge/i })).toHaveCount(0)
 })
 
+test('a check hold names each check with its GitHub link and offers the merge act', async ({ page }) => {
+  const held: NextAction = {
+    label: 'Checks hold the merge',
+    actor: 'operator',
+    kind: 'check_hold',
+    judgment: true,
+    summary: 'A failed check holds the merge of the approved head: e2e (failed).',
+    question: 'Rerun the check on GitHub, merge anyway, request changes, or close?',
+    deadline: null,
+    choices: [
+      {
+        id: 'merge',
+        label: 'Merge',
+        effect: 'Merges the approved head without reading its checks.',
+        method: 'POST',
+        path: `/v1/tasks/${taskId}/merge`,
+        capability: 'operate_gates',
+        allowed: true,
+      },
+    ],
+    details: {
+      check_hold_reason: 'failed',
+      checks: [
+        { name: 'e2e', state: 'failed', url: 'https://github.com/acme/app/runs/2' },
+        { name: 'legacy-status', state: 'pending' },
+      ],
+    },
+  }
+  await mockAPI(
+    page,
+    () => activity('approved', held),
+    () => held,
+  )
+  await page.goto(`/w/demo/tasks/${taskId}/full`)
+  const card = page.getByRole('region', { name: 'Next action' })
+  await expect(card.getByRole('link', { name: 'e2e' })).toHaveAttribute('href', 'https://github.com/acme/app/runs/2')
+  await expect(card.getByText('legacy-status', { exact: true })).toBeVisible()
+  await expect(card.getByRole('link', { name: 'legacy-status' })).toHaveCount(0)
+  await expect(page.getByRole('button', { name: 'Merge' }).first()).toBeVisible()
+})
+
 // The one-act merge at the merge_approval gate (DEC-64). Merge is the server's
 // `merge` choice (DEC-61): offered at MERGEABLE, otherwise refused with the
 // server's reason. The browser adds only the confirm, which names the reviewed

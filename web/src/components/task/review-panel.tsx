@@ -33,6 +33,7 @@ const gateKinds: Record<string, true> = {
   job_failure: true,
   merge_conflict: true,
   merge_execution: true,
+  check_hold: true,
 }
 
 // Whether the task is holding at a human gate — the gate card renders (and
@@ -66,7 +67,8 @@ export function useCanRequestTaskChanges(task: Task): boolean {
 
 // The gate's tone, exposed so the timeline can tint the rail dot to match.
 export function gateTone(kind: string | undefined): GateTone {
-  if (kind === 'merge_conflict' || kind === 'review_bounce_limit' || kind === 'job_failure') return 'alarm'
+  if (kind === 'merge_conflict' || kind === 'check_hold' || kind === 'review_bounce_limit' || kind === 'job_failure')
+    return 'alarm'
   if (kind === 'merge_execution' || kind === 'merging') return 'positive'
   return 'neutral'
 }

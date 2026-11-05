@@ -25,6 +25,7 @@ const (
 	KindJobFailure              = "job_failure"
 	KindMergeConflict           = "merge_conflict"
 	KindMergeExecution          = "merge_execution"
+	KindCheckHold               = "check_hold"
 	KindMerging                 = "merging"
 	KindContextProposal         = "context_proposal"
 	KindAgentQuestion           = "agent_question"
@@ -103,6 +104,10 @@ type Input struct {
 	Dispositions   map[string]DispositionInput
 	MergeConflict  MergeConflict
 	MergeReadiness *MergeReadiness
+	// CheckStatus is the recorded check status of the approved head of an
+	// approved task with the merge gate off, read only for such a task
+	// (component-submission-merge, Check status).
+	CheckStatus    CheckStatus
 	Recommendation string
 	Assignee       *core.TaskAssignee
 	Capabilities   map[core.Capability]bool
@@ -153,6 +158,47 @@ type Markers struct {
 	CheckpointClass          string
 	Citations                []core.WorkOrderAuthorityConflictCitation
 	ReleaseOutcome           string
+}
+
+// Reason codes and catalogue variants of a merging task whose last check-status
+// read went unanswered.
+const (
+	CheckReadFailed           = "check_read_failed"
+	CheckReadRetriesExhausted = "check_read_retries_exhausted"
+)
+
+// Reasons a check-status hold names the operator.
+const (
+	CheckHoldFailed     = "failed"
+	CheckHoldStuck      = "stuck"
+	CheckHoldPermission = "permission"
+)
+
+// CheckRef is one check as a hold or a wait names it. URL is the check's page
+// on GitHub, which is how the operator reruns it.
+type CheckRef struct {
+	Name  string `json:"name"`
+	State string `json:"state"`
+	URL   string `json:"url,omitempty"`
+}
+
+// CheckHold is a standing hold, folded from merge.check_hold events.
+type CheckHold struct {
+	Reason      string
+	Checks      []CheckRef
+	ReadFailure string
+	Remedy      string
+}
+
+// CheckStatus is the recorded check status of one head, already folded from
+// events. Waiting names what the task waits on while a recorded deadline
+// stands, ReadFailure names a failed read in that wait, and RetriesExhausted
+// says the job's bounded retries for that failure ended.
+type CheckStatus struct {
+	Hold             *CheckHold
+	Waiting          []CheckRef
+	ReadFailure      string
+	RetriesExhausted bool
 }
 
 // MergeConflict is the open conflict episode, already folded from events.
@@ -343,6 +389,14 @@ type Details struct {
 	// ClaimFailure is present only on the claim_failing stall. It carries
 	// the record's count, times, and class, never driver text.
 	ClaimFailure *core.WorkOrderClaimFailure `json:"claim_failure,omitempty"`
+	// Checks lists each check a check_hold names, or what a merging task waits
+	// on, with its name, state, and GitHub URL (component-next-action, The
+	// statement). CheckHoldReason, CheckReadFailure, and CheckRemedy say why:
+	// the remedy appears only when GitHub refused the read.
+	Checks           []CheckRef `json:"checks,omitempty"`
+	CheckHoldReason  string     `json:"check_hold_reason,omitempty"`
+	CheckReadFailure string     `json:"check_read_failure,omitempty"`
+	CheckRemedy      string     `json:"check_remedy,omitempty"`
 }
 
 // Compact is the list-item shape. Label is the same catalogue entry as the full shape.

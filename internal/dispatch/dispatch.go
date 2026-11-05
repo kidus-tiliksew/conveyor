@@ -33,20 +33,24 @@ type Dispatcher struct {
 	// AutomaticReviewRecovery is the order clock handler's review-round
 	// recovery pass, installed by the daemon before the queue starts
 	// (component-durable-queue, The deadline alarm).
-	AutomaticReviewRecovery     func(context.Context, time.Time) (int, error)
-	ReadVerificationPR          func(context.Context, string, int) (github.VerificationPullRequest, error)
-	WriteVerificationPR         func(context.Context, string, int, string) error
-	Store                       store.Store
-	Cfg                         *config.Config
-	Pack                        *pack.Bundle
-	Agent                       inprocess.Agent
-	ConfigProvider              func(context.Context) (*config.Config, error)
-	PullRequestForClose         func(context.Context, string, string) (github.PullRequest, error)
-	PullRequestForNumber        func(context.Context, string, int) (github.PullRequest, error)
-	ClosePullRequest            func(context.Context, string, int, string, string) error
-	PublishIssue                func(context.Context, github.IssuePublication) (github.IssuePublicationResult, error)
-	PublishReview               func(context.Context, github.ReviewPublication) (github.ReviewPublicationResult, error)
-	ViewPullRequest             func(context.Context, string, string) (github.PullRequest, error)
+	AutomaticReviewRecovery func(context.Context, time.Time) (int, error)
+	ReadVerificationPR      func(context.Context, string, int) (github.VerificationPullRequest, error)
+	WriteVerificationPR     func(context.Context, string, int, string) error
+	Store                   store.Store
+	Cfg                     *config.Config
+	Pack                    *pack.Bundle
+	Agent                   inprocess.Agent
+	ConfigProvider          func(context.Context) (*config.Config, error)
+	PullRequestForClose     func(context.Context, string, string) (github.PullRequest, error)
+	PullRequestForNumber    func(context.Context, string, int) (github.PullRequest, error)
+	ClosePullRequest        func(context.Context, string, int, string, string) error
+	PublishIssue            func(context.Context, github.IssuePublication) (github.IssuePublicationResult, error)
+	PublishReview           func(context.Context, github.ReviewPublication) (github.ReviewPublicationResult, error)
+	ViewPullRequest         func(context.Context, string, string) (github.PullRequest, error)
+	// ReadCommitChecks reads every check of a commit for the automatic merge
+	// (req-review-gates-evidence AC-1.4). A fixture stubbing the forge gets
+	// NoChecksReportedForTest, so it never calls a real reader.
+	ReadCommitChecks            func(context.Context, string, string) (github.CheckStatus, error)
 	SubmissionPR                func(context.Context, string, string) (github.SubmissionPullRequest, error)
 	DiscoverDocumentationPolicy func(context.Context, string, string) github.DocumentationPolicyDiscovery
 	RequestMerge                func(context.Context, string, int) error
@@ -142,6 +146,7 @@ func New(st store.Store, cfg *config.Config, agent inprocess.Agent) *Dispatcher 
 		}
 		return github.PullRequestForBranch(forgeCtx, repo, branch)
 	}
+	d.ReadCommitChecks = newCommitChecksReader(d)
 	d.RequestMerge = func(ctx context.Context, repo string, number int) error {
 		token, err := d.workspaceCredential(ctx, repo)
 		if err != nil {
@@ -247,6 +252,14 @@ func (d *Dispatcher) Run(ctx context.Context) {
 			return
 		case item := <-d.memoryQueue:
 			workCtx := store.WithWorkspace(store.WithActor(ctx, store.SystemActor("dispatcher")), item.Workspace)
+			// The volatile store has no job, so its queue gives a failed read one
+			// more read and no schedule.
+			if current, err := d.Store.GetTask(workCtx, item.TaskID); err == nil && checkReadRowApplies(current) {
+				if err := d.readCheckStatusAttempt(workCtx, current, 1, true); err != nil {
+					log.Printf("[task %s] check-status read: %v", item.TaskID, err)
+				}
+				continue
+			}
 			if err := d.runTask(workCtx, item.TaskID); err != nil {
 				log.Printf("[task %s] dispatch failed: %v", item.TaskID, err)
 			}
@@ -1398,8 +1411,13 @@ func (d *Dispatcher) applyReview(ctx context.Context, cfg *config.Config, task c
 		d.Enqueue(ctx, task.ID)
 	}
 	if current.State == core.TaskApproved && current.PolicyVersion > 0 && !current.MergeApproval {
-		if err := d.MergeApprovedTask(ctx, current); err != nil {
+		// The verdict stands whatever the check status says. A hold, a wait, and
+		// an unanswered read are recorded, and an unanswered read has its retry
+		// job; none of them is a failure of the verdict its caller could act on.
+		if err := d.MergeApprovedTaskAutomatically(ctx, current); err != nil && !checkStatusDeferred(err) {
 			return err
+		} else if err != nil {
+			log.Printf("[task %s] automatic merge after approval: %v", task.ID, err)
 		}
 	}
 	return nil

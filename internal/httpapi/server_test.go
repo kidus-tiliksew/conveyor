@@ -2535,7 +2535,7 @@ func TestMergeTaskRequiresAuthAndConfirmedMergedState(t *testing.T) {
 	s := NewServer(st)
 	s.BearerToken = "token"
 	mergeCalls := 0
-	s.OnMerge = func(ctx context.Context, task core.Task) error {
+	s.OnMerge = func(ctx context.Context, task core.Task, _ core.Actor) error {
 		mergeCalls++
 		if task.State == core.TaskApproved {
 			_, err := taskops.New(st).Perform(ctx, task.ID, taskops.Command{Kind: core.TaskMergeConfirm, ProjectStages: true})
@@ -2573,7 +2573,7 @@ func TestMergeTaskDoesNotReportUnconfirmedSuccess(t *testing.T) {
 	}
 	s := NewServer(st)
 	s.BearerToken = "token"
-	s.OnMerge = func(context.Context, core.Task) error { return nil }
+	s.OnMerge = func(context.Context, core.Task, core.Actor) error { return nil }
 	request := httptest.NewRequest(http.MethodPost, "/v1/tasks/approved/merge", nil)
 	request.Header.Set("Authorization", "Bearer token")
 	response := httptest.NewRecorder()

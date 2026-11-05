@@ -15,18 +15,20 @@ import (
 // webhook delivery when no delivery has arrived for a while
 // (component-runtime, Silence fallback; req-quiet-idle-runtime AC-3.8). It
 // watches only the tasks whose next step depends on something GitHub
-// reports: approved tasks with the merge gate off, which wait for checks
-// and for the automatic or an external merge to be observed. Parked,
-// human-gated, and agent-driven tasks never start it. Every input is a
-// stored time, so a restart recomputes the silence.
+// reports: approved tasks with the merge gate off and no failed or stuck
+// check holding their merge, which wait for checks and for the automatic or
+// an external merge to be observed. Parked, human-gated, check-held, and
+// agent-driven tasks never start it. Every input is a stored time, so a
+// restart recomputes the silence.
 
 // GitHubSilenceWindow is how long a watched task waits without an accepted
 // delivery before the silence fallback starts.
 const GitHubSilenceWindow = 15 * time.Minute
 
 // waitingSince memoizes when a watched task began waiting: the time of its
-// latest task.state_changed event to approved, and the last ledger event
-// read, so the next read fetches only later events.
+// latest task.state_changed event to approved or merge.check_hold_cleared
+// event, and the last ledger event read, so the next read fetches only later
+// events.
 type waitingSince struct {
 	at          time.Time
 	lastEventID int64
@@ -42,11 +44,30 @@ func (f *GitHubFallback) SilenceActive(workspace string) bool {
 	return worker != nil && worker.silent.Load()
 }
 
-// silenceWatched reports whether the silence fallback watches the task: an
-// approved task with the merge gate off. An approved task with the merge
-// gate on waits for an operator's merge act and is not watched.
+// silenceWatched reports from the task row whether the silence fallback can
+// watch the task: an approved task with the merge gate off. An approved task
+// with the merge gate on waits for an operator's merge act and is not watched.
+// checkHeldTasks then removes the ones a failed or stuck check holds.
 func silenceWatched(task core.Task) bool {
 	return task.State == core.TaskApproved && !task.MergeApproval
+}
+
+// checkHeldTasks reads which tasks a failed or stuck check holds. Such a task
+// names the operator and stops waiting on GitHub until a later read clears the
+// hold (req-quiet-idle-runtime AC-3.8). A failed read is returned, so the
+// caller keeps its previous answer instead of treating every task as unheld.
+func (f *GitHubFallback) checkHeldTasks(ctx context.Context, tasks []core.Task) (map[string]bool, error) {
+	statuses, err := store.ReadCheckStatuses(ctx, f.Dispatcher.Store, tasks)
+	if err != nil {
+		return nil, err
+	}
+	held := map[string]bool{}
+	for id, status := range statuses {
+		if store.HoldsSilenceFallback(status) {
+			held[id] = true
+		}
+	}
+	return held, nil
 }
 
 // watchedTasks lists the workspace's watched tasks.
@@ -55,9 +76,19 @@ func (f *GitHubFallback) watchedTasks(ctx context.Context) ([]core.Task, error) 
 	if err != nil {
 		return nil, err
 	}
-	watched := approved[:0]
+	candidates := approved[:0]
 	for _, task := range approved {
 		if silenceWatched(task) {
+			candidates = append(candidates, task)
+		}
+	}
+	held, err := f.checkHeldTasks(ctx, candidates)
+	if err != nil {
+		return nil, err
+	}
+	watched := candidates[:0]
+	for _, task := range candidates {
+		if !held[task.ID] {
 			watched = append(watched, task)
 		}
 	}
@@ -134,6 +165,15 @@ func (f *GitHubFallback) onSilenceTask(ctx context.Context, workspace string, st
 		delete(st.since, notice.TaskID)
 		return
 	}
+	held, err := f.checkHeldTasks(ctx, []core.Task{task})
+	if err != nil {
+		f.logf(`level=error msg="timed GitHub check failed" workspace=%s step=watched_tasks err=%v`, workspace, err)
+		return
+	}
+	if held[task.ID] {
+		delete(st.since, notice.TaskID)
+		return
+	}
 	since, err := f.waitingSince(ctx, st, task)
 	if err != nil {
 		f.logf(`level=error msg="timed GitHub check failed" workspace=%s step=waiting_since task=%s err=%v`, workspace, task.ID, err)
@@ -176,8 +216,10 @@ func (st *fallbackState) endSilence() {
 }
 
 // waitingSince returns when a watched task began waiting: its latest
-// task.state_changed event to approved, or its creation when the ledger
-// holds none. Only events after the memoized one are read.
+// task.state_changed event to approved or merge.check_hold_cleared event, or
+// its creation when the ledger holds neither. A task that a hold released
+// began waiting again at that release (req-quiet-idle-runtime AC-3.8). Only
+// events after the memoized one are read.
 func (f *GitHubFallback) waitingSince(ctx context.Context, st *fallbackState, task core.Task) (time.Time, error) {
 	memo, known := st.since[task.ID]
 	var events []core.Event
@@ -198,7 +240,8 @@ func (f *GitHubFallback) waitingSince(ctx context.Context, st *fallbackState, ta
 	}
 	for _, event := range events {
 		memo.lastEventID = max(memo.lastEventID, event.ID)
-		if event.Kind == "task.state_changed" && stateChangedTo(event) == core.TaskApproved && event.At.After(memo.at) {
+		waitBegan := event.Kind == store.EventCheckHoldCleared || (event.Kind == "task.state_changed" && stateChangedTo(event) == core.TaskApproved)
+		if waitBegan && event.At.After(memo.at) {
 			memo.at = event.At
 		}
 	}

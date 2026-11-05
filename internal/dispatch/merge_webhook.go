@@ -106,14 +106,16 @@ func (d *Dispatcher) ApplyChecksDelivery(ctx context.Context, githubRepo, sha st
 // retryableMergeError separates a failure a retry can fix from a deferral
 // (component-submission-merge, Merge readiness from webhook deliveries). A
 // pending conflict fix, a definitive refusal the merge path recorded, and a
-// GitHub client-status or permission refusal wait for the next delivery.
-// A transient GitHub failure, mergeability still UNKNOWN, an unconfirmed
+// GitHub client-status or permission refusal wait for the next delivery, and
+// so do a check-status hold and a check-status wait. A transient GitHub failure,
+// mergeability still UNKNOWN, a check-status read with no answer, an unconfirmed
 // merge, and a store or configuration failure are retried.
 func retryableMergeError(err error) bool {
 	switch {
-	case err == nil, errors.Is(err, context.Canceled), errors.Is(err, ErrConflictFixPending), errors.Is(err, errMergeIneligible), errors.Is(err, github.ErrPullRequestNotFound):
+	case err == nil, errors.Is(err, context.Canceled), errors.Is(err, ErrConflictFixPending), errors.Is(err, errMergeIneligible), errors.Is(err, github.ErrPullRequestNotFound),
+		errors.Is(err, ErrCheckStatusHeld), errors.Is(err, ErrCheckStatusPending):
 		return false
-	case errors.Is(err, ErrMergeReadinessPending):
+	case errors.Is(err, ErrMergeReadinessPending), errors.Is(err, ErrCheckStatusUnread):
 		return true
 	case github.ErrorCategory(err) != "":
 		return github.IsTransientReadError(err)
