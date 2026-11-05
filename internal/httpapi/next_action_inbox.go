@@ -158,7 +158,7 @@ func inboxTaskItems(candidates []core.Task, projected map[string]nextaction.Next
 			SortID: task.ID, Blockers: action.BlockedBy,
 		}
 		switch {
-		case action.Actor == nextaction.ActorOperator && action.Judgment:
+		case store.TaskIsInboxDecision(action):
 			item.Band = "decisions"
 		case action.Actor == nextaction.ActorDependency:
 			item.Band = "blocked"

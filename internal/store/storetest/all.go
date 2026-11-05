@@ -72,7 +72,8 @@ type Fixture struct {
 	// import internal/httpapi, because httpapi tests import storetest, so
 	// each conformance entry point constructs it
 	// (component-verification-strategy; component-lineage). The
-	// dependency-removal case requires it and never skips.
+	// dependency-removal case and the inbox attention count case require it
+	// and never skip.
 	LineageHTTP func(t *testing.T) http.Handler
 	// VerificationClaimReads observes the tasks whose verification rows
 	// ReconcileVerificationClaims reads in Workspace and returns a reader of
@@ -188,6 +189,7 @@ func RunAll(t *testing.T, factory Factory) {
 	})
 	run("ChangeNotices", func(t *testing.T) { RunChangeNoticeConformance(t, factory.fresh(t, nil)) })
 	run("ClaimFailureStall", func(t *testing.T) { runClaimFailureStall(t, factory.fresh(t, nil), factory.ClaimService) })
+	run("InboxAttentionCount", func(t *testing.T) { runInboxAttentionCount(t, factory.fresh(t, nil)) })
 	run("HoldRetirement", func(t *testing.T) { runHoldRetirement(t, factory.fresh(t, nil), factory.ClaimService) })
 	run("ReviewDistinctModelsNoClaimStall", func(t *testing.T) {
 		runDistinctModelsNoClaimFailure(t, factory.fresh(t, nil), factory.ClaimService)
