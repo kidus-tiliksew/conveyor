@@ -481,6 +481,19 @@ verification success creates the review orders, an addition creates one review
 order per added seat, and a re-dispatched order needs a new agent. Start agents
 only for orders that are claimable now; never start a second agent for an order
 whose agent holds its claim or has submitted its result (AC-2.5; DEC-77(2)).
+When the task's frozen `review.distinct_models` policy is true, give each seat
+a different model when you start it. The implementation order's
+`get_work_order` response carries the policy as
+`task.policy_contract.review.distinct_models`. Conveyor compares the names that
+seats report, ignoring letter case and surrounding whitespace. It verifies no
+name and chooses no model. A claim with a blank name, or with a name that
+another seat of the round holds, is refused with
+`review_seat_model_not_distinct`, and the seat stays claimable. A refused
+reviewer reports the refusal to the session that started it and exits. It never
+changes its reported name to pass the comparison. That session starts a new
+agent on a different model for the seat (req-review-gates-evidence AC-2.10;
+DEC-104(4)).
+
 After a round settles, a session that coordinated its seats may optionally record an informative summary with `submit_review_summary`; every seat that requested changes must be cited by at least one finding, and the seat verdicts decide the round.
 
 #### A seat that cannot finish

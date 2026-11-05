@@ -1251,6 +1251,78 @@ test('round summaries attach only to their matching review panels', () => {
   expect(legacy[0].roundSummary).toBeUndefined()
 })
 
+// req-review-gates-evidence AC-2.12: a reported name reads self-reported, a
+// recorded match reads as such, and the panel states the frozen policy.
+function seatLabelPanel(distinctModels: boolean) {
+  const seat = (n: number, extra: Partial<WorkOrder>) =>
+    order(`${taskId}-review-1-seat-${n}`, {
+      stage: 'review',
+      state: 'completed',
+      job_id: `${taskId}-review-1-seat-${n}`,
+      review_round: 1,
+      review_seat: n,
+      ...extra,
+    })
+  const verdict = (n: number, same?: string) => ({
+    verdict: 'approve',
+    summary: `seat ${n}`,
+    feedback: '',
+    at: minutes(8),
+    event_id: String(n),
+    ...(same ? { same_model_as_implementer: same } : {}),
+  })
+  return activity({
+    task: { ...task, policy_contract: { review: { seats: [{}, {}, {}, {}], distinct_models: distinctModels } } },
+    latest_stage: 'review',
+    work_orders: [
+      seat(1, { model: 'claude-sonnet-5-5', agent: 'claude-code', model_enforcement: 'self-reported' }),
+      seat(2, { model: 'gpt-6', agent: 'codex', model_enforcement: 'self-reported' }),
+      seat(3, { model: 'pinned-model', agent: 'codex', model_enforcement: 'worker-pinned' }),
+      seat(4, { state: 'queued', required_model: 'required-model' }),
+      seat(5, { state: 'queued' }),
+    ],
+    // A released or expired seat's order has no model; its job keeps the earlier one.
+    jobs: [job(`${taskId}-review-1-seat-5`, 'review', 'pending', { model_tier: 'earlier-model' })],
+    summaries: {
+      review_results: {
+        by_order: {
+          [`${taskId}-review-1-seat-1`]: verdict(1, 'true'),
+          [`${taskId}-review-1-seat-2`]: verdict(2, 'false'),
+          [`${taskId}-review-1-seat-3`]: verdict(3, 'unknown'),
+        },
+      },
+    },
+  })
+}
+
+test('review seats label reported models and the recorded implementer match', async ({ page }) => {
+  await mockAPI(page, seatLabelPanel(true), nextAction(`${taskId}-review-1-seat-4`, 'review'))
+  await page.goto(`/w/demo/tasks/${taskId}/full`)
+  const timeline = page.getByRole('region', { name: 'Execution event timeline' })
+  const seat = (n: number) => timeline.getByText(`Seat ${n}`, { exact: true }).locator('..')
+
+  await expect(timeline.getByText('· task policy: distinct seat models')).toBeVisible()
+  await expect(seat(1).getByText('claude-sonnet-5-5', { exact: true })).toBeVisible()
+  await expect(seat(1).getByText('self-reported', { exact: true })).toBeVisible()
+  await expect(seat(1).getByText('same model as implementer', { exact: true })).toBeVisible()
+  await expect(seat(2).getByText('self-reported', { exact: true })).toBeVisible()
+  await expect(seat(2).getByText('same model as implementer')).toHaveCount(0)
+  await expect(seat(3).getByText('self-reported')).toHaveCount(0)
+  await expect(seat(3).getByText('same model as implementer')).toHaveCount(0)
+  await expect(seat(4).getByText('required-model', { exact: true })).toBeVisible()
+  await expect(seat(4).getByText('self-reported')).toHaveCount(0)
+  await expect(seat(5).getByText('earlier-model', { exact: true })).toBeVisible()
+  await expect(seat(5).getByText('self-reported')).toHaveCount(0)
+})
+
+test('the review panel states the distinct-model policy only when the frozen policy is on', async ({ page }) => {
+  await mockAPI(page, seatLabelPanel(false), nextAction(`${taskId}-review-1-seat-4`, 'review'))
+  await page.goto(`/w/demo/tasks/${taskId}/full`)
+  const timeline = page.getByRole('region', { name: 'Execution event timeline' })
+  await expect(timeline.getByText('Seat 1', { exact: true })).toBeVisible()
+  await expect(timeline.getByText('· task policy: distinct seat models')).toHaveCount(0)
+})
+
 test('review panel shows its current round summary above unchanged seat feedback', async ({ page }, testInfo) => {
   await mockAPI(page, summarizedPanels(), nextAction(`${taskId}-implement-2`))
   await page.goto(`/w/demo/tasks/${taskId}/full`)

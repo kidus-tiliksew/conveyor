@@ -596,7 +596,7 @@ are in [Authentication](https://github.com/kidus-tiliksew/conveyor/blob/main/doc
 Conveyor launches no agent and keeps no execution setup: the person starts
 each agent session in a tool connected in section 7.2 and chooses its harness
 and model there, and that session claims the task's work order itself over
-MCP (DEC-96; DEC-97). Nothing claims work automatically, so there is no
+MCP (DEC-104; DEC-97). Nothing claims work automatically, so there is no
 worker or service to enroll for task execution.
 
 A machine where the person works tasks needs a worktree location, because

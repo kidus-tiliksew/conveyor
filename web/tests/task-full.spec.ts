@@ -5009,6 +5009,8 @@ test('review panel hides generated metadata while preserving reported zero usage
     item.work_orders = item.work_orders?.map((order, index) => ({
       ...order,
       task_id: 'review-panel-cleanup',
+      // A claim records the model the seat reports on its order.
+      model: order.required_model,
       model_enforcement: 'self-reported',
       usage_reported: index === 1,
       tokens_in: 0,
@@ -5030,7 +5032,10 @@ test('review panel hides generated metadata while preserving reported zero usage
   await expect(panel.getByText('0 in / 0 out', { exact: true }).last()).toBeVisible()
   await expect(panel.getByText('Checking requirement citations.', { exact: true })).toBeVisible()
   await expect(panel.getByText(/conveyor run mode/i)).toHaveCount(0)
-  await expect(panel.getByText(/self-reported/i)).toHaveCount(0)
+  // Each seat's model carries the short label (req-review-gates-evidence AC-2.12),
+  // and the generated enforcement sentence stays hidden.
+  await expect(panel.getByText('self-reported', { exact: true })).toHaveCount(2)
+  await expect(panel.getByText(/model self-reported by the agent/i)).toHaveCount(0)
   await expect(panel.getByText('Usage unavailable')).toHaveCount(0)
   await expect(panel.getByRole('tooltip').filter({ hasText: 'Usage unavailable' })).toHaveCount(0)
 })

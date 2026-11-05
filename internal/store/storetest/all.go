@@ -188,6 +188,9 @@ func RunAll(t *testing.T, factory Factory) {
 	run("ChangeNotices", func(t *testing.T) { RunChangeNoticeConformance(t, factory.fresh(t, nil)) })
 	run("ClaimFailureStall", func(t *testing.T) { runClaimFailureStall(t, factory.fresh(t, nil), factory.ClaimService) })
 	run("HoldRetirement", func(t *testing.T) { runHoldRetirement(t, factory.fresh(t, nil), factory.ClaimService) })
+	run("ReviewDistinctModelsNoClaimStall", func(t *testing.T) {
+		runDistinctModelsNoClaimFailure(t, factory.fresh(t, nil), factory.ClaimService)
+	})
 	run("TaskStartOver", func(t *testing.T) { runTaskStartOver(t, factory) })
 	run("TaskMap", func(t *testing.T) { RunTaskMapConformance(t, factory.fresh(t, nil)) })
 	run("ActivityValidation", func(t *testing.T) { RunActivityValidationConformance(t, factory.fresh(t, nil)) })
@@ -309,6 +312,7 @@ func RunAll(t *testing.T, factory Factory) {
 		{"ReviewRoundSeats", true, RunReviewRoundSeatsConformance},
 		{"ReviewSummary", true, runReviewSummary},
 		{"ReviewFailFast", true, runReviewFailFast},
+		{"ReviewDistinctModels", true, runReviewDistinctModels},
 		{"RequirementInsight", true, RunRequirementInsightConformance},
 		{"Decisions", true, runDecisions},
 		{"ArchiveRestore", true, runArchiveRestore},

@@ -1397,6 +1397,9 @@ func (s *Store) ClaimWorkOrderCommand(ctx context.Context, lifecycleLease taskop
 		if blocked {
 			return core.WorkOrder{}, fmt.Errorf("self-review forbidden: review session independence requires a fresh session and client token")
 		}
+		if err := store.ReviewSeatModelRefusal(task, order, claim.Model, taskOrders, now); err != nil {
+			return core.WorkOrder{}, err
+		}
 		order.ModelEnforcement = "self-reported"
 	}
 	if !order.ExecutionStartedAt.IsZero() && order.ExecutionDeadline.IsZero() && claim.ExecutionTimeout > 0 {

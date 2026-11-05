@@ -12,7 +12,7 @@
 # seat count, and the in-process control-plane models, and ignores and logs
 # by name every execution key: harnesses, setups, default_setup, stage
 # harness/model/model_policy/effort, review fallbacks, and seat contents
-# (DEC-96). Conveyor keeps no harness registry or execution setup anywhere;
+# (DEC-104). Conveyor keeps no harness registry or execution setup anywhere;
 # the sections below remain only to show what an earlier file held.
 # conveyor init writes a policy-only file.
 workspace: demo
@@ -122,6 +122,10 @@ harnesses:
 # Here every seat is explicit, so route-level fallback data is unused. Effort
 # is optional; when absent, the selected harness keeps its own default.
 review:
+  # Off by default and frozen on each task at intake. When true, a review seat
+  # claim is refused when its reported model name is blank or repeats a name
+  # another seat of the round reports. Names are compared, never verified.
+  distinct_models: false
   seats:
     - model: gpt-5.6
       harness: local-agent

@@ -19,7 +19,7 @@ const document = {
   monitor: { enabled: false, repositories: [], poll_interval: '1m', startup_window: '24h' },
 }
 
-async function mockAPIs(page: Page, reject = false) {
+async function mockAPIs(page: Page, reject = false, served: typeof document = document) {
   let submitted: Record<string, unknown> | undefined
   const workerRequests: string[] = []
   await page.addInitScript(() => {
@@ -44,7 +44,7 @@ async function mockAPIs(page: Page, reject = false) {
           })
         return route.fulfill({ json: { document: submitted!.document, version: 2, event_id: 42 } })
       }
-      return route.fulfill({ json: { document, version: 1 } })
+      return route.fulfill({ json: { document: served, version: 1 } })
     }
     // The server serves no worker routes (DEC-97(1)); a read here is a regression.
     if (path.startsWith('/v1/workers')) {
@@ -96,6 +96,50 @@ test('fail-fast review is off by default and survives a seat change when enabled
   expect(submitted()?.document).toMatchObject({ review: { seats: [{}, {}, {}], fail_fast: true } })
 })
 
+// req-review-gates-evidence AC-2.9: off by default and sent only once turned on.
+test('distinct seat models is off by default and submits when enabled', async ({ page }) => {
+  const submitted = await mockAPIs(page)
+  await page.goto('/w/demo/workspace')
+
+  const distinct = page.getByRole('switch', { name: 'Distinct seat models' })
+  await expect(distinct).not.toBeChecked()
+  await distinct.click()
+  await page.getByLabel('Review seats').fill('3')
+  await expect(distinct).toBeChecked()
+  await page.getByRole('button', { name: 'Save changes' }).click()
+
+  await expect(page.getByText(/Recorded config.updated event 42/)).toBeVisible()
+  expect(submitted()?.document).toMatchObject({ review: { seats: [{}, {}, {}], distinct_models: true } })
+})
+
+test('turning distinct seat models on and off again leaves nothing to save', async ({ page }) => {
+  await mockAPIs(page)
+  await page.goto('/w/demo/workspace')
+
+  const distinct = page.getByRole('switch', { name: 'Distinct seat models' })
+  const unsaved = page.getByText('Unsaved changes', { exact: true })
+  await expect(distinct).not.toBeChecked()
+  await expect(unsaved).toHaveCount(0)
+  await distinct.click()
+  await expect(unsaved).toBeVisible()
+  await distinct.click()
+  await expect(distinct).not.toBeChecked()
+  await expect(unsaved).toHaveCount(0)
+})
+
+test('a persisted distinct seat models setting loads on and survives a seat change', async ({ page }) => {
+  const served = { ...document, review: { seats: [{}, {}], distinct_models: true } }
+  const submitted = await mockAPIs(page, false, served)
+  await page.goto('/w/demo/workspace')
+
+  await expect(page.getByRole('switch', { name: 'Distinct seat models' })).toBeChecked()
+  await page.getByLabel('Review seats').fill('3')
+  await page.getByRole('button', { name: 'Save changes' }).click()
+
+  await expect(page.getByText(/Recorded config.updated event 42/)).toBeVisible()
+  expect(submitted()?.document).toMatchObject({ review: { seats: [{}, {}, {}], distinct_models: true } })
+})
+
 test('workspace surfaces named policy rejections verbatim', async ({ page }) => {
   await mockAPIs(page, true)
   await page.goto('/w/demo/workspace')
@@ -141,6 +185,10 @@ test('scoped configuration sources contain no retired vocabulary or API paths', 
   const taskHeader = readFileSync('src/components/task/task-header.tsx', 'utf8')
   const api = readFileSync('src/lib/api.ts', 'utf8')
 
-  expect(`${workspace}\n${taskCreate}\n${taskHeader}`).not.toMatch(/setup|harness|model/i)
+  // DEC-104(4) and req-review-gates-evidence AC-2.9 admit the review.distinct_models
+  // switch. Only its key and label are exempt; any other match stays refused.
+  const policyOnly = workspace.replace(/distinct_models|Distinct seat models/g, '')
+  expect(policyOnly).not.toBe(workspace)
+  expect(`${policyOnly}\n${taskCreate}\n${taskHeader}`).not.toMatch(/setup|harness|model/i)
   expect(api).not.toMatch(/getHarnessTemplates|changeTaskSetup|setup\?: string/)
 })

@@ -917,7 +917,7 @@ func TestValidateGovernanceAssessmentAllowsDecisionWithoutDesignAndIgnoresLiveRa
 
 // A task's frozen policy sources stage timeouts for dispatch; review seat
 // contents and workspace routes never become executor requirements
-// (DEC-96(2)).
+// (DEC-104(2)).
 func TestFrozenPolicySourcesImplementationAndReviewDispatch(t *testing.T) {
 	policy := func(seat config.ReviewSeat) config.PolicyContract {
 		return config.PolicyContract{StageTimeouts: config.PolicyStageTimeouts{Spec: "30m", Implement: "2h", Review: "45m"}, Review: config.ReviewPanel{Seats: []config.ReviewSeat{seat}}}

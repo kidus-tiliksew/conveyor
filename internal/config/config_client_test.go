@@ -10,7 +10,7 @@ import (
 
 // A conveyor.yaml that an earlier CLI wrote still loads: every execution key
 // is removed before validation and named once in one warning line, and the
-// client-local settings survive (DEC-96(2); component-runtime).
+// client-local settings survive (DEC-104(2); component-runtime).
 func TestLoadClientIgnoresExecutionKeys(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
@@ -50,7 +50,7 @@ worktree_location:
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := "config: " + path + ": ignoring execution keys default_setup, execution, execution_settings, harnesses, planning_models, review, routing, setups; Conveyor keeps no local execution setup (DEC-96)"
+	want := "config: " + path + ": ignoring execution keys default_setup, execution, execution_settings, harnesses, planning_models, review, routing, setups; Conveyor keeps no local execution setup (DEC-104)"
 	if len(lines) != 1 || lines[0] != want {
 		t.Fatalf("warnings = %q, want one line %q", lines, want)
 	}

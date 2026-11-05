@@ -576,6 +576,24 @@ function PolicyTab({
                 </p>
               </div>
             </div>
+            <div className="flex items-center gap-3">
+              <Switch
+                aria-label="Distinct seat models"
+                checked={draft.review.distinct_models ?? false}
+                onChange={(checked) => {
+                  // Off omits the key, matching the fetched document, so the draft reads as unchanged.
+                  const { distinct_models: _off, ...review } = draft.review
+                  update({ review: checked ? { ...review, distinct_models: true } : review })
+                }}
+              />
+              <div>
+                <p className="text-sm font-medium">Distinct seat models</p>
+                <p className="text-xs text-faint">
+                  Refuse a review seat claim that repeats the name another seat of the round reports. Names are
+                  self-reported and never verified. New tasks only.
+                </p>
+              </div>
+            </div>
           </div>
           <div className="grid gap-3 sm:grid-cols-2">
             <Field

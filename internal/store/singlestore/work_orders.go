@@ -1206,6 +1206,9 @@ func (s *Store) ClaimWorkOrderCommand(ctx context.Context, lease taskops.TaskLea
 			if err = s.reviewClaimGuardTx(ctx, tx, o, claim, hash); err != nil {
 				return err
 			}
+			if err = store.ReviewSeatModelRefusal(task, o, claim.Model, siblings, time.Now().UTC()); err != nil {
+				return err
+			}
 			o.ModelEnforcement = "self-reported"
 		}
 		now := time.Now().UTC()

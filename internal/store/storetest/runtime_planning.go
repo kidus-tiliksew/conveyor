@@ -228,7 +228,7 @@ func runPolicyOnlyPlanningRejectsMissingDeploymentControlPlane(t *testing.T, x F
 // stored workspace document: a harness registry whose argv the retired
 // validation refused, two execution setups with executor detail, the
 // default setup that names one, a stale top-level projection and routing,
-// and review seat contents (DEC-96(1), DEC-96(2)).
+// and review seat contents (DEC-104(1), DEC-104(2)).
 const legacyWorkspaceRowKeys = `harnesses:
   - {name: codex, mcp_transport: toml_override, command: [codex, exec], probe_command: [codex, --version], probe_timeout: 10s}
 setups:
@@ -264,7 +264,7 @@ review: {seats: [{model: stale-seat}]}
 // loads through WorkspaceConfig and RuntimeConfig without validation, yields
 // the stage timeouts and review seat count its named default setup declared
 // with no executor detail, and is neither rewritten nor versioned by the
-// reads (component-persistence; component-runtime; DEC-96(1)).
+// reads (component-persistence; component-runtime; DEC-104(1)).
 func runLegacyWorkspaceRowLoads(t *testing.T, x Fixture) {
 	if x.SeedWorkspaceConfigYAML == nil || x.WorkspaceConfigYAML == nil {
 		t.Fatal("conformance fixture must provide SeedWorkspaceConfigYAML and WorkspaceConfigYAML for the legacy-row case (component-persistence)")

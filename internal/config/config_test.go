@@ -1368,7 +1368,7 @@ func TestLineageOperatorReadBudgetDefaultsToTheContextBudget(t *testing.T) {
 }
 
 // loadDeploymentForTest loads a deployment file without a warning sink; the
-// full-document loader is retired (DEC-96(2); component-runtime).
+// full-document loader is retired (DEC-104(2); component-runtime).
 func loadDeploymentForTest(path string) (*Config, error) {
 	return LoadDeployment(path, nil)
 }

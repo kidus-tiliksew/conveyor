@@ -388,10 +388,14 @@ type ReviewSeat struct {
 // settling each review round on its first accepted changes-requested
 // verdict instead of waiting for every seat; it defaults to false and freezes
 // with the task's pipeline policy at intake (feature-review-seat-minimum;
-// component-work-orders).
+// component-work-orders). DistinctModels opts a task into refusing a review
+// seat claim whose reported model name repeats another seat of the round; it
+// defaults to false and freezes the same way (req-review-gates-evidence
+// AC-2.9; DEC-104(1), DEC-104(4)).
 type ReviewPanel struct {
-	Seats    []ReviewSeat `yaml:"seats,omitempty" json:"seats"`
-	FailFast bool         `yaml:"fail_fast,omitempty" json:"fail_fast,omitempty"`
+	Seats          []ReviewSeat `yaml:"seats,omitempty" json:"seats"`
+	FailFast       bool         `yaml:"fail_fast,omitempty" json:"fail_fast,omitempty"`
+	DistinctModels bool         `yaml:"distinct_models,omitempty" json:"distinct_models,omitempty"`
 }
 
 type ExecutionPolicy struct {
@@ -708,11 +712,11 @@ type PolicyStageTimeouts struct {
 	Verify    string
 }
 
-// PolicyContract is a task's frozen pipeline policy (DEC-96(1)): the verify
+// PolicyContract is a task's frozen pipeline policy (DEC-104(1)): the verify
 // stage toggle, bounce limit, stage timeouts, review seat count and
 // fail-fast, and refresh review mode. It is the type of core.Task's
 // SetupContract and of a planning bundle member's contract. It carries no
-// harness, model, effort, or setup selection (DEC-96(2); component-runtime).
+// harness, model, effort, or setup selection (DEC-104(2); component-runtime).
 type PolicyContract struct {
 	VerifyStage   bool
 	MaxBounces    int
@@ -729,8 +733,9 @@ type policyContractJSON struct {
 	MaxBounces    int               `json:"max_bounces"`
 	StageTimeouts map[string]string `json:"stage_timeouts"`
 	Review        struct {
-		Seats    *[]struct{} `json:"seats,omitempty"`
-		FailFast bool        `json:"fail_fast,omitempty"`
+		Seats          *[]struct{} `json:"seats,omitempty"`
+		FailFast       bool        `json:"fail_fast,omitempty"`
+		DistinctModels bool        `json:"distinct_models,omitempty"`
 	} `json:"review"`
 	RefreshReview string `json:"refresh_review,omitempty"`
 }
@@ -753,12 +758,13 @@ func (s PolicyContract) MarshalJSON() ([]byte, error) {
 		encoded.Review.Seats = &frozen
 	}
 	encoded.Review.FailFast = s.Review.FailFast
+	encoded.Review.DistinctModels = s.Review.DistinctModels
 	return json.Marshal(encoded)
 }
 
 // legacySetupContract is the earlier full-setup encoding of a stored task
 // contract. Only its policy members are read; harness, model, and effort
-// members are ignored and never validated (DEC-96(2)).
+// members are ignored and never validated (DEC-104(2)).
 type legacySetupContract struct {
 	VerifyStage       bool   `json:"verify_stage"`
 	Name              string `json:"name"`
@@ -820,8 +826,9 @@ func (s *PolicyContract) UnmarshalJSON(data []byte) error {
 		MaxBounces    int               `json:"max_bounces"`
 		StageTimeouts map[string]string `json:"stage_timeouts"`
 		Review        struct {
-			Seats    []struct{} `json:"seats"`
-			FailFast bool       `json:"fail_fast"`
+			Seats          []struct{} `json:"seats"`
+			FailFast       bool       `json:"fail_fast"`
+			DistinctModels bool       `json:"distinct_models"`
 		} `json:"review"`
 		RefreshReview string `json:"refresh_review"`
 	}
@@ -841,7 +848,7 @@ func (s *PolicyContract) UnmarshalJSON(data []byte) error {
 			Review:    policy.StageTimeouts["review"],
 			Verify:    policy.StageTimeouts["verify"],
 		},
-		Review:        ReviewPanel{Seats: seats, FailFast: policy.Review.FailFast},
+		Review:        ReviewPanel{Seats: seats, FailFast: policy.Review.FailFast, DistinctModels: policy.Review.DistinctModels},
 		RefreshReview: policy.RefreshReview,
 	}
 	return nil
@@ -967,7 +974,7 @@ func ParseWorkspaceDocument(data []byte, deployment *Config, source string) (*Co
 	next.Recovery = document.Recovery
 	// Every document parses as policy. A legacy document's execution
 	// settings and routes supply only the stage timeouts that stage_timeouts
-	// omits; no harness, setup, model, or effort is read (DEC-96(1), DEC-96(2)).
+	// omits; no harness, setup, model, or effort is read (DEC-104(1), DEC-104(2)).
 	legacyShape := document.ExecutionSettings != nil || len(document.Routing.Stages) != 0
 	document.StageTimeouts = legacyStageTimeouts(document)
 	if next.Routing.Stages == nil {
@@ -1172,7 +1179,7 @@ func normalizePolicy(next *Config, document WorkspaceDocument) (*Config, error) 
 // superseded Phase 4.5 fields accepted by the compatibility members above.
 // Legacy harness, setup, default-setup, and executor keys are dropped before
 // strict decoding, so such a row loads without validation and is never
-// rewritten only because it carries them (DEC-96(1); component-runtime).
+// rewritten only because it carries them (DEC-104(1); component-runtime).
 func ParseStoredWorkspaceDocument(data []byte, deployment *Config, source string) (*Config, bool, error) {
 	document, hadBudget, err := decodeStoredWorkspaceDocument(data)
 	if err != nil {
@@ -1618,7 +1625,7 @@ func (c *Config) WorkspaceDocument() WorkspaceDocument {
 		WorkOrderQueueTimeoutText: c.WorkOrderQueueTimeoutText,
 		ExecutionSettings:         executionSettings,
 		Routing:                   Routing{Stages: make(map[string]StageRoute, len(c.Routing.Stages))},
-		Review:                    ReviewPanel{Seats: reviewSeats, FailFast: c.Review.FailFast},
+		Review:                    ReviewPanel{Seats: reviewSeats, FailFast: c.Review.FailFast, DistinctModels: c.Review.DistinctModels},
 		Execution:                 execution,
 		Repos:                     append(make([]Repo, 0, len(c.Repos)), c.Repos...),
 		Monitor:                   c.Monitor,
@@ -1685,8 +1692,8 @@ func (c *Config) FreezePolicy() PolicyContract {
 			Implement: policy.StageTimeouts.Implement,
 			Review:    policy.StageTimeouts.Review,
 		},
-		// Fail-fast is workspace review policy.
-		Review:        ReviewPanel{Seats: make([]ReviewSeat, len(policy.Review.Seats)), FailFast: c.Review.FailFast},
+		// Fail-fast and distinct seat models are workspace review policy.
+		Review:        ReviewPanel{Seats: make([]ReviewSeat, len(policy.Review.Seats)), FailFast: c.Review.FailFast, DistinctModels: c.Review.DistinctModels},
 		RefreshReview: policy.RefreshReview,
 	}
 }
@@ -1751,8 +1758,9 @@ func (c *Config) WithPolicy(policy PolicyContract) *Config {
 		next.Review = c.Review
 		next.Review.Seats = seats
 	}
-	// The frozen value always wins over the workspace's current setting.
+	// The frozen values always win over the workspace's current settings.
 	next.Review.FailFast = policy.Review.FailFast
+	next.Review.DistinctModels = policy.Review.DistinctModels
 	return &next
 }
 

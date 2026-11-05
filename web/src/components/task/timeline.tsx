@@ -905,6 +905,7 @@ function PanelEntry({
               : `Panel of ${seats.length}`}
           </span>
           {seats.length > 1 && <span className="text-xs text-muted">· unanimous to pass</span>}
+          {entry.distinctModels && <span className="text-xs text-muted">· task policy: distinct seat models</span>}
           <span className="inline-flex items-center gap-[5px]" title={`${verdictsIn} of ${seats.length} verdicts in`}>
             {seats.map((seat) => (
               <span
@@ -1032,6 +1033,11 @@ function reviewSeatSourceTitle(metadata: TaskReviewSeatMetadata) {
 
 function SeatRow({ seat, index, usageAvailable }: { seat: PanelSeat; index: number; usageAvailable: boolean }) {
   const progress = reviewSeatProgress(seat.order.progress)
+  // Only the order's current model is a name the seat reports. A required model
+  // is a historical pin, a worker-pinned order was launched on its model, and a
+  // job keeps an earlier attempt's model after a release or an expiry clears
+  // the order's (AC-2.12; DEC-104(4)).
+  const reportedModel = seat.order.model_enforcement !== 'worker-pinned' && seat.order.model?.trim()
   return (
     <div className="flex flex-wrap items-center gap-x-3 gap-y-1.5 px-4 py-2.5">
       <span className="w-11 shrink-0 text-xs text-faint">Seat {seat.seat}</span>
@@ -1045,7 +1051,11 @@ function SeatRow({ seat, index, usageAvailable }: { seat: PanelSeat; index: numb
           usageAvailable={usageAvailable}
           showUnavailableUsage={false}
         />
+        {reportedModel && <span className="ml-1.5 font-sans text-faint">self-reported</span>}
       </span>
+      {seat.review?.sameModelAsImplementer && (
+        <span className="text-[11px] text-attention">same model as implementer</span>
+      )}
       {usageAvailable && (
         <span className="font-mono text-[11px] tabular-nums text-faint">
           {compactTokens(seat.order.tokens_in)} in / {compactTokens(seat.order.tokens_out)} out

@@ -2,6 +2,7 @@ package config
 
 import (
 	"encoding/json"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -198,5 +199,103 @@ func TestPolicyContractDecodesLegacySetupRows(t *testing.T) {
 	}
 	if zero.HasFrozenPolicy() {
 		t.Fatalf("an empty legacy row decoded as frozen: %+v", zero)
+	}
+}
+
+// The workspace distinct-models setting freezes onto the task contract at
+// intake and a later workspace edit changes neither direction; an absent key
+// decodes false, so an earlier frozen task keeps its behavior
+// (req-review-gates-evidence AC-2.9).
+func TestReviewDistinctModelsFreezesAndRoundTrips(t *testing.T) {
+	if (&Config{}).FreezePolicy().Review.DistinctModels {
+		t.Fatal("distinct_models must default off")
+	}
+	for _, frozenValue := range []bool{true, false} {
+		cfg := &Config{Review: ReviewPanel{Seats: []ReviewSeat{{}, {}}, DistinctModels: frozenValue}}
+		data, err := json.Marshal(cfg.FreezePolicy())
+		if err != nil {
+			t.Fatal(err)
+		}
+		if strings.Contains(string(data), "distinct_models") != frozenValue {
+			t.Fatalf("frozen value %t encoded as %s", frozenValue, data)
+		}
+		var restored PolicyContract
+		if err := json.Unmarshal(data, &restored); err != nil {
+			t.Fatal(err)
+		}
+		if restored.Review.DistinctModels != frozenValue {
+			t.Fatalf("frozen review policy %s restored as %+v", data, restored.Review)
+		}
+		cfg.Review.DistinctModels = !frozenValue
+		if got := cfg.WithPolicy(restored).Review.DistinctModels; got != frozenValue {
+			t.Fatalf("workspace change to %t overrode frozen distinct_models %t", !frozenValue, frozenValue)
+		}
+	}
+	var earlier PolicyContract
+	if err := json.Unmarshal([]byte(`{"max_bounces":3,"stage_timeouts":{"review":"1h"},"review":{"seats":[{}],"fail_fast":true}}`), &earlier); err != nil {
+		t.Fatal(err)
+	}
+	if earlier.Review.DistinctModels || !earlier.Review.FailFast {
+		t.Fatalf("earlier contract decoded as %+v", earlier.Review)
+	}
+	workspaceOn := &Config{Review: ReviewPanel{DistinctModels: true}}
+	if workspaceOn.WithPolicy(earlier).Review.DistinctModels {
+		t.Fatal("earlier contract inherited workspace distinct_models")
+	}
+}
+
+func TestReviewDistinctModelsSurvivesWorkspaceDocument(t *testing.T) {
+	base := validConfig()
+	normalized, err := normalizeDeployment(base, "test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	document := normalized.WorkspaceDocument()
+	document.Review.DistinctModels = true
+	raw, err := yaml.Marshal(document)
+	if err != nil {
+		t.Fatal(err)
+	}
+	parsed, err := ParseWorkspaceDocument(raw, base, "distinct-models")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !parsed.Review.DistinctModels || !parsed.FreezePolicy().Review.DistinctModels {
+		t.Fatalf("parsed distinct_models=%t frozen=%t", parsed.Review.DistinctModels, parsed.FreezePolicy().Review.DistinctModels)
+	}
+	if !parsed.WorkspaceDocument().Review.DistinctModels || !parsed.PolicyDocument().Review.DistinctModels {
+		t.Fatal("re-emitted workspace document dropped distinct_models")
+	}
+}
+
+// promoteLegacyDefaultSetup replaces the review block with the setup's. The
+// file's top-level distinct_models survives that projection, and a value the
+// setup states wins (req-review-gates-evidence AC-2.9).
+func TestLegacyDefaultSetupKeepsTopLevelDistinctModels(t *testing.T) {
+	seats := []any{map[string]any{}, map[string]any{}}
+	for name, tc := range map[string]struct {
+		setup any
+		want  map[string]any
+	}{
+		"setup review without the key": {map[string]any{"seats": seats}, map[string]any{"seats": seats, "distinct_models": true}},
+		"setup review states the key":  {map[string]any{"seats": seats, "distinct_models": false}, map[string]any{"seats": seats, "distinct_models": false}},
+		"setup without a review":       {nil, map[string]any{"distinct_models": true}},
+	} {
+		t.Run(name, func(t *testing.T) {
+			setup := map[string]any{"name": "default"}
+			if tc.setup != nil {
+				setup["review"] = tc.setup
+			}
+			root := map[string]any{"default_setup": "default", "setups": []any{setup}, "review": map[string]any{"distinct_models": true}}
+			promoteLegacyDefaultSetup(root)
+			if !reflect.DeepEqual(root["review"], tc.want) {
+				t.Fatalf("review=%v, want %v", root["review"], tc.want)
+			}
+		})
+	}
+	root := map[string]any{"default_setup": "default", "setups": []any{map[string]any{"name": "default"}}, "review": map[string]any{"seats": seats}}
+	promoteLegacyDefaultSetup(root)
+	if _, kept := root["review"]; kept {
+		t.Fatalf("a file without the key keeps the earlier projection: %v", root["review"])
 	}
 }

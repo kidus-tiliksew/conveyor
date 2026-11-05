@@ -11,7 +11,7 @@ import (
 
 // clientExecutionKeys are the top-level keys of an earlier client conveyor.yaml
 // that described local execution setups. The CLI keeps no local execution
-// setup, so LoadClient removes them before decoding (DEC-96(2);
+// setup, so LoadClient removes them before decoding (DEC-104(2);
 // component-runtime).
 var clientExecutionKeys = []string{"default_setup", "execution", "execution_settings", "harnesses", "planning_models", "review", "routing", "setups"}
 
@@ -31,7 +31,7 @@ func LoadClient(path string, logf func(string, ...any)) (*Config, error) {
 		return nil, fmt.Errorf("parse %s: %w", path, err)
 	}
 	if len(ignored) != 0 && logf != nil {
-		logf("config: %s: ignoring execution keys %s; Conveyor keeps no local execution setup (DEC-96)", path, strings.Join(ignored, ", "))
+		logf("config: %s: ignoring execution keys %s; Conveyor keeps no local execution setup (DEC-104)", path, strings.Join(ignored, ", "))
 	}
 	var c Config
 	if len(strings.TrimSpace(string(stripped))) != 0 {

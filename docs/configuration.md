@@ -12,7 +12,7 @@ explicitly when a host also runs agent sessions.
 
 Read by `conveyord` (and written by `conveyor init`). It holds pipeline
 policy and the settings of the stages that run inside `conveyord` (triage,
-title generation, and planning), never harnesses or executor models (DEC-96).
+title generation, and planning), never harnesses or executor models (DEC-104).
 The annotated [conveyor.example.yaml](../conveyor.example.yaml) documents
 every field inline; the shape:
 
@@ -37,6 +37,7 @@ execution_settings:
 
 review:
   seats: [{}]                    # seat count only; seat models are client-local
+  distinct_models: false         # refuse a seat claim that repeats a round's model name
 
 execution:
   spec_approval: true            # workspace default for the plan gate
@@ -73,11 +74,11 @@ model is not configured", set `execution_settings.control_plane.planning.model`
 (and `planning_models` for alternate models) in this file and restart
 `conveyord`.
 
-A deployment file written before DEC-96 may still carry `harnesses`,
-`setups`, `default_setup`, `routing` models, stage `harness`, `model`,
-`model_policy`, or `effort`, review fallbacks, or seat models. `conveyord`
-and `conveyor init` ignore those keys, never validate them, and log one line
-naming each ignored field without its value. When `default_setup` names one of
+A deployment file written before execution setups were retired may still
+carry `harnesses`, `setups`, `default_setup`, `routing` models, stage
+`harness`, `model`, `model_policy`, or `effort`, review fallbacks, or seat
+models. `conveyord` and `conveyor init` ignore those keys, never validate them,
+and log one line naming each ignored field without its value. When `default_setup` names one of
 the file's `setups`, that setup's stage timeouts, review seat count, and
 control-plane settings apply, as they did before, and its executor detail is
 dropped. Other unknown keys still fail
@@ -179,7 +180,7 @@ reports the database activity before its first byte.
 Read by `conveyor checkout`, `conveyor config`, and `conveyor kit verify` on a
 machine where you start agent sessions. It holds no harness, model, effort, or
 execution setup: you choose the harness and model when you start an agent
-session, and the session claims its work order itself over MCP (DEC-96(2),
+session, and the session claims its work order itself over MCP (DEC-104(2),
 DEC-97(1)). The file holds:
 
 - `worktree_location`: where new task worktrees are created. Required on a
@@ -362,6 +363,18 @@ count, gates, bounce limits, monitor, issue publication) is also editable at
 runtime: through the Workspace page, or round-tripped as YAML with
 `conveyor config export` and `conveyor config import`, which uses optimistic
 concurrency and rejects unknown keys.
+
+`review.distinct_models` is off when the document never set it. When it is true
+at a task's intake, the task's frozen policy holds it, and a review seat claim
+is refused with `review_seat_model_not_distinct` when its reported model name is
+blank or repeats, ignoring letter case and surrounding whitespace, the name
+another seat of the round reports. A released, expired, or cancelled seat and an
+earlier round do not count. Conveyor compares reported names only: it verifies
+no name, chooses no model, and keeps no list of models. A later workspace edit
+changes no existing task. To change one task, an operator runs
+`conveyor task set-distinct-models <task-id> --off|--on --reason <text>`. The
+server refuses that change while a seat of the task is claimed or holds a
+submitted verdict.
 
 `issue_publication.enabled` decides whether plan approval publishes a GitHub
 issue for the task. It is off when the document never set it, including every
