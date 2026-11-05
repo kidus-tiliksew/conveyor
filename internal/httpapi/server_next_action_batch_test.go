@@ -271,7 +271,7 @@ func TestNextActionReadsStayEqualThroughBatchedLoaders(t *testing.T) {
 	}
 	operatorTasks := 0
 	for _, task := range all {
-		if store.TaskNeedsAttention(full[task.ID]) {
+		if store.TaskIsInboxDecision(full[task.ID]) {
 			operatorTasks++
 		}
 	}

@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -96,6 +97,19 @@ func TestNextActionDerivationAndAttentionParity(t *testing.T) {
 	if _, ok := attention["running"]; ok {
 		t.Fatal("attention included a factory task or honored the subject query")
 	}
+	// The job-failure gate keeps caller attention and leaves the count, which
+	// equals the inbox's decisions (req-operator-next-action AC-2.7).
+	if _, ok := attention["failed"]; !ok {
+		t.Fatal("attention lost the operator task that needs no judgment")
+	}
+	decisions := call("/v1/next-actions?workspace_id=demo&band=decisions")
+	if decisions.Code != http.StatusOK || strings.Contains(decisions.Body.String(), `"id":"failed"`) {
+		t.Fatalf("decisions band status=%d body=%s", decisions.Code, decisions.Body.String())
+	}
+	decisionTotal, err := strconv.Atoi(decisions.Header().Get("X-Conveyor-Total"))
+	if err != nil {
+		t.Fatal(err)
+	}
 	pending := call("/v1/pending-proposals?workspace_id=demo")
 	var summary struct {
 		Attention struct {
@@ -103,8 +117,8 @@ func TestNextActionDerivationAndAttentionParity(t *testing.T) {
 			Total             int `json:"total"`
 		} `json:"attention"`
 	}
-	if pending.Code != http.StatusOK || json.Unmarshal(pending.Body.Bytes(), &summary) != nil || summary.Attention.OperatorDecisions != summary.Attention.Total || summary.Attention.Total != len(attention) {
-		t.Fatalf("decisions status=%d summary=%+v attention=%d body=%s", pending.Code, summary, len(attention), pending.Body.String())
+	if pending.Code != http.StatusOK || json.Unmarshal(pending.Body.Bytes(), &summary) != nil || summary.Attention.OperatorDecisions != summary.Attention.Total || summary.Attention.Total != decisionTotal || summary.Attention.Total != len(attention)-1 {
+		t.Fatalf("decisions status=%d summary=%+v decisions=%d attention=%d body=%s", pending.Code, summary, decisionTotal, len(attention), pending.Body.String())
 	}
 }
 

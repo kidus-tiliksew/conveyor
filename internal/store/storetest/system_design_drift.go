@@ -8,6 +8,7 @@ import (
 	"slices"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -383,46 +384,185 @@ func RunSystemDesignDriftConformance(t *testing.T, factory SystemDesignDriftFact
 		}
 	})
 
-	t.Run("unresolved task drift saturates at the shared bound", func(t *testing.T) {
+	t.Run("a sixth and later observation records drift on one task", func(t *testing.T) {
 		st, ctx, workspace := factory(t)
-		task := createDriftTask(t, st, ctx, workspace, "saturated-drift-task")
+		task := createDriftTask(t, st, ctx, workspace, "uncapped-drift-task")
 		monitorStore := st.(monitor.Store)
 		detectedAt := time.Now().UTC()
-		for index := 0; index < monitor.MaxUnresolvedDriftPerTask; index++ {
+		for index := 0; index < driftsPastRetiredCap; index++ {
 			drift := monitor.Drift{
-				ID: fmt.Sprintf("saturation-%d", index), WorkspaceID: workspace, Repository: "conveyor",
+				ID: fmt.Sprintf("uncapped-%d", index), WorkspaceID: workspace, Repository: "conveyor",
 				Kind: monitor.DirectPush, SourceURL: fmt.Sprintf("https://example.test/commit/%d", index),
 				TaskID: task.ID, DetectedAt: detectedAt.Add(time.Duration(index) * time.Second),
 			}
 			if _, fresh, err := monitorStore.RecordDrift(ctx, drift); err != nil || !fresh {
 				t.Fatalf("record drift %d fresh=%t err=%v", index, fresh, err)
 			}
-			if index == 0 {
-				if _, duplicateFresh, duplicateErr := monitorStore.RecordDrift(ctx, drift); duplicateErr != nil || duplicateFresh {
-					t.Fatalf("duplicate drift fresh=%t err=%v", duplicateFresh, duplicateErr)
-				}
+			if _, duplicateFresh, duplicateErr := monitorStore.RecordDrift(ctx, drift); duplicateErr != nil || duplicateFresh {
+				t.Fatalf("duplicate drift %d fresh=%t err=%v", index, duplicateFresh, duplicateErr)
 			}
 		}
-		_, _, err := monitorStore.RecordDrift(ctx, monitor.Drift{
-			ID: "saturation-refused", WorkspaceID: workspace, Repository: "conveyor", Kind: monitor.Revert,
-			SourceURL: "https://example.test/commit/refused", TaskID: task.ID, DetectedAt: detectedAt.Add(time.Hour),
-		})
-		if !errors.Is(err, monitor.ErrTaskDriftSaturated) || !strings.Contains(err.Error(), task.ID) {
-			t.Fatalf("saturation error=%v", err)
-		}
-		status, err := monitorStore.MonitorStatus(ctx, true, detectedAt.Add(2*time.Hour))
-		if err != nil || status.DriftCount != monitor.MaxUnresolvedDriftPerTask {
+		status, err := monitorStore.MonitorStatus(ctx, true, detectedAt.Add(time.Hour))
+		if err != nil || status.DriftCount != driftsPastRetiredCap {
 			t.Fatalf("drift count=%d err=%v", status.DriftCount, err)
 		}
 		observation := monitor.Observation{
 			WorkspaceID: workspace, Repository: "conveyor", Kind: monitor.LineagedMerge,
-			OccurrenceID: "saturated-link", SourceURL: "https://example.test/pull/saturated", ObservedAt: detectedAt.Add(3 * time.Hour),
+			OccurrenceID: "uncapped-link", SourceURL: "https://example.test/pull/uncapped", ObservedAt: detectedAt.Add(2 * time.Hour),
 		}
 		if _, _, err = monitorStore.Observe(ctx, observation); err != nil {
 			t.Fatal(err)
 		}
-		if _, err = monitorStore.LinkTask(ctx, observation.Identity(), task.ID, "reused"); !errors.Is(err, monitor.ErrTaskDriftSaturated) || !strings.Contains(err.Error(), task.ID) {
-			t.Fatalf("link saturation error=%v", err)
+		if linked, linkErr := monitorStore.LinkTask(ctx, observation.Identity(), task.ID, "reused"); linkErr != nil || linked.TaskID != task.ID {
+			t.Fatalf("link past the retired cap=%+v err=%v", linked, linkErr)
+		}
+	})
+
+	t.Run("direct pushes past the retired cap each record drift on one reused task", func(t *testing.T) {
+		st, ctx, workspace := factory(t)
+		now := time.Now().UTC()
+		service := driftService(t, st, ctx, workspace, now)
+		taskIDs := map[string]struct{}{}
+		for index := 0; index < driftsPastRetiredCap; index++ {
+			sha := fmt.Sprintf("uncapped-push-%d", index)
+			record, err := service.Process(ctx, monitor.Observation{
+				Repository: "conveyor", Kind: monitor.DirectPush, OccurrenceID: sha, CommitSHA: sha,
+				SourceURL: "https://example.test/commit/" + sha,
+			})
+			if err != nil || record.TaskID == "" {
+				t.Fatalf("push %d record=%+v err=%v", index, record, err)
+			}
+			taskIDs[record.TaskID] = struct{}{}
+		}
+		status, err := st.(monitor.Store).MonitorStatus(ctx, true, now)
+		if err != nil || status.DriftCount != driftsPastRetiredCap || len(taskIDs) != 1 {
+			t.Fatalf("drift count=%d tasks=%v err=%v", status.DriftCount, taskIDs, err)
+		}
+	})
+
+	t.Run("a merge touching documents past the retired cap records drift on each", func(t *testing.T) {
+		st, ctx, workspace := factory(t)
+		now := time.Date(2026, 8, 13, 8, 0, 0, 0, time.UTC)
+		service := driftService(t, st, ctx, workspace, now)
+		delivery := createDriftTask(t, st, ctx, workspace, "uncapped-design-merge")
+		for index := 0; index < driftsPastRetiredCap; index++ {
+			createConfirmedDesign(t, st, ctx, fmt.Sprintf("DESIGN-uncapped-%d", index), "internal/dispatch/**")
+		}
+		if err := st.AppendEvent(ctx, core.Event{TaskID: delivery.ID, Kind: "merge.confirmed", Payload: core.JSONPayload(map[string]any{"head_sha": "uncapped-head"})}); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := service.ProcessDesignMerge(ctx, monitor.Observation{
+			Repository: "conveyor", Kind: monitor.LineagedMerge, OccurrenceID: "pr:uncapped", CommitSHA: "uncapped-head",
+			SourceURL: "https://example.test/pull/uncapped", ChangedPaths: []string{"internal/dispatch/dispatch.go"},
+			CausalEventID: latestEventID(t, st, ctx, delivery.ID, "merge.confirmed"),
+		}, delivery.ID); err != nil {
+			t.Fatal(err)
+		}
+		status, err := st.(monitor.Store).MonitorStatus(ctx, true, now)
+		if err != nil || status.DriftCount != driftsPastRetiredCap {
+			t.Fatalf("drift count=%d err=%v", status.DriftCount, err)
+		}
+	})
+
+	t.Run("a drift write that failed after linking is recorded on the next observation with one task", func(t *testing.T) {
+		st, ctx, workspace := factory(t)
+		now := time.Now().UTC()
+		monitorStore := st.(monitor.Store)
+		service := driftService(t, st, ctx, workspace, now)
+		failing := &failingDriftStore{Store: monitorStore}
+		failing.failures.Store(1)
+		service.Store = failing
+		firstObservedAt := now.Add(-time.Minute).Truncate(time.Second)
+		observation := monitor.Observation{
+			Repository: "conveyor", Kind: monitor.DirectPush, OccurrenceID: "failed-drift-write", CommitSHA: "failed-drift-write",
+			SourceURL: "https://example.test/commit/failed-drift-write", ObservedAt: firstObservedAt,
+		}
+		if _, err := service.Process(ctx, observation); !errors.Is(err, errInjectedDriftWrite) {
+			t.Fatalf("first observation err=%v", err)
+		}
+		status, err := monitorStore.MonitorStatus(ctx, true, now)
+		if err != nil || status.DriftCount != 0 || len(status.Observations) != 1 || status.Observations[0].TaskID == "" {
+			t.Fatalf("after the failed write status=%+v err=%v", status, err)
+		}
+		taskID := status.Observations[0].TaskID
+		audits := func() (onTask, inActivity int) {
+			t.Helper()
+			events, listErr := st.ListEvents(ctx, taskID)
+			if listErr != nil {
+				t.Fatal(listErr)
+			}
+			for _, event := range events {
+				if event.Kind == "monitor.drift_detected" {
+					onTask++
+				}
+			}
+			current, statusErr := monitorStore.MonitorStatus(ctx, true, now)
+			if statusErr != nil {
+				t.Fatal(statusErr)
+			}
+			for _, activity := range current.Activity {
+				if activity.Kind == "monitor.drift_detected" {
+					inActivity++
+				}
+			}
+			return onTask, inActivity
+		}
+		if onTask, inActivity := audits(); onTask != 0 || inActivity != 0 {
+			t.Fatalf("a failed write audited drift task=%d activity=%d", onTask, inActivity)
+		}
+		monitorTasks := func() int {
+			t.Helper()
+			tasks, listErr := st.ListTasks(ctx)
+			if listErr != nil {
+				t.Fatal(listErr)
+			}
+			count := 0
+			for _, task := range tasks {
+				if task.Source == "monitor:"+string(monitor.DirectPush) {
+					count++
+				}
+			}
+			return count
+		}
+
+		// A replay carrying less, and later, than the first observation still
+		// writes the record that first write would have made.
+		replay := observation
+		replay.CommitSHA, replay.ObservedAt = "", now
+		record, err := service.Process(ctx, replay)
+		if err != nil || record.TaskID != taskID {
+			t.Fatalf("retry record=%+v err=%v", record, err)
+		}
+		status, err = monitorStore.MonitorStatus(ctx, true, now)
+		if err != nil || status.DriftCount != 1 || status.Drift[0].ID != observation.Identity() || status.Drift[0].TaskID != taskID {
+			t.Fatalf("after the retry status=%+v err=%v", status, err)
+		}
+		if retried := status.Drift[0]; retried.CommitSHA != observation.CommitSHA || !retried.DetectedAt.Equal(firstObservedAt) {
+			t.Fatalf("the retry did not use the stored observation: %+v", retried)
+		}
+		if onTask, inActivity := audits(); onTask != 1 || inActivity != 1 || monitorTasks() != 1 {
+			t.Fatalf("retry audits task=%d activity=%d tasks=%d", onTask, inActivity, monitorTasks())
+		}
+
+		if record, err = service.Process(ctx, observation); err != nil || record.TaskID != taskID {
+			t.Fatalf("repeat record=%+v err=%v", record, err)
+		}
+		if onTask, inActivity := audits(); onTask != 1 || inActivity != 1 || monitorTasks() != 1 {
+			t.Fatalf("repeat audits task=%d activity=%d tasks=%d", onTask, inActivity, monitorTasks())
+		}
+
+		if _, err = monitorStore.ResolveDrift(ctx, observation.Identity(), "conflict_resolved", ""); err != nil {
+			t.Fatal(err)
+		}
+		if record, err = service.Process(ctx, observation); err != nil || record.TaskID != taskID {
+			t.Fatalf("repeat after resolution record=%+v err=%v", record, err)
+		}
+		status, err = monitorStore.MonitorStatus(ctx, true, now)
+		if err != nil || status.DriftCount != 0 {
+			t.Fatalf("a repeat reopened resolved drift: count=%d err=%v", status.DriftCount, err)
+		}
+		if onTask, inActivity := audits(); onTask != 1 || inActivity != 1 || monitorTasks() != 1 {
+			t.Fatalf("audits after resolution task=%d activity=%d tasks=%d", onTask, inActivity, monitorTasks())
 		}
 	})
 
@@ -466,41 +606,83 @@ func RunSystemDesignDriftConformance(t *testing.T, factory SystemDesignDriftFact
 		}
 	})
 
-	t.Run("concurrent fresh drift cannot exceed the task bound", func(t *testing.T) {
+	t.Run("concurrent fresh drift on one task records every observation", func(t *testing.T) {
 		st, ctx, workspace := factory(t)
-		task := createDriftTask(t, st, ctx, workspace, "concurrent-saturation")
+		task := createDriftTask(t, st, ctx, workspace, "concurrent-uncapped")
 		monitorStore := st.(monitor.Store)
-		errorsByCall := make(chan error, monitor.MaxUnresolvedDriftPerTask+1)
+		type result struct {
+			fresh bool
+			err   error
+		}
+		results := make(chan result, driftsPastRetiredCap)
 		var ready sync.WaitGroup
 		start := make(chan struct{})
-		for index := 0; index <= monitor.MaxUnresolvedDriftPerTask; index++ {
+		for index := 0; index < driftsPastRetiredCap; index++ {
 			ready.Add(1)
 			go func(index int) {
 				ready.Done()
 				<-start
-				_, _, err := monitorStore.RecordDrift(ctx, monitor.Drift{
-					ID: fmt.Sprintf("concurrent-saturation-%d", index), WorkspaceID: workspace,
+				_, fresh, err := monitorStore.RecordDrift(ctx, monitor.Drift{
+					ID: fmt.Sprintf("concurrent-uncapped-%d", index), WorkspaceID: workspace,
 					Repository: "conveyor", Kind: monitor.LineagedMerge,
 					SourceURL: fmt.Sprintf("https://example.test/pull/concurrent-%d", index),
 					TaskID:    task.ID, DetectedAt: time.Now().UTC(),
 				})
-				errorsByCall <- err
+				results <- result{fresh: fresh, err: err}
 			}(index)
 		}
 		ready.Wait()
 		close(start)
-		saturated := 0
-		for index := 0; index <= monitor.MaxUnresolvedDriftPerTask; index++ {
-			err := <-errorsByCall
-			if errors.Is(err, monitor.ErrTaskDriftSaturated) {
-				saturated++
-			} else if err != nil {
-				t.Fatal(err)
+		for index := 0; index < driftsPastRetiredCap; index++ {
+			if got := <-results; got.err != nil || !got.fresh {
+				t.Fatalf("concurrent drift fresh=%t err=%v", got.fresh, got.err)
 			}
 		}
 		status, err := monitorStore.MonitorStatus(ctx, true, time.Now().UTC())
-		if err != nil || saturated != 1 || status.DriftCount != monitor.MaxUnresolvedDriftPerTask {
-			t.Fatalf("saturated=%d drift_count=%d err=%v", saturated, status.DriftCount, err)
+		if err != nil || status.DriftCount != driftsPastRetiredCap {
+			t.Fatalf("drift_count=%d err=%v", status.DriftCount, err)
+		}
+	})
+
+	t.Run("concurrent drift writes for one identity record it once", func(t *testing.T) {
+		st, ctx, workspace := factory(t)
+		task := createDriftTask(t, st, ctx, workspace, "concurrent-same-identity")
+		monitorStore := st.(monitor.Store)
+		drift := monitor.Drift{
+			ID: "concurrent-same-identity", WorkspaceID: workspace, Repository: "conveyor", Kind: monitor.DirectPush,
+			SourceURL: "https://example.test/commit/concurrent-same-identity", TaskID: task.ID, DetectedAt: time.Now().UTC(),
+		}
+		type result struct {
+			fresh bool
+			err   error
+		}
+		results := make(chan result, driftsPastRetiredCap)
+		var ready sync.WaitGroup
+		start := make(chan struct{})
+		for index := 0; index < driftsPastRetiredCap; index++ {
+			ready.Add(1)
+			go func() {
+				ready.Done()
+				<-start
+				_, fresh, err := monitorStore.RecordDrift(ctx, drift)
+				results <- result{fresh: fresh, err: err}
+			}()
+		}
+		ready.Wait()
+		close(start)
+		fresh := 0
+		for index := 0; index < driftsPastRetiredCap; index++ {
+			got := <-results
+			if got.err != nil {
+				t.Fatal(got.err)
+			}
+			if got.fresh {
+				fresh++
+			}
+		}
+		status, err := monitorStore.MonitorStatus(ctx, true, time.Now().UTC())
+		if err != nil || fresh != 1 || status.DriftCount != 1 {
+			t.Fatalf("fresh=%d drift_count=%d err=%v", fresh, status.DriftCount, err)
 		}
 	})
 
@@ -903,6 +1085,28 @@ func designAdded(t *testing.T, st store.Store, ctx context.Context, taskID, docu
 		}
 	}
 	return matched
+}
+
+// driftsPastRetiredCap exceeds the five unresolved drift records a task could
+// once hold, so these cases prove a sixth and later record is written
+// (req-delivery-and-forge AC-4.4; component-monitor-drift invariant 21).
+const driftsPastRetiredCap = 8
+
+var errInjectedDriftWrite = errors.New("injected drift write failure")
+
+// failingDriftStore fails the next RecordDrift calls, which models a drift
+// write failing after its observation linked a task
+// (req-delivery-and-forge AC-4.10).
+type failingDriftStore struct {
+	monitor.Store
+	failures atomic.Int32
+}
+
+func (s *failingDriftStore) RecordDrift(ctx context.Context, drift monitor.Drift) (monitor.Drift, bool, error) {
+	if s.failures.Add(-1) >= 0 {
+		return monitor.Drift{}, false, errInjectedDriftWrite
+	}
+	return s.Store.RecordDrift(ctx, drift)
 }
 
 func driftService(t *testing.T, st store.Store, ctx context.Context, workspace string, now time.Time) *monitor.Service {

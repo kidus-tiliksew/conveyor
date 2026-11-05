@@ -57,14 +57,79 @@ func NextActionSupersessionRefusal(gateSpecVersion, latest int) string {
 	return ""
 }
 
-// NextActionRedispatchRefusal is the redispatch route's order-state check.
-func NextActionRedispatchRefusal(order WorkOrder) string {
-	switch order.State {
-	case WorkOrderQueued, WorkOrderStale, WorkOrderTimedOut, WorkOrderCancelled:
-		return ""
-	default:
-		return fmt.Sprintf("work order %s cannot be redispatched from %s", order.ID, order.State)
+// Refusal texts of POST /v1/tasks/{id}/redispatch. The route answers 409 with
+// them and NextActionRedispatchRefusal states them, so a withheld choice names
+// the route's own failing condition (req-operator-next-action AC-1.4).
+const (
+	TaskRedispatchActiveRefusal  = "task is already active"
+	TaskRedispatchNoStageRefusal = "task has no decided next stage; record an explicit review redirect instead"
+	// TaskHeldByWorkOrderRefusal is the text of store.ErrTaskHeldByWorkOrder.
+	TaskHeldByWorkOrderRefusal = "task stage is held by a work order; redispatch or recover the work order instead"
+)
+
+// TaskRedispatchStage is the stage POST /v1/tasks/{id}/redispatch resumes at
+// for a task that is neither running nor queued. A triage park records the
+// stage in RecoveryStage and clears NextStage (component-http-api).
+func TaskRedispatchStage(task Task) Stage {
+	if task.State == TaskParked && task.NextStage == "" {
+		return task.RecoveryStage
 	}
+	return task.NextStage
+}
+
+// TaskRedispatchCommand is the transition POST /v1/tasks/{id}/redispatch
+// applies to a task that is neither running nor queued.
+func TaskRedispatchCommand(state TaskState) TaskCommand {
+	switch state {
+	case TaskAwaiting:
+		return TaskInterventionRedirect
+	case TaskApproved:
+		return TaskRefreshReview
+	case TaskClaiming:
+		return TaskIntakeFinalize
+	default:
+		return TaskRecover
+	}
+}
+
+// NextActionRedispatchRefusal states why POST /v1/tasks/{id}/redispatch would
+// answer 409 for this task and its orders, and is empty when the route would
+// accept. It tests the route's own conditions and no others: a running task,
+// a queued task whose stage a work order holds, a task with no stage to resume
+// at, and a refused transition. orders are the task's clock-projected orders
+// sorted by (created_at, id) (req-operator-next-action AC-1.4; DEC-61;
+// component-next-action, Invariants 7; component-durable-queue).
+func NextActionRedispatchRefusal(task Task, orders []WorkOrder) string {
+	switch task.State {
+	case TaskRunning:
+		return TaskRedispatchActiveRefusal
+	case TaskQueued:
+		if holding, held := WorkOrderHoldsStage(withStoredClaims(orders), task.NextStage); held {
+			return fmt.Sprintf("%s: task %s waits on work order %s", TaskHeldByWorkOrderRefusal, task.ID, holding.ID)
+		}
+		return ""
+	}
+	if TaskRedispatchStage(task) == "" {
+		return TaskRedispatchNoStageRefusal
+	}
+	if _, err := TransitionTask(task.State, TaskRedispatchCommand(task.State)); err != nil {
+		return err.Error()
+	}
+	return ""
+}
+
+// withStoredClaims returns orders with each claim whose elapsed expiry only a
+// read has applied restored to claimed. The route's hold check reads stored
+// states, where such a claim still holds its stage until the order clock
+// persists the expiry (WorkOrderHoldsStage).
+func withStoredClaims(orders []WorkOrder) []WorkOrder {
+	out := append([]WorkOrder(nil), orders...)
+	for i := range out {
+		if out[i].ClaimExpiryUnpersisted {
+			out[i].State = WorkOrderClaimed
+		}
+	}
+	return out
 }
 
 // NextActionChangePolicyRefusal offers policy change only when a recovery

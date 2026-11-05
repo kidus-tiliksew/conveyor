@@ -1,19 +1,18 @@
 import { useEffect, useRef, useState } from 'react'
 import { stageLabels } from '../../lib/contracts'
-import type { TaskFlowStage } from '../../lib/types'
+import type { TaskFlowStatus } from '../../lib/types'
 import { cn } from '../../lib/utils'
 import { useTaskFlow } from '../task/use-task-flow'
 import { stageSegmentClass, stageSegmentName } from './stage-segments'
 
-type GateState = 'upcoming' | 'passed' | 'needs_operator'
-
 // A card's stage stripe, shown only when the viewer opts in
-// (req-operator-next-action AC-3.2, AC-3.3; feature-operator-next-action NA-7).
-// One segment per stage in the server's flow, toned by the stage's status, and
-// a diamond for each approval gate the frozen policy keeps. The flow is read
-// only once the card is on screen, so a full Board page does not issue a flow
-// read per task up front, and the card unmounts this component entirely while
-// the preference is off.
+// (req-operator-next-action AC-3.2, AC-3.3, AC-7.5, AC-7.7; component-next-action
+// invariants 28, 30, 39). One segment per stage in the server's flow, toned by
+// the stage's status, and a diamond for each approval gate the frozen policy
+// keeps, marked and named only by what the flow serves for that gate. The flow
+// is read only once the card is on screen, so a full Board page does not issue
+// a flow read per task up front, and the card unmounts this component entirely
+// while the preference is off.
 export function StageStripe({ taskId }: { taskId: string }) {
   const ref = useRef<HTMLDivElement>(null)
   const [seen, setSeen] = useState(false)
@@ -40,13 +39,14 @@ function Segments({ taskId }: { taskId: string }) {
     <ol aria-label="Stage progress" className="flex h-3 items-center gap-1">
       {flow.stages.map((stage) => {
         const label = stageLabels[stage.id] ?? stage.id
-        const gate = stage.gate ? (
-          <GateDiamond
-            gate={stage.gate}
-            state={gateState(stage)}
-            name={`${gateLabels[stage.gate] ?? stage.gate} — ${gateStateLabels[gateState(stage)]}`}
-          />
-        ) : null
+        const gate =
+          stage.gate && stage.gate_status ? (
+            <GateDiamond
+              gate={stage.gate}
+              status={stage.gate_status}
+              name={`${stage.gate_label} — ${stage.gate_status_label}`}
+            />
+          ) : null
         return (
           <li
             key={stage.id}
@@ -83,42 +83,28 @@ function InProgress() {
   )
 }
 
-const gateLabels: Record<string, string> = {
-  plan_approval: 'Plan approval',
-  merge_approval: 'Merge approval',
+// The one tone mapping of a gate's served mark. It is exhaustive over the
+// server's TaskFlowStatus, so a status the server adds fails the type check
+// here instead of rendering untoned. It maps only the served gate_status: the
+// stage row's own status never marks a gate, so a stop that holds the stage
+// without being the gate's decision leaves the gate's mark alone.
+const gateTones: Record<TaskFlowStatus, string> = {
+  done: 'size-2 bg-primary',
+  in_progress: 'size-2 border-[1.5px] border-primary',
+  waiting: 'size-2 bg-primary/35',
+  needs_operator: 'size-2.5 bg-attention-dot ring-2 ring-attention-dot/40 ring-offset-1 ring-offset-card',
+  upcoming: 'size-2 border-[1.5px] border-edge',
+  off: 'size-2 border-[1.5px] border-dashed border-edge',
 }
 
-const gateStateLabels: Record<GateState, string> = {
-  upcoming: 'upcoming',
-  passed: 'passed',
-  needs_operator: 'waiting for you',
-}
-
-// A gate reads from the stage it guards: the plan approval follows the plan, so
-// it has passed once the plan is done; the merge approval precedes the merge,
-// so it has passed once the merge is under way or done. Either waits on the
-// operator while its stage does.
-function gateState(stage: TaskFlowStage): GateState {
-  if (stage.status === 'needs_operator') return 'needs_operator'
-  if (stage.gate === 'plan_approval') return stage.status === 'done' ? 'passed' : 'upcoming'
-  return stage.status === 'done' || stage.status === 'in_progress' ? 'passed' : 'upcoming'
-}
-
-function GateDiamond({ gate, state, name }: { gate: string; state: GateState; name: string }) {
+function GateDiamond({ gate, status, name }: { gate: string; status: TaskFlowStatus; name: string }) {
   return (
     <span
       role="img"
       aria-label={name}
       data-gate={gate}
-      data-gate-state={state}
-      className={cn(
-        'shrink-0 rotate-45 rounded-[1.5px]',
-        state === 'needs_operator'
-          ? 'size-2.5 bg-attention-dot ring-2 ring-attention-dot/40 ring-offset-1 ring-offset-card'
-          : state === 'passed'
-            ? 'size-2 bg-primary'
-            : 'size-2 border-[1.5px] border-edge',
-      )}
+      data-gate-state={status}
+      className={cn('shrink-0 rotate-45 rounded-[1.5px]', gateTones[status])}
     />
   )
 }

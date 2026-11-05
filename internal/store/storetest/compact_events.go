@@ -2,8 +2,10 @@ package storetest
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"reflect"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -12,6 +14,7 @@ import (
 	"github.com/kidus-tiliksew/conveyor/internal/core"
 	"github.com/kidus-tiliksew/conveyor/internal/nextaction"
 	"github.com/kidus-tiliksew/conveyor/internal/store"
+	"github.com/kidus-tiliksew/conveyor/internal/store/dbmetrics"
 )
 
 const (
@@ -193,5 +196,291 @@ func requireSameFold(t *testing.T, name string, full, compact any) {
 	t.Helper()
 	if !reflect.DeepEqual(full, compact) {
 		t.Fatalf("%s differs between the reads:\nfull:    %#v\ncompact: %#v", name, full, compact)
+	}
+}
+
+// activityMarkerRoles names one fixture's tasks by the marker fold each proves.
+type activityMarkerRoles struct {
+	// claimed is an implement task whose user bounce a historical claim cleared
+	// and whose latest merge attempt failed.
+	claimed string
+	// bounced is an implement task whose user bounce follows a claim.
+	bounced string
+	// review is a task with one claimed and one queued seat of a review round.
+	review string
+	// lastEvents maps each task to its newest seeded event ID.
+	lastEvents map[string]int64
+}
+
+func (r activityMarkerRoles) ids() []string { return []string{r.claimed, r.bounced, r.review} }
+
+// activityMarkerTimes fixes the instants both fixtures share, so their markers
+// differ only by task and event identity.
+type activityMarkerTimes struct {
+	// now is the read instant and at is the first seeded event's time, after
+	// every ordinary fixture event.
+	now, at time.Time
+	// claimLease is the seat's claim lease, which sets the horizon, and
+	// renewedLease is its later renewal, which sets the seat's diagnostic.
+	claimLease, renewedLease time.Time
+	// expiredLease is the queued seat's elapsed claim lease.
+	expiredLease time.Time
+}
+
+// seedActivityMarkerFixture creates the task, order, and event shape the marker
+// folds read. One implement order's and one review seat's work_order.claimed
+// events embed a snapshot body of compactSnapshotBodyBytes, the only bodies the
+// proof needs, and encode decides the payload the ledger holds.
+func seedActivityMarkerFixture(t *testing.T, x Fixture, times activityMarkerTimes, encode func(kind string, payload json.RawMessage) json.RawMessage) activityMarkerRoles {
+	t.Helper()
+	st, ctx := x.Backend, x.Context
+	claim := func(id string) core.WorkOrder {
+		t.Helper()
+		claimed, err := ClaimWorkOrder(ctx, st, id, core.WorkOrderClaim{ClaimantID: core.TaskRunClaimantID("activity-marker"), SessionID: "activity-marker-" + id, ClientToken: "activity-marker-token-" + id, Agent: "claude-code", Model: "claude-opus-5-5", Lease: 6 * time.Hour, ExecutionTimeout: 24 * time.Hour})
+		requireOK(t, err)
+		return claimed
+	}
+	claimEvent := func(order core.WorkOrder, lease time.Time, rank int64) core.Event {
+		t.Helper()
+		order.LeaseExpiresAt = lease
+		return core.Event{ID: rank, TaskID: order.TaskID, JobID: order.JobID, Kind: "work_order.claimed", At: times.at.Add(time.Duration(rank) * time.Second), Payload: encode("work_order.claimed", core.JSONPayload(order))}
+	}
+	historicalClaim := func(order core.WorkOrder, lease time.Time, rank int64) core.Event {
+		t.Helper()
+		order.GovernanceSnapshot = &core.GovernanceSnapshot{Designs: []core.GovernanceDesignContext{{
+			ID: "design-activity-marker", Title: "Activity marker", Category: "Component design", Version: 1,
+			Content: compactSnapshotMarker + strings.Repeat("s", compactSnapshotBodyBytes),
+			Governs: []core.GovernedScope{{Repository: "conveyor", Paths: []string{"internal/**"}}},
+		}}}
+		order.ServedRequirementSnapshot = []core.ServedRequirementContext{{ID: "req-activity-marker", Title: "Activity marker", Version: 1}}
+		return claimEvent(order, lease, rank)
+	}
+	userBounce := func(taskID string, rank int64) core.Event {
+		return core.Event{ID: rank, TaskID: taskID, Kind: "pipeline.bounced", At: times.at.Add(time.Duration(rank) * time.Second), Payload: core.JSONPayload(map[string]any{"source": store.UserRequestChangesSource})}
+	}
+	roles := activityMarkerRoles{lastEvents: map[string]int64{}}
+	seed := func(taskID string, events ...core.Event) {
+		t.Helper()
+		stored := x.SeedEvents(t, ctx, 0, events)
+		roles.lastEvents[taskID] = stored[len(stored)-1].ID
+	}
+
+	claimedOrder := claim(newAggregateOrder(t, x).ID)
+	roles.claimed = claimedOrder.TaskID
+	seed(roles.claimed,
+		userBounce(roles.claimed, 1),
+		historicalClaim(claimedOrder, times.claimLease, 2),
+		core.Event{ID: 3, TaskID: roles.claimed, Kind: "merge.failed", At: times.at.Add(3 * time.Second), Payload: core.JSONPayload(map[string]any{"forge_error_category": "merge_conflict", "error": "activity marker merge failure"})},
+	)
+
+	bouncedOrder := claim(newAggregateOrder(t, x).ID)
+	roles.bounced = bouncedOrder.TaskID
+	seed(roles.bounced,
+		claimEvent(bouncedOrder, times.claimLease, 1),
+		userBounce(roles.bounced, 2),
+	)
+
+	review := newAggregateTask(t, x, core.StageReview)
+	roles.review = review.ID
+	var jobs []core.Job
+	var orders []core.WorkOrder
+	for seat := 1; seat <= 2; seat++ {
+		id := review.ID + "-review-1-" + strconv.Itoa(seat)
+		jobs = append(jobs, core.Job{ID: id, TaskID: review.ID, Stage: core.StageReview, State: core.JobPending})
+		orders = append(orders, core.WorkOrder{ID: id, JobID: id, TaskID: review.ID, Stage: core.StageReview, ReviewRound: 1, ReviewSeat: seat, QueueEnteredAt: times.now, QueueDeadline: times.now.Add(24 * time.Hour)})
+	}
+	requireOK(t, CreateReviewRound(ctx, st, review.ID, jobs, orders))
+	claimedSeat := claim(orders[0].ID)
+	queuedSeat, err := st.GetWorkOrder(ctx, orders[1].ID)
+	requireOK(t, err)
+	seed(roles.review,
+		historicalClaim(claimedSeat, times.claimLease, 1),
+		core.Event{ID: 2, TaskID: review.ID, JobID: claimedSeat.JobID, Kind: "work_order.lease_renewed", At: times.at.Add(2 * time.Second), Payload: core.JSONPayload(map[string]any{"id": claimedSeat.ID, "lease_expires_at": times.renewedLease})},
+		claimEvent(queuedSeat, times.expiredLease, 3),
+	)
+	return roles
+}
+
+// activityMarkerRead is one entry point that reaches listActivityMarkers. A read
+// without a horizon returns the zero time and hasHorizon false.
+type activityMarkerRead struct {
+	name       string
+	hasHorizon bool
+	read       func(ctx context.Context, st store.Backend, ids []string, now time.Time) ([]store.ActivityMarker, time.Time, error)
+}
+
+var activityMarkerReads = []activityMarkerRead{
+	{name: "ListActivityMarkers", read: func(ctx context.Context, st store.Backend, _ []string, _ time.Time) ([]store.ActivityMarker, time.Time, error) {
+		markers, err := st.ListActivityMarkers(ctx)
+		return markers, time.Time{}, err
+	}},
+	{name: "ListActivityMarkersForTasks", read: func(ctx context.Context, st store.Backend, ids []string, _ time.Time) ([]store.ActivityMarker, time.Time, error) {
+		markers, err := st.ListActivityMarkersForTasks(ctx, ids)
+		return markers, time.Time{}, err
+	}},
+	{name: "ReadActivityInputs-workspace", hasHorizon: true, read: func(ctx context.Context, st store.Backend, _ []string, now time.Time) ([]store.ActivityMarker, time.Time, error) {
+		inputs, err := st.ReadActivityInputs(ctx, nil, now)
+		return inputs.Markers, inputs.ValidUntil, err
+	}},
+	{name: "ReadActivityInputs-tasks", hasHorizon: true, read: func(ctx context.Context, st store.Backend, ids []string, now time.Time) ([]store.ActivityMarker, time.Time, error) {
+		inputs, err := st.ReadActivityInputs(ctx, ids, now)
+		return inputs.Markers, inputs.ValidUntil, err
+	}},
+}
+
+// roleMarkers returns the marker of each role's task, encoded with its task ID
+// replaced and its event ID checked and cleared, so two fixtures' markers
+// compare byte for byte.
+func roleMarkers(t *testing.T, label string, roles activityMarkerRoles, markers []store.ActivityMarker) map[string]string {
+	t.Helper()
+	byTask := make(map[string]store.ActivityMarker, len(markers))
+	for _, marker := range markers {
+		byTask[marker.TaskID] = marker
+	}
+	encoded := make(map[string]string, 3)
+	for name, id := range map[string]string{"claimed": roles.claimed, "bounced": roles.bounced, "review": roles.review} {
+		marker, ok := byTask[id]
+		if !ok {
+			t.Fatalf("%s returned no marker for the %s task %s", label, name, id)
+		}
+		if marker.LastEventID != roles.lastEvents[id] {
+			t.Fatalf("%s %s marker last event %d, want %d", label, name, marker.LastEventID, roles.lastEvents[id])
+		}
+		marker.LastEventID = 0
+		payload, err := json.Marshal(marker)
+		requireOK(t, err)
+		encoded[name] = strings.ReplaceAll(string(payload), id, "<task>")
+	}
+	return encoded
+}
+
+// runActivityMarkerCompactReads pins every entry point that reaches
+// listActivityMarkers over historical work_order.claimed events that embed
+// snapshot bodies, on an implement order and a review order. The markers and the review
+// lease horizon equal those of the same fixture with compact payloads, and the
+// bytes the database sends under the read label stay below
+// compactReadPayloadBound, so a return to the raw payload column fails
+// (component-task-lifecycle, Compact event reads; component-persistence,
+// Database read accounting).
+func runActivityMarkerCompactReads(t *testing.T, x Fixture) {
+	if x.SeedEvents == nil {
+		t.Fatal("factory must provide SeedEvents for activity marker conformance")
+	}
+	now := time.Now().UTC().Truncate(time.Microsecond)
+	at := seedTime()
+	times := activityMarkerTimes{
+		now: now, at: at,
+		claimLease: at.Add(10 * time.Minute), renewedLease: at.Add(20 * time.Minute),
+		expiredLease: now.Add(-time.Minute),
+	}
+	historical := seedActivityMarkerFixture(t, x, times, func(_ string, payload json.RawMessage) json.RawMessage { return payload })
+
+	// A second workspace holds the same fixture with compact payloads, so each
+	// whole-workspace read covers one fixture on the durable backends.
+	compactWorkspace := x.Workspace + "-compact"
+	compactFixture := x
+	compactFixture.Workspace = compactWorkspace
+	compactFixture.Context = store.WithWorkspace(x.Context, compactWorkspace)
+	compactFixture.Config = &config.Config{Workspace: compactWorkspace, Repos: x.Config.Repos, Routing: x.Config.Routing}
+	_, err := x.Backend.BootstrapWorkspaceConfig(compactFixture.Context, compactFixture.Config)
+	requireOK(t, err)
+	compact := seedActivityMarkerFixture(t, compactFixture, times, store.CompactEventPayload)
+
+	// The fixture is not vacuous: the ledger holds the bodies and the read
+	// ledger sees them when a read selects the raw column.
+	drain := func() map[string]uint64 {
+		if x.DrainReadBytes == nil {
+			return nil
+		}
+		return x.DrainReadBytes()
+	}
+	drain()
+	full, err := x.Backend.ListEvents(dbmetrics.WithReadLabel(x.Context, "activity-marker-compact-full"), historical.review)
+	requireOK(t, err)
+	bodies := 0
+	for _, event := range full {
+		if bytes.Contains(event.Payload, []byte(compactSnapshotMarker)) {
+			bodies++
+		}
+	}
+	if bodies != 1 {
+		t.Fatalf("review ledger holds %d snapshot bodies, want 1", bodies)
+	}
+	if received := drain(); received != nil {
+		if got := received["activity-marker-compact-full"]; got < compactSnapshotBodyBytes {
+			t.Fatalf("the raw read received %d bytes, want at least the %d seeded body bytes", got, compactSnapshotBodyBytes)
+		}
+	}
+
+	for _, entry := range activityMarkerReads {
+		t.Run(entry.name, func(t *testing.T) {
+			label := "activity-marker-compact-" + entry.name
+			drain()
+			markers, horizon, err := entry.read(dbmetrics.WithReadLabel(x.Context, label), x.Backend, historical.ids(), now)
+			requireOK(t, err)
+			if received := drain(); received != nil {
+				got := received[label]
+				if got == 0 || got >= compactReadPayloadBound {
+					t.Fatalf("%s received %d bytes, want more than 0 and fewer than %d", entry.name, got, compactReadPayloadBound)
+				}
+				t.Logf("%s received %d bytes", entry.name, got)
+			}
+			compactMarkers, compactHorizon, err := entry.read(compactFixture.Context, x.Backend, compact.ids(), now)
+			requireOK(t, err)
+
+			got, want := roleMarkers(t, entry.name, historical, markers), roleMarkers(t, entry.name+" compact", compact, compactMarkers)
+			for role := range want {
+				if got[role] != want[role] {
+					t.Fatalf("%s %s marker differs from the compact fixture:\nhistorical %s\ncompact    %s", entry.name, role, got[role], want[role])
+				}
+			}
+			if !horizon.Equal(compactHorizon) {
+				t.Fatalf("%s horizon %s, compact fixture %s", entry.name, horizon, compactHorizon)
+			}
+			if entry.hasHorizon && !horizon.Equal(times.claimLease) {
+				t.Fatalf("%s horizon %s, want the historical claim's lease %s", entry.name, horizon, times.claimLease)
+			}
+			requireActivityMarkerFolds(t, entry.name, historical, markers, times)
+		})
+	}
+}
+
+// requireActivityMarkerFolds pins each marker field the fixture's historical
+// events decide, so the comparison with the compact fixture is not vacuous.
+func requireActivityMarkerFolds(t *testing.T, label string, roles activityMarkerRoles, markers []store.ActivityMarker, times activityMarkerTimes) {
+	t.Helper()
+	byTask := make(map[string]store.ActivityMarker, len(markers))
+	for _, marker := range markers {
+		byTask[marker.TaskID] = marker
+	}
+	// A historical implement claim clears the user bounce only through its
+	// stage key, and a later bounce stays pending.
+	claimed := byTask[roles.claimed]
+	if claimed.UserChangesRequested {
+		t.Fatalf("%s: the historical implement claim did not clear the user bounce", label)
+	}
+	if failure := claimed.ForgeFailure; failure == nil || failure.Category != "merge_conflict" || failure.Detail != "activity marker merge failure" {
+		t.Fatalf("%s: forge failure = %+v, want the seeded merge failure", label, failure)
+	}
+	if !byTask[roles.bounced].UserChangesRequested {
+		t.Fatalf("%s: the user bounce after the claim is not pending", label)
+	}
+	diagnostics := byTask[roles.review].ReviewDiagnostics
+	if len(diagnostics) != 2 {
+		t.Fatalf("%s: review diagnostics = %+v, want one per seat", label, diagnostics)
+	}
+	for _, diagnostic := range diagnostics {
+		switch diagnostic.ReviewSeat {
+		case 1:
+			if diagnostic.Status != store.ReviewClaimedWithoutVerdict || !diagnostic.LeaseExpiresAt.Equal(times.renewedLease) || !diagnostic.ClaimedAt.Equal(times.at.Add(time.Second)) {
+				t.Fatalf("%s: claimed seat diagnostic = %+v, want the renewed lease %s", label, diagnostic, times.renewedLease)
+			}
+		case 2:
+			if diagnostic.Status != store.ReviewExpiredWithoutVerdict || !diagnostic.LeaseExpiresAt.Equal(times.expiredLease) {
+				t.Fatalf("%s: queued seat diagnostic = %+v, want the seeded claim's elapsed lease %s", label, diagnostic, times.expiredLease)
+			}
+		default:
+			t.Fatalf("%s: unexpected review seat diagnostic %+v", label, diagnostic)
+		}
 	}
 }
