@@ -18,6 +18,7 @@ import (
 	"github.com/kidus-tiliksew/conveyor/internal/dispatch"
 	"github.com/kidus-tiliksew/conveyor/internal/httpapi"
 	"github.com/kidus-tiliksew/conveyor/internal/store"
+	"github.com/kidus-tiliksew/conveyor/internal/store/dbmetrics"
 	"github.com/kidus-tiliksew/conveyor/internal/store/storetest"
 	githubtrigger "github.com/kidus-tiliksew/conveyor/internal/trigger/github"
 	"github.com/kidus-tiliksew/conveyor/internal/workorder"
@@ -78,6 +79,12 @@ func openConformanceSchema(databaseURL string) error {
 		return err
 	}
 	poolConfig.ConnConfig.RuntimeParams["search_path"] = name
+	// The production tracer and counting dialer feed the read ledger the
+	// conformance byte bounds drain (component-persistence, Database read
+	// accounting).
+	reads := dbmetrics.NewReadLedger()
+	poolConfig.ConnConfig.Tracer = newRequestTracer(poolConfig.ConnConfig.Tracer, time.Now, nil)
+	poolConfig.ConnConfig.DialFunc = countingDialFunc(poolConfig.ConnConfig.DialFunc, reads)
 	pool, err := pgxpool.NewWithConfig(ctx, poolConfig)
 	if err != nil {
 		return err
@@ -132,6 +139,7 @@ func openConformanceSchema(databaseURL string) error {
 		return err
 	}
 	conformanceSchema.store = newStore(pool)
+	conformanceSchema.store.reads = reads
 	return nil
 }
 
@@ -198,7 +206,7 @@ func TestPostgresConformanceIntegration(t *testing.T) {
 			if _, err := st.BootstrapWorkspaceConfig(ctx, cfg); err != nil {
 				t.Fatal(err)
 			}
-			return storetest.Fixture{VerificationClaimReads: verificationClaimReads(workspace), ReopenVerification: func(t *testing.T) store.Backend {
+			return storetest.Fixture{DrainReadBytes: conformanceReadBytes(st), VerificationClaimReads: verificationClaimReads(workspace), ReopenVerification: func(t *testing.T) store.Backend {
 				pool, err := pgxpool.NewWithConfig(t.Context(), st.pool.Config())
 				if err != nil {
 					t.Fatal(err)
@@ -366,4 +374,16 @@ func (r *verificationClaimReadRecorder) ids() []string {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	return append([]string(nil), r.read...)
+}
+
+// conformanceReadBytes drains the store's read ledger into bytes per read
+// label for the conformance byte bounds.
+func conformanceReadBytes(st *Store) func() map[string]uint64 {
+	return func() map[string]uint64 {
+		bytes := map[string]uint64{}
+		for _, total := range st.ReadStats(1 << 16).Top {
+			bytes[total.Label] = total.Bytes
+		}
+		return bytes
+	}
 }
