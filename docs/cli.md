@@ -444,7 +444,7 @@ reported, never deleted.
 ## verification permissions
 
 Operator grants for a claimed verify work order. The commands use your user
-credential and an explicit `--workspace`. Agent credentials are refused.
+credential and an explicit `--workspace`.
 
 | Command | What it does |
 |---|---|

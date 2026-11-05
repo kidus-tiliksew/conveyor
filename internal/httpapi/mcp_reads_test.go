@@ -34,8 +34,6 @@ func newMCPReadFixture(t *testing.T) (*Server, context.Context) {
 		"reader": {ID: "reader-pat", OwnerUserID: "reader", Kind: core.CredentialUser, Scope: core.CredentialScopeUser},
 		"other":  {ID: "other-pat", OwnerUserID: "other", Kind: core.CredentialUser, Scope: core.CredentialScopeUser},
 		"denied": {ID: "denied-pat", OwnerUserID: "denied", Kind: core.CredentialUser, Scope: core.CredentialScopeUser},
-		"agent":  {ID: "agent-credential", OwnerUserID: "reader", Kind: core.CredentialAgent, Scope: core.CredentialScopeUser},
-		"child":  {ID: "child-credential", OwnerUserID: "reader", Kind: core.CredentialAgent, Scope: core.CredentialScopeUser},
 	}
 	s.ConfigProvider = func(ctx context.Context) (*config.Config, error) {
 		workspace, _ := store.WorkspaceFromContext(ctx)
@@ -307,7 +305,7 @@ func TestMCPReadAuthorizationAndSchemas(t *testing.T) {
 			if _, ok := d.fields["kind"]; ok {
 				a["kind"] = "system_design"
 			}
-			for _, token := range []string{"agent", "child", "denied"} {
+			for _, token := range []string{"denied"} {
 				if _, e := mcpReadCall(t, s, token, d.name, a); e == "" {
 					t.Fatalf("%s accepted %s", d.name, token)
 				}

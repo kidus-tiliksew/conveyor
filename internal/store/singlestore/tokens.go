@@ -16,16 +16,12 @@ import (
 	"github.com/kidus-tiliksew/conveyor/internal/store/dbmetrics"
 )
 
-func (s *Store) issueCredential(ctx context.Context, userID, label string, agent bool) (core.IssuedPersonalAccessToken, error) {
-	prefix, idPrefix := "pat", "pat"
-	if agent {
-		prefix, idPrefix = "agent", "agt"
-	}
-	id, err := randomIdentityID(idPrefix, 12)
+func (s *Store) issueCredential(ctx context.Context, userID, label string) (core.IssuedPersonalAccessToken, error) {
+	id, err := randomIdentityID("pat", 12)
 	if err != nil {
 		return core.IssuedPersonalAccessToken{}, translateBackendConflict(err)
 	}
-	secret, err := randomIdentityID("cv_"+prefix+"_"+id, 32)
+	secret, err := randomIdentityID("cv_pat_"+id, 32)
 	if err != nil {
 		return core.IssuedPersonalAccessToken{}, translateBackendConflict(err)
 	}
@@ -39,26 +35,19 @@ func (s *Store) issueCredential(ctx context.Context, userID, label string, agent
 		if status != "active" {
 			return core.ErrInvalidCredential
 		}
-		kind, scope := "user", "user"
-		if agent {
-			kind = "agent"
-		} else {
-			var operator bool
-			if err := tx.QueryRowContext(ctx, "SELECT EXISTS(SELECT 1 FROM workspace_role_bindings WHERE user_id=? AND role='operator')", userID).Scan(&operator); err != nil {
-				return translateBackendConflict(err)
-			}
-			if operator {
-				scope = "operator"
-			}
+		scope := "user"
+		var operator bool
+		if err := tx.QueryRowContext(ctx, "SELECT EXISTS(SELECT 1 FROM workspace_role_bindings WHERE user_id=? AND role='operator')", userID).Scan(&operator); err != nil {
+			return translateBackendConflict(err)
+		}
+		if operator {
+			scope = "operator"
 		}
 		if err := checkTokenHash(ctx, tx, hash[:], ""); err != nil {
 			return translateBackendConflict(err)
 		}
-		if _, err := writeRow(ctx, tx, rowWrite{table: "user_tokens", operation: "INSERT", values: map[string]any{"id": id, "user_id": userID, "label": row.Label, "token_hash": hash[:], "kind": kind, "scope": scope, "deployment_credential": false, "created_at": row.CreatedAt}}); err != nil {
+		if _, err := writeRow(ctx, tx, rowWrite{table: "user_tokens", operation: "INSERT", values: map[string]any{"id": id, "user_id": userID, "label": row.Label, "token_hash": hash[:], "kind": string(core.CredentialUser), "scope": scope, "deployment_credential": false, "created_at": row.CreatedAt}}); err != nil {
 			return translateBackendConflict(err)
-		}
-		if agent {
-			return nil
 		}
 		return auditPersonalToken(ctx, tx, row, "identity.personal_token_issued")
 	})
@@ -76,12 +65,38 @@ func auditPersonalToken(ctx context.Context, tx *sql.Tx, row core.PersonalAccess
 }
 func (s *Store) IssueOwnPersonalAccessToken(ctx context.Context, userID, label string) (core.IssuedPersonalAccessToken, error) {
 	ctx = dbmetrics.WithReadLabel(ctx, "IssueOwnPersonalAccessToken")
-	return s.issueCredential(ctx, userID, label, false)
+	return s.issueCredential(ctx, userID, label)
 }
-func (s *Store) IssueAgentCredential(ctx context.Context, userID, label string) (store.IssuedAgentCredential, error) {
-	ctx = dbmetrics.WithReadLabel(ctx, "IssueAgentCredential")
-	r, err := s.issueCredential(ctx, userID, label, true)
-	return store.IssuedAgentCredential{ID: r.ID, UserID: r.UserID, Label: r.Label, Value: r.Value}, translateBackendConflict(err)
+
+// AgentActorOwners implements store.AgentActorOwnerStore. The kind predicate
+// keeps an agent:<id> actor from resolving through a person's token row, and
+// revoked rows stay in scope because the acts outlive the credential.
+func (s *Store) AgentActorOwners(ctx context.Context, credentialIDs []string) (map[string]string, error) {
+	ctx = dbmetrics.WithReadLabel(ctx, "AgentActorOwners")
+	owners := make(map[string]string, len(credentialIDs))
+	if len(credentialIDs) == 0 {
+		return owners, nil
+	}
+	args := make([]any, 0, len(credentialIDs))
+	for _, id := range credentialIDs {
+		args = append(args, id)
+	}
+	rows, err := backendRows(ctx, s.db, "SELECT id,user_id FROM user_tokens WHERE kind='agent' AND id IN (?"+strings.Repeat(",?", len(credentialIDs)-1)+")", args...)
+	if err != nil {
+		return nil, translateBackendConflict(err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var id, owner string
+		if err := rows.Scan(&id, &owner); err != nil {
+			return nil, translateBackendConflict(err)
+		}
+		owners[id] = owner
+	}
+	if err := rows.Err(); err != nil {
+		return nil, translateBackendConflict(err)
+	}
+	return owners, nil
 }
 
 // credentialUseGranularity bounds how often bearer verification writes a
@@ -97,9 +112,11 @@ type credentialRead struct {
 }
 
 // readCredential reads a live credential by its hash on the ordinary handle,
-// outside identityTx and its registry locks: unrevoked and owned by an active
-// user. It reports whether last_used_at is unset or older than the stamp
-// interval by the database clock.
+// outside identityTx and its registry locks: unrevoked, of kind user, and owned
+// by an active user. A stored agent row is refused with the same error as an
+// unknown credential, so the refusal carries no kind-specific code
+// (req-security-boundaries AC-1.3; DEC-116(3)). It reports whether last_used_at
+// is unset or older than the stamp interval by the database clock.
 func (s *Store) readCredential(ctx context.Context, hash []byte) (credentialRead, error) {
 	var r credentialRead
 	var stored []byte
@@ -113,7 +130,7 @@ func (s *Store) readCredential(ctx context.Context, hash []byte) (credentialRead
 	if err != nil {
 		return credentialRead{}, translateBackendConflict(err)
 	}
-	if revoked.Valid || r.user.Status != "active" || subtle.ConstantTimeCompare(stored, hash) != 1 {
+	if revoked.Valid || r.credential.Kind != core.CredentialUser || r.user.Status != "active" || subtle.ConstantTimeCompare(stored, hash) != 1 {
 		return credentialRead{}, core.ErrInvalidCredential
 	}
 	r.user.ID = r.credential.OwnerUserID

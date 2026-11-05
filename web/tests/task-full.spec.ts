@@ -7190,6 +7190,49 @@ for (const surface of ['full', 'board sheet']) {
   }
 }
 
+for (const test_ of [
+  { name: 'a co-member', owner: 'usr_id', label: 'usr_id' },
+  { name: 'a user outside the roster', owner: 'usr_gone', label: 'User · usr_gone' },
+  { name: 'no resolved owner', owner: undefined, label: 'Agent · agt_retired' },
+]) {
+  test(`Created by resolves a retired agent credential's act to ${test_.name}`, async ({ page }) => {
+    await page.route('**/v1/workspaces/demo/members**', (route) =>
+      route.fulfill({
+        json: [...assignmentMembers, { ...assignmentMembers[0], user_id: 'usr_id', display_name: '', email: '' }],
+      }),
+    )
+    const item = activity('creator-owner', false)
+    const event = {
+      id: 1,
+      task_id: item.task.id,
+      kind: 'task.created',
+      actor_role: 'agent',
+      actor_id: 'agent:agt_retired',
+      actor_owner_user_id: test_.owner,
+      payload: {},
+      at: createdAt,
+    }
+    await page.route('**/v1/tasks/creator-owner/activity*', (route) =>
+      route.fulfill({
+        json: {
+          ...item,
+          events: [event],
+        },
+      }),
+    )
+    await page.goto('/w/demo/tasks/creator-owner/full')
+    const creatorName = page
+      .locator('dt')
+      .filter({ hasText: /^Created$/ })
+      .locator('xpath=following-sibling::dd[1]')
+      .locator('[data-task-creator] > span')
+      .first()
+    await expect(creatorName).toHaveText(test_.label)
+    await expect(creatorName).toHaveAttribute('title', /agent:agt_retired/)
+    if (test_.owner) await expect(creatorName).toHaveAttribute('title', new RegExp(`owned by User · ${test_.owner}`))
+  })
+}
+
 test('Created by preserves a long historical identity when the workspace member read fails', async ({ page }) => {
   const identifier = `user:usr_${'historical'.repeat(30)}`
   await page.route('**/v1/workspaces/demo/members**', (route) => route.fulfill({ status: 500, json: {} }))

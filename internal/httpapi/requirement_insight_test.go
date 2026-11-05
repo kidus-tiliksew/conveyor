@@ -328,7 +328,7 @@ func newInsightHarness(t *testing.T, wrap func(store.Store) store.Store) *insigh
 	h.server.Credentials = staticCredentialVerifier{
 		"viewer":  {ID: "pat_viewer", OwnerUserID: "viewer", Kind: core.CredentialUser, Scope: core.CredentialScopeUser},
 		"creator": {ID: "pat_creator", OwnerUserID: "creator", Kind: core.CredentialUser, Scope: core.CredentialScopeUser},
-		"agent":   {ID: "agent_1", OwnerUserID: "creator", Kind: core.CredentialAgent, Scope: core.CredentialScopeUser},
+		"agent":   {ID: "agent_1", OwnerUserID: "creator", Kind: retiredAgentKind, Scope: core.CredentialScopeUser},
 	}
 	h.server.InvitationSessions = &invitationSessionFixture{credential: core.AuthenticatedCredential{
 		ID: "session_creator", OwnerUserID: "creator", Kind: core.CredentialUser, Scope: core.CredentialScopeUser, Method: core.CredentialMethodSession,

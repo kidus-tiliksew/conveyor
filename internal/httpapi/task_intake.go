@@ -54,14 +54,6 @@ func (s *Server) createTaskRecord(ctx context.Context, req createTaskReq, intake
 }
 
 func (s *Server) createTaskRecordWithState(ctx context.Context, req createTaskReq, intakeKey, defaultSource string, initialState core.TaskState) (taskCreateResult, error) {
-	// An agent's policy input is checked before the idempotency lookup, title
-	// generation, or any write, so a refused request has no side effect even
-	// when its key already names a task (DEC-60; component-http-api).
-	if credential, ok := store.CredentialFromContext(ctx); ok && credential.Kind == core.CredentialAgent {
-		if err := agentIntakePolicyError(req); err != nil {
-			return taskCreateResult{}, err
-		}
-	}
 	req.Repo = strings.TrimSpace(req.Repo)
 	req.BaseBranch = strings.TrimSpace(req.BaseBranch)
 	req.Source = strings.TrimSpace(req.Source)
@@ -233,40 +225,11 @@ const (
 	taskHoldRetired              = "task_hold_retired"
 	taskHoldRetiredIntakeMessage = "hold is retired (DEC-74); a task carries no worker reservation, so omit hold or send false"
 	taskHoldRetiredRouteMessage  = "task hold is retired (DEC-74); a task carries no worker reservation"
-	// agentGateDisableForbidden refuses an agent input that would turn a
-	// human gate off (req-intake-and-triage AC-4.2; DEC-60).
-	agentGateDisableForbidden = "agent_gate_disable_forbidden"
-	// agentGateOverrideInvalid refuses an agent gate input whose value is not
-	// a recognized on-only override.
-	agentGateOverrideInvalid = "invalid_agent_gate_override"
+	// invalidGateOverride refuses a gate or level input that is not a value
+	// the caller's request can apply. The wire name is kept as
+	// component-task-lifecycle invariant 16 states it.
+	invalidGateOverride = "invalid_agent_gate_override"
 )
-
-// agentIntakePolicyError applies the gate-on-only rule to every pipeline-policy
-// input an agent can supply. Omitted gates take the workspace defaults, even
-// off ones; true is accepted; false is refused by name, never ignored. The
-// legacy level is a gate input: L2 and L3 map every gate on and are accepted,
-// while L0 and L1 map a gate off. Hold is retired for every caller (DEC-74(3))
-// and is refused by the shared intake after the idempotency lookup, never here.
-// TestCreateTaskRequestPolicyFieldsAreAgentChecked pins createTaskReq so a new
-// policy field cannot bypass this check unnoticed.
-func agentIntakePolicyError(req createTaskReq) error {
-	for _, gate := range []struct {
-		field string
-		value *bool
-	}{{"spec_approval", req.SpecApproval}, {"merge_approval", req.MergeApproval}} {
-		if gate.value != nil && !*gate.value {
-			return &taskCreateError{Status: http.StatusForbidden, Code: agentGateDisableForbidden, Message: gate.field + " cannot be turned off by an agent credential; omit it to take the workspace default or set it true"}
-		}
-	}
-	switch req.Level {
-	case "", core.L2, core.L3:
-		return nil
-	case core.L0, core.L1:
-		return &taskCreateError{Status: http.StatusForbidden, Code: agentGateDisableForbidden, Message: "level " + string(req.Level) + " turns a gate off; an agent credential may supply only L2 or L3"}
-	default:
-		return &taskCreateError{Status: http.StatusBadRequest, Code: agentGateOverrideInvalid, Message: "level must be L2 or L3 for an agent credential"}
-	}
-}
 
 // resolvedIntakePolicy maps the request onto the two intake policy decisions:
 // spec approval and merge approval (DEC-74(1); component-task-lifecycle). A

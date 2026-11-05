@@ -23,10 +23,9 @@ plain words and active voice.
 
 Use the server-specific native MCP connection already configured for the
 intended factory. Supply its workspace explicitly on every investigation
-call. With a human session or PAT, use `list_workspaces` from a known workspace
-scope and `list_repositories` to verify the destination. These reads require
-`view_workspace`; they do not require a claim. Agent credentials
-must stay within their existing work-order context tools.
+call. Use `list_workspaces` from a known workspace scope and
+`list_repositories` to verify the destination. These reads require
+`view_workspace`; they do not require a claim.
 
 Use `get_task` for a known ID or `list_tasks` with `state: terminal` / `all`
 and repository or text filters. An empty `list_work_orders` response says
@@ -71,8 +70,6 @@ This step is required for every task and for every task in a set:
 When a returned task covers the same scope, do not file. Report each match to
 the operator with its task ID and state. File only on the operator's
 direction, and cite each related task ID in the new body's opening paragraph.
-An agent credential is refused these reads; ask the operator for the search
-result instead of skipping the step.
 
 ### Investigate the current base
 
@@ -146,14 +143,12 @@ Settle the gate values before filing, not after. Before the first
 `create_task` of a task or a set, read the workspace's effective defaults: the
 `execution.spec_approval` and `execution.merge_approval` values of the
 workspace configuration, which `conveyor config export` prints. When the
-filer cannot read them, ask the operator for them. An agent credential cannot
-turn a gate off (DEC-60): `create_task` refuses `false` with
-`agent_gate_disable_forbidden`, and an omitted gate takes the workspace
-default. When the operator wants a value other than the default, ask the
-operator before filing; never file and then refile a task to change a gate.
-An agent filer can set a gate `true`. A gate the operator wants off under an
-agent credential needs the operator's own act before filing, such as filing
-that task with their own credential.
+filer cannot read them, ask the operator for them. An omitted gate takes the
+workspace default, and a boolean you supply applies, `false` included
+(DEC-116(5)). A null or non-boolean gate is refused with
+`invalid_agent_gate_override`. When the operator wants a value other than the
+default, ask the operator before filing and supply it; never file and then
+refile a task to change a gate.
 
 A queue that requires one decision per pull request must set
 `merge_approval: true` at intake. A repository's validation documentation may

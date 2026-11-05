@@ -180,7 +180,7 @@ func TestCallerIdentityProjectionRequiresAuthorizedWorkspace(t *testing.T) {
 	server.Memberships = &membershipFixture{roles: bindings}
 	server.Credentials = staticCredentialVerifier{
 		"human-secret": {ID: "pat-owner", OwnerUserID: "usr-owner", Kind: core.CredentialUser, Scope: core.CredentialScopeUser},
-		"agent-secret": {ID: "agt-owner", OwnerUserID: "usr-owner", Kind: core.CredentialAgent, Scope: core.CredentialScopeUser},
+		"agent-secret": {ID: "agt-owner", OwnerUserID: "usr-owner", Kind: retiredAgentKind, Scope: core.CredentialScopeUser},
 	}
 	call := func(server *Server, token, target, header string) *httptest.ResponseRecorder {
 		t.Helper()

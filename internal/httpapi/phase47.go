@@ -92,7 +92,7 @@ func (s *Server) getWorkOrder(w http.ResponseWriter, r *http.Request) {
 func (s *Server) projectWorkOrderSessions(ctx context.Context, orders []core.WorkOrder) ([]core.WorkOrder, error) {
 	credential, credentialAuth := store.CredentialFromContext(ctx)
 	for i := range orders {
-		owner := credentialAuth && (credential.Kind == core.CredentialUser || credential.Kind == core.CredentialAgent) &&
+		owner := credentialAuth && credential.Kind == core.CredentialUser &&
 			orders[i].WorkerID == "" && orders[i].ClaimantID == core.TaskRunClaimantID(credential.OwnerUserID)
 		if !owner {
 			orders[i].SessionID = ""

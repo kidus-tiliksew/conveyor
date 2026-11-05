@@ -62,7 +62,7 @@ func newPersonalTokenServer(tokens *personalTokenFixture) *Server {
 	server.Credentials = staticCredentialVerifier{
 		"owner-token":  {ID: "pat_owner", OwnerUserID: "owner", Kind: core.CredentialUser, Scope: core.CredentialScopeUser},
 		"other-token":  {ID: "pat_other", OwnerUserID: "other", Kind: core.CredentialUser, Scope: core.CredentialScopeUser},
-		"agent-token":  {ID: "agt_owner", OwnerUserID: "owner", Kind: core.CredentialAgent, Scope: core.CredentialScopeUser},
+		"agent-token":  {ID: "agt_owner", OwnerUserID: "owner", Kind: retiredAgentKind, Scope: core.CredentialScopeUser},
 		"legacy-token": {ID: "pat_legacy", OwnerUserID: "operator", Kind: core.CredentialUser, Scope: core.CredentialScopeOperator},
 	}
 	return server

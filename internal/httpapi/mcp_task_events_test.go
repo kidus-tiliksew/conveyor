@@ -305,8 +305,6 @@ func TestMCPTaskEventsCursorRefusalsAndAuthorization(t *testing.T) {
 		"changed filter":   {"reader", with("event_kind", "work_order.renewed"), "snapshot unavailable"},
 		"foreign task":     {"reader", with("task_id", "other"), "snapshot unavailable"},
 		"foreign owner":    {"other", base, "snapshot unavailable"},
-		"agent":            {"agent", base, "operator-scoped user credential"},
-		"run child":        {"child", base, "operator-scoped user credential"},
 		"foreign space":    {"reader", with("workspace_id", "private"), "workspace_not_found"},
 		"missing capacity": {"denied", base, "workspace_not_found"},
 	} {

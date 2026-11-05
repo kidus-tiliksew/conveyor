@@ -60,9 +60,8 @@ follows that prompt, which ends it after its own submission.
    `search_documents` and `get_document`'s `outline` and `section_id` modes at
    the listed `version`. Pass the order's `work_order_id` and `session_id` on
    each of those calls: a read of design text under that claim records your
-   consultation (`req-design-delivery` REQ-5), and an agent credential is refused
-   without them. An agent credential cannot call `get_decision` or `list_decisions`, so it works from the
-   summaries. A reviewer reads every section, including every page of a large
+   consultation (`req-design-delivery` REQ-5). `get_decision` reads a decision's
+   full record. A reviewer reads every section, including every page of a large
    one, of each design attached to the task or covering the diff
    (`req-design-delivery` AC-6.1).
 4. Resolve every relevant artifact reference with `read_artifact` under the
@@ -723,8 +722,7 @@ gate from `get_task` (state `awaiting_human`, or state `approved` with
 of `conveyor task wait --json` (kind `merge_execution` with its
 `merge_readiness` for the pending merge act), or from a review order that
 `list_work_orders` reports as unclaimable. `conveyor task status <task-id>`, or `get_task_status`
-over MCP with the `work_order_id` and `session_id` of the order your session
-claimed or submitted, prints the server's statement: who acts, the question,
+over MCP, prints the server's statement: who acts, the question,
 each choice with its effect and its command, what happens if nobody acts, and
 the deadline. Quote it rather than deriving the gate from the task state.
 

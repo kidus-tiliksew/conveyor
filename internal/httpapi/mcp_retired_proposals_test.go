@@ -57,8 +57,8 @@ func requireRetiredRefusal(t *testing.T, tool, text string, isErr bool) {
 func TestMCPToolListOmitsRetiredProposalTools(t *testing.T) {
 	t.Parallel()
 	f := newGovernanceAuthFixture(t)
-	userToken, agentToken := f.user("usr_tool_list", core.WorkspaceRoleExecutor)
-	for label, token := range map[string]string{"user": userToken, "agent": agentToken} {
+	userToken := f.user("usr_tool_list", core.WorkspaceRoleExecutor)
+	for label, token := range map[string]string{"user": userToken} {
 		request := httptest.NewRequest(http.MethodPost, "/mcp", strings.NewReader(`{"jsonrpc":"2.0","id":1,"method":"tools/list"}`))
 		request.Header.Set("Authorization", "Bearer "+token)
 		response := httptest.NewRecorder()
@@ -176,10 +176,10 @@ func TestMCPRetiredProposalToolsRefuseWithoutWriting(t *testing.T) {
 				t.Run(tool+"/"+string(role)+"/"+test.name, func(t *testing.T) {
 					t.Parallel()
 					f := newGovernanceAuthFixture(t)
-					userToken, agentToken := f.user(owner, role)
+					userToken := f.user(owner, role)
 					orderID, args := test.setup(f)
 					before := f.snapshot(orderID)
-					for label, token := range map[string]string{"user": userToken, "agent": agentToken} {
+					for label, token := range map[string]string{"user": userToken} {
 						text, isErr := f.call(token, tool, args(tool))
 						requireRetiredRefusal(t, tool, text, isErr)
 						f.requireUnchanged(tool+" "+label, before)
@@ -199,7 +199,7 @@ func TestMCPRetiredProposalToolsRefuseWithoutWriting(t *testing.T) {
 func TestMCPRetiredProposalToolRefusalIsInBand(t *testing.T) {
 	t.Parallel()
 	f := newGovernanceAuthFixture(t)
-	userToken, _ := f.user("usr_in_band", core.WorkspaceRoleExecutor)
+	userToken := f.user("usr_in_band", core.WorkspaceRoleExecutor)
 	raw := func(tool string) (isError bool, text string, protocolError *rpcError) {
 		payload, err := json.Marshal(map[string]any{"jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": map[string]any{"name": tool, "arguments": map[string]any{"workspace_id": governanceWorkspace}}})
 		if err != nil {
@@ -253,7 +253,7 @@ func TestMCPAuthorityConflictReleaseNeedsNoProposal(t *testing.T) {
 			"citations":        []any{map[string]any{"document_id": documentID, "cited_version": version, "statement_or_section_id": clause}},
 		}
 	}
-	setup := func(t *testing.T) (*governanceAuthFixture, string, string, string) {
+	setup := func(t *testing.T) (*governanceAuthFixture, string, string) {
 		t.Helper()
 		f := newGovernanceAuthFixture(t)
 		if _, _, err := f.store.ConfirmRequirementVersion(f.ctx, governanceReqID, 1); err != nil {
@@ -262,23 +262,19 @@ func TestMCPAuthorityConflictReleaseNeedsNoProposal(t *testing.T) {
 		if _, _, err := f.store.ConfirmSystemDesignVersion(f.ctx, governanceDesignID, 1); err != nil {
 			t.Fatal(err)
 		}
-		userToken, agentToken := f.user("usr_checkpoint", core.WorkspaceRoleExecutor)
+		userToken := f.user("usr_checkpoint", core.WorkspaceRoleExecutor)
 		orderID := f.order("checkpoint", core.StageImplement)
 		f.claimRun(orderID, "usr_checkpoint", "checkpoint-session")
 		if pending, err := f.store.ListPendingProposals(f.ctx); err != nil || len(pending) != 0 {
 			t.Fatalf("fixture pending proposals=%+v err=%v", pending, err)
 		}
-		return f, userToken, agentToken, orderID
+		return f, userToken, orderID
 	}
-	for _, credential := range []string{"agent", "user"} {
+	for _, credential := range []string{"user"} {
 		for _, documentID := range []string{governanceReqID, governanceDesignID} {
 			t.Run(credential+"/"+documentID, func(t *testing.T) {
 				t.Parallel()
-				f, userToken, agentToken, orderID := setup(t)
-				token := agentToken
-				if credential == "user" {
-					token = userToken
-				}
+				f, token, orderID := setup(t)
 				before := f.snapshot(orderID)
 				text, isErr := f.call(token, "release_work_order", map[string]any{
 					"workspace_id": governanceWorkspace, "work_order_id": orderID, "session_id": "checkpoint-session",
@@ -303,7 +299,7 @@ func TestMCPAuthorityConflictReleaseNeedsNoProposal(t *testing.T) {
 				}
 				// The operator is asked for authorship, because nothing is
 				// pending on the cited document (AC-3.2).
-				status, isErr := f.call(userToken, "get_task_status", map[string]any{"workspace_id": governanceWorkspace, "task_id": released.TaskID})
+				status, isErr := f.call(token, "get_task_status", map[string]any{"workspace_id": governanceWorkspace, "task_id": released.TaskID})
 				if isErr {
 					t.Fatalf("task status: %s", status)
 				}
@@ -335,7 +331,7 @@ func TestMCPAuthorityConflictReleaseNeedsNoProposal(t *testing.T) {
 	} {
 		t.Run("refuses "+refusal.name, func(t *testing.T) {
 			t.Parallel()
-			f, _, agentToken, orderID := setup(t)
+			f, agentToken, orderID := setup(t)
 			before := f.snapshot(orderID)
 			text, isErr := f.call(agentToken, "release_work_order", map[string]any{
 				"workspace_id": governanceWorkspace, "work_order_id": orderID, "session_id": "checkpoint-session",
@@ -361,7 +357,7 @@ func TestDocumentSurfacesSurviveProposalToolRetirement(t *testing.T) {
 	if _, _, err := f.store.ConfirmSystemDesignVersion(f.ctx, governanceDesignID, 1); err != nil {
 		t.Fatal(err)
 	}
-	contributor, _ := f.user("usr_contributor", core.WorkspaceRoleContributor)
+	contributor := f.user("usr_contributor", core.WorkspaceRoleContributor)
 	rest := func(token, method, path string, body any) *httptest.ResponseRecorder {
 		t.Helper()
 		payload, err := json.Marshal(body)
@@ -453,7 +449,7 @@ func TestDocumentSurfacesSurviveProposalToolRetirement(t *testing.T) {
 	if err != nil || confirmed.Status != core.DecisionConfirmed || confirmed.Origin != core.DecisionOriginImplementation || confirmed.OriginTaskID != originTask {
 		t.Fatalf("decision history=%+v err=%v", confirmed, err)
 	}
-	reader, _ := f.user("usr_reader", core.WorkspaceRoleViewer)
+	reader := f.user("usr_reader", core.WorkspaceRoleViewer)
 	text, isErr := f.call(reader, "get_document", map[string]any{"workspace_id": governanceWorkspace, "kind": "system_design", "document_id": governanceDesignID, "version": design.Version})
 	if isErr || !strings.Contains(text, originTask) {
 		t.Fatalf("get_document isError=%v, want origin task %s in %s", isErr, originTask, text)

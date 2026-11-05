@@ -372,8 +372,7 @@ const (
 type CredentialKind string
 
 const (
-	CredentialUser  CredentialKind = "user"
-	CredentialAgent CredentialKind = "agent"
+	CredentialUser CredentialKind = "user"
 )
 
 type CredentialScope string
@@ -383,9 +382,8 @@ const (
 	CredentialScopeUser     CredentialScope = "user"
 )
 
-// AuthenticatedCredential is the non-secret identity resolved from a bearer
-// credential. Agent credentials always retain their owning user for later
-// authorization without attributing the agent's event to that user.
+// AuthenticatedCredential is the non-secret identity resolved from a person's
+// bearer credential or dashboard session (DEC-116(1)).
 type AuthenticatedCredential struct {
 	ID          string
 	OwnerUserID string
@@ -430,14 +428,19 @@ func (action InterventionAction) Valid() bool {
 // Event is the append-only source of truth for task state. Tasks and jobs are
 // transactional projections optimized for queries.
 type Event struct {
-	ID        int64           `json:"id"`
-	TaskID    string          `json:"task_id"`
-	JobID     string          `json:"job_id,omitempty"`
-	Kind      string          `json:"kind"`
-	ActorID   string          `json:"actor_id"`
-	ActorRole ActorRole       `json:"actor_role"`
-	Payload   json.RawMessage `json:"payload"`
-	At        time.Time       `json:"at"`
+	ID        int64     `json:"id"`
+	TaskID    string    `json:"task_id"`
+	JobID     string    `json:"job_id,omitempty"`
+	Kind      string    `json:"kind"`
+	ActorID   string    `json:"actor_id"`
+	ActorRole ActorRole `json:"actor_role"`
+	// ActorOwnerUserID is set only on a read, for an act recorded under a
+	// retired agent credential: the user who owns that credential. It is never
+	// stored, and the recorded ActorID stays as written
+	// (req-security-boundaries AC-1.3; DEC-116(3)).
+	ActorOwnerUserID string          `json:"actor_owner_user_id,omitempty"`
+	Payload          json.RawMessage `json:"payload"`
+	At               time.Time       `json:"at"`
 }
 
 type InterventionAction string
@@ -467,15 +470,17 @@ func InterventionActions() []InterventionAction {
 // ReasonCode is intentionally data rather than an enum so workspaces
 // can add taxonomy without a deploy; the API validates the required baseline.
 type Intervention struct {
-	ID         int64              `json:"id"`
-	TaskID     string             `json:"task_id"`
-	JobID      string             `json:"job_id,omitempty"`
-	ActorID    string             `json:"actor_id"`
-	ActorRole  ActorRole          `json:"actor_role"`
-	Action     InterventionAction `json:"action"`
-	ReasonCode string             `json:"reason_code"`
-	Comment    string             `json:"comment"`
-	At         time.Time          `json:"at"`
+	ID        int64     `json:"id"`
+	TaskID    string    `json:"task_id"`
+	JobID     string    `json:"job_id,omitempty"`
+	ActorID   string    `json:"actor_id"`
+	ActorRole ActorRole `json:"actor_role"`
+	// ActorOwnerUserID is set only on a read; see Event.ActorOwnerUserID.
+	ActorOwnerUserID string             `json:"actor_owner_user_id,omitempty"`
+	Action           InterventionAction `json:"action"`
+	ReasonCode       string             `json:"reason_code"`
+	Comment          string             `json:"comment"`
+	At               time.Time          `json:"at"`
 }
 
 type RedactionStats struct {

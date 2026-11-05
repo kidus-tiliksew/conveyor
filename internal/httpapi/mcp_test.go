@@ -102,7 +102,7 @@ func TestMCPReadArtifactSupportsManualSessionsAndEnforcesClaimOwnership(t *testi
 	server.WorkOrders = &workorder.Service{Store: st}
 	args := map[string]any{"workspace_id": "demo", "work_order_id": "order-a", "session_id": "session-a", "artifact_id": artifact.ID}
 	request := httptest.NewRequest(http.MethodPost, "/mcp", nil)
-	request = request.WithContext(withCredentialActor(request.Context(), core.AuthenticatedCredential{ID: "manual-agent", OwnerUserID: "owner-a", Kind: core.CredentialAgent}))
+	request = request.WithContext(withCredentialActor(request.Context(), core.AuthenticatedCredential{ID: "manual-pat", OwnerUserID: "owner-a", Kind: core.CredentialUser}))
 	if _, err = server.callMCPTool(request, "read_artifact", args); err != nil {
 		t.Fatalf("manual read: %v", err)
 	}
@@ -115,7 +115,7 @@ func TestMCPReadArtifactSupportsManualSessionsAndEnforcesClaimOwnership(t *testi
 	if _, err = server.callMCPTool(request, "read_artifact", auditArgs); err == nil || !strings.Contains(err.Error(), "not found") {
 		t.Fatalf("own-task generated audit read error=%v", err)
 	}
-	otherOwnerRequest := request.WithContext(withCredentialActor(request.Context(), core.AuthenticatedCredential{ID: "other-agent", OwnerUserID: "owner-b", Kind: core.CredentialAgent}))
+	otherOwnerRequest := request.WithContext(withCredentialActor(request.Context(), core.AuthenticatedCredential{ID: "other-pat", OwnerUserID: "owner-b", Kind: core.CredentialUser}))
 	if _, err = server.callMCPTool(otherOwnerRequest, "read_artifact", args); !errors.Is(err, store.ErrWorkOrderClaimUnauthorized) {
 		t.Fatalf("other owner read error=%v", err)
 	}
@@ -190,7 +190,7 @@ func TestMCPClaimDefaultsToFiveMinuteLease(t *testing.T) {
 	server.Workspace = "demo"
 	server.WorkOrders = &workorder.Service{Store: st, ConfigProvider: provider}
 	request := httptest.NewRequest(http.MethodPost, "/mcp", nil)
-	request = request.WithContext(withCredentialActor(request.Context(), core.AuthenticatedCredential{ID: "agent-token", OwnerUserID: "usr-owner", Kind: core.CredentialAgent, Scope: core.CredentialScopeUser}))
+	request = request.WithContext(withCredentialActor(request.Context(), core.AuthenticatedCredential{ID: "pat-token", OwnerUserID: "usr-owner", Kind: core.CredentialUser, Scope: core.CredentialScopeUser}))
 	result, err := server.callMCPTool(request, "claim_work_order", map[string]any{
 		"workspace_id": "demo", "work_order_id": job.ID, "session_id": "session", "client_token": "token", "claimant_id": "run:spoofed", "agent": "codex", "model": "gpt",
 	})
@@ -229,7 +229,7 @@ func TestMCPClaimWorksWithoutStoredForgeTokens(t *testing.T) {
 	server.Workspace = "demo"
 	server.WorkOrders = &workorder.Service{Store: st, ConfigProvider: provider}
 	request := httptest.NewRequest(http.MethodPost, "/mcp", nil)
-	request = request.WithContext(withCredentialActor(request.Context(), core.AuthenticatedCredential{ID: "agent-token", OwnerUserID: "usr-owner", Kind: core.CredentialAgent, Scope: core.CredentialScopeUser}))
+	request = request.WithContext(withCredentialActor(request.Context(), core.AuthenticatedCredential{ID: "pat-token", OwnerUserID: "usr-owner", Kind: core.CredentialUser, Scope: core.CredentialScopeUser}))
 	args := map[string]any{
 		"workspace_id": "demo", "work_order_id": job.ID, "session_id": "session", "client_token": "token", "claimant_id": "run:spoofed", "agent": "codex", "model": "gpt",
 	}
@@ -628,8 +628,8 @@ func TestMCPToolsListRequiresAuthAndPublishesLifecycle(t *testing.T) {
 		if strings.Contains(name, "preempt") {
 			t.Fatalf("operator-only preempt leaked into MCP tool %q", name)
 		}
-		if name == "create_task" && !strings.Contains(envelope.Result.Tools[i].Description, "agent_gate_disable_forbidden") {
-			t.Fatalf("create_task description omits the agent gate rule: %q", envelope.Result.Tools[i].Description)
+		if name == "create_task" && !strings.Contains(envelope.Result.Tools[i].Description, "invalid_agent_gate_override") {
+			t.Fatalf("create_task description omits the mistyped gate rule: %q", envelope.Result.Tools[i].Description)
 		}
 		if name == "claim_work_order" {
 			description := envelope.Result.Tools[i].Description
@@ -640,76 +640,7 @@ func TestMCPToolsListRequiresAuthAndPublishesLifecycle(t *testing.T) {
 	}
 }
 
-func TestMCPAgentCredentialCannotInvokeHumanReservedTools(t *testing.T) {
-	st := store.NewMemory()
-	server := NewServer(st)
-	// The owner holds an operator binding so that only the agent ceiling and
-	// the investigation-read rule can refuse a tool.
-	server.WorkOrders = &workorder.Service{Store: st}
-	membership := &membershipFixture{workspaces: []core.Workspace{{ID: "demo"}}, roles: map[string]map[string]core.WorkspaceRole{"usr_1": {"demo": core.WorkspaceRoleOperator}}}
-	server.Workspaces, server.Memberships = membership, membership
-	request := httptest.NewRequest(http.MethodPost, "/mcp", nil)
-	credential := core.AuthenticatedCredential{ID: "agt_1", OwnerUserID: "usr_1", Kind: core.CredentialAgent, Scope: core.CredentialScopeUser}
-	request = request.WithContext(withCredentialActor(request.Context(), credential))
-	if err := validateMCPAgentSafety(mcpAgentSafeReasons); err != nil {
-		t.Fatal(err)
-	}
-	for _, tool := range mcpTools() {
-		name, _ := tool["name"].(string)
-		if _, agentSafe := mcpAgentSafeReasons[name]; agentSafe {
-			continue
-		}
-		if _, err := server.callMCPTool(request, name, map[string]any{"workspace_id": "demo"}); err == nil || !strings.Contains(err.Error(), "operator-scoped user credential") {
-			t.Fatalf("%s error=%v", name, err)
-		}
-	}
-	// Independent literal inventory: DEC-60 moves only create_task out of the
-	// reserved set; every other lifecycle tool and investigation read stays
-	// human-reserved. The capability-derived ceiling and the
-	// investigation-read rule together must refuse exactly this set.
-	// report_continuation is retired (DEC-94) and absent from the inventory.
-	literal := []string{
-		"add_task_dependency", "set_assignee", "redispatch_work_order", "attach_task_branch",
-		"list_workspaces", "list_repositories", "list_tasks", "get_task", "list_operator_inbox", "list_task_events", "get_task_context",
-		"list_documents", "get_document", "search_documents", "list_document_events", "list_decisions", "get_decision", "get_lineage",
-	}
-	for _, name := range literal {
-		if !agentRefusedMCPTool(name) {
-			t.Fatalf("%s left the human-reserved set", name)
-		}
-	}
-	var derived []string
-	for _, tool := range mcpTools() {
-		if name, _ := tool["name"].(string); agentRefusedMCPTool(name) {
-			derived = append(derived, name)
-		}
-	}
-	if !slices.Equal(slices.Sorted(slices.Values(derived)), slices.Sorted(slices.Values(literal))) {
-		t.Fatalf("agent-refused tools=%v, want %v", slices.Sorted(slices.Values(derived)), slices.Sorted(slices.Values(literal)))
-	}
-	if agentRefusedMCPTool("create_task") {
-		t.Fatal("create_task is still human-reserved")
-	}
-}
-
-// agentRefusedMCPTool classifies a registered tool by the two independent
-// agent-credential rules: investigation reads are user-only without a live
-// claim (get_document and search_documents admit one; see
-// mcp_governance_authorization_test.go), and every other
-// tool is refused exactly when its mapped
-// capability is outside the capability-derived agent ceiling
-// (req-accounts-and-membership AC-3.4, AC-5.1; component-mcp-protocol). An
-// unmapped tool classifies as refused, matching production's fail-closed
-// unknown-tool answer.
-func agentRefusedMCPTool(name string) bool {
-	if isMCPRead(name) {
-		return true
-	}
-	capability, mapped := mcpCapabilities[name]
-	return !mapped || !agentMayExerciseCapability(capability)
-}
-
-func TestMCPAddTaskDependencyRequiresHumanCredential(t *testing.T) {
+func TestMCPAddTaskDependencyRunsUnderAPersonsCredential(t *testing.T) {
 	ctx := store.WithWorkspace(store.WithActor(t.Context(), store.SystemActor()), "demo")
 	st := store.NewMemory()
 	for _, task := range []core.Task{
@@ -733,14 +664,9 @@ func TestMCPAddTaskDependencyRequiresHumanCredential(t *testing.T) {
 		t.Fatalf("human result=%+v err=%v", result, err)
 	}
 
-	agentRequest := httptest.NewRequest(http.MethodPost, "/mcp", nil)
-	agentRequest = agentRequest.WithContext(withCredentialActor(agentRequest.Context(), core.AuthenticatedCredential{ID: "agent", OwnerUserID: "operator", Kind: core.CredentialAgent}))
-	if _, err = server.callMCPTool(agentRequest, "add_task_dependency", args); err == nil || !strings.Contains(err.Error(), "operator-scoped user credential") {
-		t.Fatalf("agent error=%v", err)
-	}
 }
 
-func TestMCPAttachTaskBranchRequiresHumanCredential(t *testing.T) {
+func TestMCPAttachTaskBranchRunsUnderAPersonsCredential(t *testing.T) {
 	ctx := store.WithWorkspace(store.WithActor(t.Context(), store.SystemActor()), "demo")
 	st := store.NewMemory()
 	task := core.Task{ID: "mcp-attach", Workspace: "demo", Repo: "conveyor", BaseBranch: "main", Branch: "conveyor/task-mcp-attach", State: core.TaskRunning, CreatedAt: time.Now().UTC()}
@@ -756,11 +682,6 @@ func TestMCPAttachTaskBranchRequiresHumanCredential(t *testing.T) {
 	got, _ := result.(core.Task)
 	if err != nil || got.Branch != "feature/mcp" {
 		t.Fatalf("human result=%+v err=%v", result, err)
-	}
-	agentRequest := httptest.NewRequest(http.MethodPost, "/mcp", nil)
-	agentRequest = agentRequest.WithContext(withCredentialActor(agentRequest.Context(), core.AuthenticatedCredential{ID: "agent", OwnerUserID: "operator", Kind: core.CredentialAgent}))
-	if _, err = server.callMCPTool(agentRequest, "attach_task_branch", args); err == nil || !strings.Contains(err.Error(), "operator-scoped user credential") {
-		t.Fatalf("agent error=%v", err)
 	}
 }
 
@@ -786,63 +707,6 @@ func TestMCPAttachTaskBranchRefusals(t *testing.T) {
 	if err := call("main"); err == nil || !strings.Contains(err.Error(), "branch_not_attachable") {
 		t.Fatalf("base=%v", err)
 	}
-}
-
-func TestMCPHumanReservedClassificationRejectsOmittedReservedTool(t *testing.T) {
-	mutated := maps.Clone(mcpAgentSafeReasons)
-	// Reclassifying add_task_dependency as agent-safe removes it from the
-	// reserved set derived by exclusion. The independent production guard must
-	// reject that mutation, proving this test does not share production's
-	// literal list. create_task is the one justified agent-safe exception
-	// (DEC-60), so it can no longer serve as the mutation probe.
-	mutated["add_task_dependency"] = "mutation: agent may reorder durable operator work"
-	if err := validateMCPAgentSafety(mutated); err == nil || !strings.Contains(err.Error(), "add_task_dependency") {
-		t.Fatalf("reserved-set mutation error=%v", err)
-	}
-	// Dropping create_task's justification must fail too: an agent-reachable
-	// tool always carries a recorded security reason.
-	omitted := maps.Clone(mcpAgentSafeReasons)
-	delete(omitted, "create_task")
-	if err := validateMCPAgentSafety(omitted); err == nil || !strings.Contains(err.Error(), "create_task") {
-		t.Fatalf("omitted justification error=%v", err)
-	}
-}
-
-var mcpAgentSafeReasons = map[string]string{
-	// The one maintainer act an agent credential may perform (DEC-60;
-	// req-accounts-and-membership AC-3.4; req-intake-and-triage AC-4.2, AC-4.3).
-	"create_task":                      "files a task only when the credential owner's live binding grants create_tasks; agent gate input may only turn gates on (explicit false, L0, and L1 are refused by name before any lookup or write); provenance names the agent and owner from the verified credential; the task enters ordinary triage; and the agent gains no right over it",
-	"refresh_work_order_context":       "Exact live-claim bounded observation; no authority or lifecycle mutation.",
-	"prepare_verification_operation":   "requires the exact live verify claim and retains one-use dispatch receipts",
-	"reconcile_verification_operation": "requires the exact live verify claim and cannot issue operator recovery authorization",
-	"submit_verification":              "seals validated evidence under the exact claim without judging review acceptance",
-
-	"get_verification_context":         "requires exact live verification authority or an authorized workspace read",
-	"prepare_verification":             "requires exact live verification authority or an authorized workspace read",
-	"register_verification_obligation": "requires exact live verification authority or an authorized workspace read",
-	"start_verification_attempt":       "requires exact live verification authority or an authorized workspace read",
-	"report_verification_outcome":      "requires exact live verification authority or an authorized workspace read",
-	"get_evidence_schemas":             "requires exact live verification authority or an authorized workspace read",
-	"submit_verification_evidence":     "requires exact live verification authority or an authorized workspace read",
-	"upload_verification_artifact":     "requires exact live verification authority or an authorized workspace read",
-	"read_verification_evidence":       "requires exact live verification authority or an authorized workspace read",
-	"get_verification_publication":     "requires exact live verification authority or an authorized workspace read",
-	"list_work_orders":                 "read-only discovery of work the caller may claim",
-	"claim_work_order":                 "begins only an eligible bounded execution lease",
-	"renew_work_order":                 "extends only the caller's exact execution lease",
-	"release_work_order":               "releases only the caller's exact execution lease",
-	"request_plan_revision":            "requests an operator-gated plan decision without deciding it",
-	"get_work_order":                   "reads only context authorized for the caller's claimed order",
-	"get_task_status":                  "reads only the next action of the task behind an order the caller's session claimed or submitted, without renewing the lease",
-	"read_artifact":                    "reads only an artifact authorized by claimed-order context",
-	"report_progress":                  "records self-reported progress only after claimant-bound admission",
-	"report_usage":                     "records self-reported observational usage only after claimant-bound admission",
-	"upload_transcript":                "attaches redacted evidence only after claimant-bound admission",
-	"submit_plan":                      "submits a plan-stage deliverable only after claimant-bound admission",
-	"submit_for_review":                "submits an implementation only after claimant-bound admission",
-	"await_review":                     "observes review state only after claimant-bound admission",
-	"submit_review_verdict":            "acts only after claimant-bound admission to an independently claimed review order",
-	"submit_review_summary":            "appends only an informative summary of a settled round after same-task order and session admission; changes no verdict, bounce, gate, or work order",
 }
 
 func TestEveryRegisteredMCPToolHasExplicitCapability(t *testing.T) {
@@ -1014,30 +878,6 @@ func TestWorkOrderListSurfacesRedactForeignSessionIDs(t *testing.T) {
 		t.Fatal(err)
 	}
 	assertProjection(t, restOrders)
-}
-
-func validateMCPAgentSafety(agentSafe map[string]string) error {
-	seen := make(map[string]bool)
-	for _, tool := range mcpTools() {
-		name, _ := tool["name"].(string)
-		seen[name] = true
-		reason, safe := agentSafe[name]
-		reserved := agentRefusedMCPTool(name)
-		switch {
-		case safe && strings.TrimSpace(reason) == "":
-			return fmt.Errorf("agent-safe MCP tool %s lacks a security justification", name)
-		case safe && reserved:
-			return fmt.Errorf("human-reserved MCP tool %s was omitted from the reserved set by agent-safe classification", name)
-		case !safe && !reserved:
-			return fmt.Errorf("registered MCP tool %s is neither justified as agent-safe nor guarded as human-reserved", name)
-		}
-	}
-	for name := range agentSafe {
-		if !seen[name] {
-			return fmt.Errorf("agent-safe justification names unregistered MCP tool %s", name)
-		}
-	}
-	return nil
 }
 
 func TestMCPRequestPlanRevisionEndToEnd(t *testing.T) {
@@ -1234,15 +1074,34 @@ func TestMCPRenewHonorsLeaseSeconds(t *testing.T) {
 		}
 	})
 
-	t.Run("agent renewal refused as claim lost", func(t *testing.T) {
+	t.Run("another token of the claiming person renews", func(t *testing.T) {
 		t.Parallel()
 		f := setup(t, core.TaskRunClaimantID("owner-a"), "", 4*time.Hour)
-		agent := core.AuthenticatedCredential{
-			ID: "owner-agent", OwnerUserID: "owner-a", Kind: core.CredentialAgent, Scope: core.CredentialScopeUser,
-		}
+		second := core.AuthenticatedCredential{ID: "owner-pat-second", OwnerUserID: "owner-a", Kind: core.CredentialUser, Scope: core.CredentialScopeUser}
 		args := map[string]any{"workspace_id": "demo", "work_order_id": f.orderID, "session_id": "session-a", "lease_seconds": float64(1800)}
-		if _, err := f.server.callMCPTool(requestFor(agent), "renew_work_order", args); !errors.Is(err, store.ErrWorkOrderClaimLost) {
-			t.Fatalf("agent renew error=%v", err)
+		if _, err := f.server.callMCPTool(requestFor(second), "renew_work_order", args); err != nil {
+			t.Fatalf("person's second token renew error=%v", err)
+		}
+	})
+
+	t.Run("another person is refused the claim", func(t *testing.T) {
+		t.Parallel()
+		f := setup(t, core.TaskRunClaimantID("owner-a"), "", 4*time.Hour)
+		before, err := f.server.Store.GetWorkOrder(store.WithWorkspace(store.WithActor(t.Context(), store.SystemActor()), "demo"), f.orderID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		other := core.AuthenticatedCredential{ID: "other-pat", OwnerUserID: "owner-b", Kind: core.CredentialUser, Scope: core.CredentialScopeUser}
+		args := map[string]any{"workspace_id": "demo", "work_order_id": f.orderID, "session_id": "session-a", "lease_seconds": float64(1800)}
+		if _, err := f.server.callMCPTool(requestFor(other), "renew_work_order", args); err == nil {
+			t.Fatal("another person's renewal was accepted")
+		}
+		after, err := f.server.Store.GetWorkOrder(store.WithWorkspace(store.WithActor(t.Context(), store.SystemActor()), "demo"), f.orderID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !after.LeaseExpiresAt.Equal(before.LeaseExpiresAt) {
+			t.Fatalf("refused renewal moved the lease %s -> %s", before.LeaseExpiresAt, after.LeaseExpiresAt)
 		}
 	})
 
@@ -1434,7 +1293,7 @@ func TestMCPClaimedPlanSubmissionStillUsesSpecLifecycle(t *testing.T) {
 	server.Workspace = "demo"
 	server.WorkOrders = &workorder.Service{Store: st, Dispatcher: &dispatch.Dispatcher{Store: st}, ConfigProvider: provider}
 	request := httptest.NewRequest(http.MethodPost, "/mcp", nil)
-	request = request.WithContext(withCredentialActor(request.Context(), core.AuthenticatedCredential{ID: "agent-token", OwnerUserID: "usr-planner", Kind: core.CredentialAgent, Scope: core.CredentialScopeUser}))
+	request = request.WithContext(withCredentialActor(request.Context(), core.AuthenticatedCredential{ID: "pat-token", OwnerUserID: "usr-planner", Kind: core.CredentialUser, Scope: core.CredentialScopeUser}))
 	claimArgs := map[string]any{
 		"workspace_id": "demo", "work_order_id": job.ID, "session_id": "plan-session", "client_token": "secret",
 		"claimant_id": "run:spoofed", "agent": "codex", "model": "gpt",
@@ -1527,7 +1386,7 @@ func TestMCPSubmitPlanReviewSeats(t *testing.T) {
 		server.Workspace = "demo"
 		server.WorkOrders = &workorder.Service{Store: st, Dispatcher: &dispatch.Dispatcher{Store: st}, ConfigProvider: provider}
 		request := httptest.NewRequest(http.MethodPost, "/mcp", nil)
-		request = request.WithContext(withCredentialActor(request.Context(), core.AuthenticatedCredential{ID: "agent-token", OwnerUserID: "usr-planner", Kind: core.CredentialAgent, Scope: core.CredentialScopeUser}))
+		request = request.WithContext(withCredentialActor(request.Context(), core.AuthenticatedCredential{ID: "pat-token", OwnerUserID: "usr-planner", Kind: core.CredentialUser, Scope: core.CredentialScopeUser}))
 		if _, err := server.callMCPTool(request, "claim_work_order", map[string]any{
 			"workspace_id": "demo", "work_order_id": job.ID, "session_id": "plan-session", "client_token": "secret", "agent": "codex", "model": "gpt",
 		}); err != nil {
@@ -1635,10 +1494,11 @@ func planReviewSeatPointer(value int) *int { return &value }
 // A nil Go slice marshals to `"required": null`, which the official MCP
 // SDK's validation rejects — taking every tool down with it as a
 // "tools fetch failed" at connection time.
-// TestMCPCreateTaskToolDescribesAgentRules keeps the published description in
-// step with DEC-60's agent rules, and keeps the schema title-less with the
-// retired execution fields and the retired hold (DEC-74(3)) absent.
-func TestMCPCreateTaskToolDescribesAgentRules(t *testing.T) {
+// TestMCPCreateTaskToolDescribesItsRules keeps the published description in step
+// with DEC-116(5) and component-task-lifecycle invariant 16, and keeps the schema
+// title-less with the retired execution fields and the retired hold (DEC-74(3))
+// absent.
+func TestMCPCreateTaskToolDescribesItsRules(t *testing.T) {
 	t.Parallel()
 	var tool map[string]any
 	for _, candidate := range mcpTools() {
@@ -1653,16 +1513,14 @@ func TestMCPCreateTaskToolDescribesAgentRules(t *testing.T) {
 	for _, phrase := range []string{
 		"idempotency_key is required",
 		"create_tasks",
-		"An agent credential may call this tool only when its owning user's role in the workspace grants create_tasks",
-		"records the agent and its owning user as provenance",
+		"The credential's owner needs create_tasks in the workspace",
+		"records MCP as its source and that person as its creator",
 		"enters triage like any other task",
-		"grants the agent no further capability",
-		"take the workspace defaults",
-		"true turns a gate on",
-		"agent_gate_disable_forbidden",
-		"L0 or L1",
+		"grants the session no further capability",
+		"takes the workspace default",
+		"a supplied boolean applies",
 		"invalid_agent_gate_override",
-		"DEC-60",
+		"DEC-116(5)",
 	} {
 		if !strings.Contains(description, phrase) {
 			t.Fatalf("create_task description lacks %q: %s", phrase, description)
@@ -2079,8 +1937,8 @@ func TestResolveMCPWorkspaceFallbackFailsClosed(t *testing.T) {
 	}
 }
 
-func TestMCPApprovalCoverageGuardForUserAndAgent(t *testing.T) {
-	for _, transport := range []string{"user", "agent"} {
+func TestMCPApprovalCoverageGuardForUser(t *testing.T) {
+	for _, transport := range []string{"user"} {
 		t.Run(transport, func(t *testing.T) {
 			ctx := store.WithWorkspace(store.WithActor(t.Context(), store.SystemActor()), "demo")
 			st := store.NewMemory()
@@ -2114,9 +1972,6 @@ func TestMCPApprovalCoverageGuardForUserAndAgent(t *testing.T) {
 			server.WorkOrders = &workorder.Service{Store: st, Dispatcher: d, ConfigProvider: func(context.Context) (*config.Config, error) { return cfg, nil }}
 			request := httptest.NewRequest(http.MethodPost, "/mcp", nil)
 			credential := core.AuthenticatedCredential{ID: "owner", OwnerUserID: "owner", Kind: core.CredentialUser}
-			if transport == "agent" {
-				credential.Kind = core.CredentialAgent
-			}
 			request = request.WithContext(withCredentialActor(request.Context(), credential))
 			args := map[string]any{"workspace_id": "demo", "work_order_id": job.ID, "session_id": claim.SessionID, "verdict": "approve", "reason_code": "approved", "summary": "focused checks pass", "feedback": "", "requirement_citations": map[string]any{"applicable": false}, "governance_assessment": map[string]any{"design_applicable": false, "decision_citable": false}, "done_criteria_coverage": map[string]any{"applicable": true, "summary": "mandatory validation unresolved", "unverified": []string{storetest.PR907MandatoryValidation}}}
 			before, _ := st.ListEvents(ctx, task.ID)
@@ -2171,7 +2026,7 @@ func TestMCPApprovalCoverageGuardForUserAndAgent(t *testing.T) {
 // (component-persistence, Actor context).
 func withCredentialActor(ctx context.Context, credential core.AuthenticatedCredential) context.Context {
 	actor := store.Actor{ID: store.UserActorID(credential.OwnerUserID), Role: core.ActorUser}
-	if credential.Kind == core.CredentialAgent {
+	if credential.Kind == retiredAgentKind {
 		actor = store.Actor{ID: store.AgentActorID(credential.ID), Role: core.ActorAgent}
 	}
 	return store.WithActor(store.WithCredential(ctx, credential), actor)
@@ -2464,7 +2319,7 @@ func TestMCPBackendFailureCarriesRequestIDWithoutDriverText(t *testing.T) {
 	server.WorkOrders = &workorder.Service{Store: st}
 	body := `{"jsonrpc":"2.0","id":7,"method":"tools/call","params":{"name":"claim_work_order","arguments":{"workspace_id":"demo","work_order_id":"wo-1","session_id":"session","client_token":"secret-client-token","agent":"codex","model":"gpt"}}}`
 	request := httptest.NewRequest(http.MethodPost, "/mcp", strings.NewReader(body))
-	ctx := withCredentialActor(request.Context(), core.AuthenticatedCredential{ID: "agent-token", OwnerUserID: "usr-owner", Kind: core.CredentialAgent, Scope: core.CredentialScopeUser})
+	ctx := withCredentialActor(request.Context(), core.AuthenticatedCredential{ID: "pat-token", OwnerUserID: "usr-owner", Kind: core.CredentialUser, Scope: core.CredentialScopeUser})
 	request = request.WithContext(context.WithValue(ctx, middleware.RequestIDKey, "host/abc-000042"))
 	response := httptest.NewRecorder()
 	server.handleMCP(response, request)

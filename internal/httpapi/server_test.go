@@ -134,7 +134,7 @@ func TestCredentialAuthDerivesTypedActorsAndIgnoresAssertedHeader(t *testing.T) 
 	server := NewServer(store.NewMemory())
 	server.Credentials = staticCredentialVerifier{
 		"human-secret": {ID: "pat_1", OwnerUserID: "usr_1", Kind: core.CredentialUser, Scope: core.CredentialScopeOperator},
-		"agent-secret": {ID: "agt_1", OwnerUserID: "usr_1", Kind: core.CredentialAgent, Scope: core.CredentialScopeUser},
+		"agent-secret": {ID: "agt_1", OwnerUserID: "usr_1", Kind: retiredAgentKind, Scope: core.CredentialScopeUser},
 	}
 	capture := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		_ = json.NewEncoder(w).Encode(store.ActorFromContext(r.Context()))
@@ -153,7 +153,6 @@ func TestCredentialAuthDerivesTypedActorsAndIgnoresAssertedHeader(t *testing.T) 
 		role               core.ActorRole
 	}{
 		{name: "user", token: "human-secret", actor: "user:usr_1", role: core.ActorUser},
-		{name: "agent", token: "agent-secret", actor: "agent:agt_1", role: core.ActorAgent},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			response := call(server.requireMCPAuth(capture), test.token)
@@ -164,7 +163,10 @@ func TestCredentialAuthDerivesTypedActorsAndIgnoresAssertedHeader(t *testing.T) 
 		})
 	}
 	if response := call(server.requireMutationCapability(core.CapabilityOperateGates)(capture), "agent-secret"); response.Code != http.StatusUnauthorized {
-		t.Fatalf("execution credential reached human mutation: status=%d body=%s", response.Code, response.Body.String())
+		t.Fatalf("retired agent credential reached a mutation: status=%d body=%s", response.Code, response.Body.String())
+	}
+	if response := call(server.requireMCPAuth(capture), "agent-secret"); response.Code != http.StatusUnauthorized || response.Header().Get("WWW-Authenticate") != "Bearer" {
+		t.Fatalf("retired agent credential reached MCP: status=%d body=%s", response.Code, response.Body.String())
 	}
 }
 
@@ -4896,7 +4898,7 @@ func TestTaskDetailAuditSnapshots(t *testing.T) {
 			if unauthenticated.Code != http.StatusUnauthorized {
 				t.Fatalf("unauthenticated read: %d", unauthenticated.Code)
 			}
-			for _, kind := range []core.CredentialKind{core.CredentialAgent, core.CredentialKind("worker")} {
+			for _, kind := range []core.CredentialKind{retiredAgentKind, core.CredentialKind("worker")} {
 				srv.Credentials = staticCredentialVerifier{"private-token": {ID: "execution", Kind: kind, OwnerUserID: "local-operator"}}
 				rec := httptest.NewRecorder()
 				req := httptest.NewRequest("GET", "/v1/tasks/audit-task/audit/work-order/audit-order-6?workspace_id=demo", nil)

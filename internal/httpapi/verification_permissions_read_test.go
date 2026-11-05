@@ -214,7 +214,7 @@ func TestVerificationPermissionProjectionAndReceipt(t *testing.T) {
 	if w, body := f.post(f.operator, foreign); w.Code != 404 || body["reason"] != "" {
 		t.Fatalf("foreign context: %d %v", w.Code, body)
 	}
-	agent := store.WithActor(store.WithCredential(f.ctx, core.AuthenticatedCredential{ID: "child", Kind: core.CredentialAgent, OwnerUserID: f.ownerID}), store.Actor{ID: "agent:child", Role: core.ActorAgent})
+	agent := store.WithActor(store.WithCredential(f.ctx, core.AuthenticatedCredential{ID: "child", Kind: retiredAgentKind, OwnerUserID: f.ownerID}), store.Actor{ID: "agent:child", Role: core.ActorAgent})
 	for name, caller := range map[string]context.Context{"worker": f.worker, "agent": agent, "contributor": f.contrib, "viewer": f.viewer, "anonymous": f.ctx} {
 		w := f.serve(caller, "GET", f.path, nil)
 		if w.Code < 400 || strings.Contains(w.Body.String(), f.contextID) {

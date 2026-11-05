@@ -68,7 +68,7 @@ func TestCallerIdentityIsCredentialDerivedAndWorkspaceScoped(t *testing.T) {
 	server.Memberships = memberships
 	server.Credentials = staticCredentialVerifier{
 		"human-secret": {ID: "pat-owner", OwnerUserID: "usr-owner", Kind: core.CredentialUser, Scope: core.CredentialScopeUser},
-		"agent-secret": {ID: "agt-owner", OwnerUserID: "usr-owner", Kind: core.CredentialAgent, Scope: core.CredentialScopeUser},
+		"agent-secret": {ID: "agt-owner", OwnerUserID: "usr-owner", Kind: retiredAgentKind, Scope: core.CredentialScopeUser},
 	}
 	call := func(token, target string) *httptest.ResponseRecorder {
 		t.Helper()

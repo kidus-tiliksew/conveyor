@@ -179,16 +179,6 @@ func (s *Server) callMCPTool(r *http.Request, name string, args map[string]any) 
 		}
 		return result
 	}
-	if credential, ok := store.CredentialFromContext(r.Context()); ok && credential.Kind == core.CredentialAgent {
-		// The agent ceiling is derived from the tool's capability, never from
-		// a tool-name list, so a new tool above contributor is refused without
-		// further edits. Unmapped tools fail closed below as unknown
-		// (req-accounts-and-membership AC-3.4, AC-5.1; req-security-boundaries
-		// REQ-1; component-mcp-protocol).
-		if capability, mapped := mcpCapabilities[name]; mapped && !agentMayExerciseCapability(capability) {
-			return nil, fmt.Errorf("%s requires an operator-scoped user credential", name)
-		}
-	}
 	explicitWorkspace := stringArg("workspace_id")
 	workspace, err := s.resolveMCPWorkspace(r.Context(), explicitWorkspace)
 	if err != nil {
@@ -221,14 +211,12 @@ func (s *Server) callMCPTool(r *http.Request, name string, args map[string]any) 
 	}
 	switch name {
 	case "create_task":
-		if credential, ok := store.CredentialFromContext(ctx); ok && credential.Kind == core.CredentialAgent {
-			// boolArg and stringArg drop a mistyped value, which would let a
-			// null or string gate fall back to an off workspace default. An
-			// agent's policy inputs are therefore type-checked here, before
-			// the shared intake applies the gate-on-only rule (DEC-60).
-			if err := agentCreateTaskArgTypeError(args); err != nil {
-				return nil, fmt.Errorf("%s: %s", err.Code, err.Message)
-			}
+		// boolArg and stringArg drop a mistyped value, which would let a null
+		// or string gate fall back to the workspace default. Every caller's
+		// policy inputs are therefore type-checked here, before any lookup
+		// (component-task-lifecycle invariant 16; req-intake-and-triage AC-4.2).
+		if err := createTaskPolicyArgError(args); err != nil {
+			return nil, fmt.Errorf("%s: %s", err.Code, err.Message)
 		}
 		if _, supplied := args["title"]; supplied {
 			return nil, fmt.Errorf("title is generated and must not be supplied")
@@ -328,12 +316,11 @@ func (s *Server) callMCPTool(r *http.Request, name string, args map[string]any) 
 	case "redispatch_work_order":
 		return outboundWorkOrderResult(s.WorkOrders.Redispatch(ctx, stringArg("work_order_id")))
 	case "renew_work_order":
-		// Only a user credential renews: its owner-derived run:<owner> claimant
-		// is the identity the claim recorded. An agent credential carries no
-		// run binding, so its renewal is refused as a lost claim
+		// The credential owner's run:<owner> claimant is the identity the claim
+		// recorded, so only the claiming person's session renews
 		// (req-security-boundaries REQ-1; component-mcp-protocol, Renewal lease).
 		credential, ok := store.CredentialFromContext(ctx)
-		if !ok || credential.Kind != core.CredentialUser {
+		if !ok {
 			return nil, store.ErrWorkOrderClaimLost
 		}
 		claim := core.WorkOrderClaimIdentity{ClaimantID: core.TaskRunClaimantID(credential.OwnerUserID), SessionID: session}
@@ -361,7 +348,7 @@ func (s *Server) callMCPTool(r *http.Request, name string, args map[string]any) 
 		}
 		return s.WorkOrders.RequestPlanRevisionClaim(ctx, claim, stringArg("work_order_id"), stringArg("rationale"))
 	case "get_task_status":
-		return s.mcpTaskStatus(ctx, stringArg("task_id"), stringArg("work_order_id"), session)
+		return s.mcpTaskStatus(ctx, stringArg("task_id"))
 	case "get_work_order":
 		contract, err := s.WorkOrders.Get(ctx, stringArg("work_order_id"), session)
 		if err != nil {
@@ -464,35 +451,35 @@ func (s *Server) callMCPTool(r *http.Request, name string, args map[string]any) 
 	}
 }
 
-// agentCreateTaskArgTypeError refuses an agent's create_task policy input
-// whose JSON type would otherwise be silently dropped by boolArg or stringArg.
-func agentCreateTaskArgTypeError(args map[string]any) *taskCreateError {
+// createTaskPolicyArgError refuses a create_task policy input whose JSON type or
+// value would otherwise be silently dropped or reach the shared intake as
+// something other than the caller's gate. A null or non-boolean gate, a
+// non-string level, and an unrecognized level answer
+// invalid_agent_gate_override for every caller, before the idempotency lookup, so
+// a refused request has no side effect even when its key names a task
+// (component-task-lifecycle invariant 16; req-intake-and-triage AC-4.2).
+func createTaskPolicyArgError(args map[string]any) *taskCreateError {
 	for _, field := range []string{"spec_approval", "merge_approval"} {
 		value, supplied := args[field]
 		if !supplied {
 			continue
 		}
 		if _, ok := value.(bool); !ok {
-			return &taskCreateError{Status: http.StatusBadRequest, Code: agentGateOverrideInvalid, Message: field + " must be a boolean; omit it to take the workspace default"}
+			return &taskCreateError{Status: http.StatusBadRequest, Code: invalidGateOverride, Message: field + " must be a boolean; omit it to take the workspace default"}
 		}
 	}
 	if value, supplied := args["level"]; supplied {
-		if _, ok := value.(string); !ok {
-			return &taskCreateError{Status: http.StatusBadRequest, Code: agentGateOverrideInvalid, Message: "level must be L2 or L3 for an agent credential"}
+		level, ok := value.(string)
+		if !ok {
+			return &taskCreateError{Status: http.StatusBadRequest, Code: invalidGateOverride, Message: "level must be L0, L1, L2, or L3"}
+		}
+		switch core.EscalationLevel(level) {
+		case "", core.L0, core.L1, core.L2, core.L3:
+		default:
+			return &taskCreateError{Status: http.StatusBadRequest, Code: invalidGateOverride, Message: "level must be L0, L1, L2, or L3"}
 		}
 	}
 	return nil
-}
-
-// agentMayExerciseCapability is the agent credential ceiling: every
-// contributor capability, plus create_tasks, the one maintainer capability an
-// execution credential may exercise. It is derived from the role bundles, so a
-// bundle change moves the ceiling on the MCP surface without a tool list to
-// edit. Passing it grants nothing by itself; the owner's live binding, claim,
-// stage, and handler checks still apply (req-accounts-and-membership AC-3.4,
-// AC-5.1; DEC-60; component-mcp-protocol).
-func agentMayExerciseCapability(capability core.Capability) bool {
-	return capability == core.CapabilityCreateTasks || core.RoleAllows(core.WorkspaceRoleContributor, capability)
 }
 
 // mcpCapabilities names each tool's capability, checked against the live
@@ -569,25 +556,13 @@ var claimantBoundMCPTools = map[string]bool{
 }
 
 // mcpTaskStatus returns the next action GET /v1/tasks/{id}/next-action
-// returns (req-operator-next-action AC-5.3, AC-1.7; DEC-61). A user reads any
-// task in the workspace. An agent credential reads only the task
-// of an order its session claimed or submitted, through get_work_order's
-// observation check without its lease renewal. Every agent refusal is the
-// same error, so it never discloses whether a task exists (DEC-19;
-// feature-operator-next-action NA-8).
-func (s *Server) mcpTaskStatus(ctx context.Context, taskID, workOrderID, sessionID string) (nextaction.NextAction, error) {
-	credential, ok := store.CredentialFromContext(ctx)
-	if !ok {
+// returns (req-operator-next-action AC-5.3, AC-1.7; DEC-61). The tool's
+// view_workspace capability, checked against the owner's live binding, admits
+// any member to any task in the workspace. A caller outside it was refused
+// before this runs, and a task of another workspace answers not found (DEC-19).
+func (s *Server) mcpTaskStatus(ctx context.Context, taskID string) (nextaction.NextAction, error) {
+	if _, ok := store.CredentialFromContext(ctx); !ok {
 		return nextaction.NextAction{}, errWorkspaceNotVisible
-	}
-	if credential.Kind != core.CredentialUser {
-		if workOrderID == "" || sessionID == "" || s.WorkOrders == nil {
-			return nextaction.NextAction{}, store.ErrWorkOrderClaimUnauthorized
-		}
-		order, err := s.WorkOrders.ObservableOrder(ctx, workOrderID, sessionID)
-		if err != nil || order.TaskID != taskID {
-			return nextaction.NextAction{}, store.ErrWorkOrderClaimUnauthorized
-		}
 	}
 	task, err := s.Store.GetTask(ctx, taskID)
 	if workspace, _ := store.WorkspaceFromContext(ctx); err != nil || task.Workspace != workspace {
@@ -632,15 +607,14 @@ func (s *Server) claimantSessionOrder(ctx context.Context, workOrderID, sessionI
 	if order.WorkerID != "" {
 		return core.WorkOrder{}, store.ErrWorkOrderClaimLost
 	}
-	if (credential.Kind == core.CredentialUser || credential.Kind == core.CredentialAgent) && order.ClaimantID == core.TaskRunClaimantID(credential.OwnerUserID) {
+	if credential.Kind == core.CredentialUser && order.ClaimantID == core.TaskRunClaimantID(credential.OwnerUserID) {
 		return order, nil
 	}
 	return core.WorkOrder{}, store.ErrWorkOrderClaimUnauthorized
 }
 
 // authorizeClaimMutation resolves the authenticated owner of one live claim
-// through the owner-derived run:<owner> identity of user and agent
-// credentials.
+// through the owner-derived run:<owner> identity of a person's credential.
 func (s *Server) authorizeClaimMutation(ctx context.Context, workOrderID, sessionID string) (core.WorkOrderClaimIdentity, error) {
 	claim, err := s.authorizeClaimantSession(ctx, workOrderID, sessionID)
 	if err != nil {
@@ -934,11 +908,11 @@ func mcpTools() []map[string]any {
 	}
 	identity := map[string]any{"workspace_id": str, "work_order_id": str, "session_id": str}
 	return append(append(mcpReadTools(), verificationMCPTools()...), []map[string]any{
-		{"name": "create_task", "description": "Create one durable task in an explicit workspace with optional desired-state context, generate its title from body, and enqueue triage. idempotency_key is required; reusing it returns the original task. A user credential needs create_tasks in the workspace. An agent credential may call this tool only when its owning user's role in the workspace grants create_tasks; the task records the agent and its owning user as provenance, enters triage like any other task, and grants the agent no further capability. For an agent, omitted spec_approval and merge_approval take the workspace defaults, true turns a gate on, and false is refused with agent_gate_disable_forbidden; a legacy level L0 or L1 is refused the same way, and a null or non-boolean gate fails with invalid_agent_gate_override (DEC-60).", "inputSchema": object(map[string]any{"workspace_id": str, "body": map[string]any{"type": "string", "description": "Task description in GitHub-flavored Markdown. Structured descriptions using headings and lists are encouraged."}, "repo": str, "base_branch": str, "source": str, "depends_on": map[string]any{"type": "array", "items": str, "description": "Optional open task IDs in this workspace that must merge first."}, "requirement_ids": map[string]any{"type": "array", "items": str, "description": "Optional confirmed requirements this task serves."}, "system_design_ids": map[string]any{"type": "array", "items": str, "description": "Optional confirmed System Design documents governing this task."}, "spec_approval": map[string]string{"type": "boolean"}, "merge_approval": map[string]string{"type": "boolean"}, "idempotency_key": str}, "body", "repo", "idempotency_key")},
+		{"name": "create_task", "description": "Create one durable task in an explicit workspace with optional desired-state context, generate its title from body, and enqueue triage. idempotency_key is required; reusing it returns the original task. The credential's owner needs create_tasks in the workspace; the task records MCP as its source and that person as its creator, enters triage like any other task, and grants the session no further capability (DEC-116(5)). An omitted spec_approval or merge_approval takes the workspace default and a supplied boolean applies. A null or non-boolean gate, a non-string level, or an unrecognized level fails with invalid_agent_gate_override and records nothing.", "inputSchema": object(map[string]any{"workspace_id": str, "body": map[string]any{"type": "string", "description": "Task description in GitHub-flavored Markdown. Structured descriptions using headings and lists are encouraged."}, "repo": str, "base_branch": str, "source": str, "depends_on": map[string]any{"type": "array", "items": str, "description": "Optional open task IDs in this workspace that must merge first."}, "requirement_ids": map[string]any{"type": "array", "items": str, "description": "Optional confirmed requirements this task serves."}, "system_design_ids": map[string]any{"type": "array", "items": str, "description": "Optional confirmed System Design documents governing this task."}, "spec_approval": map[string]string{"type": "boolean"}, "merge_approval": map[string]string{"type": "boolean"}, "idempotency_key": str}, "body", "repo", "idempotency_key")},
 		{"name": "add_task_dependency", "description": "Make one existing open task depend on another as an audited operator act. Existing dependencies are idempotent and cycles are rejected.", "inputSchema": object(map[string]any{"workspace_id": str, "task_id": str, "depends_on_task_id": str, "reason": str, "request_id": str}, "task_id", "depends_on_task_id", "reason", "request_id")},
 		{"name": "set_assignee", "description": "Set or clear a task assignee as an audited operator act. Assignment constrains claim eligibility and never queue order.", "inputSchema": object(map[string]any{"workspace_id": str, "task_id": str, "assignee_user_id": str}, "task_id", "assignee_user_id")},
 		{"name": "attach_task_branch", "description": "Replace a non-terminal task's assigned git branch name as an audited operator act. Same-name is a no-op. Refused when a pull request is recorded, a work order is claimed, the name is illegal, not attachable, or already held by another open task.", "inputSchema": object(map[string]any{"workspace_id": str, "task_id": str, "branch": str}, "task_id", "branch", "workspace_id")},
-		{"name": "get_task_status", "description": "Read one task's server-stated next action: its label, who acts next, the kind, whether operator judgment is needed, the summary, the question, each choice with its effect, what happens if nobody acts, the deadline, blockers, and the current order and attempt. A user credential reads any task in the workspace. An agent or run-child credential must pass the work_order_id and session_id of an order its session claimed or submitted for this task. Read-only; it never renews a claim.", "inputSchema": object(map[string]any{"workspace_id": str, "task_id": str, "work_order_id": str, "session_id": str}, "task_id")},
+		{"name": "get_task_status", "description": "Read one task's server-stated next action: its label, who acts next, the kind, whether operator judgment is needed, the summary, the question, each choice with its effect, what happens if nobody acts, the deadline, blockers, and the current order and attempt. Any workspace member reads any task in the workspace. Read-only; it never renews a claim.", "inputSchema": object(map[string]any{"workspace_id": str, "task_id": str}, "task_id")},
 		{"name": "list_work_orders", "description": "List active, stale, or execution-timed-out spec, implement, and review work orders in one workspace with distinct queue, execution, and lease clocks.", "inputSchema": object(map[string]any{"workspace_id": str})},
 		{"name": "claim_work_order", "description": "Claim a work order with a bounded lease. Review self-claim is forbidden. claimant_id is accepted for wire compatibility but ignored; claimant identity is derived from the authenticated credential. For implement, review, and verify claims, the response names governing documents in governance_references, without their bodies.", "inputSchema": object(map[string]any{"workspace_id": str, "work_order_id": str, "session_id": str, "client_token": str, "claimant_id": str, "agent": str, "model": str, "lease_seconds": num}, "work_order_id", "session_id", "client_token", "agent", "model")},
 		{"name": "redispatch_work_order", "description": "Return a stale queued work order in one workspace to the queue with a fresh queue deadline. Active and execution-timed-out work orders are rejected.", "inputSchema": object(map[string]any{"workspace_id": str, "work_order_id": str}, "work_order_id")},

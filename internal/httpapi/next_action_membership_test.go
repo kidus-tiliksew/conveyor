@@ -80,7 +80,7 @@ func TestNextActionChoicesFollowWorkspaceRole(t *testing.T) {
 	var inboxes []string
 	for _, tc := range cases {
 		t.Run(string(tc.role), func(t *testing.T) {
-			token, _ := f.user("usr_role_"+string(tc.role), tc.role)
+			token := f.user("usr_role_"+string(tc.role), tc.role)
 			for task, want := range map[string]map[string]bool{"gov-task-role-plan": tc.plan, "gov-task-role-merge": tc.merge, "gov-task-role-proposal": tc.proposal} {
 				rest := allowedChoices(t, f.rest(token, "/v1/tasks/"+task+"/next-action?workspace_id="+governanceWorkspace))
 				if !reflect.DeepEqual(rest, want) {
@@ -146,7 +146,7 @@ func TestNextActionChoicesWithoutMembershipsFollowCredentialScope(t *testing.T) 
 			t.Errorf("%s choices=%v want %v", token, got, want)
 		}
 	}
-	agent := store.WithCredential(f.ctx, core.AuthenticatedCredential{ID: "agent_scope", OwnerUserID: "usr_scope_operator", Kind: core.CredentialAgent, Scope: core.CredentialScopeOperator})
+	agent := store.WithCredential(f.ctx, core.AuthenticatedCredential{ID: "agent_scope", OwnerUserID: "usr_scope_operator", Kind: retiredAgentKind, Scope: core.CredentialScopeOperator})
 	opts, err := f.server.nextActionOptionsFor(agent)
 	if err != nil {
 		t.Fatal(err)
@@ -171,7 +171,7 @@ func TestNextActionChoicesWithoutMembershipsFollowCredentialScope(t *testing.T) 
 func TestNextActionMembershipFailureIsNotAnEmptyChoiceSet(t *testing.T) {
 	f := newGovernanceAuthFixture(t)
 	f.gateTask("gov-task-fail-plan", time.Now().UTC())
-	token, _ := f.user("usr_fail", core.WorkspaceRoleOperator)
+	token := f.user("usr_fail", core.WorkspaceRoleOperator)
 	f.members.mu.Lock()
 	f.members.inner.authorizeErrs = map[core.Capability]error{core.CapabilityConfirmDocuments: errors.New("membership store down")}
 	f.members.mu.Unlock()

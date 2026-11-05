@@ -8,7 +8,8 @@ import (
 )
 
 // TaskTriggerProvenance names the agent credential that filed a task and the
-// user who owns it (req-intake-and-triage AC-4.2; DEC-60).
+// user who owns it. Only task.created events recorded before the class was
+// retired carry it, and nothing writes it now (DEC-116(1), (3)).
 type TaskTriggerProvenance struct {
 	AgentCredentialID string `json:"agent_credential_id"`
 	OwnerUserID       string `json:"owner_user_id"`
@@ -41,19 +42,6 @@ type taskCreatedReference struct {
 	ID string `json:"id"`
 }
 
-// TaskCreationProvenance derives trigger provenance from the authenticated
-// credential bound to ctx. Only a verified agent credential with both its own
-// ID and its owning user yields provenance; request fields, the intake source,
-// headers, and client-asserted actors never reach this function, and an
-// incomplete identity never invents an owner (component-persistence).
-func TaskCreationProvenance(ctx context.Context) (TaskTriggerProvenance, bool) {
-	credential, ok := CredentialFromContext(ctx)
-	if !ok || credential.Kind != core.CredentialAgent {
-		return TaskTriggerProvenance{}, false
-	}
-	return TaskTriggerProvenance{AgentCredentialID: credential.ID, OwnerUserID: credential.OwnerUserID}, true
-}
-
 // TaskCreatedPayload is the reference-only task.created payload every creation
 // transaction writes, including blueprint children and planning-bundle tasks.
 func TaskCreatedPayload(ctx context.Context, task core.Task) json.RawMessage {
@@ -78,15 +66,12 @@ func TaskCreatedPayload(ctx context.Context, task core.Task) json.RawMessage {
 			payload.Context.Designs[i].ID = reference.ID
 		}
 	}
-	if provenance, ok := TaskCreationProvenance(ctx); ok {
-		payload.TriggerProvenance = &provenance
-	}
 	return core.JSONPayload(payload)
 }
 
 // TaskCreatedProvenance decodes trigger provenance from a task.created
-// payload. Payloads written before DEC-60, and human or system creations,
-// report none.
+// payload. Only a payload an agent credential's creation recorded carries it;
+// every other payload, and every payload written since DEC-116, reports none.
 func TaskCreatedProvenance(payload json.RawMessage) (TaskTriggerProvenance, bool, error) {
 	var decoded struct {
 		TriggerProvenance *TaskTriggerProvenance `json:"trigger_provenance"`

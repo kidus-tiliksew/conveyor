@@ -20,7 +20,7 @@ import (
 )
 
 func TestContextRefreshTransportParityAndConfinement(t *testing.T) {
-	for _, channel := range []string{"user", "agent"} {
+	for _, channel := range []string{"user"} {
 		t.Run(channel, func(t *testing.T) {
 			ctx := store.WithWorkspace(store.WithActor(t.Context(), store.SystemActor()), "demo")
 			st := store.NewMemory()
@@ -35,16 +35,10 @@ func TestContextRefreshTransportParityAndConfinement(t *testing.T) {
 			}
 			claim := core.WorkOrderClaim{ClaimantID: core.TaskRunClaimantID("owner"), SessionID: "session", ClientToken: "token", Lease: time.Minute}
 			credential := core.AuthenticatedCredential{ID: "user-token", OwnerUserID: "owner", Kind: core.CredentialUser}
-			if channel == "agent" {
-				credential.Kind = core.CredentialAgent
-			}
 			if _, e := storetest.For(st).ClaimWorkOrder(ctx, "order", claim); e != nil {
 				t.Fatal(e)
 			}
 			actor := store.Actor{ID: store.UserActorID("owner"), Role: core.ActorUser}
-			if channel == "agent" {
-				actor = store.Actor{ID: store.AgentActorID(credential.ID), Role: core.ActorAgent}
-			}
 			ctx = store.WithActor(store.WithCredential(ctx, credential), actor)
 			server := NewServer(st)
 			server.Workspace = "demo"

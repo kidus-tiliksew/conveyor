@@ -34,8 +34,8 @@ func TestAttachTaskBranchHTTP(t *testing.T) {
 	server.Workspaces, server.Memberships = membership, membership
 	server.Credentials = staticCredentialVerifier{
 		"operator-token": {ID: "pat_attach", OwnerUserID: "usr_attach", Kind: core.CredentialUser, Scope: core.CredentialScopeOperator},
-		"agent-token":    {ID: "agt_attach", OwnerUserID: "usr_attach", Kind: core.CredentialAgent, Scope: core.CredentialScopeUser},
-		"child-token":    {ID: "agt_child", OwnerUserID: "usr_attach", Kind: core.CredentialAgent, Scope: core.CredentialScopeUser},
+		"agent-token":    {ID: "agt_attach", OwnerUserID: "usr_attach", Kind: retiredAgentKind, Scope: core.CredentialScopeUser},
+		"child-token":    {ID: "agt_child", OwnerUserID: "usr_attach", Kind: retiredAgentKind, Scope: core.CredentialScopeUser},
 		"worker-token":   {ID: "wrk_attach", OwnerUserID: "usr_attach", Kind: core.CredentialKind("worker")},
 	}
 	handler := server.Handler()

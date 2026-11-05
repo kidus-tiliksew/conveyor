@@ -457,7 +457,11 @@ export function taskSummaries(item: CompleteActivity): TaskSummaries {
     switch (event.kind) {
       case 'task.created':
         if (!summaries.creator)
-          summaries.creator = { actor_id: event.actor_id ?? '', actor_role: event.actor_role ?? '' }
+          summaries.creator = {
+            actor_id: event.actor_id ?? '',
+            actor_role: event.actor_role ?? '',
+            actor_owner_user_id: event.actor_owner_user_id,
+          }
         break
       case 'pull_request.opened':
         summaries.pull_request = {

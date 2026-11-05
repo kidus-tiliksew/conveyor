@@ -138,8 +138,10 @@ func userSummaryContext(base context.Context, owner string) context.Context {
 	return store.WithCredential(ctx, core.AuthenticatedCredential{ID: "pat_" + owner, OwnerUserID: owner, Kind: core.CredentialUser, Scope: core.CredentialScopeUser})
 }
 
-func agentSummaryContext(base context.Context, owner string) context.Context {
-	credential := core.AuthenticatedCredential{ID: "agt_" + owner, OwnerUserID: owner, Kind: core.CredentialAgent, Scope: core.CredentialScopeUser}
+// retiredAgentSummaryContext presents the retired agent class directly: no
+// store verification returns it now, and admission still refuses it (DEC-116(1)).
+func retiredAgentSummaryContext(base context.Context, owner string) context.Context {
+	credential := core.AuthenticatedCredential{ID: "agt_" + owner, OwnerUserID: owner, Kind: core.CredentialKind("agent"), Scope: core.CredentialScopeUser}
 	ctx := store.WithActor(base, store.Actor{ID: store.AgentActorID(credential.ID), Role: core.ActorAgent})
 	return store.WithCredential(ctx, credential)
 }
@@ -176,9 +178,10 @@ func (f *summaryFixture) summaryPayload(eventID int64) store.ReviewSummaryPayloa
 // DEC-19; DEC-79(4)).
 func TestRecordReviewSummaryAuthorization(t *testing.T) {
 	f := newSummaryFixture(t)
-	f.st.claimWork["usr_executor"] = true
+	for _, user := range []string{"usr_executor", "usr_seat", "usr_owner"} {
+		f.st.claimWork[user] = true
+	}
 	seat1, seat2 := f.taskID+"-review-1-seat-1", f.taskID+"-review-1-seat-2"
-	implement := f.taskID + "-implement-1"
 	for _, id := range []string{seat1, seat2} {
 		order, err := f.st.GetWorkOrder(f.base, id)
 		f.ok(err)
@@ -186,50 +189,20 @@ func TestRecordReviewSummaryAuthorization(t *testing.T) {
 			t.Fatalf("seat %s state=%s, want completed after settlement", id, order.State)
 		}
 	}
-	// The dispatcher mints the bounce's fresh implement order; mint it here
-	// and claim it live.
-	live := core.WorkOrder{ID: f.order(f.taskID, f.taskID+"-implement-2", core.StageImplement, 0, 0)}
-	f.claim(live.ID, "live-session")
 	other := "summary-other"
 	f.task(other)
-	otherOrder := f.order(other, other+"-implement-1", core.StageImplement, 0, 0)
-	f.claim(otherOrder, "other-session")
+	f.claim(f.order(other, other+"-implement-1", core.StageImplement, 0, 0), "other-session")
 
 	admitted := []struct {
-		name    string
-		ctx     context.Context
-		order   string
-		session string
+		name string
+		ctx  context.Context
 	}{
-		{"user with claim_work", userSummaryContext(f.base, "usr_executor"), "", ""},
-		{"completed changes-requested seat", agentSummaryContext(f.base, "usr_seat"), seat1, "seat-1-session"},
-		{"completed approving seat", agentSummaryContext(f.base, "usr_seat"), seat2, "seat-2-session"},
-		{"claimed live order", agentSummaryContext(f.base, "usr_owner"), live.ID, "live-session"},
+		{"executor with claim_work", userSummaryContext(f.base, "usr_executor")},
+		{"seat session's person with claim_work", userSummaryContext(f.base, "usr_seat")},
+		{"implementation session's person with claim_work", userSummaryContext(f.base, "usr_owner")},
 	}
-	implementOrder, err := f.st.GetWorkOrder(f.base, implement)
-	f.ok(err)
-	switch implementOrder.State {
-	case core.WorkOrderSubmitted, core.WorkOrderCompleted:
-		admitted = append(admitted, struct {
-			name    string
-			ctx     context.Context
-			order   string
-			session string
-		}{"bounced implementation order (" + string(implementOrder.State) + ")", agentSummaryContext(f.base, "usr_owner"), implement, "implement-session"})
-	default:
-		t.Fatalf("bounced implementation order state=%s", implementOrder.State)
-	}
-	submittedID := "summary-submitted-override"
-	f.st.overrides[submittedID] = core.WorkOrder{ID: submittedID, TaskID: f.taskID, Stage: core.StageImplement, State: core.WorkOrderSubmitted, SessionID: "submitted-session"}
-	admitted = append(admitted, struct {
-		name    string
-		ctx     context.Context
-		order   string
-		session string
-	}{"submitted order", agentSummaryContext(f.base, "usr_owner"), submittedID, "submitted-session"})
 	for i, tc := range admitted {
 		input := f.input(fmt.Sprintf("admitted-%d", i))
-		input.WorkOrderID, input.SessionID = tc.order, tc.session
 		result, err := f.service.RecordReviewSummary(tc.ctx, input)
 		if err != nil {
 			t.Fatalf("%s refused: %v", tc.name, err)
@@ -239,56 +212,27 @@ func TestRecordReviewSummaryAuthorization(t *testing.T) {
 		}
 		payload := f.summaryPayload(result.EventID)
 		actor := store.ActorFromContext(tc.ctx)
-		want := store.ReviewSummaryAuthor{ActorID: actor.ID, ActorRole: actor.Role, WorkOrderID: tc.order, SessionID: tc.session, Model: "claude-opus-5-5", ModelEnforcement: "self-reported"}
+		want := store.ReviewSummaryAuthor{ActorID: actor.ID, ActorRole: core.ActorUser, Model: "claude-opus-5-5", ModelEnforcement: "self-reported"}
 		if payload.Author != want {
 			t.Fatalf("%s author=%+v, want %+v", tc.name, payload.Author, want)
 		}
 	}
-	// A user's presented order is not part of the author record.
-	userInput := f.input("user-with-order")
-	userInput.WorkOrderID, userInput.SessionID = seat1, "seat-1-session"
-	result, err := f.service.RecordReviewSummary(userSummaryContext(f.base, "usr_executor"), userInput)
-	f.ok(err)
-	if author := f.summaryPayload(result.EventID).Author; author.WorkOrderID != "" || author.SessionID != "" || author.ActorRole != core.ActorUser {
-		t.Fatalf("user author=%+v", author)
-	}
 
-	for state, order := range map[string]core.WorkOrder{
-		"expired-claim": {State: core.WorkOrderClaimed, LeaseExpiresAt: time.Now().Add(-time.Minute)},
-		"queued":        {State: core.WorkOrderQueued},
-		"stale":         {State: core.WorkOrderStale},
-		"timed-out":     {State: core.WorkOrderTimedOut},
-		"cancelled":     {State: core.WorkOrderCancelled},
-	} {
-		order.ID, order.TaskID, order.Stage, order.SessionID = "summary-"+state, f.taskID, core.StageReview, state+"-session"
-		f.st.overrides[order.ID] = order
-	}
-	foreign := store.WithWorkspace(agentSummaryContext(f.base, "usr_seat"), "beta")
 	refusals := []struct {
-		name    string
-		ctx     context.Context
-		task    string
-		round   int
-		order   string
-		session string
+		name  string
+		ctx   context.Context
+		task  string
+		round int
 	}{
-		{"user without claim_work", userSummaryContext(f.base, "usr_viewer"), "", 1, "", ""},
-		{"user without claim_work on an unsettled round", userSummaryContext(f.base, "usr_viewer"), "", 99, "", ""},
-		{"user with claim_work naming a missing task", userSummaryContext(f.base, "usr_executor"), "summary-absent", 1, "", ""},
-		{"user with claim_work in another workspace", store.WithWorkspace(userSummaryContext(f.base, "usr_executor"), "beta"), "", 1, "", ""},
-		{"agent without an order", agentSummaryContext(f.base, "usr_seat"), "", 1, "", ""},
-		{"agent without a session", agentSummaryContext(f.base, "usr_seat"), "", 1, seat1, ""},
-		{"agent with another session", agentSummaryContext(f.base, "usr_seat"), "", 1, seat1, "seat-2-session"},
-		{"agent with an unknown order", agentSummaryContext(f.base, "usr_seat"), "", 1, "summary-unknown", "seat-1-session"},
-		{"agent with another task's order", agentSummaryContext(f.base, "usr_owner"), "", 1, otherOrder, "other-session"},
-		{"agent naming a missing task", agentSummaryContext(f.base, "usr_seat"), "summary-absent", 1, seat1, "seat-1-session"},
-		{"agent in another workspace", foreign, "", 1, seat1, "seat-1-session"},
-		{"agent with an expired claim", agentSummaryContext(f.base, "usr_owner"), "", 1, "summary-expired-claim", "expired-claim-session"},
-		{"agent with a queued order", agentSummaryContext(f.base, "usr_owner"), "", 1, "summary-queued", "queued-session"},
-		{"agent with a stale order", agentSummaryContext(f.base, "usr_owner"), "", 1, "summary-stale", "stale-session"},
-		{"agent with a timed-out order", agentSummaryContext(f.base, "usr_owner"), "", 1, "summary-timed-out", "timed-out-session"},
-		{"agent with a cancelled order", agentSummaryContext(f.base, "usr_owner"), "", 1, "summary-cancelled", "cancelled-session"},
-		{"missing credential", store.WithActor(f.base, store.Actor{ID: store.UserActorID("usr_executor"), Role: core.ActorUser}), "", 1, "", ""},
+		{"user without claim_work", userSummaryContext(f.base, "usr_viewer"), "", 1},
+		{"user without claim_work on an unsettled round", userSummaryContext(f.base, "usr_viewer"), "", 99},
+		{"user with claim_work naming a missing task", userSummaryContext(f.base, "usr_executor"), "summary-absent", 1},
+		{"user with claim_work in another workspace", store.WithWorkspace(userSummaryContext(f.base, "usr_executor"), "beta"), "", 1},
+		{"retired agent credential with claim_work", retiredAgentSummaryContext(f.base, "usr_seat"), "", 1},
+		{"retired agent credential naming a missing task", retiredAgentSummaryContext(f.base, "usr_seat"), "summary-absent", 1},
+		{"retired agent credential in another workspace", store.WithWorkspace(retiredAgentSummaryContext(f.base, "usr_seat"), "beta"), "", 1},
+		{"person's credential under the agent actor", store.WithActor(userSummaryContext(f.base, "usr_seat"), store.Actor{ID: store.AgentActorID("agt_usr_seat"), Role: core.ActorAgent}), "", 1},
+		{"missing credential", store.WithActor(f.base, store.Actor{ID: store.UserActorID("usr_executor"), Role: core.ActorUser}), "", 1},
 	}
 	before := len(f.events(f.taskID))
 	for i, tc := range refusals {
@@ -296,7 +240,7 @@ func TestRecordReviewSummaryAuthorization(t *testing.T) {
 		if tc.task != "" {
 			input.TaskID = tc.task
 		}
-		input.ReviewRound, input.WorkOrderID, input.SessionID = tc.round, tc.order, tc.session
+		input.ReviewRound = tc.round
 		_, err := f.service.RecordReviewSummary(tc.ctx, input)
 		if err != store.ErrWorkOrderClaimUnauthorized || err.Error() != store.ErrWorkOrderClaimUnauthorized.Error() {
 			t.Fatalf("%s err=%v, want exactly ErrWorkOrderClaimUnauthorized", tc.name, err)
@@ -353,10 +297,10 @@ func TestRecordReviewSummaryLeavesLifecycleUnchanged(t *testing.T) {
 		s.events = len(f.events(f.taskID))
 		return s
 	}
+	f.st.claimWork["usr_seat"] = true
 	before := read()
 	input := f.input("unchanged")
-	input.WorkOrderID, input.SessionID = f.taskID+"-review-1-seat-1", "seat-1-session"
-	if _, err := f.service.RecordReviewSummary(agentSummaryContext(f.base, "usr_seat"), input); err != nil {
+	if _, err := f.service.RecordReviewSummary(userSummaryContext(f.base, "usr_seat"), input); err != nil {
 		t.Fatal(err)
 	}
 	after := read()
@@ -366,21 +310,5 @@ func TestRecordReviewSummaryLeavesLifecycleUnchanged(t *testing.T) {
 	after.events = before.events
 	if !reflect.DeepEqual(before, after) {
 		t.Fatalf("summary changed lifecycle state:\nbefore=%+v\nafter=%+v", before, after)
-	}
-}
-
-func TestReviewSummaryAuthorOrderState(t *testing.T) {
-	now := time.Now()
-	for state, want := range map[core.WorkOrderState]bool{
-		core.WorkOrderClaimed: true, core.WorkOrderSubmitted: true, core.WorkOrderCompleted: true,
-		core.WorkOrderQueued: false, core.WorkOrderStale: false, core.WorkOrderTimedOut: false, core.WorkOrderCancelled: false,
-	} {
-		order := core.WorkOrder{State: state, LeaseExpiresAt: now.Add(time.Minute)}
-		if got := reviewSummaryAuthorOrderState(order, now); got != want {
-			t.Fatalf("%s admitted=%v, want %v", state, got, want)
-		}
-	}
-	if reviewSummaryAuthorOrderState(core.WorkOrder{State: core.WorkOrderClaimed, LeaseExpiresAt: now}, now) {
-		t.Fatal("a claim whose lease ends now was admitted")
 	}
 }

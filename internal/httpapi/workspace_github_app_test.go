@@ -77,7 +77,7 @@ func TestWorkspaceGitHubAppHTTPFlow(t *testing.T) {
 	server.ConfigProvider = func(context.Context) (*config.Config, error) { return cfg, nil }
 	sessions := &invitationSessionFixture{credential: core.AuthenticatedCredential{ID: "session-1", OwnerUserID: "operator", Kind: core.CredentialUser, Method: core.CredentialMethodSession, Scope: core.CredentialScopeOperator}}
 	server.InvitationSessions = sessions
-	server.Credentials = staticCredentialVerifier{"operator": {ID: "pat", OwnerUserID: "operator", Kind: core.CredentialUser, Scope: core.CredentialScopeOperator}, "maintainer": {ID: "pat2", OwnerUserID: "maintainer", Kind: core.CredentialUser, Scope: core.CredentialScopeUser}, "agent": {ID: "agent", OwnerUserID: "operator", Kind: core.CredentialAgent, Scope: core.CredentialScopeUser}}
+	server.Credentials = staticCredentialVerifier{"operator": {ID: "pat", OwnerUserID: "operator", Kind: core.CredentialUser, Scope: core.CredentialScopeOperator}, "maintainer": {ID: "pat2", OwnerUserID: "maintainer", Kind: core.CredentialUser, Scope: core.CredentialScopeUser}, "agent": {ID: "agent", OwnerUserID: "operator", Kind: retiredAgentKind, Scope: core.CredentialScopeUser}}
 	key, err := rsa.GenerateKey(rand.Reader, 2048)
 	if err != nil {
 		t.Fatal(err)

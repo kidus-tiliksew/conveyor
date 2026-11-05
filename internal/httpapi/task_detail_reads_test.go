@@ -1862,7 +1862,7 @@ func TestTaskDetailCapabilitiesMatchPerCapabilityAuthority(t *testing.T) {
 	credentials := map[string]core.AuthenticatedCredential{
 		"user operator scope": {ID: "pat", OwnerUserID: "usr_member", Kind: core.CredentialUser, Scope: core.CredentialScopeOperator},
 		"user plain scope":    {ID: "pat", OwnerUserID: "usr_member", Kind: core.CredentialUser},
-		"agent":               {ID: "agent", OwnerUserID: "usr_member", Kind: core.CredentialAgent, Scope: core.CredentialScopeOperator},
+		"agent":               {ID: "agent", OwnerUserID: "usr_member", Kind: retiredAgentKind, Scope: core.CredentialScopeOperator},
 		// A worker reaches reads through its actor, without a user credential.
 		"worker": {},
 	}
@@ -2423,7 +2423,7 @@ func TestTaskDetailCapabilitiesThroughRoute(t *testing.T) {
 	}
 	credentials["tok-missing"] = core.AuthenticatedCredential{ID: "pat-missing", OwnerUserID: "usr_missing", Kind: core.CredentialUser, Scope: core.CredentialScopeOperator}
 	credentials["tok-revoked"] = core.AuthenticatedCredential{ID: "pat-revoked", OwnerUserID: "usr_revoked", Kind: core.CredentialUser, Scope: core.CredentialScopeOperator}
-	credentials["tok-agent"] = core.AuthenticatedCredential{ID: "agent-1", OwnerUserID: "usr_operator", Kind: core.CredentialAgent, Scope: core.CredentialScopeOperator}
+	credentials["tok-agent"] = core.AuthenticatedCredential{ID: "agent-1", OwnerUserID: "usr_operator", Kind: retiredAgentKind, Scope: core.CredentialScopeOperator}
 	// The revoked caller held a binding that is gone before the request.
 	members.roles["usr_revoked"] = map[string]core.WorkspaceRole{"demo": core.WorkspaceRoleOperator}
 	delete(members.roles, "usr_revoked")
