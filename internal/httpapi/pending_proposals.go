@@ -51,9 +51,10 @@ func (s *Server) listPendingProposals(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	// Each pending document proposal is one operator decision alongside the
-	// tasks that need the operator: it holds no task's work, so no task row
-	// counts it (req-260810-23b69f AC-1.1, AC-4.2; req-operator-next-action
-	// AC-2.7).
+	// tasks the inbox lists among its decisions: it holds no task's work, so
+	// no task row counts it. The sum equals the inbox's decisions total
+	// (req-260810-23b69f AC-1.1, AC-4.2; req-operator-next-action AC-2.7;
+	// component-next-action, One attention definition).
 	decisions := tasks + len(items)
 	writeJSON(w, http.StatusOK, pendingProposalsResponse{Items: items, Attention: attentionSummary{TaskCount: tasks, PendingProposalCount: len(items), OperatorDecisions: decisions, Total: decisions}})
 }
