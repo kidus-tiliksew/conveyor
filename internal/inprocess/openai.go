@@ -17,10 +17,12 @@ import (
 	"net/textproto"
 	"net/url"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
 	"github.com/kidus-tiliksew/conveyor/internal/core"
+	"github.com/kidus-tiliksew/conveyor/internal/lineagecontext"
 	"github.com/kidus-tiliksew/conveyor/internal/redact"
 )
 
@@ -209,7 +211,8 @@ func (client *OpenAI) run(ctx context.Context, model string, input Input) (Resul
 				}
 				return Result{Transcript: audit, Redactions: stats, Diagnostic: &diagnostic}, failure
 			}
-			text := fmt.Sprintf("# Audio attachment: %s (artifact %s)\n\n%s", attachment.Name, attachment.ID, transcript)
+			heading := fmt.Sprintf("# Audio attachment: %s (artifact %s)", strconv.Quote(attachment.Name), attachment.ID)
+			text := heading + "\n\n" + lineagecontext.RenderUntrustedBlock("Audio transcript", "audio artifact "+attachment.ID, transcript)
 			if input.CheckPreparedText != nil {
 				if err := input.CheckPreparedText(attachment, len(text)); err != nil {
 					diagnostic.Phase = "attachment_text_budget"
@@ -221,7 +224,7 @@ func (client *OpenAI) run(ctx context.Context, model string, input Input) (Resul
 				}
 			}
 			content = append(content, map[string]any{"type": "input_text", "text": text})
-			auditContent = append(auditContent, map[string]any{"type": "input_text", "text": fmt.Sprintf("# Audio attachment: %s (artifact %s)\n\n[transcript supplied to model; %d characters]", attachment.Name, attachment.ID, len(transcript))})
+			auditContent = append(auditContent, map[string]any{"type": "input_text", "text": fmt.Sprintf("%s\n\n[transcript supplied to model; %d characters]", heading, len(transcript))})
 		default:
 			diagnostic.Phase = "attachment_preparation"
 			failure := fmt.Errorf("unsupported attachment kind %q for artifact %s", attachment.Kind, attachment.ID)

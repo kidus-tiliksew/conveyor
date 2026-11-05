@@ -942,7 +942,7 @@ func (s *Service) contextForOrder(ctx context.Context, order core.WorkOrder) (Co
 	if result.ApprovedSpec != nil {
 		planContent = result.ApprovedSpec.Content
 	}
-	result.RolePrompt += pack.DoneCriteriaReference(order.Stage, planContent, task.Body, len(servedRequirements) > 0)
+	result.RolePrompt += pack.DoneCriteriaReference(order.Stage, planContent, task.Body, task.Source, len(servedRequirements) > 0)
 	for _, event := range events {
 		if event.Kind == "pipeline.bounced" {
 			result.BounceHistory = append(result.BounceHistory, event.Payload)
