@@ -76,15 +76,18 @@ func RunNextActionConformance(t *testing.T, st store.Store, ctx context.Context)
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := 0
+	want, wantDecisions := 0, 0
 	for _, action := range projected {
 		if store.TaskNeedsAttention(action) {
 			want++
 		}
+		if store.TaskIsInboxDecision(action) {
+			wantDecisions++
+		}
 	}
 	count, err := st.CountOperatorAttention(iso)
-	if err != nil || count != want {
-		t.Fatalf("attention count=%d projected=%d err=%v", count, want, err)
+	if err != nil || count != wantDecisions {
+		t.Fatalf("attention count=%d projected decisions=%d err=%v", count, wantDecisions, err)
 	}
 	page, err := store.PageOperatorAttention(iso, st, candidates, 0, 10)
 	if err != nil || page.Total != want {
