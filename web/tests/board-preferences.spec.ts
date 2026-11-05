@@ -44,6 +44,9 @@ const flow: TaskFlow = {
   stages: (['triage', 'spec', 'implement', 'verify', 'review', 'merge'] as const).map((id, index) => ({
     id,
     gate: id === 'spec' ? 'plan_approval' : null,
+    gate_label: id === 'spec' ? 'Plan approval' : id === 'merge' ? 'Merge approval' : '',
+    gate_status: id === 'spec' ? 'done' : id === 'merge' ? 'off' : null,
+    gate_status_label: id === 'spec' ? 'Done' : id === 'merge' ? 'Off for this task' : '',
     status: index < 2 ? 'done' : index === 2 ? 'in_progress' : 'upcoming',
     description: '',
     status_label: 'label',
