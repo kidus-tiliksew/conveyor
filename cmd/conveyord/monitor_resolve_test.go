@@ -94,7 +94,7 @@ func TestAssignmentResolverPollReadCount(t *testing.T) {
 				}
 				calls, matches := 0, 0
 				factory := assignmentResolveTask(st, "app", "org/app")
-				source := monitor.GitHubSource{Repository: "app", GitHubSlug: "org/app",
+				source := monitor.GitHubSource{Repository: "app", GitHubSlug: "org/app", Base: "main",
 					NewTaskResolver: func(ctx context.Context) (monitor.TaskResolver, error) {
 						resolve, err := factory(ctx)
 						if err != nil {
@@ -162,7 +162,7 @@ func TestAssignmentResolverReadErrorsAbortPoll(t *testing.T) {
 			} else {
 				st.eventErr = sentinel
 			}
-			source := monitor.GitHubSource{Repository: "app", GitHubSlug: "org/app", NewTaskResolver: assignmentResolveTask(st, "app", "org/app"),
+			source := monitor.GitHubSource{Repository: "app", GitHubSlug: "org/app", Base: "main", NewTaskResolver: assignmentResolveTask(st, "app", "org/app"),
 				Run: func(context.Context, ...string) ([]byte, error) {
 					t.Fatal("forge read after failed initialization")
 					return nil, nil

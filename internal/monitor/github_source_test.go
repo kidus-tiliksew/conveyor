@@ -21,7 +21,7 @@ func resolvePrefixID(_ context.Context, headRef string, _ int) (string, bool, er
 func TestGitHubSourceClassifiesLineageFailuresAndOutsideChanges(t *testing.T) {
 	suppressed := 0
 	source := GitHubSource{
-		WorkspaceID: "demo", Repository: "conveyor", GitHubSlug: "acme/conveyor",
+		WorkspaceID: "demo", Repository: "conveyor", GitHubSlug: "acme/conveyor", Base: "main",
 		ResolveTask: resolvePrefixID,
 		ReconcileMerged: func(_ context.Context, id string, pr githubtrigger.PullRequest) (bool, error) {
 			return id == "known" && pr.Number == 1 && pr.HeadSHA == "known-head", nil
@@ -162,20 +162,20 @@ func TestGitHubSourceEmitsRecoveryForGreenLineagedMerge(t *testing.T) {
 
 func TestGitHubSourceSuppressesFirstParentEmptyDirectPush(t *testing.T) {
 	source := GitHubSource{
-		WorkspaceID: "demo", Repository: "conveyor", GitHubSlug: "acme/conveyor",
+		WorkspaceID: "demo", Repository: "conveyor", GitHubSlug: "acme/conveyor", Base: "main",
 		Run: func(_ context.Context, args ...string) ([]byte, error) {
 			path := strings.Join(args, " ")
 			switch {
 			case strings.Contains(path, "/commits -f"):
 				return []byte(`[
-{"sha":"empty-merge","html_url":"https://example/empty","parents":[{"sha":"parent-a"},{"sha":"parent-b"}],"commit":{"message":"Merge main","committer":{"date":"2026-07-28T10:00:00Z"}}},
-{"sha":"content-push","html_url":"https://example/content","parents":[{"sha":"parent-c"}],"commit":{"message":"manual","committer":{"date":"2026-07-28T10:01:00Z"}}}
+{"sha":"content-push","html_url":"https://example/content","parents":[{"sha":"empty-merge"}],"commit":{"message":"manual","committer":{"date":"2026-07-28T10:01:00Z"}}},
+{"sha":"empty-merge","html_url":"https://example/empty","parents":[{"sha":"parent-a"},{"sha":"parent-b"}],"commit":{"message":"Merge main","committer":{"date":"2026-07-28T10:00:00Z"}}}
 ]`), nil
 			case strings.Contains(path, "/pulls"):
 				return []byte(`[]`), nil
 			case strings.Contains(path, "compare/parent-a...empty-merge"):
 				return []byte(`{"files":[]}`), nil
-			case strings.Contains(path, "compare/parent-c...content-push"):
+			case strings.Contains(path, "compare/empty-merge...content-push"):
 				return []byte(`{"files":[{"filename":"internal/monitor/types.go"}]}`), nil
 			default:
 				return nil, fmt.Errorf("unexpected args %v", args)
@@ -194,7 +194,7 @@ func TestGitHubSourceSuppressesFirstParentEmptyDirectPush(t *testing.T) {
 	}
 }
 
-// External pull-request merges and reverts carry the observed default-branch
+// External pull-request merges and reverts carry the observed base-branch
 // commit's first-parent paths, so governed-scope evaluation can raise document
 // drift for them (req-260811-228be6 AC-4.3; component-monitor-drift). An empty
 // comparison keeps the repository observation without document paths; only an
@@ -203,17 +203,17 @@ func TestGitHubSourceCarriesFirstParentPathsForExternalMergesAndReverts(t *testi
 	compared := map[string]int{}
 	suppressed := 0
 	source := GitHubSource{
-		WorkspaceID: "demo", Repository: "conveyor", GitHubSlug: "acme/conveyor",
+		WorkspaceID: "demo", Repository: "conveyor", GitHubSlug: "acme/conveyor", Base: "main",
 		ResolveTask: resolvePrefixID,
 		Run: func(_ context.Context, args ...string) ([]byte, error) {
 			path := strings.Join(args, " ")
 			switch {
 			case strings.Contains(path, "/commits -f"):
 				return []byte(`[
-{"sha":"external-merge","html_url":"https://example/external","parents":[{"sha":"main-before"},{"sha":"external-head"}],"commit":{"message":"Merge pull request #7","committer":{"date":"2026-07-28T10:00:00Z"}}},
-{"sha":"revert-commit","html_url":"https://example/revert","parents":[{"sha":"external-merge"}],"commit":{"message":"Revert \"feature\"","committer":{"date":"2026-07-28T10:01:00Z"}}},
+{"sha":"empty-revert","html_url":"https://example/empty-revert","parents":[{"sha":"empty-external"}],"commit":{"message":"revert nothing","committer":{"date":"2026-07-28T10:03:00Z"}}},
 {"sha":"empty-external","html_url":"https://example/empty-external","parents":[{"sha":"revert-commit"},{"sha":"other-head"}],"commit":{"message":"Merge pull request #8","committer":{"date":"2026-07-28T10:02:00Z"}}},
-{"sha":"empty-revert","html_url":"https://example/empty-revert","parents":[{"sha":"empty-external"}],"commit":{"message":"revert nothing","committer":{"date":"2026-07-28T10:03:00Z"}}}
+{"sha":"revert-commit","html_url":"https://example/revert","parents":[{"sha":"external-merge"}],"commit":{"message":"Revert \"feature\"","committer":{"date":"2026-07-28T10:01:00Z"}}},
+{"sha":"external-merge","html_url":"https://example/external","parents":[{"sha":"main-before"},{"sha":"external-head"}],"commit":{"message":"Merge pull request #7","committer":{"date":"2026-07-28T10:00:00Z"}}}
 ]`), nil
 			case strings.Contains(path, "external-merge/pulls"):
 				return []byte(`[{"number":7,"html_url":"https://example/pr/7","merged_at":"2026-07-28T09:59:00Z","head":{"ref":"feature","sha":"external-head"}}]`), nil
@@ -280,7 +280,7 @@ func TestGitHubSourceExternalMergeComparisonFailsClosed(t *testing.T) {
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			source := GitHubSource{
-				WorkspaceID: "demo", Repository: "conveyor", GitHubSlug: "acme/conveyor", ResolveTask: resolvePrefixID,
+				WorkspaceID: "demo", Repository: "conveyor", GitHubSlug: "acme/conveyor", Base: "main", ResolveTask: resolvePrefixID,
 				Run: func(_ context.Context, args ...string) ([]byte, error) {
 					path := strings.Join(args, " ")
 					switch {
@@ -327,7 +327,7 @@ func TestGitHubSourceFirstParentPathsFailClosed(t *testing.T) {
 		{name: "ambiguous limit", response: string(limit), invalid: true},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			source := GitHubSource{GitHubSlug: "kidus-tiliksew/conveyor", Run: func(_ context.Context, args ...string) ([]byte, error) {
+			source := GitHubSource{GitHubSlug: "kidus-tiliksew/conveyor", Base: "main", Run: func(_ context.Context, args ...string) ([]byte, error) {
 				if strings.Join(args, " ") != "api --method GET repos/kidus-tiliksew/conveyor/compare/parent...head -H Accept: application/vnd.github+json" {
 					t.Fatalf("unexpected comparison request: %v", args)
 				}
@@ -349,7 +349,7 @@ func TestGitHubSourceFirstParentPathsFailClosed(t *testing.T) {
 
 func lineagedCheckSource(checks string) GitHubSource {
 	return GitHubSource{
-		WorkspaceID: "demo", Repository: "conveyor", GitHubSlug: "acme/conveyor",
+		WorkspaceID: "demo", Repository: "conveyor", GitHubSlug: "acme/conveyor", Base: "main",
 		ResolveTask: resolvePrefixID,
 		ReconcileMerged: func(_ context.Context, id string, pr githubtrigger.PullRequest) (bool, error) {
 			return id == "known" && pr.Number == 1 && pr.HeadSHA == "known-head", nil
@@ -500,7 +500,7 @@ func TestGitHubSourceReconcilesApprovedMergeAndKeepsUnapprovedOccurrence(t *test
 	for _, approved := range []bool{true, false} {
 		t.Run(fmt.Sprint(approved), func(t *testing.T) {
 			calls, compares := 0, 0
-			source := GitHubSource{WorkspaceID: "demo", Repository: "repo", GitHubSlug: "org/repo", ResolveTask: resolvePrefixID}
+			source := GitHubSource{WorkspaceID: "demo", Repository: "repo", GitHubSlug: "org/repo", Base: "main", ResolveTask: resolvePrefixID}
 			source.ReconcileMerged = func(_ context.Context, taskID string, pr githubtrigger.PullRequest) (bool, error) {
 				calls++
 				if taskID != "task" || pr.Number != 12 || pr.HeadSHA != "reviewed-head" || pr.MergedBy != "operator" || pr.MergeCommitSHA != "landed" || !pr.Merged {
@@ -579,7 +579,7 @@ func TestMatchObservedTaskPrefersRecordedOwnerThenOpenBranch(t *testing.T) {
 
 func TestGitHubSourceResolveTaskErrorAbortsObservations(t *testing.T) {
 	source := GitHubSource{
-		WorkspaceID: "demo", Repository: "conveyor", GitHubSlug: "acme/conveyor",
+		WorkspaceID: "demo", Repository: "conveyor", GitHubSlug: "acme/conveyor", Base: "main",
 		ResolveTask: func(context.Context, string, int) (string, bool, error) {
 			return "", false, fmt.Errorf("list tasks failed")
 		},
@@ -606,7 +606,7 @@ func TestGitHubSourceResolveTaskErrorAbortsObservations(t *testing.T) {
 
 func TestGitHubSourceResolverFactoryIsPollLocal(t *testing.T) {
 	factories, resolutions := 0, 0
-	source := GitHubSource{Repository: "repo", GitHubSlug: "org/repo",
+	source := GitHubSource{Repository: "repo", GitHubSlug: "org/repo", Base: "main",
 		ResolveTask: func(context.Context, string, int) (string, bool, error) {
 			t.Fatal("factory must take precedence")
 			return "", false, nil
@@ -680,7 +680,7 @@ func TestGitHubSourceDefersAndSuppressesInFlightAndRecordedMerges(t *testing.T) 
 		t.Run(test.name, func(t *testing.T) {
 			var suppressed []string
 			source := GitHubSource{
-				WorkspaceID: "demo", Repository: "conveyor", GitHubSlug: "acme/conveyor",
+				WorkspaceID: "demo", Repository: "conveyor", GitHubSlug: "acme/conveyor", Base: "main",
 				Run: commitWithPullsRun("landed", "parent", "merge", committed.Format(time.RFC3339), test.pulls),
 				MergeCommitState: func(_ context.Context, repository, sha string, at time.Time) (MergeState, string, error) {
 					if repository != "acme/conveyor" || sha != "landed" || !at.Equal(committed) {
@@ -713,7 +713,7 @@ func TestGitHubSourceDefersAndSuppressesInFlightAndRecordedMerges(t *testing.T) 
 
 func TestGitHubSourceDoesNotDeferRevertDuringInFlightMerge(t *testing.T) {
 	source := GitHubSource{
-		WorkspaceID: "demo", Repository: "conveyor", GitHubSlug: "acme/conveyor",
+		WorkspaceID: "demo", Repository: "conveyor", GitHubSlug: "acme/conveyor", Base: "main",
 		Run: commitWithPullsRun("reverted", "parent", "Revert merge", "2026-10-13T12:00:00Z", ""),
 		MergeCommitState: func(context.Context, string, string, time.Time) (MergeState, string, error) {
 			t.Fatal("revert consulted merge state")
@@ -731,7 +731,7 @@ func TestGitHubSourceDoesNotDeferRevertDuringInFlightMerge(t *testing.T) {
 
 func TestGitHubSourceMergeCommitStateErrorFailsClosed(t *testing.T) {
 	source := GitHubSource{
-		WorkspaceID: "demo", Repository: "conveyor", GitHubSlug: "acme/conveyor",
+		WorkspaceID: "demo", Repository: "conveyor", GitHubSlug: "acme/conveyor", Base: "main",
 		Run: commitWithPullsRun("landed", "parent", "merge", "2026-10-13T12:00:00Z", ""),
 		MergeCommitState: func(context.Context, string, string, time.Time) (MergeState, string, error) {
 			return MergeNone, "", fmt.Errorf("store unavailable")
@@ -747,7 +747,7 @@ func TestGitHubSourceStaleApprovalMergeStaysExternal(t *testing.T) {
 	// no merge.confirmed or merge.reconciled proves a Conveyor merge (AC-4.3).
 	pulls := `[{"number":12,"html_url":"https://github.com/acme/conveyor/pull/12","merged_at":"2026-10-13T12:00:00Z","head":{"ref":"conveyor/task-old","sha":"stale-head"}}]`
 	source := GitHubSource{
-		WorkspaceID: "demo", Repository: "conveyor", GitHubSlug: "acme/conveyor",
+		WorkspaceID: "demo", Repository: "conveyor", GitHubSlug: "acme/conveyor", Base: "main",
 		Run: commitWithPullsRun("stale-head", "parent", "merged", "2026-10-13T12:00:00Z", pulls),
 		MergeCommitState: func(context.Context, string, string, time.Time) (MergeState, string, error) {
 			return MergeNone, "", nil
