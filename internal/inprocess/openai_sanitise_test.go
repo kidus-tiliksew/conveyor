@@ -7,7 +7,9 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -184,5 +186,74 @@ func TestRunKeepsAnUnchangedErrorIdentical(t *testing.T) {
 	_, err := (&OpenAI{APIKey: sanitiseAPIKey}).sanitiseResult(context.Background(), "model-a", Result{}, failure)
 	if err != failure {
 		t.Fatalf("err=%v", err)
+	}
+}
+
+// TestRunAudioPathKeepsSecretsOutOfTheAudit covers the transcript prompt site:
+// the transcript reaches the provider inside its untrusted block and the audit
+// records only its size, while the attachment name, which the prompt heading
+// quotes, is still redacted when quoting escapes a known value
+// (req-security-boundaries REQ-3; component-triage).
+func TestRunAudioPathKeepsSecretsOutOfTheAudit(t *testing.T) {
+	t.Parallel()
+	const escapedStored = `fixture"stored\key-value`
+	const spoken = "spoken " + sanitiseToken + " and " + sanitiseAPIKey
+	attachment := Attachment{ID: "audio-id", Name: "clip " + sanitiseToken + " " + escapedStored + ".mp3", ContentType: "audio/mpeg", Kind: AttachmentAudio, Content: []byte("audio")}
+	// "stored" and "key-value" find the known value however many layers of Go
+	// and JSON quoting surround its escapes.
+	forms := []string{sanitiseToken, sanitiseAPIKey, escapedStored, `fixture\"stored`, "stored", "key-value", "spoken "}
+	requireClean := func(t *testing.T, name, text string) {
+		t.Helper()
+		for _, form := range forms {
+			if strings.Contains(text, form) {
+				t.Fatalf("%s holds a fixture value of %d bytes", name, len(form))
+			}
+		}
+	}
+	for _, tc := range []struct {
+		name     string
+		status   int
+		response string
+	}{
+		{name: "success", status: http.StatusOK, response: `{"model":"m","output":[{"type":"message","content":[{"type":"output_text","text":"done"}]}]}`},
+		{name: "provider failure echoing the name", status: http.StatusBadRequest, response: fmt.Sprintf(`{"error":{"code":"bad_input","message":%s}}`, strconv.Quote("rejected "+sanitiseToken+" in "+escapedStored))},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			var sent atomic.Value
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.URL.Path == "/audio/transcriptions" {
+					_, _ = fmt.Fprintf(w, `{"text":%s}`, strconv.Quote(spoken))
+					return
+				}
+				body, _ := io.ReadAll(r.Body)
+				sent.Store(string(body))
+				w.WriteHeader(tc.status)
+				_, _ = io.WriteString(w, tc.response)
+			}))
+			defer server.Close()
+			client := &OpenAI{APIKey: sanitiseAPIKey, BaseURL: server.URL, Client: server.Client(), RedactionSecrets: documentSecretSource{escapedStored}}
+			result, err := client.Run(context.Background(), "model-a", Input{Prompt: "work", Attachments: []Attachment{attachment}})
+			if request, _ := sent.Load().(string); !strings.Contains(request, sanitiseToken) || !strings.Contains(request, "spoken ") {
+				t.Fatal("the provider did not receive the transcript")
+			}
+			requireClean(t, "transcript", string(result.Transcript))
+			if !strings.Contains(string(result.Transcript), fmt.Sprintf("[transcript supplied to model; %d characters]", len(spoken))) {
+				t.Fatalf("the audit lost the transcript's size: %d bytes", len(result.Transcript))
+			}
+			if result.Redactions.Pattern < 1 || result.Redactions.Encoded < 1 {
+				t.Fatalf("removals not counted: %+v", result.Redactions)
+			}
+			if tc.status == http.StatusOK {
+				if err != nil {
+					t.Fatalf("run failed: %d-byte error", len(err.Error()))
+				}
+				return
+			}
+			if err == nil {
+				t.Fatal("expected a provider failure")
+			}
+			requireClean(t, "error", err.Error())
+		})
 	}
 }

@@ -6,6 +6,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -192,6 +193,33 @@ func TestRedactsTokenShapesAndKeepsDigests(t *testing.T) {
 			clean, stats := New(nil).Redact(kept.text)
 			if clean != kept.text || stats.Total() != 0 {
 				t.Fatalf("clean=%q stats=%+v", clean, stats)
+			}
+		})
+	}
+}
+
+// TestRedactsQuotedFormOfKnownValues covers a known value printed with %q,
+// whose escapes would otherwise defeat the exact match. A value quoting leaves
+// alone counts once, as exact.
+func TestRedactsQuotedFormOfKnownValues(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name, secret string
+		want         Stats
+	}{
+		{name: "quote and backslash", secret: `fixture"stored\key-value`, want: Stats{Encoded: 1}},
+		{name: "newline", secret: "fixture-first-line\nfixture-second-line", want: Stats{Encoded: 1}},
+		{name: "tab", secret: "fixture-left\tfixture-right", want: Stats{Encoded: 1}},
+		{name: "nothing to escape", secret: "fixture-plain-value", want: Stats{Exact: 1}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			clean, stats := New([]string{tc.secret}).Redact(fmt.Sprintf("name %q here", tc.secret))
+			if stats != tc.want {
+				t.Fatalf("stats=%+v, want %+v", stats, tc.want)
+			}
+			if strings.Contains(clean, "fixture") {
+				t.Fatal("part of the known value survived")
 			}
 		})
 	}

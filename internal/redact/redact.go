@@ -10,6 +10,7 @@ import (
 	"net/url"
 	"regexp"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -97,6 +98,9 @@ func New(values []string) *Redactor {
 			base64.RawURLEncoding.EncodeToString([]byte(value)),
 			url.QueryEscape(value),
 			url.PathEscape(value),
+			// A value printed with %q or strconv.Quote, such as a quoted
+			// attachment name in an audit transcript, has its escapes applied.
+			quotedForm(value),
 		}
 		for _, candidate := range encoded {
 			if candidate != value {
@@ -110,6 +114,12 @@ func New(values []string) *Redactor {
 	}
 	sort.Slice(needles, func(i, j int) bool { return len(needles[i].value) > len(needles[j].value) })
 	return &Redactor{needles: needles, source: source}
+}
+
+// quotedForm is value as strconv.Quote prints it, without the outer quotes.
+func quotedForm(value string) string {
+	quoted := strconv.Quote(value)
+	return quoted[1 : len(quoted)-1]
 }
 
 var credentialPatterns = []*regexp.Regexp{
