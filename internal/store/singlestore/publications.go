@@ -278,7 +278,83 @@ func (s *Store) ReconcileReviewPublications(ctx context.Context) (int, error) {
 			store.ReportDriftRepair(ctx, store.DriftReviewPublicationWithoutComment.For(publication.TaskID))
 		}
 	}
-	return created, nil
+	failed, err := s.failRetryingReviewPublicationsWithoutJob(ctx)
+	created += failed
+	return created, err
+}
+
+// failRetryingReviewPublicationsWithoutJob marks failed each retrying review
+// publication whose job is no longer active, so the bounded automatic
+// re-enqueue owns it once per window instead of the row staying retrying
+// (req-bounded-automatic-recovery AC-4.1; req-quiet-idle-runtime AC-4.1). A
+// row whose job is still active is not drift. Each repair is reported after
+// its transaction commits.
+func (s *Store) failRetryingReviewPublicationsWithoutJob(ctx context.Context) (int, error) {
+	rows, err := documentRows(ctx, s.db, `SELECT review_work_order_id FROM review_publications
+		WHERE workspace_id=? AND state='retrying'
+		ORDER BY created_at, review_work_order_id`, documentWorkspace(ctx))
+	if err != nil {
+		return 0, err
+	}
+	var ids []string
+	for rows.Next() {
+		var id string
+		if err = rows.Scan(&id); err != nil {
+			rows.Close()
+			return 0, err
+		}
+		ids = append(ids, id)
+	}
+	if err = rows.Err(); err != nil {
+		rows.Close()
+		return 0, err
+	}
+	rows.Close()
+	repaired := 0
+	for _, id := range ids {
+		var failed *core.ReviewPublication
+		err = s.withTx(ctx, func(tx *sql.Tx) error {
+			failed = nil
+			publication, err := scanReviewPublication(documentRow(ctx, tx, "SELECT "+reviewPublicationColumns+` FROM review_publications
+				WHERE workspace_id=? AND review_work_order_id=? AND state='retrying' FOR UPDATE`, documentWorkspace(ctx), id))
+			if errors.Is(err, sql.ErrNoRows) {
+				return nil
+			}
+			if err != nil {
+				return err
+			}
+			job, err := logqueue.Load(logTx(ctx, tx), s.log, documentWorkspace(ctx), logqueue.StreamFor(queue.ReviewPublicationArgs{}.Kind(), id))
+			if err != nil {
+				return err
+			}
+			if job.Active() {
+				return nil
+			}
+			publication.State = core.ReviewPublicationFailed
+			if publication.LastError == "" {
+				publication.LastError = store.RetryingWithoutJobError
+			}
+			if _, err = documentExec(ctx, tx, `UPDATE review_publications SET state='failed', last_error=?, updated_at=now()
+				WHERE workspace_id=? AND review_work_order_id=? AND state='retrying'`,
+				publication.LastError, documentWorkspace(ctx), id); err != nil {
+				return err
+			}
+			if err = taskEvent(ctx, tx, core.Event{TaskID: publication.TaskID, JobID: publication.JobID,
+				Kind: "review.publication_failed", Payload: core.JSONPayload(publication)}); err != nil {
+				return err
+			}
+			failed = &publication
+			return nil
+		})
+		if err != nil {
+			return repaired, err
+		}
+		if failed != nil {
+			repaired++
+			store.ReportDriftRepair(ctx, store.DriftReviewPublicationRetryingWithoutJob.For(failed.TaskID))
+		}
+	}
+	return repaired, nil
 }
 
 func (s *Store) repairPublishedReviewPublication(ctx context.Context, publication core.ReviewPublication) (bool, error) {
