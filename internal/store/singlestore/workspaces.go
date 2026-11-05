@@ -19,7 +19,7 @@ import (
 
 func (s *Store) ListWorkspaces(ctx context.Context) ([]core.Workspace, error) {
 	ctx = dbmetrics.WithReadLabel(ctx, "ListWorkspaces")
-	rows, err := s.db.QueryContext(ctx, `SELECT id,name,config_version,created_at FROM workspaces ORDER BY LOWER(name),id`)
+	rows, err := backendRows(ctx, s.db, `SELECT id,name,config_version,created_at FROM workspaces ORDER BY LOWER(name),id`)
 	if err != nil {
 		return nil, translateBackendConflict(err)
 	}
@@ -37,7 +37,7 @@ func (s *Store) ListWorkspaces(ctx context.Context) ([]core.Workspace, error) {
 func (s *Store) GetWorkspace(ctx context.Context, id string) (core.Workspace, error) {
 	ctx = dbmetrics.WithReadLabel(ctx, "GetWorkspace")
 	var w core.Workspace
-	err := s.db.QueryRowContext(ctx, `SELECT id,name,config_version,created_at FROM workspaces WHERE id=?`, id).Scan(&w.ID, &w.Name, &w.ConfigVersion, &w.CreatedAt)
+	err := backendRow(ctx, s.db, `SELECT id,name,config_version,created_at FROM workspaces WHERE id=?`, id).Scan(&w.ID, &w.Name, &w.ConfigVersion, &w.CreatedAt)
 	if errors.Is(err, sql.ErrNoRows) {
 		err = store.ErrNotFound
 	}
@@ -158,7 +158,7 @@ func (s *Store) configRow(ctx context.Context) (string, int64, error) {
 	}
 	var data string
 	var version int64
-	err = s.db.QueryRowContext(ctx, `SELECT config_yaml,config_version FROM workspaces WHERE id=?`, ws).Scan(&data, &version)
+	err = backendRow(ctx, s.db, `SELECT config_yaml,config_version FROM workspaces WHERE id=?`, ws).Scan(&data, &version)
 	if errors.Is(err, sql.ErrNoRows) {
 		err = store.ErrNotFound
 	}

@@ -2,9 +2,7 @@ package httpapi
 
 import (
 	"context"
-	"log"
 	"net/http"
-	"strconv"
 	"time"
 
 	"github.com/kidus-tiliksew/conveyor/internal/core"
@@ -66,36 +64,34 @@ func (s *Server) listNextActions(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
-	limit, _ := strconv.Atoi(r.URL.Query().Get("limit"))
-	offset, _ := strconv.Atoi(r.URL.Query().Get("offset"))
-	if limit <= 0 {
-		limit = 50
-	}
-	if offset < 0 {
-		offset = 0
+	page, ok := readListPage(w, r, defaultInboxPageLimit)
+	if !ok {
+		return
 	}
 	opts, err := s.nextActionOptions(r)
 	if err != nil {
-		log.Printf("next action options: %v", err)
-		http.Error(w, "internal server error", http.StatusInternalServerError)
+		writeStoreFailure(w, r, err)
 		return
 	}
+	// The inbox order and bands are computed from the next-action projection
+	// over the workspace's open tasks, so no store page can select them. Only
+	// open tasks are read, so the read follows open work and not workspace
+	// history, and the response carries one page (DEC-61; component-next-action
+	// invariants 21, 22).
 	items, err := s.readInbox(r.Context(), opts, band, filter)
 	if err != nil {
-		http.Error(w, "internal server error", http.StatusInternalServerError)
+		writeStoreFailure(w, r, err)
 		return
 	}
 	total := len(items)
-	start := min(offset, total)
-	end := min(start+limit, total)
+	start := min(page.Offset, total)
+	end := min(start+page.Limit, total)
 	acts, err := s.Store.ListFactoryActs(r.Context(), time.Now().UTC().Add(-24*time.Hour), 100)
 	if err != nil {
-		http.Error(w, "internal server error", http.StatusInternalServerError)
+		writeStoreFailure(w, r, err)
 		return
 	}
-	w.Header().Set("X-Conveyor-Total", strconv.Itoa(total))
-	w.Header().Set("X-Conveyor-Limit", strconv.Itoa(limit))
-	w.Header().Set("X-Conveyor-Offset", strconv.Itoa(offset))
+	page.writeHeaders(w, total)
 	writeJSON(w, http.StatusOK, map[string]any{"items": items[start:end], "acts": acts})
 }
 

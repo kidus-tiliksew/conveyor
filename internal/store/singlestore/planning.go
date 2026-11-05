@@ -659,7 +659,7 @@ func (s *Store) withPlanningSessionLock(ctx context.Context, id string, fn func(
 		return err
 	}
 	defer release()
-	return fn(ctx)
+	return translateBackendConflict(fn(ctx))
 }
 func (s *Store) WithPlanningSessionFinalization(ctx context.Context, id string, fn func(context.Context) error) error {
 	return s.withPlanningSessionLock(ctx, id, func(ctx context.Context) error {
@@ -780,7 +780,7 @@ func (s *Store) WithPlanningSessionRun(ctx context.Context, id string, fn func(c
 		return planningRunAcquireError(ctx, acquireCtx, err)
 	}
 	cancel()
-	return fn(ctx)
+	return translateBackendConflict(fn(ctx))
 }
 func planningRunAcquireError(ctx, acquireCtx context.Context, err error) error {
 	if ctx.Err() != nil {

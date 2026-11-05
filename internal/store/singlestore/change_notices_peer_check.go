@@ -29,7 +29,7 @@ var _ changes.PeerReader = (*Store)(nil)
 // marks.
 func (s *Store) PeerMarks(ctx context.Context) (map[string]changes.PeerMark, error) {
 	ctx = dbmetrics.WithReadLabel(ctx, "PeerMarks")
-	rows, err := s.db.QueryContext(ctx, peerMarksSQL)
+	rows, err := backendRows(ctx, s.db, peerMarksSQL)
 	if err != nil {
 		return nil, translateBackendConflict(err)
 	}

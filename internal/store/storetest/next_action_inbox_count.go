@@ -174,7 +174,7 @@ func runInboxAttentionCount(t *testing.T, x Fixture) {
 // readInboxBand reads one inbox band and its X-Conveyor-Total header.
 func readInboxBand(t *testing.T, handler http.Handler, workspace, band string) ([]inboxCountItem, int) {
 	t.Helper()
-	request := httptest.NewRequest(http.MethodGet, "/v1/next-actions?band="+band+"&limit=500", nil)
+	request := httptest.NewRequest(http.MethodGet, "/v1/next-actions?band="+band+"&limit=200", nil)
 	request.Header.Set("Authorization", "Bearer "+LineageHTTPToken)
 	request.Header.Set("X-Workspace-ID", workspace)
 	response := httptest.NewRecorder()

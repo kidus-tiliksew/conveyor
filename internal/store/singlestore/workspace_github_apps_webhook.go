@@ -82,7 +82,7 @@ func (s *Store) SetWorkspaceGitHubWebhookSecret(ctx context.Context, id, secret 
 func (s *Store) GetWorkspaceGitHubWebhookSecretForUse(ctx context.Context, id string) (string, error) {
 	ctx = dbmetrics.WithReadLabel(ctx, "GetWorkspaceGitHubWebhookSecretForUse")
 	var nonce, ciphertext []byte
-	err := s.db.QueryRowContext(ctx, `SELECT secret_nonce,secret_ciphertext FROM workspace_github_webhook_secrets WHERE workspace_id=?`, id).Scan(&nonce, &ciphertext)
+	err := backendRow(ctx, s.db, `SELECT secret_nonce,secret_ciphertext FROM workspace_github_webhook_secrets WHERE workspace_id=?`, id).Scan(&nonce, &ciphertext)
 	if errors.Is(err, sql.ErrNoRows) {
 		return "", store.ErrNotFound
 	}
@@ -111,13 +111,13 @@ func (s *Store) RecordGitHubWebhookDelivery(ctx context.Context, id, deliveryID,
 		return false, translateBackendConflict(err)
 	}
 	var exists string
-	if err := s.db.QueryRowContext(ctx, `SELECT id FROM workspaces WHERE id=?`, id).Scan(&exists); err != nil {
+	if err := backendRow(ctx, s.db, `SELECT id FROM workspaces WHERE id=?`, id).Scan(&exists); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return false, store.ErrNotFound
 		}
 		return false, translateBackendConflict(err)
 	}
-	result, err := s.db.ExecContext(ctx, `INSERT IGNORE INTO github_webhook_deliveries (workspace_id,delivery_id,event,received_at) VALUES (?,?,?,?)`, id, deliveryID, event, receivedAt.UTC().Truncate(time.Microsecond))
+	result, err := backendExec(ctx, s.db, `INSERT IGNORE INTO github_webhook_deliveries (workspace_id,delivery_id,event,received_at) VALUES (?,?,?,?)`, id, deliveryID, event, receivedAt.UTC().Truncate(time.Microsecond))
 	if err != nil {
 		return false, translateBackendConflict(err)
 	}
@@ -130,7 +130,7 @@ func (s *Store) RecordGitHubWebhookDelivery(ctx context.Context, id, deliveryID,
 
 func (s *Store) ForgetGitHubWebhookDelivery(ctx context.Context, id, deliveryID string) error {
 	ctx = dbmetrics.WithReadLabel(ctx, "ForgetGitHubWebhookDelivery")
-	_, err := s.db.ExecContext(ctx, `DELETE FROM github_webhook_deliveries WHERE workspace_id=? AND delivery_id=?`, id, deliveryID)
+	_, err := backendExec(ctx, s.db, `DELETE FROM github_webhook_deliveries WHERE workspace_id=? AND delivery_id=?`, id, deliveryID)
 	return translateBackendConflict(err)
 }
 
@@ -138,14 +138,14 @@ func (s *Store) GitHubWebhookStatus(ctx context.Context, id string) (core.GitHub
 	ctx = dbmetrics.WithReadLabel(ctx, "GitHubWebhookStatus")
 	var status core.GitHubWebhookStatus
 	var exists string
-	if err := s.db.QueryRowContext(ctx, `SELECT id FROM workspaces WHERE id=?`, id).Scan(&exists); err != nil {
+	if err := backendRow(ctx, s.db, `SELECT id FROM workspaces WHERE id=?`, id).Scan(&exists); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return status, store.ErrNotFound
 		}
 		return status, translateBackendConflict(err)
 	}
 	var setAt sql.NullTime
-	if err := s.db.QueryRowContext(ctx, `SELECT set_at FROM workspace_github_webhook_secrets WHERE workspace_id=?`, id).Scan(&setAt); err != nil && !errors.Is(err, sql.ErrNoRows) {
+	if err := backendRow(ctx, s.db, `SELECT set_at FROM workspace_github_webhook_secrets WHERE workspace_id=?`, id).Scan(&setAt); err != nil && !errors.Is(err, sql.ErrNoRows) {
 		return status, translateBackendConflict(err)
 	}
 	if setAt.Valid {
@@ -153,7 +153,7 @@ func (s *Store) GitHubWebhookStatus(ctx context.Context, id string) (core.GitHub
 		status.SecretConfigured, status.SecretSetAt = true, &at
 	}
 	var lastAt sql.NullTime
-	if err := s.db.QueryRowContext(ctx, `SELECT MAX(received_at) FROM github_webhook_deliveries WHERE workspace_id=?`, id).Scan(&lastAt); err != nil && !errors.Is(err, sql.ErrNoRows) {
+	if err := backendRow(ctx, s.db, `SELECT MAX(received_at) FROM github_webhook_deliveries WHERE workspace_id=?`, id).Scan(&lastAt); err != nil && !errors.Is(err, sql.ErrNoRows) {
 		return status, translateBackendConflict(err)
 	}
 	if lastAt.Valid {

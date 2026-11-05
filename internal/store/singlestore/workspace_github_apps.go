@@ -125,10 +125,10 @@ func (s *Store) RecordWorkspaceGitHubAppInstallation(ctx context.Context, id str
 }
 func (s *Store) GetWorkspaceGitHubAppStatus(ctx context.Context, id string) (core.WorkspaceGitHubAppStatus, error) {
 	ctx = dbmetrics.WithReadLabel(ctx, "GetWorkspaceGitHubAppStatus")
-	result, err := scanAppStatus(s.db.QueryRowContext(ctx, `SELECT `+appStatusColumns+` FROM workspace_github_apps WHERE workspace_id=?`, id))
+	result, err := scanAppStatus(backendRow(ctx, s.db, `SELECT `+appStatusColumns+` FROM workspace_github_apps WHERE workspace_id=?`, id))
 	if errors.Is(err, store.ErrNotFound) {
 		var exists string
-		if e := s.db.QueryRowContext(ctx, `SELECT id FROM workspaces WHERE id=?`, id).Scan(&exists); e != nil {
+		if e := backendRow(ctx, s.db, `SELECT id FROM workspaces WHERE id=?`, id).Scan(&exists); e != nil {
 			if errors.Is(e, sql.ErrNoRows) {
 				return core.WorkspaceGitHubAppStatus{}, store.ErrNotFound
 			}
@@ -143,7 +143,7 @@ func (s *Store) GetWorkspaceGitHubAppForUse(ctx context.Context, id string) (cor
 	var r core.WorkspaceGitHubAppCredential
 	var at sql.NullTime
 	var nonce, ciphertext []byte
-	err := s.db.QueryRowContext(ctx, `SELECT `+appStatusColumns+`,private_key_nonce,private_key_ciphertext FROM workspace_github_apps WHERE workspace_id=?`, id).Scan(&r.WorkspaceID, &r.AppID, &r.AppSlug, &r.ClientID, &r.InstallationID, &r.InstallationAccount, &r.ConnectedBy, &r.ConnectedAt, &at, &nonce, &ciphertext)
+	err := backendRow(ctx, s.db, `SELECT `+appStatusColumns+`,private_key_nonce,private_key_ciphertext FROM workspace_github_apps WHERE workspace_id=?`, id).Scan(&r.WorkspaceID, &r.AppID, &r.AppSlug, &r.ClientID, &r.InstallationID, &r.InstallationAccount, &r.ConnectedBy, &r.ConnectedAt, &at, &nonce, &ciphertext)
 	if errors.Is(err, sql.ErrNoRows) {
 		return r, store.ErrNotFound
 	}

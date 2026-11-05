@@ -334,7 +334,7 @@ func (s *Store) ReconcileQueuedTasks(ctx context.Context) (int, error) {
 		return tasks[i].CreatedAt.Before(tasks[j].CreatedAt)
 	})
 	for _, t := range tasks {
-		job, err := logqueue.Load(ctx, s.log, ws, logqueue.StreamFor(queue.DispatchTaskArgs{}.Kind(), t.ID))
+		job, err := s.loadJob(ctx, ws, logqueue.StreamFor(queue.DispatchTaskArgs{}.Kind(), t.ID))
 		if err != nil {
 			return n, err
 		}

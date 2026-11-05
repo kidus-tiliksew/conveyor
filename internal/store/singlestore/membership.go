@@ -25,7 +25,7 @@ func (s *Store) AuthorizeDeployment(ctx context.Context, userID string, capabili
 		return false, nil
 	}
 	var allowed bool
-	err := s.db.QueryRowContext(ctx, `SELECT EXISTS (
+	err := backendRow(ctx, s.db, `SELECT EXISTS (
 		SELECT 1
 		FROM users u
 		JOIN workspace_role_bindings b ON b.user_id=u.id
@@ -43,7 +43,7 @@ func (s *Store) AuthorizeInstanceAdministration(ctx context.Context, userID stri
 		return false, nil
 	}
 	var allowed bool
-	err := s.db.QueryRowContext(ctx, `SELECT EXISTS (
+	err := backendRow(ctx, s.db, `SELECT EXISTS (
 		SELECT 1
 		FROM user_tokens t
 		JOIN users u ON u.id=t.user_id
@@ -55,7 +55,7 @@ func (s *Store) AuthorizeInstanceAdministration(ctx context.Context, userID stri
 func (s *Store) AuthorizeWorkspace(ctx context.Context, userID, workspaceID string, capability core.Capability) (bool, error) {
 	ctx = dbmetrics.WithReadLabel(ctx, "AuthorizeWorkspace")
 	var role core.WorkspaceRole
-	err := s.db.QueryRowContext(ctx, `SELECT role FROM workspace_role_bindings WHERE workspace_id=? AND user_id=?`, workspaceID, userID).Scan(&role)
+	err := backendRow(ctx, s.db, `SELECT role FROM workspace_role_bindings WHERE workspace_id=? AND user_id=?`, workspaceID, userID).Scan(&role)
 	if errors.Is(err, sql.ErrNoRows) {
 		return false, nil
 	}
@@ -75,7 +75,7 @@ func (s *Store) AuthorizeWorkspaceCapabilities(ctx context.Context, userID, work
 		return out, nil
 	}
 	var role core.WorkspaceRole
-	err := s.db.QueryRowContext(ctx, `SELECT role FROM workspace_role_bindings WHERE workspace_id=? AND user_id=?`, workspaceID, userID).Scan(&role)
+	err := backendRow(ctx, s.db, `SELECT role FROM workspace_role_bindings WHERE workspace_id=? AND user_id=?`, workspaceID, userID).Scan(&role)
 	bound := true
 	if errors.Is(err, sql.ErrNoRows) {
 		bound, err = false, nil
@@ -91,7 +91,7 @@ func (s *Store) AuthorizeWorkspaceCapabilities(ctx context.Context, userID, work
 
 func (s *Store) ListWorkspacesForUser(ctx context.Context, userID string) ([]core.Workspace, error) {
 	ctx = dbmetrics.WithReadLabel(ctx, "ListWorkspacesForUser")
-	rows, err := s.db.QueryContext(ctx, `SELECT w.id,w.name,w.config_version,w.created_at
+	rows, err := backendRows(ctx, s.db, `SELECT w.id,w.name,w.config_version,w.created_at
 		FROM workspaces w JOIN workspace_role_bindings b ON b.workspace_id=w.id
 		WHERE b.user_id=? ORDER BY lower(w.name),w.id`, userID)
 	if err != nil {
@@ -115,7 +115,7 @@ func (s *Store) ListWorkspaceMembers(ctx context.Context, requesterUserID, works
 	if err != nil || !allowed {
 		return nil, translateBackendConflict(err)
 	}
-	rows, err := s.db.QueryContext(ctx, `SELECT b.workspace_id,b.user_id,u.email,u.display_name,b.role,b.created_at
+	rows, err := backendRows(ctx, s.db, `SELECT b.workspace_id,b.user_id,u.email,u.display_name,b.role,b.created_at
 		FROM workspace_role_bindings b JOIN users u ON u.id=b.user_id
 		WHERE b.workspace_id=? ORDER BY lower(u.display_name),u.id`, workspaceID)
 	if err != nil {
@@ -139,7 +139,7 @@ func (s *Store) ListWorkspaceMembers(ctx context.Context, requesterUserID, works
 // authorized at the HTTP capability boundary, like RevokeWorkspaceInvitation.
 func (s *Store) ListWorkspaceInvitations(ctx context.Context, workspaceID string) ([]core.WorkspaceInvitation, error) {
 	ctx = dbmetrics.WithReadLabel(ctx, "ListWorkspaceInvitations")
-	rows, err := s.db.QueryContext(ctx, `SELECT i.workspace_id,i.email,i.role,i.invited_by,COALESCE(u.display_name,''),i.created_at
+	rows, err := backendRows(ctx, s.db, `SELECT i.workspace_id,i.email,i.role,i.invited_by,COALESCE(u.display_name,''),i.created_at
 		FROM workspace_membership_invitations i LEFT JOIN users u ON u.id=i.invited_by
 		WHERE i.workspace_id=? ORDER BY i.created_at DESC,i.email`, workspaceID)
 	if err != nil {
