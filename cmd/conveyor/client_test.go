@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"net/http"
@@ -358,5 +359,41 @@ func TestTaskListSendsStatesAndPageAndNamesTheRange(t *testing.T) {
 	}
 	if err := runTaskList(c, &out, &errOut, nil, 0, 3, false, true); err == nil || err.Error() != "--offset requires --limit" {
 		t.Fatalf("offset without limit err=%v", err)
+	}
+}
+
+// A failed task-list read reaches the operator as an error: `conveyor task
+// list` prints no table, and the occupied-branch read behind `conveyor done`
+// returns the failure before any worktree cleanup (req-operator-next-action
+// AC-1.7; component-next-action invariant 1).
+func TestTaskListReadsReturnServerFailure(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet || r.URL.Path != "/v1/tasks" {
+			t.Errorf("request %s %s", r.Method, r.URL.Path)
+		}
+		http.Error(w, "internal server error", http.StatusInternalServerError)
+	}))
+	defer srv.Close()
+	c := &client{base: srv.URL, workspace: "demo"}
+
+	var out, errOut bytes.Buffer
+	err := runTaskList(c, &out, &errOut, nil, 0, 0, false, false)
+	var status *apiStatusError
+	if !errors.As(err, &status) || status.Status != http.StatusInternalServerError {
+		t.Fatalf("task list err=%v, want a 500 status error", err)
+	}
+	if !strings.Contains(err.Error(), "internal server error") {
+		t.Fatalf("task list err=%q does not carry the server's message", err)
+	}
+	if out.Len() != 0 || errOut.Len() != 0 {
+		t.Fatalf("task list printed stdout=%q stderr=%q on a failed read", out.String(), errOut.String())
+	}
+
+	tasks, err := c.listOpenTasksHoldingBranch("conveyor", "conveyor/task-a")
+	if !errors.As(err, &status) || status.Status != http.StatusInternalServerError {
+		t.Fatalf("occupied-branch err=%v, want a 500 status error", err)
+	}
+	if tasks != nil {
+		t.Fatalf("occupied-branch tasks=%v on a failed read", tasks)
 	}
 }

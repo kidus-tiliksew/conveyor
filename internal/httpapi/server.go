@@ -1280,10 +1280,7 @@ func (s *Server) listTasks(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "internal server error", http.StatusInternalServerError)
 		return
 	}
-	w.Header().Set("X-Conveyor-Total", strconv.Itoa(page.Total))
-	w.Header().Set("X-Conveyor-Limit", strconv.Itoa(query.Limit))
-	w.Header().Set("X-Conveyor-Offset", strconv.Itoa(query.Offset))
-	s.writeTasks(w, r, page.Tasks)
+	s.writeTasks(w, r, page, query.Limit, query.Offset)
 }
 
 func (s *Server) getTask(w http.ResponseWriter, r *http.Request) {
