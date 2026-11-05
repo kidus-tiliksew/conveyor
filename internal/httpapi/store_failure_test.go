@@ -94,9 +94,10 @@ func TestWriteClassifiedStoreError(t *testing.T) {
 	}
 }
 
-// TestRouterRequestIDReachesStoreFailureLog proves the ID comes from the
-// router's request-ID middleware on a real route.
-func TestRouterRequestIDReachesStoreFailureLog(t *testing.T) {
+// TestRequestIDMiddlewareReachesStoreFailureLog proves the writer reads the ID
+// that middleware.RequestID assigns. TestOwnedListRoutesAnswerStoreFailureGenerically
+// proves the same through the server's router.
+func TestRequestIDMiddlewareReachesStoreFailureLog(t *testing.T) {
 	captured := captureStandardLog(t)
 	handler := middleware.RequestID(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		writeStoreFailure(w, r, errors.New("boom"))

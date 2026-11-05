@@ -35,11 +35,12 @@ type listPage struct {
 // without limit unpaged (DEC-105(4); component-http-api invariant 19).
 func parseListPage(values url.Values, defaultLimit int) (listPage, error) {
 	limitValues, limited := values["limit"]
-	if len(values["offset"]) > 1 {
+	offsetValues, hasOffset := values["offset"]
+	if len(offsetValues) > 1 {
 		return listPage{}, fmt.Errorf("offset must be supplied once")
 	}
 	if !limited {
-		if values.Get("offset") != "" {
+		if hasOffset {
 			return listPage{}, fmt.Errorf("offset requires limit")
 		}
 		return listPage{Limit: defaultLimit, Paged: defaultLimit > 0}, nil
@@ -52,11 +53,11 @@ func parseListPage(values url.Values, defaultLimit int) (listPage, error) {
 		return listPage{}, fmt.Errorf("limit must be between 1 and %d", store.MaxTaskOperationsLimit)
 	}
 	offset := 0
-	if value := values.Get("offset"); value != "" {
+	if hasOffset {
 		// Bound the offset here, before it reaches a store: past
 		// store.MaxTaskOperationsOffset the two stores disagree, because
 		// Postgres narrows the bind parameter to int32.
-		offset, err = strconv.Atoi(value)
+		offset, err = strconv.Atoi(offsetValues[0])
 		if err != nil || offset < 0 || offset > store.MaxTaskOperationsOffset {
 			return listPage{}, fmt.Errorf("offset must be between 0 and %d", store.MaxTaskOperationsOffset)
 		}

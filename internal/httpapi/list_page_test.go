@@ -38,6 +38,8 @@ func TestParseListPage(t *testing.T) {
 		{query: "limit=", dflt: 50, refusal: "limit must be between 1 and 200"},
 		{query: "limit=1&limit=2", dflt: 50, refusal: "limit must be supplied once"},
 		{query: "offset=1", dflt: 50, refusal: "offset requires limit"},
+		{query: "offset=", dflt: 50, refusal: "offset requires limit"},
+		{query: "limit=1&offset=", dflt: 50, refusal: "offset must be between 0 and 2147483647"},
 		{query: "limit=1&offset=-1", dflt: 50, refusal: "offset must be between 0 and 2147483647"},
 		{query: "limit=1&offset=abc", dflt: 50, refusal: "offset must be between 0 and 2147483647"},
 		{query: "limit=1&offset=2147483648", dflt: 50, refusal: "offset must be between 0 and 2147483647"},
