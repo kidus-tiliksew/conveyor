@@ -11,9 +11,9 @@ import (
 	"github.com/kidus-tiliksew/conveyor/internal/core"
 	"github.com/kidus-tiliksew/conveyor/internal/inprocess"
 	"github.com/kidus-tiliksew/conveyor/internal/lineagecontext"
-	"github.com/kidus-tiliksew/conveyor/internal/lineagecontext/untrustedtest"
 	"github.com/kidus-tiliksew/conveyor/internal/pack"
 	"github.com/kidus-tiliksew/conveyor/internal/store"
+	"github.com/kidus-tiliksew/conveyor/internal/testsupport/untrustedtest"
 )
 
 // Each test here proves one prompt site from req-security-boundaries REQ-4

@@ -8,8 +8,8 @@ import (
 
 	"github.com/kidus-tiliksew/conveyor/internal/core"
 	"github.com/kidus-tiliksew/conveyor/internal/lineagecontext"
-	"github.com/kidus-tiliksew/conveyor/internal/lineagecontext/untrustedtest"
 	"github.com/kidus-tiliksew/conveyor/internal/pipeline"
+	"github.com/kidus-tiliksew/conveyor/internal/testsupport/untrustedtest"
 )
 
 func TestLoadValidatesAndCachesWholePack(t *testing.T) {

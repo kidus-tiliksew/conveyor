@@ -17,12 +17,12 @@ import (
 	"github.com/kidus-tiliksew/conveyor/internal/dispatch"
 	"github.com/kidus-tiliksew/conveyor/internal/inprocess"
 	"github.com/kidus-tiliksew/conveyor/internal/lineagecontext"
-	"github.com/kidus-tiliksew/conveyor/internal/lineagecontext/untrustedtest"
 	"github.com/kidus-tiliksew/conveyor/internal/pack"
 	"github.com/kidus-tiliksew/conveyor/internal/pipeline"
 	"github.com/kidus-tiliksew/conveyor/internal/store"
 	"github.com/kidus-tiliksew/conveyor/internal/store/storetest"
 	"github.com/kidus-tiliksew/conveyor/internal/taskops"
+	"github.com/kidus-tiliksew/conveyor/internal/testsupport/untrustedtest"
 	githubtrigger "github.com/kidus-tiliksew/conveyor/internal/trigger/github"
 )
 

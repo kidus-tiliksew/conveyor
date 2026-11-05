@@ -5,7 +5,7 @@ import (
 	"testing"
 
 	"github.com/kidus-tiliksew/conveyor/internal/lineagecontext"
-	"github.com/kidus-tiliksew/conveyor/internal/lineagecontext/untrustedtest"
+	"github.com/kidus-tiliksew/conveyor/internal/testsupport/untrustedtest"
 )
 
 func TestRenderUntrustedBlockKeepsItsBodyInside(t *testing.T) {
