@@ -69,6 +69,8 @@ func TestSingleStoreInitAndUserIntegration(t *testing.T) {
 	if first == "" {
 		t.Fatal("init did not issue a sign-in link")
 	}
+	assertGeneratedConfigHoldsBackendOnly(t, path, "singlestore", cfg.FormatDSN())
+	assertNoDatabaseSecret(t, "fresh init output", output.String(), cfg.FormatDSN())
 	output.Reset()
 	if err = initializeDeployment(store.WithActor(t.Context(), store.SystemActor()), &output, path, answers); err != nil {
 		t.Fatal(err)
@@ -83,6 +85,7 @@ func TestSingleStoreInitAndUserIntegration(t *testing.T) {
 	if loaded.Database.Backend != "singlestore" {
 		t.Fatal("init persisted the wrong backend")
 	}
+	assertInitRerunToleratesPaddedURL(t, cfg.FormatDSN(), path, answers)
 	// A file in the pre-DEC-56 init shape is accepted on rerun and left
 	// unchanged (component-identity-membership).
 	legacyPath := filepath.Join(t.TempDir(), "conveyor.yaml")
@@ -97,6 +100,12 @@ func TestSingleStoreInitAndUserIntegration(t *testing.T) {
 	if after, readErr := os.ReadFile(legacyPath); readErr != nil || string(after) != string(legacy) {
 		t.Fatalf("legacy config was rewritten: %v", readErr)
 	}
+	assertLegacyURLNotice(t, output.String(), legacyPath, cfg.FormatDSN())
+	legacyToken := signInTokenFromOutput(t, output.String())
+	if legacyToken == "" {
+		t.Fatal("legacy rerun printed no sign-in link")
+	}
+	assertInitCollisionsRefused(t, cfg.FormatDSN(), "singlestore", answers, legacyToken)
 	command := userCmd()
 	output.Reset()
 	command.SetOut(&output)

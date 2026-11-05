@@ -52,7 +52,7 @@ var (
 func newDaemonServiceFlagSet(verb string) (*flag.FlagSet, *string, *string) {
 	flags := flag.NewFlagSet("conveyord "+verb, flag.ContinueOnError)
 	configPath := flags.String("config", "conveyor.yaml", "path to deployment config")
-	envFilePath := flags.String("env-file", "", "owner-only environment file (default: .env beside config)")
+	envFilePath := flags.String("env-file", "", "owner-only environment file holding CONVEYOR_DATABASE_URL (default: .env beside config)")
 	return flags, configPath, envFilePath
 }
 
@@ -101,7 +101,7 @@ func runServiceVerb(ctx context.Context, args []string, stdout, stderr io.Writer
 		if err = installDaemonService(ctx, platform, paths); err != nil {
 			return true, err
 		}
-		fmt.Fprintf(stdout, "installed conveyord service\nunit=%s\nstdout_log=%s\nstderr_log=%s\n", paths.Unit, paths.Stdout, paths.Stderr)
+		fmt.Fprint(stdout, daemonServiceInstalledSummary(paths))
 	case "uninstall":
 		removed, removeErr := uninstallDaemonService(ctx, platform, paths)
 		if removeErr != nil {
@@ -121,6 +121,14 @@ func runServiceVerb(ctx context.Context, args []string, stdout, stderr io.Writer
 		fmt.Fprintln(stdout, string(data))
 	}
 	return true, nil
+}
+
+// daemonServiceInstalledSummary names the environment file because a file
+// conveyor init wrote holds no database URL: the service reads it from
+// CONVEYOR_DATABASE_URL in that file (req-security-boundaries REQ-2). It names
+// the variable and never reads its value.
+func daemonServiceInstalledSummary(paths daemonServicePaths) string {
+	return fmt.Sprintf("installed conveyord service\nunit=%s\nstdout_log=%s\nstderr_log=%s\nenv_file=%s\nA deployment config without database.url needs CONVEYOR_DATABASE_URL in env_file.\n", paths.Unit, paths.Stdout, paths.Stderr, paths.EnvFile)
 }
 
 func currentDaemonServicePlatform() (daemonServicePlatform, error) {
