@@ -1678,6 +1678,7 @@ func ProjectWorkOrderAt(order core.WorkOrder, now time.Time) core.WorkOrder {
 		if order.State == core.WorkOrderClaimed {
 			order.LastAttemptID = order.AttemptID
 			clearClaimOwnership(&order)
+			order.ClaimExpiryUnpersisted = true
 		}
 		order.State = core.WorkOrderTimedOut
 		order.Claimable = false
@@ -1694,6 +1695,7 @@ func ProjectWorkOrderAt(order core.WorkOrder, now time.Time) core.WorkOrder {
 		order.LastAttemptOutcome = core.WorkOrderOutcomeExpired
 		order.NextRetryAt = time.Time{}
 		order.RetrySuppressed = !taskRunClaim
+		order.ClaimExpiryUnpersisted = true
 		return order
 	}
 	if order.State == core.WorkOrderQueued && !order.QueueBlockedAt.IsZero() {
