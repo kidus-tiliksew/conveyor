@@ -117,7 +117,7 @@ func TestDriverFailureLogLinesIntegration(t *testing.T) {
 	requireGenericBackendError(t, st.CreateTask(otherCtx, phase61Task(other, child, core.TaskClosed, parent.ID)))
 	line = onlyDriverLogLine(t, captured)
 	logged = parseDriverLogLine(t, line)
-	if logged.operation != "CreateTask" || logged.state != "23503" {
+	if logged.operation != "CreateTaskWithDependenciesAndContext" || logged.state != "23503" {
 		t.Fatalf("foreign key failure logged operation %q, sqlstate %q", logged.operation, logged.state)
 	}
 	for _, leaked := range []string{"Key (", "INSERT", child, parent.ID} {
