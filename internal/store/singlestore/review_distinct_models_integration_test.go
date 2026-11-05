@@ -104,11 +104,11 @@ func forceSeatClaimGap(t *testing.T, st *Store, ctx context.Context, ws string, 
 	t.Helper()
 	gap := seatClaimGap{claimed: claimed}
 	if hideClaimEvent {
-		record, err := parseClaimedRecord(claimHolder(t, st, reviewSeatModelClaimKey(ws, claimed.TaskID, claimed.ReviewRound)))
-		if err != nil {
+		var id int64
+		if err := st.db.QueryRowContext(ctx, `SELECT id FROM events_columnstore WHERE workspace_id=? AND task_id=? AND job_id=? AND kind='work_order.claimed'`, ws, claimed.TaskID, claimed.JobID).Scan(&id); err != nil {
 			t.Fatal(err)
 		}
-		hidden := hideEvent(t, st, ws, record.ID)
+		hidden := hideEvent(t, st, ws, id)
 		gap.event = &hidden
 	}
 	writeReviewSeatImage(t, st, ctx, before)
@@ -121,6 +121,19 @@ func (g seatClaimGap) close(t *testing.T, st *Store, ctx context.Context) {
 	if g.event != nil {
 		g.event.restore(t, st)
 	}
+}
+
+// seatClaimHolder reads the round's claim holder, or "" before any claim
+// recorded one, so a test without the claim fails on the decision it proves
+// rather than on the missing row.
+func seatClaimHolder(t *testing.T, st *Store, key string) string {
+	t.Helper()
+	var holder string
+	err := st.db.QueryRowContext(t.Context(), "SELECT holder FROM conveyor_locks WHERE `key`=?", lockRowKey(key)).Scan(&holder)
+	if err != nil && !errors.Is(err, sql.ErrNoRows) {
+		t.Fatal(err)
+	}
+	return holder
 }
 
 func requireSeatStillQueued(t *testing.T, st *Store, ctx context.Context, order core.WorkOrder) {
@@ -161,18 +174,7 @@ func TestReviewSeatClaimWaitsForUnseenPredecessorIntegration(t *testing.T) {
 			ctx, ws, orders := seedReviewSeats(t, st, "seat-window", 2, true)
 			before, claimed := claimVisibleSeat(t, st, ctx, orders[0], "gpt-6")
 			key := reviewSeatModelClaimKey(ws, claimed.TaskID, 1)
-			holder := claimHolder(t, st, key)
-			record, err := parseClaimedRecord(holder)
-			if err != nil {
-				t.Fatal(err)
-			}
-			note, err := parseReviewSeatClaimNote(record.Note)
-			if err != nil {
-				t.Fatal(err)
-			}
-			if note.OrderID != claimed.ID || note.AttemptID != claimed.AttemptID || note.ReplacedAt.UnixMicro() != before.UpdatedAt.UnixMicro() {
-				t.Fatalf("note=%+v, want order %s attempt %s replacing %s", note, claimed.ID, claimed.AttemptID, before.UpdatedAt)
-			}
+			holder := seatClaimHolder(t, st, key)
 
 			gap := forceSeatClaimGap(t, st, ctx, ws, before, claimed, tc.hideClaimEvent)
 			waitCtx, obs := observeClaimedRecordWait(ctx)
@@ -200,8 +202,19 @@ func TestReviewSeatClaimWaitsForUnseenPredecessorIntegration(t *testing.T) {
 			gap.close(t, st, ctx)
 			requireModelRefusal(t, (<-done).err, "gpt-6")
 			requireSeatStillQueued(t, st, ctx, orders[1])
-			if got := claimHolder(t, st, key); got != holder {
+			if got := seatClaimHolder(t, st, key); got != holder {
 				t.Fatalf("a refused claim moved the round's claim from %q to %q", holder, got)
+			}
+			record, err := parseClaimedRecord(holder)
+			if err != nil {
+				t.Fatal(err)
+			}
+			note, err := parseReviewSeatClaimNote(record.Note)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if note.OrderID != claimed.ID || note.AttemptID != claimed.AttemptID || note.ReplacedAt.UnixMicro() != before.UpdatedAt.UnixMicro() {
+				t.Fatalf("note=%+v, want order %s attempt %s replacing %s", note, claimed.ID, claimed.AttemptID, before.UpdatedAt)
 			}
 		})
 	}
@@ -217,7 +230,7 @@ func TestReviewSeatClaimTimeoutWritesNothingIntegration(t *testing.T) {
 			ctx, ws, orders := seedReviewSeats(t, st, "seat-timeout", 2, true)
 			before, claimed := claimVisibleSeat(t, st, ctx, orders[0], "gpt-6")
 			key := reviewSeatModelClaimKey(ws, claimed.TaskID, 1)
-			holder := claimHolder(t, st, key)
+			holder := seatClaimHolder(t, st, key)
 			gap := forceSeatClaimGap(t, st, ctx, ws, before, claimed, tc.hideClaimEvent)
 			events := countTaskEvents(t, st, ws, claimed.TaskID)
 			seatBefore := storedReviewSeat(t, st, ctx, orders[1].ID)
@@ -233,7 +246,7 @@ func TestReviewSeatClaimTimeoutWritesNothingIntegration(t *testing.T) {
 			if seatAfter := storedReviewSeat(t, st, ctx, orders[1].ID); !seatAfter.UpdatedAt.Equal(seatBefore.UpdatedAt) {
 				t.Fatalf("seat row stamp %s -> %s after timed-out claims", seatBefore.UpdatedAt, seatAfter.UpdatedAt)
 			}
-			if got := claimHolder(t, st, key); got != holder {
+			if got := seatClaimHolder(t, st, key); got != holder {
 				t.Fatalf("a timed-out claim moved the round's claim from %q to %q", holder, got)
 			}
 			failures, err := st.ListWorkOrderClaimFailures(ctx, []string{orders[1].ID})
