@@ -25,16 +25,22 @@ func (s *Store) documentTx(ctx context.Context, fn func(*sql.Tx) error) error {
 		return err
 	}
 	return s.withTx(ctx, func(tx *sql.Tx) error {
-		var exists int
-		if err := tx.QueryRowContext(ctx, `SELECT 1 FROM workspaces WHERE id=?`, ws).Scan(&exists); err != nil {
-			return notFound(err, "workspace %s", ws)
-		}
-
-		if err := lockKey(ctx, tx, "document-corpus:"+ws); err != nil {
+		if err := lockDocumentCorpusTx(ctx, tx, ws); err != nil {
 			return err
 		}
 		return fn(tx)
 	})
+}
+
+// lockDocumentCorpusTx takes the workspace's document lock. A caller that also
+// needs a task-operation lock takes that lock first (component-persistence,
+// Lock order).
+func lockDocumentCorpusTx(ctx context.Context, tx *sql.Tx, ws string) error {
+	var exists int
+	if err := tx.QueryRowContext(ctx, `SELECT 1 FROM workspaces WHERE id=?`, ws).Scan(&exists); err != nil {
+		return notFound(err, "workspace %s", ws)
+	}
+	return lockKey(ctx, tx, "document-corpus:"+ws)
 }
 func documentWorkspace(ctx context.Context) string { ws, _ := workspace(ctx); return ws }
 

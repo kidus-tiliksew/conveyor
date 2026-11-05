@@ -70,8 +70,8 @@ func (s *Store) SetTaskAssigneeCommand(ctx context.Context, lease taskops.TaskLe
 func (s *Store) AttachSubmissionGovernance(ctx context.Context, taskID, repository string, changedPaths []string, attribution store.SubmissionGovernanceAttribution) ([]core.TaskDesignContext, error) {
 	ctx = dbmetrics.WithReadLabel(ctx, "AttachSubmissionGovernance")
 	attached := []core.TaskDesignContext{}
-	err := s.documentTx(ctx, func(tx *sql.Tx) error {
-		if err := s.lockTaskOperation(ctx, tx, documentWorkspace(ctx), taskID); err != nil {
+	err := s.taskTx(ctx, taskID, func(tx *sql.Tx) error {
+		if err := lockDocumentCorpusTx(ctx, tx, documentWorkspace(ctx)); err != nil {
 			return err
 		}
 		t, err := getTaskRow(ctx, tx, taskID)
