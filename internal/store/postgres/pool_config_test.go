@@ -90,6 +90,10 @@ func testPoolConfigRefusesInvalidPoolMaxConns(t *testing.T) {
 		"postgres://u:sup3rsecret@localhost:5432/conveyor?pool_max_conns=many",
 		"postgres://u:sup3rsecret@localhost:5432/conveyor?pool_max_conns=0",
 		"host=localhost user=u password=sup3rsecret dbname=conveyor pool_max_conns=-2",
+		// pgx masks only the text after the last colon of an unparseable
+		// URL, and a slash in the password moves its head into the port.
+		"postgres://u:sup3rsecret:tail@localhost:notaport/conveyor",
+		"postgres://u:sup3rsecret/tail@localhost/conveyor",
 	} {
 		_, err := poolConfig(url, options)
 		if err == nil {

@@ -49,6 +49,11 @@ func RunReconcileWaitingOrderConformance(t *testing.T, st store.Store, ctx conte
 			t.Fatal("production backend has no durable dispatch queue")
 		}
 	}
+	if production {
+		t.Run("DiscardFinalStepsKeepTheHeldJob", func(t *testing.T) {
+			runDiscardFinalSteps(t, st, durable, ctx, workspace)
+		})
+	}
 	now := time.Now().UTC()
 	newQueued := func(stage core.Stage) string {
 		t.Helper()
@@ -444,4 +449,55 @@ func completeDispatchJob(t *testing.T, ctx context.Context, log eventlog.Store, 
 	}
 	appendJobEvent(job.Head, logqueue.KindClaimed, map[string]any{"attempt": 1, "worker": "storetest", "claimed_at": time.Now().UTC()})
 	appendJobEvent(job.Head+1, logqueue.KindCompleted, map[string]any{"attempt": 1})
+}
+
+// runDiscardFinalSteps proves the store half of recoverable discard
+// finalization on a durable backend. While an exhausted dispatch job is still
+// claimed, stage.bounce enqueues no newer generation, dispatch.fail_final parks
+// the task and records dispatch.failed once in one transaction, and a repeat is
+// refused and records nothing (req-task-lifecycle-and-queue AC-6.2;
+// component-durable-queue, Handlers).
+func runDiscardFinalSteps(t *testing.T, st store.Store, durable durableQueue, ctx context.Context, workspace string) {
+	t.Helper()
+	taskID := "discard-final-" + core.NewTaskID()
+	requireOK(t, st.CreateTask(ctx, core.Task{ID: taskID, Workspace: workspace, Repo: "app", Title: "Discard final steps", BaseBranch: "main", Branch: "conveyor/" + taskID, State: core.TaskRunning, NextStage: core.StageImplement, CreatedAt: time.Now().UTC()}))
+	kind := queue.DispatchTaskArgs{}.Kind()
+	stream := logqueue.StreamFor(kind, taskID)
+	log := durable.Log()
+	if _, err := logqueue.Enqueue(ctx, log, workspace, kind, taskID, queue.DispatchTaskArgs{WorkspaceID: workspace, TaskID: taskID}, queue.DispatchTaskMaxAttempts, time.Now().UTC()); err != nil {
+		t.Fatal(err)
+	}
+	job, err := logqueue.Load(ctx, log, workspace, stream)
+	requireOK(t, err)
+	claim, err := json.Marshal(map[string]any{"attempt": queue.DispatchTaskMaxAttempts, "worker": "owner", "claimed_at": time.Now().UTC()})
+	requireOK(t, err)
+	head, err := log.Append(ctx, workspace, stream, job.Head, []eventlog.NewEvent{{Kind: logqueue.KindClaimed, Payload: claim, At: time.Now().UTC()}})
+	requireOK(t, err)
+	requireHeld := func(step string) {
+		t.Helper()
+		held, loadErr := logqueue.Load(ctx, log, workspace, stream)
+		requireOK(t, loadErr)
+		if held.State != logqueue.StateRunning || held.Head != head || held.Generation != job.Generation {
+			t.Fatalf("job after %s=%+v, want running at head %d in generation %d", step, held, head, job.Generation)
+		}
+	}
+	plane := taskops.New(st)
+	_, err = plane.Perform(ctx, taskID, taskops.Command{Kind: core.TaskStageBounce, NextStage: core.StageImplement, ProjectStages: true})
+	requireOK(t, err)
+	requireHeld("stage.bounce")
+	final := taskops.Command{Kind: core.TaskDispatchFailFinal, RecoveryStage: core.StageImplement, ProjectStages: true, FailureMessage: "rescued", Attempt: queue.DispatchTaskMaxAttempts, MaxAttempts: queue.DispatchTaskMaxAttempts}
+	_, err = plane.Perform(ctx, taskID, final)
+	requireOK(t, err)
+	requireHeld("dispatch.fail_final")
+	task, err := st.GetTask(ctx, taskID)
+	requireOK(t, err)
+	if task.State != core.TaskParked || task.RecoveryStage != core.StageImplement {
+		t.Fatalf("task=%+v", task)
+	}
+	if _, err = plane.Perform(ctx, taskID, final); err == nil {
+		t.Fatal("a repeated dispatch.fail_final was accepted")
+	}
+	if count, countErr := st.CountEvents(ctx, taskID, "dispatch.failed"); countErr != nil || count != 1 {
+		t.Fatalf("dispatch.failed=%d err=%v", count, countErr)
+	}
 }

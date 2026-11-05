@@ -105,7 +105,7 @@ func (s *Store) readCredential(ctx context.Context, hash []byte) (credentialRead
 	var stored []byte
 	var revoked sql.NullTime
 	var label string
-	err := s.db.QueryRowContext(ctx, "SELECT t.id,t.user_id,t.kind,t.scope,t.token_hash,t.revoked_at,t.label,u.email,u.display_name,u.status,t.last_used_at IS NULL OR t.last_used_at<DATE_SUB(CURRENT_TIMESTAMP(6),INTERVAL ? MICROSECOND) FROM user_tokens t JOIN users u ON u.id=t.user_id WHERE t.token_hash=?",
+	err := backendRow(ctx, s.db, "SELECT t.id,t.user_id,t.kind,t.scope,t.token_hash,t.revoked_at,t.label,u.email,u.display_name,u.status,t.last_used_at IS NULL OR t.last_used_at<DATE_SUB(CURRENT_TIMESTAMP(6),INTERVAL ? MICROSECOND) FROM user_tokens t JOIN users u ON u.id=t.user_id WHERE t.token_hash=?",
 		credentialUseGranularity.Microseconds(), hash).Scan(&r.credential.ID, &r.credential.OwnerUserID, &r.credential.Kind, &r.credential.Scope, &stored, &revoked, &label, &r.user.Email, &r.user.DisplayName, &r.user.Status, &r.stale)
 	if errors.Is(err, sql.ErrNoRows) {
 		return credentialRead{}, core.ErrInvalidCredential
@@ -141,7 +141,7 @@ func (s *Store) verifyCredential(ctx context.Context, candidate string) (core.Au
 		if err = store.RunIdentityTestHook(ctx, store.IdentityHookCredentialStamping); err != nil {
 			return core.AuthenticatedCredential{}, core.IdentityUser{}, err
 		}
-		result, err := s.db.ExecContext(ctx, "UPDATE user_tokens SET last_used_at=CURRENT_TIMESTAMP(6) WHERE id=? AND token_hash=? AND revoked_at IS NULL AND (last_used_at IS NULL OR last_used_at<DATE_SUB(CURRENT_TIMESTAMP(6),INTERVAL ? MICROSECOND)) AND user_id IN (SELECT id FROM users WHERE status='active')",
+		result, err := backendExec(ctx, s.db, "UPDATE user_tokens SET last_used_at=CURRENT_TIMESTAMP(6) WHERE id=? AND token_hash=? AND revoked_at IS NULL AND (last_used_at IS NULL OR last_used_at<DATE_SUB(CURRENT_TIMESTAMP(6),INTERVAL ? MICROSECOND)) AND user_id IN (SELECT id FROM users WHERE status='active')",
 			read.credential.ID, hash[:], credentialUseGranularity.Microseconds())
 		if err != nil {
 			return core.AuthenticatedCredential{}, core.IdentityUser{}, translateBackendConflict(err)
@@ -195,7 +195,7 @@ const personalTokenColumns = "id,user_id,label,deployment_credential,created_at,
 
 func (s *Store) ListOwnPersonalAccessTokens(ctx context.Context, userID string) ([]core.PersonalAccessToken, error) {
 	ctx = dbmetrics.WithReadLabel(ctx, "ListOwnPersonalAccessTokens")
-	rows, err := s.db.QueryContext(ctx, "SELECT "+personalTokenColumns+" FROM user_tokens WHERE user_id=? AND kind='user' ORDER BY created_at DESC,id", userID)
+	rows, err := backendRows(ctx, s.db, "SELECT "+personalTokenColumns+" FROM user_tokens WHERE user_id=? AND kind='user' ORDER BY created_at DESC,id", userID)
 	if err != nil {
 		return nil, translateBackendConflict(err)
 	}

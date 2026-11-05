@@ -1,6 +1,7 @@
 package httpapi
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -11,6 +12,7 @@ import (
 
 	"github.com/kidus-tiliksew/conveyor/internal/changes"
 	"github.com/kidus-tiliksew/conveyor/internal/core"
+	"github.com/kidus-tiliksew/conveyor/internal/redact"
 	"github.com/kidus-tiliksew/conveyor/internal/store"
 )
 
@@ -34,7 +36,10 @@ var errTaskEventStreamRead = errors.New("task event stream read failed")
 // connection; a reconnect replays history and the client refetches
 // (component-persistence; DEC-39).
 type taskEventStream struct {
-	reader   taskEventStreamReader
+	reader taskEventStreamReader
+	// redactor is built for each poll, so a frame never predates a secret
+	// that was readable when its poll began.
+	redactor func(context.Context) (*redact.Redactor, error)
 	taskID   string
 	window   time.Duration
 	pageSize int
@@ -47,9 +52,9 @@ type taskEventStream struct {
 	sent map[int64]time.Time
 }
 
-func newTaskEventStream(reader taskEventStreamReader, taskID string) *taskEventStream {
+func newTaskEventStream(reader taskEventStreamReader, taskID string, redactor func(context.Context) (*redact.Redactor, error)) *taskEventStream {
 	return &taskEventStream{
-		reader: reader, taskID: taskID,
+		reader: reader, redactor: redactor, taskID: taskID,
 		window:   store.TaskEventStreamReconciliationWindow,
 		pageSize: store.TaskEventStreamMaxEvents,
 		sent:     map[int64]time.Time{},
@@ -70,6 +75,10 @@ func (s *taskEventStream) lowerBound() time.Time {
 // is still found. A write or marshal failure stops the poll without marking
 // the unsent event delivered.
 func (s *taskEventStream) poll(ctx context.Context, w io.Writer) error {
+	redactor, err := s.redactor(ctx)
+	if err != nil {
+		return fmt.Errorf("%w: %v", errTaskEventStreamRead, err)
+	}
 	since := s.lowerBound()
 	var after *store.TaskEventPosition
 	for {
@@ -82,7 +91,11 @@ func (s *taskEventStream) poll(ctx context.Context, w io.Writer) error {
 			if _, seen := s.sent[event.ID]; seen {
 				continue
 			}
-			if err := writeTaskActivityFrame(w, event); err != nil {
+			clean, err := redactEventForRead(event, redactor)
+			if err != nil {
+				return err
+			}
+			if err := writeTaskActivityFrame(w, clean); err != nil {
 				return err
 			}
 			s.sent[event.ID] = event.At
@@ -108,6 +121,25 @@ func (s *taskEventStream) evict() {
 			delete(s.sent, id)
 		}
 	}
+}
+
+// redactEventForRead returns the event as a REST read serves it. Recorded
+// events are never rewritten, so an event stored before its secret's shape was
+// known is redacted here instead (req-security-boundaries REQ-3, REQ-5). A
+// payload with nothing to remove keeps its recorded bytes.
+func redactEventForRead(event core.Event, redactor *redact.Redactor) (core.Event, error) {
+	event.ActorID, _ = redactor.Redact(event.ActorID)
+	if len(bytes.TrimSpace(event.Payload)) == 0 {
+		return event, nil
+	}
+	clean, stats, err := redactor.RedactJSON(event.Payload)
+	if err != nil {
+		return core.Event{}, fmt.Errorf("redact event payload: %w", err)
+	}
+	if stats.Total() > 0 {
+		event.Payload = clean
+	}
+	return event, nil
 }
 
 func writeTaskActivityFrame(w io.Writer, event core.Event) error {

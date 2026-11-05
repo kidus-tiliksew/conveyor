@@ -86,7 +86,7 @@ The listing ends with the page count and the number of recent factory acts;
 	}
 	cmd.Flags().StringVar(&options.band, "band", "", "decisions, blocked, or automatic")
 	cmd.Flags().IntVar(&options.limit, "limit", 0, "page size (server default when omitted)")
-	cmd.Flags().IntVar(&options.offset, "offset", 0, "page offset")
+	cmd.Flags().IntVar(&options.offset, "offset", 0, "page offset (requires --limit)")
 	cmd.Flags().BoolVar(&options.asJSON, "json", false, "print the server body verbatim")
 	return cmd
 }

@@ -400,6 +400,7 @@ func TestDeploymentLegacyWarningsConcurrent(t *testing.T) {
 // conveyor init writes MarshalDeployment output: no executor key at any path,
 // and the file reloads without a warning.
 func TestMarshalDeploymentRoundTripsPolicyOnly(t *testing.T) {
+	t.Setenv("CONVEYOR_DATABASE_URL", "postgres://conveyor@db.invalid/conveyor")
 	legacy, err := ParseDeployment(legacyInitShapedDeployment(t), "legacy.yaml", nil)
 	if err != nil {
 		t.Fatal(err)
@@ -654,4 +655,65 @@ func TestDeploymentLoadKeepsLegacyDefaultSetupPolicy(t *testing.T) {
 			t.Fatalf("top-level gates or bounce limit changed: %+v", view)
 		}
 	})
+}
+
+// req-security-boundaries REQ-2: the rendered file names the backend and never
+// the URL, whatever the caller passes, and the loader restores the URL from the
+// environment, so the daemon reaches the backend the file names.
+func TestMarshalDeploymentOmitsDatabaseURL(t *testing.T) {
+	const password = "fixture-render-pw-71c"
+	for _, tc := range []struct{ raw, backend string }{
+		{"postgres://fixture:" + password + "@db.invalid/conveyor", "postgres"},
+		{"singlestore://fixture:" + password + "@db.invalid/conveyor", "singlestore"},
+		{"fixture:" + password + "@tcp(db.invalid:3306)/conveyor", "singlestore"},
+	} {
+		rendered, err := MarshalDeployment(&Config{Database: DatabaseForURL(tc.raw)})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if strings.Contains(string(rendered), password) || strings.Contains(string(rendered), "url:") {
+			t.Fatalf("%s: rendered file holds the URL or its key", tc.backend)
+		}
+		var document struct {
+			Database map[string]any `yaml:"database"`
+		}
+		if err = yaml.Unmarshal(rendered, &document); err != nil {
+			t.Fatal(err)
+		}
+		if len(document.Database) != 1 || document.Database["backend"] != tc.backend {
+			t.Fatalf("%s: database node has %d keys, want backend only", tc.backend, len(document.Database))
+		}
+		holds, err := DeploymentHoldsDatabaseURL(rendered)
+		if err != nil || holds {
+			t.Fatalf("%s: holds=%t err=%v", tc.backend, holds, err)
+		}
+	}
+}
+
+func TestDeploymentHoldsDatabaseURL(t *testing.T) {
+	for _, tc := range []struct {
+		name, document string
+		want           bool
+	}{
+		{"no database", "workspace: demo\n", false},
+		{"backend only", "database: {backend: postgres}\n", false},
+		{"empty url", "database: {backend: postgres, url: \"\"}\n", false},
+		{"url", "database: {url: \"postgres://fixture:fixture-pw@db.invalid/conveyor\"}\n", true},
+		{"url through an alias", "shared: &shared {url: \"postgres://fixture:fixture-pw@db.invalid/conveyor\"}\ndatabase: *shared\n", true},
+		{"url through a merge key", "shared: &shared {url: \"postgres://fixture:fixture-pw@db.invalid/conveyor\"}\ndatabase: {<<: *shared}\n", true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := DeploymentHoldsDatabaseURL([]byte(tc.document))
+			if err != nil || got != tc.want {
+				t.Fatalf("got %t err=%v, want %t", got, err, tc.want)
+			}
+		})
+	}
+	_, err := DeploymentHoldsDatabaseURL([]byte("database: {url: [\"postgres://fixture:fixture-pw@db.invalid/conveyor\"]}\n"))
+	if err == nil {
+		t.Fatal("a url that is not a string must fail")
+	}
+	if strings.Contains(err.Error(), "fixture-pw") {
+		t.Fatal("the error repeats the document's password")
+	}
 }

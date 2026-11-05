@@ -11,6 +11,8 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/kidus-tiliksew/conveyor/internal/core"
+	"github.com/kidus-tiliksew/conveyor/internal/queue"
+	"github.com/kidus-tiliksew/conveyor/internal/queue/logqueue"
 	"github.com/kidus-tiliksew/conveyor/internal/store"
 	"github.com/kidus-tiliksew/conveyor/internal/store/dbmetrics"
 	"github.com/kidus-tiliksew/conveyor/internal/store/postgres/db"
@@ -149,6 +151,12 @@ func (s *Store) UpdateGitHubLifecycle(ctx context.Context, lifecycle core.GitHub
 		}
 		if err := store.ValidateGitHubPublicationTransition(current, lifecycle.State); err != nil {
 			return err
+		}
+		// A second writer of a failed row changes nothing, so one failure
+		// records one event whatever the timing (req-bounded-automatic-recovery
+		// AC-4.1).
+		if current == core.GitHubPublicationFailed && lifecycle.State == core.GitHubPublicationFailed {
+			return nil
 		}
 		command, err := tx.Exec(ctx, `UPDATE github_lifecycles SET
 			issue_number=$1, issue_url=$2, outcome=$3, state=$4, attempts=$5,
@@ -321,6 +329,12 @@ func (s *Store) UpdateReviewPublication(ctx context.Context, publication core.Re
 		if err := store.ValidateReviewPublicationUpdate(current, publication); err != nil {
 			return err
 		}
+		// A second writer of a failed row changes nothing, so one failure
+		// records one event whatever the timing (req-bounded-automatic-recovery
+		// AC-4.1).
+		if current.State == core.ReviewPublicationFailed && publication.State == core.ReviewPublicationFailed {
+			return nil
+		}
 		command, err := tx.Exec(ctx, `UPDATE review_publications SET state=$1, attempts=$2,
 			check_run_id=$3, comment_id=$4, reviewed_commit_sha=$5, forge_error_category=$6, last_error=$7,
 			forge_author_class=$8, forge_author_user_id=$9, updated_at=now() WHERE workspace_id=$10 AND review_work_order_id=$11`,
@@ -421,7 +435,83 @@ func (s *Store) ReconcileReviewPublications(ctx context.Context) (int, error) {
 			store.ReportDriftRepair(ctx, store.DriftReviewPublicationWithoutComment.For(publication.TaskID))
 		}
 	}
-	return created, nil
+	failed, err := s.failRetryingReviewPublicationsWithoutJob(ctx)
+	created += failed
+	return created, err
+}
+
+// failRetryingReviewPublicationsWithoutJob marks failed each retrying review
+// publication whose job is no longer active, so the bounded automatic
+// re-enqueue owns it once per window instead of the row staying retrying
+// (req-bounded-automatic-recovery AC-4.1; req-quiet-idle-runtime AC-4.1). A
+// row whose job is still active is not drift. Each repair is reported after
+// its transaction commits.
+func (s *Store) failRetryingReviewPublicationsWithoutJob(ctx context.Context) (int, error) {
+	rows, err := s.boundary.Query(ctx, `SELECT review_work_order_id FROM review_publications
+		WHERE workspace_id=$1 AND state='retrying'
+		ORDER BY created_at, review_work_order_id`, workspace(ctx))
+	if err != nil {
+		return 0, err
+	}
+	var ids []string
+	for rows.Next() {
+		var id string
+		if err = rows.Scan(&id); err != nil {
+			rows.Close()
+			return 0, err
+		}
+		ids = append(ids, id)
+	}
+	if err = rows.Err(); err != nil {
+		rows.Close()
+		return 0, err
+	}
+	rows.Close()
+	repaired := 0
+	for _, id := range ids {
+		var failed *core.ReviewPublication
+		err = s.inTx(ctx, func(tx pgx.Tx, q *db.Queries) error {
+			failed = nil
+			publication, err := scanReviewPublication(tx.QueryRow(ctx, "SELECT "+reviewPublicationColumns+` FROM review_publications
+				WHERE workspace_id=$1 AND review_work_order_id=$2 AND state='retrying' FOR UPDATE`, workspace(ctx), id))
+			if errors.Is(err, pgx.ErrNoRows) {
+				return nil
+			}
+			if err != nil {
+				return err
+			}
+			job, err := logqueue.Load(logTx(ctx, tx), s.log, workspace(ctx), logqueue.StreamFor(queue.ReviewPublicationArgs{}.Kind(), id))
+			if err != nil {
+				return err
+			}
+			if job.Active() {
+				return nil
+			}
+			publication.State = core.ReviewPublicationFailed
+			if publication.LastError == "" {
+				publication.LastError = store.RetryingWithoutJobError
+			}
+			if _, err = tx.Exec(ctx, `UPDATE review_publications SET state='failed', last_error=$1, updated_at=now()
+				WHERE workspace_id=$2 AND review_work_order_id=$3 AND state='retrying'`,
+				publication.LastError, workspace(ctx), id); err != nil {
+				return err
+			}
+			if err = insertEvent(ctx, q, core.Event{TaskID: publication.TaskID, JobID: publication.JobID,
+				Kind: "review.publication_failed", Payload: core.JSONPayload(publication)}); err != nil {
+				return err
+			}
+			failed = &publication
+			return nil
+		})
+		if err != nil {
+			return repaired, err
+		}
+		if failed != nil {
+			repaired++
+			store.ReportDriftRepair(ctx, store.DriftReviewPublicationRetryingWithoutJob.For(failed.TaskID))
+		}
+	}
+	return repaired, nil
 }
 
 func (s *Store) repairPublishedReviewPublication(ctx context.Context, publication core.ReviewPublication) (bool, error) {

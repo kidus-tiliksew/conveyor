@@ -36,7 +36,9 @@ SKIP LOCKED. Completion, failure with a retry time, snooze (which hands the
 attempt back), rescue of a claim older than the threshold, and discard after
 the last attempt are events on the same stream. The runtime tails each
 workspace's log into an in-memory job index and drains it one job at a time
-per kind.
+per kind. A failed catch-up, whether its index load or a tail, and a failed
+rescue are retried on their own backoff of 5 seconds doubling to one minute,
+and the next success stops that timer.
 
 Each driver also keeps one row per job stream in `event_log_job_index`,
 written in the same transaction as every job append and folded with the
@@ -55,8 +57,20 @@ handler is idempotent under concurrent replicas.
 
 The dispatcher sees only `queue.Runtime` and the handler contract: return
 nil to complete a job, `queue.Snooze` to reschedule it, any other error to
-fail it. `ReconcileQueuedTasks` repairs a queued task without a live job and
-fails a running task whose job was discarded after its last attempt.
+fail it. A registration may also name a `Discarded` handler, which applies
+the owner's stop before the discard is recorded: `dispatch_task` parks the
+task, and the review and GitHub issue publications mark their row failed. Every
+attempt, on rescue, after a handler's last attempt, and on each retry, first
+appends an expected-version `job.claimed` naming the next attempt. That append
+proves the replica's view is current and renews the claim, so a replica with a
+stale view has no effect. The attempt's claim, handler, and discard append share
+one budget of at most 30 seconds and half the rescue threshold, so the handler's
+writes stop before another replica may take the job over. The job stays running
+until the handler succeeds, so no newer generation can start under it, and a
+failure is retried on the backoff above. The running job is the durable intent:
+after a restart, rescue finds it again once its claim goes stale.
+`ReconcileQueuedTasks` repairs a queued task without a live job and fails a
+running task whose job was discarded after its last attempt.
 
 ## Operating it
 

@@ -178,7 +178,7 @@ func claimFailureNextAction(t *testing.T, handler http.Handler, workspace, taskI
 func claimFailureInboxItem(t *testing.T, handler http.Handler, workspace, taskID string) (claimFailureItem, bool) {
 	t.Helper()
 	var inbox claimFailureInbox
-	claimFailureGet(t, handler, workspace, "/v1/next-actions?band=automatic&limit=500", &inbox)
+	claimFailureGet(t, handler, workspace, "/v1/next-actions?band=automatic&limit=200", &inbox)
 	for _, item := range inbox.Items {
 		if item.Task != nil && item.Task.ID == taskID && item.NextAction != nil {
 			if item.Band != "automatic" {

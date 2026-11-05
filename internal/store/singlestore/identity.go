@@ -317,9 +317,9 @@ func (s *Store) GetCallerIdentity(ctx context.Context, userID, workspaceID strin
 	var r core.CallerIdentity
 	var err error
 	if workspaceID == "" {
-		err = s.db.QueryRowContext(ctx, "SELECT id,email,display_name FROM users WHERE id=? AND status='active'", userID).Scan(&r.ID, &r.Email, &r.DisplayName)
+		err = backendRow(ctx, s.db, "SELECT id,email,display_name FROM users WHERE id=? AND status='active'", userID).Scan(&r.ID, &r.Email, &r.DisplayName)
 	} else {
-		err = s.db.QueryRowContext(ctx, "SELECT u.id,u.email,u.display_name,b.role FROM users u JOIN workspace_role_bindings b ON b.user_id=u.id WHERE u.id=? AND u.status='active' AND b.workspace_id=?", userID, workspaceID).Scan(&r.ID, &r.Email, &r.DisplayName, &r.Role)
+		err = backendRow(ctx, s.db, "SELECT u.id,u.email,u.display_name,b.role FROM users u JOIN workspace_role_bindings b ON b.user_id=u.id WHERE u.id=? AND u.status='active' AND b.workspace_id=?", userID, workspaceID).Scan(&r.ID, &r.Email, &r.DisplayName, &r.Role)
 	}
 	return r, identityNotFound(err)
 }

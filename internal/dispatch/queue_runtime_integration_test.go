@@ -258,7 +258,8 @@ func TestQueueDispatchPersistsRetryDelaysThenParksIntegration(t *testing.T) {
 		_ = second.Stop(stopCtx)
 	}()
 	discarded := waitForJob(t, ctx, st, workspace, stream, func(job logqueue.Job) bool { return job.State == logqueue.StateDiscarded }, "discard after final attempt")
-	if discarded.Attempt != queue.DispatchTaskMaxAttempts || discarded.MaxAttempts != queue.DispatchTaskMaxAttempts {
+	// The discard handler's own claim names the attempt after the last execution.
+	if discarded.Attempt != queue.DispatchTaskMaxAttempts+1 || discarded.MaxAttempts != queue.DispatchTaskMaxAttempts {
 		t.Fatalf("discarded job=%+v", discarded)
 	}
 	deadline := time.Now().Add(10 * time.Second)

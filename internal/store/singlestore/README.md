@@ -23,6 +23,7 @@ Aggregate writers validate parents, workspace ownership, core lifecycle states, 
 Unique keys must include the shard key; deployment-wide uniqueness requires Go-side locking and checks.
 Event ledgers are append-only.
 `withTx` rolls back on error, cancellation, or panic, and translates supported backend conflicts at the transaction boundary.
+A statement outside `withTx` goes through `backendRow`, `backendRows`, `backendExec`, or their workspace-checked `document*` forms, which translate its errors, including row iteration and `RowsAffected`; `TestPackageQueriesUseTranslatingPaths` enforces this.
 
 ## Tests
 

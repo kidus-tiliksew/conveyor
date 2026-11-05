@@ -211,18 +211,24 @@ type githubIssuePublicationWorker struct {
 // daemon hands them to whichever queue.Runtime is in use.
 func (d *Dispatcher) Registrations(shutdown *ShutdownMarker) []queue.Registration {
 	publications := &verificationPublicationWorker{dispatcher: d}
+	// Rescue runs a kind's Discarded handler after it discards a job whose
+	// handler never recorded an outcome (component-durable-queue, Handlers).
+	dispatchWorker := &dispatchTaskWorker{dispatcher: d, shutdown: shutdown}
+	reviewWorker := &reviewPublicationWorker{dispatcher: d}
+	issueWorker := &githubIssuePublicationWorker{dispatcher: d}
 	return []queue.Registration{
 		{Kind: queue.VerificationPublicationArgs{}.Kind(), Handle: publications.Work},
 		{Kind: "verification_publication", Handle: publications.Legacy},
 		{
-			Kind:   queue.DispatchTaskArgs{}.Kind(),
-			Handle: (&dispatchTaskWorker{dispatcher: d, shutdown: shutdown}).Work,
+			Kind:      queue.DispatchTaskArgs{}.Kind(),
+			Handle:    dispatchWorker.Work,
+			Discarded: dispatchWorker.Discarded,
 			// Bounded T12/T13 backoff between failed dispatch attempts
 			// (component-durable-queue).
 			RetryDelay: queue.DispatchTaskRetryDelay,
 		},
-		{Kind: queue.ReviewPublicationArgs{}.Kind(), Handle: (&reviewPublicationWorker{dispatcher: d}).Work},
-		{Kind: queue.GitHubIssuePublicationArgs{}.Kind(), Handle: (&githubIssuePublicationWorker{dispatcher: d}).Work},
+		{Kind: queue.ReviewPublicationArgs{}.Kind(), Handle: reviewWorker.Work, Discarded: reviewWorker.Discarded},
+		{Kind: queue.GitHubIssuePublicationArgs{}.Kind(), Handle: issueWorker.Work, Discarded: issueWorker.Discarded},
 		{Kind: queue.PullRequestCloseArgs{}.Kind(), Handle: (&pullRequestCloseWorker{dispatcher: d}).Work, RetryDelay: queue.DispatchTaskRetryDelay},
 		{Kind: queue.OrderClockArgs{}.Kind(), Handle: (&orderClockWorker{dispatcher: d}).Work},
 	}

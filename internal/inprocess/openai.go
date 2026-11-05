@@ -7,6 +7,7 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"image/gif"
 	"io"
@@ -139,11 +140,25 @@ const (
 	responsesRetryDelay  = 2 * time.Second
 )
 
+// Run calls the provider and sanitises what the caller will store: every
+// return path passes through one sanitiser, so the stage error and Diagnostic
+// hold only redacted provider text and the endpoint's host
+// (req-security-boundaries REQ-2, REQ-3; component-triage).
 func (client *OpenAI) Run(ctx context.Context, model string, input Input) (Result, error) {
+	result, err := client.run(ctx, model, input)
+	return client.sanitiseResult(ctx, model, result, err)
+}
+
+func (client *OpenAI) endpoint() string {
 	endpoint := strings.TrimRight(client.BaseURL, "/")
 	if endpoint == "" {
-		endpoint = "https://api.openai.com/v1"
+		return "https://api.openai.com/v1"
 	}
+	return endpoint
+}
+
+func (client *OpenAI) run(ctx context.Context, model string, input Input) (Result, error) {
+	endpoint := client.endpoint()
 	endpointHost := responseEndpointHost(endpoint)
 	diagnostic := requestDiagnostic(model, endpointHost, input.Attachments)
 	if strings.TrimSpace(client.APIKey) == "" {
@@ -189,7 +204,7 @@ func (client *OpenAI) Run(ctx context.Context, model string, input Input) (Resul
 			transcript, err := client.transcribe(ctx, endpoint, attachment)
 			if err != nil {
 				diagnostic.Phase = "attachment_preparation"
-				failure := fmt.Errorf("transcribe artifact %s (%s): %w", attachment.ID, attachment.Name, err)
+				failure := fmt.Errorf("transcribe artifact %s (%s): %w", attachment.ID, attachment.Name, withoutEndpointURL(err, endpointHost))
 				audit, stats, redactErr := client.auditEnvelope(ctx, map[string]any{"model": model, "input": auditContent, "store": false}, map[string]any{"diagnostic": diagnostic, "error": failure.Error()})
 				if redactErr != nil {
 					return Result{Diagnostic: &diagnostic}, redactErr
@@ -281,6 +296,9 @@ func (client *OpenAI) Run(ctx context.Context, model string, input Input) (Resul
 	for try := 1; ; try++ {
 		attempts = try
 		raw, statusCode, status, requestID, err = attempt()
+		// The audit transcript records this error too, and a credential in the
+		// endpoint's path is not a known value the redactor could find.
+		err = withoutEndpointURL(err, endpointHost)
 		transient := err != nil || statusCode == http.StatusTooManyRequests || statusCode >= 500
 		contextExceeded := responseContextExceeded(raw)
 		if contextExceeded {
@@ -729,6 +747,89 @@ func documentWireMediaType(contentType string) string {
 		return "text/plain"
 	}
 	return contentType
+}
+
+// sanitisedError carries redacted text while keeping its cause reachable, so
+// errors.As and errors.Is still classify a budget overage or a cancellation.
+type sanitisedError struct {
+	text  string
+	cause error
+}
+
+func (e *sanitisedError) Error() string { return e.text }
+func (e *sanitisedError) Unwrap() error { return e.cause }
+
+// withoutEndpointURL names the endpoint's host in place of the full URL a
+// *url.Error prints. When err is the *url.Error itself, its cause skips that
+// value, so the URL stays unreachable through Unwrap as well.
+func withoutEndpointURL(err error, host string) error {
+	var urlErr *url.Error
+	if !errors.As(err, &urlErr) {
+		return err
+	}
+	inner := withoutEndpointURL(urlErr.Err, host)
+	text := strings.ReplaceAll(err.Error(), urlErr.Error(), urlErr.Op+" "+host+": "+inner.Error())
+	cause := err
+	if err == error(urlErr) {
+		cause = inner
+	}
+	return &sanitisedError{text: text, cause: cause}
+}
+
+// sanitiseReadTimeout bounds the secret read that sanitising performs after a
+// stage's own context has ended.
+const sanitiseReadTimeout = 5 * time.Second
+
+// sanitiseResult redacts the stage error and the Diagnostic, adding what it
+// removed to the result's counts. The secret read ignores the stage's
+// cancellation, so a cancelled or timed-out stage keeps its detail. When the
+// read fails, the error becomes fixed text and the Diagnostic loses the fields
+// that hold provider or caller text, so unredacted text never leaves Run.
+func (client *OpenAI) sanitiseResult(ctx context.Context, model string, result Result, runErr error) (Result, error) {
+	if runErr == nil && result.Diagnostic == nil {
+		return result, nil
+	}
+	endpoint := client.endpoint()
+	host := responseEndpointHost(endpoint)
+	readCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), sanitiseReadTimeout)
+	defer cancel()
+	redactor, redactErr := client.redactor(readCtx)
+	if redactErr != nil {
+		if result.Diagnostic != nil {
+			withheld := *result.Diagnostic
+			withheld.ProviderCode, withheld.UpstreamRequest, withheld.AttachmentTypes = "", "", nil
+			result.Diagnostic = &withheld
+		}
+		if runErr != nil {
+			runErr = &sanitisedError{text: fmt.Sprintf("Responses API (%s) request for model %q failed; detail withheld because redaction is unavailable", host, model), cause: runErr}
+		}
+		return result, runErr
+	}
+	clean := func(value string) string {
+		text, stats := redactor.Redact(value)
+		result.Redactions.Add(stats)
+		return text
+	}
+	if result.Diagnostic != nil {
+		sanitised := *result.Diagnostic
+		sanitised.Endpoint = clean(sanitised.Endpoint)
+		sanitised.Model = clean(sanitised.Model)
+		sanitised.ProviderCode = clean(sanitised.ProviderCode)
+		sanitised.UpstreamRequest = clean(sanitised.UpstreamRequest)
+		sanitised.AttachmentTypes = append([]string(nil), sanitised.AttachmentTypes...)
+		for index, value := range sanitised.AttachmentTypes {
+			sanitised.AttachmentTypes[index] = clean(value)
+		}
+		result.Diagnostic = &sanitised
+	}
+	if runErr == nil {
+		return result, nil
+	}
+	original := runErr.Error()
+	if text := clean(strings.ReplaceAll(original, endpoint, host)); text != original {
+		runErr = &sanitisedError{text: text, cause: runErr}
+	}
+	return result, runErr
 }
 
 func (client *OpenAI) redactor(ctx context.Context) (*redact.Redactor, error) {

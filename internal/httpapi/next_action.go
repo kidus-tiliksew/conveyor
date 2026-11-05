@@ -17,21 +17,28 @@ import (
 )
 
 func (s *Server) writeTask(w http.ResponseWriter, r *http.Request, task core.Task) {
+	if response, ok := s.taskResponse(w, r, task); ok {
+		writeJSON(w, http.StatusOK, response)
+	}
+}
+
+// taskResponse is a task with its next action. On a failed read it answers the
+// request itself and reports false.
+func (s *Server) taskResponse(w http.ResponseWriter, r *http.Request, task core.Task) (any, bool) {
 	opts, err := s.nextActionOptions(r)
 	if err != nil {
-		log.Printf("next action options: %v", err)
-		http.Error(w, "internal server error", http.StatusInternalServerError)
-		return
+		writeStoreFailure(w, r, err)
+		return nil, false
 	}
 	action, err := store.ReadNextAction(r.Context(), s.Store, task.ID, opts)
 	if err != nil {
-		http.Error(w, "internal server error", http.StatusInternalServerError)
-		return
+		writeStoreFailure(w, r, err)
+		return nil, false
 	}
-	writeJSON(w, http.StatusOK, struct {
+	return struct {
 		core.Task
 		NextAction nextaction.NextAction `json:"next_action"`
-	}{Task: task, NextAction: action})
+	}{Task: task, NextAction: action}, true
 }
 
 // writeTasks answers one task page with each row's compact next action. The
@@ -40,8 +47,7 @@ func (s *Server) writeTasks(w http.ResponseWriter, r *http.Request, page store.T
 	tasks := page.Tasks
 	opts, err := s.nextActionOptions(r)
 	if err != nil {
-		log.Printf("next action options: %v", err)
-		http.Error(w, "internal server error", http.StatusInternalServerError)
+		writeStoreFailure(w, r, err)
 		return
 	}
 	// Rows carry only the compact action, so the projection skips the
@@ -102,13 +108,12 @@ func (s *Server) nextActionOptionsFor(ctx context.Context) (store.NextActionOpti
 func (s *Server) getNextAction(w http.ResponseWriter, r *http.Request) {
 	opts, err := s.nextActionOptions(r)
 	if err != nil {
-		log.Printf("next action options: %v", err)
-		http.Error(w, "internal server error", http.StatusInternalServerError)
+		writeStoreFailure(w, r, err)
 		return
 	}
 	action, err := store.ReadNextAction(r.Context(), s.Store, chi.URLParam(r, "id"), opts)
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusNotFound)
+		writeClassifiedStoreError(w, r, err, refuseSentinel(store.ErrNotFound, http.StatusNotFound, "task not found"))
 		return
 	}
 	writeJSON(w, http.StatusOK, action)
@@ -120,35 +125,35 @@ func (s *Server) listInbox(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "authenticated user is required", http.StatusUnauthorized)
 		return
 	}
-	limit, _ := strconv.Atoi(r.URL.Query().Get("limit"))
-	offset, _ := strconv.Atoi(r.URL.Query().Get("offset"))
-	if limit <= 0 {
-		limit = 50
+	listed, ok := readListPage(w, r, defaultInboxPageLimit)
+	if !ok {
+		return
 	}
-	page, err := s.Store.ListCallerAttentionTaskPage(r.Context(), store.CallerAttentionQuery{UserID: credential.OwnerUserID, Limit: limit, Offset: offset})
+	page, err := s.Store.ListCallerAttentionTaskPage(r.Context(), store.CallerAttentionQuery{UserID: credential.OwnerUserID, Limit: listed.Limit, Offset: listed.Offset})
 	if err != nil {
-		http.Error(w, "internal server error", http.StatusInternalServerError)
+		writeStoreFailure(w, r, err)
 		return
 	}
 	opts, err := s.nextActionOptions(r)
 	if err != nil {
-		log.Printf("next action options: %v", err)
-		http.Error(w, "internal server error", http.StatusInternalServerError)
+		writeStoreFailure(w, r, err)
 		return
 	}
 	projected, err := store.ReadNextActions(r.Context(), s.Store, page.Tasks, opts)
 	if err != nil {
-		http.Error(w, "internal server error", http.StatusInternalServerError)
+		writeStoreFailure(w, r, err)
 		return
 	}
 	items := make([]nextaction.Compact, 0, len(page.Tasks))
 	for _, task := range page.Tasks {
 		items = append(items, nextaction.CompactFrom(projected[task.ID]))
 	}
-	w.Header().Set("X-Conveyor-Total", strconv.Itoa(page.Total))
+	listed.writeHeaders(w, page.Total)
 	writeJSON(w, http.StatusOK, map[string]any{"items": items, "total": page.Total})
 }
 
+// listFactoryActs serves the workspace's system recovery acts, newest first,
+// from one bounded store page (DEC-105(4); component-next-action invariant 21).
 func (s *Server) listFactoryActs(w http.ResponseWriter, r *http.Request) {
 	since := time.Now().UTC().Add(-24 * time.Hour)
 	if raw := r.URL.Query().Get("since"); raw != "" {
@@ -159,20 +164,15 @@ func (s *Server) listFactoryActs(w http.ResponseWriter, r *http.Request) {
 		}
 		since = parsed
 	}
-	limit, _ := strconv.Atoi(r.URL.Query().Get("limit"))
-	tasks, err := s.Store.ListTasks(r.Context())
-	if err != nil {
-		http.Error(w, "internal server error", http.StatusInternalServerError)
+	listed, ok := readListPage(w, r, defaultInboxPageLimit)
+	if !ok {
 		return
 	}
-	var events []core.Event
-	for _, task := range tasks {
-		taskEvents, listErr := s.Store.ListCompactEvents(r.Context(), task.ID)
-		if listErr != nil {
-			http.Error(w, "internal server error", http.StatusInternalServerError)
-			return
-		}
-		events = append(events, taskEvents...)
+	page, err := s.Store.ListRecoveryActPage(r.Context(), store.RecoveryActQuery{Since: since, Page: listed.query()})
+	if err != nil {
+		writeStoreFailure(w, r, err)
+		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"acts": store.FilterFactoryActs(events, since, limit)})
+	listed.writeHeaders(w, page.Total)
+	writeJSON(w, http.StatusOK, map[string]any{"acts": page.Acts})
 }

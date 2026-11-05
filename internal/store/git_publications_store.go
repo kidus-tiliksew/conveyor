@@ -152,6 +152,9 @@ func (m *memory) UpdateReviewPublication(ctx context.Context, publication core.R
 	if err := ValidateReviewPublicationUpdate(current, publication); err != nil {
 		return err
 	}
+	if current.State == core.ReviewPublicationFailed && publication.State == core.ReviewPublicationFailed {
+		return nil
+	}
 	publication.UpdatedAt = time.Now().UTC()
 	m.publications[publication.ReviewWorkOrderID] = publication
 	kind := "review.publication_retry"
@@ -408,6 +411,9 @@ func (m *memory) UpdateGitHubLifecycle(ctx context.Context, lifecycle core.GitHu
 	}
 	if err := ValidateGitHubPublicationTransition(current.State, lifecycle.State); err != nil {
 		return err
+	}
+	if current.State == core.GitHubPublicationFailed && lifecycle.State == core.GitHubPublicationFailed {
+		return nil
 	}
 	lifecycle.UpdatedAt = time.Now().UTC()
 	m.github[lifecycle.TaskID] = lifecycle

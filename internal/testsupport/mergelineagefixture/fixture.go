@@ -207,7 +207,7 @@ func (s scenario) source(t *testing.T, mergedHead string, checks *int) monitor.G
 	pull := fmt.Sprintf(`{"number":%d,"html_url":%q,"merged_at":"2026-10-13T12:00:00Z","merged_by":{"login":"operator"},"merge_commit_sha":%q,"head":{"ref":%q,"sha":%q}}`,
 		number, pullURL(), landed, s.task.Branch, mergedHead)
 	return monitor.GitHubSource{
-		WorkspaceID: s.ws, Repository: repository, GitHubSlug: githubSlug,
+		WorkspaceID: s.ws, Repository: repository, GitHubSlug: githubSlug, Base: "main",
 		ResolveTask: func(_ context.Context, headRef string, _ int) (string, bool, error) {
 			return s.task.ID, headRef == s.task.Branch, nil
 		},

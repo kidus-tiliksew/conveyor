@@ -28,7 +28,7 @@ func (s *Store) WithMonitorSignalClassLock(ctx context.Context, repository strin
 		return translateBackendConflict(err)
 	}
 	defer release()
-	return fn(ctx)
+	return translateBackendConflict(fn(ctx))
 }
 func (s *Store) monitorTx(ctx context.Context, fn func(*sql.Tx, string) error) error {
 	ws, err := workspace(ctx)
@@ -154,7 +154,7 @@ func (s *Store) FindOpenMonitorTask(ctx context.Context, repository string, kind
 		return "", false, translateBackendConflict(err)
 	}
 	var id string
-	err = s.db.QueryRowContext(ctx, "SELECT id FROM tasks WHERE workspace_id=? AND repo_name=? AND source=? AND state NOT IN ('merged','closed') ORDER BY created_at,id LIMIT 1", ws, repository, "monitor:"+string(kind)).Scan(&id)
+	err = backendRow(ctx, s.db, "SELECT id FROM tasks WHERE workspace_id=? AND repo_name=? AND source=? AND state NOT IN ('merged','closed') ORDER BY created_at,id LIMIT 1", ws, repository, "monitor:"+string(kind)).Scan(&id)
 	if errors.Is(err, sql.ErrNoRows) {
 		return "", false, nil
 	}
@@ -173,7 +173,7 @@ func (s *Store) MonitorMergeCommitState(ctx context.Context, repository, commitS
 		return monitor.MergeNone, "", translateBackendConflict(err)
 	}
 	var recordedTask string
-	err = s.db.QueryRowContext(ctx, `SELECT e.task_id FROM events_columnstore e
+	err = backendRow(ctx, s.db, `SELECT e.task_id FROM events_columnstore e
 		WHERE e.workspace_id=?
 		  AND e.kind IN ('merge.confirmed','merge.reconciled')
 		  AND JSON_EXTRACT_STRING(e.payload_json,'repository')=?
@@ -188,7 +188,7 @@ func (s *Store) MonitorMergeCommitState(ctx context.Context, repository, commitS
 	var inFlightTask string
 	var requestAt time.Time
 	if recordedTask == "" && bound > 0 && now.Sub(committedAt) < bound {
-		err = s.db.QueryRowContext(ctx, `SELECT e.task_id, e.at FROM events_columnstore e
+		err = backendRow(ctx, s.db, `SELECT e.task_id, e.at FROM events_columnstore e
 			WHERE e.workspace_id=? AND e.kind='merge.requested'
 			  AND JSON_EXTRACT_STRING(e.payload_json,'repository')=?
 			  AND e.at > ?
@@ -359,13 +359,13 @@ func (s *Store) MonitorStatus(ctx context.Context, enabled bool, now time.Time) 
 	}
 	r := monitor.Status{WorkspaceID: ws, Enabled: enabled}
 	var last, backoff sql.NullTime
-	err = s.db.QueryRowContext(ctx, "SELECT last_successful_at,current_error,forge_error_category,backoff_until FROM monitor_status WHERE workspace_id=?", ws).Scan(&last, &r.CurrentError, &r.ForgeErrorCategory, &backoff)
+	err = backendRow(ctx, s.db, "SELECT last_successful_at,current_error,forge_error_category,backoff_until FROM monitor_status WHERE workspace_id=?", ws).Scan(&last, &r.CurrentError, &r.ForgeErrorCategory, &backoff)
 	if err != nil && !errors.Is(err, sql.ErrNoRows) {
 		return r, translateBackendConflict(err)
 	}
 	r.LastSuccessfulAt = last.Time
 	r.BackoffUntil = backoff.Time
-	rows, err := s.db.QueryContext(ctx, "SELECT id,kind,payload_json,at FROM monitor_activity WHERE workspace_id=? ORDER BY at,id", ws)
+	rows, err := backendRows(ctx, s.db, "SELECT id,kind,payload_json,at FROM monitor_activity WHERE workspace_id=? ORDER BY at,id", ws)
 	if err != nil {
 		return r, translateBackendConflict(err)
 	}
@@ -387,7 +387,7 @@ func (s *Store) MonitorStatus(ctx context.Context, enabled bool, now time.Time) 
 	if err != nil {
 		return r, translateBackendConflict(err)
 	}
-	rows, err = s.db.QueryContext(ctx, "SELECT "+observationColumns+" FROM monitor_observations WHERE workspace_id=? ORDER BY created_at,identity", ws)
+	rows, err = backendRows(ctx, s.db, "SELECT "+observationColumns+" FROM monitor_observations WHERE workspace_id=? ORDER BY created_at,identity", ws)
 	if err != nil {
 		return r, translateBackendConflict(err)
 	}
@@ -423,7 +423,7 @@ func (s *Store) ListUnresolvedDrift(ctx context.Context) ([]monitor.Drift, error
 	if err != nil {
 		return nil, translateBackendConflict(err)
 	}
-	rows, err := s.db.QueryContext(ctx, "SELECT "+driftColumns+" FROM repository_drift WHERE workspace_id=? AND resolved_at IS NULL ORDER BY detected_at,id", ws)
+	rows, err := backendRows(ctx, s.db, "SELECT "+driftColumns+" FROM repository_drift WHERE workspace_id=? AND resolved_at IS NULL ORDER BY detected_at,id", ws)
 	if err != nil {
 		return nil, translateBackendConflict(err)
 	}
@@ -711,7 +711,7 @@ func (s *Store) MonitorOriginsForTasks(ctx context.Context, taskIDs []string) (m
 	// The task sources are read first and matched in Go, so the observation
 	// read needs no correlated subquery.
 	kinds := map[string]string{}
-	taskRows, err := s.db.QueryContext(ctx, "SELECT id,source FROM tasks WHERE workspace_id=? AND id IN ("+placeholders+")", args...)
+	taskRows, err := backendRows(ctx, s.db, "SELECT id,source FROM tasks WHERE workspace_id=? AND id IN ("+placeholders+")", args...)
 	if err != nil {
 		return nil, translateBackendConflict(err)
 	}
@@ -734,7 +734,7 @@ func (s *Store) MonitorOriginsForTasks(ctx context.Context, taskIDs []string) (m
 	if len(kinds) == 0 {
 		return result, nil
 	}
-	rows, err := s.db.QueryContext(ctx, "SELECT "+observationColumns+" FROM monitor_observations WHERE workspace_id=? AND task_id IN ("+placeholders+") ORDER BY task_id,created_at,identity", args...)
+	rows, err := backendRows(ctx, s.db, "SELECT "+observationColumns+" FROM monitor_observations WHERE workspace_id=? AND task_id IN ("+placeholders+") ORDER BY task_id,created_at,identity", args...)
 	if err != nil {
 		return nil, translateBackendConflict(err)
 	}

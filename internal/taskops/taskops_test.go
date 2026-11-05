@@ -2,6 +2,7 @@ package taskops_test
 
 import (
 	"context"
+	"errors"
 	"github.com/kidus-tiliksew/conveyor/internal/store/storetest"
 	"strings"
 	"testing"
@@ -98,5 +99,67 @@ func TestReadsArePureAndOrderClockPersistsCanonicalCommands(t *testing.T) {
 	afterTick, _ := st.CountEvents(ctx, task.ID, "work_order.stale")
 	if afterTick != before+1 {
 		t.Fatalf("clock stale events=%d before=%d", afterTick, before)
+	}
+}
+
+// clockBackend fails ApplyWorkOrderClock for the tasks in fail and counts one
+// transition for every other task.
+type clockBackend struct {
+	taskops.Backend
+	ids     []string
+	fail    map[string]error
+	applied []string
+	cancel  func()
+}
+
+func (b *clockBackend) ListElapsedWorkOrderTaskIDs(context.Context, time.Time) ([]string, error) {
+	return b.ids, nil
+}
+
+func (b *clockBackend) ApplyWorkOrderClock(_ context.Context, _ taskops.TaskLease, taskID string, _ time.Time) (int, error) {
+	b.applied = append(b.applied, taskID)
+	if b.cancel != nil {
+		b.cancel()
+	}
+	if err := b.fail[taskID]; err != nil {
+		return 0, err
+	}
+	return 1, nil
+}
+
+// A failing first task must not stop later tasks' deadlines, and the error
+// still returns so the deadline alarm retries (req-quiet-idle-runtime AC-2.4).
+func TestOrderClockContinuesPastFailingTaskAndReturnsJoinedError(t *testing.T) {
+	backend := &clockBackend{
+		ids:  []string{"task-a", "task-b", "task-c"},
+		fail: map[string]error{"task-a": store.ErrRetryable, "task-c": errors.New("boom")},
+	}
+	count, err := taskops.New(backend).TickOrderClock(context.Background(), time.Now().UTC())
+	if count != 1 {
+		t.Fatalf("count=%d, want 1", count)
+	}
+	if strings.Join(backend.applied, ",") != "task-a,task-b,task-c" {
+		t.Fatalf("applied=%v", backend.applied)
+	}
+	if err == nil || !errors.Is(err, store.ErrRetryable) {
+		t.Fatalf("err=%v, want joined error matching store.ErrRetryable", err)
+	}
+	for _, want := range []string{"task task-a:", "task task-c: boom"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Fatalf("err=%q lacks %q", err, want)
+		}
+	}
+}
+
+func TestOrderClockStopsOnContextCancellation(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	backend := &clockBackend{ids: []string{"task-a", "task-b"}, cancel: cancel}
+	count, err := taskops.New(backend).TickOrderClock(ctx, time.Now().UTC())
+	if count != 1 || strings.Join(backend.applied, ",") != "task-a" {
+		t.Fatalf("count=%d applied=%v", count, backend.applied)
+	}
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("err=%v, want context.Canceled", err)
 	}
 }

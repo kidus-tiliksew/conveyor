@@ -919,20 +919,13 @@ func FilterFactoryActs(events []core.Event, since time.Time, limit int) []nextac
 	if limit <= 0 {
 		limit = 50
 	}
-	kinds := map[string]string{
-		"work_order.recovery_scheduled": "recovery_scheduled",
-		"work_order.recovered":          "recovered",
-		"merge.conflict_fix_dispatched": "conflict_fix_dispatched",
-		"task.retry_accepted":           "retry_accepted",
-	}
 	var acts []nextaction.Act
 	for i := len(events) - 1; i >= 0; i-- {
 		event := events[i]
-		kind, ok := kinds[event.Kind]
-		if !ok || event.ActorRole != core.ActorSystem || event.At.Before(since) {
+		if _, recovery := recoveryActKinds[event.Kind]; !recovery || event.ActorRole != core.ActorSystem || event.At.Before(since) {
 			continue
 		}
-		acts = append(acts, nextaction.Act{ID: event.ID, TaskID: event.TaskID, Kind: kind, At: event.At, Automatic: true})
+		acts = append(acts, RecoveryActFromEvent(event.ID, event.TaskID, event.Kind, event.At))
 		if len(acts) == limit {
 			break
 		}

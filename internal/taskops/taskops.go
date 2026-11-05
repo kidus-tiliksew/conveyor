@@ -5,6 +5,7 @@ package taskops
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"time"
 
@@ -211,6 +212,12 @@ func (p *Plane) AcceptReviewDecision(ctx context.Context, decision core.ReviewDe
 // TickOrderClock sends deadline commands for every task with elapsed work-order
 // clocks. Candidate discovery is a pure read; each task's transitions execute
 // under the same unforgeable, workspace-qualified command-plane lease.
+//
+// One task's failure does not stop the pass: the clock applies every later
+// task's deadlines, joins each failure with its task ID, and returns the joined
+// error so the deadline alarm retries the failed tasks. Joining keeps
+// errors.Is matches such as store.ErrRetryable. The pass stops only when ctx
+// is cancelled (req-quiet-idle-runtime AC-2.4; component-durable-queue).
 func (p *Plane) TickOrderClock(ctx context.Context, now time.Time) (int, error) {
 	if p == nil || p.backend == nil {
 		return 0, fmt.Errorf("taskops plane requires a backend")
@@ -220,14 +227,20 @@ func (p *Plane) TickOrderClock(ctx context.Context, now time.Time) (int, error) 
 		return 0, err
 	}
 	total := 0
+	var errs []error
 	for _, taskID := range taskIDs {
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			errs = append(errs, ctxErr)
+			break
+		}
 		count, applyErr := p.backend.ApplyWorkOrderClock(ctx, TaskLease{taskID: taskID, seal: &leaseSeal{}}, taskID, now)
 		if applyErr != nil {
-			return total, applyErr
+			errs = append(errs, fmt.Errorf("task %s: %w", taskID, applyErr))
+			continue
 		}
 		total += count
 	}
-	return total, nil
+	return total, errors.Join(errs...)
 }
 
 type Plane struct{ backend Backend }

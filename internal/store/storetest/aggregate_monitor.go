@@ -582,7 +582,7 @@ func mergeDeferralGitHubSource(x Fixture, sha string, committed time.Time, now f
 	}
 	parent := "parent-" + sha
 	return monitor.GitHubSource{
-		WorkspaceID: x.Workspace, Repository: "conveyor", GitHubSlug: "acme/conveyor",
+		WorkspaceID: x.Workspace, Repository: "conveyor", GitHubSlug: "acme/conveyor", Base: "main",
 		MergeCommitState: func(ctx context.Context, repository, commitSHA string, at time.Time) (monitor.MergeState, string, error) {
 			return ms.MonitorMergeCommitState(ctx, repository, commitSHA, at, now(), bound)
 		},
