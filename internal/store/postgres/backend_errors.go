@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log"
 	"reflect"
+	"regexp"
 	"strings"
 
 	"github.com/jackc/pgx/v5"
@@ -102,8 +103,62 @@ func translateDriverError(err error) error {
 	}
 	// The driver detail stays in the server log; callers receive only the
 	// store error.
-	log.Printf("postgres: database operation failed: %v", err)
+	logDriverError(err)
 	return errBackendOperation
+}
+
+// logDriverError writes the one server log line for an untranslated driver
+// condition, in the form SingleStore's logDriverError uses. SQLSTATE is
+// PostgreSQL's error code, so the line has no separate error number. The
+// message is redacted and bounded; no SQL text or argument is added to it
+// (component-persistence; req-security-boundaries REQ-2).
+func logDriverError(err error) {
+	state, message := driverDiagnosis(err)
+	log.Printf("postgres: database operation failed: operation=%s sqlstate=%s message=%q", store.BackendOperation(storePackage), state, store.DriverLogMessage(message))
+}
+
+// storePackage is this package's import path, as runtime function names
+// spell it.
+var storePackage = reflect.TypeOf((*Store)(nil)).Elem().PkgPath()
+
+// sqlStatePattern is the form of a SQLSTATE. A driver error's Code is an
+// unchecked string, and only a real SQLSTATE reaches the unredacted field.
+var sqlStatePattern = regexp.MustCompile(`^[0-9A-Z]{5}$`)
+
+// driverDiagnosis selects the SQLSTATE and message to log. From a server error
+// it takes only the primary message, never the detail, hint, query, or context
+// fields, which can hold row values and SQL text.
+func driverDiagnosis(err error) (state, message string) {
+	var pgErr *pgconn.PgError
+	if errors.As(err, &pgErr) {
+		if sqlStatePattern.MatchString(pgErr.Code) {
+			state = pgErr.Code
+		}
+		return state, pgErr.Message
+	}
+	return "", withoutQuotedQueryValues(err.Error())
+}
+
+var (
+	// quotedQueryValues matches the pgx client text that repeats a bound
+	// argument (`failed to encode args[0]: unable to encode "value" into ...`)
+	// or the SQL of a batched statement (`error building query SELECT ...`).
+	quotedQueryValues = regexp.MustCompile(`(?s)(?:error building query |(?:failed|unable) to encode ).*`)
+	argumentPosition  = regexp.MustCompile(`args\[\d+\]`)
+)
+
+// withoutQuotedQueryValues replaces the text quotedQueryValues matches with a
+// fixed statement that keeps only the argument's position.
+func withoutQuotedQueryValues(message string) string {
+	found := quotedQueryValues.FindStringIndex(message)
+	if found == nil {
+		return message
+	}
+	omitted := "failed to encode query argument"
+	if position := argumentPosition.FindString(message[found[0]:]); position != "" {
+		omitted += " " + position
+	}
+	return message[:found[0]] + omitted + ": value omitted"
 }
 
 // carriesDriverError reports whether any error in the chain is declared in

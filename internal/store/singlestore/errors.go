@@ -6,13 +6,9 @@ import (
 	"fmt"
 	"log"
 	"reflect"
-	"runtime"
 	"strings"
-	"unicode"
-	"unicode/utf8"
 
 	"github.com/go-sql-driver/mysql"
-	"github.com/kidus-tiliksew/conveyor/internal/redact"
 	"github.com/kidus-tiliksew/conveyor/internal/store"
 )
 
@@ -34,7 +30,7 @@ var driverSentinels = []error{
 }
 
 // driverLogMessageLimit bounds the driver message written to the server log.
-const driverLogMessageLimit = 1024
+const driverLogMessageLimit = store.DriverLogMessageLimit
 
 // translateBackendConflict keeps driver messages within the backend. Named
 // conflicts become domain errors. Every other driver condition is logged with
@@ -83,56 +79,21 @@ func translateBackendConflict(err error) error {
 // condition. The message is redacted and bounded; no SQL text or argument is
 // ever logged.
 func logDriverError(number uint16, state, message string) {
-	clean, _ := redact.New(nil).Redact(message)
-	log.Printf("singlestore: database operation failed: operation=%s error=%d sqlstate=%s message=%q", backendOperation(), number, state, truncateUTF8(clean, driverLogMessageLimit))
-}
-
-// truncateUTF8 cuts text to at most limit bytes at a rune boundary.
-func truncateUTF8(text string, limit int) string {
-	if len(text) <= limit {
-		return text
-	}
-	cut := limit
-	for cut > 0 && !utf8.RuneStart(text[cut]) {
-		cut--
-	}
-	return text[:cut]
+	log.Printf("singlestore: database operation failed: operation=%s error=%d sqlstate=%s message=%q", backendOperation(), number, state, store.DriverLogMessage(message))
 }
 
 // storePackage is this package's import path, as runtime function names
 // spell it.
 var storePackage = reflect.TypeOf(Store{}).PkgPath()
 
-// backendOperation names the nearest exported Store method or exported
-// package function on the caller's stack, such as ClaimWorkOrderCommand or
-// Open. Closures report their enclosing function.
+// backendOperation names the nearest exported Store method or exported package
+// function on the caller's stack.
 func backendOperation() string {
-	pcs := make([]uintptr, 64)
-	frames := runtime.CallersFrames(pcs[:runtime.Callers(2, pcs)])
-	for {
-		frame, more := frames.Next()
-		if name, ok := exportedOperation(frame.Function); ok {
-			return name
-		}
-		if !more {
-			return "unknown"
-		}
-	}
+	return store.BackendOperation(storePackage)
 }
 
 // exportedOperation reports the exported operation a runtime function name
 // belongs to, when it is declared in this package.
 func exportedOperation(function string) (string, bool) {
-	rest, ok := strings.CutPrefix(function, storePackage+".")
-	if !ok {
-		return "", false
-	}
-	rest = strings.TrimPrefix(rest, "(*Store).")
-	rest = strings.TrimPrefix(rest, "Store.")
-	name, _, _ := strings.Cut(rest, ".")
-	first, _ := utf8.DecodeRuneInString(name)
-	if name == "" || !unicode.IsUpper(first) {
-		return "", false
-	}
-	return name, true
+	return store.ExportedBackendOperation(storePackage, function)
 }
