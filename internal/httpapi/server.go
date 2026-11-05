@@ -876,7 +876,9 @@ func (s *Server) closeTask(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "internal server error", http.StatusInternalServerError)
 		return
 	}
-	writeJSON(w, http.StatusAccepted, updated)
+	// The cancel committed before this read, so the answer is 200 and not 202
+	// (req-task-lifecycle-and-queue REQ-8; component-task-lifecycle invariant 31).
+	writeJSON(w, http.StatusOK, updated)
 }
 
 func (s *Server) reviewTask(w http.ResponseWriter, r *http.Request) {

@@ -431,7 +431,7 @@ func TestTaskCloseRequiresReasonAndCancelsOutsideHumanGate(t *testing.T) {
 	if response := call(task.ID, `{}`); response.Code != http.StatusBadRequest {
 		t.Fatalf("missing reason status=%d body=%s", response.Code, response.Body.String())
 	}
-	if response := call(task.ID, `{"reason":"obsolete"}`); response.Code != http.StatusAccepted || !strings.Contains(response.Body.String(), `"state":"closed"`) {
+	if response := call(task.ID, `{"reason":"obsolete"}`); response.Code != http.StatusOK || !strings.Contains(response.Body.String(), `"state":"closed"`) {
 		t.Fatalf("close status=%d body=%s", response.Code, response.Body.String())
 	}
 	order, _ := st.GetWorkOrder(ctx, job.ID)
@@ -455,7 +455,7 @@ func TestTaskCloseRequiresReasonAndCancelsOutsideHumanGate(t *testing.T) {
 			t.Fatal(err)
 		}
 		response := call(stateTask.ID, `{"reason":"state coverage"}`)
-		if response.Code != http.StatusAccepted || !strings.Contains(response.Body.String(), `"state":"closed"`) {
+		if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), `"state":"closed"`) {
 			t.Fatalf("close %s status=%d body=%s", state, response.Code, response.Body.String())
 		}
 	}
@@ -2194,8 +2194,8 @@ func postPlanRevisionClose(server *Server, taskID string) *httptest.ResponseReco
 // AC-8.1).
 func requirePlanRevisionCancelled(t *testing.T, ctx context.Context, st store.Store, response *httptest.ResponseRecorder, taskID, orderID string) {
 	t.Helper()
-	// The close route answers 202 with the task on every success.
-	if response.Code != http.StatusAccepted || !strings.Contains(response.Body.String(), `"state":"closed"`) {
+	// The close route answers 200 with the task on every success.
+	if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), `"state":"closed"`) {
 		t.Fatalf("close status=%d body=%s", response.Code, response.Body.String())
 	}
 	task, err := st.GetTask(ctx, taskID)
