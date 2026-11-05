@@ -308,6 +308,7 @@ UPDATE tasks
 SET state = sqlc.arg(state), gate_kind = sqlc.arg(gate_kind), updated_at = now()
 WHERE id = sqlc.arg(id)
   AND workspace_id = sqlc.arg(workspace_id)
+  AND state = sqlc.arg(expected_state)
 RETURNING *;
 
 -- name: UpdateTaskAssignee :one
@@ -356,6 +357,7 @@ SET state = sqlc.arg(state),
     updated_at = now()
 WHERE id = sqlc.arg(id)
   AND workspace_id = sqlc.arg(workspace_id)
+  AND state = sqlc.arg(expected_state)
 RETURNING *;
 
 -- name: UpdateTaskClassification :one

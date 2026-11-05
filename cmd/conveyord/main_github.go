@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"time"
 
 	"github.com/kidus-tiliksew/conveyor/internal/dispatch"
@@ -26,13 +27,17 @@ type gitHubWebhookDispatcher interface {
 
 // newGitHubWebhookApplier wires the applier the receiver hands each accepted
 // delivery to (component-runtime, GitHub webhook applier).
-func newGitHubWebhookApplier(webhooks store.GitHubWebhookStore, d gitHubWebhookDispatcher, pushed func(ctx context.Context, repository, ref string) error, delivered func(workspace string), logf func(string, ...any)) *githubtrigger.WebhookApplier {
+func newGitHubWebhookApplier(webhooks store.GitHubWebhookStore, d gitHubWebhookDispatcher, pushed func(ctx context.Context, repository, ref string) error, checked func(ctx context.Context, repository string, branches []string) error, delivered func(workspace string), logf func(string, ...any)) *githubtrigger.WebhookApplier {
 	return &githubtrigger.WebhookApplier{
 		Handlers: githubtrigger.WebhookHandlers{
 			PullRequest: d.ApplyPullRequestDelivery,
-			Checks:      d.ApplyChecksDelivery,
-			Push:        pushed,
-			ReadyIssue:  d.IntakeReadyIssue,
+			// Merge readiness and the monitor poll each run whatever the
+			// other's result, and either failure retries the delivery.
+			Checks: func(ctx context.Context, repository, sha string, branches []string) error {
+				return errors.Join(d.ApplyChecksDelivery(ctx, repository, sha, branches), checked(ctx, repository, branches))
+			},
+			Push:       pushed,
+			ReadyIssue: d.IntakeReadyIssue,
 		},
 		Bind: func(ctx context.Context, workspace string) context.Context {
 			return store.WithWorkspace(store.WithActor(ctx, store.SystemActor(httpapi.GitHubWebhookActor)), workspace)

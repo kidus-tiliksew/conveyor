@@ -36,6 +36,30 @@ func (s *Store) ApplyTaskCommand(ctx context.Context, lease taskops.TaskLease, i
 	return result, err
 }
 
+// lockTaskOperationTx takes the task-operation lock for the transaction. Every
+// holder must hash the key with hashtext: hashtextextended of the same string is
+// a different lock and serializes with nothing (DEC-50; component-persistence).
+func lockTaskOperationTx(ctx context.Context, tx pgx.Tx, workspaceID, taskID string) error {
+	_, err := tx.Exec(ctx, "SELECT pg_advisory_xact_lock(hashtext($1))", "conveyor:task-operation:"+workspaceID+":"+taskID)
+	return err
+}
+
+// taskStateGuardError names the refusal when a guarded task-state write matched
+// no row: another writer moved the task after this command read it, so the
+// command must not overwrite that state (DEC-50; req-task-lifecycle-and-queue
+// AC-1.1). Any other error passes through unchanged.
+func taskStateGuardError(ctx context.Context, q *db.Queries, id, command string, err error) error {
+	if !errors.Is(err, pgx.ErrNoRows) {
+		return err
+	}
+	row, readErr := q.GetTask(ctx, db.GetTaskParams{ID: id, WorkspaceID: workspace(ctx)})
+	if readErr != nil {
+		return notFound(readErr, "task %s", id)
+	}
+	current := core.TaskState(row.State)
+	return &core.ErrInvalidTransition{Space: core.TaskLifecycle, From: string(current), Command: command, Allowed: core.TaskTransitionAlternatives(current)}
+}
+
 // applyTaskCommandTx applies one lifecycle command inside a transaction that
 // already holds the task-operation lock (component-task-lifecycle).
 func (s *Store) applyTaskCommandTx(ctx context.Context, tx pgx.Tx, q *db.Queries, id string, command taskops.Command) (core.Task, error) {
@@ -64,19 +88,20 @@ func (s *Store) applyTaskCommandTx(ctx context.Context, tx pgx.Tx, q *db.Queries
 				command.RecoveryStage = core.StageVerify
 			}
 		}
+		store.TaskCommandRead(ctx, id, core.TaskState(before.State))
 		if command.ProjectStages {
 			updated, updateErr := q.UpdateTaskTransition(ctx, db.UpdateTaskTransitionParams{
-				ID: id, WorkspaceID: workspace(ctx), State: string(state), NextStage: string(command.NextStage), RecoveryStage: string(command.RecoveryStage),
+				ID: id, WorkspaceID: workspace(ctx), ExpectedState: before.State, State: string(state), NextStage: string(command.NextStage), RecoveryStage: string(command.RecoveryStage),
 				GateKind: string(core.GateKindFor(state, command.Kind)),
 			})
 			if updateErr != nil {
-				return updateErr
+				return taskStateGuardError(ctx, q, id, string(command.Kind), updateErr)
 			}
 			result = taskFromDB(updated)
 		} else {
-			updated, updateErr := q.UpdateTaskState(ctx, db.UpdateTaskStateParams{ID: id, WorkspaceID: workspace(ctx), State: string(state), GateKind: string(core.GateKindFor(state, command.Kind))})
+			updated, updateErr := q.UpdateTaskState(ctx, db.UpdateTaskStateParams{ID: id, WorkspaceID: workspace(ctx), ExpectedState: before.State, State: string(state), GateKind: string(core.GateKindFor(state, command.Kind))})
 			if updateErr != nil {
-				return updateErr
+				return taskStateGuardError(ctx, q, id, string(command.Kind), updateErr)
 			}
 			result = taskFromDB(updated)
 		}
@@ -161,9 +186,9 @@ func (s *Store) closeBlueprintParentTx(ctx context.Context, tx pgx.Tx, q *db.Que
 		return false, nil
 	}
 	if _, err = q.UpdateTaskState(ctx, db.UpdateTaskStateParams{
-		ID: parentID, WorkspaceID: workspace(ctx), State: string(closed), GateKind: string(core.GateKindFor(closed, core.TaskBlueprintClose)),
+		ID: parentID, WorkspaceID: workspace(ctx), ExpectedState: string(parentState), State: string(closed), GateKind: string(core.GateKindFor(closed, core.TaskBlueprintClose)),
 	}); err != nil {
-		return false, err
+		return false, taskStateGuardError(ctx, q, parentID, string(core.TaskBlueprintClose), err)
 	}
 	if err = deleteProposedTaskContextTx(ctx, tx, parentID); err != nil {
 		return false, err

@@ -10,6 +10,7 @@ import (
 	"net/url"
 	"regexp"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -97,6 +98,9 @@ func New(values []string) *Redactor {
 			base64.RawURLEncoding.EncodeToString([]byte(value)),
 			url.QueryEscape(value),
 			url.PathEscape(value),
+			// A value printed with %q or strconv.Quote, such as a quoted
+			// attachment name in an audit transcript, has its escapes applied.
+			quotedForm(value),
 		}
 		for _, candidate := range encoded {
 			if candidate != value {
@@ -112,11 +116,25 @@ func New(values []string) *Redactor {
 	return &Redactor{needles: needles, source: source}
 }
 
+// quotedForm is value as strconv.Quote prints it, without the outer quotes.
+func quotedForm(value string) string {
+	quoted := strconv.Quote(value)
+	return quoted[1 : len(quoted)-1]
+}
+
 var credentialPatterns = []*regexp.Regexp{
 	regexp.MustCompile(`\beyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\b`),
 	regexp.MustCompile(`\bAIza[0-9A-Za-z_-]{20,}\b`),
 	regexp.MustCompile(`\bsk-[A-Za-z0-9_-]{16,}\b`),
 	regexp.MustCompile(`\bgh[pousr]_[A-Za-z0-9]{20,}\b`),
+	// Fine-grained GitHub tokens and Conveyor's own tokens,
+	// cv_<kind>_<id>_<base64url>, whose base64url tail can end in "-", so no
+	// closing word boundary applies (req-security-boundaries REQ-3).
+	regexp.MustCompile(`\bgithub_pat_[A-Za-z0-9_]{20,}`),
+	regexp.MustCompile(`\bcv_(?:pat|agent|session|signin)_[A-Za-z0-9_-]{16,}`),
+	// A bearer credential of any other shape. A 64-hex value stays allowed
+	// alone, because artifact IDs and content digests have that shape.
+	regexp.MustCompile(`(?i)\bbearer\s+[A-Za-z0-9._~+/=-]{20,}`),
 	regexp.MustCompile(`(?s)-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----.*?-----END [A-Z0-9 ]*PRIVATE KEY-----`),
 }
 

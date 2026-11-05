@@ -48,6 +48,17 @@ func SameWorkOrderPreempt(left, right WorkOrderPreemptRequest) bool {
 	return left.WorkOrderID == right.WorkOrderID && left.RequestID == right.RequestID && left.Reason == right.Reason
 }
 
+// RefuseReviewSeatRetirement refuses retiring a queued or stale review seat. A
+// retired seat stays in the count its round requires, so the round could never
+// settle. Preempting a claimed seat requeues it and removes nothing, so it stays
+// legal (req-review-gates-evidence AC-2.6; DEC-77(2)).
+func RefuseReviewSeatRetirement(order core.WorkOrder) error {
+	if order.Stage != core.StageReview || (order.State != core.WorkOrderQueued && order.State != core.WorkOrderStale) {
+		return nil
+	}
+	return fmt.Errorf("%w: work order %s is a queued review seat, and a seat cannot be removed from its round", ErrWorkOrderPreemptConflict, order.ID)
+}
+
 func (m *memory) PreemptWorkOrderCommand(ctx context.Context, lease taskops.TaskLease, raw WorkOrderPreemptRequest) (WorkOrderPreemptResult, error) {
 	if _, err := RequireActor(ctx); err != nil {
 		return WorkOrderPreemptResult{}, err
@@ -71,6 +82,9 @@ func (m *memory) PreemptWorkOrderCommand(ctx context.Context, lease taskops.Task
 	}
 	if !lease.ValidForCommand(order.TaskID, string(core.WorkOrderCmdPreempt)) {
 		return WorkOrderPreemptResult{}, fmt.Errorf("work-order preempt requires a valid taskops lease")
+	}
+	if err := RefuseReviewSeatRetirement(order); err != nil {
+		return WorkOrderPreemptResult{}, err
 	}
 	now := time.Now().UTC()
 	observedState := order.State
