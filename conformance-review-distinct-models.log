@@ -1,0 +1,42 @@
+# head=ee9de4aedcc6238a157ab6e85bb9c25fb8b35b40 variant=conformance-review-distinct-models cmd: CONVEYOR_FIXTURE_STATE=... SINGLESTORE_INTEGRATION_SHARD=conformance-2 make test-integration-singlestore-ci SINGLESTORE_INTEGRATION_RUNTIME= GO_INTEGRATION_FLAGS="-run=TestSingleStoreConformanceIntegration/ReviewDistinctModels"
+make[1]: Entering directory '/home/user/conveyor-worktrees/conveyor-task-261105-b62258'
+env -u CONVEYOR_ADDR -u CONVEYOR_API_TOKEN -u CONVEYOR_CLIENT_TOKEN -u CONVEYOR_CURRENT_ATTEMPT_ID -u CONVEYOR_PREVIOUS_ATTEMPT_ID -u CONVEYOR_PREVIOUS_ATTEMPT_REASON -u CONVEYOR_PREDECESSOR -u CONVEYOR_PREVIOUS_WORK_ORDER_ID -u CONVEYOR_SESSION_ID -u CONVEYOR_TASK_BASE_BRANCH -u CONVEYOR_TASK_BRANCH -u CONVEYOR_TASK_ID -u CONVEYOR_TASK_REPO -u CONVEYOR_TASK_REPO_URL -u CONVEYOR_WORKSPACE -u CONVEYOR_WORKTREE_ROOT -u CONVEYOR_WORK_ORDER_ID -u CONVEYOR_WRITER_GENERATION -u CONVEYOR_WRITER_PATH bash scripts/go-test-require-tests.sh -v -p=1 ./internal/store/singlestore -run '^TestSingleStoreConformanceIntegration$' -skip '^TestSingleStoreConformanceIntegration$/^(Verification|Requirements|NextAction|Lineage|AutomaticRecovery)$' -timeout=20m -count=1 -run=TestSingleStoreConformanceIntegration/ReviewDistinctModels
+=== RUN   TestSingleStoreConformanceIntegration
+=== RUN   TestSingleStoreConformanceIntegration/ReviewDistinctModelsNoClaimStall
+2026/11/05 17:04:37 singlestore: database operation failed: operation=Open error=1857 sqlstate=HY000 message="The open transaction was aborted due to being idle during a concurrent DDL operation."
+    all_conformance_integration_test.go:182: fixture reset 80 tables in 478ms
+=== RUN   TestSingleStoreConformanceIntegration/ReviewDistinctModels
+    all_conformance_integration_test.go:182: fixture reset 80 tables in 12ms
+=== RUN   TestSingleStoreConformanceIntegration/ReviewDistinctModels/RepeatedNameRefused
+=== RUN   TestSingleStoreConformanceIntegration/ReviewDistinctModels/BlankNameRefused
+=== RUN   TestSingleStoreConformanceIntegration/ReviewDistinctModels/PolicyOffComparesNothing
+=== RUN   TestSingleStoreConformanceIntegration/ReviewDistinctModels/ReleasedSeatNameReusable
+=== RUN   TestSingleStoreConformanceIntegration/ReviewDistinctModels/ExpiredSeatNameReusable
+=== RUN   TestSingleStoreConformanceIntegration/ReviewDistinctModels/VerdictsHoldTheirNames
+=== RUN   TestSingleStoreConformanceIntegration/ReviewDistinctModels/OperatorAddedSeat
+=== RUN   TestSingleStoreConformanceIntegration/ReviewDistinctModels/LaterRoundReusesName
+=== RUN   TestSingleStoreConformanceIntegration/ReviewDistinctModels/ConcurrentSiblingClaims
+=== RUN   TestSingleStoreConformanceIntegration/ReviewDistinctModels/PolicyOnlyChangeResolvesNoHandoff
+=== RUN   TestSingleStoreConformanceIntegration/ReviewDistinctModels/ChangeAppliesToLaterClaims
+=== RUN   TestSingleStoreConformanceIntegration/ReviewDistinctModels/ChangeRefusedWhileSeatExecuting
+=== NAME  TestSingleStoreConformanceIntegration
+    all.go:152: RunAll elapsed=38.023314543s
+--- PASS: TestSingleStoreConformanceIntegration (38.02s)
+    --- PASS: TestSingleStoreConformanceIntegration/ReviewDistinctModelsNoClaimStall (36.68s)
+    --- PASS: TestSingleStoreConformanceIntegration/ReviewDistinctModels (1.34s)
+        --- PASS: TestSingleStoreConformanceIntegration/ReviewDistinctModels/RepeatedNameRefused (0.06s)
+        --- PASS: TestSingleStoreConformanceIntegration/ReviewDistinctModels/BlankNameRefused (0.03s)
+        --- PASS: TestSingleStoreConformanceIntegration/ReviewDistinctModels/PolicyOffComparesNothing (0.03s)
+        --- PASS: TestSingleStoreConformanceIntegration/ReviewDistinctModels/ReleasedSeatNameReusable (0.06s)
+        --- PASS: TestSingleStoreConformanceIntegration/ReviewDistinctModels/ExpiredSeatNameReusable (0.05s)
+        --- PASS: TestSingleStoreConformanceIntegration/ReviewDistinctModels/VerdictsHoldTheirNames (0.21s)
+        --- PASS: TestSingleStoreConformanceIntegration/ReviewDistinctModels/OperatorAddedSeat (0.15s)
+        --- PASS: TestSingleStoreConformanceIntegration/ReviewDistinctModels/LaterRoundReusesName (0.45s)
+        --- PASS: TestSingleStoreConformanceIntegration/ReviewDistinctModels/ConcurrentSiblingClaims (0.11s)
+        --- PASS: TestSingleStoreConformanceIntegration/ReviewDistinctModels/PolicyOnlyChangeResolvesNoHandoff (0.07s)
+        --- PASS: TestSingleStoreConformanceIntegration/ReviewDistinctModels/ChangeAppliesToLaterClaims (0.07s)
+        --- PASS: TestSingleStoreConformanceIntegration/ReviewDistinctModels/ChangeRefusedWhileSeatExecuting (0.02s)
+PASS
+ok  	github.com/kidus-tiliksew/conveyor/internal/store/singlestore	40.174s
+make[1]: Leaving directory '/home/user/conveyor-worktrees/conveyor-task-261105-b62258'
+# make exit=0

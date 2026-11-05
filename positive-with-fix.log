@@ -1,0 +1,51 @@
+# head=ee9de4aedcc6238a157ab6e85bb9c25fb8b35b40 variant=positive-with-fix cmd: CONVEYOR_FIXTURE_STATE=... SINGLESTORE_INTEGRATION_SHARD=packages make test-integration-singlestore-ci SINGLESTORE_INTEGRATION_RUNTIME= GO_INTEGRATION_FLAGS="'-run=^TestReviewSeatClaim|^TestFixtureTaskIDsAreDistinct|^TestCallerTransactionIntegration'"
+make[1]: Entering directory '/home/user/conveyor-worktrees/conveyor-task-261105-b62258'
+env -u CONVEYOR_ADDR -u CONVEYOR_API_TOKEN -u CONVEYOR_CLIENT_TOKEN -u CONVEYOR_CURRENT_ATTEMPT_ID -u CONVEYOR_PREVIOUS_ATTEMPT_ID -u CONVEYOR_PREVIOUS_ATTEMPT_REASON -u CONVEYOR_PREDECESSOR -u CONVEYOR_PREVIOUS_WORK_ORDER_ID -u CONVEYOR_SESSION_ID -u CONVEYOR_TASK_BASE_BRANCH -u CONVEYOR_TASK_BRANCH -u CONVEYOR_TASK_ID -u CONVEYOR_TASK_REPO -u CONVEYOR_TASK_REPO_URL -u CONVEYOR_WORKSPACE -u CONVEYOR_WORKTREE_ROOT -u CONVEYOR_WORK_ORDER_ID -u CONVEYOR_WRITER_GENERATION -u CONVEYOR_WRITER_PATH bash scripts/go-test-require-tests.sh -v -p=1 ./internal/eventlog/s2log ./internal/store/storetest ./internal/store/singlestore -skip '^TestSingleStoreConformanceIntegration$' -timeout=20m -count=1 '-run=^TestReviewSeatClaim|^TestFixtureTaskIDsAreDistinct|^TestCallerTransactionIntegration'
+=== RUN   TestCallerTransactionIntegration
+--- PASS: TestCallerTransactionIntegration (0.08s)
+PASS
+ok  	github.com/kidus-tiliksew/conveyor/internal/eventlog/s2log	0.086s
+=== RUN   TestFixtureTaskIDsAreDistinct
+--- PASS: TestFixtureTaskIDsAreDistinct (0.04s)
+PASS
+ok  	github.com/kidus-tiliksew/conveyor/internal/store/storetest	0.044s
+=== RUN   TestReviewSeatClaimWaitsForUnseenPredecessorIntegration
+2026/11/05 17:02:24 singlestore: database operation failed: operation=Open error=1857 sqlstate=HY000 message="The open transaction was aborted due to being idle during a concurrent DDL operation."
+    review_distinct_models_integration_test.go:171: fixture reset 80 tables in 517ms
+=== RUN   TestReviewSeatClaimWaitsForUnseenPredecessorIntegration/order_row_unseen_behind_a_visible_event
+=== RUN   TestReviewSeatClaimWaitsForUnseenPredecessorIntegration/order_row_and_event_unseen
+--- PASS: TestReviewSeatClaimWaitsForUnseenPredecessorIntegration (37.21s)
+    --- PASS: TestReviewSeatClaimWaitsForUnseenPredecessorIntegration/order_row_unseen_behind_a_visible_event (0.55s)
+    --- PASS: TestReviewSeatClaimWaitsForUnseenPredecessorIntegration/order_row_and_event_unseen (0.11s)
+=== RUN   TestReviewSeatClaimTimeoutWritesNothingIntegration
+    review_distinct_models_integration_test.go:226: fixture reset 80 tables in 9ms
+=== RUN   TestReviewSeatClaimTimeoutWritesNothingIntegration/order_row_unseen_behind_a_visible_event
+=== RUN   TestReviewSeatClaimTimeoutWritesNothingIntegration/order_row_and_event_unseen
+--- PASS: TestReviewSeatClaimTimeoutWritesNothingIntegration (1.00s)
+    --- PASS: TestReviewSeatClaimTimeoutWritesNothingIntegration/order_row_unseen_behind_a_visible_event (0.52s)
+    --- PASS: TestReviewSeatClaimTimeoutWritesNothingIntegration/order_row_and_event_unseen (0.47s)
+=== RUN   TestReviewSeatClaimEndedPredecessorStopsCountingIntegration
+    review_distinct_models_integration_test.go:279: fixture reset 80 tables in 7ms
+=== RUN   TestReviewSeatClaimEndedPredecessorStopsCountingIntegration/released
+=== RUN   TestReviewSeatClaimEndedPredecessorStopsCountingIntegration/lease_lapsed_before_the_clock_moved_it
+=== RUN   TestReviewSeatClaimEndedPredecessorStopsCountingIntegration/cancelled
+=== RUN   TestReviewSeatClaimEndedPredecessorStopsCountingIntegration/row_deleted
+--- PASS: TestReviewSeatClaimEndedPredecessorStopsCountingIntegration (0.14s)
+    --- PASS: TestReviewSeatClaimEndedPredecessorStopsCountingIntegration/released (0.05s)
+    --- PASS: TestReviewSeatClaimEndedPredecessorStopsCountingIntegration/lease_lapsed_before_the_clock_moved_it (0.02s)
+    --- PASS: TestReviewSeatClaimEndedPredecessorStopsCountingIntegration/cancelled (0.03s)
+    --- PASS: TestReviewSeatClaimEndedPredecessorStopsCountingIntegration/row_deleted (0.03s)
+=== RUN   TestReviewSeatClaimChainNamesEveryPredecessorIntegration
+    review_distinct_models_integration_test.go:325: fixture reset 80 tables in 7ms
+--- PASS: TestReviewSeatClaimChainNamesEveryPredecessorIntegration (0.04s)
+=== RUN   TestReviewSeatClaimPolicyOffTakesNoClaimIntegration
+    review_distinct_models_integration_test.go:351: fixture reset 80 tables in 6ms
+--- PASS: TestReviewSeatClaimPolicyOffTakesNoClaimIntegration (0.04s)
+=== RUN   TestReviewSeatClaimNoteRoundTrip
+--- PASS: TestReviewSeatClaimNoteRoundTrip (0.00s)
+=== RUN   TestReviewSeatClaimNoteRowImages
+--- PASS: TestReviewSeatClaimNoteRowImages (0.00s)
+PASS
+ok  	github.com/kidus-tiliksew/conveyor/internal/store/singlestore	39.330s
+make[1]: Leaving directory '/home/user/conveyor-worktrees/conveyor-task-261105-b62258'
+# make exit=0

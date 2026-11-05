@@ -1,0 +1,60 @@
+# head=ee9de4aedcc6238a157ab6e85bb9c25fb8b35b40 variant=negative-control-1-fix-removed cmd: CONVEYOR_FIXTURE_STATE=... SINGLESTORE_INTEGRATION_SHARD=packages make test-integration-singlestore-ci SINGLESTORE_INTEGRATION_RUNTIME= GO_INTEGRATION_FLAGS="'-run=^TestReviewSeatClaim|^TestFixtureTaskIDsAreDistinct|^TestCallerTransactionIntegration'"
+make[1]: Entering directory '/home/user/conveyor-worktrees/conveyor-task-261105-b62258'
+env -u CONVEYOR_ADDR -u CONVEYOR_API_TOKEN -u CONVEYOR_CLIENT_TOKEN -u CONVEYOR_CURRENT_ATTEMPT_ID -u CONVEYOR_PREVIOUS_ATTEMPT_ID -u CONVEYOR_PREVIOUS_ATTEMPT_REASON -u CONVEYOR_PREDECESSOR -u CONVEYOR_PREVIOUS_WORK_ORDER_ID -u CONVEYOR_SESSION_ID -u CONVEYOR_TASK_BASE_BRANCH -u CONVEYOR_TASK_BRANCH -u CONVEYOR_TASK_ID -u CONVEYOR_TASK_REPO -u CONVEYOR_TASK_REPO_URL -u CONVEYOR_WORKSPACE -u CONVEYOR_WORKTREE_ROOT -u CONVEYOR_WORK_ORDER_ID -u CONVEYOR_WRITER_GENERATION -u CONVEYOR_WRITER_PATH bash scripts/go-test-require-tests.sh -v -p=1 ./internal/eventlog/s2log ./internal/store/storetest ./internal/store/singlestore -skip '^TestSingleStoreConformanceIntegration$' -timeout=20m -count=1 '-run=^TestReviewSeatClaim|^TestFixtureTaskIDsAreDistinct|^TestCallerTransactionIntegration'
+=== RUN   TestCallerTransactionIntegration
+--- PASS: TestCallerTransactionIntegration (0.08s)
+PASS
+ok  	github.com/kidus-tiliksew/conveyor/internal/eventlog/s2log	0.079s
+=== RUN   TestFixtureTaskIDsAreDistinct
+--- PASS: TestFixtureTaskIDsAreDistinct (0.04s)
+PASS
+ok  	github.com/kidus-tiliksew/conveyor/internal/store/storetest	0.044s
+=== RUN   TestReviewSeatClaimWaitsForUnseenPredecessorIntegration
+2026/11/05 17:03:09 singlestore: database operation failed: operation=Open error=1857 sqlstate=HY000 message="The open transaction was aborted due to being idle during a concurrent DDL operation."
+    review_distinct_models_integration_test.go:171: fixture reset 80 tables in 526ms
+=== RUN   TestReviewSeatClaimWaitsForUnseenPredecessorIntegration/order_row_unseen_behind_a_visible_event
+    review_distinct_models_integration_test.go:193: seat 2 decided while seat 1 was unseen: order={VerificationContextID: ID:261105-66ef32-review-1-seat-2 TaskID:261105-66ef32 JobID:261105-66ef32-review-1-seat-2 Stage:review State:claimed Claimable:false ClaimRefusalReason: RecoveryRefusal: BlockingTaskIDs:[] Assignee:<nil> UnsatisfiableTaskIDs:[] ClaimantID:seat-worker SessionID:261105-66ef32-review-1-seat-2-261105-927f6b AttemptID:attempt-70c2818a689529a6638872f2ab748b41 ClientTokenHash:84153e53275224e77d89b6f013da4670f3adafe5f6055b6e0fe828183a6edcc9 Agent:seat-test Model:GPT-6 WorkerID: ReviewRound:1 ReviewSeat:2 DeclaredReviewSeats:<nil> ReasonCode: ReviewKind: ReviewScope: BaselineSHA:submitted-base HeadSHA:submitted-head RequiredModel: RequiredHarness: RequiredEffort: RequiredHarnessConfig:<nil> ExecutionTimeoutText: ModelEnforcement:self-reported LeaseExpiresAt:2026-11-05 18:03:10.578117 +0000 UTC QueueEnteredAt:2026-11-05 17:03:10.350454 +0000 UTC QueueDeadline:2026-11-05 18:03:10.350454 +0000 UTC QueueBlockedAt:0001-01-01 00:00:00 +0000 UTC ExecutionStartedAt:2026-11-05 17:03:10.578117 +0000 UTC ExecutionDeadline:2026-11-05 18:03:10.578117 +0000 UTC LastAttemptID: LastAttemptOutcome: LastFailureCategory: LastFailureMessage: LastFailureDetail: LastFailureExitStatus:<nil> LastFailureAt:0001-01-01 00:00:00 +0000 UTC AutomaticRetryCount:0 NextRetryAt:0001-01-01 00:00:00 +0000 UTC AutomaticRecoveryCount:0 AutomaticRecoveryWindowStartedAt:0001-01-01 00:00:00 +0000 UTC NextAutomaticRecoveryAt:0001-01-01 00:00:00 +0000 UTC BaseConflictCheckedAt:0001-01-01 00:00:00 +0000 UTC RetrySuppressed:false RetrySuppressionReason: RedispatchCount:0 OperatorDirection: Checkpoint:<nil> Progress: CostUSD:0 TokensIn:0 TokensOut:0 UsageReported:false SelfReported:false RateLimit:<nil> RateLimitObservedAt:0001-01-01 00:00:00 +0000 UTC LastAgentActivityAt:0001-01-01 00:00:00 +0000 UTC LastAgentActivityLabel: CreatedAt:2026-11-05 17:03:10.350454 +0000 UTC UpdatedAt:2026-11-05 17:03:10.578117 +0000 UTC ServedRequirementSnapshot:[] GovernanceSnapshot:<nil> GovernanceSnapshotDigest:} err=<nil>
+=== RUN   TestReviewSeatClaimWaitsForUnseenPredecessorIntegration/order_row_and_event_unseen
+    review_distinct_models_integration_test.go:193: seat 2 decided while seat 1 was unseen: order={VerificationContextID: ID:261105-fd9d96-review-1-seat-2 TaskID:261105-fd9d96 JobID:261105-fd9d96-review-1-seat-2 Stage:review State:claimed Claimable:false ClaimRefusalReason: RecoveryRefusal: BlockingTaskIDs:[] Assignee:<nil> UnsatisfiableTaskIDs:[] ClaimantID:seat-worker SessionID:261105-fd9d96-review-1-seat-2-261105-248f9b AttemptID:attempt-8e705533e87f521482ff4ad20711e2c8 ClientTokenHash:7eb58985c19efad7cb3dcdb67eb62a4953efc3a797bfd5c445f7c769fcdf496d Agent:seat-test Model:GPT-6 WorkerID: ReviewRound:1 ReviewSeat:2 DeclaredReviewSeats:<nil> ReasonCode: ReviewKind: ReviewScope: BaselineSHA:submitted-base HeadSHA:submitted-head RequiredModel: RequiredHarness: RequiredEffort: RequiredHarnessConfig:<nil> ExecutionTimeoutText: ModelEnforcement:self-reported LeaseExpiresAt:2026-11-05 18:03:10.640628 +0000 UTC QueueEnteredAt:2026-11-05 17:03:10.59523 +0000 UTC QueueDeadline:2026-11-05 18:03:10.59523 +0000 UTC QueueBlockedAt:0001-01-01 00:00:00 +0000 UTC ExecutionStartedAt:2026-11-05 17:03:10.640628 +0000 UTC ExecutionDeadline:2026-11-05 18:03:10.640628 +0000 UTC LastAttemptID: LastAttemptOutcome: LastFailureCategory: LastFailureMessage: LastFailureDetail: LastFailureExitStatus:<nil> LastFailureAt:0001-01-01 00:00:00 +0000 UTC AutomaticRetryCount:0 NextRetryAt:0001-01-01 00:00:00 +0000 UTC AutomaticRecoveryCount:0 AutomaticRecoveryWindowStartedAt:0001-01-01 00:00:00 +0000 UTC NextAutomaticRecoveryAt:0001-01-01 00:00:00 +0000 UTC BaseConflictCheckedAt:0001-01-01 00:00:00 +0000 UTC RetrySuppressed:false RetrySuppressionReason: RedispatchCount:0 OperatorDirection: Checkpoint:<nil> Progress: CostUSD:0 TokensIn:0 TokensOut:0 UsageReported:false SelfReported:false RateLimit:<nil> RateLimitObservedAt:0001-01-01 00:00:00 +0000 UTC LastAgentActivityAt:0001-01-01 00:00:00 +0000 UTC LastAgentActivityLabel: CreatedAt:2026-11-05 17:03:10.59523 +0000 UTC UpdatedAt:2026-11-05 17:03:10.640628 +0000 UTC ServedRequirementSnapshot:[] GovernanceSnapshot:<nil> GovernanceSnapshotDigest:} err=<nil>
+--- FAIL: TestReviewSeatClaimWaitsForUnseenPredecessorIntegration (36.58s)
+    --- FAIL: TestReviewSeatClaimWaitsForUnseenPredecessorIntegration/order_row_unseen_behind_a_visible_event (0.50s)
+    --- FAIL: TestReviewSeatClaimWaitsForUnseenPredecessorIntegration/order_row_and_event_unseen (0.06s)
+=== RUN   TestReviewSeatClaimTimeoutWritesNothingIntegration
+    review_distinct_models_integration_test.go:226: fixture reset 80 tables in 6ms
+=== RUN   TestReviewSeatClaimTimeoutWritesNothingIntegration/order_row_unseen_behind_a_visible_event
+    review_distinct_models_integration_test.go:239: claim with "gpt-6" err=<nil>, want ErrRetryable
+=== RUN   TestReviewSeatClaimTimeoutWritesNothingIntegration/order_row_and_event_unseen
+    review_distinct_models_integration_test.go:239: claim with "gpt-6" err=<nil>, want ErrRetryable
+--- FAIL: TestReviewSeatClaimTimeoutWritesNothingIntegration (0.09s)
+    --- FAIL: TestReviewSeatClaimTimeoutWritesNothingIntegration/order_row_unseen_behind_a_visible_event (0.05s)
+    --- FAIL: TestReviewSeatClaimTimeoutWritesNothingIntegration/order_row_and_event_unseen (0.03s)
+=== RUN   TestReviewSeatClaimEndedPredecessorStopsCountingIntegration
+    review_distinct_models_integration_test.go:279: fixture reset 80 tables in 10ms
+=== RUN   TestReviewSeatClaimEndedPredecessorStopsCountingIntegration/released
+=== RUN   TestReviewSeatClaimEndedPredecessorStopsCountingIntegration/lease_lapsed_before_the_clock_moved_it
+=== RUN   TestReviewSeatClaimEndedPredecessorStopsCountingIntegration/cancelled
+=== RUN   TestReviewSeatClaimEndedPredecessorStopsCountingIntegration/row_deleted
+--- PASS: TestReviewSeatClaimEndedPredecessorStopsCountingIntegration (0.14s)
+    --- PASS: TestReviewSeatClaimEndedPredecessorStopsCountingIntegration/released (0.05s)
+    --- PASS: TestReviewSeatClaimEndedPredecessorStopsCountingIntegration/lease_lapsed_before_the_clock_moved_it (0.03s)
+    --- PASS: TestReviewSeatClaimEndedPredecessorStopsCountingIntegration/cancelled (0.03s)
+    --- PASS: TestReviewSeatClaimEndedPredecessorStopsCountingIntegration/row_deleted (0.03s)
+=== RUN   TestReviewSeatClaimChainNamesEveryPredecessorIntegration
+    review_distinct_models_integration_test.go:325: fixture reset 80 tables in 6ms
+    review_distinct_models_integration_test.go:339: seat 3 decided while seat 2 was unseen: err=review_seat_model_not_distinct: review round 1 holds model names gpt-6, so seat 3 cannot claim with model GPT-6
+--- FAIL: TestReviewSeatClaimChainNamesEveryPredecessorIntegration (0.04s)
+=== RUN   TestReviewSeatClaimPolicyOffTakesNoClaimIntegration
+    review_distinct_models_integration_test.go:351: fixture reset 80 tables in 8ms
+--- PASS: TestReviewSeatClaimPolicyOffTakesNoClaimIntegration (0.05s)
+=== RUN   TestReviewSeatClaimNoteRoundTrip
+--- PASS: TestReviewSeatClaimNoteRoundTrip (0.00s)
+=== RUN   TestReviewSeatClaimNoteRowImages
+--- PASS: TestReviewSeatClaimNoteRowImages (0.00s)
+FAIL
+FAIL	github.com/kidus-tiliksew/conveyor/internal/store/singlestore	37.718s
+FAIL
+make[2]: *** [Makefile:347: _test-singlestore-shard] Error 1
+make[1]: *** [Makefile:343: _test-integration-singlestore] Error 1
+make[1]: Leaving directory '/home/user/conveyor-worktrees/conveyor-task-261105-b62258'
+make: *** [Makefile:334: test-integration-singlestore-ci] Error 2
+# make exit=2

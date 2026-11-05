@@ -1,0 +1,15 @@
+diff --git a/internal/store/singlestore/review_distinct_models.go b/internal/store/singlestore/review_distinct_models.go
+index 6411db62..48038127 100644
+--- a/internal/store/singlestore/review_distinct_models.go
++++ b/internal/store/singlestore/review_distinct_models.go
+@@ -81,9 +81,7 @@ func (s *Store) reviewSeatSiblingsTx(ctx context.Context, tx *sql.Tx, o core.Wor
+ 		if err != nil {
+ 			return nil, err
+ 		}
+-		if err = awaitReviewSeatClaimRow(ctx, tx, ws, note); err != nil {
+-			return nil, err
+-		}
++		_ = note
+ 	}
+ 	return s.listOrders(ctx, tx, []string{o.TaskID})
+ }
