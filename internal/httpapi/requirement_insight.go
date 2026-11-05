@@ -295,6 +295,12 @@ func (s *Server) generateRequirementInsightSummary(w http.ResponseWriter, r *htt
 // the in-process client holds. A redaction failure yields a fixed detail so
 // an unredacted error never leaves the server.
 func (s *Server) requirementInsightFailureDetail(ctx context.Context, err error) string {
+	return s.redactedFailureDetail(ctx, err, "headline generation failed; detail withheld because redaction is unavailable")
+}
+
+// redactedFailureDetail is a model failure's text for a response or a log
+// line, or withheld when redaction is unavailable.
+func (s *Server) redactedFailureDetail(ctx context.Context, err error, withheld string) string {
 	var secrets redact.SecretSource
 	var additional []string
 	if s.WorkOrders != nil {
@@ -307,7 +313,7 @@ func (s *Server) requirementInsightFailureDetail(ctx context.Context, err error)
 	}
 	redactor, redactErr := redact.WithSecrets(ctx, secrets, additional)
 	if redactErr != nil {
-		return "headline generation failed; detail withheld because redaction is unavailable"
+		return withheld
 	}
 	detail, _ := redactor.Redact(err.Error())
 	return detail

@@ -6,6 +6,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -122,5 +123,104 @@ func TestAppSecretsReachExistingDiagnosticWriters(t *testing.T) {
 		if strings.Contains(output.String(), secret) {
 			t.Fatal("registered token escaped preexisting writer")
 		}
+	}
+}
+
+// TestRedactsTokenShapesAndKeepsDigests pins each credential shape redaction
+// recognizes without knowing the value, and the 64-hex values that must pass:
+// artifact IDs and content digests have that shape (req-security-boundaries
+// REQ-3, AC-3.1).
+func TestRedactsTokenShapesAndKeepsDigests(t *testing.T) {
+	t.Parallel()
+	const tail = "Ab3dE6gH9jK2mN5pQ8sT1vW4yZ7bC0eF3hJ6kM9nP2r"
+	const digest = "0f1e2d3c4b5a69788796a5b4c3d2e1f00f1e2d3c4b5a69788796a5b4c3d2e1f0"
+	tokens := []struct{ name, value string }{
+		{"personal access token", "cv_pat_fixtureid_" + tail},
+		{"personal access token ending in a dash", "cv_pat_fixtureid_" + tail + "-"},
+		{"retired agent token", "cv_agent_fixtureid_" + tail},
+		{"session token", "cv_session_fixtureid_" + tail},
+		{"sign-in token", "cv_signin_fixtureid_" + tail},
+		{"fine-grained GitHub token", "github_pat_11AAAAAAA0fixture_" + tail},
+	}
+	for _, token := range tokens {
+		for _, form := range []struct{ name, text string }{
+			{"bare", "leaked " + token.value + " here"},
+			{"quoted", `{"value":"` + token.value + `"}`},
+			{"bearer", "Authorization: Bearer " + token.value},
+			{"lowercase bearer", "authorization: bearer " + token.value},
+		} {
+			t.Run(token.name+"/"+form.name, func(t *testing.T) {
+				t.Parallel()
+				clean, stats := New(nil).Redact(form.text)
+				if strings.Contains(clean, token.value) || strings.Contains(clean, tail) {
+					t.Fatal("token survived redaction")
+				}
+				if stats.Pattern != 1 || stats.Exact+stats.Encoded+stats.Entropy != 0 {
+					t.Fatalf("stats=%+v, want one pattern removal", stats)
+				}
+				if !strings.Contains(clean, patternPlaceholder) {
+					t.Fatalf("no placeholder in %q", clean)
+				}
+			})
+		}
+	}
+	t.Run("assigned token counts once", func(t *testing.T) {
+		t.Parallel()
+		clean, stats := New(nil).Redact("token=cv_pat_fixtureid_" + tail)
+		if clean != "token="+patternPlaceholder || stats.Pattern != 1 || stats.Entropy != 0 {
+			t.Fatalf("clean=%q stats=%+v", clean, stats)
+		}
+	})
+	t.Run("bearer value of another shape", func(t *testing.T) {
+		t.Parallel()
+		clean, stats := New(nil).Redact("Authorization: Bearer opaque-fixture." + tail)
+		if strings.Contains(clean, tail) || stats.Pattern != 1 {
+			t.Fatalf("clean=%q stats=%+v", clean, stats)
+		}
+	})
+	for _, kept := range []struct{ name, text string }{
+		{"bare artifact digest", digest},
+		{"prefixed content digest", "sha256:" + digest},
+		{"digest in a payload", `{"artifact_id":"` + digest + `","content_digest":"` + digest + `"}`},
+		{"digest in a URI", "artifact://" + digest},
+		{"prefix named in prose", "the cv_pat_ prefix and cv_session_ cookies"},
+		{"short identifier", "cv_pat_short"},
+		{"bearer in prose", "the bearer token and Bearer authentication"},
+		{"github_pat prefix alone", "a github_pat_ value"},
+	} {
+		t.Run("keeps "+kept.name, func(t *testing.T) {
+			t.Parallel()
+			clean, stats := New(nil).Redact(kept.text)
+			if clean != kept.text || stats.Total() != 0 {
+				t.Fatalf("clean=%q stats=%+v", clean, stats)
+			}
+		})
+	}
+}
+
+// TestRedactsQuotedFormOfKnownValues covers a known value printed with %q,
+// whose escapes would otherwise defeat the exact match. A value quoting leaves
+// alone counts once, as exact.
+func TestRedactsQuotedFormOfKnownValues(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name, secret string
+		want         Stats
+	}{
+		{name: "quote and backslash", secret: `fixture"stored\key-value`, want: Stats{Encoded: 1}},
+		{name: "newline", secret: "fixture-first-line\nfixture-second-line", want: Stats{Encoded: 1}},
+		{name: "tab", secret: "fixture-left\tfixture-right", want: Stats{Encoded: 1}},
+		{name: "nothing to escape", secret: "fixture-plain-value", want: Stats{Exact: 1}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			clean, stats := New([]string{tc.secret}).Redact(fmt.Sprintf("name %q here", tc.secret))
+			if stats != tc.want {
+				t.Fatalf("stats=%+v, want %+v", stats, tc.want)
+			}
+			if strings.Contains(clean, "fixture") {
+				t.Fatal("part of the known value survived")
+			}
+		})
 	}
 }

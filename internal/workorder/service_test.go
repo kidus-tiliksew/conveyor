@@ -19,6 +19,7 @@ import (
 	"github.com/kidus-tiliksew/conveyor/internal/lineagecontext"
 	"github.com/kidus-tiliksew/conveyor/internal/pack"
 	"github.com/kidus-tiliksew/conveyor/internal/pipeline"
+	"github.com/kidus-tiliksew/conveyor/internal/redact"
 	"github.com/kidus-tiliksew/conveyor/internal/store"
 	"github.com/kidus-tiliksew/conveyor/internal/store/storetest"
 	"github.com/kidus-tiliksew/conveyor/internal/taskops"
@@ -3763,5 +3764,163 @@ func TestLookupProjectsAnyState(t *testing.T) {
 	}
 	if _, err = service.Lookup(ctx, "lookup-implement-9"); err == nil {
 		t.Fatal("lookup of a missing order succeeded")
+	}
+}
+
+// progressFixture claims an implement order for the redaction tests.
+func progressFixture(t *testing.T, id string, secrets redact.SecretSource) (context.Context, store.Store, *Service, string) {
+	t.Helper()
+	ctx := store.WithWorkspace(store.WithActor(t.Context(), store.SystemActor()), "demo")
+	st := store.NewMemory()
+	task := core.Task{ID: id, Workspace: "demo", State: core.TaskRunning, CreatedAt: time.Now().UTC()}
+	if err := st.CreateTask(ctx, task); err != nil {
+		t.Fatal(err)
+	}
+	job := core.Job{ID: id + "-implement-1", TaskID: task.ID, Stage: core.StageImplement, State: core.JobPending}
+	if err := st.CreateJob(ctx, job); err != nil {
+		t.Fatal(err)
+	}
+	if err := storetest.For(st).CreateWorkOrder(ctx, core.WorkOrder{ID: job.ID, TaskID: task.ID, JobID: job.ID, Stage: job.Stage, QueueEnteredAt: time.Now().UTC(), QueueDeadline: time.Now().Add(time.Hour)}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := storetest.For(st).ClaimWorkOrder(ctx, job.ID, core.WorkOrderClaim{SessionID: "implementer", ClientToken: "client-token", Lease: time.Minute, ExecutionTimeout: time.Hour}); err != nil {
+		t.Fatal(err)
+	}
+	return ctx, st, &Service{Store: st, RedactionSecrets: secrets}, job.ID
+}
+
+func progressEvents(ctx context.Context, t *testing.T, st store.Store, taskID string) []core.Event {
+	t.Helper()
+	events, err := st.ListEvents(ctx, taskID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	reported := []core.Event{}
+	for _, event := range events {
+		if event.Kind == "work_order.progress_reported" {
+			reported = append(reported, event)
+		}
+	}
+	return reported
+}
+
+const progressFixtureToken = "cv_pat_fixtureid_Ab3dE6gH9jK2mN5pQ8sT1vW4yZ7bC0eF3hJ6kM9nP2r"
+
+type progressSecretSource struct {
+	values []string
+	err    error
+}
+
+func (s progressSecretSource) ListGitHubAppKeysForRedaction(context.Context) ([]string, error) {
+	return s.values, s.err
+}
+
+// TestProgressRedactsBeforeTrimWithSecretStraddlingTheCut fails if the trim
+// runs first: the cut would leave a token prefix too short for any pattern
+// (req-security-boundaries REQ-3; DEC-98).
+func TestProgressRedactsBeforeTrimWithSecretStraddlingTheCut(t *testing.T) {
+	t.Parallel()
+	const id = "progress-straddle"
+	ctx, st, service, order := progressFixture(t, id, nil)
+	start := maxProgressBytes - 10
+	message := strings.Repeat("x", start-1) + " " + progressFixtureToken + " tail"
+	if at := strings.Index(message, progressFixtureToken); at != start || at+len(progressFixtureToken) <= maxProgressBytes {
+		t.Fatalf("token at %d does not straddle the %d-byte cut", at, maxProgressBytes)
+	}
+	got, err := service.Progress(ctx, order, "implementer", message)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got.Progress) > maxProgressBytes {
+		t.Fatalf("progress is %d bytes", len(got.Progress))
+	}
+	stored, err := st.GetWorkOrder(ctx, order)
+	if err != nil {
+		t.Fatal(err)
+	}
+	events := progressEvents(ctx, t, st, id)
+	if len(events) != 1 {
+		t.Fatalf("got %d progress events", len(events))
+	}
+	for name, text := range map[string]string{"returned": got.Progress, "stored": stored.Progress, "event": string(events[0].Payload)} {
+		if strings.Contains(text, "cv_pat_") || strings.Contains(text, progressFixtureToken[:10]) {
+			t.Fatalf("%s progress keeps part of the token", name)
+		}
+		if !strings.Contains(text, "[REDACTED") {
+			t.Fatalf("%s progress has no placeholder", name)
+		}
+	}
+}
+
+// TestProgressRecordsRemovalByCountAndClassNeverByValue covers
+// req-security-boundaries AC-3.1 for each class a message can trigger.
+func TestProgressRecordsRemovalByCountAndClassNeverByValue(t *testing.T) {
+	t.Parallel()
+	const known = "known-app-key-fixture-value"
+	encoded := base64.StdEncoding.EncodeToString([]byte(known))
+	const id = "progress-counts"
+	ctx, st, service, order := progressFixture(t, id, progressSecretSource{values: []string{known}})
+	values := []string{known, encoded, progressFixtureToken, "fixture-assigned-value-000000"}
+	message := "exact " + known + " encoded " + encoded + " pattern " + progressFixtureToken + " twice " + progressFixtureToken + " password=" + values[3]
+	if _, err := service.Progress(ctx, order, "implementer", message); err != nil {
+		t.Fatal(err)
+	}
+	events := progressEvents(ctx, t, st, id)
+	if len(events) != 1 {
+		t.Fatalf("got %d progress events", len(events))
+	}
+	var payload struct {
+		Message    string              `json:"message"`
+		Redactions core.RedactionStats `json:"redactions"`
+	}
+	if err := json.Unmarshal(events[0].Payload, &payload); err != nil {
+		t.Fatal(err)
+	}
+	if want := (core.RedactionStats{Exact: 1, Encoded: 1, Pattern: 2, Entropy: 1}); payload.Redactions != want {
+		t.Fatalf("redactions=%+v, want %+v", payload.Redactions, want)
+	}
+	for _, value := range values {
+		if strings.Contains(string(events[0].Payload), value) {
+			t.Fatal("event holds a removed value")
+		}
+	}
+
+	clean, err := service.Progress(ctx, order, "implementer", "no secret here")
+	if err != nil || clean.Progress != "no secret here" {
+		t.Fatalf("clean progress=%q err=%v", clean.Progress, err)
+	}
+	events = progressEvents(ctx, t, st, id)
+	if len(events) != 2 || strings.Contains(string(events[1].Payload), "redactions") {
+		t.Fatalf("a message with no removal records no counts: %d events", len(events))
+	}
+}
+
+// TestProgressRefusesWhenSecretsCannotBeRead proves a failed secret read
+// stores nothing rather than storing unredacted text, and that the refusal
+// doesn't echo the caller's message.
+func TestProgressRefusesWhenSecretsCannotBeRead(t *testing.T) {
+	t.Parallel()
+	const id = "progress-refused"
+	ctx, st, service, order := progressFixture(t, id, progressSecretSource{err: errors.New("key decrypt failed")})
+	if _, err := service.Progress(ctx, order, "implementer", "first report"); err == nil {
+		t.Fatal("a failed secret read must refuse the report")
+	} else if !strings.HasPrefix(err.Error(), "resolve redaction credentials: ") || strings.Contains(err.Error(), "first report") {
+		t.Fatalf("refusal=%q", err)
+	}
+	stored, err := st.GetWorkOrder(ctx, order)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stored.Progress != "" || stored.State != core.WorkOrderClaimed {
+		t.Fatalf("order changed: progress=%q state=%s", stored.Progress, stored.State)
+	}
+	if events := progressEvents(ctx, t, st, id); len(events) != 0 {
+		t.Fatalf("a refused report appended %d events", len(events))
+	}
+
+	service.RedactionSecrets = progressSecretSource{}
+	retried, err := service.Progress(ctx, order, "implementer", "first report")
+	if err != nil || retried.Progress != "first report" {
+		t.Fatalf("retry progress=%q err=%v", retried.Progress, err)
 	}
 }

@@ -1276,10 +1276,7 @@ func (s *Server) listTasks(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "internal server error", http.StatusInternalServerError)
 		return
 	}
-	w.Header().Set("X-Conveyor-Total", strconv.Itoa(page.Total))
-	w.Header().Set("X-Conveyor-Limit", strconv.Itoa(query.Limit))
-	w.Header().Set("X-Conveyor-Offset", strconv.Itoa(query.Offset))
-	s.writeTasks(w, r, page.Tasks)
+	s.writeTasks(w, r, page, query.Limit, query.Offset)
 }
 
 func (s *Server) getTask(w http.ResponseWriter, r *http.Request) {
@@ -1294,7 +1291,26 @@ func (s *Server) getTask(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "internal server error", http.StatusInternalServerError)
 		return
 	}
-	s.writeTask(w, r, t)
+	// This read may serve a row stored raw, so its text passes the redactor
+	// without rewriting the row. A stage's delivery doesn't take this path: it
+	// receives the body as submitted (req-security-boundaries REQ-3, REQ-5;
+	// req-intake-and-triage AC-1.2).
+	redactor, err := s.mcpReadRedactor(r.Context())
+	if err != nil {
+		http.Error(w, "internal server error", http.StatusInternalServerError)
+		return
+	}
+	response, ok := s.taskResponse(w, r, t)
+	if !ok {
+		return
+	}
+	rendered, err := renderMCPReadItem(response, redactor)
+	if err != nil {
+		log.Printf("handle API request: %v", err)
+		http.Error(w, "internal server error", http.StatusInternalServerError)
+		return
+	}
+	writeJSON(w, http.StatusOK, rendered)
 }
 
 func (s *Server) listJobs(w http.ResponseWriter, r *http.Request) {
@@ -1313,6 +1329,18 @@ func (s *Server) listEvents(w http.ResponseWriter, r *http.Request) {
 		log.Printf("handle API request: %v", err)
 		http.Error(w, "internal server error", http.StatusInternalServerError)
 		return
+	}
+	redactor, err := s.mcpReadRedactor(r.Context())
+	if err != nil {
+		http.Error(w, "internal server error", http.StatusInternalServerError)
+		return
+	}
+	for index, event := range events {
+		if events[index], err = redactEventForRead(event, redactor); err != nil {
+			log.Printf("handle API request: event %d: %v", event.ID, err)
+			http.Error(w, "internal server error", http.StatusInternalServerError)
+			return
+		}
 	}
 	writeJSON(w, http.StatusOK, events)
 }
@@ -1350,7 +1378,7 @@ func (s *Server) streamEvents(w http.ResponseWriter, r *http.Request) {
 		s.streamTaskEventNotifications(w, flusher, r, chi.URLParam(r, "id"), wake)
 		return
 	}
-	stream := newTaskEventStream(s.Store, chi.URLParam(r, "id"))
+	stream := newTaskEventStream(s.Store, chi.URLParam(r, "id"), s.mcpReadRedactor)
 	for {
 		if err := stream.poll(r.Context(), w); err != nil {
 			if errors.Is(err, errTaskEventStreamRead) {
