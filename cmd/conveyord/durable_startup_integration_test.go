@@ -60,7 +60,7 @@ func TestConveyordDurableStartupIntegration(t *testing.T) {
 			t.Helper()
 			daemon := startDurableDaemon(t, raw, cfgPath, timeout)
 			if name == "singlestore" {
-				migrated = raw
+				migrated = strings.TrimSpace(raw)
 			}
 			return daemon
 		}
@@ -69,7 +69,10 @@ func TestConveyordDurableStartupIntegration(t *testing.T) {
 			dir := t.TempDir()
 			cfgPath := filepath.Join(dir, "conveyor.yaml")
 			requireStartupWrite(t, cfgPath, []byte(durableStartupConfig(name, "startup")))
-			daemon := start(t, raw, cfgPath, 45*time.Second)
+			// The file names only the backend, as conveyor init writes it, and the
+			// environment value is padded: the checks below open raw itself and
+			// find what this daemon wrote (req-deployment-and-releases AC-2.3).
+			daemon := start(t, "  "+raw+" \n", cfgPath, 45*time.Second)
 			if code, body := daemon.post(t, "/v1/workspaces", durableStartupToken, `{"id":"created","name":"Created","document":{"repos":[]}}`); code != http.StatusCreated {
 				t.Fatalf("create workspace status=%d body=%s", code, body)
 			}

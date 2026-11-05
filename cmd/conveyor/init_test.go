@@ -16,6 +16,8 @@ import (
 	"github.com/kidus-tiliksew/conveyor/internal/core"
 	"github.com/kidus-tiliksew/conveyor/internal/pack"
 	"github.com/kidus-tiliksew/conveyor/internal/store"
+	"github.com/kidus-tiliksew/conveyor/internal/store/backend"
+	"github.com/kidus-tiliksew/conveyor/internal/testsupport/connprobe"
 	"gopkg.in/yaml.v3"
 )
 
@@ -916,4 +918,125 @@ func TestInitProcessExitsNonzeroWithoutPassword(t *testing.T) {
 		t.Errorf("stderr has %d bytes and no store error", len(stderr))
 	}
 	assertOnlyDirectoryEntries(t, directory)
+}
+
+// paddedHandoffCases are the connection strings the handoff tests run on each
+// durable backend. Each names the identity the server must see.
+func paddedHandoffCases() []struct {
+	name, backendName string
+	probe             func(*testing.T) *connprobe.Probe
+	connection        func(addr string) string
+} {
+	return []struct {
+		name, backendName string
+		probe             func(*testing.T) *connprobe.Probe
+		connection        func(addr string) string
+	}{
+		{"postgres", "postgres", connprobe.Postgres, func(addr string) string {
+			return "postgres://" + initFixtureUser + ":" + initFixturePassword + "@" + addr + "/" + initFixtureDatabase + "?sslmode=disable&connect_timeout=2"
+		}},
+		{"singlestore URL", "singlestore", connprobe.MySQL, func(addr string) string {
+			return "singlestore://" + initFixtureUser + ":" + initFixturePassword + "@" + addr + "/" + initFixtureDatabase
+		}},
+		{"singlestore DSN", "singlestore", connprobe.MySQL, func(addr string) string {
+			return initFixtureUser + ":" + initFixturePassword + "@tcp(" + addr + ")/" + initFixtureDatabase
+		}},
+	}
+}
+
+// The handoff: init accepts a padded CONVEYOR_DATABASE_URL and publishes a file
+// that names only the backend. Loading that file the way conveyord does and
+// opening its Database, the call cmd/conveyord/main.go makes, reaches the same
+// user and database as the URL init opened. The loader stays untrimmed
+// (req-deployment-and-releases REQ-2, AC-2.3).
+func TestInitGeneratedConfigWithPaddedURLReachesTheDatabaseInitUsed(t *testing.T) {
+	want := connprobe.Handshake{User: initFixtureUser, Database: initFixtureDatabase}
+	for _, tc := range paddedHandoffCases() {
+		t.Run(tc.name, func(t *testing.T) {
+			probe := tc.probe(t)
+			raw := tc.connection(probe.Addr)
+			padded := "  " + raw + " \n"
+			path := filepath.Join(t.TempDir(), "conveyor.yaml")
+			useInitFixtureStore(t, nil)
+			var initDatabase config.Database
+			fixtureOpen := initOpenStore
+			initOpenStore = func(ctx context.Context, database config.Database) (store.Backend, error) {
+				initDatabase = database
+				return fixtureOpen(ctx, database)
+			}
+			t.Setenv("CONVEYOR_DATABASE_URL", padded)
+			var output strings.Builder
+			if err := initializeDeployment(t.Context(), &output, path, initFixtureAnswers()); err != nil {
+				t.Fatalf("init refused a padded URL: %v", err)
+			}
+			if initDatabase.URL != raw || initDatabase.Backend != tc.backendName {
+				t.Fatalf("init opened backend %q with the trimmed URL=%t", initDatabase.Backend, initDatabase.URL == raw)
+			}
+			published, err := os.ReadFile(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			assertDatabaseNodeIsBackendOnly(t, published, tc.backendName)
+			if strings.Contains(string(published), initFixturePassword) || strings.Contains(output.String(), initFixturePassword) {
+				t.Fatal("the file or output holds the password")
+			}
+			loaded, err := config.LoadDeployment(path, nil)
+			if err != nil {
+				t.Fatal("generated file does not load")
+			}
+			if loaded.Database.URL != padded {
+				t.Fatal("the loader no longer returns the environment value untrimmed")
+			}
+			ctx := store.WithActor(t.Context(), store.SystemActor())
+			for label, database := range map[string]config.Database{"init's database": initDatabase, "the daemon's loaded database": loaded.Database} {
+				_, _, openErr := backend.OpenWithStats(ctx, database)
+				if openErr == nil {
+					t.Fatalf("%s: the probe accepted no session, so the open must fail", label)
+				}
+				if strings.Contains(openErr.Error(), initFixturePassword) || strings.Contains(openErr.Error(), "connection string") {
+					t.Fatalf("%s: the open stopped before connection setup or repeated the password", label)
+				}
+				probe.Require(t, label, want)
+			}
+		})
+	}
+}
+
+// Each host-local command that reads the variable reaches connection setup
+// through its real open path with a padded value, and prints no password.
+func TestHostLocalCommandsReachConnectionSetupWithPaddedURL(t *testing.T) {
+	t.Setenv("CONVEYOR_API_TOKEN", initFixtureToken)
+	t.Setenv(config.LLMAPIKeyEnv, "fixture-llm-key")
+	want := connprobe.Handshake{User: initFixtureUser, Database: initFixtureDatabase}
+	for _, tc := range paddedHandoffCases() {
+		t.Run(tc.name, func(t *testing.T) {
+			probe := tc.probe(t)
+			t.Setenv("CONVEYOR_DATABASE_URL", "\t"+tc.connection(probe.Addr)+"  \n")
+			logged := captureInitLog(t)
+			directory := t.TempDir()
+			var initOutput strings.Builder
+			initErr := initializeDeployment(t.Context(), &initOutput, filepath.Join(directory, "conveyor.yaml"), initFixtureAnswers())
+			if initErr == nil {
+				t.Fatal("init: the probe accepted no session, so the open must fail")
+			}
+			probe.Require(t, "init", want)
+			assertOnlyDirectoryEntries(t, directory)
+			command := userCmd()
+			var userOutput strings.Builder
+			command.SetOut(&userOutput)
+			command.SetErr(&userOutput)
+			command.SetArgs([]string{"issue-link", "owner@example.test"})
+			command.SilenceErrors, command.SilenceUsage = true, true
+			userErr := command.ExecuteContext(store.WithActor(t.Context(), store.SystemActor()))
+			if userErr == nil {
+				t.Fatal("user issue-link: the probe accepted no session, so the open must fail")
+			}
+			probe.Require(t, "user issue-link", want)
+			for label, text := range map[string]string{"init error": initErr.Error(), "init output": initOutput.String(), "user error": userErr.Error(), "user output": userOutput.String(), "log": logged.String()} {
+				if strings.Contains(text, initFixturePassword) {
+					t.Errorf("%s holds the password", label)
+				}
+			}
+		})
+	}
 }

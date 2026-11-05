@@ -257,27 +257,61 @@ func assertGeneratedConfigHoldsBackendOnly(t *testing.T, path, backendName, data
 }
 
 // assertInitRerunToleratesPaddedURL reruns over a generated file with spaces and
-// a newline around the environment value. The file stays byte-equal.
+// a newline around the environment value, and the file stays byte-equal. It then
+// loads that file as conveyord does and opens its Database, the call
+// cmd/conveyord/main.go makes, on the real backend. The workspace init created
+// must be there, which proves the daemon reached the database init used
+// (req-deployment-and-releases REQ-2, AC-2.3). conveyor user reads the same
+// variable and must reach it too.
 func assertInitRerunToleratesPaddedURL(t *testing.T, databaseURL, path string, answers initAnswers) {
 	t.Helper()
-	before, err := os.ReadFile(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Setenv("CONVEYOR_DATABASE_URL", "  "+databaseURL+" \n")
-	var output strings.Builder
-	err = initializeDeployment(store.WithActor(t.Context(), store.SystemActor()), &output, path, answers)
-	t.Setenv("CONVEYOR_DATABASE_URL", databaseURL)
-	if err != nil {
-		t.Fatal("rerun with a padded environment value was refused: ", err)
-	}
-	assertNoDatabaseSecret(t, "padded rerun output", output.String(), databaseURL)
-	if signInTokenFromOutput(t, output.String()) == "" {
-		t.Fatal("padded rerun printed no sign-in link")
-	}
-	if after, readErr := os.ReadFile(path); readErr != nil || string(after) != string(before) {
-		t.Fatalf("padded rerun rewrote the config (read err %v)", readErr)
-	}
+	t.Run("padded_environment_url", func(t *testing.T) {
+		before, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		padded := "  " + databaseURL + " \n"
+		t.Setenv("CONVEYOR_DATABASE_URL", padded)
+		ctx := store.WithActor(t.Context(), store.SystemActor())
+		var output strings.Builder
+		if err = initializeDeployment(ctx, &output, path, answers); err != nil {
+			t.Fatal("rerun with a padded environment value was refused: ", err)
+		}
+		assertNoDatabaseSecret(t, "padded rerun output", output.String(), databaseURL)
+		if signInTokenFromOutput(t, output.String()) == "" {
+			t.Fatal("padded rerun printed no sign-in link")
+		}
+		if after, readErr := os.ReadFile(path); readErr != nil || string(after) != string(before) {
+			t.Fatalf("padded rerun rewrote the config (read err %v)", readErr)
+		}
+		loaded, err := config.LoadDeployment(path, nil)
+		if err != nil {
+			t.Fatal("generated config does not load")
+		}
+		if loaded.Database.URL != padded {
+			t.Fatal("the loader no longer returns the environment value untrimmed")
+		}
+		st, _, err := backend.OpenWithStats(ctx, loaded.Database)
+		if err != nil {
+			t.Fatalf("the daemon's open failed with a padded URL: %v", scrubInitError(err, databaseURL, ""))
+		}
+		defer st.Close()
+		workspace, err := st.GetWorkspace(ctx, answers.WorkspaceID)
+		if err != nil || workspace.Name != answers.WorkspaceName {
+			t.Fatalf("the daemon's database lacks init's workspace: name=%q err=%v", workspace.Name, err)
+		}
+		command := userCmd()
+		var issued strings.Builder
+		command.SetOut(&issued)
+		command.SetArgs([]string{"issue-link", answers.OperatorEmail})
+		if err = command.ExecuteContext(ctx); err != nil {
+			t.Fatalf("user issue-link failed with a padded URL: %v", scrubInitError(err, databaseURL, ""))
+		}
+		if signInTokenFromOutput(t, issued.String()) == "" {
+			t.Fatal("user issue-link printed no sign-in link")
+		}
+		assertNoDatabaseSecret(t, "user issue-link output", issued.String(), databaseURL)
+	})
 }
 
 func assertLegacyURLNotice(t *testing.T, output, path, databaseURL string) {
