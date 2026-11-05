@@ -22,22 +22,18 @@ func (w *dispatchTaskWorker) Work(ctx context.Context, job queue.Job) error {
 	}
 	ctx = store.WithActor(ctx, store.SystemActor(fmt.Sprintf("queue:%s", job.ID)))
 	ctx = store.WithWorkspace(ctx, args.WorkspaceID)
-	// An approved task with an unanswered check-status read gets its bounded
-	// retry here. The task can leave approved during a wait, so a task still
-	// approved afterward completes, and any other runs as usual with this job
-	// (component-durable-queue invariant 37).
-	if err = w.retryCheckStatusRead(ctx, args.TaskID); err != nil {
-		return err
-	}
-	if current, getErr := w.dispatcher.Store.GetTask(ctx, args.TaskID); getErr == nil && current.State == core.TaskApproved {
-		return nil
+	// Invariant 37's check-status rows return from here, so their errors never
+	// reach handleFailure. A task the read moved out of approved runs as usual
+	// with this job, because the transition can't enqueue while it is active.
+	if settled, outcome := w.checkReadOutcome(ctx, job, args.TaskID); settled {
+		return outcome
 	}
 	err = w.dispatcher.runTask(ctx, args.TaskID)
 	if err == nil {
 		// An in-process review may have just approved the task and found the
 		// read unanswered, while this job held the stream.
-		if err = w.retryCheckStatusRead(ctx, args.TaskID); err != nil {
-			return err
+		if settled, outcome := w.checkReadOutcome(ctx, job, args.TaskID); settled {
+			return outcome
 		}
 		task, getErr := w.dispatcher.Store.GetTask(ctx, args.TaskID)
 		if getErr != nil {
@@ -77,19 +73,34 @@ func (w *dispatchTaskWorker) Work(ctx context.Context, job queue.Job) error {
 	return w.handleFailure(ctx, job, err)
 }
 
-// retryCheckStatusRead runs the bounded retry and returns only what the queue
-// must act on: daemon shutdown hands the attempt back, so a restart resumes the
-// retry. Any other failure is logged, and the task's other wakes remain.
-func (w *dispatchTaskWorker) retryCheckStatusRead(ctx context.Context, taskID string) error {
-	err := w.dispatcher.retryCheckStatusRead(ctx, taskID)
-	if err == nil {
-		return nil
+// checkReadOutcome applies invariant 37's rows for an approved task with the
+// merge gate off, and reports whether they settled this attempt. It returns the
+// error for job.failed to schedule the next attempt, with no dispatch.failed and
+// no transition. Daemon shutdown hands the attempt back. A final attempt returns
+// nothing, so the queue never discards this job.
+func (w *dispatchTaskWorker) checkReadOutcome(ctx context.Context, job queue.Job, taskID string) (bool, error) {
+	task, err := w.dispatcher.Store.GetTask(ctx, taskID)
+	if err != nil || !checkReadRowApplies(task) {
+		return false, nil
 	}
-	if w.shutdown.Stopping() && errors.Is(err, context.Canceled) {
-		return queue.Snooze(shutdownRetryDelay)
+	final := job.Attempt >= job.MaxAttempts
+	err = w.dispatcher.readCheckStatusAttempt(ctx, task, job.Attempt, final)
+	switch {
+	case err == nil:
+	case w.shutdown.Stopping() && errors.Is(err, context.Canceled):
+		log.Printf("[task %s] queue job %s interrupted by daemon shutdown; preserving attempt %d", taskID, job.ID, job.Attempt)
+		return true, queue.Snooze(shutdownRetryDelay)
+	case final:
+		log.Printf("[task %s] check-status attempt %d: %v", taskID, job.Attempt, err)
+	default:
+		return true, err
 	}
-	log.Printf("[task %s] check-status retry: %v", taskID, err)
-	return nil
+	current, err := w.dispatcher.Store.GetTask(ctx, taskID)
+	if err != nil {
+		log.Printf("[task %s] check-status attempt %d: %v", taskID, job.Attempt, err)
+		return true, nil
+	}
+	return checkReadRowApplies(current), nil
 }
 
 func (w *dispatchTaskWorker) handleFailure(ctx context.Context, job queue.Job, err error) error {

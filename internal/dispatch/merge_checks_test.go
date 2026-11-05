@@ -9,6 +9,7 @@ import (
 	"github.com/kidus-tiliksew/conveyor/internal/config"
 	"github.com/kidus-tiliksew/conveyor/internal/core"
 	"github.com/kidus-tiliksew/conveyor/internal/pipeline"
+	"github.com/kidus-tiliksew/conveyor/internal/queue"
 	"github.com/kidus-tiliksew/conveyor/internal/store"
 	"github.com/kidus-tiliksew/conveyor/internal/store/storetest"
 	"github.com/kidus-tiliksew/conveyor/internal/trigger/github"
@@ -257,7 +258,6 @@ func TestApprovingVerdictMergesThroughTheRetryJob(t *testing.T) {
 		}
 		return github.CheckStatus{Checks: []github.Check{{Name: "build", State: github.CheckPassed}}}, nil
 	}
-	d.CheckReadRetryWait = func(context.Context, time.Duration) error { return nil }
 
 	review := pipeline.Review{Verdict: "approve", ReasonCode: "approved", Summary: "approved"}
 	if err := d.ApplyExternalReviewPinned(ctx, task, job, review, order.ID, "review-session", "reviewer", []core.ServedRequirementContext{}, emptyGovernanceAuthority()); err != nil {
@@ -349,7 +349,6 @@ func TestFailedReadOnTheMemoryQueueRetries(t *testing.T) {
 		}
 		return github.CheckStatus{}, nil
 	}
-	d.CheckReadRetryWait = func(context.Context, time.Duration) error { return nil }
 	if err := d.MergeApprovedTaskAutomatically(ctx, task); !errors.Is(err, ErrCheckStatusUnread) {
 		t.Fatalf("err = %v", err)
 	}
@@ -361,5 +360,100 @@ func TestFailedReadOnTheMemoryQueueRetries(t *testing.T) {
 	case <-merged:
 	case <-time.After(30 * time.Second):
 		t.Fatal("the memory queue did not retry")
+	}
+}
+
+func checkReadWorker(t *testing.T) (context.Context, store.Store, core.Task, *dispatchTaskWorker) {
+	t.Helper()
+	ctx, st, task, d := approvedMergeFixture(t, "acme/app")
+	if err := st.BindTaskApproval(ctx, task.ID, "head"); err != nil {
+		t.Fatal(err)
+	}
+	d.ViewPullRequest = func(context.Context, string, string) (github.PullRequest, error) {
+		return github.PullRequest{Number: 41, State: "open", Mergeable: "MERGEABLE", HeadSHA: "head", BaseSHA: "base"}, nil
+	}
+	d.ReadCommitChecks = func(context.Context, string, string) (github.CheckStatus, error) {
+		return github.CheckStatus{}, github.StatusError(502, errors.New("bad gateway"))
+	}
+	if err := d.MergeApprovedTaskAutomatically(ctx, task); !errors.Is(err, ErrCheckStatusUnread) {
+		t.Fatalf("err = %v", err)
+	}
+	return ctx, st, task, &dispatchTaskWorker{dispatcher: d}
+}
+
+// The check-status rows return before handleFailure: an unanswered attempt
+// returns the error with no dispatch.failed and no transition, and the final
+// attempt completes (component-durable-queue invariant 37).
+func TestCheckReadAttemptNeverReachesHandleFailure(t *testing.T) {
+	ctx, st, task, worker := checkReadWorker(t)
+	transitions, err := st.CountEvents(ctx, task.ID, "task.state_changed")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for attempt := 1; attempt < queue.DispatchTaskMaxAttempts; attempt++ {
+		if err := worker.Work(ctx, dispatchTaskJob(task.ID, attempt, queue.DispatchTaskMaxAttempts)); !errors.Is(err, ErrCheckStatusUnread) {
+			t.Fatalf("attempt %d err = %v, want the read's error for job.failed", attempt, err)
+		}
+	}
+	if err := worker.Work(ctx, dispatchTaskJob(task.ID, queue.DispatchTaskMaxAttempts, queue.DispatchTaskMaxAttempts)); err != nil {
+		t.Fatalf("final attempt err = %v, want completion", err)
+	}
+	current, err := st.GetTask(ctx, task.ID)
+	if err != nil || current.State != core.TaskApproved {
+		t.Fatalf("task=%+v err=%v", current, err)
+	}
+	if count, _ := st.CountEvents(ctx, task.ID, "dispatch.failed"); count != 0 {
+		t.Fatalf("dispatch.failed = %d", count)
+	}
+	if count, _ := st.CountEvents(ctx, task.ID, "task.state_changed"); count != transitions {
+		t.Fatalf("task.state_changed = %d, want %d", count, transitions)
+	}
+	events, err := st.ListCheckStatusEvents(ctx, []string{task.ID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if status := store.FoldCheckStatus(events[task.ID], "head"); !status.RetriesExhausted {
+		t.Fatalf("status = %+v, want the end of the retries recorded", status)
+	}
+	// The retries ended, so a job that finds them so reads nothing.
+	reads := 0
+	worker.dispatcher.ReadCommitChecks = func(context.Context, string, string) (github.CheckStatus, error) {
+		reads++
+		return github.CheckStatus{}, nil
+	}
+	if err := worker.Work(ctx, dispatchTaskJob(task.ID, 1, queue.DispatchTaskMaxAttempts)); err != nil || reads != 0 {
+		t.Fatalf("err=%v reads=%d", err, reads)
+	}
+}
+
+// A task the rows don't apply to behaves as before: a queued task's real dispatch
+// failure still reaches dispatch.failed and its transition.
+func TestRealDispatchFailureStillReachesHandleFailure(t *testing.T) {
+	ctx := store.WithWorkspace(store.WithActor(t.Context(), store.SystemActor()), "test")
+	st := store.NewMemory()
+	task := core.Task{ID: "queued-failure", Workspace: "test", Repo: "app", State: core.TaskQueued, NextStage: core.StageImplement, CreatedAt: time.Now()}
+	if err := st.CreateTask(ctx, task); err != nil {
+		t.Fatal(err)
+	}
+	d := New(st, &config.Config{Workspace: "test"}, nil)
+	worker := &dispatchTaskWorker{dispatcher: d}
+	if err := worker.Work(ctx, dispatchTaskJob(task.ID, 1, queue.DispatchTaskMaxAttempts)); err == nil {
+		t.Fatal("a stage with no route dispatched")
+	}
+	if count, err := st.CountEvents(ctx, task.ID, "dispatch.failed"); err != nil || count != 1 {
+		t.Fatalf("dispatch.failed = %d, err = %v", count, err)
+	}
+	if count, err := st.CountEvents(ctx, task.ID, "task.state_changed"); err != nil || count != 1 {
+		t.Fatalf("task.state_changed = %d, err = %v", count, err)
+	}
+}
+
+// With the merge gate on, the rows don't apply: the job reads no check status.
+func TestCheckReadRowsSkipAGateOnTask(t *testing.T) {
+	ctx, _, task, d := approvedMergeFixtureWithScopeAndGate(t, "acme/app", config.RefreshReviewDelta, true)
+	d.ReadCommitChecks = failingCheckReader(t)
+	worker := &dispatchTaskWorker{dispatcher: d}
+	if err := worker.Work(ctx, dispatchTaskJob(task.ID, 1, queue.DispatchTaskMaxAttempts)); err != nil {
+		t.Fatalf("err = %v", err)
 	}
 }

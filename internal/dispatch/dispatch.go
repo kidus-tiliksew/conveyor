@@ -50,10 +50,7 @@ type Dispatcher struct {
 	// ReadCommitChecks reads every check of a commit for the automatic merge
 	// (req-review-gates-evidence AC-1.4). A fixture stubbing the forge gets
 	// NoChecksReportedForTest, so it never calls a real reader.
-	ReadCommitChecks func(context.Context, string, string) (github.CheckStatus, error)
-	// CheckReadRetryWait waits out one backoff of the check-status retry. Nil
-	// waits on a timer; tests inject it so no test sleeps the real delays.
-	CheckReadRetryWait          func(context.Context, time.Duration) error
+	ReadCommitChecks            func(context.Context, string, string) (github.CheckStatus, error)
 	SubmissionPR                func(context.Context, string, string) (github.SubmissionPullRequest, error)
 	DiscoverDocumentationPolicy func(context.Context, string, string) github.DocumentationPolicyDiscovery
 	RequestMerge                func(context.Context, string, int) error
@@ -255,10 +252,12 @@ func (d *Dispatcher) Run(ctx context.Context) {
 			return
 		case item := <-d.memoryQueue:
 			workCtx := store.WithWorkspace(store.WithActor(ctx, store.SystemActor("dispatcher")), item.Workspace)
-			if err := d.retryCheckStatusRead(workCtx, item.TaskID); err != nil {
-				log.Printf("[task %s] check-status retry: %v", item.TaskID, err)
-			}
-			if current, err := d.Store.GetTask(workCtx, item.TaskID); err == nil && current.State == core.TaskApproved {
+			// The volatile store has no job, so its queue gives a failed read one
+			// more read and no schedule.
+			if current, err := d.Store.GetTask(workCtx, item.TaskID); err == nil && checkReadRowApplies(current) {
+				if err := d.readCheckStatusAttempt(workCtx, current, 1, true); err != nil {
+					log.Printf("[task %s] check-status read: %v", item.TaskID, err)
+				}
 				continue
 			}
 			if err := d.runTask(workCtx, item.TaskID); err != nil {

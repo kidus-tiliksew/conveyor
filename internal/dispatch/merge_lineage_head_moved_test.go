@@ -41,7 +41,7 @@ func TestAutomaticMergeCheckStatusOutcomesPostgresIntegration(t *testing.T) {
 	mergelineagefixture.RunCheckStatus(t, func(t *testing.T) store.Store { return postgresSchemaBackend(t, raw, "checks_") })
 }
 
-// The bounded retry of an unanswered check-status read on the real queue
+// The job retry of an unanswered check-status read on the real queue
 // runtime, with SingleStore's twin beside the other SingleStore fixtures
 // (req-review-gates-evidence AC-1.7).
 func TestCheckStatusReadRetry(t *testing.T) {
