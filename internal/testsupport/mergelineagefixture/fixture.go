@@ -8,6 +8,7 @@ package mergelineagefixture
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"strings"
@@ -683,8 +684,11 @@ func (c *checkScenario) single(t *testing.T, kind string) core.Event {
 func (c *checkScenario) requireRequestedStatus(t *testing.T, want string) {
 	t.Helper()
 	requested := c.single(t, "merge.requested")
-	if !strings.Contains(string(requested.Payload), `"check_status":"`+want+`"`) {
-		t.Fatalf("merge.requested = %s, want check_status %s", requested.Payload, want)
+	var payload struct {
+		CheckStatus string `json:"check_status"`
+	}
+	if err := json.Unmarshal(requested.Payload, &payload); err != nil || payload.CheckStatus != want {
+		t.Fatalf("merge.requested = %s, want check_status %s (%v)", requested.Payload, want, err)
 	}
 }
 

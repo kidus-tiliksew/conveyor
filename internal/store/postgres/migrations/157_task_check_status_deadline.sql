@@ -1,4 +1,4 @@
--- req-review-gates-evidence AC-1.5; component-submission-merge (Check status,
+-- req-review-gates-evidence AC-1.5 and component-submission-merge (Check status,
 -- invariant 61). The first read of a head that finds a check pending, or that
 -- fails, records a deadline 2 hours later and that head. Both columns stay NULL
 -- on every existing task. No events row is written.
