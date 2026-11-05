@@ -650,7 +650,7 @@ func (s *Store) RequestChangesCommand(ctx context.Context, lease taskops.TaskLea
 		}
 		events = append(events, core.Event{Kind: "task.state_changed", Payload: latestPayload})
 		if !store.AtMergeGate(before, events) {
-			return fmt.Errorf("task %s is not at the merge gate", request.TaskID)
+			return store.NotAtMergeGateError(before)
 		}
 		if request.JobID != "" {
 			job, jobErr := q.GetJob(ctx, db.GetJobParams{ID: request.JobID, WorkspaceID: workspace(ctx)})
@@ -683,9 +683,9 @@ func (s *Store) RequestChangesCommand(ctx context.Context, lease taskops.TaskLea
 				return err
 			}
 		}
-		updated, err := q.UpdateTaskTransition(ctx, db.UpdateTaskTransitionParams{ID: request.TaskID, WorkspaceID: workspace(ctx), State: string(state), NextStage: string(plan.NextStage), RecoveryStage: string(plan.Recovery), GateKind: string(core.GateKindFor(state, plan.Command))})
+		updated, err := q.UpdateTaskTransition(ctx, db.UpdateTaskTransitionParams{ID: request.TaskID, WorkspaceID: workspace(ctx), ExpectedState: string(before.State), State: string(state), NextStage: string(plan.NextStage), RecoveryStage: string(plan.Recovery), GateKind: string(core.GateKindFor(state, plan.Command))})
 		if err != nil {
-			return err
+			return taskStateGuardError(ctx, q, request.TaskID, string(plan.Command), err)
 		}
 		result = taskFromDB(updated)
 		if err = insertEvent(ctx, q, core.Event{TaskID: request.TaskID, Kind: "task.state_changed", ActorID: actor.ID, ActorRole: actor.Role, Payload: core.JSONPayload(map[string]any{"from": before.State, "to": state, "command": plan.Command})}); err != nil {
@@ -1432,7 +1432,14 @@ func (s *Store) CancelTaskCommand(ctx context.Context, lease taskops.TaskLease, 
 	if intervention.Action != core.InterventionCancel || strings.TrimSpace(intervention.ReasonCode) == "" {
 		return core.Task{}, fmt.Errorf("cancel intervention requires a reason")
 	}
-	err := s.inTx(ctx, func(tx pgx.Tx, q *db.Queries) error { return s.cancelTaskTx(ctx, tx, q, intervention) })
+	// The lock sits here and not in cancelTaskTx because StartOverTaskCommand
+	// already holds it when it calls cancelTaskTx (DEC-50; component-task-lifecycle).
+	err := s.inTx(ctx, func(tx pgx.Tx, q *db.Queries) error {
+		if err := lockTaskOperationTx(ctx, tx, workspace(ctx), intervention.TaskID); err != nil {
+			return err
+		}
+		return s.cancelTaskTx(ctx, tx, q, intervention)
+	})
 	if err != nil {
 		return core.Task{}, err
 	}

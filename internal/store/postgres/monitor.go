@@ -296,13 +296,22 @@ func scanObservation(row interface{ Scan(...any) error }, ws string) (monitor.Ob
 	return record, nil
 }
 
+// requireMonitorTask confirms the task belongs to the bound workspace, which
+// the tasks(id) foreign keys cannot (component-monitor-drift invariant 19). It
+// takes no row lock: the lock it replaced only serialized the retired per-task
+// drift count, and the drift primary key and the observation row lock guard
+// the writes themselves.
+func requireMonitorTask(ctx context.Context, tx pgx.Tx, taskID string) error {
+	var id string
+	return tx.QueryRow(ctx, `SELECT id FROM tasks WHERE workspace_id=$1 AND id=$2`, workspace(ctx), taskID).Scan(&id)
+}
+
 func (s *Store) LinkTask(ctx context.Context, identity, taskID, outcome string) (monitor.ObservationRecord, error) {
 	ctx = dbmetrics.WithReadLabel(ctx, "LinkTask")
 	err := s.inTx(ctx, func(tx pgx.Tx, _ *db.Queries) error {
 		var linkedTask *string
-		var kind string
-		if err := tx.QueryRow(ctx, `SELECT task_id,kind FROM monitor_observations
-			WHERE workspace_id=$1 AND identity=$2 FOR UPDATE`, workspace(ctx), identity).Scan(&linkedTask, &kind); err != nil {
+		if err := tx.QueryRow(ctx, `SELECT task_id FROM monitor_observations
+			WHERE workspace_id=$1 AND identity=$2 FOR UPDATE`, workspace(ctx), identity).Scan(&linkedTask); err != nil {
 			if errors.Is(err, pgx.ErrNoRows) {
 				return fmt.Errorf("monitor observation %s not found", identity)
 			}
@@ -314,19 +323,8 @@ func (s *Store) LinkTask(ctx context.Context, identity, taskID, outcome string) 
 			}
 			return nil
 		}
-		if monitor.SignalKind(kind).Drift() {
-			var lockedTaskID string
-			if err := tx.QueryRow(ctx, `SELECT id FROM tasks WHERE workspace_id=$1 AND id=$2 FOR UPDATE`, workspace(ctx), taskID).Scan(&lockedTaskID); err != nil {
-				return err
-			}
-			var count int
-			if err := tx.QueryRow(ctx, `SELECT count(*) FROM repository_drift
-				WHERE workspace_id=$1 AND task_id=$2 AND resolved_at IS NULL`, workspace(ctx), taskID).Scan(&count); err != nil {
-				return err
-			}
-			if count >= monitor.MaxUnresolvedDriftPerTask {
-				return monitor.TaskDriftSaturatedError(taskID)
-			}
+		if err := requireMonitorTask(ctx, tx, taskID); err != nil {
+			return err
 		}
 		_, err := tx.Exec(ctx, `UPDATE monitor_observations SET task_id=$3,task_outcome=$4,state='task_linked',updated_at=now()
 			WHERE workspace_id=$1 AND identity=$2`, workspace(ctx), identity, taskID, outcome)
@@ -359,17 +357,8 @@ func (s *Store) RecordDrift(ctx context.Context, drift monitor.Drift) (monitor.D
 		if exists {
 			return nil
 		}
-		var lockedTaskID string
-		if err := tx.QueryRow(ctx, `SELECT id FROM tasks WHERE workspace_id=$1 AND id=$2 FOR UPDATE`, workspace(ctx), drift.TaskID).Scan(&lockedTaskID); err != nil {
+		if err := requireMonitorTask(ctx, tx, drift.TaskID); err != nil {
 			return err
-		}
-		var count int
-		if err := tx.QueryRow(ctx, `SELECT count(*) FROM repository_drift
-			WHERE workspace_id=$1 AND task_id=$2 AND resolved_at IS NULL`, workspace(ctx), drift.TaskID).Scan(&count); err != nil {
-			return err
-		}
-		if count >= monitor.MaxUnresolvedDriftPerTask {
-			return monitor.TaskDriftSaturatedError(drift.TaskID)
 		}
 		tag, insertErr := tx.Exec(ctx, `
 INSERT INTO repository_drift (

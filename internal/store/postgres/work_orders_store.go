@@ -2131,6 +2131,9 @@ func (s *Store) AcceptReviewDecisionCommand(ctx context.Context, lease taskops.T
 		if err != nil {
 			return notFound(err, "task %s", decision.TaskID)
 		}
+		// A regressed projection is re-derived on before below, so the state
+		// guard needs what the row held when this command read it.
+		storedState := before.State
 		if err := requireVerifyReviewTx(ctx, tx, taskFromDB(before)); err != nil {
 			return err
 		}
@@ -2314,11 +2317,11 @@ ORDER BY s.version DESC LIMIT 1`, workspace(ctx), id, version).Scan(&spec.Conten
 		}
 
 		if _, err := q.UpdateTaskTransition(ctx, db.UpdateTaskTransitionParams{
-			ID: decision.TaskID, WorkspaceID: workspace(ctx), State: string(state),
+			ID: decision.TaskID, WorkspaceID: workspace(ctx), ExpectedState: storedState, State: string(state),
 			NextStage: string(next), RecoveryStage: string(recovery),
 			GateKind: string(core.GateKindFor(state, command)),
 		}); err != nil {
-			return err
+			return taskStateGuardError(ctx, q, decision.TaskID, string(command), err)
 		}
 		if err := insertEvent(ctx, q, core.Event{TaskID: decision.TaskID, Kind: "task.state_changed", Payload: core.JSONPayload(map[string]any{"from": fromState, "to": state, "command": command})}); err != nil {
 			return err

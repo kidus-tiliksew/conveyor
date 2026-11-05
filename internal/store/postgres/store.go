@@ -888,7 +888,10 @@ func (s *Store) listActivityMarkers(ctx context.Context, taskIDs []string, now t
 	eventsByTask := make(map[string][]core.Event)
 	requestEventsByTask := make(map[string][]core.Event)
 	forgeEventsByTask := make(map[string][]core.Event)
-	markerQuery := `SELECT e.id,e.task_id,COALESCE(e.job_id,''),e.kind,e.payload_json,e.at
+	// The folds below read no snapshot key, so the query leaves historical
+	// snapshot bodies in the database (component-task-lifecycle, Compact event
+	// reads).
+	markerQuery := `SELECT e.id,e.task_id,COALESCE(e.job_id,''),e.kind,` + compactEventPayloadColumn + `,e.at
 		FROM events e JOIN tasks t ON t.id=e.task_id
 		WHERE t.workspace_id=$1
 		AND (cardinality($2::text[])=0 OR t.id=ANY($2::text[]))

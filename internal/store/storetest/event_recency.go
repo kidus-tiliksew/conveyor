@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"reflect"
 	"slices"
 	"sort"
 	"strings"
@@ -120,8 +121,16 @@ func runMergeGateRecency(t *testing.T, x Fixture) {
 	if store.AtMergeGate(current, events) {
 		t.Fatalf("view reports the merge gate behind a same-time higher-ID state change: %+v", tied)
 	}
-	if err := requestChanges(tie.ID); err == nil || !strings.Contains(err.Error(), "not at the merge gate") {
+	err = requestChanges(tie.ID)
+	if err == nil || !strings.Contains(err.Error(), "not at the merge gate") {
 		t.Fatalf("RequestChangesCommand accepted a superseded gate at an equal timestamp: %v", err)
+	}
+	// The refusal names what the state allows (req-task-lifecycle-and-queue AC-1.1).
+	var invalid *core.ErrInvalidTransition
+	if !errors.As(err, &invalid) || invalid.From != string(core.TaskAwaiting) || invalid.Command != taskops.RequestChangesCommand ||
+		!reflect.DeepEqual(invalid.Allowed, core.TaskTransitionAlternatives(core.TaskAwaiting)) || len(invalid.Allowed) == 0 ||
+		!strings.Contains(err.Error(), string(core.TaskInterventionReject)+"->"+string(core.TaskClosed)) {
+		t.Fatalf("off-gate refusal does not name the allowed changes: %v", err)
 	}
 
 	// A backdated insert does not displace the chronologically newest gate,

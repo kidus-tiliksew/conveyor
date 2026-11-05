@@ -143,6 +143,44 @@ func TestRequestChangesBouncesThroughSharedContextAndAttention(t *testing.T) {
 	}
 }
 
+// Off the gate the refusal names what the state allows, from the route's own
+// check and from the store's (req-task-lifecycle-and-queue AC-1.1).
+func TestRequestChangesOffGateNamesAllowedChanges(t *testing.T) {
+	ctx := store.WithWorkspace(store.WithActor(t.Context(), store.SystemActor()), "demo")
+	for _, test := range []struct {
+		name      string
+		reviewJob bool
+	}{{name: "no review job", reviewJob: false}, {name: "store refusal", reviewJob: true}} {
+		t.Run(test.name, func(t *testing.T) {
+			st := store.NewMemory()
+			task := core.Task{ID: "off-gate", Workspace: "demo", Repo: "conveyor", State: core.TaskRunning, NextStage: core.StageReview, CreatedAt: time.Now().UTC()}
+			if err := st.CreateTask(ctx, task); err != nil {
+				t.Fatal(err)
+			}
+			if test.reviewJob {
+				if err := st.CreateJob(ctx, core.Job{ID: "off-gate-review-1-seat-1", TaskID: task.ID, Stage: core.StageReview, State: core.JobPending}); err != nil {
+					t.Fatal(err)
+				}
+			}
+			server := NewServer(st)
+			server.BearerToken, server.Workspace = "token", "demo"
+			request := httptest.NewRequest(http.MethodPost, "/v1/tasks/"+task.ID+"/request-changes", strings.NewReader(`{"feedback":"fix it"}`))
+			request.Header.Set("Authorization", "Bearer token")
+			response := httptest.NewRecorder()
+			server.Handler().ServeHTTP(response, request)
+			body := response.Body.String()
+			if response.Code != http.StatusConflict || !strings.Contains(body, "not at the merge gate") {
+				t.Fatalf("status=%d body=%s", response.Code, body)
+			}
+			for _, alternative := range core.TaskTransitionAlternatives(core.TaskRunning) {
+				if !strings.Contains(body, alternative.Command+"->"+alternative.To) {
+					t.Fatalf("body=%s does not name %s", body, alternative.Command)
+				}
+			}
+		})
+	}
+}
+
 func TestApprovedTaskDetailIsNotAtMergeGate(t *testing.T) {
 	ctx := store.WithWorkspace(store.WithActor(t.Context(), store.SystemActor()), "demo")
 	st := store.NewMemory()

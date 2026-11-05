@@ -186,7 +186,7 @@ func TestSingleStoreConformanceIntegration(t *testing.T) {
 			if _, err := st.BootstrapWorkspaceConfig(ctx, cfg); err != nil {
 				t.Fatal(err)
 			}
-			return storetest.Fixture{VerificationClaimReads: verificationClaimReads(ws), DeactivateUser: func(t *testing.T, ctx context.Context, userID string) {
+			return storetest.Fixture{DrainReadBytes: conformanceReadBytes(st), VerificationClaimReads: verificationClaimReads(ws), DeactivateUser: func(t *testing.T, ctx context.Context, userID string) {
 				t.Helper()
 				if _, err := st.db.ExecContext(ctx, `UPDATE users SET status='deactivated' WHERE id=?`, userID); err != nil {
 					t.Fatal(err)
@@ -357,4 +357,16 @@ func (r *verificationClaimReadRecorder) ids() []string {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	return append([]string(nil), r.read...)
+}
+
+// conformanceReadBytes drains the store's read ledger into bytes per read
+// label for the conformance byte bounds.
+func conformanceReadBytes(st *Store) func() map[string]uint64 {
+	return func() map[string]uint64 {
+		bytes := map[string]uint64{}
+		for _, total := range st.ReadStats(1 << 16).Top {
+			bytes[total.Label] = total.Bytes
+		}
+		return bytes
+	}
 }

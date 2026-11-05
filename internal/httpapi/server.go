@@ -863,11 +863,13 @@ func (s *Server) closeTask(w http.ResponseWriter, r *http.Request) {
 		_, err = taskops.New(s.Store).Cancel(r.Context(), intervention)
 	}
 	if err != nil {
-		status := http.StatusInternalServerError
-		if errors.Is(err, store.ErrTaskTerminal) {
-			status = http.StatusConflict
+		var invalid *core.ErrInvalidTransition
+		if errors.Is(err, store.ErrTaskTerminal) || errors.As(err, &invalid) {
+			http.Error(w, err.Error(), http.StatusConflict)
+			return
 		}
-		http.Error(w, err.Error(), status)
+		log.Printf("handle API request: %v", err)
+		http.Error(w, "internal server error", http.StatusInternalServerError)
 		return
 	}
 	updated, err := s.Store.GetTask(r.Context(), id)
@@ -876,7 +878,9 @@ func (s *Server) closeTask(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "internal server error", http.StatusInternalServerError)
 		return
 	}
-	writeJSON(w, http.StatusAccepted, updated)
+	// The cancel committed before this read, so the answer is 200 and not 202
+	// (req-task-lifecycle-and-queue REQ-8; component-task-lifecycle invariant 31).
+	writeJSON(w, http.StatusOK, updated)
 }
 
 func (s *Server) reviewTask(w http.ResponseWriter, r *http.Request) {
@@ -1274,10 +1278,7 @@ func (s *Server) listTasks(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "internal server error", http.StatusInternalServerError)
 		return
 	}
-	w.Header().Set("X-Conveyor-Total", strconv.Itoa(page.Total))
-	w.Header().Set("X-Conveyor-Limit", strconv.Itoa(query.Limit))
-	w.Header().Set("X-Conveyor-Offset", strconv.Itoa(query.Offset))
-	s.writeTasks(w, r, page.Tasks)
+	s.writeTasks(w, r, page, query.Limit, query.Offset)
 }
 
 func (s *Server) getTask(w http.ResponseWriter, r *http.Request) {
@@ -1292,7 +1293,26 @@ func (s *Server) getTask(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "internal server error", http.StatusInternalServerError)
 		return
 	}
-	s.writeTask(w, r, t)
+	// This read may serve a row stored raw, so its text passes the redactor
+	// without rewriting the row. A stage's delivery doesn't take this path: it
+	// receives the body as submitted (req-security-boundaries REQ-3, REQ-5;
+	// req-intake-and-triage AC-1.2).
+	redactor, err := s.mcpReadRedactor(r.Context())
+	if err != nil {
+		http.Error(w, "internal server error", http.StatusInternalServerError)
+		return
+	}
+	response, ok := s.taskResponse(w, r, t)
+	if !ok {
+		return
+	}
+	rendered, err := renderMCPReadItem(response, redactor)
+	if err != nil {
+		log.Printf("handle API request: %v", err)
+		http.Error(w, "internal server error", http.StatusInternalServerError)
+		return
+	}
+	writeJSON(w, http.StatusOK, rendered)
 }
 
 // listJobs serves one store page of a task's jobs (DEC-105(4)).
@@ -1323,6 +1343,20 @@ func (s *Server) listEvents(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		writeStoreFailure(w, r, err)
 		return
+	}
+	// This read may serve a row stored raw, so its text passes the redactor
+	// without rewriting the row (req-security-boundaries REQ-5). The paging
+	// headers go out only with the rows, so a failed read states no page.
+	redactor, err := s.mcpReadRedactor(r.Context())
+	if err != nil {
+		writeStoreFailure(w, r, err)
+		return
+	}
+	for index, event := range page.Events {
+		if page.Events[index], err = redactEventForRead(event, redactor); err != nil {
+			writeStoreFailure(w, r, fmt.Errorf("event %d: %w", event.ID, err))
+			return
+		}
 	}
 	listed.writeHeaders(w, page.Total)
 	writeJSON(w, http.StatusOK, page.Events)
@@ -1361,7 +1395,7 @@ func (s *Server) streamEvents(w http.ResponseWriter, r *http.Request) {
 		s.streamTaskEventNotifications(w, flusher, r, chi.URLParam(r, "id"), wake)
 		return
 	}
-	stream := newTaskEventStream(s.Store, chi.URLParam(r, "id"))
+	stream := newTaskEventStream(s.Store, chi.URLParam(r, "id"), s.mcpReadRedactor)
 	for {
 		if err := stream.poll(r.Context(), w); err != nil {
 			if errors.Is(err, errTaskEventStreamRead) {

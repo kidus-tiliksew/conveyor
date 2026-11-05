@@ -427,7 +427,7 @@ func TestHTTPMutationDerivesLegacyUserAndRejectsAgentCredentialIntegration(t *te
 	if response := call(agent.Value); response.Code != http.StatusUnauthorized {
 		t.Fatalf("agent mutation status=%d body=%s", response.Code, response.Body.String())
 	}
-	if response := call(legacy); response.Code != http.StatusAccepted {
+	if response := call(legacy); response.Code != http.StatusOK {
 		t.Fatalf("legacy mutation status=%d body=%s", response.Code, response.Body.String())
 	}
 	events, err := st.ListEvents(ctx, taskID)

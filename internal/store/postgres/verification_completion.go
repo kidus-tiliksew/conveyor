@@ -46,8 +46,8 @@ func (s *Store) completeVerificationTx(ctx context.Context, tx pgx.Tx, q *db.Que
 	if _, err = q.UpdateJob(ctx, jobUpdateParams(v.Job, workspace(ctx))); err != nil {
 		return err
 	}
-	if _, err = q.UpdateTaskTransition(ctx, db.UpdateTaskTransitionParams{ID: v.Task.ID, WorkspaceID: workspace(ctx), State: string(v.Task.State), NextStage: string(v.Task.NextStage), RecoveryStage: string(v.Task.RecoveryStage), GateKind: string(v.Task.GateKind)}); err != nil {
-		return err
+	if _, err = q.UpdateTaskTransition(ctx, db.UpdateTaskTransitionParams{ID: v.Task.ID, WorkspaceID: workspace(ctx), ExpectedState: task.State, State: string(v.Task.State), NextStage: string(v.Task.NextStage), RecoveryStage: string(v.Task.RecoveryStage), GateKind: string(v.Task.GateKind)}); err != nil {
+		return taskStateGuardError(ctx, q, v.Task.ID, string(core.WorkOrderCmdSubmitVerification), err)
 	}
 	if v.Intervention != nil {
 		if _, err = q.InsertIntervention(ctx, interventionInsertParams(*v.Intervention)); err != nil {

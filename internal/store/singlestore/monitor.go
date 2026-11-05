@@ -216,22 +216,6 @@ func lockMonitorTask(ctx context.Context, tx *sql.Tx, ws, taskID string) error {
 	var id string
 	return identityNotFound(tx.QueryRowContext(ctx, "SELECT id FROM tasks WHERE workspace_id=? AND id=? FOR UPDATE", ws, taskID).Scan(&id))
 }
-func checkDriftSaturation(taskID string, count int) error {
-	if count >= monitor.MaxUnresolvedDriftPerTask {
-		return monitor.TaskDriftSaturatedError(taskID)
-	}
-	return nil
-}
-func monitorTaskCapacity(ctx context.Context, tx *sql.Tx, ws, taskID string) error {
-	if err := lockMonitorTask(ctx, tx, ws, taskID); err != nil {
-		return translateBackendConflict(err)
-	}
-	var count int
-	if err := tx.QueryRowContext(ctx, "SELECT COUNT(*) FROM repository_drift WHERE workspace_id=? AND task_id=? AND resolved_at IS NULL", ws, taskID).Scan(&count); err != nil {
-		return translateBackendConflict(err)
-	}
-	return checkDriftSaturation(taskID, count)
-}
 func (s *Store) LinkTask(ctx context.Context, identity, taskID, outcome string) (monitor.ObservationRecord, error) {
 	ctx = dbmetrics.WithReadLabel(ctx, "LinkTask")
 	var r monitor.ObservationRecord
@@ -247,11 +231,7 @@ func (s *Store) LinkTask(ctx context.Context, identity, taskID, outcome string) 
 			}
 			return nil
 		}
-		if r.Kind.Drift() {
-			if err := monitorTaskCapacity(ctx, tx, ws, taskID); err != nil {
-				return translateBackendConflict(err)
-			}
-		} else if err := lockMonitorTask(ctx, tx, ws, taskID); err != nil {
+		if err := lockMonitorTask(ctx, tx, ws, taskID); err != nil {
 			return translateBackendConflict(err)
 		}
 		r.TaskID = taskID
@@ -300,7 +280,7 @@ func (s *Store) RecordDrift(ctx context.Context, d monitor.Drift) (monitor.Drift
 		if !errors.Is(e, store.ErrNotFound) {
 			return translateBackendConflict(e)
 		}
-		if e = monitorTaskCapacity(ctx, tx, ws, d.TaskID); e != nil {
+		if e = lockMonitorTask(ctx, tx, ws, d.TaskID); e != nil {
 			return translateBackendConflict(e)
 		}
 		if d.RequirementID != "" {

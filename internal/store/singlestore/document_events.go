@@ -296,7 +296,10 @@ func (s *Store) listActivityMarkers(ctx context.Context, taskIDs []string, now t
 	if hasReviewOrders {
 		kinds = append(kinds, activityMarkerReviewKinds...)
 	}
-	markerQuery := `SELECT e.id,e.task_id,COALESCE(e.job_id,''),e.kind,e.payload_json,e.at FROM events_columnstore e WHERE e.workspace_id=? AND e.task_id IS NOT NULL AND e.kind IN (` + taskMapMarks(len(kinds)) + `)`
+	// The folds below read no snapshot key, so the query leaves historical
+	// snapshot bodies in the database (component-task-lifecycle, Compact event
+	// reads).
+	markerQuery := `SELECT e.id,e.task_id,COALESCE(e.job_id,''),e.kind,` + compactEventPayloadColumn + `,e.at FROM events_columnstore e WHERE e.workspace_id=? AND e.task_id IS NOT NULL AND e.kind IN (` + taskMapMarks(len(kinds)) + `)`
 	markerArgs := append([]any{documentWorkspace(ctx)}, taskMapArgs(kinds)...)
 	if len(taskIDs) > 0 {
 		markerQuery += ` AND e.task_id IN (` + taskMapMarks(len(taskIDs)) + `)`
