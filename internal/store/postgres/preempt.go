@@ -57,6 +57,9 @@ func (s *Store) PreemptWorkOrderCommand(ctx context.Context, lease taskops.TaskL
 	if !lease.ValidForCommand(current.TaskID, string(core.WorkOrderCmdPreempt)) {
 		return store.WorkOrderPreemptResult{}, fmt.Errorf("work-order preempt requires a valid taskops lease")
 	}
+	if err = store.RefuseReviewSeatRetirement(current); err != nil {
+		return store.WorkOrderPreemptResult{}, err
+	}
 	now := time.Now().UTC()
 	if current.State == core.WorkOrderClaimed && !current.ExecutionDeadline.IsZero() && !current.ExecutionDeadline.After(now) {
 		if _, err = s.transitionWorkOrderTx(ctx, tx, current, core.WorkOrderCmdTimeout, "work_order.timed_out", now); err != nil {

@@ -1333,7 +1333,7 @@ func (m *memory) RequestChangesCommand(ctx context.Context, lease taskops.TaskLe
 		return core.Task{}, fmt.Errorf("task %s not found", request.TaskID)
 	}
 	if !AtMergeGate(task, m.events[task.ID]) {
-		return core.Task{}, fmt.Errorf("task %s is not at the merge gate", task.ID)
+		return core.Task{}, NotAtMergeGateError(task)
 	}
 	if request.JobID != "" {
 		job, _, found := m.findJobLocked(request.JobID)

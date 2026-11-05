@@ -50,8 +50,8 @@ func (s *Store) CreateTaskWithAttachments(ctx context.Context, t core.Task, ids 
 		if err != nil {
 			return err
 		}
-		if _, err = q.UpdateTaskState(ctx, db.UpdateTaskStateParams{ID: t.ID, WorkspaceID: t.Workspace, State: string(state), GateKind: string(core.GateKindFor(state, core.TaskIntakeFinalize))}); err != nil {
-			return err
+		if _, err = q.UpdateTaskState(ctx, db.UpdateTaskStateParams{ID: t.ID, WorkspaceID: t.Workspace, ExpectedState: string(t.State), State: string(state), GateKind: string(core.GateKindFor(state, core.TaskIntakeFinalize))}); err != nil {
+			return taskStateGuardError(ctx, q, t.ID, string(core.TaskIntakeFinalize), err)
 		}
 		if err = insertEvent(ctx, q, store.IntakeFinalizedEvent(t)); err != nil {
 			return err

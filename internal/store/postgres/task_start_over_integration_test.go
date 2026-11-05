@@ -61,15 +61,18 @@ func TestTaskStartOverRollbackAtWriteBoundariesIntegration(t *testing.T) {
 				t.Fatal(err)
 			}
 			eventsBefore, _ := st.ListEvents(ctx, old.ID)
-			// The trigger's message is driver text, so it stays in the server
-			// log and the caller receives the store's backend-operation error
-			// (component-persistence; DEC-38).
+			// The trigger's message is driver text, so it reaches neither the
+			// caller nor the server log. The caller receives the store's
+			// backend-operation error, and the log line's SQLSTATE and operation
+			// show the raised failure is what ran (component-persistence;
+			// req-security-boundaries REQ-2; DEC-38).
 			driverLog := &lockedBuffer{}
 			previousLog := log.Writer()
 			log.SetOutput(driverLog)
 			_, err = taskops.New(st).StartOver(ctx, core.TaskStartOverRequest{TaskID: old.ID, RequestID: "failure", Reason: "restart", Note: "start over note"})
 			log.SetOutput(previousLog)
-			if !errors.Is(err, store.ErrBackendOperation) || strings.Contains(err.Error(), "restart injected failure") || !strings.Contains(driverLog.String(), "restart injected failure") {
+			logged := driverLog.String()
+			if !errors.Is(err, store.ErrBackendOperation) || strings.Contains(err.Error(), "restart injected failure") || strings.Contains(logged, "restart injected failure") || !strings.Contains(logged, `operation=StartOverTaskCommand sqlstate=P0001 message="server message omitted"`) {
 				t.Fatalf("injection did not run behind the store boundary: err=%v log=%q", err, driverLog.String())
 			}
 			task, err := st.GetTask(ctx, old.ID)
