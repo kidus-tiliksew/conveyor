@@ -87,8 +87,8 @@ export function MonitorPage() {
                 <div key={item.id} className="flex flex-wrap items-center gap-x-6 gap-y-2 py-3">
                   <div className="min-w-0 flex-[1_1_18rem]">
                     <div className="flex flex-wrap items-center gap-2">
-                      <Badge variant="mono">{item.kind}</Badge>
                       <span className="text-[13px] font-medium">{item.repository}</span>
+                      <Badge variant="mono">{item.kind}</Badge>
                     </div>
                     <p className="mt-1 flex min-w-0 items-center gap-2 text-xs text-muted">
                       <GitCommitHorizontal aria-hidden="true" className="size-3.5 shrink-0 text-faint" />
@@ -100,7 +100,7 @@ export function MonitorPage() {
                       </span>
                     </p>
                   </div>
-                  <div className="flex shrink-0 items-center gap-2 [&_select]:border-transparent [&_select]:bg-transparent [&_select]:shadow-none [&_select:hover]:border-edge [&_select:focus]:border-primary">
+                  <div className="flex shrink-0 items-center gap-2 [&_select]:border-transparent [&_select]:bg-transparent [&_select]:shadow-none [&_select:hover]:border-edge [&_select:focus]:border-primary [&_label]:min-w-0 [&_select]:[field-sizing:content]">
                     {canManageWorkspace && (
                       <DriftResolutionForm
                         drift={item}
@@ -118,7 +118,7 @@ export function MonitorPage() {
                       Task
                     </Link>
                     <a href={item.source_url} target="_blank" rel="noreferrer" aria-label="Open source signal">
-                      <ExternalLink className="size-4 text-faint hover:text-foreground" />
+                      <ExternalLink className="size-3.5 text-primary hover:opacity-80" />
                     </a>
                   </div>
                 </div>

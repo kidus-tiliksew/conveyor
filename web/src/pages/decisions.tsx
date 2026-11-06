@@ -236,6 +236,19 @@ export function DecisionsPage() {
   )
 }
 
+// Statements are written in Markdown; the list previews their inline code the
+// way documents render it, without literal backticks.
+function InlineCode({ text }: { text: string }) {
+  return (
+    <span className="markdown text-[13px] leading-5 text-foreground">
+      {text.split(/`([^`]+)`/).map((part, index) =>
+        // biome-ignore lint/suspicious/noArrayIndexKey: the parts of one fixed string never reorder
+        index % 2 === 1 ? <code key={index}>{part}</code> : <span key={index}>{part}</span>,
+      )}
+    </span>
+  )
+}
+
 function DecisionRow({ decision, citingCount }: { decision: Decision; citingCount?: number }) {
   const { workspace } = useWorkspaceSelection()
   const clauses = statementClauses(decision.statement)
@@ -250,15 +263,17 @@ function DecisionRow({ decision, citingCount }: { decision: Decision; citingCoun
         <div className="flex items-start gap-3">
           <span className="mt-px w-14 shrink-0 font-mono text-[11px] leading-5 text-muted">{decision.id}</span>
           <div className="min-w-0 flex-1">
-            <p className="line-clamp-2 text-[13px] leading-5 text-foreground">
-              {clauses ? `(1) ${clauses[0]}` : decision.statement}
+            <p className="line-clamp-2 max-w-[46rem] text-[13px] leading-5 text-foreground">
+              <InlineCode text={clauses ? `(1) ${clauses[0]}` : decision.statement} />
             </p>
-            <p className="mt-1 flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-muted">
+            <p className="mt-1 flex h-5 items-center gap-x-3 overflow-hidden whitespace-nowrap text-xs text-muted">
               {decision.status !== 'confirmed' && (
-                <Badge variant={statusVariants[decision.status]}>{statusLabels[decision.status]}</Badge>
+                <Badge className="py-0" variant={statusVariants[decision.status]}>
+                  {statusLabels[decision.status]}
+                </Badge>
               )}
-              {clauses && <span>{clauses.length} clauses</span>}
-              <span className="inline-flex items-center gap-1">
+              <span className="w-16 shrink-0">{clauses ? `${clauses.length} clauses` : '1 clause'}</span>
+              <span className="inline-flex w-24 shrink-0 items-center gap-1 tabular-nums">
                 <Clock className="size-3" />
                 <time dateTime={decisionDate(decision)}>{formatDecisionDate(decisionDate(decision))}</time>
               </span>
@@ -266,7 +281,7 @@ function DecisionRow({ decision, citingCount }: { decision: Decision; citingCoun
               {decision.supersedes && <span>Replaces {decision.supersedes}</span>}
               {decision.superseded_by && <span>Replaced by {decision.superseded_by}</span>}
               {open > 0 && decision.supersedes && (
-                <Badge variant="attention">
+                <Badge className="py-0" variant="attention">
                   {open} still cite {decision.supersedes}
                 </Badge>
               )}

@@ -1010,28 +1010,6 @@ function RequirementDetailCanvas({
             </div>
           )}
         </div>
-        {/* The document's corner affordance (REQ-3): what this intent reaches
-            in work, delivery, and evidence, on demand. */}
-        <div className="flex shrink-0 flex-wrap items-center gap-2">
-          {canConfirm && !archivedByDismissal(item.requirement) && (
-            <Button
-              size="sm"
-              variant="secondary"
-              disabled={archive.isPending}
-              onClick={() => (item.requirement.archived ? archive.mutate([]) : setArchiveDialogOpen(true))}
-            >
-              {item.requirement.archived ? <RotateCcw /> : <Archive />}
-              {archive.isPending
-                ? item.requirement.archived
-                  ? 'Restoring…'
-                  : 'Archiving…'
-                : item.requirement.archived
-                  ? 'Restore'
-                  : 'Archive'}
-            </Button>
-          )}
-          <LineageExplorer type="requirement" id={item.requirement.id} />
-        </div>
       </header>
 
       {archive.error && item.requirement.archived && (
@@ -1043,6 +1021,28 @@ function RequirementDetailCanvas({
         </p>
       )}
       <DocumentReview
+        actions={
+          <>
+            {canConfirm && !archivedByDismissal(item.requirement) && (
+              <Button
+                size="sm"
+                variant="secondary"
+                disabled={archive.isPending}
+                onClick={() => (item.requirement.archived ? archive.mutate([]) : setArchiveDialogOpen(true))}
+              >
+                {item.requirement.archived ? <RotateCcw /> : <Archive />}
+                {archive.isPending
+                  ? item.requirement.archived
+                    ? 'Restoring…'
+                    : 'Archiving…'
+                  : item.requirement.archived
+                    ? 'Restore'
+                    : 'Archive'}
+              </Button>
+            )}
+            <LineageExplorer type="requirement" id={item.requirement.id} />
+          </>
+        }
         search={search}
         onChange={onReviewChange}
         versions={reviewVersions}

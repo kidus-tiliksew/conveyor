@@ -100,29 +100,33 @@ export function SignInPage() {
         </div>
         {state !== 'checking' && state !== 'success' && (
           <>
-            <div className="my-5 h-px bg-border" />
+            <div className="mt-5" />
             <form className="space-y-3" aria-label="Password sign-in" onSubmit={submitPassword}>
-              <Input
-                type="email"
-                aria-label="Email address"
-                placeholder="Email address"
-                autoComplete="email"
-                value={email}
-                onChange={(event) => setEmail(event.target.value)}
-              />
-              <Input
-                type="password"
-                aria-label="Password"
-                placeholder="Password"
-                autoComplete="current-password"
-                value={password}
-                onChange={(event) => setPassword(event.target.value)}
-              />
-              <Button
-                type="submit"
-                className="w-full disabled:bg-primary-soft disabled:text-primary"
-                disabled={passwordPending || !email.trim() || !password}
-              >
+              <div className="space-y-1">
+                <label htmlFor="sign-in-email" className="block text-xs font-medium text-muted">
+                  Email address
+                </label>
+                <Input
+                  id="sign-in-email"
+                  type="email"
+                  autoComplete="email"
+                  value={email}
+                  onChange={(event) => setEmail(event.target.value)}
+                />
+              </div>
+              <div className="space-y-1">
+                <label htmlFor="sign-in-password" className="block text-xs font-medium text-muted">
+                  Password
+                </label>
+                <Input
+                  id="sign-in-password"
+                  type="password"
+                  autoComplete="current-password"
+                  value={password}
+                  onChange={(event) => setPassword(event.target.value)}
+                />
+              </div>
+              <Button type="submit" className="w-full" disabled={passwordPending || !email.trim() || !password}>
                 {passwordPending ? 'Signing in…' : 'Sign in'}
               </Button>
               {passwordError && (

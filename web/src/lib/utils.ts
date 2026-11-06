@@ -34,7 +34,7 @@ export function absoluteTime(value: string) {
   return new Date(value).toLocaleString('en', {
     month: 'short',
     day: 'numeric',
-    hour: '2-digit',
+    hour: 'numeric',
     minute: '2-digit',
   })
 }

@@ -43,8 +43,8 @@ export function PasswordCard() {
         <CardTitle>Password</CardTitle>
       </CardHeader>
       <CardContent>
-        <p className="mb-4 text-sm leading-6 text-muted">Use a password to sign in next time.</p>
-        <form className="w-full space-y-3" aria-label="Update password" onSubmit={submit}>
+        <p className="mb-3 text-xs leading-5 text-muted">Use a password to sign in next time.</p>
+        <form className="w-full max-w-[25rem] space-y-3" aria-label="Update password" onSubmit={submit}>
           <div className="space-y-1">
             <label htmlFor={`${ids}-current`} className="block text-xs font-medium text-muted">
               Current password

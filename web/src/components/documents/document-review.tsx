@@ -84,6 +84,7 @@ export function DocumentReview({
   attention,
   document,
   history,
+  actions,
   loading,
   error,
 }: {
@@ -94,6 +95,7 @@ export function DocumentReview({
   attention: ReactNode
   document: ReactNode
   history: ReactNode
+  actions?: ReactNode
   loading?: boolean
   error?: string
 }) {
@@ -107,35 +109,38 @@ export function DocumentReview({
   const select = (next: ReviewSearch) => onChange({ ...search, ...next })
   return (
     <div className="min-w-0">
-      <div role="tablist" aria-label="Document views" className="mb-4 flex gap-4 border-b border-border">
-        {tabs.map((name, index) => (
-          <button
-            key={name}
-            type="button"
-            id={`${id}-${name}`}
-            role="tab"
-            aria-selected={tab === name}
-            aria-controls={`${id}-panel`}
-            tabIndex={tab === name ? 0 : -1}
-            className={`-mb-px border-b-2 pb-2.5 text-[13px] font-medium capitalize transition-colors focus-visible:outline-2 focus-visible:outline-primary ${tab === name ? 'border-primary text-foreground' : 'border-transparent text-muted hover:text-foreground'}`}
-            onClick={() => select({ tab: name })}
-            onKeyDown={(event) => {
-              let next = index
-              if (event.key === 'ArrowRight') next = (index + 1) % tabs.length
-              else if (event.key === 'ArrowLeft') next = (index + tabs.length - 1) % tabs.length
-              else if (event.key === 'Home') next = 0
-              else if (event.key === 'End') next = tabs.length - 1
-              else return
-              event.preventDefault()
-              const name = tabs[next]
-              void Promise.resolve(onChange({ ...search, tab: name })).then(() =>
-                window.document.querySelector<HTMLButtonElement>(`[role=tab][aria-selected=true]`)?.focus(),
-              )
-            }}
-          >
-            {name}
-          </button>
-        ))}
+      <div className="mb-4 flex max-w-[35rem] flex-wrap items-end justify-between gap-x-4 border-b border-border">
+        <div role="tablist" aria-label="Document views" className="flex gap-4">
+          {tabs.map((name, index) => (
+            <button
+              key={name}
+              type="button"
+              id={`${id}-${name}`}
+              role="tab"
+              aria-selected={tab === name}
+              aria-controls={`${id}-panel`}
+              tabIndex={tab === name ? 0 : -1}
+              className={`-mb-px border-b-2 pb-2.5 text-[13px] font-medium capitalize transition-colors focus-visible:outline-2 focus-visible:outline-primary ${tab === name ? 'border-primary text-foreground' : 'border-transparent text-muted hover:text-foreground'}`}
+              onClick={() => select({ tab: name })}
+              onKeyDown={(event) => {
+                let next = index
+                if (event.key === 'ArrowRight') next = (index + 1) % tabs.length
+                else if (event.key === 'ArrowLeft') next = (index + tabs.length - 1) % tabs.length
+                else if (event.key === 'Home') next = 0
+                else if (event.key === 'End') next = tabs.length - 1
+                else return
+                event.preventDefault()
+                const name = tabs[next]
+                void Promise.resolve(onChange({ ...search, tab: name })).then(() =>
+                  window.document.querySelector<HTMLButtonElement>(`[role=tab][aria-selected=true]`)?.focus(),
+                )
+              }}
+            >
+              {name}
+            </button>
+          ))}
+        </div>
+        {actions && <div className="flex flex-wrap items-center gap-1 pb-1.5">{actions}</div>}
       </div>
       <div className={tab === 'changes' ? 'sticky top-0 z-10 max-h-[40vh] overflow-y-auto bg-card' : undefined}>
         {attention}

@@ -622,28 +622,6 @@ function DesignCanvas({
             <p className="mt-1.5 text-xs text-muted">No version has been written yet.</p>
           )}
         </div>
-        {/* The document's corner affordance (REQ-3): the code, work, and
-            evidence this guide governs, on demand. */}
-        <div className="flex shrink-0 flex-wrap items-center gap-2">
-          {canConfirm && !archivedByDismissal(item.document) && (
-            <Button
-              size="sm"
-              variant="secondary"
-              disabled={archive.isPending}
-              onClick={() => (item.document.archived ? archive.mutate([]) : setArchiveDialogOpen(true))}
-            >
-              {item.document.archived ? <RotateCcw /> : <Archive />}
-              {archive.isPending
-                ? item.document.archived
-                  ? 'Restoring…'
-                  : 'Archiving…'
-                : item.document.archived
-                  ? 'Restore'
-                  : 'Archive'}
-            </Button>
-          )}
-          <LineageExplorer type="system_design" id={item.document.id} />
-        </div>
       </header>
 
       {archive.error && item.document.archived && (
@@ -655,6 +633,28 @@ function DesignCanvas({
         </p>
       )}
       <DocumentReview
+        actions={
+          <>
+            {canConfirm && !archivedByDismissal(item.document) && (
+              <Button
+                size="sm"
+                variant="secondary"
+                disabled={archive.isPending}
+                onClick={() => (item.document.archived ? archive.mutate([]) : setArchiveDialogOpen(true))}
+              >
+                {item.document.archived ? <RotateCcw /> : <Archive />}
+                {archive.isPending
+                  ? item.document.archived
+                    ? 'Restoring…'
+                    : 'Archiving…'
+                  : item.document.archived
+                    ? 'Restore'
+                    : 'Archive'}
+              </Button>
+            )}
+            <LineageExplorer type="system_design" id={item.document.id} />
+          </>
+        }
         search={search}
         onChange={onReviewChange}
         versions={reviewVersions}

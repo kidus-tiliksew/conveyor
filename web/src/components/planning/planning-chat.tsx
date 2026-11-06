@@ -209,25 +209,25 @@ export function PlanningChat({
           {sidebar ? (
             <p className="mt-0.5 text-[11px] text-muted">{sessionGoalLabel(session)}</p>
           ) : (
-            <p className="mt-0.5 flex min-w-0 flex-wrap items-center gap-x-2 text-[11px] text-muted">
+            <p className="mt-0.5 flex min-w-0 flex-wrap items-center gap-x-1.5 text-[11px] text-muted [&>span+span]:before:mr-1.5 [&>span+span]:before:content-['·']">
               <span>{sessionGoalLabel(session)}</span>
               {session.model && (
                 <span>
-                  · {session.model}
+                  {session.model}
                   {session.effort ? ` · ${session.effort}` : ''}
                 </span>
               )}
               {session.exploration_output_tokens && (
-                <span>· {session.exploration_output_tokens.toLocaleString()} tokens/call</span>
+                <span>{session.exploration_output_tokens.toLocaleString()} tokens/call</span>
               )}
               {Object.entries(session.pinned_revisions ?? {})
                 .sort(([left], [right]) => left.localeCompare(right))
                 .map(([repo, revision]) => (
                   <span key={repo} className="font-mono">
-                    · {repo}@{revision.slice(0, 12)}
+                    {repo}@{revision.slice(0, 12)}
                   </span>
                 ))}
-              <span className="truncate font-mono text-faint">· {session.id}</span>
+              <span className="truncate font-mono text-faint">{session.id}</span>
             </p>
           )}
         </div>

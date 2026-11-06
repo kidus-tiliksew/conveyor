@@ -35,7 +35,7 @@ export function TaskFullPage() {
           to="/w/$workspaceId/tasks/$taskId"
           params={{ workspaceId: workspace, taskId }}
           aria-label="Back to board"
-          className="shrink-0"
+          className="-ml-2 shrink-0"
         >
           <Button variant="ghost" size="icon" tabIndex={-1}>
             <ArrowLeft />

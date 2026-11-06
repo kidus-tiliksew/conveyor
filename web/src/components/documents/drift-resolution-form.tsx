@@ -61,7 +61,7 @@ export function DriftResolutionForm({
   const requirementSelectID = `resolution-requirement-${drift.id}`
   return (
     <form
-      className="flex flex-wrap items-end gap-2"
+      className={`flex flex-wrap gap-2 ${surface === 'monitor' ? 'items-center' : 'items-end'}`}
       aria-label={`Resolve drift ${drift.id}`}
       onSubmit={(event) => {
         event.preventDefault()

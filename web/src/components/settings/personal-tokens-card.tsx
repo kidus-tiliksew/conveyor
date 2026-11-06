@@ -68,7 +68,7 @@ export function PersonalTokensCard() {
         <CardTitle>Your access tokens</CardTitle>
       </CardHeader>
       <CardContent className="space-y-3">
-        <p className="text-sm leading-6 text-muted">
+        <p className="text-xs leading-5 text-muted">
           Tokens sign in as you, from the CLI or an agent session. They are yours alone — nobody else can see or revoke
           them.
         </p>
@@ -84,7 +84,7 @@ export function PersonalTokensCard() {
             required
             aria-label="Token name"
             placeholder="Laptop CLI"
-            className="min-w-40 flex-1"
+            className="min-w-40 max-w-[25rem] flex-1"
             value={label}
             onChange={(event) => setLabel(event.target.value)}
           />
