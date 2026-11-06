@@ -3,6 +3,7 @@ package storetest
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"strings"
 	"sync"
 	"testing"
@@ -22,7 +23,7 @@ func runAutomaticRecoveryRemaining(t *testing.T, st store.Store, ctx context.Con
 	runOperatorRedispatchReset(t, st, ctx, workspace)
 	runQueuePositionAndIdentity(t, st, ctx, workspace)
 	runPolicyChangeOnNextTick(t, st, ctx, workspace)
-	runConcurrentDueTicks(t, st, ctx, workspace)
+	t.Run("ConcurrentDueTicks", func(t *testing.T) { runConcurrentDueTicks(t, st, ctx, workspace) })
 	runAutomaticRecoveryProperty(t, st, ctx, workspace)
 	if _, err := st.ApplyWorkOrderClock(ctx, taskops.TaskLease{}, "missing", time.Now().UTC()); err == nil || !strings.Contains(err.Error(), "lease") {
 		t.Fatalf("non-command lease err=%v", err)
@@ -444,15 +445,7 @@ func runConcurrentDueTicks(t *testing.T, st store.Store, ctx context.Context, wo
 	if err != nil {
 		t.Fatal(err)
 	}
-	var group sync.WaitGroup
-	group.Add(2)
-	for range 2 {
-		go func() {
-			defer group.Done()
-			_, _ = taskops.New(st).TickOrderClock(ctx, scheduled.NextAutomaticRecoveryAt)
-		}()
-	}
-	group.Wait()
+	tickConcurrentlyWithRetry(t, st, ctx, scheduled.NextAutomaticRecoveryAt)
 	recovered, err := st.GetWorkOrder(ctx, id)
 	if err != nil || recovered.AutomaticRecoveryCount != 1 || recovered.State != core.WorkOrderQueued {
 		t.Fatalf("concurrent=%+v err=%v", recovered, err)
@@ -464,15 +457,7 @@ func runConcurrentDueTicks(t *testing.T, st store.Store, ctx context.Context, wo
 		t.Fatal(err)
 	}
 	exhaustAt := time.Now().UTC().Add(2 * time.Minute)
-	var exhaust sync.WaitGroup
-	exhaust.Add(2)
-	for range 2 {
-		go func() {
-			defer exhaust.Done()
-			_, _ = taskops.New(st).TickOrderClock(ctx, exhaustAt)
-		}()
-	}
-	exhaust.Wait()
+	tickConcurrentlyWithRetry(t, st, ctx, exhaustAt)
 	done, err := st.GetWorkOrder(ctx, id)
 	if err != nil || done.RetrySuppressionReason != core.AutomaticRecoveryExhaustedReason || done.AutomaticRecoveryCount != 1 {
 		t.Fatalf("concurrent exhaust=%+v err=%v", done, err)
@@ -482,6 +467,34 @@ func runConcurrentDueTicks(t *testing.T, st store.Store, ctx context.Context, wo
 	}
 	if n := countWorkOrderEvents(t, st, ctx, done.TaskID, "work_order.recovery_exhausted"); n != 1 {
 		t.Fatalf("exhausted events=%d", n)
+	}
+}
+
+// tickConcurrentlyWithRetry runs two ticks at once. A loser may only fail with
+// store.ErrRetryable, which leaves nothing written, and it is ticked again as
+// the deadline alarm would, so a lost recovery fails the caller's assertions.
+func tickConcurrentlyWithRetry(t *testing.T, st store.Store, ctx context.Context, at time.Time) {
+	t.Helper()
+	var group sync.WaitGroup
+	errs := make([]error, 2)
+	for i := range errs {
+		group.Add(1)
+		go func() {
+			defer group.Done()
+			_, errs[i] = taskops.New(st).TickOrderClock(ctx, at)
+		}()
+	}
+	group.Wait()
+	for _, err := range errs {
+		if err == nil {
+			continue
+		}
+		if !errors.Is(err, store.ErrRetryable) {
+			t.Fatalf("concurrent tick err=%v, want nil or %v", err, store.ErrRetryable)
+		}
+		if _, err = taskops.New(st).TickOrderClock(ctx, at); err != nil {
+			t.Fatalf("tick after a retryable loser: %v", err)
+		}
 	}
 }
 

@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"fmt"
 	"sort"
 	"time"
 
@@ -49,6 +50,76 @@ const automaticRecoveryElapsedSQL = ` OR (
 			AND (next_automatic_recovery_at IS NULL OR next_automatic_recovery_at<=?)
 		)`
 
+// clockOrderRead names a point where the order clock has read a task's orders.
+type clockOrderRead int
+
+const (
+	// clockOrderReadTransitions is the read behind the deadline transitions.
+	clockOrderReadTransitions clockOrderRead = iota
+	// clockOrderReadRecovery is the read behind the automatic recovery decision.
+	clockOrderReadRecovery
+)
+
+// clockOrderReadObserver is a test-only hook; production callers leave it
+// unset. unlockedRead skips the row lock, which is the read the clock used
+// before it, so a control test can show its barrier exposes the double append.
+type clockOrderReadObserver struct {
+	unlockedRead bool
+	read         func(clockOrderRead)
+}
+
+type clockOrderReadKey struct{}
+
+func observeClockOrderReads(ctx context.Context, obs *clockOrderReadObserver) context.Context {
+	return context.WithValue(ctx, clockOrderReadKey{}, obs)
+}
+
+func noteClockOrderRead(ctx context.Context, point clockOrderRead) {
+	if obs, ok := ctx.Value(clockOrderReadKey{}).(*clockOrderReadObserver); ok && obs.read != nil {
+		obs.read(point)
+	}
+}
+
+// clockOrderLockWait bounds the wait for a task's order rows. It stays below the
+// driver's 30-second read timeout, which the server's 30-second lock wait can
+// lose to, and which fails the tick with a generic error instead of a retryable
+// one. Tests shorten it.
+var clockOrderLockWait = 10 * time.Second
+
+// lockClockOrderRowsTx locks the task's order rows before the clock reads them.
+// Holding the task-operation lock doesn't prove the previous holder's order
+// write is visible, because its commit spans partitions and can release the
+// lock row first (component-persistence invariant 8). A tick that read the rows
+// in that gap acted on the image the previous tick replaced, wrote it back, and
+// appended the previous tick's events again (component-work-orders invariants
+// 47 and 48). A locked read waits for that write, and the plain reads after it
+// in this transaction see it.
+//
+// The order is task operation, order rows, documents (component-persistence
+// invariant 7). A wait that runs out returns store.ErrRetryable, which rolls the
+// tick's transaction back with nothing written for the deadline alarm's retry.
+func lockClockOrderRowsTx(ctx context.Context, tx *sql.Tx, taskID string) error {
+	if obs, ok := ctx.Value(clockOrderReadKey{}).(*clockOrderReadObserver); ok && obs.unlockedRead {
+		return nil
+	}
+	lockCtx, cancel := context.WithTimeout(ctx, clockOrderLockWait)
+	defer cancel()
+	err := func() error {
+		rows, err := documentRows(lockCtx, tx, `SELECT id FROM work_orders WHERE workspace_id=? AND task_id=? FOR UPDATE`, documentWorkspace(ctx), taskID)
+		if err != nil {
+			return err
+		}
+		defer rows.Close()
+		for rows.Next() {
+		}
+		return rows.Err()
+	}()
+	if err != nil && lockCtx.Err() != nil && ctx.Err() == nil {
+		return fmt.Errorf("%w: order rows of task %s stayed locked", store.ErrRetryable, taskID)
+	}
+	return err
+}
+
 func (s *Store) applyAutomaticRecoveryTx(ctx context.Context, tx *sql.Tx, taskID string, now time.Time) (int, error) {
 	policy, queueTimeout, err := readClockPolicyTx(ctx, tx)
 	if err != nil {
@@ -62,6 +133,7 @@ func (s *Store) applyAutomaticRecoveryTx(ctx context.Context, tx *sql.Tx, taskID
 	if err != nil {
 		return 0, err
 	}
+	noteClockOrderRead(ctx, clockOrderReadRecovery)
 	sort.Slice(orders, func(i, j int) bool {
 		if !orders[i].QueueEnteredAt.Equal(orders[j].QueueEnteredAt) {
 			return orders[i].QueueEnteredAt.Before(orders[j].QueueEnteredAt)
