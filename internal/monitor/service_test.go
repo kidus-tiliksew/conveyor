@@ -327,6 +327,266 @@ func TestPostMergeRecoveryAnnotatesOpenTaskOnceWithoutClosing(t *testing.T) {
 	}
 }
 
+// recoveryFaultStore fails the reads and writes a recovery pass depends on, and
+// counts the link attempts that reach it.
+type recoveryFaultStore struct {
+	monitor.Store
+	linkErr  error
+	findErr  error
+	linkCall int
+}
+
+func (s *recoveryFaultStore) LinkRecoveryTask(ctx context.Context, identity, taskID string, taskPayload, activityPayload map[string]any) (monitor.ObservationRecord, error) {
+	s.linkCall++
+	if s.linkErr != nil {
+		return monitor.ObservationRecord{}, s.linkErr
+	}
+	return s.Store.LinkRecoveryTask(ctx, identity, taskID, taskPayload, activityPayload)
+}
+
+func (s *recoveryFaultStore) FindOpenMonitorTask(ctx context.Context, repository string, kind monitor.SignalKind) (string, bool, error) {
+	if s.findErr != nil {
+		return "", false, s.findErr
+	}
+	return s.Store.FindOpenMonitorTask(ctx, repository, kind)
+}
+
+func recoveryObservation(sha string) monitor.Observation {
+	return monitor.Observation{
+		Repository: "conveyor", Kind: monitor.PostMergeFailure, OccurrenceID: "recovery:commit:" + sha,
+		SourceURL: "https://github.example/commit/" + sha, CommitSHA: sha, RecoveryObserved: true,
+	}
+}
+
+func failedCheckObservation(sha string) monitor.Observation {
+	return monitor.Observation{
+		Repository: "conveyor", Kind: monitor.PostMergeFailure, OccurrenceID: "commit:" + sha + ":attempt:1",
+		SourceURL: "https://github.example/check/" + sha, CommitSHA: sha, Attempt: 1,
+	}
+}
+
+// requireRecoveryAnnotations checks the task's recovery events and the workspace's
+// activity rows for the observation.
+func requireRecoveryAnnotations(t *testing.T, st store.Store, service *monitor.Service, ctx context.Context, taskID, identity string, want int) {
+	t.Helper()
+	events, err := st.ListEvents(ctx, taskID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	taskEvents := 0
+	for _, event := range events {
+		if event.Kind == monitor.EventRecoveryObserved {
+			taskEvents++
+		}
+	}
+	status, err := service.Store.MonitorStatus(ctx, true, time.Now().UTC())
+	if err != nil {
+		t.Fatal(err)
+	}
+	activity := 0
+	for _, row := range status.Activity {
+		if row.Kind == monitor.EventRecoveryObserved && row.Payload["identity"] == identity {
+			activity++
+		}
+	}
+	if taskEvents != want || activity != want {
+		t.Fatalf("task events=%d activity=%d, want %d of each", taskEvents, activity, want)
+	}
+}
+
+// A failed link stays owed: the pass reports it, and a later pass reading the
+// same observation completes it with one of each event (component-monitor-drift
+// invariant 17, State and failure).
+func TestPostMergeRecoveryLinkFailureCompletesOnLaterPass(t *testing.T) {
+	service, st, ctx := testService(t)
+	failure, err := service.Process(ctx, failedCheckObservation("abc"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	errLink := errors.New("link failed")
+	faults := &recoveryFaultStore{Store: service.Store, linkErr: errLink}
+	service.Store = faults
+	recovery := recoveryObservation("def")
+	if _, err = service.Process(ctx, recovery); !errors.Is(err, errLink) {
+		t.Fatalf("first pass err=%v, want the link failure", err)
+	}
+	requireRecoveryAnnotations(t, st, service, ctx, failure.TaskID, recovery.Identity(), 0)
+
+	if _, err = service.Process(ctx, recovery); !errors.Is(err, errLink) {
+		t.Fatalf("second pass err=%v, want the link failure again", err)
+	}
+	requireRecoveryAnnotations(t, st, service, ctx, failure.TaskID, recovery.Identity(), 0)
+
+	faults.linkErr = nil
+	for pass := range 2 {
+		record, processErr := service.Process(ctx, recovery)
+		if processErr != nil {
+			t.Fatal(processErr)
+		}
+		if record.TaskID != failure.TaskID || record.TaskOutcome != monitor.OutcomeRecoveryObserved {
+			t.Fatalf("pass %d record=%+v", pass, record)
+		}
+		requireRecoveryAnnotations(t, st, service, ctx, failure.TaskID, recovery.Identity(), 1)
+	}
+	if faults.linkCall != 3 {
+		t.Fatalf("link attempts=%d, want two failures and one success", faults.linkCall)
+	}
+	task, err := st.GetTask(ctx, failure.TaskID)
+	if err != nil || task.State != core.TaskQueued {
+		t.Fatalf("recovery changed task state: task=%+v err=%v", task, err)
+	}
+}
+
+// A recovery first observed with no open task has nothing to link. The tip holds
+// at a deferred commit, so a repeat can see a post-merge task opened later, and
+// annotating it would claim a recovery that predates the failure
+// (component-monitor-drift invariants 4 and 17).
+func TestPostMergeRecoveryRepeatWithNothingToLinkLeavesNewerTaskAlone(t *testing.T) {
+	service, st, ctx := testService(t)
+	faults := &recoveryFaultStore{Store: service.Store}
+	service.Store = faults
+	recovery := recoveryObservation("def")
+	first, err := service.Process(ctx, recovery)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first.TaskID != "" {
+		t.Fatalf("first=%+v, want no task", first)
+	}
+	failure, err := service.Process(ctx, failedCheckObservation("later"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for range 2 {
+		repeat, processErr := service.Process(ctx, recovery)
+		if processErr != nil {
+			t.Fatal(processErr)
+		}
+		if repeat.TaskID != "" || repeat.TaskOutcome != "" {
+			t.Fatalf("repeat=%+v, want no link", repeat)
+		}
+	}
+	if faults.linkCall != 0 {
+		t.Fatalf("link attempts=%d, want none", faults.linkCall)
+	}
+	requireRecoveryAnnotations(t, st, service, ctx, failure.TaskID, recovery.Identity(), 0)
+
+	// A recovery the open task predates still annotates it.
+	newer := recoveryObservation("newer")
+	record, err := service.Process(ctx, newer)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if record.TaskID != failure.TaskID {
+		t.Fatalf("newer recovery record=%+v, want task %s", record, failure.TaskID)
+	}
+	requireRecoveryAnnotations(t, st, service, ctx, failure.TaskID, newer.Identity(), 1)
+}
+
+// A link owed to a task that has since ended completes on no other task
+// (component-monitor-drift invariant 17).
+func TestPostMergeRecoveryOwedLinkEndsWithItsTask(t *testing.T) {
+	service, st, ctx := testService(t)
+	ended, err := service.Process(ctx, failedCheckObservation("abc"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	errLink := errors.New("link failed")
+	faults := &recoveryFaultStore{Store: service.Store, linkErr: errLink}
+	service.Store = faults
+	recovery := recoveryObservation("def")
+	if _, err = service.Process(ctx, recovery); !errors.Is(err, errLink) {
+		t.Fatalf("first pass err=%v", err)
+	}
+	if _, err = storetest.For(st).CancelTask(ctx, core.Intervention{TaskID: ended.TaskID, Action: core.InterventionCancel, ReasonCode: "operator-resolved"}); err != nil {
+		t.Fatal(err)
+	}
+	replacement, err := service.Process(ctx, failedCheckObservation("ghi"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if replacement.TaskID == ended.TaskID {
+		t.Fatal("the failure reused the ended task")
+	}
+	faults.linkErr = nil
+	record, err := service.Process(ctx, recovery)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if record.TaskID != "" {
+		t.Fatalf("record=%+v, want no link", record)
+	}
+	requireRecoveryAnnotations(t, st, service, ctx, ended.TaskID, recovery.Identity(), 0)
+	requireRecoveryAnnotations(t, st, service, ctx, replacement.TaskID, recovery.Identity(), 0)
+}
+
+// A failed read before the row is recorded decides nothing, so the next pass is
+// still the first one (component-monitor-drift, State and failure).
+func TestPostMergeRecoveryFailedFindLeavesFirstPassForLater(t *testing.T) {
+	service, st, ctx := testService(t)
+	failure, err := service.Process(ctx, failedCheckObservation("abc"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	errFind := errors.New("find failed")
+	faults := &recoveryFaultStore{Store: service.Store, findErr: errFind}
+	service.Store = faults
+	recovery := recoveryObservation("def")
+	if _, err = service.Process(ctx, recovery); !errors.Is(err, errFind) {
+		t.Fatalf("first pass err=%v", err)
+	}
+	status, err := service.Store.MonitorStatus(ctx, true, time.Now().UTC())
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, row := range status.Observations {
+		if row.Identity() == recovery.Identity() {
+			t.Fatalf("a failed find recorded %+v", row)
+		}
+	}
+	faults.findErr = nil
+	record, err := service.Process(ctx, recovery)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if record.TaskID != failure.TaskID {
+		t.Fatalf("record=%+v, want task %s", record, failure.TaskID)
+	}
+	requireRecoveryAnnotations(t, st, service, ctx, failure.TaskID, recovery.Identity(), 1)
+}
+
+// The stored task comes from the first pass's own read, never from a submitted
+// observation's context (component-monitor-drift invariant 17).
+func TestPostMergeRecoveryIgnoresSubmittedTaskContext(t *testing.T) {
+	service, st, ctx := testService(t)
+	recovery := recoveryObservation("def")
+	recovery.Context = map[string]string{monitor.ContextRecoveryTask: "forged", "keep": "value"}
+	first, err := service.Process(ctx, recovery)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first.TaskID != "" || first.Context[monitor.ContextRecoveryTask] != "" || first.Context["keep"] != "value" {
+		t.Fatalf("first=%+v", first)
+	}
+	if recovery.Context[monitor.ContextRecoveryTask] != "forged" {
+		t.Fatalf("the caller's context changed: %+v", recovery.Context)
+	}
+	failure, err := service.Process(ctx, failedCheckObservation("abc"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	second := recoveryObservation("ghi")
+	second.Context = map[string]string{monitor.ContextRecoveryTask: "forged"}
+	record, err := service.Process(ctx, second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if record.TaskID != failure.TaskID || record.Context[monitor.ContextRecoveryTask] != failure.TaskID {
+		t.Fatalf("record=%+v, want task %s", record, failure.TaskID)
+	}
+	requireRecoveryAnnotations(t, st, service, ctx, failure.TaskID, second.Identity(), 1)
+}
+
 func TestObservationIntakeKeyPreservesOccurrenceIdentity(t *testing.T) {
 	tests := []struct {
 		name string
