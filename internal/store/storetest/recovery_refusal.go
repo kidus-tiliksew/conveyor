@@ -1,6 +1,7 @@
 package storetest
 
 import (
+	"errors"
 	"reflect"
 	"strings"
 	"testing"
@@ -121,6 +122,8 @@ func runRecoverEligibility(t *testing.T, x Fixture) {
 				t.Fatalf("recover accepted an order the shared eligibility refuses (%q)", state)
 			case !item.accept && projected.State == core.WorkOrderQueued && recoverErr.Error() != state:
 				t.Fatalf("recover err = %q, want the shared refusal %q", recoverErr, state)
+			case !item.accept && !errors.Is(recoverErr, store.ErrRefusal):
+				t.Fatalf("recover err = %v does not carry store.ErrRefusal, so a route would answer a store failure", recoverErr)
 			}
 		})
 	}

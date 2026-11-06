@@ -75,6 +75,12 @@ func (s *Server) getTaskHistory(w http.ResponseWriter, r *http.Request) {
 	taskID := chi.URLParam(r, "id")
 	workspace, scoped := store.WorkspaceFromContext(ctx)
 	task, err := s.Store.GetTask(ctx, taskID)
+	if err != nil && !errors.Is(err, store.ErrNotFound) {
+		writeStoreFailure(w, r, err)
+		return
+	}
+	// A missing task and a task in another workspace answer one not-found
+	// (req-accounts-and-membership AC-4.2).
 	if err != nil || !scoped || task.Workspace != workspace {
 		http.NotFound(w, r)
 		return

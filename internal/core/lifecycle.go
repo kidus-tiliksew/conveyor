@@ -39,6 +39,9 @@ func (e *ErrInvalidTransition) Error() string {
 	for _, alternative := range e.Allowed {
 		allowed = append(allowed, alternative.Command+"->"+alternative.To)
 	}
+	if len(allowed) == 0 {
+		return fmt.Sprintf("invalid %s transition from %q with command %q", e.Space, e.From, e.Command)
+	}
 	return fmt.Sprintf("invalid %s transition from %q with command %q (allowed: %s)", e.Space, e.From, e.Command, strings.Join(allowed, ", "))
 }
 

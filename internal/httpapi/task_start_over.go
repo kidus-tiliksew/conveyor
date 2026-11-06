@@ -1,6 +1,7 @@
 package httpapi
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"io"
@@ -17,7 +18,16 @@ import (
 
 func (s *Server) restartTask(w http.ResponseWriter, r *http.Request) {
 	var request core.TaskStartOverRequest
-	decoder := json.NewDecoder(http.MaxBytesReader(w, r.Body, 65536))
+	body, err := readBoundedBody(w, r, 65536)
+	if errors.Is(err, errBodyTooLarge) {
+		writeJSON(w, http.StatusRequestEntityTooLarge, map[string]string{"error": "invalid_restart_request", "message": err.Error()})
+		return
+	}
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid_restart_request", "message": "invalid restart request"})
+		return
+	}
+	decoder := json.NewDecoder(bytes.NewReader(body))
 	decoder.DisallowUnknownFields()
 	if err := decoder.Decode(&request); err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid_restart_request", "message": "invalid restart request"})

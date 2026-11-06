@@ -401,7 +401,7 @@ func (s *Server) redispatchTask(w http.ResponseWriter, r *http.Request) {
 	id := chi.URLParam(r, "id")
 	t, err := s.Store.GetTask(r.Context(), id)
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusNotFound)
+		writeTaskReadFailure(w, r, err)
 		return
 	}
 	// core.NextActionRedispatchRefusal states these same refusals to the next
@@ -424,8 +424,7 @@ func (s *Server) redispatchTask(w http.ResponseWriter, r *http.Request) {
 				http.Error(w, err.Error(), http.StatusConflict)
 				return
 			}
-			log.Printf("ensure task enqueued: %v", err)
-			http.Error(w, "internal server error", http.StatusInternalServerError)
+			writeStoreFailure(w, r, err)
 			return
 		}
 	} else {
@@ -445,12 +444,12 @@ func (s *Server) redispatchTask(w http.ResponseWriter, r *http.Request) {
 			_, transitionErr = taskops.New(s.Store).Perform(r.Context(), id, taskops.Command{Kind: command})
 		}
 		if transitionErr != nil {
-			status := http.StatusInternalServerError
 			var invalidTransition *core.ErrInvalidTransition
 			if errors.As(transitionErr, &invalidTransition) {
-				status = http.StatusConflict
+				http.Error(w, transitionErr.Error(), http.StatusConflict)
+				return
 			}
-			http.Error(w, transitionErr.Error(), status)
+			writeStoreFailure(w, r, transitionErr)
 			return
 		}
 		t.State = core.TaskQueued
@@ -499,13 +498,16 @@ func (s *Server) setTaskAssignee(w http.ResponseWriter, r *http.Request) {
 	var request struct {
 		AssigneeUserID string `json:"assignee_user_id"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
+	if err := decodeBoundedJSON(w, r, taskRouteBodyLimit, &request); err != nil {
+		writeBodyDecodeError(w, err)
 		return
 	}
 	task, err := taskops.New(s.Store).SetAssignee(r.Context(), chi.URLParam(r, "id"), request.AssigneeUserID)
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
+		writeClassifiedStoreError(w, r, err,
+			refuseSentinel(store.ErrNotFound, http.StatusBadRequest, "task not found"),
+			refuseSentinel(store.ErrAssigneeNotMember, http.StatusBadRequest, "assignee is not an active member of the workspace"),
+			refuseSentinel(store.ErrAssigneeLacksCapability, http.StatusBadRequest, "assignee role lacks the claim_work capability"))
 		return
 	}
 	writeJSON(w, http.StatusOK, task)
@@ -817,10 +819,8 @@ type addTaskDependencyRequest struct {
 
 func (s *Server) addTaskDependency(w http.ResponseWriter, r *http.Request) {
 	var request addTaskDependencyRequest
-	decoder := json.NewDecoder(r.Body)
-	decoder.DisallowUnknownFields()
-	if err := decoder.Decode(&request); err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
+	if err := decodeStrictBoundedJSON(w, r, taskRouteBodyLimit, &request); err != nil {
+		writeBodyDecodeError(w, err)
 		return
 	}
 	result, err := s.Store.AddTaskDependency(r.Context(), store.DependencyAdditionRequest{
@@ -833,8 +833,10 @@ func (s *Server) addTaskDependency(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, err.Error(), http.StatusNotFound)
 		case errors.Is(err, store.ErrTaskTerminal), errors.Is(err, store.ErrTaskDependencyCycle), errors.Is(err, store.ErrTaskDependencyConflict):
 			http.Error(w, err.Error(), http.StatusConflict)
+		case errors.Is(err, store.ErrTaskDependencyInvalid):
+			http.Error(w, store.ErrTaskDependencyInvalid.Error(), http.StatusBadRequest)
 		default:
-			http.Error(w, err.Error(), http.StatusBadRequest)
+			writeStoreFailure(w, r, err)
 		}
 		return
 	}
@@ -843,8 +845,8 @@ func (s *Server) addTaskDependency(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) removeTaskDependency(w http.ResponseWriter, r *http.Request) {
 	var request removeTaskDependencyRequest
-	if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
+	if err := decodeBoundedJSON(w, r, taskRouteBodyLimit, &request); err != nil {
+		writeBodyDecodeError(w, err)
 		return
 	}
 	result, err := s.Store.RemoveTaskDependency(r.Context(), store.DependencyRemovalRequest{
@@ -852,7 +854,11 @@ func (s *Server) removeTaskDependency(w http.ResponseWriter, r *http.Request) {
 		Reason: request.Reason, RequestID: request.RequestID,
 	})
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
+		writeClassifiedStoreError(w, r, err,
+			refuseSentinel(store.ErrTaskDependencyInvalid, http.StatusBadRequest, store.ErrTaskDependencyInvalid.Error()),
+			refuseSentinel(store.ErrDependencyEdgeNotFound, http.StatusBadRequest, store.ErrDependencyEdgeNotFound.Error()),
+			refuseSentinel(store.ErrTaskDependencyConflict, http.StatusBadRequest, "request_id was already used for different dependency removal inputs"),
+			refuseSentinel(store.ErrNotFound, http.StatusBadRequest, "task not found"))
 		return
 	}
 	writeJSON(w, http.StatusOK, result)
@@ -862,7 +868,7 @@ func (s *Server) closeTask(w http.ResponseWriter, r *http.Request) {
 	id := chi.URLParam(r, "id")
 	task, err := s.Store.GetTask(r.Context(), id)
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusNotFound)
+		writeTaskReadFailure(w, r, err)
 		return
 	}
 	if core.TaskTerminal(task.State) {
@@ -870,22 +876,32 @@ func (s *Server) closeTask(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var request closeTaskRequest
-	if err = json.NewDecoder(r.Body).Decode(&request); err != nil && err != io.EOF {
-		http.Error(w, err.Error(), http.StatusBadRequest)
+	if err = decodeOptionalBoundedJSON(w, r, taskRouteBodyLimit, &request); err != nil {
+		writeBodyDecodeError(w, err)
 		return
 	}
+	// A reason is prose of at most 255 characters, counted in runes. With no
+	// reason, a reason_code is a code of at most 64 bytes
+	// (component-task-lifecycle invariant 31).
 	reason := strings.TrimSpace(request.Reason)
-	if reason == "" {
-		reason = strings.TrimSpace(request.ReasonCode)
-	}
-	if reason == "" || len(reason) > 64 {
-		http.Error(w, "reason is required and must be at most 64 characters", http.StatusBadRequest)
+	switch {
+	case utf8.RuneCountInString(reason) > 255:
+		http.Error(w, "reason must be at most 255 characters", http.StatusBadRequest)
 		return
+	case reason == "":
+		reason = strings.TrimSpace(request.ReasonCode)
+		if len(reason) > 64 {
+			http.Error(w, "reason_code must be at most 64 bytes", http.StatusBadRequest)
+			return
+		}
+		if reason == "" {
+			http.Error(w, "reason is required", http.StatusBadRequest)
+			return
+		}
 	}
 	latest, hasJob, err := s.Store.GetLatestJob(r.Context(), id)
 	if err != nil {
-		log.Printf("handle API request: %v", err)
-		http.Error(w, "internal server error", http.StatusInternalServerError)
+		writeStoreFailure(w, r, err)
 		return
 	}
 	if !hasJob {
@@ -899,18 +915,16 @@ func (s *Server) closeTask(w http.ResponseWriter, r *http.Request) {
 	}
 	if err != nil {
 		var invalid *core.ErrInvalidTransition
-		if errors.Is(err, store.ErrTaskTerminal) || errors.As(err, &invalid) {
+		if errors.Is(err, store.ErrTaskTerminal) || errors.Is(err, store.ErrRefusal) || errors.As(err, &invalid) {
 			http.Error(w, err.Error(), http.StatusConflict)
 			return
 		}
-		log.Printf("handle API request: %v", err)
-		http.Error(w, "internal server error", http.StatusInternalServerError)
+		writeStoreFailure(w, r, err)
 		return
 	}
 	updated, err := s.Store.GetTask(r.Context(), id)
 	if err != nil {
-		log.Printf("handle API request: %v", err)
-		http.Error(w, "internal server error", http.StatusInternalServerError)
+		writeStoreFailure(w, r, err)
 		return
 	}
 	// The cancel committed before this read, so the answer is 200 and not 202
@@ -922,7 +936,7 @@ func (s *Server) reviewTask(w http.ResponseWriter, r *http.Request) {
 	id := chi.URLParam(r, "id")
 	task, err := s.Store.GetTask(r.Context(), id)
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusNotFound)
+		writeTaskReadFailure(w, r, err)
 		return
 	}
 	if !reviewable(task.State) {
@@ -931,13 +945,12 @@ func (s *Server) reviewTask(w http.ResponseWriter, r *http.Request) {
 	}
 	_, planRevisionGate, err := dispatch.PendingPlanRevisionGate(r.Context(), s.Store, id)
 	if err != nil {
-		log.Printf("handle API request: %v", err)
-		http.Error(w, "internal server error", http.StatusInternalServerError)
+		writeStoreFailure(w, r, err)
 		return
 	}
 	var request reviewRequest
-	if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
+	if err := decodeBoundedJSON(w, r, taskRouteBodyLimit, &request); err != nil {
+		writeBodyDecodeError(w, err)
 		return
 	}
 	if !request.Action.Valid() || request.Action == core.InterventionCancel {
@@ -979,8 +992,7 @@ func (s *Server) reviewTask(w http.ResponseWriter, r *http.Request) {
 	}
 	latestJob, hasJob, err := s.Store.GetLatestJob(r.Context(), id)
 	if err != nil {
-		log.Printf("handle API request: %v", err)
-		http.Error(w, "internal server error", http.StatusInternalServerError)
+		writeStoreFailure(w, r, err)
 		return
 	}
 	jobID := ""
@@ -1014,20 +1026,26 @@ func (s *Server) reviewTask(w http.ResponseWriter, r *http.Request) {
 				http.Error(w, err.Error(), http.StatusNotFound)
 				return
 			}
-			log.Printf("create plan revision intervention: %v", err)
-			http.Error(w, "internal server error", http.StatusInternalServerError)
+			writeStoreFailure(w, r, err)
 			return
 		}
 		interventionRecorded = true
 	}
 	if s.OnIntervention != nil {
 		if err := s.OnIntervention(r.Context(), task, latestJob, intervention); err != nil {
-			status := http.StatusInternalServerError
 			var invalidTransition *core.ErrInvalidTransition
-			if errors.As(err, &invalidTransition) || errors.Is(err, dispatch.ErrReviewedHeadUnavailable) {
-				status = http.StatusConflict
+			switch {
+			case errors.As(err, &invalidTransition), errors.Is(err, dispatch.ErrReviewedHeadUnavailable):
+				http.Error(w, err.Error(), http.StatusConflict)
+			case github.ErrorCategory(err) != "" && !errors.Is(err, store.ErrBackendOperation):
+				// A forge failure keeps its answer and its remedy.
+				http.Error(w, err.Error(), http.StatusInternalServerError)
+			case isOperationRefusal(err):
+				// A task closed while a decision completes refuses the recovery.
+				http.Error(w, err.Error(), http.StatusConflict)
+			default:
+				writeStoreFailure(w, r, err)
 			}
-			http.Error(w, err.Error(), status)
 			return
 		}
 	}
@@ -1037,8 +1055,7 @@ func (s *Server) reviewTask(w http.ResponseWriter, r *http.Request) {
 				http.Error(w, err.Error(), http.StatusNotFound)
 				return
 			}
-			log.Printf("create intervention: %v", err)
-			http.Error(w, "internal server error", http.StatusInternalServerError)
+			writeStoreFailure(w, r, err)
 			return
 		}
 	}
@@ -1047,8 +1064,7 @@ func (s *Server) reviewTask(w http.ResponseWriter, r *http.Request) {
 	}
 	updated, err := s.Store.GetTask(r.Context(), id)
 	if err != nil {
-		log.Printf("handle API request: %v", err)
-		http.Error(w, "internal server error", http.StatusInternalServerError)
+		writeStoreFailure(w, r, err)
 		return
 	}
 	writeJSON(w, http.StatusAccepted, map[string]any{
@@ -1063,7 +1079,7 @@ func (s *Server) mergeTask(w http.ResponseWriter, r *http.Request) {
 	id := chi.URLParam(r, "id")
 	task, err := s.Store.GetTask(r.Context(), id)
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusNotFound)
+		writeTaskReadFailure(w, r, err)
 		return
 	}
 	if task.State == core.TaskAwaiting && task.GateKind == core.GateKindMergeApproval {
@@ -1084,13 +1100,12 @@ func (s *Server) mergeTask(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := s.OnMerge(r.Context(), task, actor); err != nil {
-		http.Error(w, err.Error(), http.StatusConflict)
+		writeMergeRouteError(w, r, err)
 		return
 	}
 	updated, err := s.Store.GetTask(r.Context(), id)
 	if err != nil {
-		log.Printf("handle API request: %v", err)
-		http.Error(w, "internal server error", http.StatusInternalServerError)
+		writeStoreFailure(w, r, err)
 		return
 	}
 	if updated.State != core.TaskMerged {
@@ -1124,7 +1139,7 @@ func (s *Server) mergeTaskAtGate(w http.ResponseWriter, r *http.Request, task co
 		http.Error(w, "merge was not confirmed by the forge", http.StatusConflict)
 		return
 	case err != nil:
-		http.Error(w, err.Error(), http.StatusConflict)
+		writeMergeRouteError(w, r, err)
 		return
 	case updated.State != core.TaskMerged:
 		http.Error(w, "merge was not confirmed by the forge", http.StatusConflict)
@@ -1137,7 +1152,7 @@ func (s *Server) mergeTaskAtGate(w http.ResponseWriter, r *http.Request, task co
 func (s *Server) fixMergeConflict(w http.ResponseWriter, r *http.Request) {
 	task, err := s.Store.GetTask(r.Context(), chi.URLParam(r, "id"))
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusNotFound)
+		writeTaskReadFailure(w, r, err)
 		return
 	}
 	if s.OnConflictFix == nil {
@@ -1146,10 +1161,21 @@ func (s *Server) fixMergeConflict(w http.ResponseWriter, r *http.Request) {
 	}
 	order, err := s.OnConflictFix(r.Context(), task)
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusConflict)
+		writeMergeRouteError(w, r, err)
 		return
 	}
 	writeJSON(w, http.StatusAccepted, order)
+}
+
+// writeMergeRouteError answers a merge act's failure: a refusal or a forge
+// failure keeps 409 and its remedy, and a store failure answers the generic 500
+// (DEC-105(1); req-delivery-and-forge AC-1.4, AC-1.8).
+func writeMergeRouteError(w http.ResponseWriter, r *http.Request, err error) {
+	if dispatch.MergeRouteRefusal(err) {
+		http.Error(w, err.Error(), http.StatusConflict)
+		return
+	}
+	writeStoreFailure(w, r, err)
 }
 
 func reviewable(state core.TaskState) bool {
@@ -1202,13 +1228,13 @@ func (s *Server) createTask(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var req createTaskReq
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
+	if err := decodeBoundedJSON(w, r, taskCreateBodyLimit, &req); err != nil {
+		writeBodyDecodeError(w, err)
 		return
 	}
 	result, err := s.createTaskRecord(r.Context(), req, "", "api")
 	if err != nil {
-		writeTaskCreateError(w, err)
+		writeTaskCreateError(w, r, err)
 		return
 	}
 	writeJSON(w, http.StatusCreated, result.Task)
@@ -1269,7 +1295,7 @@ func (s *Server) createTaskWithAttachments(w http.ResponseWriter, r *http.Reques
 	}
 	result, err := s.createTaskRecord(r.Context(), req, r.FormValue("idempotency_key"), "api")
 	if err != nil {
-		writeTaskCreateError(w, err)
+		writeTaskCreateError(w, r, err)
 		return
 	}
 	status := http.StatusCreated
@@ -1324,13 +1350,12 @@ func (s *Server) listTasks(w http.ResponseWriter, r *http.Request) {
 func (s *Server) getTask(w http.ResponseWriter, r *http.Request) {
 	t, err := s.Store.GetTask(r.Context(), chi.URLParam(r, "id"))
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusNotFound)
+		writeTaskReadFailure(w, r, err)
 		return
 	}
 	t.Context, err = store.TaskContextForTask(r.Context(), s.Store, t.ID)
 	if err != nil {
-		log.Printf("handle API request: %v", err)
-		http.Error(w, "internal server error", http.StatusInternalServerError)
+		writeStoreFailure(w, r, err)
 		return
 	}
 	// This read may serve a row stored raw, so its text passes the redactor
@@ -1339,7 +1364,7 @@ func (s *Server) getTask(w http.ResponseWriter, r *http.Request) {
 	// req-intake-and-triage AC-1.2).
 	redactor, err := s.mcpReadRedactor(r.Context())
 	if err != nil {
-		http.Error(w, "internal server error", http.StatusInternalServerError)
+		writeStoreFailure(w, r, err)
 		return
 	}
 	response, ok := s.taskResponse(w, r, t)
@@ -1348,8 +1373,7 @@ func (s *Server) getTask(w http.ResponseWriter, r *http.Request) {
 	}
 	rendered, err := renderMCPReadItem(response, redactor)
 	if err != nil {
-		log.Printf("handle API request: %v", err)
-		http.Error(w, "internal server error", http.StatusInternalServerError)
+		writeStoreFailure(w, r, err)
 		return
 	}
 	writeJSON(w, http.StatusOK, rendered)
@@ -1419,7 +1443,7 @@ func (s *Server) streamEvents(w http.ResponseWriter, r *http.Request) {
 	}
 	task, err := s.Store.GetTask(r.Context(), chi.URLParam(r, "id"))
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusNotFound)
+		writeTaskReadFailure(w, r, err)
 		return
 	}
 	flusher, ok := w.(http.Flusher)
@@ -2413,7 +2437,7 @@ func (s *Server) getTaskActivity(w http.ResponseWriter, r *http.Request) {
 	readStart := s.mergeReadiness.now()
 	task, err := s.Store.GetTask(r.Context(), id)
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusNotFound)
+		writeTaskReadFailure(w, r, err)
 		return
 	}
 	var mergeReadiness *dispatch.MergeReadiness
@@ -2429,12 +2453,16 @@ func (s *Server) getTaskActivity(w http.ResponseWriter, r *http.Request) {
 		case readinessErr != nil && approved:
 			// The merge action must never render without a successful
 			// readiness read (component-http-api).
+			if !dispatch.MergeRouteRefusal(readinessErr) {
+				writeStoreFailure(w, r, readinessErr)
+				return
+			}
 			http.Error(w, fmt.Sprintf("resolve merge readiness: %v", readinessErr), http.StatusServiceUnavailable)
 			return
 		case readinessErr != nil:
 			// A failed gate peek omits merge_readiness; the projection then
 			// offers no merge choice (component-http-api).
-			log.Printf("task detail merge readiness for %s: %v", id, readinessErr)
+			log.Printf("httpapi: task detail merge readiness: request_id=%q task=%s error=%q", middleware.GetReqID(r.Context()), id, redactedErrorLogText(readinessErr))
 		default:
 			mergeReadiness = &readiness
 			// A hook call that finished after the task read may have written
@@ -2448,21 +2476,18 @@ func (s *Server) getTaskActivity(w http.ResponseWriter, r *http.Request) {
 	}
 	jobs, err := s.Store.ListJobs(r.Context(), id)
 	if err != nil {
-		log.Printf("handle API request: %v", err)
-		http.Error(w, "internal server error", http.StatusInternalServerError)
+		writeStoreFailure(w, r, err)
 		return
 	}
 	events, err := s.Store.ListEvents(r.Context(), id)
 	if err != nil {
-		log.Printf("handle API request: %v", err)
-		http.Error(w, "internal server error", http.StatusInternalServerError)
+		writeStoreFailure(w, r, err)
 		return
 	}
 	contextRequirements, contextDesigns := store.ActiveTaskContextReferences(events)
 	contextProposals, err := s.Store.ListTaskContextProposals(r.Context(), id, core.TaskContextProposalProposed)
 	if err != nil {
-		log.Printf("handle API request: %v", err)
-		http.Error(w, "internal server error", http.StatusInternalServerError)
+		writeStoreFailure(w, r, err)
 		return
 	}
 	interventions, err := s.Store.ListInterventions(r.Context(), id)
@@ -2470,14 +2495,12 @@ func (s *Server) getTaskActivity(w http.ResponseWriter, r *http.Request) {
 		err = s.annotateInterventionActorOwners(r.Context(), interventions)
 	}
 	if err != nil {
-		log.Printf("handle API request: %v", err)
-		http.Error(w, "internal server error", http.StatusInternalServerError)
+		writeStoreFailure(w, r, err)
 		return
 	}
 	spec, hasSpec, err := s.Store.GetLatestSpecVersion(r.Context(), id)
 	if err != nil {
-		log.Printf("handle API request: %v", err)
-		http.Error(w, "internal server error", http.StatusInternalServerError)
+		writeStoreFailure(w, r, err)
 		return
 	}
 	var specPointer *core.SpecVersion
@@ -2487,8 +2510,7 @@ func (s *Server) getTaskActivity(w http.ResponseWriter, r *http.Request) {
 	}
 	workOrders, err := s.Store.ListTaskWorkOrders(store.WithWorkspace(r.Context(), task.Workspace), id)
 	if err != nil {
-		log.Printf("handle API request: %v", err)
-		http.Error(w, "internal server error", http.StatusInternalServerError)
+		writeStoreFailure(w, r, err)
 		return
 	}
 	if workOrders == nil {
@@ -2502,8 +2524,7 @@ func (s *Server) getTaskActivity(w http.ResponseWriter, r *http.Request) {
 			pending, planErr = true, nil
 		}
 		if planErr != nil {
-			log.Printf("handle API request: %v", planErr)
-			http.Error(w, "internal server error", http.StatusInternalServerError)
+			writeStoreFailure(w, r, planErr)
 			return
 		}
 		pendingPlanRevision = pending
@@ -2530,8 +2551,7 @@ func (s *Server) getTaskActivity(w http.ResponseWriter, r *http.Request) {
 	metadata := store.NewDocumentMetadataSet()
 	if documentIDs := taskDetailDocumentIDs(contextRequirements, contextDesigns, workOrders); len(documentIDs) > 0 {
 		if metadata, err = s.Store.ListDocumentMetadata(r.Context(), documentIDs); err != nil {
-			log.Printf("handle API request: %v", err)
-			http.Error(w, "internal server error", http.StatusInternalServerError)
+			writeStoreFailure(w, r, err)
 			return
 		}
 	}
@@ -2543,8 +2563,7 @@ func (s *Server) getTaskActivity(w http.ResponseWriter, r *http.Request) {
 	// evidence, not attachments. One task-node read serves both lists.
 	artifacts, err := s.Store.ListArtifactsForLineage(r.Context(), []core.LineageNode{{Type: core.LineageTask, ID: id}})
 	if err != nil {
-		log.Printf("handle API request: %v", err)
-		http.Error(w, "internal server error", http.StatusInternalServerError)
+		writeStoreFailure(w, r, err)
 		return
 	}
 	attachments, verificationEvidence := taskDetailArtifacts(id, artifacts)
@@ -2554,26 +2573,22 @@ func (s *Server) getTaskActivity(w http.ResponseWriter, r *http.Request) {
 	}
 	proposals, err := s.Store.ListPendingProposals(r.Context())
 	if err != nil {
-		log.Printf("handle API request: %v", err)
-		http.Error(w, "internal server error", http.StatusInternalServerError)
+		writeStoreFailure(w, r, err)
 		return
 	}
 	workOrderViews, err := checkpointViewsFromMetadata(workOrders, proposals, metadata)
 	if err != nil {
-		log.Printf("enrich checkpoint recovery: %v", err)
-		http.Error(w, "internal server error", http.StatusInternalServerError)
+		writeStoreFailure(w, r, err)
 		return
 	}
 	opts, err := s.detailNextActionOptions(r.Context())
 	if err != nil {
-		log.Printf("handle API request: %v", err)
-		http.Error(w, "internal server error", http.StatusInternalServerError)
+		writeStoreFailure(w, r, err)
 		return
 	}
 	action, err := store.ReadNextActionForTask(r.Context(), s.Store, task, projectionOrders, opts)
 	if err != nil {
-		log.Printf("handle API request: %v", err)
-		http.Error(w, "internal server error", http.StatusInternalServerError)
+		writeStoreFailure(w, r, err)
 		return
 	}
 	compact := nextaction.CompactFrom(action)
@@ -2596,8 +2611,7 @@ func (s *Server) getTaskActivity(w http.ResponseWriter, r *http.Request) {
 	}
 	if !bounded {
 		if err := s.annotateEventActorOwners(r.Context(), item.Events); err != nil {
-			log.Printf("handle API request: %v", err)
-			http.Error(w, "internal server error", http.StatusInternalServerError)
+			writeStoreFailure(w, r, err)
 			return
 		}
 		writeJSON(w, http.StatusOK, taskDetailProjection{item})
@@ -2607,19 +2621,16 @@ func (s *Server) getTaskActivity(w http.ResponseWriter, r *http.Request) {
 	// changes only how events are presented and adds the summaries.
 	pageEvents, eventPage, err := s.boundedTaskEventSection(r, id, events)
 	if err != nil {
-		log.Printf("handle API request: %v", err)
-		http.Error(w, "internal server error", http.StatusInternalServerError)
+		writeStoreFailure(w, r, err)
 		return
 	}
 	summaries := deriveTaskDetailSummaries(events, jobs, workOrders)
 	if err := s.enrichReviewSeatSummaries(r.Context(), task, workOrders, events, &summaries); err != nil {
-		log.Printf("handle API request: %v", err)
-		http.Error(w, "internal server error", http.StatusInternalServerError)
+		writeStoreFailure(w, r, err)
 		return
 	}
 	if err := s.annotateSummaryActorOwners(r.Context(), &summaries); err != nil {
-		log.Printf("handle API request: %v", err)
-		http.Error(w, "internal server error", http.StatusInternalServerError)
+		writeStoreFailure(w, r, err)
 		return
 	}
 	item.Events = nil
