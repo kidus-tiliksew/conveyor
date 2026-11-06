@@ -920,6 +920,44 @@ func TestInitProcessExitsNonzeroWithoutPassword(t *testing.T) {
 	assertOnlyDirectoryEntries(t, directory)
 }
 
+// The installed binary reports an existing file's type error by line and
+// expected type. The misplaced value stays out of stdout and stderr, whether
+// yaml.v3 would print it in full or by its first 7 bytes
+// (req-security-boundaries REQ-2).
+func TestInitProcessTypeErrorDropsMisplacedValue(t *testing.T) {
+	t.Setenv("CONVEYOR_DATABASE_URL", initFixtureURL)
+	t.Setenv("CONVEYOR_API_TOKEN", initFixtureToken)
+	t.Setenv(config.LLMAPIKeyEnv, "fixture-llm-key")
+	for _, tc := range []struct{ name, value, printed string }{
+		{name: "value yaml.v3 prints in full", value: "Zq7Kp3x-pw", printed: "Zq7Kp3x-pw"},
+		{name: "value yaml.v3 prints by prefix", value: "Yt5Rm8w-fixture-secret-value", printed: "Yt5Rm8w"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			directory := t.TempDir()
+			path := filepath.Join(directory, "conveyor.yaml")
+			document := "workspace: demo\nmax_bounces: " + tc.value + "\n"
+			if err := os.WriteFile(path, []byte(document), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			status, stdout, stderr := runInitProcess(t, path, initFixtureAnswers())
+			if status != 1 {
+				t.Fatalf("exit status = %d, want 1", status)
+			}
+			if strings.Contains(stdout, tc.printed) || strings.Contains(stderr, tc.printed) {
+				t.Fatal("process output holds the misplaced value")
+			}
+			for _, want := range []string{"load existing deployment config", "line 2:", "cannot unmarshal !!str into int"} {
+				if !strings.Contains(stderr, want) {
+					t.Errorf("stderr lacks %q: %s", want, stderr)
+				}
+			}
+			if after, err := os.ReadFile(path); err != nil || string(after) != document {
+				t.Error("existing file changed")
+			}
+		})
+	}
+}
+
 // paddedHandoffCases are the connection strings the handoff tests run on each
 // durable backend. Each names the identity the server must see.
 func paddedHandoffCases() []struct {

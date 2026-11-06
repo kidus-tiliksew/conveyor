@@ -15,3 +15,12 @@ func QuoteArg(value string) string {
 func DirectivePath(value string) string {
 	return strings.ReplaceAll(value, "%", "%%")
 }
+
+// EnvironmentAssignment renders one Environment= word. systemd splits the value
+// into words with C unescaping and then expands specifiers, so the whole
+// assignment is one double-quoted word with backslash, quote, newline, and
+// percent escaped. systemd never expands dollar signs in Environment=, so they
+// stay literal, unlike in QuoteArg.
+func EnvironmentAssignment(name, value string) string {
+	return `"` + strings.NewReplacer(`\`, `\\`, `"`, `\"`, "\n", `\n`, `%`, `%%`).Replace(name+"="+value) + `"`
+}

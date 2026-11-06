@@ -77,7 +77,7 @@ func MarshalDeployment(c *Config) ([]byte, error) {
 		return nil, fmt.Errorf("marshal deployment config: %w", err)
 	}
 	var root map[string]any
-	if err := yaml.Unmarshal(stripped, &root); err != nil {
+	if err := unmarshalYAML(stripped, &root); err != nil {
 		return nil, fmt.Errorf("marshal deployment config: %w", err)
 	}
 	delete(root, "routing")
@@ -115,7 +115,7 @@ func DeploymentHoldsDatabaseURL(data []byte) (bool, error) {
 // without execution detail plus the sorted removed field paths.
 func stripDeploymentExecutionDetail(data []byte) ([]byte, []string, bool, error) {
 	var root map[string]any
-	if err := yaml.Unmarshal(data, &root); err != nil {
+	if err := unmarshalYAML(data, &root); err != nil {
 		return nil, nil, false, err
 	}
 	if root == nil {

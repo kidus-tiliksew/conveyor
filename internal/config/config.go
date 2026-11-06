@@ -1239,7 +1239,7 @@ func decodeStoredWorkspaceDocument(data []byte) (WorkspaceDocument, bool, error)
 // files and API writes still reject budget_usd as an unknown field.
 func stripLegacyBudgetFields(data []byte) ([]byte, bool, error) {
 	var root yaml.Node
-	if err := yaml.Unmarshal(data, &root); err != nil {
+	if err := unmarshalYAML(data, &root); err != nil {
 		return nil, false, err
 	}
 	document := &root
@@ -1289,7 +1289,7 @@ func removeDirectMappingKey(node *yaml.Node, key string) bool {
 func decodeKnown(data []byte, target any) error {
 	decoder := yaml.NewDecoder(bytes.NewReader(data))
 	decoder.KnownFields(true)
-	return decoder.Decode(target)
+	return redactYAMLError(decoder.Decode(target))
 }
 
 func contextualExecutionSettings(routing Routing) *ContextualExecutionSettings {

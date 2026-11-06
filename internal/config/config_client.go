@@ -62,7 +62,7 @@ func LoadClient(path string, logf func(string, ...any)) (*Config, error) {
 // resolved by the decode, so the returned document is self-contained.
 func stripClientExecutionKeys(data []byte) ([]byte, []string, error) {
 	var root map[string]any
-	if err := yaml.Unmarshal(data, &root); err != nil {
+	if err := unmarshalYAML(data, &root); err != nil {
 		return nil, nil, err
 	}
 	if root == nil {
