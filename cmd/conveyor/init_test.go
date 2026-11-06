@@ -1009,6 +1009,65 @@ func TestInitProcessTaggedValueDropsMisplacedValue(t *testing.T) {
 	})
 }
 
+// A value that decodes and then breaks a validator rule stays out of the
+// installed binary's stdout and stderr, for a site in internal/config/deployment.go
+// and a site in internal/config/config.go, while the field path and rule remain.
+// Each control states an accepted value beside a later refusal, so the rule judged
+// the value and the output would show a printed one (req-security-boundaries REQ-2).
+func TestInitProcessValidatorRefusalDropsMisplacedValue(t *testing.T) {
+	t.Setenv("CONVEYOR_DATABASE_URL", initFixtureURL)
+	t.Setenv("CONVEYOR_API_TOKEN", initFixtureToken)
+	t.Setenv(config.LLMAPIKeyEnv, "fixture-llm-key")
+	const value = "sk-live-FAKE0123456789"
+	const effortRule = "must be minimal, low, medium, or high"
+	run := func(t *testing.T, document string) (int, string, string) {
+		t.Helper()
+		path := filepath.Join(t.TempDir(), "conveyor.yaml")
+		if err := os.WriteFile(path, []byte("workspace: demo\n"+document), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		return runInitProcess(t, path, initFixtureAnswers())
+	}
+	triage := func(body string) string {
+		return "execution_settings: {control_plane: {triage: {model: fixture-model, " + body + "}}}\n"
+	}
+	planning := func(body string) string {
+		return "execution_settings: {control_plane: {triage: {model: fixture-model}, planning: {" + body + "}}}\n"
+	}
+	for _, tc := range []struct{ name, document, want string }{
+		{"deployment.go plain", triage("effort: " + value), "execution_settings.control_plane.triage.effort " + effortRule},
+		{"deployment.go tagged", triage("effort: !!str " + value), "execution_settings.control_plane.triage.effort " + effortRule},
+		{"deployment.go aliased", "pack_dir: &misplaced " + value + "\n" + triage("effort: *misplaced"), "execution_settings.control_plane.triage.effort " + effortRule},
+		{"config.go plain", planning("effort: " + value), "execution_settings.control_plane.planning.effort " + effortRule},
+		{"config.go tagged", planning("effort: !!str " + value), "execution_settings.control_plane.planning.effort " + effortRule},
+		{"config.go aliased", "pack_dir: &misplaced " + value + "\n" + planning("effort: *misplaced"), "execution_settings.control_plane.planning.effort " + effortRule},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			status, stdout, stderr := run(t, tc.document)
+			if status != 1 {
+				t.Fatalf("exit status = %d, want 1", status)
+			}
+			if strings.Contains(stdout, value) || strings.Contains(stderr, value) {
+				t.Fatal("process output holds the misplaced value")
+			}
+			if !strings.Contains(stderr, "load existing deployment config") || !strings.Contains(stderr, tc.want) {
+				t.Errorf("stderr lacks %q: %s", tc.want, stderr)
+			}
+		})
+	}
+	for _, tc := range []struct{ name, document, later, rule string }{
+		{"deployment.go control", triage("effort: low, timeout: not-a-duration"), "execution_settings.control_plane.triage.timeout must be a positive duration", "triage.effort"},
+		{"config.go control", planning("effort: low, timeout: not-a-duration"), "execution_settings.control_plane.planning.timeout must be a positive duration", "planning.effort"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			_, _, stderr := run(t, tc.document)
+			if strings.Contains(stderr, tc.rule) || !strings.Contains(stderr, tc.later) {
+				t.Errorf("accepted value did not reach the later refusal: %s", stderr)
+			}
+		})
+	}
+}
+
 // paddedHandoffCases are the connection strings the handoff tests run on each
 // durable backend. Each names the identity the server must see.
 func paddedHandoffCases() []struct {

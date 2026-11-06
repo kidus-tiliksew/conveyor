@@ -2,7 +2,6 @@ package config
 
 import (
 	"errors"
-	"fmt"
 	"path/filepath"
 	"strings"
 )
@@ -36,7 +35,7 @@ func ParseWorktreeLocation(value string) (WorktreeLocation, error) {
 	case WorktreeLocationMachine:
 		return WorktreeLocation{Mode: mode, Root: strings.TrimSpace(detail)}, nil
 	}
-	return WorktreeLocation{}, fmt.Errorf("worktree location %q must be repository, repository:<dir>, machine, or machine:<root>", value)
+	return WorktreeLocation{}, errors.New("worktree location must be repository, repository:<dir>, machine, or machine:<root>")
 }
 
 // String renders the location in the shared value syntax.
@@ -63,7 +62,7 @@ func (l WorktreeLocation) Normalized(home string) (WorktreeLocation, error) {
 			l.Dir = DefaultRepositoryWorktreeDir
 		}
 		if !safeWorktreeDir(l.Dir) {
-			return WorktreeLocation{}, fmt.Errorf("worktree_location.dir %q must be one relative path component of ASCII letters, digits, '.', '_', and '-', not starting with '-', and other than ., .., and .git", l.Dir)
+			return WorktreeLocation{}, errors.New("worktree_location.dir must be one relative path component of ASCII letters, digits, '.', '_', and '-', not starting with '-', and other than ., .., and .git")
 		}
 		return l, nil
 	case WorktreeLocationMachine:
@@ -79,7 +78,7 @@ func (l WorktreeLocation) Normalized(home string) (WorktreeLocation, error) {
 	case "":
 		return WorktreeLocation{}, errors.New("worktree_location.mode is required: repository or machine")
 	}
-	return WorktreeLocation{}, fmt.Errorf("worktree_location.mode %q must be repository or machine", l.Mode)
+	return WorktreeLocation{}, errors.New("worktree_location.mode must be repository or machine")
 }
 
 // safeWorktreeDir keeps dir a literal Git path: no ignore-pattern comment,

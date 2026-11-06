@@ -790,17 +790,21 @@ type legacySetupContract struct {
 	RefreshReview string `json:"refresh_review"`
 }
 
+// errPolicyContractShape replaces encoding/json's text, which prints a number
+// from the row (req-security-boundaries REQ-2).
+var errPolicyContractShape = errors.New("policy contract JSON does not match the policy shape")
+
 // UnmarshalJSON reads the policy_contract shape and, for task rows written
 // before it, the policy members of the earlier full-setup encoding.
 func (s *PolicyContract) UnmarshalJSON(data []byte) error {
 	var probe map[string]json.RawMessage
 	if err := json.Unmarshal(data, &probe); err != nil {
-		return err
+		return errPolicyContractShape
 	}
 	if _, policy := probe["stage_timeouts"]; !policy {
 		var decoded legacySetupContract
 		if err := json.Unmarshal(data, &decoded); err != nil {
-			return err
+			return errPolicyContractShape
 		}
 		var seats []ReviewSeat
 		if decoded.Review.Seats != nil {
@@ -833,7 +837,7 @@ func (s *PolicyContract) UnmarshalJSON(data []byte) error {
 		RefreshReview string `json:"refresh_review"`
 	}
 	if err := json.Unmarshal(data, &policy); err != nil {
-		return err
+		return errPolicyContractShape
 	}
 	var seats []ReviewSeat
 	if policy.Review.Seats != nil {
@@ -1159,18 +1163,20 @@ func normalizePolicy(next *Config, document WorkspaceDocument) (*Config, error) 
 	if err = normalizeMonitorConfig(&next.Monitor); err != nil {
 		return nil, err
 	}
-	seen := map[string]bool{}
+	// A refusal names the field, the index, and the rule, and never the value,
+	// because its text reaches API responses (req-security-boundaries REQ-2).
+	seen := make(map[string]int, len(next.Repos))
 	for i, repo := range next.Repos {
 		if strings.TrimSpace(repo.Name) == "" || strings.TrimSpace(repo.URL) == "" {
 			return nil, fmt.Errorf("repo %d: name and url are required", i)
 		}
 		if !safePathSegment(repo.Name) {
-			return nil, fmt.Errorf("repo %d: name %q must use only ASCII letters, digits, '.', '_', or '-' and must not be '.' or '..'", i, repo.Name)
+			return nil, fmt.Errorf("repo %d: name must use only ASCII letters, digits, '.', '_', or '-' and must not be '.' or '..'", i)
 		}
-		if seen[repo.Name] {
-			return nil, fmt.Errorf("duplicate repo name %q", repo.Name)
+		if first, duplicate := seen[repo.Name]; duplicate {
+			return nil, fmt.Errorf("repo %d: name duplicates repo %d", i, first)
 		}
-		seen[repo.Name] = true
+		seen[repo.Name] = i
 	}
 	return next, nil
 }
@@ -1348,7 +1354,7 @@ func normalizeDeploymentScalars(c *Config, path string) error {
 		c.packDirSet = true
 	}
 	if c.packDirSet && strings.TrimSpace(c.PackDir) == "" {
-		return fmt.Errorf("pack_dir override %q is empty", c.PackDir)
+		return errors.New("pack_dir override is empty")
 	}
 	if c.packDirSet && !filepath.IsAbs(c.PackDir) {
 		configDir, err := filepath.Abs(filepath.Dir(path))
@@ -1452,6 +1458,10 @@ func normalizeDeploymentScalars(c *Config, path string) error {
 // finishNormalization resolves the control-plane planning settings and
 // validates repositories, planning models, and monitor scope. Both loaders
 // call it after their routes are settled.
+//
+// A refusal names the field, the index, and the rule, and never the value,
+// because its text reaches conveyor init output and the conveyord startup log
+// (req-security-boundaries REQ-2).
 func finishNormalization(c *Config, requestedPlanning PlanningSettings) (*Config, error) {
 	normalizedSettings := contextualExecutionSettings(c.Routing)
 	planning := requestedPlanning
@@ -1474,7 +1484,7 @@ func finishNormalization(c *Config, requestedPlanning PlanningSettings) (*Config
 		return nil, fmt.Errorf("execution_settings.control_plane.planning.model is required")
 	}
 	if planning.Effort != "" && !validResponsesEffort(planning.Effort) {
-		return nil, fmt.Errorf("execution_settings.control_plane.planning.effort %q must be minimal, low, medium, or high", planning.Effort)
+		return nil, errors.New("execution_settings.control_plane.planning.effort must be minimal, low, medium, or high")
 	}
 	if parsed, parseErr := time.ParseDuration(planning.TimeoutText); parseErr != nil || parsed <= 0 {
 		return nil, fmt.Errorf("execution_settings.control_plane.planning.timeout must be a positive duration")
@@ -1505,20 +1515,20 @@ func finishNormalization(c *Config, requestedPlanning PlanningSettings) (*Config
 	}
 	normalizedSettings.ControlPlane.Planning = planning
 	c.ExecutionSettings = normalizedSettings
-	repoNames := make(map[string]struct{}, len(c.Repos))
+	repoNames := make(map[string]int, len(c.Repos))
 	for i := range c.Repos {
 		repo := &c.Repos[i]
 		if repo.Name == "" || repo.URL == "" {
 			return nil, fmt.Errorf("repo %d: name and url are required", i)
 		}
-		if _, duplicate := repoNames[repo.Name]; duplicate {
-			return nil, fmt.Errorf("duplicate repo name %q", repo.Name)
+		if first, duplicate := repoNames[repo.Name]; duplicate {
+			return nil, fmt.Errorf("repo %d: name duplicates repo %d", i, first)
 		}
-		repoNames[repo.Name] = struct{}{}
+		repoNames[repo.Name] = i
 		// Repository names become part of the implicit sibling worktree name,
 		// so keep them to the server-generated task ID alphabet (component-runtime).
 		if !validRepoName(repo.Name) {
-			return nil, fmt.Errorf("repo %d: name %q must use only ASCII letters, digits, '.', '_', or '-' and must not be '.' or '..'", i, repo.Name)
+			return nil, fmt.Errorf("repo %d: name must use only ASCII letters, digits, '.', '_', or '-' and must not be '.' or '..'", i)
 		}
 		if repo.Base == "" {
 			repo.Base = "main"
@@ -1536,33 +1546,33 @@ func finishNormalization(c *Config, requestedPlanning PlanningSettings) (*Config
 	if len(c.PlanningModels) == 0 {
 		c.PlanningModels = []string{planning.Model}
 	}
-	seenPlanningModels := make(map[string]struct{}, len(c.PlanningModels))
+	seenPlanningModels := make(map[string]int, len(c.PlanningModels))
 	defaultAllowed := false
 	for i, model := range c.PlanningModels {
 		model = strings.TrimSpace(model)
 		if model == "" {
 			return nil, fmt.Errorf("planning_models[%d] is required", i)
 		}
-		if _, duplicate := seenPlanningModels[model]; duplicate {
-			return nil, fmt.Errorf("planning_models contains duplicate model %q", model)
+		if first, duplicate := seenPlanningModels[model]; duplicate {
+			return nil, fmt.Errorf("planning_models[%d] duplicates planning_models[%d]", i, first)
 		}
-		seenPlanningModels[model] = struct{}{}
+		seenPlanningModels[model] = i
 		defaultAllowed = defaultAllowed || model == planning.Model
 		c.PlanningModels[i] = model
 	}
 	if !defaultAllowed {
-		return nil, fmt.Errorf("execution_settings.control_plane.planning.model %q must be included in planning_models", planning.Model)
+		return nil, errors.New("execution_settings.control_plane.planning.model must be included in planning_models")
 	}
-	seenMonitorRepo := make(map[string]struct{}, len(c.Monitor.Repositories))
+	seenMonitorRepo := make(map[string]int, len(c.Monitor.Repositories))
 	for i, name := range c.Monitor.Repositories {
 		name = strings.TrimSpace(name)
 		if _, ok := repoNames[name]; !ok {
-			return nil, fmt.Errorf("monitor.repositories[%d] names unknown repo %q", i, name)
+			return nil, fmt.Errorf("monitor.repositories[%d] names an unknown repo", i)
 		}
-		if _, duplicate := seenMonitorRepo[name]; duplicate {
-			return nil, fmt.Errorf("monitor.repositories contains duplicate repo %q", name)
+		if first, duplicate := seenMonitorRepo[name]; duplicate {
+			return nil, fmt.Errorf("monitor.repositories[%d] duplicates monitor.repositories[%d]", i, first)
 		}
-		seenMonitorRepo[name] = struct{}{}
+		seenMonitorRepo[name] = i
 		c.Monitor.Repositories[i] = name
 	}
 	if c.Monitor.Enabled && len(c.Monitor.Repositories) == 0 {

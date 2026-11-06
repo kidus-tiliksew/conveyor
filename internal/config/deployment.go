@@ -171,7 +171,7 @@ func stripDeploymentExecutionDetail(data []byte) ([]byte, []string, bool, error)
 					if stage == "triage" && (key == "model" || key == "model_tier" || key == "effort") {
 						continue
 					}
-					drop(mapping, "routing.stages."+stage+".", key)
+					drop(mapping, "routing.stages."+retiredRouteStageLabel(stage)+".", key)
 				}
 			}
 		}
@@ -189,6 +189,17 @@ func stripDeploymentExecutionDetail(data []byte) ([]byte, []string, bool, error)
 		return nil, nil, false, err
 	}
 	return stripped, ignored, packDirSet, nil
+}
+
+// retiredRouteStageLabel names a stage in the removed-field log line. A stage is
+// a free map key, so only a stage this release knows prints by name
+// (req-security-boundaries REQ-2; component-runtime).
+func retiredRouteStageLabel(stage string) string {
+	switch stage {
+	case "triage", "spec", "implement", "review", "verify":
+		return stage
+	}
+	return "<unrecognized>"
 }
 
 // promoteLegacyDefaultSetup makes the setup that default_setup names
@@ -301,7 +312,7 @@ func normalizeDeployment(c *Config, path string) (*Config, error) {
 		return nil, fmt.Errorf("execution_settings.control_plane.triage.model is required")
 	}
 	if triage.Effort != "" && !validResponsesEffort(triage.Effort) {
-		return nil, fmt.Errorf("execution_settings.control_plane.triage.effort %q must be minimal, low, medium, or high", triage.Effort)
+		return nil, errors.New("execution_settings.control_plane.triage.effort must be minimal, low, medium, or high")
 	}
 	triageTimeout := DefaultStageTimeout
 	if strings.TrimSpace(triage.TimeoutText) == "" {
