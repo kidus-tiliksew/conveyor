@@ -468,25 +468,31 @@ func TestTaskDetailReadinessStoreFailureIsGeneric(t *testing.T) {
 	requireGenericFailure(t, failureRequest(t, server, http.MethodGet, "/v1/tasks/failure-approved/activity", ""), captured)
 }
 
-// TestCloseReasonCountsRunes applies the 64-character limit to a reason in runes,
-// as a start-over reason counts them, and keeps reason_code in bytes.
+// TestCloseReasonCountsRunes applies component-task-lifecycle invariant 31: a
+// reason of at most 255 characters, counted in runes, or with no reason a
+// reason_code of at most 64 bytes. Each refusal names its own limit and echoes no
+// caller text.
 func TestCloseReasonCountsRunes(t *testing.T) {
 	for _, tc := range []struct {
 		name, field, value string
 		status             int
+		refusal            string
 	}{
-		{"reason of 64 two-byte runes", "reason", strings.Repeat("é", 64), http.StatusOK},
-		{"reason of 65 two-byte runes", "reason", strings.Repeat("é", 65), http.StatusBadRequest},
-		{"reason of 64 ASCII", "reason", strings.Repeat("a", 64), http.StatusOK},
-		{"reason of 65 ASCII", "reason", strings.Repeat("a", 65), http.StatusBadRequest},
-		{"reason_code over 64 bytes", "reason_code", strings.Repeat("é", 33), http.StatusBadRequest},
-		{"reason_code at 64 bytes", "reason_code", strings.Repeat("a", 64), http.StatusOK},
+		{"reason of 255 two-byte runes", "reason", strings.Repeat("é", 255), http.StatusOK, ""},
+		{"reason of 256 two-byte runes", "reason", strings.Repeat("é", 256), http.StatusBadRequest, "reason must be at most 255 characters"},
+		{"reason of 255 ASCII", "reason", strings.Repeat("a", 255), http.StatusOK, ""},
+		{"reason of 256 ASCII", "reason", strings.Repeat("a", 256), http.StatusBadRequest, "reason must be at most 255 characters"},
+		{"reason_code over 64 bytes", "reason_code", strings.Repeat("é", 33), http.StatusBadRequest, "reason_code must be at most 64 bytes"},
+		{"reason_code at 64 bytes", "reason_code", strings.Repeat("a", 64), http.StatusOK, ""},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			server, _ := failureClassesFixture(t)
 			response := failureRequest(t, server, http.MethodPost, "/v1/tasks/failure-task/close", fmt.Sprintf(`{%q:%q}`, tc.field, tc.value))
 			if response.Code != tc.status {
 				t.Fatalf("status=%d body=%q, want %d", response.Code, response.Body.String(), tc.status)
+			}
+			if tc.status != http.StatusOK && strings.TrimSpace(response.Body.String()) != tc.refusal {
+				t.Fatalf("body=%q, want %q", response.Body.String(), tc.refusal)
 			}
 		})
 	}

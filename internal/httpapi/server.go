@@ -880,17 +880,24 @@ func (s *Server) closeTask(w http.ResponseWriter, r *http.Request) {
 		writeBodyDecodeError(w, err)
 		return
 	}
-	// A reason is prose, counted in runes as a start-over reason is. A
-	// reason_code stays a code of at most 64 bytes.
+	// A reason is prose of at most 255 characters, counted in runes. With no
+	// reason, a reason_code is a code of at most 64 bytes
+	// (component-task-lifecycle invariant 31).
 	reason := strings.TrimSpace(request.Reason)
-	tooLong := utf8.RuneCountInString(reason) > 64
-	if reason == "" {
-		reason = strings.TrimSpace(request.ReasonCode)
-		tooLong = len(reason) > 64
-	}
-	if reason == "" || tooLong {
-		http.Error(w, "reason is required and must be at most 64 characters", http.StatusBadRequest)
+	switch {
+	case utf8.RuneCountInString(reason) > 255:
+		http.Error(w, "reason must be at most 255 characters", http.StatusBadRequest)
 		return
+	case reason == "":
+		reason = strings.TrimSpace(request.ReasonCode)
+		if len(reason) > 64 {
+			http.Error(w, "reason_code must be at most 64 bytes", http.StatusBadRequest)
+			return
+		}
+		if reason == "" {
+			http.Error(w, "reason is required", http.StatusBadRequest)
+			return
+		}
 	}
 	latest, hasJob, err := s.Store.GetLatestJob(r.Context(), id)
 	if err != nil {
