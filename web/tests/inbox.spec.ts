@@ -2753,7 +2753,9 @@ test('keys move the selection and act through the selected item’s own controls
   await expect(decisionDetail(page).locator('[data-detail-title]')).toHaveText('Alpha agent question')
 
   // c on a choice that needs input opens its composer and sends nothing; keys
-  // typed into it stay text.
+  // typed into it stay text. The title comes from the list item and the choices
+  // from the separate next-action read, and c does nothing until its button exists.
+  await expect(decisionDetail(page).locator('[data-shortcut="c"]')).toHaveText('Answer')
   await page.keyboard.press('c')
   const direction = decisionDetail(page).getByLabel('Direction')
   await expect(direction).toBeFocused()
@@ -2784,6 +2786,7 @@ test('keys move the selection and act through the selected item’s own controls
   // c on the plan approval records the same act as its button, once.
   await page.keyboard.press('k')
   await expect(decisionDetail(page).locator('[data-detail-title]')).toHaveText('Zeta plan everyone waits on')
+  await expect(approve).toHaveText('Approve plan')
   await page.keyboard.down('c')
   await page.keyboard.press('c')
   await page.keyboard.up('c')
