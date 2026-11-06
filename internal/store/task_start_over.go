@@ -114,18 +114,26 @@ func StartOverDroppedContextPayload(drops []core.TaskStartOverDroppedContext) []
 }
 
 // StartOverSuccessor copies intake policy, never execution or approval state.
-// req-task-lifecycle-and-queue AC-7.3.
-func StartOverSuccessor(old core.Task, r core.TaskStartOverRequest) core.Task {
+// The title passes redaction again, because the retired task's may predate it,
+// and the returned counts belong on the successor's task.created. The body
+// stays as submitted. A failed secret read refuses the successor.
+// req-task-lifecycle-and-queue AC-7.3; req-security-boundaries REQ-3, AC-3.1.
+func StartOverSuccessor(old core.Task, r core.TaskStartOverRequest, secrets TaskTitleSecrets) (core.Task, core.RedactionStats, error) {
+	redactor, err := secrets.Redactor()
+	if err != nil {
+		return core.Task{}, core.RedactionStats{}, err
+	}
+	title, stats := redactor.Redact(old.Title)
 	id := core.NewTaskID()
 	direction := "Start-over reason: " + r.Reason
 	if r.Note != "" {
 		direction += "\nOperator note: " + r.Note
 	}
-	return core.Task{ID: id, Workspace: old.Workspace, Source: old.Source, Title: old.Title, Body: old.Body,
+	return core.Task{ID: id, Workspace: old.Workspace, Source: old.Source, Title: title, Body: old.Body,
 		Repo: old.Repo, BaseBranch: old.BaseBranch, Branch: gitx.BranchName(id),
 		SpecApproval: old.SpecApproval, MergeApproval: old.MergeApproval, PolicyVersion: old.PolicyVersion,
 		SetupContract: old.SetupContract, State: core.TaskQueued, NextStage: core.StageTriage,
-		Supersedes: old.ID, IntakeOperatorDirection: direction, CreatedAt: time.Now().UTC()}
+		Supersedes: old.ID, IntakeOperatorDirection: direction, CreatedAt: time.Now().UTC()}, stats, nil
 }
 
 func StartOverPlanContent(taskID string, version int, content string) []byte {

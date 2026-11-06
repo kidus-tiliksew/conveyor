@@ -137,7 +137,13 @@ func PrepareVerificationRecovery(ctx context.Context, task core.Task, order core
 	run.Recovery = append(run.Recovery, VerificationReplayAuthorization{ID: id, Actor: actor.ID, Reason: d.Reason, At: now, Original: original, RequestDigest: requestDigest, Disposition: d.Disposition, InputDigest: d.InputDigest})
 	rr.State, rr.Body = run.State, verificationJSON(run)
 	changed = append(changed, rr)
-	event := core.Event{TaskID: task.ID, JobID: order.JobID, Kind: "verification.recovery_authorized", ActorID: actor.ID, ActorRole: actor.Role, At: now, Payload: core.JSONPayload(map[string]any{"request_id": requestID, "authorization_id": id, "original": original, "disposition": d.Disposition, "reason": d.Reason, "operation_ids": d.OperationIDs})}
+	payload := map[string]any{"request_id": requestID, "authorization_id": id, "original": original, "disposition": d.Disposition, "reason": d.Reason, "operation_ids": d.OperationIDs}
+	// A removal is recorded by count and class, never by value
+	// (req-security-boundaries AC-3.1).
+	if stats, ok := ctx.Value(verificationRecoveryRedactionsKey{}).(core.RedactionStats); ok && stats.Total() > 0 {
+		payload["redactions"] = stats
+	}
+	event := core.Event{TaskID: task.ID, JobID: order.JobID, Kind: "verification.recovery_authorized", ActorID: actor.ID, ActorRole: actor.Role, At: now, Payload: core.JSONPayload(payload)}
 	return changed, []core.Event{event}, nil
 }
 
@@ -320,6 +326,8 @@ func verificationRecoveryUnused(run VerificationAttempt, orderID string) bool {
 
 type verificationRecoveryDigestKey struct{}
 
+type verificationRecoveryRedactionsKey struct{}
+
 func SanitizeVerificationRecovery(ctx context.Context, source redact.SecretSource) (context.Context, error) {
 	d := VerificationRecoveryFromContext(ctx)
 	if d == nil {
@@ -329,10 +337,16 @@ func SanitizeVerificationRecovery(ctx context.Context, source redact.SecretSourc
 		ctx = context.WithValue(ctx, verificationRecoveryDigestKey{}, verificationHash(verificationJSON(d)))
 	}
 	clean := *d
-	reason, _, err := redact.Text(ctx, source, d.Reason)
+	reason, stats, err := redact.Text(ctx, source, d.Reason)
 	if err != nil {
 		return ctx, err
 	}
 	clean.Reason = reason
+	// A backend may sanitize more than once on the way to its transaction, and
+	// each pass removes only what earlier passes left, so the counts accumulate.
+	if prior, ok := ctx.Value(verificationRecoveryRedactionsKey{}).(core.RedactionStats); ok {
+		stats.Add(prior)
+	}
+	ctx = context.WithValue(ctx, verificationRecoveryRedactionsKey{}, stats)
 	return WithVerificationRecovery(ctx, &clean), nil
 }

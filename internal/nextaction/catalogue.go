@@ -96,7 +96,7 @@ func init() {
 		{KindJobFailure, "Job failure", "A job failed and needs a person.", "", "The failure stays at the human gate.", reviewChoices("Approve"), &RunGate{Kind: "human", Label: "human recovery gate"}},
 		{KindMergeConflict, "Merge conflict", "Automatic conflict fixes are exhausted.", "", "The conflict stays until someone fixes it.", conflictChoices(), &RunGate{Kind: "merge_execution", Label: "merge execution pending"}},
 		{KindMergeExecution, "Merge branch", "The merge gate is on and the branch is ready to merge.", "", "Conveyor does not merge it.", mergeExecutionChoices(), &RunGate{Kind: "merge_execution", Label: "merge execution pending"}},
-		{KindCheckHold, "Checks hold the merge", "A failed check holds the merge of the approved head.", "Rerun the check on GitHub, merge anyway, request changes, or close?", "The merge stays held. A later read that finds nothing failed lets it continue.", checkHoldChoices(), &RunGate{Kind: "merge_execution", Label: "merge execution pending"}},
+		{KindCheckHold, "Checks hold the merge", "A failed check holds the merge of the approved head.", "Rerun the failed check on GitHub, merge the approved head anyway, request changes, or close?", "The task stays approved and unmerged. A later read that finds nothing failed lets the merge continue.", checkHoldChoices(), &RunGate{Kind: "merge_execution", Label: "merge execution pending"}},
 		{KindMerging, "Merging", "Conveyor is merging this branch.", "", "The merge continues.", nil, nil},
 		{KindContextProposal, "Context proposal", "A context proposal is waiting for a decision.", "Confirm or dismiss the proposed context?", "The proposal stays pending.", nil, nil},
 		{KindAgentQuestion, "Agent question", "The agent stopped for a decision.", "Answer the agent?", "The order stays released.", answerChoices(), nil},
@@ -132,12 +132,20 @@ func init() {
 		}
 		return "A failed check holds the merge of the approved head: " + v.Checks + "."
 	}
+	// The question names the approved head and each held check
+	// (component-next-action invariant 19).
+	failedHold.Question = func(v Vars) string {
+		if v.Checks == "" {
+			return "Rerun the failed check on GitHub, merge the approved head anyway, request changes, or close?"
+		}
+		return "Rerun " + v.Checks + " on GitHub, merge the approved head anyway, request changes, or close?"
+	}
 	catalogueTable[catalogueKey{KindCheckHold, "", "", "", ""}] = failedHold
 	refused := failedHold
 	refused.Label = "Grant Checks read"
 	refused.Summary = text("GitHub refused the check-status read, so Conveyor cannot tell whether the approved head may merge.")
 	refused.Question = text("Grant the workspace GitHub App Checks read in workspace settings, or merge without a read?")
-	refused.IfIgnored = text("The merge stays held. A later read that GitHub answers decides it.")
+	refused.IfIgnored = text("The task stays approved and unmerged. A later read that GitHub answers decides the merge.")
 	catalogueTable[catalogueKey{KindCheckHold, "", "", "", CheckHoldPermission}] = refused
 	stuck := failedHold
 	stuck.Label = "Stuck check holds the merge"

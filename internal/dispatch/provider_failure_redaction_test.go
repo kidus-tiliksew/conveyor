@@ -260,3 +260,35 @@ func TestInProcessStagePromptKeepsTaskBodyExact(t *testing.T) {
 		t.Fatal("the in-process stage prompt does not hold the body as submitted")
 	}
 }
+
+// TestProviderMessageRemovalRecordedOnTranscript proves the stage error's copy
+// of the provider message reaches the transcript record's counts. The two
+// responses hold the same secret: only the first holds it in error.message, the
+// text the stage error copies, so its record counts one removal more and the
+// count is what differs (req-security-boundaries AC-3.1; component-triage).
+func TestProviderMessageRemovalRecordedOnTranscript(t *testing.T) {
+	t.Parallel()
+	run := func(t *testing.T, id, field string) (string, core.RedactionStats) {
+		t.Helper()
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			w.WriteHeader(http.StatusBadRequest)
+			_, _ = fmt.Fprintf(w, `{"error":{%q:%q}}`, field, "bad key "+failurePatToken)
+		}))
+		defer server.Close()
+		_, raw, transcript, record := storedFailure(t, id, &inprocess.OpenAI{APIKey: failureAPIKey, BaseURL: server.URL, Client: server.Client(), RetryDelay: time.Millisecond})
+		requireNoFailureSecret(t, "job.failed", raw)
+		requireNoFailureSecret(t, "transcript", transcript)
+		return raw, record.RedactionStats
+	}
+	messageEvent, withMessage := run(t, "failure-message-count", "message")
+	if !strings.Contains(messageEvent, "provider_message=bad key [REDACTED:pattern]") {
+		t.Fatal("the stage error did not copy the redacted provider message")
+	}
+	controlEvent, control := run(t, "failure-message-control", "detail")
+	if strings.Contains(controlEvent, "provider_message=") {
+		t.Fatal("control: the stage error copied a provider message")
+	}
+	if want := (core.RedactionStats{Pattern: control.Pattern + 1, Exact: control.Exact, Encoded: control.Encoded, Entropy: control.Entropy}); withMessage != want {
+		t.Fatalf("transcript counts = %+v, want %+v", withMessage, want)
+	}
+}

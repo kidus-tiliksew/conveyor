@@ -224,3 +224,39 @@ func TestRedactsQuotedFormOfKnownValues(t *testing.T) {
 		})
 	}
 }
+
+// A deployment token's bare 64-hex form passes the patterns on purpose, because
+// artifact IDs and digests have that shape. Only registration removes it, with
+// an exact count, and no general 64-hex pattern reaches an unrelated digest
+// (req-security-boundaries REQ-3).
+func TestRegisteredBareHexTokenRedactsExactWhileDigestStays(t *testing.T) {
+	token := strings.Repeat("1a2b3c4d", 8)
+	digest := strings.Repeat("d4c3b2a1", 8)
+	text := "token value " + token + " digest " + digest
+	if clean, stats := New(nil).Redact(text); clean != text || stats.Total() != 0 {
+		t.Fatalf("control: an unregistered 64-hex value was redacted: %+v", stats)
+	}
+	RegisterSecret(token, time.Time{})
+	t.Cleanup(func() {
+		processSecrets.Lock()
+		defer processSecrets.Unlock()
+		delete(processSecrets.values, token)
+	})
+	clean, stats := New(nil).Redact(text)
+	if strings.Contains(clean, token) || !strings.Contains(clean, digest) {
+		t.Fatal("the registered token survived or the digest was redacted")
+	}
+	if stats != (Stats{Exact: 1}) {
+		t.Fatalf("counts = %+v, want one exact", stats)
+	}
+}
+
+func TestRegisterSecretIgnoresEmptyValue(t *testing.T) {
+	RegisterSecret("", time.Time{})
+	processSecrets.Lock()
+	_, registered := processSecrets.values[""]
+	processSecrets.Unlock()
+	if registered {
+		t.Fatal("an empty value was registered")
+	}
+}

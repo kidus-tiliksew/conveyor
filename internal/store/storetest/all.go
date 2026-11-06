@@ -10,6 +10,7 @@ import (
 
 	"github.com/kidus-tiliksew/conveyor/internal/config"
 	"github.com/kidus-tiliksew/conveyor/internal/store"
+	"github.com/kidus-tiliksew/conveyor/internal/trigger/github"
 )
 
 // Capabilities describe behavior, not merely satisfaction of Go interfaces.
@@ -82,6 +83,14 @@ type Fixture struct {
 	// which moves no task without a dispatcher. It requires this field and
 	// never skips (component-work-orders invariant 39).
 	RedispatchHTTP func(t *testing.T, onDispatch func(context.Context, string)) http.Handler
+	// TaskIntakeHTTP returns the real httpapi handler over Backend, bound to
+	// Workspace and accepting LineageHTTPToken, with generate as its title
+	// generator. GitHubIssueIntake takes one ready issue in through the real
+	// dispatcher with the label move stubbed. storetest cannot import httpapi
+	// or dispatch, so each conformance entry point constructs them. The task
+	// title cases require both and never skip (req-security-boundaries REQ-3).
+	TaskIntakeHTTP    func(t *testing.T, generate func(context.Context, core.Task) (string, error)) http.Handler
+	GitHubIssueIntake func(ctx context.Context, repo config.Repo, issue github.Issue) error
 	// VerificationClaimReads observes the tasks whose verification rows
 	// ReconcileVerificationClaims reads in Workspace and returns a reader of
 	// the task IDs seen so far, in read order. The durable backends read
@@ -336,6 +345,8 @@ func RunAll(t *testing.T, factory Factory) {
 		{"LargeArgumentWrites", true, runLargeArgumentWrites},
 		{"AutomaticRecoveryAuthority", true, runAutomaticRecoveryAuthority},
 		{"ContextFreshness", true, runContextFreshness},
+		{"TaskTitleRedaction", true, runTaskTitleRedaction},
+		{"RedactionCounts", true, runRedactionCounts},
 		{"WorkOrderClocks", true, runWorkOrderClocks},
 		{"QueueReentryPins", true, runQueueReentryPins},
 		{"ReviewRounds", true, runReviewRounds},

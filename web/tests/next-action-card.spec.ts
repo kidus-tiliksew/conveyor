@@ -618,7 +618,8 @@ test('a check hold names each check with its GitHub link and offers the merge ac
     kind: 'check_hold',
     judgment: true,
     summary: 'A failed check holds the merge of the approved head: e2e (failed).',
-    question: 'Rerun the check on GitHub, merge anyway, request changes, or close?',
+    question:
+      'Rerun e2e (failed), legacy-status (pending) on GitHub, merge the approved head anyway, request changes, or close?',
     deadline: null,
     choices: [
       {
