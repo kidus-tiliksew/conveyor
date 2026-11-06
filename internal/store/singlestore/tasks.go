@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"slices"
 	"sort"
 	"strings"
 	"time"
@@ -276,7 +277,12 @@ func (s *Store) ListTasksForRecovery(ctx context.Context, taskIDs []string) (map
 	if err != nil {
 		return nil, err
 	}
-	rows, err := documentRows(ctx, s.db, `SELECT id,state,next_stage,recovery_stage,setup_contract,approval_stale,reviewed_head_sha,refresh_head_sha FROM tasks WHERE workspace_id=? AND id IN (`+taskMapMarks(len(taskIDs))+`)`, append([]any{ws}, taskMapArgs(taskIDs)...)...)
+	// Each ID is one bound parameter here, so duplicates collapse before the
+	// statement instead of counting against the driver's parameter limit.
+	unique := slices.Clone(taskIDs)
+	slices.Sort(unique)
+	unique = slices.Compact(unique)
+	rows, err := documentRows(ctx, s.db, `SELECT id,state,next_stage,recovery_stage,setup_contract,approval_stale,reviewed_head_sha,refresh_head_sha FROM tasks WHERE workspace_id=? AND id IN (`+taskMapMarks(len(unique))+`)`, append([]any{ws}, taskMapArgs(unique)...)...)
 	if err != nil {
 		return nil, err
 	}

@@ -2857,6 +2857,13 @@ func TestPendingPlanRevisionGateForTaskMatchesTheIDForm(t *testing.T) {
 			if pending != tc.wantPending || !errors.Is(err, tc.wantErr) {
 				t.Fatalf("pending=%t err=%v, want %t/%v", pending, err, tc.wantPending, tc.wantErr)
 			}
+			full, fullPending, fullErr := PendingPlanRevisionGateForTask(ctx, fullLedgerStore{st}, core.Task{ID: id, State: tc.state})
+			if got != full || pending != fullPending || fmt.Sprint(err) != fmt.Sprint(fullErr) {
+				t.Fatalf("compact events=%+v/%t/%v, full events=%+v/%t/%v", got, pending, err, full, fullPending, fullErr)
+			}
+			if tc.name == "pending" && got != (PlanRevisionGateContext{WorkOrderID: "order", AttemptID: "attempt", Rationale: "the API moved", PlanVersion: 2}) {
+				t.Fatalf("gate context=%+v", got)
+			}
 		})
 	}
 }

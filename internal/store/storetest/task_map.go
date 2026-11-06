@@ -358,6 +358,12 @@ func runTaskRecoveryReads(t *testing.T, x Fixture, ctx context.Context) {
 		if !reflect.DeepEqual(forward, reordered) {
 			t.Fatalf("forward=%+v reordered=%+v", forward, reordered)
 		}
+		// More copies than a prepared statement has parameters still read as one.
+		repeated, err := st.ListTasksForRecovery(ctx, slices.Repeat([]string{full.ID}, 70000))
+		requireOK(t, err)
+		if len(repeated) != 1 || !reflect.DeepEqual(repeated[full.ID], forward[full.ID]) {
+			t.Fatalf("repeated request rows=%+v", repeated)
+		}
 	})
 	t.Run("an empty request returns an empty map", func(t *testing.T) {
 		for _, ids := range [][]string{nil, {}} {
