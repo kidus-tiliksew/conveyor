@@ -2,7 +2,6 @@ package httpapi
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
@@ -17,8 +16,8 @@ import (
 
 func (s *Server) rebuildLineage(w http.ResponseWriter, r *http.Request) {
 	var request core.LineageRebuildRequest
-	if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
+	if err := decodeBoundedJSON(w, r, taskRouteBodyLimit, &request); err != nil {
+		writeBodyDecodeError(w, err)
 		return
 	}
 	if strings.TrimSpace(request.Reason) == "" || strings.TrimSpace(request.RequestID) == "" {
@@ -27,14 +26,14 @@ func (s *Server) rebuildLineage(w http.ResponseWriter, r *http.Request) {
 	}
 	result, err := s.Store.RebuildLineage(r.Context(), request)
 	if err != nil {
-		status := http.StatusInternalServerError
-		if errors.Is(err, store.ErrLineageRebuildValidation) {
-			status = http.StatusBadRequest
+		switch {
+		case errors.Is(err, store.ErrLineageRebuildValidation):
+			http.Error(w, err.Error(), http.StatusBadRequest)
+		case errors.Is(err, store.ErrLineageRebuildConflict):
+			http.Error(w, err.Error(), http.StatusConflict)
+		default:
+			writeStoreFailure(w, r, err)
 		}
-		if errors.Is(err, store.ErrLineageRebuildConflict) {
-			status = http.StatusConflict
-		}
-		http.Error(w, err.Error(), status)
 		return
 	}
 	writeJSON(w, http.StatusOK, result)

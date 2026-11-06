@@ -36,13 +36,13 @@ func (s *Store) SetTaskAssigneeCommand(ctx context.Context, lease taskops.TaskLe
 			var role core.WorkspaceRole
 			err := documentRow(ctx, tx, `SELECT u.status='active',b.role FROM workspace_role_bindings b JOIN users u ON u.id=b.user_id WHERE b.workspace_id=? AND b.user_id=?`, documentWorkspace(ctx), assigneeUserID).Scan(&active, &role)
 			if errors.Is(err, sql.ErrNoRows) || (err == nil && !active) {
-				return fmt.Errorf("assignee %s is not an active member of workspace %s", assigneeUserID, documentWorkspace(ctx))
+				return fmt.Errorf("assignee %s is not an active member of workspace %s: %w", assigneeUserID, documentWorkspace(ctx), store.ErrAssigneeNotMember)
 			}
 			if err != nil {
 				return err
 			}
 			if !core.RoleAllows(role, core.CapabilityClaimWork) {
-				return fmt.Errorf("assignee %s role %s lacks %s capability in workspace %s", assigneeUserID, role, core.CapabilityClaimWork, documentWorkspace(ctx))
+				return fmt.Errorf("assignee %s role %s lacks %s capability in workspace %s: %w", assigneeUserID, role, core.CapabilityClaimWork, documentWorkspace(ctx), store.ErrAssigneeLacksCapability)
 			}
 		}
 		current := ""

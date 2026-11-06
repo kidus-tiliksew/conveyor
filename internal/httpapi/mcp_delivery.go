@@ -24,8 +24,8 @@ func (s *Server) submitWorkOrderReview(w http.ResponseWriter, r *http.Request) {
 		WorkspaceID string          `json:"workspace_id"`
 		ReviewSeats json.RawMessage `json:"review_seats"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
+	if err := decodeBoundedJSON(w, r, taskRouteBodyLimit, &request); err != nil {
+		writeBodyDecodeError(w, err)
 		return
 	}
 	if request.WorkspaceID == "" {
@@ -45,7 +45,7 @@ func (s *Server) submitWorkOrderReview(w http.ResponseWriter, r *http.Request) {
 	}
 	result, err := s.callMCPTool(r, "submit_for_review", args)
 	if err != nil {
-		writeWorkOrderToolError(w, err)
+		writeWorkOrderToolError(w, r, err)
 		return
 	}
 	writeJSON(w, http.StatusOK, result)
@@ -75,7 +75,7 @@ func (s *Server) getSubmissionTemplate(w http.ResponseWriter, r *http.Request) {
 	// (req-accounts-and-membership AC-4.2; DEC-19; component-http-api).
 	workspace, err := s.resolveMCPWorkspace(r.Context(), r.URL.Query().Get("workspace_id"))
 	if err != nil {
-		writeWorkOrderToolError(w, err)
+		writeWorkOrderToolError(w, r, err)
 		return
 	}
 	ctx := store.WithWorkspace(r.Context(), workspace)
@@ -100,12 +100,12 @@ func (s *Server) getSubmissionTemplate(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	if _, err = s.authorizeClaimantSession(ctx, chi.URLParam(r, "id"), session); err != nil {
-		http.Error(w, err.Error(), http.StatusConflict)
+		writeWorkOrderToolError(w, r, err)
 		return
 	}
 	result, err := s.WorkOrders.PullRequestTemplate(ctx, chi.URLParam(r, "id"), session)
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusConflict)
+		writeWorkOrderToolError(w, r, err)
 		return
 	}
 	writeJSON(w, http.StatusOK, result)

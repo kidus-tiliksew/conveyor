@@ -221,10 +221,10 @@ func NormalizeImplementationSubmission(ctx context.Context, request Implementati
 // non-running job before any submission write.
 func ValidateSubmissionJob(order core.WorkOrder, job core.Job, found bool) error {
 	if !found || job.TaskID != order.TaskID {
-		return fmt.Errorf("work order %s job %s not found for task %s", order.ID, order.JobID, order.TaskID)
+		return Refusef("work order %s job %s not found for task %s", order.ID, order.JobID, order.TaskID)
 	}
 	if job.State != core.JobRunning {
-		return fmt.Errorf("work order %s job %s is %s; submission requires a running job", order.ID, job.ID, job.State)
+		return Refusef("work order %s job %s is %s; submission requires a running job", order.ID, job.ID, job.State)
 	}
 	return ValidateJobTransition(job.State, core.JobDone)
 }

@@ -8,6 +8,7 @@ import (
 	"github.com/kidus-tiliksew/conveyor/internal/core"
 	"github.com/kidus-tiliksew/conveyor/internal/nextaction"
 	"github.com/kidus-tiliksew/conveyor/internal/store"
+	"github.com/kidus-tiliksew/conveyor/internal/taskops"
 )
 
 // failingStoreDriverText reads like an untranslated driver error with a
@@ -99,6 +100,111 @@ func (s *failingStore) ListFactoryActs(ctx context.Context, since time.Time, lim
 		return nil, err
 	}
 	return s.Store.ListFactoryActs(ctx, since, limit)
+}
+
+func (s *failingStore) GetWorkOrder(ctx context.Context, id string) (core.WorkOrder, error) {
+	if err := s.failure("GetWorkOrder"); err != nil {
+		return core.WorkOrder{}, err
+	}
+	return s.Store.GetWorkOrder(ctx, id)
+}
+
+func (s *failingStore) GetWorkOrderWithoutSnapshots(ctx context.Context, id string) (core.WorkOrder, error) {
+	if err := s.failure("GetWorkOrderWithoutSnapshots"); err != nil {
+		return core.WorkOrder{}, err
+	}
+	return s.Store.GetWorkOrderWithoutSnapshots(ctx, id)
+}
+
+func (s *failingStore) GetLatestJob(ctx context.Context, taskID string) (core.Job, bool, error) {
+	if err := s.failure("GetLatestJob"); err != nil {
+		return core.Job{}, false, err
+	}
+	return s.Store.GetLatestJob(ctx, taskID)
+}
+
+func (s *failingStore) ListEvents(ctx context.Context, taskID string) ([]core.Event, error) {
+	if err := s.failure("ListEvents"); err != nil {
+		return nil, err
+	}
+	return s.Store.ListEvents(ctx, taskID)
+}
+
+func (s *failingStore) CountEvents(ctx context.Context, taskID, kind string) (int, error) {
+	if err := s.failure("CountEvents"); err != nil {
+		return 0, err
+	}
+	return s.Store.CountEvents(ctx, taskID, kind)
+}
+
+func (s *failingStore) AppendEvent(ctx context.Context, event core.Event) error {
+	if err := s.failure("AppendEvent"); err != nil {
+		return err
+	}
+	return s.Store.AppendEvent(ctx, event)
+}
+
+func (s *failingStore) ListCompactEvents(ctx context.Context, taskID string) ([]core.Event, error) {
+	if err := s.failure("ListCompactEvents"); err != nil {
+		return nil, err
+	}
+	return s.Store.ListCompactEvents(ctx, taskID)
+}
+
+func (s *failingStore) SetTaskAssigneeCommand(ctx context.Context, lease taskops.TaskLease, id, assignee string) (core.Task, error) {
+	if err := s.failure("SetTaskAssigneeCommand"); err != nil {
+		return core.Task{}, err
+	}
+	return s.Store.SetTaskAssigneeCommand(ctx, lease, id, assignee)
+}
+
+func (s *failingStore) AddTaskDependency(ctx context.Context, request store.DependencyAdditionRequest) (store.DependencyAdditionResult, error) {
+	if err := s.failure("AddTaskDependency"); err != nil {
+		return store.DependencyAdditionResult{}, err
+	}
+	return s.Store.AddTaskDependency(ctx, request)
+}
+
+func (s *failingStore) RemoveTaskDependency(ctx context.Context, request store.DependencyRemovalRequest) (store.DependencyRemovalResult, error) {
+	if err := s.failure("RemoveTaskDependency"); err != nil {
+		return store.DependencyRemovalResult{}, err
+	}
+	return s.Store.RemoveTaskDependency(ctx, request)
+}
+
+func (s *failingStore) RebuildLineage(ctx context.Context, request core.LineageRebuildRequest) (core.LineageRebuildResult, error) {
+	if err := s.failure("RebuildLineage"); err != nil {
+		return core.LineageRebuildResult{}, err
+	}
+	return s.Store.RebuildLineage(ctx, request)
+}
+
+func (s *failingStore) ApplyTaskCommand(ctx context.Context, lease taskops.TaskLease, id string, command taskops.Command) (core.Task, error) {
+	if err := s.failure("ApplyTaskCommand"); err != nil {
+		return core.Task{}, err
+	}
+	return s.Store.ApplyTaskCommand(ctx, lease, id, command)
+}
+
+func (s *failingStore) RequestChangesCommand(ctx context.Context, lease taskops.TaskLease, request taskops.RequestChanges) (core.Task, error) {
+	if err := s.failure("RequestChangesCommand"); err != nil {
+		return core.Task{}, err
+	}
+	return s.Store.RequestChangesCommand(ctx, lease, request)
+}
+
+func (s *failingStore) ChangeTaskPolicyCommand(ctx context.Context, lease taskops.TaskLease, request store.SetupChangeRequest) (store.SetupChangeResult, error) {
+	if err := s.failure("ChangeTaskPolicyCommand"); err != nil {
+		return store.SetupChangeResult{}, err
+	}
+	return s.Store.ChangeTaskPolicyCommand(ctx, lease, request)
+}
+
+func (s *failingStore) CreateTaskWithDependenciesAndContext(ctx context.Context, task core.Task, dependencyIDs []string, attached store.TaskContextInput) error {
+	if err := s.failure("CreateTaskWithDependenciesAndContext"); err != nil {
+		return err
+	}
+	return s.Store.CreateTaskWithDependenciesAndContext(ctx, task, dependencyIDs, attached)
 }
 
 // compile-time check that a test can drop the fixture in for a store.

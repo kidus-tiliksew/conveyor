@@ -1,9 +1,7 @@
 package httpapi
 
 import (
-	"encoding/json"
 	"errors"
-	"log"
 	"net/http"
 	"strings"
 
@@ -18,8 +16,8 @@ func (s *Server) requestTaskChanges(w http.ResponseWriter, r *http.Request) {
 	var request struct {
 		Feedback string `json:"feedback"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
+	if err := decodeBoundedJSON(w, r, taskRouteBodyLimit, &request); err != nil {
+		writeBodyDecodeError(w, err)
 		return
 	}
 	if strings.TrimSpace(request.Feedback) == "" {
@@ -34,7 +32,11 @@ func (s *Server) requestTaskChanges(w http.ResponseWriter, r *http.Request) {
 	taskID := chi.URLParam(r, "id")
 	task, err := s.Store.GetTask(r.Context(), taskID)
 	if err != nil {
-		http.NotFound(w, r)
+		if errors.Is(err, store.ErrNotFound) {
+			http.NotFound(w, r)
+			return
+		}
+		writeStoreFailure(w, r, err)
 		return
 	}
 	if task.Assignee != nil && task.Assignee.UserID != credential.OwnerUserID {
@@ -43,8 +45,7 @@ func (s *Server) requestTaskChanges(w http.ResponseWriter, r *http.Request) {
 			workspaceID, _ := store.WorkspaceFromContext(r.Context())
 			operator, err = s.Memberships.AuthorizeWorkspace(r.Context(), credential.OwnerUserID, workspaceID, core.CapabilitySetAssignee)
 			if err != nil {
-				log.Printf("handle task change request: %v", err)
-				http.Error(w, "internal server error", http.StatusInternalServerError)
+				writeStoreFailure(w, r, err)
 				return
 			}
 		}
@@ -55,8 +56,7 @@ func (s *Server) requestTaskChanges(w http.ResponseWriter, r *http.Request) {
 	}
 	latest, found, err := s.Store.GetLatestJob(r.Context(), taskID)
 	if err != nil {
-		log.Printf("handle task change request: %v", err)
-		http.Error(w, "internal server error", http.StatusInternalServerError)
+		writeStoreFailure(w, r, err)
 		return
 	}
 	if !found || latest.Stage != core.StageReview {
@@ -69,7 +69,7 @@ func (s *Server) requestTaskChanges(w http.ResponseWriter, r *http.Request) {
 	} else if s.ConfigProvider != nil {
 		cfg, cfgErr := s.ConfigProvider(r.Context())
 		if cfgErr != nil {
-			http.Error(w, cfgErr.Error(), http.StatusInternalServerError)
+			writeStoreFailure(w, r, cfgErr)
 			return
 		}
 		maxBounces = cfg.MaxBounces
@@ -81,12 +81,12 @@ func (s *Server) requestTaskChanges(w http.ResponseWriter, r *http.Request) {
 		MaxBounces: maxBounces,
 	})
 	if err != nil {
-		status := http.StatusInternalServerError
 		var invalid *core.ErrInvalidTransition
 		if errors.As(err, &invalid) {
-			status = http.StatusConflict
+			http.Error(w, err.Error(), http.StatusConflict)
+			return
 		}
-		http.Error(w, err.Error(), status)
+		writeStoreFailure(w, r, err)
 		return
 	}
 	if !s.Store.IsDurable() && s.OnCreate != nil {

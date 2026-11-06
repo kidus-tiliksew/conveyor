@@ -132,7 +132,7 @@ func (s *Service) authorityDivergence(ctx context.Context, order core.WorkOrder)
 }
 func (s *Service) RefreshContext(ctx context.Context, id, session, prior string) (core.ContextFreshness, error) {
 	if prior != "" && !core.ValidContextRevision(prior) {
-		return core.ContextFreshness{}, fmt.Errorf("invalid prior_revision")
+		return core.ContextFreshness{}, store.Refusef("invalid prior_revision")
 	}
 	order, err := s.authorized(ctx, id, session)
 	if err != nil {

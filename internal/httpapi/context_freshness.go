@@ -59,7 +59,7 @@ func (s *Server) refreshWorkOrderContext(w http.ResponseWriter, r *http.Request)
 	}
 	result, e := s.callMCPTool(r, "refresh_work_order_context", map[string]any{"workspace_id": body.WorkspaceID, "work_order_id": chi.URLParam(r, "id"), "session_id": body.SessionID, "prior_revision": body.PriorRevision})
 	if e != nil {
-		writeWorkOrderToolError(w, e)
+		writeWorkOrderToolError(w, r, e)
 		return
 	}
 	writeJSON(w, http.StatusOK, result)

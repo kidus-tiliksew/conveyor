@@ -118,7 +118,7 @@ func (s *Store) AddTaskDependency(ctx context.Context, request store.DependencyA
 	request.Reason = strings.TrimSpace(request.Reason)
 	request.RequestID = strings.TrimSpace(request.RequestID)
 	if request.TaskID == "" || request.DependsOnTaskID == "" || request.Reason == "" || request.RequestID == "" {
-		return store.DependencyAdditionResult{}, fmt.Errorf("task_id, depends_on_task_id, reason, and request_id are required")
+		return store.DependencyAdditionResult{}, store.ErrTaskDependencyInvalid
 	}
 	if request.TaskID == request.DependsOnTaskID {
 		return store.DependencyAdditionResult{}, fmt.Errorf("%w: task cannot depend on itself", store.ErrTaskDependencyConflict)
@@ -242,7 +242,7 @@ func (s *Store) RemoveTaskDependency(ctx context.Context, request store.Dependen
 	request.Reason = strings.TrimSpace(request.Reason)
 	request.RequestID = strings.TrimSpace(request.RequestID)
 	if request.TaskID == "" || request.DependsOnTaskID == "" || request.Reason == "" || request.RequestID == "" {
-		return store.DependencyRemovalResult{}, fmt.Errorf("task_id, depends_on_task_id, reason, and request_id are required")
+		return store.DependencyRemovalResult{}, store.ErrTaskDependencyInvalid
 	}
 	actor := store.ActorFromContext(ctx)
 	removed := false
@@ -258,7 +258,7 @@ func (s *Store) RemoveTaskDependency(ctx context.Context, request store.Dependen
 			Scan(&prior.TaskID, &prior.DependsOnTaskID, &prior.Reason, &prior.RequestID, &actorID, &actorRole)
 		if err == nil {
 			if prior != request || actorID != actor.ID || actorRole != string(actor.Role) {
-				return fmt.Errorf("request_id %s was already used for different dependency removal inputs", request.RequestID)
+				return fmt.Errorf("%w: request_id %s was already used for different dependency removal inputs", store.ErrTaskDependencyConflict, request.RequestID)
 			}
 			return nil
 		}
@@ -272,7 +272,7 @@ func (s *Store) RemoveTaskDependency(ctx context.Context, request store.Dependen
 			return err
 		}
 		if affected, _ := command.RowsAffected(); affected != 1 {
-			return fmt.Errorf("dependency edge %s -> %s not found", request.TaskID, request.DependsOnTaskID)
+			return fmt.Errorf("%w: %s -> %s", store.ErrDependencyEdgeNotFound, request.TaskID, request.DependsOnTaskID)
 		}
 		now := time.Now().UTC()
 		if _, err = tx.ExecContext(ctx, `INSERT INTO task_dependency_removals

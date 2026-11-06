@@ -17,6 +17,7 @@ func RunDependencyAdditionConformance(t *testing.T, st store.Store, ctx context.
 	t.Helper()
 	ctx = store.WithActor(ctx, store.Actor{ID: "operator-dependency-link", Role: core.ActorHuman})
 	now := time.Now().UTC()
+	runDependencyEditRefusalConformance(t, st, ctx, workspace, now)
 	create := func(id string, state core.TaskState) {
 		t.Helper()
 		if err := st.CreateTask(ctx, core.Task{ID: id, Workspace: workspace, Repo: "conveyor", Branch: "conveyor/" + id, State: state, CreatedAt: now}); err != nil {
@@ -131,5 +132,36 @@ func RunDependencyAdditionConformance(t *testing.T, st store.Store, ctx context.
 	}
 	if _, err = st.AddTaskDependency(ctx, store.DependencyAdditionRequest{TaskID: dependent, DependsOnTaskID: "missing", Reason: "missing", RequestID: "link-missing"}); !errors.Is(err, store.ErrNotFound) {
 		t.Fatalf("missing dependency error=%v", err)
+	}
+}
+
+// runDependencyEditRefusalConformance holds the dependency-edit refusals to one
+// sentinel on every backend, so a REST route classifies them without reading
+// error text (component-task-lifecycle invariant 29; DEC-105(2)).
+func runDependencyEditRefusalConformance(t *testing.T, st store.Store, ctx context.Context, workspace string, now time.Time) {
+	t.Helper()
+	dependent, dependency, other := "edit-refusal-dependent", "edit-refusal-dependency", "edit-refusal-other"
+	for _, id := range []string{dependent, dependency, other} {
+		if err := st.CreateTask(ctx, core.Task{ID: id, Workspace: workspace, Repo: "conveyor", Branch: "conveyor/" + id, State: core.TaskRunning, CreatedAt: now}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := st.AddTaskDependency(ctx, store.DependencyAdditionRequest{TaskID: dependent}); !errors.Is(err, store.ErrTaskDependencyInvalid) {
+		t.Fatalf("incomplete addition err = %v, want ErrTaskDependencyInvalid", err)
+	}
+	if _, err := st.RemoveTaskDependency(ctx, store.DependencyRemovalRequest{TaskID: dependent}); !errors.Is(err, store.ErrTaskDependencyInvalid) {
+		t.Fatalf("incomplete removal err = %v, want ErrTaskDependencyInvalid", err)
+	}
+	if _, err := st.RemoveTaskDependency(ctx, store.DependencyRemovalRequest{TaskID: dependent, DependsOnTaskID: other, Reason: "absent edge", RequestID: "edit-refusal-absent"}); !errors.Is(err, store.ErrDependencyEdgeNotFound) {
+		t.Fatalf("absent edge err = %v, want ErrDependencyEdgeNotFound", err)
+	}
+	if _, err := st.AddTaskDependency(ctx, store.DependencyAdditionRequest{TaskID: dependent, DependsOnTaskID: dependency, Reason: "edge", RequestID: "edit-refusal-add"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.RemoveTaskDependency(ctx, store.DependencyRemovalRequest{TaskID: dependent, DependsOnTaskID: dependency, Reason: "edge", RequestID: "edit-refusal-remove"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.RemoveTaskDependency(ctx, store.DependencyRemovalRequest{TaskID: dependent, DependsOnTaskID: dependency, Reason: "a different reason", RequestID: "edit-refusal-remove"}); !errors.Is(err, store.ErrTaskDependencyConflict) {
+		t.Fatalf("reused removal request err = %v, want ErrTaskDependencyConflict", err)
 	}
 }

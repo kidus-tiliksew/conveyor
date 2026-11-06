@@ -593,7 +593,7 @@ func (s *Store) RetryReviewRoundCommand(ctx context.Context, lease taskops.TaskL
 	r.Reason = strings.TrimSpace(r.Reason)
 	r.PRHead = strings.TrimSpace(r.PRHead)
 	if r.RequestID == "" || r.Reason == "" || r.PRHead == "" {
-		return result, fmt.Errorf("review retry request_id, reason, and verified PR head are required")
+		return result, store.Refusef("review retry request_id, reason, and verified PR head are required")
 	}
 	if len(jobs) == 0 || len(jobs) != len(orders) {
 		return result, fmt.Errorf("review retry requires one job per work order")
@@ -725,7 +725,7 @@ func (s *Store) RecoverInterruptedReviewRoundCommand(ctx context.Context, lease 
 	}
 	r.RequestID = strings.TrimSpace(r.RequestID)
 	if r.RequestID == "" || r.TaskID == "" || r.Round <= 0 || timeout <= 0 {
-		return result, fmt.Errorf("interrupted review recovery requires task, request_id, round, and queue timeout")
+		return result, store.Refusef("interrupted review recovery requires task, request_id, round, and queue timeout")
 	}
 	err := s.taskTx(ctx, r.TaskID, func(tx *sql.Tx) error {
 		ws := documentWorkspace(ctx)

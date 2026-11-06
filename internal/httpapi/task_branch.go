@@ -1,7 +1,6 @@
 package httpapi
 
 import (
-	"encoding/json"
 	"errors"
 	"fmt"
 	"log"
@@ -15,8 +14,8 @@ func (s *Server) attachTaskBranch(w http.ResponseWriter, r *http.Request) {
 	var request struct {
 		Branch string `json:"branch"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
+	if err := decodeBoundedJSON(w, r, taskRouteBodyLimit, &request); err != nil {
+		writeBodyDecodeError(w, err)
 		return
 	}
 	task, err := s.Store.AttachTaskBranch(r.Context(), chi.URLParam(r, "id"), request.Branch)

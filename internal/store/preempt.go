@@ -39,7 +39,7 @@ func PrepareWorkOrderPreemptRequest(request WorkOrderPreemptRequest) (WorkOrderP
 	request.RequestID = strings.TrimSpace(request.RequestID)
 	request.Reason = strings.TrimSpace(request.Reason)
 	if request.WorkOrderID == "" || request.RequestID == "" || request.Reason == "" {
-		return request, fmt.Errorf("work_order_id, reason, and request_id are required")
+		return request, Refusef("work_order_id, reason, and request_id are required")
 	}
 	return request, nil
 }

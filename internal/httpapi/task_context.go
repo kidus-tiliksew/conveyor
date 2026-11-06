@@ -1,7 +1,6 @@
 package httpapi
 
 import (
-	"encoding/json"
 	"errors"
 	"log"
 	"net/http"
@@ -13,8 +12,8 @@ import (
 
 func (s *Server) updateTaskContext(w http.ResponseWriter, r *http.Request) {
 	var request store.TaskContextChange
-	if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
+	if err := decodeBoundedJSON(w, r, taskRouteBodyLimit, &request); err != nil {
+		writeBodyDecodeError(w, err)
 		return
 	}
 	context, err := s.Store.UpdateTaskContext(r.Context(), chi.URLParam(r, "id"), request)

@@ -61,11 +61,11 @@ func (s *Service) admitSubmission(ctx context.Context, id, session, headSHA stri
 	}
 	if current.State == core.WorkOrderSubmitted && current.Stage == core.StageImplement {
 		if session == "" || current.SessionID != session {
-			return core.WorkOrder{}, false, fmt.Errorf("work order %s belongs to another session", id)
+			return core.WorkOrder{}, false, store.Refusef("work order %s belongs to another session", id)
 		}
 		head := strings.TrimSpace(headSHA)
 		if head == "" || current.HeadSHA == "" || head != current.HeadSHA {
-			return core.WorkOrder{}, false, fmt.Errorf("work order %s is not claimed: it was already submitted at head %q; only that head replays the handoff", id, current.HeadSHA)
+			return core.WorkOrder{}, false, store.Refusef("work order %s is not claimed: it was already submitted at head %q; only that head replays the handoff", id, current.HeadSHA)
 		}
 		return current, true, nil
 	}
@@ -82,11 +82,11 @@ func (s *Service) submitForReviewLocked(ctx context.Context, id, session, headSH
 		return s.submissionReplayResult(ctx, order)
 	}
 	if order.Stage != core.StageImplement {
-		return nil, fmt.Errorf("work order %s is not implement", id)
+		return nil, store.Refusef("work order %s is not implement", id)
 	}
 	headSHA = strings.TrimSpace(headSHA)
 	if headSHA == "" {
-		return nil, fmt.Errorf("head_sha is required")
+		return nil, store.Refusef("head_sha is required")
 	}
 	if err = s.enforce(ctx, order); err != nil {
 		return nil, err
@@ -123,7 +123,7 @@ func (s *Service) submitForReviewLocked(ctx context.Context, id, session, headSH
 	// Read-only admission: the task must accept stage.advance and the order's
 	// own job must be completable before any submission side effect.
 	if _, err = core.TransitionTask(task.State, core.TaskStageAdvance); err != nil {
-		return nil, fmt.Errorf("submission refused before side effects: %w", err)
+		return nil, store.Refuse(fmt.Errorf("submission refused before side effects: %w", err))
 	}
 	if err = s.submissionJobReady(ctx, order); err != nil {
 		return nil, err
@@ -137,7 +137,7 @@ func (s *Service) submitForReviewLocked(ctx context.Context, id, session, headSH
 	}
 	repo, ok := cfg.Repo(task.Repo)
 	if !ok {
-		return nil, fmt.Errorf("repo %s not found", task.Repo)
+		return nil, store.Refusef("repo %s not found", task.Repo)
 	}
 	var target github.SubmissionPullRequest
 	var documentationEvidence *core.DocumentationGateEvidence
@@ -153,17 +153,17 @@ func (s *Service) submitForReviewLocked(ctx context.Context, id, session, headSH
 			// is admitted without an association (req-delivery-and-forge
 			// AC-8.2, AC-8.4; component-submission-merge).
 			if task.GitHub.Repository != repo.GitHub {
-				return nil, fmt.Errorf("task GitHub association repository %q does not match configured repository %q", task.GitHub.Repository, repo.GitHub)
+				return nil, store.Refusef("task GitHub association repository %q does not match configured repository %q", task.GitHub.Repository, repo.GitHub)
 			}
 			if task.GitHub.State != core.GitHubPublicationPublished || task.GitHub.IssueNumber <= 0 {
-				return nil, fmt.Errorf("GitHub issue publication for task %s is %s; retry after publication reconciliation", task.ID, task.GitHub.State)
+				return nil, store.Refusef("GitHub issue publication for task %s is %s; retry after publication reconciliation", task.ID, task.GitHub.State)
 			}
 		}
 		lookup := s.SubmissionPR
 		if lookup == nil {
 			forgeCtx, err = s.workspaceForgeContext(ctx, repo.GitHub)
 			if err != nil {
-				return nil, err
+				return nil, store.Refuse(err)
 			}
 			lookup = github.SubmissionPRForBranch
 		}
@@ -197,15 +197,15 @@ func (s *Service) submitForReviewLocked(ctx context.Context, id, session, headSH
 		}
 		paths, pathErr := changedPaths(forgeCtx, cfg, comparisonTask)
 		if pathErr != nil {
-			return nil, fmt.Errorf("resolve submission diff changed paths: %w", pathErr)
+			return nil, store.Refuse(fmt.Errorf("resolve submission diff changed paths: %w", pathErr))
 		}
 		if repo.GitHub != "" {
 			diff, diffErr := s.reviewDiffBetween(ctx, repo.GitHub, comparisonTask.BaseBranch, headSHA)
 			if diffErr != nil {
-				return nil, fmt.Errorf("resolve submission diff for head %s: %w", headSHA, diffErr)
+				return nil, store.Refuse(fmt.Errorf("resolve submission diff for head %s: %w", headSHA, diffErr))
 			}
 			if len(diff) > 25<<20 {
-				return nil, fmt.Errorf("submission diff for head %s exceeds the 25 MiB review input limit", headSHA)
+				return nil, store.Refusef("submission diff for head %s exceeds the 25 MiB review input limit", headSHA)
 			}
 		}
 		if repo.GitHub != "" {
@@ -227,11 +227,11 @@ func (s *Service) submitForReviewLocked(ctx context.Context, id, session, headSH
 			reconcile = github.ReconcileSubmissionPR
 			forgeCtx, err = s.workspaceForgeContext(ctx, repo.GitHub)
 			if err != nil {
-				return nil, err
+				return nil, store.Refuse(err)
 			}
 		}
 		if err = reconcile(forgeCtx, repo.GitHub, target, dispatch.PRBody(task, dispatch.PRBodyContext{PublicURL: s.PublicURL, Repository: repo.GitHub}, evidence...)); err != nil {
-			return nil, fmt.Errorf("reconcile pull request body: %w", err)
+			return nil, store.Refuse(fmt.Errorf("reconcile pull request body: %w", err))
 		}
 		evidenceIDs := make([]string, 0, len(evidence))
 		for _, item := range evidence {
@@ -322,7 +322,7 @@ func documentationSubmissionEvidence(ctx context.Context, taskID, headSHA string
 		return nil, nil
 	case "present":
 		if declaration.Revision != target.Base.SHA || declaration.Policy == nil {
-			return nil, fmt.Errorf("submission refused before side effects: documentation declaration revision mismatch")
+			return nil, store.Refusef("submission refused before side effects: documentation declaration revision mismatch")
 		}
 		policyJSON, err := json.Marshal(declaration.Policy)
 		if err != nil {
@@ -334,11 +334,11 @@ func documentationSubmissionEvidence(ctx context.Context, taskID, headSHA string
 			AgentAuthoredBody: github.AgentAuthoredPullRequestBody(target.Body),
 		})
 		if err != nil {
-			return nil, fmt.Errorf("submission refused before side effects: %w", err)
+			return nil, store.Refuse(fmt.Errorf("submission refused before side effects: %w", err))
 		}
 		return &evidence, nil
 	default:
-		return nil, fmt.Errorf("submission refused before side effects: documentation declaration %s at base %s", declaration.State, target.Base.SHA)
+		return nil, store.Refusef("submission refused before side effects: documentation declaration %s at base %s", declaration.State, target.Base.SHA)
 	}
 }
 
@@ -376,7 +376,7 @@ func (s *Service) dispatchedRefreshDocumentationAdmission(ctx context.Context, c
 		var err error
 		forgeCtx, err = s.workspaceForgeContext(ctx, repo.GitHub)
 		if err != nil {
-			return nil, true, fmt.Errorf("resolve conflict-fix forge context: %w", err)
+			return nil, true, store.Refuse(fmt.Errorf("resolve conflict-fix forge context: %w", err))
 		}
 		lookup = github.SubmissionPRForBranch
 	}
@@ -394,7 +394,7 @@ func (s *Service) dispatchedRefreshDocumentationAdmission(ctx context.Context, c
 		}
 	}
 	if err != nil {
-		return nil, true, fmt.Errorf("read conflict-fix pull request: %w", err)
+		return nil, true, store.Refuse(fmt.Errorf("read conflict-fix pull request: %w", err))
 	}
 	if target.Base.SHA != declaration.Revision {
 		declaration = s.discoverDocumentationPolicy(ctx, repo.GitHub, target.Base.SHA)
@@ -404,7 +404,7 @@ func (s *Service) dispatchedRefreshDocumentationAdmission(ctx context.Context, c
 		return evidence, true, err
 	}
 	if target.Head.SHA != head || target.Head.Ref != task.Branch || target.Base.Ref != task.BaseBranch {
-		return nil, true, fmt.Errorf("submission refused before side effects: documentation declaration pull request does not match the conflict-fix head and branch")
+		return nil, true, store.Refusef("submission refused before side effects: documentation declaration pull request does not match the conflict-fix head and branch")
 	}
 	comparison := task
 	comparison.ReviewedHeadSHA, comparison.BaseBranch = head, target.Base.SHA
@@ -417,7 +417,7 @@ func (s *Service) dispatchedRefreshDocumentationAdmission(ctx context.Context, c
 	}
 	paths, err := changedPaths(forgeCtx, cfg, comparison)
 	if err != nil {
-		return nil, true, fmt.Errorf("resolve documentation admission changed paths: %w", err)
+		return nil, true, store.Refuse(fmt.Errorf("resolve documentation admission changed paths: %w", err))
 	}
 	evidence, err := documentationSubmissionEvidence(ctx, task.ID, head, target, paths, declaration)
 	return evidence, true, err
@@ -433,17 +433,17 @@ func (s *Service) observeSubmissionPR(ctx, forgeCtx context.Context, lookup func
 	for attempt := 0; ; attempt++ {
 		target, err := lookup(forgeCtx, repo, branch)
 		if err != nil {
-			return github.SubmissionPullRequest{}, fmt.Errorf("read pull request for branch %s expected head %s: %w", branch, head, err)
+			return github.SubmissionPullRequest{}, store.Refuse(fmt.Errorf("read pull request for branch %s expected head %s: %w", branch, head, err))
 		}
 		lagging := target.Number > 0 && target.Head.Ref == branch && target.Base.Ref == base && target.Head.SHA != head
 		if !lagging || attempt >= len(submissionPRHeadBackoff) {
 			if err = github.ValidateSubmissionPR(target, branch, base, head); err != nil {
-				return github.SubmissionPullRequest{}, err
+				return github.SubmissionPullRequest{}, store.Refuse(err)
 			}
 			return target, nil
 		}
 		if err = s.waitSubmissionPR(ctx, submissionPRHeadBackoff[attempt]); err != nil {
-			return github.SubmissionPullRequest{}, fmt.Errorf("read pull request for branch %s expected head %s observed head %s: %w", branch, head, target.Head.SHA, err)
+			return github.SubmissionPullRequest{}, store.Refuse(fmt.Errorf("read pull request for branch %s expected head %s observed head %s: %w", branch, head, target.Head.SHA, err))
 		}
 	}
 }
@@ -620,7 +620,7 @@ func (s *Service) submissionReplayResult(ctx context.Context, order core.WorkOrd
 		}
 	}
 	if !completed {
-		return nil, fmt.Errorf("work order %s was submitted at head %s but its job %s is not complete; recovery is an operator action", order.ID, order.HeadSHA, order.JobID)
+		return nil, store.Refusef("work order %s was submitted at head %s but its job %s is not complete; recovery is an operator action", order.ID, order.HeadSHA, order.JobID)
 	}
 	task, err := s.Store.GetTask(ctx, order.TaskID)
 	if err != nil {
@@ -637,7 +637,7 @@ func (s *Service) submissionReplayResult(ctx context.Context, order core.WorkOrd
 		}
 	}
 	if !advanced && !refreshed {
-		return nil, fmt.Errorf("work order %s was submitted at head %s but its review handoff was not recorded (no stage advance or head-bound refresh); the submission is partial and recovery is an operator action", order.ID, order.HeadSHA)
+		return nil, store.Refusef("work order %s was submitted at head %s but its review handoff was not recorded (no stage advance or head-bound refresh); the submission is partial and recovery is an operator action", order.ID, order.HeadSHA)
 	}
 	cfg, err := s.config(ctx)
 	if err != nil {
@@ -764,7 +764,7 @@ func (s *Service) PullRequestTemplate(ctx context.Context, id, session string) (
 		return result, err
 	}
 	if order.Stage != core.StageImplement {
-		return result, fmt.Errorf("work order %s is not implement", id)
+		return result, store.Refusef("work order %s is not implement", id)
 	}
 	if err = s.enforce(ctx, order); err != nil {
 		return result, err
@@ -779,7 +779,7 @@ func (s *Service) PullRequestTemplate(ctx context.Context, id, session string) (
 	}
 	repo, ok := cfg.Repo(task.Repo)
 	if !ok || repo.GitHub == "" {
-		return result, fmt.Errorf("GitHub repository is required for submission")
+		return result, store.Refusef("GitHub repository is required for submission")
 	}
 	evidence, err := s.taskVerificationEvidence(ctx, task.ID)
 	if err != nil {

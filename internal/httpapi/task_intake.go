@@ -5,11 +5,14 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log"
 	"net/http"
 	"reflect"
 	"sort"
 	"strings"
 	"time"
+
+	"github.com/go-chi/chi/v5/middleware"
 
 	"github.com/kidus-tiliksew/conveyor/internal/config"
 	"github.com/kidus-tiliksew/conveyor/internal/core"
@@ -37,10 +40,14 @@ func taskCreateStatus(err error) int {
 	return http.StatusInternalServerError
 }
 
-func writeTaskCreateError(w http.ResponseWriter, err error) {
+func writeTaskCreateError(w http.ResponseWriter, r *http.Request, err error) {
 	typed, ok := err.(*taskCreateError)
-	if !ok || typed.Code == "" {
-		http.Error(w, err.Error(), taskCreateStatus(err))
+	if !ok {
+		writeStoreFailure(w, r, err)
+		return
+	}
+	if typed.Code == "" {
+		http.Error(w, typed.Message, typed.Status)
 		return
 	}
 	writeJSON(w, typed.Status, map[string]string{"error": typed.Code, "message": typed.Message})
@@ -111,7 +118,8 @@ func (s *Server) createTaskRecordWithState(ctx context.Context, req createTaskRe
 		var err error
 		current, err = s.ConfigProvider(ctx)
 		if err != nil {
-			return taskCreateResult{}, &taskCreateError{Status: http.StatusServiceUnavailable, Message: err.Error()}
+			log.Printf("httpapi: task intake configuration unavailable: request_id=%q error=%q", middleware.GetReqID(ctx), redactedErrorLogText(err))
+			return taskCreateResult{}, &taskCreateError{Status: http.StatusServiceUnavailable, Message: "workspace configuration is unavailable"}
 		}
 		repos = current.RepoNames()
 		workspace = current.Workspace
@@ -209,6 +217,9 @@ func (s *Server) createTaskRecordWithState(ctx context.Context, req createTaskRe
 		var referenceErr *store.TaskContextReferenceError
 		if errors.As(err, &referenceErr) {
 			return taskCreateResult{}, taskContextCreateError(referenceErr)
+		}
+		if !isOperationRefusal(err) {
+			return taskCreateResult{}, err
 		}
 		return taskCreateResult{}, &taskCreateError{Status: http.StatusConflict, Message: fmt.Sprintf("create task: %v", err)}
 	}

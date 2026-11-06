@@ -1978,7 +1978,7 @@ func TestTaskActivityFailsClosedWhenMergeReadinessCannotBeResolved(t *testing.T)
 	}
 	server := NewServer(st)
 	server.OnMergeReadiness = func(context.Context, core.Task) (dispatch.MergeReadiness, error) {
-		return dispatch.MergeReadiness{}, fmt.Errorf("github unavailable")
+		return dispatch.MergeReadiness{}, githubtrigger.CategorizeError(fmt.Errorf("github unavailable"))
 	}
 
 	response := httptest.NewRecorder()
