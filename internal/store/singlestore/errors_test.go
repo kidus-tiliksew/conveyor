@@ -120,11 +120,11 @@ func TestDriverLogRedactsAndBoundsMessage(t *testing.T) {
 		}
 		line := captured.String()
 		if strings.Contains(line, "s3cr3tV4lue") || strings.Contains(line, "192.0.2.7") || strings.Contains(line, "Leaf Error") {
-			t.Fatalf("server text reached the log: %q", line)
+			t.Fatal("the row value or leaf address reached the log")
 		}
 		logged := loggedDriverMessage(t, line)
 		if len(logged) != driverLogMessageLimit || !strings.HasPrefix(logged, prefix+"kkk") {
-			t.Fatalf("logged message length %d, prefix %.60q", len(logged), logged)
+			t.Fatalf("logged message length %d, want the bound %d, and the fixed prefix", len(logged), driverLogMessageLimit)
 		}
 	})
 
@@ -134,7 +134,7 @@ func TestDriverLogRedactsAndBoundsMessage(t *testing.T) {
 		translateBackendConflict(&mysql.MySQLError{Number: 1062, Message: "Duplicate entry '" + value + "' for key '" + name + "'"})
 		logged := loggedDriverMessage(t, captured.String())
 		if strings.Contains(logged, "Fak3Fixture") || !strings.HasPrefix(logged, prefix+"[REDACTED:") {
-			t.Fatalf("secret shaped key name logged as %q", logged)
+			t.Fatal("a secret shaped key name was not redacted")
 		}
 	})
 
@@ -143,13 +143,13 @@ func TestDriverLogRedactsAndBoundsMessage(t *testing.T) {
 		name := "registered_fixture_key_" + strings.ReplaceAll(core.NewTaskID(), "-", "_")
 		translateBackendConflict(&mysql.MySQLError{Number: 1062, Message: "Duplicate key " + name})
 		if logged := loggedDriverMessage(t, captured.String()); logged != prefix+name+"'" {
-			t.Fatalf("control failed: an unregistered key name logged as %q", logged)
+			t.Fatalf("control failed: an unregistered key name was not logged, got %d bytes", len(logged))
 		}
 		redact.RegisterSecret(name, time.Time{})
 		captured = captureLog(t)
 		translateBackendConflict(&mysql.MySQLError{Number: 1062, Message: "Duplicate key " + name})
 		if logged := loggedDriverMessage(t, captured.String()); strings.Contains(logged, name) || !strings.Contains(logged, "[REDACTED") {
-			t.Fatalf("registered key name logged as %q", logged)
+			t.Fatal("a registered key name was not redacted")
 		}
 	})
 
@@ -158,7 +158,7 @@ func TestDriverLogRedactsAndBoundsMessage(t *testing.T) {
 			captured := captureLog(t)
 			translateBackendConflict(&mysql.MySQLError{Number: number, Message: value + " " + strings.Repeat("é", 2*driverLogMessageLimit)})
 			if logged := loggedDriverMessage(t, captured.String()); logged != omittedDriverMessage {
-				t.Fatalf("number %d logged %.60q", number, logged)
+				t.Fatalf("number %d logged %d bytes of text outside its list", number, len(logged))
 			}
 		}
 	})
@@ -232,7 +232,7 @@ func TestDriverLogAdmitsOnlyFixedForms(t *testing.T) {
 		{"1706 exact text is kept", 1706, general, refused, refused, nil},
 		{"1706 other text is omitted", 1706, general, "Feature '" + rowValue + "' is not supported", omitted, dropped},
 		{"1857 text under another number is omitted", 1064, syntax, aborted, omitted, []string{"aborted"}},
-		{"sentinel text from a server error is omitted without a list match", 0, general, rowValue, omitted, dropped},
+		{"number 0 with text outside the sentinel list is omitted", 0, general, rowValue, omitted, dropped},
 	}
 	for _, form := range forms {
 		t.Run(form.name, func(t *testing.T) {
