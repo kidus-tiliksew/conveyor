@@ -152,7 +152,7 @@ export function WorkspacePage() {
               {/* When the tabs exceed a phone width, the row scrolls inside itself. */}
               <div
                 role="tablist"
-                className="flex gap-4 overflow-x-auto border-b border-border [scrollbar-width:none] [&::-webkit-scrollbar]:hidden"
+                className="flex gap-4 overflow-x-auto shadow-[inset_0_-1px_0_var(--color-border)] [scrollbar-width:none] [&::-webkit-scrollbar]:hidden"
               >
                 {TABS.map((entry) => {
                   const dirty = dirtyTabs.includes(entry.id)
@@ -165,7 +165,7 @@ export function WorkspacePage() {
                       aria-selected={tab === entry.id}
                       onClick={() => setTab(entry.id)}
                       className={cn(
-                        '-mb-px flex shrink-0 items-center gap-2 whitespace-nowrap border-b-2 pb-2.5 pt-1.5 text-[13px] font-medium transition-colors focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-primary',
+                        'flex shrink-0 items-center gap-2 whitespace-nowrap border-b-2 pb-2.5 pt-1.5 text-[13px] font-medium transition-colors focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-primary',
                         tab === entry.id
                           ? 'border-primary text-foreground'
                           : 'border-transparent text-muted hover:text-foreground',

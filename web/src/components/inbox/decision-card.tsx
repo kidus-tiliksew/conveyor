@@ -201,7 +201,7 @@ export function DecisionDetail({ item, task, onActed }: { item: InboxItem; task:
               </span>
             </p>
           )}
-          <div className="flex min-w-0 flex-wrap items-end gap-x-3 gap-y-2">
+          <div className="flex min-w-0 flex-wrap items-center gap-x-3 gap-y-2">
             {/* Buttons inherit their font (styles.css), so the wrapper sets their size. */}
             <div className="min-w-0 flex-1">
               {contextRows ? (

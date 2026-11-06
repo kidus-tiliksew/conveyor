@@ -120,7 +120,7 @@
   --color-primary-soft: #232848;
   --color-primary-fill: #5b66e8;
   --color-segment: #363a43;
-  --switch-knob-off: #8d94a2;
+  --switch-knob-off: #e3e5ea;
 
   --color-attention: #efb464;
   --color-attention-soft: #33271a;
@@ -207,6 +207,18 @@ time, td, dd { font-variant-numeric: tabular-nums; }
    steps down rather than competing with it. */
 .document-body .markdown { font-size: 0.9375rem; line-height: 1.62; }
 .document-body .markdown p { margin: 0.9em 0; }
+@media (min-width: 64rem) {
+  .document-reading .markdown > :is(table, pre, [data-mermaid]) {
+    display: block;
+    position: relative;
+    left: 50%;
+    transform: translateX(-50%);
+    width: max-content;
+    min-width: 100%;
+    max-width: min(50rem, calc(100vw - 40rem));
+    overflow-x: auto;
+  }
+}
 .task-reading .markdown > :not(table, pre, [data-mermaid]) { max-width: 37rem; }
 .document-body .markdown > :not(table, pre, [data-mermaid]) { max-width: 35rem; }
 .document-body .markdown > :is(h1, h2):first-child { font-size: 0.9375rem; letter-spacing: -0.008em; margin-bottom: 0.4em; }

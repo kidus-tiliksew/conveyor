@@ -643,7 +643,7 @@ function FinalizedHandoff({
   const { workspace } = useWorkspaceSelection()
   return (
     <div className={`shrink-0 border-t border-border bg-positive-soft/60 ${gutter} py-2.5`}>
-      <div className={`flex flex-wrap items-center gap-3 ${sidebar ? '' : 'mx-auto max-w-3xl'}`}>
+      <div className="flex flex-wrap items-center gap-3">
         <CheckCircle2 className="size-4 text-positive" />
         <div className="min-w-0 flex-1">
           <p className="text-[13px] font-medium text-positive">Planning artifact finalized</p>

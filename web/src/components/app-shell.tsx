@@ -586,7 +586,7 @@ function MobileNav() {
   const close = () => setOpen(false)
   return (
     <>
-      <header className="flex h-12 shrink-0 items-center gap-2 border-b border-border bg-rail px-2">
+      <header className="flex h-12 shrink-0 items-center gap-2 border-b border-border bg-rail pl-2 pr-4">
         <Button variant="ghost" size="icon" aria-label="Open navigation" onClick={() => setOpen(true)}>
           <Menu />
         </Button>
