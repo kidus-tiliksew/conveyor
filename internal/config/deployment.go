@@ -48,7 +48,7 @@ func LoadDeployment(path string, logf func(string, ...any)) (*Config, error) {
 func ParseDeployment(data []byte, path string, logf func(string, ...any)) (*Config, error) {
 	stripped, ignored, packDirSet, err := stripDeploymentExecutionDetail(data)
 	if err != nil {
-		return nil, fmt.Errorf("parse %s: %w", path, err)
+		return nil, fmt.Errorf("parse %s: %w", path, locatedYAMLError[Config](data, err))
 	}
 	if len(ignored) != 0 && logf != nil {
 		logf("config: %s: ignoring retired execution detail in deployment configuration (DEC-56): %s", path, strings.Join(ignored, ", "))
@@ -77,7 +77,7 @@ func MarshalDeployment(c *Config) ([]byte, error) {
 		return nil, fmt.Errorf("marshal deployment config: %w", err)
 	}
 	var root map[string]any
-	if err := yaml.Unmarshal(stripped, &root); err != nil {
+	if err := unmarshalYAML(stripped, &root); err != nil {
 		return nil, fmt.Errorf("marshal deployment config: %w", err)
 	}
 	delete(root, "routing")
@@ -115,7 +115,7 @@ func DeploymentHoldsDatabaseURL(data []byte) (bool, error) {
 // without execution detail plus the sorted removed field paths.
 func stripDeploymentExecutionDetail(data []byte) ([]byte, []string, bool, error) {
 	var root map[string]any
-	if err := yaml.Unmarshal(data, &root); err != nil {
+	if err := unmarshalYAML(data, &root); err != nil {
 		return nil, nil, false, err
 	}
 	if root == nil {

@@ -1,6 +1,8 @@
 package nextaction
 
 import (
+	"slices"
+	"strings"
 	"testing"
 	"time"
 
@@ -218,5 +220,39 @@ func TestClaimFailingChoicesKeepOnlyTheRedispatchException(t *testing.T) {
 	requireWithheld(t, running, "redispatch", core.TaskRedispatchActiveRefusal)
 	if hasChoice(running, "change_policy") || !hasRefusal(running, "change_policy") {
 		t.Fatalf("change_policy: choices %+v refusals %+v", running.Choices, running.Details.Refusals)
+	}
+}
+
+// TestAwaitingGatesOfferNoRedispatch proves the statement at a pending
+// plan-revision decision offers only the decision, and that no awaiting gate
+// names the redispatch route, even with a stale order that would offer it
+// outside a gate (req-operator-next-action AC-1.4; component-next-action
+// invariants 3, 7, and 8; component-work-orders invariant 39).
+func TestAwaitingGatesOfferNoRedispatch(t *testing.T) {
+	for _, gate := range []core.GateKind{
+		core.GateKindPlanRevision, core.GateKindPlanApproval, core.GateKindMergeApproval,
+		core.GateKindReviewBounceLimit, core.GateKindJobFailure, "",
+	} {
+		t.Run("gate "+string(gate), func(t *testing.T) {
+			got := Project(stalledInput(core.Task{ID: "t", State: core.TaskAwaiting, NextStage: core.StageImplement, GateKind: gate}, StallRetrySuppressed))
+			for _, choice := range got.Choices {
+				if choice.ID == "redispatch" || strings.HasSuffix(choice.Path, "/redispatch") {
+					t.Fatalf("%s offers %+v", got.Kind, choice)
+				}
+			}
+			if gate != core.GateKindPlanRevision {
+				return
+			}
+			if got.Kind != KindPlanRevision {
+				t.Fatalf("kind = %s, want %s", got.Kind, KindPlanRevision)
+			}
+			var ids []string
+			for _, choice := range got.Choices {
+				ids = append(ids, choice.ID)
+			}
+			if want := []string{"approve_revision", "decline", "reject"}; !slices.Equal(ids, want) {
+				t.Fatalf("choices = %v, want %v", ids, want)
+			}
+		})
 	}
 }
