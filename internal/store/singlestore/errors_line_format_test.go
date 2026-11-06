@@ -17,8 +17,12 @@ func TestDriverLogLineFormatIsUnchanged(t *testing.T) {
 		want  string
 	}{
 		{
+			&mysql.MySQLError{Number: 1706, SQLState: [5]byte{'H', 'Y', '0', '0', '0'}, Message: "Feature 'COM_STMT_SEND_LONG_DATA' is not supported by SingleStore"},
+			`singlestore: database operation failed: operation=TestDriverLogLineFormatIsUnchanged error=1706 sqlstate=HY000 message="Feature 'COM_STMT_SEND_LONG_DATA' is not supported by SingleStore"` + "\n",
+		},
+		{
 			&mysql.MySQLError{Number: 1706, SQLState: [5]byte{'H', 'Y', '0', '0', '0'}, Message: "Feature 'X' is not supported"},
-			`singlestore: database operation failed: operation=TestDriverLogLineFormatIsUnchanged error=1706 sqlstate=HY000 message="Feature 'X' is not supported"` + "\n",
+			`singlestore: database operation failed: operation=TestDriverLogLineFormatIsUnchanged error=1706 sqlstate=HY000 message="server message omitted"` + "\n",
 		},
 		{
 			mysql.ErrInvalidConn,
@@ -32,8 +36,9 @@ func TestDriverLogLineFormatIsUnchanged(t *testing.T) {
 		}
 	}
 	captured := captureLog(t)
-	translateBackendConflict(&mysql.MySQLError{Number: 1706, Message: strings.Repeat("x", 2*store.DriverLogMessageLimit)})
-	want := `singlestore: database operation failed: operation=TestDriverLogLineFormatIsUnchanged error=1706 sqlstate= message="` + strings.Repeat("x", 1024) + "\"\n"
+	translateBackendConflict(&mysql.MySQLError{Number: 1062, Message: "Duplicate key " + strings.Repeat("x", 2*store.DriverLogMessageLimit)})
+	const admitted = "Duplicate entry [value omitted] for key '"
+	want := `singlestore: database operation failed: operation=TestDriverLogLineFormatIsUnchanged error=1062 sqlstate= message="` + admitted + strings.Repeat("x", 1024-len(admitted)) + "\"\n"
 	if got := captured.String(); got != want {
 		t.Fatalf("bounded log line has %d bytes, want %d", len(got), len(want))
 	}

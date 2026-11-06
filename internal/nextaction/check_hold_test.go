@@ -49,6 +49,48 @@ func TestCheckHoldNamesTheOperatorAndEachCheck(t *testing.T) {
 	}
 }
 
+// The failed hold's question names the approved head and each held check, and
+// falls back to the failed check when the hold names none (component-next-action
+// invariant 19; req-operator-next-action AC-1.5).
+func TestFailedCheckHoldQuestionNamesTheApprovedHeadAndEachCheck(t *testing.T) {
+	checks := []CheckRef{
+		{Name: "e2e", State: "failed", URL: "https://github.com/acme/app/runs/2"},
+		{Name: "deploy", State: "pending", URL: "https://github.com/acme/app/runs/3"},
+	}
+	for name, test := range map[string]struct {
+		checks []CheckRef
+		want   string
+	}{
+		"each check": {checks, "Rerun e2e (failed), deploy (pending) on GitHub, merge the approved head anyway, request changes, or close?"},
+		"no checks":  {nil, "Rerun the failed check on GitHub, merge the approved head anyway, request changes, or close?"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			na := Project(checkHoldInput(&CheckHold{Reason: CheckHoldFailed, Checks: test.checks}, false))
+			if na.Question != test.want {
+				t.Fatalf("question = %q, want %q", na.Question, test.want)
+			}
+		})
+	}
+}
+
+// The failed and refused holds' if-ignored sentences say the task stays approved
+// and unmerged and keep what a later read does, and a refused read's question
+// stays as it is because no read found a check to name (component-next-action
+// invariant 19; req-review-gates-evidence AC-1.6, AC-1.7).
+func TestFailedAndRefusedHoldsSayTheTaskStaysApprovedAndUnmerged(t *testing.T) {
+	failed := Project(checkHoldInput(&CheckHold{Reason: CheckHoldFailed}, false))
+	if want := "The task stays approved and unmerged. A later read that finds nothing failed lets the merge continue."; failed.IfIgnored != want {
+		t.Errorf("failed if-ignored = %q, want %q", failed.IfIgnored, want)
+	}
+	refused := Project(checkHoldInput(&CheckHold{Reason: CheckHoldPermission, ReadFailure: "refused", Remedy: "Open workspace settings."}, false))
+	if want := "The task stays approved and unmerged. A later read that GitHub answers decides the merge."; refused.IfIgnored != want {
+		t.Errorf("refused if-ignored = %q, want %q", refused.IfIgnored, want)
+	}
+	if want := "Grant the workspace GitHub App Checks read in workspace settings, or merge without a read?"; refused.Question != want {
+		t.Errorf("refused question = %q, want %q", refused.Question, want)
+	}
+}
+
 // A refused read needs a grant, not a judgment about the change, and names the
 // workspace-settings remedy (req-review-gates-evidence AC-1.7).
 func TestCheckHoldOfARefusedReadNeedsNoJudgment(t *testing.T) {
@@ -73,7 +115,9 @@ func TestCheckHoldOfARefusedReadNeedsNoJudgment(t *testing.T) {
 func TestStuckCheckHoldReadsDifferentlyAndOffersTheMerge(t *testing.T) {
 	url := "https://github.com/acme/app/runs/3"
 	checks := []CheckRef{{Name: "deploy", State: "pending", URL: url}}
-	failed := Project(checkHoldInput(&CheckHold{Reason: CheckHoldFailed, Checks: checks}, false))
+	// A failed hold always names a failed check, and the question names what the
+	// hold holds, so the failed fixture carries the same check in its failed state.
+	failed := Project(checkHoldInput(&CheckHold{Reason: CheckHoldFailed, Checks: []CheckRef{{Name: "deploy", State: "failed", URL: url}}}, false))
 	na := Project(checkHoldInput(&CheckHold{Reason: CheckHoldStuck, Checks: checks}, false))
 	if na.Actor != ActorOperator || na.Kind != KindCheckHold || !na.Judgment || na.Details.CheckHoldReason != CheckHoldStuck || na.Details.ReasonCode != CheckHoldStuck {
 		t.Fatalf("next action = %+v", na)

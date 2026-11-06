@@ -10,7 +10,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/go-sql-driver/mysql"
 	"github.com/kidus-tiliksew/conveyor/internal/core"
 	"github.com/kidus-tiliksew/conveyor/internal/store"
 	"github.com/kidus-tiliksew/conveyor/internal/store/dbmetrics"
@@ -61,18 +60,26 @@ func (s *Store) ProposeDecision(ctx context.Context, decision core.Decision) (co
 		}
 		return insertWorkspaceEvent(ctx, tx, core.Event{Kind: "decision.proposed", Payload: core.JSONPayload(map[string]any{"workspace_id": documentWorkspace(ctx), "decision_id": decision.ID, "origin": decision.Origin, "origin_session_id": decision.OriginSessionID, "origin_task_id": decision.OriginTaskID, "supersedes": decision.Supersedes})})
 	})
-	if err != nil {
-		var pgErr *mysql.MySQLError
-		if errors.As(err, &pgErr) && pgErr.Number == 1062 {
-			if strings.Contains(pgErr.Message, "PRIMARY") {
-				return decision, fmt.Errorf("%w: %s", store.ErrDecisionIDConflict, decision.ID)
-			}
-			if strings.Contains(pgErr.Message, "decisions_confirmed_supersedes_key") {
-				return decision, fmt.Errorf("%w: %s", store.ErrDecisionSupersessionConflict, decision.Supersedes)
-			}
-		}
+	return decision, decisionProposalConflict(err, decision)
+}
+
+// decisionProposalConflict maps a duplicate of the decision's primary key or
+// supersession key to its domain conflict and returns every other error
+// unchanged.
+func decisionProposalConflict(err error, decision core.Decision) error {
+	if isDuplicateKey(err, "PRIMARY") {
+		return fmt.Errorf("%w: %s", store.ErrDecisionIDConflict, decision.ID)
 	}
-	return decision, err
+	return decisionSupersessionConflict(err, decision)
+}
+
+// decisionSupersessionConflict maps a duplicate of the decision's supersession
+// key to its domain conflict and returns every other error unchanged.
+func decisionSupersessionConflict(err error, decision core.Decision) error {
+	if isDuplicateKey(err, "decisions_confirmed_supersedes_key") {
+		return fmt.Errorf("%w: %s", store.ErrDecisionSupersessionConflict, decision.Supersedes)
+	}
+	return err
 }
 
 func (s *Store) ConfirmDecision(ctx context.Context, id string) (core.Decision, error) {
@@ -113,14 +120,9 @@ func (s *Store) ConfirmDecision(ctx context.Context, id string) (core.Decision, 
 		return recomputeDecisionSupersessionSweepTx(ctx, tx, decision)
 	})
 	if err != nil {
-		var pgErr *mysql.MySQLError
-		if errors.As(err, &pgErr) && pgErr.Number == 1062 && strings.Contains(pgErr.Message, "decisions_confirmed_supersedes_key") {
-			return decision, fmt.Errorf("%w: %s", store.ErrDecisionSupersessionConflict, decision.Supersedes)
-		}
+		return decision, decisionSupersessionConflict(err, decision)
 	}
-	if err == nil {
-		decision, err = s.GetDecision(ctx, id)
-	}
+	decision, err = s.GetDecision(ctx, id)
 	return decision, err
 }
 

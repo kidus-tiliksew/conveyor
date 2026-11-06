@@ -9,7 +9,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/go-sql-driver/mysql"
 	"github.com/kidus-tiliksew/conveyor/internal/core"
 	"github.com/kidus-tiliksew/conveyor/internal/store"
 	"github.com/kidus-tiliksew/conveyor/internal/store/dbmetrics"
@@ -103,13 +102,18 @@ func (s *Store) CreateRequirement(ctx context.Context, requirement core.Requirem
 		})
 	})
 	if err != nil {
-		var pgErr *mysql.MySQLError
-		if errors.As(err, &pgErr) && pgErr.Number == 1062 && strings.Contains(pgErr.Message, "requirements_workspace_id_slug_key") {
-			return core.Requirement{}, core.RequirementVersion{}, fmt.Errorf("%w: %s", store.ErrRequirementSlugConflict, requirement.Slug)
-		}
-		return core.Requirement{}, core.RequirementVersion{}, err
+		return core.Requirement{}, core.RequirementVersion{}, requirementCreateConflict(err, requirement)
 	}
 	return requirement, first, nil
+}
+
+// requirementCreateConflict maps a duplicate of the requirement's slug key to
+// its domain conflict and returns every other error unchanged.
+func requirementCreateConflict(err error, requirement core.Requirement) error {
+	if isDuplicateKey(err, "requirements_workspace_id_slug_key") {
+		return fmt.Errorf("%w: %s", store.ErrRequirementSlugConflict, requirement.Slug)
+	}
+	return err
 }
 
 func (s *Store) GetRequirement(ctx context.Context, id string) (core.Requirement, error) {
