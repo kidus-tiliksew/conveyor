@@ -31,7 +31,7 @@ import { LineageExplorer } from '../components/lineage/lineage-explorer'
 import { Badge } from '../components/ui/badge'
 import { Button } from '../components/ui/button'
 import { Card, CardContent } from '../components/ui/card'
-import { MarkdownProse } from '../components/ui/markdown-prose'
+import { MarkdownProse, withoutRepeatedTitle } from '../components/ui/markdown-prose'
 import {
   archiveSystemDesign,
   confirmSystemDesignVersion,
@@ -590,7 +590,7 @@ function DesignCanvas({
           onConfirm={(supersededBy) => archive.mutate(supersededBy)}
         />
       )}
-      <header className="mb-8 flex flex-wrap items-start gap-4 border-b border-border pb-6">
+      <header className="mb-4 flex flex-wrap items-start gap-4">
         <div className="min-w-[14rem] flex-1">
           <span className="text-xs font-medium text-faint" title="The group this document belongs to">
             {item.document.category}
@@ -690,8 +690,10 @@ function DesignCanvas({
         }
         document={
           <>
-            <section className="mt-8">
-              {displayed && <MarkdownProse>{displayed.content}</MarkdownProse>}
+            <section className="document-body mt-5">
+              {displayed && (
+                <MarkdownProse>{withoutRepeatedTitle(displayed.content, item.document.title)}</MarkdownProse>
+              )}
               {displayed && displayed.governs.length > 0 && (
                 <div className="mt-8 flex flex-wrap items-center gap-2 border-t border-border pt-4">
                   <span className="text-xs font-semibold text-muted">Covers</span>

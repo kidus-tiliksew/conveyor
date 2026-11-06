@@ -109,7 +109,7 @@ export function DecisionsPage() {
         description="The choices that govern how this system works, and the ones that replaced them."
       />
       <main className="min-h-0 flex-1 overflow-y-auto">
-        <div className="mx-auto max-w-4xl px-4 py-6 sm:px-6 lg:px-8">
+        <div className="max-w-4xl px-4 py-5 lg:px-6">
           {openFlags > 0 && (
             <section
               aria-label="Decisions needing attention"
@@ -154,10 +154,7 @@ export function DecisionsPage() {
             </p>
           )}
           <div className="flex flex-wrap items-center gap-3">
-            <fieldset
-              aria-label="Filter decisions"
-              className="m-0 inline-flex rounded-lg border border-border bg-surface p-0.5"
-            >
+            <fieldset aria-label="Filter decisions" className="m-0 inline-flex rounded-lg bg-raised/70 p-0.5">
               {decisionFilters.map((option) => {
                 const count = all.filter((decision) => inFilter(decision, option.value)).length
                 return (
@@ -175,12 +172,12 @@ export function DecisionsPage() {
                     className={cn(
                       'inline-flex items-center gap-1.5 rounded-md px-2.5 py-1 text-xs font-medium transition-colors',
                       filter === option.value
-                        ? 'bg-background text-foreground shadow-sm'
+                        ? 'bg-card text-foreground shadow-sm'
                         : 'text-muted hover:text-foreground',
                     )}
                   >
                     {option.label}
-                    <span className="font-mono text-[11px] text-faint">{count}</span>
+                    <span className="text-[11px] tabular-nums text-faint">{count}</span>
                   </button>
                 )
               })}
@@ -214,7 +211,10 @@ export function DecisionsPage() {
                 {all.length === 0 ? 'No decisions are recorded in this workspace.' : 'No decisions match.'}
               </p>
             ) : (
-              <ul aria-label="Decisions" className="divide-y divide-border rounded-lg border border-border">
+              <ul
+                aria-label="Decisions"
+                className="divide-y divide-border rounded-xl border border-border bg-card shadow-xs"
+              >
                 {rows.map((decision) => (
                   <DecisionRow
                     key={decision.id}
@@ -245,14 +245,14 @@ function DecisionRow({ decision, citingCount }: { decision: Decision; citingCoun
       <Link
         to="/w/$workspaceId/decisions/$decisionId"
         params={{ workspaceId: workspace, decisionId: decision.id }}
-        className="block px-4 py-3 transition-colors hover:bg-surface/60"
+        className="block px-4 py-2.5 transition-colors first:rounded-t-xl hover:bg-surface/70"
       >
         <div className="flex items-start gap-3">
-          <Badge variant="mono" className="mt-0.5 shrink-0">
-            {decision.id}
-          </Badge>
+          <span className="mt-px w-14 shrink-0 font-mono text-[11px] leading-5 text-muted">{decision.id}</span>
           <div className="min-w-0 flex-1">
-            <p className="line-clamp-2 text-sm text-foreground">{clauses ? `(1) ${clauses[0]}` : decision.statement}</p>
+            <p className="line-clamp-2 text-[13px] leading-5 text-foreground">
+              {clauses ? `(1) ${clauses[0]}` : decision.statement}
+            </p>
             <p className="mt-1 flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-muted">
               {decision.status !== 'confirmed' && (
                 <Badge variant={statusVariants[decision.status]}>{statusLabels[decision.status]}</Badge>
@@ -457,7 +457,7 @@ function DecisionRecord({
       )}
       <section aria-label="Statement" className="mt-6">
         {clauses ? (
-          <ol className="divide-y divide-border rounded-lg border border-border">
+          <ol className="divide-y divide-border rounded-xl border border-border bg-card shadow-xs">
             {clauses.map((clause, index) => (
               <li key={`${index}:${clause}`} className="flex gap-3 px-4 py-3 text-[15px] leading-7">
                 <span className="shrink-0 font-mono text-sm font-semibold text-muted">({index + 1})</span>
@@ -504,7 +504,7 @@ function DecisionRecord({
       <section aria-label="Alternatives rejected" className="mt-8">
         <h2 className="text-xs font-semibold text-muted">Alternatives rejected</h2>
         {alternatives.length > 0 ? (
-          <ul className="mt-2 divide-y divide-border rounded-lg border border-border">
+          <ul className="mt-2 divide-y divide-border rounded-xl border border-border bg-card shadow-xs">
             {alternatives.map((alternative, index) => (
               <li key={`${index}:${alternative}`} className="px-4 py-2.5 text-sm leading-6">
                 {alternative}

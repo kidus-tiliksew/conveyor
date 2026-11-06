@@ -891,7 +891,7 @@ function PanelEntry({
           )}
         />
       )}
-      <article className="rounded-lg border border-border bg-card">
+      <article className="border-b border-border pb-1">
         <div className="flex flex-wrap items-center gap-2 border-b border-border px-4 py-2.5">
           <span className="text-[13px] font-semibold text-foreground">{stageLabels.review}</span>
           {resolution && (
@@ -1293,7 +1293,10 @@ function JobEntry({
     <li className="relative pl-7">
       {dot}
       <article
-        className={cn('rounded-lg border border-border bg-card', warning && 'border-attention/40 bg-attention-soft')}
+        className={cn(
+          'border-b border-border pb-1',
+          warning && 'rounded-lg border border-attention/40 bg-attention-soft pb-0',
+        )}
       >
         {/* One header line: the stage, then model and duration, then the time.
             The entry has no separate footer (component-web-task-surfaces,

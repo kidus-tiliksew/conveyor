@@ -33,7 +33,7 @@ export function MonitorPage() {
         description="Post-merge signals and out-of-pipeline drift entering the normal Conveyor intake."
       />
       <div className="min-h-0 flex-1 overflow-y-auto">
-        <div className="mx-auto max-w-5xl px-4 py-5 sm:px-6 sm:py-6">
+        <div className="max-w-5xl px-4 py-5 lg:px-6">
           {error && (
             <Card className="mb-4 border-failure/40">
               <CardContent className="text-sm text-failure">{String(error)}</CardContent>
@@ -67,7 +67,7 @@ export function MonitorPage() {
                 <Badge variant="failure">{status.forge_error_category || 'monitor'}</Badge>
               </CardHeader>
               <CardContent>
-                <p className="text-sm text-failure">{status.current_error}</p>
+                <p className="break-words font-mono text-xs leading-5 text-foreground/85">{status.current_error}</p>
                 {isSetTimestamp(status.backoff_until) && (
                   <p className="mt-2 text-xs text-muted">
                     Backoff until {new Date(status.backoff_until).toLocaleString()}
@@ -83,19 +83,23 @@ export function MonitorPage() {
                 {status?.drift_count ?? 0}
               </Badge>
             </CardHeader>
-            <CardContent className="space-y-2">
+            <CardContent className="divide-y divide-border py-0">
               {(status?.drift ?? []).map((item) => (
-                <div key={item.id} className="flex items-start gap-3 rounded-lg border border-border bg-background p-3">
-                  <GitCommitHorizontal className="mt-0.5 size-4 text-primary" />
-                  <div className="min-w-0 flex-1">
+                <div key={item.id} className="flex flex-wrap items-center gap-x-6 gap-y-2 py-3">
+                  <div className="min-w-0 flex-[1_1_18rem]">
                     <div className="flex flex-wrap items-center gap-2">
                       <Badge variant="mono">{item.kind}</Badge>
-                      <span className="text-sm font-medium">{item.repository}</span>
+                      <span className="text-[13px] font-medium">{item.repository}</span>
                     </div>
-                    <p className="mt-1 truncate font-mono text-xs text-faint">{item.commit_sha || item.id}</p>
-                    <p className="mt-1 text-xs text-muted" title={new Date(item.detected_at).toLocaleString()}>
-                      Detected {age(item.detected_at)} ago
+                    <p className="mt-1 flex min-w-0 items-center gap-2 text-xs text-muted">
+                      <GitCommitHorizontal aria-hidden="true" className="size-3.5 shrink-0 text-faint" />
+                      <span className="min-w-0 truncate font-mono text-[11px]">{item.commit_sha || item.id}</span>
+                      <span className="shrink-0" title={new Date(item.detected_at).toLocaleString()}>
+                        Detected {age(item.detected_at)} ago
+                      </span>
                     </p>
+                  </div>
+                  <div className="flex shrink-0 items-center gap-3">
                     {canManageWorkspace && (
                       <DriftResolutionForm
                         drift={item}
@@ -105,17 +109,15 @@ export function MonitorPage() {
                         workspace={workspace}
                       />
                     )}
-                  </div>
-                  <div className="flex gap-2">
                     <Link
                       to="/w/$workspaceId/tasks/$taskId"
                       params={{ workspaceId: workspace, taskId: item.task_id }}
-                      className="text-xs text-primary hover:underline"
+                      className="text-xs font-medium text-primary hover:underline"
                     >
                       Task
                     </Link>
                     <a href={item.source_url} target="_blank" rel="noreferrer" aria-label="Open source signal">
-                      <ExternalLink className="size-4 text-muted" />
+                      <ExternalLink className="size-4 text-faint hover:text-foreground" />
                     </a>
                   </div>
                 </div>

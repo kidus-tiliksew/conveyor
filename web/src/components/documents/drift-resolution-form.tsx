@@ -69,7 +69,7 @@ export function DriftResolutionForm({
       }}
     >
       <label className="min-w-48 text-xs text-muted" htmlFor={outcomeSelectID}>
-        Resolution
+        <span className={surface === 'monitor' ? 'sr-only' : undefined}>Resolution</span>
         <Select
           id={outcomeSelectID}
           aria-label={`Resolution outcome for ${drift.id}`}
@@ -105,7 +105,12 @@ export function DriftResolutionForm({
           )}
         </label>
       )}
-      <Button type="submit" size="sm" disabled={mutation.isPending || (needsRequirement && !requirementID)}>
+      <Button
+        type="submit"
+        size="sm"
+        variant={surface === 'monitor' ? 'secondary' : 'default'}
+        disabled={mutation.isPending || (needsRequirement && !requirementID)}
+      >
         {mutation.isPending ? 'Resolving…' : 'Resolve'}
       </Button>
       {mutation.error && (

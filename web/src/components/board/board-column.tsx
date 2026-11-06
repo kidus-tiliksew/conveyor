@@ -11,7 +11,6 @@ import {
 } from 'lucide-react'
 import type { GroupKey } from '../../lib/contracts'
 import type { ActivitySummary } from '../../lib/types'
-import { cn } from '../../lib/utils'
 import { useWorkspaceSelection } from '../app-shell'
 import { Badge } from '../ui/badge'
 import { TaskCard } from './task-card'
@@ -57,9 +56,10 @@ export function BoardColumn({
   return (
     <section
       aria-label={label}
-      className={cn('flex h-full min-w-72 flex-[3_1_18rem] flex-col rounded-xl', idle ? 'bg-surface/55' : 'bg-surface')}
+      data-lane-populated={idle ? undefined : ''}
+      className="flex h-full min-w-[17rem] flex-[3_1_17rem] flex-col"
     >
-      <header className="flex h-10 shrink-0 items-center gap-2 px-3.5">
+      <header className="flex h-9 shrink-0 items-center gap-2 px-1">
         <Icon className="size-3.5 shrink-0 text-faint" />
         <h2 className="truncate text-[13px] font-semibold text-foreground">{label}</h2>
         <span className="text-xs tabular-nums text-faint">{items.length}</span>
@@ -67,7 +67,7 @@ export function BoardColumn({
           <Link
             to="/w/$workspaceId/inbox"
             params={{ workspaceId: workspace }}
-            className="ml-auto"
+            className="ml-auto flex"
             aria-label={`${operator} waiting on an operator — open the Inbox`}
             data-operator-count
           >
@@ -76,7 +76,7 @@ export function BoardColumn({
         )}
       </header>
       {!idle && (
-        <div className="min-h-0 flex-1 space-y-2 overflow-y-auto px-2 pb-2">
+        <div className="min-h-0 flex-1 space-y-2 overflow-y-auto px-px pb-2 pt-px">
           {visible.map((item) => (
             <TaskCard key={item.task.id} item={item} selected={item.task.id === selectedId} />
           ))}

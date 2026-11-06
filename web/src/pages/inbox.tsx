@@ -121,7 +121,7 @@ export function InboxPage() {
         {inbox.data && <InboxBandChips search={search} counts={counts} />}
       </PageHeader>
       <div ref={root} className="min-h-0 flex-1 overflow-y-auto">
-        <div className="mx-auto max-w-6xl px-4 py-5 sm:px-6">
+        <div className="max-w-6xl px-4 py-5 lg:px-6">
           {(search.task || search.document) && (
             <div className="mt-4 flex flex-wrap items-center justify-between gap-2 rounded-md border border-border bg-surface px-3 py-2 text-xs text-muted">
               <span className="min-w-0 break-words">

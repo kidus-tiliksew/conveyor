@@ -1,6 +1,6 @@
 import { Link, useNavigate, useParams, useSearch } from '@tanstack/react-router'
 import { ChevronLeft, ChevronRight, Plus } from 'lucide-react'
-import { lazy, Suspense, useEffect, useMemo, useState } from 'react'
+import { lazy, Suspense, useEffect, useMemo, useRef, useState } from 'react'
 import { boardColumnFor } from '../../lib/activity'
 import { isBlueprintAnchor } from '../../lib/blueprint'
 import { type GroupKey, stageGroups } from '../../lib/contracts'
@@ -133,6 +133,15 @@ function Kanban() {
     return byGroup
   }, [data])
 
+  // On a phone only one lane fits, so the first view opens where the work is.
+  const laneScroller = useRef<HTMLElement>(null)
+  const hasItems = Boolean(data?.items.length)
+  useEffect(() => {
+    const scroller = laneScroller.current
+    if (!hasItems || !scroller || scroller.clientWidth >= 640) return
+    const lane = scroller.querySelector<HTMLElement>('[data-lane-populated]')
+    if (lane) scroller.scrollLeft = lane.offsetLeft - scroller.offsetLeft - 16
+  }, [hasItems])
   useEffect(() => setOffset(0), [filterKey])
   useEffect(() => {
     if (!data || data.total === 0 || offset < data.total) return
@@ -197,7 +206,11 @@ function Kanban() {
           Activity feed unavailable: {String(error)}
         </p>
       )}
-      <section aria-label="Task board" className="flex min-h-0 flex-1 gap-2.5 overflow-x-auto px-3 py-3 lg:px-4">
+      <section
+        ref={laneScroller}
+        aria-label="Task board"
+        className="flex min-h-0 flex-1 gap-3 overflow-x-auto bg-surface/70 px-4 pt-2 lg:rounded-b-xl lg:px-6"
+      >
         {isLoading
           ? stageGroups.map(({ key }) => <Skeleton key={key} className="h-full w-72 shrink-0 rounded-xl" />)
           : stageGroups.map(({ key, label }) => (

@@ -1,4 +1,3 @@
-import { KeyRound } from 'lucide-react'
 import { useId, useState } from 'react'
 import { updateOwnPassword } from '../../lib/api'
 import { Button } from '../ui/button'
@@ -42,11 +41,10 @@ export function PasswordCard() {
     <Card className="mt-4">
       <CardHeader>
         <CardTitle>Password</CardTitle>
-        <KeyRound className="size-4 text-primary" />
       </CardHeader>
       <CardContent>
         <p className="mb-4 text-sm leading-6 text-muted">Use a password to sign in next time.</p>
-        <form className="w-full space-y-3 sm:max-w-sm" aria-label="Update password" onSubmit={submit}>
+        <form className="w-full space-y-3" aria-label="Update password" onSubmit={submit}>
           <div className="space-y-1">
             <label htmlFor={`${ids}-current`} className="block text-xs font-medium">
               Current password

@@ -1,5 +1,5 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { KeyRound, Plus } from 'lucide-react'
+import { Plus } from 'lucide-react'
 import { useState } from 'react'
 import { fetchPersonalAccessTokens, issuePersonalAccessToken, revokePersonalAccessToken } from '../../lib/api'
 import { errorMessage } from '../../lib/errors'
@@ -65,7 +65,6 @@ export function PersonalTokensCard() {
     <Card className="mt-4">
       <CardHeader>
         <CardTitle>Your access tokens</CardTitle>
-        <KeyRound className="size-4 text-faint" />
       </CardHeader>
       <CardContent className="space-y-3">
         <p className="text-sm leading-6 text-muted">
@@ -84,7 +83,7 @@ export function PersonalTokensCard() {
             required
             aria-label="Token name"
             placeholder="Laptop CLI"
-            className="max-w-xs"
+            className="min-w-40 flex-1"
             value={label}
             onChange={(event) => setLabel(event.target.value)}
           />

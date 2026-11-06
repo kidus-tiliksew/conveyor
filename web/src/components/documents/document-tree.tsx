@@ -243,7 +243,7 @@ export function DocumentTreeToolbar({
           <input
             type="search"
             aria-label={searchLabel}
-            placeholder={searchLabel}
+            placeholder="Search"
             value={query}
             onChange={(event) => onQueryChange(event.target.value)}
             className="h-full min-w-0 flex-1 bg-transparent px-2 text-[11px] text-foreground outline-none placeholder:text-faint"
@@ -326,8 +326,15 @@ export function DocumentTreeItem({
   onClick: () => void
 }) {
   const { closeDrawer } = useContext(DocumentTreeContext)
+  // The open document stays visible in a long list, on arrival and after a
+  // sort or search moves it.
+  const row = useRef<HTMLButtonElement>(null)
+  useEffect(() => {
+    if (selected) row.current?.scrollIntoView({ block: 'center' })
+  }, [selected])
   const navigation = (
     <button
+      ref={row}
       type="button"
       title={title}
       aria-current={selected ? 'true' : undefined}
@@ -339,12 +346,9 @@ export function DocumentTreeItem({
         selected ? 'bg-primary-soft text-primary' : 'text-foreground hover:bg-surface'
       }`}
     >
-      <FileText
-        aria-hidden="true"
-        className={`size-4 shrink-0 ${tooltip ? 'invisible' : ''} ${selected ? 'text-primary' : 'text-faint'}`}
-      />
+      {tooltip && <FileText aria-hidden="true" className="invisible size-4 shrink-0" />}
       <span className="min-w-0 flex-1">
-        <span className="block truncate text-[13px]">{label}</span>
+        <span className="block line-clamp-2 text-[13px] leading-[1.35]">{label}</span>
         {meta && (
           <span className={`mt-px block truncate text-[11px] ${selected ? 'text-primary/70' : 'text-faint'}`}>
             {meta}

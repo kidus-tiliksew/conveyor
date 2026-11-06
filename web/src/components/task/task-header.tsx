@@ -107,7 +107,7 @@ export function TaskHeader({ item, variant }: { item: ActivityItem; variant: 'sh
     <div>
       <TaskIdentity item={item} variant={variant} />
       <TaskFacts item={item} variant={variant} columns={variant === 'full' ? 'two' : 'one'} />
-      <div className="mt-4">
+      <div className="mt-3">
         <TaskAgentPrompt item={item} />
       </div>
     </div>
@@ -218,7 +218,7 @@ export function TaskFacts({
     <div>
       <dl
         className={cn(
-          'mt-5 grid grid-cols-[minmax(6.5rem,max-content)_minmax(0,1fr)] items-center gap-x-6 gap-y-2 border-y border-border py-3.5 text-[13px] leading-5',
+          'mt-3 grid grid-cols-[minmax(6.5rem,max-content)_minmax(0,1fr)] items-center gap-x-6 gap-y-1 border-y border-border py-2.5 text-[13px] leading-5',
           columns === 'two' &&
             'lg:grid-cols-[minmax(6.5rem,max-content)_minmax(0,1fr)_minmax(6.5rem,max-content)_minmax(0,1fr)] lg:gap-x-10',
           className,
@@ -738,13 +738,17 @@ function TaskBody({ body }: { body: string }) {
   return (
     <div className="mt-2 max-w-3xl">
       <div className="relative">
-        <div ref={viewportRef} id={viewportID} className={cn(!expanded && 'max-h-32 overflow-hidden')}>
+        <div
+          ref={viewportRef}
+          id={viewportID}
+          className={cn('text-[14px] leading-[1.68]', !expanded && 'max-h-[5lh] overflow-hidden')}
+        >
           <MarkdownProse className="markdown-demoted text-sm">{body}</MarkdownProse>
         </div>
         {hasOverflow && !expanded && (
           <div
             aria-hidden="true"
-            className="spec-overflow-shadow pointer-events-none absolute inset-x-0 bottom-0 h-16"
+            className="spec-overflow-shadow pointer-events-none absolute inset-x-0 bottom-0 h-6"
             data-task-body-overflow-shadow
           />
         )}

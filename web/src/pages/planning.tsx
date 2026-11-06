@@ -12,6 +12,7 @@ import { sessionGoalLabel, sessionGoalLabels } from '../lib/contracts'
 import { errorMessage } from '../lib/errors'
 import type { PlanningSessionGoal } from '../lib/types'
 import { PageHeader } from '../components/ui/page-header'
+import { MarkdownProse } from '../components/ui/markdown-prose'
 
 // Task fan-out now comes from reviewable delivery bundles. Blueprint remains
 // a historical document label, not a planning-session creation goal.
@@ -134,9 +135,9 @@ export function PlanningPage() {
                 type="button"
                 aria-current={selectedId === session.id ? 'true' : undefined}
                 onClick={() => setSelectedId(session.id)}
-                className={`block w-full px-4 py-3 text-left ${selectedId === session.id ? 'bg-primary-soft' : 'hover:bg-surface'}`}
+                className={`block w-full px-4 py-3 text-left ${selectedId === session.id ? 'bg-raised/70' : 'hover:bg-surface'}`}
               >
-                <strong className="block truncate text-sm font-medium">
+                <strong className="block truncate text-[13px] font-medium">
                   {session.title || 'Untitled planning session'}
                 </strong>
                 <span className="mt-1 flex flex-wrap items-center gap-1.5">
@@ -221,7 +222,7 @@ export function PlanningPage() {
                             className="rounded-md border border-border bg-background p-3 text-sm"
                           >
                             <strong>{task.title}</strong>
-                            <p className="mt-1 whitespace-pre-wrap text-xs text-muted">{task.body}</p>
+                            <MarkdownProse className="markdown-demoted mt-1 text-xs">{task.body}</MarkdownProse>
                             <p className="mt-2 font-mono text-[10px] text-faint">
                               {task.repo} · depends on: {task.depends_on?.join(', ') || 'none'} · context:{' '}
                               {[

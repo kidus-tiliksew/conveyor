@@ -547,6 +547,8 @@ export function MapView({
       positive: read('--color-positive'),
       edge: read('--color-edge'),
       raised: read('--color-raised'),
+      card: read('--color-card'),
+      border: read('--color-border'),
     }
     // biome-ignore lint/correctness/useExhaustiveDependencies: the palette follows the theme
   }, [theme])
@@ -640,7 +642,15 @@ export function MapView({
                 return palette.edge
             }
           }}
-          maskColor="rgba(0, 0, 0, 0.35)"
+          maskColor={theme === 'dark' ? 'rgba(0, 0, 0, 0.45)' : 'rgba(240, 241, 244, 0.72)'}
+          bgColor={palette.card}
+          style={{
+            width: 140,
+            height: 100,
+            borderRadius: 10,
+            overflow: 'hidden',
+            border: `1px solid ${palette.border}`,
+          }}
         />
       )}
     </ReactFlow>

@@ -237,7 +237,7 @@ export function MarkdownEditor({
             onKeyDown={handleKeyDown}
             placeholder={placeholder}
             style={{ fontFamily: 'var(--font-mono)' }}
-            className="block min-h-56 w-full resize-y bg-transparent px-3 py-2 text-sm leading-6 text-foreground outline-none placeholder:text-faint"
+            className="block min-h-56 w-full resize-y bg-transparent px-3 py-2 text-sm leading-6 text-foreground outline-none placeholder:font-sans placeholder:text-faint"
           />
         </div>
       ) : (

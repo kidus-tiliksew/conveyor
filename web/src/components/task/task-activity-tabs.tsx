@@ -85,7 +85,7 @@ export function TaskActivityTabs({ item, routeVariant }: { item: ActivityItem; r
         <div
           role="tablist"
           aria-label="Task activity view"
-          className="flex gap-1 border-b border-border"
+          className="flex gap-4 border-b border-border"
           onKeyDown={onKeyDown}
         >
           {views.map((candidate) => {
@@ -104,10 +104,8 @@ export function TaskActivityTabs({ item, routeVariant }: { item: ActivityItem; r
                 tabIndex={selected ? 0 : -1}
                 data-activity-tab={candidate.id}
                 className={cn(
-                  '-mb-px border-b-2 px-3 py-1.5 text-sm outline-none focus-visible:ring-2 focus-visible:ring-primary/40',
-                  selected
-                    ? 'border-primary font-medium text-foreground'
-                    : 'border-transparent text-muted hover:text-foreground',
+                  '-mb-px border-b-2 pb-2.5 text-[13px] font-medium outline-none transition-colors focus-visible:ring-2 focus-visible:ring-primary/40',
+                  selected ? 'border-primary text-foreground' : 'border-transparent text-muted hover:text-foreground',
                 )}
                 onClick={() => select(candidate.id)}
               >

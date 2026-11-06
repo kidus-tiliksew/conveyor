@@ -14,14 +14,16 @@
   --color-edge: #d5d8de;
   --color-foreground: #1b1e25;
   --color-muted: #5d636e;
-  --color-faint: #7f8591;
+  --color-faint: #6f7583;
   --color-markdown: #33373f;
   --color-selection: #dde1fb;
-  --color-scrim: rgb(24 27 36 / 0.32);
+  --color-scrim: rgb(24 27 36 / 0.18);
 
   --color-primary: #4655e0;
   --color-primary-foreground: #ffffff;
   --color-primary-soft: #eef0fd;
+  --color-primary-fill: #4655e0;
+  --switch-knob-off: #ffffff;
 
   --color-attention: #a8540a;
   --color-attention-soft: #fdf3e4;
@@ -40,7 +42,7 @@
 
   --color-rail: #f0f1f4;
   --color-rail-raised: #e4e6ea;
-  --color-workspace-tile: #e1e3e8;
+  --color-workspace-tile: #e5e7eb;
   --color-workspace-tile-hover: #d6d9df;
   --color-workspace-tile-foreground: #4f555f;
   --color-workspace-active: #ffffff;
@@ -50,7 +52,7 @@
   --radius-sm: 0.3125rem;
   --radius-md: 0.4375rem;
   --radius-lg: 0.625rem;
-  --radius-xl: 0.875rem;
+  --radius-xl: 0.75rem;
 
   --shadow-xs: 0 1px 2px rgb(22 26 38 / 0.05);
   --shadow-sm: 0 1px 2px rgb(22 26 38 / 0.05), 0 1px 3px rgb(22 26 38 / 0.04);
@@ -106,15 +108,17 @@
   --color-border: #292d35;
   --color-edge: #3a3f49;
   --color-foreground: #e9ebef;
-  --color-muted: #a4aab5;
-  --color-faint: #7f8693;
+  --color-muted: #abb1bc;
+  --color-faint: #8d94a2;
   --color-markdown: #cfd3da;
   --color-selection: #333d7a;
   --color-scrim: rgb(4 5 8 / 0.6);
 
   --color-primary: #8592f6;
-  --color-primary-foreground: #0d1024;
+  --color-primary-foreground: #ffffff;
   --color-primary-soft: #232848;
+  --color-primary-fill: #5b66e8;
+  --switch-knob-off: #8d94a2;
 
   --color-attention: #efb464;
   --color-attention-soft: #33271a;
@@ -131,11 +135,11 @@
 
   --color-rail: #0d0f12;
   --color-rail-raised: #20242a;
-  --color-workspace-tile: #262a31;
+  --color-workspace-tile: #1f2228;
   --color-workspace-tile-hover: #31363e;
   --color-workspace-tile-foreground: #b9bec8;
-  --color-workspace-active: #e9ebef;
-  --color-workspace-active-foreground: #15171c;
+  --color-workspace-active: #363a43;
+  --color-workspace-active-foreground: #f2f3f6;
   --color-workspace-active-ring: #8592f6;
 
   --shadow-xs: 0 1px 2px rgb(0 0 0 / 0.28);
@@ -164,6 +168,31 @@ body {
 
 * { scrollbar-width: thin; scrollbar-color: var(--color-edge) transparent; }
 
+/* The fill is deeper than the accent used for text, so repeated buttons stay
+   calm in dark mode while links and icons keep their contrast. */
+.bg-primary:not(:disabled) { background-color: var(--color-primary-fill); }
+.hover\:bg-primary\/90:not(:disabled):hover { background-color: color-mix(in srgb, var(--color-primary-fill) 88%, var(--color-foreground)); }
+
+/* Every disclosure uses the same chevron, drawn in the summary's own text colour. */
+summary:not(.list-none) { list-style: none; }
+summary:not(.list-none)::-webkit-details-marker { display: none; }
+summary:not(.list-none)::before {
+  content: "";
+  display: inline-block;
+  width: 0.4em;
+  height: 0.4em;
+  margin: 0 0.55em 0.1em 0.1em;
+  border-right: 1.5px solid currentColor;
+  border-bottom: 1.5px solid currentColor;
+  transform: rotate(-45deg);
+  transition: transform 120ms ease;
+}
+details[open] > summary:not(.list-none)::before { transform: rotate(45deg); }
+
+/* The map's own controls follow the app's surfaces. */
+.react-flow__controls { border-radius: 8px; overflow: hidden; border: 1px solid var(--color-border); box-shadow: var(--shadow-xs); }
+.react-flow__attribution { background: transparent !important; font-size: 10px; opacity: 0.6; }
+
 /* Numbers line up in columns everywhere without switching typeface. */
 time, td, dd { font-variant-numeric: tabular-nums; }
 
@@ -171,6 +200,12 @@ time, td, dd { font-variant-numeric: tabular-nums; }
    here and rendered structurally by the acceptance checklist instead. */
 .markdown { font-size: 0.875rem; line-height: 1.68; color: var(--color-markdown); }
 .markdown > :first-child { margin-top: 0; }
+/* Long documents keep a readable measure; tables, code, and diagrams may use
+   the whole column. The opening heading usually repeats the page title, so it
+   steps down rather than competing with it. */
+.document-body .markdown { font-size: 0.9375rem; line-height: 1.62; }
+.document-body .markdown > :not(table, pre, [data-mermaid]) { max-width: 42rem; }
+.document-body .markdown > :is(h1, h2):first-child { font-size: 0.9375rem; letter-spacing: -0.008em; margin-bottom: 0.4em; }
 /* Panel-only: long unbreakable tokens (branch names, PR URLs) wrap within the
    narrow side task panel instead of forcing phantom horizontal scroll, without
    changing the full-page task view's markdown (task 260720-710669, AC-2/AC-3). */
@@ -193,12 +228,13 @@ time, td, dd { font-variant-numeric: tabular-nums; }
 .markdown a:hover { text-decoration: underline; }
 .markdown code {
   font-family: var(--font-mono);
-  font-size: 0.8em;
-  background: var(--color-surface);
-  border: 1px solid var(--color-border);
-  border-radius: 5px;
-  padding: 0.12em 0.36em;
-  overflow-wrap: anywhere;
+  font-size: 0.85em;
+  background: color-mix(in srgb, var(--color-raised) 70%, transparent);
+  border-radius: 4px;
+  padding: 0.08em 0.3em;
+  overflow-wrap: break-word;
+  -webkit-box-decoration-break: clone;
+  box-decoration-break: clone;
 }
 .markdown pre {
   background: var(--color-surface);

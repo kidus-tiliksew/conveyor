@@ -107,7 +107,7 @@ export function DocumentReview({
   const select = (next: ReviewSearch) => onChange({ ...search, ...next })
   return (
     <div className="min-w-0">
-      <div role="tablist" aria-label="Document views" className="mb-5 flex gap-4 border-b border-border">
+      <div role="tablist" aria-label="Document views" className="mb-4 flex gap-4 border-b border-border">
         {tabs.map((name, index) => (
           <button
             key={name}

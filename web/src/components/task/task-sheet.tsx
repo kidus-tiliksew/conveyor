@@ -143,7 +143,7 @@ function SheetNavButton({ targetId, label, icon }: { targetId?: string; label: s
 
 function SheetBody({ item }: { item: ActivityItem }) {
   return (
-    <div className="space-y-4">
+    <div className="space-y-3">
       <TaskHeader item={item} variant="sheet" />
       <TaskContextCard taskId={item.task.id} taskState={item.task.state} context={item.task.context} />
       {item.spec && (

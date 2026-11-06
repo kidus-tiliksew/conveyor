@@ -125,7 +125,7 @@ export function WorkspacePage() {
         )}
       </PageHeader>
       <div className="min-h-0 flex-1 overflow-y-auto">
-        <div className="mx-auto max-w-5xl px-4 pb-24 pt-4 sm:px-6">
+        <div className="max-w-4xl px-4 pb-24 pt-3 lg:px-6">
           {!workspace && (
             <Card className="mt-6">
               <CardHeader>
@@ -152,7 +152,7 @@ export function WorkspacePage() {
               {/* When the tabs exceed a phone width, the row scrolls inside itself. */}
               <div
                 role="tablist"
-                className="flex gap-1 overflow-x-auto border-b border-border [scrollbar-width:none] [&::-webkit-scrollbar]:hidden"
+                className="flex gap-4 overflow-x-auto border-b border-border [scrollbar-width:none] [&::-webkit-scrollbar]:hidden"
               >
                 {TABS.map((entry) => {
                   const dirty = dirtyTabs.includes(entry.id)
@@ -165,7 +165,7 @@ export function WorkspacePage() {
                       aria-selected={tab === entry.id}
                       onClick={() => setTab(entry.id)}
                       className={cn(
-                        '-mb-px flex shrink-0 items-center gap-2 whitespace-nowrap border-b-2 px-3.5 py-2.5 text-sm font-medium transition-colors focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-primary',
+                        '-mb-px flex shrink-0 items-center gap-2 whitespace-nowrap border-b-2 pb-2.5 pt-1.5 text-[13px] font-medium transition-colors focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-primary',
                         tab === entry.id
                           ? 'border-primary text-foreground'
                           : 'border-transparent text-muted hover:text-foreground',
@@ -538,9 +538,9 @@ function PolicyTab({
           <CardTitle>Pipeline policy</CardTitle>
           <span className="text-xs text-faint">Defaults are frozen onto each task at intake.</span>
         </CardHeader>
-        <CardContent className="grid gap-x-6 gap-y-5 md:grid-cols-2">
-          <div className="space-y-3">
-            <div className="flex items-center gap-3">
+        <CardContent className="space-y-4">
+          <div className="space-y-3.5">
+            <div className="flex items-start gap-3">
               <Switch
                 aria-label="Plan approval"
                 checked={draft.execution.spec_approval}
@@ -548,10 +548,12 @@ function PolicyTab({
               />
               <div>
                 <p className="text-sm font-medium">Pause for plan approval</p>
-                <p className="text-xs text-faint">Require operator approval before implementation starts</p>
+                <p className="text-xs leading-[1.45] text-muted">
+                  Require operator approval before implementation starts
+                </p>
               </div>
             </div>
-            <div className="flex items-center gap-3">
+            <div className="flex items-start gap-3">
               <Switch
                 aria-label="Merge approval"
                 checked={draft.execution.merge_approval}
@@ -559,10 +561,12 @@ function PolicyTab({
               />
               <div>
                 <p className="text-sm font-medium">Pause before merge</p>
-                <p className="text-xs text-faint">Require operator approval before the reviewed change lands</p>
+                <p className="text-xs leading-[1.45] text-muted">
+                  Require operator approval before the reviewed change lands
+                </p>
               </div>
             </div>
-            <div className="flex items-center gap-3">
+            <div className="flex items-start gap-3">
               <Switch
                 aria-label="Fail-fast review"
                 checked={draft.review.fail_fast ?? false}
@@ -570,12 +574,12 @@ function PolicyTab({
               />
               <div>
                 <p className="text-sm font-medium">Fail-fast review</p>
-                <p className="text-xs text-faint">
+                <p className="text-xs leading-[1.45] text-muted">
                   End a review round on its first changes-requested verdict and cancel the seats still reviewing
                 </p>
               </div>
             </div>
-            <div className="flex items-center gap-3">
+            <div className="flex items-start gap-3">
               <Switch
                 aria-label="Distinct seat models"
                 checked={draft.review.distinct_models ?? false}
@@ -587,14 +591,14 @@ function PolicyTab({
               />
               <div>
                 <p className="text-sm font-medium">Distinct seat models</p>
-                <p className="text-xs text-faint">
+                <p className="text-xs leading-[1.45] text-muted">
                   Refuse a review seat claim that repeats the name another seat of the round reports. Names are
                   self-reported and never verified. New tasks only.
                 </p>
               </div>
             </div>
           </div>
-          <div className="grid gap-3 sm:grid-cols-2">
+          <div className="flex flex-wrap gap-4 border-t border-border pt-4 [&_input]:w-28">
             <Field
               label="Review rounds before check-in"
               hint="Unsupervised implement-review rounds before the task pauses for an operator."
@@ -627,7 +631,7 @@ function PolicyTab({
           <CardTitle>Stage timeouts</CardTitle>
           <span className="text-xs text-faint">Each value is a positive duration such as 30m or 4h.</span>
         </CardHeader>
-        <CardContent className="grid gap-3 md:grid-cols-3">
+        <CardContent className="flex flex-wrap gap-4 [&_input]:w-28">
           <Field label="Plan">
             <Input
               aria-label="Plan stage timeout"

@@ -17,7 +17,7 @@ import {
   useContextProposalSends,
 } from './context-proposal-rows'
 import { DecisionContext } from './inbox-context'
-import { Kbd, ShortcutChoiceProvider, shortcutChoiceId } from './inbox-keyboard'
+import { ShortcutChoiceProvider, shortcutChoiceId } from './inbox-keyboard'
 import { DueChip, KindPill, timeOfDay } from './inbox-kind'
 import { useNextAction } from './use-next-actions'
 
@@ -141,7 +141,7 @@ export function DecisionDetail({ item, task, onActed }: { item: InboxItem; task:
             </div>
           )}
           {action?.question && (
-            <p data-decision-question className="break-words pt-1 text-[15px] font-medium leading-relaxed">
+            <p data-decision-question className="break-words pt-1 text-sm font-medium leading-relaxed">
               {action.question}
             </p>
           )}
@@ -215,11 +215,6 @@ export function DecisionDetail({ item, task, onActed }: { item: InboxItem; task:
               )}
             </div>
             <div className="ml-auto flex shrink-0 items-center gap-3 text-[11px] text-faint">
-              <span className="hidden items-center gap-1 lg:flex" data-footer-move-hint>
-                <Kbd>j</Kbd>
-                <Kbd>k</Kbd>
-                move
-              </span>
               {action && <NextActionIDs value={{ details: action.details, current_order: action.current_order }} />}
             </div>
           </div>

@@ -1,5 +1,4 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { UserRound } from 'lucide-react'
 import { useState } from 'react'
 import { fetchCallerIdentity, updateOwnDisplayName } from '../../lib/api'
 import type { CallerIdentity } from '../../lib/types'
@@ -53,12 +52,11 @@ export function ProfileCard() {
     <Card className="mt-4">
       <CardHeader>
         <CardTitle>Profile</CardTitle>
-        <UserRound className="size-4 text-primary" />
       </CardHeader>
       <CardContent>
         <p className="mb-4 text-sm leading-6 text-muted">This is the name teammates see in workspace member lists.</p>
         <form
-          className="max-w-sm space-y-3"
+          className="space-y-3"
           aria-label="Update profile"
           onSubmit={(event) => {
             event.preventDefault()

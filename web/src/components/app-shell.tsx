@@ -651,7 +651,7 @@ function IconRail() {
             className={cn(
               'grid size-8 shrink-0 place-items-center rounded-[9px] text-xs font-semibold tracking-[-0.01em] transition-[background-color,color,box-shadow] duration-150 focus-visible:outline-2 focus-visible:outline-offset-[5px] focus-visible:outline-primary',
               item.id === selected
-                ? 'bg-workspace-active text-workspace-active-foreground shadow-sm ring-2 ring-workspace-active-ring ring-offset-2 ring-offset-rail'
+                ? 'relative bg-workspace-active text-workspace-active-foreground shadow-sm ring-1 ring-edge before:absolute before:-left-3 before:h-4 before:w-[3px] before:rounded-r-full before:bg-primary'
                 : 'bg-workspace-tile text-workspace-tile-foreground hover:bg-workspace-tile-hover hover:text-foreground',
             )}
           >

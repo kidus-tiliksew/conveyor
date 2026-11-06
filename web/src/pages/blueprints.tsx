@@ -34,7 +34,7 @@ export function BlueprintsPage() {
         }
       />
       <div className="min-h-0 flex-1 overflow-y-auto">
-        <div className="mx-auto max-w-5xl px-4 py-5 sm:px-6 sm:py-6">
+        <div className="max-w-5xl px-4 py-5 lg:px-6">
           {!workspace && <EmptyMessage>Choose a workspace to open its blueprints.</EmptyMessage>}
           {isLoading && workspace && <EmptyMessage>Loading blueprints…</EmptyMessage>}
           {error != null && (
@@ -54,7 +54,7 @@ export function BlueprintsPage() {
           )}
 
           {blueprints && blueprints.length > 0 && (
-            <ul className="mt-7 space-y-3">
+            <ul className="space-y-2">
               {blueprints.map((view) => (
                 <li key={view.task.id}>
                   <BlueprintListEntry view={view} />
@@ -79,12 +79,12 @@ function BlueprintListEntry({ view }: { view: BlueprintView }) {
     >
       <Blocks className="mt-0.5 size-4 shrink-0 text-primary" />
       <div className="min-w-0 flex-1">
-        <div className="flex flex-wrap items-center gap-2">
-          <strong className="truncate text-sm font-medium">{view.task.title}</strong>
+        <strong className="block truncate text-[13px] font-medium">{view.task.title}</strong>
+        <div className="mt-1 flex flex-wrap items-center gap-2 text-xs text-muted">
           <Badge variant={deliveryTone(view.delivery)}>{deliveryLabel(view.delivery)}</Badge>
-          {specVersion ? <Badge variant="mono">Blueprint v{specVersion}</Badge> : null}
+          {specVersion ? <span>Blueprint v{specVersion}</span> : null}
+          <span>{childRollup(view.delivery)}</span>
         </div>
-        <p className="mt-1.5 text-xs text-muted">{childRollup(view.delivery)}</p>
         {view.planning_session?.model && (
           <p className="mt-1.5 flex flex-wrap gap-1.5 text-[11px] text-faint">
             <Badge variant="mono">

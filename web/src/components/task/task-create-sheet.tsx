@@ -200,12 +200,8 @@ export function TaskCreateSheet() {
           groups={contextGroups}
         />
 
-        <details
-          open={advancedOpen}
-          onToggle={(event) => setAdvancedOpen(event.currentTarget.open)}
-          className="rounded-md border border-border p-3"
-        >
-          <summary className="cursor-pointer text-sm font-medium">Advanced options</summary>
+        <details open={advancedOpen} onToggle={(event) => setAdvancedOpen(event.currentTarget.open)}>
+          <summary className="cursor-pointer text-[13px] font-medium text-muted">Advanced options</summary>
           <div className="mt-3">
             <Field label="Depends on" hint="Optional — this task stays queued until every selected task is merged.">
               <Input

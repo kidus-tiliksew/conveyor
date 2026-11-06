@@ -49,7 +49,7 @@ import { Button } from '../components/ui/button'
 import { Card, CardContent, CardHeader, CardTitle } from '../components/ui/card'
 import { Dialog } from '../components/ui/dialog'
 import { Disclosure } from '../components/ui/disclosure'
-import { MarkdownProse } from '../components/ui/markdown-prose'
+import { MarkdownProse, withoutRepeatedTitle } from '../components/ui/markdown-prose'
 import {
   acknowledgeRequirementStaleness,
   archiveRequirement,
@@ -473,7 +473,11 @@ function OverviewCanvas({
       </header>
       {isLoading && <p className="text-sm text-muted">Loading version history…</p>}
       {error && <p className="text-sm text-failure">{errorMessage(error, 'Could not load version history.')}</p>}
-      {selected && <MarkdownProse>{selected.content}</MarkdownProse>}
+      {selected && (
+        <div className="document-body">
+          <MarkdownProse>{selected.content}</MarkdownProse>
+        </div>
+      )}
       {versions.length > 1 && (
         <label
           className="mt-8 block max-w-xs border-t border-border pt-4 text-xs font-medium"
@@ -975,7 +979,7 @@ function RequirementDetailCanvas({
           onClose={() => setAttachmentOffer(null)}
         />
       )}
-      <header className="mb-8 flex flex-wrap items-start gap-4 border-b border-border pb-6">
+      <header className="mb-4 flex flex-wrap items-start gap-4">
         <div className="min-w-[14rem] flex-1">
           <span className="font-mono text-[11px] text-faint">{item.requirement.slug}</span>
           <h2 className="mt-1.5 text-[22px] font-semibold leading-[1.25] tracking-[-0.018em] text-balance">
@@ -1072,9 +1076,9 @@ function RequirementDetailCanvas({
         }
         document={
           <>
-            <div className="mt-8">
+            <div className="document-body mt-5">
               {displayed ? (
-                <RequirementDocument version={displayed} />
+                <RequirementDocument version={displayed} title={item.requirement.title} />
               ) : (
                 <p className="text-sm text-muted">Nothing has been proposed for this requirement yet.</p>
               )}
@@ -1465,10 +1469,11 @@ function documentGlobalByID(id: string) {
   return window.document.getElementById(id)
 }
 
-function RequirementDocument({ version }: { version: RequirementVersion }) {
+function RequirementDocument({ version, title }: { version: RequirementVersion; title: string }) {
+  const prose = withoutRepeatedTitle(stripStatementsFence(version.content), title)
   return (
     <div className="space-y-8">
-      {stripStatementsFence(version.content) && <MarkdownProse>{stripStatementsFence(version.content)}</MarkdownProse>}
+      {prose && <MarkdownProse>{prose}</MarkdownProse>}
       {version.statements.length > 0 && (
         <section aria-label="Requirement statements">
           <h3 className="flex items-center gap-1.5 text-xs font-semibold text-muted">

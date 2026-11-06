@@ -256,7 +256,7 @@ function ContextRow({
   return (
     // One row: kind icon and label, the title, then the pinned version at the
     // end. Below sm the kind label drops and the row keeps one line.
-    <li className="flex min-w-0 items-center gap-2.5 rounded-md px-2 py-1.5 text-sm hover:bg-surface">
+    <li className="flex min-w-0 items-center gap-2.5 rounded-md px-2 py-1 text-[13px] hover:bg-surface">
       <Icon
         aria-hidden
         className={kind === 'Outcome' ? 'size-3.5 shrink-0 text-primary' : 'size-3.5 shrink-0 text-faint'}

@@ -697,7 +697,7 @@ export function TaskFilters({
   ].filter(Boolean).length
   return (
     <div className={`flex flex-wrap items-center gap-2 ${className}`}>
-      <label className="relative w-full sm:w-56" htmlFor={`task-filter-search-${workspace}`}>
+      <label className="relative min-w-0 flex-1 sm:w-56 sm:flex-none" htmlFor={`task-filter-search-${workspace}`}>
         <Search className="pointer-events-none absolute left-2.5 top-1/2 size-4 -translate-y-1/2 text-faint" />
         <Input
           id={`task-filter-search-${workspace}`}
@@ -706,7 +706,7 @@ export function TaskFilters({
           value={value.query}
           onChange={(event) => set({ query: event.target.value })}
           placeholder="Search tasks"
-          className="h-9 pl-8 text-xs"
+          className="h-8 pl-8 text-[13px]"
         />
       </label>
       <FilterMenu

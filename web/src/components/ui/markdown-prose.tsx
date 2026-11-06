@@ -48,6 +48,14 @@ const sharedComponents: Components = {
   },
 }
 
+// A document's first heading usually repeats the title the page already shows.
+export function withoutRepeatedTitle(content: string, title: string) {
+  const match = content.match(/^\s*#{1,2}[ \t]+(.+?)[ \t]*\n+/)
+  return match && match[1].trim().toLowerCase() === title.trim().toLowerCase()
+    ? content.slice(match[0].length)
+    : content
+}
+
 // Shared safe GFM presentation for human-authored prose. React Markdown keeps
 // raw HTML disabled unless rehype-raw is added; do not add it here.
 export function MarkdownProse({

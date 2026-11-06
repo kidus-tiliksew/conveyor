@@ -30,7 +30,7 @@ export function TaskFullPage() {
 
   return (
     <div className="flex h-full flex-col">
-      <header className="flex shrink-0 flex-wrap items-center gap-1 border-b border-border px-4 py-2.5">
+      <header className="flex min-h-14 shrink-0 flex-wrap items-center gap-1 border-b border-border px-4 py-2 lg:px-6">
         <Link
           to="/w/$workspaceId/tasks/$taskId"
           params={{ workspaceId: workspace, taskId }}
@@ -108,9 +108,9 @@ const readingMeasure = 'w-full min-w-0 lg:mx-auto lg:max-w-[47.5rem]'
 
 // One grid, each section mounted once. Below lg the DOM order is the reading
 // order: identity, properties, plan, context and the other inspector
-// sections, then activity. From lg up the header row pairs identity with the
-// properties, and the remaining inspector sections span the plan and activity
-// rows, so neither column waits on the other's height.
+// sections, then activity. From lg up identity spans the rows beside the
+// properties and the top of the inspector, so neither column waits on the
+// other's height.
 function FullBody({ item }: { item: ActivityItem }) {
   return (
     <section
@@ -120,32 +120,22 @@ function FullBody({ item }: { item: ActivityItem }) {
       {/* The inspector rail is the scroll region's own background, attached
           locally so it spans the whole scroll height: the 20rem inspector, the
           1.5rem page padding, and half the 3rem column gap, then a 1px border. */}
-      <div className="grid grid-cols-1 gap-y-5 px-4 pt-5 pb-6 sm:px-6 lg:grid-cols-[minmax(0,1fr)_20rem] lg:grid-rows-[auto_auto_1fr] lg:gap-x-12 lg:pt-6">
-        <div className={cn(readingMeasure, 'order-1 lg:col-start-1 lg:row-start-1')}>
+      <div className="grid grid-cols-1 gap-y-5 px-4 pt-5 pb-6 sm:px-6 lg:grid-cols-[minmax(0,1fr)_20rem] lg:grid-rows-[auto_1fr_auto_auto] lg:gap-x-12 lg:pt-6">
+        <div className={cn(readingMeasure, 'lg:col-start-1 lg:row-span-2 lg:row-start-1')}>
           <TaskIdentity item={item} variant="full" />
         </div>
-        {/* One column from lg up, so the inspector follows the properties
-            directly. Below lg it dissolves and order restores the reading
-            sequence: identity, properties, plan, inspector, activity. */}
-        <div className="contents lg:col-start-2 lg:row-span-3 lg:row-start-1 lg:block lg:space-y-5">
-          <section aria-label="Properties" className="order-2 min-w-0">
-            <SectionHeading as="h2" className="mb-1 text-xs font-medium text-faint">
-              Properties
-            </SectionHeading>
-            <TaskFacts item={item} variant="full" columns="one" className="mt-0 gap-y-1.5 border-y-0 py-1" />
-          </section>
-          <section aria-label="Task inspector" className="order-4 min-w-0 space-y-5">
-            <TaskContextCard taskId={item.task.id} taskState={item.task.state} context={item.task.context} compact />
-            <TaskAgentPrompt item={item} />
-            <AttachmentsCard attachments={item.attachments ?? []} />
-            {/* While a gate is open the evidence belongs with the decision, and
-                the gate card renders it there — not twice on one page. */}
-            {!isReviewable(item) && (
-              <AttachmentsCard attachments={item.verification_evidence ?? []} title="Verification evidence" />
-            )}
-          </section>
-        </div>
-        <section aria-label="Execution plan" className={cn(readingMeasure, 'order-3 lg:col-start-1 lg:row-start-2')}>
+        <section aria-label="Properties" className="min-w-0 lg:col-start-2 lg:row-start-1">
+          <SectionHeading as="h2" className="mb-1 text-xs font-medium text-faint">
+            Properties
+          </SectionHeading>
+          <TaskFacts
+            item={item}
+            variant="full"
+            columns="one"
+            className="mt-0 grid-cols-[5.5rem_minmax(0,1fr)] gap-x-3 gap-y-1.5 border-y-0 py-1"
+          />
+        </section>
+        <section aria-label="Execution plan" className={cn(readingMeasure, 'lg:col-start-1 lg:row-start-3')}>
           {item.spec ? (
             <SpecCard
               spec={item.spec}
@@ -155,18 +145,30 @@ function FullBody({ item }: { item: ActivityItem }) {
               minimumSeatCount={item.summaries?.review_seat_policy?.minimum_seat_count}
             />
           ) : (
-            <p className="rounded-lg border border-border bg-surface p-3 text-sm text-muted">
+            <p className="text-[13px] text-muted">
               No execution plan yet — the planning stage has not produced a version.
             </p>
+          )}
+        </section>
+        {/* Zero height from lg up: the inspector follows the properties directly
+            and never stretches the rows that hold the reading column. */}
+        <section
+          aria-label="Task inspector"
+          className="min-w-0 space-y-5 lg:col-start-2 lg:row-span-3 lg:row-start-2 lg:h-0"
+        >
+          <TaskContextCard taskId={item.task.id} taskState={item.task.state} context={item.task.context} compact />
+          <TaskAgentPrompt item={item} />
+          <AttachmentsCard attachments={item.attachments ?? []} />
+          {/* While a gate is open the evidence belongs with the decision, and
+              the gate card renders it there — not twice on one page. */}
+          {!isReviewable(item) && (
+            <AttachmentsCard attachments={item.verification_evidence ?? []} title="Verification evidence" />
           )}
         </section>
         {/* The static relationship graph is gone: relationships are read in
             the explorer panel, and one page does not carry two renderings of
             the same lineage. */}
-        <section
-          aria-label="Activity"
-          className={cn(readingMeasure, 'order-5 space-y-4 lg:col-start-1 lg:row-start-3')}
-        >
+        <section aria-label="Activity" className={cn(readingMeasure, 'space-y-4 lg:col-start-1 lg:row-start-4')}>
           <TaskActivityTabs item={item} routeVariant="full" />
         </section>
       </div>
