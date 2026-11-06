@@ -8,9 +8,9 @@ import urllib.request
 
 # Relays state_observation evidence items through the runner's local channel
 # with a short child-side timeout, as a kit with a 10 s child timeout does.
-# argv: item count, per-request timeout seconds, padding bytes per item, and
-# seconds to keep running after the last relay.
-count, timeout, padding, linger = int(sys.argv[1]), float(sys.argv[2]), int(sys.argv[3]), float(sys.argv[4])
+# argv: item count, per-request timeout seconds (0 for none), padding bytes per
+# item, and seconds to keep running after the last relay.
+count, timeout, padding, linger = int(sys.argv[1]), float(sys.argv[2]) or None, int(sys.argv[3]), float(sys.argv[4])
 channel = json.loads(os.environ["CONVEYOR_KIT_OPERATIONS"])
 log_path = os.path.join(os.environ["CONVEYOR_KIT_ATTEMPT_DIR"], "relay-log.json")
 log = []
