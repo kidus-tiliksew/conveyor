@@ -1837,10 +1837,17 @@ func PendingPlanRevisionGate(ctx context.Context, st store.Store, taskID string)
 	if err != nil {
 		return PlanRevisionGateContext{}, false, err
 	}
+	return PendingPlanRevisionGateForTask(ctx, st, task)
+}
+
+// PendingPlanRevisionGateForTask is PendingPlanRevisionGate over a task its
+// caller already read. It reads the task's ID and State, and reads events only
+// for an awaiting task.
+func PendingPlanRevisionGateForTask(ctx context.Context, st store.Store, task core.Task) (PlanRevisionGateContext, bool, error) {
 	if task.State != core.TaskAwaiting {
 		return PlanRevisionGateContext{}, false, nil
 	}
-	events, err := st.ListCompactEvents(ctx, taskID)
+	events, err := st.ListCompactEvents(ctx, task.ID)
 	if err != nil {
 		return PlanRevisionGateContext{}, false, err
 	}
