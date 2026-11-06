@@ -178,7 +178,9 @@ func liveOrders(orders []core.WorkOrder) []core.WorkOrder {
 
 // projectList adds dependency, proposal, and recovery projections to orders.
 // Recovery refusal folds a task's whole order history, which history reads in
-// one batch for every task with a recoverable order.
+// one batch for every task with a recoverable order. The tasks themselves also
+// come from one batched read, so the task reads don't grow with the orders
+// (component-work-orders, Reads and waits).
 func (s *Service) projectList(ctx context.Context, orders []core.WorkOrder, history func(context.Context, []string) ([]core.WorkOrder, error)) ([]core.WorkOrder, error) {
 	var err error
 	var queuedImplementTaskIDs []string
@@ -203,29 +205,33 @@ func (s *Service) projectList(ctx context.Context, orders []core.WorkOrder, hist
 	}
 	recoveryByTask := map[string]recoveryContext{}
 	var recoveryTaskIDs []string
+	seenRecoveryTask := map[string]bool{}
 	for _, order := range orders {
-		if !recoverEligible(order) {
-			continue
+		if recoverEligible(order) && !seenRecoveryTask[order.TaskID] {
+			recoveryTaskIDs = append(recoveryTaskIDs, order.TaskID)
+			seenRecoveryTask[order.TaskID] = true
 		}
-		if _, ok := recoveryByTask[order.TaskID]; ok {
-			continue
-		}
-		task, taskErr := s.Store.GetTask(ctx, order.TaskID)
-		if taskErr != nil {
-			return nil, taskErr
-		}
-		_, pendingPlanRevision, gateErr := dispatch.PendingPlanRevisionGate(ctx, s.Store, order.TaskID)
-		if errors.Is(gateErr, store.ErrPlanRevisionGateUnreadable) {
-			pendingPlanRevision = true
-			gateErr = nil
-		}
-		if gateErr != nil {
-			return nil, gateErr
-		}
-		recoveryByTask[order.TaskID] = recoveryContext{task: task, pendingPlanRevision: pendingPlanRevision}
-		recoveryTaskIDs = append(recoveryTaskIDs, order.TaskID)
 	}
 	if len(recoveryTaskIDs) > 0 {
+		tasks, tasksErr := s.Store.ListTasksForRecovery(ctx, recoveryTaskIDs)
+		if tasksErr != nil {
+			return nil, tasksErr
+		}
+		for _, taskID := range recoveryTaskIDs {
+			task, ok := tasks[taskID]
+			if !ok {
+				return nil, fmt.Errorf("%w: task %s", store.ErrNotFound, taskID)
+			}
+			_, pendingPlanRevision, gateErr := dispatch.PendingPlanRevisionGateForTask(ctx, s.Store, task)
+			if errors.Is(gateErr, store.ErrPlanRevisionGateUnreadable) {
+				pendingPlanRevision = true
+				gateErr = nil
+			}
+			if gateErr != nil {
+				return nil, gateErr
+			}
+			recoveryByTask[taskID] = recoveryContext{task: task, pendingPlanRevision: pendingPlanRevision}
+		}
 		taskOrders, historyErr := history(ctx, recoveryTaskIDs)
 		if historyErr != nil {
 			return nil, historyErr
