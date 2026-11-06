@@ -1,0 +1,8 @@
+DIAG relay key=item-1 lock=881ns git=3.131069ms put=719.719µs total=8.387541ms clientGone=false
+DIAG relay key=item-2 lock=351ns git=2.265917ms put=632.816µs total=6.778747ms clientGone=false
+DIAG relay key=item-3 lock=321ns git=3.016886ms put=591.689µs total=7.309731ms clientGone=false
+--- PASS: TestKitRunnerSlowServerRecordsRelayedEvidence (8.90s)
+DIAG relay key=item-1 lock=561ns git=3.21714ms put=805.62µs total=7.705926ms clientGone=false
+DIAG relay key=item-2 lock=370ns git=2.572733ms put=608.45µs total=6.334043ms clientGone=false
+DIAG relay key=item-3 lock=330ns git=2.442699ms put=699.851µs total=6.699558ms clientGone=false
+--- PASS: TestKitRunnerSlowServerRecordsRelayedEvidence (8.77s)

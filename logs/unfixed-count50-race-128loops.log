@@ -1,0 +1,114 @@
+# head: 6ef21cde05a389c5eb13a9c5e8aa294628d88dd5, working tree clean (unfixed)
+# date: 2026-11-06T14:00:27Z
+# load: 128 busy-loop processes on nproc=4, started when conveyor.test appears
+# cmd: go test ./cmd/conveyor -run TestKitRunnerSlowServerRecordsRelayedEvidence -count=50 -race
+# t=60s loadavg: 94.98 30.98 29.76 134/634 54406
+# t=120s loadavg: 124.94 50.81 36.63 165/703 55234
+# t=180s loadavg: 132.97 66.94 43.09 130/615 55734
+# t=240s loadavg: 141.38 81.29 49.51 131/636 56530
+# t=300s loadavg: 145.47 92.86 55.45 156/706 57385
+# t=360s loadavg: 138.31 100.59 60.46 131/619 58133
+# t=421s loadavg: 140.35 108.40 65.68 131/612 58711
+# t=481s loadavg: 142.43 114.80 70.55 132/630 59512
+--- FAIL: TestKitRunnerSlowServerRecordsRelayedEvidence (10.62s)
+    kit_verify_relay_test.go:75: slow server attempt: outcome="failed" err=exercise relay: failed 
+--- FAIL: TestKitRunnerSlowServerRecordsRelayedEvidence (9.80s)
+    kit_verify_relay_test.go:75: slow server attempt: outcome="failed" err=exercise relay: failed 
+--- FAIL: TestKitRunnerSlowServerRecordsRelayedEvidence (9.68s)
+    kit_verify_relay_test.go:75: slow server attempt: outcome="failed" err=exercise relay: failed 
+--- FAIL: TestKitRunnerSlowServerRecordsRelayedEvidence (9.88s)
+    kit_verify_relay_test.go:75: slow server attempt: outcome="failed" err=exercise relay: failed 
+--- FAIL: TestKitRunnerSlowServerRecordsRelayedEvidence (10.46s)
+    kit_verify_relay_test.go:75: slow server attempt: outcome="failed" err=exercise relay: failed 
+--- FAIL: TestKitRunnerSlowServerRecordsRelayedEvidence (9.90s)
+    kit_verify_relay_test.go:75: slow server attempt: outcome="failed" err=exercise relay: failed 
+--- FAIL: TestKitRunnerSlowServerRecordsRelayedEvidence (9.62s)
+    kit_verify_relay_test.go:75: slow server attempt: outcome="failed" err=exercise relay: failed 
+--- FAIL: TestKitRunnerSlowServerRecordsRelayedEvidence (9.43s)
+    kit_verify_relay_test.go:75: slow server attempt: outcome="failed" err=exercise relay: failed 
+--- FAIL: TestKitRunnerSlowServerRecordsRelayedEvidence (9.05s)
+    kit_verify_relay_test.go:75: slow server attempt: outcome="failed" err=exercise relay: failed 
+--- FAIL: TestKitRunnerSlowServerRecordsRelayedEvidence (10.00s)
+    kit_verify_relay_test.go:75: slow server attempt: outcome="failed" err=exercise relay: failed 
+--- FAIL: TestKitRunnerSlowServerRecordsRelayedEvidence (9.70s)
+    kit_verify_relay_test.go:75: slow server attempt: outcome="failed" err=exercise relay: failed 
+--- FAIL: TestKitRunnerSlowServerRecordsRelayedEvidence (9.12s)
+    kit_verify_relay_test.go:75: slow server attempt: outcome="failed" err=exercise relay: failed 
+--- FAIL: TestKitRunnerSlowServerRecordsRelayedEvidence (10.03s)
+    kit_verify_relay_test.go:75: slow server attempt: outcome="failed" err=exercise relay: failed 
+--- FAIL: TestKitRunnerSlowServerRecordsRelayedEvidence (10.04s)
+    kit_verify_relay_test.go:75: slow server attempt: outcome="failed" err=exercise relay: failed 
+--- FAIL: TestKitRunnerSlowServerRecordsRelayedEvidence (9.50s)
+    kit_verify_relay_test.go:75: slow server attempt: outcome="failed" err=exercise relay: failed 
+--- FAIL: TestKitRunnerSlowServerRecordsRelayedEvidence (9.97s)
+    kit_verify_relay_test.go:75: slow server attempt: outcome="failed" err=exercise relay: failed 
+--- FAIL: TestKitRunnerSlowServerRecordsRelayedEvidence (9.52s)
+    kit_verify_relay_test.go:75: slow server attempt: outcome="failed" err=exercise relay: failed 
+--- FAIL: TestKitRunnerSlowServerRecordsRelayedEvidence (9.95s)
+    kit_verify_relay_test.go:75: slow server attempt: outcome="failed" err=exercise relay: failed 
+--- FAIL: TestKitRunnerSlowServerRecordsRelayedEvidence (10.80s)
+    kit_verify_relay_test.go:75: slow server attempt: outcome="failed" err=exercise relay: failed 
+--- FAIL: TestKitRunnerSlowServerRecordsRelayedEvidence (9.95s)
+    kit_verify_relay_test.go:75: slow server attempt: outcome="failed" err=exercise relay: failed 
+--- FAIL: TestKitRunnerSlowServerRecordsRelayedEvidence (9.21s)
+    kit_verify_relay_test.go:75: slow server attempt: outcome="failed" err=exercise relay: failed 
+--- FAIL: TestKitRunnerSlowServerRecordsRelayedEvidence (9.25s)
+    kit_verify_relay_test.go:75: slow server attempt: outcome="failed" err=exercise relay: failed 
+--- FAIL: TestKitRunnerSlowServerRecordsRelayedEvidence (10.09s)
+    kit_verify_relay_test.go:75: slow server attempt: outcome="failed" err=exercise relay: failed 
+--- FAIL: TestKitRunnerSlowServerRecordsRelayedEvidence (9.66s)
+    kit_verify_relay_test.go:75: slow server attempt: outcome="failed" err=exercise relay: failed 
+--- FAIL: TestKitRunnerSlowServerRecordsRelayedEvidence (10.38s)
+    kit_verify_relay_test.go:75: slow server attempt: outcome="failed" err=exercise relay: failed 
+--- FAIL: TestKitRunnerSlowServerRecordsRelayedEvidence (9.76s)
+    kit_verify_relay_test.go:75: slow server attempt: outcome="failed" err=exercise relay: failed 
+--- FAIL: TestKitRunnerSlowServerRecordsRelayedEvidence (9.80s)
+    kit_verify_relay_test.go:75: slow server attempt: outcome="failed" err=exercise relay: failed 
+--- FAIL: TestKitRunnerSlowServerRecordsRelayedEvidence (10.65s)
+    kit_verify_relay_test.go:75: slow server attempt: outcome="failed" err=exercise relay: failed 
+--- FAIL: TestKitRunnerSlowServerRecordsRelayedEvidence (9.49s)
+    kit_verify_relay_test.go:75: slow server attempt: outcome="failed" err=exercise relay: failed 
+--- FAIL: TestKitRunnerSlowServerRecordsRelayedEvidence (9.18s)
+    kit_verify_relay_test.go:75: slow server attempt: outcome="failed" err=exercise relay: failed 
+--- FAIL: TestKitRunnerSlowServerRecordsRelayedEvidence (9.82s)
+    kit_verify_relay_test.go:75: slow server attempt: outcome="failed" err=exercise relay: failed 
+--- FAIL: TestKitRunnerSlowServerRecordsRelayedEvidence (9.21s)
+    kit_verify_relay_test.go:75: slow server attempt: outcome="failed" err=exercise relay: failed 
+--- FAIL: TestKitRunnerSlowServerRecordsRelayedEvidence (10.13s)
+    kit_verify_relay_test.go:75: slow server attempt: outcome="failed" err=exercise relay: failed 
+--- FAIL: TestKitRunnerSlowServerRecordsRelayedEvidence (10.20s)
+    kit_verify_relay_test.go:75: slow server attempt: outcome="failed" err=exercise relay: failed 
+--- FAIL: TestKitRunnerSlowServerRecordsRelayedEvidence (9.38s)
+    kit_verify_relay_test.go:75: slow server attempt: outcome="failed" err=exercise relay: failed 
+--- FAIL: TestKitRunnerSlowServerRecordsRelayedEvidence (10.30s)
+    kit_verify_relay_test.go:75: slow server attempt: outcome="failed" err=exercise relay: failed 
+--- FAIL: TestKitRunnerSlowServerRecordsRelayedEvidence (9.50s)
+    kit_verify_relay_test.go:75: slow server attempt: outcome="failed" err=exercise relay: failed 
+--- FAIL: TestKitRunnerSlowServerRecordsRelayedEvidence (9.16s)
+    kit_verify_relay_test.go:75: slow server attempt: outcome="failed" err=exercise relay: failed 
+--- FAIL: TestKitRunnerSlowServerRecordsRelayedEvidence (9.42s)
+    kit_verify_relay_test.go:75: slow server attempt: outcome="failed" err=exercise relay: failed 
+--- FAIL: TestKitRunnerSlowServerRecordsRelayedEvidence (9.45s)
+    kit_verify_relay_test.go:75: slow server attempt: outcome="failed" err=exercise relay: failed 
+--- FAIL: TestKitRunnerSlowServerRecordsRelayedEvidence (9.26s)
+    kit_verify_relay_test.go:75: slow server attempt: outcome="failed" err=exercise relay: failed 
+--- FAIL: TestKitRunnerSlowServerRecordsRelayedEvidence (9.54s)
+    kit_verify_relay_test.go:75: slow server attempt: outcome="failed" err=exercise relay: failed 
+--- FAIL: TestKitRunnerSlowServerRecordsRelayedEvidence (9.39s)
+    kit_verify_relay_test.go:75: slow server attempt: outcome="failed" err=exercise relay: failed 
+--- FAIL: TestKitRunnerSlowServerRecordsRelayedEvidence (10.01s)
+    kit_verify_relay_test.go:75: slow server attempt: outcome="failed" err=exercise relay: failed 
+--- FAIL: TestKitRunnerSlowServerRecordsRelayedEvidence (10.02s)
+    kit_verify_relay_test.go:75: slow server attempt: outcome="failed" err=exercise relay: failed 
+--- FAIL: TestKitRunnerSlowServerRecordsRelayedEvidence (9.72s)
+    kit_verify_relay_test.go:75: slow server attempt: outcome="failed" err=exercise relay: failed 
+--- FAIL: TestKitRunnerSlowServerRecordsRelayedEvidence (9.47s)
+    kit_verify_relay_test.go:75: slow server attempt: outcome="failed" err=exercise relay: failed 
+--- FAIL: TestKitRunnerSlowServerRecordsRelayedEvidence (9.53s)
+    kit_verify_relay_test.go:75: slow server attempt: outcome="failed" err=exercise relay: failed 
+FAIL
+FAIL	github.com/kidus-tiliksew/conveyor/cmd/conveyor	495.169s
+FAIL
+# final loadavg: 140.19 115.66 71.54 133/611 59610
+# exit=1 elapsed_under_load=493.7s
+# wrapper exit: 1

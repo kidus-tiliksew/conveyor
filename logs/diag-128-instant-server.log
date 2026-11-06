@@ -1,0 +1,30 @@
+# load: 128 busy-loop processes on nproc=4
+# cmd: /tmp/task/diag2.test -test.run TestKitRunnerSlowServerRecordsRelayedEvidence$ -test.count=8 -test.v
+# loadavg before: 36.28 43.34 20.79 129/599 20774
+DIAG relay key=item-1 lock=701ns git=96.403652ms put=43.340138ms total=160.747262ms clientGone=false
+DIAG relay key=item-2 lock=1.073µs git=122.437154ms put=53.613976ms total=257.625413ms clientGone=true
+    kit_verify_relay_test.go:77: slow server attempt: outcome="failed" err=exercise relay: failed 
+--- FAIL: TestKitRunnerSlowServerRecordsRelayedEvidence (4.93s)
+DIAG relay lock=5.831µs git=638.038333ms gitErr=verification checkout must remain attached and readable: local git status: signal: killed:  ctxErr=context canceled
+    kit_verify_relay_test.go:77: slow server attempt: outcome="cancelled" err=exercise relay: cancelled 
+--- FAIL: TestKitRunnerSlowServerRecordsRelayedEvidence (3.39s)
+DIAG relay key=item-1 lock=992ns git=198.8818ms put=58.380746ms total=359.852729ms clientGone=true
+    kit_verify_relay_test.go:77: slow server attempt: outcome="failed" err=exercise relay: failed 
+--- FAIL: TestKitRunnerSlowServerRecordsRelayedEvidence (5.15s)
+DIAG relay key=item-1 lock=711ns git=171.347926ms put=42.426578ms total=317.031129ms clientGone=true
+    kit_verify_relay_test.go:77: slow server attempt: outcome="failed" err=exercise relay: failed 
+--- FAIL: TestKitRunnerSlowServerRecordsRelayedEvidence (4.58s)
+DIAG relay key=item-1 lock=802ns git=174.353185ms put=43.646665ms total=313.066965ms clientGone=true
+    kit_verify_relay_test.go:77: slow server attempt: outcome="failed" err=exercise relay: failed 
+--- FAIL: TestKitRunnerSlowServerRecordsRelayedEvidence (4.79s)
+DIAG relay key=item-1 lock=5.38µs git=165.444417ms put=66.314554ms total=334.370542ms clientGone=true
+    kit_verify_relay_test.go:77: slow server attempt: outcome="failed" err=exercise relay: failed 
+--- FAIL: TestKitRunnerSlowServerRecordsRelayedEvidence (4.62s)
+DIAG relay key=item-1 lock=941ns git=201.886862ms put=32.378002ms total=363.821673ms clientGone=true
+    kit_verify_relay_test.go:77: slow server attempt: outcome="failed" err=exercise relay: failed 
+--- FAIL: TestKitRunnerSlowServerRecordsRelayedEvidence (4.95s)
+DIAG relay key=item-1 lock=1.192µs git=188.381497ms put=6.77978ms total=359.992882ms clientGone=true
+    kit_verify_relay_test.go:77: slow server attempt: outcome="failed" err=exercise relay: failed 
+--- FAIL: TestKitRunnerSlowServerRecordsRelayedEvidence (4.64s)
+# loadavg after: 92.19 56.45 26.13 175/685 21582
+# exit=1 elapsed=37.9s

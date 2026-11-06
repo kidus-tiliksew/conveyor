@@ -1,0 +1,17 @@
+# load: 128 busy-loop processes on nproc=4
+# cmd: /tmp/task/diag2.test -test.run TestKitRunnerSlowServerRecordsRelayedEvidence$ -test.count=4 -test.v
+# loadavg before: 97.34 58.72 27.19 131/611 21745
+DIAG relay key=item-1 lock=691ns git=165.645742ms put=60.216177ms total=420.299773ms clientGone=true
+    kit_verify_relay_test.go:77: slow server attempt: outcome="failed" err=exercise relay: failed 
+--- FAIL: TestKitRunnerSlowServerRecordsRelayedEvidence (9.90s)
+DIAG relay key=item-1 lock=981ns git=152.505181ms put=59.055343ms total=304.130624ms clientGone=true
+    kit_verify_relay_test.go:77: slow server attempt: outcome="failed" err=exercise relay: failed 
+--- FAIL: TestKitRunnerSlowServerRecordsRelayedEvidence (9.37s)
+DIAG relay key=item-1 lock=1.192µs git=141.78098ms put=50.585925ms total=272.06285ms clientGone=false
+    kit_verify_relay_test.go:77: slow server attempt: outcome="failed" err=exercise relay: failed 
+--- FAIL: TestKitRunnerSlowServerRecordsRelayedEvidence (10.01s)
+DIAG relay key=item-1 lock=882ns git=186.303993ms put=767.639µs total=293.299116ms clientGone=true
+    kit_verify_relay_test.go:77: slow server attempt: outcome="failed" err=exercise relay: failed 
+--- FAIL: TestKitRunnerSlowServerRecordsRelayedEvidence (10.38s)
+# loadavg after: 114.05 67.86 31.60 132/611 22062
+# exit=1 elapsed=40.3s

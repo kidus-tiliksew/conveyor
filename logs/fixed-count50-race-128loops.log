@@ -1,0 +1,14 @@
+# head: c2bb1103f70c3d4b1ead52c44a8c5969eb7e3915, working tree clean (fixed)
+# date: 2026-11-06T14:08:53Z
+# load: 128 busy-loop processes on nproc=4, started when conveyor.test appears
+# cmd: go test ./cmd/conveyor -run TestKitRunnerSlowServerRecordsRelayedEvidence -count=50 -race
+# t=60s loadavg: 127.41 115.54 74.61 197/710 61514
+# t=120s loadavg: 136.20 120.75 79.00 134/638 62085
+# t=180s loadavg: 145.02 125.86 83.36 131/636 63050
+# t=240s loadavg: 147.69 129.40 87.20 159/714 64013
+# t=300s loadavg: 140.43 130.97 90.40 130/630 64875
+# t=360s loadavg: 143.35 133.81 93.93 132/634 65562
+ok  	github.com/kidus-tiliksew/conveyor/cmd/conveyor	421.634s
+# final loadavg: 143.91 135.28 96.91 153/678 66526
+# exit=0 elapsed_under_load=419.5s
+# wrapper exit: 0

@@ -1,0 +1,16 @@
+# load: 32 busy-loop processes on nproc=4
+# cmd: /tmp/task/diag.test -test.run TestKitRunnerSlowServerRecordsRelayedEvidence$ -test.count=10 -test.v
+# loadavg before: 5.05 2.23 0.87 34/504 15484
+--- PASS: TestKitRunnerSlowServerRecordsRelayedEvidence (9.61s)
+--- PASS: TestKitRunnerSlowServerRecordsRelayedEvidence (10.02s)
+--- PASS: TestKitRunnerSlowServerRecordsRelayedEvidence (9.61s)
+--- PASS: TestKitRunnerSlowServerRecordsRelayedEvidence (9.71s)
+--- PASS: TestKitRunnerSlowServerRecordsRelayedEvidence (9.20s)
+--- PASS: TestKitRunnerSlowServerRecordsRelayedEvidence (9.61s)
+--- PASS: TestKitRunnerSlowServerRecordsRelayedEvidence (9.89s)
+--- PASS: TestKitRunnerSlowServerRecordsRelayedEvidence (9.29s)
+--- PASS: TestKitRunnerSlowServerRecordsRelayedEvidence (9.60s)
+--- PASS: TestKitRunnerSlowServerRecordsRelayedEvidence (9.40s)
+PASS
+# loadavg after: 33.73 12.72 4.75 33/507 17065
+# exit=0 elapsed=97.3s

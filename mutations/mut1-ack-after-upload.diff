@@ -1,0 +1,15 @@
+--- a/cmd/conveyor/kit_verify_execution.go
++++ b/cmd/conveyor/kit_verify_execution.go
+@@ relay handler, evidence branch @@
+ 			uploader.enqueue(signal.Key)
++			for {
++				if _, statErr := os.Stat(filepath.Join(spoolDir, signal.Key+".json")); statErr != nil {
++					break
++				}
++				select {
++				case <-requestCtx.Done():
++					return nil, requestCtx.Err()
++				case <-time.After(10 * time.Millisecond):
++				}
++			}
+ 			return map[string]string{"state": "recorded"}, nil

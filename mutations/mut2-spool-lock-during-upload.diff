@@ -1,0 +1,14 @@
+--- a/internal/verification/runner.go
++++ b/internal/verification/runner.go
+@@ EvidenceSpool.Upload @@
++	defer s.mu.Unlock()
+ 	b, err := s.read(path)
+-	s.mu.Unlock()
+ 	if err != nil {
+ 		return err
+ 	}
+ 	if err = upload(ctx, b); err != nil {
+ 		return err
+ 	}
+-	s.mu.Lock()
+-	defer s.mu.Unlock()

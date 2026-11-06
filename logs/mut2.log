@@ -1,0 +1,3 @@
+    kit_verify_relay_test.go:106: slow server attempt: outcome="timed_out" err=exercise relay: timed_out  child output: {"stderr":"","stdout":""}
+--- FAIL: TestKitRunnerSlowServerRecordsRelayedEvidence (122.53s)
+FAIL
