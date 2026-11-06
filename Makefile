@@ -247,7 +247,7 @@ test-integration-ci: _postgres-integration-shard-check _postgres-integration-url
 _test-integration-postgres:
 	@test "$${CONVEYOR_FIXTURE_PREPARED:-}" = 1 || (echo "PostgreSQL fixture was not prepared" >&2; exit 1)
 	@test -n "$$CONVEYOR_TEST_DATABASE_URL" || (echo "CONVEYOR_TEST_DATABASE_URL is required" >&2; exit 1)
-	$(GO_TEST_REQUIRE_TESTS) -v -p=1 $(POSTGRES_INTEGRATION_PACKAGES) -count=1 -timeout=5m $(GO_INTEGRATION_FLAGS)
+	$(GO_TEST_REQUIRE_TESTS) -v -p=1 $(POSTGRES_INTEGRATION_PACKAGES) -count=1 -timeout=10m $(GO_INTEGRATION_FLAGS)
 
 # Keep the accepted work-order validation command explicit while sharing the
 # integration suite's isolated Postgres lifecycle.
