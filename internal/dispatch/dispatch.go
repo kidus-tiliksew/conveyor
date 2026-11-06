@@ -1412,8 +1412,9 @@ func (d *Dispatcher) applyReview(ctx context.Context, cfg *config.Config, task c
 	}
 	if current.State == core.TaskApproved && current.PolicyVersion > 0 && !current.MergeApproval {
 		// The verdict stands whatever the check status says. A hold, a wait, and
-		// an unanswered read are recorded, and an unanswered read has its retry
-		// job; none of them is a failure of the verdict its caller could act on.
+		// an unanswered read of the check status or the pull request are recorded,
+		// and an unanswered read has its retry job; none of them is a failure of
+		// the verdict its caller could act on (AC-1.10; DEC-118(2)).
 		if err := d.MergeApprovedTaskAutomatically(ctx, current); err != nil && !checkStatusDeferred(err) {
 			return err
 		} else if err != nil {

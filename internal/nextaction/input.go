@@ -186,12 +186,16 @@ type CheckRef struct {
 	URL   string `json:"url,omitempty"`
 }
 
-// CheckHold is a standing hold, folded from merge.check_hold events.
+// CheckHold is a standing hold, folded from merge.check_hold events. AfterStuck
+// marks a permission hold that replaced a stuck hold, so the next read GitHub
+// answers decides as if the stuck hold stood (req-review-gates-evidence AC-1.11;
+// component-submission-merge invariant 62).
 type CheckHold struct {
 	Reason      string
 	Checks      []CheckRef
 	ReadFailure string
 	Remedy      string
+	AfterStuck  bool
 }
 
 // CheckStatus is the recorded check status of one head, already folded from
@@ -203,6 +207,13 @@ type CheckStatus struct {
 	Waiting          []CheckRef
 	ReadFailure      string
 	RetriesExhausted bool
+}
+
+// StuckStands reports a stuck hold, or a permission hold that took its place.
+// Either way no new deadline is recorded, and a read that finds a check pending
+// keeps or restores the stuck hold (component-submission-merge invariants 61, 62).
+func (s CheckStatus) StuckStands() bool {
+	return s.Hold != nil && (s.Hold.Reason == CheckHoldStuck || s.Hold.AfterStuck)
 }
 
 // MergeConflict is the open conflict episode, already folded from events.

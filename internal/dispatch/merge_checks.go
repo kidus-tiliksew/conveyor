@@ -35,10 +35,64 @@ var (
 	// ErrCheckStatusPending reports a merge waiting on a pending check with
 	// none failed. The wait is recorded and the factory stays the actor.
 	ErrCheckStatusPending = errors.New("check status is pending")
-	// ErrCheckStatusUnread reports a read with no answer, which is no pass. It
+	// ErrCheckStatusUnread reports a read with no answer, which is no pass: of the
+	// check status, or of the pull request an automatic merge reads first. It
 	// wraps the forge error, so a retry and a rate-limit pause can see it.
 	ErrCheckStatusUnread = errors.New("check status could not be read")
 )
+
+// unreadPullRequestError is an automatic merge's read of the pull request with
+// no answer (AC-1.10; component-submission-merge invariant 63). It counts as
+// ErrCheckStatusUnread, and failure is the fixed text its events name it by.
+type unreadPullRequestError struct {
+	failure string
+	err     error
+}
+
+func (e *unreadPullRequestError) Error() string        { return e.err.Error() }
+func (e *unreadPullRequestError) Unwrap() error        { return e.err }
+func (e *unreadPullRequestError) Is(target error) bool { return target == ErrCheckStatusUnread }
+
+// unreadPullRequestApplies selects the merges invariant 63 governs: the automatic
+// merge of an approved gate-off task with a head to record the deadline at. The
+// operator's act, a gate-on task, and a queued or running task finishing through
+// the accepted-review path stay outside it.
+func unreadPullRequestApplies(task core.Task, act mergeAct) bool {
+	return act.operator == nil && checkReadRowApplies(task) && store.CheckStatusHead(task) != ""
+}
+
+// recordUnreadPullRequest applies invariant 63: the read counts as a failed read,
+// so it records the deadline and reads no check status. A deadline's own merge
+// records nothing here, because the deadline holds instead of waiting again. The
+// wait is recorded before the caller's merge.failed, so a process that dies
+// between them still has a deadline to wake it.
+func (d *Dispatcher) recordUnreadPullRequest(ctx context.Context, task core.Task, act mergeAct, failure string, cause error) error {
+	unread := &unreadPullRequestError{failure: failure, err: cause}
+	if act.checkStatus != "" {
+		return unread
+	}
+	head := store.CheckStatusHead(task)
+	standing, err := d.foldCheckStatus(ctx, task.ID, head)
+	if err != nil {
+		return err
+	}
+	if err := d.recordUnansweredRead(ctx, task, head, standing, "read_failed", failure, cause); err != nil {
+		return err
+	}
+	return unread
+}
+
+// pullRequestReadFailure is the fixed text an event names a failed pull-request
+// read by, as checkReadFailure does for a check-status read.
+func pullRequestReadFailure(err error) string {
+	if category := github.ErrorCategory(err); category != "" {
+		return fmt.Sprintf("The pull-request read failed (%s).", category)
+	}
+	return "The pull-request read failed."
+}
+
+// pullRequestMergeabilityUnknown names GitHub's UNKNOWN answer.
+const pullRequestMergeabilityUnknown = "GitHub has not settled the pull request's mergeability."
 
 // checkStatusDeferred reports the outcomes that leave an approved task
 // unmerged with the reason recorded, which a verdict's caller cannot act on.
@@ -103,12 +157,12 @@ func (d *Dispatcher) applyCheckStatusLocked(ctx context.Context, task core.Task,
 		return "", d.applyFailedCheckRead(ctx, task, head, standing, readErr)
 	}
 	failed, pending := read.Named(github.CheckFailed), read.Named(github.CheckPending)
-	stuck := standing.Hold != nil && standing.Hold.Reason == nextaction.CheckHoldStuck
 	switch {
-	case len(pending) > 0 && stuck:
+	case len(pending) > 0 && standing.StuckStands():
 		// A stuck hold stays until a read finds no check pending, and records no
 		// new deadline while it stands (AC-1.9; invariant 61). It keeps naming
-		// what this read found.
+		// what this read found. A permission hold that replaced it gives way to it
+		// on the first answered read, with nothing cleared (AC-1.11; invariant 62).
 		if err := d.recordCheckHold(ctx, task, head, standing.Hold, nextaction.CheckHoldStuck, append(failed, pending...), ""); err != nil {
 			return "", err
 		}
@@ -151,24 +205,18 @@ func (d *Dispatcher) applyCheckStatusLocked(ctx context.Context, task core.Task,
 }
 
 // applyFailedCheckRead applies the two read-failure rows. Both record the
-// deadline AC-1.5 asks of a failed read, unless a stuck hold stands. Only a
-// refused permission names the operator at once; a failed read clears nothing.
+// deadline AC-1.5 asks of a failed read, unless a stuck hold or the permission
+// hold that replaced it stands. Only a refused permission names the operator at
+// once; a failed read clears nothing.
 func (d *Dispatcher) applyFailedCheckRead(ctx context.Context, task core.Task, head string, standing nextaction.CheckStatus, readErr error) error {
 	hold := standing.Hold
 	permission := github.ErrorCategory(readErr) == github.ForgePermission
-	if hold == nil || hold.Reason != nextaction.CheckHoldStuck {
-		reason := "read_failed"
-		if permission {
-			reason = nextaction.CheckHoldPermission
-		}
-		payload := checkEventPayload(task, head, reason, nil)
-		payload["read_failed"], payload["read_failure"] = true, checkReadFailure(readErr)
-		if category := github.ErrorCategory(readErr); category != "" {
-			payload["forge_error_category"] = category
-		}
-		if err := d.recordCheckDeadline(ctx, task, head, standing, payload, !permission && !rateLimited(readErr)); err != nil {
-			return err
-		}
+	reason := "read_failed"
+	if permission {
+		reason = nextaction.CheckHoldPermission
+	}
+	if err := d.recordUnansweredRead(ctx, task, head, standing, reason, checkReadFailure(readErr), readErr); err != nil {
+		return err
 	}
 	if !permission {
 		return fmt.Errorf("%w for head %s: %w", ErrCheckStatusUnread, head, readErr)
@@ -183,6 +231,20 @@ func (d *Dispatcher) applyFailedCheckRead(ctx context.Context, task core.Task, h
 		return err
 	}
 	return fmt.Errorf("%w: GitHub refused the read of head %s: %w", ErrCheckStatusHeld, head, readErr)
+}
+
+// recordUnansweredRead records merge.check_pending and the deadline for a read
+// with no answer, unless StuckStands: that state records no new deadline.
+func (d *Dispatcher) recordUnansweredRead(ctx context.Context, task core.Task, head string, standing nextaction.CheckStatus, reason, failure string, cause error) error {
+	if standing.StuckStands() {
+		return nil
+	}
+	payload := checkEventPayload(task, head, reason, nil)
+	payload["read_failed"], payload["read_failure"] = true, failure
+	if category := github.ErrorCategory(cause); category != "" {
+		payload["forge_error_category"] = category
+	}
+	return d.recordCheckDeadline(ctx, task, head, standing, payload, reason != nextaction.CheckHoldPermission && !rateLimited(cause))
 }
 
 // checkReadFailure is the fixed text an event names a failed read by. The
@@ -214,10 +276,11 @@ func (d *Dispatcher) recordPendingDeadline(ctx context.Context, task core.Task, 
 // recordCheckDeadline records the deadline and merge.check_pending together. A
 // later read of the same head leaves the deadline where it is. It appends a
 // further event only when the read changes between answered and unanswered, when
-// an answered read finds different checks pending, or when reopen is set and a
-// failed read follows the end of the retries, so the wait reads truthfully and
-// the job finds what is due. A failed read in a wait keeps naming what the wait's
-// last answered read found pending, so the deadline can name it.
+// an answered read finds different checks pending, when an unanswered read names
+// a different failure, or when reopen is set and a failed read follows the end of
+// the retries, so the wait reads truthfully and the job finds what is due. A
+// failed read in a wait keeps naming what the wait's last answered read found
+// pending, so the deadline can name it.
 func (d *Dispatcher) recordCheckDeadline(ctx context.Context, task core.Task, head string, standing nextaction.CheckStatus, payload map[string]any, reopen bool) error {
 	deadline := d.checkClock().Add(CheckStatusDeadlineWindow)
 	payload["deadline"] = deadline
@@ -228,6 +291,9 @@ func (d *Dispatcher) recordCheckDeadline(ctx context.Context, task core.Task, he
 	}
 	readFailed, _ := payload["read_failed"].(bool)
 	changed := readFailed != (standing.ReadFailure != "")
+	if failure, _ := payload["read_failure"].(string); readFailed && failure != standing.ReadFailure {
+		changed = true
+	}
 	if pending, _ := payload["checks"].([]github.Check); !readFailed && !sameChecks(standing.Waiting, pending) {
 		changed = true
 	}
