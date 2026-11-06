@@ -1128,7 +1128,7 @@ export interface MonitorObservation {
   source_url: string
   commit_sha?: string
   task_id?: string
-  task_outcome?: 'created' | 'reused'
+  task_outcome?: 'created' | 'reused' | 'recovery_observed'
   last_error?: string
   state: string
   deduplicated_count: number

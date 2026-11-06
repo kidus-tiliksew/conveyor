@@ -306,28 +306,64 @@ func requireMonitorTask(ctx context.Context, tx pgx.Tx, taskID string) error {
 	return tx.QueryRow(ctx, `SELECT id FROM tasks WHERE workspace_id=$1 AND id=$2`, workspace(ctx), taskID).Scan(&id)
 }
 
+// linkObservationTx links the observation unless it already links that task,
+// and reports whether it wrote the link. A link to another task is refused.
+func linkObservationTx(ctx context.Context, tx pgx.Tx, identity, taskID, outcome string) (bool, error) {
+	var linkedTask *string
+	if err := tx.QueryRow(ctx, `SELECT task_id FROM monitor_observations
+		WHERE workspace_id=$1 AND identity=$2 FOR UPDATE`, workspace(ctx), identity).Scan(&linkedTask); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return false, fmt.Errorf("monitor observation %s not found", identity)
+		}
+		return false, err
+	}
+	if linkedTask != nil {
+		if *linkedTask != taskID {
+			return false, fmt.Errorf("monitor observation %s already links task %s", identity, *linkedTask)
+		}
+		return false, nil
+	}
+	if err := requireMonitorTask(ctx, tx, taskID); err != nil {
+		return false, err
+	}
+	_, err := tx.Exec(ctx, `UPDATE monitor_observations SET task_id=$3,task_outcome=$4,state='task_linked',updated_at=now()
+		WHERE workspace_id=$1 AND identity=$2`, workspace(ctx), identity, taskID, outcome)
+	return err == nil, err
+}
+
 func (s *Store) LinkTask(ctx context.Context, identity, taskID, outcome string) (monitor.ObservationRecord, error) {
 	ctx = dbmetrics.WithReadLabel(ctx, "LinkTask")
 	err := s.inTx(ctx, func(tx pgx.Tx, _ *db.Queries) error {
-		var linkedTask *string
-		if err := tx.QueryRow(ctx, `SELECT task_id FROM monitor_observations
-			WHERE workspace_id=$1 AND identity=$2 FOR UPDATE`, workspace(ctx), identity).Scan(&linkedTask); err != nil {
-			if errors.Is(err, pgx.ErrNoRows) {
-				return fmt.Errorf("monitor observation %s not found", identity)
-			}
+		_, err := linkObservationTx(ctx, tx, identity, taskID, outcome)
+		return err
+	})
+	if err != nil {
+		return monitor.ObservationRecord{}, err
+	}
+	return s.getObservation(ctx, identity)
+}
+
+// LinkRecoveryTask commits the link, the task event, and the activity row
+// together (component-persistence invariant 5).
+func (s *Store) LinkRecoveryTask(ctx context.Context, identity, taskID string, taskPayload, activityPayload map[string]any) (monitor.ObservationRecord, error) {
+	ctx = dbmetrics.WithReadLabel(ctx, "LinkRecoveryTask")
+	if _, err := store.RequireActor(ctx); err != nil {
+		return monitor.ObservationRecord{}, err
+	}
+	err := s.inTx(ctx, func(tx pgx.Tx, q *db.Queries) error {
+		linked, err := linkObservationTx(ctx, tx, identity, taskID, monitor.OutcomeRecoveryObserved)
+		if err != nil || !linked {
 			return err
 		}
-		if linkedTask != nil {
-			if *linkedTask != taskID {
-				return fmt.Errorf("monitor observation %s already links task %s", identity, *linkedTask)
-			}
-			return nil
-		}
-		if err := requireMonitorTask(ctx, tx, taskID); err != nil {
+		if err = insertEvent(ctx, q, core.Event{TaskID: taskID, Kind: monitor.EventRecoveryObserved, Payload: core.JSONPayload(taskPayload)}); err != nil {
 			return err
 		}
-		_, err := tx.Exec(ctx, `UPDATE monitor_observations SET task_id=$3,task_outcome=$4,state='task_linked',updated_at=now()
-			WHERE workspace_id=$1 AND identity=$2`, workspace(ctx), identity, taskID, outcome)
+		activity, err := json.Marshal(activityPayload)
+		if err != nil {
+			return err
+		}
+		_, err = tx.Exec(ctx, `INSERT INTO monitor_activity (workspace_id,kind,payload_json) VALUES ($1,$2,$3::jsonb)`,
+			workspace(ctx), monitor.EventRecoveryObserved, string(activity))
 		return err
 	})
 	if err != nil {
