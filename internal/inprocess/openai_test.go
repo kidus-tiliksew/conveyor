@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/kidus-tiliksew/conveyor/internal/core"
 	"github.com/kidus-tiliksew/conveyor/internal/lineagecontext"
 	"github.com/kidus-tiliksew/conveyor/internal/testimage"
 	"github.com/kidus-tiliksew/conveyor/internal/testsupport/untrustedtest"
@@ -967,7 +968,7 @@ func TestProviderErrorMessageDetail(t *testing.T) {
 		{name: "secret spans boundary", raw: body(padding + " " + appKey + " tail"), absent: []string{appKey[:8]}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			got, err := client.providerMessage(context.Background(), tc.raw)
+			got, _, err := client.providerMessage(context.Background(), tc.raw)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -985,7 +986,43 @@ func TestProviderErrorMessageDetail(t *testing.T) {
 		})
 	}
 	failing := &OpenAI{APIKey: apiKey, RedactionSecrets: failingDocumentSecretSource{}}
-	if _, err := failing.providerMessage(context.Background(), body("message")); err == nil {
+	if _, _, err := failing.providerMessage(context.Background(), body("message")); err == nil {
 		t.Fatal("secret source failure must fail closed")
+	}
+}
+
+// A provider message's removals are returned by class, whole-message first, so a
+// secret past the length bound still counts (req-security-boundaries AC-3.1).
+func TestProviderMessageCountsRemovalsByClass(t *testing.T) {
+	t.Parallel()
+	const apiKey = "provider-api-key-fixture-value"
+	const appKey = "github-app-private-key-fixture"
+	const pattern = "sk-fixturefixturefixturefixture"
+	client := &OpenAI{APIKey: apiKey, RedactionSecrets: documentSecretSource{appKey}}
+	body := func(message string) []byte {
+		encoded, _ := json.Marshal(map[string]any{"error": map[string]any{"message": message}})
+		return encoded
+	}
+	for _, tc := range []struct {
+		name    string
+		message string
+		want    core.RedactionStats
+	}{
+		{name: "clean", message: "plain provider failure"},
+		{name: "exact and pattern", message: "bad " + apiKey + " and " + appKey + " and " + pattern, want: core.RedactionStats{Exact: 2, Pattern: 1}},
+		{name: "past the bound", message: strings.Repeat("a", 400) + " " + pattern, want: core.RedactionStats{Pattern: 1}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got, stats, err := client.providerMessage(context.Background(), body(tc.message))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if stats != tc.want {
+				t.Fatalf("counts = %+v, want %+v", stats, tc.want)
+			}
+			if strings.Contains(got, pattern) || strings.Contains(got, apiKey) || strings.Contains(got, appKey) {
+				t.Fatal("the message holds a secret")
+			}
+		})
 	}
 }

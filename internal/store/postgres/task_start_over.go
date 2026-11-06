@@ -26,6 +26,9 @@ func (s *Store) StartOverTaskCommand(ctx context.Context, lease taskops.TaskLeas
 	if err := r.Validate(); err != nil {
 		return result, err
 	}
+	// The read precedes the transaction, which holds its own connection. Only
+	// a start-over that writes a successor needs it (req-security-boundaries REQ-3).
+	titleSecrets := store.ReadTaskTitleSecrets(ctx, s)
 	err := s.inTx(ctx, func(tx pgx.Tx, q *db.Queries) error {
 		ws := workspace(ctx)
 		if err := lockDependencyEdgesTx(ctx, tx, ws); err != nil {
@@ -128,7 +131,10 @@ func (s *Store) StartOverTaskCommand(ctx context.Context, lease taskops.TaskLeas
 		if err != nil && !errors.Is(err, pgx.ErrNoRows) {
 			return err
 		}
-		next := store.StartOverSuccessor(old, r)
+		next, titleStats, err := store.StartOverSuccessor(old, r, titleSecrets)
+		if err != nil {
+			return err
+		}
 		intervention := core.Intervention{TaskID: old.ID, Action: core.InterventionCancel, ReasonCode: r.Reason, Comment: r.Note, At: next.CreatedAt}
 		if err := s.cancelTaskTx(ctx, tx, q, intervention); err != nil {
 			return err
@@ -136,7 +142,7 @@ func (s *Store) StartOverTaskCommand(ctx context.Context, lease taskops.TaskLeas
 		if err := store.TaskStartOverFault(ctx, "successor"); err != nil {
 			return err
 		}
-		if err := s.createTaskTx(ctx, tx, q, next, dependencies, attached, pinned); err != nil {
+		if err := s.createTaskTx(store.WithTaskTitleRedactions(ctx, titleStats), tx, q, next, dependencies, attached, pinned); err != nil {
 			return err
 		}
 		if version > 0 {

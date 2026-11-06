@@ -397,10 +397,14 @@ func (client *OpenAI) run(ctx context.Context, model string, input Input) (Resul
 		if diagnostic.ProviderCode != "" {
 			details += " provider_code=" + diagnostic.ProviderCode
 		}
-		message, messageErr := client.providerMessage(ctx, raw)
+		message, messageStats, messageErr := client.providerMessage(ctx, raw)
 		if messageErr != nil {
 			return Result{Transcript: transcript, Redactions: stats, Diagnostic: &diagnostic}, messageErr
 		}
+		// The error text is a second stored copy of the provider's message, so
+		// its removals join the counts this call's transcript record carries
+		// (req-security-boundaries AC-3.1; component-triage).
+		stats.Add(messageStats)
 		if message != "" {
 			details += " provider_message=" + message
 		}
@@ -712,22 +716,22 @@ func providerErrorMessage(raw []byte) string {
 // providerMessage returns the provider's error message for a stage error:
 // redacted in full first, then collapsed to one line, then bounded to
 // providerMessageLimit characters including the "..." marker
-// (component-triage).
-func (client *OpenAI) providerMessage(ctx context.Context, raw []byte) (string, error) {
+// (component-triage). It returns what redaction removed, by class.
+func (client *OpenAI) providerMessage(ctx context.Context, raw []byte) (string, core.RedactionStats, error) {
 	message := providerErrorMessage(raw)
 	if strings.TrimSpace(message) == "" {
-		return "", nil
+		return "", core.RedactionStats{}, nil
 	}
 	redactor, err := client.redactor(ctx)
 	if err != nil {
-		return "", err
+		return "", core.RedactionStats{}, err
 	}
-	clean, _ := redactor.Redact(message)
+	clean, stats := redactor.Redact(message)
 	clean = strings.Join(strings.Fields(clean), " ")
 	if runes := []rune(clean); len(runes) > providerMessageLimit {
 		clean = string(runes[:providerMessageLimit-len("...")]) + "..."
 	}
-	return clean, nil
+	return clean, stats, nil
 }
 
 const providerMessageLimit = 300

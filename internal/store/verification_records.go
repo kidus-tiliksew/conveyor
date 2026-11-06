@@ -41,6 +41,10 @@ type VerificationMutation struct {
 	Receipt            VerificationReceipt
 	Event              core.Event
 	Publication        *VerificationPublication
+	// Redactions counts what redaction removed from the text this write stores.
+	// It reaches the write's event by class and never by value, and a replay
+	// that writes nothing records nothing (req-security-boundaries AC-3.1).
+	Redactions core.RedactionStats
 }
 type VerificationRetainedArtifact struct {
 	Artifact core.Artifact
@@ -265,7 +269,7 @@ func prepareVerificationMutation(ctx context.Context, source redact.SecretSource
 	// Keep identity/claim credentials out of redaction input. Submitted contract
 	// fields are sanitized individually below; credentials are never persisted.
 	if c.Submission != nil {
-		data, err := verificationSanitizeJSON(redactor, verificationJSON(c.Submission))
+		data, stats, err := verificationSanitizeJSON(redactor, verificationJSON(c.Submission))
 		if err != nil {
 			return out, err
 		}
@@ -274,8 +278,14 @@ func prepareVerificationMutation(ctx context.Context, source redact.SecretSource
 			return out, ErrVerificationInvalid
 		}
 		c.Submission = &submission
+		// Only a seal stores a submission.
+		if c.Kind == VerificationSeal {
+			out.Redactions.Add(stats)
+		}
 	}
-	clean := func(v any) ([]byte, error) { return verificationSanitizeJSON(redactor, verificationJSON(v)) }
+	clean := func(v any) ([]byte, core.RedactionStats, error) {
+		return verificationSanitizeJSON(redactor, verificationJSON(v))
+	}
 	put := func(r VerificationRow) { out.Rows = append(out.Rows, r) }
 	if c.Kind == VerificationReconcileClaimLoss {
 		return prepareVerificationClaimLoss(ctx, c, rows, now)
@@ -384,7 +394,7 @@ func prepareVerificationMutation(ctx context.Context, source redact.SecretSource
 		}
 		switch c.Kind {
 		case VerificationGrantPermissions, VerificationRevokePermissions:
-			data, e := clean(c.Permissions)
+			data, stats, e := clean(c.Permissions)
 			if e != nil {
 				return out, e
 			}
@@ -393,6 +403,7 @@ func prepareVerificationMutation(ctx context.Context, source redact.SecretSource
 				return out, ErrVerificationInvalid
 			}
 			c.Permissions = &permissions
+			out.Redactions.Add(stats)
 			if err := verificationPermissionMutation(c, rows, vc, actor, now, &out); err != nil {
 				return out, err
 			}
@@ -459,13 +470,14 @@ func prepareVerificationMutation(ctx context.Context, source redact.SecretSource
 			if v.Contract.RetryPolicy == "" {
 				v.Contract.RetryPolicy = "operator_action_required"
 			}
-			b, err := clean(v)
+			b, stats, err := clean(v)
 			if err != nil {
 				return out, err
 			}
 			if err = json.Unmarshal(b, &v); err != nil {
 				return out, err
 			}
+			out.Redactions.Add(stats)
 			v.Digest = verificationHash(verificationJSON(v))
 			id := c.ContextID + ":" + v.ID
 			if old, found := verificationFind(rows, "verification_obligations", id); found {
@@ -491,7 +503,7 @@ func prepareVerificationMutation(ctx context.Context, source redact.SecretSource
 				if err := ValidateVerificationCoverage(*c.Coverage, snapshot); err != nil {
 					return out, err
 				}
-				data, err := clean(c.Coverage)
+				data, stats, err := clean(c.Coverage)
 				if err != nil {
 					return out, err
 				}
@@ -504,6 +516,7 @@ func prepareVerificationMutation(ctx context.Context, source redact.SecretSource
 					vc.Coverage = &coverage
 					r.Body = verificationJSON(vc)
 					put(r)
+					out.Redactions.Add(stats)
 				}
 			}
 			if err := verificationAttemptMutation(c, rows, vc, actor, now, redactor, &out); err != nil {
@@ -589,16 +602,29 @@ func prepareVerificationMutation(ctx context.Context, source redact.SecretSource
 		if eventKind == VerificationFinalizeArtifact {
 			eventKind = VerificationWriteEvidence
 		}
-		out.Event = core.Event{TaskID: c.Access.TaskID, Kind: "verification." + eventKind, ActorID: actor, ActorRole: ActorFromContext(ctx).Role, Payload: verificationJSON(out.Receipt)}
+		out.Event = core.Event{TaskID: c.Access.TaskID, Kind: "verification." + eventKind, ActorID: actor, ActorRole: ActorFromContext(ctx).Role, Payload: verificationEventPayload(out.Receipt, out.Redactions)}
 	}
 	return out, nil
 }
 
-func verificationSanitizeJSON(r *redact.Redactor, b []byte) ([]byte, error) {
+// verificationEventPayload is the receipt the event has always carried, plus a
+// redactions field only when this write removed something, in the shape
+// work_order.progress_reported uses (req-security-boundaries AC-3.1).
+func verificationEventPayload(receipt VerificationReceipt, stats core.RedactionStats) []byte {
+	if stats.Total() == 0 {
+		return verificationJSON(receipt)
+	}
+	return verificationJSON(struct {
+		VerificationReceipt
+		Redactions core.RedactionStats `json:"redactions"`
+	}{receipt, stats})
+}
+
+func verificationSanitizeJSON(r *redact.Redactor, b []byte) ([]byte, core.RedactionStats, error) {
 	// Decode strings only after rejecting duplicate JSON keys. RedactJSON alone
 	// would discard duplicate keys before the envelope validator could see them.
 	if err := verificationUniqueJSON(b); err != nil {
-		return nil, err
+		return nil, core.RedactionStats{}, err
 	}
 	return verificationFilterJSON(r, b)
 }

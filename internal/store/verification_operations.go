@@ -66,7 +66,8 @@ func verificationOperationMutation(c VerificationCommand, rows []VerificationRow
 		if (v.IdempotencyScope == "") != v.IdempotencyValidUntil.IsZero() {
 			return ErrVerificationInvalid
 		}
-		v.IdempotencyScope, _ = redactor.Redact(v.IdempotencyScope)
+		var scopeStats core.RedactionStats
+		v.IdempotencyScope, scopeStats = redactor.Redact(v.IdempotencyScope)
 		if v.InputDigest != verificationHash(verificationJSON(attempt.SafeInputs)) {
 			return ErrVerificationConflict
 		}
@@ -127,6 +128,7 @@ func verificationOperationMutation(c VerificationCommand, rows []VerificationRow
 		v.ID, v.CreatedAt = verificationID(), now
 		v.History = []VerificationOperationObservation{{State: "registered", Actor: actor, Source: "operation.prepare", CapturedAt: now, ContextID: c.ContextID, RunID: c.RunID, WorkOrderAttemptID: c.Access.WorkOrderAttemptID}}
 		out.Rows = append(out.Rows, verificationRow("verification_operations", v.ID, c.Access.TaskID, c.ContextID, c.RunID, c.Key, "registered", v))
+		out.Redactions.Add(scopeStats)
 		out.Receipt = VerificationReceipt{ID: v.ID, State: "registered"}
 		return nil
 	}
@@ -251,8 +253,9 @@ func appendVerificationOperationObservation(c VerificationCommand, row Verificat
 	if obs.Source == "" || obs.CapturedAt.IsZero() || obs.CapturedAt.After(now.Add(time.Minute)) {
 		return ErrVerificationInvalid
 	}
-	obs.ProviderReference, _ = redactor.Redact(core.SanitizeVerificationProviderReference(obs.ProviderReference))
-	obs.Source, _ = redactor.Redact(obs.Source)
+	var referenceStats, sourceStats core.RedactionStats
+	obs.ProviderReference, referenceStats = redactor.Redact(core.SanitizeVerificationProviderReference(obs.ProviderReference))
+	obs.Source, sourceStats = redactor.Redact(obs.Source)
 	out.Receipt = VerificationReceipt{ID: op.ID, State: row.State}
 	if len(op.History) > 0 && verificationEqual(op.History[len(op.History)-1], obs) {
 		return nil
@@ -263,6 +266,8 @@ func appendVerificationOperationObservation(c VerificationCommand, row Verificat
 	op.History = append(op.History, obs)
 	row.State, row.Body = obs.State, verificationJSON(op)
 	out.Rows = append(out.Rows, row)
+	out.Redactions.Add(referenceStats)
+	out.Redactions.Add(sourceStats)
 	out.Receipt.State, out.Receipt.DispatchAuthorized = obs.State, obs.State == "dispatching"
 	return nil
 }

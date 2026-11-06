@@ -13,6 +13,7 @@ import (
 	"github.com/kidus-tiliksew/conveyor/internal/config"
 	"github.com/kidus-tiliksew/conveyor/internal/core"
 	"github.com/kidus-tiliksew/conveyor/internal/gitx"
+	"github.com/kidus-tiliksew/conveyor/internal/redact"
 	"github.com/kidus-tiliksew/conveyor/internal/store"
 	"github.com/kidus-tiliksew/conveyor/internal/store/dbmetrics"
 	"github.com/kidus-tiliksew/conveyor/internal/store/postgres/db"
@@ -912,6 +913,9 @@ func (s *Store) GetLatestJob(ctx context.Context, taskID string) (core.Job, bool
 func (s *Store) ApproveSpecVersionAndMaterialize(ctx context.Context, taskID string, version int) ([]core.Task, error) {
 	ctx = dbmetrics.WithReadLabel(ctx, "ApproveSpecVersionAndMaterialize")
 	var children []core.Task
+	// The read precedes the transaction, which holds its own connection. Only
+	// an approval that creates a child needs it (req-security-boundaries REQ-3).
+	titleSecrets := store.ReadTaskTitleSecrets(ctx, s)
 	err := s.inTx(ctx, func(tx pgx.Tx, q *db.Queries) error {
 		if err := lockDependencyEdgesTx(ctx, tx, workspace(ctx)); err != nil {
 			return err
@@ -987,7 +991,11 @@ func (s *Store) ApproveSpecVersionAndMaterialize(ctx context.Context, taskID str
 				childrenToCreate++
 			}
 		}
+		var titleRedactor *redact.Redactor
 		if childrenToCreate > 0 {
+			if titleRedactor, err = titleSecrets.Redactor(); err != nil {
+				return err
+			}
 			_, err = insertEventWithID(ctx, q, core.Event{
 				TaskID: taskID, Kind: "blueprint.materialized", At: createdAt,
 				Payload: core.JSONPayload(map[string]any{
@@ -1004,8 +1012,7 @@ func (s *Store) ApproveSpecVersionAndMaterialize(ctx context.Context, taskID str
 				continue
 			}
 			id := core.NewTaskID()
-			title := strings.TrimSpace(item.Summary)
-			title = core.TruncateUTF8Bytes(title, 200)
+			title, titleStats := store.BlueprintChildTitle(titleRedactor, item.Summary)
 			child := core.Task{
 				ID: id, Workspace: parent.Workspace,
 				Source: fmt.Sprintf("blueprint:%s@v%d#%s", parent.ID, version, item.ID),
@@ -1023,7 +1030,7 @@ func (s *Store) ApproveSpecVersionAndMaterialize(ctx context.Context, taskID str
 			if _, err = q.InsertTask(ctx, taskInsertParams(child)); err != nil {
 				return fmt.Errorf("materialize %s: %w", item.ID, err)
 			}
-			if err = insertEvent(ctx, q, core.Event{TaskID: child.ID, Kind: "task.created", Payload: store.TaskCreatedPayload(ctx, child), At: createdAt}); err != nil {
+			if err = insertEvent(ctx, q, core.Event{TaskID: child.ID, Kind: "task.created", Payload: store.TaskCreatedPayload(store.WithTaskTitleRedactions(ctx, titleStats), child), At: createdAt}); err != nil {
 				return err
 			}
 			if _, err = s.enqueueTaskTx(ctx, tx, child.ID, child.Workspace); err != nil {

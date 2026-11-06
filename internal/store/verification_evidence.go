@@ -45,10 +45,11 @@ func verificationEvidenceMutation(c VerificationCommand, rows []VerificationRow,
 		if len(raw) > core.MaxVerificationEvidenceBytes || total > 8<<20 {
 			return ErrVerificationInvalid
 		}
-		b, err := verificationSanitizeJSON(r, raw)
+		b, stats, err := verificationSanitizeJSON(r, raw)
 		if err != nil {
 			return err
 		}
+		out.Redactions.Add(stats)
 		// Decoder validates the sanitized representation, including unknown fields.
 		var submitted core.VerificationEvidence
 		if err = json.Unmarshal(b, &submitted); err != nil {
@@ -86,9 +87,13 @@ func verificationEvidenceMutation(c VerificationCommand, rows []VerificationRow,
 	// Until commit these bytes remain inaccessible staging records.
 	replacements := map[string]core.VerificationArtifactReference{}
 	for _, input := range c.Artifacts {
-		input.Name, _ = r.Redact(input.Name)
-		input.SanitationRecord, _ = r.Redact(input.SanitationRecord)
-		input.MaskingAttestation, _ = r.Redact(input.MaskingAttestation)
+		var inputStats core.RedactionStats
+		input.Name, inputStats = r.Redact(input.Name)
+		out.Redactions.Add(inputStats)
+		input.SanitationRecord, inputStats = r.Redact(input.SanitationRecord)
+		out.Redactions.Add(inputStats)
+		input.MaskingAttestation, inputStats = r.Redact(input.MaskingAttestation)
+		out.Redactions.Add(inputStats)
 		var chunks []VerificationUploadChunk
 		for _, row := range rows {
 			if row.Table == "verification_upload_chunks" && row.LogicalKey == input.UploadID {
@@ -149,10 +154,13 @@ func verificationEvidenceMutation(c VerificationCommand, rows []VerificationRow,
 		}
 		switch media {
 		case "application/json":
-			data, err = verificationSanitizeJSON(r, data)
+			var stats core.RedactionStats
+			data, stats, err = verificationSanitizeJSON(r, data)
+			out.Redactions.Add(stats)
 		case "text/plain":
-			clean, _ := r.Redact(string(data))
+			clean, stats := r.Redact(string(data))
 			data = []byte(clean)
+			out.Redactions.Add(stats)
 		default:
 			if input.SanitationRecord == "" || input.MaskingAttestation == "" {
 				return ErrVerificationInvalid
