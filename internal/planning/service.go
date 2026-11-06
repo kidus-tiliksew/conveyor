@@ -2768,6 +2768,11 @@ func (s *Service) workspaceCredential(ctx context.Context, repository string) (c
 	appStore, _ := s.Store.(github.AppStore)
 	token, err := client.WorkspaceToken(ctx, appStore, workspace)
 	if err != nil {
+		// A missing App names the repository as an uncovered one does
+		// (component-planning invariant 20; req-delivery-and-forge AC-1.4).
+		if github.ErrorCategory(err) == github.ForgePermission {
+			err = github.AppRepositoryPermission(workspace, slug)
+		}
 		return nil, fmt.Errorf("planning repository %s: %w", repository, err)
 	}
 	if err = client.RequireRepository(ctx, workspace, token, slug); err != nil {

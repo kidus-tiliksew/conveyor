@@ -291,6 +291,11 @@ func extractSnapshot(ctx context.Context, archive io.Reader, root string, limit,
 				return fmt.Errorf("unsafe snapshot archive traversal")
 			}
 		}
+		// A GitHub tarball opens with a PAX global header. It is archive metadata
+		// outside the repository tree, so it must not seed the archive root.
+		if header.Typeflag == tar.TypeXGlobalHeader {
+			continue
+		}
 		first, relative, _ := strings.Cut(name, "/")
 		if top == "" {
 			top = first
@@ -298,13 +303,19 @@ func extractSnapshot(ctx context.Context, archive io.Reader, root string, limit,
 		if first != top {
 			return fmt.Errorf("snapshot archive has multiple roots")
 		}
-		if header.Typeflag != tar.TypeDir && header.Typeflag != tar.TypeReg {
+		if header.Typeflag != tar.TypeDir && header.Typeflag != tar.TypeReg && header.Typeflag != tar.TypeSymlink {
 			return fmt.Errorf("unsafe snapshot archive entry type %d", header.Typeflag)
 		}
 		if relative == "" {
 			if header.Typeflag != tar.TypeDir {
 				return fmt.Errorf("snapshot archive root is not a directory")
 			}
+			continue
+		}
+		// A symbolic link entry is skipped without being materialized
+		// (component-planning invariant 22). Its name has passed the path and
+		// root checks above, and its link target is never read.
+		if header.Typeflag == tar.TypeSymlink {
 			continue
 		}
 		target := filepath.Join(root, filepath.FromSlash(relative))
