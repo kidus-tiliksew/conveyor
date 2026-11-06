@@ -12,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/kidus-tiliksew/conveyor/internal/config"
 	"github.com/kidus-tiliksew/conveyor/internal/core"
 	"github.com/kidus-tiliksew/conveyor/internal/nextaction"
 	"github.com/kidus-tiliksew/conveyor/internal/store"
@@ -276,6 +277,9 @@ func RunTaskMapConformance(t *testing.T, x Fixture) {
 	t.Run("next-action batch reads equal their per-task and full-history reads", func(t *testing.T) {
 		runNextActionBatchReads(t, x, ctx, newTask, requirement)
 	})
+	t.Run("recovery task read", func(t *testing.T) {
+		runTaskRecoveryReads(t, x, ctx)
+	})
 	t.Run("empty workspace reads empty arrays", func(t *testing.T) {
 		other := x.Workspace + "-map-empty"
 		emptyCtx := store.WithWorkspace(ctx, other)
@@ -285,6 +289,195 @@ func RunTaskMapConformance(t *testing.T, x Fixture) {
 		}
 		if len(got.Tasks) != 0 || len(got.OpenTasks) != 0 || len(got.Requirements) != 0 {
 			t.Fatalf("foreign workspace map=%+v", got)
+		}
+	})
+}
+
+// recoveryFields narrows a task to what ListTasksForRecovery carries.
+func recoveryFields(task core.Task) core.Task {
+	return core.Task{
+		ID: task.ID, State: task.State, NextStage: task.NextStage, RecoveryStage: task.RecoveryStage,
+		SetupContract: task.SetupContract, ApprovalStale: task.ApprovalStale,
+		ReviewedHeadSHA: task.ReviewedHeadSHA, RefreshHeadSHA: task.RefreshHeadSHA,
+	}
+}
+
+// runTaskRecoveryReads holds ListTasksForRecovery to GetTask on every backend:
+// the same rows and refusals, the same missing-task error, and no row of
+// another workspace (component-persistence, Workspace scope;
+// component-task-lifecycle invariant 55).
+func runTaskRecoveryReads(t *testing.T, x Fixture, ctx context.Context) {
+	st := x.Backend
+	seed := func(t *testing.T, ctx context.Context, workspace string, edit func(*core.Task), dependencies ...string) core.Task {
+		t.Helper()
+		id := core.NewTaskID()
+		task := core.Task{ID: id, Workspace: workspace, Repo: "conveyor", BaseBranch: "main", Branch: "conveyor/task-" + id, Title: taskMapBodySentinel, Body: taskMapBodySentinel, State: core.TaskRunning, NextStage: core.StageImplement, CreatedAt: time.Now().UTC().Truncate(time.Second)}
+		if edit != nil {
+			edit(&task)
+		}
+		requireOK(t, st.CreateTaskWithDependencies(ctx, task, dependencies))
+		return task
+	}
+	dependency := seed(t, ctx, x.Workspace, nil)
+	full := seed(t, ctx, x.Workspace, func(task *core.Task) {
+		task.State, task.NextStage, task.RecoveryStage = core.TaskAwaiting, core.StageVerify, core.StageImplement
+		task.SetupContract.VerifyStage = true
+		task.ApprovalStale, task.ReviewedHeadSHA, task.RefreshHeadSHA = true, "reviewed-head", "refresh-head"
+	})
+	dependent := seed(t, ctx, x.Workspace, nil, dependency.ID)
+
+	t.Run("rows equal GetTask on the fields they carry and nothing else", func(t *testing.T) {
+		ids := []string{dependency.ID, full.ID, dependent.ID}
+		got, err := st.ListTasksForRecovery(ctx, ids)
+		requireOK(t, err)
+		if len(got) != len(ids) {
+			t.Fatalf("rows=%d want %d", len(got), len(ids))
+		}
+		for _, id := range ids {
+			task, err := st.GetTask(ctx, id)
+			requireOK(t, err)
+			if !reflect.DeepEqual(got[id], recoveryFields(task)) {
+				t.Fatalf("task %s batched=%+v want %+v", id, got[id], recoveryFields(task))
+			}
+		}
+		// A backend that dropped a field would match GetTask only if it also
+		// failed to store it, so the seeded values are stated too.
+		row := got[full.ID]
+		if row.State != core.TaskAwaiting || row.NextStage != core.StageVerify || row.RecoveryStage != core.StageImplement || !row.SetupContract.VerifyStage || !row.ApprovalStale || row.ReviewedHeadSHA != "reviewed-head" || row.RefreshHeadSHA != "refresh-head" {
+			t.Fatalf("seeded fields lost: %+v", row)
+		}
+		if row := got[dependent.ID]; row.Title != "" || row.Body != "" || row.Dependencies != nil || row.BlockingTaskIDs != nil {
+			t.Fatalf("read carried fields outside the recovery inputs: %+v", row)
+		}
+	})
+	t.Run("request order and duplicates do not change the rows", func(t *testing.T) {
+		forward, err := st.ListTasksForRecovery(ctx, []string{dependency.ID, full.ID, dependent.ID})
+		requireOK(t, err)
+		reordered, err := st.ListTasksForRecovery(ctx, []string{dependent.ID, full.ID, dependent.ID, dependency.ID, full.ID})
+		requireOK(t, err)
+		if !reflect.DeepEqual(forward, reordered) {
+			t.Fatalf("forward=%+v reordered=%+v", forward, reordered)
+		}
+		// More copies than a prepared statement has parameters still read as one.
+		repeated, err := st.ListTasksForRecovery(ctx, slices.Repeat([]string{full.ID}, 70000))
+		requireOK(t, err)
+		if len(repeated) != 1 || !reflect.DeepEqual(repeated[full.ID], forward[full.ID]) {
+			t.Fatalf("repeated request rows=%+v", repeated)
+		}
+	})
+	t.Run("an empty request returns an empty map", func(t *testing.T) {
+		for _, ids := range [][]string{nil, {}} {
+			got, err := st.ListTasksForRecovery(ctx, ids)
+			requireOK(t, err)
+			if got == nil || len(got) != 0 {
+				t.Fatalf("empty request rows=%#v", got)
+			}
+		}
+	})
+	t.Run("a missing task keeps the GetTask error", func(t *testing.T) {
+		missing := "missing-" + core.NewTaskID()
+		_, want := st.GetTask(ctx, missing)
+		if !errors.Is(want, store.ErrNotFound) {
+			t.Fatalf("GetTask error=%v", want)
+		}
+		for _, ids := range [][]string{{missing}, {full.ID, missing}, {missing, full.ID}} {
+			got, err := st.ListTasksForRecovery(ctx, ids)
+			if got != nil || !errors.Is(err, store.ErrNotFound) || err.Error() != want.Error() {
+				t.Fatalf("request %v rows=%+v err=%v want %v", ids, got, err, want)
+			}
+		}
+		other := "missing-" + core.NewTaskID()
+		_, want = st.GetTask(ctx, other)
+		if _, err := st.ListTasksForRecovery(ctx, []string{other, missing}); err == nil || err.Error() != want.Error() {
+			t.Fatalf("first missing err=%v want %v", err, want)
+		}
+	})
+	t.Run("the workspace scopes the rows", func(t *testing.T) {
+		foreign := x.Workspace + "-recovery"
+		foreignCtx := store.WithActor(store.WithWorkspace(context.Background(), foreign), store.SystemActor())
+		_, err := st.BootstrapWorkspaceConfig(foreignCtx, &config.Config{Workspace: foreign, Repos: x.Config.Repos})
+		requireOK(t, err)
+		other := seed(t, foreignCtx, foreign, nil)
+		for _, ids := range [][]string{{other.ID}, {full.ID, other.ID}} {
+			got, err := st.ListTasksForRecovery(ctx, ids)
+			if got != nil || !errors.Is(err, store.ErrNotFound) || !strings.Contains(err.Error(), other.ID) {
+				t.Fatalf("home read of a foreign task rows=%+v err=%v", got, err)
+			}
+		}
+		got, err := st.ListTasksForRecovery(foreignCtx, []string{other.ID})
+		requireOK(t, err)
+		if got[other.ID].ID != other.ID {
+			t.Fatalf("foreign workspace rows=%+v", got)
+		}
+		if got, err = st.ListTasksForRecovery(foreignCtx, []string{full.ID}); got != nil || !errors.Is(err, store.ErrNotFound) {
+			t.Fatalf("foreign read of a home task rows=%+v err=%v", got, err)
+		}
+		// An unbound context behaves as GetTask does on each backend: no row on
+		// PostgreSQL, ErrWorkspaceRequired on SingleStore, unscoped on memory.
+		unbound := store.WithActor(context.Background(), store.SystemActor())
+		task, want := st.GetTask(unbound, full.ID)
+		got, err = st.ListTasksForRecovery(unbound, []string{full.ID})
+		switch {
+		case want == nil:
+			if err != nil || !reflect.DeepEqual(got[full.ID], recoveryFields(task)) {
+				t.Fatalf("unbound rows=%+v err=%v", got, err)
+			}
+		case err == nil || err.Error() != want.Error():
+			t.Fatalf("unbound err=%v want %v", err, want)
+		}
+	})
+	t.Run("refusals and the gate read the same from either task", func(t *testing.T) {
+		head := func(reviewed, refresh string, stale bool) func(*core.Task) {
+			return func(task *core.Task) {
+				task.State, task.NextStage = core.TaskRunning, core.StageVerify
+				task.SetupContract.VerifyStage = true
+				task.ReviewedHeadSHA, task.RefreshHeadSHA, task.ApprovalStale = reviewed, refresh, stale
+			}
+		}
+		for _, tc := range []struct {
+			name  string
+			edit  func(*core.Task)
+			order core.WorkOrder
+			want  string
+		}{
+			{"verify stage off", func(task *core.Task) { task.NextStage = core.StageVerify }, core.WorkOrder{Stage: core.StageVerify, State: core.WorkOrderQueued, HeadSHA: "head"}, "verify stage is off"},
+			{"next stage", func(task *core.Task) { task.SetupContract.VerifyStage = true }, core.WorkOrder{Stage: core.StageVerify, State: core.WorkOrderQueued, HeadSHA: "head"}, "next_stage is implement"},
+			{"reviewed head", head("reviewed-head", "", false), core.WorkOrder{Stage: core.StageVerify, State: core.WorkOrderQueued, HeadSHA: "other-head"}, "differs from the verify head reviewed-head"},
+			{"refresh head", head("reviewed-head", "refresh-head", true), core.WorkOrder{Stage: core.StageVerify, State: core.WorkOrderQueued, HeadSHA: "reviewed-head"}, "because approval_stale is set"},
+			{"recovery stage", func(task *core.Task) { task.RecoveryStage = core.StageImplement }, core.WorkOrder{Stage: core.StageSpec, State: core.WorkOrderQueued}, "passed the plan gate"},
+			{"task state", func(task *core.Task) { task.State = core.TaskClosed }, core.WorkOrder{Stage: core.StageImplement, State: core.WorkOrderTimedOut}, "terminal task state"},
+			{"no refusal", head("reviewed-head", "", false), core.WorkOrder{Stage: core.StageVerify, State: core.WorkOrderQueued, HeadSHA: "reviewed-head"}, ""},
+		} {
+			t.Run(tc.name, func(t *testing.T) {
+				task := seed(t, ctx, x.Workspace, tc.edit)
+				loaded, err := st.GetTask(ctx, task.ID)
+				requireOK(t, err)
+				batched, err := st.ListTasksForRecovery(ctx, []string{task.ID})
+				requireOK(t, err)
+				order := tc.order
+				order.ID, order.TaskID = task.ID+"-order", task.ID
+				orders := []core.WorkOrder{order}
+				fromTask, fromBatch := store.WorkOrderRecoveryRefusal(loaded, order, orders), store.WorkOrderRecoveryRefusal(batched[task.ID], order, orders)
+				if fmt.Sprint(fromTask) != fmt.Sprint(fromBatch) {
+					t.Fatalf("GetTask refusal=%v batched refusal=%v", fromTask, fromBatch)
+				}
+				if tc.want == "" && fromBatch != nil || tc.want != "" && (fromBatch == nil || !strings.Contains(fromBatch.Error(), tc.want)) {
+					t.Fatalf("refusal=%v want %q", fromBatch, tc.want)
+				}
+			})
+		}
+		awaiting := seed(t, ctx, x.Workspace, func(task *core.Task) { task.State = core.TaskAwaiting })
+		requireOK(t, st.AppendEvent(ctx, core.Event{TaskID: awaiting.ID, Kind: "task.state_changed", At: time.Now().UTC(), Payload: json.RawMessage(`{"command":7}`)}))
+		events, err := st.ListCompactEvents(ctx, awaiting.ID)
+		requireOK(t, err)
+		loaded, err := st.GetTask(ctx, awaiting.ID)
+		requireOK(t, err)
+		batched, err := st.ListTasksForRecovery(ctx, []string{awaiting.ID})
+		requireOK(t, err)
+		_, pending, gateErr := store.PlanRevisionGateState(batched[awaiting.ID], events)
+		_, wantPending, wantErr := store.PlanRevisionGateState(loaded, events)
+		if !pending || !errors.Is(gateErr, store.ErrPlanRevisionGateUnreadable) || pending != wantPending || gateErr.Error() != wantErr.Error() {
+			t.Fatalf("batched gate pending=%t err=%v, GetTask gate pending=%t err=%v", pending, gateErr, wantPending, wantErr)
 		}
 	})
 }
