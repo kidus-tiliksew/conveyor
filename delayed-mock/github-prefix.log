@@ -1,0 +1,95 @@
+cd web && npm ci
+
+added 292 packages, and audited 293 packages in 2s
+
+108 packages are looking for funding
+  run `npm fund` for details
+
+15 vulnerabilities (1 low, 12 high, 2 critical)
+
+To address issues that do not require attention, run:
+  npm audit fix
+
+To address all issues, run:
+  npm audit fix --force
+
+Run `npm audit` for details.
+cd web && npx playwright install  chromium
+cd web && CONVEYOR_VALIDATION_TASK=261106-2b47db PLAYWRIGHT_WORKERS=1 env -u CONVEYOR_ADDR -u CONVEYOR_API_TOKEN -u CONVEYOR_CLIENT_TOKEN -u CONVEYOR_CURRENT_ATTEMPT_ID -u CONVEYOR_PREVIOUS_ATTEMPT_ID -u CONVEYOR_PREVIOUS_ATTEMPT_REASON -u CONVEYOR_PREDECESSOR -u CONVEYOR_PREVIOUS_WORK_ORDER_ID -u CONVEYOR_SESSION_ID -u CONVEYOR_TASK_BASE_BRANCH -u CONVEYOR_TASK_BRANCH -u CONVEYOR_TASK_ID -u CONVEYOR_TASK_REPO -u CONVEYOR_TASK_REPO_URL -u CONVEYOR_WORKSPACE -u CONVEYOR_WORKTREE_ROOT -u CONVEYOR_WORK_ORDER_ID -u CONVEYOR_WRITER_GENERATION -u CONVEYOR_WRITER_PATH npm run test:e2e -- --shard=1/1 tests/zz-probe-github-prefix.spec.ts --grep 'generated webhook secret shows once' --repeat-each=3 --retries=0
+
+> conveyor-dashboard@0.1.0 test:e2e
+> playwright test --shard=1/1 tests/zz-probe-github-prefix.spec.ts --grep generated webhook secret shows once --repeat-each=3 --retries=0
+
+
+Running 3 tests using 1 worker, shard 1 of 1
+
+  ✘  1 [dev-server] › tests/zz-probe-github-prefix.spec.ts:400:1 › generated webhook secret shows once, is replaced on regenerate, and leaves no browser trace (710ms)
+  ✘  2 [dev-server] › tests/zz-probe-github-prefix.spec.ts:400:1 › generated webhook secret shows once, is replaced on regenerate, and leaves no browser trace (808ms)
+  ✘  3 [dev-server] › tests/zz-probe-github-prefix.spec.ts:400:1 › generated webhook secret shows once, is replaced on regenerate, and leaves no browser trace (680ms)
+
+
+  1) [dev-server] › tests/zz-probe-github-prefix.spec.ts:400:1 › generated webhook secret shows once, is replaced on regenerate, and leaves no browser trace 
+
+    Error: expect(locator).toHaveValue(expected) failed
+
+    Locator: getByRole('dialog', { name: 'Generate webhook secret' }).getByLabel('Webhook secret', { exact: true })
+    Error: expected value must be a string or regular expression
+    Expected has value: undefined
+
+
+      416 |   await dialog.getByRole('button', { name: 'Generate', exact: true }).click()
+      417 |   const field = dialog.getByLabel('Webhook secret', { exact: true })
+    > 418 |   await expect(field).toHaveValue(state.secrets[0])
+          |                       ^
+      419 |   await expect(dialog).toContainText('Conveyor will not show this secret again.')
+      420 |   const first = state.secrets[0]
+      421 |   // The card refetches status and shows when the secret was set.
+        at /home/user/conveyor-worktrees/conveyor-task-261106-2b47db/web/tests/zz-probe-github-prefix.spec.ts:418:23
+
+    Error Context: test-results/zz-probe-github-prefix-gen-2038d-and-leaves-no-browser-trace-dev-server/error-context.md
+
+  2) [dev-server] › tests/zz-probe-github-prefix.spec.ts:400:1 › generated webhook secret shows once, is replaced on regenerate, and leaves no browser trace 
+
+    Error: expect(locator).toHaveValue(expected) failed
+
+    Locator: getByRole('dialog', { name: 'Generate webhook secret' }).getByLabel('Webhook secret', { exact: true })
+    Error: expected value must be a string or regular expression
+    Expected has value: undefined
+
+
+      416 |   await dialog.getByRole('button', { name: 'Generate', exact: true }).click()
+      417 |   const field = dialog.getByLabel('Webhook secret', { exact: true })
+    > 418 |   await expect(field).toHaveValue(state.secrets[0])
+          |                       ^
+      419 |   await expect(dialog).toContainText('Conveyor will not show this secret again.')
+      420 |   const first = state.secrets[0]
+      421 |   // The card refetches status and shows when the secret was set.
+        at /home/user/conveyor-worktrees/conveyor-task-261106-2b47db/web/tests/zz-probe-github-prefix.spec.ts:418:23
+
+    Error Context: test-results/zz-probe-github-prefix-gen-2038d-and-leaves-no-browser-trace-dev-server-repeat1/error-context.md
+
+  3) [dev-server] › tests/zz-probe-github-prefix.spec.ts:400:1 › generated webhook secret shows once, is replaced on regenerate, and leaves no browser trace 
+
+    Error: expect(locator).toHaveValue(expected) failed
+
+    Locator: getByRole('dialog', { name: 'Generate webhook secret' }).getByLabel('Webhook secret', { exact: true })
+    Error: expected value must be a string or regular expression
+    Expected has value: undefined
+
+
+      416 |   await dialog.getByRole('button', { name: 'Generate', exact: true }).click()
+      417 |   const field = dialog.getByLabel('Webhook secret', { exact: true })
+    > 418 |   await expect(field).toHaveValue(state.secrets[0])
+          |                       ^
+      419 |   await expect(dialog).toContainText('Conveyor will not show this secret again.')
+      420 |   const first = state.secrets[0]
+      421 |   // The card refetches status and shows when the secret was set.
+        at /home/user/conveyor-worktrees/conveyor-task-261106-2b47db/web/tests/zz-probe-github-prefix.spec.ts:418:23
+
+    Error Context: test-results/zz-probe-github-prefix-gen-2038d-and-leaves-no-browser-trace-dev-server-repeat2/error-context.md
+
+  3 failed
+    [dev-server] › tests/zz-probe-github-prefix.spec.ts:400:1 › generated webhook secret shows once, is replaced on regenerate, and leaves no browser trace 
+    [dev-server] › tests/zz-probe-github-prefix.spec.ts:400:1 › generated webhook secret shows once, is replaced on regenerate, and leaves no browser trace 
+    [dev-server] › tests/zz-probe-github-prefix.spec.ts:400:1 › generated webhook secret shows once, is replaced on regenerate, and leaves no browser trace 
+make: *** [Makefile:196: test-playwright-shard] Error 1

@@ -1,0 +1,447 @@
+{
+  "config": {
+    "argv": [
+      "/home/user/.nvm/versions/node/v24.22.1/bin/node",
+      "/home/user/conveyor-worktrees/conveyor-task-261106-2b47db/web/node_modules/.bin/playwright",
+      "test",
+      "--shard=1/1",
+      "tests/inbox.spec.ts",
+      "--grep",
+      "keys move the selection and act through",
+      "--repeat-each=10",
+      "--retries=0",
+      "--reporter=list,json"
+    ],
+    "configFile": "/home/user/conveyor-worktrees/conveyor-task-261106-2b47db/web/playwright.config.ts",
+    "rootDir": "/home/user/conveyor-worktrees/conveyor-task-261106-2b47db/web/tests",
+    "failOnFlakyTests": false,
+    "forbidOnly": false,
+    "fullyParallel": true,
+    "globalSetup": null,
+    "globalTeardown": null,
+    "globalTimeout": 0,
+    "grep": {},
+    "grepInvert": null,
+    "maxFailures": 0,
+    "metadata": {
+      "actualWorkers": 1
+    },
+    "preserveOutput": "always",
+    "projects": [
+      {
+        "outputDir": "/home/user/conveyor-worktrees/conveyor-task-261106-2b47db/web/test-results",
+        "repeatEach": 10,
+        "retries": 0,
+        "metadata": {
+          "actualWorkers": 1
+        },
+        "id": "dev-server",
+        "name": "dev-server",
+        "testDir": "/home/user/conveyor-worktrees/conveyor-task-261106-2b47db/web/tests",
+        "testIgnore": [],
+        "testMatch": [
+          "**/*.@(spec|test).?(c|m)[jt]s?(x)"
+        ],
+        "timeout": 30000
+      },
+      {
+        "outputDir": "/home/user/conveyor-worktrees/conveyor-task-261106-2b47db/web/test-results",
+        "repeatEach": 1,
+        "retries": 0,
+        "metadata": {
+          "actualWorkers": 1
+        },
+        "id": "built-dashboard",
+        "name": "built-dashboard",
+        "testDir": "/home/user/conveyor-worktrees/conveyor-task-261106-2b47db/web/tests",
+        "testIgnore": [],
+        "testMatch": [
+          "**/*.@(spec|test).?(c|m)[jt]s?(x)"
+        ],
+        "timeout": 30000
+      }
+    ],
+    "quiet": false,
+    "reporter": [
+      [
+        "list"
+      ],
+      [
+        "json"
+      ]
+    ],
+    "reportSlowTests": {
+      "max": 5,
+      "threshold": 300000
+    },
+    "shard": {
+      "current": 1,
+      "total": 1
+    },
+    "tags": [],
+    "updateSnapshots": "missing",
+    "updateSourceMethod": "patch",
+    "version": "1.61.1",
+    "workers": 1,
+    "webServer": null
+  },
+  "suites": [
+    {
+      "title": "inbox.spec.ts",
+      "file": "inbox.spec.ts",
+      "column": 0,
+      "line": 0,
+      "specs": [
+        {
+          "title": "keys move the selection and act through the selected item’s own controls",
+          "ok": true,
+          "tags": [],
+          "tests": [
+            {
+              "timeout": 30000,
+              "annotations": [],
+              "expectedStatus": "passed",
+              "projectId": "dev-server",
+              "projectName": "dev-server",
+              "results": [
+                {
+                  "workerIndex": 0,
+                  "parallelIndex": 0,
+                  "status": "passed",
+                  "duration": 969,
+                  "errors": [],
+                  "stdout": [],
+                  "stderr": [],
+                  "retry": 0,
+                  "startTime": "2026-11-06T05:53:04.058Z",
+                  "annotations": [],
+                  "attachments": []
+                }
+              ],
+              "status": "expected"
+            }
+          ],
+          "id": "c9086cbe786fc8171a5a-03d49872e12166dd010a",
+          "file": "inbox.spec.ts",
+          "line": 2726,
+          "column": 1
+        },
+        {
+          "title": "keys move the selection and act through the selected item’s own controls",
+          "ok": true,
+          "tags": [],
+          "tests": [
+            {
+              "timeout": 30000,
+              "annotations": [],
+              "expectedStatus": "passed",
+              "projectId": "dev-server",
+              "projectName": "dev-server",
+              "results": [
+                {
+                  "workerIndex": 1,
+                  "parallelIndex": 0,
+                  "status": "passed",
+                  "duration": 1212,
+                  "errors": [],
+                  "stdout": [],
+                  "stderr": [],
+                  "retry": 0,
+                  "startTime": "2026-11-06T05:53:05.844Z",
+                  "annotations": [],
+                  "attachments": []
+                }
+              ],
+              "status": "expected"
+            }
+          ],
+          "id": "c9086cbe786fc8171a5a-082aca8cac6bbd5d92d8",
+          "file": "inbox.spec.ts",
+          "line": 2726,
+          "column": 1
+        },
+        {
+          "title": "keys move the selection and act through the selected item’s own controls",
+          "ok": true,
+          "tags": [],
+          "tests": [
+            {
+              "timeout": 30000,
+              "annotations": [],
+              "expectedStatus": "passed",
+              "projectId": "dev-server",
+              "projectName": "dev-server",
+              "results": [
+                {
+                  "workerIndex": 2,
+                  "parallelIndex": 0,
+                  "status": "passed",
+                  "duration": 1000,
+                  "errors": [],
+                  "stdout": [],
+                  "stderr": [],
+                  "retry": 0,
+                  "startTime": "2026-11-06T05:53:07.370Z",
+                  "annotations": [],
+                  "attachments": []
+                }
+              ],
+              "status": "expected"
+            }
+          ],
+          "id": "c9086cbe786fc8171a5a-a5ceaf677b2fa1bf307b",
+          "file": "inbox.spec.ts",
+          "line": 2726,
+          "column": 1
+        },
+        {
+          "title": "keys move the selection and act through the selected item’s own controls",
+          "ok": true,
+          "tags": [],
+          "tests": [
+            {
+              "timeout": 30000,
+              "annotations": [],
+              "expectedStatus": "passed",
+              "projectId": "dev-server",
+              "projectName": "dev-server",
+              "results": [
+                {
+                  "workerIndex": 3,
+                  "parallelIndex": 0,
+                  "status": "passed",
+                  "duration": 824,
+                  "errors": [],
+                  "stdout": [],
+                  "stderr": [],
+                  "retry": 0,
+                  "startTime": "2026-11-06T05:53:08.710Z",
+                  "annotations": [],
+                  "attachments": []
+                }
+              ],
+              "status": "expected"
+            }
+          ],
+          "id": "c9086cbe786fc8171a5a-797adc457fe77b7813be",
+          "file": "inbox.spec.ts",
+          "line": 2726,
+          "column": 1
+        },
+        {
+          "title": "keys move the selection and act through the selected item’s own controls",
+          "ok": true,
+          "tags": [],
+          "tests": [
+            {
+              "timeout": 30000,
+              "annotations": [],
+              "expectedStatus": "passed",
+              "projectId": "dev-server",
+              "projectName": "dev-server",
+              "results": [
+                {
+                  "workerIndex": 4,
+                  "parallelIndex": 0,
+                  "status": "passed",
+                  "duration": 743,
+                  "errors": [],
+                  "stdout": [],
+                  "stderr": [],
+                  "retry": 0,
+                  "startTime": "2026-11-06T05:53:09.852Z",
+                  "annotations": [],
+                  "attachments": []
+                }
+              ],
+              "status": "expected"
+            }
+          ],
+          "id": "c9086cbe786fc8171a5a-b7ad2c70af48531ad8d8",
+          "file": "inbox.spec.ts",
+          "line": 2726,
+          "column": 1
+        },
+        {
+          "title": "keys move the selection and act through the selected item’s own controls",
+          "ok": true,
+          "tags": [],
+          "tests": [
+            {
+              "timeout": 30000,
+              "annotations": [],
+              "expectedStatus": "passed",
+              "projectId": "dev-server",
+              "projectName": "dev-server",
+              "results": [
+                {
+                  "workerIndex": 5,
+                  "parallelIndex": 0,
+                  "status": "passed",
+                  "duration": 1090,
+                  "errors": [],
+                  "stdout": [],
+                  "stderr": [],
+                  "retry": 0,
+                  "startTime": "2026-11-06T05:53:10.892Z",
+                  "annotations": [],
+                  "attachments": []
+                }
+              ],
+              "status": "expected"
+            }
+          ],
+          "id": "c9086cbe786fc8171a5a-b98b22632e72eea44b50",
+          "file": "inbox.spec.ts",
+          "line": 2726,
+          "column": 1
+        },
+        {
+          "title": "keys move the selection and act through the selected item’s own controls",
+          "ok": true,
+          "tags": [],
+          "tests": [
+            {
+              "timeout": 30000,
+              "annotations": [],
+              "expectedStatus": "passed",
+              "projectId": "dev-server",
+              "projectName": "dev-server",
+              "results": [
+                {
+                  "workerIndex": 6,
+                  "parallelIndex": 0,
+                  "status": "passed",
+                  "duration": 828,
+                  "errors": [],
+                  "stdout": [],
+                  "stderr": [],
+                  "retry": 0,
+                  "startTime": "2026-11-06T05:53:12.270Z",
+                  "annotations": [],
+                  "attachments": []
+                }
+              ],
+              "status": "expected"
+            }
+          ],
+          "id": "c9086cbe786fc8171a5a-7837c793f92e5180c2cc",
+          "file": "inbox.spec.ts",
+          "line": 2726,
+          "column": 1
+        },
+        {
+          "title": "keys move the selection and act through the selected item’s own controls",
+          "ok": true,
+          "tags": [],
+          "tests": [
+            {
+              "timeout": 30000,
+              "annotations": [],
+              "expectedStatus": "passed",
+              "projectId": "dev-server",
+              "projectName": "dev-server",
+              "results": [
+                {
+                  "workerIndex": 7,
+                  "parallelIndex": 0,
+                  "status": "passed",
+                  "duration": 999,
+                  "errors": [],
+                  "stdout": [],
+                  "stderr": [],
+                  "retry": 0,
+                  "startTime": "2026-11-06T05:53:13.637Z",
+                  "annotations": [],
+                  "attachments": []
+                }
+              ],
+              "status": "expected"
+            }
+          ],
+          "id": "c9086cbe786fc8171a5a-9dacc3380e2f718c7e7e",
+          "file": "inbox.spec.ts",
+          "line": 2726,
+          "column": 1
+        },
+        {
+          "title": "keys move the selection and act through the selected item’s own controls",
+          "ok": true,
+          "tags": [],
+          "tests": [
+            {
+              "timeout": 30000,
+              "annotations": [],
+              "expectedStatus": "passed",
+              "projectId": "dev-server",
+              "projectName": "dev-server",
+              "results": [
+                {
+                  "workerIndex": 8,
+                  "parallelIndex": 0,
+                  "status": "passed",
+                  "duration": 1521,
+                  "errors": [],
+                  "stdout": [],
+                  "stderr": [],
+                  "retry": 0,
+                  "startTime": "2026-11-06T05:53:15.388Z",
+                  "annotations": [],
+                  "attachments": []
+                }
+              ],
+              "status": "expected"
+            }
+          ],
+          "id": "c9086cbe786fc8171a5a-20d3b8c35cddbfbd9d14",
+          "file": "inbox.spec.ts",
+          "line": 2726,
+          "column": 1
+        },
+        {
+          "title": "keys move the selection and act through the selected item’s own controls",
+          "ok": true,
+          "tags": [],
+          "tests": [
+            {
+              "timeout": 30000,
+              "annotations": [],
+              "expectedStatus": "passed",
+              "projectId": "dev-server",
+              "projectName": "dev-server",
+              "results": [
+                {
+                  "workerIndex": 9,
+                  "parallelIndex": 0,
+                  "status": "passed",
+                  "duration": 1024,
+                  "errors": [],
+                  "stdout": [],
+                  "stderr": [],
+                  "retry": 0,
+                  "startTime": "2026-11-06T05:53:18.752Z",
+                  "annotations": [],
+                  "attachments": []
+                }
+              ],
+              "status": "expected"
+            }
+          ],
+          "id": "c9086cbe786fc8171a5a-e56205bb1d25ef7b7c61",
+          "file": "inbox.spec.ts",
+          "line": 2726,
+          "column": 1
+        }
+      ]
+    }
+  ],
+  "errors": [],
+  "stats": {
+    "startTime": "2026-11-06T05:53:00.795Z",
+    "duration": 19838.925,
+    "expected": 10,
+    "skipped": 0,
+    "unexpected": 0,
+    "flaky": 0
+  }
+}

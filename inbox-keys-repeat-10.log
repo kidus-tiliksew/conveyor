@@ -1,0 +1,44 @@
+# task 261106-2b47db local repeat run: inbox-keys-repeat-10
+# head: ba561ade162d8a8b62769b1362fe7d6721270cbd
+# tree status: []
+# started: 2026-11-06T05:52:56Z
+# command: make test-playwright-shard PLAYWRIGHT_SHARD=1 PLAYWRIGHT_SHARD_COUNT=1 PLAYWRIGHT_WORKERS=1 PLAYWRIGHT_ARGS="tests/inbox.spec.ts --grep 'keys move the selection and act through' --repeat-each=10 --retries=0 --reporter=list,json"
+cd web && npm ci
+
+added 292 packages, and audited 293 packages in 3s
+
+108 packages are looking for funding
+  run `npm fund` for details
+
+15 vulnerabilities (1 low, 12 high, 2 critical)
+
+To address issues that do not require attention, run:
+  npm audit fix
+
+To address all issues, run:
+  npm audit fix --force
+
+Run `npm audit` for details.
+cd web && npx playwright install  chromium
+cd web && CONVEYOR_VALIDATION_TASK=261106-2b47db PLAYWRIGHT_WORKERS=1 env -u CONVEYOR_ADDR -u CONVEYOR_API_TOKEN -u CONVEYOR_CLIENT_TOKEN -u CONVEYOR_CURRENT_ATTEMPT_ID -u CONVEYOR_PREVIOUS_ATTEMPT_ID -u CONVEYOR_PREVIOUS_ATTEMPT_REASON -u CONVEYOR_PREDECESSOR -u CONVEYOR_PREVIOUS_WORK_ORDER_ID -u CONVEYOR_SESSION_ID -u CONVEYOR_TASK_BASE_BRANCH -u CONVEYOR_TASK_BRANCH -u CONVEYOR_TASK_ID -u CONVEYOR_TASK_REPO -u CONVEYOR_TASK_REPO_URL -u CONVEYOR_WORKSPACE -u CONVEYOR_WORKTREE_ROOT -u CONVEYOR_WORK_ORDER_ID -u CONVEYOR_WRITER_GENERATION -u CONVEYOR_WRITER_PATH npm run test:e2e -- --shard=1/1 tests/inbox.spec.ts --grep 'keys move the selection and act through' --repeat-each=10 --retries=0 --reporter=list,json
+
+> conveyor-dashboard@0.1.0 test:e2e
+> playwright test --shard=1/1 tests/inbox.spec.ts --grep keys move the selection and act through --repeat-each=10 --retries=0 --reporter=list,json
+
+
+Running 10 tests using 1 worker, shard 1 of 1
+
+  ✓   1 [dev-server] › tests/inbox.spec.ts:2726:1 › keys move the selection and act through the selected item’s own controls (969ms)
+  ✓   2 [dev-server] › tests/inbox.spec.ts:2726:1 › keys move the selection and act through the selected item’s own controls (1.2s)
+  ✓   3 [dev-server] › tests/inbox.spec.ts:2726:1 › keys move the selection and act through the selected item’s own controls (1.0s)
+  ✓   4 [dev-server] › tests/inbox.spec.ts:2726:1 › keys move the selection and act through the selected item’s own controls (824ms)
+  ✓   5 [dev-server] › tests/inbox.spec.ts:2726:1 › keys move the selection and act through the selected item’s own controls (743ms)
+  ✓   6 [dev-server] › tests/inbox.spec.ts:2726:1 › keys move the selection and act through the selected item’s own controls (1.1s)
+  ✓   7 [dev-server] › tests/inbox.spec.ts:2726:1 › keys move the selection and act through the selected item’s own controls (828ms)
+  ✓   8 [dev-server] › tests/inbox.spec.ts:2726:1 › keys move the selection and act through the selected item’s own controls (999ms)
+  ✓   9 [dev-server] › tests/inbox.spec.ts:2726:1 › keys move the selection and act through the selected item’s own controls (1.5s)
+  ✓  10 [dev-server] › tests/inbox.spec.ts:2726:1 › keys move the selection and act through the selected item’s own controls (1.0s)
+
+  10 passed (19.8s)
+# exit: 0
+# finished: 2026-11-06T05:53:20Z

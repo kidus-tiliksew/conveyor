@@ -1,0 +1,30 @@
+cd web && npm ci
+
+added 292 packages, and audited 293 packages in 2s
+
+108 packages are looking for funding
+  run `npm fund` for details
+
+15 vulnerabilities (1 low, 12 high, 2 critical)
+
+To address issues that do not require attention, run:
+  npm audit fix
+
+To address all issues, run:
+  npm audit fix --force
+
+Run `npm audit` for details.
+cd web && npx playwright install  chromium
+cd web && CONVEYOR_VALIDATION_TASK=261106-2b47db PLAYWRIGHT_WORKERS=1 env -u CONVEYOR_ADDR -u CONVEYOR_API_TOKEN -u CONVEYOR_CLIENT_TOKEN -u CONVEYOR_CURRENT_ATTEMPT_ID -u CONVEYOR_PREVIOUS_ATTEMPT_ID -u CONVEYOR_PREVIOUS_ATTEMPT_REASON -u CONVEYOR_PREDECESSOR -u CONVEYOR_PREVIOUS_WORK_ORDER_ID -u CONVEYOR_SESSION_ID -u CONVEYOR_TASK_BASE_BRANCH -u CONVEYOR_TASK_BRANCH -u CONVEYOR_TASK_ID -u CONVEYOR_TASK_REPO -u CONVEYOR_TASK_REPO_URL -u CONVEYOR_WORKSPACE -u CONVEYOR_WORKTREE_ROOT -u CONVEYOR_WORK_ORDER_ID -u CONVEYOR_WRITER_GENERATION -u CONVEYOR_WRITER_PATH npm run test:e2e -- --shard=1/1 tests/zz-probe-github-postfix.spec.ts --grep 'generated webhook secret shows once' --repeat-each=3 --retries=0
+
+> conveyor-dashboard@0.1.0 test:e2e
+> playwright test --shard=1/1 tests/zz-probe-github-postfix.spec.ts --grep generated webhook secret shows once --repeat-each=3 --retries=0
+
+
+Running 3 tests using 1 worker, shard 1 of 1
+
+  ✓  1 [dev-server] › tests/zz-probe-github-postfix.spec.ts:400:1 › generated webhook secret shows once, is replaced on regenerate, and leaves no browser trace (4.8s)
+  ✓  2 [dev-server] › tests/zz-probe-github-postfix.spec.ts:400:1 › generated webhook secret shows once, is replaced on regenerate, and leaves no browser trace (4.8s)
+  ✓  3 [dev-server] › tests/zz-probe-github-postfix.spec.ts:400:1 › generated webhook secret shows once, is replaced on regenerate, and leaves no browser trace (5.2s)
+
+  3 passed (18.0s)
