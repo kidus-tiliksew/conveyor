@@ -70,8 +70,8 @@ func TestDeploymentDatabaseMaxConns(t *testing.T) {
 				if err == nil || !strings.Contains(err.Error(), tc.wantErr) {
 					t.Fatalf("error = %v, want %q", err, tc.wantErr)
 				}
-				for _, leaked := range []string{"pa55word", "postgres://", "singlestore://", "lots", "2147483648", "99999999999999999999"} {
-					if strings.Contains(err.Error(), leaked) && !strings.Contains(tc.wantErr, "cannot unmarshal") {
+				for _, leaked := range []string{"pa55word", "postgres://", "singlestore://", "lots", "many", "2147483648", "99999999999999999999"} {
+					if strings.Contains(err.Error(), leaked) {
 						t.Fatalf("error leaks %q: %v", leaked, err)
 					}
 				}

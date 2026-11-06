@@ -109,9 +109,13 @@ See [SingleStore operations](singlestore.md) before creating its database.
 password. `conveyord` then needs `CONVEYOR_DATABASE_URL`. The installed service
 reads it from the owner-only `.env` beside the config or the file `--env-file`
 names. A foreground `conveyord` reads it from the file `CONVEYOR_ENV_FILE`
-names, or from `.env` in its working directory. Every command trims whitespace
-around the URL when it opens the database, and changes nothing else in it. A
-blank value refuses to open.
+names, or from `.env` in its working directory. The Linux service unit sets
+`CONVEYOR_ENV_FILE` to the file it names, as the macOS definition does, so the
+service never loads a second `.env`. `conveyord install` writes the unit, so a
+service installed by an earlier release keeps its old unit until
+`conveyord install` runs again. Every command trims whitespace around the URL
+when it opens the database, and changes nothing else in it. A blank value
+refuses to open.
 
 A file from an earlier version can hold `database.url`. It still loads, and its
 URL wins over the variable. Rerunning `conveyor init` over it requires the same

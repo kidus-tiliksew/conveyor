@@ -111,7 +111,7 @@ func ReadClockPolicy(configYAML []byte) (RecoveryPolicy, time.Duration, error) {
 		WorkOrderQueueTimeoutText string         `yaml:"work_order_queue_timeout"`
 	}
 	if len(bytes.TrimSpace(configYAML)) > 0 {
-		if err := yaml.Unmarshal(configYAML, &document); err != nil {
+		if err := unmarshalYAML(configYAML, &document); err != nil {
 			return RecoveryPolicy{}, 0, fmt.Errorf("parse clock policy: %w", err)
 		}
 	}

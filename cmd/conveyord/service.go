@@ -180,10 +180,13 @@ func resolveDaemonServiceWithEnvironment(platform daemonServicePlatform, configP
 `, daemonServiceOwner, xmlCommentEscape(configPath), xmlCommentEscape(envFile), html.EscapeString(name), html.EscapeString(platform.Executable), html.EscapeString(configPath), html.EscapeString(envFile), html.EscapeString(filepath.Dir(configPath)), html.EscapeString(paths.Stdout), html.EscapeString(paths.Stderr))
 		return paths, nil
 	}
+	// CONVEYOR_ENV_FILE keeps the daemon's own env loading on the file this unit
+	// names, so a .env in WorkingDirectory cannot fill a variable that file omits
+	// (component-runtime invariant 4).
 	name := "conveyord.service"
 	logDir := filepath.Join(platform.StateDir, "conveyor", "daemon")
 	paths := daemonServicePaths{Name: name, Unit: filepath.Join(platform.ConfigDir, "systemd", "user", name), Stdout: filepath.Join(logDir, "stdout.log"), Stderr: filepath.Join(logDir, "stderr.log"), Config: configPath, EnvFile: envFile}
-	paths.Definition = fmt.Sprintf("# %s config=%s env=%s\n[Unit]\nDescription=Conveyor control-plane daemon\nAfter=network-online.target\n\n[Service]\nWorkingDirectory=%s\nEnvironmentFile=%s\nExecStart=%s -config %s\nRestart=on-failure\nStandardOutput=append:%s\nStandardError=append:%s\n\n[Install]\nWantedBy=default.target\n", daemonServiceOwner, xmlCommentEscape(configPath), xmlCommentEscape(envFile), serviceunit.DirectivePath(filepath.Dir(configPath)), serviceunit.DirectivePath(envFile), serviceunit.QuoteArg(platform.Executable), serviceunit.QuoteArg(configPath), serviceunit.DirectivePath(paths.Stdout), serviceunit.DirectivePath(paths.Stderr))
+	paths.Definition = fmt.Sprintf("# %s config=%s env=%s\n[Unit]\nDescription=Conveyor control-plane daemon\nAfter=network-online.target\n\n[Service]\nWorkingDirectory=%s\nEnvironmentFile=%s\nEnvironment=%s\nExecStart=%s -config %s\nRestart=on-failure\nStandardOutput=append:%s\nStandardError=append:%s\n\n[Install]\nWantedBy=default.target\n", daemonServiceOwner, xmlCommentEscape(configPath), xmlCommentEscape(envFile), serviceunit.DirectivePath(filepath.Dir(configPath)), serviceunit.DirectivePath(envFile), serviceunit.EnvironmentAssignment("CONVEYOR_ENV_FILE", envFile), serviceunit.QuoteArg(platform.Executable), serviceunit.QuoteArg(configPath), serviceunit.DirectivePath(paths.Stdout), serviceunit.DirectivePath(paths.Stderr))
 	return paths, nil
 }
 
