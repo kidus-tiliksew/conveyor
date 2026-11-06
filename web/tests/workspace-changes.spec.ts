@@ -64,6 +64,9 @@ const families = {
 type Server = {
   hits(match: (path: string) => boolean): number
   revise(id: string, title: string): void
+  // Counts each read of the path as usual and holds its answer until the
+  // returned function runs.
+  hold(path: string): () => void
 }
 
 // One fake server for the shell, Board, sheet, inbox, and map reads. Each GET
@@ -71,10 +74,12 @@ type Server = {
 async function serve(page: Page): Promise<Server> {
   const requests: string[] = []
   const titles = new Map<string, string>()
+  const holds = new Map<string, Promise<void>>()
   await page.route('**/v1/**', async (route) => {
     const url = new URL(route.request().url())
     const path = url.pathname
     if (route.request().method() === 'GET') requests.push(path)
+    await holds.get(path)
     if (path === '/v1/workspaces') return route.fulfill({ json: [{ id: 'demo', name: 'Demo' }] })
     if (path === '/v1/me')
       return route.fulfill({
@@ -127,6 +132,17 @@ async function serve(page: Page): Promise<Server> {
     revise: (id, title) => {
       titles.set(id, title)
     },
+    hold: (path) => {
+      let release = () => {}
+      const held = new Promise<void>((resolve) => {
+        release = resolve
+      })
+      holds.set(path, held)
+      return () => {
+        holds.delete(path)
+        release()
+      }
+    },
   }
 }
 
@@ -176,6 +192,21 @@ async function connect(page: Page, changes: WorkspaceChangeControl, settled: () 
   return settled()
 }
 
+// TanStack Query hands a settled read to its observers on a zero-delay timer,
+// which a paused clock holds. A read that settles after `runFor` returns reaches
+// the cache but not the sheet, and the sheet renders it only if another cache
+// change re-renders it first. Each attempt moves the clock one millisecond, so
+// the read's own notification delivers it however the reads ordered themselves.
+async function expectOpenDetail(page: Page, text: string) {
+  const sheet = page.getByRole('dialog', { name: 'Task detail' })
+  await expect
+    .poll(async () => {
+      await page.clock.runFor(1)
+      return sheet.textContent()
+    })
+    .toContain(text)
+}
+
 test.beforeEach(async ({ page }) => {
   await page.addInitScript(() => {
     localStorage.setItem('conveyor-workspace', 'demo')
@@ -221,13 +252,19 @@ test('an activity frame refreshes the Board, sidebar, and named task detail once
   await page.clock.runFor(1_000)
   expect(counts()).toEqual(joined)
 
-  // A frame naming a blocking task refreshes its dependent's detail.
+  // A frame naming a blocking task refreshes its dependent's detail. The detail
+  // read answers after the Board read, the order in which the Board's re-render
+  // cannot carry the detail to the sheet.
   server.revise(blocked.id, 'Blocked task, unblocked')
+  const releaseDetail = server.hold(`/v1/tasks/${blocked.id}/activity`)
+  const boardRead = page.waitForResponse((response) => families.activity(new URL(response.url()).pathname))
   await changes.activity(dependency.id)
   await page.clock.runFor(250)
   const blocker = plus(joined, { activity: 1, proposals: 1, workspace: 1, detail: 1 })
   await expect.poll(counts).toEqual(blocker)
-  await expect(page.getByRole('dialog', { name: 'Task detail' })).toContainText('Blocked task, unblocked')
+  await boardRead
+  releaseDetail()
+  await expectOpenDetail(page, 'Blocked task, unblocked')
 
   // A frame naming an unrelated task leaves the open detail alone.
   await changes.activity(unrelated.id)
