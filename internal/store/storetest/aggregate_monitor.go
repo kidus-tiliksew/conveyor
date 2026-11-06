@@ -14,6 +14,7 @@ import (
 	"github.com/kidus-tiliksew/conveyor/internal/core"
 	"github.com/kidus-tiliksew/conveyor/internal/monitor"
 	"github.com/kidus-tiliksew/conveyor/internal/store"
+	"github.com/kidus-tiliksew/conveyor/internal/taskops"
 )
 
 func runMonitor(t *testing.T, x Fixture) {
@@ -125,6 +126,228 @@ func runMonitor(t *testing.T, x Fixture) {
 	t.Run("merge deferral poll", func(t *testing.T) { runMonitorMergeDeferral(t, x) })
 	t.Run("tip and per-repository status", func(t *testing.T) { runMonitorTip(t, x) })
 	t.Run("task origins", func(t *testing.T) { runMonitorOrigins(t, x) })
+	t.Run("recovery link", func(t *testing.T) { runMonitorRecoveryLink(t, x) })
+}
+
+// recoveryLinkFault fails LinkRecoveryTask while err is set, as a store failure
+// on a pass would.
+type recoveryLinkFault struct {
+	monitor.Store
+	err error
+}
+
+func (f *recoveryLinkFault) LinkRecoveryTask(ctx context.Context, identity, taskID string, taskPayload, activityPayload map[string]any) (monitor.ObservationRecord, error) {
+	if f.err != nil {
+		return monitor.ObservationRecord{}, f.err
+	}
+	return f.Store.LinkRecoveryTask(ctx, identity, taskID, taskPayload, activityPayload)
+}
+
+// runMonitorRecoveryLink pins the recovery_observed outcome and its once-only
+// annotation on every backend (component-monitor-drift invariants 4 and 17;
+// component-persistence invariant 5). Each scenario runs in its own workspace,
+// because the open post-merge task is found per workspace and repository.
+func runMonitorRecoveryLink(t *testing.T, x Fixture) {
+	st := x.Backend
+	ms := st.(monitor.Store)
+	scoped := func(t *testing.T) Fixture {
+		t.Helper()
+		foreign := x.Workspace + "-recovery-" + core.NewTaskID()
+		away := store.WithWorkspace(x.Context, foreign)
+		_, err := st.BootstrapWorkspaceConfig(away, &config.Config{Workspace: foreign, Repos: x.Config.Repos})
+		requireOK(t, err)
+		fixture := x
+		fixture.Context, fixture.Workspace = away, foreign
+		return fixture
+	}
+	recovery := func(sha string) monitor.Observation {
+		return monitor.Observation{Repository: "conveyor", Kind: monitor.PostMergeFailure, OccurrenceID: "recovery:commit:" + sha, SourceURL: "https://example.test/commit/" + sha, CommitSHA: sha, RecoveryObserved: true}
+	}
+	failure := func(sha string) monitor.Observation {
+		return monitor.Observation{Repository: "conveyor", Kind: monitor.PostMergeFailure, OccurrenceID: "commit:" + sha + ":attempt:1", SourceURL: "https://example.test/check/" + sha, CommitSHA: sha, Attempt: 1}
+	}
+	// annotations counts the observation's task events on the task and its
+	// activity rows, and reads its stored row without counting a repeat.
+	annotations := func(t *testing.T, fixture Fixture, taskID, identity string) (int, int, monitor.ObservationRecord) {
+		t.Helper()
+		events, err := st.ListEvents(fixture.Context, taskID)
+		requireOK(t, err)
+		taskEvents := 0
+		for _, event := range events {
+			if event.Kind == monitor.EventRecoveryObserved {
+				taskEvents++
+			}
+		}
+		status, err := ms.MonitorStatus(fixture.Context, true, time.Now().UTC())
+		requireOK(t, err)
+		activity := 0
+		for _, row := range status.Activity {
+			if row.Kind == monitor.EventRecoveryObserved && row.Payload["identity"] == identity {
+				activity++
+			}
+		}
+		for _, row := range status.Observations {
+			if row.Identity() == identity {
+				return taskEvents, activity, row
+			}
+		}
+		t.Fatalf("observation %s missing from status %+v", identity, status.Observations)
+		return 0, 0, monitor.ObservationRecord{}
+	}
+	requireAnnotated := func(t *testing.T, fixture Fixture, taskID, identity string, want int) {
+		t.Helper()
+		taskEvents, activity, row := annotations(t, fixture, taskID, identity)
+		if taskEvents != want || activity != want {
+			t.Fatalf("task events=%d activity=%d, want %d of each", taskEvents, activity, want)
+		}
+		if want > 0 && (row.TaskID != taskID || row.TaskOutcome != monitor.OutcomeRecoveryObserved) {
+			t.Fatalf("stored link = %q outcome %q, want %q with %q", row.TaskID, row.TaskOutcome, taskID, monitor.OutcomeRecoveryObserved)
+		}
+		if want == 0 && (row.TaskID != "" || row.TaskOutcome != "") {
+			t.Fatalf("stored link = %q outcome %q, want none", row.TaskID, row.TaskOutcome)
+		}
+	}
+	observed := func(t *testing.T, fixture Fixture, occurrence string) monitor.Observation {
+		t.Helper()
+		observation := monitor.Observation{WorkspaceID: fixture.Workspace, Repository: "conveyor", Kind: monitor.PostMergeFailure, OccurrenceID: occurrence, SourceURL: "https://example.test/commit/" + occurrence, CommitSHA: occurrence, ObservedAt: time.Now().UTC().Truncate(time.Microsecond)}
+		_, fresh, err := ms.Observe(fixture.Context, observation)
+		requireOK(t, err)
+		if !fresh {
+			t.Fatalf("observation %s was not fresh", occurrence)
+		}
+		return observation
+	}
+
+	t.Run("task link stores the outcome", func(t *testing.T) {
+		fixture := scoped(t)
+		task := newAggregateTask(t, fixture)
+		observation := observed(t, fixture, "recovery:commit:outcome")
+		linked, err := ms.LinkTask(fixture.Context, observation.Identity(), task.ID, monitor.OutcomeRecoveryObserved)
+		requireOK(t, err)
+		if linked.TaskID != task.ID || linked.TaskOutcome != monitor.OutcomeRecoveryObserved || linked.State != "task_linked" {
+			t.Fatalf("linked = %+v", linked)
+		}
+		_, _, row := annotations(t, fixture, task.ID, observation.Identity())
+		if row.TaskID != task.ID || row.TaskOutcome != monitor.OutcomeRecoveryObserved {
+			t.Fatalf("stored = %+v", row)
+		}
+	})
+
+	t.Run("link and events commit together once", func(t *testing.T) {
+		fixture := scoped(t)
+		task, other := newAggregateTask(t, fixture), newAggregateTask(t, fixture)
+		identity := observed(t, fixture, "recovery:commit:atomic").Identity()
+		payload := map[string]any{"identity": identity}
+
+		if _, err := ms.LinkRecoveryTask(fixture.Context, identity, "missing-task", payload, payload); err == nil {
+			t.Fatal("a link to a missing task was accepted")
+		}
+		requireAnnotated(t, fixture, task.ID, identity, 0)
+
+		// The last write of the transaction fails, after the link and the task
+		// event, and neither of them may survive it.
+		if _, err := ms.LinkRecoveryTask(fixture.Context, identity, task.ID, payload, map[string]any{"unmarshalable": make(chan int)}); err == nil {
+			t.Fatal("a failed activity write was accepted")
+		}
+		requireAnnotated(t, fixture, task.ID, identity, 0)
+
+		linked, err := ms.LinkRecoveryTask(fixture.Context, identity, task.ID, payload, payload)
+		requireOK(t, err)
+		if linked.TaskID != task.ID || linked.TaskOutcome != monitor.OutcomeRecoveryObserved {
+			t.Fatalf("linked = %+v", linked)
+		}
+		requireAnnotated(t, fixture, task.ID, identity, 1)
+
+		repeated, err := ms.LinkRecoveryTask(fixture.Context, identity, task.ID, payload, payload)
+		requireOK(t, err)
+		if repeated.TaskID != task.ID {
+			t.Fatalf("repeated = %+v", repeated)
+		}
+		requireAnnotated(t, fixture, task.ID, identity, 1)
+
+		if _, err = ms.LinkRecoveryTask(fixture.Context, identity, other.ID, payload, payload); err == nil {
+			t.Fatal("a link to a second task was accepted")
+		}
+		requireAnnotated(t, fixture, task.ID, identity, 1)
+		if taskEvents, _, _ := annotations(t, fixture, other.ID, identity); taskEvents != 0 {
+			t.Fatalf("refused task gained %d events", taskEvents)
+		}
+	})
+
+	t.Run("a later pass completes a failed link", func(t *testing.T) {
+		fixture := scoped(t)
+		service := mergeDeferralService(t, fixture, func() time.Time { return time.Now().UTC().Truncate(time.Microsecond) })
+		fault := &recoveryLinkFault{Store: service.Store, err: errors.New("link failed")}
+		service.Store = fault
+		filed, err := service.Process(fixture.Context, failure("recovery-a"))
+		requireOK(t, err)
+		observation := recovery("recovery-b")
+		if _, err = service.Process(fixture.Context, observation); !errors.Is(err, fault.err) {
+			t.Fatalf("first pass err = %v", err)
+		}
+		requireAnnotated(t, fixture, filed.TaskID, observation.Identity(), 0)
+		fault.err = nil
+		for range 2 {
+			record, processErr := service.Process(fixture.Context, observation)
+			requireOK(t, processErr)
+			if record.TaskID != filed.TaskID {
+				t.Fatalf("record = %+v, want task %s", record, filed.TaskID)
+			}
+			requireAnnotated(t, fixture, filed.TaskID, observation.Identity(), 1)
+		}
+		task, err := st.GetTask(fixture.Context, filed.TaskID)
+		requireOK(t, err)
+		if task.State != core.TaskQueued {
+			t.Fatalf("recovery changed task state to %s", task.State)
+		}
+	})
+
+	t.Run("a repeat with nothing to link never annotates a newer task", func(t *testing.T) {
+		fixture := scoped(t)
+		service := mergeDeferralService(t, fixture, func() time.Time { return time.Now().UTC().Truncate(time.Microsecond) })
+		observation := recovery("recovery-c")
+		first, err := service.Process(fixture.Context, observation)
+		requireOK(t, err)
+		if first.TaskID != "" {
+			t.Fatalf("first = %+v, want no task", first)
+		}
+		filed, err := service.Process(fixture.Context, failure("recovery-d"))
+		requireOK(t, err)
+		repeat, err := service.Process(fixture.Context, observation)
+		requireOK(t, err)
+		if repeat.TaskID != "" {
+			t.Fatalf("repeat = %+v, want no task", repeat)
+		}
+		requireAnnotated(t, fixture, filed.TaskID, observation.Identity(), 0)
+	})
+
+	t.Run("a task that ended is not replaced by a newer one", func(t *testing.T) {
+		fixture := scoped(t)
+		service := mergeDeferralService(t, fixture, func() time.Time { return time.Now().UTC().Truncate(time.Microsecond) })
+		fault := &recoveryLinkFault{Store: service.Store, err: errors.New("link failed")}
+		service.Store = fault
+		ended, err := service.Process(fixture.Context, failure("recovery-e"))
+		requireOK(t, err)
+		observation := recovery("recovery-f")
+		if _, err = service.Process(fixture.Context, observation); !errors.Is(err, fault.err) {
+			t.Fatalf("first pass err = %v", err)
+		}
+		_, err = taskops.New(st).Cancel(fixture.Context, core.Intervention{TaskID: ended.TaskID, Action: core.InterventionCancel, ReasonCode: "operator-resolved"})
+		requireOK(t, err)
+		replacement, err := service.Process(fixture.Context, failure("recovery-g"))
+		requireOK(t, err)
+		if replacement.TaskID == ended.TaskID {
+			t.Fatal("the failure reused the ended task")
+		}
+		fault.err = nil
+		record, err := service.Process(fixture.Context, observation)
+		requireOK(t, err)
+		if record.TaskID != "" {
+			t.Fatalf("record = %+v, want no task", record)
+		}
+		requireAnnotated(t, fixture, ended.TaskID, observation.Identity(), 0)
+		requireAnnotated(t, fixture, replacement.TaskID, observation.Identity(), 0)
+	})
 }
 
 // runMonitorOrigins pins MonitorOriginsForTasks on every backend: per

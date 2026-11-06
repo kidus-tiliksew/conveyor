@@ -49,12 +49,16 @@ func (m *memory) AuditMonitor(ctx context.Context, kind string, payload map[stri
 	if !ok || workspace == "" {
 		return ErrWorkspaceRequired
 	}
+	m.appendMonitorActivityLocked(workspace, kind, payload)
+	return nil
+}
+
+func (m *memory) appendMonitorActivityLocked(workspace, kind string, payload map[string]any) {
 	m.nextMonitorActivityID++
 	m.monitorActivity[workspace] = append(m.monitorActivity[workspace], monitor.Activity{
 		ID: m.nextMonitorActivityID, WorkspaceID: workspace, Kind: kind,
 		Payload: payload, At: time.Now().UTC(),
 	})
-	return nil
 }
 
 func monitorKey(workspace, identity string) string { return workspace + "\x00" + identity }
@@ -319,6 +323,44 @@ func (m *memory) LinkTask(ctx context.Context, identity, taskID, outcome string)
 	}
 	record.TaskID, record.TaskOutcome, record.State, record.UpdatedAt = taskID, outcome, "task_linked", time.Now().UTC()
 	m.monitorObservations[key] = record
+	return record, nil
+}
+
+// LinkRecoveryTask makes the link, the task event, and the activity row one
+// write under the store mutex. It checks everything that can refuse them first,
+// because the volatile backend has no rollback (component-persistence
+// invariant 5).
+func (m *memory) LinkRecoveryTask(ctx context.Context, identity, taskID string, taskPayload, activityPayload map[string]any) (monitor.ObservationRecord, error) {
+	if _, err := RequireActor(ctx); err != nil {
+		return monitor.ObservationRecord{}, err
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	workspace, ok := WorkspaceFromContext(ctx)
+	if !ok || workspace == "" {
+		return monitor.ObservationRecord{}, ErrWorkspaceRequired
+	}
+	key := monitorKey(workspace, identity)
+	record, ok := m.monitorObservations[key]
+	if !ok {
+		return monitor.ObservationRecord{}, fmt.Errorf("monitor observation %s not found", identity)
+	}
+	if record.TaskID != "" {
+		if record.TaskID != taskID {
+			return monitor.ObservationRecord{}, fmt.Errorf("monitor observation %s already links task %s", identity, record.TaskID)
+		}
+		return record, nil
+	}
+	if task, found := m.tasks[taskID]; !found || task.Workspace != workspace {
+		return monitor.ObservationRecord{}, fmt.Errorf("task %s not found", taskID)
+	}
+	if _, err := json.Marshal(activityPayload); err != nil {
+		return monitor.ObservationRecord{}, err
+	}
+	record.TaskID, record.TaskOutcome, record.State, record.UpdatedAt = taskID, monitor.OutcomeRecoveryObserved, "task_linked", time.Now().UTC()
+	m.monitorObservations[key] = record
+	m.appendEventLocked(ctx, core.Event{TaskID: taskID, Kind: monitor.EventRecoveryObserved, Payload: core.JSONPayload(taskPayload)})
+	m.appendMonitorActivityLocked(workspace, monitor.EventRecoveryObserved, activityPayload)
 	return record, nil
 }
 
