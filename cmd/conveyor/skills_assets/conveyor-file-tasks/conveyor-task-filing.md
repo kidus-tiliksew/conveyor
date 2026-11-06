@@ -230,7 +230,7 @@ unrelated source explicitly instead.
   document change, draft it with the `conveyor-plan` skill and have the operator
   confirm it before filing the task that depends on it.
 - When authorities disagree, cite requirements over decisions over System
-  Design documents, per DEC-57(2), and never cite a pending document as authority.
+  Design documents, per DEC-109(2), and never cite a pending document as authority.
 - Attach the requirements a task serves directly at intake with
   `requirement_ids` (or a planning-bundle task's `context.requirement_ids`).
 
