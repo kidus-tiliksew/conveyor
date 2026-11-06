@@ -979,6 +979,17 @@ func (m *memory) ListTasksFiltered(ctx context.Context, filter TaskFilter) ([]co
 	return out, nil
 }
 
+func (m *memory) ListTasksFilteredWithoutBody(ctx context.Context, filter TaskFilter) ([]core.Task, error) {
+	tasks, err := m.ListTasksFiltered(ctx, filter)
+	if err != nil {
+		return nil, err
+	}
+	for i := range tasks {
+		tasks[i].Body = ""
+	}
+	return tasks, nil
+}
+
 // taskMatchesFilterLocked evaluates the shared surface predicate. The Postgres
 // store expresses the same members in SQL; the two must agree, so the fixtures
 // in storetest exercise both through one table.

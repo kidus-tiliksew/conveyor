@@ -60,6 +60,13 @@ func (s *failingStore) ListTasksFiltered(ctx context.Context, filter store.TaskF
 	return s.Store.ListTasksFiltered(ctx, filter)
 }
 
+func (s *failingStore) ListTasksFilteredWithoutBody(ctx context.Context, filter store.TaskFilter) ([]core.Task, error) {
+	if err := s.failure("ListTasksFilteredWithoutBody"); err != nil {
+		return nil, err
+	}
+	return s.Store.ListTasksFilteredWithoutBody(ctx, filter)
+}
+
 func (s *failingStore) ListTaskOperations(ctx context.Context, query store.TaskOperationsQuery) (store.TaskOperationsPage, error) {
 	if err := s.failure("ListTaskOperations"); err != nil {
 		return store.TaskOperationsPage{}, err

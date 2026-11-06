@@ -262,6 +262,21 @@ func (s *Store) ListTasksFiltered(ctx context.Context, filter store.TaskFilter) 
 	return s.hydrateTaskRows(ctx, rows)
 }
 
+// ListTasksFilteredWithoutBody runs ListTasksFiltered's predicate and hydration
+// over a task row whose body is an empty string, so the read transfers no task
+// body (req-operator-next-action AC-2.7).
+func (s *Store) ListTasksFilteredWithoutBody(ctx context.Context, filter store.TaskFilter) ([]core.Task, error) {
+	ctx = dbmetrics.WithReadLabel(ctx, "ListTasksFilteredWithoutBody")
+	if err := filter.Validate(); err != nil {
+		return nil, err
+	}
+	rows, err := s.queries.ListTaskOperationsTasksWithoutBody(ctx, taskOperationsListParams(ctx, filter, 0, 0))
+	if err != nil {
+		return nil, err
+	}
+	return s.hydrateTaskRows(ctx, rows)
+}
+
 // taskFilterParams binds the shared predicate. Every member is a store-side
 // argument: nothing about the filter is decided after the rows come back.
 func taskFilterParams(ctx context.Context, filter store.TaskFilter) db.CountTaskOperationsTasksParams {

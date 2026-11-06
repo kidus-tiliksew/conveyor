@@ -54,6 +54,11 @@ func (c *countingStore) GetTask(ctx context.Context, id string) (core.Task, erro
 	return c.Store.GetTask(ctx, id)
 }
 
+func (c *countingStore) ListTasksFilteredWithoutBody(ctx context.Context, filter store.TaskFilter) ([]core.Task, error) {
+	c.count("ListTasksFilteredWithoutBody", nil)
+	return c.Store.ListTasksFilteredWithoutBody(ctx, filter)
+}
+
 func (c *countingStore) ListTasksFiltered(ctx context.Context, filter store.TaskFilter) ([]core.Task, error) {
 	c.count("ListTasksFiltered", nil)
 	return c.Store.ListTasksFiltered(ctx, filter)
@@ -524,7 +529,7 @@ func TestCountOperatorAttentionStoreCallsDoNotGrowWithTasks(t *testing.T) {
 		if total != want || want == 0 {
 			t.Fatalf("copies=%d attention=%d want %d", copies, total, want)
 		}
-		if calls["ListTasksFiltered"] != 1 || calls["ReadVerificationReviews"] != 0 || calls["ListOpenDependents"] != 0 {
+		if calls["ListTasksFilteredWithoutBody"] != 1 || calls["ListTasksFiltered"] != 0 || calls["ReadVerificationReviews"] != 0 || calls["ListOpenDependents"] != 0 {
 			t.Fatalf("copies=%d calls=%v", copies, calls)
 		}
 		for name, n := range calls {

@@ -165,6 +165,13 @@ type TaskStore interface {
 	// Tasks list instead of a second implementation (AC-2.4). An inactive
 	// filter is exactly ListTasks.
 	ListTasksFiltered(ctx context.Context, filter TaskFilter) ([]core.Task, error)
+	// ListTasksFilteredWithoutBody returns the tasks ListTasksFiltered returns
+	// for the same filter, in the same order and with the same relations, with
+	// an empty Body. A durable backend leaves the body column in the database,
+	// so a count over open tasks never transfers their bodies
+	// (req-operator-next-action AC-2.7; component-next-action, One attention
+	// definition).
+	ListTasksFilteredWithoutBody(ctx context.Context, filter TaskFilter) ([]core.Task, error)
 	ListTaskPage(ctx context.Context, query TaskOperationsQuery) (TaskPage, error)
 	// ListCallerAttentionTaskPage returns only the authenticated caller's
 	// assigned, nonterminal tasks that currently satisfy TaskNeedsAttention.
