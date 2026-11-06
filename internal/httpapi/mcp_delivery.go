@@ -6,7 +6,6 @@ package httpapi
 import (
 	"bytes"
 	"encoding/json"
-	"log"
 	"net/http"
 
 	"github.com/go-chi/chi/v5"
@@ -90,8 +89,7 @@ func (s *Server) getSubmissionTemplate(w http.ResponseWriter, r *http.Request) {
 		if authErr != nil {
 			// An authorization-store failure is not a refusal; it answers
 			// the same opaque 500 as requireWorkspaceCapability.
-			log.Printf("authorize submission template: %v", authErr)
-			http.Error(w, "internal server error", http.StatusInternalServerError)
+			writeStoreFailure(w, r, authErr)
 			return
 		}
 		if !allowed {

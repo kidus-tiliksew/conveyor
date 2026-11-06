@@ -2427,7 +2427,7 @@ func (s *Server) getTaskActivity(w http.ResponseWriter, r *http.Request) {
 		case readinessErr != nil:
 			// A failed gate peek omits merge_readiness; the projection then
 			// offers no merge choice (component-http-api).
-			log.Printf("task detail merge readiness for %s: %v", id, readinessErr)
+			log.Printf("httpapi: task detail merge readiness: request_id=%q task=%s error=%q", middleware.GetReqID(r.Context()), id, redactedErrorLogText(readinessErr))
 		default:
 			mergeReadiness = &readiness
 			// A hook call that finished after the task read may have written
@@ -2489,8 +2489,7 @@ func (s *Server) getTaskActivity(w http.ResponseWriter, r *http.Request) {
 			pending, planErr = true, nil
 		}
 		if planErr != nil {
-			log.Printf("handle API request: %v", planErr)
-			http.Error(w, "internal server error", http.StatusInternalServerError)
+			writeStoreFailure(w, r, planErr)
 			return
 		}
 		pendingPlanRevision = pending

@@ -160,6 +160,11 @@ func failingOperationRoutes() []failureRoute {
 		{name: "writeWorkOrderToolError submit", method: http.MethodPost, path: "/v1/work-orders/failure-order/submit-for-review", body: `{"session_id":"s","head_sha":"h","workspace_id":"demo"}`, failing: []string{"GetWorkOrderWithoutSnapshots"}},
 		{name: "writeWorkOrderToolError template", method: http.MethodGet, path: "/v1/work-orders/failure-order/pull-request-template?session_id=s", failing: []string{"GetWorkOrderWithoutSnapshots"}},
 		{name: "writeWorkOrderToolError context refresh", method: http.MethodPost, path: "/v1/work-orders/failure-order/context-refresh", body: `{"session_id":"s","workspace_id":"demo"}`, failing: []string{"GetWorkOrderWithoutSnapshots"}},
+		// Owned routes whose failure answer was already generic now log the cause
+		// redacted, with the request ID.
+		{name: "attachTaskBranch", method: http.MethodPost, path: "/v1/tasks/failure-task/branch", body: `{"branch":"conveyor/other"}`, failing: []string{"AttachTaskBranch"}},
+		{name: "updateTaskContext", method: http.MethodPost, path: "/v1/tasks/failure-task/context", body: `{}`, failing: []string{"UpdateTaskContext"}},
+		{name: "confirmTaskContextProposal", method: http.MethodPost, path: "/v1/tasks/failure-task/context/proposals/requirement/req-x/confirm", failing: []string{"ConfirmTaskContextProposal"}},
 		// Item 3: error text at 5xx.
 		{name: "requestTaskChanges job read", method: http.MethodPost, path: "/v1/tasks/failure-task/request-changes", body: `{"feedback":"fix"}`, failing: []string{"GetLatestJob"}},
 		{name: "requestTaskChanges configuration", method: http.MethodPost, path: "/v1/tasks/failure-task/request-changes", body: `{"feedback":"fix"}`, prepare: seedReviewJob, hook: func(s *Server) {

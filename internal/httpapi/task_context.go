@@ -2,7 +2,6 @@ package httpapi
 
 import (
 	"errors"
-	"log"
 	"net/http"
 
 	"github.com/go-chi/chi/v5"
@@ -33,8 +32,7 @@ func (s *Server) updateTaskContext(w http.ResponseWriter, r *http.Request) {
 		case errors.Is(err, store.ErrNotFound):
 			http.Error(w, err.Error(), http.StatusNotFound)
 		default:
-			log.Printf("update task context: %v", err)
-			http.Error(w, "internal server error", http.StatusInternalServerError)
+			writeStoreFailure(w, r, err)
 		}
 		return
 	}
@@ -44,7 +42,7 @@ func (s *Server) updateTaskContext(w http.ResponseWriter, r *http.Request) {
 func (s *Server) confirmTaskContextProposal(w http.ResponseWriter, r *http.Request) {
 	proposal, err := s.Store.ConfirmTaskContextProposal(r.Context(), chi.URLParam(r, "id"), core.TaskContextProposalTargetKind(chi.URLParam(r, "kind")), chi.URLParam(r, "target_id"))
 	if err != nil {
-		writeTaskContextProposalError(w, err)
+		writeTaskContextProposalError(w, r, err)
 		return
 	}
 	writeJSON(w, http.StatusOK, proposal)
@@ -53,13 +51,13 @@ func (s *Server) confirmTaskContextProposal(w http.ResponseWriter, r *http.Reque
 func (s *Server) dismissTaskContextProposal(w http.ResponseWriter, r *http.Request) {
 	proposal, err := s.Store.DismissTaskContextProposal(r.Context(), chi.URLParam(r, "id"), core.TaskContextProposalTargetKind(chi.URLParam(r, "kind")), chi.URLParam(r, "target_id"))
 	if err != nil {
-		writeTaskContextProposalError(w, err)
+		writeTaskContextProposalError(w, r, err)
 		return
 	}
 	writeJSON(w, http.StatusOK, proposal)
 }
 
-func writeTaskContextProposalError(w http.ResponseWriter, err error) {
+func writeTaskContextProposalError(w http.ResponseWriter, r *http.Request, err error) {
 	if writeContextArchiveError(w, err) {
 		return
 	}
@@ -74,8 +72,7 @@ func writeTaskContextProposalError(w http.ResponseWriter, err error) {
 	case errors.Is(err, store.ErrNotFound):
 		http.Error(w, err.Error(), http.StatusNotFound)
 	default:
-		log.Printf("decide task context proposal: %v", err)
-		http.Error(w, "internal server error", http.StatusInternalServerError)
+		writeStoreFailure(w, r, err)
 	}
 }
 

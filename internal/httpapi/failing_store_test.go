@@ -200,6 +200,27 @@ func (s *failingStore) ChangeTaskPolicyCommand(ctx context.Context, lease taskop
 	return s.Store.ChangeTaskPolicyCommand(ctx, lease, request)
 }
 
+func (s *failingStore) AttachTaskBranch(ctx context.Context, id, branch string) (core.Task, error) {
+	if err := s.failure("AttachTaskBranch"); err != nil {
+		return core.Task{}, err
+	}
+	return s.Store.AttachTaskBranch(ctx, id, branch)
+}
+
+func (s *failingStore) UpdateTaskContext(ctx context.Context, id string, change store.TaskContextChange) (core.TaskContext, error) {
+	if err := s.failure("UpdateTaskContext"); err != nil {
+		return core.TaskContext{}, err
+	}
+	return s.Store.UpdateTaskContext(ctx, id, change)
+}
+
+func (s *failingStore) ConfirmTaskContextProposal(ctx context.Context, id string, kind core.TaskContextProposalTargetKind, target string) (core.TaskContextProposal, error) {
+	if err := s.failure("ConfirmTaskContextProposal"); err != nil {
+		return core.TaskContextProposal{}, err
+	}
+	return s.Store.ConfirmTaskContextProposal(ctx, id, kind, target)
+}
+
 func (s *failingStore) CreateTaskWithDependenciesAndContext(ctx context.Context, task core.Task, dependencyIDs []string, attached store.TaskContextInput) error {
 	if err := s.failure("CreateTaskWithDependenciesAndContext"); err != nil {
 		return err
