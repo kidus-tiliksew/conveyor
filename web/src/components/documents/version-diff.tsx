@@ -5,6 +5,9 @@ import {
   compareDocuments,
   type FormattedChange,
   formattedParagraphChanges,
+  type ListItem,
+  type ListItemChange,
+  listBlockChanges,
   type ReviewRow,
   type ReviewSource,
   reviewRowBodies,
@@ -278,6 +281,44 @@ function ReviewRowContent({ row, mode }: { row: ReviewRow; mode: 'inline' | 'sid
   )
 }
 
+const unavailableNotice = 'Detailed highlighting unavailable for this block · showing complete before and after'
+const insertedClassName = 'bg-positive-soft text-positive'
+const removedClassName = 'bg-failure-soft text-failure'
+type ReviewSide = 'before' | 'after'
+
+function styledChange(word: FormattedChange) {
+  let content: ReactNode = word.text
+  if (word.style === 'code') content = <code>{content}</code>
+  else if (word.style === 'emphasis') content = <em>{content}</em>
+  else if (word.style === 'strong') content = <strong>{content}</strong>
+  else if (word.style === 'link')
+    content = (
+      <a href={word.href} className="text-primary underline underline-offset-2">
+        {content}
+      </a>
+    )
+  return content
+}
+
+// With a side, renders that side's text; without one, renders both inline.
+function ChangedWords({ words, side }: { words: FormattedChange[]; side?: ReviewSide }) {
+  return words.map((word, index) => {
+    if ((side === 'before' && word.kind === 'added') || (side === 'after' && word.kind === 'removed')) return null
+    const key = `${index}-${word.kind}`
+    return word.kind === 'added' ? (
+      <ins key={key} className={insertedClassName}>
+        {styledChange(word)}
+      </ins>
+    ) : word.kind === 'removed' ? (
+      <del key={key} className={removedClassName}>
+        {styledChange(word)}
+      </del>
+    ) : (
+      <span key={key}>{styledChange(word)}</span>
+    )
+  })
+}
+
 function ReviewParagraph({
   before: beforeSource,
   after: afterSource,
@@ -291,50 +332,28 @@ function ReviewParagraph({
 }) {
   const before = beforeSource ?? ''
   const after = afterSource ?? ''
+  // The block's key holds its text, so a mode change reuses this alignment.
+  const list = useMemo(() => (complete ? undefined : listBlockChanges(before, after)), [after, before, complete])
+  if (list)
+    return (
+      <ReviewListBlock
+        items={list}
+        mode={mode}
+        beforeAbsent={beforeSource === undefined}
+        afterAbsent={afterSource === undefined}
+      />
+    )
   const words = complete ? undefined : formattedParagraphChanges(before, after)
-  const styled = (word: FormattedChange) => {
-    let content: ReactNode = word.text
-    if (word.style === 'code') content = <code>{content}</code>
-    else if (word.style === 'emphasis') content = <em>{content}</em>
-    else if (word.style === 'strong') content = <strong>{content}</strong>
-    else if (word.style === 'link')
-      content = (
-        <a href={word.href} className="text-primary underline underline-offset-2">
-          {content}
-        </a>
-      )
-    return content
-  }
-  const renderWords = (side?: 'before' | 'after') =>
-    words?.map((word, index) => {
-      if ((side === 'before' && word.kind === 'added') || (side === 'after' && word.kind === 'removed')) return null
-      const key = `${index}-${word.kind}`
-      return word.kind === 'added' ? (
-        <ins key={key} className="bg-positive-soft text-positive">
-          {styled(word)}
-        </ins>
-      ) : word.kind === 'removed' ? (
-        <del key={key} className="bg-failure-soft text-failure">
-          {styled(word)}
-        </del>
-      ) : (
-        <span key={key}>{styled(word)}</span>
-      )
-    })
   if (mode === 'inline' && words)
     return (
       <div className="whitespace-pre-wrap break-words p-4 text-sm leading-7">
-        {renderWords()}
+        <ChangedWords words={words} />
         {!before && !after && 'Empty section'}
       </div>
     )
   return (
     <div>
-      {!words && (
-        <p className="px-4 pt-3 text-xs text-muted">
-          Detailed highlighting unavailable for this block · showing complete before and after
-        </p>
-      )}
+      {!words && <p className="px-4 pt-3 text-xs text-muted">{unavailableNotice}</p>}
       <div
         className={
           mode === 'side'
@@ -344,13 +363,13 @@ function ReviewParagraph({
       >
         {(['before', 'after'] as const).map((side) => (
           <div key={side} className="min-w-0 p-4">
-            <p className="mb-3 text-[10px] font-semibold uppercase tracking-wider text-muted">
-              {side === 'before' ? 'Base' : 'Target'}
-            </p>
+            <SideLabel side={side} />
             {(side === 'before' ? beforeSource : afterSource) === undefined ? (
-              <p className="text-sm italic text-muted">No section in this version</p>
+              <AbsentSide />
             ) : words ? (
-              <div className="whitespace-pre-wrap break-words text-sm leading-7">{renderWords(side)}</div>
+              <div className="whitespace-pre-wrap break-words text-sm leading-7">
+                <ChangedWords words={words} side={side} />
+              </div>
             ) : (
               <div className="min-w-0 overflow-auto">
                 <MarkdownProse>{side === 'before' ? before : after}</MarkdownProse>
@@ -360,5 +379,170 @@ function ReviewParagraph({
         ))}
       </div>
     </div>
+  )
+}
+
+function SideLabel({ side }: { side: ReviewSide }) {
+  return (
+    <p className="mb-3 text-[10px] font-semibold uppercase tracking-wider text-muted">
+      {side === 'before' ? 'Base' : 'Target'}
+    </p>
+  )
+}
+
+function AbsentSide() {
+  return <p className="text-sm italic text-muted">No section in this version</p>
+}
+
+// Item rows hold their markers as text, not list counters, so a list starting
+// at 31 shows 31. Both modes keep one row per aligned pair, so an inserted item
+// can't shift the rows after it (component-web-document-surfaces "Block
+// comparison").
+function ReviewListBlock({
+  items,
+  mode,
+  beforeAbsent,
+  afterAbsent,
+}: {
+  items: ListItemChange[]
+  mode: 'inline' | 'side'
+  beforeAbsent: boolean
+  afterAbsent: boolean
+}) {
+  const rows = (
+    <ul className="min-w-0 list-none space-y-2 text-sm leading-7">
+      {items.map((item, index) => (
+        <ReviewListItem key={`${index}-${item.before?.text}-${item.after?.text}`} item={item} mode={mode} />
+      ))}
+    </ul>
+  )
+  if (mode === 'inline') return <div className="min-w-0 p-4">{rows}</div>
+  return (
+    <div className="min-w-0 space-y-3 p-4">
+      <div className="grid grid-cols-2 gap-4">
+        {(['before', 'after'] as const).map((side) => (
+          <div key={side} className="min-w-0">
+            <SideLabel side={side} />
+            {(side === 'before' ? beforeAbsent : afterAbsent) && <AbsentSide />}
+          </div>
+        ))}
+      </div>
+      {rows}
+    </div>
+  )
+}
+
+function ReviewListItem({ item, mode }: { item: ListItemChange; mode: 'inline' | 'side' }) {
+  const { before, after, changes } = item
+  // A changed item without safe marks falls back alone. An identical item has
+  // nothing to highlight, so it renders whole with no notice.
+  const unavailable = !changes && before?.text !== after?.text
+  const sides = (['before', 'after'] as const).filter((side) => item[side])
+  const indented = { marginLeft: `${((after ?? before)?.depth ?? 0) * 1.5}rem` }
+  if (mode === 'side')
+    return (
+      <li className="min-w-0 space-y-1" data-review-list-item>
+        {unavailable && <p className="text-xs text-muted">{unavailableNotice}</p>}
+        <div className="grid grid-cols-2 gap-4">
+          {(['before', 'after'] as const).map((side) => (
+            <div key={side} className="min-w-0" style={{ marginLeft: `${(item[side]?.depth ?? 0) * 1.5}rem` }}>
+              {item[side] && (
+                <ListItemLine marker={<SideMarker item={item} side={side} />}>
+                  {changes ? <ChangedWords words={changes} side={side} /> : <ItemProse item={item[side]} />}
+                </ListItemLine>
+              )}
+            </div>
+          ))}
+        </div>
+      </li>
+    )
+  if (unavailable)
+    return (
+      <li className="min-w-0 space-y-1" style={indented} data-review-list-item>
+        <p className="text-xs text-muted">{unavailableNotice}</p>
+        {sides.map((side) => (
+          <div key={side} className="min-w-0">
+            <SideLabel side={side} />
+            <ListItemLine marker={<SideMarker item={item} side={side} />}>
+              <ItemProse item={item[side]} />
+            </ListItemLine>
+          </div>
+        ))}
+      </li>
+    )
+  return (
+    <li className="min-w-0" style={indented} data-review-list-item>
+      <ListItemLine marker={<InlineMarker item={item} />}>
+        {changes ? <ChangedWords words={changes} /> : <ItemProse item={after ?? before} />}
+      </ListItemLine>
+    </li>
+  )
+}
+
+function ListItemLine({ marker, children }: { marker: ReactNode; children: ReactNode }) {
+  return (
+    <div className="flex min-w-0 gap-2">
+      {marker}
+      <div className="min-w-0 flex-1 whitespace-pre-wrap break-words">{children}</div>
+    </div>
+  )
+}
+
+function ItemProse({ item }: { item?: ListItem }) {
+  return (
+    <div className="min-w-0 overflow-auto whitespace-normal">
+      <MarkdownProse>{item?.text ?? ''}</MarkdownProse>
+    </div>
+  )
+}
+
+// Every bullet character renders the same list, so all show one bullet.
+function markerLabel(item?: ListItem) {
+  return item && /^[-+*]$/.test(item.marker) ? '•' : (item?.marker ?? '')
+}
+
+// A marker counts as changed when its label or nesting differs. An inserted or
+// removed item has only one marker, which is its change.
+function markerChanged({ before, after }: ListItemChange) {
+  return !before || !after || markerLabel(before) !== markerLabel(after) || before.depth !== after.depth
+}
+
+function Marker({ label, kind }: { label: string; kind?: 'added' | 'removed' }) {
+  if (!label) return null
+  if (kind === 'added') return <ins className={insertedClassName}>{label}</ins>
+  if (kind === 'removed') return <del className={removedClassName}>{label}</del>
+  return <span>{label}</span>
+}
+
+function MarkerSlot({ children }: { children: ReactNode }) {
+  return <span className="shrink-0 tabular-nums text-muted">{children}</span>
+}
+
+function SideMarker({ item, side }: { item: ListItemChange; side: ReviewSide }) {
+  const label = markerLabel(item[side])
+  if (!label) return null
+  return (
+    <MarkerSlot>
+      <Marker label={label} kind={!markerChanged(item) ? undefined : side === 'before' ? 'removed' : 'added'} />
+    </MarkerSlot>
+  )
+}
+
+function InlineMarker({ item }: { item: ListItemChange }) {
+  const before = markerLabel(item.before)
+  const after = markerLabel(item.after)
+  if (!before && !after) return null
+  if (!markerChanged(item))
+    return (
+      <MarkerSlot>
+        <Marker label={after} />
+      </MarkerSlot>
+    )
+  return (
+    <MarkerSlot>
+      <Marker label={before} kind="removed" />
+      {before && after && ' '}
+      <Marker label={after} kind="added" />
+    </MarkerSlot>
   )
 }
