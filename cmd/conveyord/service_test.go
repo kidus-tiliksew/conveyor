@@ -558,3 +558,64 @@ func TestConveyordStartupLogDropsMisplacedConfigValue(t *testing.T) {
 		})
 	}
 }
+
+// A tagged or aliased value takes yaml.v3's plain errors instead of its type
+// errors, and the startup log still holds no value. The control is the same file
+// with a well-formed tagged value, which gets past the decoder.
+func TestConveyordStartupLogDropsTaggedConfigValue(t *testing.T) {
+	const childEnv = "CONVEYOR_TEST_TAGGED_VALUE_CONFIG"
+	if path := os.Getenv(childEnv); path != "" {
+		flag.CommandLine = flag.NewFlagSet("conveyord", flag.ExitOnError)
+		os.Args = []string{"conveyord", "-config", path, "-addr", "127.0.0.1:0"}
+		main()
+		t.Fatal("conveyord started with a malformed config")
+	}
+	const value = "Zq7Kp3x-pw"
+	run := func(t *testing.T, line string) string {
+		t.Helper()
+		dir := t.TempDir()
+		configPath := filepath.Join(dir, "conveyor.yaml")
+		envPath := filepath.Join(dir, "empty.env")
+		writeOwnerFile(t, configPath, "workspace: demo\n"+line+"\n")
+		writeOwnerFile(t, envPath, "")
+		command := exec.CommandContext(t.Context(), os.Args[0], "-test.run=^TestConveyordStartupLogDropsTaggedConfigValue$")
+		for _, item := range os.Environ() {
+			if !strings.HasPrefix(item, "CONVEYOR_") {
+				command.Env = append(command.Env, item)
+			}
+		}
+		command.Env = append(command.Env, childEnv+"="+configPath, "CONVEYOR_ENV_FILE="+envPath)
+		output, err := command.CombinedOutput()
+		var exitErr *exec.ExitError
+		if !errors.As(err, &exitErr) || exitErr.ExitCode() == 0 {
+			t.Fatalf("conveyord exit status is not a refusal: %v", err)
+		}
+		return string(output)
+	}
+	for _, tc := range []struct{ name, line, want string }{
+		{name: "int tag", line: "max_bounces: !!int " + value, want: "line 2: cannot decode !!str as a !!int (expected int)"},
+		{name: "bool tag", line: "max_bounces: !!bool " + value, want: "line 2: cannot decode !!str as a !!bool (expected int)"},
+		{name: "binary tag", line: "max_bounces: !!binary " + value, want: "line 2: !!binary value contains invalid base64 data (expected int)"},
+		{name: "custom tag", line: "max_bounces: !" + value + " x", want: "line 2: cannot unmarshal value into int"},
+		{name: "undefined alias", line: "max_bounces: *" + value, want: "line 2: unknown anchor referenced (expected int)"},
+		{name: "time key", line: "issue_publication: {enabled_at: " + value + "}", want: "line 2: cannot unmarshal value into time.Time"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			startupLog := run(t, tc.line)
+			if strings.Contains(startupLog, value) {
+				t.Fatal("startup log holds the misplaced value")
+			}
+			if !strings.Contains(startupLog, "load config: ") || !strings.Contains(startupLog, tc.want) {
+				t.Fatalf("startup log lacks %q: %s", tc.want, startupLog)
+			}
+		})
+	}
+	t.Run("control", func(t *testing.T) {
+		startupLog := run(t, "max_bounces: !!int 3")
+		for _, refused := range []string{"cannot decode", "cannot unmarshal", "unrecognized YAML decode error"} {
+			if strings.Contains(startupLog, refused) {
+				t.Fatalf("well-formed tagged value was refused by the decoder: %s", startupLog)
+			}
+		}
+	})
+}

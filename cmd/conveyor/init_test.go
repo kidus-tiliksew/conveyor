@@ -920,6 +920,10 @@ func TestInitProcessExitsNonzeroWithoutPassword(t *testing.T) {
 	assertOnlyDirectoryEntries(t, directory)
 }
 
+// yamlUnrecognizedText is the config package's text for an unrecognized decoder
+// error.
+const yamlUnrecognizedText = "unrecognized YAML decode error"
+
 // The installed binary reports an existing file's type error by line and
 // expected type. The misplaced value stays out of stdout and stderr, whether
 // yaml.v3 would print it in full or by its first 7 bytes
@@ -956,6 +960,53 @@ func TestInitProcessTypeErrorDropsMisplacedValue(t *testing.T) {
 			}
 		})
 	}
+}
+
+// A tagged or aliased value takes yaml.v3's plain errors instead of its type
+// errors, and the installed binary's output still holds no value. The control is
+// the same file with a well-formed tagged value, which gets past the decoder.
+func TestInitProcessTaggedValueDropsMisplacedValue(t *testing.T) {
+	t.Setenv("CONVEYOR_DATABASE_URL", initFixtureURL)
+	t.Setenv("CONVEYOR_API_TOKEN", initFixtureToken)
+	t.Setenv(config.LLMAPIKeyEnv, "fixture-llm-key")
+	const value = "Zq7Kp3x-pw"
+	run := func(t *testing.T, line string) (int, string, string) {
+		t.Helper()
+		path := filepath.Join(t.TempDir(), "conveyor.yaml")
+		if err := os.WriteFile(path, []byte("workspace: demo\n"+line+"\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		return runInitProcess(t, path, initFixtureAnswers())
+	}
+	for _, tc := range []struct{ name, line, want string }{
+		{name: "int tag", line: "max_bounces: !!int " + value, want: "line 2: cannot decode !!str as a !!int (expected int)"},
+		{name: "bool tag", line: "max_bounces: !!bool " + value, want: "line 2: cannot decode !!str as a !!bool (expected int)"},
+		{name: "binary tag", line: "max_bounces: !!binary " + value, want: "line 2: !!binary value contains invalid base64 data (expected int)"},
+		{name: "custom tag", line: "max_bounces: !" + value + " x", want: "line 2: cannot unmarshal value into int"},
+		{name: "undefined alias", line: "max_bounces: *" + value, want: "line 2: unknown anchor referenced (expected int)"},
+		{name: "time key", line: "issue_publication: {enabled_at: " + value + "}", want: "line 2: cannot unmarshal value into time.Time"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			status, stdout, stderr := run(t, tc.line)
+			if status != 1 {
+				t.Fatalf("exit status = %d, want 1", status)
+			}
+			if strings.Contains(stdout, value) || strings.Contains(stderr, value) {
+				t.Fatal("process output holds the misplaced value")
+			}
+			if !strings.Contains(stderr, "load existing deployment config") || !strings.Contains(stderr, tc.want) {
+				t.Errorf("stderr lacks %q: %s", tc.want, stderr)
+			}
+		})
+	}
+	t.Run("control", func(t *testing.T) {
+		_, _, stderr := run(t, "max_bounces: !!int 3")
+		for _, refused := range []string{"cannot decode", "cannot unmarshal", yamlUnrecognizedText} {
+			if strings.Contains(stderr, refused) {
+				t.Errorf("well-formed tagged value was refused by the decoder: %s", stderr)
+			}
+		}
+	})
 }
 
 // paddedHandoffCases are the connection strings the handoff tests run on each

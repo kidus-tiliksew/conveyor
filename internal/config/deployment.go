@@ -48,7 +48,7 @@ func LoadDeployment(path string, logf func(string, ...any)) (*Config, error) {
 func ParseDeployment(data []byte, path string, logf func(string, ...any)) (*Config, error) {
 	stripped, ignored, packDirSet, err := stripDeploymentExecutionDetail(data)
 	if err != nil {
-		return nil, fmt.Errorf("parse %s: %w", path, err)
+		return nil, fmt.Errorf("parse %s: %w", path, locatedYAMLError[Config](data, err))
 	}
 	if len(ignored) != 0 && logf != nil {
 		logf("config: %s: ignoring retired execution detail in deployment configuration (DEC-56): %s", path, strings.Join(ignored, ", "))

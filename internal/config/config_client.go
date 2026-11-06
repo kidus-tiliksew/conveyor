@@ -28,7 +28,7 @@ func LoadClient(path string, logf func(string, ...any)) (*Config, error) {
 	}
 	stripped, ignored, err := stripClientExecutionKeys(data)
 	if err != nil {
-		return nil, fmt.Errorf("parse %s: %w", path, err)
+		return nil, fmt.Errorf("parse %s: %w", path, locatedYAMLError[Config](data, err))
 	}
 	if len(ignored) != 0 && logf != nil {
 		logf("config: %s: ignoring execution keys %s; Conveyor keeps no local execution setup (DEC-104)", path, strings.Join(ignored, ", "))

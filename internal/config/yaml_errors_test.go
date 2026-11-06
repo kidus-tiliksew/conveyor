@@ -1,12 +1,16 @@
 package config
 
 import (
+	"encoding"
 	"errors"
+	"fmt"
 	"io"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"reflect"
 	"regexp"
+	"sort"
 	"strings"
 	"testing"
 
@@ -145,12 +149,12 @@ func TestConfigLoadersDropMisplacedValue(t *testing.T) {
 	}
 }
 
-// The two yaml.v3 errors outside *yaml.TypeError that quote document text lose
-// it and keep their fixed words.
+// The yaml.v3 errors outside *yaml.TypeError that quote an anchor or map key
+// lose it and keep their fixed words.
 func TestRedactYAMLErrorDropsQuotedDocumentText(t *testing.T) {
 	var root map[string]any
 	for _, tc := range []struct{ name, document, want string }{
-		{name: "value read as an alias", document: "url: *" + misplacedShortValue + "\n", want: "yaml: unknown anchor referenced"},
+		{name: "value read as an alias", document: "url: *" + misplacedShortValue + "\n", want: "yaml: line 1: unknown anchor referenced"},
 		{name: "self-referencing anchor", document: "base: &" + misplacedShortValue + " {<<: *" + misplacedShortValue + "}\n", want: "anchor value contains itself"},
 		{name: "sequence as a map key", document: "execution: {[" + misplacedShortValue + "]: 1}\n", want: "yaml: invalid map key"},
 	} {
@@ -162,7 +166,7 @@ func TestRedactYAMLErrorDropsQuotedDocumentText(t *testing.T) {
 			}
 		})
 	}
-	if err := redactYAMLError(nil); err != nil {
+	if err := redactYAMLError(nil, nil, nil); err != nil {
 		t.Fatalf("nil error became %v", err)
 	}
 	if err := unmarshalYAML([]byte("a: {b: 1\n"), &root); err == nil || !strings.Contains(err.Error(), "line ") {
@@ -270,5 +274,284 @@ func TestConfigDecodeTargetTypesMatchRedactedShape(t *testing.T) {
 	walk(reflect.TypeOf(WorkspaceDocument{}))
 	if len(seen) < 10 {
 		t.Fatalf("walk reached %d types", len(seen))
+	}
+	// yaml.v3 hands a decode target's own error text straight to fail(), so these
+	// are the only custom routes from a scalar to a message. The two unmarshalers
+	// return only yaml.v3's errors, and redactYAMLError rewrites those and
+	// time.Time's.
+	textUnmarshaler := reflect.TypeFor[encoding.TextUnmarshaler]()
+	yamlUnmarshaler := reflect.TypeFor[yaml.Unmarshaler]()
+	var custom, text []string
+	for current := range seen {
+		pointer := reflect.PointerTo(current)
+		if current.Implements(textUnmarshaler) || pointer.Implements(textUnmarshaler) {
+			text = append(text, current.String())
+		}
+		if current.Implements(yamlUnmarshaler) || pointer.Implements(yamlUnmarshaler) {
+			custom = append(custom, current.String())
+		}
+	}
+	if want := []string{"time.Time"}; !reflect.DeepEqual(text, want) {
+		t.Errorf("TextUnmarshaler types = %v, want %v", text, want)
+	}
+	sort.Strings(custom)
+	if want := []string{"config.ExecutionPolicy", "config.RecoveryPolicy"}; !reflect.DeepEqual(custom, want) {
+		t.Errorf("custom yaml.Unmarshaler types = %v, want %v", custom, want)
+	}
+}
+
+// A tagged value is gone from the ParseDeployment error, whichever tag carries
+// it, and its line and expected type remain. Each resolver case first shows raw
+// yaml.v3 printing the fixture, so the test exercises the real leak.
+func TestParseDeploymentTaggedValueDropsMisplacedValue(t *testing.T) {
+	const value = misplacedShortValue
+	for _, tc := range []struct {
+		name, line, want string
+		rawLeak          bool
+	}{
+		{name: "int tag", line: "max_bounces: !!int " + value, want: "line 2: cannot decode !!str as a !!int (expected int)", rawLeak: true},
+		{name: "float tag", line: "max_bounces: !!float " + value, want: "line 2: cannot decode !!str as a !!float (expected int)", rawLeak: true},
+		{name: "bool tag", line: "max_bounces: !!bool " + value, want: "line 2: cannot decode !!str as a !!bool (expected int)", rawLeak: true},
+		{name: "null tag", line: "max_bounces: !!null " + value, want: "line 2: cannot decode !!str as a !!null (expected int)", rawLeak: true},
+		{name: "timestamp tag", line: "max_bounces: !!timestamp " + value, want: "line 2: cannot decode !!str as a !!timestamp (expected int)", rawLeak: true},
+		{name: "long form tag", line: "max_bounces: !<tag:yaml.org,2002:int> " + value, want: "line 2: cannot decode !!str as a !!int (expected int)", rawLeak: true},
+		{name: "quoted value", line: `max_bounces: !!int "` + value + `"`, want: "line 2: cannot decode !!str as a !!int (expected int)", rawLeak: true},
+		{name: "under a string key", line: "workspace: !!int " + value, want: "line 2: cannot decode !!str as a !!int", rawLeak: true},
+		{name: "through a custom unmarshaler", line: "recovery: {window: !!bool " + value + "}", want: "line 2: cannot decode !!str as a !!bool", rawLeak: true},
+		{name: "through a nested custom unmarshaler", line: "execution: {review_concurrency: !!int " + value + "}", want: "line 2: cannot decode !!str as a !!int (expected int)", rawLeak: true},
+		{name: "as a map key", line: "database: {!!int " + value + ": 1}", want: "line 2: cannot decode !!str as a !!int", rawLeak: true},
+		{name: "binary tag", line: "max_bounces: !!binary " + value, want: "line 2: !!binary value contains invalid base64 data (expected int)"},
+		{name: "custom tag", line: "max_bounces: !custom " + value, want: "line 2: cannot unmarshal value into int"},
+		{name: "custom tag holding the value", line: "max_bounces: !" + value + " x", want: "line 2: cannot unmarshal value into int"},
+		{name: "custom secondary tag", line: "max_bounces: !!custom " + value, want: "line 2: cannot unmarshal value into int"},
+		{name: "merge tag", line: "max_bounces: !!merge " + value, want: "line 2: cannot unmarshal !!merge into int"},
+		{name: "str tag", line: "max_bounces: !!str " + value, want: "line 2: cannot unmarshal !!str into int"},
+		{name: "undefined alias", line: "max_bounces: *" + value, want: "line 2: unknown anchor referenced (expected int)"},
+		{name: "undefined alias under a string key", line: "workspace: *" + value, want: "line 2: unknown anchor referenced"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			unsetEnv(t, "CONVEYOR_DATABASE_URL")
+			document := []byte("# leading comment\n" + tc.line + "\n")
+			var raw map[string]any
+			if rawErr := yaml.Unmarshal(document, &raw); tc.rawLeak && (rawErr == nil || !strings.Contains(rawErr.Error(), value)) {
+				t.Fatal("control: raw yaml.v3 no longer prints this value")
+			}
+			_, err := ParseDeployment(document, "deployment.yaml", nil)
+			requireNoMisplacedText(t, err, value)
+			if !strings.Contains(err.Error(), tc.want) || !strings.Contains(err.Error(), "parse deployment.yaml: ") {
+				t.Fatalf("error = %v, want %q", err, tc.want)
+			}
+		})
+	}
+}
+
+// An aliased scalar reaches the resolver at its anchor, so the error names the
+// anchor's line. A later occurrence of an undefined alias's name in a comment or
+// a quoted string does not move the line, nor does an earlier one.
+func TestParseDeploymentAliasedValueDropsMisplacedValue(t *testing.T) {
+	const value = misplacedShortValue
+	for _, tc := range []struct{ name, document, want string }{
+		{name: "alias of a tagged anchor", document: "base: &anchor !!int " + value + "\nmax_bounces: *anchor\n", want: "line 1: cannot decode !!str as a !!int"},
+		{name: "merge of a tagged anchor", document: "base: &anchor {review_concurrency: !!int " + value + "}\nexecution: {<<: *anchor}\n", want: "line 1: cannot decode !!str as a !!int"},
+		{name: "alias of a plain anchor", document: "base: &anchor " + value + "\nmax_bounces: *anchor\n", want: "line 1: field base not found"},
+		{name: "undefined alias after a comment naming it", document: "# *" + value + "\nmax_bounces: *" + value + "\n", want: "line 2: unknown anchor referenced (expected int)"},
+		{name: "undefined alias after a string naming it", document: "workspace: \"*" + value + "\"\nmax_bounces: *" + value + "\n", want: "line 2: unknown anchor referenced (expected int)"},
+		{name: "name that extends the alias", document: "workspace: *" + value + "x\nmax_bounces: *" + value + "\n", want: "line 1: unknown anchor referenced"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			unsetEnv(t, "CONVEYOR_DATABASE_URL")
+			_, err := ParseDeployment([]byte(tc.document), "deployment.yaml", nil)
+			requireNoMisplacedText(t, err, value)
+			if !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("error = %v, want %q", err, tc.want)
+			}
+		})
+	}
+}
+
+// A value misplaced under the one time.Time key reaches time.ParseError, which
+// prints it whole. The control shows raw yaml.v3 doing so, and a real timestamp
+// still decodes.
+func TestTimeKeyDropsMisplacedValue(t *testing.T) {
+	const value = misplacedShortValue
+	document := "workspace: demo\nissue_publication:\n  enabled_at: %s\n"
+	var raw WorkspaceDocument
+	if rawErr := yaml.Unmarshal(fmt.Appendf(nil, document, value), &raw); rawErr == nil || !strings.Contains(rawErr.Error(), value) {
+		t.Fatal("control: raw yaml.v3 no longer prints this value")
+	}
+	const want = "line 3: cannot unmarshal value into time.Time"
+	t.Run("ParseDeployment", func(t *testing.T) {
+		unsetEnv(t, "CONVEYOR_DATABASE_URL")
+		_, err := ParseDeployment(fmt.Appendf(nil, document, value), "deployment.yaml", nil)
+		requireNoMisplacedText(t, err, value)
+		if !strings.Contains(err.Error(), want) {
+			t.Fatalf("error = %v, want %q", err, want)
+		}
+	})
+	t.Run("decodeKnown", func(t *testing.T) {
+		var decoded WorkspaceDocument
+		err := decodeKnown(fmt.Appendf(nil, document, value), &decoded)
+		requireNoMisplacedText(t, err, value)
+		if !strings.Contains(err.Error(), want) {
+			t.Fatalf("error = %v, want %q", err, want)
+		}
+	})
+	t.Run("control", func(t *testing.T) {
+		var decoded WorkspaceDocument
+		if err := decodeKnown(fmt.Appendf(nil, document, "2026-11-06T06:00:00Z"), &decoded); err != nil || decoded.IssuePublication.EnabledAt.IsZero() {
+			t.Fatalf("decoded=%v err=%v", decoded.IssuePublication.EnabledAt, err)
+		}
+	})
+}
+
+// A well-formed tagged value decodes as before, and a valid alias resolves, so
+// the rewrite refuses nothing the decoder accepted.
+func TestParseDeploymentTaggedValueControl(t *testing.T) {
+	var decoded struct {
+		MaxBounces int    `yaml:"max_bounces"`
+		Other      int    `yaml:"other"`
+		Name       string `yaml:"name"`
+	}
+	document := "max_bounces: !!int 3\nother: &n 4\nname: !!str text\n"
+	if err := unmarshalYAML([]byte(document), &decoded); err != nil || decoded.MaxBounces != 3 || decoded.Other != 4 || decoded.Name != "text" {
+		t.Fatalf("decoded=%+v err=%v", decoded, err)
+	}
+	var workspace WorkspaceDocument
+	if err := decodeKnown([]byte("max_bounces: !!int 3\n"), &workspace); err != nil || workspace.MaxBounces != 3 {
+		t.Fatalf("strict decoded=%d err=%v", workspace.MaxBounces, err)
+	}
+}
+
+// Every failure site in the pinned yaml.v3 is either in yamlFixedProblems or has
+// a row here, and each row's sample carries a fixture the rewrite must drop.
+// Reading the module source makes an upgrade fail this test until the list is
+// reviewed, though an unreviewed form still keeps only its line.
+func TestYAMLFailureFormsMatchPinnedSource(t *testing.T) {
+	goTool, err := exec.LookPath("go")
+	if err != nil {
+		t.Skip("the go tool is unavailable")
+	}
+	output, err := exec.Command(goTool, "list", "-m", "-f", "{{.Version}} {{.Dir}}", "gopkg.in/yaml.v3").Output()
+	if err != nil {
+		t.Fatal(err)
+	}
+	version, dir, ok := strings.Cut(strings.TrimSpace(string(output)), " ")
+	if !ok || version != "v3.0.1" {
+		t.Fatalf("yaml.v3 is %q; review every failure form in this file before changing the pin", output)
+	}
+	read := func(name string) string {
+		t.Helper()
+		data, readErr := os.ReadFile(filepath.Join(dir, name))
+		if readErr != nil {
+			t.Fatal(readErr)
+		}
+		return string(data)
+	}
+
+	variable := map[string]struct{ sample, want string }{
+		"unknown anchor '%s' referenced":             {sample: "yaml: unknown anchor 'SECRET' referenced", want: "yaml: unknown anchor referenced"},
+		"anchor '%s' value contains itself":          {sample: "yaml: anchor 'SECRET' value contains itself", want: "yaml: anchor value contains itself"},
+		"invalid map key: %#v":                       {sample: `yaml: invalid map key: []interface {}{"SECRET"}`, want: "yaml: invalid map key"},
+		"cannot decode %s `%s` as a %s":              {sample: "yaml: cannot decode !!str `SECRET` as a !!int", want: "yaml: cannot decode !!str as a !!int"},
+		"%s%s":                                       {sample: "yaml: line 4: SECRET", want: "yaml: line 4: " + yamlUnrecognizedError},
+		"cannot decode node with unknown kind %d":    {sample: "yaml: cannot decode node with unknown kind 9", want: "yaml: cannot decode node with unknown kind 9"},
+		"invalid array: want %d elements but got %d": {sample: "yaml: invalid array: want 1 elements but got 2", want: "yaml: invalid array: want 1 elements but got 2"},
+	}
+	failf := regexp.MustCompile(`\bfailf\(\s*"((?:[^"\\]|\\.)*)"`)
+	seen := map[string]bool{}
+	for _, name := range []string{"decode.go", "resolve.go"} {
+		for _, match := range failf.FindAllStringSubmatch(read(name), -1) {
+			format := match[1]
+			seen[format] = true
+			if _, known := variable[format]; !known && !yamlFixedProblems[format] {
+				t.Errorf("%s failf form %q is not classified", name, format)
+			}
+		}
+	}
+	for format, row := range variable {
+		if !seen[format] {
+			t.Errorf("failf form %q is not in the pinned source", format)
+		}
+		got := redactYAMLError(errors.New(row.sample), nil, nil)
+		if got == nil || got.Error() != row.want {
+			t.Errorf("form %q rewrote to %v, want %q", format, got, row.want)
+		}
+	}
+
+	problemCall := regexp.MustCompile(`(?s)yaml_parser_set_(scanner_error|scanner_tag_error|parser_error|parser_error_context|reader_error)\(parser,(.*?)\)\n`)
+	literal := regexp.MustCompile(`"((?:[^"\\]|\\.)*)"`)
+	dynamic := 0
+	for _, name := range []string{"scannerc.go", "parserc.go", "readerc.go"} {
+		for _, call := range problemCall.FindAllStringSubmatch(read(name), -1) {
+			arguments := call[2]
+			literals := literal.FindAllStringSubmatch(arguments, -1)
+			switch {
+			case strings.Contains(arguments, "max_flow_level") || strings.Contains(arguments, "max_indents"):
+				dynamic++
+				continue
+			case strings.Contains(arguments, "err.Error()"):
+				dynamic++
+				continue
+			case len(literals) == 0:
+				continue // the scanner_tag_error wrapper forwards its own parameters
+			}
+			problem := literals[0][1]
+			if call[1] == "scanner_error" || call[1] == "scanner_tag_error" || call[1] == "parser_error_context" {
+				problem = literals[len(literals)-1][1]
+			}
+			seen[problem] = true
+			if !yamlFixedProblems[problem] {
+				t.Errorf("%s problem %q is not in yamlFixedProblems", name, problem)
+			}
+		}
+	}
+	if dynamic != 3 {
+		t.Errorf("found %d computed problems, want the two depth limits and the reader's input error", dynamic)
+	}
+	// parser.fail() prints this when a parser sets no problem.
+	if strings.Contains(read("decode.go"), `"unknown problem parsing YAML content"`) {
+		seen["unknown problem parsing YAML content"] = true
+	}
+	for problem := range yamlFixedProblems {
+		if !seen[problem] {
+			t.Errorf("yamlFixedProblems entry %q is not in the pinned source", problem)
+		}
+	}
+	for _, sample := range []string{"yaml: exceeded max depth of 10000", "yaml: line 3: expected scalar event but got mapping start"} {
+		if got := redactYAMLError(errors.New(sample), nil, nil); got.Error() != sample {
+			t.Errorf("fixed form %q rewrote to %q", sample, got)
+		}
+	}
+}
+
+// Anything the rewrite does not recognize keeps only its line, including the
+// reader's input error, an error from outside yaml.v3, and a look-alike of a
+// fixed form that carries extra text.
+func TestRedactYAMLErrorDeniesByDefault(t *testing.T) {
+	const secret = "SECRET"
+	for _, tc := range []struct{ name, message, want string }{
+		{name: "unknown form with a line", message: "yaml: line 7: some future form quoting " + secret, want: "yaml: line 7: " + yamlUnrecognizedError},
+		{name: "unknown form without a line", message: "yaml: some future form quoting " + secret, want: "yaml: " + yamlUnrecognizedError},
+		{name: "reader input error", message: "yaml: input error: read " + secret, want: "yaml: " + yamlUnrecognizedError},
+		{name: "not from yaml.v3", message: "custom unmarshaler says " + secret, want: "yaml: " + yamlUnrecognizedError},
+		{name: "not from yaml.v3 with a line", message: "line 2: custom unmarshaler says " + secret, want: "yaml: line 2: " + yamlUnrecognizedError},
+		{name: "fixed form with a suffix", message: "yaml: did not find expected key " + secret, want: "yaml: " + yamlUnrecognizedError},
+		{name: "numeric form with text", message: "yaml: exceeded max depth of " + secret, want: "yaml: " + yamlUnrecognizedError},
+		{name: "event form with text", message: "yaml: expected " + secret + " event but got scalar", want: "yaml: " + yamlUnrecognizedError},
+		{name: "resolver form with a custom tag", message: "yaml: cannot decode !" + secret + " `" + secret + "` as a !" + secret, want: "yaml: cannot decode value as a value"},
+		{name: "resolver form across lines", message: "yaml: cannot decode !!str `a\n" + secret + "` as a !!int", want: "yaml: cannot decode !!str as a !!int"},
+		{name: "resolver form posing as its own end", message: "yaml: cannot decode !!str `" + secret + "` as a !!int` as a !!bool", want: "yaml: cannot decode !!str as a !!bool"},
+		{name: "walker self-anchor with a line", message: "yaml: line 3: anchor '" + secret + "' value contains itself", want: "yaml: line 3: anchor value contains itself"},
+		{name: "fixed text with a line", message: "yaml: line 3: did not find expected key", want: "yaml: line 3: did not find expected key"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := redactYAMLError(errors.New(tc.message), nil, nil); got.Error() != tc.want {
+				t.Fatalf("got %q, want %q", got, tc.want)
+			}
+		})
+	}
+	eof := fmt.Errorf("wrapped: %w", io.EOF)
+	if got := redactYAMLError(eof, nil, nil); !errors.Is(got, io.EOF) {
+		t.Fatalf("wrapped io.EOF became %v", got)
 	}
 }
