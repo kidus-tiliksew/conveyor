@@ -109,7 +109,7 @@ export function DecisionsPage() {
         description="The choices that govern how this system works, and the ones that replaced them."
       />
       <main className="min-h-0 flex-1 overflow-y-auto">
-        <div className="max-w-4xl px-4 py-5 lg:px-6">
+        <div className="max-w-6xl px-4 py-5 lg:px-6">
           {openFlags > 0 && (
             <section
               aria-label="Decisions needing attention"
@@ -154,7 +154,7 @@ export function DecisionsPage() {
             </p>
           )}
           <div className="flex flex-wrap items-center gap-3">
-            <fieldset aria-label="Filter decisions" className="m-0 inline-flex rounded-lg bg-raised/70 p-0.5">
+            <fieldset aria-label="Filter decisions" className="m-0 inline-flex h-8 rounded-lg bg-raised/70 p-0.5">
               {decisionFilters.map((option) => {
                 const count = all.filter((decision) => inFilter(decision, option.value)).length
                 return (
@@ -170,9 +170,9 @@ export function DecisionsPage() {
                       })
                     }
                     className={cn(
-                      'inline-flex items-center gap-1.5 rounded-md px-2.5 py-1 text-xs font-medium transition-colors',
+                      'inline-flex items-center gap-1.5 rounded-md px-2.5 text-xs font-medium transition-colors',
                       filter === option.value
-                        ? 'bg-card text-foreground shadow-sm'
+                        ? 'bg-segment text-foreground shadow-xs'
                         : 'text-muted hover:text-foreground',
                     )}
                   >

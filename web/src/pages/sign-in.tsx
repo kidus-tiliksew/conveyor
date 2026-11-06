@@ -118,7 +118,11 @@ export function SignInPage() {
                 value={password}
                 onChange={(event) => setPassword(event.target.value)}
               />
-              <Button type="submit" className="w-full" disabled={passwordPending || !email.trim() || !password}>
+              <Button
+                type="submit"
+                className="w-full disabled:bg-primary-soft disabled:text-primary"
+                disabled={passwordPending || !email.trim() || !password}
+              >
                 {passwordPending ? 'Signing in…' : 'Sign in'}
               </Button>
               {passwordError && (

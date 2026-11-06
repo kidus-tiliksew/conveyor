@@ -154,7 +154,7 @@ export const TaskNode = memo(function TaskNode({ data }: NodeProps<TaskFlowNode>
           →{unblocks}
         </span>
       </div>
-      <p className="line-clamp-2 text-[12.5px] font-medium leading-[1.25] text-foreground" title={task.title}>
+      <p className="line-clamp-2 text-[12.5px] font-medium leading-[1.32] text-foreground" title={task.title}>
         {task.title}
       </p>
       <p className="truncate font-mono text-[10.5px] text-faint">

@@ -47,7 +47,7 @@ export function TaskSheet({ taskId }: { taskId: string }) {
 
   return (
     <Sheet onClose={close} label="Task detail">
-      <header className="pointer-coarse:[&_button]:min-h-10 pointer-coarse:[&_button]:min-w-10 flex shrink-0 flex-wrap items-center gap-1 border-b border-border px-4 py-2.5">
+      <header className="pointer-coarse:[&_button]:min-h-10 pointer-coarse:[&_button]:min-w-10 flex shrink-0 flex-wrap items-center gap-1 border-b border-border px-5 py-2.5">
         {/* The title takes whatever width the fixed-size controls leave and
             truncates; the controls never shrink under their own content. */}
         {/* A 10rem basis keeps the title readable: the controls wrap before
@@ -82,7 +82,7 @@ export function TaskSheet({ taskId }: { taskId: string }) {
           <X />
         </Button>
       </header>
-      <div className="task-sheet-body min-h-0 flex-1 overflow-x-hidden overflow-y-auto px-4 pb-8 pt-4">
+      <div className="task-sheet-body task-reading min-h-0 flex-1 overflow-x-hidden overflow-y-auto px-5 pb-8 pt-4">
         {(isLoading || redirecting) && (
           <div className="space-y-3">
             <Skeleton className="h-16" />

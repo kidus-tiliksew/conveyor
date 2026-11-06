@@ -35,7 +35,7 @@ export function InboxBandChips({ search, counts }: { search: InboxSearch; counts
               data-band-chip={segment.band ?? 'all'}
               className={cn(
                 'inline-flex items-center gap-1.5 rounded-md px-2.5 py-1 font-medium pointer-coarse:min-h-10',
-                selected ? 'bg-card text-foreground shadow-sm' : 'text-muted hover:text-foreground',
+                selected ? 'bg-segment text-foreground shadow-xs' : 'text-muted hover:text-foreground',
               )}
             >
               {segment.label}

@@ -904,8 +904,8 @@ test('the view switch closes one shared toolbar at the same position in every vi
       await expect(button(name)).toHaveText('')
       await expect(button(name)).toHaveAttribute('aria-pressed', String(name === pressed))
     }
-    // The selection takes the soft treatment; New task keeps the only fill.
-    await expect(button(pressed)).toHaveClass(/bg-primary-soft/)
+    // The selection takes the shared segment treatment; New task keeps the only fill.
+    await expect(button(pressed)).toHaveClass(/bg-segment/)
     await expect(button(pressed)).not.toHaveClass(/(^|\s)bg-primary(\s|$)/)
   }
 

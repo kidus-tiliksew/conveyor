@@ -982,7 +982,7 @@ function RequirementDetailCanvas({
       <header className="mb-4 flex flex-wrap items-start gap-4">
         <div className="min-w-[14rem] flex-1">
           <span className="font-mono text-[11px] text-faint">{item.requirement.slug}</span>
-          <h2 className="mt-1.5 text-[22px] font-semibold leading-[1.25] tracking-[-0.018em] text-balance">
+          <h2 className="mt-1.5 text-[22px] font-semibold leading-[1.25] tracking-[-0.018em]">
             {item.requirement.title}
           </h2>
           {!item.current_version && <p className="mt-2 text-sm text-muted">No confirmed version</p>}

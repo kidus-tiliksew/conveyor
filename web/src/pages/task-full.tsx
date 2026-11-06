@@ -115,12 +115,12 @@ function FullBody({ item }: { item: ActivityItem }) {
   return (
     <section
       aria-label="Task content"
-      className="min-h-0 flex-1 overflow-y-auto lg:bg-local lg:bg-[linear-gradient(to_left,var(--color-surface)_23rem,var(--color-border)_23rem,var(--color-border)_calc(23rem+1px),transparent_calc(23rem+1px))]"
+      className="task-reading min-h-0 flex-1 overflow-y-auto lg:bg-local lg:bg-[linear-gradient(to_left,var(--color-surface)_23rem,var(--color-border)_23rem,var(--color-border)_calc(23rem+1px),transparent_calc(23rem+1px))]"
     >
       {/* The inspector rail is the scroll region's own background, attached
           locally so it spans the whole scroll height: the 20rem inspector, the
           1.5rem page padding, and half the 3rem column gap, then a 1px border. */}
-      <div className="grid grid-cols-1 gap-y-5 px-4 pt-5 pb-6 sm:px-6 lg:grid-cols-[minmax(0,1fr)_20rem] lg:grid-rows-[auto_1fr_auto_auto] lg:gap-x-12 lg:pt-6">
+      <div className="grid grid-cols-1 gap-y-5 px-4 pt-5 pb-5 sm:px-6 lg:grid-cols-[minmax(0,1fr)_20rem] lg:grid-rows-[auto_1fr_auto_auto] lg:gap-x-12 lg:gap-y-0">
         <div className={cn(readingMeasure, 'lg:col-start-1 lg:row-span-2 lg:row-start-1')}>
           <TaskIdentity item={item} variant="full" />
         </div>
@@ -135,7 +135,7 @@ function FullBody({ item }: { item: ActivityItem }) {
             className="mt-0 grid-cols-[5.5rem_minmax(0,1fr)] gap-x-3 gap-y-1.5 border-y-0 py-1"
           />
         </section>
-        <section aria-label="Execution plan" className={cn(readingMeasure, 'lg:col-start-1 lg:row-start-3')}>
+        <section aria-label="Execution plan" className={cn(readingMeasure, 'lg:col-start-1 lg:row-start-3 lg:mt-5')}>
           {item.spec ? (
             <SpecCard
               spec={item.spec}
@@ -154,7 +154,7 @@ function FullBody({ item }: { item: ActivityItem }) {
             and never stretches the rows that hold the reading column. */}
         <section
           aria-label="Task inspector"
-          className="min-w-0 space-y-5 lg:col-start-2 lg:row-span-3 lg:row-start-2 lg:h-0"
+          className="min-w-0 space-y-5 lg:col-start-2 lg:row-span-3 lg:row-start-2 lg:mt-5 lg:h-0"
         >
           <TaskContextCard taskId={item.task.id} taskState={item.task.state} context={item.task.context} compact />
           <TaskAgentPrompt item={item} />
@@ -168,7 +168,10 @@ function FullBody({ item }: { item: ActivityItem }) {
         {/* The static relationship graph is gone: relationships are read in
             the explorer panel, and one page does not carry two renderings of
             the same lineage. */}
-        <section aria-label="Activity" className={cn(readingMeasure, 'space-y-4 lg:col-start-1 lg:row-start-4')}>
+        <section
+          aria-label="Activity"
+          className={cn(readingMeasure, 'space-y-4 lg:col-start-1 lg:row-start-4 lg:mt-5')}
+        >
           <TaskActivityTabs item={item} routeVariant="full" />
         </section>
       </div>

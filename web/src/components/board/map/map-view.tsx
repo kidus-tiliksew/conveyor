@@ -83,9 +83,9 @@ const FrameNode = memo(function FrameNode({ data, width = 0, height = 0 }: NodeP
         style={{ height: CLUSTER_HEADER }}
         title={`${data.open} open · ${data.merged}/${data.total} delivered`}
       >
-        <span className="truncate text-[24px] font-semibold text-foreground">{data.title}</span>
+        <span className="truncate text-[16px] font-semibold text-foreground">{data.title}</span>
         {dot && <span className={cn('size-2.5 shrink-0 rounded-full', dot)} />}
-        <span className="ml-auto shrink-0 text-[15px] tabular-nums text-faint">{data.open} open</span>
+        <span className="ml-auto shrink-0 text-[12px] tabular-nums text-faint">{data.open} open</span>
       </div>
     </div>
   )
@@ -576,6 +576,7 @@ export function MapView({
       nodesConnectable={false}
       elementsSelectable={false}
       minZoom={minZoom}
+      attributionPosition="bottom-left"
       maxZoom={1.6}
       onNodeMouseEnter={(_, node) => {
         clearTimeout(hoverTimer.current)
@@ -627,17 +628,18 @@ export function MapView({
           nodeBorderRadius={12}
           nodeColor={(node) => {
             if (node.type !== 'task') return palette.raised
+            const wash = (color: string) => `color-mix(in srgb, ${color} 40%, transparent)`
             switch ((node as TaskFlowNode).data.task.status) {
               case 'blocked':
-                return palette.failure
+                return wash(palette.failure)
               case 'plan_gate':
               case 'merge_gate':
               case 'needs_you':
-                return palette.attention
+                return wash(palette.attention)
               case 'running':
-                return palette.primary
+                return wash(palette.primary)
               case 'ready':
-                return palette.positive
+                return wash(palette.positive)
               default:
                 return palette.edge
             }

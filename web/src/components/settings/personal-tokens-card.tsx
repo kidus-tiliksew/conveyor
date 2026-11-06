@@ -9,10 +9,11 @@ import { Card, CardContent, CardHeader, CardTitle } from '../ui/card'
 import { CopyButton } from '../ui/copy-button'
 import { Dialog } from '../ui/dialog'
 import { Input } from '../ui/input'
+import { dateTimeLabel } from '../../lib/utils'
 
 function lifecycleSummary(created: string, lastUsed?: string) {
-  const createdText = `Created ${new Date(created).toLocaleString()}`
-  return lastUsed ? `${createdText} · Last used ${new Date(lastUsed).toLocaleString()}` : `${createdText} · Never used`
+  const createdText = `Created ${dateTimeLabel(created)}`
+  return lastUsed ? `${createdText} · Last used ${dateTimeLabel(lastUsed)}` : `${createdText} · Never used`
 }
 
 const deploymentRevokeConfirmation = 'REVOKE DEPLOYMENT CREDENTIAL'

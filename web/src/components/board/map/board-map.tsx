@@ -423,7 +423,7 @@ function BoardMapView() {
   return (
     <div className="flex min-h-0 flex-1 flex-col">
       <BoardToolbar>
-        <fieldset aria-label="Arrange by" className="m-0 flex rounded-md border border-border p-0.5">
+        <fieldset aria-label="Arrange by" className="m-0 flex h-8 rounded-lg bg-raised/70 p-0.5">
           {(
             [
               ['requirements', 'Requirements', BookText],
@@ -443,8 +443,8 @@ function BoardMapView() {
                 })
               }
               className={cn(
-                'inline-flex items-center gap-1.5 rounded px-2.5 py-1 text-xs font-medium transition-colors',
-                grouping === value ? 'bg-raised text-foreground' : 'text-muted hover:text-foreground',
+                'inline-flex items-center gap-1.5 rounded-md px-2.5 text-xs font-medium transition-colors',
+                grouping === value ? 'bg-segment text-foreground shadow-xs' : 'text-muted hover:text-foreground',
               )}
             >
               <Icon aria-hidden className="size-3.5" />
@@ -467,7 +467,7 @@ function BoardMapView() {
               }}
               placeholder="Find a task"
               aria-label="Find a task"
-              className="h-8 w-48 rounded-md border border-border bg-background pl-7 pr-2 text-xs"
+              className="h-8 w-48 rounded-md border border-edge bg-card pl-7 pr-2 text-[13px] shadow-xs"
             />
           </label>
           {grouping === 'dependencies' && (

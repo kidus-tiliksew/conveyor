@@ -4,7 +4,6 @@ import { MessageSquarePlus } from 'lucide-react'
 import { useEffect, useRef, useState } from 'react'
 import { useWorkspaceCapability, useWorkspaceSelection } from '../components/app-shell'
 import { PlanningChat, relativeDate, sessionStatusLabels } from '../components/planning/planning-chat'
-import { Badge } from '../components/ui/badge'
 import { Button } from '../components/ui/button'
 import { Select } from '../components/ui/input'
 import { createPlanningSession, decidePlanningBundle, fetchPlanningBundles, fetchPlanningSessions } from '../lib/api'
@@ -118,7 +117,7 @@ export function PlanningPage() {
       </PageHeader>
       <div className="flex min-h-0 flex-1">
         <aside className="w-72 shrink-0 overflow-y-auto border-r border-border bg-surface/40">
-          <div className="px-4 py-3">
+          <div className="py-3 pl-4 pr-4 lg:pl-6">
             <p className="text-xs font-semibold text-muted">Sessions</p>
           </div>
           {isLoading && <p className="px-4 text-xs text-muted">Restoring sessions…</p>}
@@ -135,21 +134,21 @@ export function PlanningPage() {
                 type="button"
                 aria-current={selectedId === session.id ? 'true' : undefined}
                 onClick={() => setSelectedId(session.id)}
-                className={`block w-full px-4 py-3 text-left ${selectedId === session.id ? 'bg-raised/70' : 'hover:bg-surface'}`}
+                className={`block w-full py-2.5 pl-4 pr-4 text-left lg:pl-6 ${selectedId === session.id ? 'bg-raised/70' : 'hover:bg-surface'}`}
               >
                 <strong className="block truncate text-[13px] font-medium">
                   {session.title || 'Untitled planning session'}
                 </strong>
                 <span className="mt-1 flex flex-wrap items-center gap-1.5">
-                  <Badge
-                    variant={
-                      session.status === 'active' ? 'accent' : session.status === 'finalized' ? 'positive' : 'default'
-                    }
-                  >
+                  <span className="inline-flex items-center gap-1.5 text-[11px] text-muted">
+                    <span
+                      aria-hidden="true"
+                      className={`size-1.5 rounded-full ${session.status === 'active' ? 'bg-primary' : session.status === 'finalized' ? 'bg-positive' : 'bg-faint'}`}
+                    />
                     {sessionStatusLabels[session.status]}
-                  </Badge>
-                  <Badge variant="mono">{sessionGoalLabel(session)}</Badge>
-                  <time className="ml-auto text-[10px] text-faint">{relativeDate(session.updated_at)}</time>
+                  </span>
+                  <span className="text-[11px] text-faint">{sessionGoalLabel(session)}</span>
+                  <time className="ml-auto text-[11px] text-faint">{relativeDate(session.updated_at)}</time>
                 </span>
               </button>
             ))}

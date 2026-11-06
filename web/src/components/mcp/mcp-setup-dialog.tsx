@@ -83,7 +83,7 @@ export function MCPSetupDialog({ onClose }: { onClose: () => void }) {
                   aria-controls="mcp-client-panel"
                   className={cn(
                     'flex h-9 items-center justify-center gap-2 rounded-md px-3 text-xs font-medium text-muted transition-colors focus-visible:outline-2 focus-visible:outline-primary',
-                    client.id === selected && 'bg-background text-foreground shadow-sm',
+                    client.id === selected && 'bg-segment text-foreground shadow-xs',
                   )}
                   onClick={() => setSelected(client.id)}
                 >

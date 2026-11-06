@@ -187,7 +187,7 @@ export function Timeline({ item, executionActions = true }: { item: ActivityItem
         </p>
         {/* The current execution state and the stop affordance belong to the
             next-action card above, which prints them once (DEC-61). */}
-        <h2 className="mb-4 mt-5 text-sm font-semibold tracking-tight">Activity</h2>
+        <h2 className="sr-only">Activity</h2>
         <ol className="relative space-y-4 before:absolute before:bottom-4 before:left-[7px] before:top-4 before:w-px before:bg-border">
           {entries.map((entry) => (
             <TimelineRow key={keyFor(entry)} entry={entry} item={item} usageReportedOrderIDs={usageReportedOrderIDs} />

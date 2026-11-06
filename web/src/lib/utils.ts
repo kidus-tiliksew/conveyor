@@ -19,6 +19,17 @@ export function relativeTime(value?: string) {
   return formatter.format(Math.round(hours / 24), 'day')
 }
 
+// A date and time for reading, the same wherever a page states one.
+export function dateTimeLabel(value: string) {
+  return new Date(value).toLocaleString('en', {
+    year: 'numeric',
+    month: 'short',
+    day: 'numeric',
+    hour: 'numeric',
+    minute: '2-digit',
+  })
+}
+
 export function absoluteTime(value: string) {
   return new Date(value).toLocaleString('en', {
     month: 'short',

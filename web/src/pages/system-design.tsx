@@ -595,9 +595,7 @@ function DesignCanvas({
           <span className="text-xs font-medium text-faint" title="The group this document belongs to">
             {item.document.category}
           </span>
-          <h2 className="mt-1.5 text-[22px] font-semibold leading-[1.25] tracking-[-0.018em] text-balance">
-            {item.document.title}
-          </h2>
+          <h2 className="mt-1.5 text-[22px] font-semibold leading-[1.25] tracking-[-0.018em]">{item.document.title}</h2>
           {!item.current_version && <p className="mt-2 text-sm text-muted">No confirmed version</p>}
           {displayed ? (
             <div className="mt-3 flex flex-wrap items-center gap-1.5">

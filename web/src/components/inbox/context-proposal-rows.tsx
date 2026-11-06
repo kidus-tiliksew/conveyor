@@ -482,7 +482,7 @@ function ProposalTitle({
     <button
       type="button"
       data-context-title
-      className={cn('min-w-0 break-words text-left font-medium text-foreground hover:underline', className)}
+      className={cn('min-w-0 break-words text-left text-[13px] font-medium text-foreground hover:underline', className)}
       onClick={onPreview}
     >
       {title}
@@ -550,7 +550,7 @@ export function ContextProposalFooter({
   const keyed = shortcut === CONTEXT_APPLY_SHORTCUT && apply.reason === '' && !sends.busy
   return (
     <div data-context-footer className="min-w-0 space-y-1.5 text-[13px]">
-      <div className="flex min-w-0 flex-wrap items-center gap-2">
+      <div className="flex min-w-0 flex-wrap items-center gap-3">
         <span className="inline-flex items-center gap-1.5">
           <Button
             size="sm"

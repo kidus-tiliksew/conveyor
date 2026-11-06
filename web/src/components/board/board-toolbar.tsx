@@ -13,7 +13,7 @@ export function BoardToolbar({ children, pager }: { children?: ReactNode; pager?
   return (
     <div
       data-testid="board-toolbar"
-      className="flex min-h-13 shrink-0 flex-wrap items-center gap-x-3 gap-y-2 border-b border-border px-4 py-2 text-xs text-muted lg:px-6"
+      className="flex min-h-13 shrink-0 flex-wrap items-center gap-x-3 gap-y-1.5 border-b border-border px-4 py-1.5 lg:py-2 text-xs text-muted lg:px-6"
     >
       <div className="flex min-w-0 flex-[1_1_auto] flex-wrap items-center gap-2">{children}</div>
       <div className="ml-auto flex shrink-0 items-center gap-3">

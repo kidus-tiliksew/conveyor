@@ -200,6 +200,26 @@ export function TaskCreateSheet() {
           groups={contextGroups}
         />
 
+        {/* A task carries no hold or execution reservation (DEC-74(3)), and a
+            filed task waits in the queue for an agent session with no
+            availability warning (req-task-lifecycle-and-queue AC-9.4). */}
+
+        <div className="grid gap-4 md:grid-cols-2">
+          <Field label="Plan approval gate">
+            <Select value={specGate} onChange={(event) => setSpecGate(event.target.value as typeof specGate)}>
+              <option value="default">Workspace default</option>
+              <option value="on">Human approval on</option>
+              <option value="off">Auto-approve off</option>
+            </Select>
+          </Field>
+          <Field label="Merge approval gate">
+            <Select value={mergeGate} onChange={(event) => setMergeGate(event.target.value as typeof mergeGate)}>
+              <option value="default">Workspace default</option>
+              <option value="on">Human approval on</option>
+              <option value="off">Auto-merge on green</option>
+            </Select>
+          </Field>
+        </div>
         <details open={advancedOpen} onToggle={(event) => setAdvancedOpen(event.currentTarget.open)}>
           <summary className="cursor-pointer text-[13px] font-medium text-muted">Advanced options</summary>
           <div className="mt-3">
@@ -262,27 +282,6 @@ export function TaskCreateSheet() {
             </Field>
           </div>
         </details>
-
-        {/* A task carries no hold or execution reservation (DEC-74(3)), and a
-            filed task waits in the queue for an agent session with no
-            availability warning (req-task-lifecycle-and-queue AC-9.4). */}
-
-        <div className="grid gap-4 md:grid-cols-2">
-          <Field label="Plan approval gate">
-            <Select value={specGate} onChange={(event) => setSpecGate(event.target.value as typeof specGate)}>
-              <option value="default">Workspace default</option>
-              <option value="on">Human approval on</option>
-              <option value="off">Auto-approve off</option>
-            </Select>
-          </Field>
-          <Field label="Merge approval gate">
-            <Select value={mergeGate} onChange={(event) => setMergeGate(event.target.value as typeof mergeGate)}>
-              <option value="default">Workspace default</option>
-              <option value="on">Human approval on</option>
-              <option value="off">Auto-merge on green</option>
-            </Select>
-          </Field>
-        </div>
 
         <Field
           label="Attachments"

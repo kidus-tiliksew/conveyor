@@ -60,7 +60,7 @@ export function ImplementationEntry({
       {dotSlot(implementationDot(entry))}
       <article
         aria-label={entry.attempt ? `Implementation attempt ${entry.attempt}` : 'Implementation'}
-        className={cn('rounded-lg border border-border bg-card', warning && 'border-attention/40 bg-attention-soft')}
+        className={cn('border-b border-border pb-1', warning && 'border-attention/40 bg-attention-soft')}
         data-implementation-entry
       >
         <header className="flex flex-wrap items-center gap-x-2.5 gap-y-1 px-4 pt-3" data-job-header>

@@ -125,7 +125,7 @@ export function WorkspacePage() {
         )}
       </PageHeader>
       <div className="min-h-0 flex-1 overflow-y-auto">
-        <div className="max-w-4xl px-4 pb-24 pt-3 lg:px-6">
+        <div className="max-w-2xl px-4 pb-24 pt-3 lg:px-6">
           {!workspace && (
             <Card className="mt-6">
               <CardHeader>

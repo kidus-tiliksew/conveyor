@@ -12,7 +12,8 @@ const buttonVariants = cva(
         secondary: 'border border-border bg-card text-foreground shadow-xs hover:border-edge hover:bg-surface',
         outline: 'border border-edge bg-card text-foreground shadow-xs hover:bg-surface',
         ghost: 'text-muted hover:bg-raised/70 hover:text-foreground',
-        destructive: 'bg-failure-soft text-failure hover:bg-failure/15',
+        destructive:
+          'border border-border bg-card text-failure shadow-xs hover:border-failure/40 hover:bg-failure-soft',
       },
       size: {
         default: 'h-8 px-3.5',

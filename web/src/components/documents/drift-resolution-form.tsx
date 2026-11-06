@@ -108,7 +108,7 @@ export function DriftResolutionForm({
       <Button
         type="submit"
         size="sm"
-        variant={surface === 'monitor' ? 'secondary' : 'default'}
+        variant={surface === 'monitor' ? 'ghost' : 'default'}
         disabled={mutation.isPending || (needsRequirement && !requirementID)}
       >
         {mutation.isPending ? 'Resolving…' : 'Resolve'}

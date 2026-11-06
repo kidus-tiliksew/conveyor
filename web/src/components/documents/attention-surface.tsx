@@ -30,7 +30,7 @@ export type AttentionItem = {
 export function AttentionSurface({ items }: { items: AttentionItem[] }) {
   if (items.length === 0)
     return (
-      <section aria-label="Needs your attention" className="flex items-center gap-2 text-xs text-muted">
+      <section aria-label="Needs your attention" className="sr-only">
         <span className="flex size-4 shrink-0 items-center justify-center rounded-full bg-positive-soft text-positive">
           <Check className="size-3" />
         </span>

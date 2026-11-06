@@ -7,6 +7,7 @@ import { Badge } from '../components/ui/badge'
 import { Card, CardContent, CardHeader, CardTitle } from '../components/ui/card'
 import { fetchMonitorStatus, fetchRequirements } from '../lib/api'
 import { PageHeader } from '../components/ui/page-header'
+import { dateTimeLabel } from '../lib/utils'
 
 export function MonitorPage() {
   const { workspace } = useWorkspaceSelection()
@@ -33,7 +34,7 @@ export function MonitorPage() {
         description="Post-merge signals and out-of-pipeline drift entering the normal Conveyor intake."
       />
       <div className="min-h-0 flex-1 overflow-y-auto">
-        <div className="max-w-5xl px-4 py-5 lg:px-6">
+        <div className="max-w-6xl px-4 py-5 lg:px-6">
           {error && (
             <Card className="mb-4 border-failure/40">
               <CardContent className="text-sm text-failure">{String(error)}</CardContent>
@@ -69,9 +70,7 @@ export function MonitorPage() {
               <CardContent>
                 <p className="break-words font-mono text-xs leading-5 text-foreground/85">{status.current_error}</p>
                 {isSetTimestamp(status.backoff_until) && (
-                  <p className="mt-2 text-xs text-muted">
-                    Backoff until {new Date(status.backoff_until).toLocaleString()}
-                  </p>
+                  <p className="mt-2 text-xs text-muted">Backoff until {dateTimeLabel(status.backoff_until)}</p>
                 )}
               </CardContent>
             </Card>
@@ -93,13 +92,15 @@ export function MonitorPage() {
                     </div>
                     <p className="mt-1 flex min-w-0 items-center gap-2 text-xs text-muted">
                       <GitCommitHorizontal aria-hidden="true" className="size-3.5 shrink-0 text-faint" />
-                      <span className="min-w-0 truncate font-mono text-[11px]">{item.commit_sha || item.id}</span>
+                      <span className="min-w-0 truncate font-mono text-[11px]" title={item.commit_sha || item.id}>
+                        {item.commit_sha ? item.commit_sha.slice(0, 12) : item.id}
+                      </span>
                       <span className="shrink-0" title={new Date(item.detected_at).toLocaleString()}>
                         Detected {age(item.detected_at)} ago
                       </span>
                     </p>
                   </div>
-                  <div className="flex shrink-0 items-center gap-3">
+                  <div className="flex shrink-0 items-center gap-2 [&_select]:border-transparent [&_select]:bg-transparent [&_select]:shadow-none [&_select:hover]:border-edge [&_select:focus]:border-primary">
                     {canManageWorkspace && (
                       <DriftResolutionForm
                         drift={item}

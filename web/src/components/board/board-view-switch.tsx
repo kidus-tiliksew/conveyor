@@ -14,7 +14,7 @@ const views = [
 // Kanban or map, and no list view (AC-6.1; req-board-map AC-1.1). The view is written
 // to the address with replace, so a reload keeps it and switching does not
 // pile up history entries. Icon-only buttons keep their view names as
-// accessible names and tooltips; the selection takes the soft treatment so
+// accessible names and tooltips; the selection takes the segment treatment so
 // New task stays the header's only filled action.
 export function BoardViewSwitch({ view }: { view: BoardView }) {
   const navigate = useNavigate()
@@ -44,7 +44,7 @@ export function BoardViewSwitch({ view }: { view: BoardView }) {
           onClick={() => show(id)}
           className={cn(
             'h-7 w-8',
-            view === id && 'bg-primary-soft text-primary shadow-xs hover:bg-primary-soft hover:text-primary',
+            view === id && 'bg-segment text-foreground shadow-xs hover:bg-segment hover:text-foreground',
           )}
         >
           <Icon />

@@ -167,8 +167,8 @@ export function DocumentTreeGroup({
 }) {
   if (collapsible)
     return (
-      <details className="group mb-5 px-3 last:mb-0" open={defaultOpen || undefined}>
-        <summary className="flex cursor-pointer list-none items-center gap-1 px-2 pb-1.5 text-xs font-semibold text-muted">
+      <details className="group mb-5 px-3.5 last:mb-0" open={defaultOpen || undefined}>
+        <summary className="flex cursor-pointer list-none items-center gap-1 px-2.5 pb-1.5 text-xs font-semibold text-muted">
           <ChevronRight className="size-3 transition-transform group-open:rotate-90" />
           {label}
         </summary>
@@ -176,8 +176,8 @@ export function DocumentTreeGroup({
       </details>
     )
   return (
-    <section className="mb-5 px-3 last:mb-0">
-      <h2 className="px-2 pb-1.5 text-xs font-semibold text-muted">{label}</h2>
+    <section className="mb-5 px-3.5 last:mb-0">
+      <h2 className="px-2.5 pb-1.5 text-xs font-semibold text-muted">{label}</h2>
       <div className="space-y-0.5">{children}</div>
     </section>
   )
@@ -343,17 +343,13 @@ export function DocumentTreeItem({
         closeDrawer()
       }}
       className={`relative flex w-full items-center gap-2 rounded-md py-1.5 pl-2.5 pr-2 text-left transition-colors pointer-coarse:py-2.5 ${
-        selected ? 'bg-primary-soft text-primary' : 'text-foreground hover:bg-surface'
+        selected ? 'bg-raised/70 font-medium text-foreground' : 'text-foreground hover:bg-surface'
       }`}
     >
       {tooltip && <FileText aria-hidden="true" className="invisible size-4 shrink-0" />}
       <span className="min-w-0 flex-1">
         <span className="block line-clamp-2 text-[13px] leading-[1.35]">{label}</span>
-        {meta && (
-          <span className={`mt-px block truncate text-[11px] ${selected ? 'text-primary/70' : 'text-faint'}`}>
-            {meta}
-          </span>
-        )}
+        {meta && <span className={`mt-px block truncate text-[11px] ${'text-faint'}`}>{meta}</span>}
       </span>
       {Boolean(attentionCount) && (
         <Badge
@@ -380,8 +376,7 @@ export function DocumentTreeItem({
             {...props}
             className={cn(
               props.className,
-              'absolute left-3 top-1/2 -translate-y-1/2 justify-center pointer-coarse:left-0',
-              selected ? 'text-primary' : 'text-faint',
+              'absolute left-3 top-1/2 -translate-y-1/2 justify-center text-faint pointer-coarse:left-0',
             )}
           >
             <FileText aria-hidden="true" className="size-4 shrink-0" />

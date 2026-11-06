@@ -166,7 +166,9 @@ export function TaskIdentity({ item, variant }: { item: ActivityItem; variant: '
           blockingIDs.size > 0 && <Badge variant="mono">Waiting on dependencies</Badge>
         )}
         {item.task.class && <Badge>{sentenceCase(item.task.class)}</Badge>}
-        <span className="min-w-0 font-mono text-[11px] text-faint [overflow-wrap:anywhere]">{item.task.id}</span>
+        {variant === 'sheet' && (
+          <span className="min-w-0 font-mono text-[11px] text-faint [overflow-wrap:anywhere]">{item.task.id}</span>
+        )}
         {/* Controls sit apart from the status chips: a destructive action
             never belongs in the row the eye reads for state. */}
         {canOperate && <TaskActions key={item.task.id} item={item} variant={variant} />}
@@ -243,10 +245,17 @@ export function TaskFacts({
                 href={prURL}
                 target="_blank"
                 rel="noreferrer"
+                aria-label={forgeReference(prURL)}
+                title={forgeReference(prURL)}
                 className="inline-flex max-w-full items-center gap-1.5 hover:text-primary hover:underline"
               >
                 <GitPullRequest aria-hidden className="size-3 shrink-0 text-faint" />
-                <span className="truncate">{forgeReference(prURL)}</span>
+                {/* The narrow rail drops the owner; the name and tooltip keep it. */}
+                <span className="truncate">
+                  {columns === 'one' && variant === 'full'
+                    ? forgeReference(prURL).replace(/^[^/#]+\//, '')
+                    : forgeReference(prURL)}
+                </span>
                 <ExternalLink aria-hidden className="size-3 shrink-0 text-faint" />
               </a>
             }

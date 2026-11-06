@@ -46,7 +46,7 @@ export function PasswordCard() {
         <p className="mb-4 text-sm leading-6 text-muted">Use a password to sign in next time.</p>
         <form className="w-full space-y-3" aria-label="Update password" onSubmit={submit}>
           <div className="space-y-1">
-            <label htmlFor={`${ids}-current`} className="block text-xs font-medium">
+            <label htmlFor={`${ids}-current`} className="block text-xs font-medium text-muted">
               Current password
             </label>
             <Input
@@ -62,7 +62,7 @@ export function PasswordCard() {
             </p>
           </div>
           <div className="space-y-1">
-            <label htmlFor={`${ids}-new`} className="block text-xs font-medium">
+            <label htmlFor={`${ids}-new`} className="block text-xs font-medium text-muted">
               New password
             </label>
             <Input
@@ -75,7 +75,7 @@ export function PasswordCard() {
             />
           </div>
           <div className="space-y-1">
-            <label htmlFor={`${ids}-confirm`} className="block text-xs font-medium">
+            <label htmlFor={`${ids}-confirm`} className="block text-xs font-medium text-muted">
               Confirm new password
             </label>
             <Input

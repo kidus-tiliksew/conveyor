@@ -50,7 +50,7 @@ export function PlanningChat({
   const stickToBottom = useRef(true)
   const controller = useRef<AbortController | null>(null)
   const sidebar = variant === 'sidebar'
-  const gutter = sidebar ? 'px-4' : 'px-5'
+  const gutter = sidebar ? 'px-4' : 'px-6'
   const { data: session = summary } = useQuery({
     queryKey: ['planning-session', workspace, summary.id],
     queryFn: () => fetchPlanningSession(workspace, summary.id),

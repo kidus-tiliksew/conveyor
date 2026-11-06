@@ -34,7 +34,7 @@ export function BlueprintsPage() {
         }
       />
       <div className="min-h-0 flex-1 overflow-y-auto">
-        <div className="max-w-5xl px-4 py-5 lg:px-6">
+        <div className="max-w-6xl px-4 py-5 lg:px-6">
           {!workspace && <EmptyMessage>Choose a workspace to open its blueprints.</EmptyMessage>}
           {isLoading && workspace && <EmptyMessage>Loading blueprints…</EmptyMessage>}
           {error != null && (
@@ -92,9 +92,7 @@ function BlueprintListEntry({ view }: { view: BlueprintView }) {
               {view.planning_session.effort ? ` · ${view.planning_session.effort}` : ''}
             </Badge>
             {view.planning_session.exploration_output_tokens ? (
-              <Badge variant="mono">
-                {view.planning_session.exploration_output_tokens.toLocaleString()} tokens/call
-              </Badge>
+              <Badge>{view.planning_session.exploration_output_tokens.toLocaleString()} tokens/call</Badge>
             ) : null}
             {Object.entries(view.planning_session.pinned_revisions ?? {})
               .sort(([left], [right]) => left.localeCompare(right))
