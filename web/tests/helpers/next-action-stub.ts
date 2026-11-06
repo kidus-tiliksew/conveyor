@@ -71,7 +71,7 @@ const catalogue: Record<string, { label: string; summary: string; question?: str
   check_hold: {
     label: 'Checks hold the merge',
     summary: 'A failed check holds the merge of the approved head.',
-    question: 'Rerun the check on GitHub, merge anyway, request changes, or close?',
+    question: 'Rerun the failed check on GitHub, merge the approved head anyway, request changes, or close?',
     choices: [
       ['merge', 'Merge', 'POST', '/v1/tasks/{id}/merge'],
       ['request_changes', 'Request changes…', 'POST', '/v1/tasks/{id}/request-changes'],
