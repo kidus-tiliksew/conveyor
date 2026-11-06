@@ -411,6 +411,9 @@ func (s *Server) redispatchTask(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, core.TaskRedispatchActiveRefusal, http.StatusConflict)
 		return
 	}
+	if s.refuseRedispatchAtPlanRevisionGate(w, r, id) {
+		return
+	}
 	if t.State == core.TaskQueued {
 		if err := s.Store.EnsureTaskEnqueued(r.Context(), id); err != nil {
 			if errors.Is(err, store.ErrNotFound) {
@@ -460,6 +463,28 @@ func (s *Server) redispatchTask(w http.ResponseWriter, r *http.Request) {
 		s.OnCreate(r.Context(), id)
 	}
 	writeJSON(w, http.StatusAccepted, t)
+}
+
+// refuseRedispatchAtPlanRevisionGate answers the redispatch route before any
+// write when the task waits on a plan-revision decision, and reports whether
+// it answered. A gate that cannot be read refuses the same way, with a fixed
+// text: its cause, which names the failed decode, goes only to the log. A
+// store failure is not an unreadable gate, so it answers the generic 500
+// (component-work-orders invariant 39 and State and failure; DEC-105(1)).
+func (s *Server) refuseRedispatchAtPlanRevisionGate(w http.ResponseWriter, r *http.Request, id string) bool {
+	_, pending, err := dispatch.PendingPlanRevisionGate(r.Context(), s.Store, id)
+	switch {
+	case errors.Is(err, store.ErrPlanRevisionGateUnreadable):
+		log.Printf("httpapi: redispatch refused at unreadable plan-revision gate: request_id=%q method=%s path=%q error=%q", middleware.GetReqID(r.Context()), r.Method, r.URL.Path, redactedErrorLogText(err))
+		http.Error(w, core.TaskRedispatchPlanRevisionUnreadableRefusal, http.StatusConflict)
+	case err != nil:
+		writeClassifiedStoreError(w, r, err, refuseSentinel(store.ErrNotFound, http.StatusNotFound, "task not found"))
+	case pending:
+		http.Error(w, core.TaskRedispatchPlanRevisionRefusal, http.StatusConflict)
+	default:
+		return false
+	}
+	return true
 }
 
 // retiredTaskHold answers the retired per-task hold route. A task carries no

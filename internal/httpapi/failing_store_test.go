@@ -101,5 +101,12 @@ func (s *failingStore) ListFactoryActs(ctx context.Context, since time.Time, lim
 	return s.Store.ListFactoryActs(ctx, since, limit)
 }
 
+func (s *failingStore) ListCompactEvents(ctx context.Context, taskID string) ([]core.Event, error) {
+	if err := s.failure("ListCompactEvents"); err != nil {
+		return nil, err
+	}
+	return s.Store.ListCompactEvents(ctx, taskID)
+}
+
 // compile-time check that a test can drop the fixture in for a store.
 var _ store.Store = (*failingStore)(nil)

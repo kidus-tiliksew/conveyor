@@ -76,6 +76,13 @@ type Fixture struct {
 	// dependency-removal case and the inbox attention count case require it
 	// and never skip.
 	LineageHTTP func(t *testing.T) http.Handler
+	// RedispatchHTTP returns the LineageHTTP handler with onDispatch as its
+	// OnCreate and a real dispatcher as its OnIntervention. The redispatch
+	// gate case reads the route's dispatch request through onDispatch and
+	// records a plan-revision decision through POST /v1/tasks/{id}/review,
+	// which moves no task without a dispatcher. It requires this field and
+	// never skips (component-work-orders invariant 39).
+	RedispatchHTTP func(t *testing.T, onDispatch func(context.Context, string)) http.Handler
 	// TaskIntakeHTTP returns the real httpapi handler over Backend, bound to
 	// Workspace and accepting LineageHTTPToken, with generate as its title
 	// generator. GitHubIssueIntake takes one ready issue in through the real
@@ -211,6 +218,7 @@ func RunAll(t *testing.T, factory Factory) {
 	run("ChangeNotices", func(t *testing.T) { RunChangeNoticeConformance(t, factory.fresh(t, nil)) })
 	run("ClaimFailureStall", func(t *testing.T) { runClaimFailureStall(t, factory.fresh(t, nil), factory.ClaimService) })
 	run("RedispatchOfferParity", func(t *testing.T) { runRedispatchOfferParity(t, factory.fresh(t, nil)) })
+	run("RedispatchPlanRevisionGate", func(t *testing.T) { runRedispatchPlanRevisionGate(t, factory.fresh(t, nil), factory.PlanRevisionGate) })
 	run("InboxAttentionCount", func(t *testing.T) { runInboxAttentionCount(t, factory.fresh(t, nil)) })
 	run("HoldRetirement", func(t *testing.T) { runHoldRetirement(t, factory.fresh(t, nil), factory.ClaimService) })
 	run("ReviewDistinctModelsNoClaimStall", func(t *testing.T) {

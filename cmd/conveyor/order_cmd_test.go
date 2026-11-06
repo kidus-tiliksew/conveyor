@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"io"
@@ -15,6 +16,13 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
+
+	"github.com/kidus-tiliksew/conveyor/internal/core"
+	"github.com/kidus-tiliksew/conveyor/internal/httpapi"
+	"github.com/kidus-tiliksew/conveyor/internal/store"
+	"github.com/kidus-tiliksew/conveyor/internal/store/storetest"
+	"github.com/kidus-tiliksew/conveyor/internal/taskops"
 )
 
 // Tests for conveyor order recover|redispatch (req-operator-next-action AC-5.5).
@@ -318,6 +326,91 @@ func TestOrderCommands409Passthrough(t *testing.T) {
 	stderr, code := runConveyorMain(t, c.base, "order", "recover", "o-1")
 	if code != 1 || !strings.Contains(stderr, "409 Conflict: "+refusal) {
 		t.Fatalf("exit=%d stderr=%q", code, stderr)
+	}
+}
+
+// TestOrderRedispatchReportsPlanRevisionGateRefusal runs the real CLI entry
+// point against the real route over a task at the gate: the command reports the
+// route's refusal, exits non-zero, and claims no redispatch
+// (component-work-orders invariants 39 and 44).
+func TestOrderRedispatchReportsPlanRevisionGateRefusal(t *testing.T) {
+	const eventCanary = "fake-redispatch-event-canary"
+	ctx := store.WithWorkspace(store.WithActor(t.Context(), store.SystemActor()), "demo")
+	st := store.NewMemory()
+	pendingGate := func() (taskID, orderID string) {
+		t.Helper()
+		taskID = "plan-revision-cli-" + core.NewTaskID()
+		orderID = taskID + "-implement-1"
+		now := time.Now().UTC()
+		if err := st.CreateTask(ctx, core.Task{ID: taskID, Workspace: "demo", Repo: "conveyor", State: core.TaskRunning, NextStage: core.StageImplement, CreatedAt: now}); err != nil {
+			t.Fatal(err)
+		}
+		plan, err := st.CreateSpecVersion(ctx, core.SpecVersion{TaskID: taskID, Content: "approved v1"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err = st.ApproveSpecVersion(ctx, taskID, plan.Version); err != nil {
+			t.Fatal(err)
+		}
+		job := core.Job{ID: orderID, TaskID: taskID, Stage: core.StageImplement, State: core.JobPending}
+		order := core.WorkOrder{ID: orderID, TaskID: taskID, JobID: orderID, Stage: core.StageImplement, State: core.WorkOrderQueued, Claimable: true, QueueEnteredAt: now, QueueDeadline: now.Add(time.Hour)}
+		if _, err = storetest.For(st).CreateStageWorkOrder(ctx, job, order); err != nil {
+			t.Fatal(err)
+		}
+		claimed, err := storetest.For(st).ClaimWorkOrder(ctx, orderID, core.WorkOrderClaim{SessionID: "session", ClientToken: "fake-client-token", Agent: "codex", Model: "model", Lease: time.Minute, ExecutionTimeout: time.Hour})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err = taskops.ExecuteWorkOrder(ctx, st, taskID, core.WorkOrderCmdRequestPlanRevision, func(lease taskops.TaskLease) (store.PlanRevisionRequestResult, error) {
+			return st.RequestPlanRevisionCommand(ctx, lease, orderID, core.WorkOrderClaimIdentity{ClaimantID: claimed.ClaimantID, SessionID: claimed.SessionID}, "the API changed")
+		}); err != nil {
+			t.Fatal(err)
+		}
+		return taskID, orderID
+	}
+	server := httpapi.NewServer(st)
+	server.Workspace, server.BearerToken = "demo", taskWaitTestToken
+	dispatched := 0
+	server.OnCreate = func(context.Context, string) { dispatched++ }
+	httpServer := httptest.NewServer(server.Handler())
+	t.Cleanup(httpServer.Close)
+
+	for _, test := range []struct {
+		name    string
+		refusal string
+		corrupt bool
+	}{
+		{name: "pending", refusal: core.TaskRedispatchPlanRevisionRefusal},
+		{name: "unreadable", refusal: core.TaskRedispatchPlanRevisionUnreadableRefusal, corrupt: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			taskID, orderID := pendingGate()
+			if test.corrupt {
+				if err := st.AppendEvent(ctx, core.Event{TaskID: taskID, Kind: "task.state_changed", At: time.Now().UTC().Add(time.Second), Payload: json.RawMessage(`{"command":7,"detail":"` + eventCanary + `"}`)}); err != nil {
+					t.Fatal(err)
+				}
+			}
+			want := "409 Conflict: " + test.refusal
+			stderr, code := runConveyorMain(t, httpServer.URL, "order", "redispatch", orderID)
+			if code != 1 || !strings.Contains(stderr, want) || strings.Contains(stderr, eventCanary) {
+				t.Fatalf("exit=%d stderr=%q, want exit 1 with %q", code, stderr, want)
+			}
+			var out bytes.Buffer
+			err := runOrderRedispatch(&client{base: httpServer.URL, token: taskWaitTestToken, workspace: "demo"}, &out, orderID, "", false)
+			if err == nil || err.Error() != want {
+				t.Fatalf("err = %v, want %q", err, want)
+			}
+			if out.Len() != 0 {
+				t.Fatalf("refused command printed %q", out.String())
+			}
+			task, err := st.GetTask(ctx, taskID)
+			if err != nil || task.State != core.TaskAwaiting || task.GateKind != core.GateKindPlanRevision {
+				t.Fatalf("task after refusal = %+v err=%v", task, err)
+			}
+			if dispatched != 0 {
+				t.Fatalf("refused redispatch dispatched %d tasks", dispatched)
+			}
+		})
 	}
 }
 

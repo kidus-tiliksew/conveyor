@@ -1,7 +1,11 @@
 package storetest
 
 import (
+	"context"
+	"encoding/json"
 	"errors"
+	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
@@ -129,4 +133,216 @@ func runRedispatchOfferParity(t *testing.T, x Fixture) {
 	_, err = ops.TickOrderClock(ctx, time.Now().UTC())
 	requireOK(t, err)
 	requireParity(claimed, "")
+}
+
+// redispatchGateEventCanary sits in each corrupt gate event, so a response that
+// echoes the event is caught by value.
+const redispatchGateEventCanary = "fake-redispatch-event-canary"
+
+// redispatchGateLedger is everything the redispatch route could write for one
+// task, as JSON so two reads compare by value.
+func redispatchGateLedger(t *testing.T, x Fixture, taskID string) string {
+	t.Helper()
+	st, ctx := x.Backend, x.Context
+	task, err := st.GetTask(ctx, taskID)
+	requireOK(t, err)
+	events, err := st.ListEvents(ctx, taskID)
+	requireOK(t, err)
+	jobs, err := st.ListJobs(ctx, taskID)
+	requireOK(t, err)
+	orders, err := st.ListWorkOrdersForTasks(ctx, []string{taskID})
+	requireOK(t, err)
+	interventions, err := st.ListInterventions(ctx, taskID)
+	requireOK(t, err)
+	raw, err := json.Marshal(map[string]any{"task": task, "events": events, "jobs": jobs, "orders": orders, "interventions": interventions})
+	requireOK(t, err)
+	return string(raw)
+}
+
+func redispatchGatePost(handler http.Handler, workspace, path, body string) *httptest.ResponseRecorder {
+	request := httptest.NewRequest(http.MethodPost, path, strings.NewReader(body))
+	request.Header.Set("Authorization", "Bearer "+LineageHTTPToken)
+	request.Header.Set("X-Workspace-ID", workspace)
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+	return response
+}
+
+// requireNoRedispatchOffer proves the statement names neither the redispatch
+// choice nor any choice on the redispatch route.
+func requireNoRedispatchOffer(t *testing.T, action nextaction.NextAction) {
+	t.Helper()
+	for _, choice := range action.Choices {
+		if choice.ID == "redispatch" || strings.HasSuffix(choice.Path, "/redispatch") {
+			t.Fatalf("statement %s offers %+v at a pending plan-revision gate", action.Kind, choice)
+		}
+	}
+}
+
+// runRedispatchPlanRevisionGate proves through the real handler, on every
+// backend, that POST /v1/tasks/{id}/redispatch refuses at a pending or
+// unreadable plan-revision decision before any write, requests no dispatch,
+// and accepts the same task once the decision is recorded. The statement offers
+// no redispatch at those gates (component-work-orders invariant 39 and State
+// and failure; req-operator-next-action AC-1.4; component-next-action
+// invariant 7).
+func runRedispatchPlanRevisionGate(t *testing.T, x Fixture, gate PlanRevisionGateFunc) {
+	if x.RedispatchHTTP == nil {
+		t.Fatal("conformance fixture must provide RedispatchHTTP for the plan-revision gate refusal")
+	}
+	if gate == nil {
+		t.Fatal("factory must wire dispatch.PendingPlanRevisionGate")
+	}
+	st, ctx := x.Backend, x.Context
+	var dispatched []string
+	handler := x.RedispatchHTTP(t, func(_ context.Context, id string) { dispatched = append(dispatched, id) })
+	redispatch := func(taskID string) *httptest.ResponseRecorder {
+		return redispatchGatePost(handler, x.Workspace, "/v1/tasks/"+taskID+"/redispatch", `{}`)
+	}
+	// pendingGate parks one claimed order's task at the gate through the real
+	// request command.
+	pendingGate := func(t *testing.T) string {
+		t.Helper()
+		fixture := newPlanRevisionFixture(t, st, ctx, core.StageImplement, true, true)
+		_, err := requestPlanRevision(ctx, st, fixture.order.TaskID, fixture.order.ID, fixture.workerID, fixture.sessionID, "the API moved")
+		requireOK(t, err)
+		return fixture.order.TaskID
+	}
+	// requireRefused proves one refusal: its exact text, an unchanged ledger, and
+	// no dispatch. The exact text is why no event or decode text can be present.
+	requireRefused := func(t *testing.T, taskID, text string) {
+		t.Helper()
+		before := redispatchGateLedger(t, x, taskID)
+		dispatchedBefore := len(dispatched)
+		response := redispatch(taskID)
+		if response.Code != http.StatusConflict || strings.TrimSpace(response.Body.String()) != text {
+			t.Fatalf("redispatch status=%d body=%q, want 409 %q", response.Code, response.Body.String(), text)
+		}
+		if strings.Contains(response.Body.String(), redispatchGateEventCanary) {
+			t.Fatalf("refusal echoes event text: %q", response.Body.String())
+		}
+		if after := redispatchGateLedger(t, x, taskID); after != before {
+			t.Fatalf("refused redispatch wrote:\nbefore %s\nafter  %s", before, after)
+		}
+		if len(dispatched) != dispatchedBefore {
+			t.Fatalf("refused redispatch requested dispatch: %v", dispatched[dispatchedBefore:])
+		}
+	}
+
+	t.Run("pending gate refuses until the decision is recorded", func(t *testing.T) {
+		taskID := pendingGate(t)
+		action := claimFailureNextAction(t, handler, x.Workspace, taskID)
+		if action.Kind != nextaction.KindPlanRevision {
+			t.Fatalf("statement kind = %s, want %s", action.Kind, nextaction.KindPlanRevision)
+		}
+		requireNoRedispatchOffer(t, action)
+		if pending, err := gate(ctx, st, taskID); !pending || err != nil {
+			t.Fatalf("gate pending=%t err=%v, want pending", pending, err)
+		}
+		requireRefused(t, taskID, core.TaskRedispatchPlanRevisionRefusal)
+		task, err := st.GetTask(ctx, taskID)
+		requireOK(t, err)
+		if task.State != core.TaskAwaiting || task.GateKind != core.GateKindPlanRevision {
+			t.Fatalf("refused task state=%s gate_kind=%s", task.State, task.GateKind)
+		}
+
+		// The control: the same task, with its decision recorded through the
+		// real review route, is accepted and dispatched exactly once.
+		decision := redispatchGatePost(handler, x.Workspace, "/v1/tasks/"+taskID+"/review", `{"action":"redirect","reason_code":"plan-revision-approved"}`)
+		if decision.Code != http.StatusAccepted {
+			t.Fatalf("decision status=%d body=%s", decision.Code, decision.Body.String())
+		}
+		task, err = st.GetTask(ctx, taskID)
+		requireOK(t, err)
+		if task.State != core.TaskQueued || task.NextStage != core.StageSpec || task.GateKind != "" {
+			t.Fatalf("decided task state=%s next=%s gate_kind=%s", task.State, task.NextStage, task.GateKind)
+		}
+		dispatchedBefore := len(dispatched)
+		response := redispatch(taskID)
+		if response.Code != http.StatusAccepted {
+			t.Fatalf("redispatch after the decision status=%d body=%s", response.Code, response.Body.String())
+		}
+		if got := dispatched[dispatchedBefore:]; len(got) != 1 || got[0] != taskID {
+			t.Fatalf("redispatch after the decision dispatched %v, want %s once", got, taskID)
+		}
+	})
+
+	t.Run("declined decision leaves the held answer", func(t *testing.T) {
+		taskID := pendingGate(t)
+		decision := redispatchGatePost(handler, x.Workspace, "/v1/tasks/"+taskID+"/review", `{"action":"redirect","reason_code":"plan-revision-declined","comment":"keep the approved plan"}`)
+		if decision.Code != http.StatusAccepted {
+			t.Fatalf("decision status=%d body=%s", decision.Code, decision.Body.String())
+		}
+		dispatchedBefore := len(dispatched)
+		response := redispatch(taskID)
+		if response.Code != http.StatusConflict || !strings.Contains(response.Body.String(), core.TaskHeldByWorkOrderRefusal) {
+			t.Fatalf("redispatch after a decline status=%d body=%q, want 409 held", response.Code, response.Body.String())
+		}
+		if len(dispatched) != dispatchedBefore {
+			t.Fatalf("held redispatch requested dispatch: %v", dispatched[dispatchedBefore:])
+		}
+	})
+
+	t.Run("task at no plan-revision gate stays accepted", func(t *testing.T) {
+		now := time.Now().UTC()
+		taskID := core.NewTaskID()
+		requireOK(t, st.CreateTask(ctx, core.Task{ID: taskID, Workspace: x.Workspace, Repo: "app", Branch: "conveyor/task-" + taskID, State: core.TaskAwaiting, NextStage: core.StageImplement, CreatedAt: now}))
+		dispatchedBefore := len(dispatched)
+		if response := redispatch(taskID); response.Code != http.StatusAccepted {
+			t.Fatalf("redispatch status=%d body=%s", response.Code, response.Body.String())
+		}
+		if got := dispatched[dispatchedBefore:]; len(got) != 1 || got[0] != taskID {
+			t.Fatalf("accepted redispatch dispatched %v, want %s once", got, taskID)
+		}
+	})
+
+	// requireUnreadable proves the seeded gate is the unreadable kind before it
+	// proves the refusal, so a fixture that stopped corrupting the gate fails.
+	requireUnreadable := func(t *testing.T, taskID string, wantGate core.GateKind) {
+		t.Helper()
+		if pending, err := gate(ctx, st, taskID); !pending || !errors.Is(err, store.ErrPlanRevisionGateUnreadable) {
+			t.Fatalf("gate pending=%t err=%v, want pending and ErrPlanRevisionGateUnreadable", pending, err)
+		}
+		requireNoRedispatchOffer(t, claimFailureNextAction(t, handler, x.Workspace, taskID))
+		requireRefused(t, taskID, core.TaskRedispatchPlanRevisionUnreadableRefusal)
+		task, err := st.GetTask(ctx, taskID)
+		requireOK(t, err)
+		if task.State != core.TaskAwaiting || task.GateKind != wantGate {
+			t.Fatalf("refused task state=%s gate_kind=%s", task.State, task.GateKind)
+		}
+	}
+
+	t.Run("unreadable gate/undecodable transition", func(t *testing.T) {
+		taskID := pendingGate(t)
+		requireOK(t, st.AppendEvent(ctx, core.Event{
+			TaskID: taskID, Kind: "task.state_changed", At: time.Now().UTC().Add(time.Second),
+			Payload: json.RawMessage(`{"command":7,"detail":"` + redispatchGateEventCanary + `"}`),
+		}))
+		requireUnreadable(t, taskID, core.GateKindPlanRevision)
+	})
+
+	t.Run("unreadable gate/undecodable request", func(t *testing.T) {
+		taskID := pendingGate(t)
+		at := time.Now().UTC().Add(time.Second)
+		requireOK(t, st.AppendEvent(ctx, core.Event{
+			TaskID: taskID, Kind: "work_order.plan_revision_requested", At: at,
+			Payload: json.RawMessage(`{"work_order_id":1,"rationale":"` + redispatchGateEventCanary + `"}`),
+		}))
+		requireOK(t, st.AppendEvent(ctx, core.Event{
+			TaskID: taskID, Kind: "task.state_changed", At: at.Add(time.Millisecond),
+			Payload: core.JSONPayload(map[string]any{"command": core.TaskGatePlanRevision, "from": core.TaskRunning, "to": core.TaskAwaiting}),
+		}))
+		requireUnreadable(t, taskID, core.GateKindPlanRevision)
+	})
+
+	t.Run("unreadable gate/missing request", func(t *testing.T) {
+		now := time.Now().UTC()
+		taskID := core.NewTaskID()
+		requireOK(t, st.CreateTask(ctx, core.Task{ID: taskID, Workspace: x.Workspace, Repo: "app", Branch: "conveyor/task-" + taskID, State: core.TaskAwaiting, NextStage: core.StageImplement, CreatedAt: now}))
+		requireOK(t, st.AppendEvent(ctx, core.Event{
+			TaskID: taskID, Kind: "task.state_changed", At: now,
+			Payload: core.JSONPayload(map[string]any{"command": core.TaskGatePlanRevision, "from": core.TaskRunning, "to": core.TaskAwaiting}),
+		}))
+		requireUnreadable(t, taskID, "")
+	})
 }
