@@ -13,5 +13,5 @@ Each ran with `--repeat-each=3 --retries=0` through `make test-playwright-shard`
 | --- | --- |
 | inbox-prefix.log | 3 failed: getByLabel('Direction'), element(s) not found |
 | inbox-postfix.log | 3 passed |
-| github-prefix.log | 3 failed: expected value must be a string or regular expression, received undefined |
+| github-prefix.log | 3 failed: `toHaveValue` reports `expected value must be a string or regular expression` and `Expected has value: undefined` |
 | github-postfix.log | 3 passed |

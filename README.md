@@ -1,6 +1,6 @@
 # Local evidence for Conveyor task 261106-2b47db
 
-Everything here ran at task head `ba561ade162d8a8b62769b1362fe7d6721270cbd`, whose first line of each log records it.
+The repeat runs and `make fmt-check` ran at task head `ba561ade162d8a8b62769b1362fe7d6721270cbd`, with a clean tree. Each of those logs records the head and tree status in its `#` header lines. The delayed-mock logs ran from the same checkout against throwaway spec copies; their README says where each copy came from.
 
 | File | What it is | Result |
 | --- | --- | --- |
