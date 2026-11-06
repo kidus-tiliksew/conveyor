@@ -318,10 +318,10 @@ func runRecoveryReasonCount(t *testing.T, x Fixture) {
 	}
 }
 
-type monitorCountSource func(context.Context, time.Time) ([]monitor.Observation, error)
+type monitorCountSource func(context.Context, monitor.ReadFrom) (monitor.Read, error)
 
-func (f monitorCountSource) Observations(ctx context.Context, since time.Time) ([]monitor.Observation, error) {
-	return f(ctx, since)
+func (f monitorCountSource) Observations(ctx context.Context, from monitor.ReadFrom) (monitor.Read, error) {
+	return f(ctx, from)
 }
 
 func monitorCountService(x Fixture) *monitor.Service {
@@ -346,15 +346,10 @@ func activityPayload(t *testing.T, activity monitor.Activity) []byte {
 func runMonitorRetryCount(t *testing.T, x Fixture) {
 	ctx := x.Context
 	service := monitorCountService(x)
-	failures := 0
-	poller := monitor.Poller{Service: service, StartupWindow: time.Hour, Attempts: 2, RetryInitial: time.Millisecond, RetryMaximum: time.Millisecond,
+	poller := monitor.Poller{Service: service, Repository: "conveyor", StartupWindow: time.Hour, Attempts: 2, RetryInitial: time.Millisecond, RetryMaximum: time.Millisecond,
 		Sleep: func(context.Context, time.Duration) error { return nil },
-		Source: monitorCountSource(func(context.Context, time.Time) ([]monitor.Observation, error) {
-			failures++
-			if failures > 2 {
-				return nil, nil
-			}
-			return nil, errors.New("read failed with " + countFixtureSecret)
+		Source: monitorCountSource(func(context.Context, monitor.ReadFrom) (monitor.Read, error) {
+			return monitor.Read{}, errors.New("read failed with " + countFixtureSecret)
 		}),
 	}
 	err := poller.Poll(ctx)
@@ -385,9 +380,8 @@ func runMonitorRetryCount(t *testing.T, x Fixture) {
 	}
 	// Control: a failed read that removes nothing records no count.
 	poller.Attempts = 1
-	failures = 0
-	poller.Source = monitorCountSource(func(context.Context, time.Time) ([]monitor.Observation, error) {
-		return nil, errors.New("read failed plainly")
+	poller.Source = monitorCountSource(func(context.Context, monitor.ReadFrom) (monitor.Read, error) {
+		return monitor.Read{}, errors.New("read failed plainly")
 	})
 	if err := poller.Poll(ctx); err == nil {
 		t.Fatal("the failed poll returned no error")
@@ -411,13 +405,13 @@ func runMonitorPassFailureAppendsNothing(t *testing.T, x Fixture) {
 		return len(status.Activity)
 	}
 	before := activity()
-	requireOK(t, x.Backend.RecordMonitorFailure(ctx, "", "pass failed", time.Now().UTC().Add(time.Minute)))
+	requireOK(t, x.Backend.RecordMonitorFailure(ctx, "conveyor", "", "pass failed", time.Now().UTC().Add(time.Minute)))
 	if activity() != before {
 		t.Fatal("RecordMonitorFailure appended activity")
 	}
 	service := monitorCountService(x)
-	poller := monitor.Poller{Service: service, StartupWindow: time.Hour, Source: monitorCountSource(func(context.Context, time.Time) ([]monitor.Observation, error) {
-		return []monitor.Observation{{Repository: "conveyor", Kind: monitor.DirectPush, OccurrenceID: "counted-pass", CommitSHA: "counted-pass", SourceURL: "https://example.test/commit/counted-pass"}}, nil
+	poller := monitor.Poller{Service: service, Repository: "conveyor", StartupWindow: time.Hour, Source: monitorCountSource(func(context.Context, monitor.ReadFrom) (monitor.Read, error) {
+		return monitor.Read{Observations: []monitor.Observation{{Repository: "conveyor", Kind: monitor.DirectPush, OccurrenceID: "counted-pass", CommitSHA: "counted-pass", SourceURL: "https://example.test/commit/counted-pass"}}}, nil
 	})}
 	err := poller.Poll(ctx)
 	if err == nil || strings.Contains(err.Error(), countFixtureSecret) {
@@ -425,8 +419,8 @@ func runMonitorPassFailureAppendsNothing(t *testing.T, x Fixture) {
 	}
 	status, err := x.Backend.MonitorStatus(ctx, true, time.Now().UTC())
 	requireOK(t, err)
-	if status.CurrentError == "" || strings.Contains(status.CurrentError, countFixtureSecret) {
-		t.Fatal("the status error is empty or holds the secret")
+	if !strings.Contains(status.CurrentError, "[REDACTED:pattern]") || strings.Contains(status.CurrentError, countFixtureSecret) {
+		t.Fatal("the status error is not this pass's redacted text")
 	}
 	// Only what this pass appended: earlier failed reads in the workspace counted.
 	for _, entry := range status.Activity[before:] {

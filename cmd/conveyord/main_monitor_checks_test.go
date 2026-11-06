@@ -60,7 +60,7 @@ func TestChecksCompletedPollsOnlyForAMonitoredBase(t *testing.T) {
 					polls.Add(1)
 					return func(_ context.Context, args ...string) ([]byte, error) {
 						request.Store(strings.Join(args, " "))
-						return []byte(`[]`), nil
+						return quietMonitorRead(args...), nil
 					}, nil
 				},
 			}
@@ -177,8 +177,9 @@ func newPostMergeFixture(t *testing.T) *postMergeFixture {
 	f := &postMergeFixture{t: t, ctx: ctx, st: st}
 	f.checks.Store(`{"check_runs":[{"id":7,"name":"ci","conclusion":""}]}`)
 	pull := fmt.Sprintf(`{"number":41,"html_url":"https://github.com/acme/app/pull/41","merged_at":%q,"merged_by":{"login":"operator"},"merge_commit_sha":"landed","head":{"ref":"conveyor/task-merged","sha":"merged-head"}}`, time.Now().UTC().Format(time.RFC3339))
-	commits := fmt.Sprintf(`[{"sha":"landed","html_url":"https://github.com/acme/app/commit/landed","parents":[{"sha":"before"},{"sha":"merged-head"}],"commit":{"message":"Merge pull request #41","committer":{"date":%q}}},{"sha":"merged-head","html_url":"https://github.com/acme/app/commit/merged-head","parents":[{"sha":"before"}],"commit":{"message":"work","committer":{"date":%q}}}]`,
-		time.Now().UTC().Format(time.RFC3339), time.Now().UTC().Format(time.RFC3339))
+	landedCommit := fmt.Sprintf(`{"sha":"landed","html_url":"https://github.com/acme/app/commit/landed","parents":[{"sha":"before"},{"sha":"merged-head"}],"commit":{"message":"Merge pull request #41","committer":{"date":%q}}}`, time.Now().UTC().Format(time.RFC3339))
+	branchCommit := fmt.Sprintf(`{"sha":"merged-head","html_url":"https://github.com/acme/app/commit/merged-head","parents":[{"sha":"before"}],"commit":{"message":"work","committer":{"date":%q}}}`, time.Now().UTC().Format(time.RFC3339))
+	commits := "[" + landedCommit + "," + branchCommit + "]"
 	run := func(_ context.Context, args ...string) ([]byte, error) {
 		request := strings.Join(args, " ")
 		f.reads.Add(1)
@@ -187,6 +188,12 @@ func newPostMergeFixture(t *testing.T) *postMergeFixture {
 			return nil, githubtrigger.StatusError(http.StatusBadGateway, errors.New("bad gateway"))
 		}
 		switch {
+		case strings.HasSuffix(args[3], "/commits/main"):
+			return []byte(`{"sha":"landed"}`), nil
+		case strings.Contains(request, "/compare/before...main"):
+			// The tip stays behind the lineaged merge, and a comparison answers
+			// oldest first.
+			return []byte(fmt.Sprintf(`{"status":"ahead","total_commits":2,"commits":[%s,%s]}`, branchCommit, landedCommit)), nil
 		case strings.Contains(request, "/commits -f"):
 			return []byte(commits), nil
 		case strings.Contains(request, "/commits/merged-head/check-runs"):
@@ -319,5 +326,19 @@ func TestTaskBranchCheckDeliveryReadsNoMonitor(t *testing.T) {
 	f.deliver("branch-check", "check_run", `{"action":"completed","check_run":{"id":8,"head_sha":"elsewhere","check_suite":{"head_branch":"conveyor/task-other"},"pull_requests":[{"head":{"ref":"conveyor/task-other"}}]},"repository":{"full_name":"acme/app"}}`)
 	if f.reads.Load() != 0 {
 		t.Fatalf("forge reads=%d", f.reads.Load())
+	}
+}
+
+// quietMonitorRead answers a monitor read of a repository with no commit in its
+// window: a branch head for the read that precedes a window listing, an
+// unchanged comparison from the tip that pass stores, and an empty listing.
+func quietMonitorRead(args ...string) []byte {
+	switch {
+	case len(args) > 3 && strings.Contains(args[3], "/commits/"):
+		return []byte(`{"sha":"quiet-head"}`)
+	case len(args) > 3 && strings.Contains(args[3], "/compare/"):
+		return []byte(`{"status":"identical","total_commits":0,"commits":[]}`)
+	default:
+		return []byte(`[]`)
 	}
 }

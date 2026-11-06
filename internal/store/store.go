@@ -637,6 +637,8 @@ func NewMemoryWithConfig(cfg *config.Config) Store {
 		monitorObservations:         map[string]monitor.ObservationRecord{},
 		monitorDrift:                map[string]monitor.Drift{},
 		monitorActivity:             map[string][]monitor.Activity{},
+		monitorRepositories:         map[string]monitor.RepositoryStatus{},
+		monitorTips:                 map[string]string{},
 		requirementInsightHeadlines: map[memoryScopedKey]RequirementInsightHeadline{},
 	}
 }
@@ -709,10 +711,8 @@ type memory struct {
 	dependencyRemovals          map[string]memoryDependencyRemoval
 	monitorObservations         map[string]monitor.ObservationRecord
 	monitorDrift                map[string]monitor.Drift
-	monitorLastSuccess          map[string]time.Time
-	monitorError                map[string]string
-	monitorErrorCategory        map[string]string
-	monitorBackoff              map[string]time.Time
+	monitorRepositories         map[string]monitor.RepositoryStatus
+	monitorTips                 map[string]string
 	monitorActivity             map[string][]monitor.Activity
 	requirementInsightHeadlines map[memoryScopedKey]RequirementInsightHeadline
 	nextMonitorActivityID       int64

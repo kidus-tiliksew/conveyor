@@ -195,7 +195,7 @@ func TestGitHubWebhookReplayAgainstFakeForge(t *testing.T) {
 			forge.monitorN++
 			forge.mu.Unlock()
 			// The default branch has no commit in the startup window.
-			return func(context.Context, ...string) ([]byte, error) { return []byte(`[]`), nil }, nil
+			return func(_ context.Context, args ...string) ([]byte, error) { return quietMonitorRead(args...), nil }, nil
 		},
 	}
 	var delivered []string
@@ -467,7 +467,7 @@ func newRetryFixture(t *testing.T) *retryFixture {
 			if f.failRunner.CompareAndSwap(true, false) {
 				return nil, githubtrigger.StatusError(http.StatusBadGateway, errors.New("installation token unavailable"))
 			}
-			return func(context.Context, ...string) ([]byte, error) { return []byte(`[]`), nil }, nil
+			return func(_ context.Context, args ...string) ([]byte, error) { return quietMonitorRead(args...), nil }, nil
 		},
 	}
 	f.applier = newGitHubWebhookApplier(backend, d, polls.PushedRef, polls.ChecksCompleted, func(string) {}, func(format string, args ...any) {

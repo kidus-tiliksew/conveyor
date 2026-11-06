@@ -60,3 +60,33 @@ func TestHoldsSilenceFallback(t *testing.T) {
 		t.Error("no hold excluded a task")
 	}
 }
+
+// The ledger keeps showing that a stuck hold came before a refused read's hold,
+// through a repeated refusal, until another decision replaces or clears it
+// (req-review-gates-evidence AC-1.11; component-submission-merge invariant 62).
+func TestFoldCheckStatusRemembersAStuckHoldBehindARefusedRead(t *testing.T) {
+	event := func(kind, head, reason string) core.Event {
+		return core.Event{Kind: kind, Payload: core.JSONPayload(map[string]any{"head_sha": head, "reason": reason})}
+	}
+	stuck := event(EventCheckHold, "a", nextaction.CheckHoldStuck)
+	refused := event(EventCheckHold, "a", nextaction.CheckHoldPermission)
+	failed := event(EventCheckHold, "a", nextaction.CheckHoldFailed)
+	cleared := event(EventCheckHoldCleared, "a", nextaction.CheckHoldPermission)
+	for name, tc := range map[string]struct {
+		events []core.Event
+		want   bool
+	}{
+		"refused alone":               {[]core.Event{refused}, false},
+		"stuck alone":                 {[]core.Event{stuck}, true},
+		"refused after stuck":         {[]core.Event{stuck, refused}, true},
+		"refused again":               {[]core.Event{stuck, refused, refused}, true},
+		"refused after failed":        {[]core.Event{stuck, failed, refused}, false},
+		"refused after a clear":       {[]core.Event{stuck, cleared, refused}, false},
+		"stuck of another head":       {[]core.Event{event(EventCheckHold, "b", nextaction.CheckHoldStuck), refused}, false},
+		"failed after a refused read": {[]core.Event{stuck, refused, failed}, false},
+	} {
+		if got := FoldCheckStatus(tc.events, "a").StuckStands(); got != tc.want {
+			t.Errorf("%s: StuckStands = %t, want %t", name, got, tc.want)
+		}
+	}
+}

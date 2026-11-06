@@ -66,13 +66,13 @@ func runMonitor(t *testing.T, x Fixture) {
 	if created {
 		t.Fatal("repeat drift created a second record")
 	}
-	requireOK(t, st.RecordMonitorFailure(ctx, "forge_status", "fixture failure", now.Add(time.Minute)))
+	requireOK(t, st.RecordMonitorFailure(ctx, "conveyor", "forge_status", "fixture failure", now.Add(time.Minute)))
 	status, err := st.MonitorStatus(ctx, true, now)
 	requireOK(t, err)
 	if status.CurrentError != "fixture failure" || status.DriftCount != 1 {
 		t.Fatal("monitor failure or drift count missing")
 	}
-	requireOK(t, st.RecordMonitorSuccess(ctx, now))
+	requireOK(t, st.RecordMonitorSuccess(ctx, "conveyor", now))
 	requireOK(t, st.AuditMonitor(ctx, "monitor.observed", map[string]any{"repository": "conveyor"}))
 	status, err = st.MonitorStatus(ctx, true, now)
 	requireOK(t, err)
@@ -123,6 +123,7 @@ func runMonitor(t *testing.T, x Fixture) {
 	t.Run("record workspace scoping", func(t *testing.T) { runMonitorWorkspaceScoping(t, x) })
 	t.Run("merge commit state", func(t *testing.T) { runMonitorMergeCommitState(t, x) })
 	t.Run("merge deferral poll", func(t *testing.T) { runMonitorMergeDeferral(t, x) })
+	t.Run("tip and per-repository status", func(t *testing.T) { runMonitorTip(t, x) })
 	t.Run("task origins", func(t *testing.T) { runMonitorOrigins(t, x) })
 }
 
@@ -439,7 +440,7 @@ func runMonitorMergeDeferral(t *testing.T, x Fixture) {
 	service := mergeDeferralService(t, x, func() time.Time { return clock })
 	poll := func(t *testing.T) {
 		t.Helper()
-		poller := monitor.Poller{Service: service, Source: source, StartupWindow: 24 * time.Hour, Now: func() time.Time { return clock }}
+		poller := monitor.Poller{Service: service, Repository: "conveyor", Source: source, StartupWindow: 24 * time.Hour, Now: func() time.Time { return clock }}
 		if err := poller.Poll(ctx); err != nil {
 			t.Fatal(err)
 		}
@@ -474,7 +475,7 @@ func runMonitorMergeDeferral(t *testing.T, x Fixture) {
 
 	const real = "real-direct-push"
 	realSource := mergeDeferralGitHubSource(x, real, committed, func() time.Time { return clock }, bound, "", &suppressed)
-	realPoller := monitor.Poller{Service: service, Source: realSource, StartupWindow: 24 * time.Hour, Now: func() time.Time { return clock }}
+	realPoller := monitor.Poller{Service: service, Repository: "conveyor", Source: realSource, StartupWindow: 24 * time.Hour, Now: func() time.Time { return clock }}
 	if err := realPoller.Poll(ctx); err != nil {
 		t.Fatal(err)
 	}
@@ -492,7 +493,7 @@ func runMonitorMergeDeferral(t *testing.T, x Fixture) {
 	clock = before
 	delayedSuppressed := []string{}
 	delayedSource := mergeDeferralGitHubSource(x, delayed, committed, func() time.Time { return clock }, bound, "", &delayedSuppressed)
-	delayedPoller := monitor.Poller{Service: service, Source: delayedSource, StartupWindow: 24 * time.Hour, Now: func() time.Time { return clock }}
+	delayedPoller := monitor.Poller{Service: service, Repository: "conveyor", Source: delayedSource, StartupWindow: 24 * time.Hour, Now: func() time.Time { return clock }}
 	if err := delayedPoller.Poll(ctx); err != nil {
 		t.Fatal(err)
 	}
@@ -513,7 +514,7 @@ func runMonitorMergeDeferral(t *testing.T, x Fixture) {
 	requireOK(t, st.AppendEvent(ctx, core.Event{TaskID: failed.ID, Kind: "merge.failed", Payload: core.JSONPayload(map[string]any{"reason_code": "forge_merge_failed"})}))
 	clock = committed.Add(time.Minute)
 	failedSource := mergeDeferralGitHubSource(x, failedSHA, committed, func() time.Time { return clock }, bound, "", new([]string))
-	failedPoller := monitor.Poller{Service: service, Source: failedSource, StartupWindow: 24 * time.Hour, Now: func() time.Time { return clock }}
+	failedPoller := monitor.Poller{Service: service, Repository: "conveyor", Source: failedSource, StartupWindow: 24 * time.Hour, Now: func() time.Time { return clock }}
 	if err := failedPoller.Poll(ctx); err != nil {
 		t.Fatal(err)
 	}
@@ -524,7 +525,7 @@ func runMonitorMergeDeferral(t *testing.T, x Fixture) {
 	const staleSHA = "stale-approval-head"
 	stalePulls := fmt.Sprintf(`[{"number":20,"html_url":"https://github.com/acme/conveyor/pull/20","merged_at":%q,"head":{"ref":"feature/stale","sha":%q}}]`, committed.Format(time.RFC3339), staleSHA)
 	staleSource := mergeDeferralGitHubSource(x, staleSHA, committed, func() time.Time { return clock }, bound, stalePulls, new([]string))
-	stalePoller := monitor.Poller{Service: service, Source: staleSource, StartupWindow: 24 * time.Hour, Now: func() time.Time { return clock }}
+	stalePoller := monitor.Poller{Service: service, Repository: "conveyor", Source: staleSource, StartupWindow: 24 * time.Hour, Now: func() time.Time { return clock }}
 	if err := stalePoller.Poll(ctx); err != nil {
 		t.Fatal(err)
 	}
@@ -540,16 +541,125 @@ func runMonitorMergeDeferral(t *testing.T, x Fixture) {
 		t.Fatal("stale-approval GitHub merge was not reported as external_pr_merge")
 	}
 
-	const lostSHA = "outside-window-sha"
-	lostCommitted := clock.Add(-16 * time.Minute)
-	lostSource := mergeDeferralGitHubSource(x, lostSHA, lostCommitted, func() time.Time { return clock }, bound, "", new([]string))
-	lostPoller := monitor.Poller{Service: service, Source: lostSource, StartupWindow: 15 * time.Minute, Now: func() time.Time { return clock }}
-	if err := lostPoller.Poll(ctx); err != nil {
+	// The repository has a tip now, so a commit dated older than the window is
+	// read all the same (component-monitor-drift invariant 4).
+	const oldDatedSHA = "outside-window-sha"
+	oldDated := clock.Add(-16 * time.Minute)
+	oldDatedSource := mergeDeferralGitHubSource(x, oldDatedSHA, oldDated, func() time.Time { return clock }, bound, "", new([]string))
+	oldDatedPoller := monitor.Poller{Service: service, Repository: "conveyor", Source: oldDatedSource, StartupWindow: 15 * time.Minute, Now: func() time.Time { return clock }}
+	if err := oldDatedPoller.Poll(ctx); err != nil {
 		t.Fatal(err)
 	}
-	if observed(lostSHA) {
-		t.Fatal("commit older than startup window was observed")
+	if !observed(oldDatedSHA) {
+		t.Fatal("commit older than the startup window was lost despite a stored tip")
 	}
+}
+
+// runMonitorTip proves the tip read, its conditional advance, and that one
+// repository's status and tip never touch another's on every backend
+// (component-monitor-drift invariants 4 and 15; req-delivery-and-forge AC-4.5).
+func runMonitorTip(t *testing.T, x Fixture) {
+	st, ctx := x.Backend, x.Context
+	const one, two = "conveyor-tip-one", "conveyor-tip-two"
+	tip := func(repository string) string {
+		t.Helper()
+		value, err := st.MonitorTip(ctx, repository)
+		requireOK(t, err)
+		return value
+	}
+	advance := func(repository, expected, next string, want bool) {
+		t.Helper()
+		advanced, err := st.AdvanceMonitorTip(ctx, repository, expected, next)
+		requireOK(t, err)
+		if advanced != want {
+			t.Fatalf("advance %s from %q to %q = %v, want %v", repository, expected, next, advanced, want)
+		}
+	}
+	if tip(one) != "" {
+		t.Fatalf("a repository with no row has tip %q", tip(one))
+	}
+	// A non-empty expected value never creates the row.
+	advance(one, "stale", "next", false)
+	if tip(one) != "" {
+		t.Fatalf("a refused advance stored tip %q", tip(one))
+	}
+	advance(one, "", "first", true)
+	if tip(one) != "first" || tip(two) != "" {
+		t.Fatalf("tips one=%q two=%q", tip(one), tip(two))
+	}
+	// A slower pass holding an old value can't move the tip backward.
+	advance(one, "", "slower", false)
+	advance(one, "stale", "slower", false)
+	advance(one, "first", "second", true)
+	advance(one, "first", "slower", false)
+	if tip(one) != "second" {
+		t.Fatalf("tip=%q after refused advances", tip(one))
+	}
+	if value, err := st.MonitorTip(store.WithWorkspace(ctx, x.Workspace+"-foreign"), one); err != nil || value != "" {
+		t.Fatalf("tip crossed workspaces: %q err=%v", value, err)
+	}
+	if _, err := st.AdvanceMonitorTip(ctx, one, "second", ""); !errors.Is(err, monitor.ErrTipRequired) {
+		t.Fatalf("an empty tip err=%v", err)
+	}
+	if _, err := st.AdvanceMonitorTip(ctx, "", "", "next"); !errors.Is(err, monitor.ErrRepositoryRequired) {
+		t.Fatalf("an unnamed repository's advance err=%v", err)
+	}
+	if err := st.RecordMonitorSuccess(ctx, "", time.Now()); !errors.Is(err, monitor.ErrRepositoryRequired) {
+		t.Fatalf("an unnamed repository's success err=%v", err)
+	}
+	if err := st.RecordMonitorFailure(ctx, "", "forge_status", "failure", time.Now()); !errors.Is(err, monitor.ErrRepositoryRequired) {
+		t.Fatalf("an unnamed repository's failure err=%v", err)
+	}
+
+	now := time.Now().UTC().Truncate(time.Microsecond)
+	row := func(repository string) monitor.RepositoryStatus {
+		t.Helper()
+		status, err := st.MonitorStatus(ctx, true, now)
+		requireOK(t, err)
+		for _, candidate := range status.Repositories {
+			if candidate.Repository == repository {
+				return candidate
+			}
+		}
+		t.Fatalf("no status row for %s: %+v", repository, status.Repositories)
+		return monitor.RepositoryStatus{}
+	}
+	requireOK(t, st.RecordMonitorSuccess(ctx, one, now.Add(-time.Hour)))
+	requireOK(t, st.RecordMonitorSuccess(ctx, two, now))
+	requireOK(t, st.RecordMonitorFailure(ctx, one, "forge_status", "one failed", now.Add(time.Minute)))
+	requireOK(t, st.RecordMonitorFailure(ctx, two, "forge_rate_limited", "two failed", now.Add(2*time.Minute)))
+	// A pass over one repository clears only that repository's error.
+	requireOK(t, st.RecordMonitorSuccess(ctx, two, now))
+	cleared, failing := row(two), row(one)
+	if cleared.CurrentError != "" || cleared.ForgeErrorCategory != "" || !cleared.BackoffUntil.IsZero() || !cleared.LastSuccessfulAt.Equal(now) {
+		t.Fatalf("cleared row=%+v", cleared)
+	}
+	if failing.CurrentError != "one failed" || failing.ForgeErrorCategory != "forge_status" || !failing.BackoffUntil.Equal(now.Add(time.Minute)) || !failing.LastSuccessfulAt.Equal(now.Add(-time.Hour)) {
+		t.Fatalf("failing row=%+v", failing)
+	}
+	status, err := st.MonitorStatus(ctx, true, now)
+	requireOK(t, err)
+	if status.CurrentError != "one failed" || status.ForgeErrorCategory != "forge_status" || !status.BackoffUntil.Equal(now.Add(time.Minute)) {
+		t.Fatalf("summary error=%q category=%q backoff=%s", status.CurrentError, status.ForgeErrorCategory, status.BackoffUntil)
+	}
+	if status.LastSuccessfulAt.After(now.Add(-time.Hour)) {
+		t.Fatalf("summary success=%s is not the oldest", status.LastSuccessfulAt)
+	}
+	// Status writes leave the tip alone, and the tip write leaves status alone.
+	if tip(one) != "second" {
+		t.Fatalf("status writes moved the tip to %q", tip(one))
+	}
+	advance(one, "second", "third", true)
+	if row(one).CurrentError != "one failed" {
+		t.Fatalf("a tip write changed status: %+v", row(one))
+	}
+	foreign, err := st.MonitorStatus(store.WithWorkspace(ctx, x.Workspace+"-foreign"), true, now)
+	requireOK(t, err)
+	if len(foreign.Repositories) != 0 || foreign.CurrentError != "" {
+		t.Fatalf("status crossed workspaces: %+v", foreign.Repositories)
+	}
+	// Later cases read the workspace summary, so this case leaves no error.
+	requireOK(t, st.RecordMonitorSuccess(ctx, one, now))
 }
 
 func mergeDeferralService(t *testing.T, x Fixture, now func() time.Time) *monitor.Service {
@@ -581,6 +691,7 @@ func mergeDeferralGitHubSource(x Fixture, sha string, committed time.Time, now f
 		pulls = "[]"
 	}
 	parent := "parent-" + sha
+	listed := fmt.Sprintf(`{"sha":%q,"html_url":"https://example/%s","parents":[{"sha":%q}],"commit":{"message":"manual","committer":{"date":%q}}}`, sha, sha, parent, committed.UTC().Format(time.RFC3339))
 	return monitor.GitHubSource{
 		WorkspaceID: x.Workspace, Repository: "conveyor", GitHubSlug: "acme/conveyor", Base: "main",
 		MergeCommitState: func(ctx context.Context, repository, commitSHA string, at time.Time) (monitor.MergeState, string, error) {
@@ -594,6 +705,12 @@ func mergeDeferralGitHubSource(x Fixture, sha string, committed time.Time, now f
 		Run: func(_ context.Context, args ...string) ([]byte, error) {
 			path := strings.Join(args, " ")
 			switch {
+			case strings.HasSuffix(args[3], "/commits/main"):
+				return []byte(fmt.Sprintf(`{"sha":%q}`, sha)), nil
+			case strings.HasSuffix(args[3], "/compare/"+sha+"...main"):
+				return []byte(`{"status":"identical","total_commits":0,"commits":[]}`), nil
+			case strings.HasSuffix(args[3], "...main"):
+				return []byte(`{"status":"ahead","total_commits":1,"commits":[` + listed + `]}`), nil
 			case strings.Contains(path, "/commits -f"):
 				var since time.Time
 				for i, arg := range args {
@@ -607,7 +724,7 @@ func mergeDeferralGitHubSource(x Fixture, sha string, committed time.Time, now f
 				if !since.IsZero() && committed.Before(since) {
 					return []byte("[]"), nil
 				}
-				return []byte(fmt.Sprintf(`[{"sha":%q,"html_url":"https://example/%s","parents":[{"sha":%q}],"commit":{"message":"manual","committer":{"date":%q}}}]`, sha, sha, parent, committed.UTC().Format(time.RFC3339))), nil
+				return []byte("[" + listed + "]"), nil
 			case strings.Contains(path, "/pulls"):
 				return []byte(pulls), nil
 			case strings.Contains(path, "compare/"+parent+"..."+sha):

@@ -157,3 +157,35 @@ func TestMergingSaysTheReadWentUnanswered(t *testing.T) {
 		t.Fatalf("next action = %+v", na)
 	}
 }
+
+// An unanswered read says what could not be read, whether that is the check
+// status or the pull request (req-review-gates-evidence AC-1.10;
+// component-next-action, The statement).
+func TestUnansweredReadWordingNamesTheRecordedFailure(t *testing.T) {
+	const failure = "The pull-request read failed (forge_status)."
+	merging := func(status CheckStatus) Input {
+		return Input{Task: core.Task{ID: "unread", State: core.TaskApproved}, CheckStatus: status, Now: time.Now().UTC()}
+	}
+	for name, na := range map[string]NextAction{
+		"stuck read":    Project(checkHoldInput(&CheckHold{Reason: CheckHoldStuck, ReadFailure: failure}, false)),
+		"reading again": Project(merging(CheckStatus{ReadFailure: failure})),
+		"retries ended": Project(merging(CheckStatus{ReadFailure: failure, RetriesExhausted: true})),
+	} {
+		if !strings.Contains(na.Summary, failure) || !strings.Contains(na.Summary, "could not read") {
+			t.Errorf("%s: summary = %q, want it naming %q", name, na.Summary, failure)
+		}
+		for _, sentence := range []string{na.Label, na.Summary, na.IfIgnored} {
+			if strings.Contains(sentence, "check status") || strings.Contains(sentence, "Unread checks") {
+				t.Errorf("%s: %q claims a check-status failure", name, sentence)
+			}
+		}
+		if na.Details.CheckReadFailure != failure {
+			t.Errorf("%s: details = %+v", name, na.Details)
+		}
+	}
+	checks := []CheckRef{{Name: "deploy", State: "pending"}}
+	held := Project(checkHoldInput(&CheckHold{Reason: CheckHoldStuck, ReadFailure: "The check-status read failed.", Checks: checks}, false))
+	if !strings.Contains(held.Summary, "The check-status read failed.") || !strings.Contains(held.Summary, "deploy (pending)") {
+		t.Errorf("summary = %q, want the check-status failure and what it last named", held.Summary)
+	}
+}

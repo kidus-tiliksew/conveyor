@@ -127,16 +127,20 @@ func (d *Dispatcher) recordDeadlineHold(ctx context.Context, task core.Task, hea
 			last = standing.Hold.Checks
 		}
 		reason := nextaction.CheckHoldStuck
-		if github.ErrorCategory(readErr) == github.ForgePermission {
+		switch {
+		case github.ErrorCategory(readErr) == github.ForgePermission:
 			reason = nextaction.CheckHoldPermission
+		case standing.Hold != nil && standing.Hold.AfterStuck:
+			// A failed read clears nothing, so the refused read's hold stays in the
+			// stuck hold's place until a read is answered (invariant 62).
+			return nil
 		}
 		return d.recordCheckHold(ctx, task, head, standing.Hold, reason, checksFromRefs(last), checkReadFailure(readErr))
 	}
 	failed, pending := read.Named(github.CheckFailed), read.Named(github.CheckPending)
 	// A stuck hold already standing, which only a fire that died before its clear
 	// leaves here, stays until a read finds no check pending (invariant 62).
-	stuck := standing.Hold != nil && standing.Hold.Reason == nextaction.CheckHoldStuck
-	if len(failed) > 0 && (len(pending) == 0 || !stuck) {
+	if len(failed) > 0 && (len(pending) == 0 || !standing.StuckStands()) {
 		return d.recordCheckHold(ctx, task, head, standing.Hold, nextaction.CheckHoldFailed, append(failed, pending...), "")
 	}
 	return d.recordCheckHold(ctx, task, head, standing.Hold, nextaction.CheckHoldStuck, append(failed, pending...), "")
@@ -148,20 +152,33 @@ func (d *Dispatcher) recordDeadlineHold(ctx context.Context, task core.Task, hea
 // one case where a deadline makes more GitHub calls than its read, because a lost
 // delivery has no other wake on an active workspace.
 //
-// A failure a retry can fix returns with the deadline still due, so the alarm's
-// failed-fire retry tries again. Nothing else would wake the task. Anything else
-// the merge path has recorded, and the deadline has done its work.
+// A pull request still unread or UNKNOWN holds the task as stuck, naming what
+// could not be read, and the deadline clears, so it does not fire again (AC-1.10;
+// invariant 61). The hold clears only after that is ruled out, because this fire
+// must not clear a hold and then append a new one for the same head. A process
+// that dies before the clear leaves the deadline due, so the next fire reads again.
+//
+// Any other failure a retry can fix returns with the deadline still due, so the
+// alarm's failed-fire retry tries again. Nothing else would wake the task.
+// Anything else the merge path has recorded, and the deadline has done its work.
 func (d *Dispatcher) mergeAtCheckStatusDeadline(ctx context.Context, task core.Task, head string, standing nextaction.CheckStatus, read github.CheckStatus) error {
 	status := "none_reported"
 	if len(read.Checks) > 0 {
 		status = "passed"
 	}
-	if err := d.clearCheckHold(ctx, task, head, standing.Hold, status); err != nil {
-		return err
-	}
 	mergeErr := d.mergeApprovedTaskLocked(ctx, task, mergeAct{checkStatus: status})
 	if ctx.Err() != nil {
 		return errors.Join(mergeErr, ctx.Err())
+	}
+	var unread *unreadPullRequestError
+	if errors.As(mergeErr, &unread) {
+		if err := d.recordCheckHold(ctx, task, head, standing.Hold, nextaction.CheckHoldStuck, []github.Check{}, unread.failure); err != nil {
+			return err
+		}
+		return d.clearCheckDeadline(ctx, task)
+	}
+	if err := d.clearCheckHold(ctx, task, head, standing.Hold, status); err != nil {
+		return errors.Join(mergeErr, err)
 	}
 	if retryableMergeError(mergeErr) {
 		return fmt.Errorf("merge after the deadline's read: %w", mergeErr)
