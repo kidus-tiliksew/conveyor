@@ -414,6 +414,8 @@ test('generated webhook secret shows once, is replaced on regenerate, and leaves
 
   await dialog.getByRole('button', { name: 'Generate', exact: true }).click()
   const field = dialog.getByLabel('Webhook secret', { exact: true })
+  // The mock records each secret when its POST arrives, so read it only after that.
+  await expect.poll(() => state.secretPosts).toBe(1)
   await expect(field).toHaveValue(state.secrets[0])
   await expect(dialog).toContainText('Conveyor will not show this secret again.')
   const first = state.secrets[0]
@@ -428,6 +430,7 @@ test('generated webhook secret shows once, is replaced on regenerate, and leaves
   expect(await cacheState(page)).not.toContain(first)
 
   await dialog.getByRole('button', { name: 'Generate again', exact: true }).click()
+  await expect.poll(() => state.secretPosts).toBe(2)
   await expect(field).toHaveValue(state.secrets[1])
   const second = state.secrets[1]
   expect(second).not.toBe(first)
