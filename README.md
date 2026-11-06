@@ -1,7 +1,7 @@
 # Evidence for task 261106-9415aa
 
 Base head for the repro runs: 6ef21cde05a389c5eb13a9c5e8aa294628d88dd5.
-Fix head for the fix runs: 43b31372eaac4d1692dffd0f5b838c2ad110b7fc.
+Fix head for fix-1 to fix-4: 43b31372eaac4d1692dffd0f5b838c2ad110b7fc. Final head for fix-5: f52fd719624ff3f8c08955f0b9c20d22b895038d (43b31372 merged with main at 83884288).
 Machine: 4 vCPU, 7 GiB, chromium-headless-shell 1228, Playwright 1.61.1.
 
 | File | Head | Load | Result |
@@ -20,5 +20,6 @@ Machine: 4 vCPU, 7 GiB, chromium-headless-shell 1228, Playwright 1.61.1.
 | fix-3-amplified-under-load.log | fix | Same stress-ng load as repro-6, 2 workers | 8 of 8 passed: 3519 iterations, 11 natural flips, no stale failure |
 | fix-3-amplified.spec.ts.txt | fix | - | The temporary spec behind fix-3 (not committed) |
 | fix-4-full-spec-file.log | fix | none | Full spec file: 5 passed |
+| fix-5-repeat-each-50-under-load-final-head.log | final | Same stress-ng load as repro-6, 2 workers | --repeat-each=50: 50 passed |
 
 The *.time files hold wall-clock and load-average samples for repro-3 to repro-6.

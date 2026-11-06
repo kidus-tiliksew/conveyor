@@ -1,0 +1,60 @@
+head=f52fd719624ff3f8c08955f0b9c20d22b895038d
+Fri Nov  6 02:22:04 PM UTC 2026
+loadavg-start 2.61 12.60 16.66 12/703 104220
+
+Running 50 tests using 2 workers
+
+[1/50] [dev-server] › tests/workspace-changes.spec.ts:217:1 › an activity frame refreshes the Board, sidebar, and named task detail once
+[2/50] [dev-server] › tests/workspace-changes.spec.ts:217:1 › an activity frame refreshes the Board, sidebar, and named task detail once
+[3/50] [dev-server] › tests/workspace-changes.spec.ts:217:1 › an activity frame refreshes the Board, sidebar, and named task detail once
+[4/50] [dev-server] › tests/workspace-changes.spec.ts:217:1 › an activity frame refreshes the Board, sidebar, and named task detail once
+[5/50] [dev-server] › tests/workspace-changes.spec.ts:217:1 › an activity frame refreshes the Board, sidebar, and named task detail once
+[6/50] [dev-server] › tests/workspace-changes.spec.ts:217:1 › an activity frame refreshes the Board, sidebar, and named task detail once
+[7/50] [dev-server] › tests/workspace-changes.spec.ts:217:1 › an activity frame refreshes the Board, sidebar, and named task detail once
+[8/50] [dev-server] › tests/workspace-changes.spec.ts:217:1 › an activity frame refreshes the Board, sidebar, and named task detail once
+[9/50] [dev-server] › tests/workspace-changes.spec.ts:217:1 › an activity frame refreshes the Board, sidebar, and named task detail once
+[10/50] [dev-server] › tests/workspace-changes.spec.ts:217:1 › an activity frame refreshes the Board, sidebar, and named task detail once
+[11/50] [dev-server] › tests/workspace-changes.spec.ts:217:1 › an activity frame refreshes the Board, sidebar, and named task detail once
+[12/50] [dev-server] › tests/workspace-changes.spec.ts:217:1 › an activity frame refreshes the Board, sidebar, and named task detail once
+[13/50] [dev-server] › tests/workspace-changes.spec.ts:217:1 › an activity frame refreshes the Board, sidebar, and named task detail once
+[14/50] [dev-server] › tests/workspace-changes.spec.ts:217:1 › an activity frame refreshes the Board, sidebar, and named task detail once
+[15/50] [dev-server] › tests/workspace-changes.spec.ts:217:1 › an activity frame refreshes the Board, sidebar, and named task detail once
+[16/50] [dev-server] › tests/workspace-changes.spec.ts:217:1 › an activity frame refreshes the Board, sidebar, and named task detail once
+[17/50] [dev-server] › tests/workspace-changes.spec.ts:217:1 › an activity frame refreshes the Board, sidebar, and named task detail once
+[18/50] [dev-server] › tests/workspace-changes.spec.ts:217:1 › an activity frame refreshes the Board, sidebar, and named task detail once
+[19/50] [dev-server] › tests/workspace-changes.spec.ts:217:1 › an activity frame refreshes the Board, sidebar, and named task detail once
+[20/50] [dev-server] › tests/workspace-changes.spec.ts:217:1 › an activity frame refreshes the Board, sidebar, and named task detail once
+[21/50] [dev-server] › tests/workspace-changes.spec.ts:217:1 › an activity frame refreshes the Board, sidebar, and named task detail once
+[22/50] [dev-server] › tests/workspace-changes.spec.ts:217:1 › an activity frame refreshes the Board, sidebar, and named task detail once
+[23/50] [dev-server] › tests/workspace-changes.spec.ts:217:1 › an activity frame refreshes the Board, sidebar, and named task detail once
+[24/50] [dev-server] › tests/workspace-changes.spec.ts:217:1 › an activity frame refreshes the Board, sidebar, and named task detail once
+[25/50] [dev-server] › tests/workspace-changes.spec.ts:217:1 › an activity frame refreshes the Board, sidebar, and named task detail once
+[26/50] [dev-server] › tests/workspace-changes.spec.ts:217:1 › an activity frame refreshes the Board, sidebar, and named task detail once
+[27/50] [dev-server] › tests/workspace-changes.spec.ts:217:1 › an activity frame refreshes the Board, sidebar, and named task detail once
+[28/50] [dev-server] › tests/workspace-changes.spec.ts:217:1 › an activity frame refreshes the Board, sidebar, and named task detail once
+[29/50] [dev-server] › tests/workspace-changes.spec.ts:217:1 › an activity frame refreshes the Board, sidebar, and named task detail once
+[30/50] [dev-server] › tests/workspace-changes.spec.ts:217:1 › an activity frame refreshes the Board, sidebar, and named task detail once
+[31/50] [dev-server] › tests/workspace-changes.spec.ts:217:1 › an activity frame refreshes the Board, sidebar, and named task detail once
+[32/50] [dev-server] › tests/workspace-changes.spec.ts:217:1 › an activity frame refreshes the Board, sidebar, and named task detail once
+[33/50] [dev-server] › tests/workspace-changes.spec.ts:217:1 › an activity frame refreshes the Board, sidebar, and named task detail once
+[34/50] [dev-server] › tests/workspace-changes.spec.ts:217:1 › an activity frame refreshes the Board, sidebar, and named task detail once
+[35/50] [dev-server] › tests/workspace-changes.spec.ts:217:1 › an activity frame refreshes the Board, sidebar, and named task detail once
+[36/50] [dev-server] › tests/workspace-changes.spec.ts:217:1 › an activity frame refreshes the Board, sidebar, and named task detail once
+[37/50] [dev-server] › tests/workspace-changes.spec.ts:217:1 › an activity frame refreshes the Board, sidebar, and named task detail once
+[38/50] [dev-server] › tests/workspace-changes.spec.ts:217:1 › an activity frame refreshes the Board, sidebar, and named task detail once
+[39/50] [dev-server] › tests/workspace-changes.spec.ts:217:1 › an activity frame refreshes the Board, sidebar, and named task detail once
+[40/50] [dev-server] › tests/workspace-changes.spec.ts:217:1 › an activity frame refreshes the Board, sidebar, and named task detail once
+[41/50] [dev-server] › tests/workspace-changes.spec.ts:217:1 › an activity frame refreshes the Board, sidebar, and named task detail once
+[42/50] [dev-server] › tests/workspace-changes.spec.ts:217:1 › an activity frame refreshes the Board, sidebar, and named task detail once
+[43/50] [dev-server] › tests/workspace-changes.spec.ts:217:1 › an activity frame refreshes the Board, sidebar, and named task detail once
+[44/50] [dev-server] › tests/workspace-changes.spec.ts:217:1 › an activity frame refreshes the Board, sidebar, and named task detail once
+[45/50] [dev-server] › tests/workspace-changes.spec.ts:217:1 › an activity frame refreshes the Board, sidebar, and named task detail once
+[46/50] [dev-server] › tests/workspace-changes.spec.ts:217:1 › an activity frame refreshes the Board, sidebar, and named task detail once
+[47/50] [dev-server] › tests/workspace-changes.spec.ts:217:1 › an activity frame refreshes the Board, sidebar, and named task detail once
+[48/50] [dev-server] › tests/workspace-changes.spec.ts:217:1 › an activity frame refreshes the Board, sidebar, and named task detail once
+[49/50] [dev-server] › tests/workspace-changes.spec.ts:217:1 › an activity frame refreshes the Board, sidebar, and named task detail once
+[50/50] [dev-server] › tests/workspace-changes.spec.ts:217:1 › an activity frame refreshes the Board, sidebar, and named task detail once
+  50 passed (3.4m)
+exit=0
+loadavg-end 33.31 23.34 20.04 15/712 109666
+Fri Nov  6 02:25:35 PM UTC 2026

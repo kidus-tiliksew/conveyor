@@ -3,7 +3,8 @@
 b120f56cbd0af8b3fa27587908cc5e231e35bf7fe6e4966ee84bf501dbef3a0a  fix-3-amplified.spec.ts.txt
 7e095b9e797e20375b21b0c28c2aaa4f16b48bf6a6bdca711cec55c308932296  fix-3-amplified-under-load.log
 4b38c21e3d0e7a184ad5c936e568ac6515bcbf88d86ad1e62855644810a38744  fix-4-full-spec-file.log
-5f04f92bf1f863dcbcfa7b8b00e377d2800babbcdf1bf42bf91de21b17f0d1d4  README.md
+e106326ebec0249f243b44c629e25e02d34b61891402e5cc7224120a1423cf5d  fix-5-repeat-each-50-under-load-final-head.log
+c6bfa17f41cbf4401b1e9eb4d4898acecb03e85bd6beb49dd43737724ee684e9  README.md
 3f70fb1213e0213eb30d17888357a9e0a6c433e8d02f1c0f5f502bd03453df82  repro-1.log
 e00a625e7994f8407baaa41fb853c2be0c1a5170379325aa687d19ee0bb43a10  repro-2-cpu32-w4.log
 edce7bbf41f5001b7926c52a7d167feacffb0d2eba9ff155dd6fa4dce49a158c  repro-3-pinned2cpu-16hogs.log
