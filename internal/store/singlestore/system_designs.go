@@ -10,7 +10,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/go-sql-driver/mysql"
 	"github.com/kidus-tiliksew/conveyor/internal/core"
 	"github.com/kidus-tiliksew/conveyor/internal/store"
 	"github.com/kidus-tiliksew/conveyor/internal/store/dbmetrics"
@@ -65,18 +64,22 @@ func (s *Store) CreateSystemDesign(ctx context.Context, document core.SystemDesi
 		}
 		return insertSystemDesignProposalEvent(ctx, tx, first)
 	})
-	if err != nil {
-		var pgErr *mysql.MySQLError
-		if errors.As(err, &pgErr) && pgErr.Number == 1062 {
-			switch {
-			case strings.Contains(pgErr.Message, "PRIMARY"):
-				return core.SystemDesign{}, core.SystemDesignVersion{}, fmt.Errorf("%w: %s", store.ErrSystemDesignIDConflict, document.ID)
-			case strings.Contains(pgErr.Message, "system_designs_workspace_id_slug_key"):
-				return core.SystemDesign{}, core.SystemDesignVersion{}, fmt.Errorf("%w: %s", store.ErrSystemDesignSlugConflict, document.Slug)
-			}
-		}
+	if conflict := systemDesignCreateConflict(err, document); conflict != nil {
+		return core.SystemDesign{}, core.SystemDesignVersion{}, conflict
 	}
 	return document, first, err
+}
+
+// systemDesignCreateConflict maps a duplicate of the document's primary key or
+// slug key to its domain conflict. It returns nil for every other error.
+func systemDesignCreateConflict(err error, document core.SystemDesign) error {
+	switch {
+	case isDuplicateKey(err, "PRIMARY"):
+		return fmt.Errorf("%w: %s", store.ErrSystemDesignIDConflict, document.ID)
+	case isDuplicateKey(err, "system_designs_workspace_id_slug_key"):
+		return fmt.Errorf("%w: %s", store.ErrSystemDesignSlugConflict, document.Slug)
+	}
+	return nil
 }
 
 func (s *Store) GetSystemDesign(ctx context.Context, id string) (core.SystemDesign, error) {
