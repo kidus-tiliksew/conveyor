@@ -104,9 +104,11 @@ Workflows that have worked well so far:
   through the queue with the `conveyor-coordinate` skill. It starts a fresh
   agent for each stage order and brings you only the decisions that need you.
 - **Plan in conversation, then file.** Talk a feature through with an agent
-  using `conveyor-plan`, confirm the requirements and decisions, and only then
-  file tasks with `conveyor-file-tasks`. Small, dependency-ordered tasks review
-  faster than large ones.
+  using `conveyor-plan`, answer its open decisions and approve its drafts on a
+  review page such as [Lavish](https://github.com/kunchenguid/lavish-axi), and
+  confirm the documents before tasks enter the queue. Small, dependency-ordered
+  tasks review faster than large ones. The
+  [planning guide](docs/planning-guide.md) walks through it.
 - **Get gates on your phone with [AgentDesk](https://github.com/kidus-tiliksew/AgentDesk).**
   Plan approvals, merges, and document confirmations wait on you. AgentDesk
   sends each one to you as a question you can answer from anywhere, so the

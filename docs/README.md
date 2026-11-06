@@ -21,6 +21,7 @@ hold no setup procedure (DEC-93).
 
 - [Concepts](concepts.md): the software factory, the knowledge graph, light and dark factory patterns
 - [The document corpus](document-corpus.md): requirements, System Designs, decisions, and the propose-confirm cycle
+- [Planning guide](planning-guide.md): plan a feature with an agent, from open decisions to filed tasks
 - [Tasks](tasks.md): how work is created, given context, executed, reviewed, and linked
 - [Misalignment](misalignment.md): drift, staleness, and pending proposals
 
