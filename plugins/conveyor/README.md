@@ -39,10 +39,13 @@ order with fresh session credentials. It never reuses a client token or resets
 the assigned branch.
 
 If an unclaimed order has exceeded the configured queue-retention timeout,
-`list_work_orders` reports it as non-claimable `stale`. Use
-`redispatch_work_order` to reset that queue clock through the audited service
-path; do not edit the database. Redispatch does not revive an execution-timed-
-out or actively claimed order.
+`list_work_orders` reports it as non-claimable `stale`, and the order clock
+returns it to the queue through automatic recovery. No MCP tool recovers an
+order. If it stays stale, an operator runs `conveyor order recover <order-id>`
+(`POST /v1/work-orders/{id}/recover`) to reset that queue clock through the
+audited path; do not edit the database. `conveyor order redispatch <order-id>`
+(`POST /v1/tasks/{id}/redispatch`) acts on the task and answers 409 while an
+order holds its stage.
 
 The task's branch field is an assigned canonical name, not proof that a Git ref
 already exists. After claiming and reading the work order, the implementation

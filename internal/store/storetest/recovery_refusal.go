@@ -19,6 +19,8 @@ func runRecoveryRefusal(t *testing.T, x Fixture) {
 	t.Run("PredicateMatrix", func(t *testing.T) { runRecoveryRefusalMatrix(t, x) })
 	t.Run("PlainQueuedClaimRefusal", func(t *testing.T) { runPlainQueuedClaimRefusal(t, x) })
 	t.Run("RedispatchPlanRevisionGuard", func(t *testing.T) { runRedispatchPlanRevisionGuard(t, x) })
+	t.Run("RedispatchResetsQueueClockAndAudit", func(t *testing.T) { runRedispatchResetsQueueClockAndAudit(t, x) })
+	t.Run("RedispatchStaleNeverClaimedGuard", func(t *testing.T) { runRedispatchStaleNeverClaimedGuard(t, x) })
 	t.Run("QueuedStrandedVerifyCancelled", func(t *testing.T) { runQueuedStrandedVerifyCancelled(t, x) })
 	t.Run("RecoverRequestIDReplayBeforeRefusal", func(t *testing.T) { runRecoverRequestIDReplayBeforeRefusal(t, x) })
 	t.Run("AdvancedStageQueuedClaimRefusal", func(t *testing.T) { runAdvancedStageQueuedClaimRefusal(t, x) })
@@ -656,6 +658,72 @@ func runRedispatchPlanRevisionGuard(t *testing.T, x Fixture) {
 	}
 	afterOrder, afterJob, afterTask, afterEvents := snapshotRecovery(t, x, task.ID, order.ID)
 	assertUnchanged(t, beforeOrder, afterOrder, beforeJob, afterJob, beforeTask, afterTask, beforeEvents, afterEvents)
+}
+
+// runRedispatchResetsQueueClockAndAudit proves the order-level redispatch of a
+// stale never-claimed order on every backend: a fresh queue window, no execution
+// clock, one audit event for each step, and a claim that succeeds afterward
+// (component-work-orders invariants 5 and 41).
+func runRedispatchResetsQueueClockAndAudit(t *testing.T, x Fixture) {
+	st, ctx := x.Backend, x.Context
+	order := newAggregateOrder(t, x)
+	_, err := taskops.ExecuteWorkOrder(ctx, st, order.TaskID, core.WorkOrderCmdMarkStale, func(lease taskops.TaskLease) (int, error) {
+		return st.ApplyWorkOrderClock(ctx, lease, order.TaskID, order.QueueDeadline.Add(time.Second))
+	})
+	requireOK(t, err)
+	const timeout = 3 * time.Hour
+	redispatched, err := RedispatchWorkOrder(ctx, st, order.ID, timeout)
+	requireOK(t, err)
+	if redispatched.State != core.WorkOrderQueued || !redispatched.Claimable || redispatched.RedispatchCount != 1 ||
+		redispatched.QueueDeadline.Sub(redispatched.QueueEnteredAt) != timeout ||
+		!redispatched.ExecutionStartedAt.IsZero() || !redispatched.ExecutionDeadline.IsZero() {
+		t.Fatalf("redispatched=%+v", redispatched)
+	}
+	_, err = ClaimWorkOrder(ctx, st, order.ID, core.WorkOrderClaim{SessionID: "after-redispatch", ClientToken: "fixture", Lease: time.Minute, ExecutionTimeout: time.Hour})
+	requireOK(t, err)
+	events, err := st.ListEvents(ctx, order.TaskID)
+	requireOK(t, err)
+	counts := map[string]int{}
+	for _, event := range events {
+		counts[event.Kind]++
+	}
+	if counts["work_order.stale"] != 1 || counts["work_order.redispatched"] != 1 {
+		t.Fatalf("audit events stale=%d redispatched=%d", counts["work_order.stale"], counts["work_order.redispatched"])
+	}
+}
+
+// runRedispatchStaleNeverClaimedGuard proves the order-level redispatch refuses,
+// with no write, every order outside the stale never-claimed guard, on every
+// backend (component-work-orders invariants 5 and 39).
+func runRedispatchStaleNeverClaimedGuard(t *testing.T, x Fixture) {
+	st, ctx := x.Backend, x.Context
+	for _, tc := range []struct {
+		name    string
+		state   core.WorkOrderState
+		command core.WorkOrderCommand
+		want    string
+	}{
+		{name: "claimed", state: core.WorkOrderClaimed, want: "cannot be redispatched"},
+		{name: "submitted", state: core.WorkOrderSubmitted, command: core.WorkOrderCmdSubmitForReview, want: "is not stale and cannot be redispatched"},
+		{name: "timed-out", state: core.WorkOrderTimedOut, command: core.WorkOrderCmdTimeout, want: "is not stale and cannot be redispatched"},
+		{name: "previously-claimed-stale", state: core.WorkOrderStale, command: core.WorkOrderCmdMarkStale, want: "was already claimed and requires operator recovery"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			order := newAggregateOrder(t, x)
+			claimed, err := ClaimWorkOrder(ctx, st, order.ID, core.WorkOrderClaim{SessionID: "guard-" + tc.name, ClientToken: "fixture", Lease: time.Minute, ExecutionTimeout: time.Hour})
+			requireOK(t, err)
+			if tc.state != core.WorkOrderClaimed {
+				claimed.State = tc.state
+				requireOK(t, UpdateWorkOrder(ctx, st, claimed, tc.command))
+			}
+			beforeOrder, beforeJob, beforeTask, beforeEvents := snapshotRecovery(t, x, order.TaskID, order.ID)
+			if _, err = RedispatchWorkOrder(ctx, st, order.ID, time.Hour); err == nil || !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("redispatch err=%v, want %q", err, tc.want)
+			}
+			afterOrder, afterJob, afterTask, afterEvents := snapshotRecovery(t, x, order.TaskID, order.ID)
+			assertUnchanged(t, beforeOrder, afterOrder, beforeJob, afterJob, beforeTask, afterTask, beforeEvents, afterEvents)
+		})
+	}
 }
 
 func runQueuedStrandedVerifyCancelled(t *testing.T, x Fixture) {

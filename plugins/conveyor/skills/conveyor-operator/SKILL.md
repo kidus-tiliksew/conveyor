@@ -68,8 +68,10 @@ parallel workflow.
 8. Use `report_progress` for meaningful milestones and `report_usage` with
    cumulative, truthful usage. Respect the lease and fixed execution deadline;
    reclaiming an expired lease does not extend execution time. If a never-
-   claimed order is reported `stale`, use `redispatch_work_order` for the
-   supported audited recovery path and then claim it with fresh credentials.
+   claimed order is reported `stale`, the order clock returns it to the queue;
+   claim it with fresh credentials once it is claimable. If it stays stale, the
+   supported audited recovery path is an operator's
+   `conveyor order recover <order-id>` (`POST /v1/work-orders/{id}/recover`).
    Never redispatch an active or execution-timed-out order. Upload a
    transcript only when required and only after confirming it contains no
    secrets.
