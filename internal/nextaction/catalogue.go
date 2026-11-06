@@ -10,19 +10,22 @@ import (
 // Vars are the only values a catalogue template may read.
 type Vars struct {
 	// Checks names a hold's checks, each with its state.
-	Checks   string
-	Title    string
-	PR       int
-	Stage    string
-	OrderID  string
-	Attempts int
-	RetryAt  string
-	Blockers string
-	Branch   string
-	Base     string
-	Version  int
-	State    string
-	Next     string
+	Checks string
+	// ReadFailure is the recorded read_failure sentence of an unanswered read,
+	// which says whether the check status or the pull request went unread.
+	ReadFailure string
+	Title       string
+	PR          int
+	Stage       string
+	OrderID     string
+	Attempts    int
+	RetryAt     string
+	Blockers    string
+	Branch      string
+	Base        string
+	Version     int
+	State       string
+	Next        string
 	// Dependents is the titles of blocks joined as a list, empty when nothing
 	// waits on the task (feature-operator-next-action NA-4).
 	Dependents string
@@ -161,12 +164,13 @@ func init() {
 	stuck.IfIgnored = text("The task stays approved and unmerged until a later read finds no check pending.")
 	catalogueTable[catalogueKey{KindCheckHold, "", "", "", CheckHoldStuck}] = stuck
 	stuckRead := stuck
-	stuckRead.Label = "Unread checks hold the merge"
+	stuckRead.Label = "An unanswered read holds the merge"
 	stuckRead.Summary = func(v Vars) string {
+		summary := withReadFailure("Conveyor still could not read what the approved head's merge depends on at its deadline, so the merge is held.", v)
 		if v.Checks == "" {
-			return "Conveyor still could not read the approved head's check status at its deadline, so the merge is held."
+			return summary
 		}
-		return "Conveyor still could not read the approved head's check status at its deadline, so the merge is held. It last named: " + v.Checks + "."
+		return summary + " It last named: " + v.Checks + "."
 	}
 	stuckRead.Question = func(v Vars) string {
 		if v.Checks == "" {
@@ -174,13 +178,18 @@ func init() {
 		}
 		return "Check " + v.Checks + " on GitHub, merge the approved head anyway, request changes, or close?"
 	}
+	stuckRead.IfIgnored = text("The task stays approved and unmerged until a later read lets it merge.")
 	catalogueTable[catalogueKey{KindCheckHold, "", "", "", CheckHoldStuckRead}] = stuckRead
 	readFailed := catalogueTable[catalogueKey{KindMerging, "", "", "", ""}]
-	readFailed.Summary = text("Conveyor could not read the approved head's check status and is reading it again.")
-	readFailed.IfIgnored = text("Conveyor reads the check status again, and merges only when that read allows it.")
+	readFailed.Summary = func(v Vars) string {
+		return withReadFailure("Conveyor could not read what the approved head's merge depends on and is reading it again.", v)
+	}
+	readFailed.IfIgnored = text("Conveyor reads again, and merges only when that read allows it.")
 	catalogueTable[catalogueKey{KindMerging, "", "", "", CheckReadFailed}] = readFailed
 	readExhausted := readFailed
-	readExhausted.Summary = text("Conveyor could not read the approved head's check status and its retries ended. Nothing merges until a read succeeds.")
+	readExhausted.Summary = func(v Vars) string {
+		return withReadFailure("Conveyor could not read what the approved head's merge depends on and its retries ended.", v) + " Nothing merges until a read succeeds."
+	}
 	readExhausted.IfIgnored = text("The next check delivery, timed check, daemon start, or check-status deadline reads it again. The merge act needs no read.")
 	catalogueTable[catalogueKey{KindMerging, "", "", "", CheckReadRetriesExhausted}] = readExhausted
 	for _, item := range []struct{ variant, label, summary, question string }{
@@ -426,4 +435,14 @@ func DocumentProposalCopy(tier string) (label, question, ifIgnored string) {
 		label, question = "Document proposal", "Confirm or dismiss the proposal?"
 	}
 	return label, question, "The proposal stays pending."
+}
+
+// withReadFailure appends the recorded read_failure sentence to a summary, which
+// is how a surface tells an unread pull request from an unread check status
+// (component-next-action, The statement; req-review-gates-evidence AC-1.10).
+func withReadFailure(summary string, v Vars) string {
+	if v.ReadFailure == "" {
+		return summary
+	}
+	return summary + " " + v.ReadFailure
 }

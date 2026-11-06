@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -12,7 +11,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/kidus-tiliksew/conveyor/internal/config"
 	"github.com/kidus-tiliksew/conveyor/internal/core"
@@ -100,10 +98,10 @@ func TestMonitorReadsBoundedAndHTTPParityIntegration(t *testing.T) {
 			}
 		}
 	}
-	if err = st.RecordMonitorSuccess(ctx, now.Add(-time.Hour)); err != nil {
+	if err = st.RecordMonitorSuccess(ctx, "conveyor", now.Add(-time.Hour)); err != nil {
 		t.Fatal(err)
 	}
-	if err = st.RecordMonitorFailure(ctx, "forge_status", "fixture error", now.Add(time.Minute)); err != nil {
+	if err = st.RecordMonitorFailure(ctx, "conveyor", "forge_status", "fixture error", now.Add(time.Minute)); err != nil {
 		t.Fatal(err)
 	}
 	if err = st.AuditMonitor(ctx, "monitor.retry", map[string]any{"attempt": 1}); err != nil {
@@ -160,20 +158,34 @@ func TestMonitorReadsBoundedAndHTTPParityIntegration(t *testing.T) {
 
 func (s *legacyMonitorReads) MonitorStatus(ctx context.Context, enabled bool, now time.Time) (monitor.Status, error) {
 	status := monitor.Status{WorkspaceID: workspace(ctx), Enabled: enabled}
-	var lastSuccess, backoff *time.Time
-	err := s.pool.QueryRow(ctx, `
-SELECT last_successful_at,current_error,forge_error_category,backoff_until
-FROM monitor_status WHERE workspace_id=$1`, workspace(ctx)).
-		Scan(&lastSuccess, &status.CurrentError, &status.ForgeErrorCategory, &backoff)
-	if err != nil && !errors.Is(err, pgx.ErrNoRows) {
+	statusRows, err := s.pool.Query(ctx, `
+SELECT repository,last_successful_at,current_error,forge_error_category,backoff_until
+FROM monitor_status WHERE workspace_id=$1`, workspace(ctx))
+	if err != nil {
 		return monitor.Status{}, err
 	}
-	if lastSuccess != nil {
-		status.LastSuccessfulAt = *lastSuccess
+	var repositories []monitor.RepositoryStatus
+	for statusRows.Next() {
+		var row monitor.RepositoryStatus
+		var lastSuccess, backoff *time.Time
+		if err = statusRows.Scan(&row.Repository, &lastSuccess, &row.CurrentError, &row.ForgeErrorCategory, &backoff); err != nil {
+			statusRows.Close()
+			return monitor.Status{}, err
+		}
+		if lastSuccess != nil {
+			row.LastSuccessfulAt = *lastSuccess
+		}
+		if backoff != nil {
+			row.BackoffUntil = *backoff
+		}
+		repositories = append(repositories, row)
 	}
-	if backoff != nil {
-		status.BackoffUntil = *backoff
+	if err = statusRows.Err(); err != nil {
+		statusRows.Close()
+		return monitor.Status{}, err
 	}
+	statusRows.Close()
+	status.SetRepositories(repositories)
 	activityRows, err := s.pool.Query(ctx, `
 SELECT id,kind,payload_json,at FROM monitor_activity
 WHERE workspace_id=$1 ORDER BY at,id`, workspace(ctx))

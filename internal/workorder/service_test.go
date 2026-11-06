@@ -3240,6 +3240,90 @@ func submissionTestHead(service *Service) string {
 	return "abc123"
 }
 
+// The reviewer's verdict call succeeds when the automatic merge cannot read the
+// pull request or GitHub reports unknown mergeability. The verdict stands, the
+// order completes, and the task waits on a recorded deadline
+// (req-review-gates-evidence AC-1.10; component-submission-merge invariant 63;
+// DEC-118(2)).
+func TestSubmitVerdictStandsWhenThePullRequestGoesUnread(t *testing.T) {
+	for name, tc := range map[string]struct {
+		viewErr   error
+		mergeable string
+		failures  int
+	}{
+		"failed read":          {viewErr: githubtrigger.StatusError(502, errors.New("bad gateway")), failures: 1},
+		"unknown mergeability": {mergeable: "UNKNOWN"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			ctx := store.WithWorkspace(store.WithActor(t.Context(), store.SystemActor()), "test")
+			st := store.NewMemory()
+			task := core.Task{ID: "unread-verdict", Workspace: "test", Repo: "app", Branch: "conveyor/unread-verdict", BaseBranch: "main", PolicyVersion: 1, State: core.TaskRunning, NextStage: core.StageReview, CreatedAt: time.Now()}
+			if err := st.CreateTask(ctx, task); err != nil {
+				t.Fatal(err)
+			}
+			if err := st.AppendEvent(ctx, core.Event{TaskID: task.ID, Kind: "pull_request.opened", Payload: core.JSONPayload(map[string]any{"head_sha": "head"})}); err != nil {
+				t.Fatal(err)
+			}
+			job := core.Job{ID: task.ID + "-review-1", TaskID: task.ID, Stage: core.StageReview, State: core.JobRunning, ModelTier: "reviewer", StartedAt: time.Now()}
+			if err := st.CreateJob(ctx, job); err != nil {
+				t.Fatal(err)
+			}
+			if err := storetest.For(st).CreateWorkOrder(ctx, core.WorkOrder{ID: job.ID, TaskID: task.ID, JobID: job.ID, Stage: core.StageReview, ReviewRound: 1, ReviewSeat: 1, BaselineSHA: "head", ServedRequirementSnapshot: []core.ServedRequirementContext{}, GovernanceSnapshot: &core.GovernanceSnapshot{Designs: []core.GovernanceDesignContext{}, Decisions: []core.Decision{}}}); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := storetest.For(st).ClaimWorkOrder(ctx, job.ID, core.WorkOrderClaim{SessionID: "review-session", ClientToken: "review-token", Model: "reviewer", Lease: time.Minute}); err != nil {
+				t.Fatal(err)
+			}
+			cfg := &config.Config{Workspace: "test", MaxBounces: 2, Repos: []config.Repo{{Name: "app", GitHub: "acme/app"}}}
+			dispatcher := dispatch.New(st, cfg, nil)
+			dispatcher.DisableMemoryQueueForTest()
+			dispatcher.ViewPullRequest = func(context.Context, string, string) (githubtrigger.PullRequest, error) {
+				return githubtrigger.PullRequest{Number: 41, State: "open", Mergeable: tc.mergeable, HeadSHA: "head", BaseSHA: "base"}, tc.viewErr
+			}
+			dispatcher.ReadCommitChecks = func(context.Context, string, string) (githubtrigger.CheckStatus, error) {
+				t.Error("an unread pull request read check status")
+				return githubtrigger.CheckStatus{}, nil
+			}
+			dispatcher.RequestMerge = func(context.Context, string, int) error {
+				t.Error("an unread pull request merged")
+				return nil
+			}
+			service := &Service{Store: st, Dispatcher: dispatcher, ConfigProvider: func(context.Context) (*config.Config, error) { return cfg, nil }}
+			review := pipeline.Review{Verdict: "approve", ReasonCode: "approved", Summary: "passes"}
+			if _, err := service.SubmitVerdict(ctx, job.ID, "review-session", review); err != nil {
+				t.Fatalf("verdict caller got %v", err)
+			}
+			order, err := st.GetWorkOrder(ctx, job.ID)
+			if err != nil || order.State != core.WorkOrderCompleted {
+				t.Fatalf("order=%+v err=%v", order, err)
+			}
+			current, err := st.GetTask(ctx, task.ID)
+			if err != nil || current.State != core.TaskApproved || current.CheckStatusDeadline == nil || current.CheckStatusDeadlineHead != "head" {
+				t.Fatalf("task=%+v err=%v", current, err)
+			}
+			events, err := st.ListEvents(ctx, task.ID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			waits, failures := 0, 0
+			for _, event := range events {
+				switch event.Kind {
+				case store.EventCheckPending:
+					waits++
+					if !strings.Contains(string(event.Payload), `"read_failed":true`) {
+						t.Fatalf("merge.check_pending = %s", event.Payload)
+					}
+				case "merge.failed":
+					failures++
+				}
+			}
+			if waits != 1 || failures != tc.failures {
+				t.Fatalf("waits=%d merge.failed=%d, want 1 and %d", waits, failures, tc.failures)
+			}
+		})
+	}
+}
+
 func TestSubmitVerdictUnresolvedApprovalRemainsRetryable(t *testing.T) {
 	for _, gate := range []bool{false, true} {
 		t.Run(fmt.Sprintf("merge-gate=%t", gate), func(t *testing.T) {

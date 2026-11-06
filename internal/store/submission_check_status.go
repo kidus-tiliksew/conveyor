@@ -52,8 +52,11 @@ type checkStatusPayload struct {
 // FoldCheckStatus folds a task's check-status events in (at, id) order for one
 // head. A hold stands from its latest merge.check_hold until a later
 // merge.check_hold_cleared; a later hold of that head replaces it, so the
-// standing hold names what the last deciding read named. Waiting, ReadFailure,
-// and RetriesExhausted are what the latest merge.check_pending said.
+// standing hold names what the last deciding read named. A permission hold that
+// replaces a stuck hold, or one that itself did, is marked AfterStuck, so the
+// ledger keeps showing the stuck hold came before it (component-submission-merge
+// invariant 62). Waiting, ReadFailure, and RetriesExhausted are what the latest
+// merge.check_pending said.
 func FoldCheckStatus(events []core.Event, head string) nextaction.CheckStatus {
 	var out nextaction.CheckStatus
 	if head == "" {
@@ -71,7 +74,8 @@ func FoldCheckStatus(events []core.Event, head string) nextaction.CheckStatus {
 		}
 		switch event.Kind {
 		case EventCheckHold:
-			out.Hold = &nextaction.CheckHold{Reason: payload.Reason, Checks: payload.Checks, ReadFailure: payload.Failure, Remedy: payload.Remedy}
+			afterStuck := payload.Reason == nextaction.CheckHoldPermission && out.StuckStands()
+			out.Hold = &nextaction.CheckHold{Reason: payload.Reason, Checks: payload.Checks, ReadFailure: payload.Failure, Remedy: payload.Remedy, AfterStuck: afterStuck}
 		case EventCheckHoldCleared:
 			out.Hold = nil
 		case EventCheckPending:

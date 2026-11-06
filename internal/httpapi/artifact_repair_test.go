@@ -1,7 +1,9 @@
 package httpapi
 
 import (
+	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -86,6 +88,39 @@ func TestArtifactRepairAuthorizationAndValidation(t *testing.T) {
 	}
 	if w := call("operator", "?workspace_id=demo", strings.Replace(real, `"image/jpeg"`, `"image/png"`, 1)); w.Code != 409 {
 		t.Fatalf("conflict: %d %s", w.Code, w.Body)
+	}
+}
+
+// retryableRepairStore answers every repair the way a SingleStore replay does
+// when its wait for the ledger row runs out.
+type retryableRepairStore struct {
+	store.Store
+	err error
+}
+
+func (s retryableRepairStore) RepairArtifactMetadata(context.Context, store.ArtifactRepairRequest) (store.ArtifactRepairResult, error) {
+	return store.ArtifactRepairResult{}, s.err
+}
+
+// A wait that ran out is a store failure, so it answers the generic 500 and
+// carries no error text (DEC-105(1); component-artifacts, State and failure).
+func TestArtifactRepairRetryableAnswersGenericInternalError(t *testing.T) {
+	const detail = "recorded artifact repair is not visible"
+	members := &membershipFixture{workspaces: []core.Workspace{{ID: "demo"}}, roles: map[string]map[string]core.WorkspaceRole{"operator": {"demo": core.WorkspaceRoleOperator}}}
+	server := NewServer(retryableRepairStore{Store: store.NewMemory(), err: fmt.Errorf("%w: %s", store.ErrRetryable, detail)})
+	server.Workspaces, server.Memberships = members, members
+	server.Credentials = staticCredentialVerifier{"operator": core.AuthenticatedCredential{ID: "operator", OwnerUserID: "operator", Kind: core.CredentialUser, Scope: core.CredentialScopeOperator}}
+	const requestID = "http-replay-request-id"
+	body := `{"expected_old_content_type":"image/png","new_content_type":"image/jpeg","request_id":"` + requestID + `"}`
+	r := httptest.NewRequest("POST", "/v1/artifacts/some-artifact/metadata-repair?workspace_id=demo", strings.NewReader(body))
+	r.Header.Set("Authorization", "Bearer operator")
+	w := httptest.NewRecorder()
+	server.Handler().ServeHTTP(w, r)
+	if w.Code != http.StatusInternalServerError {
+		t.Fatalf("status=%d body=%s", w.Code, w.Body)
+	}
+	if got := strings.TrimSpace(w.Body.String()); got != "internal server error" {
+		t.Fatalf("body=%q, want the generic message", got)
 	}
 }
 

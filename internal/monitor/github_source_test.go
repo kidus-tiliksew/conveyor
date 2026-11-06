@@ -5,6 +5,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"sort"
 	"strings"
 	"testing"
 	"time"
@@ -12,6 +13,21 @@ import (
 	"github.com/kidus-tiliksew/conveyor/internal/core"
 	githubtrigger "github.com/kidus-tiliksew/conveyor/internal/trigger/github"
 )
+
+// windowObservations reads as a repository with no stored tip does, answering
+// the branch-head read that precedes every window listing.
+func windowObservations(ctx context.Context, source GitHubSource, since time.Time) ([]Observation, error) {
+	if run := source.Run; run != nil {
+		source.Run = func(ctx context.Context, args ...string) ([]byte, error) {
+			if len(args) > 3 && args[3] == "repos/"+source.GitHubSlug+"/commits/"+source.Base {
+				return []byte(`{"sha":"window-head"}`), nil
+			}
+			return run(ctx, args...)
+		}
+	}
+	read, err := source.Observations(ctx, ReadFrom{Since: since})
+	return read.Observations, err
+}
 
 func resolvePrefixID(_ context.Context, headRef string, _ int) (string, bool, error) {
 	id, ok := strings.CutPrefix(headRef, "conveyor/task-")
@@ -58,7 +74,7 @@ func TestGitHubSourceClassifiesLineageFailuresAndOutsideChanges(t *testing.T) {
 		},
 		OnSuppressed: func(context.Context, map[string]any) error { suppressed++; return nil },
 	}
-	observations, err := source.Observations(context.Background(), time.Now().Add(-time.Hour))
+	observations, err := windowObservations(context.Background(), source, time.Now().Add(-time.Hour))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -97,7 +113,7 @@ func TestGitHubSourceSuppressesNonActionableCheckConclusions(t *testing.T) {
 	for _, conclusion := range []string{"cancelled", "skipped", "neutral", "stale", "action_required", "success"} {
 		t.Run(conclusion, func(t *testing.T) {
 			source := lineagedCheckSource(fmt.Sprintf(`{"check_runs":[{"id":77,"name":"ci","html_url":"https://example/check/77","conclusion":%q,"run_attempt":1}]}`, conclusion))
-			observations, err := source.Observations(context.Background(), time.Now().Add(-time.Hour))
+			observations, err := windowObservations(context.Background(), source, time.Now().Add(-time.Hour))
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -121,11 +137,11 @@ func TestGitHubSourceAggregatesFailedChecksPerCommitAttempt(t *testing.T) {
 {"id":33,"name":"retry","html_url":"https://example/check/33","conclusion":"failure","run_attempt":2}
 ]}`)
 
-	first, err := source.Observations(context.Background(), time.Now().Add(-time.Hour))
+	first, err := windowObservations(context.Background(), source, time.Now().Add(-time.Hour))
 	if err != nil {
 		t.Fatal(err)
 	}
-	second, err := source.Observations(context.Background(), time.Now().Add(-time.Hour))
+	second, err := windowObservations(context.Background(), source, time.Now().Add(-time.Hour))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -150,7 +166,7 @@ func TestGitHubSourceAggregatesFailedChecksPerCommitAttempt(t *testing.T) {
 
 func TestGitHubSourceEmitsRecoveryForGreenLineagedMerge(t *testing.T) {
 	source := lineagedCheckSource(`{"check_runs":[{"id":77,"name":"ci","html_url":"https://example/check/77","conclusion":"success","run_attempt":1}]}`)
-	observations, err := source.Observations(context.Background(), time.Now().Add(-time.Hour))
+	observations, err := windowObservations(context.Background(), source, time.Now().Add(-time.Hour))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -182,7 +198,7 @@ func TestGitHubSourceSuppressesFirstParentEmptyDirectPush(t *testing.T) {
 			}
 		},
 	}
-	observations, err := source.Observations(context.Background(), time.Now().Add(-time.Hour))
+	observations, err := windowObservations(context.Background(), source, time.Now().Add(-time.Hour))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -239,7 +255,7 @@ func TestGitHubSourceCarriesFirstParentPathsForExternalMergesAndReverts(t *testi
 		},
 		OnSuppressed: func(context.Context, map[string]any) error { suppressed++; return nil },
 	}
-	observations, err := source.Observations(context.Background(), time.Now().Add(-time.Hour))
+	observations, err := windowObservations(context.Background(), source, time.Now().Add(-time.Hour))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -295,7 +311,7 @@ func TestGitHubSourceExternalMergeComparisonFailsClosed(t *testing.T) {
 					}
 				},
 			}
-			observations, err := source.Observations(context.Background(), time.Now().Add(-time.Hour))
+			observations, err := windowObservations(context.Background(), source, time.Now().Add(-time.Hour))
 			if err == nil || githubtrigger.ErrorCategory(err) != githubtrigger.ForgeResponse || len(observations) != 0 {
 				t.Fatalf("incomplete comparison accepted: observations=%+v err=%v", observations, err)
 			}
@@ -305,9 +321,12 @@ func TestGitHubSourceExternalMergeComparisonFailsClosed(t *testing.T) {
 
 func TestGitHubSourceFirstParentPathsFailClosed(t *testing.T) {
 	limitFiles := make([]map[string]string, 300)
+	limitPaths := make([]string, 300)
 	for i := range limitFiles {
-		limitFiles[i] = map[string]string{"filename": fmt.Sprintf("file-%d.md", i)}
+		limitPaths[i] = fmt.Sprintf("file-%d.md", i)
+		limitFiles[i] = map[string]string{"filename": limitPaths[i]}
 	}
+	sort.Strings(limitPaths)
 	limit, err := json.Marshal(map[string]any{"files": limitFiles})
 	if err != nil {
 		t.Fatal(err)
@@ -315,16 +334,18 @@ func TestGitHubSourceFirstParentPathsFailClosed(t *testing.T) {
 	for _, test := range []struct {
 		name, response, want string
 		invalid              bool
+		incomplete           string
+		listed               int
 	}{
 		{name: "empty", response: `{"files":[]}`},
 		{name: "rename and duplicates", response: `{"files":[{"filename":"docs/intro.md","previous_filename":"README.md"},{"filename":"docs/intro.md"}]}`, want: "README.md,docs/intro.md"},
 		{name: "missing files", response: `{}`, invalid: true},
 		{name: "null files", response: `{"files":null}`, invalid: true},
 		{name: "non-array files", response: `{"files":{}}`, invalid: true},
-		{name: "missing filename", response: `{"files":[{}]}`, invalid: true},
-		{name: "invalid filename", response: `{"files":[{"filename":"../README.md"}]}`, invalid: true},
-		{name: "invalid previous filename", response: `{"files":[{"filename":"README.md","previous_filename":"/etc/file"}]}`, invalid: true},
-		{name: "ambiguous limit", response: string(limit), invalid: true},
+		{name: "missing filename", response: `{"files":[{}]}`, incomplete: PathsInvalidFilename, listed: 1},
+		{name: "invalid filename", response: `{"files":[{"filename":"../README.md"},{"filename":"docs/kept.md"}]}`, want: "docs/kept.md", incomplete: PathsInvalidFilename, listed: 2},
+		{name: "invalid previous filename", response: `{"files":[{"filename":"README.md","previous_filename":"/etc/file"}]}`, want: "README.md", incomplete: PathsInvalidFilename, listed: 1},
+		{name: "ambiguous limit", response: string(limit), want: strings.Join(limitPaths, ","), incomplete: PathsFileLimit, listed: 300},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			source := GitHubSource{GitHubSlug: "kidus-tiliksew/conveyor", Base: "main", Run: func(_ context.Context, args ...string) ([]byte, error) {
@@ -333,15 +354,18 @@ func TestGitHubSourceFirstParentPathsFailClosed(t *testing.T) {
 				}
 				return []byte(test.response), nil
 			}}
-			paths, err := source.pathsFromFirstParent(context.Background(), "parent", "head")
+			changed, err := source.pathsFromFirstParent(context.Background(), "parent", "head")
 			if test.invalid {
-				if err == nil || githubtrigger.ErrorCategory(err) != githubtrigger.ForgeResponse || len(paths) != 0 {
-					t.Fatalf("incomplete comparison accepted: paths=%v err=%v", paths, err)
+				if err == nil || githubtrigger.ErrorCategory(err) != githubtrigger.ForgeResponse || len(changed.paths) != 0 {
+					t.Fatalf("missing file list accepted: changed=%+v err=%v", changed, err)
 				}
 				return
 			}
-			if err != nil || strings.Join(paths, ",") != test.want {
-				t.Fatalf("paths=%v err=%v want=%s", paths, err, test.want)
+			if err != nil || strings.Join(changed.paths, ",") != test.want || changed.incomplete != test.incomplete {
+				t.Fatalf("changed=%+v err=%v want=%s incomplete=%q", changed, err, test.want, test.incomplete)
+			}
+			if test.listed != 0 && changed.listed != test.listed {
+				t.Fatalf("listed=%d want=%d", changed.listed, test.listed)
 			}
 		})
 	}
@@ -526,7 +550,7 @@ func TestGitHubSourceReconcilesApprovedMergeAndKeepsUnapprovedOccurrence(t *test
 					return nil, fmt.Errorf("unexpected args %v", args)
 				}
 			}
-			observations, err := source.Observations(t.Context(), time.Now().Add(-time.Hour))
+			observations, err := windowObservations(t.Context(), source, time.Now().Add(-time.Hour))
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -595,7 +619,7 @@ func TestGitHubSourceResolveTaskErrorAbortsObservations(t *testing.T) {
 			}
 		},
 	}
-	observations, err := source.Observations(context.Background(), time.Now().Add(-time.Hour))
+	observations, err := windowObservations(context.Background(), source, time.Now().Add(-time.Hour))
 	if err == nil || !strings.Contains(err.Error(), "list tasks failed") {
 		t.Fatalf("err=%v observations=%+v", err, observations)
 	}
@@ -630,7 +654,7 @@ func TestGitHubSourceResolverFactoryIsPollLocal(t *testing.T) {
 		},
 	}
 	for poll := 1; poll <= 2; poll++ {
-		if _, err := source.Observations(t.Context(), time.Time{}); err != nil {
+		if _, err := windowObservations(t.Context(), source, time.Time{}); err != nil {
 			t.Fatal(err)
 		}
 		if factories != poll || resolutions != poll*4 {
@@ -694,7 +718,7 @@ func TestGitHubSourceDefersAndSuppressesInFlightAndRecordedMerges(t *testing.T) 
 					return nil
 				},
 			}
-			observations, err := source.Observations(t.Context(), committed.Add(-time.Hour))
+			observations, err := windowObservations(t.Context(), source, committed.Add(-time.Hour))
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -720,7 +744,7 @@ func TestGitHubSourceDoesNotDeferRevertDuringInFlightMerge(t *testing.T) {
 			return MergeInFlight, "t1", nil
 		},
 	}
-	observations, err := source.Observations(t.Context(), time.Now().Add(-time.Hour))
+	observations, err := windowObservations(t.Context(), source, time.Now().Add(-time.Hour))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -737,7 +761,7 @@ func TestGitHubSourceMergeCommitStateErrorFailsClosed(t *testing.T) {
 			return MergeNone, "", fmt.Errorf("store unavailable")
 		},
 	}
-	if _, err := source.Observations(t.Context(), time.Now().Add(-time.Hour)); err == nil || !strings.Contains(err.Error(), "store unavailable") {
+	if _, err := windowObservations(t.Context(), source, time.Now().Add(-time.Hour)); err == nil || !strings.Contains(err.Error(), "store unavailable") {
 		t.Fatalf("err=%v", err)
 	}
 }
@@ -757,7 +781,7 @@ func TestGitHubSourceStaleApprovalMergeStaysExternal(t *testing.T) {
 			return nil
 		},
 	}
-	observations, err := source.Observations(t.Context(), time.Now().Add(-time.Hour))
+	observations, err := windowObservations(t.Context(), source, time.Now().Add(-time.Hour))
 	if err != nil {
 		t.Fatal(err)
 	}

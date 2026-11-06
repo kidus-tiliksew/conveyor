@@ -386,8 +386,11 @@ func varsFor(in Input, row built) Vars {
 		vars.Blockers += blocker.Title
 	}
 	vars.Dependents = dependentList(in.Blocks)
-	if row.kind == KindCheckHold {
-		vars.Checks = checkList(in.CheckStatus.Hold.Checks)
+	switch row.kind {
+	case KindCheckHold:
+		vars.Checks, vars.ReadFailure = checkList(in.CheckStatus.Hold.Checks), in.CheckStatus.Hold.ReadFailure
+	case KindMerging:
+		vars.ReadFailure = in.CheckStatus.ReadFailure
 	}
 	return vars
 }

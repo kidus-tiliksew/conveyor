@@ -110,6 +110,9 @@ func TestAssignmentResolverPollReadCount(t *testing.T) {
 						}, nil
 					},
 					Run: func(_ context.Context, args ...string) ([]byte, error) {
+						if strings.HasSuffix(args[3], "/commits/main") {
+							return []byte(`{"sha":"branch-head"}`), nil
+						}
 						if strings.HasSuffix(args[3], "/commits") {
 							var commits []map[string]any
 							for i := 1; i <= n; i++ {
@@ -125,7 +128,8 @@ func TestAssignmentResolverPollReadCount(t *testing.T) {
 					},
 				}
 				for poll := 1; poll <= 2; poll++ {
-					got, err := source.Observations(ctx, time.Time{})
+					read, err := source.Observations(ctx, monitor.ReadFrom{})
+					got := read.Observations
 					if err != nil || len(got) != n {
 						t.Fatalf("observations=%v err=%v", got, err)
 					}
@@ -168,7 +172,8 @@ func TestAssignmentResolverReadErrorsAbortPoll(t *testing.T) {
 					return nil, nil
 				},
 			}
-			got, err := source.Observations(store.WithWorkspace(store.WithActor(t.Context(), store.SystemActor()), "demo"), time.Time{})
+			read, err := source.Observations(store.WithWorkspace(store.WithActor(t.Context(), store.SystemActor()), "demo"), monitor.ReadFrom{})
+			got := read.Observations
 			if !errors.Is(err, sentinel) || len(got) != 0 {
 				t.Fatalf("observations=%v err=%v", got, err)
 			}

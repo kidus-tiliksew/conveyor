@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"net/url"
+	"slices"
 	"sort"
 	"strings"
 	"time"
@@ -159,18 +160,63 @@ type Drift struct {
 	Outcome             string     `json:"outcome,omitempty"`
 }
 
+// Observation context fields a source sets beside the changed paths.
+const (
+	// ContextPathsIncomplete says the changed paths don't name every file the
+	// commit changed. Its value is PathsFileLimit or PathsInvalidFilename
+	// (component-monitor-drift invariant 13).
+	ContextPathsIncomplete = "paths_incomplete"
+	PathsFileLimit         = "file_limit"
+	PathsInvalidFilename   = "invalid_filename"
+	// ContextHintsSkipped names why the commit was processed without its
+	// repository hints (component-monitor-drift invariant 14).
+	ContextHintsSkipped = "hints_skipped"
+)
+
+// RepositoryStatus is one repository's row of monitor status
+// (req-delivery-and-forge AC-4.5; component-monitor-drift invariant 15).
+type RepositoryStatus struct {
+	Repository         string    `json:"repository"`
+	LastSuccessfulAt   time.Time `json:"last_successful_observation,omitzero"`
+	CurrentError       string    `json:"current_error,omitempty"`
+	ForgeErrorCategory string    `json:"forge_error_category,omitempty"`
+	BackoffUntil       time.Time `json:"backoff_until,omitzero"`
+}
+
 type Status struct {
-	WorkspaceID        string              `json:"workspace_id"`
-	Enabled            bool                `json:"enabled"`
+	WorkspaceID string `json:"workspace_id"`
+	Enabled     bool   `json:"enabled"`
+	// The four fields below summarize Repositories: the oldest successful
+	// observation, and the first non-empty error with its category and backoff.
 	LastSuccessfulAt   time.Time           `json:"last_successful_observation,omitzero"`
 	CurrentError       string              `json:"current_error,omitempty"`
 	ForgeErrorCategory string              `json:"forge_error_category,omitempty"`
 	BackoffUntil       time.Time           `json:"backoff_until,omitzero"`
+	Repositories       []RepositoryStatus  `json:"repositories"`
 	Observations       []ObservationRecord `json:"observations"`
 	Drift              []Drift             `json:"drift"`
 	DriftCount         int                 `json:"drift_count"`
 	OldestDriftAge     time.Duration       `json:"oldest_drift_age"`
 	Activity           []Activity          `json:"activity"`
+}
+
+// SetRepositories stores the repository rows in name order and derives the
+// top-level summary from them, so one summary rule serves every backend.
+func (s *Status) SetRepositories(rows []RepositoryStatus) {
+	s.Repositories = slices.Clone(rows)
+	if s.Repositories == nil {
+		s.Repositories = []RepositoryStatus{}
+	}
+	sort.Slice(s.Repositories, func(i, j int) bool { return s.Repositories[i].Repository < s.Repositories[j].Repository })
+	s.LastSuccessfulAt, s.CurrentError, s.ForgeErrorCategory, s.BackoffUntil = time.Time{}, "", "", time.Time{}
+	for _, row := range s.Repositories {
+		if !row.LastSuccessfulAt.IsZero() && (s.LastSuccessfulAt.IsZero() || row.LastSuccessfulAt.Before(s.LastSuccessfulAt)) {
+			s.LastSuccessfulAt = row.LastSuccessfulAt
+		}
+		if s.CurrentError == "" && row.CurrentError != "" {
+			s.CurrentError, s.ForgeErrorCategory, s.BackoffUntil = row.CurrentError, row.ForgeErrorCategory, row.BackoffUntil
+		}
+	}
 }
 
 type Activity struct {
@@ -240,8 +286,19 @@ type Store interface {
 	ResolveDrift(context.Context, string, string, string) (Drift, error)
 	MonitorStatus(context.Context, bool, time.Time) (Status, error)
 	ListUnresolvedDrift(context.Context) ([]Drift, error)
-	RecordMonitorSuccess(context.Context, time.Time) error
-	RecordMonitorFailure(context.Context, string, string, time.Time) error
+	// RecordMonitorSuccess and RecordMonitorFailure write one repository's
+	// status row and leave every other repository's untouched
+	// (req-delivery-and-forge AC-4.5).
+	RecordMonitorSuccess(ctx context.Context, repository string, at time.Time) error
+	RecordMonitorFailure(ctx context.Context, repository, category, detail string, backoffUntil time.Time) error
+	// MonitorTip reads the repository's last-processed tip, empty when it has
+	// none (component-monitor-drift invariant 4).
+	MonitorTip(ctx context.Context, repository string) (string, error)
+	// AdvanceMonitorTip moves the tip from expected to next and reports whether
+	// it did. A stored value other than expected changes nothing, so a slower
+	// concurrent pass can't move the tip backward. An empty expected means no
+	// stored tip.
+	AdvanceMonitorTip(ctx context.Context, repository, expected, next string) (bool, error)
 	AuditTask(context.Context, string, string, map[string]any) error
 	AuditMonitor(context.Context, string, map[string]any) error
 	WithMonitorSignalClassLock(context.Context, string, SignalKind, func(context.Context) error) error
@@ -267,6 +324,10 @@ var (
 	ErrRequirementIDMissing    = errors.New("monitor requirement_id is missing")
 	ErrRequirementIDInvalid    = errors.New("monitor requirement_id is invalid")
 	ErrRequirementIDNotAllowed = errors.New("monitor requirement_id is only allowed for requirements_amended")
+	// ErrRepositoryRequired refuses a status or tip write that names no repository.
+	ErrRepositoryRequired = errors.New("monitor repository is required")
+	// ErrTipRequired refuses a tip advance to an empty value.
+	ErrTipRequired = errors.New("monitor tip is required")
 )
 
 type Service struct {
@@ -285,15 +346,25 @@ func (s *Service) Status(ctx context.Context) (Status, error) {
 	if s.Now != nil {
 		now = s.Now().UTC()
 	}
-	enabled := s.Enabled
+	enabled, repositories := s.Enabled, s.Repositories
 	if s.ResolveScope != nil {
-		_, resolved, _, err := s.ResolveScope(ctx)
+		_, resolved, scope, err := s.ResolveScope(ctx)
 		if err != nil {
 			return Status{}, err
 		}
-		enabled = resolved
+		enabled, repositories = resolved, scope
 	}
-	return s.Store.MonitorStatus(ctx, enabled, now)
+	status, err := s.Store.MonitorStatus(ctx, enabled, now)
+	if err != nil || !enabled || len(repositories) == 0 {
+		return status, err
+	}
+	// No pass reads a repository outside the monitor's scope, so nothing would
+	// ever clear its row's error from the summary.
+	status.SetRepositories(slices.DeleteFunc(status.Repositories, func(row RepositoryStatus) bool {
+		_, monitored := repositories[row.Repository]
+		return !monitored
+	}))
+	return status, nil
 }
 
 // ListUnresolvedDrift reads the document attention signal without loading monitor history.
@@ -510,12 +581,18 @@ func (s *Service) Process(ctx context.Context, observation Observation) (Observa
 			"source": request.Source, "intake_key": request.IntakeKey,
 		})
 	}
-	_ = s.Store.AuditTask(ctx, result.Task.ID, "monitor.observed", map[string]any{
+	observedPayload := map[string]any{
 		"identity": observation.Identity(), "kind": observation.Kind,
 		"repository": observation.Repository, "source_url": observation.SourceURL,
 		"commit_sha": observation.CommitSHA, "check_run_id": observation.CheckRunID,
 		"attempt": observation.Attempt, "occurrence_id": observation.OccurrenceID,
-	})
+	}
+	// A reused task's body was written for an earlier occurrence, so its events
+	// are where this occurrence states that its path list is incomplete.
+	if incomplete := observation.Context[ContextPathsIncomplete]; incomplete != "" {
+		observedPayload[ContextPathsIncomplete] = incomplete
+	}
+	_ = s.Store.AuditTask(ctx, result.Task.ID, "monitor.observed", observedPayload)
 	if observation.Kind.ReusesOpenTask() && fresh {
 		_ = s.Store.AuditTask(ctx, result.Task.ID, "monitor.occurrence_observed", map[string]any{
 			"identity": observation.Identity(), "kind": observation.Kind,
@@ -528,6 +605,11 @@ func (s *Service) Process(ctx context.Context, observation Observation) (Observa
 		"identity": observation.Identity(), "classification": observation.Kind,
 		"drift": observation.Kind.Drift(),
 	})
+	if reason := observation.Context[ContextHintsSkipped]; reason != "" {
+		_ = s.Store.AuditTask(ctx, result.Task.ID, "repository_hints.skipped", map[string]any{
+			"path": hintsPath, "revision": observation.CommitSHA, "reason": reason,
+		})
+	}
 	if observation.Kind.Drift() {
 		if err = s.recordRepositoryDrift(ctx, observation, result.Task.ID); err != nil {
 			return ObservationRecord{}, err
@@ -568,7 +650,8 @@ func (s *Service) recordRepositoryDrift(ctx context.Context, observation Observa
 }
 
 func (s *Service) recordSystemDesignDrift(ctx context.Context, observation Observation, taskID string) error {
-	if len(observation.ChangedPaths) == 0 {
+	fileLimit := observation.Context[ContextPathsIncomplete] == PathsFileLimit
+	if len(observation.ChangedPaths) == 0 && !fileLimit {
 		return nil
 	}
 	documents, err := s.Store.ListSystemDesigns(ctx, false)
@@ -586,7 +669,11 @@ func (s *Service) recordSystemDesignDrift(ctx context.Context, observation Obser
 		}
 		designs = append(designs, core.GovernanceDesignContext{ID: document.ID, Title: document.Title, Category: document.Category, Version: version.Version, Content: version.Content, Governs: version.Governs})
 	}
-	for _, match := range core.ResolveGovernedDesigns(designs, observation.Repository, observation.ChangedPaths) {
+	matches := core.ResolveGovernedDesigns(designs, observation.Repository, observation.ChangedPaths)
+	if fileLimit {
+		matches = withRepositoryGovernors(matches, designs, observation.Repository)
+	}
+	for _, match := range matches {
 		design := match.Design
 		id := "design:" + design.ID + ":" + observation.Identity()
 		judgment, judgmentErr := s.Store.ResolveCausalSystemDesignMerge(ctx, design.ID, observation.Repository, observation.CommitSHA, observation.CausalEventID, id, match.MatchingPaths, observation.Kind == LineagedMerge)
@@ -611,6 +698,29 @@ func (s *Service) recordSystemDesignDrift(ctx context.Context, observation Obser
 	return nil
 }
 
+// withRepositoryGovernors adds every design that governs a path in repository
+// and no listed path. A list cut off at the file limit can't rule one out, and
+// each added match records no matching path because none matched
+// (component-monitor-drift invariant 23).
+func withRepositoryGovernors(matches []core.GovernedDesignMatch, designs []core.GovernanceDesignContext, repository string) []core.GovernedDesignMatch {
+	matched := make(map[string]struct{}, len(matches))
+	for _, match := range matches {
+		matched[match.Design.ID] = struct{}{}
+	}
+	for _, design := range designs {
+		if _, found := matched[design.ID]; found {
+			continue
+		}
+		if slices.ContainsFunc(design.Governs, func(scope core.GovernedScope) bool {
+			return scope.Repository == repository && len(scope.Paths) > 0
+		}) {
+			matches = append(matches, core.GovernedDesignMatch{Design: design, MatchingPaths: []string{}})
+		}
+	}
+	sort.Slice(matches, func(i, j int) bool { return matches[i].Design.ID < matches[j].Design.ID })
+	return matches
+}
+
 func compactStrings(values []string) []string {
 	if len(values) < 2 {
 		return values
@@ -627,12 +737,18 @@ func compactStrings(values []string) []string {
 func taskBody(o Observation) string {
 	purpose := "Investigate and repair the post-merge failure through Conveyor's normal pipeline."
 	if o.Kind.Drift() {
-		purpose = "Reconcile this out-of-pipeline repository change: propose a requirement revision if intentional, or surface the requirement/code conflict for human decision. Do not silently rewrite approved requirements."
+		purpose = "Reconcile this out-of-pipeline repository change against the confirmed documents, and surface any requirement or code conflict for an operator decision. Do not rewrite approved requirements."
 	}
 	body := fmt.Sprintf("Monitor signal: %s\nRepository: %s\nOccurrence: %s\nSource: %s\nCommit: %s\n\n%s",
 		o.Kind, o.Repository, o.OccurrenceID, o.SourceURL, o.CommitSHA, purpose)
 	if failedChecks := strings.TrimSpace(o.Context["failed_check_runs"]); failedChecks != "" {
 		body += "\n\nFailed checks:\n" + failedChecks
+	}
+	switch o.Context[ContextPathsIncomplete] {
+	case PathsFileLimit:
+		body += "\n\nChanged paths: GitHub's comparison stops at 300 files, so the recorded list of changed paths is cut off and omits files this commit changed."
+	case PathsInvalidFilename:
+		body += "\n\nChanged paths: the recorded list of changed paths leaves out at least one file whose name is not a clean repository-relative path."
 	}
 	if o.Hints != nil {
 		body += "\n\n" + o.Hints.AdvisoryText()

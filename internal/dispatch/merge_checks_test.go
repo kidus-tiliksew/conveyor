@@ -112,17 +112,22 @@ func TestRateLimitedCheckReadStopsTheTimedSweep(t *testing.T) {
 }
 
 // A hold, a wait, and an unanswered read leave the verdict accepted: the caller
-// of the verdict gets nil, and the merge stays recorded (the applyReview path).
+// of the verdict gets nil, and the merge stays recorded (the applyReview path;
+// req-review-gates-evidence AC-1.10; DEC-118(2)).
 func TestApprovingVerdictSurvivesCheckStatus(t *testing.T) {
 	for name, tc := range map[string]struct {
-		read    github.CheckStatus
-		readErr error
-		kind    string
+		read      github.CheckStatus
+		readErr   error
+		viewErr   error
+		mergeable string
+		kind      string
 	}{
-		"failed":    {read: github.CheckStatus{Checks: []github.Check{{Name: "e2e", State: github.CheckFailed}}}, kind: store.EventCheckHold},
-		"pending":   {read: github.CheckStatus{Checks: []github.Check{{Name: "e2e", State: github.CheckPending}}}, kind: store.EventCheckPending},
-		"transient": {readErr: github.StatusError(502, errors.New("bad gateway")), kind: store.EventCheckPending},
-		"refused":   {readErr: github.PermissionError(errors.New("refused")), kind: store.EventCheckHold},
+		"unread pull request":  {viewErr: github.StatusError(502, errors.New("bad gateway")), kind: store.EventCheckPending},
+		"unknown mergeability": {mergeable: "UNKNOWN", kind: store.EventCheckPending},
+		"failed":               {read: github.CheckStatus{Checks: []github.Check{{Name: "e2e", State: github.CheckFailed}}}, kind: store.EventCheckHold},
+		"pending":              {read: github.CheckStatus{Checks: []github.Check{{Name: "e2e", State: github.CheckPending}}}, kind: store.EventCheckPending},
+		"transient":            {readErr: github.StatusError(502, errors.New("bad gateway")), kind: store.EventCheckPending},
+		"refused":              {readErr: github.PermissionError(errors.New("refused")), kind: store.EventCheckHold},
 	} {
 		t.Run(name, func(t *testing.T) {
 			ctx := store.WithWorkspace(store.WithActor(t.Context(), store.SystemActor()), "test")
@@ -145,7 +150,14 @@ func TestApprovingVerdictSurvivesCheckStatus(t *testing.T) {
 			d := New(st, &config.Config{Workspace: "test", Repos: []config.Repo{{Name: "app", GitHub: "acme/app"}}}, nil)
 			merges := 0
 			d.ViewPullRequest = func(context.Context, string, string) (github.PullRequest, error) {
-				return github.PullRequest{Number: 41, State: "open", Mergeable: "MERGEABLE", HeadSHA: "head", BaseSHA: "base"}, nil
+				if tc.viewErr != nil {
+					return github.PullRequest{}, tc.viewErr
+				}
+				mergeable := "MERGEABLE"
+				if tc.mergeable != "" {
+					mergeable = tc.mergeable
+				}
+				return github.PullRequest{Number: 41, State: "open", Mergeable: mergeable, HeadSHA: "head", BaseSHA: "base"}, nil
 			}
 			d.RequestMerge = func(context.Context, string, int) error { merges++; return nil }
 			d.ReadCommitChecks = func(context.Context, string, string) (github.CheckStatus, error) { return tc.read, tc.readErr }
@@ -162,6 +174,143 @@ func TestApprovingVerdictSurvivesCheckStatus(t *testing.T) {
 				t.Fatalf("events=%+v err=%v, want %s last", events[task.ID], err, tc.kind)
 			}
 		})
+	}
+}
+
+// Invariant 63 governs only the automatic merge of an approved gate-off task with
+// a head to record. Everything else keeps its result and records no wait
+// (req-review-gates-evidence AC-1.8, AC-1.10).
+func TestUnreadPullRequestOutsideTheAutomaticPath(t *testing.T) {
+	failure := github.StatusError(502, errors.New("bad gateway"))
+	operator := core.Actor{ID: store.UserActorID("usr-operator"), Role: core.ActorUser}
+	for name, tc := range map[string]struct {
+		mutate func(*core.Task)
+		act    func(context.Context, *Dispatcher, core.Task) error
+	}{
+		"the operator's act": {
+			mutate: func(task *core.Task) { task.ApprovedHeadSHA = "head" },
+			act: func(ctx context.Context, d *Dispatcher, task core.Task) error {
+				return d.MergeApprovedTask(store.WithActor(ctx, operator), task, operator)
+			},
+		},
+		"a gate-on task": {
+			mutate: func(task *core.Task) { task.ApprovedHeadSHA, task.MergeApproval = "head", true },
+			act: func(ctx context.Context, d *Dispatcher, task core.Task) error {
+				return d.MergeApprovedTaskAutomatically(ctx, task)
+			},
+		},
+		"a task with no head": {
+			mutate: func(*core.Task) {},
+			act: func(ctx context.Context, d *Dispatcher, task core.Task) error {
+				return d.MergeApprovedTaskAutomatically(ctx, task)
+			},
+		},
+	} {
+		for _, read := range []struct {
+			name      string
+			viewErr   error
+			mergeable string
+			want      error
+			failures  int
+		}{
+			{name: "failed read", viewErr: failure, want: failure, failures: 1},
+			{name: "unknown mergeability", mergeable: "UNKNOWN", want: ErrMergeReadinessPending},
+		} {
+			t.Run(name+"/"+read.name, func(t *testing.T) {
+				ctx := store.WithWorkspace(store.WithActor(t.Context(), store.SystemActor()), "test")
+				st := store.NewMemory()
+				task := core.Task{ID: "outside", Workspace: "test", Repo: "app", BaseBranch: "main", Branch: "conveyor/outside", State: core.TaskApproved, CreatedAt: time.Now()}
+				tc.mutate(&task)
+				if err := st.CreateTask(ctx, task); err != nil {
+					t.Fatal(err)
+				}
+				if task.MergeApproval {
+					if err := st.CreateIntervention(ctx, core.Intervention{TaskID: task.ID, Action: core.InterventionApprove, ActorID: gateOperator.ID, ActorRole: core.ActorUser}); err != nil {
+						t.Fatal(err)
+					}
+				}
+				d := New(mergeIdentityStore{st}, &config.Config{Workspace: "test", Repos: []config.Repo{{Name: "app", GitHub: "acme/app"}}}, nil)
+				d.DisableMemoryQueueForTest()
+				d.ViewPullRequest = func(context.Context, string, string) (github.PullRequest, error) {
+					return github.PullRequest{Number: 41, State: "open", Mergeable: read.mergeable, HeadSHA: "head", BaseSHA: "base"}, read.viewErr
+				}
+				d.ReadCommitChecks = failingCheckReader(t)
+				err := tc.act(ctx, d, task)
+				if !errors.Is(err, read.want) || errors.Is(err, ErrCheckStatusUnread) {
+					t.Fatalf("err = %v, want %v and no unread read", err, read.want)
+				}
+				requireNoUnreadWait(t, ctx, st, task.ID, read.failures)
+			})
+		}
+	}
+}
+
+// A queued or running task finishing through the accepted-review path is outside
+// invariant 63 too, so it reports the same failure and records no wait.
+func TestUnreadPullRequestOnTheAcceptedReviewPath(t *testing.T) {
+	failure := github.StatusError(502, errors.New("bad gateway"))
+	for _, read := range []struct {
+		name      string
+		viewErr   error
+		mergeable string
+		want      error
+		failures  int
+	}{
+		{name: "failed read", viewErr: failure, want: failure, failures: 1},
+		{name: "unknown mergeability", mergeable: "UNKNOWN", want: ErrMergeReadinessPending},
+	} {
+		t.Run(read.name, func(t *testing.T) {
+			ctx := store.WithWorkspace(store.WithActor(t.Context(), store.SystemActor()), "test")
+			st := store.NewMemory()
+			task := core.Task{ID: "accepted", Workspace: "test", Repo: "app", Branch: "conveyor/accepted", State: core.TaskRunning, NextStage: core.StageReview, PolicyVersion: 1, ApprovedHeadSHA: "head", CreatedAt: time.Now()}
+			if err := st.CreateTask(ctx, task); err != nil {
+				t.Fatal(err)
+			}
+			if err := st.AppendEvent(ctx, core.Event{TaskID: task.ID, Kind: "review.round_completed", Payload: core.JSONPayload(map[string]any{"review_round": 1, "verdict": "approve", "approved_head_sha": "head"})}); err != nil {
+				t.Fatal(err)
+			}
+			d := New(st, &config.Config{Workspace: "test", Repos: []config.Repo{{Name: "app", GitHub: "acme/app"}}}, nil)
+			d.DisableMemoryQueueForTest()
+			d.ViewPullRequest = func(context.Context, string, string) (github.PullRequest, error) {
+				return github.PullRequest{Number: 41, State: "open", Mergeable: read.mergeable, HeadSHA: "head", BaseSHA: "base"}, read.viewErr
+			}
+			d.ReadCommitChecks = failingCheckReader(t)
+			err := d.MergeApprovedTaskAutomatically(ctx, task)
+			if !errors.Is(err, read.want) || errors.Is(err, ErrCheckStatusUnread) {
+				t.Fatalf("err = %v, want %v and no unread read", err, read.want)
+			}
+			requireNoUnreadWait(t, ctx, st, task.ID, read.failures)
+		})
+	}
+}
+
+// requireNoUnreadWait requires no deadline, no check-status event, and failures
+// merge.failed events.
+func requireNoUnreadWait(t *testing.T, ctx context.Context, st store.Store, taskID string, failures int) {
+	t.Helper()
+	current, err := st.GetTask(ctx, taskID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if current.CheckStatusDeadline != nil {
+		t.Fatalf("deadline = %v, want none", current.CheckStatusDeadline)
+	}
+	events, err := st.ListCheckStatusEvents(ctx, []string{taskID})
+	if err != nil || len(events[taskID]) != 0 {
+		t.Fatalf("check-status events = %+v, err = %v", events[taskID], err)
+	}
+	ledger, err := st.ListEvents(ctx, taskID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	recorded := 0
+	for _, event := range ledger {
+		if event.Kind == "merge.failed" {
+			recorded++
+		}
+	}
+	if recorded != failures {
+		t.Fatalf("merge.failed events = %d, want %d", recorded, failures)
 	}
 }
 

@@ -438,7 +438,7 @@ func TestMonitorStatusOmitsUnsetTimestamps(t *testing.T) {
 	// the correct RFC 3339 value and backoff_until must still be absent.
 	ctx := store.WithWorkspace(store.WithActor(t.Context(), store.SystemActor()), "demo")
 	successAt := time.Date(2026, 10, 13, 9, 0, 0, 0, time.UTC)
-	if err := st.(monitor.Store).RecordMonitorSuccess(ctx, successAt); err != nil {
+	if err := st.(monitor.Store).RecordMonitorSuccess(ctx, "conveyor", successAt); err != nil {
 		t.Fatal(err)
 	}
 	raw = getStatus()
@@ -461,7 +461,7 @@ func TestMonitorStatusOmitsUnsetTimestamps(t *testing.T) {
 	// After recording a failure with a real backoff time, backoff_until must
 	// appear with the expected value.
 	backoff := time.Date(2026, 10, 13, 9, 5, 0, 0, time.UTC)
-	if err := st.(monitor.Store).RecordMonitorFailure(ctx, "forge_status", "rate limited", backoff); err != nil {
+	if err := st.(monitor.Store).RecordMonitorFailure(ctx, "conveyor", "forge_status", "rate limited", backoff); err != nil {
 		t.Fatal(err)
 	}
 	raw = getStatus()
@@ -502,5 +502,62 @@ func TestMonitorStatusOmitsUnsetTimestamps(t *testing.T) {
 	}
 	if _, ok := driftEntries[0]["detected_at"]; !ok {
 		t.Error("open drift JSON missing detected_at")
+	}
+}
+
+// TestMonitorStatusReportsRepositories proves GET /v1/monitor lists each
+// repository's status and keeps the top-level fields as their summary
+// (req-delivery-and-forge AC-4.5; component-monitor-drift invariant 15).
+func TestMonitorStatusReportsRepositories(t *testing.T) {
+	st := store.NewMemory()
+	server := NewServer(st)
+	server.Workspace, server.Repos, server.BearerToken = "demo", []string{"conveyor", "web"}, "secret"
+	server.Monitor = &monitor.Service{Store: st.(monitor.Store), WorkspaceID: "demo", Enabled: true}
+	handler := server.Handler()
+	read := func() monitor.Status {
+		t.Helper()
+		request := httptest.NewRequest(http.MethodGet, "/v1/monitor", nil)
+		authenticatedMemoryRead(server, request)
+		response := httptest.NewRecorder()
+		handler.ServeHTTP(response, request)
+		if response.Code != http.StatusOK {
+			t.Fatalf("GET /v1/monitor status=%d body=%s", response.Code, response.Body.String())
+		}
+		if !strings.Contains(response.Body.String(), `"repositories":`) {
+			t.Fatalf("no repositories field: %s", response.Body.String())
+		}
+		var status monitor.Status
+		if err := json.Unmarshal(response.Body.Bytes(), &status); err != nil {
+			t.Fatal(err)
+		}
+		return status
+	}
+	if status := read(); len(status.Repositories) != 0 {
+		t.Fatalf("repositories=%+v", status.Repositories)
+	}
+	ctx := store.WithWorkspace(store.WithActor(t.Context(), store.SystemActor()), "demo")
+	older := time.Date(2026, 10, 13, 9, 0, 0, 0, time.UTC)
+	newer := older.Add(time.Hour)
+	monitorStore := st.(monitor.Store)
+	if err := monitorStore.RecordMonitorSuccess(ctx, "conveyor", newer); err != nil {
+		t.Fatal(err)
+	}
+	if err := monitorStore.RecordMonitorSuccess(ctx, "web", older); err != nil {
+		t.Fatal(err)
+	}
+	if err := monitorStore.RecordMonitorFailure(ctx, "web", "forge_status", "web failed", newer); err != nil {
+		t.Fatal(err)
+	}
+	// A pass over conveyor leaves web's error standing.
+	if err := monitorStore.RecordMonitorSuccess(ctx, "conveyor", newer); err != nil {
+		t.Fatal(err)
+	}
+	status := read()
+	if len(status.Repositories) != 2 || status.Repositories[0].Repository != "conveyor" || status.Repositories[0].CurrentError != "" ||
+		status.Repositories[1].Repository != "web" || status.Repositories[1].CurrentError != "web failed" {
+		t.Fatalf("repositories=%+v", status.Repositories)
+	}
+	if status.CurrentError != "web failed" || status.ForgeErrorCategory != "forge_status" || !status.LastSuccessfulAt.Equal(older) {
+		t.Fatalf("summary=%+v", status)
 	}
 }

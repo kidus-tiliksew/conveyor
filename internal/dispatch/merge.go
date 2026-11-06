@@ -827,11 +827,11 @@ func (d *Dispatcher) MergeApprovedTask(ctx context.Context, task core.Task, acto
 }
 
 // MergeApprovedTaskAutomatically is the factory's merge of an approved task
-// with the merge gate off. It reads the approved head's check status first and
-// returns ErrCheckStatusHeld, ErrCheckStatusPending, or ErrCheckStatusUnread
-// when that status does not let it merge. Every automatic caller shares one
-// answer to an unanswered read: it arranges the task's job, whose attempts bound
-// the retries.
+// with the merge gate off. It returns ErrCheckStatusUnread when the pull request
+// or the approved head's check status goes unanswered, and ErrCheckStatusHeld or
+// ErrCheckStatusPending when that status does not let it merge. Every automatic
+// caller shares one answer to an unanswered read: it arranges the task's job,
+// whose attempts bound the retries.
 func (d *Dispatcher) MergeApprovedTaskAutomatically(ctx context.Context, task core.Task) error {
 	err := d.readAndMergeAutomatically(ctx, task)
 	if errors.Is(err, ErrCheckStatusUnread) {
@@ -884,7 +884,18 @@ func (d *Dispatcher) mergeApprovedTaskLocked(ctx context.Context, task core.Task
 		if errors.Is(err, github.ErrPullRequestNotFound) {
 			return d.recordMergeFailureWithAuthor(ctx, current, "missing_pull_request", fmt.Errorf("no pull request found for branch %s; push it and submit it for review before merging: %w", current.Branch, err), author)
 		}
-		return d.recordMergeFailureWithAuthor(ctx, current, "pull_request_lookup_failed", fmt.Errorf("could not read the pull request for branch %s; verify GitHub authentication and retry: %w", current.Branch, err), author)
+		lookupErr := fmt.Errorf("could not read the pull request for branch %s; verify GitHub authentication and retry: %w", current.Branch, err)
+		if unreadPullRequestApplies(current, act) {
+			if ctx.Err() != nil {
+				return ctx.Err()
+			}
+			lookupErr = d.recordUnreadPullRequest(ctx, current, act, pullRequestReadFailure(err), lookupErr)
+			var unread *unreadPullRequestError
+			if !errors.As(lookupErr, &unread) {
+				return lookupErr
+			}
+		}
+		return d.recordMergeFailureWithAuthor(ctx, current, "pull_request_lookup_failed", lookupErr, author)
 	}
 	if pr.Merged {
 		if current.ApprovalStale {
@@ -932,7 +943,11 @@ func (d *Dispatcher) mergeApprovedTaskLocked(ctx context.Context, task core.Task
 		}
 	}
 	if pr.Mergeable == "UNKNOWN" {
-		return fmt.Errorf("pull request %s#%d %w", repo.GitHub, pr.Number, ErrMergeReadinessPending)
+		pendingErr := fmt.Errorf("pull request %s#%d %w", repo.GitHub, pr.Number, ErrMergeReadinessPending)
+		if unreadPullRequestApplies(current, act) {
+			return d.recordUnreadPullRequest(ctx, current, act, pullRequestMergeabilityUnknown, pendingErr)
+		}
+		return pendingErr
 	}
 	if pr.Mergeable == "CONFLICTING" {
 		if err = d.recordMergeConflictBlocked(ctx, current, approvedHead, pr.HeadSHA, "merge-conflict"); err != nil {
