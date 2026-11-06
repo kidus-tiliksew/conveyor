@@ -1,0 +1,22 @@
+== mode=resume (no load)
+Running 4 tests using 2 workers
+CONTROL paused-clock stale after 5000ms: true counts {"activity":5,"proposals":5,"workspace":5,"detail":5,"history":0}
+CONTROL paused-clock stale after 5000ms: true counts {"activity":5,"proposals":5,"workspace":5,"detail":5,"history":0}
+CONTROL mode resume text fresh; detail reads added: 0
+CONTROL mode resume text fresh; detail reads added: 0
+CONTROL paused-clock stale after 5000ms: true counts {"activity":5,"proposals":5,"workspace":5,"detail":5,"history":0}
+CONTROL mode resume text fresh; detail reads added: 0
+CONTROL paused-clock stale after 5000ms: true counts {"activity":5,"proposals":5,"workspace":5,"detail":5,"history":0}
+CONTROL mode resume text fresh; detail reads added: 0
+  4 passed (14.5s)
+== mode=tick (no load)
+Running 4 tests using 2 workers
+CONTROL paused-clock stale after 5000ms: true counts {"activity":5,"proposals":5,"workspace":5,"detail":5,"history":0}
+CONTROL mode tick text fresh; detail reads added: 0
+CONTROL paused-clock stale after 5000ms: true counts {"activity":5,"proposals":5,"workspace":5,"detail":5,"history":0}
+CONTROL mode tick text fresh; detail reads added: 0
+CONTROL paused-clock stale after 5000ms: true counts {"activity":5,"proposals":5,"workspace":5,"detail":5,"history":0}
+CONTROL mode tick text fresh; detail reads added: 0
+CONTROL paused-clock stale after 5000ms: true counts {"activity":5,"proposals":5,"workspace":5,"detail":5,"history":0}
+CONTROL mode tick text fresh; detail reads added: 0
+  4 passed (14.5s)

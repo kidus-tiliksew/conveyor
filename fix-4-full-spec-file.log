@@ -1,0 +1,9 @@
+
+Running 5 tests using 2 workers
+
+[1/5] [dev-server] › tests/workspace-changes.spec.ts:287:1 › an activity frame refreshes the inbox and the task map on their pages
+[2/5] [dev-server] › tests/workspace-changes.spec.ts:217:1 › an activity frame refreshes the Board, sidebar, and named task detail once
+[3/5] [dev-server] › tests/workspace-changes.spec.ts:319:1 › a hidden tab holds no stream and runs no interval refetch
+[4/5] [dev-server] › tests/workspace-changes.spec.ts:356:1 › a dropped stream reconnects with backoff capped at 30 seconds and refetches once
+[5/5] [dev-server] › tests/workspace-changes.spec.ts:407:1 › a change between the first read and the stream subscription is not missed
+  5 passed (5.1s)

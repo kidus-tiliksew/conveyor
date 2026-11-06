@@ -1,0 +1,151 @@
+
+Running 8 tests using 2 workers
+
+[1/8] [dev-server] › tests/zz-debug.spec.ts:186:1 › an activity frame refreshes the Board, sidebar, and named task detail once
+[2/8] [dev-server] › tests/zz-debug.spec.ts:186:1 › an activity frame refreshes the Board, sidebar, and named task detail once
+[dev-server] › tests/zz-debug.spec.ts:186:1 › an activity frame refreshes the Board, sidebar, and named task detail once
+DBGFAIL stale-after-5000ms iteration 12 {"flip":true,"order":">activity <pending-proposals <workspace <D:activity <activity $pending-proposals $activity $workspace $D:activity >D:next-action <D:next-action $D:next-action","notify":3,"real":false,"text":"Blocked task, unblocked 11 Knowledge exp"}
+
+DBGFAIL after-runFor-1 {"flip":true,"order":">activity <pending-proposals <workspace <D:activity <activity $pending-proposals $activity $workspace $D:activity >D:next-action <D:next-action $D:next-action","notify":0,"real":false,"text":"Blocked task, unblocked 12 Knowledge exp"}
+
+  1) [dev-server] › tests/zz-debug.spec.ts:186:1 › an activity frame refreshes the Board, sidebar, and named task detail once 
+
+    Error: expect(locator).toContainText(expected) failed
+
+    Locator: getByRole('dialog', { name: 'Task detail' })
+    Timeout: 5000ms
+    - Expected substring  - 1
+    + Received string     + 3
+
+    - Blocked task, unblocked 12
+    + Blocked task, unblocked 11 Knowledge explorerRunningWaiting on dependenciestask-blockedBlocked task, unblocked 11RepositoryconveyorBranchconveyor/task-blocked← Depends ontask-dependencyWaitingAssigneeUnassignedCreatedNov 1, 12:01 PMby Unknown (Creator information is unavailable)Agent workingagentThe agent is working.Show IDs{
+    +   "details": {}
+    + }TimelineFlowActivityWaiting for the first job to start.Show technical activity
+
+    Call log:
+      - Expect "toContainText" with timeout 5000ms
+      - waiting for getByRole('dialog', { name: 'Task detail' })
+        14 × locator resolved to <aside role="dialog" tabindex="-1" aria-modal="true" aria-label="Task detail" class="absolute inset-y-0 flex flex-col bg-background shadow-xl outline-none right-0 animate-sheet-in border-l border-border w-full md:w-1/2">…</aside>
+           - unexpected value "Blocked task, unblocked 11 Knowledge explorerRunningWaiting on dependenciestask-blockedBlocked task, unblocked 11RepositoryconveyorBranchconveyor/task-blocked← Depends ontask-dependencyWaitingAssigneeUnassignedCreatedNov 1, 12:01 PMby Unknown (Creator information is unavailable)Agent workingagentThe agent is working.Show IDs{
+      "details": {}
+    }TimelineFlowActivityWaiting for the first job to start.Show technical activity"
+
+
+      268 |     current = blocker
+      269 |     try {
+    > 270 |       await expect(dialog).toContainText(title)
+          |                            ^
+      271 |       const seen = await state()
+      272 |       if (seen.flip) flips++
+      273 |     } catch (error) {
+        at /home/user/conveyor-worktrees/conveyor-task-261106-9415aa/web/tests/zz-debug.spec.ts:270:28
+
+    Error Context: ../../../.cache/conveyor/261106-9415aa/out-repro/zz-debug-an-activity-frame-acc48--and-named-task-detail-once-dev-server-repeat1/error-context.md
+
+
+[3/8] [dev-server] › tests/zz-debug.spec.ts:186:1 › an activity frame refreshes the Board, sidebar, and named task detail once
+[dev-server] › tests/zz-debug.spec.ts:186:1 › an activity frame refreshes the Board, sidebar, and named task detail once
+DBGFAIL stale-after-5000ms iteration 388 {"flip":true,"order":">activity <pending-proposals $pending-proposals <workspace $workspace <D:activity <activity $activity $D:activity >D:next-action <D:next-action $D:next-action","notify":3,"real":false,"text":"Blocked task, unblocked 387 Knowledge ex"}
+
+DBGFAIL after-runFor-1 {"flip":true,"order":">activity <pending-proposals $pending-proposals <workspace $workspace <D:activity <activity $activity $D:activity >D:next-action <D:next-action $D:next-action","notify":0,"real":false,"text":"Blocked task, unblocked 388 Knowledge ex"}
+
+  2) [dev-server] › tests/zz-debug.spec.ts:186:1 › an activity frame refreshes the Board, sidebar, and named task detail once 
+
+    Error: expect(locator).toContainText(expected) failed
+
+    Locator: getByRole('dialog', { name: 'Task detail' })
+    Timeout: 5000ms
+    - Expected substring  - 1
+    + Received string     + 3
+
+    - Blocked task, unblocked 388
+    + Blocked task, unblocked 387 Knowledge explorerRunningWaiting on dependenciestask-blockedBlocked task, unblocked 387RepositoryconveyorBranchconveyor/task-blocked← Depends ontask-dependencyWaitingAssigneeUnassignedCreatedNov 1, 12:01 PMby Unknown (Creator information is unavailable)Agent workingagentThe agent is working.Show IDs{
+    +   "details": {}
+    + }TimelineFlowActivityWaiting for the first job to start.Show technical activity
+
+    Call log:
+      - Expect "toContainText" with timeout 5000ms
+      - waiting for getByRole('dialog', { name: 'Task detail' })
+        14 × locator resolved to <aside role="dialog" tabindex="-1" aria-modal="true" aria-label="Task detail" class="absolute inset-y-0 flex flex-col bg-background shadow-xl outline-none right-0 animate-sheet-in border-l border-border w-full md:w-1/2">…</aside>
+           - unexpected value "Blocked task, unblocked 387 Knowledge explorerRunningWaiting on dependenciestask-blockedBlocked task, unblocked 387RepositoryconveyorBranchconveyor/task-blocked← Depends ontask-dependencyWaitingAssigneeUnassignedCreatedNov 1, 12:01 PMby Unknown (Creator information is unavailable)Agent workingagentThe agent is working.Show IDs{
+      "details": {}
+    }TimelineFlowActivityWaiting for the first job to start.Show technical activity"
+
+
+      268 |     current = blocker
+      269 |     try {
+    > 270 |       await expect(dialog).toContainText(title)
+          |                            ^
+      271 |       const seen = await state()
+      272 |       if (seen.flip) flips++
+      273 |     } catch (error) {
+        at /home/user/conveyor-worktrees/conveyor-task-261106-9415aa/web/tests/zz-debug.spec.ts:270:28
+
+    Error Context: ../../../.cache/conveyor/261106-9415aa/out-repro/zz-debug-an-activity-frame-acc48--and-named-task-detail-once-dev-server/error-context.md
+
+
+[4/8] [dev-server] › tests/zz-debug.spec.ts:186:1 › an activity frame refreshes the Board, sidebar, and named task detail once
+[dev-server] › tests/zz-debug.spec.ts:186:1 › an activity frame refreshes the Board, sidebar, and named task detail once
+DBGDONE iterations 376 flips-that-rendered 0
+
+[5/8] [dev-server] › tests/zz-debug.spec.ts:186:1 › an activity frame refreshes the Board, sidebar, and named task detail once
+[dev-server] › tests/zz-debug.spec.ts:186:1 › an activity frame refreshes the Board, sidebar, and named task detail once
+DBGDONE iterations 396 flips-that-rendered 0
+
+[6/8] [dev-server] › tests/zz-debug.spec.ts:186:1 › an activity frame refreshes the Board, sidebar, and named task detail once
+[dev-server] › tests/zz-debug.spec.ts:186:1 › an activity frame refreshes the Board, sidebar, and named task detail once
+DBGDONE iterations 411 flips-that-rendered 0
+
+[7/8] [dev-server] › tests/zz-debug.spec.ts:186:1 › an activity frame refreshes the Board, sidebar, and named task detail once
+[dev-server] › tests/zz-debug.spec.ts:186:1 › an activity frame refreshes the Board, sidebar, and named task detail once
+DBGDONE iterations 416 flips-that-rendered 0
+
+[8/8] [dev-server] › tests/zz-debug.spec.ts:186:1 › an activity frame refreshes the Board, sidebar, and named task detail once
+[dev-server] › tests/zz-debug.spec.ts:186:1 › an activity frame refreshes the Board, sidebar, and named task detail once
+DBGDONE iterations 419 flips-that-rendered 0
+
+[dev-server] › tests/zz-debug.spec.ts:186:1 › an activity frame refreshes the Board, sidebar, and named task detail once
+DBGFAIL stale-after-5000ms iteration 107 {"flip":true,"order":">activity <pending-proposals $pending-proposals <workspace $workspace <D:activity <activity $activity $D:activity >D:next-action <D:next-action $D:next-action","notify":3,"real":false,"text":"Blocked task, unblocked 106 Knowledge ex"}
+
+DBGFAIL after-runFor-1 {"flip":true,"order":">activity <pending-proposals $pending-proposals <workspace $workspace <D:activity <activity $activity $D:activity >D:next-action <D:next-action $D:next-action","notify":0,"real":false,"text":"Blocked task, unblocked 107 Knowledge ex"}
+
+  3) [dev-server] › tests/zz-debug.spec.ts:186:1 › an activity frame refreshes the Board, sidebar, and named task detail once 
+
+    Error: expect(locator).toContainText(expected) failed
+
+    Locator: getByRole('dialog', { name: 'Task detail' })
+    Timeout: 5000ms
+    - Expected substring  - 1
+    + Received string     + 3
+
+    - Blocked task, unblocked 107
+    + Blocked task, unblocked 106 Knowledge explorerRunningWaiting on dependenciestask-blockedBlocked task, unblocked 106RepositoryconveyorBranchconveyor/task-blocked← Depends ontask-dependencyWaitingAssigneeUnassignedCreatedNov 1, 12:01 PMby Unknown (Creator information is unavailable)Agent workingagentThe agent is working.Show IDs{
+    +   "details": {}
+    + }TimelineFlowActivityWaiting for the first job to start.Show technical activity
+
+    Call log:
+      - Expect "toContainText" with timeout 5000ms
+      - waiting for getByRole('dialog', { name: 'Task detail' })
+        14 × locator resolved to <aside role="dialog" tabindex="-1" aria-modal="true" aria-label="Task detail" class="absolute inset-y-0 flex flex-col bg-background shadow-xl outline-none right-0 animate-sheet-in border-l border-border w-full md:w-1/2">…</aside>
+           - unexpected value "Blocked task, unblocked 106 Knowledge explorerRunningWaiting on dependenciestask-blockedBlocked task, unblocked 106RepositoryconveyorBranchconveyor/task-blocked← Depends ontask-dependencyWaitingAssigneeUnassignedCreatedNov 1, 12:01 PMby Unknown (Creator information is unavailable)Agent workingagentThe agent is working.Show IDs{
+      "details": {}
+    }TimelineFlowActivityWaiting for the first job to start.Show technical activity"
+
+
+      268 |     current = blocker
+      269 |     try {
+    > 270 |       await expect(dialog).toContainText(title)
+          |                            ^
+      271 |       const seen = await state()
+      272 |       if (seen.flip) flips++
+      273 |     } catch (error) {
+        at /home/user/conveyor-worktrees/conveyor-task-261106-9415aa/web/tests/zz-debug.spec.ts:270:28
+
+    Error Context: ../../../.cache/conveyor/261106-9415aa/out-repro/zz-debug-an-activity-frame-acc48--and-named-task-detail-once-dev-server-repeat7/error-context.md
+
+
+  3 failed
+    [dev-server] › tests/zz-debug.spec.ts:186:1 › an activity frame refreshes the Board, sidebar, and named task detail once 
+    [dev-server] › tests/zz-debug.spec.ts:186:1 › an activity frame refreshes the Board, sidebar, and named task detail once 
+    [dev-server] › tests/zz-debug.spec.ts:186:1 › an activity frame refreshes the Board, sidebar, and named task detail once 
+  5 passed (5.2m)

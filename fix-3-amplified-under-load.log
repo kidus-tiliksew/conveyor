@@ -1,0 +1,40 @@
+43b31372eaac4d1692dffd0f5b838c2ad110b7fc
+Fri Nov  6 02:14:15 PM UTC 2026
+
+Running 8 tests using 2 workers
+
+[1/8] [dev-server] › tests/zz-debug.spec.ts:217:1 › an activity frame refreshes the Board, sidebar, and named task detail once
+[2/8] [dev-server] › tests/zz-debug.spec.ts:217:1 › an activity frame refreshes the Board, sidebar, and named task detail once
+[dev-server] › tests/zz-debug.spec.ts:217:1 › an activity frame refreshes the Board, sidebar, and named task detail once
+DBGDONE iterations 457 flips-that-rendered 3
+
+[dev-server] › tests/zz-debug.spec.ts:217:1 › an activity frame refreshes the Board, sidebar, and named task detail once
+DBGDONE iterations 459 flips-that-rendered 2
+
+[3/8] [dev-server] › tests/zz-debug.spec.ts:217:1 › an activity frame refreshes the Board, sidebar, and named task detail once
+[4/8] [dev-server] › tests/zz-debug.spec.ts:217:1 › an activity frame refreshes the Board, sidebar, and named task detail once
+[dev-server] › tests/zz-debug.spec.ts:217:1 › an activity frame refreshes the Board, sidebar, and named task detail once
+DBGDONE iterations 413 flips-that-rendered 1
+
+[dev-server] › tests/zz-debug.spec.ts:217:1 › an activity frame refreshes the Board, sidebar, and named task detail once
+DBGDONE iterations 402 flips-that-rendered 0
+
+[5/8] [dev-server] › tests/zz-debug.spec.ts:217:1 › an activity frame refreshes the Board, sidebar, and named task detail once
+[6/8] [dev-server] › tests/zz-debug.spec.ts:217:1 › an activity frame refreshes the Board, sidebar, and named task detail once
+[dev-server] › tests/zz-debug.spec.ts:217:1 › an activity frame refreshes the Board, sidebar, and named task detail once
+DBGDONE iterations 446 flips-that-rendered 0
+
+[dev-server] › tests/zz-debug.spec.ts:217:1 › an activity frame refreshes the Board, sidebar, and named task detail once
+DBGDONE iterations 463 flips-that-rendered 0
+
+[7/8] [dev-server] › tests/zz-debug.spec.ts:217:1 › an activity frame refreshes the Board, sidebar, and named task detail once
+[8/8] [dev-server] › tests/zz-debug.spec.ts:217:1 › an activity frame refreshes the Board, sidebar, and named task detail once
+[dev-server] › tests/zz-debug.spec.ts:217:1 › an activity frame refreshes the Board, sidebar, and named task detail once
+DBGDONE iterations 441 flips-that-rendered 4
+
+[dev-server] › tests/zz-debug.spec.ts:217:1 › an activity frame refreshes the Board, sidebar, and named task detail once
+DBGDONE iterations 438 flips-that-rendered 1
+
+  8 passed (5.6m)
+exit=0
+Fri Nov  6 02:19:54 PM UTC 2026

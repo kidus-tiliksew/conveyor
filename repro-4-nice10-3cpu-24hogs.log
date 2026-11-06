@@ -1,0 +1,789 @@
+
+Running 240 tests using 4 workers
+
+[1/240] [dev-server] › tests/zz-debug.spec.ts:186:1 › an activity frame refreshes the Board, sidebar, and named task detail once
+[2/240] [dev-server] › tests/workspace-changes.spec.ts:186:1 › an activity frame refreshes the Board, sidebar, and named task detail once
+[3/240] [dev-server] › tests/workspace-changes.spec.ts:186:1 › an activity frame refreshes the Board, sidebar, and named task detail once
+[4/240] [dev-server] › tests/zz-debug.spec.ts:186:1 › an activity frame refreshes the Board, sidebar, and named task detail once
+  1) [dev-server] › tests/zz-debug.spec.ts:186:1 › an activity frame refreshes the Board, sidebar, and named task detail once 
+
+    Error: expect(locator).toContainText(expected) failed
+
+    Locator: getByRole('dialog', { name: 'Task detail' })
+    Expected substring: "Blocked task"
+    Timeout: 5000ms
+    Error: element(s) not found
+
+    Call log:
+      - Expect "toContainText" with timeout 5000ms
+      - waiting for getByRole('dialog', { name: 'Task detail' })
+
+
+      206 |   const server = await serve(page)
+      207 |   await page.goto(`/w/demo/tasks/${blocked.id}`)
+    > 208 |   await expect(page.getByRole('dialog', { name: 'Task detail' })).toContainText(blocked.title)
+          |                                                                   ^
+      209 |   await expect.poll(() => server.hits(families.activity)).toBeGreaterThan(0)
+      210 |   expect(await changes.connections()).toContainEqual({ url: '/v1/workspaces/demo/changes', closed: false })
+      211 |   expect(await changes.open()).toBe(1)
+        at /home/user/conveyor-worktrees/conveyor-task-261106-9415aa/web/tests/zz-debug.spec.ts:208:67
+
+    Error Context: ../../../.cache/conveyor/261106-9415aa/out-repro/zz-debug-an-activity-frame-acc48--and-named-task-detail-once-dev-server/error-context.md
+
+
+  2) [dev-server] › tests/workspace-changes.spec.ts:186:1 › an activity frame refreshes the Board, sidebar, and named task detail once 
+
+    Error: expect(locator).toContainText(expected) failed
+
+    Locator: getByRole('dialog', { name: 'Task detail' })
+    Expected substring: "Blocked task"
+    Received string:    " Knowledge explorer"
+    Timeout: 5000ms
+
+    Call log:
+      - Expect "toContainText" with timeout 5000ms
+      - waiting for getByRole('dialog', { name: 'Task detail' })
+
+
+      189 |   const server = await serve(page)
+      190 |   await page.goto(`/w/demo/tasks/${blocked.id}`)
+    > 191 |   await expect(page.getByRole('dialog', { name: 'Task detail' })).toContainText(blocked.title)
+          |                                                                   ^
+      192 |   await expect.poll(() => server.hits(families.activity)).toBeGreaterThan(0)
+      193 |   expect(await changes.connections()).toContainEqual({ url: '/v1/workspaces/demo/changes', closed: false })
+      194 |   expect(await changes.open()).toBe(1)
+        at /home/user/conveyor-worktrees/conveyor-task-261106-9415aa/web/tests/workspace-changes.spec.ts:191:67
+
+    Error Context: ../../../.cache/conveyor/261106-9415aa/out-repro/workspace-changes-an-activ-a2a0d--and-named-task-detail-once-dev-server/error-context.md
+
+
+  3) [dev-server] › tests/workspace-changes.spec.ts:186:1 › an activity frame refreshes the Board, sidebar, and named task detail once 
+
+    Error: expect(locator).toContainText(expected) failed
+
+    Locator: getByRole('dialog', { name: 'Task detail' })
+    Expected substring: "Blocked task"
+    Received string:    " Knowledge explorer"
+    Timeout: 5000ms
+
+    Call log:
+      - Expect "toContainText" with timeout 5000ms
+      - waiting for getByRole('dialog', { name: 'Task detail' })
+
+
+      189 |   const server = await serve(page)
+      190 |   await page.goto(`/w/demo/tasks/${blocked.id}`)
+    > 191 |   await expect(page.getByRole('dialog', { name: 'Task detail' })).toContainText(blocked.title)
+          |                                                                   ^
+      192 |   await expect.poll(() => server.hits(families.activity)).toBeGreaterThan(0)
+      193 |   expect(await changes.connections()).toContainEqual({ url: '/v1/workspaces/demo/changes', closed: false })
+      194 |   expect(await changes.open()).toBe(1)
+        at /home/user/conveyor-worktrees/conveyor-task-261106-9415aa/web/tests/workspace-changes.spec.ts:191:67
+
+    Error Context: ../../../.cache/conveyor/261106-9415aa/out-repro/workspace-changes-an-activ-a2a0d--and-named-task-detail-once-dev-server-repeat1/error-context.md
+
+
+  4) [dev-server] › tests/zz-debug.spec.ts:186:1 › an activity frame refreshes the Board, sidebar, and named task detail once 
+
+    Error: expect(locator).toContainText(expected) failed
+
+    Locator: getByRole('dialog', { name: 'Task detail' })
+    Expected substring: "Blocked task"
+    Received string:    " Knowledge explorer"
+    Timeout: 5000ms
+
+    Call log:
+      - Expect "toContainText" with timeout 5000ms
+      - waiting for getByRole('dialog', { name: 'Task detail' })
+
+
+      206 |   const server = await serve(page)
+      207 |   await page.goto(`/w/demo/tasks/${blocked.id}`)
+    > 208 |   await expect(page.getByRole('dialog', { name: 'Task detail' })).toContainText(blocked.title)
+          |                                                                   ^
+      209 |   await expect.poll(() => server.hits(families.activity)).toBeGreaterThan(0)
+      210 |   expect(await changes.connections()).toContainEqual({ url: '/v1/workspaces/demo/changes', closed: false })
+      211 |   expect(await changes.open()).toBe(1)
+        at /home/user/conveyor-worktrees/conveyor-task-261106-9415aa/web/tests/zz-debug.spec.ts:208:67
+
+    Error Context: ../../../.cache/conveyor/261106-9415aa/out-repro/zz-debug-an-activity-frame-acc48--and-named-task-detail-once-dev-server-repeat1/error-context.md
+
+
+[5/240] [dev-server] › tests/workspace-changes.spec.ts:186:1 › an activity frame refreshes the Board, sidebar, and named task detail once
+[6/240] [dev-server] › tests/zz-debug.spec.ts:186:1 › an activity frame refreshes the Board, sidebar, and named task detail once
+[7/240] [dev-server] › tests/workspace-changes.spec.ts:186:1 › an activity frame refreshes the Board, sidebar, and named task detail once
+[8/240] [dev-server] › tests/zz-debug.spec.ts:186:1 › an activity frame refreshes the Board, sidebar, and named task detail once
+  5) [dev-server] › tests/workspace-changes.spec.ts:186:1 › an activity frame refreshes the Board, sidebar, and named task detail once 
+
+    Error: expect(locator).toContainText(expected) failed
+
+    Locator: getByRole('dialog', { name: 'Task detail' })
+    Expected substring: "Blocked task"
+    Received string:    " Knowledge explorer"
+    Timeout: 5000ms
+
+    Call log:
+      - Expect "toContainText" with timeout 5000ms
+      - waiting for getByRole('dialog', { name: 'Task detail' })
+
+
+      189 |   const server = await serve(page)
+      190 |   await page.goto(`/w/demo/tasks/${blocked.id}`)
+    > 191 |   await expect(page.getByRole('dialog', { name: 'Task detail' })).toContainText(blocked.title)
+          |                                                                   ^
+      192 |   await expect.poll(() => server.hits(families.activity)).toBeGreaterThan(0)
+      193 |   expect(await changes.connections()).toContainEqual({ url: '/v1/workspaces/demo/changes', closed: false })
+      194 |   expect(await changes.open()).toBe(1)
+        at /home/user/conveyor-worktrees/conveyor-task-261106-9415aa/web/tests/workspace-changes.spec.ts:191:67
+
+    Error Context: ../../../.cache/conveyor/261106-9415aa/out-repro/workspace-changes-an-activ-a2a0d--and-named-task-detail-once-dev-server-repeat2/error-context.md
+
+
+  6) [dev-server] › tests/zz-debug.spec.ts:186:1 › an activity frame refreshes the Board, sidebar, and named task detail once 
+
+    Error: expect(locator).toContainText(expected) failed
+
+    Locator: getByRole('dialog', { name: 'Task detail' })
+    Expected substring: "Blocked task"
+    Received string:    " Knowledge explorer"
+    Timeout: 5000ms
+
+    Call log:
+      - Expect "toContainText" with timeout 5000ms
+      - waiting for getByRole('dialog', { name: 'Task detail' })
+
+
+      206 |   const server = await serve(page)
+      207 |   await page.goto(`/w/demo/tasks/${blocked.id}`)
+    > 208 |   await expect(page.getByRole('dialog', { name: 'Task detail' })).toContainText(blocked.title)
+          |                                                                   ^
+      209 |   await expect.poll(() => server.hits(families.activity)).toBeGreaterThan(0)
+      210 |   expect(await changes.connections()).toContainEqual({ url: '/v1/workspaces/demo/changes', closed: false })
+      211 |   expect(await changes.open()).toBe(1)
+        at /home/user/conveyor-worktrees/conveyor-task-261106-9415aa/web/tests/zz-debug.spec.ts:208:67
+
+    Error Context: ../../../.cache/conveyor/261106-9415aa/out-repro/zz-debug-an-activity-frame-acc48--and-named-task-detail-once-dev-server-repeat2/error-context.md
+
+
+  7) [dev-server] › tests/workspace-changes.spec.ts:186:1 › an activity frame refreshes the Board, sidebar, and named task detail once 
+
+    Error: expect(locator).toContainText(expected) failed
+
+    Locator: getByRole('dialog', { name: 'Task detail' })
+    Expected substring: "Blocked task"
+    Received string:    " Knowledge explorer"
+    Timeout: 5000ms
+
+    Call log:
+      - Expect "toContainText" with timeout 5000ms
+      - waiting for getByRole('dialog', { name: 'Task detail' })
+
+
+      189 |   const server = await serve(page)
+      190 |   await page.goto(`/w/demo/tasks/${blocked.id}`)
+    > 191 |   await expect(page.getByRole('dialog', { name: 'Task detail' })).toContainText(blocked.title)
+          |                                                                   ^
+      192 |   await expect.poll(() => server.hits(families.activity)).toBeGreaterThan(0)
+      193 |   expect(await changes.connections()).toContainEqual({ url: '/v1/workspaces/demo/changes', closed: false })
+      194 |   expect(await changes.open()).toBe(1)
+        at /home/user/conveyor-worktrees/conveyor-task-261106-9415aa/web/tests/workspace-changes.spec.ts:191:67
+
+    Error Context: ../../../.cache/conveyor/261106-9415aa/out-repro/workspace-changes-an-activ-a2a0d--and-named-task-detail-once-dev-server-repeat3/error-context.md
+
+
+  8) [dev-server] › tests/zz-debug.spec.ts:186:1 › an activity frame refreshes the Board, sidebar, and named task detail once 
+
+    Error: expect(locator).toContainText(expected) failed
+
+    Locator: getByRole('dialog', { name: 'Task detail' })
+    Expected substring: "Blocked task"
+    Received string:    " Knowledge explorer"
+    Timeout: 5000ms
+
+    Call log:
+      - Expect "toContainText" with timeout 5000ms
+      - waiting for getByRole('dialog', { name: 'Task detail' })
+
+
+      206 |   const server = await serve(page)
+      207 |   await page.goto(`/w/demo/tasks/${blocked.id}`)
+    > 208 |   await expect(page.getByRole('dialog', { name: 'Task detail' })).toContainText(blocked.title)
+          |                                                                   ^
+      209 |   await expect.poll(() => server.hits(families.activity)).toBeGreaterThan(0)
+      210 |   expect(await changes.connections()).toContainEqual({ url: '/v1/workspaces/demo/changes', closed: false })
+      211 |   expect(await changes.open()).toBe(1)
+        at /home/user/conveyor-worktrees/conveyor-task-261106-9415aa/web/tests/zz-debug.spec.ts:208:67
+
+    Error Context: ../../../.cache/conveyor/261106-9415aa/out-repro/zz-debug-an-activity-frame-acc48--and-named-task-detail-once-dev-server-repeat3/error-context.md
+
+
+[9/240] [dev-server] › tests/workspace-changes.spec.ts:186:1 › an activity frame refreshes the Board, sidebar, and named task detail once
+[10/240] [dev-server] › tests/zz-debug.spec.ts:186:1 › an activity frame refreshes the Board, sidebar, and named task detail once
+[11/240] [dev-server] › tests/workspace-changes.spec.ts:186:1 › an activity frame refreshes the Board, sidebar, and named task detail once
+[12/240] [dev-server] › tests/zz-debug.spec.ts:186:1 › an activity frame refreshes the Board, sidebar, and named task detail once
+  9) [dev-server] › tests/workspace-changes.spec.ts:186:1 › an activity frame refreshes the Board, sidebar, and named task detail once 
+
+    Error: expect(locator).toContainText(expected) failed
+
+    Locator: getByRole('dialog', { name: 'Task detail' })
+    Expected substring: "Blocked task"
+    Received string:    " Knowledge explorer"
+    Timeout: 5000ms
+
+    Call log:
+      - Expect "toContainText" with timeout 5000ms
+      - waiting for getByRole('dialog', { name: 'Task detail' })
+
+
+      189 |   const server = await serve(page)
+      190 |   await page.goto(`/w/demo/tasks/${blocked.id}`)
+    > 191 |   await expect(page.getByRole('dialog', { name: 'Task detail' })).toContainText(blocked.title)
+          |                                                                   ^
+      192 |   await expect.poll(() => server.hits(families.activity)).toBeGreaterThan(0)
+      193 |   expect(await changes.connections()).toContainEqual({ url: '/v1/workspaces/demo/changes', closed: false })
+      194 |   expect(await changes.open()).toBe(1)
+        at /home/user/conveyor-worktrees/conveyor-task-261106-9415aa/web/tests/workspace-changes.spec.ts:191:67
+
+    Error Context: ../../../.cache/conveyor/261106-9415aa/out-repro/workspace-changes-an-activ-a2a0d--and-named-task-detail-once-dev-server-repeat4/error-context.md
+
+
+  10) [dev-server] › tests/workspace-changes.spec.ts:186:1 › an activity frame refreshes the Board, sidebar, and named task detail once 
+
+    Error: expect(locator).toContainText(expected) failed
+
+    Locator: getByRole('dialog', { name: 'Task detail' })
+    Expected substring: "Blocked task"
+    Received string:    " Knowledge explorer"
+    Timeout: 5000ms
+
+    Call log:
+      - Expect "toContainText" with timeout 5000ms
+      - waiting for getByRole('dialog', { name: 'Task detail' })
+
+
+      189 |   const server = await serve(page)
+      190 |   await page.goto(`/w/demo/tasks/${blocked.id}`)
+    > 191 |   await expect(page.getByRole('dialog', { name: 'Task detail' })).toContainText(blocked.title)
+          |                                                                   ^
+      192 |   await expect.poll(() => server.hits(families.activity)).toBeGreaterThan(0)
+      193 |   expect(await changes.connections()).toContainEqual({ url: '/v1/workspaces/demo/changes', closed: false })
+      194 |   expect(await changes.open()).toBe(1)
+        at /home/user/conveyor-worktrees/conveyor-task-261106-9415aa/web/tests/workspace-changes.spec.ts:191:67
+
+    Error Context: ../../../.cache/conveyor/261106-9415aa/out-repro/workspace-changes-an-activ-a2a0d--and-named-task-detail-once-dev-server-repeat5/error-context.md
+
+
+  11) [dev-server] › tests/zz-debug.spec.ts:186:1 › an activity frame refreshes the Board, sidebar, and named task detail once 
+
+    Error: expect(locator).toContainText(expected) failed
+
+    Locator: getByRole('dialog', { name: 'Task detail' })
+    Expected substring: "Blocked task"
+    Received string:    " Knowledge explorer"
+    Timeout: 5000ms
+
+    Call log:
+      - Expect "toContainText" with timeout 5000ms
+      - waiting for getByRole('dialog', { name: 'Task detail' })
+
+
+      206 |   const server = await serve(page)
+      207 |   await page.goto(`/w/demo/tasks/${blocked.id}`)
+    > 208 |   await expect(page.getByRole('dialog', { name: 'Task detail' })).toContainText(blocked.title)
+          |                                                                   ^
+      209 |   await expect.poll(() => server.hits(families.activity)).toBeGreaterThan(0)
+      210 |   expect(await changes.connections()).toContainEqual({ url: '/v1/workspaces/demo/changes', closed: false })
+      211 |   expect(await changes.open()).toBe(1)
+        at /home/user/conveyor-worktrees/conveyor-task-261106-9415aa/web/tests/zz-debug.spec.ts:208:67
+
+    Error Context: ../../../.cache/conveyor/261106-9415aa/out-repro/zz-debug-an-activity-frame-acc48--and-named-task-detail-once-dev-server-repeat4/error-context.md
+
+
+  12) [dev-server] › tests/zz-debug.spec.ts:186:1 › an activity frame refreshes the Board, sidebar, and named task detail once 
+
+    Error: expect(locator).toContainText(expected) failed
+
+    Locator: getByRole('dialog', { name: 'Task detail' })
+    Expected substring: "Blocked task"
+    Received string:    " Knowledge explorer"
+    Timeout: 5000ms
+
+    Call log:
+      - Expect "toContainText" with timeout 5000ms
+      - waiting for getByRole('dialog', { name: 'Task detail' })
+
+
+      206 |   const server = await serve(page)
+      207 |   await page.goto(`/w/demo/tasks/${blocked.id}`)
+    > 208 |   await expect(page.getByRole('dialog', { name: 'Task detail' })).toContainText(blocked.title)
+          |                                                                   ^
+      209 |   await expect.poll(() => server.hits(families.activity)).toBeGreaterThan(0)
+      210 |   expect(await changes.connections()).toContainEqual({ url: '/v1/workspaces/demo/changes', closed: false })
+      211 |   expect(await changes.open()).toBe(1)
+        at /home/user/conveyor-worktrees/conveyor-task-261106-9415aa/web/tests/zz-debug.spec.ts:208:67
+
+    Error Context: ../../../.cache/conveyor/261106-9415aa/out-repro/zz-debug-an-activity-frame-acc48--and-named-task-detail-once-dev-server-repeat5/error-context.md
+
+
+[13/240] [dev-server] › tests/workspace-changes.spec.ts:186:1 › an activity frame refreshes the Board, sidebar, and named task detail once
+[14/240] [dev-server] › tests/zz-debug.spec.ts:186:1 › an activity frame refreshes the Board, sidebar, and named task detail once
+[15/240] [dev-server] › tests/workspace-changes.spec.ts:186:1 › an activity frame refreshes the Board, sidebar, and named task detail once
+[16/240] [dev-server] › tests/zz-debug.spec.ts:186:1 › an activity frame refreshes the Board, sidebar, and named task detail once
+  13) [dev-server] › tests/workspace-changes.spec.ts:186:1 › an activity frame refreshes the Board, sidebar, and named task detail once 
+
+    Error: expect(locator).toContainText(expected) failed
+
+    Locator: getByRole('dialog', { name: 'Task detail' })
+    Expected substring: "Blocked task"
+    Received string:    " Knowledge explorer"
+    Timeout: 5000ms
+
+    Call log:
+      - Expect "toContainText" with timeout 5000ms
+      - waiting for getByRole('dialog', { name: 'Task detail' })
+
+
+      189 |   const server = await serve(page)
+      190 |   await page.goto(`/w/demo/tasks/${blocked.id}`)
+    > 191 |   await expect(page.getByRole('dialog', { name: 'Task detail' })).toContainText(blocked.title)
+          |                                                                   ^
+      192 |   await expect.poll(() => server.hits(families.activity)).toBeGreaterThan(0)
+      193 |   expect(await changes.connections()).toContainEqual({ url: '/v1/workspaces/demo/changes', closed: false })
+      194 |   expect(await changes.open()).toBe(1)
+        at /home/user/conveyor-worktrees/conveyor-task-261106-9415aa/web/tests/workspace-changes.spec.ts:191:67
+
+    Error Context: ../../../.cache/conveyor/261106-9415aa/out-repro/workspace-changes-an-activ-a2a0d--and-named-task-detail-once-dev-server-repeat6/error-context.md
+
+
+  14) [dev-server] › tests/zz-debug.spec.ts:186:1 › an activity frame refreshes the Board, sidebar, and named task detail once 
+
+    Error: expect(locator).toContainText(expected) failed
+
+    Locator: getByRole('dialog', { name: 'Task detail' })
+    Expected substring: "Blocked task"
+    Received string:    " Knowledge explorer"
+    Timeout: 5000ms
+
+    Call log:
+      - Expect "toContainText" with timeout 5000ms
+      - waiting for getByRole('dialog', { name: 'Task detail' })
+
+
+      206 |   const server = await serve(page)
+      207 |   await page.goto(`/w/demo/tasks/${blocked.id}`)
+    > 208 |   await expect(page.getByRole('dialog', { name: 'Task detail' })).toContainText(blocked.title)
+          |                                                                   ^
+      209 |   await expect.poll(() => server.hits(families.activity)).toBeGreaterThan(0)
+      210 |   expect(await changes.connections()).toContainEqual({ url: '/v1/workspaces/demo/changes', closed: false })
+      211 |   expect(await changes.open()).toBe(1)
+        at /home/user/conveyor-worktrees/conveyor-task-261106-9415aa/web/tests/zz-debug.spec.ts:208:67
+
+    Error Context: ../../../.cache/conveyor/261106-9415aa/out-repro/zz-debug-an-activity-frame-acc48--and-named-task-detail-once-dev-server-repeat6/error-context.md
+
+
+  15) [dev-server] › tests/workspace-changes.spec.ts:186:1 › an activity frame refreshes the Board, sidebar, and named task detail once 
+
+    Error: expect(locator).toContainText(expected) failed
+
+    Locator: getByRole('dialog', { name: 'Task detail' })
+    Expected substring: "Blocked task"
+    Received string:    " Knowledge explorer"
+    Timeout: 5000ms
+
+    Call log:
+      - Expect "toContainText" with timeout 5000ms
+      - waiting for getByRole('dialog', { name: 'Task detail' })
+
+
+      189 |   const server = await serve(page)
+      190 |   await page.goto(`/w/demo/tasks/${blocked.id}`)
+    > 191 |   await expect(page.getByRole('dialog', { name: 'Task detail' })).toContainText(blocked.title)
+          |                                                                   ^
+      192 |   await expect.poll(() => server.hits(families.activity)).toBeGreaterThan(0)
+      193 |   expect(await changes.connections()).toContainEqual({ url: '/v1/workspaces/demo/changes', closed: false })
+      194 |   expect(await changes.open()).toBe(1)
+        at /home/user/conveyor-worktrees/conveyor-task-261106-9415aa/web/tests/workspace-changes.spec.ts:191:67
+
+    Error Context: ../../../.cache/conveyor/261106-9415aa/out-repro/workspace-changes-an-activ-a2a0d--and-named-task-detail-once-dev-server-repeat7/error-context.md
+
+
+  16) [dev-server] › tests/zz-debug.spec.ts:186:1 › an activity frame refreshes the Board, sidebar, and named task detail once 
+
+    Error: expect(locator).toContainText(expected) failed
+
+    Locator: getByRole('dialog', { name: 'Task detail' })
+    Expected substring: "Blocked task"
+    Received string:    " Knowledge explorer"
+    Timeout: 5000ms
+
+    Call log:
+      - Expect "toContainText" with timeout 5000ms
+      - waiting for getByRole('dialog', { name: 'Task detail' })
+
+
+      206 |   const server = await serve(page)
+      207 |   await page.goto(`/w/demo/tasks/${blocked.id}`)
+    > 208 |   await expect(page.getByRole('dialog', { name: 'Task detail' })).toContainText(blocked.title)
+          |                                                                   ^
+      209 |   await expect.poll(() => server.hits(families.activity)).toBeGreaterThan(0)
+      210 |   expect(await changes.connections()).toContainEqual({ url: '/v1/workspaces/demo/changes', closed: false })
+      211 |   expect(await changes.open()).toBe(1)
+        at /home/user/conveyor-worktrees/conveyor-task-261106-9415aa/web/tests/zz-debug.spec.ts:208:67
+
+    Error Context: ../../../.cache/conveyor/261106-9415aa/out-repro/zz-debug-an-activity-frame-acc48--and-named-task-detail-once-dev-server-repeat7/error-context.md
+
+
+[17/240] [dev-server] › tests/workspace-changes.spec.ts:186:1 › an activity frame refreshes the Board, sidebar, and named task detail once
+[18/240] [dev-server] › tests/zz-debug.spec.ts:186:1 › an activity frame refreshes the Board, sidebar, and named task detail once
+[19/240] [dev-server] › tests/zz-debug.spec.ts:186:1 › an activity frame refreshes the Board, sidebar, and named task detail once
+[20/240] [dev-server] › tests/workspace-changes.spec.ts:186:1 › an activity frame refreshes the Board, sidebar, and named task detail once
+  17) [dev-server] › tests/workspace-changes.spec.ts:186:1 › an activity frame refreshes the Board, sidebar, and named task detail once 
+
+    Error: expect(locator).toContainText(expected) failed
+
+    Locator: getByRole('dialog', { name: 'Task detail' })
+    Expected substring: "Blocked task"
+    Received string:    " Knowledge explorer"
+    Timeout: 5000ms
+
+    Call log:
+      - Expect "toContainText" with timeout 5000ms
+      - waiting for getByRole('dialog', { name: 'Task detail' })
+
+
+      189 |   const server = await serve(page)
+      190 |   await page.goto(`/w/demo/tasks/${blocked.id}`)
+    > 191 |   await expect(page.getByRole('dialog', { name: 'Task detail' })).toContainText(blocked.title)
+          |                                                                   ^
+      192 |   await expect.poll(() => server.hits(families.activity)).toBeGreaterThan(0)
+      193 |   expect(await changes.connections()).toContainEqual({ url: '/v1/workspaces/demo/changes', closed: false })
+      194 |   expect(await changes.open()).toBe(1)
+        at /home/user/conveyor-worktrees/conveyor-task-261106-9415aa/web/tests/workspace-changes.spec.ts:191:67
+
+    Error Context: ../../../.cache/conveyor/261106-9415aa/out-repro/workspace-changes-an-activ-a2a0d--and-named-task-detail-once-dev-server-repeat8/error-context.md
+
+
+  18) [dev-server] › tests/zz-debug.spec.ts:186:1 › an activity frame refreshes the Board, sidebar, and named task detail once 
+
+    Error: expect(locator).toContainText(expected) failed
+
+    Locator: getByRole('dialog', { name: 'Task detail' })
+    Expected substring: "Blocked task"
+    Received string:    " Knowledge explorer"
+    Timeout: 5000ms
+
+    Call log:
+      - Expect "toContainText" with timeout 5000ms
+      - waiting for getByRole('dialog', { name: 'Task detail' })
+
+
+      206 |   const server = await serve(page)
+      207 |   await page.goto(`/w/demo/tasks/${blocked.id}`)
+    > 208 |   await expect(page.getByRole('dialog', { name: 'Task detail' })).toContainText(blocked.title)
+          |                                                                   ^
+      209 |   await expect.poll(() => server.hits(families.activity)).toBeGreaterThan(0)
+      210 |   expect(await changes.connections()).toContainEqual({ url: '/v1/workspaces/demo/changes', closed: false })
+      211 |   expect(await changes.open()).toBe(1)
+        at /home/user/conveyor-worktrees/conveyor-task-261106-9415aa/web/tests/zz-debug.spec.ts:208:67
+
+    Error Context: ../../../.cache/conveyor/261106-9415aa/out-repro/zz-debug-an-activity-frame-acc48--and-named-task-detail-once-dev-server-repeat8/error-context.md
+
+
+  19) [dev-server] › tests/zz-debug.spec.ts:186:1 › an activity frame refreshes the Board, sidebar, and named task detail once 
+
+    Error: expect(locator).toContainText(expected) failed
+
+    Locator: getByRole('dialog', { name: 'Task detail' })
+    Expected substring: "Blocked task"
+    Received string:    " Knowledge explorer"
+    Timeout: 5000ms
+
+    Call log:
+      - Expect "toContainText" with timeout 5000ms
+      - waiting for getByRole('dialog', { name: 'Task detail' })
+
+
+      206 |   const server = await serve(page)
+      207 |   await page.goto(`/w/demo/tasks/${blocked.id}`)
+    > 208 |   await expect(page.getByRole('dialog', { name: 'Task detail' })).toContainText(blocked.title)
+          |                                                                   ^
+      209 |   await expect.poll(() => server.hits(families.activity)).toBeGreaterThan(0)
+      210 |   expect(await changes.connections()).toContainEqual({ url: '/v1/workspaces/demo/changes', closed: false })
+      211 |   expect(await changes.open()).toBe(1)
+        at /home/user/conveyor-worktrees/conveyor-task-261106-9415aa/web/tests/zz-debug.spec.ts:208:67
+
+    Error Context: ../../../.cache/conveyor/261106-9415aa/out-repro/zz-debug-an-activity-frame-acc48--and-named-task-detail-once-dev-server-repeat9/error-context.md
+
+
+  20) [dev-server] › tests/workspace-changes.spec.ts:186:1 › an activity frame refreshes the Board, sidebar, and named task detail once 
+
+    Error: expect(locator).toContainText(expected) failed
+
+    Locator: getByRole('dialog', { name: 'Task detail' })
+    Expected substring: "Blocked task"
+    Received string:    " Knowledge explorer"
+    Timeout: 5000ms
+
+    Call log:
+      - Expect "toContainText" with timeout 5000ms
+      - waiting for getByRole('dialog', { name: 'Task detail' })
+
+
+      189 |   const server = await serve(page)
+      190 |   await page.goto(`/w/demo/tasks/${blocked.id}`)
+    > 191 |   await expect(page.getByRole('dialog', { name: 'Task detail' })).toContainText(blocked.title)
+          |                                                                   ^
+      192 |   await expect.poll(() => server.hits(families.activity)).toBeGreaterThan(0)
+      193 |   expect(await changes.connections()).toContainEqual({ url: '/v1/workspaces/demo/changes', closed: false })
+      194 |   expect(await changes.open()).toBe(1)
+        at /home/user/conveyor-worktrees/conveyor-task-261106-9415aa/web/tests/workspace-changes.spec.ts:191:67
+
+    Error Context: ../../../.cache/conveyor/261106-9415aa/out-repro/workspace-changes-an-activ-a2a0d--and-named-task-detail-once-dev-server-repeat9/error-context.md
+
+
+[21/240] [dev-server] › tests/workspace-changes.spec.ts:186:1 › an activity frame refreshes the Board, sidebar, and named task detail once
+[22/240] [dev-server] › tests/zz-debug.spec.ts:186:1 › an activity frame refreshes the Board, sidebar, and named task detail once
+[23/240] [dev-server] › tests/workspace-changes.spec.ts:186:1 › an activity frame refreshes the Board, sidebar, and named task detail once
+[24/240] [dev-server] › tests/zz-debug.spec.ts:186:1 › an activity frame refreshes the Board, sidebar, and named task detail once
+  21) [dev-server] › tests/workspace-changes.spec.ts:186:1 › an activity frame refreshes the Board, sidebar, and named task detail once 
+
+    Error: expect(locator).toContainText(expected) failed
+
+    Locator: getByRole('dialog', { name: 'Task detail' })
+    Expected substring: "Blocked task"
+    Received string:    " Knowledge explorer"
+    Timeout: 5000ms
+
+    Call log:
+      - Expect "toContainText" with timeout 5000ms
+      - waiting for getByRole('dialog', { name: 'Task detail' })
+
+
+      189 |   const server = await serve(page)
+      190 |   await page.goto(`/w/demo/tasks/${blocked.id}`)
+    > 191 |   await expect(page.getByRole('dialog', { name: 'Task detail' })).toContainText(blocked.title)
+          |                                                                   ^
+      192 |   await expect.poll(() => server.hits(families.activity)).toBeGreaterThan(0)
+      193 |   expect(await changes.connections()).toContainEqual({ url: '/v1/workspaces/demo/changes', closed: false })
+      194 |   expect(await changes.open()).toBe(1)
+        at /home/user/conveyor-worktrees/conveyor-task-261106-9415aa/web/tests/workspace-changes.spec.ts:191:67
+
+    Error Context: ../../../.cache/conveyor/261106-9415aa/out-repro/workspace-changes-an-activ-a2a0d--and-named-task-detail-once-dev-server-repeat10/error-context.md
+
+
+  22) [dev-server] › tests/zz-debug.spec.ts:186:1 › an activity frame refreshes the Board, sidebar, and named task detail once 
+
+    Error: expect(locator).toContainText(expected) failed
+
+    Locator: getByRole('dialog', { name: 'Task detail' })
+    Expected substring: "Blocked task"
+    Received string:    " Knowledge explorer"
+    Timeout: 5000ms
+
+    Call log:
+      - Expect "toContainText" with timeout 5000ms
+      - waiting for getByRole('dialog', { name: 'Task detail' })
+
+
+      206 |   const server = await serve(page)
+      207 |   await page.goto(`/w/demo/tasks/${blocked.id}`)
+    > 208 |   await expect(page.getByRole('dialog', { name: 'Task detail' })).toContainText(blocked.title)
+          |                                                                   ^
+      209 |   await expect.poll(() => server.hits(families.activity)).toBeGreaterThan(0)
+      210 |   expect(await changes.connections()).toContainEqual({ url: '/v1/workspaces/demo/changes', closed: false })
+      211 |   expect(await changes.open()).toBe(1)
+        at /home/user/conveyor-worktrees/conveyor-task-261106-9415aa/web/tests/zz-debug.spec.ts:208:67
+
+    Error Context: ../../../.cache/conveyor/261106-9415aa/out-repro/zz-debug-an-activity-frame-acc48--and-named-task-detail-once-dev-server-repeat10/error-context.md
+
+
+  23) [dev-server] › tests/workspace-changes.spec.ts:186:1 › an activity frame refreshes the Board, sidebar, and named task detail once 
+
+    Error: expect(locator).toContainText(expected) failed
+
+    Locator: getByRole('dialog', { name: 'Task detail' })
+    Expected substring: "Blocked task"
+    Received string:    " Knowledge explorer"
+    Timeout: 5000ms
+
+    Call log:
+      - Expect "toContainText" with timeout 5000ms
+      - waiting for getByRole('dialog', { name: 'Task detail' })
+
+
+      189 |   const server = await serve(page)
+      190 |   await page.goto(`/w/demo/tasks/${blocked.id}`)
+    > 191 |   await expect(page.getByRole('dialog', { name: 'Task detail' })).toContainText(blocked.title)
+          |                                                                   ^
+      192 |   await expect.poll(() => server.hits(families.activity)).toBeGreaterThan(0)
+      193 |   expect(await changes.connections()).toContainEqual({ url: '/v1/workspaces/demo/changes', closed: false })
+      194 |   expect(await changes.open()).toBe(1)
+        at /home/user/conveyor-worktrees/conveyor-task-261106-9415aa/web/tests/workspace-changes.spec.ts:191:67
+
+    Error Context: ../../../.cache/conveyor/261106-9415aa/out-repro/workspace-changes-an-activ-a2a0d--and-named-task-detail-once-dev-server-repeat11/error-context.md
+
+
+  24) [dev-server] › tests/zz-debug.spec.ts:186:1 › an activity frame refreshes the Board, sidebar, and named task detail once 
+
+    Error: expect(locator).toContainText(expected) failed
+
+    Locator: getByRole('dialog', { name: 'Task detail' })
+    Expected substring: "Blocked task"
+    Received string:    " Knowledge explorer"
+    Timeout: 5000ms
+
+    Call log:
+      - Expect "toContainText" with timeout 5000ms
+      - waiting for getByRole('dialog', { name: 'Task detail' })
+
+
+      206 |   const server = await serve(page)
+      207 |   await page.goto(`/w/demo/tasks/${blocked.id}`)
+    > 208 |   await expect(page.getByRole('dialog', { name: 'Task detail' })).toContainText(blocked.title)
+          |                                                                   ^
+      209 |   await expect.poll(() => server.hits(families.activity)).toBeGreaterThan(0)
+      210 |   expect(await changes.connections()).toContainEqual({ url: '/v1/workspaces/demo/changes', closed: false })
+      211 |   expect(await changes.open()).toBe(1)
+        at /home/user/conveyor-worktrees/conveyor-task-261106-9415aa/web/tests/zz-debug.spec.ts:208:67
+
+    Error Context: ../../../.cache/conveyor/261106-9415aa/out-repro/zz-debug-an-activity-frame-acc48--and-named-task-detail-once-dev-server-repeat11/error-context.md
+
+
+[25/240] [dev-server] › tests/workspace-changes.spec.ts:186:1 › an activity frame refreshes the Board, sidebar, and named task detail once
+[26/240] [dev-server] › tests/zz-debug.spec.ts:186:1 › an activity frame refreshes the Board, sidebar, and named task detail once
+[27/240] [dev-server] › tests/workspace-changes.spec.ts:186:1 › an activity frame refreshes the Board, sidebar, and named task detail once
+[28/240] [dev-server] › tests/zz-debug.spec.ts:186:1 › an activity frame refreshes the Board, sidebar, and named task detail once
+  25) [dev-server] › tests/workspace-changes.spec.ts:186:1 › an activity frame refreshes the Board, sidebar, and named task detail once 
+
+    Error: expect(locator).toContainText(expected) failed
+
+    Locator: getByRole('dialog', { name: 'Task detail' })
+    Expected substring: "Blocked task"
+    Received string:    " Knowledge explorer"
+    Timeout: 5000ms
+
+    Call log:
+      - Expect "toContainText" with timeout 5000ms
+      - waiting for getByRole('dialog', { name: 'Task detail' })
+
+
+      189 |   const server = await serve(page)
+      190 |   await page.goto(`/w/demo/tasks/${blocked.id}`)
+    > 191 |   await expect(page.getByRole('dialog', { name: 'Task detail' })).toContainText(blocked.title)
+          |                                                                   ^
+      192 |   await expect.poll(() => server.hits(families.activity)).toBeGreaterThan(0)
+      193 |   expect(await changes.connections()).toContainEqual({ url: '/v1/workspaces/demo/changes', closed: false })
+      194 |   expect(await changes.open()).toBe(1)
+        at /home/user/conveyor-worktrees/conveyor-task-261106-9415aa/web/tests/workspace-changes.spec.ts:191:67
+
+    Error Context: ../../../.cache/conveyor/261106-9415aa/out-repro/workspace-changes-an-activ-a2a0d--and-named-task-detail-once-dev-server-repeat12/error-context.md
+
+
+  26) [dev-server] › tests/zz-debug.spec.ts:186:1 › an activity frame refreshes the Board, sidebar, and named task detail once 
+
+    Error: expect(locator).toContainText(expected) failed
+
+    Locator: getByRole('dialog', { name: 'Task detail' })
+    Expected substring: "Blocked task"
+    Received string:    " Knowledge explorer"
+    Timeout: 5000ms
+
+    Call log:
+      - Expect "toContainText" with timeout 5000ms
+      - waiting for getByRole('dialog', { name: 'Task detail' })
+
+
+      206 |   const server = await serve(page)
+      207 |   await page.goto(`/w/demo/tasks/${blocked.id}`)
+    > 208 |   await expect(page.getByRole('dialog', { name: 'Task detail' })).toContainText(blocked.title)
+          |                                                                   ^
+      209 |   await expect.poll(() => server.hits(families.activity)).toBeGreaterThan(0)
+      210 |   expect(await changes.connections()).toContainEqual({ url: '/v1/workspaces/demo/changes', closed: false })
+      211 |   expect(await changes.open()).toBe(1)
+        at /home/user/conveyor-worktrees/conveyor-task-261106-9415aa/web/tests/zz-debug.spec.ts:208:67
+
+    Error Context: ../../../.cache/conveyor/261106-9415aa/out-repro/zz-debug-an-activity-frame-acc48--and-named-task-detail-once-dev-server-repeat12/error-context.md
+
+
+  27) [dev-server] › tests/workspace-changes.spec.ts:186:1 › an activity frame refreshes the Board, sidebar, and named task detail once 
+
+    Error: expect(locator).toContainText(expected) failed
+
+    Locator: getByRole('dialog', { name: 'Task detail' })
+    Expected substring: "Blocked task"
+    Received string:    " Knowledge explorer"
+    Timeout: 5000ms
+
+    Call log:
+      - Expect "toContainText" with timeout 5000ms
+      - waiting for getByRole('dialog', { name: 'Task detail' })
+
+
+      189 |   const server = await serve(page)
+      190 |   await page.goto(`/w/demo/tasks/${blocked.id}`)
+    > 191 |   await expect(page.getByRole('dialog', { name: 'Task detail' })).toContainText(blocked.title)
+          |                                                                   ^
+      192 |   await expect.poll(() => server.hits(families.activity)).toBeGreaterThan(0)
+      193 |   expect(await changes.connections()).toContainEqual({ url: '/v1/workspaces/demo/changes', closed: false })
+      194 |   expect(await changes.open()).toBe(1)
+        at /home/user/conveyor-worktrees/conveyor-task-261106-9415aa/web/tests/workspace-changes.spec.ts:191:67
+
+    Error Context: ../../../.cache/conveyor/261106-9415aa/out-repro/workspace-changes-an-activ-a2a0d--and-named-task-detail-once-dev-server-repeat13/error-context.md
+
+
+  28) [dev-server] › tests/zz-debug.spec.ts:186:1 › an activity frame refreshes the Board, sidebar, and named task detail once 
+
+    Error: expect(locator).toContainText(expected) failed
+
+    Locator: getByRole('dialog', { name: 'Task detail' })
+    Expected substring: "Blocked task"
+    Received string:    " Knowledge explorer"
+    Timeout: 5000ms
+
+    Call log:
+      - Expect "toContainText" with timeout 5000ms
+      - waiting for getByRole('dialog', { name: 'Task detail' })
+
+
+      206 |   const server = await serve(page)
+      207 |   await page.goto(`/w/demo/tasks/${blocked.id}`)
+    > 208 |   await expect(page.getByRole('dialog', { name: 'Task detail' })).toContainText(blocked.title)
+          |                                                                   ^
+      209 |   await expect.poll(() => server.hits(families.activity)).toBeGreaterThan(0)
+      210 |   expect(await changes.connections()).toContainEqual({ url: '/v1/workspaces/demo/changes', closed: false })
+      211 |   expect(await changes.open()).toBe(1)
+        at /home/user/conveyor-worktrees/conveyor-task-261106-9415aa/web/tests/zz-debug.spec.ts:208:67
+
+    Error Context: ../../../.cache/conveyor/261106-9415aa/out-repro/zz-debug-an-activity-frame-acc48--and-named-task-detail-once-dev-server-repeat13/error-context.md
+
+
+[29/240] [dev-server] › tests/workspace-changes.spec.ts:186:1 › an activity frame refreshes the Board, sidebar, and named task detail once
+[30/240] [dev-server] › tests/zz-debug.spec.ts:186:1 › an activity frame refreshes the Board, sidebar, and named task detail once
+[31/240] [dev-server] › tests/workspace-changes.spec.ts:186:1 › an activity frame refreshes the Board, sidebar, and named task detail once
+[32/240] [dev-server] › tests/zz-debug.spec.ts:186:1 › an activity frame refreshes the Board, sidebar, and named task detail once
+  29) [dev-server] › tests/workspace-changes.spec.ts:186:1 › an activity frame refreshes the Board, sidebar, and named task detail once 
+
+    Error: expect(locator).toContainText(expected) failed
+
+    Locator: getByRole('dialog', { name: 'Task detail' })
+    Expected substring: "Blocked task"
+    Timeout: 5000ms
+    Error: element(s) not found
+
+    Call log:
+      - Expect "toContainText" with timeout 5000ms
+      - waiting for getByRole('dialog', { name: 'Task detail' })
+
+
+      189 |   const server = await serve(page)
+      190 |   await page.goto(`/w/demo/tasks/${blocked.id}`)
+    > 191 |   await expect(page.getByRole('dialog', { name: 'Task detail' })).toContainText(blocked.title)
+          |                                                                   ^
+      192 |   await expect.poll(() => server.hits(families.activity)).toBeGreaterThan(0)
+      193 |   expect(await changes.connections()).toContainEqual({ url: '/v1/workspaces/demo/changes', closed: false })
+      194 |   expect(await changes.open()).toBe(1)
+        at /home/user/conveyor-worktrees/conveyor-task-261106-9415aa/web/tests/workspace-changes.spec.ts:191:67
+
+    Error Context: ../../../.cache/conveyor/261106-9415aa/out-repro/workspace-changes-an-activ-a2a0d--and-named-task-detail-once-dev-server-repeat14/error-context.md
+
+

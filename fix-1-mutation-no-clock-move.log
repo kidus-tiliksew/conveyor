@@ -1,0 +1,152 @@
+
+Running 4 tests using 2 workers
+
+[1/4] [dev-server] › tests/zz-mutation.spec.ts:217:1 › an activity frame refreshes the Board, sidebar, and named task detail once
+[2/4] [dev-server] › tests/zz-mutation.spec.ts:217:1 › an activity frame refreshes the Board, sidebar, and named task detail once
+  1) [dev-server] › tests/zz-mutation.spec.ts:217:1 › an activity frame refreshes the Board, sidebar, and named task detail once 
+
+    Error: expect(locator).toContainText(expected) failed
+
+    Locator: getByRole('dialog', { name: 'Task detail' })
+    Timeout: 5000ms
+    - Expected substring  - 1
+    + Received string     + 3
+
+    - Blocked task, unblocked
+    + Blocked task Knowledge explorerRunningWaiting on dependenciestask-blockedBlocked taskRepositoryconveyorBranchconveyor/task-blocked← Depends ontask-dependencyWaitingAssigneeUnassignedCreatedNov 1, 12:01 PMby Unknown (Creator information is unavailable)Agent workingagentThe agent is working.Show IDs{
+    +   "details": {}
+    + }TimelineFlowActivityWaiting for the first job to start.Show technical activity
+
+    Call log:
+      - Expect "toContainText" with timeout 5000ms
+      - waiting for getByRole('dialog', { name: 'Task detail' })
+        14 × locator resolved to <aside role="dialog" tabindex="-1" aria-modal="true" aria-label="Task detail" class="absolute inset-y-0 flex flex-col bg-background shadow-xl outline-none right-0 animate-sheet-in border-l border-border w-full md:w-1/2">…</aside>
+           - unexpected value "Blocked task Knowledge explorerRunningWaiting on dependenciestask-blockedBlocked taskRepositoryconveyorBranchconveyor/task-blocked← Depends ontask-dependencyWaitingAssigneeUnassignedCreatedNov 1, 12:01 PMby Unknown (Creator information is unavailable)Agent workingagentThe agent is working.Show IDs{
+      "details": {}
+    }TimelineFlowActivityWaiting for the first job to start.Show technical activity"
+
+
+      265 |   await boardRead
+      266 |   releaseDetail()
+    > 267 |   await expect(page.getByRole('dialog', { name: 'Task detail' })).toContainText('Blocked task, unblocked')
+          |                                                                   ^
+      268 |
+      269 |   // A frame naming an unrelated task leaves the open detail alone.
+      270 |   await changes.activity(unrelated.id)
+        at /home/user/conveyor-worktrees/conveyor-task-261106-9415aa/web/tests/zz-mutation.spec.ts:267:67
+
+    Error Context: ../../../.cache/conveyor/261106-9415aa/out-mut/zz-mutation-an-activity-fr-57f29--and-named-task-detail-once-dev-server/error-context.md
+
+
+  2) [dev-server] › tests/zz-mutation.spec.ts:217:1 › an activity frame refreshes the Board, sidebar, and named task detail once 
+
+    Error: expect(locator).toContainText(expected) failed
+
+    Locator: getByRole('dialog', { name: 'Task detail' })
+    Timeout: 5000ms
+    - Expected substring  - 1
+    + Received string     + 3
+
+    - Blocked task, unblocked
+    + Blocked task Knowledge explorerRunningWaiting on dependenciestask-blockedBlocked taskRepositoryconveyorBranchconveyor/task-blocked← Depends ontask-dependencyWaitingAssigneeUnassignedCreatedNov 1, 12:01 PMby Unknown (Creator information is unavailable)Agent workingagentThe agent is working.Show IDs{
+    +   "details": {}
+    + }TimelineFlowActivityWaiting for the first job to start.Show technical activity
+
+    Call log:
+      - Expect "toContainText" with timeout 5000ms
+      - waiting for getByRole('dialog', { name: 'Task detail' })
+        14 × locator resolved to <aside role="dialog" tabindex="-1" aria-modal="true" aria-label="Task detail" class="absolute inset-y-0 flex flex-col bg-background shadow-xl outline-none right-0 animate-sheet-in border-l border-border w-full md:w-1/2">…</aside>
+           - unexpected value "Blocked task Knowledge explorerRunningWaiting on dependenciestask-blockedBlocked taskRepositoryconveyorBranchconveyor/task-blocked← Depends ontask-dependencyWaitingAssigneeUnassignedCreatedNov 1, 12:01 PMby Unknown (Creator information is unavailable)Agent workingagentThe agent is working.Show IDs{
+      "details": {}
+    }TimelineFlowActivityWaiting for the first job to start.Show technical activity"
+
+
+      265 |   await boardRead
+      266 |   releaseDetail()
+    > 267 |   await expect(page.getByRole('dialog', { name: 'Task detail' })).toContainText('Blocked task, unblocked')
+          |                                                                   ^
+      268 |
+      269 |   // A frame naming an unrelated task leaves the open detail alone.
+      270 |   await changes.activity(unrelated.id)
+        at /home/user/conveyor-worktrees/conveyor-task-261106-9415aa/web/tests/zz-mutation.spec.ts:267:67
+
+    Error Context: ../../../.cache/conveyor/261106-9415aa/out-mut/zz-mutation-an-activity-fr-57f29--and-named-task-detail-once-dev-server-repeat1/error-context.md
+
+
+[3/4] [dev-server] › tests/zz-mutation.spec.ts:217:1 › an activity frame refreshes the Board, sidebar, and named task detail once
+[4/4] [dev-server] › tests/zz-mutation.spec.ts:217:1 › an activity frame refreshes the Board, sidebar, and named task detail once
+  3) [dev-server] › tests/zz-mutation.spec.ts:217:1 › an activity frame refreshes the Board, sidebar, and named task detail once 
+
+    Error: expect(locator).toContainText(expected) failed
+
+    Locator: getByRole('dialog', { name: 'Task detail' })
+    Timeout: 5000ms
+    - Expected substring  - 1
+    + Received string     + 3
+
+    - Blocked task, unblocked
+    + Blocked task Knowledge explorerRunningWaiting on dependenciestask-blockedBlocked taskRepositoryconveyorBranchconveyor/task-blocked← Depends ontask-dependencyWaitingAssigneeUnassignedCreatedNov 1, 12:01 PMby Unknown (Creator information is unavailable)Agent workingagentThe agent is working.Show IDs{
+    +   "details": {}
+    + }TimelineFlowActivityWaiting for the first job to start.Show technical activity
+
+    Call log:
+      - Expect "toContainText" with timeout 5000ms
+      - waiting for getByRole('dialog', { name: 'Task detail' })
+        14 × locator resolved to <aside role="dialog" tabindex="-1" aria-modal="true" aria-label="Task detail" class="absolute inset-y-0 flex flex-col bg-background shadow-xl outline-none right-0 animate-sheet-in border-l border-border w-full md:w-1/2">…</aside>
+           - unexpected value "Blocked task Knowledge explorerRunningWaiting on dependenciestask-blockedBlocked taskRepositoryconveyorBranchconveyor/task-blocked← Depends ontask-dependencyWaitingAssigneeUnassignedCreatedNov 1, 12:01 PMby Unknown (Creator information is unavailable)Agent workingagentThe agent is working.Show IDs{
+      "details": {}
+    }TimelineFlowActivityWaiting for the first job to start.Show technical activity"
+
+
+      265 |   await boardRead
+      266 |   releaseDetail()
+    > 267 |   await expect(page.getByRole('dialog', { name: 'Task detail' })).toContainText('Blocked task, unblocked')
+          |                                                                   ^
+      268 |
+      269 |   // A frame naming an unrelated task leaves the open detail alone.
+      270 |   await changes.activity(unrelated.id)
+        at /home/user/conveyor-worktrees/conveyor-task-261106-9415aa/web/tests/zz-mutation.spec.ts:267:67
+
+    Error Context: ../../../.cache/conveyor/261106-9415aa/out-mut/zz-mutation-an-activity-fr-57f29--and-named-task-detail-once-dev-server-repeat2/error-context.md
+
+
+  4) [dev-server] › tests/zz-mutation.spec.ts:217:1 › an activity frame refreshes the Board, sidebar, and named task detail once 
+
+    Error: expect(locator).toContainText(expected) failed
+
+    Locator: getByRole('dialog', { name: 'Task detail' })
+    Timeout: 5000ms
+    - Expected substring  - 1
+    + Received string     + 3
+
+    - Blocked task, unblocked
+    + Blocked task Knowledge explorerRunningWaiting on dependenciestask-blockedBlocked taskRepositoryconveyorBranchconveyor/task-blocked← Depends ontask-dependencyWaitingAssigneeUnassignedCreatedNov 1, 12:01 PMby Unknown (Creator information is unavailable)Agent workingagentThe agent is working.Show IDs{
+    +   "details": {}
+    + }TimelineFlowActivityWaiting for the first job to start.Show technical activity
+
+    Call log:
+      - Expect "toContainText" with timeout 5000ms
+      - waiting for getByRole('dialog', { name: 'Task detail' })
+        14 × locator resolved to <aside role="dialog" tabindex="-1" aria-modal="true" aria-label="Task detail" class="absolute inset-y-0 flex flex-col bg-background shadow-xl outline-none right-0 animate-sheet-in border-l border-border w-full md:w-1/2">…</aside>
+           - unexpected value "Blocked task Knowledge explorerRunningWaiting on dependenciestask-blockedBlocked taskRepositoryconveyorBranchconveyor/task-blocked← Depends ontask-dependencyWaitingAssigneeUnassignedCreatedNov 1, 12:01 PMby Unknown (Creator information is unavailable)Agent workingagentThe agent is working.Show IDs{
+      "details": {}
+    }TimelineFlowActivityWaiting for the first job to start.Show technical activity"
+
+
+      265 |   await boardRead
+      266 |   releaseDetail()
+    > 267 |   await expect(page.getByRole('dialog', { name: 'Task detail' })).toContainText('Blocked task, unblocked')
+          |                                                                   ^
+      268 |
+      269 |   // A frame naming an unrelated task leaves the open detail alone.
+      270 |   await changes.activity(unrelated.id)
+        at /home/user/conveyor-worktrees/conveyor-task-261106-9415aa/web/tests/zz-mutation.spec.ts:267:67
+
+    Error Context: ../../../.cache/conveyor/261106-9415aa/out-mut/zz-mutation-an-activity-fr-57f29--and-named-task-detail-once-dev-server-repeat3/error-context.md
+
+
+  4 failed
+    [dev-server] › tests/zz-mutation.spec.ts:217:1 › an activity frame refreshes the Board, sidebar, and named task detail once 
+    [dev-server] › tests/zz-mutation.spec.ts:217:1 › an activity frame refreshes the Board, sidebar, and named task detail once 
+    [dev-server] › tests/zz-mutation.spec.ts:217:1 › an activity frame refreshes the Board, sidebar, and named task detail once 
+    [dev-server] › tests/zz-mutation.spec.ts:217:1 › an activity frame refreshes the Board, sidebar, and named task detail once 

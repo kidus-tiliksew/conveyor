@@ -1,0 +1,24 @@
+
+Running 20 tests using 2 workers
+
+[1/20] [dev-server] › tests/workspace-changes.spec.ts:186:1 › an activity frame refreshes the Board, sidebar, and named task detail once
+[2/20] [dev-server] › tests/workspace-changes.spec.ts:186:1 › an activity frame refreshes the Board, sidebar, and named task detail once
+[3/20] [dev-server] › tests/workspace-changes.spec.ts:186:1 › an activity frame refreshes the Board, sidebar, and named task detail once
+[4/20] [dev-server] › tests/workspace-changes.spec.ts:186:1 › an activity frame refreshes the Board, sidebar, and named task detail once
+[5/20] [dev-server] › tests/workspace-changes.spec.ts:186:1 › an activity frame refreshes the Board, sidebar, and named task detail once
+[6/20] [dev-server] › tests/workspace-changes.spec.ts:186:1 › an activity frame refreshes the Board, sidebar, and named task detail once
+[7/20] [dev-server] › tests/workspace-changes.spec.ts:186:1 › an activity frame refreshes the Board, sidebar, and named task detail once
+[8/20] [dev-server] › tests/workspace-changes.spec.ts:186:1 › an activity frame refreshes the Board, sidebar, and named task detail once
+[9/20] [dev-server] › tests/workspace-changes.spec.ts:186:1 › an activity frame refreshes the Board, sidebar, and named task detail once
+[10/20] [dev-server] › tests/workspace-changes.spec.ts:186:1 › an activity frame refreshes the Board, sidebar, and named task detail once
+[11/20] [dev-server] › tests/workspace-changes.spec.ts:186:1 › an activity frame refreshes the Board, sidebar, and named task detail once
+[12/20] [dev-server] › tests/workspace-changes.spec.ts:186:1 › an activity frame refreshes the Board, sidebar, and named task detail once
+[13/20] [dev-server] › tests/workspace-changes.spec.ts:186:1 › an activity frame refreshes the Board, sidebar, and named task detail once
+[14/20] [dev-server] › tests/workspace-changes.spec.ts:186:1 › an activity frame refreshes the Board, sidebar, and named task detail once
+[15/20] [dev-server] › tests/workspace-changes.spec.ts:186:1 › an activity frame refreshes the Board, sidebar, and named task detail once
+[16/20] [dev-server] › tests/workspace-changes.spec.ts:186:1 › an activity frame refreshes the Board, sidebar, and named task detail once
+[17/20] [dev-server] › tests/workspace-changes.spec.ts:186:1 › an activity frame refreshes the Board, sidebar, and named task detail once
+[18/20] [dev-server] › tests/workspace-changes.spec.ts:186:1 › an activity frame refreshes the Board, sidebar, and named task detail once
+[19/20] [dev-server] › tests/workspace-changes.spec.ts:186:1 › an activity frame refreshes the Board, sidebar, and named task detail once
+[20/20] [dev-server] › tests/workspace-changes.spec.ts:186:1 › an activity frame refreshes the Board, sidebar, and named task detail once
+  20 passed (36.8s)

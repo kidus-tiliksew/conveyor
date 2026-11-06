@@ -1,0 +1,673 @@
+
+Running 500 tests using 3 workers
+
+[1/500] [dev-server] › tests/zz-debug.spec.ts:186:1 › an activity frame refreshes the Board, sidebar, and named task detail once
+[2/500] [dev-server] › tests/workspace-changes.spec.ts:186:1 › an activity frame refreshes the Board, sidebar, and named task detail once
+[3/500] [dev-server] › tests/workspace-changes.spec.ts:186:1 › an activity frame refreshes the Board, sidebar, and named task detail once
+[dev-server] › tests/zz-debug.spec.ts:186:1 › an activity frame refreshes the Board, sidebar, and named task detail once
+DBGOK {"flip":false,"order":">activity <pending-proposals <workspace <D:activity $pending-proposals $workspace $D:activity >D:next-action <activity $activity <D:next-action $D:next-action","notify":3,"real":false,"text":"Blocked task, unblocked Kn"}
+
+[4/500] [dev-server] › tests/workspace-changes.spec.ts:186:1 › an activity frame refreshes the Board, sidebar, and named task detail once
+[5/500] [dev-server] › tests/zz-debug.spec.ts:186:1 › an activity frame refreshes the Board, sidebar, and named task detail once
+[6/500] [dev-server] › tests/zz-debug.spec.ts:186:1 › an activity frame refreshes the Board, sidebar, and named task detail once
+[dev-server] › tests/zz-debug.spec.ts:186:1 › an activity frame refreshes the Board, sidebar, and named task detail once
+DBGOK {"flip":false,"order":">activity <pending-proposals <workspace $pending-proposals $workspace <D:activity <activity $D:activity >D:next-action $activity <D:next-action $D:next-action","notify":3,"real":false,"text":"Blocked task, unblocked Kn"}
+
+[dev-server] › tests/zz-debug.spec.ts:186:1 › an activity frame refreshes the Board, sidebar, and named task detail once
+DBGOK {"flip":false,"order":">D:activity >activity <pending-proposals $pending-proposals <workspace <D:activity <activity $workspace $D:activity >D:next-action $activity <D:next-action","notify":3,"real":false,"text":"Blocked task, unblocked Kn"}
+
+[7/500] [dev-server] › tests/workspace-changes.spec.ts:186:1 › an activity frame refreshes the Board, sidebar, and named task detail once
+[8/500] [dev-server] › tests/workspace-changes.spec.ts:186:1 › an activity frame refreshes the Board, sidebar, and named task detail once
+[9/500] [dev-server] › tests/zz-debug.spec.ts:186:1 › an activity frame refreshes the Board, sidebar, and named task detail once
+[dev-server] › tests/zz-debug.spec.ts:186:1 › an activity frame refreshes the Board, sidebar, and named task detail once
+DBGOK {"flip":false,"order":">activity <pending-proposals <workspace <D:activity <activity $pending-proposals $workspace $D:activity >D:next-action <D:next-action $activity $D:next-action","notify":3,"real":false,"text":"Blocked task, unblocked Kn"}
+
+[10/500] [dev-server] › tests/zz-debug.spec.ts:186:1 › an activity frame refreshes the Board, sidebar, and named task detail once
+[11/500] [dev-server] › tests/workspace-changes.spec.ts:186:1 › an activity frame refreshes the Board, sidebar, and named task detail once
+[12/500] [dev-server] › tests/zz-debug.spec.ts:186:1 › an activity frame refreshes the Board, sidebar, and named task detail once
+[dev-server] › tests/zz-debug.spec.ts:186:1 › an activity frame refreshes the Board, sidebar, and named task detail once
+DBGOK {"flip":false,"order":">activity <pending-proposals $pending-proposals <workspace $workspace <D:activity $D:activity >D:next-action <activity <D:next-action $activity $D:next-action","notify":3,"real":false,"text":"Blocked task, unblocked Kn"}
+
+[dev-server] › tests/zz-debug.spec.ts:186:1 › an activity frame refreshes the Board, sidebar, and named task detail once
+DBGOK {"flip":false,"order":">activity <pending-proposals $pending-proposals <workspace <D:activity <activity $workspace $D:activity >D:next-action $activity <D:next-action $D:next-action","notify":3,"real":false,"text":"Blocked task, unblocked Kn"}
+
+[13/500] [dev-server] › tests/workspace-changes.spec.ts:186:1 › an activity frame refreshes the Board, sidebar, and named task detail once
+[14/500] [dev-server] › tests/workspace-changes.spec.ts:186:1 › an activity frame refreshes the Board, sidebar, and named task detail once
+[15/500] [dev-server] › tests/zz-debug.spec.ts:186:1 › an activity frame refreshes the Board, sidebar, and named task detail once
+[dev-server] › tests/zz-debug.spec.ts:186:1 › an activity frame refreshes the Board, sidebar, and named task detail once
+DBGOK {"flip":false,"order":">activity <pending-proposals <workspace <D:activity <activity $pending-proposals $workspace $D:activity >D:next-action $activity <D:next-action $D:next-action","notify":3,"real":false,"text":"Blocked task, unblocked Kn"}
+
+[16/500] [dev-server] › tests/workspace-changes.spec.ts:186:1 › an activity frame refreshes the Board, sidebar, and named task detail once
+[17/500] [dev-server] › tests/zz-debug.spec.ts:186:1 › an activity frame refreshes the Board, sidebar, and named task detail once
+[18/500] [dev-server] › tests/zz-debug.spec.ts:186:1 › an activity frame refreshes the Board, sidebar, and named task detail once
+[dev-server] › tests/zz-debug.spec.ts:186:1 › an activity frame refreshes the Board, sidebar, and named task detail once
+DBGOK {"flip":false,"order":">activity <pending-proposals $pending-proposals <workspace $workspace <D:activity <activity $D:activity >D:next-action $activity <D:next-action $D:next-action","notify":3,"real":false,"text":"Blocked task, unblocked Kn"}
+
+[dev-server] › tests/zz-debug.spec.ts:186:1 › an activity frame refreshes the Board, sidebar, and named task detail once
+DBGOK {"flip":false,"order":">activity <pending-proposals $pending-proposals <workspace $workspace <D:activity <activity $D:activity >D:next-action $activity <D:next-action $D:next-action","notify":3,"real":false,"text":"Blocked task, unblocked Kn"}
+
+[19/500] [dev-server] › tests/workspace-changes.spec.ts:186:1 › an activity frame refreshes the Board, sidebar, and named task detail once
+[20/500] [dev-server] › tests/workspace-changes.spec.ts:186:1 › an activity frame refreshes the Board, sidebar, and named task detail once
+[21/500] [dev-server] › tests/zz-debug.spec.ts:186:1 › an activity frame refreshes the Board, sidebar, and named task detail once
+[dev-server] › tests/zz-debug.spec.ts:186:1 › an activity frame refreshes the Board, sidebar, and named task detail once
+DBGOK {"flip":false,"order":">D:activity >activity <pending-proposals $pending-proposals <workspace $workspace <D:activity <activity $D:activity >D:next-action $activity <D:next-action","notify":3,"real":false,"text":"Blocked task, unblocked Kn"}
+
+[22/500] [dev-server] › tests/workspace-changes.spec.ts:186:1 › an activity frame refreshes the Board, sidebar, and named task detail once
+[23/500] [dev-server] › tests/zz-debug.spec.ts:186:1 › an activity frame refreshes the Board, sidebar, and named task detail once
+[24/500] [dev-server] › tests/zz-debug.spec.ts:186:1 › an activity frame refreshes the Board, sidebar, and named task detail once
+[dev-server] › tests/zz-debug.spec.ts:186:1 › an activity frame refreshes the Board, sidebar, and named task detail once
+DBGOK {"flip":false,"order":">activity <pending-proposals <workspace <D:activity <activity $pending-proposals $workspace $D:activity >D:next-action $activity <D:next-action $D:next-action","notify":3,"real":false,"text":"Blocked task, unblocked Kn"}
+
+[dev-server] › tests/zz-debug.spec.ts:186:1 › an activity frame refreshes the Board, sidebar, and named task detail once
+DBGOK {"flip":false,"order":">activity <pending-proposals <workspace <D:activity <activity $pending-proposals $workspace $D:activity >D:next-action $activity <D:next-action $D:next-action","notify":3,"real":false,"text":"Blocked task, unblocked Kn"}
+
+[25/500] [dev-server] › tests/workspace-changes.spec.ts:186:1 › an activity frame refreshes the Board, sidebar, and named task detail once
+[26/500] [dev-server] › tests/zz-debug.spec.ts:186:1 › an activity frame refreshes the Board, sidebar, and named task detail once
+[27/500] [dev-server] › tests/workspace-changes.spec.ts:186:1 › an activity frame refreshes the Board, sidebar, and named task detail once
+[dev-server] › tests/zz-debug.spec.ts:186:1 › an activity frame refreshes the Board, sidebar, and named task detail once
+DBGOK {"flip":false,"order":">activity <pending-proposals $pending-proposals <workspace $workspace <D:activity $D:activity >D:next-action <activity <D:next-action $activity $D:next-action","notify":3,"real":false,"text":"Blocked task, unblocked Kn"}
+
+[28/500] [dev-server] › tests/zz-debug.spec.ts:186:1 › an activity frame refreshes the Board, sidebar, and named task detail once
+[29/500] [dev-server] › tests/zz-debug.spec.ts:186:1 › an activity frame refreshes the Board, sidebar, and named task detail once
+[30/500] [dev-server] › tests/workspace-changes.spec.ts:186:1 › an activity frame refreshes the Board, sidebar, and named task detail once
+[dev-server] › tests/zz-debug.spec.ts:186:1 › an activity frame refreshes the Board, sidebar, and named task detail once
+DBGOK {"flip":false,"order":">activity <pending-proposals <workspace <D:activity <activity $pending-proposals $workspace $D:activity >D:next-action $activity <D:next-action $D:next-action","notify":3,"real":false,"text":"Blocked task, unblocked Kn"}
+
+[dev-server] › tests/zz-debug.spec.ts:186:1 › an activity frame refreshes the Board, sidebar, and named task detail once
+DBGOK {"flip":false,"order":">D:activity >activity <pending-proposals $pending-proposals <workspace <D:activity <activity $workspace $D:activity >D:next-action $activity <D:next-action","notify":3,"real":false,"text":"Blocked task, unblocked Kn"}
+
+[31/500] [dev-server] › tests/workspace-changes.spec.ts:186:1 › an activity frame refreshes the Board, sidebar, and named task detail once
+[32/500] [dev-server] › tests/zz-debug.spec.ts:186:1 › an activity frame refreshes the Board, sidebar, and named task detail once
+[33/500] [dev-server] › tests/workspace-changes.spec.ts:186:1 › an activity frame refreshes the Board, sidebar, and named task detail once
+[dev-server] › tests/zz-debug.spec.ts:186:1 › an activity frame refreshes the Board, sidebar, and named task detail once
+DBGOK {"flip":false,"order":">D:activity >activity <pending-proposals <workspace <D:activity <activity $pending-proposals $workspace $D:activity >D:next-action $activity <D:next-action","notify":3,"real":false,"text":"Blocked task, unblocked Kn"}
+
+[34/500] [dev-server] › tests/zz-debug.spec.ts:186:1 › an activity frame refreshes the Board, sidebar, and named task detail once
+[35/500] [dev-server] › tests/workspace-changes.spec.ts:186:1 › an activity frame refreshes the Board, sidebar, and named task detail once
+[36/500] [dev-server] › tests/zz-debug.spec.ts:186:1 › an activity frame refreshes the Board, sidebar, and named task detail once
+[dev-server] › tests/zz-debug.spec.ts:186:1 › an activity frame refreshes the Board, sidebar, and named task detail once
+DBGOK {"flip":false,"order":">activity <pending-proposals <workspace <D:activity <activity $pending-proposals $workspace $D:activity >D:next-action $activity <D:next-action $D:next-action","notify":3,"real":false,"text":"Blocked task, unblocked Kn"}
+
+[dev-server] › tests/zz-debug.spec.ts:186:1 › an activity frame refreshes the Board, sidebar, and named task detail once
+DBGOK {"flip":false,"order":">D:activity >activity <pending-proposals $pending-proposals <workspace <D:activity <activity $workspace $D:activity >D:next-action $activity <D:next-action","notify":3,"real":false,"text":"Blocked task, unblocked Kn"}
+
+[37/500] [dev-server] › tests/workspace-changes.spec.ts:186:1 › an activity frame refreshes the Board, sidebar, and named task detail once
+[38/500] [dev-server] › tests/workspace-changes.spec.ts:186:1 › an activity frame refreshes the Board, sidebar, and named task detail once
+[39/500] [dev-server] › tests/zz-debug.spec.ts:186:1 › an activity frame refreshes the Board, sidebar, and named task detail once
+[dev-server] › tests/zz-debug.spec.ts:186:1 › an activity frame refreshes the Board, sidebar, and named task detail once
+DBGOK {"flip":false,"order":">activity <pending-proposals <workspace <D:activity <activity $pending-proposals $workspace $D:activity >D:next-action $activity <D:next-action $D:next-action","notify":3,"real":false,"text":"Blocked task, unblocked Kn"}
+
+[40/500] [dev-server] › tests/zz-debug.spec.ts:186:1 › an activity frame refreshes the Board, sidebar, and named task detail once
+[41/500] [dev-server] › tests/workspace-changes.spec.ts:186:1 › an activity frame refreshes the Board, sidebar, and named task detail once
+[42/500] [dev-server] › tests/zz-debug.spec.ts:186:1 › an activity frame refreshes the Board, sidebar, and named task detail once
+[dev-server] › tests/zz-debug.spec.ts:186:1 › an activity frame refreshes the Board, sidebar, and named task detail once
+DBGOK {"flip":false,"order":">D:activity >activity <pending-proposals $pending-proposals <workspace <D:activity <activity $workspace $D:activity >D:next-action $activity <D:next-action","notify":3,"real":false,"text":"Blocked task, unblocked Kn"}
+
+[dev-server] › tests/zz-debug.spec.ts:186:1 › an activity frame refreshes the Board, sidebar, and named task detail once
+DBGOK {"flip":false,"order":">activity <pending-proposals $pending-proposals <workspace <D:activity <activity $workspace $D:activity >D:next-action $activity <D:next-action $D:next-action","notify":3,"real":false,"text":"Blocked task, unblocked Kn"}
+
+[43/500] [dev-server] › tests/workspace-changes.spec.ts:186:1 › an activity frame refreshes the Board, sidebar, and named task detail once
+[44/500] [dev-server] › tests/zz-debug.spec.ts:186:1 › an activity frame refreshes the Board, sidebar, and named task detail once
+[45/500] [dev-server] › tests/workspace-changes.spec.ts:186:1 › an activity frame refreshes the Board, sidebar, and named task detail once
+[dev-server] › tests/zz-debug.spec.ts:186:1 › an activity frame refreshes the Board, sidebar, and named task detail once
+DBGOK {"flip":false,"order":">activity <pending-proposals $pending-proposals <workspace $workspace <D:activity $D:activity >D:next-action <activity $activity <D:next-action $D:next-action","notify":3,"real":false,"text":"Blocked task, unblocked Kn"}
+
+[46/500] [dev-server] › tests/zz-debug.spec.ts:186:1 › an activity frame refreshes the Board, sidebar, and named task detail once
+[47/500] [dev-server] › tests/workspace-changes.spec.ts:186:1 › an activity frame refreshes the Board, sidebar, and named task detail once
+[48/500] [dev-server] › tests/zz-debug.spec.ts:186:1 › an activity frame refreshes the Board, sidebar, and named task detail once
+[dev-server] › tests/zz-debug.spec.ts:186:1 › an activity frame refreshes the Board, sidebar, and named task detail once
+DBGOK {"flip":false,"order":">activity <pending-proposals <workspace <D:activity <activity $pending-proposals $workspace $D:activity >D:next-action $activity <D:next-action $D:next-action","notify":3,"real":false,"text":"Blocked task, unblocked Kn"}
+
+[49/500] [dev-server] › tests/workspace-changes.spec.ts:186:1 › an activity frame refreshes the Board, sidebar, and named task detail once
+[dev-server] › tests/zz-debug.spec.ts:186:1 › an activity frame refreshes the Board, sidebar, and named task detail once
+DBGOK {"flip":false,"order":">activity <pending-proposals $pending-proposals <workspace <D:activity <activity $workspace $D:activity >D:next-action $activity <D:next-action $D:next-action","notify":3,"real":false,"text":"Blocked task, unblocked Kn"}
+
+[50/500] [dev-server] › tests/zz-debug.spec.ts:186:1 › an activity frame refreshes the Board, sidebar, and named task detail once
+[51/500] [dev-server] › tests/workspace-changes.spec.ts:186:1 › an activity frame refreshes the Board, sidebar, and named task detail once
+[dev-server] › tests/zz-debug.spec.ts:186:1 › an activity frame refreshes the Board, sidebar, and named task detail once
+DBGOK {"flip":false,"order":">activity <pending-proposals $pending-proposals <workspace <D:activity <activity $workspace $D:activity >D:next-action $activity <D:next-action $D:next-action","notify":3,"real":false,"text":"Blocked task, unblocked Kn"}
+
+[52/500] [dev-server] › tests/zz-debug.spec.ts:186:1 › an activity frame refreshes the Board, sidebar, and named task detail once
+[53/500] [dev-server] › tests/workspace-changes.spec.ts:186:1 › an activity frame refreshes the Board, sidebar, and named task detail once
+[54/500] [dev-server] › tests/zz-debug.spec.ts:186:1 › an activity frame refreshes the Board, sidebar, and named task detail once
+[dev-server] › tests/zz-debug.spec.ts:186:1 › an activity frame refreshes the Board, sidebar, and named task detail once
+DBGOK {"flip":false,"order":">activity <pending-proposals <workspace <D:activity <activity $pending-proposals $workspace $D:activity >D:next-action $activity <D:next-action $D:next-action","notify":3,"real":false,"text":"Blocked task, unblocked Kn"}
+
+[dev-server] › tests/zz-debug.spec.ts:186:1 › an activity frame refreshes the Board, sidebar, and named task detail once
+DBGOK {"flip":false,"order":">activity <pending-proposals <workspace <D:activity <activity $pending-proposals $workspace $D:activity >D:next-action $activity <D:next-action $D:next-action","notify":3,"real":false,"text":"Blocked task, unblocked Kn"}
+
+[55/500] [dev-server] › tests/workspace-changes.spec.ts:186:1 › an activity frame refreshes the Board, sidebar, and named task detail once
+[56/500] [dev-server] › tests/zz-debug.spec.ts:186:1 › an activity frame refreshes the Board, sidebar, and named task detail once
+[57/500] [dev-server] › tests/workspace-changes.spec.ts:186:1 › an activity frame refreshes the Board, sidebar, and named task detail once
+[dev-server] › tests/zz-debug.spec.ts:186:1 › an activity frame refreshes the Board, sidebar, and named task detail once
+DBGOK {"flip":false,"order":">activity <pending-proposals <workspace $pending-proposals $workspace <D:activity <activity $D:activity >D:next-action $activity <D:next-action $D:next-action","notify":3,"real":false,"text":"Blocked task, unblocked Kn"}
+
+[58/500] [dev-server] › tests/workspace-changes.spec.ts:186:1 › an activity frame refreshes the Board, sidebar, and named task detail once
+[59/500] [dev-server] › tests/zz-debug.spec.ts:186:1 › an activity frame refreshes the Board, sidebar, and named task detail once
+[60/500] [dev-server] › tests/zz-debug.spec.ts:186:1 › an activity frame refreshes the Board, sidebar, and named task detail once
+[dev-server] › tests/zz-debug.spec.ts:186:1 › an activity frame refreshes the Board, sidebar, and named task detail once
+DBGOK {"flip":false,"order":">activity <pending-proposals $pending-proposals <workspace <D:activity $workspace $D:activity >D:next-action <activity $activity <D:next-action $D:next-action","notify":3,"real":false,"text":"Blocked task, unblocked Kn"}
+
+[dev-server] › tests/zz-debug.spec.ts:186:1 › an activity frame refreshes the Board, sidebar, and named task detail once
+DBGOK {"flip":false,"order":">activity <pending-proposals <workspace <D:activity <activity $pending-proposals $workspace $D:activity >D:next-action $activity <D:next-action $D:next-action","notify":3,"real":false,"text":"Blocked task, unblocked Kn"}
+
+[61/500] [dev-server] › tests/workspace-changes.spec.ts:186:1 › an activity frame refreshes the Board, sidebar, and named task detail once
+[62/500] [dev-server] › tests/zz-debug.spec.ts:186:1 › an activity frame refreshes the Board, sidebar, and named task detail once
+[63/500] [dev-server] › tests/workspace-changes.spec.ts:186:1 › an activity frame refreshes the Board, sidebar, and named task detail once
+[dev-server] › tests/zz-debug.spec.ts:186:1 › an activity frame refreshes the Board, sidebar, and named task detail once
+DBGOK {"flip":false,"order":">activity <pending-proposals $pending-proposals <workspace <D:activity $workspace $D:activity >D:next-action <activity $activity <D:next-action $D:next-action","notify":3,"real":false,"text":"Blocked task, unblocked Kn"}
+
+[64/500] [dev-server] › tests/zz-debug.spec.ts:186:1 › an activity frame refreshes the Board, sidebar, and named task detail once
+[65/500] [dev-server] › tests/workspace-changes.spec.ts:186:1 › an activity frame refreshes the Board, sidebar, and named task detail once
+[66/500] [dev-server] › tests/zz-debug.spec.ts:186:1 › an activity frame refreshes the Board, sidebar, and named task detail once
+[dev-server] › tests/zz-debug.spec.ts:186:1 › an activity frame refreshes the Board, sidebar, and named task detail once
+DBGOK {"flip":false,"order":">D:activity >activity <pending-proposals <workspace <D:activity $pending-proposals $workspace $D:activity >D:next-action <activity $activity <D:next-action","notify":3,"real":false,"text":"Blocked task, unblocked Kn"}
+
+[dev-server] › tests/zz-debug.spec.ts:186:1 › an activity frame refreshes the Board, sidebar, and named task detail once
+DBGOK {"flip":false,"order":">activity <pending-proposals <workspace $pending-proposals <D:activity <activity $workspace $D:activity >D:next-action $activity <D:next-action $D:next-action","notify":3,"real":false,"text":"Blocked task, unblocked Kn"}
+
+[67/500] [dev-server] › tests/workspace-changes.spec.ts:186:1 › an activity frame refreshes the Board, sidebar, and named task detail once
+[68/500] [dev-server] › tests/zz-debug.spec.ts:186:1 › an activity frame refreshes the Board, sidebar, and named task detail once
+[69/500] [dev-server] › tests/workspace-changes.spec.ts:186:1 › an activity frame refreshes the Board, sidebar, and named task detail once
+[dev-server] › tests/zz-debug.spec.ts:186:1 › an activity frame refreshes the Board, sidebar, and named task detail once
+DBGOK {"flip":false,"order":">D:activity >activity <pending-proposals <workspace <D:activity <activity $pending-proposals $workspace $D:activity >D:next-action $activity <D:next-action","notify":3,"real":false,"text":"Blocked task, unblocked Kn"}
+
+[70/500] [dev-server] › tests/zz-debug.spec.ts:186:1 › an activity frame refreshes the Board, sidebar, and named task detail once
+[71/500] [dev-server] › tests/workspace-changes.spec.ts:186:1 › an activity frame refreshes the Board, sidebar, and named task detail once
+[72/500] [dev-server] › tests/zz-debug.spec.ts:186:1 › an activity frame refreshes the Board, sidebar, and named task detail once
+[dev-server] › tests/zz-debug.spec.ts:186:1 › an activity frame refreshes the Board, sidebar, and named task detail once
+DBGOK {"flip":false,"order":">activity <pending-proposals <workspace $pending-proposals $workspace <D:activity <activity $D:activity >D:next-action $activity <D:next-action $D:next-action","notify":3,"real":false,"text":"Blocked task, unblocked Kn"}
+
+[dev-server] › tests/zz-debug.spec.ts:186:1 › an activity frame refreshes the Board, sidebar, and named task detail once
+DBGOK {"flip":false,"order":">activity <pending-proposals <workspace <D:activity <activity $pending-proposals $workspace $D:activity >D:next-action $activity <D:next-action $D:next-action","notify":3,"real":false,"text":"Blocked task, unblocked Kn"}
+
+[73/500] [dev-server] › tests/workspace-changes.spec.ts:186:1 › an activity frame refreshes the Board, sidebar, and named task detail once
+[74/500] [dev-server] › tests/zz-debug.spec.ts:186:1 › an activity frame refreshes the Board, sidebar, and named task detail once
+[75/500] [dev-server] › tests/workspace-changes.spec.ts:186:1 › an activity frame refreshes the Board, sidebar, and named task detail once
+[dev-server] › tests/zz-debug.spec.ts:186:1 › an activity frame refreshes the Board, sidebar, and named task detail once
+DBGOK {"flip":false,"order":">D:activity >activity <pending-proposals <workspace <D:activity <activity $pending-proposals $workspace $D:activity >D:next-action $activity <D:next-action","notify":3,"real":false,"text":"Blocked task, unblocked Kn"}
+
+[76/500] [dev-server] › tests/zz-debug.spec.ts:186:1 › an activity frame refreshes the Board, sidebar, and named task detail once
+[77/500] [dev-server] › tests/workspace-changes.spec.ts:186:1 › an activity frame refreshes the Board, sidebar, and named task detail once
+[78/500] [dev-server] › tests/zz-debug.spec.ts:186:1 › an activity frame refreshes the Board, sidebar, and named task detail once
+[dev-server] › tests/zz-debug.spec.ts:186:1 › an activity frame refreshes the Board, sidebar, and named task detail once
+DBGOK {"flip":false,"order":">activity <pending-proposals <workspace <D:activity <activity $pending-proposals $workspace $D:activity >D:next-action $activity <D:next-action $D:next-action","notify":3,"real":false,"text":"Blocked task, unblocked Kn"}
+
+[dev-server] › tests/zz-debug.spec.ts:186:1 › an activity frame refreshes the Board, sidebar, and named task detail once
+DBGOK {"flip":false,"order":">activity <pending-proposals <workspace <D:activity <activity $pending-proposals $workspace $D:activity >D:next-action $activity <D:next-action $D:next-action","notify":3,"real":false,"text":"Blocked task, unblocked Kn"}
+
+[79/500] [dev-server] › tests/workspace-changes.spec.ts:186:1 › an activity frame refreshes the Board, sidebar, and named task detail once
+[80/500] [dev-server] › tests/zz-debug.spec.ts:186:1 › an activity frame refreshes the Board, sidebar, and named task detail once
+[81/500] [dev-server] › tests/workspace-changes.spec.ts:186:1 › an activity frame refreshes the Board, sidebar, and named task detail once
+[dev-server] › tests/zz-debug.spec.ts:186:1 › an activity frame refreshes the Board, sidebar, and named task detail once
+DBGOK {"flip":false,"order":">D:activity >activity <pending-proposals $pending-proposals <workspace <D:activity <activity $workspace $D:activity >D:next-action $activity <D:next-action","notify":3,"real":false,"text":"Blocked task, unblocked Kn"}
+
+[82/500] [dev-server] › tests/zz-debug.spec.ts:186:1 › an activity frame refreshes the Board, sidebar, and named task detail once
+[83/500] [dev-server] › tests/workspace-changes.spec.ts:186:1 › an activity frame refreshes the Board, sidebar, and named task detail once
+[84/500] [dev-server] › tests/zz-debug.spec.ts:186:1 › an activity frame refreshes the Board, sidebar, and named task detail once
+[dev-server] › tests/zz-debug.spec.ts:186:1 › an activity frame refreshes the Board, sidebar, and named task detail once
+DBGOK {"flip":false,"order":">activity <pending-proposals <workspace <D:activity <activity $pending-proposals $workspace $D:activity >D:next-action $activity <D:next-action $D:next-action","notify":3,"real":false,"text":"Blocked task, unblocked Kn"}
+
+[dev-server] › tests/zz-debug.spec.ts:186:1 › an activity frame refreshes the Board, sidebar, and named task detail once
+DBGOK {"flip":false,"order":">activity <pending-proposals $pending-proposals <workspace <D:activity <activity $workspace $D:activity >D:next-action $activity <D:next-action $D:next-action","notify":3,"real":false,"text":"Blocked task, unblocked Kn"}
+
+[85/500] [dev-server] › tests/workspace-changes.spec.ts:186:1 › an activity frame refreshes the Board, sidebar, and named task detail once
+[86/500] [dev-server] › tests/zz-debug.spec.ts:186:1 › an activity frame refreshes the Board, sidebar, and named task detail once
+[87/500] [dev-server] › tests/workspace-changes.spec.ts:186:1 › an activity frame refreshes the Board, sidebar, and named task detail once
+[dev-server] › tests/zz-debug.spec.ts:186:1 › an activity frame refreshes the Board, sidebar, and named task detail once
+DBGOK {"flip":false,"order":">activity <pending-proposals <workspace <D:activity $pending-proposals $workspace $D:activity >D:next-action <activity <D:next-action $activity $D:next-action","notify":3,"real":false,"text":"Blocked task, unblocked Kn"}
+
+[88/500] [dev-server] › tests/zz-debug.spec.ts:186:1 › an activity frame refreshes the Board, sidebar, and named task detail once
+[89/500] [dev-server] › tests/workspace-changes.spec.ts:186:1 › an activity frame refreshes the Board, sidebar, and named task detail once
+[90/500] [dev-server] › tests/zz-debug.spec.ts:186:1 › an activity frame refreshes the Board, sidebar, and named task detail once
+[dev-server] › tests/zz-debug.spec.ts:186:1 › an activity frame refreshes the Board, sidebar, and named task detail once
+DBGOK {"flip":false,"order":">activity <pending-proposals $pending-proposals <workspace <D:activity $workspace $D:activity >D:next-action <activity <D:next-action $activity $D:next-action","notify":3,"real":false,"text":"Blocked task, unblocked Kn"}
+
+[dev-server] › tests/zz-debug.spec.ts:186:1 › an activity frame refreshes the Board, sidebar, and named task detail once
+DBGOK {"flip":false,"order":">activity <pending-proposals <workspace $pending-proposals $workspace <D:activity $D:activity >D:next-action <activity <D:next-action $activity $D:next-action","notify":3,"real":false,"text":"Blocked task, unblocked Kn"}
+
+[91/500] [dev-server] › tests/workspace-changes.spec.ts:186:1 › an activity frame refreshes the Board, sidebar, and named task detail once
+[92/500] [dev-server] › tests/zz-debug.spec.ts:186:1 › an activity frame refreshes the Board, sidebar, and named task detail once
+[93/500] [dev-server] › tests/workspace-changes.spec.ts:186:1 › an activity frame refreshes the Board, sidebar, and named task detail once
+[dev-server] › tests/zz-debug.spec.ts:186:1 › an activity frame refreshes the Board, sidebar, and named task detail once
+DBGOK {"flip":false,"order":">activity <pending-proposals $pending-proposals <workspace $workspace <D:activity $D:activity >D:next-action <activity <D:next-action $activity $D:next-action","notify":3,"real":false,"text":"Blocked task, unblocked Kn"}
+
+[94/500] [dev-server] › tests/zz-debug.spec.ts:186:1 › an activity frame refreshes the Board, sidebar, and named task detail once
+[95/500] [dev-server] › tests/zz-debug.spec.ts:186:1 › an activity frame refreshes the Board, sidebar, and named task detail once
+[96/500] [dev-server] › tests/workspace-changes.spec.ts:186:1 › an activity frame refreshes the Board, sidebar, and named task detail once
+[dev-server] › tests/zz-debug.spec.ts:186:1 › an activity frame refreshes the Board, sidebar, and named task detail once
+DBGOK {"flip":false,"order":">activity <pending-proposals <workspace <D:activity <activity $pending-proposals $workspace $D:activity >D:next-action $activity <D:next-action $D:next-action","notify":3,"real":false,"text":"Blocked task, unblocked Kn"}
+
+[dev-server] › tests/zz-debug.spec.ts:186:1 › an activity frame refreshes the Board, sidebar, and named task detail once
+DBGOK {"flip":false,"order":">activity <pending-proposals <workspace <D:activity <activity $pending-proposals $workspace $D:activity >D:next-action $activity <D:next-action $D:next-action","notify":3,"real":false,"text":"Blocked task, unblocked Kn"}
+
+[97/500] [dev-server] › tests/workspace-changes.spec.ts:186:1 › an activity frame refreshes the Board, sidebar, and named task detail once
+[98/500] [dev-server] › tests/zz-debug.spec.ts:186:1 › an activity frame refreshes the Board, sidebar, and named task detail once
+[99/500] [dev-server] › tests/workspace-changes.spec.ts:186:1 › an activity frame refreshes the Board, sidebar, and named task detail once
+[dev-server] › tests/zz-debug.spec.ts:186:1 › an activity frame refreshes the Board, sidebar, and named task detail once
+DBGOK {"flip":false,"order":">D:activity >activity <pending-proposals <workspace <D:activity <activity $pending-proposals $workspace $D:activity >D:next-action $activity <D:next-action","notify":3,"real":false,"text":"Blocked task, unblocked Kn"}
+
+[100/500] [dev-server] › tests/zz-debug.spec.ts:186:1 › an activity frame refreshes the Board, sidebar, and named task detail once
+[101/500] [dev-server] › tests/workspace-changes.spec.ts:186:1 › an activity frame refreshes the Board, sidebar, and named task detail once
+[102/500] [dev-server] › tests/zz-debug.spec.ts:186:1 › an activity frame refreshes the Board, sidebar, and named task detail once
+[dev-server] › tests/zz-debug.spec.ts:186:1 › an activity frame refreshes the Board, sidebar, and named task detail once
+DBGOK {"flip":false,"order":">activity <pending-proposals <workspace <D:activity <activity $pending-proposals $workspace $D:activity >D:next-action $activity <D:next-action $D:next-action","notify":3,"real":false,"text":"Blocked task, unblocked Kn"}
+
+[dev-server] › tests/zz-debug.spec.ts:186:1 › an activity frame refreshes the Board, sidebar, and named task detail once
+DBGOK {"flip":false,"order":">activity <pending-proposals <workspace <D:activity <activity $pending-proposals $workspace $D:activity >D:next-action $activity <D:next-action $D:next-action","notify":3,"real":false,"text":"Blocked task, unblocked Kn"}
+
+[103/500] [dev-server] › tests/workspace-changes.spec.ts:186:1 › an activity frame refreshes the Board, sidebar, and named task detail once
+[104/500] [dev-server] › tests/zz-debug.spec.ts:186:1 › an activity frame refreshes the Board, sidebar, and named task detail once
+[105/500] [dev-server] › tests/workspace-changes.spec.ts:186:1 › an activity frame refreshes the Board, sidebar, and named task detail once
+[dev-server] › tests/zz-debug.spec.ts:186:1 › an activity frame refreshes the Board, sidebar, and named task detail once
+DBGOK {"flip":false,"order":">activity <pending-proposals <workspace <D:activity <activity $pending-proposals $workspace $D:activity >D:next-action $activity <D:next-action $D:next-action","notify":3,"real":false,"text":"Blocked task, unblocked Kn"}
+
+[106/500] [dev-server] › tests/zz-debug.spec.ts:186:1 › an activity frame refreshes the Board, sidebar, and named task detail once
+[107/500] [dev-server] › tests/workspace-changes.spec.ts:186:1 › an activity frame refreshes the Board, sidebar, and named task detail once
+[108/500] [dev-server] › tests/zz-debug.spec.ts:186:1 › an activity frame refreshes the Board, sidebar, and named task detail once
+[dev-server] › tests/zz-debug.spec.ts:186:1 › an activity frame refreshes the Board, sidebar, and named task detail once
+DBGOK {"flip":false,"order":">activity <pending-proposals $pending-proposals <workspace $workspace <D:activity <activity $D:activity >D:next-action $activity <D:next-action $D:next-action","notify":3,"real":false,"text":"Blocked task, unblocked Kn"}
+
+[109/500] [dev-server] › tests/workspace-changes.spec.ts:186:1 › an activity frame refreshes the Board, sidebar, and named task detail once
+[dev-server] › tests/zz-debug.spec.ts:186:1 › an activity frame refreshes the Board, sidebar, and named task detail once
+DBGOK {"flip":false,"order":">activity <pending-proposals <workspace $pending-proposals $workspace <D:activity <activity $D:activity >D:next-action $activity <D:next-action $D:next-action","notify":3,"real":false,"text":"Blocked task, unblocked Kn"}
+
+[110/500] [dev-server] › tests/zz-debug.spec.ts:186:1 › an activity frame refreshes the Board, sidebar, and named task detail once
+[111/500] [dev-server] › tests/workspace-changes.spec.ts:186:1 › an activity frame refreshes the Board, sidebar, and named task detail once
+[dev-server] › tests/zz-debug.spec.ts:186:1 › an activity frame refreshes the Board, sidebar, and named task detail once
+DBGOK {"flip":false,"order":">activity <pending-proposals <workspace <D:activity <activity $pending-proposals $workspace $D:activity >D:next-action $activity <D:next-action $D:next-action","notify":3,"real":false,"text":"Blocked task, unblocked Kn"}
+
+[112/500] [dev-server] › tests/zz-debug.spec.ts:186:1 › an activity frame refreshes the Board, sidebar, and named task detail once
+[113/500] [dev-server] › tests/workspace-changes.spec.ts:186:1 › an activity frame refreshes the Board, sidebar, and named task detail once
+[114/500] [dev-server] › tests/zz-debug.spec.ts:186:1 › an activity frame refreshes the Board, sidebar, and named task detail once
+[dev-server] › tests/zz-debug.spec.ts:186:1 › an activity frame refreshes the Board, sidebar, and named task detail once
+DBGOK {"flip":false,"order":">activity <pending-proposals <workspace $pending-proposals $workspace <D:activity <activity $D:activity >D:next-action $activity <D:next-action $D:next-action","notify":3,"real":false,"text":"Blocked task, unblocked Kn"}
+
+[dev-server] › tests/zz-debug.spec.ts:186:1 › an activity frame refreshes the Board, sidebar, and named task detail once
+DBGOK {"flip":false,"order":">D:activity >activity <pending-proposals $pending-proposals <workspace $workspace <D:activity <activity $D:activity >D:next-action $activity <D:next-action","notify":3,"real":false,"text":"Blocked task, unblocked Kn"}
+
+[115/500] [dev-server] › tests/zz-debug.spec.ts:186:1 › an activity frame refreshes the Board, sidebar, and named task detail once
+[116/500] [dev-server] › tests/workspace-changes.spec.ts:186:1 › an activity frame refreshes the Board, sidebar, and named task detail once
+[117/500] [dev-server] › tests/workspace-changes.spec.ts:186:1 › an activity frame refreshes the Board, sidebar, and named task detail once
+[dev-server] › tests/zz-debug.spec.ts:186:1 › an activity frame refreshes the Board, sidebar, and named task detail once
+DBGOK {"flip":false,"order":">activity <pending-proposals $pending-proposals <workspace <D:activity <activity $workspace $D:activity >D:next-action $activity <D:next-action $D:next-action","notify":3,"real":false,"text":"Blocked task, unblocked Kn"}
+
+[118/500] [dev-server] › tests/zz-debug.spec.ts:186:1 › an activity frame refreshes the Board, sidebar, and named task detail once
+[119/500] [dev-server] › tests/workspace-changes.spec.ts:186:1 › an activity frame refreshes the Board, sidebar, and named task detail once
+[120/500] [dev-server] › tests/zz-debug.spec.ts:186:1 › an activity frame refreshes the Board, sidebar, and named task detail once
+[dev-server] › tests/zz-debug.spec.ts:186:1 › an activity frame refreshes the Board, sidebar, and named task detail once
+DBGOK {"flip":false,"order":">activity <pending-proposals <workspace <D:activity <activity $pending-proposals $workspace $D:activity >D:next-action $activity <D:next-action $D:next-action","notify":3,"real":false,"text":"Blocked task, unblocked Kn"}
+
+[dev-server] › tests/zz-debug.spec.ts:186:1 › an activity frame refreshes the Board, sidebar, and named task detail once
+DBGOK {"flip":false,"order":">activity <pending-proposals $pending-proposals <workspace <D:activity <activity $workspace $D:activity >D:next-action <D:next-action $activity $D:next-action","notify":3,"real":false,"text":"Blocked task, unblocked Kn"}
+
+[121/500] [dev-server] › tests/workspace-changes.spec.ts:186:1 › an activity frame refreshes the Board, sidebar, and named task detail once
+[122/500] [dev-server] › tests/zz-debug.spec.ts:186:1 › an activity frame refreshes the Board, sidebar, and named task detail once
+[123/500] [dev-server] › tests/workspace-changes.spec.ts:186:1 › an activity frame refreshes the Board, sidebar, and named task detail once
+[124/500] [dev-server] › tests/zz-debug.spec.ts:186:1 › an activity frame refreshes the Board, sidebar, and named task detail once
+[dev-server] › tests/zz-debug.spec.ts:186:1 › an activity frame refreshes the Board, sidebar, and named task detail once
+DBGOK {"flip":false,"order":">activity <pending-proposals $pending-proposals <workspace $workspace <D:activity <activity $D:activity >D:next-action $activity <D:next-action $D:next-action","notify":3,"real":false,"text":"Blocked task, unblocked Kn"}
+
+[dev-server] › tests/zz-debug.spec.ts:186:1 › an activity frame refreshes the Board, sidebar, and named task detail once
+DBGOK {"flip":false,"order":">activity <pending-proposals <workspace <D:activity <activity $pending-proposals $workspace $D:activity >D:next-action $activity <D:next-action $D:next-action","notify":3,"real":false,"text":"Blocked task, unblocked Kn"}
+
+[125/500] [dev-server] › tests/workspace-changes.spec.ts:186:1 › an activity frame refreshes the Board, sidebar, and named task detail once
+[126/500] [dev-server] › tests/zz-debug.spec.ts:186:1 › an activity frame refreshes the Board, sidebar, and named task detail once
+[127/500] [dev-server] › tests/workspace-changes.spec.ts:186:1 › an activity frame refreshes the Board, sidebar, and named task detail once
+[dev-server] › tests/zz-debug.spec.ts:186:1 › an activity frame refreshes the Board, sidebar, and named task detail once
+DBGOK {"flip":false,"order":">D:activity >activity <pending-proposals $pending-proposals <workspace <D:activity <activity $workspace $D:activity >D:next-action $activity <D:next-action","notify":3,"real":false,"text":"Blocked task, unblocked Kn"}
+
+[128/500] [dev-server] › tests/zz-debug.spec.ts:186:1 › an activity frame refreshes the Board, sidebar, and named task detail once
+[129/500] [dev-server] › tests/zz-debug.spec.ts:186:1 › an activity frame refreshes the Board, sidebar, and named task detail once
+[130/500] [dev-server] › tests/workspace-changes.spec.ts:186:1 › an activity frame refreshes the Board, sidebar, and named task detail once
+[dev-server] › tests/zz-debug.spec.ts:186:1 › an activity frame refreshes the Board, sidebar, and named task detail once
+DBGOK {"flip":false,"order":">activity <pending-proposals <workspace <D:activity <activity $pending-proposals $workspace $D:activity >D:next-action $activity <D:next-action $D:next-action","notify":3,"real":false,"text":"Blocked task, unblocked Kn"}
+
+[dev-server] › tests/zz-debug.spec.ts:186:1 › an activity frame refreshes the Board, sidebar, and named task detail once
+DBGOK {"flip":false,"order":">activity <pending-proposals <workspace <D:activity <activity $pending-proposals $workspace $D:activity >D:next-action $activity <D:next-action $D:next-action","notify":3,"real":false,"text":"Blocked task, unblocked Kn"}
+
+[131/500] [dev-server] › tests/workspace-changes.spec.ts:186:1 › an activity frame refreshes the Board, sidebar, and named task detail once
+[132/500] [dev-server] › tests/zz-debug.spec.ts:186:1 › an activity frame refreshes the Board, sidebar, and named task detail once
+[133/500] [dev-server] › tests/workspace-changes.spec.ts:186:1 › an activity frame refreshes the Board, sidebar, and named task detail once
+[dev-server] › tests/zz-debug.spec.ts:186:1 › an activity frame refreshes the Board, sidebar, and named task detail once
+DBGOK {"flip":false,"order":">activity <pending-proposals $pending-proposals <workspace $workspace <D:activity <activity $D:activity >D:next-action $activity <D:next-action $D:next-action","notify":3,"real":false,"text":"Blocked task, unblocked Kn"}
+
+[134/500] [dev-server] › tests/zz-debug.spec.ts:186:1 › an activity frame refreshes the Board, sidebar, and named task detail once
+[135/500] [dev-server] › tests/workspace-changes.spec.ts:186:1 › an activity frame refreshes the Board, sidebar, and named task detail once
+[136/500] [dev-server] › tests/zz-debug.spec.ts:186:1 › an activity frame refreshes the Board, sidebar, and named task detail once
+[dev-server] › tests/zz-debug.spec.ts:186:1 › an activity frame refreshes the Board, sidebar, and named task detail once
+DBGOK {"flip":false,"order":">activity <pending-proposals $pending-proposals <workspace <D:activity <activity $workspace $D:activity >D:next-action $activity <D:next-action $D:next-action","notify":3,"real":false,"text":"Blocked task, unblocked Kn"}
+
+[137/500] [dev-server] › tests/workspace-changes.spec.ts:186:1 › an activity frame refreshes the Board, sidebar, and named task detail once
+[dev-server] › tests/zz-debug.spec.ts:186:1 › an activity frame refreshes the Board, sidebar, and named task detail once
+DBGOK {"flip":false,"order":">activity <pending-proposals <workspace <D:activity <activity $pending-proposals $workspace $D:activity >D:next-action $activity <D:next-action $D:next-action","notify":3,"real":false,"text":"Blocked task, unblocked Kn"}
+
+[138/500] [dev-server] › tests/zz-debug.spec.ts:186:1 › an activity frame refreshes the Board, sidebar, and named task detail once
+[139/500] [dev-server] › tests/workspace-changes.spec.ts:186:1 › an activity frame refreshes the Board, sidebar, and named task detail once
+[dev-server] › tests/zz-debug.spec.ts:186:1 › an activity frame refreshes the Board, sidebar, and named task detail once
+DBGOK {"flip":false,"order":">activity <pending-proposals <workspace <D:activity <activity $pending-proposals $workspace $D:activity >D:next-action $activity <D:next-action $D:next-action","notify":3,"real":false,"text":"Blocked task, unblocked Kn"}
+
+[140/500] [dev-server] › tests/zz-debug.spec.ts:186:1 › an activity frame refreshes the Board, sidebar, and named task detail once
+[141/500] [dev-server] › tests/workspace-changes.spec.ts:186:1 › an activity frame refreshes the Board, sidebar, and named task detail once
+[142/500] [dev-server] › tests/zz-debug.spec.ts:186:1 › an activity frame refreshes the Board, sidebar, and named task detail once
+[dev-server] › tests/zz-debug.spec.ts:186:1 › an activity frame refreshes the Board, sidebar, and named task detail once
+DBGOK {"flip":false,"order":">D:activity >activity <pending-proposals <workspace <D:activity <activity $pending-proposals $workspace $D:activity >D:next-action $activity <D:next-action","notify":3,"real":false,"text":"Blocked task, unblocked Kn"}
+
+[dev-server] › tests/zz-debug.spec.ts:186:1 › an activity frame refreshes the Board, sidebar, and named task detail once
+DBGOK {"flip":false,"order":">activity <pending-proposals <workspace <D:activity <activity $pending-proposals $workspace $D:activity >D:next-action $activity <D:next-action $D:next-action","notify":3,"real":false,"text":"Blocked task, unblocked Kn"}
+
+[143/500] [dev-server] › tests/workspace-changes.spec.ts:186:1 › an activity frame refreshes the Board, sidebar, and named task detail once
+[144/500] [dev-server] › tests/zz-debug.spec.ts:186:1 › an activity frame refreshes the Board, sidebar, and named task detail once
+[145/500] [dev-server] › tests/workspace-changes.spec.ts:186:1 › an activity frame refreshes the Board, sidebar, and named task detail once
+[dev-server] › tests/zz-debug.spec.ts:186:1 › an activity frame refreshes the Board, sidebar, and named task detail once
+DBGOK {"flip":false,"order":">activity <pending-proposals <workspace $pending-proposals $workspace <D:activity <activity $D:activity >D:next-action $activity <D:next-action $D:next-action","notify":3,"real":false,"text":"Blocked task, unblocked Kn"}
+
+[146/500] [dev-server] › tests/zz-debug.spec.ts:186:1 › an activity frame refreshes the Board, sidebar, and named task detail once
+[147/500] [dev-server] › tests/workspace-changes.spec.ts:186:1 › an activity frame refreshes the Board, sidebar, and named task detail once
+[148/500] [dev-server] › tests/zz-debug.spec.ts:186:1 › an activity frame refreshes the Board, sidebar, and named task detail once
+[dev-server] › tests/zz-debug.spec.ts:186:1 › an activity frame refreshes the Board, sidebar, and named task detail once
+DBGOK {"flip":false,"order":">activity <pending-proposals <workspace <D:activity <activity $pending-proposals $workspace $D:activity >D:next-action $activity <D:next-action $D:next-action","notify":3,"real":false,"text":"Blocked task, unblocked Kn"}
+
+[dev-server] › tests/zz-debug.spec.ts:186:1 › an activity frame refreshes the Board, sidebar, and named task detail once
+DBGOK {"flip":false,"order":">activity <pending-proposals $pending-proposals <workspace <D:activity <activity $workspace $D:activity >D:next-action $activity <D:next-action $D:next-action","notify":3,"real":false,"text":"Blocked task, unblocked Kn"}
+
+[149/500] [dev-server] › tests/workspace-changes.spec.ts:186:1 › an activity frame refreshes the Board, sidebar, and named task detail once
+[150/500] [dev-server] › tests/zz-debug.spec.ts:186:1 › an activity frame refreshes the Board, sidebar, and named task detail once
+[151/500] [dev-server] › tests/workspace-changes.spec.ts:186:1 › an activity frame refreshes the Board, sidebar, and named task detail once
+[dev-server] › tests/zz-debug.spec.ts:186:1 › an activity frame refreshes the Board, sidebar, and named task detail once
+DBGOK {"flip":false,"order":">activity <pending-proposals <workspace <D:activity <activity $pending-proposals $workspace $D:activity >D:next-action $activity <D:next-action $D:next-action","notify":3,"real":false,"text":"Blocked task, unblocked Kn"}
+
+[152/500] [dev-server] › tests/zz-debug.spec.ts:186:1 › an activity frame refreshes the Board, sidebar, and named task detail once
+[153/500] [dev-server] › tests/workspace-changes.spec.ts:186:1 › an activity frame refreshes the Board, sidebar, and named task detail once
+[154/500] [dev-server] › tests/zz-debug.spec.ts:186:1 › an activity frame refreshes the Board, sidebar, and named task detail once
+[dev-server] › tests/zz-debug.spec.ts:186:1 › an activity frame refreshes the Board, sidebar, and named task detail once
+DBGOK {"flip":false,"order":">activity <pending-proposals $pending-proposals <workspace <D:activity <activity $workspace $D:activity >D:next-action $activity <D:next-action $D:next-action","notify":3,"real":false,"text":"Blocked task, unblocked Kn"}
+
+[155/500] [dev-server] › tests/workspace-changes.spec.ts:186:1 › an activity frame refreshes the Board, sidebar, and named task detail once
+[156/500] [dev-server] › tests/zz-debug.spec.ts:186:1 › an activity frame refreshes the Board, sidebar, and named task detail once
+[dev-server] › tests/zz-debug.spec.ts:186:1 › an activity frame refreshes the Board, sidebar, and named task detail once
+DBGOK {"flip":false,"order":">D:activity >activity <pending-proposals $pending-proposals <workspace <D:activity <activity $workspace $D:activity >D:next-action $activity <D:next-action","notify":3,"real":false,"text":"Blocked task, unblocked Kn"}
+
+[157/500] [dev-server] › tests/workspace-changes.spec.ts:186:1 › an activity frame refreshes the Board, sidebar, and named task detail once
+[dev-server] › tests/zz-debug.spec.ts:186:1 › an activity frame refreshes the Board, sidebar, and named task detail once
+DBGOK {"flip":false,"order":">activity <pending-proposals <workspace <D:activity <activity $pending-proposals $workspace $D:activity >D:next-action $activity <D:next-action $D:next-action","notify":3,"real":false,"text":"Blocked task, unblocked Kn"}
+
+[158/500] [dev-server] › tests/zz-debug.spec.ts:186:1 › an activity frame refreshes the Board, sidebar, and named task detail once
+[159/500] [dev-server] › tests/workspace-changes.spec.ts:186:1 › an activity frame refreshes the Board, sidebar, and named task detail once
+[160/500] [dev-server] › tests/zz-debug.spec.ts:186:1 › an activity frame refreshes the Board, sidebar, and named task detail once
+[dev-server] › tests/zz-debug.spec.ts:186:1 › an activity frame refreshes the Board, sidebar, and named task detail once
+DBGOK {"flip":false,"order":">activity <pending-proposals $pending-proposals <workspace <D:activity $workspace $D:activity >D:next-action <activity <D:next-action $activity $D:next-action","notify":3,"real":false,"text":"Blocked task, unblocked Kn"}
+
+[161/500] [dev-server] › tests/workspace-changes.spec.ts:186:1 › an activity frame refreshes the Board, sidebar, and named task detail once
+[162/500] [dev-server] › tests/zz-debug.spec.ts:186:1 › an activity frame refreshes the Board, sidebar, and named task detail once
+[dev-server] › tests/zz-debug.spec.ts:186:1 › an activity frame refreshes the Board, sidebar, and named task detail once
+DBGOK {"flip":false,"order":">activity <pending-proposals <workspace <D:activity <activity $pending-proposals $workspace $D:activity >D:next-action $activity <D:next-action $D:next-action","notify":3,"real":false,"text":"Blocked task, unblocked Kn"}
+
+[163/500] [dev-server] › tests/workspace-changes.spec.ts:186:1 › an activity frame refreshes the Board, sidebar, and named task detail once
+[dev-server] › tests/zz-debug.spec.ts:186:1 › an activity frame refreshes the Board, sidebar, and named task detail once
+DBGOK {"flip":false,"order":">activity <pending-proposals <workspace <D:activity <activity $pending-proposals $workspace $D:activity >D:next-action $activity <D:next-action $D:next-action","notify":3,"real":false,"text":"Blocked task, unblocked Kn"}
+
+[164/500] [dev-server] › tests/zz-debug.spec.ts:186:1 › an activity frame refreshes the Board, sidebar, and named task detail once
+[165/500] [dev-server] › tests/workspace-changes.spec.ts:186:1 › an activity frame refreshes the Board, sidebar, and named task detail once
+[dev-server] › tests/zz-debug.spec.ts:186:1 › an activity frame refreshes the Board, sidebar, and named task detail once
+DBGOK {"flip":false,"order":">activity <pending-proposals <workspace $pending-proposals <D:activity $workspace <activity $D:activity >D:next-action $activity <D:next-action $D:next-action","notify":3,"real":false,"text":"Blocked task, unblocked Kn"}
+
+[166/500] [dev-server] › tests/zz-debug.spec.ts:186:1 › an activity frame refreshes the Board, sidebar, and named task detail once
+[167/500] [dev-server] › tests/workspace-changes.spec.ts:186:1 › an activity frame refreshes the Board, sidebar, and named task detail once
+[168/500] [dev-server] › tests/zz-debug.spec.ts:186:1 › an activity frame refreshes the Board, sidebar, and named task detail once
+[dev-server] › tests/zz-debug.spec.ts:186:1 › an activity frame refreshes the Board, sidebar, and named task detail once
+DBGOK {"flip":false,"order":">activity <pending-proposals <workspace <D:activity <activity $pending-proposals $workspace $D:activity >D:next-action $activity <D:next-action $D:next-action","notify":3,"real":false,"text":"Blocked task, unblocked Kn"}
+
+[dev-server] › tests/zz-debug.spec.ts:186:1 › an activity frame refreshes the Board, sidebar, and named task detail once
+DBGOK {"flip":false,"order":">activity <pending-proposals <workspace <D:activity <activity $pending-proposals $workspace $D:activity >D:next-action $activity <D:next-action $D:next-action","notify":3,"real":false,"text":"Blocked task, unblocked Kn"}
+
+[169/500] [dev-server] › tests/workspace-changes.spec.ts:186:1 › an activity frame refreshes the Board, sidebar, and named task detail once
+[170/500] [dev-server] › tests/zz-debug.spec.ts:186:1 › an activity frame refreshes the Board, sidebar, and named task detail once
+[171/500] [dev-server] › tests/workspace-changes.spec.ts:186:1 › an activity frame refreshes the Board, sidebar, and named task detail once
+[dev-server] › tests/zz-debug.spec.ts:186:1 › an activity frame refreshes the Board, sidebar, and named task detail once
+DBGOK {"flip":false,"order":">D:activity >activity <pending-proposals $pending-proposals <workspace <D:activity <activity $workspace $D:activity >D:next-action $activity <D:next-action","notify":3,"real":false,"text":"Blocked task, unblocked Kn"}
+
+[172/500] [dev-server] › tests/workspace-changes.spec.ts:186:1 › an activity frame refreshes the Board, sidebar, and named task detail once
+[173/500] [dev-server] › tests/zz-debug.spec.ts:186:1 › an activity frame refreshes the Board, sidebar, and named task detail once
+[174/500] [dev-server] › tests/zz-debug.spec.ts:186:1 › an activity frame refreshes the Board, sidebar, and named task detail once
+[dev-server] › tests/zz-debug.spec.ts:186:1 › an activity frame refreshes the Board, sidebar, and named task detail once
+DBGOK {"flip":false,"order":">activity <pending-proposals <workspace <D:activity <activity $pending-proposals $workspace $D:activity >D:next-action $activity <D:next-action $D:next-action","notify":3,"real":false,"text":"Blocked task, unblocked Kn"}
+
+[dev-server] › tests/zz-debug.spec.ts:186:1 › an activity frame refreshes the Board, sidebar, and named task detail once
+DBGOK {"flip":false,"order":">activity <pending-proposals <workspace <D:activity <activity $pending-proposals $workspace $D:activity >D:next-action $activity <D:next-action $D:next-action","notify":3,"real":false,"text":"Blocked task, unblocked Kn"}
+
+[175/500] [dev-server] › tests/workspace-changes.spec.ts:186:1 › an activity frame refreshes the Board, sidebar, and named task detail once
+[176/500] [dev-server] › tests/zz-debug.spec.ts:186:1 › an activity frame refreshes the Board, sidebar, and named task detail once
+[177/500] [dev-server] › tests/workspace-changes.spec.ts:186:1 › an activity frame refreshes the Board, sidebar, and named task detail once
+[dev-server] › tests/zz-debug.spec.ts:186:1 › an activity frame refreshes the Board, sidebar, and named task detail once
+DBGOK {"flip":false,"order":">activity <pending-proposals <workspace <D:activity <activity $pending-proposals $workspace $D:activity >D:next-action $activity <D:next-action $D:next-action","notify":3,"real":false,"text":"Blocked task, unblocked Kn"}
+
+[178/500] [dev-server] › tests/workspace-changes.spec.ts:186:1 › an activity frame refreshes the Board, sidebar, and named task detail once
+[179/500] [dev-server] › tests/zz-debug.spec.ts:186:1 › an activity frame refreshes the Board, sidebar, and named task detail once
+[180/500] [dev-server] › tests/zz-debug.spec.ts:186:1 › an activity frame refreshes the Board, sidebar, and named task detail once
+[dev-server] › tests/zz-debug.spec.ts:186:1 › an activity frame refreshes the Board, sidebar, and named task detail once
+DBGOK {"flip":false,"order":">activity <pending-proposals <workspace <D:activity <activity $pending-proposals $workspace $D:activity >D:next-action $activity <D:next-action $D:next-action","notify":3,"real":false,"text":"Blocked task, unblocked Kn"}
+
+[dev-server] › tests/zz-debug.spec.ts:186:1 › an activity frame refreshes the Board, sidebar, and named task detail once
+DBGOK {"flip":false,"order":">activity <pending-proposals <workspace $pending-proposals $workspace <D:activity $D:activity >D:next-action <activity $activity <D:next-action $D:next-action","notify":3,"real":false,"text":"Blocked task, unblocked Kn"}
+
+[181/500] [dev-server] › tests/workspace-changes.spec.ts:186:1 › an activity frame refreshes the Board, sidebar, and named task detail once
+[182/500] [dev-server] › tests/zz-debug.spec.ts:186:1 › an activity frame refreshes the Board, sidebar, and named task detail once
+[183/500] [dev-server] › tests/workspace-changes.spec.ts:186:1 › an activity frame refreshes the Board, sidebar, and named task detail once
+[184/500] [dev-server] › tests/zz-debug.spec.ts:186:1 › an activity frame refreshes the Board, sidebar, and named task detail once
+[dev-server] › tests/zz-debug.spec.ts:186:1 › an activity frame refreshes the Board, sidebar, and named task detail once
+DBGOK {"flip":false,"order":">activity <pending-proposals <workspace <D:activity $pending-proposals $workspace $D:activity >D:next-action <activity <D:next-action $activity $D:next-action","notify":3,"real":false,"text":"Blocked task, unblocked Kn"}
+
+[dev-server] › tests/zz-debug.spec.ts:186:1 › an activity frame refreshes the Board, sidebar, and named task detail once
+DBGOK {"flip":false,"order":">activity <pending-proposals <workspace <D:activity <activity $pending-proposals $workspace $D:activity >D:next-action $activity <D:next-action $D:next-action","notify":3,"real":false,"text":"Blocked task, unblocked Kn"}
+
+[185/500] [dev-server] › tests/workspace-changes.spec.ts:186:1 › an activity frame refreshes the Board, sidebar, and named task detail once
+[186/500] [dev-server] › tests/zz-debug.spec.ts:186:1 › an activity frame refreshes the Board, sidebar, and named task detail once
+[187/500] [dev-server] › tests/workspace-changes.spec.ts:186:1 › an activity frame refreshes the Board, sidebar, and named task detail once
+[dev-server] › tests/zz-debug.spec.ts:186:1 › an activity frame refreshes the Board, sidebar, and named task detail once
+DBGOK {"flip":false,"order":">D:activity >activity <pending-proposals $pending-proposals <workspace $workspace <D:activity <activity $D:activity >D:next-action $activity <D:next-action","notify":3,"real":false,"text":"Blocked task, unblocked Kn"}
+
+[188/500] [dev-server] › tests/zz-debug.spec.ts:186:1 › an activity frame refreshes the Board, sidebar, and named task detail once
+[189/500] [dev-server] › tests/workspace-changes.spec.ts:186:1 › an activity frame refreshes the Board, sidebar, and named task detail once
+[190/500] [dev-server] › tests/zz-debug.spec.ts:186:1 › an activity frame refreshes the Board, sidebar, and named task detail once
+[dev-server] › tests/zz-debug.spec.ts:186:1 › an activity frame refreshes the Board, sidebar, and named task detail once
+DBGOK {"flip":false,"order":">D:activity >activity <pending-proposals <workspace <D:activity <activity $pending-proposals $workspace $D:activity >D:next-action $activity <D:next-action","notify":3,"real":false,"text":"Blocked task, unblocked Kn"}
+
+[191/500] [dev-server] › tests/workspace-changes.spec.ts:186:1 › an activity frame refreshes the Board, sidebar, and named task detail once
+[dev-server] › tests/zz-debug.spec.ts:186:1 › an activity frame refreshes the Board, sidebar, and named task detail once
+DBGOK {"flip":false,"order":">activity <pending-proposals <workspace <D:activity <activity $pending-proposals $workspace $D:activity >D:next-action $activity <D:next-action $D:next-action","notify":3,"real":false,"text":"Blocked task, unblocked Kn"}
+
+[192/500] [dev-server] › tests/zz-debug.spec.ts:186:1 › an activity frame refreshes the Board, sidebar, and named task detail once
+[193/500] [dev-server] › tests/workspace-changes.spec.ts:186:1 › an activity frame refreshes the Board, sidebar, and named task detail once
+[dev-server] › tests/zz-debug.spec.ts:186:1 › an activity frame refreshes the Board, sidebar, and named task detail once
+DBGOK {"flip":false,"order":">activity <pending-proposals $pending-proposals <workspace <D:activity <activity $workspace $D:activity >D:next-action $activity <D:next-action $D:next-action","notify":3,"real":false,"text":"Blocked task, unblocked Kn"}
+
+[194/500] [dev-server] › tests/zz-debug.spec.ts:186:1 › an activity frame refreshes the Board, sidebar, and named task detail once
+[195/500] [dev-server] › tests/workspace-changes.spec.ts:186:1 › an activity frame refreshes the Board, sidebar, and named task detail once
+[196/500] [dev-server] › tests/zz-debug.spec.ts:186:1 › an activity frame refreshes the Board, sidebar, and named task detail once
+[dev-server] › tests/zz-debug.spec.ts:186:1 › an activity frame refreshes the Board, sidebar, and named task detail once
+DBGOK {"flip":false,"order":">activity <pending-proposals <workspace <D:activity <activity $pending-proposals $workspace $D:activity >D:next-action $activity <D:next-action $D:next-action","notify":3,"real":false,"text":"Blocked task, unblocked Kn"}
+
+[197/500] [dev-server] › tests/workspace-changes.spec.ts:186:1 › an activity frame refreshes the Board, sidebar, and named task detail once
+[dev-server] › tests/zz-debug.spec.ts:186:1 › an activity frame refreshes the Board, sidebar, and named task detail once
+DBGOK {"flip":false,"order":">D:activity >activity <pending-proposals <workspace <D:activity <activity $pending-proposals $workspace $D:activity >D:next-action $activity <D:next-action","notify":3,"real":false,"text":"Blocked task, unblocked Kn"}
+
+[198/500] [dev-server] › tests/zz-debug.spec.ts:186:1 › an activity frame refreshes the Board, sidebar, and named task detail once
+[199/500] [dev-server] › tests/workspace-changes.spec.ts:186:1 › an activity frame refreshes the Board, sidebar, and named task detail once
+[200/500] [dev-server] › tests/zz-debug.spec.ts:186:1 › an activity frame refreshes the Board, sidebar, and named task detail once
+[dev-server] › tests/zz-debug.spec.ts:186:1 › an activity frame refreshes the Board, sidebar, and named task detail once
+DBGOK {"flip":false,"order":">activity <pending-proposals $pending-proposals <workspace $workspace <D:activity <activity $D:activity >D:next-action $activity <D:next-action $D:next-action","notify":3,"real":false,"text":"Blocked task, unblocked Kn"}
+
+[201/500] [dev-server] › tests/workspace-changes.spec.ts:186:1 › an activity frame refreshes the Board, sidebar, and named task detail once
+[202/500] [dev-server] › tests/zz-debug.spec.ts:186:1 › an activity frame refreshes the Board, sidebar, and named task detail once
+[dev-server] › tests/zz-debug.spec.ts:186:1 › an activity frame refreshes the Board, sidebar, and named task detail once
+DBGOK {"flip":false,"order":">activity <pending-proposals <workspace <D:activity <activity $pending-proposals $workspace $D:activity >D:next-action $activity <D:next-action $D:next-action","notify":3,"real":false,"text":"Blocked task, unblocked Kn"}
+
+[203/500] [dev-server] › tests/workspace-changes.spec.ts:186:1 › an activity frame refreshes the Board, sidebar, and named task detail once
+[dev-server] › tests/zz-debug.spec.ts:186:1 › an activity frame refreshes the Board, sidebar, and named task detail once
+DBGOK {"flip":false,"order":">D:activity >activity <pending-proposals <workspace <D:activity <activity $pending-proposals $workspace $D:activity >D:next-action $activity <D:next-action","notify":3,"real":false,"text":"Blocked task, unblocked Kn"}
+
+[204/500] [dev-server] › tests/zz-debug.spec.ts:186:1 › an activity frame refreshes the Board, sidebar, and named task detail once
+[205/500] [dev-server] › tests/workspace-changes.spec.ts:186:1 › an activity frame refreshes the Board, sidebar, and named task detail once
+[206/500] [dev-server] › tests/zz-debug.spec.ts:186:1 › an activity frame refreshes the Board, sidebar, and named task detail once
+[dev-server] › tests/zz-debug.spec.ts:186:1 › an activity frame refreshes the Board, sidebar, and named task detail once
+DBGOK {"flip":false,"order":">D:activity >activity <pending-proposals <workspace <D:activity <activity $pending-proposals $workspace $D:activity >D:next-action $activity <D:next-action","notify":3,"real":false,"text":"Blocked task, unblocked Kn"}
+
+[207/500] [dev-server] › tests/workspace-changes.spec.ts:186:1 › an activity frame refreshes the Board, sidebar, and named task detail once
+[208/500] [dev-server] › tests/zz-debug.spec.ts:186:1 › an activity frame refreshes the Board, sidebar, and named task detail once
+[dev-server] › tests/zz-debug.spec.ts:186:1 › an activity frame refreshes the Board, sidebar, and named task detail once
+DBGOK {"flip":false,"order":">activity <pending-proposals <workspace <D:activity <activity $pending-proposals $workspace $D:activity >D:next-action $activity <D:next-action $D:next-action","notify":3,"real":false,"text":"Blocked task, unblocked Kn"}
+
+[209/500] [dev-server] › tests/workspace-changes.spec.ts:186:1 › an activity frame refreshes the Board, sidebar, and named task detail once
+[dev-server] › tests/zz-debug.spec.ts:186:1 › an activity frame refreshes the Board, sidebar, and named task detail once
+DBGOK {"flip":false,"order":">activity <pending-proposals <workspace <D:activity <activity $pending-proposals $workspace $D:activity >D:next-action $activity <D:next-action $D:next-action","notify":3,"real":false,"text":"Blocked task, unblocked Kn"}
+
+[210/500] [dev-server] › tests/zz-debug.spec.ts:186:1 › an activity frame refreshes the Board, sidebar, and named task detail once
+[211/500] [dev-server] › tests/workspace-changes.spec.ts:186:1 › an activity frame refreshes the Board, sidebar, and named task detail once
+[212/500] [dev-server] › tests/zz-debug.spec.ts:186:1 › an activity frame refreshes the Board, sidebar, and named task detail once
+[dev-server] › tests/zz-debug.spec.ts:186:1 › an activity frame refreshes the Board, sidebar, and named task detail once
+DBGOK {"flip":false,"order":">D:activity >activity <pending-proposals <workspace <D:activity <activity $pending-proposals $workspace $D:activity >D:next-action $activity <D:next-action","notify":3,"real":false,"text":"Blocked task, unblocked Kn"}
+
+[213/500] [dev-server] › tests/workspace-changes.spec.ts:186:1 › an activity frame refreshes the Board, sidebar, and named task detail once
+[dev-server] › tests/zz-debug.spec.ts:186:1 › an activity frame refreshes the Board, sidebar, and named task detail once
+DBGOK {"flip":false,"order":">activity <pending-proposals <workspace <D:activity $pending-proposals $workspace $D:activity >D:next-action <activity $activity <D:next-action $D:next-action","notify":3,"real":false,"text":"Blocked task, unblocked Kn"}
+
+[214/500] [dev-server] › tests/zz-debug.spec.ts:186:1 › an activity frame refreshes the Board, sidebar, and named task detail once
+[215/500] [dev-server] › tests/workspace-changes.spec.ts:186:1 › an activity frame refreshes the Board, sidebar, and named task detail once
+[dev-server] › tests/zz-debug.spec.ts:186:1 › an activity frame refreshes the Board, sidebar, and named task detail once
+DBGOK {"flip":false,"order":">activity <pending-proposals <workspace <D:activity <activity $pending-proposals $workspace $D:activity >D:next-action $activity <D:next-action $D:next-action","notify":3,"real":false,"text":"Blocked task, unblocked Kn"}
+
+[216/500] [dev-server] › tests/zz-debug.spec.ts:186:1 › an activity frame refreshes the Board, sidebar, and named task detail once
+[217/500] [dev-server] › tests/workspace-changes.spec.ts:186:1 › an activity frame refreshes the Board, sidebar, and named task detail once
+[218/500] [dev-server] › tests/zz-debug.spec.ts:186:1 › an activity frame refreshes the Board, sidebar, and named task detail once
+[dev-server] › tests/zz-debug.spec.ts:186:1 › an activity frame refreshes the Board, sidebar, and named task detail once
+DBGOK {"flip":false,"order":">activity <pending-proposals <workspace <D:activity <activity $pending-proposals $workspace $D:activity >D:next-action $activity <D:next-action $D:next-action","notify":3,"real":false,"text":"Blocked task, unblocked Kn"}
+
+[219/500] [dev-server] › tests/workspace-changes.spec.ts:186:1 › an activity frame refreshes the Board, sidebar, and named task detail once
+[220/500] [dev-server] › tests/zz-debug.spec.ts:186:1 › an activity frame refreshes the Board, sidebar, and named task detail once
+[dev-server] › tests/zz-debug.spec.ts:186:1 › an activity frame refreshes the Board, sidebar, and named task detail once
+DBGOK {"flip":false,"order":">D:activity >activity <pending-proposals <workspace <D:activity <activity $pending-proposals $workspace $D:activity >D:next-action $activity <D:next-action","notify":3,"real":false,"text":"Blocked task, unblocked Kn"}
+
+[221/500] [dev-server] › tests/workspace-changes.spec.ts:186:1 › an activity frame refreshes the Board, sidebar, and named task detail once
+[dev-server] › tests/zz-debug.spec.ts:186:1 › an activity frame refreshes the Board, sidebar, and named task detail once
+DBGOK {"flip":false,"order":">D:activity >activity <pending-proposals $pending-proposals <workspace <D:activity <activity $workspace $D:activity >D:next-action $activity <D:next-action","notify":3,"real":false,"text":"Blocked task, unblocked Kn"}
+
+[222/500] [dev-server] › tests/zz-debug.spec.ts:186:1 › an activity frame refreshes the Board, sidebar, and named task detail once
+[223/500] [dev-server] › tests/workspace-changes.spec.ts:186:1 › an activity frame refreshes the Board, sidebar, and named task detail once
+[224/500] [dev-server] › tests/zz-debug.spec.ts:186:1 › an activity frame refreshes the Board, sidebar, and named task detail once
+[dev-server] › tests/zz-debug.spec.ts:186:1 › an activity frame refreshes the Board, sidebar, and named task detail once
+DBGOK {"flip":false,"order":">activity <pending-proposals <workspace <D:activity <activity $pending-proposals $workspace $D:activity >D:next-action $activity <D:next-action $D:next-action","notify":3,"real":false,"text":"Blocked task, unblocked Kn"}
+
+[225/500] [dev-server] › tests/workspace-changes.spec.ts:186:1 › an activity frame refreshes the Board, sidebar, and named task detail once
+[226/500] [dev-server] › tests/zz-debug.spec.ts:186:1 › an activity frame refreshes the Board, sidebar, and named task detail once
+[dev-server] › tests/zz-debug.spec.ts:186:1 › an activity frame refreshes the Board, sidebar, and named task detail once
+DBGOK {"flip":false,"order":">activity <pending-proposals <workspace <D:activity <activity $pending-proposals $workspace $D:activity >D:next-action $activity <D:next-action $D:next-action","notify":3,"real":false,"text":"Blocked task, unblocked Kn"}
+
+[227/500] [dev-server] › tests/workspace-changes.spec.ts:186:1 › an activity frame refreshes the Board, sidebar, and named task detail once
+[dev-server] › tests/zz-debug.spec.ts:186:1 › an activity frame refreshes the Board, sidebar, and named task detail once
+DBGOK {"flip":false,"order":">activity <pending-proposals $pending-proposals <workspace <D:activity $workspace $D:activity >D:next-action <activity <D:next-action $activity $D:next-action","notify":3,"real":false,"text":"Blocked task, unblocked Kn"}
+
+[228/500] [dev-server] › tests/zz-debug.spec.ts:186:1 › an activity frame refreshes the Board, sidebar, and named task detail once
+[229/500] [dev-server] › tests/workspace-changes.spec.ts:186:1 › an activity frame refreshes the Board, sidebar, and named task detail once
+[230/500] [dev-server] › tests/zz-debug.spec.ts:186:1 › an activity frame refreshes the Board, sidebar, and named task detail once
+[dev-server] › tests/zz-debug.spec.ts:186:1 › an activity frame refreshes the Board, sidebar, and named task detail once
+DBGOK {"flip":false,"order":">D:activity >activity <pending-proposals <workspace <D:activity <activity $pending-proposals $workspace $D:activity >D:next-action $activity <D:next-action","notify":3,"real":false,"text":"Blocked task, unblocked Kn"}
+
+[231/500] [dev-server] › tests/workspace-changes.spec.ts:186:1 › an activity frame refreshes the Board, sidebar, and named task detail once
+[dev-server] › tests/zz-debug.spec.ts:186:1 › an activity frame refreshes the Board, sidebar, and named task detail once
+DBGOK {"flip":false,"order":">D:activity >activity <pending-proposals $pending-proposals <workspace <D:activity <activity $workspace $D:activity >D:next-action $activity <D:next-action","notify":3,"real":false,"text":"Blocked task, unblocked Kn"}
+
+[232/500] [dev-server] › tests/zz-debug.spec.ts:186:1 › an activity frame refreshes the Board, sidebar, and named task detail once
+[233/500] [dev-server] › tests/workspace-changes.spec.ts:186:1 › an activity frame refreshes the Board, sidebar, and named task detail once
+[dev-server] › tests/zz-debug.spec.ts:186:1 › an activity frame refreshes the Board, sidebar, and named task detail once
+DBGOK {"flip":false,"order":">activity <pending-proposals <workspace <D:activity <activity $pending-proposals $workspace $D:activity >D:next-action $activity <D:next-action $D:next-action","notify":3,"real":false,"text":"Blocked task, unblocked Kn"}
+
+[234/500] [dev-server] › tests/zz-debug.spec.ts:186:1 › an activity frame refreshes the Board, sidebar, and named task detail once
+[235/500] [dev-server] › tests/workspace-changes.spec.ts:186:1 › an activity frame refreshes the Board, sidebar, and named task detail once
+[236/500] [dev-server] › tests/zz-debug.spec.ts:186:1 › an activity frame refreshes the Board, sidebar, and named task detail once
+[dev-server] › tests/zz-debug.spec.ts:186:1 › an activity frame refreshes the Board, sidebar, and named task detail once
+DBGOK {"flip":false,"order":">activity <pending-proposals $pending-proposals <workspace $workspace <D:activity $D:activity >D:next-action <activity <D:next-action $activity $D:next-action","notify":3,"real":false,"text":"Blocked task, unblocked Kn"}
+
+[237/500] [dev-server] › tests/workspace-changes.spec.ts:186:1 › an activity frame refreshes the Board, sidebar, and named task detail once
+[dev-server] › tests/zz-debug.spec.ts:186:1 › an activity frame refreshes the Board, sidebar, and named task detail once
+DBGOK {"flip":false,"order":">D:activity >activity <pending-proposals <workspace <D:activity <activity $pending-proposals $workspace $D:activity >D:next-action $activity <D:next-action","notify":3,"real":false,"text":"Blocked task, unblocked Kn"}
+
+[238/500] [dev-server] › tests/zz-debug.spec.ts:186:1 › an activity frame refreshes the Board, sidebar, and named task detail once
+[239/500] [dev-server] › tests/workspace-changes.spec.ts:186:1 › an activity frame refreshes the Board, sidebar, and named task detail once
+[dev-server] › tests/zz-debug.spec.ts:186:1 › an activity frame refreshes the Board, sidebar, and named task detail once
+DBGOK {"flip":false,"order":">activity <pending-proposals <workspace $pending-proposals $workspace <D:activity <activity $D:activity >D:next-action $activity <D:next-action $D:next-action","notify":3,"real":false,"text":"Blocked task, unblocked Kn"}
+
+[240/500] [dev-server] › tests/zz-debug.spec.ts:186:1 › an activity frame refreshes the Board, sidebar, and named task detail once
+[241/500] [dev-server] › tests/workspace-changes.spec.ts:186:1 › an activity frame refreshes the Board, sidebar, and named task detail once
+[242/500] [dev-server] › tests/zz-debug.spec.ts:186:1 › an activity frame refreshes the Board, sidebar, and named task detail once
+[dev-server] › tests/zz-debug.spec.ts:186:1 › an activity frame refreshes the Board, sidebar, and named task detail once
+DBGOK {"flip":false,"order":">activity <pending-proposals $pending-proposals <workspace <D:activity <activity $workspace $D:activity >D:next-action $activity <D:next-action $D:next-action","notify":3,"real":false,"text":"Blocked task, unblocked Kn"}
+
+[243/500] [dev-server] › tests/workspace-changes.spec.ts:186:1 › an activity frame refreshes the Board, sidebar, and named task detail once
+[dev-server] › tests/zz-debug.spec.ts:186:1 › an activity frame refreshes the Board, sidebar, and named task detail once
+DBGOK {"flip":false,"order":">activity <pending-proposals <workspace <D:activity $pending-proposals $workspace $D:activity >D:next-action <activity <D:next-action $activity $D:next-action","notify":3,"real":false,"text":"Blocked task, unblocked Kn"}
+
+[244/500] [dev-server] › tests/zz-debug.spec.ts:186:1 › an activity frame refreshes the Board, sidebar, and named task detail once
+[245/500] [dev-server] › tests/workspace-changes.spec.ts:186:1 › an activity frame refreshes the Board, sidebar, and named task detail once
+[dev-server] › tests/zz-debug.spec.ts:186:1 › an activity frame refreshes the Board, sidebar, and named task detail once
+DBGOK {"flip":false,"order":">activity <pending-proposals <workspace <D:activity <activity $pending-proposals $workspace $D:activity >D:next-action $activity <D:next-action $D:next-action","notify":3,"real":false,"text":"Blocked task, unblocked Kn"}
+
+[246/500] [dev-server] › tests/zz-debug.spec.ts:186:1 › an activity frame refreshes the Board, sidebar, and named task detail once
+[247/500] [dev-server] › tests/workspace-changes.spec.ts:186:1 › an activity frame refreshes the Board, sidebar, and named task detail once
+[248/500] [dev-server] › tests/zz-debug.spec.ts:186:1 › an activity frame refreshes the Board, sidebar, and named task detail once
+[dev-server] › tests/zz-debug.spec.ts:186:1 › an activity frame refreshes the Board, sidebar, and named task detail once
+DBGOK {"flip":false,"order":">activity <pending-proposals <workspace <D:activity <activity $pending-proposals $workspace $D:activity >D:next-action $activity <D:next-action $D:next-action","notify":3,"real":false,"text":"Blocked task, unblocked Kn"}
+
+[249/500] [dev-server] › tests/workspace-changes.spec.ts:186:1 › an activity frame refreshes the Board, sidebar, and named task detail once
+[dev-server] › tests/zz-debug.spec.ts:186:1 › an activity frame refreshes the Board, sidebar, and named task detail once
+DBGOK {"flip":false,"order":">activity <pending-proposals <workspace <D:activity <activity $pending-proposals $workspace $D:activity >D:next-action $activity <D:next-action $D:next-action","notify":3,"real":false,"text":"Blocked task, unblocked Kn"}
+
+[250/500] [dev-server] › tests/zz-debug.spec.ts:186:1 › an activity frame refreshes the Board, sidebar, and named task detail once
+[251/500] [dev-server] › tests/workspace-changes.spec.ts:186:1 › an activity frame refreshes the Board, sidebar, and named task detail once
+[dev-server] › tests/zz-debug.spec.ts:186:1 › an activity frame refreshes the Board, sidebar, and named task detail once
+DBGOK {"flip":false,"order":">D:activity >activity <pending-proposals $pending-proposals <workspace $workspace <D:activity <activity $D:activity >D:next-action $activity <D:next-action","notify":3,"real":false,"text":"Blocked task, unblocked Kn"}
+
+[252/500] [dev-server] › tests/zz-debug.spec.ts:186:1 › an activity frame refreshes the Board, sidebar, and named task detail once
+[253/500] [dev-server] › tests/workspace-changes.spec.ts:186:1 › an activity frame refreshes the Board, sidebar, and named task detail once
+[254/500] [dev-server] › tests/zz-debug.spec.ts:186:1 › an activity frame refreshes the Board, sidebar, and named task detail once
+[dev-server] › tests/zz-debug.spec.ts:186:1 › an activity frame refreshes the Board, sidebar, and named task detail once
+DBGOK {"flip":false,"order":">activity <pending-proposals <workspace <D:activity <activity $pending-proposals $workspace $D:activity >D:next-action $activity <D:next-action $D:next-action","notify":3,"real":false,"text":"Blocked task, unblocked Kn"}
+
+[255/500] [dev-server] › tests/workspace-changes.spec.ts:186:1 › an activity frame refreshes the Board, sidebar, and named task detail once
+[256/500] [dev-server] › tests/zz-debug.spec.ts:186:1 › an activity frame refreshes the Board, sidebar, and named task detail once
+[dev-server] › tests/zz-debug.spec.ts:186:1 › an activity frame refreshes the Board, sidebar, and named task detail once
+DBGOK {"flip":false,"order":">activity <pending-proposals $pending-proposals <workspace <D:activity <activity $workspace $D:activity >D:next-action $activity <D:next-action $D:next-action","notify":3,"real":false,"text":"Blocked task, unblocked Kn"}
+
+[257/500] [dev-server] › tests/workspace-changes.spec.ts:186:1 › an activity frame refreshes the Board, sidebar, and named task detail once
+[dev-server] › tests/zz-debug.spec.ts:186:1 › an activity frame refreshes the Board, sidebar, and named task detail once
+DBGOK {"flip":false,"order":">activity <pending-proposals $pending-proposals <workspace $workspace <D:activity $D:activity >D:next-action <activity $activity <D:next-action $D:next-action","notify":3,"real":false,"text":"Blocked task, unblocked Kn"}
+
+[258/500] [dev-server] › tests/zz-debug.spec.ts:186:1 › an activity frame refreshes the Board, sidebar, and named task detail once
+[259/500] [dev-server] › tests/workspace-changes.spec.ts:186:1 › an activity frame refreshes the Board, sidebar, and named task detail once
+[260/500] [dev-server] › tests/zz-debug.spec.ts:186:1 › an activity frame refreshes the Board, sidebar, and named task detail once
+[dev-server] › tests/zz-debug.spec.ts:186:1 › an activity frame refreshes the Board, sidebar, and named task detail once
+DBGOK {"flip":false,"order":">activity <pending-proposals <workspace <D:activity <activity $pending-proposals $workspace $D:activity >D:next-action $activity <D:next-action $D:next-action","notify":3,"real":false,"text":"Blocked task, unblocked Kn"}
+
+[261/500] [dev-server] › tests/workspace-changes.spec.ts:186:1 › an activity frame refreshes the Board, sidebar, and named task detail once
+[262/500] [dev-server] › tests/zz-debug.spec.ts:186:1 › an activity frame refreshes the Board, sidebar, and named task detail once
+[dev-server] › tests/zz-debug.spec.ts:186:1 › an activity frame refreshes the Board, sidebar, and named task detail once
+DBGOK {"flip":false,"order":">activity <pending-proposals <workspace <D:activity $pending-proposals $workspace $D:activity >D:next-action <activity <D:next-action $activity $D:next-action","notify":3,"real":false,"text":"Blocked task, unblocked Kn"}
+
+[263/500] [dev-server] › tests/workspace-changes.spec.ts:186:1 › an activity frame refreshes the Board, sidebar, and named task detail once
+[dev-server] › tests/zz-debug.spec.ts:186:1 › an activity frame refreshes the Board, sidebar, and named task detail once
+DBGOK {"flip":false,"order":">activity <pending-proposals <workspace $pending-proposals $workspace <D:activity <activity $D:activity >D:next-action $activity <D:next-action $D:next-action","notify":3,"real":false,"text":"Blocked task, unblocked Kn"}
+
+[264/500] [dev-server] › tests/zz-debug.spec.ts:186:1 › an activity frame refreshes the Board, sidebar, and named task detail once
+[265/500] [dev-server] › tests/workspace-changes.spec.ts:186:1 › an activity frame refreshes the Board, sidebar, and named task detail once
+[266/500] [dev-server] › tests/zz-debug.spec.ts:186:1 › an activity frame refreshes the Board, sidebar, and named task detail once
+[dev-server] › tests/zz-debug.spec.ts:186:1 › an activity frame refreshes the Board, sidebar, and named task detail once
+DBGOK {"flip":false,"order":">D:activity >activity <pending-proposals <workspace <D:activity <activity $pending-proposals $workspace $D:activity >D:next-action $activity <D:next-action","notify":3,"real":false,"text":"Blocked task, unblocked Kn"}
+
+[267/500] [dev-server] › tests/workspace-changes.spec.ts:186:1 › an activity frame refreshes the Board, sidebar, and named task detail once
+[268/500] [dev-server] › tests/zz-debug.spec.ts:186:1 › an activity frame refreshes the Board, sidebar, and named task detail once
+[dev-server] › tests/zz-debug.spec.ts:186:1 › an activity frame refreshes the Board, sidebar, and named task detail once
+DBGOK {"flip":false,"order":">activity <pending-proposals $pending-proposals <workspace <D:activity <activity $workspace $D:activity >D:next-action $activity <D:next-action $D:next-action","notify":3,"real":false,"text":"Blocked task, unblocked Kn"}
+
+[dev-server] › tests/zz-debug.spec.ts:186:1 › an activity frame refreshes the Board, sidebar, and named task detail once
+DBGOK {"flip":false,"order":">activity <pending-proposals <workspace $pending-proposals $workspace <D:activity <activity $D:activity >D:next-action $activity <D:next-action $D:next-action","notify":3,"real":false,"text":"Blocked task, unblocked Kn"}
+
