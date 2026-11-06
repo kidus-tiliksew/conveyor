@@ -105,7 +105,7 @@ export function TaskContextPicker({
 
   return (
     <div ref={root}>
-      <span className="mb-1 block text-[11px] font-medium uppercase tracking-wider text-muted">{label}</span>
+      <span className="mb-1 block text-xs font-medium text-muted">{label}</span>
       {chips.length > 0 && (
         <div className="mb-2 flex flex-wrap gap-1.5">
           {chips.map(({ group, option }) => (
@@ -189,9 +189,7 @@ export function TaskContextPicker({
               {matches.sections.map((section) => (
                 // biome-ignore lint/a11y/useSemanticElements: a listbox may only contain option and group children, so a fieldset would break the ARIA tree.
                 <div key={section.group.key} role="group" aria-label={section.group.label}>
-                  <p className="px-1.5 py-1 text-[11px] font-medium uppercase tracking-wider text-muted">
-                    {section.group.label}
-                  </p>
+                  <p className="px-1.5 py-1 text-xs font-medium text-muted">{section.group.label}</p>
                   {section.options.map((option, index) => {
                     const position = section.start + index
                     const isSelected = section.group.selected.includes(option.id)

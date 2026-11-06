@@ -317,7 +317,7 @@ function TaskUsage({ item, workspace }: { item: ActivityItem; workspace: string 
   return (
     <section aria-label="Task usage telemetry" className="border-t border-border px-3 py-3">
       <p className="font-medium text-foreground">Task usage</p>
-      <p className="mt-1 font-mono text-[11px] tabular-nums">
+      <p className="mt-1 text-[11px] tabular-nums">
         {measured.length > 0
           ? `${compactTokens(totals.tokensIn)} in / ${compactTokens(totals.tokensOut)} out across ${measured.length} reported work ${measured.length === 1 ? 'order' : 'orders'}`
           : 'Usage unavailable for every work order'}
@@ -327,7 +327,7 @@ function TaskUsage({ item, workspace }: { item: ActivityItem; workspace: string 
       </p>
       <ul className="mt-2 space-y-1" aria-label="Work-order usage">
         {orders.map((order) => (
-          <li key={order.id} className="flex flex-wrap items-baseline gap-x-2 font-mono text-[11px] tabular-nums">
+          <li key={order.id} className="flex flex-wrap items-baseline gap-x-2 text-[11px] tabular-nums">
             <span className="text-foreground">{stageLabels[order.stage] ?? order.stage}</span>
             <code className="text-faint">{order.id}</code>
             <span className="ml-auto">{usageText(order, reported.has(order.id))}</span>
@@ -997,7 +997,7 @@ function PanelEntry({
             </span>
           </div>
         ) : (
-          <div className="flex flex-wrap items-center gap-x-3 gap-y-1 border-t border-border px-4 py-2 font-mono text-[11px] tabular-nums text-muted">
+          <div className="flex flex-wrap items-center gap-x-3 gap-y-1 border-t border-border px-4 py-2 text-[11px] tabular-nums text-muted">
             <span>
               {verdictsIn} of {seats.length} verdicts in
             </span>
@@ -1041,7 +1041,7 @@ function SeatRow({ seat, index, usageAvailable }: { seat: PanelSeat; index: numb
   return (
     <div className="flex flex-wrap items-center gap-x-3 gap-y-1.5 px-4 py-2.5">
       <span className="w-11 shrink-0 text-xs text-faint">Seat {seat.seat}</span>
-      <span className="min-w-0 flex-[1_1_7rem] font-mono text-[11px] tabular-nums text-muted">
+      <span className="min-w-0 flex-[1_1_7rem] text-[11px] tabular-nums text-muted">
         <ModelChip
           model={seat.model}
           agent={seat.order.agent}
@@ -1057,7 +1057,7 @@ function SeatRow({ seat, index, usageAvailable }: { seat: PanelSeat; index: numb
         <span className="text-[11px] text-attention">same model as implementer</span>
       )}
       {usageAvailable && (
-        <span className="font-mono text-[11px] tabular-nums text-faint">
+        <span className="text-[11px] tabular-nums text-faint">
           {compactTokens(seat.order.tokens_in)} in / {compactTokens(seat.order.tokens_out)} out
         </span>
       )}
@@ -1168,7 +1168,7 @@ function SeatState({ seat, index }: { seat: PanelSeat; index: number }) {
           {approved ? <Check className="size-3" /> : <Undo2 className="size-3" />}
           {approved ? 'Approved' : 'Changes'}
         </Disclosure>
-        {took && <span className="font-mono text-[11px] tabular-nums text-muted">{took}</span>}
+        {took && <span className="text-[11px] tabular-nums text-muted">{took}</span>}
       </span>
     )
   }
@@ -1182,9 +1182,7 @@ function SeatState({ seat, index }: { seat: PanelSeat; index: number }) {
           />
           Deliberating
         </span>
-        {job?.started_at && (
-          <span className="font-mono text-[11px] tabular-nums text-muted">{duration(job.started_at)}</span>
-        )}
+        {job?.started_at && <span className="text-[11px] tabular-nums text-muted">{duration(job.started_at)}</span>}
       </span>
     )
   }
@@ -1280,12 +1278,10 @@ function JobEntry({
         {dot}
         <div className="flex flex-wrap items-baseline gap-x-3 gap-y-1 px-1 py-1.5 text-sm">
           <span className="text-foreground/90">{stage} completed</span>
-          <span className="font-mono text-[11px] tabular-nums text-faint">
-            {duration(job.started_at, job.ended_at)}
-          </span>
+          <span className="text-[11px] tabular-nums text-faint">{duration(job.started_at, job.ended_at)}</span>
           <time className="ml-auto text-[11px] text-faint">{absoluteTime(at)}</time>
           {order && !providerUsage && (
-            <span className="basis-full font-mono text-[11px] tabular-nums text-faint">
+            <span className="basis-full text-[11px] tabular-nums text-faint">
               {usageText(order, usageAvailable === true)}
             </span>
           )}
@@ -1336,7 +1332,7 @@ function JobEntry({
 function JobFooter(props: { job: Job; model: string; order?: WorkOrder; usageAvailable?: boolean }) {
   if (!props.job.started_at) return null
   return (
-    <footer className="flex flex-wrap items-center gap-x-4 gap-y-1 border-t border-border px-4 py-2 font-mono text-[11px] tabular-nums text-muted">
+    <footer className="flex flex-wrap items-center gap-x-4 gap-y-1 border-t border-border px-4 py-2 text-[11px] tabular-nums text-muted">
       <JobMeta {...props} />
     </footer>
   )
@@ -1370,7 +1366,7 @@ function JobMeta({
     .filter(Boolean)
     .join(' · ')
   return (
-    <span className="inline-flex min-w-0 items-center gap-x-2.5 font-mono text-[11px] tabular-nums text-muted">
+    <span className="inline-flex min-w-0 items-center gap-x-2.5 text-[11px] tabular-nums text-muted">
       <span className="min-w-0">
         <ModelChip
           model={model}

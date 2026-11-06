@@ -107,7 +107,7 @@ export function DocumentReview({
   const select = (next: ReviewSearch) => onChange({ ...search, ...next })
   return (
     <div className="min-w-0">
-      <div role="tablist" aria-label="Document views" className="mb-5 flex gap-5 border-b border-border">
+      <div role="tablist" aria-label="Document views" className="mb-5 flex gap-4 border-b border-border">
         {tabs.map((name, index) => (
           <button
             key={name}
@@ -117,7 +117,7 @@ export function DocumentReview({
             aria-selected={tab === name}
             aria-controls={`${id}-panel`}
             tabIndex={tab === name ? 0 : -1}
-            className={`border-b-2 pb-3 text-sm capitalize focus-visible:outline-2 focus-visible:outline-primary ${tab === name ? 'border-primary font-semibold text-primary' : 'border-transparent text-muted'}`}
+            className={`-mb-px border-b-2 pb-2.5 text-[13px] font-medium capitalize transition-colors focus-visible:outline-2 focus-visible:outline-primary ${tab === name ? 'border-primary text-foreground' : 'border-transparent text-muted hover:text-foreground'}`}
             onClick={() => select({ tab: name })}
             onKeyDown={(event) => {
               let next = index

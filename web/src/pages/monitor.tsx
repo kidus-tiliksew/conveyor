@@ -6,6 +6,7 @@ import { DriftResolutionForm } from '../components/documents/drift-resolution-fo
 import { Badge } from '../components/ui/badge'
 import { Card, CardContent, CardHeader, CardTitle } from '../components/ui/card'
 import { fetchMonitorStatus, fetchRequirements } from '../lib/api'
+import { PageHeader } from '../components/ui/page-header'
 
 export function MonitorPage() {
   const { workspace } = useWorkspaceSelection()
@@ -23,136 +24,89 @@ export function MonitorPage() {
   })
   const confirmedRequirements = requirements.filter((item) => item.current_version?.confirmed)
   return (
-    <div className="h-full overflow-y-auto">
-      <div className="mx-auto max-w-5xl px-4 py-6 sm:px-6 sm:py-8">
-        <div className="flex items-start justify-between gap-4">
-          <div>
-            <h1 className="text-xl font-semibold">Repository monitor</h1>
-            <p className="mt-1 text-sm text-muted">
-              Post-merge signals and out-of-pipeline drift entering the normal Conveyor intake.
-            </p>
-          </div>
+    <div className="flex h-full flex-col">
+      <PageHeader
+        title="Repository monitor"
+        meta={
           <Badge variant={status?.enabled ? 'positive' : 'default'}>{status?.enabled ? 'Enabled' : 'Disabled'}</Badge>
-        </div>
-        {error && (
-          <Card className="mt-6 border-failure">
-            <CardContent className="text-sm text-failure">{String(error)}</CardContent>
-          </Card>
-        )}
-        <div className="mt-6 grid gap-4 md:grid-cols-3">
-          <Metric
-            label="Unreconciled drift"
-            value={String(status?.drift_count ?? 0)}
-            attention={(status?.drift_count ?? 0) > 0}
-          />
-          <Metric
-            label="Oldest drift"
-            value={duration(status?.oldest_drift_age ?? 0)}
-            attention={(status?.drift_count ?? 0) > 0}
-            title="Age of the oldest unreconciled signal"
-          />
-          <Metric
-            label="Last successful observation"
-            value={
-              isSetTimestamp(status?.last_successful_observation)
-                ? new Date(status.last_successful_observation).toLocaleString()
-                : 'Never'
-            }
-          />
-        </div>
-        {status?.current_error && (
-          <Card className="mt-4 border-failure">
-            <CardHeader>
-              <CardTitle>Current monitor error</CardTitle>
-              <Badge variant="failure">{status.forge_error_category || 'monitor'}</Badge>
-            </CardHeader>
-            <CardContent>
-              <p className="text-sm text-failure">{status.current_error}</p>
-              {isSetTimestamp(status.backoff_until) && (
-                <p className="mt-2 text-xs text-muted">
-                  Backoff until {new Date(status.backoff_until).toLocaleString()}
-                </p>
-              )}
-            </CardContent>
-          </Card>
-        )}
-        <Card className="mt-6">
-          <CardHeader>
-            <CardTitle>Unreconciled changes</CardTitle>
-            <Badge variant={(status?.drift_count ?? 0) > 0 ? 'attention' : 'positive'}>
-              {status?.drift_count ?? 0}
-            </Badge>
-          </CardHeader>
-          <CardContent className="space-y-2">
-            {(status?.drift ?? []).map((item) => (
-              <div key={item.id} className="flex items-start gap-3 rounded-lg border border-border p-3">
-                <GitCommitHorizontal className="mt-0.5 size-4 text-primary" />
-                <div className="min-w-0 flex-1">
-                  <div className="flex flex-wrap items-center gap-2">
-                    <Badge variant="mono">{item.kind}</Badge>
-                    <span className="text-sm font-medium">{item.repository}</span>
-                  </div>
-                  <p className="mt-1 truncate font-mono text-xs text-faint">{item.commit_sha || item.id}</p>
-                  <p className="mt-1 text-xs text-muted" title={new Date(item.detected_at).toLocaleString()}>
-                    Detected {age(item.detected_at)} ago
+        }
+        description="Post-merge signals and out-of-pipeline drift entering the normal Conveyor intake."
+      />
+      <div className="min-h-0 flex-1 overflow-y-auto">
+        <div className="mx-auto max-w-5xl px-4 py-5 sm:px-6 sm:py-6">
+          {error && (
+            <Card className="mb-4 border-failure/40">
+              <CardContent className="text-sm text-failure">{String(error)}</CardContent>
+            </Card>
+          )}
+          <div className="grid gap-3 md:grid-cols-3">
+            <Metric
+              label="Unreconciled drift"
+              value={String(status?.drift_count ?? 0)}
+              attention={(status?.drift_count ?? 0) > 0}
+            />
+            <Metric
+              label="Oldest drift"
+              value={duration(status?.oldest_drift_age ?? 0)}
+              attention={(status?.drift_count ?? 0) > 0}
+              title="Age of the oldest unreconciled signal"
+            />
+            <Metric
+              label="Last successful observation"
+              value={
+                isSetTimestamp(status?.last_successful_observation)
+                  ? new Date(status.last_successful_observation).toLocaleString()
+                  : 'Never'
+              }
+            />
+          </div>
+          {status?.current_error && (
+            <Card className="mt-3 border-failure/40">
+              <CardHeader>
+                <CardTitle>Current monitor error</CardTitle>
+                <Badge variant="failure">{status.forge_error_category || 'monitor'}</Badge>
+              </CardHeader>
+              <CardContent>
+                <p className="text-sm text-failure">{status.current_error}</p>
+                {isSetTimestamp(status.backoff_until) && (
+                  <p className="mt-2 text-xs text-muted">
+                    Backoff until {new Date(status.backoff_until).toLocaleString()}
                   </p>
-                  {canManageWorkspace && (
-                    <DriftResolutionForm
-                      drift={item}
-                      surface="monitor"
-                      requirements={confirmedRequirements}
-                      requirementsPending={requirementsPending}
-                      workspace={workspace}
-                    />
-                  )}
-                </div>
-                <div className="flex gap-2">
-                  <Link
-                    to="/w/$workspaceId/tasks/$taskId"
-                    params={{ workspaceId: workspace, taskId: item.task_id }}
-                    className="text-xs text-primary hover:underline"
-                  >
-                    Task
-                  </Link>
-                  <a href={item.source_url} target="_blank" rel="noreferrer" aria-label="Open source signal">
-                    <ExternalLink className="size-4 text-muted" />
-                  </a>
-                </div>
-              </div>
-            ))}
-            {(status?.drift_count ?? 0) === 0 && (
-              <p className="py-4 text-center text-sm text-muted">No unreconciled repository changes.</p>
-            )}
-          </CardContent>
-        </Card>
-        <Card className="mt-4">
-          <CardHeader>
-            <CardTitle>Recent observations</CardTitle>
-            <Badge>{status?.observations?.length ?? 0}</Badge>
-          </CardHeader>
-          <CardContent className="space-y-2">
-            {[...(status?.observations ?? [])]
-              .reverse()
-              .slice(0, 20)
-              .map((item) => (
-                <div
-                  key={`${item.kind}:${item.occurrence_id}`}
-                  className="flex items-center gap-3 border-b border-border py-2 last:border-0"
-                >
-                  <Activity className="size-4 text-muted" />
-                  <Badge variant="mono">{item.kind}</Badge>
-                  <span className="min-w-0 flex-1 truncate text-xs">
-                    {item.repository} · {item.occurrence_id}
-                  </span>
-                  {item.task_outcome && (
-                    <Badge variant={item.task_outcome === 'created' ? 'accent' : 'default'}>{item.task_outcome}</Badge>
-                  )}
-                  {item.deduplicated_count > 0 && (
-                    <Badge>
-                      {item.deduplicated_count} duplicate{item.deduplicated_count === 1 ? '' : 's'}
-                    </Badge>
-                  )}
-                  {item.task_id && (
+                )}
+              </CardContent>
+            </Card>
+          )}
+          <Card className="mt-3">
+            <CardHeader>
+              <CardTitle>Unreconciled changes</CardTitle>
+              <Badge variant={(status?.drift_count ?? 0) > 0 ? 'attention' : 'positive'}>
+                {status?.drift_count ?? 0}
+              </Badge>
+            </CardHeader>
+            <CardContent className="space-y-2">
+              {(status?.drift ?? []).map((item) => (
+                <div key={item.id} className="flex items-start gap-3 rounded-lg border border-border bg-background p-3">
+                  <GitCommitHorizontal className="mt-0.5 size-4 text-primary" />
+                  <div className="min-w-0 flex-1">
+                    <div className="flex flex-wrap items-center gap-2">
+                      <Badge variant="mono">{item.kind}</Badge>
+                      <span className="text-sm font-medium">{item.repository}</span>
+                    </div>
+                    <p className="mt-1 truncate font-mono text-xs text-faint">{item.commit_sha || item.id}</p>
+                    <p className="mt-1 text-xs text-muted" title={new Date(item.detected_at).toLocaleString()}>
+                      Detected {age(item.detected_at)} ago
+                    </p>
+                    {canManageWorkspace && (
+                      <DriftResolutionForm
+                        drift={item}
+                        surface="monitor"
+                        requirements={confirmedRequirements}
+                        requirementsPending={requirementsPending}
+                        workspace={workspace}
+                      />
+                    )}
+                  </div>
+                  <div className="flex gap-2">
                     <Link
                       to="/w/$workspaceId/tasks/$taskId"
                       params={{ workspaceId: workspace, taskId: item.task_id }}
@@ -160,12 +114,61 @@ export function MonitorPage() {
                     >
                       Task
                     </Link>
-                  )}
-                  {item.last_error && <p className="max-w-md text-xs text-failure">{item.last_error}</p>}
+                    <a href={item.source_url} target="_blank" rel="noreferrer" aria-label="Open source signal">
+                      <ExternalLink className="size-4 text-muted" />
+                    </a>
+                  </div>
                 </div>
               ))}
-          </CardContent>
-        </Card>
+              {(status?.drift_count ?? 0) === 0 && (
+                <p className="py-4 text-center text-sm text-muted">No unreconciled repository changes.</p>
+              )}
+            </CardContent>
+          </Card>
+          <Card className="mt-4">
+            <CardHeader>
+              <CardTitle>Recent observations</CardTitle>
+              <Badge>{status?.observations?.length ?? 0}</Badge>
+            </CardHeader>
+            <CardContent className="space-y-2">
+              {[...(status?.observations ?? [])]
+                .reverse()
+                .slice(0, 20)
+                .map((item) => (
+                  <div
+                    key={`${item.kind}:${item.occurrence_id}`}
+                    className="flex items-center gap-3 border-b border-border py-2 last:border-0"
+                  >
+                    <Activity className="size-4 text-muted" />
+                    <Badge variant="mono">{item.kind}</Badge>
+                    <span className="min-w-0 flex-1 truncate text-xs">
+                      {item.repository} · {item.occurrence_id}
+                    </span>
+                    {item.task_outcome && (
+                      <Badge variant={item.task_outcome === 'created' ? 'accent' : 'default'}>
+                        {item.task_outcome}
+                      </Badge>
+                    )}
+                    {item.deduplicated_count > 0 && (
+                      <Badge>
+                        {item.deduplicated_count} duplicate{item.deduplicated_count === 1 ? '' : 's'}
+                      </Badge>
+                    )}
+                    {item.task_id && (
+                      <Link
+                        to="/w/$workspaceId/tasks/$taskId"
+                        params={{ workspaceId: workspace, taskId: item.task_id }}
+                        className="text-xs text-primary hover:underline"
+                      >
+                        Task
+                      </Link>
+                    )}
+                    {item.last_error && <p className="max-w-md text-xs text-failure">{item.last_error}</p>}
+                  </div>
+                ))}
+            </CardContent>
+          </Card>
+        </div>
       </div>
     </div>
   )

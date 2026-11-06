@@ -74,7 +74,7 @@ function Text({ children, className }: { children: string; className?: string })
 }
 
 function Heading({ children }: { children: ReactNode }) {
-  return <p className="text-[11px] font-semibold uppercase tracking-[0.12em] text-faint">{children}</p>
+  return <p className="text-xs font-semibold text-muted">{children}</p>
 }
 
 export function VerificationDiagnostics({ diagnostics }: { diagnostics: VerificationKitDiagnostic[] }) {

@@ -182,7 +182,7 @@ export function DocumentComparison({ before, after }: { before: ReviewSource; af
       <div className={changed.length ? 'grid min-w-0 gap-4 lg:grid-cols-[10rem_minmax(0,1fr)]' : 'min-w-0'}>
         {changed.length > 0 && (
           <nav aria-label="Changed sections" className="min-w-0">
-            <p className="mb-2 text-[10px] font-semibold uppercase tracking-wider text-muted">Changed sections</p>
+            <p className="mb-2 text-xs font-semibold text-muted">Changed sections</p>
             <div className="flex flex-wrap gap-1 lg:flex-col">
               {changed.map((row, index) => (
                 <button
@@ -383,11 +383,7 @@ function ReviewParagraph({
 }
 
 function SideLabel({ side }: { side: ReviewSide }) {
-  return (
-    <p className="mb-3 text-[10px] font-semibold uppercase tracking-wider text-muted">
-      {side === 'before' ? 'Base' : 'Target'}
-    </p>
-  )
+  return <p className="mb-3 text-xs font-semibold text-muted">{side === 'before' ? 'Base' : 'Target'}</p>
 }
 
 function AbsentSide() {

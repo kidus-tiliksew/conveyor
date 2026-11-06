@@ -38,11 +38,7 @@ export function Dialog({
 
   return createPortal(
     <div className="fixed inset-0 z-40 grid place-items-center p-4">
-      <div
-        aria-hidden
-        className="absolute inset-0 animate-overlay-in bg-foreground/40"
-        onClick={() => onCloseRef.current()}
-      />
+      <div aria-hidden className="absolute inset-0 animate-overlay-in bg-scrim" onClick={() => onCloseRef.current()} />
       <div
         ref={panelRef}
         role="dialog"
@@ -50,7 +46,7 @@ export function Dialog({
         aria-label={label}
         tabIndex={-1}
         className={cn(
-          'relative max-h-[85vh] w-full max-w-lg animate-dialog-in overflow-y-auto rounded-lg border border-border bg-background shadow-xl outline-none',
+          'relative max-h-[85vh] w-full max-w-lg animate-dialog-in overflow-y-auto rounded-xl border border-border bg-card shadow-xl outline-none',
           className,
         )}
       >

@@ -46,7 +46,7 @@ export function AttentionSurface({ items }: { items: AttentionItem[] }) {
       aria-label="Needs your attention"
       className="overflow-hidden rounded-lg border border-attention/25 bg-card"
     >
-      <h2 className="flex items-center gap-1.5 border-b border-attention/20 bg-attention-soft/50 px-4 py-2.5 text-[10px] font-semibold uppercase tracking-[0.12em] text-attention">
+      <h2 className="flex items-center gap-1.5 border-b border-attention/20 bg-attention-soft/50 px-4 py-2.5 text-xs font-semibold text-attention">
         <TriangleAlert className="size-3" />
         {attentionCount > 0 ? 'Needs your attention' : 'Related attention context'}
         {attentionCount > 0 && (

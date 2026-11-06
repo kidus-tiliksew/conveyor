@@ -6,6 +6,7 @@ import { Card, CardContent } from '../components/ui/card'
 import { childRollup, deliveryLabel, deliveryTone } from '../lib/blueprint'
 import { errorMessage } from '../lib/errors'
 import type { BlueprintView } from '../lib/types'
+import { PageHeader } from '../components/ui/page-header'
 
 // Historical Blueprints lens: retained records remain
 // queryable, but this surface offers no creation path. Its navigation entry is
@@ -17,52 +18,51 @@ export function BlueprintsPage() {
   const { data: blueprints, isLoading, error } = useBlueprints()
 
   return (
-    <div className="h-full overflow-y-auto">
-      <div className="mx-auto max-w-5xl px-4 py-6 sm:px-6 sm:py-8">
-        <header className="flex flex-wrap items-start justify-between gap-4">
-          <div>
-            <div className="flex items-center gap-2">
-              <h1 className="text-xl font-semibold tracking-tight">Blueprint history</h1>
-              <Badge variant="mono">{blueprints?.length ?? 0}</Badge>
-            </div>
-            <p className="mt-1 max-w-2xl text-sm text-muted">
-              Read-only records of legacy blueprints and the tasks they fanned out. New delivery work is proposed
-              through planning bundles and managed in{' '}
-              <Link to="/w/$workspaceId/" params={{ workspaceId: workspace }} className="text-primary hover:underline">
-                the Board
-              </Link>
-              .
-            </p>
-          </div>
-        </header>
+    <div className="flex h-full flex-col">
+      <PageHeader
+        title="Blueprint history"
+        meta={<Badge variant="mono">{blueprints?.length ?? 0}</Badge>}
+        description={
+          <>
+            Read-only records of legacy blueprints and the tasks they fanned out. New delivery work is proposed through
+            planning bundles and managed in{' '}
+            <Link to="/w/$workspaceId/" params={{ workspaceId: workspace }} className="text-primary hover:underline">
+              the Board
+            </Link>
+            .
+          </>
+        }
+      />
+      <div className="min-h-0 flex-1 overflow-y-auto">
+        <div className="mx-auto max-w-5xl px-4 py-5 sm:px-6 sm:py-6">
+          {!workspace && <EmptyMessage>Choose a workspace to open its blueprints.</EmptyMessage>}
+          {isLoading && workspace && <EmptyMessage>Loading blueprints…</EmptyMessage>}
+          {error != null && (
+            <EmptyMessage tone="failure">{errorMessage(error, 'Could not load blueprints.')}</EmptyMessage>
+          )}
 
-        {!workspace && <EmptyMessage>Choose a workspace to open its blueprints.</EmptyMessage>}
-        {isLoading && workspace && <EmptyMessage>Loading blueprints…</EmptyMessage>}
-        {error != null && (
-          <EmptyMessage tone="failure">{errorMessage(error, 'Could not load blueprints.')}</EmptyMessage>
-        )}
+          {blueprints?.length === 0 && (
+            <Card className="mt-8 border-dashed">
+              <CardContent className="flex min-h-56 flex-col items-center justify-center text-center">
+                <History className="size-7 text-primary" />
+                <h2 className="mt-4 text-base font-semibold">No historical blueprints</h2>
+                <p className="mt-2 max-w-md text-sm leading-6 text-muted">
+                  This workspace has no legacy blueprint records.
+                </p>
+              </CardContent>
+            </Card>
+          )}
 
-        {blueprints?.length === 0 && (
-          <Card className="mt-8 border-dashed">
-            <CardContent className="flex min-h-56 flex-col items-center justify-center text-center">
-              <History className="size-7 text-primary" />
-              <h2 className="mt-4 text-base font-semibold">No historical blueprints</h2>
-              <p className="mt-2 max-w-md text-sm leading-6 text-muted">
-                This workspace has no legacy blueprint records.
-              </p>
-            </CardContent>
-          </Card>
-        )}
-
-        {blueprints && blueprints.length > 0 && (
-          <ul className="mt-7 space-y-3">
-            {blueprints.map((view) => (
-              <li key={view.task.id}>
-                <BlueprintListEntry view={view} />
-              </li>
-            ))}
-          </ul>
-        )}
+          {blueprints && blueprints.length > 0 && (
+            <ul className="mt-7 space-y-3">
+              {blueprints.map((view) => (
+                <li key={view.task.id}>
+                  <BlueprintListEntry view={view} />
+                </li>
+              ))}
+            </ul>
+          )}
+        </div>
       </div>
     </div>
   )

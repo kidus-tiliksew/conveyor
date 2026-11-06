@@ -247,7 +247,7 @@ export function PlanningChat({
           className={`flex shrink-0 flex-wrap items-center gap-2 border-b border-border bg-surface/50 ${gutter} py-2`}
           aria-label="Planning attachments"
         >
-          <span className="text-[10px] font-semibold uppercase tracking-[0.12em] text-faint">Attachments</span>
+          <span className="text-xs font-semibold text-muted">Attachments</span>
           {sessionArtifacts.map((artifact) => (
             <Attachment
               key={`${artifact.id}-${artifact.role}`}

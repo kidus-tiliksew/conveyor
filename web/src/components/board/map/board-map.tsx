@@ -887,7 +887,7 @@ function TaskRow({ task, model, onFocus }: { task: GraphTask; model: TaskGraphMo
 function Section({ title, children }: { title: string; children: ReactNode }) {
   return (
     <section className="border-b border-border px-4 py-3 last:border-b-0">
-      <h3 className="mb-1.5 text-[11px] font-semibold uppercase tracking-wide text-faint">{title}</h3>
+      <h3 className="mb-1.5 text-xs font-semibold text-muted">{title}</h3>
       {children}
     </section>
   )

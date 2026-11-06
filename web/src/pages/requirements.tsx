@@ -84,6 +84,7 @@ import type {
   SystemDesignSummary,
   TaskEvent,
 } from '../lib/types'
+import { PageHeader } from '../components/ui/page-header'
 
 const originLabels: Record<RequirementVersion['origin'], string> = {
   chat: 'Written in a planning conversation',
@@ -227,15 +228,7 @@ export function RequirementsPage() {
 
   return (
     <div className="flex h-full min-h-0 flex-col">
-      <header className="flex shrink-0 items-center gap-3 border-b border-border px-4 py-3 lg:px-6 lg:py-4">
-        <span className="flex size-8 items-center justify-center rounded-lg bg-primary-soft text-primary">
-          <ListChecks className="size-4" />
-        </span>
-        <div className="min-w-0">
-          <h1 className="text-lg font-semibold tracking-tight">Requirements</h1>
-          <p className="mt-0.5 text-xs text-muted">What this product should do, written down and confirmed.</p>
-        </div>
-      </header>
+      <PageHeader title="Requirements" description="What this product should do, written down and confirmed." />
 
       <div className="flex min-h-0 flex-1 flex-col lg:flex-row">
         <DocumentTree>
@@ -438,7 +431,7 @@ function OverviewCanvas({
     <article id={selected ? `reference-${document.id}-v${selected.version}` : undefined} className="scroll-mt-6">
       <header className="mb-8 flex flex-wrap items-start justify-between gap-4 border-b border-border pb-6">
         <div className="min-w-[14rem] flex-1">
-          <span className="inline-flex items-center gap-1.5 rounded-md border border-border bg-surface px-2 py-0.5 text-[10px] font-semibold uppercase tracking-[0.12em] text-faint">
+          <span className="inline-flex items-center gap-1.5 rounded-md border border-border bg-surface px-2 py-0.5 text-xs font-semibold text-muted">
             <FileText className="size-3" /> Product overview
           </span>
           <h2 className="mt-3 text-[28px] font-semibold leading-tight tracking-tight text-balance">{document.name}</h2>
@@ -984,10 +977,8 @@ function RequirementDetailCanvas({
       )}
       <header className="mb-8 flex flex-wrap items-start gap-4 border-b border-border pb-6">
         <div className="min-w-[14rem] flex-1">
-          <span className="inline-flex items-center rounded-md border border-border bg-surface px-2 py-0.5 font-mono text-[10px] uppercase tracking-[0.12em] text-faint">
-            {item.requirement.slug}
-          </span>
-          <h2 className="mt-3 text-[28px] font-semibold leading-tight tracking-tight text-balance">
+          <span className="font-mono text-[11px] text-faint">{item.requirement.slug}</span>
+          <h2 className="mt-1.5 text-[22px] font-semibold leading-[1.25] tracking-[-0.018em] text-balance">
             {item.requirement.title}
           </h2>
           {!item.current_version && <p className="mt-2 text-sm text-muted">No confirmed version</p>}
@@ -1021,7 +1012,7 @@ function RequirementDetailCanvas({
           {canConfirm && !archivedByDismissal(item.requirement) && (
             <Button
               size="sm"
-              variant={item.requirement.archived ? 'secondary' : 'destructive'}
+              variant="secondary"
               disabled={archive.isPending}
               onClick={() => (item.requirement.archived ? archive.mutate([]) : setArchiveDialogOpen(true))}
             >
@@ -1094,7 +1085,7 @@ function RequirementDetailCanvas({
           <>
             {' '}
             <div className="mt-10 space-y-4 border-t border-border pt-8">
-              <h3 className="text-xs font-semibold uppercase tracking-[0.12em] text-faint">Delivery &amp; history</h3>
+              <h3 className="text-xs font-semibold text-muted">Delivery &amp; history</h3>
               {/*
           Delivery is task-centric: `serves` sits on the task itself
           (req-task-centric-delivery REQ-1). Blueprints are retained below as the historical
@@ -1480,7 +1471,7 @@ function RequirementDocument({ version }: { version: RequirementVersion }) {
       {stripStatementsFence(version.content) && <MarkdownProse>{stripStatementsFence(version.content)}</MarkdownProse>}
       {version.statements.length > 0 && (
         <section aria-label="Requirement statements">
-          <h3 className="flex items-center gap-1.5 text-xs font-semibold uppercase tracking-[0.12em] text-muted">
+          <h3 className="flex items-center gap-1.5 text-xs font-semibold text-muted">
             <ListChecks className="size-3.5" /> What this requires
           </h3>
           <ol className="mt-4 space-y-3">
@@ -1516,7 +1507,7 @@ function RequirementDocument({ version }: { version: RequirementVersion }) {
                         <a
                           href={`#${criterion.id.toLowerCase()}`}
                           aria-label={`Link to ${criterion.id}`}
-                          className="mt-0.5 flex size-5 shrink-0 items-center justify-center rounded-full border border-edge font-mono text-[9px] font-semibold text-muted hover:border-primary hover:text-primary"
+                          className="mt-0.5 flex size-5 shrink-0 items-center justify-center rounded-full border border-edge font-mono text-[10px] font-semibold text-muted hover:border-primary hover:text-primary"
                           title={criterion.id}
                         >
                           {criterionIndex + 1}

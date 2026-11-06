@@ -32,10 +32,7 @@ export function BoardViewSwitch({ view }: { view: BoardView }) {
       }),
     })
   return (
-    <fieldset
-      aria-label="Board view"
-      className="m-0 flex shrink-0 gap-0.5 rounded-lg border border-border bg-surface p-0.5"
-    >
+    <fieldset aria-label="Board view" className="m-0 flex shrink-0 gap-0.5 rounded-lg bg-raised/70 p-0.5">
       {views.map(({ id, label, Icon }) => (
         <Button
           key={id}
@@ -47,7 +44,7 @@ export function BoardViewSwitch({ view }: { view: BoardView }) {
           onClick={() => show(id)}
           className={cn(
             'h-7 w-8',
-            view === id && 'bg-primary-soft text-primary hover:bg-primary-soft hover:text-primary',
+            view === id && 'bg-primary-soft text-primary shadow-xs hover:bg-primary-soft hover:text-primary',
           )}
         >
           <Icon />

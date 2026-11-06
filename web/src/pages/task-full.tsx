@@ -120,19 +120,32 @@ function FullBody({ item }: { item: ActivityItem }) {
       {/* The inspector rail is the scroll region's own background, attached
           locally so it spans the whole scroll height: the 20rem inspector, the
           1.5rem page padding, and half the 3rem column gap, then a 1px border. */}
-      <div className="grid grid-cols-1 gap-y-5 px-4 pt-5 pb-6 sm:px-6 lg:grid-cols-[minmax(0,1fr)_20rem] lg:grid-rows-[auto_auto_1fr] lg:gap-x-12 lg:gap-y-5 lg:pt-6">
-        <div className="grid grid-cols-1 gap-y-5 lg:col-span-2 lg:grid-cols-[minmax(0,1fr)_20rem] lg:gap-x-12">
-          <div className={readingMeasure}>
-            <TaskIdentity item={item} variant="full" />
-          </div>
-          <section aria-label="Properties" className="min-w-0 lg:pr-0">
+      <div className="grid grid-cols-1 gap-y-5 px-4 pt-5 pb-6 sm:px-6 lg:grid-cols-[minmax(0,1fr)_20rem] lg:grid-rows-[auto_auto_1fr] lg:gap-x-12 lg:pt-6">
+        <div className={cn(readingMeasure, 'order-1 lg:col-start-1 lg:row-start-1')}>
+          <TaskIdentity item={item} variant="full" />
+        </div>
+        {/* One column from lg up, so the inspector follows the properties
+            directly. Below lg it dissolves and order restores the reading
+            sequence: identity, properties, plan, inspector, activity. */}
+        <div className="contents lg:col-start-2 lg:row-span-3 lg:row-start-1 lg:block lg:space-y-5">
+          <section aria-label="Properties" className="order-2 min-w-0">
             <SectionHeading as="h2" className="mb-1 text-xs font-medium text-faint">
               Properties
             </SectionHeading>
             <TaskFacts item={item} variant="full" columns="one" className="mt-0 gap-y-1.5 border-y-0 py-1" />
           </section>
+          <section aria-label="Task inspector" className="order-4 min-w-0 space-y-5">
+            <TaskContextCard taskId={item.task.id} taskState={item.task.state} context={item.task.context} compact />
+            <TaskAgentPrompt item={item} />
+            <AttachmentsCard attachments={item.attachments ?? []} />
+            {/* While a gate is open the evidence belongs with the decision, and
+                the gate card renders it there — not twice on one page. */}
+            {!isReviewable(item) && (
+              <AttachmentsCard attachments={item.verification_evidence ?? []} title="Verification evidence" />
+            )}
+          </section>
         </div>
-        <section aria-label="Execution plan" className={cn(readingMeasure, 'lg:col-start-1 lg:row-start-2')}>
+        <section aria-label="Execution plan" className={cn(readingMeasure, 'order-3 lg:col-start-1 lg:row-start-2')}>
           {item.spec ? (
             <SpecCard
               spec={item.spec}
@@ -147,20 +160,13 @@ function FullBody({ item }: { item: ActivityItem }) {
             </p>
           )}
         </section>
-        <section aria-label="Task inspector" className="min-w-0 space-y-5 lg:col-start-2 lg:row-span-2 lg:row-start-2">
-          <TaskContextCard taskId={item.task.id} taskState={item.task.state} context={item.task.context} compact />
-          <TaskAgentPrompt item={item} />
-          <AttachmentsCard attachments={item.attachments ?? []} />
-          {/* While a gate is open the evidence belongs with the decision, and
-              the gate card renders it there — not twice on one page. */}
-          {!isReviewable(item) && (
-            <AttachmentsCard attachments={item.verification_evidence ?? []} title="Verification evidence" />
-          )}
-        </section>
         {/* The static relationship graph is gone: relationships are read in
             the explorer panel, and one page does not carry two renderings of
             the same lineage. */}
-        <section aria-label="Activity" className={cn(readingMeasure, 'space-y-4 lg:col-start-1 lg:row-start-3')}>
+        <section
+          aria-label="Activity"
+          className={cn(readingMeasure, 'order-5 space-y-4 lg:col-start-1 lg:row-start-3')}
+        >
           <TaskActivityTabs item={item} routeVariant="full" />
         </section>
       </div>

@@ -72,7 +72,7 @@ const FrameNode = memo(function FrameNode({ data, width = 0, height = 0 }: NodeP
   return (
     <div
       className={cn(
-        'relative rounded-[28px] border-2 bg-card/35',
+        'relative rounded-[28px] border bg-surface/60',
         data.selected ? 'border-primary' : 'border-border',
         data.dim && 'opacity-35',
       )}
@@ -85,7 +85,7 @@ const FrameNode = memo(function FrameNode({ data, width = 0, height = 0 }: NodeP
       >
         <span className="truncate text-[24px] font-semibold text-foreground">{data.title}</span>
         {dot && <span className={cn('size-2.5 shrink-0 rounded-full', dot)} />}
-        <span className="ml-auto shrink-0 font-mono text-[15px] text-faint">{data.open} open</span>
+        <span className="ml-auto shrink-0 text-[15px] tabular-nums text-faint">{data.open} open</span>
       </div>
     </div>
   )

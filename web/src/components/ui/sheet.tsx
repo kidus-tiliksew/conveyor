@@ -53,18 +53,14 @@ export function Sheet({
 
   return createPortal(
     <div className="fixed inset-0 z-40">
-      <div
-        aria-hidden
-        className="absolute inset-0 animate-overlay-in bg-foreground/25"
-        onClick={() => onCloseRef.current()}
-      />
+      <div aria-hidden className="absolute inset-0 animate-overlay-in bg-scrim" onClick={() => onCloseRef.current()} />
       <aside
         ref={panelRef}
         role="dialog"
         aria-modal="true"
         aria-label={label}
         tabIndex={-1}
-        className={`absolute inset-y-0 flex flex-col bg-background shadow-xl outline-none ${
+        className={`absolute inset-y-0 flex flex-col bg-card shadow-xl outline-none ${
           side === 'left'
             ? 'left-0 animate-sheet-in-left border-r border-border'
             : 'right-0 animate-sheet-in border-l border-border'

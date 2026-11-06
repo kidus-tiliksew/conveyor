@@ -80,12 +80,7 @@ export function ReviewRoundSummary({
       <p className="whitespace-pre-line break-words leading-6 text-foreground/85">{summary.summary}</p>
       {groups.map((group) => (
         <div key={group.severity} className="mt-2.5" data-review-summary-severity={group.severity}>
-          <h4
-            className={cn(
-              'text-[11px] font-medium uppercase tracking-wide',
-              group.severity === 'blocking' ? 'text-attention' : 'text-muted',
-            )}
-          >
+          <h4 className={cn('text-xs font-medium', group.severity === 'blocking' ? 'text-attention' : 'text-muted')}>
             {group.label} {group.findings.length}
           </h4>
           <ul className="mt-1 space-y-1.5">

@@ -15,6 +15,7 @@ import { useNextActions } from '../components/inbox/use-next-actions'
 import { errorMessage } from '../lib/errors'
 import type { InboxItem } from '../lib/types'
 import { cn } from '../lib/utils'
+import { PageHeader } from '../components/ui/page-header'
 
 // The retired pending-proposals queue's narrowing, applied to the decisions
 // band: `task` keeps that task's proposals (and its own decision), `document`
@@ -103,95 +104,99 @@ export function InboxPage() {
   const showAutomatic = show('automatic') && (automatic.length > 0 || (inbox.data?.acts.length ?? 0) > 0)
 
   return (
-    <div ref={root} className="h-full overflow-y-auto">
-      <div className="mx-auto max-w-6xl px-4 py-6 sm:px-6 sm:py-8">
-        <header className="flex flex-wrap items-end justify-between gap-x-6 gap-y-3">
-          <div className="min-w-0">
-            <h1 className="text-2xl font-semibold tracking-tight">Inbox</h1>
-            {inbox.data && (
-              <InboxSummary
-                decisions={allDecisions.length}
-                urgent={allDecisions.filter((item) => isUrgent(item, now)).length}
-                blocked={blocked.length}
-                automatic={automatic.length}
-              />
-            )}
-          </div>
-          {inbox.data && <InboxBandChips search={search} counts={counts} />}
-        </header>
+    <div className="flex h-full flex-col">
+      <PageHeader
+        title="Inbox"
+        description={
+          inbox.data && (
+            <InboxSummary
+              decisions={allDecisions.length}
+              urgent={allDecisions.filter((item) => isUrgent(item, now)).length}
+              blocked={blocked.length}
+              automatic={automatic.length}
+            />
+          )
+        }
+      >
+        {inbox.data && <InboxBandChips search={search} counts={counts} />}
+      </PageHeader>
+      <div ref={root} className="min-h-0 flex-1 overflow-y-auto">
+        <div className="mx-auto max-w-6xl px-4 py-5 sm:px-6">
+          {(search.task || search.document) && (
+            <div className="mt-4 flex flex-wrap items-center justify-between gap-2 rounded-md border border-border bg-surface px-3 py-2 text-xs text-muted">
+              <span className="min-w-0 break-words">
+                {search.document && search.tier
+                  ? `Showing ${search.tier === 'requirement' ? 'Requirement' : 'System Design'} proposals for ${search.document}. Confirming another version dismisses older pending versions.`
+                  : `Showing decisions from task ${search.task}.`}
+              </span>
+              <Link
+                to="/w/$workspaceId/inbox"
+                params={{ workspaceId: workspace }}
+                search={{}}
+                className="font-medium text-primary hover:underline"
+              >
+                Show all
+              </Link>
+            </div>
+          )}
+          {inbox.isLoading && <p className="mt-8 text-sm text-muted">Loading the inbox…</p>}
+          {inbox.error && (
+            <p className="mt-8 rounded-md bg-failure-soft px-3 py-2 text-sm text-failure">
+              {errorMessage(inbox.error, 'Could not load the inbox.')}
+            </p>
+          )}
 
-        {(search.task || search.document) && (
-          <div className="mt-4 flex flex-wrap items-center justify-between gap-2 rounded-md border border-border bg-surface px-3 py-2 text-xs text-muted">
-            <span className="min-w-0 break-words">
-              {search.document && search.tier
-                ? `Showing ${search.tier === 'requirement' ? 'Requirement' : 'System Design'} proposals for ${search.document}. Confirming another version dismisses older pending versions.`
-                : `Showing decisions from task ${search.task}.`}
-            </span>
-            <Link
-              to="/w/$workspaceId/inbox"
-              params={{ workspaceId: workspace }}
-              search={{}}
-              className="font-medium text-primary hover:underline"
-            >
-              Show all
-            </Link>
-          </div>
-        )}
-        {inbox.isLoading && <p className="mt-8 text-sm text-muted">Loading the inbox…</p>}
-        {inbox.error && (
-          <p className="mt-8 rounded-md bg-failure-soft px-3 py-2 text-sm text-failure">
-            {errorMessage(inbox.error, 'Could not load the inbox.')}
-          </p>
-        )}
-
-        {inbox.data && show('decisions') && (
-          <section aria-label="Decisions" className="mt-6">
-            {decisions.length === 0 ? (
-              <EmptyDecisions />
-            ) : (
-              <div className="grid min-w-0 items-start gap-4 md:grid-cols-[minmax(0,19rem)_minmax(0,1fr)] lg:grid-cols-[minmax(0,21rem)_minmax(0,1fr)]">
-                <div className={cn('min-w-0', explicit ? 'hidden md:block' : 'block')}>
-                  <InboxReviewList items={decisions} selectedKey={selectedKey} search={search} />
+          {inbox.data && show('decisions') && (
+            <section aria-label="Decisions">
+              {decisions.length === 0 ? (
+                <EmptyDecisions />
+              ) : (
+                <div className="grid min-w-0 items-start gap-4 md:grid-cols-[minmax(0,19rem)_minmax(0,1fr)] lg:grid-cols-[minmax(0,21rem)_minmax(0,1fr)]">
+                  <div className={cn('min-w-0', explicit ? 'hidden md:block' : 'block')}>
+                    <InboxReviewList items={decisions} selectedKey={selectedKey} search={search} />
+                  </div>
+                  <InboxReviewDetail
+                    item={selectedItem}
+                    itemKey={selectedKey}
+                    workspace={workspace}
+                    explicit={explicit != null}
+                    search={search}
+                    onActed={markActed(selectedKey ?? '')}
+                  />
                 </div>
-                <InboxReviewDetail
-                  item={selectedItem}
-                  itemKey={selectedKey}
-                  workspace={workspace}
-                  explicit={explicit != null}
-                  search={search}
-                  onActed={markActed(selectedKey ?? '')}
-                />
-              </div>
-            )}
-          </section>
-        )}
+              )}
+            </section>
+          )}
 
-        {inbox.data && (showBlocked || showAutomatic) && (
-          <div className={cn('mt-10 grid min-w-0 items-start gap-6', showBlocked && showAutomatic && 'lg:grid-cols-2')}>
-            {showBlocked && (
-              <section aria-label="Blocked" className="min-w-0">
-                <h2 className="mb-2 flex items-baseline gap-2 text-sm font-semibold">
-                  Waiting on other tasks <span className="text-xs font-normal text-faint">{blocked.length}</span>
-                </h2>
-                <ul className="divide-y divide-border overflow-hidden rounded-xl border border-border bg-card">
-                  {blocked.map((item) =>
-                    item.task ? (
-                      <BlockedRow key={item.task.id} item={item} task={item.task} decisionTaskIds={decisionTaskIds} />
-                    ) : null,
-                  )}
-                </ul>
-              </section>
-            )}
-            {showAutomatic && (
-              <section aria-label="Automatic" className="min-w-0">
-                <h2 className="mb-2 flex items-baseline gap-2 text-sm font-semibold">
-                  Handled automatically <span className="text-xs font-normal text-faint">{automatic.length}</span>
-                </h2>
-                <AutomaticBand items={automatic} acts={inbox.data.acts} />
-              </section>
-            )}
-          </div>
-        )}
+          {inbox.data && (showBlocked || showAutomatic) && (
+            <div
+              className={cn('mt-10 grid min-w-0 items-start gap-6', showBlocked && showAutomatic && 'lg:grid-cols-2')}
+            >
+              {showBlocked && (
+                <section aria-label="Blocked" className="min-w-0">
+                  <h2 className="mb-2 flex items-baseline gap-2 text-sm font-semibold">
+                    Waiting on other tasks <span className="text-xs font-normal text-faint">{blocked.length}</span>
+                  </h2>
+                  <ul className="divide-y divide-border overflow-hidden rounded-xl border border-border bg-card">
+                    {blocked.map((item) =>
+                      item.task ? (
+                        <BlockedRow key={item.task.id} item={item} task={item.task} decisionTaskIds={decisionTaskIds} />
+                      ) : null,
+                    )}
+                  </ul>
+                </section>
+              )}
+              {showAutomatic && (
+                <section aria-label="Automatic" className="min-w-0">
+                  <h2 className="mb-2 flex items-baseline gap-2 text-sm font-semibold">
+                    Handled automatically <span className="text-xs font-normal text-faint">{automatic.length}</span>
+                  </h2>
+                  <AutomaticBand items={automatic} acts={inbox.data.acts} />
+                </section>
+              )}
+            </div>
+          )}
+        </div>
       </div>
     </div>
   )
@@ -210,14 +215,9 @@ function InboxSummary({
   blocked: number
   automatic: number
 }) {
-  if (decisions === 0)
-    return (
-      <p data-inbox-summary className="mt-1 text-sm text-muted">
-        Nothing needs you right now.
-      </p>
-    )
+  if (decisions === 0) return <p data-inbox-summary>Nothing needs you right now.</p>
   return (
-    <p data-inbox-summary className="mt-1 text-sm text-muted">
+    <p data-inbox-summary>
       <span className="font-medium text-foreground">
         {decisions} {decisions === 1 ? 'call needs' : 'calls need'} you
       </span>

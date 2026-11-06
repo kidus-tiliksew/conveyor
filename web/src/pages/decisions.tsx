@@ -1,6 +1,6 @@
 import { useQuery } from '@tanstack/react-query'
 import { Link, useNavigate, useParams, useSearch } from '@tanstack/react-router'
-import { ArrowRight, ChevronRight, Clock, Scale, Search } from 'lucide-react'
+import { ArrowRight, ChevronRight, Clock, Search } from 'lucide-react'
 import { type ReactNode, useMemo } from 'react'
 import { useWorkspaceSelection } from '../components/app-shell'
 import {
@@ -30,6 +30,7 @@ import { errorMessage } from '../lib/errors'
 import { decisionCitationsQueryKey, decisionsQueryKey } from '../lib/query-keys'
 import type { Decision, DecisionCitation } from '../lib/types'
 import { cn } from '../lib/utils'
+import { PageHeader } from '../components/ui/page-header'
 
 // The two workspace reads behind the Decisions surface and every decision
 // page: the decision list and the decision citations, one query each, keyed by
@@ -103,17 +104,10 @@ export function DecisionsPage() {
 
   return (
     <div className="flex h-full min-h-0 flex-col">
-      <header className="flex shrink-0 items-center gap-3 border-b border-border px-4 py-3 lg:px-6 lg:py-4">
-        <span className="flex size-8 items-center justify-center rounded-lg bg-primary-soft text-primary">
-          <Scale className="size-4" />
-        </span>
-        <div className="min-w-0">
-          <h1 className="text-lg font-semibold tracking-tight">Decisions</h1>
-          <p className="mt-0.5 text-xs text-muted">
-            The choices that govern how this system works, and the ones that replaced them.
-          </p>
-        </div>
-      </header>
+      <PageHeader
+        title="Decisions"
+        description="The choices that govern how this system works, and the ones that replaced them."
+      />
       <main className="min-h-0 flex-1 overflow-y-auto">
         <div className="mx-auto max-w-4xl px-4 py-6 sm:px-6 lg:px-8">
           {openFlags > 0 && (
@@ -477,7 +471,7 @@ function DecisionRecord({
       </section>
       {chain.length > 1 && (
         <section aria-label="Version chain" className="mt-8">
-          <h2 className="text-xs font-semibold uppercase tracking-[0.12em] text-muted">Version chain</h2>
+          <h2 className="text-xs font-semibold text-muted">Version chain</h2>
           <ol className="mt-2 flex flex-wrap items-center gap-1.5">
             {chain.map((item, index) => (
               <li key={item.id} className="flex items-center gap-1.5">
@@ -504,11 +498,11 @@ function DecisionRecord({
         </section>
       )}
       <section aria-label="Why" className="mt-8">
-        <h2 className="text-xs font-semibold uppercase tracking-[0.12em] text-muted">Why</h2>
+        <h2 className="text-xs font-semibold text-muted">Why</h2>
         <p className="mt-2 whitespace-pre-wrap text-sm leading-6">{decision.context || 'No context was recorded.'}</p>
       </section>
       <section aria-label="Alternatives rejected" className="mt-8">
-        <h2 className="text-xs font-semibold uppercase tracking-[0.12em] text-muted">Alternatives rejected</h2>
+        <h2 className="text-xs font-semibold text-muted">Alternatives rejected</h2>
         {alternatives.length > 0 ? (
           <ul className="mt-2 divide-y divide-border rounded-lg border border-border">
             {alternatives.map((alternative, index) => (
@@ -574,7 +568,7 @@ function CitedBy({ citations, error }: { citations?: DecisionCitation[]; error: 
   )
   return (
     <section aria-label="Cited by" className="mt-8">
-      <h2 className="text-xs font-semibold uppercase tracking-[0.12em] text-muted">Cited by</h2>
+      <h2 className="text-xs font-semibold text-muted">Cited by</h2>
       {error ? (
         <p className="mt-2 text-sm text-failure">{errorMessage(error, 'Could not load the citing documents.')}</p>
       ) : !citations ? (

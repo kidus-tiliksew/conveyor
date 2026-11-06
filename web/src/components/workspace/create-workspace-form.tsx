@@ -43,7 +43,7 @@ export function CreateWorkspaceForm({
   return (
     <div className="space-y-4">
       <label className="block" htmlFor="workspace-name">
-        <span className="mb-1 block text-[11px] font-medium uppercase tracking-wider text-muted">Name</span>
+        <span className="mb-1 block text-xs font-medium text-muted">Name</span>
         <Input
           id="workspace-name"
           autoFocus

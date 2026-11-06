@@ -21,7 +21,7 @@ export function InboxBandChips({ search, counts }: { search: InboxSearch; counts
     <div className="flex flex-col items-start gap-1.5 sm:items-end">
       <nav
         aria-label="Inbox bands"
-        className="flex flex-wrap items-center gap-0.5 rounded-lg border border-border bg-surface p-0.5 text-xs"
+        className="flex flex-wrap items-center gap-0.5 rounded-lg bg-raised/70 p-0.5 text-xs"
       >
         {bands.map((segment) => {
           const selected = search.band === segment.band

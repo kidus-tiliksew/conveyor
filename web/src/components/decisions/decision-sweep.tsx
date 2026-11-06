@@ -71,9 +71,7 @@ export function DecisionSweep({ decision }: { decision: Decision & { supersedes:
   }
   return (
     <section aria-label={`Cleanup after replacing ${decision.supersedes}`} className="mt-8">
-      <h3 className="text-xs font-semibold uppercase tracking-[0.12em] text-muted">
-        Cleanup after replacing {decision.supersedes}
-      </h3>
+      <h3 className="text-xs font-semibold text-muted">Cleanup after replacing {decision.supersedes}</h3>
       <p className="mt-1 text-xs text-muted">
         Documents flagged for still citing {decision.supersedes}. These flags manage operator attention. They do not
         block delivery, review, or merge.

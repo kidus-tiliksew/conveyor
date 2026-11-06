@@ -57,15 +57,12 @@ export function BoardColumn({
   return (
     <section
       aria-label={label}
-      className={cn(
-        'flex h-full min-w-72 flex-[3_1_18rem] flex-col rounded-lg border border-border',
-        idle ? 'bg-surface/50' : 'bg-surface',
-      )}
+      className={cn('flex h-full min-w-72 flex-[3_1_18rem] flex-col rounded-xl', idle ? 'bg-surface/55' : 'bg-surface')}
     >
-      <header className="flex shrink-0 items-center gap-2 border-b border-border px-3 py-2.5">
-        <Icon className="size-3.5 shrink-0 text-muted" />
-        <h2 className="truncate text-[11px] font-semibold uppercase tracking-[0.08em] text-muted">{label}</h2>
-        <span className="font-mono text-[11px] text-faint">{items.length}</span>
+      <header className="flex h-10 shrink-0 items-center gap-2 px-3.5">
+        <Icon className="size-3.5 shrink-0 text-faint" />
+        <h2 className="truncate text-[13px] font-semibold text-foreground">{label}</h2>
+        <span className="text-xs tabular-nums text-faint">{items.length}</span>
         {operator > 0 && (
           <Link
             to="/w/$workspaceId/inbox"
@@ -79,7 +76,7 @@ export function BoardColumn({
         )}
       </header>
       {!idle && (
-        <div className="min-h-0 flex-1 space-y-2 overflow-y-auto p-2">
+        <div className="min-h-0 flex-1 space-y-2 overflow-y-auto px-2 pb-2">
           {visible.map((item) => (
             <TaskCard key={item.task.id} item={item} selected={item.task.id === selectedId} />
           ))}

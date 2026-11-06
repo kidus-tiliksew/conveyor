@@ -42,7 +42,7 @@ function VersionChanges({ proposal, version }: { proposal: PendingProposal; vers
   const current = view?.current_version
   return (
     <section aria-label="Proposed changes" data-proposal-changes aria-busy={!view && error == null}>
-      <h3 className="text-[11px] font-semibold uppercase tracking-[0.08em] text-muted">Changes</h3>
+      <h3 className="text-xs font-semibold text-muted">Changes</h3>
       {!view && error == null && <Skeleton className="mt-2 h-24" />}
       {error != null && <ReadError error={error} retrying={isFetching} retry={() => void refetch()} />}
       {view && !target && (
@@ -89,7 +89,7 @@ function DecisionText({ id }: { id: string }) {
             ] as const
           ).map(([label, text]) => (
             <div key={label}>
-              <dt className="text-[11px] font-semibold uppercase tracking-[0.08em] text-muted">{label}</dt>
+              <dt className="text-xs font-semibold text-muted">{label}</dt>
               <dd className="mt-1 whitespace-pre-wrap break-words leading-6">{text || '—'}</dd>
             </div>
           ))}

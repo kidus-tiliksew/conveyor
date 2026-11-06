@@ -11,6 +11,7 @@ import { createPlanningSession, decidePlanningBundle, fetchPlanningBundles, fetc
 import { sessionGoalLabel, sessionGoalLabels } from '../lib/contracts'
 import { errorMessage } from '../lib/errors'
 import type { PlanningSessionGoal } from '../lib/types'
+import { PageHeader } from '../components/ui/page-header'
 
 // Task fan-out now comes from reviewable delivery bundles. Blueprint remains
 // a historical document label, not a planning-session creation goal.
@@ -79,13 +80,10 @@ export function PlanningPage() {
 
   return (
     <div className="flex h-full min-h-0 flex-col">
-      <header className="flex shrink-0 flex-wrap items-center justify-between gap-3 border-b border-border px-6 py-4">
-        <div>
-          <h1 className="text-lg font-semibold tracking-tight">Planning</h1>
-          <p className="mt-0.5 text-xs text-muted">
-            Explore freely or propose a delivery bundle. Requirement drafting lives beside the document in Requirements.
-          </p>
-        </div>
+      <PageHeader
+        title="Planning"
+        description="Explore freely or propose a delivery bundle. Requirement drafting lives beside the document in Requirements."
+      >
         {canPropose && (
           <form
             className="flex flex-wrap items-center gap-2"
@@ -116,11 +114,11 @@ export function PlanningPage() {
             {errorMessage(create.error, 'Could not start this planning session.')}
           </p>
         )}
-      </header>
+      </PageHeader>
       <div className="flex min-h-0 flex-1">
         <aside className="w-72 shrink-0 overflow-y-auto border-r border-border bg-surface/40">
           <div className="px-4 py-3">
-            <p className="text-[10px] font-semibold uppercase tracking-[0.12em] text-faint">Sessions</p>
+            <p className="text-xs font-semibold text-muted">Sessions</p>
           </div>
           {isLoading && <p className="px-4 text-xs text-muted">Restoring sessions…</p>}
           {sessionsError && (
@@ -175,9 +173,7 @@ export function PlanningPage() {
                 >
                   <div className="flex items-start justify-between gap-4">
                     <div>
-                      <p className="text-[10px] font-semibold uppercase tracking-wider text-faint">
-                        Delivery bundle · {selectedBundle.status}
-                      </p>
+                      <p className="text-xs font-semibold text-muted">Delivery bundle · {selectedBundle.status}</p>
                       <h2 className="mt-1 text-base font-semibold">{selectedBundle.title}</h2>
                       <p className="mt-1 text-xs text-muted">
                         Approving creates the task set. Document revisions remain pending their own confirmation.
@@ -200,7 +196,7 @@ export function PlanningPage() {
                   </div>
                   <div className="mt-4 grid gap-4 lg:grid-cols-2">
                     <div>
-                      <h3 className="text-xs font-semibold uppercase tracking-wider text-muted">Pending documents</h3>
+                      <h3 className="text-xs font-semibold text-muted">Pending documents</h3>
                       <ul className="mt-2 space-y-2">
                         {selectedBundle.documents.map((document) => (
                           <li
@@ -217,7 +213,7 @@ export function PlanningPage() {
                       </ul>
                     </div>
                     <div>
-                      <h3 className="text-xs font-semibold uppercase tracking-wider text-muted">Task set</h3>
+                      <h3 className="text-xs font-semibold text-muted">Task set</h3>
                       <ol className="mt-2 space-y-2">
                         {selectedBundle.tasks.map((task) => (
                           <li

@@ -327,7 +327,7 @@ function PlanContext({ item, spec }: { item: ActivityItem; spec: SpecVersion }) 
           )}
           {planHeadings.map((heading) => (
             <section key={heading} aria-label={heading} data-plan-section={heading}>
-              <h4 className="mb-1.5 text-[11px] font-semibold uppercase tracking-[0.08em] text-muted">{heading}</h4>
+              <h4 className="mb-1.5 text-xs font-semibold text-muted">{heading}</h4>
               {heading === 'Files touched' ? (
                 <PlanFiles section={sections.sections[heading]} />
               ) : (

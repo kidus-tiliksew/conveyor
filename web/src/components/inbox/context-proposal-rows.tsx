@@ -364,9 +364,7 @@ function ChecklistRow({
         </span>
         <div className="min-w-0 flex-1">
           <div className={cn('flex min-w-0 items-baseline gap-x-2', compact ? 'flex-nowrap' : 'flex-wrap gap-y-0.5')}>
-            <span className="shrink-0 text-[11px] font-medium uppercase tracking-[0.06em] text-muted">
-              {proposal.tier_label}
-            </span>
+            <span className="shrink-0 text-xs font-medium text-muted">{proposal.tier_label}</span>
             <ProposalTitle proposal={proposal} className={cn(faded, compact && 'truncate')} onPreview={onPreview} />
             {compact ? (
               <button

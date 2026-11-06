@@ -18,7 +18,7 @@ export function Switch({
       onClick={() => onChange(!checked)}
       className={cn(
         'relative h-[18px] w-8 shrink-0 rounded-full transition-colors focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary',
-        checked ? 'bg-primary' : 'bg-edge',
+        checked ? 'bg-primary' : 'bg-faint/45',
       )}
     >
       <span
