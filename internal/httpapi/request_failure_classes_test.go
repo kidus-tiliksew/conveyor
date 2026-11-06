@@ -568,3 +568,62 @@ func TestOptionalBodiesStayOptional(t *testing.T) {
 		}
 	}
 }
+
+// TestInterventionRoutesClassifyFailures covers the gate decision and close acts
+// through their shared hook: a refusal is 409, a store failure the generic 500
+// even when marked, and a forge failure on review keeps its answer.
+func TestInterventionRoutesClassifyFailures(t *testing.T) {
+	review := `{"action":"reject","reason_code":"nope"}`
+	backend := fmt.Errorf("PostgreSQL %w", store.ErrBackendOperation)
+	remedy := "connect the GitHub App in workspace settings"
+	for _, tc := range []struct {
+		name, path, body string
+		err              error
+		status           int
+		contains         string
+	}{
+		{"review marked refusal", "/v1/tasks/failure-gate/review", review, store.Refusef("work order o was superseded"), http.StatusConflict, "superseded"},
+		{"review invalid transition", "/v1/tasks/failure-gate/review", review, &core.ErrInvalidTransition{Space: core.TaskLifecycle, From: "closed", Command: "c"}, http.StatusConflict, "invalid"},
+		{"review head unavailable", "/v1/tasks/failure-gate/review", review, dispatch.ErrReviewedHeadUnavailable, http.StatusConflict, "unavailable"},
+		{"review forge failure", "/v1/tasks/failure-gate/review", review, github.PermissionError(errors.New(remedy)), http.StatusInternalServerError, remedy},
+		{"review store failure", "/v1/tasks/failure-gate/review", review, errors.New(failingStoreDriverText), http.StatusInternalServerError, "internal server error"},
+		{"review marked backend failure", "/v1/tasks/failure-gate/review", review, store.Refuse(backend), http.StatusInternalServerError, "internal server error"},
+		{"close marked refusal", "/v1/tasks/failure-task/close", `{"reason":"stop"}`, store.Refusef("task is changing"), http.StatusConflict, "changing"},
+		{"close terminal", "/v1/tasks/failure-task/close", `{"reason":"stop"}`, store.ErrTaskTerminal, http.StatusConflict, "terminal"},
+		{"close store failure", "/v1/tasks/failure-task/close", `{"reason":"stop"}`, errors.New(failingStoreDriverText), http.StatusInternalServerError, "internal server error"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			server, _ := failureClassesFixture(t)
+			captureStandardLog(t)
+			server.OnIntervention = func(context.Context, core.Task, core.Job, core.Intervention) error { return tc.err }
+			response := failureRequest(t, server, http.MethodPost, tc.path, tc.body)
+			if response.Code != tc.status || !strings.Contains(response.Body.String(), tc.contains) || strings.Contains(response.Body.String(), "does not exist") {
+				t.Fatalf("status=%d body=%q, want %d containing %q", response.Code, response.Body.String(), tc.status, tc.contains)
+			}
+		})
+	}
+}
+
+// TestCloseBoundsBytesAfterTheJSONValue counts every byte of the body, so a valid
+// object followed by whitespace past the bound answers 413 and closes nothing.
+func TestCloseBoundsBytesAfterTheJSONValue(t *testing.T) {
+	server, base := failureClassesFixture(t)
+	body := `{"reason":"stop"}` + strings.Repeat(" ", taskRouteBodyLimit)
+	request := httptest.NewRequest(http.MethodPost, "/v1/tasks/failure-task/close?workspace_id=demo", io.NopCloser(strings.NewReader(body)))
+	request.ContentLength = -1
+	request.Header.Set("Authorization", "Bearer token")
+	request.Header.Set("Content-Type", "application/json")
+	response := httptest.NewRecorder()
+	server.Handler().ServeHTTP(response, request)
+	if response.Code != http.StatusRequestEntityTooLarge {
+		t.Fatalf("status=%d body=%.200q", response.Code, response.Body.String())
+	}
+	ctx := store.WithWorkspace(store.WithActor(t.Context(), store.SystemActor()), "demo")
+	task, err := base.GetTask(ctx, failureTask)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if core.TaskTerminal(task.State) {
+		t.Fatalf("the oversized request closed the task: state=%s", task.State)
+	}
+}

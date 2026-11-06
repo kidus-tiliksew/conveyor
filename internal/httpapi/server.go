@@ -883,7 +883,7 @@ func (s *Server) closeTask(w http.ResponseWriter, r *http.Request) {
 	}
 	if err != nil {
 		var invalid *core.ErrInvalidTransition
-		if errors.Is(err, store.ErrTaskTerminal) || errors.As(err, &invalid) {
+		if errors.Is(err, store.ErrTaskTerminal) || errors.Is(err, store.ErrRefusal) || errors.As(err, &invalid) {
 			http.Error(w, err.Error(), http.StatusConflict)
 			return
 		}
@@ -1008,6 +1008,9 @@ func (s *Server) reviewTask(w http.ResponseWriter, r *http.Request) {
 			case github.ErrorCategory(err) != "" && !errors.Is(err, store.ErrBackendOperation):
 				// A forge failure keeps its answer and its remedy.
 				http.Error(w, err.Error(), http.StatusInternalServerError)
+			case isOperationRefusal(err):
+				// A task closed while a decision completes refuses the recovery.
+				http.Error(w, err.Error(), http.StatusConflict)
 			default:
 				writeStoreFailure(w, r, err)
 			}
