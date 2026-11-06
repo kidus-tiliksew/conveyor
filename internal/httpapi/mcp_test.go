@@ -616,7 +616,7 @@ func TestMCPToolsListRequiresAuthAndPublishesLifecycle(t *testing.T) {
 	if err := json.Unmarshal(response.Body.Bytes(), &envelope); err != nil {
 		t.Fatal(err)
 	}
-	want := []string{"list_workspaces", "list_repositories", "list_tasks", "get_task", "list_operator_inbox", "list_task_events", "get_task_context", "list_documents", "get_document", "search_documents", "list_document_events", "list_decisions", "get_decision", "get_lineage", "create_task", "add_task_dependency", "set_assignee", "attach_task_branch", "get_task_status", "list_work_orders", "claim_work_order", "redispatch_work_order", "renew_work_order", "release_work_order", "request_plan_revision", "get_work_order", "refresh_work_order_context", "read_artifact", "report_progress", "report_usage", "upload_transcript", "submit_plan", "submit_for_review", "await_review", "submit_review_verdict", "submit_review_summary"}
+	want := []string{"list_workspaces", "list_repositories", "list_tasks", "get_task", "list_operator_inbox", "list_task_events", "get_task_context", "list_documents", "get_document", "search_documents", "list_document_events", "list_decisions", "get_decision", "get_lineage", "create_task", "add_task_dependency", "set_assignee", "attach_task_branch", "get_task_status", "list_work_orders", "claim_work_order", "renew_work_order", "release_work_order", "request_plan_revision", "get_work_order", "refresh_work_order_context", "read_artifact", "report_progress", "report_usage", "upload_transcript", "submit_plan", "submit_for_review", "await_review", "submit_review_verdict", "submit_review_summary"}
 	want = append(append(append([]string{}, want[:14]...), verificationTools...), want[14:]...)
 	if len(envelope.Result.Tools) != len(want) {
 		t.Fatalf("tools = %d, want %d", len(envelope.Result.Tools), len(want))
@@ -728,6 +728,176 @@ func TestEveryRegisteredMCPToolHasExplicitCapability(t *testing.T) {
 		if !seen[name] {
 			t.Fatalf("capability mapping names unregistered MCP tool %q", name)
 		}
+	}
+}
+
+// reservedMCPToolViolations names every tool whose capability AC-1.2 does not
+// admit on the list: each tool maps to view_workspace, claim_work, create_tasks,
+// or set_assignee, and only add_task_dependency and attach_task_branch may map
+// to operate_gates. An unmapped tool has no admitted capability, so it fails too.
+func reservedMCPToolViolations(tools []map[string]any, capabilities map[string]core.Capability) []string {
+	admitted := map[core.Capability]bool{
+		core.CapabilityViewWorkspace: true,
+		core.CapabilityClaimWork:     true,
+		core.CapabilityCreateTasks:   true,
+		core.CapabilitySetAssignee:   true,
+	}
+	operateGatesExceptions := map[string]bool{"add_task_dependency": true, "attach_task_branch": true}
+	var violations []string
+	for _, tool := range tools {
+		name, _ := tool["name"].(string)
+		capability := capabilities[name]
+		if admitted[capability] || (operateGatesExceptions[name] && capability == core.CapabilityOperateGates) {
+			continue
+		}
+		violations = append(violations, fmt.Sprintf("MCP tool %q maps to capability %q", name, capability))
+	}
+	return violations
+}
+
+// TestMCPToolListHoldsNoReservedTool enforces that no listed tool decides a
+// gate, cancels a task, writes configuration, recovers a work order, unlinks a
+// dependency, manages users or grants, or issues a token. It iterates mcpTools()
+// itself, so a tool added later is held to the same rule, and its controls prove
+// the check fails and names the tool (req-security-boundaries AC-1.2;
+// component-mcp-protocol invariant 7).
+func TestMCPToolListHoldsNoReservedTool(t *testing.T) {
+	tools := mcpTools()
+	if len(tools) == 0 {
+		t.Fatal("mcpTools() is empty, so the check would hold vacuously")
+	}
+	if violations := reservedMCPToolViolations(tools, mcpCapabilities); len(violations) != 0 {
+		t.Fatalf("the tool list holds reserved tools:\n%s", strings.Join(violations, "\n"))
+	}
+
+	const controlTool = "control_recover_tool"
+	for name, tc := range map[string]struct {
+		tool       string
+		capability core.Capability
+	}{
+		"tool mapped to recover_work":                  {controlTool, core.CapabilityRecoverWork},
+		"exception tool mapped to recover_work":        {"add_task_dependency", core.CapabilityRecoverWork},
+		"tool outside the exceptions on operate_gates": {controlTool, core.CapabilityOperateGates},
+		"tool with no capability":                      {controlTool, ""},
+	} {
+		t.Run("control/"+name, func(t *testing.T) {
+			controlTools := mcpTools()
+			if tc.tool == controlTool {
+				controlTools = append(controlTools, map[string]any{"name": controlTool})
+			}
+			capabilities := maps.Clone(mcpCapabilities)
+			capabilities[tc.tool] = tc.capability
+			violations := reservedMCPToolViolations(controlTools, capabilities)
+			if len(violations) != 1 || !strings.Contains(violations[0], `"`+tc.tool+`"`) {
+				t.Fatalf("violations = %q, want one naming %s", violations, tc.tool)
+			}
+		})
+	}
+}
+
+// TestMCPRedispatchWorkOrderIsNotOffered proves over the wire that tools/list
+// omits the retired tool and that a call to its name answers a refusal and
+// changes nothing, on an order the store command would still redispatch
+// (req-security-boundaries AC-1.2; component-mcp-protocol invariants 6 and 7).
+func TestMCPRedispatchWorkOrderIsNotOffered(t *testing.T) {
+	const retiredTool = "redispatch_work_order"
+	ctx := store.WithWorkspace(store.WithActor(t.Context(), store.SystemActor()), "demo")
+	st := store.NewMemory()
+	now := time.Now().UTC()
+	task := core.Task{ID: "retired-tool-task", Workspace: "demo", Repo: "conveyor", State: core.TaskQueued, NextStage: core.StageImplement, CreatedAt: now}
+	if err := st.CreateTask(ctx, task); err != nil {
+		t.Fatal(err)
+	}
+	order := core.WorkOrder{ID: task.ID + "-implement-1", TaskID: task.ID, JobID: task.ID + "-implement-1", Stage: core.StageImplement, State: core.WorkOrderQueued, QueueEnteredAt: now.Add(-2 * time.Hour), QueueDeadline: now.Add(-time.Hour)}
+	if err := st.CreateJob(ctx, core.Job{ID: order.JobID, TaskID: task.ID, Stage: order.Stage, State: core.JobPending}); err != nil {
+		t.Fatal(err)
+	}
+	if err := storetest.For(st).CreateWorkOrder(ctx, order); err != nil {
+		t.Fatal(err)
+	}
+	provider := func(context.Context) (*config.Config, error) {
+		return &config.Config{Workspace: "demo", WorkOrderQueueTimeout: time.Hour}, nil
+	}
+	server := NewServer(st)
+	server.BearerToken, server.Workspace = "operator-token", "demo"
+	server.WorkOrders = &workorder.Service{Store: st, ConfigProvider: provider}
+	handler := server.Handler()
+	post := func(payload map[string]any) []byte {
+		t.Helper()
+		body, err := json.Marshal(payload)
+		if err != nil {
+			t.Fatal(err)
+		}
+		request := httptest.NewRequest(http.MethodPost, "/mcp", bytes.NewReader(body))
+		request.Header.Set("Authorization", "Bearer operator-token")
+		response := httptest.NewRecorder()
+		handler.ServeHTTP(response, request)
+		if response.Code != http.StatusOK {
+			t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
+		}
+		return response.Body.Bytes()
+	}
+
+	var listed struct {
+		Result struct {
+			Tools []struct {
+				Name string `json:"name"`
+			} `json:"tools"`
+		} `json:"result"`
+	}
+	if err := json.Unmarshal(post(map[string]any{"jsonrpc": "2.0", "id": 1, "method": "tools/list"}), &listed); err != nil {
+		t.Fatal(err)
+	}
+	if len(listed.Result.Tools) == 0 {
+		t.Fatal("tools/list returned no tools")
+	}
+	for _, tool := range listed.Result.Tools {
+		if tool.Name == retiredTool {
+			t.Fatalf("tools/list still offers %s", retiredTool)
+		}
+	}
+	if _, mapped := mcpCapabilities[retiredTool]; mapped {
+		t.Fatalf("%s still has a capability", retiredTool)
+	}
+
+	beforeOrder, err := st.GetWorkOrder(ctx, order.ID)
+	if err != nil || beforeOrder.State != core.WorkOrderStale {
+		t.Fatalf("fixture order=%+v err=%v, want stale", beforeOrder, err)
+	}
+	beforeEvents, err := st.ListEvents(ctx, task.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var called struct {
+		Result struct {
+			IsError bool `json:"isError"`
+			Content []struct {
+				Text string `json:"text"`
+			} `json:"content"`
+		} `json:"result"`
+	}
+	if err := json.Unmarshal(post(map[string]any{"jsonrpc": "2.0", "id": 2, "method": "tools/call", "params": map[string]any{
+		"name": retiredTool, "arguments": map[string]any{"workspace_id": "demo", "work_order_id": order.ID},
+	}}), &called); err != nil {
+		t.Fatal(err)
+	}
+	if !called.Result.IsError || len(called.Result.Content) != 1 || !strings.Contains(called.Result.Content[0].Text, "unknown tool") {
+		t.Fatalf("call result = %+v, want the unknown-tool refusal", called.Result)
+	}
+	afterOrder, err := st.GetWorkOrder(ctx, order.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	afterEvents, err := st.ListEvents(ctx, task.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(beforeOrder, afterOrder) || len(afterEvents) != len(beforeEvents) {
+		t.Fatalf("refused call changed state: order %+v -> %+v, events %d -> %d", beforeOrder, afterOrder, len(beforeEvents), len(afterEvents))
+	}
+	// Control: the order was redispatchable, so the name alone caused the refusal.
+	if redispatched, err := storetest.RedispatchWorkOrder(ctx, st, order.ID, time.Hour); err != nil || redispatched.RedispatchCount != 1 {
+		t.Fatalf("store redispatch after the refusal = %+v err=%v", redispatched, err)
 	}
 }
 

@@ -620,7 +620,11 @@ in-product planning sessions, and the REST routes, which require
 | `create_task` | Create one durable task: `body`, `repo`, and a caller-stable `idempotency_key` required; optional `depends_on`, `requirement_ids`, `system_design_ids`, and gate overrides. A task carries no hold (DEC-74): a new `hold: true` or a non-boolean `hold` is refused with `task_hold_retired`, while a retry whose key names an existing task still returns it. The title is generated; supplying one is an error. Requires `create_tasks` on the credential's owner. An omitted gate takes the workspace default and a supplied boolean applies, `false` included. A null or non-boolean gate, a non-string level, or an unrecognized level is refused with `invalid_agent_gate_override` before any lookup, for every caller, so a mistyped gate never takes the workspace default. The task records MCP as its source and the person as its creator, enters triage like any other task, and grants the session nothing further (DEC-116(5)). |
 | `add_task_dependency` | Make an existing open task depend on another. Requires `task_id`, `depends_on_task_id`, an audit `reason`, and caller-stable `request_id`; rejects terminal tasks, self-links, and cycles. Requires `operate_gates`. |
 | `set_assignee` | Set or clear a task's assignee as an audited act. Constrains claim eligibility, never queue order. Requires `set_assignee`. |
-| `redispatch_work_order` | Return a stale queued order to the queue with a fresh deadline. Active and execution-timed-out orders are rejected. Requires `recover_work`; human credentials only. |
+
+No tool recovers or redispatches a work order (`req-security-boundaries`
+AC-1.2). Those are operator routes that require `recover_work`:
+`POST /v1/work-orders/{id}/recover` (`conveyor order recover`) and
+`POST /v1/tasks/{id}/redispatch` (`conveyor order redispatch`).
 
 ## Contracts worth restating
 

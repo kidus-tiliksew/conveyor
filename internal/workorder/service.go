@@ -371,31 +371,6 @@ func (s *Service) claim(ctx context.Context, id string, claim core.WorkOrderClai
 	return order, nil
 }
 
-func (s *Service) Redispatch(ctx context.Context, id string) (core.WorkOrder, error) {
-	cfg, err := s.config(ctx)
-	if err != nil {
-		return core.WorkOrder{}, err
-	}
-	timeout := cfg.WorkOrderQueueTimeout
-	if timeout <= 0 {
-		timeout = config.DefaultWorkOrderQueueTimeout
-	}
-	order, err := s.Store.GetWorkOrder(ctx, id)
-	if err != nil {
-		return core.WorkOrder{}, err
-	}
-	_, pendingPlanRevision, err := dispatch.PendingPlanRevisionGate(ctx, s.Store, order.TaskID)
-	if err != nil {
-		return core.WorkOrder{}, err
-	}
-	if pendingPlanRevision {
-		return core.WorkOrder{}, store.Refusef("work order %s cannot be recovered while task %s awaits the pending plan-revision decision; use the plan-revision decision gate", id, order.TaskID)
-	}
-	return taskops.ExecuteWorkOrder(ctx, s.Store, order.TaskID, core.WorkOrderCmdRedispatch, func(lease taskops.TaskLease) (core.WorkOrder, error) {
-		return s.Store.RedispatchWorkOrderCommand(ctx, lease, id, timeout)
-	})
-}
-
 func (s *Service) RecoverVerification(ctx context.Context, id, requestID, direction string, disposition *store.VerificationRecoveryDisposition) (core.WorkOrder, error) {
 	if disposition == nil {
 		return s.Recover(ctx, id, requestID, direction)

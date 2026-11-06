@@ -2347,35 +2347,6 @@ func TestStaleQueuedOrderIsListedNonClaimableAndRejected(t *testing.T) {
 	}
 }
 
-func TestRedispatchStaleOrderResetsQueueClockAndPreservesAudit(t *testing.T) {
-	t.Parallel()
-	ctx, st, service, order := newLifecycleService(t, "redispatch")
-	order.QueueDeadline = time.Now().Add(-time.Second)
-	if err := storetest.For(st).UpdateWorkOrder(ctx, order); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := service.List(ctx); err != nil {
-		t.Fatal(err)
-	}
-	redispatched, err := service.Redispatch(ctx, order.ID)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if redispatched.State != core.WorkOrderQueued || !redispatched.Claimable || redispatched.RedispatchCount != 1 ||
-		redispatched.QueueDeadline.Sub(redispatched.QueueEnteredAt) != config.DefaultWorkOrderQueueTimeout ||
-		!redispatched.ExecutionStartedAt.IsZero() || !redispatched.ExecutionDeadline.IsZero() {
-		t.Fatalf("redispatched = %+v", redispatched)
-	}
-	if _, err = service.Claim(ctx, order.ID, core.WorkOrderClaim{SessionID: "session", ClientToken: "token", ClaimantID: "agent", Agent: "codex", Model: "gpt"}); err != nil {
-		t.Fatal(err)
-	}
-	staleEvents, _ := st.CountEvents(ctx, order.TaskID, "work_order.stale")
-	redispatchEvents, _ := st.CountEvents(ctx, order.TaskID, "work_order.redispatched")
-	if staleEvents != 1 || redispatchEvents != 1 {
-		t.Fatalf("audit events stale=%d redispatched=%d", staleEvents, redispatchEvents)
-	}
-}
-
 func TestStageCompletionRetiresQueuedSameStageSibling(t *testing.T) {
 	ctx := store.WithWorkspace(store.WithActor(t.Context(), store.SystemActor()), "test")
 	st := store.NewMemory()
@@ -2508,80 +2479,6 @@ func TestRecoverWorkOrderAfterChangesRequestedBounce(t *testing.T) {
 	after, err := st.GetTask(ctx, task.ID)
 	if err != nil || after.NextStage != core.StageImplement {
 		t.Fatalf("task after recovery=%+v err=%v", after, err)
-	}
-}
-
-func TestRedispatchRejectsOrdersOutsideStaleNeverClaimedGuard(t *testing.T) {
-	t.Parallel()
-	for _, tc := range []struct {
-		name  string
-		state core.WorkOrderState
-	}{
-		{name: "claimed", state: core.WorkOrderClaimed},
-		{name: "submitted", state: core.WorkOrderSubmitted},
-		{name: "timed-out", state: core.WorkOrderTimedOut},
-		{name: "previously-claimed-stale", state: core.WorkOrderStale},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			t.Parallel()
-			ctx, st, service, order := newLifecycleService(t, "redispatch-reject-"+tc.name)
-			claimed, err := storetest.For(st).ClaimWorkOrder(ctx, order.ID, core.WorkOrderClaim{
-				SessionID: "session", ClientToken: "token", Lease: time.Minute, ExecutionTimeout: time.Hour,
-			})
-			if err != nil {
-				t.Fatal(err)
-			}
-			if tc.state != core.WorkOrderClaimed {
-				claimed.State = tc.state
-				command := core.WorkOrderCmdSubmitForReview
-				if tc.state == core.WorkOrderTimedOut {
-					command = core.WorkOrderCmdTimeout
-				} else if tc.state == core.WorkOrderStale {
-					command = core.WorkOrderCmdMarkStale
-				}
-				if err = storetest.For(st).UpdateWorkOrder(ctx, claimed, command); err != nil {
-					t.Fatal(err)
-				}
-			}
-			if _, err = service.Redispatch(ctx, order.ID); err == nil {
-				t.Fatalf("redispatch unexpectedly accepted %s order", tc.name)
-			}
-		})
-	}
-}
-
-// A stale redispatch re-queues a legacy pinned order without consulting any
-// harness list: every execution pin is cleared and no refresh event is
-// appended (req-worker AC-2.2; DEC-56).
-func TestRedispatchClearsLegacyExecutionPinsWithoutHarnessRegistry(t *testing.T) {
-	t.Parallel()
-	ctx, st, service, order := newLifecycleService(t, "snapshot-clear")
-	order.RequiredHarness, order.RequiredModel, order.RequiredEffort = "claude", "legacy-model", "high"
-	order.RequiredHarnessConfig = &core.HarnessSnapshot{Name: "claude", Command: []string{"claude", "-p", "{prompt}", "{mcp_config}"}, Effort: "high", EffortArgs: map[string][]string{"high": {"--effort", "high"}}, EffortArgv: []string{"--effort", "high"}}
-	order.QueueDeadline = time.Now().Add(-time.Second)
-	if err := storetest.For(st).UpdateWorkOrder(ctx, order); err != nil {
-		t.Fatal(err)
-	}
-	service.ConfigProvider = func(context.Context) (*config.Config, error) {
-		return &config.Config{
-			WorkOrderQueueTimeout: config.DefaultWorkOrderQueueTimeout,
-			Routing:               config.Routing{Stages: map[string]config.StageRoute{"implement": {Timeout: time.Hour}}},
-		}, nil
-	}
-	redispatched, err := service.Redispatch(ctx, order.ID)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if redispatched.State != core.WorkOrderQueued || redispatched.RequiredHarnessConfig != nil || redispatched.RequiredHarness != "" || redispatched.RequiredModel != "" || redispatched.RequiredEffort != "" {
-		t.Fatalf("redispatched order kept execution pins: %+v", redispatched)
-	}
-	stored, err := st.GetWorkOrder(ctx, order.ID)
-	if err != nil || stored.RequiredHarnessConfig != nil || stored.RequiredHarness != "" || stored.RequiredModel != "" || stored.RequiredEffort != "" {
-		t.Fatalf("stored order kept execution pins: %+v err=%v", stored, err)
-	}
-	refreshEvents, _ := st.CountEvents(ctx, order.TaskID, "work_order.harness_refreshed")
-	if refreshEvents != 0 {
-		t.Fatalf("harness refresh events = %d", refreshEvents)
 	}
 }
 

@@ -313,8 +313,6 @@ func (s *Server) callMCPTool(r *http.Request, name string, args map[string]any) 
 			return nil, err
 		}
 		return s.WorkOrders.DeliverOrder(ctx, order), nil
-	case "redispatch_work_order":
-		return outboundWorkOrderResult(s.WorkOrders.Redispatch(ctx, stringArg("work_order_id")))
 	case "renew_work_order":
 		// The credential owner's run:<owner> claimant is the identity the claim
 		// recorded, so only the claiming person's session renews
@@ -524,7 +522,6 @@ var mcpCapabilities = map[string]core.Capability{
 	"attach_task_branch":         core.CapabilityOperateGates,
 	"list_work_orders":           core.CapabilityViewWorkspace,
 	"claim_work_order":           core.CapabilityClaimWork,
-	"redispatch_work_order":      core.CapabilityRecoverWork,
 	"renew_work_order":           core.CapabilityClaimWork,
 	"release_work_order":         core.CapabilityClaimWork,
 	"request_plan_revision":      core.CapabilityClaimWork,
@@ -918,7 +915,6 @@ func mcpTools() []map[string]any {
 		{"name": "get_task_status", "description": "Read one task's server-stated next action: its label, who acts next, the kind, whether operator judgment is needed, the summary, the question, each choice with its effect, what happens if nobody acts, the deadline, blockers, and the current order and attempt. Any workspace member reads any task in the workspace. Read-only; it never renews a claim.", "inputSchema": object(map[string]any{"workspace_id": str, "task_id": str}, "task_id")},
 		{"name": "list_work_orders", "description": "List active, stale, or execution-timed-out spec, implement, and review work orders in one workspace with distinct queue, execution, and lease clocks.", "inputSchema": object(map[string]any{"workspace_id": str})},
 		{"name": "claim_work_order", "description": "Claim a work order with a bounded lease. Review self-claim is forbidden. claimant_id is accepted for wire compatibility but ignored; claimant identity is derived from the authenticated credential. For implement, review, and verify claims, the response names governing documents in governance_references, without their bodies.", "inputSchema": object(map[string]any{"workspace_id": str, "work_order_id": str, "session_id": str, "client_token": str, "claimant_id": str, "agent": str, "model": str, "lease_seconds": num}, "work_order_id", "session_id", "client_token", "agent", "model")},
-		{"name": "redispatch_work_order", "description": "Return a stale queued work order in one workspace to the queue with a fresh queue deadline. Active and execution-timed-out work orders are rejected.", "inputSchema": object(map[string]any{"workspace_id": str, "work_order_id": str}, "work_order_id")},
 		{"name": "renew_work_order", "description": "Renew the exact execution child session lease without extending its fixed attempt deadline. Pass the claim's lease_seconds on every renewal to keep that lease; an absent value, or one outside 1-3600, renews for the five-minute default. The renewed lease never passes the execution deadline.", "inputSchema": object(map[string]any{"workspace_id": str, "work_order_id": str, "session_id": str, "lease_seconds": map[string]string{"type": "integer"}}, "work_order_id", "session_id")},
 		{"name": "release_work_order", "description": "Release the exact execution child session without allowing a stale child to alter a newer claim. Operator checkpoints require checkpoint.decision_request.", "inputSchema": object(map[string]any{"workspace_id": str, "work_order_id": str, "session_id": str, "reason": str, "checkpoint": object(map[string]any{"decision_request": decisionRequestSchema, "class": map[string]any{"type": "string", "enum": []string{core.WorkOrderCheckpointClassAuthorityConflict}}, "citations": map[string]any{"type": "array", "items": object(map[string]any{"document_id": str, "cited_version": citedVersionSchema, "statement_or_section_id": str}, "document_id", "cited_version")}})}, "work_order_id", "session_id")},
 		{"name": "request_plan_revision", "description": "Request operator-gated revision of the approved execution plan for the exact claimed implement session.", "inputSchema": object(map[string]any{"workspace_id": str, "work_order_id": str, "session_id": str, "rationale": str}, "work_order_id", "session_id", "rationale")},
