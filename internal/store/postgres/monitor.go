@@ -662,20 +662,34 @@ func nullableMonitorEventID(id int64) any {
 func (s *Store) MonitorStatus(ctx context.Context, enabled bool, now time.Time) (monitor.Status, error) {
 	ctx = dbmetrics.WithReadLabel(ctx, "MonitorStatus")
 	status := monitor.Status{WorkspaceID: workspace(ctx), Enabled: enabled}
-	var lastSuccess, backoff *time.Time
-	err := s.boundary.QueryRow(ctx, `
-SELECT last_successful_at,current_error,forge_error_category,backoff_until
-FROM monitor_status WHERE workspace_id=$1`, workspace(ctx)).
-		Scan(&lastSuccess, &status.CurrentError, &status.ForgeErrorCategory, &backoff)
-	if err != nil && !errors.Is(err, pgx.ErrNoRows) {
+	statusRows, err := s.boundary.Query(ctx, `
+SELECT repository,last_successful_at,current_error,forge_error_category,backoff_until
+FROM monitor_status WHERE workspace_id=$1`, workspace(ctx))
+	if err != nil {
 		return monitor.Status{}, err
 	}
-	if lastSuccess != nil {
-		status.LastSuccessfulAt = *lastSuccess
+	var repositories []monitor.RepositoryStatus
+	for statusRows.Next() {
+		var row monitor.RepositoryStatus
+		var lastSuccess, backoff *time.Time
+		if err = statusRows.Scan(&row.Repository, &lastSuccess, &row.CurrentError, &row.ForgeErrorCategory, &backoff); err != nil {
+			statusRows.Close()
+			return monitor.Status{}, err
+		}
+		if lastSuccess != nil {
+			row.LastSuccessfulAt = *lastSuccess
+		}
+		if backoff != nil {
+			row.BackoffUntil = *backoff
+		}
+		repositories = append(repositories, row)
 	}
-	if backoff != nil {
-		status.BackoffUntil = *backoff
+	if err = statusRows.Err(); err != nil {
+		statusRows.Close()
+		return monitor.Status{}, err
 	}
+	statusRows.Close()
+	status.SetRepositories(repositories)
 	activityRows, err := s.boundary.Query(ctx, `
 SELECT id,kind,payload_json,at FROM monitor_activity
 WHERE workspace_id=$1 ORDER BY at,id`, workspace(ctx))
@@ -768,21 +782,66 @@ func (s *Store) ListActiveSystemDesignDriftCounts(ctx context.Context) (map[stri
 	return counts, rows.Err()
 }
 
-func (s *Store) RecordMonitorSuccess(ctx context.Context, at time.Time) error {
+func (s *Store) RecordMonitorSuccess(ctx context.Context, repository string, at time.Time) error {
 	ctx = dbmetrics.WithReadLabel(ctx, "RecordMonitorSuccess")
+	if repository == "" {
+		return monitor.ErrRepositoryRequired
+	}
 	_, err := s.boundary.Exec(ctx, `
-INSERT INTO monitor_status (workspace_id,last_successful_at) VALUES ($1,$2)
-ON CONFLICT (workspace_id) DO UPDATE SET last_successful_at=$2,current_error='',forge_error_category='',backoff_until=NULL`,
-		workspace(ctx), at)
+INSERT INTO monitor_status (workspace_id,repository,last_successful_at) VALUES ($1,$2,$3)
+ON CONFLICT (workspace_id,repository) DO UPDATE SET last_successful_at=$3,current_error='',forge_error_category='',backoff_until=NULL`,
+		workspace(ctx), repository, at)
 	return err
 }
 
-func (s *Store) RecordMonitorFailure(ctx context.Context, category, detail string, backoffUntil time.Time) error {
+func (s *Store) RecordMonitorFailure(ctx context.Context, repository, category, detail string, backoffUntil time.Time) error {
 	ctx = dbmetrics.WithReadLabel(ctx, "RecordMonitorFailure")
+	if repository == "" {
+		return monitor.ErrRepositoryRequired
+	}
 	_, err := s.boundary.Exec(ctx, `
-INSERT INTO monitor_status (workspace_id,current_error,forge_error_category,backoff_until)
-VALUES ($1,$2,$3,$4)
-ON CONFLICT (workspace_id) DO UPDATE SET current_error=$2,forge_error_category=$3,backoff_until=$4`,
-		workspace(ctx), detail, category, backoffUntil)
+INSERT INTO monitor_status (workspace_id,repository,current_error,forge_error_category,backoff_until)
+VALUES ($1,$2,$3,$4,$5)
+ON CONFLICT (workspace_id,repository) DO UPDATE SET current_error=$3,forge_error_category=$4,backoff_until=$5`,
+		workspace(ctx), repository, detail, category, backoffUntil)
 	return err
+}
+
+func (s *Store) MonitorTip(ctx context.Context, repository string) (string, error) {
+	ctx = dbmetrics.WithReadLabel(ctx, "MonitorTip")
+	if repository == "" {
+		return "", monitor.ErrRepositoryRequired
+	}
+	var tip string
+	err := s.boundary.QueryRow(ctx, `SELECT last_processed_tip FROM monitor_status WHERE workspace_id=$1 AND repository=$2`,
+		workspace(ctx), repository).Scan(&tip)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return "", nil
+	}
+	return tip, err
+}
+
+func (s *Store) AdvanceMonitorTip(ctx context.Context, repository, expected, next string) (bool, error) {
+	ctx = dbmetrics.WithReadLabel(ctx, "AdvanceMonitorTip")
+	if repository == "" {
+		return false, monitor.ErrRepositoryRequired
+	}
+	if next == "" {
+		return false, monitor.ErrTipRequired
+	}
+	// The single statement compares and moves under the row lock, so concurrent
+	// passes can't both win. Only an empty expected may create the row.
+	statement := `UPDATE monitor_status SET last_processed_tip=$3 WHERE workspace_id=$1 AND repository=$2 AND last_processed_tip=$4`
+	arguments := []any{workspace(ctx), repository, next, expected}
+	if expected == "" {
+		statement = `
+INSERT INTO monitor_status (workspace_id,repository,last_processed_tip) VALUES ($1,$2,$3)
+ON CONFLICT (workspace_id,repository) DO UPDATE SET last_processed_tip=$3 WHERE monitor_status.last_processed_tip=''`
+		arguments = arguments[:3]
+	}
+	tag, err := s.boundary.Exec(ctx, statement, arguments...)
+	if err != nil {
+		return false, err
+	}
+	return tag.RowsAffected() == 1, nil
 }

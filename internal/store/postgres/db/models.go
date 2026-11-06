@@ -183,6 +183,8 @@ type MonitorStatus struct {
 	CurrentError       string             `json:"current_error"`
 	ForgeErrorCategory string             `json:"forge_error_category"`
 	BackoffUntil       pgtype.Timestamptz `json:"backoff_until"`
+	Repository         string             `json:"repository"`
+	LastProcessedTip   string             `json:"last_processed_tip"`
 }
 
 type Repo struct {

@@ -565,15 +565,16 @@ func (m *memory) MonitorStatus(ctx context.Context, enabled bool, now time.Time)
 	if !ok || workspace == "" {
 		return monitor.Status{}, ErrWorkspaceRequired
 	}
-	status := monitor.Status{
-		WorkspaceID: workspace, Enabled: enabled,
-		LastSuccessfulAt:   m.monitorLastSuccess[workspace],
-		CurrentError:       m.monitorError[workspace],
-		ForgeErrorCategory: m.monitorErrorCategory[workspace],
-		BackoffUntil:       m.monitorBackoff[workspace],
-	}
+	status := monitor.Status{WorkspaceID: workspace, Enabled: enabled}
 	status.Activity = append([]monitor.Activity(nil), m.monitorActivity[workspace]...)
 	prefix := workspace + "\x00"
+	var repositories []monitor.RepositoryStatus
+	for key, row := range m.monitorRepositories {
+		if strings.HasPrefix(key, prefix) {
+			repositories = append(repositories, row)
+		}
+	}
+	status.SetRepositories(repositories)
 	for key, record := range m.monitorObservations {
 		if strings.HasPrefix(key, prefix) {
 			status.Observations = append(status.Observations, record)
@@ -640,35 +641,67 @@ func (m *memory) ListActiveSystemDesignDriftCounts(ctx context.Context) (map[str
 	return counts, nil
 }
 
-func (m *memory) RecordMonitorSuccess(ctx context.Context, at time.Time) error {
+func (m *memory) RecordMonitorSuccess(ctx context.Context, repository string, at time.Time) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	workspace, ok := WorkspaceFromContext(ctx)
 	if !ok || workspace == "" {
 		return ErrWorkspaceRequired
 	}
-	if m.monitorLastSuccess == nil {
-		m.monitorLastSuccess, m.monitorError, m.monitorErrorCategory, m.monitorBackoff =
-			map[string]time.Time{}, map[string]string{}, map[string]string{}, map[string]time.Time{}
+	if repository == "" {
+		return monitor.ErrRepositoryRequired
 	}
-	m.monitorLastSuccess[workspace] = at
-	delete(m.monitorError, workspace)
-	delete(m.monitorErrorCategory, workspace)
-	delete(m.monitorBackoff, workspace)
+	m.monitorRepositories[workspace+"\x00"+repository] = monitor.RepositoryStatus{Repository: repository, LastSuccessfulAt: at}
 	return nil
 }
 
-func (m *memory) RecordMonitorFailure(ctx context.Context, category, detail string, backoffUntil time.Time) error {
+func (m *memory) RecordMonitorFailure(ctx context.Context, repository, category, detail string, backoffUntil time.Time) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	workspace, ok := WorkspaceFromContext(ctx)
 	if !ok || workspace == "" {
 		return ErrWorkspaceRequired
 	}
-	if m.monitorError == nil {
-		m.monitorLastSuccess, m.monitorError, m.monitorErrorCategory, m.monitorBackoff =
-			map[string]time.Time{}, map[string]string{}, map[string]string{}, map[string]time.Time{}
+	if repository == "" {
+		return monitor.ErrRepositoryRequired
 	}
-	m.monitorError[workspace], m.monitorErrorCategory[workspace], m.monitorBackoff[workspace] = detail, category, backoffUntil
+	key := workspace + "\x00" + repository
+	row := m.monitorRepositories[key]
+	row.Repository, row.CurrentError, row.ForgeErrorCategory, row.BackoffUntil = repository, detail, category, backoffUntil
+	m.monitorRepositories[key] = row
 	return nil
+}
+
+func (m *memory) MonitorTip(ctx context.Context, repository string) (string, error) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	workspace, ok := WorkspaceFromContext(ctx)
+	if !ok || workspace == "" {
+		return "", ErrWorkspaceRequired
+	}
+	if repository == "" {
+		return "", monitor.ErrRepositoryRequired
+	}
+	return m.monitorTips[workspace+"\x00"+repository], nil
+}
+
+func (m *memory) AdvanceMonitorTip(ctx context.Context, repository, expected, next string) (bool, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	workspace, ok := WorkspaceFromContext(ctx)
+	if !ok || workspace == "" {
+		return false, ErrWorkspaceRequired
+	}
+	if repository == "" {
+		return false, monitor.ErrRepositoryRequired
+	}
+	if next == "" {
+		return false, monitor.ErrTipRequired
+	}
+	key := workspace + "\x00" + repository
+	if m.monitorTips[key] != expected {
+		return false, nil
+	}
+	m.monitorTips[key] = next
+	return true, nil
 }

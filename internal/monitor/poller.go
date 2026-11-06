@@ -11,10 +11,26 @@ import (
 	githubtrigger "github.com/kidus-tiliksew/conveyor/internal/trigger/github"
 )
 
+// ReadFrom says where one pass reads from: the repository's last-processed tip
+// when it has one, otherwise the commits dated at or after Since. Since also
+// bounds which lineaged commits still count as deferred
+// (component-monitor-drift invariant 4).
+type ReadFrom struct {
+	Since time.Time
+	Tip   string
+}
+
+// Read is what one pass found. NextTip is the commit the tip may move to once
+// every observation is processed, empty when the tip stays where it is.
+type Read struct {
+	Observations []Observation
+	NextTip      string
+}
+
 // Source is the narrow GitHub observation boundary. The implementation may
 // poll or adapt webhook redelivery, but it must return stable occurrence IDs.
 type Source interface {
-	Observations(context.Context, time.Time) ([]Observation, error)
+	Observations(context.Context, ReadFrom) (Read, error)
 }
 
 // passFailureRecordTimeout bounds the status write for a failed pass, which
@@ -22,8 +38,11 @@ type Source interface {
 const passFailureRecordTimeout = 5 * time.Second
 
 type Poller struct {
-	Service       *Service
-	Source        Source
+	Service *Service
+	Source  Source
+	// Repository is the configured repository name Source reads. It keys the
+	// pass's status row and tip.
+	Repository    string
 	StartupWindow time.Duration
 	RetryInitial  time.Duration
 	RetryMaximum  time.Duration
@@ -38,10 +57,11 @@ type Poller struct {
 }
 
 // Poll performs startup reconciliation and bounded forge retries. Persisted
-// observation identity, rather than the polling cursor, is authoritative for
-// deduplication across restart and redelivery (component-monitor-drift).
+// observation identity is authoritative for deduplication across restart and
+// redelivery, and the stored tip only decides where a read starts
+// (component-monitor-drift invariants 3 and 4).
 func (p *Poller) Poll(ctx context.Context) error {
-	if p.Service == nil || p.Source == nil || p.Service.Store == nil {
+	if p.Service == nil || p.Source == nil || p.Service.Store == nil || p.Repository == "" {
 		return fmt.Errorf("monitor poller is not configured")
 	}
 	now := time.Now().UTC()
@@ -60,11 +80,14 @@ func (p *Poller) Poll(ctx context.Context) error {
 	if maximum < delay {
 		maximum = 30 * time.Second
 	}
-	since := now.Add(-p.StartupWindow)
-	var observations []Observation
-	var err error
+	tip, err := p.Service.Store.MonitorTip(ctx, p.Repository)
+	if err != nil {
+		return p.recordPassFailure(ctx, fmt.Errorf("read monitor tip: %w", err), now.Add(delay))
+	}
+	from := ReadFrom{Since: now.Add(-p.StartupWindow), Tip: tip}
+	var read Read
 	for attempt := 1; attempt <= attempts; attempt++ {
-		observations, err = p.Source.Observations(ctx, since)
+		read, err = p.Source.Observations(ctx, from)
 		if err == nil {
 			break
 		}
@@ -82,7 +105,7 @@ func (p *Poller) Poll(ctx context.Context) error {
 		if redactErr != nil {
 			return fmt.Errorf("resolve monitor redaction credentials: %w", redactErr)
 		}
-		_ = p.Service.Store.RecordMonitorFailure(ctx, category, detail, backoffUntil)
+		_ = p.Service.Store.RecordMonitorFailure(ctx, p.Repository, category, detail, backoffUntil)
 		kind := "monitor.retry"
 		if final {
 			kind = "monitor.terminal_failure"
@@ -111,11 +134,11 @@ func (p *Poller) Poll(ctx context.Context) error {
 			delay = maximum
 		}
 	}
-	// One failed observation never strands a later one. Identity makes the
-	// next pass's re-read of the window retry the failure and deduplicate the
-	// rest (component-monitor-drift, State and failure).
+	// One failed observation never strands a later one. The tip stays put, so
+	// the next pass reads the failure again whatever its age, and identity
+	// deduplicates the rest (component-monitor-drift, State and failure).
 	var failures []error
-	for _, observation := range observations {
+	for _, observation := range read.Observations {
 		if ctxErr := ctx.Err(); ctxErr != nil {
 			failures = append(failures, ctxErr)
 			break
@@ -127,7 +150,16 @@ func (p *Poller) Poll(ctx context.Context) error {
 	if len(failures) > 0 {
 		return p.recordPassFailure(ctx, errors.Join(failures...), now.Add(delay))
 	}
-	return p.Service.Store.RecordMonitorSuccess(ctx, now)
+	// A pass holding the tip at a deferred commit still read and processed
+	// everything, so it records success. A false answer means a concurrent pass
+	// moved the tip first, which leaves that pass's value standing
+	// (component-monitor-drift invariants 4 and 15).
+	if read.NextTip != "" && read.NextTip != tip {
+		if _, advanceErr := p.Service.Store.AdvanceMonitorTip(ctx, p.Repository, tip, read.NextTip); advanceErr != nil {
+			return p.recordPassFailure(ctx, fmt.Errorf("advance monitor tip: %w", advanceErr), now.Add(delay))
+		}
+	}
+	return p.Service.Store.RecordMonitorSuccess(ctx, p.Repository, now)
 }
 
 // passFailure carries the redacted, single-line text recorded in status while
@@ -154,7 +186,7 @@ func (p *Poller) recordPassFailure(ctx context.Context, failure error, backoffUn
 	// A store or intake failure has no forge category, and it must not keep
 	// the category of an earlier failed read.
 	category := string(githubtrigger.ErrorCategory(failure))
-	if recordErr := p.Service.Store.RecordMonitorFailure(recordCtx, category, detail, backoffUntil); recordErr != nil {
+	if recordErr := p.Service.Store.RecordMonitorFailure(recordCtx, p.Repository, category, detail, backoffUntil); recordErr != nil {
 		failure = errors.Join(failure, fmt.Errorf("record monitor failure: %w", recordErr))
 		detail = detail + "; the failure could not be recorded in status"
 	}

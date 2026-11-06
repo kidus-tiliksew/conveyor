@@ -23,14 +23,14 @@ func TestMonitorIndependentIntegration(t *testing.T) {
 	if err != nil || fresh || r.DeduplicatedCount != 1 || r.CausalEventID != 42 {
 		t.Fatal("observation did not deduplicate")
 	}
-	if err = s.RecordMonitorFailure(ctx, "forge_status", "fixture failure", now.Add(time.Minute)); err != nil {
+	if err = s.RecordMonitorFailure(ctx, "conveyor", "forge_status", "fixture failure", now.Add(time.Minute)); err != nil {
 		t.Fatal(err)
 	}
 	status, err := s.MonitorStatus(ctx, true, now)
 	if err != nil || status.CurrentError != "fixture failure" || len(status.Observations) != 1 {
 		t.Fatal("monitor failure missing")
 	}
-	if err = s.RecordMonitorSuccess(ctx, now); err != nil {
+	if err = s.RecordMonitorSuccess(ctx, "conveyor", now); err != nil {
 		t.Fatal(err)
 	}
 	if err = s.AuditMonitor(ctx, "monitor.observed", map[string]any{"repository": "conveyor"}); err != nil {

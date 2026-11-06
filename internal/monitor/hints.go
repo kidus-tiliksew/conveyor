@@ -14,6 +14,17 @@ import (
 
 const HintSchemaVersion = 1
 
+const hintsPath = ".conveyor/hints.yaml"
+
+// UnusableHintsError says a commit's hints file can't be used, as opposed to a
+// failed read of it. The source processes that commit without hints and records
+// Reason (req-delivery-and-forge AC-4.11; component-monitor-drift invariant 14).
+type UnusableHintsError struct {
+	Reason string
+}
+
+func (e *UnusableHintsError) Error() string { return "advisory hints are unusable: " + e.Reason }
+
 var safeArg = regexp.MustCompile(`^[^\x00\r\n;&|<>$` + "`" + `]+$`)
 
 type HintDocument struct {
@@ -75,7 +86,7 @@ func ParseHints(data []byte, revision string) (HintContext, error) {
 	sum := sha256.Sum256(data)
 	return HintContext{
 		Document: document, Revision: revision,
-		Fingerprint: hex.EncodeToString(sum[:]), Path: ".conveyor/hints.yaml",
+		Fingerprint: hex.EncodeToString(sum[:]), Path: hintsPath,
 	}, nil
 }
 
