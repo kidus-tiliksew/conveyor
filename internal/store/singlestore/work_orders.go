@@ -827,6 +827,9 @@ func (s *Store) ApplyWorkOrderClock(ctx context.Context, lease taskops.TaskLease
 	}
 	count := 0
 	err := s.taskTx(ctx, id, func(tx *sql.Tx) error {
+		if err := lockClockOrderRowsTx(ctx, tx, id); err != nil {
+			return err
+		}
 		// An order of a terminal task has no clock: retire what history left
 		// open instead of marking it stale or timed_out (component-work-orders
 		// "Three clocks").
@@ -844,6 +847,7 @@ func (s *Store) ApplyWorkOrderClock(ctx context.Context, lease taskops.TaskLease
 		if err != nil {
 			return err
 		}
+		noteClockOrderRead(ctx, clockOrderReadTransitions)
 		blocked, err := taskBlockedTx(ctx, tx, id)
 		if err != nil {
 			return err
