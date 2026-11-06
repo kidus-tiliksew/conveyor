@@ -2,6 +2,7 @@ package storetest
 
 import (
 	"context"
+	"errors"
 	"reflect"
 	"strings"
 	"testing"
@@ -42,7 +43,7 @@ func RunTaskAssigneeMembershipConformance(t *testing.T, fixture TaskAssigneeMemb
 		t.Fatalf("assign active member: assignee=%+v err=%v", assigned.Assignee, err)
 	}
 	for name, userID := range map[string]string{"inactive member": fixture.InactiveUserID, "non-member": fixture.NonMemberID} {
-		if _, err = taskops.New(fixture.Store).SetAssignee(fixture.Context, fixture.TaskID, userID); err == nil || !strings.Contains(err.Error(), "not an active member") {
+		if _, err = taskops.New(fixture.Store).SetAssignee(fixture.Context, fixture.TaskID, userID); err == nil || !strings.Contains(err.Error(), "not an active member") || !errors.Is(err, store.ErrAssigneeNotMember) {
 			t.Fatalf("%s assignment error=%v", name, err)
 		}
 		current, getErr := fixture.Store.GetTask(fixture.Context, fixture.TaskID)
@@ -50,7 +51,7 @@ func RunTaskAssigneeMembershipConformance(t *testing.T, fixture TaskAssigneeMemb
 			t.Fatalf("%s changed assignee=%+v err=%v", name, current.Assignee, getErr)
 		}
 	}
-	if _, err = taskops.New(fixture.Store).SetAssignee(fixture.Context, fixture.TaskID, fixture.ViewerUserID); err == nil || !strings.Contains(err.Error(), "viewer lacks claim_work capability") {
+	if _, err = taskops.New(fixture.Store).SetAssignee(fixture.Context, fixture.TaskID, fixture.ViewerUserID); err == nil || !strings.Contains(err.Error(), "viewer lacks claim_work capability") || !errors.Is(err, store.ErrAssigneeLacksCapability) {
 		t.Fatalf("viewer assignment error=%v", err)
 	}
 	current, getErr := fixture.Store.GetTask(fixture.Context, fixture.TaskID)

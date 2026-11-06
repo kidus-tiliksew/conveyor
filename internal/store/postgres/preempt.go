@@ -49,7 +49,7 @@ func (s *Store) PreemptWorkOrderCommand(ctx context.Context, lease taskops.TaskL
 	}
 	current, err := scanWorkOrder(tx.QueryRow(ctx, `SELECT `+workOrderColumns+` FROM work_orders WHERE workspace_id=$1 AND id=$2 FOR UPDATE`, workspaceID, request.WorkOrderID))
 	if errors.Is(err, pgx.ErrNoRows) {
-		return store.WorkOrderPreemptResult{}, fmt.Errorf("work order %s not found", request.WorkOrderID)
+		return store.WorkOrderPreemptResult{}, fmt.Errorf("work order %s: %w", request.WorkOrderID, store.ErrNotFound)
 	}
 	if err != nil {
 		return store.WorkOrderPreemptResult{}, err

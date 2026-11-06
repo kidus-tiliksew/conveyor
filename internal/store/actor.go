@@ -91,11 +91,11 @@ func RequireActor(ctx context.Context) (Actor, error) {
 // owner (DEC-97(1)).
 func WorkOrderOwnerUserID(ctx context.Context, st Store, order core.WorkOrder) (string, error) {
 	if order.WorkerID != "" {
-		return "", fmt.Errorf("work order %s was claimed by retired worker %s and has no recorded owner (DEC-97)", order.ID, order.WorkerID)
+		return "", Refusef("work order %s was claimed by retired worker %s and has no recorded owner (DEC-97)", order.ID, order.WorkerID)
 	}
 	owner := strings.TrimSpace(strings.TrimPrefix(order.ClaimantID, core.TaskRunClaimantPrefix))
 	if owner == "" || order.ClaimantID != core.TaskRunClaimantID(owner) {
-		return "", fmt.Errorf("work order %s has no authenticated executing user", order.ID)
+		return "", Refusef("work order %s has no authenticated executing user", order.ID)
 	}
 	return owner, nil
 }
@@ -127,7 +127,7 @@ func GitAuthorForUser(ctx context.Context, identities CallerIdentityStore, userI
 		return core.GitAuthorIdentity{}, fmt.Errorf("resolve git author for user %s: %w", userID, err)
 	}
 	if strings.TrimSpace(identity.DisplayName) == "" || strings.TrimSpace(identity.Email) == "" {
-		return core.GitAuthorIdentity{}, fmt.Errorf("user %s has no complete git author identity", userID)
+		return core.GitAuthorIdentity{}, Refusef("user %s has no complete git author identity", userID)
 	}
 	return core.GitAuthorIdentity{Name: strings.TrimSpace(identity.DisplayName), Email: strings.TrimSpace(identity.Email)}, nil
 }

@@ -255,3 +255,16 @@ func TestGateKindForMatchesAwaitingEdges(t *testing.T) {
 		t.Fatalf("non-awaiting target kept gate_kind=%q", got)
 	}
 }
+
+// TestInvalidTransitionOmitsAnEmptyAllowedClause keeps a terminal state's refusal
+// from printing "(allowed: )", and keeps the clause when a command is allowed.
+func TestInvalidTransitionOmitsAnEmptyAllowedClause(t *testing.T) {
+	terminal := &ErrInvalidTransition{Space: TaskLifecycle, From: string(TaskMerged), Command: "stage.advance"}
+	if text := terminal.Error(); strings.Contains(text, "allowed") || !strings.Contains(text, `with command "stage.advance"`) {
+		t.Fatalf("terminal text = %q", text)
+	}
+	allowed := &ErrInvalidTransition{Space: TaskLifecycle, From: "queued", Command: "x", Allowed: []TransitionAlternative{{Command: "a", To: "b"}, {Command: "c", To: "d"}}}
+	if text := allowed.Error(); !strings.Contains(text, "(allowed: a->b, c->d)") {
+		t.Fatalf("allowed text = %q", text)
+	}
+}

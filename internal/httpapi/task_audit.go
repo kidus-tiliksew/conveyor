@@ -1,6 +1,7 @@
 package httpapi
 
 import (
+	"errors"
 	"net/http"
 	"strconv"
 
@@ -17,6 +18,12 @@ func (s *Server) getTaskAudit(w http.ResponseWriter, r *http.Request) {
 	taskID := chi.URLParam(r, "id")
 	workspace, scoped := store.WorkspaceFromContext(r.Context())
 	task, err := s.Store.GetTask(r.Context(), taskID)
+	if err != nil && !errors.Is(err, store.ErrNotFound) {
+		writeStoreFailure(w, r, err)
+		return
+	}
+	// A missing task and a task in another workspace answer one not-found
+	// (req-accounts-and-membership AC-4.2).
 	if err != nil || !scoped || task.Workspace != workspace {
 		http.NotFound(w, r)
 		return
@@ -31,14 +38,14 @@ func (s *Server) getTaskAudit(w http.ResponseWriter, r *http.Request) {
 		}
 		events, err := s.Store.ListEvents(r.Context(), taskID)
 		if err != nil {
-			http.Error(w, "internal server error", http.StatusInternalServerError)
+			writeStoreFailure(w, r, err)
 			return
 		}
 		for _, event := range events {
 			if event.ID == eventID && event.TaskID == taskID {
 				presented := []core.Event{event}
 				if err := s.annotateEventActorOwners(r.Context(), presented); err != nil {
-					http.Error(w, "internal server error", http.StatusInternalServerError)
+					writeStoreFailure(w, r, err)
 					return
 				}
 				writeJSON(w, http.StatusOK, map[string]any{"kind": kind, "event": presented[0]})
@@ -47,6 +54,10 @@ func (s *Server) getTaskAudit(w http.ResponseWriter, r *http.Request) {
 		}
 	case "work-order":
 		order, err := s.Store.GetWorkOrder(r.Context(), recordID)
+		if err != nil && !errors.Is(err, store.ErrNotFound) {
+			writeStoreFailure(w, r, err)
+			return
+		}
 		if err == nil && order.TaskID == taskID {
 			writeJSON(w, http.StatusOK, map[string]any{"kind": kind, "work_order": order})
 			return

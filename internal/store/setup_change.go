@@ -98,10 +98,10 @@ func normalizeSetupChangeRequest(request SetupChangeRequest) SetupChangeRequest 
 
 func validateSetupChangeRequest(request SetupChangeRequest) error {
 	if request.Policy == nil {
-		return fmt.Errorf("a frozen-policy change is required")
+		return Refusef("a frozen-policy change is required")
 	}
 	if request.TaskID == "" || request.RequestID == "" || request.Reason == "" {
-		return fmt.Errorf("task, request_id, and nonblank reason are required")
+		return Refusef("task, request_id, and nonblank reason are required")
 	}
 	return request.Policy.Validate()
 }
@@ -169,7 +169,7 @@ func (m *memory) ChangeTaskPolicyCommand(ctx context.Context, lease taskops.Task
 	}
 	task, ok := m.tasks[request.TaskID]
 	if !ok || task.Workspace != workspace {
-		return SetupChangeResult{}, fmt.Errorf("task %s not found", request.TaskID)
+		return SetupChangeResult{}, fmt.Errorf("task %s: %w", request.TaskID, ErrNotFound)
 	}
 	if core.TaskTerminal(task.State) {
 		return SetupChangeResult{}, fmt.Errorf("%w: terminal task %s cannot change policy", ErrSetupChangeConflict, request.TaskID)

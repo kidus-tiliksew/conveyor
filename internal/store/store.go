@@ -69,9 +69,18 @@ var (
 	// ErrWorkOrderClaimed refuses remap while any work order is claimed (AC-2.8).
 	ErrWorkOrderClaimed = errors.New("work_order_claimed")
 	// ErrPullRequestRecorded refuses remap after pull_request.opened (AC-2.7).
-	ErrPullRequestRecorded      = errors.New("pull_request_recorded")
-	ErrTaskDependencyCycle      = errors.New("task dependency would create a cycle")
-	ErrTaskDependencyConflict   = errors.New("task dependency request conflicts with current state")
+	ErrPullRequestRecorded    = errors.New("pull_request_recorded")
+	ErrTaskDependencyCycle    = errors.New("task dependency would create a cycle")
+	ErrTaskDependencyConflict = errors.New("task dependency request conflicts with current state")
+	// ErrTaskDependencyInvalid refuses a dependency edit missing a required
+	// field. ErrDependencyEdgeNotFound refuses removing an edge that does not
+	// exist. ErrAssigneeNotMember and ErrAssigneeLacksCapability refuse an
+	// assignee the workspace cannot assign (component-task-lifecycle invariants
+	// 26, 29; DEC-105(2)).
+	ErrTaskDependencyInvalid    = errors.New("task_id, depends_on_task_id, reason, and request_id are required")
+	ErrDependencyEdgeNotFound   = errors.New("dependency edge not found")
+	ErrAssigneeNotMember        = errors.New("assignee_not_member")
+	ErrAssigneeLacksCapability  = errors.New("assignee_lacks_capability")
 	ErrLineageRebuildValidation = errors.New("invalid lineage rebuild request")
 	ErrLineageRebuildConflict   = errors.New("lineage rebuild request conflicts with a prior request")
 	// ErrWorkOrderClaimLost reports that the caller's credential is valid but

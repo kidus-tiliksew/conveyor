@@ -388,7 +388,7 @@ func (s *Service) RecoverVerification(ctx context.Context, id, requestID, direct
 
 func (s *Service) Recover(ctx context.Context, id, requestID string, suppliedDirection ...string) (core.WorkOrder, error) {
 	if strings.TrimSpace(requestID) == "" {
-		return core.WorkOrder{}, fmt.Errorf("recovery request_id is required")
+		return core.WorkOrder{}, store.Refusef("recovery request_id is required")
 	}
 	direction := ""
 	if len(suppliedDirection) > 0 {
@@ -422,7 +422,7 @@ func (s *Service) Recover(ctx context.Context, id, requestID string, suppliedDir
 		// The plan-revision decision is the exclusive route back to planning or
 		// implementation while a plan is contested (REQ-2, AC-2.1;
 		// component-work-orders). Generic recovery must not bypass that gate.
-		return core.WorkOrder{}, fmt.Errorf("work order %s cannot be recovered while task %s awaits the pending plan-revision decision; use the plan-revision decision gate", id, order.TaskID)
+		return core.WorkOrder{}, store.Refusef("work order %s cannot be recovered while task %s awaits the pending plan-revision decision; use the plan-revision decision gate", id, order.TaskID)
 	}
 	if change := recoveryRefreeze(task, order); change != nil {
 		return taskops.ExecuteWorkOrder(ctx, s.Store, order.TaskID, core.WorkOrderCmdRecover, func(lease taskops.TaskLease) (core.WorkOrder, error) {
@@ -468,7 +468,7 @@ func (s *Service) RecoverInterruptedReviewRound(ctx context.Context, taskID, req
 func (s *Service) recoverInterruptedReviewRound(ctx context.Context, taskID, requestID string, automatic bool) (store.InterruptedReviewRecoveryResult, error) {
 	requestID = strings.TrimSpace(requestID)
 	if requestID == "" {
-		return store.InterruptedReviewRecoveryResult{}, fmt.Errorf("interrupted review recovery request_id is required")
+		return store.InterruptedReviewRecoveryResult{}, store.Refusef("interrupted review recovery request_id is required")
 	}
 	task, err := s.Store.GetTask(ctx, taskID)
 	if err != nil {
@@ -532,7 +532,7 @@ func (s *Service) retryReviewRound(ctx context.Context, taskID, requestID, reaso
 	requestID = strings.TrimSpace(requestID)
 	reason = strings.TrimSpace(reason)
 	if requestID == "" || reason == "" {
-		return store.ReviewRoundRetryResult{}, fmt.Errorf("review retry request_id and operator reason are required")
+		return store.ReviewRoundRetryResult{}, store.Refusef("review retry request_id and operator reason are required")
 	}
 	task, err := s.Store.GetTask(ctx, taskID)
 	if err != nil {
@@ -593,23 +593,23 @@ func (s *Service) retryReviewRound(ctx context.Context, taskID, requestID, reaso
 	}
 	route, ok := cfg.Routing.Stages[string(core.StageReview)]
 	if !ok || route.Execution != config.ExecutionMCP {
-		return store.ReviewRoundRetryResult{}, fmt.Errorf("review retry requires the current MCP review route")
+		return store.ReviewRoundRetryResult{}, store.Refusef("review retry requires the current MCP review route")
 	}
 	repo, ok := cfg.Repo(task.Repo)
 	if !ok || strings.TrimSpace(repo.GitHub) == "" {
-		return store.ReviewRoundRetryResult{}, fmt.Errorf("verified PR head is unavailable for repo %s", task.Repo)
+		return store.ReviewRoundRetryResult{}, store.Refusef("verified PR head is unavailable for repo %s", task.Repo)
 	}
 	reviewTarget := s.ReviewTarget
 	if reviewTarget == nil {
 		reviewTarget = github.ReviewTargetForBranch
 		ctx, err = s.workspaceForgeContext(ctx)
 		if err != nil {
-			return store.ReviewRoundRetryResult{}, err
+			return store.ReviewRoundRetryResult{}, store.Refuse(err)
 		}
 	}
 	target, err := reviewTarget(ctx, repo.GitHub, task.Branch)
 	if err != nil {
-		return store.ReviewRoundRetryResult{}, fmt.Errorf("verify current PR head: %w", err)
+		return store.ReviewRoundRetryResult{}, store.Refuse(fmt.Errorf("verify current PR head: %w", err))
 	}
 	recordedHead := ""
 	for i := len(events) - 1; i >= 0; i-- {
@@ -625,7 +625,7 @@ func (s *Service) retryReviewRound(ctx context.Context, taskID, requestID, reaso
 		}
 	}
 	if recordedHead == "" {
-		return store.ReviewRoundRetryResult{}, fmt.Errorf("verified implementation handoff PR head is unavailable")
+		return store.ReviewRoundRetryResult{}, store.Refusef("verified implementation handoff PR head is unavailable")
 	}
 	if target.HeadSHA != recordedHead {
 		return store.ReviewRoundRetryResult{}, fmt.Errorf("%w: PR head changed from %s to %s and requires implementation handoff", store.ErrReviewRetryConflict, recordedHead, target.HeadSHA)
@@ -673,7 +673,7 @@ func (s *Service) contextForClaimedOrder(ctx context.Context, order core.WorkOrd
 
 	remaining := time.Until(order.LeaseExpiresAt)
 	if remaining <= 0 {
-		return Context{}, fmt.Errorf("work order lease expired")
+		return Context{}, store.Refusef("work order lease expired")
 	}
 	var assemblyCtx context.Context
 	var cancel context.CancelFunc
@@ -1656,18 +1656,18 @@ func (s *Service) authorizedSession(ctx context.Context, id, session string, all
 	}
 	if allowSubmitted && order.State == core.WorkOrderSubmitted {
 		if session == "" || order.SessionID != session {
-			return core.WorkOrder{}, fmt.Errorf("work order %s belongs to another session", id)
+			return core.WorkOrder{}, store.Refusef("work order %s belongs to another session", id)
 		}
 		return order, nil
 	}
 	if order.State != core.WorkOrderClaimed {
-		return core.WorkOrder{}, fmt.Errorf("work order %s is not claimed", id)
+		return core.WorkOrder{}, store.Refusef("work order %s is not claimed", id)
 	}
 	if session == "" || order.SessionID != session {
-		return core.WorkOrder{}, fmt.Errorf("work order %s is claimed by another session", id)
+		return core.WorkOrder{}, store.Refusef("work order %s is claimed by another session", id)
 	}
 	if !order.LeaseExpiresAt.After(time.Now()) {
-		return core.WorkOrder{}, fmt.Errorf("work order lease expired")
+		return core.WorkOrder{}, store.Refusef("work order lease expired")
 	}
 	return order, nil
 }

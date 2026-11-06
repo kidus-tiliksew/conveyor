@@ -78,7 +78,7 @@ func (m *memory) RequestPlanRevisionCommand(ctx context.Context, taskLease tasko
 	}
 	task, ok := m.tasks[order.TaskID]
 	if !ok {
-		return PlanRevisionRequestResult{}, fmt.Errorf("task %s not found", order.TaskID)
+		return PlanRevisionRequestResult{}, fmt.Errorf("task %s: %w", order.TaskID, ErrNotFound)
 	}
 	plan, ok := m.approvedExecutionDocumentLocked(task)
 	if !ok {
@@ -143,7 +143,7 @@ func (m *memory) CancelPlanRevisionWorkOrderCommand(ctx context.Context, taskLea
 	defer m.mu.Unlock()
 	order, ok := m.workOrders[workOrderID]
 	if !ok {
-		return core.WorkOrder{}, fmt.Errorf("work order %s not found", workOrderID)
+		return core.WorkOrder{}, fmt.Errorf("work order %s: %w", workOrderID, ErrNotFound)
 	}
 	if !taskLease.ValidForCommand(order.TaskID, string(core.WorkOrderCmdCancel)) {
 		return core.WorkOrder{}, fmt.Errorf("plan-revision cancellation requires a valid taskops lease")
@@ -214,6 +214,10 @@ func (m *memory) retireWorkOrderSiblingsLocked(ctx context.Context, authoritativ
 // redispatch apply before any write. Callers hold the task-operation
 // serialization boundary while evaluating it.
 func WorkOrderRecoveryRefusal(task core.Task, order core.WorkOrder, taskOrders []core.WorkOrder) error {
+	return Refuse(workOrderRecoveryRefusal(task, order, taskOrders))
+}
+
+func workOrderRecoveryRefusal(task core.Task, order core.WorkOrder, taskOrders []core.WorkOrder) error {
 	laterThanTarget := func(candidate core.WorkOrder) bool {
 		return candidate.CreatedAt.After(order.CreatedAt) || candidate.CreatedAt.Equal(order.CreatedAt) && candidate.ID > order.ID
 	}
@@ -493,7 +497,7 @@ func (m *memory) ApplyTaskCommand(ctx context.Context, lease taskops.TaskLease, 
 func (m *memory) applyTaskCommandLocked(ctx context.Context, id string, command taskops.Command) (core.Task, error) {
 	task, ok := m.tasks[id]
 	if !ok {
-		return core.Task{}, fmt.Errorf("task %s not found", id)
+		return core.Task{}, fmt.Errorf("task %s: %w", id, ErrNotFound)
 	}
 	fromState, fromStage := task.State, task.NextStage
 	state, err := core.TransitionTask(fromState, command.Kind)

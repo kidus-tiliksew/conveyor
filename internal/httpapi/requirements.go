@@ -230,7 +230,7 @@ func (s *Server) createRequirementStalenessFollowUp(w http.ResponseWriter, r *ht
 		Source: "requirement-staleness", RequirementIDs: []string{requirementID},
 	}, requirementStalenessIntakeKey(signalID), "requirement-staleness")
 	if err != nil {
-		writeTaskCreateError(w, err)
+		writeTaskCreateError(w, r, err)
 		return
 	}
 	status := http.StatusOK

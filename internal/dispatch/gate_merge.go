@@ -247,7 +247,7 @@ func (d *Dispatcher) gateMergeAuthor(ctx context.Context, actor core.Actor) (cor
 		return author, "", err
 	}
 	if strings.ContainsAny(identity.Name+identity.Email, "\r\n") {
-		return author, "", fmt.Errorf("approving operator identity contains a newline")
+		return author, "", store.Refusef("approving operator identity contains a newline")
 	}
 	author.UserID, author.DisplayName = userID, identity.Name
 	return author, fmt.Sprintf("Approved-by: %s <%s>", identity.Name, identity.Email), nil

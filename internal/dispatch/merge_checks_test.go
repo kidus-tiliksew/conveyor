@@ -3,6 +3,7 @@ package dispatch
 import (
 	"context"
 	"errors"
+	"fmt"
 	"testing"
 	"time"
 
@@ -604,5 +605,103 @@ func TestCheckReadRowsSkipAGateOnTask(t *testing.T) {
 	worker := &dispatchTaskWorker{dispatcher: d}
 	if err := worker.Work(ctx, dispatchTaskJob(task.ID, 1, queue.DispatchTaskMaxAttempts)); err != nil {
 		t.Fatalf("err = %v", err)
+	}
+}
+
+// The refusal mark on a failed pull-request read changes no classification: an
+// automatic merge's unread read still counts as ErrCheckStatusUnread, still
+// unwraps to its typed error and the forge's failure, and still retries. Only
+// the operator's route reads the mark (DEC-118; component-submission-merge
+// invariant 63; DEC-105(2)).
+func TestRefusalMarkKeepsUnreadPullRequestClassification(t *testing.T) {
+	failure := github.StatusError(502, errors.New("bad gateway"))
+	for _, read := range []struct {
+		name      string
+		viewErr   error
+		mergeable string
+	}{
+		{name: "failed read", viewErr: failure},
+		{name: "unknown mergeability", mergeable: "UNKNOWN"},
+	} {
+		t.Run(read.name, func(t *testing.T) {
+			ctx := store.WithWorkspace(store.WithActor(t.Context(), store.SystemActor()), "test")
+			st := store.NewMemory()
+			task := core.Task{ID: "unread", Workspace: "test", Repo: "app", BaseBranch: "main", Branch: "conveyor/unread", State: core.TaskApproved, ApprovedHeadSHA: "head", CreatedAt: time.Now()}
+			if err := st.CreateTask(ctx, task); err != nil {
+				t.Fatal(err)
+			}
+			d := New(mergeIdentityStore{st}, &config.Config{Workspace: "test", Repos: []config.Repo{{Name: "app", GitHub: "acme/app"}}}, nil)
+			d.DisableMemoryQueueForTest()
+			d.ViewPullRequest = func(context.Context, string, string) (github.PullRequest, error) {
+				return github.PullRequest{Number: 41, State: "open", Mergeable: read.mergeable, HeadSHA: "head", BaseSHA: "base"}, read.viewErr
+			}
+			d.ReadCommitChecks = failingCheckReader(t)
+			err := d.readAndMergeAutomatically(ctx, task)
+			var unread *unreadPullRequestError
+			if !errors.Is(err, ErrCheckStatusUnread) || !errors.As(err, &unread) {
+				t.Fatalf("err = %v, want an unread pull-request read", err)
+			}
+			if errors.Is(err, errMergeIneligible) || !retryableMergeError(err) {
+				t.Fatalf("err = %v, want a retryable read that is not ineligible", err)
+			}
+			if read.viewErr != nil && !errors.Is(err, read.viewErr) {
+				t.Fatalf("err = %v lost the forge failure", err)
+			}
+			if !MergeRouteRefusal(err) {
+				t.Fatalf("err = %v, want it classified as a forge answer, not a store failure", err)
+			}
+		})
+	}
+}
+
+// MergeRouteRefusal names refusals and forge failures only: anything else, a
+// marked backend failure included, is a store failure (DEC-105(1), (2)).
+func TestMergeRouteRefusal(t *testing.T) {
+	backend := fmt.Errorf("PostgreSQL %w", store.ErrBackendOperation)
+	for name, tc := range map[string]struct {
+		err  error
+		want bool
+	}{
+		"nil":                {nil, false},
+		"plain store error":  {errors.New(`pq: relation "tasks" does not exist`), false},
+		"backend failure":    {backend, false},
+		"marked backend":     {store.Refuse(backend), false},
+		"forge wrap backend": {github.PermissionError(backend), false},
+		"record failure":     {fmt.Errorf("%v; record merge failure: %w", errors.New("forge said no"), errors.New("driver")), false},
+		"forge failure":      {github.StatusError(502, errors.New("bad gateway")), true},
+		"marked refusal":     {store.Refusef("no pull request"), true},
+		"ineligible":         {ineligibleMerge(errors.New("stale")), true},
+		"pending fix":        {ErrConflictFixPending, true},
+		"pending readiness":  {ErrMergeReadinessPending, true},
+		"not conflicting":    {fmt.Errorf("%w (MERGEABLE)", ErrPullRequestNotConflicting), true},
+		"blocked fix":        {ErrConflictFixNotDispatched, true},
+		"gate not ready":     {&ErrGateMergeNotReady{State: "STALE"}, true},
+		"invalid transition": {&core.ErrInvalidTransition{Space: core.TaskLifecycle, From: "merged", Command: "c"}, true},
+	} {
+		t.Run(name, func(t *testing.T) {
+			if got := MergeRouteRefusal(tc.err); got != tc.want {
+				t.Fatalf("MergeRouteRefusal(%v) = %v, want %v", tc.err, got, tc.want)
+			}
+		})
+	}
+}
+
+// A conflict fix for a pull request GitHub does not report as conflicting names
+// its sentinel and keeps its text, including the state GitHub reported.
+func TestDispatchConflictFixRefusesPullRequestNotConflicting(t *testing.T) {
+	ctx := store.WithWorkspace(store.WithActor(t.Context(), store.SystemActor()), "test")
+	st := store.NewMemory()
+	task := core.Task{ID: "mergeable", Workspace: "test", Repo: "app", BaseBranch: "main", Branch: "conveyor/mergeable", State: core.TaskApproved, ApprovedHeadSHA: "head", CreatedAt: time.Now()}
+	if err := st.CreateTask(ctx, task); err != nil {
+		t.Fatal(err)
+	}
+	d := New(mergeIdentityStore{st}, &config.Config{Workspace: "test", Repos: []config.Repo{{Name: "app", GitHub: "acme/app"}}}, nil)
+	d.DisableMemoryQueueForTest()
+	d.ViewPullRequest = func(context.Context, string, string) (github.PullRequest, error) {
+		return github.PullRequest{Number: 41, State: "open", Mergeable: "MERGEABLE", HeadSHA: "head"}, nil
+	}
+	_, err := d.DispatchConflictFix(ctx, task)
+	if !errors.Is(err, ErrPullRequestNotConflicting) || err.Error() != "pull request is not conflicting (MERGEABLE)" {
+		t.Fatalf("err = %v, want ErrPullRequestNotConflicting with the reported state", err)
 	}
 }

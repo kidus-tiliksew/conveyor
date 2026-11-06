@@ -275,7 +275,7 @@ func (m *memory) approveSpecVersionAndMaterialize(ctx context.Context, taskID st
 	}
 	parent, ok := m.tasks[taskID]
 	if !ok {
-		return nil, fmt.Errorf("task %s not found", taskID)
+		return nil, fmt.Errorf("task %s: %w", taskID, ErrNotFound)
 	}
 	var decomposition []core.BlueprintDecompositionItem
 	if len(versions[len(versions)-1].Decomposition) > 0 {
@@ -402,7 +402,7 @@ func (m *memory) ListBlockingTaskIDs(_ context.Context, taskID string) ([]string
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 	if _, ok := m.tasks[taskID]; !ok {
-		return nil, fmt.Errorf("task %s not found", taskID)
+		return nil, fmt.Errorf("task %s: %w", taskID, ErrNotFound)
 	}
 	var result []string
 	for dependencyID := range m.dependencies[taskID] {
@@ -422,18 +422,18 @@ func (m *memory) ValidateTaskDependencies(ctx context.Context, dependencyIDs []s
 	for _, dependencyID := range dependencyIDs {
 		dependencyID = strings.TrimSpace(dependencyID)
 		if dependencyID == "" || seen[dependencyID] {
-			return fmt.Errorf("depends_on contains an empty or duplicate task id")
+			return Refusef("depends_on contains an empty or duplicate task id")
 		}
 		seen[dependencyID] = true
 		dependency, ok := m.tasks[dependencyID]
 		if !ok {
-			return fmt.Errorf("dependency task %s not found", dependencyID)
+			return Refusef("dependency task %s not found", dependencyID)
 		}
 		if workspace != "" && dependency.Workspace != workspace {
-			return fmt.Errorf("dependency task %s belongs to another workspace", dependencyID)
+			return Refusef("dependency task %s belongs to another workspace", dependencyID)
 		}
 		if core.TaskTerminal(dependency.State) {
-			return fmt.Errorf("dependency task %s is not open", dependencyID)
+			return Refusef("dependency task %s is not open", dependencyID)
 		}
 	}
 	return nil
@@ -501,7 +501,7 @@ func (m *memory) AddTaskDependency(ctx context.Context, request DependencyAdditi
 	request.Reason = strings.TrimSpace(request.Reason)
 	request.RequestID = strings.TrimSpace(request.RequestID)
 	if request.TaskID == "" || request.DependsOnTaskID == "" || request.Reason == "" || request.RequestID == "" {
-		return DependencyAdditionResult{}, fmt.Errorf("task_id, depends_on_task_id, reason, and request_id are required")
+		return DependencyAdditionResult{}, ErrTaskDependencyInvalid
 	}
 	if request.TaskID == request.DependsOnTaskID {
 		return DependencyAdditionResult{}, fmt.Errorf("%w: task cannot depend on itself", ErrTaskDependencyConflict)
@@ -595,29 +595,29 @@ func (m *memory) RemoveTaskDependency(ctx context.Context, request DependencyRem
 	request.Reason = strings.TrimSpace(request.Reason)
 	request.RequestID = strings.TrimSpace(request.RequestID)
 	if request.TaskID == "" || request.DependsOnTaskID == "" || request.Reason == "" || request.RequestID == "" {
-		return DependencyRemovalResult{}, fmt.Errorf("task_id, depends_on_task_id, reason, and request_id are required")
+		return DependencyRemovalResult{}, ErrTaskDependencyInvalid
 	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	task, ok := m.tasks[request.TaskID]
 	workspace, _ := WorkspaceFromContext(ctx)
 	if !ok || (workspace != "" && task.Workspace != workspace) {
-		return DependencyRemovalResult{}, fmt.Errorf("task %s not found", request.TaskID)
+		return DependencyRemovalResult{}, fmt.Errorf("task %s: %w", request.TaskID, ErrNotFound)
 	}
 	actor := ActorFromContext(ctx)
 	key := task.Workspace + "\x00" + request.RequestID
 	if prior, exists := m.dependencyRemovals[key]; exists {
 		if prior.Request != request || prior.Actor != actor {
-			return DependencyRemovalResult{}, fmt.Errorf("request_id %s was already used for different dependency removal inputs", request.RequestID)
+			return DependencyRemovalResult{}, fmt.Errorf("%w: request_id %s was already used for different dependency removal inputs", ErrTaskDependencyConflict, request.RequestID)
 		}
 		return DependencyRemovalResult{Task: m.hydrateTaskLocked(task), RequestID: request.RequestID}, nil
 	}
 	dependencies := m.dependencies[request.TaskID]
 	if dependencies == nil {
-		return DependencyRemovalResult{}, fmt.Errorf("dependency edge %s -> %s not found", request.TaskID, request.DependsOnTaskID)
+		return DependencyRemovalResult{}, fmt.Errorf("%w: %s -> %s", ErrDependencyEdgeNotFound, request.TaskID, request.DependsOnTaskID)
 	}
 	if _, exists := dependencies[request.DependsOnTaskID]; !exists {
-		return DependencyRemovalResult{}, fmt.Errorf("dependency edge %s -> %s not found", request.TaskID, request.DependsOnTaskID)
+		return DependencyRemovalResult{}, fmt.Errorf("%w: %s -> %s", ErrDependencyEdgeNotFound, request.TaskID, request.DependsOnTaskID)
 	}
 	delete(dependencies, request.DependsOnTaskID)
 	m.dependencyRemovals[key] = memoryDependencyRemoval{Request: request, Actor: actor}
@@ -662,7 +662,7 @@ func (m *memory) createTaskWithContextLocked(ctx context.Context, t core.Task, d
 		return err
 	}
 	if _, exists := m.tasks[t.ID]; exists {
-		return fmt.Errorf("task %s already exists", t.ID)
+		return Refusef("task %s already exists", t.ID)
 	}
 	// The workspace-scoped intake key is unique, as PostgreSQL's
 	// tasks_workspace_intake_key_idx and SingleStore's lock-row claim plus
@@ -671,7 +671,7 @@ func (m *memory) createTaskWithContextLocked(ctx context.Context, t core.Task, d
 	if t.IntakeKey != "" {
 		for _, existing := range m.tasks {
 			if existing.Workspace == t.Workspace && existing.IntakeKey == t.IntakeKey {
-				return fmt.Errorf("task intake key already exists")
+				return Refusef("task intake key already exists")
 			}
 		}
 	}
@@ -1161,20 +1161,20 @@ func (m *memory) SetTaskAssigneeCommand(ctx context.Context, lease taskops.TaskL
 	defer m.mu.Unlock()
 	task, ok := m.tasks[id]
 	if !ok {
-		return core.Task{}, fmt.Errorf("task %s not found", id)
+		return core.Task{}, fmt.Errorf("task %s: %w", id, ErrNotFound)
 	}
 	assigneeUserID = strings.TrimSpace(assigneeUserID)
 	if assigneeUserID != "" {
 		key := memoryScopedKey{workspace: task.Workspace, id: assigneeUserID}
 		if !m.workspaceMembers[key] {
-			return core.Task{}, fmt.Errorf("assignee %s is not an active member of workspace %s", assigneeUserID, task.Workspace)
+			return core.Task{}, fmt.Errorf("assignee %s is not an active member of workspace %s: %w", assigneeUserID, task.Workspace, ErrAssigneeNotMember)
 		}
 		role := m.workspaceMemberRoles[key]
 		if role == "" {
 			role = core.WorkspaceRoleContributor
 		}
 		if !core.RoleAllows(role, core.CapabilityClaimWork) {
-			return core.Task{}, fmt.Errorf("assignee %s role %s lacks %s capability in workspace %s", assigneeUserID, role, core.CapabilityClaimWork, task.Workspace)
+			return core.Task{}, fmt.Errorf("assignee %s role %s lacks %s capability in workspace %s: %w", assigneeUserID, role, core.CapabilityClaimWork, task.Workspace, ErrAssigneeLacksCapability)
 		}
 	}
 	if (task.Assignee != nil && task.Assignee.UserID == assigneeUserID) || (task.Assignee == nil && assigneeUserID == "") {
@@ -1200,7 +1200,7 @@ func (m *memory) UpdateTaskClassification(ctx context.Context, id, class string)
 	defer m.mu.Unlock()
 	task, ok := m.tasks[id]
 	if !ok {
-		return fmt.Errorf("task %s not found", id)
+		return fmt.Errorf("task %s: %w", id, ErrNotFound)
 	}
 	task.Class = class
 	m.tasks[id] = task
@@ -1213,7 +1213,7 @@ func (m *memory) EnsureTaskEnqueued(_ context.Context, id string) error {
 	defer m.mu.RUnlock()
 	task, ok := m.tasks[id]
 	if !ok {
-		return fmt.Errorf("task %s not found", id)
+		return fmt.Errorf("task %s: %w", id, ErrNotFound)
 	}
 	if task.State != core.TaskQueued {
 		return fmt.Errorf("task %s is not queued", id)
@@ -1240,7 +1240,7 @@ func (m *memory) CreateJob(ctx context.Context, j core.Job) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if _, ok := m.tasks[j.TaskID]; !ok {
-		return fmt.Errorf("task %s not found", j.TaskID)
+		return fmt.Errorf("task %s: %w", j.TaskID, ErrNotFound)
 	}
 	if _, _, ok := m.findJobLocked(j.ID); ok {
 		return fmt.Errorf("%w: job %s already exists", ErrDispatchJobConflict, j.ID)
@@ -1302,7 +1302,7 @@ func (m *memory) CreateIntervention(ctx context.Context, intervention core.Inter
 func (m *memory) createInterventionLocked(ctx context.Context, intervention core.Intervention) error {
 	_, ok := m.tasks[intervention.TaskID]
 	if !ok {
-		return fmt.Errorf("task %s not found", intervention.TaskID)
+		return fmt.Errorf("task %s: %w", intervention.TaskID, ErrNotFound)
 	}
 	if !intervention.Action.Valid() {
 		return fmt.Errorf("invalid intervention action %q", intervention.Action)
@@ -1355,7 +1355,7 @@ func (m *memory) RequestChangesCommand(ctx context.Context, lease taskops.TaskLe
 	defer m.mu.Unlock()
 	task, ok := m.tasks[request.TaskID]
 	if !ok {
-		return core.Task{}, fmt.Errorf("task %s not found", request.TaskID)
+		return core.Task{}, fmt.Errorf("task %s: %w", request.TaskID, ErrNotFound)
 	}
 	if !AtMergeGate(task, m.events[task.ID]) {
 		return core.Task{}, NotAtMergeGateError(task)
@@ -1432,7 +1432,7 @@ func (m *memory) MergeTaskAtGateCommand(ctx context.Context, lease taskops.TaskL
 	defer m.mu.Unlock()
 	task, ok := m.tasks[intervention.TaskID]
 	if !ok {
-		return core.Task{}, fmt.Errorf("task %s not found", intervention.TaskID)
+		return core.Task{}, fmt.Errorf("task %s: %w", intervention.TaskID, ErrNotFound)
 	}
 	if _, err := core.TransitionGateMerge(task.State, task.GateKind); err != nil {
 		return core.Task{}, err
@@ -1466,7 +1466,7 @@ func (m *memory) MergeTaskAtGateCommand(ctx context.Context, lease taskops.TaskL
 func (m *memory) cancelTaskLocked(ctx context.Context, intervention core.Intervention) (core.Task, error) {
 	task, ok := m.tasks[intervention.TaskID]
 	if !ok {
-		return core.Task{}, fmt.Errorf("task %s not found", intervention.TaskID)
+		return core.Task{}, fmt.Errorf("task %s: %w", intervention.TaskID, ErrNotFound)
 	}
 	if core.TaskTerminal(task.State) {
 		return core.Task{}, ErrTaskTerminal

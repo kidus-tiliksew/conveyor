@@ -28,6 +28,7 @@ import (
 	"github.com/kidus-tiliksew/conveyor/internal/store"
 	"github.com/kidus-tiliksew/conveyor/internal/store/storetest"
 	"github.com/kidus-tiliksew/conveyor/internal/taskops"
+	"github.com/kidus-tiliksew/conveyor/internal/trigger/github"
 )
 
 // taskDetailCountingStore counts every store.Store method a request calls,
@@ -2174,7 +2175,7 @@ func TestTaskDetailReadinessCache(t *testing.T) {
 			t.Fatal("an expired entry was reused")
 		}
 		failures, failing := immediate(func(context.Context, core.Task) (dispatch.MergeReadiness, error) {
-			return dispatch.MergeReadiness{}, errors.New("forge unavailable")
+			return dispatch.MergeReadiness{}, github.CategorizeError(errors.New("forge unavailable"))
 		})
 		fail := core.Task{ID: "task-fail", State: core.TaskApproved, ApprovedHeadSHA: "head-1"}
 		for i := 0; i < 2; i++ {
@@ -2323,7 +2324,7 @@ func TestTaskDetailReadinessThroughRoute(t *testing.T) {
 	failures := 0
 	d.server.OnMergeReadiness = func(context.Context, core.Task) (dispatch.MergeReadiness, error) {
 		failures++
-		return dispatch.MergeReadiness{}, errors.New("forge unavailable")
+		return dispatch.MergeReadiness{}, github.CategorizeError(errors.New("forge unavailable"))
 	}
 	// An approved task without readiness answers 503.
 	if response := d.get(t, detailPath(f.branches["approved"], false)); response.Code != http.StatusServiceUnavailable {
