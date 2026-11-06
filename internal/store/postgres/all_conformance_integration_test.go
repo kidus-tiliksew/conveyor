@@ -317,6 +317,17 @@ func TestPostgresConformanceIntegration(t *testing.T) {
 					return time.Time{}
 				}
 				return lastUsed.UTC()
+			}, TaskIntakeHTTP: func(_ *testing.T, generate func(context.Context, core.Task) (string, error)) http.Handler {
+				server := httpapi.NewServer(st)
+				server.Credentials = nil
+				server.Workspace, server.BearerToken = workspace, storetest.LineageHTTPToken
+				server.GenerateTaskTitle = generate
+				return server.Handler()
+			}, GitHubIssueIntake: func(ctx context.Context, repo config.Repo, issue githubtrigger.Issue) error {
+				d := dispatch.New(st, cfg, nil)
+				d.DisableMemoryQueueForTest()
+				d.MarkIssueDispatched = func(context.Context, string, int, string) error { return nil }
+				return d.TakeInReadyIssue(ctx, ctx, workspace, repo, issue)
 			}, LineageHTTP: func(*testing.T) http.Handler {
 				// The shared-token operator fixture (component-lineage).
 				server := httpapi.NewServer(st)

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log"
 	"net/http"
 	"reflect"
 	"sort"
@@ -14,6 +15,7 @@ import (
 	"github.com/kidus-tiliksew/conveyor/internal/config"
 	"github.com/kidus-tiliksew/conveyor/internal/core"
 	"github.com/kidus-tiliksew/conveyor/internal/gitx"
+	"github.com/kidus-tiliksew/conveyor/internal/redact"
 	"github.com/kidus-tiliksew/conveyor/internal/store"
 )
 
@@ -152,6 +154,18 @@ func (s *Server) createTaskRecordWithState(ctx context.Context, req createTaskRe
 	if title == "" || len(title) > 200 {
 		return taskCreateResult{}, &taskCreateError{Status: http.StatusServiceUnavailable, Message: "generate task title: AI returned an invalid title"}
 	}
+	// A model can echo a secret from the body. Only the body is exempt from
+	// redaction, and a failed secret read refuses creation as a failed
+	// generation does. Placeholders can lengthen a title, so the bound applies
+	// again, after the whole title is redacted (req-security-boundaries REQ-3;
+	// DEC-8; component-task-lifecycle invariant 13).
+	title, titleStats, err := redact.Text(ctx, s.redactionSecrets(), title)
+	if err != nil {
+		logged, _ := redact.New(nil).Redact(err.Error())
+		log.Printf("task title redaction unavailable: %s", logged)
+		return taskCreateResult{}, &taskCreateError{Status: http.StatusServiceUnavailable, Message: "task title redaction is unavailable"}
+	}
+	title = core.TruncateUTF8Bytes(title, 200)
 
 	id := core.NewTaskID()
 	task := core.Task{
@@ -180,10 +194,11 @@ func (s *Server) createTaskRecordWithState(ctx context.Context, req createTaskRe
 	// an otherwise byte-identical idempotent retry.
 	task.Context = intakeTaskContext(attached)
 	var createErr error
+	createCtx := store.WithTaskTitleRedactions(ctx, titleStats)
 	if req.multipartIntake {
-		createErr = s.Store.CreateTaskWithAttachments(ctx, task, req.DependsOn, attached, req.attachments)
+		createErr = s.Store.CreateTaskWithAttachments(createCtx, task, req.DependsOn, attached, req.attachments)
 	} else {
-		createErr = s.Store.CreateTaskWithDependenciesAndContext(ctx, task, req.DependsOn, attached)
+		createErr = s.Store.CreateTaskWithDependenciesAndContext(createCtx, task, req.DependsOn, attached)
 	}
 	if err := createErr; err != nil {
 		// A concurrent retry may win the unique intake-key race between the
@@ -217,6 +232,17 @@ func (s *Server) createTaskRecordWithState(ctx context.Context, req createTaskRe
 	}
 	task.Context, _ = store.TaskContextForTask(ctx, s.Store, task.ID)
 	return taskCreateResult{Task: task, Created: true}, nil
+}
+
+// redactionSecrets is the stored-secret source for an intake write: the daemon's
+// wired source, else the store itself, so a server without a work-order service
+// still covers stored keys.
+func (s *Server) redactionSecrets() redact.SecretSource {
+	if s.WorkOrders != nil && s.WorkOrders.RedactionSecrets != nil {
+		return s.WorkOrders.RedactionSecrets
+	}
+	source, _ := s.Store.(redact.SecretSource)
+	return source
 }
 
 const (

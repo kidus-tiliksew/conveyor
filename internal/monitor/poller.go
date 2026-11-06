@@ -78,7 +78,7 @@ func (p *Poller) Poll(ctx context.Context) error {
 		if limited && retryAt.After(backoffUntil) {
 			backoffUntil = retryAt
 		}
-		detail, _, redactErr := redact.Text(ctx, p.Service.RedactionSecrets, err.Error())
+		detail, stats, redactErr := redact.Text(ctx, p.Service.RedactionSecrets, err.Error())
 		if redactErr != nil {
 			return fmt.Errorf("resolve monitor redaction credentials: %w", redactErr)
 		}
@@ -87,11 +87,17 @@ func (p *Poller) Poll(ctx context.Context) error {
 		if final {
 			kind = "monitor.terminal_failure"
 		}
-		_ = p.Service.Store.AuditMonitor(ctx, kind, map[string]any{
+		payload := map[string]any{
 			"attempt": attempt, "max_attempts": attempts,
 			"forge_error_category": category, "error": detail,
 			"backoff_until": backoffUntil,
-		})
+		}
+		// A removal is recorded by count and class, never by value
+		// (req-security-boundaries AC-3.1).
+		if stats.Total() > 0 {
+			payload["redactions"] = stats
+		}
+		_ = p.Service.Store.AuditMonitor(ctx, kind, payload)
 		if final {
 			failure := fmt.Errorf("observe GitHub after %d attempt(s): %s", attempt, detail)
 			if limited {

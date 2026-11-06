@@ -24,6 +24,9 @@ func (s *Store) StartOverTaskCommand(ctx context.Context, lease taskops.TaskLeas
 	if err := r.Validate(); err != nil {
 		return result, err
 	}
+	// The read precedes the transaction, which holds its own connection. Only
+	// a start-over that writes a successor needs it (req-security-boundaries REQ-3).
+	titleSecrets := store.ReadTaskTitleSecrets(ctx, s)
 	err := s.withTx(ctx, func(tx *sql.Tx) error {
 		ws := documentWorkspace(ctx)
 		// Match dependency writers: task operation before the workspace graph lock.
@@ -124,7 +127,10 @@ func (s *Store) StartOverTaskCommand(ctx context.Context, lease taskops.TaskLeas
 		if err != nil && !errors.Is(err, sql.ErrNoRows) {
 			return err
 		}
-		next := store.StartOverSuccessor(old, r)
+		next, titleStats, err := store.StartOverSuccessor(old, r, titleSecrets)
+		if err != nil {
+			return err
+		}
 		intervention := core.Intervention{TaskID: old.ID, Action: core.InterventionCancel, ReasonCode: r.Reason, Comment: r.Note, At: next.CreatedAt}
 		if err := s.cancelTaskTx(ctx, tx, normalizeIntervention(ctx, intervention)); err != nil {
 			return err
@@ -132,7 +138,7 @@ func (s *Store) StartOverTaskCommand(ctx context.Context, lease taskops.TaskLeas
 		if err := store.TaskStartOverFault(ctx, "successor"); err != nil {
 			return err
 		}
-		if err := s.createTaskTx(ctx, tx, next, dependencies, attached, pinned); err != nil {
+		if err := s.createTaskTx(store.WithTaskTitleRedactions(ctx, titleStats), tx, next, dependencies, attached, pinned); err != nil {
 			return err
 		}
 		if version > 0 {

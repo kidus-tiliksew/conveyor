@@ -36,6 +36,9 @@ type TaskCreatedEvent struct {
 		Designs      []taskCreatedReference `json:"designs,omitempty"`
 	} `json:"context"`
 	TriggerProvenance *TaskTriggerProvenance `json:"trigger_provenance,omitempty"`
+	// Redactions counts what redaction removed from this task's title by
+	// class and never by value (req-security-boundaries AC-3.1).
+	Redactions *core.RedactionStats `json:"redactions,omitempty"`
 }
 
 type taskCreatedReference struct {
@@ -65,6 +68,9 @@ func TaskCreatedPayload(ctx context.Context, task core.Task) json.RawMessage {
 		for i, reference := range task.Context.Designs {
 			payload.Context.Designs[i].ID = reference.ID
 		}
+	}
+	if stats, ok := ctx.Value(taskTitleRedactionsKey{}).(core.RedactionStats); ok {
+		payload.Redactions = &stats
 	}
 	return core.JSONPayload(payload)
 }
