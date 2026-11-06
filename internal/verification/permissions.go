@@ -23,9 +23,11 @@ func NormalizeVerificationPermissions(input []VerificationPermission) ([]Verific
 	}
 	out := make([]VerificationPermission, 0, len(input))
 	seen := map[VerificationPermission]bool{}
-	for _, p := range input {
+	for i, p := range input {
+		// p.Kind is unchecked here and in the default case below, so those
+		// refusals name the entry by index (req-security-boundaries REQ-2).
 		if !VerificationBindingName(p.Binding) {
-			return nil, fmt.Errorf("permission %s: invalid binding", p.Kind)
+			return nil, fmt.Errorf("permission %d: invalid binding", i)
 		}
 		switch p.Kind {
 		case "filesystem_read", "filesystem_write":
@@ -63,7 +65,7 @@ func NormalizeVerificationPermissions(input []VerificationPermission) ([]Verific
 				return nil, fmt.Errorf("permission operator_interaction: target forbidden")
 			}
 		default:
-			return nil, fmt.Errorf("permission %s: unknown action", p.Kind)
+			return nil, fmt.Errorf("permission %d: unknown action", i)
 		}
 		if !seen[p] {
 			out = append(out, p)

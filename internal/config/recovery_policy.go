@@ -3,6 +3,7 @@ package config
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"time"
 
@@ -62,8 +63,10 @@ func (p *RecoveryPolicy) UnmarshalJSON(data []byte) error {
 		Window              string `json:"window"`
 	}
 	var decoded plain
+	// encoding/json prints a number from the document, and this text reaches
+	// the workspace configuration response (req-security-boundaries REQ-2).
 	if err := json.Unmarshal(data, &decoded); err != nil {
-		return err
+		return errors.New("recovery must hold an integer automatic_recoveries and a string window")
 	}
 	p.AutomaticRecoveries = decoded.AutomaticRecoveries
 	p.WindowText = decoded.Window

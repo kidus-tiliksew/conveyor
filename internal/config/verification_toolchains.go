@@ -1,6 +1,7 @@
 package config
 
 import (
+	"errors"
 	"fmt"
 	"net/url"
 	"os"
@@ -92,7 +93,7 @@ func (t VerificationToolchain) Validate() error {
 	for key, value := range t.Settings {
 		kind, ok := verificationToolchainSettings[key]
 		if !ok {
-			return fmt.Errorf("verification_toolchains: unknown setting %q (allowed: %s)", key, strings.Join(VerificationToolchainSettingKeys(), ", "))
+			return fmt.Errorf("verification_toolchains: unknown setting (allowed: %s)", strings.Join(VerificationToolchainSettingKeys(), ", "))
 		}
 		var err error
 		switch kind {
@@ -187,16 +188,16 @@ func validateVerificationToolchains(records []VerificationToolchain) error {
 	if len(records) > MaxVerificationToolchains {
 		return fmt.Errorf("verification_toolchains: at most %d records", MaxVerificationToolchains)
 	}
-	seen := map[string]bool{}
-	for _, record := range records {
+	seen := make(map[string]int, len(records))
+	for i, record := range records {
 		if err := record.Validate(); err != nil {
 			return err
 		}
 		key := localScopeKey(record.Server, record.Workspace, record.Repository)
-		if seen[key] {
-			return fmt.Errorf("verification_toolchains: duplicate scope for server %s workspace %s repository %s", record.Server, record.Workspace, record.Repository)
+		if first, duplicate := seen[key]; duplicate {
+			return fmt.Errorf("verification_toolchains[%d]: duplicate scope of verification_toolchains[%d]", i, first)
 		}
-		seen[key] = true
+		seen[key] = i
 	}
 	return nil
 }
@@ -215,7 +216,7 @@ func (c *Config) VerificationToolchainFor(server, workspace, repository string) 
 			continue
 		}
 		if selected != nil {
-			return nil, fmt.Errorf("verification_toolchains: ambiguous scope for server %s workspace %s repository %s", server, workspace, repository)
+			return nil, errors.New("verification_toolchains: ambiguous scope")
 		}
 		copied := record
 		copied.SearchPaths = append([]string(nil), record.SearchPaths...)

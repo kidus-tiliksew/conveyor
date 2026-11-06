@@ -1,6 +1,7 @@
 package config
 
 import (
+	"errors"
 	"fmt"
 	"net/url"
 	"strings"
@@ -29,7 +30,7 @@ func (g KitPermissionGrant) Validate() error {
 		return fmt.Errorf("kit_permissions: workspace, repository and binding required")
 	}
 	if _, err := verification.NormalizeVerificationPermissions(g.Actions); err != nil {
-		return err
+		return fmt.Errorf("kit_permissions: %w", err)
 	}
 	for _, a := range g.Actions {
 		if a.Binding != g.Binding {
@@ -52,7 +53,11 @@ func (c *Config) KitActions(server, workspace, repository string) ([]verificatio
 		}
 	}
 	if !found {
-		return nil, fmt.Errorf("missing local kit_permissions grant for server %s workspace %s repository %s", server, workspace, repository)
+		return nil, errors.New("missing local kit_permissions grant for this server, workspace, and repository")
 	}
-	return verification.NormalizeVerificationPermissions(out)
+	normalized, err := verification.NormalizeVerificationPermissions(out)
+	if err != nil {
+		return nil, fmt.Errorf("kit_permissions: %w", err)
+	}
+	return normalized, nil
 }

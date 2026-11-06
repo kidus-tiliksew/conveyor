@@ -178,6 +178,210 @@ func TestWorkspaceConfigAPIReportsInvalidRepositoryNameAsFieldError(t *testing.T
 	}
 }
 
+// A refused workspace configuration PUT answers 422 validation_failed naming the
+// field, and neither the refusal nor anything stored holds the value. The repo
+// rows are the only changed validator sites the route reaches. The hijack row
+// holds another field's name in the value, which the former message handed to
+// validationField. The control proves the same request succeeds with an accepted
+// value (component-runtime invariant 17; req-security-boundaries REQ-2).
+func TestWorkspaceConfigPUTRefusalNamesFieldAndHoldsNoValue(t *testing.T) {
+	const mark = "FAKE0123456789"
+	put := func(t *testing.T, document any) (*fakeWorkspaceConfigStore, *httptest.ResponseRecorder) {
+		t.Helper()
+		backend := &fakeWorkspaceConfigStore{record: config.VersionedDocument{Document: contextualWorkspaceDocument(), Version: 1}}
+		s := NewServer(store.NewMemory())
+		s.BearerToken = "token"
+		s.Deployment = &config.Config{Workspace: "demo", Database: config.Database{Backend: "memory"}}
+		s.ConfigStore = backend
+		body, err := json.Marshal(map[string]any{"document": document})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !strings.Contains(string(body), mark) && !strings.Contains(string(body), "12345.678") && !strings.Contains(string(body), "accepted-name") {
+			t.Fatal("request holds no misplaced value")
+		}
+		request := httptest.NewRequest(http.MethodPut, "/v1/workspace/config", strings.NewReader(string(body)))
+		request.Header.Set("Authorization", "Bearer token")
+		request.Header.Set("If-Match", "1")
+		result := httptest.NewRecorder()
+		s.Handler().ServeHTTP(result, request)
+		return backend, result
+	}
+	withRepos := func(names ...string) config.WorkspaceDocument {
+		document := contextualWorkspaceDocument()
+		document.Repos = nil
+		for _, name := range names {
+			document.Repos = append(document.Repos, config.Repo{Name: name, URL: "https://example.com/fixture", Base: "main", InstallConveyor: config.InstallSwitch(false)})
+		}
+		return document
+	}
+	withRecovery := func(raw string) map[string]any {
+		data, err := json.Marshal(contextualWorkspaceDocument())
+		if err != nil {
+			t.Fatal(err)
+		}
+		var document map[string]any
+		if err := json.Unmarshal(data, &document); err != nil {
+			t.Fatal(err)
+		}
+		document["recovery"] = json.RawMessage(raw)
+		return document
+	}
+	for _, tc := range []struct {
+		name         string
+		document     any
+		field, value string
+		message      string
+	}{
+		{
+			name: "invalid repo name", document: withRepos("fine", "sk-live/"+mark),
+			field: "repos", value: mark,
+			message: "repo 1: name must use only ASCII letters, digits, '.', '_', or '-' and must not be '.' or '..'",
+		},
+		{
+			name: "duplicate repo name", document: withRepos("sk-live-"+mark, "fine", "sk-live-"+mark),
+			field: "repos", value: mark,
+			message: "repo 2: name duplicates repo 0",
+		},
+		{
+			name: "invalid repo name holding another field", document: withRepos("max_bounces/" + mark),
+			field: "repos", value: mark,
+			message: "repo 0: name must use only ASCII letters, digits, '.', '_', or '-' and must not be '.' or '..'",
+		},
+		{
+			// The route's JSON decode branch answers field document, as it does
+			// for every decode failure, and the message names recovery.
+			name: "recovery number encoding/json would print", document: withRecovery(`{"automatic_recoveries":12345.678}`),
+			field: "document", value: "12345.678",
+			message: "recovery must hold an integer automatic_recoveries and a string window",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			backend, result := put(t, tc.document)
+			if strings.Contains(result.Body.String(), tc.value) {
+				t.Fatal("response holds the misplaced value")
+			}
+			var refusal struct {
+				Error  string `json:"error"`
+				Fields []struct {
+					Field   string `json:"field"`
+					Message string `json:"message"`
+				} `json:"fields"`
+			}
+			if err := json.Unmarshal(result.Body.Bytes(), &refusal); err != nil {
+				t.Fatalf("decode refusal: %v", err)
+			}
+			if result.Code != http.StatusUnprocessableEntity || backend.updates != 0 || refusal.Error != "validation_failed" ||
+				len(refusal.Fields) != 1 || refusal.Fields[0].Field != tc.field || refusal.Fields[0].Message != tc.message {
+				t.Fatalf("status=%d updates=%d refusal=%+v", result.Code, backend.updates, refusal)
+			}
+		})
+	}
+	t.Run("control", func(t *testing.T) {
+		backend, result := put(t, withRepos("accepted-name", "fine"))
+		if result.Code != http.StatusOK || backend.updates != 1 {
+			t.Fatalf("status=%d updates=%d", result.Code, backend.updates)
+		}
+	})
+}
+
+// Workspace creation shares the validators, so its refusal also names the field
+// and holds no value (component-runtime invariant 18).
+func TestCreateWorkspaceRefusalNamesFieldAndHoldsNoValue(t *testing.T) {
+	const mark = "FAKE0123456789"
+	for _, tc := range []struct {
+		name         string
+		document     map[string]any
+		field, value string
+		message      string
+	}{
+		{
+			name: "invalid repo name",
+			document: map[string]any{"repos": []any{
+				map[string]any{"name": "sk-live/" + mark, "url": "https://example.test/repo"},
+			}},
+			field: "repos", value: mark,
+			message: "repo 0: name must use only ASCII letters, digits, '.', '_', or '-' and must not be '.' or '..'",
+		},
+		{
+			name: "duplicate repo name",
+			document: map[string]any{"repos": []any{
+				map[string]any{"name": "sk-live-" + mark, "url": "https://example.test/one"},
+				map[string]any{"name": "sk-live-" + mark, "url": "https://example.test/two"},
+			}},
+			field: "repos", value: mark,
+			message: "repo 1: name duplicates repo 0",
+		},
+		{
+			name:     "recovery number encoding/json would print",
+			document: map[string]any{"recovery": map[string]any{"automatic_recoveries": json.Number("12345.678")}},
+			field:    "document", value: "12345.678",
+			message: "recovery must hold an integer automatic_recoveries and a string window",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			control := &fakeWorkspaceControl{}
+			create := NewServer(store.NewMemory())
+			create.Workspaces, create.Deployment, create.BearerToken = control, legacyExecutorDeployment(), "token"
+			create.Memberships = localOperatorInstanceAdmin()
+			body, err := json.Marshal(map[string]any{"id": "engineering", "name": "Engineering", "document": tc.document})
+			if err != nil {
+				t.Fatal(err)
+			}
+			request := httptest.NewRequest(http.MethodPost, "/v1/workspaces", strings.NewReader(string(body)))
+			request.Header.Set("Authorization", "Bearer token")
+			result := httptest.NewRecorder()
+			create.Handler().ServeHTTP(result, request)
+			if strings.Contains(result.Body.String(), tc.value) {
+				t.Fatal("response holds the misplaced value")
+			}
+			var refusal struct {
+				Error  string             `json:"error"`
+				Fields []configFieldError `json:"fields"`
+			}
+			if err := json.Unmarshal(result.Body.Bytes(), &refusal); err != nil {
+				t.Fatalf("decode refusal: %v", err)
+			}
+			if result.Code != http.StatusUnprocessableEntity || control.created != nil || refusal.Error != "validation_failed" ||
+				len(refusal.Fields) != 1 || refusal.Fields[0].Field != tc.field || refusal.Fields[0].Message != tc.message {
+				t.Fatalf("status=%d created=%v refusal=%+v", result.Code, control.created != nil, refusal)
+			}
+		})
+	}
+}
+
+// validationField keeps naming the field for every changed validator family, read
+// from the error the validator returns. Only the repo family reaches the route
+// today; the other rows pin what validationField answers for the new text.
+func TestValidationFieldNamesEachRedactedSiteFamily(t *testing.T) {
+	const value = "sk-live-FAKE0123456789"
+	const triage = "execution_settings: {control_plane: {triage: {model: fixture-model}}}\n"
+	const database = "database: {backend: memory}\n"
+	for _, tc := range []struct{ name, document, field string }{
+		{"triage effort", "execution_settings: {control_plane: {triage: {model: fixture-model, effort: " + value + "}}}\n", "execution_settings.control_plane.triage.effort"},
+		{"planning effort", "execution_settings: {control_plane: {triage: {model: fixture-model}, planning: {effort: " + value + "}}}\n", "execution_settings"},
+		{"planning model", "execution_settings: {control_plane: {triage: {model: fixture-model}, planning: {model: " + value + "}}}\nplanning_models: [fixture-model]\n", "execution_settings"},
+		{"planning_models duplicate", triage + "planning_models: [fixture-model, " + value + ", " + value + "]\n", "document"},
+		{"repo name invalid", triage + "repos: [{name: 'a/" + value + "', url: https://example.test/a}]\n", "repos"},
+		{"repo name duplicate", triage + "repos: [{name: " + value + ", url: https://example.test/a}, {name: " + value + ", url: https://example.test/b}]\n", "repos"},
+		{"monitor unknown", triage + "repos: [{name: fine, url: https://example.test/a}]\nmonitor: {repositories: [" + value + "]}\n", "repos"},
+		{"monitor duplicate", triage + "repos: [{name: " + value + ", url: https://example.test/a}]\nmonitor: {repositories: [" + value + ", " + value + "]}\n", "repos"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := config.ParseDeployment([]byte(database+tc.document), "deployment.yaml", nil)
+			if err == nil {
+				t.Fatal("document was accepted")
+			}
+			if strings.Contains(err.Error(), value) {
+				t.Fatal("refusal holds the misplaced value")
+			}
+			if got := validationField(err); got != tc.field {
+				t.Errorf("validationField = %q, want %q", got, tc.field)
+			}
+		})
+	}
+}
+
 func TestWorkspaceConfigAPIRecoveryRoundTripAndRefusal(t *testing.T) {
 	document := contextualWorkspaceDocument()
 	document.Recovery = config.RecoveryPolicy{AutomaticRecoveries: 2, WindowText: "24h"}

@@ -559,6 +559,79 @@ func TestConveyordStartupLogDropsMisplacedConfigValue(t *testing.T) {
 	}
 }
 
+// A value that decodes and then breaks a validator rule stays out of the startup
+// log, for a site in internal/config/deployment.go and a site in
+// internal/config/config.go, while the field path and rule remain. Each control
+// states an accepted value beside a later refusal, so the rule judged the value
+// and the log would show a printed one (req-security-boundaries REQ-2).
+func TestConveyordStartupLogDropsValidatorRefusedValue(t *testing.T) {
+	const childEnv = "CONVEYOR_TEST_VALIDATOR_VALUE_CONFIG"
+	if path := os.Getenv(childEnv); path != "" {
+		flag.CommandLine = flag.NewFlagSet("conveyord", flag.ExitOnError)
+		os.Args = []string{"conveyord", "-config", path, "-addr", "127.0.0.1:0"}
+		main()
+		t.Fatal("conveyord started with a refused config")
+	}
+	const value = "sk-live-FAKE0123456789"
+	const effortRule = "must be minimal, low, medium, or high"
+	run := func(t *testing.T, document string) string {
+		t.Helper()
+		dir := t.TempDir()
+		configPath := filepath.Join(dir, "conveyor.yaml")
+		envPath := filepath.Join(dir, "empty.env")
+		writeOwnerFile(t, configPath, "workspace: demo\ndatabase: {backend: memory}\n"+document)
+		writeOwnerFile(t, envPath, "")
+		command := exec.CommandContext(t.Context(), os.Args[0], "-test.run=^TestConveyordStartupLogDropsValidatorRefusedValue$")
+		for _, item := range os.Environ() {
+			if !strings.HasPrefix(item, "CONVEYOR_") {
+				command.Env = append(command.Env, item)
+			}
+		}
+		command.Env = append(command.Env, childEnv+"="+configPath, "CONVEYOR_ENV_FILE="+envPath)
+		output, err := command.CombinedOutput()
+		var exitErr *exec.ExitError
+		if !errors.As(err, &exitErr) || exitErr.ExitCode() == 0 {
+			t.Fatalf("conveyord exit status is not a refusal: %v", err)
+		}
+		return string(output)
+	}
+	triage := func(body string) string {
+		return "execution_settings: {control_plane: {triage: {model: fixture-model, " + body + "}}}\n"
+	}
+	planning := func(body string) string {
+		return "execution_settings: {control_plane: {triage: {model: fixture-model}, planning: {" + body + "}}}\n"
+	}
+	for _, tc := range []struct{ name, document, want string }{
+		{"deployment.go plain", triage("effort: " + value), "execution_settings.control_plane.triage.effort " + effortRule},
+		{"deployment.go tagged", triage("effort: !!str " + value), "execution_settings.control_plane.triage.effort " + effortRule},
+		{"deployment.go aliased", "pack_dir: &misplaced " + value + "\n" + triage("effort: *misplaced"), "execution_settings.control_plane.triage.effort " + effortRule},
+		{"config.go plain", planning("effort: " + value), "execution_settings.control_plane.planning.effort " + effortRule},
+		{"config.go tagged", planning("effort: !!str " + value), "execution_settings.control_plane.planning.effort " + effortRule},
+		{"config.go aliased", "pack_dir: &misplaced " + value + "\n" + planning("effort: *misplaced"), "execution_settings.control_plane.planning.effort " + effortRule},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			startupLog := run(t, tc.document)
+			if strings.Contains(startupLog, value) {
+				t.Fatal("startup log holds the misplaced value")
+			}
+			if !strings.Contains(startupLog, "load config: ") || !strings.Contains(startupLog, tc.want) {
+				t.Fatalf("startup log lacks %q: %s", tc.want, startupLog)
+			}
+		})
+	}
+	for _, tc := range []struct{ name, document, later, rule string }{
+		{"deployment.go control", triage("effort: low, timeout: not-a-duration"), "execution_settings.control_plane.triage.timeout must be a positive duration", "triage.effort"},
+		{"config.go control", planning("effort: low, timeout: not-a-duration"), "execution_settings.control_plane.planning.timeout must be a positive duration", "planning.effort"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			startupLog := run(t, tc.document)
+			if strings.Contains(startupLog, tc.rule) || !strings.Contains(startupLog, tc.later) {
+				t.Fatalf("accepted value did not reach the later refusal: %s", startupLog)
+			}
+		})
+	}
+}
+
 // A tagged or aliased value takes yaml.v3's plain errors instead of its type
 // errors, and the startup log still holds no value. The control is the same file
 // with a well-formed tagged value, which gets past the decoder.

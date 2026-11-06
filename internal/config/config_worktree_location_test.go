@@ -87,7 +87,7 @@ func TestWorktreeLocationRefusesInvalidDocuments(t *testing.T) {
 		name, document, want string
 	}{
 		{"missing mode", "worktree_location:\n  dir: _worktrees\n", "worktree_location.mode is required"},
-		{"unknown mode", "worktree_location:\n  mode: home\n", `worktree_location.mode "home"`},
+		{"unknown mode", "worktree_location:\n  mode: home\n", "worktree_location.mode must be repository or machine"},
 		{"nested dir", "worktree_location:\n  mode: repository\n  dir: a/b\n", "one relative path component"},
 		{"parent dir", "worktree_location:\n  mode: repository\n  dir: ..\n", "one relative path component"},
 		{"git dir", "worktree_location:\n  mode: repository\n  dir: .git\n", "one relative path component"},
