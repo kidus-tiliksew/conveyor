@@ -337,19 +337,77 @@ func (s *Store) AuditTask(ctx context.Context, taskID, kind string, payload map[
 	ctx = dbmetrics.WithReadLabel(ctx, "AuditTask")
 	return s.monitorTx(ctx, func(tx *sql.Tx, ws string) error { return auditMonitorTask(ctx, tx, ws, taskID, kind, payload) })
 }
-func (s *Store) RecordMonitorSuccess(ctx context.Context, at time.Time) error {
+func (s *Store) RecordMonitorSuccess(ctx context.Context, repository string, at time.Time) error {
 	ctx = dbmetrics.WithReadLabel(ctx, "RecordMonitorSuccess")
+	if repository == "" {
+		return monitor.ErrRepositoryRequired
+	}
 	return s.monitorTx(ctx, func(tx *sql.Tx, ws string) error {
-		_, err := tx.ExecContext(ctx, "INSERT INTO monitor_status(workspace_id,last_successful_at) VALUES(?,?) ON DUPLICATE KEY UPDATE last_successful_at=VALUES(last_successful_at),current_error='',forge_error_category='',backoff_until=NULL", ws, at)
+		_, err := tx.ExecContext(ctx, "INSERT INTO monitor_status(workspace_id,repository,last_successful_at) VALUES(?,?,?) ON DUPLICATE KEY UPDATE last_successful_at=VALUES(last_successful_at),current_error='',forge_error_category='',backoff_until=NULL", ws, repository, at)
 		return translateBackendConflict(err)
 	})
 }
-func (s *Store) RecordMonitorFailure(ctx context.Context, category, detail string, backoff time.Time) error {
+func (s *Store) RecordMonitorFailure(ctx context.Context, repository, category, detail string, backoff time.Time) error {
 	ctx = dbmetrics.WithReadLabel(ctx, "RecordMonitorFailure")
+	if repository == "" {
+		return monitor.ErrRepositoryRequired
+	}
 	return s.monitorTx(ctx, func(tx *sql.Tx, ws string) error {
-		_, err := tx.ExecContext(ctx, "INSERT INTO monitor_status(workspace_id,current_error,forge_error_category,backoff_until) VALUES(?,?,?,?) ON DUPLICATE KEY UPDATE current_error=VALUES(current_error),forge_error_category=VALUES(forge_error_category),backoff_until=VALUES(backoff_until)", ws, detail, category, backoff)
+		_, err := tx.ExecContext(ctx, "INSERT INTO monitor_status(workspace_id,repository,current_error,forge_error_category,backoff_until) VALUES(?,?,?,?,?) ON DUPLICATE KEY UPDATE current_error=VALUES(current_error),forge_error_category=VALUES(forge_error_category),backoff_until=VALUES(backoff_until)", ws, repository, detail, category, backoff)
 		return translateBackendConflict(err)
 	})
+}
+func (s *Store) MonitorTip(ctx context.Context, repository string) (string, error) {
+	ctx = dbmetrics.WithReadLabel(ctx, "MonitorTip")
+	if repository == "" {
+		return "", monitor.ErrRepositoryRequired
+	}
+	ws, err := workspace(ctx)
+	if err != nil {
+		return "", translateBackendConflict(err)
+	}
+	var tip string
+	err = backendRow(ctx, s.db, "SELECT last_processed_tip FROM monitor_status WHERE workspace_id=? AND repository=?", ws, repository).Scan(&tip)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", nil
+	}
+	return tip, translateBackendConflict(err)
+}
+
+// AdvanceMonitorTip compares and moves under monitorTx's workspace lock, so
+// concurrent passes can't both win. Only an empty expected may create the row.
+func (s *Store) AdvanceMonitorTip(ctx context.Context, repository, expected, next string) (bool, error) {
+	ctx = dbmetrics.WithReadLabel(ctx, "AdvanceMonitorTip")
+	if repository == "" {
+		return false, monitor.ErrRepositoryRequired
+	}
+	if next == "" {
+		return false, monitor.ErrTipRequired
+	}
+	advanced := false
+	err := s.monitorTx(ctx, func(tx *sql.Tx, ws string) error {
+		var stored string
+		err := tx.QueryRowContext(ctx, "SELECT last_processed_tip FROM monitor_status WHERE workspace_id=? AND repository=?", ws, repository).Scan(&stored)
+		switch {
+		case errors.Is(err, sql.ErrNoRows):
+			if expected != "" {
+				return nil
+			}
+			_, err = tx.ExecContext(ctx, "INSERT INTO monitor_status(workspace_id,repository,last_processed_tip) VALUES(?,?,?)", ws, repository, next)
+		case err != nil:
+			return translateBackendConflict(err)
+		case stored != expected:
+			return nil
+		default:
+			_, err = tx.ExecContext(ctx, "UPDATE monitor_status SET last_processed_tip=? WHERE workspace_id=? AND repository=?", next, ws, repository)
+		}
+		if err != nil {
+			return translateBackendConflict(err)
+		}
+		advanced = true
+		return nil
+	})
+	return advanced && err == nil, translateBackendConflict(err)
 }
 func (s *Store) MonitorStatus(ctx context.Context, enabled bool, now time.Time) (monitor.Status, error) {
 	ctx = dbmetrics.WithReadLabel(ctx, "MonitorStatus")
@@ -358,14 +416,28 @@ func (s *Store) MonitorStatus(ctx context.Context, enabled bool, now time.Time) 
 		return monitor.Status{}, translateBackendConflict(err)
 	}
 	r := monitor.Status{WorkspaceID: ws, Enabled: enabled}
-	var last, backoff sql.NullTime
-	err = backendRow(ctx, s.db, "SELECT last_successful_at,current_error,forge_error_category,backoff_until FROM monitor_status WHERE workspace_id=?", ws).Scan(&last, &r.CurrentError, &r.ForgeErrorCategory, &backoff)
-	if err != nil && !errors.Is(err, sql.ErrNoRows) {
+	rows, err := backendRows(ctx, s.db, "SELECT repository,last_successful_at,current_error,forge_error_category,backoff_until FROM monitor_status WHERE workspace_id=?", ws)
+	if err != nil {
 		return r, translateBackendConflict(err)
 	}
-	r.LastSuccessfulAt = last.Time
-	r.BackoffUntil = backoff.Time
-	rows, err := backendRows(ctx, s.db, "SELECT id,kind,payload_json,at FROM monitor_activity WHERE workspace_id=? ORDER BY at,id", ws)
+	var repositories []monitor.RepositoryStatus
+	for rows.Next() {
+		var row monitor.RepositoryStatus
+		var last, backoff sql.NullTime
+		if err = rows.Scan(&row.Repository, &last, &row.CurrentError, &row.ForgeErrorCategory, &backoff); err != nil {
+			rows.Close()
+			return r, translateBackendConflict(err)
+		}
+		row.LastSuccessfulAt, row.BackoffUntil = last.Time, backoff.Time
+		repositories = append(repositories, row)
+	}
+	err = rows.Err()
+	rows.Close()
+	if err != nil {
+		return r, translateBackendConflict(err)
+	}
+	r.SetRepositories(repositories)
+	rows, err = backendRows(ctx, s.db, "SELECT id,kind,payload_json,at FROM monitor_activity WHERE workspace_id=? ORDER BY at,id", ws)
 	if err != nil {
 		return r, translateBackendConflict(err)
 	}

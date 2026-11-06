@@ -4,7 +4,9 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"net/http"
 	"path"
 	"slices"
 	"sort"
@@ -13,6 +15,7 @@ import (
 	"time"
 
 	"github.com/kidus-tiliksew/conveyor/internal/core"
+	"github.com/kidus-tiliksew/conveyor/internal/redact"
 	githubtrigger "github.com/kidus-tiliksew/conveyor/internal/trigger/github"
 )
 
@@ -35,6 +38,9 @@ type GitHubSource struct {
 	ReconcileMerged func(context.Context, string, githubtrigger.PullRequest) (bool, error)
 	LoadHints       func(context.Context, string) (*HintContext, error)
 	OnSuppressed    func(context.Context, map[string]any) error
+	// OnWindowFallback records a read that fell back to the window because the
+	// stored tip diverged or is gone (component-monitor-drift invariant 4).
+	OnWindowFallback func(context.Context, map[string]any) error
 	// MergeCommitState classifies DirectPush and ExternalPRMerge commits
 	// against recorded and in-flight Conveyor merges. Nil keeps today's
 	// classification (component-monitor-drift; req-260811-228be6).
@@ -298,40 +304,31 @@ func MatchObservedTask(tasks []core.Task, eventsByID map[string][]core.Event, re
 	}
 }
 
-func (s GitHubSource) Observations(ctx context.Context, since time.Time) ([]Observation, error) {
+// Observations reads the base branch from the stored tip when there is one,
+// otherwise from the window, and classifies what it reads. Read.NextTip stops
+// short of every deferred commit (component-monitor-drift invariant 4).
+func (s GitHubSource) Observations(ctx context.Context, from ReadFrom) (Read, error) {
 	if s.Run == nil {
-		return nil, githubtrigger.PermissionError(fmt.Errorf("workspace GitHub App is required for monitor reads; connect it in workspace settings"))
+		return Read{}, githubtrigger.PermissionError(fmt.Errorf("workspace GitHub App is required for monitor reads; connect it in workspace settings"))
 	}
 	if strings.TrimSpace(s.Repository) == "" || strings.TrimSpace(s.GitHubSlug) == "" || strings.TrimSpace(s.Base) == "" {
-		return nil, fmt.Errorf("monitor GitHub repository name, slug, and base branch are required")
+		return Read{}, fmt.Errorf("monitor GitHub repository name, slug, and base branch are required")
 	}
 	resolveTask := s.ResolveTask
 	if s.NewTaskResolver != nil {
 		var err error
 		resolveTask, err = s.NewTaskResolver(ctx)
 		if err != nil {
-			return nil, err
+			return Read{}, err
 		}
 	}
-	var commits []githubCommit
-	for page := 1; ; page++ {
-		raw, err := s.Run(ctx, "api", "--method", "GET",
-			"repos/"+s.GitHubSlug+"/commits",
-			"-f", "sha="+s.Base,
-			"-f", "since="+since.UTC().Format(time.RFC3339),
-			"-f", "per_page=100", "-f", "page="+strconv.Itoa(page))
-		if err != nil {
-			return nil, githubtrigger.CategorizeError(err)
-		}
-		var batch []githubCommit
-		if err = json.Unmarshal(raw, &batch); err != nil {
-			return nil, &githubtrigger.Error{Category: githubtrigger.ForgeResponse, Err: fmt.Errorf("parse monitor commits: %w", err)}
-		}
-		commits = append(commits, batch...)
-		if len(batch) < 100 {
-			break
-		}
+	listing, listErr := s.listCommits(ctx, from)
+	if listErr != nil {
+		return Read{}, listErr
 	}
+	commits := listing.commits
+	// deferred holds the first-parent commits the tip may not pass yet.
+	deferred := make(map[string]struct{})
 	var observations []Observation
 	seen := make(map[string]struct{})
 	appendObservation := func(observation Observation) {
@@ -344,12 +341,12 @@ func (s GitHubSource) Observations(ctx context.Context, since time.Time) ([]Obse
 	}
 	firstParent, ancestryErr := firstParentHistory(ctx, commits, s.isAncestor, s.firstParentOf)
 	if ancestryErr != nil {
-		return nil, ancestryErr
+		return Read{}, ancestryErr
 	}
 	for _, commit := range commits {
 		pulls, pullErr := s.pulls(ctx, commit.SHA)
 		if pullErr != nil {
-			return nil, pullErr
+			return Read{}, pullErr
 		}
 		lineaged := false
 		for _, pull := range pulls {
@@ -361,7 +358,7 @@ func (s GitHubSource) Observations(ctx context.Context, since time.Time) ([]Obse
 			if resolveTask != nil {
 				resolvedID, resolved, resolveErr := resolveTask(ctx, pull.Head.Ref, pull.Number)
 				if resolveErr != nil {
-					return nil, resolveErr
+					return Read{}, resolveErr
 				}
 				taskID, ok = resolvedID, resolved
 			}
@@ -371,7 +368,7 @@ func (s GitHubSource) Observations(ctx context.Context, since time.Time) ([]Obse
 			if s.ReconcileMerged != nil {
 				detail, err := s.mergedPull(ctx, pull.Number)
 				if err != nil {
-					return nil, err
+					return Read{}, err
 				}
 				if detail.MergedAt == nil || detail.Number != pull.Number || detail.Head.SHA != pull.Head.SHA || detail.Head.Ref != pull.Head.Ref {
 					continue
@@ -383,7 +380,7 @@ func (s GitHubSource) Observations(ctx context.Context, since time.Time) ([]Obse
 					MergedBy: strings.TrimSpace(pull.MergedBy.Login), MergeCommitSHA: strings.TrimSpace(pull.MergeCommitSHA),
 				})
 				if err != nil {
-					return nil, err
+					return Read{}, err
 				}
 			}
 			if lineaged {
@@ -404,23 +401,25 @@ func (s GitHubSource) Observations(ctx context.Context, since time.Time) ([]Obse
 					"reason": "outside_first_parent", "repository": s.Repository,
 					"commit_sha": commit.SHA,
 				}); err != nil {
-					return nil, fmt.Errorf("audit commit %s outside first-parent history: %w", commit.SHA, err)
+					return Read{}, fmt.Errorf("audit commit %s outside first-parent history: %w", commit.SHA, err)
 				}
 			}
 			continue
 		}
-		var hints *HintContext
-		if s.LoadHints != nil {
-			loadedHints, loadErr := s.LoadHints(ctx, commit.SHA)
-			if loadErr != nil {
-				return nil, loadErr
-			}
-			hints = loadedHints
+		hints, hintsSkipped, hintsErr := s.commitHints(ctx, commit.SHA)
+		if hintsErr != nil {
+			return Read{}, hintsErr
 		}
 		if lineaged {
+			// Inside the window its checks and reruns may still conclude, so
+			// the tip stays behind it and later polls read it again
+			// (component-monitor-drift invariant 4).
+			if !commit.Commit.Committer.Date.Before(from.Since) {
+				deferred[commit.SHA] = struct{}{}
+			}
 			checks, checkErr := s.checks(ctx, commit.SHA)
 			if checkErr != nil {
-				return nil, checkErr
+				return Read{}, checkErr
 			}
 			byAttempt := make(map[int][]failedCheckRun)
 			green := false
@@ -463,6 +462,10 @@ func (s GitHubSource) Observations(ctx context.Context, since time.Time) ([]Obse
 					}
 					checkDetails = append(checkDetails, fmt.Sprintf("- %s (check run %s): %s", name, id, check.URL))
 				}
+				failedContext := map[string]string{"failed_check_runs": strings.Join(checkDetails, "\n")}
+				if hintsSkipped != "" {
+					failedContext[ContextHintsSkipped] = hintsSkipped
+				}
 				appendObservation(Observation{
 					WorkspaceID: s.WorkspaceID, Repository: s.Repository,
 					Kind:         PostMergeFailure,
@@ -471,7 +474,7 @@ func (s GitHubSource) Observations(ctx context.Context, since time.Time) ([]Obse
 					CheckRunID: strings.Join(checkIDs, ","),
 					Attempt:    attempt,
 					ObservedAt: commit.Commit.Committer.Date, Hints: hints,
-					Context: map[string]string{"failed_check_runs": strings.Join(checkDetails, "\n")},
+					Context: failedContext,
 				})
 			}
 			if len(byAttempt) == 0 && green {
@@ -496,9 +499,14 @@ func (s GitHubSource) Observations(ctx context.Context, since time.Time) ([]Obse
 				}
 			}
 		}
-		if skip, skipErr := s.suppressMergeCommit(ctx, kind, commit); skipErr != nil {
-			return nil, skipErr
-		} else if skip {
+		state, skipErr := s.suppressMergeCommit(ctx, kind, commit)
+		if skipErr != nil {
+			return Read{}, skipErr
+		}
+		if state == MergeInFlight {
+			deferred[commit.SHA] = struct{}{}
+		}
+		if state != MergeNone {
 			continue
 		}
 		// Every out-of-pipeline kind (direct push, external pull-request
@@ -508,17 +516,17 @@ func (s GitHubSource) Observations(ctx context.Context, since time.Time) ([]Obse
 		// component-monitor-drift). The comparison reads the base-branch
 		// commit against its first parent, never the pull request's branch
 		// head, through the workspace App runner (DEC-59).
-		var changedPaths []string
+		var changed firstParentPaths
 		if len(commit.Parents) > 0 {
 			var diffErr error
-			changedPaths, diffErr = s.pathsFromFirstParent(ctx, commit.Parents[0].SHA, commit.SHA)
+			changed, diffErr = s.pathsFromFirstParent(ctx, commit.Parents[0].SHA, commit.SHA)
 			if diffErr != nil {
-				return nil, diffErr
+				return Read{}, diffErr
 			}
-			// Only an empty direct push is suppressed. An empty external
-			// merge or revert comparison carries no document paths but keeps
-			// its repository observation.
-			if kind == DirectPush && len(changedPaths) == 0 {
+			// Only a direct push whose comparison lists no file at all is
+			// suppressed. An empty external merge or revert comparison carries
+			// no document paths but keeps its repository observation.
+			if kind == DirectPush && changed.listed == 0 {
 				if s.OnSuppressed != nil {
 					_ = s.OnSuppressed(ctx, map[string]any{
 						"reason": "first_parent_empty", "repository": s.Repository,
@@ -528,14 +536,274 @@ func (s GitHubSource) Observations(ctx context.Context, since time.Time) ([]Obse
 				continue
 			}
 		}
+		var observationContext map[string]string
+		if changed.incomplete != "" || hintsSkipped != "" {
+			observationContext = map[string]string{}
+			if changed.incomplete != "" {
+				observationContext[ContextPathsIncomplete] = changed.incomplete
+			}
+			if hintsSkipped != "" {
+				observationContext[ContextHintsSkipped] = hintsSkipped
+			}
+		}
 		appendObservation(Observation{
 			WorkspaceID: s.WorkspaceID, Repository: s.Repository, Kind: kind,
 			OccurrenceID: occurrenceID, SourceURL: sourceURL, CommitSHA: commit.SHA,
-			ChangedPaths:      changedPaths,
+			ChangedPaths:      changed.paths,
 			PullRequestNumber: prNumber, ObservedAt: commit.Commit.Committer.Date, Hints: hints,
+			Context: observationContext,
 		})
 	}
-	return observations, nil
+	return Read{Observations: observations, NextTip: listing.nextTip(firstParent, deferred)}, nil
+}
+
+// commitListing is what one pass reads from the base branch, newest first with
+// the branch head as the first entry.
+type commitListing struct {
+	commits []githubCommit
+	// fromTip says the commits are everything after the stored tip.
+	fromTip bool
+	// windowHead is the branch head read before a window listing.
+	windowHead string
+}
+
+// nextTip returns the commit the tip may move to: the branch head, or the first
+// parent of the oldest deferred commit. Comparing from the result reads every
+// deferred commit again. Empty means the tip stays where it is.
+//
+// A window read has no tip to protect, so the first parent of its oldest listed
+// commit is a valid start even though the window didn't list it. Without that a
+// repository that merges more often than its window would never store a tip. A
+// read from a tip keeps the tip instead, because only a listed commit is known
+// to be newer than it.
+func (l commitListing) nextTip(firstParent, deferred map[string]struct{}) string {
+	if len(l.commits) == 0 {
+		return l.windowHead
+	}
+	listed := make(map[string]githubCommit, len(l.commits))
+	for _, commit := range l.commits {
+		listed[commit.SHA] = commit
+	}
+	chained := make(map[string]struct{}, len(l.commits))
+	var chain []githubCommit
+	for sha := l.commits[0].SHA; ; {
+		commit, isListed := listed[sha]
+		if _, visited := chained[sha]; !isListed || visited {
+			break
+		}
+		chained[sha] = struct{}{}
+		chain = append(chain, commit)
+		if len(commit.Parents) == 0 {
+			break
+		}
+		sha = commit.Parents[0].SHA
+	}
+	// A deferred commit off the chain has no known place in the order, which
+	// leaves nothing proven about how far the tip may move.
+	for sha := range deferred {
+		_, onHistory := firstParent[sha]
+		if _, onChain := chained[sha]; onHistory && !onChain {
+			return ""
+		}
+	}
+	oldest := -1
+	for i, commit := range chain {
+		if _, held := deferred[commit.SHA]; held {
+			oldest = i
+		}
+	}
+	if oldest < 0 {
+		return l.commits[0].SHA
+	}
+	if oldest+1 < len(chain) {
+		return chain[oldest+1].SHA
+	}
+	if l.fromTip || len(chain[oldest].Parents) == 0 {
+		return ""
+	}
+	return chain[oldest].Parents[0].SHA
+}
+
+// listCommits reads from the tip when there is one, and otherwise from the
+// window. A tip that diverged from the branch or no longer exists falls back to
+// the window, which is recorded once the window read succeeds.
+func (s GitHubSource) listCommits(ctx context.Context, from ReadFrom) (commitListing, error) {
+	fallback := ""
+	if from.Tip != "" {
+		commits, status, err := s.compareFromTip(ctx, from.Tip)
+		switch {
+		case err == nil && status != "diverged":
+			return commitListing{commits: commits, fromTip: true}, nil
+		case err == nil:
+			fallback = "diverged"
+		case tipGone(err):
+			fallback = "tip_gone"
+		default:
+			return commitListing{}, err
+		}
+	}
+	listing, err := s.listWindow(ctx, from.Since)
+	if err != nil {
+		return commitListing{}, err
+	}
+	if fallback != "" && s.OnWindowFallback != nil {
+		if err = s.OnWindowFallback(ctx, map[string]any{
+			"repository": s.Repository, "base": s.Base, "tip": from.Tip, "reason": fallback,
+		}); err != nil {
+			return commitListing{}, fmt.Errorf("audit window fallback from tip %s: %w", from.Tip, err)
+		}
+	}
+	return listing, nil
+}
+
+// tipGone reports the answers GitHub gives a comparison whose tip it no longer
+// has. A repository the App can't reach answers the same, and the window read
+// that follows fails with its own category.
+func tipGone(err error) bool {
+	status := githubtrigger.HTTPStatus(err)
+	return status == http.StatusNotFound || status == http.StatusUnprocessableEntity
+}
+
+// listWindow reads the commits dated at or after since. It reads the branch
+// head first, so a quiet window still stores a tip, and a commit pushed during
+// this read stays after that tip for the next pass to read.
+func (s GitHubSource) listWindow(ctx context.Context, since time.Time) (commitListing, error) {
+	raw, err := s.Run(ctx, "api", "--method", "GET",
+		"repos/"+s.GitHubSlug+"/commits/"+s.Base,
+		"-H", "Accept: application/vnd.github+json")
+	if err != nil {
+		return commitListing{}, githubtrigger.CategorizeError(err)
+	}
+	var head githubCommit
+	if err = json.Unmarshal(raw, &head); err != nil {
+		return commitListing{}, &githubtrigger.Error{Category: githubtrigger.ForgeResponse, Err: fmt.Errorf("parse monitor branch head: %w", err)}
+	}
+	if head.SHA == "" {
+		return commitListing{}, &githubtrigger.Error{Category: githubtrigger.ForgeResponse, Err: fmt.Errorf("monitor branch head read for %s names no commit", s.Base)}
+	}
+	var commits []githubCommit
+	for page := 1; ; page++ {
+		raw, err = s.Run(ctx, "api", "--method", "GET",
+			"repos/"+s.GitHubSlug+"/commits",
+			"-f", "sha="+s.Base,
+			"-f", "since="+since.UTC().Format(time.RFC3339),
+			"-f", "per_page=100", "-f", "page="+strconv.Itoa(page))
+		if err != nil {
+			return commitListing{}, githubtrigger.CategorizeError(err)
+		}
+		var batch []githubCommit
+		if err = json.Unmarshal(raw, &batch); err != nil {
+			return commitListing{}, &githubtrigger.Error{Category: githubtrigger.ForgeResponse, Err: fmt.Errorf("parse monitor commits: %w", err)}
+		}
+		commits = append(commits, batch...)
+		if len(batch) < 100 {
+			return commitListing{commits: commits, windowHead: head.SHA}, nil
+		}
+	}
+}
+
+// compareFromTip reads every commit GitHub lists after tip and the comparison's
+// status, stopping at a diverged answer. A count that disagrees with
+// total_commits fails the read, so nothing is classified from a partial answer.
+func (s GitHubSource) compareFromTip(ctx context.Context, tip string) ([]githubCommit, string, error) {
+	var commits []githubCommit
+	for page := 1; ; page++ {
+		raw, err := s.Run(ctx, "api", "--method", "GET",
+			"repos/"+s.GitHubSlug+"/compare/"+tip+"..."+s.Base,
+			"-f", "per_page=100", "-f", "page="+strconv.Itoa(page),
+			"-H", "Accept: application/vnd.github+json")
+		if err != nil {
+			return nil, "", githubtrigger.CategorizeError(err)
+		}
+		var comparison struct {
+			Status       string         `json:"status"`
+			TotalCommits *int           `json:"total_commits"`
+			Commits      []githubCommit `json:"commits"`
+		}
+		if err = json.Unmarshal(raw, &comparison); err != nil {
+			return nil, "", &githubtrigger.Error{Category: githubtrigger.ForgeResponse, Err: fmt.Errorf("parse tip comparison: %w", err)}
+		}
+		switch comparison.Status {
+		case "diverged":
+			return nil, comparison.Status, nil
+		case "ahead", "identical", "behind":
+		default:
+			return nil, "", &githubtrigger.Error{Category: githubtrigger.ForgeResponse, Err: fmt.Errorf("comparison from tip %s has an unknown status %q", tip, comparison.Status)}
+		}
+		commits = append(commits, comparison.Commits...)
+		if len(comparison.Commits) == 100 {
+			continue
+		}
+		if comparison.TotalCommits == nil || *comparison.TotalCommits != len(commits) {
+			return nil, "", &githubtrigger.Error{Category: githubtrigger.ForgeResponse, Err: fmt.Errorf("comparison from tip %s listed %d commits and did not state that total", tip, len(commits))}
+		}
+		ordered, err := newestFirst(commits)
+		if err != nil {
+			return nil, "", err
+		}
+		return ordered, comparison.Status, nil
+	}
+}
+
+// newestFirst adapts a comparison, which answers oldest first, to the order
+// firstParentHistory and the classifier expect: newest first with the branch
+// head as the first entry. The head is the one commit no listed commit names as
+// a parent, whatever order the pages arrived in. Anything other than one such
+// commit is a malformed answer.
+func newestFirst(commits []githubCommit) ([]githubCommit, error) {
+	if len(commits) == 0 {
+		return nil, nil
+	}
+	ordered := slices.Clone(commits)
+	slices.Reverse(ordered)
+	parents := make(map[string]struct{}, len(ordered))
+	for _, commit := range ordered {
+		for _, parent := range commit.Parents {
+			parents[parent.SHA] = struct{}{}
+		}
+	}
+	head := -1
+	for i, commit := range ordered {
+		if _, isParent := parents[commit.SHA]; isParent {
+			continue
+		}
+		if head >= 0 {
+			return nil, &githubtrigger.Error{Category: githubtrigger.ForgeResponse, Err: fmt.Errorf("tip comparison lists more than one head: %s and %s", ordered[head].SHA, commit.SHA)}
+		}
+		head = i
+	}
+	if head < 0 {
+		return nil, &githubtrigger.Error{Category: githubtrigger.ForgeResponse, Err: errors.New("tip comparison lists no head")}
+	}
+	headCommit := ordered[head]
+	copy(ordered[1:head+1], ordered[:head])
+	ordered[0] = headCommit
+	return ordered, nil
+}
+
+// commitHints loads a commit's hints. An unusable file processes the commit
+// without hints and returns why, after recording it. A failed read fails the
+// pass (req-delivery-and-forge AC-4.11; component-monitor-drift invariant 14).
+func (s GitHubSource) commitHints(ctx context.Context, sha string) (*HintContext, string, error) {
+	if s.LoadHints == nil {
+		return nil, "", nil
+	}
+	hints, err := s.LoadHints(ctx, sha)
+	var unusable *UnusableHintsError
+	if !errors.As(err, &unusable) {
+		return hints, "", err
+	}
+	// The reason can quote the repository's own file.
+	reason, _ := redact.New(nil).Redact(unusable.Reason)
+	if s.OnSuppressed != nil {
+		if auditErr := s.OnSuppressed(ctx, map[string]any{
+			"reason": "hints_unusable", "repository": s.Repository, "commit_sha": sha,
+			"path": hintsPath, "detail": reason,
+		}); auditErr != nil {
+			return nil, "", fmt.Errorf("audit unusable hints at %s: %w", sha, auditErr)
+		}
+	}
+	return nil, reason, nil
 }
 
 // unlistedFirstParentReads is how far past the listed commits one pass reads
@@ -705,13 +973,15 @@ func (s GitHubSource) isAncestor(ctx context.Context, candidate, descendant stri
 	}
 }
 
-func (s GitHubSource) suppressMergeCommit(ctx context.Context, kind SignalKind, commit githubCommit) (bool, error) {
+// suppressMergeCommit returns the commit's merge state after recording a
+// suppression. MergeNone means the commit is classified as observed.
+func (s GitHubSource) suppressMergeCommit(ctx context.Context, kind SignalKind, commit githubCommit) (MergeState, error) {
 	if s.MergeCommitState == nil || (kind != DirectPush && kind != ExternalPRMerge) {
-		return false, nil
+		return MergeNone, nil
 	}
 	state, taskID, err := s.MergeCommitState(ctx, s.GitHubSlug, commit.SHA, commit.Commit.Committer.Date)
 	if err != nil {
-		return false, err
+		return MergeNone, err
 	}
 	var reason string
 	switch state {
@@ -720,7 +990,7 @@ func (s GitHubSource) suppressMergeCommit(ctx context.Context, kind SignalKind, 
 	case MergeInFlight:
 		reason = "merge_in_flight"
 	default:
-		return false, nil
+		return MergeNone, nil
 	}
 	if s.OnSuppressed != nil {
 		_ = s.OnSuppressed(ctx, map[string]any{
@@ -728,17 +998,31 @@ func (s GitHubSource) suppressMergeCommit(ctx context.Context, kind SignalKind, 
 			"commit_sha": commit.SHA, "task_id": taskID,
 		})
 	}
-	return true, nil
+	return state, nil
+}
+
+// firstParentPaths is one commit's comparison against its first parent.
+type firstParentPaths struct {
+	paths []string
+	// listed counts the files the comparison named, valid or not.
+	listed int
+	// incomplete is the paths_incomplete context value, empty when paths names
+	// every changed file.
+	incomplete string
 }
 
 // Carry the first-parent paths into governed-scope evaluation instead of only
 // testing for an empty push (req-260811-228be6 AC-4.3; component-monitor-drift).
-func (s GitHubSource) pathsFromFirstParent(ctx context.Context, parentSHA, commitSHA string) ([]string, error) {
+// A missing file list aborts the read. A list cut off at GitHub's limit, or a
+// filename that isn't a clean repository-relative path, returns the valid paths
+// and says what is missing, because neither gets better on a later read
+// (component-monitor-drift invariant 13).
+func (s GitHubSource) pathsFromFirstParent(ctx context.Context, parentSHA, commitSHA string) (firstParentPaths, error) {
 	raw, err := s.Run(ctx, "api", "--method", "GET",
 		"repos/"+s.GitHubSlug+"/compare/"+parentSHA+"..."+commitSHA,
 		"-H", "Accept: application/vnd.github+json")
 	if err != nil {
-		return nil, githubtrigger.CategorizeError(err)
+		return firstParentPaths{}, githubtrigger.CategorizeError(err)
 	}
 	var comparison struct {
 		Files *[]struct {
@@ -747,16 +1031,12 @@ func (s GitHubSource) pathsFromFirstParent(ctx context.Context, parentSHA, commi
 		} `json:"files"`
 	}
 	if err = json.Unmarshal(raw, &comparison); err != nil {
-		return nil, &githubtrigger.Error{Category: githubtrigger.ForgeResponse, Err: fmt.Errorf("parse first-parent comparison: %w", err)}
+		return firstParentPaths{}, &githubtrigger.Error{Category: githubtrigger.ForgeResponse, Err: fmt.Errorf("parse first-parent comparison: %w", err)}
 	}
 	if comparison.Files == nil {
-		return nil, &githubtrigger.Error{Category: githubtrigger.ForgeResponse, Err: fmt.Errorf("parse first-parent comparison: files are missing")}
+		return firstParentPaths{}, &githubtrigger.Error{Category: githubtrigger.ForgeResponse, Err: fmt.Errorf("parse first-parent comparison: files are missing")}
 	}
-	// Comparison pagination covers commits, not files. At the same limit used
-	// by the delivery comparison reader, completeness cannot be established.
-	if len(*comparison.Files) >= 300 {
-		return nil, &githubtrigger.Error{Category: githubtrigger.ForgeResponse, Err: fmt.Errorf("first-parent comparison for %s reaches GitHub's 300-file limit", commitSHA)}
-	}
+	result := firstParentPaths{listed: len(*comparison.Files)}
 	var paths []string
 	for _, file := range *comparison.Files {
 		names := []string{file.Filename}
@@ -765,13 +1045,21 @@ func (s GitHubSource) pathsFromFirstParent(ctx context.Context, parentSHA, commi
 		}
 		for _, name := range names {
 			if name == "" || name == "." || strings.HasPrefix(name, "/") || strings.ContainsAny(name, "\\\x00") || path.Clean(name) != name || name == ".." || strings.HasPrefix(name, "../") {
-				return nil, &githubtrigger.Error{Category: githubtrigger.ForgeResponse, Err: fmt.Errorf("first-parent comparison for %s has an invalid repository-relative filename", commitSHA)}
+				result.incomplete = PathsInvalidFilename
+				continue
 			}
 			paths = append(paths, name)
 		}
 	}
+	// Comparison pagination covers commits, not files. At the same limit used
+	// by the delivery comparison reader, completeness cannot be established.
+	// This takes precedence because it widens document drift.
+	if result.listed >= 300 {
+		result.incomplete = PathsFileLimit
+	}
 	sort.Strings(paths)
-	return compactStrings(paths), nil
+	result.paths = compactStrings(paths)
+	return result, nil
 }
 
 // The associated-PR endpoint returns pull-request-simple without merged_by.
@@ -817,14 +1105,15 @@ func (s GitHubSource) checks(ctx context.Context, sha string) (githubCheckRuns, 
 }
 
 // FetchGitHubHints reads the advisory file from the exact observed revision.
-// A missing file means the repository supplies no hints; every other forge or
-// validation failure is operator-visible and fails closed.
+// A missing file means the repository supplies no hints. A file that can't be
+// used returns *UnusableHintsError, and any other failure is a failed read
+// (component-monitor-drift invariant 14).
 func FetchGitHubHints(ctx context.Context, slug, revision string, run CommandRunner) (*HintContext, error) {
 	if run == nil {
 		return nil, githubtrigger.PermissionError(fmt.Errorf("workspace forge token is required for monitor hints; add it in workspace settings"))
 	}
 	raw, err := run(ctx, "api", "--method", "GET",
-		"repos/"+slug+"/contents/.conveyor/hints.yaml", "-f", "ref="+revision)
+		"repos/"+slug+"/contents/"+hintsPath, "-f", "ref="+revision)
 	if err != nil {
 		detail := strings.ToLower(err.Error())
 		if strings.Contains(detail, "404") || strings.Contains(detail, "not found") {
@@ -836,16 +1125,25 @@ func FetchGitHubHints(ctx context.Context, slug, revision string, run CommandRun
 		Content  string `json:"content"`
 		Encoding string `json:"encoding"`
 	}
-	if err = json.Unmarshal(raw, &response); err != nil || response.Encoding != "base64" {
+	if err = json.Unmarshal(raw, &response); err != nil {
+		// Valid JSON of another shape is what GitHub answers when the path is
+		// a directory. Only unparsable JSON is a malformed answer.
+		var wrongShape *json.UnmarshalTypeError
+		if errors.As(err, &wrongShape) {
+			return nil, &UnusableHintsError{Reason: hintsPath + " is not a file"}
+		}
 		return nil, &githubtrigger.Error{Category: githubtrigger.ForgeResponse, Err: fmt.Errorf("parse advisory hints response")}
+	}
+	if response.Encoding != "base64" {
+		return nil, &UnusableHintsError{Reason: fmt.Sprintf("GitHub returned %s with encoding %q", hintsPath, response.Encoding)}
 	}
 	data, err := base64.StdEncoding.DecodeString(strings.ReplaceAll(response.Content, "\n", ""))
 	if err != nil {
-		return nil, &githubtrigger.Error{Category: githubtrigger.ForgeResponse, Err: fmt.Errorf("decode advisory hints: %w", err)}
+		return nil, &UnusableHintsError{Reason: fmt.Sprintf("decode advisory hints: %v", err)}
 	}
 	hints, err := ParseHints(data, revision)
 	if err != nil {
-		return nil, err
+		return nil, &UnusableHintsError{Reason: err.Error()}
 	}
 	return &hints, nil
 }

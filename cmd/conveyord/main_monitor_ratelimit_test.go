@@ -110,14 +110,14 @@ func TestTimedMonitorPollPausesAtRateLimit(t *testing.T) {
 	polls := &monitorPoller{Store: st, Dispatcher: d, Service: service,
 		Config: func(context.Context) (*config.Config, error) { return cfg, nil },
 		Runner: func(_ context.Context, _, slug string) (func(context.Context, ...string) ([]byte, error), error) {
-			return func(context.Context, ...string) ([]byte, error) {
+			return func(_ context.Context, args ...string) ([]byte, error) {
 				mu.Lock()
 				reads = append(reads, slug)
 				mu.Unlock()
 				if reset := limited.Load(); reset != nil {
 					return nil, githubtrigger.RateLimitedError(*reset, errors.New("GitHub REST status 403: API rate limit exceeded for installation ID 12."))
 				}
-				return []byte(`[]`), nil
+				return quietMonitorRead(args...), nil
 			}, nil
 		},
 		Sleep: func(context.Context, time.Duration) error {
@@ -183,8 +183,8 @@ func TestTimedMonitorPollPausesAtRateLimit(t *testing.T) {
 	}
 
 	fallback.Start(runCtx, []string{"demo"})
-	if s := await("start"); !s.armed || readCount() != 3 {
-		t.Fatalf("start step=%+v reads=%d, want armed after one poll of each repository", s, readCount())
+	if s := await("start"); !s.armed || readCount() != 6 {
+		t.Fatalf("start step=%+v reads=%d, want armed after one poll of each repository: a head read and a window listing", s, readCount())
 	}
 
 	reset := start.Add(21 * time.Minute)
@@ -193,18 +193,18 @@ func TestTimedMonitorPollPausesAtRateLimit(t *testing.T) {
 	if !fired || !s.armed || !s.due.Equal(reset) {
 		t.Fatalf("rate-limited fire=%+v fired=%t, want armed for the reset %s", s, fired, reset)
 	}
-	if got := readCount(); got != 4 || sleeps.Load() != 0 {
+	if got := readCount(); got != 7 || sleeps.Load() != 0 {
 		t.Fatalf("reads=%d sleeps=%d, want one read and no retry after the rate limit", got, sleeps.Load())
 	}
 	if got := errorLines(); len(got) != 1 || !strings.Contains(got[0], `msg="timed GitHub checks paused: GitHub rate limit exhausted" workspace=demo reset_at=`+reset.Format(time.RFC3339)) {
 		t.Fatalf("error lines=%v, want one pause line naming the workspace and reset", got)
 	}
-	if _, fired := advance(19 * time.Minute); fired || readCount() != 4 {
+	if _, fired := advance(19 * time.Minute); fired || readCount() != 7 {
 		t.Fatalf("fired=%t reads=%d before GitHub's reset", fired, readCount())
 	}
 	limited.Store(nil)
-	if s, fired := advance(time.Minute); !fired || !s.armed || readCount() != 7 {
-		t.Fatalf("fire at the reset=%+v fired=%t reads=%d, want every repository polled again", s, fired, readCount())
+	if s, fired := advance(time.Minute); !fired || !s.armed || readCount() != 10 {
+		t.Fatalf("fire at the reset=%+v fired=%t reads=%d, want every repository polled again from its tip", s, fired, readCount())
 	}
 	if got := errorLines(); len(got) != 1 {
 		t.Fatalf("error lines after the reset=%v", got)

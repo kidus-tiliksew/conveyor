@@ -72,10 +72,11 @@ func RunHeadMoved(t *testing.T, open func(*testing.T) store.Store) {
 	checks := 0
 	source := s.source(t, headB, &checks)
 	for poll := 1; poll <= 2; poll++ {
-		observations, err := source.Observations(s.ctx, time.Now().Add(-time.Hour))
+		read, err := source.Observations(s.ctx, monitor.ReadFrom{Since: time.Now().Add(-time.Hour)})
 		if err != nil {
 			t.Fatal(err)
 		}
+		observations := read.Observations
 		for _, observation := range observations {
 			if observation.Kind == monitor.ExternalPRMerge || observation.Kind == monitor.DirectPush || observation.Kind == monitor.Revert {
 				t.Fatalf("poll %d: Conveyor merge after head move was classified %s: %+v", poll, observation.Kind, observation)
@@ -130,10 +131,11 @@ func (s scenario) expectExternal(t *testing.T, merged string, lineaged bool, sta
 	}
 	checks := 0
 	failedBefore := countKind(t, s, "merge.failed")
-	observations, err := s.source(t, merged, &checks).Observations(s.ctx, time.Now().Add(-time.Hour))
+	read, err := s.source(t, merged, &checks).Observations(s.ctx, monitor.ReadFrom{Since: time.Now().Add(-time.Hour)})
 	if err != nil {
 		t.Fatal(err)
 	}
+	observations := read.Observations
 	if len(observations) != 1 || observations[0].Kind != monitor.ExternalPRMerge || observations[0].OccurrenceID != fmt.Sprintf("pr:%d", number) || checks != 0 {
 		t.Fatalf("merge at %s observations=%+v checks=%d, want one external_pr_merge", merged, observations, checks)
 	}
@@ -217,6 +219,8 @@ func (s scenario) source(t *testing.T, mergedHead string, checks *int) monitor.G
 		Run: func(_ context.Context, args ...string) ([]byte, error) {
 			request := strings.Join(args, " ")
 			switch {
+			case strings.HasSuffix(args[3], "/commits/main"):
+				return []byte(`{"sha":"branch-head"}`), nil
 			case strings.Contains(request, "/commits -f"):
 				return fmt.Appendf(nil, `[{"sha":%q,"html_url":"https://github.com/acme/app/commit/%s","parents":[{"sha":"main-before"},{"sha":%q}],"commit":{"message":"merged","committer":{"date":"2026-10-13T12:00:00Z"}}}]`, landed, landed, mergedHead), nil
 			case strings.Contains(request, fmt.Sprintf("/pulls/%d", number)):

@@ -38,6 +38,13 @@ func TestReadmeDirectPushPreservesGovernedDriftOnRedelivery(t *testing.T) {
 				Run: func(_ context.Context, args ...string) ([]byte, error) {
 					request := strings.Join(args, " ")
 					switch {
+					case strings.HasSuffix(args[3], "/commits/main"):
+						return []byte(`{"sha":"branch-head"}`), nil
+					// The stored tip diverged, so the second pass reads the window
+					// again and identity alone deduplicates it (component-monitor-drift
+					// invariant 3).
+					case strings.HasSuffix(args[3], "...main"):
+						return []byte(`{"status":"diverged"}`), nil
 					case strings.Contains(request, "/commits -f"):
 						return []byte(fmt.Sprintf(`[{"sha":%q,"html_url":%q,"parents":[{"sha":%q}],"commit":{"message":"docs(readme): clarify Conveyor description","committer":{"date":"2026-09-15T14:08:33Z"}}}]`, sha, sourceURL, parent)), nil
 					case strings.Contains(request, "/commits/"+sha+"/pulls"):
@@ -51,7 +58,7 @@ func TestReadmeDirectPushPreservesGovernedDriftOnRedelivery(t *testing.T) {
 			}
 			for attempt := 0; attempt < 2; attempt++ {
 				// A new poller models restart: the store owns deduplication.
-				poller := monitor.Poller{Service: service, Source: source, StartupWindow: 24 * time.Hour}
+				poller := monitor.Poller{Service: service, Repository: "conveyor", Source: source, StartupWindow: 24 * time.Hour}
 				if err := poller.Poll(ctx); err != nil {
 					t.Fatal(err)
 				}
@@ -125,6 +132,10 @@ func TestExternalMergeAndRevertRaiseGovernedDocumentDrift(t *testing.T) {
 				Run: func(_ context.Context, args ...string) ([]byte, error) {
 					request := strings.Join(args, " ")
 					switch {
+					case strings.HasSuffix(args[3], "/commits/main"):
+						return []byte(`{"sha":"branch-head"}`), nil
+					case strings.HasSuffix(args[3], "...main"):
+						return []byte(`{"status":"diverged"}`), nil
 					case strings.Contains(request, "/commits -f"):
 						return []byte(fmt.Sprintf(`[{"sha":"observed-sha","html_url":"https://github.com/kidus-tiliksew/conveyor/commit/observed-sha","parents":[{"sha":"first-parent"},{"sha":"feature-head"}],"commit":{"message":%q,"committer":{"date":"2026-09-15T14:08:33Z"}}}]`, test.message)), nil
 					case strings.Contains(request, "/commits/observed-sha/pulls"):
@@ -138,7 +149,7 @@ func TestExternalMergeAndRevertRaiseGovernedDocumentDrift(t *testing.T) {
 				},
 			}
 			for attempt := 0; attempt < 2; attempt++ {
-				poller := monitor.Poller{Service: service, Source: source, StartupWindow: 24 * time.Hour}
+				poller := monitor.Poller{Service: service, Repository: "conveyor", Source: source, StartupWindow: 24 * time.Hour}
 				if err := poller.Poll(ctx); err != nil {
 					t.Fatal(err)
 				}
@@ -178,8 +189,9 @@ func TestExternalMergeAndRevertRaiseGovernedDocumentDrift(t *testing.T) {
 
 type sourceFunc func(context.Context, time.Time) ([]monitor.Observation, error)
 
-func (f sourceFunc) Observations(ctx context.Context, since time.Time) ([]monitor.Observation, error) {
-	return f(ctx, since)
+func (f sourceFunc) Observations(ctx context.Context, from monitor.ReadFrom) (monitor.Read, error) {
+	observations, err := f(ctx, from.Since)
+	return monitor.Read{Observations: observations}, err
 }
 
 func testService(t *testing.T) (*monitor.Service, store.Store, context.Context) {
@@ -394,11 +406,12 @@ func TestOutOfPipelineKindsCreateDriftUntilAuditedOutcome(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			// The drift task asks for a requirement revision; the retired
-			// amendment wording must not return (req-delivery-and-forge AC-4.3;
-			// component-monitor-drift; DEC-48).
+			// The drift task asks for reconciliation and an operator decision. It
+			// never asks the session to propose or revise a document, and the
+			// retired amendment wording must not return (component-monitor-drift
+			// invariant 18; DEC-102(1); DEC-48).
 			task, err := st.GetTask(ctx, record.TaskID)
-			if err != nil || !strings.Contains(task.Body, "propose a requirement revision") || strings.Contains(task.Body, "amendment") {
+			if err != nil || !strings.Contains(task.Body, "operator decision") || strings.Contains(task.Body, "propose") || strings.Contains(task.Body, "amendment") {
 				t.Fatalf("drift task body=%q err=%v", task.Body, err)
 			}
 			status, err := service.Status(ctx)
@@ -476,7 +489,7 @@ func TestPollerRetriesWithBoundedBackoffAndReconcilesStartupWindow(t *testing.T)
 	attempts := 0
 	var since time.Time
 	poller := monitor.Poller{
-		Service: service, StartupWindow: 24 * time.Hour, Attempts: 3,
+		Service: service, Repository: "conveyor", StartupWindow: 24 * time.Hour, Attempts: 3,
 		RetryInitial: time.Second, RetryMaximum: 2 * time.Second,
 		Now: func() time.Time { return time.Date(2026, 7, 28, 12, 0, 0, 0, time.UTC) },
 		Source: sourceFunc(func(_ context.Context, value time.Time) ([]monitor.Observation, error) {
@@ -510,11 +523,11 @@ type failingStatusStore struct {
 	failureErr error
 }
 
-func (s *failingStatusStore) RecordMonitorFailure(ctx context.Context, category, detail string, backoff time.Time) error {
+func (s *failingStatusStore) RecordMonitorFailure(ctx context.Context, repository, category, detail string, backoff time.Time) error {
 	if s.failureErr != nil {
 		return s.failureErr
 	}
-	return s.Store.RecordMonitorFailure(ctx, category, detail, backoff)
+	return s.Store.RecordMonitorFailure(ctx, repository, category, detail, backoff)
 }
 
 func directPush(sha string) monitor.Observation {
@@ -554,7 +567,7 @@ func TestPollContinuesPastFailedObservationAndRecordsFailure(t *testing.T) {
 	older, newer := directPush("older"), directPush("newer")
 	errIntake := errors.New("intake unavailable")
 	failing := failIntakeFor(service, errIntake, "monitor:direct_push:conveyor:older")
-	poller := monitor.Poller{Service: service, Source: staticSource(older, newer), StartupWindow: time.Hour}
+	poller := monitor.Poller{Service: service, Repository: "conveyor", Source: staticSource(older, newer), StartupWindow: time.Hour}
 
 	err := poller.Poll(ctx)
 	if !errors.Is(err, errIntake) || !strings.Contains(err.Error(), "direct_push:conveyor:older") {
@@ -633,7 +646,7 @@ func TestPollJoinsEveryFailureAndRedactsItsText(t *testing.T) {
 		observation.Kind = monitor.Revert
 		return observation
 	}
-	poller := monitor.Poller{Service: service, Source: staticSource(revert("one"), revert("two"), revert("three")), StartupWindow: time.Hour}
+	poller := monitor.Poller{Service: service, Repository: "conveyor", Source: staticSource(revert("one"), revert("two"), revert("three")), StartupWindow: time.Hour}
 	err := poller.Poll(ctx)
 	if !errors.Is(err, errFirst) || !errors.Is(err, errSecond) {
 		t.Fatalf("poll err=%v", err)
@@ -671,7 +684,7 @@ func TestPollRedactsConfiguredSecretsFromPassFailure(t *testing.T) {
 		service, _, ctx := testService(t)
 		service.RedactionSecrets = secretSource{secrets: []string{opaque}}
 		failIntakeFor(service, errIntake, "monitor:direct_push:conveyor:only")
-		poller := monitor.Poller{Service: service, Source: staticSource(directPush("only")), StartupWindow: time.Hour}
+		poller := monitor.Poller{Service: service, Repository: "conveyor", Source: staticSource(directPush("only")), StartupWindow: time.Hour}
 		err := poller.Poll(ctx)
 		if !errors.Is(err, errIntake) {
 			t.Fatalf("poll err=%v", err)
@@ -689,7 +702,7 @@ func TestPollRedactsConfiguredSecretsFromPassFailure(t *testing.T) {
 		errLookup := errors.New("secrets unavailable")
 		service.RedactionSecrets = secretSource{err: errLookup}
 		failIntakeFor(service, errIntake, "monitor:direct_push:conveyor:only")
-		poller := monitor.Poller{Service: service, Source: staticSource(directPush("only")), StartupWindow: time.Hour}
+		poller := monitor.Poller{Service: service, Repository: "conveyor", Source: staticSource(directPush("only")), StartupWindow: time.Hour}
 		err := poller.Poll(ctx)
 		if !errors.Is(err, errIntake) || !errors.Is(err, errLookup) {
 			t.Fatalf("poll err=%v", err)
@@ -713,7 +726,7 @@ func TestPollRetriesDriftWriteThatFailedAfterLinking(t *testing.T) {
 	failing := &failingDriftWrites{Store: service.Store, err: errWrite, identity: directPush("linked").Identity()}
 	service.Store = failing
 	newer := directPush("after-linked")
-	poller := monitor.Poller{Service: service, Source: staticSource(directPush("linked"), newer), StartupWindow: time.Hour}
+	poller := monitor.Poller{Service: service, Repository: "conveyor", Source: staticSource(directPush("linked"), newer), StartupWindow: time.Hour}
 	if err := poller.Poll(ctx); !errors.Is(err, errWrite) {
 		t.Fatalf("poll err=%v", err)
 	}
@@ -758,7 +771,7 @@ func TestPollCanceledMidPassRecordsFailureNotSuccess(t *testing.T) {
 		cancel()
 		return result, err
 	}
-	poller := monitor.Poller{Service: service, Source: staticSource(directPush("first"), directPush("second")), StartupWindow: time.Hour}
+	poller := monitor.Poller{Service: service, Repository: "conveyor", Source: staticSource(directPush("first"), directPush("second")), StartupWindow: time.Hour}
 	if err := poller.Poll(pollCtx); !errors.Is(err, context.Canceled) {
 		t.Fatalf("poll err=%v", err)
 	}
@@ -783,7 +796,7 @@ func TestPollReturnsFailureToRecordPassFailure(t *testing.T) {
 	errIntake, errStatus := errors.New("intake unavailable"), errors.New("status unavailable")
 	failIntakeFor(service, errIntake, "monitor:direct_push:conveyor:only")
 	service.Store = &failingStatusStore{Store: service.Store, failureErr: errStatus}
-	poller := monitor.Poller{Service: service, Source: staticSource(directPush("only")), StartupWindow: time.Hour}
+	poller := monitor.Poller{Service: service, Repository: "conveyor", Source: staticSource(directPush("only")), StartupWindow: time.Hour}
 	err := poller.Poll(ctx)
 	if !errors.Is(err, errIntake) || !errors.Is(err, errStatus) {
 		t.Fatalf("poll err=%v", err)
@@ -847,6 +860,10 @@ func TestLaggingSecondParentLookupFilesNoTaskOrDrift(t *testing.T) {
 		Run: func(_ context.Context, args ...string) ([]byte, error) {
 			request := strings.Join(args, " ")
 			switch {
+			case strings.HasSuffix(args[3], "/commits/main"):
+				return []byte(`{"sha":"branch-head"}`), nil
+			case strings.HasSuffix(args[3], "...main"):
+				return []byte(`{"status":"diverged"}`), nil
 			case strings.Contains(request, "/commits -f"):
 				return []byte("[" + listing + "]"), nil
 			case strings.Contains(request, "/pulls"):
@@ -860,7 +877,7 @@ func TestLaggingSecondParentLookupFilesNoTaskOrDrift(t *testing.T) {
 	}
 	poll := func() {
 		t.Helper()
-		poller := monitor.Poller{Service: service, Source: source, StartupWindow: 24 * time.Hour}
+		poller := monitor.Poller{Service: service, Repository: "conveyor", Source: source, StartupWindow: 24 * time.Hour}
 		if err := poller.Poll(ctx); err != nil {
 			t.Fatal(err)
 		}
@@ -941,6 +958,8 @@ func TestSharedAncestryDirectPushFilesTaskAndDriftAfterFailedRead(t *testing.T) 
 		Run: func(_ context.Context, args ...string) ([]byte, error) {
 			request := strings.Join(args, " ")
 			switch {
+			case strings.HasSuffix(args[3], "/commits/main"):
+				return []byte(`{"sha":"branch-head"}`), nil
 			case strings.Contains(request, "/commits -f"):
 				return []byte(listing), nil
 			case strings.Contains(request, "/pulls"):
@@ -962,7 +981,7 @@ func TestSharedAncestryDirectPushFilesTaskAndDriftAfterFailedRead(t *testing.T) 
 			}
 		},
 	}
-	poller := monitor.Poller{Service: service, Source: source, StartupWindow: 24 * time.Hour, Attempts: 1,
+	poller := monitor.Poller{Service: service, Repository: "conveyor", Source: source, StartupWindow: 24 * time.Hour, Attempts: 1,
 		Now: func() time.Time { return time.Date(2026, 7, 28, 12, 0, 0, 0, time.UTC) }}
 	if err := poller.Poll(ctx); err == nil {
 		t.Fatal("a failed ancestry read reported a successful poll")

@@ -157,7 +157,7 @@ func TestGitHubSourceRequestCarriesConfiguredBase(t *testing.T) {
 			return nil, fmt.Errorf("unscripted request: %s", request)
 		},
 	}
-	observations, err := source.Observations(t.Context(), time.Now().Add(-time.Hour))
+	observations, err := windowObservations(t.Context(), source, time.Now().Add(-time.Hour))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -176,7 +176,7 @@ func TestGitHubSourceRequestCarriesConfiguredBase(t *testing.T) {
 		reads := 0
 		source := GitHubSource{Repository: "conveyor", GitHubSlug: "acme/conveyor", Base: base,
 			Run: func(context.Context, ...string) ([]byte, error) { reads++; return []byte(`[]`), nil }}
-		if _, err := source.Observations(t.Context(), time.Now()); err == nil || reads != 0 {
+		if _, err := windowObservations(t.Context(), source, time.Now()); err == nil || reads != 0 {
 			t.Fatalf("base %q: err=%v reads=%d, want a refusal with no read", base, err, reads)
 		}
 	}
@@ -210,7 +210,7 @@ func TestGitHubSourceLaggingLookupOnSecondParentIsNotADirectPush(t *testing.T) {
 			}
 			return nil, nil
 		}
-		observations, err := source.Observations(t.Context(), time.Now().Add(-time.Hour))
+		observations, err := windowObservations(t.Context(), source, time.Now().Add(-time.Hour))
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -239,7 +239,7 @@ func TestGitHubSourceLaggingLookupOnSecondParentIsNotADirectPush(t *testing.T) {
 	t.Run("unrecorded merge stays visible with the branch's diff", func(t *testing.T) {
 		forge := &firstParentForge{commits: commits}
 		var audits []suppressedAudit
-		observations, err := firstParentSource(forge, &audits).Observations(t.Context(), time.Now().Add(-time.Hour))
+		observations, err := windowObservations(t.Context(), firstParentSource(forge, &audits), time.Now().Add(-time.Hour))
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -273,7 +273,7 @@ func TestGitHubSourceFastForwardOntoRecordedHeadStaysVisible(t *testing.T) {
 		}
 		return MergeNone, "", nil
 	}
-	observations, err := source.Observations(t.Context(), time.Now().Add(-time.Hour))
+	observations, err := windowObservations(t.Context(), source, time.Now().Add(-time.Hour))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -317,7 +317,7 @@ func TestGitHubSourceBranchCommitCheckFailureCountsForNothing(t *testing.T) {
 				reconciled++
 				return true, nil
 			}
-			observations, err := source.Observations(t.Context(), time.Now().Add(-time.Hour))
+			observations, err := windowObservations(t.Context(), source, time.Now().Add(-time.Hour))
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -355,7 +355,7 @@ func TestGitHubSourceBranchCommitRevertMessageCountsForNothing(t *testing.T) {
 		}
 		return MergeRecorded, "t1", nil
 	}
-	observations, err := source.Observations(t.Context(), time.Now().Add(-time.Hour))
+	observations, err := windowObservations(t.Context(), source, time.Now().Add(-time.Hour))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -405,7 +405,7 @@ func TestGitHubSourceSharedAncestryBehindMissingFirstParentKeepsDirectPush(t *te
 	if err != nil {
 		t.Fatal(err)
 	}
-	observations, err := source.Observations(t.Context(), since)
+	observations, err := windowObservations(t.Context(), source, since)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -558,7 +558,7 @@ func TestGitHubSourceBrokenChainFailsTowardVisibility(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 			forge := &firstParentForge{commits: test.commits, ancestry: test.ancestry, unlisted: test.unlisted}
 			var audits []suppressedAudit
-			observations, err := firstParentSource(forge, &audits).Observations(t.Context(), time.Now().Add(-time.Hour))
+			observations, err := windowObservations(t.Context(), firstParentSource(forge, &audits), time.Now().Add(-time.Hour))
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -621,7 +621,7 @@ func TestGitHubSourceAncestryReadFailureClassifiesNothing(t *testing.T) {
 				}
 				return forge.run(ctx, args...)
 			}
-			observations, err := source.Observations(t.Context(), time.Now().Add(-time.Hour))
+			observations, err := windowObservations(t.Context(), source, time.Now().Add(-time.Hour))
 			if err == nil || observations != nil || githubtrigger.ErrorCategory(err) != test.category {
 				t.Fatalf("observations=%+v err=%v category=%q want %q", observations, err, githubtrigger.ErrorCategory(err), test.category)
 			}
@@ -629,7 +629,7 @@ func TestGitHubSourceAncestryReadFailureClassifiesNothing(t *testing.T) {
 				t.Fatalf("a commit was judged before the failure settled: audits=%+v requests=%v", audits, forge.requests)
 			}
 			failing = false
-			observations, err = source.Observations(t.Context(), time.Now().Add(-time.Hour))
+			observations, err = windowObservations(t.Context(), source, time.Now().Add(-time.Hour))
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -660,7 +660,7 @@ func TestGitHubSourceOutsideFirstParentAuditFailureFailsThePass(t *testing.T) {
 		}
 		return nil
 	}
-	observations, err := source.Observations(t.Context(), time.Now().Add(-time.Hour))
+	observations, err := windowObservations(t.Context(), source, time.Now().Add(-time.Hour))
 	if !errors.Is(err, sentinel) || !strings.Contains(err.Error(), "branch-head") || observations != nil {
 		t.Fatalf("observations=%+v err=%v", observations, err)
 	}
@@ -682,7 +682,7 @@ func TestGitHubSourceBranchCommitLookupFailureFailsThePass(t *testing.T) {
 			return forge.run(ctx, args...)
 		},
 	}
-	if _, err := source.Observations(t.Context(), time.Now().Add(-time.Hour)); err == nil || githubtrigger.ErrorCategory(err) == "" {
+	if _, err := windowObservations(t.Context(), source, time.Now().Add(-time.Hour)); err == nil || githubtrigger.ErrorCategory(err) == "" {
 		t.Fatalf("err=%v, want a categorized forge error", err)
 	}
 }

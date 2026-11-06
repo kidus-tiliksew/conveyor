@@ -133,7 +133,7 @@ func (p *monitorPoller) pollRepository(workspaceCtx context.Context, workspaceID
 	repository, ok := current.Repo(repositoryName)
 	if !ok || repository.GitHub == "" {
 		// Configuration a retry cannot fix: recorded, not retried.
-		_ = p.Service.Store.RecordMonitorFailure(workspaceCtx, "forge_response",
+		_ = p.Service.Store.RecordMonitorFailure(workspaceCtx, repositoryName, "forge_response",
 			"monitored repository requires a GitHub slug", time.Now().Add(current.Monitor.PollInterval))
 		return nil
 	}
@@ -148,7 +148,7 @@ func (p *monitorPoller) pollRepository(workspaceCtx context.Context, workspaceID
 		// Recorded as before, and returned so a push delivery is retried
 		// and the timed fallback logs it (component-runtime, GitHub webhook
 		// applier).
-		_ = p.Service.Store.RecordMonitorFailure(workspaceCtx, string(githubtrigger.ErrorCategory(tokenErr)), tokenErr.Error(), time.Now().Add(current.Monitor.PollInterval))
+		_ = p.Service.Store.RecordMonitorFailure(workspaceCtx, repositoryName, string(githubtrigger.ErrorCategory(tokenErr)), tokenErr.Error(), time.Now().Add(current.Monitor.PollInterval))
 		return fmt.Errorf("resolve GitHub runner for %s: %w", repository.GitHub, tokenErr)
 	}
 	source := monitor.GitHubSource{
@@ -165,6 +165,9 @@ func (p *monitorPoller) pollRepository(workspaceCtx context.Context, workspaceID
 	}
 	source.OnSuppressed = func(ctx context.Context, payload map[string]any) error {
 		return p.Service.Store.AuditMonitor(ctx, "monitor.suppressed", payload)
+	}
+	source.OnWindowFallback = func(ctx context.Context, payload map[string]any) error {
+		return p.Service.Store.AuditMonitor(ctx, "monitor.window_fallback", payload)
 	}
 	source.LoadHints = func(ctx context.Context, revision string) (*monitor.HintContext, error) {
 		return monitor.FetchGitHubHints(ctx, repository.GitHub, revision, runGitHub)
@@ -183,7 +186,7 @@ func (p *monitorPoller) pollRepository(workspaceCtx context.Context, workspaceID
 		}
 	}
 	poller := monitor.Poller{
-		Service: p.Service, Source: source, StartupWindow: current.Monitor.StartupWindow,
+		Service: p.Service, Source: source, Repository: repositoryName, StartupWindow: current.Monitor.StartupWindow,
 		RetryInitial: time.Second, RetryMaximum: 30 * time.Second, Sleep: sleep,
 		StopOnRateLimit: timed,
 	}

@@ -173,6 +173,16 @@ func StatusError(status int, err error) error {
 	return &Error{Category: ForgeStatus, status: status, Err: err}
 }
 
+// HTTPStatus returns the REST status of a forge failure, or zero when err
+// carries none.
+func HTTPStatus(err error) int {
+	var failure *Error
+	if errors.As(err, &failure) {
+		return failure.status
+	}
+	return 0
+}
+
 func forgeCallError(err error) error {
 	if err == nil || ErrorCategory(err) != "" {
 		return err
