@@ -257,6 +257,8 @@ func runRESTTitleRedaction(t *testing.T, x Fixture) {
 	t.Run("FailedSecretReadCreatesNoTask", func(t *testing.T) {
 		title = titleFixtureText
 		key := "title-refused-" + core.NewTaskID()
+		existing, err := f.st.ListTasks(f.ctx)
+		requireOK(t, err)
 		f.withFailedSecretRead(t, func() {
 			for name, response := range map[string]*httptest.ResponseRecorder{
 				"keyed": f.postKeyed(t, handler, body, key),
@@ -274,10 +276,10 @@ func runRESTTitleRedaction(t *testing.T, x Fixture) {
 		if _, found, err := f.st.GetTaskByIntakeKey(f.ctx, key); err != nil || found {
 			t.Fatalf("a refused request stored a task: found=%v err=%v", found, err)
 		}
-		tasks, err := f.st.ListTasksFiltered(f.ctx, store.TaskFilter{Query: "Refused " + key})
+		tasks, err := f.st.ListTasks(f.ctx)
 		requireOK(t, err)
-		if len(tasks) != 0 {
-			t.Fatalf("a refused request stored %d task(s)", len(tasks))
+		if len(tasks) != len(existing) {
+			t.Fatalf("refused requests stored %d task(s)", len(tasks)-len(existing))
 		}
 		// The refusal loses nothing: the same request succeeds once secrets read.
 		id := createdTaskID(t, f.postKeyed(t, handler, body, key), http.StatusCreated)
@@ -408,6 +410,13 @@ func runBlueprintTitleRedaction(t *testing.T, x Fixture) {
 				t.Fatalf("a refused approval recorded %s", event.Kind)
 			}
 		}
+		tasks, err := f.st.ListTasks(f.ctx)
+		requireOK(t, err)
+		for _, stored := range tasks {
+			if stored.ParentTaskID == task.ID {
+				t.Fatal("a refused approval created a child")
+			}
+		}
 		// The operator's approval is not lost: it succeeds once secrets read.
 		children := approveBlueprint(t, f.ctx, f.st, task.ID, spec.Version)
 		if len(children) != 1 {
@@ -417,7 +426,7 @@ func runBlueprintTitleRedaction(t *testing.T, x Fixture) {
 	})
 	t.Run("ApprovalWritingNoTitleNeedsNoSecretRead", func(t *testing.T) {
 		task := parent(t)
-		spec, err := f.st.CreateSpecVersion(f.ctx, core.SpecVersion{TaskID: task.ID, Content: "plain plan", Acceptance: core.JSONPayload([]any{})})
+		spec, err := f.st.CreateSpecVersion(f.ctx, core.SpecVersion{TaskID: task.ID, Content: "plain plan", Acceptance: core.JSONPayload([]any{}), Decomposition: core.JSONPayload([]any{})})
 		requireOK(t, err)
 		f.withFailedSecretRead(t, func() {
 			if _, err := f.st.ApproveSpecVersionAndMaterialize(f.ctx, task.ID, spec.Version); err != nil {
@@ -475,6 +484,9 @@ func runStartOverTitleRedaction(t *testing.T, x Fixture) {
 		requireOK(t, err)
 		if kept.State != old.State || kept.SupersededBy != "" {
 			t.Fatal("a refused start-over changed the task")
+		}
+		if started := taskEventsOfKind(t, f.st, ctx, old.ID, "task.started_over"); len(started) != 0 {
+			t.Fatal("a refused start-over recorded task.started_over")
 		}
 		// The request is not lost, and its replay needs no secret read.
 		got, err := taskops.New(f.st).StartOver(ctx, request)

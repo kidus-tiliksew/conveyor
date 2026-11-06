@@ -157,6 +157,48 @@ func runRedactionCounts(t *testing.T, x Fixture) {
 		requireWriteRecorded(t, x.Backend, v.ctx, v.access.TaskID, "verification."+store.VerificationRegisterObligation, core.RedactionStats{Pattern: 1})
 		requireReplayRecordsNothing(t, &v, c)
 	})
+	t.Run("AttemptStartSanitizeJSON", func(t *testing.T) {
+		// Safe inputs and coverage reach the same start write, and each removal counts.
+		v := newVerificationFixture(t, x)
+		obligation := store.VerificationObligation{ID: "counted-start-" + v.access.TaskID, Description: "Start with inputs", Sources: []store.VerificationCitation{{DocumentID: "req-fixture", Version: 1, SectionID: "AC-1.1"}}, Contract: verification.Exercise{ID: "counted-start", Kind: "script", Argv: []string{"true"}, TimeoutSeconds: 30, RequiredAssertions: []verification.Assertion{}, RetryPolicy: "safe_to_replay", SafetyBasis: "read-only observation"}}
+		registered := v.apply(t, store.VerificationCommand{Kind: store.VerificationRegisterObligation, Obligation: &obligation})
+		v.subject = core.VerificationSubject{Kind: "ordinary", ObligationID: obligation.ID, ContractDigest: registered.Digest}
+		coverage := verificationFixtureCoverage(v.snapshot(t))
+		coverage.Justification = "Covered by " + countFixtureSecret
+		c := store.VerificationCommand{Kind: store.VerificationStartAttempt, Key: "counted-start", Coverage: &coverage, Attempt: &store.VerificationAttempt{Subject: v.subject, SafeInputs: map[string]json.RawMessage{"note": core.JSONPayload("input " + countFixtureSecret)}, Environment: core.VerificationEnvironment{Target: "fixture", OS: "unknown", Architecture: "unknown", Runtime: "unknown", Deployment: "unknown"}}}
+		v.runID = v.apply(t, c).ID
+		requireWriteRecorded(t, x.Backend, v.ctx, v.access.TaskID, "verification."+store.VerificationStartAttempt, core.RedactionStats{Pattern: 2})
+		// Control: a start that stores no new secret records no count.
+		v.apply(t, store.VerificationCommand{Kind: store.VerificationTerminateAttempt, Attempt: &store.VerificationAttempt{State: "failed", Explanation: "plain"}})
+		plain := verificationFixtureCoverage(v.snapshot(t))
+		v.runID = v.apply(t, store.VerificationCommand{Kind: store.VerificationStartAttempt, Key: "plain-start", Coverage: &plain, Attempt: &store.VerificationAttempt{Subject: v.subject, SafeInputs: map[string]json.RawMessage{}, Environment: core.VerificationEnvironment{Target: "fixture", OS: "unknown", Architecture: "unknown", Runtime: "unknown", Deployment: "unknown"}}}).ID
+		requireWriteRecorded(t, x.Backend, v.ctx, v.access.TaskID, "verification."+store.VerificationStartAttempt, core.RedactionStats{})
+	})
+	t.Run("PermissionSanitizeJSON", func(t *testing.T) {
+		v := newVerificationFixture(t, x)
+		var grant string
+		for _, attempt := range v.snapshot(t).Attempts {
+			if attempt.ID == v.runID {
+				grant = attempt.GrantID
+			}
+		}
+		operator, owner := bootstrapOwner(t, x)
+		_, err := x.Backend.ApplyVerification(operator, store.VerificationCommand{Access: store.VerificationAccess{UserID: owner.ID, TaskID: v.access.TaskID, WorkOrderID: v.access.WorkOrderID}, Kind: store.VerificationRevokePermissions, ContextID: v.contextID, Key: "counted-revoke", Permissions: &store.VerificationPermissionRequest{RevokeGrantID: grant, Reason: "stopped for " + countFixtureSecret}})
+		requireOK(t, err)
+		requireWriteRecorded(t, x.Backend, v.ctx, v.access.TaskID, "verification."+store.VerificationRevokePermissions, core.RedactionStats{Pattern: 1})
+	})
+	t.Run("SealSanitizeJSON", func(t *testing.T) {
+		v := newVerificationFixture(t, x, true)
+		coverage := verificationFixtureCoverage(v.snapshot(t))
+		coverage.Justification = "Sealed by " + countFixtureSecret
+		c := store.VerificationCommand{Kind: store.VerificationSeal, Submission: &store.VerificationSubmission{Outcome: "succeeded", Coverage: coverage}}
+		v.apply(t, c)
+		requireWriteRecorded(t, x.Backend, v.ctx, v.access.TaskID, "verification."+store.VerificationSeal, core.RedactionStats{Pattern: 1})
+		requireReplayRecordsNothing(t, &v, c)
+		if result := v.snapshot(t).Contexts[0].Result; result == nil || strings.Contains(result.Submission.Coverage.Justification, countFixtureSecret) {
+			t.Fatal("the seal has no result or stores the secret")
+		}
+	})
 	t.Run("AttemptExplanation", func(t *testing.T) {
 		v := newVerificationFixture(t, x)
 		c := store.VerificationCommand{Kind: store.VerificationTerminateAttempt, Attempt: &store.VerificationAttempt{State: "failed", Explanation: "stopped by " + countFixtureSecret}}
