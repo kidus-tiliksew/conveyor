@@ -12,6 +12,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"encoding/pem"
+	"errors"
 	"fmt"
 	"io/fs"
 	"net/http"
@@ -73,6 +74,17 @@ func planningSnapshotManager(t *testing.T, cfg *config.Config) *gitx.Manager {
 		var data bytes.Buffer
 		gz := gzip.NewWriter(&data)
 		tw := tar.NewWriter(gz)
+		// The archive takes a GitHub tarball's shape: a global header first, the
+		// root directory, the files, and a symbolic link.
+		for _, header := range []*tar.Header{
+			{Name: "pax_global_header", Typeflag: tar.TypeXGlobalHeader, PAXRecords: map[string]string{"comment": parts[2]}},
+			{Name: "root/", Typeflag: tar.TypeDir, Mode: 0755},
+		} {
+			if err := tw.WriteHeader(header); err != nil {
+				http.Error(w, err.Error(), 500)
+				return
+			}
+		}
 		err := filepath.WalkDir(directory, func(file string, entry fs.DirEntry, err error) error {
 			if err != nil {
 				return err
@@ -91,6 +103,9 @@ func planningSnapshotManager(t *testing.T, cfg *config.Config) *gitx.Manager {
 			_, err = tw.Write(raw)
 			return err
 		})
+		if err == nil {
+			err = tw.WriteHeader(&tar.Header{Name: "root/AGENTS.md", Typeflag: tar.TypeSymlink, Linkname: "CLAUDE.md", Mode: 0777})
+		}
 		if err != nil {
 			http.Error(w, err.Error(), 500)
 			return
@@ -191,5 +206,62 @@ func TestSnapshotWorkspaceCredentialPermissionAndCoverage(t *testing.T) {
 	covered = true
 	if _, err = service.workspaceCredential(ctx, "https://github.com/owner/repo"); err != nil {
 		t.Fatalf("covered repo: %v", err)
+	}
+}
+
+// The exploration tools and history read a repository whose archive holds a
+// global header first and a symbolic link, and the link stays unreadable
+// (component-planning invariants 22 and 24).
+func TestExplorationReadsArchiveWithGlobalHeaderAndSymlink(t *testing.T) {
+	ctx, st, session := planningFixture(t, "session-github-archive")
+	local := createPlanningRepo(t, filepath.Join(t.TempDir(), "repo"), "internal/eligibility.go", "package eligibility\n")
+	cfg := &config.Config{Workspace: "demo", Repos: []config.Repo{{Name: "repo", URL: "file://" + local, Base: "main"}}}
+	service := &Service{
+		Store: st, Git: planningSnapshotManager(t, cfg), CredentialContext: planningTestCredential,
+		ConfigProvider: func(context.Context) (*config.Config, error) { return cfg, nil },
+	}
+	for _, test := range []struct{ tool, args, want string }{
+		{"list_files", `{"repo":"repo","path":"internal","depth":0}`, "internal/eligibility.go"},
+		{"read_file", `{"repo":"repo","path":"internal/eligibility.go","offset":1,"limit":10}`, "package eligibility"},
+		{"grep", `{"repo":"repo","pattern":"eligibility","context":0,"mode":"content"}`, "internal/eligibility.go"},
+		{"history", `{"repo":"repo","path":"internal/eligibility.go","n":20}`, "Latest commit context"},
+	} {
+		result, err := service.explorationTool(ctx, session, toolCall{Name: test.tool, ArgumentsJSON: test.args})
+		if err != nil {
+			t.Fatalf("%s err=%v", test.tool, err)
+		}
+		if output, _ := result.Output.(string); !strings.Contains(output, test.want) {
+			t.Fatalf("%s output=%q", test.tool, output)
+		}
+	}
+	listed, err := service.explorationTool(ctx, session, toolCall{Name: "list_files", ArgumentsJSON: `{"repo":"repo","depth":0}`})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if output, _ := listed.Output.(string); strings.Contains(output, "AGENTS.md") || strings.Contains(output, "pax_global_header") {
+		t.Fatalf("skipped entry listed: %q", output)
+	}
+	if _, err = service.explorationTool(ctx, session, toolCall{
+		Name: "read_file", ArgumentsJSON: `{"repo":"repo","path":"AGENTS.md","offset":1,"limit":10}`,
+	}); err == nil {
+		t.Fatal("read a skipped symbolic link")
+	}
+}
+
+// With no connected App, exploration fails as a permission failure that names
+// the repository and the remedy (component-planning invariant 20).
+func TestExplorationWithoutWorkspaceAppNamesRepository(t *testing.T) {
+	ctx, st, session := planningFixture(t, "session-no-app")
+	cfg := &config.Config{Workspace: "demo", Repos: []config.Repo{{Name: "repo", URL: "https://github.com/planning/repo", Base: "main"}}}
+	service := &Service{
+		Store: st, Git: gitx.NewManager(github.NewSnapshotClient(nil, "http://127.0.0.1:1"), 0),
+		ConfigProvider: func(context.Context) (*config.Config, error) { return cfg, nil },
+	}
+	service.Git.Root = filepath.Join(t.TempDir(), "snapshots")
+	_, err := service.explorationTool(ctx, session, toolCall{Name: "list_files", ArgumentsJSON: `{"repo":"repo","depth":0}`})
+	var infrastructure *planningInfrastructureError
+	if !errors.As(err, &infrastructure) || github.ErrorCategory(err) != github.ForgePermission ||
+		!strings.Contains(err.Error(), "planning/repo") || !strings.Contains(err.Error(), "workspace settings") {
+		t.Fatalf("err=%v", err)
 	}
 }

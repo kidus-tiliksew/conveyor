@@ -7,10 +7,12 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io/fs"
 	"math/rand"
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -38,6 +40,46 @@ func testArchive(t *testing.T, files map[string][]byte, extra ...*tar.Header) []
 	}
 	for _, header := range extra {
 		if err := tw.WriteHeader(header); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := tw.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := gz.Close(); err != nil {
+		t.Fatal(err)
+	}
+	return out.Bytes()
+}
+
+// globalHeader is the PAX global header GitHub and git archive write first.
+func globalHeader() *tar.Header {
+	return &tar.Header{Name: "pax_global_header", Typeflag: tar.TypeXGlobalHeader, PAXRecords: map[string]string{"comment": testSHA}}
+}
+
+// githubArchive lays an archive out as a GitHub tarball does: the global header,
+// the root directory, the files, and the symbolic links.
+func githubArchive(t *testing.T, files map[string][]byte, links map[string]string) []byte {
+	t.Helper()
+	var out bytes.Buffer
+	gz := gzip.NewWriter(&out)
+	tw := tar.NewWriter(gz)
+	headers := []*tar.Header{globalHeader(), {Name: "root/", Typeflag: tar.TypeDir, Mode: 0755}}
+	for _, header := range headers {
+		if err := tw.WriteHeader(header); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for name, data := range files {
+		if err := tw.WriteHeader(&tar.Header{Name: "root/" + name, Mode: 0644, Size: int64(len(data))}); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := tw.Write(data); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for name, target := range links {
+		if err := tw.WriteHeader(&tar.Header{Name: "root/" + name, Typeflag: tar.TypeSymlink, Linkname: target, Mode: 0777}); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -168,9 +210,17 @@ func TestSnapshotRejectsUnsafeArchivesAndBothSizeCaps(t *testing.T) {
 	}{
 		{"traversal", testArchive(t, nil, &tar.Header{Name: "root/../escape", Typeflag: tar.TypeDir}), 1 << 20, "traversal"},
 		{"absolute", testArchive(t, nil, &tar.Header{Name: "/escape", Typeflag: tar.TypeDir}), 1 << 20, "unsafe"},
-		{"symlink", testArchive(t, nil, &tar.Header{Name: "root/link", Typeflag: tar.TypeSymlink, Linkname: "/etc"}), 1 << 20, "entry type"},
+		{"symlink outside the root", testArchive(t, nil, &tar.Header{Name: "root/file", Typeflag: tar.TypeDir}, &tar.Header{Name: "other/link", Typeflag: tar.TypeSymlink, Linkname: "/etc"}), 1 << 20, "multiple roots"},
+		{"symlink traversal", testArchive(t, nil, &tar.Header{Name: "root/../link", Typeflag: tar.TypeSymlink, Linkname: "/etc"}), 1 << 20, "traversal"},
+		{"symlink absolute", testArchive(t, nil, &tar.Header{Name: "/link", Typeflag: tar.TypeSymlink, Linkname: "/etc"}), 1 << 20, "unsafe"},
+		{"symlink as root", testArchive(t, nil, &tar.Header{Name: "link", Typeflag: tar.TypeSymlink, Linkname: "/etc"}), 1 << 20, "root is not a directory"},
 		{"hardlink", testArchive(t, nil, &tar.Header{Name: "root/link", Typeflag: tar.TypeLink, Linkname: "root/file"}), 1 << 20, "entry type"},
 		{"device", testArchive(t, nil, &tar.Header{Name: "root/device", Typeflag: tar.TypeChar}), 1 << 20, "entry type"},
+		{"hardlink after global header", testArchive(t, nil, globalHeader(), &tar.Header{Name: "root/link", Typeflag: tar.TypeLink, Linkname: "root/file"}), 1 << 20, "entry type"},
+		{"device after global header", testArchive(t, nil, globalHeader(), &tar.Header{Name: "root/device", Typeflag: tar.TypeChar}), 1 << 20, "entry type"},
+		{"global header traversal", testArchive(t, nil, &tar.Header{Name: "../pax_global_header", Typeflag: tar.TypeXGlobalHeader, PAXRecords: map[string]string{"comment": testSHA}}), 1 << 20, "traversal"},
+		{"global header only", testArchive(t, nil, globalHeader()), 1 << 20, "archive is empty"},
+		{"extracted after global header and symlink", githubArchive(t, map[string][]byte{"large": bytes.Repeat([]byte("a"), 4096)}, map[string]string{"link": "large"}), 1024, "extracted size"},
 		{"extracted", testArchive(t, map[string][]byte{"large": bytes.Repeat([]byte("a"), 4096)}), 1024, "extracted size"},
 		{"compressed", testArchive(t, map[string][]byte{"random": random}), 4096, "compressed transfer"},
 	}
@@ -187,6 +237,135 @@ func TestSnapshotRejectsUnsafeArchivesAndBothSizeCaps(t *testing.T) {
 				t.Fatalf("leaked extraction: %v", matches)
 			}
 		})
+	}
+}
+
+// A GitHub tarball holds a global header first and may hold symbolic links.
+// It opens, reads return content, and no link reaches the disk
+// (component-planning invariants 22 and 24).
+func TestSnapshotOpensGitHubArchiveWithGlobalHeaderAndSymlink(t *testing.T) {
+	content := "package eligibility\n"
+	m, ctx, _ := snapshotFixture(t, githubArchive(t,
+		map[string][]byte{"CLAUDE.md": []byte("guidance\n"), "internal/eligibility.go": []byte(content)},
+		map[string]string{"AGENTS.md": "CLAUDE.md", "escape": "../../../../etc/passwd"},
+	))
+	snapshot := openFixture(t, m, ctx)
+	for _, name := range []string{"AGENTS.md", "escape"} {
+		if _, err := os.Lstat(filepath.Join(snapshot.Repository, name)); !os.IsNotExist(err) {
+			t.Fatalf("link %s materialized: %v", name, err)
+		}
+		if _, err := m.ReadSnapshotBlob(ctx, snapshot, name, 1<<20); err == nil {
+			t.Fatalf("read skipped link %s", name)
+		}
+	}
+	if _, err := os.Lstat(filepath.Join(snapshot.Repository, "pax_global_header")); !os.IsNotExist(err) {
+		t.Fatalf("global header materialized: %v", err)
+	}
+	entries, truncated, err := m.ListSnapshotTree(ctx, snapshot, ".", 1<<20)
+	if err != nil || truncated || len(entries) != 2 {
+		t.Fatalf("tree=%+v truncated=%v err=%v", entries, truncated, err)
+	}
+	blob, err := m.ReadSnapshotBlob(ctx, snapshot, "internal/eligibility.go", 1<<20)
+	if err != nil || string(blob) != content {
+		t.Fatalf("blob=%q err=%v", blob, err)
+	}
+	matches, _, err := m.GrepSnapshot(ctx, snapshot, "eligibility", "internal", 0, false, false, 200, 1<<20)
+	if err != nil || !strings.Contains(matches, "eligibility.go:1:") {
+		t.Fatalf("grep=%q err=%v", matches, err)
+	}
+	history, err := m.SnapshotHistory(ctx, snapshot, "internal/eligibility.go", 20, 1<<20)
+	if err != nil || !strings.Contains(history, "initial") || !strings.Contains(history, "Latest commit context:") {
+		t.Fatalf("history=%q err=%v", history, err)
+	}
+}
+
+// A second global header and a path through a skipped link stay inside the
+// snapshot: the skipped link leaves nothing for a later entry to follow.
+func TestSnapshotSkippedLinkCannotRedirectLaterEntries(t *testing.T) {
+	outside := t.TempDir()
+	var out bytes.Buffer
+	gz := gzip.NewWriter(&out)
+	tw := tar.NewWriter(gz)
+	for _, header := range []*tar.Header{
+		globalHeader(),
+		{Name: "root/link", Typeflag: tar.TypeSymlink, Linkname: outside},
+		globalHeader(),
+		{Name: "root/link/file", Mode: 0644, Size: 4},
+	} {
+		if err := tw.WriteHeader(header); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := tw.Write([]byte("data")); err != nil {
+		t.Fatal(err)
+	}
+	if err := tw.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := gz.Close(); err != nil {
+		t.Fatal(err)
+	}
+	m, ctx, _ := snapshotFixture(t, out.Bytes())
+	snapshot := openFixture(t, m, ctx)
+	info, err := os.Lstat(filepath.Join(snapshot.Repository, "link"))
+	if err != nil || !info.IsDir() {
+		t.Fatalf("link path info=%v err=%v", info, err)
+	}
+	blob, err := m.ReadSnapshotBlob(ctx, snapshot, "link/file", 1<<20)
+	if err != nil || string(blob) != "data" {
+		t.Fatalf("blob=%q err=%v", blob, err)
+	}
+	if escaped, _ := os.ReadDir(outside); len(escaped) != 0 {
+		t.Fatalf("entry escaped through a link: %v", escaped)
+	}
+}
+
+// This repository's own archive holds a global header and AGENTS.md -> CLAUDE.md.
+// git archive writes the format GitHub's tarball endpoint serves. The test skips
+// outside a Git checkout.
+func TestSnapshotOpensThisRepositoryArchive(t *testing.T) {
+	toplevel, err := exec.Command("git", "rev-parse", "--show-toplevel").Output()
+	if err != nil {
+		t.Skipf("not a Git checkout: %v", err)
+	}
+	raw, err := exec.Command("git", "-C", strings.TrimSpace(string(toplevel)), "archive", "--format=tar", "--prefix=root/", "HEAD").Output()
+	if err != nil {
+		t.Fatalf("git archive: %v", err)
+	}
+	var out bytes.Buffer
+	gz, err := gzip.NewWriterLevel(&out, gzip.BestSpeed)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = gz.Write(raw); err != nil {
+		t.Fatal(err)
+	}
+	if err = gz.Close(); err != nil {
+		t.Fatal(err)
+	}
+	m, ctx, _ := snapshotFixture(t, out.Bytes())
+	snapshot := openFixture(t, m, ctx)
+	if _, err = os.Lstat(filepath.Join(snapshot.Repository, "AGENTS.md")); !os.IsNotExist(err) {
+		t.Fatalf("AGENTS.md link materialized: %v", err)
+	}
+	guidance, err := m.ReadSnapshotBlob(ctx, snapshot, "CLAUDE.md", 1<<20)
+	if err != nil || !strings.Contains(string(guidance), "Conveyor") {
+		t.Fatalf("CLAUDE.md len=%d err=%v", len(guidance), err)
+	}
+	module, err := m.ReadSnapshotBlob(ctx, snapshot, "go.mod", 1<<20)
+	if err != nil || !strings.Contains(string(module), "module github.com/kidus-tiliksew/conveyor") {
+		t.Fatalf("go.mod=%q err=%v", module, err)
+	}
+	if err = filepath.WalkDir(snapshot.Repository, func(name string, entry fs.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+		if entry.Type()&os.ModeSymlink != 0 {
+			return fmt.Errorf("materialized link %s", name)
+		}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
 	}
 }
 func TestSnapshotConcurrentReuseTerminalCleanupAndRestart(t *testing.T) {

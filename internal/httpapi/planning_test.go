@@ -17,6 +17,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/kidus-tiliksew/conveyor/internal/config"
 	"github.com/kidus-tiliksew/conveyor/internal/core"
 	"github.com/kidus-tiliksew/conveyor/internal/gitx"
 	"github.com/kidus-tiliksew/conveyor/internal/inprocess"
@@ -357,6 +358,126 @@ func TestPlanningHTTPRedactsInternalRunErrors(t *testing.T) {
 	if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), "Planning request failed") ||
 		strings.Contains(response.Body.String(), "secret-path") || strings.Contains(response.Body.String(), "private stderr") {
 		t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
+	}
+}
+
+// A failed turn shows a forge permission failure's own text, which names the
+// repository and the remedy, and keeps the generic text for every other failure
+// (req-delivery-and-forge AC-1.4, AC-1.8; component-planning invariant 20).
+func TestPlanningHTTPTurnFailureText(t *testing.T) {
+	const (
+		generic = "Planning request failed. Please retry."
+		token   = "ghs_planningfixturetoken"
+		body    = "private-github-response-body"
+		listAll = `{"response_text":"","tool_calls":[{"id":"call-1","name":"list_files","arguments_json":"{\"repo\":\"repo\",\"depth\":0}"}]}`
+	)
+	forgeAnswering := func(t *testing.T, status int, headers map[string]string) *gitx.Manager {
+		t.Helper()
+		forge := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			for name, value := range headers {
+				w.Header().Set(name, value)
+			}
+			w.WriteHeader(status)
+			fmt.Fprint(w, body+" "+token)
+		}))
+		t.Cleanup(forge.Close)
+		manager := gitx.NewManager(github.NewSnapshotClient(forge.Client(), forge.URL), 0)
+		manager.Root = filepath.Join(t.TempDir(), "snapshots")
+		return manager
+	}
+	withToken := func(ctx context.Context, _ string) (context.Context, error) {
+		return github.WithCredential(ctx, token, github.AppIdentity("demo")), nil
+	}
+	for _, test := range []struct {
+		name       string
+		git        func(*testing.T) *gitx.Manager
+		credential func(context.Context, string) (context.Context, error)
+		agent      inprocess.Agent
+		want       []string
+	}{
+		{
+			name:  "no connected App names the repository and remedy",
+			git:   func(*testing.T) *gitx.Manager { return gitx.NewManager(nil, 0) },
+			agent: planningHTTPAgent{output: listAll},
+			want:  []string{"workspace demo GitHub App", "planning/repo", "workspace settings"},
+		},
+		{
+			name:       "uncovered repository names the repository and remedy",
+			git:        func(t *testing.T) *gitx.Manager { return forgeAnswering(t, http.StatusNotFound, nil) },
+			credential: withToken,
+			agent:      planningHTTPAgent{output: listAll},
+			want:       []string{"planning/repo", "workspace settings"},
+		},
+		{
+			name:       "refused token names the repository and remedy",
+			git:        func(t *testing.T) *gitx.Manager { return forgeAnswering(t, http.StatusForbidden, nil) },
+			credential: withToken,
+			agent:      planningHTTPAgent{output: listAll},
+			want:       []string{"planning/repo", "workspace settings"},
+		},
+		{
+			name:       "forge status failure keeps the generic text",
+			git:        func(t *testing.T) *gitx.Manager { return forgeAnswering(t, http.StatusInternalServerError, nil) },
+			credential: withToken,
+			agent:      planningHTTPAgent{output: listAll},
+			want:       []string{generic},
+		},
+		{
+			name: "forge rate limit keeps the generic text",
+			git: func(t *testing.T) *gitx.Manager {
+				return forgeAnswering(t, http.StatusForbidden, map[string]string{"X-RateLimit-Remaining": "0"})
+			},
+			credential: withToken,
+			agent:      planningHTTPAgent{output: listAll},
+			want:       []string{generic},
+		},
+		{
+			name:  "uncategorized failure keeps the generic text",
+			git:   func(*testing.T) *gitx.Manager { return gitx.NewManager(nil, 0) },
+			agent: failingPlanningHTTPAgent{},
+			want:  []string{generic},
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			st := store.NewMemory()
+			ctx := store.WithWorkspace(store.WithActor(t.Context(), store.SystemActor()), "demo")
+			session, err := st.CreatePlanningSession(ctx, core.PlanningSession{ID: "session-http-permission"})
+			if err != nil {
+				t.Fatal(err)
+			}
+			cfg := &config.Config{Workspace: "demo", Repos: []config.Repo{{Name: "repo", URL: "https://github.com/planning/repo", Base: "main"}}}
+			manager := test.git(t)
+			manager.Root = filepath.Join(t.TempDir(), "snapshots")
+			server := NewServer(st)
+			server.Workspace, server.BearerToken = "demo", "token"
+			server.Planning = &planning.Service{
+				Store: st, Agent: test.agent, Model: "planner", Prompt: planningHTTPPrompt, Git: manager,
+				CredentialContext: test.credential,
+				ConfigProvider:    func(context.Context) (*config.Config, error) { return cfg, nil },
+			}
+			request := httptest.NewRequest(http.MethodPost, "/v1/planning-sessions/"+session.ID+"/messages",
+				strings.NewReader(`{"content":"Explore the repository"}`))
+			request.Header.Set("Authorization", "Bearer token")
+			response := httptest.NewRecorder()
+			server.Handler().ServeHTTP(response, request)
+			text := response.Body.String()
+			if response.Code != http.StatusOK || !strings.Contains(text, `"type":"error"`) || !strings.HasSuffix(text, "data: [DONE]\n\n") {
+				t.Fatalf("status=%d body=%s", response.Code, text)
+			}
+			for _, want := range test.want {
+				if !strings.Contains(text, want) {
+					t.Fatalf("body missing %q: %s", want, text)
+				}
+			}
+			for _, absent := range []string{body, token, "secret-path", "private stderr", "infrastructure", "HTTP 500"} {
+				if strings.Contains(text, absent) {
+					t.Fatalf("body carries %q: %s", absent, text)
+				}
+			}
+			if test.want[0] != generic && strings.Contains(text, generic) {
+				t.Fatalf("permission failure kept the generic text: %s", text)
+			}
+		})
 	}
 }
 

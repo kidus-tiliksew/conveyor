@@ -14,6 +14,7 @@ import (
 	"github.com/kidus-tiliksew/conveyor/internal/core"
 	"github.com/kidus-tiliksew/conveyor/internal/planning"
 	"github.com/kidus-tiliksew/conveyor/internal/store"
+	"github.com/kidus-tiliksew/conveyor/internal/trigger/github"
 )
 
 const maxPlanningRequestBytes = 1 << 20
@@ -284,10 +285,25 @@ func (s *Server) streamPlanningMessage(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, "planning request failed", http.StatusInternalServerError)
 			return
 		}
-		_ = emit(map[string]any{"type": "error", "errorText": "Planning request failed. Please retry."})
+		_ = emit(map[string]any{"type": "error", "errorText": s.planningTurnFailureText(context.WithoutCancel(r.Context()), err)})
 	}
 	_, _ = io.WriteString(w, "data: [DONE]\n\n")
 	flusher.Flush()
+}
+
+// planningTurnFailureText is what a failed turn tells the caller. A forge
+// permission failure shows its own text, which names the repository and the
+// workspace-settings remedy (req-delivery-and-forge AC-1.4, AC-1.8; DEC-105(1)).
+// Only the categorized failure's text is shown, not the wrapping around it, and
+// it passes redaction first (req-security-boundaries REQ-2). Every other failure
+// keeps the generic text.
+func (s *Server) planningTurnFailureText(ctx context.Context, err error) string {
+	const generic = "Planning request failed. Please retry."
+	var forge *github.Error
+	if !errors.As(err, &forge) || forge.Category != github.ForgePermission {
+		return generic
+	}
+	return s.redactedFailureDetail(ctx, forge, generic)
 }
 
 func (s *Server) validatePlanningAttachments(ctx context.Context, sessionID string, raw json.RawMessage) error {

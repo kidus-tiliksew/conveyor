@@ -95,6 +95,17 @@ func AppIdentity(workspace string) string { return "workspace " + workspace + " 
 func AppPermission(workspace string) error {
 	return PermissionError(fmt.Errorf("workspace %s GitHub App is missing, revoked, suspended, or lacks repository access; connect the GitHub App in workspace settings", workspace))
 }
+
+// AppRepositoryPermission is AppPermission for an act that addressed one
+// repository, so the failure names that repository as well as the workspace
+// and the remedy (req-delivery-and-forge AC-1.4). An empty slug has nothing to
+// name and answers AppPermission.
+func AppRepositoryPermission(workspace, slug string) error {
+	if slug == "" {
+		return AppPermission(workspace)
+	}
+	return PermissionError(fmt.Errorf("workspace %s GitHub App is missing, revoked, suspended, or lacks access to repository %s; connect the GitHub App in workspace settings", workspace, slug))
+}
 func (c *AppClient) runner(token, workspace string) AppRunner {
 	if c.Runner != nil {
 		return c.Runner(token, AppIdentity(workspace))
@@ -324,10 +335,13 @@ func (c *AppClient) ConvertManifest(ctx context.Context, code string) (core.Work
 func (c *AppClient) RequireRepository(ctx context.Context, workspace, token, slug string) error {
 	repos, err := c.Repositories(ctx, workspace, token)
 	if err != nil {
+		if ErrorCategory(err) == ForgePermission {
+			return AppRepositoryPermission(workspace, slug)
+		}
 		return err
 	}
 	if !repos[strings.ToLower(slug)] {
-		return AppPermission(workspace)
+		return AppRepositoryPermission(workspace, slug)
 	}
 	return nil
 }

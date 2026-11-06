@@ -10,6 +10,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"encoding/pem"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -129,8 +130,9 @@ func TestAppManifestInstallationTokensAndCoverage(t *testing.T) {
 	if err = client.RequireRepository(t.Context(), "demo", first, "org/repo"); err != nil {
 		t.Fatal(err)
 	}
-	if err = client.RequireRepository(t.Context(), "demo", first, "org/uncovered"); ErrorCategory(err) != ForgePermission {
-		t.Fatal("uncovered repository category")
+	if err = client.RequireRepository(t.Context(), "demo", first, "org/uncovered"); ErrorCategory(err) != ForgePermission ||
+		!strings.Contains(err.Error(), "org/uncovered") || !strings.Contains(err.Error(), "workspace settings") {
+		t.Fatalf("uncovered repository err=%v", err)
 	}
 	now = now.Add(55 * time.Minute)
 	second, err := client.Token(t.Context(), "demo", app)
@@ -218,5 +220,48 @@ func TestAppPermissionAndMalformedResponses(t *testing.T) {
 		if _, err := (&AppClient{}).Token(context.Background(), "demo", bad); ErrorCategory(err) != ForgePermission {
 			t.Fatal("missing app/key category")
 		}
+	}
+}
+
+func TestAppRepositoryPermissionNamesRepositoryAndRemedy(t *testing.T) {
+	err := AppRepositoryPermission("demo", "org/repo")
+	if ErrorCategory(err) != ForgePermission {
+		t.Fatalf("category=%q", ErrorCategory(err))
+	}
+	for _, want := range []string{"workspace demo", "org/repo", "workspace settings"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Fatalf("err=%q missing %q", err, want)
+		}
+	}
+	if err = AppRepositoryPermission("demo", ""); err.Error() != AppPermission("demo").Error() || ErrorCategory(err) != ForgePermission {
+		t.Fatalf("empty slug err=%v", err)
+	}
+	if got := AppPermission("demo").Error(); strings.Contains(got, "org/repo") || !strings.Contains(got, "workspace settings") {
+		t.Fatalf("AppPermission=%q", got)
+	}
+}
+
+// A failed coverage read names the repository only under the permission
+// category, and it carries no GitHub response body.
+func TestRequireRepositoryCoverageReadFailures(t *testing.T) {
+	for _, test := range []struct {
+		name     string
+		failure  error
+		category ForgeErrorCategory
+		names    bool
+	}{
+		{"permission", PermissionError(errors.New("private GitHub body")), ForgePermission, true},
+		{"status", StatusError(500, errors.New("private GitHub body")), ForgeStatus, false},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			client := &AppClient{Runner: func(string, string) AppRunner {
+				return func(context.Context, ...string) ([]byte, error) { return nil, test.failure }
+			}}
+			err := client.RequireRepository(t.Context(), "demo", "token", "org/repo")
+			if ErrorCategory(err) != test.category || strings.Contains(err.Error(), "private GitHub body") ||
+				strings.Contains(err.Error(), "org/repo") != test.names {
+				t.Fatalf("err=%v category=%q", err, ErrorCategory(err))
+			}
+		})
 	}
 }
