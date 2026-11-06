@@ -354,11 +354,11 @@ func runInboxAttentionCountBodyFree(t *testing.T, x Fixture) {
 	// The rows differ from ListTasksFiltered in Body alone, for the count's
 	// filter, an inactive filter, and a narrowing filter.
 	openFilter := store.TaskFilter{States: attentionOpenStates}
-	var fullRows, leanRows []core.Task
-	for name, filter := range map[string]store.TaskFilter{"open": openFilter, "inactive": {}, "query": {States: attentionOpenStates, Query: working}} {
+	sameRows := func(name string, filter store.TaskFilter) (full, lean []core.Task) {
+		t.Helper()
 		full, err := st.ListTasksFiltered(ctx, filter)
 		requireOK(t, err)
-		lean, err := st.ListTasksFilteredWithoutBody(ctx, filter)
+		lean, err = st.ListTasksFilteredWithoutBody(ctx, filter)
 		requireOK(t, err)
 		bodies := 0
 		cleared := make([]core.Task, len(full))
@@ -370,10 +370,11 @@ func runInboxAttentionCountBodyFree(t *testing.T, x Fixture) {
 		if len(lean) == 0 || bodies == 0 || !reflect.DeepEqual(lean, cleared) {
 			t.Fatalf("%s filter: ListTasksFilteredWithoutBody differs from ListTasksFiltered beyond Body (%d body bytes):\n lean %+v\n full %+v", name, bodies, lean, cleared)
 		}
-		if name == "open" {
-			fullRows, leanRows = full, lean
-		}
+		return full, lean
 	}
+	sameRows("inactive", store.TaskFilter{})
+	sameRows("query", store.TaskFilter{States: attentionOpenStates, Query: working})
+	fullRows, leanRows := sameRows("open", openFilter)
 	inverted := store.TaskFilter{UpdatedFrom: now, UpdatedTo: now.Add(-time.Hour)}
 	if _, err := st.ListTasksFilteredWithoutBody(ctx, inverted); err == nil {
 		t.Fatal("ListTasksFilteredWithoutBody accepted an inverted range")
@@ -475,6 +476,21 @@ func runInboxAttentionCountBodyFree(t *testing.T, x Fixture) {
 	requireOK(t, err)
 	if after != count {
 		t.Fatalf("another workspace's decision moved the count from %d to %d", count, after)
+	}
+	// The count discards foreign rows itself, so the read's own workspace scope
+	// shows only in its rows: they keep matching ListTasksFiltered, and on a
+	// durable backend, which scopes that read, they hold no foreign task.
+	for name, filter := range map[string]store.TaskFilter{"foreign open": openFilter, "foreign inactive": {}} {
+		_, lean := sameRows(name, filter)
+		foreign := slices.ContainsFunc(lean, func(task core.Task) bool { return task.Workspace != x.Workspace })
+		if foreign && x.DrainReadBytes != nil {
+			t.Fatalf("%s filter: ListTasksFilteredWithoutBody returned another workspace's task", name)
+		}
+	}
+	otherRows, err := st.ListTasksFilteredWithoutBody(otherCtx, openFilter)
+	requireOK(t, err)
+	if !slices.ContainsFunc(otherRows, func(task core.Task) bool { return task.ID == otherID && task.Body == "" }) {
+		t.Fatalf("the other workspace's read = %+v, want its own task %s without a body", otherRows, otherID)
 	}
 
 	if x.DrainReadBytes == nil {

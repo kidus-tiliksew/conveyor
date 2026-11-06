@@ -220,7 +220,13 @@ func RunAll(t *testing.T, factory Factory) {
 	run("RedispatchOfferParity", func(t *testing.T) { runRedispatchOfferParity(t, factory.fresh(t, nil)) })
 	run("RedispatchPlanRevisionGate", func(t *testing.T) { runRedispatchPlanRevisionGate(t, factory.fresh(t, nil), factory.PlanRevisionGate) })
 	run("InboxAttentionCount", func(t *testing.T) { runInboxAttentionCount(t, factory.fresh(t, nil)) })
-	run("InboxAttentionCountBodyFree", func(t *testing.T) { runInboxAttentionCountBodyFree(t, factory.fresh(t, nil)) })
+	run("InboxAttentionCountBodyFree", func(t *testing.T) {
+		x := factory.fresh(t, nil)
+		if factory.ProductionCapable && x.DrainReadBytes == nil {
+			t.Fatal("production-capable conformance fixture must provide DrainReadBytes")
+		}
+		runInboxAttentionCountBodyFree(t, x)
+	})
 	run("HoldRetirement", func(t *testing.T) { runHoldRetirement(t, factory.fresh(t, nil), factory.ClaimService) })
 	run("ReviewDistinctModelsNoClaimStall", func(t *testing.T) {
 		runDistinctModelsNoClaimFailure(t, factory.fresh(t, nil), factory.ClaimService)
