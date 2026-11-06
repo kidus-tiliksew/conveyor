@@ -389,7 +389,7 @@ func runTaskRecoveryReads(t *testing.T, x Fixture, ctx context.Context) {
 	t.Run("the workspace scopes the rows", func(t *testing.T) {
 		foreign := x.Workspace + "-recovery"
 		foreignCtx := store.WithActor(store.WithWorkspace(context.Background(), foreign), store.SystemActor())
-		_, err := st.CreateWorkspace(foreignCtx, foreign, "Recovery", &config.Config{Workspace: foreign})
+		_, err := st.BootstrapWorkspaceConfig(foreignCtx, &config.Config{Workspace: foreign, Repos: x.Config.Repos})
 		requireOK(t, err)
 		other := seed(t, foreignCtx, foreign, nil)
 		for _, ids := range [][]string{{other.ID}, {full.ID, other.ID}} {
