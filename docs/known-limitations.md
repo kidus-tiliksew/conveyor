@@ -22,11 +22,13 @@ Conveyor calculates no USD cost for them.
 
 A claim may request a lease of at most one hour. Expired claims return to the
 queue when work orders are listed or claimed, but reclaiming never extends the
-fixed execution deadline that began at the first successful claim. Unclaimed
-orders have a separate configurable queue-retention timeout (default `24h`);
-after that they become explicitly `stale` and require
-`redispatch_work_order`. Phase 4.7 has no heartbeat tool; long work should
-claim again after expiry or choose a lease matching the expected operation.
+fixed execution deadline that began at the first successful claim. An unclaimed
+order that reads `stale` past the queue-retention timeout (default `24h`) needs no
+agent action: the order clock returns it to the queue with
+`work_order.redispatched` (DEC-117(2)). An operator can return one sooner with
+`conveyor order recover` (`POST /v1/work-orders/{id}/recover`), and no MCP tool
+does this. Phase 4.7 has no heartbeat tool; long work should claim again after
+expiry or choose a lease matching the expected operation.
 
 ## Legacy task retries cannot add pinned intake context
 
