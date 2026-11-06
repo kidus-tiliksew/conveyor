@@ -37,19 +37,20 @@ Design drift is sharper. Every confirmed System Design document declares the
 paths it governs in its `conveyor:governs` code block
 ([details](document-corpus.md#system-design-documents)). When any observed
 change, including the factory's own merges, touches governed paths, Conveyor
-checks whether the delivering work already accounted for the design:
+judges each matching design on its own (`component-monitor-drift`):
 
-- If the task proposed a revision to that design before merging, no drift.
-  The proposal is the accounting.
-- If the design was attached to the task as pinned context and the merge came
-  through the pipeline, no drift; a consultation event is recorded instead,
-  and the design's page shows the delivery consulted it.
-- Otherwise, a drift record is written against that design version, with the
-  matching paths and the causal merge event.
+- A merge whose task held the design records a merge judgment with no drift. An
+  attachment derived from the submitted diff counts the same as an operator's
+  attachment. The judgment asserts no read: a consultation records a session's
+  read of the design text (DEC-103(5)).
+- Any other change to governed paths records drift against that design version,
+  with the matching paths and any causal merge event. A direct push, an external
+  merge, and a revert carry no causal merge event, so each always lands here.
 
-This is why the task-filing convention says to name the governing design and
-state whether the change alters the documented mechanism: a task that engages
-with its governing design honestly never trips the wire.
+A task authors no document version (DEC-102(1)), so no delivery accounts for a
+governed change by proposing a revision. A change to a design goes through
+operator-side planning and is confirmed before the tasks that depend on it are
+filed (DEC-102(2)).
 
 Resolving drift is an audited judgment with four outcomes:
 

@@ -77,7 +77,7 @@ with no channel back to the author. Hold every draft to this discipline —
 DEC-28 makes it a review criterion at confirmation:
 
 - One tier per job: requirements state verifiable intent, System Design
-  states what the system is, decisions carry the why. Never embed rationale
+  states what must stay true, decisions carry the why. Never embed rationale
   in a requirement or design body; extract it with propose_decision and
   cite the DEC-n.
 - Every normative claim carries an ID a code comment can cite. Write
@@ -95,24 +95,47 @@ DEC-28 makes it a review criterion at confirmation:
   serves stale authority everywhere it governs.
 - Requirements are black-box contracts with one capability per document.
   They prescribe no storage, service, query, queue, or algorithm unless that
-  mechanism is itself a public contract (DEC-57(1)).
+  mechanism is itself a public contract (DEC-109(1)).
 - When confirmed documents disagree, requirements outrank decisions, which
-  outrank System Design documents (DEC-57(2)).
+  outrank System Design documents (DEC-109(2)).
 - Reference documents orient; they never restate acceptance criteria
-  (DEC-57(3)).
+  (DEC-109(3)).
 - A proposal cannot cite a pending decision or design as authority. Confirm
   requirements before decisions that cite them, then decisions before designs
-  that cite both (DEC-57(4)).
-- Recommend DEC-57(5)'s baseline-and-overlay pattern when list_system_designs
-  returns no documents before a first design, delivery already spans several
-  design baselines, or the operator asks how to document in-flight work.
-  Explain evergreen component baselines and a temporary feature overlay that
-  opens with the exact baseline versions it changes, implemented requirements,
-  delivery state, and the absorbing document for each lasting mechanism; once
-  absorbed, the archived overlay names its successors. Let the operator
-  decline without blocking the draft; the overlay never outranks a requirement
-  or decision. Do not reintroduce the pattern when existing designs are present
-  and the operator has not raised it.
+  that cite both (DEC-109(4)).
+- Teach every workspace one System Design standard: the content test of DEC-100
+  and the component and feature shapes of DEC-101(2) to (8) (DEC-109(5)).
+  Conveyor encodes neither shape as a document kind or lifecycle state.
+- A System Design document states what must stay true: boundaries, public
+  surfaces, invariants, and failure behavior. The code states how the system
+  works today (DEC-100(1)).
+- Content test: a sentence belongs only when a behavior-preserving refactor
+  would not force an edit to it, and either a caller or another component would
+  break if it became false or a reviewer should reject a pull request that
+  violates it (DEC-100(2)). A document holds no implementation walkthroughs, test
+  inventories, task identifiers, change plans, or narration of removed mechanisms
+  (DEC-100(4)).
+- A component design has the category `Component design` and an ID
+  `component-<name>`. It describes one lasting capability or platform service:
+  one that outlives any single feature, whose contract fits in one paragraph, and
+  that owns code named by directory (DEC-101(2)). A domain component owns one
+  capability from storage through its user-interface contract. A platform
+  component sets rules other components follow and names no specific feature
+  (DEC-101(3)). A component design holds its boundary, public surfaces, numbered
+  invariants, state and failure model, extension rules, verification by suite or
+  gate, and governs fence, and aims for about 2,500 words (DEC-101(4)).
+- A feature design has the category `Feature design` and an ID `feature-<name>`.
+  It plans one change that spans several tasks or components, names the component
+  versions it changes, governs no path (`paths: []`), and aims for about 2,000
+  words. A one-task change has no feature design (DEC-101(5)). The last task of a
+  feature design closes it: its surfaces and invariants move into the components
+  it changes, a new capability becomes a new component, and the feature design is
+  archived naming its successors (DEC-101(6)). Planning drafts those versions; a
+  task authors none (DEC-102(1), (2)).
+- Every source, test, build, configuration, and mechanism-documentation path is
+  governed by exactly one component design (DEC-101(7)). Historical evidence and
+  narrative guides that restate no mechanism are governed by no document
+  (DEC-101(8)).
 
 Prose discipline, applying the corpus sentence rules
 (ref-260823-f4729f v2, informative):
