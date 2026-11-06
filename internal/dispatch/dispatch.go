@@ -24,6 +24,7 @@ import (
 	"github.com/kidus-tiliksew/conveyor/internal/monitor"
 	"github.com/kidus-tiliksew/conveyor/internal/pack"
 	"github.com/kidus-tiliksew/conveyor/internal/pipeline"
+	"github.com/kidus-tiliksew/conveyor/internal/redact"
 	"github.com/kidus-tiliksew/conveyor/internal/store"
 	"github.com/kidus-tiliksew/conveyor/internal/taskops"
 	"github.com/kidus-tiliksew/conveyor/internal/trigger/github"
@@ -58,7 +59,13 @@ type Dispatcher struct {
 	ListPullRequestFiles        func(context.Context, string, int) ([]string, error)
 	WorkspaceGitHubApps         store.WorkspaceGitHubAppStore
 	GitHubApps                  *github.AppClient
-	ObserveDesignMerge          func(context.Context, monitor.Observation, string) error
+	// RedactionSecrets resolves stored credentials for the redaction of a
+	// GitHub issue title before intake stores it (req-security-boundaries
+	// REQ-3). New sets it from a store that holds them.
+	RedactionSecrets redact.SecretSource
+	// MarkIssueDispatched moves a taken-in issue's labels. Injectable for tests.
+	MarkIssueDispatched func(context.Context, string, int, string) error
+	ObserveDesignMerge  func(context.Context, monitor.Observation, string) error
 	// ReviewDiff resolves the pushed task branch's diff against its base for
 	// the in-process review fallback, which has no checkout of its own
 	// (component-work-orders). Injectable for tests.
@@ -74,9 +81,11 @@ func New(st store.Store, cfg *config.Config, agent inprocess.Agent) *Dispatcher 
 		Store: st, Cfg: cfg, Agent: agent, memoryQueue: make(chan queuedTask, 64), durableQueue: st.IsDurable(),
 		WorkspaceGitHubApps:        workspaceGitHubAppStore(st),
 		RequestMergeWithCredential: github.MergePullRequestWithCredential,
+		MarkIssueDispatched:        github.MarkIssueDispatched,
 
 		Now: func() time.Time { return time.Now().UTC() },
 	}
+	d.RedactionSecrets, _ = st.(redact.SecretSource)
 	d.SubmissionPR = func(ctx context.Context, repo, branch string) (github.SubmissionPullRequest, error) {
 		forgeCtx, err := d.workspaceForgeContext(ctx, repo)
 		if err != nil {
@@ -1925,7 +1934,9 @@ func (d *Dispatcher) pollOnce(ctx context.Context) {
 		for _, issue := range issues {
 			// The intake body is shared with the issues webhook delivery
 			// (component-runtime, Timed issue intake).
-			_ = d.intakeReadyIssue(ctx, forgeCtx, cfg.Workspace, repo, issue)
+			if err := d.TakeInReadyIssue(ctx, forgeCtx, cfg.Workspace, repo, issue); err != nil {
+				log.Printf("GitHub intake %s#%d: %v", repo.GitHub, issue.Number, err)
+			}
 		}
 	}
 }

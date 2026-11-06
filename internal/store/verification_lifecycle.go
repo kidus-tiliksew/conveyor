@@ -13,13 +13,20 @@ import (
 	"github.com/kidus-tiliksew/conveyor/internal/verification"
 )
 
-func verificationFilterJSON(r *redact.Redactor, b []byte) ([]byte, error) {
+// verificationFilterJSON returns the sanitized form and what it removed. A
+// credential-named field, a credential-named URL query parameter, and URL user
+// info match by name, so they count as pattern removals beside the redactor's
+// own classes (req-security-boundaries AC-3.1; component-verification-service
+// invariant 30). A value this filter already replaced doesn't count again.
+func verificationFilterJSON(r *redact.Redactor, b []byte) ([]byte, core.RedactionStats, error) {
 	var value any
 	d := json.NewDecoder(strings.NewReader(string(b)))
 	d.UseNumber()
 	if err := d.Decode(&value); err != nil {
-		return nil, err
+		return nil, core.RedactionStats{}, err
 	}
+	var named int64
+	const fieldPlaceholder = "[REDACTED:field]"
 	var walk func(any) any
 	walk = func(v any) any {
 		switch x := v.(type) {
@@ -28,18 +35,27 @@ func verificationFilterJSON(r *redact.Redactor, b []byte) ([]byte, error) {
 				lower := strings.ToLower(k)
 				switch lower {
 				case "authorization", "proxy-authorization", "cookie", "set-cookie", "password", "secret", "access_token", "refresh_token", "api_key", "apikey":
-					x[k] = "[REDACTED:field]"
+					if child != nil && child != "" && child != fieldPlaceholder {
+						named++
+					}
+					x[k] = fieldPlaceholder
 					continue
 				}
 				if lower == "url" {
 					if raw, ok := child.(string); ok {
 						if u, err := url.Parse(raw); err == nil {
+							if u.User != nil {
+								named++
+							}
 							u.User = nil
 							q := u.Query()
 							for key := range q {
 								lk := strings.ToLower(key)
 								if strings.Contains(lk, "token") || strings.Contains(lk, "secret") || strings.Contains(lk, "password") || lk == "key" || lk == "api_key" {
-									q.Set(key, "[REDACTED:field]")
+									if q.Get(key) != fieldPlaceholder {
+										named++
+									}
+									q.Set(key, fieldPlaceholder)
 								}
 							}
 							u.RawQuery = q.Encode()
@@ -61,10 +77,14 @@ func verificationFilterJSON(r *redact.Redactor, b []byte) ([]byte, error) {
 	}
 	filtered, err := json.Marshal(walk(value))
 	if err != nil {
-		return nil, err
+		return nil, core.RedactionStats{}, err
 	}
-	clean, _, err := r.RedactJSON(filtered)
-	return clean, err
+	clean, stats, err := r.RedactJSON(filtered)
+	if err != nil {
+		return nil, core.RedactionStats{}, err
+	}
+	stats.Pattern += named
+	return clean, stats, nil
 }
 
 func verificationContract(rows []VerificationRow, contextID string, subject core.VerificationSubject) (verification.Exercise, error) {
@@ -180,13 +200,14 @@ func verificationAttemptMutation(c VerificationCommand, rows []VerificationRow, 
 		if len(v.EffectiveActions) == 0 {
 			v.EffectiveActions = nil
 		}
-		b, err := verificationSanitizeJSON(r, verificationJSON(v))
+		b, stats, err := verificationSanitizeJSON(r, verificationJSON(v))
 		if err != nil {
 			return err
 		}
 		if err = json.Unmarshal(b, &v); err != nil {
 			return err
 		}
+		out.Redactions.Add(stats)
 		ordinal := 1
 		// component-verification-service "Attempts and outcome evaluation":
 		// the operator_action_required retry gate reads the latest attempt of
@@ -334,7 +355,7 @@ func verificationAttemptMutation(c VerificationCommand, rows []VerificationRow, 
 	default:
 		return ErrVerificationInvalid
 	}
-	explanation, _ := r.Redact(c.Attempt.Explanation)
+	explanation, explanationStats := r.Redact(c.Attempt.Explanation)
 	if (next == "blocked" || next == "waiting") && explanation == "" {
 		return ErrVerificationInvalid
 	}
@@ -368,6 +389,7 @@ func verificationAttemptMutation(c VerificationCommand, rows []VerificationRow, 
 	row.State = next
 	row.Body = verificationJSON(v)
 	out.Rows = append(out.Rows, row)
+	out.Redactions.Add(explanationStats)
 	out.Receipt.ID = v.ID
 	out.Receipt.State = v.State
 	// A terminated process without completion acknowledgement leaves uncertain

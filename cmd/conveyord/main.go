@@ -31,6 +31,7 @@ import (
 	"github.com/kidus-tiliksew/conveyor/internal/pack"
 	"github.com/kidus-tiliksew/conveyor/internal/planning"
 	"github.com/kidus-tiliksew/conveyor/internal/queue/logqueue"
+	"github.com/kidus-tiliksew/conveyor/internal/redact"
 	"github.com/kidus-tiliksew/conveyor/internal/releaseinfo"
 	"github.com/kidus-tiliksew/conveyor/internal/store"
 	"github.com/kidus-tiliksew/conveyor/internal/store/backend"
@@ -58,6 +59,21 @@ func registerDaemonFlags(flags *flag.FlagSet) conveyordFlags {
 		debugAddr:          flags.String(debugAddrFlag, "", "opt-in net/http/pprof listen address (loopback only unless -"+debugAllowRemoteFlag+"; empty disables)"),
 		debugAllowRemote:   flags.Bool(debugAllowRemoteFlag, false, "allow -"+debugAddrFlag+" to bind a non-loopback address"),
 	}
+}
+
+// readDeploymentToken reads the deployment token and registers it for
+// redaction before anything can store it. A bare 64-character hex token matches
+// no credential pattern, because artifact IDs and digests have that shape, so
+// exact matching is what removes it. The value stays in process memory only, and
+// an unset token refuses start-up before any registration
+// (req-security-boundaries REQ-3; component-identity-membership invariants 45, 46).
+func readDeploymentToken(getenv func(string) string) (string, error) {
+	apiToken := getenv("CONVEYOR_API_TOKEN")
+	if apiToken == "" {
+		return "", errors.New("CONVEYOR_API_TOKEN is required for authenticated task creation")
+	}
+	redact.RegisterSecret(apiToken, time.Time{})
+	return apiToken, nil
 }
 
 func main() {
@@ -106,9 +122,9 @@ func main() {
 	if err != nil {
 		log.Fatalf("load planning role: %v", err)
 	}
-	apiToken := os.Getenv("CONVEYOR_API_TOKEN")
-	if apiToken == "" {
-		log.Fatal("CONVEYOR_API_TOKEN is required for authenticated task creation")
+	apiToken, err := readDeploymentToken(os.Getenv)
+	if err != nil {
+		log.Fatal(err)
 	}
 	llmEnvironment, err := resolveConveyordLLMEnvironment(os.Getenv, log.Printf)
 	if err != nil {

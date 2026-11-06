@@ -24,6 +24,19 @@ func (m *memory) StartOverTaskCommand(ctx context.Context, lease taskops.TaskLea
 	if _, err := RequireActor(ctx); err != nil {
 		return core.TaskStartOverResult{}, err
 	}
+	return m.startOverTaskCommand(ctx, lease, r, TaskTitleSecrets{})
+}
+
+// StartOverTaskCommand reads the stored secrets before the store lock, as
+// applyVerification does.
+func (m *volatileMemory) StartOverTaskCommand(ctx context.Context, lease taskops.TaskLease, r core.TaskStartOverRequest) (core.TaskStartOverResult, error) {
+	if _, err := RequireActor(ctx); err != nil {
+		return core.TaskStartOverResult{}, err
+	}
+	return m.memory.startOverTaskCommand(ctx, lease, r, ReadTaskTitleSecrets(ctx, m))
+}
+
+func (m *memory) startOverTaskCommand(ctx context.Context, lease taskops.TaskLease, r core.TaskStartOverRequest, secrets TaskTitleSecrets) (core.TaskStartOverResult, error) {
 	var result core.TaskStartOverResult
 	if !lease.ValidForCommand(r.TaskID, string(core.TaskStartOver)) {
 		return result, fmt.Errorf("task start over requires a valid taskops lease")
@@ -91,14 +104,17 @@ func (m *memory) StartOverTaskCommand(ctx context.Context, lease taskops.TaskLea
 			dependencies = append(dependencies, id)
 		}
 	}
-	next := StartOverSuccessor(old, r)
+	next, titleStats, err := StartOverSuccessor(old, r, secrets)
+	if err != nil {
+		return result, err
+	}
 	if _, err := staged.cancelTaskLocked(ctx, core.Intervention{TaskID: old.ID, Action: core.InterventionCancel, ReasonCode: r.Reason, Comment: r.Note, At: next.CreatedAt}); err != nil {
 		return result, err
 	}
 	if err := TaskStartOverFault(ctx, "successor"); err != nil {
 		return result, err
 	}
-	if err := staged.createTaskWithContextLocked(ctx, next, dependencies, attached, pinned); err != nil {
+	if err := staged.createTaskWithContextLocked(WithTaskTitleRedactions(ctx, titleStats), next, dependencies, attached, pinned); err != nil {
 		return result, err
 	}
 	var plan core.SpecVersion

@@ -12,6 +12,7 @@ import (
 
 	"github.com/kidus-tiliksew/conveyor/internal/core"
 	"github.com/kidus-tiliksew/conveyor/internal/gitx"
+	"github.com/kidus-tiliksew/conveyor/internal/redact"
 	"github.com/kidus-tiliksew/conveyor/internal/taskops"
 )
 
@@ -253,6 +254,19 @@ func (m *memory) ApproveSpecVersionAndMaterialize(ctx context.Context, taskID st
 	if _, err := RequireActor(ctx); err != nil {
 		return nil, err
 	}
+	return m.approveSpecVersionAndMaterialize(ctx, taskID, version, TaskTitleSecrets{})
+}
+
+// ApproveSpecVersionAndMaterialize reads the stored secrets before the store
+// lock, as applyVerification does.
+func (m *volatileMemory) ApproveSpecVersionAndMaterialize(ctx context.Context, taskID string, version int) ([]core.Task, error) {
+	if _, err := RequireActor(ctx); err != nil {
+		return nil, err
+	}
+	return m.memory.approveSpecVersionAndMaterialize(ctx, taskID, version, ReadTaskTitleSecrets(ctx, m))
+}
+
+func (m *memory) approveSpecVersionAndMaterialize(ctx context.Context, taskID string, version int, secrets TaskTitleSecrets) ([]core.Task, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	versions := m.specs[taskID]
@@ -299,6 +313,18 @@ func (m *memory) ApproveSpecVersionAndMaterialize(ctx context.Context, taskID st
 			childrenBySub[existing.OriginSubID] = existing
 		}
 	}
+	// The refusal precedes every write, so a failed secret read leaves the
+	// version unapproved and creates no child (req-security-boundaries REQ-3).
+	var titleRedactor *redact.Redactor
+	if slices.ContainsFunc(decomposition, func(item core.BlueprintDecompositionItem) bool {
+		_, exists := childrenBySub[item.ID]
+		return !exists
+	}) {
+		var err error
+		if titleRedactor, err = secrets.Redactor(); err != nil {
+			return nil, err
+		}
+	}
 	createdSubs := make(map[string]struct{}, len(decomposition))
 	for _, item := range decomposition {
 		if _, exists := childrenBySub[item.ID]; exists {
@@ -311,8 +337,7 @@ func (m *memory) ApproveSpecVersionAndMaterialize(ctx context.Context, taskID st
 			}
 			id = core.NewTaskID()
 		}
-		title := strings.TrimSpace(item.Summary)
-		title = core.TruncateUTF8Bytes(title, 200)
+		title, titleStats := BlueprintChildTitle(titleRedactor, item.Summary)
 		child := core.Task{
 			ID: id, Workspace: parent.Workspace,
 			Source: fmt.Sprintf("blueprint:%s@v%d#%s", parent.ID, version, item.ID),
@@ -330,7 +355,7 @@ func (m *memory) ApproveSpecVersionAndMaterialize(ctx context.Context, taskID st
 		m.tasks[id] = child
 		childrenBySub[item.ID] = child
 		createdSubs[item.ID] = struct{}{}
-		m.appendEventLocked(ctx, core.Event{TaskID: id, Kind: "task.created", Payload: TaskCreatedPayload(ctx, child), At: createdAt})
+		m.appendEventLocked(ctx, core.Event{TaskID: id, Kind: "task.created", Payload: TaskCreatedPayload(WithTaskTitleRedactions(ctx, titleStats), child), At: createdAt})
 	}
 	for _, item := range decomposition {
 		if _, created := createdSubs[item.ID]; !created {
