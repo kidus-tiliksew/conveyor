@@ -805,9 +805,23 @@ func (s *Store) ListTasksFiltered(ctx context.Context, f store.TaskFilter) ([]co
 	}
 	return s.listTaskRows(ctx, store.TaskOperationsQuery{TaskFilter: f})
 }
+
+// ListTasksFilteredWithoutBody runs ListTasksFiltered's predicate and hydration
+// over taskMapColumns, whose body is an empty string, so the read transfers no
+// task body (req-operator-next-action AC-2.7).
+func (s *Store) ListTasksFilteredWithoutBody(ctx context.Context, f store.TaskFilter) ([]core.Task, error) {
+	ctx = dbmetrics.WithReadLabel(ctx, "ListTasksFilteredWithoutBody")
+	if err := f.Validate(); err != nil {
+		return nil, err
+	}
+	return s.listTaskRowsSelecting(ctx, taskMapColumns, store.TaskOperationsQuery{TaskFilter: f})
+}
 func (s *Store) listTaskRows(ctx context.Context, q store.TaskOperationsQuery) ([]core.Task, error) {
+	return s.listTaskRowsSelecting(ctx, taskColumns, q)
+}
+func (s *Store) listTaskRowsSelecting(ctx context.Context, columns string, q store.TaskOperationsQuery) ([]core.Task, error) {
 	predicate, args := taskPredicate(ctx, q.TaskFilter)
-	query := `SELECT ` + taskColumns + ` FROM tasks WHERE ` + predicate + ` ORDER BY created_at DESC,id ASC`
+	query := `SELECT ` + columns + ` FROM tasks WHERE ` + predicate + ` ORDER BY created_at DESC,id ASC`
 	if q.Limit > 0 {
 		query += ` LIMIT ? OFFSET ?`
 		args = append(args, q.Limit, q.Offset)

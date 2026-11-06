@@ -844,6 +844,11 @@ func (c *taskDetailCountingStore) ListTasksFiltered(a0 context.Context, a1 store
 	return c.Store.ListTasksFiltered(a0, a1)
 }
 
+func (c *taskDetailCountingStore) ListTasksFilteredWithoutBody(a0 context.Context, a1 store.TaskFilter) ([]core.Task, error) {
+	c.count("ListTasksFilteredWithoutBody")
+	return c.Store.ListTasksFilteredWithoutBody(a0, a1)
+}
+
 func (c *taskDetailCountingStore) ListWorkOrders(a0 context.Context) ([]core.WorkOrder, error) {
 	c.count("ListWorkOrders")
 	return c.Store.ListWorkOrders(a0)

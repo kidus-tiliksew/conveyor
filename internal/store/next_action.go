@@ -952,12 +952,13 @@ func TaskIsInboxDecision(action nextaction.NextAction) bool {
 
 // CountOperatorAttention is the task part of the workspace attention count:
 // the open tasks, blueprint anchors excluded, that the inbox lists among its
-// decisions. It reads the workspace's open tasks once and projects them with
-// those tasks preloaded for the dependency view and CompactOnly set, because
-// TaskIsInboxDecision reads only compact fields
+// decisions. It reads the workspace's open tasks once, without their bodies
+// because neither the count nor the projection reads Task.Body, and projects
+// them with those tasks preloaded for the dependency view and CompactOnly set,
+// because TaskIsInboxDecision reads only compact fields
 // (req-operator-next-action AC-2.7; component-next-action).
 func CountOperatorAttention(ctx context.Context, st Store) (int, error) {
-	tasks, err := st.ListTasksFiltered(ctx, TaskFilter{States: openTaskStates})
+	tasks, err := st.ListTasksFilteredWithoutBody(ctx, TaskFilter{States: openTaskStates})
 	if err != nil {
 		return 0, err
 	}

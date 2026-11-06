@@ -317,6 +317,9 @@ func TestAuditedDirectStatementsReturnGenericBackendError(t *testing.T) {
 		"ListTasksForRecovery": func(s *Store, c context.Context) error {
 			return discard(s.ListTasksForRecovery(c, []string{"task"}))
 		},
+		"ListTasksFilteredWithoutBody": func(s *Store, c context.Context) error {
+			return discard(s.ListTasksFilteredWithoutBody(c, store.TaskFilter{States: []core.TaskState{core.TaskQueued}}))
+		},
 		"ListWorkspaces":   func(s *Store, c context.Context) error { return discard(s.ListWorkspaces(c)) },
 		"GetWorkspace":     func(s *Store, c context.Context) error { return discard(s.GetWorkspace(c, "demo")) },
 		"WorkspaceConfig":  func(s *Store, c context.Context) error { return discard(s.WorkspaceConfig(c)) },
