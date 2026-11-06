@@ -68,12 +68,64 @@ export function reviewText(source: ReviewSource) {
     .join('\n\n')
 }
 
+// Columns a line prefix spans from `start`, with tab stops every four columns.
+function columnWidth(text: string, start = 0) {
+  let column = start
+  for (const character of text) column += character === '\t' ? 4 - (column % 4) : 1
+  return column - start
+}
+
+function lineIndent(line: string) {
+  return columnWidth(line.match(/^[ \t]*/)?.[0] ?? '')
+}
+
+// A fence's content column is its list item's, or 0 outside a list item.
+type OpenFence = { marker: string; contentColumn: number }
+
+const fenceMarker = /^(`{3,}(?=[^`]*$)|~{3,})/
+const listMarkerPrefix = /^[ \t]*(?:(?:[-+*]|\d{1,9}[.)])[ \t]+)+/
+
+// A fence opened on a block's own line, at most three columns in, or on a list
+// marker line (`- ```text`, `1. ~~~`). A backtick info string holds no backtick,
+// so ```` ```x``` ```` is inline code.
+function openedFence(line: string): OpenFence | undefined {
+  const prefix = line.match(listMarkerPrefix)?.[0]
+  if (prefix) {
+    const marker = line.slice(prefix.length).match(fenceMarker)?.[1]
+    return marker ? { marker, contentColumn: columnWidth(prefix) } : undefined
+  }
+  if (lineIndent(line) > 3) return undefined
+  const marker = line.trimStart().match(fenceMarker)?.[1]
+  return marker ? { marker, contentColumn: 0 } : undefined
+}
+
+// A line left of its list item's content ends the item and any fence inside it.
+function leftFenceItem(line: string, fence: OpenFence) {
+  return fence.contentColumn > 0 && !!line.trim() && lineIndent(line) < fence.contentColumn
+}
+
+function closesFence(line: string, fence: OpenFence) {
+  const closer = line.match(/^[ \t]*(`{3,}|~{3,})[ \t]*$/)?.[1]
+  return (
+    closer?.[0] === fence.marker[0] &&
+    closer.length >= fence.marker.length &&
+    lineIndent(line) - fence.contentColumn <= 3
+  )
+}
+
+// The fence open after `line`, for block and paragraph splitting
+// (component-web-document-surfaces "Block comparison" rule 13).
+function fenceAfterLine(line: string, fence: OpenFence | undefined) {
+  if (!fence || leftFenceItem(line, fence)) return openedFence(line)
+  return closesFence(line, fence) ? undefined : fence
+}
+
 export function headingBlocks(content: string): ReviewBlock[] {
   const blocks: ReviewBlock[] = []
   const occurrences = new Map<string, number>()
   let title = 'Overview'
   let lines: string[] = []
-  let fence: string | undefined
+  let fence: OpenFence | undefined
   const flush = () => {
     const text = lines.join('\n').trim()
     if (!text) return
@@ -88,12 +140,7 @@ export function headingBlocks(content: string): ReviewBlock[] {
   const sourceLines = content.split('\n')
   for (let index = 0; index < sourceLines.length; index++) {
     const line = sourceLines[index]
-    const marker = line.match(/^\s{0,3}(`{3,}|~{3,})/)
-    if (marker) {
-      if (!fence) fence = marker[1]
-      else if (marker[1][0] === fence[0] && marker[1].length >= fence.length && /^\s{0,3}(`+|~+)\s*$/.test(line))
-        fence = undefined
-    }
+    fence = fenceAfterLine(line, fence)
     const setext = !fence && line.trim() && /^\s{0,3}(?:=+|-+)\s*$/.test(sourceLines[index + 1] ?? '')
     const heading = !fence && line.match(/^\s{0,3}#{1,6}\s+(.+?)\s*#*\s*$/)
     if (heading || setext) {
@@ -317,10 +364,6 @@ export function paragraphCells(before: string, after: string) {
 const listMarker = /^([ \t]*)([-+*]|\d{1,9}[.)])(?:([ \t]+)(.*))?$/
 const thematicBreak = /^ {0,3}([-*_])[ \t]*(?:\1[ \t]*){2,}$/
 
-function indentWidth(whitespace: string) {
-  return [...whitespace].reduce((width, character) => width + (character === '\t' ? 4 : 1), 0)
-}
-
 // Split a block into its list items, or return undefined when it holds none.
 // Marker lines start items, including nested ones. Every other line continues
 // the current item, so a fence, table, or quote inside an item stays in that
@@ -329,7 +372,7 @@ function listItems(block: string): ListItem[] | undefined {
   const items: ListItem[] = []
   const openContentColumns: number[] = []
   let contentColumn = 0
-  let fence: { marker: string; inItem: boolean } | undefined
+  let fence: OpenFence | undefined
   const attach = (line: string) => {
     const text = line.replace(/^[ \t]+/, (indent) => indent.slice(contentColumn))
     const current = items.at(-1)
@@ -337,37 +380,40 @@ function listItems(block: string): ListItem[] | undefined {
     else current.text = current.text ? `${current.text}\n${text}` : text
   }
   for (const line of block.split(/\r?\n/)) {
-    const lineIndent = indentWidth(line.match(/^[ \t]*/)?.[0] ?? '')
-    // A line left of its item's content ends the item and any fence inside it.
-    if (fence?.inItem && line.trim() && lineIndent < contentColumn) fence = undefined
-    const fenceMarker = line.match(/^\s*(`{3,}|~{3,})/)?.[1]
+    if (fence && leftFenceItem(line, fence)) fence = undefined
     if (fence) {
       attach(line)
-      if (
-        fenceMarker?.[0] === fence.marker[0] &&
-        fenceMarker.length >= fence.marker.length &&
-        /^\s*(`+|~+)\s*$/.test(line)
-      )
-        fence = undefined
-    } else if (fenceMarker) {
-      fence = { marker: fenceMarker, inItem: items.some((item) => item.marker) && lineIndent >= contentColumn }
-      attach(line)
-    } else if (line.trim()) {
-      if (setextLine.test(line) || thematicBreak.test(line)) return undefined
-      // Four leading columns before any content is indented code, not a list.
-      if (!items.length && lineIndent > 3) return undefined
-      const marker = line.match(listMarker)
-      const inList = items.some((item) => item.marker)
-      // Paragraph text absorbs a deep line, and any ordered marker other than 1.
-      if (!marker || (!inList && items.length && (lineIndent > 3 || /^(?!0*1[.)])\d/.test(marker[2])))) {
-        attach(line)
-        continue
-      }
-      while ((openContentColumns.at(-1) ?? 0) > lineIndent) openContentColumns.pop()
-      items.push({ marker: marker[2], depth: openContentColumns.length, text: marker[4] ?? '' })
-      contentColumn = lineIndent + marker[2].length + (marker[3] ? indentWidth(marker[3]) : 1)
-      openContentColumns.push(contentColumn)
+      if (closesFence(line, fence)) fence = undefined
+      continue
     }
+    if (!line.trim()) continue
+    const indent = lineIndent(line)
+    // Four leading columns before any content is indented code, not a list.
+    if (!items.length && indent > 3) return undefined
+    const inList = items.some((item) => item.marker)
+    const lineFence = line.trimStart().match(fenceMarker)?.[1]
+    if (lineFence) {
+      fence = { marker: lineFence, contentColumn: inList && indent >= contentColumn ? contentColumn : 0 }
+      attach(line)
+      continue
+    }
+    if (setextLine.test(line) || thematicBreak.test(line)) return undefined
+    const marker = line.match(listMarker)
+    // Paragraph text absorbs a deep line, and any ordered marker other than 1.
+    if (!marker || (!inList && items.length && (indent > 3 || /^(?!0*1[.)])\d/.test(marker[2])))) {
+      attach(line)
+      continue
+    }
+    while ((openContentColumns.at(-1) ?? 0) > indent) openContentColumns.pop()
+    const text = marker[4] ?? ''
+    items.push({ marker: marker[2], depth: openContentColumns.length, text })
+    const markerEnd = indent + marker[2].length
+    contentColumn = markerEnd + (marker[3] ? columnWidth(marker[3], markerEnd) : 1)
+    openContentColumns.push(contentColumn)
+    // A fence opened on the marker line belongs to this item, including through
+    // another marker on the same line (`- - ```text`).
+    const opened = text.replace(/^(?:(?:[-+*]|\d{1,9}[.)])[ \t]+)+/, '').match(fenceMarker)?.[1]
+    if (opened) fence = { marker: opened, contentColumn }
   }
   return items.some((item) => item.marker) ? items : undefined
 }
@@ -610,14 +656,9 @@ function sectionCells(row: ReviewRow) {
 function paragraphs(content: string) {
   const parts: string[] = []
   let lines: string[] = []
-  let fence: string | undefined
+  let fence: OpenFence | undefined
   for (const line of content.split('\n')) {
-    const marker = line.match(/^\s{0,3}(`{3,}|~{3,})/)
-    if (marker) {
-      if (!fence) fence = marker[1]
-      else if (marker[1][0] === fence[0] && marker[1].length >= fence.length && /^\s{0,3}(`+|~+)\s*$/.test(line))
-        fence = undefined
-    }
+    fence = fenceAfterLine(line, fence)
     if (!line.trim() && !fence) {
       if (lines.length) parts.push(lines.join('\n'))
       lines = []

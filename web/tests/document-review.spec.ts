@@ -221,6 +221,24 @@ const listSiblings =
 const terminationList = (item: string) =>
   `# Task lifecycle\n\n## Termination\n\n${item}\n${listSiblings}\n\n## Stable\n\nSame.`
 
+// Fences opened on a marker line: base, target, the fence item's marker, the sibling's marker.
+const markerFences = [
+  ['- ```text\n  - old code\n  ```\n- sibling old', '- ```text\n  - new code\n  ```\n- sibling new', '-', '-'],
+  ['* ~~~sh\n  1. old code\n  ~~~\n* sibling old', '* ~~~sh\n  1. new code\n  ~~~\n* sibling new', '*', '*'],
+  [
+    '1. ```text\n   2. old code\n   ```\n2. sibling old',
+    '1. ```text\n   2. new code\n   ```\n2. sibling new',
+    '1.',
+    '2.',
+  ],
+  [
+    '10) ~~~sh\n    - old code\n    ~~~\n11) sibling old',
+    '10) ~~~sh\n    - new code\n    ~~~\n11) sibling new',
+    '10)',
+    '11)',
+  ],
+] as const
+
 const added = (changes?: Array<{ text: string; kind: string }>) =>
   (changes ?? []).filter((change) => change.kind === 'added').map((change) => change.text)
 const removed = (changes?: Array<{ text: string; kind: string }>) =>
@@ -399,6 +417,55 @@ test('review model falls back one unsafe list item at a time', () => {
   expect(dashes).toHaveLength(2)
   expect(dashes?.[0].changes).toBeUndefined()
   expect(added(dashes?.[1].changes)).toEqual(['two'])
+
+  // A fence opened on the marker line stays whole in its own item, its list-looking
+  // code starts no item, and the changed sibling stays paired and highlighted.
+  for (const [before, after, firstMarker, siblingMarker] of markerFences) {
+    const items = listBlockChanges(before, after)
+    expect(items?.map((item) => item.after?.marker)).toEqual([firstMarker, siblingMarker])
+    expect(items?.map((item) => item.before?.marker)).toEqual([firstMarker, siblingMarker])
+    expect(items?.[0].after?.text.split('\n').at(0)).toMatch(/^(?:```text|~~~sh)$/)
+    expect(items?.[0].after?.text.split('\n').at(-1)).toMatch(/^(?:```|~~~)$/)
+    expect(items?.[0].after?.text).toContain('new code')
+    expect(items?.[0].before?.text).toContain('old code')
+    expect(items?.[0].changes).toBeUndefined()
+    expect(items?.[1].after?.text).toBe('sibling new')
+    expect(items?.[1].before?.text).toBe('sibling old')
+    expect(added(items?.[1].changes)).toEqual(['new'])
+    expect(removed(items?.[1].changes)).toEqual(['old'])
+  }
+  // A blank line in such a fence keeps the fence in one paragraph pair, and the
+  // paragraphs after it stay separate.
+  const blankInFence = alignedParagraphs(
+    '- ```text\n  - old code\n\n  - more\n  ```\n- sibling old\n\nAfter text.\n\nLast text.',
+    '- ```text\n  - new code\n\n  - more\n  ```\n- sibling new\n\nAfter text.\n\nLast text.',
+  )
+  expect(blankInFence).toHaveLength(3)
+  const blankItems = listBlockChanges(blankInFence[0].before ?? '', blankInFence[0].after ?? '')
+  expect(blankItems?.map((item) => item.after?.text)).toEqual(['```text\n- new code\n\n- more\n```', 'sibling new'])
+  expect(added(blankItems?.[1].changes)).toEqual(['new'])
+  // Code in such a fence starts no section, and the section after it survives.
+  expect(
+    headingBlocks('## A\n\n- ```md\n  ## not a heading\n  ```\n\n## B\n\nBody').map((block) => block.title),
+  ).toEqual(['A', 'B'])
+  // Without a closing line, leaving the item ends the fence and later items stay items.
+  const unclosedOnMarker = listBlockChanges('- ```\n  code\n- b one\n- c', '- ```\n  other\n- b two\n- c')
+  expect(unclosedOnMarker?.map((item) => item.after?.marker)).toEqual(['-', '-', '-'])
+  expect(added(unclosedOnMarker?.[1].changes)).toEqual(['two'])
+  // Markers nested on one line and a tab after the marker hold the fence the same way.
+  expect(
+    listBlockChanges('- - ```\n    - code\n    ```\n- b one', '- - ```\n    - more\n    ```\n- b two')?.map(
+      (item) => item.after?.text,
+    ),
+  ).toEqual(['- ```\n  - more\n  ```', 'b two'])
+  expect(
+    listBlockChanges('-\t```\n    - code\n    ```\n- b one', '-\t```\n    - more\n    ```\n- b two')?.map(
+      (item) => item.after?.text,
+    ),
+  ).toEqual(['```\n- more\n```', 'b two'])
+  // A line with a closing backtick run is inline code, not a fence.
+  const inlineTicks = listBlockChanges('- ```a``` old\n- sibling old', '- ```a``` new\n- sibling new')
+  expect(inlineTicks?.map((item) => item.after?.text)).toEqual(['```a``` new', 'sibling new'])
 
   const javascriptLink = listBlockChanges('- [one](javascript:alert(1))\n- two', '- [one](javascript:alert(2))\n- two')
   expect(javascriptLink?.[0].changes).toBeUndefined()
@@ -1043,6 +1110,41 @@ for (const tier of ['requirements', 'system-design'] as const) {
       await expect(block.getByText('Detailed highlighting unavailable for this block')).toHaveCount(1)
     }
   })
+
+  for (const [name, marker, sibling] of [
+    ['bulleted', '-', '-'],
+    ['ordered', '1.', '2.'],
+  ] as const) {
+    test(`${tier}: a fence opened on a ${name} marker stays in its item beside a highlighted sibling`, async ({
+      page,
+    }) => {
+      const indent = ' '.repeat(marker.length + 1)
+      const list = (word: string) =>
+        `# Rules\n\n## Fenced\n\n${marker} \`\`\`text\n${indent}- ${word} code\n${indent}2. ${word} step\n${indent}\`\`\`\n${sibling} sibling ${word}`
+      const seed = await seedReview(page, tier, { baseContent: list('old'), targetContent: list('new') })
+      await page.goto(seed.url)
+      const block = page
+        .getByRole('region', { name: 'Version comparison', exact: true })
+        .getByRole('region', { name: 'Fenced', exact: true })
+      const items = block.getByRole('listitem')
+      for (const mode of ['Inline', 'Side by side']) {
+        await page.getByRole('button', { name: mode, exact: true }).click()
+        await expect(items).toHaveCount(2)
+        await expect(items.nth(0)).toContainText('Detailed highlighting unavailable for this block')
+        await expect(items.nth(0).locator('pre code').first()).toContainText('- old code')
+        await expect(items.nth(0).locator('pre code').first()).toContainText('2. old step')
+        await expect(items.nth(0).locator('pre code').last()).toContainText('- new code')
+        await expect(items.nth(0).locator('pre code').last()).toContainText('2. new step')
+        await expect(items.nth(0).locator('ins, del')).toHaveCount(0)
+        await expect(items.nth(1).locator('ins').filter({ hasText: 'new' })).toBeVisible()
+        await expect(items.nth(1).locator('del').filter({ hasText: 'old' })).toBeVisible()
+        await expect(items.nth(1)).toContainText('sibling')
+        await expect(items.nth(1)).not.toContainText('Detailed highlighting unavailable')
+        await expect(items.nth(1).locator('pre')).toHaveCount(0)
+        if (marker === '1.') await expect(items.nth(1)).toContainText('2.')
+      }
+    })
+  }
 
   test(`${tier}: real block structure keeps its notice and HTML-like input renders safely`, async ({ page }) => {
     const seed = await seedReview(page, tier, {
