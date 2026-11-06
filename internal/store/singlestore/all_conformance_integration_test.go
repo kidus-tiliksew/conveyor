@@ -312,6 +312,15 @@ func TestSingleStoreConformanceIntegration(t *testing.T) {
 				server.Credentials = nil
 				server.Workspace, server.BearerToken = ws, storetest.LineageHTTPToken
 				return server.Handler()
+			}, RedispatchHTTP: func(_ *testing.T, onDispatch func(context.Context, string)) http.Handler {
+				server := httpapi.NewServer(st)
+				server.Credentials = nil
+				server.Workspace, server.BearerToken = ws, storetest.LineageHTTPToken
+				server.OnCreate = onDispatch
+				dispatcher := dispatch.New(st, cfg, nil)
+				dispatcher.DisableMemoryQueueForTest()
+				server.OnIntervention = dispatcher.HandleIntervention
+				return server.Handler()
 			}}
 		}})
 }

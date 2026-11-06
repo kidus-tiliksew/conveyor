@@ -59,10 +59,19 @@ func NextActionSupersessionRefusal(gateSpecVersion, latest int) string {
 
 // Refusal texts of POST /v1/tasks/{id}/redispatch. The route answers 409 with
 // them and NextActionRedispatchRefusal states them, so a withheld choice names
-// the route's own failing condition (req-operator-next-action AC-1.4).
+// the route's own failing condition (req-operator-next-action AC-1.4). The two
+// plan-revision texts are the route's alone, as NextActionRedispatchRefusal
+// says.
 const (
 	TaskRedispatchActiveRefusal  = "task is already active"
 	TaskRedispatchNoStageRefusal = "task has no decided next stage; record an explicit review redirect instead"
+	// TaskRedispatchPlanRevisionRefusal answers a pending plan-revision
+	// decision (component-work-orders invariant 39).
+	TaskRedispatchPlanRevisionRefusal = "task is waiting at the plan-revision decision gate; record the plan-revision decision instead"
+	// TaskRedispatchPlanRevisionUnreadableRefusal answers a gate whose events
+	// cannot be read. It is fixed so that no event, driver, or decode text
+	// reaches the response (component-work-orders, State and failure).
+	TaskRedispatchPlanRevisionUnreadableRefusal = "task has an unreadable plan-revision request; use the plan-revision decision gate"
 	// TaskHeldByWorkOrderRefusal is the text of store.ErrTaskHeldByWorkOrder.
 	TaskHeldByWorkOrderRefusal = "task stage is held by a work order; redispatch or recover the work order instead"
 )
@@ -99,6 +108,11 @@ func TaskRedispatchCommand(state TaskState) TaskCommand {
 // at, and a refused transition. orders are the task's clock-projected orders
 // sorted by (created_at, id) (req-operator-next-action AC-1.4; DEC-61;
 // component-next-action, Invariants 7; component-durable-queue).
+//
+// The route's plan-revision gate refusals are not tested here, because the
+// route reads that gate from the task's events, which this predicate does not
+// hold. No statement needs them: every awaiting task states its gate, and no
+// gate's choices name the redispatch route.
 func NextActionRedispatchRefusal(task Task, orders []WorkOrder) string {
 	switch task.State {
 	case TaskRunning:
