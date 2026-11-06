@@ -23,6 +23,16 @@ import (
 // episode. The merge-readiness sweep treats it as ordinary pending work.
 var ErrConflictFixPending = errors.New("conflict fix pending")
 
+// ErrPullRequestNotConflicting refuses a conflict fix for a pull request GitHub
+// does not report as conflicting (DEC-105(2)).
+var ErrPullRequestNotConflicting = errors.New("pull request is not conflicting")
+
+// ErrConflictFixNotDispatched refuses the operator's conflict fix when no order
+// was admitted: interrupted review recovery owns the dispatch, and the
+// merge.conflict_recovery_blocked event records it. The side-effect lock has
+// committed that event by the time a caller sees this error.
+var ErrConflictFixNotDispatched = errors.New("conflict fix not dispatched: interrupted review recovery owns conflict dispatch")
+
 type MergeReadiness struct {
 	State   string `json:"state"`
 	HeadSHA string `json:"head_sha,omitempty"`
@@ -595,11 +605,11 @@ func (d *Dispatcher) DispatchConflictFix(ctx context.Context, task core.Task) (c
 	}
 	repo, ok := cfg.Repo(current.Repo)
 	if !ok || repo.GitHub == "" {
-		return core.WorkOrder{}, fmt.Errorf("repository %q does not configure GitHub", current.Repo)
+		return core.WorkOrder{}, store.Refusef("repository %q does not configure GitHub", current.Repo)
 	}
 	pr, err := d.ViewPullRequest(ctx, repo.GitHub, current.Branch)
 	if err != nil {
-		return core.WorkOrder{}, err
+		return core.WorkOrder{}, store.Refuse(err)
 	}
 	// The forge operation above is observational. Re-enter the task lock and
 	// refresh state before the durable command so watcher and queue paths share
@@ -621,6 +631,13 @@ func (d *Dispatcher) DispatchConflictFix(ctx context.Context, task core.Task) (c
 		result, lockedErr = d.dispatchConflictFixLocked(lockedCtx, current, pr, cfg, true, "")
 		return lockedErr
 	})
+	// The operator route retries past the budget and the backoff, so only the
+	// interrupted-review block admits no order. The refusal comes after the lock
+	// so the recovery-blocked event stands, and the automatic callers of
+	// dispatchConflictFixLocked keep their empty result.
+	if err == nil && result.ID == "" {
+		return core.WorkOrder{}, ErrConflictFixNotDispatched
+	}
 	return result, err
 }
 
@@ -638,7 +655,7 @@ func (d *Dispatcher) dispatchConflictFixLocked(ctx context.Context, current core
 		return active, nil
 	}
 	if pr.Mergeable != "CONFLICTING" {
-		return core.WorkOrder{}, fmt.Errorf("pull request is not conflicting (%s)", pr.Mergeable)
+		return core.WorkOrder{}, fmt.Errorf("%w (%s)", ErrPullRequestNotConflicting, pr.Mergeable)
 	}
 	episode, present, err := d.currentMergeConflictEpisode(ctx, current.ID)
 	if err != nil {
@@ -774,7 +791,7 @@ func (d *Dispatcher) dispatchConflictFixLocked(ctx context.Context, current core
 // confirmed by the forge".
 func (d *Dispatcher) gateOnConflictMergeError(ctx context.Context, current core.Task, githubRepo string, number int, order core.WorkOrder) error {
 	if order.ID != "" {
-		return fmt.Errorf("pull request %s#%d has merge conflicts; conflict fix %s dispatched", githubRepo, number, order.ID)
+		return store.Refusef("pull request %s#%d has merge conflicts; conflict fix %s dispatched", githubRepo, number, order.ID)
 	}
 	reason := "budget exhausted"
 	episode, present, err := d.currentMergeConflictEpisode(ctx, current.ID)
@@ -799,7 +816,7 @@ func (d *Dispatcher) gateOnConflictMergeError(ctx context.Context, current core.
 			reason = "backing off until " + state.NextRetryAt.UTC().Format(time.RFC3339)
 		}
 	}
-	return fmt.Errorf("pull request %s#%d has merge conflicts; conflict fix not dispatched (%s)", githubRepo, number, reason)
+	return store.Refusef("pull request %s#%d has merge conflicts; conflict fix not dispatched (%s)", githubRepo, number, reason)
 }
 
 // mergeAct names who asks for a merge. A nil operator is the automatic merge,
@@ -882,7 +899,7 @@ func (d *Dispatcher) mergeApprovedTaskLocked(ctx context.Context, task core.Task
 	pr, err := d.ViewPullRequest(ctx, repo.GitHub, current.Branch)
 	if err != nil {
 		if errors.Is(err, github.ErrPullRequestNotFound) {
-			return d.recordMergeFailureWithAuthor(ctx, current, "missing_pull_request", fmt.Errorf("no pull request found for branch %s; push it and submit it for review before merging: %w", current.Branch, err), author)
+			return d.recordMergeFailureWithAuthor(ctx, current, "missing_pull_request", store.Refuse(fmt.Errorf("no pull request found for branch %s; push it and submit it for review before merging: %w", current.Branch, err)), author)
 		}
 		lookupErr := fmt.Errorf("could not read the pull request for branch %s; verify GitHub authentication and retry: %w", current.Branch, err)
 		if unreadPullRequestApplies(current, act) {
@@ -895,7 +912,9 @@ func (d *Dispatcher) mergeApprovedTaskLocked(ctx context.Context, task core.Task
 				return lookupErr
 			}
 		}
-		return d.recordMergeFailureWithAuthor(ctx, current, "pull_request_lookup_failed", lookupErr, author)
+		// store.Refuse keeps the error chain, so an unread pull request still
+		// counts as ErrCheckStatusUnread on the automatic path.
+		return d.recordMergeFailureWithAuthor(ctx, current, "pull_request_lookup_failed", store.Refuse(lookupErr), author)
 	}
 	if pr.Merged {
 		if current.ApprovalStale {
@@ -1001,14 +1020,14 @@ func (d *Dispatcher) mergeApprovedTaskLocked(ctx context.Context, task core.Task
 	// The forge merges only the approved head (DEC-64(5); component-submission-merge step 6).
 	ctx = github.WithExpectedHead(github.WithMergeMessage(ctx, mergeMessage), approvedHead)
 	if err := requestMerge(ctx, repo.GitHub, pr.Number); err != nil {
-		return d.recordMergeFailureWithAuthor(ctx, current, "forge_merge_failed", fmt.Errorf("GitHub could not merge pull request %s#%d; resolve required checks or branch protection and retry: %w", repo.GitHub, pr.Number, err), author)
+		return d.recordMergeFailureWithAuthor(ctx, current, "forge_merge_failed", store.Refuse(fmt.Errorf("GitHub could not merge pull request %s#%d; resolve required checks or branch protection and retry: %w", repo.GitHub, pr.Number, err)), author)
 	}
 	confirmed, err := d.ViewPullRequest(ctx, repo.GitHub, current.Branch)
 	if err != nil {
-		return d.recordMergeFailureWithAuthor(ctx, current, "merge_verification_failed", fmt.Errorf("GitHub accepted the merge request but Conveyor could not verify pull request %s#%d; inspect it and retry reconciliation: %w", repo.GitHub, pr.Number, err), author)
+		return d.recordMergeFailureWithAuthor(ctx, current, "merge_verification_failed", store.Refuse(fmt.Errorf("GitHub accepted the merge request but Conveyor could not verify pull request %s#%d; inspect it and retry reconciliation: %w", repo.GitHub, pr.Number, err)), author)
 	}
 	if !confirmed.Merged {
-		return d.recordMergeFailureWithAuthor(ctx, current, "merge_unconfirmed", fmt.Errorf("GitHub did not confirm pull request %s#%d as merged; inspect checks or merge-queue status and retry", repo.GitHub, pr.Number), author)
+		return d.recordMergeFailureWithAuthor(ctx, current, "merge_unconfirmed", store.Refusef("GitHub did not confirm pull request %s#%d as merged; inspect checks or merge-queue status and retry", repo.GitHub, pr.Number), author)
 	}
 	if held {
 		// The override is written before the confirmation. A crash before it
@@ -1319,6 +1338,33 @@ func (e *ineligibleMergeError) Error() string        { return e.err.Error() }
 func (e *ineligibleMergeError) Unwrap() error        { return e.err }
 func (e *ineligibleMergeError) Is(target error) bool { return target == errMergeIneligible }
 
+// MergeRouteRefusal reports whether a merge or conflict-fix error is a refusal
+// or a forge failure, which the route answers with 409 and the error's text so
+// its remedy stands (req-delivery-and-forge AC-1.4, AC-1.8). Any other error is
+// a store failure, which answers the generic 500 (DEC-105(1), (2)).
+func MergeRouteRefusal(err error) bool {
+	if err == nil || errors.Is(err, store.ErrBackendOperation) {
+		return false
+	}
+	var invalid *core.ErrInvalidTransition
+	var notReady *ErrGateMergeNotReady
+	switch {
+	case errors.As(err, &invalid), errors.As(err, &notReady), github.ErrorCategory(err) != "":
+		return true
+	}
+	for _, refusal := range []error{
+		errMergeIneligible, store.ErrRefusal, ErrConflictFixPending, ErrMergeReadinessPending,
+		ErrCheckStatusHeld, ErrCheckStatusPending, ErrCheckStatusUnread,
+		ErrPullRequestNotConflicting, ErrConflictFixNotDispatched, ErrGateMergeRefused, ErrGateMergeUnconfirmed,
+		ErrReviewedHeadUnavailable, store.ErrConflictReviewRecovery, store.ErrDispatchJobConflict, store.ErrTaskTerminal, store.ErrNotFound,
+	} {
+		if errors.Is(err, refusal) {
+			return true
+		}
+	}
+	return false
+}
+
 func ineligibleMerge(err error) error {
 	if err == nil {
 		return nil
@@ -1400,7 +1446,7 @@ func (d *Dispatcher) mergeAuthor(ctx context.Context, task core.Task) (core.Forg
 		return author, "", err
 	}
 	if strings.ContainsAny(identity.Name+identity.Email, "\r\n") {
-		return author, "", fmt.Errorf("approving operator identity contains a newline")
+		return author, "", store.Refusef("approving operator identity contains a newline")
 	}
 	author.UserID, author.DisplayName = userID, identity.Name
 	return author, fmt.Sprintf("Approved-by: %s <%s>", identity.Name, identity.Email), nil

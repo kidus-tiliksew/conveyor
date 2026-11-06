@@ -811,8 +811,9 @@ func TestConflictFixInterruptedReviewRecoveryPrecedesStageHeldDispatch(t *testin
 		return githubtrigger.PullRequest{Number: 12, State: "open", Mergeable: "CONFLICTING", HeadSHA: "conflicting-head"}, nil
 	}
 	for range 3 {
-		if _, err := d.DispatchConflictFix(ctx, task); err != nil {
-			t.Fatal(err)
+		order, err := d.DispatchConflictFix(ctx, task)
+		if !errors.Is(err, ErrConflictFixNotDispatched) || order.ID != "" {
+			t.Fatalf("blocked conflict fix: order=%+v err=%v, want ErrConflictFixNotDispatched", order, err)
 		}
 	}
 	orders, _ := st.ListTaskWorkOrders(ctx, task.ID)
@@ -823,6 +824,15 @@ func TestConflictFixInterruptedReviewRecoveryPrecedesStageHeldDispatch(t *testin
 	}
 	if blocked, _ := st.CountEvents(ctx, task.ID, "merge.conflict_recovery_blocked"); blocked != 1 {
 		t.Fatalf("recovery-blocked events=%d, want 1", blocked)
+	}
+	// The automatic paths share the locked admission and keep its empty result,
+	// so the operator route's sentinel changes no retry decision.
+	cfg, err := d.currentConfig(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if order, err := d.dispatchConflictFixLocked(ctx, current, githubtrigger.PullRequest{Number: 12, State: "open", Mergeable: "CONFLICTING", HeadSHA: "conflicting-head"}, cfg, false, ""); err != nil || order.ID != "" {
+		t.Fatalf("automatic admission: order=%+v err=%v, want an empty result", order, err)
 	}
 	interrupted.RetrySuppressed = false
 	interrupted.LastAttemptOutcome = ""

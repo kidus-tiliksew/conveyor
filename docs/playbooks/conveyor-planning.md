@@ -40,8 +40,8 @@ propose-confirm boundary; the incidents behind each rule are in the
 "Documentation style and organization" reference document
 (ref-260823-f4729f, current version; informative).
 
-- One tier per job: requirements say what, System Design says what *is*,
-  decisions say why, reference documents orient. Rationale never rides in
+- One tier per job: requirements say what, System Design says what must stay
+  true, decisions say why, reference documents orient. Rationale never rides in
   a what-tier — extract a DEC-n and cite it.
 - Every normative claim carries a citable ID; acceptance criteria are
   falsifiable "When <X>, the system shall <Y>" statements.
@@ -53,8 +53,8 @@ propose-confirm boundary; the incidents behind each rule are in the
 - Governs scopes match what the prose actually describes, re-checked on
   every revision.
 - Several tight design documents beat one broad one — pins attach whole
-  documents by version. Aim for about 2,500 words per System Design
-  document; 4,000 is the ceiling.
+  documents by version. A component design aims for about 2,500 words and a
+  feature design for about 2,000 (DEC-101(4), (5)).
 - Verify every mechanism claim against the code at the current head before
   writing it, and record each correction where a reviewer can see it.
 - Point to the owning statement ("as req-X REQ-n specifies") instead of
@@ -64,22 +64,17 @@ propose-confirm boundary; the incidents behind each rule are in the
   them in the same session as the confirmation that changes them.
 - Requirements are black-box contracts with one capability per document; do
   not prescribe storage, services, queries, queues, or algorithms unless the
-  mechanism is itself a public contract (DEC-57(1)).
+  mechanism is itself a public contract (DEC-109(1)).
 - Confirmed-document precedence is requirements, then decisions, then System
-  Design documents (DEC-57(2)).
-- Reference documents orient and never restate acceptance criteria (DEC-57(3)).
+  Design documents (DEC-109(2)).
+- Reference documents orient and never restate acceptance criteria (DEC-109(3)).
 - A proposal cannot cite a pending decision or design as authority; confirm
   requirements before decisions that cite them, then decisions before designs
-  that cite both (DEC-57(4)).
-- Recommend DEC-57(5)'s baseline-and-overlay pattern when
-  `GET /v1/system-designs` returns an empty workspace list before a first
-  design, delivery already spans several design baselines, or the operator
-  asks how to document in-flight work. Explain evergreen component baselines
-  and a temporary feature overlay, recommend the pattern as the default, and
-  let the operator decline without blocking the draft; once absorbed, the
-  archived overlay names its successors. The overlay never outranks a
-  requirement or decision. Do not reintroduce the pattern when designs exist
-  and the operator has not raised it.
+  that cite both (DEC-109(4)).
+- Teach every workspace one System Design standard: the content test of
+  DEC-100 and the component and feature shapes of DEC-101(2) to (8)
+  (DEC-109(5)). [System Design](#system-design-normative-mechanism) states them.
+  Conveyor encodes neither shape as a document kind or lifecycle state.
 - Name the mechanism, actor, and source. Replace generic praise with a fact,
   instruction, or number, and cite the REQ-n or DEC-n that holds each claim.
 - Use one name per concept, especially for schema columns and API fields.
@@ -277,7 +272,7 @@ Statement schema:
   which side is right, then leave one owning statement and make the others
   cite it. Code never changes confirmed intent on its own: record the
   disagreement, file code defects as tasks, and take product choices to the
-  operator (DEC-57(2)).
+  operator (DEC-109(2)).
 - A draft requirement is a `requirements/` item that push sends as a new
   document or a revision; [The draft flow](#the-draft-flow) covers both.
 - **Promotion**: when a claim originates in an uploaded overview, name the
@@ -299,21 +294,48 @@ paths:
 
 - Glob dialect is `*`, `?`, `**` only — no `[..]` character classes (the
   server rejects them). Paths are repo-relative, case-sensitive.
-- Document what the system IS, not a change plan. An evergreen baseline
-  carries no history, change-plan, or absorption narration; a removed
-  mechanism is deleted from the text, not described as retired. Category is
-  operator-named (Architecture, Database design, API contracts, …) and
-  immutable after creation.
-- Cite code as `<repo>:path#Symbol` (for example
+- A System Design document states what must stay true: boundaries, public
+  surfaces, invariants, and failure behavior. The code states how the system
+  works today (DEC-100(1)).
+- Content test: a sentence belongs only when a behavior-preserving refactor
+  would not force an edit to it, and either a caller or another component would
+  break if it became false or a reviewer should reject a pull request that
+  violates it (DEC-100(2)).
+- A component design changes only when a rule a reviewer should enforce changes,
+  a public surface is broken or removed or is added outside the component's
+  extension rules, a boundary or dependency between components changes, or
+  behavior a requirement demands changes (DEC-100(3)).
+- A System Design document holds no implementation walkthroughs, test
+  inventories, task identifiers, change plans, or narration of removed
+  mechanisms (DEC-100(4)). A component design carries no history; a removed
+  mechanism is deleted from the text, not described as retired.
+- Category is operator-named and immutable after creation. Name it
+  `Component design` or `Feature design` (DEC-101(2), (5)).
+- A component design has an ID `component-<name>`. It describes one lasting
+  capability or platform service: one that outlives any single feature, whose
+  contract fits in one paragraph, and that owns code named by directory
+  (DEC-101(2)). A domain component owns one capability from storage through its
+  user-interface contract. A platform component sets rules other components
+  follow and names no specific feature (DEC-101(3)). A component design holds
+  its boundary, public surfaces, numbered invariants, state and failure model,
+  extension rules, verification by suite or gate, and governs fence
+  (DEC-101(4)).
+- A feature design has an ID `feature-<name>`. It plans one change that spans
+  several tasks or components, names the component versions it changes, and
+  governs no path. A one-task change has no feature design (DEC-101(5)).
+- The last task of a feature design closes it: its surfaces and invariants move
+  into the components it changes, a new capability becomes a new component, and
+  the feature design is archived naming its successors (DEC-101(6)). Draft those
+  versions here; a task authors none (DEC-102(1), (2)).
+- A sentence that names code passes the content test too, so name directories
+  and public surfaces before internal symbols. When a symbol passes, cite it as
+  `<repo>:path#Symbol` (for example
   `conveyor:internal/core/system_design.go#ContainsDecisionToken`), never by
   line range: line ranges drift onto unrelated code within weeks.
-- When the operator takes the baseline-and-overlay recommendation, draft the
-  temporary overlay to open with the exact baseline versions it changes, the
-  requirements it implements, its delivery state, and the absorbing owner for
-  each lasting mechanism (DEC-57(5)).
-- Governed scope is load-bearing: merges touching those paths without a
-  proposed revision raise the drift signal. Scope only what the document
-  genuinely describes.
+- Governed scope is load-bearing: a merge whose task held the document records a
+  merge judgment with no drift, and any other change to those paths records
+  drift (`component-monitor-drift`). Scope only what the document genuinely
+  describes.
 - A document that owns no code, such as a feature design (DEC-101(5)), writes
   `paths: []` for its repository. The empty list is a scope that matches
   nothing, not a repository-wide wildcard: the document is not repository
@@ -323,10 +345,10 @@ paths:
   `conveyor plan check` refuses a repository entry whose `paths` is absent or
   null, so a misspelled key cannot empty a scope.
 - Every source, test, build, configuration, and mechanism-documentation path
-  is governed by exactly one document. Only historical evidence
-  (point-in-time measurements, incident reconciliations, retained
-  screenshots) and narrative guides that describe no mechanism stay
-  ungoverned, and the ownership map says so explicitly. A code file holding
+  is governed by exactly one component design (DEC-101(7)). Only historical
+  evidence (point-in-time measurements, incident reconciliations, retained
+  screenshots) and narrative guides that restate no mechanism stay ungoverned
+  (DEC-101(8)), and the ownership map says so explicitly. A code file holding
   several components' mechanisms defeats single ownership; split the file,
   not the rule.
 - A created document's ID matches `[A-Za-z0-9][A-Za-z0-9._-]*`, with no `/`
@@ -338,30 +360,41 @@ stays in history with its actor and time and cannot be confirmed later.
 Dismissing the only proposal of a created document archives that document, as
 [Dismissed and changed items](#dismissed-and-changed-items) describes.
 
-A component baseline, the evergreen half of the baseline-and-overlay
-pattern, takes this shape. The `conveyor` workspace adopts it as its convention
-(DEC-58); elsewhere it is a recommendation the operator may decline.
+A component design takes this shape:
 
 ````markdown
 # <Component title>
 
-Lifecycle: evergreen component baseline.
+Domain component. Implements `req-<capability>` REQ-1, REQ-2 (AC-2.1, AC-2.3);
+`req-<other>` REQ-4. Follows DEC-<n>.
 
-Implements: `req-<capability>` REQ-1, REQ-2 (AC-2.1, AC-2.3); `req-<other>` REQ-4
+## Boundary
 
 This component owns <its concerns>. `component-<neighbour>` owns <the
 adjacent concern>. `component-<other>` owns <the next adjacent concern>.
 
-## <Mechanism>
+## Public surfaces
 
-<Current state only: what the code does today, cited as
-`<repo>:path/to/file.go#Symbol`.>
+<The routes, tools, commands, events, and tables that callers or other
+components depend on.>
+
+## Invariants
+
+1. **<Rule name>.** <What must stay true, stated so a reviewer can reject a pull
+   request that violates it.> (`req-<capability>` AC-2.1; DEC-<n>)
+
+## State and failure
+
+<The states, and what happens on each failure.>
+
+## Extending this component
+
+<Which additions stay inside these rules, and which need a planning revision of
+this document.>
 
 ## Verification
 
-- <Behavior>: `<repo>:path/to/file_test.go#TestName`, `#TestOtherName`.
-
-`make test` runs these.
+- <Behavior class>: <the suite or gate that proves it>.
 
 ```conveyor:governs
 - repo: <repo>
@@ -370,9 +403,31 @@ adjacent concern>. `component-<other>` owns <the next adjacent concern>.
 ```
 ````
 
-The `Implements:` line lists the document-qualified REQ/AC identifiers that
-are current at proposal time, and the ownership paragraph names the owner of
-every neighbouring concern the mechanism sections touch.
+A feature design takes this shape:
+
+````markdown
+# <Feature title>
+
+Implements `req-<capability>` REQ-1. Follows DEC-<n>.
+
+## Change
+
+<The one change this plans, and the tasks or components it spans.>
+
+## Components changed
+
+- `component-<name>` v<n>: <the surfaces and invariants this change moves into
+  it>.
+
+```conveyor:governs
+- repo: <repo>
+  paths: []
+```
+````
+
+The opening line lists the document-qualified REQ/AC identifiers that are current
+at proposal time, and the boundary names the owner of every neighbouring concern
+the invariants touch.
 
 ## Decisions (DEC-n)
 
@@ -401,7 +456,7 @@ rejected alternatives — extraction, not description. Shape:
   wording-only successor until those documents are being revised anyway.
 - Point pending drafts that cite the superseded decision at the successor
   before confirming it, and keep them pending until it is confirmed
-  (DEC-57(4)).
+  (DEC-109(4)).
 - The supersession check: confirming a successor scans the current confirmed
   version of every live requirement and System Design document, and the
   current version of every undeleted reference document, for the superseded
@@ -431,7 +486,7 @@ corpus" section of ref-260823-f4729f, current version (informative).
 - Establish facts first: check each affected claim against the code at the
   current head and record every correction.
 - Then draft in tier order: decisions, then requirements, then designs.
-  Confirmation still follows DEC-57(4): a document is confirmed only after
+  Confirmation still follows DEC-109(4): a document is confirmed only after
   every document it cites, so no confirmed document cites unconfirmed
   authority.
 - When content moves, propose and have the operator confirm the receiving

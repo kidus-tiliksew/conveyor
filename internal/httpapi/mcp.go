@@ -618,6 +618,9 @@ func (s *Server) authorizeClaimMutation(ctx context.Context, workOrderID, sessio
 		return core.WorkOrderClaimIdentity{}, err
 	}
 	order, err := s.Store.GetWorkOrder(ctx, workOrderID)
+	if err != nil && !errors.Is(err, store.ErrNotFound) {
+		return core.WorkOrderClaimIdentity{}, err
+	}
 	if err != nil || !liveWorkOrderClaim(order, time.Now()) {
 		return core.WorkOrderClaimIdentity{}, store.ErrWorkOrderClaimLost
 	}
@@ -665,10 +668,10 @@ func (s *Server) resolveMCPWorkspace(ctx context.Context, explicit string) (stri
 	}
 	if explicit == "" {
 		if len(items) == 0 {
-			return "", fmt.Errorf("workspace_unavailable: create a workspace first")
+			return "", store.Refusef("workspace_unavailable: create a workspace first")
 		}
 		if len(items) != 1 {
-			return "", fmt.Errorf("workspace_required: workspace_id is required")
+			return "", store.Refusef("workspace_required: workspace_id is required")
 		}
 		return items[0].ID, nil
 	}

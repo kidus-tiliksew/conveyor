@@ -594,13 +594,13 @@ func (s *Store) SetTaskAssigneeCommand(ctx context.Context, lease taskops.TaskLe
 			err := tx.QueryRow(ctx, `SELECT u.status='active',b.role FROM workspace_role_bindings b JOIN users u ON u.id=b.user_id
 				WHERE b.workspace_id=$1 AND b.user_id=$2`, workspace(ctx), assigneeUserID).Scan(&active, &role)
 			if errors.Is(err, pgx.ErrNoRows) || (err == nil && !active) {
-				return fmt.Errorf("assignee %s is not an active member of workspace %s", assigneeUserID, workspace(ctx))
+				return fmt.Errorf("assignee %s is not an active member of workspace %s: %w", assigneeUserID, workspace(ctx), store.ErrAssigneeNotMember)
 			}
 			if err != nil {
 				return err
 			}
 			if !core.RoleAllows(role, core.CapabilityClaimWork) {
-				return fmt.Errorf("assignee %s role %s lacks %s capability in workspace %s", assigneeUserID, role, core.CapabilityClaimWork, workspace(ctx))
+				return fmt.Errorf("assignee %s role %s lacks %s capability in workspace %s: %w", assigneeUserID, role, core.CapabilityClaimWork, workspace(ctx), store.ErrAssigneeLacksCapability)
 			}
 		}
 		if current.String == assigneeUserID && current.Valid == (assigneeUserID != "") {
@@ -1188,7 +1188,7 @@ func (s *Store) AddTaskDependency(ctx context.Context, request store.DependencyA
 	request.Reason = strings.TrimSpace(request.Reason)
 	request.RequestID = strings.TrimSpace(request.RequestID)
 	if request.TaskID == "" || request.DependsOnTaskID == "" || request.Reason == "" || request.RequestID == "" {
-		return store.DependencyAdditionResult{}, fmt.Errorf("task_id, depends_on_task_id, reason, and request_id are required")
+		return store.DependencyAdditionResult{}, store.ErrTaskDependencyInvalid
 	}
 	if request.TaskID == request.DependsOnTaskID {
 		return store.DependencyAdditionResult{}, fmt.Errorf("%w: task cannot depend on itself", store.ErrTaskDependencyConflict)
@@ -1318,7 +1318,7 @@ func (s *Store) RemoveTaskDependency(ctx context.Context, request store.Dependen
 	request.Reason = strings.TrimSpace(request.Reason)
 	request.RequestID = strings.TrimSpace(request.RequestID)
 	if request.TaskID == "" || request.DependsOnTaskID == "" || request.Reason == "" || request.RequestID == "" {
-		return store.DependencyRemovalResult{}, fmt.Errorf("task_id, depends_on_task_id, reason, and request_id are required")
+		return store.DependencyRemovalResult{}, store.ErrTaskDependencyInvalid
 	}
 	actor := store.ActorFromContext(ctx)
 	removed := false
@@ -1335,7 +1335,7 @@ func (s *Store) RemoveTaskDependency(ctx context.Context, request store.Dependen
 			Scan(&prior.TaskID, &prior.DependsOnTaskID, &prior.Reason, &prior.RequestID, &actorID, &actorRole)
 		if err == nil {
 			if prior != request || actorID != actor.ID || actorRole != string(actor.Role) {
-				return fmt.Errorf("request_id %s was already used for different dependency removal inputs", request.RequestID)
+				return fmt.Errorf("%w: request_id %s was already used for different dependency removal inputs", store.ErrTaskDependencyConflict, request.RequestID)
 			}
 			return nil
 		}
@@ -1349,7 +1349,7 @@ func (s *Store) RemoveTaskDependency(ctx context.Context, request store.Dependen
 			return err
 		}
 		if command.RowsAffected() != 1 {
-			return fmt.Errorf("dependency edge %s -> %s not found", request.TaskID, request.DependsOnTaskID)
+			return fmt.Errorf("%w: %s -> %s", store.ErrDependencyEdgeNotFound, request.TaskID, request.DependsOnTaskID)
 		}
 		now := time.Now().UTC()
 		if _, err = tx.Exec(ctx, `INSERT INTO task_dependency_removals

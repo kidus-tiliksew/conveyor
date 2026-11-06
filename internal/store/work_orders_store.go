@@ -706,7 +706,7 @@ func (m *memory) AcceptReviewDecisionCommand(ctx context.Context, lease taskops.
 	defer m.mu.Unlock()
 	task, ok := m.tasks[decision.TaskID]
 	if !ok {
-		return fmt.Errorf("task %s not found", decision.TaskID)
+		return fmt.Errorf("task %s: %w", decision.TaskID, ErrNotFound)
 	}
 	if !m.verifyReviewReadyLocked(task) {
 		return fmt.Errorf("review requires completed verification for the submitted head")
@@ -1058,7 +1058,7 @@ func (m *memory) CreateWorkOrderCommand(ctx context.Context, lease taskops.TaskL
 	defer m.mu.Unlock()
 	task, ok := m.tasks[order.TaskID]
 	if !ok {
-		return fmt.Errorf("task %s not found", order.TaskID)
+		return fmt.Errorf("task %s: %w", order.TaskID, ErrNotFound)
 	}
 	if selected, present := WorkspaceFromContext(ctx); present && task.Workspace != selected {
 		return fmt.Errorf("task %s belongs to workspace %s, not %s", order.TaskID, task.Workspace, selected)
@@ -1123,7 +1123,7 @@ func (m *memory) CreateReviewRoundCommand(ctx context.Context, lease taskops.Tas
 	defer m.mu.Unlock()
 	task, ok := m.tasks[taskID]
 	if !ok {
-		return fmt.Errorf("task %s not found", taskID)
+		return fmt.Errorf("task %s: %w", taskID, ErrNotFound)
 	}
 	if selected, present := WorkspaceFromContext(ctx); present && selected != "" && task.Workspace != selected {
 		return fmt.Errorf("task %s belongs to workspace %s, not %s", taskID, task.Workspace, selected)
@@ -1213,7 +1213,7 @@ func (m *memory) CreateStageWorkOrderCommand(ctx context.Context, lease taskops.
 	defer m.mu.Unlock()
 	task, ok := m.tasks[job.TaskID]
 	if !ok {
-		return false, fmt.Errorf("task %s not found", job.TaskID)
+		return false, fmt.Errorf("task %s: %w", job.TaskID, ErrNotFound)
 	}
 	if selected, present := WorkspaceFromContext(ctx); present && selected != "" && task.Workspace != selected {
 		return false, fmt.Errorf("task %s belongs to workspace %s, not %s", job.TaskID, task.Workspace, selected)
@@ -1307,7 +1307,7 @@ func (m *memory) RetryReviewRoundCommand(ctx context.Context, lease taskops.Task
 	request.Reason = strings.TrimSpace(request.Reason)
 	request.PRHead = strings.TrimSpace(request.PRHead)
 	if request.RequestID == "" || request.Reason == "" || request.PRHead == "" {
-		return ReviewRoundRetryResult{}, fmt.Errorf("review retry request_id, reason, and verified PR head are required")
+		return ReviewRoundRetryResult{}, Refusef("review retry request_id, reason, and verified PR head are required")
 	}
 	workspace, _ := WorkspaceFromContext(ctx)
 	key := request.RequestID
@@ -1319,7 +1319,7 @@ func (m *memory) RetryReviewRoundCommand(ctx context.Context, lease taskops.Task
 	}
 	task, ok := m.tasks[request.TaskID]
 	if !ok || (workspace != "" && task.Workspace != workspace) {
-		return ReviewRoundRetryResult{}, fmt.Errorf("task %s not found", request.TaskID)
+		return ReviewRoundRetryResult{}, fmt.Errorf("task %s: %w", request.TaskID, ErrNotFound)
 	}
 	if len(jobs) == 0 || len(jobs) != len(orders) {
 		return ReviewRoundRetryResult{}, fmt.Errorf("review retry requires one job per work order")
@@ -1433,7 +1433,7 @@ func (m *memory) RecoverInterruptedReviewRoundCommand(ctx context.Context, lease
 	defer m.mu.Unlock()
 	request.RequestID = strings.TrimSpace(request.RequestID)
 	if request.RequestID == "" || request.TaskID == "" || request.Round <= 0 || queueTimeout <= 0 {
-		return InterruptedReviewRecoveryResult{}, fmt.Errorf("interrupted review recovery requires task, request_id, round, and queue timeout")
+		return InterruptedReviewRecoveryResult{}, Refusef("interrupted review recovery requires task, request_id, round, and queue timeout")
 	}
 	workspace, _ := WorkspaceFromContext(ctx)
 	key := request.RequestID
@@ -1445,7 +1445,7 @@ func (m *memory) RecoverInterruptedReviewRoundCommand(ctx context.Context, lease
 	}
 	task, ok := m.tasks[request.TaskID]
 	if !ok || task.Workspace != workspace {
-		return InterruptedReviewRecoveryResult{}, fmt.Errorf("task %s not found", request.TaskID)
+		return InterruptedReviewRecoveryResult{}, fmt.Errorf("task %s: %w", request.TaskID, ErrNotFound)
 	}
 	if core.TaskTerminal(task.State) {
 		return InterruptedReviewRecoveryResult{}, fmt.Errorf("%w: terminal task %s cannot recover review work", ErrReviewRetryConflict, request.TaskID)
@@ -1870,7 +1870,7 @@ func (m *memory) ClaimWorkOrderCommand(ctx context.Context, lifecycleLease tasko
 	defer m.mu.Unlock()
 	order, ok := m.workOrders[id]
 	if !ok {
-		return core.WorkOrder{}, fmt.Errorf("work order %s not found", id)
+		return core.WorkOrder{}, fmt.Errorf("work order %s: %w", id, ErrNotFound)
 	}
 	if !lifecycleLease.ValidForCommand(order.TaskID, string(core.WorkOrderCmdClaim)) {
 		return core.WorkOrder{}, fmt.Errorf("work-order claim requires a valid taskops lease")
@@ -2036,7 +2036,7 @@ func (m *memory) RedispatchWorkOrderCommand(ctx context.Context, lease taskops.T
 	defer m.mu.Unlock()
 	order, ok := m.workOrders[id]
 	if !ok {
-		return core.WorkOrder{}, fmt.Errorf("work order %s not found", id)
+		return core.WorkOrder{}, fmt.Errorf("work order %s: %w", id, ErrNotFound)
 	}
 	if !lease.ValidForCommand(order.TaskID, string(core.WorkOrderCmdRedispatch)) {
 		return core.WorkOrder{}, fmt.Errorf("work-order redispatch requires a valid taskops lease")
@@ -2101,7 +2101,7 @@ func (m *memory) RecoverWorkOrderCommand(ctx context.Context, lease taskops.Task
 		return core.WorkOrder{}, err
 	}
 	if strings.TrimSpace(requestID) == "" {
-		return core.WorkOrder{}, fmt.Errorf("recovery request_id is required")
+		return core.WorkOrder{}, Refusef("recovery request_id is required")
 	}
 	if queueTimeout <= 0 {
 		return core.WorkOrder{}, fmt.Errorf("work-order queue timeout must be positive")
@@ -2112,10 +2112,10 @@ func (m *memory) RecoverWorkOrderCommand(ctx context.Context, lease taskops.Task
 	key := workspace + "/" + id + "/" + requestID
 	order, ok := m.workOrders[id]
 	if !ok {
-		return core.WorkOrder{}, fmt.Errorf("work order %s not found", id)
+		return core.WorkOrder{}, fmt.Errorf("work order %s: %w", id, ErrNotFound)
 	}
 	if workspace != "" && m.tasks[order.TaskID].Workspace != workspace {
-		return core.WorkOrder{}, fmt.Errorf("work order %s not found", id)
+		return core.WorkOrder{}, fmt.Errorf("work order %s: %w", id, ErrNotFound)
 	}
 	if !lease.ValidForCommand(order.TaskID, string(core.WorkOrderCmdRecover)) {
 		return core.WorkOrder{}, fmt.Errorf("work-order recovery requires a valid taskops lease")
@@ -2166,7 +2166,7 @@ func (m *memory) RecoverWorkOrderCommand(ctx context.Context, lease taskops.Task
 		return core.WorkOrder{}, err
 	}
 	if refusal := core.WorkOrderRecoverStateRefusal(projected); refusal != "" {
-		return core.WorkOrder{}, errors.New(refusal)
+		return core.WorkOrder{}, Refuse(errors.New(refusal))
 	}
 
 	if VerificationRecoveryFromContext(ctx) == nil {
@@ -2287,7 +2287,7 @@ func (m *memory) updateWorkOrderCommandLocked(ctx context.Context, lease taskops
 func (m *memory) updateWorkOrderSubmissionLocked(ctx context.Context, lease taskops.TaskLease, order core.WorkOrder, seats SubmissionReviewSeats, commands ...core.WorkOrderCommand) error {
 	current, ok := m.workOrders[order.ID]
 	if !ok {
-		return fmt.Errorf("work order %s not found", order.ID)
+		return fmt.Errorf("work order %s: %w", order.ID, ErrNotFound)
 	}
 	current = m.refreshWorkOrderLocked(ctx, current, time.Now().UTC())
 	if current.State == core.WorkOrderTimedOut {
@@ -2394,7 +2394,7 @@ func (m *memory) CreateSpecVersion(ctx context.Context, spec core.SpecVersion) (
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if _, ok := m.tasks[spec.TaskID]; !ok {
-		return core.SpecVersion{}, fmt.Errorf("task %s not found", spec.TaskID)
+		return core.SpecVersion{}, fmt.Errorf("task %s: %w", spec.TaskID, ErrNotFound)
 	}
 	spec.Version = len(m.specs[spec.TaskID]) + 1
 	// Approval is a separate exact-version gate; callers cannot smuggle an

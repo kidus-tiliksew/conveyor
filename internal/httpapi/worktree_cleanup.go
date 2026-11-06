@@ -2,7 +2,6 @@ package httpapi
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"net/http"
 	"strings"
@@ -37,7 +36,7 @@ type worktreeCleanupReceipt struct {
 func (s *Server) getWorktreeCleanupStatus(w http.ResponseWriter, r *http.Request) {
 	task, authorized, err := s.authorizedWorktreeCleanupTask(r)
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		writeStoreFailure(w, r, err)
 		return
 	}
 	if !authorized {
@@ -46,7 +45,7 @@ func (s *Server) getWorktreeCleanupStatus(w http.ResponseWriter, r *http.Request
 	}
 	completed, err := s.Store.CountEvents(r.Context(), task.ID, worktreeCleanupCompletedEvent)
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		writeStoreFailure(w, r, err)
 		return
 	}
 	writeJSON(w, http.StatusOK, worktreeCleanupStatus{Terminal: core.TaskTerminal(task.State), Completed: completed != 0})
@@ -54,8 +53,8 @@ func (s *Server) getWorktreeCleanupStatus(w http.ResponseWriter, r *http.Request
 
 func (s *Server) recordWorktreeCleanup(w http.ResponseWriter, r *http.Request) {
 	var request worktreeCleanupRecord
-	if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
+	if err := decodeBoundedJSON(w, r, taskRouteBodyLimit, &request); err != nil {
+		writeBodyDecodeError(w, err)
 		return
 	}
 	if err := validateWorktreeCleanupRecord(request); err != nil {
@@ -64,7 +63,7 @@ func (s *Server) recordWorktreeCleanup(w http.ResponseWriter, r *http.Request) {
 	}
 	task, authorized, err := s.authorizedWorktreeCleanupTask(r)
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		writeStoreFailure(w, r, err)
 		return
 	}
 	if !authorized {
@@ -114,7 +113,7 @@ func (s *Server) recordWorktreeCleanup(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		writeStoreFailure(w, r, err)
 		return
 	}
 	writeJSON(w, http.StatusOK, receipt)

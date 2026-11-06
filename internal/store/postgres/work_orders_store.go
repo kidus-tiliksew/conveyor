@@ -545,7 +545,7 @@ func (s *Store) RetryReviewRoundCommand(ctx context.Context, lease taskops.TaskL
 	request.Reason = strings.TrimSpace(request.Reason)
 	request.PRHead = strings.TrimSpace(request.PRHead)
 	if request.RequestID == "" || request.Reason == "" || request.PRHead == "" {
-		return store.ReviewRoundRetryResult{}, fmt.Errorf("review retry request_id, reason, and verified PR head are required")
+		return store.ReviewRoundRetryResult{}, store.Refusef("review retry request_id, reason, and verified PR head are required")
 	}
 	if len(jobs) == 0 || len(jobs) != len(orders) {
 		return store.ReviewRoundRetryResult{}, fmt.Errorf("review retry requires one job per work order")
@@ -742,7 +742,7 @@ func (s *Store) RecoverInterruptedReviewRoundCommand(ctx context.Context, lease 
 	}
 	request.RequestID = strings.TrimSpace(request.RequestID)
 	if request.RequestID == "" || request.TaskID == "" || request.Round <= 0 || queueTimeout <= 0 {
-		return store.InterruptedReviewRecoveryResult{}, fmt.Errorf("interrupted review recovery requires task, request_id, round, and queue timeout")
+		return store.InterruptedReviewRecoveryResult{}, store.Refusef("interrupted review recovery requires task, request_id, round, and queue timeout")
 	}
 	tx, err := s.begin(ctx)
 	if err != nil {
@@ -1594,7 +1594,7 @@ func (s *Store) RecoverWorkOrderCommand(ctx context.Context, lease taskops.TaskL
 	}
 	requestID = strings.TrimSpace(requestID)
 	if requestID == "" {
-		return core.WorkOrder{}, fmt.Errorf("recovery request_id is required")
+		return core.WorkOrder{}, store.Refusef("recovery request_id is required")
 	}
 	if queueTimeout <= 0 {
 		return core.WorkOrder{}, fmt.Errorf("work-order queue timeout must be positive")
@@ -1665,7 +1665,7 @@ func (s *Store) RecoverWorkOrderCommand(ctx context.Context, lease taskops.TaskL
 		return core.WorkOrder{}, err
 	}
 	if refusal := core.WorkOrderRecoverStateRefusal(projected); refusal != "" {
-		return core.WorkOrder{}, errors.New(refusal)
+		return core.WorkOrder{}, store.Refuse(errors.New(refusal))
 	}
 	if order.State == core.WorkOrderQueued && order.ExecutionStartedAt.IsZero() &&
 		!order.QueueDeadline.IsZero() && !order.QueueDeadline.After(now) {
@@ -1706,7 +1706,7 @@ func (s *Store) RecoverWorkOrderCommand(ctx context.Context, lease taskops.TaskL
 	}
 	order, err = writeRecoveredWorkOrder(ctx, tx, id, now, queueTimeout, direction, order.ExecutionTimeoutText, 0, time.Time{})
 	if errors.Is(err, pgx.ErrNoRows) {
-		return core.WorkOrder{}, fmt.Errorf("work order %s changed during recovery", id)
+		return core.WorkOrder{}, store.Refusef("work order %s changed during recovery", id)
 	}
 	if err != nil {
 		return core.WorkOrder{}, err
@@ -2067,7 +2067,7 @@ func (s *Store) updateWorkOrderSubmissionTx(ctx context.Context, tx pgx.Tx, q *d
 			return err
 		}
 		if tag.RowsAffected() != 1 {
-			return fmt.Errorf("work order %s not found", order.ID)
+			return fmt.Errorf("work order %s: %w", order.ID, store.ErrNotFound)
 		}
 		// The ordinary update never writes declared_review_seats, so the event
 		// carries the stored value; only the implementation submission writes

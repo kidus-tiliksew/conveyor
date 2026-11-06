@@ -1,9 +1,7 @@
 package httpapi
 
 import (
-	"encoding/json"
 	"errors"
-	"io"
 	"net/http"
 	"strings"
 
@@ -21,8 +19,8 @@ func (s *Server) preemptWorkOrder(w http.ResponseWriter, r *http.Request) {
 		Reason    string `json:"reason"`
 		RequestID string `json:"request_id"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&request); err != nil && err != io.EOF {
-		http.Error(w, err.Error(), http.StatusBadRequest)
+	if err := decodeOptionalBoundedJSON(w, r, taskRouteBodyLimit, &request); err != nil {
+		writeBodyDecodeError(w, err)
 		return
 	}
 	headerRequestID := strings.TrimSpace(r.Header.Get("X-Idempotency-Key"))
@@ -38,7 +36,7 @@ func (s *Server) preemptWorkOrder(w http.ResponseWriter, r *http.Request) {
 		if errors.Is(err, store.ErrWorkOrderPreemptConflict) {
 			status = http.StatusConflict
 		}
-		http.Error(w, err.Error(), status)
+		writeOperationError(w, r, err, status)
 		return
 	}
 	writeJSON(w, http.StatusOK, result)

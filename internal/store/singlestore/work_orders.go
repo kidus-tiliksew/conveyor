@@ -1482,7 +1482,7 @@ func (s *Store) RecoverWorkOrderCommand(ctx context.Context, lease taskops.TaskL
 	}
 	requestID = strings.TrimSpace(requestID)
 	if requestID == "" {
-		return core.WorkOrder{}, fmt.Errorf("recovery request_id is required")
+		return core.WorkOrder{}, store.Refusef("recovery request_id is required")
 	}
 	if timeout <= 0 {
 		return core.WorkOrder{}, fmt.Errorf("work-order queue timeout must be positive")
@@ -1537,7 +1537,7 @@ func (s *Store) RecoverWorkOrderCommand(ctx context.Context, lease taskops.TaskL
 			return err
 		}
 		if refusal := core.WorkOrderRecoverStateRefusal(projected); refusal != "" {
-			return errors.New(refusal)
+			return store.Refuse(errors.New(refusal))
 		}
 		if o.State == core.WorkOrderQueued && o.ExecutionStartedAt.IsZero() && !o.QueueDeadline.IsZero() && !o.QueueDeadline.After(now) {
 			o, err = s.transitionWorkOrderTx(ctx, tx, o, core.WorkOrderCmdMarkStale, "work_order.stale", now)

@@ -33,10 +33,11 @@ func invalidToolArgument(err error) error {
 // categories are classified, never error text: a workspace-visibility refusal
 // answers the canonical 404 workspace_not_found, an invalid argument answers
 // 400, a declared review seat count below the task's floor answers 422 with
-// its counts (feature-review-seat-minimum RS-4), and every other claim or
-// lifecycle error keeps 409 (req-accounts-and-membership AC-4.2;
+// its counts (component-review), every other claim or lifecycle refusal and a
+// forge failure keep 409, and anything else is a store failure that answers the
+// generic 500 (req-accounts-and-membership AC-4.2; DEC-105(1);
 // component-http-api).
-func writeWorkOrderToolError(w http.ResponseWriter, err error) {
+func writeWorkOrderToolError(w http.ResponseWriter, r *http.Request, err error) {
 	if errors.Is(err, errWorkspaceNotVisible) {
 		writeWorkspaceNotFound(w)
 		return
@@ -55,5 +56,5 @@ func writeWorkOrderToolError(w http.ResponseWriter, err error) {
 		})
 		return
 	}
-	http.Error(w, err.Error(), http.StatusConflict)
+	writeOperationError(w, r, err, http.StatusConflict)
 }

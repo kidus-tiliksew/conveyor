@@ -2,6 +2,7 @@ package store
 
 import (
 	"context"
+	"errors"
 	"time"
 
 	"github.com/kidus-tiliksew/conveyor/internal/core"
@@ -28,6 +29,11 @@ func ResolveClaimSession(ctx context.Context, st ClaimSessionReader, workOrderID
 		return core.WorkOrder{}, ErrWorkOrderClaimLost
 	}
 	order, err := st.GetWorkOrderWithoutSnapshots(ctx, workOrderID)
+	if err != nil && !errors.Is(err, ErrNotFound) {
+		// A failed read is a store failure and never reads as a lost claim
+		// (DEC-105(1)).
+		return core.WorkOrder{}, err
+	}
 	if err == nil && order.SessionID == sessionID {
 		return order, nil
 	}

@@ -27,7 +27,7 @@ anything uploaded as Markdown. They cannot be cited, on purpose. When a claim
 in an overview should become enforceable, an operator promotes it into a
 requirement, and Conveyor records a `derived_from` link back to the overview
 when that requirement is confirmed. Informative documents never restate
-acceptance criteria (DEC-57(3)).
+acceptance criteria (DEC-109(3)).
 
 ## Requirements
 
@@ -38,7 +38,7 @@ At proposal time, the first non-blank line must be a non-empty `# <title>` headi
 
 A requirement is a black-box contract and each requirement document covers
 one capability. It does not prescribe storage, services, queries, queues, or
-algorithms unless that mechanism is itself a public contract (DEC-57(1)).
+algorithms unless that mechanism is itself a public contract (DEC-109(1)).
 
 ````markdown
 # Sign-in recovery
@@ -81,9 +81,9 @@ changes.
 
 The governs block does double duty. It selects which designs are served as
 pinned authority when a task touches those paths, and it arms
-[drift detection](misalignment.md): a merge that changes governed paths
-without the delivering task having consulted or proposed a revision to the
-design raises a drift signal.
+[drift detection](misalignment.md): a merge whose task held the design records
+a merge judgment with no drift, and any other change to the governed paths
+records drift (`component-monitor-drift`).
 
 A document that owns no code, such as a feature design (DEC-101(5)), declares
 its repository with an empty path list:
@@ -103,24 +103,69 @@ which pins a version as usual. The document still has exactly one code block,
 and the list must be written out: a repository entry with an absent or null
 `paths` is refused, so a misspelled key cannot empty a scope.
 
-## Baselines and overlays
+## The System Design standard
 
-DEC-57(5) recommends evergreen System Design documents as component baselines
-and a temporary feature overlay for delivery that changes several baselines. The
-overlay opens by naming the exact baseline versions it changes, the
-requirements it implements, its delivery state, and the absorbing document
-for each lasting mechanism; it does not outrank a requirement or decision.
+Conveyor's planning playbooks and skills teach every factory one System Design
+standard: the content test of DEC-100 and the component and feature shapes of
+DEC-101(2) to (8) (DEC-109(5)). Conveyor encodes neither shape as a document
+kind or lifecycle state, and a category selects no behavior.
 
-Planning agents recommend this pattern when a workspace creates its first
-System Design document, when in-flight delivery spans several baselines, or
-when an operator asks how to document a feature under development. A workspace
-may decline and revise evergreen baselines directly, and the agent does not
-press the pattern again after that choice. The `conveyor` workspace's own corpus
-adopts the component-and-feature form of the pattern (DEC-58).
+### The content test
 
-After delivery, the operator proposes the baseline revisions and then archives
-the overlay naming those documents as its successors (req-document-archive
-REQ-1/AC-1.7).
+A System Design document states what must stay true: boundaries, public
+surfaces, invariants, and failure behavior. The code states how the system
+works today (DEC-100(1)).
+
+A sentence belongs in a System Design document only when a behavior-preserving
+refactor would not force an edit to it, and either a caller or another component
+would break if it became false or a reviewer should reject a pull request that
+violates it (DEC-100(2)).
+
+A component design changes only when a rule a reviewer should enforce changes, a
+public surface is broken or removed or is added outside the component's
+extension rules, a boundary or dependency between components changes, or behavior
+a requirement demands changes (DEC-100(3)).
+
+A System Design document holds no implementation walkthroughs, test inventories,
+task identifiers, change plans, or narration of removed mechanisms (DEC-100(4)).
+
+### Component designs
+
+A component design has the category `Component design` and an ID
+`component-<name>`. It describes one lasting capability or platform service: one
+that outlives any single feature, whose contract fits in one paragraph, and that
+owns code named by directory (DEC-101(2)).
+
+A domain component owns one capability from storage through its user-interface
+contract. A platform component sets rules other components follow and names no
+specific feature (DEC-101(3)). The `conveyor` workspace's HTTP API, MCP protocol,
+and web dashboard documents keep the platform label although they name specific
+features (DEC-109(6)).
+
+A component design holds its boundary, public surfaces, numbered invariants,
+state and failure model, extension rules, verification by suite or gate, and
+governs fence, and aims for about 2,500 words (DEC-101(4)).
+
+### Feature designs
+
+A feature design has the category `Feature design` and an ID `feature-<name>`.
+It plans one change that spans several tasks or components, names the component
+versions it changes, governs no path, and aims for about 2,000 words. A one-task
+change has no feature design (DEC-101(5)).
+
+The last task of a feature design closes it. Its surfaces and invariants move
+into the components it changes, a new capability becomes a new component, and the
+feature design is archived naming its successors (DEC-101(6);
+req-document-archive REQ-1/AC-1.7). Operator-side planning authors those versions,
+because a task authors none (DEC-102(1), (2)).
+
+### Path ownership
+
+Every source, test, build, configuration, and mechanism-documentation path is
+governed by exactly one component design (DEC-101(7)). Historical evidence
+(point-in-time measurements, incident reconciliations, retained screenshots) and
+narrative guides that restate no mechanism are governed by no document
+(DEC-101(8)).
 
 ## Decisions
 
@@ -143,12 +188,12 @@ IDs, they are never recycled.
 ## Precedence and confirmation order
 
 When confirmed documents disagree, read requirements first, decisions second,
-and System Design documents third (DEC-57(2)). Requirements hold the public
+and System Design documents third (DEC-109(2)). Requirements hold the public
 contract, decisions constrain the chosen direction, and designs describe the
 mechanism within those constraints.
 
 Confirm requirements before the decisions that cite them, then confirm
-decisions before the designs that cite both (DEC-57(4)). A pending document has no
+decisions before the designs that cite both (DEC-109(4)). A pending document has no
 authority, so this order prevents a proposal from depending on an unconfirmed
 premise.
 
@@ -228,12 +273,14 @@ attachment kinds age differently, on purpose:
 Triage may suggest attachments but never makes them; its suggestions wait as
 proposals for an operator to confirm or dismiss.
 
-When an agent claims a work order, Conveyor renders the served requirements
-(with their REQ and AC statements) and the governance snapshot (governing
-design content, confirmed and superseded decisions) into the agent's
-context. Review orders get a snapshot frozen at claim time, and reviewers
-must return structured assessments classifying their citations against
-exactly that authority. The mechanics live in [Tasks](tasks.md#what-a-work-order-carries).
+A work order carries the session's instructions, plan, done criteria, and served
+requirement statements with their REQ and AC IDs. It names the governing System
+Design documents and decisions without carrying their bodies (DEC-103(1)). A
+session finds and reads design text over MCP by search, outline, and section
+read, each of which accepts a version (DEC-103(3)). Review orders get a snapshot
+frozen at claim time, and reviewers must return structured assessments
+classifying their citations against exactly that authority. The layers are listed
+in [What a work order carries](tasks.md#what-a-work-order-carries).
 
 ## Planning from an agent session
 

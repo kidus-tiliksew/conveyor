@@ -1,6 +1,7 @@
 package httpapi
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"io"
@@ -19,7 +20,16 @@ func (s *Server) changeTaskPolicy(w http.ResponseWriter, r *http.Request) {
 		Reason               string            `json:"reason"`
 		RequestID            string            `json:"request_id"`
 	}
-	decoder := json.NewDecoder(http.MaxBytesReader(w, r.Body, 16384))
+	body, err := readBoundedBody(w, r, 16384)
+	if errors.Is(err, errBodyTooLarge) {
+		writeJSON(w, http.StatusRequestEntityTooLarge, map[string]string{"error": err.Error()})
+		return
+	}
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		return
+	}
+	decoder := json.NewDecoder(bytes.NewReader(body))
 	decoder.DisallowUnknownFields()
 	if err := decoder.Decode(&input); err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
@@ -40,6 +50,10 @@ func (s *Server) changeTaskPolicy(w http.ResponseWriter, r *http.Request) {
 	}
 	result, err := s.WorkOrders.ChangeTaskPolicy(r.Context(), chi.URLParam(r, "id"), input.Reason, input.RequestID, policy)
 	if err != nil {
+		if !isOperationRefusal(err) {
+			writeStoreFailure(w, r, err)
+			return
+		}
 		status := http.StatusBadRequest
 		if errors.Is(err, store.ErrSetupChangeConflict) {
 			status = http.StatusConflict

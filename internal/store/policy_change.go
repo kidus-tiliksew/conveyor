@@ -54,7 +54,7 @@ func (p TaskPolicyChange) Validate() error {
 // AC-2.11).
 func PlanTaskPolicyChange(task core.Task, orders []core.WorkOrder, r SetupChangeRequest, seats PolicyHandoffSeatInputs) (SetupChangeRequest, error) {
 	if r.Policy == nil {
-		return r, fmt.Errorf("a frozen-policy change is required")
+		return r, Refusef("a frozen-policy change is required")
 	}
 	if err := r.Policy.Validate(); err != nil {
 		return r, err

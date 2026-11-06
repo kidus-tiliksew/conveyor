@@ -1,10 +1,8 @@
 package httpapi
 
 import (
-	"encoding/json"
 	"errors"
 	"fmt"
-	"log"
 	"net/http"
 
 	"github.com/go-chi/chi/v5"
@@ -15,27 +13,26 @@ func (s *Server) attachTaskBranch(w http.ResponseWriter, r *http.Request) {
 	var request struct {
 		Branch string `json:"branch"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
+	if err := decodeBoundedJSON(w, r, taskRouteBodyLimit, &request); err != nil {
+		writeBodyDecodeError(w, err)
 		return
 	}
 	task, err := s.Store.AttachTaskBranch(r.Context(), chi.URLParam(r, "id"), request.Branch)
 	if err != nil {
-		writeTaskBranchAttachError(w, err)
+		writeTaskBranchAttachError(w, r, err)
 		return
 	}
 	writeJSON(w, http.StatusOK, task)
 }
 
-func writeTaskBranchAttachError(w http.ResponseWriter, err error) {
+func writeTaskBranchAttachError(w http.ResponseWriter, r *http.Request, err error) {
 	code, status, otherTaskID := classifyTaskBranchAttachError(err)
 	if status == http.StatusNotFound {
 		http.Error(w, err.Error(), http.StatusNotFound)
 		return
 	}
 	if code == "" {
-		log.Printf("attach task branch: %v", err)
-		http.Error(w, "internal server error", http.StatusInternalServerError)
+		writeStoreFailure(w, r, err)
 		return
 	}
 	body := map[string]string{"error": code, "message": err.Error()}

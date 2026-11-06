@@ -1638,7 +1638,7 @@ func (s *Store) ChangeTaskPolicyCommand(ctx context.Context, lease taskops.TaskL
 		for _, id := range r.SupersedeWorkOrderIDs {
 			o, ok := byID[id]
 			if !ok {
-				return fmt.Errorf("work order %s not found", id)
+				return fmt.Errorf("work order %s: %w", id, store.ErrNotFound)
 			}
 			old := o.State
 			values := map[string]any{"review_superseded": o.Stage == core.StageReview, "updated_at": now}

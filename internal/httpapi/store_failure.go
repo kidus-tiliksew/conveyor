@@ -8,7 +8,10 @@ import (
 
 	"github.com/go-chi/chi/v5/middleware"
 
+	"github.com/kidus-tiliksew/conveyor/internal/core"
+	"github.com/kidus-tiliksew/conveyor/internal/dispatch"
 	"github.com/kidus-tiliksew/conveyor/internal/redact"
+	"github.com/kidus-tiliksew/conveyor/internal/store"
 )
 
 // errorLogLimit bounds the error text one log line carries.
@@ -60,6 +63,60 @@ func writeClassifiedStoreError(w http.ResponseWriter, r *http.Request, err error
 			http.Error(w, message, status)
 			return
 		}
+	}
+	writeStoreFailure(w, r, err)
+}
+
+// writeTaskReadFailure answers a failed read of the task a route addresses: a
+// missing task is 404, and anything else is a store failure, so an outage never
+// reads as not found (DEC-105(1)).
+func writeTaskReadFailure(w http.ResponseWriter, r *http.Request, err error) {
+	writeClassifiedStoreError(w, r, err, refuseSentinel(store.ErrNotFound, http.StatusNotFound, "task not found"))
+}
+
+// isOperationRefusal reports whether err from a task, gate, or work-order
+// operation is a refusal or a forge failure rather than a store failure. It
+// names sentinels and typed errors only, never error text (DEC-105(1), (2);
+// component-http-api invariants 15, 16).
+func isOperationRefusal(err error) bool {
+	if err == nil || errors.Is(err, store.ErrBackendOperation) {
+		return false
+	}
+	if dispatch.MergeRouteRefusal(err) {
+		return true
+	}
+	var (
+		remedy     *store.VerificationRemedyError
+		dependency *store.TaskDependencyError
+		branch     *store.BranchInUseError
+		invalid    *core.ErrInvalidTransition
+	)
+	if errors.As(err, &remedy) || errors.As(err, &dependency) || errors.As(err, &branch) || errors.As(err, &invalid) {
+		return true
+	}
+	for _, refusal := range []error{
+		store.ErrWorkspaceRequired, store.ErrWorkOrderStale, store.ErrWorkOrderTimedOut, store.ErrWorkOrderCancelled,
+		store.ErrWorkOrderPreempted, store.ErrWorkOrderPreemptConflict, store.ErrWorkOrderClaimLost,
+		store.ErrWorkOrderReleasedAtCheckpoint, store.ErrWorkOrderClaimUnauthorized, store.ErrReviewRetryConflict,
+		store.ErrSetupChangeConflict, store.ErrTaskHeldByWorkOrder, store.ErrTaskBranchConflict,
+		store.ErrPlanRevisionGateUnreadable, store.ErrReviewRoundSeatsInvalid, store.ErrReviewHeadStale,
+		store.ErrDocumentationGateUnresolved, store.ErrDocumentationUnresolved, store.ErrReviewSeatModelNotDistinct,
+		store.ErrCheckStatusHeadRequired, store.ErrVerificationAccess, store.ErrVerificationConflict,
+		store.ErrVerificationState, store.ErrVerificationInvalid,
+	} {
+		if errors.Is(err, refusal) {
+			return true
+		}
+	}
+	return false
+}
+
+// writeOperationError answers an operation's refusal with status and the
+// refusal's text, and any other error as a store failure.
+func writeOperationError(w http.ResponseWriter, r *http.Request, err error, status int) {
+	if isOperationRefusal(err) {
+		http.Error(w, err.Error(), status)
+		return
 	}
 	writeStoreFailure(w, r, err)
 }

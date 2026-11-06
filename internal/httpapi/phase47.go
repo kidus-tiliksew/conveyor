@@ -3,7 +3,7 @@ package httpapi
 import (
 	"context"
 	"crypto/sha256"
-	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -122,7 +122,11 @@ func (s *Server) recoverWorkOrder(w http.ResponseWriter, r *http.Request) {
 		RequestID    string                                 `json:"request_id"`
 		Direction    string                                 `json:"direction"`
 	}
-	raw, err := io.ReadAll(http.MaxBytesReader(w, r.Body, 1<<20))
+	raw, err := readBoundedBody(w, r, 1<<20)
+	if errors.Is(err, errBodyTooLarge) {
+		writeBodyTooLarge(w)
+		return
+	}
 	if err != nil {
 		http.Error(w, "invalid recovery request", http.StatusBadRequest)
 		return
@@ -142,7 +146,7 @@ func (s *Server) recoverWorkOrder(w http.ResponseWriter, r *http.Request) {
 	}
 	order, err := s.WorkOrders.RecoverVerification(r.Context(), chi.URLParam(r, "id"), request.RequestID, request.Direction, request.Verification)
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusConflict)
+		writeOperationError(w, r, err, http.StatusConflict)
 		return
 	}
 	writeJSON(w, http.StatusOK, order)
@@ -157,8 +161,8 @@ func (s *Server) retryReviewRound(w http.ResponseWriter, r *http.Request) {
 		RequestID string `json:"request_id"`
 		Reason    string `json:"reason"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&request); err != nil && err != io.EOF {
-		http.Error(w, err.Error(), http.StatusBadRequest)
+	if err := decodeOptionalBoundedJSON(w, r, taskRouteBodyLimit, &request); err != nil {
+		writeBodyDecodeError(w, err)
 		return
 	}
 	if request.RequestID == "" {
@@ -170,7 +174,7 @@ func (s *Server) retryReviewRound(w http.ResponseWriter, r *http.Request) {
 	}
 	result, err := s.WorkOrders.RetryReviewRound(r.Context(), chi.URLParam(r, "id"), request.RequestID, request.Reason)
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusConflict)
+		writeOperationError(w, r, err, http.StatusConflict)
 		return
 	}
 	writeJSON(w, http.StatusOK, result)
@@ -184,8 +188,8 @@ func (s *Server) recoverInterruptedReviewRound(w http.ResponseWriter, r *http.Re
 	var request struct {
 		RequestID string `json:"request_id"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&request); err != nil && err != io.EOF {
-		http.Error(w, err.Error(), http.StatusBadRequest)
+	if err := decodeOptionalBoundedJSON(w, r, taskRouteBodyLimit, &request); err != nil {
+		writeBodyDecodeError(w, err)
 		return
 	}
 	if request.RequestID == "" {
@@ -197,7 +201,7 @@ func (s *Server) recoverInterruptedReviewRound(w http.ResponseWriter, r *http.Re
 	}
 	result, err := s.WorkOrders.RecoverInterruptedReviewRound(r.Context(), chi.URLParam(r, "id"), request.RequestID)
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusConflict)
+		writeOperationError(w, r, err, http.StatusConflict)
 		return
 	}
 	writeJSON(w, http.StatusOK, result)
