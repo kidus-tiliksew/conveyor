@@ -5,6 +5,7 @@ import {
   formattedParagraph,
   formattedParagraphChanges,
   headingBlocks,
+  listBlockChanges,
   paragraphCells,
   reviewBlocks,
   reviewRowParagraphs,
@@ -133,7 +134,11 @@ test('review model preserves stable identifiers, headings, moves and bounded com
   })
   expect(formattedParagraph('[unsafe](javascript:alert(1))')).toBeUndefined()
   expect(formattedParagraph('*unterminated')).toBeUndefined()
-  expect(formattedParagraph('- list item')).toBeUndefined()
+  expect(listBlockChanges('- list item', '- list item')).toMatchObject([
+    { after: { marker: '-', depth: 0, text: 'list item' }, changes: [{ text: 'list item', kind: 'same' }] },
+  ])
+  expect(formattedParagraph('| Field | Value |\n| --- | --- |\n| Lease | 10 |')).toBeUndefined()
+  expect(formattedParagraph('```go\nrenew()\n```')).toBeUndefined()
   expect(formattedParagraph('<script>window.injected = true</script>')).toBeUndefined()
   expect(formattedParagraphChanges('one '.repeat(800), 'two '.repeat(800))).toBeUndefined()
   expect(paragraphCells('one '.repeat(300), 'one '.repeat(300))).toBe(0)
@@ -165,7 +170,9 @@ test('review model budgets renderer work per changed section', () => {
   expect(paragraphCells('Renew every 30 seconds.', 'Renew every 30 seconds.')).toBe(0)
   expect(paragraphCells('Renew every 30 seconds.', 'Renew every 10 seconds.')).toBe(9 * 9)
   expect(paragraphCells('', 'Added.')).toBe(3)
-  expect(paragraphCells('- list item', '- other item')).toBe(0)
+  // A list block costs its item alignment plus each changed item's token matrix.
+  expect(paragraphCells('- list item', '- other item')).toBe(2 * 2 + 4 * 4)
+  expect(paragraphCells('- list item', '- list item')).toBe(0)
   expect(paragraphCells(heavyParagraph('a'), heavyParagraph('b'))).toBe(470 * 470)
 
   const isolated = compareDocuments(
@@ -203,6 +210,306 @@ test('review model budgets renderer work per changed section', () => {
   const underCeiling = compareDocuments({ content: four('alpha') }, { content: four('beta') })
   expect(underCeiling.limited).toBe(false)
   expect(underCeiling.rows.every((row) => row.changed && !row.limited)).toBe(true)
+})
+
+const listItemBase =
+  '31. **Cancellation.** It is valid from any non-terminal state. `POST .../close` requires a non-blank reason of at most 64 bytes and refuses a terminal task with 409.'
+const listItemTarget =
+  '31. **Cancellation.** It is valid from any non-terminal state. `POST .../close` requires a non-blank `reason` of at most 255 characters, or with no `reason` a `reason_code` of at most 64 bytes, and refuses a terminal task with 409.'
+const listSiblings =
+  '32. **Closure.** A closed task keeps its history.\n33. **Retention.** Events stay append-only and readable.'
+const terminationList = (item: string) =>
+  `# Task lifecycle\n\n## Termination\n\n${item}\n${listSiblings}\n\n## Stable\n\nSame.`
+
+const added = (changes?: Array<{ text: string; kind: string }>) =>
+  (changes ?? []).filter((change) => change.kind === 'added').map((change) => change.text)
+const removed = (changes?: Array<{ text: string; kind: string }>) =>
+  (changes ?? []).filter((change) => change.kind === 'removed').map((change) => change.text)
+const annotated = (changes?: Array<{ kind: string }>) => (changes ?? []).filter((change) => change.kind !== 'same')
+
+test('review model diffs list blocks per item and keeps source markers', () => {
+  const items = listBlockChanges(`${listItemBase}\n${listSiblings}`, `${listItemTarget}\n${listSiblings}`)
+  expect(items?.map((item) => item.after?.marker)).toEqual(['31.', '32.', '33.'])
+  expect(items?.map((item) => item.before?.marker)).toEqual(['31.', '32.', '33.'])
+  expect(added(items?.[0].changes).join('')).toContain('255')
+  expect(removed(items?.[0].changes).join('')).toContain('reason')
+  expect(items?.[0].changes).toContainEqual({
+    text: 'Cancellation.',
+    kind: 'same',
+    style: 'strong',
+  })
+  expect(annotated(items?.[1].changes)).toEqual([])
+  expect(annotated(items?.[2].changes)).toEqual([])
+
+  // Bulleted items, a continuation line, and an ordered `)` marker.
+  const continued = listBlockChanges(
+    '- first line\n  renew every 30 seconds\n- second',
+    '- first line\n  renew every 10 seconds\n- second',
+  )
+  expect(continued).toHaveLength(2)
+  expect(continued?.[0].after?.text).toBe('first line\nrenew every 10 seconds')
+  expect(added(continued?.[0].changes)).toEqual(['10'])
+  expect(removed(continued?.[0].changes)).toEqual(['30'])
+  expect(annotated(continued?.[1].changes)).toEqual([])
+  expect(listBlockChanges('7) seven', '7) eight')?.[0].after?.marker).toBe('7)')
+
+  // A nested item aligns and highlights alone, at its own depth.
+  const nested = listBlockChanges(
+    '15. Bounded work.\n    - A pair renders whole.\n    - A section keeps its entry.\n16. Line diff.',
+    '15. Bounded work.\n    - A pair renders whole.\n    - A section keeps its navigator entry.\n16. Line diff.',
+  )
+  expect(nested?.map((item) => [item.after?.marker, item.after?.depth])).toEqual([
+    ['15.', 0],
+    ['-', 1],
+    ['-', 1],
+    ['16.', 0],
+  ])
+  expect(nested?.map((item) => annotated(item.changes).length)).toEqual([0, 0, 1, 0])
+
+  // Text before the first marker stays its own row with no marker.
+  const leadIn = listBlockChanges('Rules:\n- one', 'Rules now:\n- one')
+  expect(leadIn?.map((item) => item.after?.marker)).toEqual(['', '-'])
+  expect(added(leadIn?.[0].changes).join('')).toContain('now')
+  expect(annotated(leadIn?.[1].changes)).toEqual([])
+
+  // Prose, thematic breaks, setext underlines, and indented code are not lists.
+  expect(listBlockChanges('Renew every 30 seconds.', 'Renew every 10 seconds.')).toBeUndefined()
+  expect(listBlockChanges('- - -', '- - -')).toBeUndefined()
+  expect(listBlockChanges('- item\n---', '- other\n---')).toBeUndefined()
+  expect(listBlockChanges('    - code', '    - other')).toBeUndefined()
+  expect(listBlockChanges('    code\n    - a', '    code\n    - b')).toBeUndefined()
+
+  // Paragraph text absorbs a deep line, and an ordered marker other than 1.
+  expect(listBlockChanges('Released in\n2024. Then more', 'Released in\n2025. Then more')).toBeUndefined()
+  expect(listBlockChanges('Some text\n    - not list', 'Some text\n    - not it')).toBeUndefined()
+  expect(listBlockChanges('Steps:\n1. one', 'Steps:\n1. two')?.map((item) => item.after?.marker)).toEqual(['', '1.'])
+
+  // CRLF line endings keep each item on its own row.
+  const crlf = listBlockChanges('- a one\r\n- b two\r\n- c three', '- a one\r\n- b four\r\n- c three')
+  expect(crlf?.map((item) => item.after?.text)).toEqual(['a one', 'b four', 'c three'])
+})
+
+test('review model aligns inserted, removed, and renumbered list items', () => {
+  const inserted = listBlockChanges('- alpha one\n- gamma three', '- alpha one\n- beta two\n- gamma three')
+  expect(inserted?.map((item) => [item.before?.text, item.after?.text])).toEqual([
+    ['alpha one', 'alpha one'],
+    [undefined, 'beta two'],
+    ['gamma three', 'gamma three'],
+  ])
+  expect(inserted?.[1].changes).toEqual([{ text: 'beta two', kind: 'added', style: 'text' }])
+  expect(annotated(inserted?.[0].changes)).toEqual([])
+  expect(annotated(inserted?.[2].changes)).toEqual([])
+
+  const dropped = listBlockChanges('- alpha one\n- beta two\n- gamma three', '- alpha one\n- gamma three')
+  expect(dropped?.map((item) => [item.before?.text, item.after?.text])).toEqual([
+    ['alpha one', 'alpha one'],
+    ['beta two', undefined],
+    ['gamma three', 'gamma three'],
+  ])
+  expect(dropped?.[1].changes).toEqual([{ text: 'beta two', kind: 'removed', style: 'text' }])
+
+  // A renumbering pairs each item with its own text and keeps both numbers.
+  const renumbered = listBlockChanges(
+    '1. alpha one\n2. beta two\n3. gamma three',
+    '1. delta four\n2. alpha one\n3. beta two\n4. gamma three',
+  )
+  expect(renumbered?.map((item) => [item.before?.marker, item.after?.marker])).toEqual([
+    [undefined, '1.'],
+    ['1.', '2.'],
+    ['2.', '3.'],
+    ['3.', '4.'],
+  ])
+  expect(renumbered?.slice(1).every((item) => annotated(item.changes).length === 0)).toBe(true)
+
+  // An insertion beside an edit keeps the edit paired with its own item.
+  const editBesideInsert = listBlockChanges(
+    '- renew the claim every 30 seconds\n- stable item',
+    '- brand new unrelated rule\n- renew the claim every 10 seconds\n- stable item',
+  )
+  expect(editBesideInsert?.map((item) => [item.before?.text, item.after?.text])).toEqual([
+    [undefined, 'brand new unrelated rule'],
+    ['renew the claim every 30 seconds', 'renew the claim every 10 seconds'],
+    ['stable item', 'stable item'],
+  ])
+  expect(added(editBesideInsert?.[1].changes)).toEqual(['10'])
+
+  // Loose items are separate paragraphs; a renumbering joins them into one
+  // aligned list pair, and prose in the same hunk stays positional.
+  expect(alignedParagraphs('1. alpha one\n\n2. beta two', '1. new item\n\n2. alpha one\n\n3. beta two')).toEqual([
+    { before: '1. alpha one\n\n2. beta two', after: '1. new item\n\n2. alpha one\n\n3. beta two' },
+  ])
+  const loose = listBlockChanges('1. alpha one\n\n2. beta two', '1. new item\n\n2. alpha one\n\n3. beta two')
+  expect(loose?.map((item) => [item.before?.text, item.after?.text])).toEqual([
+    [undefined, 'new item'],
+    ['alpha one', 'alpha one'],
+    ['beta two', 'beta two'],
+  ])
+  // An edited continuation paragraph stays with its item through a renumbering.
+  const continuedLoose = alignedParagraphs(
+    '1. alpha one\n\n   more alpha detail\n\n2. beta two',
+    '1. new item\n\n2. alpha one\n\n   more alpha details\n\n3. beta two',
+  )
+  expect(continuedLoose).toHaveLength(1)
+  expect(
+    listBlockChanges(continuedLoose[0].before ?? '', continuedLoose[0].after ?? '')?.map((item) => [
+      item.before?.text,
+      item.after?.text,
+    ]),
+  ).toEqual([
+    [undefined, 'new item'],
+    ['alpha one\nmore alpha detail', 'alpha one\nmore alpha details'],
+    ['beta two', 'beta two'],
+  ])
+  expect(alignedParagraphs('First\n\nLast', 'New\n\n- item\n\nLast')).toEqual([
+    { before: 'First', after: 'New' },
+    { before: undefined, after: '- item' },
+    { before: 'Last', after: 'Last' },
+  ])
+})
+
+test('review model falls back one unsafe list item at a time', () => {
+  const mixed = listBlockChanges(
+    '- safe 30 seconds\n- table item\n  | Name | Value |\n  | --- | --- |\n  | Lease | 30 |\n- <b>markup</b> before\n- last 1',
+    '- safe 10 seconds\n- table item\n  | Name | Value |\n  | --- | --- |\n  | Lease | 10 |\n- <b>markup</b> after\n- last 2',
+  )
+  expect(mixed).toHaveLength(4)
+  expect(added(mixed?.[0].changes)).toEqual(['10'])
+  expect(mixed?.[1].changes).toBeUndefined()
+  expect(mixed?.[1].after?.text).toContain('| Lease | 10 |')
+  expect(mixed?.[2].changes).toBeUndefined()
+  expect(added(mixed?.[3].changes)).toEqual(['2'])
+
+  // A list marker inside a fence doesn't start an item, and the fence falls back.
+  const fenced = listBlockChanges(
+    '- run this\n  ```sh\n  - not an item\n\n  1. nor this\n  ```\n- after 1',
+    '- run this\n  ```sh\n  - still not an item\n\n  1. nor this\n  ```\n- after 2',
+  )
+  expect(fenced).toHaveLength(2)
+  expect(fenced?.[0].changes).toBeUndefined()
+  expect(added(fenced?.[1].changes)).toEqual(['2'])
+
+  // Leaving an item ends an unclosed fence inside it, so later items stay items.
+  const unclosed = listBlockChanges('- a\n  ```\n  code\n- b one\n- c', '- a\n  ```\n  other\n- b two\n- c')
+  expect(unclosed?.map((item) => item.after?.marker)).toEqual(['-', '-', '-'])
+  expect(unclosed?.[0].changes).toBeUndefined()
+  expect(added(unclosed?.[1].changes)).toEqual(['two'])
+
+  // A dash line in an item's fence is code, not a setext underline.
+  const dashes = listBlockChanges('- a\n  ```\n  ---\n  ```\n- b one', '- a\n  ```\n  ---\n  x\n  ```\n- b two')
+  expect(dashes).toHaveLength(2)
+  expect(dashes?.[0].changes).toBeUndefined()
+  expect(added(dashes?.[1].changes)).toEqual(['two'])
+
+  const javascriptLink = listBlockChanges('- [one](javascript:alert(1))\n- two', '- [one](javascript:alert(2))\n- two')
+  expect(javascriptLink?.[0].changes).toBeUndefined()
+  expect(annotated(javascriptLink?.[1].changes)).toEqual([])
+})
+
+test('review model highlights literal characters and keeps real block structure as a fallback', () => {
+  for (const [before, after, change] of [
+    ['Route a -> b today.', 'Route a -> c today.', 'c'],
+    ['Require a > b today.', 'Require a > c today.', 'c'],
+    ['Require x < y today.', 'Require x < z today.', 'z'],
+    ['Allow x <y today.', 'Allow x <z today.', 'z'],
+    ['Use `a | b` today.', 'Use `a | c` today.', 'c'],
+    ['Read a | b today.', 'Read a | c today.', 'c'],
+    ['About ~5 minutes.', 'About ~9 minutes.', '9'],
+    ['Match C:\\dir\\file today.', 'Match C:\\dir\\other today.', 'other'],
+    ['Name `<id>` today.', 'Name `<key>` today.', 'key'],
+    ['Use `~~x~~` and `\\*` today.', 'Use `~~y~~` and `\\*` today.', 'y'],
+    ['**a > b** today.', '**a > c** today.', 'c'],
+  ]) {
+    expect(formattedParagraphChanges(before, after), before).toContainEqual(
+      expect.objectContaining({ text: change, kind: 'added' }),
+    )
+    expect(paragraphCells(before, after), before).toBeGreaterThan(0)
+  }
+
+  for (const unsafe of [
+    '| Field | Value |\n| --- | --- |\n| Lease | 10 |',
+    'Field | Value\n--- | ---\nLease | 10',
+    '| Field |\n|:---:|\n| Lease |',
+    '```go\nrenew()\n```',
+    '~~~\nrenew()\n~~~',
+    '```mermaid\nflowchart LR\n A-->B\n```',
+    '> quoted policy',
+    '# Heading',
+    'Setext\n---',
+    '<script>window.injected = true</script>',
+    'Text with <b>bold</b> inside.',
+    'Closing </div> tag.',
+    'A comment <!-- hidden --> here.',
+    'A declaration <!DOCTYPE html> here.',
+    'An instruction <?php echo ?> here.',
+    '<div',
+    'See <https://example.test/a> now.',
+    'Mail <1person@example.test> now.',
+    '<img src=x onerror=alert(1)>',
+    'Struck ~~out~~ words.',
+    'Escaped \\* star.',
+    'Escaped \\`x` tick.',
+    'Hard break\\\nnext line.',
+    '![alt](https://example.test/a.png)',
+  ]) {
+    const changed = `${unsafe}\n\nextra`
+    expect(formattedParagraph(unsafe), unsafe).toBeUndefined()
+    expect(formattedParagraphChanges(unsafe, `${unsafe} changed`), unsafe).toBeUndefined()
+    expect(paragraphCells(unsafe, `${unsafe} changed`), unsafe).toBe(0)
+    expect(listBlockChanges(unsafe, changed), unsafe).toBeUndefined()
+  }
+})
+
+test('review model counts list work in its section and document budgets', () => {
+  // Item alignment, the similar-item pairing of an uneven gap, and token diffs all count.
+  expect(paragraphCells('- a b c', '- a b d')).toBe(2 * 2 + 6 * 6)
+  const uneven = paragraphCells('- alpha beta\n- gamma delta', '- alpha beta two\n- new words\n- gamma delta two')
+  // 3 x 4 alignment, 3 x 4 score, 2 x 3 weight, 4 unique words x 3 scanned, then
+  // (3 + 1) x (5 + 1) token cells for each of the two edited pairs and 1 x 4 for the insertion.
+  expect(uneven).toBe(12 + 12 + 6 + 12 + 24 + 24 + 4)
+
+  // An alignment over the per-matrix guard renders whole and allocates nothing.
+  const hugeList = (word: string) => Array.from({ length: 1600 }, (_, n) => `- ${word}${n}`).join('\n')
+  expect(paragraphCells(hugeList('a'), hugeList('b'))).toBe(0)
+  expect(listBlockChanges(hugeList('a'), hugeList('b'))).toBeUndefined()
+  // A pairing over the guard renders whole, and its allocated alignment still counts.
+  const wideList = (word: string) => Array.from({ length: 1000 }, (_, n) => `- ${word}${n}`).join('\n')
+  expect(paragraphCells(wideList('a'), wideList('b'))).toBe(1001 * 1001)
+  expect(listBlockChanges(wideList('a'), wideList('b'))).toBeUndefined()
+  const wideSections = Array.from({ length: 8 }, (_, n) => n)
+  const wideDocument = (word: string) => wideSections.map((n) => `## Wide ${n}\n\n${wideList(word)}`).join('\n\n')
+  const wide = compareDocuments({ content: wideDocument('a') }, { content: wideDocument('b') })
+  expect(wide.limited).toBe(false)
+  expect(wide.rows.every((row) => row.limited)).toBe(true)
+
+  // Each of these edited items costs 470 x 470 token cells, like heavyParagraph,
+  // and keeps enough shared words to stay paired with its own text.
+  const heavyItem = (word: string, n: number) => `- item${n} ${'same '.repeat(200)}${`${word} `.repeat(34)}`.trimEnd()
+  const heavyList = (title: string, word: string, count: number) =>
+    `## ${title}\n\n${Array.from({ length: count }, (_, n) => heavyItem(word, n)).join('\n')}`
+  const isolated = compareDocuments(
+    { content: `${heavyList('Oversized', 'alpha', 3)}\n\n## Sibling\n\n- Renew every 30 seconds.` },
+    { content: `${heavyList('Oversized', 'beta', 3)}\n\n## Sibling\n\n- Renew every 10 seconds.` },
+  )
+  expect(isolated.limited).toBe(false)
+  expect(isolated.rows.map(({ title, limited }) => ({ title, limited }))).toEqual([
+    { title: 'Oversized', limited: true },
+    { title: 'Sibling', limited: false },
+  ])
+  const listDocument = (word: string, sections: number) =>
+    Array.from({ length: sections }, (_, n) => heavyList(`Heavy ${n}`, word, 2)).join('\n\n')
+  const aggregate = compareDocuments({ content: listDocument('alpha', 5) }, { content: listDocument('beta', 5) })
+  expect(aggregate.limited).toBe(true)
+  expect(aggregate.rows).toEqual([])
+  const underCeiling = compareDocuments({ content: listDocument('alpha', 4) }, { content: listDocument('beta', 4) })
+  expect(underCeiling.limited).toBe(false)
+  expect(underCeiling.rows.every((row) => row.changed && !row.limited)).toBe(true)
+
+  // A rewrite of every word leaves no similar items, so it costs one removal and one insertion per item.
+  const rewriteItems = (word: string) =>
+    `## Rules\n\n${Array.from({ length: 40 }, (_, n) => `${n + 1}. ${`${word}${n} `.repeat(60).trimEnd()}`).join('\n')}`
+  const rewritten = compareDocuments({ content: rewriteItems('old') }, { content: rewriteItems('new') })
+  expect(rewritten.limited).toBe(false)
+  expect(rewritten.rows).toMatchObject([{ title: 'Rules', changed: true, limited: false }])
 })
 
 test('review model consumers share the 2,500,000-cell matrix guard', () => {
@@ -673,6 +980,95 @@ for (const tier of ['requirements', 'system-design'] as const) {
       path: testInfo.outputPath(`${tier}-seeded-formatted-before-after-side-by-side.png`),
       fullPage: true,
     })
+  })
+
+  test(`${tier}: seeded list fixture highlights only the changed item in both comparison modes`, async ({
+    page,
+  }, testInfo) => {
+    // Tall enough that the section screenshots below aren't clipped.
+    await page.setViewportSize({ width: 1600, height: 1400 })
+    const seed = await seedReview(page, tier, {
+      baseContent: terminationList(listItemBase),
+      targetContent: terminationList(listItemTarget),
+    })
+    await page.goto(seed.url)
+    const comparison = page.getByRole('region', { name: 'Version comparison', exact: true })
+    const block = comparison.getByRole('region', { name: 'Termination', exact: true })
+    const items = block.getByRole('listitem')
+    for (const mode of ['Inline', 'Side by side']) {
+      await page.getByRole('button', { name: mode, exact: true }).click()
+      await expect(items).toHaveCount(3)
+      await expect(items.nth(0)).toContainText('31.')
+      await expect(items.nth(1)).toContainText('32.')
+      await expect(items.nth(2)).toContainText('33.')
+      await expect(items.nth(0).locator('ins').filter({ hasText: '255' })).toBeVisible()
+      await expect(items.nth(0).locator('ins code').filter({ hasText: 'reason_code' })).toBeVisible()
+      await expect(items.nth(0).locator('del').filter({ hasText: 'reason' })).toBeVisible()
+      await expect(items.nth(0).locator('strong').filter({ hasText: 'Cancellation.' }).first()).toBeVisible()
+      await expect(items.nth(1).locator('ins, del')).toHaveCount(0)
+      await expect(items.nth(2).locator('ins, del')).toHaveCount(0)
+      await expect(block).not.toContainText('Detailed highlighting unavailable')
+      await block.screenshot({
+        path: testInfo.outputPath(`${tier}-seeded-list-${mode === 'Inline' ? 'inline' : 'side-by-side'}.png`),
+      })
+    }
+  })
+
+  test(`${tier}: an inserted item and an unsafe item leave their sibling items highlighted`, async ({ page }) => {
+    const seed = await seedReview(page, tier, {
+      baseContent:
+        '# Rules\n\n## Limits\n\n1. Renew every 30 seconds.\n2. Keep the claim.\n3. Use <b>old</b> markup.\n    - Nested 30 detail.\n4. Last rule.',
+      targetContent:
+        '# Rules\n\n## Limits\n\n1. Renew every 10 seconds.\n2. Inserted policy text here.\n3. Keep the claim.\n4. Use <b>new</b> markup.\n    - Nested 10 detail.\n5. Last rule.',
+    })
+    await page.goto(seed.url)
+    const block = page
+      .getByRole('region', { name: 'Version comparison', exact: true })
+      .getByRole('region', { name: 'Limits', exact: true })
+    const items = block.getByRole('listitem')
+    for (const mode of ['Inline', 'Side by side']) {
+      await page.getByRole('button', { name: mode, exact: true }).click()
+      await expect(items).toHaveCount(6)
+      await expect(items.nth(0).locator('ins').filter({ hasText: '10' })).toBeVisible()
+      await expect(items.nth(1).locator('ins').filter({ hasText: 'Inserted policy text here.' })).toBeVisible()
+      await expect(items.nth(2)).toContainText('Keep the claim.')
+      await expect(items.nth(2).getByText('Keep the claim.').locator('xpath=ancestor-or-self::ins')).toHaveCount(0)
+      await expect(items.nth(2).locator('del').filter({ hasText: '2.' })).toBeVisible()
+      await expect(items.nth(2).locator('ins').filter({ hasText: '3.' })).toBeVisible()
+      await expect(items.nth(3)).toContainText('Detailed highlighting unavailable for this block')
+      await expect(items.nth(3).locator('b')).toHaveCount(0)
+      await expect(items.nth(4).locator('ins').filter({ hasText: '10' })).toBeVisible()
+      await expect(items.nth(4)).not.toContainText('Detailed highlighting unavailable')
+      await expect(items.nth(5)).toContainText('Last rule.')
+      await expect(block.getByText('Detailed highlighting unavailable for this block')).toHaveCount(1)
+    }
+  })
+
+  test(`${tier}: real block structure keeps its notice and HTML-like input renders safely`, async ({ page }) => {
+    const seed = await seedReview(page, tier, {
+      baseContent:
+        '# Rich\n\n## Table\n\n| Name | Value |\n| --- | --- |\n| Lease | 30 |\n\n## Code\n\n```go\nrenew(30)\n```\n\n## Markup\n\n<img src=x onerror="window.injected = true"> old <script>window.injected = true</script>\n\n## Arrows\n\nRoute a -> b when `x | y` holds.',
+      targetContent:
+        '# Rich\n\n## Table\n\n| Name | Value |\n| --- | --- |\n| Lease | 10 |\n\n## Code\n\n```go\nrenew(10)\n```\n\n## Markup\n\n<img src=x onerror="window.injected = true"> new <script>window.injected = true</script>\n\n## Arrows\n\nRoute a -> c when `x | y` holds.',
+    })
+    await page.goto(seed.url)
+    const comparison = page.getByRole('region', { name: 'Version comparison', exact: true })
+    for (const mode of ['Inline', 'Side by side']) {
+      await page.getByRole('button', { name: mode, exact: true }).click()
+      for (const name of ['Table', 'Code', 'Markup']) {
+        const section = comparison.getByRole('region', { name, exact: true })
+        await expect(section).toContainText('Detailed highlighting unavailable for this block')
+        await expect(section.locator('ins, del')).toHaveCount(0)
+      }
+      await expect(comparison.getByRole('region', { name: 'Table', exact: true }).getByRole('table')).toHaveCount(2)
+      await expect(comparison.locator('script, img')).toHaveCount(0)
+      expect(await page.evaluate(() => 'injected' in window)).toBe(false)
+      const arrows = comparison.getByRole('region', { name: 'Arrows', exact: true })
+      await expect(arrows).not.toContainText('Detailed highlighting unavailable')
+      await expect(arrows.locator('ins').filter({ hasText: 'c' })).toBeVisible()
+      await expect(arrows.locator('code').filter({ hasText: 'x | y' }).first()).toBeVisible()
+      await expect(arrows).toContainText('a ->')
+    }
   })
 
   test(`${tier}: long-section revisions keep navigation and section-local fallback`, async ({ page }, testInfo) => {

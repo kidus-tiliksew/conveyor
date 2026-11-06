@@ -4,6 +4,14 @@ export type ReviewBlock = { id: string; title: string; content: string }
 export type WordChange = { text: string; kind: 'same' | 'added' | 'removed' }
 export type InlineStyle = 'text' | 'code' | 'emphasis' | 'strong' | 'link'
 export type FormattedChange = WordChange & { style: InlineStyle; href?: string }
+// One list item. `marker` is the source marker (`31.`, `-`), and is empty for
+// text that precedes the first marker in its block. Nested items stay flat and
+// carry their depth, so each one aligns and highlights on its own.
+export type ListItem = { marker: string; depth: number; text: string }
+// One aligned row of a list block. `changes` is undefined when the row can't
+// carry safe inline marks; that row alone renders whole
+// (component-web-document-surfaces "Block comparison" rule 15).
+export type ListItemChange = { before?: ListItem; after?: ListItem; changes?: FormattedChange[] }
 export type ReviewRow = {
   id: string
   title: string
@@ -21,7 +29,8 @@ export type ReviewSource = { content: string; statements?: RequirementVersion['s
 // allocating matrices or parsing Markdown.
 const maxCharacters = 120_000
 const maxBlocks = 400
-// Largest single matrix: one paragraph alignment or one paragraph token diff.
+// Largest single matrix: one paragraph alignment, one list item alignment, or
+// one paragraph or list item token diff.
 // A 2.5M-cell Uint32 matrix holds about 10 MB before row and token overhead.
 // Paragraph matrices above maxSectionCells still make their section fall back
 // alone; pairs above this guard render complete content in their own block.
@@ -35,7 +44,9 @@ const maxCells = 2_500_000
 // changes. Measured full rewrites of a 25-section design cost about 0.6M
 // cells at 15k characters and 1.7M at 42k, so they keep detailed comparison;
 // an 87k-character rewrite exceeds the ceiling and takes the document-wide
-// fallback.
+// fallback. With list blocks counted, the 29 current System Designs stay under
+// the ceiling: the largest (40k characters, 170 list lines) costs 0.8M cells
+// when every word changes and 1.5M when every third word changes.
 const maxSectionCells = 500_000
 const maxDocumentCells = 2_000_000
 
@@ -167,8 +178,27 @@ function safeLinkDestination(destination: string) {
 }
 
 function plainInlineContent(text: string) {
-  return text.length > 0 && !/[`*_[\]<>\\]/.test(text)
+  return text.length > 0 && !/[`*_[\]\\]/.test(text)
 }
+
+// A GFM table's delimiter row. A bare dash line without a pipe is a setext
+// underline or thematic break, which other guards handle.
+function hasTableDelimiterRow(text: string) {
+  return text.split('\n').some((line) => {
+    const row = line.trim()
+    return row.includes('|') && /^\|?(?:\s*:?-+:?\s*\|)*\s*:?-+:?\s*\|?$/.test(row)
+  })
+}
+
+const setextUnderline = /(^|\n)\s{0,3}(?:=+|-+)\s*(?:\n|$)/
+const setextLine = /^ {0,3}(?:=+|-+)[ \t]*$/
+// Inline Markdown the renderer would misrepresent as literal text: raw HTML
+// tags, comments and declarations, autolinks, HTML blocks at a line start,
+// `~~` strikethrough, backslash escapes and hard breaks, and images. Any other
+// `<`, `>`, `~`, `|`, or `\` renders as literal text, escaped by React. Tested
+// outside inline code spans, whose content is already literal.
+const unsafeInline =
+  /<\/?[A-Za-z][^<>]*>|<[!?]|<[^\s<>@]+@[^\s<>]+>|(?:^|\n)\s{0,3}<\/?[A-Za-z]|~~|\\(?:[!-/:-@[-`{-~]|\n)|!\[/
 
 // Parse only the bounded, ordinary inline subset owned by the document review
 // renderer. Block Markdown and ambiguous/malformed inline syntax deliberately
@@ -176,9 +206,9 @@ function plainInlineContent(text: string) {
 export function formattedParagraph(text: string): InlineRun[] | undefined {
   if (
     /(^|\n)\s{0,3}(?:#{1,6}\s|>|[-+*]\s|\d+[.)]\s|`{3,}|~{3,})/.test(text) ||
-    /(^|\n)\s{0,3}(?:=+|-+)\s*(?:\n|$)/.test(text) ||
-    /(^|\n).*\|.*(?:\n|$)/.test(text) ||
-    /<|>|~|\\|!\[/.test(text)
+    setextUnderline.test(text) ||
+    hasTableDelimiterRow(text) ||
+    unsafeInline.test(text.replace(/(?<![`\\])`[^`\n]+`(?!`)/g, ''))
   )
     return undefined
   const runs: InlineRun[] = []
@@ -266,15 +296,202 @@ function formattedTokens(before: string, after: string) {
   return [inlineTokens(beforeRuns), inlineTokens(afterRuns)] as const
 }
 
-// Cells formattedParagraphChanges allocates for one aligned pair. Identical
-// text needs no matrix; unsafe Markdown and pairs above maxCells allocate none
-// and render complete content instead.
-export function paragraphCells(before: string, after: string) {
+// Cells formattedParagraphChanges allocates for one pair. Identical text needs
+// no matrix; unsafe Markdown and pairs above maxCells allocate none and render
+// complete content instead.
+function tokenCells(before: string, after: string) {
   if (before === after) return 0
   const pair = formattedTokens(before, after)
   if (!pair) return 0
   const cells = (pair[0].length + 1) * (pair[1].length + 1)
   return cells > maxCells ? 0 : cells
+}
+
+// Cells the renderer allocates for one aligned pair: a list block's item
+// alignment and item token diffs, or a paragraph's token diff.
+export function paragraphCells(before: string, after: string) {
+  if (before === after) return 0
+  return listComparison(before, after)?.cells ?? tokenCells(before, after)
+}
+
+const listMarker = /^([ \t]*)([-+*]|\d{1,9}[.)])(?:([ \t]+)(.*))?$/
+const thematicBreak = /^ {0,3}([-*_])[ \t]*(?:\1[ \t]*){2,}$/
+
+function indentWidth(whitespace: string) {
+  return [...whitespace].reduce((width, character) => width + (character === '\t' ? 4 : 1), 0)
+}
+
+// Split a block into its list items, or return undefined when it holds none.
+// Marker lines start items, including nested ones. Every other line continues
+// the current item, so a fence, table, or quote inside an item stays in that
+// item and makes only that item fall back. A fence body never starts an item.
+function listItems(block: string): ListItem[] | undefined {
+  const items: ListItem[] = []
+  const openContentColumns: number[] = []
+  let contentColumn = 0
+  let fence: { marker: string; inItem: boolean } | undefined
+  const attach = (line: string) => {
+    const text = line.replace(/^[ \t]+/, (indent) => indent.slice(contentColumn))
+    const current = items.at(-1)
+    if (!current) items.push({ marker: '', depth: 0, text })
+    else current.text = current.text ? `${current.text}\n${text}` : text
+  }
+  for (const line of block.split(/\r?\n/)) {
+    const lineIndent = indentWidth(line.match(/^[ \t]*/)?.[0] ?? '')
+    // A line left of its item's content ends the item and any fence inside it.
+    if (fence?.inItem && line.trim() && lineIndent < contentColumn) fence = undefined
+    const fenceMarker = line.match(/^\s*(`{3,}|~{3,})/)?.[1]
+    if (fence) {
+      attach(line)
+      if (
+        fenceMarker?.[0] === fence.marker[0] &&
+        fenceMarker.length >= fence.marker.length &&
+        /^\s*(`+|~+)\s*$/.test(line)
+      )
+        fence = undefined
+    } else if (fenceMarker) {
+      fence = { marker: fenceMarker, inItem: items.some((item) => item.marker) && lineIndent >= contentColumn }
+      attach(line)
+    } else if (line.trim()) {
+      if (setextLine.test(line) || thematicBreak.test(line)) return undefined
+      // Four leading columns before any content is indented code, not a list.
+      if (!items.length && lineIndent > 3) return undefined
+      const marker = line.match(listMarker)
+      const inList = items.some((item) => item.marker)
+      // Paragraph text absorbs a deep line, and any ordered marker other than 1.
+      if (!marker || (!inList && items.length && (lineIndent > 3 || /^(?!0*1[.)])\d/.test(marker[2])))) {
+        attach(line)
+        continue
+      }
+      while ((openContentColumns.at(-1) ?? 0) > lineIndent) openContentColumns.pop()
+      items.push({ marker: marker[2], depth: openContentColumns.length, text: marker[4] ?? '' })
+      contentColumn = lineIndent + marker[2].length + (marker[3] ? indentWidth(marker[3]) : 1)
+      openContentColumns.push(contentColumn)
+    }
+  }
+  return items.some((item) => item.marker) ? items : undefined
+}
+
+function startsListItem(paragraph: string) {
+  return listMarker.test(paragraph.split('\n', 1)[0]) && !!listItems(paragraph)
+}
+
+// A run of loose paragraphs that item alignment can treat as one list: list
+// items and the indented paragraphs that continue them.
+function isLooseListRun(run: string[]) {
+  return (
+    startsListItem(run[0]) && run.every((paragraph) => startsListItem(paragraph) || /^(?: {2,}|\t)\S/.test(paragraph))
+  )
+}
+
+function wordCounts(text: string) {
+  const counts = new Map<string, number>()
+  for (const token of tokens(text)) if (token.trim()) counts.set(token, (counts.get(token) ?? 0) + 1)
+  return counts
+}
+
+// Items whose words overlap at least this much (Dice coefficient, per mille)
+// are one edited item. Below it they show as one removal and one insertion.
+const minimumItemSimilarity = 500
+
+type ListItemPair = { before?: ListItem; after?: ListItem }
+
+// Pair the differing items between two exact matches by word overlap, so an
+// insertion beside an edit doesn't shift the edit onto the inserted item.
+function pairSimilarItems(removed: ListItem[], added: ListItem[]) {
+  // One item a side has one possible pairing and needs no matrix.
+  if (removed.length === 1 && added.length === 1)
+    return { pairs: [{ before: removed[0], after: added[0] }] as ListItemPair[], cells: 0 }
+  if (!removed.length || !added.length)
+    return {
+      pairs: [
+        ...removed.map((before): ListItemPair => ({ before })),
+        ...added.map((after): ListItemPair => ({ after })),
+      ],
+      cells: 0,
+    }
+  const left = removed.map((item) => wordCounts(item.text))
+  const right = added.map((item) => wordCounts(item.text))
+  const size = (counts: Map<string, number>) => [...counts.values()].reduce((sum, count) => sum + count, 0)
+  const rightSizes = right.map(size)
+  // The score matrix, the weight matrix, and the word scan of every item pair.
+  const cells =
+    (left.length + 1) * (right.length + 1) +
+    left.length * right.length +
+    left.reduce((sum, counts) => sum + counts.size, 0) * right.length
+  if (cells > maxCells) return undefined
+  const weights = left.map((counts) => {
+    const leftSize = size(counts)
+    return Uint16Array.from(right, (candidate, column) => {
+      let shared = 0
+      for (const [word, count] of counts) shared += Math.min(count, candidate.get(word) ?? 0)
+      const weight = Math.round((2000 * shared) / Math.max(1, leftSize + rightSizes[column]))
+      return weight >= minimumItemSimilarity ? weight : 0
+    })
+  })
+  const score = Array.from({ length: left.length + 1 }, () => new Uint32Array(right.length + 1))
+  for (let i = left.length - 1; i >= 0; i--)
+    for (let j = right.length - 1; j >= 0; j--)
+      score[i][j] = Math.max(score[i + 1][j], score[i][j + 1], weights[i][j] ? weights[i][j] + score[i + 1][j + 1] : 0)
+  const pairs: ListItemPair[] = []
+  let i = 0
+  let j = 0
+  while (i < left.length || j < right.length) {
+    if (i < left.length && j < right.length && weights[i][j] && score[i][j] === weights[i][j] + score[i + 1][j + 1])
+      pairs.push({ before: removed[i++], after: added[j++] })
+    else if (i < left.length && (j === right.length || score[i + 1][j] >= score[i][j + 1]))
+      pairs.push({ before: removed[i++] })
+    else pairs.push({ after: added[j++] })
+  }
+  return { pairs, cells }
+}
+
+// Align a list block's items and count every matrix the renderer allocates for
+// them: item alignment, similar-item pairing, and each pair's token diff.
+// Returns undefined when neither side is a list. Without `pairs`, an alignment
+// exceeded maxCells, so the block renders whole; `cells` still counts the
+// alignment matrix when one was allocated first. Markers don't take part in
+// alignment, so a renumbered item stays paired with its own text.
+function listComparison(before: string, after: string) {
+  const beforeItems = listItems(before)
+  const afterItems = listItems(after)
+  if (!beforeItems && !afterItems) return undefined
+  const plain = (text: string): ListItem[] => (text ? [{ marker: '', depth: 0, text }] : [])
+  const left = beforeItems ?? plain(before)
+  const right = afterItems ?? plain(after)
+  if (before === after) return { cells: 0, pairs: left.map((item): ListItemPair => ({ before: item, after: item })) }
+  const alignment = (left.length + 1) * (right.length + 1)
+  if (alignment > maxCells) return { cells: 0 }
+  let cells = alignment
+  const pairs: ListItemPair[] = []
+  let oversized = false
+  walkAlignment(
+    left.map((item) => item.text),
+    right.map((item) => item.text),
+    (i, j) => pairs.push({ before: left[i], after: right[j] }),
+    (removed, added) => {
+      const gap = pairSimilarItems(
+        removed.map((i) => left[i]),
+        added.map((j) => right[j]),
+      )
+      if (!gap) oversized = true
+      else {
+        pairs.push(...gap.pairs)
+        cells += gap.cells
+      }
+    },
+  )
+  if (oversized) return { cells: alignment }
+  for (const pair of pairs) cells += tokenCells(pair.before?.text ?? '', pair.after?.text ?? '')
+  return { cells, pairs }
+}
+
+// Per-item changes for a list block, or undefined for a block that isn't one.
+export function listBlockChanges(before: string, after: string): ListItemChange[] | undefined {
+  return listComparison(before, after)?.pairs?.map((pair) => ({
+    ...pair,
+    changes: formattedParagraphChanges(pair.before?.text ?? '', pair.after?.text ?? ''),
+  }))
 }
 
 export function formattedParagraphChanges(before: string, after: string): FormattedChange[] | undefined {
@@ -416,15 +633,48 @@ export function alignedParagraphs(before: string, after: string): Array<{ before
   // compareDocuments marks a section limited before this guard applies. The
   // guard also makes this helper safe for standalone callers.
   if ((left.length + 1) * (right.length + 1) > maxCells) return [{ before, after }]
+  const pairs: Array<{ before?: string; after?: string }> = []
+  walkAlignment(
+    left,
+    right,
+    (i, j) => pairs.push({ before: left[i], after: right[j] }),
+    (removedIndexes, addedIndexes) => {
+      const removed = removedIndexes.map((i) => left[i])
+      const added = addedIndexes.map((j) => right[j])
+      // Loose list items are separate paragraphs. A renumbering leaves them no
+      // exact match, so join the run and let item alignment pair them.
+      if (
+        removed.length &&
+        added.length &&
+        removed.length + added.length > 2 &&
+        isLooseListRun(removed) &&
+        isLooseListRun(added)
+      )
+        pairs.push({ before: removed.join('\n\n'), after: added.join('\n\n') })
+      else
+        for (let n = 0; n < Math.max(removed.length, added.length); n++)
+          pairs.push({ before: removed[n], after: added[n] })
+    },
+  )
+  return pairs
+}
+
+// Longest-common-subsequence walk shared by paragraph and list item alignment.
+// `gap` receives the indexes that differ between two matches, in order.
+function walkAlignment(
+  left: string[],
+  right: string[],
+  match: (i: number, j: number) => void,
+  gap: (removed: number[], added: number[]) => void,
+) {
   const matrix = Array.from({ length: left.length + 1 }, () => new Uint32Array(right.length + 1))
   for (let i = left.length - 1; i >= 0; i--)
     for (let j = right.length - 1; j >= 0; j--)
       matrix[i][j] = left[i] === right[j] ? matrix[i + 1][j + 1] + 1 : Math.max(matrix[i + 1][j], matrix[i][j + 1])
-  const pairs: Array<{ before?: string; after?: string }> = []
-  let removed: string[] = []
-  let added: string[] = []
+  let removed: number[] = []
+  let added: number[] = []
   const flush = () => {
-    for (let n = 0; n < Math.max(removed.length, added.length); n++) pairs.push({ before: removed[n], after: added[n] })
+    if (removed.length || added.length) gap(removed, added)
     removed = []
     added = []
   }
@@ -433,10 +683,9 @@ export function alignedParagraphs(before: string, after: string): Array<{ before
   while (i < left.length || j < right.length) {
     if (i < left.length && j < right.length && left[i] === right[j]) {
       flush()
-      pairs.push({ before: left[i++], after: right[j++] })
-    } else if (i < left.length && (j === right.length || matrix[i + 1][j] >= matrix[i][j + 1])) removed.push(left[i++])
-    else added.push(right[j++])
+      match(i++, j++)
+    } else if (i < left.length && (j === right.length || matrix[i + 1][j] >= matrix[i][j + 1])) removed.push(i++)
+    else added.push(j++)
   }
   flush()
-  return pairs
 }
