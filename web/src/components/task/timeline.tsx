@@ -46,7 +46,6 @@ import { useNextAction } from '../inbox/use-next-actions'
 import { Badge } from '../ui/badge'
 import { Disclosure } from '../ui/disclosure'
 import { MarkdownProse } from '../ui/markdown-prose'
-import { ClampedBlock } from './clamped-block'
 import { ImplementationEntry } from './implementation-entry'
 import { hasInterruptedReviewRecovery, InterruptedReviewRecoveryCard } from './interrupted-review-recovery-card'
 import { canRedispatch, FailedTriageCard, RedispatchCard } from './redispatch-card'
@@ -205,15 +204,9 @@ export function Timeline({
         {/* The current execution state and the stop affordance belong to the
             next-action card above, which prints them once (DEC-61). */}
         <h2 className="sr-only">Activity</h2>
-        <ol className="relative space-y-5 before:absolute before:bottom-4 before:left-[7px] before:top-4 before:w-px before:bg-border">
-          {entries.map((entry, index) => (
-            <TimelineRow
-              key={keyFor(entry)}
-              entry={entry}
-              item={item}
-              usageReportedOrderIDs={usageReportedOrderIDs}
-              latest={index === entries.length - 1}
-            />
+        <ol className="relative space-y-4 before:absolute before:bottom-4 before:left-[7px] before:top-4 before:w-px before:bg-border">
+          {entries.map((entry) => (
+            <TimelineRow key={keyFor(entry)} entry={entry} item={item} usageReportedOrderIDs={usageReportedOrderIDs} />
           ))}
           {item.event_page?.has_older && item.event_page.older_cursor && (
             // Remounted closed for another task or workspace, which aborts its read.
@@ -700,13 +693,10 @@ function TimelineRow({
   entry,
   item,
   usageReportedOrderIDs,
-  latest = false,
 }: {
   entry: TimelineEntry
   item: ActivityItem
   usageReportedOrderIDs: Set<string>
-  // The newest entry reads in full; earlier reports start clipped.
-  latest?: boolean
 }) {
   // The verify stage is a structured result, so like review it gets its own
   // entry: the sealed outcome, the assertions by exercise, and the pull
@@ -734,7 +724,6 @@ function TimelineRow({
     return (
       <ImplementationEntry
         entry={entry}
-        latest={latest}
         dotSlot={(className) => <TimelineDot className={className} />}
         meta={
           <JobMeta
@@ -765,7 +754,6 @@ function TimelineRow({
         taskId={item.task.id}
         summary={entry.summary}
         summaryEventId={entry.summaryEventId}
-        latest={latest}
         model={entry.model}
         tone={entry.tone}
         order={entry.order}
@@ -773,9 +761,7 @@ function TimelineRow({
       />
     )
   if (entry.type === 'panel')
-    return (
-      <PanelEntry entry={entry} taskId={item.task.id} usageReportedOrderIDs={usageReportedOrderIDs} latest={latest} />
-    )
+    return <PanelEntry entry={entry} taskId={item.task.id} usageReportedOrderIDs={usageReportedOrderIDs} />
   // A work-order entry carries no usage; per-order usage stays in TaskUsage
   // inside technical activity (component-web-task-surfaces, Work-order
   // timeline entries).
@@ -814,7 +800,7 @@ function TimelineRow({
     return (
       <li className="relative pl-7">
         <TimelineDot className="top-3 bg-foreground" />
-        <div className="rounded-lg border border-edge bg-raised/40 px-4 py-3">
+        <div data-timeline-card className="rounded-lg border border-edge bg-raised/40 px-4 py-3">
           <div className="flex flex-wrap items-center gap-2 text-sm">
             <UserRound className="size-3.5 text-muted" />
             <strong className="font-semibold">
@@ -825,18 +811,28 @@ function TimelineRow({
             )}
             <time className="ml-auto text-[11px] text-faint">{absoluteTime(intervention.at)}</time>
           </div>
-          {intervention.comment && <p className="mt-2 text-sm leading-6 text-foreground/85">{intervention.comment}</p>}
+          {intervention.comment && <p className="timeline-prose mt-2">{intervention.comment}</p>}
           {returnedForChanges && <p className="mt-1.5 text-xs text-muted">{changesComposerHint}</p>}
         </div>
       </li>
     )
   }
+  const longDetail = Boolean(entry.detail && !entry.href && entry.detail.length > 160)
   return (
     <li className="relative pl-7">
       <TimelineDot className={entry.alarm ? 'bg-attention-dot' : 'bg-edge'} />
-      <div className="flex flex-wrap items-baseline gap-x-2 gap-y-1 px-4">
+      <div className={cn('flex flex-wrap items-baseline gap-x-2 gap-y-1 px-4', longDetail && 'timeline-entry')}>
         {entry.alarm && <AlertTriangle className="size-3.5 self-center text-attention" />}
-        <span className={cn('text-sm', entry.alarm ? 'font-medium text-attention' : 'text-foreground/90')}>
+        <span
+          className={cn(
+            'text-sm',
+            entry.alarm
+              ? 'font-medium text-attention'
+              : longDetail
+                ? 'font-semibold text-foreground'
+                : 'text-foreground/90',
+          )}
+        >
           {entry.href ? (
             <a
               href={entry.href}
@@ -851,8 +847,15 @@ function TimelineRow({
             entry.title
           )}
         </span>
-        {entry.detail && !entry.href && <span className="text-xs text-muted">{entry.detail}</span>}
+        {entry.detail && !entry.href && !longDetail && <span className="text-xs text-muted">{entry.detail}</span>}
         <time className="ml-auto text-[11px] text-faint">{absoluteTime(entry.at)}</time>
+        {longDetail && (
+          <div className="basis-full">
+            <MarkdownProse components={{ p: ({ children }) => <p className="whitespace-pre-line">{children}</p> }}>
+              {entry.detail ?? ''}
+            </MarkdownProse>
+          </div>
+        )}
         {entry.failureDetail && (
           <details className="basis-full text-xs text-muted">
             <summary className="cursor-pointer">Captured child error</summary>
@@ -886,12 +889,10 @@ function PanelEntry({
   entry,
   taskId,
   usageReportedOrderIDs,
-  latest,
 }: {
   entry: Extract<TimelineEntry, { type: 'panel' }>
   taskId: string
   usageReportedOrderIDs: Set<string>
-  latest: boolean
 }) {
   const { seats, resolution, seatMetadata } = entry
   const verdictsIn = seats.filter((seat) => seat.review).length
@@ -922,8 +923,8 @@ function PanelEntry({
           )}
         />
       )}
-      <article className="pb-1">
-        <div className="flex flex-wrap items-center gap-x-2.5 gap-y-1 px-4 pt-0.5">
+      <article className="timeline-entry">
+        <div className="flex flex-wrap items-center gap-x-2.5 gap-y-1 px-4">
           <span className="text-sm font-semibold text-foreground">{stageLabels.review}</span>
           {entry.round > 0 && <span className="text-xs text-muted">Round {entry.round}</span>}
           {resolution && (
@@ -943,6 +944,10 @@ function PanelEntry({
           </span>
           {multiSeat && <span className="text-xs text-muted">· unanimous to pass</span>}
           {entry.distinctModels && <span className="text-xs text-muted">· task policy: distinct seat models</span>}
+          {/* A lone reviewer's model and time read in the header, as on every other entry. */}
+          {!multiSeat && single?.review && (
+            <SeatFacts seat={single} usageAvailable={usageReportedOrderIDs.has(single.order.id)} />
+          )}
           {(multiSeat || !resolution) && (
             <span className="inline-flex items-center gap-[5px]" title={`${verdictsIn} of ${seats.length} verdicts in`}>
               {seats.map((seat) => (
@@ -969,7 +974,6 @@ function PanelEntry({
             round={entry.round}
             summary={entry.roundSummary}
             singleSeat={!multiSeat}
-            past={!latest && Boolean(resolution)}
             audit={
               <AuditDisclosure
                 taskId={taskId}
@@ -980,20 +984,24 @@ function PanelEntry({
             }
           />
         )}
-        <div className="mt-1">
+        <div>
           {seats.map((seat, index) => (
             <div key={seat.seat} data-review-seat={seat.seat}>
-              <SeatRow
-                seat={seat}
-                index={index}
-                multiSeat={multiSeat}
-                usageAvailable={usageReportedOrderIDs.has(seat.order.id)}
-              />
+              {multiSeat || !seat.review ? (
+                <SeatRow
+                  seat={seat}
+                  index={index}
+                  multiSeat={multiSeat}
+                  usageAvailable={usageReportedOrderIDs.has(seat.order.id)}
+                />
+              ) : (
+                <span className="sr-only">Seat {seat.seat}</span>
+              )}
               {/* Reviewer feedback surfaces as each verdict lands — not held
                   until the round settles — so nothing a reviewer wrote is ever
                   invisible. */}
-              {seat.review?.feedback.trim() && (
-                <div className="max-w-[calc(37rem+2rem)] px-4 pb-2 text-[13px]">
+              {(seat.review?.feedback.trim() || (!multiSeat && seat.review?.summary.trim())) && (
+                <div className="px-4 pt-1">
                   <SeatNote seat={seat} taskId={taskId} />
                 </div>
               )}
@@ -1048,6 +1056,50 @@ function reviewSeatSourceTitle(metadata: TaskReviewSeatMetadata) {
   return planned ? `${source} · Plan: ${planned} ${planned === 1 ? 'seat' : 'seats'}` : source
 }
 
+// A seat's model, its usage, and how long it took.
+function SeatFacts({
+  seat,
+  usageAvailable,
+  showDuration = true,
+}: {
+  seat: PanelSeat
+  usageAvailable: boolean
+  showDuration?: boolean
+}) {
+  // Only the order's current model is a name the seat reports. A required model
+  // is a historical pin, a worker-pinned order was launched on its model, and a
+  // job keeps an earlier attempt's model after a release or an expiry clears
+  // the order's (AC-2.12; DEC-104(4)).
+  const reportedModel = seat.order.model_enforcement !== 'worker-pinned' && seat.order.model?.trim()
+  const took =
+    seat.review && seat.job?.started_at ? duration(seat.job.started_at, seat.job.ended_at ?? seat.review.at) : undefined
+  return (
+    <>
+      <span className="inline-flex min-w-0 items-center gap-1.5 text-[11px] tabular-nums text-muted">
+        <ModelChip
+          model={seat.model}
+          agent={seat.order.agent}
+          tokensIn={seat.job?.tokens_in || seat.order.tokens_in}
+          tokensOut={seat.job?.tokens_out || seat.order.tokens_out}
+          note={seat.order.required_effort ? `effort ${seat.order.required_effort}` : undefined}
+          usageAvailable={usageAvailable}
+          showUnavailableUsage={false}
+        />
+        {reportedModel && <span className="font-sans text-faint">self-reported</span>}
+      </span>
+      {seat.review?.sameModelAsImplementer && (
+        <span className="text-[11px] text-attention">same model as implementer</span>
+      )}
+      {usageAvailable && (
+        <span className="text-[11px] tabular-nums text-faint">
+          {compactTokens(seat.order.tokens_in)} in / {compactTokens(seat.order.tokens_out)} out
+        </span>
+      )}
+      {showDuration && took && <span className="text-[11px] tabular-nums text-muted">{took}</span>}
+    </>
+  )
+}
+
 function SeatRow({
   seat,
   index,
@@ -1060,36 +1112,12 @@ function SeatRow({
   usageAvailable: boolean
 }) {
   const progress = reviewSeatProgress(seat.order.progress)
-  // Only the order's current model is a name the seat reports. A required model
-  // is a historical pin, a worker-pinned order was launched on its model, and a
-  // job keeps an earlier attempt's model after a release or an expiry clears
-  // the order's (AC-2.12; DEC-104(4)).
-  const reportedModel = seat.order.model_enforcement !== 'worker-pinned' && seat.order.model?.trim()
   return (
     <div className="flex flex-wrap items-center gap-x-3 gap-y-1.5 px-4 py-1.5">
       <span className={multiSeat ? 'w-11 shrink-0 text-xs text-faint' : 'sr-only'}>Seat {seat.seat}</span>
-      <span className="min-w-0 flex-[1_1_7rem] text-[11px] tabular-nums text-muted">
-        <ModelChip
-          model={seat.model}
-          agent={seat.order.agent}
-          tokensIn={seat.job?.tokens_in || seat.order.tokens_in}
-          tokensOut={seat.job?.tokens_out || seat.order.tokens_out}
-          note={seat.order.required_effort ? `effort ${seat.order.required_effort}` : undefined}
-          usageAvailable={usageAvailable}
-          showUnavailableUsage={false}
-        />
-        {reportedModel && <span className="ml-1.5 font-sans text-faint">self-reported</span>}
-      </span>
-      {seat.review?.sameModelAsImplementer && (
-        <span className="text-[11px] text-attention">same model as implementer</span>
-      )}
-      {usageAvailable && (
-        <span className="text-[11px] tabular-nums text-faint">
-          {compactTokens(seat.order.tokens_in)} in / {compactTokens(seat.order.tokens_out)} out
-        </span>
-      )}
+      <SeatFacts seat={seat} usageAvailable={usageAvailable} showDuration={false} />
       <span className="ml-auto">
-        <SeatState seat={seat} index={index} quiet={!multiSeat} />
+        <SeatState seat={seat} index={index} />
       </span>
       {seat.status === 'deliberating' && progress && (
         <p className="w-full line-clamp-2 text-xs leading-5 text-muted">{progress}</p>
@@ -1106,61 +1134,13 @@ function reviewSeatProgress(progress?: string) {
     .trim()
 }
 
-// A seat's review feedback rendered as a clipped document block — the same
-// family as the spec card's overflow treatment (see SpecCard): a fixed
-// collapsed height with overflow hidden and the shared bottom fade, plus a
-// small per-seat toggle shown only when the text actually overflows. State is
-// session-local and independent per seat.
+// A seat's review feedback, whole.
 function SeatNote({ seat, taskId }: { seat: PanelSeat; taskId: string }) {
-  const [expanded, setExpanded] = useState(false)
-  const [hasOverflow, setHasOverflow] = useState(false)
-  const viewportRef = useRef<HTMLDivElement>(null)
-  const viewportID = useId()
-
-  useLayoutEffect(() => {
-    // Only measure while collapsed; expanding keeps the last overflow reading so
-    // the collapse control stays visible (mirrors SpecCard's contentExpanded).
-    const viewport = viewportRef.current
-    if (!viewport || expanded) return
-    const measure = () => setHasOverflow(viewport.scrollHeight > viewport.clientHeight + 1)
-    measure()
-
-    const observer = new ResizeObserver(measure)
-    observer.observe(viewport)
-    if (viewport.firstElementChild) observer.observe(viewport.firstElementChild)
-    return () => observer.disconnect()
-  }, [expanded, seat.review])
-
   return (
     <div>
-      <div className="relative">
-        <div id={viewportID} ref={viewportRef} className={cn(!expanded && 'max-h-20 overflow-hidden')}>
-          <p className="whitespace-pre-line leading-5 text-muted">{seat.review!.feedback.trim()}</p>
-        </div>
-        {hasOverflow && !expanded && (
-          <div
-            aria-hidden="true"
-            className="spec-overflow-shadow pointer-events-none absolute inset-x-0 bottom-0 h-4"
-          />
-        )}
-      </div>
-      {hasOverflow && (
-        <button
-          type="button"
-          aria-controls={viewportID}
-          aria-expanded={expanded}
-          aria-label={`${expanded ? 'Collapse' : 'Expand'} seat ${seat.seat} notes`}
-          className="mt-1 inline-flex items-center gap-1 text-xs font-medium text-muted hover:text-foreground focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-primary"
-          onClick={() => setExpanded((value) => !value)}
-        >
-          {expanded ? (
-            <ChevronUp aria-hidden="true" className="size-3" />
-          ) : (
-            <ChevronDown aria-hidden="true" className="size-3" />
-          )}
-          {expanded ? 'Show less' : 'Show full note'}
-        </button>
-      )}
+      <MarkdownProse components={{ p: ({ children }) => <p className="whitespace-pre-line">{children}</p> }}>
+        {seat.review!.feedback.trim() || seat.review!.summary.trim()}
+      </MarkdownProse>
       {seat.review?.truncatedEventId && (
         <div className="text-xs text-muted">
           <AuditDisclosure
@@ -1177,7 +1157,7 @@ function SeatNote({ seat, taskId }: { seat: PanelSeat; taskId: string }) {
 
 // Deliberating seats pulse out of phase with one another — independent
 // minds, not one process with several labels.
-function SeatState({ seat, index, quiet = false }: { seat: PanelSeat; index: number; quiet?: boolean }) {
+function SeatState({ seat, index }: { seat: PanelSeat; index: number }) {
   const { review, status, job } = seat
   if (review) {
     const approved = review.verdict === 'approve'
@@ -1187,15 +1167,9 @@ function SeatState({ seat, index, quiet = false }: { seat: PanelSeat; index: num
         <Disclosure
           title={review.summary.trim() || undefined}
           content={review.summary.trim() || undefined}
-          // The round's header already carries a lone seat's verdict in color.
           triggerClassName={cn(
-            'inline-flex items-center gap-1 text-xs',
-            quiet
-              ? 'text-muted'
-              : cn(
-                  'rounded-full px-2 py-0.5 font-medium',
-                  approved ? 'bg-positive-soft text-positive' : 'bg-attention-soft text-attention',
-                ),
+            'inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-xs font-medium',
+            approved ? 'bg-positive-soft text-positive' : 'bg-attention-soft text-attention',
           )}
         >
           {approved ? <Check className="size-3" /> : <Undo2 className="size-3" />}
@@ -1270,7 +1244,6 @@ function JobEntry({
   taskId,
   summary,
   summaryEventId,
-  latest = false,
   model,
   tone,
   order,
@@ -1282,7 +1255,6 @@ function JobEntry({
   taskId: string
   summary: string
   summaryEventId?: string
-  latest?: boolean
   model: string
   tone: Extract<TimelineEntry, { type: 'job' }>['tone']
   order?: WorkOrder
@@ -1327,14 +1299,11 @@ function JobEntry({
   return (
     <li className="relative pl-7">
       {dot}
-      <article className={cn('pb-1', warning && 'rounded-lg border border-attention/40 bg-attention-soft pb-0')}>
+      <article className={warning ? 'rounded-lg border border-attention/40 bg-attention-soft' : 'timeline-entry'}>
         {/* One header line: the stage, then model and duration, then the time.
             The entry has no separate footer (component-web-task-surfaces,
             Work-order timeline entries). */}
-        <header
-          className={cn('flex flex-wrap items-center gap-x-2.5 gap-y-1 px-4', warning ? 'pt-3' : 'pt-0.5')}
-          data-job-header
-        >
+        <header className={cn('flex flex-wrap items-center gap-x-2.5 gap-y-1 px-4', warning && 'pt-3')} data-job-header>
           <span className="text-sm font-semibold text-foreground">{stage}</span>
           {order?.review_seat ? <span className="text-xs text-muted">Seat {order.review_seat}</span> : null}
           {job.state === 'failed' && <Badge variant="failure">Failed</Badge>}
@@ -1342,15 +1311,10 @@ function JobEntry({
           <JobMeta job={job} model={model} order={order} usageAvailable={usageAvailable} />
           <time className="ml-auto text-[11px] text-faint">{absoluteTime(at)}</time>
         </header>
-        <div className="px-4 pt-1 pb-2">
-          <ClampedBlock clamp={!latest && !running}>
-            <MarkdownProse
-              className={latest || running ? undefined : 'markdown-past'}
-              components={{ p: ({ children }) => <p className="whitespace-pre-line">{children}</p> }}
-            >
-              {summary}
-            </MarkdownProse>
-          </ClampedBlock>
+        <div className={cn('px-4 pt-1', warning && 'pb-3')}>
+          <MarkdownProse components={{ p: ({ children }) => <p className="whitespace-pre-line">{children}</p> }}>
+            {summary}
+          </MarkdownProse>
         </div>
         {summaryEventId && (
           // The server cut this text at 16,384 bytes; its event holds the rest.
@@ -1468,6 +1432,9 @@ function ModelChip({
 }) {
   const selected = selectModelLogo(model, agent)
   const logo = selected ? logoAssets[selected.logo] : undefined
+  // An unreported model says nothing: name the harness when it is known.
+  const label = model === 'unknown' ? (selected?.source === 'harness' ? selected.harness : undefined) : model
+  if (!label) return null
   const usage = [
     usageAvailable === false
       ? showUnavailableUsage
@@ -1493,8 +1460,8 @@ function ModelChip({
       ) : (
         <Cpu aria-hidden className="size-3.5 shrink-0 text-faint" />
       )}
-      <Disclosure triggerClassName="truncate" title={model} content={model}>
-        {model}
+      <Disclosure triggerClassName="truncate" title={label} content={label}>
+        {label}
       </Disclosure>
       {usage && (
         <span

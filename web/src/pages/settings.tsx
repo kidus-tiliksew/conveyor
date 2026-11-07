@@ -73,7 +73,7 @@ export function SettingsPage() {
             </Card>
           )}
 
-          <div className="grid items-start gap-4 xl:grid-cols-2">
+          <div className="grid items-stretch gap-4 xl:grid-cols-2">
             <ProfileCard />
             <PasswordCard />
           </div>

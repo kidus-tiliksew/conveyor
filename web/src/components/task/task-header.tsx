@@ -217,7 +217,7 @@ export function TaskIdentity({ item, variant }: { item: ActivityItem; variant: '
           <p className="mt-1 whitespace-pre-wrap">{item.task.intake_operator_direction}</p>
         </section>
       )}
-      <Heading className="text-xl font-semibold leading-snug tracking-tight text-balance">{item.task.title}</Heading>
+      <Heading className="text-xl font-semibold leading-snug tracking-tight">{item.task.title}</Heading>
       {item.task.body && (
         <TaskBody body={item.task.body} clampClassName={variant === 'sheet' ? 'max-h-[4lh]' : 'max-h-[5lh]'} />
       )}
@@ -771,7 +771,7 @@ function TaskBody({ body, clampClassName }: { body: string; clampClassName: stri
   }, [body, expanded])
 
   return (
-    <div className="mt-2 max-w-3xl">
+    <div className="mt-2">
       <div className="relative">
         <div
           ref={viewportRef}

@@ -264,7 +264,7 @@ function DecisionRow({ decision, citingCount }: { decision: Decision; citingCoun
         <div className="flex items-start gap-3">
           <span className="mt-px w-14 shrink-0 font-mono text-[11px] leading-5 text-muted">{decision.id}</span>
           <div className="flex min-w-0 flex-1 flex-col gap-1 2xl:flex-row 2xl:items-start 2xl:justify-between 2xl:gap-8">
-            <p className="line-clamp-2 min-w-0 max-w-[46rem] text-[13px] leading-5 text-foreground">
+            <p className="line-clamp-2 min-w-0 flex-1 text-[13px] leading-5 text-foreground">
               <InlineCode text={clauses ? `(1) ${clauses[0]}` : decision.statement} />
             </p>
             <p className="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-muted sm:h-5 sm:flex-nowrap sm:overflow-hidden sm:whitespace-nowrap 2xl:mt-px 2xl:w-[34rem] 2xl:shrink-0">

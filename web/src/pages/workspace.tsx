@@ -328,7 +328,7 @@ function GeneralTab({
         </CardContent>
       </Card>
       <Card>
-        <CardHeader>
+        <CardHeader className="items-center">
           <CardTitle>Repositories</CardTitle>
           <Button
             size="sm"
@@ -402,7 +402,7 @@ function GeneralTab({
               <Button
                 size="icon"
                 variant="ghost"
-                className="mb-0.5 hover:text-failure"
+                className="mt-5 hover:text-failure"
                 aria-label={`Remove repository ${repo.name || index + 1}`}
                 onClick={() => update({ repos: draft.repos.filter((_, i) => i !== index) })}
               >
@@ -438,7 +438,7 @@ function GeneralTab({
             Observe selected GitHub repositories for post-merge failures and changes outside Conveyor. Signals always
             create ordinary gated tasks; the monitor cannot implement, review, merge, or deploy them.
           </p>
-          <div className="flex flex-wrap items-start gap-x-6 gap-y-3 [&_input]:w-28 [&>*:last-child]:basis-full">
+          <div className="flex flex-wrap items-start gap-x-6 gap-y-3 [&_input]:w-28">
             <Field label="Poll interval">
               <Input
                 value={draft.monitor?.poll_interval ?? '1m'}
@@ -505,7 +505,7 @@ function GeneralTab({
         </CardContent>
       </Card>
       <Card>
-        <CardHeader>
+        <CardHeader className="justify-start">
           <CardTitle>Issue publication</CardTitle>
           <Switch
             aria-label="Publish GitHub issues for approved plans"

@@ -79,8 +79,12 @@ export function MonitorPage() {
           <Card className="mt-3">
             <CardHeader>
               <CardTitle>Unreconciled changes</CardTitle>
+              <Badge variant={(status?.drift_count ?? 0) > 0 ? 'attention' : 'positive'}>
+                {status?.drift_count ?? 0}
+              </Badge>
             </CardHeader>
-            <CardContent className="max-h-[32rem] divide-y divide-border overflow-y-auto px-0 py-0">
+            {/* A half row at the bottom edge shows the list scrolls. */}
+            <CardContent className="max-h-[30rem] divide-y divide-border overflow-y-auto px-0 py-0">
               {(status?.drift ?? []).map((item) => (
                 <div
                   key={item.id}

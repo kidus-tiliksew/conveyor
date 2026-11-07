@@ -168,7 +168,7 @@ export function PlanningPage() {
               />
               {selectedBundle && (
                 <section
-                  className="max-h-[35%] shrink-0 overflow-y-auto border-t lg:max-h-[45%] border-border bg-surface/40 px-6 py-4"
+                  className="max-h-[35%] shrink-0 overflow-y-auto border-t lg:max-h-[45%] border-border bg-surface/40 px-6 py-4 [&>*]:mx-auto [&>*]:max-w-3xl"
                   aria-label="Planning bundle preview"
                 >
                   <div className="flex items-start justify-between gap-4">
@@ -197,7 +197,7 @@ export function PlanningPage() {
                   <div className="mt-4 space-y-4">
                     <div>
                       <h3 className="text-xs font-semibold text-muted">Pending documents</h3>
-                      <ul className="mt-2 grid gap-2 lg:grid-cols-2">
+                      <ul className="mt-2 grid grid-cols-[repeat(auto-fit,minmax(min(100%,20rem),1fr))] gap-2">
                         {selectedBundle.documents.map((document) => (
                           <li
                             key={`${document.kind}:${document.id}:${document.version ?? 0}`}

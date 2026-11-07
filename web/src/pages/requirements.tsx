@@ -434,7 +434,7 @@ function OverviewCanvas({
           <span className="inline-flex items-center gap-1.5 rounded-md border border-border bg-surface px-2 py-0.5 text-xs font-semibold text-muted">
             <FileText className="size-3" /> Product overview
           </span>
-          <h2 className="mt-3 text-[28px] font-semibold leading-tight tracking-tight text-balance">{document.name}</h2>
+          <h2 className="mt-3 text-[28px] font-semibold leading-tight tracking-tight">{document.name}</h2>
           <div className="mt-3 flex flex-wrap items-center gap-1.5">
             <Badge variant="mono">v{document.current_version}</Badge>
             <Badge variant="outline">Reference material</Badge>

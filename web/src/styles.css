@@ -202,17 +202,19 @@ time, td, dd { font-variant-numeric: tabular-nums; }
    here and rendered structurally by the acceptance checklist instead. */
 .markdown { font-size: 0.875rem; line-height: 1.68; color: var(--color-markdown); }
 .markdown > :first-child { margin-top: 0; }
-/* A finished report in the timeline: quieter than the entry that is current. */
+.markdown > :last-child { margin-bottom: 0; }
+/* One rule closes each timeline entry; the rail and this rule are its only lines.
+   The last entry, and one directly above a bordered card, need no rule. */
+.timeline-entry { padding-bottom: 1rem; border-bottom: 1px solid var(--color-border); }
+li:last-child > .timeline-entry,
+li:has(+ li > [data-timeline-card]) > .timeline-entry { padding-bottom: 0; border-bottom: 0; }
+/* Plain-text reports read like the Markdown ones beside them. */
+.timeline-prose { font-size: 0.875rem; line-height: 1.68; color: var(--color-markdown); }
 /* A long document names many identifiers; filled chips would turn its prose
    into a row of pills. The font alone marks them there. */
 .document-body .markdown :not(pre, td, th) > code { background: none; border: none; padding: 0; }
-.markdown-past { font-size: 0.8125rem; line-height: 1.25rem; color: var(--color-muted); }
-/* Long documents keep a readable measure; tables, code, and diagrams may use
-   the whole column. The opening heading usually repeats the page title, so it
-   steps down rather than competing with it. */
 .document-body .markdown { font-size: 0.9375rem; line-height: 1.62; }
 .document-body .markdown p { margin: 0.9em 0; }
-.task-reading .markdown > :not(.markdown-table, pre, [data-mermaid]) { max-width: 37rem; }
 .document-body .markdown > :is(h1, h2):first-child { font-size: 0.9375rem; letter-spacing: -0.008em; margin-bottom: 0.4em; }
 /* Panel-only: long unbreakable tokens (branch names, PR URLs) wrap within the
    narrow side task panel instead of forcing phantom horizontal scroll, without

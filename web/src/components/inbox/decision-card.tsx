@@ -213,7 +213,7 @@ export function DecisionDetail({ item, task, onActed }: { item: InboxItem; task:
                 <ContextProposalFooter action={contextRows} selection={selection} sends={sends} />
               ) : (
                 action && (
-                  <div className="text-[13px]">
+                  <div className="max-w-2xl text-[13px]">
                     <GateChoices taskId={task.id} action={action} onActed={onActed} onRestarted={onActed} />
                   </div>
                 )
