@@ -109,7 +109,7 @@ export function DocumentReview({
   const select = (next: ReviewSearch) => onChange({ ...search, ...next })
   return (
     <div className="min-w-0">
-      <div className="mb-4 flex max-w-[35rem] flex-wrap items-end justify-between gap-x-4 border-b border-border">
+      <div className="mb-4 flex flex-wrap items-end justify-between gap-x-4 border-b border-border">
         <div role="tablist" aria-label="Document views" className="flex gap-4">
           {tabs.map((name, index) => (
             <button

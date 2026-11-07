@@ -207,20 +207,7 @@ time, td, dd { font-variant-numeric: tabular-nums; }
    steps down rather than competing with it. */
 .document-body .markdown { font-size: 0.9375rem; line-height: 1.62; }
 .document-body .markdown p { margin: 0.9em 0; }
-@media (min-width: 64rem) {
-  .document-reading .markdown > :is(table, pre, [data-mermaid]) {
-    display: block;
-    position: relative;
-    left: 50%;
-    transform: translateX(-50%);
-    width: max-content;
-    min-width: 100%;
-    max-width: min(50rem, calc(100vw - 40rem));
-    overflow-x: auto;
-  }
-}
-.task-reading .markdown > :not(table, pre, [data-mermaid]) { max-width: 37rem; }
-.document-body .markdown > :not(table, pre, [data-mermaid]) { max-width: 35rem; }
+.task-reading .markdown > :not(.markdown-table, pre, [data-mermaid]) { max-width: 37rem; }
 .document-body .markdown > :is(h1, h2):first-child { font-size: 0.9375rem; letter-spacing: -0.008em; margin-bottom: 0.4em; }
 /* Panel-only: long unbreakable tokens (branch names, PR URLs) wrap within the
    narrow side task panel instead of forcing phantom horizontal scroll, without
@@ -279,12 +266,12 @@ time, td, dd { font-variant-numeric: tabular-nums; }
   padding-left: 1em;
   color: var(--color-muted);
 }
-.markdown table { border-collapse: separate; border-spacing: 0; margin: 0.9em 0; font-size: 0.8125rem; border: 1px solid var(--color-border); border-radius: 10px; }
+.markdown-table { width: fit-content; max-width: 100%; margin: 0.9em 0; overflow-x: auto; border: 1px solid var(--color-border); border-radius: 10px; }
+.document-body .markdown-table, .document-body .markdown table { width: 100%; }
+.markdown table { border-collapse: separate; border-spacing: 0; font-size: 0.8125rem; }
 .markdown th, .markdown td { border-bottom: 1px solid var(--color-border); padding: 0.45em 0.8em; text-align: left; vertical-align: top; }
 .markdown tr:last-child td { border-bottom: none; }
 .markdown th { color: var(--color-foreground); font-weight: 600; background: var(--color-surface); }
-.markdown th:first-child { border-top-left-radius: 9px; }
-.markdown th:last-child { border-top-right-radius: 9px; }
 .markdown hr { border: none; border-top: 1px solid var(--color-border); margin: 1.25em 0; }
 
 /* The fade ends on whichever surface the clipped text sits on. */

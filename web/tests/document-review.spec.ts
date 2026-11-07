@@ -990,6 +990,28 @@ for (const tier of ['requirements', 'system-design'] as const) {
     }
   })
 
+  test(`${tier}: every tab and a Markdown table share one column`, async ({ page }) => {
+    await page.setViewportSize({ width: 1440, height: 900 })
+    const seed = await seedReview(page, tier, {
+      content: `# Rich\n\nA paragraph long enough to reach the edge of the reading column. ${'More words follow here. '.repeat(20)}\n\n| Field | Value |\n| --- | --- |\n| Lease | 10 |`,
+    })
+    await page.goto(seed.url)
+    const edges = async (locator: ReturnType<Page['locator']>) => {
+      const box = await locator.boundingBox()
+      if (!box) throw new Error('expected a laid-out element')
+      return { left: Math.round(box.x), right: Math.round(box.x + box.width) }
+    }
+    const tabRow = page.getByRole('tablist', { name: 'Document views' }).locator('..')
+    await expect(page.getByRole('region', { name: 'Version comparison', exact: true })).toBeVisible()
+    const changes = await edges(tabRow)
+    await page.getByRole('tab', { name: 'document' }).click()
+    const table = page.locator('.document-body .markdown-table')
+    await expect(table).toBeVisible()
+    expect(await edges(tabRow)).toEqual(changes)
+    expect(await edges(table)).toEqual(changes)
+    expect(await edges(page.locator('.document-body .markdown > p').first())).toEqual(changes)
+  })
+
   test(`${tier}: desktop and narrow review evidence`, async ({ page }, testInfo) => {
     const seed = await seedReview(page, tier)
     await page.goto(seed.url)

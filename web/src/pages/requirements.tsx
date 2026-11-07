@@ -340,9 +340,7 @@ export function RequirementsPage() {
         </DocumentTree>
 
         <section aria-label="Requirement document" className="min-w-0 flex-1 overflow-y-auto">
-          <div
-            className={`mx-auto ${search.tab && search.tab !== 'document' ? 'max-w-4xl' : 'document-reading max-w-[39rem]'} px-4 py-6 sm:px-6 lg:px-8 lg:py-8`}
-          >
+          <div className="mx-auto max-w-[50rem] px-4 py-6 sm:px-6 lg:px-8 lg:py-8">
             {!workspace && <EmptyMessage>Choose a workspace to open its requirements.</EmptyMessage>}
             {isLoading && <EmptyMessage>Loading requirements…</EmptyMessage>}
             {error && <EmptyMessage tone="failure">{errorMessage(error, 'Could not load requirements.')}</EmptyMessage>}

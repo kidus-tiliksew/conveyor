@@ -551,9 +551,7 @@ function DesignCanvas({
   ]
 
   return (
-    <article
-      className={`mx-auto ${search.tab && search.tab !== 'document' ? 'max-w-4xl' : 'document-reading max-w-[39rem]'} px-4 py-6 sm:px-6 lg:px-8 lg:py-8`}
-    >
+    <article className="mx-auto max-w-[50rem] px-4 py-6 sm:px-6 lg:px-8 lg:py-8">
       {!item.document.archived &&
         reviseTarget &&
         item.pending_versions.some((v) => v.version === reviseTarget.version) && (
