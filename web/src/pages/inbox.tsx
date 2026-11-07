@@ -236,10 +236,7 @@ function InboxSummary({
 
 function EmptyDecisions() {
   return (
-    <div
-      data-no-decisions
-      className="flex flex-col items-center px-6 py-20 text-center"
-    >
+    <div data-no-decisions className="flex flex-col items-center px-6 py-20 text-center">
       <span className="flex size-10 items-center justify-center rounded-full bg-positive-soft text-positive">
         <Check className="size-5" aria-hidden />
       </span>
