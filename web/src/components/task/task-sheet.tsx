@@ -1,8 +1,9 @@
 import { useQueryClient } from '@tanstack/react-query'
 import { Link, useNavigate } from '@tanstack/react-router'
 import { ChevronDown, ChevronUp, Maximize2, X } from 'lucide-react'
-import { useEffect } from 'react'
+import { useEffect, useState } from 'react'
 import type { ActivityItem } from '../../lib/types'
+import { cn } from '../../lib/utils'
 import {
   blueprintsQueryOptions,
   callerIdentityQueryOptions,
@@ -20,7 +21,7 @@ import { isReviewable } from './review-panel'
 import { SpecCard } from './spec-card'
 import { TaskActivityTabs } from './task-activity-tabs'
 import { TaskContextCard } from './task-context-card'
-import { TaskHeader } from './task-header'
+import { TaskHeader, TaskStatusBadge } from './task-header'
 import { taskHasVerifyStage, useTaskDetail, useTaskOrder, useTaskVerification } from './use-task-detail'
 
 // The task detail sheet: the costed event timeline — which
@@ -44,15 +45,26 @@ export function TaskSheet({ taskId }: { taskId: string }) {
     void navigate({ to: '/w/$workspaceId/', params: { workspaceId: workspace }, search: (prev) => prev })
   // A blueprint anchor has one home, and it is not this sheet.
   const redirecting = useCanonicalBlueprintRedirect(item?.task)
+  // Once the identity block has scrolled away, the fixed header says where the
+  // task stands, so older activity never reads as its current state.
+  const [scrolled, setScrolled] = useState(false)
 
   return (
     <Sheet onClose={close} label="Task detail">
-      <header className="pointer-coarse:[&_button]:min-h-10 pointer-coarse:[&_button]:min-w-10 flex shrink-0 flex-wrap items-center gap-1 border-b border-border px-4 py-2.5">
+      <header className="pointer-coarse:[&_button]:min-h-10 pointer-coarse:[&_button]:min-w-10 flex shrink-0 flex-wrap items-center gap-1 border-b border-border px-5 py-2.5">
         {/* The title takes whatever width the fixed-size controls leave and
             truncates; the controls never shrink under their own content. */}
         {/* A 10rem basis keeps the title readable: the controls wrap before
             they squeeze it. */}
-        <span className="min-w-0 flex-1 basis-40 truncate text-sm font-medium text-muted">{item?.task.title}</span>
+        <span
+          className={cn(
+            'min-w-0 flex-1 basis-40 truncate text-sm font-medium text-muted transition-opacity',
+            !scrolled && 'opacity-0',
+          )}
+        >
+          {item?.task.title}
+        </span>
+        {item && scrolled && <TaskStatusBadge item={item} />}
         {/* The same corner affordance the full route carries (REQ-3): the
             panel opens over this one without dismissing it. */}
         <LineageExplorer type="task" id={taskId} />
@@ -82,7 +94,10 @@ export function TaskSheet({ taskId }: { taskId: string }) {
           <X />
         </Button>
       </header>
-      <div className="task-sheet-body min-h-0 flex-1 overflow-x-hidden overflow-y-auto px-4 pb-8 pt-4">
+      <div
+        className="task-sheet-body task-reading min-h-0 flex-1 overflow-x-hidden overflow-y-auto px-5 pb-8 pt-4"
+        onScroll={(event) => setScrolled(event.currentTarget.scrollTop > 160)}
+      >
         {(isLoading || redirecting) && (
           <div className="space-y-3">
             <Skeleton className="h-16" />
@@ -143,7 +158,7 @@ function SheetNavButton({ targetId, label, icon }: { targetId?: string; label: s
 
 function SheetBody({ item }: { item: ActivityItem }) {
   return (
-    <div className="space-y-4">
+    <div className="mx-auto max-w-[60rem] space-y-3">
       <TaskHeader item={item} variant="sheet" />
       <TaskContextCard taskId={item.task.id} taskState={item.task.state} context={item.task.context} />
       {item.spec && (

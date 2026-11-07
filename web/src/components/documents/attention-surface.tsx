@@ -30,11 +30,8 @@ export type AttentionItem = {
 export function AttentionSurface({ items }: { items: AttentionItem[] }) {
   if (items.length === 0)
     return (
-      <section
-        aria-label="Needs your attention"
-        className="flex items-center gap-2.5 rounded-lg border border-border bg-surface/40 px-4 py-3 text-xs text-muted"
-      >
-        <span className="flex size-5 shrink-0 items-center justify-center rounded-full bg-positive-soft text-positive">
+      <section aria-label="Needs your attention" className="sr-only">
+        <span className="flex size-4 shrink-0 items-center justify-center rounded-full bg-positive-soft text-positive">
           <Check className="size-3" />
         </span>
         Nothing needs your attention on this document.
@@ -46,7 +43,7 @@ export function AttentionSurface({ items }: { items: AttentionItem[] }) {
       aria-label="Needs your attention"
       className="overflow-hidden rounded-lg border border-attention/25 bg-card"
     >
-      <h2 className="flex items-center gap-1.5 border-b border-attention/20 bg-attention-soft/50 px-4 py-2.5 text-[10px] font-semibold uppercase tracking-[0.12em] text-attention">
+      <h2 className="flex items-center gap-1.5 border-b border-attention/20 bg-attention-soft/50 px-4 py-2.5 text-xs font-semibold text-attention">
         <TriangleAlert className="size-3" />
         {attentionCount > 0 ? 'Needs your attention' : 'Related attention context'}
         {attentionCount > 0 && (

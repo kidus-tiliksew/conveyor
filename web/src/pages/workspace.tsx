@@ -21,6 +21,7 @@ import { ConfigValidationError, fetchWorkspaceConfig, updateWorkspaceConfig } fr
 import { githubSlug } from '../lib/repository'
 import type { WorkspaceConfigDocument, WorkspaceConfigRepo } from '../lib/types'
 import { cn } from '../lib/utils'
+import { PageHeader } from '../components/ui/page-header'
 
 // The selected tab is page state, never part of the address, so ordinary
 // navigation to this page opens on Policy. Conveyor has no workers, so no tab,
@@ -112,164 +113,166 @@ export function WorkspacePage() {
   }, [save.error])
 
   return (
-    <div className="h-full overflow-y-auto">
-      <div className="mx-auto max-w-5xl px-4 pb-24 pt-6 sm:px-6 sm:pt-8">
-        <div className="flex items-start justify-between">
-          <div className="flex items-baseline gap-3">
-            <h1 className="text-xl font-semibold">Workspace</h1>
-            {draft && <Badge variant="mono">{draft.workspace}</Badge>}
-          </div>
-          {canCreateWorkspaces && (
-            <Link to="/workspaces/new">
-              <Button variant="secondary" tabIndex={-1}>
-                <Plus />
-                New workspace
-              </Button>
-            </Link>
-          )}
-        </div>
-        {!workspace && (
-          <Card className="mt-6">
-            <CardHeader>
-              <CardTitle>No workspace selected</CardTitle>
-            </CardHeader>
-            <CardContent>
-              {canCreateWorkspaces ? (
-                <p className="text-sm text-muted">
-                  Pick a workspace from the left rail, or{' '}
-                  <Link to="/workspaces/new" className="text-primary hover:underline">
-                    create one
-                  </Link>{' '}
-                  to get started.
-                </p>
-              ) : (
-                <p className="text-sm text-muted">Pick a workspace from the left rail to get started.</p>
-              )}
-            </CardContent>
-          </Card>
+    <div className="flex h-full flex-col">
+      <PageHeader
+        title="Workspace"
+        meta={draft && <Badge variant="mono">{draft.workspace}</Badge>}
+        description="How tasks run here, and who can work on them."
+      >
+        {canCreateWorkspaces && (
+          <Link to="/workspaces/new">
+            <Button variant="secondary" size="sm" tabIndex={-1}>
+              <Plus />
+              New workspace
+            </Button>
+          </Link>
         )}
+      </PageHeader>
+      <div className="min-h-0 flex-1 overflow-y-auto">
+        <div className="px-4 pb-24 pt-3 lg:px-6">
+          {!workspace && (
+            <Card className="mt-6">
+              <CardHeader>
+                <CardTitle>No workspace selected</CardTitle>
+              </CardHeader>
+              <CardContent>
+                {canCreateWorkspaces ? (
+                  <p className="text-sm text-muted">
+                    Pick a workspace from the left rail, or{' '}
+                    <Link to="/workspaces/new" className="text-primary hover:underline">
+                      create one
+                    </Link>{' '}
+                    to get started.
+                  </p>
+                ) : (
+                  <p className="text-sm text-muted">Pick a workspace from the left rail to get started.</p>
+                )}
+              </CardContent>
+            </Card>
+          )}
 
-        {draft && canManageWorkspace ? (
-          <>
-            {/* When the tabs exceed a phone width, the row scrolls inside itself. */}
-            <div
-              role="tablist"
-              className="mt-6 flex gap-1 overflow-x-auto border-b border-border [scrollbar-width:none] [&::-webkit-scrollbar]:hidden"
-            >
-              {TABS.map((entry) => {
-                const dirty = dirtyTabs.includes(entry.id)
-                const errored = errorTabs.includes(entry.id)
-                return (
-                  <button
-                    type="button"
-                    key={entry.id}
-                    role="tab"
-                    aria-selected={tab === entry.id}
-                    onClick={() => setTab(entry.id)}
-                    className={cn(
-                      '-mb-px flex shrink-0 items-center gap-2 whitespace-nowrap border-b-2 px-3.5 py-2.5 text-sm font-medium transition-colors focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-primary',
-                      tab === entry.id
-                        ? 'border-primary text-foreground'
-                        : 'border-transparent text-muted hover:text-foreground',
-                    )}
-                  >
-                    {entry.label}
-                    {(dirty || errored) && (
-                      <span
-                        title={errored ? 'Validation errors' : 'Unsaved changes'}
-                        className={cn('size-1.5 rounded-full', errored ? 'bg-failure' : 'bg-attention-dot')}
-                      />
-                    )}
-                  </button>
-                )
-              })}
-            </div>
+          {draft && canManageWorkspace ? (
+            <>
+              {/* When the tabs exceed a phone width, the row scrolls inside itself. */}
+              <div
+                role="tablist"
+                className="flex gap-4 overflow-x-auto shadow-[inset_0_-1px_0_var(--color-border)] [scrollbar-width:none] [&::-webkit-scrollbar]:hidden"
+              >
+                {TABS.map((entry) => {
+                  const dirty = dirtyTabs.includes(entry.id)
+                  const errored = errorTabs.includes(entry.id)
+                  return (
+                    <button
+                      type="button"
+                      key={entry.id}
+                      role="tab"
+                      aria-selected={tab === entry.id}
+                      onClick={() => setTab(entry.id)}
+                      className={cn(
+                        'flex shrink-0 items-center gap-2 whitespace-nowrap border-b-2 pb-2.5 pt-1.5 text-[13px] font-medium transition-colors focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-primary',
+                        tab === entry.id
+                          ? 'border-primary text-foreground'
+                          : 'border-transparent text-muted hover:text-foreground',
+                      )}
+                    >
+                      {entry.label}
+                      {(dirty || errored) && (
+                        <span
+                          title={errored ? 'Validation errors' : 'Unsaved changes'}
+                          className={cn('size-1.5 rounded-full', errored ? 'bg-failure' : 'bg-attention-dot')}
+                        />
+                      )}
+                    </button>
+                  )
+                })}
+              </div>
 
-            <div className="pt-5">
-              {tab === 'general' && (
-                <GeneralTab
-                  draft={draft}
-                  setDraft={setDraft}
-                  errors={save.error instanceof ConfigValidationError ? save.error.fields : []}
-                />
+              <div className="pt-5">
+                {tab === 'general' && (
+                  <GeneralTab
+                    draft={draft}
+                    setDraft={setDraft}
+                    errors={save.error instanceof ConfigValidationError ? save.error.fields : []}
+                  />
+                )}
+                {tab === 'policy' && <PolicyTab draft={draft} setDraft={setDraft} />}
+                {tab === 'verification' && (
+                  <div className="space-y-4">
+                    <VerificationSettings draft={draft} setDraft={setDraft} />
+                    <VerificationKits key={workspace} workspace={workspace} />
+                  </div>
+                )}
+                {tab === 'members' && <MembersSection />}
+              </div>
+
+              {(save.error || saved || dirtyTabs.length > 0) && (
+                <div className="pointer-events-none sticky bottom-4 mt-6 flex justify-center">
+                  <div className="pointer-events-auto w-full space-y-2">
+                    {save.error ? (
+                      <div className="rounded-lg border border-failure/30 bg-failure-soft p-3 text-sm text-failure shadow-lg">
+                        <p>{save.error instanceof ConfigValidationError ? save.error.message : String(save.error)}</p>
+                        {save.error instanceof ConfigValidationError &&
+                          save.error.fields.map((field) => (
+                            <p key={field.field} className="mt-1 font-mono text-xs">
+                              {field.field}: {field.message}
+                            </p>
+                          ))}
+                      </div>
+                    ) : null}
+                    {saved && dirtyTabs.length === 0 && !save.error && (
+                      <p className="flex items-center gap-2 rounded-lg border border-positive/30 bg-positive-soft p-3 text-sm text-positive shadow-lg">
+                        <CheckCircle2 className="size-4" />
+                        {saved}
+                      </p>
+                    )}
+                    {dirtyTabs.length > 0 && (
+                      <div className="flex items-center gap-3 rounded-lg border border-edge bg-card py-2 pl-4 pr-2 shadow-lg">
+                        <p className="text-sm">
+                          <span className="font-medium">Unsaved changes</span>{' '}
+                          <span className="text-faint">
+                            · {dirtyTabs.map((id) => TABS.find((entry) => entry.id === id)!.label).join(', ')}
+                          </span>
+                        </p>
+                        <div className="ml-auto flex gap-2">
+                          <Button
+                            size="sm"
+                            variant="ghost"
+                            onClick={() => {
+                              setDraftState(structuredClone(serverDocument!))
+                              save.reset()
+                              setSaved('')
+                            }}
+                          >
+                            Discard
+                          </Button>
+                          <Button size="sm" disabled={save.isPending} onClick={() => save.mutate()}>
+                            <Save />
+                            Save changes
+                          </Button>
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                </div>
               )}
-              {tab === 'policy' && <PolicyTab draft={draft} setDraft={setDraft} />}
-              {tab === 'verification' && (
-                <div className="space-y-4">
-                  <VerificationSettings draft={draft} setDraft={setDraft} />
+            </>
+          ) : snapshot ? (
+            // Configuration is an operator surface, so a member reaching this page
+            // gets the read-only summary. The member list belongs beside it: every
+            // member may see who else is here, without the management controls.
+            <>
+              <ReadOnly snapshot={snapshot} configuration={query.data?.document} />
+              {workspace && (
+                <div className="mt-4">
                   <VerificationKits key={workspace} workspace={workspace} />
                 </div>
               )}
-              {tab === 'members' && <MembersSection />}
-            </div>
-
-            {(save.error || saved || dirtyTabs.length > 0) && (
-              <div className="pointer-events-none sticky bottom-4 mt-6 flex justify-center">
-                <div className="pointer-events-auto w-full max-w-2xl space-y-2">
-                  {save.error ? (
-                    <div className="rounded-lg border border-failure/30 bg-failure-soft p-3 text-sm text-failure shadow-lg">
-                      <p>{save.error instanceof ConfigValidationError ? save.error.message : String(save.error)}</p>
-                      {save.error instanceof ConfigValidationError &&
-                        save.error.fields.map((field) => (
-                          <p key={field.field} className="mt-1 font-mono text-xs">
-                            {field.field}: {field.message}
-                          </p>
-                        ))}
-                    </div>
-                  ) : null}
-                  {saved && dirtyTabs.length === 0 && !save.error && (
-                    <p className="flex items-center gap-2 rounded-lg border border-positive/30 bg-positive-soft p-3 text-sm text-positive shadow-lg">
-                      <CheckCircle2 className="size-4" />
-                      {saved}
-                    </p>
-                  )}
-                  {dirtyTabs.length > 0 && (
-                    <div className="flex items-center gap-3 rounded-lg border border-edge bg-card py-2 pl-4 pr-2 shadow-lg">
-                      <p className="text-sm">
-                        <span className="font-medium">Unsaved changes</span>{' '}
-                        <span className="text-faint">
-                          · {dirtyTabs.map((id) => TABS.find((entry) => entry.id === id)!.label).join(', ')}
-                        </span>
-                      </p>
-                      <div className="ml-auto flex gap-2">
-                        <Button
-                          size="sm"
-                          variant="ghost"
-                          onClick={() => {
-                            setDraftState(structuredClone(serverDocument!))
-                            save.reset()
-                            setSaved('')
-                          }}
-                        >
-                          Discard
-                        </Button>
-                        <Button size="sm" disabled={save.isPending} onClick={() => save.mutate()}>
-                          <Save />
-                          Save changes
-                        </Button>
-                      </div>
-                    </div>
-                  )}
-                </div>
-              </div>
-            )}
-          </>
-        ) : snapshot ? (
-          // Configuration is an operator surface, so a member reaching this page
-          // gets the read-only summary. The member list belongs beside it: every
-          // member may see who else is here, without the management controls.
-          <>
-            <ReadOnly snapshot={snapshot} configuration={query.data?.document} />
-            {workspace && (
               <div className="mt-4">
-                <VerificationKits key={workspace} workspace={workspace} />
+                <MembersSection />
               </div>
-            )}
-            <div className="mt-4">
-              <MembersSection />
-            </div>
-          </>
-        ) : null}
+            </>
+          ) : null}
+        </div>
       </div>
     </div>
   )
@@ -311,7 +314,7 @@ function GeneralTab({
         <CardHeader>
           <CardTitle>Basics</CardTitle>
         </CardHeader>
-        <CardContent>
+        <CardContent className="[&_input]:w-28">
           <Field
             label="Work-order queue timeout"
             hint="How long a work order may wait in the queue before it is marked stalled."
@@ -325,7 +328,7 @@ function GeneralTab({
         </CardContent>
       </Card>
       <Card>
-        <CardHeader>
+        <CardHeader className="items-center">
           <CardTitle>Repositories</CardTitle>
           <Button
             size="sm"
@@ -399,7 +402,7 @@ function GeneralTab({
               <Button
                 size="icon"
                 variant="ghost"
-                className="mb-0.5 hover:text-failure"
+                className="mt-5 hover:text-failure"
                 aria-label={`Remove repository ${repo.name || index + 1}`}
                 onClick={() => update({ repos: draft.repos.filter((_, i) => i !== index) })}
               >
@@ -418,7 +421,7 @@ function GeneralTab({
         </CardContent>
       </Card>
       <Card>
-        <CardHeader>
+        <CardHeader className="justify-start">
           <CardTitle>Repository monitor</CardTitle>
           <Switch
             aria-label="Enable repository monitor"
@@ -435,7 +438,7 @@ function GeneralTab({
             Observe selected GitHub repositories for post-merge failures and changes outside Conveyor. Signals always
             create ordinary gated tasks; the monitor cannot implement, review, merge, or deploy them.
           </p>
-          <div className="grid gap-3 md:grid-cols-2">
+          <div className="flex flex-wrap items-start gap-x-6 gap-y-3 [&_input]:w-28">
             <Field label="Poll interval">
               <Input
                 value={draft.monitor?.poll_interval ?? '1m'}
@@ -502,7 +505,7 @@ function GeneralTab({
         </CardContent>
       </Card>
       <Card>
-        <CardHeader>
+        <CardHeader className="justify-start">
           <CardTitle>Issue publication</CardTitle>
           <Switch
             aria-label="Publish GitHub issues for approved plans"
@@ -539,9 +542,9 @@ function PolicyTab({
           <CardTitle>Pipeline policy</CardTitle>
           <span className="text-xs text-faint">Defaults are frozen onto each task at intake.</span>
         </CardHeader>
-        <CardContent className="grid gap-x-6 gap-y-5 md:grid-cols-2">
-          <div className="space-y-3">
-            <div className="flex items-center gap-3">
+        <CardContent className="space-y-4">
+          <div className="space-y-3.5">
+            <div className="flex items-start gap-3">
               <Switch
                 aria-label="Plan approval"
                 checked={draft.execution.spec_approval}
@@ -549,10 +552,12 @@ function PolicyTab({
               />
               <div>
                 <p className="text-sm font-medium">Pause for plan approval</p>
-                <p className="text-xs text-faint">Require operator approval before implementation starts</p>
+                <p className="text-xs leading-[1.45] text-muted">
+                  Require operator approval before implementation starts
+                </p>
               </div>
             </div>
-            <div className="flex items-center gap-3">
+            <div className="flex items-start gap-3">
               <Switch
                 aria-label="Merge approval"
                 checked={draft.execution.merge_approval}
@@ -560,10 +565,12 @@ function PolicyTab({
               />
               <div>
                 <p className="text-sm font-medium">Pause before merge</p>
-                <p className="text-xs text-faint">Require operator approval before the reviewed change lands</p>
+                <p className="text-xs leading-[1.45] text-muted">
+                  Require operator approval before the reviewed change lands
+                </p>
               </div>
             </div>
-            <div className="flex items-center gap-3">
+            <div className="flex items-start gap-3">
               <Switch
                 aria-label="Fail-fast review"
                 checked={draft.review.fail_fast ?? false}
@@ -571,12 +578,12 @@ function PolicyTab({
               />
               <div>
                 <p className="text-sm font-medium">Fail-fast review</p>
-                <p className="text-xs text-faint">
+                <p className="text-xs leading-[1.45] text-muted">
                   End a review round on its first changes-requested verdict and cancel the seats still reviewing
                 </p>
               </div>
             </div>
-            <div className="flex items-center gap-3">
+            <div className="flex items-start gap-3">
               <Switch
                 aria-label="Distinct seat models"
                 checked={draft.review.distinct_models ?? false}
@@ -588,14 +595,14 @@ function PolicyTab({
               />
               <div>
                 <p className="text-sm font-medium">Distinct seat models</p>
-                <p className="text-xs text-faint">
+                <p className="text-xs leading-[1.45] text-muted">
                   Refuse a review seat claim that repeats the name another seat of the round reports. Names are
                   self-reported and never verified. New tasks only.
                 </p>
               </div>
             </div>
           </div>
-          <div className="grid gap-3 sm:grid-cols-2">
+          <div className="flex flex-wrap gap-4 border-t border-border pt-4 [&_input]:w-28">
             <Field
               label="Review rounds before check-in"
               hint="Unsupervised implement-review rounds before the task pauses for an operator."
@@ -628,7 +635,7 @@ function PolicyTab({
           <CardTitle>Stage timeouts</CardTitle>
           <span className="text-xs text-faint">Each value is a positive duration such as 30m or 4h.</span>
         </CardHeader>
-        <CardContent className="grid gap-3 md:grid-cols-3">
+        <CardContent className="flex flex-wrap gap-4 [&_input]:w-28">
           <Field label="Plan">
             <Input
               aria-label="Plan stage timeout"

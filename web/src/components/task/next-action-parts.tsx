@@ -1,4 +1,4 @@
-import { relativeTime } from '../../lib/utils'
+import { absoluteTime, relativeTime } from '../../lib/utils'
 
 // The deadline a next action states, absolute and relative. A next action
 // without one says nothing rather than inventing a horizon.
@@ -6,7 +6,7 @@ export function NextActionDeadline({ deadline }: { deadline: string | null | und
   if (!deadline) return null
   return (
     <p className="text-xs text-muted" data-next-action-deadline>
-      Deadline <time dateTime={deadline}>{new Date(deadline).toLocaleString()}</time> ({relativeTime(deadline)})
+      Deadline <time dateTime={deadline}>{absoluteTime(deadline)}</time> ({relativeTime(deadline)})
     </p>
   )
 }

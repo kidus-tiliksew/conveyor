@@ -973,7 +973,10 @@ test('the merged task shape keeps the Timeline tab within two sheet heights at 1
   await expect.poll(() => sheet.evaluate((node) => node.getAnimations().length)).toBe(0)
 
   // The shape is what the measurement claims.
-  await expect(sheet.getByRole('region', { name: 'Attached context' }).getByRole('listitem')).toHaveCount(7)
+  // A long context list starts closed in the side view, with its count showing.
+  const attachedContext = sheet.getByRole('region', { name: 'Attached context' })
+  await expect(attachedContext.getByRole('button', { name: /Context/ })).toHaveAttribute('aria-expanded', 'false')
+  await expect(attachedContext.getByRole('heading', { name: /Context 7/ })).toBeVisible()
   await expect(sheet.getByRole('heading', { name: 'Attachments 9' })).toBeVisible()
   await expect(sheet.getByRole('heading', { name: /^Execution plan/ })).toBeVisible()
   await expect(sheet.locator('[data-review-verdict]')).toHaveText(['Changes requested', 'Approved'])

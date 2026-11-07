@@ -11,7 +11,6 @@ import {
 } from 'lucide-react'
 import type { GroupKey } from '../../lib/contracts'
 import type { ActivitySummary } from '../../lib/types'
-import { cn } from '../../lib/utils'
 import { useWorkspaceSelection } from '../app-shell'
 import { Badge } from '../ui/badge'
 import { TaskCard } from './task-card'
@@ -57,20 +56,18 @@ export function BoardColumn({
   return (
     <section
       aria-label={label}
-      className={cn(
-        'flex h-full min-w-72 flex-[3_1_18rem] flex-col rounded-lg border border-border',
-        idle ? 'bg-surface/50' : 'bg-surface',
-      )}
+      data-lane-populated={idle ? undefined : ''}
+      className="flex h-full min-w-[17rem] flex-[3_1_17rem] flex-col border-l border-border px-2.5 pt-2 first:border-l-0"
     >
-      <header className="flex shrink-0 items-center gap-2 border-b border-border px-3 py-2.5">
-        <Icon className="size-3.5 shrink-0 text-muted" />
-        <h2 className="truncate text-[11px] font-semibold uppercase tracking-[0.08em] text-muted">{label}</h2>
-        <span className="font-mono text-[11px] text-faint">{items.length}</span>
+      <header className="flex h-9 shrink-0 items-center gap-2 px-1">
+        <Icon className="size-3.5 shrink-0 text-faint" />
+        <h2 className="truncate text-[13px] font-semibold text-foreground">{label}</h2>
+        <span className="text-xs tabular-nums text-faint">{items.length}</span>
         {operator > 0 && (
           <Link
             to="/w/$workspaceId/inbox"
             params={{ workspaceId: workspace }}
-            className="ml-auto"
+            className="ml-auto flex"
             aria-label={`${operator} waiting on an operator — open the Inbox`}
             data-operator-count
           >
@@ -79,7 +76,7 @@ export function BoardColumn({
         )}
       </header>
       {!idle && (
-        <div className="min-h-0 flex-1 space-y-2 overflow-y-auto p-2">
+        <div className="min-h-0 flex-1 space-y-2 overflow-y-auto px-px pb-2 pt-px">
           {visible.map((item) => (
             <TaskCard key={item.task.id} item={item} selected={item.task.id === selectedId} />
           ))}

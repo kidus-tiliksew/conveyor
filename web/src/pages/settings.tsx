@@ -12,6 +12,7 @@ import { Card, CardContent, CardHeader, CardTitle } from '../components/ui/card'
 import { CopyButton } from '../components/ui/copy-button'
 import { fetchWorkspaces } from '../lib/api'
 import { mcpConnectionConfig, mcpEndpoint } from '../lib/mcp'
+import { PageHeader } from '../components/ui/page-header'
 
 export function SettingsPage() {
   const { workspace } = useWorkspaceSelection()
@@ -37,61 +38,65 @@ export function SettingsPage() {
   const endpoint = mcpEndpoint(window.location.origin)
   const mcpConfig = mcpConnectionConfig(endpoint).replace('<CONVEYOR_API_TOKEN>', '<paste-your-token>')
   return (
-    <div className="h-full overflow-y-auto">
-      <div className="mx-auto max-w-2xl px-4 py-6 sm:px-6 sm:py-8">
-        <h1 className="text-xl font-semibold tracking-tight">Settings</h1>
-        <p className="mt-1 text-sm text-muted">Your access and connection settings.</p>
+    <div className="flex h-full flex-col">
+      <PageHeader title="Settings" description="Your access and connection settings." />
+      <div className="min-h-0 flex-1 overflow-y-auto">
+        <div className="px-4 py-5 lg:px-6">
+          {welcome && (
+            <Card className="mb-4 border-primary/30 bg-primary-soft/30">
+              <CardHeader>
+                <CardTitle>Welcome to Conveyor</CardTitle>
+                <CheckCircle2 className="size-4 text-positive" />
+              </CardHeader>
+              <CardContent className="space-y-4 text-sm leading-6 text-muted">
+                <p>
+                  You’re signed in. Create your first access token below, copy it when it appears, then use these
+                  details to connect your command line or coding agent.
+                </p>
+                <div className="space-y-2">
+                  <p className="font-medium text-foreground">Command line</p>
+                  <div className="flex items-center gap-2 rounded-md border border-border bg-card p-2">
+                    <code className="min-w-0 flex-1 overflow-x-auto font-mono text-xs text-foreground">
+                      {cliCommand}
+                    </code>
+                    <CopyButton value={cliCommand} label="Copy command" />
+                  </div>
+                </div>
+                <div className="space-y-2">
+                  <p className="font-medium text-foreground">Coding-agent connection</p>
+                  <div className="flex items-start gap-2 rounded-md border border-border bg-card p-2">
+                    <pre className="min-w-0 flex-1 overflow-x-auto font-mono text-xs text-foreground">{mcpConfig}</pre>
+                    <CopyButton value={mcpConfig} label="Copy connection settings" />
+                  </div>
+                </div>
+              </CardContent>
+            </Card>
+          )}
 
-        {welcome && (
-          <Card className="mt-6 border-primary/30 bg-primary-soft/30">
+          <div className="grid items-stretch gap-4 xl:grid-cols-2">
+            <ProfileCard />
+            <PasswordCard />
+          </div>
+          <PersonalTokensCard />
+          <BoardPreferencesCard />
+          {(!returnWorkspaceKnown || returnedWorkspace === workspace) && <WorkspaceGitHubAppCard key={workspace} />}
+          <Card className="mt-4">
             <CardHeader>
-              <CardTitle>Welcome to Conveyor</CardTitle>
-              <CheckCircle2 className="size-4 text-positive" />
+              <CardTitle>MCP work-order server</CardTitle>
+              {welcome ? <Terminal className="size-4 text-primary" /> : <PlugZap className="size-4 text-primary" />}
             </CardHeader>
-            <CardContent className="space-y-4 text-sm leading-6 text-muted">
+            <CardContent className="space-y-2 text-sm leading-6 text-muted">
               <p>
-                You’re signed in. Create your first access token below, copy it when it appears, then use these details
-                to connect your command line or coding agent.
+                Connect each operator-owned coding-agent session to{' '}
+                <code className="font-mono text-xs text-foreground">{endpoint}</code> using the bearer token above.
+                Start a fresh session for review: Conveyor rejects self-review at claim time.
               </p>
-              <div className="space-y-2">
-                <p className="font-medium text-foreground">Command line</p>
-                <div className="flex items-center gap-2 rounded-md border border-border bg-card p-2">
-                  <code className="min-w-0 flex-1 overflow-x-auto font-mono text-xs text-foreground">{cliCommand}</code>
-                  <CopyButton value={cliCommand} label="Copy command" />
-                </div>
-              </div>
-              <div className="space-y-2">
-                <p className="font-medium text-foreground">Coding-agent connection</p>
-                <div className="flex items-start gap-2 rounded-md border border-border bg-card p-2">
-                  <pre className="min-w-0 flex-1 overflow-x-auto font-mono text-xs text-foreground">{mcpConfig}</pre>
-                  <CopyButton value={mcpConfig} label="Copy connection settings" />
-                </div>
-              </div>
+              <pre className="overflow-x-auto rounded-md bg-background p-3 font-mono text-xs text-foreground">
+                {mcpConnectionConfig(endpoint)}
+              </pre>
             </CardContent>
           </Card>
-        )}
-
-        <ProfileCard />
-        <PasswordCard />
-        <PersonalTokensCard />
-        <BoardPreferencesCard />
-        {(!returnWorkspaceKnown || returnedWorkspace === workspace) && <WorkspaceGitHubAppCard key={workspace} />}
-        <Card className="mt-4">
-          <CardHeader>
-            <CardTitle>MCP work-order server</CardTitle>
-            {welcome ? <Terminal className="size-4 text-primary" /> : <PlugZap className="size-4 text-primary" />}
-          </CardHeader>
-          <CardContent className="space-y-2 text-sm leading-6 text-muted">
-            <p>
-              Connect each operator-owned coding-agent session to{' '}
-              <code className="font-mono text-xs text-foreground">{endpoint}</code> using the bearer token above. Start
-              a fresh session for review: Conveyor rejects self-review at claim time.
-            </p>
-            <pre className="overflow-x-auto rounded-md bg-background p-3 font-mono text-xs text-foreground">
-              {mcpConnectionConfig(endpoint)}
-            </pre>
-          </CardContent>
-        </Card>
+        </div>
       </div>
     </div>
   )

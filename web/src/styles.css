@@ -1,51 +1,74 @@
 @import "tailwindcss";
 
-/* Conveyor design tokens: a light, product-grade surface.
-   Royal blue is the working accent on cool neutrals; amber is reserved
-   exclusively for "Needs attention" — the single alarm color on the page. */
+/* Conveyor design tokens: calm, layered neutrals that are easy to read for hours.
+   Indigo is the working accent; amber is reserved exclusively for "Needs
+   attention", the single alarm color on the page. Surfaces step up from the
+   rail, through the content canvas, to cards, so depth comes from tone and
+   soft shadow rather than heavy outlines. */
 @theme {
-  --color-background: #ffffff;
-  --color-surface: #f7f8fa;
+  --color-background: #fbfbfc;
+  --color-surface: #f4f5f7;
   --color-card: #ffffff;
-  --color-raised: #eef0f3;
-  --color-border: #e6e8ec;
-  --color-edge: #d4d7dd;
-  --color-foreground: #16181d;
-  --color-muted: #5c616b;
-  --color-faint: #9aa0aa;
-  --color-markdown: #363a42;
-  --color-selection: #dbe3fe;
+  --color-raised: #eceef1;
+  --color-border: #e7e8ec;
+  --color-edge: #d5d8de;
+  --color-foreground: #1b1e25;
+  --color-muted: #5d636e;
+  --color-faint: #6f7583;
+  --color-markdown: #33373f;
+  --color-selection: #dde1fb;
+  --color-scrim: rgb(24 27 36 / 0.14);
 
-  --color-primary: #3355f5;
+  --color-primary: #4655e0;
   --color-primary-foreground: #ffffff;
-  --color-primary-soft: #eef1fe;
+  --color-primary-soft: #eef0fd;
+  --color-primary-fill: #4655e0;
+  --color-segment: #ffffff;
+  --switch-knob-off: #ffffff;
 
-  --color-attention: #b45309;
-  --color-attention-soft: #fdf1e2;
-  --color-attention-dot: #f59e0b;
+  --color-attention: #a8540a;
+  --color-attention-soft: #fdf3e4;
+  --color-attention-dot: #f09a13;
 
-  --color-positive: #1a7f37;
-  --color-positive-soft: #e9f7ee;
-  --color-failure: #b3261e;
-  --color-failure-soft: #fdeeed;
+  --color-positive: #18794a;
+  --color-positive-soft: #e7f6ee;
+  --color-failure: #b4322c;
+  --color-failure-soft: #fcefee;
   /* Kind tones for the inbox (feature-operator-next-action NA-6): a question
      and a document proposal. Neither is an alarm; amber stays the only one. */
-  --color-info: #0369a1;
-  --color-info-soft: #e6f3fb;
-  --color-document: #6d28d9;
-  --color-document-soft: #f1ebfd;
+  --color-info: #0f6c9b;
+  --color-info-soft: #e8f4fa;
+  --color-document: #6a3fc9;
+  --color-document-soft: #f2eefc;
 
-  --color-rail: #f7f8fa;
-  --color-rail-raised: #e9ebf0;
-  --color-workspace-tile: #e2e5ea;
-  --color-workspace-tile-hover: #d6dae1;
-  --color-workspace-tile-foreground: #4d535d;
+  --color-rail: #f0f1f4;
+  --color-rail-raised: #e4e6ea;
+  --color-workspace-tile: #e5e7eb;
+  --color-workspace-tile-hover: #d6d9df;
+  --color-workspace-tile-foreground: #4f555f;
   --color-workspace-active: #ffffff;
-  --color-workspace-active-foreground: #16181d;
-  --color-workspace-active-ring: #aeb4bd;
+  --color-workspace-active-foreground: #1b1e25;
+  --color-workspace-active-ring: #4655e0;
 
-  --font-sans: "IBM Plex Sans", ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
-  --font-mono: ui-monospace, "SF Mono", "JetBrains Mono", Menlo, Consolas, monospace;
+  --radius-sm: 0.3125rem;
+  --radius-md: 0.4375rem;
+  --radius-lg: 0.625rem;
+  --radius-xl: 0.75rem;
+
+  --shadow-xs: 0 1px 2px rgb(22 26 38 / 0.05);
+  --shadow-sm: 0 1px 2px rgb(22 26 38 / 0.05), 0 1px 3px rgb(22 26 38 / 0.04);
+  --shadow-md: 0 2px 4px rgb(22 26 38 / 0.05), 0 6px 16px rgb(22 26 38 / 0.07);
+  --shadow-lg: 0 4px 8px rgb(22 26 38 / 0.05), 0 14px 32px rgb(22 26 38 / 0.1);
+  --shadow-xl: 0 8px 16px rgb(22 26 38 / 0.06), 0 24px 56px rgb(22 26 38 / 0.14);
+
+  --text-sm: 0.84375rem;
+  --text-sm--line-height: 1.5;
+  --text-base: 0.9375rem;
+  --text-base--line-height: 1.5;
+  --tracking-tight: -0.014em;
+
+  --font-sans: "Inter Variable", ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+  --font-mono: "JetBrains Mono Variable", ui-monospace, "SF Mono", Menlo, Consolas, monospace;
 
   --animate-sheet-in: sheet-in 200ms cubic-bezier(0.32, 0.72, 0, 1);
   --animate-sheet-in-left: sheet-in-left 200ms cubic-bezier(0.32, 0.72, 0, 1);
@@ -79,43 +102,53 @@
 
 :root[data-theme="dark"] {
   color-scheme: dark;
-  --color-background: #0f1115;
-  --color-surface: #15181e;
-  --color-card: #191d24;
-  --color-raised: #222731;
-  --color-border: #2a303a;
-  --color-edge: #3a424f;
-  --color-foreground: #f2f4f7;
-  --color-muted: #aeb5c0;
-  --color-faint: #7f8998;
-  --color-markdown: #d7dbe2;
-  --color-selection: #34498f;
+  --color-background: #121419;
+  --color-surface: #181b21;
+  --color-card: #1b1e25;
+  --color-raised: #24282f;
+  --color-border: #292d35;
+  --color-edge: #3a3f49;
+  --color-foreground: #e9ebef;
+  --color-muted: #abb1bc;
+  --color-faint: #8d94a2;
+  --color-markdown: #cfd3da;
+  --color-selection: #333d7a;
+  --color-scrim: rgb(4 5 8 / 0.6);
 
-  --color-primary: #8aa2ff;
-  --color-primary-foreground: #0b1023;
-  --color-primary-soft: #202b58;
+  --color-primary: #8592f6;
+  --color-primary-foreground: #ffffff;
+  --color-primary-soft: #232848;
+  --color-primary-fill: #5b66e8;
+  --color-segment: #363a43;
+  --switch-knob-off: #e3e5ea;
 
-  --color-attention: #f6b968;
-  --color-attention-soft: #3c2a16;
-  --color-attention-dot: #fbbf24;
+  --color-attention: #efb464;
+  --color-attention-soft: #33271a;
+  --color-attention-dot: #f2ad3f;
 
-  --color-positive: #67cf8a;
-  --color-positive-soft: #163524;
-  --color-failure: #ff8a83;
-  --color-failure-soft: #3d1f20;
-  --color-info: #7dd3fc;
-  --color-info-soft: #102a3a;
-  --color-document: #c4b5fd;
-  --color-document-soft: #2a2045;
+  --color-positive: #6cc896;
+  --color-positive-soft: #18302a;
+  --color-failure: #f0928c;
+  --color-failure-soft: #3a2224;
+  --color-info: #7cc8ee;
+  --color-info-soft: #16293a;
+  --color-document: #bcaef7;
+  --color-document-soft: #2a2444;
 
-  --color-rail: #12151a;
-  --color-rail-raised: #252b34;
-  --color-workspace-tile: #343a43;
-  --color-workspace-tile-hover: #444b56;
-  --color-workspace-tile-foreground: #d7dbe2;
-  --color-workspace-active: #f2f4f7;
-  --color-workspace-active-foreground: #16181d;
-  --color-workspace-active-ring: #bbc0c7;
+  --color-rail: #0d0f12;
+  --color-rail-raised: #20242a;
+  --color-workspace-tile: #1f2228;
+  --color-workspace-tile-hover: #31363e;
+  --color-workspace-tile-foreground: #b9bec8;
+  --color-workspace-active: #363a43;
+  --color-workspace-active-foreground: #f2f3f6;
+  --color-workspace-active-ring: #8592f6;
+
+  --shadow-xs: 0 1px 2px rgb(0 0 0 / 0.28);
+  --shadow-sm: 0 1px 2px rgb(0 0 0 / 0.3), 0 1px 3px rgb(0 0 0 / 0.2);
+  --shadow-md: 0 2px 4px rgb(0 0 0 / 0.3), 0 6px 16px rgb(0 0 0 / 0.32);
+  --shadow-lg: 0 4px 8px rgb(0 0 0 / 0.3), 0 14px 32px rgb(0 0 0 / 0.42);
+  --shadow-xl: 0 8px 16px rgb(0 0 0 / 0.34), 0 24px 56px rgb(0 0 0 / 0.5);
 }
 
 body {
@@ -124,6 +157,7 @@ body {
   background: var(--color-background);
   color: var(--color-foreground);
   font-family: var(--font-sans);
+  font-feature-settings: "cv11", "ss03";
 }
 
 /* Form controls inherit the page font family. The rule sits in the base layer
@@ -136,10 +170,52 @@ body {
 
 * { scrollbar-width: thin; scrollbar-color: var(--color-edge) transparent; }
 
+/* The fill is deeper than the accent used for text, so repeated buttons stay
+   calm in dark mode while links and icons keep their contrast. */
+.bg-primary:not(:disabled) { background-color: var(--color-primary-fill); }
+.hover\:bg-primary\/90:not(:disabled):hover { background-color: color-mix(in srgb, var(--color-primary-fill) 88%, var(--color-foreground)); }
+
+/* Every disclosure uses the same chevron, drawn in the summary's own text colour. */
+summary:not(.list-none) { list-style: none; }
+summary:not(.list-none)::-webkit-details-marker { display: none; }
+summary:not(.list-none)::before {
+  content: "";
+  display: inline-block;
+  width: 0.4em;
+  height: 0.4em;
+  margin: 0 0.55em 0.1em 0.1em;
+  border-right: 1.5px solid currentColor;
+  border-bottom: 1.5px solid currentColor;
+  transform: rotate(-45deg);
+  transition: transform 120ms ease;
+}
+details[open] > summary:not(.list-none)::before { transform: rotate(45deg); }
+
+/* The map's own controls follow the app's surfaces. */
+.react-flow__controls { border-radius: 8px; overflow: hidden; border: 1px solid var(--color-border); box-shadow: var(--shadow-xs); }
+.react-flow__attribution { background: transparent !important; font-size: 10px; opacity: 0.6; }
+
+/* Numbers line up in columns everywhere without switching typeface. */
+time, td, dd { font-variant-numeric: tabular-nums; }
+
 /* Rendered spec markdown. The legacy format's machine-owned fenced blocks are hidden
    here and rendered structurally by the acceptance checklist instead. */
-.markdown { font-size: 0.875rem; line-height: 1.7; color: var(--color-markdown); }
+.markdown { font-size: 0.875rem; line-height: 1.68; color: var(--color-markdown); }
 .markdown > :first-child { margin-top: 0; }
+.markdown > :last-child { margin-bottom: 0; }
+/* One rule closes each timeline entry; the rail and this rule are its only lines.
+   The last entry, and one directly above a bordered card, need no rule. */
+.timeline-entry { padding-bottom: 1rem; border-bottom: 1px solid var(--color-border); }
+li:last-child > .timeline-entry,
+li:has(+ li > [data-timeline-card]) > .timeline-entry { padding-bottom: 0; border-bottom: 0; }
+/* Plain-text reports read like the Markdown ones beside them. */
+.timeline-prose { font-size: 0.875rem; line-height: 1.68; color: var(--color-markdown); }
+/* A long document names many identifiers; filled chips would turn its prose
+   into a row of pills. The font alone marks them there. */
+.document-body .markdown :not(pre, td, th) > code { background: none; border: none; padding: 0; }
+.document-body .markdown { font-size: 0.9375rem; line-height: 1.62; }
+.document-body .markdown p { margin: 0.9em 0; }
+.document-body .markdown > :is(h1, h2):first-child { font-size: 0.9375rem; letter-spacing: -0.008em; margin-bottom: 0.4em; }
 /* Panel-only: long unbreakable tokens (branch names, PR URLs) wrap within the
    narrow side task panel instead of forcing phantom horizontal scroll, without
    changing the full-page task view's markdown (task 260720-710669, AC-2/AC-3). */
@@ -150,9 +226,9 @@ body {
   letter-spacing: -0.01em;
   margin: 1.5em 0 0.5em;
 }
-.markdown h1 { font-size: 1.125rem; }
-.markdown h2 { font-size: 1rem; }
-.markdown h3, .markdown h4 { font-size: 0.875rem; }
+.markdown h1 { font-size: 1.1875rem; letter-spacing: -0.016em; }
+.markdown h2 { font-size: 1.0313rem; letter-spacing: -0.012em; }
+.markdown h3, .markdown h4 { font-size: 0.9063rem; }
 .markdown p, .markdown ul, .markdown ol { margin: 0.6em 0; }
 .markdown ul, .markdown ol { padding-left: 1.4em; }
 .markdown ul { list-style: disc; }
@@ -162,16 +238,18 @@ body {
 .markdown a:hover { text-decoration: underline; }
 .markdown code {
   font-family: var(--font-mono);
-  font-size: 0.8125rem;
-  background: var(--color-raised);
-  border: 1px solid var(--color-border);
+  font-size: 0.85em;
+  background: color-mix(in srgb, var(--color-raised) 70%, transparent);
   border-radius: 4px;
-  padding: 0.1em 0.35em;
+  padding: 0.08em 0.3em;
+  overflow-wrap: break-word;
+  -webkit-box-decoration-break: clone;
+  box-decoration-break: clone;
 }
 .markdown pre {
   background: var(--color-surface);
   border: 1px solid var(--color-border);
-  border-radius: 8px;
+  border-radius: 10px;
   padding: 0.875rem 1rem;
   overflow-x: auto;
   margin: 0.75em 0;
@@ -195,13 +273,20 @@ body {
   padding-left: 1em;
   color: var(--color-muted);
 }
-.markdown table { border-collapse: collapse; margin: 0.75em 0; font-size: 0.8125rem; }
-.markdown th, .markdown td { border: 1px solid var(--color-border); padding: 0.35em 0.75em; text-align: left; }
+.markdown-table { width: fit-content; max-width: 100%; margin: 0.9em 0; overflow-x: auto; border: 1px solid var(--color-border); border-radius: 10px; }
+.document-body .markdown-table, .document-body .markdown table { width: 100%; }
+.markdown table { border-collapse: separate; border-spacing: 0; font-size: 0.8125rem; }
+.markdown th, .markdown td { border-bottom: 1px solid var(--color-border); padding: 0.45em 0.8em; text-align: left; vertical-align: top; }
+.markdown tr:last-child td { border-bottom: none; }
 .markdown th { color: var(--color-foreground); font-weight: 600; background: var(--color-surface); }
 .markdown hr { border: none; border-top: 1px solid var(--color-border); margin: 1.25em 0; }
 
+/* The fade ends on whichever surface the clipped text sits on. */
+:root { --fade-surface: var(--color-background); }
+.bg-card { --fade-surface: var(--color-card); }
+.bg-surface { --fade-surface: var(--color-surface); }
 .spec-overflow-shadow {
-  background: linear-gradient(to bottom, transparent, var(--color-card));
+  background: linear-gradient(to bottom, transparent, var(--fade-surface));
 }
 
 /* Task descriptions: agent-authored bodies often open with their own headings;
@@ -211,3 +296,11 @@ body {
 .markdown.markdown-demoted h3,
 .markdown.markdown-demoted h4 { font-size: 0.875rem; }
 
+/* A phone's canvas is too small to give a corner to the minimap. */
+@media (max-width: 39.99rem) {
+  .react-flow__minimap { display: none; }
+}
+/* The map's corner controls sit on the same right edge as the toolbar above. */
+@media (min-width: 64rem) {
+  .react-flow__panel.right { margin-right: 24px; }
+}

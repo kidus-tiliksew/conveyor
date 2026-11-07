@@ -83,30 +83,30 @@ export function TaskCard({ item, selected }: { item: ActivitySummary; selected: 
       params={{ workspaceId: workspace, taskId: item.task.id }}
       aria-describedby={action?.summary ? summaryId : undefined}
       className={cn(
-        'group/card relative block rounded-lg border bg-card p-3 transition-colors',
-        selected ? 'border-primary bg-primary-soft/40' : 'border-border hover:border-edge',
+        'group/card relative block rounded-lg border bg-card px-3 py-2.5 shadow-xs transition-[border-color,box-shadow] duration-150',
+        selected ? 'border-primary bg-primary-soft/40' : 'border-border hover:border-edge hover:shadow-sm',
       )}
       data-operator={operator || undefined}
     >
       <div className="flex items-start gap-2">
-        <p className="line-clamp-2 min-w-0 flex-1 text-sm font-medium leading-snug">{item.task.title}</p>
+        <p className="line-clamp-2 min-w-0 flex-1 text-[13px] font-medium leading-[1.4]">{item.task.title}</p>
         {blockingIDs.length > 0 && <DependencyMark titles={blockingTitles} unsatisfiable={unsatisfiable} />}
       </div>
       {showStageProgress && <StageStripe taskId={item.task.id} />}
-      <div className="mt-2 flex min-w-0 items-center gap-2 text-xs">
+      <div className="mt-2 flex min-w-0 items-center gap-1.5 text-xs">
         {action && (
           <>
             <span
               aria-hidden
               data-status-mark={tone}
-              className={cn('size-2 shrink-0 rounded-full', statusMarks[tone])}
+              className={cn('size-1.5 shrink-0 rounded-full', statusMarks[tone])}
             />
             <span data-next-action-label className={cn('min-w-0 truncate', statusLabels[tone])}>
               {action.label}
             </span>
           </>
         )}
-        <span className="ml-auto shrink-0 whitespace-nowrap font-mono text-[11px] text-faint">
+        <span className="ml-auto shrink-0 whitespace-nowrap text-[11px] tabular-nums text-faint">
           {relativeTime(lastAt)}
         </span>
         {/* The same chip the Tasks rows carry, so a colleague's assignment reads

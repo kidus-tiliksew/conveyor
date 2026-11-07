@@ -4,7 +4,7 @@ import { cn } from '../../lib/utils'
 import { useWorkspaceSelection } from '../app-shell'
 import { pullRequestLabel } from './decision-card'
 import { Kbd } from './inbox-keyboard'
-import { compactAge, DueChip, inboxKind, itemKind, KindIcon, toneBar, UnblocksMark, useMinuteClock } from './inbox-kind'
+import { compactAge, DueChip, itemKind, KindIcon, UnblocksMark, useMinuteClock } from './inbox-kind'
 import type { InboxSearch } from './inbox-search'
 import { inboxItemKey } from './inbox-selection'
 import { knownTier, originWord, proposalAge, tierLabels } from './proposal-card'
@@ -68,21 +68,15 @@ function InboxRow({
   const now = useMinuteClock()
   const row = describeRow(item, now)
   const kind = itemKind(item)
-  const { tone } = inboxKind(kind)
   const pullRequest = item.kind === 'document_proposal' ? undefined : item.pull_request
   return (
     <div
       data-inbox-row-item={rowKey}
       className={cn(
-        'relative min-w-0 overflow-hidden rounded-lg border px-3 py-2.5 transition-colors',
-        selected ? 'border-edge bg-card shadow-sm' : 'border-transparent hover:bg-card/60',
+        'relative min-w-0 overflow-hidden rounded-lg px-3 py-2.5 transition-colors',
+        selected ? 'bg-raised/70' : 'hover:bg-surface',
       )}
     >
-      <span
-        aria-hidden
-        data-row-accent={selected ? tone : undefined}
-        className={cn('absolute inset-y-2 left-0 w-[3px] rounded-r', selected ? toneBar[tone] : 'bg-transparent')}
-      />
       <Link
         to="/w/$workspaceId/inbox"
         params={{ workspaceId: workspace }}

@@ -1,4 +1,3 @@
-import { Columns3 } from 'lucide-react'
 import { setShowStageProgress, useShowStageProgress } from '../../lib/board-preferences'
 import { Card, CardContent, CardHeader, CardTitle } from '../ui/card'
 import { Switch } from '../ui/switch'
@@ -12,7 +11,6 @@ export function BoardPreferencesCard() {
     <Card className="mt-4">
       <CardHeader>
         <CardTitle>Board</CardTitle>
-        <Columns3 className="size-4 text-primary" />
       </CardHeader>
       <CardContent>
         <div className="flex items-start justify-between gap-4 text-sm">

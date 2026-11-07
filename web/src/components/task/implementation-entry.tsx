@@ -57,44 +57,40 @@ export function ImplementationEntry({
   const { delivery } = entry
   return (
     <li className="relative pl-7">
-      {dotSlot(implementationDot(entry))}
+      {dotSlot(cn(implementationDot(entry), warning && 'top-3'))}
       <article
         aria-label={entry.attempt ? `Implementation attempt ${entry.attempt}` : 'Implementation'}
-        className={cn('rounded-lg border border-border bg-card', warning && 'border-attention/40 bg-attention-soft')}
+        className={warning ? 'rounded-lg border border-attention/40 bg-attention-soft' : 'timeline-entry'}
         data-implementation-entry
       >
-        <header className="flex flex-wrap items-center gap-x-2.5 gap-y-1 px-4 pt-3" data-job-header>
-          <span className="text-[13px] font-semibold text-foreground">Implementation</span>
+        <header className={cn('flex flex-wrap items-center gap-x-2.5 gap-y-1 px-4', warning && 'pt-3')} data-job-header>
+          <span className="text-sm font-semibold text-foreground">Implementation</span>
           <Badge variant={badge.variant}>{badge.label}</Badge>
           {entry.attempt ? <span className="text-xs text-muted">Attempt {entry.attempt}</span> : null}
           {meta}
+          {delivery && (
+            <span className="flex min-w-0 items-center gap-x-2 text-xs text-muted" data-implementation-delivery>
+              <a
+                href={delivery.url}
+                target="_blank"
+                rel="noreferrer"
+                className="inline-flex items-center gap-1 text-primary hover:underline"
+              >
+                <GitPullRequest className="size-3.5" aria-hidden />#{delivery.number}
+              </a>
+              <span className="font-mono text-[11px] text-muted" title={delivery.headSha}>
+                {delivery.headSha.slice(0, 7)}
+              </span>
+            </span>
+          )}
           <time className="ml-auto text-[11px] text-faint">{absoluteTime(entry.at)}</time>
         </header>
-        <MarkdownProse
-          className="px-4 pt-1.5 pb-3 text-sm leading-6 text-foreground/85"
-          components={{ p: ({ children }) => <p className="whitespace-pre-line">{children}</p> }}
-        >
-          {entry.summary}
-        </MarkdownProse>
-        {summaryAudit && <div className="px-4 pb-3 text-xs text-muted">{summaryAudit}</div>}
-        {delivery && (
-          <footer
-            className="flex min-w-0 flex-wrap items-center gap-x-3 gap-y-1 border-t border-border px-4 py-2 text-xs text-muted"
-            data-implementation-delivery
-          >
-            <a
-              href={delivery.url}
-              target="_blank"
-              rel="noreferrer"
-              className="inline-flex items-center gap-1 text-primary hover:underline"
-            >
-              <GitPullRequest className="size-3.5" aria-hidden />#{delivery.number}
-            </a>
-            <span className="font-mono text-[11px] text-muted" title={delivery.headSha}>
-              {delivery.headSha.slice(0, 7)}
-            </span>
-          </footer>
-        )}
+        <div className={cn('px-4 pt-1', warning && 'pb-3')}>
+          <MarkdownProse components={{ p: ({ children }) => <p className="whitespace-pre-line">{children}</p> }}>
+            {entry.summary}
+          </MarkdownProse>
+        </div>
+        {summaryAudit && <div className="px-4 pt-2 text-xs text-muted">{summaryAudit}</div>}
       </article>
     </li>
   )

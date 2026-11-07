@@ -175,7 +175,7 @@ export function MarkdownEditor({
   return (
     <div className="overflow-hidden rounded-md border border-edge bg-input focus-within:border-primary/50 focus-within:ring-2 focus-within:ring-primary/10">
       <div className="flex min-h-10 flex-wrap items-center justify-between gap-1 border-b border-border bg-surface px-2">
-        <div role="tablist" aria-label="Markdown editor mode" className="flex self-stretch">
+        <div role="tablist" aria-label="Markdown editor mode" className="flex min-h-10 self-stretch">
           <button
             id={writeTabID}
             role="tab"
@@ -237,7 +237,7 @@ export function MarkdownEditor({
             onKeyDown={handleKeyDown}
             placeholder={placeholder}
             style={{ fontFamily: 'var(--font-mono)' }}
-            className="block min-h-56 w-full resize-y bg-transparent px-3 py-2 text-sm leading-6 text-foreground outline-none placeholder:text-faint"
+            className="block min-h-56 w-full resize-y bg-transparent px-3 py-2 text-sm leading-6 text-foreground outline-none placeholder:font-sans placeholder:text-faint"
           />
         </div>
       ) : (

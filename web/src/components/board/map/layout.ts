@@ -5,7 +5,7 @@ import workerUrl from 'elkjs/lib/elk-worker.min.js?url'
 import { adoptLayoutWorker } from './layout-worker'
 
 export const CARD_WIDTH = 264
-export const CARD_HEIGHT = 80
+export const CARD_HEIGHT = 88
 export const HUB_WIDTH = 300
 export const HUB_HEIGHT = 132
 
@@ -104,7 +104,7 @@ export interface ClusterInput {
   edges: LayoutEdge[]
 }
 
-export const CLUSTER_HEADER = 72
+export const CLUSTER_HEADER = 56
 // The padding below a requirement's node: the insight toolbar hangs 10px
 // below the node and is about 40px tall (feature-requirement-insights RI-7).
 const HUB_FOOT = 76
@@ -148,7 +148,10 @@ async function placeClusters(clusters: ClusterInput[]) {
     children: clusters.map((cluster) => ({
       id: `frame:${cluster.id}`,
       layoutOptions: {
-        'elk.algorithm': 'layered',
+        // Tasks with no edges and no hub have no hierarchy to show, so they pack
+        // into rows instead of one long line that forces the whole map to shrink.
+        'elk.algorithm': cluster.edges.length === 0 && !cluster.hubId ? 'rectpacking' : 'layered',
+        'elk.aspectRatio': '1.7',
         'elk.direction': 'DOWN',
         // A requirement's group keeps room below its node for the insight
         // toolbar, so the frame border passes below the pill.

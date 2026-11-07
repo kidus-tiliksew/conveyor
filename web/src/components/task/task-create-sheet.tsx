@@ -200,12 +200,28 @@ export function TaskCreateSheet() {
           groups={contextGroups}
         />
 
-        <details
-          open={advancedOpen}
-          onToggle={(event) => setAdvancedOpen(event.currentTarget.open)}
-          className="rounded-md border border-border p-3"
-        >
-          <summary className="cursor-pointer text-sm font-medium">Advanced options</summary>
+        {/* A task carries no hold or execution reservation (DEC-74(3)), and a
+            filed task waits in the queue for an agent session with no
+            availability warning (req-task-lifecycle-and-queue AC-9.4). */}
+
+        <div className="grid gap-4 md:grid-cols-2">
+          <Field label="Plan approval gate">
+            <Select value={specGate} onChange={(event) => setSpecGate(event.target.value as typeof specGate)}>
+              <option value="default">Workspace default</option>
+              <option value="on">Human approval on</option>
+              <option value="off">Auto-approve off</option>
+            </Select>
+          </Field>
+          <Field label="Merge approval gate">
+            <Select value={mergeGate} onChange={(event) => setMergeGate(event.target.value as typeof mergeGate)}>
+              <option value="default">Workspace default</option>
+              <option value="on">Human approval on</option>
+              <option value="off">Auto-merge on green</option>
+            </Select>
+          </Field>
+        </div>
+        <details open={advancedOpen} onToggle={(event) => setAdvancedOpen(event.currentTarget.open)}>
+          <summary className="cursor-pointer text-[13px] font-medium text-muted">Advanced options</summary>
           <div className="mt-3">
             <Field label="Depends on" hint="Optional — this task stays queued until every selected task is merged.">
               <Input
@@ -266,27 +282,6 @@ export function TaskCreateSheet() {
             </Field>
           </div>
         </details>
-
-        {/* A task carries no hold or execution reservation (DEC-74(3)), and a
-            filed task waits in the queue for an agent session with no
-            availability warning (req-task-lifecycle-and-queue AC-9.4). */}
-
-        <div className="grid gap-4 md:grid-cols-2">
-          <Field label="Plan approval gate">
-            <Select value={specGate} onChange={(event) => setSpecGate(event.target.value as typeof specGate)}>
-              <option value="default">Workspace default</option>
-              <option value="on">Human approval on</option>
-              <option value="off">Auto-approve off</option>
-            </Select>
-          </Field>
-          <Field label="Merge approval gate">
-            <Select value={mergeGate} onChange={(event) => setMergeGate(event.target.value as typeof mergeGate)}>
-              <option value="default">Workspace default</option>
-              <option value="on">Human approval on</option>
-              <option value="off">Auto-merge on green</option>
-            </Select>
-          </Field>
-        </div>
 
         <Field
           label="Attachments"
@@ -349,7 +344,7 @@ export function TaskCreateSheet() {
 function Field({ label, hint, children }: { label: string; hint?: string; children: React.ReactNode }) {
   return (
     <div>
-      <span className="mb-1 block text-[11px] font-medium uppercase tracking-wider text-muted">{label}</span>
+      <span className="mb-1 block text-xs font-medium text-muted">{label}</span>
       {children}
       {hint && <span className="mt-1 block text-xs text-faint">{hint}</span>}
     </div>

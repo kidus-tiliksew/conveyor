@@ -155,19 +155,13 @@ export function BurnChart({ progress, mode }: { progress: RequirementInsightProg
               y2={y(tick)}
               stroke={tick === 0 ? 'var(--color-edge)' : 'var(--color-border)'}
             />
-            <text x={ml - 6} y={y(tick) + 3} textAnchor="end" className="fill-faint text-[9.5px]">
+            <text x={ml - 6} y={y(tick) + 3} textAnchor="end" className="fill-faint text-[10px]">
               {tick}
             </text>
           </g>
         ))}
         {labels.map((label) => (
-          <text
-            key={label.text}
-            x={x(label.at)}
-            y={H - 6}
-            textAnchor={label.anchor}
-            className="fill-faint text-[9.5px]"
-          >
+          <text key={label.text} x={x(label.at)} y={H - 6} textAnchor={label.anchor} className="fill-faint text-[10px]">
             {label.text}
           </text>
         ))}
@@ -388,10 +382,10 @@ export function WeeklyBars({ progress }: { progress: RequirementInsightProgress 
                 fill="var(--color-positive)"
               />
             )}
-            <text x={cx} y={top - 4} textAnchor="middle" className="fill-muted text-[9.5px] tabular-nums">
+            <text x={cx} y={top - 4} textAnchor="middle" className="fill-muted text-[10px] tabular-nums">
               {week.delivered}
             </text>
-            <text x={cx} y={base + 12} textAnchor="middle" className="fill-faint text-[9.5px]">
+            <text x={cx} y={base + 12} textAnchor="middle" className="fill-faint text-[10px]">
               {formatDay(week.week_start)}
             </text>
             {week.in_progress && (

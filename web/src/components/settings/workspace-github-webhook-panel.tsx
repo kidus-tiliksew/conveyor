@@ -1,3 +1,4 @@
+import { dateTimeLabel } from '../../lib/utils'
 import { useMutation } from '@tanstack/react-query'
 import { ExternalLink } from 'lucide-react'
 import { useId, useState } from 'react'
@@ -20,7 +21,7 @@ const eventLabels: Record<string, string> = {
 }
 
 function LocalTime({ value }: { value: string }) {
-  return <time dateTime={value}>{new Date(value).toLocaleString()}</time>
+  return <time dateTime={value}>{dateTimeLabel(value)}</time>
 }
 
 /**
@@ -83,7 +84,14 @@ export function WorkspaceGitHubWebhookPanel({
             Receiver URL
           </label>
           <div className="flex items-center gap-2">
-            <Input id={receiverID} readOnly value={webhook.receiver_url} autoComplete="off" spellCheck={false} />
+            <Input
+              id={receiverID}
+              readOnly
+              value={webhook.receiver_url}
+              autoComplete="off"
+              spellCheck={false}
+              className="max-w-xl"
+            />
             <CopyButton value={webhook.receiver_url} label="Copy receiver URL" />
           </div>
         </div>

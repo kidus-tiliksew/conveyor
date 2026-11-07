@@ -83,7 +83,7 @@ export function MCPSetupDialog({ onClose }: { onClose: () => void }) {
                   aria-controls="mcp-client-panel"
                   className={cn(
                     'flex h-9 items-center justify-center gap-2 rounded-md px-3 text-xs font-medium text-muted transition-colors focus-visible:outline-2 focus-visible:outline-primary',
-                    client.id === selected && 'bg-background text-foreground shadow-sm',
+                    client.id === selected && 'bg-segment text-foreground shadow-xs',
                   )}
                   onClick={() => setSelected(client.id)}
                 >
@@ -113,7 +113,7 @@ export function MCPSetupDialog({ onClose }: { onClose: () => void }) {
           </ol>
 
           <div className="mt-5 flex items-center justify-between gap-3">
-            <p className="text-xs font-semibold uppercase tracking-wide text-faint">{setup.snippetLabel}</p>
+            <p className="text-xs font-semibold text-muted">{setup.snippetLabel}</p>
             <CopyButton value={setup.snippet} label={`Copy ${setup.label} setup`} showLabel />
           </div>
           <pre className="mt-2 max-h-56 overflow-auto rounded-lg bg-surface p-4 font-mono text-xs leading-5 text-foreground">

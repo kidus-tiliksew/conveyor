@@ -3,9 +3,10 @@ import type { ActivityItem } from '../../lib/types'
 import { cn } from '../../lib/utils'
 import { useWorkspaceSelection } from '../app-shell'
 import { NextActionCard } from './next-action-card'
-import { isReviewable } from './review-panel'
+import { RedispatchCard } from './redispatch-card'
+import { gateToneClasses, isReviewable, ReviewPanel } from './review-panel'
 import { TaskFlowChart } from './task-flow'
-import { Timeline } from './timeline'
+import { Timeline, useLiveActions } from './timeline'
 
 export type TaskActivityView = 'timeline' | 'flow'
 
@@ -48,9 +49,10 @@ const views: { id: TaskActivityView; label: string }[] = [
 ]
 
 // The activity area of task detail on the Board sheet and the full task route
-// (component-web-task-surfaces, Activity tabs and the task flow view): the one
-// next-action card, then Timeline and Flow tabs with only the active panel
-// mounted. The Timeline tab is the default and reads no flow; the Flow tab's
+// (component-web-task-surfaces, Activity tabs and the task flow view): where
+// the task stands and what can be done now, the next-action card joined to the
+// human gate and followed by any recovery action, then Timeline and Flow tabs
+// with only the active panel mounted. The Timeline tab is the default and reads no flow; the Flow tab's
 // chart is the only task-detail reader of /flow (AC-7.4).
 export function TaskActivityTabs({ item, routeVariant }: { item: ActivityItem; routeVariant: 'sheet' | 'full' }) {
   const { workspace } = useWorkspaceSelection()
@@ -74,18 +76,53 @@ export function TaskActivityTabs({ item, routeVariant }: { item: ActivityItem; r
     event.preventDefault()
     select(target.id, true)
   }
-  // While Flow is shown the timeline's gate card is not mounted, so the
-  // next-action card carries the server's choices itself.
-  const gateOpen = view === 'timeline' && isReviewable(item)
+  const gateOpen = isReviewable(item)
+  const live = useLiveActions(item)
+  const [decisionScrollRequest, setDecisionScrollRequest] = useState(0)
+  const recordDecision = () => {
+    // The record lands in the timeline, so a reader on Flow is brought back to see it.
+    select('timeline')
+    setDecisionScrollRequest((request) => request + 1)
+  }
+  // A plan revision's card has its own structure and stays its own box.
+  const joined = live.gate && item.next_action?.kind !== 'plan_revision'
+  // Re-enqueueing a queued task is part of saying it is queued, so it shares the box.
+  const queuedRedispatch =
+    !joined && item.task.state === 'queued' && live.tail.some(({ key }) => key === 'redispatch')
+      ? { flatCard: <RedispatchCard item={item} flat /> }
+      : undefined
 
   return (
     <div className="space-y-4">
-      <NextActionCard item={item} routeVariant={routeVariant} gateOpen={gateOpen} />
+      {joined ? (
+        <div
+          className={cn('overflow-hidden rounded-lg border bg-card', gateToneClasses(item.next_action?.kind).card)}
+          data-current-decision
+        >
+          <NextActionCard item={item} routeVariant={routeVariant} gateOpen={gateOpen} joined />
+          <ReviewPanel item={item} joined onDecisionRecorded={recordDecision} />
+        </div>
+      ) : (
+        <>
+          <NextActionCard
+            item={item}
+            routeVariant={routeVariant}
+            gateOpen={gateOpen && live.gate}
+            footer={queuedRedispatch?.flatCard}
+          />
+          {live.gate && <ReviewPanel item={item} onDecisionRecorded={recordDecision} />}
+        </>
+      )}
+      {live.tail
+        .filter(({ key }) => !(queuedRedispatch && key === 'redispatch'))
+        .map(({ key, card }) => (
+          <div key={key}>{card}</div>
+        ))}
       <div className="space-y-3">
         <div
           role="tablist"
           aria-label="Task activity view"
-          className="flex gap-1 border-b border-border"
+          className="flex gap-4 border-b border-border"
           onKeyDown={onKeyDown}
         >
           {views.map((candidate) => {
@@ -104,10 +141,8 @@ export function TaskActivityTabs({ item, routeVariant }: { item: ActivityItem; r
                 tabIndex={selected ? 0 : -1}
                 data-activity-tab={candidate.id}
                 className={cn(
-                  '-mb-px border-b-2 px-3 py-1.5 text-sm outline-none focus-visible:ring-2 focus-visible:ring-primary/40',
-                  selected
-                    ? 'border-primary font-medium text-foreground'
-                    : 'border-transparent text-muted hover:text-foreground',
+                  '-mb-px border-b-2 pb-2.5 text-[13px] font-medium outline-none transition-colors focus-visible:ring-2 focus-visible:ring-primary/40',
+                  selected ? 'border-primary text-foreground' : 'border-transparent text-muted hover:text-foreground',
                 )}
                 onClick={() => select(candidate.id)}
               >
@@ -123,7 +158,7 @@ export function TaskActivityTabs({ item, routeVariant }: { item: ActivityItem; r
           data-activity-panel={view}
         >
           {view === 'timeline' ? (
-            <Timeline item={item} />
+            <Timeline item={item} inlineActions={false} decisionScrollRequest={decisionScrollRequest} />
           ) : (
             <TaskFlowChart key={`${workspace}:${item.task.id}`} taskId={item.task.id} />
           )}

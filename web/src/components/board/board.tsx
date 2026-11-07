@@ -1,6 +1,6 @@
 import { Link, useNavigate, useParams, useSearch } from '@tanstack/react-router'
 import { ChevronLeft, ChevronRight, Plus } from 'lucide-react'
-import { lazy, Suspense, useEffect, useMemo, useState } from 'react'
+import { lazy, Suspense, useEffect, useMemo, useRef, useState } from 'react'
 import { boardColumnFor } from '../../lib/activity'
 import { isBlueprintAnchor } from '../../lib/blueprint'
 import { type GroupKey, stageGroups } from '../../lib/contracts'
@@ -17,6 +17,7 @@ import {
   useTaskFilters,
 } from '../task/task-filters'
 import { Button } from '../ui/button'
+import { PageHeader } from '../ui/page-header'
 import { Skeleton } from '../ui/skeleton'
 import { EmptyRepositoryNotice } from '../workspace/empty-repository-notice'
 import { BoardColumn } from './board-column'
@@ -43,9 +44,8 @@ export function Board() {
   const map = search.view === 'map'
   return (
     <div className="flex h-full flex-col">
-      <header className="flex shrink-0 flex-wrap items-center gap-x-4 gap-y-2 border-b border-border px-4 py-3 lg:px-6 lg:py-3.5">
-        <h1 className="text-lg font-semibold tracking-tight">Board</h1>
-        <div className="ml-auto flex items-center gap-2">
+      <PageHeader title="Board" description="Every task, by the stage it has reached.">
+        <div className="flex items-center gap-2">
           <MCPSetup iconOnly />
           {canCreateTasks && (
             <Link to="." search={(prev: BoardSearch) => ({ ...prev, create: true as const })}>
@@ -56,7 +56,7 @@ export function Board() {
             </Link>
           )}
         </div>
-      </header>
+      </PageHeader>
       <div className="mx-4 lg:mx-6">
         <EmptyRepositoryNotice />
       </div>
@@ -133,6 +133,15 @@ function Kanban() {
     return byGroup
   }, [data])
 
+  // On a phone only one lane fits, so the first view opens where the work is.
+  const laneScroller = useRef<HTMLElement>(null)
+  const hasItems = Boolean(data?.items.length)
+  useEffect(() => {
+    const scroller = laneScroller.current
+    if (!hasItems || !scroller || scroller.clientWidth >= 640) return
+    const lane = scroller.querySelector<HTMLElement>('[data-lane-populated]')
+    if (lane) scroller.scrollLeft = lane.offsetLeft - scroller.offsetLeft - 6
+  }, [hasItems])
   useEffect(() => setOffset(0), [filterKey])
   useEffect(() => {
     if (!data || data.total === 0 || offset < data.total) return
@@ -145,12 +154,15 @@ function Kanban() {
         pager={
           data &&
           !isLoading && (
-            <nav aria-label="Board pages" className="flex h-8 items-center rounded-md border border-border bg-surface">
-              <span className="whitespace-nowrap px-2.5">
+            <nav
+              aria-label="Board pages"
+              className="flex h-8 items-center rounded-md border border-border bg-card shadow-xs"
+            >
+              <span className="whitespace-nowrap px-2.5 tabular-nums">
                 <span className="font-medium text-foreground">
                   {data.total === 0 ? 0 : data.offset + 1}–{Math.min(data.offset + data.items.length, data.total)}
                 </span>{' '}
-                of {data.total}
+                of {data.total} tasks
               </span>
               <Button
                 size="icon"
@@ -194,9 +206,13 @@ function Kanban() {
           Activity feed unavailable: {String(error)}
         </p>
       )}
-      <section aria-label="Task board" className="flex min-h-0 flex-1 gap-3 overflow-x-auto px-4 py-4">
+      <section
+        ref={laneScroller}
+        aria-label="Task board"
+        className="flex min-h-0 flex-1 overflow-x-auto bg-surface/70 px-1.5 lg:rounded-b-xl lg:px-3.5"
+      >
         {isLoading
-          ? stageGroups.map(({ key }) => <Skeleton key={key} className="h-full w-72 shrink-0 rounded-xl" />)
+          ? stageGroups.map(({ key }) => <Skeleton key={key} className="m-2 h-auto w-72 shrink-0 rounded-xl" />)
           : stageGroups.map(({ key, label }) => (
               <BoardColumn
                 key={key}

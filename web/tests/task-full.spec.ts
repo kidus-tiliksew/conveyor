@@ -4534,6 +4534,8 @@ for (const surface of ['full', 'sheet']) {
       const { changes } = await mockContextManagement(page, { archived })
       await page.goto(`/w/demo/tasks/operator-checkpoint${surface === 'full' ? '/full' : ''}`)
       const card = page.getByRole('region', { name: 'Attached context' })
+      // The side view's list starts closed; the full page's inspector shows it.
+      if (surface !== 'full') await card.getByRole('button', { name: /^Context/ }).click()
       for (const [title, version] of [
         ['Attached requirement', 3],
         ['Attached design', 2],
@@ -4746,6 +4748,8 @@ test('task context suggestions remain visible without decision controls for non-
 test('task sheet bounds an overflowing spec and expands and collapses it accessibly', async ({ page }) => {
   await page.goto('/w/demo/tasks/long-spec')
 
+  // An approved plan starts closed in the side view; opening it shows the bound.
+  await page.getByRole('button', { name: /Execution plan/ }).click()
   const toggle = page.getByRole('button', { name: 'Show full plan' })
   await expect(toggle).toBeVisible()
   await expect(toggle).toHaveAttribute('aria-expanded', 'false')
@@ -5144,7 +5148,7 @@ test('external Cursor Auto claims show the Cursor logo in the job header and rev
   await expect(claudeSeat.getByText(/via /)).toHaveCount(0)
 })
 
-test('human gate renders as the event timeline tail and the page opens scrolled to it', async ({ page }) => {
+test('human gate joins the next action above the timeline and the page opens at the top', async ({ page }) => {
   await page.goto('/w/demo/tasks/gate/full')
 
   await expect(page.getByRole('heading', { name: 'Activity' })).toBeVisible()
@@ -5152,17 +5156,22 @@ test('human gate renders as the event timeline tail and the page opens scrolled 
   await expect(gate).toHaveCount(1)
   await expect(gate.getByRole('heading', { name: 'Plan approval' })).toBeVisible()
 
-  // The gate is the timeline's last entry — the decision point where the
-  // story currently ends.
-  const timelineRows = page.getByRole('region', { name: 'Execution event timeline' }).locator('ol > li')
-  await expect(timelineRows.last().getByRole('region', { name: 'Human gate' })).toBeVisible()
+  // The statement and the decision read as one block, ahead of the history.
+  const block = page.locator('[data-current-decision]')
+  await expect(block.getByRole('region', { name: 'Next action' })).toBeVisible()
+  await expect(block.getByRole('region', { name: 'Human gate' })).toBeVisible()
+  const timeline = page.getByRole('region', { name: 'Execution event timeline' })
+  await expect(timeline.getByRole('region', { name: 'Human gate' })).toHaveCount(0)
+  const blockBottom = await block.evaluate((element) => element.getBoundingClientRect().bottom)
+  const tabsTop = await page
+    .getByRole('tab', { name: 'Timeline', exact: true })
+    .evaluate((element) => element.getBoundingClientRect().top)
+  expect(blockBottom).toBeLessThanOrEqual(tabsTop)
 
-  // A reviewable task opens scrolled to the gate: the long description
-  // overflows the content region, yet the gate is in view without scrolling.
+  // The page opens at the top: the task and its plan stay in view of the decision.
   const content = page.getByRole('region', { name: 'Task content' })
   await expect.poll(() => content.evaluate((element) => element.scrollHeight > element.clientHeight)).toBe(true)
-  await expect(gate).toBeInViewport()
-  await expect.poll(() => content.evaluate((element) => element.scrollTop)).toBeGreaterThan(0)
+  await expect.poll(() => content.evaluate((element) => element.scrollTop)).toBe(0)
 })
 
 for (const decision of [
@@ -5720,11 +5729,11 @@ for (const decision of ['approve', 'redirect'] as const) {
   })
 }
 
-test('task sheet opens scrolled to the human gate for reviewable tasks', async ({ page }) => {
+test('task sheet opens at the top with the human gate on the page for reviewable tasks', async ({ page }) => {
   await page.goto('/w/demo/tasks/gate')
-  const gate = page.getByRole('region', { name: 'Human gate' })
-  await expect(gate).toBeInViewport()
-  await expect.poll(() => page.evaluate(() => document.documentElement.scrollTop)).toBe(0)
+  await expect(page.getByRole('region', { name: 'Human gate' })).toBeVisible()
+  const body = page.getByRole('dialog', { name: 'Task detail' }).locator('.task-sheet-body')
+  await expect.poll(() => body.evaluate((element) => element.scrollTop)).toBe(0)
 })
 
 test('board activity surfaces expired-without-verdict state', async ({ page }) => {
@@ -6186,7 +6195,7 @@ for (const stage of ['implement', 'verify', 'review'] as const) {
     )
     await page.goto(`/w/demo/tasks/${taskId}/full`)
     await expect(page.getByRole('button', { name: 'Redispatch', exact: true })).toBeVisible()
-    await expect(page.getByText('Queued — re-enqueue if dispatch stalled.')).toBeVisible()
+    await expect(page.getByText('Re-enqueue if dispatch stalled.')).toBeVisible()
     await expectNoTaskProposalSurface(page)
   })
 }

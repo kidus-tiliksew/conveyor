@@ -1,5 +1,4 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { UserRound } from 'lucide-react'
 import { useState } from 'react'
 import { fetchCallerIdentity, updateOwnDisplayName } from '../../lib/api'
 import type { CallerIdentity } from '../../lib/types'
@@ -50,15 +49,14 @@ export function ProfileCard() {
   })
 
   return (
-    <Card className="mt-4">
+    <Card>
       <CardHeader>
         <CardTitle>Profile</CardTitle>
-        <UserRound className="size-4 text-primary" />
       </CardHeader>
       <CardContent>
-        <p className="mb-4 text-sm leading-6 text-muted">This is the name teammates see in workspace member lists.</p>
+        <p className="mb-3 text-xs leading-5 text-muted">This is the name teammates see in workspace member lists.</p>
         <form
-          className="max-w-sm space-y-3"
+          className="max-w-[25rem] space-y-3"
           aria-label="Update profile"
           onSubmit={(event) => {
             event.preventDefault()
@@ -66,14 +64,19 @@ export function ProfileCard() {
             update.mutate(displayName)
           }}
         >
-          <Input
-            aria-label="Display name"
-            autoComplete="name"
-            maxLength={128}
-            value={displayName}
-            onChange={(event) => setDraft(event.target.value)}
-            disabled={identity.isPending}
-          />
+          <div className="space-y-1">
+            <label htmlFor="profile-display-name" className="block text-xs font-medium text-muted">
+              Display name
+            </label>
+            <Input
+              id="profile-display-name"
+              autoComplete="name"
+              maxLength={128}
+              value={displayName}
+              onChange={(event) => setDraft(event.target.value)}
+              disabled={identity.isPending}
+            />
+          </div>
           <Button type="submit" disabled={update.isPending || !displayName.trim()}>
             {update.isPending ? 'Saving…' : 'Save profile'}
           </Button>

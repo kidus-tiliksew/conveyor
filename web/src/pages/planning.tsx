@@ -4,13 +4,14 @@ import { MessageSquarePlus } from 'lucide-react'
 import { useEffect, useRef, useState } from 'react'
 import { useWorkspaceCapability, useWorkspaceSelection } from '../components/app-shell'
 import { PlanningChat, relativeDate, sessionStatusLabels } from '../components/planning/planning-chat'
-import { Badge } from '../components/ui/badge'
 import { Button } from '../components/ui/button'
 import { Select } from '../components/ui/input'
 import { createPlanningSession, decidePlanningBundle, fetchPlanningBundles, fetchPlanningSessions } from '../lib/api'
 import { sessionGoalLabel, sessionGoalLabels } from '../lib/contracts'
 import { errorMessage } from '../lib/errors'
 import type { PlanningSessionGoal } from '../lib/types'
+import { PageHeader } from '../components/ui/page-header'
+import { MarkdownProse } from '../components/ui/markdown-prose'
 
 // Task fan-out now comes from reviewable delivery bundles. Blueprint remains
 // a historical document label, not a planning-session creation goal.
@@ -22,6 +23,8 @@ export function PlanningPage() {
   const canConfirm = useWorkspaceCapability('confirm_documents')
   const client = useQueryClient()
   const [selectedId, setSelectedId] = useState('')
+  // Below lg the session list opens from a button, so the conversation keeps the screen.
+  const [sessionsOpen, setSessionsOpen] = useState(false)
   const restoredWorkspace = useRef('')
   const [goal, setGoal] = useState<PlanningSessionGoal>('open')
   const {
@@ -79,13 +82,10 @@ export function PlanningPage() {
 
   return (
     <div className="flex h-full min-h-0 flex-col">
-      <header className="flex shrink-0 flex-wrap items-center justify-between gap-3 border-b border-border px-6 py-4">
-        <div>
-          <h1 className="text-lg font-semibold tracking-tight">Planning</h1>
-          <p className="mt-0.5 text-xs text-muted">
-            Explore freely or propose a delivery bundle. Requirement drafting lives beside the document in Requirements.
-          </p>
-        </div>
+      <PageHeader
+        title="Planning"
+        description="Explore freely or propose a delivery bundle. Requirement drafting lives beside the document in Requirements."
+      >
         {canPropose && (
           <form
             className="flex flex-wrap items-center gap-2"
@@ -116,11 +116,23 @@ export function PlanningPage() {
             {errorMessage(create.error, 'Could not start this planning session.')}
           </p>
         )}
-      </header>
-      <div className="flex min-h-0 flex-1">
-        <aside className="w-72 shrink-0 overflow-y-auto border-r border-border bg-surface/40">
-          <div className="px-4 py-3">
-            <p className="text-[10px] font-semibold uppercase tracking-[0.12em] text-faint">Sessions</p>
+      </PageHeader>
+      <div className="flex min-h-0 flex-1 flex-col lg:flex-row">
+        <div className="shrink-0 border-b border-border px-4 py-2 lg:hidden">
+          <Button
+            variant="secondary"
+            size="sm"
+            aria-expanded={sessionsOpen}
+            onClick={() => setSessionsOpen((open) => !open)}
+          >
+            Sessions{sessions ? ` (${sessions.length})` : ''}
+          </Button>
+        </div>
+        <aside
+          className={`max-h-72 w-full shrink-0 overflow-y-auto border-b border-border bg-surface/40 lg:block lg:max-h-none lg:w-72 lg:border-r lg:border-b-0 ${sessionsOpen ? '' : 'max-lg:hidden'}`}
+        >
+          <div className="py-3 pl-4 pr-4 lg:pl-6">
+            <p className="text-xs font-semibold text-muted">Sessions</p>
           </div>
           {isLoading && <p className="px-4 text-xs text-muted">Restoring sessions…</p>}
           {sessionsError && (
@@ -135,49 +147,52 @@ export function PlanningPage() {
                 key={session.id}
                 type="button"
                 aria-current={selectedId === session.id ? 'true' : undefined}
-                onClick={() => setSelectedId(session.id)}
-                className={`block w-full px-4 py-3 text-left ${selectedId === session.id ? 'bg-primary-soft' : 'hover:bg-surface'}`}
+                onClick={() => {
+                  setSelectedId(session.id)
+                  setSessionsOpen(false)
+                }}
+                className={`block w-full py-2.5 pl-4 pr-4 text-left lg:pl-6 ${selectedId === session.id ? 'bg-raised/70' : 'hover:bg-surface'}`}
               >
-                <strong className="block truncate text-sm font-medium">
+                <strong className="block truncate text-[13px] font-medium">
                   {session.title || 'Untitled planning session'}
                 </strong>
                 <span className="mt-1 flex flex-wrap items-center gap-1.5">
-                  <Badge
-                    variant={
-                      session.status === 'active' ? 'accent' : session.status === 'finalized' ? 'positive' : 'default'
-                    }
-                  >
+                  <span className="inline-flex items-center gap-1.5 text-[11px] text-muted">
+                    <span
+                      aria-hidden="true"
+                      className={`size-1.5 rounded-full ${session.status === 'active' ? 'bg-primary' : session.status === 'finalized' ? 'bg-positive' : 'bg-faint'}`}
+                    />
                     {sessionStatusLabels[session.status]}
-                  </Badge>
-                  <Badge variant="mono">{sessionGoalLabel(session)}</Badge>
-                  <time className="ml-auto text-[10px] text-faint">{relativeDate(session.updated_at)}</time>
+                  </span>
+                  <span className="text-[11px] text-faint">{sessionGoalLabel(session)}</span>
+                  <time className="ml-auto text-[11px] text-faint">{relativeDate(session.updated_at)}</time>
                 </span>
               </button>
             ))}
           </div>
         </aside>
-        <main className="min-w-0 flex-1">
+        <main className="min-h-0 min-w-0 flex-1 max-lg:overflow-y-auto">
           {selected ? (
-            <div className="flex h-full min-h-0 flex-col">
-              <PlanningChat
-                key={`${workspace}:${selected.id}`}
-                summary={selected}
-                workspace={workspace}
-                onFinalized={() => {
-                  void client.invalidateQueries({ queryKey: ['planning-sessions', workspace] })
-                  void client.invalidateQueries({ queryKey: ['planning-bundles', workspace] })
-                }}
-              />
+            <div className="flex h-full min-h-0 flex-col max-lg:h-auto">
+              <div className="flex min-h-0 flex-1 flex-col max-lg:h-[75dvh] max-lg:flex-none">
+                <PlanningChat
+                  key={`${workspace}:${selected.id}`}
+                  summary={selected}
+                  workspace={workspace}
+                  onFinalized={() => {
+                    void client.invalidateQueries({ queryKey: ['planning-sessions', workspace] })
+                    void client.invalidateQueries({ queryKey: ['planning-bundles', workspace] })
+                  }}
+                />
+              </div>
               {selectedBundle && (
                 <section
-                  className="max-h-[45%] shrink-0 overflow-y-auto border-t border-border bg-surface/40 px-6 py-4"
+                  className="shrink-0 border-t border-border bg-surface/40 px-4 py-4 lg:max-h-[45%] lg:overflow-y-auto lg:px-6 [&>*]:mx-auto [&>*]:max-w-3xl"
                   aria-label="Planning bundle preview"
                 >
                   <div className="flex items-start justify-between gap-4">
                     <div>
-                      <p className="text-[10px] font-semibold uppercase tracking-wider text-faint">
-                        Delivery bundle · {selectedBundle.status}
-                      </p>
+                      <p className="text-xs font-semibold text-muted">Delivery bundle · {selectedBundle.status}</p>
                       <h2 className="mt-1 text-base font-semibold">{selectedBundle.title}</h2>
                       <p className="mt-1 text-xs text-muted">
                         Approving creates the task set. Document revisions remain pending their own confirmation.
@@ -198,10 +213,10 @@ export function PlanningPage() {
                       </div>
                     )}
                   </div>
-                  <div className="mt-4 grid gap-4 lg:grid-cols-2">
+                  <div className="mt-4 space-y-4">
                     <div>
-                      <h3 className="text-xs font-semibold uppercase tracking-wider text-muted">Pending documents</h3>
-                      <ul className="mt-2 space-y-2">
+                      <h3 className="text-xs font-semibold text-muted">Pending documents</h3>
+                      <ul className="mt-2 grid grid-cols-[repeat(auto-fit,minmax(min(100%,20rem),1fr))] gap-2">
                         {selectedBundle.documents.map((document) => (
                           <li
                             key={`${document.kind}:${document.id}:${document.version ?? 0}`}
@@ -217,7 +232,7 @@ export function PlanningPage() {
                       </ul>
                     </div>
                     <div>
-                      <h3 className="text-xs font-semibold uppercase tracking-wider text-muted">Task set</h3>
+                      <h3 className="text-xs font-semibold text-muted">Task set</h3>
                       <ol className="mt-2 space-y-2">
                         {selectedBundle.tasks.map((task) => (
                           <li
@@ -225,7 +240,7 @@ export function PlanningPage() {
                             className="rounded-md border border-border bg-background p-3 text-sm"
                           >
                             <strong>{task.title}</strong>
-                            <p className="mt-1 whitespace-pre-wrap text-xs text-muted">{task.body}</p>
+                            <MarkdownProse className="markdown-demoted mt-1 text-xs">{task.body}</MarkdownProse>
                             <p className="mt-2 font-mono text-[10px] text-faint">
                               {task.repo} · depends on: {task.depends_on?.join(', ') || 'none'} · context:{' '}
                               {[

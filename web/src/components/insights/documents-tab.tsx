@@ -99,7 +99,7 @@ export function DocumentsTab({
                       title={`${criterion.id}: ${criterion.statement}\n${cited ? `Cited by ${tasks(criterion.citing_task_ids.length)}` : 'Not cited by a task'}`}
                       {...hoverProps(onHover, criterion.citing_task_ids)}
                       className={cn(
-                        'grid h-5 w-full place-items-center rounded-[3px] border font-mono text-[9.5px]',
+                        'grid h-5 w-full place-items-center rounded-[3px] border font-mono text-[10px]',
                         cited
                           ? 'border-positive/40 bg-positive-soft text-positive'
                           : 'border-dashed border-attention-dot text-attention',
@@ -202,15 +202,15 @@ function DecisionRow({ decision, onHover }: { decision: RequirementInsightDecisi
       {open && (
         <dl id={`${id}-details`} className="m-0 space-y-1.5 px-2 pb-2.5 pl-[46px] text-xs">
           <div>
-            <dt className="text-[10.5px] font-semibold uppercase tracking-wide text-faint">Statement</dt>
+            <dt className="text-xs font-semibold text-muted">Statement</dt>
             <dd className="m-0 whitespace-pre-wrap text-markdown">{decision.statement}</dd>
           </div>
           <div>
-            <dt className="text-[10.5px] font-semibold uppercase tracking-wide text-faint">Context</dt>
+            <dt className="text-xs font-semibold text-muted">Context</dt>
             <dd className="m-0 whitespace-pre-wrap text-markdown">{decision.context || 'None recorded.'}</dd>
           </div>
           <div>
-            <dt className="text-[10.5px] font-semibold uppercase tracking-wide text-faint">Status</dt>
+            <dt className="text-xs font-semibold text-muted">Status</dt>
             <dd className="m-0 capitalize text-markdown">{decision.status}</dd>
           </div>
         </dl>

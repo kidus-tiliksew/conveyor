@@ -167,8 +167,8 @@ export function DocumentTreeGroup({
 }) {
   if (collapsible)
     return (
-      <details className="group mb-5 px-3 last:mb-0" open={defaultOpen || undefined}>
-        <summary className="flex cursor-pointer list-none items-center gap-1 px-2 pb-1.5 text-[10px] font-semibold uppercase tracking-[0.12em] text-faint">
+      <details className="group mb-5 px-3.5 last:mb-0" open={defaultOpen || undefined}>
+        <summary className="flex cursor-pointer list-none items-center gap-1 px-2.5 pb-1.5 text-xs font-semibold text-muted">
           <ChevronRight className="size-3 transition-transform group-open:rotate-90" />
           {label}
         </summary>
@@ -176,8 +176,8 @@ export function DocumentTreeGroup({
       </details>
     )
   return (
-    <section className="mb-5 px-3 last:mb-0">
-      <h2 className="px-2 pb-1.5 text-[10px] font-semibold uppercase tracking-[0.12em] text-faint">{label}</h2>
+    <section className="mb-5 px-3.5 last:mb-0">
+      <h2 className="px-2.5 pb-1.5 text-xs font-semibold text-muted">{label}</h2>
       <div className="space-y-0.5">{children}</div>
     </section>
   )
@@ -243,7 +243,7 @@ export function DocumentTreeToolbar({
           <input
             type="search"
             aria-label={searchLabel}
-            placeholder={searchLabel}
+            placeholder="Search"
             value={query}
             onChange={(event) => onQueryChange(event.target.value)}
             className="h-full min-w-0 flex-1 bg-transparent px-2 text-[11px] text-foreground outline-none placeholder:text-faint"
@@ -271,9 +271,7 @@ export function DocumentTreeToolbar({
               aria-label={sortLabel}
               className="absolute right-0 top-full z-20 mt-1 w-44 rounded-md border border-border bg-card p-1 shadow-lg"
             >
-              <p className="px-2 pb-1 pt-1.5 text-[10px] font-semibold uppercase tracking-[0.12em] text-faint">
-                Sort by
-              </p>
+              <p className="px-2 pb-1 pt-1.5 text-xs font-semibold text-muted">Sort by</p>
               {options.map((option) => {
                 const current = option.value === sort
                 return (
@@ -328,8 +326,15 @@ export function DocumentTreeItem({
   onClick: () => void
 }) {
   const { closeDrawer } = useContext(DocumentTreeContext)
+  // The open document stays visible in a long list, on arrival and after a
+  // sort or search moves it.
+  const row = useRef<HTMLButtonElement>(null)
+  useEffect(() => {
+    if (selected) row.current?.scrollIntoView({ block: 'center' })
+  }, [selected])
   const navigation = (
     <button
+      ref={row}
       type="button"
       title={title}
       aria-current={selected ? 'true' : undefined}
@@ -337,25 +342,14 @@ export function DocumentTreeItem({
         onClick()
         closeDrawer()
       }}
-      className={`relative flex w-full items-center gap-2.5 rounded-md py-2 pl-3 pr-2.5 text-left transition-colors pointer-coarse:py-2.5 before:absolute before:inset-y-1.5 before:left-0 before:w-0.5 before:rounded-full before:transition-colors ${
-        selected
-          ? 'bg-primary-soft text-primary before:bg-primary'
-          : 'text-foreground before:bg-transparent hover:bg-surface'
+      className={`relative flex w-full items-center gap-2 rounded-md py-1.5 pl-2.5 pr-2 text-left transition-colors pointer-coarse:py-2.5 ${
+        selected ? 'bg-raised/70 font-medium text-foreground' : 'text-foreground hover:bg-surface'
       }`}
     >
-      <FileText
-        aria-hidden="true"
-        className={`size-4 shrink-0 ${tooltip ? 'invisible' : ''} ${selected ? 'text-primary' : 'text-faint'}`}
-      />
+      {tooltip && <FileText aria-hidden="true" className="invisible size-4 shrink-0" />}
       <span className="min-w-0 flex-1">
-        <span className="block truncate text-sm font-medium">{label}</span>
-        {meta && (
-          <span
-            className={`mt-0.5 block truncate font-mono text-[10px] tracking-wide ${selected ? 'text-primary/70' : 'text-faint'}`}
-          >
-            {meta}
-          </span>
-        )}
+        <span className="block line-clamp-2 text-[13px] leading-[1.35]">{label}</span>
+        {meta && <span className={`mt-px block truncate text-[11px] ${'text-faint'}`}>{meta}</span>}
       </span>
       {Boolean(attentionCount) && (
         <Badge
@@ -382,8 +376,7 @@ export function DocumentTreeItem({
             {...props}
             className={cn(
               props.className,
-              'absolute left-3 top-1/2 -translate-y-1/2 justify-center pointer-coarse:left-0',
-              selected ? 'text-primary' : 'text-faint',
+              'absolute left-3 top-1/2 -translate-y-1/2 justify-center text-faint pointer-coarse:left-0',
             )}
           >
             <FileText aria-hidden="true" className="size-4 shrink-0" />

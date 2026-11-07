@@ -53,7 +53,7 @@ export function shortcutChoiceId(action: NextAction) {
 export function Kbd({ children, className }: { children: ReactNode; className?: string }) {
   return (
     <span aria-hidden="true" data-kbd-hint className={cn('hidden md:inline-flex', className)}>
-      <kbd className="inline-flex h-5 min-w-5 items-center justify-center rounded border border-b-2 border-border bg-surface px-1 font-mono text-[10.5px] leading-none text-muted">
+      <kbd className="inline-flex h-4.5 min-w-4.5 items-center justify-center rounded border border-border px-1 font-mono text-[10px] leading-none text-faint">
         {children}
       </kbd>
     </span>

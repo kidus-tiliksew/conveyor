@@ -321,6 +321,9 @@ async function expectContextRows(page: Page, _stacked: boolean) {
     ['Verification strategy', 'component-verification-strategy', 'v22'],
   ]) {
     const name = `${title} (${id})`
+    // The side view's list starts closed; the full page's inspector shows it.
+    const toggle = card.getByRole('button', { name: /^Context/ })
+    if ((await toggle.count()) > 0 && (await toggle.getAttribute('aria-expanded')) === 'false') await toggle.click()
     const link = card.getByRole('link', { name })
     const row = card.getByRole('listitem').filter({ has: page.getByRole('link', { name }) })
     const titleBox = await link.boundingBox()

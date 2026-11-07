@@ -2,8 +2,8 @@ export const THEME_STORAGE_KEY = 'conveyor-theme'
 export const DARK_MEDIA_QUERY = '(prefers-color-scheme: dark)'
 
 export const THEME_COLORS = {
-  light: '#ffffff',
-  dark: '#0f1115',
+  light: '#f0f1f4',
+  dark: '#0d0f12',
 } as const
 
 export type ThemeChoice = 'light' | 'dark' | 'system'

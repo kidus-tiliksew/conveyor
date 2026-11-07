@@ -18,10 +18,10 @@ const bands: { band?: InboxBand; label: string }[] = [
 export function InboxBandChips({ search, counts }: { search: InboxSearch; counts: Record<InboxBand, number> }) {
   const { workspace } = useWorkspaceSelection()
   return (
-    <div className="flex flex-col items-start gap-1.5 sm:items-end">
+    <div className="flex flex-col items-start gap-1.5 sm:flex-row-reverse sm:items-center sm:gap-3">
       <nav
         aria-label="Inbox bands"
-        className="flex flex-wrap items-center gap-0.5 rounded-lg border border-border bg-surface p-0.5 text-xs"
+        className="flex flex-wrap items-center gap-0.5 rounded-lg bg-raised/70 p-0.5 text-xs"
       >
         {bands.map((segment) => {
           const selected = search.band === segment.band
@@ -35,7 +35,7 @@ export function InboxBandChips({ search, counts }: { search: InboxSearch; counts
               data-band-chip={segment.band ?? 'all'}
               className={cn(
                 'inline-flex items-center gap-1.5 rounded-md px-2.5 py-1 font-medium pointer-coarse:min-h-10',
-                selected ? 'bg-card text-foreground shadow-sm' : 'text-muted hover:text-foreground',
+                selected ? 'bg-segment text-foreground shadow-xs' : 'text-muted hover:text-foreground',
               )}
             >
               {segment.label}

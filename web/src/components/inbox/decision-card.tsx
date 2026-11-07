@@ -17,7 +17,7 @@ import {
   useContextProposalSends,
 } from './context-proposal-rows'
 import { DecisionContext } from './inbox-context'
-import { Kbd, ShortcutChoiceProvider, shortcutChoiceId } from './inbox-keyboard'
+import { ShortcutChoiceProvider, shortcutChoiceId } from './inbox-keyboard'
 import { DueChip, KindPill, timeOfDay } from './inbox-kind'
 import { useNextAction } from './use-next-actions'
 
@@ -130,6 +130,11 @@ export function DecisionDetail({ item, task, onActed }: { item: InboxItem; task:
               Open task
               <ArrowUpRight className="size-3.5" aria-hidden />
             </Link>
+            {action && (
+              <div className="basis-auto text-[11px] text-faint open:basis-full">
+                <NextActionIDs value={{ details: action.details, current_order: action.current_order }} />
+              </div>
+            )}
           </div>
           {isLoading && <Skeleton className="h-12" />}
           {error != null && (
@@ -141,7 +146,7 @@ export function DecisionDetail({ item, task, onActed }: { item: InboxItem; task:
             </div>
           )}
           {action?.question && (
-            <p data-decision-question className="break-words pt-1 text-[15px] font-medium leading-relaxed">
+            <p data-decision-question className="break-words pt-1 text-sm font-medium leading-relaxed">
               {action.question}
             </p>
           )}
@@ -201,26 +206,18 @@ export function DecisionDetail({ item, task, onActed }: { item: InboxItem; task:
               </span>
             </p>
           )}
-          <div className="flex min-w-0 flex-wrap items-end gap-x-3 gap-y-2">
+          <div className="flex min-w-0 flex-wrap items-center gap-x-3 gap-y-2">
             {/* Buttons inherit their font (styles.css), so the wrapper sets their size. */}
             <div className="min-w-0 flex-1">
               {contextRows ? (
                 <ContextProposalFooter action={contextRows} selection={selection} sends={sends} />
               ) : (
                 action && (
-                  <div className="text-[13px]">
+                  <div className="max-w-2xl text-[13px]">
                     <GateChoices taskId={task.id} action={action} onActed={onActed} onRestarted={onActed} />
                   </div>
                 )
               )}
-            </div>
-            <div className="ml-auto flex shrink-0 items-center gap-3 text-[11px] text-faint">
-              <span className="hidden items-center gap-1 lg:flex" data-footer-move-hint>
-                <Kbd>j</Kbd>
-                <Kbd>k</Kbd>
-                move
-              </span>
-              {action && <NextActionIDs value={{ details: action.details, current_order: action.current_order }} />}
             </div>
           </div>
         </div>

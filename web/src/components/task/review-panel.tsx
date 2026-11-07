@@ -17,9 +17,9 @@ import { VerificationReviewResult } from './verification-stage'
 // server's statement of what the pipeline is waiting for and offers exactly the
 // server's choices (feature-operator-next-action NA-4, NA-6). Amber stays
 // reserved for states that are genuinely stuck; a clean approval reads as good
-// news. The card renders as the event timeline's live tail
-// (component-web-task-surfaces): the decision point is where the story
-// currently ends, and acting on it resolves in place into the recorded
+// news. Task detail joins it to the next-action card above the history
+// (component-web-task-surfaces): the statement, then the evidence and choices,
+// as one decision. Acting on it lands in the timeline as the recorded
 // intervention entry.
 
 export type GateTone = 'positive' | 'neutral' | 'alarm'
@@ -102,10 +102,7 @@ function MergeGateReviewCard({ item }: { item: ActivityItem }) {
         : 'Factory review approved this'
       : 'Factory review asked for changes')
   return (
-    <section
-      aria-label="What you are approving"
-      className="mb-3 rounded-md border border-border bg-surface/40 px-3 py-2.5"
-    >
+    <section aria-label="What you are approving" className="mb-3">
       <h4 className="text-[13px] font-semibold text-foreground">What you are approving</h4>
       <dl className="mt-2 grid gap-x-6 gap-y-1.5 text-xs sm:grid-cols-[auto_1fr]">
         {branch && (
@@ -192,7 +189,21 @@ const toneStyles: Record<GateTone, { card: string; header: string; title: string
 // A contested execution plan is a different question from "is this work good",
 // so it gets its own card laying out the agent's rationale (REQ-2 AC-2.1).
 // Whether the plan revision is the open decision is the server's next action.
-export function ReviewPanel({ item, onDecisionRecorded }: { item: ActivityItem; onDecisionRecorded?: () => void }) {
+export function gateToneClasses(kind: Parameters<typeof gateTone>[0]) {
+  return toneStyles[gateTone(kind)]
+}
+
+export function ReviewPanel({
+  item,
+  onDecisionRecorded,
+  joined = false,
+}: {
+  item: ActivityItem
+  onDecisionRecorded?: () => void
+  // Rendered as the lower part of the next-action card's box, which already
+  // shows the label and the tone.
+  joined?: boolean
+}) {
   const canOperate = useWorkspaceCapability('operate_gates')
   const revisionRequest = item.next_action?.kind === 'plan_revision' ? latestPlanRevisionRequest(item.summaries) : null
   if (revisionRequest)
@@ -200,16 +211,42 @@ export function ReviewPanel({ item, onDecisionRecorded }: { item: ActivityItem; 
       <PlanRevisionDecisionCard item={item} request={revisionRequest} onDecisionRecorded={onDecisionRecorded} />
     ) : null
 
-  return <GenericReviewPanel item={item} onDecisionRecorded={onDecisionRecorded} />
+  return <GenericReviewPanel item={item} onDecisionRecorded={onDecisionRecorded} joined={joined} />
 }
 
-function GenericReviewPanel({ item, onDecisionRecorded }: { item: ActivityItem; onDecisionRecorded?: () => void }) {
+function GenericReviewPanel({
+  item,
+  onDecisionRecorded,
+  joined,
+}: {
+  item: ActivityItem
+  onDecisionRecorded?: () => void
+  joined: boolean
+}) {
   const { data: action } = useNextAction(item.task.id)
   if (!action || action.kind === 'terminal') return null
   const tone = gateTone(action.kind)
   const style = toneStyles[tone]
   const Icon = tone === 'alarm' ? TriangleAlert : tone === 'positive' ? GitMerge : UserRound
   const mergeGate = item.at_merge_gate
+  const evidence = (
+    <>
+      {mergeGate && <MergeGateReviewCard item={item} />}
+      {mergeGate && <VerificationVerdictLine item={item} />}
+      {mergeGate && <VerificationReviewResult item={item} />}
+      <AttachmentsCard attachments={item.verification_evidence ?? []} title="Verification evidence" />
+      <GateChoices taskId={item.task.id} action={action} onActed={() => onDecisionRecorded?.()} />
+    </>
+  )
+  if (joined)
+    return (
+      <section className="space-y-3 border-t border-border px-4 py-3" aria-label="Human gate">
+        {/* The heading stays for navigation; the label already reads directly above. */}
+        <h3 className="sr-only">{action.label}</h3>
+        {action.question && <p className="text-sm font-medium text-foreground">{action.question}</p>}
+        {evidence}
+      </section>
+    )
   return (
     <section className={cn('rounded-lg border bg-background', style.card)} aria-label="Human gate">
       <div className={cn('flex flex-wrap items-center gap-3 rounded-t-lg px-4 py-3', style.header)}>
@@ -221,13 +258,7 @@ function GenericReviewPanel({ item, onDecisionRecorded }: { item: ActivityItem; 
           {action.question && <p className="mt-0.5 text-xs leading-5 text-muted">{action.question}</p>}
         </div>
       </div>
-      <div className="space-y-3 px-4 py-2.5">
-        {mergeGate && <MergeGateReviewCard item={item} />}
-        {mergeGate && <VerificationVerdictLine item={item} />}
-        {mergeGate && <VerificationReviewResult item={item} />}
-        <AttachmentsCard attachments={item.verification_evidence ?? []} title="Verification evidence" />
-        <GateChoices taskId={item.task.id} action={action} onActed={() => onDecisionRecorded?.()} />
-      </div>
+      <div className="space-y-3 px-4 py-2.5">{evidence}</div>
     </section>
   )
 }

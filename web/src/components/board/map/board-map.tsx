@@ -422,8 +422,8 @@ function BoardMapView() {
 
   return (
     <div className="flex min-h-0 flex-1 flex-col">
-      <BoardToolbar>
-        <fieldset aria-label="Arrange by" className="m-0 flex rounded-md border border-border p-0.5">
+      <BoardToolbar flush>
+        <fieldset aria-label="Arrange by" className="m-0 flex h-8 rounded-lg bg-raised/70 p-0.5">
           {(
             [
               ['requirements', 'Requirements', BookText],
@@ -443,8 +443,8 @@ function BoardMapView() {
                 })
               }
               className={cn(
-                'inline-flex items-center gap-1.5 rounded px-2.5 py-1 text-xs font-medium transition-colors',
-                grouping === value ? 'bg-raised text-foreground' : 'text-muted hover:text-foreground',
+                'inline-flex items-center gap-1.5 rounded-md px-2.5 text-xs font-medium transition-colors',
+                grouping === value ? 'bg-segment text-foreground shadow-xs' : 'text-muted hover:text-foreground',
               )}
             >
               <Icon aria-hidden className="size-3.5" />
@@ -467,7 +467,7 @@ function BoardMapView() {
               }}
               placeholder="Find a task"
               aria-label="Find a task"
-              className="h-8 w-48 rounded-md border border-border bg-background pl-7 pr-2 text-xs"
+              className="h-8 w-48 rounded-md border border-edge bg-card pl-7 pr-2 text-[13px] shadow-xs"
             />
           </label>
           {grouping === 'dependencies' && (
@@ -498,9 +498,9 @@ function BoardMapView() {
       </BoardToolbar>
       <div className="relative flex min-h-0 flex-1">
         <section className="flex min-w-0 flex-1 flex-col">
-          <header className="flex shrink-0 flex-wrap items-center gap-x-4 gap-y-2 border-b border-border px-4 py-2.5">
+          <header className="flex shrink-0 flex-wrap items-center gap-x-4 gap-y-2 border-b border-border px-4 py-1.5 lg:px-6">
             <div className="min-w-0">
-              <h2 className="truncate text-sm font-semibold text-foreground">
+              <h2 className="truncate text-[13px] font-semibold text-foreground">
                 {grouping === 'dependencies' ? 'All open work' : (card?.title ?? `All ${grouping}`)}
               </h2>
               {stats && (
@@ -887,7 +887,7 @@ function TaskRow({ task, model, onFocus }: { task: GraphTask; model: TaskGraphMo
 function Section({ title, children }: { title: string; children: ReactNode }) {
   return (
     <section className="border-b border-border px-4 py-3 last:border-b-0">
-      <h3 className="mb-1.5 text-[11px] font-semibold uppercase tracking-wide text-faint">{title}</h3>
+      <h3 className="mb-1.5 text-xs font-semibold text-muted">{title}</h3>
       {children}
     </section>
   )

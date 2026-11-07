@@ -37,6 +37,15 @@ function MermaidBlock({ source }: { source: string }) {
 }
 
 const sharedComponents: Components = {
+  // The wrapper scrolls a table too wide for its column, and carries the border
+  // so the rounded corners stay intact while it scrolls.
+  table({ node: _node, ...props }) {
+    return (
+      <div className="markdown-table">
+        <table {...props} />
+      </div>
+    )
+  },
   code({ className, children, ...props }) {
     const source = String(children).replace(/\n$/, '')
     if (className === 'language-mermaid') return <MermaidBlock source={source} />
@@ -46,6 +55,14 @@ const sharedComponents: Components = {
       </code>
     )
   },
+}
+
+// A document's first heading usually repeats the title the page already shows.
+export function withoutRepeatedTitle(content: string, title: string) {
+  const match = content.match(/^\s*#{1,2}[ \t]+(.+?)[ \t]*\n+/)
+  return match && match[1].trim().toLowerCase() === title.trim().toLowerCase()
+    ? content.slice(match[0].length)
+    : content
 }
 
 // Shared safe GFM presentation for human-authored prose. React Markdown keeps

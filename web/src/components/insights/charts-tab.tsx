@@ -69,7 +69,7 @@ export function ChartsTab({ workspace, requirementId }: { workspace: string; req
                 onClick={() => setMode(value)}
                 className={cn(
                   'rounded px-2 py-0.5 text-[11px] transition-colors',
-                  mode === value ? 'bg-card text-foreground shadow-sm' : 'text-muted hover:text-foreground',
+                  mode === value ? 'bg-segment text-foreground shadow-xs' : 'text-muted hover:text-foreground',
                 )}
               >
                 {label}

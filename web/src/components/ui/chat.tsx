@@ -36,8 +36,8 @@ export function Bubble({
     <div
       className={cn(
         'max-w-[82%] rounded-xl px-4 py-3 text-sm leading-6 whitespace-pre-wrap',
-        from === 'assistant' && 'rounded-tl-sm border border-border bg-card',
-        from === 'user' && 'rounded-tr-sm bg-primary text-primary-foreground',
+        from === 'assistant' && 'rounded-tl-sm bg-transparent px-0 py-1',
+        from === 'user' && 'rounded-tr-sm bg-raised text-foreground',
         from === 'system' && 'border border-border bg-surface text-muted',
         className,
       )}

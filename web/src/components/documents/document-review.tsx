@@ -2,6 +2,10 @@ import { type ReactNode, useId } from 'react'
 import { Button } from '../ui/button'
 import type { ReviewSource } from './document-review-model'
 import { DocumentComparison } from './version-diff'
+import { actorName } from '../../lib/activity'
+import { dateTimeLabel } from '../../lib/utils'
+import { useWorkspaceMembers } from '../app-shell'
+import { Select } from '../ui/input'
 
 export type ReviewSearch = { tab?: 'document' | 'changes' | 'history'; base?: number; target?: number }
 export type ReviewVersion = ReviewSource & {
@@ -84,6 +88,7 @@ export function DocumentReview({
   attention,
   document,
   history,
+  actions,
   loading,
   error,
 }: {
@@ -94,48 +99,59 @@ export function DocumentReview({
   attention: ReactNode
   document: ReactNode
   history: ReactNode
+  actions?: ReactNode
   loading?: boolean
   error?: string
 }) {
   const id = useId()
+  const members = useWorkspaceMembers().data ?? []
   const tab = search.tab ?? 'document'
   const target = selectedReviewVersion(versions, current, search)
-  const baseNumber = search.base ?? current?.version ?? 0
+  // Comparing the current version against itself says nothing, so it opens
+  // against the version it replaced.
+  const previous = [...versions]
+    .filter((v) => v.version < (target?.version ?? 0) && v.confirmed_at)
+    .sort((a, b) => b.version - a.version)[0]
+  const baseNumber =
+    search.base ?? (target && target.version === current?.version ? (previous?.version ?? 0) : (current?.version ?? 0))
   const base = versions.find((v) => v.version === baseNumber)
   const invalid = (search.target !== undefined && !target) || (tab === 'changes' && baseNumber !== 0 && !base)
   const tabs = ['document', 'changes', 'history'] as const
   const select = (next: ReviewSearch) => onChange({ ...search, ...next })
   return (
     <div className="min-w-0">
-      <div role="tablist" aria-label="Document views" className="mb-5 flex gap-5 border-b border-border">
-        {tabs.map((name, index) => (
-          <button
-            key={name}
-            type="button"
-            id={`${id}-${name}`}
-            role="tab"
-            aria-selected={tab === name}
-            aria-controls={`${id}-panel`}
-            tabIndex={tab === name ? 0 : -1}
-            className={`border-b-2 pb-3 text-sm capitalize focus-visible:outline-2 focus-visible:outline-primary ${tab === name ? 'border-primary font-semibold text-primary' : 'border-transparent text-muted'}`}
-            onClick={() => select({ tab: name })}
-            onKeyDown={(event) => {
-              let next = index
-              if (event.key === 'ArrowRight') next = (index + 1) % tabs.length
-              else if (event.key === 'ArrowLeft') next = (index + tabs.length - 1) % tabs.length
-              else if (event.key === 'Home') next = 0
-              else if (event.key === 'End') next = tabs.length - 1
-              else return
-              event.preventDefault()
-              const name = tabs[next]
-              void Promise.resolve(onChange({ ...search, tab: name })).then(() =>
-                window.document.querySelector<HTMLButtonElement>(`[role=tab][aria-selected=true]`)?.focus(),
-              )
-            }}
-          >
-            {name}
-          </button>
-        ))}
+      <div className="mb-4 flex flex-wrap items-end justify-between gap-x-4 border-b border-border">
+        <div role="tablist" aria-label="Document views" className="flex gap-4">
+          {tabs.map((name, index) => (
+            <button
+              key={name}
+              type="button"
+              id={`${id}-${name}`}
+              role="tab"
+              aria-selected={tab === name}
+              aria-controls={`${id}-panel`}
+              tabIndex={tab === name ? 0 : -1}
+              className={`-mb-px border-b-2 pb-2.5 text-[13px] font-medium capitalize transition-colors focus-visible:outline-2 focus-visible:outline-primary ${tab === name ? 'border-primary text-foreground' : 'border-transparent text-muted hover:text-foreground'}`}
+              onClick={() => select({ tab: name })}
+              onKeyDown={(event) => {
+                let next = index
+                if (event.key === 'ArrowRight') next = (index + 1) % tabs.length
+                else if (event.key === 'ArrowLeft') next = (index + tabs.length - 1) % tabs.length
+                else if (event.key === 'Home') next = 0
+                else if (event.key === 'End') next = tabs.length - 1
+                else return
+                event.preventDefault()
+                const name = tabs[next]
+                void Promise.resolve(onChange({ ...search, tab: name })).then(() =>
+                  window.document.querySelector<HTMLButtonElement>(`[role=tab][aria-selected=true]`)?.focus(),
+                )
+              }}
+            >
+              {name}
+            </button>
+          ))}
+        </div>
+        {actions && <div className="-mr-2.5 flex flex-wrap items-center gap-1 pb-1.5">{actions}</div>}
       </div>
       <div className={tab === 'changes' ? 'sticky top-0 z-10 max-h-[40vh] overflow-y-auto bg-card' : undefined}>
         {attention}
@@ -165,12 +181,13 @@ export function DocumentReview({
                 <h3 className="mb-4 text-lg font-semibold">
                   {target ? `Review version ${target.version}` : 'Version comparison'}
                 </h3>
-                <div className="grid min-w-0 gap-3 rounded-lg border border-border bg-surface p-4 sm:grid-cols-2">
-                  <label className="min-w-0 text-xs text-muted">
+                <div className="grid min-w-0 grid-cols-2 gap-3 rounded-lg border border-border bg-surface p-3 sm:p-4">
+                  <label className="min-w-0 text-xs text-muted" htmlFor={`${id}-base`}>
                     Base version
-                    <select
+                    <Select
+                      id={`${id}-base`}
                       aria-label="Base version"
-                      className="mt-2 block w-full min-w-0 rounded-md border border-border bg-card p-2 text-sm text-foreground"
+                      className="mt-1.5"
                       value={baseNumber}
                       onChange={(e) => select({ base: Number(e.target.value) })}
                     >
@@ -180,13 +197,14 @@ export function DocumentReview({
                           v{v.version} · {versionState(v)}
                         </option>
                       ))}
-                    </select>
+                    </Select>
                   </label>
-                  <label className="min-w-0 text-xs text-muted">
+                  <label className="min-w-0 text-xs text-muted" htmlFor={`${id}-target`}>
                     Target version
-                    <select
+                    <Select
+                      id={`${id}-target`}
                       aria-label="Target version"
-                      className="mt-2 block w-full min-w-0 rounded-md border border-border bg-card p-2 text-sm text-foreground"
+                      className="mt-1.5"
                       value={target?.version ?? ''}
                       onChange={(e) => select({ target: Number(e.target.value) })}
                     >
@@ -196,7 +214,7 @@ export function DocumentReview({
                           v{v.version} · {versionState(v)}
                         </option>
                       ))}
-                    </select>
+                    </Select>
                   </label>
                 </div>
                 {baseNumber === 0 && (
@@ -215,31 +233,30 @@ export function DocumentReview({
               <>
                 <section aria-label="Version history">
                   <h3 className="mb-4 text-lg font-semibold">Version history</h3>
-                  <ol className="space-y-3">
+                  <ol className="divide-y divide-border rounded-lg border border-border bg-card">
                     {[...versions]
                       .sort((a, b) => b.version - a.version)
                       .map((v) => (
-                        <li key={v.version} className="rounded-lg border border-border p-4 text-sm">
+                        <li key={v.version} className="px-4 py-3 text-sm">
                           <h4 className="font-semibold">
                             v{v.version} · {versionState(v)}
                           </h4>
                           <p className="mt-1 break-words text-xs text-muted">
                             {v.origin.replaceAll('_', ' ')}
                             {v.origin_task_id && ` · Task ${v.origin_task_id}`}
-                            {v.origin_session_id && ` · Session ${v.origin_session_id}`} ·{' '}
-                            {new Date(v.created_at).toLocaleString()}
+                            {v.origin_session_id && ` · Session ${v.origin_session_id}`} · {dateTimeLabel(v.created_at)}
                           </p>
                           {v.confirmed_by && (
                             <p className="mt-1 text-xs text-muted">
-                              Confirmed by {v.confirmed_by}
-                              {v.confirmed_at && ` on ${new Date(v.confirmed_at).toLocaleString()}`}
+                              Confirmed by {actorName(v.confirmed_by, members)}
+                              {v.confirmed_at && ` on ${dateTimeLabel(v.confirmed_at)}`}
                             </p>
                           )}
                           {(v.dismissed_by || v.retired_by) && (
                             <p className="mt-1 text-xs text-muted">
-                              Dismissed by {v.dismissed_by ?? v.retired_by}
+                              Dismissed by {actorName(v.dismissed_by ?? v.retired_by ?? '', members)}
                               {(v.dismissed_at || v.retired_at) &&
-                                ` on ${new Date(v.dismissed_at ?? v.retired_at ?? '').toLocaleString()}`}
+                                ` on ${dateTimeLabel(v.dismissed_at ?? v.retired_at ?? '')}`}
                             </p>
                           )}
                           {v.dismissal_note && (

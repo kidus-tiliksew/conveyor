@@ -76,7 +76,7 @@ export const tabBody = '[&>section:first-child>h3]:mt-0'
 
 export function SectionHeading({ children, count }: { children: ReactNode; count?: number }) {
   return (
-    <h3 className="mb-1.5 mt-5 flex items-center gap-1.5 text-[11px] font-semibold uppercase tracking-wide text-faint">
+    <h3 className="mb-1.5 mt-5 flex items-center gap-1.5 text-xs font-semibold text-muted">
       {children}
       {count !== undefined && (
         <span className="rounded-md bg-raised px-1.5 font-mono text-[10.5px] font-normal tracking-normal text-muted">

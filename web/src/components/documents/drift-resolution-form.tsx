@@ -45,12 +45,18 @@ export function DriftResolutionForm({
   onResolved?: () => Promise<unknown> | unknown
 }) {
   const queryClient = useQueryClient()
-  const [outcome, setOutcome] = useState<MonitorDriftOutcome>('conflict_resolved')
+  // Monitor rows start undecided, so no row reads as already resolved.
+  const [outcome, setOutcome] = useState<MonitorDriftOutcome | ''>(surface === 'monitor' ? '' : 'conflict_resolved')
   const [selectedRequirementID, setSelectedRequirementID] = useState(drift.requirement_id ?? '')
   const requirementID = fixedRequirementID ?? selectedRequirementID
   const mutation = useMutation({
     mutationFn: () =>
-      resolveMonitorDrift(workspace, drift.id, outcome, outcome === 'requirements_amended' ? requirementID : undefined),
+      resolveMonitorDrift(
+        workspace,
+        drift.id,
+        outcome as MonitorDriftOutcome,
+        outcome === 'requirements_amended' ? requirementID : undefined,
+      ),
     onSuccess: async () => {
       await Promise.all([queryClient.invalidateQueries({ queryKey: ['monitor', workspace] }), onResolved?.()])
     },
@@ -61,21 +67,29 @@ export function DriftResolutionForm({
   const requirementSelectID = `resolution-requirement-${drift.id}`
   return (
     <form
-      className="flex flex-wrap items-end gap-2"
+      className={`flex flex-wrap gap-2 ${surface === 'monitor' ? 'items-center' : 'items-end'}`}
       aria-label={`Resolve drift ${drift.id}`}
       onSubmit={(event) => {
         event.preventDefault()
         mutation.mutate()
       }}
     >
-      <label className="min-w-48 text-xs text-muted" htmlFor={outcomeSelectID}>
-        Resolution
+      <label
+        className={surface === 'monitor' ? 'text-xs text-muted' : 'min-w-48 text-xs text-muted'}
+        htmlFor={outcomeSelectID}
+      >
+        <span className={surface === 'monitor' ? 'sr-only' : undefined}>Resolution</span>
         <Select
           id={outcomeSelectID}
           aria-label={`Resolution outcome for ${drift.id}`}
           value={outcome}
           onChange={(event) => setOutcome(event.target.value as MonitorDriftOutcome)}
         >
+          {surface === 'monitor' && (
+            <option value="" disabled>
+              Resolve as…
+            </option>
+          )}
           {driftOutcomes[surface].map((option) => (
             <option key={option.value} value={option.value}>
               {option.label}
@@ -105,9 +119,16 @@ export function DriftResolutionForm({
           )}
         </label>
       )}
-      <Button type="submit" size="sm" disabled={mutation.isPending || (needsRequirement && !requirementID)}>
-        {mutation.isPending ? 'Resolving…' : 'Resolve'}
-      </Button>
+      {outcome !== '' && (
+        <Button
+          type="submit"
+          size="sm"
+          variant={surface === 'monitor' ? 'secondary' : 'default'}
+          disabled={mutation.isPending || (needsRequirement && !requirementID)}
+        >
+          {mutation.isPending ? 'Resolving…' : 'Resolve'}
+        </Button>
+      )}
       {mutation.error && (
         <p className="basis-full text-xs text-failure">
           {errorMessage(mutation.error, 'Could not resolve this repository change.')}

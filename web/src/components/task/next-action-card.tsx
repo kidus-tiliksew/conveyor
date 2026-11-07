@@ -1,4 +1,5 @@
 import { Link } from '@tanstack/react-router'
+import type { ReactNode } from 'react'
 import { deriveCurrentExecutionState } from '../../lib/activity'
 import type { TaskRouteVariant } from '../../lib/task-route'
 import type { ActivityItem, NextAction } from '../../lib/types'
@@ -19,6 +20,7 @@ import { CheckStatusList } from './next-action-checks'
 import { ExecutionFactRows, ExecutionStatusLine, ExecutionTitle } from './execution-summary-details'
 import { GateChoices } from './merge-at-gate'
 import { NextActionDeadline, NextActionIDs } from './next-action-parts'
+import { gateToneClasses } from './review-panel'
 import { claimedWorkOrder, WorkOrderPreemptControl } from './work-order-preempt-card'
 
 // The server's next action, leading task detail on the Board sheet and the full
@@ -28,15 +30,22 @@ import { claimedWorkOrder, WorkOrderPreemptControl } from './work-order-preempt-
 // order's execution state from deriveCurrentExecutionState adds just the lines
 // its `facts` mark as saying more than that summary (DEC-61; AC-1.7). While the
 // human gate is open on the same page it carries the choices beside the
-// evidence, so the card does not repeat them (`gateOpen`).
+// evidence, so the card does not repeat them (`gateOpen`), and it renders
+// without a box of its own as the top of the decision block (`joined`). While
+// someone else acts, nothing is asked of the reader, so the card stays small.
 export function NextActionCard({
   item,
   routeVariant,
   gateOpen,
+  joined = false,
+  footer,
 }: {
   item: ActivityItem
   routeVariant: TaskRouteVariant
   gateOpen: boolean
+  joined?: boolean
+  // An action on this same state, such as re-enqueueing a queued task.
+  footer?: ReactNode
 }) {
   const { data: action, isLoading } = useNextAction(item.task.id)
   const canRecover = useWorkspaceCapability('recover_work')
@@ -46,11 +55,72 @@ export function NextActionCard({
   const preemptOrder = canRecover ? claimedWorkOrder(item) : undefined
   if (isLoading) return <Skeleton className="h-20" />
   if (!action || action.kind === 'terminal') {
+    if (footer) return <>{footer}</>
     return preemptOrder ? <WorkOrderPreemptControl order={preemptOrder} /> : null
   }
   const execution = deriveCurrentExecutionState(item, action)
   const operator = action.actor === 'operator'
   const paused = execution?.status === 'paused'
+  const preempt = preemptOrder && <WorkOrderPreemptControl order={preemptOrder} />
+  const ids = <NextActionIDs value={{ details: action.details, current_order: action.current_order }} />
+  const choices =
+    !gateOpen &&
+    (action.kind === 'context_proposal' && action.details?.context_proposals?.length ? (
+      <ContextProposalDecision key={`${workspace}:${item.task.id}`} taskId={item.task.id} action={action} />
+    ) : (
+      <GateChoices taskId={item.task.id} action={action} routeVariant={routeVariant} />
+    ))
+  if (joined) {
+    const tone = gateToneClasses(action.kind)
+    return (
+      <section aria-label="Next action" className={cn('space-y-1.5 px-4 py-3', tone.header)}>
+        <div className="flex flex-wrap items-center justify-between gap-x-3">
+          <p className={cn('text-xs font-semibold', tone.title)}>{action.label}</p>
+          <div className="text-right open:basis-full">{ids}</div>
+        </div>
+        <span className="sr-only" data-actor={action.actor}>
+          {action.actor}
+        </span>
+        <h2 className="text-sm font-semibold leading-6">{action.summary}</h2>
+        {execution && <ExecutionStatusLine state={execution} />}
+        {execution && <ExecutionTitle state={execution} />}
+        <CheckStatusList action={action} />
+        {execution && <ExecutionFactRows state={execution} routeVariant={routeVariant} />}
+        {action.if_ignored && <p className="text-xs text-muted">If ignored: {action.if_ignored}</p>}
+        <NextActionDeadline deadline={action.deadline} />
+        {preempt}
+      </section>
+    )
+  }
+  if (!operator && !paused) {
+    return (
+      <section aria-label="Next action" className="space-y-1.5 rounded-lg border border-border bg-surface px-4 py-2.5">
+        <div className="flex flex-wrap items-center gap-x-2 gap-y-0.5 text-xs text-muted">
+          <span className="font-medium text-foreground">{action.label}</span>
+          <span className="sr-only" data-actor={action.actor}>
+            {action.actor}
+          </span>
+          {execution && <ExecutionStatusLine state={execution} />}
+          {action.deadline && (
+            <span className="ml-auto">
+              <NextActionDeadline deadline={action.deadline} />
+            </span>
+          )}
+        </div>
+        <h2 className="text-sm leading-6 font-medium">{action.summary}</h2>
+        {execution && <ExecutionTitle state={execution} />}
+        {action.question && <p className="text-sm text-muted">{action.question}</p>}
+        <CheckStatusList action={action} />
+        {execution && <ExecutionFactRows state={execution} routeVariant={routeVariant} />}
+        {choices}
+        <div className="flex flex-wrap items-center justify-between gap-2">
+          <div className="min-w-0 flex-1">{ids}</div>
+          {preempt}
+        </div>
+        {footer}
+      </section>
+    )
+  }
   return (
     <section aria-label="Next action">
       <Card
@@ -77,12 +147,7 @@ export function NextActionCard({
           {action.question && <p className="text-sm text-muted">{action.question}</p>}
           <CheckStatusList action={action} />
           {execution && <ExecutionFactRows state={execution} routeVariant={routeVariant} />}
-          {!gateOpen &&
-            (action.kind === 'context_proposal' && action.details?.context_proposals?.length ? (
-              <ContextProposalDecision key={`${workspace}:${item.task.id}`} taskId={item.task.id} action={action} />
-            ) : (
-              <GateChoices taskId={item.task.id} action={action} routeVariant={routeVariant} />
-            ))}
+          {choices}
           {action.if_ignored && <p className="text-xs text-muted">If ignored: {action.if_ignored}</p>}
           <NextActionDeadline deadline={action.deadline} />
           {preemptOrder && (
@@ -90,7 +155,8 @@ export function NextActionCard({
               <WorkOrderPreemptControl order={preemptOrder} />
             </div>
           )}
-          <NextActionIDs value={{ details: action.details, current_order: action.current_order }} />
+          {ids}
+          {footer}
         </CardContent>
       </Card>
     </section>

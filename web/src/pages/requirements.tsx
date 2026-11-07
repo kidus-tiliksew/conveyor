@@ -49,7 +49,7 @@ import { Button } from '../components/ui/button'
 import { Card, CardContent, CardHeader, CardTitle } from '../components/ui/card'
 import { Dialog } from '../components/ui/dialog'
 import { Disclosure } from '../components/ui/disclosure'
-import { MarkdownProse } from '../components/ui/markdown-prose'
+import { MarkdownProse, withoutRepeatedTitle } from '../components/ui/markdown-prose'
 import {
   acknowledgeRequirementStaleness,
   archiveRequirement,
@@ -84,6 +84,7 @@ import type {
   SystemDesignSummary,
   TaskEvent,
 } from '../lib/types'
+import { PageHeader } from '../components/ui/page-header'
 
 const originLabels: Record<RequirementVersion['origin'], string> = {
   chat: 'Written in a planning conversation',
@@ -227,15 +228,7 @@ export function RequirementsPage() {
 
   return (
     <div className="flex h-full min-h-0 flex-col">
-      <header className="flex shrink-0 items-center gap-3 border-b border-border px-4 py-3 lg:px-6 lg:py-4">
-        <span className="flex size-8 items-center justify-center rounded-lg bg-primary-soft text-primary">
-          <ListChecks className="size-4" />
-        </span>
-        <div className="min-w-0">
-          <h1 className="text-lg font-semibold tracking-tight">Requirements</h1>
-          <p className="mt-0.5 text-xs text-muted">What this product should do, written down and confirmed.</p>
-        </div>
-      </header>
+      <PageHeader title="Requirements" description="What this product should do, written down and confirmed." />
 
       <div className="flex min-h-0 flex-1 flex-col lg:flex-row">
         <DocumentTree>
@@ -347,7 +340,7 @@ export function RequirementsPage() {
         </DocumentTree>
 
         <section aria-label="Requirement document" className="min-w-0 flex-1 overflow-y-auto">
-          <div className="mx-auto max-w-4xl px-4 py-6 sm:px-6 lg:px-8 lg:py-8">
+          <div className="mx-auto max-w-[50rem] px-4 py-6 sm:px-6 lg:px-8 lg:py-8">
             {!workspace && <EmptyMessage>Choose a workspace to open its requirements.</EmptyMessage>}
             {isLoading && <EmptyMessage>Loading requirements…</EmptyMessage>}
             {error && <EmptyMessage tone="failure">{errorMessage(error, 'Could not load requirements.')}</EmptyMessage>}
@@ -438,10 +431,10 @@ function OverviewCanvas({
     <article id={selected ? `reference-${document.id}-v${selected.version}` : undefined} className="scroll-mt-6">
       <header className="mb-8 flex flex-wrap items-start justify-between gap-4 border-b border-border pb-6">
         <div className="min-w-[14rem] flex-1">
-          <span className="inline-flex items-center gap-1.5 rounded-md border border-border bg-surface px-2 py-0.5 text-[10px] font-semibold uppercase tracking-[0.12em] text-faint">
+          <span className="inline-flex items-center gap-1.5 rounded-md border border-border bg-surface px-2 py-0.5 text-xs font-semibold text-muted">
             <FileText className="size-3" /> Product overview
           </span>
-          <h2 className="mt-3 text-[28px] font-semibold leading-tight tracking-tight text-balance">{document.name}</h2>
+          <h2 className="mt-3 text-[28px] font-semibold leading-tight tracking-tight">{document.name}</h2>
           <div className="mt-3 flex flex-wrap items-center gap-1.5">
             <Badge variant="mono">v{document.current_version}</Badge>
             <Badge variant="outline">Reference material</Badge>
@@ -480,7 +473,11 @@ function OverviewCanvas({
       </header>
       {isLoading && <p className="text-sm text-muted">Loading version history…</p>}
       {error && <p className="text-sm text-failure">{errorMessage(error, 'Could not load version history.')}</p>}
-      {selected && <MarkdownProse>{selected.content}</MarkdownProse>}
+      {selected && (
+        <div className="document-body">
+          <MarkdownProse>{selected.content}</MarkdownProse>
+        </div>
+      )}
       {versions.length > 1 && (
         <label
           className="mt-8 block max-w-xs border-t border-border pt-4 text-xs font-medium"
@@ -982,12 +979,10 @@ function RequirementDetailCanvas({
           onClose={() => setAttachmentOffer(null)}
         />
       )}
-      <header className="mb-8 flex flex-wrap items-start gap-4 border-b border-border pb-6">
+      <header className="mb-4 flex flex-wrap items-start gap-4">
         <div className="min-w-[14rem] flex-1">
-          <span className="inline-flex items-center rounded-md border border-border bg-surface px-2 py-0.5 font-mono text-[10px] uppercase tracking-[0.12em] text-faint">
-            {item.requirement.slug}
-          </span>
-          <h2 className="mt-3 text-[28px] font-semibold leading-tight tracking-tight text-balance">
+          <span className="font-mono text-[11px] text-faint">{item.requirement.slug}</span>
+          <h2 className="mt-1.5 text-[22px] font-semibold leading-[1.25] tracking-[-0.018em]">
             {item.requirement.title}
           </h2>
           {!item.current_version && <p className="mt-2 text-sm text-muted">No confirmed version</p>}
@@ -1015,28 +1010,6 @@ function RequirementDetailCanvas({
             </div>
           )}
         </div>
-        {/* The document's corner affordance (REQ-3): what this intent reaches
-            in work, delivery, and evidence, on demand. */}
-        <div className="flex shrink-0 flex-wrap items-center gap-2">
-          {canConfirm && !archivedByDismissal(item.requirement) && (
-            <Button
-              size="sm"
-              variant={item.requirement.archived ? 'secondary' : 'destructive'}
-              disabled={archive.isPending}
-              onClick={() => (item.requirement.archived ? archive.mutate([]) : setArchiveDialogOpen(true))}
-            >
-              {item.requirement.archived ? <RotateCcw /> : <Archive />}
-              {archive.isPending
-                ? item.requirement.archived
-                  ? 'Restoring…'
-                  : 'Archiving…'
-                : item.requirement.archived
-                  ? 'Restore'
-                  : 'Archive'}
-            </Button>
-          )}
-          <LineageExplorer type="requirement" id={item.requirement.id} />
-        </div>
       </header>
 
       {archive.error && item.requirement.archived && (
@@ -1048,6 +1021,28 @@ function RequirementDetailCanvas({
         </p>
       )}
       <DocumentReview
+        actions={
+          <>
+            {canConfirm && !archivedByDismissal(item.requirement) && (
+              <Button
+                size="sm"
+                variant="ghost"
+                disabled={archive.isPending}
+                onClick={() => (item.requirement.archived ? archive.mutate([]) : setArchiveDialogOpen(true))}
+              >
+                {item.requirement.archived ? <RotateCcw /> : <Archive />}
+                {archive.isPending
+                  ? item.requirement.archived
+                    ? 'Restoring…'
+                    : 'Archiving…'
+                  : item.requirement.archived
+                    ? 'Restore'
+                    : 'Archive'}
+              </Button>
+            )}
+            <LineageExplorer type="requirement" id={item.requirement.id} />
+          </>
+        }
         search={search}
         onChange={onReviewChange}
         versions={reviewVersions}
@@ -1081,9 +1076,9 @@ function RequirementDetailCanvas({
         }
         document={
           <>
-            <div className="mt-8">
+            <div className="document-body mt-5">
               {displayed ? (
-                <RequirementDocument version={displayed} />
+                <RequirementDocument version={displayed} title={item.requirement.title} />
               ) : (
                 <p className="text-sm text-muted">Nothing has been proposed for this requirement yet.</p>
               )}
@@ -1094,7 +1089,7 @@ function RequirementDetailCanvas({
           <>
             {' '}
             <div className="mt-10 space-y-4 border-t border-border pt-8">
-              <h3 className="text-xs font-semibold uppercase tracking-[0.12em] text-faint">Delivery &amp; history</h3>
+              <h3 className="text-xs font-semibold text-muted">Delivery &amp; history</h3>
               {/*
           Delivery is task-centric: `serves` sits on the task itself
           (req-task-centric-delivery REQ-1). Blueprints are retained below as the historical
@@ -1474,13 +1469,14 @@ function documentGlobalByID(id: string) {
   return window.document.getElementById(id)
 }
 
-function RequirementDocument({ version }: { version: RequirementVersion }) {
+function RequirementDocument({ version, title }: { version: RequirementVersion; title: string }) {
+  const prose = withoutRepeatedTitle(stripStatementsFence(version.content), title)
   return (
     <div className="space-y-8">
-      {stripStatementsFence(version.content) && <MarkdownProse>{stripStatementsFence(version.content)}</MarkdownProse>}
+      {prose && <MarkdownProse>{prose}</MarkdownProse>}
       {version.statements.length > 0 && (
         <section aria-label="Requirement statements">
-          <h3 className="flex items-center gap-1.5 text-xs font-semibold uppercase tracking-[0.12em] text-muted">
+          <h3 className="flex items-center gap-1.5 text-xs font-semibold text-muted">
             <ListChecks className="size-3.5" /> What this requires
           </h3>
           <ol className="mt-4 space-y-3">
@@ -1500,7 +1496,7 @@ function RequirementDocument({ version }: { version: RequirementVersion }) {
                     {index + 1}
                   </a>
                   <div className="min-w-0 flex-1">
-                    <p className="text-sm leading-6 text-balance">{statement.statement}</p>
+                    <p className="text-sm leading-6">{statement.statement}</p>
                     {statement.user_story && (
                       <p className="mt-3 border-l-2 border-edge pl-3 text-xs leading-5 text-muted italic">
                         As {statement.user_story.as_a}, I want {statement.user_story.i_want}, so that{' '}
@@ -1516,7 +1512,7 @@ function RequirementDocument({ version }: { version: RequirementVersion }) {
                         <a
                           href={`#${criterion.id.toLowerCase()}`}
                           aria-label={`Link to ${criterion.id}`}
-                          className="mt-0.5 flex size-5 shrink-0 items-center justify-center rounded-full border border-edge font-mono text-[9px] font-semibold text-muted hover:border-primary hover:text-primary"
+                          className="mt-0.5 flex size-5 shrink-0 items-center justify-center rounded-full border border-edge font-mono text-[10px] font-semibold text-muted hover:border-primary hover:text-primary"
                           title={criterion.id}
                         >
                           {criterionIndex + 1}

@@ -70,15 +70,6 @@ export const tonePill: Record<InboxTone, string> = {
   neutral: 'bg-surface text-muted',
 }
 
-export const toneBar: Record<InboxTone, string> = {
-  gate: 'bg-primary',
-  ship: 'bg-positive',
-  question: 'bg-info',
-  broken: 'bg-failure',
-  document: 'bg-document',
-  neutral: 'bg-edge',
-}
-
 export function KindIcon({ kind, className }: { kind: string; className?: string }) {
   const { tone, icon: Icon } = inboxKind(kind)
   return <Icon aria-hidden data-kind-tone={tone} className={cn('size-3.5 shrink-0', toneText[tone], className)} />

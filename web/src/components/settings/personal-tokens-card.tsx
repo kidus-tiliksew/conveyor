@@ -1,5 +1,5 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { KeyRound, Plus } from 'lucide-react'
+import { Plus } from 'lucide-react'
 import { useState } from 'react'
 import { fetchPersonalAccessTokens, issuePersonalAccessToken, revokePersonalAccessToken } from '../../lib/api'
 import { errorMessage } from '../../lib/errors'
@@ -9,10 +9,11 @@ import { Card, CardContent, CardHeader, CardTitle } from '../ui/card'
 import { CopyButton } from '../ui/copy-button'
 import { Dialog } from '../ui/dialog'
 import { Input } from '../ui/input'
+import { dateTimeLabel } from '../../lib/utils'
 
 function lifecycleSummary(created: string, lastUsed?: string) {
-  const createdText = `Created ${new Date(created).toLocaleString()}`
-  return lastUsed ? `${createdText} · Last used ${new Date(lastUsed).toLocaleString()}` : `${createdText} · Never used`
+  const createdText = `Created ${dateTimeLabel(created)}`
+  return lastUsed ? `${createdText} · Last used ${dateTimeLabel(lastUsed)}` : `${createdText} · Never used`
 }
 
 const deploymentRevokeConfirmation = 'REVOKE DEPLOYMENT CREDENTIAL'
@@ -65,10 +66,9 @@ export function PersonalTokensCard() {
     <Card className="mt-4">
       <CardHeader>
         <CardTitle>Your access tokens</CardTitle>
-        <KeyRound className="size-4 text-faint" />
       </CardHeader>
       <CardContent className="space-y-3">
-        <p className="text-sm leading-6 text-muted">
+        <p className="text-xs leading-5 text-muted">
           Tokens sign in as you, from the CLI or an agent session. They are yours alone — nobody else can see or revoke
           them.
         </p>
@@ -84,7 +84,7 @@ export function PersonalTokensCard() {
             required
             aria-label="Token name"
             placeholder="Laptop CLI"
-            className="max-w-xs"
+            className="min-w-40 max-w-[25rem] flex-1"
             value={label}
             onChange={(event) => setLabel(event.target.value)}
           />

@@ -1,5 +1,4 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { Building2 } from 'lucide-react'
 import { useEffect, useId, useState } from 'react'
 import { createWorkspaceGitHubAppManifest, disconnectWorkspaceGitHubApp, fetchWorkspaceGitHubApp } from '../../lib/api'
 import { errorMessage } from '../../lib/errors'
@@ -76,7 +75,6 @@ export function WorkspaceGitHubAppCard() {
     <Card className="mt-4">
       <CardHeader>
         <CardTitle>Workspace GitHub App</CardTitle>
-        <Building2 className="size-4 text-faint" />
       </CardHeader>
       <CardContent className="space-y-4">
         {status.isPending && <p className="text-sm text-muted">Loading GitHub connection…</p>}

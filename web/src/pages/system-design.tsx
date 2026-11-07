@@ -31,7 +31,7 @@ import { LineageExplorer } from '../components/lineage/lineage-explorer'
 import { Badge } from '../components/ui/badge'
 import { Button } from '../components/ui/button'
 import { Card, CardContent } from '../components/ui/card'
-import { MarkdownProse } from '../components/ui/markdown-prose'
+import { MarkdownProse, withoutRepeatedTitle } from '../components/ui/markdown-prose'
 import {
   archiveSystemDesign,
   confirmSystemDesignVersion,
@@ -47,6 +47,7 @@ import {
 import { errorMessage } from '../lib/errors'
 import { decisionsQueryKey } from '../lib/query-keys'
 import type { SystemDesignSummary, SystemDesignVersion, SystemDesignView } from '../lib/types'
+import { PageHeader } from '../components/ui/page-header'
 
 const originLabels: Record<SystemDesignVersion['origin'], string> = {
   planning_session: 'Written in a planning conversation',
@@ -178,15 +179,7 @@ export function SystemDesignPage() {
 
   return (
     <div className="flex h-full min-h-0 flex-col">
-      <header className="flex shrink-0 items-center gap-3 border-b border-border px-4 py-3 lg:px-6 lg:py-4">
-        <span className="flex size-8 items-center justify-center rounded-lg bg-primary-soft text-primary">
-          <Layers className="size-4" />
-        </span>
-        <div className="min-w-0">
-          <h1 className="text-lg font-semibold tracking-tight">System Design</h1>
-          <p className="mt-0.5 text-xs text-muted">How this system works today, written down and confirmed.</p>
-        </div>
-      </header>
+      <PageHeader title="System Design" description="How this system works today, written down and confirmed." />
       <div className="flex min-h-0 flex-1 flex-col lg:flex-row">
         <DocumentTree>
           <DocumentTreeToolbar
@@ -558,7 +551,7 @@ function DesignCanvas({
   ]
 
   return (
-    <article className="mx-auto max-w-4xl px-4 py-6 sm:px-6 lg:px-8 lg:py-8">
+    <article className="mx-auto max-w-[50rem] px-4 py-6 sm:px-6 lg:px-8 lg:py-8">
       {!item.document.archived &&
         reviseTarget &&
         item.pending_versions.some((v) => v.version === reviseTarget.version) && (
@@ -597,17 +590,12 @@ function DesignCanvas({
           onConfirm={(supersededBy) => archive.mutate(supersededBy)}
         />
       )}
-      <header className="mb-8 flex flex-wrap items-start gap-4 border-b border-border pb-6">
+      <header className="mb-4 flex flex-wrap items-start gap-4">
         <div className="min-w-[14rem] flex-1">
-          <span
-            className="inline-flex items-center rounded-md border border-border bg-surface px-2 py-0.5 text-[10px] font-semibold uppercase tracking-[0.12em] text-faint"
-            title="The group this document belongs to"
-          >
+          <span className="text-xs font-medium text-faint" title="The group this document belongs to">
             {item.document.category}
           </span>
-          <h2 className="mt-3 text-[28px] font-semibold leading-tight tracking-tight text-balance">
-            {item.document.title}
-          </h2>
+          <h2 className="mt-1.5 text-[22px] font-semibold leading-[1.25] tracking-[-0.018em]">{item.document.title}</h2>
           {!item.current_version && <p className="mt-2 text-sm text-muted">No confirmed version</p>}
           {displayed ? (
             <div className="mt-3 flex flex-wrap items-center gap-1.5">
@@ -634,28 +622,6 @@ function DesignCanvas({
             <p className="mt-1.5 text-xs text-muted">No version has been written yet.</p>
           )}
         </div>
-        {/* The document's corner affordance (REQ-3): the code, work, and
-            evidence this guide governs, on demand. */}
-        <div className="flex shrink-0 flex-wrap items-center gap-2">
-          {canConfirm && !archivedByDismissal(item.document) && (
-            <Button
-              size="sm"
-              variant={item.document.archived ? 'secondary' : 'destructive'}
-              disabled={archive.isPending}
-              onClick={() => (item.document.archived ? archive.mutate([]) : setArchiveDialogOpen(true))}
-            >
-              {item.document.archived ? <RotateCcw /> : <Archive />}
-              {archive.isPending
-                ? item.document.archived
-                  ? 'Restoring…'
-                  : 'Archiving…'
-                : item.document.archived
-                  ? 'Restore'
-                  : 'Archive'}
-            </Button>
-          )}
-          <LineageExplorer type="system_design" id={item.document.id} />
-        </div>
       </header>
 
       {archive.error && item.document.archived && (
@@ -667,6 +633,28 @@ function DesignCanvas({
         </p>
       )}
       <DocumentReview
+        actions={
+          <>
+            {canConfirm && !archivedByDismissal(item.document) && (
+              <Button
+                size="sm"
+                variant="ghost"
+                disabled={archive.isPending}
+                onClick={() => (item.document.archived ? archive.mutate([]) : setArchiveDialogOpen(true))}
+              >
+                {item.document.archived ? <RotateCcw /> : <Archive />}
+                {archive.isPending
+                  ? item.document.archived
+                    ? 'Restoring…'
+                    : 'Archiving…'
+                  : item.document.archived
+                    ? 'Restore'
+                    : 'Archive'}
+              </Button>
+            )}
+            <LineageExplorer type="system_design" id={item.document.id} />
+          </>
+        }
         search={search}
         onChange={onReviewChange}
         versions={reviewVersions}
@@ -700,11 +688,13 @@ function DesignCanvas({
         }
         document={
           <>
-            <section className="mt-8">
-              {displayed && <MarkdownProse>{displayed.content}</MarkdownProse>}
+            <section className="document-body mt-5">
+              {displayed && (
+                <MarkdownProse>{withoutRepeatedTitle(displayed.content, item.document.title)}</MarkdownProse>
+              )}
               {displayed && displayed.governs.length > 0 && (
                 <div className="mt-8 flex flex-wrap items-center gap-2 border-t border-border pt-4">
-                  <span className="text-[10px] font-semibold uppercase tracking-[0.12em] text-faint">Covers</span>
+                  <span className="text-xs font-semibold text-muted">Covers</span>
                   {displayed.governs.flatMap((scope) =>
                     scope.paths.map((path) => (
                       <Badge key={`${scope.repository}:${path}`} variant="mono" title="Code this document describes">
@@ -722,7 +712,7 @@ function DesignCanvas({
             {' '}
             {deliveryConsultations.length > 0 && (
               <section className="mt-8 border-t border-border pt-5" aria-label="Delivery history">
-                <h3 className="flex items-center gap-1.5 text-xs font-semibold uppercase tracking-[0.12em] text-muted">
+                <h3 className="flex items-center gap-1.5 text-xs font-semibold text-muted">
                   <History className="size-3.5" /> Delivery history
                 </h3>
                 <ol className="mt-3 divide-y divide-border rounded-md border border-border">
@@ -752,7 +742,7 @@ function DesignCanvas({
             )}
             {archiveActivity.length > 0 && (
               <section className="mt-8 border-t border-border pt-5" aria-label="Archive activity">
-                <h3 className="flex items-center gap-1.5 text-xs font-semibold uppercase tracking-[0.12em] text-muted">
+                <h3 className="flex items-center gap-1.5 text-xs font-semibold text-muted">
                   <History className="size-3.5" /> Archive activity
                 </h3>
                 <ol className="mt-3 divide-y divide-border rounded-md border border-border">

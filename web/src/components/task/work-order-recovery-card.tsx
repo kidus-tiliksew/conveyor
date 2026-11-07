@@ -81,7 +81,7 @@ function VerificationCheckpointRecovery({ item, state }: { item: ActivityItem; s
       <div className="flex items-start gap-2">
         <TriangleAlert className="mt-0.5 size-4 shrink-0 text-attention" aria-hidden />
         <div className="min-w-0 space-y-1 leading-5">
-          <p className="text-[11px] font-semibold uppercase tracking-[0.08em] text-attention">{state.title}</p>
+          <p className="text-xs font-semibold text-attention">{state.title}</p>
           <p className="whitespace-pre-wrap break-words text-sm text-foreground">{checkpoint.reason}</p>
         </div>
       </div>

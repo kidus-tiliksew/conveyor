@@ -50,7 +50,7 @@ export function PlanningChat({
   const stickToBottom = useRef(true)
   const controller = useRef<AbortController | null>(null)
   const sidebar = variant === 'sidebar'
-  const gutter = sidebar ? 'px-4' : 'px-5'
+  const gutter = sidebar ? 'px-4' : 'px-6'
   const { data: session = summary } = useQuery({
     queryKey: ['planning-session', workspace, summary.id],
     queryFn: () => fetchPlanningSession(workspace, summary.id),
@@ -193,31 +193,44 @@ export function PlanningChat({
 
   return (
     <div className="flex h-full min-h-0 flex-col">
-      <div className={`flex shrink-0 items-center gap-3 border-b border-border ${gutter} py-3`}>
+      <div className={`flex shrink-0 items-center gap-3 border-b border-border ${gutter} py-2.5`}>
         <div className="min-w-0 flex-1">
-          <h2 className="truncate text-sm font-semibold">{session.title || 'Untitled planning session'}</h2>
+          <div className="flex min-w-0 items-center gap-2">
+            <h2 className="min-w-0 truncate text-[13px] font-semibold">
+              {session.title || 'Untitled planning session'}
+            </h2>
+            <Badge
+              variant={session.status === 'active' ? 'accent' : session.status === 'finalized' ? 'positive' : 'default'}
+            >
+              {sessionStatusLabels[session.status]}
+            </Badge>
+            {!sidebar && session.requirement_context_id && <Badge variant="accent">Requirement context</Badge>}
+          </div>
           {sidebar ? (
             <p className="mt-0.5 text-[11px] text-muted">{sessionGoalLabel(session)}</p>
           ) : (
-            <p className="mt-0.5 truncate font-mono text-[10px] text-faint">{session.id}</p>
+            <p className="mt-0.5 flex min-w-0 flex-wrap items-center gap-x-1.5 text-[11px] text-muted [&>span+span]:before:mr-1.5 [&>span+span]:before:content-['·']">
+              <span>{sessionGoalLabel(session)}</span>
+              {session.model && (
+                <span>
+                  {session.model}
+                  {session.effort ? ` · ${session.effort}` : ''}
+                </span>
+              )}
+              {session.exploration_output_tokens && (
+                <span>{session.exploration_output_tokens.toLocaleString()} tokens/call</span>
+              )}
+              {Object.entries(session.pinned_revisions ?? {})
+                .sort(([left], [right]) => left.localeCompare(right))
+                .map(([repo, revision]) => (
+                  <span key={repo} className="font-mono">
+                    {repo}@{revision.slice(0, 12)}
+                  </span>
+                ))}
+              <span className="truncate font-mono text-faint">{session.id}</span>
+            </p>
           )}
         </div>
-        {!sidebar && <Badge variant="mono">{sessionGoalLabel(session)}</Badge>}
-        {!sidebar && session.requirement_context_id && <Badge variant="accent">Requirement context</Badge>}
-        {!sidebar && session.model && (
-          <Badge variant="mono">
-            {session.model}
-            {session.effort ? ` · ${session.effort}` : ''}
-          </Badge>
-        )}
-        {!sidebar && session.exploration_output_tokens && (
-          <Badge variant="mono">{session.exploration_output_tokens.toLocaleString()} tokens/call</Badge>
-        )}
-        <Badge
-          variant={session.status === 'active' ? 'accent' : session.status === 'finalized' ? 'positive' : 'default'}
-        >
-          {sessionStatusLabels[session.status]}
-        </Badge>
         {canPropose && session.status === 'active' && (
           <Button
             variant="ghost"
@@ -231,23 +244,12 @@ export function PlanningChat({
           </Button>
         )}
       </div>
-      {!sidebar && session.pinned_revisions && Object.keys(session.pinned_revisions).length > 0 && (
-        <div className="flex shrink-0 flex-wrap gap-2 border-b border-border bg-surface/50 px-5 py-2">
-          {Object.entries(session.pinned_revisions)
-            .sort(([left], [right]) => left.localeCompare(right))
-            .map(([repo, revision]) => (
-              <Badge key={repo} variant="mono">
-                {repo}@{revision.slice(0, 12)}
-              </Badge>
-            ))}
-        </div>
-      )}
       {sessionArtifacts.length > 0 && (
         <section
           className={`flex shrink-0 flex-wrap items-center gap-2 border-b border-border bg-surface/50 ${gutter} py-2`}
           aria-label="Planning attachments"
         >
-          <span className="text-[10px] font-semibold uppercase tracking-[0.12em] text-faint">Attachments</span>
+          <span className="text-xs font-semibold text-muted">Attachments</span>
           {sessionArtifacts.map((artifact) => (
             <Attachment
               key={`${artifact.id}-${artifact.role}`}
@@ -472,7 +474,11 @@ function ConversationMessage({ group }: { group: MessageGroup }) {
   return (
     <Message from={group.role}>
       {group.role !== 'system' && <Avatar kind={group.role} />}
-      <div className={group.role === 'system' ? 'contents' : 'min-w-0 max-w-[82%] space-y-2'}>
+      <div
+        className={
+          group.role === 'system' ? 'contents' : 'flex min-w-0 max-w-[85%] flex-col space-y-2 [&>*]:max-w-full'
+        }
+      >
         <RenderedParts parts={group.parts} fallback={group.content} role={group.role} />
       </div>
     </Message>
@@ -640,11 +646,11 @@ function FinalizedHandoff({
 }) {
   const { workspace } = useWorkspaceSelection()
   return (
-    <div className={`shrink-0 border-t border-border bg-positive-soft ${gutter} py-4`}>
-      <div className={`flex flex-wrap items-center gap-3 ${sidebar ? '' : 'mx-auto max-w-3xl'}`}>
-        <CheckCircle2 className="size-5 text-positive" />
+    <div className={`shrink-0 border-t border-border bg-positive-soft/60 ${gutter} py-2.5`}>
+      <div className="flex flex-wrap items-center gap-3">
+        <CheckCircle2 className="size-4 text-positive" />
         <div className="min-w-0 flex-1">
-          <p className="text-sm font-semibold text-positive">Planning artifact finalized</p>
+          <p className="text-[13px] font-medium text-positive">Planning artifact finalized</p>
           <p className="text-xs text-muted">
             The conversation is archived in lineage; authority remains with the ordinary confirmation or plan gate.
           </p>

@@ -17,7 +17,7 @@ import { nextActionQueryKey, nextActionsQueryKey } from './use-next-actions'
 // Every choice button shares one height and one class, so a disabled choice
 // never changes the row's alignment; `choiceButtonClass` is exported for the
 // merge-at-gate button, which renders in the same row.
-export const choiceButtonClass = 'h-auto min-h-8 max-w-full py-1.5 text-left whitespace-normal [overflow-wrap:anywhere]'
+export const choiceButtonClass = 'h-auto min-h-8 max-w-full py-1 text-left whitespace-normal [overflow-wrap:anywhere]'
 
 // A disabled choice's reason as the reasons block under the row prints it.
 export type ChoiceReason = { id: string; label: string; text: string; choice?: string }

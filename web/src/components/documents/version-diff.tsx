@@ -1,3 +1,4 @@
+import { cn } from '../../lib/utils'
 import { type ReactNode, useId, useMemo, useState } from 'react'
 import { Button } from '../ui/button'
 import { MarkdownProse } from '../ui/markdown-prose'
@@ -158,60 +159,64 @@ export function DocumentComparison({ before, after }: { before: ReviewSource; af
     )
   return (
     <section aria-label="Version comparison" className="mt-6 min-w-0">
-      <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
-        <p className="text-sm text-muted">
-          {changed.length ? `${changed.length} changed sections` : 'No changes between these versions.'}
-        </p>
-        <div className="flex gap-2">
-          <Button
-            variant={mode === 'inline' ? 'default' : 'secondary'}
-            aria-pressed={mode === 'inline'}
-            onClick={() => setMode('inline')}
-          >
-            Inline
-          </Button>
-          <Button
-            variant={mode === 'side' ? 'default' : 'secondary'}
-            aria-pressed={mode === 'side'}
-            onClick={() => setMode('side')}
-          >
-            Side by side
-          </Button>
-        </div>
-      </div>
-      <div className={changed.length ? 'grid min-w-0 gap-4 lg:grid-cols-[10rem_minmax(0,1fr)]' : 'min-w-0'}>
-        {changed.length > 0 && (
-          <nav aria-label="Changed sections" className="min-w-0">
-            <p className="mb-2 text-[10px] font-semibold uppercase tracking-wider text-muted">Changed sections</p>
-            <div className="flex flex-wrap gap-1 lg:flex-col">
-              {changed.map((row, index) => (
-                <button
-                  type="button"
-                  key={row.id}
-                  aria-current={active === index ? 'true' : undefined}
-                  className={`rounded-md p-2 text-left text-xs break-words ${active === index ? 'bg-primary-soft text-primary' : 'text-muted hover:bg-surface'}`}
-                  onClick={() => go(index)}
-                >
-                  {row.title}
-                </button>
-              ))}
-            </div>
-            <div className="mt-4 flex flex-wrap gap-2">
-              <Button size="sm" variant="secondary" disabled={active === 0} onClick={() => go(active - 1)}>
-                Previous
-              </Button>
-              <Button
-                size="sm"
-                variant="secondary"
-                disabled={active >= changed.length - 1}
-                onClick={() => go(active + 1)}
-              >
-                Next
-              </Button>
-            </div>
-            <p className="mt-2 text-xs text-muted">
+      <div className="mb-3 flex flex-wrap items-center justify-between gap-3">
+        {changed.length ? (
+          <div className="flex flex-wrap items-center gap-2">
+            <Button size="sm" variant="secondary" disabled={active === 0} onClick={() => go(active - 1)}>
+              Previous
+            </Button>
+            <Button
+              size="sm"
+              variant="secondary"
+              disabled={active >= changed.length - 1}
+              onClick={() => go(active + 1)}
+            >
+              Next
+            </Button>
+            <p className="text-xs text-muted">
               {active + 1} of {changed.length} changes
             </p>
+          </div>
+        ) : (
+          <p className="text-sm text-muted">No changes between these versions.</p>
+        )}
+        <div className="ml-auto flex h-8 rounded-lg bg-raised/70 p-0.5">
+          {(
+            [
+              ['inline', 'Inline'],
+              ['side', 'Side by side'],
+            ] as const
+          ).map(([value, label]) => (
+            <button
+              key={value}
+              type="button"
+              aria-pressed={mode === value}
+              onClick={() => setMode(value)}
+              className={cn(
+                'rounded-md px-2.5 text-xs font-medium transition-colors',
+                mode === value ? 'bg-segment text-foreground shadow-xs' : 'text-muted hover:text-foreground',
+              )}
+            >
+              {label}
+            </button>
+          ))}
+        </div>
+      </div>
+      <div className="min-w-0 space-y-3">
+        {changed.length > 0 && (
+          <nav aria-label="Changed sections" className="flex min-w-0 flex-wrap items-center gap-1">
+            <p className="mr-1 text-xs font-semibold text-muted">Changed sections</p>
+            {changed.map((row, index) => (
+              <button
+                type="button"
+                key={row.id}
+                aria-current={active === index ? 'true' : undefined}
+                className={`rounded-md px-2 py-1 text-left text-xs break-words ${active === index ? 'bg-primary-soft text-primary' : 'text-muted hover:bg-surface'}`}
+                onClick={() => go(index)}
+              >
+                {row.title}
+              </button>
+            ))}
           </nav>
         )}
         <div className="min-w-0 space-y-4">
@@ -242,7 +247,11 @@ export function DocumentComparison({ before, after }: { before: ReviewSource; af
                 <ReviewRowContent row={row} mode={mode} />
               </section>
             ) : (
-              <details key={row.id} className="min-w-0 rounded-lg border border-dashed border-border p-4">
+              <details
+                key={row.id}
+                data-unchanged-section
+                className="min-w-0 border-x border-t border-border bg-card px-4 py-2.5 first:rounded-t-lg last:rounded-b-lg last:border-b [&+section]:mt-3 [section+&]:mt-3 [section+&]:rounded-t-lg [&:has(+section)]:rounded-b-lg [&:has(+section)]:border-b"
+              >
                 <summary className="cursor-pointer text-xs text-muted">Show unchanged section · {row.title}</summary>
                 <div className="mt-4 min-w-0 overflow-auto">
                   <MarkdownProse>{row.after?.content ?? ''}</MarkdownProse>
@@ -346,7 +355,7 @@ function ReviewParagraph({
   const words = complete ? undefined : formattedParagraphChanges(before, after)
   if (mode === 'inline' && words)
     return (
-      <div className="whitespace-pre-wrap break-words p-4 text-sm leading-7">
+      <div className="whitespace-pre-wrap break-words p-4 text-sm leading-6">
         <ChangedWords words={words} />
         {!before && !after && 'Empty section'}
       </div>
@@ -367,7 +376,7 @@ function ReviewParagraph({
             {(side === 'before' ? beforeSource : afterSource) === undefined ? (
               <AbsentSide />
             ) : words ? (
-              <div className="whitespace-pre-wrap break-words text-sm leading-7">
+              <div className="whitespace-pre-wrap break-words text-sm leading-6">
                 <ChangedWords words={words} side={side} />
               </div>
             ) : (
@@ -383,11 +392,7 @@ function ReviewParagraph({
 }
 
 function SideLabel({ side }: { side: ReviewSide }) {
-  return (
-    <p className="mb-3 text-[10px] font-semibold uppercase tracking-wider text-muted">
-      {side === 'before' ? 'Base' : 'Target'}
-    </p>
-  )
+  return <p className="mb-3 text-xs font-semibold text-muted">{side === 'before' ? 'Base' : 'Target'}</p>
 }
 
 function AbsentSide() {

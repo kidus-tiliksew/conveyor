@@ -3,10 +3,10 @@ import type { InputHTMLAttributes, SelectHTMLAttributes, TextareaHTMLAttributes 
 import { cn } from '../../lib/utils'
 
 const fieldClasses =
-  'w-full rounded-md border border-edge bg-background px-3 py-2 text-sm text-foreground placeholder:text-faint outline-none transition-colors focus:border-primary focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-primary/40 disabled:opacity-40'
+  'w-full rounded-md border border-edge bg-card px-2.5 py-1.5 text-[13px] text-foreground shadow-xs placeholder:text-faint outline-none transition-[border-color,box-shadow] duration-150 hover:border-faint/70 focus:border-primary focus:ring-3 focus:ring-primary/15 disabled:opacity-50 disabled:shadow-none'
 
 export function Input({ className, ...props }: InputHTMLAttributes<HTMLInputElement>) {
-  return <input className={cn(fieldClasses, 'h-9', className)} {...props} />
+  return <input className={cn(fieldClasses, 'h-8', className)} {...props} />
 }
 
 export function Textarea({ className, ...props }: TextareaHTMLAttributes<HTMLTextAreaElement>) {
@@ -16,7 +16,7 @@ export function Textarea({ className, ...props }: TextareaHTMLAttributes<HTMLTex
 export function Select({ className, children, ...props }: SelectHTMLAttributes<HTMLSelectElement>) {
   return (
     <span className={cn('relative inline-flex w-full', className)}>
-      <select className={cn(fieldClasses, 'h-9 appearance-none pr-8')} {...props}>
+      <select className={cn(fieldClasses, 'h-8 appearance-none py-0 pr-8')} {...props}>
         {children}
       </select>
       <ChevronDown className="pointer-events-none absolute right-2.5 top-1/2 size-4 -translate-y-1/2 text-faint" />

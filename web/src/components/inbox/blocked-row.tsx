@@ -26,7 +26,7 @@ export function BlockedRow({
         to="/w/$workspaceId/tasks/$taskId"
         params={{ workspaceId: workspace, taskId: task.id }}
         title={task.title}
-        className="block truncate text-sm font-medium hover:underline"
+        className="line-clamp-2 text-sm font-medium hover:underline"
       >
         {task.title}
       </Link>

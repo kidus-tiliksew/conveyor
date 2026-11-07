@@ -49,7 +49,7 @@ export function AssigneeChip({
     >
       <span
         aria-hidden="true"
-        className={`flex size-4 shrink-0 items-center justify-center rounded-full text-[9px] font-medium leading-none ${
+        className={`flex size-4 shrink-0 items-center justify-center rounded-full text-[10px] font-medium leading-none ${
           tone === 'neutral' ? 'bg-raised text-muted ring-1 ring-border' : 'bg-primary/15 text-primary'
         }`}
       >

@@ -6,6 +6,7 @@ import { Card, CardContent } from '../components/ui/card'
 import { childRollup, deliveryLabel, deliveryTone } from '../lib/blueprint'
 import { errorMessage } from '../lib/errors'
 import type { BlueprintView } from '../lib/types'
+import { PageHeader } from '../components/ui/page-header'
 
 // Historical Blueprints lens: retained records remain
 // queryable, but this surface offers no creation path. Its navigation entry is
@@ -17,52 +18,51 @@ export function BlueprintsPage() {
   const { data: blueprints, isLoading, error } = useBlueprints()
 
   return (
-    <div className="h-full overflow-y-auto">
-      <div className="mx-auto max-w-5xl px-4 py-6 sm:px-6 sm:py-8">
-        <header className="flex flex-wrap items-start justify-between gap-4">
-          <div>
-            <div className="flex items-center gap-2">
-              <h1 className="text-xl font-semibold tracking-tight">Blueprint history</h1>
-              <Badge variant="mono">{blueprints?.length ?? 0}</Badge>
-            </div>
-            <p className="mt-1 max-w-2xl text-sm text-muted">
-              Read-only records of legacy blueprints and the tasks they fanned out. New delivery work is proposed
-              through planning bundles and managed in{' '}
-              <Link to="/w/$workspaceId/" params={{ workspaceId: workspace }} className="text-primary hover:underline">
-                the Board
-              </Link>
-              .
-            </p>
-          </div>
-        </header>
+    <div className="flex h-full flex-col">
+      <PageHeader
+        title="Blueprint history"
+        meta={<Badge variant="mono">{blueprints?.length ?? 0}</Badge>}
+        description={
+          <>
+            Read-only records of legacy blueprints and the tasks they fanned out. New delivery work is proposed through
+            planning bundles and managed in{' '}
+            <Link to="/w/$workspaceId/" params={{ workspaceId: workspace }} className="text-primary hover:underline">
+              the Board
+            </Link>
+            .
+          </>
+        }
+      />
+      <div className="min-h-0 flex-1 overflow-y-auto">
+        <div className="px-4 py-5 lg:px-6">
+          {!workspace && <EmptyMessage>Choose a workspace to open its blueprints.</EmptyMessage>}
+          {isLoading && workspace && <EmptyMessage>Loading blueprints…</EmptyMessage>}
+          {error != null && (
+            <EmptyMessage tone="failure">{errorMessage(error, 'Could not load blueprints.')}</EmptyMessage>
+          )}
 
-        {!workspace && <EmptyMessage>Choose a workspace to open its blueprints.</EmptyMessage>}
-        {isLoading && workspace && <EmptyMessage>Loading blueprints…</EmptyMessage>}
-        {error != null && (
-          <EmptyMessage tone="failure">{errorMessage(error, 'Could not load blueprints.')}</EmptyMessage>
-        )}
+          {blueprints?.length === 0 && (
+            <Card className="mt-8 border-dashed">
+              <CardContent className="flex min-h-56 flex-col items-center justify-center text-center">
+                <History className="size-7 text-primary" />
+                <h2 className="mt-4 text-base font-semibold">No historical blueprints</h2>
+                <p className="mt-2 max-w-md text-sm leading-6 text-muted">
+                  This workspace has no legacy blueprint records.
+                </p>
+              </CardContent>
+            </Card>
+          )}
 
-        {blueprints?.length === 0 && (
-          <Card className="mt-8 border-dashed">
-            <CardContent className="flex min-h-56 flex-col items-center justify-center text-center">
-              <History className="size-7 text-primary" />
-              <h2 className="mt-4 text-base font-semibold">No historical blueprints</h2>
-              <p className="mt-2 max-w-md text-sm leading-6 text-muted">
-                This workspace has no legacy blueprint records.
-              </p>
-            </CardContent>
-          </Card>
-        )}
-
-        {blueprints && blueprints.length > 0 && (
-          <ul className="mt-7 space-y-3">
-            {blueprints.map((view) => (
-              <li key={view.task.id}>
-                <BlueprintListEntry view={view} />
-              </li>
-            ))}
-          </ul>
-        )}
+          {blueprints && blueprints.length > 0 && (
+            <ul className="space-y-2">
+              {blueprints.map((view) => (
+                <li key={view.task.id}>
+                  <BlueprintListEntry view={view} />
+                </li>
+              ))}
+            </ul>
+          )}
+        </div>
       </div>
     </div>
   )
@@ -79,12 +79,12 @@ function BlueprintListEntry({ view }: { view: BlueprintView }) {
     >
       <Blocks className="mt-0.5 size-4 shrink-0 text-primary" />
       <div className="min-w-0 flex-1">
-        <div className="flex flex-wrap items-center gap-2">
-          <strong className="truncate text-sm font-medium">{view.task.title}</strong>
+        <strong className="block text-[13px] font-medium max-sm:line-clamp-3 sm:truncate">{view.task.title}</strong>
+        <div className="mt-1 flex flex-wrap items-center gap-2 text-xs text-muted">
           <Badge variant={deliveryTone(view.delivery)}>{deliveryLabel(view.delivery)}</Badge>
-          {specVersion ? <Badge variant="mono">Blueprint v{specVersion}</Badge> : null}
+          {specVersion ? <span>Blueprint v{specVersion}</span> : null}
+          <span>{childRollup(view.delivery)}</span>
         </div>
-        <p className="mt-1.5 text-xs text-muted">{childRollup(view.delivery)}</p>
         {view.planning_session?.model && (
           <p className="mt-1.5 flex flex-wrap gap-1.5 text-[11px] text-faint">
             <Badge variant="mono">
@@ -92,9 +92,7 @@ function BlueprintListEntry({ view }: { view: BlueprintView }) {
               {view.planning_session.effort ? ` · ${view.planning_session.effort}` : ''}
             </Badge>
             {view.planning_session.exploration_output_tokens ? (
-              <Badge variant="mono">
-                {view.planning_session.exploration_output_tokens.toLocaleString()} tokens/call
-              </Badge>
+              <Badge>{view.planning_session.exploration_output_tokens.toLocaleString()} tokens/call</Badge>
             ) : null}
             {Object.entries(view.planning_session.pinned_revisions ?? {})
               .sort(([left], [right]) => left.localeCompare(right))

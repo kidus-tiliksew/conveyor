@@ -106,11 +106,35 @@ export function TaskHeader({ item, variant }: { item: ActivityItem; variant: 'sh
   return (
     <div>
       <TaskIdentity item={item} variant={variant} />
-      <TaskFacts item={item} variant={variant} columns={variant === 'full' ? 'two' : 'one'} />
-      <div className="mt-4">
+      <TaskFacts item={item} variant={variant} columns="two" />
+      <div className="mt-3">
         <TaskAgentPrompt item={item} />
       </div>
     </div>
+  )
+}
+
+// The task's status alone, for a header that stays in view while the reader
+// scrolls through older activity.
+export function TaskStatusBadge({ item }: { item: ActivityItem }) {
+  const triageFailure = failedTriage(item)
+  const label = triageFailure
+    ? 'Triage failed'
+    : item.stalled?.needed
+      ? 'Stalled'
+      : (taskStateLabels[item.task.state] ?? item.task.state)
+  return (
+    <Badge
+      variant={
+        item.task.state === 'approved' || item.task.state === 'merged'
+          ? 'positive'
+          : item.needs_attention
+            ? 'attention'
+            : 'outline'
+      }
+    >
+      {label}
+    </Badge>
   )
 }
 
@@ -166,7 +190,9 @@ export function TaskIdentity({ item, variant }: { item: ActivityItem; variant: '
           blockingIDs.size > 0 && <Badge variant="mono">Waiting on dependencies</Badge>
         )}
         {item.task.class && <Badge>{sentenceCase(item.task.class)}</Badge>}
-        <span className="min-w-0 font-mono text-[11px] text-faint [overflow-wrap:anywhere]">{item.task.id}</span>
+        {variant === 'sheet' && (
+          <span className="min-w-0 font-mono text-[11px] text-faint [overflow-wrap:anywhere]">{item.task.id}</span>
+        )}
         {/* Controls sit apart from the status chips: a destructive action
             never belongs in the row the eye reads for state. */}
         {canOperate && <TaskActions key={item.task.id} item={item} variant={variant} />}
@@ -191,8 +217,10 @@ export function TaskIdentity({ item, variant }: { item: ActivityItem; variant: '
           <p className="mt-1 whitespace-pre-wrap">{item.task.intake_operator_direction}</p>
         </section>
       )}
-      <Heading className="text-xl font-semibold leading-snug tracking-tight text-balance">{item.task.title}</Heading>
-      {item.task.body && <TaskBody body={item.task.body} />}
+      <Heading className="text-xl font-semibold leading-snug tracking-tight">{item.task.title}</Heading>
+      {item.task.body && (
+        <TaskBody body={item.task.body} clampClassName={variant === 'sheet' ? 'max-h-[4lh]' : 'max-h-[5lh]'} />
+      )}
     </div>
   )
 }
@@ -218,7 +246,7 @@ export function TaskFacts({
     <div>
       <dl
         className={cn(
-          'mt-5 grid grid-cols-[minmax(6.5rem,max-content)_minmax(0,1fr)] items-center gap-x-6 gap-y-2 border-y border-border py-3.5 text-[13px] leading-5',
+          'mt-3 grid grid-cols-[minmax(6.5rem,max-content)_minmax(0,1fr)] items-center gap-x-6 gap-y-1 border-y border-border py-2.5 text-[13px] leading-5',
           columns === 'two' &&
             'lg:grid-cols-[minmax(6.5rem,max-content)_minmax(0,1fr)_minmax(6.5rem,max-content)_minmax(0,1fr)] lg:gap-x-10',
           className,
@@ -243,10 +271,17 @@ export function TaskFacts({
                 href={prURL}
                 target="_blank"
                 rel="noreferrer"
+                aria-label={forgeReference(prURL)}
+                title={forgeReference(prURL)}
                 className="inline-flex max-w-full items-center gap-1.5 hover:text-primary hover:underline"
               >
                 <GitPullRequest aria-hidden className="size-3 shrink-0 text-faint" />
-                <span className="truncate">{forgeReference(prURL)}</span>
+                {/* The narrow rail drops the owner; the name and tooltip keep it. */}
+                <span className="truncate">
+                  {columns === 'one' && variant === 'full'
+                    ? forgeReference(prURL).replace(/^[^/#]+\//, '')
+                    : forgeReference(prURL)}
+                </span>
                 <ExternalLink aria-hidden className="size-3 shrink-0 text-faint" />
               </a>
             }
@@ -718,7 +753,7 @@ export function CancelControl({ item, onClose }: { item: ActivityItem; onClose?:
   )
 }
 
-function TaskBody({ body }: { body: string }) {
+function TaskBody({ body, clampClassName }: { body: string; clampClassName: string }) {
   const [expanded, setExpanded] = useState(false)
   const [hasOverflow, setHasOverflow] = useState(false)
   const viewportRef = useRef<HTMLDivElement>(null)
@@ -736,15 +771,19 @@ function TaskBody({ body }: { body: string }) {
   }, [body, expanded])
 
   return (
-    <div className="mt-2 max-w-3xl">
+    <div className="mt-2">
       <div className="relative">
-        <div ref={viewportRef} id={viewportID} className={cn(!expanded && 'max-h-32 overflow-hidden')}>
+        <div
+          ref={viewportRef}
+          id={viewportID}
+          className={cn('text-[14px] leading-[1.68]', !expanded && clampClassName, !expanded && 'overflow-hidden')}
+        >
           <MarkdownProse className="markdown-demoted text-sm">{body}</MarkdownProse>
         </div>
         {hasOverflow && !expanded && (
           <div
             aria-hidden="true"
-            className="spec-overflow-shadow pointer-events-none absolute inset-x-0 bottom-0 h-16"
+            className="spec-overflow-shadow pointer-events-none absolute inset-x-0 bottom-0 h-6"
             data-task-body-overflow-shadow
           />
         )}
@@ -912,6 +951,8 @@ export function TaskAgentPrompt({ item }: { item: ActivityItem }) {
   const { workspace } = useWorkspaceSelection()
   const [open, setOpen] = useState(false)
   const promptID = useId()
+  // A prompt to work a finished task leads nowhere.
+  if (item.task.state === 'merged' || item.task.state === 'closed') return null
   if (item.checkout_available) {
     if (!workspace) return null
     const prompt = agentPrompt(item, workspace)
@@ -953,7 +994,7 @@ export function TaskAgentPrompt({ item }: { item: ActivityItem }) {
   }
   if (!item.checkout_guidance) return null
   return (
-    <div className="flex max-w-xl items-start gap-2 rounded-md border border-border bg-surface px-2.5 py-1.5">
+    <div className="flex items-start gap-2 rounded-md border border-border bg-surface px-2.5 py-1.5">
       <Terminal className="mt-0.5 size-3.5 shrink-0 text-faint" aria-hidden="true" />
       <p className="min-w-0 text-[11px] leading-5 text-muted">
         <span className="font-medium">Work on this locally</span> — {item.checkout_guidance}

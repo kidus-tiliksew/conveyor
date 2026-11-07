@@ -1,8 +1,8 @@
 import { useQuery } from '@tanstack/react-query'
 import { Link, useNavigate, useParams, useSearch } from '@tanstack/react-router'
-import { ArrowRight, ChevronRight, Clock, Scale, Search } from 'lucide-react'
+import { ArrowRight, ChevronRight, Clock, Search } from 'lucide-react'
 import { type ReactNode, useMemo } from 'react'
-import { useWorkspaceSelection } from '../components/app-shell'
+import { useWorkspaceMembers, useWorkspaceSelection } from '../components/app-shell'
 import {
   alternativeRows,
   citationsByDecision,
@@ -29,7 +29,9 @@ import { fetchDecisionCitations, fetchDecisions } from '../lib/api'
 import { errorMessage } from '../lib/errors'
 import { decisionCitationsQueryKey, decisionsQueryKey } from '../lib/query-keys'
 import type { Decision, DecisionCitation } from '../lib/types'
+import { actorName } from '../lib/activity'
 import { cn } from '../lib/utils'
+import { PageHeader } from '../components/ui/page-header'
 
 // The two workspace reads behind the Decisions surface and every decision
 // page: the decision list and the decision citations, one query each, keyed by
@@ -103,19 +105,12 @@ export function DecisionsPage() {
 
   return (
     <div className="flex h-full min-h-0 flex-col">
-      <header className="flex shrink-0 items-center gap-3 border-b border-border px-4 py-3 lg:px-6 lg:py-4">
-        <span className="flex size-8 items-center justify-center rounded-lg bg-primary-soft text-primary">
-          <Scale className="size-4" />
-        </span>
-        <div className="min-w-0">
-          <h1 className="text-lg font-semibold tracking-tight">Decisions</h1>
-          <p className="mt-0.5 text-xs text-muted">
-            The choices that govern how this system works, and the ones that replaced them.
-          </p>
-        </div>
-      </header>
+      <PageHeader
+        title="Decisions"
+        description="The choices that govern how this system works, and the ones that replaced them."
+      />
       <main className="min-h-0 flex-1 overflow-y-auto">
-        <div className="mx-auto max-w-4xl px-4 py-6 sm:px-6 lg:px-8">
+        <div className="px-4 py-5 lg:px-6">
           {openFlags > 0 && (
             <section
               aria-label="Decisions needing attention"
@@ -160,10 +155,7 @@ export function DecisionsPage() {
             </p>
           )}
           <div className="flex flex-wrap items-center gap-3">
-            <fieldset
-              aria-label="Filter decisions"
-              className="m-0 inline-flex rounded-lg border border-border bg-surface p-0.5"
-            >
+            <fieldset aria-label="Filter decisions" className="m-0 inline-flex h-8 rounded-lg bg-raised/70 p-0.5">
               {decisionFilters.map((option) => {
                 const count = all.filter((decision) => inFilter(decision, option.value)).length
                 return (
@@ -179,14 +171,14 @@ export function DecisionsPage() {
                       })
                     }
                     className={cn(
-                      'inline-flex items-center gap-1.5 rounded-md px-2.5 py-1 text-xs font-medium transition-colors',
+                      'inline-flex items-center gap-1.5 rounded-md px-2.5 text-xs font-medium transition-colors',
                       filter === option.value
-                        ? 'bg-background text-foreground shadow-sm'
+                        ? 'bg-segment text-foreground shadow-xs'
                         : 'text-muted hover:text-foreground',
                     )}
                   >
                     {option.label}
-                    <span className="font-mono text-[11px] text-faint">{count}</span>
+                    <span className="text-[11px] tabular-nums text-faint">{count}</span>
                   </button>
                 )
               })}
@@ -220,7 +212,10 @@ export function DecisionsPage() {
                 {all.length === 0 ? 'No decisions are recorded in this workspace.' : 'No decisions match.'}
               </p>
             ) : (
-              <ul aria-label="Decisions" className="divide-y divide-border rounded-lg border border-border">
+              <ul
+                aria-label="Decisions"
+                className="divide-y divide-border rounded-xl border border-border bg-card shadow-xs"
+              >
                 {rows.map((decision) => (
                   <DecisionRow
                     key={decision.id}
@@ -242,6 +237,19 @@ export function DecisionsPage() {
   )
 }
 
+// Statements are written in Markdown; the list previews their inline code the
+// way documents render it, without literal backticks.
+function InlineCode({ text, className = 'text-[13px] leading-5' }: { text: string; className?: string }) {
+  return (
+    <span className={`markdown text-foreground ${className}`}>
+      {text.split(/`([^`]+)`/).map((part, index) =>
+        // biome-ignore lint/suspicious/noArrayIndexKey: the parts of one fixed string never reorder
+        index % 2 === 1 ? <code key={index}>{part}</code> : <span key={index}>{part}</span>,
+      )}
+    </span>
+  )
+}
+
 function DecisionRow({ decision, citingCount }: { decision: Decision; citingCount?: number }) {
   const { workspace } = useWorkspaceSelection()
   const clauses = statementClauses(decision.statement)
@@ -251,20 +259,22 @@ function DecisionRow({ decision, citingCount }: { decision: Decision; citingCoun
       <Link
         to="/w/$workspaceId/decisions/$decisionId"
         params={{ workspaceId: workspace, decisionId: decision.id }}
-        className="block px-4 py-3 transition-colors hover:bg-surface/60"
+        className="block px-4 py-2.5 transition-colors first:rounded-t-xl hover:bg-surface/70"
       >
         <div className="flex items-start gap-3">
-          <Badge variant="mono" className="mt-0.5 shrink-0">
-            {decision.id}
-          </Badge>
-          <div className="min-w-0 flex-1">
-            <p className="line-clamp-2 text-sm text-foreground">{clauses ? `(1) ${clauses[0]}` : decision.statement}</p>
-            <p className="mt-1 flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-muted">
+          <span className="mt-px w-14 shrink-0 font-mono text-[11px] leading-5 text-muted">{decision.id}</span>
+          <div className="flex min-w-0 flex-1 flex-col gap-1 2xl:flex-row 2xl:items-start 2xl:justify-between 2xl:gap-8">
+            <p className="line-clamp-2 min-w-0 flex-1 text-[13px] leading-5 text-foreground">
+              <InlineCode text={clauses ? `(1) ${clauses[0]}` : decision.statement} />
+            </p>
+            <p className="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-muted sm:h-5 sm:flex-nowrap sm:overflow-hidden sm:whitespace-nowrap 2xl:mt-px 2xl:w-[34rem] 2xl:shrink-0">
               {decision.status !== 'confirmed' && (
-                <Badge variant={statusVariants[decision.status]}>{statusLabels[decision.status]}</Badge>
+                <Badge className="py-0" variant={statusVariants[decision.status]}>
+                  {statusLabels[decision.status]}
+                </Badge>
               )}
-              {clauses && <span>{clauses.length} clauses</span>}
-              <span className="inline-flex items-center gap-1">
+              <span className="shrink-0 sm:w-16">{clauses ? `${clauses.length} clauses` : '1 clause'}</span>
+              <span className="inline-flex shrink-0 items-center gap-1 tabular-nums sm:w-24">
                 <Clock className="size-3" />
                 <time dateTime={decisionDate(decision)}>{formatDecisionDate(decisionDate(decision))}</time>
               </span>
@@ -272,7 +282,7 @@ function DecisionRow({ decision, citingCount }: { decision: Decision; citingCoun
               {decision.supersedes && <span>Replaces {decision.supersedes}</span>}
               {decision.superseded_by && <span>Replaced by {decision.superseded_by}</span>}
               {open > 0 && decision.supersedes && (
-                <Badge variant="attention">
+                <Badge className="py-0" variant="attention">
                   {open} still cite {decision.supersedes}
                 </Badge>
               )}
@@ -309,8 +319,7 @@ export function DecisionPage() {
   )
   if (decisions.isLoading)
     return (
-      <DecisionFrame>
-        {breadcrumb}
+      <DecisionFrame breadcrumb={breadcrumb}>
         <div className="mt-6 space-y-3" role="status" aria-label="Loading decision">
           <Skeleton className="h-10" />
           <Skeleton className="h-32" />
@@ -319,8 +328,7 @@ export function DecisionPage() {
     )
   if (decisions.error)
     return (
-      <DecisionFrame>
-        {breadcrumb}
+      <DecisionFrame breadcrumb={breadcrumb}>
         <p role="alert" className="mt-6 rounded-md bg-failure-soft px-3 py-2 text-sm text-failure">
           {errorMessage(decisions.error, 'Could not load this decision.')}
         </p>
@@ -328,8 +336,7 @@ export function DecisionPage() {
     )
   if (!decision)
     return (
-      <DecisionFrame>
-        {breadcrumb}
+      <DecisionFrame breadcrumb={breadcrumb}>
         <section aria-label="Decision not found" className="mt-10 text-center">
           <h1 className="text-lg font-semibold tracking-tight">No such decision</h1>
           <p className="mt-2 text-sm text-muted">
@@ -346,8 +353,7 @@ export function DecisionPage() {
       </DecisionFrame>
     )
   return (
-    <DecisionFrame>
-      {breadcrumb}
+    <DecisionFrame breadcrumb={breadcrumb}>
       <DecisionRecord
         // Keyed by the decision, so no copy or mutation state outlives it.
         key={decision.id}
@@ -360,10 +366,16 @@ export function DecisionPage() {
   )
 }
 
-function DecisionFrame({ children }: { children: ReactNode }) {
+// The same bar every page opens with, holding the way back to the list.
+function DecisionFrame({ breadcrumb, children }: { breadcrumb: ReactNode; children: ReactNode }) {
   return (
-    <main className="h-full min-h-0 overflow-y-auto">
-      <article className="mx-auto max-w-3xl px-4 py-6 sm:px-6 lg:px-8 lg:py-8">{children}</article>
+    <main className="flex h-full min-h-0 flex-col">
+      <div className="flex min-h-12 shrink-0 items-center border-b border-border px-4 lg:h-14 lg:px-6">
+        {breadcrumb}
+      </div>
+      <div className="min-h-0 flex-1 overflow-y-auto">
+        <article className="mx-auto max-w-[50rem] px-4 py-6 sm:px-6 lg:px-8 lg:py-8">{children}</article>
+      </div>
     </main>
   )
 }
@@ -386,13 +398,14 @@ function DecisionRecord({
   const alternatives = alternativeRows(decision.alternatives_rejected ?? '')
   const confirmedAt = recordedTime(decision.confirmed_at)
   const dismissedAt = recordedTime(decision.dismissed_at)
+  const members = useWorkspaceMembers().data ?? []
   return (
     <>
-      <header className="mt-4 border-b border-border pb-5">
+      <header className="border-b border-border pb-5">
         <div className="flex flex-wrap items-center gap-2">
           <h1 className="font-mono text-2xl font-semibold tracking-tight">{decision.id}</h1>
           <Badge variant={statusVariants[decision.status]}>{statusLabels[decision.status]}</Badge>
-          <span className="ml-auto flex items-center gap-1">
+          <span className="-mr-2.5 ml-auto flex items-center gap-1">
             <CopyButton
               value={`${window.location.origin}/w/${encodeURIComponent(workspace)}/decisions/${encodeURIComponent(decision.id)}`}
               label="Copy link"
@@ -404,14 +417,14 @@ function DecisionRecord({
         <p className="mt-2 flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-muted">
           {decision.status === 'dismissed' ? (
             <span>
-              Dismissed{decision.dismissed_by ? ` by ${decision.dismissed_by}` : ''}
+              Dismissed{decision.dismissed_by ? ` by ${actorName(decision.dismissed_by, members)}` : ''}
               {dismissedAt ? ` on ${formatDecisionDate(dismissedAt)}` : ''}
             </span>
           ) : decision.status === 'proposed' ? (
             <span>Proposed on {formatDecisionDate(decision.created_at)}</span>
           ) : (
             <span>
-              Confirmed{decision.confirmed_by ? ` by ${decision.confirmed_by}` : ''}
+              Confirmed{decision.confirmed_by ? ` by ${actorName(decision.confirmed_by, members)}` : ''}
               {confirmedAt ? ` on ${formatDecisionDate(confirmedAt)}` : ''}
             </span>
           )}
@@ -463,21 +476,23 @@ function DecisionRecord({
       )}
       <section aria-label="Statement" className="mt-6">
         {clauses ? (
-          <ol className="divide-y divide-border rounded-lg border border-border">
+          <ol className="divide-y divide-border rounded-xl border border-border bg-card shadow-xs">
             {clauses.map((clause, index) => (
               <li key={`${index}:${clause}`} className="flex gap-3 px-4 py-3 text-[15px] leading-7">
                 <span className="shrink-0 font-mono text-sm font-semibold text-muted">({index + 1})</span>
-                <span>{clause}</span>
+                <InlineCode text={clause} className="text-[15px] leading-7" />
               </li>
             ))}
           </ol>
         ) : (
-          <p className="text-[15px] leading-7">{decision.statement}</p>
+          <p className="text-[15px] leading-7">
+            <InlineCode text={decision.statement} className="text-[15px] leading-7" />
+          </p>
         )}
       </section>
       {chain.length > 1 && (
         <section aria-label="Version chain" className="mt-8">
-          <h2 className="text-xs font-semibold uppercase tracking-[0.12em] text-muted">Version chain</h2>
+          <h2 className="text-xs font-semibold text-muted">Version chain</h2>
           <ol className="mt-2 flex flex-wrap items-center gap-1.5">
             {chain.map((item, index) => (
               <li key={item.id} className="flex items-center gap-1.5">
@@ -504,16 +519,18 @@ function DecisionRecord({
         </section>
       )}
       <section aria-label="Why" className="mt-8">
-        <h2 className="text-xs font-semibold uppercase tracking-[0.12em] text-muted">Why</h2>
-        <p className="mt-2 whitespace-pre-wrap text-sm leading-6">{decision.context || 'No context was recorded.'}</p>
+        <h2 className="text-xs font-semibold text-muted">Why</h2>
+        <p className="mt-2 whitespace-pre-wrap text-sm leading-6">
+          <InlineCode text={decision.context || 'No context was recorded.'} className="text-sm leading-6" />
+        </p>
       </section>
       <section aria-label="Alternatives rejected" className="mt-8">
-        <h2 className="text-xs font-semibold uppercase tracking-[0.12em] text-muted">Alternatives rejected</h2>
+        <h2 className="text-xs font-semibold text-muted">Alternatives rejected</h2>
         {alternatives.length > 0 ? (
-          <ul className="mt-2 divide-y divide-border rounded-lg border border-border">
+          <ul className="mt-2 divide-y divide-border rounded-xl border border-border bg-card shadow-xs">
             {alternatives.map((alternative, index) => (
               <li key={`${index}:${alternative}`} className="px-4 py-2.5 text-sm leading-6">
-                {alternative}
+                <InlineCode text={alternative} className="text-sm leading-6" />
               </li>
             ))}
           </ul>
@@ -574,7 +591,7 @@ function CitedBy({ citations, error }: { citations?: DecisionCitation[]; error: 
   )
   return (
     <section aria-label="Cited by" className="mt-8">
-      <h2 className="text-xs font-semibold uppercase tracking-[0.12em] text-muted">Cited by</h2>
+      <h2 className="text-xs font-semibold text-muted">Cited by</h2>
       {error ? (
         <p className="mt-2 text-sm text-failure">{errorMessage(error, 'Could not load the citing documents.')}</p>
       ) : !citations ? (

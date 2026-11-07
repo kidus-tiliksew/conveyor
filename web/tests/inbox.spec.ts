@@ -653,6 +653,10 @@ test('the context checklist lists each proposed document checked, and Apply atta
     },
   }
   await page.goto('/w/demo/tasks/T-ctx')
+  await page
+    .getByRole('region', { name: 'Attached context' })
+    .getByRole('button', { name: /^Context/ })
+    .click()
   await expect(
     page.getByRole('region', { name: 'Attached context' }).getByLabel(`${requirement.title} (${requirement.id})`),
   ).toBeVisible()
@@ -2619,7 +2623,7 @@ test('a version proposal shows its changes in place and a decision proposal show
   await expect(changes().locator('[data-comparison-base]')).toHaveText('Confirmed v2 compared with proposed v3.')
   const comparison = changes().getByRole('region', { name: 'Version comparison' })
   await expect(comparison).toContainText('Proposed rule text.')
-  await expect(comparison).toContainText('1 changed sections')
+  await expect(comparison).toContainText('1 of 1 changes')
   await expect(decisionDetail(page).getByRole('link', { name: 'View changes →' })).toHaveAttribute(
     'href',
     /tab=changes/,

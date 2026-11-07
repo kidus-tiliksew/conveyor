@@ -123,7 +123,7 @@ export function VerificationKits({ workspace }: { workspace: string }) {
   const repositories = Array.isArray(query.data?.repositories) ? query.data.repositories : []
   return (
     <Card>
-      <CardHeader>
+      <CardHeader className="items-center">
         <CardTitle>Verification kits</CardTitle>
         <Button
           size="sm"

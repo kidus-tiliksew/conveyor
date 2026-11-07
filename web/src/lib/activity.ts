@@ -33,6 +33,14 @@ export function assigneeName(assignee: TaskAssignee): string {
 // attribution and resolve names only through the current workspace roster.
 // The creator is the server's `summaries.creator`, the actor of the first
 // task.created event in the complete ledger (component-http-api).
+// A stored actor reads as the member's name. An ID that no member matches never
+// reaches the screen as a raw `user:` value.
+export function actorName(actor: string, members: WorkspaceMembership[] = []) {
+  if (!actor.startsWith('user:')) return actor
+  const member = members.find((entry) => entry.user_id === actor.slice('user:'.length))
+  return member?.display_name || member?.email || 'an operator'
+}
+
 export function taskCreator(creator: TaskSummaries['creator'], members: WorkspaceMembership[] = []) {
   const event = creator
   if (!event) return { label: 'Unknown', detail: 'Creator information is unavailable' }

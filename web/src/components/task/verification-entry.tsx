@@ -121,12 +121,9 @@ export function VerificationEntry({
   return (
     <li className="relative pl-7" id={anchor}>
       {dotSlot?.(verificationDot(outcome))}
-      <article
-        aria-label="Verification"
-        className={cn('rounded-lg border border-border bg-card', superseded && 'opacity-80')}
-      >
-        <div className="flex flex-wrap items-center gap-2 border-b border-border px-4 py-2.5">
-          <span className="text-xs font-semibold uppercase tracking-[0.1em] text-foreground">Verify</span>
+      <article aria-label="Verification" className={cn('timeline-entry', superseded && 'opacity-80')}>
+        <div className="flex flex-wrap items-center gap-x-2.5 gap-y-1 px-4 pb-1.5">
+          <span className="text-sm font-semibold text-foreground">Verify</span>
           <Badge variant={badge.variant}>{badge.label}</Badge>
           {context?.metadata.source_sha && (
             <span className="font-mono text-[11px] text-muted" title={context.metadata.source_sha}>
@@ -415,7 +412,7 @@ function ResultBanner({
 function Row({ label, children }: { label: string; children: ReactNode }) {
   return (
     <div className="grid grid-cols-[6.5rem_1fr] gap-x-3 px-4 py-2.5">
-      <span className="pt-0.5 font-mono text-[10px] uppercase tracking-[0.08em] text-faint">{label}</span>
+      <span className="pt-0.5 font-mono text-xs text-faint">{label}</span>
       <div className="min-w-0">{children}</div>
     </div>
   )
@@ -829,7 +826,7 @@ function AssertionEvidence({
       )}
       {supporting.length > 0 && (
         <div className="space-y-2 border-t border-border pt-2">
-          <p className="text-[10px] uppercase tracking-[0.08em] text-faint">Judged on</p>
+          <p className="text-xs text-faint">Judged on</p>
           {supporting.map((id) => (
             <SupportingEvidence key={id} taskId={taskId} contextId={contextId} evidenceId={id} />
           ))}
