@@ -73,8 +73,10 @@ export function SettingsPage() {
             </Card>
           )}
 
-          <ProfileCard />
-          <PasswordCard />
+          <div className="grid items-start gap-4 xl:grid-cols-2">
+            <ProfileCard />
+            <PasswordCard />
+          </div>
           <PersonalTokensCard />
           <BoardPreferencesCard />
           {(!returnWorkspaceKnown || returnedWorkspace === workspace) && <WorkspaceGitHubAppCard key={workspace} />}

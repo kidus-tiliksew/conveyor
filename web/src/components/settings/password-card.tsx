@@ -38,7 +38,7 @@ export function PasswordCard() {
   }
 
   return (
-    <Card className="mt-4">
+    <Card>
       <CardHeader>
         <CardTitle>Password</CardTitle>
       </CardHeader>

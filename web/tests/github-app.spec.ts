@@ -377,7 +377,17 @@ test('webhook panel shows configured delivery and the last accepted delivery tim
   await expect(panel.getByText('Webhook delivery is configured', { exact: true })).toBeVisible()
   const lastDelivery = panel.getByTestId('webhook-last-delivery').locator('time')
   await expect(lastDelivery).toHaveAttribute('datetime', configuredWebhook.last_delivery_at!)
-  const expected = await page.evaluate((value) => new Date(value).toLocaleString(), configuredWebhook.last_delivery_at!)
+  const expected = await page.evaluate(
+    (value) =>
+      new Date(value).toLocaleString('en', {
+        year: 'numeric',
+        month: 'short',
+        day: 'numeric',
+        hour: 'numeric',
+        minute: '2-digit',
+      }),
+    configuredWebhook.last_delivery_at!,
+  )
   await expect(lastDelivery).toHaveText(expected)
   await expect(panel.getByTestId('webhook-secret-set').locator('time')).toHaveAttribute(
     'datetime',

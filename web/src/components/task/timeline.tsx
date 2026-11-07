@@ -231,13 +231,13 @@ export function Timeline({
           )}
           {tail.map(({ key, dot, card }) => (
             <li key={key} className="relative pl-7">
-              <TimelineDot className={dot} />
+              <TimelineDot className={cn('top-3', dot)} />
               {card}
             </li>
           ))}
           {showGate && (
             <li className="relative pl-7">
-              <TimelineDot className={cn('animate-pulse', gateDots[gateTone(item.next_action?.kind)])} />
+              <TimelineDot className={cn('top-3 animate-pulse', gateDots[gateTone(item.next_action?.kind)])} />
               <ReviewPanel item={item} onDecisionRecorded={() => setInnerScrollRequest((request) => request + 1)} />
             </li>
           )}
@@ -390,7 +390,7 @@ function EarlierHistory({
   const newest = item.event_page?.older_cursor ?? ''
   return (
     <li className="relative pl-7">
-      <TimelineDot className="bg-edge" />
+      <TimelineDot className="top-3 bg-edge" />
       <section className="rounded-lg border border-border bg-surface/35 text-xs text-muted">
         <button
           type="button"
@@ -773,7 +773,9 @@ function TimelineRow({
       />
     )
   if (entry.type === 'panel')
-    return <PanelEntry entry={entry} taskId={item.task.id} usageReportedOrderIDs={usageReportedOrderIDs} />
+    return (
+      <PanelEntry entry={entry} taskId={item.task.id} usageReportedOrderIDs={usageReportedOrderIDs} latest={latest} />
+    )
   // A work-order entry carries no usage; per-order usage stays in TaskUsage
   // inside technical activity (component-web-task-surfaces, Work-order
   // timeline entries).
@@ -811,7 +813,7 @@ function TimelineRow({
     const returnedForChanges = intervention.reason_code === userRequestChangesReason
     return (
       <li className="relative pl-7">
-        <TimelineDot className="bg-foreground" />
+        <TimelineDot className="top-3 bg-foreground" />
         <div className="rounded-lg border border-edge bg-raised/40 px-4 py-3">
           <div className="flex flex-wrap items-center gap-2 text-sm">
             <UserRound className="size-3.5 text-muted" />
@@ -884,10 +886,12 @@ function PanelEntry({
   entry,
   taskId,
   usageReportedOrderIDs,
+  latest,
 }: {
   entry: Extract<TimelineEntry, { type: 'panel' }>
   taskId: string
   usageReportedOrderIDs: Set<string>
+  latest: boolean
 }) {
   const { seats, resolution, seatMetadata } = entry
   const verdictsIn = seats.filter((seat) => seat.review).length
@@ -901,7 +905,7 @@ function PanelEntry({
       {gradient ? (
         <span
           aria-hidden
-          className={cn('absolute -left-0.5 top-2.5 size-[19px] rounded-full', deliberating && 'animate-pulse')}
+          className={cn('absolute -left-0.5 top-[2.5px] size-[19px] rounded-full', deliberating && 'animate-pulse')}
           style={{ background: gradient }}
         >
           <span className="absolute inset-1 rounded-full bg-background" />
@@ -965,6 +969,7 @@ function PanelEntry({
             round={entry.round}
             summary={entry.roundSummary}
             singleSeat={!multiSeat}
+            past={!latest && Boolean(resolution)}
             audit={
               <AuditDisclosure
                 taskId={taskId}
@@ -1129,13 +1134,13 @@ function SeatNote({ seat, taskId }: { seat: PanelSeat; taskId: string }) {
   return (
     <div>
       <div className="relative">
-        <div id={viewportID} ref={viewportRef} className={cn(!expanded && 'max-h-[3.75rem] overflow-hidden')}>
+        <div id={viewportID} ref={viewportRef} className={cn(!expanded && 'max-h-20 overflow-hidden')}>
           <p className="whitespace-pre-line leading-5 text-muted">{seat.review!.feedback.trim()}</p>
         </div>
         {hasOverflow && !expanded && (
           <div
             aria-hidden="true"
-            className="spec-overflow-shadow pointer-events-none absolute inset-x-0 bottom-0 h-6"
+            className="spec-overflow-shadow pointer-events-none absolute inset-x-0 bottom-0 h-4"
           />
         )}
       </div>
@@ -1145,7 +1150,7 @@ function SeatNote({ seat, taskId }: { seat: PanelSeat; taskId: string }) {
           aria-controls={viewportID}
           aria-expanded={expanded}
           aria-label={`${expanded ? 'Collapse' : 'Expand'} seat ${seat.seat} notes`}
-          className="mt-1 inline-flex items-center gap-1 text-[11px] font-medium text-primary hover:text-primary focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-primary"
+          className="mt-1 inline-flex items-center gap-1 text-xs font-medium text-muted hover:text-foreground focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-primary"
           onClick={() => setExpanded((value) => !value)}
         >
           {expanded ? (
@@ -1153,7 +1158,7 @@ function SeatNote({ seat, taskId }: { seat: PanelSeat; taskId: string }) {
           ) : (
             <ChevronDown aria-hidden="true" className="size-3" />
           )}
-          {expanded ? 'Less' : 'More'}
+          {expanded ? 'Show less' : 'Show full note'}
         </button>
       )}
       {seat.review?.truncatedEventId && (
@@ -1293,7 +1298,7 @@ function JobEntry({
       className={cn(
         'bg-edge',
         job.state === 'done' && !warning && 'bg-positive',
-        warning && 'bg-attention-dot',
+        warning && 'top-3 bg-attention-dot',
         job.state === 'failed' && 'bg-failure',
         running && 'animate-pulse bg-primary',
       )}
@@ -1504,5 +1509,9 @@ function ModelChip({
 }
 
 function TimelineDot({ className }: { className?: string }) {
-  return <span className={cn('absolute left-0 top-3 size-[15px] rounded-full border-4 border-background', className)} />
+  return (
+    <span
+      className={cn('absolute left-0 top-[4.5px] size-[15px] rounded-full border-4 border-background', className)}
+    />
+  )
 }

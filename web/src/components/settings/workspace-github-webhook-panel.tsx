@@ -1,3 +1,4 @@
+import { dateTimeLabel } from '../../lib/utils'
 import { useMutation } from '@tanstack/react-query'
 import { ExternalLink } from 'lucide-react'
 import { useId, useState } from 'react'
@@ -20,7 +21,7 @@ const eventLabels: Record<string, string> = {
 }
 
 function LocalTime({ value }: { value: string }) {
-  return <time dateTime={value}>{new Date(value).toLocaleString()}</time>
+  return <time dateTime={value}>{dateTimeLabel(value)}</time>
 }
 
 /**

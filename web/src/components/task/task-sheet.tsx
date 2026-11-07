@@ -3,6 +3,7 @@ import { Link, useNavigate } from '@tanstack/react-router'
 import { ChevronDown, ChevronUp, Maximize2, X } from 'lucide-react'
 import { useEffect, useState } from 'react'
 import type { ActivityItem } from '../../lib/types'
+import { cn } from '../../lib/utils'
 import {
   blueprintsQueryOptions,
   callerIdentityQueryOptions,
@@ -55,7 +56,14 @@ export function TaskSheet({ taskId }: { taskId: string }) {
             truncates; the controls never shrink under their own content. */}
         {/* A 10rem basis keeps the title readable: the controls wrap before
             they squeeze it. */}
-        <span className="min-w-0 flex-1 basis-40 truncate text-sm font-medium text-muted">{item?.task.title}</span>
+        <span
+          className={cn(
+            'min-w-0 flex-1 basis-40 truncate text-sm font-medium text-muted transition-opacity',
+            !scrolled && 'opacity-0',
+          )}
+        >
+          {item?.task.title}
+        </span>
         {item && scrolled && <TaskStatusBadge item={item} />}
         {/* The same corner affordance the full route carries (REQ-3): the
             panel opens over this one without dismissing it. */}

@@ -121,9 +121,9 @@ export function VerificationEntry({
   return (
     <li className="relative pl-7" id={anchor}>
       {dotSlot?.(verificationDot(outcome))}
-      <article aria-label="Verification" className={cn('border-b border-border pb-1', superseded && 'opacity-80')}>
-        <div className="flex flex-wrap items-center gap-2 border-b border-border px-4 py-2.5">
-          <span className="text-xs font-semibold text-foreground">Verify</span>
+      <article aria-label="Verification" className={cn('pb-1', superseded && 'opacity-80')}>
+        <div className="flex flex-wrap items-center gap-x-2.5 gap-y-1 px-4 pt-0.5 pb-1.5">
+          <span className="text-sm font-semibold text-foreground">Verify</span>
           <Badge variant={badge.variant}>{badge.label}</Badge>
           {context?.metadata.source_sha && (
             <span className="font-mono text-[11px] text-muted" title={context.metadata.source_sha}>

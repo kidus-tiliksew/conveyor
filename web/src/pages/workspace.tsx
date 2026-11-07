@@ -314,7 +314,7 @@ function GeneralTab({
         <CardHeader>
           <CardTitle>Basics</CardTitle>
         </CardHeader>
-        <CardContent>
+        <CardContent className="[&_input]:w-28">
           <Field
             label="Work-order queue timeout"
             hint="How long a work order may wait in the queue before it is marked stalled."
@@ -421,7 +421,7 @@ function GeneralTab({
         </CardContent>
       </Card>
       <Card>
-        <CardHeader>
+        <CardHeader className="justify-start">
           <CardTitle>Repository monitor</CardTitle>
           <Switch
             aria-label="Enable repository monitor"
@@ -438,7 +438,7 @@ function GeneralTab({
             Observe selected GitHub repositories for post-merge failures and changes outside Conveyor. Signals always
             create ordinary gated tasks; the monitor cannot implement, review, merge, or deploy them.
           </p>
-          <div className="grid gap-3 md:grid-cols-2">
+          <div className="flex flex-wrap items-start gap-x-6 gap-y-3 [&_input]:w-28 [&>*:last-child]:basis-full">
             <Field label="Poll interval">
               <Input
                 value={draft.monitor?.poll_interval ?? '1m'}

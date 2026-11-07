@@ -130,6 +130,11 @@ export function DecisionDetail({ item, task, onActed }: { item: InboxItem; task:
               Open task
               <ArrowUpRight className="size-3.5" aria-hidden />
             </Link>
+            {action && (
+              <div className="basis-auto text-[11px] text-faint open:basis-full">
+                <NextActionIDs value={{ details: action.details, current_order: action.current_order }} />
+              </div>
+            )}
           </div>
           {isLoading && <Skeleton className="h-12" />}
           {error != null && (
@@ -213,9 +218,6 @@ export function DecisionDetail({ item, task, onActed }: { item: InboxItem; task:
                   </div>
                 )
               )}
-            </div>
-            <div className="ml-auto flex shrink-0 items-center gap-3 text-[11px] text-faint">
-              {action && <NextActionIDs value={{ details: action.details, current_order: action.current_order }} />}
             </div>
           </div>
         </div>

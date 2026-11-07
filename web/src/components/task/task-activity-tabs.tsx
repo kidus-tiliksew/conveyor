@@ -3,6 +3,7 @@ import type { ActivityItem } from '../../lib/types'
 import { cn } from '../../lib/utils'
 import { useWorkspaceSelection } from '../app-shell'
 import { NextActionCard } from './next-action-card'
+import { RedispatchCard } from './redispatch-card'
 import { gateToneClasses, isReviewable, ReviewPanel } from './review-panel'
 import { TaskFlowChart } from './task-flow'
 import { Timeline, useLiveActions } from './timeline'
@@ -85,6 +86,11 @@ export function TaskActivityTabs({ item, routeVariant }: { item: ActivityItem; r
   }
   // A plan revision's card has its own structure and stays its own box.
   const joined = live.gate && item.next_action?.kind !== 'plan_revision'
+  // Re-enqueueing a queued task is part of saying it is queued, so it shares the box.
+  const queuedRedispatch =
+    !joined && item.task.state === 'queued' && live.tail.some(({ key }) => key === 'redispatch')
+      ? { flatCard: <RedispatchCard item={item} flat /> }
+      : undefined
 
   return (
     <div className="space-y-4">
@@ -98,13 +104,20 @@ export function TaskActivityTabs({ item, routeVariant }: { item: ActivityItem; r
         </div>
       ) : (
         <>
-          <NextActionCard item={item} routeVariant={routeVariant} gateOpen={gateOpen && live.gate} />
+          <NextActionCard
+            item={item}
+            routeVariant={routeVariant}
+            gateOpen={gateOpen && live.gate}
+            footer={queuedRedispatch?.flatCard}
+          />
           {live.gate && <ReviewPanel item={item} onDecisionRecorded={recordDecision} />}
         </>
       )}
-      {live.tail.map(({ key, card }) => (
-        <div key={key}>{card}</div>
-      ))}
+      {live.tail
+        .filter(({ key }) => !(queuedRedispatch && key === 'redispatch'))
+        .map(({ key, card }) => (
+          <div key={key}>{card}</div>
+        ))}
       <div className="space-y-3">
         <div
           role="tablist"

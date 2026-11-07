@@ -101,7 +101,7 @@ export function MonitorPage() {
                       </span>
                     </p>
                   </div>
-                  <div className="flex shrink-0 items-center gap-2 [&_label]:min-w-0 [&_select]:[field-sizing:content]">
+                  <div className="flex items-center gap-x-3 gap-y-2 max-sm:w-full max-sm:flex-wrap sm:shrink-0 [&_label]:min-w-0 [&_select]:[field-sizing:content]">
                     {canManageWorkspace && (
                       <DriftResolutionForm
                         drift={item}

@@ -1,3 +1,4 @@
+import { cn } from '../../lib/utils'
 import { type ReactNode, useId, useMemo, useState } from 'react'
 import { Button } from '../ui/button'
 import { MarkdownProse } from '../ui/markdown-prose'
@@ -179,11 +180,18 @@ export function DocumentComparison({ before, after }: { before: ReviewSource; af
           </Button>
         </div>
       </div>
-      <div className={changed.length ? 'grid min-w-0 gap-4 lg:grid-cols-[10rem_minmax(0,1fr)]' : 'min-w-0'}>
+      {/* Side by side needs the column's whole width, so the section list moves above it. */}
+      <div
+        className={
+          changed.length && mode === 'inline'
+            ? 'grid min-w-0 gap-4 lg:grid-cols-[10rem_minmax(0,1fr)]'
+            : 'min-w-0 space-y-4'
+        }
+      >
         {changed.length > 0 && (
           <nav aria-label="Changed sections" className="min-w-0">
             <p className="mb-2 text-xs font-semibold text-muted">Changed sections</p>
-            <div className="flex flex-wrap gap-1 lg:flex-col">
+            <div className={cn('flex flex-wrap gap-1', mode === 'inline' && 'lg:flex-col')}>
               {changed.map((row, index) => (
                 <button
                   type="button"
@@ -350,7 +358,7 @@ function ReviewParagraph({
   const words = complete ? undefined : formattedParagraphChanges(before, after)
   if (mode === 'inline' && words)
     return (
-      <div className="whitespace-pre-wrap break-words p-4 text-sm leading-7">
+      <div className="whitespace-pre-wrap break-words p-4 text-sm leading-6">
         <ChangedWords words={words} />
         {!before && !after && 'Empty section'}
       </div>
@@ -371,7 +379,7 @@ function ReviewParagraph({
             {(side === 'before' ? beforeSource : afterSource) === undefined ? (
               <AbsentSide />
             ) : words ? (
-              <div className="whitespace-pre-wrap break-words text-sm leading-7">
+              <div className="whitespace-pre-wrap break-words text-sm leading-6">
                 <ChangedWords words={words} side={side} />
               </div>
             ) : (

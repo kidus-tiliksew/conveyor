@@ -267,7 +267,7 @@ function DecisionRow({ decision, citingCount }: { decision: Decision; citingCoun
             <p className="line-clamp-2 min-w-0 max-w-[46rem] text-[13px] leading-5 text-foreground">
               <InlineCode text={clauses ? `(1) ${clauses[0]}` : decision.statement} />
             </p>
-            <p className="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-muted sm:h-5 sm:flex-nowrap sm:overflow-hidden sm:whitespace-nowrap 2xl:mt-px 2xl:shrink-0">
+            <p className="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-muted sm:h-5 sm:flex-nowrap sm:overflow-hidden sm:whitespace-nowrap 2xl:mt-px 2xl:w-[34rem] 2xl:shrink-0">
               {decision.status !== 'confirmed' && (
                 <Badge className="py-0" variant={statusVariants[decision.status]}>
                   {statusLabels[decision.status]}

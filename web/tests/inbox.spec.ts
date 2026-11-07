@@ -653,6 +653,10 @@ test('the context checklist lists each proposed document checked, and Apply atta
     },
   }
   await page.goto('/w/demo/tasks/T-ctx')
+  await page
+    .getByRole('region', { name: 'Attached context' })
+    .getByRole('button', { name: /^Context/ })
+    .click()
   await expect(
     page.getByRole('region', { name: 'Attached context' }).getByLabel(`${requirement.title} (${requirement.id})`),
   ).toBeVisible()

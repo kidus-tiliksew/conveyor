@@ -76,9 +76,9 @@ export function TaskContextCard({
   const designs = context?.designs ?? []
   const proposals = context?.proposals ?? []
   const attached = requirements.length + designs.length
-  // A long list of references should not push where the task stands off the
-  // screen, so in the side view it starts closed. The inspector has the room.
-  const [open, setOpen] = useState(compact || attached <= 3)
+  // References should not push where the task stands off the screen, so in the
+  // side view the list starts closed. The inspector has the room.
+  const [open, setOpen] = useState(compact)
   if (requirements.length === 0 && designs.length === 0 && proposals.length === 0) return null
   return (
     <div className="space-y-3">

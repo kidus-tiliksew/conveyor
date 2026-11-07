@@ -116,7 +116,7 @@ export function PlanningPage() {
         )}
       </PageHeader>
       <div className="flex min-h-0 flex-1 flex-col lg:flex-row">
-        <aside className="max-h-56 w-full shrink-0 overflow-y-auto border-b border-border bg-surface/40 lg:max-h-none lg:w-72 lg:border-r lg:border-b-0">
+        <aside className="max-h-32 w-full shrink-0 overflow-y-auto border-b border-border bg-surface/40 lg:max-h-none lg:w-72 lg:border-r lg:border-b-0">
           <div className="py-3 pl-4 pr-4 lg:pl-6">
             <p className="text-xs font-semibold text-muted">Sessions</p>
           </div>
@@ -168,7 +168,7 @@ export function PlanningPage() {
               />
               {selectedBundle && (
                 <section
-                  className="max-h-[45%] shrink-0 overflow-y-auto border-t border-border bg-surface/40 px-6 py-4"
+                  className="max-h-[35%] shrink-0 overflow-y-auto border-t lg:max-h-[45%] border-border bg-surface/40 px-6 py-4"
                   aria-label="Planning bundle preview"
                 >
                   <div className="flex items-start justify-between gap-4">

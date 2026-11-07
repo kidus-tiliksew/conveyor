@@ -4534,6 +4534,8 @@ for (const surface of ['full', 'sheet']) {
       const { changes } = await mockContextManagement(page, { archived })
       await page.goto(`/w/demo/tasks/operator-checkpoint${surface === 'full' ? '/full' : ''}`)
       const card = page.getByRole('region', { name: 'Attached context' })
+      // The side view's list starts closed; the full page's inspector shows it.
+      if (surface !== 'full') await card.getByRole('button', { name: /^Context/ }).click()
       for (const [title, version] of [
         ['Attached requirement', 3],
         ['Attached design', 2],
@@ -6193,7 +6195,7 @@ for (const stage of ['implement', 'verify', 'review'] as const) {
     )
     await page.goto(`/w/demo/tasks/${taskId}/full`)
     await expect(page.getByRole('button', { name: 'Redispatch', exact: true })).toBeVisible()
-    await expect(page.getByText('Queued — re-enqueue if dispatch stalled.')).toBeVisible()
+    await expect(page.getByText('Re-enqueue if dispatch stalled.')).toBeVisible()
     await expectNoTaskProposalSurface(page)
   })
 }

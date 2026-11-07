@@ -60,7 +60,7 @@ export function ImplementationEntry({
   const { delivery } = entry
   return (
     <li className="relative pl-7">
-      {dotSlot(implementationDot(entry))}
+      {dotSlot(cn(implementationDot(entry), warning && 'top-3'))}
       <article
         aria-label={entry.attempt ? `Implementation attempt ${entry.attempt}` : 'Implementation'}
         className={cn('pb-1', warning && 'rounded-lg border border-attention/40 bg-attention-soft pb-0')}

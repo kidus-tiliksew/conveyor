@@ -98,7 +98,7 @@ export function canRedispatch(item: ActivityItem) {
 // Task management beyond the gate: nudge a stuck queued task, recover a
 // parked task at its recorded recovery stage, or reopen a closed task with a
 // decided stage.
-export function RedispatchCard({ item }: { item: ActivityItem }) {
+export function RedispatchCard({ item, flat = false }: { item: ActivityItem; flat?: boolean }) {
   const { workspace } = useWorkspaceSelection()
   const queryClient = useQueryClient()
   const mutation = useMutation({
@@ -111,10 +111,16 @@ export function RedispatchCard({ item }: { item: ActivityItem }) {
   })
   const parked = item.task.state === 'parked'
   return (
-    <div className="flex items-center justify-between gap-3 rounded-lg border border-border bg-surface px-3 py-2.5">
+    <div
+      className={
+        flat
+          ? 'flex items-center justify-between gap-3 border-t border-border pt-2'
+          : 'flex items-center justify-between gap-3 rounded-lg border border-border bg-surface px-3 py-2.5'
+      }
+    >
       <p className="text-xs text-muted">
         {item.task.state === 'queued'
-          ? 'Queued — re-enqueue if dispatch stalled.'
+          ? 'Re-enqueue if dispatch stalled.'
           : parked
             ? 'Parked by triage — resume from the recorded recovery stage when this work is ready.'
             : 'Closed — redispatch resumes at the decided stage.'}

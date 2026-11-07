@@ -89,7 +89,7 @@ export function TaskCard({ item, selected }: { item: ActivitySummary; selected: 
       data-operator={operator || undefined}
     >
       <div className="flex items-start gap-2">
-        <p className="line-clamp-2 min-w-0 flex-1 text-[13px] font-medium leading-[1.4]">{item.task.title}</p>
+        <p className="line-clamp-3 min-w-0 flex-1 text-[13px] font-medium leading-[1.4]">{item.task.title}</p>
         {blockingIDs.length > 0 && <DependencyMark titles={blockingTitles} unsatisfiable={unsatisfiable} />}
       </div>
       {showStageProgress && <StageStripe taskId={item.task.id} />}

@@ -181,7 +181,7 @@ export function DocumentReview({
                 <h3 className="mb-4 text-lg font-semibold">
                   {target ? `Review version ${target.version}` : 'Version comparison'}
                 </h3>
-                <div className="grid min-w-0 gap-3 rounded-lg border border-border bg-surface p-4 sm:grid-cols-2">
+                <div className="grid min-w-0 grid-cols-2 gap-3 rounded-lg border border-border bg-surface p-3 sm:p-4">
                   <label className="min-w-0 text-xs text-muted" htmlFor={`${id}-base`}>
                     Base version
                     <Select
@@ -233,11 +233,11 @@ export function DocumentReview({
               <>
                 <section aria-label="Version history">
                   <h3 className="mb-4 text-lg font-semibold">Version history</h3>
-                  <ol className="space-y-3">
+                  <ol className="divide-y divide-border rounded-lg border border-border bg-card">
                     {[...versions]
                       .sort((a, b) => b.version - a.version)
                       .map((v) => (
-                        <li key={v.version} className="rounded-lg border border-border p-4 text-sm">
+                        <li key={v.version} className="px-4 py-3 text-sm">
                           <h4 className="font-semibold">
                             v{v.version} · {versionState(v)}
                           </h4>

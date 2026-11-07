@@ -219,7 +219,7 @@ export function TaskIdentity({ item, variant }: { item: ActivityItem; variant: '
       )}
       <Heading className="text-xl font-semibold leading-snug tracking-tight text-balance">{item.task.title}</Heading>
       {item.task.body && (
-        <TaskBody body={item.task.body} clampClassName={variant === 'sheet' ? 'max-h-[3lh]' : 'max-h-[5lh]'} />
+        <TaskBody body={item.task.body} clampClassName={variant === 'sheet' ? 'max-h-[4lh]' : 'max-h-[5lh]'} />
       )}
     </div>
   )
@@ -994,7 +994,7 @@ export function TaskAgentPrompt({ item }: { item: ActivityItem }) {
   }
   if (!item.checkout_guidance) return null
   return (
-    <div className="flex max-w-xl items-start gap-2 rounded-md border border-border bg-surface px-2.5 py-1.5">
+    <div className="flex items-start gap-2 rounded-md border border-border bg-surface px-2.5 py-1.5">
       <Terminal className="mt-0.5 size-3.5 shrink-0 text-faint" aria-hidden="true" />
       <p className="min-w-0 text-[11px] leading-5 text-muted">
         <span className="font-medium">Work on this locally</span> — {item.checkout_guidance}

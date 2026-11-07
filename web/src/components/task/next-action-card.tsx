@@ -1,4 +1,5 @@
 import { Link } from '@tanstack/react-router'
+import type { ReactNode } from 'react'
 import { deriveCurrentExecutionState } from '../../lib/activity'
 import type { TaskRouteVariant } from '../../lib/task-route'
 import type { ActivityItem, NextAction } from '../../lib/types'
@@ -37,11 +38,14 @@ export function NextActionCard({
   routeVariant,
   gateOpen,
   joined = false,
+  footer,
 }: {
   item: ActivityItem
   routeVariant: TaskRouteVariant
   gateOpen: boolean
   joined?: boolean
+  // An action on this same state, such as re-enqueueing a queued task.
+  footer?: ReactNode
 }) {
   const { data: action, isLoading } = useNextAction(item.task.id)
   const canRecover = useWorkspaceCapability('recover_work')
@@ -51,6 +55,7 @@ export function NextActionCard({
   const preemptOrder = canRecover ? claimedWorkOrder(item) : undefined
   if (isLoading) return <Skeleton className="h-20" />
   if (!action || action.kind === 'terminal') {
+    if (footer) return <>{footer}</>
     return preemptOrder ? <WorkOrderPreemptControl order={preemptOrder} /> : null
   }
   const execution = deriveCurrentExecutionState(item, action)
@@ -69,7 +74,10 @@ export function NextActionCard({
     const tone = gateToneClasses(action.kind)
     return (
       <section aria-label="Next action" className={cn('space-y-1.5 px-4 py-3', tone.header)}>
-        <p className={cn('text-xs font-semibold', tone.title)}>{action.label}</p>
+        <div className="flex flex-wrap items-center justify-between gap-x-3">
+          <p className={cn('text-xs font-semibold', tone.title)}>{action.label}</p>
+          <div className="text-right open:basis-full">{ids}</div>
+        </div>
         <span className="sr-only" data-actor={action.actor}>
           {action.actor}
         </span>
@@ -81,7 +89,6 @@ export function NextActionCard({
         {action.if_ignored && <p className="text-xs text-muted">If ignored: {action.if_ignored}</p>}
         <NextActionDeadline deadline={action.deadline} />
         {preempt}
-        {ids}
       </section>
     )
   }
@@ -110,6 +117,7 @@ export function NextActionCard({
           <div className="min-w-0 flex-1">{ids}</div>
           {preempt}
         </div>
+        {footer}
       </section>
     )
   }
@@ -148,6 +156,7 @@ export function NextActionCard({
             </div>
           )}
           {ids}
+          {footer}
         </CardContent>
       </Card>
     </section>

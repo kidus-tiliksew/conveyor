@@ -7,7 +7,7 @@ import { cn } from '../../lib/utils'
 export function ClampedBlock({
   children,
   clamp = true,
-  maxHeightClassName = 'max-h-[3.75rem]',
+  maxHeightClassName = 'max-h-20',
   toggleClassName,
 }: {
   children: ReactNode
@@ -47,7 +47,7 @@ export function ClampedBlock({
         {clamp && hasOverflow && !expanded && (
           <div
             aria-hidden="true"
-            className="spec-overflow-shadow pointer-events-none absolute inset-x-0 bottom-0 h-6"
+            className="spec-overflow-shadow pointer-events-none absolute inset-x-0 bottom-0 h-4"
           />
         )}
       </div>
@@ -57,7 +57,7 @@ export function ClampedBlock({
           aria-controls={viewportID}
           aria-expanded={expanded}
           className={cn(
-            'mt-1 inline-flex items-center gap-1 text-[11px] font-medium text-muted hover:text-foreground focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary',
+            'mt-1 inline-flex items-center gap-1 text-xs font-medium text-muted hover:text-foreground focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary',
             toggleClassName,
           )}
           onClick={() => setExpanded((value) => !value)}
