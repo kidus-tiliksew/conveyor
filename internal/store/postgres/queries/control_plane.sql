@@ -231,6 +231,68 @@ ORDER BY t.created_at DESC, t.id
 LIMIT NULLIF(sqlc.arg(page_limit)::int, 0)
 OFFSET sqlc.arg(page_offset)::int;
 
+-- name: ListTaskOperationsTasksWithoutBody :many
+SELECT t.id, t.workspace_id, t.source, t.title, ''::text AS body, t.class, t.escalation_level, t.repo_name, t.base_branch, t.branch, t.state, t.parent_task_id, t.created_at, t.updated_at, t.next_stage, t.recovery_stage, t.intake_key, t.mode, t.spec_approval, t.merge_approval, t.policy_version, t.setup_name, t.setup_contract, t.hold, t.reviewed_head_sha, t.approved_head_sha, t.approval_stale, t.refresh_baseline_sha, t.refresh_head_sha, t.refresh_review_scope, t.origin_spec_version, t.origin_sub_id, t.supersedes, t.superseded_by, t.intake_operator_direction, t.gate_kind, t.check_status_deadline, t.check_status_deadline_head,
+       EXISTS (
+           SELECT 1 FROM task_dependencies edge
+           WHERE edge.workspace_id = t.workspace_id AND edge.task_id = t.id
+       ) AS has_dependencies,
+       EXISTS (
+           SELECT 1 FROM tasks child
+           WHERE child.workspace_id = t.workspace_id AND child.parent_task_id = t.id
+       ) AS has_children
+FROM tasks t
+WHERE t.workspace_id = sqlc.arg(workspace_id)
+  AND (cardinality(sqlc.arg(task_states)::text[]) = 0 OR t.state = ANY(sqlc.arg(task_states)::text[]))
+  AND (cardinality(sqlc.arg(repositories)::text[]) = 0 OR t.repo_name = ANY(sqlc.arg(repositories)::text[]))
+  AND (sqlc.arg(search)::text = '' OR
+       strpos(lower(t.title), lower(sqlc.arg(search))) > 0 OR
+       strpos(lower(t.id), lower(sqlc.arg(search))) > 0 OR
+       strpos(lower(t.source), lower(sqlc.arg(search))) > 0 OR
+       strpos(lower(t.branch), lower(sqlc.arg(search))) > 0)
+  AND (sqlc.narg(created_from)::timestamptz IS NULL OR t.created_at >= sqlc.narg(created_from))
+  AND (sqlc.narg(created_to)::timestamptz IS NULL OR t.created_at < sqlc.narg(created_to))
+  AND (cardinality(sqlc.arg(serves_requirements)::text[]) = 0 OR EXISTS (
+           SELECT 1 FROM unnest(sqlc.arg(serves_requirements)::text[]) AS wanted(document_id)
+           WHERE (
+               SELECT e.kind FROM events e
+               WHERE e.workspace_id = t.workspace_id AND e.task_id = t.id
+                 AND e.kind IN ('task.context_requirement_added', 'task.context_requirement_removed')
+                 AND e.payload_json ->> 'id' = wanted.document_id
+               ORDER BY e.at DESC, e.id DESC LIMIT 1
+           ) = 'task.context_requirement_added'
+       ))
+  AND (cardinality(sqlc.arg(governing_designs)::text[]) = 0 OR EXISTS (
+           SELECT 1 FROM unnest(sqlc.arg(governing_designs)::text[]) AS wanted(document_id)
+           WHERE (
+               SELECT e.kind FROM events e
+               WHERE e.workspace_id = t.workspace_id AND e.task_id = t.id
+                 AND e.kind IN ('task.context_design_added', 'task.context_design_removed')
+                 AND e.payload_json ->> 'id' = wanted.document_id
+               ORDER BY e.at DESC, e.id DESC LIMIT 1
+           ) = 'task.context_design_added'
+       ))
+  AND (sqlc.arg(assignee)::text = '' OR
+       (sqlc.arg(assignee) = 'unassigned' AND t.assignee_user_id IS NULL) OR
+       (sqlc.arg(assignee) <> 'unassigned' AND t.assignee_user_id = sqlc.arg(assignee)))
+  AND (sqlc.narg(updated_from)::timestamptz IS NULL OR COALESCE((
+           SELECT max(e.at) FROM events e
+           WHERE e.workspace_id = t.workspace_id AND e.task_id = t.id
+       ), t.created_at) >= sqlc.narg(updated_from))
+  AND (sqlc.narg(updated_to)::timestamptz IS NULL OR COALESCE((
+           SELECT max(e.at) FROM events e
+           WHERE e.workspace_id = t.workspace_id AND e.task_id = t.id
+       ), t.created_at) < sqlc.narg(updated_to))
+  AND (NOT sqlc.arg(open_only)::boolean OR (
+           t.state NOT IN ('merged', 'closed')
+           AND NOT EXISTS (
+               SELECT 1 FROM tasks child
+               WHERE child.workspace_id = t.workspace_id AND child.parent_task_id = t.id
+           )))
+ORDER BY t.created_at DESC, t.id
+LIMIT NULLIF(sqlc.arg(page_limit)::int, 0)
+OFFSET sqlc.arg(page_offset)::int;
+
 -- name: CountTaskOperationsTasks :one
 SELECT count(*)::bigint
 FROM tasks t

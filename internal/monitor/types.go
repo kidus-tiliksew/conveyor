@@ -171,6 +171,19 @@ const (
 	// ContextHintsSkipped names why the commit was processed without its
 	// repository hints (component-monitor-drift invariant 14).
 	ContextHintsSkipped = "hints_skipped"
+	// ContextRecoveryTask names the post-merge task that was open when a
+	// recovery observation was first recorded. Its absence means none was open.
+	// The first pass stores it with the row, so a later pass can tell a link
+	// still owed from nothing to link (component-monitor-drift invariant 17).
+	ContextRecoveryTask = "recovery_task_id"
+)
+
+// OutcomeRecoveryObserved is the task outcome of a recovery observation's link,
+// and EventRecoveryObserved the kind of its task event and its activity row
+// (component-monitor-drift invariant 17).
+const (
+	OutcomeRecoveryObserved = "recovery_observed"
+	EventRecoveryObserved   = "monitor.recovery_observed"
 )
 
 // RepositoryStatus is one repository's row of monitor status
@@ -282,6 +295,12 @@ type Store interface {
 	RequirementExists(context.Context, string) (bool, error)
 	Observe(context.Context, Observation) (ObservationRecord, bool, error)
 	LinkTask(context.Context, string, string, string) (ObservationRecord, error)
+	// LinkRecoveryTask links a recovery observation to its task with
+	// OutcomeRecoveryObserved and writes the EventRecoveryObserved task event
+	// and activity row in one transaction, so all three commit or none does
+	// (component-persistence invariant 5). An observation that already links
+	// that task writes nothing, and one linking another task is refused.
+	LinkRecoveryTask(ctx context.Context, identity, taskID string, taskPayload, activityPayload map[string]any) (ObservationRecord, error)
 	RecordDrift(context.Context, Drift) (Drift, bool, error)
 	ResolveDrift(context.Context, string, string, string) (Drift, error)
 	MonitorStatus(context.Context, bool, time.Time) (Status, error)
@@ -474,6 +493,9 @@ func (s *Service) Process(ctx context.Context, observation Observation) (Observa
 			return ObservationRecord{}, fmt.Errorf("%w: %s", ErrUnknownRequirementID, observation.RequirementID)
 		}
 	}
+	if observation.RecoveryObserved {
+		return s.processRecovery(ctx, observation)
+	}
 	record, fresh, err := s.Store.Observe(ctx, observation)
 	if err != nil {
 		return ObservationRecord{}, err
@@ -482,34 +504,6 @@ func (s *Service) Process(ctx context.Context, observation Observation) (Observa
 		"identity": observation.Identity(), "repository": observation.Repository,
 		"kind": observation.Kind, "source_url": observation.SourceURL, "fresh": fresh,
 	})
-	if observation.RecoveryObserved {
-		if !fresh {
-			return record, nil
-		}
-		var taskID string
-		err = s.Store.WithMonitorSignalClassLock(ctx, observation.Repository, PostMergeFailure, func(lockedCtx context.Context) error {
-			var found bool
-			taskID, found, err = s.Store.FindOpenMonitorTask(lockedCtx, observation.Repository, PostMergeFailure)
-			if err != nil || !found {
-				return err
-			}
-			record, err = s.Store.LinkTask(lockedCtx, observation.Identity(), taskID, "recovery_observed")
-			return err
-		})
-		if err != nil {
-			return ObservationRecord{}, err
-		}
-		if taskID != "" {
-			_ = s.Store.AuditTask(ctx, taskID, "monitor.recovery_observed", map[string]any{
-				"identity": observation.Identity(), "repository": observation.Repository,
-				"commit_sha": observation.CommitSHA, "source_url": observation.SourceURL,
-			})
-			_ = s.Store.AuditMonitor(ctx, "monitor.recovery_observed", map[string]any{
-				"identity": observation.Identity(), "task_id": taskID, "repository": observation.Repository,
-			})
-		}
-		return record, nil
-	}
 	if record.TaskID != "" {
 		_ = s.Store.AuditMonitor(ctx, "monitor.deduplicated", map[string]any{
 			"identity": observation.Identity(), "task_id": record.TaskID,
@@ -624,6 +618,75 @@ func (s *Service) Process(ctx context.Context, observation Observation) (Observa
 // recordRepositoryDrift records the observation's repository drift under its
 // identity and audits only the write that created the record, so a retry adds
 // no second audit (component-monitor-drift invariants 3 and 20).
+// processRecovery annotates the post-merge task that was open when the recovery
+// was first observed, and changes no task state (component-monitor-drift
+// invariant 17). The tip can hold at the commit, so the same observation can
+// arrive on many passes (invariant 4).
+//
+// The class lock makes finding the open task and recording the row one decision
+// against failure intake. The first pass stores that task on the row, and every
+// later pass reads the stored value instead of what is open now. A row with no
+// stored task therefore never annotates a task opened after it, because that
+// recovery predates the failure. Observations recorded before the field existed
+// read the same way, so none is backfilled. A row with a stored task and no link
+// owes the link until it commits or the task ends.
+//
+// LinkRecoveryTask commits the link and both events together. A process that
+// dies or a write that fails before that commit leaves the row unlinked for a
+// later pass, and one that commits leaves nothing for a later pass to do.
+func (s *Service) processRecovery(ctx context.Context, observation Observation) (ObservationRecord, error) {
+	identity := observation.Identity()
+	var record ObservationRecord
+	err := s.Store.WithMonitorSignalClassLock(ctx, observation.Repository, PostMergeFailure, func(lockedCtx context.Context) error {
+		openTask, _, err := s.Store.FindOpenMonitorTask(lockedCtx, observation.Repository, PostMergeFailure)
+		if err != nil {
+			return err
+		}
+		var fresh bool
+		record, fresh, err = s.Store.Observe(lockedCtx, withRecoveryTask(observation, openTask))
+		if err != nil {
+			return err
+		}
+		_ = s.Store.AuditMonitor(lockedCtx, "monitor.observed", map[string]any{
+			"identity": identity, "repository": observation.Repository,
+			"kind": observation.Kind, "source_url": observation.SourceURL, "fresh": fresh,
+		})
+		// FindOpenMonitorTask answers the oldest open task, and the stored task
+		// was that when recorded, so a different answer means the stored task
+		// has ended and is no longer the open post-merge task to annotate.
+		target := record.Context[ContextRecoveryTask]
+		if record.TaskID != "" || target == "" || target != openTask {
+			return nil
+		}
+		record, err = s.Store.LinkRecoveryTask(lockedCtx, identity, target, map[string]any{
+			"identity": identity, "repository": observation.Repository,
+			"commit_sha": observation.CommitSHA, "source_url": observation.SourceURL,
+		}, map[string]any{
+			"identity": identity, "task_id": target, "repository": observation.Repository,
+		})
+		return err
+	})
+	if err != nil {
+		return ObservationRecord{}, err
+	}
+	return record, nil
+}
+
+// withRecoveryTask returns the observation with its context naming only the
+// given task, which also discards a value a submitted observation supplied.
+func withRecoveryTask(observation Observation, taskID string) Observation {
+	recorded := make(map[string]string, len(observation.Context)+1)
+	for key, value := range observation.Context {
+		recorded[key] = value
+	}
+	delete(recorded, ContextRecoveryTask)
+	if taskID != "" {
+		recorded[ContextRecoveryTask] = taskID
+	}
+	observation.Context = recorded
+	return observation
+}
+
 func (s *Service) recordRepositoryDrift(ctx context.Context, observation Observation, taskID string) error {
 	_, fresh, err := s.Store.RecordDrift(ctx, Drift{
 		ID: observation.Identity(), WorkspaceID: observation.WorkspaceID,

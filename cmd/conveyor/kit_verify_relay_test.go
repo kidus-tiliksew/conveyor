@@ -49,15 +49,27 @@ func readKitRelayLog(t *testing.T, attemptRoot string) []kitRelayLogEntry {
 	return entries
 }
 
-// A remote server that answers every call three to four times slower than
-// the child's per-request relay timeout must not fail the exercise: the relay
-// answers from the spool and the attempt drains every upload before it
-// reports (component-verification-runner). The 0.75–1 s server answers and
-// the 0.25 s child timeout keep the ratio of the 6–8 s and 2 s originals, and
-// every call stays inside the default transport ceiling.
+// kitRelayChildOutput returns the attempt's retained child output, so a failed
+// exercise names what the child itself reported.
+func kitRelayChildOutput(attemptRoot string) string {
+	data, err := os.ReadFile(filepath.Join(attemptRoot, "run", "output.json"))
+	if err != nil {
+		return "unavailable: " + err.Error()
+	}
+	return string(data)
+}
+
+// A remote server slower than any child must not fail the exercise: the relay
+// answers from the spool and the attempt drains every upload before it reports
+// (component-verification-runner). The server holds every evidence answer until
+// the child has exited, so an acknowledgement that depended on an upload could
+// never arrive. The child relays with no per-request timeout: the relay's local
+// checkout check and spool write take as long as the host allows, and no
+// wall-clock margin decides the result. Every call also answers in 375-500 ms,
+// so the drain and the report path still meet a slow server.
 func TestKitRunnerSlowServerRecordsRelayedEvidence(t *testing.T) {
 	t.Parallel()
-	e := kitRelayExercise(t, "relay", "3", "0.25", "64", "0")
+	e := kitRelayExercise(t, "relay", "3", "0", "64", "0")
 	e.EvidenceOutputs = []verification.EvidenceOutput{{Type: "state_observation", SchemaVersion: 1, MinimumItems: 3}}
 	f := newKitExecutionFixture(t, e)
 	f.mu.Lock()
@@ -65,18 +77,44 @@ func TestKitRunnerSlowServerRecordsRelayedEvidence(t *testing.T) {
 	f.order.ExecutionDeadline = time.Now().Add(10 * time.Minute)
 	f.v.order = f.order
 	f.mu.Unlock()
-	f.responseDelay.Store(int64(750 * time.Millisecond))
-	f.responseJitter.Store(int64(250 * time.Millisecond))
+	f.v.rpc.timeout = kitMaxRPCTimeout
+	f.responseDelay.Store(int64(375 * time.Millisecond))
+	f.responseJitter.Store(int64(125 * time.Millisecond))
+	childExited := make(chan struct{})
+	var release sync.Once
+	releaseEvidence := func() { release.Do(func() { close(childExited) }) }
+	f.onEvidenceArrival = func() { <-childExited }
+	// A relay that waits on a held answer ends at the exercise deadline, so the
+	// regression fails the test instead of hanging it. A child still running at
+	// that deadline times out, so this release never decides a passing run.
+	deadline := time.AfterFunc(time.Duration(e.TimeoutSeconds)*time.Second, releaseEvidence)
+	defer deadline.Stop()
+	answeredBeforeExit := -1
+	f.v.onDrain = func() {
+		f.mu.Lock()
+		answeredBeforeExit = len(f.snapshot.Evidence)
+		f.mu.Unlock()
+		releaseEvidence()
+	}
 	attemptRoot := t.TempDir()
 	err := f.v.launch(t.Context(), e, f.v.root, attemptRoot, "run", "grant", f.snapshot.Attempts[0].Subject, kitRelayEnvironment(), nil)
+	// launch can return before the drain starts; a held answer must still end.
+	releaseEvidence()
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	if err != nil || f.outcome != "succeeded" {
-		t.Fatalf("slow server attempt: outcome=%q err=%v", f.outcome, err)
+		t.Fatalf("slow server attempt: outcome=%q err=%v child output: %s", f.outcome, err, kitRelayChildOutput(attemptRoot))
 	}
-	for _, entry := range readKitRelayLog(t, attemptRoot) {
+	if answeredBeforeExit != 0 {
+		t.Fatalf("server answered %d evidence uploads before the child exited", answeredBeforeExit)
+	}
+	log := readKitRelayLog(t, attemptRoot)
+	if len(log) != 3 {
+		t.Fatalf("relay log holds %d entries, want 3: %+v", len(log), log)
+	}
+	for _, entry := range log {
 		if entry.Status != http.StatusOK || entry.State != "recorded" {
-			t.Fatalf("relay not acknowledged within the child timeout: %+v", entry)
+			t.Fatalf("relay not acknowledged from the spool: %+v", entry)
 		}
 	}
 	recorded := map[string]bool{}

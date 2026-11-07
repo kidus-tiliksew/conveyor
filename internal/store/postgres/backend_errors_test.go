@@ -12,7 +12,9 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
+	"github.com/kidus-tiliksew/conveyor/internal/core"
 	"github.com/kidus-tiliksew/conveyor/internal/store"
+	"github.com/kidus-tiliksew/conveyor/internal/store/postgres/db"
 )
 
 func requireNoDriverType(t *testing.T, err error) {
@@ -162,6 +164,31 @@ type fakeTx struct {
 }
 
 func (f fakeTx) Commit(context.Context) error { return f.err }
+
+// TestListTasksForRecoverySurfacesIteration keeps a failed iteration a backend
+// error: the rows it never delivered must not read as a missing task.
+func TestListTasksForRecoverySurfacesIteration(t *testing.T) {
+	driver := fmt.Errorf("wrapped: %w", &pgconn.PgError{Code: "XX000", Message: "iteration failed"})
+	st := &Store{boundary: boundaryDB{q: fakeQuerier{err: driver}}}
+	ctx := store.WithWorkspace(store.WithActor(t.Context(), store.SystemActor()), "demo")
+	got, err := st.ListTasksForRecovery(ctx, []string{"task"})
+	if got != nil || !errors.Is(err, store.ErrBackendOperation) || errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("rows=%+v err=%v, want the generic backend error", got, err)
+	}
+}
+
+// TestListTasksFilteredWithoutBodySurfacesIteration keeps a failed read a
+// backend error, so the attention count cannot answer from missing rows.
+func TestListTasksFilteredWithoutBodySurfacesIteration(t *testing.T) {
+	driver := fmt.Errorf("wrapped: %w", &pgconn.PgError{Code: "XX000", Message: "iteration failed"})
+	boundary := boundaryDB{q: fakeQuerier{err: driver}}
+	st := &Store{boundary: boundary, queries: db.New(boundary)}
+	ctx := store.WithWorkspace(store.WithActor(t.Context(), store.SystemActor()), "demo")
+	got, err := st.ListTasksFilteredWithoutBody(ctx, store.TaskFilter{States: []core.TaskState{core.TaskQueued}})
+	if got != nil || !errors.Is(err, store.ErrBackendOperation) {
+		t.Fatalf("rows=%+v err=%v, want the generic backend error", got, err)
+	}
+}
 
 func TestBoundaryTranslatesEveryQueryPath(t *testing.T) {
 	driver := fmt.Errorf("wrapped: %w", &pgconn.PgError{Code: "23503", Message: "insert or update violates foreign key constraint"})

@@ -165,6 +165,37 @@ func (s *Store) GetTask(ctx context.Context, id string) (core.Task, error) {
 	return result, nil
 }
 
+// ListTasksForRecovery reads the fields the recovery refusal and the
+// plan-revision gate read in one query, decoding them as GetTask does.
+func (s *Store) ListTasksForRecovery(ctx context.Context, taskIDs []string) (map[string]core.Task, error) {
+	ctx = dbmetrics.WithReadLabel(ctx, "ListTasksForRecovery")
+	out := make(map[string]core.Task, len(taskIDs))
+	if len(taskIDs) == 0 {
+		return out, nil
+	}
+	rows, err := s.boundary.Query(ctx, `SELECT id,state,next_stage,recovery_stage,setup_contract,approval_stale,reviewed_head_sha,refresh_head_sha FROM tasks WHERE workspace_id=$1 AND id=ANY($2::text[])`, workspace(ctx), taskIDs)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var row db.Task
+		if err = rows.Scan(&row.ID, &row.State, &row.NextStage, &row.RecoveryStage, &row.SetupContract, &row.ApprovalStale, &row.ReviewedHeadSha, &row.RefreshHeadSha); err != nil {
+			return nil, err
+		}
+		out[row.ID] = taskFromDB(row)
+	}
+	if err = rows.Err(); err != nil {
+		return nil, err
+	}
+	for _, id := range taskIDs {
+		if _, ok := out[id]; !ok {
+			return nil, notFound(pgx.ErrNoRows, "task %s", id)
+		}
+	}
+	return out, nil
+}
+
 func (s *Store) GetTaskByIntakeKey(ctx context.Context, key string) (core.Task, bool, error) {
 	ctx = dbmetrics.WithReadLabel(ctx, "GetTaskByIntakeKey")
 	task, err := s.queries.GetTaskByIntakeKey(ctx, db.GetTaskByIntakeKeyParams{WorkspaceID: workspace(ctx), IntakeKey: nullableText(key)})
@@ -225,6 +256,21 @@ func (s *Store) ListTasksFiltered(ctx context.Context, filter store.TaskFilter) 
 	// A zero page limit is the query's own "no LIMIT" spelling, so the paged
 	// Tasks read and this unpaged one stay one SQL predicate.
 	rows, err := s.queries.ListTaskOperationsTasks(ctx, taskOperationsListParams(ctx, filter, 0, 0))
+	if err != nil {
+		return nil, err
+	}
+	return s.hydrateTaskRows(ctx, rows)
+}
+
+// ListTasksFilteredWithoutBody runs ListTasksFiltered's predicate and hydration
+// over a task row whose body is an empty string, so the read transfers no task
+// body (req-operator-next-action AC-2.7).
+func (s *Store) ListTasksFilteredWithoutBody(ctx context.Context, filter store.TaskFilter) ([]core.Task, error) {
+	ctx = dbmetrics.WithReadLabel(ctx, "ListTasksFilteredWithoutBody")
+	if err := filter.Validate(); err != nil {
+		return nil, err
+	}
+	rows, err := s.queries.ListTaskOperationsTasksWithoutBody(ctx, taskOperationsListParams(ctx, filter, 0, 0))
 	if err != nil {
 		return nil, err
 	}

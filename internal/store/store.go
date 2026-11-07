@@ -147,6 +147,16 @@ type TaskStore interface {
 	AttachSubmissionGovernance(ctx context.Context, taskID, repository string, changedPaths []string, attribution SubmissionGovernanceAttribution) ([]core.TaskDesignContext, error)
 	ListCheckpointContextCandidates(ctx context.Context, requirementID string) ([]CheckpointContextCandidate, error)
 	GetTask(ctx context.Context, id string) (core.Task, error)
+	// ListTasksForRecovery reads the requested tasks of the workspace in one
+	// statement, keyed by ID. Each task carries only what the recovery refusal
+	// and the plan-revision gate read: ID, State, NextStage, RecoveryStage,
+	// SetupContract, ApprovalStale, ReviewedHeadSHA, and RefreshHeadSHA. It
+	// hydrates no relation. A requested task the read does not return fails the
+	// whole read with the error GetTask returns for the first such ID in request
+	// order, so a missing task never reads as having no refusal. Duplicate IDs
+	// collapse, and an empty request reads nothing (component-work-orders,
+	// Reads and waits).
+	ListTasksForRecovery(ctx context.Context, taskIDs []string) (map[string]core.Task, error)
 	GetTaskByIntakeKey(ctx context.Context, key string) (core.Task, bool, error)
 	ListRepositoryInstallTasks(context.Context, string) ([]core.RepositoryInstallTask, error)
 	ListTasks(ctx context.Context) ([]core.Task, error)
@@ -155,6 +165,13 @@ type TaskStore interface {
 	// Tasks list instead of a second implementation (AC-2.4). An inactive
 	// filter is exactly ListTasks.
 	ListTasksFiltered(ctx context.Context, filter TaskFilter) ([]core.Task, error)
+	// ListTasksFilteredWithoutBody returns the tasks ListTasksFiltered returns
+	// for the same filter, in the same order and with the same relations, with
+	// an empty Body. A durable backend leaves the body column in the database,
+	// so a count over open tasks never transfers their bodies
+	// (req-operator-next-action AC-2.7; component-next-action, One attention
+	// definition).
+	ListTasksFilteredWithoutBody(ctx context.Context, filter TaskFilter) ([]core.Task, error)
 	ListTaskPage(ctx context.Context, query TaskOperationsQuery) (TaskPage, error)
 	// ListCallerAttentionTaskPage returns only the authenticated caller's
 	// assigned, nonterminal tasks that currently satisfy TaskNeedsAttention.

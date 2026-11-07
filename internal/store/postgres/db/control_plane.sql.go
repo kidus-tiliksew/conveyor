@@ -8,6 +8,7 @@ package db
 import (
 	"context"
 	"fmt"
+	"strings"
 
 	"github.com/jackc/pgx/v5/pgtype"
 )
@@ -1551,8 +1552,20 @@ type ListTaskOperationsTasksRow struct {
 	HasChildren     bool `json:"has_children"`
 }
 
+// listTaskOperationsTasksWithoutBody is listTaskOperationsTasks with the body
+// column replaced by an empty string, so its predicate and order cannot drift.
+var listTaskOperationsTasksWithoutBody = strings.Replace(listTaskOperationsTasks, "t.title, t.body, t.class", "t.title, ''::text AS body, t.class", 1)
+
 func (q *Queries) ListTaskOperationsTasks(ctx context.Context, arg ListTaskOperationsTasksParams) ([]ListTaskOperationsTasksRow, error) {
-	rows, err := q.db.Query(ctx, listTaskOperationsTasks,
+	return q.listTaskOperationsTasksRows(ctx, listTaskOperationsTasks, arg)
+}
+
+func (q *Queries) ListTaskOperationsTasksWithoutBody(ctx context.Context, arg ListTaskOperationsTasksParams) ([]ListTaskOperationsTasksRow, error) {
+	return q.listTaskOperationsTasksRows(ctx, listTaskOperationsTasksWithoutBody, arg)
+}
+
+func (q *Queries) listTaskOperationsTasksRows(ctx context.Context, query string, arg ListTaskOperationsTasksParams) ([]ListTaskOperationsTasksRow, error) {
+	rows, err := q.db.Query(ctx, query,
 		arg.WorkspaceID,
 		arg.TaskStates,
 		arg.Repositories,

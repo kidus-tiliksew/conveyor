@@ -2801,6 +2801,73 @@ func (s fullLedgerStore) ListCompactEvents(ctx context.Context, taskID string) (
 	return s.Store.ListEvents(ctx, taskID)
 }
 
+// planRevisionGateEventCounter counts the event reads the gate issues.
+type planRevisionGateEventCounter struct {
+	store.Store
+	reads int
+}
+
+func (s *planRevisionGateEventCounter) ListCompactEvents(ctx context.Context, taskID string) ([]core.Event, error) {
+	s.reads++
+	return s.Store.ListCompactEvents(ctx, taskID)
+}
+
+// TestPendingPlanRevisionGateForTaskMatchesTheIDForm holds the loaded-task form
+// to the ID form over a task carrying only ID and State, and reads events only
+// for an awaiting task.
+func TestPendingPlanRevisionGateForTaskMatchesTheIDForm(t *testing.T) {
+	ctx := store.WithWorkspace(store.WithActor(t.Context(), store.SystemActor()), "demo")
+	st := &planRevisionGateEventCounter{Store: store.NewMemory()}
+	now := time.Now().UTC()
+	gate := core.Event{Kind: "task.state_changed", At: now.Add(time.Second), Payload: core.JSONPayload(map[string]any{"command": core.TaskGatePlanRevision})}
+	request := core.Event{Kind: "work_order.plan_revision_requested", At: now, Payload: core.JSONPayload(map[string]any{"work_order_id": "order", "attempt_id": "attempt", "rationale": "the API moved", "plan_version": 2})}
+	for _, tc := range []struct {
+		name        string
+		state       core.TaskState
+		events      []core.Event
+		wantPending bool
+		wantErr     error
+		wantReads   int
+	}{
+		{name: "running", state: core.TaskRunning, events: []core.Event{request, gate}},
+		{name: "awaiting another gate", state: core.TaskAwaiting, events: []core.Event{{Kind: "task.state_changed", At: now, Payload: core.JSONPayload(map[string]any{"command": core.TaskGateSpec})}}, wantReads: 1},
+		{name: "pending", state: core.TaskAwaiting, events: []core.Event{request, gate}, wantPending: true, wantReads: 1},
+		{name: "unreadable", state: core.TaskAwaiting, events: []core.Event{{Kind: "task.state_changed", At: now, Payload: json.RawMessage(`{"command":7}`)}}, wantPending: true, wantErr: store.ErrPlanRevisionGateUnreadable, wantReads: 1},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			id := "gate-" + strings.ReplaceAll(tc.name, " ", "-")
+			if err := st.CreateTask(ctx, core.Task{ID: id, Workspace: "demo", Repo: "conveyor", State: tc.state, NextStage: core.StageImplement, CreatedAt: now}); err != nil {
+				t.Fatal(err)
+			}
+			for _, event := range tc.events {
+				event.TaskID = id
+				if err := st.AppendEvent(ctx, event); err != nil {
+					t.Fatal(err)
+				}
+			}
+			st.reads = 0
+			got, pending, err := PendingPlanRevisionGateForTask(ctx, st, core.Task{ID: id, State: tc.state})
+			if st.reads != tc.wantReads {
+				t.Fatalf("event reads=%d want %d", st.reads, tc.wantReads)
+			}
+			want, wantPending, wantErr := PendingPlanRevisionGate(ctx, st, id)
+			if got != want || pending != wantPending || fmt.Sprint(err) != fmt.Sprint(wantErr) {
+				t.Fatalf("loaded form=%+v/%t/%v, ID form=%+v/%t/%v", got, pending, err, want, wantPending, wantErr)
+			}
+			if pending != tc.wantPending || !errors.Is(err, tc.wantErr) {
+				t.Fatalf("pending=%t err=%v, want %t/%v", pending, err, tc.wantPending, tc.wantErr)
+			}
+			full, fullPending, fullErr := PendingPlanRevisionGateForTask(ctx, fullLedgerStore{st}, core.Task{ID: id, State: tc.state})
+			if got != full || pending != fullPending || fmt.Sprint(err) != fmt.Sprint(fullErr) {
+				t.Fatalf("compact events=%+v/%t/%v, full events=%+v/%t/%v", got, pending, err, full, fullPending, fullErr)
+			}
+			if tc.name == "pending" && got != (PlanRevisionGateContext{WorkOrderID: "order", AttemptID: "attempt", Rationale: "the API moved", PlanVersion: 2}) {
+				t.Fatalf("gate context=%+v", got)
+			}
+		})
+	}
+}
+
 // TestDispatchFoldsMatchOverCompactEvents runs the dispatcher's own event
 // folds over a ledger holding historical work-order events with embedded
 // snapshot bodies and compares each result between the complete and the
@@ -2885,6 +2952,7 @@ func TestDispatchFoldsMatchOverCompactEvents(t *testing.T) {
 	same("hasRecoverableApprovedReview", results(full.hasRecoverableApprovedReview(ctx, task)), results(compact.hasRecoverableApprovedReview(ctx, task)))
 	same("pendingSpecGate", results(full.pendingSpecGate(ctx, id)), results(compact.pendingSpecGate(ctx, id)))
 	same("PendingPlanRevisionGate", results(PendingPlanRevisionGate(ctx, fullLedgerStore{st}, id)), results(PendingPlanRevisionGate(ctx, st, id)))
+	same("PendingPlanRevisionGateForTask", results(PendingPlanRevisionGateForTask(ctx, fullLedgerStore{st}, task)), results(PendingPlanRevisionGate(ctx, st, id)))
 	same("RecordedReviewComparison", results(RecordedReviewComparison(task, fullEvents)), results(RecordedReviewComparison(task, compactEvents)))
 	same("RecordedReviewComparisonContext", results(RecordedReviewComparisonContext(task, fullEvents)), results(RecordedReviewComparisonContext(task, compactEvents)))
 	same("reviewHistory", reviewHistory(fullEvents), reviewHistory(compactEvents))

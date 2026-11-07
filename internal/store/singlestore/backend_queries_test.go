@@ -314,10 +314,16 @@ func TestAuditedDirectStatementsReturnGenericBackendError(t *testing.T) {
 			return s.ForgetGitHubWebhookDelivery(c, "demo", "delivery")
 		},
 		"GitHubWebhookStatus": func(s *Store, c context.Context) error { return discard(s.GitHubWebhookStatus(c, "demo")) },
-		"ListWorkspaces":      func(s *Store, c context.Context) error { return discard(s.ListWorkspaces(c)) },
-		"GetWorkspace":        func(s *Store, c context.Context) error { return discard(s.GetWorkspace(c, "demo")) },
-		"WorkspaceConfig":     func(s *Store, c context.Context) error { return discard(s.WorkspaceConfig(c)) },
-		"ListLineageLinks":    func(s *Store, c context.Context) error { return discard(s.ListLineageLinks(c)) },
+		"ListTasksForRecovery": func(s *Store, c context.Context) error {
+			return discard(s.ListTasksForRecovery(c, []string{"task"}))
+		},
+		"ListTasksFilteredWithoutBody": func(s *Store, c context.Context) error {
+			return discard(s.ListTasksFilteredWithoutBody(c, store.TaskFilter{States: []core.TaskState{core.TaskQueued}}))
+		},
+		"ListWorkspaces":   func(s *Store, c context.Context) error { return discard(s.ListWorkspaces(c)) },
+		"GetWorkspace":     func(s *Store, c context.Context) error { return discard(s.GetWorkspace(c, "demo")) },
+		"WorkspaceConfig":  func(s *Store, c context.Context) error { return discard(s.WorkspaceConfig(c)) },
+		"ListLineageLinks": func(s *Store, c context.Context) error { return discard(s.ListLineageLinks(c)) },
 	}
 	for name, call := range methods {
 		t.Run(name, func(t *testing.T) {

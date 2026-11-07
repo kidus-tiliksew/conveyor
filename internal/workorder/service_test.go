@@ -285,6 +285,20 @@ func (s *dependencyBatchObservationStore) GetTask(_ context.Context, id string) 
 	return core.Task{ID: id, State: core.TaskRunning}, nil
 }
 
+func (s *dependencyBatchObservationStore) ListTasksForRecovery(_ context.Context, ids []string) (map[string]core.Task, error) {
+	return runningRecoveryTasks(ids), nil
+}
+
+// runningRecoveryTasks answers the batched task read for doubles whose tasks
+// all read as running.
+func runningRecoveryTasks(ids []string) map[string]core.Task {
+	tasks := make(map[string]core.Task, len(ids))
+	for _, id := range ids {
+		tasks[id] = core.Task{ID: id, State: core.TaskRunning}
+	}
+	return tasks
+}
+
 func (s *dependencyBatchObservationStore) ListEvents(context.Context, string) ([]core.Event, error) {
 	return nil, nil
 }
@@ -344,6 +358,394 @@ func TestListBatchesBlockersOnlyForQueuedImplementationOrders(t *testing.T) {
 	}
 }
 
+// recoveryReadStore observes the task reads of List and Lookup. A nil override
+// passes through to the wrapped store.
+type recoveryReadStore struct {
+	store.Store
+	getTaskIDs   []string
+	batches      [][]string
+	eventReads   []string
+	historyReads int
+
+	liveOrders  []core.WorkOrder
+	loneOrder   *core.WorkOrder
+	batchErr    error
+	dropFromMap string
+	eventsErr   error
+}
+
+func (s *recoveryReadStore) GetTask(ctx context.Context, id string) (core.Task, error) {
+	s.getTaskIDs = append(s.getTaskIDs, id)
+	return s.Store.GetTask(ctx, id)
+}
+
+func (s *recoveryReadStore) ListTasksForRecovery(ctx context.Context, ids []string) (map[string]core.Task, error) {
+	s.batches = append(s.batches, append([]string(nil), ids...))
+	if s.batchErr != nil {
+		return nil, s.batchErr
+	}
+	tasks, err := s.Store.ListTasksForRecovery(ctx, ids)
+	if err == nil && s.dropFromMap != "" {
+		delete(tasks, s.dropFromMap)
+	}
+	return tasks, err
+}
+
+func (s *recoveryReadStore) ListCompactEvents(ctx context.Context, id string) ([]core.Event, error) {
+	s.eventReads = append(s.eventReads, id)
+	if s.eventsErr != nil {
+		return nil, s.eventsErr
+	}
+	return s.Store.ListCompactEvents(ctx, id)
+}
+
+func (s *recoveryReadStore) ListWorkOrdersForTasks(ctx context.Context, ids []string) ([]core.WorkOrder, error) {
+	s.historyReads++
+	return s.Store.ListWorkOrdersForTasks(ctx, ids)
+}
+
+func (s *recoveryReadStore) ListLiveWorkOrders(ctx context.Context) ([]core.WorkOrder, error) {
+	if s.liveOrders != nil {
+		return slices.Clone(s.liveOrders), nil
+	}
+	return s.Store.ListLiveWorkOrders(ctx)
+}
+
+func (s *recoveryReadStore) GetWorkOrder(ctx context.Context, id string) (core.WorkOrder, error) {
+	if s.loneOrder != nil {
+		return *s.loneOrder, nil
+	}
+	return s.Store.GetWorkOrder(ctx, id)
+}
+
+func (s *recoveryReadStore) reset() {
+	s.getTaskIDs, s.batches, s.eventReads, s.historyReads = nil, nil, nil, 0
+}
+
+func seedRecoveryTask(t *testing.T, ctx context.Context, st store.Store, id string, edit func(*core.Task), dependencies ...string) {
+	t.Helper()
+	task := core.Task{ID: id, Workspace: "demo", Repo: "conveyor", State: core.TaskRunning, NextStage: core.StageImplement, CreatedAt: time.Now().UTC()}
+	if edit != nil {
+		edit(&task)
+	}
+	if err := st.CreateTaskWithDependencies(ctx, task, dependencies); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// TestListReadsRecoveryTasksInOneBatch fails on any return to a per-order task
+// read: the task reads must not grow with the eligible orders.
+func TestListReadsRecoveryTasksInOneBatch(t *testing.T) {
+	ctx := store.WithWorkspace(store.WithActor(t.Context(), store.SystemActor()), "demo")
+	st := &recoveryReadStore{Store: store.NewMemory()}
+	service := &Service{Store: st}
+	now := time.Now().UTC().Truncate(time.Microsecond)
+
+	if listed, err := service.List(ctx); err != nil || len(listed) != 0 {
+		t.Fatalf("empty list=%+v err=%v", listed, err)
+	}
+	if len(st.batches) != 0 || st.historyReads != 0 {
+		t.Fatalf("no orders issued batches=%v history=%d", st.batches, st.historyReads)
+	}
+
+	seedRecoveryTask(t, ctx, st, "claimed-only", nil)
+	seedListedOrder(t, ctx, st, "claimed-only", core.StageImplement, 1, core.WorkOrderClaimed, now)
+	st.reset()
+	if listed, err := service.List(ctx); err != nil || len(listed) != 1 {
+		t.Fatalf("claimed list=%+v err=%v", listed, err)
+	}
+	if len(st.batches) != 0 || len(st.getTaskIDs) != 0 {
+		t.Fatalf("no eligible order issued batches=%v GetTask=%v", st.batches, st.getTaskIDs)
+	}
+
+	var want []string
+	for index := range 24 {
+		id := fmt.Sprintf("eligible-%02d", index)
+		want = append(want, id)
+		seedRecoveryTask(t, ctx, st, id, nil)
+		seedListedOrder(t, ctx, st, id, core.StageImplement, 1, core.WorkOrderQueued, now.Add(time.Duration(index+1)*time.Second))
+	}
+	// A second eligible order of one task reads that task once.
+	seedListedOrder(t, ctx, st, "eligible-00", core.StageSpec, 2, core.WorkOrderQueued, now.Add(time.Minute))
+	seedRecoveryTask(t, ctx, st, "eligible-awaiting", func(task *core.Task) { task.State = core.TaskAwaiting })
+	seedListedOrder(t, ctx, st, "eligible-awaiting", core.StageImplement, 1, core.WorkOrderQueued, now.Add(2*time.Minute))
+	want = append(want, "eligible-awaiting")
+
+	st.reset()
+	listed, err := service.List(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(listed) != 27 {
+		t.Fatalf("listed=%d want 27", len(listed))
+	}
+	if len(st.getTaskIDs) != 0 {
+		t.Fatalf("List issued GetTask for %v", st.getTaskIDs)
+	}
+	if len(st.batches) != 1 || !slices.Equal(st.batches[0], want) {
+		t.Fatalf("batched task reads=%v want one read of %v", st.batches, want)
+	}
+	if st.historyReads != 1 {
+		t.Fatalf("history reads=%d want 1", st.historyReads)
+	}
+	if !slices.Equal(st.eventReads, []string{"eligible-awaiting"}) {
+		t.Fatalf("event reads=%v, want only the awaiting task", st.eventReads)
+	}
+
+	st.reset()
+	if _, err = service.Lookup(ctx, "eligible-03-implement-1"); err != nil {
+		t.Fatal(err)
+	}
+	if len(st.getTaskIDs) != 0 || len(st.batches) != 1 || !slices.Equal(st.batches[0], []string{"eligible-03"}) {
+		t.Fatalf("Lookup GetTask=%v batches=%v", st.getTaskIDs, st.batches)
+	}
+}
+
+// listedProjection is what the batched read must leave unchanged.
+type listedProjection struct {
+	refusal   string
+	claimable bool
+	blocking  string
+	unsatisfy string
+}
+
+func projectionOf(order core.WorkOrder) listedProjection {
+	return listedProjection{order.RecoveryRefusal, order.Claimable, strings.Join(order.BlockingTaskIDs, ","), strings.Join(order.UnsatisfiableTaskIDs, ",")}
+}
+
+// perOrderProjection is the projection as the per-order loop computed it, from
+// the hydrated task and the ID form of the gate. It is the oracle the batched
+// read is held to.
+func perOrderProjection(t *testing.T, ctx context.Context, st store.Store, order core.WorkOrder) listedProjection {
+	t.Helper()
+	queuedDelivery := (order.Stage == core.StageImplement || order.Stage == core.StageVerify) && order.State == core.WorkOrderQueued
+	if queuedDelivery {
+		blockers, err := st.ListDependencyBlockers(ctx, []string{order.TaskID})
+		if err != nil {
+			t.Fatal(err)
+		}
+		order.BlockingTaskIDs = append([]string(nil), blockers[order.TaskID].BlockingTaskIDs...)
+		order.UnsatisfiableTaskIDs = append([]string(nil), blockers[order.TaskID].UnsatisfiableTaskIDs...)
+		if len(order.BlockingTaskIDs) > 0 {
+			order.Claimable = false
+		}
+	}
+	if recoverEligible(order) {
+		task, err := st.GetTask(ctx, order.TaskID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		_, pending, err := dispatch.PendingPlanRevisionGate(ctx, st, order.TaskID)
+		if errors.Is(err, store.ErrPlanRevisionGateUnreadable) {
+			pending, err = true, nil
+		}
+		if err != nil {
+			t.Fatal(err)
+		}
+		history, err := st.ListWorkOrdersForTasks(ctx, []string{order.TaskID})
+		if err != nil {
+			t.Fatal(err)
+		}
+		store.ApplyRecoveryRefusal(&order, task, history, pending)
+	}
+	return projectionOf(order)
+}
+
+func TestListAndLookupKeepProjectionsForMixedFixture(t *testing.T) {
+	ctx := store.WithWorkspace(store.WithActor(t.Context(), store.SystemActor()), "demo")
+	st := &recoveryReadStore{Store: store.NewMemory()}
+	service := &Service{Store: st}
+	now := time.Now().UTC().Truncate(time.Microsecond)
+	at := func(index int) time.Time { return now.Add(time.Duration(index) * time.Second) }
+	verifyOn := func(reviewed, refresh string, stale bool, next core.Stage) func(*core.Task) {
+		return func(task *core.Task) {
+			task.NextStage = next
+			task.SetupContract.VerifyStage = true
+			task.ReviewedHeadSHA, task.RefreshHeadSHA, task.ApprovalStale = reviewed, refresh, stale
+		}
+	}
+	seedVerify := func(taskID string, index int, head string) core.WorkOrder {
+		t.Helper()
+		id := taskID + "-verify-1"
+		if err := st.CreateJob(ctx, core.Job{ID: id, TaskID: taskID, Stage: core.StageVerify, State: core.JobPending}); err != nil {
+			t.Fatal(err)
+		}
+		order := core.WorkOrder{ID: id, TaskID: taskID, JobID: id, Stage: core.StageVerify, HeadSHA: head, CreatedAt: at(index), QueueEnteredAt: at(index), QueueDeadline: at(index).Add(24 * time.Hour)}
+		if err := storetest.For(st).CreateWorkOrder(ctx, order); err != nil {
+			t.Fatal(err)
+		}
+		return order
+	}
+	appendGate := func(taskID string, events ...core.Event) {
+		t.Helper()
+		for _, event := range events {
+			event.TaskID = taskID
+			if err := st.AppendEvent(ctx, event); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	gateEvent := core.Event{Kind: "task.state_changed", At: now.Add(time.Second), Payload: core.JSONPayload(map[string]any{"command": core.TaskGatePlanRevision})}
+	requestEvent := core.Event{Kind: "work_order.plan_revision_requested", At: now, Payload: core.JSONPayload(map[string]any{"work_order_id": "prior-order", "attempt_id": "attempt", "rationale": "the API moved", "plan_version": 1})}
+	awaiting := func(task *core.Task) { task.State = core.TaskAwaiting }
+
+	seedRecoveryTask(t, ctx, st, "dep-open", nil)
+	seedRecoveryTask(t, ctx, st, "dep-closed", nil)
+	seedRecoveryTask(t, ctx, st, "clean", nil)
+	seedRecoveryTask(t, ctx, st, "blocked", nil, "dep-open", "dep-closed")
+	if _, err := taskops.New(st).Perform(ctx, "dep-closed", taskops.Command{Kind: core.TaskCancel}); err != nil {
+		t.Fatal(err)
+	}
+	seedRecoveryTask(t, ctx, st, "verify-next-stage", verifyOn("reviewed", "", false, core.StageImplement))
+	seedRecoveryTask(t, ctx, st, "verify-refresh-head", verifyOn("reviewed", "refresh", true, core.StageVerify))
+	seedRecoveryTask(t, ctx, st, "verify-clean", verifyOn("reviewed", "", false, core.StageVerify))
+	seedRecoveryTask(t, ctx, st, "superseded", nil)
+	seedRecoveryTask(t, ctx, st, "pending", awaiting)
+	appendGate("pending", requestEvent, gateEvent)
+	seedRecoveryTask(t, ctx, st, "unreadable", awaiting)
+	appendGate("unreadable", core.Event{Kind: "task.state_changed", At: now, Payload: json.RawMessage(`{"command":7}`)})
+	seedRecoveryTask(t, ctx, st, "other-gate", awaiting)
+	appendGate("other-gate", core.Event{Kind: "task.state_changed", At: now, Payload: core.JSONPayload(map[string]any{"command": core.TaskGateSpec})})
+	seedRecoveryTask(t, ctx, st, "timed-out", nil)
+	seedRecoveryTask(t, ctx, st, "claimed", nil)
+
+	// The successor is written first, because creating an order retires its
+	// open predecessors.
+	seedListedOrder(t, ctx, st, "superseded", core.StageImplement, 2, core.WorkOrderSubmitted, at(20))
+	seedListedOrder(t, ctx, st, "superseded", core.StageImplement, 1, core.WorkOrderQueued, at(5))
+	seedListedOrder(t, ctx, st, "clean", core.StageImplement, 1, core.WorkOrderQueued, at(1))
+	seedListedOrder(t, ctx, st, "blocked", core.StageImplement, 1, core.WorkOrderQueued, at(2))
+	seedVerify("verify-next-stage", 3, "reviewed")
+	seedVerify("verify-refresh-head", 4, "reviewed")
+	seedVerify("verify-clean", 6, "reviewed")
+	seedListedOrder(t, ctx, st, "pending", core.StageImplement, 1, core.WorkOrderQueued, at(7))
+	seedListedOrder(t, ctx, st, "unreadable", core.StageImplement, 1, core.WorkOrderQueued, at(8))
+	seedListedOrder(t, ctx, st, "other-gate", core.StageImplement, 1, core.WorkOrderQueued, at(9))
+	seedListedOrder(t, ctx, st, "timed-out", core.StageImplement, 1, core.WorkOrderTimedOut, at(10))
+	seedListedOrder(t, ctx, st, "claimed", core.StageImplement, 1, core.WorkOrderClaimed, at(11))
+
+	pendingText := func(orderID, taskID string) string {
+		return "work order " + orderID + " cannot be recovered while task " + taskID + " awaits the pending plan-revision decision; use the plan-revision decision gate"
+	}
+	want := []struct {
+		id         string
+		projection listedProjection
+	}{
+		{"clean-implement-1", listedProjection{claimable: true}},
+		{"blocked-implement-1", listedProjection{blocking: "dep-closed,dep-open", unsatisfy: "dep-closed"}},
+		{"verify-next-stage-verify-1", listedProjection{refusal: "verify order verify-next-stage-verify-1 cannot be claimed: task verify-next-stage next_stage is implement, not verify"}},
+		{"verify-refresh-head-verify-1", listedProjection{refusal: "verify order verify-refresh-head-verify-1 cannot be claimed: order head reviewed differs from the verify head refresh (the refresh head, because approval_stale is set)"}},
+		{"superseded-implement-1", listedProjection{refusal: "work order superseded-implement-1 was superseded by same-stage successor superseded-implement-2"}},
+		{"verify-clean-verify-1", listedProjection{claimable: true}},
+		{"pending-implement-1", listedProjection{refusal: pendingText("pending-implement-1", "pending")}},
+		{"unreadable-implement-1", listedProjection{refusal: pendingText("unreadable-implement-1", "unreadable")}},
+		{"other-gate-implement-1", listedProjection{claimable: true}},
+		{"timed-out-implement-1", listedProjection{}},
+		{"claimed-implement-1", listedProjection{}},
+	}
+
+	raw, err := st.Store.ListLiveWorkOrders(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	oracle := map[string]listedProjection{}
+	for _, order := range raw {
+		oracle[order.ID] = perOrderProjection(t, ctx, st.Store, order)
+	}
+	st.reset()
+	listed, err := service.List(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(st.getTaskIDs) != 0 || len(st.batches) != 1 {
+		t.Fatalf("List GetTask=%v batches=%v", st.getTaskIDs, st.batches)
+	}
+	if len(listed) != len(want) {
+		t.Fatalf("listed=%d want %d", len(listed), len(want))
+	}
+	for index, expected := range want {
+		order := listed[index]
+		if order.ID != expected.id {
+			t.Fatalf("listed[%d]=%s want %s", index, order.ID, expected.id)
+		}
+		if got := projectionOf(order); got != expected.projection || got != oracle[order.ID] {
+			t.Fatalf("list %s projection=%+v want %+v oracle=%+v", order.ID, got, expected.projection, oracle[order.ID])
+		}
+		looked, err := service.Lookup(ctx, order.ID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got := projectionOf(looked); got != expected.projection {
+			t.Fatalf("lookup %s projection=%+v want %+v", order.ID, got, expected.projection)
+		}
+	}
+}
+
+// TestListFailsClosedOnUnreadableRecoveryTask covers every way a task can fail
+// to arrive. None may pass as an order with no refusal.
+func TestListFailsClosedOnUnreadableRecoveryTask(t *testing.T) {
+	ctx := store.WithWorkspace(store.WithActor(t.Context(), store.SystemActor()), "demo")
+	newStore := func(t *testing.T) *recoveryReadStore {
+		t.Helper()
+		st := &recoveryReadStore{Store: store.NewMemory()}
+		seedRecoveryTask(t, ctx, st, "present", func(task *core.Task) { task.State = core.TaskAwaiting })
+		seedListedOrder(t, ctx, st, "present", core.StageImplement, 1, core.WorkOrderQueued, time.Now().UTC())
+		return st
+	}
+	ghost := core.WorkOrder{ID: "ghost-order", TaskID: "ghost", Stage: core.StageImplement, State: core.WorkOrderQueued, Claimable: true}
+
+	t.Run("a task the read does not return keeps the GetTask error", func(t *testing.T) {
+		st := newStore(t)
+		_, want := st.Store.GetTask(ctx, "ghost")
+		if !errors.Is(want, store.ErrNotFound) {
+			t.Fatalf("GetTask error=%v", want)
+		}
+		present, err := st.Store.GetWorkOrder(ctx, "present-implement-1")
+		if err != nil {
+			t.Fatal(err)
+		}
+		st.liveOrders = []core.WorkOrder{present, ghost}
+		listed, err := (&Service{Store: st}).List(ctx)
+		if listed != nil || !errors.Is(err, store.ErrNotFound) || err.Error() != want.Error() {
+			t.Fatalf("list=%+v err=%v want %v", listed, err, want)
+		}
+		st.loneOrder = &ghost
+		if _, err = (&Service{Store: st}).Lookup(ctx, ghost.ID); !errors.Is(err, store.ErrNotFound) || err.Error() != want.Error() {
+			t.Fatalf("lookup err=%v want %v", err, want)
+		}
+		if len(st.getTaskIDs) != 0 {
+			t.Fatalf("missing task issued GetTask for %v", st.getTaskIDs)
+		}
+	})
+	t.Run("a partial batch result is not found", func(t *testing.T) {
+		st := newStore(t)
+		st.dropFromMap = "present"
+		listed, err := (&Service{Store: st}).List(ctx)
+		if listed != nil || !errors.Is(err, store.ErrNotFound) || !strings.Contains(err.Error(), "present") {
+			t.Fatalf("list=%+v err=%v", listed, err)
+		}
+	})
+	t.Run("a failed batched read surfaces", func(t *testing.T) {
+		st := newStore(t)
+		st.batchErr = store.ErrBackendOperation
+		listed, err := (&Service{Store: st}).List(ctx)
+		if listed != nil || !errors.Is(err, store.ErrBackendOperation) {
+			t.Fatalf("list=%+v err=%v", listed, err)
+		}
+		if st.historyReads != 0 {
+			t.Fatalf("history reads=%d after the failure", st.historyReads)
+		}
+	})
+	t.Run("a failed event read surfaces", func(t *testing.T) {
+		st := newStore(t)
+		st.eventsErr = store.ErrBackendOperation
+		listed, err := (&Service{Store: st}).List(ctx)
+		if listed != nil || !errors.Is(err, store.ErrBackendOperation) {
+			t.Fatalf("list=%+v err=%v", listed, err)
+		}
+	})
+}
+
 type scopedListObservationStore struct {
 	store.Store
 	orders                    []core.WorkOrder
@@ -379,6 +781,10 @@ func (s *scopedListObservationStore) ListDependencyBlockers(_ context.Context, t
 
 func (s *scopedListObservationStore) GetTask(_ context.Context, id string) (core.Task, error) {
 	return core.Task{ID: id, State: core.TaskRunning}, nil
+}
+
+func (s *scopedListObservationStore) ListTasksForRecovery(_ context.Context, ids []string) (map[string]core.Task, error) {
+	return runningRecoveryTasks(ids), nil
 }
 
 func (s *scopedListObservationStore) ListEvents(context.Context, string) ([]core.Event, error) {

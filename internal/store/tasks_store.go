@@ -893,6 +893,28 @@ func (m *memory) GetTask(_ context.Context, id string) (core.Task, error) {
 	return m.hydrateTaskLocked(t), nil
 }
 
+func (m *memory) ListTasksForRecovery(ctx context.Context, taskIDs []string) (map[string]core.Task, error) {
+	out := make(map[string]core.Task, len(taskIDs))
+	if len(taskIDs) == 0 {
+		return out, nil
+	}
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	workspace, scoped := WorkspaceFromContext(ctx)
+	for _, id := range taskIDs {
+		task, ok := m.tasks[id]
+		if !ok || (scoped && workspace != "" && task.Workspace != workspace) {
+			return nil, fmt.Errorf("%w: task %s", ErrNotFound, id)
+		}
+		out[id] = core.Task{
+			ID: task.ID, State: task.State, NextStage: task.NextStage, RecoveryStage: task.RecoveryStage,
+			SetupContract: task.SetupContract, ApprovalStale: task.ApprovalStale,
+			ReviewedHeadSHA: task.ReviewedHeadSHA, RefreshHeadSHA: task.RefreshHeadSHA,
+		}
+	}
+	return out, nil
+}
+
 func (m *memory) GetTaskByIntakeKey(_ context.Context, key string) (core.Task, bool, error) {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
@@ -955,6 +977,17 @@ func (m *memory) ListTasksFiltered(ctx context.Context, filter TaskFilter) ([]co
 		return out[i].CreatedAt.After(out[j].CreatedAt)
 	})
 	return out, nil
+}
+
+func (m *memory) ListTasksFilteredWithoutBody(ctx context.Context, filter TaskFilter) ([]core.Task, error) {
+	tasks, err := m.ListTasksFiltered(ctx, filter)
+	if err != nil {
+		return nil, err
+	}
+	for i := range tasks {
+		tasks[i].Body = ""
+	}
+	return tasks, nil
 }
 
 // taskMatchesFilterLocked evaluates the shared surface predicate. The Postgres

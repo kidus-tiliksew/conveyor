@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"slices"
 	"sort"
 	"strings"
 	"time"
@@ -263,6 +264,53 @@ func (s *Store) GetTask(ctx context.Context, id string) (core.Task, error) {
 	}
 	return t, nil
 }
+
+// ListTasksForRecovery reads the fields the recovery refusal and the
+// plan-revision gate read in one query, decoding them as GetTask does.
+func (s *Store) ListTasksForRecovery(ctx context.Context, taskIDs []string) (map[string]core.Task, error) {
+	ctx = dbmetrics.WithReadLabel(ctx, "ListTasksForRecovery")
+	out := make(map[string]core.Task, len(taskIDs))
+	if len(taskIDs) == 0 {
+		return out, nil
+	}
+	ws, err := workspace(ctx)
+	if err != nil {
+		return nil, err
+	}
+	// Each ID is one bound parameter here, so duplicates collapse before the
+	// statement instead of counting against the driver's parameter limit.
+	unique := slices.Clone(taskIDs)
+	slices.Sort(unique)
+	unique = slices.Compact(unique)
+	rows, err := documentRows(ctx, s.db, `SELECT id,state,next_stage,recovery_stage,setup_contract,approval_stale,reviewed_head_sha,refresh_head_sha FROM tasks WHERE workspace_id=? AND id IN (`+taskMapMarks(len(unique))+`)`, append([]any{ws}, taskMapArgs(unique)...)...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var t core.Task
+		var setup []byte
+		if err = rows.Scan(&t.ID, &t.State, &t.NextStage, &t.RecoveryStage, &setup, &t.ApprovalStale, &t.ReviewedHeadSHA, &t.RefreshHeadSHA); err != nil {
+			return nil, err
+		}
+		if len(setup) > 0 {
+			if err = json.Unmarshal(setup, &t.SetupContract); err != nil {
+				return nil, err
+			}
+		}
+		out[t.ID] = t
+	}
+	if err = rows.Err(); err != nil {
+		return nil, err
+	}
+	for _, id := range taskIDs {
+		if _, ok := out[id]; !ok {
+			return nil, notFound(sql.ErrNoRows, "task %s", id)
+		}
+	}
+	return out, nil
+}
+
 func (s *Store) GetTaskByIntakeKey(ctx context.Context, key string) (core.Task, bool, error) {
 	ctx = dbmetrics.WithReadLabel(ctx, "GetTaskByIntakeKey")
 	t, err := scanTask(documentRow(ctx, s.db, `SELECT `+taskColumns+` FROM tasks WHERE workspace_id=? AND BINARY intake_key=BINARY ?`, documentWorkspace(ctx), key))
@@ -757,9 +805,23 @@ func (s *Store) ListTasksFiltered(ctx context.Context, f store.TaskFilter) ([]co
 	}
 	return s.listTaskRows(ctx, store.TaskOperationsQuery{TaskFilter: f})
 }
+
+// ListTasksFilteredWithoutBody runs ListTasksFiltered's predicate and hydration
+// over taskMapColumns, whose body is an empty string, so the read transfers no
+// task body (req-operator-next-action AC-2.7).
+func (s *Store) ListTasksFilteredWithoutBody(ctx context.Context, f store.TaskFilter) ([]core.Task, error) {
+	ctx = dbmetrics.WithReadLabel(ctx, "ListTasksFilteredWithoutBody")
+	if err := f.Validate(); err != nil {
+		return nil, err
+	}
+	return s.listTaskRowsSelecting(ctx, taskMapColumns, store.TaskOperationsQuery{TaskFilter: f})
+}
 func (s *Store) listTaskRows(ctx context.Context, q store.TaskOperationsQuery) ([]core.Task, error) {
+	return s.listTaskRowsSelecting(ctx, taskColumns, q)
+}
+func (s *Store) listTaskRowsSelecting(ctx context.Context, columns string, q store.TaskOperationsQuery) ([]core.Task, error) {
 	predicate, args := taskPredicate(ctx, q.TaskFilter)
-	query := `SELECT ` + taskColumns + ` FROM tasks WHERE ` + predicate + ` ORDER BY created_at DESC,id ASC`
+	query := `SELECT ` + columns + ` FROM tasks WHERE ` + predicate + ` ORDER BY created_at DESC,id ASC`
 	if q.Limit > 0 {
 		query += ` LIMIT ? OFFSET ?`
 		args = append(args, q.Limit, q.Offset)

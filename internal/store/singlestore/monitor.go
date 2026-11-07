@@ -244,6 +244,63 @@ func (s *Store) LinkTask(ctx context.Context, identity, taskID, outcome string) 
 	return r, translateBackendConflict(err)
 }
 
+// LinkRecoveryTask commits the link, the task event, and the activity row
+// together (component-persistence invariant 5). The update names an unlinked
+// row, so a predecessor whose commit the read above could not yet see leaves
+// zero rows here, and the caller retries with nothing written instead of
+// appending a second event (component-persistence invariant 8).
+func (s *Store) LinkRecoveryTask(ctx context.Context, identity, taskID string, taskPayload, activityPayload map[string]any) (monitor.ObservationRecord, error) {
+	ctx = dbmetrics.WithReadLabel(ctx, "LinkRecoveryTask")
+	if _, err := store.RequireActor(ctx); err != nil {
+		return monitor.ObservationRecord{}, translateBackendConflict(err)
+	}
+	var r monitor.ObservationRecord
+	err := s.monitorTx(ctx, func(tx *sql.Tx, ws string) error {
+		var err error
+		r, err = scanObservation(tx.QueryRowContext(ctx, "SELECT "+observationColumns+" FROM monitor_observations WHERE workspace_id=? AND identity=?", ws, identity), ws)
+		if err != nil {
+			return translateBackendConflict(err)
+		}
+		if r.TaskID != "" {
+			if r.TaskID != taskID {
+				return fmt.Errorf("monitor observation %s already links task %s", identity, r.TaskID)
+			}
+			return nil
+		}
+		if err = lockMonitorTask(ctx, tx, ws, taskID); err != nil {
+			return translateBackendConflict(err)
+		}
+		r.TaskID = taskID
+		r.TaskOutcome = monitor.OutcomeRecoveryObserved
+		r.State = "task_linked"
+		r.UpdatedAt = time.Now().UTC().Truncate(time.Microsecond)
+		result, err := tx.ExecContext(ctx, "UPDATE monitor_observations SET task_id=?,task_outcome=?,state='task_linked',updated_at=? WHERE workspace_id=? AND identity=? AND task_id IS NULL", taskID, monitor.OutcomeRecoveryObserved, r.UpdatedAt, ws, identity)
+		if err != nil {
+			return translateBackendConflict(err)
+		}
+		updated, err := result.RowsAffected()
+		if err != nil {
+			return translateBackendConflict(err)
+		}
+		if updated != 1 {
+			return store.ErrRetryable
+		}
+		if err = auditMonitorTask(ctx, tx, ws, taskID, monitor.EventRecoveryObserved, taskPayload); err != nil {
+			return err
+		}
+		activity, err := json.Marshal(activityPayload)
+		if err != nil {
+			return translateBackendConflict(err)
+		}
+		_, err = writeRow(ctx, tx, rowWrite{table: "monitor_activity", operation: "INSERT", values: map[string]any{"workspace_id": ws, "kind": monitor.EventRecoveryObserved, "payload_json": activity}})
+		return translateBackendConflict(err)
+	})
+	if err != nil {
+		return monitor.ObservationRecord{}, translateBackendConflict(err)
+	}
+	return r, nil
+}
+
 const driftColumns = "id,repository,kind,source_url,commit_sha,COALESCE(requirement_id,''),COALESCE(system_design_id,''),COALESCE(system_design_version,0),COALESCE(causal_event_id,0),matching_paths,task_id,detected_at,resolved_at,outcome"
 
 func scanDrift(row interface{ Scan(...any) error }, ws string) (monitor.Drift, error) {
