@@ -23,6 +23,8 @@ export function PlanningPage() {
   const canConfirm = useWorkspaceCapability('confirm_documents')
   const client = useQueryClient()
   const [selectedId, setSelectedId] = useState('')
+  // Below lg the session list opens from a button, so the conversation keeps the screen.
+  const [sessionsOpen, setSessionsOpen] = useState(false)
   const restoredWorkspace = useRef('')
   const [goal, setGoal] = useState<PlanningSessionGoal>('open')
   const {
@@ -116,7 +118,19 @@ export function PlanningPage() {
         )}
       </PageHeader>
       <div className="flex min-h-0 flex-1 flex-col lg:flex-row">
-        <aside className="max-h-32 w-full shrink-0 overflow-y-auto border-b border-border bg-surface/40 lg:max-h-none lg:w-72 lg:border-r lg:border-b-0">
+        <div className="shrink-0 border-b border-border px-4 py-2 lg:hidden">
+          <Button
+            variant="secondary"
+            size="sm"
+            aria-expanded={sessionsOpen}
+            onClick={() => setSessionsOpen((open) => !open)}
+          >
+            Sessions{sessions ? ` (${sessions.length})` : ''}
+          </Button>
+        </div>
+        <aside
+          className={`max-h-72 w-full shrink-0 overflow-y-auto border-b border-border bg-surface/40 lg:block lg:max-h-none lg:w-72 lg:border-r lg:border-b-0 ${sessionsOpen ? '' : 'max-lg:hidden'}`}
+        >
           <div className="py-3 pl-4 pr-4 lg:pl-6">
             <p className="text-xs font-semibold text-muted">Sessions</p>
           </div>
@@ -133,7 +147,10 @@ export function PlanningPage() {
                 key={session.id}
                 type="button"
                 aria-current={selectedId === session.id ? 'true' : undefined}
-                onClick={() => setSelectedId(session.id)}
+                onClick={() => {
+                  setSelectedId(session.id)
+                  setSessionsOpen(false)
+                }}
                 className={`block w-full py-2.5 pl-4 pr-4 text-left lg:pl-6 ${selectedId === session.id ? 'bg-raised/70' : 'hover:bg-surface'}`}
               >
                 <strong className="block truncate text-[13px] font-medium">
@@ -154,21 +171,23 @@ export function PlanningPage() {
             ))}
           </div>
         </aside>
-        <main className="min-h-0 min-w-0 flex-1">
+        <main className="min-h-0 min-w-0 flex-1 max-lg:overflow-y-auto">
           {selected ? (
-            <div className="flex h-full min-h-0 flex-col">
-              <PlanningChat
-                key={`${workspace}:${selected.id}`}
-                summary={selected}
-                workspace={workspace}
-                onFinalized={() => {
-                  void client.invalidateQueries({ queryKey: ['planning-sessions', workspace] })
-                  void client.invalidateQueries({ queryKey: ['planning-bundles', workspace] })
-                }}
-              />
+            <div className="flex h-full min-h-0 flex-col max-lg:h-auto">
+              <div className="flex min-h-0 flex-1 flex-col max-lg:h-[75dvh] max-lg:flex-none">
+                <PlanningChat
+                  key={`${workspace}:${selected.id}`}
+                  summary={selected}
+                  workspace={workspace}
+                  onFinalized={() => {
+                    void client.invalidateQueries({ queryKey: ['planning-sessions', workspace] })
+                    void client.invalidateQueries({ queryKey: ['planning-bundles', workspace] })
+                  }}
+                />
+              </div>
               {selectedBundle && (
                 <section
-                  className="max-h-[35%] shrink-0 overflow-y-auto border-t lg:max-h-[45%] border-border bg-surface/40 px-6 py-4 [&>*]:mx-auto [&>*]:max-w-3xl"
+                  className="shrink-0 border-t border-border bg-surface/40 px-4 py-4 lg:max-h-[45%] lg:overflow-y-auto lg:px-6 [&>*]:mx-auto [&>*]:max-w-3xl"
                   aria-label="Planning bundle preview"
                 >
                   <div className="flex items-start justify-between gap-4">
