@@ -182,9 +182,10 @@ export function DocumentReview({
                   {target ? `Review version ${target.version}` : 'Version comparison'}
                 </h3>
                 <div className="grid min-w-0 gap-3 rounded-lg border border-border bg-surface p-4 sm:grid-cols-2">
-                  <label className="min-w-0 text-xs text-muted">
+                  <label className="min-w-0 text-xs text-muted" htmlFor={`${id}-base`}>
                     Base version
                     <Select
+                      id={`${id}-base`}
                       aria-label="Base version"
                       className="mt-1.5"
                       value={baseNumber}
@@ -198,9 +199,10 @@ export function DocumentReview({
                       ))}
                     </Select>
                   </label>
-                  <label className="min-w-0 text-xs text-muted">
+                  <label className="min-w-0 text-xs text-muted" htmlFor={`${id}-target`}>
                     Target version
                     <Select
+                      id={`${id}-target`}
                       aria-label="Target version"
                       className="mt-1.5"
                       value={target?.version ?? ''}

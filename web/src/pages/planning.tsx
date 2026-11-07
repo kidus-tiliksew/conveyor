@@ -154,7 +154,7 @@ export function PlanningPage() {
             ))}
           </div>
         </aside>
-        <main className="min-w-0 flex-1">
+        <main className="min-h-0 min-w-0 flex-1">
           {selected ? (
             <div className="flex h-full min-h-0 flex-col">
               <PlanningChat
