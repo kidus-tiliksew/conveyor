@@ -655,7 +655,7 @@ function IconRail() {
                 : 'bg-workspace-tile text-workspace-tile-foreground hover:bg-workspace-tile-hover hover:text-foreground',
             )}
           >
-            {initials(item.name || item.id)}
+            {railLabel(item, workspaces ?? [])}
           </button>
         ))}
         {canCreateWorkspaces && (
@@ -672,6 +672,17 @@ function IconRail() {
       </div>
     </nav>
   )
+}
+
+// Two workspaces can share initials, and only the tile's letters tell them
+// apart at a glance. Repeats fall back to the first and last character.
+function railLabel(item: { id: string; name?: string }, all: { id: string; name?: string }[]) {
+  const name = item.name || item.id
+  const label = initials(name)
+  const repeated = all.some((other) => other.id !== item.id && initials(other.name || other.id) === label)
+  if (!repeated) return label
+  const compact = name.replace(/[\s_-]+/g, '')
+  return (compact[0] + compact[compact.length - 1]).toUpperCase()
 }
 
 function initials(name: string) {

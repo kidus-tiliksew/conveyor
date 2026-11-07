@@ -242,7 +242,11 @@ export function DocumentComparison({ before, after }: { before: ReviewSource; af
                 <ReviewRowContent row={row} mode={mode} />
               </section>
             ) : (
-              <details key={row.id} className="min-w-0 rounded-lg border border-dashed border-border p-4">
+              <details
+                key={row.id}
+                data-unchanged-section
+                className="min-w-0 border-x border-t border-border bg-card px-4 py-2.5 first:rounded-t-lg last:rounded-b-lg last:border-b [&+section]:mt-3 [section+&]:mt-3 [section+&]:rounded-t-lg [&:has(+section)]:rounded-b-lg [&:has(+section)]:border-b"
+              >
                 <summary className="cursor-pointer text-xs text-muted">Show unchanged section · {row.title}</summary>
                 <div className="mt-4 min-w-0 overflow-auto">
                   <MarkdownProse>{row.after?.content ?? ''}</MarkdownProse>

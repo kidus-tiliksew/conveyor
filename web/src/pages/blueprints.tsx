@@ -79,7 +79,7 @@ function BlueprintListEntry({ view }: { view: BlueprintView }) {
     >
       <Blocks className="mt-0.5 size-4 shrink-0 text-primary" />
       <div className="min-w-0 flex-1">
-        <strong className="block truncate text-[13px] font-medium">{view.task.title}</strong>
+        <strong className="block text-[13px] font-medium max-sm:line-clamp-3 sm:truncate">{view.task.title}</strong>
         <div className="mt-1 flex flex-wrap items-center gap-2 text-xs text-muted">
           <Badge variant={deliveryTone(view.delivery)}>{deliveryLabel(view.delivery)}</Badge>
           {specVersion ? <span>Blueprint v{specVersion}</span> : null}

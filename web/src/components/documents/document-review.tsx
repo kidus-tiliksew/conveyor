@@ -2,6 +2,10 @@ import { type ReactNode, useId } from 'react'
 import { Button } from '../ui/button'
 import type { ReviewSource } from './document-review-model'
 import { DocumentComparison } from './version-diff'
+import { actorName } from '../../lib/activity'
+import { dateTimeLabel } from '../../lib/utils'
+import { useWorkspaceMembers } from '../app-shell'
+import { Select } from '../ui/input'
 
 export type ReviewSearch = { tab?: 'document' | 'changes' | 'history'; base?: number; target?: number }
 export type ReviewVersion = ReviewSource & {
@@ -100,9 +104,16 @@ export function DocumentReview({
   error?: string
 }) {
   const id = useId()
+  const members = useWorkspaceMembers().data ?? []
   const tab = search.tab ?? 'document'
   const target = selectedReviewVersion(versions, current, search)
-  const baseNumber = search.base ?? current?.version ?? 0
+  // Comparing the current version against itself says nothing, so it opens
+  // against the version it replaced.
+  const previous = [...versions]
+    .filter((v) => v.version < (target?.version ?? 0) && v.confirmed_at)
+    .sort((a, b) => b.version - a.version)[0]
+  const baseNumber =
+    search.base ?? (target && target.version === current?.version ? (previous?.version ?? 0) : (current?.version ?? 0))
   const base = versions.find((v) => v.version === baseNumber)
   const invalid = (search.target !== undefined && !target) || (tab === 'changes' && baseNumber !== 0 && !base)
   const tabs = ['document', 'changes', 'history'] as const
@@ -140,7 +151,7 @@ export function DocumentReview({
             </button>
           ))}
         </div>
-        {actions && <div className="flex flex-wrap items-center gap-1 pb-1.5">{actions}</div>}
+        {actions && <div className="-mr-2.5 flex flex-wrap items-center gap-1 pb-1.5">{actions}</div>}
       </div>
       <div className={tab === 'changes' ? 'sticky top-0 z-10 max-h-[40vh] overflow-y-auto bg-card' : undefined}>
         {attention}
@@ -173,9 +184,9 @@ export function DocumentReview({
                 <div className="grid min-w-0 gap-3 rounded-lg border border-border bg-surface p-4 sm:grid-cols-2">
                   <label className="min-w-0 text-xs text-muted">
                     Base version
-                    <select
+                    <Select
                       aria-label="Base version"
-                      className="mt-2 block w-full min-w-0 rounded-md border border-border bg-card p-2 text-sm text-foreground"
+                      className="mt-1.5"
                       value={baseNumber}
                       onChange={(e) => select({ base: Number(e.target.value) })}
                     >
@@ -185,13 +196,13 @@ export function DocumentReview({
                           v{v.version} · {versionState(v)}
                         </option>
                       ))}
-                    </select>
+                    </Select>
                   </label>
                   <label className="min-w-0 text-xs text-muted">
                     Target version
-                    <select
+                    <Select
                       aria-label="Target version"
-                      className="mt-2 block w-full min-w-0 rounded-md border border-border bg-card p-2 text-sm text-foreground"
+                      className="mt-1.5"
                       value={target?.version ?? ''}
                       onChange={(e) => select({ target: Number(e.target.value) })}
                     >
@@ -201,7 +212,7 @@ export function DocumentReview({
                           v{v.version} · {versionState(v)}
                         </option>
                       ))}
-                    </select>
+                    </Select>
                   </label>
                 </div>
                 {baseNumber === 0 && (
@@ -231,20 +242,19 @@ export function DocumentReview({
                           <p className="mt-1 break-words text-xs text-muted">
                             {v.origin.replaceAll('_', ' ')}
                             {v.origin_task_id && ` · Task ${v.origin_task_id}`}
-                            {v.origin_session_id && ` · Session ${v.origin_session_id}`} ·{' '}
-                            {new Date(v.created_at).toLocaleString()}
+                            {v.origin_session_id && ` · Session ${v.origin_session_id}`} · {dateTimeLabel(v.created_at)}
                           </p>
                           {v.confirmed_by && (
                             <p className="mt-1 text-xs text-muted">
-                              Confirmed by {v.confirmed_by}
-                              {v.confirmed_at && ` on ${new Date(v.confirmed_at).toLocaleString()}`}
+                              Confirmed by {actorName(v.confirmed_by, members)}
+                              {v.confirmed_at && ` on ${dateTimeLabel(v.confirmed_at)}`}
                             </p>
                           )}
                           {(v.dismissed_by || v.retired_by) && (
                             <p className="mt-1 text-xs text-muted">
-                              Dismissed by {v.dismissed_by ?? v.retired_by}
+                              Dismissed by {actorName(v.dismissed_by ?? v.retired_by ?? '', members)}
                               {(v.dismissed_at || v.retired_at) &&
-                                ` on ${new Date(v.dismissed_at ?? v.retired_at ?? '').toLocaleString()}`}
+                                ` on ${dateTimeLabel(v.dismissed_at ?? v.retired_at ?? '')}`}
                             </p>
                           )}
                           {v.dismissal_note && (

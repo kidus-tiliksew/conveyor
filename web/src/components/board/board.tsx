@@ -44,7 +44,7 @@ export function Board() {
   const map = search.view === 'map'
   return (
     <div className="flex h-full flex-col">
-      <PageHeader title="Board">
+      <PageHeader title="Board" description="Every task, by the stage it has reached.">
         <div className="flex items-center gap-2">
           <MCPSetup iconOnly />
           {canCreateTasks && (
@@ -135,6 +135,20 @@ function Kanban() {
 
   // On a phone only one lane fits, so the first view opens where the work is.
   const laneScroller = useRef<HTMLElement>(null)
+  const [moreLanes, setMoreLanes] = useState(false)
+  const updateMoreLanes = () => {
+    const scroller = laneScroller.current
+    setMoreLanes(Boolean(scroller && scroller.scrollLeft + scroller.clientWidth < scroller.scrollWidth - 1))
+  }
+  // biome-ignore lint/correctness/useExhaustiveDependencies: measured once per mount; the observer keeps it current
+  useEffect(() => {
+    const scroller = laneScroller.current
+    if (!scroller) return
+    updateMoreLanes()
+    const observer = new ResizeObserver(updateMoreLanes)
+    observer.observe(scroller)
+    return () => observer.disconnect()
+  }, [])
   const hasItems = Boolean(data?.items.length)
   useEffect(() => {
     const scroller = laneScroller.current
@@ -162,7 +176,7 @@ function Kanban() {
                 <span className="font-medium text-foreground">
                   {data.total === 0 ? 0 : data.offset + 1}–{Math.min(data.offset + data.items.length, data.total)}
                 </span>{' '}
-                of {data.total}
+                of {data.total} tasks
               </span>
               <Button
                 size="icon"
@@ -206,23 +220,34 @@ function Kanban() {
           Activity feed unavailable: {String(error)}
         </p>
       )}
-      <section
-        ref={laneScroller}
-        aria-label="Task board"
-        className="flex min-h-0 flex-1 gap-3 overflow-x-auto bg-surface/70 px-4 pt-2 lg:rounded-b-xl lg:px-6"
-      >
-        {isLoading
-          ? stageGroups.map(({ key }) => <Skeleton key={key} className="h-full w-72 shrink-0 rounded-xl" />)
-          : stageGroups.map(({ key, label }) => (
-              <BoardColumn
-                key={key}
-                groupKey={key}
-                label={label}
-                items={grouped.get(key) ?? []}
-                selectedId={selectedId}
-              />
-            ))}
-      </section>
+      <div className="relative flex min-h-0 flex-1">
+        <section
+          ref={laneScroller}
+          aria-label="Task board"
+          onScroll={updateMoreLanes}
+          className="flex min-h-0 min-w-0 flex-1 gap-3 overflow-x-auto bg-surface/70 px-4 pt-2 max-sm:snap-x max-sm:scroll-pl-4 lg:rounded-b-xl lg:px-6"
+        >
+          {isLoading
+            ? stageGroups.map(({ key }) => <Skeleton key={key} className="h-full w-72 shrink-0 rounded-xl" />)
+            : stageGroups.map(({ key, label }) => (
+                <BoardColumn
+                  key={key}
+                  groupKey={key}
+                  label={label}
+                  items={grouped.get(key) ?? []}
+                  selectedId={selectedId}
+                />
+              ))}
+        </section>
+        {/* More lanes wait to the right; a clipped lane and this fade say so. */}
+        {moreLanes && (
+          <div
+            aria-hidden
+            data-more-lanes
+            className="pointer-events-none absolute inset-y-0 right-0 w-14 bg-gradient-to-l from-background to-transparent lg:rounded-br-xl"
+          />
+        )}
+      </div>
     </>
   )
 }

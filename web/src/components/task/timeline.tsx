@@ -224,8 +224,10 @@ export function Timeline({
               usageReportedOrderIDs={usageReportedOrderIDs}
             />
           )}
-          {entries.length === 0 && live.tail.length === 0 && !live.gate && (
-            <li className="pl-7 text-sm text-muted">Waiting for the first job to start.</li>
+          {entries.length === 0 && (
+            <li className="pl-7 text-sm text-muted">
+              {live.tail.length === 0 && !live.gate ? 'Waiting for the first job to start.' : 'No activity yet.'}
+            </li>
           )}
           {tail.map(({ key, dot, card }) => (
             <li key={key} className="relative pl-7">

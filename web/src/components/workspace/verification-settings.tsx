@@ -23,7 +23,7 @@ export function VerificationSettings({
         <span className="text-xs text-faint">Defaults are frozen onto each task at intake.</span>
       </CardHeader>
       <CardContent className="grid gap-x-6 gap-y-4 md:grid-cols-2">
-        <div className="flex items-center gap-3">
+        <div className="flex items-start gap-3">
           <Switch
             aria-label="Verify before review"
             checked={draft.execution.verify_stage ?? false}

@@ -1,4 +1,5 @@
 import type { ReactNode } from 'react'
+import { actorName } from '../../lib/activity'
 import type { TaskReviewRoundSummary, TaskReviewSummaryFinding } from '../../lib/types'
 import { absoluteTime, cn } from '../../lib/utils'
 import { useWorkspaceMembers } from '../app-shell'
@@ -55,8 +56,8 @@ export function ReviewRoundSummary({
   const model = summary.author?.model?.trim()
   const members = useWorkspaceMembers().data ?? []
   const memberName = (actor: string) => {
-    const member = members.find((entry) => entry.user_id === actor.replace(/^user:/, ''))
-    return member?.display_name || member?.email || actor
+    const member = members.find((entry) => entry.user_id === actor)
+    return member?.display_name || member?.email || actorName(actor, members)
   }
   return (
     <section aria-label={`Round ${round} summary`} data-review-round-summary className="px-4 pt-1.5 pb-2 text-sm">

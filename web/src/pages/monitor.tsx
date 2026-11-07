@@ -40,7 +40,7 @@ export function MonitorPage() {
               <CardContent className="text-sm text-failure">{String(error)}</CardContent>
             </Card>
           )}
-          <div className="grid gap-3 md:grid-cols-3">
+          <div className="grid grid-cols-2 gap-3 md:grid-cols-3">
             <Metric
               label="Unreconciled drift"
               value={String(status?.drift_count ?? 0)}
@@ -56,9 +56,10 @@ export function MonitorPage() {
               label="Last successful observation"
               value={
                 isSetTimestamp(status?.last_successful_observation)
-                  ? new Date(status.last_successful_observation).toLocaleString()
+                  ? dateTimeLabel(status.last_successful_observation)
                   : 'Never'
               }
+              className="col-span-2 md:col-span-1"
             />
           </div>
           {status?.current_error && (
@@ -78,29 +79,29 @@ export function MonitorPage() {
           <Card className="mt-3">
             <CardHeader>
               <CardTitle>Unreconciled changes</CardTitle>
-              <Badge variant={(status?.drift_count ?? 0) > 0 ? 'attention' : 'positive'}>
-                {status?.drift_count ?? 0}
-              </Badge>
             </CardHeader>
-            <CardContent className="divide-y divide-border py-0">
+            <CardContent className="max-h-[32rem] divide-y divide-border overflow-y-auto px-0 py-0">
               {(status?.drift ?? []).map((item) => (
-                <div key={item.id} className="flex flex-wrap items-center gap-x-6 gap-y-2 py-3">
+                <div
+                  key={item.id}
+                  className="flex flex-wrap items-center gap-x-6 gap-y-2 px-4 py-3 transition-colors hover:bg-surface/70"
+                >
                   <div className="min-w-0 flex-[1_1_18rem]">
                     <div className="flex flex-wrap items-center gap-2">
                       <span className="text-[13px] font-medium">{item.repository}</span>
-                      <Badge variant="mono">{item.kind}</Badge>
+                      <Badge title={item.kind}>{driftKindLabel(item.kind)}</Badge>
                     </div>
                     <p className="mt-1 flex min-w-0 items-center gap-2 text-xs text-muted">
                       <GitCommitHorizontal aria-hidden="true" className="size-3.5 shrink-0 text-faint" />
                       <span className="min-w-0 truncate font-mono text-[11px]" title={item.commit_sha || item.id}>
                         {item.commit_sha ? item.commit_sha.slice(0, 12) : item.id}
                       </span>
-                      <span className="shrink-0" title={new Date(item.detected_at).toLocaleString()}>
+                      <span className="shrink-0" title={dateTimeLabel(item.detected_at)}>
                         Detected {age(item.detected_at)} ago
                       </span>
                     </p>
                   </div>
-                  <div className="flex shrink-0 items-center gap-2 [&_select]:border-transparent [&_select]:bg-transparent [&_select]:shadow-none [&_select:hover]:border-edge [&_select:focus]:border-primary [&_label]:min-w-0 [&_select]:[field-sizing:content]">
+                  <div className="flex shrink-0 items-center gap-2 [&_label]:min-w-0 [&_select]:[field-sizing:content]">
                     {canManageWorkspace && (
                       <DriftResolutionForm
                         drift={item}
@@ -124,7 +125,7 @@ export function MonitorPage() {
                 </div>
               ))}
               {(status?.drift_count ?? 0) === 0 && (
-                <p className="py-4 text-center text-sm text-muted">No unreconciled repository changes.</p>
+                <p className="px-4 py-4 text-center text-sm text-muted">No unreconciled repository changes.</p>
               )}
             </CardContent>
           </Card>
@@ -182,14 +183,16 @@ function Metric({
   value,
   attention = false,
   title,
+  className,
 }: {
   label: string
   value: string
   attention?: boolean
   title?: string
+  className?: string
 }) {
   return (
-    <Card>
+    <Card className={className}>
       <CardContent>
         <p className="text-xs text-muted">{label}</p>
         <p className={`mt-2 text-lg font-semibold ${attention ? 'text-attention' : ''}`} title={title}>
@@ -220,4 +223,10 @@ function duration(nanoseconds: number) {
 function isSetTimestamp(value?: string): value is string {
   if (!value) return false
   return new Date(value).getUTCFullYear() > 1
+}
+
+// A drift kind in words; the stored value stays on the tooltip.
+function driftKindLabel(kind: string) {
+  const words = kind.replaceAll('_', ' ').replace(/\bpr\b/g, 'PR')
+  return words.charAt(0).toUpperCase() + words.slice(1)
 }

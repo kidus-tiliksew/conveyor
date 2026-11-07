@@ -68,8 +68,13 @@ export function DriftResolutionForm({
         mutation.mutate()
       }}
     >
-      <label className="min-w-48 text-xs text-muted" htmlFor={outcomeSelectID}>
-        <span className={surface === 'monitor' ? 'sr-only' : undefined}>Resolution</span>
+      <label
+        className={
+          surface === 'monitor' ? 'flex min-w-48 items-center gap-2 text-xs text-muted' : 'min-w-48 text-xs text-muted'
+        }
+        htmlFor={outcomeSelectID}
+      >
+        <span className="shrink-0">{surface === 'monitor' ? 'Resolve as' : 'Resolution'}</span>
         <Select
           id={outcomeSelectID}
           aria-label={`Resolution outcome for ${drift.id}`}

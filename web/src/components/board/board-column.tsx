@@ -57,7 +57,7 @@ export function BoardColumn({
     <section
       aria-label={label}
       data-lane-populated={idle ? undefined : ''}
-      className="flex h-full min-w-[17rem] flex-[3_1_17rem] flex-col"
+      className="flex h-full min-w-[14.5rem] flex-[3_1_14.5rem] snap-start flex-col"
     >
       <header className="flex h-9 shrink-0 items-center gap-2 px-1">
         <Icon className="size-3.5 shrink-0 text-faint" />

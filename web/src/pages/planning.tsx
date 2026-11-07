@@ -115,8 +115,8 @@ export function PlanningPage() {
           </p>
         )}
       </PageHeader>
-      <div className="flex min-h-0 flex-1">
-        <aside className="w-72 shrink-0 overflow-y-auto border-r border-border bg-surface/40">
+      <div className="flex min-h-0 flex-1 flex-col lg:flex-row">
+        <aside className="max-h-56 w-full shrink-0 overflow-y-auto border-b border-border bg-surface/40 lg:max-h-none lg:w-72 lg:border-r lg:border-b-0">
           <div className="py-3 pl-4 pr-4 lg:pl-6">
             <p className="text-xs font-semibold text-muted">Sessions</p>
           </div>
@@ -194,10 +194,10 @@ export function PlanningPage() {
                       </div>
                     )}
                   </div>
-                  <div className="mt-4 grid gap-4 lg:grid-cols-2">
+                  <div className="mt-4 space-y-4">
                     <div>
                       <h3 className="text-xs font-semibold text-muted">Pending documents</h3>
-                      <ul className="mt-2 space-y-2">
+                      <ul className="mt-2 grid gap-2 lg:grid-cols-2">
                         {selectedBundle.documents.map((document) => (
                           <li
                             key={`${document.kind}:${document.id}:${document.version ?? 0}`}

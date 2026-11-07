@@ -203,6 +203,9 @@ time, td, dd { font-variant-numeric: tabular-nums; }
 .markdown { font-size: 0.875rem; line-height: 1.68; color: var(--color-markdown); }
 .markdown > :first-child { margin-top: 0; }
 /* A finished report in the timeline: quieter than the entry that is current. */
+/* A long document names many identifiers; filled chips would turn its prose
+   into a row of pills. The font alone marks them there. */
+.document-body .markdown :not(pre, td, th) > code { background: none; border: none; padding: 0; }
 .markdown-past { font-size: 0.8125rem; line-height: 1.25rem; color: var(--color-muted); }
 /* Long documents keep a readable measure; tables, code, and diagrams may use
    the whole column. The opening heading usually repeats the page title, so it
@@ -291,3 +294,11 @@ time, td, dd { font-variant-numeric: tabular-nums; }
 .markdown.markdown-demoted h3,
 .markdown.markdown-demoted h4 { font-size: 0.875rem; }
 
+/* A phone's canvas is too small to give a corner to the minimap. */
+@media (max-width: 39.99rem) {
+  .react-flow__minimap { display: none; }
+}
+/* The map's corner controls sit on the same right edge as the toolbar above. */
+@media (min-width: 64rem) {
+  .react-flow__panel.right { margin-right: 24px; }
+}

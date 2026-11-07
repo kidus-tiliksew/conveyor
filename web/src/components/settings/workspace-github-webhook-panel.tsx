@@ -83,7 +83,14 @@ export function WorkspaceGitHubWebhookPanel({
             Receiver URL
           </label>
           <div className="flex items-center gap-2">
-            <Input id={receiverID} readOnly value={webhook.receiver_url} autoComplete="off" spellCheck={false} />
+            <Input
+              id={receiverID}
+              readOnly
+              value={webhook.receiver_url}
+              autoComplete="off"
+              spellCheck={false}
+              className="max-w-xl"
+            />
             <CopyButton value={webhook.receiver_url} label="Copy receiver URL" />
           </div>
         </div>

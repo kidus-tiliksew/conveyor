@@ -474,7 +474,11 @@ function ConversationMessage({ group }: { group: MessageGroup }) {
   return (
     <Message from={group.role}>
       {group.role !== 'system' && <Avatar kind={group.role} />}
-      <div className={group.role === 'system' ? 'contents' : 'min-w-0 max-w-[82%] space-y-2'}>
+      <div
+        className={
+          group.role === 'system' ? 'contents' : 'flex min-w-0 max-w-[85%] flex-col space-y-2 [&>*]:max-w-full'
+        }
+      >
         <RenderedParts parts={group.parts} fallback={group.content} role={group.role} />
       </div>
     </Message>

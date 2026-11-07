@@ -1393,7 +1393,7 @@ test('a single-version summary with no findings shows no version counter or find
   await expect(summary.locator('p').first()).toHaveText('Approved.\n\nNo findings this round.', { useInnerText: false })
   await expect(summary.locator('[data-review-summary-version]')).toHaveCount(0)
   await expect(summary.locator('[data-review-summary-severity]')).toHaveCount(0)
-  await expect(summary.locator('[data-review-summary-author]')).toContainText('By user:usr_operator')
+  await expect(summary.locator('[data-review-summary-author]')).toContainText('By an operator')
   await expect(summary.locator('[data-review-summary-author]')).not.toContainText('self-reported')
 })
 

@@ -337,7 +337,7 @@ test('a decision page shows its record, clauses, chain, alternatives, and citing
   await page.goto('/w/demo/decisions/DEC-7')
   await expect(page.getByRole('heading', { name: 'DEC-7', level: 1 })).toBeVisible()
   await expect(page.getByText('In force', { exact: true })).toBeVisible()
-  await expect(page.getByText('Confirmed by user:operator on')).toBeVisible()
+  await expect(page.getByText('Confirmed by an operator on')).toBeVisible()
   await expect(page.getByText('Proposed while implementing a task')).toBeVisible()
   await expect(page.getByRole('link', { name: '261020-abc123' })).toHaveAttribute(
     'href',

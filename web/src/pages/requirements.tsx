@@ -1496,7 +1496,7 @@ function RequirementDocument({ version, title }: { version: RequirementVersion; 
                     {index + 1}
                   </a>
                   <div className="min-w-0 flex-1">
-                    <p className="text-sm leading-6 text-balance">{statement.statement}</p>
+                    <p className="text-sm leading-6">{statement.statement}</p>
                     {statement.user_story && (
                       <p className="mt-3 border-l-2 border-edge pl-3 text-xs leading-5 text-muted italic">
                         As {statement.user_story.as_a}, I want {statement.user_story.i_want}, so that{' '}

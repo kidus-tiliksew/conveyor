@@ -114,7 +114,11 @@ export function WorkspacePage() {
 
   return (
     <div className="flex h-full flex-col">
-      <PageHeader title="Workspace" meta={draft && <Badge variant="mono">{draft.workspace}</Badge>}>
+      <PageHeader
+        title="Workspace"
+        meta={draft && <Badge variant="mono">{draft.workspace}</Badge>}
+        description="How tasks run here, and who can work on them."
+      >
         {canCreateWorkspaces && (
           <Link to="/workspaces/new">
             <Button variant="secondary" size="sm" tabIndex={-1}>

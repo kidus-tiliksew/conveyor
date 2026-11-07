@@ -368,7 +368,7 @@ test('the Kanban pager shows its range beside named icon buttons', async ({ page
   const seen: string[] = []
   await openBoard(page, seen)
   const pager = page.getByRole('navigation', { name: 'Board pages' })
-  await expect(pager).toHaveText(/^1–3 of 3$/)
+  await expect(pager).toHaveText(/^1–3 of 3 tasks$/)
   for (const name of ['Previous', 'Next']) {
     const button = pager.getByRole('button', { name, exact: true })
     await expect(button).toHaveAttribute('title', name)
@@ -833,6 +833,7 @@ test('Board sheet keeps lazy audit reads isolated across workspace changes', asy
   })
   await cards(page).filter({ hasText: 'Recent conveyor change' }).click()
   let panel = page.getByRole('dialog', { name: 'Task detail' })
+  await panel.getByRole('button', { name: /Execution plan/ }).click()
   await expect(panel.getByText('Board retained plan')).toBeVisible()
   expect(requests).toEqual([])
   await panel.getByText('Show technical activity').click()
@@ -844,6 +845,7 @@ test('Board sheet keeps lazy audit reads isolated across workspace changes', asy
   releaseDemo()
   await cards(page).filter({ hasText: 'Recent conveyor change' }).click()
   panel = page.getByRole('dialog', { name: 'Task detail' })
+  await panel.getByRole('button', { name: /Execution plan/ }).click()
   await expect(panel.getByText('Board retained plan')).toBeVisible()
   await expect(panel.getByText('demo complete authority')).toHaveCount(0)
   await expect.poll(() => requests).toEqual(['demo'])

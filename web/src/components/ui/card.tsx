@@ -8,14 +8,17 @@ export function Card({ className, ...props }: HTMLAttributes<HTMLDivElement>) {
 export function CardHeader({ className, ...props }: HTMLAttributes<HTMLDivElement>) {
   return (
     <div
-      className={cn('flex items-start justify-between gap-3 border-b border-border px-4 py-3', className)}
+      className={cn(
+        'flex flex-wrap items-start justify-between gap-x-3 gap-y-0.5 border-b border-border px-4 py-3',
+        className,
+      )}
       {...props}
     />
   )
 }
 
 export function CardTitle({ className, ...props }: HTMLAttributes<HTMLHeadingElement>) {
-  return <h3 className={cn('text-[13px] font-semibold text-foreground', className)} {...props} />
+  return <h3 className={cn('shrink-0 text-[13px] font-semibold text-foreground', className)} {...props} />
 }
 
 export function CardContent({ className, ...props }: HTMLAttributes<HTMLDivElement>) {
