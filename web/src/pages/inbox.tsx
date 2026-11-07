@@ -121,7 +121,7 @@ export function InboxPage() {
         {inbox.data && <InboxBandChips search={search} counts={counts} />}
       </PageHeader>
       <div ref={root} className="min-h-0 flex-1 overflow-y-auto">
-        <div className="max-w-6xl px-4 py-5 lg:px-6">
+        <div className="px-4 py-5 lg:px-6">
           {(search.task || search.document) && (
             <div className="mt-4 flex flex-wrap items-center justify-between gap-2 rounded-md border border-border bg-surface px-3 py-2 text-xs text-muted">
               <span className="min-w-0 break-words">
@@ -238,7 +238,7 @@ function EmptyDecisions() {
   return (
     <div
       data-no-decisions
-      className="flex flex-col items-center rounded-xl border border-dashed border-border px-6 py-14 text-center"
+      className="flex flex-col items-center px-6 py-20 text-center"
     >
       <span className="flex size-10 items-center justify-center rounded-full bg-positive-soft text-positive">
         <Check className="size-5" aria-hidden />
