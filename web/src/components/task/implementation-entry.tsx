@@ -4,6 +4,7 @@ import type { TimelineEntry } from '../../lib/activity'
 import { absoluteTime, cn } from '../../lib/utils'
 import { Badge } from '../ui/badge'
 import { MarkdownProse } from '../ui/markdown-prose'
+import { ClampedBlock } from './clamped-block'
 
 // An implement job is the task's delivery, so like the verify and review
 // stages it gets its own timeline card instead of the generic job card: what
@@ -46,11 +47,13 @@ export function ImplementationEntry({
   dotSlot,
   meta,
   summaryAudit,
+  latest = false,
 }: {
   entry: Extract<TimelineEntry, { type: 'job' }>
   dotSlot: (className: string) => ReactNode
   meta: ReactNode
   summaryAudit?: ReactNode
+  latest?: boolean
 }) {
   const badge = statusBadge[statusOf(entry.job)]
   const warning = entry.tone === 'warning'
@@ -60,41 +63,45 @@ export function ImplementationEntry({
       {dotSlot(implementationDot(entry))}
       <article
         aria-label={entry.attempt ? `Implementation attempt ${entry.attempt}` : 'Implementation'}
-        className={cn('border-b border-border pb-1', warning && 'border-attention/40 bg-attention-soft')}
+        className={cn('pb-1', warning && 'rounded-lg border border-attention/40 bg-attention-soft pb-0')}
         data-implementation-entry
       >
-        <header className="flex flex-wrap items-center gap-x-2.5 gap-y-1 px-4 pt-3" data-job-header>
-          <span className="text-[13px] font-semibold text-foreground">Implementation</span>
+        <header
+          className={cn('flex flex-wrap items-center gap-x-2.5 gap-y-1 px-4', warning ? 'pt-3' : 'pt-0.5')}
+          data-job-header
+        >
+          <span className="text-sm font-semibold text-foreground">Implementation</span>
           <Badge variant={badge.variant}>{badge.label}</Badge>
           {entry.attempt ? <span className="text-xs text-muted">Attempt {entry.attempt}</span> : null}
           {meta}
+          {delivery && (
+            <span className="flex min-w-0 items-center gap-x-2 text-xs text-muted" data-implementation-delivery>
+              <a
+                href={delivery.url}
+                target="_blank"
+                rel="noreferrer"
+                className="inline-flex items-center gap-1 text-primary hover:underline"
+              >
+                <GitPullRequest className="size-3.5" aria-hidden />#{delivery.number}
+              </a>
+              <span className="font-mono text-[11px] text-muted" title={delivery.headSha}>
+                {delivery.headSha.slice(0, 7)}
+              </span>
+            </span>
+          )}
           <time className="ml-auto text-[11px] text-faint">{absoluteTime(entry.at)}</time>
         </header>
-        <MarkdownProse
-          className="px-4 pt-1.5 pb-3 text-sm leading-6 text-foreground/85"
-          components={{ p: ({ children }) => <p className="whitespace-pre-line">{children}</p> }}
-        >
-          {entry.summary}
-        </MarkdownProse>
-        {summaryAudit && <div className="px-4 pb-3 text-xs text-muted">{summaryAudit}</div>}
-        {delivery && (
-          <footer
-            className="flex min-w-0 flex-wrap items-center gap-x-3 gap-y-1 border-t border-border px-4 py-2 text-xs text-muted"
-            data-implementation-delivery
-          >
-            <a
-              href={delivery.url}
-              target="_blank"
-              rel="noreferrer"
-              className="inline-flex items-center gap-1 text-primary hover:underline"
+        <div className="px-4 pt-1 pb-2">
+          <ClampedBlock clamp={!latest && statusOf(entry.job) !== 'running'}>
+            <MarkdownProse
+              className={latest ? undefined : 'markdown-past'}
+              components={{ p: ({ children }) => <p className="whitespace-pre-line">{children}</p> }}
             >
-              <GitPullRequest className="size-3.5" aria-hidden />#{delivery.number}
-            </a>
-            <span className="font-mono text-[11px] text-muted" title={delivery.headSha}>
-              {delivery.headSha.slice(0, 7)}
-            </span>
-          </footer>
-        )}
+              {entry.summary}
+            </MarkdownProse>
+          </ClampedBlock>
+        </div>
+        {summaryAudit && <div className="px-4 pb-3 text-xs text-muted">{summaryAudit}</div>}
       </article>
     </li>
   )

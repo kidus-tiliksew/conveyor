@@ -1,5 +1,6 @@
 import { Link, useParams } from '@tanstack/react-router'
 import { ArrowLeft, ChevronDown, ChevronUp } from 'lucide-react'
+import { useState } from 'react'
 import { useWorkspaceSelection } from '../components/app-shell'
 import { useCanonicalBlueprintRedirect } from '../components/blueprint/use-blueprint-route'
 import { LineageExplorer } from '../components/lineage/lineage-explorer'
@@ -9,7 +10,7 @@ import { SectionHeading } from '../components/task/section-heading'
 import { SpecCard } from '../components/task/spec-card'
 import { TaskActivityTabs } from '../components/task/task-activity-tabs'
 import { TaskContextCard } from '../components/task/task-context-card'
-import { TaskAgentPrompt, TaskFacts, TaskIdentity } from '../components/task/task-header'
+import { TaskAgentPrompt, TaskFacts, TaskIdentity, TaskStatusBadge } from '../components/task/task-header'
 import { useTaskDetail, useTaskOrder } from '../components/task/use-task-detail'
 import { Button } from '../components/ui/button'
 import { Skeleton } from '../components/ui/skeleton'
@@ -25,6 +26,7 @@ export function TaskFullPage() {
   const { taskId } = useParams({ from: '/w/$workspaceId/tasks/$taskId/full' })
   const { data: item, isLoading, error } = useTaskDetail(taskId)
   const { previousId, nextId, windowEdge } = useTaskOrder(taskId)
+  const [scrolled, setScrolled] = useState(false)
   // A blueprint anchor has one home, and it is not this page.
   const redirecting = useCanonicalBlueprintRedirect(item?.task)
 
@@ -48,9 +50,21 @@ export function TaskFullPage() {
           <span aria-hidden className="shrink-0 text-edge">
             /
           </span>
-          <span className="min-w-0 truncate font-mono text-xs text-foreground" aria-current="page">
+          <span className="shrink-0 font-mono text-xs text-foreground" aria-current="page">
             {taskId}
           </span>
+          {/* Once the title has scrolled away, the header keeps the reader oriented. */}
+          {item && scrolled && (
+            <>
+              <span aria-hidden className="shrink-0 text-edge">
+                ·
+              </span>
+              <span className="min-w-0 truncate text-[13px] text-muted">{item.task.title}</span>
+              <span className="shrink-0">
+                <TaskStatusBadge item={item} />
+              </span>
+            </>
+          )}
         </nav>
         {/* The corner affordance REQ-3 asks for: what this task connects to is
             one read away, and it costs nothing until it is opened. */}
@@ -75,7 +89,7 @@ export function TaskFullPage() {
         </div>
       )}
       {error != null && <p className="px-6 py-6 text-sm text-failure">{String(error)}</p>}
-      {item && !redirecting && <FullBody item={item} />}
+      {item && !redirecting && <FullBody item={item} onScrolled={setScrolled} />}
     </div>
   )
 }
@@ -111,10 +125,11 @@ const readingMeasure = 'w-full min-w-0 lg:mx-auto lg:max-w-[47.5rem]'
 // sections, then activity. From lg up identity spans the rows beside the
 // properties and the top of the inspector, so neither column waits on the
 // other's height.
-function FullBody({ item }: { item: ActivityItem }) {
+function FullBody({ item, onScrolled }: { item: ActivityItem; onScrolled: (scrolled: boolean) => void }) {
   return (
     <section
       aria-label="Task content"
+      onScroll={(event) => onScrolled(event.currentTarget.scrollTop > 160)}
       className="task-reading min-h-0 flex-1 overflow-y-auto lg:bg-local lg:bg-[linear-gradient(to_left,var(--color-surface)_23rem,var(--color-border)_23rem,var(--color-border)_calc(23rem+1px),transparent_calc(23rem+1px))]"
     >
       {/* The inspector rail is the scroll region's own background, attached
@@ -135,8 +150,8 @@ function FullBody({ item }: { item: ActivityItem }) {
             className="mt-0 grid-cols-[5.5rem_minmax(0,1fr)] gap-x-3 gap-y-1.5 border-y-0 py-1"
           />
         </section>
-        <section aria-label="Execution plan" className={cn(readingMeasure, 'lg:col-start-1 lg:row-start-3 lg:mt-5')}>
-          {item.spec ? (
+        {item.spec && (
+          <section aria-label="Execution plan" className={cn(readingMeasure, 'lg:col-start-1 lg:row-start-3 lg:mt-5')}>
             <SpecCard
               spec={item.spec}
               collapsible={false}
@@ -144,26 +159,26 @@ function FullBody({ item }: { item: ActivityItem }) {
               routeVariant="full"
               minimumSeatCount={item.summaries?.review_seat_policy?.minimum_seat_count}
             />
-          ) : (
-            <p className="text-[13px] text-muted">
-              No execution plan yet — the planning stage has not produced a version.
-            </p>
-          )}
-        </section>
+          </section>
+        )}
         {/* Zero height from lg up: the inspector follows the properties directly
-            and never stretches the rows that hold the reading column. */}
+            and never stretches the rows that hold the reading column. It stays
+            in view while the column scrolls, and scrolls itself when taller
+            than the window. */}
         <section
           aria-label="Task inspector"
-          className="min-w-0 space-y-5 lg:col-start-2 lg:row-span-3 lg:row-start-2 lg:mt-5 lg:h-0"
+          className="min-w-0 space-y-5 lg:sticky lg:top-5 lg:col-start-2 lg:row-span-3 lg:row-start-2 lg:mt-5 lg:h-0 lg:self-start"
         >
-          <TaskContextCard taskId={item.task.id} taskState={item.task.state} context={item.task.context} compact />
-          <TaskAgentPrompt item={item} />
-          <AttachmentsCard attachments={item.attachments ?? []} />
-          {/* While a gate is open the evidence belongs with the decision, and
+          <div className="min-w-0 space-y-5 lg:max-h-[calc(100dvh-7rem)] lg:overflow-y-auto">
+            <TaskContextCard taskId={item.task.id} taskState={item.task.state} context={item.task.context} compact />
+            <TaskAgentPrompt item={item} />
+            <AttachmentsCard attachments={item.attachments ?? []} />
+            {/* While a gate is open the evidence belongs with the decision, and
               the gate card renders it there — not twice on one page. */}
-          {!isReviewable(item) && (
-            <AttachmentsCard attachments={item.verification_evidence ?? []} title="Verification evidence" />
-          )}
+            {!isReviewable(item) && (
+              <AttachmentsCard attachments={item.verification_evidence ?? []} title="Verification evidence" />
+            )}
+          </div>
         </section>
         {/* The static relationship graph is gone: relationships are read in
             the explorer panel, and one page does not carry two renderings of

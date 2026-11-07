@@ -142,7 +142,10 @@ for (const surface of [`/w/demo/tasks/${taskId}`, `/w/demo/tasks/${taskId}/full`
     await expect(card.getByText('The plan for Card task waits for your approval.')).toBeVisible()
     await expect(card.getByText('Approve the plan')).toBeVisible()
     await expect(card.locator('[data-actor]')).toHaveText('operator')
-    await expect(card.getByText('Does this plan do what the task asks?')).toBeVisible()
+    // The question reads once, beside the evidence and the choices it asks about.
+    const gate = page.getByRole('region', { name: 'Human gate' })
+    await expect(gate.getByText('Does this plan do what the task asks?')).toBeVisible()
+    await expect(card.getByText('Does this plan do what the task asks?')).toHaveCount(0)
     await expect(card.getByText('If ignored: Implementation never starts.')).toBeVisible()
     await expect(card.locator('[data-next-action-deadline] time')).toHaveAttribute('datetime', '2026-10-13T10:00:00Z')
 
@@ -246,7 +249,10 @@ for (const surface of [
     // count is taken over task detail.
     const detail = page.getByRole(surface.detail, { name: surface.label })
     await expect(detail.getByText('An agent is working on this task.', { exact: true })).toHaveCount(1)
-    await expect(card.getByText('If ignored: The attempt continues.')).toBeVisible()
+    // While an agent acts, nothing is asked of the reader, so what happens if
+    // nobody acts is not stated (`req-operator-next-action` states it for an
+    // operator's act).
+    await expect(card.getByText('If ignored: The attempt continues.')).toHaveCount(0)
     await expect(card.locator('[data-next-action-deadline] time')).toHaveAttribute('datetime', '2026-10-12T14:00:00Z')
     await expect(card.getByText('Implementation · Progressing', { exact: true })).toBeVisible()
 
@@ -308,7 +314,7 @@ test('a claimed order without a mapped execution state keeps one Stop attempt in
 // carries the server's choices: still usable, and the summary still printed
 // once (component-web-task-surfaces, Activity tabs and the task flow view).
 for (const surface of [`/w/demo/tasks/${taskId}`, `/w/demo/tasks/${taskId}/full`]) {
-  test(`on ${surface} the Flow tab keeps the gate choices usable from the card`, async ({ page }) => {
+  test(`on ${surface} the Flow tab keeps the gate and its choices usable`, async ({ page }) => {
     const posts = await mockAPI(
       page,
       () => activity('awaiting_human', gateAction),
@@ -320,9 +326,12 @@ for (const surface of [`/w/demo/tasks/${taskId}`, `/w/demo/tasks/${taskId}/full`
     await expect(page.getByRole('tab', { name: 'Timeline', exact: true })).toHaveAttribute('aria-selected', 'true')
     await expect(card.locator('[data-next-action-choices]')).toHaveCount(0)
     await page.getByRole('tab', { name: 'Flow', exact: true }).click()
-    await expect(page.getByRole('region', { name: 'Human gate' })).toHaveCount(0)
+    await expect(page.getByRole('region', { name: 'Human gate' })).toHaveCount(1)
     await expect(page.locator('[data-next-action-choices]')).toHaveCount(1)
-    const choices = card.locator('[data-next-action-choices]').getByRole('button')
+    const choices = page
+      .getByRole('region', { name: 'Human gate' })
+      .locator('[data-next-action-choices]')
+      .getByRole('button')
     await expect(choices).toHaveText(['Approve plan', 'Reject plan', 'Teleport'])
     // The summary prints once on the detail surface.
     const detail = surface.endsWith('/full')

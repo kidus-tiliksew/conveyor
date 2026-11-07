@@ -202,6 +202,8 @@ time, td, dd { font-variant-numeric: tabular-nums; }
    here and rendered structurally by the acceptance checklist instead. */
 .markdown { font-size: 0.875rem; line-height: 1.68; color: var(--color-markdown); }
 .markdown > :first-child { margin-top: 0; }
+/* A finished report in the timeline: quieter than the entry that is current. */
+.markdown-past { font-size: 0.8125rem; line-height: 1.25rem; color: var(--color-muted); }
 /* Long documents keep a readable measure; tables, code, and diagrams may use
    the whole column. The opening heading usually repeats the page title, so it
    steps down rather than competing with it. */

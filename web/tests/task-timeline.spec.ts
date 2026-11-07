@@ -1355,7 +1355,7 @@ test('review panel shows its current round summary above unchanged seat feedback
   await expect(nonBlocking.getByText(/^Fix:/)).toHaveCount(0)
 
   // The summary sits above the seat rows; seats, verdicts, and feedback are unchanged.
-  const seatRows = summarized.locator('div.divide-y > div')
+  const seatRows = summarized.locator('[data-review-seat]')
   await expect(seatRows).toHaveCount(2)
   const above = await summary.evaluate(
     (element, other) => Boolean(other && element.compareDocumentPosition(other) & Node.DOCUMENT_POSITION_FOLLOWING),
@@ -1367,7 +1367,7 @@ test('review panel shows its current round summary above unchanged seat feedback
   await expect(summarized.getByText('Changes requested — 1 of 2 seats')).toBeVisible()
   await expect(unsummarized.locator('[data-review-round-summary]')).toHaveCount(0)
   await expect(unsummarized.locator('[data-review-verdict]')).toHaveText('Approved')
-  await expect(unsummarized.locator('div.divide-y > div')).toHaveCount(1)
+  await expect(unsummarized.locator('[data-review-seat]')).toHaveCount(1)
   await expect(timeline).not.toContainText('undefined')
 
   await summarized.screenshot({ path: testInfo.outputPath('review-round-summary-panel.png') })

@@ -41,7 +41,9 @@ export function SpecCard({
   minimumSeatCount?: number
 }) {
   const { workspace } = useWorkspaceSelection()
-  const [collapsed, setCollapsed] = useState(false)
+  // In the side view an approved plan is reference: it starts closed so where
+  // the task stands comes first. A plan awaiting approval is the thing to read.
+  const [collapsed, setCollapsed] = useState(collapsible && routeVariant === 'sheet' && spec.approved === true)
   const [contentExpanded, setContentExpanded] = useState(false)
   const [hasOverflow, setHasOverflow] = useState(false)
   const viewportRef = useRef<HTMLDivElement>(null)

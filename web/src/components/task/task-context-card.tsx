@@ -1,10 +1,11 @@
 import { useMutation, useQueryClient } from '@tanstack/react-query'
 import { Link } from '@tanstack/react-router'
-import { FileText, Target, X } from 'lucide-react'
+import { ChevronRight, FileText, Target, X } from 'lucide-react'
 import { useState } from 'react'
 import { updateTaskContext } from '../../lib/api'
 import { errorMessage } from '../../lib/errors'
 import type { TaskContext, TaskContextProposal, TaskState } from '../../lib/types'
+import { cn } from '../../lib/utils'
 import { useWorkspaceCapability, useWorkspaceSelection } from '../app-shell'
 import { SuccessorLinks } from '../documents/successor-links'
 import { Badge } from '../ui/badge'
@@ -68,21 +69,43 @@ export function TaskContextCard({
       >
         {/* Its aria-label names the document; below sm the icon alone leaves
             the row's ID room on the line beside it. */}
-        <X /> <span className={compact ? 'sr-only' : 'max-sm:sr-only'}>Remove</span>
+        <X /> <span className="sr-only">Remove</span>
       </Button>
     )
   const requirements = context?.requirements ?? []
   const designs = context?.designs ?? []
   const proposals = context?.proposals ?? []
+  const attached = requirements.length + designs.length
+  // A long list of references should not push where the task stands off the
+  // screen, so in the side view it starts closed. The inspector has the room.
+  const [open, setOpen] = useState(compact || attached <= 3)
   if (requirements.length === 0 && designs.length === 0 && proposals.length === 0) return null
   return (
     <div className="space-y-3">
       {(requirements.length > 0 || designs.length > 0) && (
         <section aria-label="Attached context" className="rounded-lg border border-border bg-card">
-          <SectionHeading className="border-b border-border px-4 py-3" count={requirements.length + designs.length}>
-            Context
-          </SectionHeading>
-          <ul className="px-2 py-1.5">
+          {compact ? (
+            <SectionHeading className="border-b border-border px-4 py-3" count={attached}>
+              Context
+            </SectionHeading>
+          ) : (
+            <button
+              type="button"
+              aria-expanded={open}
+              onClick={() => setOpen((value) => !value)}
+              className={cn(
+                'flex w-full items-center gap-2 rounded-lg px-4 py-3 text-left focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-primary',
+                open && 'rounded-b-none border-b border-border',
+              )}
+            >
+              <ChevronRight
+                aria-hidden
+                className={cn('size-3.5 text-faint transition-transform', open && 'rotate-90')}
+              />
+              <SectionHeading count={attached}>Context</SectionHeading>
+            </button>
+          )}
+          <ul className={cn('px-2 py-1.5', !open && 'hidden')}>
             {requirements.map((item) => (
               <ContextRow
                 key={item.id}

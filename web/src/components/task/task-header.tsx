@@ -106,11 +106,35 @@ export function TaskHeader({ item, variant }: { item: ActivityItem; variant: 'sh
   return (
     <div>
       <TaskIdentity item={item} variant={variant} />
-      <TaskFacts item={item} variant={variant} columns={variant === 'full' ? 'two' : 'one'} />
+      <TaskFacts item={item} variant={variant} columns="two" />
       <div className="mt-3">
         <TaskAgentPrompt item={item} />
       </div>
     </div>
+  )
+}
+
+// The task's status alone, for a header that stays in view while the reader
+// scrolls through older activity.
+export function TaskStatusBadge({ item }: { item: ActivityItem }) {
+  const triageFailure = failedTriage(item)
+  const label = triageFailure
+    ? 'Triage failed'
+    : item.stalled?.needed
+      ? 'Stalled'
+      : (taskStateLabels[item.task.state] ?? item.task.state)
+  return (
+    <Badge
+      variant={
+        item.task.state === 'approved' || item.task.state === 'merged'
+          ? 'positive'
+          : item.needs_attention
+            ? 'attention'
+            : 'outline'
+      }
+    >
+      {label}
+    </Badge>
   )
 }
 
@@ -194,7 +218,9 @@ export function TaskIdentity({ item, variant }: { item: ActivityItem; variant: '
         </section>
       )}
       <Heading className="text-xl font-semibold leading-snug tracking-tight text-balance">{item.task.title}</Heading>
-      {item.task.body && <TaskBody body={item.task.body} />}
+      {item.task.body && (
+        <TaskBody body={item.task.body} clampClassName={variant === 'sheet' ? 'max-h-[3lh]' : 'max-h-[5lh]'} />
+      )}
     </div>
   )
 }
@@ -727,7 +753,7 @@ export function CancelControl({ item, onClose }: { item: ActivityItem; onClose?:
   )
 }
 
-function TaskBody({ body }: { body: string }) {
+function TaskBody({ body, clampClassName }: { body: string; clampClassName: string }) {
   const [expanded, setExpanded] = useState(false)
   const [hasOverflow, setHasOverflow] = useState(false)
   const viewportRef = useRef<HTMLDivElement>(null)
@@ -750,7 +776,7 @@ function TaskBody({ body }: { body: string }) {
         <div
           ref={viewportRef}
           id={viewportID}
-          className={cn('text-[14px] leading-[1.68]', !expanded && 'max-h-[5lh] overflow-hidden')}
+          className={cn('text-[14px] leading-[1.68]', !expanded && clampClassName, !expanded && 'overflow-hidden')}
         >
           <MarkdownProse className="markdown-demoted text-sm">{body}</MarkdownProse>
         </div>
@@ -925,6 +951,8 @@ export function TaskAgentPrompt({ item }: { item: ActivityItem }) {
   const { workspace } = useWorkspaceSelection()
   const [open, setOpen] = useState(false)
   const promptID = useId()
+  // A prompt to work a finished task leads nowhere.
+  if (item.task.state === 'merged' || item.task.state === 'closed') return null
   if (item.checkout_available) {
     if (!workspace) return null
     const prompt = agentPrompt(item, workspace)
