@@ -41,7 +41,7 @@ export function SettingsPage() {
     <div className="flex h-full flex-col">
       <PageHeader title="Settings" description="Your access and connection settings." />
       <div className="min-h-0 flex-1 overflow-y-auto">
-        <div className="max-w-2xl px-4 py-5 lg:px-6">
+        <div className="px-4 py-5 lg:px-6">
           {welcome && (
             <Card className="mb-4 border-primary/30 bg-primary-soft/30">
               <CardHeader>

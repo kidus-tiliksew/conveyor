@@ -125,7 +125,7 @@ export function WorkspacePage() {
         )}
       </PageHeader>
       <div className="min-h-0 flex-1 overflow-y-auto">
-        <div className="max-w-2xl px-4 pb-24 pt-3 lg:px-6">
+        <div className="px-4 pb-24 pt-3 lg:px-6">
           {!workspace && (
             <Card className="mt-6">
               <CardHeader>
@@ -203,7 +203,7 @@ export function WorkspacePage() {
 
               {(save.error || saved || dirtyTabs.length > 0) && (
                 <div className="pointer-events-none sticky bottom-4 mt-6 flex justify-center">
-                  <div className="pointer-events-auto w-full max-w-2xl space-y-2">
+                  <div className="pointer-events-auto w-full space-y-2">
                     {save.error ? (
                       <div className="rounded-lg border border-failure/30 bg-failure-soft p-3 text-sm text-failure shadow-lg">
                         <p>{save.error instanceof ConfigValidationError ? save.error.message : String(save.error)}</p>

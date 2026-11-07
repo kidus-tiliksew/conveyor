@@ -109,7 +109,7 @@ export function DecisionsPage() {
         description="The choices that govern how this system works, and the ones that replaced them."
       />
       <main className="min-h-0 flex-1 overflow-y-auto">
-        <div className="max-w-6xl px-4 py-5 lg:px-6">
+        <div className="px-4 py-5 lg:px-6">
           {openFlags > 0 && (
             <section
               aria-label="Decisions needing attention"
@@ -372,7 +372,7 @@ export function DecisionPage() {
 function DecisionFrame({ children }: { children: ReactNode }) {
   return (
     <main className="h-full min-h-0 overflow-y-auto">
-      <article className="mx-auto max-w-3xl px-4 py-6 sm:px-6 lg:px-8 lg:py-8">{children}</article>
+      <article className="mx-auto max-w-[50rem] px-4 py-6 sm:px-6 lg:px-8 lg:py-8">{children}</article>
     </main>
   )
 }

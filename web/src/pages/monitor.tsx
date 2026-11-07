@@ -34,7 +34,7 @@ export function MonitorPage() {
         description="Post-merge signals and out-of-pipeline drift entering the normal Conveyor intake."
       />
       <div className="min-h-0 flex-1 overflow-y-auto">
-        <div className="max-w-6xl px-4 py-5 lg:px-6">
+        <div className="px-4 py-5 lg:px-6">
           {error && (
             <Card className="mb-4 border-failure/40">
               <CardContent className="text-sm text-failure">{String(error)}</CardContent>

@@ -34,7 +34,7 @@ export function BlueprintsPage() {
         }
       />
       <div className="min-h-0 flex-1 overflow-y-auto">
-        <div className="max-w-6xl px-4 py-5 lg:px-6">
+        <div className="px-4 py-5 lg:px-6">
           {!workspace && <EmptyMessage>Choose a workspace to open its blueprints.</EmptyMessage>}
           {isLoading && workspace && <EmptyMessage>Loading blueprints…</EmptyMessage>}
           {error != null && (
