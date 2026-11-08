@@ -1,0 +1,88 @@
+# Fails-before-fix run: the final store conformance test against unfixed production code.
+$ git rev-parse HEAD   # base commit; production sources unchanged
+ed37722dc8a72e9969cc77404cad3fecbefa4b06
+$ git status --porcelain   # only test files differ from base
+ M cmd/conveyor/skills_assets/conveyor-kit-verify/conveyor-kit-verify.md
+ M docs/playbooks/conveyor-kit-verify.md
+ M internal/httpapi/verification_test.go
+ M internal/store/storetest/verification.go
+ M internal/store/storetest/verification_edges.go
+$ git diff --stat HEAD -- internal/store/verification_evidence.go internal/store/verification_records.go internal/store/verification_refusal.go internal/workorder/verification.go
+$ go version
+go version go1.24.0 linux/amd64
+$ go test ./internal/store/ -run 'TestMemoryConformance/Verification/EvidenceBinding' -count=1 -v
+=== RUN   TestMemoryConformance
+=== RUN   TestMemoryConformance/Verification
+=== RUN   TestMemoryConformance/Verification/EvidenceBinding
+=== RUN   TestMemoryConformance/Verification/EvidenceBinding/BindingMismatch/workspace
+    verification_edges.go:363: refusal = verification access refused, want verification_evidence_binding_mismatch at evidence[1].workspace_id
+=== RUN   TestMemoryConformance/Verification/EvidenceBinding/BindingMismatch/workspace_omitted
+    verification_edges.go:363: refusal = verification access refused, want verification_evidence_binding_mismatch at evidence[1].workspace_id
+=== RUN   TestMemoryConformance/Verification/EvidenceBinding/BindingMismatch/task
+    verification_edges.go:363: refusal = verification access refused, want verification_evidence_binding_mismatch at evidence[1].task_id
+=== RUN   TestMemoryConformance/Verification/EvidenceBinding/BindingMismatch/work_order
+    verification_edges.go:363: refusal = verification access refused, want verification_evidence_binding_mismatch at evidence[1].work_order_id
+=== RUN   TestMemoryConformance/Verification/EvidenceBinding/BindingMismatch/work-order_attempt
+    verification_edges.go:363: refusal = verification access refused, want verification_evidence_binding_mismatch at evidence[1].work_order_attempt_id
+=== RUN   TestMemoryConformance/Verification/EvidenceBinding/BindingMismatch/work-order_attempt_omitted
+    verification_edges.go:363: refusal = verification access refused, want verification_evidence_binding_mismatch at evidence[1].work_order_attempt_id
+=== RUN   TestMemoryConformance/Verification/EvidenceBinding/BindingMismatch/context
+    verification_edges.go:363: refusal = verification access refused, want verification_evidence_binding_mismatch at evidence[1].context_id
+=== RUN   TestMemoryConformance/Verification/EvidenceBinding/BindingMismatch/run
+    verification_edges.go:363: refusal = verification access refused, want verification_evidence_binding_mismatch at evidence[1].run_id
+=== RUN   TestMemoryConformance/Verification/EvidenceBinding/BindingMismatch/run_is_the_work-order_attempt
+    verification_edges.go:363: refusal = verification access refused, want verification_evidence_binding_mismatch at evidence[1].run_id
+=== RUN   TestMemoryConformance/Verification/EvidenceBinding/BindingMismatch/subject
+    verification_edges.go:363: refusal = verification access refused, want verification_evidence_binding_mismatch at evidence[1].subject
+=== RUN   TestMemoryConformance/Verification/EvidenceBinding/BindingMismatch/subject_omitted
+    verification_edges.go:363: refusal = verification access refused, want verification_evidence_binding_mismatch at evidence[1].subject
+=== RUN   TestMemoryConformance/Verification/EvidenceBinding/BindingMismatch/revisions
+    verification_edges.go:363: refusal = verification access refused, want verification_evidence_binding_mismatch at evidence[1].revisions
+=== RUN   TestMemoryConformance/Verification/EvidenceBinding/BindingMismatch/revisions_omitted
+    verification_edges.go:363: refusal = verification access refused, want verification_evidence_binding_mismatch at evidence[1].revisions
+=== RUN   TestMemoryConformance/Verification/EvidenceBinding/BindingMismatch/governing_pins
+    verification_edges.go:363: refusal = verification access refused, want verification_evidence_binding_mismatch at evidence[1].governing_pins
+=== RUN   TestMemoryConformance/Verification/EvidenceBinding/BindingMismatch/governing_pins_omitted
+    verification_edges.go:363: refusal = verification access refused, want verification_evidence_binding_mismatch at evidence[1].governing_pins
+=== RUN   TestMemoryConformance/Verification/EvidenceBinding/BindingMismatch/first_of_several
+    verification_edges.go:363: refusal = verification access refused, want verification_evidence_binding_mismatch at evidence[1].work_order_id
+=== RUN   TestMemoryConformance/Verification/EvidenceBinding/BindingExact
+=== RUN   TestMemoryConformance/Verification/EvidenceBinding/RunUnknown/absent
+    verification_edges.go:387: refusal = verification access refused, want verification_evidence_run_unknown at run_id
+=== RUN   TestMemoryConformance/Verification/EvidenceBinding/RunUnknown/work-order_attempt
+    verification_edges.go:387: refusal = verification access refused, want verification_evidence_run_unknown at run_id
+=== RUN   TestMemoryConformance/Verification/EvidenceBinding/RunUnknown/other_context
+    verification_edges.go:387: refusal = verification access refused, want verification_evidence_run_unknown at run_id
+=== NAME  TestMemoryConformance/Verification/EvidenceBinding
+    verification_edges.go:393: unknown-run answers differ: []
+=== RUN   TestMemoryConformance/LegacyVerificationEvidence
+=== NAME  TestMemoryConformance
+    all.go:181: RunAll elapsed=18.720061ms
+--- FAIL: TestMemoryConformance (0.02s)
+    --- FAIL: TestMemoryConformance/Verification (0.02s)
+        --- FAIL: TestMemoryConformance/Verification/EvidenceBinding (0.02s)
+            --- FAIL: TestMemoryConformance/Verification/EvidenceBinding/BindingMismatch/workspace (0.00s)
+            --- FAIL: TestMemoryConformance/Verification/EvidenceBinding/BindingMismatch/workspace_omitted (0.00s)
+            --- FAIL: TestMemoryConformance/Verification/EvidenceBinding/BindingMismatch/task (0.00s)
+            --- FAIL: TestMemoryConformance/Verification/EvidenceBinding/BindingMismatch/work_order (0.00s)
+            --- FAIL: TestMemoryConformance/Verification/EvidenceBinding/BindingMismatch/work-order_attempt (0.00s)
+            --- FAIL: TestMemoryConformance/Verification/EvidenceBinding/BindingMismatch/work-order_attempt_omitted (0.00s)
+            --- FAIL: TestMemoryConformance/Verification/EvidenceBinding/BindingMismatch/context (0.00s)
+            --- FAIL: TestMemoryConformance/Verification/EvidenceBinding/BindingMismatch/run (0.00s)
+            --- FAIL: TestMemoryConformance/Verification/EvidenceBinding/BindingMismatch/run_is_the_work-order_attempt (0.00s)
+            --- FAIL: TestMemoryConformance/Verification/EvidenceBinding/BindingMismatch/subject (0.00s)
+            --- FAIL: TestMemoryConformance/Verification/EvidenceBinding/BindingMismatch/subject_omitted (0.00s)
+            --- FAIL: TestMemoryConformance/Verification/EvidenceBinding/BindingMismatch/revisions (0.00s)
+            --- FAIL: TestMemoryConformance/Verification/EvidenceBinding/BindingMismatch/revisions_omitted (0.00s)
+            --- FAIL: TestMemoryConformance/Verification/EvidenceBinding/BindingMismatch/governing_pins (0.00s)
+            --- FAIL: TestMemoryConformance/Verification/EvidenceBinding/BindingMismatch/governing_pins_omitted (0.00s)
+            --- FAIL: TestMemoryConformance/Verification/EvidenceBinding/BindingMismatch/first_of_several (0.00s)
+            --- PASS: TestMemoryConformance/Verification/EvidenceBinding/BindingExact (0.00s)
+            --- FAIL: TestMemoryConformance/Verification/EvidenceBinding/RunUnknown/absent (0.00s)
+            --- FAIL: TestMemoryConformance/Verification/EvidenceBinding/RunUnknown/work-order_attempt (0.00s)
+            --- FAIL: TestMemoryConformance/Verification/EvidenceBinding/RunUnknown/other_context (0.00s)
+    --- PASS: TestMemoryConformance/LegacyVerificationEvidence (0.00s)
+FAIL
+FAIL	github.com/kidus-tiliksew/conveyor/internal/store	0.022s
+FAIL
+exit=1

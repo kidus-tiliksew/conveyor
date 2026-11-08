@@ -1,0 +1,70 @@
+# After-fix run of the same test at the commit below.
+$ git rev-parse HEAD
+d51e74982a93655231359ffcc2e1c5b0eb23d665
+$ git status --porcelain
+$ go version
+go version go1.24.0 linux/amd64
+$ go test ./internal/store/ -run 'TestMemoryConformance/Verification/EvidenceBinding' -count=1 -v
+=== RUN   TestMemoryConformance
+=== RUN   TestMemoryConformance/Verification
+=== RUN   TestMemoryConformance/Verification/EvidenceBinding
+=== RUN   TestMemoryConformance/Verification/EvidenceBinding/BindingMismatch/workspace
+=== RUN   TestMemoryConformance/Verification/EvidenceBinding/BindingMismatch/workspace_omitted
+=== RUN   TestMemoryConformance/Verification/EvidenceBinding/BindingMismatch/task
+=== RUN   TestMemoryConformance/Verification/EvidenceBinding/BindingMismatch/work_order
+=== RUN   TestMemoryConformance/Verification/EvidenceBinding/BindingMismatch/work-order_attempt
+=== RUN   TestMemoryConformance/Verification/EvidenceBinding/BindingMismatch/work-order_attempt_omitted
+=== RUN   TestMemoryConformance/Verification/EvidenceBinding/BindingMismatch/context
+=== RUN   TestMemoryConformance/Verification/EvidenceBinding/BindingMismatch/run
+=== RUN   TestMemoryConformance/Verification/EvidenceBinding/BindingMismatch/run_is_the_work-order_attempt
+=== RUN   TestMemoryConformance/Verification/EvidenceBinding/BindingMismatch/subject
+=== RUN   TestMemoryConformance/Verification/EvidenceBinding/BindingMismatch/subject_omitted
+=== RUN   TestMemoryConformance/Verification/EvidenceBinding/BindingMismatch/revisions
+=== RUN   TestMemoryConformance/Verification/EvidenceBinding/BindingMismatch/revisions_omitted
+=== RUN   TestMemoryConformance/Verification/EvidenceBinding/BindingMismatch/governing_pins
+=== RUN   TestMemoryConformance/Verification/EvidenceBinding/BindingMismatch/governing_pins_omitted
+=== RUN   TestMemoryConformance/Verification/EvidenceBinding/BindingMismatch/first_of_several
+=== RUN   TestMemoryConformance/Verification/EvidenceBinding/BindingExact
+=== RUN   TestMemoryConformance/Verification/EvidenceBinding/RunUnknown/absent
+=== RUN   TestMemoryConformance/Verification/EvidenceBinding/RunUnknown/work-order_attempt
+=== RUN   TestMemoryConformance/Verification/EvidenceBinding/RunUnknown/other_context
+=== RUN   TestMemoryConformance/Verification/EvidenceBinding/RunUnknownOtherKindsUnchanged
+=== RUN   TestMemoryConformance/Verification/EvidenceBinding/ForeignScopeStaysGeneric
+=== RUN   TestMemoryConformance/LegacyVerificationEvidence
+=== NAME  TestMemoryConformance
+    all.go:181: RunAll elapsed=23.971948ms
+--- PASS: TestMemoryConformance (0.02s)
+    --- PASS: TestMemoryConformance/Verification (0.02s)
+        --- PASS: TestMemoryConformance/Verification/EvidenceBinding (0.02s)
+            --- PASS: TestMemoryConformance/Verification/EvidenceBinding/BindingMismatch/workspace (0.00s)
+            --- PASS: TestMemoryConformance/Verification/EvidenceBinding/BindingMismatch/workspace_omitted (0.00s)
+            --- PASS: TestMemoryConformance/Verification/EvidenceBinding/BindingMismatch/task (0.00s)
+            --- PASS: TestMemoryConformance/Verification/EvidenceBinding/BindingMismatch/work_order (0.00s)
+            --- PASS: TestMemoryConformance/Verification/EvidenceBinding/BindingMismatch/work-order_attempt (0.00s)
+            --- PASS: TestMemoryConformance/Verification/EvidenceBinding/BindingMismatch/work-order_attempt_omitted (0.00s)
+            --- PASS: TestMemoryConformance/Verification/EvidenceBinding/BindingMismatch/context (0.00s)
+            --- PASS: TestMemoryConformance/Verification/EvidenceBinding/BindingMismatch/run (0.00s)
+            --- PASS: TestMemoryConformance/Verification/EvidenceBinding/BindingMismatch/run_is_the_work-order_attempt (0.00s)
+            --- PASS: TestMemoryConformance/Verification/EvidenceBinding/BindingMismatch/subject (0.00s)
+            --- PASS: TestMemoryConformance/Verification/EvidenceBinding/BindingMismatch/subject_omitted (0.00s)
+            --- PASS: TestMemoryConformance/Verification/EvidenceBinding/BindingMismatch/revisions (0.00s)
+            --- PASS: TestMemoryConformance/Verification/EvidenceBinding/BindingMismatch/revisions_omitted (0.00s)
+            --- PASS: TestMemoryConformance/Verification/EvidenceBinding/BindingMismatch/governing_pins (0.00s)
+            --- PASS: TestMemoryConformance/Verification/EvidenceBinding/BindingMismatch/governing_pins_omitted (0.00s)
+            --- PASS: TestMemoryConformance/Verification/EvidenceBinding/BindingMismatch/first_of_several (0.00s)
+            --- PASS: TestMemoryConformance/Verification/EvidenceBinding/BindingExact (0.00s)
+            --- PASS: TestMemoryConformance/Verification/EvidenceBinding/RunUnknown/absent (0.00s)
+            --- PASS: TestMemoryConformance/Verification/EvidenceBinding/RunUnknown/work-order_attempt (0.00s)
+            --- PASS: TestMemoryConformance/Verification/EvidenceBinding/RunUnknown/other_context (0.00s)
+            --- PASS: TestMemoryConformance/Verification/EvidenceBinding/RunUnknownOtherKindsUnchanged (0.00s)
+            --- PASS: TestMemoryConformance/Verification/EvidenceBinding/ForeignScopeStaysGeneric (0.00s)
+    --- PASS: TestMemoryConformance/LegacyVerificationEvidence (0.00s)
+PASS
+ok  	github.com/kidus-tiliksew/conveyor/internal/store	0.027s
+exit=0
+$ go test ./internal/httpapi/ -run 'TestVerificationEvidenceBindingRefusals' -count=1 -v
+=== RUN   TestVerificationEvidenceBindingRefusals
+--- PASS: TestVerificationEvidenceBindingRefusals (0.01s)
+PASS
+ok  	github.com/kidus-tiliksew/conveyor/internal/httpapi	0.014s
+exit=0
