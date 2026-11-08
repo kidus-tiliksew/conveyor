@@ -539,7 +539,7 @@ func (v *kitVerifier) launch(ctx context.Context, e verification.Exercise, cwd, 
 		}
 		if err = store.ValidateVerificationSuccess(snapshot, runID, &exit); err != nil {
 			state = "waiting"
-			explanation = "required assertion, output, or operator completion evidence is missing"
+			explanation = waitingExplanation(store.VerificationSuccessGapsFor(snapshot, runID, &exit))
 			for _, record := range snapshot.Evidence {
 				if record.Envelope.RunID == runID && record.Envelope.Type == "assertion_result" {
 					var assertion core.AssertionResultPayload
