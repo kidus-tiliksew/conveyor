@@ -191,14 +191,29 @@ func (v *kitVerifier) launch(ctx context.Context, e verification.Exercise, cwd, 
 	if v.ui != nil {
 		origins = append(origins, fmt.Sprintf("http://127.0.0.1:%d", v.ui.Port))
 	}
+	relayCheckout, relayLive := v.checkCheckout, v.live
+	if v.relayCheckout != nil {
+		relayCheckout = v.relayCheckout
+	}
+	if v.relayLive != nil {
+		relayLive = v.relayLive
+	}
 	channel, err := verification.NewOperationChannel(launchCtx, origins, func(requestCtx context.Context, data json.RawMessage) (any, error) {
 		relayMu.Lock()
 		defer relayMu.Unlock()
 		if !accepting {
 			return nil, fmt.Errorf("exercise has ended")
 		}
-		if err := v.checkCheckout(requestCtx); err != nil {
-			cancel()
+		if err := relayCheckout(requestCtx); err != nil {
+			// A child hangup ends requestCtx and kills the check's git, so a
+			// failure seen after requestCtx ended may not be a source change.
+			// The signal is refused either way. Only a failure seen while
+			// requestCtx is still live cancels the run; the monitor and the
+			// post-exit check still catch a real change
+			// (component-verification-runner).
+			if requestCtx.Err() == nil {
+				cancel()
+			}
 			return nil, err
 		}
 		var signal struct {
@@ -237,8 +252,14 @@ func (v *kitVerifier) launch(ctx context.Context, e verification.Exercise, cwd, 
 		if signal.Type != "operation.dispatching" && signal.Type != "operation.completed" {
 			return nil, fmt.Errorf("unknown operation signal")
 		}
-		if err := v.live(requestCtx, grantID); err != nil {
-			cancel()
+		if err := relayLive(requestCtx, grantID); err != nil {
+			// A hangup or a transient call failure records no authority loss,
+			// so the signal is refused while the known lease holds. Claim
+			// loss, expiry or revocation cancels the run, as in the monitor
+			// (component-verification-runner).
+			if v.cachedLive() != nil {
+				cancel()
+			}
 			return nil, err
 		}
 		var declared *verification.Operation
