@@ -58,15 +58,20 @@ var flowStatusCopy = map[string]flowStatusText{
 }
 
 // flowNodeLabels names each stage's node on the chart and flowGateLabels each
-// gate's (component-http-api, Next-action and task-flow reads).
+// gate's (component-http-api, Next-action and task-flow reads). The merge node
+// reads "Merge" until its row is done and flowMergedLabel once it is, so an
+// unfinished merge is never named for an outcome it has not reached
+// (req-operator-next-action AC-7.7; component-next-action invariant 30).
 var flowNodeLabels = map[core.Stage]string{
 	core.StageTriage:    "Triage",
 	core.StageSpec:      "Plan",
 	core.StageImplement: "Implement",
 	core.StageVerify:    "Verify",
 	core.StageReview:    "Review",
-	core.StageMerge:     "Merged",
+	core.StageMerge:     "Merge",
 }
+
+const flowMergedLabel = "Merged"
 
 var flowGateLabels = map[core.Stage]string{
 	core.StageSpec:  "Plan approval",
@@ -125,6 +130,24 @@ const (
 var flowGateWaitText = map[core.GateKind]string{
 	core.GateKindPlanApproval:  "Plan is waiting for you to approve the plan.",
 	core.GateKindMergeApproval: "Merge is waiting for you to approve the merge.",
+}
+
+// flowCheckHoldText states a merge held by its checks, from the hold reason
+// and read failure the next action names. The merge row prints it in place of
+// the running sentence (req-operator-next-action AC-1.5, AC-7.7).
+func flowCheckHoldText(details nextaction.Details) string {
+	const decide = "; the next action says what to decide."
+	switch {
+	case details.CheckHoldReason == nextaction.CheckHoldFailed:
+		return "Merge is held because a check failed on the approved head" + decide
+	case details.CheckHoldReason == nextaction.CheckHoldStuck && details.CheckReadFailure != "":
+		return "Merge is held because Conveyor could not read the approved head's checks by their deadline" + decide
+	case details.CheckHoldReason == nextaction.CheckHoldStuck:
+		return "Merge is held because a check on the approved head is stuck" + decide
+	case details.CheckHoldReason == nextaction.CheckHoldPermission:
+		return "Merge is held because GitHub refused the check-status read" + decide
+	}
+	return "Merge is held by the approved head's checks" + decide
 }
 
 // flowMissedCheckInLayout is the absolute UTC time in the missed check-in
@@ -620,6 +643,14 @@ func FoldTaskFlow(events []core.Event, action nextaction.NextAction, recovery co
 	case core.GateKindJobFailure:
 		current = lastClosedStage
 	}
+	// A check hold records no gate and review acceptance leaves next_stage
+	// empty, so the supplied next action places the task at merge: the merge
+	// row needs the operator and current_stage names merge when no order is
+	// current (req-operator-next-action AC-1.5, AC-7.7; component-next-action
+	// invariants 27, 30). The merge gate keeps its own mark (invariant 28).
+	if action.Kind == nextaction.KindCheckHold {
+		current = core.StageMerge
+	}
 
 	for _, stage := range taskFlowStages {
 		row := FlowStage{ID: stage, Attempts: []FlowAttempt{}}
@@ -671,12 +702,18 @@ func FoldTaskFlow(events []core.Event, action nextaction.NextAction, recovery co
 		name := flowStageNames[stage]
 		statusCopy := flowStatusCopy[row.Status]
 		row.Label = flowNodeLabels[stage]
+		if stage == core.StageMerge && row.Status == FlowDone {
+			row.Label = flowMergedLabel
+		}
 		row.GateLabel = flowGateLabels[stage]
 		row.Description = flowStageDescriptions[stage]
 		row.StatusLabel = statusCopy.label
 		row.StatusText = statusCopy.sentence(name)
 		if text, ok := flowGateWaitText[gateKind]; ok && row.Status == FlowNeedsOperator {
 			row.StatusText = text
+		}
+		if stage == core.StageMerge && row.Status == FlowNeedsOperator && action.Kind == nextaction.KindCheckHold {
+			row.StatusText = flowCheckHoldText(action.Details)
 		}
 		if attempt := row.CurrentAttempt; attempt != nil && attempt.LeaseExpiresAt != nil && now.After(*attempt.LeaseExpiresAt) {
 			row.MissedCheckIn = "Missed check-in: the lease expired at " + attempt.LeaseExpiresAt.UTC().Format(flowMissedCheckInLayout) + " and the agent has not renewed it."
@@ -834,7 +871,7 @@ func flowReached(status string) bool {
 
 // markFlowTraversal states whether the recorded path has reached each node on
 // the path Triage, Plan, Plan approval, Implement, Verify, Review, Merge
-// approval, Merged. A reached node is traversed; an off node is traversed only
+// approval, Merge. A reached node is traversed; an off node is traversed only
 // once a later node is reached.
 func markFlowTraversal(stages []FlowStage, state string) {
 	type node struct {

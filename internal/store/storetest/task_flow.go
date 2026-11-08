@@ -368,7 +368,100 @@ func SeedTaskFlowScenarios(t *testing.T, st store.Backend, ctx context.Context, 
 			}
 		}
 	})
+	// The merge gate off: review acceptance approves the task with next_stage
+	// empty. A failed check on the approved head holds the merge, so the merge
+	// row needs the operator while the gate stays off; without a hold the row
+	// is merging; after the merge it is done and named Merged
+	// (req-operator-next-action AC-1.5, AC-7.5, AC-7.7; component-next-action
+	// invariants 27, 28, 30). DEC-38: these extend the flow suite and replace
+	// none.
+	heldID := flowApprovedGateOff(t, st, ctx, workspace)
+	heldTask, err := st.GetTask(ctx, heldID)
+	requireOK(t, err)
+	requireOK(t, st.AppendEvent(ctx, core.Event{TaskID: heldID, Kind: store.EventCheckHold, Payload: core.JSONPayload(map[string]any{
+		"head_sha": store.CheckStatusHead(heldTask), "reason": nextaction.CheckHoldFailed,
+		"checks": []map[string]any{{"name": "e2e", "state": "failed"}},
+	})}))
+	add("check hold", heldID, func(t *testing.T, flow store.TaskFlow) {
+		if flow.NextAction.Actor != nextaction.ActorOperator || flow.NextAction.Kind != nextaction.KindCheckHold {
+			t.Fatalf("next action = %s/%s, want operator check_hold", flow.NextAction.Actor, flow.NextAction.Kind)
+		}
+		merge := taskFlowStage(t, flow, core.StageMerge)
+		if merge.Status != store.FlowNeedsOperator || merge.Label != "Merge" || merge.StatusLabel != "Needs you" ||
+			merge.StatusText != "Merge is held because a check failed on the approved head; the next action says what to decide." {
+			t.Fatalf("merge = %+v, want needs_operator named Merge with the hold sentence", merge)
+		}
+		// The hold is check_hold, not merge_approval: the merge gate is off by
+		// policy and carries no operator mark (invariant 28).
+		requireFlowGates(t, flow, store.FlowDone, store.FlowOff)
+		if merge.GateStatusLabel != "Off for this task" {
+			t.Fatalf("merge gate = %+v, want off", merge)
+		}
+		if flow.CurrentStage == nil || *flow.CurrentStage != core.StageMerge {
+			t.Fatalf("current_stage = %v, want merge", flow.CurrentStage)
+		}
+		for _, stage := range flow.Stages {
+			if (stage.Status == store.FlowNeedsOperator) != (stage.ID == core.StageMerge) {
+				t.Fatalf("%s status = %s, want only merge needs_operator", stage.ID, stage.Status)
+			}
+		}
+	})
+	mergingID := flowApprovedGateOff(t, st, ctx, workspace)
+	add("merging", mergingID, func(t *testing.T, flow store.TaskFlow) {
+		if flow.NextAction.Actor != nextaction.ActorFactory || flow.NextAction.Kind != nextaction.KindMerging {
+			t.Fatalf("next action = %s/%s, want factory merging", flow.NextAction.Actor, flow.NextAction.Kind)
+		}
+		merge := taskFlowStage(t, flow, core.StageMerge)
+		if merge.Status != store.FlowInProgress || merge.Label != "Merge" || merge.StatusText != "Merge is running now." {
+			t.Fatalf("merge = %+v, want in_progress named Merge", merge)
+		}
+		requireFlowGates(t, flow, store.FlowDone, store.FlowOff)
+	})
+	mergedID := flowApprovedGateOff(t, st, ctx, workspace)
+	_, err = plane.Perform(ctx, mergedID, taskops.Command{Kind: core.TaskMergeConfirm})
+	requireOK(t, err)
+	add("merged", mergedID, func(t *testing.T, flow store.TaskFlow) {
+		if flow.NextAction.Kind != nextaction.KindTerminal {
+			t.Fatalf("next action = %s/%s, want terminal", flow.NextAction.Actor, flow.NextAction.Kind)
+		}
+		merge := taskFlowStage(t, flow, core.StageMerge)
+		if merge.Status != store.FlowDone || merge.Label != "Merged" || !merge.Traversed {
+			t.Fatalf("merge = %+v, want done named Merged", merge)
+		}
+		if flow.CurrentStage != nil {
+			t.Fatalf("current_stage = %v, want null once merged", *flow.CurrentStage)
+		}
+	})
 	return scenarios
+}
+
+// flowApprovedGateOff approves a running task with the plan gate on and the
+// merge gate off through a real review round: each seat claims its order and
+// submits its verdict, and review acceptance records the approval as it
+// writes it, so no order is current afterwards.
+func flowApprovedGateOff(t *testing.T, st store.Store, ctx context.Context, workspace string) string {
+	t.Helper()
+	id := flowTask(t, st, ctx, workspace, core.Task{SpecApproval: true, MergeApproval: false, NextStage: core.StageReview, PolicyVersion: 1})
+	jobs, orders := reviewRound(id, 1)
+	requireOK(t, CreateReviewRound(ctx, st, id, jobs, orders))
+	plane := taskops.New(st)
+	for i, order := range orders {
+		seat := strconv.Itoa(i + 1)
+		claimed, err := ClaimWorkOrder(ctx, st, order.ID, core.WorkOrderClaim{ClaimantID: "worker-flow", SessionID: "seat-" + seat + "-" + id, ClientToken: "token-" + seat, Lease: time.Hour, ExecutionTimeout: time.Hour, Agent: "omp", Model: "opus"})
+		requireOK(t, err)
+		claimed.State = core.WorkOrderCompleted
+		requireOK(t, UpdateWorkOrder(ctx, st, claimed, core.WorkOrderCmdSubmitReviewVerdict))
+		requireOK(t, plane.AcceptReviewDecision(ctx, core.ReviewDecision{
+			TaskID: id, JobID: order.JobID, ReviewWorkOrderID: order.ID, ReviewRound: 1, ReviewSeat: i + 1, Verdict: "approve",
+			ReasonCode: "verified", Summary: "approve", ReviewedCommitSHA: "flow-head-" + id, PolicyVersion: 1, MaxBounces: 3,
+		}))
+	}
+	task, err := st.GetTask(ctx, id)
+	requireOK(t, err)
+	if task.State != core.TaskApproved || store.CheckStatusHead(task) == "" {
+		t.Fatalf("task %s after approval = %s head %q, want approved with a head", id, task.State, store.CheckStatusHead(task))
+	}
+	return id
 }
 
 // ReadTaskFlow is the store half of GET /v1/tasks/{id}/flow: the next action
