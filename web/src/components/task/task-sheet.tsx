@@ -23,7 +23,7 @@ import { TaskActivityTabs, useTaskActivityView } from './task-activity-tabs'
 import { TaskContextCard } from './task-context-card'
 import { TaskAgentPrompt, TaskFacts, TaskIdentity } from './task-header'
 import { TaskLoadError } from './task-load-error'
-import { taskHasVerifyStage, useTaskDetail, useTaskOrder, useTaskVerification } from './use-task-detail'
+import { isTaskNotFound, taskHasVerifyStage, useTaskDetail, useTaskOrder, useTaskVerification } from './use-task-detail'
 
 // The task detail sheet: the costed event timeline — which
 // carries the review actions as its live tail — opened over the board so the
@@ -42,6 +42,7 @@ export function TaskSheet({ taskId }: { taskId: string }) {
   const boardOrder = useTaskOrder(taskId)
   const previousId = boardOrder.previousId
   const nextId = boardOrder.nextId
+  const notFound = !item && error != null && isTaskNotFound(error)
   const close = () =>
     void navigate({ to: '/w/$workspaceId/', params: { workspaceId: workspace }, search: (prev) => prev })
   // A blueprint anchor has one home, and it is not this sheet.
@@ -68,21 +69,27 @@ export function TaskSheet({ taskId }: { taskId: string }) {
         <span data-sheet-title className="min-w-0 flex-1 basis-0 truncate text-sm font-medium text-muted">
           {headingHidden ? item?.task.title : <span className="sr-only">{item?.task.title}</span>}
         </span>
-        {/* The same corner affordance the full route carries (REQ-3): the
-            panel opens over this one without dismissing it. */}
-        <LineageExplorer type="task" id={taskId} />
-        {boardOrder.windowEdge && (
-          // Below sm the note takes its own line under the controls so it
-          // never squeezes the title out of the header.
-          <span
-            className="max-w-56 text-right text-[11px] leading-4 text-faint max-sm:order-last max-sm:max-w-none max-sm:basis-full max-sm:text-left"
-            role="note"
-          >
-            {boardOrder.windowEdge}
-          </span>
+        {/* A task the read answers 404 for has no lineage and no Board
+            neighbours to offer, so its header keeps only the way out. */}
+        {!notFound && (
+          <>
+            {/* The same corner affordance the full route carries (REQ-3): the
+                panel opens over this one without dismissing it. */}
+            <LineageExplorer type="task" id={taskId} />
+            {boardOrder.windowEdge && (
+              // Below sm the note takes its own line under the controls so it
+              // never squeezes the title out of the header.
+              <span
+                className="max-w-56 text-right text-[11px] leading-4 text-faint max-sm:order-last max-sm:max-w-none max-sm:basis-full max-sm:text-left"
+                role="note"
+              >
+                {boardOrder.windowEdge}
+              </span>
+            )}
+            <SheetNavButton targetId={previousId} label="Previous task" icon={<ChevronUp />} />
+            <SheetNavButton targetId={nextId} label="Next task" icon={<ChevronDown />} />
+          </>
         )}
-        <SheetNavButton targetId={previousId} label="Previous task" icon={<ChevronUp />} />
-        <SheetNavButton targetId={nextId} label="Next task" icon={<ChevronDown />} />
         <Link
           to="/w/$workspaceId/tasks/$taskId/full"
           params={{ workspaceId: workspace, taskId }}

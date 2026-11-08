@@ -13,7 +13,7 @@ import { TaskActivityTabs, useTaskActivityView } from '../components/task/task-a
 import { TaskContextCard } from '../components/task/task-context-card'
 import { TaskAgentPrompt, TaskFacts, TaskIdentity } from '../components/task/task-header'
 import { TaskLoadError } from '../components/task/task-load-error'
-import { useTaskDetail, useTaskOrder } from '../components/task/use-task-detail'
+import { isTaskNotFound, useTaskDetail, useTaskOrder } from '../components/task/use-task-detail'
 import { Button } from '../components/ui/button'
 import { Skeleton } from '../components/ui/skeleton'
 import type { ActivityItem } from '../lib/types'
@@ -28,6 +28,7 @@ export function TaskFullPage() {
   const { taskId } = useParams({ from: '/w/$workspaceId/tasks/$taskId/full' })
   const { data: item, isLoading, error, refetch, isFetching } = useTaskDetail(taskId)
   const { previousId, nextId, windowEdge } = useTaskOrder(taskId)
+  const notFound = !item && error != null && isTaskNotFound(error)
   // A blueprint anchor has one home, and it is not this page.
   const redirecting = useCanonicalBlueprintRedirect(item?.task)
   // Gate tasks open scrolled down to the gate, so the bar takes over naming the
@@ -81,21 +82,27 @@ export function TaskFullPage() {
             </>
           )}
         </nav>
-        {/* The corner affordance REQ-3 asks for: what this task connects to is
-            one read away, and it costs nothing until it is opened. */}
-        <LineageExplorer type="task" id={taskId} />
-        {windowEdge && (
-          // Below sm the note takes its own line under the controls so it
-          // never squeezes the title out of the header.
-          <span
-            className="max-w-56 text-right text-[11px] leading-4 text-faint max-sm:order-last max-sm:max-w-none max-sm:basis-full max-sm:text-left"
-            role="note"
-          >
-            {windowEdge}
-          </span>
+        {/* A task the read answers 404 for has no lineage and no Board
+            neighbours to offer, so its header keeps only the way out. */}
+        {!notFound && (
+          <>
+            {/* The corner affordance REQ-3 asks for: what this task connects to is
+                one read away, and it costs nothing until it is opened. */}
+            <LineageExplorer type="task" id={taskId} />
+            {windowEdge && (
+              // Below sm the note takes its own line under the controls so it
+              // never squeezes the title out of the header.
+              <span
+                className="max-w-56 text-right text-[11px] leading-4 text-faint max-sm:order-last max-sm:max-w-none max-sm:basis-full max-sm:text-left"
+                role="note"
+              >
+                {windowEdge}
+              </span>
+            )}
+            <FullNavButton targetId={previousId} label="Previous task" icon={<ChevronUp />} />
+            <FullNavButton targetId={nextId} label="Next task" icon={<ChevronDown />} />
+          </>
         )}
-        <FullNavButton targetId={previousId} label="Previous task" icon={<ChevronUp />} />
-        <FullNavButton targetId={nextId} label="Next task" icon={<ChevronDown />} />
       </header>
       {(isLoading || redirecting) && (
         <div className="space-y-3 px-6 py-6">

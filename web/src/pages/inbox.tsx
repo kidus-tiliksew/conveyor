@@ -14,6 +14,7 @@ import { inboxItemKey, steppedKey, survivingNeighbour } from '../components/inbo
 import { useNextActions } from '../components/inbox/use-next-actions'
 import { ErrorState } from '../components/ui/error-state'
 import { PageHeader } from '../components/ui/page-header'
+import { Skeleton } from '../components/ui/skeleton'
 import type { InboxItem } from '../lib/types'
 import { cn } from '../lib/utils'
 
@@ -49,6 +50,9 @@ export function InboxPage() {
   const items = inbox.data?.items ?? []
   const allDecisions = items.filter((item) => item.band === 'decisions')
   const decisions = allDecisions.filter((item) => matchesSearch(item, search))
+  // Urgency is read once, over the decisions the list shows, so the header's
+  // count and the rows' urgent marks name the same items.
+  const urgentKeys = new Set(decisions.filter((item) => isUrgent(item, now)).map(inboxItemKey))
   const blocked = items.filter((item) => item.band === 'blocked')
   const automatic = items.filter((item) => item.band === 'automatic')
   const decisionTaskIds = new Set(allDecisions.flatMap((item) => (item.task ? [item.task.id] : [])))
@@ -110,15 +114,20 @@ export function InboxPage() {
         title="Inbox"
         className="max-sm:[&>div:last-child]:ml-0 max-sm:[&>div:last-child]:w-full"
         description={
-          inbox.data && (
-            <InboxSummary
-              decisions={allDecisions.length}
-              urgent={allDecisions.filter((item) => isUrgent(item, now)).length}
-            />
+          inbox.data ? (
+            <InboxSummary decisions={allDecisions.length} urgent={urgentKeys.size} />
+          ) : (
+            inbox.isLoading && (
+              <span
+                aria-hidden
+                data-inbox-summary-skeleton
+                className="inline-block h-3.5 w-20 animate-pulse rounded bg-raised/60 align-middle"
+              />
+            )
           )
         }
       >
-        {inbox.data && <InboxBandChips search={search} counts={counts} />}
+        {(inbox.data || inbox.isLoading) && <InboxBandChips search={search} counts={inbox.data && counts} />}
       </PageHeader>
       <div ref={root} className="min-h-0 flex-1 overflow-y-auto">
         <div className="mx-auto max-w-6xl px-4 py-5 sm:px-6">
@@ -139,7 +148,7 @@ export function InboxPage() {
               </Link>
             </div>
           )}
-          {inbox.isLoading && <p className="text-sm text-muted">Loading the inbox…</p>}
+          {inbox.isLoading && show('decisions') && <InboxSkeleton />}
           {inbox.error && (
             <ErrorState
               title="Could not load the inbox"
@@ -156,7 +165,12 @@ export function InboxPage() {
               ) : (
                 <div className="grid min-w-0 items-start gap-4 md:grid-cols-[minmax(0,19rem)_minmax(0,1fr)] lg:grid-cols-[minmax(0,21rem)_minmax(0,1fr)]">
                   <div className={cn('min-w-0', explicit ? 'hidden md:block' : 'block')}>
-                    <InboxReviewList items={decisions} selectedKey={selectedKey} search={search} />
+                    <InboxReviewList
+                      items={decisions}
+                      selectedKey={selectedKey}
+                      urgentKeys={urgentKeys}
+                      search={search}
+                    />
                   </div>
                   <InboxReviewDetail
                     item={selectedItem}
@@ -211,7 +225,8 @@ export function InboxPage() {
 
 // The header's one-line summary (feature-operator-next-action NA-6). The band
 // chips beside it carry the counts, so it adds only what they do not: urgent
-// counts the decisions that unblock other tasks or are due within three hours.
+// counts the listed decisions that unblock other tasks or are due within three
+// hours, and each one it counts carries an urgent mark in its row.
 function InboxSummary({ decisions, urgent }: { decisions: number; urgent: number }) {
   if (decisions === 0)
     return (
@@ -229,6 +244,36 @@ function InboxSummary({ decisions, urgent }: { decisions: number; urgent: number
         'Nothing urgent'
       )}
     </span>
+  )
+}
+
+// The first load's placeholder, in the decisions band's own grid: the list's
+// heading line and compact rows on the left and the detail card on the right,
+// with the classes of the content that replaces it, so nothing moves when the
+// read answers.
+function InboxSkeleton() {
+  return (
+    <div data-inbox-skeleton aria-busy="true">
+      <span className="sr-only">Loading the inbox…</span>
+      <div className="grid min-w-0 items-start gap-4 md:grid-cols-[minmax(0,19rem)_minmax(0,1fr)] lg:grid-cols-[minmax(0,21rem)_minmax(0,1fr)]">
+        <div className="min-w-0" data-inbox-skeleton-list>
+          <div className="mb-2 flex h-5 items-center gap-2">
+            <Skeleton className="h-3.5 w-16" />
+          </div>
+          <ul className="space-y-0.5">
+            {[0, 1, 2, 3].map((row) => (
+              <li key={row} data-inbox-skeleton-row className="rounded-lg border border-transparent px-3 py-2">
+                <Skeleton className="h-4 w-32" />
+                <Skeleton className="mt-0.5 h-5 w-full" />
+              </li>
+            ))}
+          </ul>
+        </div>
+        <div className="hidden min-w-0 md:block" data-inbox-skeleton-detail>
+          <Skeleton className="h-72 rounded-xl" />
+        </div>
+      </div>
+    </div>
   )
 }
 

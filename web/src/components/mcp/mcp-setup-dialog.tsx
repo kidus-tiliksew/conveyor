@@ -125,7 +125,7 @@ export function MCPSetupDialog({ onClose }: { onClose: () => void }) {
       <div className="flex justify-end border-t border-border px-5 py-3">
         <Button type="button" onClick={onClose}>
           <CheckCircle2 />
-          Completed
+          Done
         </Button>
       </div>
     </Dialog>

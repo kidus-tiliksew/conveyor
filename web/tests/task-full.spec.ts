@@ -2147,6 +2147,38 @@ test('task detail headers show the task name while routes and API lookup keep us
   expect(new URL(page.url()).pathname).toBe(`/w/demo/tasks/${sheetTaskID}`)
 })
 
+// A task the read answers 404 for loaded nothing, so neither detail surface
+// offers its Knowledge explorer or Board neighbours; Close on the sheet and
+// the Board link on the full page stay (component-web-task-surfaces).
+test('the task not-found state renders no explorer or previous and next controls', async ({ page }) => {
+  const missing = 'missing-task'
+  await page.route(`**/v1/tasks/${missing}/activity*`, (route) =>
+    route.fulfill({ status: 404, json: { error: 'not_found', message: 'task not found' } }),
+  )
+
+  await page.goto(`/w/demo/tasks/${missing}/full`)
+  await expect(page.getByRole('heading', { name: 'Task not found' })).toBeVisible()
+  const fullHeader = page.locator('header').filter({ has: page.getByRole('link', { name: 'Back to board' }) })
+  await expect(fullHeader.getByRole('link', { name: 'Back to board' })).toBeVisible()
+  await expect(page.getByRole('button', { name: 'Knowledge explorer' })).toHaveCount(0)
+  await expect(page.getByRole('button', { name: 'Previous task' })).toHaveCount(0)
+  await expect(page.getByRole('link', { name: 'Previous task' })).toHaveCount(0)
+  await expect(page.getByRole('button', { name: 'Next task' })).toHaveCount(0)
+  await expect(page.getByRole('link', { name: 'Next task' })).toHaveCount(0)
+
+  await page.goto(`/w/demo/tasks/${missing}`)
+  const sheet = page.getByRole('dialog', { name: 'Task detail' })
+  await expect(sheet.getByRole('heading', { name: 'Task not found' })).toBeVisible()
+  await expect(sheet.getByRole('button', { name: 'Close panel' })).toBeVisible()
+  await expect(sheet.getByRole('button', { name: 'Knowledge explorer' })).toHaveCount(0)
+  await expect(sheet.getByRole('button', { name: 'Previous task' })).toHaveCount(0)
+  await expect(sheet.getByRole('link', { name: 'Previous task' })).toHaveCount(0)
+  await expect(sheet.getByRole('button', { name: 'Next task' })).toHaveCount(0)
+  await expect(sheet.getByRole('link', { name: 'Next task' })).toHaveCount(0)
+  await sheet.getByRole('button', { name: 'Close panel' }).click()
+  await expect(sheet).toHaveCount(0)
+})
+
 test('task metadata presents stored spec versions as plan versions', async ({ page }) => {
   await page.goto('/w/demo/tasks/github-fallback/full')
   await expect(page.getByText('retrying · plan v7')).toBeVisible()

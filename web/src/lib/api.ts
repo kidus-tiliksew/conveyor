@@ -695,28 +695,40 @@ async function gateMutationError(response: Response) {
   return new GateMutationError(message, response.status, readiness)
 }
 
-// API failures arrive either as a JSON envelope or as plain text. Keeping the
-// decoder here prevents mutation surfaces from rendering raw JSON to people.
+// API failures arrive either as a JSON envelope or as plain text. This is the
+// one decoder of a failed response's body: every thrown message comes from it,
+// so a page prints the message it is given and parses no body
+// (component-web-dashboard invariant 13). A body that is neither an envelope
+// with a message nor a short plain sentence, such as a proxy's HTML page or a
+// stack trace, yields the fallback instead of reaching a person.
 function apiErrorMessage(body: string, fallback: string) {
   const text = body.trim()
+  if (!text) return fallback
+  let parsed: unknown
   try {
-    const parsed = JSON.parse(text) as {
-      error?: unknown
-      detail?: string
-      message?: string
-      fields?: Array<{ message?: string }>
-    }
-    const known = parsed.detail || parsed.message || parsed.fields?.[0]?.message
-    if (known) return known
-    // Some handlers send only `{ "error": ... }`: a sentence, or a bare code.
-    if (typeof parsed.error === 'string' && parsed.error.trim()) {
-      const error = parsed.error.trim()
-      return /^[a-z0-9_.-]+$/.test(error) ? `Something went wrong (${error}).` : error
-    }
-    return fallback
+    parsed = JSON.parse(text)
   } catch {
-    return text || fallback
+    return plainErrorText(text) ?? fallback
   }
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return fallback
+  const envelope = parsed as { error?: unknown; detail?: unknown; message?: unknown; fields?: unknown }
+  const firstField = Array.isArray(envelope.fields)
+    ? (envelope.fields[0] as { message?: unknown } | undefined)
+    : undefined
+  for (const known of [envelope.detail, envelope.message, firstField?.message]) {
+    if (typeof known === 'string' && known.trim()) return known.trim()
+  }
+  // Some handlers send only `{ "error": ... }`: a sentence, or a bare code.
+  if (typeof envelope.error === 'string' && envelope.error.trim()) {
+    const error = envelope.error.trim()
+    return /^[a-z0-9_.-]+$/.test(error) ? `Something went wrong (${error}).` : error
+  }
+  return fallback
+}
+
+// A plain-text body is a message only while it reads as one short sentence.
+function plainErrorText(text: string) {
+  return text.length > 240 || /[{}<>]/.test(text) ? undefined : text
 }
 
 function membershipErrorCode(body: string) {
@@ -765,12 +777,17 @@ export async function revokePersonalAccessToken(id: string) {
 
 // Preserve server remedies, but do not display a machine-only JSON error envelope.
 function githubAppErrorMessage(body: string, fallback: string) {
+  let parsed: unknown
   try {
-    const parsed = JSON.parse(body) as { detail?: string; message?: string }
-    return parsed.detail || parsed.message || fallback
+    parsed = JSON.parse(body)
   } catch {
-    return body.trim() || fallback
+    return plainErrorText(body.trim()) || fallback
   }
+  const envelope = (parsed && typeof parsed === 'object' ? parsed : {}) as { detail?: unknown; message?: unknown }
+  for (const known of [envelope.detail, envelope.message]) {
+    if (typeof known === 'string' && known.trim()) return known.trim()
+  }
+  return fallback
 }
 
 /**
@@ -791,7 +808,7 @@ export async function fetchWorkspaceGitHubApp(workspace: string) {
 
 export async function fetchWorkspaceVerificationKits(workspace: string, signal?: AbortSignal) {
   const response = await fetch(`/v1/workspaces/${encodeURIComponent(workspace)}/verification-kits`, { signal })
-  if (!response.ok) throw new Error((await response.text()).trim() || 'Could not load verification kits.')
+  if (!response.ok) throw new Error(apiErrorMessage(await response.text(), 'Could not load verification kits.'))
   return normalizeVerificationKitRegistry(await response.json())
 }
 
@@ -947,17 +964,7 @@ async function proposeDocumentVersion<T>(workspace: string, tier: string, id: st
     headers: { ...mutationHeaders(), 'Content-Type': 'application/json' },
     body: JSON.stringify({ content, origin: 'operator' }),
   })
-  if (!response.ok) {
-    const body = await response.text()
-    let message = body.trim() || response.statusText
-    try {
-      const parsed = JSON.parse(body) as { message?: string; error?: string }
-      message = parsed.message ?? parsed.error ?? message
-    } catch {
-      /* plain-text API error */
-    }
-    throw new Error(message)
-  }
+  if (!response.ok) throw new Error(apiErrorMessage(await response.text(), response.statusText))
   return response.json() as Promise<T>
 }
 
@@ -983,15 +990,8 @@ export async function confirmRequirementVersion(
   )
   if (!response.ok) {
     const body = await response.text()
-    let message = body.trim() || response.statusText
-    let code = ''
-    try {
-      const parsed = JSON.parse(body) as { error?: string; message?: string }
-      code = parsed.error ?? ''
-      message = parsed.message ?? message
-    } catch {
-      /* plain-text API error */
-    }
+    let message = apiErrorMessage(body, response.statusText)
+    const code = membershipErrorCode(body) ?? ''
     if (response.status === 409 && code === 'requirement_archived')
       message = 'This requirement is archived. Restore it before confirming a version.'
     else if (response.status === 409 && code === 'requirement_version_superseded')
@@ -1153,9 +1153,9 @@ export async function streamPlanningMessage(
     },
   )
   if (!response.ok) {
-    const message = (await response.text()).trim()
+    const message = apiErrorMessage(await response.text(), response.statusText)
     if (response.status === 409) throw new Error('A reply is already in progress for this session.')
-    throw new Error(message || response.statusText)
+    throw new Error(message)
   }
   if (!response.body) throw new Error('Planning response did not include a stream.')
   const reader = response.body.getReader()
@@ -1176,7 +1176,9 @@ export async function streamPlanningMessage(
     }
     onPart(part)
     if (part.type === 'error')
-      throw new Error(part.errorText || 'Planning stopped before the reply finished. You can retry.')
+      throw new Error(
+        apiErrorMessage(part.errorText ?? '', 'Planning stopped before the reply finished. You can retry.'),
+      )
   }
   try {
     for (;;) {
@@ -1345,7 +1347,7 @@ async function requirementInsightJSON<T>(response: Response): Promise<T> {
     // A non-JSON body keeps only the status.
   }
   throw new RequirementInsightError(
-    detail || code || text.trim() || response.statusText || `HTTP ${response.status}`,
+    detail || code || apiErrorMessage(text, response.statusText || `HTTP ${response.status}`),
     response.status,
     code,
     detail,
@@ -1460,15 +1462,8 @@ export async function confirmSystemDesignVersion(
   )
   if (!response.ok) {
     const body = await response.text()
-    let message = body.trim() || response.statusText
-    let code = ''
-    try {
-      const parsed = JSON.parse(body) as { error?: string; message?: string }
-      code = parsed.error ?? ''
-      message = apiErrorMessage(body, response.statusText)
-    } catch {
-      /* plain-text API error */
-    }
+    const message = apiErrorMessage(body, response.statusText)
+    const code = membershipErrorCode(body) ?? ''
     if (response.status === 409 && code === 'system_design_archived')
       throw new SystemDesignConflictError(
         'This System Design document is archived. Restore it before confirming a version.',

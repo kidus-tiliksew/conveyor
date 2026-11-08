@@ -364,6 +364,50 @@ test('the blueprints list reports delivery, governing version, and served requir
   await expect(page.getByText('in_delivery')).toHaveCount(0)
 })
 
+// The first load reserves the list's shape with a skeleton entry, so the
+// entry that replaces it starts where the placeholder did and nothing shifts.
+test('the blueprints first load holds a skeleton shaped like the list entry', async ({ page }) => {
+  await initShell(page)
+  let release = () => {}
+  const held = new Promise<void>((resolve) => {
+    release = resolve
+  })
+  // An entry with only its title, badges, and rollup line: the shape the
+  // skeleton entry reserves.
+  const plain = { ...blueprintView(), planning_session: undefined, serves: [] }
+  await page.route('**/v1/**', async (route) => {
+    const shell = shellResponse(route)
+    if (shell) return await shell
+    const path = new URL(route.request().url()).pathname
+    if (path === '/v1/blueprints') {
+      await held
+      return route.fulfill({ json: [plain] }).catch(() => {})
+    }
+    if (path.endsWith('/events/stream'))
+      return route.fulfill({ status: 200, headers: { 'Content-Type': 'text/event-stream' }, body: '' })
+    return route.fulfill({ json: [] })
+  })
+
+  await page.goto('/w/demo/blueprints')
+  const skeleton = page.locator('[data-blueprints-skeleton-entry]').first()
+  await expect(skeleton).toBeVisible()
+  // The sentence remains for screen readers only.
+  await expect(page.getByText('Loading blueprints…')).toHaveClass(/sr-only/)
+  const before = await skeleton.boundingBox()
+
+  release()
+  const entry = page.getByRole('link', { name: /Deliver the planning flow/ })
+  await expect(entry).toBeVisible()
+  await expect(page.locator('[data-blueprints-skeleton]')).toHaveCount(0)
+  const after = await entry.boundingBox()
+  expect(before).not.toBeNull()
+  expect(after).not.toBeNull()
+  expect(after!.x).toBeCloseTo(before!.x, 0)
+  expect(after!.y).toBeCloseTo(before!.y, 0)
+  expect(after!.width).toBeCloseTo(before!.width, 0)
+  expect(after!.height).toBeCloseTo(before!.height, 0)
+})
+
 // AC-1: opening a blueprint from the list lands on the canonical URL, and the
 // approved specification is the lead content, above the delivery list.
 test('the blueprints list opens the canonical detail route with the spec first', async ({ page }) => {
