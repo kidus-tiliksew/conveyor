@@ -48,6 +48,63 @@ func NextActionPlainApproveRefusal(gate GateKind) string {
 	return ""
 }
 
+// ApproveWithoutReviewCode is the refusal code of an approve at a gate that
+// no review reached. The review route answers 409 with it, and the next
+// action states it in details.refusals beside the plain sentence, which
+// carries no identifier (component-next-action invariants 7, 18;
+// component-task-lifecycle, Extending this component).
+const ApproveWithoutReviewCode = "approve_without_review"
+
+// ApproveWithoutReviewRefusal is the plain sentence of ApproveWithoutReviewCode.
+const ApproveWithoutReviewRefusal = "Approve is refused because no review approved the task's current state."
+
+// ReviewOutputInvalidSource is the recorded source of a bounce limit that
+// review reached with invalid output.
+const ReviewOutputInvalidSource = "review.output_invalid"
+
+// ReviewSourcedBounceLimit reports whether a review_bounce_limit gate's
+// recorded source names review: review's invalid output, or no source,
+// which the review-round bounce limit records. Any other value, including
+// one a history read cut to its first characters, is not review's. The
+// comparison is exact, so a cut value is never read as review's.
+func ReviewSourcedBounceLimit(source string) bool {
+	return source == "" || source == ReviewOutputInvalidSource
+}
+
+// NextActionUnreviewedApproveRefusal is the one predicate that refuses an
+// approve at a gate no review reached. The review route and the next action
+// both call it with the awaiting task and the recorded gate source, so the
+// offer and the route agree (component-next-action invariant 7;
+// req-operator-next-action AC-1.4). It returns ApproveWithoutReviewRefusal,
+// or empty when the predicate admits the approve:
+//
+//   - At review_bounce_limit, an approve is admitted only when the recorded
+//     source is review's (ReviewSourcedBounceLimit). Another stage's limit
+//     would otherwise bind a head from an earlier review round that review
+//     rejected.
+//   - At job_failure, an approve is never admitted. The failure entered the
+//     gate, so any reviewed head the task holds was recorded before the
+//     failure, or at the implementation submission before any review: no
+//     review approved the current state. An awaiting task without a recorded
+//     gate kind states job_failure, so it is refused the same way.
+//
+// Plan approval, plan revision, and merge approval are untouched.
+func NextActionUnreviewedApproveRefusal(task Task, gateSource string) string {
+	if task.State != TaskAwaiting {
+		return ""
+	}
+	switch task.GateKind {
+	case GateKindReviewBounceLimit:
+		if ReviewSourcedBounceLimit(gateSource) {
+			return ""
+		}
+		return ApproveWithoutReviewRefusal
+	case GateKindJobFailure, "":
+		return ApproveWithoutReviewRefusal
+	}
+	return ""
+}
+
 // NextActionSupersessionRefusal refuses an approve when the gate was entered
 // against a spec version that is no longer current.
 func NextActionSupersessionRefusal(gateSpecVersion, latest int) string {

@@ -453,7 +453,7 @@ test('with stage progress on, visible cards draw every served status and policy-
   await page.goto('/')
   const gated = cardFor(page, 'Confirm the dashboard proposal')
   await expect(gated.locator('[data-stage]')).toHaveCount(6)
-  await expect(gated.getByRole('img', { name: 'Plan — Server needs_operator label' })).toHaveAttribute(
+  await expect(gated.getByRole('img', { name: 'Server spec node — Server needs_operator label' })).toHaveAttribute(
     'data-status',
     'needs_operator',
   )
@@ -559,6 +559,85 @@ test('a gate reads as needing the operator only when the served gate mark says s
   const maskedGate = masked.getByRole('img', { name: 'Server spec gate — Server waiting gate label' })
   await expect(maskedGate).toHaveAttribute('data-gate-state', 'waiting')
   await expect(maskedGate).not.toHaveClass(/bg-attention-dot/)
+})
+
+// The flow serves a merge held by its checks as needs_operator named "Merge",
+// with the merge gate off, and names the merge "Merged" only once it is done.
+// The stripe prints both rows as served (req-operator-next-action AC-3.2,
+// AC-7.7; component-next-action invariants 28, 30).
+test('the stripe prints a held merge and a finished merge as the flow serves them', async ({ page }) => {
+  const checkHold = {
+    label: 'Checks hold the merge',
+    actor: 'operator',
+    kind: 'check_hold',
+    judgment: true,
+    summary: 'A failed check holds the merge of the approved head: e2e (failed).',
+    deadline: null,
+  }
+  const terminal = {
+    label: 'Merged',
+    actor: 'none',
+    kind: 'terminal',
+    judgment: false,
+    summary: 'Merged.',
+    deadline: null,
+  }
+  const servedMerge = (taskId: string): TaskFlowStage =>
+    taskId === 'held'
+      ? {
+          ...stage('merge', 'needs_operator', null, 'off'),
+          label: 'Merge',
+          status_label: 'Needs you',
+          status_text:
+            'Merge is held because a check failed on the approved head; the next action says what to decide.',
+          gate_status_label: 'Off for this task',
+        }
+      : {
+          ...stage('merge', 'done', null, 'off'),
+          label: 'Merged',
+          status_label: 'Done',
+          gate_status_label: 'Off for this task',
+        }
+  await mockBoard(page, {
+    stageProgress: 'true',
+    flow: (taskId) => {
+      const base = flowFor('task-merging')
+      return {
+        ...base,
+        stages: [
+          stage('triage', 'done'),
+          stage('spec', 'done', 'plan_approval', 'done'),
+          stage('implement', 'done'),
+          stage('verify', 'off'),
+          stage('review', 'done'),
+          servedMerge(taskId),
+        ],
+        current_stage: taskId === 'held' ? 'merge' : null,
+      }
+    },
+    cards: [
+      card('held', 'Hold the merge on a failed check', 'merge', checkHold, {}, { state: 'approved' }),
+      card('merged', 'Finish the merge', 'merge', terminal, {}, { state: 'merged' }),
+    ],
+  })
+  await page.goto('/')
+
+  // The stripe reads its flow once its card scrolls into view.
+  const held = cardFor(page, 'Hold the merge on a failed check')
+  await held.scrollIntoViewIfNeeded()
+  const heldMerge = held.locator('[data-stage="merge"]')
+  await expect(heldMerge).toHaveAttribute('data-status', 'needs_operator')
+  await expect(heldMerge).toHaveAccessibleName('Merge — Needs you')
+  // The merge gate is off by policy, so the stripe draws no gate and no
+  // operator mark for the hold.
+  await expect(held.locator('[data-gate="merge_approval"]')).toHaveCount(0)
+  await expect(held.locator('[data-gate-state="needs_operator"]')).toHaveCount(0)
+
+  const merged = cardFor(page, 'Finish the merge')
+  await merged.scrollIntoViewIfNeeded()
+  const mergedMerge = merged.locator('[data-stage="merge"]')
+  await expect(mergedMerge).toHaveAttribute('data-status', 'done')
+  await expect(mergedMerge).toHaveAccessibleName('Merged — Done')
 })
 
 test('turning stage progress off unmounts every stripe and stops flow reads', async ({ page }) => {

@@ -1,17 +1,9 @@
 import { Link } from '@tanstack/react-router'
 import { Check } from 'lucide-react'
-import { Fragment, type ReactNode, useLayoutEffect, useMemo, useRef, useState } from 'react'
-import type {
-  NextAction,
-  TaskFlow,
-  TaskFlowSideName,
-  TaskFlowStage,
-  TaskFlowStageId,
-  TaskFlowStatus,
-} from '../../lib/types'
+import { Fragment, type ReactNode, useLayoutEffect, useRef, useState } from 'react'
+import type { TaskFlow, TaskFlowSideName, TaskFlowStage, TaskFlowStageId, TaskFlowStatus } from '../../lib/types'
 import { cn } from '../../lib/utils'
 import { useWorkspaceSelection } from '../app-shell'
-import { useNextAction } from '../inbox/use-next-actions'
 import { Card, CardContent } from '../ui/card'
 import { readableError } from '../ui/error-state'
 import { Skeleton } from '../ui/skeleton'
@@ -72,7 +64,7 @@ type PathNode =
   | { kind: 'gate'; stage: TaskFlowStage; status: TaskFlowStatus; label: string; traversed: boolean }
 
 // The fixed main path: Triage, Plan, Plan approval, Implement, Verify, Review,
-// Merge approval, Merged. The plan gate follows its stage and the merge gate
+// Merge approval, Merge. The plan gate follows its stage and the merge gate
 // precedes the merge it allows; the node facts are the server's.
 function pathNodes(flow: TaskFlow): PathNode[] {
   const nodes: PathNode[] = []
@@ -98,23 +90,6 @@ function pathNodes(flow: TaskFlow): PathNode[] {
   return nodes
 }
 
-// The two places the chart adjusts the server's words. The merge node is named
-// for its outcome, so it reads "Merge" until the merge happened. And the flow
-// read says a stage that holds a merge is in progress, while the next action
-// states the hold: a merge held by its checks is waiting on a person, so it
-// takes the same tone as an approval, with the next action's own sentence.
-function withMergeHeld(flow: TaskFlow, action: NextAction | undefined): TaskFlow {
-  return {
-    ...flow,
-    stages: flow.stages.map((stage) => {
-      if (stage.id !== 'merge' || stage.status === 'done') return stage
-      const named = stage.label === 'Merged' ? { ...stage, label: 'Merge' } : stage
-      if (action?.kind !== 'check_hold' || stage.status === 'off') return named
-      return { ...named, status: 'needs_operator', status_label: 'Held', status_text: action.summary }
-    }),
-  }
-}
-
 // Node n sits on grid row 2n+1; the edge into it on row 2n.
 const nodeRow = (index: number) => 2 * index + 1
 
@@ -124,10 +99,7 @@ const nodeRow = (index: number) => 2 * index + 1
 // lifecycle state. It prints no next-action summary: the card above it does
 // (DEC-61).
 export function TaskFlowChart({ taskId }: { taskId: string }) {
-  const { data: serverFlow, isLoading, error } = useTaskFlow(taskId)
-  // The card above reads the same entry, so this adds no request.
-  const { data: action } = useNextAction(taskId)
-  const flow = useMemo(() => serverFlow && withMergeHeld(serverFlow, action), [serverFlow, action])
+  const { data: flow, isLoading, error } = useTaskFlow(taskId)
   const [selectedId, setSelectedId] = useState<TaskFlowStageId | null>(null)
   const selected = flow?.stages.find((stage) => stage.id === selectedId)
 

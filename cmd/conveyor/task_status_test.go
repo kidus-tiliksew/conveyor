@@ -412,8 +412,10 @@ func TestTaskStatusPrintsSuggestedRecoveryDirection(t *testing.T) {
 // TestTaskStatusPrintsTriageInvalidOutputFailure proves `conveyor task status`
 // prints the server's statement for a triage whose output stayed invalid
 // through the bounce limit: a job failure that names triage and its invalid
-// output, never review (component-triage invariant 26; req-operator-next-action
-// AC-1.8, AC-5.1).
+// output, never review, offers Retry and reject, and states the withheld
+// Approve's refusal (component-triage invariant 26; component-next-action
+// invariants 7, 8; req-intake-and-triage AC-3.4; req-operator-next-action
+// AC-1.4, AC-1.8, AC-5.1).
 func TestTaskStatusPrintsTriageInvalidOutputFailure(t *testing.T) {
 	isolateLocalAuthTest(t)
 	st := store.NewMemory()
@@ -447,8 +449,11 @@ func TestTaskStatusPrintsTriageInvalidOutputFailure(t *testing.T) {
 	text := out.String()
 	ordered := []string{
 		"Retry triage\nTriage returned invalid output until the bounce limit, so it has no outcome.\n",
-		"question:      Ask for changes to run triage again, or reject the task?",
+		"question:      Retry triage, or reject the task?",
+		"  - Retry: Runs triage again with the guidance you give.",
+		"  - Reject: Closes the task.",
 		"if ignored:    The failure stays at the human gate.",
+		"refused:       approve: Approve is refused because no review approved the task's current state.",
 		"kind:          job_failure",
 		"gate kind:     job_failure",
 	}
@@ -460,10 +465,14 @@ func TestTaskStatusPrintsTriageInvalidOutputFailure(t *testing.T) {
 		}
 		at += index + len(want)
 	}
-	// The choice routes keep their /review path; the statement's sentences
+	if strings.Contains(text, "  - Approve") || strings.Contains(text, "Ask for changes") {
+		t.Fatalf("triage job failure status offers a review choice:\n%s", text)
+	}
+	// The choice routes keep their /review path, and the withheld Approve's
+	// refusal names the review that never approved; the statement's sentences
 	// never name review.
 	for _, line := range strings.Split(text, "\n") {
-		sentence := !strings.Contains(line, "/v1/") && !strings.Contains(line, "cli:")
+		sentence := !strings.Contains(line, "/v1/") && !strings.Contains(line, "cli:") && !strings.HasPrefix(line, "refused:")
 		if sentence && strings.Contains(strings.ToLower(line), "review") {
 			t.Fatalf("triage job failure status names review in %q:\n%s", line, text)
 		}

@@ -208,6 +208,56 @@ func TestFoldTaskFlowStatusPrecedence(t *testing.T) {
 			}
 		}
 	})
+	// Review acceptance with the merge gate off records next_stage empty and no
+	// gate, so only the supplied next action places a check hold at merge
+	// (req-operator-next-action AC-1.5, AC-7.7; component-next-action
+	// invariants 28, 30).
+	t.Run("a check hold needs the operator at merge", func(t *testing.T) {
+		task := approvalTask()
+		task.MergeApproval = false
+		accepted := func() *flowLedger {
+			return new(flowLedger).created(task).transition(core.StageImplement, core.StageReview).
+				add("pipeline.transition_decided", core.ActorSystem, "", map[string]any{"from_stage": core.StageReview, "next_stage": ""}).
+				state(core.TaskApproved, core.TaskReviewAccept)
+		}
+		for _, tc := range []struct {
+			reason, failure, text string
+		}{
+			{nextaction.CheckHoldFailed, "", "Merge is held because a check failed on the approved head; the next action says what to decide."},
+			{nextaction.CheckHoldStuck, "", "Merge is held because a check on the approved head is stuck; the next action says what to decide."},
+			{nextaction.CheckHoldStuck, "timeout", "Merge is held because Conveyor could not read the approved head's checks by their deadline; the next action says what to decide."},
+			{nextaction.CheckHoldPermission, "", "Merge is held because GitHub refused the check-status read; the next action says what to decide."},
+			{"", "", "Merge is held by the approved head's checks; the next action says what to decide."},
+		} {
+			action := nextaction.NextAction{Actor: nextaction.ActorOperator, Kind: nextaction.KindCheckHold, Judgment: true, Details: nextaction.Details{CheckHoldReason: tc.reason, CheckReadFailure: tc.failure}}
+			flow := accepted().fold(action)
+			merge := flowStage(t, flow, core.StageMerge)
+			if merge.Status != FlowNeedsOperator || merge.Label != "Merge" || merge.StatusLabel != "Needs you" || merge.StatusText != tc.text {
+				t.Fatalf("%s/%s: merge = %+v", tc.reason, tc.failure, merge)
+			}
+			if merge.GateStatus == nil || *merge.GateStatus != FlowOff || merge.GateStatusLabel != "Off for this task" {
+				t.Fatalf("%s: merge gate = %v, want off and unmarked", tc.reason, merge.GateStatus)
+			}
+			if flow.CurrentStage == nil || *flow.CurrentStage != core.StageMerge {
+				t.Fatalf("%s: current_stage = %v, want merge", tc.reason, flow.CurrentStage)
+			}
+			for stage, status := range flowStatuses(flow) {
+				if (status == FlowNeedsOperator) != (stage == core.StageMerge) {
+					t.Fatalf("%s: statuses = %v, want only merge needs_operator", tc.reason, flowStatuses(flow))
+				}
+			}
+		}
+		// The same ledger without a hold is merging: in progress, still "Merge".
+		merging := accepted().fold(nextaction.NextAction{Actor: nextaction.ActorFactory, Kind: nextaction.KindMerging})
+		if merge := flowStage(t, merging, core.StageMerge); merge.Status != FlowInProgress || merge.Label != "Merge" || merge.StatusText != "Merge is running now." {
+			t.Fatalf("merging: merge = %+v", merge)
+		}
+		// A merged task's merge row is done and named for its outcome.
+		merged := accepted().state(core.TaskMerged, core.TaskMergeConfirm).fold(nextaction.NextAction{Actor: nextaction.ActorNone, Kind: nextaction.KindTerminal})
+		if merge := flowStage(t, merged, core.StageMerge); merge.Status != FlowDone || merge.Label != "Merged" {
+			t.Fatalf("merged: merge = %+v", merge)
+		}
+	})
 	t.Run("merged makes visited stages done", func(t *testing.T) {
 		ledger := new(flowLedger).created(approvalTask()).transition(core.StageTriage, core.StageSpec).
 			transition(core.StageSpec, core.StageImplement).transition(core.StageImplement, core.StageReview).
@@ -823,7 +873,7 @@ func TestFoldTaskFlowDisplayCopy(t *testing.T) {
 	}
 	wantLabels := map[core.Stage][2]string{
 		core.StageTriage: {"Triage", ""}, core.StageSpec: {"Plan", "Plan approval"}, core.StageImplement: {"Implement", ""},
-		core.StageVerify: {"Verify", ""}, core.StageReview: {"Review", ""}, core.StageMerge: {"Merged", "Merge approval"},
+		core.StageVerify: {"Verify", ""}, core.StageReview: {"Review", ""}, core.StageMerge: {"Merge", "Merge approval"},
 	}
 	if !reflect.DeepEqual(labels, wantLabels) {
 		t.Fatalf("node labels = %v", labels)

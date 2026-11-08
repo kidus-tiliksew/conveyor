@@ -19,8 +19,9 @@ export function stageSegmentClass(status: TaskFlowStatus): string {
   return segmentTones[status]
 }
 
-// Every segment's accessible name: the stage, then the server's own word for
-// its status, falling back to the machine status only when none was served.
-export function stageSegmentName(stage: Pick<TaskFlowStage, 'status' | 'status_label'>, label: string): string {
-  return `${label} — ${stage.status_label || stage.status.replaceAll('_', ' ')}`
+// Every segment's accessible name: the server's label for the stage, then its
+// word for the stage's status, both as served (component-next-action
+// invariant 30).
+export function stageSegmentName(stage: Pick<TaskFlowStage, 'label' | 'status_label'>): string {
+  return `${stage.label} — ${stage.status_label}`
 }
