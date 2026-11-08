@@ -2229,6 +2229,14 @@ for (const surface of [
     await expect(
       header.getByRole(surface.exit === 'Close panel' ? 'button' : 'link', { name: surface.exit }),
     ).toBeVisible()
+    // Measure only once the dashboard's web font has loaded: before that the
+    // explorer label takes the machine's fallback font, whose width differs
+    // from Inter, so the placeholder and the loaded control are compared in
+    // the same font.
+    await page.evaluate(async () => {
+      await document.fonts.load('500 12px "Inter Variable"', 'Knowledge explorer')
+      await document.fonts.ready
+    })
     const before = await header.boundingBox()
     const reserved = await header.locator('[data-task-controls-placeholder="explorer"] > span').boundingBox()
 
