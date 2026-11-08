@@ -8,6 +8,7 @@ import { type AttentionItem, AttentionSurface } from '../components/documents/at
 import { MoreDocumentEvents, useDocumentEvents } from '../components/documents/document-events'
 import {
   archivedByDismissal,
+  changesTargetVersion,
   DocumentReview,
   dismissalArchiveConsequence,
   dismissalArchiveDescription,
@@ -31,7 +32,8 @@ import { LineageExplorer } from '../components/lineage/lineage-explorer'
 import { Badge } from '../components/ui/badge'
 import { Button } from '../components/ui/button'
 import { Card, CardContent } from '../components/ui/card'
-import { MarkdownProse } from '../components/ui/markdown-prose'
+import { MarkdownProse, withoutLeadingTitle } from '../components/ui/markdown-prose'
+import { PageHeader } from '../components/ui/page-header'
 import {
   archiveSystemDesign,
   confirmSystemDesignVersion,
@@ -178,34 +180,28 @@ export function SystemDesignPage() {
 
   return (
     <div className="flex h-full min-h-0 flex-col">
-      <header className="flex shrink-0 items-center gap-3 border-b border-border px-4 py-3 lg:px-6 lg:py-4">
-        <span className="flex size-8 items-center justify-center rounded-lg bg-primary-soft text-primary">
-          <Layers className="size-4" />
-        </span>
-        <div className="min-w-0">
-          <h1 className="text-lg font-semibold tracking-tight">System Design</h1>
-          <p className="mt-0.5 text-xs text-muted">How this system works today, written down and confirmed.</p>
-        </div>
-      </header>
+      <PageHeader title="System Design" description="How this system works today, written down and confirmed." />
       <div className="flex min-h-0 flex-1 flex-col lg:flex-row">
         <DocumentTree>
-          <DocumentTreeToolbar
-            searchLabel="Search System Design"
-            sortLabel="Sort System Design by"
-            query={query}
-            onQueryChange={setQuery}
-            options={[
-              { value: 'updated', label: 'Updated', initialDirection: 'descending' },
-              { value: 'created', label: 'Created', initialDirection: 'descending' },
-              { value: 'name', label: 'Name', initialDirection: 'ascending' },
-            ]}
-            sort={sort}
-            direction={direction}
-            onSortChange={(nextSort, nextDirection) => {
-              setSort(nextSort as DocumentSort)
-              setDirection(nextDirection)
-            }}
-          />
+          <div className="px-3">
+            <DocumentTreeToolbar
+              searchLabel="Search System Design"
+              sortLabel="Sort System Design by"
+              query={query}
+              onQueryChange={setQuery}
+              options={[
+                { value: 'updated', label: 'Updated', initialDirection: 'descending' },
+                { value: 'created', label: 'Created', initialDirection: 'descending' },
+                { value: 'name', label: 'Name', initialDirection: 'ascending' },
+              ]}
+              sort={sort}
+              direction={direction}
+              onSortChange={(nextSort, nextDirection) => {
+                setSort(nextSort as DocumentSort)
+                setDirection(nextDirection)
+              }}
+            />
+          </div>
           {grouped.map(([category, items]) => (
             <DocumentTreeGroup key={category} label={category}>
               {items.map((item) => (
@@ -282,7 +278,7 @@ export function SystemDesignPage() {
           {designs.error && (
             <DocumentTreeNote>{errorMessage(designs.error, 'Could not load these documents.')}</DocumentTreeNote>
           )}
-          {!designs.isLoading && !designs.data?.length && (
+          {!designs.isLoading && !designs.error && !designs.data?.length && (
             <DocumentTreeNote>Nothing written down yet.</DocumentTreeNote>
           )}
           {liveCount > 0 && grouped.length === 0 && (
@@ -362,6 +358,7 @@ function DesignCanvas({
     ).values(),
   ]
   const displayed = selectedReviewVersion(reviewVersions, item.current_version, search)
+  const reviewed = changesTargetVersion(reviewVersions, item.current_version, search)
   const [dismissTarget, setDismissTarget] = useState<SystemDesignVersion | null>(null)
   const canPropose = useWorkspaceCapability('propose_documents')
   const [reviseTarget, setReviseTarget] = useState<SystemDesignVersion | null>(null)
@@ -510,16 +507,20 @@ function DesignCanvas({
       ),
       action: (
         <>
-          <Button
-            variant="secondary"
-            onClick={() =>
-              onReviewChange({ tab: 'changes', target: version.version, base: item.current_version?.version ?? 0 })
-            }
-          >
-            Review changes · v{version.version}
-          </Button>
+          {/* Changes is where a pending version is reviewed, so while it shows
+              this version the acts replace the link back to it. */}
+          {!(search.tab === 'changes' && reviewed?.version === version.version) && (
+            <Button
+              variant="secondary"
+              onClick={() =>
+                onReviewChange({ tab: 'changes', target: version.version, base: item.current_version?.version ?? 0 })
+              }
+            >
+              Review changes · v{version.version}
+            </Button>
+          )}
           {canConfirm &&
-          ((search.tab === 'changes' && displayed?.version === version.version) ||
+          ((search.tab === 'changes' && reviewed?.version === version.version) ||
             ((!search.tab || search.tab === 'document') &&
               (search.target === undefined || displayed?.version === version.version))) ? (
             <>
@@ -600,14 +601,12 @@ function DesignCanvas({
       <header className="mb-8 flex flex-wrap items-start gap-4 border-b border-border pb-6">
         <div className="min-w-[14rem] flex-1">
           <span
-            className="inline-flex items-center rounded-md border border-border bg-surface px-2 py-0.5 text-[10px] font-semibold uppercase tracking-[0.12em] text-faint"
+            className="inline-flex items-center rounded-md border border-border bg-surface px-2 py-0.5 text-xs font-medium text-muted"
             title="The group this document belongs to"
           >
             {item.document.category}
           </span>
-          <h2 className="mt-3 text-[28px] font-semibold leading-tight tracking-tight text-balance">
-            {item.document.title}
-          </h2>
+          <h2 className="mt-2.5 text-2xl font-semibold tracking-tight">{item.document.title}</h2>
           {!item.current_version && <p className="mt-2 text-sm text-muted">No confirmed version</p>}
           {displayed ? (
             <div className="mt-3 flex flex-wrap items-center gap-1.5">
@@ -640,7 +639,7 @@ function DesignCanvas({
           {canConfirm && !archivedByDismissal(item.document) && (
             <Button
               size="sm"
-              variant={item.document.archived ? 'secondary' : 'destructive'}
+              variant="ghost"
               disabled={archive.isPending}
               onClick={() => (item.document.archived ? archive.mutate([]) : setArchiveDialogOpen(true))}
             >
@@ -671,6 +670,7 @@ function DesignCanvas({
         onChange={onReviewChange}
         versions={reviewVersions}
         current={item.current_version}
+        canActOnPending={canConfirm && !item.document.archived}
         attention={
           <>
             {item.document.archived ? (
@@ -689,8 +689,8 @@ function DesignCanvas({
                   search.tab === 'changes'
                     ? [...attention].sort(
                         (a, b) =>
-                          Number(b.id === `pending-${displayed?.version}`) -
-                          Number(a.id === `pending-${displayed?.version}`),
+                          Number(b.id === `pending-${reviewed?.version}`) -
+                          Number(a.id === `pending-${reviewed?.version}`),
                       )
                     : attention
                 }
@@ -701,10 +701,12 @@ function DesignCanvas({
         document={
           <>
             <section className="mt-8">
-              {displayed && <MarkdownProse>{displayed.content}</MarkdownProse>}
+              {displayed && (
+                <MarkdownProse>{withoutLeadingTitle(displayed.content, item.document.title)}</MarkdownProse>
+              )}
               {displayed && displayed.governs.length > 0 && (
                 <div className="mt-8 flex flex-wrap items-center gap-2 border-t border-border pt-4">
-                  <span className="text-[10px] font-semibold uppercase tracking-[0.12em] text-faint">Covers</span>
+                  <span className="text-xs font-medium text-muted">Covers</span>
                   {displayed.governs.flatMap((scope) =>
                     scope.paths.map((path) => (
                       <Badge key={`${scope.repository}:${path}`} variant="mono" title="Code this document describes">
@@ -722,7 +724,7 @@ function DesignCanvas({
             {' '}
             {deliveryConsultations.length > 0 && (
               <section className="mt-8 border-t border-border pt-5" aria-label="Delivery history">
-                <h3 className="flex items-center gap-1.5 text-xs font-semibold uppercase tracking-[0.12em] text-muted">
+                <h3 className="flex items-center gap-1.5 text-xs font-medium text-muted">
                   <History className="size-3.5" /> Delivery history
                 </h3>
                 <ol className="mt-3 divide-y divide-border rounded-md border border-border">
@@ -743,7 +745,7 @@ function DesignCanvas({
                             </>
                           )}
                         </p>
-                        <time className="mt-1 block text-[10px] text-faint">{formatDate(event.at)}</time>
+                        <time className="mt-1 block text-[11px] text-faint">{formatDate(event.at)}</time>
                       </li>
                     )
                   })}
@@ -752,14 +754,14 @@ function DesignCanvas({
             )}
             {archiveActivity.length > 0 && (
               <section className="mt-8 border-t border-border pt-5" aria-label="Archive activity">
-                <h3 className="flex items-center gap-1.5 text-xs font-semibold uppercase tracking-[0.12em] text-muted">
+                <h3 className="flex items-center gap-1.5 text-xs font-medium text-muted">
                   <History className="size-3.5" /> Archive activity
                 </h3>
                 <ol className="mt-3 divide-y divide-border rounded-md border border-border">
                   {archiveActivity.map((event) => (
                     <li key={event.id} className="px-3 py-3 text-xs text-muted">
                       <p className="font-medium text-foreground">{systemDesignEventLabel(event.kind)}</p>
-                      <time className="mt-1 block text-[10px] text-faint">{formatDate(event.at)}</time>
+                      <time className="mt-1 block text-[11px] text-faint">{formatDate(event.at)}</time>
                     </li>
                   ))}
                 </ol>

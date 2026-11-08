@@ -3,8 +3,10 @@ import { OctagonX } from 'lucide-react'
 import { useId, useRef, useState } from 'react'
 import { preemptWorkOrder } from '../../lib/api'
 import type { ActivityItem, WorkOrder } from '../../lib/types'
+import { cn } from '../../lib/utils'
 import { useWorkspaceSelection } from '../app-shell'
 import { Button } from '../ui/button'
+import { readableError } from '../ui/error-state'
 import { Textarea } from '../ui/input'
 
 export function claimedWorkOrder(item: ActivityItem): WorkOrder | undefined {
@@ -18,7 +20,9 @@ export function claimedWorkOrder(item: ActivityItem): WorkOrder | undefined {
 // destructive, and the copy is what the operator needs to decide; the protocol
 // mechanics (work-order revocation, renewal discovery, checkpoint before the
 // next claim) live in its tooltip.
-export function WorkOrderPreemptControl({ order }: { order: WorkOrder }) {
+// `inline` puts the trigger straight into the caller's wrapping row, with the
+// confirmation on a line of its own under it.
+export function WorkOrderPreemptControl({ order, inline = false }: { order: WorkOrder; inline?: boolean }) {
   const { workspace } = useWorkspaceSelection()
   const queryClient = useQueryClient()
   const [expanded, setExpanded] = useState(false)
@@ -34,8 +38,8 @@ export function WorkOrderPreemptControl({ order }: { order: WorkOrder }) {
     },
   })
   return (
-    <div className="space-y-2.5">
-      <div className="flex justify-end">
+    <div className={inline ? 'contents' : 'space-y-2.5'}>
+      <div className={cn('flex justify-end', inline && 'ml-auto shrink-0')}>
         <Button
           variant="ghost"
           size="sm"
@@ -48,7 +52,13 @@ export function WorkOrderPreemptControl({ order }: { order: WorkOrder }) {
         </Button>
       </div>
       {expanded && (
-        <div id={panelID} className="space-y-2.5 rounded-lg border border-border bg-surface/50 px-3 py-3">
+        <div
+          id={panelID}
+          className={cn(
+            'space-y-2.5 rounded-lg border border-border bg-surface/50 px-3 py-3',
+            inline && 'order-last basis-full',
+          )}
+        >
           <p
             className="text-xs leading-5 text-muted"
             title="Preemption revokes only this work order. The agent session sees the loss at its next lease renewal."
@@ -72,7 +82,9 @@ export function WorkOrderPreemptControl({ order }: { order: WorkOrder }) {
             <OctagonX />
             {mutation.isPending ? 'Stopping…' : mutation.isSuccess ? 'Stopped' : 'Stop the attempt'}
           </Button>
-          {mutation.error != null && <p className="text-xs text-failure">{String(mutation.error)}</p>}
+          {mutation.error != null && (
+            <p className="text-xs text-failure">{readableError(mutation.error, 'Something went wrong. Try again.')}</p>
+          )}
         </div>
       )}
     </div>

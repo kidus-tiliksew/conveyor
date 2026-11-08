@@ -436,7 +436,7 @@ function AuthenticatedAppShell() {
 function ShellFrame({ wide }: { wide: boolean }) {
   const { workspace } = useWorkspaceSelection()
   return (
-    <div className="flex h-dvh flex-col overflow-hidden lg:flex-row">
+    <div className="flex h-dvh flex-col overflow-hidden bg-background lg:flex-row lg:bg-rail">
       {wide ? (
         <>
           <IconRail />
@@ -445,7 +445,7 @@ function ShellFrame({ wide }: { wide: boolean }) {
       ) : (
         <MobileNav />
       )}
-      <main className="min-w-0 min-h-0 flex-1 overflow-hidden bg-background">
+      <main className="min-h-0 min-w-0 flex-1 overflow-hidden bg-background lg:my-2 lg:mr-2 lg:rounded-xl lg:border lg:border-border lg:shadow-sm">
         <Outlet />
       </main>
     </div>
@@ -585,7 +585,7 @@ function MobileNav() {
   const close = () => setOpen(false)
   return (
     <>
-      <header className="flex h-12 shrink-0 items-center gap-2 border-b border-border bg-rail px-2">
+      <header className="flex h-11 shrink-0 items-center gap-2 border-b border-border bg-rail px-2">
         <Button variant="ghost" size="icon" aria-label="Open navigation" onClick={() => setOpen(true)}>
           <Menu />
         </Button>
@@ -635,11 +635,8 @@ function IconRail() {
     closeDrawer()
   }
   return (
-    <nav
-      aria-label="Workspaces"
-      className="flex w-14 shrink-0 flex-col items-center border-r border-border bg-rail py-3"
-    >
-      <div className="flex min-h-0 w-full flex-1 flex-col items-center gap-6 overflow-y-auto py-1">
+    <nav aria-label="Workspaces" className="flex w-13 shrink-0 flex-col items-center bg-rail py-2.5">
+      <div className="flex min-h-0 w-full flex-1 flex-col items-center gap-2 overflow-y-auto py-1">
         {(workspaces ?? []).map((item) => (
           <button
             key={item.id}
@@ -649,9 +646,9 @@ function IconRail() {
             aria-current={item.id === selected ? 'true' : undefined}
             onClick={() => switchTo(item.id)}
             className={cn(
-              'grid size-8 shrink-0 place-items-center rounded-[9px] text-xs font-semibold tracking-[-0.01em] transition-[background-color,color,box-shadow] duration-150 focus-visible:outline-2 focus-visible:outline-offset-[5px] focus-visible:outline-primary',
+              'grid size-8 shrink-0 place-items-center rounded-lg text-xs font-medium transition-[background-color,color,box-shadow] duration-150 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary',
               item.id === selected
-                ? 'bg-workspace-active text-workspace-active-foreground ring-2 ring-workspace-active-ring ring-offset-[3px] ring-offset-rail'
+                ? 'bg-workspace-active text-workspace-active-foreground shadow-xs ring-1 ring-workspace-active-ring'
                 : 'bg-workspace-tile text-workspace-tile-foreground hover:bg-workspace-tile-hover hover:text-foreground',
             )}
           >
@@ -664,9 +661,9 @@ function IconRail() {
             title="Add workspace"
             aria-label="Add workspace"
             onClick={closeDrawer}
-            className="grid size-8 shrink-0 place-items-center rounded-[9px] text-workspace-tile-foreground transition-colors hover:bg-workspace-tile hover:text-foreground focus-visible:outline-2 focus-visible:outline-offset-[5px] focus-visible:outline-primary"
+            className="grid size-8 shrink-0 place-items-center rounded-lg text-workspace-tile-foreground transition-colors hover:bg-workspace-tile hover:text-foreground focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary"
           >
-            <Plus className="size-5" aria-hidden="true" />
+            <Plus className="size-4" aria-hidden="true" />
           </Link>
         )}
       </div>
@@ -710,12 +707,11 @@ function NavSidebar({ className }: { className?: string }) {
   })
 
   return (
-    <nav className={cn('flex w-64 shrink-0 flex-col border-r border-border bg-rail', className)} aria-label="Primary">
-      <div className="px-4 py-4">
+    <nav className={cn('flex w-52 shrink-0 flex-col bg-rail', className)} aria-label="Primary">
+      <div className="flex h-[52px] shrink-0 items-center px-3.5">
         <p className="truncate text-sm font-semibold tracking-tight">{currentName}</p>
-        <p className="mt-0.5 text-[11px] text-faint">Conveyor · software factory</p>
       </div>
-      <div className="flex-1 space-y-0.5 px-2">
+      <div className="flex-1 space-y-px overflow-y-auto px-2">
         <NavItem to="/w/$workspaceId/" icon={Kanban} label="Board" />
         <NavItem to="/w/$workspaceId/inbox" icon={Inbox} label="Inbox">
           {operatorDecisions > 0 && <Badge variant="attention">{operatorDecisions}</Badge>}
@@ -735,16 +731,19 @@ function NavSidebar({ className }: { className?: string }) {
         <NavItem to="/w/$workspaceId/monitor" icon={Activity} label="Monitor" />
         <NavItem to="/w/$workspaceId/settings" icon={Settings} label="Settings" />
       </div>
-      <Button
-        variant="ghost"
-        className="mx-2 justify-start text-muted"
-        disabled={signOut.isPending}
-        onClick={() => signOut.mutate()}
-      >
-        <LogOut />
-        {signOut.isPending ? 'Signing out…' : 'Sign out'}
-      </Button>
-      <ThemeSwitcher />
+      <div className="flex items-center gap-1 p-2">
+        <ThemeSwitcher />
+        <Button
+          variant="ghost"
+          size="icon"
+          title="Sign out"
+          aria-label={signOut.isPending ? 'Signing out…' : 'Sign out'}
+          disabled={signOut.isPending}
+          onClick={() => signOut.mutate()}
+        >
+          <LogOut />
+        </Button>
+      </div>
     </nav>
   )
 }
@@ -752,14 +751,13 @@ function NavSidebar({ className }: { className?: string }) {
 function ThemeSwitcher() {
   const { choice, setChoice } = useTheme()
   return (
-    <label className="m-2 flex items-center gap-2 rounded-lg border border-border bg-surface px-2.5 py-2 text-xs text-muted">
-      <SunMoon className="size-4 shrink-0" aria-hidden="true" />
-      <span className="shrink-0">Theme</span>
+    <label className="flex min-w-0 flex-1 cursor-pointer items-center gap-2 rounded-md px-2 py-1.5 text-xs text-muted transition-colors hover:bg-rail-raised hover:text-foreground">
+      <SunMoon className="size-3.5 shrink-0" aria-hidden="true" />
       <select
         aria-label="Theme"
         value={choice}
         onChange={(event) => setChoice(event.target.value as typeof choice)}
-        className="min-w-0 flex-1 cursor-pointer rounded border border-border bg-card px-1.5 py-1 text-xs text-foreground outline-none hover:border-edge focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary"
+        className="min-w-0 flex-1 cursor-pointer appearance-none rounded-sm bg-transparent text-xs outline-none focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary [&>option]:bg-card [&>option]:text-foreground"
       >
         <option value="light">Light</option>
         <option value="dark">Dark</option>
@@ -818,12 +816,14 @@ function NavItem({
       // it is matched exactly, as `/` was.
       activeOptions={exact || page === '/' ? { exact: true } : undefined}
       onClick={closeDrawer}
-      className={`flex items-center gap-2.5 rounded-lg px-2.5 py-2 text-sm transition-colors pointer-coarse:py-2.5 ${
-        active ? 'bg-raised font-medium text-foreground' : 'text-muted hover:bg-raised/60 hover:text-foreground'
+      className={`flex items-center gap-2 rounded-md px-2 py-1.5 text-sm transition-colors pointer-coarse:py-2.5 ${
+        active
+          ? 'bg-rail-raised font-medium text-foreground'
+          : 'text-muted hover:bg-rail-raised/60 hover:text-foreground'
       }`}
     >
-      <Icon className="size-4" />
-      <span className="flex-1">{label}</span>
+      <Icon className="size-4 shrink-0" />
+      <span className="flex-1 truncate">{label}</span>
       {children}
     </Link>
   )

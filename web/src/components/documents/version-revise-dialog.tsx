@@ -144,20 +144,22 @@ function ReviseEditor({
         <label className="block text-sm font-medium">
           Proposal content
           <textarea
-            className="mt-2 min-h-64 w-full rounded-md border border-border bg-card p-3 font-mono text-sm"
+            className="mt-2 min-h-48 w-full rounded-md border border-border bg-card p-3 font-mono text-sm"
             value={content}
             onChange={(event) => setContent(event.target.value)}
             readOnly={submit.isPending || proposedVersion !== null}
           />
         </label>
-        <VersionDiff
-          bounded
-          left={{
-            content: snapshot.current?.content ?? '',
-            label: snapshot.current ? `Confirmed v${snapshot.current.version}` : 'No confirmed version',
-          }}
-          right={{ content, label: 'Edited proposal' }}
-        />
+        <div className="max-h-80 overflow-auto rounded-lg border border-border p-3">
+          <VersionDiff
+            bounded
+            left={{
+              content: snapshot.current?.content ?? '',
+              label: snapshot.current ? `Confirmed v${snapshot.current.version}` : 'No confirmed version',
+            }}
+            right={{ content, label: 'Edited proposal' }}
+          />
+        </div>
         <p className="text-sm text-muted">
           Submitting proposes a new version and confirms it. Earlier pending versions will be dismissed.
         </p>
@@ -180,7 +182,7 @@ function ReviseEditor({
             {errorMessage(submit.error)}
           </p>
         )}
-        <div className="flex justify-end gap-2">
+        <div className="sticky bottom-0 -mx-5 -mb-5 flex justify-end gap-2 border-t border-border bg-background px-5 py-3">
           <Button type="button" variant="secondary" disabled={submit.isPending} onClick={onClose}>
             {proposedVersion === null ? 'Cancel' : 'Close'}
           </Button>

@@ -2921,7 +2921,7 @@ test('an authority-conflict checkpoint states the server question and groups sev
   // The current state is the server's label, the agent's decision request, and
   // the server's question; nothing reads as a failure that needs recovery.
   const banner = nextActionBox(page)
-  await expect(executionTitle(page)).toHaveText('Cited revisions need a decision')
+  await expect(nextActionBox(page).getByText('Cited revisions need a decision', { exact: true })).toBeVisible()
   await expect(banner.getByText(sevenCitationDecision, { exact: true })).toBeVisible()
   await expect(
     banner.getByText('Will you confirm or dismiss the cited revisions, then recover the order with direction?'),
@@ -3033,7 +3033,7 @@ test('an authority conflict without proposals asks for authorship', async ({ pag
     await route.fulfill({ json: item })
   })
   await page.goto('/w/demo/tasks/operator-checkpoint/full')
-  await expect(executionTitle(page)).toHaveText('Cited documents need a revision')
+  await expect(nextActionBox(page).getByText('Cited documents need a revision', { exact: true })).toBeVisible()
   const card = page.getByRole('region', { name: 'Checkpoint decision and recovery' })
   await expect(card.getByRole('button', { name: /& resume$/ })).toHaveCount(0)
   await card.getByRole('button', { name: 'Respond' }).click()
@@ -3107,7 +3107,7 @@ test('a resumed checkpoint order follows the queued server statement', async ({ 
   })
 
   await page.goto('/w/demo/tasks/operator-checkpoint/full')
-  await expect(executionTitle(page)).toHaveText('Cited documents need a revision')
+  await expect(nextActionBox(page).getByText('Cited documents need a revision', { exact: true })).toBeVisible()
   const card = page.getByRole('region', { name: 'Checkpoint decision and recovery' })
   await expect(card.getByText('Cited documents need a revision', { exact: true })).toBeVisible()
   await card.getByRole('button', { name: 'Review' }).click()
@@ -3138,7 +3138,7 @@ test('a generic decision request keeps the generic direction guidance', async ({
   })
   await page.goto('/w/demo/tasks/operator-checkpoint/full')
   const banner = nextActionBox(page)
-  await expect(executionTitle(page)).toHaveText('Agent question')
+  await expect(nextActionBox(page).getByText('Agent question', { exact: true })).toBeVisible()
   await expect(banner.getByText('Should the migration keep the legacy column?', { exact: true })).toBeVisible()
   await expect(banner.getByText('Answer the agent?')).toBeVisible()
   await expect(page.getByText(/recovery needed/i)).toHaveCount(0)
@@ -4942,7 +4942,7 @@ test('output-validation rejections show job-specific errors with warning tone an
   await expect(rejected.nth(2)).toContainText('spec validation error 3')
   await expect(rejected.nth(3)).toContainText('spec validation error 4')
   for (const card of await rejected.all()) {
-    await expect(card).toHaveClass(/border-attention\/40/)
+    await expect(card).toHaveClass(/border-attention\/30/)
     await expect(card).toHaveClass(/bg-attention-soft/)
     await expect(card.locator('xpath=..').locator('.bg-attention-dot')).toHaveCount(1)
   }
@@ -5774,7 +5774,7 @@ test('blueprint and dependency details remain linked and read only', async ({ pa
   await page.goto('/w/demo/tasks/blueprint-child/full')
   const box = nextActionBox(page)
   await expect(box.getByRole('heading', { name: 'This task is waiting on another task.' })).toBeVisible()
-  await expect(box.getByText('Implementation · Progressing')).toBeVisible()
+  await expect(box.getByText('Implementation · Waiting')).toBeVisible()
   await expect(box.getByRole('link', { name: 'Runtime · Waiting' })).toHaveAttribute(
     'href',
     '/w/demo/tasks/blueprint-sub-2/full',
@@ -7404,7 +7404,12 @@ test('failed triage retry waits for response and every projection refresh and pr
     if (accepted) refreshed.add('detail')
     await route.fulfill({
       json: accepted
-        ? { ...item, task: { ...item.task, state: 'queued', next_stage: 'triage' }, needs_attention: false }
+        ? {
+            ...item,
+            next_action: undefined,
+            task: { ...item.task, state: 'queued', next_stage: 'triage' },
+            needs_attention: false,
+          }
         : item,
     })
   })
@@ -7456,7 +7461,9 @@ test('failed triage retry waits for response and every projection refresh and pr
   releaseRefresh()
   await expect(recovery).toHaveCount(0)
   await expect.poll(() => refreshed.has('detail')).toBe(true)
-  await expect(page.getByRole('button', { name: 'Task status: Queued', exact: true })).toBeVisible()
+  // The next action names the state once the failure is gone.
+  await expect(page.getByRole('button', { name: 'Task status: Triage failed', exact: true })).toHaveCount(0)
+  await expect(page.getByRole('button', { name: 'Task status: Working', exact: true })).toBeVisible()
   expect(requests).toBe(1)
   await page.reload()
   await expect(page.getByRole('region', { name: 'Triage recovery' })).toHaveCount(0)
@@ -8180,9 +8187,9 @@ test('verify order timeline labels follow stage', async ({ page }) => {
   await expect(page.locator('li[data-order-entry]:has(span:text-is("Review"))')).toHaveCount(1)
 })
 
-// The full route arranges the shared sections into a reading column and an
-// inspector from lg up, and one column in DOM order below lg; the sheet keeps
-// its stacked composition (component-web-task-surfaces, Task detail
+// The full route arranges the shared sections into a reading column and a
+// sticky inspector from lg up, and one column in DOM order below lg; the sheet
+// keeps its stacked composition (component-web-task-surfaces, Task detail
 // composition).
 const inspectorTaskID = 'work-on-this-inspector'
 
@@ -8262,12 +8269,12 @@ test('below lg the full route is one column in reading order without horizontal 
   await expect(content.getByRole('heading', { level: 1 })).toBeVisible()
   const order = [
     content.getByRole('heading', { level: 1 }),
-    content.getByRole('region', { name: 'Properties' }),
+    content.getByRole('region', { name: 'Next action' }),
     content.getByRole('region', { name: 'Execution plan' }),
+    content.getByRole('region', { name: 'Properties' }),
     content.getByRole('region', { name: 'Attached context' }),
     content.getByRole('region', { name: 'Agent prompt' }),
     content.getByRole('heading', { name: 'Attachments 3' }),
-    content.getByRole('region', { name: 'Next action' }),
     content.getByRole('tablist', { name: 'Task activity view' }),
   ]
   const tops: number[] = []
@@ -8277,11 +8284,11 @@ test('below lg the full route is one column in reading order without horizontal 
   const domOrder = await content.evaluate((root) => {
     const marks = [
       root.querySelector('h1'),
-      root.querySelector('[aria-label="Properties"]'),
+      root.querySelector('[aria-label="Next action"]'),
       root.querySelector('[aria-label="Execution plan"]'),
+      root.querySelector('[aria-label="Properties"]'),
       root.querySelector('[aria-label="Attached context"]'),
       root.querySelector('[aria-label="Agent prompt"]'),
-      root.querySelector('[aria-label="Next action"]'),
     ]
     return marks.every(
       (mark, index) =>
@@ -8300,13 +8307,13 @@ test('the board sheet keeps its stacked composition without an inspector', async
   const sheet = page.getByRole('dialog', { name: 'Task detail' })
   await expect(sheet.getByRole('heading', { level: 2 }).first()).toBeVisible()
   await expect(sheet.getByRole('region', { name: 'Task inspector' })).toHaveCount(0)
-  // The sheet stacks: header facts, agent prompt, context, then the activity.
+  // The sheet stacks: the next action, then header facts, agent prompt, context.
   const tops: number[] = []
   for (const locator of [
+    sheet.getByRole('region', { name: 'Next action' }),
     sheet.locator('dt').filter({ hasText: /^Repository$/ }),
     sheet.getByRole('region', { name: 'Agent prompt' }),
     sheet.getByRole('region', { name: 'Attached context' }),
-    sheet.getByRole('region', { name: 'Next action' }),
   ])
     tops.push((await locator.boundingBox())!.y)
   expect(tops).toEqual([...tops].sort((a, b) => a - b))

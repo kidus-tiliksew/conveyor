@@ -223,7 +223,7 @@ function SuggestedContextCard({ proposals }: { proposals: TaskContextProposal[] 
                   <KindLabel>{requirement ? 'Outcome' : 'Guidance'}</KindLabel>
                   <KindLabel>· From {sourceLabel(proposal.source)}</KindLabel>
                 </p>
-                <p className="mt-1 text-[13px] leading-5 text-muted">{proposal.justification}</p>
+                <p className="mt-1 text-sm leading-5 text-muted">{proposal.justification}</p>
               </div>
             </li>
           )

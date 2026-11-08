@@ -15,6 +15,7 @@ import {
   RotateCcw,
   Sparkles,
   Trash2,
+  X,
 } from 'lucide-react'
 import { useEffect, useMemo, useState } from 'react'
 import { useWorkspaceCapability, useWorkspaceSelection } from '../components/app-shell'
@@ -23,6 +24,7 @@ import { type AttentionItem, AttentionSurface } from '../components/documents/at
 import { MoreDocumentEvents, useDocumentEvents } from '../components/documents/document-events'
 import {
   archivedByDismissal,
+  changesTargetVersion,
   DocumentReview,
   dismissalArchiveConsequence,
   dismissalArchiveDescription,
@@ -49,7 +51,8 @@ import { Button } from '../components/ui/button'
 import { Card, CardContent, CardHeader, CardTitle } from '../components/ui/card'
 import { Dialog } from '../components/ui/dialog'
 import { Disclosure } from '../components/ui/disclosure'
-import { MarkdownProse } from '../components/ui/markdown-prose'
+import { MarkdownProse, withoutLeadingTitle } from '../components/ui/markdown-prose'
+import { PageHeader } from '../components/ui/page-header'
 import {
   acknowledgeRequirementStaleness,
   archiveRequirement,
@@ -148,7 +151,7 @@ export function RequirementsPage() {
     enabled: Boolean(workspace),
     staleTime: 60_000,
   })
-  const { data: overviews = [] } = useQuery({
+  const { data: overviews = [], isSuccess: overviewsLoaded } = useQuery({
     queryKey: ['reference-documents', workspace],
     queryFn: () => fetchReferenceDocuments(workspace),
     enabled: Boolean(workspace),
@@ -227,15 +230,7 @@ export function RequirementsPage() {
 
   return (
     <div className="flex h-full min-h-0 flex-col">
-      <header className="flex shrink-0 items-center gap-3 border-b border-border px-4 py-3 lg:px-6 lg:py-4">
-        <span className="flex size-8 items-center justify-center rounded-lg bg-primary-soft text-primary">
-          <ListChecks className="size-4" />
-        </span>
-        <div className="min-w-0">
-          <h1 className="text-lg font-semibold tracking-tight">Requirements</h1>
-          <p className="mt-0.5 text-xs text-muted">What this product should do, written down and confirmed.</p>
-        </div>
-      </header>
+      <PageHeader title="Requirements" description="What this product should do, written down and confirmed." />
 
       <div className="flex min-h-0 flex-1 flex-col lg:flex-row">
         <DocumentTree>
@@ -248,7 +243,7 @@ export function RequirementsPage() {
                 onClick={() => setOpenOverview({ id: document.id })}
               />
             ))}
-            {overviews.length === 0 && (
+            {overviewsLoaded && overviews.length === 0 && (
               <DocumentTreeNote>Add a product overview, personas, or a glossary.</DocumentTreeNote>
             )}
             {canManageReferenceDocuments && (
@@ -304,7 +299,10 @@ export function RequirementsPage() {
                 onClick={() => selectRequirement(item.requirement.id)}
               />
             ))}
-            {liveRequirements.length === 0 && !query && <DocumentTreeNote>No active requirements.</DocumentTreeNote>}
+            {isLoading && <DocumentTreeNote>Loading requirements…</DocumentTreeNote>}
+            {!isLoading && !error && liveRequirements.length === 0 && !query && (
+              <DocumentTreeNote>No active requirements.</DocumentTreeNote>
+            )}
             {Boolean(liveRequirements.length) && visible.length === 0 && (
               <DocumentTreeNote>No requirements match your search.</DocumentTreeNote>
             )}
@@ -438,10 +436,10 @@ function OverviewCanvas({
     <article id={selected ? `reference-${document.id}-v${selected.version}` : undefined} className="scroll-mt-6">
       <header className="mb-8 flex flex-wrap items-start justify-between gap-4 border-b border-border pb-6">
         <div className="min-w-[14rem] flex-1">
-          <span className="inline-flex items-center gap-1.5 rounded-md border border-border bg-surface px-2 py-0.5 text-[10px] font-semibold uppercase tracking-[0.12em] text-faint">
+          <span className="inline-flex items-center gap-1.5 rounded-md border border-border bg-surface px-2 py-0.5 text-xs font-medium text-muted">
             <FileText className="size-3" /> Product overview
           </span>
-          <h2 className="mt-3 text-[28px] font-semibold leading-tight tracking-tight text-balance">{document.name}</h2>
+          <h2 className="mt-2.5 text-2xl font-semibold tracking-tight">{document.name}</h2>
           <div className="mt-3 flex flex-wrap items-center gap-1.5">
             <Badge variant="mono">v{document.current_version}</Badge>
             <Badge variant="outline">Reference material</Badge>
@@ -480,7 +478,7 @@ function OverviewCanvas({
       </header>
       {isLoading && <p className="text-sm text-muted">Loading version history…</p>}
       {error && <p className="text-sm text-failure">{errorMessage(error, 'Could not load version history.')}</p>}
-      {selected && <MarkdownProse>{selected.content}</MarkdownProse>}
+      {selected && <MarkdownProse>{withoutLeadingTitle(selected.content, document.name)}</MarkdownProse>}
       {versions.length > 1 && (
         <label
           className="mt-8 block max-w-xs border-t border-border pt-4 text-xs font-medium"
@@ -597,6 +595,7 @@ function RequirementDetailCanvas({
     ).values(),
   ]
   const displayed = selectedReviewVersion(reviewVersions, item.current_version, search)
+  const reviewed = changesTargetVersion(reviewVersions, item.current_version, search)
   const { data: referenceDocuments = [] } = useQuery({
     queryKey: ['reference-documents', workspace],
     queryFn: () => fetchReferenceDocuments(workspace),
@@ -728,11 +727,11 @@ function RequirementDetailCanvas({
           >
             {delivery.reasons.join(' · ')}
           </Disclosure>
-          <p className="mt-1 font-mono text-[10px] text-faint">
+          <p className="mt-1 font-mono text-[11px] text-faint">
             Task {delivery.task_id} · {delivery.event_kind} #{delivery.delivery_event_id}
           </p>
           {(delivery.pinned_version || delivery.current_version) && (
-            <p className="text-[10px] text-faint">
+            <p className="text-[11px] text-faint">
               Served v{delivery.pinned_version || 'unknown'} · current at delivery v
               {delivery.current_version || 'unknown'}
             </p>
@@ -887,16 +886,20 @@ function RequirementDetailCanvas({
       ),
       action: (
         <>
-          <Button
-            variant="secondary"
-            onClick={() =>
-              onReviewChange({ tab: 'changes', target: version.version, base: item.current_version?.version ?? 0 })
-            }
-          >
-            Review changes · v{version.version}
-          </Button>
+          {/* Changes is where a pending version is reviewed, so while it shows
+              this version the acts replace the link back to it. */}
+          {!(search.tab === 'changes' && reviewed?.version === version.version) && (
+            <Button
+              variant="secondary"
+              onClick={() =>
+                onReviewChange({ tab: 'changes', target: version.version, base: item.current_version?.version ?? 0 })
+              }
+            >
+              Review changes · v{version.version}
+            </Button>
+          )}
           {canConfirm &&
-          ((search.tab === 'changes' && displayed?.version === version.version) ||
+          ((search.tab === 'changes' && reviewed?.version === version.version) ||
             ((!search.tab || search.tab === 'document') &&
               (search.target === undefined || displayed?.version === version.version))) ? (
             <>
@@ -924,7 +927,7 @@ function RequirementDetailCanvas({
                 disabled={confirm.isPending || dismiss.isPending}
                 onClick={() => setDismissTarget(version)}
               >
-                <Trash2 /> Dismiss
+                <X /> Dismiss
               </Button>
             </>
           ) : null}
@@ -984,12 +987,10 @@ function RequirementDetailCanvas({
       )}
       <header className="mb-8 flex flex-wrap items-start gap-4 border-b border-border pb-6">
         <div className="min-w-[14rem] flex-1">
-          <span className="inline-flex items-center rounded-md border border-border bg-surface px-2 py-0.5 font-mono text-[10px] uppercase tracking-[0.12em] text-faint">
+          <span className="inline-flex items-center rounded-md border border-border bg-surface px-2 py-0.5 text-xs text-muted">
             {item.requirement.slug}
           </span>
-          <h2 className="mt-3 text-[28px] font-semibold leading-tight tracking-tight text-balance">
-            {item.requirement.title}
-          </h2>
+          <h2 className="mt-2.5 text-2xl font-semibold tracking-tight">{item.requirement.title}</h2>
           {!item.current_version && <p className="mt-2 text-sm text-muted">No confirmed version</p>}
           {displayed && (
             <div className="mt-3 flex flex-wrap items-center gap-1.5">
@@ -1021,7 +1022,7 @@ function RequirementDetailCanvas({
           {canConfirm && !archivedByDismissal(item.requirement) && (
             <Button
               size="sm"
-              variant={item.requirement.archived ? 'secondary' : 'destructive'}
+              variant="ghost"
               disabled={archive.isPending}
               onClick={() => (item.requirement.archived ? archive.mutate([]) : setArchiveDialogOpen(true))}
             >
@@ -1052,6 +1053,7 @@ function RequirementDetailCanvas({
         onChange={onReviewChange}
         versions={reviewVersions}
         current={item.current_version}
+        canActOnPending={canConfirm && !item.requirement.archived}
         attention={
           <>
             {item.requirement.archived ? (
@@ -1070,8 +1072,8 @@ function RequirementDetailCanvas({
                   search.tab === 'changes'
                     ? [...attention].sort(
                         (a, b) =>
-                          Number(b.id === `pending-${displayed?.version}`) -
-                          Number(a.id === `pending-${displayed?.version}`),
+                          Number(b.id === `pending-${reviewed?.version}`) -
+                          Number(a.id === `pending-${reviewed?.version}`),
                       )
                     : attention
                 }
@@ -1083,7 +1085,7 @@ function RequirementDetailCanvas({
           <>
             <div className="mt-8">
               {displayed ? (
-                <RequirementDocument version={displayed} />
+                <RequirementDocument version={displayed} title={item.requirement.title} />
               ) : (
                 <p className="text-sm text-muted">Nothing has been proposed for this requirement yet.</p>
               )}
@@ -1094,7 +1096,7 @@ function RequirementDetailCanvas({
           <>
             {' '}
             <div className="mt-10 space-y-4 border-t border-border pt-8">
-              <h3 className="text-xs font-semibold uppercase tracking-[0.12em] text-faint">Delivery &amp; history</h3>
+              <h3 className="text-xs font-medium text-muted">Delivery &amp; history</h3>
               {/*
           Delivery is task-centric: `serves` sits on the task itself
           (req-task-centric-delivery REQ-1). Blueprints are retained below as the historical
@@ -1236,7 +1238,7 @@ function RequirementDetailCanvas({
                       >
                         <Download className="size-3.5 shrink-0 text-primary" />
                         <span className="min-w-0 flex-1 truncate text-xs">{artifact.name}</span>
-                        <span className="font-mono text-[10px] text-faint">{artifact.size_bytes} B</span>
+                        <span className="font-mono text-[11px] text-faint">{artifact.size_bytes} B</span>
                       </button>
                     ))}
                     {canOperate && (
@@ -1287,14 +1289,14 @@ function RequirementDetailCanvas({
                                 >
                                   {delivery.label}
                                 </Link>
-                                <span className="block text-[10px] text-faint">
+                                <span className="block text-[11px] text-faint">
                                   Delivered {formatDate(delivery.at)}
                                 </span>
                                 {delivery.follow_up && (
                                   <Link
                                     to="/w/$workspaceId/tasks/$taskId"
                                     params={{ workspaceId: workspace, taskId: delivery.follow_up.task_id }}
-                                    className="block text-[10px] font-medium text-primary hover:underline"
+                                    className="block text-[11px] font-medium text-primary hover:underline"
                                   >
                                     Follow-up: {delivery.follow_up.title}
                                   </Link>
@@ -1318,7 +1320,7 @@ function RequirementDetailCanvas({
                               <span className="min-w-0 flex-1">
                                 <strong className="font-medium">{eventLabel(event)}</strong>
                                 <span className="mt-0.5 flex items-center gap-2">
-                                  <time className="text-[10px] text-faint">{formatDate(event.at)}</time>
+                                  <time className="text-[11px] text-faint">{formatDate(event.at)}</time>
                                   {event.payload?.backfilled === true && <Badge variant="mono">Backfilled</Badge>}
                                 </span>
                               </span>
@@ -1474,13 +1476,14 @@ function documentGlobalByID(id: string) {
   return window.document.getElementById(id)
 }
 
-function RequirementDocument({ version }: { version: RequirementVersion }) {
+function RequirementDocument({ version, title }: { version: RequirementVersion; title?: string }) {
+  const body = withoutLeadingTitle(stripStatementsFence(version.content), title)
   return (
     <div className="space-y-8">
-      {stripStatementsFence(version.content) && <MarkdownProse>{stripStatementsFence(version.content)}</MarkdownProse>}
+      {body && <MarkdownProse>{body}</MarkdownProse>}
       {version.statements.length > 0 && (
         <section aria-label="Requirement statements">
-          <h3 className="flex items-center gap-1.5 text-xs font-semibold uppercase tracking-[0.12em] text-muted">
+          <h3 className="flex items-center gap-1.5 text-xs font-medium text-muted">
             <ListChecks className="size-3.5" /> What this requires
           </h3>
           <ol className="mt-4 space-y-3">
@@ -1494,7 +1497,7 @@ function RequirementDocument({ version }: { version: RequirementVersion }) {
                   <a
                     href={`#${statement.id.toLowerCase()}`}
                     aria-label={`Link to ${statement.id}`}
-                    className="mt-0.5 flex size-6 shrink-0 items-center justify-center rounded-full bg-primary-soft font-mono text-[11px] font-semibold text-primary"
+                    className="mt-0.5 flex size-6 shrink-0 items-center justify-center rounded-full bg-raised text-xs tabular-nums font-semibold text-primary"
                     title={statement.id}
                   >
                     {index + 1}
@@ -1516,7 +1519,7 @@ function RequirementDocument({ version }: { version: RequirementVersion }) {
                         <a
                           href={`#${criterion.id.toLowerCase()}`}
                           aria-label={`Link to ${criterion.id}`}
-                          className="mt-0.5 flex size-5 shrink-0 items-center justify-center rounded-full border border-edge font-mono text-[9px] font-semibold text-muted hover:border-primary hover:text-primary"
+                          className="mt-0.5 flex size-5 shrink-0 items-center justify-center rounded-full border border-border tabular-nums text-[11px] font-semibold text-muted hover:border-primary hover:text-primary"
                           title={criterion.id}
                         >
                           {criterionIndex + 1}

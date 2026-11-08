@@ -382,10 +382,12 @@ async function expectHubBesidePanel(page: Page, id = 'req-alpha') {
 test('near zoom shows the requirement pill toolbar and far zoom hides it', async ({ page }) => {
   await mockBoard(page)
   await page.goto('/?view=map')
-  // The whole map opens below the near zoom: no toolbar.
+  // The map opens at the near zoom, with the toolbar; below it, no toolbar.
   await expect(hub(page)).toBeVisible()
   await waitForCamera(hub(page))
-  expect(await zoom(page)).toBeLessThan(0.62)
+  expect(await zoom(page)).toBeGreaterThanOrEqual(0.62)
+  await expect(toolbar(page)).toBeVisible()
+  while ((await zoom(page)) >= 0.62) await page.locator('.react-flow__controls-zoomout').click()
   await expect(page.getByRole('toolbar', { name: 'Requirement insights' })).toHaveCount(0)
 
   await zoomNear(page)
@@ -602,6 +604,7 @@ test('summary rerenders and refetches do not duplicate generation during one ope
   // Rerenders: row hovers and a map highlight chip.
   await panel(page).locator('[data-task-row="a1"]').first().hover()
   await page.mouse.move(2, 2)
+  await page.getByRole('button', { name: 'Status details' }).click()
   await page.getByRole('button', { name: '1 An agent is on it', exact: true }).click()
   // A focus refetch once the read is stale (five seconds) reads again.
   const reads = count('GET', 'summary')

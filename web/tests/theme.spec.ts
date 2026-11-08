@@ -41,7 +41,7 @@ test('theme choice is accessible, persists, and System follows preference change
       choice: 'dark',
       effective: 'dark',
       colorScheme: 'dark',
-      themeColor: '#0f1115',
+      themeColor: '#111317',
     })
 
   await page.reload()
@@ -52,7 +52,7 @@ test('theme choice is accessible, persists, and System follows preference change
       choice: 'dark',
       effective: 'dark',
       colorScheme: 'dark',
-      themeColor: '#0f1115',
+      themeColor: '#111317',
     })
 
   await page.getByLabel('Theme').selectOption('system')
@@ -63,7 +63,7 @@ test('theme choice is accessible, persists, and System follows preference change
       choice: 'system',
       effective: 'dark',
       colorScheme: 'dark',
-      themeColor: '#0f1115',
+      themeColor: '#111317',
     })
 
   await page.emulateMedia({ colorScheme: 'light' })
@@ -73,7 +73,7 @@ test('theme choice is accessible, persists, and System follows preference change
       choice: 'system',
       effective: 'light',
       colorScheme: 'light',
-      themeColor: '#ffffff',
+      themeColor: '#f1f2f4',
     })
 
   await page.getByLabel('Theme').selectOption('light')
@@ -84,7 +84,7 @@ test('theme choice is accessible, persists, and System follows preference change
       choice: 'light',
       effective: 'light',
       colorScheme: 'light',
-      themeColor: '#ffffff',
+      themeColor: '#f1f2f4',
     })
 })
 
@@ -107,7 +107,7 @@ test('bootstrap applies saved choice before the React entrypoint loads', async (
     .toEqual({
       effective: 'light',
       colorScheme: 'light',
-      themeColor: '#ffffff',
+      themeColor: '#f1f2f4',
       reactLoaded: false,
     })
 })

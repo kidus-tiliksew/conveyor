@@ -1,5 +1,5 @@
 import { Check, TriangleAlert } from 'lucide-react'
-import type { ReactNode } from 'react'
+import { type ReactNode, useState } from 'react'
 
 /**
  * One document carries exactly one attention surface.
@@ -27,7 +27,16 @@ export type AttentionItem = {
   countable?: boolean
 }
 
+const COLLAPSED_ITEMS = 2
+
 export function AttentionSurface({ items }: { items: AttentionItem[] }) {
+  // A long list would push the document itself off the page, so the panel shows
+  // the first items and opens the rest on request, or when a link points at one.
+  const [expanded, setExpanded] = useState(false)
+  const hash = typeof window === 'undefined' ? '' : window.location.hash.slice(1)
+  const linked = items.findIndex((item) => item.anchor === hash)
+  const collapsible = items.length > COLLAPSED_ITEMS + 1 && !(hash && linked >= COLLAPSED_ITEMS)
+  const shown = collapsible && !expanded ? items.slice(0, COLLAPSED_ITEMS) : items
   if (items.length === 0)
     return (
       <section
@@ -44,26 +53,28 @@ export function AttentionSurface({ items }: { items: AttentionItem[] }) {
   return (
     <section
       aria-label="Needs your attention"
-      className="overflow-hidden rounded-lg border border-attention/25 bg-card"
+      className="overflow-hidden rounded-lg border border-border bg-card shadow-xs"
     >
-      <h2 className="flex items-center gap-1.5 border-b border-attention/20 bg-attention-soft/50 px-4 py-2.5 text-[10px] font-semibold uppercase tracking-[0.12em] text-attention">
+      <h2 className="flex items-center gap-1.5 border-b border-border bg-attention-soft/60 px-4 py-2.5 text-xs font-medium text-attention">
         <TriangleAlert className="size-3" />
         {attentionCount > 0 ? 'Needs your attention' : 'Related attention context'}
         {attentionCount > 0 && (
-          <span className="ml-0.5 rounded-full bg-attention/15 px-1.5 py-0.5 font-mono text-[10px] leading-none text-attention">
+          <span className="ml-0.5 rounded-full bg-attention/15 px-1.5 py-0.5 text-xs leading-none text-attention">
             {attentionCount}
           </span>
         )}
       </h2>
       <ul className="divide-y divide-border">
-        {items.map((item) => (
+        {shown.map((item) => (
           <li
             key={item.id}
             id={item.anchor}
             className="flex scroll-mt-6 flex-wrap items-start justify-between gap-3 border-l-2 border-transparent px-4 py-3.5 transition-colors hover:border-l-attention hover:bg-attention-soft/20"
           >
-            <div className="min-w-0 flex-1 basis-64">
-              <p className="text-sm font-medium leading-5">{item.title}</p>
+            {/* A wide basis sends the actions under the text when both would not fit
+                on one line, rather than squeezing the title around them. */}
+            <div className="min-w-0 flex-[1_1_26rem]">
+              <p className="text-pretty text-sm font-medium leading-5">{item.title}</p>
               {item.detail && <div className="mt-1 text-xs leading-5 text-muted">{item.detail}</div>}
             </div>
             {item.action && <div className="flex min-w-0 max-w-full flex-wrap items-center gap-2">{item.action}</div>}
@@ -71,6 +82,16 @@ export function AttentionSurface({ items }: { items: AttentionItem[] }) {
           </li>
         ))}
       </ul>
+      {collapsible && (
+        <button
+          type="button"
+          aria-expanded={expanded}
+          onClick={() => setExpanded((value) => !value)}
+          className="w-full border-t border-border px-4 py-2 text-left text-xs font-medium text-muted transition-colors hover:bg-surface hover:text-foreground focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-primary"
+        >
+          {expanded ? 'Show fewer' : `Show ${items.length - COLLAPSED_ITEMS} more`}
+        </button>
+      )}
     </section>
   )
 }

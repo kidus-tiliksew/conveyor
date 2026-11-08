@@ -1,6 +1,7 @@
 import { type ReactNode, useEffect, useRef } from 'react'
 import { createPortal } from 'react-dom'
 import { cn } from '../../lib/utils'
+import { containTab } from './focus-trap'
 
 // Centered modal dialog: same dependency-free behavior contract as Sheet
 // (portal, Escape/overlay close, body scroll lock, focus capture/restore).
@@ -25,6 +26,7 @@ export function Dialog({
     panelRef.current?.focus()
     const onKeyDown = (event: KeyboardEvent) => {
       if (event.key === 'Escape') onCloseRef.current()
+      containTab(event, panelRef.current)
     }
     document.addEventListener('keydown', onKeyDown)
     const overflow = document.body.style.overflow
@@ -38,11 +40,7 @@ export function Dialog({
 
   return createPortal(
     <div className="fixed inset-0 z-40 grid place-items-center p-4">
-      <div
-        aria-hidden
-        className="absolute inset-0 animate-overlay-in bg-foreground/40"
-        onClick={() => onCloseRef.current()}
-      />
+      <div aria-hidden className="absolute inset-0 animate-overlay-in bg-scrim" onClick={() => onCloseRef.current()} />
       <div
         ref={panelRef}
         role="dialog"

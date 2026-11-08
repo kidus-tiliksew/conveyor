@@ -113,7 +113,7 @@ export function MCPSetupDialog({ onClose }: { onClose: () => void }) {
           </ol>
 
           <div className="mt-5 flex items-center justify-between gap-3">
-            <p className="text-xs font-semibold uppercase tracking-wide text-faint">{setup.snippetLabel}</p>
+            <p className="text-xs font-medium text-muted">{setup.snippetLabel}</p>
             <CopyButton value={setup.snippet} label={`Copy ${setup.label} setup`} showLabel />
           </div>
           <pre className="mt-2 max-h-56 overflow-auto rounded-lg bg-surface p-4 font-mono text-xs leading-5 text-foreground">

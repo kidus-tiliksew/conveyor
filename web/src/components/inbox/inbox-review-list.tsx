@@ -1,19 +1,19 @@
 import { Link } from '@tanstack/react-router'
 import type { InboxItem } from '../../lib/types'
-import { cn } from '../../lib/utils'
+import { cn, fullTime } from '../../lib/utils'
 import { useWorkspaceSelection } from '../app-shell'
 import { pullRequestLabel } from './decision-card'
 import { Kbd } from './inbox-keyboard'
 import { compactAge, DueChip, inboxKind, itemKind, KindIcon, toneBar, UnblocksMark, useMinuteClock } from './inbox-kind'
 import type { InboxSearch } from './inbox-search'
 import { inboxItemKey } from './inbox-selection'
-import { knownTier, originWord, proposalAge, tierLabels } from './proposal-card'
+import { knownTier, proposalAge, tierLabels } from './proposal-card'
 
 // The Inbox's decision list (req-operator-next-action AC-2.8; DEC-82). One
 // compact row per item, in the server's order (DEC-82(2)): the kind's icon in
-// its tone and the kind, the age, the title clamped to two lines, and a meta
-// line of urgency marks and the pull request or proposal version (NA-6). A row
-// carries no choice
+// its tone and the kind, a proposal's version, the age, the title clamped to two
+// lines, and a meta line of urgency marks and the pull request only when there
+// is one to show (NA-6). A row carries no choice
 // control (DEC-82(1)); it is a link that names the item in `selected`, so the
 // selection survives reload and browser history. The link covers the whole row
 // through a stretched overlay; a task's pull request link sits above it, outside
@@ -39,7 +39,7 @@ export function InboxReviewList({
           move
         </span>
       </div>
-      <ul aria-label="Decision list" className="space-y-1">
+      <ul aria-label="Decision list" className="space-y-0.5">
         {items.map((item) => {
           const key = inboxItemKey(item)
           return (
@@ -74,7 +74,7 @@ function InboxRow({
     <div
       data-inbox-row-item={rowKey}
       className={cn(
-        'relative min-w-0 overflow-hidden rounded-lg border px-3 py-2.5 transition-colors',
+        'relative min-w-0 overflow-hidden rounded-lg border px-3 py-2 transition-colors',
         selected ? 'border-edge bg-card shadow-sm' : 'border-transparent hover:bg-card/60',
       )}
     >
@@ -97,6 +97,7 @@ function InboxRow({
           <span data-row-kind className="min-w-0 truncate font-medium text-muted">
             {row.kind}
           </span>
+          {row.version && <span className="shrink-0 font-mono text-faint">{row.version}</span>}
           {row.age && (
             <time
               data-row-age
@@ -111,29 +112,32 @@ function InboxRow({
         <span
           data-row-title
           title={row.title}
-          className={cn('mt-1 line-clamp-2 break-words text-sm leading-5', selected ? 'font-semibold' : 'font-medium')}
+          className={cn(
+            'mt-0.5 line-clamp-2 break-words text-sm leading-5',
+            selected ? 'font-semibold' : 'font-medium',
+          )}
         >
           {row.title}
         </span>
       </Link>
-      <span className="mt-1.5 flex min-w-0 flex-wrap items-center gap-1.5 text-[11px]">
-        <UnblocksMark count={row.blocks} />
-        <DueChip deadline={row.deadline} />
-        {pullRequest ? (
-          <a
-            data-row-pull-request
-            href={pullRequest.url}
-            target="_blank"
-            rel="noreferrer"
-            title={pullRequestLabel(pullRequest)}
-            className="relative z-10 truncate font-mono text-primary hover:underline"
-          >
-            {row.meta}
-          </a>
-        ) : (
-          row.meta && <span className="truncate text-muted">{row.meta}</span>
-        )}
-      </span>
+      {(row.blocks > 0 || row.deadline || pullRequest) && (
+        <span className="mt-1 flex min-w-0 flex-wrap items-center gap-1.5 text-xs">
+          <UnblocksMark count={row.blocks} />
+          <DueChip deadline={row.deadline} />
+          {pullRequest && (
+            <a
+              data-row-pull-request
+              href={pullRequest.url}
+              target="_blank"
+              rel="noreferrer"
+              title={pullRequestLabel(pullRequest)}
+              className="relative z-10 truncate font-mono text-primary hover:underline"
+            >
+              {pullRequest.number != null ? `PR #${pullRequest.number}` : 'PR'}
+            </a>
+          )}
+        </span>
+      )}
     </div>
   )
 }
@@ -143,29 +147,26 @@ function describeRow(item: InboxItem, now: number) {
   if (item.kind === 'document_proposal' && proposal) {
     const known = knownTier(proposal.tier)
     const kind = known ? `${tierLabels[proposal.tier]} proposal` : 'Document proposal'
-    const version = proposal.version == null ? '' : `v${proposal.version} · `
     const age = proposalAge(proposal)
     return {
       kind,
       title: proposal.title,
-      meta: `${version}${originWord(proposal)}`,
+      version: proposal.version == null ? '' : `v${proposal.version}`,
       blocks: 0,
       deadline: item.deadline,
       age: age ? { compact: compactAge(age.since, now), dateTime: age.dateTime, absolute: age.absolute } : null,
     }
   }
-  const pullRequest = item.pull_request
-  const meta = pullRequest ? (pullRequest.number != null ? `PR #${pullRequest.number}` : 'PR') : 'No PR yet'
   const compact = compactAge(item.last_event_at, now)
   return {
     kind: item.next_action?.label ?? 'Decision',
     title: item.task?.title ?? '',
-    meta,
+    version: '',
     blocks: item.next_action?.blocks?.length ?? 0,
     deadline: item.deadline ?? item.next_action?.deadline,
     age:
       item.last_event_at && compact
-        ? { compact, dateTime: item.last_event_at, absolute: new Date(item.last_event_at).toLocaleString() }
+        ? { compact, dateTime: item.last_event_at, absolute: fullTime(item.last_event_at) }
         : null,
   }
 }

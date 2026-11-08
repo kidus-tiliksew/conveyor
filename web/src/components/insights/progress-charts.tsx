@@ -155,19 +155,13 @@ export function BurnChart({ progress, mode }: { progress: RequirementInsightProg
               y2={y(tick)}
               stroke={tick === 0 ? 'var(--color-edge)' : 'var(--color-border)'}
             />
-            <text x={ml - 6} y={y(tick) + 3} textAnchor="end" className="fill-faint text-[9.5px]">
+            <text x={ml - 6} y={y(tick) + 3} textAnchor="end" className="fill-faint text-[11px]">
               {tick}
             </text>
           </g>
         ))}
         {labels.map((label) => (
-          <text
-            key={label.text}
-            x={x(label.at)}
-            y={H - 6}
-            textAnchor={label.anchor}
-            className="fill-faint text-[9.5px]"
-          >
+          <text key={label.text} x={x(label.at)} y={H - 6} textAnchor={label.anchor} className="fill-faint text-[11px]">
             {label.text}
           </text>
         ))}
@@ -190,7 +184,7 @@ export function BurnChart({ progress, mode }: { progress: RequirementInsightProg
           x={x(today) + (forecast ? 7 : -7)}
           y={y(last[series]) - 7}
           textAnchor={forecast ? 'start' : 'end'}
-          className="fill-foreground text-[10px] font-semibold"
+          className="fill-foreground text-[11px] font-semibold"
         >
           {last[series]} {series}
         </text>
@@ -211,7 +205,7 @@ export function BurnChart({ progress, mode }: { progress: RequirementInsightProg
       {hoverTime !== undefined && (
         <div
           role="presentation"
-          className="pointer-events-none absolute top-1 z-10 whitespace-nowrap rounded-md border border-edge bg-raised px-2 py-1 text-[10.5px] leading-snug text-muted shadow-md"
+          className="pointer-events-none absolute top-1 z-10 whitespace-nowrap rounded-md border border-edge bg-raised px-2 py-1 text-[11px] leading-snug text-muted shadow-md"
           style={
             hoverX > W / 2 ? { right: `${((W - hoverX + 8) / W) * 100}%` } : { left: `${((hoverX + 8) / W) * 100}%` }
           }
@@ -388,14 +382,14 @@ export function WeeklyBars({ progress }: { progress: RequirementInsightProgress 
                 fill="var(--color-positive)"
               />
             )}
-            <text x={cx} y={top - 4} textAnchor="middle" className="fill-muted text-[9.5px] tabular-nums">
+            <text x={cx} y={top - 4} textAnchor="middle" className="fill-muted text-[11px] tabular-nums">
               {week.delivered}
             </text>
-            <text x={cx} y={base + 12} textAnchor="middle" className="fill-faint text-[9.5px]">
+            <text x={cx} y={base + 12} textAnchor="middle" className="fill-faint text-[11px]">
               {formatDay(week.week_start)}
             </text>
             {week.in_progress && (
-              <text x={cx} y={base + 23} textAnchor="middle" className="fill-faint text-[8.5px] italic">
+              <text x={cx} y={base + 23} textAnchor="middle" className="fill-faint text-[11px] italic">
                 in progress
               </text>
             )}

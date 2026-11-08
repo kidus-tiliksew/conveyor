@@ -1186,7 +1186,7 @@ for (const tier of ['requirements', 'system-design'] as const) {
     ).toBeVisible()
     await expect(comparison).not.toContainText('Diff too large')
     await expect(navigator.getByRole('button', { name: /^Section / })).toHaveText(['Section 6'])
-    await expect(comparison.getByText('Show unchanged section · Section 1', { exact: true })).toBeVisible()
+    await expect(comparison.getByText('Show 5 unchanged sections', { exact: true })).toBeVisible()
     await page.screenshot({ path: testInfo.outputPath(`${tier}-long-section-revision.png`), fullPage: true })
 
     await page.unrouteAll({ behavior: 'wait' })

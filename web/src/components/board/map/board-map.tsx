@@ -10,10 +10,8 @@ import { Link, useNavigate, useSearch } from '@tanstack/react-router'
 import {
   Background,
   BackgroundVariant,
-  Controls,
   type Edge,
   MarkerType,
-  MiniMap,
   type Node,
   ReactFlow,
   ReactFlowProvider,
@@ -21,8 +19,8 @@ import {
   useStore,
   useUpdateNodeInternals,
 } from '@xyflow/react'
-import { BookText, ExternalLink, Eye, EyeOff, Focus, Maximize2, RotateCw, Search, Workflow, X } from 'lucide-react'
-import { type ReactNode, useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { BookText, ChevronDown, ExternalLink, Eye, EyeOff, Focus, RotateCw, Search, Workflow, X } from 'lucide-react'
+import { type ReactNode, useCallback, useEffect, useId, useMemo, useRef, useState } from 'react'
 import { fetchTaskMap } from '../../../lib/api'
 import { errorMessage } from '../../../lib/errors'
 import { sameWorkspacePlaceholder } from '../../../lib/query-keys'
@@ -31,6 +29,7 @@ import { cn, relativeTime } from '../../../lib/utils'
 import { useWorkspace, useWorkspaceSelection } from '../../app-shell'
 import { InsightPanel } from '../../insights/insight-panel'
 import { Button } from '../../ui/button'
+import { Select as FieldSelect } from '../../ui/input'
 import { Skeleton } from '../../ui/skeleton'
 import type { BoardSearch } from '../board-search'
 import { BoardToolbar } from '../board-toolbar'
@@ -42,6 +41,9 @@ import {
   type GraphStatus,
   type GraphTask,
   labelOf,
+  type StatusGroup,
+  statusGroupOf,
+  statusGroups,
   statusMeta,
   statusOrder,
   type TaskGraphModel,
@@ -49,7 +51,19 @@ import {
 } from './graph-model'
 import { type HubFlowNode, HubNode } from './hub-node'
 import { CARD_HEIGHT, CARD_WIDTH, HUB_HEIGHT, HUB_WIDTH, type LayoutEdge, layoutGraph } from './layout'
-import { type InsightEmphasis, LAYOUT_FAILURE, MapFailure, MapView } from './map-view'
+import {
+  type InsightEmphasis,
+  LAYOUT_FAILURE,
+  MapControls,
+  MapFailure,
+  MapMiniMap,
+  MapView,
+  mapCanvasClass,
+  mapCanvasStyle,
+  OPENING_ZOOM,
+  useMinimapShown,
+  WHOLE_OPENING_ZOOM,
+} from './map-view'
 import { DependencyMark, DOT_ZOOM, statusIcon, type TaskFlowNode, TaskNode } from './task-node'
 
 const nodeTypes = { task: TaskNode, hub: HubNode }
@@ -269,6 +283,10 @@ function BoardMapView() {
         id,
         type: 'task',
         position,
+        // React Flow's minimap reads a controlled node's own size, so a node
+        // that leaves it to measurement never draws there.
+        width: CARD_WIDTH,
+        height: CARD_HEIGHT,
         data: {
           task,
           unblocks: model.unblocks.get(id) ?? 0,
@@ -360,7 +378,7 @@ function BoardMapView() {
         ? scene.taskIds.filter((id) => !scene.external.has(id))
         : scope
           ? (cards.find((entry) => entry.id === scope)?.tasks.map((task) => task.id) ?? [])
-          : [...visible].filter((id) => !DONE.has(model.tasks.get(id)?.status ?? 'closed')),
+          : [...visible],
     [scene, scope, grouping, visible, cards, model],
   )
   // Counted by the stated label, each with its treatment (DEC-61).
@@ -376,6 +394,23 @@ function BoardMapView() {
       ([a, x], [b, y]) => statusOrder.indexOf(x.status) - statusOrder.indexOf(y.status) || a.localeCompare(b),
     )
   }, [counted, model])
+
+  // The legend's five states, each with the stated labels it gathers.
+  const groups = useMemo(() => {
+    const result = new Map<StatusGroup, { count: number; labels: Set<string> }>()
+    for (const id of counted) {
+      const task = model.tasks.get(id)
+      if (!task) continue
+      const group = statusGroupOf(task)
+      const entry = result.get(group) ?? { count: 0, labels: new Set<string>() }
+      entry.count++
+      entry.labels.add(labelOf(task))
+      result.set(group, entry)
+    }
+    return result
+  }, [counted, model])
+  const [legendOpen, setLegendOpen] = useState(false)
+  const legendId = useId()
 
   // The shared toolbar renders in every state, so the view switch stays
   // reachable while the map's read is loading or has failed. A failure with
@@ -423,7 +458,7 @@ function BoardMapView() {
   return (
     <div className="flex min-h-0 flex-1 flex-col">
       <BoardToolbar>
-        <fieldset aria-label="Arrange by" className="m-0 flex rounded-md border border-border p-0.5">
+        <fieldset aria-label="Arrange by" className="m-0 flex shrink-0 rounded-md border border-border p-0.5">
           {(
             [
               ['requirements', 'Requirements', BookText],
@@ -448,12 +483,12 @@ function BoardMapView() {
               )}
             >
               <Icon aria-hidden className="size-3.5" />
-              {label}
+              <span className="max-md:sr-only">{label}</span>
             </button>
           ))}
         </fieldset>
-        <div className="ml-auto flex flex-wrap items-center gap-2">
-          <label className="relative">
+        <div className="flex min-w-0 flex-wrap items-center gap-2 max-md:contents md:ml-auto">
+          <label className="relative min-w-0 max-md:min-w-24 max-md:flex-1">
             <Search
               aria-hidden
               className="pointer-events-none absolute left-2 top-1/2 size-3.5 -translate-y-1/2 text-faint"
@@ -467,7 +502,7 @@ function BoardMapView() {
               }}
               placeholder="Find a task"
               aria-label="Find a task"
-              className="h-8 w-48 rounded-md border border-border bg-background pl-7 pr-2 text-xs"
+              className="h-8 w-full min-w-0 rounded-md border border-border bg-background pl-7 pr-2 text-xs md:w-48"
             />
           </label>
           {grouping === 'dependencies' && (
@@ -492,67 +527,122 @@ function BoardMapView() {
           )}
           <Button size="sm" variant="ghost" onClick={() => setShowDone((value) => !value)} aria-pressed={showDone}>
             {showDone ? <Eye /> : <EyeOff />}
-            Finished
+            <span className="max-md:sr-only">Finished</span>
           </Button>
         </div>
       </BoardToolbar>
       <div className="relative flex min-h-0 flex-1">
         <section className="flex min-w-0 flex-1 flex-col">
-          <header className="flex shrink-0 flex-wrap items-center gap-x-4 gap-y-2 border-b border-border px-4 py-2.5">
-            <div className="min-w-0">
-              <h2 className="truncate text-sm font-semibold text-foreground">
-                {grouping === 'dependencies' ? 'All open work' : (card?.title ?? `All ${grouping}`)}
-              </h2>
-              {stats && (
-                <p className="text-xs text-muted">
-                  {stats.merged} of {stats.total} delivered
-                  {/* The map groups only by requirement, so the requirement page is
-                      the one document a group opens, in place. */}
-                  {scope && scope !== UNATTACHED && (
-                    <>
-                      {' · '}
-                      <Link
-                        to="/w/$workspaceId/requirements"
-                        params={{ workspaceId: workspace }}
-                        search={{ requirement: scope }}
-                        className="hover:text-foreground hover:underline"
+          <header className="shrink-0 border-b border-border px-4 py-2 lg:px-6">
+            <div className="flex min-h-8 items-center gap-x-3">
+              <div className="min-w-0 flex-1">
+                <h2 className="truncate text-sm font-semibold text-foreground">
+                  {grouping === 'dependencies' ? 'All open work' : (card?.title ?? `All ${grouping}`)}
+                </h2>
+                {stats && (
+                  <p className="truncate text-xs text-muted">
+                    {stats.merged} of {stats.total} delivered
+                    {/* The map groups only by requirement, so the requirement page is
+                        the one document a group opens, in place. */}
+                    {scope && scope !== UNATTACHED && (
+                      <>
+                        {' · '}
+                        <Link
+                          to="/w/$workspaceId/requirements"
+                          params={{ workspaceId: workspace }}
+                          search={{ requirement: scope }}
+                          className="hover:text-foreground hover:underline"
+                        >
+                          Open document
+                        </Link>
+                      </>
+                    )}
+                  </p>
+                )}
+              </div>
+              {counts.length > 0 && (
+                <div className="flex shrink-0 items-center gap-0.5 md:gap-1">
+                  {statusGroups.map((group) => {
+                    const entry = groups.get(group.id)
+                    if (!entry) return null
+                    const Icon = group.id === 'needs_you' ? statusIcon.needs_you : statusIcon[group.status]
+                    const labels = [...entry.labels]
+                    const all = labels.every((label) => highlight.has(label))
+                    return (
+                      <button
+                        key={group.id}
+                        type="button"
+                        aria-pressed={all}
+                        title={`Highlight ${group.label}`}
+                        onClick={() =>
+                          setHighlight((prev) => {
+                            const next = new Set(prev)
+                            for (const label of labels) {
+                              if (all) next.delete(label)
+                              else next.add(label)
+                            }
+                            return next
+                          })
+                        }
+                        className={cn(
+                          'inline-flex h-8 items-center gap-1 rounded-md px-1.5 text-xs md:gap-1.5 md:px-2',
+                          labels.some((label) => highlight.has(label))
+                            ? 'bg-raised text-foreground'
+                            : 'text-muted hover:bg-surface hover:text-foreground',
+                        )}
                       >
-                        Open document
-                      </Link>
-                    </>
-                  )}
-                </p>
+                        <Icon aria-hidden className={cn('size-3.5', statusMeta[group.status].tone)} />
+                        <span className="font-medium tabular-nums text-foreground">{entry.count}</span>
+                        <span className="max-md:sr-only">{group.label}</span>
+                      </button>
+                    )
+                  })}
+                  <Button
+                    size="icon"
+                    variant="ghost"
+                    aria-expanded={legendOpen}
+                    aria-controls={legendId}
+                    aria-label="Status details"
+                    title="Status details"
+                    className="size-8 text-muted"
+                    onClick={() => setLegendOpen((value) => !value)}
+                  >
+                    <ChevronDown className={cn('transition-transform', legendOpen && 'rotate-180')} />
+                  </Button>
+                </div>
               )}
             </div>
-            <div className="ml-auto flex flex-wrap items-center gap-1.5">
-              {counts.map(([label, { status, count }]) => {
-                const Icon = statusIcon[status]
-                const on = highlight.has(label)
-                return (
-                  <button
-                    key={label}
-                    type="button"
-                    aria-pressed={on}
-                    title={`Highlight ${label}`}
-                    onClick={() =>
-                      setHighlight((prev) => {
-                        const next = new Set(prev)
-                        if (next.has(label)) next.delete(label)
-                        else next.add(label)
-                        return next
-                      })
-                    }
-                    className={cn(
-                      'inline-flex items-center gap-1 rounded-md px-2 py-1 text-xs',
-                      on ? 'bg-raised text-foreground' : 'text-muted hover:bg-surface',
-                    )}
-                  >
-                    <Icon aria-hidden className={cn('size-3.5', statusMeta[status].tone)} />
-                    {count} {label}
-                  </button>
-                )
-              })}
-            </div>
+            {legendOpen && counts.length > 0 && (
+              <div id={legendId} className="mt-1.5 -ml-2 flex flex-wrap items-center gap-1">
+                {counts.map(([label, { status, count }]) => {
+                  const Icon = statusIcon[status]
+                  const on = highlight.has(label)
+                  return (
+                    <button
+                      key={label}
+                      type="button"
+                      aria-pressed={on}
+                      title={`Highlight ${label}`}
+                      onClick={() =>
+                        setHighlight((prev) => {
+                          const next = new Set(prev)
+                          if (next.has(label)) next.delete(label)
+                          else next.add(label)
+                          return next
+                        })
+                      }
+                      className={cn(
+                        'inline-flex items-center gap-1 rounded-md px-2 py-1 text-xs',
+                        on ? 'bg-raised text-foreground' : 'text-muted hover:bg-surface hover:text-foreground',
+                      )}
+                    >
+                      <Icon aria-hidden className={cn('size-3.5', statusMeta[status].tone)} />
+                      {count} {label}
+                    </button>
+                  )
+                })}
+              </div>
+            )}
           </header>
           <div className="relative min-h-0 flex-1">
             {refreshFailed && (
@@ -617,7 +707,6 @@ function BoardMapView() {
                 }}
                 onOpen={openTask}
                 onClear={() => setFocus(undefined)}
-                minFitZoom={scene.hub ? 0.45 : 0.08}
               />
             ) : (
               <p className="m-6 text-sm text-muted">No tasks match these filters.</p>
@@ -727,7 +816,6 @@ function Canvas({
   onSelect,
   onOpen,
   onClear,
-  minFitZoom = 0.08,
 }: {
   nodes: Node[]
   edges: Edge[]
@@ -737,11 +825,9 @@ function Canvas({
   onSelect: (id: string) => void
   onOpen: (id: string) => void
   onClear: () => void
-  // The least zoom a fresh layout is framed at, so a document's graph opens
-  // readable even when it does not fit.
-  minFitZoom?: number
 }) {
   const flow = useReactFlow()
+  const minimapShown = useMinimapShown()
   // Hover lights a task's own edges after a short pause, as on the map.
   const hoverTimer = useRef<ReturnType<typeof setTimeout>>(undefined)
   const dots = useStore((state) => state.transform[2] < DOT_ZOOM)
@@ -756,8 +842,31 @@ function Canvas({
   useEffect(() => {
     requestAnimationFrame(() => updateNodeInternals(ids))
   }, [dots])
-  // A focused task is centred at a readable zoom; otherwise a new layout is
-  // framed whole.
+  // A graph that fits at a readable zoom is framed whole. A larger one opens on
+  // its real chains, the tasks with a link, at the readable zoom; the rest is a
+  // pan or Whole map away.
+  function opening() {
+    const linked = new Set(edges.flatMap((edge) => [edge.source, edge.target]))
+    const all = rectOf(nodes)
+    const chains = rectOf(linked.size ? nodes.filter((node) => linked.has(node.id)) : nodes)
+    const pane = document.querySelector('.react-flow')?.getBoundingClientRect()
+    if (!all || !chains || !pane) return
+    const fit = (rect: { width: number; height: number }) =>
+      Math.min(1, Math.min(pane.width / rect.width, pane.height / rect.height) * 0.92)
+    if (fit(all) >= WHOLE_OPENING_ZOOM) return void flow.fitView({ duration: 400, padding: 0.08, maxZoom: 1 })
+    const zoom = Math.max(OPENING_ZOOM, fit(chains))
+    const fitsAcross = chains.width * zoom <= pane.width
+    void flow.setViewport(
+      {
+        x: fitsAcross ? (pane.width - chains.width * zoom) / 2 - chains.x * zoom : 16 - chains.x * zoom,
+        y: 16 - chains.y * zoom,
+        zoom,
+      },
+      { duration: 400 },
+    )
+  }
+  // A focused task is centred at a readable zoom; otherwise a new layout opens
+  // readable.
   function frame() {
     // React Flow defers a fitView until nodes exist, which would override a
     // later centring, so nothing is framed before the layout lands.
@@ -768,7 +877,7 @@ function Canvas({
         zoom: Math.max(flow.getZoom(), 0.85),
         duration: 400,
       })
-    } else void flow.fitView({ duration: 400, padding: 0.08, maxZoom: 1, minZoom: minFitZoom })
+    } else opening()
   }
   // biome-ignore lint/correctness/useExhaustiveDependencies: frame on a new layout only
   useEffect(() => {
@@ -805,39 +914,30 @@ function Canvas({
       zoomOnDoubleClick={false}
       onNodeDoubleClick={(_, node) => node.type === 'task' && onOpen(node.id)}
       onPaneClick={onClear}
-      style={
-        {
-          '--xy-background-color': 'var(--color-surface)',
-          '--xy-minimap-background-color': 'var(--color-card)',
-          '--xy-controls-button-background-color': 'var(--color-card)',
-          '--xy-controls-button-border-color': 'var(--color-border)',
-          '--xy-controls-button-color': 'var(--color-muted)',
-        } as React.CSSProperties
-      }
+      className={mapCanvasClass}
+      style={mapCanvasStyle}
     >
       <Background variant={BackgroundVariant.Dots} gap={22} size={1} color={palette.edge} />
-      <Controls showInteractive={false} position="bottom-left">
-        <button
-          type="button"
-          className="react-flow__controls-button"
-          title="Fit"
-          onClick={() => void flow.fitView({ duration: 400 })}
-        >
-          <Maximize2 className="!max-h-3 !max-w-3" />
-        </button>
-      </Controls>
-      <MiniMap
-        pannable
-        zoomable
-        position="bottom-right"
-        nodeBorderRadius={8}
-        nodeColor={(node) =>
-          node.type === 'task' ? minimapColor((node as TaskFlowNode).data.task.status, palette) : palette.foreground
-        }
-        maskColor="rgba(0, 0, 0, 0.35)"
-      />
+      <MapControls onWhole={() => void flow.fitView({ duration: 400, padding: 0.08 })} />
+      {minimapShown && (
+        <MapMiniMap
+          nodeColor={(node) =>
+            node.type === 'task' ? minimapColor((node as TaskFlowNode).data.task.status, palette) : palette.foreground
+          }
+        />
+      )}
     </ReactFlow>
   )
+}
+
+// The rectangle around these cards.
+function rectOf(nodes: Node[]) {
+  if (nodes.length === 0) return undefined
+  const left = Math.min(...nodes.map((node) => node.position.x))
+  const top = Math.min(...nodes.map((node) => node.position.y))
+  const right = Math.max(...nodes.map((node) => node.position.x + CARD_WIDTH))
+  const bottom = Math.max(...nodes.map((node) => node.position.y + CARD_HEIGHT))
+  return { x: left, y: top, width: right - left, height: bottom - top }
 }
 
 function Select({
@@ -852,14 +952,14 @@ function Select({
   children: ReactNode
 }) {
   return (
-    <select
+    <FieldSelect
       aria-label={label}
       value={value}
       onChange={(event) => onChange(event.target.value)}
-      className="h-8 max-w-52 rounded-md border border-border bg-background px-2 text-xs text-foreground"
+      className="w-40 min-w-0 max-md:w-auto max-md:min-w-36 max-md:flex-[1_1_38%]"
     >
       {children}
-    </select>
+    </FieldSelect>
   )
 }
 
@@ -875,7 +975,7 @@ function TaskRow({ task, model, onFocus }: { task: GraphTask; model: TaskGraphMo
       <Icon aria-hidden className={cn('mt-0.5 size-3.5 shrink-0', statusMeta[task.status].tone)} />
       <span className="min-w-0 flex-1">
         <span className="line-clamp-2 text-xs font-medium text-foreground">{task.title}</span>
-        <span className="font-mono text-[10.5px] text-faint">
+        <span className="font-mono text-[11px] text-faint">
           {task.id} · {labelOf(task)}
           {unblocks > 0 && ` · unblocks ${unblocks}`}
         </span>
@@ -887,7 +987,7 @@ function TaskRow({ task, model, onFocus }: { task: GraphTask; model: TaskGraphMo
 function Section({ title, children }: { title: string; children: ReactNode }) {
   return (
     <section className="border-b border-border px-4 py-3 last:border-b-0">
-      <h3 className="mb-1.5 text-[11px] font-semibold uppercase tracking-wide text-faint">{title}</h3>
+      <h3 className="mb-1.5 text-xs font-medium text-muted">{title}</h3>
       {children}
     </section>
   )

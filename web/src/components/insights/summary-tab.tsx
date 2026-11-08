@@ -92,12 +92,12 @@ export function SummaryTab({
               <Sparkles aria-hidden className="size-3.5 text-primary" />
               <span className="font-medium text-muted">Generated · informative</span>
               <span>·</span>
-              <span className="font-mono text-[10.5px]">{headline.model}</span>
+              <span className="font-mono text-[11px]">{headline.model}</span>
               <span>·</span>
               <time dateTime={headline.generated_at} title={absoluteTime(headline.generated_at)}>
                 {relativeTime(headline.generated_at)}
               </time>
-              {!headline.current && <Badge className="py-0 text-[10.5px]">Out of date</Badge>}
+              {!headline.current && <Badge className="py-0 text-[11px]">Out of date</Badge>}
             </div>
             <Button
               size="sm"
@@ -120,7 +120,7 @@ export function SummaryTab({
             </Button>
           </div>
           {/* Plain text: the headline is never rendered as markup. */}
-          <p className={cn('text-[13px] leading-relaxed text-markdown', !headline.current && 'text-muted')}>
+          <p className={cn('text-sm leading-relaxed text-markdown', !headline.current && 'text-muted')}>
             {headline.text}
           </p>
         </section>
@@ -177,7 +177,7 @@ export function SummaryTab({
                   className="block w-full rounded-md px-1.5 py-1 text-left text-xs text-muted hover:bg-raised hover:text-foreground focus-visible:bg-raised focus-visible:outline-none"
                 >
                   <span className="text-foreground">{task.title}</span>
-                  <span className="ml-1.5 font-mono text-[10.5px] text-faint">{task.next_action.label}</span>
+                  <span className="ml-1.5 font-mono text-[11px] text-faint">{task.next_action.label}</span>
                 </button>
               </li>
             ))}

@@ -99,7 +99,7 @@ test('monitor page renders health, deduplication, task links, and drift age', as
   await expect(page.getByText('Enabled', { exact: true })).toBeVisible()
   await expect(page.getByText('1', { exact: true }).first()).toBeVisible()
   await expect(page.getByText('1h', { exact: true })).toBeVisible()
-  await expect(page.getByText('direct_push', { exact: true })).toBeVisible()
+  await expect(page.locator('[data-drift-row]').getByText('Direct push', { exact: true })).toBeVisible()
   await expect(page.getByText('Detected 1h ago', { exact: true })).toBeVisible()
   await expect(page.getByText('2 duplicates', { exact: true })).toBeVisible()
   await expect(page.getByText('created', { exact: true })).toBeVisible()
@@ -200,7 +200,7 @@ test('monitor page renders a real timestamp for last_successful_observation', as
   // Wait for the response to be applied before judging the timestamp metric.
   await expect(page.getByText('rate limited')).toBeVisible()
 
-  // A real timestamp must render as its locale string (UTC), never "Never".
-  await expect(page.getByText('10/13/2026, 9:00:00 AM')).toBeVisible()
+  // A real timestamp must render in the app's date format (UTC), never "Never".
+  await expect(page.getByText('Oct 13, 2026, 9:00 AM')).toBeVisible()
   await expect(page.getByText('Never', { exact: true })).toHaveCount(0)
 })

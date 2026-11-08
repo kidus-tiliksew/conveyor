@@ -35,6 +35,7 @@ export function DriftResolutionForm({
   requirements = [],
   requirementsPending = false,
   onResolved,
+  compact = false,
 }: {
   drift: RepositoryDrift
   surface: DriftResolutionSurface
@@ -43,6 +44,8 @@ export function DriftResolutionForm({
   requirements?: RequirementSummary[]
   requirementsPending?: boolean
   onResolved?: () => Promise<unknown> | unknown
+  /** One line: the selects keep their accessible names and drop the visible labels. */
+  compact?: boolean
 }) {
   const queryClient = useQueryClient()
   const [outcome, setOutcome] = useState<MonitorDriftOutcome>('conflict_resolved')
@@ -61,15 +64,20 @@ export function DriftResolutionForm({
   const requirementSelectID = `resolution-requirement-${drift.id}`
   return (
     <form
-      className="flex flex-wrap items-end gap-2"
+      className={compact ? 'flex min-w-0 flex-wrap items-center gap-2' : 'flex flex-wrap items-end gap-2'}
       aria-label={`Resolve drift ${drift.id}`}
       onSubmit={(event) => {
         event.preventDefault()
         mutation.mutate()
       }}
     >
-      <label className="min-w-48 text-xs text-muted" htmlFor={outcomeSelectID}>
-        Resolution
+      <label
+        className={
+          compact ? 'flex min-w-52 flex-1 items-center gap-2 text-xs text-muted' : 'min-w-48 text-xs text-muted'
+        }
+        htmlFor={outcomeSelectID}
+      >
+        <span className={compact ? 'shrink-0' : undefined}>Resolution</span>
         <Select
           id={outcomeSelectID}
           aria-label={`Resolution outcome for ${drift.id}`}
@@ -85,7 +93,7 @@ export function DriftResolutionForm({
       </label>
       {showRequirementPicker && (
         <label className="min-w-56 flex-1 text-xs text-muted" htmlFor={requirementSelectID}>
-          Confirmed requirement
+          <span className={compact ? 'sr-only' : undefined}>Confirmed requirement</span>
           <Select
             id={requirementSelectID}
             aria-label={`Confirmed requirement for ${drift.id}`}
@@ -105,7 +113,12 @@ export function DriftResolutionForm({
           )}
         </label>
       )}
-      <Button type="submit" size="sm" disabled={mutation.isPending || (needsRequirement && !requirementID)}>
+      <Button
+        type="submit"
+        size={compact ? 'default' : 'sm'}
+        variant={compact ? 'secondary' : 'default'}
+        disabled={mutation.isPending || (needsRequirement && !requirementID)}
+      >
         {mutation.isPending ? 'Resolving…' : 'Resolve'}
       </Button>
       {mutation.error && (

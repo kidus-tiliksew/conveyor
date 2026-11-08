@@ -12,6 +12,7 @@ import {
 } from '../../lib/api'
 import { errorMessage } from '../../lib/errors'
 import type { MembershipGrant, WorkspaceRole } from '../../lib/types'
+import { fullTime } from '../../lib/utils'
 import { useWorkspaceCapability, useWorkspaceMembers, useWorkspaceRoles, useWorkspaceSelection } from '../app-shell'
 import { Badge } from '../ui/badge'
 import { Button } from '../ui/button'
@@ -20,7 +21,7 @@ import { CopyButton } from '../ui/copy-button'
 import { Input, Select } from '../ui/input'
 
 function formatTimestamp(value: string) {
-  return new Date(value).toLocaleString()
+  return fullTime(value)
 }
 
 function roleLabel(role: WorkspaceRole) {
@@ -243,7 +244,10 @@ export function MembersSection() {
           )}
           {members.isSuccess && members.data.length === 0 && <p className="text-sm text-faint">No members yet.</p>}
           {members.data?.map((member) => (
-            <div key={member.user_id} className="flex items-center justify-between rounded-md border border-border p-3">
+            <div
+              key={member.user_id}
+              className="flex items-center justify-between border-t border-border py-2.5 first:border-t-0"
+            >
               <div className="min-w-0">
                 <p className="truncate text-sm font-medium">{member.display_name || member.email || member.user_id}</p>
                 <p className="truncate text-xs text-muted" title={`Joined ${formatTimestamp(member.created_at)}`}>
@@ -296,7 +300,7 @@ export function MembersSection() {
             {pendingInvitations.map((invitation) => (
               <div
                 key={invitation.email}
-                className="flex items-center justify-between rounded-md border border-border p-3"
+                className="flex items-center justify-between border-t border-border py-2.5 first:border-t-0"
               >
                 <div className="min-w-0">
                   <p className="truncate text-sm font-medium">{invitation.email}</p>

@@ -1,12 +1,13 @@
 import { Link } from '@tanstack/react-router'
 import type { FactoryAct, InboxItem, Task } from '../../lib/types'
+import { fullTime } from '../../lib/utils'
 import { useWorkspaceSelection } from '../app-shell'
 import { ActsLog } from './acts-log'
 import { NextActionChoices } from './choice-button'
 import { KindIcon } from './inbox-kind'
 import { useNextAction } from './use-next-actions'
 
-// Work the factory carries on its own (AC-2.5), in one panel with the log of
+// Work on the factory's side of the line (AC-2.5), in one panel with the log of
 // what it did. An item the server marks `no_judgment_needed` offers its one
 // server choice; the rest only report.
 export function AutomaticBand({ items, acts }: { items: InboxItem[]; acts: FactoryAct[] }) {
@@ -19,6 +20,14 @@ export function AutomaticBand({ items, acts }: { items: InboxItem[]; acts: Facto
       )}
       <ActsLog acts={acts} bordered={items.length > 0} />
     </div>
+  )
+}
+
+// The server states retry times as raw timestamps inside its summary; the page
+// shows them in the app's date format.
+function readableSummary(summary: string) {
+  return summary.replace(/\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})/g, (stamp) =>
+    Number.isFinite(new Date(stamp).getTime()) ? fullTime(stamp) : stamp,
   )
 }
 
@@ -43,7 +52,7 @@ function AutomaticRow({ item, task }: { item: InboxItem; task: Task }) {
           </span>
         )}
       </div>
-      {item.next_action?.summary && <p className="text-xs text-muted">{item.next_action.summary}</p>}
+      {item.next_action?.summary && <p className="text-xs text-muted">{readableSummary(item.next_action.summary)}</p>}
       {item.no_judgment_needed && action && <NextActionChoices taskId={task.id} choices={action.choices} />}
     </li>
   )

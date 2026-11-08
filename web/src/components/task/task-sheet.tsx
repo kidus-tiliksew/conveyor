@@ -1,7 +1,7 @@
 import { useQueryClient } from '@tanstack/react-query'
 import { Link, useNavigate } from '@tanstack/react-router'
 import { ChevronDown, ChevronUp, Maximize2, X } from 'lucide-react'
-import { useEffect } from 'react'
+import { useEffect, useState } from 'react'
 import type { ActivityItem } from '../../lib/types'
 import {
   blueprintsQueryOptions,
@@ -16,11 +16,13 @@ import { Button } from '../ui/button'
 import { Sheet } from '../ui/sheet'
 import { Skeleton } from '../ui/skeleton'
 import { AttachmentsCard } from './attachments-card'
+import { NextActionCard } from './next-action-card'
 import { isReviewable } from './review-panel'
 import { SpecCard } from './spec-card'
-import { TaskActivityTabs } from './task-activity-tabs'
+import { TaskActivityTabs, useTaskActivityView } from './task-activity-tabs'
 import { TaskContextCard } from './task-context-card'
-import { TaskHeader } from './task-header'
+import { TaskAgentPrompt, TaskFacts, TaskIdentity } from './task-header'
+import { TaskLoadError } from './task-load-error'
 import { taskHasVerifyStage, useTaskDetail, useTaskOrder, useTaskVerification } from './use-task-detail'
 
 // The task detail sheet: the costed event timeline — which
@@ -30,7 +32,7 @@ import { taskHasVerifyStage, useTaskDetail, useTaskOrder, useTaskVerification } 
 export function TaskSheet({ taskId }: { taskId: string }) {
   const { workspace } = useWorkspaceSelection()
   const navigate = useNavigate()
-  const { data: item, isLoading, error } = useTaskDetail(taskId)
+  const { data: item, isLoading, error, refetch, isFetching } = useTaskDetail(taskId)
   useSheetPrefetch(taskId)
   // The summary family has zero garbage-collection time, so this observer is
   // what keeps the first summary page alive from the cold open until the
@@ -44,15 +46,28 @@ export function TaskSheet({ taskId }: { taskId: string }) {
     void navigate({ to: '/w/$workspaceId/', params: { workspaceId: workspace }, search: (prev) => prev })
   // A blueprint anchor has one home, and it is not this sheet.
   const redirecting = useCanonicalBlueprintRedirect(item?.task)
+  // The body opens with the title, so the header names the task only once that
+  // heading has scrolled away, as the full page's bar does.
+  const [heading, setHeading] = useState<HTMLHeadingElement | null>(null)
+  const [headingHidden, setHeadingHidden] = useState(false)
+  useEffect(() => {
+    if (!heading) {
+      setHeadingHidden(false)
+      return
+    }
+    const observer = new IntersectionObserver(([entry]) => setHeadingHidden(!entry.isIntersecting))
+    observer.observe(heading)
+    return () => observer.disconnect()
+  }, [heading])
 
   return (
     <Sheet onClose={close} label="Task detail">
       <header className="pointer-coarse:[&_button]:min-h-10 pointer-coarse:[&_button]:min-w-10 flex shrink-0 flex-wrap items-center gap-1 border-b border-border px-4 py-2.5">
         {/* The title takes whatever width the fixed-size controls leave and
-            truncates; the controls never shrink under their own content. */}
-        {/* A 10rem basis keeps the title readable: the controls wrap before
-            they squeeze it. */}
-        <span className="min-w-0 flex-1 basis-40 truncate text-sm font-medium text-muted">{item?.task.title}</span>
+            truncates, so every control, Close included, stays on this one row. */}
+        <span data-sheet-title className="min-w-0 flex-1 basis-0 truncate text-sm font-medium text-muted">
+          {headingHidden ? item?.task.title : <span className="sr-only">{item?.task.title}</span>}
+        </span>
         {/* The same corner affordance the full route carries (REQ-3): the
             panel opens over this one without dismissing it. */}
         <LineageExplorer type="task" id={taskId} />
@@ -60,7 +75,7 @@ export function TaskSheet({ taskId }: { taskId: string }) {
           // Below sm the note takes its own line under the controls so it
           // never squeezes the title out of the header.
           <span
-            className="max-w-56 text-right text-[10px] leading-4 text-faint max-sm:order-last max-sm:max-w-none max-sm:basis-full max-sm:text-left"
+            className="max-w-56 text-right text-[11px] leading-4 text-faint max-sm:order-last max-sm:max-w-none max-sm:basis-full max-sm:text-left"
             role="note"
           >
             {boardOrder.windowEdge}
@@ -90,8 +105,8 @@ export function TaskSheet({ taskId }: { taskId: string }) {
             <Skeleton className="h-64" />
           </div>
         )}
-        {error != null && <p className="text-sm text-failure">{String(error)}</p>}
-        {item && !redirecting && <SheetBody item={item} />}
+        {error != null && !item && <TaskLoadError error={error} retrying={isFetching} onRetry={() => void refetch()} />}
+        {item && !redirecting && <SheetBody item={item} headingRef={setHeading} />}
       </div>
     </Sheet>
   )
@@ -141,11 +156,20 @@ function SheetNavButton({ targetId, label, icon }: { targetId?: string; label: s
   )
 }
 
-function SheetBody({ item }: { item: ActivityItem }) {
+// What the task is, then what it needs from you, then the work's plan; reference
+// facts follow, so the next action is never below them.
+function SheetBody({
+  item,
+  headingRef,
+}: {
+  item: ActivityItem
+  headingRef: (heading: HTMLHeadingElement | null) => void
+}) {
+  const { view, select } = useTaskActivityView()
   return (
     <div className="space-y-4">
-      <TaskHeader item={item} variant="sheet" />
-      <TaskContextCard taskId={item.task.id} taskState={item.task.state} context={item.task.context} />
+      <TaskIdentity item={item} variant="sheet" headingRef={headingRef} />
+      <NextActionCard item={item} routeVariant="sheet" view={view} />
       {item.spec && (
         <SpecCard
           key={`${item.spec.task_id}-${item.spec.version}`}
@@ -155,6 +179,9 @@ function SheetBody({ item }: { item: ActivityItem }) {
           minimumSeatCount={item.summaries?.review_seat_policy?.minimum_seat_count}
         />
       )}
+      <TaskFacts item={item} variant="sheet" columns="one" className="mt-0" />
+      <TaskAgentPrompt item={item} />
+      <TaskContextCard taskId={item.task.id} taskState={item.task.state} context={item.task.context} />
       {/* While a gate is open the evidence belongs with the decision, and the
           gate card renders it there — showing it twice on one page does not. */}
       {!isReviewable(item) && (
@@ -163,7 +190,7 @@ function SheetBody({ item }: { item: ActivityItem }) {
       <AttachmentsCard attachments={item.attachments ?? []} />
       {/* Relationships are read in the explorer panel, not inline: the panel
           is the one rendering of this task's lineage. */}
-      <TaskActivityTabs item={item} routeVariant="sheet" />
+      <TaskActivityTabs item={item} routeVariant="sheet" view={view} onSelectView={select} />
     </div>
   )
 }

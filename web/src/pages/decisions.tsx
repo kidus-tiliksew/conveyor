@@ -1,8 +1,8 @@
 import { useQuery } from '@tanstack/react-query'
 import { Link, useNavigate, useParams, useSearch } from '@tanstack/react-router'
-import { ArrowRight, ChevronRight, Clock, Scale, Search } from 'lucide-react'
-import { type ReactNode, useMemo } from 'react'
-import { useWorkspaceSelection } from '../components/app-shell'
+import { ArrowRight, ChevronRight, Clock, Search } from 'lucide-react'
+import { Fragment, type ReactNode, useMemo } from 'react'
+import { useWorkspaceMembers, useWorkspaceSelection } from '../components/app-shell'
 import {
   alternativeRows,
   citationsByDecision,
@@ -23,13 +23,16 @@ import { DecisionSweep } from '../components/decisions/decision-sweep'
 import { LineageExplorer } from '../components/lineage/lineage-explorer'
 import { Badge } from '../components/ui/badge'
 import { CopyButton } from '../components/ui/copy-button'
+import { ErrorState } from '../components/ui/error-state'
 import { Input } from '../components/ui/input'
+import { PageHeader } from '../components/ui/page-header'
+import { SegmentedControl } from '../components/ui/segmented-control'
 import { Skeleton } from '../components/ui/skeleton'
 import { fetchDecisionCitations, fetchDecisions } from '../lib/api'
 import { errorMessage } from '../lib/errors'
 import { decisionCitationsQueryKey, decisionsQueryKey } from '../lib/query-keys'
 import type { Decision, DecisionCitation } from '../lib/types'
-import { cn } from '../lib/utils'
+import { actorName } from '../lib/utils'
 
 // The two workspace reads behind the Decisions surface and every decision
 // page: the decision list and the decision citations, one query each, keyed by
@@ -103,17 +106,10 @@ export function DecisionsPage() {
 
   return (
     <div className="flex h-full min-h-0 flex-col">
-      <header className="flex shrink-0 items-center gap-3 border-b border-border px-4 py-3 lg:px-6 lg:py-4">
-        <span className="flex size-8 items-center justify-center rounded-lg bg-primary-soft text-primary">
-          <Scale className="size-4" />
-        </span>
-        <div className="min-w-0">
-          <h1 className="text-lg font-semibold tracking-tight">Decisions</h1>
-          <p className="mt-0.5 text-xs text-muted">
-            The choices that govern how this system works, and the ones that replaced them.
-          </p>
-        </div>
-      </header>
+      <PageHeader
+        title="Decisions"
+        description="The choices that govern how this system works, and the ones that replaced them."
+      />
       <main className="min-h-0 flex-1 overflow-y-auto">
         <div className="mx-auto max-w-4xl px-4 py-6 sm:px-6 lg:px-8">
           {openFlags > 0 && (
@@ -160,37 +156,18 @@ export function DecisionsPage() {
             </p>
           )}
           <div className="flex flex-wrap items-center gap-3">
-            <fieldset
-              aria-label="Filter decisions"
-              className="m-0 inline-flex rounded-lg border border-border bg-surface p-0.5"
-            >
-              {decisionFilters.map((option) => {
-                const count = all.filter((decision) => inFilter(decision, option.value)).length
-                return (
-                  <button
-                    key={option.value}
-                    type="button"
-                    aria-pressed={filter === option.value}
-                    onClick={() =>
-                      setSearch({
-                        ...search,
-                        filter: option.value === 'in_force' ? undefined : option.value,
-                        flagged: undefined,
-                      })
-                    }
-                    className={cn(
-                      'inline-flex items-center gap-1.5 rounded-md px-2.5 py-1 text-xs font-medium transition-colors',
-                      filter === option.value
-                        ? 'bg-background text-foreground shadow-sm'
-                        : 'text-muted hover:text-foreground',
-                    )}
-                  >
-                    {option.label}
-                    <span className="font-mono text-[11px] text-faint">{count}</span>
-                  </button>
-                )
-              })}
-            </fieldset>
+            <SegmentedControl
+              label="Filter decisions"
+              options={decisionFilters.map((option) => ({
+                value: option.value,
+                label: option.label,
+                count: decisions.data ? all.filter((decision) => inFilter(decision, option.value)).length : undefined,
+              }))}
+              value={filter}
+              onChange={(next) =>
+                setSearch({ ...search, filter: next === 'in_force' ? undefined : next, flagged: undefined })
+              }
+            />
             <div className="relative min-w-48 flex-1">
               <Search className="pointer-events-none absolute left-2.5 top-1/2 size-4 -translate-y-1/2 text-faint" />
               <Input
@@ -212,9 +189,12 @@ export function DecisionsPage() {
                 <Skeleton className="h-16" />
               </div>
             ) : decisions.error ? (
-              <p role="alert" className="rounded-md bg-failure-soft px-3 py-2 text-sm text-failure">
-                {errorMessage(decisions.error, 'Could not load decisions.')}
-              </p>
+              <ErrorState
+                title="Could not load decisions"
+                error={decisions.error}
+                retrying={decisions.isFetching}
+                onRetry={() => void decisions.refetch()}
+              />
             ) : rows.length === 0 ? (
               <p className="rounded-lg border border-dashed border-border px-4 py-8 text-center text-sm text-muted">
                 {all.length === 0 ? 'No decisions are recorded in this workspace.' : 'No decisions match.'}
@@ -254,11 +234,13 @@ function DecisionRow({ decision, citingCount }: { decision: Decision; citingCoun
         className="block px-4 py-3 transition-colors hover:bg-surface/60"
       >
         <div className="flex items-start gap-3">
-          <Badge variant="mono" className="mt-0.5 shrink-0">
+          <Badge variant="mono" className="mt-0.5 min-w-14 shrink-0 justify-center font-mono text-[11px]">
             {decision.id}
           </Badge>
           <div className="min-w-0 flex-1">
-            <p className="line-clamp-2 text-sm text-foreground">{clauses ? `(1) ${clauses[0]}` : decision.statement}</p>
+            <p className="line-clamp-3 text-sm text-foreground sm:line-clamp-2">
+              {clauses ? `(1) ${clauses[0]}` : decision.statement}
+            </p>
             <p className="mt-1 flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-muted">
               {decision.status !== 'confirmed' && (
                 <Badge variant={statusVariants[decision.status]}>{statusLabels[decision.status]}</Badge>
@@ -298,20 +280,10 @@ export function DecisionPage() {
     [decisions.data],
   )
   const decision = decisions.data ? findDecision(decisions.data, decisionId) : undefined
-  const breadcrumb = (
-    <nav aria-label="Breadcrumb" className="flex items-center gap-1.5 text-xs text-muted">
-      <Link to="/w/$workspaceId/decisions" params={{ workspaceId: workspace }} className="hover:text-foreground">
-        Decisions
-      </Link>
-      <ChevronRight className="size-3" aria-hidden="true" />
-      <span className="font-mono text-foreground">{decision?.id ?? decisionId}</span>
-    </nav>
-  )
   if (decisions.isLoading)
     return (
-      <DecisionFrame>
-        {breadcrumb}
-        <div className="mt-6 space-y-3" role="status" aria-label="Loading decision">
+      <DecisionFrame decisionId={decisionId}>
+        <div className="space-y-3" role="status" aria-label="Loading decision">
           <Skeleton className="h-10" />
           <Skeleton className="h-32" />
         </div>
@@ -319,18 +291,16 @@ export function DecisionPage() {
     )
   if (decisions.error)
     return (
-      <DecisionFrame>
-        {breadcrumb}
-        <p role="alert" className="mt-6 rounded-md bg-failure-soft px-3 py-2 text-sm text-failure">
+      <DecisionFrame decisionId={decisionId}>
+        <p role="alert" className="rounded-md bg-failure-soft px-3 py-2 text-sm text-failure">
           {errorMessage(decisions.error, 'Could not load this decision.')}
         </p>
       </DecisionFrame>
     )
   if (!decision)
     return (
-      <DecisionFrame>
-        {breadcrumb}
-        <section aria-label="Decision not found" className="mt-10 text-center">
+      <DecisionFrame decisionId={decisionId}>
+        <section aria-label="Decision not found" className="mt-4 text-center">
           <h1 className="text-lg font-semibold tracking-tight">No such decision</h1>
           <p className="mt-2 text-sm text-muted">
             This workspace has no decision <span className="font-mono">{decisionId}</span>.
@@ -346,10 +316,22 @@ export function DecisionPage() {
       </DecisionFrame>
     )
   return (
-    <DecisionFrame>
-      {breadcrumb}
+    <DecisionFrame
+      decisionId={decision.id}
+      actions={
+        // Keyed by the decision, so no copy state outlives it.
+        <Fragment key={decision.id}>
+          <CopyButton
+            value={`${window.location.origin}/w/${encodeURIComponent(workspace)}/decisions/${encodeURIComponent(decision.id)}`}
+            label="Copy link"
+            showLabel
+          />
+          <LineageExplorer type="decision" id={decision.id} />
+        </Fragment>
+      }
+    >
       <DecisionRecord
-        // Keyed by the decision, so no copy or mutation state outlives it.
+        // Keyed by the decision, so no mutation state outlives it.
         key={decision.id}
         decision={decision}
         byId={byId}
@@ -360,11 +342,38 @@ export function DecisionPage() {
   )
 }
 
-function DecisionFrame({ children }: { children: ReactNode }) {
+// The same bar as the task page's, so opening a decision keeps the page's top
+// edge in every state: loading, failed, not found and found.
+function DecisionFrame({
+  decisionId,
+  actions,
+  children,
+}: {
+  decisionId: string
+  actions?: ReactNode
+  children: ReactNode
+}) {
+  const { workspace } = useWorkspaceSelection()
   return (
-    <main className="h-full min-h-0 overflow-y-auto">
-      <article className="mx-auto max-w-3xl px-4 py-6 sm:px-6 lg:px-8 lg:py-8">{children}</article>
-    </main>
+    <div className="flex h-full min-h-0 flex-col">
+      <header className="pointer-coarse:[&_button]:min-h-10 flex min-h-[52px] shrink-0 flex-wrap items-center gap-x-3 gap-y-1 border-b border-border px-4 py-2.5 lg:px-6">
+        <nav aria-label="Breadcrumb" className="flex min-w-0 flex-1 items-center gap-1.5 text-sm text-muted">
+          <Link to="/w/$workspaceId/decisions" params={{ workspaceId: workspace }} className="hover:text-foreground">
+            Decisions
+          </Link>
+          <span aria-hidden className="text-edge">
+            /
+          </span>
+          <span className="min-w-0 truncate font-mono text-xs text-foreground" aria-current="page">
+            {decisionId}
+          </span>
+        </nav>
+        {actions && <div className="flex shrink-0 items-center gap-1">{actions}</div>}
+      </header>
+      <main className="min-h-0 flex-1 overflow-y-auto">
+        <article className="mx-auto max-w-3xl px-4 py-6 sm:px-6 lg:px-8">{children}</article>
+      </main>
+    </div>
   )
 }
 
@@ -379,6 +388,7 @@ function DecisionRecord({
   citations?: DecisionCitation[]
   citationsError: Error | null
 }) {
+  const { data: members = [] } = useWorkspaceMembers()
   const { workspace } = useWorkspaceSelection()
   const clauses = statementClauses(decision.statement)
   const chain = supersessionChain(decision, byId)
@@ -388,18 +398,10 @@ function DecisionRecord({
   const dismissedAt = recordedTime(decision.dismissed_at)
   return (
     <>
-      <header className="mt-4 border-b border-border pb-5">
+      <header className="border-b border-border pb-5">
         <div className="flex flex-wrap items-center gap-2">
-          <h1 className="font-mono text-2xl font-semibold tracking-tight">{decision.id}</h1>
+          <h1 className="font-mono text-xl font-semibold tracking-tight">{decision.id}</h1>
           <Badge variant={statusVariants[decision.status]}>{statusLabels[decision.status]}</Badge>
-          <span className="ml-auto flex items-center gap-1">
-            <CopyButton
-              value={`${window.location.origin}/w/${encodeURIComponent(workspace)}/decisions/${encodeURIComponent(decision.id)}`}
-              label="Copy link"
-              showLabel
-            />
-            <LineageExplorer type="decision" id={decision.id} />
-          </span>
         </div>
         <p className="mt-2 flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-muted">
           {decision.status === 'dismissed' ? (
@@ -411,7 +413,7 @@ function DecisionRecord({
             <span>Proposed on {formatDecisionDate(decision.created_at)}</span>
           ) : (
             <span>
-              Confirmed{decision.confirmed_by ? ` by ${decision.confirmed_by}` : ''}
+              Confirmed{decision.confirmed_by ? ` by ${actorName(decision.confirmed_by, members)}` : ''}
               {confirmedAt ? ` on ${formatDecisionDate(confirmedAt)}` : ''}
             </span>
           )}
@@ -465,19 +467,19 @@ function DecisionRecord({
         {clauses ? (
           <ol className="divide-y divide-border rounded-lg border border-border">
             {clauses.map((clause, index) => (
-              <li key={`${index}:${clause}`} className="flex gap-3 px-4 py-3 text-[15px] leading-7">
+              <li key={`${index}:${clause}`} className="flex gap-3 px-4 py-3 text-base leading-7">
                 <span className="shrink-0 font-mono text-sm font-semibold text-muted">({index + 1})</span>
                 <span>{clause}</span>
               </li>
             ))}
           </ol>
         ) : (
-          <p className="text-[15px] leading-7">{decision.statement}</p>
+          <p className="text-base leading-7">{decision.statement}</p>
         )}
       </section>
       {chain.length > 1 && (
         <section aria-label="Version chain" className="mt-8">
-          <h2 className="text-xs font-semibold uppercase tracking-[0.12em] text-muted">Version chain</h2>
+          <h2 className="text-xs font-medium text-muted">Version chain</h2>
           <ol className="mt-2 flex flex-wrap items-center gap-1.5">
             {chain.map((item, index) => (
               <li key={item.id} className="flex items-center gap-1.5">
@@ -485,7 +487,7 @@ function DecisionRecord({
                 {item.id === decision.id ? (
                   <span
                     aria-current="page"
-                    className="rounded-full bg-primary px-2.5 py-0.5 font-mono text-xs font-semibold text-primary-foreground"
+                    className="rounded-full bg-primary-fill px-2.5 py-0.5 font-mono text-xs font-medium text-primary-foreground"
                   >
                     {item.id}
                   </span>
@@ -504,11 +506,11 @@ function DecisionRecord({
         </section>
       )}
       <section aria-label="Why" className="mt-8">
-        <h2 className="text-xs font-semibold uppercase tracking-[0.12em] text-muted">Why</h2>
+        <h2 className="text-xs font-medium text-muted">Why</h2>
         <p className="mt-2 whitespace-pre-wrap text-sm leading-6">{decision.context || 'No context was recorded.'}</p>
       </section>
       <section aria-label="Alternatives rejected" className="mt-8">
-        <h2 className="text-xs font-semibold uppercase tracking-[0.12em] text-muted">Alternatives rejected</h2>
+        <h2 className="text-xs font-medium text-muted">Alternatives rejected</h2>
         {alternatives.length > 0 ? (
           <ul className="mt-2 divide-y divide-border rounded-lg border border-border">
             {alternatives.map((alternative, index) => (
@@ -574,7 +576,7 @@ function CitedBy({ citations, error }: { citations?: DecisionCitation[]; error: 
   )
   return (
     <section aria-label="Cited by" className="mt-8">
-      <h2 className="text-xs font-semibold uppercase tracking-[0.12em] text-muted">Cited by</h2>
+      <h2 className="text-xs font-medium text-muted">Cited by</h2>
       {error ? (
         <p className="mt-2 text-sm text-failure">{errorMessage(error, 'Could not load the citing documents.')}</p>
       ) : !citations ? (

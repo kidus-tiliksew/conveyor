@@ -1,6 +1,6 @@
 import { useQueryClient } from '@tanstack/react-query'
 import { useNavigate } from '@tanstack/react-router'
-import { CheckCircle2, KeyRound, Link2, LoaderCircle } from 'lucide-react'
+import { CheckCircle2, LoaderCircle } from 'lucide-react'
 import { useEffect, useRef, useState } from 'react'
 import { Button } from '../components/ui/button'
 import { Input } from '../components/ui/input'
@@ -64,18 +64,18 @@ export function SignInPage() {
 
   return (
     <main className="grid min-h-screen place-items-center bg-background px-6 py-12">
-      <section className="w-full max-w-md rounded-xl border border-border bg-card p-8 shadow-sm">
+      <section className="w-full max-w-sm rounded-xl border border-border bg-card p-7 shadow-sm">
         <div className="text-center">
-          <div className="mx-auto mb-5 grid size-12 place-items-center rounded-xl bg-primary-soft text-primary">
+          <div className="mx-auto mb-4 grid size-10 place-items-center text-primary">
             {state === 'checking' ? (
               <LoaderCircle className="size-6 animate-spin" aria-hidden="true" />
             ) : state === 'success' ? (
               <CheckCircle2 className="size-6" aria-hidden="true" />
             ) : (
-              <Link2 className="size-6" aria-hidden="true" />
+              <img src="/favicon.svg" alt="" className="size-10" />
             )}
           </div>
-          <h1 className="text-xl font-semibold tracking-tight">
+          <h1 className="text-lg font-semibold tracking-tight">
             {state === 'checking'
               ? 'Signing you in…'
               : state === 'success'
@@ -84,7 +84,7 @@ export function SignInPage() {
                   ? 'This link no longer works'
                   : 'Sign in to Conveyor'}
           </h1>
-          <p className="mt-3 text-sm leading-6 text-muted" role={state === 'invalid' && token ? 'alert' : undefined}>
+          <p className="mt-2 text-sm leading-5 text-muted" role={state === 'invalid' && token ? 'alert' : undefined}>
             {state === 'checking'
               ? 'This should only take a moment.'
               : state === 'success'
@@ -96,28 +96,32 @@ export function SignInPage() {
         </div>
         {state !== 'checking' && state !== 'success' && (
           <>
-            <div className="my-6 flex items-center gap-3 text-xs text-faint">
-              <span className="h-px flex-1 bg-border" />
-              Password sign-in
-              <span className="h-px flex-1 bg-border" />
-            </div>
-            <form className="space-y-3" aria-label="Password sign-in" onSubmit={submitPassword}>
-              <Input
-                type="email"
-                aria-label="Email address"
-                autoComplete="email"
-                value={email}
-                onChange={(event) => setEmail(event.target.value)}
-              />
-              <Input
-                type="password"
-                aria-label="Password"
-                autoComplete="current-password"
-                value={password}
-                onChange={(event) => setPassword(event.target.value)}
-              />
+            <form className="mt-6 space-y-3 text-left" aria-label="Password sign-in" onSubmit={submitPassword}>
+              <label htmlFor="sign-in-email" className="block text-xs font-medium text-muted">
+                Email
+                <Input
+                  id="sign-in-email"
+                  className="mt-1"
+                  type="email"
+                  aria-label="Email address"
+                  autoComplete="email"
+                  value={email}
+                  onChange={(event) => setEmail(event.target.value)}
+                />
+              </label>
+              <label htmlFor="sign-in-password" className="block text-xs font-medium text-muted">
+                Password
+                <Input
+                  id="sign-in-password"
+                  className="mt-1"
+                  type="password"
+                  aria-label="Password"
+                  autoComplete="current-password"
+                  value={password}
+                  onChange={(event) => setPassword(event.target.value)}
+                />
+              </label>
               <Button type="submit" className="w-full" disabled={passwordPending || !email.trim() || !password}>
-                <KeyRound aria-hidden="true" />
                 {passwordPending ? 'Signing in…' : 'Sign in'}
               </Button>
               {passwordError && (

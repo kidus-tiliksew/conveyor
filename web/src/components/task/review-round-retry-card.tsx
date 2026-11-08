@@ -4,8 +4,10 @@ import { useRef, useState } from 'react'
 import { retryReviewRound } from '../../lib/api'
 import { type MutationWorkspace, taskDetailQueryKey } from '../../lib/query-keys'
 import type { ActivityItem } from '../../lib/types'
+import { fullTime } from '../../lib/utils'
 import { useWorkspaceSelection } from '../app-shell'
 import { Button } from '../ui/button'
+import { readableError } from '../ui/error-state'
 import { Textarea } from '../ui/input'
 
 export function hasReviewRoundRetry(item: ActivityItem) {
@@ -37,7 +39,7 @@ export function ReviewRoundRetryCard({ item }: { item: ActivityItem }) {
           {recovery.timed_out_orders.map((order) => (
             <p key={order.id} className="mt-1 font-mono text-[11px]">
               Seat {order.review_seat ?? '?'} · {order.id} · timed out
-              {order.execution_deadline ? ` at ${new Date(order.execution_deadline).toLocaleString()}` : ''}
+              {order.execution_deadline ? ` at ${fullTime(order.execution_deadline)}` : ''}
               {order.last_failure_message ? ` · ${order.last_failure_message}` : ''}
             </p>
           ))}
@@ -70,7 +72,9 @@ export function ReviewRoundRetryCard({ item }: { item: ActivityItem }) {
           Review round {mutation.data.new_round} is queued with {mutation.data.work_orders.length} seats.
         </p>
       )}
-      {mutation.error != null && <p className="text-xs text-failure">{String(mutation.error)}</p>}
+      {mutation.error != null && (
+        <p className="text-xs text-failure">{readableError(mutation.error, 'Something went wrong. Try again.')}</p>
+      )}
     </section>
   )
 }

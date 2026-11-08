@@ -364,9 +364,7 @@ function ChecklistRow({
         </span>
         <div className="min-w-0 flex-1">
           <div className={cn('flex min-w-0 items-baseline gap-x-2', compact ? 'flex-nowrap' : 'flex-wrap gap-y-0.5')}>
-            <span className="shrink-0 text-[11px] font-medium uppercase tracking-[0.06em] text-muted">
-              {proposal.tier_label}
-            </span>
+            <span className="shrink-0 text-xs font-medium text-muted">{proposal.tier_label}</span>
             <ProposalTitle proposal={proposal} className={cn(faded, compact && 'truncate')} onPreview={onPreview} />
             {compact ? (
               <button
@@ -551,11 +549,12 @@ export function ContextProposalFooter({
   )
   const keyed = shortcut === CONTEXT_APPLY_SHORTCUT && apply.reason === '' && !sends.busy
   return (
-    <div data-context-footer className="min-w-0 space-y-1.5 text-[13px]">
+    <div data-context-footer className="min-w-0 space-y-1.5 text-sm">
       <div className="flex min-w-0 flex-wrap items-center gap-2">
-        <span className="inline-flex items-center gap-1.5">
+        <span className="inline-flex items-center gap-1.5 max-md:flex-1">
           <Button
             size="sm"
+            className="max-md:flex-1"
             data-context-apply
             data-shortcut={keyed ? 'c' : undefined}
             disabled={sends.busy || apply.reason !== ''}
@@ -568,6 +567,7 @@ export function ContextProposalFooter({
         <Button
           size="sm"
           variant="secondary"
+          className="max-md:flex-1"
           data-context-dismiss-all
           disabled={sends.busy || dismissAll.reason !== ''}
           onClick={() => void sends.run(dismissAll.choices)}
@@ -579,7 +579,7 @@ export function ContextProposalFooter({
         ['Apply', apply.reason],
         ['Dismiss all', dismissAll.reason],
       ]).map((reason) => (
-        <p key={reason} data-context-control-reason className="text-[11px] text-muted">
+        <p key={reason} data-context-control-reason className="text-xs text-muted">
           {reason}
         </p>
       ))}

@@ -166,7 +166,7 @@ function PreviewDocument({ proposal, onClose }: { proposal: NextActionContextPro
     <>
       <header className="shrink-0 space-y-2 border-b border-border px-4 pb-3 pt-3.5">
         <div className="flex min-w-0 flex-wrap items-center gap-2">
-          <span className="text-[11px] font-medium uppercase tracking-[0.06em] text-muted">{proposal.tier_label}</span>
+          <span className="text-xs font-medium text-muted">{proposal.tier_label}</span>
           {version && (
             <span data-preview-version className="text-xs text-faint">
               v{version.version}
@@ -225,7 +225,7 @@ function PreviewDocument({ proposal, onClose }: { proposal: NextActionContextPro
               aria-label="Outline"
               className="hidden w-48 shrink-0 overflow-y-auto border-r border-border px-2 py-3 sm:block"
             >
-              <p className="px-2 pb-1.5 text-[11px] font-medium uppercase tracking-[0.06em] text-faint">Outline</p>
+              <p className="px-2 pb-1.5 text-xs font-medium text-muted">Outline</p>
               {sections.map((section) => (
                 <button
                   key={section.id}
@@ -233,7 +233,7 @@ function PreviewDocument({ proposal, onClose }: { proposal: NextActionContextPro
                   data-outline-entry={section.id}
                   data-cited={cited.has(section.id) ? 'true' : 'false'}
                   className={cn(
-                    'block w-full truncate rounded px-2 py-1 text-left text-[12.5px] hover:bg-surface hover:text-foreground',
+                    'block w-full truncate rounded px-2 py-1 text-left text-sm hover:bg-surface hover:text-foreground',
                     section.statement && section.title.startsWith('AC-') && 'pl-5',
                     !dimming || cited.has(section.id) ? 'text-foreground' : 'text-faint',
                   )}

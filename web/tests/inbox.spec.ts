@@ -292,7 +292,7 @@ test('bands render in server order with the decision detail the server states', 
   // A row carries no choice control (DEC-82(1)); the first item is selected.
   await expect(decisionRows(page).getByRole('button')).toHaveCount(0)
   await expect(decisionRows(page).first()).toHaveAttribute('aria-current', 'true')
-  await expect(rowItems(page).nth(1)).toContainText('No PR yet')
+  await expect(rowItems(page).nth(1)).not.toContainText('No PR yet')
   // The row names the pull request by number; its tooltip carries the repository.
   await expect(rowItems(page).first().locator('[data-row-pull-request]')).toHaveText('PR #77')
   await expect(rowItems(page).first().locator('[data-row-pull-request]')).toHaveAttribute(
@@ -2117,9 +2117,7 @@ test('each kind takes its tone, and attention marks only what unblocks others or
   await expect(overdue).toHaveClass(/text-failure/)
 
   // Urgent counts the decisions due within three hours or overdue.
-  await expect(page.locator('[data-inbox-summary]')).toHaveText(
-    '3 calls need you · 2 urgent · 1 waiting on other tasks · 1 handled automatically',
-  )
+  await expect(page.locator('[data-inbox-summary]')).toHaveText('2 urgent')
 
   // The detail repeats the chip and its label pill takes the kind's tone.
   const alpha = await select(page, 'Alpha agent question')
@@ -2178,7 +2176,7 @@ test('with no decisions the header says nothing needs you and the band shows the
   await expect(empty).toContainText("You're clear")
   await expect(empty).toContainText('No decisions are waiting. Conveyor will put the next one here.')
   await expect(page.getByRole('region', { name: 'Blocked' })).toContainText('Waiting on other tasks')
-  await expect(page.getByRole('region', { name: 'Automatic' })).toContainText('Handled automatically')
+  await expect(page.getByRole('region', { name: 'Automatic' })).toContainText('Automatic work')
 })
 
 test('the inbox fits a 390px viewport without horizontal overflow', async ({ page }) => {
@@ -2382,7 +2380,8 @@ test('a verification disposition posts the server binding with the operator reas
   const card = decisionDetail(page)
   await expect(card.locator('[data-context-heading]')).toHaveText('Operation log')
   await card.getByRole('button', { name: 'Yes, it applied…' }).click()
-  const send = card.locator('[data-next-action-choices]').getByRole('button', { name: 'Yes, it applied…' }).last()
+  // The composer's own submit drops the trigger's trailing ellipsis.
+  const send = card.locator('[data-next-action-choices]').getByRole('button', { name: 'Yes, it applied', exact: true })
   await expect(send).toBeDisabled()
   await card.getByRole('textbox', { name: 'Reason' }).fill('New secret version printed; health check unreachable.')
   await send.click()
@@ -2619,7 +2618,7 @@ test('a version proposal shows its changes in place and a decision proposal show
   await expect(changes().locator('[data-comparison-base]')).toHaveText('Confirmed v2 compared with proposed v3.')
   const comparison = changes().getByRole('region', { name: 'Version comparison' })
   await expect(comparison).toContainText('Proposed rule text.')
-  await expect(comparison).toContainText('1 changed sections')
+  await expect(comparison).toContainText('1 changed section')
   await expect(decisionDetail(page).getByRole('link', { name: 'View changes →' })).toHaveAttribute(
     'href',
     /tab=changes/,
@@ -3169,6 +3168,13 @@ test('a merge decision names the recorded pull request, keeps the issue apart, a
 
   const row = card.locator('[data-decision-footer] [data-next-action-choices] > div').first()
   await expect(row.getByRole('button')).toHaveText(['Merge', 'Approve only', 'Request changes…'])
-  await expect(row.locator('button.bg-primary')).toHaveCount(1)
+  await expect(row.locator('button.bg-primary-fill')).toHaveCount(1)
   await expect(row.getByRole('button', { name: 'Merge' })).toHaveClass(/bg-primary/)
+})
+
+test('c never merges past failed checks or starts a destructive choice', async () => {
+  const { shortcutChoiceId } = await import('../src/components/inbox/inbox-keyboard')
+  const choice = (id: string) => ({ id, allowed: true }) as never
+  expect(shortcutChoiceId({ kind: 'check_hold', choices: [choice('merge')] } as never)).toBeNull()
+  expect(shortcutChoiceId({ kind: 'blocked', choices: [choice('close')] } as never)).toBeNull()
 })

@@ -23,6 +23,11 @@ export async function withQuerySignal<T>(
   return read(context.signal)
 }
 
+// A task the server says does not exist: asking again cannot change the answer.
+export function isTaskNotFound(error: unknown) {
+  return error instanceof Error && /\btask not found\b/i.test(error.message)
+}
+
 // Shared by the sheet and the full page: the task-detail query plus the SSE
 // stream that keeps it (and the board) fresh.
 export function useTaskDetail(taskId: string) {
@@ -30,6 +35,7 @@ export function useTaskDetail(taskId: string) {
   const query = useQuery({
     queryKey: taskDetailQueryKey(workspace, taskId),
     queryFn: (context) => withQuerySignal(context, (signal) => fetchTaskActivity(workspace, taskId, signal)),
+    retry: (failures, error) => !isTaskNotFound(error) && failures < 1,
     // No interval. A dependency can merge without emitting an event on this
     // task, so the workspace change stream also refreshes this entry when a
     // frame names one of its blocking tasks (component-web-dashboard,

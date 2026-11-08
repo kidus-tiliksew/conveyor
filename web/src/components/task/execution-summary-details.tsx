@@ -1,5 +1,5 @@
 import { Link } from '@tanstack/react-router'
-import { AlertTriangle, CircleDashed } from 'lucide-react'
+import { AlertTriangle, CircleDashed, Hourglass } from 'lucide-react'
 import { type CurrentExecutionState, dependencyRelationLabel } from '../../lib/activity'
 import { relatedTaskRoute, type TaskRouteVariant } from '../../lib/task-route'
 import { cn } from '../../lib/utils'
@@ -10,17 +10,24 @@ import { useWorkspaceSelection } from '../app-shell'
 // deriveCurrentExecutionState, and its `facts` flags decide which lines carry
 // information beyond the server's summary; nothing here compares sentences.
 
+const executionStatusWords: Record<CurrentExecutionState['status'], string> = {
+  progressing: 'Progressing',
+  waiting: 'Waiting',
+  paused: 'Paused — needs attention',
+}
+
 export function ExecutionStatusLine({ state }: { state: CurrentExecutionState }) {
-  const paused = state.status === 'paused'
   return (
-    <p className="flex items-center gap-1.5 text-xs font-semibold text-muted">
-      {paused ? (
+    <p className="flex items-center gap-1.5 text-xs font-medium text-muted">
+      {state.status === 'paused' ? (
         <AlertTriangle className="size-3.5 shrink-0 text-attention" aria-hidden />
+      ) : state.status === 'waiting' ? (
+        <Hourglass className="size-3.5 shrink-0 text-faint" aria-hidden />
       ) : (
         <CircleDashed className="size-3.5 shrink-0 animate-pulse text-primary" aria-hidden />
       )}
       <span data-execution-status={state.status}>
-        {state.stage} · {paused ? 'Paused — needs attention' : 'Progressing'}
+        {state.stage} · {executionStatusWords[state.status]}
       </span>
     </p>
   )
@@ -54,7 +61,7 @@ export function ExecutionFactRows({
   const relatedRoute = relatedTaskRoute(routeVariant)
   const blockerDecision = state.blocker.match(/\bDEC-[1-9][0-9]*\b/)?.[0]
   return (
-    <dl className="grid gap-2 text-xs leading-5 sm:grid-cols-3">
+    <dl className="space-y-2 text-xs leading-5">
       {facts.blocker && (
         <div>
           <dt className="font-medium text-foreground">Current blocker</dt>
@@ -84,8 +91,8 @@ export function ExecutionFactRows({
         </div>
       )}
       {facts.retry && (
-        <div>
-          <dt className="font-medium text-foreground">Retry</dt>
+        <div className="flex flex-wrap gap-x-1.5">
+          <dt className="font-medium text-foreground after:content-[':']">Retry</dt>
           <dd className="text-muted">{state.retry}</dd>
         </div>
       )}

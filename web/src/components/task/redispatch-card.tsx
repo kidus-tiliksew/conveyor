@@ -7,6 +7,7 @@ import { type MutationWorkspace, taskDetailQueryKey } from '../../lib/query-keys
 import type { ActivityItem } from '../../lib/types'
 import { useWorkspaceCapability, useWorkspaceSelection } from '../app-shell'
 import { Button } from '../ui/button'
+import { readableError } from '../ui/error-state'
 
 // Failed triage has no decided next stage, so /redispatch cannot recover it.
 // The existing operator redirect resolves the server's recorded recovery stage.
@@ -123,7 +124,9 @@ export function RedispatchCard({ item }: { item: ActivityItem }) {
         <RotateCcw />
         {mutation.isPending ? (parked ? 'Resuming…' : 'Dispatching…') : parked ? 'Resume task' : 'Redispatch'}
       </Button>
-      {mutation.error != null && <p className="text-xs text-failure">{String(mutation.error)}</p>}
+      {mutation.error != null && (
+        <p className="text-xs text-failure">{readableError(mutation.error, 'Something went wrong. Try again.')}</p>
+      )}
     </div>
   )
 }

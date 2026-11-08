@@ -1,6 +1,7 @@
-import { type ReactNode, useId, useMemo, useState } from 'react'
+import { type ReactNode, useId, useMemo, useRef, useState } from 'react'
 import { Button } from '../ui/button'
 import { MarkdownProse } from '../ui/markdown-prose'
+import { SegmentedControl } from '../ui/segmented-control'
 import {
   compareDocuments,
   type FormattedChange,
@@ -130,9 +131,13 @@ export function DocumentComparison({ before, after }: { before: ReviewSource; af
   const [active, setActive] = useState(0)
   const prefix = useId()
   const changed = comparison.rows.filter((row) => row.changed)
+  const sectionButtons = useRef<Array<HTMLButtonElement | null>>([])
   const go = (index: number) => {
     setActive(index)
-    document.getElementById(`${prefix}-${changed[index]?.id}`)?.focus()
+    sectionButtons.current[index]?.scrollIntoView({ block: 'nearest', inline: 'nearest' })
+    const section = document.getElementById(`${prefix}-${changed[index]?.id}`)
+    section?.focus({ preventScroll: true })
+    section?.scrollIntoView({ block: 'start' })
   }
   if (comparison.limited)
     return (
@@ -157,102 +162,141 @@ export function DocumentComparison({ before, after }: { before: ReviewSource; af
       </section>
     )
   return (
-    <section aria-label="Version comparison" className="mt-6 min-w-0">
+    <section aria-label="Version comparison" className="@container mt-6 min-w-0">
       <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
         <p className="text-sm text-muted">
-          {changed.length ? `${changed.length} changed sections` : 'No changes between these versions.'}
+          {changed.length
+            ? `${changed.length} changed ${changed.length === 1 ? 'section' : 'sections'}`
+            : 'No changes between these versions.'}
         </p>
-        <div className="flex gap-2">
-          <Button
-            variant={mode === 'inline' ? 'default' : 'secondary'}
-            aria-pressed={mode === 'inline'}
-            onClick={() => setMode('inline')}
-          >
-            Inline
-          </Button>
-          <Button
-            variant={mode === 'side' ? 'default' : 'secondary'}
-            aria-pressed={mode === 'side'}
-            onClick={() => setMode('side')}
-          >
-            Side by side
-          </Button>
-        </div>
-      </div>
-      <div className={changed.length ? 'grid min-w-0 gap-4 lg:grid-cols-[10rem_minmax(0,1fr)]' : 'min-w-0'}>
         {changed.length > 0 && (
-          <nav aria-label="Changed sections" className="min-w-0">
-            <p className="mb-2 text-[10px] font-semibold uppercase tracking-wider text-muted">Changed sections</p>
-            <div className="flex flex-wrap gap-1 lg:flex-col">
+          <SegmentedControl
+            label="Comparison view"
+            options={[
+              { value: 'inline', label: 'Inline' },
+              { value: 'side', label: 'Side by side' },
+            ]}
+            value={mode}
+            onChange={setMode}
+          />
+        )}
+      </div>
+      {/* The section list follows the reader. Beside the comparison when there is
+          room, otherwise a compact bar above it. A narrow layout stays a plain
+          block, because a sticky grid item can't leave its own grid row. */}
+      <div className={changed.length ? 'min-w-0 @2xl:grid @2xl:grid-cols-[10rem_minmax(0,1fr)] @2xl:gap-4' : 'min-w-0'}>
+        {changed.length > 0 && (
+          <nav
+            aria-label="Changed sections"
+            className="sticky top-[var(--review-sticky-offset,0px)] z-[5] mb-3 min-w-0 border-b border-border bg-background py-2 @2xl:top-[calc(var(--review-sticky-offset,0px)+1rem)] @2xl:mb-0 @2xl:flex @2xl:max-h-[calc(100dvh-var(--review-sticky-offset,0px)-7rem)] @2xl:flex-col @2xl:self-start @2xl:border-b-0 @2xl:bg-transparent @2xl:py-0"
+          >
+            <p className="mb-2 hidden text-xs font-medium text-muted @2xl:block">Changed sections</p>
+            <div className="flex gap-1 overflow-x-auto [scrollbar-width:none] @2xl:min-h-0 @2xl:flex-col @2xl:overflow-y-auto [&::-webkit-scrollbar]:hidden">
               {changed.map((row, index) => (
                 <button
                   type="button"
                   key={row.id}
+                  ref={(element) => {
+                    sectionButtons.current[index] = element
+                  }}
                   aria-current={active === index ? 'true' : undefined}
-                  className={`rounded-md p-2 text-left text-xs break-words ${active === index ? 'bg-primary-soft text-primary' : 'text-muted hover:bg-surface'}`}
+                  className={`max-w-56 shrink-0 truncate rounded-md px-2 py-1.5 text-left text-xs pointer-coarse:min-h-10 @2xl:max-w-none @2xl:whitespace-normal @2xl:break-words ${active === index ? 'bg-primary-soft text-primary' : 'text-muted hover:bg-surface hover:text-foreground'}`}
                   onClick={() => go(index)}
                 >
                   {row.title}
                 </button>
               ))}
             </div>
-            <div className="mt-4 flex flex-wrap gap-2">
-              <Button size="sm" variant="secondary" disabled={active === 0} onClick={() => go(active - 1)}>
+            <div className="mt-2 flex flex-wrap items-center gap-2 @2xl:mt-3">
+              <Button
+                size="sm"
+                variant="secondary"
+                className="pointer-coarse:h-10"
+                disabled={active === 0}
+                onClick={() => go(active - 1)}
+              >
                 Previous
               </Button>
               <Button
                 size="sm"
                 variant="secondary"
+                className="pointer-coarse:h-10"
                 disabled={active >= changed.length - 1}
                 onClick={() => go(active + 1)}
               >
                 Next
               </Button>
+              <p className="text-xs text-muted">
+                {active + 1} of {changed.length} changes
+              </p>
             </div>
-            <p className="mt-2 text-xs text-muted">
-              {active + 1} of {changed.length} changes
-            </p>
           </nav>
         )}
-        <div className="min-w-0 space-y-4">
+        <div className="min-w-0 space-y-2">
           {changed.length > 0 && (
             <p className="text-xs text-muted">
-              Where detailed paragraph highlighting is available:{' '}
-              <del className="bg-failure-soft text-failure">Removed text</del>{' '}
-              <ins className="bg-positive-soft text-positive">Added text</ins>. Blocks labeled unavailable show complete
-              content instead.
+              <del className="bg-failure-soft text-failure">Removed</del>{' '}
+              <ins className="bg-positive-soft text-positive">Added</ins>
             </p>
           )}
           {!comparison.rows.length && <p className="text-sm text-muted">Both versions are empty.</p>}
-          {comparison.rows.map((row) =>
-            row.changed ? (
+          {rowRuns(comparison.rows).map((run) =>
+            run[0].changed ? (
               <section
-                key={row.id}
-                id={`${prefix}-${row.id}`}
+                key={run[0].id}
+                id={`${prefix}-${run[0].id}`}
                 tabIndex={-1}
-                aria-label={row.title}
-                className="min-w-0 scroll-mt-[42vh] overflow-hidden rounded-lg border border-border focus:outline-2 focus:outline-primary"
+                aria-label={run[0].title}
+                className="min-w-0 scroll-mt-[calc(var(--review-sticky-offset,0px)+7rem)] overflow-hidden rounded-lg border border-border focus:outline-2 focus:outline-primary @2xl:scroll-mt-[calc(var(--review-sticky-offset,0px)+1rem)]"
               >
                 <h3 className="flex flex-wrap justify-between gap-2 border-b border-border bg-surface px-4 py-3 text-sm font-semibold">
-                  <span>{row.title}</span>
+                  <span>{run[0].title}</span>
                   <span className="text-xs font-normal text-muted">
-                    {!row.before ? 'Added' : !row.after ? 'Deleted' : row.moved ? 'Moved' : 'Modified'}
+                    {!run[0].before ? 'Added' : !run[0].after ? 'Deleted' : run[0].moved ? 'Moved' : 'Modified'}
                   </span>
                 </h3>
-                <ReviewRowContent row={row} mode={mode} />
+                <ReviewRowContent row={run[0]} mode={mode} />
               </section>
             ) : (
-              <details key={row.id} className="min-w-0 rounded-lg border border-dashed border-border p-4">
-                <summary className="cursor-pointer text-xs text-muted">Show unchanged section · {row.title}</summary>
-                <div className="mt-4 min-w-0 overflow-auto">
-                  <MarkdownProse>{row.after?.content ?? ''}</MarkdownProse>
-                </div>
-              </details>
+              <UnchangedRun key={run[0].id} rows={run} />
             ),
           )}
         </div>
       </div>
     </section>
+  )
+}
+
+// Neighbouring unchanged sections collapse into one row, so they never push the
+// changes off the first screen. A changed section stands alone.
+function rowRuns(rows: ReviewRow[]) {
+  const runs: ReviewRow[][] = []
+  for (const row of rows) {
+    const last = runs.at(-1)
+    if (last && !row.changed && !last[0].changed) last.push(row)
+    else runs.push([row])
+  }
+  return runs
+}
+
+function UnchangedRun({ rows }: { rows: ReviewRow[] }) {
+  return (
+    <details className="min-w-0 border-b border-border py-2">
+      <summary className="cursor-pointer text-xs text-muted hover:text-foreground">
+        {rows.length === 1 ? `Show unchanged section · ${rows[0].title}` : `Show ${rows.length} unchanged sections`}
+      </summary>
+      <div className="mt-4 min-w-0 space-y-5 overflow-auto">
+        {rows.map((row) => (
+          <div key={row.id} className="min-w-0">
+            {/* Headed Markdown names itself; a requirement statement does not. */}
+            {rows.length > 1 && !row.after?.content.trimStart().startsWith('#') && (
+              <p className="mb-1 text-xs font-medium text-muted">{row.title}</p>
+            )}
+            <MarkdownProse>{row.after?.content ?? ''}</MarkdownProse>
+          </div>
+        ))}
+      </div>
+    </details>
   )
 }
 
@@ -383,11 +427,7 @@ function ReviewParagraph({
 }
 
 function SideLabel({ side }: { side: ReviewSide }) {
-  return (
-    <p className="mb-3 text-[10px] font-semibold uppercase tracking-wider text-muted">
-      {side === 'before' ? 'Base' : 'Target'}
-    </p>
-  )
+  return <p className="mb-3 text-xs font-medium text-muted">{side === 'before' ? 'Base' : 'Target'}</p>
 }
 
 function AbsentSide() {

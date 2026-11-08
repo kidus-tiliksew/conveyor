@@ -1,10 +1,12 @@
 import { Link, useNavigate, useParams, useSearch } from '@tanstack/react-router'
 import { ChevronLeft, ChevronRight, Plus } from 'lucide-react'
-import { lazy, Suspense, useEffect, useMemo, useState } from 'react'
+import { lazy, type RefObject, Suspense, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { boardColumnFor } from '../../lib/activity'
 import { isBlueprintAnchor } from '../../lib/blueprint'
 import { type GroupKey, stageGroups } from '../../lib/contracts'
 import type { ActivitySummary } from '../../lib/types'
+import { useMediaQuery } from '../../lib/use-media-query'
+import { cn } from '../../lib/utils'
 import { useActivity, useWorkspaceCapability } from '../app-shell'
 import { MCPSetup } from '../mcp/mcp-setup-dialog'
 import { TaskCreateSheet } from '../task/task-create-sheet'
@@ -17,6 +19,8 @@ import {
   useTaskFilters,
 } from '../task/task-filters'
 import { Button } from '../ui/button'
+import { ErrorState, readableError } from '../ui/error-state'
+import { PageHeader } from '../ui/page-header'
 import { Skeleton } from '../ui/skeleton'
 import { EmptyRepositoryNotice } from '../workspace/empty-repository-notice'
 import { BoardColumn } from './board-column'
@@ -43,20 +47,17 @@ export function Board() {
   const map = search.view === 'map'
   return (
     <div className="flex h-full flex-col">
-      <header className="flex shrink-0 flex-wrap items-center gap-x-4 gap-y-2 border-b border-border px-4 py-3 lg:px-6 lg:py-3.5">
-        <h1 className="text-lg font-semibold tracking-tight">Board</h1>
-        <div className="ml-auto flex items-center gap-2">
-          <MCPSetup iconOnly />
-          {canCreateTasks && (
-            <Link to="." search={(prev: BoardSearch) => ({ ...prev, create: true as const })}>
-              <Button size="sm" tabIndex={-1}>
-                <Plus />
-                New task
-              </Button>
-            </Link>
-          )}
-        </div>
-      </header>
+      <PageHeader title="Board">
+        <MCPSetup iconOnly />
+        {canCreateTasks && (
+          <Link to="." search={(prev: BoardSearch) => ({ ...prev, create: true as const })}>
+            <Button size="sm" tabIndex={-1}>
+              <Plus />
+              New task
+            </Button>
+          </Link>
+        )}
+      </PageHeader>
       <div className="mx-4 lg:mx-6">
         <EmptyRepositoryNotice />
       </div>
@@ -77,6 +78,68 @@ export function Board() {
       {search.create && canCreateTasks && <TaskCreateSheet />}
     </div>
   )
+}
+
+// The width from which the toolbar holds the lane strip on one line beside
+// search, filters, pager, and the view switch.
+const laneStripQuery = '(min-width: 88rem)'
+// A phone shows one lane at a time, so the strip gets its own scrolling row.
+const phoneQuery = '(max-width: 47.99rem)'
+
+// Brings a lane into view with the lane strip's button, moving only the lanes.
+function scrollToLane(scroller: HTMLElement | null, key: GroupKey) {
+  const lane = scroller?.querySelector<HTMLElement>(`[data-lane="${key}"]`)
+  if (!scroller || !lane) return
+  const reduced = window.matchMedia('(prefers-reduced-motion: reduce)').matches
+  const left = lane.getBoundingClientRect().left - scroller.getBoundingClientRect().left + scroller.scrollLeft
+  const gutter = Number.parseFloat(getComputedStyle(scroller).paddingLeft) || 0
+  scroller.scrollTo({ left: left - gutter, behavior: reduced ? 'auto' : 'smooth' })
+}
+
+// Which lanes the scroller shows, and which of its edges hide more.
+function useLaneScroll(scroller: RefObject<HTMLElement | null>) {
+  const [state, setState] = useState({ inView: new Set<string>(), fadeStart: false, fadeEnd: false })
+  const measure = useCallback(() => {
+    const element = scroller.current
+    if (!element) return
+    const box = element.getBoundingClientRect()
+    const inView = new Set<string>()
+    for (const lane of element.querySelectorAll<HTMLElement>('[data-lane]')) {
+      const rect = lane.getBoundingClientRect()
+      // Most of the lane shows, so a sliver at the edge does not count.
+      const seen = Math.min(rect.right, box.right) - Math.max(rect.left, box.left)
+      if (seen >= rect.width * 0.6 && lane.dataset.lane) inView.add(lane.dataset.lane)
+    }
+    const fadeStart = element.scrollLeft > 1
+    const fadeEnd = element.scrollLeft + element.clientWidth < element.scrollWidth - 1
+    setState((prev) =>
+      prev.fadeStart === fadeStart &&
+      prev.fadeEnd === fadeEnd &&
+      prev.inView.size === inView.size &&
+      [...inView].every((key) => prev.inView.has(key))
+        ? prev
+        : { inView, fadeStart, fadeEnd },
+    )
+  }, [scroller])
+  useEffect(() => {
+    const element = scroller.current
+    if (!element) return
+    measure()
+    let frame = 0
+    const schedule = () => {
+      cancelAnimationFrame(frame)
+      frame = requestAnimationFrame(measure)
+    }
+    element.addEventListener('scroll', schedule, { passive: true })
+    const observer = new ResizeObserver(schedule)
+    observer.observe(element)
+    return () => {
+      cancelAnimationFrame(frame)
+      element.removeEventListener('scroll', schedule)
+      observer.disconnect()
+    }
+  }, [measure, scroller])
+  return { ...state, measure }
 }
 
 // The kanban view: the distribution of work across stages is the factory's
@@ -108,7 +171,10 @@ function Kanban() {
   // A range no task can satisfy is a half-typed date; the filter says so in
   // place rather than emptying the board behind a request the server refuses.
   const rangeError = taskFilterRangeError(filter)
-  const { data, isLoading, isFetching, error } = useActivity(params, !rangeError && !arrivalKey, offset)
+  const { data, isLoading, isFetching, error, refetch } = useActivity(params, !rangeError && !arrivalKey, offset)
+  // With nothing loaded, empty lanes would claim the board has no work.
+  const loadFailed = error != null && !data
+  const filtered = filterKey !== JSON.stringify(taskFilterParams(boardDefaultTaskFilter))
   // Highlight the card whose sheet is open (child route /tasks/$taskId).
   const { taskId: selectedId } = useParams({ strict: false }) as { taskId?: string }
 
@@ -139,18 +205,77 @@ function Kanban() {
     setOffset(Math.floor((data.total - 1) / data.limit) * data.limit)
   }, [data, offset])
 
+  // The feed's total counts blueprint anchors, which it drops from each page
+  // after reading that page. So a short page does not end the list, but a page
+  // whose window reaches the total does. A page holding only anchors comes back
+  // empty: the pager steps back from it and remembers that the list ends there.
+  const [emptyPage, setEmptyPage] = useState<{ offset: number; total: number }>()
+  useEffect(() => setEmptyPage(undefined), [filterKey])
+  useEffect(() => {
+    if (!data || data.items.length > 0 || data.offset === 0 || data.offset >= data.total) return
+    setEmptyPage({ offset: data.offset, total: data.total })
+    setOffset(Math.max(0, data.offset - data.limit))
+  }, [data])
+  const end = data && (emptyPage?.total === data.total ? emptyPage.offset : data.total)
+  const lastPage = Boolean(data && end !== undefined && data.offset + data.limit >= end)
+  const singlePage = lastPage && data?.offset === 0
+  const shown = data ? data.offset + data.items.length : 0
+
+  const scroller = useRef<HTMLElement>(null)
+  const laneStrip = useMediaQuery(laneStripQuery)
+  const phone = useMediaQuery(phoneQuery)
+  const { inView, fadeStart, fadeEnd, measure } = useLaneScroll(scroller)
+  // The lanes mount with the first read.
+  useEffect(measure, [isLoading, measure])
+
+  const laneButtons = stageGroups.map(({ key, label }) => {
+    const items = grouped.get(key) ?? []
+    const operator = items.filter((item) => item.next_action?.actor === 'operator').length
+    return (
+      <button
+        key={key}
+        type="button"
+        title={`Scroll to ${label}`}
+        onClick={() => scrollToLane(scroller.current, key)}
+        className={cn(
+          'inline-flex h-7 shrink-0 items-center gap-1 whitespace-nowrap rounded-md px-1 text-xs transition-colors hover:bg-surface hover:text-foreground pointer-coarse:h-9 pointer-coarse:px-2',
+          inView.has(key) ? 'text-foreground' : 'text-muted',
+        )}
+      >
+        {label}
+        <span className="tabular-nums text-faint">{items.length}</span>
+        {operator > 0 && (
+          <span className="ml-0.5 inline-flex items-center gap-1 font-medium tabular-nums text-attention before:size-1 before:rounded-full before:bg-attention-dot">
+            {operator}
+            <span className="sr-only">waiting on an operator</span>
+          </span>
+        )}
+      </button>
+    )
+  })
+
   return (
     <>
       <BoardToolbar
+        lanes={
+          !isLoading &&
+          !loadFailed &&
+          laneStrip && (
+            <nav aria-label="Board lanes" className="flex items-center gap-0.5">
+              {laneButtons}
+            </nav>
+          )
+        }
         pager={
           data &&
-          !isLoading && (
+          !isLoading &&
+          !singlePage && (
             <nav aria-label="Board pages" className="flex h-8 items-center rounded-md border border-border bg-surface">
               <span className="whitespace-nowrap px-2.5">
                 <span className="font-medium text-foreground">
-                  {data.total === 0 ? 0 : data.offset + 1}–{Math.min(data.offset + data.items.length, data.total)}
+                  {data.total === 0 ? 0 : data.offset + 1}–{Math.min(shown, data.total)}
                 </span>{' '}
-                of {data.total}
+                of {lastPage ? Math.min(shown, data.total) : data.total}
               </span>
               <Button
                 size="icon"
@@ -169,7 +294,7 @@ function Kanban() {
                 aria-label="Next"
                 title="Next"
                 className="h-full rounded-r-md rounded-l-none border-l border-border"
-                disabled={data.offset + data.items.length >= data.total || isFetching}
+                disabled={lastPage || isFetching}
                 onClick={() => setOffset(data.offset + data.limit)}
               >
                 <ChevronRight />
@@ -189,24 +314,65 @@ function Kanban() {
           iconOnly
         />
       </BoardToolbar>
-      {error != null && (
+      {phone && !isLoading && !loadFailed && (
+        <nav
+          aria-label="Board lanes"
+          className="relative flex shrink-0 items-center gap-1 overflow-x-auto border-b border-border px-3 py-0.5 [scrollbar-width:none]"
+        >
+          {laneButtons}
+        </nav>
+      )}
+      {error != null && !loadFailed && (
         <p className="mx-4 mt-4 rounded-lg lg:mx-6 bg-failure-soft p-3 text-sm text-failure">
-          Activity feed unavailable: {String(error)}
+          Activity feed unavailable: {readableError(error, 'Check your connection and try again.')}
         </p>
       )}
-      <section aria-label="Task board" className="flex min-h-0 flex-1 gap-3 overflow-x-auto px-4 py-4">
-        {isLoading
-          ? stageGroups.map(({ key }) => <Skeleton key={key} className="h-full w-72 shrink-0 rounded-xl" />)
-          : stageGroups.map(({ key, label }) => (
-              <BoardColumn
-                key={key}
-                groupKey={key}
-                label={label}
-                items={grouped.get(key) ?? []}
-                selectedId={selectedId}
-              />
-            ))}
-      </section>
+      {loadFailed ? (
+        <ErrorState
+          title="Could not load the board"
+          error={error}
+          onRetry={() => void refetch()}
+          retrying={isFetching}
+        />
+      ) : (
+        <div className="relative flex min-h-0 flex-1">
+          <section
+            ref={scroller}
+            aria-label="Task board"
+            className="relative flex min-h-0 min-w-0 flex-1 gap-3 overflow-x-auto px-4 py-4 lg:px-6"
+          >
+            {isLoading
+              ? stageGroups.map(({ key }) => <Skeleton key={key} className="h-full w-72 shrink-0 rounded-xl" />)
+              : stageGroups.map(({ key, label }) => (
+                  <BoardColumn
+                    key={key}
+                    groupKey={key}
+                    label={label}
+                    items={grouped.get(key) ?? []}
+                    selectedId={selectedId}
+                    filtered={filtered}
+                  />
+                ))}
+          </section>
+          {/* A quiet sign that more lanes sit past the edge. */}
+          <span
+            aria-hidden
+            data-lane-fade="start"
+            className={cn(
+              'pointer-events-none absolute inset-y-0 left-0 w-10 bg-gradient-to-r from-background to-transparent transition-opacity duration-150',
+              fadeStart ? 'opacity-100' : 'opacity-0',
+            )}
+          />
+          <span
+            aria-hidden
+            data-lane-fade="end"
+            className={cn(
+              'pointer-events-none absolute inset-y-0 right-0 w-14 bg-gradient-to-l from-background to-transparent transition-opacity duration-150',
+              fadeEnd ? 'opacity-100' : 'opacity-0',
+            )}
+          />
+        </div>
+      )}
     </>
   )
 }

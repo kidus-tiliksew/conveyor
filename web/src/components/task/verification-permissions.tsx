@@ -210,7 +210,7 @@ function PermissionsPanel({ workspace, orderId }: { workspace: string; orderId: 
       {receipt && <Receipt grant={receipt} />}
       {error && <RefusalText error={error} />}
       <section aria-label="Subjects" className="space-y-2">
-        <h4 className="text-xs font-semibold uppercase tracking-[0.08em] text-muted">Subjects</h4>
+        <h4 className="text-xs font-medium text-muted">Subjects</h4>
         {view.subjects.length === 0 && (
           <p className="text-xs text-muted">No selected kit exercises or registered ordinary obligations yet.</p>
         )}
@@ -281,7 +281,7 @@ function PermissionsPanel({ workspace, orderId }: { workspace: string; orderId: 
         </section>
       )}
       <section aria-label="Grants" className="space-y-2">
-        <h4 className="text-xs font-semibold uppercase tracking-[0.08em] text-muted">Grants</h4>
+        <h4 className="text-xs font-medium text-muted">Grants</h4>
         {view.grants.length === 0 && <p className="text-xs text-muted">No grants for this context.</p>}
         {view.grants.map((grant) => (
           <GrantRow

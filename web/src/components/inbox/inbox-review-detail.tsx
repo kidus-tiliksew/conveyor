@@ -1,5 +1,6 @@
 import { Link } from '@tanstack/react-router'
 import { ArrowLeft } from 'lucide-react'
+import { useEffect, useRef } from 'react'
 import type { InboxItem } from '../../lib/types'
 import { cn } from '../../lib/utils'
 import { DecisionDetail } from './decision-card'
@@ -12,7 +13,9 @@ import { ProposalDetail } from './proposal-card'
 // the list only while `selected` names an item, with a Back link that clears
 // `selected` and keeps every other filter. The item's view is keyed by
 // workspace and item, so its reads, composer and mutations start fresh on
-// every selection and a late result never shows under another one.
+// every selection and a late result never shows under another one. Below md
+// the row that opened the item has just gone, so focus moves to the item's
+// heading; it stays put from md up, where the list is still on screen.
 export function InboxReviewDetail({
   item,
   itemKey,
@@ -28,11 +31,18 @@ export function InboxReviewDetail({
   search: InboxSearch
   onActed: () => void
 }) {
+  const root = useRef<HTMLDivElement>(null)
+  useEffect(() => {
+    if (!explicit || !itemKey || window.matchMedia('(min-width: 48rem)').matches) return
+    root.current?.querySelector<HTMLElement>('[data-detail-title]')?.focus({ preventScroll: true })
+    root.current?.scrollIntoView({ block: 'start' })
+  }, [explicit, itemKey])
   return (
     <div
+      ref={root}
       data-inbox-detail={itemKey}
       className={cn(
-        'min-w-0 flex-col md:sticky md:top-4 md:flex md:max-h-[calc(100dvh-12rem)]',
+        'min-w-0 scroll-mt-5 flex-col md:sticky md:top-4 md:flex md:max-h-[calc(100dvh-7rem)]',
         explicit ? 'flex' : 'hidden',
       )}
     >

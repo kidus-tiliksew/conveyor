@@ -191,7 +191,7 @@ function AttachmentTile({
       </div>
       <div className="flex min-w-0 flex-col gap-0.5 px-2 py-1.5">
         <span className="truncate text-xs text-foreground/90">{attachment.name}</span>
-        <span className="font-mono text-[10px] text-faint">{formatBytes(attachment.size_bytes)}</span>
+        <span className="font-mono text-[11px] text-faint">{formatBytes(attachment.size_bytes)}</span>
       </div>
     </button>
   )

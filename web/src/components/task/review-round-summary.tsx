@@ -1,6 +1,7 @@
 import type { ReactNode } from 'react'
 import type { TaskReviewRoundSummary, TaskReviewSummaryFinding } from '../../lib/types'
-import { absoluteTime, cn } from '../../lib/utils'
+import { absoluteTime, actorName, cn } from '../../lib/utils'
+import { useWorkspaceMembers } from '../app-shell'
 
 // A settled review round's current summary, shown inside its review panel
 // above the seat rows (req-review-gates-evidence AC-10.5; DEC-79;
@@ -47,6 +48,7 @@ export function ReviewRoundSummary({
   // The full-text audit disclosure, rendered when the server shortened text.
   audit?: ReactNode
 }) {
+  const { data: members = [] } = useWorkspaceMembers()
   const findings = Array.isArray(summary.findings) ? summary.findings : []
   const groups = groupFindings(findings)
   const model = summary.author?.model?.trim()
@@ -64,9 +66,12 @@ export function ReviewRoundSummary({
           </span>
         )}
         <span className="ml-auto text-[11px] text-faint" data-review-summary-author>
-          By {summary.author?.actor_id || 'unknown author'}
+          By {summary.author?.actor_id ? actorName(summary.author.actor_id, members) : 'unknown author'}
           {summary.author?.actor_owner_user_id && (
-            <span data-review-summary-owner> (owned by {summary.author.actor_owner_user_id})</span>
+            <span data-review-summary-owner>
+              {' '}
+              (owned by {actorName(`user:${summary.author.actor_owner_user_id}`, members)})
+            </span>
           )}
           {model && (
             <>
@@ -80,12 +85,7 @@ export function ReviewRoundSummary({
       <p className="whitespace-pre-line break-words leading-6 text-foreground/85">{summary.summary}</p>
       {groups.map((group) => (
         <div key={group.severity} className="mt-2.5" data-review-summary-severity={group.severity}>
-          <h4
-            className={cn(
-              'text-[11px] font-medium uppercase tracking-wide',
-              group.severity === 'blocking' ? 'text-attention' : 'text-muted',
-            )}
-          >
+          <h4 className={cn('text-xs font-medium', group.severity === 'blocking' ? 'text-attention' : 'text-muted')}>
             {group.label} {group.findings.length}
           </h4>
           <ul className="mt-1 space-y-1.5">
@@ -93,7 +93,7 @@ export function ReviewRoundSummary({
               <li
                 // Findings have no identity of their own; one version's order is stable.
                 key={index}
-                className="grid grid-cols-[auto_1fr] gap-x-2.5"
+                className="grid grid-cols-[3.75rem_1fr] gap-x-2.5"
                 data-review-summary-finding
               >
                 <span className="pt-0.5 text-xs text-faint">{seatLabel(finding.seats ?? [])}</span>

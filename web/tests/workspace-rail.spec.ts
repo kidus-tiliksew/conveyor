@@ -139,9 +139,9 @@ test('workspace rail uses Slack-like tiles and preserves switching and creation'
   expect(visual.inactiveBackground).not.toBe(visual.railBackground)
   expect(visual.activeBackground).not.toBe(visual.inactiveBackground)
   expect(visual.activeShadow).not.toBe('none')
-  expect(visual.radius).toBe('9px')
+  expect(visual.radius).toBe('10px')
   expect(visual.inactiveSize).toEqual([32, 32])
-  expect(visual.faceGap).toBeGreaterThanOrEqual(24)
+  expect(visual.faceGap).toBeGreaterThanOrEqual(8)
   expect(visual.addBelowWorkspaces).toBe(true)
 
   await beta.click()

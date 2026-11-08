@@ -60,11 +60,11 @@ export function ImplementationEntry({
       {dotSlot(implementationDot(entry))}
       <article
         aria-label={entry.attempt ? `Implementation attempt ${entry.attempt}` : 'Implementation'}
-        className={cn('rounded-lg border border-border bg-card', warning && 'border-attention/40 bg-attention-soft')}
+        className={cn('rounded-lg bg-surface', warning && 'border border-attention/30 bg-attention-soft')}
         data-implementation-entry
       >
         <header className="flex flex-wrap items-center gap-x-2.5 gap-y-1 px-4 pt-3" data-job-header>
-          <span className="text-[13px] font-semibold text-foreground">Implementation</span>
+          <span className="text-sm font-semibold text-foreground">Implementation</span>
           <Badge variant={badge.variant}>{badge.label}</Badge>
           {entry.attempt ? <span className="text-xs text-muted">Attempt {entry.attempt}</span> : null}
           {meta}

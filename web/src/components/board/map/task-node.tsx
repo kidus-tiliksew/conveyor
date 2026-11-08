@@ -7,11 +7,11 @@ import {
   CircleDot,
   Diamond,
   GitMerge,
-  Hand,
   Hourglass,
   type LucideIcon,
   Pause,
   Play,
+  UserRound,
   X,
 } from 'lucide-react'
 import { memo } from 'react'
@@ -29,7 +29,7 @@ export const statusIcon: Record<GraphStatus, LucideIcon> = {
   blocked: Ban,
   plan_gate: Diamond,
   merge_gate: GitMerge,
-  needs_you: Hand,
+  needs_you: UserRound,
   running: Play,
   ready: CircleDot,
   parked: Pause,
@@ -143,21 +143,23 @@ export const TaskNode = memo(function TaskNode({ data }: NodeProps<TaskFlowNode>
     >
       <Handle type="target" position={data.vertical ? Position.Top : Position.Left} className={hidden} />
       <span className={cn('absolute inset-y-0 left-0 w-1', meta.dot, waiting && 'opacity-40')} />
-      <div className="flex items-center gap-1.5 text-[11px] font-medium">
+      <div className="flex items-center gap-1.5 text-[11px] font-medium leading-3.5">
         <Icon aria-hidden className={cn('size-3.5 shrink-0', meta.tone)} />
         <span className={meta.tone}>{labelOf(task)}</span>
         {waiting && <DependencyMark task={task} />}
-        <span
-          className="ml-auto rounded bg-surface px-1.5 font-mono text-[10.5px] text-muted"
-          title={`${unblocks} open tasks wait on this`}
-        >
-          →{unblocks}
-        </span>
+        {unblocks > 0 && (
+          <span
+            className="ml-auto rounded bg-surface px-1.5 font-mono text-[11px] text-muted"
+            title={`${unblocks} open ${unblocks === 1 ? 'task waits' : 'tasks wait'} on this`}
+          >
+            →{unblocks}
+          </span>
+        )}
       </div>
-      <p className="line-clamp-2 text-[12.5px] font-medium leading-[1.25] text-foreground" title={task.title}>
+      <p className="line-clamp-2 text-sm font-medium leading-[1.25] text-foreground" title={task.title}>
         {task.title}
       </p>
-      <p className="truncate font-mono text-[10.5px] text-faint">
+      <p className="truncate font-mono text-[11px] leading-3.5 text-faint">
         {external ? `↗ ${external}` : task.id}
         {!external && task.repo && ` · ${task.repo}`}
       </p>

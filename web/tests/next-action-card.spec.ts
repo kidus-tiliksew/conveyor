@@ -142,9 +142,14 @@ for (const surface of [`/w/demo/tasks/${taskId}`, `/w/demo/tasks/${taskId}/full`
     await expect(card.getByText('The plan for Card task waits for your approval.')).toBeVisible()
     await expect(card.getByText('Approve the plan')).toBeVisible()
     await expect(card.locator('[data-actor]')).toHaveText('operator')
-    await expect(card.getByText('Does this plan do what the task asks?')).toBeVisible()
-    await expect(card.getByText('If ignored: Implementation never starts.')).toBeVisible()
-    await expect(card.locator('[data-next-action-deadline] time')).toHaveAttribute('datetime', '2026-10-13T10:00:00Z')
+    // One decision has one surface per view: on the Timeline the card is a
+    // one-line pointer, and the gate states everything else beside its choices.
+    const gate = page.getByRole('region', { name: 'Human gate' })
+    await expect(card.locator('[data-go-to-gate]')).toBeVisible()
+    await expect(gate.getByText('Does this plan do what the task asks?')).toBeVisible()
+    await expect(gate.getByText('If ignored: Implementation never starts.')).toBeVisible()
+    await expect(gate.locator('[data-next-action-deadline] time')).toHaveAttribute('datetime', '2026-10-13T10:00:00Z')
+    await expect(card.getByText('Does this plan do what the task asks?')).toHaveCount(0)
 
     // Only allowed choices this client can build render, and the label is the
     // server's. With the gate open they render once, beside its evidence, and
@@ -161,7 +166,7 @@ for (const surface of [`/w/demo/tasks/${taskId}`, `/w/demo/tasks/${taskId}/full`
     await expect(choices.nth(2)).toBeDisabled()
 
     // Show IDs discloses the server's identifiers verbatim.
-    const ids = card.locator('details')
+    const ids = gate.locator('details')
     await expect(ids.getByText('order-spec-7')).toBeHidden()
     await ids.getByText('Show IDs').click()
     await expect(ids.getByText(/"id": "order-spec-7"/)).toBeVisible()
@@ -646,11 +651,14 @@ test('a check hold names each check with its GitHub link and offers the merge ac
     () => held,
   )
   await page.goto(`/w/demo/tasks/${taskId}/full`)
-  const card = page.getByRole('region', { name: 'Next action' })
-  await expect(card.getByRole('link', { name: 'e2e' })).toHaveAttribute('href', 'https://github.com/acme/app/runs/2')
-  await expect(card.getByText('legacy-status', { exact: true })).toBeVisible()
-  await expect(card.getByRole('link', { name: 'legacy-status' })).toHaveCount(0)
-  await expect(page.getByRole('button', { name: 'Merge' }).first()).toBeVisible()
+  const gate = page.getByRole('region', { name: 'Human gate' })
+  await expect(gate.getByRole('link', { name: 'e2e' })).toHaveAttribute('href', 'https://github.com/acme/app/runs/2')
+  await expect(gate.getByText('legacy-status', { exact: true })).toBeVisible()
+  await expect(gate.getByRole('link', { name: 'legacy-status' })).toHaveCount(0)
+  // Merging past the warning above it never wears the safe primary look.
+  const merge = gate.getByRole('button', { name: 'Merge' })
+  await expect(merge).toBeVisible()
+  await expect(merge).not.toHaveClass(/bg-primary/)
 })
 
 // The one-act merge at the merge_approval gate (DEC-64). Merge is the server's
@@ -759,7 +767,7 @@ test('a merge refusal without a readiness read reads as not available yet', asyn
 })
 
 for (const width of [390, 1280]) {
-  test(`the merge_approval grid puts Merge on its own line at ${width} px`, async ({ page }) => {
+  test(`the merge_approval choices stack on a phone and share one row otherwise, at ${width} px`, async ({ page }) => {
     await page.setViewportSize({ width, height: 900 })
     for (const state of ['MERGEABLE', 'UNKNOWN']) {
       await page.unrouteAll({ behavior: 'ignoreErrors' })
@@ -775,16 +783,22 @@ for (const width of [390, 1280]) {
       const merge = gate.locator('[data-merge-at-gate]')
       const approve = gate.locator('[data-choice="approve"]')
       await expect(merge).toBeVisible()
-      await expect(row.locator('button.bg-primary')).toHaveCount(1)
+      await expect(row.locator('button[class*="bg-primary"]')).toHaveCount(1)
       await expect(state === 'MERGEABLE' ? merge : approve).toHaveClass(/bg-primary/)
       const rowBox = await row.boundingBox()
       const mergeBox = await merge.boundingBox()
       const approveBox = await approve.boundingBox()
       if (!rowBox || !mergeBox || !approveBox) throw new Error('missing layout box')
-      // Merge spans the grid; Approve sits on the next line in a half-width cell.
-      expect(Math.abs(mergeBox.width - rowBox.width)).toBeLessThanOrEqual(1)
-      expect(approveBox.y).toBeGreaterThanOrEqual(mergeBox.y + mergeBox.height)
-      expect(approveBox.width).toBeLessThan(rowBox.width * 0.6)
+      if (width < 640) {
+        // Merge spans the grid; Approve sits on the next line in a half-width cell.
+        expect(Math.abs(mergeBox.width - rowBox.width)).toBeLessThanOrEqual(1)
+        expect(approveBox.y).toBeGreaterThanOrEqual(mergeBox.y + mergeBox.height)
+        expect(approveBox.width).toBeLessThan(rowBox.width * 0.6)
+      } else {
+        // The same row of natural-width buttons as every other gate.
+        expect(Math.abs(approveBox.y - mergeBox.y)).toBeLessThanOrEqual(1)
+        expect(mergeBox.width).toBeLessThan(rowBox.width * 0.4)
+      }
       expect(Math.abs(approveBox.height - mergeBox.height)).toBeLessThanOrEqual(1)
       // The status line and the grid fill the gate's choices container: no
       // width cap leaves them in a narrow left column (component-web-task-surfaces).
@@ -1264,7 +1278,7 @@ test('a parked next action shows one choice row and Start over opens the success
   const card = page.getByRole('region', { name: 'Next action' })
   const row = card.locator('[data-next-action-choices] > div').first()
   await expect(row.getByRole('button')).toHaveText(['Recover', 'Close', 'Start over'])
-  await expect(row.locator('button.bg-primary')).toHaveCount(1)
+  await expect(row.locator('button[class*="bg-primary"]')).toHaveCount(1)
   await expect(row.getByRole('button', { name: 'Recover' })).toHaveClass(/bg-primary/)
 
   await row.getByRole('button', { name: 'Start over', exact: true }).click()

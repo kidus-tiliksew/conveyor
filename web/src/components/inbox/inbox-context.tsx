@@ -1,17 +1,17 @@
 import { Link } from '@tanstack/react-router'
 import { ChevronRight } from 'lucide-react'
 import { buildTimeline, type TimelineEntry } from '../../lib/activity'
-import { errorMessage } from '../../lib/errors'
 import type { ActivityItem, SpecVersion } from '../../lib/types'
 import { absoluteTime, relativeTime } from '../../lib/utils'
 import { useWorkspaceSelection } from '../app-shell'
-import { CheckStatusList } from '../task/next-action-checks'
 import { CheckpointProposalDiff } from '../task/checkpoint-proposal-diff'
+import { CheckStatusList } from '../task/next-action-checks'
+import { MergeGateReviewCard } from '../task/review-panel'
 import { SpecCard } from '../task/spec-card'
 import { useTaskDetail } from '../task/use-task-detail'
 import { VerificationEntry } from '../task/verification-entry'
 import { citedDocumentsOf, documentName } from '../task/work-order-recovery-card'
-import { Button } from '../ui/button'
+import { ErrorState } from '../ui/error-state'
 import { MarkdownProse } from '../ui/markdown-prose'
 import { Skeleton } from '../ui/skeleton'
 import { planFiles, planHeadings, splitPlanSections } from './plan-sections'
@@ -33,12 +33,13 @@ export function DecisionContext({ taskId, kind }: { taskId: string; kind: string
     <section aria-label="Decision context" data-decision-context={kind} aria-busy={!item && error == null}>
       {!item && error == null && <Skeleton className="h-32" />}
       {error != null && (
-        <div className="flex flex-wrap items-center gap-2 text-sm">
-          <span className="text-failure">{errorMessage(error, 'Could not load this task.')}</span>
-          <Button size="sm" variant="secondary" disabled={isFetching} onClick={() => void refetch()}>
-            Retry
-          </Button>
-        </div>
+        <ErrorState
+          className="py-8"
+          title="Could not load this task"
+          error={error}
+          onRetry={() => void refetch()}
+          retrying={isFetching}
+        />
       )}
       {item && <ContextSection item={item} kind={kind} />}
     </section>
@@ -64,28 +65,42 @@ function ContextSection({ item, kind }: { item: ActivityItem; kind: string }) {
   if (kind === 'context_proposal') return <ProposedContext item={item} />
   if (kind === 'parked') return <ParkReason item={item} />
   if (kind === 'dispatch_exhausted') return <DispatchFailure item={item} />
+  if (kind === 'merge_approval' || kind === 'merge_execution') return <MergeGateReviewCard item={item} />
   // Newest first, so `find` reads the latest run of a stage.
   const jobs = buildTimeline(item)
     .filter((entry): entry is JobEntry => entry.type === 'job')
     .reverse()
   if (kind === 'review_bounce_limit') {
-    const reviewIndex = jobs.findIndex((entry) => entry.job.stage === 'review')
-    const reply = jobs.slice(0, Math.max(reviewIndex, 0)).find((entry) => entry.job.stage === 'implement')
-    if (reviewIndex < 0) return <p className="text-sm text-muted">No review has run yet.</p>
-    return (
-      <div className="space-y-3">
-        <section aria-label="Latest reviewer feedback" className="rounded-lg border border-border px-3 py-3">
-          <h3 className="text-xs font-medium text-muted">Latest reviewer feedback</h3>
-          <p className="mt-1 whitespace-pre-wrap break-words text-sm">{jobs[reviewIndex].summary}</p>
-        </section>
-        {reply && (
-          <section aria-label="Implementer reply" className="rounded-lg border border-border px-3 py-3">
-            <h3 className="text-xs font-medium text-muted">Implementer reply</h3>
-            <p className="mt-1 whitespace-pre-wrap break-words text-sm">{reply.summary}</p>
-          </section>
-        )}
-      </div>
+    // Newest first. Seated reviews live in panel entries and older single
+    // reviews in job entries, so the latest review is whichever comes first.
+    const entries = buildTimeline(item).reverse()
+    const reviewIndex = entries.findIndex(
+      (entry) => entry.type === 'panel' || (entry.type === 'job' && entry.job.stage === 'review'),
     )
+    const review = entries[reviewIndex]
+    const reply = entries
+      .slice(0, Math.max(reviewIndex, 0))
+      .find((entry): entry is JobEntry => entry.type === 'job' && entry.job.stage === 'implement')
+    if (review) {
+      return (
+        <div className="space-y-3">
+          <section aria-label="Latest reviewer feedback" className="rounded-lg border border-border px-3 py-3">
+            <h3 className="sr-only">Latest reviewer feedback</h3>
+            {review.type === 'panel' ? (
+              <PanelFeedback panel={review} />
+            ) : (
+              review.type === 'job' && <p className="whitespace-pre-wrap break-words text-sm">{review.summary}</p>
+            )}
+          </section>
+          {reply && (
+            <section aria-label="Implementer reply" className="rounded-lg border border-border px-3 py-3">
+              <h3 className="text-xs font-medium text-muted">Implementer reply</h3>
+              <p className="mt-1 whitespace-pre-wrap break-words text-sm">{reply.summary}</p>
+            </section>
+          )}
+        </div>
+      )
+    }
   }
   if (kind === 'verification_disposition') {
     const verify = jobs.find((entry) => entry.job.stage === 'verify' && entry.job.started_at)
@@ -97,7 +112,57 @@ function ContextSection({ item, kind }: { item: ActivityItem; kind: string }) {
       <p className="text-sm text-muted">No verification has run yet.</p>
     )
   }
-  return <p className="text-sm text-muted">Open the task for its full history.</p>
+  if (item.stalled?.unsatisfiable_edge) {
+    const blockers = (item.stalled.blocking_task_ids ?? item.task.blocking_task_ids ?? []).map(
+      (id) => item.task.dependencies?.find((dependency) => dependency.id === id)?.title ?? id,
+    )
+    if (blockers.length > 0)
+      return (
+        <section aria-label="Closed dependencies" className="rounded-lg border border-border px-3 py-3">
+          <h3 className="text-xs font-medium text-muted">Closed without merging</h3>
+          <ul className="mt-1 space-y-0.5 text-sm">
+            {blockers.map((title) => (
+              <li key={title}>{title}</li>
+            ))}
+          </ul>
+        </section>
+      )
+  }
+  // Any other decision shows what the last run reported, where one did.
+  const latest = jobs.find((entry) => entry.summary.trim())
+  return latest ? (
+    <section aria-label="Latest run" className="rounded-lg border border-border px-3 py-3">
+      <h4 className="text-xs font-medium text-muted">{stageLabel(latest.job.stage)}</h4>
+      <p className="mt-1 whitespace-pre-wrap break-words text-sm">{latest.summary}</p>
+    </section>
+  ) : (
+    <p className="text-sm text-muted">No run has reported yet.</p>
+  )
+}
+
+// A review round's verdict and each seat's own notes.
+function PanelFeedback({ panel }: { panel: Extract<TimelineEntry, { type: 'panel' }> }) {
+  const reviewed = panel.seats.filter((seat) => seat.review)
+  const changes = reviewed.filter((seat) => seat.review?.verdict === 'changes_requested')
+  return (
+    <div className="space-y-2 text-sm">
+      <p className="text-muted">
+        Round {panel.round}: {changes.length} of {panel.seats.length} asked for changes
+      </p>
+      {(changes.length > 0 ? changes : reviewed).map((seat) => (
+        <div key={seat.seat} className="min-w-0">
+          <p className="text-xs font-medium text-muted">Seat {seat.seat}</p>
+          <MarkdownProse className="markdown-demoted text-sm">
+            {seat.review?.feedback.trim() || seat.review?.summary.trim() || ''}
+          </MarkdownProse>
+        </div>
+      ))}
+    </div>
+  )
+}
+
+function stageLabel(stage: string) {
+  return stage ? `${stage.charAt(0).toUpperCase()}${stage.slice(1)}` : 'Run'
 }
 
 // What triage recorded when it parked the task, read from the bounded
@@ -327,7 +392,7 @@ function PlanContext({ item, spec }: { item: ActivityItem; spec: SpecVersion }) 
           )}
           {planHeadings.map((heading) => (
             <section key={heading} aria-label={heading} data-plan-section={heading}>
-              <h4 className="mb-1.5 text-[11px] font-semibold uppercase tracking-[0.08em] text-muted">{heading}</h4>
+              <h4 className="mb-1.5 text-xs font-medium text-muted">{heading}</h4>
               {heading === 'Files touched' ? (
                 <PlanFiles section={sections.sections[heading]} />
               ) : (

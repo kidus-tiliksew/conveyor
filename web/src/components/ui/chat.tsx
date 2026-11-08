@@ -35,10 +35,10 @@ export function Bubble({
   return (
     <div
       className={cn(
-        'max-w-[82%] rounded-xl px-4 py-3 text-sm leading-6 whitespace-pre-wrap',
-        from === 'assistant' && 'rounded-tl-sm border border-border bg-card',
-        from === 'user' && 'rounded-tr-sm bg-primary text-primary-foreground',
-        from === 'system' && 'border border-border bg-surface text-muted',
+        'rounded-xl px-3.5 py-2.5 text-sm leading-[1.6]',
+        from === 'assistant' && 'rounded-tl-sm bg-surface',
+        from === 'user' && 'ml-auto w-fit whitespace-pre-wrap rounded-tr-sm bg-raised text-foreground',
+        from === 'system' && 'max-w-[82%] whitespace-pre-wrap border border-border text-muted',
         className,
       )}
       {...props}

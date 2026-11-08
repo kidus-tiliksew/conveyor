@@ -109,16 +109,16 @@ function Figure({ label, value, unit, muted }: { label: string; value: ReactNode
   return (
     // The label precedes its value for assistive technology; the value reads
     // first on screen.
-    <div className="flex min-w-0 flex-col-reverse rounded-lg border border-border bg-card px-2.5 py-2">
-      <dt className="mt-0.5 truncate text-[11px] text-muted">{label}</dt>
+    <div className="flex min-w-0 flex-col-reverse justify-end rounded-lg border border-border bg-card px-2.5 py-2">
+      <dt className="mt-0.5 text-xs leading-4 text-muted">{label}</dt>
       <dd
         className={cn(
-          'm-0 truncate text-[17px] font-semibold tabular-nums leading-tight',
+          'm-0 truncate text-lg font-semibold tabular-nums leading-tight',
           muted ? 'text-muted' : 'text-foreground',
         )}
       >
         {value}
-        {unit && <small className="ml-px text-[11px] font-normal text-faint">{unit}</small>}
+        {unit && <small className="ml-px text-xs font-normal text-faint">{unit}</small>}
       </dd>
     </div>
   )

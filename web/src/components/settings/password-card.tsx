@@ -42,7 +42,7 @@ export function PasswordCard() {
     <Card className="mt-4">
       <CardHeader>
         <CardTitle>Password</CardTitle>
-        <KeyRound className="size-4 text-primary" />
+        <KeyRound className="size-4 text-faint" />
       </CardHeader>
       <CardContent>
         <p className="mb-4 text-sm leading-6 text-muted">Use a password to sign in next time.</p>

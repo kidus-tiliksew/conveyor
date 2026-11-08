@@ -1,7 +1,7 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { Link, useLocation } from '@tanstack/react-router'
 import { CheckCircle2, Plus, Save, Trash2 } from 'lucide-react'
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useId, useMemo, useState } from 'react'
 import {
   useCanCreateWorkspaces,
   useWorkspace,
@@ -12,7 +12,9 @@ import { Badge } from '../components/ui/badge'
 import { Button } from '../components/ui/button'
 import { Card, CardContent, CardHeader, CardTitle } from '../components/ui/card'
 import { Input } from '../components/ui/input'
+import { PageHeader } from '../components/ui/page-header'
 import { Switch } from '../components/ui/switch'
+import { Tabs, tabPanelProps } from '../components/ui/tabs'
 import { Field } from '../components/workspace/field'
 import { MembersSection } from '../components/workspace/members-section'
 import { VerificationKits } from '../components/workspace/verification-kits'
@@ -80,6 +82,7 @@ export function WorkspacePage() {
   })
   const searchStr = useLocation({ select: (location) => location.searchStr })
   const [tab, setTab] = useState<TabId>(() => initialTab(searchStr))
+  const tabsId = useId()
   const [draft, setDraftState] = useState<WorkspaceConfigDocument | null>(null)
   const [saved, setSaved] = useState('')
   useEffect(() => {
@@ -112,164 +115,154 @@ export function WorkspacePage() {
   }, [save.error])
 
   return (
-    <div className="h-full overflow-y-auto">
-      <div className="mx-auto max-w-5xl px-4 pb-24 pt-6 sm:px-6 sm:pt-8">
-        <div className="flex items-start justify-between">
-          <div className="flex items-baseline gap-3">
-            <h1 className="text-xl font-semibold">Workspace</h1>
-            {draft && <Badge variant="mono">{draft.workspace}</Badge>}
-          </div>
-          {canCreateWorkspaces && (
-            <Link to="/workspaces/new">
-              <Button variant="secondary" tabIndex={-1}>
-                <Plus />
-                New workspace
-              </Button>
-            </Link>
-          )}
-        </div>
-        {!workspace && (
-          <Card className="mt-6">
-            <CardHeader>
-              <CardTitle>No workspace selected</CardTitle>
-            </CardHeader>
-            <CardContent>
-              {canCreateWorkspaces ? (
-                <p className="text-sm text-muted">
-                  Pick a workspace from the left rail, or{' '}
-                  <Link to="/workspaces/new" className="text-primary hover:underline">
-                    create one
-                  </Link>{' '}
-                  to get started.
-                </p>
-              ) : (
-                <p className="text-sm text-muted">Pick a workspace from the left rail to get started.</p>
-              )}
-            </CardContent>
-          </Card>
+    <div className="flex h-full min-h-0 flex-col">
+      <PageHeader title="Workspace" badge={draft && <Badge variant="mono">{draft.workspace}</Badge>}>
+        {canCreateWorkspaces && (
+          <Link to="/workspaces/new">
+            <Button variant="secondary" size="sm" tabIndex={-1}>
+              <Plus />
+              New workspace
+            </Button>
+          </Link>
         )}
+      </PageHeader>
+      <div className="min-h-0 flex-1 overflow-y-auto">
+        <div className="mx-auto max-w-5xl px-4 pb-24 pt-6 sm:px-6">
+          {!workspace && (
+            <Card className="mt-6">
+              <CardHeader>
+                <CardTitle>No workspace selected</CardTitle>
+              </CardHeader>
+              <CardContent>
+                {canCreateWorkspaces ? (
+                  <p className="text-sm text-muted">
+                    Pick a workspace from the left rail, or{' '}
+                    <Link to="/workspaces/new" className="text-primary hover:underline">
+                      create one
+                    </Link>{' '}
+                    to get started.
+                  </p>
+                ) : (
+                  <p className="text-sm text-muted">Pick a workspace from the left rail to get started.</p>
+                )}
+              </CardContent>
+            </Card>
+          )}
 
-        {draft && canManageWorkspace ? (
-          <>
-            {/* When the tabs exceed a phone width, the row scrolls inside itself. */}
-            <div
-              role="tablist"
-              className="mt-6 flex gap-1 overflow-x-auto border-b border-border [scrollbar-width:none] [&::-webkit-scrollbar]:hidden"
-            >
-              {TABS.map((entry) => {
-                const dirty = dirtyTabs.includes(entry.id)
-                const errored = errorTabs.includes(entry.id)
-                return (
-                  <button
-                    type="button"
-                    key={entry.id}
-                    role="tab"
-                    aria-selected={tab === entry.id}
-                    onClick={() => setTab(entry.id)}
-                    className={cn(
-                      '-mb-px flex shrink-0 items-center gap-2 whitespace-nowrap border-b-2 px-3.5 py-2.5 text-sm font-medium transition-colors focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-primary',
-                      tab === entry.id
-                        ? 'border-primary text-foreground'
-                        : 'border-transparent text-muted hover:text-foreground',
-                    )}
-                  >
-                    {entry.label}
-                    {(dirty || errored) && (
-                      <span
-                        title={errored ? 'Validation errors' : 'Unsaved changes'}
-                        className={cn('size-1.5 rounded-full', errored ? 'bg-failure' : 'bg-attention-dot')}
-                      />
-                    )}
-                  </button>
-                )
-              })}
-            </div>
+          {draft && canManageWorkspace ? (
+            <>
+              {/* When the tabs exceed a phone width, the row scrolls inside itself. */}
+              <Tabs
+                id={tabsId}
+                aria-label="Workspace settings"
+                items={TABS.map((entry) => {
+                  const dirty = dirtyTabs.includes(entry.id)
+                  const errored = errorTabs.includes(entry.id)
+                  return {
+                    id: entry.id,
+                    label: (
+                      <>
+                        {entry.label}
+                        {(dirty || errored) && (
+                          <span
+                            title={errored ? 'Validation errors' : 'Unsaved changes'}
+                            className={cn('ml-0.5 size-1.5 rounded-full', errored ? 'bg-failure' : 'bg-attention-dot')}
+                          />
+                        )}
+                      </>
+                    ),
+                  }
+                })}
+                value={tab}
+                onChange={setTab}
+              />
 
-            <div className="pt-5">
-              {tab === 'general' && (
-                <GeneralTab
-                  draft={draft}
-                  setDraft={setDraft}
-                  errors={save.error instanceof ConfigValidationError ? save.error.fields : []}
-                />
+              <div {...tabPanelProps(tabsId, tab)} className="pt-5">
+                {tab === 'general' && (
+                  <GeneralTab
+                    draft={draft}
+                    setDraft={setDraft}
+                    errors={save.error instanceof ConfigValidationError ? save.error.fields : []}
+                  />
+                )}
+                {tab === 'policy' && <PolicyTab draft={draft} setDraft={setDraft} />}
+                {tab === 'verification' && (
+                  <div className="space-y-4">
+                    <VerificationSettings draft={draft} setDraft={setDraft} />
+                    <VerificationKits key={workspace} workspace={workspace} />
+                  </div>
+                )}
+                {tab === 'members' && <MembersSection />}
+              </div>
+
+              {(save.error || saved || dirtyTabs.length > 0) && (
+                <div className="pointer-events-none sticky bottom-4 mt-6 flex justify-center">
+                  <div className="pointer-events-auto w-full max-w-2xl space-y-2">
+                    {save.error ? (
+                      <div className="rounded-lg border border-failure/30 bg-failure-soft p-3 text-sm text-failure shadow-lg">
+                        <p>{save.error instanceof ConfigValidationError ? save.error.message : String(save.error)}</p>
+                        {save.error instanceof ConfigValidationError &&
+                          save.error.fields.map((field) => (
+                            <p key={field.field} className="mt-1 font-mono text-xs">
+                              {field.field}: {field.message}
+                            </p>
+                          ))}
+                      </div>
+                    ) : null}
+                    {saved && dirtyTabs.length === 0 && !save.error && (
+                      <p className="flex items-center gap-2 rounded-lg border border-positive/30 bg-positive-soft p-3 text-sm text-positive shadow-lg">
+                        <CheckCircle2 className="size-4" />
+                        {saved}
+                      </p>
+                    )}
+                    {dirtyTabs.length > 0 && (
+                      <div className="flex items-center gap-3 rounded-lg border border-edge bg-card py-2 pl-4 pr-2 shadow-lg">
+                        <p className="text-sm">
+                          <span className="font-medium">Unsaved changes</span>{' '}
+                          <span className="text-faint">
+                            · {dirtyTabs.map((id) => TABS.find((entry) => entry.id === id)!.label).join(', ')}
+                          </span>
+                        </p>
+                        <div className="ml-auto flex gap-2">
+                          <Button
+                            size="sm"
+                            variant="ghost"
+                            onClick={() => {
+                              setDraftState(structuredClone(serverDocument!))
+                              save.reset()
+                              setSaved('')
+                            }}
+                          >
+                            Discard
+                          </Button>
+                          <Button size="sm" disabled={save.isPending} onClick={() => save.mutate()}>
+                            <Save />
+                            Save changes
+                          </Button>
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                </div>
               )}
-              {tab === 'policy' && <PolicyTab draft={draft} setDraft={setDraft} />}
-              {tab === 'verification' && (
-                <div className="space-y-4">
-                  <VerificationSettings draft={draft} setDraft={setDraft} />
+            </>
+          ) : snapshot ? (
+            // Configuration is an operator surface, so a member reaching this page
+            // gets the read-only summary. The member list belongs beside it: every
+            // member may see who else is here, without the management controls.
+            <>
+              <ReadOnly snapshot={snapshot} configuration={query.data?.document} />
+              {workspace && (
+                <div className="mt-4">
                   <VerificationKits key={workspace} workspace={workspace} />
                 </div>
               )}
-              {tab === 'members' && <MembersSection />}
-            </div>
-
-            {(save.error || saved || dirtyTabs.length > 0) && (
-              <div className="pointer-events-none sticky bottom-4 mt-6 flex justify-center">
-                <div className="pointer-events-auto w-full max-w-2xl space-y-2">
-                  {save.error ? (
-                    <div className="rounded-lg border border-failure/30 bg-failure-soft p-3 text-sm text-failure shadow-lg">
-                      <p>{save.error instanceof ConfigValidationError ? save.error.message : String(save.error)}</p>
-                      {save.error instanceof ConfigValidationError &&
-                        save.error.fields.map((field) => (
-                          <p key={field.field} className="mt-1 font-mono text-xs">
-                            {field.field}: {field.message}
-                          </p>
-                        ))}
-                    </div>
-                  ) : null}
-                  {saved && dirtyTabs.length === 0 && !save.error && (
-                    <p className="flex items-center gap-2 rounded-lg border border-positive/30 bg-positive-soft p-3 text-sm text-positive shadow-lg">
-                      <CheckCircle2 className="size-4" />
-                      {saved}
-                    </p>
-                  )}
-                  {dirtyTabs.length > 0 && (
-                    <div className="flex items-center gap-3 rounded-lg border border-edge bg-card py-2 pl-4 pr-2 shadow-lg">
-                      <p className="text-sm">
-                        <span className="font-medium">Unsaved changes</span>{' '}
-                        <span className="text-faint">
-                          · {dirtyTabs.map((id) => TABS.find((entry) => entry.id === id)!.label).join(', ')}
-                        </span>
-                      </p>
-                      <div className="ml-auto flex gap-2">
-                        <Button
-                          size="sm"
-                          variant="ghost"
-                          onClick={() => {
-                            setDraftState(structuredClone(serverDocument!))
-                            save.reset()
-                            setSaved('')
-                          }}
-                        >
-                          Discard
-                        </Button>
-                        <Button size="sm" disabled={save.isPending} onClick={() => save.mutate()}>
-                          <Save />
-                          Save changes
-                        </Button>
-                      </div>
-                    </div>
-                  )}
-                </div>
-              </div>
-            )}
-          </>
-        ) : snapshot ? (
-          // Configuration is an operator surface, so a member reaching this page
-          // gets the read-only summary. The member list belongs beside it: every
-          // member may see who else is here, without the management controls.
-          <>
-            <ReadOnly snapshot={snapshot} configuration={query.data?.document} />
-            {workspace && (
               <div className="mt-4">
-                <VerificationKits key={workspace} workspace={workspace} />
+                <MembersSection />
               </div>
-            )}
-            <div className="mt-4">
-              <MembersSection />
-            </div>
-          </>
-        ) : null}
+            </>
+          ) : null}
+        </div>
       </div>
     </div>
   )
@@ -317,6 +310,7 @@ function GeneralTab({
             hint="How long a work order may wait in the queue before it is marked stalled."
           >
             <Input
+              className="max-w-48"
               value={draft.work_order_queue_timeout}
               onChange={(event) => update({ work_order_queue_timeout: event.target.value })}
               placeholder="24h"
@@ -339,11 +333,14 @@ function GeneralTab({
           </Button>
         </CardHeader>
         <CardContent className="space-y-3">
+          <p className="text-xs text-muted">
+            Install Conveyor files a task to add agent instructions and Conveyor's skills, delivered as a pull request.
+          </p>
           {draft.repos.map((repo, index) => (
             <div
               key={index}
               data-testid="repository-row"
-              className="grid items-start gap-3 rounded-md border border-border p-3 md:grid-cols-[1fr_1.4fr_1fr_auto_auto]"
+              className="grid items-start gap-3 border-t border-border py-3 first:border-t-0 first:pt-0 md:grid-cols-[minmax(0,1fr)_minmax(0,1.6fr)_6.5rem_auto]"
             >
               <Field label="Name">
                 <Input value={repo.name} onChange={(event) => updateRepo(index, { name: event.target.value })} />
@@ -355,12 +352,24 @@ function GeneralTab({
                   onChange={(event) => updateRepo(index, { url: event.target.value, github: undefined })}
                 />
                 {githubSlug(repo.url) && (
-                  <span className="mt-1 block break-all font-mono text-xs text-muted">
+                  <span className="mt-1 block truncate text-xs text-faint">
                     GitHub slug: {repo.github ?? githubSlug(repo.url)}
                   </span>
                 )}
               </Field>
-              <div className="space-y-2">
+              <Field label="Base">
+                <Input value={repo.base} onChange={(event) => updateRepo(index, { base: event.target.value })} />
+              </Field>
+              <Button
+                size="icon"
+                variant="ghost"
+                className="self-end hover:text-failure"
+                aria-label={`Remove repository ${repo.name || index + 1}`}
+                onClick={() => update({ repos: draft.repos.filter((_, i) => i !== index) })}
+              >
+                <Trash2 />
+              </Button>
+              <div className="space-y-1 md:col-span-4">
                 <div className="flex items-center gap-2">
                   <Switch
                     aria-label="Install Conveyor"
@@ -369,9 +378,6 @@ function GeneralTab({
                   />
                   <span className="text-sm font-medium">Install Conveyor</span>
                 </div>
-                <p className="text-xs leading-5 text-muted">
-                  The factory files a task to add agent instructions and Conveyor's skills, delivered as a pull request.
-                </p>
                 {repo.install_task && (
                   <div
                     className="flex flex-wrap items-center gap-2 border-l border-border pl-2 text-xs"
@@ -389,26 +395,10 @@ function GeneralTab({
                   </div>
                 )}
               </div>
-              <Field label="Base">
-                <Input
-                  className="w-24"
-                  value={repo.base}
-                  onChange={(event) => updateRepo(index, { base: event.target.value })}
-                />
-              </Field>
-              <Button
-                size="icon"
-                variant="ghost"
-                className="mb-0.5 hover:text-failure"
-                aria-label={`Remove repository ${repo.name || index + 1}`}
-                onClick={() => update({ repos: draft.repos.filter((_, i) => i !== index) })}
-              >
-                <Trash2 />
-              </Button>
               {errors
                 .filter((error) => error.field === `repos[${index}]` || error.field.startsWith(`repos[${index}].`))
                 .map((error) => (
-                  <p key={error.field} role="alert" className="text-xs text-failure md:col-span-5">
+                  <p key={error.field} role="alert" className="text-xs text-failure md:col-span-4">
                     {error.message}
                   </p>
                 ))}
@@ -535,7 +525,7 @@ function PolicyTab({
   return (
     <div className="space-y-4">
       <Card>
-        <CardHeader>
+        <CardHeader className="flex-wrap">
           <CardTitle>Pipeline policy</CardTitle>
           <span className="text-xs text-faint">Defaults are frozen onto each task at intake.</span>
         </CardHeader>
@@ -624,7 +614,7 @@ function PolicyTab({
       </Card>
 
       <Card>
-        <CardHeader>
+        <CardHeader className="flex-wrap">
           <CardTitle>Stage timeouts</CardTitle>
           <span className="text-xs text-faint">Each value is a positive duration such as 30m or 4h.</span>
         </CardHeader>
