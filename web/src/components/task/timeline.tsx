@@ -101,7 +101,8 @@ export function Timeline({
   const canRequestChanges = useCanRequestTaskChanges(item.task)
   const members = useWorkspaceMembers()
   const entries = buildTimeline(item, members.data ?? [])
-  const nextAction = useNextAction(item.task.id).data
+  const nextActionQuery = useNextAction(item.task.id)
+  const nextAction = nextActionQuery.data
   const currentExecution = deriveCurrentExecutionState(item, nextAction)
   const { workspace } = useWorkspaceSelection()
   const usageReportedOrderIDs = reportedUsageOrderIDs(item)
@@ -180,8 +181,10 @@ export function Timeline({
             dot: 'bg-attention-dot',
             card: <FailedTriageCard key={failedTriage(item)?.jobId} item={item} />,
           },
+          // One button per act: while the server's next action offers a
+          // redispatch-path choice, the next-action card carries it (DEC-61).
           canRecover &&
-            canRedispatch(item) && {
+            canRedispatch(item, nextAction, nextActionQuery.isError) && {
               key: 'redispatch',
               dot: 'bg-edge',
               card: <RedispatchCard item={item} />,
