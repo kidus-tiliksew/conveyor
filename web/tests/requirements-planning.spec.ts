@@ -1063,8 +1063,8 @@ test('planning uses deployment configuration and sends no execution detail', asy
       createdWith = JSON.parse(route.request().postData() ?? '{}') as Record<string, unknown>
       return route.fulfill({
         json: {
-          id: 'session-new',
-          title: 'Planning work…',
+          id: 'session-260730-0a1b2c',
+          title: 'Planning delivery · 260730-0a1b2c',
           status: 'active',
           goal: createdWith.goal,
           effort: 'high',
@@ -1096,7 +1096,7 @@ test('finalize immediately reveals a complete bundle preview, approval, and crea
   let bundleReads = 0
   const session = () => ({
     id: 'session-bundle',
-    title: finalized ? 'Ship safe retries' : 'Planning delivery…',
+    title: finalized ? 'Ship safe retries' : 'Planning delivery · bundle',
     status: finalized ? ('finalized' as const) : ('active' as const),
     goal: 'bundle' as const,
     produced_bundle_id: finalized ? 'bundle-1' : undefined,
@@ -2545,13 +2545,22 @@ test('session lists label goals and the requirements surface has no freehand edi
   await initShell(page)
   const sessions = [
     {
-      id: 'session-drafting',
-      title: 'Drafting requirement…',
+      id: 'session-260730-d1a2f3',
+      title: 'Drafting requirement · 260730-d1a2f3',
       status: 'active',
       goal: 'requirement',
       workspace: 'demo',
       created_at: '2026-07-30T10:00:00Z',
       updated_at: '2026-07-30T10:02:00Z',
+    },
+    {
+      id: 'session-260730-e4b5c6',
+      title: 'Drafting requirement · 260730-e4b5c6',
+      status: 'active',
+      goal: 'requirement',
+      workspace: 'demo',
+      created_at: '2026-07-30T10:00:00Z',
+      updated_at: '2026-07-30T10:01:00Z',
     },
     {
       id: 'session-shipped',
@@ -2592,12 +2601,16 @@ test('session lists label goals and the requirements surface has no freehand edi
 
   await page.goto('/w/demo/planning')
   // Goal- and artifact-derived titles, never a wall of "New requirement".
-  await expect(page.getByRole('button', { name: /Drafting requirement…/ })).toBeVisible()
+  // Two open sessions of one goal are told apart by their provisional titles.
+  await expect(page.getByRole('button', { name: /Drafting requirement · 260730-d1a2f3/ })).toBeVisible()
+  await expect(page.getByRole('button', { name: /Drafting requirement · 260730-e4b5c6/ })).toBeVisible()
   await expect(page.getByRole('button', { name: /Ship bounded retries/ })).toBeVisible()
   await expect(page.getByText('New requirement', { exact: true })).toHaveCount(0)
   // Human-readable goals, never the raw enum. Pre-goal rows read as open.
   await expect(
-    page.getByRole('button', { name: /Drafting requirement…/ }).getByText('Requirement', { exact: true }),
+    page
+      .getByRole('button', { name: /Drafting requirement · 260730-d1a2f3/ })
+      .getByText('Requirement', { exact: true }),
   ).toBeVisible()
   await expect(
     page.getByRole('button', { name: /Ship bounded retries/ }).getByText('Blueprint', { exact: true }),

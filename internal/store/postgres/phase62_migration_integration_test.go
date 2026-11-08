@@ -1030,8 +1030,9 @@ func TestPlanningSessionGoalMigrationDefaultsExistingRowsToOpenIntegration(t *te
 	for _, goal := range []core.PlanningSessionGoal{
 		core.PlanningGoalRequirement, core.PlanningGoalSystemDesign, core.PlanningGoalBlueprint, core.PlanningGoalOpen,
 	} {
+		id := core.NewPlanningSessionID()
 		created, createErr := f.store.CreatePlanningSession(f.ctx, core.PlanningSession{
-			ID: "session-" + core.NewTaskID(), Title: goal.ProvisionalTitle(), Goal: goal,
+			ID: id, Title: goal.ProvisionalTitle(id), Goal: goal,
 		})
 		if createErr != nil || created.Goal != goal {
 			t.Fatalf("goal %q created=%+v err=%v", goal, created, createErr)

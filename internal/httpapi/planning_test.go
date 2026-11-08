@@ -506,8 +506,15 @@ func TestPlanningHTTPCreateDeclaresGoalAndProvisionalTitle(t *testing.T) {
 
 	code, drafting := create(`{"goal":"requirement"}`)
 	if code != http.StatusCreated || drafting.Goal != core.PlanningGoalRequirement ||
-		drafting.Title != "Drafting requirement…" {
+		drafting.Title != "Drafting requirement · "+strings.TrimPrefix(drafting.ID, "session-") {
 		t.Fatalf("requirement-goal create status=%d session=%+v", code, drafting)
+	}
+	// A second session of the same goal is told apart by its provisional title.
+	code, second := create(`{"goal":"requirement"}`)
+	if code != http.StatusCreated || second.Goal != core.PlanningGoalRequirement ||
+		second.Title != "Drafting requirement · "+strings.TrimPrefix(second.ID, "session-") ||
+		second.Title == drafting.Title {
+		t.Fatalf("second requirement-goal create status=%d session=%+v, first title %q", code, second, drafting.Title)
 	}
 	// A caller-supplied title carries no weight: the session is named by its
 	// goal and then by the artifact it produces.
@@ -518,7 +525,7 @@ func TestPlanningHTTPCreateDeclaresGoalAndProvisionalTitle(t *testing.T) {
 	// Omitting the goal stays compatible and reads back as open.
 	code, compatible := create(`{}`)
 	if code != http.StatusCreated || compatible.Goal != core.PlanningGoalOpen ||
-		compatible.Title != "Exploring…" {
+		compatible.Title != "Exploring · "+strings.TrimPrefix(compatible.ID, "session-") {
 		t.Fatalf("goal-less create status=%d session=%+v", code, compatible)
 	}
 	if code, _ = create(`{"goal":"epic"}`); code != http.StatusBadRequest {
@@ -527,8 +534,8 @@ func TestPlanningHTTPCreateDeclaresGoalAndProvisionalTitle(t *testing.T) {
 
 	ctx := store.WithWorkspace(store.WithActor(t.Context(), store.SystemActor()), "demo")
 	listed, err := st.ListPlanningSessions(ctx)
-	if err != nil || len(listed) != 2 {
-		t.Fatalf("listed=%d err=%v, want the two accepted sessions", len(listed), err)
+	if err != nil || len(listed) != 3 {
+		t.Fatalf("listed=%d err=%v, want the three accepted sessions", len(listed), err)
 	}
 	// The goal is declared once: there is no update route for it.
 	reread, err := st.GetPlanningSession(ctx, drafting.ID)
