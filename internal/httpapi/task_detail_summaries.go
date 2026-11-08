@@ -41,8 +41,6 @@ var humanTimelineEventKinds = []string{
 	"github.review_redirected",
 	"review.round_completed",
 	"work_order.preempted",
-	"merge.requested",
-	"merge.confirmed",
 	"merge.reconciled",
 	"merge.failed",
 	"merge.blocked",
@@ -60,7 +58,6 @@ var humanTimelineEventKinds = []string{
 	"job.log_stream_degraded",
 	"pipeline.bounced",
 	"task.state_changed",
-	"task.dependency_added",
 	"work_order.child_failed",
 	"work_order.stalled",
 }

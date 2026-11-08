@@ -201,7 +201,7 @@ func requireHumanAscending(t *testing.T, events []historyEventJSON) {
 
 var historyEpoch = time.Date(2026, 10, 1, 8, 0, 0, 0, time.UTC)
 
-var historyHumanKinds = []string{"review.round_completed", "merge.requested", "dispatch.failed", "approval.stale", "task.assignee.set", "merge.confirmed"}
+var historyHumanKinds = []string{"review.round_completed", "merge.reconciled", "dispatch.failed", "approval.stale", "task.assignee.set", "merge.blocked"}
 
 // seedHistoryFixture creates taskID with exactly total events, reconciled of
 // them dispatch.reconciled. The first non-reconciled events are an early
@@ -594,7 +594,7 @@ func ledgerEvent(taskID string, id int64, offset time.Duration, kind, payload st
 func TestTaskHistoryRestartsOnDelayedLowerIDCommit(t *testing.T) {
 	st := newLedgerStore(t, "delayed-task")
 	for i := int64(0); i < 120; i++ {
-		st.commit(ledgerEvent("delayed-task", 1000+i*10, time.Duration(i)*time.Second, "merge.requested", `{}`))
+		st.commit(ledgerEvent("delayed-task", 1000+i*10, time.Duration(i)*time.Second, "merge.reconciled", `{}`))
 	}
 	h := newHistoryHarness(t, st)
 	for round, selection := range []string{"technical", "human"} {
@@ -604,12 +604,12 @@ func TestTaskHistoryRestartsOnDelayedLowerIDCommit(t *testing.T) {
 		}
 		detail, _ := h.bounded("delayed-task")
 		// A higher ID above the captured ceiling stays outside the traversal.
-		st.commit(ledgerEvent("delayed-task", 999_999+int64(round), time.Hour, "merge.requested", `{}`))
+		st.commit(ledgerEvent("delayed-task", 999_999+int64(round), time.Hour, "merge.reconciled", `{}`))
 		if _, response := h.history(historyTokenA, "delayed-task", "?cursor="+url.QueryEscape(first.OlderCursor)); response.Code != http.StatusOK {
 			t.Fatalf("append above ceiling refused the traversal: %d", response.Code)
 		}
 		// A lower ID under the ceiling becomes visible after capture.
-		st.commit(ledgerEvent("delayed-task", 1001+2*int64(round), 30*time.Second, "merge.requested", `{}`))
+		st.commit(ledgerEvent("delayed-task", 1001+2*int64(round), 30*time.Second, "merge.reconciled", `{}`))
 		for _, cursor := range []string{first.OlderCursor, detail.EventPage.OlderCursor} {
 			response := h.get(historyTokenA, "/v1/tasks/delayed-task/history?cursor="+url.QueryEscape(cursor))
 			var body map[string]string
@@ -625,7 +625,7 @@ func TestTaskHistoryCursorRefusals(t *testing.T) {
 	st := newLedgerStore(t, "cursor-task", "sibling-task")
 	for _, taskID := range []string{"cursor-task", "sibling-task"} {
 		for i := int64(0); i < 30; i++ {
-			st.commit(ledgerEvent(taskID, 100+i, time.Duration(i)*time.Second, "merge.requested", `{}`))
+			st.commit(ledgerEvent(taskID, 100+i, time.Duration(i)*time.Second, "merge.reconciled", `{}`))
 		}
 	}
 	clock := historyEpoch
@@ -747,9 +747,9 @@ func TestTaskHistoryExactLargeIDsPayloadOmissionAndAuditRecovery(t *testing.T) {
 	big := `{"review_round":3,"approved":false,"reviews":[{"review_work_order_id":"order-a"},{"review_work_order_id":"order-b"}],"summary":"` + strings.Repeat("s", 9000) + `"}`
 	st.commit(
 		ledgerEvent("wide-task", above+4, 0, "review.round_completed", big),
-		ledgerEvent("wide-task", above+2, time.Second, "merge.requested", `{"url":"https://example.test/pr/3"}`),
+		ledgerEvent("wide-task", above+2, time.Second, "merge.reconciled", `{"url":"https://example.test/pr/3"}`),
 		// A lower ID committed with the same instant sorts first.
-		ledgerEvent("wide-task", above, time.Second, "merge.confirmed", `{"governance_snapshot":{"notes":["x"]},"url":"u"}`),
+		ledgerEvent("wide-task", above, time.Second, "merge.blocked", `{"governance_snapshot":{"notes":["x"]},"url":"u"}`),
 	)
 	h := newHistoryHarness(t, st)
 	page, response := h.history(historyTokenA, "wide-task", "?limit=2")
@@ -789,6 +789,46 @@ func TestTaskHistoryExactLargeIDsPayloadOmissionAndAuditRecovery(t *testing.T) {
 	detail, _ := h.bounded("wide-task")
 	if len(detail.Events) != 3 || detail.Events[2].ID != "9007199254740995" || !detail.Events[0].PayloadOmitted || detail.Events[0].PayloadIndex["review_round"] == nil {
 		t.Fatalf("bounded large-ID view: %+v", detail.Events)
+	}
+}
+
+// A merge request, its GitHub confirmation, and a dependency wait leave the
+// human selection but stay recorded: technical history pages and the audit
+// read still return them, while the bounded view and human pages keep only
+// the reconciled merge (component-web-task-surfaces "One human list"; task
+// 261108-38aabb).
+func TestTaskHistoryKeepsTimelineHiddenKindsTechnical(t *testing.T) {
+	st := newLedgerStore(t, "hidden-task")
+	st.commit(
+		ledgerEvent("hidden-task", 1, time.Second, "task.dependency_added", `{"depends_on_task_id":"prereq-task"}`),
+		ledgerEvent("hidden-task", 2, 2*time.Second, "merge.requested", `{"url":"https://example.test/pr/9"}`),
+		ledgerEvent("hidden-task", 3, 3*time.Second, "merge.confirmed", `{"url":"https://example.test/pr/9"}`),
+		ledgerEvent("hidden-task", 4, 4*time.Second, "merge.reconciled", `{"url":"https://example.test/pr/9"}`),
+	)
+	h := newHistoryHarness(t, st)
+	kinds := func(events []historyEventJSON) []string {
+		var out []string
+		for _, event := range events {
+			out = append(out, event.Kind)
+		}
+		return out
+	}
+	technical, response := h.history(historyTokenA, "hidden-task", "?selection=technical&limit=10")
+	if want := []string{"task.dependency_added", "merge.requested", "merge.confirmed", "merge.reconciled"}; response.Code != http.StatusOK || !slices.Equal(kinds(technical.Events), want) {
+		t.Fatalf("technical page kinds=%v want %v (%d)", kinds(technical.Events), want, response.Code)
+	}
+	human, response := h.history(historyTokenA, "hidden-task", "?selection=human&limit=10")
+	if response.Code != http.StatusOK || !slices.Equal(kinds(human.Events), []string{"merge.reconciled"}) {
+		t.Fatalf("human page kinds=%v (%d)", kinds(human.Events), response.Code)
+	}
+	detail, _ := h.bounded("hidden-task")
+	if !slices.Equal(kinds(detail.Events), []string{"merge.reconciled"}) || detail.EventPage.Returned != 1 {
+		t.Fatalf("bounded view kinds=%v page=%+v", kinds(detail.Events), detail.EventPage)
+	}
+	for _, id := range []string{"1", "2", "3"} {
+		if audit := h.get(historyTokenA, "/v1/tasks/hidden-task/audit/event/"+id); audit.Code != http.StatusOK {
+			t.Fatalf("audit read of event %s: %d", id, audit.Code)
+		}
 	}
 }
 
@@ -838,7 +878,7 @@ func TestTaskEventPayloadIndexBoundsAndMinimalForm(t *testing.T) {
 	// progresses past it.
 	st := newLedgerStore(t, "minimal-task")
 	for i := int64(1); i <= 12; i++ {
-		event := ledgerEvent("minimal-task", i, time.Duration(i)*time.Second, "merge.requested", `{}`)
+		event := ledgerEvent("minimal-task", i, time.Duration(i)*time.Second, "merge.reconciled", `{}`)
 		if i == 6 {
 			event.ActorID = strings.Repeat("a", 20_000)
 		}
@@ -939,7 +979,7 @@ func TestBoundedTaskActivityLoadsOneHistory(t *testing.T) {
 	if err := base.CreateTask(ctx, core.Task{ID: "one-read", Workspace: historyWorkspace, State: core.TaskRunning}); err != nil {
 		t.Fatal(err)
 	}
-	if err := base.AppendEvent(ctx, core.Event{TaskID: "one-read", Kind: "merge.requested"}); err != nil {
+	if err := base.AppendEvent(ctx, core.Event{TaskID: "one-read", Kind: "merge.reconciled"}); err != nil {
 		t.Fatal(err)
 	}
 	observed := &observedStore{Store: base}
