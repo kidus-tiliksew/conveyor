@@ -1333,6 +1333,10 @@ WHERE t.workspace_id = $1
                SELECT 1 FROM tasks child
                WHERE child.workspace_id = t.workspace_id AND child.parent_task_id = t.id
            )))
+  AND (NOT $13::boolean OR NOT EXISTS (
+           SELECT 1 FROM tasks child
+           WHERE child.workspace_id = t.workspace_id AND child.parent_task_id = t.id
+       ))
 `
 
 type CountTaskOperationsTasksParams struct {
@@ -1348,6 +1352,7 @@ type CountTaskOperationsTasksParams struct {
 	UpdatedFrom        pgtype.Timestamptz `json:"updated_from"`
 	UpdatedTo          pgtype.Timestamptz `json:"updated_to"`
 	OpenOnly           bool               `json:"open_only"`
+	ExcludeAnchors     bool               `json:"exclude_anchors"`
 }
 
 func (q *Queries) CountTaskOperationsTasks(ctx context.Context, arg CountTaskOperationsTasksParams) (int64, error) {
@@ -1364,6 +1369,7 @@ func (q *Queries) CountTaskOperationsTasks(ctx context.Context, arg CountTaskOpe
 		arg.UpdatedFrom,
 		arg.UpdatedTo,
 		arg.OpenOnly,
+		arg.ExcludeAnchors,
 	)
 	var column_1 int64
 	err := row.Scan(&column_1)
@@ -1524,6 +1530,10 @@ WHERE t.workspace_id = $1
                SELECT 1 FROM tasks child
                WHERE child.workspace_id = t.workspace_id AND child.parent_task_id = t.id
            )))
+  AND (NOT $15::boolean OR NOT EXISTS (
+           SELECT 1 FROM tasks child
+           WHERE child.workspace_id = t.workspace_id AND child.parent_task_id = t.id
+       ))
 ORDER BY t.created_at DESC, t.id
 LIMIT NULLIF($13::int, 0)
 OFFSET $12::int
@@ -1544,6 +1554,7 @@ type ListTaskOperationsTasksParams struct {
 	PageOffset         int32              `json:"page_offset"`
 	PageLimit          int32              `json:"page_limit"`
 	OpenOnly           bool               `json:"open_only"`
+	ExcludeAnchors     bool               `json:"exclude_anchors"`
 }
 
 type ListTaskOperationsTasksRow struct {
@@ -1580,6 +1591,7 @@ func (q *Queries) listTaskOperationsTasksRows(ctx context.Context, query string,
 		arg.PageOffset,
 		arg.PageLimit,
 		arg.OpenOnly,
+		arg.ExcludeAnchors,
 	)
 	if err != nil {
 		return nil, err

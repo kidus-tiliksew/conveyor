@@ -746,6 +746,12 @@ func taskPredicate(ctx context.Context, f store.TaskFilter) (string, []any) {
 	if f.Open {
 		q += " AND state NOT IN ('merged','closed') AND NOT EXISTS (SELECT 1 FROM tasks child WHERE child.workspace_id=tasks.workspace_id AND child.parent_task_id=tasks.id)"
 	}
+	// ExcludeBlueprintAnchors drops every task another task names as its
+	// parent before LIMIT/OFFSET and in the count, so the Board's page and
+	// total share one anchor rule (component-web-task-surfaces invariant 15).
+	if f.ExcludeBlueprintAnchors {
+		q += " AND NOT EXISTS (SELECT 1 FROM tasks child WHERE child.workspace_id=tasks.workspace_id AND child.parent_task_id=tasks.id)"
+	}
 	if f.Assignee == "unassigned" {
 		q += " AND assignee_user_id IS NULL"
 	} else if f.Assignee != "" {

@@ -1316,13 +1316,13 @@ func TestCreateSessionDeclaresGoalWithProvisionalTitle(t *testing.T) {
 	}
 	for _, test := range []struct {
 		goal  core.PlanningSessionGoal
-		title string
+		label string
 	}{
-		{core.PlanningGoalRequirement, "Drafting requirement…"},
-		{core.PlanningGoalSystemDesign, "Designing system…"},
-		{core.PlanningGoalBundle, "Planning delivery…"},
-		{core.PlanningGoalOpen, "Exploring…"},
-		{"", "Exploring…"},
+		{core.PlanningGoalRequirement, "Drafting requirement"},
+		{core.PlanningGoalSystemDesign, "Designing system"},
+		{core.PlanningGoalBundle, "Planning delivery"},
+		{core.PlanningGoalOpen, "Exploring"},
+		{"", "Exploring"},
 	} {
 		created, err := service.CreateSession(ctx, CreateSessionInput{Goal: test.goal})
 		if err != nil {
@@ -1332,12 +1332,13 @@ func TestCreateSessionDeclaresGoalWithProvisionalTitle(t *testing.T) {
 		if wantGoal == "" {
 			wantGoal = core.PlanningGoalOpen
 		}
-		if created.Goal != wantGoal || created.Title != test.title {
+		wantTitle := test.label + " · " + strings.TrimPrefix(created.ID, "session-")
+		if created.Goal != wantGoal || created.Title != wantTitle {
 			t.Fatalf("goal %q created=%+v, want goal %q title %q",
-				test.goal, created, wantGoal, test.title)
+				test.goal, created, wantGoal, wantTitle)
 		}
 		read, err := st.GetPlanningSession(ctx, created.ID)
-		if err != nil || read.Goal != wantGoal || read.Title != test.title {
+		if err != nil || read.Goal != wantGoal || read.Title != wantTitle {
 			t.Fatalf("goal %q read back=%+v err=%v", test.goal, read, err)
 		}
 	}
@@ -1353,6 +1354,91 @@ func TestCreateSessionDeclaresGoalWithProvisionalTitle(t *testing.T) {
 	listed, err := st.ListPlanningSessions(ctx)
 	if err != nil || len(listed) != 5 {
 		t.Fatalf("listed=%d err=%v, want the five accepted sessions", len(listed), err)
+	}
+}
+
+// Sessions of one goal that start together, in the same second and
+// concurrently, carry different provisional titles. A start barrier releases
+// every creation at once; the titles differ because each derives from its own
+// session ID, which the store keys uniquely, not from the start time.
+func TestCreateSessionGivesConcurrentSessionsOfOneGoalDistinctTitles(t *testing.T) {
+	tmp := t.TempDir()
+	repo := createPlanningRepo(t, filepath.Join(tmp, "primary"), "README.md", "planning fixture\n")
+	cfg := &config.Config{
+		Workspace:      "demo",
+		Repos:          []config.Repo{{Name: "primary", URL: "file://" + repo, Base: "main"}},
+		PlanningModels: []string{"planner"},
+		ExecutionSettings: &config.ContextualExecutionSettings{ControlPlane: config.ControlPlaneSettings{
+			Planning: config.PlanningSettings{Model: "planner", Effort: "high", TimeoutText: "10m"},
+		}},
+	}
+	ctx := store.WithWorkspace(store.WithActor(t.Context(), store.SystemActor()), "demo")
+	st := store.NewMemory()
+	service := &Service{
+		Store: st, Git: planningSnapshotManager(t, cfg), CredentialContext: planningTestCredential,
+		ConfigProvider: func(context.Context) (*config.Config, error) { return cfg, nil },
+	}
+	const sessions = 8
+	start := make(chan struct{})
+	created := make([]core.PlanningSession, sessions)
+	errs := make([]error, sessions)
+	var wg sync.WaitGroup
+	for i := range sessions {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			<-start
+			created[i], errs[i] = service.CreateSession(ctx, CreateSessionInput{Goal: core.PlanningGoalRequirement})
+		}()
+	}
+	close(start)
+	wg.Wait()
+	titles := map[string]string{}
+	for i, session := range created {
+		if errs[i] != nil {
+			t.Fatalf("create %d: %v", i, errs[i])
+		}
+		if !strings.HasPrefix(session.Title, "Drafting requirement · ") {
+			t.Fatalf("title %q does not say the session drafts a requirement", session.Title)
+		}
+		if other, exists := titles[session.Title]; exists {
+			t.Fatalf("sessions %s and %s share provisional title %q", other, session.ID, session.Title)
+		}
+		titles[session.Title] = session.ID
+	}
+	listed, err := st.ListPlanningSessions(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	open := map[string]bool{}
+	for _, session := range listed {
+		if session.Status != core.PlanningSessionActive || session.Goal != core.PlanningGoalRequirement {
+			continue
+		}
+		if open[session.Title] {
+			t.Fatalf("open requirement sessions share stored title %q", session.Title)
+		}
+		open[session.Title] = true
+	}
+	if len(open) != sessions {
+		t.Fatalf("open requirement sessions=%d, want %d", len(open), sessions)
+	}
+}
+
+// Every corrective example that an invalid planning tool call receives passes
+// the same validator the tool runs, so a model that copies the example's shape
+// is not refused again. The loop covers every registered tool, so a future
+// example that breaks its tool's rules fails here.
+func TestExpectedToolArgumentsPassTheirToolValidator(t *testing.T) {
+	for _, name := range toolNames() {
+		example := expectedToolArguments(name)
+		if !json.Valid([]byte(example)) {
+			t.Fatalf("%s example is not JSON: %s", name, example)
+		}
+		call := toolCall{ID: "example-" + name, Name: name, ArgumentsJSON: example}
+		if err := validatePlanningToolArguments(call, DefaultMaxToolBytes); err != nil {
+			t.Errorf("%s example fails its validator: %v\nexample: %s", name, err, example)
+		}
 	}
 }
 

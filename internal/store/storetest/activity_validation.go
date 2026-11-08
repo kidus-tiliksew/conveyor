@@ -303,3 +303,126 @@ func RunActivityValidationConformance(t *testing.T, x Fixture) {
 		t.Fatalf("ListActivityMarkers = %v, want the task-scoped markers %v", got, want)
 	}
 }
+
+// RunActivityAnchorPagingConformance proves the Board's paged activity read
+// on every backend: with ExcludeBlueprintAnchors set, the store leaves out
+// every task another task names as its parent inside the read, so the total
+// and every page count only shown rows, in creation order newest first then
+// ID, and the last page is full or ends the list (component-web-task-surfaces
+// invariants 15 and 18; req-operator-next-action AC-6.12). The unfiltered
+// read that backs GET /v1/reviews keeps anchors. When a listed task gains its
+// first child, the validation read changes while the total stays the same, so
+// the Board's 304 tag cannot keep a page that still shows the new anchor.
+func RunActivityAnchorPagingConformance(t *testing.T, x Fixture) {
+	st, ws := x.Backend, x.Workspace
+	ctx := store.WithActor(x.Context, store.Actor{ID: requirementConformanceActor, Role: core.ActorHuman})
+	now := time.Now().UTC().Truncate(time.Microsecond).Add(time.Minute)
+	suffix := core.NewTaskID()
+	id := func(name string) string { return name + "-" + suffix }
+	create := func(name, parent string, day int) {
+		t.Helper()
+		taskID := id(name)
+		parentID := ""
+		if parent != "" {
+			parentID = id(parent)
+		}
+		if err := st.CreateTask(ctx, core.Task{
+			ID: taskID, Workspace: ws, Repo: "conveyor", BaseBranch: "main", Branch: "conveyor/task-" + taskID,
+			Title: "Beacon " + name, Source: "operator", ParentTaskID: parentID, State: core.TaskQueued,
+			NextStage: core.StageImplement, CreatedAt: time.Date(2024, time.March, day, 12, 0, 0, 0, time.UTC),
+		}); err != nil {
+			t.Fatalf("seed %s: %v", taskID, err)
+		}
+	}
+	// Anchors sit at the head, in the middle, and at the tail of the
+	// creation order, so a read that paged before dropping them would return
+	// short pages and an empty last page.
+	create("beacon-anchor-head", "", 20)
+	create("beacon-0", "", 19)
+	create("beacon-1", "", 18)
+	create("beacon-anchor-middle", "", 17)
+	create("beacon-2", "", 16)
+	create("beacon-3", "", 15)
+	create("beacon-anchor-tail", "", 2)
+	create("beacon-child-head", "beacon-anchor-head", 14)
+	create("beacon-child-middle", "beacon-anchor-middle", 13)
+	create("beacon-child-tail", "beacon-anchor-tail", 12)
+	anchors := []string{id("beacon-anchor-head"), id("beacon-anchor-middle"), id("beacon-anchor-tail")}
+	board := store.TaskFilter{Query: "beacon", ExcludeBlueprintAnchors: true}
+	readPages := func(limit int) ([]string, int) {
+		t.Helper()
+		var ids []string
+		total := -1
+		for offset := 0; ; offset += limit {
+			page, err := st.ListTaskPage(ctx, store.TaskOperationsQuery{TaskFilter: board, Limit: limit, Offset: offset})
+			if err != nil {
+				t.Fatalf("ListTaskPage offset %d: %v", offset, err)
+			}
+			if total == -1 {
+				total = page.Total
+			} else if page.Total != total {
+				t.Fatalf("page at offset %d total=%d, first page total=%d", offset, page.Total, total)
+			}
+			// Every page before the total is full; the page at the total
+			// ends the list.
+			want := min(limit, max(total-offset, 0))
+			if len(page.Tasks) != want {
+				t.Fatalf("page at offset %d holds %d rows, want %d (total %d)", offset, len(page.Tasks), want, total)
+			}
+			for _, task := range page.Tasks {
+				if slices.Contains(anchors, task.ID) || core.BlueprintAnchor(task) {
+					t.Fatalf("page at offset %d carries blueprint anchor %s", offset, task.ID)
+				}
+			}
+			ids = append(ids, taskIDs(page.Tasks)...)
+			if len(page.Tasks) == 0 {
+				return ids, total
+			}
+		}
+	}
+	shown := []string{id("beacon-0"), id("beacon-1"), id("beacon-2"), id("beacon-3"), id("beacon-child-head"), id("beacon-child-middle"), id("beacon-child-tail")}
+	for _, limit := range []int{1, 2, 3, 7, 100} {
+		ids, total := readPages(limit)
+		assertTaskIDs(t, "Board pages", ids, shown)
+		if total != len(shown) {
+			t.Fatalf("limit %d total=%d, want %d", limit, total, len(shown))
+		}
+	}
+	unfiltered, err := st.ListTasksFiltered(ctx, store.TaskFilter{Query: "beacon"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := taskIDs(unfiltered); len(got) != len(shown)+len(anchors) {
+		t.Fatalf("unfiltered read = %v, want the shown rows and the anchors", got)
+	}
+	for _, anchor := range anchors {
+		if !slices.Contains(taskIDs(unfiltered), anchor) {
+			t.Fatalf("unfiltered read dropped anchor %s", anchor)
+		}
+	}
+	filtered, err := st.ListTasksFiltered(ctx, board)
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertTaskIDs(t, "ListTasksFiltered", taskIDs(filtered), shown)
+
+	// A listed task gains its first child: the page drops it and lists the
+	// child, the total is unchanged, and the validation read changes.
+	before, err := st.ReadActivityValidation(ctx, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	create("beacon-child-0", "beacon-0", 11)
+	after, err := st.ReadActivityValidation(ctx, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if after == before {
+		t.Fatalf("a listed task's first child left the validation unchanged: %+v", after)
+	}
+	ids, total := readPages(2)
+	assertTaskIDs(t, "Board pages after a first child", ids, []string{id("beacon-1"), id("beacon-2"), id("beacon-3"), id("beacon-child-head"), id("beacon-child-middle"), id("beacon-child-tail"), id("beacon-child-0")})
+	if total != len(shown) {
+		t.Fatalf("total after a first child = %d, want %d", total, len(shown))
+	}
+}

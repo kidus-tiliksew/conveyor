@@ -1609,6 +1609,14 @@ func (s *Server) listActivity(w http.ResponseWriter, r *http.Request) {
 	if query.Limit == 0 {
 		query.Limit = 100
 	}
+	// Blueprint anchors are intent artifacts, not claimable work, so they
+	// leave the Board for the Blueprints surface. The store drops them inside
+	// the paged read, so X-Conveyor-Total, the limit, and the offset count
+	// only the rows the Board shows (component-web-task-surfaces invariant 15;
+	// req-operator-next-action AC-6.12). The member is part of the parsed
+	// query the 304 tag binds, and the anchor rule reads only tasks rows,
+	// which the validation read signs (invariants 17 and 18).
+	query.ExcludeBlueprintAnchors = true
 	s.listActivityPage(w, r, query)
 }
 
@@ -1770,14 +1778,10 @@ func (s *Server) writeActivityItems(w http.ResponseWriter, r *http.Request, task
 	items := make([]activityItem, 0, len(tasks))
 	fullItems := make([]activityItem, 0, len(tasks))
 	for _, task := range tasks {
-		// Blueprint anchors are intent artifacts, not claimable work, so they
-		// leave the stage-grouped board and its counts for the Blueprints
-		// surface (component-http-api). The review inbox projection keeps them: an
-		// anchor at its spec gate has not materialized children yet, so it is
-		// not classified here and its approval card is untouched.
-		if !reviewsOnly && core.BlueprintAnchor(task) {
-			continue
-		}
+		// Every row the store returned is projected: the Board and attention
+		// reads exclude blueprint anchors inside their paged store reads, so a
+		// page never holds fewer rows than its total accounts for. The review
+		// inbox projection keeps anchors (component-web-task-surfaces).
 		marker := markerByTask[task.ID]
 		if core.TaskTerminal(task.State) {
 			marker.Stalled = nil
