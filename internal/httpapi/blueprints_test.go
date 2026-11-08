@@ -2,8 +2,11 @@ package httpapi
 
 import (
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"slices"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -180,6 +183,136 @@ func TestReviewInboxKeepsBlueprintAnchors(t *testing.T) {
 	}
 	if !gatedOnBoard {
 		t.Fatalf("a blueprint awaiting its spec gate left the board: %v", board)
+	}
+}
+
+// boardPage is one Board activity response's rows and paging headers.
+type boardPage struct {
+	ids                  []string
+	total, limit, offset string
+	etag                 string
+	code                 int
+}
+
+func (f *activityConditionalFixture) boardPage(path, etag string) boardPage {
+	f.t.Helper()
+	response := f.read(path, etag)
+	page := boardPage{
+		code: response.Code, etag: response.Header().Get("ETag"),
+		total: response.Header().Get("X-Conveyor-Total"), limit: response.Header().Get("X-Conveyor-Limit"),
+		offset: response.Header().Get("X-Conveyor-Offset"),
+	}
+	if response.Code == http.StatusNotModified {
+		return page
+	}
+	if response.Code != http.StatusOK {
+		f.t.Fatalf("%s status=%d body=%s", path, response.Code, response.Body.String())
+	}
+	var items []activityItem
+	if err := json.Unmarshal(response.Body.Bytes(), &items); err != nil {
+		f.t.Fatal(err)
+	}
+	for _, item := range items {
+		page.ids = append(page.ids, item.Task.ID)
+	}
+	return page
+}
+
+// childTask creates a task naming parent as its blueprint parent, without
+// an event, so only the tasks row changes.
+func (f *activityConditionalFixture) childTask(id, parent string, created time.Time) {
+	f.t.Helper()
+	if err := f.base.CreateTask(f.ctx, core.Task{ID: id, Workspace: "demo", Title: "Title " + id, Repo: "conveyor", ParentTaskID: parent, State: core.TaskQueued, NextStage: core.StageImplement, CreatedAt: created}); err != nil {
+		f.t.Fatal(err)
+	}
+}
+
+// The Board's activity read excludes blueprint anchors before it pages, so
+// X-Conveyor-Total and every page count only the rows the Board shows and
+// the last page is full or ends the list, while GET /v1/reviews still lists
+// the anchors (component-web-task-surfaces invariant 15 and public surfaces;
+// req-operator-next-action AC-6.12).
+func TestBoardActivityPagesExcludeBlueprintAnchors(t *testing.T) {
+	f := newActivityConditionalFixture(t)
+	created := func(minutes int) time.Time { return f.now.Add(-time.Duration(minutes) * time.Minute) }
+	seed := func(id string, state core.TaskState, minutes int) {
+		t.Helper()
+		if err := f.base.CreateTask(f.ctx, core.Task{ID: id, Workspace: "demo", Title: "Title " + id, Repo: "conveyor", State: state, NextStage: core.StageImplement, CreatedAt: created(minutes)}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// Anchors at the head, the middle, and the tail of the creation order:
+	// paging before dropping them gave short pages and an empty last page.
+	seed("anchor-head", core.TaskAwaiting, 10)
+	seed("row-1", core.TaskQueued, 20)
+	seed("row-2", core.TaskQueued, 30)
+	seed("anchor-middle", core.TaskAwaiting, 40)
+	seed("row-3", core.TaskQueued, 50)
+	seed("anchor-tail", core.TaskAwaiting, 200)
+	f.childTask("child-head", "anchor-head", created(60))
+	f.childTask("child-middle", "anchor-middle", created(70))
+	f.childTask("child-tail", "anchor-tail", created(80))
+	shown := []string{"row-1", "row-2", "row-3", "child-head", "child-middle", "child-tail"}
+	anchors := []string{"anchor-head", "anchor-middle", "anchor-tail"}
+
+	for _, limit := range []int{1, 2, 4, 6, 100} {
+		var ids []string
+		for offset := 0; ; offset += limit {
+			page := f.boardPage(fmt.Sprintf("/v1/activity?limit=%d&offset=%d", limit, offset), "")
+			if page.total != strconv.Itoa(len(shown)) || page.limit != strconv.Itoa(limit) || page.offset != strconv.Itoa(offset) {
+				t.Fatalf("limit %d offset %d headers total=%s limit=%s offset=%s, want total %d", limit, offset, page.total, page.limit, page.offset, len(shown))
+			}
+			if want := min(limit, max(len(shown)-offset, 0)); len(page.ids) != want {
+				t.Fatalf("limit %d offset %d holds %v, want %d rows", limit, offset, page.ids, want)
+			}
+			ids = append(ids, page.ids...)
+			if len(page.ids) == 0 {
+				break
+			}
+		}
+		if !slices.Equal(ids, shown) {
+			t.Fatalf("limit %d pages = %v, want %v", limit, ids, shown)
+		}
+	}
+	reviews := listActivityTaskIDs(t, f.handler, "/v1/reviews")
+	for _, anchor := range anchors {
+		if !slices.Contains(reviews, anchor) {
+			t.Fatalf("GET /v1/reviews dropped blueprint anchor %s: %v", anchor, reviews)
+		}
+	}
+}
+
+// When a listed task gains its first child, the Board's old tag must not
+// admit a 304: the anchor rule reads only tasks rows, which the validation
+// read signs, so the tag changes although the total does not
+// (component-web-task-surfaces invariants 17 and 18).
+func TestBoardActivityTagChangesWhenListedTaskGainsFirstChild(t *testing.T) {
+	f := newActivityConditionalFixture(t)
+	f.task("becomes-anchor", core.TaskQueued)
+	other := f.task("stays-listed", core.TaskQueued)
+	cold := f.boardPage("/v1/activity", "")
+	if cold.code != http.StatusOK || cold.total != "2" || !slices.Contains(cold.ids, "becomes-anchor") || cold.etag == "" {
+		t.Fatalf("cold read = %+v", cold)
+	}
+	if warm := f.boardPage("/v1/activity", cold.etag); warm.code != http.StatusNotModified {
+		t.Fatalf("unchanged Board read status=%d, want 304", warm.code)
+	}
+
+	// The child is created without an event, so only the tasks rows change.
+	f.childTask("first-child", "becomes-anchor", other.CreatedAt.Add(-time.Minute))
+	f.counted.reset()
+	changed := f.boardPage("/v1/activity", cold.etag)
+	if changed.code != http.StatusOK {
+		t.Fatalf("the old tag admitted status=%d after a listed task gained its first child", changed.code)
+	}
+	if changed.total != "2" || !slices.Equal(changed.ids, []string{"stays-listed", "first-child"}) {
+		t.Fatalf("after the first child total=%s rows=%v, want 2 rows without the new anchor", changed.total, changed.ids)
+	}
+	if changed.etag == "" || changed.etag == cold.etag {
+		t.Fatalf("tag after the first child = %q, before = %q", changed.etag, cold.etag)
+	}
+	if again := f.boardPage("/v1/activity", changed.etag); again.code != http.StatusNotModified {
+		t.Fatalf("the new tag status=%d, want 304", again.code)
 	}
 }
 
