@@ -385,6 +385,10 @@ type Secondary struct {
 type Refusal struct {
 	Choice string `json:"choice"`
 	Text   string `json:"text"`
+	// Code is the route's refusal code when the route answers one, such as
+	// core.ApproveWithoutReviewCode. Text never carries it
+	// (component-next-action invariant 18).
+	Code string `json:"code,omitempty"`
 }
 
 type Details struct {

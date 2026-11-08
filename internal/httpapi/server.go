@@ -1016,6 +1016,20 @@ func (s *Server) reviewTask(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
+	if request.Action == core.InterventionApprove && (task.GateKind == core.GateKindReviewBounceLimit || task.GateKind == core.GateKindJobFailure) {
+		// An approve at a gate no review reached is refused before any
+		// intervention is recorded, with the predicate the next action uses to
+		// withhold it. The dispatcher applies it again under the task's lock
+		// (component-next-action invariant 7; req-operator-next-action AC-1.4).
+		if err := store.UnreviewedApproveRefusal(r.Context(), s.Store, task); err != nil {
+			if errors.Is(err, store.ErrApproveWithoutReview) {
+				writeApproveWithoutReview(w)
+				return
+			}
+			writeStoreFailure(w, r, err)
+			return
+		}
+	}
 	interventionRecorded := false
 	if planRevisionGate {
 		// A revision approval can make a plan order claimable immediately. Record
@@ -1035,6 +1049,8 @@ func (s *Server) reviewTask(w http.ResponseWriter, r *http.Request) {
 		if err := s.OnIntervention(r.Context(), task, latestJob, intervention); err != nil {
 			var invalidTransition *core.ErrInvalidTransition
 			switch {
+			case errors.Is(err, store.ErrApproveWithoutReview):
+				writeApproveWithoutReview(w)
 			case errors.As(err, &invalidTransition), errors.Is(err, dispatch.ErrReviewedHeadUnavailable):
 				http.Error(w, err.Error(), http.StatusConflict)
 			case github.ErrorCategory(err) != "" && !errors.Is(err, store.ErrBackendOperation):
@@ -1073,6 +1089,13 @@ func (s *Server) reviewTask(w http.ResponseWriter, r *http.Request) {
 		"checkout_available": checkoutAvailable,
 		"checkout_guidance":  checkoutGuidance,
 	})
+}
+
+// writeApproveWithoutReview answers the refused approve at a gate no review
+// reached: 409 with the refusal code and its plain sentence, which carries no
+// identifier (component-next-action invariant 18).
+func writeApproveWithoutReview(w http.ResponseWriter) {
+	writeJSON(w, http.StatusConflict, map[string]string{"error": core.ApproveWithoutReviewCode, "message": core.ApproveWithoutReviewRefusal})
 }
 
 func (s *Server) mergeTask(w http.ResponseWriter, r *http.Request) {

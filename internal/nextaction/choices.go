@@ -21,6 +21,24 @@ func reviewChoices(approveLabel string) []ChoiceSpec {
 	}
 }
 
+// triageRetryChoices are the review-route choices of a triage job_failure.
+// The redirect choice is labelled Retry, because redirect returns the task to
+// its recorded recovery stage and runs triage again. Its act and request body
+// are unchanged, and its effect says the guidance the dashboard's redirect
+// form requires travels with it (component-next-action invariants 8, 20;
+// req-intake-and-triage AC-3.4). Approve stays listed so its refusal is
+// recorded in details.refusals.
+func triageRetryChoices() []ChoiceSpec {
+	choices := reviewChoices("Approve")
+	for i := range choices {
+		if choices[i].ID == "redirect" {
+			choices[i].Label = "Retry"
+			choices[i].Effect = "Runs triage again with the guidance you give."
+		}
+	}
+	return choices
+}
+
 func revisionChoices() []ChoiceSpec {
 	return []ChoiceSpec{
 		{ID: "approve_revision", Label: "Approve revision", Effect: "Accepts the revised plan.", Method: "POST", Path: "/v1/tasks/{id}/review", Capability: core.CapabilityOperateGates},
@@ -367,9 +385,9 @@ func selectChoices(in Input, specs []ChoiceSpec, order *core.WorkOrder) ([]Choic
 			path = replaceOrder(path, order.ID)
 		}
 		path = replaceTask(path, in.Task.ID)
-		refusal := refuseChoice(in, spec, order)
+		refusal, code := refuseChoice(in, spec, order)
 		if refusal != "" {
-			refusals = append(refusals, Refusal{Choice: spec.ID, Text: refusal})
+			refusals = append(refusals, Refusal{Choice: spec.ID, Text: refusal, Code: code})
 			continue
 		}
 		choices = append(choices, Choice{
@@ -383,7 +401,20 @@ func selectChoices(in Input, specs []ChoiceSpec, order *core.WorkOrder) ([]Choic
 	return choices, refusals
 }
 
-func refuseChoice(in Input, spec ChoiceSpec, order *core.WorkOrder) string {
+// refuseChoice states why a choice's route would refuse it, and the route's
+// refusal code when it answers one. Empty text admits the choice.
+func refuseChoice(in Input, spec ChoiceSpec, order *core.WorkOrder) (string, string) {
+	if spec.ID == "approve" {
+		// The review route refuses an approve at a gate no review reached
+		// with the same predicate (component-next-action invariant 7).
+		if text := core.NextActionUnreviewedApproveRefusal(in.Task, in.GateSource); text != "" {
+			return text, core.ApproveWithoutReviewCode
+		}
+	}
+	return refuseChoiceText(in, spec, order), ""
+}
+
+func refuseChoiceText(in Input, spec ChoiceSpec, order *core.WorkOrder) string {
 	switch id := spec.ID; id {
 	case "recover", "answer":
 		// The parked recover names the task-scoped redispatch route, which

@@ -1765,6 +1765,12 @@ func (d *Dispatcher) HandleIntervention(ctx context.Context, task core.Task, lat
 				_, transitionErr := core.TransitionTask(current.State, core.TaskInterventionApproveReview)
 				return transitionErr
 			}
+			// An approve at a gate no review reached is refused before any
+			// write, so the task stays at its gate (component-next-action
+			// invariant 7; req-operator-next-action AC-1.4).
+			if err := store.UnreviewedApproveRefusal(lockedCtx, d.Store, current); err != nil {
+				return err
+			}
 			head := current.ReviewedHeadSHA
 			if head == "" {
 				head = d.reviewedHeadFromEvents(lockedCtx, current.ID)

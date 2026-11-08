@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"reflect"
 	"regexp"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -186,7 +187,9 @@ func TestDecisionWording(t *testing.T) {
 		{"merge approval with dependents", "Approve merge", "Review approved pull request #1312. Merge it?", "Billing export and Audit log stay blocked.", gate(core.GateKindMergeApproval, dependents), []string{"Merge", "Approve only", "Request changes…"}},
 		{"merge approval alone", "Approve merge", "Review approved pull request #1312. Merge it?", "The merge gate stays open.", gate(core.GateKindMergeApproval, nil), []string{"Merge", "Approve only", "Request changes…"}},
 		{"bounce limit", "Settle review", "Review bounced 4 times. Approve, ask for changes, or reject?", "The task stays at the human gate.", gate(core.GateKindReviewBounceLimit, dependents), []string{"Approve", "Ask for changes…", "Reject"}},
-		{"job failure", "Job failure", "", "The failure stays at the human gate.", gate(core.GateKindJobFailure, nil), []string{"Approve", "Ask for changes…", "Reject"}},
+		// No review approved the state a job failure holds, so its Approve is
+		// withheld (component-next-action invariant 7).
+		{"job failure", "Job failure", "", "The failure stays at the human gate.", gate(core.GateKindJobFailure, nil), []string{"Ask for changes…", "Reject"}},
 		{"merge execution", "Merge branch", "Merge pull request #1312?", "Conveyor does not merge it.", Input{Task: core.Task{ID: "t", State: core.TaskApproved, MergeApproval: true}, PullRequest: 1312, Blocks: dependents, Now: now}, []string{"Merge", "Request changes…", "Close…"}},
 		{"parked", "Decide on a parked task", "Put it back, or close it?", "It stays parked.", Input{Task: core.Task{ID: "t", State: core.TaskParked, RecoveryStage: core.StageImplement}, Markers: Markers{ParkCommand: "triage.park"}, Now: now}, []string{"Recover", "Close", "Start over"}},
 		{"verification disposition", "Confirm an outcome", "Did the change apply? The verify agent could not observe the result.", "The verify order stays at the checkpoint.", dispositionInput(now, &Disposition{ContextID: "ctx", RunID: "run", OperationIDs: []string{"op"}, InputDigest: "digest"}), []string{"Yes, it applied…", "No, it didn't…"}},
@@ -452,39 +455,49 @@ func TestCompactIgnoresDispositionBinding(t *testing.T) {
 	}
 }
 
-// TestGateSourceWording proves the recorded gate source selects the gate's
-// wording. A triage whose output stayed invalid fails its job, and that
-// job_failure names triage and its invalid output, never review. A bounce
-// limit another stage reached with invalid output names that stage in its
-// label, summary, question, and run-gate label, with the review choices
-// unchanged. A review-sourced limit keeps the review wording, and no sentence
-// interpolates the source (component-triage invariant 26; component-next-action
-// invariants 17-20; req-operator-next-action AC-1.2, AC-1.8).
+// TestGateSourceWording proves the recorded gate source and recovery stage
+// select the gate's wording and choices. A triage job failure names triage,
+// offers Retry and reject, and its question uses no review words. A bounce
+// limit another stage reached names that stage, and its Approve is withheld
+// with the route's refusal code because no review reached it. A review-sourced
+// limit, from review's invalid output or recorded without a source, keeps the
+// review wording and Approve. A source cut to its first characters is never
+// read as review's, and no sentence interpolates the source
+// (component-triage invariant 26; component-next-action invariants 7, 8,
+// 17-20; req-intake-and-triage AC-3.4; req-operator-next-action AC-1.2,
+// AC-1.4, AC-1.8).
 func TestGateSourceWording(t *testing.T) {
 	now := time.Date(2026, 11, 8, 9, 0, 0, 0, time.UTC)
-	gate := func(kind core.GateKind, source string, count int) Input {
-		return Input{Task: core.Task{ID: "t", State: core.TaskAwaiting, GateKind: kind, RecoveryStage: core.StageTriage}, BounceCount: count, GateSource: source, Now: now}
+	gate := func(kind core.GateKind, source string, recovery core.Stage, count int) Input {
+		return Input{Task: core.Task{ID: "t", State: core.TaskAwaiting, GateKind: kind, RecoveryStage: recovery}, BounceCount: count, GateSource: source, Now: now}
 	}
-	reviewChoiceLabels := []string{"Approve", "Ask for changes…", "Reject"}
+	reviewChoices := []string{"Approve", "Ask for changes…", "Reject"}
+	withheld := []string{"Ask for changes…", "Reject"}
+	retry := []string{"Retry", "Reject"}
+	cut := core.ReviewOutputInvalidSource + strings.Repeat("x", 64-len(core.ReviewOutputInvalidSource))
 	for _, tc := range []struct {
 		name, source, label, summary, question, runGate string
 		kind                                            core.GateKind
+		recovery                                        core.Stage
 		count                                           int
+		choices                                         []string
 	}{
-		{"triage job failure", "triage.output_invalid", "Retry triage", "Triage returned invalid output until the bounce limit, so it has no outcome.", "Ask for changes to run triage again, or reject the task?", "human recovery gate", core.GateKindJobFailure, 3},
-		{"sourceless job failure", "", "Job failure", "A job failed and needs a person.", "", "human recovery gate", core.GateKindJobFailure, 0},
-		{"other job failure source", "spec.output_invalid", "Job failure", "A job failed and needs a person.", "", "human recovery gate", core.GateKindJobFailure, 0},
-		{"planning bounce limit", "spec.output_invalid", "Settle planning output", "Planning returned invalid output until the bounce limit.", "Planning returned invalid output 3 times. Approve, ask for changes, or reject?", "Settle planning output", core.GateKindReviewBounceLimit, 3},
-		{"planning bounce limit without a count", "spec.output_invalid", "Settle planning output", "Planning returned invalid output until the bounce limit.", "Planning returned invalid output until the bounce limit. Approve, ask for changes, or reject?", "Settle planning output", core.GateKindReviewBounceLimit, 0},
-		{"implementation bounce limit", "implement.output_invalid", "Settle implementation output", "Implementation returned invalid output until the bounce limit.", "Implementation returned invalid output 2 times. Approve, ask for changes, or reject?", "Settle implementation output", core.GateKindReviewBounceLimit, 2},
-		{"triage bounce limit", "triage.output_invalid", "Settle triage output", "Triage returned invalid output until the bounce limit.", "Triage returned invalid output 3 times. Approve, ask for changes, or reject?", "Settle triage output", core.GateKindReviewBounceLimit, 3},
-		{"unnamed stage bounce limit", "custom.output_invalid", "Settle invalid output", "A stage returned invalid output until the bounce limit.", "A stage returned invalid output 3 times. Approve, ask for changes, or reject?", "Settle invalid output", core.GateKindReviewBounceLimit, 3},
-		{"review bounce limit", "", "Settle review", "Review bounced until the limit.", "Review bounced 3 times. Approve, ask for changes, or reject?", "Settle review", core.GateKindReviewBounceLimit, 3},
-		{"review invalid output bounce limit", "review.output_invalid", "Settle review", "Review bounced until the limit.", "Review bounced 3 times. Approve, ask for changes, or reject?", "Settle review", core.GateKindReviewBounceLimit, 3},
-		{"other source bounce limit", "mcp-review", "Settle review", "Review bounced until the limit.", "Review bounced 3 times. Approve, ask for changes, or reject?", "Settle review", core.GateKindReviewBounceLimit, 3},
+		{"triage invalid output job failure", "triage.output_invalid", "Retry triage", "Triage returned invalid output until the bounce limit, so it has no outcome.", "Retry triage, or reject the task?", "human recovery gate", core.GateKindJobFailure, core.StageTriage, 3, retry},
+		{"triage provider job failure", "", "Retry triage", "Triage failed, so it has no outcome.", "Retry triage, or reject the task?", "human recovery gate", core.GateKindJobFailure, core.StageTriage, 0, retry},
+		{"sourceless job failure", "", "Job failure", "A job failed and needs a person.", "", "human recovery gate", core.GateKindJobFailure, core.StageImplement, 0, withheld},
+		{"other job failure source", "spec.output_invalid", "Job failure", "A job failed and needs a person.", "", "human recovery gate", core.GateKindJobFailure, core.StageSpec, 0, withheld},
+		{"planning bounce limit", "spec.output_invalid", "Settle planning output", "Planning returned invalid output until the bounce limit.", "Planning returned invalid output 3 times. Ask for changes, or reject?", "Settle planning output", core.GateKindReviewBounceLimit, core.StageSpec, 3, withheld},
+		{"planning bounce limit without a count", "spec.output_invalid", "Settle planning output", "Planning returned invalid output until the bounce limit.", "Planning returned invalid output until the bounce limit. Ask for changes, or reject?", "Settle planning output", core.GateKindReviewBounceLimit, core.StageSpec, 0, withheld},
+		{"implementation bounce limit", "implement.output_invalid", "Settle implementation output", "Implementation returned invalid output until the bounce limit.", "Implementation returned invalid output 2 times. Ask for changes, or reject?", "Settle implementation output", core.GateKindReviewBounceLimit, core.StageImplement, 2, withheld},
+		{"triage bounce limit", "triage.output_invalid", "Settle triage output", "Triage returned invalid output until the bounce limit.", "Triage returned invalid output 3 times. Ask for changes, or reject?", "Settle triage output", core.GateKindReviewBounceLimit, core.StageTriage, 3, withheld},
+		{"unnamed stage bounce limit", "custom.output_invalid", "Settle invalid output", "A stage returned invalid output until the bounce limit.", "A stage returned invalid output 3 times. Ask for changes, or reject?", "Settle invalid output", core.GateKindReviewBounceLimit, core.StageImplement, 3, withheld},
+		{"review bounce limit", "", "Settle review", "Review bounced until the limit.", "Review bounced 3 times. Approve, ask for changes, or reject?", "Settle review", core.GateKindReviewBounceLimit, core.StageImplement, 3, reviewChoices},
+		{"review invalid output bounce limit", core.ReviewOutputInvalidSource, "Settle review", "Review bounced until the limit.", "Review bounced 3 times. Approve, ask for changes, or reject?", "Settle review", core.GateKindReviewBounceLimit, core.StageReview, 3, reviewChoices},
+		{"other source bounce limit", "mcp-review", "Settle bounce limit", "A stage reached the bounce limit.", "A stage reached the bounce limit. Ask for changes, or reject?", "Settle bounce limit", core.GateKindReviewBounceLimit, core.StageImplement, 3, withheld},
+		{"cut source bounce limit", cut, "Settle bounce limit", "A stage reached the bounce limit.", "A stage reached the bounce limit. Ask for changes, or reject?", "Settle bounce limit", core.GateKindReviewBounceLimit, core.StageImplement, 3, withheld},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			in := gate(tc.kind, tc.source, tc.count)
+			in := gate(tc.kind, tc.source, tc.recovery, tc.count)
 			got := Project(in)
 			if got.Kind != string(tc.kind) || got.Details.GateKind != string(tc.kind) || got.Actor != ActorOperator || got.Judgment != (tc.kind != core.GateKindJobFailure) {
 				t.Fatalf("statement kind=%s gate=%s actor=%s judgment=%t", got.Kind, got.Details.GateKind, got.Actor, got.Judgment)
@@ -492,30 +505,53 @@ func TestGateSourceWording(t *testing.T) {
 			if got.Label != tc.label || got.Summary != tc.summary || got.Question != tc.question {
 				t.Fatalf("label/summary/question = %q / %q / %q, want %q / %q / %q", got.Label, got.Summary, got.Question, tc.label, tc.summary, tc.question)
 			}
-			entry, ok := LookupVariant(string(tc.kind), "", "", string(tc.kind), GateVariant(tc.kind, tc.source))
+			entry, ok := LookupVariant(string(tc.kind), "", "", string(tc.kind), GateVariant(tc.kind, tc.source, tc.recovery))
 			if !ok || entry.RunGate == nil || entry.RunGate.Label != tc.runGate {
 				t.Fatalf("run gate = %+v, want label %q", entry.RunGate, tc.runGate)
 			}
 			labels := make([]string, 0, len(got.Choices))
 			for _, choice := range got.Choices {
 				labels = append(labels, choice.Label)
+				if choice.ID == "redirect" && tc.label == "Retry triage" && choice.Effect != "Runs triage again with the guidance you give." {
+					t.Fatalf("retry effect = %q", choice.Effect)
+				}
 			}
-			if !reflect.DeepEqual(labels, reviewChoiceLabels) {
-				t.Fatalf("choice labels = %q, want the unchanged review choices", labels)
+			if !reflect.DeepEqual(labels, tc.choices) {
+				t.Fatalf("choice labels = %q, want %q", labels, tc.choices)
+			}
+			approveOffered := slices.Contains(labels, "Approve")
+			wantRefusals := []Refusal{{Choice: "approve", Text: core.ApproveWithoutReviewRefusal, Code: core.ApproveWithoutReviewCode}}
+			if approveOffered {
+				wantRefusals = nil
+			}
+			if !reflect.DeepEqual(got.Details.Refusals, wantRefusals) {
+				t.Fatalf("refusals = %+v, want %+v", got.Details.Refusals, wantRefusals)
+			}
+			// The offer and the route share one predicate.
+			if routeRefuses := core.NextActionUnreviewedApproveRefusal(in.Task, tc.source) != ""; routeRefuses == approveOffered {
+				t.Fatalf("route refuses=%t while the statement offers approve=%t", routeRefuses, approveOffered)
 			}
 			for _, text := range []string{got.Label, got.Summary, got.Question, got.IfIgnored} {
 				if tc.source != "" && strings.Contains(text, tc.source) {
 					t.Fatalf("sentence %q interpolates the source %q", text, tc.source)
 				}
-				if tc.source != "" && !strings.HasPrefix(tc.source, "review.") && tc.source != "mcp-review" && strings.Contains(strings.ToLower(text), "review") {
+				if !approveOffered && strings.Contains(text, "Approve") {
+					t.Fatalf("sentence %q offers the withheld approve", text)
+				}
+				if !strings.HasPrefix(tc.source, "review.") && tc.label != "Settle review" && tc.label != "Job failure" && strings.Contains(strings.ToLower(text), "review") {
 					t.Fatalf("a %s gate names review: %q", tc.source, text)
+				}
+			}
+			for _, refusal := range got.Details.Refusals {
+				if strings.Contains(refusal.Text, refusal.Code) || strings.Contains(refusal.Text, "_") {
+					t.Fatalf("refusal %q interpolates an identifier", refusal.Text)
 				}
 			}
 		})
 	}
 	for _, variant := range GateVariants() {
 		kind := KindReviewBounceLimit
-		if variant == TriageInvalidOutput {
+		if variant == TriageInvalidOutput || variant == TriageFailure {
 			kind = KindJobFailure
 		}
 		entry, ok := LookupVariant(kind, "", "", kind, variant)
@@ -523,6 +559,40 @@ func TestGateSourceWording(t *testing.T) {
 		if !ok || entry.Label == "" || entry.Label == base.Label || entry.Summary == nil || entry.Question == nil || entry.IfIgnored == nil || entry.RunGate == nil {
 			t.Fatalf("gate variant %s missing", variant)
 		}
+	}
+}
+
+// TestUnreviewedApproveRefusal pins the shared predicate: an approve is
+// refused at every job_failure and at a review_bounce_limit whose recorded
+// source is not review's, and admitted at a review-sourced limit and at plan
+// approval, plan revision, and merge approval (component-next-action
+// invariant 7; req-operator-next-action AC-1.4).
+func TestUnreviewedApproveRefusal(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		task   core.Task
+		source string
+		refuse bool
+	}{
+		{"review round limit without a source", core.Task{State: core.TaskAwaiting, GateKind: core.GateKindReviewBounceLimit}, "", false},
+		{"review invalid output limit", core.Task{State: core.TaskAwaiting, GateKind: core.GateKindReviewBounceLimit}, core.ReviewOutputInvalidSource, false},
+		{"planning invalid output limit", core.Task{State: core.TaskAwaiting, GateKind: core.GateKindReviewBounceLimit}, "spec.output_invalid", true},
+		{"verification invalid output limit", core.Task{State: core.TaskAwaiting, GateKind: core.GateKindReviewBounceLimit}, "verify.output_invalid", true},
+		{"cut source limit", core.Task{State: core.TaskAwaiting, GateKind: core.GateKindReviewBounceLimit}, core.ReviewOutputInvalidSource + strings.Repeat("x", 43), true},
+		{"job failure with a reviewed head", core.Task{State: core.TaskAwaiting, GateKind: core.GateKindJobFailure, ReviewedHeadSHA: "head"}, "", true},
+		{"triage job failure", core.Task{State: core.TaskAwaiting, GateKind: core.GateKindJobFailure, RecoveryStage: core.StageTriage}, "triage.output_invalid", true},
+		{"awaiting without a gate kind", core.Task{State: core.TaskAwaiting}, "", true},
+		{"plan approval", core.Task{State: core.TaskAwaiting, GateKind: core.GateKindPlanApproval}, "spec.output_invalid", false},
+		{"plan revision", core.Task{State: core.TaskAwaiting, GateKind: core.GateKindPlanRevision}, "", false},
+		{"merge approval", core.Task{State: core.TaskAwaiting, GateKind: core.GateKindMergeApproval}, "", false},
+		{"not awaiting", core.Task{State: core.TaskRunning, GateKind: core.GateKindJobFailure}, "", false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got := core.NextActionUnreviewedApproveRefusal(tc.task, tc.source)
+			if (got != "") != tc.refuse || (tc.refuse && got != core.ApproveWithoutReviewRefusal) {
+				t.Fatalf("refusal=%q want refuse=%t", got, tc.refuse)
+			}
+		})
 	}
 }
 

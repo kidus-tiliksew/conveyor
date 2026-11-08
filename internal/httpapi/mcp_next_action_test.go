@@ -145,6 +145,52 @@ func TestMCPGetTaskStatusParity(t *testing.T) {
 	}
 }
 
+// TestMCPGetTaskStatusTriageRetryParity pins the triage job failure statement
+// over MCP: get_task_status returns the REST next action unchanged, its
+// redirect choice reads Retry, its question uses no review words, and the
+// withheld Approve carries the route's refusal code in details.refusals
+// (component-next-action invariants 7, 8, 18; req-intake-and-triage AC-3.4;
+// req-operator-next-action AC-1.4, AC-5.3).
+func TestMCPGetTaskStatusTriageRetryParity(t *testing.T) {
+	f := newGovernanceAuthFixture(t)
+	userToken := f.user("usr_triage_retry", core.WorkspaceRoleOperator)
+	const id = "gov-task-triage-retry"
+	if err := f.store.CreateTask(f.ctx, core.Task{ID: id, Workspace: governanceWorkspace, Repo: "conveyor", Branch: id, State: core.TaskRunning, NextStage: core.StageTriage, CreatedAt: time.Now().UTC()}); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.store.AppendEvent(f.ctx, core.Event{TaskID: id, Kind: "job.failed", Payload: core.JSONPayload(map[string]any{"error": "invalid", "source": "triage.output_invalid"})}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := taskops.New(f.store).Perform(f.ctx, id, taskops.Command{Kind: core.TaskJobFail, RecoveryStage: core.StageTriage, ProjectStages: true}); err != nil {
+		t.Fatal(err)
+	}
+	text, isErr := f.call(userToken, "get_task_status", map[string]any{"workspace_id": governanceWorkspace, "task_id": id})
+	if isErr {
+		t.Fatalf("status read refused: %s", text)
+	}
+	rest := f.rest(userToken, "/v1/tasks/"+id+"/next-action?workspace_id="+governanceWorkspace)
+	if got, want := decodeJSON(t, []byte(text)), decodeJSON(t, rest); !reflect.DeepEqual(got, want) {
+		t.Fatalf("MCP and REST next actions differ:\nmcp=%s\nrest=%s", text, rest)
+	}
+	var action nextaction.NextAction
+	if err := json.Unmarshal([]byte(text), &action); err != nil {
+		t.Fatal(err)
+	}
+	if action.Kind != nextaction.KindJobFailure || action.Label != "Retry triage" || action.Question != "Retry triage, or reject the task?" {
+		t.Fatalf("triage job failure=%+v", action)
+	}
+	if len(action.Choices) != 2 || action.Choices[0].ID != "redirect" || action.Choices[0].Label != "Retry" || action.Choices[1].ID != "reject" {
+		t.Fatalf("choices=%+v, want Retry and Reject", action.Choices)
+	}
+	want := []nextaction.Refusal{{Choice: "approve", Text: core.ApproveWithoutReviewRefusal, Code: core.ApproveWithoutReviewCode}}
+	if !reflect.DeepEqual(action.Details.Refusals, want) {
+		t.Fatalf("refusals=%+v, want %+v", action.Details.Refusals, want)
+	}
+	if strings.Contains(strings.ToLower(action.Question), "review") || strings.Contains(strings.ToLower(action.Question), "changes") {
+		t.Fatalf("question %q uses a review word", action.Question)
+	}
+}
+
 // TestMCPGetTaskStatusAgentQuestionParity pins one statement for an
 // authority_conflict checkpoint: GET /v1/tasks/{id}/next-action and MCP
 // get_task_status return the same label, choices, and checkpoint details,

@@ -3292,14 +3292,27 @@ test('c never merges past failed checks or starts a destructive choice', async (
 })
 
 // A bounce limit that planning reached with invalid output, a triage whose
-// output stayed invalid, and a scheduled retry, as the server states them
-// (component-triage invariant 26; component-next-action invariants 14, 17).
+// output stayed invalid, and a scheduled retry, as the server states them. No
+// review reached either gate, so the server withholds Approve, and the triage
+// failure's redirect reads Retry (component-triage invariant 26;
+// component-next-action invariants 7, 8, 14, 17; req-intake-and-triage AC-3.4).
 function invalidOutputFixture(): Fixture {
-  const reviewChoices = [
-    choice('approve', 'Approve', '/v1/tasks/{id}/review'),
+  const planChoices = [
     choice('redirect', 'Ask for changes…', '/v1/tasks/{id}/review'),
     choice('reject', 'Reject', '/v1/tasks/{id}/review'),
   ]
+  const triageChoices = [
+    {
+      ...choice('redirect', 'Retry', '/v1/tasks/{id}/review'),
+      effect: 'Runs triage again with the guidance you give.',
+    },
+    choice('reject', 'Reject', '/v1/tasks/{id}/review'),
+  ]
+  const approveWithheld = {
+    choice: 'approve',
+    text: "Approve is refused because no review approved the task's current state.",
+    code: 'approve_without_review',
+  }
   const event = (taskId: string, id: number, jobId: string, kind: string, payload: Record<string, unknown>) => ({
     id,
     task_id: taskId,
@@ -3315,7 +3328,14 @@ function invalidOutputFixture(): Fixture {
     state,
     started_at: `2026-10-10T1${hour}:00:00Z`,
   })
-  const statement = (kind: string, label: string, summary: string, question: string, ifIgnored: string) => ({
+  const statement = (
+    kind: string,
+    label: string,
+    summary: string,
+    question: string,
+    ifIgnored: string,
+    choices: ReturnType<typeof choice>[],
+  ) => ({
     kind,
     label,
     actor: 'operator',
@@ -3323,23 +3343,25 @@ function invalidOutputFixture(): Fixture {
     summary,
     question,
     if_ignored: ifIgnored,
-    choices: reviewChoices,
+    choices,
     deadline: null,
-    details: { gate_kind: kind },
+    details: { gate_kind: kind, refusals: [approveWithheld] },
   })
   const plan = statement(
     'review_bounce_limit',
     'Settle planning output',
     'Planning returned invalid output until the bounce limit.',
-    'Planning returned invalid output 3 times. Approve, ask for changes, or reject?',
+    'Planning returned invalid output 3 times. Ask for changes, or reject?',
     'The task stays at the human gate.',
+    planChoices,
   )
   const triage = statement(
     'job_failure',
     'Retry triage',
     'Triage returned invalid output until the bounce limit, so it has no outcome.',
-    'Ask for changes to run triage again, or reject the task?',
+    'Retry triage, or reject the task?',
     'The failure stays at the human gate.',
+    triageChoices,
   )
   const retrySummary = 'Conveyor will retry this automatically. The next retry is attempt 2.'
   const triageError =
@@ -3418,7 +3440,10 @@ test('invalid-output limits name their stage and error, never review, and a retr
   // not the earlier reviewer feedback.
   const plan = await select(page, 'Planning output limit')
   await expect(plan).toContainText('Settle planning output')
-  await expect(plan).toContainText('Planning returned invalid output 3 times. Approve, ask for changes, or reject?')
+  await expect(plan).toContainText('Planning returned invalid output 3 times. Ask for changes, or reject?')
+  // No review reached the gate, so the server offers no Approve.
+  await expect(plan.getByRole('button', { name: 'Approve', exact: true })).toHaveCount(0)
+  await expect(plan.getByRole('button', { name: /Ask for changes/ })).toBeVisible()
   await expect(context().getByRole('region', { name: 'Invalid output' })).toContainText('plan markdown is required')
   await expect(context().getByRole('region', { name: 'Latest reviewer feedback' })).toHaveCount(0)
   await expect(context()).not.toContainText('Earlier reviewer feedback.')
@@ -3427,7 +3452,10 @@ test('invalid-output limits name their stage and error, never review, and a retr
   // and its invalid output; its context is the recorded failure.
   const triage = await select(page, 'Triage output limit')
   await expect(triage).toContainText('Retry triage')
-  await expect(triage).toContainText('Ask for changes to run triage again, or reject the task?')
+  await expect(triage).toContainText('Retry triage, or reject the task?')
+  await expect(triage.getByRole('button', { name: 'Retry', exact: true })).toBeVisible()
+  await expect(triage.getByRole('button', { name: 'Approve', exact: true })).toHaveCount(0)
+  await expect(triage.getByRole('button', { name: /Ask for changes/ })).toHaveCount(0)
   await expect(context()).toContainText('Last validation error: triage summary is required')
   await expect(context()).not.toContainText('Retrying with this feedback')
   await expect(triage.locator('[data-detail-title]')).not.toContainText(/review/i)

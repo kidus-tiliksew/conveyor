@@ -1308,7 +1308,18 @@ func TestMergeAndRecoveryInterventionsDoNotRequireSpec(t *testing.T) {
 					t.Fatal(err)
 				}
 				d := New(st, &config.Config{Workspace: "demo"}, nil)
-				if err = d.HandleIntervention(ctx, task, job, intervention); err != nil {
+				err = d.HandleIntervention(ctx, task, job, intervention)
+				if command == core.TaskJobFail && action == core.InterventionApprove {
+					// No review approved the state a job failure holds, so
+					// its approve is refused and the task stays at the gate
+					// (component-next-action invariant 7).
+					current, getErr := st.GetTask(ctx, task.ID)
+					if !errors.Is(err, store.ErrApproveWithoutReview) || getErr != nil || current.State != core.TaskAwaiting || current.ApprovedHeadSHA != "" {
+						t.Fatalf("job-failure approve err=%v task=%+v", err, current)
+					}
+					return
+				}
+				if err != nil {
 					t.Fatal(err)
 				}
 				current, err := st.GetTask(ctx, task.ID)
@@ -1840,7 +1851,10 @@ func TestHistoricalRouteHumanAwaitingTaskCanRejectOrCancelButNotApprove(t *testi
 					t.Fatalf("action=%s task=%+v err=%v", action, current, err)
 				}
 			case core.InterventionApprove:
-				if !errors.Is(err, ErrReviewedHeadUnavailable) || current.State != core.TaskAwaiting {
+				// An awaiting task without a recorded gate kind states
+				// job_failure, so its approve is refused before any head is
+				// read (component-next-action invariant 7).
+				if !errors.Is(err, store.ErrApproveWithoutReview) || current.State != core.TaskAwaiting {
 					t.Fatalf("approve task=%+v err=%v", current, err)
 				}
 			}
@@ -3317,4 +3331,74 @@ func TestReviewDispatchReadsOnlyTaskOrdersWithoutSnapshots(t *testing.T) {
 		}
 		requireReviewDispatchReadsOnlyTaskOrders(t, ctx, st, cfg, task.ID, false)
 	})
+}
+
+// TestHandleInterventionRefusesApproveWithoutReview proves the dispatcher
+// refuses, under the task's lock and without the route's pre-check, an approve
+// at a bounce limit that planning reached after an earlier review round
+// recorded head A and the implementer pushed head B. The approve would
+// otherwise bind A, a head review rejected. The task stays at its gate with no
+// approved head and no event, and a review-sourced limit still approves
+// (component-next-action invariant 7; req-operator-next-action AC-1.4).
+func TestHandleInterventionRefusesApproveWithoutReview(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		source  any
+		refused bool
+	}{
+		{name: "planning-sourced limit", source: "spec.output_invalid", refused: true},
+		{name: "review-sourced limit", source: nil},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx := store.WithWorkspace(store.WithActor(t.Context(), store.SystemActor()), "demo")
+			st := store.NewMemory()
+			task := core.Task{ID: "earlier-head", Workspace: "demo", Repo: "conveyor", PolicyVersion: 1, State: core.TaskRunning, NextStage: core.StageSpec, ReviewedHeadSHA: "head-b", CreatedAt: time.Now()}
+			if err := st.CreateTask(ctx, task); err != nil {
+				t.Fatal(err)
+			}
+			job := core.Job{ID: task.ID + "-spec-2", TaskID: task.ID, Stage: core.StageSpec, State: core.JobDone}
+			if err := st.CreateJob(ctx, job); err != nil {
+				t.Fatal(err)
+			}
+			limit := map[string]any{"window": 1, "max_bounces": 1}
+			if tc.source != nil {
+				limit["source"] = tc.source
+			}
+			for _, event := range []core.Event{
+				{TaskID: task.ID, Kind: "review.round_completed", Payload: core.JSONPayload(map[string]any{"reviewed_commit_sha": "head-a", "verdict": "changes_requested"})},
+				{TaskID: task.ID, JobID: job.ID, Kind: "spec.output_invalid", Payload: core.JSONPayload(map[string]string{"error": "plan markdown is required"})},
+				{TaskID: task.ID, JobID: job.ID, Kind: "pipeline.bounce_limit", Payload: core.JSONPayload(limit)},
+			} {
+				if err := st.AppendEvent(ctx, event); err != nil {
+					t.Fatal(err)
+				}
+			}
+			gated, err := taskops.New(st).Perform(ctx, task.ID, taskops.Command{Kind: core.TaskStageBounceLimit, RecoveryStage: core.StageSpec, ProjectStages: true})
+			if err != nil {
+				t.Fatal(err)
+			}
+			before, _ := st.ListEvents(ctx, task.ID)
+			d := New(st, &config.Config{Workspace: "demo"}, nil)
+			err = d.HandleIntervention(ctx, gated.Task, job, core.Intervention{TaskID: task.ID, JobID: job.ID, Action: core.InterventionApprove, ReasonCode: "approved"})
+			current, getErr := st.GetTask(ctx, task.ID)
+			if getErr != nil {
+				t.Fatal(getErr)
+			}
+			if !tc.refused {
+				if err != nil || current.State != core.TaskApproved || current.ApprovedHeadSHA != "head-b" {
+					t.Fatalf("err=%v task=%+v, want today's approve", err, current)
+				}
+				return
+			}
+			if !errors.Is(err, store.ErrApproveWithoutReview) {
+				t.Fatalf("err=%v, want ErrApproveWithoutReview", err)
+			}
+			if current.State != core.TaskAwaiting || current.GateKind != core.GateKindReviewBounceLimit || current.ApprovedHeadSHA != "" {
+				t.Fatalf("after a refused approve task=%+v, want it at its gate", current)
+			}
+			if after, _ := st.ListEvents(ctx, task.ID); len(after) != len(before) {
+				t.Fatalf("events grew from %d to %d on a refused approve", len(before), len(after))
+			}
+		})
+	}
 }
