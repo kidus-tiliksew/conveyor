@@ -19,6 +19,7 @@ import { Skeleton } from '../ui/skeleton'
 import { ExecutionFactRows, ExecutionStatusLine, ExecutionTitle } from './execution-summary-details'
 import { GateChoices } from './merge-at-gate'
 import { CheckStatusList } from './next-action-checks'
+import { NextActionParkReason } from './next-action-park-reason'
 import { NextActionDeadline, NextActionIDs } from './next-action-parts'
 import { gateAnchorId, isReviewable, useGateSurfaceMounted } from './review-panel'
 import type { TaskActivityView } from './task-activity-tabs'
@@ -139,6 +140,7 @@ export function NextActionCard({
           {execution && <ExecutionStatusLine state={execution} />}
           <h2 className="text-sm font-semibold leading-6">{action.summary}</h2>
           {execution && execution.title !== action.label && <ExecutionTitle state={execution} />}
+          {action.kind === 'parked' && <NextActionParkReason item={item} />}
           {action.question && <p className="text-sm text-muted">{action.question}</p>}
           <CheckStatusList action={action} />
           {execution && <ExecutionFactRows state={execution} routeVariant={routeVariant} />}

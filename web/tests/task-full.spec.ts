@@ -5407,14 +5407,16 @@ test('parked task offers recovery instead of an invalid approval verdict', async
 
   await expect(page.getByRole('region', { name: 'Human gate' })).toHaveCount(0)
   await expect(page.getByRole('button', { name: 'Approve' })).toHaveCount(0)
-  await expect(
-    page.getByText('Parked by triage — resume from the recorded recovery stage when this work is ready.'),
-  ).toBeVisible()
+  // The server's Recover choice is the one button for the redispatch route;
+  // the timeline adds no Resume task card for the same act (DEC-61).
+  const recover = nextActionBox(page).getByRole('button', { name: 'Recover', exact: true })
+  await expect(recover).toBeVisible()
+  await expect(page.getByRole('button', { name: /^(Recover|Redispatch|Resume task)$/ })).toHaveCount(1)
 
   const recoveryRequest = page.waitForRequest(
     (request) => request.method() === 'POST' && new URL(request.url()).pathname === '/v1/tasks/parked/redispatch',
   )
-  await page.getByRole('button', { name: 'Resume task' }).click()
+  await recover.click()
   await recoveryRequest
 })
 
@@ -6194,7 +6196,9 @@ for (const stage of ['implement', 'verify', 'review'] as const) {
     )
     await page.goto(`/w/demo/tasks/${taskId}/full`)
     await expect(page.getByRole('button', { name: 'Redispatch', exact: true })).toBeVisible()
-    await expect(page.getByText('Queued — re-enqueue if dispatch stalled.')).toBeVisible()
+    await expect(
+      page.getByText('Waiting for an agent to pick this task up. If none does, this button offers it to agents again.'),
+    ).toBeVisible()
     await expectNoTaskProposalSurface(page)
   })
 }

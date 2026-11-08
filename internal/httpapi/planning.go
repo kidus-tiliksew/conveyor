@@ -82,8 +82,9 @@ func (s *Server) createPlanningSession(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 		}
+		id := core.NewPlanningSessionID()
 		session, err = s.Store.CreatePlanningSession(r.Context(), core.PlanningSession{
-			ID: "session-" + core.NewTaskID(), Title: goal.ProvisionalTitle(), Goal: goal,
+			ID: id, Title: goal.ProvisionalTitle(id), Goal: goal,
 			RequirementContextID:  request.RequirementContextID,
 			SystemDesignContextID: request.SystemDesignContextID,
 			Promotion:             request.Promotion,
