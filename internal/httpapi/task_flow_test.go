@@ -417,7 +417,7 @@ func TestTaskFlowRouteStatesStageCopy(t *testing.T) {
 				t.Fatalf("spec with its gate off, passed = %+v", stage)
 			}
 		case "merge":
-			if stage.Label != "Merged" || stage.GateStatus == nil || *stage.GateStatus != "upcoming" || stage.GateStatusLabel != "Upcoming" || stage.Traversed {
+			if stage.Label != "Merge" || stage.GateStatus == nil || *stage.GateStatus != "upcoming" || stage.GateStatusLabel != "Upcoming" || stage.Traversed {
 				t.Fatalf("merge = %+v", stage)
 			}
 		case "implement":
