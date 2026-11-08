@@ -13,6 +13,7 @@ import (
 	"github.com/kidus-tiliksew/conveyor/internal/httpapi"
 	"github.com/kidus-tiliksew/conveyor/internal/store"
 	"github.com/kidus-tiliksew/conveyor/internal/store/storetest"
+	"github.com/kidus-tiliksew/conveyor/internal/taskops"
 )
 
 // Tests for conveyor task status (req-operator-next-action REQ-5, AC-5.1,
@@ -405,5 +406,66 @@ func TestTaskStatusPrintsSuggestedRecoveryDirection(t *testing.T) {
 	}
 	if strings.Contains(out.String(), "<answer>") {
 		t.Fatalf("suggested direction still prints the placeholder:\n%s", out.String())
+	}
+}
+
+// TestTaskStatusPrintsTriageInvalidOutputFailure proves `conveyor task status`
+// prints the server's statement for a triage whose output stayed invalid
+// through the bounce limit: a job failure that names triage and its invalid
+// output, never review (component-triage invariant 26; req-operator-next-action
+// AC-1.8, AC-5.1).
+func TestTaskStatusPrintsTriageInvalidOutputFailure(t *testing.T) {
+	isolateLocalAuthTest(t)
+	st := store.NewMemory()
+	ctx := store.WithWorkspace(store.WithActor(t.Context(), store.SystemActor()), "demo")
+	const taskID = "261108-triage"
+	if err := st.CreateTask(ctx, core.Task{ID: taskID, Workspace: "demo", Repo: "conveyor", State: core.TaskRunning, NextStage: core.StageTriage}); err != nil {
+		t.Fatal(err)
+	}
+	for _, event := range []core.Event{
+		{TaskID: taskID, Kind: "pipeline.bounce_limit", Payload: core.JSONPayload(map[string]any{"source": "triage.output_invalid", "window": 3, "max_bounces": 3})},
+		{TaskID: taskID, Kind: "job.failed", Payload: core.JSONPayload(map[string]any{"error": "Triage output stayed invalid after 3 attempts, so triage has no outcome. Last validation error: triage summary is required", "source": "triage.output_invalid"})},
+	} {
+		if err := st.AppendEvent(ctx, event); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := taskops.New(st).Perform(ctx, taskID, taskops.Command{Kind: core.TaskJobFail, RecoveryStage: core.StageTriage, ProjectStages: true}); err != nil {
+		t.Fatal(err)
+	}
+	server := httpapi.NewServer(st)
+	server.Workspace, server.BearerToken = "demo", "operator-secret-token"
+	httpServer := httptest.NewServer(server.Handler())
+	t.Cleanup(httpServer.Close)
+	t.Setenv("CONVEYOR_ADDR", httpServer.URL)
+	t.Setenv("CONVEYOR_API_TOKEN", "operator-secret-token")
+	t.Setenv("CONVEYOR_WORKSPACE", "demo")
+	var out bytes.Buffer
+	if err := runTaskStatus(newClient(), &out, taskID, false); err != nil {
+		t.Fatal(err)
+	}
+	text := out.String()
+	ordered := []string{
+		"Retry triage\nTriage returned invalid output until the bounce limit, so it has no outcome.\n",
+		"question:      Ask for changes to run triage again, or reject the task?",
+		"if ignored:    The failure stays at the human gate.",
+		"kind:          job_failure",
+		"gate kind:     job_failure",
+	}
+	at := 0
+	for _, want := range ordered {
+		index := strings.Index(text[at:], want)
+		if index < 0 {
+			t.Fatalf("missing or out of order %q after offset %d in:\n%s", want, at, text)
+		}
+		at += index + len(want)
+	}
+	// The choice routes keep their /review path; the statement's sentences
+	// never name review.
+	for _, line := range strings.Split(text, "\n") {
+		sentence := !strings.Contains(line, "/v1/") && !strings.Contains(line, "cli:")
+		if sentence && strings.Contains(strings.ToLower(line), "review") {
+			t.Fatalf("triage job failure status names review in %q:\n%s", line, text)
+		}
 	}
 }

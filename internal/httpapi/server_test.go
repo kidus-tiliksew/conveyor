@@ -3392,7 +3392,9 @@ func TestActivityConditionalDeadlines(t *testing.T) {
 		}
 		cold := f.read("/v1/activity", "")
 		etag := cold.Header().Get("ETag")
-		if !bytes.Contains(cold.Body.Bytes(), []byte("Next retry at")) {
+		// The summary states a scheduled retry without its time, which the
+		// statement carries as its deadline (component-next-action invariant 14).
+		if !bytes.Contains(cold.Body.Bytes(), []byte("A retry is scheduled.")) || bytes.Contains(cold.Body.Bytes(), []byte("Next retry at")) {
 			t.Fatalf("retrying summary missing: %s", cold.Body.String())
 		}
 		f.now = f.now.Add(35 * time.Second)
@@ -3401,7 +3403,7 @@ func TestActivityConditionalDeadlines(t *testing.T) {
 		}
 		f.now = f.now.Add(10 * time.Second)
 		after := f.read("/v1/activity", etag)
-		if after.Code != http.StatusOK || bytes.Contains(after.Body.Bytes(), []byte("Next retry at")) {
+		if after.Code != http.StatusOK || bytes.Contains(after.Body.Bytes(), []byte("A retry is scheduled.")) {
 			t.Fatalf("after retry status=%d body=%s", after.Code, after.Body.String())
 		}
 	})

@@ -418,8 +418,8 @@ JOIN work_orders wo ON wo.workspace_id = ? AND wo.task_id = x.task_id AND wo.id 
 WHERE x.kind = 'merge.conflict_fix_dispatched' AND LEFT(JSON_EXTRACT_JSON(x.p,'work_order_id'),1) = '"'`
 
 // ListNextActionHistory computes store.NextActionHistory in two queries:
-// the typed latest values of the park-command, pull-request, and bounce
-// folds, ranked with ROW_NUMBER, and the fixed-size merge-conflict summary
+// the typed latest values of the park-command, pull-request, bounce, and
+// gate-source folds, ranked with ROW_NUMBER, and the fixed-size merge-conflict summary
 // (component-persistence).
 func (s *Store) ListNextActionHistory(ctx context.Context, taskIDs []string) (map[string]store.NextActionHistory, error) {
 	ctx = dbmetrics.WithReadLabel(ctx, "ListNextActionHistory")
@@ -435,7 +435,9 @@ func (s *Store) ListNextActionHistory(ctx context.Context, taskIDs []string) (ma
 	window := `JSON_EXTRACT_JSON(payload_json,'window')`
 	// Each row carries only a typed value: the command's first 64
 	// characters, the number's digits, or the window's digits when the fold
-	// accepts it and 0 otherwise.
+	// accepts it and 0 otherwise. The second branch carries the first 64
+	// characters of the latest gate-source event's string source, or an
+	// empty value when it records none.
 	rows, err := documentRows(ctx, s.db, `SELECT task_id, kind, value FROM (
 	SELECT task_id, kind,
 		CASE
@@ -451,7 +453,19 @@ func (s *Store) ListNextActionHistory(ctx context.Context, taskIDs []string) (ma
 		OR (kind='pull_request.opened' AND `+positiveInt64SQL(`JSON_EXTRACT_JSON(payload_json,'number')`)+`)
 		OR kind='pipeline.bounce_limit')
 ) latest
-WHERE position=1`, append([]any{ws}, taskMapArgs(taskIDs)...)...)
+WHERE position=1
+UNION ALL
+SELECT task_id, kind, value FROM (
+	SELECT task_id, ? AS kind,
+		CASE
+			WHEN LEFT(JSON_EXTRACT_JSON(payload_json,'source'),1)='"' THEN LEFT(JSON_EXTRACT_STRING(payload_json,'source'), 64)
+			ELSE ''
+		END AS value,
+		ROW_NUMBER() OVER (PARTITION BY task_id ORDER BY at DESC,id DESC) AS position
+	FROM events_columnstore
+	WHERE workspace_id=? AND task_id IN (`+marks+`) AND kind IN (`+taskMapMarks(len(store.GateSourceEventKinds))+`)
+) gate
+WHERE position=1`, append(append(append(append([]any{ws}, taskMapArgs(taskIDs)...), store.GateSourceHistoryKind, ws), taskMapArgs(taskIDs)...), taskMapArgs(store.GateSourceEventKinds)...)...)
 	if err != nil {
 		return nil, err
 	}

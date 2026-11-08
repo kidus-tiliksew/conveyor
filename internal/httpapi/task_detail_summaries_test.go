@@ -652,6 +652,56 @@ func TestTaskDetailParkReasonAndDispatchFailure(t *testing.T) {
 // TestBoundedDetailParkReasonOutsideEventPage reads the park reason and the
 // dispatch failure through the bounded view when both events lie outside the
 // 100-event presentation page (component-http-api, Bounded detail view).
+// TestTaskDetailInvalidOutputLimit covers the invalid-output limit summary:
+// a bounce limit that a stage other than review reached with invalid output
+// names the stage and that stage's last validation error, and a later bounce
+// limit from review clears it (req-operator-next-action AC-2.3;
+// component-triage invariant 26).
+func TestTaskDetailInvalidOutputLimit(t *testing.T) {
+	derive := func(events ...core.Event) *taskInvalidOutputLimit {
+		return deriveTaskDetailSummaries(events, nil, nil).InvalidOutputLimit
+	}
+	invalid := func(id int64, kind, text string) core.Event {
+		return summaryEvent(id, int(id), kind, "job-1", summaryJSON(t, map[string]any{"error": text}))
+	}
+	limit := func(id int64, payload map[string]any) core.Event {
+		return summaryEvent(id, int(id), "pipeline.bounce_limit", "job-1", summaryJSON(t, payload))
+	}
+	if got := derive(); got != nil {
+		t.Fatalf("empty ledger limit=%+v", got)
+	}
+	planning := derive(
+		invalid(1, "spec.output_invalid", "first error"),
+		invalid(2, "triage.output_invalid", "triage error"),
+		invalid(3, "spec.output_invalid", "  plan markdown is required  "),
+		limit(4, map[string]any{"source": "spec.output_invalid", "window": 2}),
+	)
+	if want := (&taskInvalidOutputLimit{Stage: "spec", Error: "plan markdown is required", EventID: "4", At: at(4)}); !reflect.DeepEqual(planning, want) {
+		t.Fatalf("planning limit=%+v want %+v", planning, want)
+	}
+	if got := derive(invalid(1, "triage.output_invalid", "triage summary is required"), limit(2, map[string]any{"source": "triage.output_invalid", "window": 1})); got == nil || got.Stage != "triage" || got.Error != "triage summary is required" {
+		t.Fatalf("triage limit=%+v", got)
+	}
+	for name, events := range map[string][]core.Event{
+		"review invalid output": {invalid(1, "review.output_invalid", "bad"), limit(2, map[string]any{"source": "review.output_invalid", "window": 1})},
+		"review bounce":         {limit(1, map[string]any{"count": 3, "window": 3})},
+		"later review bounce":   {invalid(1, "spec.output_invalid", "bad"), limit(2, map[string]any{"source": "spec.output_invalid"}), limit(3, map[string]any{"window": 3})},
+		"non-string source":     {limit(1, map[string]any{"source": 5})},
+	} {
+		if got := derive(events...); got != nil {
+			t.Fatalf("%s limit=%+v, want none", name, got)
+		}
+	}
+	long := strings.Repeat("e", taskSummaryTextMaxBytes+10)
+	got := derive(invalid(1, "spec.output_invalid", long), limit(2, map[string]any{"source": "spec.output_invalid"}))
+	if got == nil {
+		t.Fatal("long error limit missing")
+	}
+	if !got.Truncated || len(got.Error) > taskSummaryTextMaxBytes {
+		t.Fatalf("long error limit truncated=%v len=%d", got.Truncated, len(got.Error))
+	}
+}
+
 func TestBoundedDetailParkReasonOutsideEventPage(t *testing.T) {
 	st := store.NewMemory()
 	h := newHistoryHarness(t, st)
