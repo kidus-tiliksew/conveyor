@@ -135,7 +135,7 @@ export function RedispatchCard({ item }: { item: ActivityItem }) {
     <div className="flex items-center justify-between gap-3 rounded-lg border border-border bg-surface px-3 py-2.5">
       <p className="text-xs text-muted">
         {item.task.state === 'queued'
-          ? 'Waiting for an agent to pick this task up. If none does, Redispatch adds it to the queue again.'
+          ? 'Waiting for an agent to pick this task up. If none does, this button offers it to agents again.'
           : 'Closed — redispatch resumes at the decided stage.'}
       </p>
       <Button variant="secondary" size="sm" disabled={mutation.isPending} onClick={() => mutation.mutate()}>

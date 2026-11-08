@@ -6189,7 +6189,7 @@ for (const stage of ['implement', 'verify', 'review'] as const) {
     await page.goto(`/w/demo/tasks/${taskId}/full`)
     await expect(page.getByRole('button', { name: 'Redispatch', exact: true })).toBeVisible()
     await expect(
-      page.getByText('Waiting for an agent to pick this task up. If none does, Redispatch adds it to the queue again.'),
+      page.getByText('Waiting for an agent to pick this task up. If none does, this button offers it to agents again.'),
     ).toBeVisible()
     await expectNoTaskProposalSurface(page)
   })

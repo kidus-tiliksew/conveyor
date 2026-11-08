@@ -1541,12 +1541,13 @@ test('a queued task the next action offers no redispatch for keeps the card in p
   )
   await page.goto(`/w/demo/tasks/${taskId}/full`)
   const timeline = page.getByRole('region', { name: 'Execution event timeline' })
-  await expect(
-    timeline.getByText(
-      'Waiting for an agent to pick this task up. If none does, Redispatch adds it to the queue again.',
-    ),
-  ).toBeVisible()
-  await expect(timeline.getByText(/re-enqueue|dispatch stalled/)).toHaveCount(0)
+  const sentence = timeline.getByText(
+    'Waiting for an agent to pick this task up. If none does, this button offers it to agents again.',
+  )
+  await expect(sentence).toBeVisible()
+  // The sentence names no internal term; Redispatch stays the button label.
+  await expect(sentence).not.toContainText(/enqueue|dispatch/i)
+  await expect(timeline.getByRole('button', { name: 'Redispatch', exact: true })).toBeVisible()
   await expect(redispatchButtons(page)).toHaveCount(1)
 })
 
