@@ -49,6 +49,8 @@ attempt, revision, subject, pins and safe inputs. Local spools are not durable
 server evidence. No evidence type or passing result grants operator approval.
 Required assertions need one passing result each with support from the same
 subject and attempt; exit zero alone cannot satisfy missing evidence.
+A plain script declares no required assertions, and a declared assertion must
+be sent while the attempt runs, because a waiting attempt takes no more evidence.
 
 Inspect coverage, latest attempts, required assertions, output cardinalities
 and unresolved operations before submit_verification. Submit the context,
