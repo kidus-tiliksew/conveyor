@@ -2237,6 +2237,15 @@ for (const surface of [
       await document.fonts.load('500 12px "Inter Variable"', 'Knowledge explorer')
       await document.fonts.ready
     })
+    // The Board sheet slides in for 200 ms, and boxes read during the slide
+    // carry its translate offset; measure once the dialog's own slide has
+    // finished. (The loading skeleton's pulse is infinite, so only the
+    // dialog's own animations are awaited, not its subtree's.)
+    if (surface.exit === 'Close panel') {
+      await page
+        .getByRole('dialog', { name: 'Task detail' })
+        .evaluate((dialog) => Promise.all(dialog.getAnimations().map((animation) => animation.finished)))
+    }
     const before = await header.boundingBox()
     const reserved = await header.locator('[data-task-controls-placeholder="explorer"] > span').boundingBox()
 
@@ -2252,8 +2261,11 @@ for (const surface of [
     const after = await header.boundingBox()
     const placed = await explorer.boundingBox()
     expect(before && after && reserved && placed).toBeTruthy()
+    // Positions are read against the header's right edge, where the controls
+    // align, so the comparison holds wherever the header itself sits.
+    const fromRight = (box: { x: number }, frame: { x: number; width: number }) => frame.x + frame.width - box.x
     expect(after!.height).toBeCloseTo(before!.height, 0)
-    expect(placed!.x).toBeCloseTo(reserved!.x, 0)
+    expect(fromRight(placed!, after!)).toBeCloseTo(fromRight(reserved!, before!), 0)
     expect(placed!.width).toBeCloseTo(reserved!.width, 0)
   })
 }
