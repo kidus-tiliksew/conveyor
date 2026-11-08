@@ -33,7 +33,11 @@ func (s *Store) ChangeTaskPolicyCommand(ctx context.Context, lease taskops.TaskL
 		return store.SetupChangeResult{}, validationErr
 	}
 	workspaceID := workspace(ctx)
-	tx, err := s.begin(ctx)
+	// The policy route runs this command under WithTaskSideEffectLock, whose
+	// session already holds the task-operation key that lockWorkOrderTaskTx
+	// takes below. The transaction therefore runs on that held connection
+	// (component-persistence invariant 6; component-task-lifecycle invariant 44).
+	tx, err := s.beginInTaskSession(ctx)
 	if err != nil {
 		return store.SetupChangeResult{}, err
 	}
