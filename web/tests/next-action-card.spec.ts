@@ -165,12 +165,15 @@ for (const surface of [`/w/demo/tasks/${taskId}`, `/w/demo/tasks/${taskId}/full`
     await expect(choices.nth(1)).toBeDisabled()
     await expect(choices.nth(2)).toBeDisabled()
 
-    // Show IDs discloses the server's identifiers verbatim.
+    // Show IDs discloses the server's identifiers as a labelled list, never
+    // as a JSON object (req-operator-next-action AC-1.8).
     const ids = gate.locator('details')
     await expect(ids.getByText('order-spec-7')).toBeHidden()
     await ids.getByText('Show IDs').click()
-    await expect(ids.getByText(/"id": "order-spec-7"/)).toBeVisible()
-    await expect(ids.getByText(/"reason_code": "gate.plan"/)).toBeVisible()
+    await expect(ids.locator('dt')).toHaveText(['Order ID', 'Stage', 'Gate kind', 'Reason code'])
+    await expect(ids.locator('dd')).toHaveText(['order-spec-7', 'spec', 'plan_approval', 'gate.plan'])
+    await expect(ids).not.toContainText('{')
+    await expect(ids).not.toContainText('"')
 
     await choices.getByText('Approve plan').click()
     await expect.poll(() => posts.length).toBe(1)
@@ -179,6 +182,38 @@ for (const surface of [`/w/demo/tasks/${taskId}`, `/w/demo/tasks/${taskId}/full`
     expect(posts[0].body).toMatchObject({ action: 'approve' })
   })
 }
+
+// Nested next-action details print as text under their own labels: a list
+// joins its items and an object lists its fields, so no braces or quotes reach
+// the disclosure (req-operator-next-action AC-1.8, AC-7.1).
+test('Show IDs flattens nested next-action details into labelled text', async ({ page }) => {
+  const nested: NextAction = {
+    ...gateAction,
+    details: {
+      ...gateAction.details,
+      order_ids: ['order-spec-6', 'order-spec-7'],
+      pending_proposals: [
+        { tier: 'requirement', id: 'req-cards', version: 3 },
+        { tier: 'system_design', id: 'component-cards', version: 8 },
+      ],
+    },
+  }
+  await mockAPI(
+    page,
+    () => activity('awaiting_human', nested),
+    () => nested,
+  )
+  await page.goto(`/w/demo/tasks/${taskId}/full`)
+  const ids = page.getByRole('region', { name: 'Human gate' }).locator('details[data-next-action-ids]')
+  await ids.getByText('Show IDs').click()
+  await expect(ids.locator('[data-next-action-id="Order IDs"] dd')).toHaveText('order-spec-6, order-spec-7')
+  await expect(ids.locator('[data-next-action-id="Pending proposals"] dd')).toHaveText(
+    'Tier: requirement, ID: req-cards, Version: 3; Tier: system_design, ID: component-cards, Version: 8',
+  )
+  await expect(ids.locator('pre')).toHaveCount(0)
+  await expect(ids).not.toContainText('{')
+  await expect(ids).not.toContainText('"')
+})
 
 // A running agent attempt reads as one box: the server's statement with the
 // current order's execution state folded in, its empty-state rows omitted, and

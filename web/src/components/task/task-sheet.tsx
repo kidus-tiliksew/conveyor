@@ -22,7 +22,7 @@ import { SpecCard } from './spec-card'
 import { TaskActivityTabs, useTaskActivityView } from './task-activity-tabs'
 import { TaskContextCard } from './task-context-card'
 import { TaskAgentPrompt, TaskFacts, TaskIdentity } from './task-header'
-import { TaskLoadError } from './task-load-error'
+import { TaskControlsPlaceholder, TaskLoadError } from './task-load-error'
 import { taskHasVerifyStage, useTaskDetail, useTaskOrder, useTaskVerification } from './use-task-detail'
 
 // The task detail sheet: the costed event timeline — which
@@ -68,9 +68,18 @@ export function TaskSheet({ taskId }: { taskId: string }) {
         <span data-sheet-title className="min-w-0 flex-1 basis-0 truncate text-sm font-medium text-muted">
           {headingHidden ? item?.task.title : <span className="sr-only">{item?.task.title}</span>}
         </span>
-        {/* The same corner affordance the full route carries (REQ-3): the
-            panel opens over this one without dismissing it. */}
-        <LineageExplorer type="task" id={taskId} />
+        {/* Until a task is loaded (a pending first read, a 404, or another
+            failure) there is no lineage and no Board neighbour to offer, so the
+            header keeps only the way out; a pending read reserves the
+            controls' space so nothing moves when the task arrives. The explorer
+            is the corner affordance REQ-3 asks for. */}
+        {item ? (
+          <LineageExplorer type="task" id={taskId} />
+        ) : (
+          error == null && <TaskControlsPlaceholder part="explorer" />
+        )}
+        {/* The Board-window note is Board context, not a task control, so it
+            shows in every state and never shifts the controls when they arrive. */}
         {boardOrder.windowEdge && (
           // Below sm the note takes its own line under the controls so it
           // never squeezes the title out of the header.
@@ -81,8 +90,14 @@ export function TaskSheet({ taskId }: { taskId: string }) {
             {boardOrder.windowEdge}
           </span>
         )}
-        <SheetNavButton targetId={previousId} label="Previous task" icon={<ChevronUp />} />
-        <SheetNavButton targetId={nextId} label="Next task" icon={<ChevronDown />} />
+        {item ? (
+          <>
+            <SheetNavButton targetId={previousId} label="Previous task" icon={<ChevronUp />} />
+            <SheetNavButton targetId={nextId} label="Next task" icon={<ChevronDown />} />
+          </>
+        ) : (
+          error == null && <TaskControlsPlaceholder part="navigation" />
+        )}
         <Link
           to="/w/$workspaceId/tasks/$taskId/full"
           params={{ workspaceId: workspace, taskId }}

@@ -2147,6 +2147,177 @@ test('task detail headers show the task name while routes and API lookup keep us
   expect(new URL(page.url()).pathname).toBe(`/w/demo/tasks/${sheetTaskID}`)
 })
 
+// With no task loaded, because the read answered 404 or failed another way,
+// neither detail surface offers its Knowledge explorer or Board neighbours,
+// and no placeholder reserves their space;
+// Close on the sheet and the Board link on the full page stay
+// (component-web-task-surfaces).
+async function expectNoTaskControls(scope: Page | Locator) {
+  await expect(scope.getByRole('button', { name: 'Knowledge explorer' })).toHaveCount(0)
+  for (const label of ['Previous task', 'Next task']) {
+    await expect(scope.getByRole('button', { name: label })).toHaveCount(0)
+    await expect(scope.getByRole('link', { name: label })).toHaveCount(0)
+  }
+}
+
+for (const failure of [
+  { name: '404', taskId: 'missing-task', status: 404, heading: 'Task not found', retry: false },
+  { name: 'non-404 failure', taskId: 'failing-task', status: 503, heading: 'Could not load this task', retry: true },
+]) {
+  test(`with no task loaded after a ${failure.name}, no explorer or previous and next controls render`, async ({
+    page,
+  }) => {
+    await page.route(`**/v1/tasks/${failure.taskId}/activity*`, (route) =>
+      route.fulfill({
+        status: failure.status,
+        json:
+          failure.status === 404
+            ? { error: 'not_found', message: 'task not found' }
+            : { error: 'unavailable', message: 'The task read is unavailable.' },
+      }),
+    )
+
+    await page.goto(`/w/demo/tasks/${failure.taskId}/full`)
+    await expect(page.getByRole('heading', { name: failure.heading })).toBeVisible()
+    await expect(page.getByRole('button', { name: 'Try again' })).toHaveCount(failure.retry ? 1 : 0)
+    const fullHeader = page.locator('header').filter({ has: page.getByRole('link', { name: 'Back to board' }) })
+    await expect(fullHeader.getByRole('link', { name: 'Back to board' })).toBeVisible()
+    await expectNoTaskControls(page)
+    await expect(page.locator('[data-task-controls-placeholder]')).toHaveCount(0)
+
+    await page.goto(`/w/demo/tasks/${failure.taskId}`)
+    const sheet = page.getByRole('dialog', { name: 'Task detail' })
+    await expect(sheet.getByRole('heading', { name: failure.heading })).toBeVisible()
+    await expect(sheet.getByRole('button', { name: 'Close panel' })).toBeVisible()
+    await expectNoTaskControls(sheet)
+    await sheet.getByRole('button', { name: 'Close panel' }).click()
+    await expect(sheet).toHaveCount(0)
+  })
+}
+
+// A held first read loads no task, so neither surface renders the Knowledge
+// explorer or Previous and Next; a non-interactive placeholder keeps their
+// space, and the controls replace it in the same place once the task loads
+// (component-web-task-surfaces).
+for (const surface of [
+  { name: 'full page', taskId: 'held-full', path: '/w/demo/tasks/held-full/full', exit: 'Back to board' },
+  { name: 'Board sheet', taskId: 'held-sheet', path: '/w/demo/tasks/held-sheet', exit: 'Close panel' },
+]) {
+  test(`on the ${surface.name} the controls stay absent until the held task read loads`, async ({ page }) => {
+    let release = () => {}
+    const held = new Promise<void>((resolve) => {
+      release = resolve
+    })
+    await page.route(`**/v1/tasks/${surface.taskId}/activity*`, async (route) => {
+      await held
+      const item = activity(surface.taskId, false)
+      item.task.title = 'Held task'
+      await route.fulfill({ json: item }).catch(() => {})
+    })
+    await page.goto(surface.path)
+    const header = page
+      .locator('header')
+      .filter({ has: page.getByRole(surface.exit === 'Close panel' ? 'button' : 'link', { name: surface.exit }) })
+    const placeholder = header.locator('[data-task-controls-placeholder]')
+    await expect(placeholder).toHaveCount(2)
+    for (const part of await placeholder.all()) {
+      await expect(part).toHaveAttribute('aria-hidden', 'true')
+      await expect(part).toHaveText('')
+    }
+    await expect(placeholder.locator('button, a, [tabindex]')).toHaveCount(0)
+    await expectNoTaskControls(header)
+    await expect(
+      header.getByRole(surface.exit === 'Close panel' ? 'button' : 'link', { name: surface.exit }),
+    ).toBeVisible()
+    // Measure only once the dashboard's web font has loaded: before that the
+    // explorer label takes the machine's fallback font, whose width differs
+    // from Inter, so the placeholder and the loaded control are compared in
+    // the same font.
+    await page.evaluate(async () => {
+      await document.fonts.load('500 12px "Inter Variable"', 'Knowledge explorer')
+      await document.fonts.ready
+    })
+    // The Board sheet slides in for 200 ms, and boxes read during the slide
+    // carry its translate offset; measure once the dialog's own slide has
+    // finished. (The loading skeleton's pulse is infinite, so only the
+    // dialog's own animations are awaited, not its subtree's.)
+    if (surface.exit === 'Close panel') {
+      await page
+        .getByRole('dialog', { name: 'Task detail' })
+        .evaluate((dialog) => Promise.all(dialog.getAnimations().map((animation) => animation.finished)))
+    }
+    const before = await header.boundingBox()
+    const reserved = await header.locator('[data-task-controls-placeholder="explorer"] > span').boundingBox()
+
+    release()
+    const explorer = header.getByRole('button', { name: 'Knowledge explorer' })
+    await expect(explorer).toBeVisible()
+    for (const label of ['Previous task', 'Next task']) {
+      await expect(
+        header.getByRole('button', { name: label }).or(header.getByRole('link', { name: label })),
+      ).toBeVisible()
+    }
+    await expect(placeholder).toHaveCount(0)
+    const after = await header.boundingBox()
+    const placed = await explorer.boundingBox()
+    expect(before && after && reserved && placed).toBeTruthy()
+    // Positions are read against the header's right edge, where the controls
+    // align, so the comparison holds wherever the header itself sits.
+    const fromRight = (box: { x: number }, frame: { x: number; width: number }) => frame.x + frame.width - box.x
+    expect(after!.height).toBeCloseTo(before!.height, 0)
+    expect(fromRight(placed!, after!)).toBeCloseTo(fromRight(reserved!, before!), 0)
+    expect(placed!.width).toBeCloseTo(reserved!.width, 0)
+  })
+}
+
+// Stepping through the Board with Next and Previous still works when the next
+// task's read is pending: the step lands, the controls leave until that task
+// loads, and then stepping continues in both directions.
+test('Board stepping continues across a held read of the next task', async ({ page }) => {
+  const titles: Record<string, string> = { 'step-a': 'Step one', 'step-b': 'Step two', 'step-c': 'Step three' }
+  let release = () => {}
+  const held = new Promise<void>((resolve) => {
+    release = resolve
+  })
+  await page.route(/\/v1\/tasks\/step-[abc]\/activity/, async (route) => {
+    const taskId = new URL(route.request().url()).pathname.split('/')[3]
+    if (taskId === 'step-b') await held
+    const item = activity(taskId, false)
+    item.task.title = titles[taskId]
+    await route.fulfill({ json: item }).catch(() => {})
+  })
+  await page.route('**/v1/activity*', (route) =>
+    route.fulfill({
+      json: Object.keys(titles).map((taskId, index) => {
+        const item = activity(taskId, false)
+        item.task.title = titles[taskId]
+        item.task.created_at = `2026-07-15T12:0${3 - index}:00Z`
+        return { task: item.task, latest_stage: 'implement', last_event_at: createdAt, needs_attention: false }
+      }),
+    }),
+  )
+
+  await page.goto('/w/demo/tasks/step-a')
+  const header = page.getByRole('dialog', { name: 'Task detail' }).locator('header').first()
+  await expect(header).toContainText('Step one')
+  await header.getByRole('link', { name: 'Next task' }).click()
+  await expect(page).toHaveURL(/\/w\/demo\/tasks\/step-b$/)
+  await expect(header.locator('[data-task-controls-placeholder]')).toHaveCount(2)
+  await expectNoTaskControls(header)
+  await expect(header.getByRole('button', { name: 'Close panel' })).toBeVisible()
+
+  release()
+  await expect(header).toContainText('Step two')
+  await header.getByRole('link', { name: 'Next task' }).click()
+  await expect(header).toContainText('Step three')
+  await expect(header.getByRole('button', { name: 'Next task' })).toBeDisabled()
+  await header.getByRole('link', { name: 'Previous task' }).click()
+  await expect(header).toContainText('Step two')
+  await header.getByRole('link', { name: 'Previous task' }).click()
+  await expect(header).toContainText('Step one')
+  await expect(header.getByRole('button', { name: 'Previous task' })).toBeDisabled()
+})
+
 test('task metadata presents stored spec versions as plan versions', async ({ page }) => {
   await page.goto('/w/demo/tasks/github-fallback/full')
   await expect(page.getByText('retrying · plan v7')).toBeVisible()

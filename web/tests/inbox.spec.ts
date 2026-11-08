@@ -605,6 +605,8 @@ test('the context checklist lists each proposed document checked, and Apply atta
   const outside = await textOutsideIDs(card)
   for (const target of [requirement, design]) expect(outside).not.toContain(target.id)
   expect(outside).not.toContain('system:triage')
+  // The labelled list mounts when the disclosure opens.
+  await card.locator('details').last().getByText('Show IDs').click()
   await expect(card.locator('details').last()).toContainText(requirement.id)
 
   // A double click still runs once: one body-less POST per row, in order.
@@ -2061,8 +2063,9 @@ test('proposal details use the decision layout with server copy and a safe age',
   expect(visibleText).not.toContain('req-attention')
   expect(visibleText).not.toContain('review-task')
   await requirement.getByText('Show IDs').click()
-  await expect(requirement.locator('details pre')).toContainText('"document": "req-attention"')
-  await expect(requirement.locator('details pre')).toContainText('"origin_id": "review-task"')
+  await expect(requirement.locator('details [data-next-action-id="Document"] dd')).toHaveText('req-attention')
+  await expect(requirement.locator('details [data-next-action-id="Origin ID"] dd')).toHaveText('review-task')
+  await expect(requirement.locator('details')).not.toContainText('{')
 
   // A missing or unusable age falls back to proposed_at.
   for (const title of ['Dashboard architecture', 'All FunnelFlux repositories']) {
@@ -2275,6 +2278,117 @@ test('a just-passed deadline reads overdue, and chips and the urgent count move 
   await page.clock.fastForward(60_000)
   await expect(alpha).toHaveAttribute('data-due', 'soon')
   await expect(page.locator('[data-inbox-urgent]')).toHaveText('2 urgent')
+})
+
+// The urgent count covers only the decisions the list shows under the `task`
+// or `document` narrowing, and each counted row carries one urgent mark with
+// an accessible name, so the count traces to its rows (NA-6).
+test('the urgent count equals the marked rows the narrowed list shows', async ({ page }) => {
+  const fixture = toneFixture()
+  // Zeta is due in a day but unblocks another task, so it is urgent too.
+  const zeta = fixture.items.find((item) => item.task?.id === 'T-zeta')
+  Object.assign(zeta?.next_action as Record<string, unknown>, { blocks: ['T-wait'] })
+  await serve(page, fixture)
+  const urgentMarks = () => rowItems(page).getByRole('note', { name: 'Urgent', exact: true })
+
+  await page.goto('/w/demo/inbox')
+  await expect(decisionRows(page)).toHaveCount(3)
+  await expect(page.locator('[data-inbox-urgent]')).toHaveText('3 urgent')
+  await expect(urgentMarks()).toHaveCount(3)
+  for (const row of await rowItems(page).all()) {
+    await expect(row.locator('[data-row-urgent]')).toHaveCount(1)
+    await expect(row.locator('[data-row-urgent]')).toHaveText('Urgent')
+  }
+
+  // Narrowed to one task, the hidden urgent decisions leave the count.
+  await page.goto('/w/demo/inbox?task=T-alpha')
+  await expect(decisionRows(page)).toHaveCount(1)
+  await expect(page.locator('[data-inbox-urgent]')).toHaveText('1 urgent')
+  await expect(urgentMarks()).toHaveCount(1)
+  await expect(rowItems(page).filter({ hasText: 'Alpha agent question' }).locator('[data-row-urgent]')).toBeVisible()
+
+  // A decision without urgency is listed alone: nothing is urgent, nothing is marked.
+  const calm = toneFixture()
+  await serve(page, calm)
+  await page.goto('/w/demo/inbox?task=T-zeta')
+  await expect(decisionRows(page)).toHaveCount(1)
+  await expect(page.locator('[data-inbox-summary]')).toHaveText('Nothing urgent')
+  await expect(page.locator('[data-inbox-urgent]')).toHaveCount(0)
+  await expect(rowItems(page).locator('[data-row-urgent]')).toHaveCount(0)
+})
+
+// The first load reserves the decisions band's shape: the header keeps its
+// height, and the list, its first row, and the detail start where their
+// skeletons stood, so nothing shifts when the read answers.
+test('the inbox first load holds a skeleton shaped like the decisions band', async ({ page }) => {
+  await page.setViewportSize({ width: 1280, height: 900 })
+  const harness = await serve(page, decisionsFixture())
+  const hold = gate()
+  await page.route('**/v1/next-actions*', async (route) => {
+    await hold.held
+    await route.fallback().catch(() => {})
+  })
+  await page.goto('/w/demo/inbox')
+  const skeleton = page.locator('[data-inbox-skeleton]')
+  await expect(skeleton).toBeVisible()
+  // The sentence remains for screen readers only.
+  await expect(page.getByText('Loading the inbox…')).toHaveClass(/sr-only/)
+  await expect(page.locator('[data-band-count-placeholder]')).toHaveCount(3)
+  const box = async (selector: string) => {
+    const found = await page.locator(selector).first().boundingBox()
+    expect(found, selector).not.toBeNull()
+    return found!
+  }
+  const header = await box('header:has(h1:text-is("Inbox"))')
+  const list = await box('[data-inbox-skeleton-list]')
+  const firstRow = await box('[data-inbox-skeleton-row]')
+  const detail = await box('[data-inbox-skeleton-detail]')
+
+  hold.release()
+  await expect(decisionRows(page)).toHaveCount(3)
+  await expect(skeleton).toHaveCount(0)
+  expect(harness.inboxRequests.length).toBeGreaterThan(0)
+  const headerAfter = await box('header:has(h1:text-is("Inbox"))')
+  const listAfter = await box('[aria-label="Decision list"]')
+  const listColumn = await box('section[aria-label="Decisions"] > div > div:first-child')
+  const firstRowAfter = await box('[data-inbox-row-item]')
+  const detailAfter = await box('[data-inbox-detail]')
+  expect(headerAfter.height).toBeCloseTo(header.height, 0)
+  expect(listColumn.x).toBeCloseTo(list.x, 0)
+  expect(listColumn.y).toBeCloseTo(list.y, 0)
+  expect(listColumn.width).toBeCloseTo(list.width, 0)
+  expect(listAfter.y).toBeCloseTo(firstRow.y, 0)
+  expect(firstRowAfter.y).toBeCloseTo(firstRow.y, 0)
+  expect(detailAfter.x).toBeCloseTo(detail.x, 0)
+  expect(detailAfter.y).toBeCloseTo(detail.y, 0)
+  expect(detailAfter.width).toBeCloseTo(detail.width, 0)
+})
+
+// The contract layer decodes a refusal body once: a JSON envelope reaches the
+// page as its sentence, and a body that is no sentence, such as a proxy's HTML
+// page, yields the response's status text instead (component-web-dashboard
+// invariant 13).
+test('a failed inbox read shows the JSON body as its sentence and never the JSON', async ({ page }) => {
+  await serve(page, decisionsFixture())
+  let body: { status: number; contentType: string; body: string } = {
+    status: 503,
+    contentType: 'application/json',
+    body: JSON.stringify({ error: 'inbox_unavailable', message: 'the inbox read is unavailable right now' }),
+  }
+  await page.route('**/v1/next-actions*', (route) => route.fulfill(body))
+
+  await page.goto('/w/demo/inbox')
+  const failure = page.getByRole('alert').filter({ hasText: 'Could not load the inbox' })
+  await expect(failure).toContainText('The inbox read is unavailable right now.')
+  await expect(failure).not.toContainText('{')
+  await expect(failure).not.toContainText('inbox_unavailable')
+
+  body = { status: 502, contentType: 'text/html', body: '<html><body><h1>502 Bad Gateway</h1></body></html>' }
+  await page.reload()
+  // The page reads the HTTP status text the contract layer falls back to.
+  await expect(failure).toContainText('Bad Gateway.')
+  await expect(failure).not.toContainText('<')
+  await expect(failure).not.toContainText('502 Bad Gateway')
 })
 
 test('with no decisions the header says nothing needs you and the band shows the empty state', async ({ page }) => {

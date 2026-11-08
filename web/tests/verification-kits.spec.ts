@@ -291,6 +291,23 @@ test('descriptions render literally and schema-1 assertions show IDs alone', asy
   await expect(legacy.getByText('fixture-observed')).toBeVisible()
 })
 
+// A refused registry read prints the sentence the contract layer decoded
+// from its JSON body, never the body itself (component-web-dashboard
+// invariant 13).
+test('a refused kit registry read shows its decoded sentence, not its JSON body', async ({ page }) => {
+  await mockAPIs(page)
+  await page.route('**/v1/workspaces/demo/verification-kits*', (route) =>
+    route.fulfill({
+      status: 503,
+      json: { error: 'kit_inventory_unavailable', message: 'The kit inventory cannot read GitHub right now.' },
+    }),
+  )
+  await page.goto('/w/demo/workspace')
+  await page.getByRole('tab', { name: 'Verification' }).click()
+  await expect(page.getByText('The kit inventory cannot read GitHub right now.')).toBeVisible()
+  await expect(page.getByText(/kit_inventory_unavailable|\{"error"/)).toHaveCount(0)
+})
+
 test('members see the kit list without verification switches', async ({ page }) => {
   await mockAPIs(page, 'viewer')
   await page.goto('/w/demo/workspace')

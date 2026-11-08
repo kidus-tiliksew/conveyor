@@ -1,21 +1,17 @@
 import { CircleAlert } from 'lucide-react'
+import { errorMessage } from '../../lib/errors'
 import { cn } from '../../lib/utils'
 import { Button } from './button'
 
-// A server's refusal can be a JSON body or a stack-like string. Only a plain
-// sentence reaches the page; anything else falls back to the page's own words.
+// The contract layer decodes every refusal body into a message
+// (`apiErrorMessage` in lib/api.ts), so this only chooses between that message
+// and the page's own words: it parses no response body
+// (component-web-dashboard invariant 13). A SyntaxError is a decoder's failure
+// to read a response, never a message for a person.
 export function readableError(error: unknown, fallback: string) {
-  const raw = error instanceof Error ? error.message : typeof error === 'string' ? error : ''
-  const text = raw.replace(/^Error:\s*/, '').trim()
-  if (!text) return fallback
-  try {
-    const parsed = JSON.parse(text) as { error?: unknown; message?: unknown }
-    const inner = parsed.error ?? parsed.message
-    if (typeof inner === 'string' && inner.trim()) return sentence(inner)
-    return fallback
-  } catch {
-    return text.length > 240 || /[{}<>]/.test(text) ? fallback : sentence(text)
-  }
+  if (error instanceof SyntaxError) return fallback
+  const message = errorMessage(error, '')
+  return message ? sentence(message) : fallback
 }
 
 function sentence(text: string) {

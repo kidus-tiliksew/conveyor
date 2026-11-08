@@ -132,7 +132,9 @@ test('Board MCP action offers safe client-specific setup and complete dialog beh
 
   await dialog.getByRole('tab', { name: 'Other' }).click()
   await expect(dialog).toContainText('MCP connection settings')
-  await dialog.getByRole('button', { name: 'Completed' }).click()
+  // The primary button only closes the dialog, so it says Done, not Completed.
+  await expect(dialog.getByRole('button', { name: 'Completed' })).toHaveCount(0)
+  await dialog.getByRole('button', { name: 'Done' }).click()
   await expect(dialog).toHaveCount(0)
   await expect(trigger).toBeFocused()
   await expect(page.locator('body')).not.toHaveCSS('overflow', 'hidden')
@@ -172,7 +174,7 @@ test('Tasks MCP action stays usable at a narrow viewport', async ({ page }) => {
   await expect(dialog).toContainText(endpoint)
   await expect(dialog.getByRole('button', { name: 'Copy Codex setup' })).toBeVisible()
 
-  await dialog.getByRole('button', { name: 'Completed' }).click()
+  await dialog.getByRole('button', { name: 'Done' }).click()
   await page.goto('/w/demo/settings')
   const settings = page.getByText('MCP work-order server').locator('..').locator('..')
   await expect(settings).toContainText(endpoint)

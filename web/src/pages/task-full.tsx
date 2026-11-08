@@ -12,7 +12,7 @@ import { SpecCard } from '../components/task/spec-card'
 import { TaskActivityTabs, useTaskActivityView } from '../components/task/task-activity-tabs'
 import { TaskContextCard } from '../components/task/task-context-card'
 import { TaskAgentPrompt, TaskFacts, TaskIdentity } from '../components/task/task-header'
-import { TaskLoadError } from '../components/task/task-load-error'
+import { TaskControlsPlaceholder, TaskLoadError } from '../components/task/task-load-error'
 import { useTaskDetail, useTaskOrder } from '../components/task/use-task-detail'
 import { Button } from '../components/ui/button'
 import { Skeleton } from '../components/ui/skeleton'
@@ -81,9 +81,18 @@ export function TaskFullPage() {
             </>
           )}
         </nav>
-        {/* The corner affordance REQ-3 asks for: what this task connects to is
-            one read away, and it costs nothing until it is opened. */}
-        <LineageExplorer type="task" id={taskId} />
+        {/* Until a task is loaded (a pending first read, a 404, or another
+            failure) there is no lineage and no Board neighbour to offer, so the
+            header keeps only the way out; a pending read reserves the
+            controls' space so nothing moves when the task arrives. The explorer
+            is the corner affordance REQ-3 asks for. */}
+        {item ? (
+          <LineageExplorer type="task" id={taskId} />
+        ) : (
+          error == null && <TaskControlsPlaceholder part="explorer" />
+        )}
+        {/* The Board-window note is Board context, not a task control, so it
+            shows in every state and never shifts the controls when they arrive. */}
         {windowEdge && (
           // Below sm the note takes its own line under the controls so it
           // never squeezes the title out of the header.
@@ -94,8 +103,14 @@ export function TaskFullPage() {
             {windowEdge}
           </span>
         )}
-        <FullNavButton targetId={previousId} label="Previous task" icon={<ChevronUp />} />
-        <FullNavButton targetId={nextId} label="Next task" icon={<ChevronDown />} />
+        {item ? (
+          <>
+            <FullNavButton targetId={previousId} label="Previous task" icon={<ChevronUp />} />
+            <FullNavButton targetId={nextId} label="Next task" icon={<ChevronDown />} />
+          </>
+        ) : (
+          error == null && <TaskControlsPlaceholder part="navigation" />
+        )}
       </header>
       {(isLoading || redirecting) && (
         <div className="space-y-3 px-6 py-6">

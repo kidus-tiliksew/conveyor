@@ -4,6 +4,7 @@ import { useBlueprints, useWorkspaceSelection } from '../components/app-shell'
 import { Badge } from '../components/ui/badge'
 import { Card, CardContent } from '../components/ui/card'
 import { PageHeader } from '../components/ui/page-header'
+import { Skeleton } from '../components/ui/skeleton'
 import { childRollup, deliveryLabel, deliveryTone } from '../lib/blueprint'
 import { errorMessage } from '../lib/errors'
 import type { BlueprintView } from '../lib/types'
@@ -34,7 +35,7 @@ export function BlueprintsPage() {
             .
           </p>
           {!workspace && <EmptyMessage>Choose a workspace to open its blueprints.</EmptyMessage>}
-          {isLoading && workspace && <EmptyMessage>Loading blueprints…</EmptyMessage>}
+          {isLoading && workspace && <BlueprintListSkeleton />}
           {error != null && (
             <EmptyMessage tone="failure">{errorMessage(error, 'Could not load blueprints.')}</EmptyMessage>
           )}
@@ -117,6 +118,37 @@ function BlueprintListEntry({ view }: { view: BlueprintView }) {
       </div>
       <ArrowRight className="mt-0.5 size-4 shrink-0 text-faint" />
     </Link>
+  )
+}
+
+// The first load's placeholder: list entries with the list's spacing and an
+// entry's border, padding, icon, title line, and rollup line, so the list
+// that replaces it starts and sits where the placeholder did.
+function BlueprintListSkeleton() {
+  return (
+    <div data-blueprints-skeleton aria-busy="true">
+      <span className="sr-only">Loading blueprints…</span>
+      <ul className="mt-7 space-y-3">
+        {[0, 1, 2].map((entry) => (
+          <li key={entry}>
+            <div
+              data-blueprints-skeleton-entry
+              className="flex items-start gap-3 rounded-lg border border-border bg-card p-4"
+            >
+              <Skeleton className="mt-0.5 size-4 shrink-0" />
+              <div className="min-w-0 flex-1">
+                {/* The title line is as tall as the delivery badge every entry carries. */}
+                <div className="flex h-[22px] items-center">
+                  <Skeleton className="h-4 w-1/2" />
+                </div>
+                <Skeleton className="mt-1.5 h-4 w-1/3" />
+              </div>
+              <Skeleton className="mt-0.5 size-4 shrink-0" />
+            </div>
+          </li>
+        ))}
+      </ul>
+    </div>
   )
 }
 

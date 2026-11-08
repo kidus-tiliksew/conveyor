@@ -1,4 +1,5 @@
 import { Link } from '@tanstack/react-router'
+import { Flame } from 'lucide-react'
 import type { InboxItem } from '../../lib/types'
 import { cn, fullTime } from '../../lib/utils'
 import { useWorkspaceSelection } from '../app-shell'
@@ -13,7 +14,8 @@ import { knownTier, proposalAge, tierLabels } from './proposal-card'
 // compact row per item, in the server's order (DEC-82(2)): the kind's icon in
 // its tone and the kind, a proposal's version, the age, the title clamped to two
 // lines, and a meta line of urgency marks and the pull request only when there
-// is one to show (NA-6). A row carries no choice
+// is one to show (NA-6). A row the header counts as urgent carries one urgent
+// mark, so the count can be traced to its rows. A row carries no choice
 // control (DEC-82(1)); it is a link that names the item in `selected`, so the
 // selection survives reload and browser history. The link covers the whole row
 // through a stretched overlay; a task's pull request link sits above it, outside
@@ -22,10 +24,12 @@ import { knownTier, proposalAge, tierLabels } from './proposal-card'
 export function InboxReviewList({
   items,
   selectedKey,
+  urgentKeys,
   search,
 }: {
   items: InboxItem[]
   selectedKey: string | undefined
+  urgentKeys: ReadonlySet<string>
   search: InboxSearch
 }) {
   return (
@@ -44,7 +48,13 @@ export function InboxReviewList({
           const key = inboxItemKey(item)
           return (
             <li key={key}>
-              <InboxRow item={item} rowKey={key} selected={key === selectedKey} search={search} />
+              <InboxRow
+                item={item}
+                rowKey={key}
+                selected={key === selectedKey}
+                urgent={urgentKeys.has(key)}
+                search={search}
+              />
             </li>
           )
         })}
@@ -57,11 +67,13 @@ function InboxRow({
   item,
   rowKey,
   selected,
+  urgent,
   search,
 }: {
   item: InboxItem
   rowKey: string
   selected: boolean
+  urgent: boolean
   search: InboxSearch
 }) {
   const { workspace } = useWorkspaceSelection()
@@ -120,8 +132,9 @@ function InboxRow({
           {row.title}
         </span>
       </Link>
-      {(row.blocks > 0 || row.deadline || pullRequest) && (
+      {(urgent || row.blocks > 0 || row.deadline || pullRequest) && (
         <span className="mt-1 flex min-w-0 flex-wrap items-center gap-1.5 text-xs">
+          {urgent && <UrgentMark />}
           <UnblocksMark count={row.blocks} />
           <DueChip deadline={row.deadline} />
           {pullRequest && (
@@ -139,6 +152,23 @@ function InboxRow({
         </span>
       )}
     </div>
+  )
+}
+
+// The one mark that traces a row to the header's urgent count: the decision
+// unblocks other tasks or is due within three hours.
+function UrgentMark() {
+  return (
+    <span
+      role="note"
+      aria-label="Urgent"
+      title="Unblocks other tasks or is due within three hours"
+      data-row-urgent
+      className="inline-flex shrink-0 items-center gap-1 rounded bg-attention-soft px-1.5 font-medium text-attention"
+    >
+      <Flame aria-hidden className="size-3" />
+      Urgent
+    </span>
   )
 }
 

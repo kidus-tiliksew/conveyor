@@ -14,8 +14,10 @@ const bands: { band?: InboxBand; label: string }[] = [
 // The band switch over the one inbox read (feature-operator-next-action NA-6):
 // a segmented control whose selected segment is the `band` search parameter.
 // Each count comes from that read, so a band link and the counts never
-// disagree. The server's order is stated beneath it.
-export function InboxBandChips({ search, counts }: { search: InboxSearch; counts: Record<InboxBand, number> }) {
+// disagree. The server's order is stated beneath it. Before the first read
+// answers, each count is a placeholder of the same size, so the header keeps
+// its shape when the counts arrive.
+export function InboxBandChips({ search, counts }: { search: InboxSearch; counts?: Record<InboxBand, number> }) {
   const { workspace } = useWorkspaceSelection()
   return (
     <div className="flex w-full min-w-0 flex-col items-start gap-1.5 sm:w-auto sm:items-end">
@@ -39,11 +41,18 @@ export function InboxBandChips({ search, counts }: { search: InboxSearch; counts
               )}
             >
               {segment.label}
-              {segment.band && (
-                <span className={cn('tabular-nums', selected ? 'text-muted' : 'text-faint')}>
-                  {counts[segment.band]}
-                </span>
-              )}
+              {segment.band &&
+                (counts ? (
+                  <span className={cn('tabular-nums', selected ? 'text-muted' : 'text-faint')}>
+                    {counts[segment.band]}
+                  </span>
+                ) : (
+                  <span
+                    aria-hidden
+                    data-band-count-placeholder
+                    className="inline-block h-3 w-[1ch] animate-pulse rounded-sm bg-raised/60"
+                  />
+                ))}
             </Link>
           )
         })}
