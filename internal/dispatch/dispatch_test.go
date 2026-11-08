@@ -15,6 +15,7 @@ import (
 	"github.com/kidus-tiliksew/conveyor/internal/config"
 	"github.com/kidus-tiliksew/conveyor/internal/core"
 	"github.com/kidus-tiliksew/conveyor/internal/inprocess"
+	"github.com/kidus-tiliksew/conveyor/internal/nextaction"
 	"github.com/kidus-tiliksew/conveyor/internal/pack"
 	"github.com/kidus-tiliksew/conveyor/internal/pipeline"
 	"github.com/kidus-tiliksew/conveyor/internal/store"
@@ -1608,6 +1609,120 @@ func TestHumanTriageRouteEntersInvalidOutputBounce(t *testing.T) {
 	}
 	if count, err := st.CountEvents(ctx, task.ID, "triage.output_invalid"); err != nil || count != 1 {
 		t.Fatalf("invalid-output events=%d err=%v", count, err)
+	}
+}
+
+// TestTriageInvalidOutputAtBounceLimitFailsJob proves that triage output that
+// stays invalid through the bounce limit appends pipeline.bounce_limit, fails
+// the job with an error naming the invalid output and its last validation
+// error, and waits at the job-failure gate, never a review gate. The Retry
+// redirect, recorded as a human intervention as POST /v1/tasks/{id}/review
+// records it, gives triage a fresh bounce window; a redirect without that
+// record would fail again on the next invalid output (component-triage
+// invariant 26; DEC-110(2); req-operator-next-action AC-1.2, AC-1.8).
+func TestTriageInvalidOutputAtBounceLimitFailsJob(t *testing.T) {
+	for _, tc := range []struct {
+		name             string
+		recordRetry      bool
+		wantAfterRetry   core.TaskState
+		wantInvalidCount int
+	}{
+		{name: "retry recorded as a human intervention", recordRetry: true, wantAfterRetry: core.TaskQueued, wantInvalidCount: 3},
+		{name: "redirect without an intervention record", recordRetry: false, wantAfterRetry: core.TaskAwaiting, wantInvalidCount: 3},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx := store.WithWorkspace(store.WithActor(t.Context(), store.SystemActor()), "demo")
+			st := store.NewMemory()
+			task := core.Task{ID: "triage-invalid", Workspace: "demo", Repo: "api", Title: "Triage invalid", Hold: true, PolicyVersion: 1, State: core.TaskQueued, NextStage: core.StageTriage, CreatedAt: time.Now()}
+			if err := st.CreateTask(ctx, task); err != nil {
+				t.Fatal(err)
+			}
+			bundle, err := pack.Load("../../pack")
+			if err != nil {
+				t.Fatal(err)
+			}
+			invalid := "```conveyor:triage\n{\"class\":\"feature\",\"route\":\"proceed\",\"summary\":\"\"}\n```"
+			agent := &sequenceAgent{outputs: []string{invalid, invalid, invalid}}
+			cfg := &config.Config{Workspace: "demo", MaxBounces: 2, Routing: config.Routing{Stages: map[string]config.StageRoute{"triage": {Model: "gpt", Execution: config.ExecutionInProcess, Timeout: time.Minute}, "spec": {Model: "gpt", Execution: config.ExecutionInProcess, Timeout: time.Minute}, "implement": {Model: "operator", Execution: config.ExecutionMCP, Timeout: time.Hour}, "review": {Model: "operator", Execution: config.ExecutionMCP, Timeout: time.Hour}}}}
+			d := New(st, cfg, agent)
+			d.Pack = bundle
+			if err = d.DispatchNow(ctx, task.ID); err != nil {
+				t.Fatal(err)
+			}
+			if current, _ := st.GetTask(ctx, task.ID); current.State != core.TaskQueued || current.NextStage != core.StageTriage {
+				t.Fatalf("after the first invalid output task=%+v", current)
+			}
+			if err = d.DispatchNow(ctx, task.ID); err != nil {
+				t.Fatal(err)
+			}
+			failed, err := st.GetTask(ctx, task.ID)
+			if err != nil || failed.State != core.TaskAwaiting || failed.GateKind != core.GateKindJobFailure || failed.RecoveryStage != core.StageTriage || failed.NextStage != "" {
+				t.Fatalf("at the bounce limit task=%+v err=%v, want a triage job failure", failed, err)
+			}
+			events, err := st.ListEvents(ctx, task.ID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var limit, failure map[string]any
+			for _, event := range events {
+				switch event.Kind {
+				case "pipeline.bounce_limit":
+					_ = json.Unmarshal(event.Payload, &limit)
+				case "job.failed":
+					_ = json.Unmarshal(event.Payload, &failure)
+				}
+			}
+			if limit["source"] != "triage.output_invalid" || limit["window"] != float64(2) {
+				t.Fatalf("bounce limit=%v", limit)
+			}
+			message, _ := failure["error"].(string)
+			diagnostic, _ := failure["diagnostic"].(map[string]any)
+			if !strings.HasPrefix(message, "Triage output stayed invalid after 2 attempts, so triage has no outcome. Last validation error: ") ||
+				!strings.HasSuffix(message, "triage summary is required") || failure["source"] != "triage.output_invalid" || diagnostic["phase"] != TriageOutputValidationPhase {
+				t.Fatalf("job failure=%v", failure)
+			}
+			latest, ok, err := st.GetLatestJob(ctx, task.ID)
+			if err != nil || !ok || latest.Stage != core.StageTriage || latest.State != core.JobDone {
+				t.Fatalf("latest job=%+v ok=%t err=%v, want the completed triage job whose output stayed invalid", latest, ok, err)
+			}
+			action, err := store.ReadNextAction(ctx, st, task.ID, store.NextActionOptions{})
+			if err != nil || action.Kind != nextaction.KindJobFailure || action.Label != "Retry triage" || action.Summary != "Triage returned invalid output until the bounce limit, so it has no outcome." {
+				t.Fatalf("next action=%+v err=%v", action, err)
+			}
+			for _, text := range []string{action.Label, action.Summary, action.Question, action.IfIgnored} {
+				if strings.Contains(strings.ToLower(text), "review") {
+					t.Fatalf("triage job failure names review: %q", text)
+				}
+			}
+			// The Retry the dashboard's triage recovery card posts: a redirect
+			// that returns to the recorded recovery stage.
+			retry := core.Intervention{TaskID: task.ID, JobID: latest.ID, Action: core.InterventionRedirect, ReasonCode: "changes-requested", Comment: "Retry triage."}
+			if err = d.HandleIntervention(ctx, failed, latest, retry); err != nil {
+				t.Fatal(err)
+			}
+			if tc.recordRetry {
+				operator := store.WithWorkspace(store.WithActor(t.Context(), store.Actor{ID: "operator", Role: core.ActorHuman}), "demo")
+				if err = st.CreateIntervention(operator, retry); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if current, _ := st.GetTask(ctx, task.ID); current.State != core.TaskQueued || current.NextStage != core.StageTriage {
+				t.Fatalf("after retry task=%+v", current)
+			}
+			if err = d.DispatchNow(ctx, task.ID); err != nil {
+				t.Fatal(err)
+			}
+			after, err := st.GetTask(ctx, task.ID)
+			if err != nil || after.State != tc.wantAfterRetry {
+				t.Fatalf("after one more invalid output task=%+v err=%v, want %s", after, err, tc.wantAfterRetry)
+			}
+			if count, _ := st.CountEvents(ctx, task.ID, "triage.output_invalid"); count != tc.wantInvalidCount {
+				t.Fatalf("invalid-output events=%d want %d", count, tc.wantInvalidCount)
+			}
+			if after.State == core.TaskQueued && after.NextStage != core.StageTriage {
+				t.Fatalf("a fresh window bounces back to triage: %+v", after)
+			}
+		})
 	}
 }
 

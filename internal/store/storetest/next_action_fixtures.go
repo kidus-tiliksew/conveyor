@@ -2,6 +2,7 @@ package storetest
 
 import (
 	"context"
+	"strings"
 	"testing"
 	"time"
 
@@ -73,9 +74,11 @@ func runNextActionReadFixtures(t *testing.T, st store.Store, ctx context.Context
 	acceptReviewRound(t, st, ctx, bounceID, func(order core.WorkOrder, seat int) core.ReviewDecision {
 		return core.ReviewDecision{TaskID: bounceID, JobID: order.JobID, ReviewWorkOrderID: order.ID, ReviewRound: 1, ReviewSeat: seat, Verdict: "changes_requested", ReasonCode: "fix", Summary: "bounce", Feedback: "again", MaxBounces: 1}
 	})
-	if got := read(bounceID, nextaction.KindReviewBounceLimit).Question; got != "Review bounced 1 times. Approve, ask for changes, or reject?" {
-		t.Fatalf("bounce question = %q, want the recorded bounce count", got)
+	// A review-sourced limit keeps the review wording.
+	if got := read(bounceID, nextaction.KindReviewBounceLimit); got.Label != "Settle review" || got.Question != "Review bounced 1 times. Approve, ask for changes, or reject?" {
+		t.Fatalf("bounce label=%q question=%q, want the review wording and the recorded bounce count", got.Label, got.Question)
 	}
+	runGateSourceFixtures(t, st, ctx, workspace, now, read)
 
 	claimedID := orderTask(t, st, ctx, workspace, core.WorkOrder{})
 	if _, err := For(st).ClaimWorkOrder(ctx, "order-"+claimedID, core.WorkOrderClaim{SessionID: "session", ClientToken: "token", ClaimantID: "agent", Lease: time.Minute, ExecutionTimeout: time.Hour}); err != nil {
@@ -110,6 +113,71 @@ func runNextActionReadFixtures(t *testing.T, st store.Store, ctx context.Context
 		}
 	}
 	runCallerAttentionOrder(t, st, ctx, workspace)
+}
+
+// runGateSourceFixtures reads the store-backed statement of gates whose
+// recorded source selects their wording: a bounce limit that planning reached
+// with invalid output names planning, and a triage whose output stayed invalid
+// fails its job and names triage, never review. A later sourceless job
+// failure keeps the base wording (component-triage invariant 26;
+// component-next-action invariants 4, 17, 18; req-operator-next-action AC-1.2,
+// AC-1.8).
+func runGateSourceFixtures(t *testing.T, st store.Store, ctx context.Context, workspace string, now time.Time, read func(string, string) nextaction.NextAction) {
+	t.Helper()
+	plane := taskops.New(st)
+	gate := func(command core.TaskCommand, recovery core.Stage, events ...core.Event) string {
+		t.Helper()
+		id := createRunningTask(t, st, ctx, workspace)
+		for i, event := range events {
+			event.TaskID, event.ActorRole, event.At = id, core.ActorSystem, now.Add(time.Duration(i-len(events))*time.Second)
+			if err := st.AppendEvent(ctx, event); err != nil {
+				t.Fatal(err)
+			}
+		}
+		if _, err := plane.Perform(ctx, id, taskops.Command{Kind: command, RecoveryStage: recovery, ProjectStages: true}); err != nil {
+			t.Fatal(err)
+		}
+		return id
+	}
+	planning := gate(core.TaskStageBounceLimit, core.StageSpec,
+		core.Event{Kind: "spec.output_invalid", Payload: core.JSONPayload(map[string]any{"error": "plan markdown is required"})},
+		core.Event{Kind: "pipeline.bounce_limit", Payload: core.JSONPayload(map[string]any{"source": "spec.output_invalid", "window": 3, "max_bounces": 3})})
+	got := read(planning, nextaction.KindReviewBounceLimit)
+	if got.Label != "Settle planning output" || got.Summary != "Planning returned invalid output until the bounce limit." ||
+		got.Question != "Planning returned invalid output 3 times. Approve, ask for changes, or reject?" || got.Details.GateKind != string(core.GateKindReviewBounceLimit) {
+		t.Fatalf("planning-sourced bounce limit=%+v", got)
+	}
+	if labels := choiceLabels(got.Choices); strings.Join(labels, ",") != "Approve,Ask for changes…,Reject" {
+		t.Fatalf("planning-sourced bounce limit choices=%v, want the unchanged review choices", labels)
+	}
+	triage := gate(core.TaskJobFail, core.StageTriage,
+		core.Event{Kind: "triage.output_invalid", Payload: core.JSONPayload(map[string]any{"error": "triage summary is required"})},
+		core.Event{Kind: "pipeline.bounce_limit", Payload: core.JSONPayload(map[string]any{"source": "triage.output_invalid", "window": 3, "max_bounces": 3})},
+		core.Event{Kind: "job.failed", Payload: core.JSONPayload(map[string]any{"error": "Triage output stayed invalid after 3 attempts, so triage has no outcome. Last validation error: triage summary is required", "source": "triage.output_invalid"})})
+	got = read(triage, nextaction.KindJobFailure)
+	if got.Label != "Retry triage" || got.Summary != "Triage returned invalid output until the bounce limit, so it has no outcome." ||
+		got.Details.GateKind != string(core.GateKindJobFailure) || got.Judgment {
+		t.Fatalf("triage job failure=%+v", got)
+	}
+	for _, text := range []string{got.Label, got.Summary, got.Question, got.IfIgnored} {
+		if strings.Contains(strings.ToLower(text), "review") {
+			t.Fatalf("triage job failure names review: %q", text)
+		}
+	}
+	superseded := gate(core.TaskJobFail, core.StageTriage,
+		core.Event{Kind: "job.failed", Payload: core.JSONPayload(map[string]any{"error": "invalid", "source": "triage.output_invalid"})},
+		core.Event{Kind: "context.authority_budget_exceeded", Payload: core.JSONPayload(map[string]any{"reason_code": "authority_budget_exceeded"})})
+	if got = read(superseded, nextaction.KindJobFailure); got.Label != "Job failure" || got.Summary != "A job failed and needs a person." {
+		t.Fatalf("a later sourceless job failure kept the triage wording: %+v", got)
+	}
+}
+
+func choiceLabels(choices []nextaction.Choice) []string {
+	labels := make([]string, 0, len(choices))
+	for _, choice := range choices {
+		labels = append(labels, choice.Label)
+	}
+	return labels
 }
 
 func orderTask(t *testing.T, st store.Store, ctx context.Context, workspace string, order core.WorkOrder, commands ...core.WorkOrderCommand) string {

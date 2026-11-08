@@ -7393,6 +7393,36 @@ for (const [reason, guidance] of [
   })
 }
 
+// Triage output that stayed invalid through the bounce limit completes its job
+// and records the failure with the output_validation phase. Retry stays
+// available whatever the validation error names, and the run's timeline entry
+// states the failure, not a retry that is not coming (component-triage
+// invariant 26).
+test('failed triage after invalid output offers retry and names the validation error', async ({ page }) => {
+  const reason =
+    'Triage output stayed invalid after 3 attempts, so triage has no outcome. Last validation error: json: unknown field "task_context"'
+  const item = failedTriageFixture(reason)
+  item.jobs[0].state = 'done'
+  item.events[1].payload.diagnostic.phase = 'output_validation'
+  item.events.splice(1, 0, {
+    id: 461069,
+    task_id: 'failed-triage',
+    job_id: 'failed-triage-triage-1',
+    kind: 'triage.output_invalid',
+    actor_id: 'system',
+    actor_role: 'system',
+    payload: { error: 'json: unknown field "task_context"' },
+    at: '2026-07-15T12:00:01Z',
+  })
+  await page.route('**/v1/tasks/failed-triage/activity*', (route) => route.fulfill({ json: item }))
+  await page.goto('/w/demo/tasks/failed-triage/full')
+  const recovery = page.getByRole('region', { name: 'Triage recovery' })
+  await expect(recovery).toContainText(reason)
+  await expect(recovery).toContainText('Retry triage to run it again with the last validation error in its prompt.')
+  await expect(recovery.getByRole('button', { name: 'Retry triage' })).toBeEnabled()
+  await expect(page.getByText('Retrying with this feedback')).toHaveCount(0)
+})
+
 test('failed triage retry waits for response and every projection refresh and prevents duplicate clicks', async ({
   page,
 }, testInfo) => {

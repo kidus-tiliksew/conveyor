@@ -592,6 +592,25 @@ func runNextActionBatchReads(t *testing.T, x Fixture, ctx context.Context, newTa
 		requireOK(t, st.AppendEvent(ctx, core.Event{TaskID: nullHeads.ID, Kind: "merge.conflict_fix_dispatched", ActorRole: core.ActorSystem, At: tiedAt, Payload: json.RawMessage(`{}`)}))
 		quiet := newTask("quiet history", "conveyor", core.TaskParked)
 		raw(quiet.ID, "task.state_changed", `{"from":"queued","to":"parked"}`)
+		// The gate source is the latest gate-source event's string source,
+		// whichever of the three kinds it is (component-triage invariant 26).
+		gateTriage := newTask("gate source triage", "conveyor", core.TaskAwaiting)
+		raw(gateTriage.ID, "pipeline.bounce_limit", `{"source":"triage.output_invalid","window":3}`)
+		raw(gateTriage.ID, "job.failed", `{"error":"invalid","source":"triage.output_invalid","diagnostic":{"phase":"output_validation"}}`)
+		raw(gateTriage.ID, "job.summary", `{"source":"unrelated"}`)
+		gateLater := newTask("gate source superseded", "conveyor", core.TaskAwaiting)
+		raw(gateLater.ID, "job.failed", `{"error":"invalid","source":"triage.output_invalid"}`)
+		raw(gateLater.ID, "context.authority_budget_exceeded", `{"reason_code":"authority_budget_exceeded"}`)
+		raw(gateLater.ID, "pull_request.opened", `{"number":7}`)
+		gateNumber := newTask("gate source number", "conveyor", core.TaskAwaiting)
+		raw(gateNumber.ID, "pipeline.bounce_limit", `{"source":"spec.output_invalid","window":1}`)
+		raw(gateNumber.ID, "pipeline.bounce_limit", `{"source":5,"window":2}`)
+		gateArray := newTask("gate source array", "conveyor", core.TaskAwaiting)
+		raw(gateArray.ID, "pipeline.bounce_limit", `{"source":"spec.output_invalid","window":1}`)
+		raw(gateArray.ID, "job.failed", `[{"source":"triage.output_invalid"}]`)
+		gateLong := newTask("gate source long", "conveyor", core.TaskAwaiting)
+		longSource := strings.Repeat("é", 70)
+		raw(gateLong.ID, "job.failed", `{"source":"`+longSource+`"}`)
 
 		// One task per retry time at and beyond each acceptance boundary of
 		// the Go decoder: each failure follows a dispatch, so the failure
@@ -619,7 +638,7 @@ func runNextActionBatchReads(t *testing.T, x Fixture, ctx context.Context, newTa
 		raw(missingRetry.ID, "merge.conflict_dispatch_failed", `{"approved_head":"a","new_head":"b"}`)
 		retryTasks = append(retryTasks, missingRetry)
 
-		tasks := append([]core.Task{history, overflow, boundary, invalid, episode, cleared, undecodable, nullHeads, quiet}, retryTasks...)
+		tasks := append([]core.Task{history, overflow, boundary, invalid, episode, cleared, undecodable, nullHeads, quiet, gateTriage, gateLater, gateNumber, gateArray, gateLong}, retryTasks...)
 		ids := []string{"missing-" + core.NewTaskID()}
 		for _, task := range tasks {
 			ids = append(ids, task.ID)
@@ -641,6 +660,21 @@ func runNextActionBatchReads(t *testing.T, x Fixture, ctx context.Context, newTa
 		}
 		if h := got[history.ID]; h.ParkCommand != "triage.park" || h.BounceCount != 0 || h.MergeConflict.Open {
 			t.Fatalf("history fixture=%+v", h)
+		}
+		if g := got[gateTriage.ID]; g.GateSource != "triage.output_invalid" || g.BounceCount != 3 {
+			t.Fatalf("gate source triage=%+v", g)
+		}
+		if g := got[gateLater.ID]; g.GateSource != "" || g.PullRequest != 7 {
+			t.Fatalf("a later sourceless gate event kept an older source: %+v", g)
+		}
+		if g := got[gateNumber.ID]; g.GateSource != "" || g.BounceCount != 2 {
+			t.Fatalf("a non-string source displaced nothing: %+v", g)
+		}
+		if g := got[gateArray.ID]; g.GateSource != "" || g.BounceCount != 1 {
+			t.Fatalf("a non-object gate event reads no source: %+v", g)
+		}
+		if g := got[gateLong.ID]; g.GateSource != strings.Repeat("é", store.ParkCommandSummaryLength) {
+			t.Fatalf("long gate source=%q, want its first %d characters", g.GateSource, store.ParkCommandSummaryLength)
 		}
 		if got[overflow.ID].PullRequest != 42 || got[boundary.ID].PullRequest != 9223372036854775807 {
 			t.Fatalf("pull requests overflow=%d boundary=%d, want 42 and the int64 maximum", got[overflow.ID].PullRequest, got[boundary.ID].PullRequest)
@@ -843,7 +877,7 @@ func runNextActionBatchReads(t *testing.T, x Fixture, ctx context.Context, newTa
 // JSON its own way.
 func sameHistory(got, want store.NextActionHistory) bool {
 	g, w := got.MergeConflict, want.MergeConflict
-	if got.ParkCommand != want.ParkCommand || got.PullRequest != want.PullRequest || got.BounceCount != want.BounceCount ||
+	if got.ParkCommand != want.ParkCommand || got.PullRequest != want.PullRequest || got.BounceCount != want.BounceCount || got.GateSource != want.GateSource ||
 		g.Open != w.Open || g.Cleared != w.Cleared || g.Exhausted != w.Exhausted || g.Failures != w.Failures ||
 		(g.NextRetryAt == nil) != (w.NextRetryAt == nil) || !reflect.DeepEqual(g.DispatchedOrderIDs, w.DispatchedOrderIDs) {
 		return false
