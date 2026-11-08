@@ -164,6 +164,21 @@ interactive contract when the CLI must launch an interaction tool. Without a
 demonstrated replay basis, ordinary checks default to `operator_action_required`.
 Registration returns the immutable obligation identity and contract digest.
 
+Declare required assertions only for evidence that someone sends while the
+attempt runs:
+
+- A plain script, such as `go test ./pkg/...`, registers
+  `required_assertions: []` and `execution_report` as its only evidence
+  output. It succeeds on exit zero.
+- Declare a required assertion only when the exercise itself sends
+  `assertion_result` through `CONVEYOR_KIT_OPERATIONS`, or when you submit it
+  while the attempt is running.
+- The runner creates the `execution_report` after the child exits. An
+  assertion that a child sends therefore cites evidence the child sent first,
+  never the execution report.
+- Exit zero proves only exit zero. A claim such as "no test was skipped"
+  needs an assertion from something that inspected the output.
+
 Write the coverage JSON outside the checkout. It contains:
 
 | Field | Content |
@@ -475,6 +490,18 @@ Ordinary observations require their declared completion evidence. Every
 declared operation must be completed or reconciled as applied. Neither
 `supports` references nor an explicit empty assertion set claims AC acceptance
 (`component-verification-evidence`; `component-verification-service`).
+
+A `waiting` attempt has ended. It refuses new evidence and its outcome can't
+change, so only a new attempt can succeed. Its explanation names the required
+assertions without a passing result, the outputs below their `minimum_items`,
+and a missing operator observation. A changed contract has a new digest, so it
+needs a newly registered obligation and a new operator grant.
+
+When you submit evidence yourself, use the running attempt's `run_id`. That is
+the verification attempt's ID, not the work order's `attempt-...` ID. Copy
+workspace, task, order, work-order attempt, context, revisions, and the full
+governing pins from the verification context, and copy the subject from the
+attempt.
 
 ## Reconciliation, retries and UI
 
