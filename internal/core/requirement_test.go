@@ -496,3 +496,36 @@ func TestConfirmedDocumentTitle(t *testing.T) {
 		})
 	}
 }
+
+// A provisional title depends only on the goal and the session ID, so two
+// sessions of one goal created in the same second, whose IDs share the date
+// token, still get different titles.
+func TestProvisionalTitleIsOneToOneWithSessionID(t *testing.T) {
+	t.Parallel()
+	first := PlanningGoalRequirement.ProvisionalTitle("session-261108-000001")
+	second := PlanningGoalRequirement.ProvisionalTitle("session-261108-000002")
+	if first != "Drafting requirement · 261108-000001" || second != "Drafting requirement · 261108-000002" {
+		t.Fatalf("titles=%q, %q", first, second)
+	}
+	seen := map[string]string{}
+	for range 256 {
+		id := NewPlanningSessionID()
+		title := PlanningGoalBundle.ProvisionalTitle(id)
+		if !strings.HasPrefix(id, "session-") || title != "Planning delivery · "+strings.TrimPrefix(id, "session-") {
+			t.Fatalf("id=%q title=%q", id, title)
+		}
+		if other, ok := seen[title]; ok && other != id {
+			t.Fatalf("ids %q and %q share title %q", other, id, title)
+		}
+		seen[title] = id
+	}
+	for goal, label := range map[PlanningSessionGoal]string{
+		PlanningGoalRequirement: "Drafting requirement", PlanningGoalSystemDesign: "Designing system",
+		PlanningGoalBundle: "Planning delivery", PlanningGoalBlueprint: "Planning work",
+		PlanningGoalOpen: "Exploring", "": "Exploring",
+	} {
+		if got := goal.ProvisionalTitle("session-261108-abcdef"); got != label+" · 261108-abcdef" {
+			t.Fatalf("goal %q title=%q", goal, got)
+		}
+	}
+}
