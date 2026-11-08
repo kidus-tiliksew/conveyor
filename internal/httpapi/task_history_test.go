@@ -792,6 +792,46 @@ func TestTaskHistoryExactLargeIDsPayloadOmissionAndAuditRecovery(t *testing.T) {
 	}
 }
 
+// A merge request, its GitHub confirmation, and a dependency wait leave the
+// human selection but stay recorded: technical history pages and the audit
+// read still return them, while the bounded view and human pages keep only
+// the reconciled merge (component-web-task-surfaces "One human list"; task
+// 261108-38aabb).
+func TestTaskHistoryKeepsTimelineHiddenKindsTechnical(t *testing.T) {
+	st := newLedgerStore(t, "hidden-task")
+	st.commit(
+		ledgerEvent("hidden-task", 1, time.Second, "task.dependency_added", `{"depends_on_task_id":"prereq-task"}`),
+		ledgerEvent("hidden-task", 2, 2*time.Second, "merge.requested", `{"url":"https://example.test/pr/9"}`),
+		ledgerEvent("hidden-task", 3, 3*time.Second, "merge.confirmed", `{"url":"https://example.test/pr/9"}`),
+		ledgerEvent("hidden-task", 4, 4*time.Second, "merge.reconciled", `{"url":"https://example.test/pr/9"}`),
+	)
+	h := newHistoryHarness(t, st)
+	kinds := func(events []historyEventJSON) []string {
+		var out []string
+		for _, event := range events {
+			out = append(out, event.Kind)
+		}
+		return out
+	}
+	technical, response := h.history(historyTokenA, "hidden-task", "?selection=technical&limit=10")
+	if want := []string{"task.dependency_added", "merge.requested", "merge.confirmed", "merge.reconciled"}; response.Code != http.StatusOK || !slices.Equal(kinds(technical.Events), want) {
+		t.Fatalf("technical page kinds=%v want %v (%d)", kinds(technical.Events), want, response.Code)
+	}
+	human, response := h.history(historyTokenA, "hidden-task", "?selection=human&limit=10")
+	if response.Code != http.StatusOK || !slices.Equal(kinds(human.Events), []string{"merge.reconciled"}) {
+		t.Fatalf("human page kinds=%v (%d)", kinds(human.Events), response.Code)
+	}
+	detail, _ := h.bounded("hidden-task")
+	if !slices.Equal(kinds(detail.Events), []string{"merge.reconciled"}) || detail.EventPage.Returned != 1 {
+		t.Fatalf("bounded view kinds=%v page=%+v", kinds(detail.Events), detail.EventPage)
+	}
+	for _, id := range []string{"1", "2", "3"} {
+		if audit := h.get(historyTokenA, "/v1/tasks/hidden-task/audit/event/"+id); audit.Code != http.StatusOK {
+			t.Fatalf("audit read of event %s: %d", id, audit.Code)
+		}
+	}
+}
+
 func TestTaskEventPayloadIndexBoundsAndMinimalForm(t *testing.T) {
 	fields := map[string]any{"nested": map[string]any{"n": 1}, "text": "x", "list": []any{1}, "blob": strings.Repeat("p", 9000)}
 	for i := 0; i < 20; i++ {
