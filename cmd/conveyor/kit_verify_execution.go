@@ -205,7 +205,15 @@ func (v *kitVerifier) launch(ctx context.Context, e verification.Exercise, cwd, 
 			return nil, fmt.Errorf("exercise has ended")
 		}
 		if err := relayCheckout(requestCtx); err != nil {
-			cancel()
+			// A child hangup ends requestCtx and kills the check's git, so a
+			// failure seen after requestCtx ended may not be a source change.
+			// The signal is refused either way. Only a failure seen while
+			// requestCtx is still live cancels the run; the monitor and the
+			// post-exit check still catch a real change
+			// (component-verification-runner).
+			if requestCtx.Err() == nil {
+				cancel()
+			}
 			return nil, err
 		}
 		var signal struct {
@@ -245,7 +253,13 @@ func (v *kitVerifier) launch(ctx context.Context, e verification.Exercise, cwd, 
 			return nil, fmt.Errorf("unknown operation signal")
 		}
 		if err := relayLive(requestCtx, grantID); err != nil {
-			cancel()
+			// A hangup or a transient call failure records no authority loss,
+			// so the signal is refused while the known lease holds. Claim
+			// loss, expiry or revocation cancels the run, as in the monitor
+			// (component-verification-runner).
+			if v.cachedLive() != nil {
+				cancel()
+			}
 			return nil, err
 		}
 		var declared *verification.Operation
