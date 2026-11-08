@@ -24,7 +24,7 @@ import { VerificationReviewResult } from './verification-stage'
 
 // The human gate rendered as a verdict, not an alarm: the card leads with the
 // server's statement of what the pipeline is waiting for and offers exactly the
-// server's choices (feature-operator-next-action NA-4, NA-6). Amber stays
+// server's choices (component-web-task-surfaces invariant 44). Amber stays
 // reserved for states that are genuinely stuck; a clean approval reads as good
 // news. The card renders as the event timeline's live tail
 // (component-web-task-surfaces): the decision point is where the story
@@ -274,7 +274,7 @@ function GenericReviewPanel({
         <div className="min-w-48 flex-1">
           {/* The label, not the summary: the one-line NextActionCard above states
               the summary once per surface, and everything else about the
-              decision prints here (DEC-61; feature-operator-next-action NA-6). */}
+              decision prints here (DEC-61; component-web-task-surfaces invariant 2). */}
           <h3 className={cn('text-sm font-semibold', style.title)}>{action.label}</h3>
           {action.question && <p className="mt-0.5 text-xs leading-5 text-muted">{action.question}</p>}
         </div>

@@ -10,8 +10,8 @@ export function taskFlowQueryKey(workspace: string, taskId: string) {
 
 // The flow has two dashboard readers: the opt-in Board stage stripe
 // (req-operator-next-action AC-3.3) and the task-detail Flow tab's chart,
-// which mounts only while that tab is shown (AC-7.4; feature-operator-next-action
-// NA-7). The flow refreshes when the task detail does. It doesn't refresh on its own
+// which mounts only while that tab is shown (AC-7.4; component-next-action
+// invariant 39). The flow refreshes when the task detail does. It doesn't refresh on its own
 // clock: SSE invalidation, blocker polling and mutations all refresh the
 // detail entry. This hook watches that cache entry without adding an observer
 // to it (an observer without the detail's queryFn would take over its

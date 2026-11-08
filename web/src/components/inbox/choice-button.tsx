@@ -32,7 +32,7 @@ export type ChoiceReason = { id: string; label: string; text: string; choice?: s
 // at its line through aria-describedby; a reason never sits under its own
 // button, where it would change the row's height and alignment.
 // Every choice shares one wrapping row with exactly one primary button
-// (feature-operator-next-action NA-6): `primaryId` names it when the caller
+// (component-next-action): `primaryId` names it when the caller
 // knows the decision's primary, as GateChoices does, and otherwise the first
 // choice that renders enabled takes it. `leading` renders first in the row and
 // `leadingReason` joins the reasons block for it. `status` renders above the

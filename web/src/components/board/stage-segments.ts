@@ -1,7 +1,7 @@
 import type { TaskFlowStage, TaskFlowStatus } from '../../lib/types'
 
 // The one status-to-tone mapping of a Board card's opt-in stage stripe
-// (req-operator-next-action AC-3.2, AC-3.5; feature-operator-next-action NA-7).
+// (req-operator-next-action AC-3.2, AC-3.5; component-next-action invariant 30).
 // It is exhaustive over the server's TaskFlowStatus, so a status the server
 // adds fails the type check here instead of rendering untoned, and it maps only
 // the served status: it derives no stage, status, or actor.

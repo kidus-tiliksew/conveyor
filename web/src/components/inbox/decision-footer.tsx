@@ -1,8 +1,8 @@
 import type { ReactNode } from 'react'
 import { cn } from '../../lib/utils'
 
-// The one footer every Inbox decision shares (feature-operator-next-action
-// NA-6): what happens if nobody acts, then the actions from the left edge, then
+// The one footer every Inbox decision shares (component-next-action;
+// req-operator-next-action AC-2.1, AC-2.11): what happens if nobody acts, then the actions from the left edge, then
 // a quiet strip for the move keys and the identifiers. It stays in view while
 // the detail's body scrolls.
 export function DecisionFooter({

@@ -35,11 +35,16 @@ import { DOT_ZOOM, type TaskFlowNode, TaskNode, TITLE_ZOOM } from './task-node'
 // The least zoom a selected requirement is shown at, where task titles read
 // (AC-1.5).
 const READABLE_ZOOM = 0.38
-// The usual least zoom; a whole map that needs less lowers it (AC-1.9).
+// The usual least zoom. A map whose groups fit the pane together only below it
+// lowers it, so the Whole map control can always frame every group
+// (req-board-map AC-1.9).
 const MIN_ZOOM = 0.02
-// A map opens whole only if that leaves its cards readable. A larger one opens
-// closer, on its first band, and the rest is a pan or the Whole map control
-// away.
+// With no requirement or task selected, the map opens framed on every group
+// only when task titles stay legible at that zoom (WHOLE_OPENING_ZOOM is above
+// TITLE_ZOOM). Otherwise it opens on the first row of groups, in the
+// req-board-map AC-1.3 order, at a zoom where titles are legible
+// (OPENING_ZOOM), and the Whole map control still frames every group
+// (req-board-map AC-1.9; DEC-120).
 export const WHOLE_OPENING_ZOOM = 0.7
 export const OPENING_ZOOM = 0.85
 // The camera's margin from the pane's edges when it opens on part of a map.
@@ -506,7 +511,7 @@ export function MapView({
 
   // The zoom that fits every group in the pane. A group too tall for the
   // usual least zoom, such as one long chain, lowers the least zoom to it, so
-  // the whole map always fits (AC-1.9).
+  // the Whole map control can always frame every group (req-board-map AC-1.9).
   const paneWidth = useStore((state) => state.width)
   const paneHeight = useStore((state) => state.height)
   const bounds = useMemo(() => enclosing(layout?.frames.values() ?? []), [layout])
@@ -558,7 +563,9 @@ export function MapView({
       { duration: 450 },
     )
   }
-  // The whole map: every group inside the pane (AC-1.9).
+  // Every group framed in the pane: the Whole map control's camera however the
+  // map opened, and the opening camera when titles stay legible at this fit
+  // (req-board-map AC-1.9).
   function overview(duration?: number) {
     if (!bounds) return
     const { width, height } = paneSize()
@@ -573,9 +580,12 @@ export function MapView({
     )
   }
 
-  // A map that fits at a readable zoom opens whole. A larger one opens on its
-  // first band of groups, the most urgent, at the readable zoom. A group taller
-  // than the pane starts at its top. Whole map still shows everything (AC-1.9).
+  // The opening camera with no requirement or task selected: every group framed
+  // in the pane when task titles stay legible at that fit, and otherwise the
+  // first row of groups, which the layout places first in the req-board-map
+  // AC-1.3 order, at a zoom where titles are legible, starting at the row's top.
+  // In both cases the Whole map control frames every group (req-board-map
+  // AC-1.9; DEC-120).
   function opening() {
     const frames = [...(layout?.frames.values() ?? [])]
     if (!bounds || frames.length === 0) return

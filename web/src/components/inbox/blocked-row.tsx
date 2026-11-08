@@ -8,7 +8,7 @@ const chip = 'inline-flex min-w-0 max-w-full items-center gap-1 rounded-md borde
 // A task waiting on other tasks (AC-2.4). Its blockers render as chips. A
 // blocker that is itself a decision is marked "needs you" in the attention
 // tone and selects that decision in the inbox; any other blocker links to its
-// task (feature-operator-next-action NA-6).
+// task (component-next-action).
 export function BlockedRow({
   item,
   task,

@@ -28,7 +28,7 @@ type MergeReadiness = ActivityItem['merge_readiness']
 // its cache; at check_hold it also lists the checks that hold the merge
 // (component-next-action, The statement; DEC-108(6)). Exactly one button is
 // primary: the merge when the server offers it, otherwise the first choice
-// that renders enabled (feature-operator-next-action NA-6).
+// that renders enabled (component-web-task-surfaces).
 // At merge_approval a status line above the choices states the merge
 // readiness in plain words. On a phone the choices stack, with the merge button
 // on its own full-width line and the other choices in two columns below it;

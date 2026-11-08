@@ -15,7 +15,7 @@ import { Skeleton } from '../ui/skeleton'
 import { citedSections } from './citation-matcher'
 import type { ContextProposalSelection } from './context-proposal-rows'
 
-// The words the panel prints for a proposal's stored source (NA-6).
+// The words the panel prints for a proposal's stored source (component-next-action).
 const sourceWords: Record<string, string> = { triage: 'triage', planning: 'planning', operator: 'operator' }
 
 // An ATX heading line, capturing its text without trailing closing hashes.
@@ -23,8 +23,8 @@ const atxHeading = /^\s{0,3}#{1,6}\s+(.+?)\s*#*\s*$/
 // A Setext underline, which makes the line above it a heading.
 const setextUnderline = /^\s{0,3}(?:=+|-+)\s*$/
 
-// The document preview panel of a context_proposal (feature-operator-next-action
-// NA-6; AC-2.3). One Sheet stays mounted while the operator moves between
+// The document preview panel of a context_proposal (component-next-action;
+// AC-2.3). One Sheet stays mounted while the operator moves between
 // proposed documents, so closing it returns focus to the control that opened
 // it. The checkbox mirrors the checklist row and never posts on its own.
 export function ContextDocumentPreview({
@@ -115,7 +115,8 @@ export function ContextDocumentPreview({
 // workspace and the query's signal aborts on unmount. The component mounts per
 // document and per opening, and content shows only from a read that succeeded
 // since that mount: cached content never stands in for a pending or failed
-// read, and a proposed version never renders (NA-6; AC-2.3).
+// read, and a proposed version never renders (component-next-action invariant 35;
+// AC-2.3).
 function PreviewDocument({ proposal, onClose }: { proposal: NextActionContextProposal; onClose: () => void }) {
   const { workspace } = useWorkspaceSelection()
   const requirement = proposal.kind === 'requirement'
@@ -297,7 +298,7 @@ interface PreviewSection {
 
 // The confirmed version's sections through the document surfaces' own model:
 // Markdown headings for a System Design document; prose headings plus one
-// section per REQ-n and AC-n.m for a requirement (NA-6).
+// section per REQ-n and AC-n.m for a requirement (component-next-action).
 function previewSections(version: ConfirmedVersion): PreviewSection[] {
   return reviewBlocks({ content: version.content, statements: version.statements }).map((block) => {
     const statement = !block.id.startsWith('heading:')

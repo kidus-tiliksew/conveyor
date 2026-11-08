@@ -14,7 +14,8 @@ import { Input, Textarea } from '../ui/input'
 // The one restart dialog: the task header's Start over and a `start_over`
 // next-action choice open it (component-web-task-surfaces, Task header).
 // Without `onRestarted` a success opens the successor task; with it the
-// caller stays where it is, as the Inbox does (feature-operator-next-action NA-6).
+// caller stays where it is, as the Inbox does so its selection can move on
+// (component-next-action invariant 37).
 export function TaskRestartControl({
   item,
   variant,

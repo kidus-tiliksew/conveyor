@@ -61,8 +61,10 @@ export const TaskNode = memo(function TaskNode({ data }: NodeProps<TaskFlowNode>
   const meta = statusMeta[task.status]
   const Icon = statusIcon[task.status]
   const done = task.status === 'merged' || task.status === 'closed'
-  // Waiting on another task keeps the prototype's waiting treatment as a mark
-  // beside the stated status, never in its place (req-board-map AC-2.2).
+  // A task with an unmerged dependency carries the dependency mark beside the
+  // stated status, never in its place. A task with at least one open dependent
+  // shows `unblocks`, the number of open tasks that depend on it directly or
+  // transitively, and a task with none shows no count (req-board-map AC-2.2).
   const waiting = task.blocking.length > 0
 
   if (dots) {

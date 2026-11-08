@@ -21,7 +21,8 @@ import { cn } from '../lib/utils'
 // The retired pending-proposals queue's narrowing, applied to the decisions
 // band: `task` keeps that task's proposals (and its own decision), `document`
 // with `tier` keeps that document's proposals. A proposal of a tier this
-// client does not know stays listed read-only (NA-6).
+// client does not know stays listed read-only (component-next-action, State and
+// failure).
 function matchesSearch(item: InboxItem, search: InboxSearch) {
   const proposal = item.proposal
   if (item.kind === 'document_proposal' && proposal) {
@@ -34,7 +35,7 @@ function matchesSearch(item: InboxItem, search: InboxSearch) {
   return true
 }
 
-// The operator inbox (feature-operator-next-action NA-6; REQ-2): decisions,
+// The operator inbox (component-next-action invariants 21, 22; REQ-2): decisions,
 // blocked work and automatic work, each in the server's order. One read feeds
 // every band; the band chips filter it in the browser. Decisions are a
 // list-and-detail review surface (AC-2.8 to AC-2.11; DEC-82): the list holds
@@ -223,7 +224,7 @@ export function InboxPage() {
   )
 }
 
-// The header's one-line summary (feature-operator-next-action NA-6). The band
+// The header's one-line summary (component-next-action). The band
 // chips beside it carry the counts, so it adds only what they do not: urgent
 // counts the listed decisions that unblock other tasks or are due within three
 // hours, and each one it counts carries an urgent mark in its row.

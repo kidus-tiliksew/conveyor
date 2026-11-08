@@ -3,7 +3,8 @@ import type { InterventionAction, PlanningSessionGoal } from './types'
 // The Board's columns: the pipeline stages in order, plus a collapsed archive
 // so merged and closed work stays reachable without cluttering the WIP view.
 // No column collects "work waiting on you": that is the Inbox's question, and
-// each column header counts its own operator items (feature-operator-next-action NA-6).
+// each column header counts its own operator items (component-web-task-surfaces
+// invariant 5).
 export type GroupKey = 'triage' | 'spec' | 'implement' | 'verify' | 'review' | 'merge' | 'done'
 
 export const stageGroups: ReadonlyArray<{ key: GroupKey; label: string }> = [

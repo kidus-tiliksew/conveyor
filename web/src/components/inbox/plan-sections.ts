@@ -1,6 +1,6 @@
 // The five headings `submit_plan` requires of every execution plan
 // (component-mcp-protocol), in the order the plan panel shows them
-// (feature-operator-next-action NA-6).
+// (req-operator-next-action AC-2.3).
 export const planHeadings = ['Approach', 'Files touched', 'Ordering', 'Risks', 'Done criteria'] as const
 
 export type PlanHeading = (typeof planHeadings)[number]

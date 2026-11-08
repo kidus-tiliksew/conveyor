@@ -97,7 +97,8 @@ export function humanizeClaimRefusal(
   return `Assigned to ${name} — only they can pick this up.`
 }
 
-// The Board column a task occupies, read from server fields only (NA-6): the
+// The Board column a task occupies, read from server fields only
+// (component-web-task-surfaces invariant 5): the
 // next action's kind places merge work and recovery holds, and otherwise the
 // stage the task is in or about to enter. A plan approval therefore lands
 // under Plan and a failed job under the stage that failed.
@@ -470,7 +471,7 @@ export interface CurrentExecutionState {
   retry: string
   // Client guidance for the recovery card and the next-action card. Absent
   // when the only guidance is the server's own summary, which NextActionCard
-  // already states once per surface (DEC-61; feature-operator-next-action NA-6).
+  // already states once per surface (DEC-61; component-next-action invariant 33).
   nextAction?: string
   facts: CurrentExecutionFacts
   action: 'none' | 'retry_implementation' | 'recover' | 'resolve_checkout'
@@ -544,7 +545,7 @@ function withDependencyContext(state: CurrentExecutionState, item: ActivityItem)
 // The server's next action names the order that is current; this maps it onto
 // the execution state the next-action card and the recovery card render. Which order is
 // current, and whether it is running, retrying, waiting or paused, is the
-// server's statement (feature-operator-next-action NA-6); only the paused
+// server's statement (component-next-action invariant 2); only the paused
 // variant is refined from the order's own recorded failure.
 export function deriveCurrentExecutionState(
   item: ActivityItem,
@@ -811,7 +812,7 @@ export function planRevisionRequestFrom(event: {
 // `summaries.plan_revision_request`: the rationale and plan version the
 // decision card lays out. Whether that request is the open decision is the
 // server's next action (kind `plan_revision`), never an event walk
-// (feature-operator-next-action NA-9).
+// (component-next-action invariant 4; component-web-task-surfaces invariant 25).
 export function latestPlanRevisionRequest(summaries: TaskSummaries | undefined): PlanRevisionRequest | null {
   const request = summaries?.plan_revision_request
   if (!request) return null
