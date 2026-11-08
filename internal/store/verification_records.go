@@ -385,6 +385,13 @@ func prepareVerificationMutation(ctx context.Context, source redact.SecretSource
 		if c.Access.UserID == "" && c.RunID != "" && (c.Kind == VerificationWriteEvidence || c.Kind == VerificationFinalizeArtifact || c.Kind == VerificationStageChunk || c.Kind == VerificationTerminateAttempt || c.Kind == VerificationPrepareOperation || c.Kind == VerificationObserveOperation) {
 			rr, exists := verificationFind(rows, "verification_attempts", c.RunID)
 			if !exists || rr.ContextID != vc.ID {
+				// The context is authenticated as the claim's own, so an
+				// evidence write may name the unknown run. An absent run and
+				// another context's run get the same answer, and other kinds
+				// keep the generic refusal (component-verification-service).
+				if c.Kind == VerificationWriteEvidence {
+					return out, verificationEvidenceRunUnknownRefusal()
+				}
 				return out, ErrVerificationAccess
 			}
 			run := verificationDecode[VerificationAttempt](rr)

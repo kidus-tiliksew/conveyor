@@ -336,15 +336,21 @@ func (s *Service) Verification(ctx context.Context, id, session, token, operatio
 
 	case *VerificationEvidenceRequest:
 		command.Kind, command.ContextID, command.RunID, command.Key = store.VerificationWriteEvidence, r.ContextID, r.RunID, r.SubmissionKey
-		for _, raw := range r.Evidence {
+		for index, item := range r.Evidence {
 			var fields map[string]json.RawMessage
-			if err := core.DecodeVerificationRequest(raw, &fields); err != nil {
+			if err := core.DecodeVerificationRequest(item, &fields); err != nil {
 				return nil, store.ErrVerificationInvalid
 			}
 			actor := store.ActorFromContext(ctx).ID
 			if supplied, ok := fields["submitted_by"]; ok {
 				var name string
 				if json.Unmarshal(supplied, &name) != nil || name != "" && name != actor {
+					// component-verification-service invariants 9 and 27: the field
+					// is named only once the request's context is proven to be the
+					// claim's own; any other context keeps the generic refusal.
+					if authenticated && s.verificationShapeContext(ctx, backend, a, operation, write, raw) {
+						return nil, store.VerificationSubmittedByRefusal(index)
+					}
 					return nil, store.ErrVerificationAccess
 				}
 			}

@@ -15,6 +15,35 @@ type verificationBatch struct {
 	Uploads []verificationAcceptedUpload
 }
 
+// verificationEvidenceBindingMismatch returns the JSON name of the first
+// envelope field that does not repeat its context or attempt, in the order
+// workspace, task, work order, work-order attempt, context, run, subject,
+// revisions, governing pins, or "" when every binding is exact
+// (component-verification-service invariant 29).
+func verificationEvidenceBindingMismatch(submitted core.VerificationEvidence, vc VerificationContext, attempt VerificationAttempt) string {
+	switch {
+	case submitted.WorkspaceID != vc.WorkspaceID:
+		return "workspace_id"
+	case submitted.TaskID != vc.TaskID:
+		return "task_id"
+	case submitted.WorkOrderID != vc.WorkOrderID:
+		return "work_order_id"
+	case submitted.WorkOrderAttemptID != vc.WorkOrderAttemptID:
+		return "work_order_attempt_id"
+	case submitted.ContextID != vc.ID:
+		return "context_id"
+	case submitted.RunID != attempt.ID:
+		return "run_id"
+	case !verificationEqual(submitted.Subject, attempt.Subject):
+		return "subject"
+	case !verificationEqual(submitted.Revisions, vc.Revisions):
+		return "revisions"
+	case !verificationEqual(submitted.GoverningPins, vc.GoverningPins):
+		return "governing_pins"
+	}
+	return ""
+}
+
 type verificationAcceptedUpload struct {
 	Input     VerificationArtifactInput
 	Reference core.VerificationArtifactReference
@@ -27,6 +56,9 @@ func verificationEvidenceMutation(c VerificationCommand, rows []VerificationRow,
 	}
 	runRow, found := verificationFind(rows, "verification_attempts", c.RunID)
 	if !found || runRow.ContextID != c.ContextID {
+		if c.Kind == VerificationWriteEvidence {
+			return verificationEvidenceRunUnknownRefusal()
+		}
 		return ErrVerificationAccess
 	}
 	attempt := verificationDecode[VerificationAttempt](runRow)
@@ -40,7 +72,7 @@ func verificationEvidenceMutation(c VerificationCommand, rows []VerificationRow,
 	total := 0
 	authority := c.Authority
 	authority.SubmittedBy = actor
-	for _, raw := range c.Evidence {
+	for index, raw := range c.Evidence {
 		total += len(raw)
 		if len(raw) > core.MaxVerificationEvidenceBytes || total > 8<<20 {
 			return ErrVerificationInvalid
@@ -55,11 +87,13 @@ func verificationEvidenceMutation(c VerificationCommand, rows []VerificationRow,
 		if err = json.Unmarshal(b, &submitted); err != nil {
 			return ErrVerificationInvalid
 		}
-		if submitted.WorkspaceID != vc.WorkspaceID || submitted.TaskID != vc.TaskID || submitted.WorkOrderID != vc.WorkOrderID || submitted.WorkOrderAttemptID != vc.WorkOrderAttemptID || submitted.ContextID != vc.ID || submitted.RunID != attempt.ID || !verificationEqual(submitted.Subject, attempt.Subject) || !verificationEqual(submitted.Revisions, vc.Revisions) || !verificationEqual(submitted.GoverningPins, vc.GoverningPins) {
-			return ErrVerificationAccess
-		}
+		// A member's write of another evidence type keeps the generic refusal,
+		// so it is checked before the binding refusal can name a field.
 		if c.Access.UserID != "" && submitted.Type != "operator_observation" {
 			return ErrVerificationAccess
+		}
+		if field := verificationEvidenceBindingMismatch(submitted, vc, attempt); field != "" {
+			return verificationEvidenceBindingRefusal(index, field)
 		}
 		if !verificationIdentifier(submitted.ID) || submitted.SubmissionKey != c.Key || ids[submitted.ID] {
 			return ErrVerificationInvalid

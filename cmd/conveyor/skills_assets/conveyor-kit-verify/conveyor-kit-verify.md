@@ -652,13 +652,30 @@ After your claim is authenticated, a refused call names a stable `code`, the
 request `field`, the `rule` that failed and a `remedy`. MCP returns
 `<code> at <field>: <rule> <remedy>`; REST returns
 `{error, code, field, rule, remedy}` with status 400 for invalid input and 409
-for state, grant and conflict refusals. Correct that field and resubmit; a
+for state, grant, evidence binding and conflict refusals. Correct that field
+and resubmit; a
 refused call wrote nothing. Examples: `verification_field_required at
 coverage.sources[1].subjects` (send `[]`), `verification_citation_unresolved at
 coverage.sources[0].source` (name a section ID the pinned document holds),
 `verification_coverage_plan_missing at coverage.sources` (add the
 `approved_plan` source). A foreign or stale claim keeps the generic
 `verification access refused` with no detail.
+
+`submit_verification_evidence` names two evidence codes. An envelope that does
+not repeat its context or attempt answers
+`verification_evidence_binding_mismatch` at the first differing field, in the
+order `workspace_id`, `task_id`, `work_order_id`, `work_order_attempt_id`,
+`context_id`, `run_id`, `subject`, `revisions`, `governing_pins`, such as
+`evidence[0].governing_pins`. Copy that field exactly: the workspace, task,
+order, work-order attempt, context, revisions and pins from
+`get_verification_context`, and the run ID and subject from the attempt that
+`start_verification_attempt` returned. A supplied `submitted_by` other than
+your own caller answers the same code at `evidence[<index>].submitted_by`; omit
+it, because the service derives it. A request `run_id` that names no attempt of
+the request's context, such as the work-order attempt ID (`attempt-...`),
+answers `verification_evidence_run_unknown` at `run_id`; send the `run_id` that
+`start_verification_attempt` returned. Neither rule quotes a submitted or
+expected value.
 
 A call that does not match the tool's input schema answers
 `verification_request_shape`. Its field is the JSON path of the failing value,
