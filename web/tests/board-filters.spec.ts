@@ -369,10 +369,10 @@ test('board pages beyond the 200th activity item and walks back without blanking
   await expect.poll(() => seen.some((url) => new URL(url).searchParams.get('offset') === '300')).toBe(true)
 })
 
-// The feed's total counts blueprint anchors, and it drops them from a page after
-// reading that page. So a short page does not end the list, and a page holding
-// only anchors comes back empty.
-test('the Kanban pager keeps going past a short page and stops at a page of anchors', async ({ page }) => {
+// The feed excludes blueprint anchors before it pages, so its total counts only
+// the rows the Board shows. The pager pages by that served total and never
+// requests a page past it (component-web-task-surfaces invariant 15).
+test('the Kanban pager pages by the served total, which leaves out blueprint anchors', async ({ page }) => {
   await page.clock.setFixedTime(new Date('2026-08-20T12:00:00Z'))
   const seen: string[] = []
   await controlWorkspaceChanges(page)
@@ -398,41 +398,35 @@ test('the Kanban pager keeps going past a short page and stops at a page of anch
       needs_attention: false,
     },
   }))
+  const listed = rows.filter((row) => !row.anchor).map((row) => row.item)
+  const offsets: number[] = []
   await page.route('**/v1/activity?**', (route) => {
     const params = new URL(route.request().url()).searchParams
     const limit = Number(params.get('limit') ?? 100)
     const offset = Number(params.get('offset') ?? 0)
+    offsets.push(offset)
     return route.fulfill({
       headers: {
-        'X-Conveyor-Total': String(rows.length),
+        'X-Conveyor-Total': String(listed.length),
         'X-Conveyor-Limit': String(limit),
         'X-Conveyor-Offset': String(offset),
       },
-      json: rows
-        .slice(offset, offset + limit)
-        .filter((row) => !row.anchor)
-        .map((row) => row.item),
+      json: listed.slice(offset, offset + limit),
     })
   })
 
   await page.goto('/')
   const next = page.getByRole('button', { name: 'Next' })
+  await expect(page.getByText('1–100 of 199')).toBeVisible()
+  await expect(cards(page)).toHaveCount(100)
+  await expect(next).toBeEnabled()
+  await next.click()
+  await expect(page.getByText('101–199 of 199')).toBeVisible()
   await expect(cards(page)).toHaveCount(99)
-  await expect(next).toBeEnabled()
-  await next.click()
-  await expect(page.getByText('101–200 of 201')).toBeVisible()
-  await expect(cards(page)).toHaveCount(100)
-  await expect(next).toBeEnabled()
-  // The last row is an anchor: its page is empty, so the pager steps back and
-  // the list ends on the page before it.
-  await next.click()
-  await expect(page.getByText('101–200 of 200')).toBeVisible()
-  await expect(cards(page)).toHaveCount(100)
   await expect(next).toBeDisabled()
+  expect(offsets.every((offset) => offset < listed.length)).toBe(true)
 })
 
-// A list that fits on one page has nothing to page through, including when
-// the total counts a blueprint anchor the feed never returns.
 test('a failed first load says so in place of lanes that would read as empty', async ({ page }) => {
   const seen: string[] = []
   await routeBoard(page, seen)
@@ -465,6 +459,7 @@ test('an empty lane says no matching tasks only while a filter or search narrows
   await expect(triage.getByText('No matching tasks')).toBeVisible()
 })
 
+// A list that fits on one page has nothing to page through.
 test('the Kanban pager is hidden while everything fits on one page', async ({ page }) => {
   await page.clock.setFixedTime(new Date('2026-08-20T12:00:00Z'))
   const seen: string[] = []

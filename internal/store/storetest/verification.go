@@ -164,6 +164,7 @@ func runVerification(t *testing.T, x Fixture) {
 	runVerificationLimits(t, x)
 	runVerificationStartRefusals(t, x)
 	runVerificationTerminalRace(t, x)
+	t.Run("AssertionTiming", func(t *testing.T) { runVerificationAssertionTiming(t, x) })
 	t.Run("VerifyReviewRoundAdmission", func(t *testing.T) { runVerifyReviewRoundAdmission(t, x) })
 	t.Run("VerificationChunkExpiry", func(t *testing.T) { runVerificationChunkExpiry(t, x) })
 	v := newVerificationFixture(t, x)

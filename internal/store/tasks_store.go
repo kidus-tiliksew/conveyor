@@ -63,6 +63,13 @@ type TaskFilter struct {
 	// inbox's candidate set (component-http-api; feature-operator-next-action
 	// NA-5). It intersects with every other member, States included.
 	Open bool
+	// ExcludeBlueprintAnchors is a store-side member no route parses: it
+	// leaves out every task that another task names as its parent, the
+	// core.BlueprintAnchor predicate, inside the read itself, so a page, its
+	// offset, and its total count only the rows the Board shows
+	// (component-web-task-surfaces invariant 15; req-operator-next-action
+	// AC-6.12). The Board's activity read sets it; GET /v1/reviews does not.
+	ExcludeBlueprintAnchors bool
 }
 
 // Active reports whether any predicate would narrow the workspace. Callers that
@@ -70,7 +77,7 @@ type TaskFilter struct {
 func (f TaskFilter) Active() bool {
 	return len(f.States) > 0 || len(f.Repositories) > 0 || f.Assignee != "" || f.Query != "" || !f.UpdatedFrom.IsZero() ||
 		!f.UpdatedTo.IsZero() || !f.CreatedFrom.IsZero() || !f.CreatedTo.IsZero() || len(f.ServesRequirementIDs) > 0 ||
-		len(f.GoverningDesignIDs) > 0 || f.Open
+		len(f.GoverningDesignIDs) > 0 || f.Open || f.ExcludeBlueprintAnchors
 }
 
 // Validate rejects a range no task can satisfy, so an inverted range fails at
@@ -995,6 +1002,9 @@ func (m *memory) ListTasksFilteredWithoutBody(ctx context.Context, filter TaskFi
 // in storetest exercise both through one table.
 func (m *memory) taskMatchesFilterLocked(task core.Task, filter TaskFilter) bool {
 	if filter.Open && (core.TaskTerminal(task.State) || m.taskHasChildrenLocked(task)) {
+		return false
+	}
+	if filter.ExcludeBlueprintAnchors && m.taskHasChildrenLocked(task) {
 		return false
 	}
 	if len(filter.States) > 0 && !slices.Contains(filter.States, task.State) {

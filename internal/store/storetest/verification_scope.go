@@ -358,3 +358,75 @@ func runVerificationTerminalRace(t *testing.T, x Fixture) {
 		}
 	})
 }
+
+// runVerificationAssertionTiming pins when a required assertion counts on
+// every backend. A claim holder's exact assertion on a running attempt lets
+// it report succeeded. After a waiting report the attempt has ended: the same
+// assertion is refused and a later succeeded report conflicts
+// (component-verification-service invariants 20 and 21; req-verification-kits
+// AC-3.2, AC-4.1).
+func runVerificationAssertionTiming(t *testing.T, x Fixture) {
+	// Evidence IDs are primary keys shared across the backend, so each subtest
+	// names its own with prefix.
+	register := func(t *testing.T, prefix string) verificationFixture {
+		t.Helper()
+		v := newVerificationFixture(t, x, true)
+		obligation := store.VerificationObligation{ID: prefix, Description: "Run the package tests", Sources: []store.VerificationCitation{{DocumentID: "req-fixture", Version: 1, SectionID: "AC-1.1"}}, Contract: verification.Exercise{ID: prefix, Kind: "script", Argv: []string{"go", "test", "./..."}, TimeoutSeconds: 30, RequiredAssertions: []verification.Assertion{{ID: "tests-pass"}}, RetryPolicy: "safe_to_replay", SafetyBasis: "read-only observation", Operations: []verification.Operation{}, EvidenceOutputs: []verification.EvidenceOutput{{Type: "execution_report", SchemaVersion: 1, MinimumItems: 1}}}}
+		r := v.apply(t, store.VerificationCommand{Kind: store.VerificationRegisterObligation, Obligation: &obligation})
+		v.subject = core.VerificationSubject{Kind: "ordinary", ObligationID: prefix, ContractDigest: r.Digest}
+		v.start(t, prefix+"-start")
+		zero, no := 0, false
+		at := time.Now().UTC().Format(time.RFC3339Nano)
+		report := v.envelope(prefix+"-report", prefix+"-report", "")
+		report.Type = "execution_report"
+		report.Payload = core.JSONPayload(core.ExecutionReportPayload{Argv: []string{"go", "test", "./..."}, Tool: "go", ToolVersion: "1", Runtime: "fixture", StartedAt: at, EndedAt: at, ExitCode: &zero, TimedOut: &no, Cancelled: &no, StdoutSHA256: strings.Repeat("a", 64), StderrSHA256: strings.Repeat("b", 64), StdoutTruncated: &no, StderrTruncated: &no})
+		v.apply(t, store.VerificationCommand{Kind: store.VerificationWriteEvidence, Key: report.SubmissionKey, Evidence: []json.RawMessage{verificationBytes(report)}})
+		return v
+	}
+	assertion := func(v verificationFixture, prefix string) store.VerificationCommand {
+		e := v.envelope(prefix+"-pass", prefix+"-pass", "")
+		e.Type = "assertion_result"
+		e.Payload = core.JSONPayload(core.AssertionResultPayload{AssertionID: "tests-pass", Text: "Package tests pass", Expected: "exit 0", Actual: "exit 0", Outcome: "pass", Supporting: []core.VerificationReference{{EvidenceID: prefix + "-report"}}})
+		return store.VerificationCommand{Kind: store.VerificationWriteEvidence, Key: e.SubmissionKey, Evidence: []json.RawMessage{verificationBytes(e)}}
+	}
+	attemptState := func(t *testing.T, v verificationFixture) string {
+		t.Helper()
+		for _, a := range v.snapshot(t).Attempts {
+			if a.ID == v.runID {
+				return a.State
+			}
+		}
+		t.Fatalf("attempt %s not found", v.runID)
+		return ""
+	}
+	t.Run("AssertionOnRunningAttemptSucceeds", func(t *testing.T) {
+		v := register(t, "assertion-running")
+		v.apply(t, assertion(v, "assertion-running"))
+		zero := 0
+		v.apply(t, store.VerificationCommand{Kind: store.VerificationTerminateAttempt, Attempt: &store.VerificationAttempt{State: "succeeded", ExitCode: &zero}})
+		if state := attemptState(t, v); state != "succeeded" {
+			t.Fatalf("attempt state %q, want succeeded", state)
+		}
+	})
+	t.Run("AssertionAfterWaitingIsRefused", func(t *testing.T) {
+		v := register(t, "assertion-after-waiting")
+		zero := 0
+		if _, err := x.Backend.ApplyVerification(v.ctx, v.command(store.VerificationCommand{Kind: store.VerificationTerminateAttempt, Attempt: &store.VerificationAttempt{State: "succeeded", ExitCode: &zero}})); !errors.Is(err, store.ErrVerificationState) {
+			t.Fatalf("succeeded without the assertion: %v", err)
+		}
+		v.apply(t, store.VerificationCommand{Kind: store.VerificationTerminateAttempt, Attempt: &store.VerificationAttempt{State: "waiting", Explanation: "required assertion tests-pass has no passing result", ExitCode: &zero}})
+		before := v.snapshot(t)
+		if _, err := x.Backend.ApplyVerification(v.ctx, v.command(assertion(v, "assertion-after-waiting"))); !errors.Is(err, store.ErrVerificationState) {
+			t.Fatalf("assertion after waiting: %v", err)
+		}
+		if !reflect.DeepEqual(before.Evidence, v.snapshot(t).Evidence) {
+			t.Fatal("refused assertion was retained")
+		}
+		if _, err := x.Backend.ApplyVerification(v.ctx, v.command(store.VerificationCommand{Kind: store.VerificationTerminateAttempt, Attempt: &store.VerificationAttempt{State: "succeeded", ExitCode: &zero}})); !errors.Is(err, store.ErrVerificationConflict) {
+			t.Fatalf("succeeded after waiting: %v", err)
+		}
+		if state := attemptState(t, v); state != "waiting" {
+			t.Fatalf("attempt state %q, want waiting", state)
+		}
+	})
+}
