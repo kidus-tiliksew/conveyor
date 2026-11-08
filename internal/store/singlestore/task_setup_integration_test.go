@@ -152,3 +152,28 @@ func TestHistoricalSetupSupersessionSingleStoreReaggregatesReplacementSeats(t *t
 		t.Fatalf("round completed=%d err=%v", count, countErr)
 	}
 }
+
+// TestTaskPolicyChangeUnderSideEffectLockSingleStoreIntegration changes a
+// policy through the path POST /v1/tasks/{id}/policy takes. SingleStore's
+// WithTaskSideEffectLock records the lock owner in the context, and the
+// command's task transaction recognizes it through ownsTaskLock, so each change
+// must finish within storetest.PolicyChangeLockBound (component-persistence
+// invariant 6; component-task-lifecycle invariant 44).
+func TestTaskPolicyChangeUnderSideEffectLockSingleStoreIntegration(t *testing.T) {
+	st := integrationStore(t)
+	workspace := "policy-lock-" + core.NewTaskID()
+	ctx := store.WithActor(store.WithWorkspace(context.Background(), workspace), store.Actor{ID: "operator-s2", Role: core.ActorHuman})
+	if _, err := st.BootstrapWorkspaceConfig(ctx, &config.Config{Workspace: workspace, Database: config.Database{Backend: "singlestore"}, Repos: []config.Repo{{Name: "repo", Base: "main"}}}); err != nil {
+		t.Fatal(err)
+	}
+	storetest.RunTaskPolicyChangeUnderSideEffectLock(t, ctx, st, func(t *testing.T) core.Task {
+		t.Helper()
+		task := core.Task{ID: core.NewTaskID(), Workspace: workspace, Repo: "repo", BaseBranch: "main", State: core.TaskRunning, NextStage: core.StageImplement,
+			SetupName: "legacy", SetupContract: config.PolicyContract{StageTimeouts: config.PolicyStageTimeouts{Implement: "1h"}}, CreatedAt: time.Now().UTC()}
+		task.Branch = "conveyor/task-" + task.ID
+		if err := st.CreateTask(ctx, task); err != nil {
+			t.Fatal(err)
+		}
+		return task
+	})
+}

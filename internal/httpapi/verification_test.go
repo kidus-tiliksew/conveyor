@@ -1695,3 +1695,89 @@ func TestVerificationLateRequirementReachesRecoveredVerifyOrder(t *testing.T) {
 		t.Fatalf("selected subjects = %+v", after.Selections[0].Subjects)
 	}
 }
+
+// TestVerificationEvidenceBindingRefusals: an authenticated claim holder's
+// evidence that differs from its context or attempt, names an unknown run, or
+// supplies another submitted_by gets the coded refusal over MCP and REST, with
+// no value echoed; a foreign context keeps the generic refusal
+// (component-verification-service invariants 7, 9, 27, 29;
+// req-verification-evidence AC-1.3; req-verification-kits AC-7.2, AC-8.3).
+func TestVerificationEvidenceBindingRefusals(t *testing.T) {
+	const sentinel = "binding-sentinel-41c9"
+	f := newNoEligibleKitFixture(t)
+	contextID := f.context("binding", "no_manifest", []verification.KitReceipt{}, []verification.Diagnostic{})
+	subject := f.register(contextID, "plan-check")
+	coverage := f.coverage(subject)
+	grantID := storetest.GrantVerificationFixture(t, f.s.Store.(store.Backend), f.ctx, f.order.TaskID, f.id, contextID, "grant", subject, nil)
+	if _, err, _ := f.call("start_verification_attempt", f.start(contextID, "binding-1", grantID, subject, coverage), false); err != nil {
+		t.Fatal(err)
+	}
+	snapshot, err := f.s.Store.(store.VerificationStore).ReadVerification(f.ctx, f.access(), contextID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	run, vc := snapshot.Attempts[0].ID, snapshot.Contexts[0]
+	at := time.Now().UTC().Format(time.RFC3339Nano)
+	envelope := func(mutate func(*core.VerificationEvidence)) map[string]any {
+		e := core.VerificationEvidence{ID: "observation", Type: "state_observation", SchemaVersion: 1, SubmissionKey: "binding", CapturedAt: at, ReceivedAt: at, SubmittedBy: "user:fixture", CapturedBy: core.VerificationCaptureActor{Identity: "fixture", Kind: "tool", Version: "1", Attribution: "self_reported"}, WorkspaceID: "demo", TaskID: f.order.TaskID, WorkOrderID: f.id, WorkOrderAttemptID: f.order.AttemptID, ContextID: contextID, RunID: run, Subject: subject, Revisions: vc.Revisions, GoverningPins: vc.GoverningPins, SafeInputs: map[string]json.RawMessage{}, Environment: core.VerificationEnvironment{Target: "fixture", OS: "unknown", Architecture: "unknown", Runtime: "unknown", Deployment: "unknown"}, Payload: core.JSONPayload(core.StateObservationPayload{Target: "fixture", Method: "read", CapturedAt: at, Value: core.JSONPayload("observed")})}
+		mutate(&e)
+		args := map[string]any{}
+		if err := json.Unmarshal(core.JSONPayload(workorder.VerificationEvidenceRequest{ContextID: contextID, RunID: run, SubmissionKey: "binding", Evidence: []json.RawMessage{core.JSONPayload(e)}}), &args); err != nil {
+			t.Fatal(err)
+		}
+		return args
+	}
+	hidden := func(name string, input map[string]any, values ...string) {
+		t.Helper()
+		_, err, response := f.call("submit_verification_evidence", input, true)
+		for _, value := range append(values, sentinel) {
+			if strings.Contains(err.Error(), value) || strings.Contains(response.Body.String(), value) {
+				t.Fatalf("%s refusal disclosed %q: %v %s", name, value, err, response.Body)
+			}
+		}
+	}
+	cases := []struct {
+		name, code, field string
+		input             map[string]any
+	}{
+		{"workspace", store.VerificationCodeEvidenceBindingMismatch, "evidence[0].workspace_id", envelope(func(e *core.VerificationEvidence) { e.WorkspaceID = sentinel })},
+		{"run is the work-order attempt", store.VerificationCodeEvidenceBindingMismatch, "evidence[0].run_id", envelope(func(e *core.VerificationEvidence) { e.RunID = f.order.AttemptID })},
+		{"governing pins", store.VerificationCodeEvidenceBindingMismatch, "evidence[0].governing_pins", envelope(func(e *core.VerificationEvidence) {
+			e.GoverningPins = []core.VerificationPin{{Kind: "requirement", DocumentID: sentinel, Version: 1}}
+		})},
+		{"submitted by", store.VerificationCodeEvidenceBindingMismatch, "evidence[0].submitted_by", envelope(func(e *core.VerificationEvidence) { e.SubmittedBy = "user:" + sentinel })},
+		{"request run is the work-order attempt", store.VerificationCodeEvidenceRunUnknown, "run_id", func() map[string]any {
+			args := envelope(func(e *core.VerificationEvidence) { e.RunID = f.order.AttemptID })
+			args["run_id"] = f.order.AttemptID
+			return args
+		}()},
+	}
+	for _, tc := range cases {
+		f.refused("submit_verification_evidence", tc.input, tc.code, tc.field, http.StatusConflict)
+		hidden(tc.name, tc.input, contextID, run, f.order.AttemptID, f.order.TaskID)
+	}
+	// The foreign context's evidence names the claim's own run, so only the
+	// context differs; a supplied submitted_by there keeps the generic refusal.
+	foreign := f.foreignContext()
+	before, err := f.s.Store.ListEvents(f.ctx, f.order.TaskID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	args := envelope(func(e *core.VerificationEvidence) { e.SubmittedBy, e.ContextID = "user:"+sentinel, foreign })
+	args["context_id"] = foreign
+	_, err, response := f.call("submit_verification_evidence", args, true)
+	var refusal *store.VerificationRefusal
+	if !errors.Is(err, store.ErrVerificationAccess) || errors.As(err, &refusal) || strings.Contains(err.Error(), "submitted_by") {
+		t.Fatalf("foreign submitted_by MCP: %v", err)
+	}
+	if response.Code != http.StatusNotFound || strings.TrimSpace(response.Body.String()) != "verification access refused" {
+		t.Fatalf("foreign submitted_by REST: %d %s", response.Code, response.Body)
+	}
+	if after, err := f.s.Store.ListEvents(f.ctx, f.order.TaskID); err != nil || !reflect.DeepEqual(before, after) {
+		t.Fatal("foreign submitted_by refusal wrote events")
+	}
+	// The exact envelope is accepted.
+	if _, err, _ := f.call("submit_verification_evidence", envelope(func(*core.VerificationEvidence) {}), false); err != nil {
+		t.Fatalf("exact envelope: %v", err)
+	}
+}

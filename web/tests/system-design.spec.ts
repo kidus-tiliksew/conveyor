@@ -111,6 +111,51 @@ function shell(route: Route) {
   if (path === '/v1/activity') return route.fulfill({ json: [] })
 }
 
+// The System Design surface lists no decision and offers no act on one, so it
+// never reads the decision list or its citations
+// (component-web-document-surfaces invariant 7; AC-8.10; DEC-121).
+function recordDecisionReads(page: Page) {
+  const reads: string[] = []
+  page.on('request', (request) => {
+    const path = new URL(request.url()).pathname
+    if (path.startsWith('/v1/decision')) reads.push(`${request.method()} ${path}`)
+  })
+  return reads
+}
+
+const proposedDecisions = [
+  {
+    id: 'DEC-1',
+    statement: 'Keep events append-only.',
+    context: 'Audit history must remain durable.',
+    alternatives_rejected: 'Mutable lifecycle rows alone.',
+    status: 'proposed',
+    origin: 'operator',
+    workspace: 'demo',
+    created_at: '2026-08-05T08:00:00Z',
+  },
+  {
+    id: 'DEC-2',
+    statement: 'Use stable decision anchors.',
+    context: 'Operators need direct blocker links.',
+    alternatives_rejected: 'Search the page manually.',
+    status: 'proposed',
+    origin: 'operator',
+    workspace: 'demo',
+    created_at: '2026-08-05T09:00:00Z',
+  },
+]
+
+async function expectNoDecisionRendered(page: Page) {
+  for (const decision of proposedDecisions) {
+    await expect(page.getByText(decision.id, { exact: true })).toHaveCount(0)
+    await expect(page.getByText(decision.statement)).toHaveCount(0)
+    await expect(page.locator(`#decision-${decision.id.toLowerCase()}`)).toHaveCount(0)
+  }
+  await expect(page.getByText('is waiting for your call')).toHaveCount(0)
+  await expect(page.getByRole('button', { name: 'Confirm', exact: true })).toHaveCount(0)
+}
+
 test('System Design renders a category tree, one attention surface, and authenticated confirmation', async ({
   page,
 }) => {
@@ -124,28 +169,14 @@ test('System Design renders a category tree, one attention surface, and authenti
     if (handled) return await handled
     const request = route.request()
     const url = new URL(request.url())
-    if (url.pathname === '/v1/system-designs' || url.pathname === '/v1/decisions') {
+    if (url.pathname === '/v1/system-designs' || url.pathname.startsWith('/v1/decision')) {
       expect(url.searchParams.get('workspace_id')).toBe('demo')
       expect(request.headers().authorization).toBeUndefined()
       protectedReads.push(url.pathname)
     }
     if (url.pathname === '/v1/system-designs') return route.fulfill({ json: [summarizeDesign(design)] })
     if (url.pathname === '/v1/system-designs/design-dispatch') return route.fulfill({ json: design })
-    if (url.pathname === '/v1/decisions')
-      return route.fulfill({
-        json: [
-          {
-            id: 'DEC-1',
-            statement: 'Use event-derived lineage.',
-            context: 'Rebuilds need provenance.',
-            alternatives_rejected: 'Mutable edges.',
-            status: 'confirmed',
-            origin: 'operator',
-            workspace: 'demo',
-            created_at: '2026-08-05T08:00:00Z',
-          },
-        ],
-      })
+    if (url.pathname === '/v1/decisions') return route.fulfill({ json: proposedDecisions })
     if (url.pathname === '/v1/system-designs/design-dispatch/versions/2/confirm') {
       expect(request.headers().authorization).toBeUndefined()
       expect(request.headers()['if-match']).toBe('"1"')
@@ -256,7 +287,8 @@ test('System Design renders a category tree, one attention surface, and authenti
   await attention.getByRole('button', { name: 'Confirm version 2' }).click()
   await expect.poll(() => confirmed).toBe(true)
   expect(revisionInput).toEqual({})
-  await expect.poll(() => [...new Set(protectedReads)].sort()).toEqual(['/v1/decisions', '/v1/system-designs'])
+  // DEC-121: the page reads its own documents and never the decision list.
+  await expect.poll(() => [...new Set(protectedReads)].sort()).toEqual(['/v1/system-designs'])
 })
 
 test('System Design search and deterministic sorting preserve categories and the selected canvas', async ({ page }) => {
@@ -321,7 +353,6 @@ test('System Design search and deterministic sorting preserve categories and the
     if (path === '/v1/system-designs') return route.fulfill({ json: items.map(summarizeDesign) })
     const detail = items.find((item) => path === `/v1/system-designs/${item.document.id}`)
     if (detail) return route.fulfill({ json: detail })
-    if (path === '/v1/decisions') return route.fulfill({ json: [] })
     return route.fulfill({ json: [] })
   })
 
@@ -381,7 +412,6 @@ test('an oversized System Design paragraph falls back to complete content in its
     const url = new URL(route.request().url())
     if (url.pathname === '/v1/system-designs') return route.fulfill({ json: [summarizeDesign(oversized)] })
     if (url.pathname === '/v1/system-designs/design-dispatch') return route.fulfill({ json: oversized })
-    if (url.pathname === '/v1/decisions') return route.fulfill({ json: [] })
     return route.fulfill({ json: [] })
   })
 
@@ -411,7 +441,6 @@ test('a System Design with nothing outstanding says so in one quiet line', async
     const url = new URL(route.request().url())
     if (url.pathname === '/v1/system-designs') return route.fulfill({ json: [summarizeDesign(settled)] })
     if (url.pathname === '/v1/system-designs/design-dispatch') return route.fulfill({ json: settled })
-    if (url.pathname === '/v1/decisions') return route.fulfill({ json: [] })
     return route.fulfill({ json: [] })
   })
 
@@ -489,6 +518,7 @@ test('System Design lists no settled decision and leaves supersession flags to t
     return route.fulfill({ json: [] })
   })
 
+  const decisionReads = recordDecisionReads(page)
   await page.goto('/w/demo/system-design?document=design-dispatch')
   await expect(page.getByRole('heading', { name: 'Dispatch ownership' })).toBeVisible()
   // AC-8.10: no confirmed, superseded, or dismissed decision renders here,
@@ -501,26 +531,7 @@ test('System Design lists no settled decision and leaves supersession flags to t
   for (const id of ['DEC-1', 'DEC-2', 'DEC-3']) await expect(page.getByText(id, { exact: true })).toHaveCount(0)
   await expect(page.getByText('documents still citing DEC-1')).toHaveCount(0)
   await expect(page.getByRole('button', { name: 'Dismiss', exact: true })).toHaveCount(0)
-})
-
-test('System Design keeps the document visible when the decision read fails', async ({ page }) => {
-  await initialize(page)
-  await page.route('**/v1/**', async (route) => {
-    const handled = shell(route)
-    if (handled) return await handled
-    const url = new URL(route.request().url())
-    if (url.pathname === '/v1/system-designs') return route.fulfill({ json: [summarizeDesign(design)] })
-    if (url.pathname === '/v1/system-designs/design-dispatch') return route.fulfill({ json: design })
-    if (url.pathname === '/v1/decisions')
-      return route.fulfill({ status: 500, body: 'Decision projection unavailable.' })
-    return route.fulfill({ json: [] })
-  })
-
-  await page.goto('/w/demo/system-design?document=design-dispatch')
-  await expect(page.getByRole('heading', { name: 'Dispatch ownership' })).toBeVisible()
-  await expect(page.getByRole('region', { name: 'Needs your attention' })).toBeVisible()
-  await page.getByRole('tab', { name: 'history', exact: true }).click()
-  await expect(page.getByRole('region', { name: 'Document activity' })).toBeVisible()
+  expect(decisionReads).toEqual([])
 })
 
 test('System Design resolves drift inline, restricts outcomes, and shows the confirmed-version precondition', async ({
@@ -542,7 +553,6 @@ test('System Design resolves drift inline, restricts outcomes, and shows the con
     const url = new URL(request.url())
     if (url.pathname === '/v1/system-designs') return route.fulfill({ json: [summarizeDesign(currentDesign())] })
     if (url.pathname === '/v1/system-designs/design-dispatch') return route.fulfill({ json: currentDesign() })
-    if (url.pathname === '/v1/decisions') return route.fulfill({ json: [] })
     if (url.pathname === '/v1/monitor/drift/design-drift-1/resolve') {
       resolution = request.postDataJSON() as Record<string, string>
       if (resolution.outcome === 'design_document_updated') {
@@ -584,7 +594,6 @@ test('the System Design surface never starts a planning session on its own', asy
     const url = new URL(route.request().url())
     if (url.pathname === '/v1/system-designs') return route.fulfill({ json: [summarizeDesign(design)] })
     if (url.pathname === '/v1/system-designs/design-dispatch') return route.fulfill({ json: design })
-    if (url.pathname === '/v1/decisions') return route.fulfill({ json: [] })
     if (url.pathname.startsWith('/v1/planning-sessions')) {
       planningRequests++
       return route.fulfill({ json: [] })
@@ -617,7 +626,6 @@ test('stale System Design confirmation refreshes the list and explains the retry
       return route.fulfill({ json: [summarizeDesign(design)] })
     }
     if (url.pathname === '/v1/system-designs/design-dispatch') return route.fulfill({ json: design })
-    if (url.pathname === '/v1/decisions') return route.fulfill({ json: [] })
     if (url.pathname === '/v1/system-designs/design-dispatch/versions/2/confirm')
       return route.fulfill({
         status: 409,
@@ -636,91 +644,95 @@ test('stale System Design confirmation refreshes the list and explains the retry
   await expect.poll(() => designReads).toBeGreaterThanOrEqual(2)
 })
 
-test('operators confirm and dismiss proposed decisions with conflict-safe refresh and attribution', async ({
-  page,
-}) => {
+test('System Design lists no proposed decision and its attention count equals the tree badge', async ({ page }) => {
   await initialize(page)
-  let decisionReads = 0
-  let decisions = [
-    {
-      id: 'DEC-1',
-      statement: 'Keep events append-only.',
-      context: 'Audit history must remain durable.',
-      alternatives_rejected: 'Mutable lifecycle rows alone.',
-      status: 'proposed',
-      origin: 'operator',
-      workspace: 'demo',
-      created_at: '2026-08-05T08:00:00Z',
-    },
-    {
-      id: 'DEC-2',
-      statement: 'Use stable decision anchors.',
-      context: 'Operators need direct blocker links.',
-      alternatives_rejected: 'Search the page manually.',
-      status: 'proposed',
-      origin: 'operator',
-      workspace: 'demo',
-      created_at: '2026-08-05T09:00:00Z',
-    },
+  const queueFirst = { ...first, document_id: 'design-queue' }
+  const queuePending = [
+    { ...pending, document_id: 'design-queue' },
+    { ...pending, document_id: 'design-queue', version: 3, created_at: '2026-08-05T09:30:00Z' },
   ]
+  const queue: typeof design = {
+    ...design,
+    document: { ...design.document, id: 'design-queue', slug: 'queue', title: 'Queue ownership' },
+    current_version: queueFirst,
+    pending_versions: queuePending,
+    versions: [queueFirst, ...queuePending],
+    lineage: [],
+    lineage_total: 0,
+    drift: [
+      { ...design.drift[0], id: 'queue-drift-1', system_design_id: 'design-queue' },
+      {
+        ...design.drift[0],
+        id: 'queue-drift-2',
+        system_design_id: 'design-queue',
+        matching_paths: ['internal/queue/queue.go'],
+      },
+    ],
+  }
   await page.route('**/v1/**', async (route) => {
     const handled = shell(route)
     if (handled) return await handled
-    const request = route.request()
-    const url = new URL(request.url())
-    if (url.pathname === '/v1/system-designs') return route.fulfill({ json: [summarizeDesign(design)] })
+    const url = new URL(route.request().url())
+    if (url.pathname === '/v1/system-designs')
+      return route.fulfill({ json: [summarizeDesign(design), summarizeDesign(queue)] })
     if (url.pathname === '/v1/system-designs/design-dispatch') return route.fulfill({ json: design })
-    if (url.pathname === '/v1/decisions') {
-      decisionReads++
-      return route.fulfill({ json: decisions })
-    }
-    if (url.pathname === '/v1/decisions/DEC-1/confirm') {
-      expect(request.method()).toBe('POST')
-      expect(request.headers().authorization).toBeUndefined()
-      expect(request.headers()['x-conveyor-actor']).toBeUndefined()
-      decisions = decisions.map((item) =>
-        item.id === 'DEC-1'
-          ? {
-              ...item,
-              status: 'confirmed',
-              confirmed_by: 'user:operator-test',
-              confirmed_at: '2026-08-06T08:00:00Z',
-            }
-          : item,
-      )
-      return route.fulfill({ json: decisions[0] })
-    }
-    if (url.pathname === '/v1/decisions/DEC-2/dismiss') {
-      expect(request.headers().authorization).toBeUndefined()
-      decisions = decisions.map((item) =>
-        item.id === 'DEC-2'
-          ? {
-              ...item,
-              status: 'dismissed',
-              dismissed_by: 'second-operator',
-              dismissed_at: '2026-08-06T08:01:00Z',
-            }
-          : item,
-      )
-      return route.fulfill({ status: 409, body: 'decision was already dismissed' })
-    }
+    if (url.pathname === '/v1/system-designs/design-queue') return route.fulfill({ json: queue })
+    // The workspace holds proposed decisions; the page must neither read nor
+    // voice them (component-web-document-surfaces invariant 7; DEC-121).
+    if (url.pathname === '/v1/decisions') return route.fulfill({ json: proposedDecisions })
     return route.fulfill({ json: [] })
   })
+  const decisionReads = recordDecisionReads(page)
+
+  await page.goto('/w/demo/system-design?document=design-dispatch')
+  const tree = page.getByRole('navigation', { name: 'Document tree' })
+  const attention = page.getByRole('region', { name: 'Needs your attention' })
+  // One drift and one pending version: the tree badge and the surface's count
+  // both say 2, and with two items nothing collapses (invariants 1 and 2).
+  await expect(attention).toContainText('Version 2 is waiting for you')
+  await expect(attention).toContainText('Code changed in conveyor without a matching update here')
+  await expect(
+    tree.getByRole('button', { name: /Dispatch ownership/ }).getByLabel('2 attention items', { exact: true }),
+  ).toBeVisible()
+  await expect(attention.getByRole('heading')).toHaveText(/^Needs your attention\s*2$/)
+  await expect(attention.getByRole('listitem')).toHaveCount(2)
+  await expect(attention.getByRole('button', { name: /^Show \d+ more$/ })).toHaveCount(0)
+  await expectNoDecisionRendered(page)
+
+  // Two drifts and two pending versions: both counts say 4, and the collapse
+  // rule counts only those four items.
+  await tree.getByRole('button', { name: /Queue ownership/ }).click()
+  await expect(page.getByRole('heading', { name: 'Queue ownership' })).toBeVisible()
+  await expect(
+    tree.getByRole('button', { name: /Queue ownership/ }).getByLabel('4 attention items', { exact: true }),
+  ).toBeVisible()
+  await expect(attention.getByRole('heading')).toHaveText(/^Needs your attention\s*4$/)
+  await attention.getByRole('button', { name: 'Show 2 more', exact: true }).click()
+  await expect(attention.getByRole('listitem')).toHaveCount(4)
+  await expect(attention).toContainText('internal/queue/queue.go')
+  await expect(attention).toContainText('Version 3 is waiting for you')
+  await expectNoDecisionRendered(page)
+  expect(decisionReads).toEqual([])
+})
+
+test('System Design with no document shows no decision surface and issues no decisions read', async ({ page }) => {
+  await initialize(page)
+  await page.route('**/v1/**', async (route) => {
+    const handled = shell(route)
+    if (handled) return await handled
+    const url = new URL(route.request().url())
+    if (url.pathname === '/v1/system-designs') return route.fulfill({ json: [] })
+    if (url.pathname === '/v1/decisions') return route.fulfill({ json: proposedDecisions })
+    return route.fulfill({ json: [] })
+  })
+  const decisionReads = recordDecisionReads(page)
 
   await page.goto('/w/demo/system-design')
-  await page.getByRole('button', { name: 'Show 2 more' }).click()
-  await expect(page.locator('#decision-dec-2')).toBeVisible()
-  await page.locator('#decision-dec-1').getByRole('button', { name: 'Confirm' }).click()
-  // A confirmed decision leaves System Design for the Decisions surface
-  // (req-document-operating-surfaces AC-8.10).
-  await expect(page.locator('#decision-dec-1')).toHaveCount(0)
-  await page.locator('#decision-dec-2').getByRole('button', { name: 'Dismiss' }).click()
-  // The refusal refreshes the list, which now reports another operator's
-  // dismissal, so the item leaves the attention surface too.
-  await expect(page.locator('#decision-dec-2')).toHaveCount(0)
-  await page.getByRole('tab', { name: 'history', exact: true }).click()
-  await expect(page.getByText('Dismissed by second-operator')).toHaveCount(0)
-  await expect.poll(() => decisionReads).toBeGreaterThanOrEqual(3)
+  await expect(page.getByRole('heading', { name: 'Write down how this system works' })).toBeVisible()
+  await expect(page.getByText('Nothing written down yet.')).toBeVisible()
+  await expect(page.getByRole('region', { name: 'Needs your attention' })).toHaveCount(0)
+  await expectNoDecisionRendered(page)
+  expect(decisionReads).toEqual([])
 })
 
 test('System Design archives with successors, shows inline rejection, and restores from an archived deep link', async ({
@@ -813,7 +825,6 @@ test('System Design archives with successors, shows inline rejection, and restor
       restoreCalls++
       return route.fulfill({ json: view().document })
     }
-    if (url.pathname === '/v1/decisions') return route.fulfill({ json: [] })
     return route.fulfill({ json: [] })
   })
 
@@ -873,7 +884,6 @@ test('System Design archive controls are absent without document confirmation ca
     if (handled) return await handled
     if (url.pathname === '/v1/system-designs') return route.fulfill({ json: [summarizeDesign(view())] })
     if (url.pathname === '/v1/system-designs/design-dispatch') return route.fulfill({ json: view() })
-    if (url.pathname === '/v1/decisions') return route.fulfill({ json: [] })
     return route.fulfill({ json: [] })
   })
   await page.goto('/w/demo/system-design?document=design-dispatch')
