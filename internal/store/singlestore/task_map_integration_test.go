@@ -378,7 +378,7 @@ func TestTaskMapSelectsNoBodiesHistoriesOrSnapshotsIntegration(t *testing.T) {
 
 // The bounded next-action history and design-pin reads on SingleStore return
 // the same rows and value bytes when a task's state-change, pull-request,
-// bounce, conflict-episode, and attachment history grows tenfold and its
+// bounce, gate-source, conflict-episode, and attachment history grows tenfold and its
 // payloads grow, with the order set fixed. No payload sentinel reaches the
 // store, while a direct history read through the same recorder sees it, and
 // each summary equals the full-history fold (component-persistence, Task map
@@ -430,6 +430,8 @@ func TestNextActionHistorySelectsBoundedRowsIntegration(t *testing.T) {
 			appendEvent("task.state_changed", map[string]any{"from": "queued", "to": "running", "note": pad})
 			appendEvent("pull_request.opened", map[string]any{"number": 100 + i, "note": pad})
 			appendEvent("pipeline.bounce_limit", map[string]any{"window": i + 1, "note": pad})
+			appendEvent("job.failed", map[string]any{"error": pad, "source": "triage.output_invalid"})
+			appendEvent("context.authority_budget_exceeded", map[string]any{"reason_code": "authority_budget_exceeded", "note": pad})
 			appendEvent("merge.conflict_cleared", map[string]any{"note": pad})
 			appendEvent("merge.blocked", heads(nil))
 			appendEvent("merge.conflict_dispatch_failed", heads(map[string]any{"next_retry_at": now}))
@@ -453,7 +455,7 @@ func TestNextActionHistorySelectsBoundedRowsIntegration(t *testing.T) {
 		appendEvent("merge.conflict_fix_dispatched", heads(map[string]any{"work_order_id": orders[1]}))
 		appendEvent("merge.conflict_dispatch_failed", heads(map[string]any{"next_retry_at": now.Add(time.Hour)}))
 		appendEvent("pull_request.opened", map[string]any{"number": 7, "note": pad})
-		appendEvent("pipeline.bounce_limit", map[string]any{"window": 3, "note": pad})
+		appendEvent("pipeline.bounce_limit", map[string]any{"window": 3, "source": "spec.output_invalid", "note": pad})
 		appendEvent("task.state_changed", map[string]any{"command": "triage.park", "note": pad})
 		appendEvent(store.TaskContextDesignAdded, map[string]any{"id": "design-history", "version": 4, "note": pad})
 		if err := st.documentTx(ctx, func(tx *sql.Tx) error {
@@ -512,7 +514,7 @@ func TestNextActionHistorySelectsBoundedRowsIntegration(t *testing.T) {
 			t.Fatal(err)
 		}
 		got, want := histories[id], store.FoldNextActionHistory(events, orders)
-		if got.ParkCommand != want.ParkCommand || got.PullRequest != want.PullRequest || got.BounceCount != want.BounceCount ||
+		if got.ParkCommand != want.ParkCommand || got.PullRequest != want.PullRequest || got.BounceCount != want.BounceCount || got.GateSource != want.GateSource ||
 			!sameConflict(store.MergeConflictFromHistory(got.MergeConflict, orders), store.MergeConflictFromHistory(want.MergeConflict, orders)) ||
 			got.MergeConflict.Failures != want.MergeConflict.Failures || !slices.Equal(got.MergeConflict.DispatchedOrderIDs, want.MergeConflict.DispatchedOrderIDs) {
 			t.Fatalf("task %s history=%+v full fold %+v", id, got, want)
@@ -520,17 +522,18 @@ func TestNextActionHistorySelectsBoundedRowsIntegration(t *testing.T) {
 		if _, wantPins := store.ActiveTaskContextReferences(events); pins[id]["design-history"] != 4 || len(pins[id]) != len(wantPins) {
 			t.Fatalf("task %s pins=%+v full fold %+v", id, pins[id], wantPins)
 		}
-		if got.ParkCommand != "triage.park" || got.PullRequest != 7 || got.BounceCount != 3 || len(got.MergeConflict.DispatchedOrderIDs) != 2 || got.MergeConflict.Failures != 3*rounds+1 || len(got.MergeConflict.NextRetryAt) > 37 {
+		if got.ParkCommand != "triage.park" || got.PullRequest != 7 || got.BounceCount != 3 || got.GateSource != "spec.output_invalid" || len(got.MergeConflict.DispatchedOrderIDs) != 2 || got.MergeConflict.Failures != 3*rounds+1 || len(got.MergeConflict.NextRetryAt) > 37 {
 			t.Fatalf("task %s summary=%+v", id, got)
 		}
 		return observation{queries: len(queries), rows: rows, bytes: bytes}
 	}
 	small := observe("history-small-1", 20)
 	large := observe("history-large-1", 200)
-	// Three latest rows, one summary row, two dispatched orders, and one
-	// current pin, over three queries.
-	if small != large || small.queries != 3 || small.rows != 7 {
-		t.Fatalf("bounded reads small=%+v large=%+v, want equal with 3 queries and 7 rows", small, large)
+	// Four latest rows (park command, pull request, bounce window, and gate
+	// source), one summary row, two dispatched orders, and one current pin,
+	// over three queries.
+	if small != large || small.queries != 3 || small.rows != 8 {
+		t.Fatalf("bounded reads small=%+v large=%+v, want equal with 3 queries and 8 rows", small, large)
 	}
 }
 

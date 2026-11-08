@@ -321,8 +321,11 @@ WHERE x.kind = 'merge.conflict_fix_dispatched' AND jsonb_typeof(x.p->'work_order
 // latestHistorySQL selects, per task and kind, the latest row each
 // park-command, pull-request, and bounce fold accepts, and transfers only a
 // typed value: the command's first 64 characters, the number's digits, or the
-// window's digits when the fold accepts it and 0 otherwise.
-var latestHistorySQL = `SELECT DISTINCT ON (e.task_id, e.kind) e.task_id, e.kind,
+// window's digits when the fold accepts it and 0 otherwise. Its second branch
+// selects the latest gate-source event per task under GateSourceHistoryKind
+// and transfers the first 64 characters of its string source, or an empty
+// value when it records none.
+var latestHistorySQL = `(SELECT DISTINCT ON (e.task_id, e.kind) e.task_id, e.kind,
 	CASE
 		WHEN e.kind = 'task.state_changed' THEN left(e.payload_json->>'command', 64)
 		WHEN e.kind = 'pull_request.opened' THEN (e.payload_json->'number')::text
@@ -335,18 +338,28 @@ WHERE t.workspace_id = $1 AND e.task_id = ANY($2::text[]) AND (
 	(e.kind = 'task.state_changed' AND jsonb_typeof(e.payload_json->'command') = 'string' AND e.payload_json->>'command' <> '')
 	OR (e.kind = 'pull_request.opened' AND ` + positiveInt64SQL(`(e.payload_json->'number')::text`) + `)
 	OR e.kind = 'pipeline.bounce_limit')
-ORDER BY e.task_id, e.kind, e.at DESC, e.id DESC`
+ORDER BY e.task_id, e.kind, e.at DESC, e.id DESC)
+UNION ALL
+(SELECT DISTINCT ON (e.task_id) e.task_id, $3::text AS kind,
+	CASE
+		WHEN jsonb_typeof(e.payload_json) = 'object' AND jsonb_typeof(e.payload_json->'source') = 'string' THEN left(e.payload_json->>'source', 64)
+		ELSE ''
+	END AS value
+FROM events e
+JOIN tasks t ON t.id = e.task_id
+WHERE t.workspace_id = $1 AND e.task_id = ANY($2::text[]) AND e.kind = ANY($4::text[])
+ORDER BY e.task_id, e.at DESC, e.id DESC)`
 
 // ListNextActionHistory computes store.NextActionHistory in two queries:
-// the typed latest values of the park-command, pull-request, and bounce
-// folds, and the fixed-size merge-conflict summary (component-persistence).
+// the typed latest values of the park-command, pull-request, bounce, and
+// gate-source folds, and the fixed-size merge-conflict summary (component-persistence).
 func (s *Store) ListNextActionHistory(ctx context.Context, taskIDs []string) (map[string]store.NextActionHistory, error) {
 	ctx = dbmetrics.WithReadLabel(ctx, "ListNextActionHistory")
 	out := map[string]store.NextActionHistory{}
 	if len(taskIDs) == 0 {
 		return out, nil
 	}
-	rows, err := s.boundary.Query(ctx, latestHistorySQL, workspace(ctx), taskIDs)
+	rows, err := s.boundary.Query(ctx, latestHistorySQL, workspace(ctx), taskIDs, store.GateSourceHistoryKind, store.GateSourceEventKinds)
 	if err != nil {
 		return nil, err
 	}

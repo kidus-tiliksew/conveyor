@@ -70,6 +70,20 @@ function ContextSection({ item, kind }: { item: ActivityItem; kind: string }) {
   const jobs = buildTimeline(item)
     .filter((entry): entry is JobEntry => entry.type === 'job')
     .reverse()
+  if (kind === 'review_bounce_limit' && item.summaries?.invalid_output_limit) {
+    // A stage other than review reached the limit with invalid output, so no
+    // reviewer feedback decided it: show that stage's last validation error
+    // (req-operator-next-action AC-2.3).
+    const limit = item.summaries.invalid_output_limit
+    return (
+      <section aria-label="Invalid output" className="rounded-lg border border-border px-3 py-3">
+        <h4 className="text-xs font-medium text-muted">Last validation error</h4>
+        <p className="mt-1 whitespace-pre-wrap break-words text-sm">
+          {limit.error || 'The stage recorded no validation error.'}
+        </p>
+      </section>
+    )
+  }
   if (kind === 'review_bounce_limit') {
     // Newest first. Seated reviews live in panel entries and older single
     // reviews in job entries, so the latest review is whichever comes first.

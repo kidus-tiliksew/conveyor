@@ -447,6 +447,7 @@ export function taskSummaries(item: CompleteActivity): TaskSummaries {
   const roundsByRound: Record<string, TaskReviewRound> = {}
   const roundsByOrder: Record<string, TaskReviewRound> = {}
   const bounces: Record<string, number> = {}
+  const invalidOutputErrors: Record<string, string> = {}
   const result = (jobID: string) => {
     jobResults[jobID] ??= {}
     return jobResults[jobID]
@@ -520,6 +521,27 @@ export function taskSummaries(item: CompleteActivity): TaskSummaries {
       case 'triage.completed':
         summaries.park_reason = parkReason(payload, id, event.at)
         break
+      case 'triage.output_invalid':
+      case 'spec.output_invalid':
+      case 'review.output_invalid':
+        invalidOutputErrors[event.kind] = typeof payload.error === 'string' ? payload.error.trim() : ''
+        break
+      case 'pipeline.bounce_limit': {
+        summaries.invalid_output_limit = undefined
+        const source = typeof payload.source === 'string' ? payload.source : ''
+        const stage = source.endsWith('.output_invalid') ? source.slice(0, -'.output_invalid'.length) : ''
+        if (stage && stage !== 'review') {
+          const error = cut(invalidOutputErrors[source] ?? '')
+          summaries.invalid_output_limit = {
+            stage,
+            error: error.text,
+            ...(error.truncated ? { truncated: true } : {}),
+            event_id: id,
+            at: event.at,
+          }
+        }
+        break
+      }
       case 'dispatch.failed':
         if (typeof payload.error === 'string' && payload.error)
           summaries.dispatch_failure = {

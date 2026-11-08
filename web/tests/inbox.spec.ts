@@ -3290,3 +3290,151 @@ test('c never merges past failed checks or starts a destructive choice', async (
   expect(shortcutChoiceId({ kind: 'check_hold', choices: [choice('merge')] } as never)).toBeNull()
   expect(shortcutChoiceId({ kind: 'blocked', choices: [choice('close')] } as never)).toBeNull()
 })
+
+// A bounce limit that planning reached with invalid output, a triage whose
+// output stayed invalid, and a scheduled retry, as the server states them
+// (component-triage invariant 26; component-next-action invariants 14, 17).
+function invalidOutputFixture(): Fixture {
+  const reviewChoices = [
+    choice('approve', 'Approve', '/v1/tasks/{id}/review'),
+    choice('redirect', 'Ask for changes…', '/v1/tasks/{id}/review'),
+    choice('reject', 'Reject', '/v1/tasks/{id}/review'),
+  ]
+  const event = (taskId: string, id: number, jobId: string, kind: string, payload: Record<string, unknown>) => ({
+    id,
+    task_id: taskId,
+    job_id: jobId,
+    kind,
+    at: `2026-10-10T1${id}:00:00Z`,
+    payload,
+  })
+  const job = (taskId: string, id: string, stage: string, state: string, hour: number) => ({
+    id,
+    task_id: taskId,
+    stage,
+    state,
+    started_at: `2026-10-10T1${hour}:00:00Z`,
+  })
+  const statement = (kind: string, label: string, summary: string, question: string, ifIgnored: string) => ({
+    kind,
+    label,
+    actor: 'operator',
+    judgment: kind !== 'job_failure',
+    summary,
+    question,
+    if_ignored: ifIgnored,
+    choices: reviewChoices,
+    deadline: null,
+    details: { gate_kind: kind },
+  })
+  const plan = statement(
+    'review_bounce_limit',
+    'Settle planning output',
+    'Planning returned invalid output until the bounce limit.',
+    'Planning returned invalid output 3 times. Approve, ask for changes, or reject?',
+    'The task stays at the human gate.',
+  )
+  const triage = statement(
+    'job_failure',
+    'Retry triage',
+    'Triage returned invalid output until the bounce limit, so it has no outcome.',
+    'Ask for changes to run triage again, or reject the task?',
+    'The failure stays at the human gate.',
+  )
+  const retrySummary = 'Conveyor will retry this automatically. The next retry is attempt 2.'
+  const triageError =
+    'Triage output stayed invalid after 3 attempts, so triage has no outcome. Last validation error: triage summary is required'
+  return {
+    operatorDecisions: 2,
+    items: [
+      {
+        band: 'decisions',
+        task: task('T-plan-limit', 'Planning output limit', 'awaiting_human'),
+        next_action: { kind: plan.kind, label: plan.label, actor: 'operator', judgment: true, summary: plan.summary },
+      },
+      {
+        band: 'decisions',
+        task: task('T-triage-limit', 'Triage output limit', 'awaiting_human'),
+        next_action: {
+          kind: triage.kind,
+          label: triage.label,
+          actor: 'operator',
+          judgment: false,
+          summary: triage.summary,
+        },
+      },
+      {
+        band: 'automatic',
+        task: task('T-retry', 'Scheduled retry', 'running'),
+        next_action: { kind: 'retrying', label: 'Retrying', actor: 'factory', judgment: false, summary: retrySummary },
+      },
+    ],
+    actions: { 'T-plan-limit': plan, 'T-triage-limit': triage },
+    activity: {
+      'T-plan-limit': {
+        task: task('T-plan-limit', 'Planning output limit', 'awaiting_human'),
+        events: [
+          event('T-plan-limit', 1, 'job-review', 'job.summary', { summary: 'Earlier reviewer feedback.' }),
+          event('T-plan-limit', 2, 'job-spec', 'spec.output_invalid', { error: 'plan markdown is required' }),
+          event('T-plan-limit', 3, 'job-spec', 'pipeline.bounce_limit', { source: 'spec.output_invalid', window: 3 }),
+        ],
+        jobs: [
+          job('T-plan-limit', 'job-review', 'review', 'done', 0),
+          job('T-plan-limit', 'job-spec', 'spec', 'done', 1),
+        ],
+        work_orders: [],
+        interventions: [],
+      },
+      'T-triage-limit': {
+        task: task('T-triage-limit', 'Triage output limit', 'awaiting_human'),
+        events: [
+          event('T-triage-limit', 1, 'job-triage', 'triage.output_invalid', { error: 'triage summary is required' }),
+          event('T-triage-limit', 2, 'job-triage', 'pipeline.bounce_limit', {
+            source: 'triage.output_invalid',
+            window: 3,
+          }),
+          event('T-triage-limit', 3, 'job-triage', 'job.failed', {
+            error: triageError,
+            source: 'triage.output_invalid',
+            diagnostic: { phase: 'output_validation' },
+          }),
+        ],
+        jobs: [job('T-triage-limit', 'job-triage', 'triage', 'done', 0)],
+        work_orders: [],
+        interventions: [],
+      },
+    },
+  }
+}
+
+test('invalid-output limits name their stage and error, never review, and a retry summary prints verbatim', async ({
+  page,
+}) => {
+  await serve(page, invalidOutputFixture())
+  await page.goto('/w/demo/inbox')
+  const context = () => decisionDetail(page).getByRole('region', { name: 'Decision context' })
+
+  // A bounce limit planning reached shows planning's last validation error,
+  // not the earlier reviewer feedback.
+  const plan = await select(page, 'Planning output limit')
+  await expect(plan).toContainText('Settle planning output')
+  await expect(plan).toContainText('Planning returned invalid output 3 times. Approve, ask for changes, or reject?')
+  await expect(context().getByRole('region', { name: 'Invalid output' })).toContainText('plan markdown is required')
+  await expect(context().getByRole('region', { name: 'Latest reviewer feedback' })).toHaveCount(0)
+  await expect(context()).not.toContainText('Earlier reviewer feedback.')
+
+  // A triage whose output stayed invalid is a job failure that names triage
+  // and its invalid output; its context is the recorded failure.
+  const triage = await select(page, 'Triage output limit')
+  await expect(triage).toContainText('Retry triage')
+  await expect(triage).toContainText('Ask for changes to run triage again, or reject the task?')
+  await expect(context()).toContainText('Last validation error: triage summary is required')
+  await expect(context()).not.toContainText('Retrying with this feedback')
+  await expect(triage.locator('[data-detail-title]')).not.toContainText(/review/i)
+
+  // The automatic band prints the server's summary as stated.
+  const automatic = page.getByRole('region', { name: 'Automatic' })
+  await expect(automatic.locator('[data-inbox-item="T-retry"] p')).toHaveText(
+    'Conveyor will retry this automatically. The next retry is attempt 2.',
+  )
+})

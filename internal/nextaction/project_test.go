@@ -3,6 +3,7 @@ package nextaction
 import (
 	"encoding/json"
 	"reflect"
+	"regexp"
 	"strings"
 	"testing"
 	"time"
@@ -448,5 +449,117 @@ func TestCompactIgnoresDispositionBinding(t *testing.T) {
 	}
 	if Project(bound).Kind != KindVerificationDisposition {
 		t.Fatalf("fixture kind=%s", Project(bound).Kind)
+	}
+}
+
+// TestGateSourceWording proves the recorded gate source selects the gate's
+// wording. A triage whose output stayed invalid fails its job, and that
+// job_failure names triage and its invalid output, never review. A bounce
+// limit another stage reached with invalid output names that stage in its
+// label, summary, question, and run-gate label, with the review choices
+// unchanged. A review-sourced limit keeps the review wording, and no sentence
+// interpolates the source (component-triage invariant 26; component-next-action
+// invariants 17-20; req-operator-next-action AC-1.2, AC-1.8).
+func TestGateSourceWording(t *testing.T) {
+	now := time.Date(2026, 11, 8, 9, 0, 0, 0, time.UTC)
+	gate := func(kind core.GateKind, source string, count int) Input {
+		return Input{Task: core.Task{ID: "t", State: core.TaskAwaiting, GateKind: kind, RecoveryStage: core.StageTriage}, BounceCount: count, GateSource: source, Now: now}
+	}
+	reviewChoiceLabels := []string{"Approve", "Ask for changes…", "Reject"}
+	for _, tc := range []struct {
+		name, source, label, summary, question, runGate string
+		kind                                            core.GateKind
+		count                                           int
+	}{
+		{"triage job failure", "triage.output_invalid", "Retry triage", "Triage returned invalid output until the bounce limit, so it has no outcome.", "Ask for changes to run triage again, or reject the task?", "human recovery gate", core.GateKindJobFailure, 3},
+		{"sourceless job failure", "", "Job failure", "A job failed and needs a person.", "", "human recovery gate", core.GateKindJobFailure, 0},
+		{"other job failure source", "spec.output_invalid", "Job failure", "A job failed and needs a person.", "", "human recovery gate", core.GateKindJobFailure, 0},
+		{"planning bounce limit", "spec.output_invalid", "Settle planning output", "Planning returned invalid output until the bounce limit.", "Planning returned invalid output 3 times. Approve, ask for changes, or reject?", "Settle planning output", core.GateKindReviewBounceLimit, 3},
+		{"planning bounce limit without a count", "spec.output_invalid", "Settle planning output", "Planning returned invalid output until the bounce limit.", "Planning returned invalid output until the bounce limit. Approve, ask for changes, or reject?", "Settle planning output", core.GateKindReviewBounceLimit, 0},
+		{"implementation bounce limit", "implement.output_invalid", "Settle implementation output", "Implementation returned invalid output until the bounce limit.", "Implementation returned invalid output 2 times. Approve, ask for changes, or reject?", "Settle implementation output", core.GateKindReviewBounceLimit, 2},
+		{"triage bounce limit", "triage.output_invalid", "Settle triage output", "Triage returned invalid output until the bounce limit.", "Triage returned invalid output 3 times. Approve, ask for changes, or reject?", "Settle triage output", core.GateKindReviewBounceLimit, 3},
+		{"unnamed stage bounce limit", "custom.output_invalid", "Settle invalid output", "A stage returned invalid output until the bounce limit.", "A stage returned invalid output 3 times. Approve, ask for changes, or reject?", "Settle invalid output", core.GateKindReviewBounceLimit, 3},
+		{"review bounce limit", "", "Settle review", "Review bounced until the limit.", "Review bounced 3 times. Approve, ask for changes, or reject?", "Settle review", core.GateKindReviewBounceLimit, 3},
+		{"review invalid output bounce limit", "review.output_invalid", "Settle review", "Review bounced until the limit.", "Review bounced 3 times. Approve, ask for changes, or reject?", "Settle review", core.GateKindReviewBounceLimit, 3},
+		{"other source bounce limit", "mcp-review", "Settle review", "Review bounced until the limit.", "Review bounced 3 times. Approve, ask for changes, or reject?", "Settle review", core.GateKindReviewBounceLimit, 3},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			in := gate(tc.kind, tc.source, tc.count)
+			got := Project(in)
+			if got.Kind != string(tc.kind) || got.Details.GateKind != string(tc.kind) || got.Actor != ActorOperator || got.Judgment != (tc.kind != core.GateKindJobFailure) {
+				t.Fatalf("statement kind=%s gate=%s actor=%s judgment=%t", got.Kind, got.Details.GateKind, got.Actor, got.Judgment)
+			}
+			if got.Label != tc.label || got.Summary != tc.summary || got.Question != tc.question {
+				t.Fatalf("label/summary/question = %q / %q / %q, want %q / %q / %q", got.Label, got.Summary, got.Question, tc.label, tc.summary, tc.question)
+			}
+			entry, ok := LookupVariant(string(tc.kind), "", "", string(tc.kind), GateVariant(tc.kind, tc.source))
+			if !ok || entry.RunGate == nil || entry.RunGate.Label != tc.runGate {
+				t.Fatalf("run gate = %+v, want label %q", entry.RunGate, tc.runGate)
+			}
+			labels := make([]string, 0, len(got.Choices))
+			for _, choice := range got.Choices {
+				labels = append(labels, choice.Label)
+			}
+			if !reflect.DeepEqual(labels, reviewChoiceLabels) {
+				t.Fatalf("choice labels = %q, want the unchanged review choices", labels)
+			}
+			for _, text := range []string{got.Label, got.Summary, got.Question, got.IfIgnored} {
+				if tc.source != "" && strings.Contains(text, tc.source) {
+					t.Fatalf("sentence %q interpolates the source %q", text, tc.source)
+				}
+				if tc.source != "" && !strings.HasPrefix(tc.source, "review.") && tc.source != "mcp-review" && strings.Contains(strings.ToLower(text), "review") {
+					t.Fatalf("a %s gate names review: %q", tc.source, text)
+				}
+			}
+		})
+	}
+	for _, variant := range GateVariants() {
+		kind := KindReviewBounceLimit
+		if variant == TriageInvalidOutput {
+			kind = KindJobFailure
+		}
+		entry, ok := LookupVariant(kind, "", "", kind, variant)
+		base, _ := Lookup(kind, "", "", "")
+		if !ok || entry.Label == "" || entry.Label == base.Label || entry.Summary == nil || entry.Question == nil || entry.IfIgnored == nil || entry.RunGate == nil {
+			t.Fatalf("gate variant %s missing", variant)
+		}
+	}
+}
+
+// TestRetrySummaryCarriesNoTime proves a scheduled retry's summary keeps the
+// attempt number and carries no RFC 3339 time, while the time stays the
+// statement's deadline (component-next-action invariants 14, 17, 18).
+func TestRetrySummaryCarriesNoTime(t *testing.T) {
+	now := time.Date(2026, 11, 8, 9, 0, 0, 0, time.UTC)
+	later := now.Add(10 * time.Minute)
+	stamp := regexp.MustCompile(`\d{4}-\d{2}-\d{2}T\d{2}:\d{2}`)
+	recovery := scheduled(now, later)
+	recovery.Recovery = map[string]AutomaticRecovery{"o": {NextAt: &later, Attempt: 2}}
+	for _, tc := range []struct {
+		name, summary string
+		in            Input
+	}{
+		{"automatic recovery", "Conveyor will retry this automatically. The next retry is attempt 2.", recovery},
+		{"merge conflict", "Conveyor will retry this automatically. A retry is scheduled.", conflictInput(false, now)},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got := Project(tc.in)
+			if got.Kind != KindRetrying || got.Summary != tc.summary || got.IfIgnored != "The next retry still runs." {
+				t.Fatalf("summary=%q if_ignored=%q, want %q", got.Summary, got.IfIgnored, tc.summary)
+			}
+			if got.Deadline == nil || !got.Deadline.After(now) {
+				t.Fatalf("deadline=%v, want the retry time", got.Deadline)
+			}
+			for _, text := range []string{got.Label, got.Summary, got.Question, got.IfIgnored} {
+				if stamp.MatchString(text) {
+					t.Fatalf("sentence %q carries an RFC 3339 time", text)
+				}
+			}
+		})
+	}
+	past := conflictInput(false, now)
+	past.MergeConflict.NextRetryAt = now.Add(-time.Minute)
+	if got := Project(past); got.Summary != "Conveyor will retry this automatically." {
+		t.Fatalf("a passed retry time summary=%q", got.Summary)
 	}
 }
