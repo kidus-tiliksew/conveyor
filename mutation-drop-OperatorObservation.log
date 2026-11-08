@@ -1,4 +1,4 @@
-# head: d9a77a9610aed3e10198385ac1c865d3ea7270ca
+# head: 53c45c59f9a5bab16667a7d7f0e97ecbbdb54886
 # mutation: empty the body of 'case verificationGapOperatorObservation' in VerificationSuccessGapsFor (gap kind dropped silently)
 # diff:
 diff --git a/internal/store/verification_success.go b/internal/store/verification_success.go

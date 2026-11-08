@@ -1,4 +1,4 @@
-# head: d9a77a9610aed3e10198385ac1c865d3ea7270ca
+# head: 53c45c59f9a5bab16667a7d7f0e97ecbbdb54886
 # mutation: empty the body of 'case verificationGapOutput' in VerificationSuccessGapsFor (gap kind dropped silently)
 # diff:
 diff --git a/internal/store/verification_success.go b/internal/store/verification_success.go
@@ -43,6 +43,6 @@ index b30848a6..289d7eba 100644
     --- PASS: TestVerificationSuccessGapsAgreeWithEvaluator/unresolved_reference_is_unnamed (0.00s)
     --- PASS: TestVerificationSuccessGapsAgreeWithEvaluator/unknown_run_is_unnamed (0.00s)
 FAIL
-FAIL	github.com/kidus-tiliksew/conveyor/internal/store	0.005s
+FAIL	github.com/kidus-tiliksew/conveyor/internal/store	0.002s
 FAIL
 # exit: 1

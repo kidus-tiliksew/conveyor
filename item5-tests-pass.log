@@ -1,4 +1,4 @@
-# head: d9a77a9610aed3e10198385ac1c865d3ea7270ca
+# head: 53c45c59f9a5bab16667a7d7f0e97ecbbdb54886
 # unmodified tree
 # command: go test -count=1 -run 'TestVerificationSuccessGapsAgreeWithEvaluator' -v ./internal/store/
 === RUN   TestVerificationSuccessGapsAgreeWithEvaluator
@@ -28,7 +28,7 @@
     --- PASS: TestVerificationSuccessGapsAgreeWithEvaluator/unresolved_reference_is_unnamed (0.00s)
     --- PASS: TestVerificationSuccessGapsAgreeWithEvaluator/unknown_run_is_unnamed (0.00s)
 PASS
-ok  	github.com/kidus-tiliksew/conveyor/internal/store	0.003s
+ok  	github.com/kidus-tiliksew/conveyor/internal/store	0.002s
 # exit: 0
 # command: go test -count=1 -run 'TestMemoryConformance/Verification/AssertionTiming' -v ./internal/store/
 === RUN   TestMemoryConformance
@@ -38,23 +38,23 @@ ok  	github.com/kidus-tiliksew/conveyor/internal/store	0.003s
 === RUN   TestMemoryConformance/Verification/AssertionTiming/AssertionAfterWaitingIsRefused
 === RUN   TestMemoryConformance/LegacyVerificationEvidence
 === NAME  TestMemoryConformance
-    all.go:181: RunAll elapsed=10.061994ms
+    all.go:181: RunAll elapsed=8.351331ms
 --- PASS: TestMemoryConformance (0.01s)
     --- PASS: TestMemoryConformance/Verification (0.01s)
         --- PASS: TestMemoryConformance/Verification/AssertionTiming (0.01s)
-            --- PASS: TestMemoryConformance/Verification/AssertionTiming/AssertionOnRunningAttemptSucceeds (0.01s)
+            --- PASS: TestMemoryConformance/Verification/AssertionTiming/AssertionOnRunningAttemptSucceeds (0.00s)
             --- PASS: TestMemoryConformance/Verification/AssertionTiming/AssertionAfterWaitingIsRefused (0.00s)
     --- PASS: TestMemoryConformance/LegacyVerificationEvidence (0.00s)
 PASS
-ok  	github.com/kidus-tiliksew/conveyor/internal/store	0.013s
+ok  	github.com/kidus-tiliksew/conveyor/internal/store	0.011s
 # exit: 0
 # command: go test -count=1 -run 'TestKitRunnerPlainScriptAssertionOutcomes|TestWaitingExplanation' -v ./cmd/conveyor/
 === RUN   TestKitRunnerPlainScriptAssertionOutcomes
 === RUN   TestKitRunnerPlainScriptAssertionOutcomes/declared_assertion_waits
 === RUN   TestKitRunnerPlainScriptAssertionOutcomes/no_required_assertions_succeeds
---- PASS: TestKitRunnerPlainScriptAssertionOutcomes (0.29s)
-    --- PASS: TestKitRunnerPlainScriptAssertionOutcomes/declared_assertion_waits (0.10s)
-    --- PASS: TestKitRunnerPlainScriptAssertionOutcomes/no_required_assertions_succeeds (0.20s)
+--- PASS: TestKitRunnerPlainScriptAssertionOutcomes (0.14s)
+    --- PASS: TestKitRunnerPlainScriptAssertionOutcomes/declared_assertion_waits (0.06s)
+    --- PASS: TestKitRunnerPlainScriptAssertionOutcomes/no_required_assertions_succeeds (0.08s)
 === RUN   TestWaitingExplanation
 === RUN   TestWaitingExplanation/no_gaps_keeps_the_fixed_sentence
 === RUN   TestWaitingExplanation/unnamed_reason_keeps_the_fixed_sentence
@@ -74,5 +74,5 @@ ok  	github.com/kidus-tiliksew/conveyor/internal/store	0.013s
     --- PASS: TestWaitingExplanation/ten_IDs_then_a_count (0.00s)
     --- PASS: TestWaitingExplanation/budget_shared_across_kinds (0.00s)
 PASS
-ok  	github.com/kidus-tiliksew/conveyor/cmd/conveyor	0.298s
+ok  	github.com/kidus-tiliksew/conveyor/cmd/conveyor	0.145s
 # exit: 0

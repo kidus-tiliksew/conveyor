@@ -1,7 +1,7 @@
 # Evidence for task 261107-885029
 
 Raw local-only output retained for review, recorded at task head
-d9a77a9610aed3e10198385ac1c865d3ea7270ca (branch conveyor/task-261107-885029).
+53c45c59f9a5bab16667a7d7f0e97ecbbdb54886 (branch conveyor/task-261107-885029).
 
 - `item5-tests-pass.log`: the item 5 tests on the unmodified tree (helper
   agreement test, store conformance AssertionTiming on memory, cmd/conveyor
