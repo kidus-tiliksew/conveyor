@@ -1,6 +1,6 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { Link } from '@tanstack/react-router'
-import { ArrowRight, Bot, CheckCircle2, FileUp, Send, Square, User } from 'lucide-react'
+import { Archive, ArrowRight, Bot, CheckCircle2, FileUp, Send, User } from 'lucide-react'
 import { useEffect, useMemo, useRef, useState } from 'react'
 import {
   abandonPlanningSession,
@@ -19,6 +19,7 @@ import { Button } from '../ui/button'
 import { Attachment, Bubble, Marker, Message, MessageScroller } from '../ui/chat'
 import { Dialog } from '../ui/dialog'
 import { Input } from '../ui/input'
+import { MarkdownProse } from '../ui/markdown-prose'
 
 export const sessionStatusLabels: Record<PlanningSession['status'], string> = {
   active: 'Active',
@@ -193,25 +194,27 @@ export function PlanningChat({
 
   return (
     <div className="flex h-full min-h-0 flex-col">
-      <div className={`flex shrink-0 items-center gap-3 border-b border-border ${gutter} py-3`}>
-        <div className="min-w-0 flex-1">
+      <div className={`flex shrink-0 flex-wrap items-center gap-x-3 gap-y-2 border-b border-border ${gutter} py-3`}>
+        <div className={`min-w-0 flex-1 ${sidebar ? '' : 'max-md:basis-full'}`}>
           <h2 className="truncate text-sm font-semibold">{session.title || 'Untitled planning session'}</h2>
           {sidebar ? (
             <p className="mt-0.5 text-[11px] text-muted">{sessionGoalLabel(session)}</p>
           ) : (
-            <p className="mt-0.5 truncate font-mono text-[10px] text-faint">{session.id}</p>
+            <p className="mt-0.5 truncate font-mono text-[11px] text-faint">{session.id}</p>
           )}
         </div>
         {!sidebar && <Badge variant="mono">{sessionGoalLabel(session)}</Badge>}
         {!sidebar && session.requirement_context_id && <Badge variant="accent">Requirement context</Badge>}
         {!sidebar && session.model && (
-          <Badge variant="mono">
+          <Badge variant="mono" className="max-md:hidden">
             {session.model}
             {session.effort ? ` · ${session.effort}` : ''}
           </Badge>
         )}
         {!sidebar && session.exploration_output_tokens && (
-          <Badge variant="mono">{session.exploration_output_tokens.toLocaleString()} tokens/call</Badge>
+          <Badge variant="mono" className="max-md:hidden">
+            {session.exploration_output_tokens.toLocaleString()} tokens/call
+          </Badge>
         )}
         <Badge
           variant={session.status === 'active' ? 'accent' : session.status === 'finalized' ? 'positive' : 'default'}
@@ -227,12 +230,12 @@ export function PlanningChat({
             disabled={abandon.isPending}
             onClick={() => setShowAbandon(true)}
           >
-            <Square /> {sidebar ? '' : 'Abandon'}
+            <Archive /> {sidebar ? '' : 'Abandon'}
           </Button>
         )}
       </div>
       {!sidebar && session.pinned_revisions && Object.keys(session.pinned_revisions).length > 0 && (
-        <div className="flex shrink-0 flex-wrap gap-2 border-b border-border bg-surface/50 px-5 py-2">
+        <div className="flex shrink-0 flex-wrap gap-2 border-b border-border bg-surface/50 px-5 py-2 max-md:hidden">
           {Object.entries(session.pinned_revisions)
             .sort(([left], [right]) => left.localeCompare(right))
             .map(([repo, revision]) => (
@@ -247,7 +250,7 @@ export function PlanningChat({
           className={`flex shrink-0 flex-wrap items-center gap-2 border-b border-border bg-surface/50 ${gutter} py-2`}
           aria-label="Planning attachments"
         >
-          <span className="text-[10px] font-semibold uppercase tracking-[0.12em] text-faint">Attachments</span>
+          <span className="text-xs font-medium text-muted">Attachments</span>
           {sessionArtifacts.map((artifact) => (
             <Attachment
               key={`${artifact.id}-${artifact.role}`}
@@ -288,7 +291,7 @@ export function PlanningChat({
             liveGroups.map((group) => (
               <Message from={group.role} key={group.key}>
                 {group.role === 'assistant' && <Avatar kind="assistant" />}
-                <div className={group.role === 'system' ? 'contents' : 'min-w-0 flex-1 space-y-2'}>
+                <div className={group.role === 'system' ? 'contents' : messageColumn}>
                   <RenderedParts parts={group.parts} fallback={group.fallback} role={group.role} />
                 </div>
               </Message>
@@ -468,11 +471,15 @@ function groupLiveReply(parts: PlanningMessagePart[], fallback: string): LiveMes
   return groups
 }
 
+// A message column leaves room for its avatar on a phone and keeps a reading
+// measure wider up; the bubbles inside take their width from it.
+const messageColumn = 'min-w-0 max-w-[calc(100%-2.5rem)] space-y-2 md:max-w-[82%]'
+
 function ConversationMessage({ group }: { group: MessageGroup }) {
   return (
     <Message from={group.role}>
       {group.role !== 'system' && <Avatar kind={group.role} />}
-      <div className={group.role === 'system' ? 'contents' : 'min-w-0 max-w-[82%] space-y-2'}>
+      <div className={group.role === 'system' ? 'contents' : messageColumn}>
         <RenderedParts parts={group.parts} fallback={group.content} role={group.role} />
       </div>
     </Message>
@@ -587,7 +594,7 @@ function RenderedParts({
         if (part.kind === 'text')
           return (
             <Bubble key={`text-${index}`} from={role}>
-              {part.text}
+              {role === 'assistant' ? <MarkdownProse className="text-sm">{part.text}</MarkdownProse> : part.text}
             </Bubble>
           )
         if (part.kind === 'file')

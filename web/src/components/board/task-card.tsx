@@ -1,5 +1,5 @@
 import { Link } from '@tanstack/react-router'
-import { Workflow } from 'lucide-react'
+import { Check, Workflow, X } from 'lucide-react'
 import { useId } from 'react'
 import { humanizeClaimRefusal, reviewDiagnosticBadge, taskWasRestarted } from '../../lib/activity'
 import { useShowStageProgress } from '../../lib/board-preferences'
@@ -50,8 +50,10 @@ const statusLabels: Record<CardStatusTone, string> = {
   waiting: 'text-muted',
 }
 
+// A raised surface that waits for a settled pointer, so crossing a column never
+// flashes it over the next card. Focus opens it at once.
 const tooltip =
-  'pointer-events-none absolute z-20 rounded-md bg-foreground px-2.5 py-1.5 text-[11px] leading-4 text-background opacity-0 shadow-md transition-opacity'
+  'pointer-events-none absolute z-20 rounded-md border border-edge bg-card px-2.5 py-1.5 text-xs leading-4 text-foreground opacity-0 shadow-md transition-opacity duration-100'
 
 // One board card (req-operator-next-action AC-3.1): the title, then one row
 // holding the server's next-action label behind a status mark, the recency, and
@@ -77,19 +79,24 @@ export function TaskCard({ item, selected }: { item: ActivitySummary; selected: 
   )
   const restarted = taskWasRestarted(item.task)
   const chips = Boolean(restarted || reviewDiagnostic)
+  // Finished work states how it finished, quietly, in the status spot.
+  const closed = item.task.state === 'closed'
+  const merged = item.task.state === 'merged'
   return (
     <Link
       to="/w/$workspaceId/tasks/$taskId"
       params={{ workspaceId: workspace, taskId: item.task.id }}
       aria-describedby={action?.summary ? summaryId : undefined}
       className={cn(
-        'group/card relative block rounded-lg border bg-card p-3 transition-colors',
-        selected ? 'border-primary bg-primary-soft/40' : 'border-border hover:border-edge',
+        'group/card relative block rounded-lg border bg-card px-3 py-2.5 shadow-xs transition-[border-color,box-shadow] duration-100',
+        selected ? 'border-primary bg-primary-soft/40' : 'border-border hover:border-edge hover:shadow-sm',
       )}
       data-operator={operator || undefined}
     >
       <div className="flex items-start gap-2">
-        <p className="line-clamp-2 min-w-0 flex-1 text-sm font-medium leading-snug">{item.task.title}</p>
+        <p className={cn('line-clamp-2 min-w-0 flex-1 text-sm font-medium leading-snug', closed && 'text-muted')}>
+          {item.task.title}
+        </p>
         {blockingIDs.length > 0 && <DependencyMark titles={blockingTitles} unsatisfiable={unsatisfiable} />}
       </div>
       {showStageProgress && <StageStripe taskId={item.task.id} />}
@@ -106,7 +113,19 @@ export function TaskCard({ item, selected }: { item: ActivitySummary; selected: 
             </span>
           </>
         )}
-        <span className="ml-auto shrink-0 whitespace-nowrap font-mono text-[11px] text-faint">
+        {closed && (
+          <span data-card-closed className="inline-flex shrink-0 items-center gap-1 text-faint">
+            <X aria-hidden className="size-3" />
+            Closed
+          </span>
+        )}
+        {merged && (
+          <span data-card-merged className="inline-flex shrink-0 items-center gap-1 text-faint">
+            <Check aria-hidden className="size-3" />
+            Merged
+          </span>
+        )}
+        <span className="ml-auto shrink-0 whitespace-nowrap text-xs tabular-nums text-faint">
           {relativeTime(lastAt)}
         </span>
         {/* The same chip the Tasks rows carry, so a colleague's assignment reads
@@ -149,7 +168,7 @@ export function TaskCard({ item, selected }: { item: ActivitySummary; selected: 
           data-next-action-summary
           className={cn(
             tooltip,
-            'left-2 right-2 top-full mt-1 group-focus-visible/card:opacity-100 group-hover/card:opacity-100 group-has-[[data-dependency-mark]:hover]/card:opacity-0',
+            'left-2 right-2 top-full mt-1 group-focus-visible/card:opacity-100 group-hover/card:opacity-100 group-hover/card:delay-500 group-has-[[data-dependency-mark]:hover]/card:opacity-0',
           )}
         >
           {action.summary}
@@ -181,7 +200,7 @@ function DependencyMark({ titles, unsatisfiable }: { titles: string[]; unsatisfi
         role="tooltip"
         className={cn(
           tooltip,
-          'right-0 top-full mt-1.5 w-60 group-hover/dependency:opacity-100 group-focus-visible/card:opacity-100',
+          'right-0 top-full mt-1.5 w-60 group-hover/dependency:opacity-100 group-hover/dependency:delay-500 group-focus-visible/card:opacity-100',
         )}
       >
         {unsatisfiable ? (

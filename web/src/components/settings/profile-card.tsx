@@ -53,7 +53,7 @@ export function ProfileCard() {
     <Card className="mt-4">
       <CardHeader>
         <CardTitle>Profile</CardTitle>
-        <UserRound className="size-4 text-primary" />
+        <UserRound className="size-4 text-faint" />
       </CardHeader>
       <CardContent>
         <p className="mb-4 text-sm leading-6 text-muted">This is the name teammates see in workspace member lists.</p>

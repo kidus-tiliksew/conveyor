@@ -31,7 +31,11 @@ export const CONTEXT_APPLY_SHORTCUT = 'context-proposal:apply'
 // button opens the merge confirmation), and every other choice also needs a
 // request body this client can build and no server refusal. A context
 // proposal binds c to its checklist's Apply instead of any one choice.
+const destructiveChoices = new Set(['reject', 'close', 'close_task', 'cancel'])
+
 export function shortcutChoiceId(action: NextAction) {
+  // Merging past failed checks is deliberately not one keypress away.
+  if (action.kind === 'check_hold') return null
   if (action.kind === 'context_proposal' && action.details?.context_proposals?.length) return CONTEXT_APPLY_SHORTCUT
   // At merge_approval an allowed merge is the primary wherever the server
   // lists it (feature-operator-next-action NA-6).
@@ -39,7 +43,7 @@ export function shortcutChoiceId(action: NextAction) {
     return 'merge'
   }
   for (const choice of action.choices) {
-    if (!choice.allowed) continue
+    if (!choice.allowed || destructiveChoices.has(choice.id)) continue
     const body = choiceBody(choice.id)
     if (!body || body.unavailable?.(action.details)) continue
     return choice.id
@@ -53,7 +57,7 @@ export function shortcutChoiceId(action: NextAction) {
 export function Kbd({ children, className }: { children: ReactNode; className?: string }) {
   return (
     <span aria-hidden="true" data-kbd-hint className={cn('hidden md:inline-flex', className)}>
-      <kbd className="inline-flex h-5 min-w-5 items-center justify-center rounded border border-b-2 border-border bg-surface px-1 font-mono text-[10.5px] leading-none text-muted">
+      <kbd className="inline-flex h-5 min-w-5 items-center justify-center rounded border border-b-2 border-border bg-surface px-1 font-mono text-[11px] leading-none text-muted">
         {children}
       </kbd>
     </span>

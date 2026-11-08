@@ -1,9 +1,7 @@
-import { type KeyboardEvent, useId, useRef, useState } from 'react'
+import { useId, useState } from 'react'
 import type { ActivityItem } from '../../lib/types'
-import { cn } from '../../lib/utils'
 import { useWorkspaceSelection } from '../app-shell'
-import { NextActionCard } from './next-action-card'
-import { isReviewable } from './review-panel'
+import { Tabs, tabPanelProps } from '../ui/tabs'
 import { TaskFlowChart } from './task-flow'
 import { Timeline } from './timeline'
 
@@ -47,87 +45,55 @@ const views: { id: TaskActivityView; label: string }[] = [
   { id: 'flow', label: 'Flow' },
 ]
 
-// The activity area of task detail on the Board sheet and the full task route
-// (component-web-task-surfaces, Activity tabs and the task flow view): the one
-// next-action card, then Timeline and Flow tabs with only the active panel
-// mounted. The Timeline tab is the default and reads no flow; the Flow tab's
-// chart is the only task-detail reader of /flow (AC-7.4).
-export function TaskActivityTabs({ item, routeVariant }: { item: ActivityItem; routeVariant: 'sheet' | 'full' }) {
-  const { workspace } = useWorkspaceSelection()
+// The chosen view belongs to the whole task detail: the next-action card reads
+// it too, because the tab decides which surface carries the open gate.
+export function useTaskActivityView() {
   const [view, setView] = useState<TaskActivityView>(() => readTaskActivityView())
-  const tabs = useRef<Record<TaskActivityView, HTMLButtonElement | null>>({ timeline: null, flow: null })
-  const id = useId()
-  const select = (next: TaskActivityView, focus = false) => {
+  const select = (next: TaskActivityView) => {
     setView(next)
     writeTaskActivityView(next)
-    if (focus) tabs.current[next]?.focus()
   }
-  const onKeyDown = (event: KeyboardEvent<HTMLDivElement>) => {
-    const index = views.findIndex((candidate) => candidate.id === view)
-    const target = {
-      ArrowRight: views[(index + 1) % views.length],
-      ArrowLeft: views[(index - 1 + views.length) % views.length],
-      Home: views[0],
-      End: views[views.length - 1],
-    }[event.key]
-    if (!target) return
-    event.preventDefault()
-    select(target.id, true)
-  }
-  // While Flow is shown the timeline's gate card is not mounted, so the
-  // next-action card carries the server's choices itself.
-  const gateOpen = view === 'timeline' && isReviewable(item)
+  return { view, select }
+}
+
+// The activity area of task detail on the Board sheet and the full task route
+// (component-web-task-surfaces, Activity tabs and the task flow view): Timeline
+// and Flow tabs with only the active panel mounted. The Timeline tab is the
+// default and reads no flow; the Flow tab's chart is the only task-detail
+// reader of /flow (AC-7.4).
+export function TaskActivityTabs({
+  item,
+  routeVariant,
+  view,
+  onSelectView,
+}: {
+  item: ActivityItem
+  routeVariant: 'sheet' | 'full'
+  view: TaskActivityView
+  onSelectView: (view: TaskActivityView) => void
+}) {
+  const { workspace } = useWorkspaceSelection()
+  const id = useId()
 
   return (
-    <div className="space-y-4">
-      <NextActionCard item={item} routeVariant={routeVariant} gateOpen={gateOpen} />
-      <div className="space-y-3">
-        <div
-          role="tablist"
-          aria-label="Task activity view"
-          className="flex gap-1 border-b border-border"
-          onKeyDown={onKeyDown}
-        >
-          {views.map((candidate) => {
-            const selected = candidate.id === view
-            return (
-              <button
-                key={candidate.id}
-                ref={(element) => {
-                  tabs.current[candidate.id] = element
-                }}
-                type="button"
-                role="tab"
-                id={`${id}-${candidate.id}-tab`}
-                aria-selected={selected}
-                aria-controls={`${id}-${candidate.id}-panel`}
-                tabIndex={selected ? 0 : -1}
-                data-activity-tab={candidate.id}
-                className={cn(
-                  '-mb-px border-b-2 px-3 py-1.5 text-sm outline-none focus-visible:ring-2 focus-visible:ring-primary/40',
-                  selected
-                    ? 'border-primary font-medium text-foreground'
-                    : 'border-transparent text-muted hover:text-foreground',
-                )}
-                onClick={() => select(candidate.id)}
-              >
-                {candidate.label}
-              </button>
-            )
-          })}
-        </div>
-        <div
-          role="tabpanel"
-          id={`${id}-${view}-panel`}
-          aria-labelledby={`${id}-${view}-tab`}
-          data-activity-panel={view}
-        >
-          {view === 'timeline' ? (
-            <Timeline item={item} />
-          ) : (
-            <TaskFlowChart key={`${workspace}:${item.task.id}`} taskId={item.task.id} />
-          )}
-        </div>
+    <div className="space-y-3">
+      <Tabs
+        id={id}
+        aria-label="Task activity view"
+        items={views.map((candidate) => ({
+          id: candidate.id,
+          label: candidate.label,
+          attributes: { 'data-activity-tab': candidate.id },
+        }))}
+        value={view}
+        onChange={onSelectView}
+      />
+      <div {...tabPanelProps(id, view)} data-activity-panel={view}>
+        {view === 'timeline' ? (
+          <Timeline item={item} routeVariant={routeVariant} />
+        ) : (
+          <TaskFlowChart key={`${workspace}:${item.task.id}`} taskId={item.task.id} />
+        )}
       </div>
     </div>
   )

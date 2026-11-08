@@ -76,10 +76,10 @@ export const tabBody = '[&>section:first-child>h3]:mt-0'
 
 export function SectionHeading({ children, count }: { children: ReactNode; count?: number }) {
   return (
-    <h3 className="mb-1.5 mt-5 flex items-center gap-1.5 text-[11px] font-semibold uppercase tracking-wide text-faint">
+    <h3 className="mb-1.5 mt-5 flex items-center gap-1.5 text-xs font-medium text-muted">
       {children}
       {count !== undefined && (
-        <span className="rounded-md bg-raised px-1.5 font-mono text-[10.5px] font-normal tracking-normal text-muted">
+        <span className="rounded-md bg-raised px-1.5 font-mono text-[11px] font-normal tracking-normal text-muted">
           {count}
         </span>
       )}
@@ -111,7 +111,7 @@ export function TaskRow({
     >
       <Icon aria-hidden className={cn('mt-0.5 size-3.5 shrink-0', statusMeta[status].tone)} />
       <span className="min-w-0 flex-1">
-        <span className="line-clamp-2 text-[12.5px] font-medium leading-snug text-foreground">{task.title}</span>
+        <span className="line-clamp-2 text-sm font-medium leading-snug text-foreground">{task.title}</span>
         <span className="mt-0.5 block text-[11px] text-muted">
           {task.next_action.label}
           <span className="font-mono text-faint"> · {task.id}</span>

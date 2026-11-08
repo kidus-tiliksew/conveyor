@@ -12,7 +12,7 @@ import {
   UserRound,
   X,
 } from 'lucide-react'
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { fetchRequirements, fetchSystemDesigns } from '../../lib/api'
 import { taskStateLabels } from '../../lib/contracts'
 import { useWorkspace, useWorkspaceMembers, useWorkspaceSelection } from '../app-shell'
@@ -273,7 +273,7 @@ function RangeCalendar({
           <ChevronRight className="size-4" />
         </button>
       </div>
-      <div className="grid grid-cols-7 text-center text-[10px] text-faint">
+      <div className="grid grid-cols-7 text-center text-[11px] text-faint">
         {weekdayHeader.map((day) => (
           <span key={day} className="py-1">
             {day}
@@ -292,7 +292,7 @@ function RangeCalendar({
               aria-pressed={day === from || day === to}
               className={`h-7 rounded text-[11px] tabular-nums transition-colors ${
                 day === from || day === to
-                  ? 'bg-primary text-primary-foreground'
+                  ? 'bg-primary-fill text-primary-foreground'
                   : from && to && day > from && day < to
                     ? 'bg-primary/15 text-foreground'
                     : `hover:bg-raised ${day === today ? 'font-semibold text-primary' : 'text-foreground'}`
@@ -413,6 +413,7 @@ function FilterMenu({
   // never slides under the navigation rail or past the viewport.
   const [align, setAlign] = useState<'left' | 'right'>('right')
   const ref = useRef<HTMLDivElement>(null)
+  const panelRef = useRef<HTMLDivElement>(null)
   useEffect(() => {
     const close = (event: MouseEvent) => {
       if (!ref.current?.contains(event.target as Node)) setOpen(false)
@@ -420,12 +421,22 @@ function FilterMenu({
     document.addEventListener('mousedown', close)
     return () => document.removeEventListener('mousedown', close)
   }, [])
+  useEffect(() => {
+    if (!open) return
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key !== 'Escape') return
+      setOpen(false)
+      ref.current?.querySelector('button')?.focus()
+    }
+    document.addEventListener('keydown', onKeyDown)
+    return () => document.removeEventListener('keydown', onKeyDown)
+  }, [open])
   const categories: { id: FilterCategory; label: string; active: boolean }[] = [
     { id: 'state', label: 'Status', active: value.states.length > 0 },
     { id: 'repository', label: 'Repository', active: value.repositories.length > 0 },
     { id: 'updated', label: 'Updated', active: value.updated !== fallback.updated },
     { id: 'requirement', label: 'Requirement', active: value.requirements.length > 0 },
-    { id: 'design', label: 'System design', active: value.designs.length > 0 },
+    { id: 'design', label: 'System Design', active: value.designs.length > 0 },
     { id: 'assignee', label: 'Assignee', active: value.assignee !== '' },
   ]
   const activeLabel = categories.find((item) => item.id === category)?.label ?? ''
@@ -478,6 +489,21 @@ function FilterMenu({
     else if (category === 'assignee') set({ assignee: '' })
     else set({ [listCategoryKeys[category]]: [] })
   }
+  // The panel hangs from its trigger, and the page body clips anything past its
+  // edges, so a trigger near an edge would hide part of the panel. It stays
+  // inside the page body, with a 16px gutter, once it can be measured.
+  useLayoutEffect(() => {
+    const panel = panelRef.current
+    if (!open || !panel) return
+    const page = panel.closest('main')?.getBoundingClientRect()
+    const min = (page?.left ?? 0) + 16
+    const max = (page?.right ?? window.innerWidth) - 16
+    panel.style.transform = ''
+    panel.style.maxWidth = `${Math.max(0, max - min)}px`
+    const { left, right } = panel.getBoundingClientRect()
+    const shift = left < min ? min - left : right > max ? max - right : 0
+    if (shift !== 0) panel.style.transform = `translateX(${shift}px)`
+  }, [open, align])
   return (
     <div className="relative" ref={ref}>
       <Button
@@ -504,16 +530,18 @@ function FilterMenu({
             <span
               data-testid="filter-count"
               aria-hidden="true"
-              className="absolute -right-1.5 -top-1.5 grid h-4 min-w-4 place-items-center rounded-full bg-primary px-1 text-[10px] font-semibold leading-none text-primary-foreground"
+              className="absolute -right-1.5 -top-1.5 grid h-4 min-w-4 place-items-center rounded-full bg-primary px-1 text-[11px] font-semibold leading-none text-primary-foreground"
             >
               {activeCount}
             </span>
           ) : (
-            <span className="rounded-full bg-primary/15 px-1.5 text-[10px] text-primary">{activeCount}</span>
+            <span className="rounded-full bg-primary/15 px-1.5 text-[11px] text-primary">{activeCount}</span>
           ))}
       </Button>
       {open && (
         <div
+          ref={panelRef}
+          data-filter-panel
           className={`absolute z-30 mt-2 flex w-[min(42rem,calc(100vw-2rem))] overflow-hidden rounded-xl border border-border bg-surface shadow-2xl ${align === 'left' ? 'left-0' : 'right-0'}`}
         >
           <div className="w-44 shrink-0 border-r border-border p-2">
@@ -591,7 +619,7 @@ function FilterMenu({
                   onClick={clearCategory}
                 >
                   <span
-                    className={`flex size-4 shrink-0 items-center justify-center rounded border ${selected.length === 0 ? 'border-primary bg-primary text-primary-foreground' : 'border-muted'}`}
+                    className={`flex size-4 shrink-0 items-center justify-center rounded border ${selected.length === 0 ? 'border-primary bg-primary-fill text-primary-foreground' : 'border-muted'}`}
                   >
                     {selected.length === 0 && <Check className="size-3" aria-hidden="true" />}
                   </span>
@@ -610,7 +638,7 @@ function FilterMenu({
                     onClick={() => toggleSelection(option.id)}
                   >
                     <span
-                      className={`flex size-4 shrink-0 items-center justify-center rounded border ${checked ? 'border-primary bg-primary text-primary-foreground' : 'border-muted'}`}
+                      className={`flex size-4 shrink-0 items-center justify-center rounded border ${checked ? 'border-primary bg-primary-fill text-primary-foreground' : 'border-muted'}`}
                     >
                       {checked && <Check className="size-3" aria-hidden="true" />}
                     </span>
@@ -697,7 +725,10 @@ export function TaskFilters({
   ].filter(Boolean).length
   return (
     <div className={`flex flex-wrap items-center gap-2 ${className}`}>
-      <label className="relative w-full sm:w-56" htmlFor={`task-filter-search-${workspace}`}>
+      <label
+        className="relative min-w-0 flex-1 sm:w-56 sm:flex-none min-[88rem]:w-44"
+        htmlFor={`task-filter-search-${workspace}`}
+      >
         <Search className="pointer-events-none absolute left-2.5 top-1/2 size-4 -translate-y-1/2 text-faint" />
         <Input
           id={`task-filter-search-${workspace}`}
@@ -706,7 +737,7 @@ export function TaskFilters({
           value={value.query}
           onChange={(event) => set({ query: event.target.value })}
           placeholder="Search tasks"
-          className="h-9 pl-8 text-xs"
+          className="pl-8 text-xs"
         />
       </label>
       <FilterMenu

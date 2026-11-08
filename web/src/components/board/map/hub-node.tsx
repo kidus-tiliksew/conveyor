@@ -64,7 +64,7 @@ function InsightToolbar({ tab, onOpen }: NonNullable<HubNodeData['insight']>) {
           }}
           onDoubleClick={(event) => event.stopPropagation()}
           className={cn(
-            'inline-flex items-center gap-1.5 whitespace-nowrap rounded-full px-3 py-1.5 text-[13px] font-medium transition-colors focus-visible:outline-2 focus-visible:outline-primary',
+            'inline-flex items-center gap-1.5 whitespace-nowrap rounded-full px-3 py-1.5 text-sm font-medium transition-colors focus-visible:outline-2 focus-visible:outline-primary',
             tab === value ? 'bg-primary-soft text-primary' : 'text-muted hover:bg-raised hover:text-foreground',
           )}
         >
@@ -120,10 +120,10 @@ export const HubNode = memo(function HubNode({ data }: NodeProps<HubFlowNode>) {
         <div className="flex items-center gap-1.5 border-b border-border bg-surface px-3 py-1.5 text-[11px] text-muted">
           <Icon aria-hidden className="size-3.5" />
           {doc.kind === 'requirement' ? 'Requirement' : 'System design'}
-          <span className="ml-auto truncate font-mono text-[10.5px] text-faint">{doc.id}</span>
+          <span className="ml-auto truncate font-mono text-[11px] text-faint">{doc.id}</span>
         </div>
         <div className="flex flex-1 flex-col justify-between px-3 py-2">
-          <p className="line-clamp-2 text-[13.5px] font-semibold leading-snug text-foreground" title={doc.title}>
+          <p className="line-clamp-2 text-sm font-semibold leading-snug text-foreground" title={doc.title}>
             {doc.title}
           </p>
           <div>

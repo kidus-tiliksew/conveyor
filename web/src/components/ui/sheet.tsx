@@ -1,5 +1,6 @@
 import { type ReactNode, useEffect, useRef } from 'react'
 import { createPortal } from 'react-dom'
+import { containTab } from './focus-trap'
 
 // Open sheets, innermost last. A sheet can now open over another one — the
 // related-records panel opens from inside the task panel (AC-3.1) — and only
@@ -39,6 +40,7 @@ export function Sheet({
     openSheets.push(identity)
     const onKeyDown = (event: KeyboardEvent) => {
       if (event.key === 'Escape' && openSheets.at(-1) === identity) onCloseRef.current()
+      containTab(event, panelRef.current)
     }
     document.addEventListener('keydown', onKeyDown)
     const overflow = document.body.style.overflow
@@ -53,11 +55,7 @@ export function Sheet({
 
   return createPortal(
     <div className="fixed inset-0 z-40">
-      <div
-        aria-hidden
-        className="absolute inset-0 animate-overlay-in bg-foreground/25"
-        onClick={() => onCloseRef.current()}
-      />
+      <div aria-hidden className="absolute inset-0 animate-overlay-in bg-scrim" onClick={() => onCloseRef.current()} />
       <aside
         ref={panelRef}
         role="dialog"

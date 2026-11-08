@@ -1,6 +1,6 @@
 import { useMutation, useQueryClient } from '@tanstack/react-query'
 import { Link } from '@tanstack/react-router'
-import { Check, X } from 'lucide-react'
+import { Check, CornerDownRight, X } from 'lucide-react'
 import { useState } from 'react'
 import {
   confirmRequirementVersion,
@@ -20,6 +20,7 @@ import { VersionDismissDialog } from '../documents/version-dismiss-dialog'
 import { type ReviseTarget, VersionReviseDialog } from '../documents/version-revise-dialog'
 import { NextActionIDs } from '../task/next-action-parts'
 import { Button } from '../ui/button'
+import { DecisionFooter } from './decision-footer'
 import { Kbd } from './inbox-keyboard'
 import { KindPill } from './inbox-kind'
 import { ProposalContext } from './proposal-context'
@@ -144,7 +145,7 @@ export function ProposalDetail({
             </time>
           )}
         </div>
-        <h2 data-detail-title className="break-words text-base font-semibold leading-6">
+        <h2 data-detail-title tabIndex={-1} className="break-words text-lg font-semibold leading-snug outline-none">
           {proposal.title}
         </h2>
         <div className="flex min-w-0 flex-wrap items-center gap-x-3 gap-y-1 text-xs text-muted">
@@ -158,9 +159,33 @@ export function ProposalDetail({
           </div>
         )}
       </div>
-      <div
-        data-decision-footer
-        className="z-10 shrink-0 space-y-2 rounded-b-xl border-t border-border bg-surface px-5 py-3 max-md:sticky max-md:bottom-0"
+      <DecisionFooter
+        ids={
+          <NextActionIDs
+            value={{
+              document: proposal.id,
+              tier: proposal.tier,
+              ...(proposal.version == null ? {} : { version: proposal.version }),
+              origin: proposal.origin_type,
+              ...(proposal.origin_id ? { origin_id: proposal.origin_id } : {}),
+            }}
+          />
+        }
+        consequence={
+          (item.if_ignored || item.sentence) && (
+            <div className="min-w-0 space-y-1 text-xs text-muted">
+              {item.if_ignored && (
+                <p className="flex min-w-0 items-start gap-1.5">
+                  <CornerDownRight className="mt-0.5 size-3.5 shrink-0" aria-hidden />
+                  <span className="min-w-0 break-words">
+                    If you do nothing: <span className="font-medium text-foreground">{item.if_ignored}</span>
+                  </span>
+                </p>
+              )}
+              {item.sentence && <p className="min-w-0 break-words">{item.sentence}</p>}
+            </div>
+          )
+        }
       >
         {resolve.error && !dismissing && (
           <p className="text-xs text-failure">{errorMessage(resolve.error, 'Could not resolve this proposal.')}</p>
@@ -169,6 +194,7 @@ export function ProposalDetail({
           <div className="flex flex-wrap items-center gap-2">
             <Button
               size="sm"
+              className="max-md:flex-1"
               data-shortcut="c"
               disabled={resolve.isPending}
               onClick={() => resolve.mutate({ action: 'confirm' })}
@@ -181,6 +207,7 @@ export function ProposalDetail({
               <Button
                 size="sm"
                 variant="secondary"
+                className="max-md:flex-1"
                 data-shortcut="r"
                 disabled={resolve.isPending}
                 onClick={() =>
@@ -199,6 +226,7 @@ export function ProposalDetail({
             <Button
               size="sm"
               variant="ghost"
+              className="max-md:flex-1"
               data-shortcut="d"
               disabled={resolve.isPending}
               onClick={() => {
@@ -213,26 +241,7 @@ export function ProposalDetail({
             <Kbd>d</Kbd>
           </div>
         )}
-        <div className="flex min-w-0 flex-wrap items-start gap-x-3 gap-y-1 text-xs text-muted">
-          {item.if_ignored && (
-            <p className="min-w-0 break-words">
-              If you do nothing: <span className="font-medium text-foreground">{item.if_ignored}</span>
-            </p>
-          )}
-          {item.sentence && <p className="min-w-0 break-words">{item.sentence}</p>}
-          <div className="ml-auto">
-            <NextActionIDs
-              value={{
-                document: proposal.id,
-                tier: proposal.tier,
-                ...(proposal.version == null ? {} : { version: proposal.version }),
-                origin: proposal.origin_type,
-                ...(proposal.origin_id ? { origin_id: proposal.origin_id } : {}),
-              }}
-            />
-          </div>
-        </div>
-      </div>
+      </DecisionFooter>
     </article>
   )
 }

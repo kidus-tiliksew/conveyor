@@ -284,6 +284,18 @@ function overlaps(a: Box, b: Box) {
 // The title and every header control occupy disjoint boxes, the title keeps a
 // usable width, and nothing in the header paints past its right edge.
 async function expectHeaderControlsClear(header: Locator, title: Locator) {
+  // The sheet names the task in its header only once the body's heading has
+  // scrolled away, so the layout is measured in that state.
+  const sheetBody = header.page().locator('.task-sheet-body')
+  if ((await sheetBody.count()) > 0) {
+    await sheetBody.evaluate((node) => {
+      const spacer = document.createElement('div')
+      spacer.style.height = '2000px'
+      node.append(spacer)
+      node.scrollTop = node.scrollHeight
+    })
+    await expect.poll(() => title.evaluate((node) => node.getBoundingClientRect().width)).toBeGreaterThan(48)
+  }
   const titleBox = await title.boundingBox()
   const headerBox = await header.boundingBox()
   if (!titleBox || !headerBox) throw new Error('the header title is not rendered')

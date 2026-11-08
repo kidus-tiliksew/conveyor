@@ -10,8 +10,8 @@ import {
 import type { NextActionCompact, TaskMapItem, TaskMapRequirement, TaskMapResponse } from '../src/lib/types'
 import { test } from './helpers/bounded-detail'
 import { callerIdentity } from './helpers/caller-identity'
-import { controlWorkspaceChanges, type WorkspaceChangeControl } from './helpers/workspace-changes'
 import { waitForSheetSettled } from './helpers/sheet'
+import { controlWorkspaceChanges, type WorkspaceChangeControl } from './helpers/workspace-changes'
 
 // The Board map (req-board-map v3; req-operator-next-action AC-1.7, AC-3.4,
 // AC-6.1; component-web-task-surfaces, Board map). GET /v1/task-map is mocked
@@ -361,7 +361,12 @@ test('the map opens on every group in urgency order, each with its tasks, hub, a
   // holds three judgments (AC-1.3).
   expect(await groupOrder(page)).toEqual(['req-alpha', 'req-beta', 'req-gamma', '__none'])
   await expect(group(page, 'req-delta')).toHaveCount(0)
-  // The map opens framed on every group (AC-1.9).
+  // Too large to fit at a zoom where cards read, the map opens on its most
+  // urgent band of groups at a readable zoom, and Whole map shows the rest.
+  await waitForCamera(groups(page).first())
+  expect(await zoom(page)).toBeGreaterThanOrEqual(0.7)
+  await expect(group(page, 'req-alpha')).toBeInViewport()
+  await page.getByRole('button', { name: 'Whole map' }).click()
   await expectEveryGroupInPane(page)
 
   // Each header shows the title, a blocked mark or else a judgment mark, and
@@ -423,10 +428,13 @@ test('a blocked task outranks any number of tasks needing judgment', async ({ pa
   // Frames differ in size, and rows still read in urgency order.
   const heights = await groups(page).evaluateAll((elements) => elements.map((element) => element.clientHeight))
   expect(new Set(heights).size).toBeGreaterThan(1)
+  await page.getByRole('button', { name: 'Whole map' }).click()
   await expectEveryGroupInPane(page)
 })
 
-test('a 500-task chain in one group still opens, and returns to Whole map, inside the pane', async ({ page }) => {
+test('a 500-task chain in one group opens readable at its top, and Whole map fits it inside the pane', async ({
+  page,
+}) => {
   test.setTimeout(60_000)
   // One requirement whose open tasks form a single dependency chain lays out
   // as one frame tens of thousands of pixels tall, too tall for the usual
@@ -445,6 +453,11 @@ test('a 500-task chain in one group still opens, and returns to Whole map, insid
     await page.setViewportSize(size)
     await page.goto('/?view=map')
     await expect(taskNodes(page)).toHaveCount(500)
+    // The tall group opens at its top, readable; Whole map fits all of it.
+    await waitForCamera(groups(page).first())
+    expect(await zoom(page)).toBeGreaterThanOrEqual(0.7)
+    await expect(node(page, 'c0')).toBeInViewport()
+    await page.getByRole('button', { name: 'Whole map' }).click()
     await expectEveryGroupInPane(page)
     await page.mouse.move(size.width / 2, size.height / 2)
     await page.mouse.wheel(0, -2400)
@@ -552,10 +565,11 @@ test('task nodes print the stated label with a mark from the stated actor, and w
 
   // Every node counts the open tasks that depend on it, zero included.
   await expect(node(page, 'a2')).toContainText('→4')
-  await expect(node(page, 'a1')).toContainText('→0')
+  await expect(node(page, 'a1')).not.toContainText('→')
   await expect(node(page, 'f1')).toContainText('→5')
 
-  // Header chips count by the stated label.
+  // The legend's detail counts by the stated label.
+  await page.getByRole('button', { name: 'Status details' }).click()
   await expect(page.getByRole('button', { name: '3 Blocked by a dependency' })).toBeVisible()
   await expect(page.getByRole('button', { name: '1 Job failed' })).toBeVisible()
 })
@@ -576,7 +590,7 @@ test('a dependency diamond counts each open dependent once', async ({ page }) =>
   await zoomToCards(page)
   await expect(node(page, 'd1')).toContainText('→3')
   await expect(node(page, 'd2')).toContainText('→1')
-  await expect(node(page, 'd4')).toContainText('→0')
+  await expect(node(page, 'd4')).not.toContainText('→')
   await expect(node(page, 'd4').locator('[data-dependency-mark]')).toHaveAttribute(
     'aria-label',
     'Waiting for Diamond left, Diamond right',
@@ -599,6 +613,7 @@ test('a stated-label chip highlights its tasks and dims the rest, in both arrang
   for (const { address, chip, match, other } of cases) {
     await page.goto(address)
     await expect(node(page, match[0])).toBeVisible()
+    await page.getByRole('button', { name: 'Status details' }).click()
     const button = page.getByRole('button', { name: chip, exact: true })
     await button.click()
     await expect(button).toHaveAttribute('aria-pressed', 'true')
@@ -609,6 +624,54 @@ test('a stated-label chip highlights its tasks and dims the rest, in both arrang
     await expect(button).toHaveAttribute('aria-pressed', 'false')
     for (const id of [...match, ...other]) await expect(dimmed(id)).not.toHaveClass(dim)
   }
+})
+
+test('the legend sums the stated labels into five states on one row, and a state highlights its tasks', async ({
+  page,
+}) => {
+  await mockMap(page)
+  await page.goto('/?view=map&scope=req-alpha')
+  await expect(node(page, 'a2')).toBeVisible()
+  const legend = page.locator('header').filter({ has: page.getByRole('button', { name: 'Status details' }) })
+  // A single row until the detail opens.
+  const details = page.getByRole('button', { name: 'Status details' })
+  await expect(details).toHaveAttribute('aria-expanded', 'false')
+  const blocked = legend.getByRole('button', { name: /^\d+ Blocked$/ })
+  const working = legend.getByRole('button', { name: /^\d+ Working$/ })
+  await expect(blocked).toHaveAttribute('aria-pressed', 'false')
+  const dim = /\bopacity-(15|20)\b/
+  await working.click()
+  await expect(working).toHaveAttribute('aria-pressed', 'true')
+  await expect(node(page, 'a2').locator(':scope > div')).not.toHaveClass(dim)
+  await expect(node(page, 'a1').locator(':scope > div')).toHaveClass(dim)
+  await working.click()
+  await expect(node(page, 'a1').locator(':scope > div')).not.toHaveClass(dim)
+})
+
+test('both arrangements keep the zoom control in one place, and the minimap draws their nodes except on a phone', async ({
+  page,
+}) => {
+  await mockMap(page)
+  await page.setViewportSize({ width: 1280, height: 800 })
+  const place = async () => {
+    const pane = await page.locator('.react-flow').boundingBox()
+    const box = await page.locator('.react-flow__controls').boundingBox()
+    if (!pane || !box) throw new Error('the zoom control is not laid out')
+    return { left: Math.round(box.x - pane.x), bottom: Math.round(pane.y + pane.height - (box.y + box.height)) }
+  }
+  await page.goto('/?view=map')
+  await expect(taskNodes(page).first()).toBeVisible()
+  await expect(page.locator('.react-flow__minimap-node').first()).toBeAttached()
+  const requirements = await place()
+  await page.goto('/?view=map&arrangement=dependencies')
+  await expect(taskNodes(page).first()).toBeVisible()
+  await expect(page.locator('.react-flow__minimap-node').first()).toBeAttached()
+  expect(await place()).toEqual(requirements)
+  await expect(page.getByRole('button', { name: 'Whole map' })).toBeVisible()
+  await expect(page.locator('.react-flow__minimap')).toHaveCSS('width', '120px')
+
+  await page.setViewportSize({ width: 390, height: 844 })
+  await expect(page.locator('.react-flow__minimap')).toHaveCount(0)
 })
 
 test('selecting a task traces both directions, dims the rest, draws its cross-cluster edges, and opens the panel', async ({

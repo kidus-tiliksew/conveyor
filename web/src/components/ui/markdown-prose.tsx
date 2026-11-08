@@ -67,3 +67,12 @@ export function MarkdownProse({
     </div>
   )
 }
+
+// A document page already shows its title in the header, so a body that opens
+// by repeating it starts at its first real content instead.
+export function withoutLeadingTitle(content: string, title?: string) {
+  if (!title) return content
+  const match = /^\s*#{1,2}\s+(.+?)\s*#*\s*(?:\n|$)/.exec(content)
+  if (!match || match[1].trim().toLowerCase() !== title.trim().toLowerCase()) return content
+  return content.slice(match[0].length).trimStart()
+}

@@ -74,6 +74,10 @@ export interface LayoutNode {
 }
 
 export async function layoutGraph(nodes: LayoutNode[], edges: LayoutEdge[], direction: 'RIGHT' | 'DOWN' = 'RIGHT') {
+  // Tasks joined by a dependency come first: they are what this view is for,
+  // and unrelated tasks should not push them to the far end of the canvas.
+  const linked = new Set(edges.flatMap((edge) => [edge.source, edge.target]))
+  const ordered = [...nodes.filter((node) => linked.has(node.id)), ...nodes.filter((node) => !linked.has(node.id))]
   const result = await runLayout({
     id: 'root',
     layoutOptions: {
@@ -89,7 +93,7 @@ export async function layoutGraph(nodes: LayoutNode[], edges: LayoutEdge[], dire
       'elk.spacing.componentComponent': '72',
       'elk.aspectRatio': '1.6',
     },
-    children: nodes,
+    children: ordered,
     edges: edges.map((edge) => ({ id: edge.id, sources: [edge.source], targets: [edge.target] })),
   })
   const positions = new Map<string, { x: number; y: number }>()
@@ -140,40 +144,65 @@ export function layoutClusters(key: string, clusters: ClusterInput[]) {
   return entry.layout
 }
 
+// A group with no links between its tasks has nothing for a layered layout to
+// show, and one long row shrinks the whole map to fit it. Its cards wrap into a
+// grid close to the canvas's own shape instead.
+function gridFrame(cluster: ClusterInput) {
+  const count = cluster.taskIds.length
+  const columns = Math.max(1, Math.ceil(Math.sqrt(count * 1.4)))
+  const rows = Math.ceil(count / columns)
+  return {
+    id: `frame:${cluster.id}`,
+    width: 64 + columns * CARD_WIDTH + (columns - 1) * 18,
+    height: CLUSTER_HEADER + 32 + rows * CARD_HEIGHT + (rows - 1) * 18,
+    children: cluster.taskIds.map((id, index) => ({
+      id,
+      x: 32 + (index % columns) * (CARD_WIDTH + 18),
+      y: CLUSTER_HEADER + Math.floor(index / columns) * (CARD_HEIGHT + 18),
+    })),
+  }
+}
+
 async function placeClusters(clusters: ClusterInput[]) {
+  const isGrid = (cluster: ClusterInput) => !cluster.hubId && cluster.edges.length === 0 && cluster.taskIds.length > 4
+  const grids = new Map(clusters.filter(isGrid).map((cluster) => [cluster.id, gridFrame(cluster)]))
   const result = await runLayout({
     id: 'root',
     // ELK only sizes the frames; placeFrames places them.
     layoutOptions: { 'elk.algorithm': 'fixed' },
-    children: clusters.map((cluster) => ({
-      id: `frame:${cluster.id}`,
-      layoutOptions: {
-        'elk.algorithm': 'layered',
-        'elk.direction': 'DOWN',
-        // A requirement's group keeps room below its node for the insight
-        // toolbar, so the frame border passes below the pill.
-        'elk.padding': `[top=${CLUSTER_HEADER},left=32,bottom=${cluster.hubId ? HUB_FOOT : 32},right=32]`,
-        'elk.layered.spacing.nodeNodeBetweenLayers': '56',
-        'elk.spacing.nodeNode': '18',
-        'elk.layered.nodePlacement.strategy': 'NETWORK_SIMPLEX',
-        'elk.separateConnectedComponents': 'false',
-        'elk.nodeSize.constraints': 'MINIMUM_SIZE',
-        'elk.nodeSize.minimum': `(${FRAME_MIN_WIDTH}, 0)`,
-        'elk.contentAlignment': 'H_CENTER V_TOP',
-      },
-      children: [
-        ...cluster.taskIds.map((id) => ({ id, width: CARD_WIDTH, height: CARD_HEIGHT })),
-        ...(cluster.hubId ? [{ id: cluster.hubId, width: HUB_WIDTH, height: HUB_HEIGHT }] : []),
-      ],
-      edges: cluster.edges.map((edge) => ({ id: edge.id, sources: [edge.source], targets: [edge.target] })),
-    })),
+    children: clusters
+      .filter((cluster) => !isGrid(cluster))
+      .map((cluster) => ({
+        id: `frame:${cluster.id}`,
+        layoutOptions: {
+          'elk.algorithm': 'layered',
+          'elk.direction': 'DOWN',
+          // A requirement's group keeps room below its node for the insight
+          // toolbar, so the frame border passes below the pill.
+          'elk.padding': `[top=${CLUSTER_HEADER},left=32,bottom=${cluster.hubId ? HUB_FOOT : 32},right=32]`,
+          'elk.layered.spacing.nodeNodeBetweenLayers': '56',
+          'elk.spacing.nodeNode': '18',
+          'elk.layered.nodePlacement.strategy': 'NETWORK_SIMPLEX',
+          // Without a requirement's node, unrelated tasks wrap into rows instead
+          // of one long line that shrinks the whole map to fit it.
+          'elk.separateConnectedComponents': cluster.hubId ? 'false' : 'true',
+          ...(cluster.hubId ? {} : { 'elk.aspectRatio': '1.6', 'elk.spacing.componentComponent': '18' }),
+          'elk.nodeSize.constraints': 'MINIMUM_SIZE',
+          'elk.nodeSize.minimum': `(${FRAME_MIN_WIDTH}, 0)`,
+          'elk.contentAlignment': 'H_CENTER V_TOP',
+        },
+        children: [
+          ...cluster.taskIds.map((id) => ({ id, width: CARD_WIDTH, height: CARD_HEIGHT })),
+          ...(cluster.hubId ? [{ id: cluster.hubId, width: HUB_WIDTH, height: HUB_HEIGHT }] : []),
+        ],
+        edges: cluster.edges.map((edge) => ({ id: edge.id, sources: [edge.source], targets: [edge.target] })),
+      })),
   })
-  const sized = (result.children ?? []).map((frame) => ({
-    id: frame.id.slice('frame:'.length),
-    width: frame.width ?? 0,
-    height: frame.height ?? 0,
-    children: frame.children ?? [],
-  }))
+  const elkFrames = new Map((result.children ?? []).map((frame) => [frame.id, frame]))
+  const sized = clusters.map((cluster) => {
+    const frame = grids.get(cluster.id) ?? elkFrames.get(`frame:${cluster.id}`)
+    return { id: cluster.id, width: frame?.width ?? 0, height: frame?.height ?? 0, children: frame?.children ?? [] }
+  })
   const placed = placeFrames(sized)
   const positions = new Map<string, { x: number; y: number }>()
   const frames = new Map<string, Rect>()

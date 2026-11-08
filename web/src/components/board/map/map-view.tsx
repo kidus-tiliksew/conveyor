@@ -20,8 +20,9 @@ import {
   useStore,
 } from '@xyflow/react'
 import { Maximize2, RotateCw } from 'lucide-react'
-import { memo, useEffect, useMemo, useRef, useState } from 'react'
+import { type CSSProperties, memo, useEffect, useMemo, useRef, useState } from 'react'
 import type { RequirementInsightTab } from '../../../lib/types'
+import { useMediaQuery } from '../../../lib/use-media-query'
 import { cn } from '../../../lib/utils'
 import { Button } from '../../ui/button'
 import { byUrgency } from './doc-map'
@@ -36,6 +37,13 @@ import { DOT_ZOOM, type TaskFlowNode, TaskNode, TITLE_ZOOM } from './task-node'
 const READABLE_ZOOM = 0.38
 // The usual least zoom; a whole map that needs less lowers it (AC-1.9).
 const MIN_ZOOM = 0.02
+// A map opens whole only if that leaves its cards readable. A larger one opens
+// closer, on its first band, and the rest is a pan or the Whole map control
+// away.
+export const WHOLE_OPENING_ZOOM = 0.7
+export const OPENING_ZOOM = 0.85
+// The camera's margin from the pane's edges when it opens on part of a map.
+const OPENING_MARGIN = 16
 
 const GATES = new Set<GraphStatus>(['plan_gate', 'merge_gate', 'needs_you'])
 // The height below a requirement's node that its insight toolbar takes.
@@ -43,8 +51,15 @@ const TOOLBAR_SPACE = 56
 // The least zoom a requirement is framed at beside its insight panel: its
 // node and toolbar read at full size, above the toolbar's near threshold.
 const INSIGHT_ZOOM = Math.max(0.85, TITLE_ZOOM)
-// The pane's foot that the minimap covers, with its margin.
-const MINIMAP_SPACE = 176
+// The minimap's size, and the pane's foot that it covers with its margin.
+const MINIMAP_WIDTH = 120
+const MINIMAP_HEIGHT = 80
+const MINIMAP_SPACE = MINIMAP_HEIGHT + 32
+// A requirement's title keeps at least this size on screen, however far the
+// map zooms out.
+const FRAME_TITLE_SIZE = 24
+const FRAME_TITLE_LEAST_SIZE = 14
+const FRAME_SIDE_PADDING = 32
 
 // The tasks an insight panel row names, and the requirement whose group the
 // rest of is dimmed (req-requirement-insights AC-1.3).
@@ -69,23 +84,36 @@ type FrameFlowNode = Node<FrameData, 'frame'>
 // blocked task or else a task needing judgment, and its open count (AC-1.3).
 const FrameNode = memo(function FrameNode({ data, width = 0, height = 0 }: NodeProps<FrameFlowNode>) {
   const dot = data.blocked ? 'bg-failure' : data.gates ? 'bg-attention-dot' : undefined
+  // Below the zoom where the title reads, it scales up against the camera and
+  // grows upward from the header, so it stays one size on screen.
+  const scale = useStore((state) =>
+    Math.max(1, Math.round((FRAME_TITLE_LEAST_SIZE / (FRAME_TITLE_SIZE * state.transform[2])) * 100) / 100),
+  )
   return (
     <div
       className={cn(
         'relative rounded-[28px] border-2 bg-card/35',
-        data.selected ? 'border-primary' : 'border-border',
+        data.selected ? 'border-edge' : 'border-border',
         data.dim && 'opacity-35',
       )}
       style={{ width, height }}
     >
-      <div
-        className="flex items-center gap-3 px-8"
-        style={{ height: CLUSTER_HEADER }}
-        title={`${data.open} open · ${data.merged}/${data.total} delivered`}
-      >
-        <span className="truncate text-[24px] font-semibold text-foreground">{data.title}</span>
-        {dot && <span className={cn('size-2.5 shrink-0 rounded-full', dot)} />}
-        <span className="ml-auto shrink-0 font-mono text-[15px] text-faint">{data.open} open</span>
+      <div className="relative" style={{ height: CLUSTER_HEADER }}>
+        <div
+          className="absolute bottom-[18px] flex origin-bottom-left items-center gap-3"
+          style={{
+            left: FRAME_SIDE_PADDING,
+            width: (width - FRAME_SIDE_PADDING * 2) / scale,
+            transform: scale > 1 ? `scale(${scale})` : undefined,
+          }}
+          title={`${data.title} · ${data.open} open · ${data.merged}/${data.total} delivered`}
+        >
+          <span className="truncate font-semibold text-foreground" style={{ fontSize: FRAME_TITLE_SIZE }}>
+            {data.title}
+          </span>
+          {dot && <span className={cn('size-2.5 shrink-0 rounded-full', dot)} />}
+          <span className="ml-auto shrink-0 text-base tabular-nums text-faint">{data.open} open</span>
+        </div>
       </div>
     </div>
   )
@@ -135,6 +163,55 @@ export function MapFailure({
         Retry
       </Button>
     </div>
+  )
+}
+
+// The canvas chrome both arrangements share: the token colours, one zoom
+// control in one place, and a small minimap toned to the surface. The
+// attribution stays, faint, on a patch of the canvas colour in its own corner,
+// so nodes passing under it never run into its letters.
+export const mapCanvasStyle = {
+  '--xy-background-color': 'var(--color-surface)',
+  '--xy-minimap-background-color': 'var(--color-card)',
+  '--xy-controls-button-background-color': 'var(--color-card)',
+  '--xy-controls-button-border-color': 'var(--color-border)',
+  '--xy-controls-button-color': 'var(--color-muted)',
+  '--xy-attribution-background-color': 'var(--color-surface)',
+} as CSSProperties
+export const mapCanvasClass =
+  '[&_.react-flow__attribution]:rounded-tl-md [&_.react-flow__attribution]:px-1.5 [&_.react-flow__attribution_a]:!text-faint'
+
+// The width at which a phone's canvas has room for a minimap: below it, the
+// minimap would cover the map it summarises.
+const minimapQuery = '(min-width: 48rem)'
+export function useMinimapShown() {
+  return useMediaQuery(minimapQuery)
+}
+
+export function MapControls({ onWhole }: { onWhole: () => void }) {
+  return (
+    <Controls showInteractive={false} showFitView={false} position="bottom-left">
+      <ControlButton onClick={onWhole} title="Whole map" aria-label="Whole map">
+        <Maximize2 />
+      </ControlButton>
+    </Controls>
+  )
+}
+
+export function MapMiniMap({ nodeColor }: { nodeColor: (node: Node) => string }) {
+  return (
+    <MiniMap
+      pannable
+      zoomable
+      position="bottom-right"
+      className="overflow-hidden rounded-lg border border-border"
+      style={{ width: MINIMAP_WIDTH, height: MINIMAP_HEIGHT }}
+      nodeBorderRadius={12}
+      nodeColor={nodeColor}
+      maskColor="color-mix(in srgb, var(--color-background) 55%, transparent)"
+      maskStrokeColor="var(--color-edge)"
+      maskStrokeWidth={2}
+    />
   )
 }
 
@@ -496,9 +573,29 @@ export function MapView({
     )
   }
 
-  // The first layout opens on the whole map unless the address names a task
-  // or a requirement; selecting a requirement flies to it; focusing a task
-  // centres it.
+  // A map that fits at a readable zoom opens whole. A larger one opens on its
+  // first band of groups, the most urgent, at the readable zoom. A group taller
+  // than the pane starts at its top. Whole map still shows everything (AC-1.9).
+  function opening() {
+    const frames = [...(layout?.frames.values() ?? [])]
+    if (!bounds || frames.length === 0) return
+    const { width, height } = paneSize()
+    if (fitZoom(bounds, width, height) >= WHOLE_OPENING_ZOOM) return overview()
+    const top = Math.min(...frames.map((frame) => frame.y))
+    const band = enclosing(frames.filter((frame) => frame.y === top))
+    if (!band) return
+    const zoom = Math.max(OPENING_ZOOM, fitZoom(band, width, height))
+    const fits = band.width * zoom <= width
+    void flow.setViewport({
+      x: fits ? (width - band.width * zoom) / 2 - band.x * zoom : OPENING_MARGIN - band.x * zoom,
+      y: OPENING_MARGIN - band.y * zoom,
+      zoom,
+    })
+  }
+
+  // The first layout opens as above unless the address names a task or a
+  // requirement; selecting a requirement flies to it; focusing a task centres
+  // it.
   const framed = useRef(false)
   // biome-ignore lint/correctness/useExhaustiveDependencies: frame once per new layout
   useEffect(() => {
@@ -509,7 +606,7 @@ export function MapView({
       if (focus) centre(focus)
       else if (selected && insight) frameHub(selected)
       else if (selected) flyTo(selected)
-      else if (first) overview()
+      else if (first) opening()
     })
   }, [laidOutKey])
   // biome-ignore lint/correctness/useExhaustiveDependencies: fly on a new selection only
@@ -528,7 +625,9 @@ export function MapView({
   }, [focus])
 
   // The minimap mounts one frame after the first laid-out map renders, so its
-  // nodes stay out of the commit that first shows the map (AC-3.2).
+  // nodes stay out of the commit that first shows the map (AC-3.2). A phone
+  // has no room for it.
+  const minimapShown = useMinimapShown()
   const [miniMap, setMiniMap] = useState(false)
   useEffect(() => {
     if (!laidOutKey || miniMap) return
@@ -601,28 +700,13 @@ export function MapView({
       zoomOnDoubleClick={false}
       onNodeDoubleClick={(_, node) => node.type === 'task' && onOpen(node.id)}
       onPaneClick={onClear}
-      style={
-        {
-          '--xy-background-color': 'var(--color-surface)',
-          '--xy-minimap-background-color': 'var(--color-card)',
-          '--xy-controls-button-background-color': 'var(--color-card)',
-          '--xy-controls-button-border-color': 'var(--color-border)',
-          '--xy-controls-button-color': 'var(--color-muted)',
-        } as React.CSSProperties
-      }
+      className={mapCanvasClass}
+      style={mapCanvasStyle}
     >
       <Background variant={BackgroundVariant.Dots} gap={22} size={1} color={palette.edge} />
-      <Controls showInteractive={false} showFitView={false} position="top-right">
-        <ControlButton onClick={() => overview(400)} title="Whole map" aria-label="Whole map">
-          <Maximize2 />
-        </ControlButton>
-      </Controls>
-      {miniMap && (
-        <MiniMap
-          pannable
-          zoomable
-          position="bottom-right"
-          nodeBorderRadius={12}
+      <MapControls onWhole={() => overview(400)} />
+      {miniMap && minimapShown && (
+        <MapMiniMap
           nodeColor={(node) => {
             if (node.type !== 'task') return palette.raised
             switch ((node as TaskFlowNode).data.task.status) {
@@ -640,7 +724,6 @@ export function MapView({
                 return palette.edge
             }
           }}
-          maskColor="rgba(0, 0, 0, 0.35)"
         />
       )}
     </ReactFlow>

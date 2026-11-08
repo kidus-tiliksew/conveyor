@@ -13,7 +13,7 @@ import {
 } from 'lucide-react'
 import { useSyncExternalStore } from 'react'
 import type { InboxItem } from '../../lib/types'
-import { cn } from '../../lib/utils'
+import { cn, fullTime } from '../../lib/utils'
 
 // The inbox's kind presentation (feature-operator-next-action NA-6). Each
 // next-action kind, and a document proposal, maps to one icon and one tone.
@@ -170,7 +170,7 @@ export function DueChip({ deadline, className }: { deadline: string | null | und
     <time
       data-due={tone}
       dateTime={deadline}
-      title={new Date(deadline).toLocaleString()}
+      title={fullTime(deadline)}
       className={cn(
         'inline-flex shrink-0 items-center rounded px-1.5 font-medium tabular-nums',
         tone === 'overdue'

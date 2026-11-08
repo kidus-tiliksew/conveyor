@@ -1,14 +1,23 @@
 import { useQuery } from '@tanstack/react-query'
 import { ExternalLink, GitMerge, TriangleAlert, UserRound } from 'lucide-react'
-import { failedTriage, latestPlanRevisionRequest, mergeGateReview } from '../../lib/activity'
+import {
+  deriveCurrentExecutionState,
+  failedTriage,
+  latestPlanRevisionRequest,
+  mergeGateReview,
+} from '../../lib/activity'
 import { fetchCallerIdentity } from '../../lib/api'
+import type { TaskRouteVariant } from '../../lib/task-route'
 import type { ActivityItem, Task } from '../../lib/types'
 import { cn } from '../../lib/utils'
 import { useWorkspaceCapability, useWorkspaceSelection } from '../app-shell'
 import { useNextAction } from '../inbox/use-next-actions'
 import { Disclosure } from '../ui/disclosure'
 import { AttachmentsCard } from './attachments-card'
+import { ExecutionFactRows, ExecutionStatusLine, ExecutionTitle } from './execution-summary-details'
 import { GateChoices } from './merge-at-gate'
+import { CheckStatusList } from './next-action-checks'
+import { NextActionNotes } from './next-action-parts'
 import { PlanRevisionDecisionCard } from './plan-revision-decision-card'
 import { VerificationVerdictLine } from './verification-entry'
 import { VerificationReviewResult } from './verification-stage'
@@ -65,6 +74,27 @@ export function useCanRequestTaskChanges(task: Task): boolean {
   )
 }
 
+// Whether this caller sees the gate surface in the timeline. A task can hold at
+// a gate this caller may not act on; then no gate mounts, and the next-action
+// card keeps the whole statement.
+export function useGateSurfaceMounted(item: ActivityItem): boolean {
+  const canOperate = useWorkspaceCapability('operate_gates')
+  const canRecover = useWorkspaceCapability('recover_work')
+  const canRequestChanges = useCanRequestTaskChanges(item.task)
+  if (!isReviewable(item)) return false
+  if (item.next_action?.kind === 'plan_revision' && latestPlanRevisionRequest(item.summaries)) return canOperate
+  return (
+    canOperate ||
+    (item.at_merge_gate && canRequestChanges) ||
+    (canRecover && item.next_action?.kind === 'merge_conflict')
+  )
+}
+
+// The timeline row holding the gate, which the next-action card's link scrolls to.
+export function gateAnchorId(taskId: string) {
+  return `task-gate-${taskId}`
+}
+
 // The gate's tone, exposed so the timeline can tint the rail dot to match.
 export function gateTone(kind: string | undefined): GateTone {
   if (kind === 'merge_conflict' || kind === 'check_hold' || kind === 'review_bounce_limit' || kind === 'job_failure')
@@ -90,7 +120,7 @@ export const changesComposerHint = 'This feedback goes to the next implementatio
 // range is labelled as the range it is. Naming it anything that implies a
 // summary of the change would tell a person the card weighed something it never
 // saw, and the pull request beside it is where the diff actually lives (REQ-6).
-function MergeGateReviewCard({ item }: { item: ActivityItem }) {
+export function MergeGateReviewCard({ item }: { item: ActivityItem }) {
   const review = mergeGateReview(item)
   const { branch, base_branch: baseBranch } = item.task
   if (!review.headSHA && !review.pullRequest && !review.verdict && !branch) return null
@@ -106,64 +136,66 @@ function MergeGateReviewCard({ item }: { item: ActivityItem }) {
       aria-label="What you are approving"
       className="mb-3 rounded-md border border-border bg-surface/40 px-3 py-2.5"
     >
-      <h4 className="text-[13px] font-semibold text-foreground">What you are approving</h4>
-      <dl className="mt-2 grid gap-x-6 gap-y-1.5 text-xs sm:grid-cols-[auto_1fr]">
+      <h4 className="text-sm font-semibold text-foreground">What you are approving</h4>
+      <dl className="mt-2 grid gap-y-2.5 text-xs sm:grid-cols-[auto_1fr] sm:gap-x-6 sm:gap-y-1.5">
         {branch && (
-          <>
+          <div className={factPair}>
             <dt className="text-muted">Change</dt>
             <dd className="min-w-0 truncate">
               <span className="font-mono text-foreground/90">{branch}</span>
               {baseBranch && <span className="text-muted"> into {baseBranch}</span>}
             </dd>
-          </>
+          </div>
         )}
         {review.headSHA && (
-          <>
+          <div className={factPair}>
             <dt className="text-muted">Reviewed at</dt>
             <dd className="min-w-0">
               <Disclosure
-                triggerClassName="font-mono text-foreground/90"
+                triggerClassName="font-mono text-foreground/90 pointer-coarse:-my-2.5"
                 content={review.headSHA}
                 title={review.headSHA}
               >
                 {review.headSHA.slice(0, 8)}
               </Disclosure>
             </dd>
-          </>
+          </div>
         )}
         {review.headSHA && review.baseSHA && (
-          <>
+          <div className={factPair}>
             <dt className="text-muted">Commit range</dt>
             <dd className="min-w-0">
               <Disclosure
-                triggerClassName="font-mono text-foreground/90"
+                triggerClassName="font-mono text-foreground/90 pointer-coarse:-my-2.5"
                 content={`${review.baseSHA} … ${review.headSHA}`}
                 title={`${review.baseSHA} … ${review.headSHA}`}
               >
                 {review.baseSHA.slice(0, 8)} … {review.headSHA.slice(0, 8)}
               </Disclosure>
             </dd>
-          </>
+          </div>
         )}
         {review.pullRequest && (
-          <>
+          <div className={factPair}>
             <dt className="text-muted">Pull request</dt>
             <dd className="min-w-0 truncate">
               <a
                 href={review.pullRequest.url}
                 target="_blank"
                 rel="noreferrer"
-                className="inline-flex items-center gap-1 text-primary hover:underline"
+                className="inline-flex max-w-full items-center gap-1 text-primary hover:underline"
               >
-                {review.pullRequest.repository ?? 'Pull request'}
-                {review.pullRequest.number ? `#${review.pullRequest.number}` : ''}
-                <ExternalLink className="size-3" aria-hidden="true" />
+                <span className="min-w-0 truncate">
+                  {review.pullRequest.repository ?? 'Pull request'}
+                  {review.pullRequest.number ? `#${review.pullRequest.number}` : ''}
+                </span>
+                <ExternalLink className="size-3 shrink-0" aria-hidden="true" />
               </a>
             </dd>
-          </>
+          </div>
         )}
         {review.verdict && (
-          <>
+          <div className={factPair}>
             <dt className="text-muted">Review</dt>
             <dd className="min-w-0">
               <span className={review.verdict.verdict === 'approve' ? 'text-positive' : 'text-attention'}>
@@ -171,12 +203,16 @@ function MergeGateReviewCard({ item }: { item: ActivityItem }) {
               </span>
               {review.verdict.summary && <span className="block text-muted leading-5">{review.verdict.summary}</span>}
             </dd>
-          </>
+          </div>
         )}
       </dl>
     </section>
   )
 }
+
+// On a phone each label sits on its value and the pairs are evenly spaced; from
+// sm up the pair dissolves into the shared two-column grid.
+const factPair = 'grid min-w-0 gap-0.5 sm:contents'
 
 const toneStyles: Record<GateTone, { card: string; header: string; title: string; icon: string }> = {
   positive: { card: 'border-positive/30', header: 'bg-positive-soft', title: 'text-positive', icon: 'text-positive' },
@@ -192,20 +228,41 @@ const toneStyles: Record<GateTone, { card: string; header: string; title: string
 // A contested execution plan is a different question from "is this work good",
 // so it gets its own card laying out the agent's rationale (REQ-2 AC-2.1).
 // Whether the plan revision is the open decision is the server's next action.
-export function ReviewPanel({ item, onDecisionRecorded }: { item: ActivityItem; onDecisionRecorded?: () => void }) {
+export function ReviewPanel({
+  item,
+  routeVariant,
+  onDecisionRecorded,
+}: {
+  item: ActivityItem
+  routeVariant?: TaskRouteVariant
+  onDecisionRecorded?: () => void
+}) {
   const canOperate = useWorkspaceCapability('operate_gates')
+  const { data: action } = useNextAction(item.task.id)
   const revisionRequest = item.next_action?.kind === 'plan_revision' ? latestPlanRevisionRequest(item.summaries) : null
   if (revisionRequest)
     return canOperate ? (
-      <PlanRevisionDecisionCard item={item} request={revisionRequest} onDecisionRecorded={onDecisionRecorded} />
+      <div className="space-y-2">
+        <PlanRevisionDecisionCard item={item} request={revisionRequest} onDecisionRecorded={onDecisionRecorded} />
+        {action && action.kind !== 'terminal' && <NextActionNotes action={action} />}
+      </div>
     ) : null
 
-  return <GenericReviewPanel item={item} onDecisionRecorded={onDecisionRecorded} />
+  return <GenericReviewPanel item={item} routeVariant={routeVariant} onDecisionRecorded={onDecisionRecorded} />
 }
 
-function GenericReviewPanel({ item, onDecisionRecorded }: { item: ActivityItem; onDecisionRecorded?: () => void }) {
+function GenericReviewPanel({
+  item,
+  routeVariant = 'sheet',
+  onDecisionRecorded,
+}: {
+  item: ActivityItem
+  routeVariant?: TaskRouteVariant
+  onDecisionRecorded?: () => void
+}) {
   const { data: action } = useNextAction(item.task.id)
   if (!action || action.kind === 'terminal') return null
+  const execution = deriveCurrentExecutionState(item, action)
   const tone = gateTone(action.kind)
   const style = toneStyles[tone]
   const Icon = tone === 'alarm' ? TriangleAlert : tone === 'positive' ? GitMerge : UserRound
@@ -215,8 +272,9 @@ function GenericReviewPanel({ item, onDecisionRecorded }: { item: ActivityItem; 
       <div className={cn('flex flex-wrap items-center gap-3 rounded-t-lg px-4 py-3', style.header)}>
         <Icon className={cn('size-5 shrink-0', style.icon)} />
         <div className="min-w-48 flex-1">
-          {/* The label, not the summary: NextActionCard above already states the
-              summary once per surface (DEC-61; feature-operator-next-action NA-6). */}
+          {/* The label, not the summary: the one-line NextActionCard above states
+              the summary once per surface, and everything else about the
+              decision prints here (DEC-61; feature-operator-next-action NA-6). */}
           <h3 className={cn('text-sm font-semibold', style.title)}>{action.label}</h3>
           {action.question && <p className="mt-0.5 text-xs leading-5 text-muted">{action.question}</p>}
         </div>
@@ -226,7 +284,17 @@ function GenericReviewPanel({ item, onDecisionRecorded }: { item: ActivityItem; 
         {mergeGate && <VerificationVerdictLine item={item} />}
         {mergeGate && <VerificationReviewResult item={item} />}
         <AttachmentsCard attachments={item.verification_evidence ?? []} title="Verification evidence" />
-        <GateChoices taskId={item.task.id} action={action} onActed={() => onDecisionRecorded?.()} />
+        {execution && <ExecutionStatusLine state={execution} />}
+        {execution && execution.title !== action.label && <ExecutionTitle state={execution} />}
+        <CheckStatusList action={action} />
+        {execution && <ExecutionFactRows state={execution} routeVariant={routeVariant} />}
+        <GateChoices
+          taskId={item.task.id}
+          action={action}
+          routeVariant={routeVariant}
+          onActed={() => onDecisionRecorded?.()}
+        />
+        <NextActionNotes action={action} />
       </div>
     </section>
   )

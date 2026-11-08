@@ -12,7 +12,7 @@ export function BoardPreferencesCard() {
     <Card className="mt-4">
       <CardHeader>
         <CardTitle>Board</CardTitle>
-        <Columns3 className="size-4 text-primary" />
+        <Columns3 className="size-4 text-faint" />
       </CardHeader>
       <CardContent>
         <div className="flex items-start justify-between gap-4 text-sm">

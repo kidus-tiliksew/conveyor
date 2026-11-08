@@ -23,7 +23,7 @@ import {
   tabBody,
 } from './shared'
 
-const tag = 'rounded-[5px] px-1.5 text-[10.5px] leading-4'
+const tag = 'rounded-[5px] px-1.5 text-[11px] leading-4'
 const decisionTag: Record<RequirementInsightDecision['status'], string> = {
   confirmed: 'bg-positive-soft text-positive',
   proposed: 'bg-attention-soft text-attention',
@@ -90,7 +90,7 @@ export function DocumentsTab({
               {data.acceptance_criteria.map((criterion) => {
                 const cited = criterion.citing_task_ids.length > 0
                 return (
-                  <li key={criterion.id} className="min-w-9 flex-1">
+                  <li key={criterion.id} className="min-w-9">
                     <button
                       type="button"
                       data-criterion={criterion.id}
@@ -99,7 +99,7 @@ export function DocumentsTab({
                       title={`${criterion.id}: ${criterion.statement}\n${cited ? `Cited by ${tasks(criterion.citing_task_ids.length)}` : 'Not cited by a task'}`}
                       {...hoverProps(onHover, criterion.citing_task_ids)}
                       className={cn(
-                        'grid h-5 w-full place-items-center rounded-[3px] border font-mono text-[9.5px]',
+                        'grid h-5 w-full place-items-center rounded-[3px] border px-1 font-mono text-[11px]',
                         cited
                           ? 'border-positive/40 bg-positive-soft text-positive'
                           : 'border-dashed border-attention-dot text-attention',
@@ -150,7 +150,7 @@ function DesignRow({ design, onHover }: { design: RequirementInsightDesign; onHo
       <span className="min-w-0 flex-1">
         <span className="block text-xs font-medium leading-snug text-foreground">{design.title}</span>
         <span className="mt-0.5 flex flex-wrap items-center gap-x-2 gap-y-0.5 text-[11px] text-faint">
-          <code className="font-mono text-[10.5px] text-muted">{design.id}</code>
+          <code className="font-mono text-[11px] text-muted">{design.id}</code>
           <span className={cn(tag, 'bg-positive-soft text-positive')}>v{design.current_version}</span>
           {design.revision_pending && (
             <span className={cn(tag, 'bg-attention-soft text-attention')}>Revision pending</span>
@@ -187,7 +187,7 @@ function DecisionRow({ decision, onHover }: { decision: RequirementInsightDecisi
             {decision.statement}
           </span>
           <span className="mt-0.5 flex flex-wrap items-center gap-x-2 gap-y-0.5 text-[11px] text-faint">
-            <code className="font-mono text-[10.5px] text-muted">{decision.id}</code>
+            <code className="font-mono text-[11px] text-muted">{decision.id}</code>
             <span className={cn(tag, 'capitalize', decisionTag[decision.status])}>{decision.status}</span>
             {decision.names_requirement && <span>names this requirement</span>}
             {decision.cited_by_requirement && <span>cited by the requirement</span>}
@@ -202,15 +202,15 @@ function DecisionRow({ decision, onHover }: { decision: RequirementInsightDecisi
       {open && (
         <dl id={`${id}-details`} className="m-0 space-y-1.5 px-2 pb-2.5 pl-[46px] text-xs">
           <div>
-            <dt className="text-[10.5px] font-semibold uppercase tracking-wide text-faint">Statement</dt>
+            <dt className="text-xs font-medium text-muted">Statement</dt>
             <dd className="m-0 whitespace-pre-wrap text-markdown">{decision.statement}</dd>
           </div>
           <div>
-            <dt className="text-[10.5px] font-semibold uppercase tracking-wide text-faint">Context</dt>
+            <dt className="text-xs font-medium text-muted">Context</dt>
             <dd className="m-0 whitespace-pre-wrap text-markdown">{decision.context || 'None recorded.'}</dd>
           </div>
           <div>
-            <dt className="text-[10.5px] font-semibold uppercase tracking-wide text-faint">Status</dt>
+            <dt className="text-xs font-medium text-muted">Status</dt>
             <dd className="m-0 capitalize text-markdown">{decision.status}</dd>
           </div>
         </dl>

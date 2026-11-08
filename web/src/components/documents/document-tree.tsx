@@ -14,7 +14,7 @@ export type { DocumentSortDirection } from './document-sort'
 // reading preference, so it persists per browser rather than per workspace.
 const minTreeWidth = 220
 const maxTreeWidth = 480
-const defaultTreeWidth = 264
+const defaultTreeWidth = 288
 const treeWidthKey = 'conveyor-document-tree-width'
 
 function clampTreeWidth(width: number) {
@@ -168,7 +168,7 @@ export function DocumentTreeGroup({
   if (collapsible)
     return (
       <details className="group mb-5 px-3 last:mb-0" open={defaultOpen || undefined}>
-        <summary className="flex cursor-pointer list-none items-center gap-1 px-2 pb-1.5 text-[10px] font-semibold uppercase tracking-[0.12em] text-faint">
+        <summary className="flex cursor-pointer list-none items-center gap-1 px-2 pb-1.5 text-xs font-medium first-letter:uppercase text-muted">
           <ChevronRight className="size-3 transition-transform group-open:rotate-90" />
           {label}
         </summary>
@@ -177,7 +177,7 @@ export function DocumentTreeGroup({
     )
   return (
     <section className="mb-5 px-3 last:mb-0">
-      <h2 className="px-2 pb-1.5 text-[10px] font-semibold uppercase tracking-[0.12em] text-faint">{label}</h2>
+      <h2 className="px-2 pb-1.5 text-xs font-medium text-muted">{label}</h2>
       <div className="space-y-0.5">{children}</div>
     </section>
   )
@@ -237,16 +237,16 @@ export function DocumentTreeToolbar({
 
   return (
     <div className="mb-2 px-2">
-      <div className="flex h-8 items-stretch rounded-md border border-edge bg-background transition-colors focus-within:border-primary">
+      <div className="flex h-8 items-stretch rounded-md border border-border bg-card shadow-xs transition-colors hover:border-edge focus-within:border-primary">
         <label className="flex min-w-0 flex-1 items-center">
           <Search aria-hidden="true" className="ml-2.5 size-3 shrink-0 text-faint" />
           <input
             type="search"
             aria-label={searchLabel}
-            placeholder={searchLabel}
+            placeholder="Search"
             value={query}
             onChange={(event) => onQueryChange(event.target.value)}
-            className="h-full min-w-0 flex-1 bg-transparent px-2 text-[11px] text-foreground outline-none placeholder:text-faint"
+            className="h-full min-w-0 flex-1 bg-transparent px-2 text-xs text-foreground outline-none placeholder:text-faint"
           />
         </label>
         <div ref={root} className="relative flex shrink-0">
@@ -258,7 +258,7 @@ export function DocumentTreeToolbar({
             title={`Sorted by ${active?.label.toLocaleLowerCase() ?? sort}, ${direction}`}
             onClick={() => setOpen((value) => !value)}
             className={cn(
-              'flex items-center gap-1 rounded-r-[5px] border-l border-border px-2 text-[10px] font-medium transition-colors hover:bg-surface hover:text-foreground',
+              'flex items-center gap-1 rounded-r-[5px] border-l border-border px-2 text-[11px] font-medium transition-colors hover:bg-surface hover:text-foreground',
               open ? 'bg-surface text-foreground' : 'text-muted',
             )}
           >
@@ -271,9 +271,7 @@ export function DocumentTreeToolbar({
               aria-label={sortLabel}
               className="absolute right-0 top-full z-20 mt-1 w-44 rounded-md border border-border bg-card p-1 shadow-lg"
             >
-              <p className="px-2 pb-1 pt-1.5 text-[10px] font-semibold uppercase tracking-[0.12em] text-faint">
-                Sort by
-              </p>
+              <p className="px-2 pb-1 pt-1.5 text-xs font-medium text-muted">Sort by</p>
               {options.map((option) => {
                 const current = option.value === sort
                 return (
@@ -339,22 +337,18 @@ export function DocumentTreeItem({
       }}
       className={`relative flex w-full items-center gap-2.5 rounded-md py-2 pl-3 pr-2.5 text-left transition-colors pointer-coarse:py-2.5 before:absolute before:inset-y-1.5 before:left-0 before:w-0.5 before:rounded-full before:transition-colors ${
         selected
-          ? 'bg-primary-soft text-primary before:bg-primary'
+          ? 'bg-raised text-foreground before:bg-transparent'
           : 'text-foreground before:bg-transparent hover:bg-surface'
       }`}
     >
       <FileText
         aria-hidden="true"
-        className={`size-4 shrink-0 ${tooltip ? 'invisible' : ''} ${selected ? 'text-primary' : 'text-faint'}`}
+        className={`size-4 shrink-0 ${tooltip ? 'invisible' : ''} ${selected ? 'text-muted' : 'text-faint'}`}
       />
       <span className="min-w-0 flex-1">
         <span className="block truncate text-sm font-medium">{label}</span>
         {meta && (
-          <span
-            className={`mt-0.5 block truncate font-mono text-[10px] tracking-wide ${selected ? 'text-primary/70' : 'text-faint'}`}
-          >
-            {meta}
-          </span>
+          <span className={`mt-0.5 block truncate text-xs ${selected ? 'text-muted' : 'text-faint'}`}>{meta}</span>
         )}
       </span>
       {Boolean(attentionCount) && (

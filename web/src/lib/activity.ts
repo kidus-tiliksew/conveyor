@@ -450,7 +450,7 @@ const allFacts: CurrentExecutionFacts = { title: true, blocker: true, retry: tru
 
 export interface CurrentExecutionState {
   kind: CurrentExecutionKind
-  status: 'progressing' | 'paused'
+  status: 'progressing' | 'waiting' | 'paused'
   stage: CurrentExecutionStage
   order: WorkOrder
   attemptId?: string
@@ -589,7 +589,8 @@ export function deriveCurrentExecutionState(
     case 'blocked':
       return {
         kind: 'dependency_waiting',
-        status: 'progressing',
+        // Nothing is moving: the order cannot start until its dependencies merge.
+        status: 'waiting',
         stage,
         order,
         title: 'Waiting on dependencies',

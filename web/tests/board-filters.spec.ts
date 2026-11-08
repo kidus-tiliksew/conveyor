@@ -354,6 +354,14 @@ test('board pages beyond the 200th activity item and walks back without blanking
   await expect(page.getByText('301–323 of 323')).toBeVisible()
   await expect(cards(page)).toHaveCount(23)
   await expect(page.getByRole('button', { name: 'Next' })).toBeDisabled()
+  // The pager is one group: the range, then icon buttons that keep their names
+  // (component-web-task-surfaces).
+  const pager = page.getByRole('navigation', { name: 'Board pages' })
+  for (const name of ['Previous', 'Next']) {
+    const button = pager.getByRole('button', { name, exact: true })
+    await expect(button).toHaveAttribute('title', name)
+    await expect(button).toHaveText('')
+  }
   await page.getByRole('button', { name: 'Previous' }).click()
   await expect(page.getByText('201–300 of 323')).toBeVisible()
   await expect(cards(page)).toHaveCount(100)
@@ -361,20 +369,108 @@ test('board pages beyond the 200th activity item and walks back without blanking
   await expect.poll(() => seen.some((url) => new URL(url).searchParams.get('offset') === '300')).toBe(true)
 })
 
-// The Kanban toolbar's pager is one group: the range, then icon buttons that
-// keep the names Previous and Next (component-web-task-surfaces).
-test('the Kanban pager shows its range beside named icon buttons', async ({ page }) => {
+// The feed's total counts blueprint anchors, and it drops them from a page after
+// reading that page. So a short page does not end the list, and a page holding
+// only anchors comes back empty.
+test('the Kanban pager keeps going past a short page and stops at a page of anchors', async ({ page }) => {
+  await page.clock.setFixedTime(new Date('2026-08-20T12:00:00Z'))
+  const seen: string[] = []
+  await controlWorkspaceChanges(page)
+  await page.addInitScript(() => {
+    localStorage.setItem('conveyor-workspace', 'demo')
+  })
+  await routeBoard(page, seen)
+  const rows = Array.from({ length: 201 }, (_, index) => ({
+    anchor: index === 5 || index === 200,
+    item: {
+      task: {
+        id: `paged-${String(index).padStart(3, '0')}`,
+        workspace: 'demo',
+        source: 'operator',
+        title: `Paged task ${String(index).padStart(3, '0')}`,
+        repo: 'conveyor',
+        branch: `conveyor/paged-${index}`,
+        state: 'running',
+        created_at: new Date(Date.UTC(2026, 7, 15, 12, 0, 0) - index * 1_000).toISOString(),
+      },
+      latest_stage: 'implement',
+      last_event_at: '2026-08-15T12:00:00Z',
+      needs_attention: false,
+    },
+  }))
+  await page.route('**/v1/activity?**', (route) => {
+    const params = new URL(route.request().url()).searchParams
+    const limit = Number(params.get('limit') ?? 100)
+    const offset = Number(params.get('offset') ?? 0)
+    return route.fulfill({
+      headers: {
+        'X-Conveyor-Total': String(rows.length),
+        'X-Conveyor-Limit': String(limit),
+        'X-Conveyor-Offset': String(offset),
+      },
+      json: rows
+        .slice(offset, offset + limit)
+        .filter((row) => !row.anchor)
+        .map((row) => row.item),
+    })
+  })
+
+  await page.goto('/')
+  const next = page.getByRole('button', { name: 'Next' })
+  await expect(cards(page)).toHaveCount(99)
+  await expect(next).toBeEnabled()
+  await next.click()
+  await expect(page.getByText('101–200 of 201')).toBeVisible()
+  await expect(cards(page)).toHaveCount(100)
+  await expect(next).toBeEnabled()
+  // The last row is an anchor: its page is empty, so the pager steps back and
+  // the list ends on the page before it.
+  await next.click()
+  await expect(page.getByText('101–200 of 200')).toBeVisible()
+  await expect(cards(page)).toHaveCount(100)
+  await expect(next).toBeDisabled()
+})
+
+// A list that fits on one page has nothing to page through, including when
+// the total counts a blueprint anchor the feed never returns.
+test('a failed first load says so in place of lanes that would read as empty', async ({ page }) => {
+  const seen: string[] = []
+  await routeBoard(page, seen)
+  let failing = true
+  await page.route('**/v1/activity?**', async (route) => {
+    if (!failing) return route.fallback()
+    return route.fulfill({ status: 500, json: { error: 'boom' } })
+  })
+  await page.addInitScript(() => localStorage.setItem('conveyor-workspace', 'demo'))
+  await page.goto('/')
+  const failure = page.getByRole('alert').filter({ hasText: 'Could not load the board' })
+  await expect(failure).toBeVisible({ timeout: 15_000 })
+  await expect(failure).toContainText('Something went wrong (boom).')
+  await expect(page.getByText('{"error"', { exact: false })).toHaveCount(0)
+  await expect(page.getByText('No tasks', { exact: true })).toHaveCount(0)
+  await expect(page.locator('[data-lane]')).toHaveCount(0)
+  failing = false
+  await failure.getByRole('button', { name: 'Try again' }).click()
+  await expect(page.locator('[data-lane]').first()).toBeVisible()
+})
+
+test('an empty lane says no matching tasks only while a filter or search narrows the board', async ({ page }) => {
+  const seen: string[] = []
+  await openBoard(page, seen)
+  const triage = page.locator('[data-lane="triage"]')
+  const emptyLane = page.locator('[data-lane]').filter({ hasText: /No tasks$/ })
+  await expect(emptyLane.first()).toBeVisible()
+  await expect(page.getByText('No matching tasks')).toHaveCount(0)
+  await page.getByRole('searchbox', { name: 'Search tasks' }).fill('no task is called this')
+  await expect(triage.getByText('No matching tasks')).toBeVisible()
+})
+
+test('the Kanban pager is hidden while everything fits on one page', async ({ page }) => {
   await page.clock.setFixedTime(new Date('2026-08-20T12:00:00Z'))
   const seen: string[] = []
   await openBoard(page, seen)
-  const pager = page.getByRole('navigation', { name: 'Board pages' })
-  await expect(pager).toHaveText(/^1–3 of 3$/)
-  for (const name of ['Previous', 'Next']) {
-    const button = pager.getByRole('button', { name, exact: true })
-    await expect(button).toHaveAttribute('title', name)
-    await expect(button).toHaveText('')
-    await expect(button).toBeDisabled()
-  }
+  await expect(cards(page)).toHaveCount(3)
+  await expect(page.getByRole('navigation', { name: 'Board pages' })).toHaveCount(0)
   await expect(page.getByText(/Showing/)).toHaveCount(0)
 })
 
@@ -983,3 +1079,24 @@ test('each next-action kind lands in its stage column', async ({ page }) => {
     ).toHaveCount(1)
   }
 })
+
+for (const width of [320, 390, 768, 1024, 1280]) {
+  test(`the Filters panel stays inside the page body at ${width}px and closes on Escape`, async ({ page }) => {
+    await page.setViewportSize({ width, height: 800 })
+    const seen: string[] = []
+    await routeBoard(page, seen)
+    await page.addInitScript(() => localStorage.setItem('conveyor-workspace', 'demo'))
+    await page.goto('/')
+    const trigger = page.getByRole('button', { name: 'Filters' })
+    await trigger.click()
+    const panel = page.locator('[data-filter-panel]')
+    const box = await panel.boundingBox()
+    const body = await page.locator('main').first().boundingBox()
+    expect(box).not.toBeNull()
+    expect(box!.x).toBeGreaterThanOrEqual(body!.x + 15)
+    expect(box!.x + box!.width).toBeLessThanOrEqual(body!.x + body!.width - 15)
+    await page.keyboard.press('Escape')
+    await expect(panel).toBeHidden()
+    await expect(trigger).toBeFocused()
+  })
+}

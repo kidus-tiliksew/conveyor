@@ -4,6 +4,7 @@ import { useId, useState } from 'react'
 import { createWorkspaceGitHubWebhookSecret } from '../../lib/api'
 import { errorMessage } from '../../lib/errors'
 import type { WorkspaceGitHubWebhookStatus } from '../../lib/types'
+import { fullTime } from '../../lib/utils'
 import { Button } from '../ui/button'
 import { CopyButton } from '../ui/copy-button'
 import { Dialog } from '../ui/dialog'
@@ -20,7 +21,7 @@ const eventLabels: Record<string, string> = {
 }
 
 function LocalTime({ value }: { value: string }) {
-  return <time dateTime={value}>{new Date(value).toLocaleString()}</time>
+  return <time dateTime={value}>{fullTime(value)}</time>
 }
 
 /**

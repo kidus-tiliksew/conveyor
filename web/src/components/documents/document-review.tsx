@@ -1,5 +1,9 @@
-import { type ReactNode, useId } from 'react'
+import { type ReactNode, useEffect, useId, useRef } from 'react'
+import { actorName, fullTime } from '../../lib/utils'
+import { useWorkspaceMembers } from '../app-shell'
 import { Button } from '../ui/button'
+import { Select } from '../ui/input'
+import { Tabs, tabPanelProps } from '../ui/tabs'
 import type { ReviewSource } from './document-review-model'
 import { DocumentComparison } from './version-diff'
 
@@ -74,6 +78,21 @@ export function selectedReviewVersion<T extends ReviewVersion>(
     : versions.find((v) => v.version === search.target)
 }
 
+// Changes opens on something worth reading: the newest proposal against the
+// confirmed version, or the confirmed version against the one before it.
+export function changesTargetVersion<T extends ReviewVersion>(
+  versions: T[],
+  current: T | undefined,
+  search: ReviewSearch,
+) {
+  const pending = versions
+    .filter((v) => !v.confirmed && !v.retired && !v.dismissed && v.version !== current?.version)
+    .sort((a, b) => b.version - a.version)[0]
+  return search.target === undefined
+    ? (pending ?? selectedReviewVersion(versions, current, search))
+    : selectedReviewVersion(versions, current, search)
+}
+
 // req-document-operating-surfaces REQ-1/REQ-2 and component-web-document-surfaces:
 // the caller supplies exactly one attention surface, never duplicated by tabs.
 export function DocumentReview({
@@ -82,6 +101,7 @@ export function DocumentReview({
   versions,
   current,
   attention,
+  canActOnPending = false,
   document,
   history,
   loading,
@@ -92,55 +112,73 @@ export function DocumentReview({
   versions: ReviewVersion[]
   current?: ReviewVersion
   attention: ReactNode
+  canActOnPending?: boolean
   document: ReactNode
   history: ReactNode
   loading?: boolean
   error?: string
 }) {
   const id = useId()
+  const { data: members = [] } = useWorkspaceMembers()
   const tab = search.tab ?? 'document'
-  const target = selectedReviewVersion(versions, current, search)
-  const baseNumber = search.base ?? current?.version ?? 0
+  const target =
+    tab === 'changes'
+      ? changesTargetVersion(versions, current, search)
+      : selectedReviewVersion(versions, current, search)
+  const previous = versions.filter((v) => target && v.version < target.version).sort((a, b) => b.version - a.version)[0]
+  const baseNumber =
+    search.base ??
+    (target && current && target.version !== current.version
+      ? current.version
+      : (previous?.version ?? current?.version ?? 0))
   const base = versions.find((v) => v.version === baseNumber)
   const invalid = (search.target !== undefined && !target) || (tab === 'changes' && baseNumber !== 0 && !base)
   const tabs = ['document', 'changes', 'history'] as const
   const select = (next: ReviewSearch) => onChange({ ...search, ...next })
+  // The band stays in reach only while reading a version it can act on.
+  const pinned =
+    tab === 'changes' &&
+    canActOnPending &&
+    Boolean(target) &&
+    !invalid &&
+    !target?.confirmed &&
+    !target?.retired &&
+    !target?.dismissed
+  // The comparison's section list sits below the pinned band, whatever its height.
+  const root = useRef<HTMLDivElement>(null)
+  const band = useRef<HTMLDivElement>(null)
+  useEffect(() => {
+    const host = root.current
+    const element = band.current
+    if (!host || !element) return
+    const update = () => {
+      const stuck = getComputedStyle(element).position === 'sticky'
+      host.style.setProperty('--review-sticky-offset', `${stuck ? element.offsetHeight : 0}px`)
+    }
+    update()
+    const observer = new ResizeObserver(update)
+    observer.observe(element)
+    return () => observer.disconnect()
+  }, [pinned])
   return (
-    <div className="min-w-0">
-      <div role="tablist" aria-label="Document views" className="mb-5 flex gap-5 border-b border-border">
-        {tabs.map((name, index) => (
-          <button
-            key={name}
-            type="button"
-            id={`${id}-${name}`}
-            role="tab"
-            aria-selected={tab === name}
-            aria-controls={`${id}-panel`}
-            tabIndex={tab === name ? 0 : -1}
-            className={`border-b-2 pb-3 text-sm capitalize focus-visible:outline-2 focus-visible:outline-primary ${tab === name ? 'border-primary font-semibold text-primary' : 'border-transparent text-muted'}`}
-            onClick={() => select({ tab: name })}
-            onKeyDown={(event) => {
-              let next = index
-              if (event.key === 'ArrowRight') next = (index + 1) % tabs.length
-              else if (event.key === 'ArrowLeft') next = (index + tabs.length - 1) % tabs.length
-              else if (event.key === 'Home') next = 0
-              else if (event.key === 'End') next = tabs.length - 1
-              else return
-              event.preventDefault()
-              const name = tabs[next]
-              void Promise.resolve(onChange({ ...search, tab: name })).then(() =>
-                window.document.querySelector<HTMLButtonElement>(`[role=tab][aria-selected=true]`)?.focus(),
-              )
-            }}
-          >
-            {name}
-          </button>
-        ))}
-      </div>
-      <div className={tab === 'changes' ? 'sticky top-0 z-10 max-h-[40vh] overflow-y-auto bg-card' : undefined}>
+    <div ref={root} className="min-w-0">
+      <Tabs
+        id={id}
+        aria-label="Document views"
+        className="mb-5"
+        items={tabs.map((name) => ({ id: name, label: <span className="capitalize">{name}</span> }))}
+        value={tab}
+        onChange={(name) => onChange({ ...search, tab: name })}
+      />
+      <div
+        ref={band}
+        className={
+          pinned ? 'md:sticky md:top-0 md:z-10 md:max-h-[40vh] md:overflow-y-auto md:bg-background md:pb-3' : undefined
+        }
+      >
         {attention}
       </div>
-      <div role="tabpanel" id={`${id}-panel`} aria-labelledby={`${id}-${tab}`} className="mt-6 min-w-0">
+      <div {...tabPanelProps(id, tab)} className="mt-6 min-w-0">
         {error && (
           <p role="alert" className="mb-4 text-sm text-failure">
             {error}
@@ -165,12 +203,13 @@ export function DocumentReview({
                 <h3 className="mb-4 text-lg font-semibold">
                   {target ? `Review version ${target.version}` : 'Version comparison'}
                 </h3>
-                <div className="grid min-w-0 gap-3 rounded-lg border border-border bg-surface p-4 sm:grid-cols-2">
-                  <label className="min-w-0 text-xs text-muted">
+                <div className="grid min-w-0 gap-3 sm:grid-cols-2">
+                  <label htmlFor={`${id}-base`} className="min-w-0 text-xs text-muted">
                     Base version
-                    <select
+                    <Select
+                      id={`${id}-base`}
                       aria-label="Base version"
-                      className="mt-2 block w-full min-w-0 rounded-md border border-border bg-card p-2 text-sm text-foreground"
+                      className="mt-1.5"
                       value={baseNumber}
                       onChange={(e) => select({ base: Number(e.target.value) })}
                     >
@@ -180,13 +219,14 @@ export function DocumentReview({
                           v{v.version} · {versionState(v)}
                         </option>
                       ))}
-                    </select>
+                    </Select>
                   </label>
-                  <label className="min-w-0 text-xs text-muted">
+                  <label htmlFor={`${id}-target`} className="min-w-0 text-xs text-muted">
                     Target version
-                    <select
+                    <Select
+                      id={`${id}-target`}
                       aria-label="Target version"
-                      className="mt-2 block w-full min-w-0 rounded-md border border-border bg-card p-2 text-sm text-foreground"
+                      className="mt-1.5"
                       value={target?.version ?? ''}
                       onChange={(e) => select({ target: Number(e.target.value) })}
                     >
@@ -196,7 +236,7 @@ export function DocumentReview({
                           v{v.version} · {versionState(v)}
                         </option>
                       ))}
-                    </select>
+                    </Select>
                   </label>
                 </div>
                 {baseNumber === 0 && (
@@ -226,20 +266,19 @@ export function DocumentReview({
                           <p className="mt-1 break-words text-xs text-muted">
                             {v.origin.replaceAll('_', ' ')}
                             {v.origin_task_id && ` · Task ${v.origin_task_id}`}
-                            {v.origin_session_id && ` · Session ${v.origin_session_id}`} ·{' '}
-                            {new Date(v.created_at).toLocaleString()}
+                            {v.origin_session_id && ` · Session ${v.origin_session_id}`} · {fullTime(v.created_at)}
                           </p>
                           {v.confirmed_by && (
                             <p className="mt-1 text-xs text-muted">
-                              Confirmed by {v.confirmed_by}
-                              {v.confirmed_at && ` on ${new Date(v.confirmed_at).toLocaleString()}`}
+                              Confirmed by {actorName(v.confirmed_by, members)}
+                              {v.confirmed_at && ` on ${fullTime(v.confirmed_at)}`}
                             </p>
                           )}
                           {(v.dismissed_by || v.retired_by) && (
                             <p className="mt-1 text-xs text-muted">
                               Dismissed by {v.dismissed_by ?? v.retired_by}
                               {(v.dismissed_at || v.retired_at) &&
-                                ` on ${new Date(v.dismissed_at ?? v.retired_at ?? '').toLocaleString()}`}
+                                ` on ${fullTime(v.dismissed_at ?? v.retired_at ?? '')}`}
                             </p>
                           )}
                           {v.dismissal_note && (

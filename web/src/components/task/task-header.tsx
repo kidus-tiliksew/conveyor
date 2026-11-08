@@ -15,7 +15,7 @@ import {
   Trash2,
   UserRound,
 } from 'lucide-react'
-import { useEffect, useId, useLayoutEffect, useRef, useState } from 'react'
+import { useEffect, useId, useRef, useState } from 'react'
 import {
   dependencyRelationLabel,
   failedTriage,
@@ -39,10 +39,11 @@ import { Dialog } from '../ui/dialog'
 import { Disclosure } from '../ui/disclosure'
 import { DropdownMenu, DropdownMenuItem } from '../ui/dropdown-menu'
 import { Input, Textarea } from '../ui/input'
-import { MarkdownProse } from '../ui/markdown-prose'
+import { MarkdownProse, withoutLeadingTitle } from '../ui/markdown-prose'
 import { AssigneeChip } from './assignee-chip'
 import { SectionHeading } from './section-heading'
 import { TaskRestartControl, TaskRestartNotice } from './task-restart-dialog'
+import { useCollapsibleContent } from './use-collapsible-content'
 
 // The task-header facts: state badges,
 // the facts a reviewer actually references — where the work lives, where it
@@ -51,9 +52,8 @@ import { TaskRestartControl, TaskRestartNotice } from './task-restart-dialog'
 // deliberately absent: the header introduces the task, it does not summarize
 // the whole page.
 //
-// The header's sections, each usable on its own: the sheet stacks them
-// through TaskHeader, and the full route places them in its
-// reading column and inspector (component-web-task-surfaces, Task detail
+// The header's sections, each usable on its own: the sheet stacks them, and the
+// full route places them in its reading column and inspector (component-web-task-surfaces, Task detail
 // composition).
 function useTaskHeaderState(item: ActivityItem, variant: 'sheet' | 'full') {
   const members = useWorkspaceMembers()
@@ -70,11 +70,17 @@ function useTaskHeaderState(item: ActivityItem, variant: 'sheet' | 'full') {
   const blockingIDs = new Set(item.task.blocking_task_ids ?? [])
   const unsatisfiableIDs = new Set(item.stalled?.unsatisfiable_edge ? (item.stalled.blocking_task_ids ?? []) : [])
   const triageFailure = failedTriage(item)
+  // The Board's language: an open next action names the state, so one state
+  // keeps one name across the header chip, the card and the gate. A stalled task
+  // whose action is still an agent's says Stalled, since that is the news.
+  const action = item.next_action?.kind === 'terminal' ? undefined : item.next_action
   const stateLabel = triageFailure
     ? 'Triage failed'
-    : item.stalled?.needed
-      ? 'Stalled'
-      : (taskStateLabels[item.task.state] ?? item.task.state)
+    : action?.actor === 'operator'
+      ? action.label
+      : item.stalled?.needed
+        ? 'Stalled'
+        : (action?.label ?? taskStateLabels[item.task.state] ?? item.task.state)
   const mergedChildren = item.task.children?.filter((child) => child.state === 'merged').length ?? 0
   const closedChildren = item.task.children?.filter((child) => child.state === 'closed').length ?? 0
   const openChildren = (item.task.children?.length ?? 0) - mergedChildren - closedChildren
@@ -97,25 +103,22 @@ function useTaskHeaderState(item: ActivityItem, variant: 'sheet' | 'full') {
     blockingIDs,
     unsatisfiableIDs,
     triageFailure,
+    action,
     stateLabel,
     childRollup,
   }
 }
 
-export function TaskHeader({ item, variant }: { item: ActivityItem; variant: 'sheet' | 'full' }) {
-  return (
-    <div>
-      <TaskIdentity item={item} variant={variant} />
-      <TaskFacts item={item} variant={variant} columns={variant === 'full' ? 'two' : 'one'} />
-      <div className="mt-4">
-        <TaskAgentPrompt item={item} />
-      </div>
-    </div>
-  )
-}
-
 // Status row, notices, title, and description.
-export function TaskIdentity({ item, variant }: { item: ActivityItem; variant: 'sheet' | 'full' }) {
+export function TaskIdentity({
+  item,
+  variant,
+  headingRef,
+}: {
+  item: ActivityItem
+  variant: 'sheet' | 'full'
+  headingRef?: (heading: HTMLHeadingElement | null) => void
+}) {
   const { workspace } = useWorkspaceSelection()
   const {
     restartLinks,
@@ -125,50 +128,59 @@ export function TaskIdentity({ item, variant }: { item: ActivityItem; variant: '
     blockingIDs,
     unsatisfiableIDs,
     triageFailure,
+    action,
     stateLabel,
   } = useTaskHeaderState(item, variant)
   const Heading = variant === 'full' ? 'h1' : 'h2'
   return (
     <div>
-      <div className="mb-2 flex flex-wrap items-center gap-1.5">
-        {/* Approved reads as good news even while it waits at the gate —
+      {/* A fixed minimum height, so the title stays put between tasks that have
+          the overflow menu and tasks that do not. */}
+      <div className="mb-3 flex min-h-8 items-start gap-1.5">
+        <div className="flex min-h-8 min-w-0 flex-1 flex-wrap items-center gap-1.5">
+          {/* Approved reads as good news even while it waits at the gate —
             amber stays reserved for states that are genuinely stuck. */}
-        <Disclosure
-          label={`Task status: ${stateLabel}`}
-          triggerClassName="rounded-md focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary"
-          content={triageFailure?.reason ?? item.stalled?.reason ?? `Current task status: ${stateLabel}.`}
-          contentClassName="pointer-events-none bottom-full top-auto left-0 z-10 mb-1.5 w-56 border-0 bg-foreground px-2.5 py-1.5 text-[11px] leading-4 text-background shadow-md transition-opacity after:absolute after:left-3 after:top-full after:border-4 after:border-transparent after:border-t-foreground"
-        >
-          <Badge
-            variant={
-              item.task.state === 'approved' || item.task.state === 'merged'
-                ? 'positive'
-                : item.needs_attention
+          <Disclosure
+            label={`Task status: ${stateLabel}`}
+            triggerClassName="rounded-md focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary"
+            content={triageFailure?.reason ?? item.stalled?.reason ?? `Current task status: ${stateLabel}.`}
+            contentClassName="pointer-events-none bottom-full top-auto left-0 z-10 mb-1.5 w-56 border-0 bg-foreground px-2.5 py-1.5 text-[11px] leading-4 text-background shadow-md transition-opacity after:absolute after:left-3 after:top-full after:border-4 after:border-transparent after:border-t-foreground"
+          >
+            <Badge
+              variant={
+                action?.actor === 'operator'
                   ? 'attention'
-                  : 'outline'
-            }
-          >
-            {stateLabel}
-          </Badge>
-        </Disclosure>
-        {restartLinks.to && (
-          <Link
-            to={relatedRoute}
-            params={{ workspaceId: workspace, taskId: restartLinks.to }}
-            className="text-sm text-primary underline"
-          >
-            Started over as {restartLinks.to}
-          </Link>
-        )}
-        {unsatisfiableIDs.size > 0 ? (
-          <Badge variant="attention">Dependency needs attention</Badge>
-        ) : (
-          blockingIDs.size > 0 && <Badge variant="mono">Waiting on dependencies</Badge>
-        )}
-        {item.task.class && <Badge>{sentenceCase(item.task.class)}</Badge>}
-        <span className="min-w-0 font-mono text-[11px] text-faint [overflow-wrap:anywhere]">{item.task.id}</span>
-        {/* Controls sit apart from the status chips: a destructive action
-            never belongs in the row the eye reads for state. */}
+                  : item.task.state === 'approved' || item.task.state === 'merged'
+                    ? 'positive'
+                    : item.needs_attention
+                      ? 'attention'
+                      : 'outline'
+              }
+            >
+              {stateLabel}
+            </Badge>
+          </Disclosure>
+          {restartLinks.to && (
+            <Link
+              to={relatedRoute}
+              params={{ workspaceId: workspace, taskId: restartLinks.to }}
+              className="text-sm text-primary underline"
+            >
+              Started over as {restartLinks.to}
+            </Link>
+          )}
+          {unsatisfiableIDs.size > 0
+            ? // The next action already names this state when it is the open one.
+              action?.kind !== 'dependency_unsatisfiable' && (
+                <Badge variant="attention">Dependency needs attention</Badge>
+              )
+            : blockingIDs.size > 0 && <Badge variant="mono">Waiting on dependencies</Badge>}
+          {item.task.class && <Badge>{sentenceCase(item.task.class)}</Badge>}
+          <span className="min-w-0 font-mono text-[11px] text-faint [overflow-wrap:anywhere]">{item.task.id}</span>
+        </div>
+        {/* Controls sit apart from the status chips, and never wrap under
+            them: a destructive action does not belong in the row the eye reads
+            for state. */}
         {canOperate && <TaskActions key={item.task.id} item={item} variant={variant} />}
       </div>
       <TaskRestartNotice taskId={item.task.id} />
@@ -191,8 +203,10 @@ export function TaskIdentity({ item, variant }: { item: ActivityItem; variant: '
           <p className="mt-1 whitespace-pre-wrap">{item.task.intake_operator_direction}</p>
         </section>
       )}
-      <Heading className="text-xl font-semibold leading-snug tracking-tight text-balance">{item.task.title}</Heading>
-      {item.task.body && <TaskBody body={item.task.body} />}
+      <Heading ref={headingRef} className="text-xl font-semibold leading-snug tracking-tight text-balance">
+        {item.task.title}
+      </Heading>
+      {item.task.body && <TaskBody body={withoutLeadingTitle(item.task.body, item.task.title)} />}
     </div>
   )
 }
@@ -218,7 +232,7 @@ export function TaskFacts({
     <div>
       <dl
         className={cn(
-          'mt-5 grid grid-cols-[minmax(6.5rem,max-content)_minmax(0,1fr)] items-center gap-x-6 gap-y-2 border-y border-border py-3.5 text-[13px] leading-5',
+          'mt-5 grid grid-cols-[minmax(5.5rem,max-content)_minmax(0,1fr)] items-center gap-x-4 gap-y-2 border-y border-border py-3.5 text-sm leading-5',
           columns === 'two' &&
             'lg:grid-cols-[minmax(6.5rem,max-content)_minmax(0,1fr)_minmax(6.5rem,max-content)_minmax(0,1fr)] lg:gap-x-10',
           className,
@@ -415,7 +429,7 @@ function TaskActions({ item, variant }: { item: ActivityItem; variant: 'sheet' |
   const close = () => setAction(null)
   if (item.task.state === 'merged' || item.task.state === 'closed') return null
   return (
-    <div className="ml-auto flex items-center gap-0.5">
+    <div className="flex shrink-0 items-center gap-0.5">
       {/* The operations live behind the overflow menu so the header stays
           quieter than the title. Each confirms before acting; the
           confirmation returns focus to whichever control opened it. A task
@@ -586,24 +600,32 @@ function UnlinkDependencyControl({ item, dependencyIDs }: { item: ActivityItem; 
     setSelectedID('')
   }
   return (
-    <section
-      className="mt-4 rounded-md border border-attention/40 bg-attention-soft p-3"
-      aria-label="Dependency needs attention"
-    >
+    <section className="mt-4 min-w-0 rounded-md border border-attention/40 p-3" aria-label="Dependency needs attention">
       <p className="text-sm font-medium text-attention">A dependency closed without merging</p>
       <p className="mt-1 text-xs leading-5 text-muted">
         Remove the dependency with an audit reason so this task can continue, or cancel the task above.
       </p>
-      <div className="mt-2 flex flex-wrap gap-2">
+      <ul className="mt-2.5 space-y-2.5">
         {dependencyIDs.map((id) => {
-          const dependency = item.task.dependencies?.find((entry) => entry.id === id)
+          const title = item.task.dependencies?.find((entry) => entry.id === id)?.title ?? id
           return (
-            <Button key={id} variant="secondary" size="sm" onClick={() => openDialog(id)}>
-              <Link2Off /> Unlink dependency {dependency?.title ?? id}
-            </Button>
+            <li key={id} className="min-w-0">
+              <p className="truncate text-xs font-medium text-foreground" title={title}>
+                {title}
+              </p>
+              <Button
+                variant="secondary"
+                size="sm"
+                className="mt-1.5 min-w-0 max-w-full"
+                aria-label={`Unlink dependency ${title}`}
+                onClick={() => openDialog(id)}
+              >
+                <Link2Off /> Unlink dependency
+              </Button>
+            </li>
           )
         })}
-      </div>
+      </ul>
       {selectedID && (
         <Dialog label="Unlink dependency" onClose={() => !mutation.isPending && closeDialog()}>
           <div className="border-b border-border px-5 py-4">
@@ -626,7 +648,7 @@ function UnlinkDependencyControl({ item, dependencyIDs }: { item: ActivityItem; 
                 className="mt-1.5"
               />
             </label>
-            {mutation.error != null && <p className="text-sm text-failure">{String(mutation.error)}</p>}
+            {mutation.error != null && <p className="text-sm text-failure">{errorMessage(mutation.error)}</p>}
             <div className="flex justify-end gap-2">
               <Button variant="secondary" onClick={closeDialog} disabled={mutation.isPending}>
                 Keep dependency
@@ -698,13 +720,13 @@ export function CancelControl({ item, onClose }: { item: ActivityItem; onClose?:
                 className="mt-1.5"
               />
             </label>
-            {mutation.error != null && <p className="text-sm text-failure">{String(mutation.error)}</p>}
+            {mutation.error != null && <p className="text-sm text-failure">{errorMessage(mutation.error)}</p>}
             <div className="flex justify-end gap-2">
               <Button variant="secondary" onClick={() => setOpen(false)} disabled={mutation.isPending}>
                 Keep task
               </Button>
               <Button
-                variant="destructive"
+                variant="danger"
                 onClick={() => mutation.mutate()}
                 disabled={mutation.isPending || !reason.trim()}
               >
@@ -720,36 +742,24 @@ export function CancelControl({ item, onClose }: { item: ActivityItem; onClose?:
 
 function TaskBody({ body }: { body: string }) {
   const [expanded, setExpanded] = useState(false)
-  const [hasOverflow, setHasOverflow] = useState(false)
-  const viewportRef = useRef<HTMLDivElement>(null)
+  const collapse = useCollapsibleContent(128, expanded)
   const viewportID = useId()
 
-  useLayoutEffect(() => {
-    const viewport = viewportRef.current
-    if (!viewport || expanded) return
-    const measure = () => setHasOverflow(viewport.scrollHeight > viewport.clientHeight + 1)
-    measure()
-    const observer = new ResizeObserver(measure)
-    observer.observe(viewport)
-    if (viewport.firstElementChild) observer.observe(viewport.firstElementChild)
-    return () => observer.disconnect()
-  }, [body, expanded])
-
   return (
-    <div className="mt-2 max-w-3xl">
+    <div className="mt-4 max-w-3xl">
       <div className="relative">
-        <div ref={viewportRef} id={viewportID} className={cn(!expanded && 'max-h-32 overflow-hidden')}>
+        <div ref={collapse.viewportRef} id={viewportID} style={collapse.viewportStyle}>
           <MarkdownProse className="markdown-demoted text-sm">{body}</MarkdownProse>
         </div>
-        {hasOverflow && !expanded && (
+        {collapse.clamped && (
           <div
             aria-hidden="true"
-            className="spec-overflow-shadow pointer-events-none absolute inset-x-0 bottom-0 h-16"
+            className={cn('spec-overflow-shadow pointer-events-none absolute inset-x-0 bottom-0', collapse.fadeClass)}
             data-task-body-overflow-shadow
           />
         )}
       </div>
-      {hasOverflow && (
+      {collapse.collapsible && (
         <button
           type="button"
           aria-controls={viewportID}
@@ -921,8 +931,8 @@ export function TaskAgentPrompt({ item }: { item: ActivityItem }) {
       <section aria-label="Agent prompt" className="w-full min-w-0 rounded-lg border border-border bg-surface">
         <div className="flex min-w-0 items-center gap-2 py-1 pr-1 pl-3">
           <Terminal className="size-3.5 shrink-0 text-faint" aria-hidden="true" />
-          <span className="shrink-0 text-[13px] font-medium">Agent prompt</span>
-          <span className="min-w-0 flex-1 truncate text-[13px] text-muted" data-agent-prompt-preview>
+          <span className="shrink-0 text-sm font-medium">Agent prompt</span>
+          <span className="min-w-0 flex-1 truncate text-sm text-muted" data-agent-prompt-preview>
             {preview}
           </span>
           <button

@@ -1,13 +1,13 @@
 import { Link } from '@tanstack/react-router'
 import { ArrowUpRight, CornerDownRight, Sparkles } from 'lucide-react'
-import { errorMessage } from '../../lib/errors'
 import type { InboxItem, InboxPullRequest, NextActionBlocker, Task } from '../../lib/types'
-import { cn, relativeTime } from '../../lib/utils'
+import { useMediaQuery } from '../../lib/use-media-query'
+import { cn, fullTime, relativeTime } from '../../lib/utils'
 import { useWorkspaceSelection } from '../app-shell'
 import { GateChoices } from '../task/merge-at-gate'
 import { NextActionIDs } from '../task/next-action-parts'
-import { Button } from '../ui/button'
 import { Disclosure } from '../ui/disclosure'
+import { ErrorState } from '../ui/error-state'
 import { Skeleton } from '../ui/skeleton'
 import {
   ContextProposalChecklist,
@@ -16,8 +16,9 @@ import {
   useContextProposalSelection,
   useContextProposalSends,
 } from './context-proposal-rows'
+import { DecisionFooter } from './decision-footer'
 import { DecisionContext } from './inbox-context'
-import { Kbd, ShortcutChoiceProvider, shortcutChoiceId } from './inbox-keyboard'
+import { ShortcutChoiceProvider, shortcutChoiceId } from './inbox-keyboard'
 import { DueChip, KindPill, timeOfDay } from './inbox-kind'
 import { useNextAction } from './use-next-actions'
 
@@ -31,7 +32,14 @@ const contextHeadings: Record<string, string> = {
   context_proposal: 'Proposed context',
   parked: 'Why it is parked',
   dispatch_exhausted: 'Why dispatch stopped',
+  check_hold: 'Checks',
 }
+
+// A merge decision's context is the task page's "What you are approving" block,
+// which carries its own heading.
+const selfHeaded = new Set(['merge_approval', 'merge_execution'])
+
+const shortFooterQuery = '(max-width: 79.98rem)'
 
 const pill =
   'inline-flex min-w-0 max-w-full items-center gap-1 rounded-md border border-border bg-background/40 px-1.5 py-0.5'
@@ -53,6 +61,7 @@ export function pullRequestLabel(pullRequest: InboxPullRequest) {
 export function DecisionDetail({ item, task, onActed }: { item: InboxItem; task: Task; onActed: () => void }) {
   const { workspace } = useWorkspaceSelection()
   const { data: action, isLoading, error, refetch, isFetching } = useNextAction(task.id)
+  const failed = error != null
   const compact = item.next_action
   const kind = action?.kind ?? compact?.kind ?? ''
   const blocks = action?.blocks ?? compact?.blocks ?? []
@@ -67,6 +76,30 @@ export function DecisionDetail({ item, task, onActed }: { item: InboxItem; task:
   const shortcut = action ? shortcutChoiceId(action) : null
   const deadline = action ? action.deadline : (item.deadline ?? compact?.deadline)
   const validDeadline = deadline && Number.isFinite(new Date(deadline).getTime()) ? deadline : undefined
+  // Below xl the detail is narrow and its footer's lines wrap, so only the
+  // actions and the readiness warning stay in view. The rest of the footer scrolls
+  // with the context, which keeps room to read what is being decided.
+  const shortFooter = useMediaQuery(shortFooterQuery)
+  const ids = action && <NextActionIDs value={{ details: action.details, current_order: action.current_order }} />
+  const consequence = action?.if_ignored && (
+    <p data-if-ignored className="flex min-w-0 items-start gap-1.5 text-xs text-muted">
+      <CornerDownRight className="mt-0.5 size-3.5 shrink-0" aria-hidden />
+      <span className="min-w-0 break-words">
+        {validDeadline ? (
+          <>
+            If nobody acts by{' '}
+            <time data-next-action-deadline dateTime={validDeadline} title={fullTime(validDeadline)}>
+              {timeOfDay(validDeadline)}
+            </time>
+            :{' '}
+          </>
+        ) : (
+          'If nobody acts: '
+        )}
+        <span className="font-medium text-foreground">{action.if_ignored}</span>
+      </span>
+    </p>
+  )
   return (
     <ShortcutChoiceProvider choiceId={shortcut}>
       <article
@@ -85,7 +118,7 @@ export function DecisionDetail({ item, task, onActed }: { item: InboxItem; task:
               </time>
             )}
           </div>
-          <h2 data-detail-title className="break-words text-[17px] font-semibold leading-snug">
+          <h2 data-detail-title tabIndex={-1} className="break-words text-lg font-semibold leading-snug outline-none">
             <Link
               to="/w/$workspaceId/tasks/$taskId"
               params={{ workspaceId: workspace, taskId: task.id }}
@@ -132,16 +165,17 @@ export function DecisionDetail({ item, task, onActed }: { item: InboxItem; task:
             </Link>
           </div>
           {isLoading && <Skeleton className="h-12" />}
-          {error != null && (
-            <div className="flex flex-wrap items-center gap-2 text-sm">
-              <span className="text-failure">{errorMessage(error, 'Could not load this decision.')}</span>
-              <Button size="sm" variant="secondary" disabled={isFetching} onClick={() => void refetch()}>
-                Retry
-              </Button>
-            </div>
+          {failed && (
+            <ErrorState
+              className="py-8"
+              title="Could not load this decision"
+              error={error}
+              onRetry={() => void refetch()}
+              retrying={isFetching}
+            />
           )}
           {action?.question && (
-            <p data-decision-question className="break-words pt-1 text-[15px] font-medium leading-relaxed">
+            <p data-decision-question className="break-words pt-1 text-base font-medium leading-relaxed">
               {action.question}
             </p>
           )}
@@ -163,67 +197,42 @@ export function DecisionDetail({ item, task, onActed }: { item: InboxItem; task:
               </div>
             </div>
           )}
-          {kind && (
+          {kind && !failed && (
             <div className="space-y-2 pt-2">
-              <h3 className="flex items-center gap-2 text-xs font-semibold text-muted">
-                <span data-context-heading>{contextHeadings[kind] ?? 'Context'}</span>
-                <span aria-hidden className="h-px flex-1 bg-border" />
-              </h3>
+              {!selfHeaded.has(kind) && (
+                <h3 className="flex items-center gap-2 text-xs font-semibold text-muted">
+                  <span data-context-heading>{contextHeadings[kind] ?? 'Latest run'}</span>
+                  <span aria-hidden className="h-px flex-1 bg-border" />
+                </h3>
+              )}
               <DecisionContext taskId={task.id} kind={kind} />
             </div>
           )}
-        </div>
-        <div
-          data-decision-footer
-          data-shortcut-merge={shortcut === 'merge' ? '' : undefined}
-          className="z-10 shrink-0 space-y-2.5 rounded-b-xl border-t border-border bg-surface px-5 py-3 max-md:sticky max-md:bottom-0"
-        >
-          {action?.if_ignored && (
-            <p data-if-ignored className="flex min-w-0 items-start gap-1.5 text-xs text-muted">
-              <CornerDownRight className="mt-0.5 size-3.5 shrink-0" aria-hidden />
-              <span className="min-w-0 break-words">
-                {validDeadline ? (
-                  <>
-                    If nobody acts by{' '}
-                    <time
-                      data-next-action-deadline
-                      dateTime={validDeadline}
-                      title={new Date(validDeadline).toLocaleString()}
-                    >
-                      {timeOfDay(validDeadline)}
-                    </time>
-                    :{' '}
-                  </>
-                ) : (
-                  'If nobody acts: '
-                )}
-                <span className="font-medium text-foreground">{action.if_ignored}</span>
-              </span>
-            </p>
+          {shortFooter && !failed && (consequence || ids) && (
+            <div className="space-y-2 border-t border-border pt-3">
+              {consequence}
+              {ids}
+            </div>
           )}
-          <div className="flex min-w-0 flex-wrap items-end gap-x-3 gap-y-2">
-            {/* Buttons inherit their font (styles.css), so the wrapper sets their size. */}
-            <div className="min-w-0 flex-1">
-              {contextRows ? (
-                <ContextProposalFooter action={contextRows} selection={selection} sends={sends} />
-              ) : (
-                action && (
-                  <div className="text-[13px]">
-                    <GateChoices taskId={task.id} action={action} onActed={onActed} onRestarted={onActed} />
-                  </div>
-                )
-              )}
-            </div>
-            <div className="ml-auto flex shrink-0 items-center gap-3 text-[11px] text-faint">
-              <span className="hidden items-center gap-1 lg:flex" data-footer-move-hint>
-                <Kbd>j</Kbd>
-                <Kbd>k</Kbd>
-                move
-              </span>
-              {action && <NextActionIDs value={{ details: action.details, current_order: action.current_order }} />}
-            </div>
-          </div>
         </div>
+        {!failed && (
+          <DecisionFooter
+            shortcutMerge={shortcut === 'merge'}
+            ids={!shortFooter && ids}
+            consequence={!shortFooter && consequence}
+          >
+            {contextRows ? (
+              <ContextProposalFooter action={contextRows} selection={selection} sends={sends} />
+            ) : (
+              action && (
+                // Buttons inherit their font (styles.css), so the wrapper sets their size.
+                <div className="text-sm">
+                  <GateChoices taskId={task.id} action={action} onActed={onActed} onRestarted={onActed} footer />
+                </div>
+              )
+            )}
+          </DecisionFooter>
+        )}
       </article>
     </ShortcutChoiceProvider>
   )
@@ -233,9 +242,9 @@ export function DecisionDetail({ item, task, onActed }: { item: InboxItem; task:
 export function BlocksChip({ blocks }: { blocks: NextActionBlocker[] }) {
   return (
     <Disclosure
-      className="text-[11px]"
+      className="text-xs"
       label={`Unblocks ${blocks.length} ${blocks.length === 1 ? 'task' : 'tasks'}`}
-      triggerClassName="gap-1.5 rounded-md bg-attention-soft px-2 py-0.5 text-xs font-medium text-attention"
+      triggerClassName="rounded-md"
       content={
         <ul className="space-y-0.5" data-blocks-list>
           {blocks.map((blocker) => (
@@ -246,8 +255,10 @@ export function BlocksChip({ blocks }: { blocks: NextActionBlocker[] }) {
         </ul>
       }
     >
-      <span aria-hidden className="size-1.5 rounded-full bg-attention-dot" />
-      Unblocks {blocks.length} {blocks.length === 1 ? 'task' : 'tasks'}
+      <span className="inline-flex items-center gap-1.5 rounded-md bg-attention-soft px-2 py-0.5 text-xs font-medium text-attention">
+        <span aria-hidden className="size-1.5 rounded-full bg-attention-dot" />
+        Unblocks {blocks.length} {blocks.length === 1 ? 'task' : 'tasks'}
+      </span>
     </Disclosure>
   )
 }

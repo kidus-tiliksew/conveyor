@@ -121,12 +121,9 @@ export function VerificationEntry({
   return (
     <li className="relative pl-7" id={anchor}>
       {dotSlot?.(verificationDot(outcome))}
-      <article
-        aria-label="Verification"
-        className={cn('rounded-lg border border-border bg-card', superseded && 'opacity-80')}
-      >
+      <article aria-label="Verification" className={cn('rounded-lg bg-surface', superseded && 'opacity-80')}>
         <div className="flex flex-wrap items-center gap-2 border-b border-border px-4 py-2.5">
-          <span className="text-xs font-semibold uppercase tracking-[0.1em] text-foreground">Verify</span>
+          <span className="text-sm font-semibold text-foreground">Verify</span>
           <Badge variant={badge.variant}>{badge.label}</Badge>
           {context?.metadata.source_sha && (
             <span className="font-mono text-[11px] text-muted" title={context.metadata.source_sha}>
@@ -401,7 +398,7 @@ function ResultBanner({
     <div
       className={cn(
         'flex flex-wrap items-center gap-x-2 gap-y-1 border-b border-border px-4 py-2.5 text-sm font-medium',
-        ok ? 'bg-positive-soft text-positive' : 'bg-failure-soft text-failure',
+        ok ? 'bg-positive-soft text-positive' : 'bg-failure-soft/60 text-failure',
       )}
     >
       {ok ? <Check className="size-4 shrink-0" /> : <X className="size-4 shrink-0" />}
@@ -414,8 +411,8 @@ function ResultBanner({
 
 function Row({ label, children }: { label: string; children: ReactNode }) {
   return (
-    <div className="grid grid-cols-[6.5rem_1fr] gap-x-3 px-4 py-2.5">
-      <span className="pt-0.5 font-mono text-[10px] uppercase tracking-[0.08em] text-faint">{label}</span>
+    <div className="grid grid-cols-1 gap-x-3 gap-y-1 px-4 py-2.5 sm:grid-cols-[6.5rem_1fr]">
+      <span className="pt-0.5 text-xs text-muted">{label}</span>
       <div className="min-w-0">{children}</div>
     </div>
   )
@@ -829,7 +826,7 @@ function AssertionEvidence({
       )}
       {supporting.length > 0 && (
         <div className="space-y-2 border-t border-border pt-2">
-          <p className="text-[10px] uppercase tracking-[0.08em] text-faint">Judged on</p>
+          <p className="text-xs text-muted">Judged on</p>
           {supporting.map((id) => (
             <SupportingEvidence key={id} taskId={taskId} contextId={contextId} evidenceId={id} />
           ))}
@@ -983,7 +980,7 @@ function Fold({ summary, children }: { summary: string; children: ReactNode }) {
       open={open}
       onToggle={(event) => setOpen((event.target as HTMLDetailsElement).open)}
     >
-      <summary className="flex cursor-pointer select-none items-center gap-1.5 px-4 py-2 text-xs text-muted hover:text-foreground [&::-webkit-details-marker]:hidden">
+      <summary className="flex cursor-pointer list-none select-none items-center gap-1.5 px-4 py-2 text-xs text-muted hover:text-foreground [&::-webkit-details-marker]:hidden">
         <ChevronRight className="size-3.5 transition-transform group-open:rotate-90" />
         {summary}
       </summary>
@@ -1006,7 +1003,7 @@ function CollectionFold({
   const [open, setOpen] = useState(false)
   return (
     <details open={open} onToggle={(event) => setOpen((event.target as HTMLDetailsElement).open)} className="group">
-      <summary className="flex cursor-pointer select-none items-center gap-1.5 px-3 py-1.5 text-xs hover:bg-surface [&::-webkit-details-marker]:hidden">
+      <summary className="flex cursor-pointer list-none select-none items-center gap-1.5 px-3 py-1.5 text-xs hover:bg-surface [&::-webkit-details-marker]:hidden">
         <ChevronRight className="size-3.5 text-muted transition-transform group-open:rotate-90" />
         {label}
       </summary>

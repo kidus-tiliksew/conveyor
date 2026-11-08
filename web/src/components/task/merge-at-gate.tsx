@@ -26,22 +26,26 @@ type MergeReadiness = ActivityItem['merge_readiness']
 // primary: the merge when the server offers it, otherwise the first choice
 // that renders enabled (feature-operator-next-action NA-6).
 // At merge_approval a status line above the choices states the merge
-// readiness in plain words, and the choices take the grid layout: the merge
-// button on its own full-width line, the other choices in two columns below
-// it. Every other gate keeps the one wrapping row (component-web-task-surfaces,
-// Next-action card).
+// readiness in plain words. On a phone the choices stack, with the merge button
+// on its own full-width line and the other choices in two columns below it;
+// from `sm` up they share the one row every other gate uses
+// (component-web-task-surfaces, Next-action card). `footer` keeps every kind in
+// one action row with the merge at its natural width, for the Inbox detail's
+// footer.
 export function GateChoices({
   taskId,
   action,
   onActed,
   onRestarted,
   routeVariant,
+  footer = false,
 }: {
   taskId: string
   action: NextAction
   onActed?: () => void
   onRestarted?: () => void
   routeVariant?: TaskRouteVariant
+  footer?: boolean
 }) {
   const { workspace } = useWorkspaceSelection()
   const ids = useId()
@@ -75,9 +79,12 @@ export function GateChoices({
       details={action.details}
       onActed={() => onActed?.()}
       primaryId={primary}
+      // Merging past a failed check is still this gate's main act, but it never
+      // wears the safe primary look under the warning about those checks.
+      cautionId={action.kind === 'check_hold' ? 'merge' : undefined}
       routeVariant={routeVariant}
       onRestarted={onRestarted}
-      layout={atGate ? 'grid' : 'row'}
+      layout={footer ? 'footer' : atGate ? 'grid' : 'row'}
       leadingReason={capabilityReason}
       status={
         atGate && (
@@ -99,6 +106,7 @@ export function GateChoices({
             describedBy={capabilityReason ? capabilityReason.id : mergeChoice ? undefined : statusId}
             readiness={detail?.merge_readiness}
             primary={primary === 'merge'}
+            fill={!footer}
             onMerged={() => onActed?.()}
           />
         )
@@ -223,6 +231,7 @@ function MergeAtGateAction({
   describedBy,
   readiness,
   primary,
+  fill,
   onMerged,
 }: {
   taskId: string
@@ -231,6 +240,7 @@ function MergeAtGateAction({
   describedBy: string | undefined
   readiness: MergeReadiness
   primary: boolean
+  fill: boolean
   onMerged: () => void
 }) {
   // The Inbox binds `c` to the merge button when it is the decision's primary.
@@ -268,8 +278,8 @@ function MergeAtGateAction({
   }
 
   return (
-    <span className="flex w-full min-w-0 flex-col gap-0.5">
-      <span className="flex w-full min-w-0 items-stretch gap-1.5">
+    <span className={cn('flex min-w-0 flex-col gap-0.5', fill ? 'w-full sm:w-auto' : 'max-md:w-full')}>
+      <span className={cn('flex min-w-0 items-stretch gap-1.5', fill ? 'w-full sm:w-auto' : 'max-md:w-full')}>
         <Button
           size="sm"
           className={`${choiceButtonClass} flex-1 justify-center`}

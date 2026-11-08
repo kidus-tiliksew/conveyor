@@ -1,10 +1,11 @@
 import { useMutation, useQueryClient } from '@tanstack/react-query'
-import { type ReactNode, useId, useRef, useState } from 'react'
+import { type ReactNode, useEffect, useId, useRef, useState } from 'react'
 import { GateMutationError, postNextActionChoice } from '../../lib/api'
 import { errorMessage } from '../../lib/errors'
 import { type MutationWorkspace, taskDetailQueryKey } from '../../lib/query-keys'
 import type { TaskRouteVariant } from '../../lib/task-route'
 import type { NextActionChoice, NextActionDetails } from '../../lib/types'
+import { cn } from '../../lib/utils'
 import { useWorkspaceSelection } from '../app-shell'
 import { TaskRestartControl } from '../task/task-restart-dialog'
 import { useTaskDetail } from '../task/use-task-detail'
@@ -35,15 +36,19 @@ export type ChoiceReason = { id: string; label: string; text: string; choice?: s
 // knows the decision's primary, as GateChoices does, and otherwise the first
 // choice that renders enabled takes it. `leading` renders first in the row and
 // `leadingReason` joins the reasons block for it. `status` renders above the
-// row. The `grid` layout, which only the merge-approval gate uses, puts
-// `leading` on its own full-width line with the other choices in two
-// equal-width columns below it (component-web-task-surfaces, Next-action card).
+// row. The `grid` layout, which only the merge-approval gate uses, stacks on a
+// phone: `leading` on its own full-width line with the other choices in two
+// equal-width columns below it. From `sm` up it is the same one row as every
+// other decision (component-web-task-surfaces, Next-action card).
+// The `footer` layout is the Inbox detail's one action row: buttons at their
+// natural width from md up, filling the line below it.
 export function NextActionChoices({
   taskId,
   choices,
   details,
   onActed,
   primaryId,
+  cautionId,
   leading,
   leadingReason,
   status,
@@ -56,10 +61,13 @@ export function NextActionChoices({
   details?: NextActionDetails
   onActed?: (choice: NextActionChoice) => void
   primaryId?: string | null
+  // The choice that overrides a warning stated above the row. It keeps its role
+  // but wears a caution outline, so it does not contradict that warning.
+  cautionId?: string
   leading?: ReactNode
   leadingReason?: ChoiceReason
   status?: ReactNode
-  layout?: 'row' | 'grid'
+  layout?: 'row' | 'grid' | 'footer'
   routeVariant?: TaskRouteVariant
   onRestarted?: () => void
 }) {
@@ -69,6 +77,12 @@ export function NextActionChoices({
   const [composing, setComposing] = useState<NextActionChoice | null>(null)
   const [input, setInput] = useState('')
   const [restarting, setRestarting] = useState(false)
+  // A choice low on the page opens its input past the fold, confirm included.
+  const composerRef = useRef<HTMLDivElement>(null)
+  const composingId = composing?.id
+  useEffect(() => {
+    if (composingId) composerRef.current?.scrollIntoView({ block: 'nearest' })
+  }, [composingId])
   // isPending lands a render after the click, so a double click would send
   // twice; the ref closes that window.
   const inFlight = useRef(false)
@@ -129,6 +143,7 @@ export function NextActionChoices({
   })
   const primary = primaryId !== undefined ? primaryId : (choices.find((_, index) => reasons[index] === '')?.id ?? null)
   const grid = layout === 'grid'
+  const footer = layout === 'footer'
   const reasonId = (index: number) => `${reasonPrefix}-reason-${index}`
   const reasonLines: ChoiceReason[] = [
     ...(leadingReason ? [leadingReason] : []),
@@ -142,10 +157,12 @@ export function NextActionChoices({
       <div
         data-choice-row={layout}
         className={
-          grid ? 'grid w-full min-w-0 grid-cols-2 items-stretch gap-2' : 'flex min-w-0 flex-wrap items-stretch gap-2'
+          grid
+            ? 'grid w-full min-w-0 grid-cols-2 items-stretch gap-2 sm:flex sm:flex-wrap'
+            : 'flex min-w-0 flex-wrap items-stretch gap-2'
         }
       >
-        {leading && (grid ? <div className="col-span-2 flex min-w-0">{leading}</div> : leading)}
+        {leading && (grid ? <div className="col-span-2 flex min-w-0 sm:contents">{leading}</div> : leading)}
         {choices.map((choice, index) => {
           const body = choiceBody(choice.id)
           const reason = reasons[index]
@@ -157,13 +174,29 @@ export function NextActionChoices({
             // to the line's height, so every button on a line is equally tall.
             <span
               key={choice.id}
-              className={`inline-flex max-w-full min-w-0 items-stretch gap-1.5${grid ? ' w-full' : ''}`}
+              className={`inline-flex max-w-full min-w-0 items-stretch gap-1.5${grid ? ' w-full sm:w-auto' : ''}${footer ? ' max-md:flex-1 max-md:basis-[calc(50%-0.25rem)]' : ''}`}
             >
               <Button
                 size="sm"
-                className={grid ? `${choiceButtonClass} flex-1 justify-center` : choiceButtonClass}
+                className={cn(
+                  grid
+                    ? `${choiceButtonClass} flex-1 justify-center`
+                    : footer
+                      ? `${choiceButtonClass} max-md:flex-1 max-md:justify-center`
+                      : choiceButtonClass,
+                  choice.id === cautionId &&
+                    'border-attention/50 text-attention hover:border-attention hover:bg-attention-soft',
+                )}
                 variant={
-                  choice.id === 'reject' ? 'ghost' : choice.id === primary && reason === '' ? 'default' : 'secondary'
+                  choice.id === 'reject'
+                    ? 'ghost'
+                    : choice.id === cautionId
+                      ? 'outline'
+                      : choice.id === 'close'
+                        ? 'destructive'
+                        : choice.id === primary && reason === ''
+                          ? 'default'
+                          : 'secondary'
                 }
                 title={`${choice.effect} (${choice.method} ${choice.path})`}
                 data-choice={choice.id}
@@ -195,16 +228,16 @@ export function NextActionChoices({
         })}
       </div>
       {reasonLines.length > 0 && (
-        <ul data-choice-reasons className="space-y-0.5 text-[11px] leading-4 text-muted">
+        <ul data-choice-reasons className="space-y-0.5 text-xs text-muted">
           {reasonLines.map((line) => (
             <li key={line.id} id={line.id} data-choice-reason={line.choice}>
-              <span className="font-medium text-foreground/80">{line.label}:</span> {line.text}
+              {line.label}: {line.text}
             </li>
           ))}
         </ul>
       )}
       {composing && contract?.input && (
-        <div className="space-y-2">
+        <div ref={composerRef} className="space-y-2">
           <p className="text-xs text-muted">{composing.effect}</p>
           <Textarea
             autoFocus
@@ -220,10 +253,11 @@ export function NextActionChoices({
             </Button>
             <Button
               size="sm"
+              variant={composing.id === 'reject' || composing.id === 'close' ? 'danger' : 'default'}
               disabled={mutation.isPending || (contract.input.required && !input.trim())}
               onClick={() => send(composing, input)}
             >
-              {composing.label}
+              {composing.label.replace(/…$/, '')}
             </Button>
           </div>
         </div>

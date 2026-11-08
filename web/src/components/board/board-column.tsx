@@ -37,11 +37,14 @@ export function BoardColumn({
   label,
   items,
   selectedId,
+  filtered = false,
 }: {
   groupKey: GroupKey
   label: string
   items: ActivitySummary[]
   selectedId?: string
+  // A filter or search narrows the board, so an empty lane may hold work.
+  filtered?: boolean
 }) {
   const { workspace } = useWorkspaceSelection()
   const Icon = groupIcons[groupKey]
@@ -57,15 +60,13 @@ export function BoardColumn({
   return (
     <section
       aria-label={label}
-      className={cn(
-        'flex h-full min-w-72 flex-[3_1_18rem] flex-col rounded-lg border border-border',
-        idle ? 'bg-surface/50' : 'bg-surface',
-      )}
+      data-lane={groupKey}
+      className={cn('flex h-full min-w-72 flex-[3_1_18rem] flex-col rounded-lg', idle ? 'bg-surface/50' : 'bg-surface')}
     >
-      <header className="flex shrink-0 items-center gap-2 border-b border-border px-3 py-2.5">
-        <Icon className="size-3.5 shrink-0 text-muted" />
-        <h2 className="truncate text-[11px] font-semibold uppercase tracking-[0.08em] text-muted">{label}</h2>
-        <span className="font-mono text-[11px] text-faint">{items.length}</span>
+      <header className="flex h-10 shrink-0 items-center gap-2 px-3">
+        <Icon className="size-3.5 shrink-0 text-faint" />
+        <h2 className="truncate text-xs font-medium text-muted">{label}</h2>
+        <span className="text-xs tabular-nums text-faint">{items.length}</span>
         {operator > 0 && (
           <Link
             to="/w/$workspaceId/inbox"
@@ -78,8 +79,10 @@ export function BoardColumn({
           </Link>
         )}
       </header>
-      {!idle && (
-        <div className="min-h-0 flex-1 space-y-2 overflow-y-auto p-2">
+      {idle ? (
+        <p className="px-3 py-1 text-xs text-faint">{filtered ? 'No matching tasks' : 'No tasks'}</p>
+      ) : (
+        <div className="min-h-0 flex-1 space-y-1.5 overflow-y-auto px-1.5 pb-1.5">
           {visible.map((item) => (
             <TaskCard key={item.task.id} item={item} selected={item.task.id === selectedId} />
           ))}

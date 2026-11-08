@@ -469,6 +469,37 @@ for (const gateCase of gateCases) {
   })
 }
 
+// The flow read calls a held merge in progress; the next action states the hold.
+test('a merge held by its checks reads as held, and an unfinished merge is named Merge', async ({ page }) => {
+  const flow = baseFlow()
+  flow.stages[5] = stage('merge', 'in_progress', { label: 'Merged', status_text: 'Merge is running now.' })
+  await mockAPI(page, {
+    flows: { [taskId]: flow },
+    action: nextAction({
+      actor: 'operator',
+      kind: 'check_hold',
+      label: 'Checks hold the merge',
+      summary: 'A failed check holds the merge.',
+    }),
+  })
+  await openFlow(page, `/w/demo/tasks/${taskId}/full`)
+  await expect(node(page, 'merge')).toHaveAttribute('data-status', 'needs_operator')
+  await expect(node(page, 'merge')).toHaveAccessibleName('Merge — Held')
+  await node(page, 'merge').click()
+  const panel = page.getByRole('dialog', { name: 'Merge stage' })
+  await expect(panel.locator('[data-flow-panel-status]')).toHaveText('Held')
+  await expect(panel.locator('[data-flow-status-text]')).toHaveText('A failed check holds the merge.')
+  await expect(panel).not.toContainText('running now')
+})
+
+test('a finished merge keeps the name Merged', async ({ page }) => {
+  const flow = baseFlow()
+  flow.stages[5] = stage('merge', 'done', { label: 'Merged' })
+  await mockAPI(page, { flows: { [taskId]: flow } })
+  await openFlow(page, `/w/demo/tasks/${taskId}/full`)
+  await expect(node(page, 'merge')).toContainText('Merged')
+})
+
 test('a plan-off task draws the bypass and skipped plan nodes', async ({ page }) => {
   const flow = baseFlow()
   flow.stages[1] = stage('spec', 'off', { gate: null, ...gate('off', true), traversed: true })

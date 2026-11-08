@@ -1,22 +1,37 @@
 import { useSearch } from '@tanstack/react-router'
 import type { ReactNode } from 'react'
+import { cn } from '../../lib/utils'
 import type { BoardSearch } from './board-search'
 import { BoardViewSwitch } from './board-view-switch'
 
 // The Board's second row, shared by Kanban and Graph
 // (component-web-task-surfaces). Each view fills the left side with its own
 // controls; the optional pager and the view switch close the row at the same
-// right edge in every view, so switching views never moves the switch.
-export function BoardToolbar({ children, pager }: { children?: ReactNode; pager?: ReactNode }) {
+// right edge in every view, so switching views never moves the switch. Kanban's
+// lane strip sits before them on a wide screen. On a phone with no pager, the switch stays beside the controls,
+// which wrap on their own, so the canvas below keeps the height.
+export function BoardToolbar({
+  children,
+  lanes,
+  pager,
+}: {
+  children?: ReactNode
+  lanes?: ReactNode
+  pager?: ReactNode
+}) {
   const search = useSearch({ strict: false }) as BoardSearch
   const view = search.view === 'map' ? 'map' : 'kanban'
   return (
     <div
       data-testid="board-toolbar"
-      className="flex min-h-13 shrink-0 flex-wrap items-center gap-x-3 gap-y-2 border-b border-border px-4 py-2 text-xs text-muted lg:px-6"
+      className={cn(
+        'flex min-h-13 shrink-0 flex-wrap items-center gap-x-3 gap-y-2 border-b border-border px-4 py-2 text-xs text-muted lg:px-6',
+        !pager && 'max-md:flex-nowrap max-md:items-start',
+      )}
     >
-      <div className="flex min-w-0 flex-[1_1_auto] flex-wrap items-center gap-2">{children}</div>
+      <div className="flex min-w-0 flex-[1_1_auto] flex-wrap items-center gap-2 max-md:flex-1">{children}</div>
       <div className="ml-auto flex shrink-0 items-center gap-3">
+        {lanes}
         {pager}
         {pager && <span aria-hidden="true" className="h-5 w-px bg-border" />}
         <BoardViewSwitch view={view} />

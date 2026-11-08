@@ -1,10 +1,19 @@
 import { Link } from '@tanstack/react-router'
 import { Check } from 'lucide-react'
-import { Fragment, type ReactNode, useLayoutEffect, useRef, useState } from 'react'
-import type { TaskFlow, TaskFlowSideName, TaskFlowStage, TaskFlowStageId, TaskFlowStatus } from '../../lib/types'
+import { Fragment, type ReactNode, useLayoutEffect, useMemo, useRef, useState } from 'react'
+import type {
+  NextAction,
+  TaskFlow,
+  TaskFlowSideName,
+  TaskFlowStage,
+  TaskFlowStageId,
+  TaskFlowStatus,
+} from '../../lib/types'
 import { cn } from '../../lib/utils'
 import { useWorkspaceSelection } from '../app-shell'
+import { useNextAction } from '../inbox/use-next-actions'
 import { Card, CardContent } from '../ui/card'
+import { readableError } from '../ui/error-state'
 import { Skeleton } from '../ui/skeleton'
 import { TaskFlowStageSheet } from './task-flow-stage-sheet'
 import { useTaskFlow } from './use-task-flow'
@@ -89,6 +98,23 @@ function pathNodes(flow: TaskFlow): PathNode[] {
   return nodes
 }
 
+// The two places the chart adjusts the server's words. The merge node is named
+// for its outcome, so it reads "Merge" until the merge happened. And the flow
+// read says a stage that holds a merge is in progress, while the next action
+// states the hold: a merge held by its checks is waiting on a person, so it
+// takes the same tone as an approval, with the next action's own sentence.
+function withMergeHeld(flow: TaskFlow, action: NextAction | undefined): TaskFlow {
+  return {
+    ...flow,
+    stages: flow.stages.map((stage) => {
+      if (stage.id !== 'merge' || stage.status === 'done') return stage
+      const named = stage.label === 'Merged' ? { ...stage, label: 'Merge' } : stage
+      if (action?.kind !== 'check_hold' || stage.status === 'off') return named
+      return { ...named, status: 'needs_operator', status_label: 'Held', status_text: action.summary }
+    }),
+  }
+}
+
 // Node n sits on grid row 2n+1; the edge into it on row 2n.
 const nodeRow = (index: number) => 2 * index + 1
 
@@ -98,7 +124,10 @@ const nodeRow = (index: number) => 2 * index + 1
 // lifecycle state. It prints no next-action summary: the card above it does
 // (DEC-61).
 export function TaskFlowChart({ taskId }: { taskId: string }) {
-  const { data: flow, isLoading, error } = useTaskFlow(taskId)
+  const { data: serverFlow, isLoading, error } = useTaskFlow(taskId)
+  // The card above reads the same entry, so this adds no request.
+  const { data: action } = useNextAction(taskId)
+  const flow = useMemo(() => serverFlow && withMergeHeld(serverFlow, action), [serverFlow, action])
   const [selectedId, setSelectedId] = useState<TaskFlowStageId | null>(null)
   const selected = flow?.stages.find((stage) => stage.id === selectedId)
 
@@ -107,7 +136,9 @@ export function TaskFlowChart({ taskId }: { taskId: string }) {
       <Card>
         <CardContent className="space-y-4">
           {isLoading && <Skeleton className="h-64" />}
-          {error != null && <p className="text-sm text-failure">{String(error)}</p>}
+          {error != null && (
+            <p className="text-sm text-failure">{readableError(error, 'Something went wrong. Try again.')}</p>
+          )}
           {flow && (
             <>
               <Legend flow={flow} />
@@ -126,7 +157,12 @@ function Legend({ flow }: { flow: TaskFlow }) {
     <ul aria-label="Legend" className="flex flex-wrap gap-x-4 gap-y-1.5 text-xs text-muted">
       {flow.display.legend.map((entry) => (
         <li key={entry.status} data-flow-legend={entry.status} className="flex items-center gap-1.5">
-          <span aria-hidden className={cn('size-3 shrink-0 rounded-sm border', nodeTone[entry.status])} />
+          <span
+            aria-hidden
+            className={cn('flex size-3 shrink-0 items-center justify-center rounded-sm border', nodeTone[entry.status])}
+          >
+            {entry.status === 'done' && <Check className="size-2.5 text-primary" />}
+          </span>
           {entry.label}
         </li>
       ))}
@@ -275,7 +311,7 @@ function LanePill({ lane }: { lane: Lane }) {
     <span
       data-flow-lane-label
       className={cn(
-        'block w-max max-w-[6.5rem] rounded-full border bg-card px-2 py-0.5 text-center text-[10px] leading-3.5 font-medium',
+        'block w-max max-w-[6.5rem] rounded-full border bg-card px-2 py-0.5 text-center text-[11px] leading-3.5 font-medium',
         lane.kind === 'loop' ? 'whitespace-nowrap border-primary/60 text-primary' : 'border-transparent text-primary',
       )}
     >
@@ -353,9 +389,9 @@ function NodeSubLabel({
   label: string
   skippedLabel: string
 }) {
-  if (status === 'off') return <span className="text-[10px] leading-3">{skippedLabel}</span>
+  if (status === 'off') return <span className="text-[11px] leading-3">{skippedLabel}</span>
   if (status === 'in_progress' || status === 'waiting' || status === 'needs_operator')
-    return <span className="max-w-full truncate text-[10px] leading-3">{label}</span>
+    return <span className="max-w-full truncate text-[11px] leading-3">{label}</span>
   return null
 }
 
@@ -364,7 +400,7 @@ function DoneBadge() {
     <span
       aria-hidden
       data-flow-done
-      className="absolute -top-1.5 -right-1.5 flex size-4 items-center justify-center rounded-full bg-primary text-primary-foreground"
+      className="absolute -top-1.5 -right-1.5 flex size-4 items-center justify-center rounded-full bg-primary-fill text-primary-foreground"
     >
       <Check className="size-2.5" strokeWidth={3} />
     </span>
@@ -445,7 +481,7 @@ function SideColumn({ flow, nodes, mainColumn }: { flow: TaskFlow; nodes: PathNo
         />
       )}
       <p
-        className="self-end border-b border-border pb-0.5 text-center text-[10px] leading-3 text-faint"
+        className="self-end border-b border-border pb-0.5 text-center text-[11px] leading-3 text-faint"
         style={{ gridColumn: side, gridRow: slots.parked - 1 }}
       >
         {flow.display.from_any_step_label}

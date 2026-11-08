@@ -18,10 +18,10 @@ const bands: { band?: InboxBand; label: string }[] = [
 export function InboxBandChips({ search, counts }: { search: InboxSearch; counts: Record<InboxBand, number> }) {
   const { workspace } = useWorkspaceSelection()
   return (
-    <div className="flex flex-col items-start gap-1.5 sm:items-end">
+    <div className="flex w-full min-w-0 flex-col items-start gap-1.5 sm:w-auto sm:items-end">
       <nav
         aria-label="Inbox bands"
-        className="flex flex-wrap items-center gap-0.5 rounded-lg border border-border bg-surface p-0.5 text-xs"
+        className="flex w-full items-center gap-0.5 overflow-x-auto rounded-lg bg-surface p-0.5 text-xs sm:w-auto"
       >
         {bands.map((segment) => {
           const selected = search.band === segment.band
@@ -34,7 +34,7 @@ export function InboxBandChips({ search, counts }: { search: InboxSearch; counts
               aria-current={selected ? 'page' : undefined}
               data-band-chip={segment.band ?? 'all'}
               className={cn(
-                'inline-flex items-center gap-1.5 rounded-md px-2.5 py-1 font-medium pointer-coarse:min-h-10',
+                'inline-flex shrink-0 items-center justify-center gap-1.5 whitespace-nowrap rounded-md px-2 py-1 font-medium pointer-coarse:min-h-10 max-sm:flex-1',
                 selected ? 'bg-card text-foreground shadow-sm' : 'text-muted hover:text-foreground',
               )}
             >
@@ -48,7 +48,7 @@ export function InboxBandChips({ search, counts }: { search: InboxSearch; counts
           )
         })}
       </nav>
-      <span data-inbox-order className="text-[11px] text-faint">
+      <span data-inbox-order className="sr-only">
         Blockers first, then nearest deadline
       </span>
     </div>

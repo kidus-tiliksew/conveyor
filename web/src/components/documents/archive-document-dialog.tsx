@@ -60,7 +60,7 @@ export function ArchiveDocumentDialog({
                 />
                 <span className="min-w-0 text-sm">
                   <span className="block truncate">{candidate.title}</span>
-                  <span className="block font-mono text-[10px] text-faint">
+                  <span className="block font-mono text-[11px] text-faint">
                     {candidate.kind === 'requirement' ? 'Requirement' : 'System Design'} · {candidate.id}
                   </span>
                 </span>

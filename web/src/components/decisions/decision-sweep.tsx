@@ -4,6 +4,7 @@ import { dismissDecisionSupersessionSweep } from '../../lib/api'
 import { errorMessage } from '../../lib/errors'
 import { decisionsQueryKey } from '../../lib/query-keys'
 import type { Decision, DecisionSupersessionSweepEntry } from '../../lib/types'
+import { fullTime } from '../../lib/utils'
 import { useWorkspaceCapability, useWorkspaceSelection } from '../app-shell'
 import { Badge } from '../ui/badge'
 import { Button } from '../ui/button'
@@ -50,7 +51,7 @@ export function DecisionSweep({ decision }: { decision: Decision & { supersedes:
           <SweepDocumentLink entry={entry} />
           <Badge>{sweepTierLabel(entry.document_tier)}</Badge>
           <Badge variant={entry.status === 'open' ? 'attention' : 'default'}>{statusLabels[entry.status]}</Badge>
-          <Disclosure triggerClassName="text-faint" content={new Date(entry.detected_at).toLocaleString()}>
+          <Disclosure triggerClassName="text-faint" content={fullTime(entry.detected_at)}>
             <time dateTime={entry.detected_at}>Detected {formatDecisionDate(entry.detected_at)}</time>
           </Disclosure>
           {entry.status === 'open' && canConfirm && (
@@ -71,9 +72,7 @@ export function DecisionSweep({ decision }: { decision: Decision & { supersedes:
   }
   return (
     <section aria-label={`Cleanup after replacing ${decision.supersedes}`} className="mt-8">
-      <h3 className="text-xs font-semibold uppercase tracking-[0.12em] text-muted">
-        Cleanup after replacing {decision.supersedes}
-      </h3>
+      <h3 className="text-xs font-medium text-muted">Cleanup after replacing {decision.supersedes}</h3>
       <p className="mt-1 text-xs text-muted">
         Documents flagged for still citing {decision.supersedes}. These flags manage operator attention. They do not
         block delivery, review, or merge.

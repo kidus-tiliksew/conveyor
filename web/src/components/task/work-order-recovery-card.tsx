@@ -11,6 +11,7 @@ import { cn } from '../../lib/utils'
 import { useWorkspaceCapability, useWorkspaceSelection } from '../app-shell'
 import { Badge } from '../ui/badge'
 import { Button } from '../ui/button'
+import { readableError } from '../ui/error-state'
 import { CheckpointProposalDiff } from './checkpoint-proposal-diff'
 import { TaskContextAttachmentDialog } from './task-context-attachment-dialog'
 import { VerificationCheckpointGrounds } from './verification-checkpoint-grounds'
@@ -81,7 +82,7 @@ function VerificationCheckpointRecovery({ item, state }: { item: ActivityItem; s
       <div className="flex items-start gap-2">
         <TriangleAlert className="mt-0.5 size-4 shrink-0 text-attention" aria-hidden />
         <div className="min-w-0 space-y-1 leading-5">
-          <p className="text-[11px] font-semibold uppercase tracking-[0.08em] text-attention">{state.title}</p>
+          <p className="text-xs font-medium text-attention">{state.title}</p>
           <p className="whitespace-pre-wrap break-words text-sm text-foreground">{checkpoint.reason}</p>
         </div>
       </div>
@@ -419,7 +420,9 @@ function WorkOrderRecoveryState({ item, state }: { item: ActivityItem; state: Cu
         {mutation.isPending ? 'Retrying…' : actionLabel}
       </Button>
       {!canRecoverWork && <p className="text-xs text-muted">Work recovery capability is required.</p>}
-      {mutation.error != null && <p className="text-xs text-failure">{String(mutation.error)}</p>}
+      {mutation.error != null && (
+        <p className="text-xs text-failure">{readableError(mutation.error, 'Something went wrong. Try again.')}</p>
+      )}
       {attachingContext && <TaskContextAttachmentDialog task={item.task} onClose={() => setAttachingContext(false)} />}
     </>
   )

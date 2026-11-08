@@ -4,6 +4,7 @@ import { useState } from 'react'
 import { type PlanRevisionRequest } from '../../lib/activity'
 import { reviewTask } from '../../lib/api'
 import { planRevisionReasonCodes } from '../../lib/contracts'
+import { errorMessage } from '../../lib/errors'
 import type { ActivityItem, InterventionAction } from '../../lib/types'
 import { cn } from '../../lib/utils'
 import { useWorkspaceSelection } from '../app-shell'
@@ -163,7 +164,7 @@ export function PlanRevisionDecisionCard({
                 Cancel
               </Button>
               <Button
-                variant={decision === 'reject' ? 'destructive' : 'secondary'}
+                variant={decision === 'reject' ? 'danger' : 'secondary'}
                 size="sm"
                 // Declining is how operator direction reaches the retried
                 // implementation, so an empty one is not a decision the API
@@ -176,7 +177,7 @@ export function PlanRevisionDecisionCard({
             </div>
           </div>
         )}
-        {mutation.error != null && <p className="mt-2 text-sm text-failure">{String(mutation.error)}</p>}
+        {mutation.error != null && <p className="mt-2 text-sm text-failure">{errorMessage(mutation.error)}</p>}
       </div>
     </section>
   )

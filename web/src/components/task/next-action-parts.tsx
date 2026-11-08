@@ -1,4 +1,5 @@
-import { relativeTime } from '../../lib/utils'
+import type { NextAction } from '../../lib/types'
+import { fullTime, relativeTime } from '../../lib/utils'
 
 // The deadline a next action states, absolute and relative. A next action
 // without one says nothing rather than inventing a horizon.
@@ -6,7 +7,7 @@ export function NextActionDeadline({ deadline }: { deadline: string | null | und
   if (!deadline) return null
   return (
     <p className="text-xs text-muted" data-next-action-deadline>
-      Deadline <time dateTime={deadline}>{new Date(deadline).toLocaleString()}</time> ({relativeTime(deadline)})
+      Deadline <time dateTime={deadline}>{fullTime(deadline)}</time> ({relativeTime(deadline)})
     </p>
   )
 }
@@ -22,5 +23,17 @@ export function NextActionIDs({ value }: { value: unknown }) {
         {JSON.stringify(value, null, 2)}
       </pre>
     </details>
+  )
+}
+
+// The lines under a decision: what ignoring it costs, when it is due, and the
+// server's identifiers. They print once, wherever the choices are.
+export function NextActionNotes({ action }: { action: NextAction }) {
+  return (
+    <>
+      {action.if_ignored && <p className="text-xs text-muted">If ignored: {action.if_ignored}</p>}
+      <NextActionDeadline deadline={action.deadline} />
+      <NextActionIDs value={{ details: action.details, current_order: action.current_order }} />
+    </>
   )
 }

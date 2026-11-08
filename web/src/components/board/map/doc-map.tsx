@@ -85,7 +85,7 @@ export function DocList({
             <span className="flex items-center gap-2">
               <span
                 className={cn(
-                  'min-w-0 flex-1 truncate text-[13px]',
+                  'min-w-0 flex-1 truncate text-sm',
                   active ? 'font-semibold text-foreground' : 'font-medium text-muted group-hover:text-foreground',
                 )}
               >

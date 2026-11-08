@@ -5,7 +5,7 @@ export function SuccessorLinks({ ids, compact = false }: { ids?: string[]; compa
   const { workspace } = useWorkspaceSelection()
   if (!ids?.length) return null
   return (
-    <span className={compact ? 'text-[10px] text-muted' : 'text-sm text-muted'}>
+    <span className={compact ? 'text-[11px] text-muted' : 'text-sm text-muted'}>
       Superseded by{' '}
       {ids.map((id, index) => (
         <span key={id}>

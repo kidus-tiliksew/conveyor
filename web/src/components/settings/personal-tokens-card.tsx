@@ -3,6 +3,7 @@ import { KeyRound, Plus } from 'lucide-react'
 import { useState } from 'react'
 import { fetchPersonalAccessTokens, issuePersonalAccessToken, revokePersonalAccessToken } from '../../lib/api'
 import { errorMessage } from '../../lib/errors'
+import { fullTime } from '../../lib/utils'
 import { Badge } from '../ui/badge'
 import { Button } from '../ui/button'
 import { Card, CardContent, CardHeader, CardTitle } from '../ui/card'
@@ -11,8 +12,8 @@ import { Dialog } from '../ui/dialog'
 import { Input } from '../ui/input'
 
 function lifecycleSummary(created: string, lastUsed?: string) {
-  const createdText = `Created ${new Date(created).toLocaleString()}`
-  return lastUsed ? `${createdText} · Last used ${new Date(lastUsed).toLocaleString()}` : `${createdText} · Never used`
+  const createdText = `Created ${fullTime(created)}`
+  return lastUsed ? `${createdText} · Last used ${fullTime(lastUsed)}` : `${createdText} · Never used`
 }
 
 const deploymentRevokeConfirmation = 'REVOKE DEPLOYMENT CREDENTIAL'

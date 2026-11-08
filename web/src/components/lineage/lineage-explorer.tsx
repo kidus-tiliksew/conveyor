@@ -131,14 +131,14 @@ function KnowledgeGroups({
         )
         return (
           <section key={key} aria-label={title}>
-            <h3 className="flex items-center gap-2 text-[10px] font-semibold uppercase tracking-[0.12em] text-faint">
+            <h3 className="flex items-center gap-2 text-xs font-medium text-muted">
               {title}
               <Badge variant="mono">{groupedEntries.length}</Badge>
             </h3>
             {own.length > 0 && list(own)}
             {through.length > 0 && (
               <section aria-label={`${title} through other tasks`} className="mt-3">
-                <h4 className="text-[10px] font-medium uppercase tracking-[0.08em] text-faint">Through other tasks</h4>
+                <h4 className="text-xs font-medium text-muted">Through other tasks</h4>
                 {list(through)}
               </section>
             )}
@@ -247,7 +247,7 @@ function KnowledgeEntry({
           `Returned ${versions}; opens the blueprint record without selecting a version`
   const body = (
     <>
-      <span className={`block text-[10px] uppercase tracking-wide ${entry.current ? 'text-primary/70' : 'text-faint'}`}>
+      <span className={`block text-xs ${entry.current ? 'text-primary/70' : 'text-muted'}`}>
         {kindInfo[entry.kind].label}
       </span>
       <span className="flex items-center gap-2">
@@ -389,7 +389,7 @@ function ImpactView({ workspace, type, id }: { workspace: string; type: 'require
   }
   return (
     <section aria-label="Merged on an older version" className="ml-3 mt-2 border-l border-border pl-3 text-[11px]">
-      <h4 className="text-[10px] font-medium uppercase tracking-[0.08em] text-faint">Merged on an older version</h4>
+      <h4 className="text-xs font-medium text-muted">Merged on an older version</h4>
       {isLoading && (
         <p role="status" className="text-muted">
           Reading merged work…

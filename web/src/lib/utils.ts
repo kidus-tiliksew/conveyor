@@ -23,7 +23,31 @@ export function absoluteTime(value: string) {
   return new Date(value).toLocaleString('en', {
     month: 'short',
     day: 'numeric',
-    hour: '2-digit',
+    hour: 'numeric',
+    minute: '2-digit',
+  })
+}
+
+// One absolute date format for the whole dashboard: "Nov 7, 2026, 11:19 AM".
+// A recorded actor such as `user:usr_abc`, as the name a person recognises.
+export function actorName(
+  actor: string,
+  members: Array<{ user_id: string; display_name?: string; email?: string }> = [],
+) {
+  const id = actor.replace(/^user:/, '')
+  const member = members.find((candidate) => candidate.user_id === id)
+  if (member) return member.display_name || member.email || id
+  if (actor.startsWith('user:')) return 'an operator'
+  if (actor.startsWith('agent:')) return 'an agent'
+  return actor
+}
+
+export function fullTime(value: string) {
+  return new Date(value).toLocaleString('en', {
+    month: 'short',
+    day: 'numeric',
+    year: 'numeric',
+    hour: 'numeric',
     minute: '2-digit',
   })
 }

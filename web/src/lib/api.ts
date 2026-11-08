@@ -700,8 +700,20 @@ async function gateMutationError(response: Response) {
 function apiErrorMessage(body: string, fallback: string) {
   const text = body.trim()
   try {
-    const parsed = JSON.parse(text) as { detail?: string; message?: string; fields?: Array<{ message?: string }> }
-    return parsed.detail || parsed.message || parsed.fields?.[0]?.message || text || fallback
+    const parsed = JSON.parse(text) as {
+      error?: unknown
+      detail?: string
+      message?: string
+      fields?: Array<{ message?: string }>
+    }
+    const known = parsed.detail || parsed.message || parsed.fields?.[0]?.message
+    if (known) return known
+    // Some handlers send only `{ "error": ... }`: a sentence, or a bare code.
+    if (typeof parsed.error === 'string' && parsed.error.trim()) {
+      const error = parsed.error.trim()
+      return /^[a-z0-9_.-]+$/.test(error) ? `Something went wrong (${error}).` : error
+    }
+    return fallback
   } catch {
     return text || fallback
   }
@@ -1453,7 +1465,7 @@ export async function confirmSystemDesignVersion(
     try {
       const parsed = JSON.parse(body) as { error?: string; message?: string }
       code = parsed.error ?? ''
-      message = parsed.message ?? message
+      message = apiErrorMessage(body, response.statusText)
     } catch {
       /* plain-text API error */
     }

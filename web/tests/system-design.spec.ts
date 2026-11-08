@@ -708,6 +708,7 @@ test('operators confirm and dismiss proposed decisions with conflict-safe refres
   })
 
   await page.goto('/w/demo/system-design')
+  await page.getByRole('button', { name: 'Show 2 more' }).click()
   await expect(page.locator('#decision-dec-2')).toBeVisible()
   await page.locator('#decision-dec-1').getByRole('button', { name: 'Confirm' }).click()
   // A confirmed decision leaves System Design for the Decisions surface

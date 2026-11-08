@@ -58,7 +58,7 @@ function CurrentAttemptCard({ stage }: { stage: TaskFlowStage }) {
   const attempt = stage.current_attempt
   return (
     <section aria-label="Current attempt" className="space-y-2">
-      <h3 className="text-xs font-semibold uppercase tracking-[0.12em] text-muted">Current attempt</h3>
+      <h3 className="text-xs font-medium text-muted">Current attempt</h3>
       <div className="space-y-3 rounded-md border border-border bg-card p-3 text-sm">
         {attempt ? <AttemptFacts attempt={attempt} /> : <p data-flow-status-text>{stage.status_text}</p>}
       </div>
@@ -142,7 +142,7 @@ function Attempts({ attempts }: { attempts: TaskFlowAttempt[] }) {
   const superseded = earlier.filter(({ attempt }) => attempt.superseded).length
   return (
     <section aria-label="Attempts" className="space-y-2">
-      <h3 className="text-xs font-semibold uppercase tracking-[0.12em] text-muted">Attempts</h3>
+      <h3 className="text-xs font-medium text-muted">Attempts</h3>
       <ol className="overflow-hidden rounded-md border border-border">
         <AttemptRow attempt={latest.attempt} number={latest.number} latest />
       </ol>

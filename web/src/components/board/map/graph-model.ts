@@ -20,6 +20,7 @@ export interface GraphTask {
   repo: string
   status: GraphStatus
   state: string
+  actionActor?: string
   actionLabel?: string
   actionSummary?: string
   lastEventAt: string
@@ -72,6 +73,7 @@ export function buildModel(items: TaskMapItem[]): TaskGraphModel {
       repo: item.repo,
       status: statusOf(item),
       state: item.state,
+      actionActor: item.next_action?.actor,
       actionLabel: item.next_action?.label,
       actionSummary: item.next_action?.summary,
       lastEventAt: item.last_event_at,
@@ -266,6 +268,42 @@ export const statusMeta: Record<GraphStatus, { label: string; tone: string; ring
 export const labelOf = (task: GraphTask) =>
   task.actionLabel ??
   (task.stub && !DONE.has(task.status) ? 'Hidden by the repository filter' : statusMeta[task.status].label)
+
+// The map's status legend gathers the stated labels into the five states a
+// person scans for. A factory step reads as work in hand, and a mechanical
+// operator step, such as a job failure, as the operator's; the labels stay
+// verbatim in the legend's detail.
+export type StatusGroup = 'needs_you' | 'working' | 'queued' | 'blocked' | 'finished'
+
+export const statusGroups: Array<{ id: StatusGroup; label: string; status: GraphStatus }> = [
+  { id: 'needs_you', label: 'Needs you', status: 'needs_you' },
+  { id: 'working', label: 'Working', status: 'running' },
+  { id: 'queued', label: 'Queued', status: 'ready' },
+  { id: 'blocked', label: 'Blocked', status: 'blocked' },
+  { id: 'finished', label: 'Finished', status: 'merged' },
+]
+
+export function statusGroupOf(task: GraphTask): StatusGroup {
+  switch (task.status) {
+    case 'blocked':
+      return 'blocked'
+    case 'plan_gate':
+    case 'merge_gate':
+    case 'needs_you':
+      return 'needs_you'
+    case 'running':
+      return 'working'
+    case 'merged':
+    case 'closed':
+      return 'finished'
+    case 'parked':
+      if (task.actionActor === 'operator') return 'needs_you'
+      if (task.actionActor === 'factory') return 'working'
+      return 'queued'
+    default:
+      return 'queued'
+  }
+}
 
 export const statusOrder: GraphStatus[] = [
   'blocked',

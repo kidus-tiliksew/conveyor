@@ -29,6 +29,7 @@ import {
 } from '../../lib/contracts'
 import { type HarnessLogo, type ProviderLogo, selectModelLogo } from '../../lib/model-logo'
 import { taskDetailQueryKey } from '../../lib/query-keys'
+import type { TaskRouteVariant } from '../../lib/task-route'
 import type {
   ActivityItem,
   InterventionAction,
@@ -52,6 +53,7 @@ import { canRedispatch, FailedTriageCard, RedispatchCard } from './redispatch-ca
 import {
   changesComposerHint,
   type GateTone,
+  gateAnchorId,
   gateTone,
   isReviewable,
   ReviewPanel,
@@ -60,6 +62,7 @@ import {
 import { hasReviewRoundRetry, ReviewRoundRetryCard } from './review-round-retry-card'
 import { ReviewRoundSummary } from './review-round-summary'
 import { ReviewSeatAdd } from './review-seat-add'
+import { useCollapsibleContent } from './use-collapsible-content'
 import { useTaskAudit } from './use-task-detail'
 import { isHistoryRestart, useTaskHistory } from './use-task-history'
 import { VerificationEntry } from './verification-entry'
@@ -84,7 +87,15 @@ const gateDots: Record<GateTone, string> = {
 // no work orders, so redispatch, order recovery, and review recovery
 // are affordances for execution that will never happen. The story it does
 // have — materialization, child progress, close — still renders in full.
-export function Timeline({ item, executionActions = true }: { item: ActivityItem; executionActions?: boolean }) {
+export function Timeline({
+  item,
+  executionActions = true,
+  routeVariant,
+}: {
+  item: ActivityItem
+  executionActions?: boolean
+  routeVariant?: TaskRouteVariant
+}) {
   const canOperate = useWorkspaceCapability('operate_gates')
   const canRecover = useWorkspaceCapability('recover_work')
   const canRequestChanges = useCanRequestTaskChanges(item.task)
@@ -108,7 +119,7 @@ export function Timeline({ item, executionActions = true }: { item: ActivityItem
   // one a pause interrupts, so that gap neither announces nor resets it.
   useEffect(() => {
     if (!currentExecution) return
-    if (priorExecutionStatus.current === 'progressing' && currentExecution.status === 'paused') {
+    if (priorExecutionStatus.current !== 'paused' && currentExecution.status === 'paused') {
       setExecutionAnnouncement(`${currentExecution.title}. ${currentExecution.nextAction}`)
     }
     priorExecutionStatus.current = currentExecution.status
@@ -211,9 +222,13 @@ export function Timeline({ item, executionActions = true }: { item: ActivityItem
             </li>
           ))}
           {showGate && (canOperate || (item.at_merge_gate && canRequestChanges) || (canRecover && recoveryGate)) && (
-            <li ref={gateRef} className="relative pl-7">
+            <li ref={gateRef} id={gateAnchorId(item.task.id)} className="relative pl-7">
               <TimelineDot className={cn('animate-pulse', gateDots[gateTone(item.next_action?.kind)])} />
-              <ReviewPanel item={item} onDecisionRecorded={() => setDecisionScrollRequest((request) => request + 1)} />
+              <ReviewPanel
+                item={item}
+                routeVariant={routeVariant}
+                onDecisionRecorded={() => setDecisionScrollRequest((request) => request + 1)}
+              />
             </li>
           )}
         </ol>
@@ -317,7 +332,7 @@ function TaskUsage({ item, workspace }: { item: ActivityItem; workspace: string 
   return (
     <section aria-label="Task usage telemetry" className="border-t border-border px-3 py-3">
       <p className="font-medium text-foreground">Task usage</p>
-      <p className="mt-1 font-mono text-[11px] tabular-nums">
+      <p className="mt-1 text-[11px] tabular-nums">
         {measured.length > 0
           ? `${compactTokens(totals.tokensIn)} in / ${compactTokens(totals.tokensOut)} out across ${measured.length} reported work ${measured.length === 1 ? 'order' : 'orders'}`
           : 'Usage unavailable for every work order'}
@@ -327,7 +342,7 @@ function TaskUsage({ item, workspace }: { item: ActivityItem; workspace: string 
       </p>
       <ul className="mt-2 space-y-1" aria-label="Work-order usage">
         {orders.map((order) => (
-          <li key={order.id} className="flex flex-wrap items-baseline gap-x-2 font-mono text-[11px] tabular-nums">
+          <li key={order.id} className="flex flex-wrap items-baseline gap-x-2 text-[11px] tabular-nums">
             <span className="text-foreground">{stageLabels[order.stage] ?? order.stage}</span>
             <code className="text-faint">{order.id}</code>
             <span className="ml-auto">{usageText(order, reported.has(order.id))}</span>
@@ -638,31 +653,24 @@ function keyFor(entry: TimelineEntry) {
   return entry.key
 }
 
-// The panel's timeline dot: a segmented ring, one arc per seat, filling as
-// verdicts arrive — the collapsed, feed-glanceable form of the header tally.
-function ringGradient(seats: PanelSeat[]): string | undefined {
-  if (seats.length < 2) return undefined
-  const gap = 16
-  const segment = (360 - seats.length * gap) / seats.length
-  const stops: string[] = []
-  let angle = 0
-  for (const seat of seats) {
-    const color = seat.review
-      ? seat.review.verdict === 'approve'
-        ? 'var(--color-positive)'
-        : 'var(--color-attention-dot)'
-      : seat.status === 'stale' || seat.status === 'timed_out'
-        ? 'var(--color-attention-dot)'
-        : seat.status === 'failed'
-          ? 'var(--color-failure)'
-          : 'var(--color-edge)'
-    stops.push(
-      `${color} ${angle}deg ${angle + segment}deg`,
-      `transparent ${angle + segment}deg ${angle + segment + gap}deg`,
-    )
-    angle += segment + gap
-  }
-  return `conic-gradient(from -90deg, ${stops.join(', ')})`
+// The panel's timeline dot, the same size as every other: the panel's verdict
+// once it settles, otherwise the state of the round so far. The per-seat tally
+// sits in the entry's header.
+// The gates' own approval reason codes, read as what the person did.
+const approvalReasonWords: Record<string, string> = {
+  'plan-approved': 'Plan approved',
+  'merge-at-gate': 'Approved and merged',
+}
+
+function panelDot(seats: PanelSeat[], resolution: { verdict: string } | undefined, deliberating: boolean) {
+  if (resolution) return resolution.verdict === 'approve' ? 'bg-positive' : 'bg-attention-dot'
+  if (deliberating) return 'animate-pulse bg-primary'
+  if (seats.some((seat) => seat.review?.verdict === 'changes_requested')) return 'bg-attention-dot'
+  if (seats.some((seat) => !seat.review && seat.status === 'failed')) return 'bg-failure'
+  if (seats.some((seat) => !seat.review && (seat.status === 'stale' || seat.status === 'timed_out')))
+    return 'bg-attention-dot'
+  if (seats.length > 0 && seats.every((seat) => seat.review?.verdict === 'approve')) return 'bg-positive'
+  return 'bg-edge'
 }
 
 const orderDots: Record<Extract<TimelineEntry, { type: 'order' }>['tone'], string> = {
@@ -777,7 +785,9 @@ function TimelineRow({
     // and the entry is where the person's own feedback is kept verbatim, so it
     // repeats the promise the composer made when they sent it (REQ-6).
     const plainLabel =
-      planRevisionDecisionLabels[intervention.reason_code] ?? interventionReasonLabels[intervention.reason_code]
+      planRevisionDecisionLabels[intervention.reason_code] ??
+      interventionReasonLabels[intervention.reason_code] ??
+      approvalReasonWords[intervention.reason_code]
     const returnedForChanges = intervention.reason_code === userRequestChangesReason
     return (
       <li className="relative pl-7">
@@ -867,45 +877,26 @@ function PanelEntry({
   // Reviewer feedback surfaces as each verdict lands — not held until the
   // round settles — so nothing a reviewer wrote is ever invisible.
   const notes = seats.filter((seat) => seat.review && seat.review.feedback.trim())
-  const gradient = ringGradient(seats)
-  const single = seats[0]
   return (
     <li className="relative pl-7">
-      {gradient ? (
-        <span
-          aria-hidden
-          className={cn('absolute -left-0.5 top-2.5 size-[19px] rounded-full', deliberating && 'animate-pulse')}
-          style={{ background: gradient }}
-        >
-          <span className="absolute inset-1 rounded-full bg-background" />
-        </span>
-      ) : (
-        <TimelineDot
-          className={cn(
-            'bg-edge',
-            single?.review?.verdict === 'approve' && 'bg-positive',
-            single?.review?.verdict === 'changes_requested' && 'bg-attention-dot',
-            !single?.review && (single?.status === 'stale' || single?.status === 'timed_out') && 'bg-attention-dot',
-            !single?.review && single?.status === 'failed' && 'bg-failure',
-            deliberating && 'animate-pulse bg-primary',
-          )}
-        />
-      )}
-      <article className="rounded-lg border border-border bg-card">
+      <TimelineDot className={panelDot(seats, resolution, deliberating)} />
+      <article className="rounded-lg bg-surface">
         <div className="flex flex-wrap items-center gap-2 border-b border-border px-4 py-2.5">
-          <span className="text-[13px] font-semibold text-foreground">{stageLabels.review}</span>
+          <span className="text-sm font-semibold text-foreground">{stageLabels.review}</span>
           {resolution && (
             <Badge variant={resolution.verdict === 'approve' ? 'positive' : 'attention'} data-review-verdict>
               {resolution.verdict === 'approve' ? 'Approved' : 'Changes requested'}
             </Badge>
           )}
-          <span className="text-xs text-muted" title={seatMetadata ? reviewSeatSourceTitle(seatMetadata) : undefined}>
-            {seatMetadata
-              ? `Panel of ${seats.length} · minimum ${seatMetadata.minimum_seat_count}`
-              : `Panel of ${seats.length}`}
+          <span className="text-xs text-muted">
+            <span title={seatMetadata ? reviewSeatSourceTitle(seatMetadata) : undefined}>
+              {seatMetadata
+                ? `Panel of ${seats.length} · minimum ${seatMetadata.minimum_seat_count}`
+                : `Panel of ${seats.length}`}
+            </span>
+            {seats.length > 1 && ' · unanimous to pass'}
+            {entry.distinctModels && ' · task policy: distinct seat models'}
           </span>
-          {seats.length > 1 && <span className="text-xs text-muted">· unanimous to pass</span>}
-          {entry.distinctModels && <span className="text-xs text-muted">· task policy: distinct seat models</span>}
           <span className="inline-flex items-center gap-[5px]" title={`${verdictsIn} of ${seats.length} verdicts in`}>
             {seats.map((seat) => (
               <span
@@ -962,7 +953,7 @@ function PanelEntry({
             {notes.map((seat) => (
               <div
                 key={seat.seat}
-                className="grid grid-cols-[auto_1fr] gap-x-2.5 border-t border-dashed border-border/70 py-2 text-sm first:border-t-0 first:pt-0 last:pb-0"
+                className="grid grid-cols-[2.75rem_1fr] gap-x-2.5 border-t border-dashed border-border/70 py-2 text-sm first:border-t-0 first:pt-0 last:pb-0"
               >
                 <span className="pt-0.5 text-xs text-faint">Seat {seat.seat}</span>
                 <SeatNote seat={seat} taskId={taskId} />
@@ -976,28 +967,31 @@ function PanelEntry({
         {resolution ? (
           <div
             className={cn(
-              'flex flex-wrap items-center gap-x-2 gap-y-1 rounded-b-lg border-t border-border px-4 py-2.5 text-sm font-medium',
+              'flex items-start gap-2 rounded-b-lg border-t border-border px-4 py-2.5 text-sm font-medium',
               resolution.verdict === 'approve' ? 'bg-positive-soft text-positive' : 'bg-attention-soft text-attention',
             )}
           >
             {resolution.verdict === 'approve' ? (
-              <Check className="size-4 shrink-0" />
+              <Check className="mt-0.5 size-4 shrink-0" />
             ) : (
-              <Undo2 className="size-4 shrink-0" />
+              <Undo2 className="mt-0.5 size-4 shrink-0" />
             )}
-            {resolution.verdict === 'approve'
-              ? seats.length > 1
-                ? `The panel is unanimous — ${seats.length} of ${seats.length} approved`
-                : 'Approved'
-              : `Changes requested — ${changes} of ${seats.length} ${seats.length > 1 ? 'seats' : 'seat'}`}
-            <span className="text-xs font-normal opacity-80">
-              {resolution.verdict === 'changes_requested'
-                ? `feedback sent back as one round${resolution.bounce ? ` · ${resolution.bounce} used so far` : ''}`
-                : ''}
+            {/* The icon stays beside the text however narrow the column gets. */}
+            <span className="min-w-0 flex-1">
+              {resolution.verdict === 'approve'
+                ? seats.length > 1
+                  ? `The panel is unanimous — ${seats.length} of ${seats.length} approved`
+                  : 'Approved'
+                : `Changes requested — ${changes} of ${seats.length} ${seats.length > 1 ? 'seats' : 'seat'}`}{' '}
+              <span className="text-xs font-normal opacity-80">
+                {resolution.verdict === 'changes_requested'
+                  ? `feedback sent back as one round${resolution.bounce ? ` · ${resolution.bounce} used so far` : ''}`
+                  : ''}
+              </span>
             </span>
           </div>
         ) : (
-          <div className="flex flex-wrap items-center gap-x-3 gap-y-1 border-t border-border px-4 py-2 font-mono text-[11px] tabular-nums text-muted">
+          <div className="flex flex-wrap items-center gap-x-3 gap-y-1 border-t border-border px-4 py-2 text-[11px] tabular-nums text-muted">
             <span>
               {verdictsIn} of {seats.length} verdicts in
             </span>
@@ -1041,7 +1035,7 @@ function SeatRow({ seat, index, usageAvailable }: { seat: PanelSeat; index: numb
   return (
     <div className="flex flex-wrap items-center gap-x-3 gap-y-1.5 px-4 py-2.5">
       <span className="w-11 shrink-0 text-xs text-faint">Seat {seat.seat}</span>
-      <span className="min-w-0 flex-[1_1_7rem] font-mono text-[11px] tabular-nums text-muted">
+      <span className="flex min-w-0 flex-wrap items-baseline gap-x-1.5 text-[11px] tabular-nums text-muted max-sm:basis-[calc(100%-3.5rem)] sm:flex-[1_1_7rem]">
         <ModelChip
           model={seat.model}
           agent={seat.order.agent}
@@ -1051,13 +1045,13 @@ function SeatRow({ seat, index, usageAvailable }: { seat: PanelSeat; index: numb
           usageAvailable={usageAvailable}
           showUnavailableUsage={false}
         />
-        {reportedModel && <span className="ml-1.5 font-sans text-faint">self-reported</span>}
+        {reportedModel && <span className="whitespace-nowrap font-sans text-faint">self-reported</span>}
       </span>
       {seat.review?.sameModelAsImplementer && (
         <span className="text-[11px] text-attention">same model as implementer</span>
       )}
       {usageAvailable && (
-        <span className="font-mono text-[11px] tabular-nums text-faint">
+        <span className="text-[11px] tabular-nums text-faint">
           {compactTokens(seat.order.tokens_in)} in / {compactTokens(seat.order.tokens_out)} out
         </span>
       )}
@@ -1086,38 +1080,23 @@ function reviewSeatProgress(progress?: string) {
 // session-local and independent per seat.
 function SeatNote({ seat, taskId }: { seat: PanelSeat; taskId: string }) {
   const [expanded, setExpanded] = useState(false)
-  const [hasOverflow, setHasOverflow] = useState(false)
-  const viewportRef = useRef<HTMLDivElement>(null)
+  const collapse = useCollapsibleContent(128, expanded)
   const viewportID = useId()
-
-  useLayoutEffect(() => {
-    // Only measure while collapsed; expanding keeps the last overflow reading so
-    // the collapse control stays visible (mirrors SpecCard's contentExpanded).
-    const viewport = viewportRef.current
-    if (!viewport || expanded) return
-    const measure = () => setHasOverflow(viewport.scrollHeight > viewport.clientHeight + 1)
-    measure()
-
-    const observer = new ResizeObserver(measure)
-    observer.observe(viewport)
-    if (viewport.firstElementChild) observer.observe(viewport.firstElementChild)
-    return () => observer.disconnect()
-  }, [expanded, seat.review])
 
   return (
     <div>
       <div className="relative">
-        <div id={viewportID} ref={viewportRef} className={cn(!expanded && 'max-h-32 overflow-hidden')}>
-          <p className="whitespace-pre-line leading-6 text-foreground/85">{seat.review!.feedback.trim()}</p>
+        <div id={viewportID} ref={collapse.viewportRef} style={collapse.viewportStyle}>
+          <MarkdownProse className="markdown-demoted text-sm">{seat.review!.feedback.trim()}</MarkdownProse>
         </div>
-        {hasOverflow && !expanded && (
+        {collapse.clamped && (
           <div
             aria-hidden="true"
-            className="spec-overflow-shadow pointer-events-none absolute inset-x-0 bottom-0 h-12"
+            className={cn('spec-overflow-shadow pointer-events-none absolute inset-x-0 bottom-0', collapse.fadeClass)}
           />
         )}
       </div>
-      {hasOverflow && (
+      {collapse.collapsible && (
         <button
           type="button"
           aria-controls={viewportID}
@@ -1160,15 +1139,20 @@ function SeatState({ seat, index }: { seat: PanelSeat; index: number }) {
         <Disclosure
           title={review.summary.trim() || undefined}
           content={review.summary.trim() || undefined}
-          triggerClassName={cn(
-            'inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-xs font-medium',
-            approved ? 'bg-positive-soft text-positive' : 'bg-attention-soft text-attention',
-          )}
+          triggerClassName="justify-center"
         >
-          {approved ? <Check className="size-3" /> : <Undo2 className="size-3" />}
-          {approved ? 'Approved' : 'Changes'}
+          {/* The button keeps its touch target; only this pill is visible. */}
+          <span
+            className={cn(
+              'inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-xs font-medium',
+              approved ? 'bg-positive-soft text-positive' : 'bg-attention-soft text-attention',
+            )}
+          >
+            {approved ? <Check className="size-3" /> : <Undo2 className="size-3" />}
+            {approved ? 'Approved' : 'Changes'}
+          </span>
         </Disclosure>
-        {took && <span className="font-mono text-[11px] tabular-nums text-muted">{took}</span>}
+        {took && <span className="text-[11px] tabular-nums text-muted">{took}</span>}
       </span>
     )
   }
@@ -1182,9 +1166,7 @@ function SeatState({ seat, index }: { seat: PanelSeat; index: number }) {
           />
           Deliberating
         </span>
-        {job?.started_at && (
-          <span className="font-mono text-[11px] tabular-nums text-muted">{duration(job.started_at)}</span>
-        )}
+        {job?.started_at && <span className="text-[11px] tabular-nums text-muted">{duration(job.started_at)}</span>}
       </span>
     )
   }
@@ -1280,12 +1262,10 @@ function JobEntry({
         {dot}
         <div className="flex flex-wrap items-baseline gap-x-3 gap-y-1 px-1 py-1.5 text-sm">
           <span className="text-foreground/90">{stage} completed</span>
-          <span className="font-mono text-[11px] tabular-nums text-faint">
-            {duration(job.started_at, job.ended_at)}
-          </span>
+          <span className="text-[11px] tabular-nums text-faint">{duration(job.started_at, job.ended_at)}</span>
           <time className="ml-auto text-[11px] text-faint">{absoluteTime(at)}</time>
           {order && !providerUsage && (
-            <span className="basis-full font-mono text-[11px] tabular-nums text-faint">
+            <span className="basis-full text-[11px] tabular-nums text-faint">
               {usageText(order, usageAvailable === true)}
             </span>
           )}
@@ -1296,14 +1276,12 @@ function JobEntry({
   return (
     <li className="relative pl-7">
       {dot}
-      <article
-        className={cn('rounded-lg border border-border bg-card', warning && 'border-attention/40 bg-attention-soft')}
-      >
+      <article className={cn('rounded-lg bg-surface', warning && 'border border-attention/30 bg-attention-soft')}>
         {/* One header line: the stage, then model and duration, then the time.
             The entry has no separate footer (component-web-task-surfaces,
             Work-order timeline entries). */}
         <header className="flex flex-wrap items-center gap-x-2.5 gap-y-1 px-4 pt-3" data-job-header>
-          <span className="text-[13px] font-semibold text-foreground">{stage}</span>
+          <span className="text-sm font-semibold text-foreground">{stage}</span>
           {order?.review_seat ? <span className="text-xs text-muted">Seat {order.review_seat}</span> : null}
           {job.state === 'failed' && <Badge variant="failure">Failed</Badge>}
           {running && <Badge variant="accent">Running</Badge>}
@@ -1336,7 +1314,7 @@ function JobEntry({
 function JobFooter(props: { job: Job; model: string; order?: WorkOrder; usageAvailable?: boolean }) {
   if (!props.job.started_at) return null
   return (
-    <footer className="flex flex-wrap items-center gap-x-4 gap-y-1 border-t border-border px-4 py-2 font-mono text-[11px] tabular-nums text-muted">
+    <footer className="flex flex-wrap items-center gap-x-4 gap-y-1 border-t border-border px-4 py-2 text-[11px] tabular-nums text-muted">
       <JobMeta {...props} />
     </footer>
   )
@@ -1370,7 +1348,7 @@ function JobMeta({
     .filter(Boolean)
     .join(' · ')
   return (
-    <span className="inline-flex min-w-0 items-center gap-x-2.5 font-mono text-[11px] tabular-nums text-muted">
+    <span className="inline-flex min-w-0 items-center gap-x-2.5 text-[11px] tabular-nums text-muted">
       <span className="min-w-0">
         <ModelChip
           model={model}

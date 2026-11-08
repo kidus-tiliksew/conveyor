@@ -1,6 +1,6 @@
 import { Link } from '@tanstack/react-router'
 import { ChevronDown, ChevronRight, ChevronUp, FlaskConical, Globe, MousePointerClick, Square } from 'lucide-react'
-import { useId, useLayoutEffect, useMemo, useRef, useState } from 'react'
+import { useId, useMemo, useState } from 'react'
 import { taskStateLabels } from '../../lib/contracts'
 import { relatedTaskRoute, type TaskRouteVariant } from '../../lib/task-route'
 import type { AcceptanceCriterion, SpecVersion } from '../../lib/types'
@@ -10,6 +10,7 @@ import { Badge } from '../ui/badge'
 import { Card, CardContent, CardHeader } from '../ui/card'
 import { MarkdownProse } from '../ui/markdown-prose'
 import { SectionCount, SectionHeading } from './section-heading'
+import { useCollapsibleContent } from './use-collapsible-content'
 
 // Machine-owned fenced blocks of the legacy spec format are stripped from the prose and
 // rendered structurally by the acceptance checklist below.
@@ -43,11 +44,10 @@ export function SpecCard({
   const { workspace } = useWorkspaceSelection()
   const [collapsed, setCollapsed] = useState(false)
   const [contentExpanded, setContentExpanded] = useState(false)
-  const [hasOverflow, setHasOverflow] = useState(false)
-  const viewportRef = useRef<HTMLDivElement>(null)
   const viewportID = useId()
   const expanded = !collapsible || !collapsed
   const overflowExpanded = !overflowExpandable || contentExpanded
+  const collapse = useCollapsibleContent(176, overflowExpanded, overflowExpandable && expanded)
   // Agent-authored prose sometimes runs a sentence straight into a heading with
   // a single newline; markdown needs a blank line for the `#` to render as one.
   const prose = useMemo(
@@ -59,23 +59,6 @@ export function SpecCard({
   // substitutes for it.
   const plannedSeats = typeof spec.review_seats === 'number' ? spec.review_seats : undefined
   const relatedRoute = relatedTaskRoute(routeVariant)
-
-  useLayoutEffect(() => {
-    if (!overflowExpandable || !expanded) {
-      setHasOverflow(false)
-      return
-    }
-
-    const viewport = viewportRef.current
-    if (!viewport || contentExpanded) return
-    const measure = () => setHasOverflow(viewport.scrollHeight > viewport.clientHeight + 1)
-    measure()
-
-    const observer = new ResizeObserver(measure)
-    observer.observe(viewport)
-    if (viewport.firstElementChild) observer.observe(viewport.firstElementChild)
-    return () => observer.disconnect()
-  }, [contentExpanded, expanded, overflowExpandable, prose, spec.acceptance, spec.decomposition])
 
   const toggleCollapsed = () => {
     if (!collapsed) setContentExpanded(false)
@@ -116,7 +99,9 @@ export function SpecCard({
               ? `approved ${absoluteTime(spec.approved_at)}`
               : `drafted ${absoluteTime(spec.created_at)}`}
           </span>
-          <Badge variant={spec.approved ? 'positive' : 'attention'}>
+          {/* The plan version's own state, quiet: the task's state is named once,
+              in the header chip and the next action. */}
+          <Badge variant={spec.approved ? 'positive' : 'outline'}>
             {spec.approved ? 'Approved' : 'Awaiting approval'}
           </Badge>
         </div>
@@ -124,11 +109,7 @@ export function SpecCard({
       {expanded && (
         <CardContent className="py-4">
           <div className="relative">
-            <div
-              id={viewportID}
-              ref={viewportRef}
-              className={cn(overflowExpandable && !contentExpanded && 'max-h-44 overflow-hidden')}
-            >
+            <div id={viewportID} ref={collapse.viewportRef} style={collapse.viewportStyle}>
               <div>
                 <MarkdownProse>{prose}</MarkdownProse>
                 {criteria.length > 0 && (
@@ -180,16 +161,19 @@ export function SpecCard({
                 )}
               </div>
             </div>
-            {hasOverflow && !overflowExpanded && (
+            {collapse.clamped && (
               <div
                 aria-hidden="true"
-                className="spec-overflow-shadow pointer-events-none absolute inset-x-0 bottom-0 h-16"
+                className={cn(
+                  'spec-overflow-shadow pointer-events-none absolute inset-x-0 bottom-0',
+                  collapse.fadeClass,
+                )}
                 data-spec-overflow-shadow
               />
             )}
           </div>
-          {hasOverflow && (
-            <div className="-mx-4 -mb-4 mt-4 border-t border-border">
+          {collapse.collapsible && (
+            <div className="-mx-4 -mb-4 mt-3 border-t border-border">
               <button
                 type="button"
                 aria-controls={viewportID}

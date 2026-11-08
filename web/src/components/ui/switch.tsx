@@ -17,8 +17,8 @@ export function Switch({
       aria-label={ariaLabel}
       onClick={() => onChange(!checked)}
       className={cn(
-        'relative h-[18px] w-8 shrink-0 rounded-full transition-colors focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary',
-        checked ? 'bg-primary' : 'bg-edge',
+        'relative h-[18px] w-8 shrink-0 rounded-full transition-colors pointer-coarse:after:absolute pointer-coarse:after:-inset-x-1.5 pointer-coarse:after:-inset-y-3 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary',
+        checked ? 'bg-primary-fill' : 'bg-switch-off',
       )}
     >
       <span

@@ -1,15 +1,18 @@
 import { Link, useParams } from '@tanstack/react-router'
 import { ArrowLeft, ChevronDown, ChevronUp } from 'lucide-react'
+import { useEffect, useState } from 'react'
 import { useWorkspaceSelection } from '../components/app-shell'
 import { useCanonicalBlueprintRedirect } from '../components/blueprint/use-blueprint-route'
 import { LineageExplorer } from '../components/lineage/lineage-explorer'
 import { AttachmentsCard } from '../components/task/attachments-card'
+import { NextActionCard } from '../components/task/next-action-card'
 import { isReviewable } from '../components/task/review-panel'
 import { SectionHeading } from '../components/task/section-heading'
 import { SpecCard } from '../components/task/spec-card'
-import { TaskActivityTabs } from '../components/task/task-activity-tabs'
+import { TaskActivityTabs, useTaskActivityView } from '../components/task/task-activity-tabs'
 import { TaskContextCard } from '../components/task/task-context-card'
 import { TaskAgentPrompt, TaskFacts, TaskIdentity } from '../components/task/task-header'
+import { TaskLoadError } from '../components/task/task-load-error'
 import { useTaskDetail, useTaskOrder } from '../components/task/use-task-detail'
 import { Button } from '../components/ui/button'
 import { Skeleton } from '../components/ui/skeleton'
@@ -23,14 +26,26 @@ import { cn } from '../lib/utils'
 export function TaskFullPage() {
   const { workspace } = useWorkspaceSelection()
   const { taskId } = useParams({ from: '/w/$workspaceId/tasks/$taskId/full' })
-  const { data: item, isLoading, error } = useTaskDetail(taskId)
+  const { data: item, isLoading, error, refetch, isFetching } = useTaskDetail(taskId)
   const { previousId, nextId, windowEdge } = useTaskOrder(taskId)
   // A blueprint anchor has one home, and it is not this page.
   const redirecting = useCanonicalBlueprintRedirect(item?.task)
+  // Gate tasks open scrolled down to the gate, so the bar takes over naming the
+  // task whenever the page heading is out of view.
+  const [heading, setHeading] = useState<HTMLHeadingElement | null>(null)
+  const [headingHidden, setHeadingHidden] = useState(false)
+  useEffect(() => {
+    setHeadingHidden(false)
+    if (!heading) return
+    const observer = new IntersectionObserver(([entry]) => setHeadingHidden(!entry.isIntersecting))
+    observer.observe(heading)
+    return () => observer.disconnect()
+  }, [heading])
+  const barTitle = headingHidden ? item?.task.title : undefined
 
   return (
     <div className="flex h-full flex-col">
-      <header className="flex shrink-0 flex-wrap items-center gap-1 border-b border-border px-4 py-2.5">
+      <header className="pointer-coarse:[&_button]:min-h-10 pointer-coarse:[&_button]:min-w-10 flex shrink-0 flex-wrap items-center gap-1 border-b border-border px-4 py-2.5">
         <Link
           to="/w/$workspaceId/tasks/$taskId"
           params={{ workspaceId: workspace, taskId }}
@@ -41,16 +56,30 @@ export function TaskFullPage() {
             <ArrowLeft />
           </Button>
         </Link>
-        {/* A breadcrumb, not a second title: the title reads once, in the
-            reading column. */}
-        <nav aria-label="Breadcrumb" className="flex min-w-0 flex-1 basis-40 items-center gap-1.5 text-sm text-muted">
-          <span className="shrink-0">Board</span>
-          <span aria-hidden className="shrink-0 text-edge">
+        {/* A breadcrumb, not a second title: the title joins it only while the
+            reading column's heading is scrolled away. A phone has room for one
+            name, and the title is the one that says what is being asked about. */}
+        <nav aria-label="Breadcrumb" className="flex min-w-0 flex-1 basis-0 items-center gap-1.5 text-sm text-muted">
+          <span className={cn('shrink-0', barTitle && 'max-sm:hidden')}>Board</span>
+          <span aria-hidden className={cn('shrink-0 text-edge', barTitle && 'max-sm:hidden')}>
             /
           </span>
-          <span className="min-w-0 truncate font-mono text-xs text-foreground" aria-current="page">
+          <span
+            className={cn('min-w-0 truncate font-mono text-xs text-foreground', barTitle && 'shrink-0 max-sm:sr-only')}
+            aria-current="page"
+          >
             {taskId}
           </span>
+          {barTitle && (
+            <>
+              <span aria-hidden className="shrink-0 text-edge max-sm:hidden">
+                /
+              </span>
+              <span className="min-w-0 truncate font-medium text-foreground" title={barTitle} data-breadcrumb-title>
+                {barTitle}
+              </span>
+            </>
+          )}
         </nav>
         {/* The corner affordance REQ-3 asks for: what this task connects to is
             one read away, and it costs nothing until it is opened. */}
@@ -59,7 +88,7 @@ export function TaskFullPage() {
           // Below sm the note takes its own line under the controls so it
           // never squeezes the title out of the header.
           <span
-            className="max-w-56 text-right text-[10px] leading-4 text-faint max-sm:order-last max-sm:max-w-none max-sm:basis-full max-sm:text-left"
+            className="max-w-56 text-right text-[11px] leading-4 text-faint max-sm:order-last max-sm:max-w-none max-sm:basis-full max-sm:text-left"
             role="note"
           >
             {windowEdge}
@@ -74,8 +103,8 @@ export function TaskFullPage() {
           <Skeleton className="h-64" />
         </div>
       )}
-      {error != null && <p className="px-6 py-6 text-sm text-failure">{String(error)}</p>}
-      {item && !redirecting && <FullBody item={item} />}
+      {error != null && !item && <TaskLoadError error={error} retrying={isFetching} onRetry={() => void refetch()} />}
+      {item && !redirecting && <FullBody item={item} headingRef={setHeading} />}
     </div>
   )
 }
@@ -106,12 +135,26 @@ function FullNavButton({ targetId, label, icon }: { targetId?: string; label: st
 // The reading column keeps a measure of about 760 px however wide the page is.
 const readingMeasure = 'w-full min-w-0 lg:mx-auto lg:max-w-[47.5rem]'
 
+// A plan can still arrive only while no later stage has begun: a closed task, or
+// one already past planning, has nothing to wait for and says nothing about it.
+function planStillAhead(item: ActivityItem) {
+  if (['approved', 'merged', 'closed'].includes(item.task.state)) return false
+  return !(item.work_orders ?? []).some((order) => order.stage !== 'spec')
+}
+
 // One grid, each section mounted once. Below lg the DOM order is the reading
-// order: identity, properties, plan, context and the other inspector
-// sections, then activity. From lg up the header row pairs identity with the
-// properties, and the remaining inspector sections span the plan and activity
-// rows, so neither column waits on the other's height.
-function FullBody({ item }: { item: ActivityItem }) {
+// order: identity, next action, plan, properties, context and the other
+// inspector sections, then activity. From lg up the side column spans both
+// rows and sticks with its own scrolling, so Properties and Context stay beside
+// the timeline however long the page runs.
+function FullBody({
+  item,
+  headingRef,
+}: {
+  item: ActivityItem
+  headingRef: (heading: HTMLHeadingElement | null) => void
+}) {
+  const { view, select } = useTaskActivityView()
   return (
     <section
       aria-label="Task content"
@@ -120,48 +163,55 @@ function FullBody({ item }: { item: ActivityItem }) {
       {/* The inspector rail is the scroll region's own background, attached
           locally so it spans the whole scroll height: the 20rem inspector, the
           1.5rem page padding, and half the 3rem column gap, then a 1px border. */}
-      <div className="grid grid-cols-1 gap-y-5 px-4 pt-5 pb-6 sm:px-6 lg:grid-cols-[minmax(0,1fr)_20rem] lg:grid-rows-[auto_auto_1fr] lg:gap-x-12 lg:gap-y-5 lg:pt-6">
-        <div className="grid grid-cols-1 gap-y-5 lg:col-span-2 lg:grid-cols-[minmax(0,1fr)_20rem] lg:gap-x-12">
-          <div className={readingMeasure}>
-            <TaskIdentity item={item} variant="full" />
-          </div>
-          <section aria-label="Properties" className="min-w-0 lg:pr-0">
+      <div className="grid grid-cols-1 gap-y-5 px-4 pt-5 pb-6 sm:px-6 lg:grid-cols-[minmax(0,1fr)_20rem] lg:grid-rows-[auto_1fr] lg:gap-x-12 lg:pt-6">
+        <div className={cn(readingMeasure, 'space-y-5 lg:col-start-1 lg:row-start-1')}>
+          <TaskIdentity item={item} variant="full" headingRef={headingRef} />
+          <NextActionCard item={item} routeVariant="full" view={view} />
+          {(item.spec || planStillAhead(item)) && (
+            <section aria-label="Execution plan">
+              {item.spec ? (
+                <SpecCard
+                  spec={item.spec}
+                  collapsible={false}
+                  overflowExpandable
+                  routeVariant="full"
+                  minimumSeatCount={item.summaries?.review_seat_policy?.minimum_seat_count}
+                />
+              ) : (
+                <p className="text-sm text-faint">
+                  No execution plan yet — the planning stage has not produced a version.
+                </p>
+              )}
+            </section>
+          )}
+        </div>
+        {/* The negative margins carry the column's scrollbar and focus outlines
+            out to the rail's edges; its padding brings the content back. It
+            fills the visible height, so a tooltip near its last row has the
+            whole rail to open into before the scrolling clips it. */}
+        <div className="min-w-0 space-y-5 [scrollbar-width:thin] lg:sticky lg:top-0 lg:col-start-2 lg:row-span-2 lg:row-start-1 lg:-mx-6 lg:-my-6 lg:h-[calc(100dvh-4.5rem)] lg:self-start lg:overflow-y-auto lg:p-6">
+          <section aria-label="Properties" className="min-w-0">
             <SectionHeading as="h2" className="mb-1 text-xs font-medium text-faint">
               Properties
             </SectionHeading>
             <TaskFacts item={item} variant="full" columns="one" className="mt-0 gap-y-1.5 border-y-0 py-1" />
           </section>
+          <section aria-label="Task inspector" className="min-w-0 space-y-5">
+            <TaskContextCard taskId={item.task.id} taskState={item.task.state} context={item.task.context} compact />
+            <TaskAgentPrompt item={item} />
+            <AttachmentsCard attachments={item.attachments ?? []} />
+            {/* While a gate is open the evidence belongs with the decision, and
+                the gate card renders it there — not twice on one page. */}
+            {!isReviewable(item) && (
+              <AttachmentsCard attachments={item.verification_evidence ?? []} title="Verification evidence" />
+            )}
+          </section>
         </div>
-        <section aria-label="Execution plan" className={cn(readingMeasure, 'lg:col-start-1 lg:row-start-2')}>
-          {item.spec ? (
-            <SpecCard
-              spec={item.spec}
-              collapsible={false}
-              overflowExpandable
-              routeVariant="full"
-              minimumSeatCount={item.summaries?.review_seat_policy?.minimum_seat_count}
-            />
-          ) : (
-            <p className="rounded-lg border border-border bg-surface p-3 text-sm text-muted">
-              No execution plan yet — the planning stage has not produced a version.
-            </p>
-          )}
-        </section>
-        <section aria-label="Task inspector" className="min-w-0 space-y-5 lg:col-start-2 lg:row-span-2 lg:row-start-2">
-          <TaskContextCard taskId={item.task.id} taskState={item.task.state} context={item.task.context} compact />
-          <TaskAgentPrompt item={item} />
-          <AttachmentsCard attachments={item.attachments ?? []} />
-          {/* While a gate is open the evidence belongs with the decision, and
-              the gate card renders it there — not twice on one page. */}
-          {!isReviewable(item) && (
-            <AttachmentsCard attachments={item.verification_evidence ?? []} title="Verification evidence" />
-          )}
-        </section>
         {/* The static relationship graph is gone: relationships are read in
             the explorer panel, and one page does not carry two renderings of
             the same lineage. */}
-        <section aria-label="Activity" className={cn(readingMeasure, 'space-y-4 lg:col-start-1 lg:row-start-3')}>
-          <TaskActivityTabs item={item} routeVariant="full" />
+        <section aria-label="Activity" className={cn(readingMeasure, 'space-y-4 lg:col-start-1 lg:row-start-2')}>
+          <TaskActivityTabs item={item} routeVariant="full" view={view} onSelectView={select} />
         </section>
       </div>
     </section>
