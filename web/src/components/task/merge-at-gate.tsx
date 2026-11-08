@@ -1,7 +1,7 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { GitMerge } from 'lucide-react'
 import { useId, useRef, useState } from 'react'
-import { fetchTaskActivity, postNextActionChoice } from '../../lib/api'
+import { fetchTaskActivity, GateMutationError, postNextActionChoice } from '../../lib/api'
 import { errorMessage } from '../../lib/errors'
 import { type MutationWorkspace, taskDetailQueryKey } from '../../lib/query-keys'
 import type { TaskRouteVariant } from '../../lib/task-route'
@@ -13,16 +13,20 @@ import { Kbd, shortcutChoiceId, useShortcutChoice } from '../inbox/inbox-keyboar
 import { nextActionQueryKey, nextActionsQueryKey } from '../inbox/use-next-actions'
 import { Button } from '../ui/button'
 import { Dialog } from '../ui/dialog'
+import { CheckStatusList } from './next-action-checks'
 import { withQuerySignal } from './use-task-detail'
 
 type MergeReadiness = ActivityItem['merge_readiness']
 
-// The server's choices for one next action, with the one-act merge at the
-// merge_approval gate pulled out behind a confirm (DEC-64). The merge is a
-// server choice like any other (DEC-61), but it is irreversible, so no
-// surface offers it as a one-click button. The confirm names the reviewed head
-// and pull request from the task's merge_readiness, read through the task
-// detail query so the task page reuses its cache. Exactly one button is
+// The server's choices for one next action, with the merge pulled out behind a
+// confirm wherever the server offers it: the one-act merge at the
+// merge_approval gate (DEC-64), and the merge of the approved head at
+// merge_execution and check_hold. The merge is a server choice like any other
+// (DEC-61), but it is irreversible, so no surface offers it as a one-click
+// button. The confirm names the head and pull request from the task's
+// merge_readiness, read through the task detail query so the task page reuses
+// its cache; at check_hold it also lists the checks that hold the merge
+// (component-next-action, The statement; DEC-108(6)). Exactly one button is
 // primary: the merge when the server offers it, otherwise the first choice
 // that renders enabled (feature-operator-next-action NA-6).
 // At merge_approval a status line above the choices states the merge
@@ -50,14 +54,23 @@ export function GateChoices({
   const { workspace } = useWorkspaceSelection()
   const ids = useId()
   const oneActMerge = action.kind === 'merge_approval'
-  const mergeChoice = oneActMerge ? action.choices.find((choice) => choice.id === 'merge') : undefined
+  const confirmedMerge = mergeKinds.has(action.kind)
+  const mergeChoice = confirmedMerge ? action.choices.find((choice) => choice.id === 'merge') : undefined
   const mergeRefusal = oneActMerge ? action.details?.refusals?.find((refusal) => refusal.choice === 'merge') : undefined
   const otherChoices = mergeChoice ? action.choices.filter((choice) => choice !== mergeChoice) : action.choices
-  const atGate = Boolean(mergeChoice || mergeRefusal)
-  const { data: detail } = useQuery({
+  // The status line and the phone grid belong to the merge_approval gate; the
+  // merge at merge_execution and check_hold keeps the row every other kind uses.
+  const atGate = oneActMerge && Boolean(mergeChoice || mergeRefusal)
+  const leadsWithMerge = atGate || Boolean(mergeChoice)
+  const {
+    data: detail,
+    error: detailError,
+    refetch: refetchDetail,
+    isFetching: detailFetching,
+  } = useQuery({
     queryKey: taskDetailQueryKey(workspace, taskId),
     queryFn: (context) => withQuerySignal(context, (signal) => fetchTaskActivity(workspace, taskId, signal)),
-    enabled: Boolean(workspace && atGate),
+    enabled: Boolean(workspace && leadsWithMerge),
   })
   const primary = shortcutChoiceId(action)
   const statusId = `${ids}-merge-status`
@@ -79,9 +92,6 @@ export function GateChoices({
       details={action.details}
       onActed={() => onActed?.()}
       primaryId={primary}
-      // Merging past a failed check is still this gate's main act, but it never
-      // wears the safe primary look under the warning about those checks.
-      cautionId={action.kind === 'check_hold' ? 'merge' : undefined}
       routeVariant={routeVariant}
       onRestarted={onRestarted}
       layout={footer ? 'footer' : atGate ? 'grid' : 'row'}
@@ -98,15 +108,24 @@ export function GateChoices({
         )
       }
       leading={
-        atGate && (
+        leadsWithMerge && (
           <MergeAtGateAction
             taskId={taskId}
+            kind={action.kind}
+            action={action}
             choice={mergeChoice}
             reason={capabilityReason?.text ?? (mergeChoice ? '' : (mergeRefusal?.text ?? ''))}
             describedBy={capabilityReason ? capabilityReason.id : mergeChoice ? undefined : statusId}
             readiness={detail?.merge_readiness}
+            readinessError={detail === undefined && detailError != null ? detailError : null}
+            readinessRetrying={detailFetching}
+            onRetryReadiness={() => void refetchDetail()}
             primary={primary === 'merge'}
-            fill={!footer}
+            // Merging past a failed check is still this decision's main act,
+            // but it never wears the safe primary look under the warning about
+            // those checks.
+            caution={action.kind === 'check_hold'}
+            layout={footer ? 'footer' : atGate ? 'grid' : 'row'}
             onMerged={() => onActed?.()}
           />
         )
@@ -114,6 +133,10 @@ export function GateChoices({
     />
   )
 }
+
+// The kinds whose merge choice lands a head, so its button opens the confirm
+// rather than posting (component-web-task-surfaces invariant 45).
+const mergeKinds = new Set(['merge_approval', 'merge_execution', 'check_hold'])
 
 type MergeTone = 'positive' | 'neutral' | 'attention'
 
@@ -221,26 +244,50 @@ function MergeStatusLine({
   )
 }
 
+// The merge button's width in each choice layout: the merge_approval grid
+// gives it its own line on a phone, the Inbox footer fills the line below md,
+// and an ordinary row keeps its natural width.
+const mergeWidthClass: Record<'grid' | 'footer' | 'row', string> = {
+  grid: 'w-full sm:w-auto',
+  footer: 'max-md:w-full',
+  row: '',
+}
+
 // Whether the act may be taken, the reason it may not, and its endpoint are the
-// server's choice; the browser adds only the confirm, which names the reviewed
-// head and the pull request the act merges.
+// server's choice; the browser adds only the confirm, which names the head and
+// the pull request the act merges and, at check_hold, the checks the merge
+// overrides. The confirm posts through the same mutation as before, so it
+// keeps the duplicate-send guard, and a 409 refetches, keeps the refusal in the
+// dialog, and never retries (component-web-task-surfaces invariant 46).
 function MergeAtGateAction({
   taskId,
+  kind,
+  action,
   choice,
   reason,
   describedBy,
   readiness,
+  readinessError,
+  readinessRetrying,
+  onRetryReadiness,
   primary,
-  fill,
+  caution,
+  layout,
   onMerged,
 }: {
   taskId: string
+  kind: NextAction['kind']
+  action: NextAction
   choice: NextActionChoice | undefined
   reason: string
   describedBy: string | undefined
   readiness: MergeReadiness
+  readinessError: unknown
+  readinessRetrying: boolean
+  onRetryReadiness: () => void
   primary: boolean
-  fill: boolean
+  caution: boolean
+  layout: 'grid' | 'footer' | 'row'
   onMerged: () => void
 }) {
   // The Inbox binds `c` to the merge button when it is the decision's primary.
@@ -258,8 +305,14 @@ function MergeAtGateAction({
       setConfirming(false)
       onMerged()
     },
-    onSettled: async (_result, _error, _variables, context) => {
+    // The refetch below lands before the mutation leaves pending, so a refused
+    // merge stays disabled until the current state renders beside the refusal.
+    // As for the gate's other choices, a conflict means the task moved under
+    // the operator, so it refetches; any other failure leaves the state as it
+    // was and refetches nothing.
+    onSettled: async (_result, error, _variables, context) => {
       inFlight.current = false
+      if (error != null && !(error instanceof GateMutationError && error.status === 409)) return
       const acted = context?.workspace ?? workspace
       await Promise.all([
         client.invalidateQueries({ queryKey: nextActionsQueryKey(acted) }),
@@ -277,13 +330,22 @@ function MergeAtGateAction({
     mutation.mutate(target)
   }
 
+  const widthClass = mergeWidthClass[layout]
+  // merge_approval approves and merges in one act; merge_execution and
+  // check_hold merge a head a review round already approved.
+  const gateAct = kind === 'merge_approval'
+  const headName = gateAct ? 'reviewed head' : 'approved head'
+
   return (
-    <span className={cn('flex min-w-0 flex-col gap-0.5', fill ? 'w-full sm:w-auto' : 'max-md:w-full')}>
-      <span className={cn('flex min-w-0 items-stretch gap-1.5', fill ? 'w-full sm:w-auto' : 'max-md:w-full')}>
+    <span className={cn('flex min-w-0 flex-col gap-0.5', widthClass)}>
+      <span className={cn('flex min-w-0 items-stretch gap-1.5', widthClass)}>
         <Button
           size="sm"
-          className={`${choiceButtonClass} flex-1 justify-center`}
-          variant={primary && reason === '' ? 'default' : 'secondary'}
+          className={cn(
+            `${choiceButtonClass} flex-1 justify-center`,
+            caution && 'border-attention/50 text-attention hover:border-attention hover:bg-attention-soft',
+          )}
+          variant={caution ? 'outline' : primary && reason === '' ? 'default' : 'secondary'}
           data-merge-at-gate
           data-shortcut={keyed && reason === '' ? 'c' : undefined}
           title={choice ? `${choice.effect} (${choice.method} ${choice.path})` : undefined}
@@ -307,12 +369,12 @@ function MergeAtGateAction({
           <div className="space-y-3 p-4">
             <h2 className="text-sm font-semibold">Merge {pullRequest}?</h2>
             {head ? (
-              <p className="text-sm leading-6 text-muted">
-                This approves and merges {pullRequest} at the reviewed head{' '}
+              <p className="text-sm leading-6 text-muted" data-confirm-head={head}>
+                {gateAct ? 'This approves and merges' : 'This merges'} {pullRequest} at the {headName}{' '}
                 <code className="font-mono text-foreground" title={head}>
                   {head.slice(0, 7)}
                 </code>{' '}
-                in one act, under your name.
+                {gateAct ? 'in one act, under your name.' : 'under your name.'}
                 {readiness?.url && (
                   <>
                     {' '}
@@ -322,8 +384,24 @@ function MergeAtGateAction({
                   </>
                 )}
               </p>
+            ) : readinessError != null ? (
+              <div className="flex flex-wrap items-center gap-2 text-sm">
+                <span className="text-failure">{errorMessage(readinessError, `Could not load the ${headName}.`)}</span>
+                <Button size="sm" variant="secondary" disabled={readinessRetrying} onClick={onRetryReadiness}>
+                  Retry
+                </Button>
+              </div>
             ) : (
-              <p className="text-sm leading-6 text-muted">Loading the reviewed head…</p>
+              <p className="text-sm leading-6 text-muted">Loading the {headName}…</p>
+            )}
+            {kind === 'check_hold' && (
+              <div data-confirm-checks className="space-y-1.5 rounded-lg bg-attention-soft px-3 py-2">
+                <p className="text-sm font-medium text-attention">These checks hold the merge:</p>
+                <CheckStatusList action={action} />
+                <p className="text-xs leading-5 text-muted">
+                  The merge reads no check status. Conveyor records you and these checks with it.
+                </p>
+              </div>
             )}
             {mutation.error != null && (
               <p className="text-xs text-failure">{errorMessage(mutation.error, 'Could not merge.')}</p>
