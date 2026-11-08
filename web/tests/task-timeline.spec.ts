@@ -1524,6 +1524,22 @@ test('a closed task with a decided stage keeps the timeline redispatch card', as
   await expect.poll(() => posts).toEqual([`POST /v1/tasks/${taskId}/redispatch`])
 })
 
+test('a closed task without a decided stage offers no redispatch', async ({ page }) => {
+  await mockAPI(page, activity({ task: { ...task, state: 'closed', next_stage: '' } }), {
+    ...nextAction(`${taskId}-implement-1`),
+    label: 'Finished',
+    actor: 'none',
+    kind: 'terminal',
+    current_order: undefined,
+    attempt: undefined,
+  })
+  await page.goto(`/w/demo/tasks/${taskId}/full`)
+  const timeline = page.getByRole('region', { name: 'Execution event timeline' })
+  await expect(page.getByRole('heading', { name: 'Activity', exact: true })).toBeVisible()
+  await expect(timeline.getByText('Closed — redispatch resumes at the decided stage.')).toHaveCount(0)
+  await expect(redispatchButtons(page)).toHaveCount(0)
+})
+
 test('a queued task the next action offers no redispatch for keeps the card in plain words', async ({ page }) => {
   await mockAPI(
     page,
@@ -1549,6 +1565,29 @@ test('a queued task the next action offers no redispatch for keeps the card in p
   await expect(sentence).not.toContainText(/enqueue|dispatch/i)
   await expect(timeline.getByRole('button', { name: 'Redispatch', exact: true })).toBeVisible()
   await expect(redispatchButtons(page)).toHaveCount(1)
+})
+
+test('a queued task keeps the timeline redispatch card when the next-action read fails', async ({ page }) => {
+  await mockAPI(
+    page,
+    activity({
+      task: { ...task, state: 'queued' },
+      work_orders: [order(`${taskId}-implement-1`, { state: 'queued', claimable: true })],
+    }),
+    nextAction(`${taskId}-implement-1`),
+  )
+  // Registered after mockAPI, so it answers every next-action read, retries included.
+  let nextActionReads = 0
+  await page.route(`**/v1/tasks/${taskId}/next-action*`, (route) => {
+    nextActionReads++
+    return route.fulfill({ status: 500, json: { error: 'internal' } })
+  })
+  await page.goto(`/w/demo/tasks/${taskId}/full`)
+  const timeline = page.getByRole('region', { name: 'Execution event timeline' })
+  // With no stated next action no choice renders, so the card is the one button.
+  await expect(timeline.getByRole('button', { name: 'Redispatch', exact: true })).toBeVisible()
+  await expect(redispatchButtons(page)).toHaveCount(1)
+  expect(nextActionReads).toBeGreaterThan(0)
 })
 
 test('a stalled queued task with a redispatch choice renders no timeline redispatch card', async ({ page }) => {

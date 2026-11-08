@@ -114,6 +114,9 @@ export function offersRedispatchChoice(action: Pick<NextAction, 'choices'>, task
 export function canRedispatch(item: ActivityItem, nextAction: NextAction | undefined, nextActionFailed: boolean) {
   if (dependencyBlockedImplementationOrder(item) || unsatisfiableDependencyOrder(item)) return false
   if (item.task.state !== 'queued' && item.task.state !== 'closed') return false
+  // A closed task redispatches only at a decided stage; the route refuses
+  // one without (core.TaskRedispatchStage).
+  if (item.task.state === 'closed' && !item.task.next_stage) return false
   if (nextAction) return !offersRedispatchChoice(nextAction, item.task.id)
   return nextActionFailed
 }
