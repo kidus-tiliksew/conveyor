@@ -12,7 +12,7 @@ import { SpecCard } from '../components/task/spec-card'
 import { TaskActivityTabs, useTaskActivityView } from '../components/task/task-activity-tabs'
 import { TaskContextCard } from '../components/task/task-context-card'
 import { TaskAgentPrompt, TaskFacts, TaskIdentity } from '../components/task/task-header'
-import { TaskLoadError } from '../components/task/task-load-error'
+import { TaskControlsPlaceholder, TaskLoadError } from '../components/task/task-load-error'
 import { useTaskDetail, useTaskOrder } from '../components/task/use-task-detail'
 import { Button } from '../components/ui/button'
 import { Skeleton } from '../components/ui/skeleton'
@@ -28,11 +28,6 @@ export function TaskFullPage() {
   const { taskId } = useParams({ from: '/w/$workspaceId/tasks/$taskId/full' })
   const { data: item, isLoading, error, refetch, isFetching } = useTaskDetail(taskId)
   const { previousId, nextId, windowEdge } = useTaskOrder(taskId)
-  // No task loaded: the read failed, whether it answered 404 or failed another
-  // way, and no earlier read left a task. A read still pending keeps the
-  // controls, so stepping through Board tasks never pulls them from under the
-  // pointer or moves the header.
-  const noTask = !item && error != null
   // A blueprint anchor has one home, and it is not this page.
   const redirecting = useCanonicalBlueprintRedirect(item?.task)
   // Gate tasks open scrolled down to the gate, so the bar takes over naming the
@@ -86,26 +81,35 @@ export function TaskFullPage() {
             </>
           )}
         </nav>
-        {/* With no task loaded there is no lineage and no Board neighbour to
-            offer, so the header keeps only the way out. */}
-        {!noTask && (
+        {/* Until a task is loaded (a pending first read, a 404, or another
+            failure) there is no lineage and no Board neighbour to offer, so the
+            header keeps only the way out; a pending read reserves the
+            controls' space so nothing moves when the task arrives. The explorer
+            is the corner affordance REQ-3 asks for. */}
+        {item ? (
+          <LineageExplorer type="task" id={taskId} />
+        ) : (
+          error == null && <TaskControlsPlaceholder part="explorer" />
+        )}
+        {/* The Board-window note is Board context, not a task control, so it
+            shows in every state and never shifts the controls when they arrive. */}
+        {windowEdge && (
+          // Below sm the note takes its own line under the controls so it
+          // never squeezes the title out of the header.
+          <span
+            className="max-w-56 text-right text-[11px] leading-4 text-faint max-sm:order-last max-sm:max-w-none max-sm:basis-full max-sm:text-left"
+            role="note"
+          >
+            {windowEdge}
+          </span>
+        )}
+        {item ? (
           <>
-            {/* The corner affordance REQ-3 asks for: what this task connects to is
-                one read away, and it costs nothing until it is opened. */}
-            <LineageExplorer type="task" id={taskId} />
-            {windowEdge && (
-              // Below sm the note takes its own line under the controls so it
-              // never squeezes the title out of the header.
-              <span
-                className="max-w-56 text-right text-[11px] leading-4 text-faint max-sm:order-last max-sm:max-w-none max-sm:basis-full max-sm:text-left"
-                role="note"
-              >
-                {windowEdge}
-              </span>
-            )}
             <FullNavButton targetId={previousId} label="Previous task" icon={<ChevronUp />} />
             <FullNavButton targetId={nextId} label="Next task" icon={<ChevronDown />} />
           </>
+        ) : (
+          error == null && <TaskControlsPlaceholder part="navigation" />
         )}
       </header>
       {(isLoading || redirecting) && (
