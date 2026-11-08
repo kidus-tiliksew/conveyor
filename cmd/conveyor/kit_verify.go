@@ -84,6 +84,10 @@ type kitVerifier struct {
 	redactor                      *redact.Redactor
 	// onDrain, when set by a test, runs as the post-exit drain starts.
 	onDrain func()
+	// relayCheckout and relayLive, when set by a test, stand in for the
+	// operation relay's checkout and liveness checks (kit_verify_execution.go).
+	relayCheckout func(context.Context) error
+	relayLive     func(context.Context, string) error
 	// mu guards order bounds and lost; liveMu serializes live checks so a
 	// slow control-plane call never holds mu (component-verification-runner).
 	mu     sync.Mutex

@@ -1053,19 +1053,11 @@ func nullableTimeValue(value time.Time) any {
 }
 
 func (s *Store) inTx(ctx context.Context, fn func(pgx.Tx, *db.Queries) error) error {
-	var (
-		tx  pgx.Tx
-		err error
-	)
-	if conn, ok := ctx.Value(sideEffectConnKey{}).(*pgxpool.Conn); ok {
-		// A lifecycle command inside WithTaskSideEffectLock must use the same
-		// PostgreSQL session. Advisory locks are re-entrant within one session;
-		// starting this transaction through the pool can select another session
-		// and deadlock against the outer task-operation lock.
-		tx, err = s.beginOn(ctx, conn)
-	} else {
-		tx, err = s.begin(ctx)
-	}
+	// A lifecycle command inside WithTaskSideEffectLock must use the same
+	// PostgreSQL session. Advisory locks are re-entrant within one session;
+	// starting this transaction through the pool can select another session
+	// and deadlock against the outer task-operation lock.
+	tx, err := s.beginInTaskSession(ctx)
 	if err != nil {
 		return translateBackendConflict(err)
 	}

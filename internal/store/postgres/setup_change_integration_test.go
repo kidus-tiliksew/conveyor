@@ -6,6 +6,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5"
+
 	"github.com/kidus-tiliksew/conveyor/internal/config"
 	"github.com/kidus-tiliksew/conveyor/internal/core"
 	"github.com/kidus-tiliksew/conveyor/internal/store"
@@ -157,4 +159,68 @@ func TestHistoricalSetupSupersessionPostgresReaggregatesReplacementSeats(t *test
 	if count, countErr := st.CountEvents(ctx, task.ID, "review.round_completed"); countErr != nil || count != 1 {
 		t.Fatalf("round completed=%d err=%v", count, countErr)
 	}
+}
+
+// TestTaskPolicyChangeUnderSideEffectLockPostgresIntegration changes a policy
+// through the path POST /v1/tasks/{id}/policy takes: WithTaskSideEffectLock
+// holds the task-operation session lock on one pooled connection, and the
+// command's transaction takes the same key. Each change must finish within
+// storetest.PolicyChangeLockBound (component-persistence invariant 6;
+// component-task-lifecycle invariant 44).
+func TestTaskPolicyChangeUnderSideEffectLockPostgresIntegration(t *testing.T) {
+	databaseURL := integrationDatabaseURL(t)
+	st, err := Open(store.WithActor(t.Context(), store.SystemActor()), databaseURL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	workspace := "policy-lock-" + core.NewTaskID()
+	ctx := store.WithActor(store.WithWorkspace(context.Background(), workspace), store.Actor{ID: "operator-pg", Role: core.ActorHuman})
+	if _, err = st.BootstrapWorkspaceConfig(ctx, &config.Config{Workspace: workspace, Database: config.Database{Backend: "postgres"}, Repos: []config.Repo{{Name: "repo", Base: "main"}}}); err != nil {
+		t.Fatal(err)
+	}
+	newTask := func(t *testing.T) core.Task {
+		t.Helper()
+		task := core.Task{ID: core.NewTaskID(), Workspace: workspace, Repo: "repo", BaseBranch: "main", State: core.TaskRunning, NextStage: core.StageImplement,
+			SetupName: "legacy", SetupContract: config.PolicyContract{StageTimeouts: config.PolicyStageTimeouts{Implement: "1h"}}, CreatedAt: time.Now().UTC()}
+		task.Branch = "conveyor/task-" + task.ID
+		if err := st.CreateTask(ctx, task); err != nil {
+			t.Fatal(err)
+		}
+		return task
+	}
+	storetest.RunTaskPolicyChangeUnderSideEffectLock(t, ctx, st, newTask)
+	t.Run("refused change releases the task lock", func(t *testing.T) {
+		task := newTask(t)
+		bounded, cancel := context.WithTimeout(ctx, storetest.PolicyChangeLockBound)
+		defer cancel()
+		request := store.SetupChangeRequest{TaskID: task.ID, RequestID: "lock-path-refused-" + task.ID, Reason: "longer verification", Policy: &store.TaskPolicyChange{StageTimeouts: map[string]string{"verify": "2h"}}}
+		if _, err := storetest.ChangeTaskPolicyUnderSideEffectLock(bounded, st, request); err != nil {
+			t.Fatal(err)
+		}
+		// The reused request ID is refused after the transaction has taken the
+		// task-operation key on the held connection.
+		request.Reason = "different inputs"
+		if _, err := storetest.ChangeTaskPolicyUnderSideEffectLock(bounded, st, request); !errors.Is(err, store.ErrSetupChangeConflict) {
+			t.Fatalf("reused request: err=%v, want ErrSetupChangeConflict", err)
+		}
+		// A session outside the pool proves no pooled session still holds the
+		// task-operation lock after the refused inner transaction.
+		other, err := pgx.Connect(bounded, databaseURL)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer other.Close(context.Background())
+		key := "conveyor:task-operation:" + workspace + ":" + task.ID
+		var acquired bool
+		if err := other.QueryRow(bounded, "SELECT pg_try_advisory_lock(hashtext($1))", key).Scan(&acquired); err != nil {
+			t.Fatal(err)
+		}
+		if !acquired {
+			t.Fatal("task-operation lock is still held after the refused policy change")
+		}
+		if _, err := other.Exec(bounded, "SELECT pg_advisory_unlock(hashtext($1))", key); err != nil {
+			t.Fatal(err)
+		}
+	})
 }

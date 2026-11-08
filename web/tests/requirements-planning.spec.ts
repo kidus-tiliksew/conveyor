@@ -857,7 +857,6 @@ test('design drift names its subject, counts once, and clears every rendering fr
     if (path.startsWith('/v1/requirements/') && path.endsWith('/versions')) return route.fulfill({ json: [] })
     if (path === '/v1/system-designs') return route.fulfill({ json: [designSummary()] })
     if (path === '/v1/system-designs/design-system-architecture') return route.fulfill({ json: designView() })
-    if (path === '/v1/decisions') return route.fulfill({ json: [] })
     if (path === '/v1/monitor/drift/shared-design-drift/resolve') {
       resolved = true
       return route.fulfill({ json: drift })

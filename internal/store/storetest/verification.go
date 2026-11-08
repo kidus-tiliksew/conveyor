@@ -323,6 +323,7 @@ func runVerification(t *testing.T, x Fixture) {
 		}
 	})
 	runVerificationEdges(t, &v)
+	t.Run("EvidenceBinding", func(t *testing.T) { runVerificationEvidenceBinding(t, x) })
 	t.Run("OperationHistoryAndTransitions", func(t *testing.T) {
 		op := store.VerificationOperation{StepID: "step", Target: "fixture", InputDigest: verificationSHA([]byte("{}"))}
 		c := store.VerificationCommand{Kind: store.VerificationPrepareOperation, Key: "logical-operation", Operation: &op}
