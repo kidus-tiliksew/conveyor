@@ -260,6 +260,7 @@ type taskDetailSummaries struct {
 	TriageFailure                *taskTriageFailure        `json:"triage_failure,omitempty"`
 	ParkReason                   *taskParkReason           `json:"park_reason,omitempty"`
 	DispatchFailure              *taskDispatchFailure      `json:"dispatch_failure,omitempty"`
+	InvalidOutputLimit           *taskInvalidOutputLimit   `json:"invalid_output_limit,omitempty"`
 	JobResults                   map[string]*taskJobResult `json:"job_results"`
 	ReviewResults                taskReviewResults         `json:"review_results"`
 	ReviewRounds                 taskReviewRounds          `json:"review_rounds"`
@@ -352,6 +353,20 @@ type taskDispatchFailure struct {
 	EventID     string    `json:"event_id"`
 	At          string    `json:"at"`
 	Truncated   bool      `json:"truncated,omitempty"`
+}
+
+// taskInvalidOutputLimit is the latest bounce limit when a stage other than
+// review reached it with invalid output: the stage and that stage's last
+// recorded validation error. A later bounce limit with any other source
+// clears it. The Inbox shows it as the bounce-limit context in place of
+// reviewer feedback (req-operator-next-action AC-2.3; component-triage
+// invariant 26).
+type taskInvalidOutputLimit struct {
+	Stage     string `json:"stage"`
+	Error     string `json:"error"`
+	EventID   string `json:"event_id"`
+	At        string `json:"at"`
+	Truncated bool   `json:"truncated,omitempty"`
 }
 
 // parkReasonListMax bounds the questions and risks a park reason carries.
@@ -596,7 +611,7 @@ var summaryKinds = map[string]bool{
 	"pipeline.bounced": true, "work_order.claimed": true, "work_order.plan_revision_requested": true,
 	"review.completed": true, "job.failed": true, "job.summary": true, "triage.completed": true,
 	"triage.output_invalid": true, "spec.output_invalid": true, "review.output_invalid": true,
-	store.ReviewSummaryRecordedEvent: true, "dispatch.failed": true,
+	store.ReviewSummaryRecordedEvent: true, "dispatch.failed": true, "pipeline.bounce_limit": true,
 }
 
 // deriveTaskDetailSummaries reproduces the dashboard's selection rules in
@@ -622,6 +637,9 @@ func deriveTaskDetailSummaries(events []core.Event, jobs []core.Job, orders []co
 	}
 	var lastPlanRevision *core.Event
 	var lastPlanRevisionPayload summaryPayload
+	// The latest validation error of each output_invalid kind, which the
+	// bounce limit that kind reached names.
+	invalidOutputErrors := map[string]string{}
 	for i := range ordered {
 		event := ordered[i]
 		if !summaryKinds[event.Kind] {
@@ -700,6 +718,17 @@ func deriveTaskDetailSummaries(events []core.Event, jobs []core.Job, orders []co
 			// The latest triage decides: a later run that proceeds clears an
 			// earlier park reason.
 			summaries.ParkReason = parkReasonFrom(payload, eventID, at)
+		case "pipeline.bounce_limit":
+			summaries.InvalidOutputLimit = nil
+			source, _ := payload.str("source")
+			if stage, ok := strings.CutSuffix(source, ".output_invalid"); ok && stage != "" && stage != string(core.StageReview) {
+				limit := &taskInvalidOutputLimit{Stage: stage, EventID: eventID, At: at}
+				limit.Error, limit.Truncated = truncateSummaryText(invalidOutputErrors[source])
+				summaries.InvalidOutputLimit = limit
+			}
+		case "triage.output_invalid", "spec.output_invalid", "review.output_invalid":
+			text, _ := payload.str("error")
+			invalidOutputErrors[event.Kind] = jsTrim(text)
 		case "dispatch.failed":
 			if text, _ := payload.str("error"); text != "" {
 				failure := &taskDispatchFailure{EventID: eventID, At: at}

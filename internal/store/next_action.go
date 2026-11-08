@@ -513,7 +513,7 @@ func assembleInput(ctx context.Context, task core.Task, orders []core.WorkOrder,
 		PendingProposals: pendingProposalRefs(proposals),
 		MergeConflict:    conflict, Recovery: AutomaticRecoveryFor(orders),
 		Now: opts.Now, Capabilities: opts.Capabilities, LiveClaimants: opts.LiveClaimants,
-		PullRequest: history.PullRequest, BounceCount: history.BounceCount,
+		PullRequest: history.PullRequest, BounceCount: history.BounceCount, GateSource: history.GateSource,
 	}
 	if task.State == core.TaskAwaiting && task.GateKind == core.GateKindMergeApproval && opts.MergeReadiness != nil {
 		input.MergeReadiness = opts.MergeReadiness(ctx, task)
@@ -723,6 +723,26 @@ func recordedBounceCount(events []core.Event) int {
 		return 0
 	}
 	return 0
+}
+
+// recordedGateSource is the string source of the latest event among
+// GateSourceEventKinds, or empty when that event records none. A job.fail or
+// stage.bounce_limit gate is entered right after one of them, so the value
+// names what produced the current review_bounce_limit or job_failure gate
+// (component-triage invariant 26; component-next-action invariant 4).
+func recordedGateSource(events []core.Event) string {
+	for i := len(events) - 1; i >= 0; i-- {
+		if !slices.Contains(GateSourceEventKinds, events[i].Kind) {
+			continue
+		}
+		var payload map[string]any
+		if json.Unmarshal(events[i].Payload, &payload) != nil {
+			return ""
+		}
+		source, _ := payload["source"].(string)
+		return source
+	}
+	return ""
 }
 
 // readDispositionInputs reads the verification records of the verify order
