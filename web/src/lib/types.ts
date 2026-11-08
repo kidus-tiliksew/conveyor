@@ -1249,7 +1249,7 @@ export interface PendingProposalsResponse {
   }
 }
 
-// The server's next action for a task (feature-operator-next-action NA-3,
+// The server's next action for a task (component-next-action, Public surfaces;
 // DEC-61). Mirrors internal/nextaction: every surface renders these fields and
 // derives none of them.
 export type NextActionActor = 'none' | 'operator' | 'factory' | 'agent' | 'dependency'
@@ -1311,10 +1311,11 @@ export interface NextActionDetails {
   check_hold_reason?: string
   check_read_failure?: string
   check_remedy?: string
-  // Row 10's binding for the verification recover body (NA-3).
+  // Row 11's binding for the verification recover body (component-next-action
+  // invariant 15).
   disposition?: NextActionDisposition
-  // Row 15's pending task-context proposals in choice order, and the origin of
-  // a monitor-filed task (NA-3, Context-proposal presentation and Monitor origin).
+  // Row 16's pending task-context proposals in choice order, and the origin of
+  // a monitor-filed task (component-next-action invariants 12, 16).
   context_proposals?: NextActionContextProposal[]
   monitor_origin?: NextActionMonitorOrigin
 }
@@ -1358,7 +1359,7 @@ export interface NextActionCompact {
   summary: string
   deadline: string | null
   blocked_by?: NextActionBlocker[]
-  // Open tasks waiting on this one (NA-3).
+  // Open tasks waiting on this one (component-next-action invariant 13).
   blocks?: NextActionBlocker[]
 }
 
@@ -1386,7 +1387,7 @@ export interface InboxItem {
   recommendation?: string
   no_judgment_needed?: boolean
   proposal?: PendingProposal
-  /** Server copy for a document proposal (feature-operator-next-action NA-4). */
+  /** Server copy for a document proposal (component-next-action invariant 17). */
   label?: string
   question?: string
   if_ignored?: string
@@ -1397,7 +1398,7 @@ export interface InboxItem {
 }
 
 // A task item's recorded pull request: the latest pull_request.opened. The
-// task's GitHub issue stays on `task.github` (feature-operator-next-action NA-5).
+// task's GitHub issue stays on `task.github` (component-next-action invariant 25).
 export interface InboxPullRequest {
   url: string
   number?: number
@@ -2001,7 +2002,7 @@ export interface VerificationKitRegistry {
   repositories: VerificationKitRepository[]
 }
 
-// GET /v1/tasks/{id}/flow (feature-operator-next-action NA-7; component-http-api,
+// GET /v1/tasks/{id}/flow (component-next-action, Public surfaces; component-http-api,
 // Next-action and task-flow reads): the task's position on its stage path,
 // folded on the server from its events. The client draws it and derives
 // nothing from events itself (req-operator-next-action AC-7.7).
@@ -2009,7 +2010,8 @@ export type TaskFlowStatus = 'done' | 'in_progress' | 'waiting' | 'needs_operato
 
 export type TaskFlowStageId = 'triage' | 'spec' | 'implement' | 'verify' | 'review' | 'merge'
 
-// The NA-3 attempt block: who holds the current attempt and how fresh it is.
+// A flow stage's current-attempt block (component-next-action, Public surfaces):
+// who holds the current attempt and how fresh it is.
 export interface TaskFlowAttemptView {
   harness?: string
   model?: string
@@ -2102,8 +2104,9 @@ export interface TaskFlowDisplay {
   from_any_step_label: string
 }
 
-// The NA-3 statement, embedded unchanged. Only the fields the flow reads are
-// typed here; the NA-6 surfaces own the rest of the statement.
+// The next-action statement (component-next-action, Public surfaces), embedded
+// unchanged. Only the fields the flow reads are typed here; the Inbox, Board,
+// and task-detail surfaces own the rest of the statement.
 export interface TaskFlowNextAction {
   label: string
   actor: string

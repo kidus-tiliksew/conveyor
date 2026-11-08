@@ -181,7 +181,7 @@ function stageLabel(stage: string) {
 
 // What triage recorded when it parked the task, read from the bounded
 // detail's complete-ledger summary, never the event page
-// (feature-operator-next-action NA-6; component-http-api, Bounded detail view).
+// (component-web-task-surfaces invariant 25; component-http-api, Bounded detail view).
 function ParkReason({ item }: { item: ActivityItem }) {
   const reason = item.summaries?.park_reason
   if (!reason) return <p className="text-sm text-muted">Triage recorded no reason.</p>
@@ -325,7 +325,8 @@ function CheckpointContext({ item }: { item: ActivityItem }) {
 // The task body, folded behind a one-line disclosure that expands to the full
 // body and a link to the full task. The section renders no proposed
 // document's content and issues no document read: a checklist row's title
-// opens the document page. The section is read-only (NA-6; AC-2.3).
+// opens the document page. The section is read-only (component-next-action;
+// AC-2.3).
 function ProposedContext({ item }: { item: ActivityItem }) {
   const { workspace } = useWorkspaceSelection()
   const body = item.task.body?.trim() ?? ''

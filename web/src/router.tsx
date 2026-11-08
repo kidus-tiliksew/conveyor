@@ -204,7 +204,7 @@ const decisionDetailRoute = createRoute({
   path: '/decisions/$decisionId',
   component: DecisionPage,
 })
-// The operator inbox (feature-operator-next-action NA-6).
+// The operator inbox (component-next-action, Public surfaces).
 const inboxRoute = createRoute({
   getParentRoute: () => workspaceLayoutRoute,
   path: '/inbox',

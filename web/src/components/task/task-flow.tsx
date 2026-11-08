@@ -93,8 +93,8 @@ function pathNodes(flow: TaskFlow): PathNode[] {
 // Node n sits on grid row 2n+1; the edge into it on row 2n.
 const nodeRow = (index: number) => 2 * index + 1
 
-// The task flowchart on task detail's Flow tab (feature-operator-next-action
-// NA-7; req-operator-next-action AC-7.5 to AC-7.7). The server folds the flow
+// The task flowchart on task detail's Flow tab (component-next-action
+// invariants 30, 33; req-operator-next-action AC-7.5 to AC-7.7). The server folds the flow
 // and states every word; this component arranges geometry and classifies no
 // lifecycle state. It prints no next-action summary: the card above it does
 // (DEC-61).

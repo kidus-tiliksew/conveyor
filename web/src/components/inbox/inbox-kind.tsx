@@ -15,7 +15,7 @@ import { useSyncExternalStore } from 'react'
 import type { InboxItem } from '../../lib/types'
 import { cn, fullTime } from '../../lib/utils'
 
-// The inbox's kind presentation (feature-operator-next-action NA-6). Each
+// The inbox's kind presentation (component-next-action). Each
 // next-action kind, and a document proposal, maps to one icon and one tone.
 // The tone says what sort of call it is, so the attention tone is left for
 // urgency alone: a decision that unblocks other tasks or one due soon. The

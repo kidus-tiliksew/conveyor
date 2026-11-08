@@ -13,7 +13,8 @@ import { ContextDocumentPreview } from './context-document-preview'
 import { CONTEXT_APPLY_SHORTCUT, Kbd, useShortcutChoice } from './inbox-keyboard'
 import { nextActionQueryKey, nextActionsQueryKey } from './use-next-actions'
 
-// The words the checklist prints for a proposal's stored source (NA-6).
+// The words the checklist prints for a proposal's stored source
+// (component-next-action).
 const sourceWords: Record<string, string> = { triage: 'triage', planning: 'planning', operator: 'operator' }
 
 type Act = 'confirm' | 'dismiss'
@@ -24,7 +25,7 @@ const choiceId = (proposal: NextActionContextProposal, act: Act) =>
   `${act}:task_context:${proposal.kind}:${proposal.target_id}`
 
 // The server choice that decides one proposal, matched by its documented ID
-// (feature-operator-next-action NA-3).
+// (component-next-action, Public surfaces).
 function proposalChoice(action: NextAction, proposal: NextActionContextProposal, act: Act) {
   const id = choiceId(proposal, act)
   return action.choices.find((choice) => choice.id === id)
@@ -46,7 +47,7 @@ export function contextProposals(action: NextAction) {
 // The checked state of one context_proposal decision, keyed by proposal kind
 // and target ID. A proposal starts checked, a proposal that survives a refetch
 // keeps its state, and the state resets when the task or workspace changes
-// (NA-6). Only unchecked keys are stored, so a newly listed proposal reads as
+// (component-next-action invariant 34). Only unchecked keys are stored, so a newly listed proposal reads as
 // checked. The hook is the one source of a row's state, so another component
 // can mirror a row through `checked` and `toggle`.
 export function useContextProposalSelection(taskId: string) {
@@ -85,7 +86,8 @@ export type ContextProposalSelection = ReturnType<typeof useContextProposalSelec
 // next; the first refusal stops it, and nothing is retried or rolled back. A
 // synchronous guard covers every run, and leaving the card abandons the
 // unsent remainder. Every post is the same audited act as a single choice
-// (AC-2.2; DEC-45); there is no bulk route (NA-6). `progress` counts the
+// (AC-2.2; DEC-45); there is no bulk route (component-next-action invariant
+// 31). `progress` counts the
 // posts recorded against the snapshot's size, so a stopped run can say how
 // far it got. `onSent` runs after each recorded act, so the Inbox can tell its
 // own acts from other operators' when the item leaves (AC-2.10).
@@ -160,7 +162,8 @@ export function useContextProposalSends(taskId: string, onSent?: () => void) {
 
 export type ContextProposalSends = ReturnType<typeof useContextProposalSends>
 
-// The task-level origin line of a monitor-filed task (NA-6).
+// The task-level origin line of a monitor-filed task (component-next-action
+// invariant 16).
 export function MonitorOriginLine({ action }: { action: NextAction }) {
   const origin = action.details?.monitor_origin
   if (!origin) return null
@@ -196,7 +199,8 @@ function Age({ value }: { value: string }) {
   )
 }
 
-// The context_proposal checklist (NA-6; AC-1.8, AC-2.1): one row per pending
+// The context_proposal checklist (component-next-action invariant 12; AC-1.8,
+// AC-2.1): one row per pending
 // proposal in the server's order, each with a checkbox (checked by default),
 // the tier word, the title, a Preview control, and the justification. The
 // title and Preview open the document preview panel over the page. The source and age
@@ -220,7 +224,7 @@ export function ContextProposalChecklist({
 }) {
   const proposals = contextProposals(action)
   // The proposal the preview panel shows, by key, or null while it is closed.
-  // A proposal that leaves the list closes the panel (NA-6).
+  // A proposal that leaves the list closes the panel (component-next-action).
   const [previewKey, setPreviewKey] = useState<string | null>(null)
   const previewIndex = previewKey == null ? -1 : proposals.findIndex((proposal) => proposalKey(proposal) === previewKey)
   if (proposals.length === 0) return null
@@ -466,7 +470,8 @@ function useClamped(text: string | null) {
 }
 
 // The proposal's title opens the document preview panel in place; the
-// panel's "Open full page" link keeps the document page route (NA-6).
+// panel's "Open full page" link keeps the document page route
+// (component-next-action).
 function ProposalTitle({
   proposal,
   className,
@@ -494,7 +499,7 @@ function ProposalTitle({
 // `choices[]`, and the reason it cannot send them, or '' when it can. A
 // control is disabled when any choice in its own snapshot is absent,
 // disallowed, or unsendable, so a disallowed dismiss never disables an
-// all-checked Apply (NA-6; DEC-61).
+// all-checked Apply (component-next-action invariant 32; DEC-61).
 function snapshot(action: NextAction, wanted: string[]) {
   const ids = new Set(wanted)
   const choices = action.choices.filter((choice) => ids.has(choice.id))
@@ -523,7 +528,7 @@ function applyLabel(total: number, attach: number) {
 }
 
 // Apply and Dismiss all: client chrome over the server's choices, not a
-// server act (NA-6). Apply sends each checked row's confirm choice and each
+// server act (component-next-action invariant 31). Apply sends each checked row's confirm choice and each
 // unchecked row's dismiss choice; Dismiss all sends every dismiss choice.
 // Inside the Inbox, c clicks Apply while it renders enabled (AC-2.11).
 export function ContextProposalFooter({

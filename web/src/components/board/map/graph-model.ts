@@ -25,8 +25,9 @@ export interface GraphTask {
   actionSummary?: string
   lastEventAt: string
   dependsOn: string[]
-  // The unmerged dependencies, for the dependency mark beside the stated
-  // status (req-board-map AC-2.2). A closed one cannot be satisfied.
+  // The unmerged dependencies. A task with at least one carries the dependency
+  // mark beside its stated status (req-board-map AC-2.2). A closed one cannot
+  // be satisfied.
   blocking: Array<{ id: string; title: string; unsatisfiable: boolean }>
   requirements: Array<{ id: string; title: string }>
   // Present only for tasks the read named as a dependency but did not return
@@ -37,7 +38,9 @@ export interface GraphTask {
 export interface TaskGraphModel {
   tasks: Map<string, GraphTask>
   dependents: Map<string, string[]>
-  // Open tasks transitively waiting on each task.
+  // The number of open tasks that depend on each task directly or
+  // transitively, which its node shows only when it is at least one
+  // (req-board-map AC-2.2).
   unblocks: Map<string, number>
 }
 

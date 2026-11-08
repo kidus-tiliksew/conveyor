@@ -16,7 +16,8 @@ export function nextActionQueryKey(workspace: string, taskId: string) {
   return ['next-action', workspace, taskId] as const
 }
 
-// The operator inbox (NA-6). The server orders it; the page renders that order.
+// The operator inbox (component-next-action invariant 22). The server orders
+// it; the page renders that order.
 // It is read once without a band so every band's count comes from one
 // response; the page filters by band in the browser. It has no interval: the
 // workspace change stream, the task stream, its own acts, and window focus
@@ -59,7 +60,7 @@ async function fetchWholeInbox(workspace: string, signal?: AbortSignal): Promise
 // useNextAction and the task sheet's mount-time prefetch. Sixty seconds lets
 // the card that mounts when a slow detail read returns reuse the prefetched
 // statement; the task stream and detail updates keep it current
-// (feature-operator-next-action NA-6).
+// (component-web-task-surfaces invariants 34, 35).
 export function nextActionQueryOptions(workspace: string, taskId: string) {
   return queryOptions({
     queryKey: nextActionQueryKey(workspace, taskId),
@@ -74,7 +75,8 @@ export function nextActionQueryOptions(workspace: string, taskId: string) {
 // update started: that read already observes what the detail read saw. The
 // task stream invalidates both entries in one batch, so it causes one
 // next-action read rather than two; a dependency poll or a mutation's detail
-// refresh still re-reads the next action once (NA-6).
+// refresh still re-reads the next action once (component-web-task-surfaces
+// invariant 35).
 export function useNextAction(taskId: string, enabled = true) {
   const { workspace } = useWorkspaceSelection()
   const queryClient = useQueryClient()

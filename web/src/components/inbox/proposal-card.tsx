@@ -37,7 +37,7 @@ export function knownTier(tier: string): tier is PendingProposal['tier'] {
 }
 
 // The selected pending document proposal in the Inbox's detail view
-// (feature-operator-next-action NA-6; req-operator-next-action AC-1.8,
+// (component-next-action invariant 36; req-operator-next-action AC-1.8,
 // AC-2.6, AC-2.8, AC-2.9). It reads like a task decision: the server's label,
 // question and if-ignored text, the proposed change in place, a footer band of
 // choices with their keys, and raw identifiers only in the IDs disclosure.

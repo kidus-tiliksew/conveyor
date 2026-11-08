@@ -34,7 +34,7 @@
   --color-failure: #b83a34;
   --color-failure-soft: #fbeeed;
   --color-failure-fill: #b83a34;
-  /* Kind tones for the inbox (feature-operator-next-action NA-6): a question
+  /* Kind tones for the inbox (component-next-action): a question
      and a document proposal. Neither is an alarm; amber stays the only one. */
   --color-info: #11699a;
   --color-info-soft: #e8f3f9;

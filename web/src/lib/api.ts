@@ -288,7 +288,7 @@ export function fetchNextAction(workspace: string, taskId: string, signal?: Abor
   return getJSON<NextAction>(workspaceURL(`/v1/tasks/${encodeURIComponent(taskId)}/next-action`, workspace), signal)
 }
 
-// The operator inbox in server order (feature-operator-next-action NA-6).
+// The operator inbox in server order (component-next-action invariant 22).
 export async function fetchNextActions(
   workspace: string,
   input: { band?: InboxBand; limit: number; offset: number },
@@ -388,7 +388,8 @@ export async function fetchTaskHistory(
   return response.json() as Promise<TaskHistoryPage>
 }
 
-// The flow projection for the opt-in Board stage stripe (NA-7), read in the
+// The flow projection for the opt-in Board stage stripe (component-next-action,
+// Public surfaces), read in the
 // query's workspace.
 export async function fetchTaskFlow(workspace: string, taskId: string, signal?: AbortSignal) {
   const body = await getJSON<{ flow: TaskFlow }>(

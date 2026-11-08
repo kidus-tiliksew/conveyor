@@ -3,10 +3,11 @@ import type { NextAction } from '../../lib/types'
 import { cn } from '../../lib/utils'
 import { choiceBody } from './choice-bodies'
 
-// The Inbox keyboard map (req-operator-next-action AC-2.11):
+// The Inbox keyboard map (req-operator-next-action AC-2.11; DEC-119):
 // j / ArrowDown and k / ArrowUp move the selection; c activates the selected
-// item's first allowed choice; r and d activate Revise and Dismiss where the
-// detail offers them. A key clicks the rendered button that carries its
+// item's first allowed choice that neither rejects, closes, nor cancels the
+// task, and no choice at all while a check hold awaits the operator; r and d
+// activate Revise and Dismiss where the detail offers them. A key clicks the rendered button that carries its
 // `data-shortcut`, so it runs that button's own handler, dialog, composer and
 // duplicate-send guard and never a second posting path.
 
@@ -23,7 +24,8 @@ export function useShortcutChoice() {
 }
 
 // What c binds to for a context_proposal: the checklist's Apply, which marks
-// itself while it renders enabled (feature-operator-next-action NA-6).
+// itself while it renders enabled (req-operator-next-action AC-2.11;
+// component-next-action invariant 38).
 export const CONTEXT_APPLY_SHORTCUT = 'context-proposal:apply'
 
 // The first choice whose button renders enabled, matching the rules each
@@ -31,14 +33,20 @@ export const CONTEXT_APPLY_SHORTCUT = 'context-proposal:apply'
 // button opens the merge confirmation), and every other choice also needs a
 // request body this client can build and no server refusal. A context
 // proposal binds c to its checklist's Apply instead of any one choice.
+// c skips the reject, close, close_task, and cancel choices, which stay on
+// their own buttons with their own dialogs (req-operator-next-action AC-2.11;
+// DEC-119(2), (3)).
 const destructiveChoices = new Set(['reject', 'close', 'close_task', 'cancel'])
 
 export function shortcutChoiceId(action: NextAction) {
-  // Merging past failed checks is deliberately not one keypress away.
+  // While a check hold awaits the operator, c activates no choice: a merge past
+  // a failed or stuck check is taken only from its own button
+  // (req-operator-next-action AC-2.11; DEC-119(1)).
   if (action.kind === 'check_hold') return null
   if (action.kind === 'context_proposal' && action.details?.context_proposals?.length) return CONTEXT_APPLY_SHORTCUT
   // At merge_approval an allowed merge is the primary wherever the server
-  // lists it (feature-operator-next-action NA-6).
+  // lists it, and c opens its merge confirmation as a click does
+  // (req-operator-next-action AC-2.11; component-next-action invariant 38).
   if (action.kind === 'merge_approval' && action.choices.some((choice) => choice.id === 'merge' && choice.allowed)) {
     return 'merge'
   }
@@ -82,7 +90,8 @@ function shown(element: Element) {
 // nothing while a modifier is held, during IME composition, while focus is in
 // a text field or outside the Inbox page, while any dialog or sheet is open,
 // or while the selected detail has a composer open. An action key ignores
-// auto-repeat, so holding c never sends twice.
+// auto-repeat, so holding c never sends twice (component-next-action
+// invariant 38).
 export function useInboxKeyboard({
   root,
   move,

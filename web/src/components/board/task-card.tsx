@@ -12,7 +12,8 @@ import { StageStripe } from './stage-stripe'
 
 export type CardStatusTone = 'failure' | 'operator' | 'working' | 'merging' | 'waiting'
 
-// The status mark's tone, first match wins (feature-operator-next-action NA-6):
+// The status mark's tone, first match wins (req-operator-next-action AC-3.1;
+// component-web-task-surfaces invariants 1, 3):
 // a recorded failure outranks the actor, so a stalled operator item still reads
 // as a failure. A deliberate checkpoint is the exception: its release message
 // is not a failure, so an agent question reads as the operator's. The tone maps

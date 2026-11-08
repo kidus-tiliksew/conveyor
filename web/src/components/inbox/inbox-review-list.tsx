@@ -14,13 +14,13 @@ import { knownTier, proposalAge, tierLabels } from './proposal-card'
 // compact row per item, in the server's order (DEC-82(2)): the kind's icon in
 // its tone and the kind, a proposal's version, the age, the title clamped to two
 // lines, and a meta line of urgency marks and the pull request only when there
-// is one to show (NA-6). A row the header counts as urgent carries one urgent
+// is one to show (req-operator-next-action AC-2.1). A row the header counts as urgent carries one urgent
 // mark, so the count can be traced to its rows. A row carries no choice
 // control (DEC-82(1)); it is a link that names the item in `selected`, so the
 // selection survives reload and browser history. The link covers the whole row
 // through a stretched overlay; a task's pull request link sits above it, outside
 // the row's link, so it opens the pull request without selecting the row
-// (feature-operator-next-action NA-6).
+// (component-next-action).
 export function InboxReviewList({
   items,
   selectedKey,

@@ -6,7 +6,7 @@ import type { NextActionDetails } from '../../lib/types'
 // the label, the effect, the method, the path and whether the caller may act;
 // this registry only builds the body and says whether the act needs typed input.
 // A choice whose id resolves to no body renders disabled, so a server-added act
-// is never posted with a guessed body (DEC-61; feature-operator-next-action NA-4).
+// is never posted with a guessed body (DEC-61; component-next-action invariant 32).
 export interface ChoiceBody {
   // Typed input the act carries. `required` input blocks sending while empty.
   input?: { label: string; required: boolean }
@@ -21,8 +21,8 @@ export interface ChoiceBody {
   dialog?: 'restart'
 }
 
-// A verification disposition posts the server's row-10 binding with the
-// operator's reason (feature-operator-next-action NA-3, NA-6). Without the
+// A verification disposition posts the binding the server states at row 11
+// with the operator's reason (component-next-action invariant 15). Without the
 // binding the act stays disabled with the server's refusal.
 const disposition = (value: 'applied' | 'not_applied'): ChoiceBody => ({
   input: { label: 'Reason', required: true },
@@ -92,7 +92,7 @@ export const choiceBodies: Record<string, ChoiceBody> = {
 }
 
 // A task-context proposal choice names its target in the id
-// (feature-operator-next-action NA-4): confirm:task_context:<kind>:<target-id>.
+// (component-next-action, Public surfaces): confirm:task_context:<kind>:<target-id>.
 // Its route takes no body, so only the documented kinds resolve; a document
 // proposal id or any other unregistered form stays without a body.
 const taskContextChoice = /^(confirm|dismiss):task_context:(requirement|system_design):.+$/

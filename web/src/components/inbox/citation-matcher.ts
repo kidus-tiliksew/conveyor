@@ -1,5 +1,5 @@
 // Which sections of a proposed document its justification cites
-// (feature-operator-next-action NA-6). The match runs in the browser over the
+// (component-next-action). The match runs in the browser over the
 // section list `reviewBlocks` produces; the proposal stores no citation field.
 //
 // A section is cited when the justification contains its `REQ-n` or `AC-n.m`

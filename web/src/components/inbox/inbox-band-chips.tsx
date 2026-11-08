@@ -11,7 +11,8 @@ const bands: { band?: InboxBand; label: string }[] = [
   { band: 'automatic', label: 'Automatic' },
 ]
 
-// The band switch over the one inbox read (feature-operator-next-action NA-6):
+// The band switch over the one inbox read (component-next-action, Public
+// surfaces):
 // a segmented control whose selected segment is the `band` search parameter.
 // Each count comes from that read, so a band link and the counts never
 // disagree. The server's order is stated beneath it. Before the first read

@@ -45,7 +45,7 @@ const pill =
   'inline-flex min-w-0 max-w-full items-center gap-1 rounded-md border border-border bg-background/40 px-1.5 py-0.5'
 
 // A recorded pull request as the inbox names it: "<repository> PR #<n>", or
-// "PR" when the event stated no number (feature-operator-next-action NA-6).
+// "PR" when the event stated no number (component-next-action invariant 25).
 export function pullRequestLabel(pullRequest: InboxPullRequest) {
   const name = pullRequest.number != null ? `PR #${pullRequest.number}` : 'PR'
   return pullRequest.repository ? `${pullRequest.repository} ${name}` : name
@@ -71,7 +71,8 @@ export function DecisionDetail({ item, task, onActed }: { item: InboxItem; task:
   const sends = useContextProposalSends(task.id, onActed)
   const selection = useContextProposalSelection(task.id)
   // A context decision lists its proposed documents as a checklist in place
-  // of the flat choice row, with Apply and Dismiss all in the footer (NA-6).
+  // of the flat choice row, with Apply and Dismiss all in the footer
+  // (component-next-action).
   const contextRows = kind === 'context_proposal' && action?.details?.context_proposals ? action : undefined
   const shortcut = action ? shortcutChoiceId(action) : null
   const deadline = action ? action.deadline : (item.deadline ?? compact?.deadline)

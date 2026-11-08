@@ -32,7 +32,8 @@ const passiveKinds = new Set(['working', 'queued'])
 
 // The server's next action, directly under the task's description on the Board
 // sheet and the full task route, ahead of its reference data
-// (feature-operator-next-action NA-6; req-operator-next-action AC-7.1). It is the one box on task detail that says
+// (req-operator-next-action AC-7.1; component-web-task-surfaces invariant 32;
+// component-next-action invariant 33). It is the one box on task detail that says
 // where the task stands: the summary is its only headline, and the current
 // order's execution state from deriveCurrentExecutionState adds just the lines
 // its `facts` mark as saying more than that summary (DEC-61; AC-1.7). One
@@ -166,7 +167,7 @@ export function NextActionCard({
 
 // Task detail's form of the context_proposal checklist: compact rows, the
 // same Apply and Dismiss all as the Inbox detail, and a link to the decision
-// in the Inbox (feature-operator-next-action NA-6; component-web-task-surfaces
+// in the Inbox (component-next-action invariant 31; component-web-task-surfaces
 // Next-action card).
 function ContextProposalDecision({ taskId, action }: { taskId: string; action: NextAction }) {
   const { workspace } = useWorkspaceSelection()
