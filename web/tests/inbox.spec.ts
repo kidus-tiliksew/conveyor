@@ -1397,6 +1397,118 @@ test('the inbox offers the one-act merge only behind the confirm naming the revi
     .toEqual(['/v1/tasks/T-merge/merge'])
 })
 
+// The merge at check_hold and merge_execution lands the approved head, so the
+// Inbox footer opens the same confirm as the task page before it posts
+// (component-web-task-surfaces invariant 45). Choices and details follow the
+// server's shapes (internal/nextaction/choices.go and project.go); an approved
+// task's detail carries merge_readiness (internal/httpapi/server.go).
+function heldMergeFixture(kind: 'check_hold' | 'merge_execution'): Fixture {
+  const held = kind === 'check_hold'
+  const compact = {
+    kind,
+    label: held ? 'Checks hold the merge' : 'Merge',
+    actor: 'operator',
+    judgment: true,
+    summary: held ? 'A failed check holds the merge of the approved head: e2e (failed).' : 'Ready to merge.',
+    deadline: null,
+  }
+  return {
+    items: [{ band: 'decisions', task: task('T-held', 'Held merge', 'approved'), next_action: compact }],
+    actions: {
+      'T-held': {
+        ...compact,
+        question: held
+          ? 'Rerun e2e (failed) on GitHub, merge anyway, request changes, or close?'
+          : 'Merge this branch?',
+        choices: [
+          {
+            ...choice('merge', 'Merge', '/v1/tasks/T-held/merge'),
+            effect: held
+              ? 'Merges the approved head without reading its checks, and records you and the checks that held it.'
+              : 'Merges the approved head.',
+            capability: 'operate_gates',
+          },
+          { ...choice('request_changes', 'Request changes…', '/v1/tasks/T-held/request-changes') },
+          { ...choice('close', 'Close…', '/v1/tasks/T-held/close'), capability: 'operate_gates' },
+        ],
+        details: held
+          ? {
+              check_hold_reason: 'failed',
+              checks: [
+                { name: 'e2e', state: 'failed', url: 'https://github.com/acme/app/runs/2' },
+                { name: 'deploy', state: 'stuck', url: 'https://github.com/acme/app/runs/3' },
+                { name: 'legacy-status', state: 'pending' },
+              ],
+            }
+          : {},
+      },
+    },
+    activity: {
+      'T-held': {
+        task: task('T-held', 'Held merge', 'approved'),
+        events: [],
+        jobs: [],
+        work_orders: [],
+        interventions: [],
+        merge_readiness: { state: 'MERGEABLE', head_sha: 'c0ffee5678abcdef', number: 31 },
+      },
+    },
+  }
+}
+
+for (const kind of ['check_hold', 'merge_execution'] as const) {
+  test(`the inbox merges at ${kind} only after the confirm naming the approved head`, async ({ page }) => {
+    const harness = await serve(page, heldMergeFixture(kind))
+    await page.goto('/w/demo/inbox')
+    const card = decisionDetail(page)
+    const merge = card.locator('[data-merge-at-gate]')
+    await expect(merge).toBeVisible()
+    // The merge choice is never a one-click button.
+    await expect(card.locator('[data-choice="merge"]')).toHaveCount(0)
+    const dialog = page.getByRole('dialog', { name: 'Confirm merge' })
+    if (kind === 'check_hold') {
+      // The action key activates no choice at a check hold (DEC-119(1)):
+      // pressing it opens no confirm and posts nothing.
+      await expect(card.locator('[data-shortcut="c"]')).toHaveCount(0)
+      await expect(merge.locator('xpath=..').locator('[data-kbd-hint]')).toHaveCount(0)
+      await page.keyboard.press('c')
+      await expect(dialog).toHaveCount(0)
+    } else {
+      // Elsewhere the key clicks the same Merge button, so it opens the confirm.
+      await expect(merge).toHaveAttribute('data-shortcut', 'c')
+      await page.keyboard.press('c')
+      await expect(dialog).toBeVisible()
+      await dialog.getByRole('button', { name: 'Cancel' }).click()
+      await expect(dialog).toHaveCount(0)
+    }
+    expect(harness.posts).toHaveLength(0)
+
+    await merge.click()
+    await expect(dialog).toContainText('This merges #31 at the approved head c0ffee5 under your name.')
+    const checks = dialog.locator('[data-confirm-checks]')
+    if (kind === 'check_hold') {
+      await expect(checks.getByRole('listitem')).toHaveText([
+        /^e2e\s*failed$/,
+        /^deploy\s*stuck$/,
+        /^legacy-status\s*pending$/,
+      ])
+      await expect(checks).toContainText('Conveyor records you and these checks with it.')
+    } else {
+      await expect(checks).toHaveCount(0)
+    }
+    // Cancel posts nothing.
+    await dialog.getByRole('button', { name: 'Cancel' }).click()
+    await expect(dialog).toHaveCount(0)
+    expect(harness.posts).toHaveLength(0)
+
+    await merge.click()
+    await dialog.locator('[data-confirm-merge]').click()
+    await expect
+      .poll(() => harness.posts.map((post) => new URL(post.url()).pathname))
+      .toEqual(['/v1/tasks/T-held/merge'])
+  })
+}
+
 test('selecting each decision shows its context in place without leaving the inbox', async ({ page }) => {
   const fixture = decisionsFixture()
   const base = (id: string, title: string) => ({

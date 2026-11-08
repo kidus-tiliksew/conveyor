@@ -696,6 +696,189 @@ test('a check hold names each check with its GitHub link and offers the merge ac
   await expect(merge).not.toHaveClass(/bg-primary/)
 })
 
+// The merge at check_hold and merge_execution lands the approved head, so it
+// opens a confirm before it posts (component-web-task-surfaces invariant 45).
+// The choices are the server's, verbatim from internal/nextaction/choices.go;
+// the task detail of an approved task carries merge_readiness, the head and
+// pull request the confirm names (internal/httpapi/server.go).
+const approvedHead = '5eedc0ffee1234567890'
+const heldMergePath = `/v1/tasks/${taskId}/merge`
+
+function heldMergeAction(kind: 'check_hold' | 'merge_execution'): NextAction {
+  const held = kind === 'check_hold'
+  return {
+    label: held ? 'Checks hold the merge' : 'Merge',
+    actor: 'operator',
+    kind,
+    judgment: true,
+    summary: held
+      ? 'A failed check holds the merge of the approved head: e2e (failed).'
+      : 'The merge gate is on and the branch is ready to merge.',
+    question: held
+      ? 'Rerun e2e (failed), deploy (stuck), legacy-status (pending) on GitHub, merge the approved head anyway, request changes, or close?'
+      : 'Merge this branch?',
+    deadline: null,
+    choices: [
+      {
+        id: 'merge',
+        label: 'Merge',
+        effect: held
+          ? 'Merges the approved head without reading its checks, and records you and the checks that held it.'
+          : 'Merges the approved head.',
+        method: 'POST',
+        path: heldMergePath,
+        capability: 'operate_gates',
+        allowed: true,
+      },
+      {
+        id: 'request_changes',
+        label: 'Request changes…',
+        effect: 'Sends the branch back.',
+        method: 'POST',
+        path: `/v1/tasks/${taskId}/request-changes`,
+        capability: 'request_changes',
+        allowed: true,
+      },
+      {
+        id: 'close',
+        label: 'Close…',
+        effect: 'Closes the task.',
+        method: 'POST',
+        path: `/v1/tasks/${taskId}/close`,
+        capability: 'operate_gates',
+        allowed: true,
+      },
+    ],
+    details: held
+      ? {
+          check_hold_reason: 'failed',
+          checks: [
+            { name: 'e2e', state: 'failed', url: 'https://github.com/acme/app/runs/2' },
+            { name: 'deploy', state: 'stuck', url: 'https://github.com/acme/app/runs/3' },
+            { name: 'legacy-status', state: 'pending' },
+          ],
+        }
+      : {},
+  }
+}
+
+function heldMergeActivity(kind: 'check_hold' | 'merge_execution') {
+  return {
+    ...activity('approved', heldMergeAction(kind)),
+    merge_readiness: { state: 'MERGEABLE', head_sha: approvedHead, number: 77, url: 'https://github.test/pr/77' },
+  }
+}
+
+for (const kind of ['check_hold', 'merge_execution'] as const) {
+  for (const surface of [`/w/demo/tasks/${taskId}`, `/w/demo/tasks/${taskId}/full`]) {
+    test(`Merge at ${kind} on ${surface} posts only after a confirm that names the approved head`, async ({ page }) => {
+      const posts = await mockAPI(
+        page,
+        () => heldMergeActivity(kind),
+        () => heldMergeAction(kind),
+      )
+      // The forge answers only after both confirm clicks land, so the act is in
+      // flight across the second click.
+      const forge = Promise.withResolvers<void>()
+      const merges: string[] = []
+      await page.route(`**${heldMergePath}**`, async (route) => {
+        merges.push(route.request().method())
+        await forge.promise
+        return route.fulfill({ json: {} })
+      })
+      await page.goto(surface)
+      const gate = page.getByRole('region', { name: 'Human gate' })
+      // The merge choice is never a one-click button.
+      await expect(gate.locator('[data-choice="merge"]')).toHaveCount(0)
+      const merge = gate.locator('[data-merge-at-gate]')
+      await expect(merge).toHaveText('Merge')
+      if (kind === 'check_hold') await expect(merge).not.toHaveClass(/bg-primary/)
+      // The server's order stays: Merge, then Request changes and Close.
+      await expect(gate.locator('[data-choice-row]').getByRole('button')).toHaveText([
+        'Merge',
+        'Request changes…',
+        'Close…',
+      ])
+
+      // Opening the confirm sends nothing, and Cancel sends nothing.
+      await merge.click()
+      const dialog = page.getByRole('dialog', { name: 'Confirm merge' })
+      await expect(dialog.getByRole('heading')).toHaveText('Merge #77?')
+      await expect(dialog.locator('[data-confirm-head]')).toHaveText(
+        `This merges #77 at the approved head ${approvedHead.slice(0, 7)} under your name. Open #77`,
+      )
+      await expect(dialog.locator('code')).toHaveAttribute('title', approvedHead)
+      await expect(dialog.locator('[data-confirm-merge]')).toHaveAttribute('data-endpoint', `POST ${heldMergePath}`)
+      const checks = dialog.locator('[data-confirm-checks]')
+      if (kind === 'check_hold') {
+        // Each failed, stuck, or pending check the hold names, with its state.
+        await expect(checks.getByRole('listitem')).toHaveText([
+          /^e2e\s*failed$/,
+          /^deploy\s*stuck$/,
+          /^legacy-status\s*pending$/,
+        ])
+        await expect(checks.getByRole('link', { name: 'e2e' })).toHaveAttribute(
+          'href',
+          'https://github.com/acme/app/runs/2',
+        )
+        await expect(checks).toContainText('Conveyor records you and these checks with it.')
+      } else {
+        await expect(checks).toHaveCount(0)
+      }
+      await dialog.getByRole('button', { name: 'Cancel' }).click()
+      await expect(dialog).toHaveCount(0)
+      expect(merges).toHaveLength(0)
+      expect(posts).toHaveLength(0)
+
+      // Confirming posts the server's merge choice once, even on a double click.
+      await merge.click()
+      await dialog.locator('[data-confirm-merge]').dblclick()
+      await expect.poll(() => merges.length).toBe(1)
+      await expect(dialog.locator('[data-confirm-merge]')).toHaveText('Merging…')
+      forge.resolve()
+      await expect(dialog).toHaveCount(0)
+      expect(merges).toEqual(['POST'])
+      expect(posts).toHaveLength(0)
+    })
+  }
+}
+
+test('a 409 on Merge at check_hold refetches, keeps the refusal, and never retries', async ({ page }) => {
+  await mockAPI(
+    page,
+    () => heldMergeActivity('check_hold'),
+    () => heldMergeAction('check_hold'),
+  )
+  let merges = 0
+  let actionReads = 0
+  const refetch = Promise.withResolvers<void>()
+  let refused = false
+  await page.route(`**/v1/tasks/${taskId}/next-action**`, async (route) => {
+    actionReads++
+    // The refetch after the refusal waits, so the act must stay pending until it lands.
+    if (refused) await refetch.promise
+    return route.fallback()
+  })
+  await page.route(`**${heldMergePath}**`, (route) => {
+    merges++
+    refused = true
+    return route.fulfill({ status: 409, json: { error: 'task is not approved' } })
+  })
+  await page.goto(`/w/demo/tasks/${taskId}/full`)
+  const gate = page.getByRole('region', { name: 'Human gate' })
+  await expect.poll(() => actionReads).toBeGreaterThan(0)
+  const readsBefore = actionReads
+  await gate.locator('[data-merge-at-gate]').click()
+  const dialog = page.getByRole('dialog', { name: 'Confirm merge' })
+  await dialog.locator('[data-confirm-merge]').click()
+  await expect.poll(() => actionReads).toBeGreaterThan(readsBefore)
+  await expect(dialog.locator('[data-confirm-merge]')).toBeDisabled()
+  refetch.resolve()
+  await expect(dialog.getByText('task is not approved')).toBeVisible()
+  await expect(dialog.locator('[data-confirm-merge]')).toBeEnabled()
+  expect(merges).toBe(1)
+})
+
 // The one-act merge at the merge_approval gate (DEC-64). Merge is the server's
 // `merge` choice (DEC-61): offered at MERGEABLE, otherwise refused with the
 // server's reason. The browser adds only the confirm, which names the reviewed
