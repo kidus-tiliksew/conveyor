@@ -469,35 +469,73 @@ for (const gateCase of gateCases) {
   })
 }
 
-// The flow read calls a held merge in progress; the next action states the hold.
-test('a merge held by its checks reads as held, and an unfinished merge is named Merge', async ({ page }) => {
+// The flow serves a merge held by its checks as needs_operator named "Merge",
+// with its own hold sentence and the merge gate off. The chart prints that row
+// as served and takes nothing from the next action (req-operator-next-action
+// AC-1.5, AC-7.7; component-next-action invariants 28, 30).
+test('a merge held by its checks prints the served needs_operator row named Merge', async ({ page }) => {
   const flow = baseFlow()
-  flow.stages[5] = stage('merge', 'in_progress', { label: 'Merged', status_text: 'Merge is running now.' })
+  flow.stages[4] = stage('review', 'done')
+  flow.stages[5] = stage('merge', 'needs_operator', {
+    label: 'Merge',
+    gate: null,
+    ...gate('off'),
+    gate_status_label: 'Off for this task',
+    status_label: 'Needs you',
+    status_text: 'Merge is held because a check failed on the approved head; the next action says what to decide.',
+  })
+  flow.current_stage = 'merge'
+  flow.next_action = { label: 'Checks hold the merge', actor: 'operator', kind: 'check_hold', summary: 'x' }
   await mockAPI(page, {
     flows: { [taskId]: flow },
     action: nextAction({
       actor: 'operator',
       kind: 'check_hold',
+      judgment: true,
       label: 'Checks hold the merge',
-      summary: 'A failed check holds the merge.',
+      summary: 'A failed check holds the merge of the approved head: e2e (failed).',
     }),
   })
   await openFlow(page, `/w/demo/tasks/${taskId}/full`)
   await expect(node(page, 'merge')).toHaveAttribute('data-status', 'needs_operator')
-  await expect(node(page, 'merge')).toHaveAccessibleName('Merge — Held')
+  await expect(node(page, 'merge')).toHaveAccessibleName('Merge — Needs you')
+  // The hold is not the merge gate's decision: the gate keeps its served off mark.
+  await expect(gateNode(page, 'merge')).toHaveAttribute('data-status', 'off')
   await node(page, 'merge').click()
   const panel = page.getByRole('dialog', { name: 'Merge stage' })
-  await expect(panel.locator('[data-flow-panel-status]')).toHaveText('Held')
-  await expect(panel.locator('[data-flow-status-text]')).toHaveText('A failed check holds the merge.')
+  await expect(panel.locator('[data-flow-panel-status]')).toHaveText('Needs you')
+  await expect(panel.locator('[data-flow-status-text]')).toHaveText(
+    'Merge is held because a check failed on the approved head; the next action says what to decide.',
+  )
+  await expect(panel).not.toContainText('A failed check holds the merge of the approved head')
   await expect(panel).not.toContainText('running now')
 })
 
-test('a finished merge keeps the name Merged', async ({ page }) => {
-  const flow = baseFlow()
-  flow.stages[5] = stage('merge', 'done', { label: 'Merged' })
-  await mockAPI(page, { flows: { [taskId]: flow } })
+// The server names the merge node "Merge" until its row is done and "Merged"
+// once it is; the chart prints whichever it serves.
+test('the merge node prints the served name: Merge while merging, Merged once done', async ({ page }) => {
+  const merging = baseFlow()
+  merging.stages[5] = stage('merge', 'in_progress', {
+    label: 'Merge',
+    gate: null,
+    ...gate('off'),
+    status_label: 'In progress',
+    status_text: 'Merge is running now.',
+  })
+  const merged = baseFlow()
+  merged.stages[5] = stage('merge', 'done', { label: 'Merged', gate: null, ...gate('off', true), status_label: 'Done' })
+  await mockAPI(page, { flows: { [taskId]: merged, [otherId]: merging } })
   await openFlow(page, `/w/demo/tasks/${taskId}/full`)
-  await expect(node(page, 'merge')).toContainText('Merged')
+  await expect(node(page, 'merge')).toHaveAttribute('data-status', 'done')
+  await expect(node(page, 'merge')).toHaveAccessibleName('Merged — Done')
+
+  await openFlow(page, `/w/demo/tasks/${otherId}/full`)
+  await expect(node(page, 'merge')).toHaveAttribute('data-status', 'in_progress')
+  await expect(node(page, 'merge')).toHaveAccessibleName('Merge — In progress')
+  await node(page, 'merge').click()
+  await expect(page.getByRole('dialog', { name: 'Merge stage' }).locator('[data-flow-status-text]')).toHaveText(
+    'Merge is running now.',
+  )
 })
 
 test('a plan-off task draws the bypass and skipped plan nodes', async ({ page }) => {

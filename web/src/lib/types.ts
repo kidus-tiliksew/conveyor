@@ -2027,7 +2027,8 @@ export interface TaskFlowAttempt {
 
 export interface TaskFlowStage {
   id: TaskFlowStageId
-  // The node's name on the chart: Triage, Plan, Implement, Verify, Review, Merged.
+  // The node's name on the chart: Triage, Plan, Implement, Verify, Review, and
+  // Merge, which the server names Merged once its row is done.
   label: string
   // Null when the stage has no gate or the frozen policy turned it off.
   gate: 'plan_approval' | 'merge_approval' | null

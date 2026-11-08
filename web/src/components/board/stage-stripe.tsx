@@ -1,5 +1,4 @@
 import { useEffect, useRef, useState } from 'react'
-import { stageLabels } from '../../lib/contracts'
 import type { TaskFlowStatus } from '../../lib/types'
 import { cn } from '../../lib/utils'
 import { useTaskFlow } from '../task/use-task-flow'
@@ -8,8 +7,10 @@ import { stageSegmentClass, stageSegmentName } from './stage-segments'
 // A card's stage stripe, shown only when the viewer opts in
 // (req-operator-next-action AC-3.2, AC-3.3, AC-7.5, AC-7.7; component-next-action
 // invariants 28, 30, 39). One segment per stage in the server's flow, toned by
-// the stage's status, and a diamond for each approval gate the frozen policy
-// keeps, marked and named only by what the flow serves for that gate. The flow
+// the stage's status and named by its served label and status label, and a
+// diamond for each approval gate the frozen policy keeps, marked and named only
+// by what the flow serves for that gate. The stripe prints the served row as
+// it is: a merge held by its checks reads as the flow states it. The flow
 // is read only once the card is on screen, so a full Board page does not issue
 // a flow read per task up front, and the card unmounts this component entirely
 // while the preference is off.
@@ -38,7 +39,6 @@ function Segments({ taskId }: { taskId: string }) {
   return (
     <ol aria-label="Stage progress" className="flex h-3 items-center gap-1">
       {flow.stages.map((stage) => {
-        const label = stageLabels[stage.id] ?? stage.id
         const gate =
           stage.gate && stage.gate_status ? (
             <GateDiamond
@@ -58,7 +58,7 @@ function Segments({ taskId }: { taskId: string }) {
             {stage.gate === 'merge_approval' && gate}
             <span
               role="img"
-              aria-label={stageSegmentName(stage, label)}
+              aria-label={stageSegmentName(stage)}
               data-stage={stage.id}
               data-status={stage.status}
               className={cn('relative block h-1.5 min-w-0 flex-1 rounded-full', stageSegmentClass(stage.status))}
