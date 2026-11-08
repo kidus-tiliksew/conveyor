@@ -422,7 +422,7 @@ func (r *historyQueryTracer) take() map[string]int64 {
 }
 
 // TestNextActionHistoryTransfersBoundedRowsIntegration grows a task's
-// state-change, pull-request, bounce, conflict-episode, and attachment
+// state-change, pull-request, bounce, gate-source, conflict-episode, and attachment
 // history tenfold and its payloads with the order set fixed. The bounded
 // reads return the same rows and wire bytes for both sizes, never a payload
 // sentinel, and summaries equal to the full-history fold.
@@ -488,6 +488,8 @@ func TestNextActionHistoryTransfersBoundedRowsIntegration(t *testing.T) {
 			appendEvent("task.state_changed", map[string]any{"from": "queued", "to": "running", "note": pad})
 			appendEvent("pull_request.opened", map[string]any{"number": 100 + i, "note": pad})
 			appendEvent("pipeline.bounce_limit", map[string]any{"window": i + 1, "note": pad})
+			appendEvent("job.failed", map[string]any{"error": pad, "source": "triage.output_invalid"})
+			appendEvent("context.authority_budget_exceeded", map[string]any{"reason_code": "authority_budget_exceeded", "note": pad})
 			appendEvent("merge.conflict_cleared", map[string]any{"note": pad})
 			appendEvent("merge.blocked", heads(nil))
 			appendEvent("merge.conflict_dispatch_failed", heads(map[string]any{"next_retry_at": now}))
@@ -511,7 +513,7 @@ func TestNextActionHistoryTransfersBoundedRowsIntegration(t *testing.T) {
 		appendEvent("merge.conflict_fix_dispatched", heads(map[string]any{"work_order_id": orders[1]}))
 		appendEvent("merge.conflict_dispatch_failed", heads(map[string]any{"next_retry_at": now.Add(time.Hour)}))
 		appendEvent("pull_request.opened", map[string]any{"number": 7, "note": pad})
-		appendEvent("pipeline.bounce_limit", map[string]any{"window": 3, "note": pad})
+		appendEvent("pipeline.bounce_limit", map[string]any{"window": 3, "source": "spec.output_invalid", "note": pad})
 		appendEvent("task.state_changed", map[string]any{"command": "triage.park", "note": pad})
 		appendEvent(store.TaskContextDesignAdded, map[string]any{"id": "design-history", "version": 4, "note": pad})
 		return id
@@ -562,7 +564,7 @@ func TestNextActionHistoryTransfersBoundedRowsIntegration(t *testing.T) {
 			t.Fatal(err)
 		}
 		got, want := histories[id], store.FoldNextActionHistory(events, orders)
-		if got.ParkCommand != want.ParkCommand || got.PullRequest != want.PullRequest || got.BounceCount != want.BounceCount ||
+		if got.ParkCommand != want.ParkCommand || got.PullRequest != want.PullRequest || got.BounceCount != want.BounceCount || got.GateSource != want.GateSource ||
 			!sameConflict(store.MergeConflictFromHistory(got.MergeConflict, orders), store.MergeConflictFromHistory(want.MergeConflict, orders)) ||
 			got.MergeConflict.Failures != want.MergeConflict.Failures || !slices.Equal(got.MergeConflict.DispatchedOrderIDs, want.MergeConflict.DispatchedOrderIDs) {
 			t.Fatalf("task %s history=%+v full fold %+v", id, got, want)
@@ -570,12 +572,12 @@ func TestNextActionHistoryTransfersBoundedRowsIntegration(t *testing.T) {
 		if _, wantPins := store.ActiveTaskContextReferences(events); pins[id]["design-history"] != 4 || len(pins[id]) != len(wantPins) {
 			t.Fatalf("task %s pins=%+v full fold %+v", id, pins[id], wantPins)
 		}
-		if got.ParkCommand != "triage.park" || got.PullRequest != 7 || got.BounceCount != 3 || len(got.MergeConflict.DispatchedOrderIDs) != 2 || got.MergeConflict.Failures != 3*rounds+1 || len(got.MergeConflict.NextRetryAt) > 37 {
+		if got.ParkCommand != "triage.park" || got.PullRequest != 7 || got.BounceCount != 3 || got.GateSource != "spec.output_invalid" || len(got.MergeConflict.DispatchedOrderIDs) != 2 || got.MergeConflict.Failures != 3*rounds+1 || len(got.MergeConflict.NextRetryAt) > 37 {
 			t.Fatalf("task %s summary=%+v", id, got)
 		}
 		bytes := map[string]int{}
 		var n int
-		n, bytes["latest"] = wire(latestHistorySQL, workspace, []string{id})
+		n, bytes["latest"] = wire(latestHistorySQL, workspace, []string{id}, store.GateSourceHistoryKind, store.GateSourceEventKinds)
 		if int64(n) != rows["latest"] {
 			t.Fatalf("latest rows traced=%d read=%d", rows["latest"], n)
 		}
@@ -588,9 +590,9 @@ func TestNextActionHistoryTransfersBoundedRowsIntegration(t *testing.T) {
 	if !maps.Equal(small.rows, large.rows) || !maps.Equal(small.bytes, large.bytes) {
 		t.Fatalf("bounded reads grew: small rows=%v bytes=%v, large rows=%v bytes=%v", small.rows, small.bytes, large.rows, large.bytes)
 	}
-	// Three latest rows, one summary row, two dispatched orders, and one
-	// current pin.
-	if small.rows["latest"] != 3 || small.rows["merge"] != 3 || small.rows["pins"] != 1 {
+	// Four latest rows (park command, pull request, bounce window, and gate
+	// source), one summary row, two dispatched orders, and one current pin.
+	if small.rows["latest"] != 4 || small.rows["merge"] != 3 || small.rows["pins"] != 1 {
 		t.Fatalf("bounded rows=%v", small.rows)
 	}
 }
