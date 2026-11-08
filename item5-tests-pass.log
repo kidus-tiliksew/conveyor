@@ -1,0 +1,78 @@
+# head: d9a77a9610aed3e10198385ac1c865d3ea7270ca
+# unmodified tree
+# command: go test -count=1 -run 'TestVerificationSuccessGapsAgreeWithEvaluator' -v ./internal/store/
+=== RUN   TestVerificationSuccessGapsAgreeWithEvaluator
+=== RUN   TestVerificationSuccessGapsAgreeWithEvaluator/plain_script_passes
+=== RUN   TestVerificationSuccessGapsAgreeWithEvaluator/asserted_script_passes
+=== RUN   TestVerificationSuccessGapsAgreeWithEvaluator/hybrid_passes
+=== RUN   TestVerificationSuccessGapsAgreeWithEvaluator/missing_assertion
+=== RUN   TestVerificationSuccessGapsAgreeWithEvaluator/failed_assertion_has_no_passing_result
+=== RUN   TestVerificationSuccessGapsAgreeWithEvaluator/short_output
+=== RUN   TestVerificationSuccessGapsAgreeWithEvaluator/missing_operator_observation
+=== RUN   TestVerificationSuccessGapsAgreeWithEvaluator/every_kind_in_declared_order
+=== RUN   TestVerificationSuccessGapsAgreeWithEvaluator/nonzero_exit_is_unnamed
+=== RUN   TestVerificationSuccessGapsAgreeWithEvaluator/missing_execution_report_is_unnamed_beside_a_named_gap
+=== RUN   TestVerificationSuccessGapsAgreeWithEvaluator/unresolved_reference_is_unnamed
+=== RUN   TestVerificationSuccessGapsAgreeWithEvaluator/unknown_run_is_unnamed
+--- PASS: TestVerificationSuccessGapsAgreeWithEvaluator (0.00s)
+    --- PASS: TestVerificationSuccessGapsAgreeWithEvaluator/plain_script_passes (0.00s)
+    --- PASS: TestVerificationSuccessGapsAgreeWithEvaluator/asserted_script_passes (0.00s)
+    --- PASS: TestVerificationSuccessGapsAgreeWithEvaluator/hybrid_passes (0.00s)
+    --- PASS: TestVerificationSuccessGapsAgreeWithEvaluator/missing_assertion (0.00s)
+    --- PASS: TestVerificationSuccessGapsAgreeWithEvaluator/failed_assertion_has_no_passing_result (0.00s)
+    --- PASS: TestVerificationSuccessGapsAgreeWithEvaluator/short_output (0.00s)
+    --- PASS: TestVerificationSuccessGapsAgreeWithEvaluator/missing_operator_observation (0.00s)
+    --- PASS: TestVerificationSuccessGapsAgreeWithEvaluator/every_kind_in_declared_order (0.00s)
+    --- PASS: TestVerificationSuccessGapsAgreeWithEvaluator/nonzero_exit_is_unnamed (0.00s)
+    --- PASS: TestVerificationSuccessGapsAgreeWithEvaluator/missing_execution_report_is_unnamed_beside_a_named_gap (0.00s)
+    --- PASS: TestVerificationSuccessGapsAgreeWithEvaluator/unresolved_reference_is_unnamed (0.00s)
+    --- PASS: TestVerificationSuccessGapsAgreeWithEvaluator/unknown_run_is_unnamed (0.00s)
+PASS
+ok  	github.com/kidus-tiliksew/conveyor/internal/store	0.003s
+# exit: 0
+# command: go test -count=1 -run 'TestMemoryConformance/Verification/AssertionTiming' -v ./internal/store/
+=== RUN   TestMemoryConformance
+=== RUN   TestMemoryConformance/Verification
+=== RUN   TestMemoryConformance/Verification/AssertionTiming
+=== RUN   TestMemoryConformance/Verification/AssertionTiming/AssertionOnRunningAttemptSucceeds
+=== RUN   TestMemoryConformance/Verification/AssertionTiming/AssertionAfterWaitingIsRefused
+=== RUN   TestMemoryConformance/LegacyVerificationEvidence
+=== NAME  TestMemoryConformance
+    all.go:181: RunAll elapsed=10.061994ms
+--- PASS: TestMemoryConformance (0.01s)
+    --- PASS: TestMemoryConformance/Verification (0.01s)
+        --- PASS: TestMemoryConformance/Verification/AssertionTiming (0.01s)
+            --- PASS: TestMemoryConformance/Verification/AssertionTiming/AssertionOnRunningAttemptSucceeds (0.01s)
+            --- PASS: TestMemoryConformance/Verification/AssertionTiming/AssertionAfterWaitingIsRefused (0.00s)
+    --- PASS: TestMemoryConformance/LegacyVerificationEvidence (0.00s)
+PASS
+ok  	github.com/kidus-tiliksew/conveyor/internal/store	0.013s
+# exit: 0
+# command: go test -count=1 -run 'TestKitRunnerPlainScriptAssertionOutcomes|TestWaitingExplanation' -v ./cmd/conveyor/
+=== RUN   TestKitRunnerPlainScriptAssertionOutcomes
+=== RUN   TestKitRunnerPlainScriptAssertionOutcomes/declared_assertion_waits
+=== RUN   TestKitRunnerPlainScriptAssertionOutcomes/no_required_assertions_succeeds
+--- PASS: TestKitRunnerPlainScriptAssertionOutcomes (0.29s)
+    --- PASS: TestKitRunnerPlainScriptAssertionOutcomes/declared_assertion_waits (0.10s)
+    --- PASS: TestKitRunnerPlainScriptAssertionOutcomes/no_required_assertions_succeeds (0.20s)
+=== RUN   TestWaitingExplanation
+=== RUN   TestWaitingExplanation/no_gaps_keeps_the_fixed_sentence
+=== RUN   TestWaitingExplanation/unnamed_reason_keeps_the_fixed_sentence
+=== RUN   TestWaitingExplanation/two_assertions
+=== RUN   TestWaitingExplanation/short_output
+=== RUN   TestWaitingExplanation/operator_observation
+=== RUN   TestWaitingExplanation/every_kind
+=== RUN   TestWaitingExplanation/ten_IDs_then_a_count
+=== RUN   TestWaitingExplanation/budget_shared_across_kinds
+--- PASS: TestWaitingExplanation (0.00s)
+    --- PASS: TestWaitingExplanation/no_gaps_keeps_the_fixed_sentence (0.00s)
+    --- PASS: TestWaitingExplanation/unnamed_reason_keeps_the_fixed_sentence (0.00s)
+    --- PASS: TestWaitingExplanation/two_assertions (0.00s)
+    --- PASS: TestWaitingExplanation/short_output (0.00s)
+    --- PASS: TestWaitingExplanation/operator_observation (0.00s)
+    --- PASS: TestWaitingExplanation/every_kind (0.00s)
+    --- PASS: TestWaitingExplanation/ten_IDs_then_a_count (0.00s)
+    --- PASS: TestWaitingExplanation/budget_shared_across_kinds (0.00s)
+PASS
+ok  	github.com/kidus-tiliksew/conveyor/cmd/conveyor	0.298s
+# exit: 0

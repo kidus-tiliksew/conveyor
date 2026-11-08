@@ -1,0 +1,49 @@
+# head: d9a77a9610aed3e10198385ac1c865d3ea7270ca
+# mutation: remove 'case verificationGapOperatorObservation' from VerificationSuccessGapsFor
+# diff:
+diff --git a/internal/store/verification_success.go b/internal/store/verification_success.go
+index b30848a6..81be42de 100644
+--- a/internal/store/verification_success.go
++++ b/internal/store/verification_success.go
+@@ -46,8 +46,6 @@ func VerificationSuccessGapsFor(snapshot VerificationSnapshot, runID string, exi
+ 			gaps.MissingAssertions = append(gaps.MissingAssertions, f.assertionID)
+ 		case verificationGapOutput:
+ 			gaps.ShortOutputs = append(gaps.ShortOutputs, f.output)
+-		case verificationGapOperatorObservation:
+-			gaps.MissingOperatorObservation = true
+ 		default:
+ 			gaps.Unnamed = true
+ 		}
+# command: go test -count=1 -run TestVerificationSuccessGapsAgreeWithEvaluator -v ./internal/store/
+=== RUN   TestVerificationSuccessGapsAgreeWithEvaluator
+=== RUN   TestVerificationSuccessGapsAgreeWithEvaluator/plain_script_passes
+=== RUN   TestVerificationSuccessGapsAgreeWithEvaluator/asserted_script_passes
+=== RUN   TestVerificationSuccessGapsAgreeWithEvaluator/hybrid_passes
+=== RUN   TestVerificationSuccessGapsAgreeWithEvaluator/missing_assertion
+=== RUN   TestVerificationSuccessGapsAgreeWithEvaluator/failed_assertion_has_no_passing_result
+=== RUN   TestVerificationSuccessGapsAgreeWithEvaluator/short_output
+=== RUN   TestVerificationSuccessGapsAgreeWithEvaluator/missing_operator_observation
+    verification_success_test.go:106: gaps {MissingAssertions:[] ShortOutputs:[] MissingOperatorObservation:false Unnamed:true}, want {MissingAssertions:[] ShortOutputs:[] MissingOperatorObservation:true Unnamed:false}
+=== RUN   TestVerificationSuccessGapsAgreeWithEvaluator/every_kind_in_declared_order
+    verification_success_test.go:106: gaps {MissingAssertions:[b a] ShortOutputs:[{Type:assertion_result Have:0 Minimum:1}] MissingOperatorObservation:false Unnamed:true}, want {MissingAssertions:[b a] ShortOutputs:[{Type:assertion_result Have:0 Minimum:1}] MissingOperatorObservation:true Unnamed:false}
+=== RUN   TestVerificationSuccessGapsAgreeWithEvaluator/nonzero_exit_is_unnamed
+=== RUN   TestVerificationSuccessGapsAgreeWithEvaluator/missing_execution_report_is_unnamed_beside_a_named_gap
+=== RUN   TestVerificationSuccessGapsAgreeWithEvaluator/unresolved_reference_is_unnamed
+=== RUN   TestVerificationSuccessGapsAgreeWithEvaluator/unknown_run_is_unnamed
+--- FAIL: TestVerificationSuccessGapsAgreeWithEvaluator (0.00s)
+    --- PASS: TestVerificationSuccessGapsAgreeWithEvaluator/plain_script_passes (0.00s)
+    --- PASS: TestVerificationSuccessGapsAgreeWithEvaluator/asserted_script_passes (0.00s)
+    --- PASS: TestVerificationSuccessGapsAgreeWithEvaluator/hybrid_passes (0.00s)
+    --- PASS: TestVerificationSuccessGapsAgreeWithEvaluator/missing_assertion (0.00s)
+    --- PASS: TestVerificationSuccessGapsAgreeWithEvaluator/failed_assertion_has_no_passing_result (0.00s)
+    --- PASS: TestVerificationSuccessGapsAgreeWithEvaluator/short_output (0.00s)
+    --- FAIL: TestVerificationSuccessGapsAgreeWithEvaluator/missing_operator_observation (0.00s)
+    --- FAIL: TestVerificationSuccessGapsAgreeWithEvaluator/every_kind_in_declared_order (0.00s)
+    --- PASS: TestVerificationSuccessGapsAgreeWithEvaluator/nonzero_exit_is_unnamed (0.00s)
+    --- PASS: TestVerificationSuccessGapsAgreeWithEvaluator/missing_execution_report_is_unnamed_beside_a_named_gap (0.00s)
+    --- PASS: TestVerificationSuccessGapsAgreeWithEvaluator/unresolved_reference_is_unnamed (0.00s)
+    --- PASS: TestVerificationSuccessGapsAgreeWithEvaluator/unknown_run_is_unnamed (0.00s)
+FAIL
+FAIL	github.com/kidus-tiliksew/conveyor/internal/store	0.003s
+FAIL
+# exit: 1
