@@ -124,6 +124,12 @@ type Input struct {
 	// BounceCount is the recorded bounce count that produced a
 	// review_bounce_limit gate, zero when none is recorded.
 	BounceCount int
+	// GateSource is the source recorded by the event that produced the
+	// current review_bounce_limit or job_failure gate, such as
+	// "spec.output_invalid", and empty when that event records none. It
+	// selects the gate's catalogue wording and is never interpolated into it
+	// (component-next-action invariant 18).
+	GateSource string
 }
 
 // Disposition is the verification body binding a client sends to

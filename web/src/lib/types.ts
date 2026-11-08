@@ -508,6 +508,15 @@ export interface TaskSummaries {
     at: string
     truncated?: boolean
   }
+  // The latest bounce limit when a stage other than review reached it with
+  // invalid output: the stage and its last recorded validation error.
+  invalid_output_limit?: {
+    stage: string
+    error: string
+    event_id: string
+    at: string
+    truncated?: boolean
+  }
   job_results?: Record<string, TaskJobResult>
   review_results?: { by_order?: Record<string, TaskReviewResult>; by_job?: Record<string, TaskReviewResult> }
   review_rounds?: { by_round?: Record<string, TaskReviewRound>; by_order?: Record<string, TaskReviewRound> }

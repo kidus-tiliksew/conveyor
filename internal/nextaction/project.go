@@ -138,7 +138,7 @@ func gateBuild(in Input) built {
 		kind = core.GateKindJobFailure
 	}
 	judgment := kind != core.GateKindJobFailure
-	return built{actor: ActorOperator, kind: string(kind), judgment: judgment, gate: string(kind), reason: string(kind)}
+	return built{actor: ActorOperator, kind: string(kind), judgment: judgment, gate: string(kind), reason: string(kind), variant: GateVariant(kind, in.GateSource)}
 }
 
 func conflictExhausted(in Input) bool {
@@ -307,7 +307,7 @@ func finish(in Input, row built, secondary []Secondary) NextAction {
 	na := NextAction{
 		Label: entry.Label, Actor: row.actor, Kind: row.kind, Judgment: row.judgment,
 		Summary: summary, Question: render(entry.Question, vars), Choices: choices,
-		IfIgnored: ifIgnored(entry, vars, row), Deadline: row.deadline, BlockedBy: row.blocked,
+		IfIgnored: render(entry.IfIgnored, vars), Deadline: row.deadline, BlockedBy: row.blocked,
 		CurrentOrder: orderView(row.order), Attempt: attemptView(in, row.order),
 		Details: Details{
 			GateKind: row.gate, ReasonCode: row.reason, StallReason: row.stall, ReleaseOutcome: row.release,
@@ -347,14 +347,6 @@ func finish(in Input, row built, secondary []Secondary) NextAction {
 	return na
 }
 
-func ifIgnored(entry Entry, vars Vars, row built) string {
-	text := render(entry.IfIgnored, vars)
-	if row.kind == KindRetrying && vars.RetryAt != "" {
-		return summaryWithRetry(text, vars)
-	}
-	return text
-}
-
 func varsFor(in Input, row built) Vars {
 	vars := Vars{Title: in.Task.Title, PR: in.PullRequest, Stage: string(in.Task.NextStage), Branch: in.Task.Branch, Base: in.Task.BaseBranch, State: string(in.Task.State), Next: string(in.Task.NextStage)}
 	if in.LatestSpec != nil {
@@ -366,11 +358,11 @@ func varsFor(in Input, row built) Vars {
 		vars.Attempts = row.order.AutomaticRetryCount
 	}
 	if in.MergeConflict.NextRetryAt.After(in.Now) {
-		vars.RetryAt = in.MergeConflict.NextRetryAt.UTC().Format(time.RFC3339)
+		vars.RetryScheduled = true
 	}
 	if row.order != nil {
 		if next := recoveryNext(in, row.order); next != nil {
-			vars.RetryAt = next.UTC().Format(time.RFC3339)
+			vars.RetryScheduled = true
 			if attempt := in.Recovery[row.order.ID].Attempt; attempt > 0 {
 				vars.Attempts = attempt
 			}

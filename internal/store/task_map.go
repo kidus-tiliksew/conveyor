@@ -200,11 +200,12 @@ func (m *memory) sortedEventsLocked(taskID string) []core.Event {
 }
 
 // NextActionEventKinds are the only event kinds the next-action assembler
-// folds: the park command, recorded pull request, bounce count, and merge
-// conflict episode (feature-operator-next-action NA-3). Batched reads load
-// these kinds instead of each task's full history.
+// folds: the park command, recorded pull request, bounce count, gate source,
+// and merge conflict episode (feature-operator-next-action NA-3). Batched reads
+// load these kinds instead of each task's full history.
 var NextActionEventKinds = []string{
 	"task.state_changed", "pull_request.opened", "pipeline.bounce_limit",
+	"job.failed", "context.authority_budget_exceeded",
 	"merge.blocked", "merge.conflict_cleared", "merge.conflict_fix_dispatched",
 	"merge.conflict_dispatch_failed", "merge.conflict_dispatch_exhausted", "merge.conflict_recovery_blocked",
 }
@@ -259,14 +260,29 @@ var MergeConflictEventKinds = []string{
 
 // NextActionHistory is the bounded summary of the history the next-action
 // assembler folds: the park command, the latest recorded pull request, the
-// bounce window, and the merge-conflict summary. No field carries an event
-// payload (component-persistence; component-work-orders, Next action).
+// bounce window, the gate source, and the merge-conflict summary. No field
+// carries an event payload (component-persistence; component-work-orders,
+// Next action).
 type NextActionHistory struct {
 	ParkCommand   string
 	PullRequest   int
 	BounceCount   int
+	GateSource    string
 	MergeConflict MergeConflictHistory
 }
+
+// GateSourceEventKinds are the events one of which a dispatcher appends just
+// before a stage.bounce_limit or job.fail command enters awaiting_human, so
+// the latest of them belongs to the current review_bounce_limit or
+// job_failure gate. GateSourceHistoryKind is the kind a durable backend's
+// latest-value row names for that fold.
+var GateSourceEventKinds = []string{"pipeline.bounce_limit", "job.failed", "context.authority_budget_exceeded"}
+
+const GateSourceHistoryKind = "gate.source"
+
+// SummarizeGateSource keeps the first ParkCommandSummaryLength characters of
+// a recorded source, as every backend transfers it.
+func SummarizeGateSource(source string) string { return SummarizeParkCommand(source) }
 
 // MergeConflictHistory is the fixed-size input of the merge-conflict fold.
 // Open reports that the latest merge.blocked decodes into its heads; nothing
@@ -419,17 +435,20 @@ func FoldNextActionHistory(events []core.Event, orders []core.WorkOrder) NextAct
 		ParkCommand:   SummarizeParkCommand(parkCommand(events)),
 		PullRequest:   recordedPullRequest(events),
 		BounceCount:   recordedBounceCount(events),
+		GateSource:    SummarizeGateSource(recordedGateSource(events)),
 		MergeConflict: SummarizeMergeConflict(events, orders),
 	}
 }
 
 // ApplyLatestHistoryValue sets the summary field a durable backend's typed
-// latest value fills: the park command, the pull-request number, or the
-// bounce window.
+// latest value fills: the park command, the pull-request number, the bounce
+// window, or the gate source.
 func ApplyLatestHistoryValue(history *NextActionHistory, kind, value string) error {
 	switch kind {
 	case "task.state_changed":
 		history.ParkCommand = value
+	case GateSourceHistoryKind:
+		history.GateSource = value
 	case "pull_request.opened", "pipeline.bounce_limit":
 		n, err := strconv.Atoi(value)
 		if err != nil {
@@ -456,7 +475,7 @@ func CompactNextActionHistories(histories map[string]NextActionHistory) map[stri
 }
 
 func (h NextActionHistory) empty() bool {
-	return h.ParkCommand == "" && h.PullRequest == 0 && h.BounceCount == 0 && !h.MergeConflict.Open
+	return h.ParkCommand == "" && h.PullRequest == 0 && h.BounceCount == 0 && h.GateSource == "" && !h.MergeConflict.Open
 }
 
 // DocumentHead is one cited document's tier, current confirmed version
