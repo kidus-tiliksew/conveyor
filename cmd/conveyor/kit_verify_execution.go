@@ -191,13 +191,20 @@ func (v *kitVerifier) launch(ctx context.Context, e verification.Exercise, cwd, 
 	if v.ui != nil {
 		origins = append(origins, fmt.Sprintf("http://127.0.0.1:%d", v.ui.Port))
 	}
+	relayCheckout, relayLive := v.checkCheckout, v.live
+	if v.relayCheckout != nil {
+		relayCheckout = v.relayCheckout
+	}
+	if v.relayLive != nil {
+		relayLive = v.relayLive
+	}
 	channel, err := verification.NewOperationChannel(launchCtx, origins, func(requestCtx context.Context, data json.RawMessage) (any, error) {
 		relayMu.Lock()
 		defer relayMu.Unlock()
 		if !accepting {
 			return nil, fmt.Errorf("exercise has ended")
 		}
-		if err := v.checkCheckout(requestCtx); err != nil {
+		if err := relayCheckout(requestCtx); err != nil {
 			cancel()
 			return nil, err
 		}
@@ -237,7 +244,7 @@ func (v *kitVerifier) launch(ctx context.Context, e verification.Exercise, cwd, 
 		if signal.Type != "operation.dispatching" && signal.Type != "operation.completed" {
 			return nil, fmt.Errorf("unknown operation signal")
 		}
-		if err := v.live(requestCtx, grantID); err != nil {
+		if err := relayLive(requestCtx, grantID); err != nil {
 			cancel()
 			return nil, err
 		}
