@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"reflect"
 	"strings"
 	"testing"
@@ -274,6 +275,148 @@ func runVerificationStartRefusals(t *testing.T, x Fixture) {
 			}
 			if after := len(v.snapshot(t).Attempts); after != before {
 				t.Fatalf("%s: refused start wrote an attempt (%d -> %d)", tc.name, before, after)
+			}
+		}
+	})
+}
+
+// runVerificationEvidenceBinding: an authenticated claim holder whose
+// envelope differs from its context or attempt gets a coded access refusal
+// naming the first mismatched field, and an unknown evidence run is named
+// without revealing whether it exists in another context
+// (component-verification-service "Correctable refusals" and invariant 29;
+// req-verification-evidence AC-1.3; req-verification-kits AC-7.2, AC-8.3).
+func runVerificationEvidenceBinding(t *testing.T, x Fixture) {
+	// The codes are spelled out so the suite pins the stable wire values.
+	const (
+		sentinel        = "binding-sentinel-7f3a"
+		bindingMismatch = "verification_evidence_binding_mismatch"
+		runUnknown      = "verification_evidence_run_unknown"
+	)
+	refused := func(t *testing.T, v *verificationFixture, c store.VerificationCommand, code, field string, hidden ...string) {
+		t.Helper()
+		before := v.snapshot(t)
+		events, err := x.Backend.ListEvents(v.ctx, v.access.TaskID)
+		requireOK(t, err)
+		receipt, err := x.Backend.ApplyVerification(v.ctx, c)
+		var refusal *store.VerificationRefusal
+		if !errors.As(err, &refusal) || refusal.Code != code || refusal.Field != field || refusal.Rule == "" || refusal.Remedy == "" {
+			t.Fatalf("refusal = %v, want %s at %s", err, code, field)
+		}
+		if !errors.Is(err, store.ErrVerificationAccess) || !reflect.DeepEqual(receipt, store.VerificationReceipt{}) {
+			t.Fatalf("refusal class or receipt: receipt=%+v err=%v", receipt, err)
+		}
+		for _, value := range append(hidden, sentinel) {
+			if value != "" && strings.Contains(err.Error(), value) {
+				t.Fatalf("refusal disclosed value %q: %v", value, err)
+			}
+		}
+		if !reflect.DeepEqual(before, v.snapshot(t)) {
+			t.Fatal("refused evidence changed the verification snapshot")
+		}
+		after, err := x.Backend.ListEvents(v.ctx, v.access.TaskID)
+		requireOK(t, err)
+		if len(after) != len(events) {
+			t.Fatal("refused evidence appended an event")
+		}
+	}
+	v := newVerificationFixture(t, x)
+	// The mismatched envelope is the batch's second item, so the field names its index.
+	batch := func(key string, mutate func(*core.VerificationEvidence)) store.VerificationCommand {
+		valid := v.envelope("binding-valid-"+key, key, "observed")
+		e := v.envelope("binding-"+key, key, "observed")
+		mutate(&e)
+		return v.command(store.VerificationCommand{Kind: store.VerificationWriteEvidence, Key: key, Evidence: []json.RawMessage{verificationBytes(valid), verificationBytes(e)}})
+	}
+	expected := []string{v.x.Workspace, v.access.TaskID, v.access.WorkOrderID, v.access.WorkOrderAttemptID, v.contextID, v.runID, v.subject.ContractDigest, v.revisions[0].SHA}
+	cases := []struct {
+		name, field string
+		mutate      func(*core.VerificationEvidence)
+	}{
+		{"workspace", "workspace_id", func(e *core.VerificationEvidence) { e.WorkspaceID = sentinel }},
+		{"workspace omitted", "workspace_id", func(e *core.VerificationEvidence) { e.WorkspaceID = "" }},
+		{"task", "task_id", func(e *core.VerificationEvidence) { e.TaskID = sentinel }},
+		{"work order", "work_order_id", func(e *core.VerificationEvidence) { e.WorkOrderID = sentinel }},
+		{"work-order attempt", "work_order_attempt_id", func(e *core.VerificationEvidence) { e.WorkOrderAttemptID = sentinel }},
+		{"work-order attempt omitted", "work_order_attempt_id", func(e *core.VerificationEvidence) { e.WorkOrderAttemptID = "" }},
+		{"context", "context_id", func(e *core.VerificationEvidence) { e.ContextID = sentinel }},
+		{"run", "run_id", func(e *core.VerificationEvidence) { e.RunID = sentinel }},
+		{"run is the work-order attempt", "run_id", func(e *core.VerificationEvidence) { e.RunID = v.access.WorkOrderAttemptID }},
+		{"subject", "subject", func(e *core.VerificationEvidence) { e.Subject.ObligationID = sentinel }},
+		{"subject omitted", "subject", func(e *core.VerificationEvidence) { e.Subject = core.VerificationSubject{} }},
+		{"revisions", "revisions", func(e *core.VerificationEvidence) {
+			e.Revisions = []core.VerificationRevision{{Repository: v.revisions[0].Repository, RemoteIdentity: v.revisions[0].RemoteIdentity, SHA: sentinel}}
+		}},
+		{"revisions omitted", "revisions", func(e *core.VerificationEvidence) { e.Revisions = nil }},
+		{"governing pins", "governing_pins", func(e *core.VerificationEvidence) {
+			e.GoverningPins = []core.VerificationPin{{Kind: "requirement", DocumentID: sentinel, Version: 1}}
+		}},
+		{"governing pins omitted", "governing_pins", func(e *core.VerificationEvidence) { e.GoverningPins = nil }},
+		// Several mismatches name the first one in the binding order.
+		{"first of several", "work_order_id", func(e *core.VerificationEvidence) {
+			e.WorkOrderID, e.ContextID, e.GoverningPins = sentinel, sentinel, nil
+		}},
+	}
+	for i, tc := range cases {
+		t.Run("BindingMismatch/"+tc.name, func(t *testing.T) {
+			c := batch(fmt.Sprintf("binding-%d", i), tc.mutate)
+			refused(t, &v, c, bindingMismatch, "evidence[1]."+tc.field, expected...)
+		})
+	}
+	t.Run("BindingExact", func(t *testing.T) {
+		v.apply(t, store.VerificationCommand{Kind: store.VerificationWriteEvidence, Key: "binding-exact", Evidence: []json.RawMessage{verificationBytes(v.envelope("binding-exact", "binding-exact", "observed"))}})
+	})
+	// An absent run and a run of another context of the same claim give the
+	// identical answer, so the refusal reveals nothing about other contexts.
+	// The claim may open a second context only after its first attempt ends.
+	w := newVerificationFixture(t, x)
+	w.apply(t, store.VerificationCommand{Kind: store.VerificationTerminateAttempt, Attempt: &store.VerificationAttempt{State: "failed"}})
+	other := w
+	obligation := w.snapshot(t).Obligations[0]
+	other.contextID = w.apply(t, store.VerificationCommand{Kind: store.VerificationCreateContext, Key: "binding-other-context", Context: &store.VerificationContext{Revisions: w.revisions, GoverningPins: w.pins}}).ID
+	registered := other.apply(t, store.VerificationCommand{Kind: store.VerificationRegisterObligation, Obligation: &obligation})
+	other.subject.ContractDigest = registered.Digest
+	other.start(t, "binding-other-run")
+	var answers []string
+	for _, run := range []struct{ name, id string }{{"absent", sentinel}, {"work-order attempt", w.access.WorkOrderAttemptID}, {"other context", other.runID}} {
+		t.Run("RunUnknown/"+run.name, func(t *testing.T) {
+			e := w.envelope("binding-run-"+run.name, "binding-run", "observed")
+			e.RunID = run.id
+			c := w.command(store.VerificationCommand{Kind: store.VerificationWriteEvidence, Key: e.SubmissionKey, Evidence: []json.RawMessage{verificationBytes(e)}})
+			c.RunID = run.id
+			refused(t, &w, c, runUnknown, "run_id", run.id, other.contextID)
+			_, err := x.Backend.ApplyVerification(w.ctx, c)
+			answers = append(answers, err.Error())
+		})
+	}
+	if len(answers) != 3 || answers[0] != answers[1] || answers[1] != answers[2] {
+		t.Fatalf("unknown-run answers differ: %q", answers)
+	}
+	t.Run("RunUnknownOtherKindsUnchanged", func(t *testing.T) {
+		c := w.command(store.VerificationCommand{Kind: store.VerificationTerminateAttempt, Attempt: &store.VerificationAttempt{State: "failed"}})
+		c.RunID = other.runID
+		_, err := x.Backend.ApplyVerification(w.ctx, c)
+		var refusal *store.VerificationRefusal
+		if !errors.Is(err, store.ErrVerificationAccess) || errors.As(err, &refusal) {
+			t.Fatalf("outcome for another context's run: %v", err)
+		}
+	})
+	t.Run("ForeignScopeStaysGeneric", func(t *testing.T) {
+		e := v.envelope("binding-foreign", "binding-foreign", "observed")
+		for name, mutate := range map[string]func(*store.VerificationCommand){
+			"task":          func(c *store.VerificationCommand) { c.Access.TaskID = sentinel },
+			"order":         func(c *store.VerificationCommand) { c.Access.WorkOrderID = sentinel },
+			"context":       func(c *store.VerificationCommand) { c.ContextID = sentinel },
+			"stale session": func(c *store.VerificationCommand) { c.Access.Claim.SessionID = sentinel },
+			"wrong token":   func(c *store.VerificationCommand) { c.Access.ClientToken = sentinel },
+		} {
+			c := v.command(store.VerificationCommand{Kind: store.VerificationWriteEvidence, Key: e.SubmissionKey, Evidence: []json.RawMessage{verificationBytes(e)}})
+			mutate(&c)
+			c.RunID = sentinel
+			_, err := x.Backend.ApplyVerification(v.ctx, c)
+			var refusal *store.VerificationRefusal
+			if !errors.Is(err, store.ErrVerificationAccess) || errors.As(err, &refusal) {
+				t.Fatalf("%s: %v", name, err)
 			}
 		}
 	})
