@@ -21,8 +21,8 @@ export interface ChoiceBody {
   dialog?: 'restart'
 }
 
-// A verification disposition posts the server's row-11 binding with the
-// operator's reason (component-next-action invariant 15). Without the
+// A verification disposition posts the binding the server states at row 11
+// with the operator's reason (component-next-action invariant 15). Without the
 // binding the act stays disabled with the server's refusal.
 const disposition = (value: 'applied' | 'not_applied'): ChoiceBody => ({
   input: { label: 'Reason', required: true },
