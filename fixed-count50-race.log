@@ -1,0 +1,1008 @@
+# head: 6b84df58fe99520425efb48774ebe7b717894a5d (fixed handler)
+# go: go version go1.24.0 linux/amd64
+# host: 4 CPUs, Linux 6.8.0-117-generic
+# date: 2026-11-08T09:13:47Z
+# command: go test ./cmd/conveyor -run 'TestKitRelayCancel' -count=50 -race -v
+=== RUN   TestKitRelayCancelHangupDuringCheckoutCheck
+=== PAUSE TestKitRelayCancelHangupDuringCheckoutCheck
+=== RUN   TestKitRelayCancelHangupDuringLiveCheck
+=== PAUSE TestKitRelayCancelHangupDuringLiveCheck
+=== RUN   TestKitRelayCancelTransientRenewalFailure
+=== PAUSE TestKitRelayCancelTransientRenewalFailure
+=== RUN   TestKitRelayCancelSourceChange
+=== PAUSE TestKitRelayCancelSourceChange
+=== RUN   TestKitRelayCancelRefusedRenewal
+=== PAUSE TestKitRelayCancelRefusedRenewal
+=== CONT  TestKitRelayCancelHangupDuringCheckoutCheck
+=== CONT  TestKitRelayCancelTransientRenewalFailure
+=== CONT  TestKitRelayCancelSourceChange
+=== CONT  TestKitRelayCancelRefusedRenewal
+=== CONT  TestKitRelayCancelHangupDuringLiveCheck
+--- PASS: TestKitRelayCancelSourceChange (0.09s)
+--- PASS: TestKitRelayCancelRefusedRenewal (0.09s)
+--- PASS: TestKitRelayCancelHangupDuringCheckoutCheck (0.10s)
+--- PASS: TestKitRelayCancelTransientRenewalFailure (0.11s)
+--- PASS: TestKitRelayCancelHangupDuringLiveCheck (0.10s)
+=== RUN   TestKitRelayCancelHangupDuringCheckoutCheck
+=== PAUSE TestKitRelayCancelHangupDuringCheckoutCheck
+=== RUN   TestKitRelayCancelHangupDuringLiveCheck
+=== PAUSE TestKitRelayCancelHangupDuringLiveCheck
+=== RUN   TestKitRelayCancelTransientRenewalFailure
+=== PAUSE TestKitRelayCancelTransientRenewalFailure
+=== RUN   TestKitRelayCancelSourceChange
+=== PAUSE TestKitRelayCancelSourceChange
+=== RUN   TestKitRelayCancelRefusedRenewal
+=== PAUSE TestKitRelayCancelRefusedRenewal
+=== CONT  TestKitRelayCancelHangupDuringCheckoutCheck
+=== CONT  TestKitRelayCancelSourceChange
+=== CONT  TestKitRelayCancelTransientRenewalFailure
+=== CONT  TestKitRelayCancelRefusedRenewal
+--- PASS: TestKitRelayCancelRefusedRenewal (0.08s)
+=== CONT  TestKitRelayCancelHangupDuringLiveCheck
+--- PASS: TestKitRelayCancelSourceChange (0.09s)
+--- PASS: TestKitRelayCancelHangupDuringCheckoutCheck (0.10s)
+--- PASS: TestKitRelayCancelTransientRenewalFailure (0.10s)
+--- PASS: TestKitRelayCancelHangupDuringLiveCheck (0.09s)
+=== RUN   TestKitRelayCancelHangupDuringCheckoutCheck
+=== PAUSE TestKitRelayCancelHangupDuringCheckoutCheck
+=== RUN   TestKitRelayCancelHangupDuringLiveCheck
+=== PAUSE TestKitRelayCancelHangupDuringLiveCheck
+=== RUN   TestKitRelayCancelTransientRenewalFailure
+=== PAUSE TestKitRelayCancelTransientRenewalFailure
+=== RUN   TestKitRelayCancelSourceChange
+=== PAUSE TestKitRelayCancelSourceChange
+=== RUN   TestKitRelayCancelRefusedRenewal
+=== PAUSE TestKitRelayCancelRefusedRenewal
+=== CONT  TestKitRelayCancelHangupDuringCheckoutCheck
+=== CONT  TestKitRelayCancelHangupDuringLiveCheck
+=== CONT  TestKitRelayCancelTransientRenewalFailure
+=== CONT  TestKitRelayCancelRefusedRenewal
+--- PASS: TestKitRelayCancelHangupDuringCheckoutCheck (0.09s)
+=== CONT  TestKitRelayCancelSourceChange
+--- PASS: TestKitRelayCancelRefusedRenewal (0.10s)
+--- PASS: TestKitRelayCancelTransientRenewalFailure (0.10s)
+--- PASS: TestKitRelayCancelHangupDuringLiveCheck (0.11s)
+--- PASS: TestKitRelayCancelSourceChange (0.08s)
+=== RUN   TestKitRelayCancelHangupDuringCheckoutCheck
+=== PAUSE TestKitRelayCancelHangupDuringCheckoutCheck
+=== RUN   TestKitRelayCancelHangupDuringLiveCheck
+=== PAUSE TestKitRelayCancelHangupDuringLiveCheck
+=== RUN   TestKitRelayCancelTransientRenewalFailure
+=== PAUSE TestKitRelayCancelTransientRenewalFailure
+=== RUN   TestKitRelayCancelSourceChange
+=== PAUSE TestKitRelayCancelSourceChange
+=== RUN   TestKitRelayCancelRefusedRenewal
+=== PAUSE TestKitRelayCancelRefusedRenewal
+=== CONT  TestKitRelayCancelTransientRenewalFailure
+=== CONT  TestKitRelayCancelHangupDuringLiveCheck
+=== CONT  TestKitRelayCancelRefusedRenewal
+=== CONT  TestKitRelayCancelSourceChange
+--- PASS: TestKitRelayCancelSourceChange (0.09s)
+=== CONT  TestKitRelayCancelHangupDuringCheckoutCheck
+--- PASS: TestKitRelayCancelRefusedRenewal (0.09s)
+--- PASS: TestKitRelayCancelHangupDuringLiveCheck (0.11s)
+--- PASS: TestKitRelayCancelTransientRenewalFailure (0.11s)
+--- PASS: TestKitRelayCancelHangupDuringCheckoutCheck (0.08s)
+=== RUN   TestKitRelayCancelHangupDuringCheckoutCheck
+=== PAUSE TestKitRelayCancelHangupDuringCheckoutCheck
+=== RUN   TestKitRelayCancelHangupDuringLiveCheck
+=== PAUSE TestKitRelayCancelHangupDuringLiveCheck
+=== RUN   TestKitRelayCancelTransientRenewalFailure
+=== PAUSE TestKitRelayCancelTransientRenewalFailure
+=== RUN   TestKitRelayCancelSourceChange
+=== PAUSE TestKitRelayCancelSourceChange
+=== RUN   TestKitRelayCancelRefusedRenewal
+=== PAUSE TestKitRelayCancelRefusedRenewal
+=== CONT  TestKitRelayCancelRefusedRenewal
+=== CONT  TestKitRelayCancelTransientRenewalFailure
+=== CONT  TestKitRelayCancelSourceChange
+=== CONT  TestKitRelayCancelHangupDuringLiveCheck
+--- PASS: TestKitRelayCancelSourceChange (0.09s)
+=== CONT  TestKitRelayCancelHangupDuringCheckoutCheck
+--- PASS: TestKitRelayCancelRefusedRenewal (0.09s)
+--- PASS: TestKitRelayCancelTransientRenewalFailure (0.10s)
+--- PASS: TestKitRelayCancelHangupDuringLiveCheck (0.11s)
+--- PASS: TestKitRelayCancelHangupDuringCheckoutCheck (0.08s)
+=== RUN   TestKitRelayCancelHangupDuringCheckoutCheck
+=== PAUSE TestKitRelayCancelHangupDuringCheckoutCheck
+=== RUN   TestKitRelayCancelHangupDuringLiveCheck
+=== PAUSE TestKitRelayCancelHangupDuringLiveCheck
+=== RUN   TestKitRelayCancelTransientRenewalFailure
+=== PAUSE TestKitRelayCancelTransientRenewalFailure
+=== RUN   TestKitRelayCancelSourceChange
+=== PAUSE TestKitRelayCancelSourceChange
+=== RUN   TestKitRelayCancelRefusedRenewal
+=== PAUSE TestKitRelayCancelRefusedRenewal
+=== CONT  TestKitRelayCancelHangupDuringCheckoutCheck
+=== CONT  TestKitRelayCancelTransientRenewalFailure
+=== CONT  TestKitRelayCancelRefusedRenewal
+=== CONT  TestKitRelayCancelSourceChange
+--- PASS: TestKitRelayCancelRefusedRenewal (0.09s)
+=== CONT  TestKitRelayCancelHangupDuringLiveCheck
+--- PASS: TestKitRelayCancelSourceChange (0.09s)
+--- PASS: TestKitRelayCancelHangupDuringCheckoutCheck (0.10s)
+--- PASS: TestKitRelayCancelTransientRenewalFailure (0.11s)
+--- PASS: TestKitRelayCancelHangupDuringLiveCheck (0.09s)
+=== RUN   TestKitRelayCancelHangupDuringCheckoutCheck
+=== PAUSE TestKitRelayCancelHangupDuringCheckoutCheck
+=== RUN   TestKitRelayCancelHangupDuringLiveCheck
+=== PAUSE TestKitRelayCancelHangupDuringLiveCheck
+=== RUN   TestKitRelayCancelTransientRenewalFailure
+=== PAUSE TestKitRelayCancelTransientRenewalFailure
+=== RUN   TestKitRelayCancelSourceChange
+=== PAUSE TestKitRelayCancelSourceChange
+=== RUN   TestKitRelayCancelRefusedRenewal
+=== PAUSE TestKitRelayCancelRefusedRenewal
+=== CONT  TestKitRelayCancelHangupDuringLiveCheck
+=== CONT  TestKitRelayCancelRefusedRenewal
+=== CONT  TestKitRelayCancelTransientRenewalFailure
+=== CONT  TestKitRelayCancelSourceChange
+=== CONT  TestKitRelayCancelHangupDuringCheckoutCheck
+--- PASS: TestKitRelayCancelRefusedRenewal (0.09s)
+--- PASS: TestKitRelayCancelSourceChange (0.09s)
+--- PASS: TestKitRelayCancelTransientRenewalFailure (0.10s)
+--- PASS: TestKitRelayCancelHangupDuringLiveCheck (0.10s)
+--- PASS: TestKitRelayCancelHangupDuringCheckoutCheck (0.08s)
+=== RUN   TestKitRelayCancelHangupDuringCheckoutCheck
+=== PAUSE TestKitRelayCancelHangupDuringCheckoutCheck
+=== RUN   TestKitRelayCancelHangupDuringLiveCheck
+=== PAUSE TestKitRelayCancelHangupDuringLiveCheck
+=== RUN   TestKitRelayCancelTransientRenewalFailure
+=== PAUSE TestKitRelayCancelTransientRenewalFailure
+=== RUN   TestKitRelayCancelSourceChange
+=== PAUSE TestKitRelayCancelSourceChange
+=== RUN   TestKitRelayCancelRefusedRenewal
+=== PAUSE TestKitRelayCancelRefusedRenewal
+=== CONT  TestKitRelayCancelHangupDuringLiveCheck
+=== CONT  TestKitRelayCancelSourceChange
+=== CONT  TestKitRelayCancelTransientRenewalFailure
+=== CONT  TestKitRelayCancelRefusedRenewal
+--- PASS: TestKitRelayCancelRefusedRenewal (0.09s)
+=== CONT  TestKitRelayCancelHangupDuringCheckoutCheck
+--- PASS: TestKitRelayCancelSourceChange (0.09s)
+--- PASS: TestKitRelayCancelHangupDuringLiveCheck (0.10s)
+--- PASS: TestKitRelayCancelTransientRenewalFailure (0.10s)
+--- PASS: TestKitRelayCancelHangupDuringCheckoutCheck (0.08s)
+=== RUN   TestKitRelayCancelHangupDuringCheckoutCheck
+=== PAUSE TestKitRelayCancelHangupDuringCheckoutCheck
+=== RUN   TestKitRelayCancelHangupDuringLiveCheck
+=== PAUSE TestKitRelayCancelHangupDuringLiveCheck
+=== RUN   TestKitRelayCancelTransientRenewalFailure
+=== PAUSE TestKitRelayCancelTransientRenewalFailure
+=== RUN   TestKitRelayCancelSourceChange
+=== PAUSE TestKitRelayCancelSourceChange
+=== RUN   TestKitRelayCancelRefusedRenewal
+=== PAUSE TestKitRelayCancelRefusedRenewal
+=== CONT  TestKitRelayCancelHangupDuringCheckoutCheck
+=== CONT  TestKitRelayCancelSourceChange
+=== CONT  TestKitRelayCancelHangupDuringLiveCheck
+=== CONT  TestKitRelayCancelRefusedRenewal
+--- PASS: TestKitRelayCancelRefusedRenewal (0.09s)
+=== CONT  TestKitRelayCancelTransientRenewalFailure
+--- PASS: TestKitRelayCancelSourceChange (0.09s)
+--- PASS: TestKitRelayCancelHangupDuringCheckoutCheck (0.10s)
+--- PASS: TestKitRelayCancelHangupDuringLiveCheck (0.10s)
+--- PASS: TestKitRelayCancelTransientRenewalFailure (0.09s)
+=== RUN   TestKitRelayCancelHangupDuringCheckoutCheck
+=== PAUSE TestKitRelayCancelHangupDuringCheckoutCheck
+=== RUN   TestKitRelayCancelHangupDuringLiveCheck
+=== PAUSE TestKitRelayCancelHangupDuringLiveCheck
+=== RUN   TestKitRelayCancelTransientRenewalFailure
+=== PAUSE TestKitRelayCancelTransientRenewalFailure
+=== RUN   TestKitRelayCancelSourceChange
+=== PAUSE TestKitRelayCancelSourceChange
+=== RUN   TestKitRelayCancelRefusedRenewal
+=== PAUSE TestKitRelayCancelRefusedRenewal
+=== CONT  TestKitRelayCancelHangupDuringCheckoutCheck
+=== CONT  TestKitRelayCancelRefusedRenewal
+=== CONT  TestKitRelayCancelSourceChange
+=== CONT  TestKitRelayCancelHangupDuringLiveCheck
+--- PASS: TestKitRelayCancelHangupDuringCheckoutCheck (0.09s)
+=== CONT  TestKitRelayCancelTransientRenewalFailure
+--- PASS: TestKitRelayCancelRefusedRenewal (0.09s)
+--- PASS: TestKitRelayCancelSourceChange (0.09s)
+--- PASS: TestKitRelayCancelHangupDuringLiveCheck (0.10s)
+--- PASS: TestKitRelayCancelTransientRenewalFailure (0.09s)
+=== RUN   TestKitRelayCancelHangupDuringCheckoutCheck
+=== PAUSE TestKitRelayCancelHangupDuringCheckoutCheck
+=== RUN   TestKitRelayCancelHangupDuringLiveCheck
+=== PAUSE TestKitRelayCancelHangupDuringLiveCheck
+=== RUN   TestKitRelayCancelTransientRenewalFailure
+=== PAUSE TestKitRelayCancelTransientRenewalFailure
+=== RUN   TestKitRelayCancelSourceChange
+=== PAUSE TestKitRelayCancelSourceChange
+=== RUN   TestKitRelayCancelRefusedRenewal
+=== PAUSE TestKitRelayCancelRefusedRenewal
+=== CONT  TestKitRelayCancelSourceChange
+=== CONT  TestKitRelayCancelTransientRenewalFailure
+=== CONT  TestKitRelayCancelRefusedRenewal
+=== CONT  TestKitRelayCancelHangupDuringCheckoutCheck
+--- PASS: TestKitRelayCancelRefusedRenewal (0.09s)
+=== CONT  TestKitRelayCancelHangupDuringLiveCheck
+--- PASS: TestKitRelayCancelSourceChange (0.09s)
+--- PASS: TestKitRelayCancelHangupDuringCheckoutCheck (0.10s)
+--- PASS: TestKitRelayCancelTransientRenewalFailure (0.10s)
+--- PASS: TestKitRelayCancelHangupDuringLiveCheck (0.09s)
+=== RUN   TestKitRelayCancelHangupDuringCheckoutCheck
+=== PAUSE TestKitRelayCancelHangupDuringCheckoutCheck
+=== RUN   TestKitRelayCancelHangupDuringLiveCheck
+=== PAUSE TestKitRelayCancelHangupDuringLiveCheck
+=== RUN   TestKitRelayCancelTransientRenewalFailure
+=== PAUSE TestKitRelayCancelTransientRenewalFailure
+=== RUN   TestKitRelayCancelSourceChange
+=== PAUSE TestKitRelayCancelSourceChange
+=== RUN   TestKitRelayCancelRefusedRenewal
+=== PAUSE TestKitRelayCancelRefusedRenewal
+=== CONT  TestKitRelayCancelHangupDuringCheckoutCheck
+=== CONT  TestKitRelayCancelSourceChange
+=== CONT  TestKitRelayCancelRefusedRenewal
+=== CONT  TestKitRelayCancelHangupDuringLiveCheck
+--- PASS: TestKitRelayCancelRefusedRenewal (0.09s)
+=== CONT  TestKitRelayCancelTransientRenewalFailure
+--- PASS: TestKitRelayCancelSourceChange (0.09s)
+--- PASS: TestKitRelayCancelHangupDuringCheckoutCheck (0.09s)
+--- PASS: TestKitRelayCancelHangupDuringLiveCheck (0.10s)
+--- PASS: TestKitRelayCancelTransientRenewalFailure (0.09s)
+=== RUN   TestKitRelayCancelHangupDuringCheckoutCheck
+=== PAUSE TestKitRelayCancelHangupDuringCheckoutCheck
+=== RUN   TestKitRelayCancelHangupDuringLiveCheck
+=== PAUSE TestKitRelayCancelHangupDuringLiveCheck
+=== RUN   TestKitRelayCancelTransientRenewalFailure
+=== PAUSE TestKitRelayCancelTransientRenewalFailure
+=== RUN   TestKitRelayCancelSourceChange
+=== PAUSE TestKitRelayCancelSourceChange
+=== RUN   TestKitRelayCancelRefusedRenewal
+=== PAUSE TestKitRelayCancelRefusedRenewal
+=== CONT  TestKitRelayCancelHangupDuringLiveCheck
+=== CONT  TestKitRelayCancelSourceChange
+=== CONT  TestKitRelayCancelRefusedRenewal
+=== CONT  TestKitRelayCancelTransientRenewalFailure
+--- PASS: TestKitRelayCancelRefusedRenewal (0.09s)
+=== CONT  TestKitRelayCancelHangupDuringCheckoutCheck
+--- PASS: TestKitRelayCancelSourceChange (0.09s)
+--- PASS: TestKitRelayCancelTransientRenewalFailure (0.10s)
+--- PASS: TestKitRelayCancelHangupDuringLiveCheck (0.11s)
+--- PASS: TestKitRelayCancelHangupDuringCheckoutCheck (0.08s)
+=== RUN   TestKitRelayCancelHangupDuringCheckoutCheck
+=== PAUSE TestKitRelayCancelHangupDuringCheckoutCheck
+=== RUN   TestKitRelayCancelHangupDuringLiveCheck
+=== PAUSE TestKitRelayCancelHangupDuringLiveCheck
+=== RUN   TestKitRelayCancelTransientRenewalFailure
+=== PAUSE TestKitRelayCancelTransientRenewalFailure
+=== RUN   TestKitRelayCancelSourceChange
+=== PAUSE TestKitRelayCancelSourceChange
+=== RUN   TestKitRelayCancelRefusedRenewal
+=== PAUSE TestKitRelayCancelRefusedRenewal
+=== CONT  TestKitRelayCancelRefusedRenewal
+=== CONT  TestKitRelayCancelHangupDuringCheckoutCheck
+=== CONT  TestKitRelayCancelSourceChange
+=== CONT  TestKitRelayCancelTransientRenewalFailure
+--- PASS: TestKitRelayCancelRefusedRenewal (0.08s)
+=== CONT  TestKitRelayCancelHangupDuringLiveCheck
+--- PASS: TestKitRelayCancelSourceChange (0.09s)
+--- PASS: TestKitRelayCancelHangupDuringCheckoutCheck (0.10s)
+--- PASS: TestKitRelayCancelTransientRenewalFailure (0.10s)
+--- PASS: TestKitRelayCancelHangupDuringLiveCheck (0.09s)
+=== RUN   TestKitRelayCancelHangupDuringCheckoutCheck
+=== PAUSE TestKitRelayCancelHangupDuringCheckoutCheck
+=== RUN   TestKitRelayCancelHangupDuringLiveCheck
+=== PAUSE TestKitRelayCancelHangupDuringLiveCheck
+=== RUN   TestKitRelayCancelTransientRenewalFailure
+=== PAUSE TestKitRelayCancelTransientRenewalFailure
+=== RUN   TestKitRelayCancelSourceChange
+=== PAUSE TestKitRelayCancelSourceChange
+=== RUN   TestKitRelayCancelRefusedRenewal
+=== PAUSE TestKitRelayCancelRefusedRenewal
+=== CONT  TestKitRelayCancelHangupDuringLiveCheck
+=== CONT  TestKitRelayCancelSourceChange
+=== CONT  TestKitRelayCancelRefusedRenewal
+=== CONT  TestKitRelayCancelHangupDuringCheckoutCheck
+--- PASS: TestKitRelayCancelSourceChange (0.09s)
+=== CONT  TestKitRelayCancelTransientRenewalFailure
+--- PASS: TestKitRelayCancelRefusedRenewal (0.09s)
+--- PASS: TestKitRelayCancelHangupDuringCheckoutCheck (0.09s)
+--- PASS: TestKitRelayCancelHangupDuringLiveCheck (0.10s)
+--- PASS: TestKitRelayCancelTransientRenewalFailure (0.09s)
+=== RUN   TestKitRelayCancelHangupDuringCheckoutCheck
+=== PAUSE TestKitRelayCancelHangupDuringCheckoutCheck
+=== RUN   TestKitRelayCancelHangupDuringLiveCheck
+=== PAUSE TestKitRelayCancelHangupDuringLiveCheck
+=== RUN   TestKitRelayCancelTransientRenewalFailure
+=== PAUSE TestKitRelayCancelTransientRenewalFailure
+=== RUN   TestKitRelayCancelSourceChange
+=== PAUSE TestKitRelayCancelSourceChange
+=== RUN   TestKitRelayCancelRefusedRenewal
+=== PAUSE TestKitRelayCancelRefusedRenewal
+=== CONT  TestKitRelayCancelHangupDuringCheckoutCheck
+=== CONT  TestKitRelayCancelTransientRenewalFailure
+=== CONT  TestKitRelayCancelSourceChange
+=== CONT  TestKitRelayCancelRefusedRenewal
+--- PASS: TestKitRelayCancelSourceChange (0.09s)
+=== CONT  TestKitRelayCancelHangupDuringLiveCheck
+--- PASS: TestKitRelayCancelRefusedRenewal (0.09s)
+--- PASS: TestKitRelayCancelHangupDuringCheckoutCheck (0.09s)
+--- PASS: TestKitRelayCancelTransientRenewalFailure (0.10s)
+--- PASS: TestKitRelayCancelHangupDuringLiveCheck (0.09s)
+=== RUN   TestKitRelayCancelHangupDuringCheckoutCheck
+=== PAUSE TestKitRelayCancelHangupDuringCheckoutCheck
+=== RUN   TestKitRelayCancelHangupDuringLiveCheck
+=== PAUSE TestKitRelayCancelHangupDuringLiveCheck
+=== RUN   TestKitRelayCancelTransientRenewalFailure
+=== PAUSE TestKitRelayCancelTransientRenewalFailure
+=== RUN   TestKitRelayCancelSourceChange
+=== PAUSE TestKitRelayCancelSourceChange
+=== RUN   TestKitRelayCancelRefusedRenewal
+=== PAUSE TestKitRelayCancelRefusedRenewal
+=== CONT  TestKitRelayCancelHangupDuringCheckoutCheck
+=== CONT  TestKitRelayCancelSourceChange
+=== CONT  TestKitRelayCancelTransientRenewalFailure
+=== CONT  TestKitRelayCancelRefusedRenewal
+--- PASS: TestKitRelayCancelSourceChange (0.09s)
+=== CONT  TestKitRelayCancelHangupDuringLiveCheck
+--- PASS: TestKitRelayCancelHangupDuringCheckoutCheck (0.09s)
+--- PASS: TestKitRelayCancelRefusedRenewal (0.09s)
+--- PASS: TestKitRelayCancelTransientRenewalFailure (0.11s)
+--- PASS: TestKitRelayCancelHangupDuringLiveCheck (0.09s)
+=== RUN   TestKitRelayCancelHangupDuringCheckoutCheck
+=== PAUSE TestKitRelayCancelHangupDuringCheckoutCheck
+=== RUN   TestKitRelayCancelHangupDuringLiveCheck
+=== PAUSE TestKitRelayCancelHangupDuringLiveCheck
+=== RUN   TestKitRelayCancelTransientRenewalFailure
+=== PAUSE TestKitRelayCancelTransientRenewalFailure
+=== RUN   TestKitRelayCancelSourceChange
+=== PAUSE TestKitRelayCancelSourceChange
+=== RUN   TestKitRelayCancelRefusedRenewal
+=== PAUSE TestKitRelayCancelRefusedRenewal
+=== CONT  TestKitRelayCancelRefusedRenewal
+=== CONT  TestKitRelayCancelTransientRenewalFailure
+=== CONT  TestKitRelayCancelSourceChange
+=== CONT  TestKitRelayCancelHangupDuringLiveCheck
+--- PASS: TestKitRelayCancelRefusedRenewal (0.09s)
+=== CONT  TestKitRelayCancelHangupDuringCheckoutCheck
+--- PASS: TestKitRelayCancelSourceChange (0.09s)
+--- PASS: TestKitRelayCancelHangupDuringLiveCheck (0.11s)
+--- PASS: TestKitRelayCancelTransientRenewalFailure (0.11s)
+--- PASS: TestKitRelayCancelHangupDuringCheckoutCheck (0.08s)
+=== RUN   TestKitRelayCancelHangupDuringCheckoutCheck
+=== PAUSE TestKitRelayCancelHangupDuringCheckoutCheck
+=== RUN   TestKitRelayCancelHangupDuringLiveCheck
+=== PAUSE TestKitRelayCancelHangupDuringLiveCheck
+=== RUN   TestKitRelayCancelTransientRenewalFailure
+=== PAUSE TestKitRelayCancelTransientRenewalFailure
+=== RUN   TestKitRelayCancelSourceChange
+=== PAUSE TestKitRelayCancelSourceChange
+=== RUN   TestKitRelayCancelRefusedRenewal
+=== PAUSE TestKitRelayCancelRefusedRenewal
+=== CONT  TestKitRelayCancelHangupDuringCheckoutCheck
+=== CONT  TestKitRelayCancelRefusedRenewal
+=== CONT  TestKitRelayCancelHangupDuringLiveCheck
+=== CONT  TestKitRelayCancelTransientRenewalFailure
+--- PASS: TestKitRelayCancelRefusedRenewal (0.09s)
+=== CONT  TestKitRelayCancelSourceChange
+--- PASS: TestKitRelayCancelHangupDuringCheckoutCheck (0.10s)
+--- PASS: TestKitRelayCancelTransientRenewalFailure (0.10s)
+--- PASS: TestKitRelayCancelHangupDuringLiveCheck (0.11s)
+--- PASS: TestKitRelayCancelSourceChange (0.08s)
+=== RUN   TestKitRelayCancelHangupDuringCheckoutCheck
+=== PAUSE TestKitRelayCancelHangupDuringCheckoutCheck
+=== RUN   TestKitRelayCancelHangupDuringLiveCheck
+=== PAUSE TestKitRelayCancelHangupDuringLiveCheck
+=== RUN   TestKitRelayCancelTransientRenewalFailure
+=== PAUSE TestKitRelayCancelTransientRenewalFailure
+=== RUN   TestKitRelayCancelSourceChange
+=== PAUSE TestKitRelayCancelSourceChange
+=== RUN   TestKitRelayCancelRefusedRenewal
+=== PAUSE TestKitRelayCancelRefusedRenewal
+=== CONT  TestKitRelayCancelTransientRenewalFailure
+=== CONT  TestKitRelayCancelHangupDuringLiveCheck
+=== CONT  TestKitRelayCancelSourceChange
+=== CONT  TestKitRelayCancelRefusedRenewal
+--- PASS: TestKitRelayCancelRefusedRenewal (0.09s)
+=== CONT  TestKitRelayCancelHangupDuringCheckoutCheck
+--- PASS: TestKitRelayCancelSourceChange (0.10s)
+--- PASS: TestKitRelayCancelTransientRenewalFailure (0.10s)
+--- PASS: TestKitRelayCancelHangupDuringLiveCheck (0.10s)
+--- PASS: TestKitRelayCancelHangupDuringCheckoutCheck (0.08s)
+=== RUN   TestKitRelayCancelHangupDuringCheckoutCheck
+=== PAUSE TestKitRelayCancelHangupDuringCheckoutCheck
+=== RUN   TestKitRelayCancelHangupDuringLiveCheck
+=== PAUSE TestKitRelayCancelHangupDuringLiveCheck
+=== RUN   TestKitRelayCancelTransientRenewalFailure
+=== PAUSE TestKitRelayCancelTransientRenewalFailure
+=== RUN   TestKitRelayCancelSourceChange
+=== PAUSE TestKitRelayCancelSourceChange
+=== RUN   TestKitRelayCancelRefusedRenewal
+=== PAUSE TestKitRelayCancelRefusedRenewal
+=== CONT  TestKitRelayCancelRefusedRenewal
+=== CONT  TestKitRelayCancelSourceChange
+=== CONT  TestKitRelayCancelTransientRenewalFailure
+=== CONT  TestKitRelayCancelHangupDuringLiveCheck
+--- PASS: TestKitRelayCancelRefusedRenewal (0.09s)
+=== CONT  TestKitRelayCancelHangupDuringCheckoutCheck
+--- PASS: TestKitRelayCancelSourceChange (0.10s)
+--- PASS: TestKitRelayCancelHangupDuringLiveCheck (0.10s)
+--- PASS: TestKitRelayCancelTransientRenewalFailure (0.10s)
+--- PASS: TestKitRelayCancelHangupDuringCheckoutCheck (0.08s)
+=== RUN   TestKitRelayCancelHangupDuringCheckoutCheck
+=== PAUSE TestKitRelayCancelHangupDuringCheckoutCheck
+=== RUN   TestKitRelayCancelHangupDuringLiveCheck
+=== PAUSE TestKitRelayCancelHangupDuringLiveCheck
+=== RUN   TestKitRelayCancelTransientRenewalFailure
+=== PAUSE TestKitRelayCancelTransientRenewalFailure
+=== RUN   TestKitRelayCancelSourceChange
+=== PAUSE TestKitRelayCancelSourceChange
+=== RUN   TestKitRelayCancelRefusedRenewal
+=== PAUSE TestKitRelayCancelRefusedRenewal
+=== CONT  TestKitRelayCancelHangupDuringLiveCheck
+=== CONT  TestKitRelayCancelSourceChange
+=== CONT  TestKitRelayCancelRefusedRenewal
+=== CONT  TestKitRelayCancelTransientRenewalFailure
+--- PASS: TestKitRelayCancelSourceChange (0.09s)
+=== CONT  TestKitRelayCancelHangupDuringCheckoutCheck
+--- PASS: TestKitRelayCancelRefusedRenewal (0.09s)
+--- PASS: TestKitRelayCancelHangupDuringLiveCheck (0.10s)
+--- PASS: TestKitRelayCancelTransientRenewalFailure (0.10s)
+--- PASS: TestKitRelayCancelHangupDuringCheckoutCheck (0.08s)
+=== RUN   TestKitRelayCancelHangupDuringCheckoutCheck
+=== PAUSE TestKitRelayCancelHangupDuringCheckoutCheck
+=== RUN   TestKitRelayCancelHangupDuringLiveCheck
+=== PAUSE TestKitRelayCancelHangupDuringLiveCheck
+=== RUN   TestKitRelayCancelTransientRenewalFailure
+=== PAUSE TestKitRelayCancelTransientRenewalFailure
+=== RUN   TestKitRelayCancelSourceChange
+=== PAUSE TestKitRelayCancelSourceChange
+=== RUN   TestKitRelayCancelRefusedRenewal
+=== PAUSE TestKitRelayCancelRefusedRenewal
+=== CONT  TestKitRelayCancelHangupDuringCheckoutCheck
+=== CONT  TestKitRelayCancelSourceChange
+=== CONT  TestKitRelayCancelRefusedRenewal
+=== CONT  TestKitRelayCancelHangupDuringLiveCheck
+--- PASS: TestKitRelayCancelRefusedRenewal (0.08s)
+=== CONT  TestKitRelayCancelTransientRenewalFailure
+--- PASS: TestKitRelayCancelHangupDuringCheckoutCheck (0.10s)
+--- PASS: TestKitRelayCancelSourceChange (0.10s)
+--- PASS: TestKitRelayCancelHangupDuringLiveCheck (0.10s)
+--- PASS: TestKitRelayCancelTransientRenewalFailure (0.09s)
+=== RUN   TestKitRelayCancelHangupDuringCheckoutCheck
+=== PAUSE TestKitRelayCancelHangupDuringCheckoutCheck
+=== RUN   TestKitRelayCancelHangupDuringLiveCheck
+=== PAUSE TestKitRelayCancelHangupDuringLiveCheck
+=== RUN   TestKitRelayCancelTransientRenewalFailure
+=== PAUSE TestKitRelayCancelTransientRenewalFailure
+=== RUN   TestKitRelayCancelSourceChange
+=== PAUSE TestKitRelayCancelSourceChange
+=== RUN   TestKitRelayCancelRefusedRenewal
+=== PAUSE TestKitRelayCancelRefusedRenewal
+=== CONT  TestKitRelayCancelTransientRenewalFailure
+=== CONT  TestKitRelayCancelRefusedRenewal
+=== CONT  TestKitRelayCancelSourceChange
+=== CONT  TestKitRelayCancelHangupDuringLiveCheck
+--- PASS: TestKitRelayCancelSourceChange (0.09s)
+=== CONT  TestKitRelayCancelHangupDuringCheckoutCheck
+--- PASS: TestKitRelayCancelRefusedRenewal (0.09s)
+--- PASS: TestKitRelayCancelHangupDuringLiveCheck (0.10s)
+--- PASS: TestKitRelayCancelTransientRenewalFailure (0.10s)
+--- PASS: TestKitRelayCancelHangupDuringCheckoutCheck (0.08s)
+=== RUN   TestKitRelayCancelHangupDuringCheckoutCheck
+=== PAUSE TestKitRelayCancelHangupDuringCheckoutCheck
+=== RUN   TestKitRelayCancelHangupDuringLiveCheck
+=== PAUSE TestKitRelayCancelHangupDuringLiveCheck
+=== RUN   TestKitRelayCancelTransientRenewalFailure
+=== PAUSE TestKitRelayCancelTransientRenewalFailure
+=== RUN   TestKitRelayCancelSourceChange
+=== PAUSE TestKitRelayCancelSourceChange
+=== RUN   TestKitRelayCancelRefusedRenewal
+=== PAUSE TestKitRelayCancelRefusedRenewal
+=== CONT  TestKitRelayCancelTransientRenewalFailure
+=== CONT  TestKitRelayCancelSourceChange
+=== CONT  TestKitRelayCancelRefusedRenewal
+=== CONT  TestKitRelayCancelHangupDuringLiveCheck
+--- PASS: TestKitRelayCancelRefusedRenewal (0.08s)
+=== CONT  TestKitRelayCancelHangupDuringCheckoutCheck
+--- PASS: TestKitRelayCancelSourceChange (0.09s)
+--- PASS: TestKitRelayCancelHangupDuringLiveCheck (0.10s)
+--- PASS: TestKitRelayCancelTransientRenewalFailure (0.10s)
+--- PASS: TestKitRelayCancelHangupDuringCheckoutCheck (0.09s)
+=== RUN   TestKitRelayCancelHangupDuringCheckoutCheck
+=== PAUSE TestKitRelayCancelHangupDuringCheckoutCheck
+=== RUN   TestKitRelayCancelHangupDuringLiveCheck
+=== PAUSE TestKitRelayCancelHangupDuringLiveCheck
+=== RUN   TestKitRelayCancelTransientRenewalFailure
+=== PAUSE TestKitRelayCancelTransientRenewalFailure
+=== RUN   TestKitRelayCancelSourceChange
+=== PAUSE TestKitRelayCancelSourceChange
+=== RUN   TestKitRelayCancelRefusedRenewal
+=== PAUSE TestKitRelayCancelRefusedRenewal
+=== CONT  TestKitRelayCancelTransientRenewalFailure
+=== CONT  TestKitRelayCancelHangupDuringLiveCheck
+=== CONT  TestKitRelayCancelHangupDuringCheckoutCheck
+=== CONT  TestKitRelayCancelSourceChange
+--- PASS: TestKitRelayCancelSourceChange (0.09s)
+=== CONT  TestKitRelayCancelRefusedRenewal
+--- PASS: TestKitRelayCancelHangupDuringCheckoutCheck (0.11s)
+--- PASS: TestKitRelayCancelTransientRenewalFailure (0.11s)
+--- PASS: TestKitRelayCancelHangupDuringLiveCheck (0.12s)
+--- PASS: TestKitRelayCancelRefusedRenewal (0.08s)
+=== RUN   TestKitRelayCancelHangupDuringCheckoutCheck
+=== PAUSE TestKitRelayCancelHangupDuringCheckoutCheck
+=== RUN   TestKitRelayCancelHangupDuringLiveCheck
+=== PAUSE TestKitRelayCancelHangupDuringLiveCheck
+=== RUN   TestKitRelayCancelTransientRenewalFailure
+=== PAUSE TestKitRelayCancelTransientRenewalFailure
+=== RUN   TestKitRelayCancelSourceChange
+=== PAUSE TestKitRelayCancelSourceChange
+=== RUN   TestKitRelayCancelRefusedRenewal
+=== PAUSE TestKitRelayCancelRefusedRenewal
+=== CONT  TestKitRelayCancelHangupDuringCheckoutCheck
+=== CONT  TestKitRelayCancelTransientRenewalFailure
+=== CONT  TestKitRelayCancelSourceChange
+=== CONT  TestKitRelayCancelRefusedRenewal
+--- PASS: TestKitRelayCancelRefusedRenewal (0.09s)
+=== CONT  TestKitRelayCancelHangupDuringLiveCheck
+--- PASS: TestKitRelayCancelSourceChange (0.09s)
+--- PASS: TestKitRelayCancelHangupDuringCheckoutCheck (0.09s)
+--- PASS: TestKitRelayCancelTransientRenewalFailure (0.10s)
+--- PASS: TestKitRelayCancelHangupDuringLiveCheck (0.09s)
+=== RUN   TestKitRelayCancelHangupDuringCheckoutCheck
+=== PAUSE TestKitRelayCancelHangupDuringCheckoutCheck
+=== RUN   TestKitRelayCancelHangupDuringLiveCheck
+=== PAUSE TestKitRelayCancelHangupDuringLiveCheck
+=== RUN   TestKitRelayCancelTransientRenewalFailure
+=== PAUSE TestKitRelayCancelTransientRenewalFailure
+=== RUN   TestKitRelayCancelSourceChange
+=== PAUSE TestKitRelayCancelSourceChange
+=== RUN   TestKitRelayCancelRefusedRenewal
+=== PAUSE TestKitRelayCancelRefusedRenewal
+=== CONT  TestKitRelayCancelHangupDuringCheckoutCheck
+=== CONT  TestKitRelayCancelSourceChange
+=== CONT  TestKitRelayCancelRefusedRenewal
+=== CONT  TestKitRelayCancelHangupDuringLiveCheck
+--- PASS: TestKitRelayCancelRefusedRenewal (0.09s)
+=== CONT  TestKitRelayCancelTransientRenewalFailure
+--- PASS: TestKitRelayCancelSourceChange (0.08s)
+--- PASS: TestKitRelayCancelHangupDuringCheckoutCheck (0.09s)
+--- PASS: TestKitRelayCancelHangupDuringLiveCheck (0.10s)
+--- PASS: TestKitRelayCancelTransientRenewalFailure (0.09s)
+=== RUN   TestKitRelayCancelHangupDuringCheckoutCheck
+=== PAUSE TestKitRelayCancelHangupDuringCheckoutCheck
+=== RUN   TestKitRelayCancelHangupDuringLiveCheck
+=== PAUSE TestKitRelayCancelHangupDuringLiveCheck
+=== RUN   TestKitRelayCancelTransientRenewalFailure
+=== PAUSE TestKitRelayCancelTransientRenewalFailure
+=== RUN   TestKitRelayCancelSourceChange
+=== PAUSE TestKitRelayCancelSourceChange
+=== RUN   TestKitRelayCancelRefusedRenewal
+=== PAUSE TestKitRelayCancelRefusedRenewal
+=== CONT  TestKitRelayCancelHangupDuringCheckoutCheck
+=== CONT  TestKitRelayCancelRefusedRenewal
+=== CONT  TestKitRelayCancelSourceChange
+=== CONT  TestKitRelayCancelHangupDuringLiveCheck
+--- PASS: TestKitRelayCancelRefusedRenewal (0.09s)
+--- PASS: TestKitRelayCancelSourceChange (0.09s)
+=== CONT  TestKitRelayCancelTransientRenewalFailure
+--- PASS: TestKitRelayCancelHangupDuringCheckoutCheck (0.09s)
+--- PASS: TestKitRelayCancelHangupDuringLiveCheck (0.10s)
+--- PASS: TestKitRelayCancelTransientRenewalFailure (0.09s)
+=== RUN   TestKitRelayCancelHangupDuringCheckoutCheck
+=== PAUSE TestKitRelayCancelHangupDuringCheckoutCheck
+=== RUN   TestKitRelayCancelHangupDuringLiveCheck
+=== PAUSE TestKitRelayCancelHangupDuringLiveCheck
+=== RUN   TestKitRelayCancelTransientRenewalFailure
+=== PAUSE TestKitRelayCancelTransientRenewalFailure
+=== RUN   TestKitRelayCancelSourceChange
+=== PAUSE TestKitRelayCancelSourceChange
+=== RUN   TestKitRelayCancelRefusedRenewal
+=== PAUSE TestKitRelayCancelRefusedRenewal
+=== CONT  TestKitRelayCancelRefusedRenewal
+=== CONT  TestKitRelayCancelTransientRenewalFailure
+=== CONT  TestKitRelayCancelHangupDuringLiveCheck
+=== CONT  TestKitRelayCancelSourceChange
+--- PASS: TestKitRelayCancelRefusedRenewal (0.09s)
+=== CONT  TestKitRelayCancelHangupDuringCheckoutCheck
+--- PASS: TestKitRelayCancelSourceChange (0.09s)
+--- PASS: TestKitRelayCancelTransientRenewalFailure (0.10s)
+--- PASS: TestKitRelayCancelHangupDuringLiveCheck (0.11s)
+--- PASS: TestKitRelayCancelHangupDuringCheckoutCheck (0.08s)
+=== RUN   TestKitRelayCancelHangupDuringCheckoutCheck
+=== PAUSE TestKitRelayCancelHangupDuringCheckoutCheck
+=== RUN   TestKitRelayCancelHangupDuringLiveCheck
+=== PAUSE TestKitRelayCancelHangupDuringLiveCheck
+=== RUN   TestKitRelayCancelTransientRenewalFailure
+=== PAUSE TestKitRelayCancelTransientRenewalFailure
+=== RUN   TestKitRelayCancelSourceChange
+=== PAUSE TestKitRelayCancelSourceChange
+=== RUN   TestKitRelayCancelRefusedRenewal
+=== PAUSE TestKitRelayCancelRefusedRenewal
+=== CONT  TestKitRelayCancelHangupDuringLiveCheck
+=== CONT  TestKitRelayCancelSourceChange
+=== CONT  TestKitRelayCancelTransientRenewalFailure
+=== CONT  TestKitRelayCancelRefusedRenewal
+--- PASS: TestKitRelayCancelRefusedRenewal (0.09s)
+=== CONT  TestKitRelayCancelHangupDuringCheckoutCheck
+--- PASS: TestKitRelayCancelSourceChange (0.09s)
+--- PASS: TestKitRelayCancelHangupDuringLiveCheck (0.10s)
+--- PASS: TestKitRelayCancelTransientRenewalFailure (0.10s)
+--- PASS: TestKitRelayCancelHangupDuringCheckoutCheck (0.08s)
+=== RUN   TestKitRelayCancelHangupDuringCheckoutCheck
+=== PAUSE TestKitRelayCancelHangupDuringCheckoutCheck
+=== RUN   TestKitRelayCancelHangupDuringLiveCheck
+=== PAUSE TestKitRelayCancelHangupDuringLiveCheck
+=== RUN   TestKitRelayCancelTransientRenewalFailure
+=== PAUSE TestKitRelayCancelTransientRenewalFailure
+=== RUN   TestKitRelayCancelSourceChange
+=== PAUSE TestKitRelayCancelSourceChange
+=== RUN   TestKitRelayCancelRefusedRenewal
+=== PAUSE TestKitRelayCancelRefusedRenewal
+=== CONT  TestKitRelayCancelTransientRenewalFailure
+=== CONT  TestKitRelayCancelSourceChange
+=== CONT  TestKitRelayCancelRefusedRenewal
+=== CONT  TestKitRelayCancelHangupDuringCheckoutCheck
+--- PASS: TestKitRelayCancelSourceChange (0.09s)
+=== CONT  TestKitRelayCancelHangupDuringLiveCheck
+--- PASS: TestKitRelayCancelRefusedRenewal (0.09s)
+--- PASS: TestKitRelayCancelHangupDuringCheckoutCheck (0.09s)
+--- PASS: TestKitRelayCancelTransientRenewalFailure (0.10s)
+--- PASS: TestKitRelayCancelHangupDuringLiveCheck (0.09s)
+=== RUN   TestKitRelayCancelHangupDuringCheckoutCheck
+=== PAUSE TestKitRelayCancelHangupDuringCheckoutCheck
+=== RUN   TestKitRelayCancelHangupDuringLiveCheck
+=== PAUSE TestKitRelayCancelHangupDuringLiveCheck
+=== RUN   TestKitRelayCancelTransientRenewalFailure
+=== PAUSE TestKitRelayCancelTransientRenewalFailure
+=== RUN   TestKitRelayCancelSourceChange
+=== PAUSE TestKitRelayCancelSourceChange
+=== RUN   TestKitRelayCancelRefusedRenewal
+=== PAUSE TestKitRelayCancelRefusedRenewal
+=== CONT  TestKitRelayCancelTransientRenewalFailure
+=== CONT  TestKitRelayCancelRefusedRenewal
+=== CONT  TestKitRelayCancelHangupDuringLiveCheck
+=== CONT  TestKitRelayCancelSourceChange
+--- PASS: TestKitRelayCancelRefusedRenewal (0.09s)
+=== CONT  TestKitRelayCancelHangupDuringCheckoutCheck
+--- PASS: TestKitRelayCancelSourceChange (0.09s)
+--- PASS: TestKitRelayCancelHangupDuringLiveCheck (0.10s)
+--- PASS: TestKitRelayCancelTransientRenewalFailure (0.10s)
+--- PASS: TestKitRelayCancelHangupDuringCheckoutCheck (0.08s)
+=== RUN   TestKitRelayCancelHangupDuringCheckoutCheck
+=== PAUSE TestKitRelayCancelHangupDuringCheckoutCheck
+=== RUN   TestKitRelayCancelHangupDuringLiveCheck
+=== PAUSE TestKitRelayCancelHangupDuringLiveCheck
+=== RUN   TestKitRelayCancelTransientRenewalFailure
+=== PAUSE TestKitRelayCancelTransientRenewalFailure
+=== RUN   TestKitRelayCancelSourceChange
+=== PAUSE TestKitRelayCancelSourceChange
+=== RUN   TestKitRelayCancelRefusedRenewal
+=== PAUSE TestKitRelayCancelRefusedRenewal
+=== CONT  TestKitRelayCancelHangupDuringLiveCheck
+=== CONT  TestKitRelayCancelSourceChange
+=== CONT  TestKitRelayCancelRefusedRenewal
+=== CONT  TestKitRelayCancelTransientRenewalFailure
+=== CONT  TestKitRelayCancelHangupDuringCheckoutCheck
+--- PASS: TestKitRelayCancelRefusedRenewal (0.08s)
+--- PASS: TestKitRelayCancelSourceChange (0.10s)
+--- PASS: TestKitRelayCancelHangupDuringLiveCheck (0.11s)
+--- PASS: TestKitRelayCancelTransientRenewalFailure (0.11s)
+--- PASS: TestKitRelayCancelHangupDuringCheckoutCheck (0.08s)
+=== RUN   TestKitRelayCancelHangupDuringCheckoutCheck
+=== PAUSE TestKitRelayCancelHangupDuringCheckoutCheck
+=== RUN   TestKitRelayCancelHangupDuringLiveCheck
+=== PAUSE TestKitRelayCancelHangupDuringLiveCheck
+=== RUN   TestKitRelayCancelTransientRenewalFailure
+=== PAUSE TestKitRelayCancelTransientRenewalFailure
+=== RUN   TestKitRelayCancelSourceChange
+=== PAUSE TestKitRelayCancelSourceChange
+=== RUN   TestKitRelayCancelRefusedRenewal
+=== PAUSE TestKitRelayCancelRefusedRenewal
+=== CONT  TestKitRelayCancelHangupDuringCheckoutCheck
+=== CONT  TestKitRelayCancelHangupDuringLiveCheck
+=== CONT  TestKitRelayCancelSourceChange
+=== CONT  TestKitRelayCancelRefusedRenewal
+--- PASS: TestKitRelayCancelRefusedRenewal (0.08s)
+=== CONT  TestKitRelayCancelTransientRenewalFailure
+--- PASS: TestKitRelayCancelHangupDuringCheckoutCheck (0.09s)
+--- PASS: TestKitRelayCancelSourceChange (0.09s)
+--- PASS: TestKitRelayCancelHangupDuringLiveCheck (0.11s)
+--- PASS: TestKitRelayCancelTransientRenewalFailure (0.09s)
+=== RUN   TestKitRelayCancelHangupDuringCheckoutCheck
+=== PAUSE TestKitRelayCancelHangupDuringCheckoutCheck
+=== RUN   TestKitRelayCancelHangupDuringLiveCheck
+=== PAUSE TestKitRelayCancelHangupDuringLiveCheck
+=== RUN   TestKitRelayCancelTransientRenewalFailure
+=== PAUSE TestKitRelayCancelTransientRenewalFailure
+=== RUN   TestKitRelayCancelSourceChange
+=== PAUSE TestKitRelayCancelSourceChange
+=== RUN   TestKitRelayCancelRefusedRenewal
+=== PAUSE TestKitRelayCancelRefusedRenewal
+=== CONT  TestKitRelayCancelHangupDuringCheckoutCheck
+=== CONT  TestKitRelayCancelSourceChange
+=== CONT  TestKitRelayCancelTransientRenewalFailure
+=== CONT  TestKitRelayCancelRefusedRenewal
+--- PASS: TestKitRelayCancelSourceChange (0.09s)
+=== CONT  TestKitRelayCancelHangupDuringLiveCheck
+--- PASS: TestKitRelayCancelRefusedRenewal (0.09s)
+--- PASS: TestKitRelayCancelHangupDuringCheckoutCheck (0.10s)
+--- PASS: TestKitRelayCancelTransientRenewalFailure (0.11s)
+--- PASS: TestKitRelayCancelHangupDuringLiveCheck (0.09s)
+=== RUN   TestKitRelayCancelHangupDuringCheckoutCheck
+=== PAUSE TestKitRelayCancelHangupDuringCheckoutCheck
+=== RUN   TestKitRelayCancelHangupDuringLiveCheck
+=== PAUSE TestKitRelayCancelHangupDuringLiveCheck
+=== RUN   TestKitRelayCancelTransientRenewalFailure
+=== PAUSE TestKitRelayCancelTransientRenewalFailure
+=== RUN   TestKitRelayCancelSourceChange
+=== PAUSE TestKitRelayCancelSourceChange
+=== RUN   TestKitRelayCancelRefusedRenewal
+=== PAUSE TestKitRelayCancelRefusedRenewal
+=== CONT  TestKitRelayCancelHangupDuringCheckoutCheck
+=== CONT  TestKitRelayCancelHangupDuringLiveCheck
+=== CONT  TestKitRelayCancelRefusedRenewal
+=== CONT  TestKitRelayCancelSourceChange
+--- PASS: TestKitRelayCancelRefusedRenewal (0.09s)
+=== CONT  TestKitRelayCancelTransientRenewalFailure
+--- PASS: TestKitRelayCancelSourceChange (0.09s)
+--- PASS: TestKitRelayCancelHangupDuringCheckoutCheck (0.10s)
+--- PASS: TestKitRelayCancelHangupDuringLiveCheck (0.11s)
+--- PASS: TestKitRelayCancelTransientRenewalFailure (0.10s)
+=== RUN   TestKitRelayCancelHangupDuringCheckoutCheck
+=== PAUSE TestKitRelayCancelHangupDuringCheckoutCheck
+=== RUN   TestKitRelayCancelHangupDuringLiveCheck
+=== PAUSE TestKitRelayCancelHangupDuringLiveCheck
+=== RUN   TestKitRelayCancelTransientRenewalFailure
+=== PAUSE TestKitRelayCancelTransientRenewalFailure
+=== RUN   TestKitRelayCancelSourceChange
+=== PAUSE TestKitRelayCancelSourceChange
+=== RUN   TestKitRelayCancelRefusedRenewal
+=== PAUSE TestKitRelayCancelRefusedRenewal
+=== CONT  TestKitRelayCancelHangupDuringCheckoutCheck
+=== CONT  TestKitRelayCancelRefusedRenewal
+=== CONT  TestKitRelayCancelSourceChange
+=== CONT  TestKitRelayCancelTransientRenewalFailure
+--- PASS: TestKitRelayCancelRefusedRenewal (0.09s)
+=== CONT  TestKitRelayCancelHangupDuringLiveCheck
+--- PASS: TestKitRelayCancelSourceChange (0.09s)
+--- PASS: TestKitRelayCancelHangupDuringCheckoutCheck (0.10s)
+--- PASS: TestKitRelayCancelTransientRenewalFailure (0.11s)
+--- PASS: TestKitRelayCancelHangupDuringLiveCheck (0.10s)
+=== RUN   TestKitRelayCancelHangupDuringCheckoutCheck
+=== PAUSE TestKitRelayCancelHangupDuringCheckoutCheck
+=== RUN   TestKitRelayCancelHangupDuringLiveCheck
+=== PAUSE TestKitRelayCancelHangupDuringLiveCheck
+=== RUN   TestKitRelayCancelTransientRenewalFailure
+=== PAUSE TestKitRelayCancelTransientRenewalFailure
+=== RUN   TestKitRelayCancelSourceChange
+=== PAUSE TestKitRelayCancelSourceChange
+=== RUN   TestKitRelayCancelRefusedRenewal
+=== PAUSE TestKitRelayCancelRefusedRenewal
+=== CONT  TestKitRelayCancelHangupDuringCheckoutCheck
+=== CONT  TestKitRelayCancelRefusedRenewal
+=== CONT  TestKitRelayCancelTransientRenewalFailure
+=== CONT  TestKitRelayCancelHangupDuringLiveCheck
+--- PASS: TestKitRelayCancelRefusedRenewal (0.09s)
+=== CONT  TestKitRelayCancelSourceChange
+--- PASS: TestKitRelayCancelHangupDuringCheckoutCheck (0.11s)
+--- PASS: TestKitRelayCancelTransientRenewalFailure (0.11s)
+--- PASS: TestKitRelayCancelHangupDuringLiveCheck (0.12s)
+--- PASS: TestKitRelayCancelSourceChange (0.09s)
+=== RUN   TestKitRelayCancelHangupDuringCheckoutCheck
+=== PAUSE TestKitRelayCancelHangupDuringCheckoutCheck
+=== RUN   TestKitRelayCancelHangupDuringLiveCheck
+=== PAUSE TestKitRelayCancelHangupDuringLiveCheck
+=== RUN   TestKitRelayCancelTransientRenewalFailure
+=== PAUSE TestKitRelayCancelTransientRenewalFailure
+=== RUN   TestKitRelayCancelSourceChange
+=== PAUSE TestKitRelayCancelSourceChange
+=== RUN   TestKitRelayCancelRefusedRenewal
+=== PAUSE TestKitRelayCancelRefusedRenewal
+=== CONT  TestKitRelayCancelHangupDuringCheckoutCheck
+=== CONT  TestKitRelayCancelSourceChange
+=== CONT  TestKitRelayCancelTransientRenewalFailure
+=== CONT  TestKitRelayCancelHangupDuringLiveCheck
+--- PASS: TestKitRelayCancelSourceChange (0.10s)
+=== CONT  TestKitRelayCancelRefusedRenewal
+--- PASS: TestKitRelayCancelHangupDuringCheckoutCheck (0.10s)
+--- PASS: TestKitRelayCancelHangupDuringLiveCheck (0.11s)
+--- PASS: TestKitRelayCancelTransientRenewalFailure (0.11s)
+--- PASS: TestKitRelayCancelRefusedRenewal (0.08s)
+=== RUN   TestKitRelayCancelHangupDuringCheckoutCheck
+=== PAUSE TestKitRelayCancelHangupDuringCheckoutCheck
+=== RUN   TestKitRelayCancelHangupDuringLiveCheck
+=== PAUSE TestKitRelayCancelHangupDuringLiveCheck
+=== RUN   TestKitRelayCancelTransientRenewalFailure
+=== PAUSE TestKitRelayCancelTransientRenewalFailure
+=== RUN   TestKitRelayCancelSourceChange
+=== PAUSE TestKitRelayCancelSourceChange
+=== RUN   TestKitRelayCancelRefusedRenewal
+=== PAUSE TestKitRelayCancelRefusedRenewal
+=== CONT  TestKitRelayCancelHangupDuringLiveCheck
+=== CONT  TestKitRelayCancelTransientRenewalFailure
+=== CONT  TestKitRelayCancelRefusedRenewal
+=== CONT  TestKitRelayCancelSourceChange
+--- PASS: TestKitRelayCancelRefusedRenewal (0.09s)
+=== CONT  TestKitRelayCancelHangupDuringCheckoutCheck
+--- PASS: TestKitRelayCancelSourceChange (0.09s)
+--- PASS: TestKitRelayCancelHangupDuringLiveCheck (0.10s)
+--- PASS: TestKitRelayCancelTransientRenewalFailure (0.10s)
+--- PASS: TestKitRelayCancelHangupDuringCheckoutCheck (0.08s)
+=== RUN   TestKitRelayCancelHangupDuringCheckoutCheck
+=== PAUSE TestKitRelayCancelHangupDuringCheckoutCheck
+=== RUN   TestKitRelayCancelHangupDuringLiveCheck
+=== PAUSE TestKitRelayCancelHangupDuringLiveCheck
+=== RUN   TestKitRelayCancelTransientRenewalFailure
+=== PAUSE TestKitRelayCancelTransientRenewalFailure
+=== RUN   TestKitRelayCancelSourceChange
+=== PAUSE TestKitRelayCancelSourceChange
+=== RUN   TestKitRelayCancelRefusedRenewal
+=== PAUSE TestKitRelayCancelRefusedRenewal
+=== CONT  TestKitRelayCancelHangupDuringLiveCheck
+=== CONT  TestKitRelayCancelSourceChange
+=== CONT  TestKitRelayCancelRefusedRenewal
+=== CONT  TestKitRelayCancelHangupDuringCheckoutCheck
+--- PASS: TestKitRelayCancelRefusedRenewal (0.08s)
+=== CONT  TestKitRelayCancelTransientRenewalFailure
+--- PASS: TestKitRelayCancelSourceChange (0.09s)
+--- PASS: TestKitRelayCancelHangupDuringCheckoutCheck (0.10s)
+--- PASS: TestKitRelayCancelHangupDuringLiveCheck (0.10s)
+--- PASS: TestKitRelayCancelTransientRenewalFailure (0.09s)
+=== RUN   TestKitRelayCancelHangupDuringCheckoutCheck
+=== PAUSE TestKitRelayCancelHangupDuringCheckoutCheck
+=== RUN   TestKitRelayCancelHangupDuringLiveCheck
+=== PAUSE TestKitRelayCancelHangupDuringLiveCheck
+=== RUN   TestKitRelayCancelTransientRenewalFailure
+=== PAUSE TestKitRelayCancelTransientRenewalFailure
+=== RUN   TestKitRelayCancelSourceChange
+=== PAUSE TestKitRelayCancelSourceChange
+=== RUN   TestKitRelayCancelRefusedRenewal
+=== PAUSE TestKitRelayCancelRefusedRenewal
+=== CONT  TestKitRelayCancelHangupDuringCheckoutCheck
+=== CONT  TestKitRelayCancelSourceChange
+=== CONT  TestKitRelayCancelRefusedRenewal
+=== CONT  TestKitRelayCancelHangupDuringLiveCheck
+--- PASS: TestKitRelayCancelRefusedRenewal (0.09s)
+=== CONT  TestKitRelayCancelTransientRenewalFailure
+--- PASS: TestKitRelayCancelSourceChange (0.09s)
+--- PASS: TestKitRelayCancelHangupDuringCheckoutCheck (0.09s)
+--- PASS: TestKitRelayCancelHangupDuringLiveCheck (0.10s)
+--- PASS: TestKitRelayCancelTransientRenewalFailure (0.09s)
+=== RUN   TestKitRelayCancelHangupDuringCheckoutCheck
+=== PAUSE TestKitRelayCancelHangupDuringCheckoutCheck
+=== RUN   TestKitRelayCancelHangupDuringLiveCheck
+=== PAUSE TestKitRelayCancelHangupDuringLiveCheck
+=== RUN   TestKitRelayCancelTransientRenewalFailure
+=== PAUSE TestKitRelayCancelTransientRenewalFailure
+=== RUN   TestKitRelayCancelSourceChange
+=== PAUSE TestKitRelayCancelSourceChange
+=== RUN   TestKitRelayCancelRefusedRenewal
+=== PAUSE TestKitRelayCancelRefusedRenewal
+=== CONT  TestKitRelayCancelHangupDuringCheckoutCheck
+=== CONT  TestKitRelayCancelTransientRenewalFailure
+=== CONT  TestKitRelayCancelSourceChange
+=== CONT  TestKitRelayCancelRefusedRenewal
+--- PASS: TestKitRelayCancelRefusedRenewal (0.09s)
+=== CONT  TestKitRelayCancelHangupDuringLiveCheck
+--- PASS: TestKitRelayCancelSourceChange (0.10s)
+--- PASS: TestKitRelayCancelHangupDuringCheckoutCheck (0.10s)
+--- PASS: TestKitRelayCancelTransientRenewalFailure (0.11s)
+--- PASS: TestKitRelayCancelHangupDuringLiveCheck (0.09s)
+=== RUN   TestKitRelayCancelHangupDuringCheckoutCheck
+=== PAUSE TestKitRelayCancelHangupDuringCheckoutCheck
+=== RUN   TestKitRelayCancelHangupDuringLiveCheck
+=== PAUSE TestKitRelayCancelHangupDuringLiveCheck
+=== RUN   TestKitRelayCancelTransientRenewalFailure
+=== PAUSE TestKitRelayCancelTransientRenewalFailure
+=== RUN   TestKitRelayCancelSourceChange
+=== PAUSE TestKitRelayCancelSourceChange
+=== RUN   TestKitRelayCancelRefusedRenewal
+=== PAUSE TestKitRelayCancelRefusedRenewal
+=== CONT  TestKitRelayCancelHangupDuringCheckoutCheck
+=== CONT  TestKitRelayCancelTransientRenewalFailure
+=== CONT  TestKitRelayCancelSourceChange
+=== CONT  TestKitRelayCancelRefusedRenewal
+--- PASS: TestKitRelayCancelRefusedRenewal (0.09s)
+=== CONT  TestKitRelayCancelHangupDuringLiveCheck
+--- PASS: TestKitRelayCancelSourceChange (0.09s)
+--- PASS: TestKitRelayCancelHangupDuringCheckoutCheck (0.10s)
+--- PASS: TestKitRelayCancelTransientRenewalFailure (0.11s)
+--- PASS: TestKitRelayCancelHangupDuringLiveCheck (0.09s)
+=== RUN   TestKitRelayCancelHangupDuringCheckoutCheck
+=== PAUSE TestKitRelayCancelHangupDuringCheckoutCheck
+=== RUN   TestKitRelayCancelHangupDuringLiveCheck
+=== PAUSE TestKitRelayCancelHangupDuringLiveCheck
+=== RUN   TestKitRelayCancelTransientRenewalFailure
+=== PAUSE TestKitRelayCancelTransientRenewalFailure
+=== RUN   TestKitRelayCancelSourceChange
+=== PAUSE TestKitRelayCancelSourceChange
+=== RUN   TestKitRelayCancelRefusedRenewal
+=== PAUSE TestKitRelayCancelRefusedRenewal
+=== CONT  TestKitRelayCancelHangupDuringCheckoutCheck
+=== CONT  TestKitRelayCancelSourceChange
+=== CONT  TestKitRelayCancelRefusedRenewal
+=== CONT  TestKitRelayCancelTransientRenewalFailure
+--- PASS: TestKitRelayCancelRefusedRenewal (0.09s)
+=== CONT  TestKitRelayCancelHangupDuringLiveCheck
+--- PASS: TestKitRelayCancelSourceChange (0.09s)
+--- PASS: TestKitRelayCancelHangupDuringCheckoutCheck (0.09s)
+--- PASS: TestKitRelayCancelTransientRenewalFailure (0.10s)
+--- PASS: TestKitRelayCancelHangupDuringLiveCheck (0.09s)
+=== RUN   TestKitRelayCancelHangupDuringCheckoutCheck
+=== PAUSE TestKitRelayCancelHangupDuringCheckoutCheck
+=== RUN   TestKitRelayCancelHangupDuringLiveCheck
+=== PAUSE TestKitRelayCancelHangupDuringLiveCheck
+=== RUN   TestKitRelayCancelTransientRenewalFailure
+=== PAUSE TestKitRelayCancelTransientRenewalFailure
+=== RUN   TestKitRelayCancelSourceChange
+=== PAUSE TestKitRelayCancelSourceChange
+=== RUN   TestKitRelayCancelRefusedRenewal
+=== PAUSE TestKitRelayCancelRefusedRenewal
+=== CONT  TestKitRelayCancelHangupDuringCheckoutCheck
+=== CONT  TestKitRelayCancelRefusedRenewal
+=== CONT  TestKitRelayCancelTransientRenewalFailure
+=== CONT  TestKitRelayCancelSourceChange
+--- PASS: TestKitRelayCancelRefusedRenewal (0.08s)
+=== CONT  TestKitRelayCancelHangupDuringLiveCheck
+--- PASS: TestKitRelayCancelSourceChange (0.09s)
+--- PASS: TestKitRelayCancelHangupDuringCheckoutCheck (0.09s)
+--- PASS: TestKitRelayCancelTransientRenewalFailure (0.10s)
+--- PASS: TestKitRelayCancelHangupDuringLiveCheck (0.09s)
+=== RUN   TestKitRelayCancelHangupDuringCheckoutCheck
+=== PAUSE TestKitRelayCancelHangupDuringCheckoutCheck
+=== RUN   TestKitRelayCancelHangupDuringLiveCheck
+=== PAUSE TestKitRelayCancelHangupDuringLiveCheck
+=== RUN   TestKitRelayCancelTransientRenewalFailure
+=== PAUSE TestKitRelayCancelTransientRenewalFailure
+=== RUN   TestKitRelayCancelSourceChange
+=== PAUSE TestKitRelayCancelSourceChange
+=== RUN   TestKitRelayCancelRefusedRenewal
+=== PAUSE TestKitRelayCancelRefusedRenewal
+=== CONT  TestKitRelayCancelTransientRenewalFailure
+=== CONT  TestKitRelayCancelHangupDuringLiveCheck
+=== CONT  TestKitRelayCancelSourceChange
+=== CONT  TestKitRelayCancelRefusedRenewal
+--- PASS: TestKitRelayCancelRefusedRenewal (0.09s)
+=== CONT  TestKitRelayCancelHangupDuringCheckoutCheck
+--- PASS: TestKitRelayCancelSourceChange (0.09s)
+--- PASS: TestKitRelayCancelTransientRenewalFailure (0.10s)
+--- PASS: TestKitRelayCancelHangupDuringLiveCheck (0.11s)
+--- PASS: TestKitRelayCancelHangupDuringCheckoutCheck (0.08s)
+=== RUN   TestKitRelayCancelHangupDuringCheckoutCheck
+=== PAUSE TestKitRelayCancelHangupDuringCheckoutCheck
+=== RUN   TestKitRelayCancelHangupDuringLiveCheck
+=== PAUSE TestKitRelayCancelHangupDuringLiveCheck
+=== RUN   TestKitRelayCancelTransientRenewalFailure
+=== PAUSE TestKitRelayCancelTransientRenewalFailure
+=== RUN   TestKitRelayCancelSourceChange
+=== PAUSE TestKitRelayCancelSourceChange
+=== RUN   TestKitRelayCancelRefusedRenewal
+=== PAUSE TestKitRelayCancelRefusedRenewal
+=== CONT  TestKitRelayCancelTransientRenewalFailure
+=== CONT  TestKitRelayCancelRefusedRenewal
+=== CONT  TestKitRelayCancelSourceChange
+=== CONT  TestKitRelayCancelHangupDuringLiveCheck
+--- PASS: TestKitRelayCancelSourceChange (0.09s)
+=== CONT  TestKitRelayCancelHangupDuringCheckoutCheck
+--- PASS: TestKitRelayCancelRefusedRenewal (0.10s)
+--- PASS: TestKitRelayCancelTransientRenewalFailure (0.10s)
+--- PASS: TestKitRelayCancelHangupDuringLiveCheck (0.10s)
+--- PASS: TestKitRelayCancelHangupDuringCheckoutCheck (0.08s)
+=== RUN   TestKitRelayCancelHangupDuringCheckoutCheck
+=== PAUSE TestKitRelayCancelHangupDuringCheckoutCheck
+=== RUN   TestKitRelayCancelHangupDuringLiveCheck
+=== PAUSE TestKitRelayCancelHangupDuringLiveCheck
+=== RUN   TestKitRelayCancelTransientRenewalFailure
+=== PAUSE TestKitRelayCancelTransientRenewalFailure
+=== RUN   TestKitRelayCancelSourceChange
+=== PAUSE TestKitRelayCancelSourceChange
+=== RUN   TestKitRelayCancelRefusedRenewal
+=== PAUSE TestKitRelayCancelRefusedRenewal
+=== CONT  TestKitRelayCancelHangupDuringCheckoutCheck
+=== CONT  TestKitRelayCancelHangupDuringLiveCheck
+=== CONT  TestKitRelayCancelSourceChange
+=== CONT  TestKitRelayCancelRefusedRenewal
+--- PASS: TestKitRelayCancelRefusedRenewal (0.09s)
+=== CONT  TestKitRelayCancelTransientRenewalFailure
+--- PASS: TestKitRelayCancelSourceChange (0.09s)
+--- PASS: TestKitRelayCancelHangupDuringCheckoutCheck (0.10s)
+--- PASS: TestKitRelayCancelHangupDuringLiveCheck (0.10s)
+--- PASS: TestKitRelayCancelTransientRenewalFailure (0.09s)
+PASS
+ok  	github.com/kidus-tiliksew/conveyor/cmd/conveyor	9.810s
+# exit status: 0

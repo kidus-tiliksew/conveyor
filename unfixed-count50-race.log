@@ -1,0 +1,1307 @@
+# head: 02d877bb91a66710e3ea40e3e87775af24660d54 (unfixed handler; reproduction commit)
+# go: go version go1.24.0 linux/amd64
+# host: 4 CPUs, Linux 6.8.0-117-generic
+# date: 2026-11-08T09:13:12Z
+# command: go test ./cmd/conveyor -run 'TestKitRelayCancel' -count=50 -race -v
+=== RUN   TestKitRelayCancelHangupDuringCheckoutCheck
+=== PAUSE TestKitRelayCancelHangupDuringCheckoutCheck
+=== RUN   TestKitRelayCancelHangupDuringLiveCheck
+=== PAUSE TestKitRelayCancelHangupDuringLiveCheck
+=== RUN   TestKitRelayCancelTransientRenewalFailure
+=== PAUSE TestKitRelayCancelTransientRenewalFailure
+=== RUN   TestKitRelayCancelSourceChange
+=== PAUSE TestKitRelayCancelSourceChange
+=== RUN   TestKitRelayCancelRefusedRenewal
+=== PAUSE TestKitRelayCancelRefusedRenewal
+=== CONT  TestKitRelayCancelTransientRenewalFailure
+=== CONT  TestKitRelayCancelHangupDuringLiveCheck
+=== CONT  TestKitRelayCancelSourceChange
+=== CONT  TestKitRelayCancelRefusedRenewal
+--- PASS: TestKitRelayCancelRefusedRenewal (0.11s)
+=== CONT  TestKitRelayCancelHangupDuringCheckoutCheck
+--- PASS: TestKitRelayCancelSourceChange (0.11s)
+=== NAME  TestKitRelayCancelTransientRenewalFailure
+    kit_verify_relay_cancel_test.go:249: transient renewal failure: outcome="cancelled" err=exercise relay: cancelled declared operation create has no acknowledged completion; reconcile before retry child output: {"stderr":"","stdout":""}
+=== NAME  TestKitRelayCancelHangupDuringLiveCheck
+    kit_verify_relay_cancel_test.go:203: hangup during the liveness check: outcome="cancelled" err=exercise relay: cancelled declared operation create has no acknowledged completion; reconcile before retry child output: {"stderr":"","stdout":""}
+--- FAIL: TestKitRelayCancelHangupDuringLiveCheck (0.11s)
+--- FAIL: TestKitRelayCancelTransientRenewalFailure (0.11s)
+=== NAME  TestKitRelayCancelHangupDuringCheckoutCheck
+    kit_verify_relay_cancel_test.go:153: hangup during the checkout check: outcome="cancelled" err=exercise relay: cancelled  child output: {"stderr":"","stdout":""}
+--- FAIL: TestKitRelayCancelHangupDuringCheckoutCheck (0.08s)
+=== RUN   TestKitRelayCancelHangupDuringCheckoutCheck
+=== PAUSE TestKitRelayCancelHangupDuringCheckoutCheck
+=== RUN   TestKitRelayCancelHangupDuringLiveCheck
+=== PAUSE TestKitRelayCancelHangupDuringLiveCheck
+=== RUN   TestKitRelayCancelTransientRenewalFailure
+=== PAUSE TestKitRelayCancelTransientRenewalFailure
+=== RUN   TestKitRelayCancelSourceChange
+=== PAUSE TestKitRelayCancelSourceChange
+=== RUN   TestKitRelayCancelRefusedRenewal
+=== PAUSE TestKitRelayCancelRefusedRenewal
+=== CONT  TestKitRelayCancelHangupDuringCheckoutCheck
+=== CONT  TestKitRelayCancelSourceChange
+=== CONT  TestKitRelayCancelTransientRenewalFailure
+=== CONT  TestKitRelayCancelRefusedRenewal
+=== NAME  TestKitRelayCancelTransientRenewalFailure
+    kit_verify_relay_cancel_test.go:249: transient renewal failure: outcome="cancelled" err=exercise relay: cancelled declared operation create has no acknowledged completion; reconcile before retry child output: {"stderr":"","stdout":""}
+=== NAME  TestKitRelayCancelHangupDuringCheckoutCheck
+    kit_verify_relay_cancel_test.go:153: hangup during the checkout check: outcome="cancelled" err=exercise relay: cancelled  child output: {"stderr":"","stdout":""}
+--- FAIL: TestKitRelayCancelHangupDuringCheckoutCheck (0.09s)
+=== CONT  TestKitRelayCancelHangupDuringLiveCheck
+--- FAIL: TestKitRelayCancelTransientRenewalFailure (0.09s)
+--- PASS: TestKitRelayCancelRefusedRenewal (0.09s)
+--- PASS: TestKitRelayCancelSourceChange (0.09s)
+=== NAME  TestKitRelayCancelHangupDuringLiveCheck
+    kit_verify_relay_cancel_test.go:203: hangup during the liveness check: outcome="cancelled" err=exercise relay: cancelled declared operation create has no acknowledged completion; reconcile before retry child output: {"stderr":"","stdout":""}
+--- FAIL: TestKitRelayCancelHangupDuringLiveCheck (0.08s)
+=== RUN   TestKitRelayCancelHangupDuringCheckoutCheck
+=== PAUSE TestKitRelayCancelHangupDuringCheckoutCheck
+=== RUN   TestKitRelayCancelHangupDuringLiveCheck
+=== PAUSE TestKitRelayCancelHangupDuringLiveCheck
+=== RUN   TestKitRelayCancelTransientRenewalFailure
+=== PAUSE TestKitRelayCancelTransientRenewalFailure
+=== RUN   TestKitRelayCancelSourceChange
+=== PAUSE TestKitRelayCancelSourceChange
+=== RUN   TestKitRelayCancelRefusedRenewal
+=== PAUSE TestKitRelayCancelRefusedRenewal
+=== CONT  TestKitRelayCancelHangupDuringLiveCheck
+=== CONT  TestKitRelayCancelSourceChange
+=== CONT  TestKitRelayCancelTransientRenewalFailure
+=== CONT  TestKitRelayCancelRefusedRenewal
+=== NAME  TestKitRelayCancelHangupDuringLiveCheck
+    kit_verify_relay_cancel_test.go:203: hangup during the liveness check: outcome="cancelled" err=exercise relay: cancelled declared operation create has no acknowledged completion; reconcile before retry child output: {"stderr":"","stdout":""}
+=== CONT  TestKitRelayCancelHangupDuringCheckoutCheck
+--- FAIL: TestKitRelayCancelHangupDuringLiveCheck (0.08s)
+--- PASS: TestKitRelayCancelRefusedRenewal (0.09s)
+--- PASS: TestKitRelayCancelSourceChange (0.09s)
+=== NAME  TestKitRelayCancelTransientRenewalFailure
+    kit_verify_relay_cancel_test.go:249: transient renewal failure: outcome="cancelled" err=exercise relay: cancelled declared operation create has no acknowledged completion; reconcile before retry child output: {"stderr":"","stdout":""}
+--- FAIL: TestKitRelayCancelTransientRenewalFailure (0.10s)
+=== NAME  TestKitRelayCancelHangupDuringCheckoutCheck
+    kit_verify_relay_cancel_test.go:153: hangup during the checkout check: outcome="cancelled" err=exercise relay: cancelled  child output: {"stderr":"","stdout":""}
+--- FAIL: TestKitRelayCancelHangupDuringCheckoutCheck (0.08s)
+=== RUN   TestKitRelayCancelHangupDuringCheckoutCheck
+=== PAUSE TestKitRelayCancelHangupDuringCheckoutCheck
+=== RUN   TestKitRelayCancelHangupDuringLiveCheck
+=== PAUSE TestKitRelayCancelHangupDuringLiveCheck
+=== RUN   TestKitRelayCancelTransientRenewalFailure
+=== PAUSE TestKitRelayCancelTransientRenewalFailure
+=== RUN   TestKitRelayCancelSourceChange
+=== PAUSE TestKitRelayCancelSourceChange
+=== RUN   TestKitRelayCancelRefusedRenewal
+=== PAUSE TestKitRelayCancelRefusedRenewal
+=== CONT  TestKitRelayCancelHangupDuringCheckoutCheck
+=== CONT  TestKitRelayCancelTransientRenewalFailure
+=== CONT  TestKitRelayCancelRefusedRenewal
+=== CONT  TestKitRelayCancelSourceChange
+=== NAME  TestKitRelayCancelHangupDuringCheckoutCheck
+    kit_verify_relay_cancel_test.go:153: hangup during the checkout check: outcome="cancelled" err=exercise relay: cancelled  child output: {"stderr":"","stdout":""}
+=== CONT  TestKitRelayCancelHangupDuringLiveCheck
+--- FAIL: TestKitRelayCancelHangupDuringCheckoutCheck (0.08s)
+--- PASS: TestKitRelayCancelSourceChange (0.09s)
+=== NAME  TestKitRelayCancelTransientRenewalFailure
+    kit_verify_relay_cancel_test.go:249: transient renewal failure: outcome="cancelled" err=exercise relay: cancelled declared operation create has no acknowledged completion; reconcile before retry child output: {"stderr":"","stdout":""}
+--- PASS: TestKitRelayCancelRefusedRenewal (0.10s)
+--- FAIL: TestKitRelayCancelTransientRenewalFailure (0.10s)
+=== NAME  TestKitRelayCancelHangupDuringLiveCheck
+    kit_verify_relay_cancel_test.go:203: hangup during the liveness check: outcome="cancelled" err=exercise relay: cancelled declared operation create has no acknowledged completion; reconcile before retry child output: {"stderr":"","stdout":""}
+--- FAIL: TestKitRelayCancelHangupDuringLiveCheck (0.08s)
+=== RUN   TestKitRelayCancelHangupDuringCheckoutCheck
+=== PAUSE TestKitRelayCancelHangupDuringCheckoutCheck
+=== RUN   TestKitRelayCancelHangupDuringLiveCheck
+=== PAUSE TestKitRelayCancelHangupDuringLiveCheck
+=== RUN   TestKitRelayCancelTransientRenewalFailure
+=== PAUSE TestKitRelayCancelTransientRenewalFailure
+=== RUN   TestKitRelayCancelSourceChange
+=== PAUSE TestKitRelayCancelSourceChange
+=== RUN   TestKitRelayCancelRefusedRenewal
+=== PAUSE TestKitRelayCancelRefusedRenewal
+=== CONT  TestKitRelayCancelHangupDuringCheckoutCheck
+=== CONT  TestKitRelayCancelSourceChange
+=== CONT  TestKitRelayCancelRefusedRenewal
+=== CONT  TestKitRelayCancelHangupDuringLiveCheck
+=== NAME  TestKitRelayCancelHangupDuringCheckoutCheck
+    kit_verify_relay_cancel_test.go:153: hangup during the checkout check: outcome="cancelled" err=exercise relay: cancelled  child output: {"stderr":"","stdout":""}
+=== CONT  TestKitRelayCancelTransientRenewalFailure
+--- FAIL: TestKitRelayCancelHangupDuringCheckoutCheck (0.08s)
+=== NAME  TestKitRelayCancelHangupDuringLiveCheck
+    kit_verify_relay_cancel_test.go:203: hangup during the liveness check: outcome="cancelled" err=exercise relay: cancelled declared operation create has no acknowledged completion; reconcile before retry child output: {"stderr":"","stdout":""}
+--- FAIL: TestKitRelayCancelHangupDuringLiveCheck (0.08s)
+--- PASS: TestKitRelayCancelSourceChange (0.09s)
+--- PASS: TestKitRelayCancelRefusedRenewal (0.09s)
+=== NAME  TestKitRelayCancelTransientRenewalFailure
+    kit_verify_relay_cancel_test.go:249: transient renewal failure: outcome="cancelled" err=exercise relay: cancelled declared operation create has no acknowledged completion; reconcile before retry child output: {"stderr":"","stdout":""}
+--- FAIL: TestKitRelayCancelTransientRenewalFailure (0.09s)
+=== RUN   TestKitRelayCancelHangupDuringCheckoutCheck
+=== PAUSE TestKitRelayCancelHangupDuringCheckoutCheck
+=== RUN   TestKitRelayCancelHangupDuringLiveCheck
+=== PAUSE TestKitRelayCancelHangupDuringLiveCheck
+=== RUN   TestKitRelayCancelTransientRenewalFailure
+=== PAUSE TestKitRelayCancelTransientRenewalFailure
+=== RUN   TestKitRelayCancelSourceChange
+=== PAUSE TestKitRelayCancelSourceChange
+=== RUN   TestKitRelayCancelRefusedRenewal
+=== PAUSE TestKitRelayCancelRefusedRenewal
+=== CONT  TestKitRelayCancelHangupDuringCheckoutCheck
+=== CONT  TestKitRelayCancelTransientRenewalFailure
+=== CONT  TestKitRelayCancelSourceChange
+=== CONT  TestKitRelayCancelRefusedRenewal
+=== NAME  TestKitRelayCancelHangupDuringCheckoutCheck
+    kit_verify_relay_cancel_test.go:153: hangup during the checkout check: outcome="cancelled" err=exercise relay: cancelled  child output: {"stderr":"","stdout":""}
+--- FAIL: TestKitRelayCancelHangupDuringCheckoutCheck (0.08s)
+=== CONT  TestKitRelayCancelHangupDuringLiveCheck
+--- PASS: TestKitRelayCancelRefusedRenewal (0.09s)
+--- PASS: TestKitRelayCancelSourceChange (0.09s)
+=== NAME  TestKitRelayCancelTransientRenewalFailure
+    kit_verify_relay_cancel_test.go:249: transient renewal failure: outcome="cancelled" err=exercise relay: cancelled declared operation create has no acknowledged completion; reconcile before retry child output: {"stderr":"","stdout":""}
+--- FAIL: TestKitRelayCancelTransientRenewalFailure (0.10s)
+=== NAME  TestKitRelayCancelHangupDuringLiveCheck
+    kit_verify_relay_cancel_test.go:203: hangup during the liveness check: outcome="cancelled" err=exercise relay: cancelled declared operation create has no acknowledged completion; reconcile before retry child output: {"stderr":"","stdout":""}
+--- FAIL: TestKitRelayCancelHangupDuringLiveCheck (0.08s)
+=== RUN   TestKitRelayCancelHangupDuringCheckoutCheck
+=== PAUSE TestKitRelayCancelHangupDuringCheckoutCheck
+=== RUN   TestKitRelayCancelHangupDuringLiveCheck
+=== PAUSE TestKitRelayCancelHangupDuringLiveCheck
+=== RUN   TestKitRelayCancelTransientRenewalFailure
+=== PAUSE TestKitRelayCancelTransientRenewalFailure
+=== RUN   TestKitRelayCancelSourceChange
+=== PAUSE TestKitRelayCancelSourceChange
+=== RUN   TestKitRelayCancelRefusedRenewal
+=== PAUSE TestKitRelayCancelRefusedRenewal
+=== CONT  TestKitRelayCancelHangupDuringLiveCheck
+=== CONT  TestKitRelayCancelSourceChange
+=== CONT  TestKitRelayCancelTransientRenewalFailure
+=== CONT  TestKitRelayCancelRefusedRenewal
+--- PASS: TestKitRelayCancelRefusedRenewal (0.09s)
+=== CONT  TestKitRelayCancelHangupDuringCheckoutCheck
+=== NAME  TestKitRelayCancelTransientRenewalFailure
+    kit_verify_relay_cancel_test.go:249: transient renewal failure: outcome="cancelled" err=exercise relay: cancelled declared operation create has no acknowledged completion; reconcile before retry child output: {"stderr":"","stdout":""}
+--- FAIL: TestKitRelayCancelTransientRenewalFailure (0.09s)
+--- PASS: TestKitRelayCancelSourceChange (0.09s)
+=== NAME  TestKitRelayCancelHangupDuringLiveCheck
+    kit_verify_relay_cancel_test.go:203: hangup during the liveness check: outcome="cancelled" err=exercise relay: cancelled declared operation create has no acknowledged completion; reconcile before retry child output: {"stderr":"","stdout":""}
+--- FAIL: TestKitRelayCancelHangupDuringLiveCheck (0.10s)
+=== NAME  TestKitRelayCancelHangupDuringCheckoutCheck
+    kit_verify_relay_cancel_test.go:153: hangup during the checkout check: outcome="cancelled" err=exercise relay: cancelled  child output: {"stderr":"","stdout":""}
+--- FAIL: TestKitRelayCancelHangupDuringCheckoutCheck (0.07s)
+=== RUN   TestKitRelayCancelHangupDuringCheckoutCheck
+=== PAUSE TestKitRelayCancelHangupDuringCheckoutCheck
+=== RUN   TestKitRelayCancelHangupDuringLiveCheck
+=== PAUSE TestKitRelayCancelHangupDuringLiveCheck
+=== RUN   TestKitRelayCancelTransientRenewalFailure
+=== PAUSE TestKitRelayCancelTransientRenewalFailure
+=== RUN   TestKitRelayCancelSourceChange
+=== PAUSE TestKitRelayCancelSourceChange
+=== RUN   TestKitRelayCancelRefusedRenewal
+=== PAUSE TestKitRelayCancelRefusedRenewal
+=== CONT  TestKitRelayCancelHangupDuringCheckoutCheck
+=== CONT  TestKitRelayCancelHangupDuringLiveCheck
+=== CONT  TestKitRelayCancelTransientRenewalFailure
+=== CONT  TestKitRelayCancelRefusedRenewal
+=== NAME  TestKitRelayCancelHangupDuringCheckoutCheck
+    kit_verify_relay_cancel_test.go:153: hangup during the checkout check: outcome="cancelled" err=exercise relay: cancelled  child output: {"stderr":"","stdout":""}
+--- FAIL: TestKitRelayCancelHangupDuringCheckoutCheck (0.08s)
+=== CONT  TestKitRelayCancelSourceChange
+=== NAME  TestKitRelayCancelHangupDuringLiveCheck
+    kit_verify_relay_cancel_test.go:203: hangup during the liveness check: outcome="cancelled" err=exercise relay: cancelled declared operation create has no acknowledged completion; reconcile before retry child output: {"stderr":"","stdout":""}
+--- FAIL: TestKitRelayCancelHangupDuringLiveCheck (0.08s)
+--- PASS: TestKitRelayCancelRefusedRenewal (0.09s)
+=== NAME  TestKitRelayCancelTransientRenewalFailure
+    kit_verify_relay_cancel_test.go:249: transient renewal failure: outcome="cancelled" err=exercise relay: cancelled declared operation create has no acknowledged completion; reconcile before retry child output: {"stderr":"","stdout":""}
+--- FAIL: TestKitRelayCancelTransientRenewalFailure (0.10s)
+--- PASS: TestKitRelayCancelSourceChange (0.09s)
+=== RUN   TestKitRelayCancelHangupDuringCheckoutCheck
+=== PAUSE TestKitRelayCancelHangupDuringCheckoutCheck
+=== RUN   TestKitRelayCancelHangupDuringLiveCheck
+=== PAUSE TestKitRelayCancelHangupDuringLiveCheck
+=== RUN   TestKitRelayCancelTransientRenewalFailure
+=== PAUSE TestKitRelayCancelTransientRenewalFailure
+=== RUN   TestKitRelayCancelSourceChange
+=== PAUSE TestKitRelayCancelSourceChange
+=== RUN   TestKitRelayCancelRefusedRenewal
+=== PAUSE TestKitRelayCancelRefusedRenewal
+=== CONT  TestKitRelayCancelHangupDuringLiveCheck
+=== CONT  TestKitRelayCancelSourceChange
+=== CONT  TestKitRelayCancelRefusedRenewal
+=== CONT  TestKitRelayCancelTransientRenewalFailure
+--- PASS: TestKitRelayCancelRefusedRenewal (0.09s)
+=== CONT  TestKitRelayCancelHangupDuringCheckoutCheck
+=== NAME  TestKitRelayCancelHangupDuringLiveCheck
+    kit_verify_relay_cancel_test.go:203: hangup during the liveness check: outcome="cancelled" err=exercise relay: cancelled declared operation create has no acknowledged completion; reconcile before retry child output: {"stderr":"","stdout":""}
+--- FAIL: TestKitRelayCancelHangupDuringLiveCheck (0.10s)
+--- PASS: TestKitRelayCancelSourceChange (0.10s)
+=== NAME  TestKitRelayCancelTransientRenewalFailure
+    kit_verify_relay_cancel_test.go:249: transient renewal failure: outcome="cancelled" err=exercise relay: cancelled declared operation create has no acknowledged completion; reconcile before retry child output: {"stderr":"","stdout":""}
+--- FAIL: TestKitRelayCancelTransientRenewalFailure (0.10s)
+=== NAME  TestKitRelayCancelHangupDuringCheckoutCheck
+    kit_verify_relay_cancel_test.go:153: hangup during the checkout check: outcome="cancelled" err=exercise relay: cancelled  child output: {"stderr":"","stdout":""}
+--- FAIL: TestKitRelayCancelHangupDuringCheckoutCheck (0.07s)
+=== RUN   TestKitRelayCancelHangupDuringCheckoutCheck
+=== PAUSE TestKitRelayCancelHangupDuringCheckoutCheck
+=== RUN   TestKitRelayCancelHangupDuringLiveCheck
+=== PAUSE TestKitRelayCancelHangupDuringLiveCheck
+=== RUN   TestKitRelayCancelTransientRenewalFailure
+=== PAUSE TestKitRelayCancelTransientRenewalFailure
+=== RUN   TestKitRelayCancelSourceChange
+=== PAUSE TestKitRelayCancelSourceChange
+=== RUN   TestKitRelayCancelRefusedRenewal
+=== PAUSE TestKitRelayCancelRefusedRenewal
+=== CONT  TestKitRelayCancelHangupDuringCheckoutCheck
+=== CONT  TestKitRelayCancelSourceChange
+=== CONT  TestKitRelayCancelRefusedRenewal
+=== CONT  TestKitRelayCancelTransientRenewalFailure
+=== NAME  TestKitRelayCancelHangupDuringCheckoutCheck
+    kit_verify_relay_cancel_test.go:153: hangup during the checkout check: outcome="cancelled" err=exercise relay: cancelled  child output: {"stderr":"","stdout":""}
+--- FAIL: TestKitRelayCancelHangupDuringCheckoutCheck (0.08s)
+=== CONT  TestKitRelayCancelHangupDuringLiveCheck
+--- PASS: TestKitRelayCancelRefusedRenewal (0.09s)
+--- PASS: TestKitRelayCancelSourceChange (0.09s)
+=== NAME  TestKitRelayCancelTransientRenewalFailure
+    kit_verify_relay_cancel_test.go:249: transient renewal failure: outcome="cancelled" err=exercise relay: cancelled declared operation create has no acknowledged completion; reconcile before retry child output: {"stderr":"","stdout":""}
+--- FAIL: TestKitRelayCancelTransientRenewalFailure (0.10s)
+=== NAME  TestKitRelayCancelHangupDuringLiveCheck
+    kit_verify_relay_cancel_test.go:203: hangup during the liveness check: outcome="cancelled" err=exercise relay: cancelled declared operation create has no acknowledged completion; reconcile before retry child output: {"stderr":"","stdout":""}
+--- FAIL: TestKitRelayCancelHangupDuringLiveCheck (0.08s)
+=== RUN   TestKitRelayCancelHangupDuringCheckoutCheck
+=== PAUSE TestKitRelayCancelHangupDuringCheckoutCheck
+=== RUN   TestKitRelayCancelHangupDuringLiveCheck
+=== PAUSE TestKitRelayCancelHangupDuringLiveCheck
+=== RUN   TestKitRelayCancelTransientRenewalFailure
+=== PAUSE TestKitRelayCancelTransientRenewalFailure
+=== RUN   TestKitRelayCancelSourceChange
+=== PAUSE TestKitRelayCancelSourceChange
+=== RUN   TestKitRelayCancelRefusedRenewal
+=== PAUSE TestKitRelayCancelRefusedRenewal
+=== CONT  TestKitRelayCancelHangupDuringCheckoutCheck
+=== CONT  TestKitRelayCancelSourceChange
+=== CONT  TestKitRelayCancelRefusedRenewal
+=== CONT  TestKitRelayCancelHangupDuringLiveCheck
+=== NAME  TestKitRelayCancelHangupDuringCheckoutCheck
+    kit_verify_relay_cancel_test.go:153: hangup during the checkout check: outcome="cancelled" err=exercise relay: cancelled  child output: {"stderr":"","stdout":""}
+--- FAIL: TestKitRelayCancelHangupDuringCheckoutCheck (0.08s)
+=== CONT  TestKitRelayCancelTransientRenewalFailure
+=== NAME  TestKitRelayCancelHangupDuringLiveCheck
+    kit_verify_relay_cancel_test.go:203: hangup during the liveness check: outcome="cancelled" err=exercise relay: cancelled declared operation create has no acknowledged completion; reconcile before retry child output: {"stderr":"","stdout":""}
+--- FAIL: TestKitRelayCancelHangupDuringLiveCheck (0.09s)
+--- PASS: TestKitRelayCancelSourceChange (0.09s)
+--- PASS: TestKitRelayCancelRefusedRenewal (0.10s)
+=== NAME  TestKitRelayCancelTransientRenewalFailure
+    kit_verify_relay_cancel_test.go:249: transient renewal failure: outcome="cancelled" err=exercise relay: cancelled declared operation create has no acknowledged completion; reconcile before retry child output: {"stderr":"","stdout":""}
+--- FAIL: TestKitRelayCancelTransientRenewalFailure (0.09s)
+=== RUN   TestKitRelayCancelHangupDuringCheckoutCheck
+=== PAUSE TestKitRelayCancelHangupDuringCheckoutCheck
+=== RUN   TestKitRelayCancelHangupDuringLiveCheck
+=== PAUSE TestKitRelayCancelHangupDuringLiveCheck
+=== RUN   TestKitRelayCancelTransientRenewalFailure
+=== PAUSE TestKitRelayCancelTransientRenewalFailure
+=== RUN   TestKitRelayCancelSourceChange
+=== PAUSE TestKitRelayCancelSourceChange
+=== RUN   TestKitRelayCancelRefusedRenewal
+=== PAUSE TestKitRelayCancelRefusedRenewal
+=== CONT  TestKitRelayCancelTransientRenewalFailure
+=== CONT  TestKitRelayCancelSourceChange
+=== CONT  TestKitRelayCancelRefusedRenewal
+=== CONT  TestKitRelayCancelHangupDuringLiveCheck
+--- PASS: TestKitRelayCancelRefusedRenewal (0.09s)
+=== CONT  TestKitRelayCancelHangupDuringCheckoutCheck
+--- PASS: TestKitRelayCancelSourceChange (0.09s)
+=== NAME  TestKitRelayCancelHangupDuringLiveCheck
+    kit_verify_relay_cancel_test.go:203: hangup during the liveness check: outcome="cancelled" err=exercise relay: cancelled declared operation create has no acknowledged completion; reconcile before retry child output: {"stderr":"","stdout":""}
+=== NAME  TestKitRelayCancelTransientRenewalFailure
+    kit_verify_relay_cancel_test.go:249: transient renewal failure: outcome="cancelled" err=exercise relay: cancelled declared operation create has no acknowledged completion; reconcile before retry child output: {"stderr":"","stdout":""}
+--- FAIL: TestKitRelayCancelHangupDuringLiveCheck (0.09s)
+--- FAIL: TestKitRelayCancelTransientRenewalFailure (0.09s)
+=== NAME  TestKitRelayCancelHangupDuringCheckoutCheck
+    kit_verify_relay_cancel_test.go:153: hangup during the checkout check: outcome="cancelled" err=exercise relay: cancelled  child output: {"stderr":"","stdout":""}
+--- FAIL: TestKitRelayCancelHangupDuringCheckoutCheck (0.07s)
+=== RUN   TestKitRelayCancelHangupDuringCheckoutCheck
+=== PAUSE TestKitRelayCancelHangupDuringCheckoutCheck
+=== RUN   TestKitRelayCancelHangupDuringLiveCheck
+=== PAUSE TestKitRelayCancelHangupDuringLiveCheck
+=== RUN   TestKitRelayCancelTransientRenewalFailure
+=== PAUSE TestKitRelayCancelTransientRenewalFailure
+=== RUN   TestKitRelayCancelSourceChange
+=== PAUSE TestKitRelayCancelSourceChange
+=== RUN   TestKitRelayCancelRefusedRenewal
+=== PAUSE TestKitRelayCancelRefusedRenewal
+=== CONT  TestKitRelayCancelHangupDuringLiveCheck
+=== CONT  TestKitRelayCancelSourceChange
+=== CONT  TestKitRelayCancelTransientRenewalFailure
+=== CONT  TestKitRelayCancelRefusedRenewal
+=== NAME  TestKitRelayCancelHangupDuringLiveCheck
+    kit_verify_relay_cancel_test.go:203: hangup during the liveness check: outcome="cancelled" err=exercise relay: cancelled declared operation create has no acknowledged completion; reconcile before retry child output: {"stderr":"","stdout":""}
+--- FAIL: TestKitRelayCancelHangupDuringLiveCheck (0.08s)
+=== CONT  TestKitRelayCancelHangupDuringCheckoutCheck
+--- PASS: TestKitRelayCancelRefusedRenewal (0.09s)
+--- PASS: TestKitRelayCancelSourceChange (0.09s)
+=== NAME  TestKitRelayCancelTransientRenewalFailure
+    kit_verify_relay_cancel_test.go:249: transient renewal failure: outcome="cancelled" err=exercise relay: cancelled declared operation create has no acknowledged completion; reconcile before retry child output: {"stderr":"","stdout":""}
+--- FAIL: TestKitRelayCancelTransientRenewalFailure (0.09s)
+=== NAME  TestKitRelayCancelHangupDuringCheckoutCheck
+    kit_verify_relay_cancel_test.go:153: hangup during the checkout check: outcome="cancelled" err=exercise relay: cancelled  child output: {"stderr":"","stdout":""}
+--- FAIL: TestKitRelayCancelHangupDuringCheckoutCheck (0.07s)
+=== RUN   TestKitRelayCancelHangupDuringCheckoutCheck
+=== PAUSE TestKitRelayCancelHangupDuringCheckoutCheck
+=== RUN   TestKitRelayCancelHangupDuringLiveCheck
+=== PAUSE TestKitRelayCancelHangupDuringLiveCheck
+=== RUN   TestKitRelayCancelTransientRenewalFailure
+=== PAUSE TestKitRelayCancelTransientRenewalFailure
+=== RUN   TestKitRelayCancelSourceChange
+=== PAUSE TestKitRelayCancelSourceChange
+=== RUN   TestKitRelayCancelRefusedRenewal
+=== PAUSE TestKitRelayCancelRefusedRenewal
+=== CONT  TestKitRelayCancelHangupDuringCheckoutCheck
+=== CONT  TestKitRelayCancelTransientRenewalFailure
+=== CONT  TestKitRelayCancelRefusedRenewal
+=== CONT  TestKitRelayCancelSourceChange
+=== NAME  TestKitRelayCancelHangupDuringCheckoutCheck
+    kit_verify_relay_cancel_test.go:153: hangup during the checkout check: outcome="cancelled" err=exercise relay: cancelled  child output: {"stderr":"","stdout":""}
+--- FAIL: TestKitRelayCancelHangupDuringCheckoutCheck (0.08s)
+=== CONT  TestKitRelayCancelHangupDuringLiveCheck
+--- PASS: TestKitRelayCancelRefusedRenewal (0.09s)
+--- PASS: TestKitRelayCancelSourceChange (0.10s)
+=== NAME  TestKitRelayCancelTransientRenewalFailure
+    kit_verify_relay_cancel_test.go:249: transient renewal failure: outcome="cancelled" err=exercise relay: cancelled declared operation create has no acknowledged completion; reconcile before retry child output: {"stderr":"","stdout":""}
+--- FAIL: TestKitRelayCancelTransientRenewalFailure (0.10s)
+=== NAME  TestKitRelayCancelHangupDuringLiveCheck
+    kit_verify_relay_cancel_test.go:203: hangup during the liveness check: outcome="cancelled" err=exercise relay: cancelled declared operation create has no acknowledged completion; reconcile before retry child output: {"stderr":"","stdout":""}
+--- FAIL: TestKitRelayCancelHangupDuringLiveCheck (0.08s)
+=== RUN   TestKitRelayCancelHangupDuringCheckoutCheck
+=== PAUSE TestKitRelayCancelHangupDuringCheckoutCheck
+=== RUN   TestKitRelayCancelHangupDuringLiveCheck
+=== PAUSE TestKitRelayCancelHangupDuringLiveCheck
+=== RUN   TestKitRelayCancelTransientRenewalFailure
+=== PAUSE TestKitRelayCancelTransientRenewalFailure
+=== RUN   TestKitRelayCancelSourceChange
+=== PAUSE TestKitRelayCancelSourceChange
+=== RUN   TestKitRelayCancelRefusedRenewal
+=== PAUSE TestKitRelayCancelRefusedRenewal
+=== CONT  TestKitRelayCancelHangupDuringCheckoutCheck
+=== CONT  TestKitRelayCancelHangupDuringLiveCheck
+=== CONT  TestKitRelayCancelRefusedRenewal
+=== CONT  TestKitRelayCancelSourceChange
+--- PASS: TestKitRelayCancelRefusedRenewal (0.08s)
+=== CONT  TestKitRelayCancelTransientRenewalFailure
+=== NAME  TestKitRelayCancelHangupDuringLiveCheck
+    kit_verify_relay_cancel_test.go:203: hangup during the liveness check: outcome="cancelled" err=exercise relay: cancelled declared operation create has no acknowledged completion; reconcile before retry child output: {"stderr":"","stdout":""}
+--- FAIL: TestKitRelayCancelHangupDuringLiveCheck (0.09s)
+=== NAME  TestKitRelayCancelHangupDuringCheckoutCheck
+    kit_verify_relay_cancel_test.go:153: hangup during the checkout check: outcome="cancelled" err=exercise relay: cancelled  child output: {"stderr":"","stdout":""}
+--- FAIL: TestKitRelayCancelHangupDuringCheckoutCheck (0.09s)
+--- PASS: TestKitRelayCancelSourceChange (0.09s)
+=== NAME  TestKitRelayCancelTransientRenewalFailure
+    kit_verify_relay_cancel_test.go:249: transient renewal failure: outcome="cancelled" err=exercise relay: cancelled declared operation create has no acknowledged completion; reconcile before retry child output: {"stderr":"","stdout":""}
+--- FAIL: TestKitRelayCancelTransientRenewalFailure (0.09s)
+=== RUN   TestKitRelayCancelHangupDuringCheckoutCheck
+=== PAUSE TestKitRelayCancelHangupDuringCheckoutCheck
+=== RUN   TestKitRelayCancelHangupDuringLiveCheck
+=== PAUSE TestKitRelayCancelHangupDuringLiveCheck
+=== RUN   TestKitRelayCancelTransientRenewalFailure
+=== PAUSE TestKitRelayCancelTransientRenewalFailure
+=== RUN   TestKitRelayCancelSourceChange
+=== PAUSE TestKitRelayCancelSourceChange
+=== RUN   TestKitRelayCancelRefusedRenewal
+=== PAUSE TestKitRelayCancelRefusedRenewal
+=== CONT  TestKitRelayCancelHangupDuringLiveCheck
+=== CONT  TestKitRelayCancelRefusedRenewal
+=== CONT  TestKitRelayCancelTransientRenewalFailure
+=== CONT  TestKitRelayCancelSourceChange
+--- PASS: TestKitRelayCancelRefusedRenewal (0.09s)
+=== CONT  TestKitRelayCancelHangupDuringCheckoutCheck
+=== NAME  TestKitRelayCancelHangupDuringLiveCheck
+    kit_verify_relay_cancel_test.go:203: hangup during the liveness check: outcome="cancelled" err=exercise relay: cancelled declared operation create has no acknowledged completion; reconcile before retry child output: {"stderr":"","stdout":""}
+--- FAIL: TestKitRelayCancelHangupDuringLiveCheck (0.09s)
+--- PASS: TestKitRelayCancelSourceChange (0.09s)
+=== NAME  TestKitRelayCancelTransientRenewalFailure
+    kit_verify_relay_cancel_test.go:249: transient renewal failure: outcome="cancelled" err=exercise relay: cancelled declared operation create has no acknowledged completion; reconcile before retry child output: {"stderr":"","stdout":""}
+--- FAIL: TestKitRelayCancelTransientRenewalFailure (0.10s)
+=== NAME  TestKitRelayCancelHangupDuringCheckoutCheck
+    kit_verify_relay_cancel_test.go:153: hangup during the checkout check: outcome="cancelled" err=exercise relay: cancelled  child output: {"stderr":"","stdout":""}
+--- FAIL: TestKitRelayCancelHangupDuringCheckoutCheck (0.07s)
+=== RUN   TestKitRelayCancelHangupDuringCheckoutCheck
+=== PAUSE TestKitRelayCancelHangupDuringCheckoutCheck
+=== RUN   TestKitRelayCancelHangupDuringLiveCheck
+=== PAUSE TestKitRelayCancelHangupDuringLiveCheck
+=== RUN   TestKitRelayCancelTransientRenewalFailure
+=== PAUSE TestKitRelayCancelTransientRenewalFailure
+=== RUN   TestKitRelayCancelSourceChange
+=== PAUSE TestKitRelayCancelSourceChange
+=== RUN   TestKitRelayCancelRefusedRenewal
+=== PAUSE TestKitRelayCancelRefusedRenewal
+=== CONT  TestKitRelayCancelHangupDuringLiveCheck
+=== CONT  TestKitRelayCancelTransientRenewalFailure
+=== CONT  TestKitRelayCancelSourceChange
+=== CONT  TestKitRelayCancelRefusedRenewal
+=== NAME  TestKitRelayCancelHangupDuringLiveCheck
+    kit_verify_relay_cancel_test.go:203: hangup during the liveness check: outcome="cancelled" err=exercise relay: cancelled declared operation create has no acknowledged completion; reconcile before retry child output: {"stderr":"","stdout":""}
+--- PASS: TestKitRelayCancelRefusedRenewal (0.09s)
+=== CONT  TestKitRelayCancelHangupDuringCheckoutCheck
+--- FAIL: TestKitRelayCancelHangupDuringLiveCheck (0.09s)
+--- PASS: TestKitRelayCancelSourceChange (0.09s)
+=== NAME  TestKitRelayCancelTransientRenewalFailure
+    kit_verify_relay_cancel_test.go:249: transient renewal failure: outcome="cancelled" err=exercise relay: cancelled declared operation create has no acknowledged completion; reconcile before retry child output: {"stderr":"","stdout":""}
+--- FAIL: TestKitRelayCancelTransientRenewalFailure (0.09s)
+=== NAME  TestKitRelayCancelHangupDuringCheckoutCheck
+    kit_verify_relay_cancel_test.go:153: hangup during the checkout check: outcome="cancelled" err=exercise relay: cancelled  child output: {"stderr":"","stdout":""}
+--- FAIL: TestKitRelayCancelHangupDuringCheckoutCheck (0.07s)
+=== RUN   TestKitRelayCancelHangupDuringCheckoutCheck
+=== PAUSE TestKitRelayCancelHangupDuringCheckoutCheck
+=== RUN   TestKitRelayCancelHangupDuringLiveCheck
+=== PAUSE TestKitRelayCancelHangupDuringLiveCheck
+=== RUN   TestKitRelayCancelTransientRenewalFailure
+=== PAUSE TestKitRelayCancelTransientRenewalFailure
+=== RUN   TestKitRelayCancelSourceChange
+=== PAUSE TestKitRelayCancelSourceChange
+=== RUN   TestKitRelayCancelRefusedRenewal
+=== PAUSE TestKitRelayCancelRefusedRenewal
+=== CONT  TestKitRelayCancelHangupDuringCheckoutCheck
+=== CONT  TestKitRelayCancelTransientRenewalFailure
+=== CONT  TestKitRelayCancelRefusedRenewal
+=== CONT  TestKitRelayCancelSourceChange
+=== NAME  TestKitRelayCancelHangupDuringCheckoutCheck
+    kit_verify_relay_cancel_test.go:153: hangup during the checkout check: outcome="cancelled" err=exercise relay: cancelled  child output: {"stderr":"","stdout":""}
+--- FAIL: TestKitRelayCancelHangupDuringCheckoutCheck (0.08s)
+=== CONT  TestKitRelayCancelHangupDuringLiveCheck
+--- PASS: TestKitRelayCancelRefusedRenewal (0.09s)
+--- PASS: TestKitRelayCancelSourceChange (0.09s)
+=== NAME  TestKitRelayCancelTransientRenewalFailure
+    kit_verify_relay_cancel_test.go:249: transient renewal failure: outcome="cancelled" err=exercise relay: cancelled declared operation create has no acknowledged completion; reconcile before retry child output: {"stderr":"","stdout":""}
+--- FAIL: TestKitRelayCancelTransientRenewalFailure (0.10s)
+=== NAME  TestKitRelayCancelHangupDuringLiveCheck
+    kit_verify_relay_cancel_test.go:203: hangup during the liveness check: outcome="cancelled" err=exercise relay: cancelled declared operation create has no acknowledged completion; reconcile before retry child output: {"stderr":"","stdout":""}
+--- FAIL: TestKitRelayCancelHangupDuringLiveCheck (0.08s)
+=== RUN   TestKitRelayCancelHangupDuringCheckoutCheck
+=== PAUSE TestKitRelayCancelHangupDuringCheckoutCheck
+=== RUN   TestKitRelayCancelHangupDuringLiveCheck
+=== PAUSE TestKitRelayCancelHangupDuringLiveCheck
+=== RUN   TestKitRelayCancelTransientRenewalFailure
+=== PAUSE TestKitRelayCancelTransientRenewalFailure
+=== RUN   TestKitRelayCancelSourceChange
+=== PAUSE TestKitRelayCancelSourceChange
+=== RUN   TestKitRelayCancelRefusedRenewal
+=== PAUSE TestKitRelayCancelRefusedRenewal
+=== CONT  TestKitRelayCancelHangupDuringCheckoutCheck
+=== CONT  TestKitRelayCancelSourceChange
+=== CONT  TestKitRelayCancelHangupDuringLiveCheck
+=== CONT  TestKitRelayCancelRefusedRenewal
+=== NAME  TestKitRelayCancelHangupDuringCheckoutCheck
+    kit_verify_relay_cancel_test.go:153: hangup during the checkout check: outcome="cancelled" err=exercise relay: cancelled  child output: {"stderr":"","stdout":""}
+--- FAIL: TestKitRelayCancelHangupDuringCheckoutCheck (0.08s)
+=== CONT  TestKitRelayCancelTransientRenewalFailure
+--- PASS: TestKitRelayCancelRefusedRenewal (0.08s)
+=== NAME  TestKitRelayCancelHangupDuringLiveCheck
+    kit_verify_relay_cancel_test.go:203: hangup during the liveness check: outcome="cancelled" err=exercise relay: cancelled declared operation create has no acknowledged completion; reconcile before retry child output: {"stderr":"","stdout":""}
+--- FAIL: TestKitRelayCancelHangupDuringLiveCheck (0.09s)
+--- PASS: TestKitRelayCancelSourceChange (0.09s)
+=== NAME  TestKitRelayCancelTransientRenewalFailure
+    kit_verify_relay_cancel_test.go:249: transient renewal failure: outcome="cancelled" err=exercise relay: cancelled declared operation create has no acknowledged completion; reconcile before retry child output: {"stderr":"","stdout":""}
+--- FAIL: TestKitRelayCancelTransientRenewalFailure (0.09s)
+=== RUN   TestKitRelayCancelHangupDuringCheckoutCheck
+=== PAUSE TestKitRelayCancelHangupDuringCheckoutCheck
+=== RUN   TestKitRelayCancelHangupDuringLiveCheck
+=== PAUSE TestKitRelayCancelHangupDuringLiveCheck
+=== RUN   TestKitRelayCancelTransientRenewalFailure
+=== PAUSE TestKitRelayCancelTransientRenewalFailure
+=== RUN   TestKitRelayCancelSourceChange
+=== PAUSE TestKitRelayCancelSourceChange
+=== RUN   TestKitRelayCancelRefusedRenewal
+=== PAUSE TestKitRelayCancelRefusedRenewal
+=== CONT  TestKitRelayCancelHangupDuringCheckoutCheck
+=== CONT  TestKitRelayCancelSourceChange
+=== CONT  TestKitRelayCancelTransientRenewalFailure
+=== CONT  TestKitRelayCancelRefusedRenewal
+=== NAME  TestKitRelayCancelHangupDuringCheckoutCheck
+    kit_verify_relay_cancel_test.go:153: hangup during the checkout check: outcome="cancelled" err=exercise relay: cancelled  child output: {"stderr":"","stdout":""}
+--- PASS: TestKitRelayCancelRefusedRenewal (0.08s)
+=== CONT  TestKitRelayCancelHangupDuringLiveCheck
+--- FAIL: TestKitRelayCancelHangupDuringCheckoutCheck (0.09s)
+--- PASS: TestKitRelayCancelSourceChange (0.09s)
+=== NAME  TestKitRelayCancelTransientRenewalFailure
+    kit_verify_relay_cancel_test.go:249: transient renewal failure: outcome="cancelled" err=exercise relay: cancelled declared operation create has no acknowledged completion; reconcile before retry child output: {"stderr":"","stdout":""}
+--- FAIL: TestKitRelayCancelTransientRenewalFailure (0.09s)
+=== NAME  TestKitRelayCancelHangupDuringLiveCheck
+    kit_verify_relay_cancel_test.go:203: hangup during the liveness check: outcome="cancelled" err=exercise relay: cancelled declared operation create has no acknowledged completion; reconcile before retry child output: {"stderr":"","stdout":""}
+--- FAIL: TestKitRelayCancelHangupDuringLiveCheck (0.08s)
+=== RUN   TestKitRelayCancelHangupDuringCheckoutCheck
+=== PAUSE TestKitRelayCancelHangupDuringCheckoutCheck
+=== RUN   TestKitRelayCancelHangupDuringLiveCheck
+=== PAUSE TestKitRelayCancelHangupDuringLiveCheck
+=== RUN   TestKitRelayCancelTransientRenewalFailure
+=== PAUSE TestKitRelayCancelTransientRenewalFailure
+=== RUN   TestKitRelayCancelSourceChange
+=== PAUSE TestKitRelayCancelSourceChange
+=== RUN   TestKitRelayCancelRefusedRenewal
+=== PAUSE TestKitRelayCancelRefusedRenewal
+=== CONT  TestKitRelayCancelHangupDuringLiveCheck
+=== CONT  TestKitRelayCancelTransientRenewalFailure
+=== CONT  TestKitRelayCancelRefusedRenewal
+=== CONT  TestKitRelayCancelSourceChange
+=== CONT  TestKitRelayCancelHangupDuringCheckoutCheck
+--- PASS: TestKitRelayCancelRefusedRenewal (0.08s)
+=== NAME  TestKitRelayCancelHangupDuringLiveCheck
+    kit_verify_relay_cancel_test.go:203: hangup during the liveness check: outcome="cancelled" err=exercise relay: cancelled declared operation create has no acknowledged completion; reconcile before retry child output: {"stderr":"","stdout":""}
+--- FAIL: TestKitRelayCancelHangupDuringLiveCheck (0.09s)
+--- PASS: TestKitRelayCancelSourceChange (0.10s)
+=== NAME  TestKitRelayCancelTransientRenewalFailure
+    kit_verify_relay_cancel_test.go:249: transient renewal failure: outcome="cancelled" err=exercise relay: cancelled declared operation create has no acknowledged completion; reconcile before retry child output: {"stderr":"","stdout":""}
+--- FAIL: TestKitRelayCancelTransientRenewalFailure (0.10s)
+=== NAME  TestKitRelayCancelHangupDuringCheckoutCheck
+    kit_verify_relay_cancel_test.go:153: hangup during the checkout check: outcome="cancelled" err=exercise relay: cancelled  child output: {"stderr":"","stdout":""}
+--- FAIL: TestKitRelayCancelHangupDuringCheckoutCheck (0.07s)
+=== RUN   TestKitRelayCancelHangupDuringCheckoutCheck
+=== PAUSE TestKitRelayCancelHangupDuringCheckoutCheck
+=== RUN   TestKitRelayCancelHangupDuringLiveCheck
+=== PAUSE TestKitRelayCancelHangupDuringLiveCheck
+=== RUN   TestKitRelayCancelTransientRenewalFailure
+=== PAUSE TestKitRelayCancelTransientRenewalFailure
+=== RUN   TestKitRelayCancelSourceChange
+=== PAUSE TestKitRelayCancelSourceChange
+=== RUN   TestKitRelayCancelRefusedRenewal
+=== PAUSE TestKitRelayCancelRefusedRenewal
+=== CONT  TestKitRelayCancelHangupDuringCheckoutCheck
+=== CONT  TestKitRelayCancelHangupDuringLiveCheck
+=== CONT  TestKitRelayCancelTransientRenewalFailure
+=== CONT  TestKitRelayCancelRefusedRenewal
+=== NAME  TestKitRelayCancelHangupDuringCheckoutCheck
+    kit_verify_relay_cancel_test.go:153: hangup during the checkout check: outcome="cancelled" err=exercise relay: cancelled  child output: {"stderr":"","stdout":""}
+--- FAIL: TestKitRelayCancelHangupDuringCheckoutCheck (0.07s)
+=== CONT  TestKitRelayCancelSourceChange
+=== NAME  TestKitRelayCancelHangupDuringLiveCheck
+    kit_verify_relay_cancel_test.go:203: hangup during the liveness check: outcome="cancelled" err=exercise relay: cancelled declared operation create has no acknowledged completion; reconcile before retry child output: {"stderr":"","stdout":""}
+--- FAIL: TestKitRelayCancelHangupDuringLiveCheck (0.08s)
+--- PASS: TestKitRelayCancelRefusedRenewal (0.09s)
+=== NAME  TestKitRelayCancelTransientRenewalFailure
+    kit_verify_relay_cancel_test.go:249: transient renewal failure: outcome="cancelled" err=exercise relay: cancelled declared operation create has no acknowledged completion; reconcile before retry child output: {"stderr":"","stdout":""}
+--- FAIL: TestKitRelayCancelTransientRenewalFailure (0.09s)
+--- PASS: TestKitRelayCancelSourceChange (0.08s)
+=== RUN   TestKitRelayCancelHangupDuringCheckoutCheck
+=== PAUSE TestKitRelayCancelHangupDuringCheckoutCheck
+=== RUN   TestKitRelayCancelHangupDuringLiveCheck
+=== PAUSE TestKitRelayCancelHangupDuringLiveCheck
+=== RUN   TestKitRelayCancelTransientRenewalFailure
+=== PAUSE TestKitRelayCancelTransientRenewalFailure
+=== RUN   TestKitRelayCancelSourceChange
+=== PAUSE TestKitRelayCancelSourceChange
+=== RUN   TestKitRelayCancelRefusedRenewal
+=== PAUSE TestKitRelayCancelRefusedRenewal
+=== CONT  TestKitRelayCancelHangupDuringLiveCheck
+=== CONT  TestKitRelayCancelSourceChange
+=== CONT  TestKitRelayCancelRefusedRenewal
+=== CONT  TestKitRelayCancelTransientRenewalFailure
+=== NAME  TestKitRelayCancelHangupDuringLiveCheck
+    kit_verify_relay_cancel_test.go:203: hangup during the liveness check: outcome="cancelled" err=exercise relay: cancelled declared operation create has no acknowledged completion; reconcile before retry child output: {"stderr":"","stdout":""}
+--- FAIL: TestKitRelayCancelHangupDuringLiveCheck (0.08s)
+=== CONT  TestKitRelayCancelHangupDuringCheckoutCheck
+--- PASS: TestKitRelayCancelRefusedRenewal (0.09s)
+--- PASS: TestKitRelayCancelSourceChange (0.09s)
+=== NAME  TestKitRelayCancelTransientRenewalFailure
+    kit_verify_relay_cancel_test.go:249: transient renewal failure: outcome="cancelled" err=exercise relay: cancelled declared operation create has no acknowledged completion; reconcile before retry child output: {"stderr":"","stdout":""}
+--- FAIL: TestKitRelayCancelTransientRenewalFailure (0.10s)
+=== NAME  TestKitRelayCancelHangupDuringCheckoutCheck
+    kit_verify_relay_cancel_test.go:153: hangup during the checkout check: outcome="cancelled" err=exercise relay: cancelled  child output: {"stderr":"","stdout":""}
+--- FAIL: TestKitRelayCancelHangupDuringCheckoutCheck (0.07s)
+=== RUN   TestKitRelayCancelHangupDuringCheckoutCheck
+=== PAUSE TestKitRelayCancelHangupDuringCheckoutCheck
+=== RUN   TestKitRelayCancelHangupDuringLiveCheck
+=== PAUSE TestKitRelayCancelHangupDuringLiveCheck
+=== RUN   TestKitRelayCancelTransientRenewalFailure
+=== PAUSE TestKitRelayCancelTransientRenewalFailure
+=== RUN   TestKitRelayCancelSourceChange
+=== PAUSE TestKitRelayCancelSourceChange
+=== RUN   TestKitRelayCancelRefusedRenewal
+=== PAUSE TestKitRelayCancelRefusedRenewal
+=== CONT  TestKitRelayCancelHangupDuringCheckoutCheck
+=== CONT  TestKitRelayCancelSourceChange
+=== CONT  TestKitRelayCancelRefusedRenewal
+=== CONT  TestKitRelayCancelTransientRenewalFailure
+=== NAME  TestKitRelayCancelHangupDuringCheckoutCheck
+    kit_verify_relay_cancel_test.go:153: hangup during the checkout check: outcome="cancelled" err=exercise relay: cancelled  child output: {"stderr":"","stdout":""}
+--- FAIL: TestKitRelayCancelHangupDuringCheckoutCheck (0.08s)
+=== CONT  TestKitRelayCancelHangupDuringLiveCheck
+--- PASS: TestKitRelayCancelRefusedRenewal (0.09s)
+=== NAME  TestKitRelayCancelTransientRenewalFailure
+    kit_verify_relay_cancel_test.go:249: transient renewal failure: outcome="cancelled" err=exercise relay: cancelled declared operation create has no acknowledged completion; reconcile before retry child output: {"stderr":"","stdout":""}
+--- FAIL: TestKitRelayCancelTransientRenewalFailure (0.09s)
+--- PASS: TestKitRelayCancelSourceChange (0.10s)
+=== NAME  TestKitRelayCancelHangupDuringLiveCheck
+    kit_verify_relay_cancel_test.go:203: hangup during the liveness check: outcome="cancelled" err=exercise relay: cancelled declared operation create has no acknowledged completion; reconcile before retry child output: {"stderr":"","stdout":""}
+--- FAIL: TestKitRelayCancelHangupDuringLiveCheck (0.08s)
+=== RUN   TestKitRelayCancelHangupDuringCheckoutCheck
+=== PAUSE TestKitRelayCancelHangupDuringCheckoutCheck
+=== RUN   TestKitRelayCancelHangupDuringLiveCheck
+=== PAUSE TestKitRelayCancelHangupDuringLiveCheck
+=== RUN   TestKitRelayCancelTransientRenewalFailure
+=== PAUSE TestKitRelayCancelTransientRenewalFailure
+=== RUN   TestKitRelayCancelSourceChange
+=== PAUSE TestKitRelayCancelSourceChange
+=== RUN   TestKitRelayCancelRefusedRenewal
+=== PAUSE TestKitRelayCancelRefusedRenewal
+=== CONT  TestKitRelayCancelHangupDuringCheckoutCheck
+=== CONT  TestKitRelayCancelTransientRenewalFailure
+=== CONT  TestKitRelayCancelSourceChange
+=== CONT  TestKitRelayCancelRefusedRenewal
+=== NAME  TestKitRelayCancelHangupDuringCheckoutCheck
+    kit_verify_relay_cancel_test.go:153: hangup during the checkout check: outcome="cancelled" err=exercise relay: cancelled  child output: {"stderr":"","stdout":""}
+--- FAIL: TestKitRelayCancelHangupDuringCheckoutCheck (0.08s)
+=== CONT  TestKitRelayCancelHangupDuringLiveCheck
+--- PASS: TestKitRelayCancelRefusedRenewal (0.08s)
+--- PASS: TestKitRelayCancelSourceChange (0.09s)
+=== NAME  TestKitRelayCancelTransientRenewalFailure
+    kit_verify_relay_cancel_test.go:249: transient renewal failure: outcome="cancelled" err=exercise relay: cancelled declared operation create has no acknowledged completion; reconcile before retry child output: {"stderr":"","stdout":""}
+--- FAIL: TestKitRelayCancelTransientRenewalFailure (0.09s)
+=== NAME  TestKitRelayCancelHangupDuringLiveCheck
+    kit_verify_relay_cancel_test.go:203: hangup during the liveness check: outcome="cancelled" err=exercise relay: cancelled declared operation create has no acknowledged completion; reconcile before retry child output: {"stderr":"","stdout":""}
+--- FAIL: TestKitRelayCancelHangupDuringLiveCheck (0.08s)
+=== RUN   TestKitRelayCancelHangupDuringCheckoutCheck
+=== PAUSE TestKitRelayCancelHangupDuringCheckoutCheck
+=== RUN   TestKitRelayCancelHangupDuringLiveCheck
+=== PAUSE TestKitRelayCancelHangupDuringLiveCheck
+=== RUN   TestKitRelayCancelTransientRenewalFailure
+=== PAUSE TestKitRelayCancelTransientRenewalFailure
+=== RUN   TestKitRelayCancelSourceChange
+=== PAUSE TestKitRelayCancelSourceChange
+=== RUN   TestKitRelayCancelRefusedRenewal
+=== PAUSE TestKitRelayCancelRefusedRenewal
+=== CONT  TestKitRelayCancelHangupDuringCheckoutCheck
+=== CONT  TestKitRelayCancelSourceChange
+=== CONT  TestKitRelayCancelRefusedRenewal
+=== CONT  TestKitRelayCancelTransientRenewalFailure
+=== NAME  TestKitRelayCancelHangupDuringCheckoutCheck
+    kit_verify_relay_cancel_test.go:153: hangup during the checkout check: outcome="cancelled" err=exercise relay: cancelled  child output: {"stderr":"","stdout":""}
+--- FAIL: TestKitRelayCancelHangupDuringCheckoutCheck (0.08s)
+=== CONT  TestKitRelayCancelHangupDuringLiveCheck
+--- PASS: TestKitRelayCancelRefusedRenewal (0.09s)
+--- PASS: TestKitRelayCancelSourceChange (0.10s)
+=== NAME  TestKitRelayCancelTransientRenewalFailure
+    kit_verify_relay_cancel_test.go:249: transient renewal failure: outcome="cancelled" err=exercise relay: cancelled declared operation create has no acknowledged completion; reconcile before retry child output: {"stderr":"","stdout":""}
+--- FAIL: TestKitRelayCancelTransientRenewalFailure (0.10s)
+=== NAME  TestKitRelayCancelHangupDuringLiveCheck
+    kit_verify_relay_cancel_test.go:203: hangup during the liveness check: outcome="cancelled" err=exercise relay: cancelled declared operation create has no acknowledged completion; reconcile before retry child output: {"stderr":"","stdout":""}
+--- FAIL: TestKitRelayCancelHangupDuringLiveCheck (0.08s)
+=== RUN   TestKitRelayCancelHangupDuringCheckoutCheck
+=== PAUSE TestKitRelayCancelHangupDuringCheckoutCheck
+=== RUN   TestKitRelayCancelHangupDuringLiveCheck
+=== PAUSE TestKitRelayCancelHangupDuringLiveCheck
+=== RUN   TestKitRelayCancelTransientRenewalFailure
+=== PAUSE TestKitRelayCancelTransientRenewalFailure
+=== RUN   TestKitRelayCancelSourceChange
+=== PAUSE TestKitRelayCancelSourceChange
+=== RUN   TestKitRelayCancelRefusedRenewal
+=== PAUSE TestKitRelayCancelRefusedRenewal
+=== CONT  TestKitRelayCancelHangupDuringLiveCheck
+=== CONT  TestKitRelayCancelTransientRenewalFailure
+=== CONT  TestKitRelayCancelSourceChange
+=== CONT  TestKitRelayCancelRefusedRenewal
+=== NAME  TestKitRelayCancelHangupDuringLiveCheck
+    kit_verify_relay_cancel_test.go:203: hangup during the liveness check: outcome="cancelled" err=exercise relay: cancelled declared operation create has no acknowledged completion; reconcile before retry child output: {"stderr":"","stdout":""}
+--- PASS: TestKitRelayCancelRefusedRenewal (0.09s)
+=== CONT  TestKitRelayCancelHangupDuringCheckoutCheck
+--- FAIL: TestKitRelayCancelHangupDuringLiveCheck (0.09s)
+--- PASS: TestKitRelayCancelSourceChange (0.09s)
+=== NAME  TestKitRelayCancelTransientRenewalFailure
+    kit_verify_relay_cancel_test.go:249: transient renewal failure: outcome="cancelled" err=exercise relay: cancelled declared operation create has no acknowledged completion; reconcile before retry child output: {"stderr":"","stdout":""}
+--- FAIL: TestKitRelayCancelTransientRenewalFailure (0.10s)
+=== NAME  TestKitRelayCancelHangupDuringCheckoutCheck
+    kit_verify_relay_cancel_test.go:153: hangup during the checkout check: outcome="cancelled" err=exercise relay: cancelled  child output: {"stderr":"","stdout":""}
+--- FAIL: TestKitRelayCancelHangupDuringCheckoutCheck (0.07s)
+=== RUN   TestKitRelayCancelHangupDuringCheckoutCheck
+=== PAUSE TestKitRelayCancelHangupDuringCheckoutCheck
+=== RUN   TestKitRelayCancelHangupDuringLiveCheck
+=== PAUSE TestKitRelayCancelHangupDuringLiveCheck
+=== RUN   TestKitRelayCancelTransientRenewalFailure
+=== PAUSE TestKitRelayCancelTransientRenewalFailure
+=== RUN   TestKitRelayCancelSourceChange
+=== PAUSE TestKitRelayCancelSourceChange
+=== RUN   TestKitRelayCancelRefusedRenewal
+=== PAUSE TestKitRelayCancelRefusedRenewal
+=== CONT  TestKitRelayCancelRefusedRenewal
+=== CONT  TestKitRelayCancelTransientRenewalFailure
+=== CONT  TestKitRelayCancelSourceChange
+=== CONT  TestKitRelayCancelHangupDuringLiveCheck
+--- PASS: TestKitRelayCancelRefusedRenewal (0.09s)
+=== CONT  TestKitRelayCancelHangupDuringCheckoutCheck
+=== NAME  TestKitRelayCancelHangupDuringLiveCheck
+    kit_verify_relay_cancel_test.go:203: hangup during the liveness check: outcome="cancelled" err=exercise relay: cancelled declared operation create has no acknowledged completion; reconcile before retry child output: {"stderr":"","stdout":""}
+--- PASS: TestKitRelayCancelSourceChange (0.09s)
+--- FAIL: TestKitRelayCancelHangupDuringLiveCheck (0.09s)
+=== NAME  TestKitRelayCancelTransientRenewalFailure
+    kit_verify_relay_cancel_test.go:249: transient renewal failure: outcome="cancelled" err=exercise relay: cancelled declared operation create has no acknowledged completion; reconcile before retry child output: {"stderr":"","stdout":""}
+--- FAIL: TestKitRelayCancelTransientRenewalFailure (0.09s)
+=== NAME  TestKitRelayCancelHangupDuringCheckoutCheck
+    kit_verify_relay_cancel_test.go:153: hangup during the checkout check: outcome="cancelled" err=exercise relay: cancelled  child output: {"stderr":"","stdout":""}
+--- FAIL: TestKitRelayCancelHangupDuringCheckoutCheck (0.07s)
+=== RUN   TestKitRelayCancelHangupDuringCheckoutCheck
+=== PAUSE TestKitRelayCancelHangupDuringCheckoutCheck
+=== RUN   TestKitRelayCancelHangupDuringLiveCheck
+=== PAUSE TestKitRelayCancelHangupDuringLiveCheck
+=== RUN   TestKitRelayCancelTransientRenewalFailure
+=== PAUSE TestKitRelayCancelTransientRenewalFailure
+=== RUN   TestKitRelayCancelSourceChange
+=== PAUSE TestKitRelayCancelSourceChange
+=== RUN   TestKitRelayCancelRefusedRenewal
+=== PAUSE TestKitRelayCancelRefusedRenewal
+=== CONT  TestKitRelayCancelHangupDuringCheckoutCheck
+=== CONT  TestKitRelayCancelRefusedRenewal
+=== CONT  TestKitRelayCancelTransientRenewalFailure
+=== CONT  TestKitRelayCancelSourceChange
+=== NAME  TestKitRelayCancelHangupDuringCheckoutCheck
+    kit_verify_relay_cancel_test.go:153: hangup during the checkout check: outcome="cancelled" err=exercise relay: cancelled  child output: {"stderr":"","stdout":""}
+--- FAIL: TestKitRelayCancelHangupDuringCheckoutCheck (0.08s)
+=== CONT  TestKitRelayCancelHangupDuringLiveCheck
+--- PASS: TestKitRelayCancelRefusedRenewal (0.09s)
+--- PASS: TestKitRelayCancelSourceChange (0.09s)
+=== NAME  TestKitRelayCancelTransientRenewalFailure
+    kit_verify_relay_cancel_test.go:249: transient renewal failure: outcome="cancelled" err=exercise relay: cancelled declared operation create has no acknowledged completion; reconcile before retry child output: {"stderr":"","stdout":""}
+--- FAIL: TestKitRelayCancelTransientRenewalFailure (0.10s)
+=== NAME  TestKitRelayCancelHangupDuringLiveCheck
+    kit_verify_relay_cancel_test.go:203: hangup during the liveness check: outcome="cancelled" err=exercise relay: cancelled declared operation create has no acknowledged completion; reconcile before retry child output: {"stderr":"","stdout":""}
+--- FAIL: TestKitRelayCancelHangupDuringLiveCheck (0.08s)
+=== RUN   TestKitRelayCancelHangupDuringCheckoutCheck
+=== PAUSE TestKitRelayCancelHangupDuringCheckoutCheck
+=== RUN   TestKitRelayCancelHangupDuringLiveCheck
+=== PAUSE TestKitRelayCancelHangupDuringLiveCheck
+=== RUN   TestKitRelayCancelTransientRenewalFailure
+=== PAUSE TestKitRelayCancelTransientRenewalFailure
+=== RUN   TestKitRelayCancelSourceChange
+=== PAUSE TestKitRelayCancelSourceChange
+=== RUN   TestKitRelayCancelRefusedRenewal
+=== PAUSE TestKitRelayCancelRefusedRenewal
+=== CONT  TestKitRelayCancelTransientRenewalFailure
+=== CONT  TestKitRelayCancelRefusedRenewal
+=== CONT  TestKitRelayCancelHangupDuringLiveCheck
+=== CONT  TestKitRelayCancelHangupDuringCheckoutCheck
+    kit_verify_relay_cancel_test.go:153: hangup during the checkout check: outcome="cancelled" err=exercise relay: cancelled  child output: {"stderr":"","stdout":""}
+--- FAIL: TestKitRelayCancelHangupDuringCheckoutCheck (0.08s)
+=== CONT  TestKitRelayCancelSourceChange
+=== NAME  TestKitRelayCancelHangupDuringLiveCheck
+    kit_verify_relay_cancel_test.go:203: hangup during the liveness check: outcome="cancelled" err=exercise relay: cancelled declared operation create has no acknowledged completion; reconcile before retry child output: {"stderr":"","stdout":""}
+--- PASS: TestKitRelayCancelRefusedRenewal (0.09s)
+--- FAIL: TestKitRelayCancelHangupDuringLiveCheck (0.09s)
+=== NAME  TestKitRelayCancelTransientRenewalFailure
+    kit_verify_relay_cancel_test.go:249: transient renewal failure: outcome="cancelled" err=exercise relay: cancelled declared operation create has no acknowledged completion; reconcile before retry child output: {"stderr":"","stdout":""}
+--- FAIL: TestKitRelayCancelTransientRenewalFailure (0.10s)
+--- PASS: TestKitRelayCancelSourceChange (0.09s)
+=== RUN   TestKitRelayCancelHangupDuringCheckoutCheck
+=== PAUSE TestKitRelayCancelHangupDuringCheckoutCheck
+=== RUN   TestKitRelayCancelHangupDuringLiveCheck
+=== PAUSE TestKitRelayCancelHangupDuringLiveCheck
+=== RUN   TestKitRelayCancelTransientRenewalFailure
+=== PAUSE TestKitRelayCancelTransientRenewalFailure
+=== RUN   TestKitRelayCancelSourceChange
+=== PAUSE TestKitRelayCancelSourceChange
+=== RUN   TestKitRelayCancelRefusedRenewal
+=== PAUSE TestKitRelayCancelRefusedRenewal
+=== CONT  TestKitRelayCancelHangupDuringCheckoutCheck
+=== CONT  TestKitRelayCancelSourceChange
+=== CONT  TestKitRelayCancelRefusedRenewal
+=== CONT  TestKitRelayCancelTransientRenewalFailure
+=== NAME  TestKitRelayCancelHangupDuringCheckoutCheck
+    kit_verify_relay_cancel_test.go:153: hangup during the checkout check: outcome="cancelled" err=exercise relay: cancelled  child output: {"stderr":"","stdout":""}
+--- FAIL: TestKitRelayCancelHangupDuringCheckoutCheck (0.08s)
+=== CONT  TestKitRelayCancelHangupDuringLiveCheck
+--- PASS: TestKitRelayCancelRefusedRenewal (0.09s)
+=== NAME  TestKitRelayCancelTransientRenewalFailure
+    kit_verify_relay_cancel_test.go:249: transient renewal failure: outcome="cancelled" err=exercise relay: cancelled declared operation create has no acknowledged completion; reconcile before retry child output: {"stderr":"","stdout":""}
+--- PASS: TestKitRelayCancelSourceChange (0.10s)
+--- FAIL: TestKitRelayCancelTransientRenewalFailure (0.10s)
+=== NAME  TestKitRelayCancelHangupDuringLiveCheck
+    kit_verify_relay_cancel_test.go:203: hangup during the liveness check: outcome="cancelled" err=exercise relay: cancelled declared operation create has no acknowledged completion; reconcile before retry child output: {"stderr":"","stdout":""}
+--- FAIL: TestKitRelayCancelHangupDuringLiveCheck (0.08s)
+=== RUN   TestKitRelayCancelHangupDuringCheckoutCheck
+=== PAUSE TestKitRelayCancelHangupDuringCheckoutCheck
+=== RUN   TestKitRelayCancelHangupDuringLiveCheck
+=== PAUSE TestKitRelayCancelHangupDuringLiveCheck
+=== RUN   TestKitRelayCancelTransientRenewalFailure
+=== PAUSE TestKitRelayCancelTransientRenewalFailure
+=== RUN   TestKitRelayCancelSourceChange
+=== PAUSE TestKitRelayCancelSourceChange
+=== RUN   TestKitRelayCancelRefusedRenewal
+=== PAUSE TestKitRelayCancelRefusedRenewal
+=== CONT  TestKitRelayCancelRefusedRenewal
+=== CONT  TestKitRelayCancelHangupDuringLiveCheck
+=== CONT  TestKitRelayCancelTransientRenewalFailure
+=== CONT  TestKitRelayCancelSourceChange
+--- PASS: TestKitRelayCancelRefusedRenewal (0.10s)
+=== CONT  TestKitRelayCancelHangupDuringCheckoutCheck
+--- PASS: TestKitRelayCancelSourceChange (0.10s)
+=== NAME  TestKitRelayCancelHangupDuringLiveCheck
+    kit_verify_relay_cancel_test.go:203: hangup during the liveness check: outcome="cancelled" err=exercise relay: cancelled declared operation create has no acknowledged completion; reconcile before retry child output: {"stderr":"","stdout":""}
+--- FAIL: TestKitRelayCancelHangupDuringLiveCheck (0.10s)
+=== NAME  TestKitRelayCancelTransientRenewalFailure
+    kit_verify_relay_cancel_test.go:249: transient renewal failure: outcome="cancelled" err=exercise relay: cancelled declared operation create has no acknowledged completion; reconcile before retry child output: {"stderr":"","stdout":""}
+--- FAIL: TestKitRelayCancelTransientRenewalFailure (0.10s)
+=== NAME  TestKitRelayCancelHangupDuringCheckoutCheck
+    kit_verify_relay_cancel_test.go:153: hangup during the checkout check: outcome="cancelled" err=exercise relay: cancelled  child output: {"stderr":"","stdout":""}
+--- FAIL: TestKitRelayCancelHangupDuringCheckoutCheck (0.07s)
+=== RUN   TestKitRelayCancelHangupDuringCheckoutCheck
+=== PAUSE TestKitRelayCancelHangupDuringCheckoutCheck
+=== RUN   TestKitRelayCancelHangupDuringLiveCheck
+=== PAUSE TestKitRelayCancelHangupDuringLiveCheck
+=== RUN   TestKitRelayCancelTransientRenewalFailure
+=== PAUSE TestKitRelayCancelTransientRenewalFailure
+=== RUN   TestKitRelayCancelSourceChange
+=== PAUSE TestKitRelayCancelSourceChange
+=== RUN   TestKitRelayCancelRefusedRenewal
+=== PAUSE TestKitRelayCancelRefusedRenewal
+=== CONT  TestKitRelayCancelHangupDuringLiveCheck
+=== CONT  TestKitRelayCancelSourceChange
+=== CONT  TestKitRelayCancelRefusedRenewal
+=== CONT  TestKitRelayCancelTransientRenewalFailure
+--- PASS: TestKitRelayCancelRefusedRenewal (0.09s)
+=== CONT  TestKitRelayCancelHangupDuringCheckoutCheck
+=== NAME  TestKitRelayCancelHangupDuringLiveCheck
+    kit_verify_relay_cancel_test.go:203: hangup during the liveness check: outcome="cancelled" err=exercise relay: cancelled declared operation create has no acknowledged completion; reconcile before retry child output: {"stderr":"","stdout":""}
+--- FAIL: TestKitRelayCancelHangupDuringLiveCheck (0.09s)
+--- PASS: TestKitRelayCancelSourceChange (0.09s)
+=== NAME  TestKitRelayCancelTransientRenewalFailure
+    kit_verify_relay_cancel_test.go:249: transient renewal failure: outcome="cancelled" err=exercise relay: cancelled declared operation create has no acknowledged completion; reconcile before retry child output: {"stderr":"","stdout":""}
+--- FAIL: TestKitRelayCancelTransientRenewalFailure (0.10s)
+=== NAME  TestKitRelayCancelHangupDuringCheckoutCheck
+    kit_verify_relay_cancel_test.go:153: hangup during the checkout check: outcome="cancelled" err=exercise relay: cancelled  child output: {"stderr":"","stdout":""}
+--- FAIL: TestKitRelayCancelHangupDuringCheckoutCheck (0.08s)
+=== RUN   TestKitRelayCancelHangupDuringCheckoutCheck
+=== PAUSE TestKitRelayCancelHangupDuringCheckoutCheck
+=== RUN   TestKitRelayCancelHangupDuringLiveCheck
+=== PAUSE TestKitRelayCancelHangupDuringLiveCheck
+=== RUN   TestKitRelayCancelTransientRenewalFailure
+=== PAUSE TestKitRelayCancelTransientRenewalFailure
+=== RUN   TestKitRelayCancelSourceChange
+=== PAUSE TestKitRelayCancelSourceChange
+=== RUN   TestKitRelayCancelRefusedRenewal
+=== PAUSE TestKitRelayCancelRefusedRenewal
+=== CONT  TestKitRelayCancelHangupDuringLiveCheck
+=== CONT  TestKitRelayCancelSourceChange
+=== CONT  TestKitRelayCancelRefusedRenewal
+=== CONT  TestKitRelayCancelHangupDuringCheckoutCheck
+    kit_verify_relay_cancel_test.go:153: hangup during the checkout check: outcome="cancelled" err=exercise relay: cancelled  child output: {"stderr":"","stdout":""}
+=== CONT  TestKitRelayCancelTransientRenewalFailure
+--- FAIL: TestKitRelayCancelHangupDuringCheckoutCheck (0.08s)
+=== NAME  TestKitRelayCancelHangupDuringLiveCheck
+    kit_verify_relay_cancel_test.go:203: hangup during the liveness check: outcome="cancelled" err=exercise relay: cancelled declared operation create has no acknowledged completion; reconcile before retry child output: {"stderr":"","stdout":""}
+--- FAIL: TestKitRelayCancelHangupDuringLiveCheck (0.08s)
+--- PASS: TestKitRelayCancelSourceChange (0.08s)
+--- PASS: TestKitRelayCancelRefusedRenewal (0.09s)
+=== NAME  TestKitRelayCancelTransientRenewalFailure
+    kit_verify_relay_cancel_test.go:249: transient renewal failure: outcome="cancelled" err=exercise relay: cancelled declared operation create has no acknowledged completion; reconcile before retry child output: {"stderr":"","stdout":""}
+--- FAIL: TestKitRelayCancelTransientRenewalFailure (0.09s)
+=== RUN   TestKitRelayCancelHangupDuringCheckoutCheck
+=== PAUSE TestKitRelayCancelHangupDuringCheckoutCheck
+=== RUN   TestKitRelayCancelHangupDuringLiveCheck
+=== PAUSE TestKitRelayCancelHangupDuringLiveCheck
+=== RUN   TestKitRelayCancelTransientRenewalFailure
+=== PAUSE TestKitRelayCancelTransientRenewalFailure
+=== RUN   TestKitRelayCancelSourceChange
+=== PAUSE TestKitRelayCancelSourceChange
+=== RUN   TestKitRelayCancelRefusedRenewal
+=== PAUSE TestKitRelayCancelRefusedRenewal
+=== CONT  TestKitRelayCancelSourceChange
+=== CONT  TestKitRelayCancelHangupDuringLiveCheck
+=== CONT  TestKitRelayCancelTransientRenewalFailure
+=== CONT  TestKitRelayCancelRefusedRenewal
+=== NAME  TestKitRelayCancelHangupDuringLiveCheck
+    kit_verify_relay_cancel_test.go:203: hangup during the liveness check: outcome="cancelled" err=exercise relay: cancelled declared operation create has no acknowledged completion; reconcile before retry child output: {"stderr":"","stdout":""}
+--- FAIL: TestKitRelayCancelHangupDuringLiveCheck (0.08s)
+=== CONT  TestKitRelayCancelHangupDuringCheckoutCheck
+--- PASS: TestKitRelayCancelRefusedRenewal (0.09s)
+--- PASS: TestKitRelayCancelSourceChange (0.09s)
+=== NAME  TestKitRelayCancelTransientRenewalFailure
+    kit_verify_relay_cancel_test.go:249: transient renewal failure: outcome="cancelled" err=exercise relay: cancelled declared operation create has no acknowledged completion; reconcile before retry child output: {"stderr":"","stdout":""}
+--- FAIL: TestKitRelayCancelTransientRenewalFailure (0.10s)
+=== NAME  TestKitRelayCancelHangupDuringCheckoutCheck
+    kit_verify_relay_cancel_test.go:153: hangup during the checkout check: outcome="cancelled" err=exercise relay: cancelled  child output: {"stderr":"","stdout":""}
+--- FAIL: TestKitRelayCancelHangupDuringCheckoutCheck (0.08s)
+=== RUN   TestKitRelayCancelHangupDuringCheckoutCheck
+=== PAUSE TestKitRelayCancelHangupDuringCheckoutCheck
+=== RUN   TestKitRelayCancelHangupDuringLiveCheck
+=== PAUSE TestKitRelayCancelHangupDuringLiveCheck
+=== RUN   TestKitRelayCancelTransientRenewalFailure
+=== PAUSE TestKitRelayCancelTransientRenewalFailure
+=== RUN   TestKitRelayCancelSourceChange
+=== PAUSE TestKitRelayCancelSourceChange
+=== RUN   TestKitRelayCancelRefusedRenewal
+=== PAUSE TestKitRelayCancelRefusedRenewal
+=== CONT  TestKitRelayCancelSourceChange
+=== CONT  TestKitRelayCancelHangupDuringLiveCheck
+=== CONT  TestKitRelayCancelRefusedRenewal
+=== CONT  TestKitRelayCancelTransientRenewalFailure
+--- PASS: TestKitRelayCancelRefusedRenewal (0.09s)
+=== CONT  TestKitRelayCancelHangupDuringCheckoutCheck
+=== NAME  TestKitRelayCancelHangupDuringLiveCheck
+    kit_verify_relay_cancel_test.go:203: hangup during the liveness check: outcome="cancelled" err=exercise relay: cancelled declared operation create has no acknowledged completion; reconcile before retry child output: {"stderr":"","stdout":""}
+--- FAIL: TestKitRelayCancelHangupDuringLiveCheck (0.09s)
+--- PASS: TestKitRelayCancelSourceChange (0.09s)
+=== NAME  TestKitRelayCancelTransientRenewalFailure
+    kit_verify_relay_cancel_test.go:249: transient renewal failure: outcome="cancelled" err=exercise relay: cancelled declared operation create has no acknowledged completion; reconcile before retry child output: {"stderr":"","stdout":""}
+--- FAIL: TestKitRelayCancelTransientRenewalFailure (0.10s)
+=== NAME  TestKitRelayCancelHangupDuringCheckoutCheck
+    kit_verify_relay_cancel_test.go:153: hangup during the checkout check: outcome="cancelled" err=exercise relay: cancelled  child output: {"stderr":"","stdout":""}
+--- FAIL: TestKitRelayCancelHangupDuringCheckoutCheck (0.07s)
+=== RUN   TestKitRelayCancelHangupDuringCheckoutCheck
+=== PAUSE TestKitRelayCancelHangupDuringCheckoutCheck
+=== RUN   TestKitRelayCancelHangupDuringLiveCheck
+=== PAUSE TestKitRelayCancelHangupDuringLiveCheck
+=== RUN   TestKitRelayCancelTransientRenewalFailure
+=== PAUSE TestKitRelayCancelTransientRenewalFailure
+=== RUN   TestKitRelayCancelSourceChange
+=== PAUSE TestKitRelayCancelSourceChange
+=== RUN   TestKitRelayCancelRefusedRenewal
+=== PAUSE TestKitRelayCancelRefusedRenewal
+=== CONT  TestKitRelayCancelHangupDuringCheckoutCheck
+=== CONT  TestKitRelayCancelSourceChange
+=== CONT  TestKitRelayCancelTransientRenewalFailure
+=== CONT  TestKitRelayCancelHangupDuringLiveCheck
+=== NAME  TestKitRelayCancelHangupDuringCheckoutCheck
+    kit_verify_relay_cancel_test.go:153: hangup during the checkout check: outcome="cancelled" err=exercise relay: cancelled  child output: {"stderr":"","stdout":""}
+--- FAIL: TestKitRelayCancelHangupDuringCheckoutCheck (0.08s)
+=== CONT  TestKitRelayCancelRefusedRenewal
+=== NAME  TestKitRelayCancelHangupDuringLiveCheck
+    kit_verify_relay_cancel_test.go:203: hangup during the liveness check: outcome="cancelled" err=exercise relay: cancelled declared operation create has no acknowledged completion; reconcile before retry child output: {"stderr":"","stdout":""}
+--- FAIL: TestKitRelayCancelHangupDuringLiveCheck (0.08s)
+--- PASS: TestKitRelayCancelSourceChange (0.09s)
+=== NAME  TestKitRelayCancelTransientRenewalFailure
+    kit_verify_relay_cancel_test.go:249: transient renewal failure: outcome="cancelled" err=exercise relay: cancelled declared operation create has no acknowledged completion; reconcile before retry child output: {"stderr":"","stdout":""}
+--- FAIL: TestKitRelayCancelTransientRenewalFailure (0.10s)
+--- PASS: TestKitRelayCancelRefusedRenewal (0.08s)
+=== RUN   TestKitRelayCancelHangupDuringCheckoutCheck
+=== PAUSE TestKitRelayCancelHangupDuringCheckoutCheck
+=== RUN   TestKitRelayCancelHangupDuringLiveCheck
+=== PAUSE TestKitRelayCancelHangupDuringLiveCheck
+=== RUN   TestKitRelayCancelTransientRenewalFailure
+=== PAUSE TestKitRelayCancelTransientRenewalFailure
+=== RUN   TestKitRelayCancelSourceChange
+=== PAUSE TestKitRelayCancelSourceChange
+=== RUN   TestKitRelayCancelRefusedRenewal
+=== PAUSE TestKitRelayCancelRefusedRenewal
+=== CONT  TestKitRelayCancelHangupDuringLiveCheck
+=== CONT  TestKitRelayCancelTransientRenewalFailure
+=== CONT  TestKitRelayCancelRefusedRenewal
+=== CONT  TestKitRelayCancelSourceChange
+=== NAME  TestKitRelayCancelHangupDuringLiveCheck
+    kit_verify_relay_cancel_test.go:203: hangup during the liveness check: outcome="cancelled" err=exercise relay: cancelled declared operation create has no acknowledged completion; reconcile before retry child output: {"stderr":"","stdout":""}
+--- FAIL: TestKitRelayCancelHangupDuringLiveCheck (0.09s)
+=== CONT  TestKitRelayCancelHangupDuringCheckoutCheck
+--- PASS: TestKitRelayCancelSourceChange (0.09s)
+--- PASS: TestKitRelayCancelRefusedRenewal (0.09s)
+=== NAME  TestKitRelayCancelTransientRenewalFailure
+    kit_verify_relay_cancel_test.go:249: transient renewal failure: outcome="cancelled" err=exercise relay: cancelled declared operation create has no acknowledged completion; reconcile before retry child output: {"stderr":"","stdout":""}
+--- FAIL: TestKitRelayCancelTransientRenewalFailure (0.09s)
+=== NAME  TestKitRelayCancelHangupDuringCheckoutCheck
+    kit_verify_relay_cancel_test.go:153: hangup during the checkout check: outcome="cancelled" err=exercise relay: cancelled  child output: {"stderr":"","stdout":""}
+--- FAIL: TestKitRelayCancelHangupDuringCheckoutCheck (0.07s)
+=== RUN   TestKitRelayCancelHangupDuringCheckoutCheck
+=== PAUSE TestKitRelayCancelHangupDuringCheckoutCheck
+=== RUN   TestKitRelayCancelHangupDuringLiveCheck
+=== PAUSE TestKitRelayCancelHangupDuringLiveCheck
+=== RUN   TestKitRelayCancelTransientRenewalFailure
+=== PAUSE TestKitRelayCancelTransientRenewalFailure
+=== RUN   TestKitRelayCancelSourceChange
+=== PAUSE TestKitRelayCancelSourceChange
+=== RUN   TestKitRelayCancelRefusedRenewal
+=== PAUSE TestKitRelayCancelRefusedRenewal
+=== CONT  TestKitRelayCancelSourceChange
+=== CONT  TestKitRelayCancelRefusedRenewal
+=== CONT  TestKitRelayCancelTransientRenewalFailure
+=== CONT  TestKitRelayCancelHangupDuringLiveCheck
+--- PASS: TestKitRelayCancelSourceChange (0.08s)
+=== CONT  TestKitRelayCancelHangupDuringCheckoutCheck
+=== NAME  TestKitRelayCancelHangupDuringLiveCheck
+    kit_verify_relay_cancel_test.go:203: hangup during the liveness check: outcome="cancelled" err=exercise relay: cancelled declared operation create has no acknowledged completion; reconcile before retry child output: {"stderr":"","stdout":""}
+--- FAIL: TestKitRelayCancelHangupDuringLiveCheck (0.09s)
+--- PASS: TestKitRelayCancelRefusedRenewal (0.09s)
+=== NAME  TestKitRelayCancelTransientRenewalFailure
+    kit_verify_relay_cancel_test.go:249: transient renewal failure: outcome="cancelled" err=exercise relay: cancelled declared operation create has no acknowledged completion; reconcile before retry child output: {"stderr":"","stdout":""}
+--- FAIL: TestKitRelayCancelTransientRenewalFailure (0.10s)
+=== NAME  TestKitRelayCancelHangupDuringCheckoutCheck
+    kit_verify_relay_cancel_test.go:153: hangup during the checkout check: outcome="cancelled" err=exercise relay: cancelled  child output: {"stderr":"","stdout":""}
+--- FAIL: TestKitRelayCancelHangupDuringCheckoutCheck (0.08s)
+=== RUN   TestKitRelayCancelHangupDuringCheckoutCheck
+=== PAUSE TestKitRelayCancelHangupDuringCheckoutCheck
+=== RUN   TestKitRelayCancelHangupDuringLiveCheck
+=== PAUSE TestKitRelayCancelHangupDuringLiveCheck
+=== RUN   TestKitRelayCancelTransientRenewalFailure
+=== PAUSE TestKitRelayCancelTransientRenewalFailure
+=== RUN   TestKitRelayCancelSourceChange
+=== PAUSE TestKitRelayCancelSourceChange
+=== RUN   TestKitRelayCancelRefusedRenewal
+=== PAUSE TestKitRelayCancelRefusedRenewal
+=== CONT  TestKitRelayCancelHangupDuringLiveCheck
+=== CONT  TestKitRelayCancelTransientRenewalFailure
+=== CONT  TestKitRelayCancelRefusedRenewal
+=== CONT  TestKitRelayCancelSourceChange
+=== NAME  TestKitRelayCancelHangupDuringLiveCheck
+    kit_verify_relay_cancel_test.go:203: hangup during the liveness check: outcome="cancelled" err=exercise relay: cancelled declared operation create has no acknowledged completion; reconcile before retry child output: {"stderr":"","stdout":""}
+--- PASS: TestKitRelayCancelRefusedRenewal (0.09s)
+=== CONT  TestKitRelayCancelHangupDuringCheckoutCheck
+--- FAIL: TestKitRelayCancelHangupDuringLiveCheck (0.09s)
+--- PASS: TestKitRelayCancelSourceChange (0.09s)
+=== NAME  TestKitRelayCancelTransientRenewalFailure
+    kit_verify_relay_cancel_test.go:249: transient renewal failure: outcome="cancelled" err=exercise relay: cancelled declared operation create has no acknowledged completion; reconcile before retry child output: {"stderr":"","stdout":""}
+--- FAIL: TestKitRelayCancelTransientRenewalFailure (0.09s)
+=== NAME  TestKitRelayCancelHangupDuringCheckoutCheck
+    kit_verify_relay_cancel_test.go:153: hangup during the checkout check: outcome="cancelled" err=exercise relay: cancelled  child output: {"stderr":"","stdout":""}
+--- FAIL: TestKitRelayCancelHangupDuringCheckoutCheck (0.07s)
+=== RUN   TestKitRelayCancelHangupDuringCheckoutCheck
+=== PAUSE TestKitRelayCancelHangupDuringCheckoutCheck
+=== RUN   TestKitRelayCancelHangupDuringLiveCheck
+=== PAUSE TestKitRelayCancelHangupDuringLiveCheck
+=== RUN   TestKitRelayCancelTransientRenewalFailure
+=== PAUSE TestKitRelayCancelTransientRenewalFailure
+=== RUN   TestKitRelayCancelSourceChange
+=== PAUSE TestKitRelayCancelSourceChange
+=== RUN   TestKitRelayCancelRefusedRenewal
+=== PAUSE TestKitRelayCancelRefusedRenewal
+=== CONT  TestKitRelayCancelHangupDuringLiveCheck
+=== CONT  TestKitRelayCancelTransientRenewalFailure
+=== CONT  TestKitRelayCancelRefusedRenewal
+=== CONT  TestKitRelayCancelSourceChange
+--- PASS: TestKitRelayCancelRefusedRenewal (0.09s)
+=== CONT  TestKitRelayCancelHangupDuringCheckoutCheck
+=== NAME  TestKitRelayCancelHangupDuringLiveCheck
+    kit_verify_relay_cancel_test.go:203: hangup during the liveness check: outcome="cancelled" err=exercise relay: cancelled declared operation create has no acknowledged completion; reconcile before retry child output: {"stderr":"","stdout":""}
+--- FAIL: TestKitRelayCancelHangupDuringLiveCheck (0.10s)
+=== NAME  TestKitRelayCancelTransientRenewalFailure
+    kit_verify_relay_cancel_test.go:249: transient renewal failure: outcome="cancelled" err=exercise relay: cancelled declared operation create has no acknowledged completion; reconcile before retry child output: {"stderr":"","stdout":""}
+--- FAIL: TestKitRelayCancelTransientRenewalFailure (0.10s)
+--- PASS: TestKitRelayCancelSourceChange (0.10s)
+=== NAME  TestKitRelayCancelHangupDuringCheckoutCheck
+    kit_verify_relay_cancel_test.go:153: hangup during the checkout check: outcome="cancelled" err=exercise relay: cancelled  child output: {"stderr":"","stdout":""}
+--- FAIL: TestKitRelayCancelHangupDuringCheckoutCheck (0.08s)
+=== RUN   TestKitRelayCancelHangupDuringCheckoutCheck
+=== PAUSE TestKitRelayCancelHangupDuringCheckoutCheck
+=== RUN   TestKitRelayCancelHangupDuringLiveCheck
+=== PAUSE TestKitRelayCancelHangupDuringLiveCheck
+=== RUN   TestKitRelayCancelTransientRenewalFailure
+=== PAUSE TestKitRelayCancelTransientRenewalFailure
+=== RUN   TestKitRelayCancelSourceChange
+=== PAUSE TestKitRelayCancelSourceChange
+=== RUN   TestKitRelayCancelRefusedRenewal
+=== PAUSE TestKitRelayCancelRefusedRenewal
+=== CONT  TestKitRelayCancelHangupDuringLiveCheck
+=== CONT  TestKitRelayCancelTransientRenewalFailure
+=== CONT  TestKitRelayCancelSourceChange
+=== CONT  TestKitRelayCancelRefusedRenewal
+=== NAME  TestKitRelayCancelHangupDuringLiveCheck
+    kit_verify_relay_cancel_test.go:203: hangup during the liveness check: outcome="cancelled" err=exercise relay: cancelled declared operation create has no acknowledged completion; reconcile before retry child output: {"stderr":"","stdout":""}
+--- PASS: TestKitRelayCancelSourceChange (0.09s)
+=== CONT  TestKitRelayCancelHangupDuringCheckoutCheck
+=== NAME  TestKitRelayCancelTransientRenewalFailure
+    kit_verify_relay_cancel_test.go:249: transient renewal failure: outcome="cancelled" err=exercise relay: cancelled declared operation create has no acknowledged completion; reconcile before retry child output: {"stderr":"","stdout":""}
+--- FAIL: TestKitRelayCancelHangupDuringLiveCheck (0.09s)
+--- FAIL: TestKitRelayCancelTransientRenewalFailure (0.09s)
+--- PASS: TestKitRelayCancelRefusedRenewal (0.10s)
+=== NAME  TestKitRelayCancelHangupDuringCheckoutCheck
+    kit_verify_relay_cancel_test.go:153: hangup during the checkout check: outcome="cancelled" err=exercise relay: cancelled  child output: {"stderr":"","stdout":""}
+--- FAIL: TestKitRelayCancelHangupDuringCheckoutCheck (0.08s)
+=== RUN   TestKitRelayCancelHangupDuringCheckoutCheck
+=== PAUSE TestKitRelayCancelHangupDuringCheckoutCheck
+=== RUN   TestKitRelayCancelHangupDuringLiveCheck
+=== PAUSE TestKitRelayCancelHangupDuringLiveCheck
+=== RUN   TestKitRelayCancelTransientRenewalFailure
+=== PAUSE TestKitRelayCancelTransientRenewalFailure
+=== RUN   TestKitRelayCancelSourceChange
+=== PAUSE TestKitRelayCancelSourceChange
+=== RUN   TestKitRelayCancelRefusedRenewal
+=== PAUSE TestKitRelayCancelRefusedRenewal
+=== CONT  TestKitRelayCancelHangupDuringLiveCheck
+=== CONT  TestKitRelayCancelSourceChange
+=== CONT  TestKitRelayCancelTransientRenewalFailure
+=== CONT  TestKitRelayCancelRefusedRenewal
+--- PASS: TestKitRelayCancelRefusedRenewal (0.09s)
+=== CONT  TestKitRelayCancelHangupDuringCheckoutCheck
+=== NAME  TestKitRelayCancelHangupDuringLiveCheck
+    kit_verify_relay_cancel_test.go:203: hangup during the liveness check: outcome="cancelled" err=exercise relay: cancelled declared operation create has no acknowledged completion; reconcile before retry child output: {"stderr":"","stdout":""}
+--- PASS: TestKitRelayCancelSourceChange (0.09s)
+--- FAIL: TestKitRelayCancelHangupDuringLiveCheck (0.09s)
+=== NAME  TestKitRelayCancelTransientRenewalFailure
+    kit_verify_relay_cancel_test.go:249: transient renewal failure: outcome="cancelled" err=exercise relay: cancelled declared operation create has no acknowledged completion; reconcile before retry child output: {"stderr":"","stdout":""}
+--- FAIL: TestKitRelayCancelTransientRenewalFailure (0.10s)
+=== NAME  TestKitRelayCancelHangupDuringCheckoutCheck
+    kit_verify_relay_cancel_test.go:153: hangup during the checkout check: outcome="cancelled" err=exercise relay: cancelled  child output: {"stderr":"","stdout":""}
+--- FAIL: TestKitRelayCancelHangupDuringCheckoutCheck (0.08s)
+=== RUN   TestKitRelayCancelHangupDuringCheckoutCheck
+=== PAUSE TestKitRelayCancelHangupDuringCheckoutCheck
+=== RUN   TestKitRelayCancelHangupDuringLiveCheck
+=== PAUSE TestKitRelayCancelHangupDuringLiveCheck
+=== RUN   TestKitRelayCancelTransientRenewalFailure
+=== PAUSE TestKitRelayCancelTransientRenewalFailure
+=== RUN   TestKitRelayCancelSourceChange
+=== PAUSE TestKitRelayCancelSourceChange
+=== RUN   TestKitRelayCancelRefusedRenewal
+=== PAUSE TestKitRelayCancelRefusedRenewal
+=== CONT  TestKitRelayCancelHangupDuringCheckoutCheck
+=== CONT  TestKitRelayCancelSourceChange
+=== CONT  TestKitRelayCancelTransientRenewalFailure
+=== CONT  TestKitRelayCancelRefusedRenewal
+=== NAME  TestKitRelayCancelHangupDuringCheckoutCheck
+    kit_verify_relay_cancel_test.go:153: hangup during the checkout check: outcome="cancelled" err=exercise relay: cancelled  child output: {"stderr":"","stdout":""}
+--- FAIL: TestKitRelayCancelHangupDuringCheckoutCheck (0.08s)
+=== CONT  TestKitRelayCancelHangupDuringLiveCheck
+--- PASS: TestKitRelayCancelRefusedRenewal (0.09s)
+--- PASS: TestKitRelayCancelSourceChange (0.09s)
+=== NAME  TestKitRelayCancelTransientRenewalFailure
+    kit_verify_relay_cancel_test.go:249: transient renewal failure: outcome="cancelled" err=exercise relay: cancelled declared operation create has no acknowledged completion; reconcile before retry child output: {"stderr":"","stdout":""}
+--- FAIL: TestKitRelayCancelTransientRenewalFailure (0.09s)
+=== NAME  TestKitRelayCancelHangupDuringLiveCheck
+    kit_verify_relay_cancel_test.go:203: hangup during the liveness check: outcome="cancelled" err=exercise relay: cancelled declared operation create has no acknowledged completion; reconcile before retry child output: {"stderr":"","stdout":""}
+--- FAIL: TestKitRelayCancelHangupDuringLiveCheck (0.08s)
+=== RUN   TestKitRelayCancelHangupDuringCheckoutCheck
+=== PAUSE TestKitRelayCancelHangupDuringCheckoutCheck
+=== RUN   TestKitRelayCancelHangupDuringLiveCheck
+=== PAUSE TestKitRelayCancelHangupDuringLiveCheck
+=== RUN   TestKitRelayCancelTransientRenewalFailure
+=== PAUSE TestKitRelayCancelTransientRenewalFailure
+=== RUN   TestKitRelayCancelSourceChange
+=== PAUSE TestKitRelayCancelSourceChange
+=== RUN   TestKitRelayCancelRefusedRenewal
+=== PAUSE TestKitRelayCancelRefusedRenewal
+=== CONT  TestKitRelayCancelTransientRenewalFailure
+=== CONT  TestKitRelayCancelHangupDuringLiveCheck
+=== CONT  TestKitRelayCancelHangupDuringCheckoutCheck
+=== CONT  TestKitRelayCancelRefusedRenewal
+=== NAME  TestKitRelayCancelHangupDuringCheckoutCheck
+    kit_verify_relay_cancel_test.go:153: hangup during the checkout check: outcome="cancelled" err=exercise relay: cancelled  child output: {"stderr":"","stdout":""}
+--- FAIL: TestKitRelayCancelHangupDuringCheckoutCheck (0.08s)
+=== CONT  TestKitRelayCancelSourceChange
+=== NAME  TestKitRelayCancelHangupDuringLiveCheck
+    kit_verify_relay_cancel_test.go:203: hangup during the liveness check: outcome="cancelled" err=exercise relay: cancelled declared operation create has no acknowledged completion; reconcile before retry child output: {"stderr":"","stdout":""}
+--- FAIL: TestKitRelayCancelHangupDuringLiveCheck (0.08s)
+--- PASS: TestKitRelayCancelRefusedRenewal (0.10s)
+=== NAME  TestKitRelayCancelTransientRenewalFailure
+    kit_verify_relay_cancel_test.go:249: transient renewal failure: outcome="cancelled" err=exercise relay: cancelled declared operation create has no acknowledged completion; reconcile before retry child output: {"stderr":"","stdout":""}
+--- FAIL: TestKitRelayCancelTransientRenewalFailure (0.11s)
+--- PASS: TestKitRelayCancelSourceChange (0.09s)
+=== RUN   TestKitRelayCancelHangupDuringCheckoutCheck
+=== PAUSE TestKitRelayCancelHangupDuringCheckoutCheck
+=== RUN   TestKitRelayCancelHangupDuringLiveCheck
+=== PAUSE TestKitRelayCancelHangupDuringLiveCheck
+=== RUN   TestKitRelayCancelTransientRenewalFailure
+=== PAUSE TestKitRelayCancelTransientRenewalFailure
+=== RUN   TestKitRelayCancelSourceChange
+=== PAUSE TestKitRelayCancelSourceChange
+=== RUN   TestKitRelayCancelRefusedRenewal
+=== PAUSE TestKitRelayCancelRefusedRenewal
+=== CONT  TestKitRelayCancelHangupDuringCheckoutCheck
+=== CONT  TestKitRelayCancelHangupDuringLiveCheck
+=== CONT  TestKitRelayCancelSourceChange
+=== CONT  TestKitRelayCancelRefusedRenewal
+=== NAME  TestKitRelayCancelHangupDuringCheckoutCheck
+    kit_verify_relay_cancel_test.go:153: hangup during the checkout check: outcome="cancelled" err=exercise relay: cancelled  child output: {"stderr":"","stdout":""}
+--- FAIL: TestKitRelayCancelHangupDuringCheckoutCheck (0.08s)
+=== CONT  TestKitRelayCancelTransientRenewalFailure
+=== NAME  TestKitRelayCancelHangupDuringLiveCheck
+    kit_verify_relay_cancel_test.go:203: hangup during the liveness check: outcome="cancelled" err=exercise relay: cancelled declared operation create has no acknowledged completion; reconcile before retry child output: {"stderr":"","stdout":""}
+--- FAIL: TestKitRelayCancelHangupDuringLiveCheck (0.08s)
+--- PASS: TestKitRelayCancelRefusedRenewal (0.08s)
+--- PASS: TestKitRelayCancelSourceChange (0.09s)
+=== NAME  TestKitRelayCancelTransientRenewalFailure
+    kit_verify_relay_cancel_test.go:249: transient renewal failure: outcome="cancelled" err=exercise relay: cancelled declared operation create has no acknowledged completion; reconcile before retry child output: {"stderr":"","stdout":""}
+--- FAIL: TestKitRelayCancelTransientRenewalFailure (0.09s)
+=== RUN   TestKitRelayCancelHangupDuringCheckoutCheck
+=== PAUSE TestKitRelayCancelHangupDuringCheckoutCheck
+=== RUN   TestKitRelayCancelHangupDuringLiveCheck
+=== PAUSE TestKitRelayCancelHangupDuringLiveCheck
+=== RUN   TestKitRelayCancelTransientRenewalFailure
+=== PAUSE TestKitRelayCancelTransientRenewalFailure
+=== RUN   TestKitRelayCancelSourceChange
+=== PAUSE TestKitRelayCancelSourceChange
+=== RUN   TestKitRelayCancelRefusedRenewal
+=== PAUSE TestKitRelayCancelRefusedRenewal
+=== CONT  TestKitRelayCancelHangupDuringCheckoutCheck
+=== CONT  TestKitRelayCancelHangupDuringLiveCheck
+=== CONT  TestKitRelayCancelTransientRenewalFailure
+=== CONT  TestKitRelayCancelSourceChange
+=== NAME  TestKitRelayCancelHangupDuringCheckoutCheck
+    kit_verify_relay_cancel_test.go:153: hangup during the checkout check: outcome="cancelled" err=exercise relay: cancelled  child output: {"stderr":"","stdout":""}
+=== NAME  TestKitRelayCancelHangupDuringLiveCheck
+    kit_verify_relay_cancel_test.go:203: hangup during the liveness check: outcome="cancelled" err=exercise relay: cancelled declared operation create has no acknowledged completion; reconcile before retry child output: {"stderr":"","stdout":""}
+--- FAIL: TestKitRelayCancelHangupDuringCheckoutCheck (0.08s)
+=== CONT  TestKitRelayCancelRefusedRenewal
+--- FAIL: TestKitRelayCancelHangupDuringLiveCheck (0.08s)
+--- PASS: TestKitRelayCancelSourceChange (0.09s)
+=== NAME  TestKitRelayCancelTransientRenewalFailure
+    kit_verify_relay_cancel_test.go:249: transient renewal failure: outcome="cancelled" err=exercise relay: cancelled declared operation create has no acknowledged completion; reconcile before retry child output: {"stderr":"","stdout":""}
+--- FAIL: TestKitRelayCancelTransientRenewalFailure (0.09s)
+--- PASS: TestKitRelayCancelRefusedRenewal (0.08s)
+=== RUN   TestKitRelayCancelHangupDuringCheckoutCheck
+=== PAUSE TestKitRelayCancelHangupDuringCheckoutCheck
+=== RUN   TestKitRelayCancelHangupDuringLiveCheck
+=== PAUSE TestKitRelayCancelHangupDuringLiveCheck
+=== RUN   TestKitRelayCancelTransientRenewalFailure
+=== PAUSE TestKitRelayCancelTransientRenewalFailure
+=== RUN   TestKitRelayCancelSourceChange
+=== PAUSE TestKitRelayCancelSourceChange
+=== RUN   TestKitRelayCancelRefusedRenewal
+=== PAUSE TestKitRelayCancelRefusedRenewal
+=== CONT  TestKitRelayCancelHangupDuringCheckoutCheck
+=== CONT  TestKitRelayCancelTransientRenewalFailure
+=== CONT  TestKitRelayCancelRefusedRenewal
+=== CONT  TestKitRelayCancelHangupDuringLiveCheck
+=== NAME  TestKitRelayCancelHangupDuringCheckoutCheck
+    kit_verify_relay_cancel_test.go:153: hangup during the checkout check: outcome="cancelled" err=exercise relay: cancelled  child output: {"stderr":"","stdout":""}
+--- FAIL: TestKitRelayCancelHangupDuringCheckoutCheck (0.08s)
+=== CONT  TestKitRelayCancelSourceChange
+=== NAME  TestKitRelayCancelHangupDuringLiveCheck
+    kit_verify_relay_cancel_test.go:203: hangup during the liveness check: outcome="cancelled" err=exercise relay: cancelled declared operation create has no acknowledged completion; reconcile before retry child output: {"stderr":"","stdout":""}
+--- FAIL: TestKitRelayCancelHangupDuringLiveCheck (0.09s)
+--- PASS: TestKitRelayCancelRefusedRenewal (0.09s)
+=== NAME  TestKitRelayCancelTransientRenewalFailure
+    kit_verify_relay_cancel_test.go:249: transient renewal failure: outcome="cancelled" err=exercise relay: cancelled declared operation create has no acknowledged completion; reconcile before retry child output: {"stderr":"","stdout":""}
+--- FAIL: TestKitRelayCancelTransientRenewalFailure (0.10s)
+--- PASS: TestKitRelayCancelSourceChange (0.08s)
+=== RUN   TestKitRelayCancelHangupDuringCheckoutCheck
+=== PAUSE TestKitRelayCancelHangupDuringCheckoutCheck
+=== RUN   TestKitRelayCancelHangupDuringLiveCheck
+=== PAUSE TestKitRelayCancelHangupDuringLiveCheck
+=== RUN   TestKitRelayCancelTransientRenewalFailure
+=== PAUSE TestKitRelayCancelTransientRenewalFailure
+=== RUN   TestKitRelayCancelSourceChange
+=== PAUSE TestKitRelayCancelSourceChange
+=== RUN   TestKitRelayCancelRefusedRenewal
+=== PAUSE TestKitRelayCancelRefusedRenewal
+=== CONT  TestKitRelayCancelSourceChange
+=== CONT  TestKitRelayCancelTransientRenewalFailure
+=== CONT  TestKitRelayCancelRefusedRenewal
+=== CONT  TestKitRelayCancelHangupDuringLiveCheck
+--- PASS: TestKitRelayCancelRefusedRenewal (0.09s)
+=== CONT  TestKitRelayCancelHangupDuringCheckoutCheck
+=== NAME  TestKitRelayCancelHangupDuringLiveCheck
+    kit_verify_relay_cancel_test.go:203: hangup during the liveness check: outcome="cancelled" err=exercise relay: cancelled declared operation create has no acknowledged completion; reconcile before retry child output: {"stderr":"","stdout":""}
+--- FAIL: TestKitRelayCancelHangupDuringLiveCheck (0.09s)
+--- PASS: TestKitRelayCancelSourceChange (0.09s)
+=== NAME  TestKitRelayCancelTransientRenewalFailure
+    kit_verify_relay_cancel_test.go:249: transient renewal failure: outcome="cancelled" err=exercise relay: cancelled declared operation create has no acknowledged completion; reconcile before retry child output: {"stderr":"","stdout":""}
+--- FAIL: TestKitRelayCancelTransientRenewalFailure (0.10s)
+=== NAME  TestKitRelayCancelHangupDuringCheckoutCheck
+    kit_verify_relay_cancel_test.go:153: hangup during the checkout check: outcome="cancelled" err=exercise relay: cancelled  child output: {"stderr":"","stdout":""}
+--- FAIL: TestKitRelayCancelHangupDuringCheckoutCheck (0.07s)
+=== RUN   TestKitRelayCancelHangupDuringCheckoutCheck
+=== PAUSE TestKitRelayCancelHangupDuringCheckoutCheck
+=== RUN   TestKitRelayCancelHangupDuringLiveCheck
+=== PAUSE TestKitRelayCancelHangupDuringLiveCheck
+=== RUN   TestKitRelayCancelTransientRenewalFailure
+=== PAUSE TestKitRelayCancelTransientRenewalFailure
+=== RUN   TestKitRelayCancelSourceChange
+=== PAUSE TestKitRelayCancelSourceChange
+=== RUN   TestKitRelayCancelRefusedRenewal
+=== PAUSE TestKitRelayCancelRefusedRenewal
+=== CONT  TestKitRelayCancelHangupDuringLiveCheck
+=== CONT  TestKitRelayCancelTransientRenewalFailure
+=== CONT  TestKitRelayCancelRefusedRenewal
+=== CONT  TestKitRelayCancelSourceChange
+=== NAME  TestKitRelayCancelHangupDuringLiveCheck
+    kit_verify_relay_cancel_test.go:203: hangup during the liveness check: outcome="cancelled" err=exercise relay: cancelled declared operation create has no acknowledged completion; reconcile before retry child output: {"stderr":"","stdout":""}
+--- PASS: TestKitRelayCancelRefusedRenewal (0.09s)
+=== CONT  TestKitRelayCancelHangupDuringCheckoutCheck
+--- FAIL: TestKitRelayCancelHangupDuringLiveCheck (0.09s)
+--- PASS: TestKitRelayCancelSourceChange (0.09s)
+=== NAME  TestKitRelayCancelTransientRenewalFailure
+    kit_verify_relay_cancel_test.go:249: transient renewal failure: outcome="cancelled" err=exercise relay: cancelled declared operation create has no acknowledged completion; reconcile before retry child output: {"stderr":"","stdout":""}
+--- FAIL: TestKitRelayCancelTransientRenewalFailure (0.10s)
+=== NAME  TestKitRelayCancelHangupDuringCheckoutCheck
+    kit_verify_relay_cancel_test.go:153: hangup during the checkout check: outcome="cancelled" err=exercise relay: cancelled  child output: {"stderr":"","stdout":""}
+--- FAIL: TestKitRelayCancelHangupDuringCheckoutCheck (0.08s)
+FAIL
+FAIL	github.com/kidus-tiliksew/conveyor/cmd/conveyor	8.244s
+FAIL
+# exit status: 1
