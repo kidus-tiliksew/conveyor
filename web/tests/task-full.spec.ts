@@ -5442,9 +5442,15 @@ test('merge gate stays pending until the post-success task and activity refreshe
   await page.goto('/w/demo/tasks/merge-delayed/full')
   const gate = page.getByRole('region', { name: 'Human gate' })
   const merge = gate.getByRole('button', { name: 'Merge', exact: true })
+  // Merge opens its confirm (component-web-task-surfaces invariant 45); the
+  // confirm posts the act.
   await merge.click()
-  await expect(gate.getByRole('button', { name: 'Recording…' })).toBeDisabled()
-  await expect(gate.getByRole('button', { name: 'Merge', exact: true })).toHaveCount(0)
+  const dialog = page.getByRole('dialog', { name: 'Confirm merge' })
+  await dialog.locator('[data-confirm-merge]').click()
+  // The accepted merge closes the confirm, and Merge stays disabled until the
+  // refreshes land.
+  await expect(dialog).toHaveCount(0)
+  await expect(merge).toBeDisabled()
 
   releaseRefresh()
   await expect(gate).toHaveCount(0)
@@ -5459,11 +5465,13 @@ test('failed merge restores the existing error and retry action', async ({ page 
 
   await page.goto('/w/demo/tasks/merge-failure/full')
   const gate = page.getByRole('region', { name: 'Human gate' })
-  const merge = gate.getByRole('button', { name: 'Merge', exact: true })
-  await merge.click()
-  await expect(gate.getByText('GitHub merge failed')).toBeVisible()
-  await expect(merge).toBeEnabled()
-  await merge.click()
+  await gate.getByRole('button', { name: 'Merge', exact: true }).click()
+  const dialog = page.getByRole('dialog', { name: 'Confirm merge' })
+  const confirm = dialog.locator('[data-confirm-merge]')
+  await confirm.click()
+  await expect(dialog.getByText('GitHub merge failed')).toBeVisible()
+  await expect(confirm).toBeEnabled()
+  await confirm.click()
   await expect.poll(() => attempts).toBe(2)
 })
 
@@ -7951,8 +7959,10 @@ test('non-conflict gate failures keep their existing behavior without a refetch'
   const gate = page.getByRole('region', { name: 'Human gate' })
   await expect.poll(() => detailRequests).toBe(1)
   await gate.getByRole('button', { name: 'Merge', exact: true }).click()
-  await expect(gate.getByText('GitHub merge failed')).toBeVisible()
-  await expect(gate.getByRole('button', { name: 'Merge', exact: true })).toBeEnabled()
+  const dialog = page.getByRole('dialog', { name: 'Confirm merge' })
+  await dialog.locator('[data-confirm-merge]').click()
+  await expect(dialog.getByText('GitHub merge failed')).toBeVisible()
+  await expect(dialog.locator('[data-confirm-merge]')).toBeEnabled()
   expect(detailRequests).toBe(1)
 })
 
