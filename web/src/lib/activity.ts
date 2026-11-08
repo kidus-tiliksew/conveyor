@@ -242,6 +242,17 @@ export function failedTriage(item: ActivityItem): FailedTriage | undefined {
     .filter((value): value is string => typeof value === 'string' && Boolean(value.trim()))
     .join(' · ')
   const reason = recorded || diagnosticText || 'The triage job failed without a recorded explanation.'
+  // Output that stayed invalid through the bounce limit needs no input repair:
+  // Retry runs triage again with the last validation error in its prompt
+  // (component-triage invariant 26).
+  if (diagnostic.phase === 'output_validation')
+    return {
+      jobId: latest.id,
+      reason,
+      repairRequired: false,
+      guidance:
+        'Retry triage to run it again with the last validation error in its prompt. This restarts triage; no plan or implementation is being approved.',
+    }
   const budget = /triage.*budget|(?:task context|model input|attachment).*(?:exceeds|exceed|limit)/i.test(reason)
   const attachment =
     diagnostic.phase === 'attachment_validation' ||
@@ -1093,6 +1104,12 @@ function jobSummary(job: Job, results: TaskJobResult | undefined): JobSummaryTex
   // stage outputs, then a job-specific output rejection and state fallback.
   const preferred = preferredJobSummary(results)
   if (preferred !== undefined) return preferred
+
+  // A completed job whose output a stage then failed records the failure; it
+  // replaces the rejection, which would promise a retry that is not coming.
+  const failure = results?.failure_error
+  if (job.state === 'done' && failure && typeof failure.text === 'string' && failure.text)
+    return { text: failure.text, truncatedEventId: failure.truncated ? failure.event_id : undefined }
 
   const rejected = rejectedOutput(job, results)
   if (rejected) {

@@ -1118,6 +1118,9 @@ func (d *Dispatcher) completeOutput(ctx context.Context, cfg *config.Config, tas
 		count, _ := d.Store.CountEventsSinceHumanIntervention(ctx, task.ID, kind)
 		if count >= cfg.MaxBounces {
 			_ = d.Store.AppendEvent(ctx, core.Event{TaskID: task.ID, JobID: job.ID, Kind: "pipeline.bounce_limit", Payload: core.JSONPayload(map[string]any{"source": kind, "window": count, "max_bounces": cfg.MaxBounces})})
+			if job.Stage == core.StageTriage {
+				return d.failInvalidTriage(ctx, job, kind, count, parseErr)
+			}
 			return d.transition(ctx, task.ID, core.TaskStageBounceLimit, "", job.Stage)
 		}
 		return d.transition(ctx, task.ID, core.TaskStageBounce, job.Stage, "")
@@ -1168,6 +1171,28 @@ func (d *Dispatcher) completeOutput(ctx context.Context, cfg *config.Config, tas
 	default:
 		return fmt.Errorf("unsupported in-process stage %s", job.Stage)
 	}
+}
+
+// TriageOutputValidationPhase is the job.failed diagnostic phase of a triage
+// job whose output stayed invalid through the bounce limit. The dashboard's
+// triage recovery card reads it to offer Retry instead of an input repair.
+const TriageOutputValidationPhase = "output_validation"
+
+// failInvalidTriage ends a triage whose output stayed invalid through the
+// task's bounce limit. Triage then has no outcome, so the job fails and the
+// task waits at the job-failure gate for an operator Retry instead of a review
+// decision (component-triage invariant 26; DEC-110(2); req-operator-next-action
+// AC-1.2). The job.failed error names the invalid output and its last
+// validation error, and its source is the next action's recorded cause. The
+// model job itself completed, so its own state stays done.
+func (d *Dispatcher) failInvalidTriage(ctx context.Context, job core.Job, source string, count int, parseErr error) error {
+	message := fmt.Sprintf("Triage output stayed invalid after %d attempts, so triage has no outcome. Last validation error: %s", count, parseErr.Error())
+	if err := d.Store.AppendEvent(ctx, core.Event{TaskID: job.TaskID, JobID: job.ID, Kind: "job.failed", Payload: core.JSONPayload(map[string]any{
+		"error": message, "source": source, "diagnostic": map[string]any{"phase": TriageOutputValidationPhase},
+	})}); err != nil {
+		return err
+	}
+	return d.transition(ctx, job.TaskID, core.TaskJobFail, "", core.StageTriage)
 }
 
 // ApplyExternalReviewPinned completes an MCP review against the immutable

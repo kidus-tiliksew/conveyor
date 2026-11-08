@@ -3,6 +3,7 @@ package storetest
 import (
 	"context"
 	"encoding/json"
+	"regexp"
 	"strconv"
 	"strings"
 	"testing"
@@ -14,6 +15,10 @@ import (
 	"github.com/kidus-tiliksew/conveyor/internal/store"
 	"github.com/kidus-tiliksew/conveyor/internal/taskops"
 )
+
+// rfc3339Time matches an RFC 3339 date-time, which no catalogue sentence may
+// carry (component-next-action invariant 18).
+var rfc3339Time = regexp.MustCompile(`\d{4}-\d{2}-\d{2}T\d{2}:\d{2}`)
 
 func RunAutomaticRecoveryConformance(t *testing.T, st store.Store, ctx context.Context) {
 	now := time.Now().UTC()
@@ -156,8 +161,10 @@ func requireRetrying(t *testing.T, st store.Store, ctx context.Context, taskID s
 	if action.CurrentOrder == nil || action.CurrentOrder.ID != scheduled.ID || action.Deadline == nil || !action.Deadline.Equal(scheduled.NextAutomaticRecoveryAt) {
 		t.Fatalf("scheduled next action order=%+v deadline=%v want %s at %s", action.CurrentOrder, action.Deadline, scheduled.ID, scheduled.NextAutomaticRecoveryAt)
 	}
-	if !strings.Contains(action.Summary, "(attempt "+strconv.Itoa(attempt)+")") {
-		t.Fatalf("scheduled summary=%q want attempt %d", action.Summary, attempt)
+	// The summary keeps the attempt and carries no retry time; the time is
+	// the statement's deadline (component-next-action invariants 14, 18).
+	if !strings.Contains(action.Summary, "The next retry is attempt "+strconv.Itoa(attempt)+".") || rfc3339Time.MatchString(action.Summary) {
+		t.Fatalf("scheduled summary=%q want attempt %d and no RFC 3339 time", action.Summary, attempt)
 	}
 	events, err := st.ListEvents(ctx, taskID)
 	if err != nil {
