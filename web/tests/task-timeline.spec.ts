@@ -8,8 +8,9 @@ import { callerIdentity } from './helpers/caller-identity'
 // component-web-task-surfaces). The Timeline tab is the default below the
 // next-action card and reads no flow (AC-7.4; the Flow tab is covered by
 // task-flow.spec.ts), no entry renders a Current attempt facts region, each
-// stage entry keeps its own content, and parked, closed, dependency waits,
-// automatic retries, and bounces read as entries.
+// stage entry keeps its own content, and parked, closed, automatic retries,
+// and bounces read as entries. A dependency wait, a merge request, and its
+// GitHub confirmation render no entry (task 261108-38aabb).
 
 const t0 = '2026-10-15T08:00:00Z'
 const taskId = 'timeline-task'
@@ -327,7 +328,11 @@ function event(id: number, kind: string, at: string, payload: Record<string, unk
   return { id, task_id: taskId, kind, actor_id: 'system', actor_role: 'system', payload, at }
 }
 
-test('dependency waits, automatic retries, bounces, parking, and closing read as timeline entries', async ({
+// A dependency wait reads from the Dependencies section, the Board card's
+// dependency mark, and the flowchart's waiting side state, so the timeline
+// renders no entry for it (req-operator-next-action AC-6.11, AC-3.4, AC-7.3,
+// AC-7.5).
+test('automatic retries, bounces, parking, and closing read as timeline entries and dependency waits do not', async ({
   page,
 }) => {
   const item = activity({
@@ -356,8 +361,6 @@ test('dependency waits, automatic retries, bounces, parking, and closing read as
   })
   await page.goto(`/w/demo/tasks/${taskId}/full`)
   const timeline = page.getByRole('region', { name: 'Execution event timeline' })
-  await expect(timeline.getByText('Waiting on another task')).toBeVisible()
-  await expect(timeline.getByText('task-prereq')).toBeVisible()
   await expect(timeline.getByText('The agent’s run failed — retrying')).toHaveCount(1)
   await expect(timeline.getByText('The agent’s run failed — not retried automatically')).toHaveCount(0)
   await expect(timeline.getByText('Sent back to implementation')).toBeVisible()
@@ -366,6 +369,8 @@ test('dependency waits, automatic retries, bounces, parking, and closing read as
   await expect(timeline.getByText('Triage parked the task for an operator decision')).toBeVisible()
   await expect(timeline.getByText('Closed — started over as a new task')).toBeVisible()
   await expect(timeline.getByText('Closed', { exact: true })).toHaveCount(0)
+  await expect(timeline.getByText('Waiting on another task')).toHaveCount(0)
+  await expect(timeline.getByText('task-prereq')).toHaveCount(0)
 })
 
 // A task-context decision shows as the document under Attached context, so the
@@ -393,16 +398,74 @@ test('task-context decisions render no timeline note', async ({ page }) => {
         audit_available: true,
       },
       event(5, 'task.dependency_added', minutes(5), { depends_on_task_id: 'task-dependency' }),
+      event(6, 'task.dependency_removed', minutes(6), { reason: 'operator removed the dependency' }),
     ],
   })
   await mockAPI(page, item, nextAction(`${taskId}-implement-1`))
   await page.goto(`/w/demo/tasks/${taskId}/full`)
   const timeline = page.getByRole('region', { name: 'Execution event timeline' })
-  await expect(timeline.getByText('Waiting on another task')).toBeVisible()
+  await expect(timeline.getByText('Dependency removed')).toBeVisible()
+  await expect(timeline.getByText('Waiting on another task')).toHaveCount(0)
+  await expect(timeline.getByText('task-dependency')).toHaveCount(0)
   await expect(timeline).not.toContainText('Context confirmed')
   await expect(timeline).not.toContainText('Context dismissed')
   await expect(timeline.getByText('Details omitted from this page')).toHaveCount(0)
   await expect(timeline).not.toContainText('undefined')
+})
+
+// A merge request and its GitHub confirmation only repeat the task's finished
+// state, so the timeline renders no entry for either, with or without an
+// omitted payload, while an out-of-pipeline merge the system reconciled still
+// reads as an entry; technical activity keeps all three recorded events
+// (component-web-task-surfaces, One human list; task 261108-38aabb).
+test('merge requests and confirmations render no timeline entry while a reconciled merge does', async ({ page }) => {
+  const mergeURL = 'https://github.com/kidus-tiliksew/conveyor/pull/1600'
+  const item = activity({
+    task: { ...task, state: 'merged' },
+    events: [
+      event(1, 'merge.requested', minutes(1), { url: mergeURL }),
+      event(2, 'merge.confirmed', minutes(2), { url: mergeURL }),
+      {
+        ...event(3, 'merge.confirmed', minutes(3), {}),
+        payload: null,
+        payload_omitted: true,
+        payload_bytes: 9000,
+        audit_available: true,
+      },
+      event(4, 'merge.reconciled', minutes(4), { url: mergeURL, result: 'merged_outside_conveyor' }),
+    ],
+  })
+  await mockAPI(page, item, {
+    ...nextAction(`${taskId}-implement-1`),
+    label: 'Finished',
+    actor: 'none',
+    kind: 'terminal',
+    current_order: undefined,
+    attempt: undefined,
+  })
+  await page.goto(`/w/demo/tasks/${taskId}/full`)
+  const timeline = page.getByRole('region', { name: 'Execution event timeline' })
+  await expect(timeline.getByText('Already-merged pull request reconciled')).toBeVisible()
+  await expect(timeline.getByText('Pull request merge requested')).toHaveCount(0)
+  await expect(timeline.getByText('Pull request merge confirmed by GitHub')).toHaveCount(0)
+  await expect(timeline.getByText('Details omitted from this page')).toHaveCount(0)
+  await expect(timeline.getByText(/merge (requested|confirmed)/i)).toHaveCount(0)
+  await page.route(`**/v1/tasks/${taskId}/history*`, (route) =>
+    route.fulfill({
+      json: {
+        selection: 'technical',
+        limit: 50,
+        events: (item.events as { id: number }[]).map((entry) => ({ ...entry, id: String(entry.id) })),
+        boundary: { max_id: '4', count: item.events.length },
+        has_older: false,
+        has_newer: false,
+      },
+    }),
+  )
+  await page.getByRole('button', { name: 'Show technical activity' }).click()
+  const technical = page.getByRole('list', { name: 'Technical activity events' })
+  for (const kind of ['merge.requested', 'merge.confirmed', 'merge.reconciled'])
+    await expect(technical.getByText(kind, { exact: true }).first()).toBeVisible()
 })
 
 // A plan stage shaped like task 261015-3721c6's: claimed at 06:31:37Z, lease

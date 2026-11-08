@@ -78,8 +78,8 @@ func TestHumanTimelineEventKindsMatchDashboard(t *testing.T) {
 			want = append(want, kind)
 		}
 	}
-	if len(humanTimelineEventKinds) != 38 || len(sorted(humanTimelineEventKinds)) != len(humanTimelineEventKinds) {
-		t.Fatalf("Go human kinds must be 38 distinct kinds: %v", humanTimelineEventKinds)
+	if len(humanTimelineEventKinds) != 35 || len(sorted(humanTimelineEventKinds)) != len(humanTimelineEventKinds) {
+		t.Fatalf("Go human kinds must be 35 distinct kinds: %v", humanTimelineEventKinds)
 	}
 	if !slices.Equal(sorted(want), sorted(humanTimelineEventKinds)) {
 		t.Fatalf("dashboard human kinds=%v Go=%v", sorted(want), sorted(humanTimelineEventKinds))
@@ -99,6 +99,19 @@ func TestHumanTimelineEventKindsMatchDashboard(t *testing.T) {
 		}
 	}
 	for _, kind := range []string{"github_issue.publication_retry", "github_issue.publication_failed", "review.publication_failed", "pull_request.opened"} {
+		if !slices.Contains(humanTimelineEventKinds, kind) {
+			t.Fatalf("%s must stay in the human selection", kind)
+		}
+	}
+	// A merge request, its GitHub confirmation, and a dependency wait stay
+	// technical, while the other merge outcomes and dependency changes stay
+	// selected (req-operator-next-action AC-6.11, AC-7.3; task 261108-38aabb).
+	for _, kind := range []string{"merge.requested", "merge.confirmed", "task.dependency_added"} {
+		if slices.Contains(humanTimelineEventKinds, kind) || !slices.Contains(hiddenKinds, kind) {
+			t.Fatalf("%s must be hidden by the dashboard and outside the human selection", kind)
+		}
+	}
+	for _, kind := range []string{"merge.reconciled", "merge.failed", "merge.blocked", "task.dependency_removed", "task.dependency_unsatisfiable"} {
 		if !slices.Contains(humanTimelineEventKinds, kind) {
 			t.Fatalf("%s must stay in the human selection", kind)
 		}

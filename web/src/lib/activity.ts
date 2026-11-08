@@ -382,7 +382,10 @@ type NoteEventKind = (typeof noteEventKinds)[number]
 // the approval intervention, and Attached context already tell their story,
 // and the remaining publication bookkeeping reads as noise. Technical activity
 // keeps them all (component-web-task-surfaces, Task detail composition; task
-// 261028-5c2ae2).
+// 261028-5c2ae2). A merge request and its GitHub confirmation only repeat the
+// finished state, and a dependency wait reads from the Dependencies section,
+// the Board card's dependency mark, and the flowchart's waiting side state
+// (req-operator-next-action AC-6.11, AC-3.4, AC-7.5; task 261108-38aabb).
 const hiddenNoteKinds = new Set([
   'review.completed',
   'spec.version_approved',
@@ -393,6 +396,9 @@ const hiddenNoteKinds = new Set([
   'review.publication_retry',
   'task.context_proposal_confirmed',
   'task.context_proposal_dismissed',
+  'merge.requested',
+  'merge.confirmed',
+  'task.dependency_added',
 ])
 
 // Attempt kinds that read as an entry when the factory retries the run on its
@@ -1326,11 +1332,12 @@ function noteContent(
         return { title: command === 'task.start_over' ? 'Closed — started over as a new task' : 'Closed' }
       return undefined
     }
+    // A dependency wait reads from the Dependencies section, the Board card's
+    // dependency mark, and the flowchart's waiting side state; the recorded
+    // event stays in technical activity (req-operator-next-action AC-6.11,
+    // AC-3.4, AC-7.5).
     case 'task.dependency_added':
-      return {
-        title: 'Waiting on another task',
-        detail: typeof payload.depends_on_task_id === 'string' ? payload.depends_on_task_id : undefined,
-      }
+      return undefined
     // A task-context decision shows as the document under Attached context;
     // the recorded event stays in technical activity and the audit reads
     // (component-web-task-surfaces, Task detail composition).
@@ -1445,18 +1452,11 @@ function noteContent(
         detail:
           typeof payload.reason === 'string' ? `${payload.reason} · stops within one renewal interval` : undefined,
       }
+    // A merge's request and GitHub's confirmation only repeat the task's
+    // finished state; technical activity keeps both events.
     case 'merge.requested':
-      return {
-        title: 'Pull request merge requested',
-        detail: typeof payload.url === 'string' ? payload.url : undefined,
-        href: typeof payload.url === 'string' ? payload.url : undefined,
-      }
     case 'merge.confirmed':
-      return {
-        title: 'Pull request merge confirmed by GitHub',
-        detail: typeof payload.url === 'string' ? payload.url : undefined,
-        href: typeof payload.url === 'string' ? payload.url : undefined,
-      }
+      return undefined
     case 'merge.reconciled':
       return {
         title: 'Already-merged pull request reconciled',

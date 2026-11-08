@@ -41,8 +41,6 @@ export const serverHumanTimelineEventKinds = [
   'github.review_redirected',
   'review.round_completed',
   'work_order.preempted',
-  'merge.requested',
-  'merge.confirmed',
   'merge.reconciled',
   'merge.failed',
   'merge.blocked',
@@ -60,7 +58,6 @@ export const serverHumanTimelineEventKinds = [
   'job.log_stream_degraded',
   'pipeline.bounced',
   'task.state_changed',
-  'task.dependency_added',
   'work_order.child_failed',
   'work_order.stalled',
 ] as const
@@ -771,7 +768,7 @@ const ledgerStart = Date.parse('2026-06-01T00:00:00Z')
 // A task ledger shaped like the long-running production task this view was
 // built for: a handful of lifecycle events and human entries among tens of
 // thousands of `dispatch.reconciled` records. `human` sets how many human
-// timeline entries (assignment changes and merge requests) the ledger holds,
+// timeline entries (assignment changes and merge reconciliations) the ledger holds,
 // so the bounded view can hold all of them or page the rest.
 export function generateLedger(options: {
   taskId: string
@@ -901,10 +898,10 @@ export function generateLedger(options: {
                 payload: { assignee_user_id: `usr_${ordinal}`, ordinal },
               }
             : {
-                kind: 'merge.requested',
+                kind: 'merge.reconciled',
                 actor_id: 'conveyor',
                 actor_role: 'system',
-                payload: { url: `https://github.com/acme/widgets/pull/4242#request-${ordinal}`, ordinal },
+                payload: { url: `https://github.com/acme/widgets/pull/4242#reconciled-${ordinal}`, ordinal },
               },
       )
     } else if (othersLeft > 0 && index % 211 === 7) {

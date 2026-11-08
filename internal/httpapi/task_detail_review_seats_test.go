@@ -466,7 +466,7 @@ func TestTaskActivityReviewSeatMetadata(t *testing.T) {
 	f.completeRound("seat-detail", 1, "changes_requested", first)
 	// The round events fall outside the bounded page of 100 human events.
 	for i := range 120 {
-		requireOKHTTP(t, f.st.AppendEvent(f.ctx, core.Event{TaskID: "seat-detail", Kind: "merge.requested", At: time.Now().UTC(), Payload: core.JSONPayload(map[string]any{"n": i})}))
+		requireOKHTTP(t, f.st.AppendEvent(f.ctx, core.Event{TaskID: "seat-detail", Kind: "merge.reconciled", At: time.Now().UTC(), Payload: core.JSONPayload(map[string]any{"n": i})}))
 	}
 	f.recordedRound("seat-detail", 2, seatResolution(3, store.ReviewSeatSourceCarried, 2, ""))
 	f.addSeats("seat-detail", "detail-add", 1)
