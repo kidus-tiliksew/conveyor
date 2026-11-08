@@ -76,13 +76,19 @@ const (
 )
 
 // Gate catalogue variants keyed on the gate's recorded source
-// (Input.GateSource). TriageInvalidOutput is the job_failure of a triage whose
-// output stayed invalid through the bounce limit (component-triage invariant
-// 26). The InvalidOutput variants are review_bounce_limit gates that a stage
-// other than review reached with invalid output; a review-sourced limit keeps
-// the base entry (req-operator-next-action AC-1.2, AC-1.8).
+// (Input.GateSource) and recovery stage. TriageInvalidOutput is the
+// job_failure of a triage whose output stayed invalid through the bounce limit
+// (component-triage invariant 26), and TriageFailure is any other job_failure
+// that triage's recovery stage names, such as a failed provider call
+// (req-intake-and-triage AC-3.4). The InvalidOutput variants are
+// review_bounce_limit gates that a stage other than review reached with
+// invalid output, and UnreviewedBounceLimit is one whose source names no
+// stage's invalid output and is not review's. A review-sourced limit keeps the
+// base entry (req-operator-next-action AC-1.2, AC-1.8).
 const (
 	TriageInvalidOutput           = "triage_invalid_output"
+	TriageFailure                 = "triage_failure"
+	UnreviewedBounceLimit         = "unreviewed_bounce_limit"
 	InvalidOutputTriage           = "invalid_output_triage"
 	InvalidOutputPlan             = "invalid_output_spec"
 	InvalidOutputImplementation   = "invalid_output_implement"
@@ -102,18 +108,27 @@ var invalidOutputStages = []struct{ variant, stage, word string }{
 	{InvalidOutputUnnamedStage, "", "A stage"},
 }
 
-// GateVariant is the catalogue variant a gate's recorded source selects, or
-// empty for the gate's base entry.
-func GateVariant(gate core.GateKind, source string) string {
+// GateVariant is the catalogue variant a gate's recorded source and the
+// task's recovery stage select, or empty for the gate's base entry. A
+// review_bounce_limit gate keeps its base entry exactly when
+// core.ReviewSourcedBounceLimit admits its source, the predicate that also
+// decides whether Approve is offered there.
+func GateVariant(gate core.GateKind, source string, recovery core.Stage) string {
 	switch gate {
 	case core.GateKindJobFailure:
 		if source == triageInvalidOutputGateSource {
 			return TriageInvalidOutput
 		}
+		if recovery == core.StageTriage {
+			return TriageFailure
+		}
 	case core.GateKindReviewBounceLimit:
-		stage, ok := strings.CutSuffix(source, invalidOutputSourceSuffix)
-		if !ok || stage == string(core.StageReview) {
+		if core.ReviewSourcedBounceLimit(source) {
 			return ""
+		}
+		stage, ok := strings.CutSuffix(source, invalidOutputSourceSuffix)
+		if !ok {
+			return UnreviewedBounceLimit
 		}
 		for _, item := range invalidOutputStages {
 			if item.stage == stage {
@@ -127,7 +142,7 @@ func GateVariant(gate core.GateKind, source string) string {
 
 // GateVariants are the gate variants the catalogue must cover.
 func GateVariants() []string {
-	out := []string{TriageInvalidOutput}
+	out := []string{TriageInvalidOutput, TriageFailure, UnreviewedBounceLimit}
 	for _, item := range invalidOutputStages {
 		out = append(out, item.variant)
 	}
@@ -389,11 +404,13 @@ func summaryWithRetry(base string, vars Vars) string {
 
 // gateSourceWording states the gate variants keyed on the recorded source. A
 // stage-sourced bounce limit names the stage and its invalid output in the
-// label, summary, question, and run-gate label, and keeps the review route's
-// choices unchanged. A triage whose output stayed invalid fails its job, so
-// its job_failure names triage's invalid output and never review
-// (component-triage invariant 26; component-next-action invariants 17-20;
-// req-operator-next-action AC-1.8).
+// label, summary, question, and run-gate label. Its Approve is withheld,
+// because no review reached it, so its question offers only the acts that
+// remain. A triage job failure offers Retry and reject: its question uses no
+// review words, and the job_failure of a triage whose output stayed invalid
+// names triage's invalid output (component-triage invariant 26;
+// component-next-action invariants 7, 8, 17-20; req-intake-and-triage AC-3.4;
+// req-operator-next-action AC-1.4, AC-1.8).
 func gateSourceWording(text func(string) func(Vars) string) {
 	for _, item := range invalidOutputStages {
 		label := "Settle " + strings.ToLower(item.word) + " output"
@@ -406,18 +423,30 @@ func gateSourceWording(text func(string) func(Vars) string) {
 		entry.Summary = text(word + " returned invalid output until the bounce limit.")
 		entry.Question = func(v Vars) string {
 			if v.Attempts > 0 {
-				return fmt.Sprintf("%s returned invalid output %d times. Approve, ask for changes, or reject?", word, v.Attempts)
+				return fmt.Sprintf("%s returned invalid output %d times. Ask for changes, or reject?", word, v.Attempts)
 			}
-			return word + " returned invalid output until the bounce limit. Approve, ask for changes, or reject?"
+			return word + " returned invalid output until the bounce limit. Ask for changes, or reject?"
 		}
 		entry.RunGate = &RunGate{Kind: "human", Label: label}
 		catalogueTable[catalogueKey{KindReviewBounceLimit, "", "", "", item.variant}] = entry
 	}
-	triage := catalogueTable[catalogueKey{KindJobFailure, "", "", "", ""}]
-	triage.Label = "Retry triage"
-	triage.Summary = text("Triage returned invalid output until the bounce limit, so it has no outcome.")
-	triage.Question = text("Ask for changes to run triage again, or reject the task?")
-	catalogueTable[catalogueKey{KindJobFailure, "", "", "", TriageInvalidOutput}] = triage
+	unreviewed := catalogueTable[catalogueKey{KindReviewBounceLimit, "", "", "", ""}]
+	unreviewed.Label = "Settle bounce limit"
+	unreviewed.Summary = text("A stage reached the bounce limit.")
+	unreviewed.Question = text("A stage reached the bounce limit. Ask for changes, or reject?")
+	unreviewed.RunGate = &RunGate{Kind: "human", Label: unreviewed.Label}
+	catalogueTable[catalogueKey{KindReviewBounceLimit, "", "", "", UnreviewedBounceLimit}] = unreviewed
+	for _, item := range []struct{ variant, summary string }{
+		{TriageInvalidOutput, "Triage returned invalid output until the bounce limit, so it has no outcome."},
+		{TriageFailure, "Triage failed, so it has no outcome."},
+	} {
+		triage := catalogueTable[catalogueKey{KindJobFailure, "", "", "", ""}]
+		triage.Label = "Retry triage"
+		triage.Summary = text(item.summary)
+		triage.Question = text("Retry triage, or reject the task?")
+		triage.Choices = triageRetryChoices()
+		catalogueTable[catalogueKey{KindJobFailure, "", "", "", item.variant}] = triage
+	}
 }
 
 // decisionWording states the judgment kinds' questions and if-ignored

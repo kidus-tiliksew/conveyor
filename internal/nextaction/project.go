@@ -138,7 +138,7 @@ func gateBuild(in Input) built {
 		kind = core.GateKindJobFailure
 	}
 	judgment := kind != core.GateKindJobFailure
-	return built{actor: ActorOperator, kind: string(kind), judgment: judgment, gate: string(kind), reason: string(kind), variant: GateVariant(kind, in.GateSource)}
+	return built{actor: ActorOperator, kind: string(kind), judgment: judgment, gate: string(kind), reason: string(kind), variant: GateVariant(kind, in.GateSource, in.Task.RecoveryStage)}
 }
 
 func conflictExhausted(in Input) bool {

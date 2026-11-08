@@ -2,6 +2,7 @@ package storetest
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"testing"
 	"time"
@@ -34,8 +35,14 @@ func runNextActionReadFixtures(t *testing.T, st store.Store, ctx context.Context
 		if _, err := plane.Perform(ctx, id, taskops.Command{Kind: tc.command}); err != nil {
 			t.Fatal(err)
 		}
-		if action := read(id, tc.kind); action.Details.GateKind == "" {
+		action := read(id, tc.kind)
+		if action.Details.GateKind == "" {
 			t.Fatalf("%s missing gate kind", tc.kind)
+		}
+		if tc.kind == nextaction.KindJobFailure {
+			// No review approved the state a job failure holds: Approve is
+			// withheld, and the route's predicate refuses it.
+			requireApproveWithheld(t, st, ctx, id, action)
 		}
 		if tc.kind != nextaction.KindPlanApproval {
 			continue
@@ -74,10 +81,13 @@ func runNextActionReadFixtures(t *testing.T, st store.Store, ctx context.Context
 	acceptReviewRound(t, st, ctx, bounceID, func(order core.WorkOrder, seat int) core.ReviewDecision {
 		return core.ReviewDecision{TaskID: bounceID, JobID: order.JobID, ReviewWorkOrderID: order.ID, ReviewRound: 1, ReviewSeat: seat, Verdict: "changes_requested", ReasonCode: "fix", Summary: "bounce", Feedback: "again", MaxBounces: 1}
 	})
-	// A review-sourced limit keeps the review wording.
-	if got := read(bounceID, nextaction.KindReviewBounceLimit); got.Label != "Settle review" || got.Question != "Review bounced 1 times. Approve, ask for changes, or reject?" {
+	// A review-sourced limit, recorded without a source, keeps the review
+	// wording and Approve.
+	got := read(bounceID, nextaction.KindReviewBounceLimit)
+	if got.Label != "Settle review" || got.Question != "Review bounced 1 times. Approve, ask for changes, or reject?" {
 		t.Fatalf("bounce label=%q question=%q, want the review wording and the recorded bounce count", got.Label, got.Question)
 	}
+	requireApproveOffered(t, st, ctx, bounceID, got)
 	runGateSourceFixtures(t, st, ctx, workspace, now, read)
 
 	claimedID := orderTask(t, st, ctx, workspace, core.WorkOrder{})
@@ -144,31 +154,112 @@ func runGateSourceFixtures(t *testing.T, st store.Store, ctx context.Context, wo
 		core.Event{Kind: "pipeline.bounce_limit", Payload: core.JSONPayload(map[string]any{"source": "spec.output_invalid", "window": 3, "max_bounces": 3})})
 	got := read(planning, nextaction.KindReviewBounceLimit)
 	if got.Label != "Settle planning output" || got.Summary != "Planning returned invalid output until the bounce limit." ||
-		got.Question != "Planning returned invalid output 3 times. Approve, ask for changes, or reject?" || got.Details.GateKind != string(core.GateKindReviewBounceLimit) {
+		got.Question != "Planning returned invalid output 3 times. Ask for changes, or reject?" || got.Details.GateKind != string(core.GateKindReviewBounceLimit) {
 		t.Fatalf("planning-sourced bounce limit=%+v", got)
 	}
-	if labels := choiceLabels(got.Choices); strings.Join(labels, ",") != "Approve,Ask for changes…,Reject" {
-		t.Fatalf("planning-sourced bounce limit choices=%v, want the unchanged review choices", labels)
+	if labels := choiceLabels(got.Choices); strings.Join(labels, ",") != "Ask for changes…,Reject" {
+		t.Fatalf("planning-sourced bounce limit choices=%v, want redirect and reject with Approve withheld", labels)
 	}
+	requireApproveWithheld(t, st, ctx, planning, got)
+	// A limit review reached with invalid output keeps the review wording and
+	// Approve.
+	reviewOutput := gate(core.TaskStageBounceLimit, core.StageReview,
+		core.Event{Kind: "review.output_invalid", Payload: core.JSONPayload(map[string]any{"error": "verdict is required"})},
+		core.Event{Kind: "pipeline.bounce_limit", Payload: core.JSONPayload(map[string]any{"source": core.ReviewOutputInvalidSource, "window": 3, "max_bounces": 3})})
+	got = read(reviewOutput, nextaction.KindReviewBounceLimit)
+	if got.Label != "Settle review" || choiceLabels(got.Choices)[0] != "Approve" {
+		t.Fatalf("review-output bounce limit=%+v, want the review wording with Approve", got)
+	}
+	requireApproveOffered(t, st, ctx, reviewOutput, got)
+	// Every backend transfers at most the first 64 characters of a source. A
+	// source that only begins with review's is cut and never read as review's.
+	cut := gate(core.TaskStageBounceLimit, core.StageImplement,
+		core.Event{Kind: "pipeline.bounce_limit", Payload: core.JSONPayload(map[string]any{"source": core.ReviewOutputInvalidSource + strings.Repeat("x", 80), "window": 3, "max_bounces": 3})})
+	got = read(cut, nextaction.KindReviewBounceLimit)
+	if got.Label != "Settle bounce limit" {
+		t.Fatalf("cut-source bounce limit=%+v, want the unreviewed wording", got)
+	}
+	requireApproveWithheld(t, st, ctx, cut, got)
 	triage := gate(core.TaskJobFail, core.StageTriage,
 		core.Event{Kind: "triage.output_invalid", Payload: core.JSONPayload(map[string]any{"error": "triage summary is required"})},
 		core.Event{Kind: "pipeline.bounce_limit", Payload: core.JSONPayload(map[string]any{"source": "triage.output_invalid", "window": 3, "max_bounces": 3})},
 		core.Event{Kind: "job.failed", Payload: core.JSONPayload(map[string]any{"error": "Triage output stayed invalid after 3 attempts, so triage has no outcome. Last validation error: triage summary is required", "source": "triage.output_invalid"})})
 	got = read(triage, nextaction.KindJobFailure)
 	if got.Label != "Retry triage" || got.Summary != "Triage returned invalid output until the bounce limit, so it has no outcome." ||
-		got.Details.GateKind != string(core.GateKindJobFailure) || got.Judgment {
+		got.Question != "Retry triage, or reject the task?" || got.Details.GateKind != string(core.GateKindJobFailure) || got.Judgment {
 		t.Fatalf("triage job failure=%+v", got)
 	}
-	for _, text := range []string{got.Label, got.Summary, got.Question, got.IfIgnored} {
-		if strings.Contains(strings.ToLower(text), "review") {
-			t.Fatalf("triage job failure names review: %q", text)
-		}
-	}
+	requireTriageRetry(t, got)
+	requireApproveWithheld(t, st, ctx, triage, got)
+	// A later sourceless failure of triage, such as an exceeded authority
+	// budget, drops the invalid-output summary and still offers Retry
+	// (req-intake-and-triage AC-3.4).
 	superseded := gate(core.TaskJobFail, core.StageTriage,
 		core.Event{Kind: "job.failed", Payload: core.JSONPayload(map[string]any{"error": "invalid", "source": "triage.output_invalid"})},
 		core.Event{Kind: "context.authority_budget_exceeded", Payload: core.JSONPayload(map[string]any{"reason_code": "authority_budget_exceeded"})})
-	if got = read(superseded, nextaction.KindJobFailure); got.Label != "Job failure" || got.Summary != "A job failed and needs a person." {
-		t.Fatalf("a later sourceless job failure kept the triage wording: %+v", got)
+	if got = read(superseded, nextaction.KindJobFailure); got.Label != "Retry triage" || got.Summary != "Triage failed, so it has no outcome." || got.Question != "Retry triage, or reject the task?" {
+		t.Fatalf("a later sourceless triage failure kept the invalid-output wording: %+v", got)
+	}
+	requireTriageRetry(t, got)
+	requireApproveWithheld(t, st, ctx, superseded, got)
+}
+
+// requireTriageRetry checks a triage job failure's choices: Retry, the
+// redirect act, and reject, with no sentence naming review
+// (component-next-action invariant 8; req-intake-and-triage AC-3.4).
+func requireTriageRetry(t *testing.T, got nextaction.NextAction) {
+	t.Helper()
+	if labels := choiceLabels(got.Choices); strings.Join(labels, ",") != "Retry,Reject" || got.Choices[0].ID != "redirect" {
+		t.Fatalf("triage job failure choices=%+v, want Retry and Reject", got.Choices)
+	}
+	for _, text := range []string{got.Label, got.Summary, got.Question, got.IfIgnored, got.Choices[0].Label, got.Choices[0].Effect} {
+		if strings.Contains(strings.ToLower(text), "review") || strings.Contains(strings.ToLower(text), "changes") {
+			t.Fatalf("triage job failure uses a review word: %q", text)
+		}
+	}
+}
+
+// requireApproveWithheld checks that the statement withholds Approve with the
+// route's refusal code and plain sentence, and that the route's predicate,
+// reading the same history on this backend, refuses it and writes nothing
+// (component-next-action invariants 7, 18; req-operator-next-action AC-1.4).
+func requireApproveWithheld(t *testing.T, st store.Store, ctx context.Context, id string, got nextaction.NextAction) {
+	t.Helper()
+	for _, choice := range got.Choices {
+		if choice.ID == "approve" {
+			t.Fatalf("task %s offers approve: %+v", id, got.Choices)
+		}
+	}
+	want := nextaction.Refusal{Choice: "approve", Text: core.ApproveWithoutReviewRefusal, Code: core.ApproveWithoutReviewCode}
+	if len(got.Details.Refusals) != 1 || got.Details.Refusals[0] != want {
+		t.Fatalf("task %s refusals=%+v, want %+v", id, got.Details.Refusals, want)
+	}
+	before, err := st.GetTask(ctx, id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.UnreviewedApproveRefusal(ctx, st, before); !errors.Is(err, store.ErrApproveWithoutReview) {
+		t.Fatalf("task %s route refusal=%v, want ErrApproveWithoutReview", id, err)
+	}
+	after, err := st.GetTask(ctx, id)
+	if err != nil || after.State != core.TaskAwaiting || after.GateKind != before.GateKind || after.ApprovedHeadSHA != before.ApprovedHeadSHA {
+		t.Fatalf("task %s after a refused approve=%+v err=%v, want it at its gate", id, after, err)
+	}
+}
+
+// requireApproveOffered checks that a review-sourced gate offers Approve and
+// that the route's predicate admits it on this backend.
+func requireApproveOffered(t *testing.T, st store.Store, ctx context.Context, id string, got nextaction.NextAction) {
+	t.Helper()
+	if len(got.Choices) == 0 || got.Choices[0].ID != "approve" || len(got.Details.Refusals) != 0 {
+		t.Fatalf("task %s choices=%+v refusals=%+v, want Approve offered", id, got.Choices, got.Details.Refusals)
+	}
+	task, err := st.GetTask(ctx, id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.UnreviewedApproveRefusal(ctx, st, task); err != nil {
+		t.Fatalf("task %s route refusal=%v, want the approve admitted", id, err)
 	}
 }
 

@@ -3,6 +3,7 @@ package store
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"slices"
 	"sort"
@@ -723,6 +724,35 @@ func recordedBounceCount(events []core.Event) int {
 		return 0
 	}
 	return 0
+}
+
+// ErrApproveWithoutReview refuses an approve at a gate no review reached. The
+// review route answers 409 with core.ApproveWithoutReviewCode and records no
+// intervention (component-next-action invariant 7).
+var ErrApproveWithoutReview = errors.New(core.ApproveWithoutReviewRefusal)
+
+// UnreviewedApproveRefusal applies core.NextActionUnreviewedApproveRefusal to
+// an awaiting task with the gate source the next action folds, read through
+// the same ListNextActionHistory, so the review route refuses exactly the
+// approve the next action withholds. It returns ErrApproveWithoutReview when
+// the predicate refuses, and the read's error when the source cannot be read;
+// it writes nothing.
+func UnreviewedApproveRefusal(ctx context.Context, st NextActionInputStore, task core.Task) error {
+	if task.State != core.TaskAwaiting {
+		return nil
+	}
+	source := ""
+	if task.GateKind == core.GateKindReviewBounceLimit {
+		histories, err := st.ListNextActionHistory(ctx, []string{task.ID})
+		if err != nil {
+			return err
+		}
+		source = histories[task.ID].GateSource
+	}
+	if core.NextActionUnreviewedApproveRefusal(task, source) != "" {
+		return ErrApproveWithoutReview
+	}
+	return nil
 }
 
 // recordedGateSource is the string source of the latest event among
