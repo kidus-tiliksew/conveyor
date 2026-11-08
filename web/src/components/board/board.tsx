@@ -205,21 +205,12 @@ function Kanban() {
     setOffset(Math.floor((data.total - 1) / data.limit) * data.limit)
   }, [data, offset])
 
-  // The feed's total counts blueprint anchors, which it drops from each page
-  // after reading that page. So a short page does not end the list, but a page
-  // whose window reaches the total does. A page holding only anchors comes back
-  // empty: the pager steps back from it and remembers that the list ends there.
-  const [emptyPage, setEmptyPage] = useState<{ offset: number; total: number }>()
-  useEffect(() => setEmptyPage(undefined), [filterKey])
-  useEffect(() => {
-    if (!data || data.items.length > 0 || data.offset === 0 || data.offset >= data.total) return
-    setEmptyPage({ offset: data.offset, total: data.total })
-    setOffset(Math.max(0, data.offset - data.limit))
-  }, [data])
-  const end = data && (emptyPage?.total === data.total ? emptyPage.offset : data.total)
-  const lastPage = Boolean(data && end !== undefined && data.offset + data.limit >= end)
-  const singlePage = lastPage && data?.offset === 0
+  // The feed excludes blueprint anchors before it pages, so its total counts
+  // only rows the Board shows and the served total alone ends the list
+  // (component-web-task-surfaces invariant 15).
   const shown = data ? data.offset + data.items.length : 0
+  const lastPage = Boolean(data && shown >= data.total)
+  const singlePage = lastPage && data?.offset === 0
 
   const scroller = useRef<HTMLElement>(null)
   const laneStrip = useMediaQuery(laneStripQuery)
@@ -275,7 +266,7 @@ function Kanban() {
                 <span className="font-medium text-foreground">
                   {data.total === 0 ? 0 : data.offset + 1}–{Math.min(shown, data.total)}
                 </span>{' '}
-                of {lastPage ? Math.min(shown, data.total) : data.total}
+                of {data.total}
               </span>
               <Button
                 size="icon"

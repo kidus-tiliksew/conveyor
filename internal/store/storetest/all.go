@@ -234,6 +234,7 @@ func RunAll(t *testing.T, factory Factory) {
 	run("TaskStartOver", func(t *testing.T) { runTaskStartOver(t, factory) })
 	run("TaskMap", func(t *testing.T) { RunTaskMapConformance(t, factory.fresh(t, nil)) })
 	run("ActivityValidation", func(t *testing.T) { RunActivityValidationConformance(t, factory.fresh(t, nil)) })
+	run("ActivityAnchorPaging", func(t *testing.T) { RunActivityAnchorPagingConformance(t, factory.fresh(t, nil)) })
 	run("ActivityMarkerCompactReads", func(t *testing.T) {
 		x := factory.fresh(t, nil)
 		if factory.ProductionCapable && x.DrainReadBytes == nil {
