@@ -13,7 +13,7 @@ import { TaskActivityTabs, useTaskActivityView } from '../components/task/task-a
 import { TaskContextCard } from '../components/task/task-context-card'
 import { TaskAgentPrompt, TaskFacts, TaskIdentity } from '../components/task/task-header'
 import { TaskLoadError } from '../components/task/task-load-error'
-import { isTaskNotFound, useTaskDetail, useTaskOrder } from '../components/task/use-task-detail'
+import { useTaskDetail, useTaskOrder } from '../components/task/use-task-detail'
 import { Button } from '../components/ui/button'
 import { Skeleton } from '../components/ui/skeleton'
 import type { ActivityItem } from '../lib/types'
@@ -28,7 +28,11 @@ export function TaskFullPage() {
   const { taskId } = useParams({ from: '/w/$workspaceId/tasks/$taskId/full' })
   const { data: item, isLoading, error, refetch, isFetching } = useTaskDetail(taskId)
   const { previousId, nextId, windowEdge } = useTaskOrder(taskId)
-  const notFound = !item && error != null && isTaskNotFound(error)
+  // No task loaded: the read failed, whether it answered 404 or failed another
+  // way, and no earlier read left a task. A read still pending keeps the
+  // controls, so stepping through Board tasks never pulls them from under the
+  // pointer or moves the header.
+  const noTask = !item && error != null
   // A blueprint anchor has one home, and it is not this page.
   const redirecting = useCanonicalBlueprintRedirect(item?.task)
   // Gate tasks open scrolled down to the gate, so the bar takes over naming the
@@ -82,9 +86,9 @@ export function TaskFullPage() {
             </>
           )}
         </nav>
-        {/* A task the read answers 404 for has no lineage and no Board
-            neighbours to offer, so its header keeps only the way out. */}
-        {!notFound && (
+        {/* With no task loaded there is no lineage and no Board neighbour to
+            offer, so the header keeps only the way out. */}
+        {!noTask && (
           <>
             {/* The corner affordance REQ-3 asks for: what this task connects to is
                 one read away, and it costs nothing until it is opened. */}

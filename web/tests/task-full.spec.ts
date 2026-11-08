@@ -2147,36 +2147,72 @@ test('task detail headers show the task name while routes and API lookup keep us
   expect(new URL(page.url()).pathname).toBe(`/w/demo/tasks/${sheetTaskID}`)
 })
 
-// A task the read answers 404 for loaded nothing, so neither detail surface
-// offers its Knowledge explorer or Board neighbours; Close on the sheet and
-// the Board link on the full page stay (component-web-task-surfaces).
-test('the task not-found state renders no explorer or previous and next controls', async ({ page }) => {
-  const missing = 'missing-task'
-  await page.route(`**/v1/tasks/${missing}/activity*`, (route) =>
-    route.fulfill({ status: 404, json: { error: 'not_found', message: 'task not found' } }),
-  )
+// With no task loaded, because the read answered 404 or failed another way,
+// neither detail surface offers its Knowledge explorer or Board neighbours;
+// Close on the sheet and the Board link on the full page stay
+// (component-web-task-surfaces).
+async function expectNoTaskControls(scope: Page | Locator) {
+  await expect(scope.getByRole('button', { name: 'Knowledge explorer' })).toHaveCount(0)
+  for (const label of ['Previous task', 'Next task']) {
+    await expect(scope.getByRole('button', { name: label })).toHaveCount(0)
+    await expect(scope.getByRole('link', { name: label })).toHaveCount(0)
+  }
+}
 
-  await page.goto(`/w/demo/tasks/${missing}/full`)
+for (const failure of [
+  { name: '404', taskId: 'missing-task', status: 404, heading: 'Task not found', retry: false },
+  { name: 'non-404 failure', taskId: 'failing-task', status: 503, heading: 'Could not load this task', retry: true },
+]) {
+  test(`with no task loaded after a ${failure.name}, no explorer or previous and next controls render`, async ({
+    page,
+  }) => {
+    await page.route(`**/v1/tasks/${failure.taskId}/activity*`, (route) =>
+      route.fulfill({
+        status: failure.status,
+        json:
+          failure.status === 404
+            ? { error: 'not_found', message: 'task not found' }
+            : { error: 'unavailable', message: 'The task read is unavailable.' },
+      }),
+    )
+
+    await page.goto(`/w/demo/tasks/${failure.taskId}/full`)
+    await expect(page.getByRole('heading', { name: failure.heading })).toBeVisible()
+    await expect(page.getByRole('button', { name: 'Try again' })).toHaveCount(failure.retry ? 1 : 0)
+    const fullHeader = page.locator('header').filter({ has: page.getByRole('link', { name: 'Back to board' }) })
+    await expect(fullHeader.getByRole('link', { name: 'Back to board' })).toBeVisible()
+    await expectNoTaskControls(page)
+
+    await page.goto(`/w/demo/tasks/${failure.taskId}`)
+    const sheet = page.getByRole('dialog', { name: 'Task detail' })
+    await expect(sheet.getByRole('heading', { name: failure.heading })).toBeVisible()
+    await expect(sheet.getByRole('button', { name: 'Close panel' })).toBeVisible()
+    await expectNoTaskControls(sheet)
+    await sheet.getByRole('button', { name: 'Close panel' }).click()
+    await expect(sheet).toHaveCount(0)
+  })
+}
+
+// While the first read is pending the controls stay, so stepping through Board
+// tasks never pulls them from under the pointer; they leave only once the read
+// fails with no task loaded.
+test('the explorer and previous and next controls stay while the task read is pending', async ({ page }) => {
+  let release = () => {}
+  const held = new Promise<void>((resolve) => {
+    release = resolve
+  })
+  await page.route('**/v1/tasks/slow-missing/activity*', async (route) => {
+    await held
+    await route.fulfill({ status: 404, json: { error: 'not_found', message: 'task not found' } }).catch(() => {})
+  })
+  await page.goto('/w/demo/tasks/slow-missing/full')
+  await expect(page.getByRole('button', { name: 'Knowledge explorer' })).toBeVisible()
+  await expect(
+    page.getByRole('button', { name: 'Previous task' }).or(page.getByRole('link', { name: 'Previous task' })),
+  ).toBeVisible()
+  release()
   await expect(page.getByRole('heading', { name: 'Task not found' })).toBeVisible()
-  const fullHeader = page.locator('header').filter({ has: page.getByRole('link', { name: 'Back to board' }) })
-  await expect(fullHeader.getByRole('link', { name: 'Back to board' })).toBeVisible()
-  await expect(page.getByRole('button', { name: 'Knowledge explorer' })).toHaveCount(0)
-  await expect(page.getByRole('button', { name: 'Previous task' })).toHaveCount(0)
-  await expect(page.getByRole('link', { name: 'Previous task' })).toHaveCount(0)
-  await expect(page.getByRole('button', { name: 'Next task' })).toHaveCount(0)
-  await expect(page.getByRole('link', { name: 'Next task' })).toHaveCount(0)
-
-  await page.goto(`/w/demo/tasks/${missing}`)
-  const sheet = page.getByRole('dialog', { name: 'Task detail' })
-  await expect(sheet.getByRole('heading', { name: 'Task not found' })).toBeVisible()
-  await expect(sheet.getByRole('button', { name: 'Close panel' })).toBeVisible()
-  await expect(sheet.getByRole('button', { name: 'Knowledge explorer' })).toHaveCount(0)
-  await expect(sheet.getByRole('button', { name: 'Previous task' })).toHaveCount(0)
-  await expect(sheet.getByRole('link', { name: 'Previous task' })).toHaveCount(0)
-  await expect(sheet.getByRole('button', { name: 'Next task' })).toHaveCount(0)
-  await expect(sheet.getByRole('link', { name: 'Next task' })).toHaveCount(0)
-  await sheet.getByRole('button', { name: 'Close panel' }).click()
-  await expect(sheet).toHaveCount(0)
+  await expectNoTaskControls(page)
 })
 
 test('task metadata presents stored spec versions as plan versions', async ({ page }) => {

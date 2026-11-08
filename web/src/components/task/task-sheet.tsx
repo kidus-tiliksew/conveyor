@@ -23,7 +23,7 @@ import { TaskActivityTabs, useTaskActivityView } from './task-activity-tabs'
 import { TaskContextCard } from './task-context-card'
 import { TaskAgentPrompt, TaskFacts, TaskIdentity } from './task-header'
 import { TaskLoadError } from './task-load-error'
-import { isTaskNotFound, taskHasVerifyStage, useTaskDetail, useTaskOrder, useTaskVerification } from './use-task-detail'
+import { taskHasVerifyStage, useTaskDetail, useTaskOrder, useTaskVerification } from './use-task-detail'
 
 // The task detail sheet: the costed event timeline — which
 // carries the review actions as its live tail — opened over the board so the
@@ -42,7 +42,11 @@ export function TaskSheet({ taskId }: { taskId: string }) {
   const boardOrder = useTaskOrder(taskId)
   const previousId = boardOrder.previousId
   const nextId = boardOrder.nextId
-  const notFound = !item && error != null && isTaskNotFound(error)
+  // No task loaded: the read failed, whether it answered 404 or failed another
+  // way, and no earlier read left a task. A read still pending keeps the
+  // controls, so stepping through Board tasks never pulls them from under the
+  // pointer or moves the header.
+  const noTask = !item && error != null
   const close = () =>
     void navigate({ to: '/w/$workspaceId/', params: { workspaceId: workspace }, search: (prev) => prev })
   // A blueprint anchor has one home, and it is not this sheet.
@@ -69,9 +73,9 @@ export function TaskSheet({ taskId }: { taskId: string }) {
         <span data-sheet-title className="min-w-0 flex-1 basis-0 truncate text-sm font-medium text-muted">
           {headingHidden ? item?.task.title : <span className="sr-only">{item?.task.title}</span>}
         </span>
-        {/* A task the read answers 404 for has no lineage and no Board
-            neighbours to offer, so its header keeps only the way out. */}
-        {!notFound && (
+        {/* With no task loaded there is no lineage and no Board neighbour to
+            offer, so the header keeps only the way out. */}
+        {!noTask && (
           <>
             {/* The same corner affordance the full route carries (REQ-3): the
                 panel opens over this one without dismissing it. */}
