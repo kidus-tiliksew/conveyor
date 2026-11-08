@@ -4,7 +4,7 @@ import { useRef } from 'react'
 import { dependencyBlockedImplementationOrder, failedTriage, unsatisfiableDependencyOrder } from '../../lib/activity'
 import { redispatchTask, reviewTask } from '../../lib/api'
 import { type MutationWorkspace, taskDetailQueryKey } from '../../lib/query-keys'
-import type { ActivityItem } from '../../lib/types'
+import type { ActivityItem, NextAction } from '../../lib/types'
 import { useWorkspaceCapability, useWorkspaceSelection } from '../app-shell'
 import { Button } from '../ui/button'
 import { readableError } from '../ui/error-state'
@@ -91,14 +91,35 @@ export function FailedTriageCard({ item }: { item: ActivityItem }) {
   )
 }
 
-export function canRedispatch(item: ActivityItem) {
-  if (dependencyBlockedImplementationOrder(item) || unsatisfiableDependencyOrder(item)) return false
-  return item.task.state === 'queued' || item.task.state === 'closed' || item.task.state === 'parked'
+// The task's redispatch route, as the server states it in a choice's path.
+function redispatchPaths(taskId: string) {
+  return new Set([`/v1/tasks/${taskId}/redispatch`, `/v1/tasks/${encodeURIComponent(taskId)}/redispatch`])
 }
 
-// Task management beyond the gate: nudge a stuck queued task, recover a
-// parked task at its recorded recovery stage, or reopen a closed task with a
-// decided stage.
+// Whether the server's next action already offers the redispatch act: any
+// choice whose path is the task's redispatch route, whatever its ID or label
+// (`recover` at parked, `redispatch` at stalled and dispatch_exhausted). Such a
+// choice is the act's one button, under the server's label (DEC-61;
+// req-operator-next-action AC-1.4, AC-1.7).
+export function offersRedispatchChoice(action: Pick<NextAction, 'choices'>, taskId: string) {
+  const paths = redispatchPaths(taskId)
+  return (action.choices ?? []).some((choice) => paths.has(choice.path))
+}
+
+// The card covers what the next action offers no choice for: a queued task
+// whose claim has not started, and a closed task with a decided stage. A
+// parked task's redispatch is always the server's choice. The card waits for
+// the next action, so a slow read never shows a second button for a choice
+// about to arrive; a failed read leaves the card, since then no choice renders.
+export function canRedispatch(item: ActivityItem, nextAction: NextAction | undefined, nextActionFailed: boolean) {
+  if (dependencyBlockedImplementationOrder(item) || unsatisfiableDependencyOrder(item)) return false
+  if (item.task.state !== 'queued' && item.task.state !== 'closed') return false
+  if (nextAction) return !offersRedispatchChoice(nextAction, item.task.id)
+  return nextActionFailed
+}
+
+// Task management beyond the gate: nudge a stuck queued task, or reopen a
+// closed task with a decided stage.
 export function RedispatchCard({ item }: { item: ActivityItem }) {
   const { workspace } = useWorkspaceSelection()
   const queryClient = useQueryClient()
@@ -110,19 +131,16 @@ export function RedispatchCard({ item }: { item: ActivityItem }) {
       void queryClient.invalidateQueries({ queryKey: ['activity'] })
     },
   })
-  const parked = item.task.state === 'parked'
   return (
     <div className="flex items-center justify-between gap-3 rounded-lg border border-border bg-surface px-3 py-2.5">
       <p className="text-xs text-muted">
         {item.task.state === 'queued'
-          ? 'Queued — re-enqueue if dispatch stalled.'
-          : parked
-            ? 'Parked by triage — resume from the recorded recovery stage when this work is ready.'
-            : 'Closed — redispatch resumes at the decided stage.'}
+          ? 'Waiting for an agent to pick this task up. If none does, Redispatch adds it to the queue again.'
+          : 'Closed — redispatch resumes at the decided stage.'}
       </p>
       <Button variant="secondary" size="sm" disabled={mutation.isPending} onClick={() => mutation.mutate()}>
         <RotateCcw />
-        {mutation.isPending ? (parked ? 'Resuming…' : 'Dispatching…') : parked ? 'Resume task' : 'Redispatch'}
+        {mutation.isPending ? 'Dispatching…' : 'Redispatch'}
       </Button>
       {mutation.error != null && (
         <p className="text-xs text-failure">{readableError(mutation.error, 'Something went wrong. Try again.')}</p>

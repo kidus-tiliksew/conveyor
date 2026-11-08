@@ -1338,3 +1338,152 @@ test('a compact row opens the document preview over the task sheet, and Escape c
   await expect(page.getByRole('dialog', { name: `Preview: ${contextTargets[1].title}` })).toBeVisible()
   expect(posts).toEqual([])
 })
+
+// A parked task's next-action card says why triage parked it, from the bounded
+// detail's summaries.park_reason, and its server Recover choice is the task
+// detail's one button for the redispatch route: the timeline adds no second
+// card for the same act (DEC-61; req-operator-next-action AC-1.4, AC-1.7;
+// component-web-task-surfaces invariant 25; task 261108-1ae968).
+function parkedWithRecover(): NextAction {
+  return {
+    label: 'Decide on a parked task',
+    actor: 'operator',
+    kind: 'parked',
+    judgment: true,
+    summary: 'This task is parked.',
+    question: 'Put it back, or close it?',
+    if_ignored: 'It stays parked.',
+    deadline: null,
+    choices: [
+      ['recover', 'Recover', 'redispatch', 'recover_work'],
+      ['close', 'Close', 'close', 'operate_gates'],
+      ['start_over', 'Start over', 'restart', 'operate_gates'],
+    ].map(([id, label, route, capability]) => ({
+      id,
+      label,
+      effect: `${label} effect.`,
+      method: 'POST',
+      path: `/v1/tasks/${taskId}/${route}`,
+      capability,
+      allowed: true,
+    })),
+    details: {},
+  }
+}
+
+// What triage recorded when it parked the task; the fake server folds it into
+// summaries.park_reason. The event page itself carries no park facts.
+const parkedTriage = {
+  id: '9007199254741003',
+  task_id: taskId,
+  kind: 'triage.completed',
+  job_id: `${taskId}-triage`,
+  at: '2026-10-12T09:30:00Z',
+  payload: {
+    route: 'parked',
+    summary: 'The task names no repository surface to change.',
+    brief: {
+      questions: ['Which dashboard page shows the duplicate?', '  '],
+      risks: ['Guessing the surface could edit an unrelated page.'],
+    },
+  },
+}
+
+for (const surface of [
+  { name: 'Board sheet', url: `/w/demo/tasks/${taskId}` },
+  { name: 'full task page', url: `/w/demo/tasks/${taskId}/full` },
+]) {
+  test(`a parked task on the ${surface.name} shows the park reason and one redispatch button`, async ({ page }) => {
+    const action = parkedWithRecover()
+    const posts = await mockAPI(
+      page,
+      () => {
+        const item = activity('parked', action)
+        return { ...item, events: [...item.events, parkedTriage] }
+      },
+      () => action,
+    )
+    await page.goto(surface.url)
+    const card = page.getByRole('region', { name: 'Next action' })
+    const reason = card.getByRole('region', { name: 'Why it is parked' })
+    await expect(reason).toContainText('Triage summary')
+    await expect(reason).toContainText('The task names no repository surface to change.')
+    await expect(reason.getByRole('region', { name: 'Open questions' }).getByRole('listitem')).toHaveText([
+      'Which dashboard page shows the duplicate?',
+    ])
+    await expect(reason.getByRole('region', { name: 'Risks' }).getByRole('listitem')).toHaveText([
+      'Guessing the surface could edit an unrelated page.',
+    ])
+    // The catalogue question still follows the recorded facts.
+    await expect(card.getByText('Put it back, or close it?')).toBeVisible()
+
+    // One button posts the redispatch route: the server's Recover choice.
+    await expect(page.getByRole('button', { name: /^(Recover|Redispatch|Resume task)$/ })).toHaveCount(1)
+    await expect(
+      page.getByRole('region', { name: 'Execution event timeline' }).getByRole('button', { name: /Redispatch|Resume/ }),
+    ).toHaveCount(0)
+    await card.getByRole('button', { name: 'Recover', exact: true }).click()
+    await expect
+      .poll(() => posts.map((post) => `${post.method} ${post.path}`))
+      .toEqual([`POST /v1/tasks/${taskId}/redispatch`])
+  })
+}
+
+test('a parked task without a recorded park reason says triage recorded none', async ({ page }) => {
+  const action = parkedWithRecover()
+  await mockAPI(
+    page,
+    () => activity('parked', action),
+    () => action,
+  )
+  await page.goto(`/w/demo/tasks/${taskId}/full`)
+  const card = page.getByRole('region', { name: 'Next action' })
+  await expect(card.locator('[data-park-reason]')).toHaveText('Triage recorded no reason.')
+  await expect(card.getByRole('region', { name: 'Why it is parked' })).toHaveCount(0)
+})
+
+test('a stalled task offers redispatch only as the server choice', async ({ page }) => {
+  const action: NextAction = {
+    label: 'Stalled',
+    actor: 'operator',
+    kind: 'stalled',
+    judgment: false,
+    summary: 'No agent claimed this task in time.',
+    deadline: null,
+    choices: [
+      {
+        id: 'redispatch',
+        label: 'Redispatch',
+        effect: 'Puts the task back in the queue.',
+        method: 'POST',
+        path: `/v1/tasks/${taskId}/redispatch`,
+        capability: 'recover_work',
+        allowed: true,
+      },
+    ],
+    details: { stall_reason: 'unclaimable' },
+  }
+  await mockAPI(
+    page,
+    () =>
+      activity('queued', action, [
+        {
+          id: 'order-implement-1',
+          task_id: taskId,
+          job_id: 'order-implement-1',
+          stage: 'implement',
+          state: 'queued',
+          claimable: false,
+          queue_entered_at: timestamp,
+          created_at: timestamp,
+          updated_at: timestamp,
+        } as WorkOrder,
+      ]),
+    () => action,
+  )
+  await page.goto(`/w/demo/tasks/${taskId}/full`)
+  const card = page.getByRole('region', { name: 'Next action' })
+  await expect(card.getByRole('button', { name: 'Redispatch', exact: true })).toBeVisible()
+  await expect(page.getByRole('button', { name: /^(Recover|Redispatch|Resume task)$/ })).toHaveCount(1)
+  await expect(page.locator('[data-park-reason]')).toHaveCount(0)
+})

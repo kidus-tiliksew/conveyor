@@ -1416,3 +1416,173 @@ test.describe('round summary at 390 px', () => {
     await panel.screenshot({ path: testInfo.outputPath('review-round-summary-panel-390.png') })
   })
 })
+
+// The timeline's redispatch card never repeats a redispatch-path choice the
+// server's next action already offers: that choice is task detail's one button
+// for the act, under the server's label. The card keeps a closed task with a
+// decided stage and a queued task the next action offers no such choice for
+// (DEC-61; req-operator-next-action AC-1.4, AC-1.7; task 261108-1ae968).
+const redispatchButtons = (page: Page) => page.getByRole('button', { name: /^(Recover|Redispatch|Resume task)$/ })
+
+function recordPosts(page: Page) {
+  const posts: string[] = []
+  return page
+    .route(`**/v1/tasks/${taskId}/redispatch*`, (route) => {
+      posts.push(`${route.request().method()} ${new URL(route.request().url()).pathname}`)
+      return route.fulfill({ json: {} })
+    })
+    .then(() => posts)
+}
+
+const parkedAction: NextAction = {
+  ...nextAction(`${taskId}-triage-1`),
+  label: 'Decide on a parked task',
+  actor: 'operator',
+  kind: 'parked',
+  judgment: true,
+  summary: 'This task is parked.',
+  question: 'Put it back, or close it?',
+  current_order: undefined,
+  attempt: undefined,
+  choices: [
+    {
+      id: 'recover',
+      label: 'Recover',
+      effect: 'Puts the task back in the queue.',
+      method: 'POST',
+      path: `/v1/tasks/${taskId}/redispatch`,
+      capability: 'recover_work',
+      allowed: true,
+    },
+    {
+      id: 'close',
+      label: 'Close',
+      effect: 'Closes the task.',
+      method: 'POST',
+      path: `/v1/tasks/${taskId}/close`,
+      capability: 'operate_gates',
+      allowed: true,
+    },
+  ],
+}
+
+for (const surface of surfaces) {
+  test(`the ${surface.name} offers a parked task's redispatch once, from the server's Recover choice`, async ({
+    page,
+  }) => {
+    await mockAPI(
+      page,
+      activity({
+        task: { ...task, state: 'parked', recovery_stage: 'triage' },
+        needs_attention: true,
+        summaries: {
+          park_reason: {
+            summary: 'Triage could not tell which surface the task changes.',
+            questions: ['Which page shows the second button?'],
+            risks: [],
+            event_id: '41',
+            at: minutes(4),
+          },
+        },
+      }),
+      parkedAction,
+    )
+    const posts = await recordPosts(page)
+    await page.goto(surface.url)
+    const card = page.getByRole('region', { name: 'Next action' })
+    const reason = card.getByRole('region', { name: 'Why it is parked' })
+    await expect(reason).toContainText('Triage could not tell which surface the task changes.')
+    await expect(reason.getByRole('region', { name: 'Open questions' })).toContainText(
+      'Which page shows the second button?',
+    )
+    await expect(reason.getByRole('region', { name: 'Risks' })).toHaveCount(0)
+
+    await expect(redispatchButtons(page)).toHaveCount(1)
+    const timeline = page.getByRole('region', { name: 'Execution event timeline' })
+    await expect(timeline.getByRole('button')).toHaveCount(0)
+    await expect(timeline.getByText(/Parked by triage — resume/)).toHaveCount(0)
+    await card.getByRole('button', { name: 'Recover', exact: true }).click()
+    await expect.poll(() => posts).toEqual([`POST /v1/tasks/${taskId}/redispatch`])
+  })
+}
+
+test('a closed task with a decided stage keeps the timeline redispatch card', async ({ page }) => {
+  await mockAPI(page, activity({ task: { ...task, state: 'closed', next_stage: 'implement' } }), {
+    ...nextAction(`${taskId}-implement-1`),
+    label: 'Finished',
+    actor: 'none',
+    kind: 'terminal',
+    current_order: undefined,
+    attempt: undefined,
+  })
+  const posts = await recordPosts(page)
+  await page.goto(`/w/demo/tasks/${taskId}/full`)
+  const timeline = page.getByRole('region', { name: 'Execution event timeline' })
+  await expect(timeline.getByText('Closed — redispatch resumes at the decided stage.')).toBeVisible()
+  await expect(redispatchButtons(page)).toHaveCount(1)
+  await timeline.getByRole('button', { name: 'Redispatch', exact: true }).click()
+  await expect.poll(() => posts).toEqual([`POST /v1/tasks/${taskId}/redispatch`])
+})
+
+test('a queued task the next action offers no redispatch for keeps the card in plain words', async ({ page }) => {
+  await mockAPI(
+    page,
+    activity({
+      task: { ...task, state: 'queued' },
+      work_orders: [order(`${taskId}-implement-1`, { state: 'queued', claimable: true })],
+    }),
+    {
+      ...nextAction(`${taskId}-implement-1`),
+      label: 'Waiting for an agent',
+      kind: 'queued',
+      summary: 'Waiting for an agent to claim this task.',
+      attempt: undefined,
+    },
+  )
+  await page.goto(`/w/demo/tasks/${taskId}/full`)
+  const timeline = page.getByRole('region', { name: 'Execution event timeline' })
+  await expect(
+    timeline.getByText(
+      'Waiting for an agent to pick this task up. If none does, Redispatch adds it to the queue again.',
+    ),
+  ).toBeVisible()
+  await expect(timeline.getByText(/re-enqueue|dispatch stalled/)).toHaveCount(0)
+  await expect(redispatchButtons(page)).toHaveCount(1)
+})
+
+test('a stalled queued task with a redispatch choice renders no timeline redispatch card', async ({ page }) => {
+  await mockAPI(
+    page,
+    activity({
+      task: { ...task, state: 'queued' },
+      work_orders: [order(`${taskId}-implement-1`, { state: 'queued', claimable: false })],
+    }),
+    {
+      ...nextAction(`${taskId}-implement-1`),
+      label: 'Stalled',
+      actor: 'operator',
+      kind: 'stalled',
+      summary: 'No agent claimed this task in time.',
+      attempt: undefined,
+      choices: [
+        {
+          id: 'redispatch',
+          label: 'Redispatch',
+          effect: 'Puts the task back in the queue.',
+          method: 'POST',
+          path: `/v1/tasks/${taskId}/redispatch`,
+          capability: 'recover_work',
+          allowed: true,
+        },
+      ],
+      details: { stall_reason: 'unclaimable' },
+    },
+  )
+  await page.goto(`/w/demo/tasks/${taskId}/full`)
+  const card = page.getByRole('region', { name: 'Next action' })
+  await expect(card.getByRole('button', { name: 'Redispatch', exact: true })).toBeVisible()
+  await expect(redispatchButtons(page)).toHaveCount(1)
+  await expect(
+    page.getByRole('region', { name: 'Execution event timeline' }).getByRole('button', { name: 'Redispatch' }),
+  ).toHaveCount(0)
+})
