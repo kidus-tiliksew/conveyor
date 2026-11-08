@@ -4,8 +4,8 @@ import { type ReactNode, useState } from 'react'
 /**
  * One document carries exactly one attention surface.
  * Every machinery signal the document produces — unreconciled repository
- * changes, code that shipped past confirmed intent, versions and decisions
- * waiting on an operator — is listed here with the action that resolves it,
+ * changes, code that shipped past confirmed intent, versions waiting on an
+ * operator — is listed here with the action that resolves it,
  * and nowhere else on the surface (REQ-1, AC-1.1 and AC-1.2). A document with
  * nothing outstanding says so in one quiet line rather than rendering an empty
  * alarm card (AC-1.3).

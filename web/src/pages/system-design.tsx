@@ -38,16 +38,13 @@ import {
   archiveSystemDesign,
   confirmSystemDesignVersion,
   dismissSystemDesignVersion,
-  fetchDecisions,
   fetchRequirements,
   fetchSystemDesign,
   fetchSystemDesigns,
-  resolveDecision,
   restoreSystemDesign,
   SystemDesignConflictError,
 } from '../lib/api'
 import { errorMessage } from '../lib/errors'
-import { decisionsQueryKey } from '../lib/query-keys'
 import type { SystemDesignSummary, SystemDesignVersion, SystemDesignView } from '../lib/types'
 
 const originLabels: Record<SystemDesignVersion['origin'], string> = {
@@ -61,15 +58,16 @@ const originLabels: Record<SystemDesignVersion['origin'], string> = {
  * ordinary reading surface. Changes and History share its header and the one
  * attention surface carries every signal that needs an operator
  * (component-web-document-surfaces; req-document-operating-surfaces REQ-1/REQ-2).
+ * It lists no decision and offers no act on one: a proposed decision is
+ * decided in the Inbox and on its own decision page
+ * (component-web-document-surfaces invariant 7; AC-8.10; DEC-121).
  * The assistant column is withdrawn from presentation while in-product
  * planning is parked — its components and every
  * propose→confirm route stay exactly as they are.
  */
 export function SystemDesignPage() {
-  const canConfirm = useWorkspaceCapability('confirm_documents')
   const { workspace } = useWorkspaceSelection()
   const navigate = useNavigate()
-  const client = useQueryClient()
   const search = useSearch({ from: '/w/$workspaceId/system-design' })
   const [query, setQuery] = useState('')
   const [sort, setSort] = useState<DocumentSort>('updated')
@@ -79,19 +77,6 @@ export function SystemDesignPage() {
     queryFn: () => fetchSystemDesigns(workspace, { includeArchived: true }),
     enabled: Boolean(workspace),
     staleTime: 60_000,
-  })
-  // Only proposed decisions are voiced here; confirmed, superseded, and
-  // dismissed decisions live on the Decisions surface
-  // (req-document-operating-surfaces AC-8.10).
-  const decisions = useQuery({
-    queryKey: decisionsQueryKey(workspace),
-    queryFn: ({ signal }) => fetchDecisions(workspace, signal),
-    enabled: Boolean(workspace),
-  })
-  const resolve = useMutation({
-    mutationFn: ({ id, action }: { id: string; action: 'confirm' | 'dismiss' }) =>
-      resolveDecision(workspace, id, action),
-    onSettled: () => void client.invalidateQueries({ queryKey: decisionsQueryKey(workspace) }),
   })
   const selected = designs.data?.find((item) => item.document.id === search.document)
   const detail = useQuery({
@@ -136,47 +121,6 @@ export function SystemDesignPage() {
   }, [designs.data, direction, query, sort])
   const archivedCount = (designs.data ?? []).filter((item) => item.document.archived).length
   const liveCount = (designs.data ?? []).length - archivedCount
-  // Decisions are workspace-wide, so they are voiced on whichever document is
-  // open — the same place they were surfaced before.
-  const decisionItems: AttentionItem[] = (decisions.data ?? [])
-    .filter((decision) => decision.status === 'proposed')
-    .map((decision) => ({
-      id: `decision-${decision.id}`,
-      anchor: `decision-${decision.id.toLowerCase()}`,
-      title: `${decision.id} is waiting for your call`,
-      detail: (
-        <>
-          <span className="block font-medium text-foreground">{decision.statement}</span>
-          {decision.context}
-        </>
-      ),
-      action: canConfirm ? (
-        <>
-          <Button
-            size="sm"
-            disabled={resolve.isPending}
-            onClick={() => resolve.mutate({ id: decision.id, action: 'confirm' })}
-          >
-            <Check />
-            {resolve.isPending && resolve.variables?.id === decision.id && resolve.variables.action === 'confirm'
-              ? 'Confirming…'
-              : 'Confirm'}
-          </Button>
-          <Button
-            size="sm"
-            variant="destructive"
-            disabled={resolve.isPending}
-            onClick={() => resolve.mutate({ id: decision.id, action: 'dismiss' })}
-          >
-            <X />
-            {resolve.isPending && resolve.variables?.id === decision.id && resolve.variables.action === 'dismiss'
-              ? 'Dismissing…'
-              : 'Dismiss'}
-          </Button>
-        </>
-      ) : undefined,
-      error: resolve.error ? errorMessage(resolve.error, 'Could not resolve this decision.') : undefined,
-    }))
 
   return (
     <div className="flex h-full min-h-0 flex-col">
@@ -292,7 +236,6 @@ export function SystemDesignPage() {
               search={search}
               item={detail.data}
               workspace={workspace}
-              decisionItems={decisionItems}
             />
           ) : selected && detail.isLoading ? (
             <div className="px-4 py-6 text-sm text-muted sm:px-8 sm:py-8">Loading document…</div>
@@ -314,11 +257,6 @@ export function SystemDesignPage() {
                   </p>
                 </CardContent>
               </Card>
-              {decisionItems.length > 0 && (
-                <div className="mt-10">
-                  <AttentionSurface items={decisionItems} />
-                </div>
-              )}
             </div>
           )}
         </main>
@@ -331,12 +269,10 @@ function DesignCanvas({
   search,
   item,
   workspace,
-  decisionItems,
 }: {
   search: ReviewSearch & { document?: string; session?: string }
   item: SystemDesignView
   workspace: string
-  decisionItems: AttentionItem[]
 }) {
   const history = useDocumentEvents('system_design', item.document.id, item)
   const client = useQueryClient()
@@ -555,7 +491,6 @@ function DesignCanvas({
           ? errorMessage(confirm.error, 'Could not confirm this version.')
           : undefined,
     })),
-    ...decisionItems,
   ]
 
   return (
