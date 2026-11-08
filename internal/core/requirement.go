@@ -279,21 +279,46 @@ func NormalizePlanningSessionGoal(goal PlanningSessionGoal) (PlanningSessionGoal
 	return goal, nil
 }
 
-// ProvisionalTitle names a session before it has produced anything. It is a
-// per-goal label, so concurrently drafting sessions do share it until one
-// finalizes and adopts its artifact's title.
-func (g PlanningSessionGoal) ProvisionalTitle() string {
+// planningSessionIDPrefix starts every planning session ID. The rest of the ID
+// is a task-style token whose first six digits are the UTC start date.
+const planningSessionIDPrefix = "session-"
+
+// NewPlanningSessionID returns the ID a new planning session is created with.
+// Both creation paths use it, so ProvisionalTitle can rely on its shape.
+func NewPlanningSessionID() string {
+	return planningSessionIDPrefix + NewTaskID()
+}
+
+// ProvisionalTitle names a session before it has produced anything. It is the
+// goal's label, which says what the session is for, followed by the session's
+// ID token, which starts with the UTC start date (component-planning). No
+// confirmed document requires sessions of one goal to share a title, and the
+// planning list cannot tell open sessions apart when they do.
+//
+// The title is unique among the workspace's sessions, open or not, because it
+// is a one-to-one function of the session ID: every backend keys planning
+// sessions by (workspace, id), so two sessions of one goal that start in the
+// same second, or concurrently, still hold different IDs. Uniqueness needs no
+// title lookup before creation and so has no check-then-create race. When two
+// creations draw the same ID, the store refuses the second insert instead of
+// storing a duplicate title. Finalizing replaces this title with the produced
+// artifact's own title.
+func (g PlanningSessionGoal) ProvisionalTitle(sessionID string) string {
+	return g.provisionalLabel() + " · " + strings.TrimPrefix(sessionID, planningSessionIDPrefix)
+}
+
+func (g PlanningSessionGoal) provisionalLabel() string {
 	switch g {
 	case PlanningGoalRequirement:
-		return "Drafting requirement…"
+		return "Drafting requirement"
 	case PlanningGoalBlueprint:
-		return "Planning work…"
+		return "Planning work"
 	case PlanningGoalSystemDesign:
-		return "Designing system…"
+		return "Designing system"
 	case PlanningGoalBundle:
-		return "Planning delivery…"
+		return "Planning delivery"
 	default:
-		return "Exploring…"
+		return "Exploring"
 	}
 }
 

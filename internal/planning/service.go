@@ -209,11 +209,13 @@ func (s *Service) CreateSession(ctx context.Context, input CreateSessionInput) (
 	if err != nil {
 		return core.PlanningSession{}, fmt.Errorf("pin primary planning repository %s: %w", primary.Name, err)
 	}
-	// A session carries its goal-derived provisional title until it produces
-	// something, and finalizing swaps in the artifact's own title. That is what
-	// retires the identical "New requirement" rows.
+	// A session carries its goal-derived provisional title, made unique by its
+	// own ID, until it produces something, and finalizing swaps in the
+	// artifact's own title. That is what retires identical rows in the
+	// planning list.
+	id := core.NewPlanningSessionID()
 	return s.Store.CreatePlanningSession(ctx, core.PlanningSession{
-		ID: "session-" + core.NewTaskID(), Title: goal.ProvisionalTitle(), Goal: goal,
+		ID: id, Title: goal.ProvisionalTitle(id), Goal: goal,
 		RequirementContextID:  input.RequirementContextID,
 		SystemDesignContextID: input.SystemDesignContextID,
 		Promotion:             input.Promotion,
@@ -1537,14 +1539,49 @@ func planningToolTarget(name string) (any, error) {
 	}
 }
 
+// expectedToolArguments is the corrective example an invalid tool call
+// receives. Each example passes validatePlanningToolArguments for its tool,
+// so a model that copies the example's shape is not refused again
+// (component-planning).
 func expectedToolArguments(name string) string {
 	target, err := planningToolTarget(name)
 	if err != nil {
 		return "a supported tool name (" + strings.Join(toolNames(), ", ") + ") and that tool's JSON object arguments"
 	}
-	if _, ok := target.(*requirementArgs); ok {
-		target = &requirementArgs{
-			RequirementID: "req-billing-retries", Title: "Billing retries", Prose: "Retry behavior promoted from the product overview.",
+	if example := toolArgumentsExample(target); example != nil {
+		target = example
+	}
+	data, err := json.Marshal(target)
+	if err != nil {
+		return "a JSON object matching the selected tool's schema"
+	}
+	return string(data)
+}
+
+// toolArgumentsExample returns a valid example for each argument shape whose
+// zero value the validator refuses. A shape whose zero value is valid, such as
+// noPlanningArgs or listFilesArgs, returns nil and is shown as its zero value.
+func toolArgumentsExample(target any) any {
+	switch target.(type) {
+	case *readRequirementArgs:
+		return &readRequirementArgs{RequirementID: "req-billing-retries"}
+	case *readSystemDesignArgs:
+		return &readSystemDesignArgs{DocumentID: "design-runtime"}
+	case *taskIDArgs:
+		return &taskIDArgs{TaskID: "260801-a1b2c3"}
+	case *artifactIDArgs:
+		return &artifactIDArgs{ArtifactID: "artifact-260801-a1b2c3"}
+	case *readFileArgs:
+		return &readFileArgs{Path: "internal/dispatch/dispatcher.go"}
+	case *grepArgs:
+		return &grepArgs{Pattern: "retry", Path: "internal/dispatch"}
+	case *historyArgs:
+		return &historyArgs{Path: "internal/dispatch/dispatcher.go"}
+	case *requirementArgs:
+		// The prose starts with the "# <title>" heading the requirement parser
+		// requires, matching Title.
+		return &requirementArgs{
+			RequirementID: "req-billing-retries", Title: "Billing retries", Prose: "# Billing retries\n\nRetry behavior promoted from the product overview.",
 			Statements: []core.RequirementStatement{{
 				ID: "REQ-1", Statement: "Failed charges use bounded retries.",
 				UserStory:          &core.RequirementUserStory{AsA: "billing operator", IWant: "failed charges retried", SoThat: "transient failures recover"},
@@ -1552,18 +1589,17 @@ func expectedToolArguments(name string) string {
 			}},
 			DerivedFrom: &core.RequirementDerivation{DocumentID: "ref-product-overview", Version: 2, SectionAnchor: "#billing-retries", TargetID: "AC-1.1"},
 		}
+	case *systemDesignArgs:
+		return &systemDesignArgs{DocumentID: "design-runtime", Title: "Runtime architecture", Category: "Architecture", Content: "# Runtime architecture\n\nThe API delegates durable work to the dispatcher.\n\n```conveyor:governs\n- repo: conveyor\n  paths:\n    - internal/dispatch/**\n    - internal/httpapi/**\n```"}
+	case *decisionArgs:
+		return &decisionArgs{ID: "", Statement: "Use event-derived projections", Context: "Lineage must rebuild from durable history.", AlternativesRejected: "Volunteered edges cannot prove provenance.", Supersedes: ""}
+	case *bundleArgs:
+		// Raw JSON leaves out the optional task fields, including both gate
+		// values, so the example does not suggest a gate setting.
+		return json.RawMessage(`{"title":"Billing retries delivery","documents":[{"kind":"requirement","id":"req-billing-retries","version":1}],"tasks":[{"member_id":"bounded-retries","title":"Bound failed-charge retries","body":"Retry a failed charge at most twice.","repo":"conveyor","context":{"requirement_ids":["req-billing-retries"]}}]}`)
+	default:
+		return nil
 	}
-	if _, ok := target.(*systemDesignArgs); ok {
-		target = &systemDesignArgs{DocumentID: "design-runtime", Title: "Runtime architecture", Category: "Architecture", Content: "# Runtime architecture\n\nThe API delegates durable work to the dispatcher.\n\n```conveyor:governs\n- repo: conveyor\n  paths:\n    - internal/dispatch/**\n    - internal/httpapi/**\n```"}
-	}
-	if _, ok := target.(*decisionArgs); ok {
-		target = &decisionArgs{ID: "", Statement: "Use event-derived projections", Context: "Lineage must rebuild from durable history.", AlternativesRejected: "Volunteered edges cannot prove provenance.", Supersedes: ""}
-	}
-	data, err := json.Marshal(target)
-	if err != nil {
-		return "a JSON object matching the selected tool's schema"
-	}
-	return string(data)
 }
 
 func validatePlanningToolArguments(call toolCall, maxBytes int) error {
