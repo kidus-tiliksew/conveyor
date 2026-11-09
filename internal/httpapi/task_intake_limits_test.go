@@ -48,7 +48,7 @@ func (b multipartIntakeBody) withTaskJSON(task string) multipartIntakeBody {
 }
 
 // historicalHoldLookup reads every keyed task as stored with hold before the
-// retirement. No public writer sets hold any more (DEC-74(3)), so intake tests
+// retirement. No public writer sets hold any more (DEC-122(3)), so intake tests
 // model a historical row at the idempotency lookup.
 type historicalHoldLookup struct{ store.Store }
 

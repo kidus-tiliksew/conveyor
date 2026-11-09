@@ -322,17 +322,25 @@ func (s *Store) RequestPlanRevisionCommand(ctx context.Context, taskLease taskop
 	if err != nil {
 		return store.PlanRevisionRequestResult{}, notFound(err, "task %s", current.TaskID)
 	}
-	planTaskID, planVersion := current.TaskID, 0
-	err = tx.QueryRow(ctx, `SELECT s.version FROM task_specs s JOIN tasks t ON t.id=s.task_id WHERE s.task_id=$1 AND t.workspace_id=$2 AND s.approved ORDER BY s.version DESC LIMIT 1`, planTaskID, workspace(ctx)).Scan(&planVersion)
-	if errors.Is(err, pgx.ErrNoRows) && taskRow.ParentTaskID.Valid && taskRow.OriginSpecVersion > 0 {
-		planTaskID = taskRow.ParentTaskID.String
-		err = tx.QueryRow(ctx, `SELECT s.version FROM task_specs s JOIN tasks t ON t.id=s.task_id WHERE s.task_id=$1 AND s.version=$2 AND t.workspace_id=$3 AND s.approved`, planTaskID, taskRow.OriginSpecVersion, workspace(ctx)).Scan(&planVersion)
-	}
-	if errors.Is(err, pgx.ErrNoRows) {
-		return store.PlanRevisionRequestResult{}, fmt.Errorf("request_plan_revision requires an approved execution plan")
-	}
-	if err != nil {
+	// Planning completed contests the approved plan; no plan required asks
+	// for planning and contests no version (component-work-orders invariant
+	// 57; req-task-plan-state AC-3.3).
+	if err = store.PlanRevisionRequestable(core.PlanState(taskRow.PlanState)); err != nil {
 		return store.PlanRevisionRequestResult{}, err
+	}
+	planTaskID, planVersion := current.TaskID, 0
+	if core.PlanState(taskRow.PlanState) == core.PlanCompleted {
+		err = tx.QueryRow(ctx, `SELECT s.version FROM task_specs s JOIN tasks t ON t.id=s.task_id WHERE s.task_id=$1 AND t.workspace_id=$2 AND s.approved ORDER BY s.version DESC LIMIT 1`, planTaskID, workspace(ctx)).Scan(&planVersion)
+		if errors.Is(err, pgx.ErrNoRows) && taskRow.ParentTaskID.Valid && taskRow.OriginSpecVersion > 0 {
+			planTaskID = taskRow.ParentTaskID.String
+			err = tx.QueryRow(ctx, `SELECT s.version FROM task_specs s JOIN tasks t ON t.id=s.task_id WHERE s.task_id=$1 AND s.version=$2 AND t.workspace_id=$3 AND s.approved`, planTaskID, taskRow.OriginSpecVersion, workspace(ctx)).Scan(&planVersion)
+		}
+		if errors.Is(err, pgx.ErrNoRows) {
+			return store.PlanRevisionRequestResult{}, store.ErrPlanRevisionNoApprovedPlan
+		}
+		if err != nil {
+			return store.PlanRevisionRequestResult{}, err
+		}
 	}
 	nextOrder, err := core.TransitionWorkOrder(current.State, core.WorkOrderCmdRequestPlanRevision)
 	if err != nil {
@@ -363,7 +371,7 @@ func (s *Store) RequestPlanRevisionCommand(ctx context.Context, taskLease taskop
 		return store.PlanRevisionRequestResult{}, taskStateGuardError(ctx, q, current.TaskID, string(core.TaskGatePlanRevision), err)
 	}
 	eventCtx := ctx
-	if err = insertEvent(eventCtx, q, core.Event{TaskID: current.TaskID, JobID: current.JobID, Kind: "work_order.plan_revision_requested", Payload: core.JSONPayload(map[string]any{"work_order_id": current.ID, "attempt_id": attemptID, "session_id": claim.SessionID, "rationale": rationale, "plan_version": planVersion}), At: now}); err != nil {
+	if err = insertEvent(eventCtx, q, core.Event{TaskID: current.TaskID, JobID: current.JobID, Kind: "work_order.plan_revision_requested", Payload: store.PlanRevisionRequestedPayload(current.ID, attemptID, claim.SessionID, rationale, planVersion), At: now}); err != nil {
 		return store.PlanRevisionRequestResult{}, err
 	}
 	if err = insertEvent(eventCtx, q, core.Event{TaskID: current.TaskID, JobID: current.JobID, Kind: "work_order.released", Payload: core.JSONPayload(map[string]any{"attempt_id": attemptID, "session_id": claim.SessionID, "reason": core.WorkOrderReleaseReasonPlanRevisionRequested, "release_cause": core.WorkOrderReleaseCauseOperatorAction, "outcome": core.WorkOrderOutcomeReleased, "automatic_retry_count": order.AutomaticRetryCount, "retry_suppressed": true}), At: now}); err != nil {

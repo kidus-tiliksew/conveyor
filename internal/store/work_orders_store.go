@@ -2482,6 +2482,16 @@ func (m *memory) ApproveSpecVersion(ctx context.Context, taskID string, version 
 	versions[len(versions)-1].ApprovedAt = time.Now().UTC()
 	m.specs[taskID] = versions
 	m.appendEventLocked(ctx, core.Event{TaskID: taskID, Kind: "spec.version_approved", Payload: core.JSONPayload(map[string]int{"version": version})})
+	// A person's plan approval sets planning completed in the transaction
+	// that records it (component-task-lifecycle invariant 54;
+	// component-plan-state invariant 3; req-task-plan-state AC-1.3).
+	if task, ok := m.tasks[taskID]; ok {
+		if move := PlanStateMoveEvent(taskID, task.PlanState, core.PlanCompleted, core.PlanCausePlanApproved); move != nil {
+			task.PlanState = core.PlanCompleted
+			m.tasks[taskID] = task
+			m.appendEventLocked(ctx, *move)
+		}
+	}
 	return nil
 }
 

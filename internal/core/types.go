@@ -75,7 +75,7 @@ func InitialStage(level EscalationLevel) Stage {
 
 // TaskMode is the retired auto/manual execution mode. It
 // survives only to parse deprecated intake input and render historical
-// records; no task carries a worker reservation (DEC-74(3)).
+// records; no task carries a worker reservation (DEC-122(3)).
 type TaskMode string
 
 const (
@@ -85,9 +85,10 @@ const (
 
 func (m TaskMode) Valid() bool { return m == TaskModeAuto || m == TaskModeManual }
 
-// LegacyPolicy preserves the accepted L0-L3 gate meaning for historical
-// callers: spec approval, merge approval. No level implies a reservation; L3
-// maps both gates on exactly like L2 (DEC-74(1), DEC-74(3);
+// LegacyPolicy preserves the accepted L0-L3 meaning for historical callers:
+// the retired spec-approval value, which the plan state replaced, and the
+// merge approval gate. No level implies a reservation; L3 maps both on
+// exactly like L2 (DEC-122(1), DEC-122(3);
 // component-task-lifecycle).
 func LegacyPolicy(level EscalationLevel) (bool, bool) {
 	switch level {

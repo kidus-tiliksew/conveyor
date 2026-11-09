@@ -55,7 +55,7 @@ type Fixture struct {
 	// a raw contract; the volatile backend decodes it into the task.
 	SeedSetupContract func(t *testing.T, ctx context.Context, taskID, raw string)
 	// SeedStoredTaskHold sets one task's stored historical hold column to
-	// true, modelling a row written before the hold retirement (DEC-74(3)).
+	// true, modelling a row written before the hold retirement (DEC-122(3)).
 	// No public writer can; each backend seeds it directly in its test
 	// binary. The hold-retirement cases require it and never skip.
 	SeedStoredTaskHold func(t *testing.T, ctx context.Context, taskID string)
@@ -133,7 +133,7 @@ type Fixture struct {
 func requireStoredTaskHoldSeed(t *testing.T, seed func(*testing.T, context.Context, string)) func(*testing.T, context.Context, string) {
 	t.Helper()
 	if seed == nil {
-		t.Fatal("conformance fixture must provide SeedStoredTaskHold for the hold-retirement cases (DEC-74(3))")
+		t.Fatal("conformance fixture must provide SeedStoredTaskHold for the hold-retirement cases (DEC-122(3))")
 	}
 	return seed
 }

@@ -277,7 +277,7 @@ func TestPostgresConformanceIntegration(t *testing.T) {
 				}
 			}, SeedStoredTaskHold: func(t *testing.T, ctx context.Context, taskID string) {
 				// A row written before the hold retirement; no public writer
-				// sets the column (DEC-74(3); component-persistence).
+				// sets the column (DEC-122(3); component-persistence).
 				tag, err := st.pool.Exec(ctx, `UPDATE tasks SET hold=true WHERE workspace_id=$1 AND id=$2`, workspace, taskID)
 				if err != nil || tag.RowsAffected() != 1 {
 					t.Fatalf("seed stored hold rows=%d err=%v", tag.RowsAffected(), err)

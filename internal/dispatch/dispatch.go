@@ -846,7 +846,9 @@ func (d *Dispatcher) buildStageInput(ctx context.Context, cfg *config.Config, st
 	prompt.WriteString(role)
 	// The title is generated from the body, so both carry the task's origin
 	// (req-security-boundaries REQ-4; component-triage).
-	fmt.Fprintf(&prompt, "\n\n# Task %s\n\n%s\nPlan approval: %t · Merge approval: %t · Repository: %s\n\n%s\nBranch: %s (base %s).\n", task.ID, lineagecontext.RenderUntrustedBlock("Task title", task.Source, task.Title), task.SpecApproval, task.MergeApproval, task.Repo, lineagecontext.RenderUntrustedBlock("Task body", task.Source, task.Body), task.Branch, task.BaseBranch)
+	// The header states the task's plan state and merge gate, never the
+	// retired plan-approval toggle (component-triage invariant 12; DEC-122(1)).
+	fmt.Fprintf(&prompt, "\n\n# Task %s\n\n%s\nPlan state: %s (%s) · Merge approval: %t · Repository: %s\n\n%s\nBranch: %s (base %s).\n", task.ID, lineagecontext.RenderUntrustedBlock("Task title", task.Source, task.Title), PlanStateLabel(task.PlanState), task.PlanState, task.MergeApproval, task.Repo, lineagecontext.RenderUntrustedBlock("Task body", task.Source, task.Body), task.Branch, task.BaseBranch)
 	if stage == core.StageTriage {
 		tools, marshalErr := json.Marshal(corpus.Tools())
 		if marshalErr != nil {
@@ -869,7 +871,7 @@ func (d *Dispatcher) buildStageInput(ctx context.Context, cfg *config.Config, st
 		break
 	}
 	if stage == core.StageImplement || stage == core.StageReview {
-		spec, exists, getErr := store.ApprovedExecutionDocument(ctx, d.Store, task)
+		spec, exists, getErr := DeliveredApprovedPlan(ctx, d.Store, task)
 		if getErr != nil {
 			return input, getErr
 		}
@@ -1142,13 +1144,7 @@ func (d *Dispatcher) completeOutput(ctx context.Context, cfg *config.Config, tas
 		if result.Route == "parked" {
 			return d.transition(ctx, task.ID, core.TaskTriagePark, "", core.StageTriage)
 		}
-		next := core.StageImplement
-		// Triage is code-blind classify-and-frame only. The intake-frozen task
-		// policy alone selects the next stage (REQ-3, AC-3.1; DEC-17).
-		if (task.PolicyVersion > 0 && task.SpecApproval) || (task.PolicyVersion == 0 && (task.Level == core.L2 || task.Level == core.L3)) {
-			next = core.StageSpec
-		}
-		return d.transition(ctx, task.ID, core.TaskStageAdvance, next, "")
+		return d.proceedFromTriage(ctx, task)
 	case core.StageSpec:
 		result, err := pipeline.RenderStructuredPlan(output)
 		if err != nil {
@@ -1214,9 +1210,10 @@ func (d *Dispatcher) ApplyExternalReviewPinned(ctx context.Context, task core.Ta
 	return d.applyReview(ctx, cfg, task, job, result, "external-mcp", reviewWorkOrderID, session, model, servedRequirements, governance, len(claimAuthorized) > 0 && claimAuthorized[0], nil)
 }
 
-// ApplyExternalPlan validates an MCP-authored execution plan and enters the
-// exact existing spec-version gate/auto-approval path. Stage identity and
-// lifecycle events intentionally remain unchanged.
+// ApplyExternalPlan validates an MCP-authored execution plan, including its
+// optional base commit, and records it at the plan_approval gate. Validation
+// refuses before any write, so the order stays claimed (component-work-orders
+// invariant 56).
 func (d *Dispatcher) ApplyExternalPlan(ctx context.Context, task core.Task, job core.Job, value pipeline.StructuredPlan, agent, model string) (core.SpecVersion, error) {
 	result, err := pipeline.ParseStructuredPlan(value)
 	if err != nil {
@@ -1264,24 +1261,72 @@ func (d *Dispatcher) completeSpec(ctx context.Context, task core.Task, result pi
 	return err
 }
 
+// completeSpecVersion records a submitted plan as the next plan version with
+// origin plan_order and its base commit, moves the plan state to
+// awaiting_approval (cause plan_submitted), and parks the task at the
+// plan_approval gate. No submission approves a plan, whatever the task's
+// policy version: only a person's recorded approval reaches planning
+// completed (component-work-orders invariant 56; req-task-plan-state AC-1.2;
+// req-task-centric-delivery AC-2.1, AC-2.3; DEC-122(6)).
 func (d *Dispatcher) completeSpecVersion(ctx context.Context, task core.Task, result pipeline.Spec, agent, model string) (core.SpecVersion, error) {
-	version, err := d.Store.CreateSpecVersion(ctx, core.SpecVersion{TaskID: task.ID, Content: result.Markdown, AcceptanceCount: len(result.Acceptance), Acceptance: core.JSONPayload(result.Acceptance), Decomposition: core.JSONPayload(result.Decomposition), Agent: agent, Model: model, ReviewSeats: result.ReviewSeats})
+	spec := core.SpecVersion{TaskID: task.ID, Content: result.Markdown, AcceptanceCount: len(result.Acceptance), Acceptance: core.JSONPayload(result.Acceptance), Decomposition: core.JSONPayload(result.Decomposition), Agent: agent, Model: model, ReviewSeats: result.ReviewSeats, Origin: core.PlanOriginPlanOrder}
+	if result.BaseCommit != "" {
+		commit := result.BaseCommit
+		spec.BaseCommit = &commit
+	}
+	version, err := d.Store.CreateSpecVersion(ctx, spec)
 	if err != nil {
 		return core.SpecVersion{}, err
 	}
-	if (task.PolicyVersion > 0 && task.SpecApproval) || (task.PolicyVersion == 0 && task.Level == core.L2) {
-		return version, d.transition(ctx, task.ID, core.TaskGateSpec, "", core.StageImplement)
-	}
-	if err := d.Store.ApproveSpecVersion(ctx, task.ID, version.Version); err != nil {
-		return core.SpecVersion{}, err
-	}
-	if err = d.queueApprovedIssue(ctx, task, version); err != nil {
-		return core.SpecVersion{}, err
-	}
-	if err = d.transition(ctx, task.ID, core.TaskStageAdvance, core.StageImplement, ""); err != nil {
+	if err = d.transitionPlan(ctx, task.ID, core.TaskGateSpec, "", core.StageImplement, &taskops.PlanStateMove{To: core.PlanAwaitingApproval, Cause: core.PlanCausePlanSubmitted}); err != nil {
 		return core.SpecVersion{}, err
 	}
 	return version, nil
+}
+
+// proceedFromTriage applies the step a valid proceed verdict takes, selected
+// by the task's plan state alone: no plan required and planning completed
+// advance to implementation, planning needed advances to the plan stage, and
+// a plan awaiting approval enters the plan_approval gate for the version
+// recorded before triage finished. Triage enters no other gate and moves no
+// plan state (component-triage invariant 29; component-task-lifecycle
+// invariant 4; req-task-plan-state AC-1.1; DEC-110(1); DEC-122(5)).
+func (d *Dispatcher) proceedFromTriage(ctx context.Context, task core.Task) error {
+	command, next, recovery, err := TriageProceed(task.PlanState)
+	if err != nil {
+		return err
+	}
+	return d.transition(ctx, task.ID, command, next, recovery)
+}
+
+// TriageProceed is component-triage invariant 29's table: the lifecycle
+// command and stages a proceed verdict applies for each plan state.
+func TriageProceed(state core.PlanState) (core.TaskCommand, core.Stage, core.Stage, error) {
+	switch state {
+	case core.PlanNotRequired, core.PlanCompleted:
+		return core.TaskStageAdvance, core.StageImplement, "", nil
+	case core.PlanNeeded:
+		return core.TaskStageAdvance, core.StageSpec, "", nil
+	case core.PlanAwaitingApproval:
+		return core.TaskGateSpec, "", core.StageImplement, nil
+	}
+	return "", "", "", fmt.Errorf("task plan state %q selects no triage proceed step", state)
+}
+
+// PlanStateLabel is the plain-language name of a plan state
+// (component-web-task-surfaces invariant 57's labels).
+func PlanStateLabel(state core.PlanState) string {
+	switch state {
+	case core.PlanNotRequired:
+		return "No plan required"
+	case core.PlanNeeded:
+		return "Planning needed"
+	case core.PlanAwaitingApproval:
+		return "Plan awaiting approval"
+	case core.PlanCompleted:
+		return "Planning completed"
+	}
+	return "Unknown plan state"
 }
 
 func (d *Dispatcher) applyReview(ctx context.Context, cfg *config.Config, task core.Task, job core.Job, result pipeline.Review, reviewer, reviewWorkOrderID, session, model string, servedRequirements []core.ServedRequirementContext, governance *core.GovernanceSnapshot, claimAuthorized bool, invalid func(error) error) error {
@@ -1303,7 +1348,7 @@ func (d *Dispatcher) applyReview(ctx context.Context, cfg *config.Config, task c
 	// version on the task. Resolving through the same helper used by prompt
 	// construction therefore has migration-064/067 stability without another
 	// persisted copy.
-	approved, hasApproved, planErr := store.ApprovedExecutionDocument(ctx, d.Store, task)
+	approved, hasApproved, planErr := DeliveredApprovedPlan(ctx, d.Store, task)
 	if planErr != nil {
 		return planErr
 	}
@@ -1590,6 +1635,13 @@ func (d *Dispatcher) bounce(ctx context.Context, cfg *config.Config, taskID, job
 }
 
 func (d *Dispatcher) transition(ctx context.Context, taskID string, command core.TaskCommand, next, recovery core.Stage) error {
+	return d.transitionPlan(ctx, taskID, command, next, recovery, nil)
+}
+
+// transitionPlan is transition with an optional plan-state move that the
+// lifecycle command commits in its own transaction (component-plan-state
+// invariant 3).
+func (d *Dispatcher) transitionPlan(ctx context.Context, taskID string, command core.TaskCommand, next, recovery core.Stage, planMove *taskops.PlanStateMove) error {
 	task, err := d.Store.GetTask(ctx, taskID)
 	if err != nil {
 		return err
@@ -1615,7 +1667,7 @@ func (d *Dispatcher) transition(ctx context.Context, taskID string, command core
 		}
 	}
 	outcome, err := taskops.New(d.Store).Perform(ctx, taskID, taskops.Command{
-		Kind: command, NextStage: next, RecoveryStage: recovery, ProjectStages: true,
+		Kind: command, NextStage: next, RecoveryStage: recovery, ProjectStages: true, PlanState: planMove,
 	})
 	if err != nil {
 		return err
@@ -1680,7 +1732,15 @@ func (d *Dispatcher) HandleIntervention(ctx context.Context, task core.Task, lat
 				if err = d.cancelContestedImplementationOrder(ctx, planRevision.WorkOrderID, planRevision.AttemptID); err != nil {
 					return err
 				}
-				return d.transition(ctx, task.ID, core.TaskInterventionRedirect, core.StageSpec, "")
+				// An approved request sets planning needed: a revision of
+				// the approved plan, or planning for a task that required
+				// none (component-work-orders invariant 58;
+				// req-task-plan-state AC-3.3, AC-3.4; DEC-122(7)).
+				cause := core.PlanCausePlanRevisionApproved
+				if task.PlanState == core.PlanNotRequired {
+					cause = core.PlanCausePlanningRequestedApproved
+				}
+				return d.transitionPlan(ctx, task.ID, core.TaskInterventionRedirect, core.StageSpec, "", &taskops.PlanStateMove{To: core.PlanNeeded, Cause: cause})
 			case PlanRevisionDeclinedReasonCode:
 				// Restore the released implementation order through the existing
 				// recovery-direction command instead of minting a parallel order
@@ -1736,7 +1796,10 @@ func (d *Dispatcher) HandleIntervention(ctx context.Context, task core.Task, lat
 			if err = d.queueApprovedIssue(ctx, task, spec); err != nil {
 				return err
 			}
-			if err = d.transition(ctx, task.ID, core.TaskInterventionApproveSpec, core.StageImplement, ""); err != nil {
+			// The approval recorded planning completed with the version; the
+			// command's move covers a legacy materializing approval and is a
+			// no-op otherwise (component-task-lifecycle invariant 54).
+			if err = d.transitionPlan(ctx, task.ID, core.TaskInterventionApproveSpec, core.StageImplement, "", &taskops.PlanStateMove{To: core.PlanCompleted, Cause: core.PlanCausePlanApproved}); err != nil {
 				return err
 			}
 			for _, child := range children {
@@ -1818,9 +1881,13 @@ func (d *Dispatcher) HandleIntervention(ctx context.Context, task core.Task, lat
 		if redirectSpecGate {
 			// RecoveryStage identifies where approval continues, so a spec gate
 			// normally points at implementation. Requested changes instead reopen
-			// the existing spec workflow and require a newly approved revision.
-			target = core.StageSpec
-		} else if latest.Stage == core.StageReview {
+			// the plan stage with planning needed (cause plan_redirected), and
+			// the comment reaches the next plan order as direction
+			// (component-task-lifecycle invariant 54; req-task-plan-state
+			// AC-1.3).
+			return d.transitionPlan(ctx, task.ID, core.TaskInterventionRedirect, core.StageSpec, "", &taskops.PlanStateMove{To: core.PlanNeeded, Cause: core.PlanCausePlanRedirected})
+		}
+		if latest.Stage == core.StageReview {
 			target = core.StageImplement
 		}
 		return d.transition(ctx, task.ID, core.TaskInterventionRedirect, target, "")
@@ -2000,4 +2067,19 @@ func (d *Dispatcher) PollOnce(ctx context.Context) { d.pollOnce(ctx) }
 func workspaceGitHubAppStore(st store.Store) store.WorkspaceGitHubAppStore {
 	apps, _ := st.(store.WorkspaceGitHubAppStore)
 	return apps
+}
+
+// DeliveredApprovedPlan is the approved plan an implement or review order of
+// the task receives: the approved version of a task whose plan state is
+// completed. A task with no plan required, or one whose planning is not
+// complete, receives none, and its body is the statement of done. A legacy
+// blueprint child keeps the approved blueprint version it was materialized
+// from (component-work-orders invariant 61; component-review invariant 22;
+// component-plan-state invariant 7; req-task-plan-state REQ-4, AC-1.5).
+func DeliveredApprovedPlan(ctx context.Context, st store.ExecutionDocumentReader, task core.Task) (core.SpecVersion, bool, error) {
+	legacyChild := task.ParentTaskID != "" && task.OriginSpecVersion > 0
+	if task.PlanState != core.PlanCompleted && !legacyChild {
+		return core.SpecVersion{}, false, nil
+	}
+	return store.ApprovedExecutionDocument(ctx, st, task)
 }

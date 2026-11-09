@@ -1,10 +1,12 @@
 package pack
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/kidus-tiliksew/conveyor/internal/core"
 	"github.com/kidus-tiliksew/conveyor/internal/lineagecontext"
@@ -270,15 +272,78 @@ func TestGovernanceContractDirectsReadsThroughTheLiveClaim(t *testing.T) {
 
 func TestDoneCriteriaReferencePointsAtThePlanOnce(t *testing.T) {
 	t.Parallel()
-	plan := validExecutionPlanForTest
+	plan := &core.SpecVersion{Version: 2, Content: validExecutionPlanForTest, Approved: true}
 	for _, stage := range []core.Stage{core.StageImplement, core.StageReview} {
 		reference := DoneCriteriaReference(stage, plan, "task body", "api", true)
 		if !strings.Contains(reference, "`approved_spec.content`") || strings.Contains(reference, "CRITERION-SENTINEL") {
 			t.Fatalf("%s reference=%s", stage, reference)
 		}
 	}
-	if got, want := DoneCriteriaReference(core.StageReview, "", "task body", "api", false), DoneCriteriaContract(core.StageReview, "", "task body", "api", false); got != want {
+	if got, want := DoneCriteriaReference(core.StageReview, nil, "task body", "api", false), DoneCriteriaContract(core.StageReview, "", "task body", "api", false); got != want {
 		t.Fatalf("no-plan reference=%q, want the fallback %q", got, want)
+	}
+}
+
+// TestDoneCriteriaReferenceStatesApprovedPlanProvenance covers the implement
+// contract of a completed task: the base commit, or none recorded, the
+// approval time, and the direction to check the plan against the checkout
+// and call request_plan_revision on a contradiction (component-work-orders
+// invariant 61; req-task-plan-state REQ-4).
+func TestDoneCriteriaReferenceStatesApprovedPlanProvenance(t *testing.T) {
+	t.Parallel()
+	approvedAt := time.Date(2026, 11, 9, 10, 30, 0, 0, time.UTC)
+	commit := "0123456789abcdef0123456789abcdef01234567"
+	withCommit := &core.SpecVersion{Version: 3, Content: validExecutionPlanForTest, Approved: true, ApprovedAt: approvedAt, BaseCommit: &commit, Origin: core.PlanOriginPlanOrder}
+	withoutCommit := &core.SpecVersion{Version: 1, Content: validExecutionPlanForTest, Approved: true, ApprovedAt: approvedAt, Origin: core.PlanOriginIntake}
+	for name, tc := range map[string]struct {
+		plan *core.SpecVersion
+		base string
+	}{
+		"base commit": {withCommit, "Base commit: `" + commit + "`."},
+		"none":        {withoutCommit, "Base commit: none recorded."},
+	} {
+		reference := DoneCriteriaReference(core.StageImplement, tc.plan, "task body", "api", true)
+		for _, want := range []string{
+			tc.base,
+			"Approved at: 2026-11-09T10:30:00Z.",
+			fmt.Sprintf("Approved plan version %d.", tc.plan.Version),
+			"Before editing, check the plan's claims against your checkout.",
+			"call `request_plan_revision`",
+		} {
+			if !strings.Contains(reference, want) {
+				t.Fatalf("%s: implement reference lacks %q:\n%s", name, want, reference)
+			}
+		}
+		if strings.Contains(reference, "# Statement of done") {
+			t.Fatalf("%s: a completed task's contract states the body as done:\n%s", name, reference)
+		}
+	}
+	// Review judges the approved plan's done criteria; the implement-only
+	// direction to check the checkout before editing is not repeated.
+	if review := DoneCriteriaReference(core.StageReview, withCommit, "task body", "api", true); strings.Contains(review, "Before editing") {
+		t.Fatalf("review reference carries the implement direction:\n%s", review)
+	}
+}
+
+// TestDoneCriteriaReferenceWithoutPlanStatesTheBody covers a task with no plan
+// required: the implement order states the body as the statement of done and
+// names request_plan_revision for asking that the task be planned, and review
+// judges the task body (component-work-orders invariant 61; component-review
+// invariant 22; req-task-plan-state AC-1.5).
+func TestDoneCriteriaReferenceWithoutPlanStatesTheBody(t *testing.T) {
+	t.Parallel()
+	implement := DoneCriteriaReference(core.StageImplement, nil, "task body", "api", true)
+	for _, want := range []string{"# Statement of done", "carries no `approved_spec`", "The task body is the statement of done", "`request_plan_revision`", "ask that the task be planned"} {
+		if !strings.Contains(implement, want) {
+			t.Fatalf("implement no-plan reference lacks %q:\n%s", want, implement)
+		}
+	}
+	if strings.Contains(implement, "Base commit") {
+		t.Fatalf("no-plan reference states a base commit:\n%s", implement)
+	}
+	review := DoneCriteriaReference(core.StageReview, nil, "the task body asks for X", "api", false)
+	if !strings.Contains(review, "The task description is the statement of done") || !strings.Contains(review, "the task body asks for X") {
+		t.Fatalf("review no-plan reference does not judge the body:\n%s", review)
 	}
 }
 
@@ -287,8 +352,10 @@ func TestDoneCriteriaContractLabelsTheTaskDescription(t *testing.T) {
 	label := lineagecontext.UntrustedLabel("Task description", "github:acme/app#7")
 	for name, body := range untrustedtest.HostileBodies(label) {
 		for surface, render := range map[string]func(core.Stage, string, string, string, bool) string{
-			"contract":  DoneCriteriaContract,
-			"reference": DoneCriteriaReference,
+			"contract": DoneCriteriaContract,
+			"reference": func(stage core.Stage, _ string, body, source string, served bool) string {
+				return DoneCriteriaReference(stage, nil, body, source, served)
+			},
 		} {
 			contract := render(core.StageReview, "", "  "+body+"\n", "github:acme/app#7", false)
 			if !strings.Contains(contract, "The task description is the statement of done: judge the change against what it asks for") ||
@@ -315,7 +382,7 @@ func TestDoneCriteriaContractLabelsPlanCriteria(t *testing.T) {
 			untrustedtest.RequireBlock(t, contract, label, done)
 			untrustedtest.RequireConfined(t, contract, untrustedtest.Injection)
 			// The MCP form carries no body at all: it points at approved_spec.content.
-			if reference := DoneCriteriaReference(stage, plan, "task body", "api", true); strings.Contains(reference, untrustedtest.Injection) {
+			if reference := DoneCriteriaReference(stage, &core.SpecVersion{Version: 1, Content: plan, Approved: true}, "task body", "api", true); strings.Contains(reference, untrustedtest.Injection) {
 				t.Fatalf("%s %s: reference copied the plan: %s", name, stage, reference)
 			}
 		}
@@ -393,6 +460,10 @@ func TestRolePromptsEnforceOperatorAuthorityBoundary(t *testing.T) {
 	normalizedSpec := strings.Join(strings.Fields(spec), " ")
 	for _, required := range []string{
 		"repository checkout, the validation commands that the repository's validation documentation names",
+		"Pass your checkout's `HEAD` as `base_commit`",
+		"`git rev-parse HEAD`",
+		"40 lowercase hexadecimal characters",
+		"no submission approves it",
 		"Gate approval, repository-drift resolution",
 		"authors no requirement, System Design, or decision version",
 		"never directs its implementer to propose or revise a document",
@@ -436,6 +507,10 @@ func TestRolePromptsEnforceOperatorAuthorityBoundary(t *testing.T) {
 		"request_plan_revision",
 		"repository reality conflicts with the approved plan while confirmed documents stand",
 		"never authorize changing or departing from the approved plan",
+		"the contract states the plan's base commit, or `none recorded`, and its approval time",
+		"Before editing, check the plan's claims against your checkout",
+		"the task requires no plan and the task body is the statement of done",
+		"ask that the task be planned",
 		"existing `released` outcome",
 		"do not enter an automatic recovery loop",
 		"`wip(attempt-` checkpoint commit",
@@ -459,8 +534,10 @@ func TestRolePromptsEnforceOperatorAuthorityBoundary(t *testing.T) {
 	}
 	normalizedReview := strings.Join(strings.Fields(review), " ")
 	for _, required := range []string{
-		"pinned confirmed documents and the approved plan",
-		"Request changes to work that contradicts either one",
+		"pinned confirmed documents and the statement of done",
+		"the approved plan's done criteria are the statement of done",
+		"the task requires no plan and the task body is the statement of done",
+		"Request changes to work that contradicts the documents or the statement of done",
 		"Never ask the task for a document revision or accept one as the remedy",
 		"confirmed document itself appears wrong",
 		"governance assessment's `conflicts`",
@@ -481,7 +558,7 @@ func TestRolePromptsEnforceOperatorAuthorityBoundary(t *testing.T) {
 	for _, obsolete := range []string{
 		"For gate approval, repository-drift resolution, requirement-clause revisions",
 		"repository-drift resolution, requirement-clause revisions, task cancel/hold",
-		// The per-task hold is retired (DEC-74(3)); no role names it as an
+		// The per-task hold is retired (DEC-122(3)); no role names it as an
 		// operator act.
 		"cancel/hold",
 	} {

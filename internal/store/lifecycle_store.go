@@ -39,6 +39,34 @@ func TaskCommandRead(ctx context.Context, taskID string, read core.TaskState) {
 	}
 }
 
+// ErrPlanRevisionNoApprovedPlan refuses a plan-revision request on a task
+// whose planning is completed but which has no approved plan version.
+var ErrPlanRevisionNoApprovedPlan = Refusef("request_plan_revision requires an approved execution plan")
+
+// PlanRevisionRequestable admits a plan-revision request by the task's plan
+// state: planning completed, where it contests the approved plan, or no plan
+// required, where it asks for planning. Every other plan state refuses it
+// (component-work-orders invariant 57; req-task-plan-state AC-3.3).
+func PlanRevisionRequestable(state core.PlanState) error {
+	switch state {
+	case core.PlanCompleted, core.PlanNotRequired:
+		return nil
+	}
+	return Refusef("request_plan_revision requires plan state completed with an approved plan, or not_required; the task's plan state is %q", state)
+}
+
+// PlanRevisionRequestedPayload is the work_order.plan_revision_requested
+// payload on every backend. A planning request from a no-plan-required task
+// contests no plan version and carries none (component-work-orders invariant
+// 57).
+func PlanRevisionRequestedPayload(workOrderID, attemptID, sessionID, rationale string, planVersion int) json.RawMessage {
+	payload := map[string]any{"work_order_id": workOrderID, "attempt_id": attemptID, "session_id": sessionID, "rationale": rationale}
+	if planVersion > 0 {
+		payload["plan_version"] = planVersion
+	}
+	return core.JSONPayload(payload)
+}
+
 // PlanRevisionRequestResult is the atomic projection committed when an
 // implementer contests its approved execution plan (REQ-1, AC-1.1–AC-1.3).
 type PlanRevisionRequestResult struct {
@@ -80,9 +108,16 @@ func (m *memory) RequestPlanRevisionCommand(ctx context.Context, taskLease tasko
 	if !ok {
 		return PlanRevisionRequestResult{}, fmt.Errorf("task %s: %w", order.TaskID, ErrNotFound)
 	}
-	plan, ok := m.approvedExecutionDocumentLocked(task)
-	if !ok {
-		return PlanRevisionRequestResult{}, fmt.Errorf("request_plan_revision requires an approved execution plan")
+	planVersion := 0
+	if err := PlanRevisionRequestable(task.PlanState); err != nil {
+		return PlanRevisionRequestResult{}, err
+	}
+	if task.PlanState == core.PlanCompleted {
+		plan, ok := m.approvedExecutionDocumentLocked(task)
+		if !ok {
+			return PlanRevisionRequestResult{}, ErrPlanRevisionNoApprovedPlan
+		}
+		planVersion = plan.Version
 	}
 	nextOrder, err := core.TransitionWorkOrder(order.State, core.WorkOrderCmdRequestPlanRevision)
 	if err != nil {
@@ -129,10 +164,10 @@ func (m *memory) RequestPlanRevisionCommand(ctx context.Context, taskLease tasko
 	task.GateKind = core.GateKindFor(nextTask, core.TaskGatePlanRevision)
 	m.tasks[task.ID] = task
 	actor := ctx
-	m.appendEventLocked(actor, core.Event{TaskID: task.ID, JobID: order.JobID, Kind: "work_order.plan_revision_requested", Payload: core.JSONPayload(map[string]any{"work_order_id": order.ID, "attempt_id": attemptID, "session_id": claim.SessionID, "rationale": rationale, "plan_version": plan.Version}), At: now})
+	m.appendEventLocked(actor, core.Event{TaskID: task.ID, JobID: order.JobID, Kind: "work_order.plan_revision_requested", Payload: PlanRevisionRequestedPayload(order.ID, attemptID, claim.SessionID, rationale, planVersion), At: now})
 	m.appendEventLocked(actor, core.Event{TaskID: task.ID, JobID: order.JobID, Kind: "work_order.released", Payload: core.JSONPayload(map[string]any{"attempt_id": attemptID, "session_id": claim.SessionID, "reason": core.WorkOrderReleaseReasonPlanRevisionRequested, "release_cause": core.WorkOrderReleaseCauseOperatorAction, "outcome": core.WorkOrderOutcomeReleased, "automatic_retry_count": order.AutomaticRetryCount, "retry_suppressed": true}), At: now})
 	m.appendEventLocked(actor, core.Event{TaskID: task.ID, Kind: "task.state_changed", Payload: core.JSONPayload(map[string]any{"from": core.TaskRunning, "to": nextTask, "command": core.TaskGatePlanRevision}), At: now})
-	return PlanRevisionRequestResult{WorkOrder: order, Task: task, PlanVersion: plan.Version, Rationale: rationale}, nil
+	return PlanRevisionRequestResult{WorkOrder: order, Task: task, PlanVersion: planVersion, Rationale: rationale}, nil
 }
 
 func (m *memory) CancelPlanRevisionWorkOrderCommand(ctx context.Context, taskLease taskops.TaskLease, workOrderID, attemptID string) (core.WorkOrder, error) {
@@ -337,7 +372,9 @@ func PlanRevisionGateState(task core.Task, events []core.Event) (PlanRevisionReq
 		if err := json.Unmarshal(events[i].Payload, &request); err != nil {
 			return PlanRevisionRequest{}, true, fmt.Errorf("decode plan-revision request for %s: %w", task.ID, ErrPlanRevisionGateUnreadable)
 		}
-		if request.WorkOrderID == "" || request.AttemptID == "" || strings.TrimSpace(request.Rationale) == "" || request.PlanVersion < 1 {
+		// A planning request from a no-plan-required task contests no plan
+		// version (component-work-orders invariant 57).
+		if request.WorkOrderID == "" || request.AttemptID == "" || strings.TrimSpace(request.Rationale) == "" || request.PlanVersion < 0 || (request.PlanVersion == 0 && task.PlanState != core.PlanNotRequired) {
 			return PlanRevisionRequest{}, true, fmt.Errorf("plan-revision request for %s is incomplete: %w", task.ID, ErrPlanRevisionGateUnreadable)
 		}
 		return PlanRevisionRequest{
@@ -515,11 +552,18 @@ func (m *memory) applyTaskCommandLocked(ctx context.Context, id string, command 
 			command.RecoveryStage = core.StageVerify
 		}
 	}
+	planMove, err := TaskCommandPlanStateMove(id, task.PlanState, command.PlanState)
+	if err != nil {
+		return core.Task{}, err
+	}
 	task.State = state
 	task.GateKind = core.GateKindFor(state, command.Kind)
 	if command.ProjectStages {
 		task.NextStage = command.NextStage
 		task.RecoveryStage = command.RecoveryStage
+	}
+	if planMove != nil {
+		task.PlanState = command.PlanState.To
 	}
 	m.tasks[id] = task
 	if core.TaskTerminal(state) {
@@ -528,6 +572,9 @@ func (m *memory) applyTaskCommandLocked(ctx context.Context, id string, command 
 		m.cancelTaskWorkOrdersLocked(ctx, id, command.Kind, actor.ID, actor.Role, time.Now().UTC())
 	}
 	m.appendEventLocked(ctx, core.Event{TaskID: id, Kind: "task.state_changed", Payload: core.JSONPayload(map[string]any{"from": fromState, "to": state, "command": command.Kind})})
+	if planMove != nil {
+		m.appendEventLocked(ctx, *planMove)
+	}
 	if command.FailureMessage != "" {
 		m.appendEventLocked(ctx, core.Event{TaskID: id, Kind: "dispatch.failed", Payload: core.JSONPayload(map[string]any{
 			"attempt": command.Attempt, "max_attempts": command.MaxAttempts, "error": command.FailureMessage,

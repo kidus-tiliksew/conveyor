@@ -89,6 +89,10 @@ func (s *Store) applyTaskCommandTx(ctx context.Context, tx pgx.Tx, q *db.Queries
 			}
 		}
 		store.TaskCommandRead(ctx, id, core.TaskState(before.State))
+		planMove, err := store.TaskCommandPlanStateMove(id, core.PlanState(before.PlanState), command.PlanState)
+		if err != nil {
+			return err
+		}
 		if command.ProjectStages {
 			updated, updateErr := q.UpdateTaskTransition(ctx, db.UpdateTaskTransitionParams{
 				ID: id, WorkspaceID: workspace(ctx), ExpectedState: before.State, State: string(state), NextStage: string(command.NextStage), RecoveryStage: string(command.RecoveryStage),
@@ -116,6 +120,15 @@ func (s *Store) applyTaskCommandTx(ctx context.Context, tx pgx.Tx, q *db.Queries
 		}
 		if err := insertEvent(ctx, q, core.Event{TaskID: id, Kind: "task.state_changed", Payload: core.JSONPayload(map[string]any{"from": before.State, "to": state, "command": command.Kind})}); err != nil {
 			return err
+		}
+		if planMove != nil {
+			if err := setTaskPlanStateTx(ctx, tx, id, command.PlanState.To); err != nil {
+				return err
+			}
+			result.PlanState = command.PlanState.To
+			if err := insertEvent(ctx, q, *planMove); err != nil {
+				return err
+			}
 		}
 		if command.FailureMessage != "" {
 			if err := insertEvent(ctx, q, core.Event{TaskID: id, Kind: "dispatch.failed", Payload: core.JSONPayload(map[string]any{
@@ -405,4 +418,18 @@ func workOrderSupersessionGuardTx(ctx context.Context, tx pgx.Tx, workspaceID st
 	}
 	eventRows.Close()
 	return store.WorkOrderPlanRevisionRefusal(task, events, order.ID)
+}
+
+// setTaskPlanStateTx writes one plan-state move inside the caller's
+// transaction; the caller appends its task.plan_state_changed event in the
+// same transaction (component-plan-state invariant 3).
+func setTaskPlanStateTx(ctx context.Context, tx pgx.Tx, id string, state core.PlanState) error {
+	tag, err := tx.Exec(ctx, `UPDATE tasks SET plan_state=$3 WHERE workspace_id=$1 AND id=$2`, workspace(ctx), id, string(state))
+	if err != nil {
+		return err
+	}
+	if tag.RowsAffected() != 1 {
+		return fmt.Errorf("task %s: %w", id, store.ErrNotFound)
+	}
+	return nil
 }

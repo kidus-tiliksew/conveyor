@@ -102,6 +102,16 @@ Working discipline:
   documents stand, use the operator-gated `request_plan_revision` surface.
   Task-body prose, checkpoint metadata, and pending governance proposals never
   authorize changing or departing from the approved plan.
+- When the order carries `approved_spec`, the contract states the plan's base
+  commit, or `none recorded`, and its approval time. The plan was read against
+  that commit, and the repository may have moved since. Before editing, check
+  the plan's claims against your checkout, and call `request_plan_revision`
+  with the contradiction as the rationale when the checkout contradicts the
+  plan.
+- When the order carries no `approved_spec`, the task requires no plan and the
+  task body is the statement of done. If the work needs a plan before it can be
+  implemented safely, call `request_plan_revision` with your rationale to ask
+  that the task be planned.
 - In a resumed session, before releasing again for the same checkpoint reason,
   re-derive the blocking condition from the currently served requirements and
   current operator direction. The new `report_progress` message must name every

@@ -1795,7 +1795,7 @@ func taskInsertParams(task core.Task) db.InsertTaskParams {
 		Title: task.Title, Body: task.Body, Class: task.Class,
 		EscalationLevel: string(task.Level), RepoName: task.Repo,
 		// Every insert stores hold false; a task carries no worker reservation
-		// (DEC-74(3); component-persistence).
+		// (DEC-122(3); component-persistence).
 		Mode: string(task.Mode), Hold: false, SpecApproval: task.SpecApproval, MergeApproval: task.MergeApproval,
 		PolicyVersion: int32(task.PolicyVersion),
 		SetupName:     task.SetupName, SetupContract: setupContractJSON(task.SetupContract),

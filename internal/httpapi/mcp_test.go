@@ -1059,13 +1059,22 @@ func TestMCPRequestPlanRevisionEndToEnd(t *testing.T) {
 		store   store.Store
 		taskID  string
 	}
-	setup := func(t *testing.T, stage core.Stage, approved, claimed bool) fixture {
+	setup := func(t *testing.T, stage core.Stage, approved, claimed bool, planState ...core.PlanState) fixture {
 		t.Helper()
 		ctx := store.WithWorkspace(store.WithActor(t.Context(), store.SystemActor()), "demo")
 		st := store.NewMemory()
 		taskID := "plan-revision-" + core.NewTaskID()
 		now := time.Now().UTC()
-		if err := st.CreateTask(ctx, core.Task{ID: taskID, Workspace: "demo", Repo: "conveyor", State: core.TaskRunning, NextStage: stage, CreatedAt: now}); err != nil {
+		// An approved plan is planning completed; a task without one
+		// requires no plan unless the case states otherwise.
+		state := core.PlanNotRequired
+		if approved {
+			state = core.PlanAwaitingApproval
+		}
+		if len(planState) > 0 {
+			state = planState[0]
+		}
+		if err := st.CreateTask(ctx, core.Task{ID: taskID, Workspace: "demo", Repo: "conveyor", State: core.TaskRunning, NextStage: stage, PlanState: state, CreatedAt: now}); err != nil {
 			t.Fatal(err)
 		}
 		if approved {
@@ -1109,20 +1118,42 @@ func TestMCPRequestPlanRevisionEndToEnd(t *testing.T) {
 		}
 	})
 
+	// A no-plan-required task's implement claim is admitted: the call asks
+	// that the task be planned and contests no plan version
+	// (component-mcp-protocol invariant 39; component-work-orders invariant
+	// 57; req-task-plan-state AC-3.3).
+	t.Run("no plan required asks for planning", func(t *testing.T) {
+		item := setup(t, core.StageImplement, false, true, core.PlanNotRequired)
+		result, err := item.server.callMCPTool(item.request, "request_plan_revision", item.args)
+		if err != nil {
+			t.Fatal(err)
+		}
+		got := result.(store.PlanRevisionRequestResult)
+		if got.PlanVersion != 0 || got.Task.State != core.TaskAwaiting || got.Task.GateKind != core.GateKindPlanRevision || got.Task.PlanState != core.PlanNotRequired || got.WorkOrder.State != core.WorkOrderQueued || !got.WorkOrder.RetrySuppressed {
+			t.Fatalf("result=%+v", got)
+		}
+	})
+
 	for _, test := range []struct {
 		name                 string
 		stage                core.Stage
 		approved, claimed    bool
 		sessionID, rationale string
+		planState            core.PlanState
 	}{
 		{name: "blank rationale", stage: core.StageImplement, approved: true, claimed: true, sessionID: "session-a", rationale: " "},
 		{name: "wrong stage", stage: core.StageReview, approved: true, claimed: true, sessionID: "session-a", rationale: "wrong"},
-		{name: "missing approved plan", stage: core.StageImplement, claimed: true, sessionID: "session-a", rationale: "wrong"},
+		{name: "missing approved plan", stage: core.StageImplement, claimed: true, sessionID: "session-a", rationale: "wrong", planState: core.PlanCompleted},
+		{name: "planning needed", stage: core.StageImplement, claimed: true, sessionID: "session-a", rationale: "wrong", planState: core.PlanNeeded},
 		{name: "stale session", stage: core.StageImplement, approved: true, claimed: true, sessionID: "stale", rationale: "wrong"},
 		{name: "unclaimed", stage: core.StageImplement, approved: true, sessionID: "session-a", rationale: "wrong"},
 	} {
 		t.Run(test.name+" is in-band and non-mutating", func(t *testing.T) {
-			item := setup(t, test.stage, test.approved, test.claimed)
+			var states []core.PlanState
+			if test.planState != "" {
+				states = append(states, test.planState)
+			}
+			item := setup(t, test.stage, test.approved, test.claimed, states...)
 			item.args["session_id"], item.args["rationale"] = test.sessionID, test.rationale
 			beforeOrder, _ := item.store.GetWorkOrder(store.WithWorkspace(store.WithActor(t.Context(), store.SystemActor()), "demo"), item.args["work_order_id"].(string))
 			beforeTask, _ := item.store.GetTask(store.WithWorkspace(store.WithActor(t.Context(), store.SystemActor()), "demo"), item.taskID)
@@ -1525,6 +1556,134 @@ func TestMCPSubmitPlanReviewSeatsSchema(t *testing.T) {
 	}
 }
 
+// TestMCPPlanStateToolSchemas covers the submit_plan base_commit argument and
+// the request_plan_revision description: base_commit is an optional string
+// of 40 lowercase hexadecimal characters described as the planner
+// checkout's HEAD, and request_plan_revision states both uses
+// (component-mcp-protocol invariants 39 and 40).
+func TestMCPPlanStateToolSchemas(t *testing.T) {
+	t.Parallel()
+	tools := map[string]map[string]any{}
+	for _, candidate := range mcpTools() {
+		name, _ := candidate["name"].(string)
+		tools[name] = candidate
+	}
+	plan := tools["submit_plan"]
+	schema, _ := plan["inputSchema"].(map[string]any)
+	properties, _ := schema["properties"].(map[string]any)
+	base, _ := properties["base_commit"].(map[string]any)
+	description, _ := base["description"].(string)
+	if base["type"] != "string" || base["pattern"] != "^[0-9a-f]{40}$" || !strings.Contains(description, "HEAD") || !strings.Contains(description, "40 lowercase hexadecimal characters") {
+		t.Fatalf("base_commit schema=%#v", base)
+	}
+	if required, _ := schema["required"].([]string); slices.Contains(required, "base_commit") {
+		t.Fatalf("base_commit is required: %v", required)
+	}
+	if text, _ := plan["description"].(string); !strings.Contains(text, "base_commit is your checkout's HEAD") || !strings.Contains(text, "record no plan version") || !strings.Contains(text, "waits for a person's approval") {
+		t.Fatalf("submit_plan description=%q", text)
+	}
+	revision, _ := tools["request_plan_revision"]["description"].(string)
+	for _, want := range []string{"revise the approved execution plan", "no plan required", "asks that the task be planned", "planning needed"} {
+		if !strings.Contains(revision, want) {
+			t.Fatalf("request_plan_revision description lacks %q: %q", want, revision)
+		}
+	}
+}
+
+// TestMCPSubmitPlanBaseCommit drives submit_plan's base_commit through the
+// JSON-RPC envelope: a valid value is recorded on the plan version, and a
+// malformed or mistyped value is an in-band tool error that keeps the claim
+// and records no version (component-mcp-protocol invariant 40;
+// component-work-orders invariant 56).
+func TestMCPSubmitPlanBaseCommit(t *testing.T) {
+	t.Parallel()
+	markdown := "## Approach\nPlan it.\n\n## Files touched\n- internal/httpapi/mcp.go\n\n## Ordering\n1. Submit.\n\n## Risks\n- Drift.\n\n## Done criteria\n- The base commit persists."
+	const commit = "0123456789abcdef0123456789abcdef01234567"
+	for _, tc := range []struct {
+		name  string
+		value any
+		valid bool
+	}{
+		{name: "valid", value: commit, valid: true},
+		{name: "uppercase", value: strings.ToUpper(commit)},
+		{name: "short", value: commit[:12]},
+		{name: "number", value: 42},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx := store.WithWorkspace(store.WithActor(t.Context(), store.SystemActor()), "demo")
+			st := store.NewMemory()
+			task := core.Task{ID: "mcp-plan-base-" + tc.name, Workspace: "demo", Repo: "conveyor", PlanState: core.PlanNeeded, State: core.TaskRunning, NextStage: core.StageSpec, CreatedAt: time.Now()}
+			if err := st.CreateTask(ctx, task); err != nil {
+				t.Fatal(err)
+			}
+			job := core.Job{ID: task.ID + "-spec-1", TaskID: task.ID, Stage: core.StageSpec, State: core.JobPending}
+			if err := st.CreateJob(ctx, job); err != nil {
+				t.Fatal(err)
+			}
+			if err := storetest.For(st).CreateWorkOrder(ctx, core.WorkOrder{ID: job.ID, TaskID: task.ID, JobID: job.ID, Stage: core.StageSpec, State: core.WorkOrderQueued, QueueEnteredAt: time.Now(), QueueDeadline: time.Now().Add(time.Hour)}); err != nil {
+				t.Fatal(err)
+			}
+			provider := func(context.Context) (*config.Config, error) {
+				return &config.Config{Workspace: "demo", Routing: config.Routing{Stages: map[string]config.StageRoute{"spec": {Timeout: time.Hour}}}}, nil
+			}
+			server := NewServer(st)
+			server.Workspace = "demo"
+			server.WorkOrders = &workorder.Service{Store: st, Dispatcher: &dispatch.Dispatcher{Store: st}, ConfigProvider: provider}
+			request := httptest.NewRequest(http.MethodPost, "/mcp", nil)
+			request = request.WithContext(withCredentialActor(request.Context(), core.AuthenticatedCredential{ID: "pat-token", OwnerUserID: "usr-planner", Kind: core.CredentialUser, Scope: core.CredentialScopeUser}))
+			if _, err := server.callMCPTool(request, "claim_work_order", map[string]any{
+				"workspace_id": "demo", "work_order_id": job.ID, "session_id": "plan-session", "client_token": "secret", "agent": "codex", "model": "gpt",
+			}); err != nil {
+				t.Fatal(err)
+			}
+			payload, err := json.Marshal(map[string]any{"jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": map[string]any{"name": "submit_plan", "arguments": map[string]any{
+				"workspace_id": "demo", "work_order_id": job.ID, "session_id": "plan-session", "markdown": markdown, "decomposition": []any{}, "base_commit": tc.value,
+			}}})
+			if err != nil {
+				t.Fatal(err)
+			}
+			response := httptest.NewRecorder()
+			server.handleMCP(response, httptest.NewRequest(http.MethodPost, "/mcp", bytes.NewReader(payload)).WithContext(request.Context()))
+			var envelope struct {
+				Result struct {
+					IsError bool `json:"isError"`
+					Content []struct {
+						Text string `json:"text"`
+					} `json:"content"`
+				} `json:"result"`
+				Error *rpcError `json:"error"`
+			}
+			if err = json.Unmarshal(response.Body.Bytes(), &envelope); err != nil {
+				t.Fatal(err)
+			}
+			if response.Code != http.StatusOK || envelope.Error != nil || len(envelope.Result.Content) != 1 || envelope.Result.IsError == tc.valid {
+				t.Fatalf("submit_plan status=%d body=%s", response.Code, response.Body.String())
+			}
+			order, err := st.GetWorkOrder(ctx, job.ID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			spec, recorded, err := st.GetLatestSpecVersion(ctx, task.ID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !tc.valid {
+				if order.State != core.WorkOrderClaimed || order.SessionID != "plan-session" || recorded {
+					t.Fatalf("refused base_commit: order=%+v version recorded=%v", order, recorded)
+				}
+				return
+			}
+			if order.State != core.WorkOrderCompleted || !recorded || spec.BaseCommit == nil || *spec.BaseCommit != commit || spec.Origin != core.PlanOriginPlanOrder || spec.Approved {
+				t.Fatalf("accepted plan: order=%+v spec=%+v", order, spec)
+			}
+			stored, err := st.GetTask(ctx, task.ID)
+			if err != nil || stored.PlanState != core.PlanAwaitingApproval {
+				t.Fatalf("task plan state=%s err=%v", stored.PlanState, err)
+			}
+		})
+	}
+}
+
 // TestMCPSubmitPlanReviewSeats drives submit_plan through the JSON-RPC tool
 // envelope: omitted and null counts store none, malformed values and counts
 // below the task's minimum are in-band tool errors that leave the order
@@ -1666,7 +1825,7 @@ func planReviewSeatPointer(value int) *int { return &value }
 // "tools fetch failed" at connection time.
 // TestMCPCreateTaskToolDescribesItsRules keeps the published description in step
 // with DEC-116(5) and component-task-lifecycle invariant 16, and keeps the schema
-// title-less with the retired execution fields and the retired hold (DEC-74(3))
+// title-less with the retired execution fields and the retired hold (DEC-122(3))
 // absent.
 func TestMCPCreateTaskToolDescribesItsRules(t *testing.T) {
 	t.Parallel()
@@ -1898,7 +2057,7 @@ func TestMCPCreateTaskEnqueuesTriageIdempotently(t *testing.T) {
 }
 
 // TestMCPCreateTaskRefusesRetiredHold covers the compatibility input for the
-// retired hold (DEC-74(3); component-mcp-protocol): a new true and a mistyped
+// retired hold (DEC-122(3); component-mcp-protocol): a new true and a mistyped
 // value are refused in-band with no side effect, omitted, null, and false are
 // accepted, and a retry whose key names a task stored with hold before the
 // retirement returns that original task.
@@ -1929,7 +2088,7 @@ func TestMCPCreateTaskRefusesRetiredHold(t *testing.T) {
 		return len(tasks)
 	}
 	for name, value := range map[string]any{"true": true, "string": "yes", "number": 1} {
-		if _, err := server.callMCPTool(request, "create_task", arguments("refused-"+name, map[string]any{"hold": value})); err == nil || !strings.Contains(err.Error(), "task_hold_retired") || !strings.Contains(err.Error(), "DEC-74") {
+		if _, err := server.callMCPTool(request, "create_task", arguments("refused-"+name, map[string]any{"hold": value})); err == nil || !strings.Contains(err.Error(), "task_hold_retired") || !strings.Contains(err.Error(), "DEC-122") {
 			t.Fatalf("%s hold error=%v", name, err)
 		}
 	}

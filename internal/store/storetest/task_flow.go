@@ -36,10 +36,10 @@ func SeedTaskFlowScenarios(t *testing.T, st store.Backend, ctx context.Context, 
 	}
 
 	// Plan approval: a claimed spec order, then the spec gate.
-	planID := flowTask(t, st, ctx, workspace, core.Task{SpecApproval: true, MergeApproval: true})
+	planID := flowTask(t, st, ctx, workspace, core.Task{PlanState: core.PlanNeeded, MergeApproval: true})
 	spec := flowOrder(t, st, ctx, planID, core.StageSpec, "1", time.Hour)
 	flowClaim(t, st, ctx, spec, "plan", time.Hour)
-	_, err := plane.Perform(ctx, planID, taskops.Command{Kind: core.TaskGateSpec})
+	_, err := plane.Perform(ctx, planID, taskops.Command{Kind: core.TaskGateSpec, PlanState: &taskops.PlanStateMove{To: core.PlanAwaitingApproval, Cause: core.PlanCausePlanSubmitted}})
 	requireOK(t, err)
 	add("plan approval", planID, func(t *testing.T, flow store.TaskFlow) {
 		if flow.Raw.GateKind != string(core.GateKindPlanApproval) || flow.Raw.State != string(core.TaskAwaiting) {
@@ -63,21 +63,67 @@ func SeedTaskFlowScenarios(t *testing.T, st store.Backend, ctx context.Context, 
 		}
 	})
 
-	// A plan revision holds the plan gate from a later stage: the gate needs
-	// the operator, and the stages already passed stay done.
-	revisionID := flowTask(t, st, ctx, workspace, core.Task{SpecApproval: true, MergeApproval: true, NextStage: core.StageImplement})
+	// A plan revision is requested from a later stage of a task whose
+	// planning is completed: the plan gate reads done while the plan state
+	// stays completed, and the stages already passed stay done
+	// (component-next-action invariant 28).
+	revisionID := flowTask(t, st, ctx, workspace, core.Task{PlanState: core.PlanCompleted, MergeApproval: true, NextStage: core.StageImplement})
 	_, err = plane.Perform(ctx, revisionID, taskops.Command{Kind: core.TaskGatePlanRevision})
 	requireOK(t, err)
 	add("plan revision", revisionID, func(t *testing.T, flow store.TaskFlow) {
 		if flow.NextAction.Actor != nextaction.ActorOperator || flow.NextAction.Kind != nextaction.KindPlanRevision {
 			t.Fatalf("next action = %s/%s, want operator plan_revision", flow.NextAction.Actor, flow.NextAction.Kind)
 		}
-		requireFlowGates(t, flow, store.FlowNeedsOperator, store.FlowUpcoming)
+		requireFlowGates(t, flow, store.FlowDone, store.FlowUpcoming)
+		if got := taskFlowStage(t, flow, core.StageSpec).Status; got != store.FlowDone {
+			t.Fatalf("plan row = %s, want done while planning is completed", got)
+		}
+	})
+
+	// An approved revision sets a completed task back to planning needed: the
+	// fold follows task.plan_state_changed, so the plan row and gate leave
+	// done and the plan stage is ahead again (component-next-action
+	// invariants 27, 28; req-task-plan-state AC-3.4).
+	reneededID := flowTask(t, st, ctx, workspace, core.Task{PlanState: core.PlanCompleted, MergeApproval: true, NextStage: core.StageImplement})
+	_, err = plane.Perform(ctx, reneededID, taskops.Command{Kind: core.TaskGatePlanRevision})
+	requireOK(t, err)
+	_, err = plane.Perform(operator, reneededID, taskops.Command{Kind: core.TaskInterventionRedirect, NextStage: core.StageSpec, ProjectStages: true, PlanState: &taskops.PlanStateMove{To: core.PlanNeeded, Cause: core.PlanCausePlanRevisionApproved}})
+	requireOK(t, err)
+	add("set back to needed", reneededID, func(t *testing.T, flow store.TaskFlow) {
+		spec := taskFlowStage(t, flow, core.StageSpec)
+		if spec.Status == store.FlowOff || spec.Status == store.FlowDone || spec.Gate == nil || *spec.Gate != string(core.GateKindPlanApproval) {
+			t.Fatalf("spec = %+v, want the plan stage ahead behind plan_approval", spec)
+		}
+		requireFlowGates(t, flow, store.FlowUpcoming, store.FlowUpcoming)
+	})
+
+	// No plan required: the plan row and its gate read off while the merge
+	// gate stays on (component-next-action invariant 28; DEC-122(5)).
+	notRequiredID := flowTask(t, st, ctx, workspace, core.Task{PlanState: core.PlanNotRequired, MergeApproval: true})
+	add("no plan required", notRequiredID, func(t *testing.T, flow store.TaskFlow) {
+		spec := taskFlowStage(t, flow, core.StageSpec)
+		if spec.Status != store.FlowOff || spec.Gate != nil {
+			t.Fatalf("spec = %+v, want off with no gate", spec)
+		}
+		requireFlowGates(t, flow, store.FlowOff, store.FlowUpcoming)
+	})
+
+	// A plan approved at intake reaches planning completed with no plan
+	// order: the plan row and gate read done before any stage ran
+	// (component-next-action invariant 28; req-task-plan-state AC-2.3).
+	intakeApprover := store.WithActor(ctx, store.Actor{ID: store.UserActorID("flow-intake"), Role: core.ActorUser})
+	intakeID := flowTask(t, st, intakeApprover, workspace, core.Task{MergeApproval: true, IntakePlan: &core.IntakePlan{Content: flowIntakePlan, Approved: true}})
+	add("plan approved at intake", intakeID, func(t *testing.T, flow store.TaskFlow) {
+		spec := taskFlowStage(t, flow, core.StageSpec)
+		if spec.Status != store.FlowDone || len(spec.Attempts) != 0 {
+			t.Fatalf("spec = %+v, want done with no plan attempt", spec)
+		}
+		requireFlowGates(t, flow, store.FlowDone, store.FlowUpcoming)
 	})
 
 	// The merge gate: only the merge gate needs the operator, and the plan
 	// gate the task passed reads done.
-	mergeGateID := flowTask(t, st, ctx, workspace, core.Task{SpecApproval: true, MergeApproval: true, NextStage: core.StageReview})
+	mergeGateID := flowTask(t, st, ctx, workspace, core.Task{PlanState: core.PlanCompleted, MergeApproval: true, NextStage: core.StageReview})
 	_, err = plane.Perform(ctx, mergeGateID, taskops.Command{Kind: core.TaskGateMerge, RecoveryStage: core.StageImplement, ProjectStages: true})
 	requireOK(t, err)
 	add("merge approval", mergeGateID, func(t *testing.T, flow store.TaskFlow) {
@@ -98,7 +144,7 @@ func SeedTaskFlowScenarios(t *testing.T, st store.Backend, ctx context.Context, 
 	requireOK(t, err)
 	_, _, err = st.ConfirmSystemDesignVersion(ctx, design.ID, designInitial.Version)
 	requireOK(t, err)
-	contextID := flowTask(t, st, ctx, workspace, core.Task{SpecApproval: true, MergeApproval: true, NextStage: core.StageSpec})
+	contextID := flowTask(t, st, ctx, workspace, core.Task{PlanState: core.PlanNeeded, MergeApproval: true, NextStage: core.StageSpec})
 	_, _, err = st.ProposeTaskContext(ctx, core.TaskContextProposalInput{TaskID: contextID, TargetKind: core.TaskContextProposalSystemDesign, TargetID: design.ID, Source: core.TaskContextProposalTriage, Justification: "Triage suggests this design."})
 	requireOK(t, err)
 	add("context proposal at plan", contextID, func(t *testing.T, flow store.TaskFlow) {
@@ -164,7 +210,7 @@ func SeedTaskFlowScenarios(t *testing.T, st store.Backend, ctx context.Context, 
 	add("redirect window", redirectID, nil)
 
 	// Policy switches frozen at intake, and a verify switch turned back on.
-	offID := flowTask(t, st, ctx, workspace, core.Task{SpecApproval: false, MergeApproval: false})
+	offID := flowTask(t, st, ctx, workspace, core.Task{PlanState: core.PlanNotRequired, MergeApproval: false})
 	add("policy off", offID, func(t *testing.T, flow store.TaskFlow) {
 		spec, verify, merge := taskFlowStage(t, flow, core.StageSpec), taskFlowStage(t, flow, core.StageVerify), taskFlowStage(t, flow, core.StageMerge)
 		if spec.Status != store.FlowOff || spec.Gate != nil || verify.Status != store.FlowOff || merge.Gate != nil || merge.Status == store.FlowOff {
@@ -175,7 +221,7 @@ func SeedTaskFlowScenarios(t *testing.T, st store.Backend, ctx context.Context, 
 			t.Fatalf("spec off node = %+v", spec)
 		}
 	})
-	verifyID := flowTask(t, st, ctx, workspace, core.Task{SpecApproval: true, MergeApproval: true})
+	verifyID := flowTask(t, st, ctx, workspace, core.Task{PlanState: core.PlanNeeded, MergeApproval: true})
 	enabled := true
 	_, err = taskops.ExecuteSetupChange(ctx, st, verifyID, func(l taskops.TaskLease) (store.SetupChangeResult, error) {
 		return st.ChangeTaskPolicyCommand(ctx, l, store.SetupChangeRequest{TaskID: verifyID, RequestID: "flow-verify-" + verifyID, Reason: "enable verification", Policy: &store.TaskPolicyChange{VerifyStage: &enabled}})
@@ -189,7 +235,7 @@ func SeedTaskFlowScenarios(t *testing.T, st store.Backend, ctx context.Context, 
 
 	// Two spec orders: the newer one supersedes and retires the older, then
 	// times out unclaimed and the clock redispatches it automatically.
-	staleID := flowTask(t, st, ctx, workspace, core.Task{SpecApproval: true, MergeApproval: true, NextStage: core.StageSpec})
+	staleID := flowTask(t, st, ctx, workspace, core.Task{PlanState: core.PlanNeeded, MergeApproval: true, NextStage: core.StageSpec})
 	older := flowOrder(t, st, ctx, staleID, core.StageSpec, "1", flowShort)
 	newer := flowOrder(t, st, ctx, staleID, core.StageSpec, "2", flowShort)
 	flowRecover(t, "stale redispatch", st, ctx, newer)
@@ -441,7 +487,7 @@ func SeedTaskFlowScenarios(t *testing.T, st store.Backend, ctx context.Context, 
 // writes it, so no order is current afterwards.
 func flowApprovedGateOff(t *testing.T, st store.Store, ctx context.Context, workspace string) string {
 	t.Helper()
-	id := flowTask(t, st, ctx, workspace, core.Task{SpecApproval: true, MergeApproval: false, NextStage: core.StageReview, PolicyVersion: 1})
+	id := flowTask(t, st, ctx, workspace, core.Task{PlanState: core.PlanCompleted, MergeApproval: false, NextStage: core.StageReview, PolicyVersion: 1})
 	jobs, orders := reviewRound(id, 1)
 	requireOK(t, CreateReviewRound(ctx, st, id, jobs, orders))
 	plane := taskops.New(st)
@@ -610,7 +656,6 @@ func runTaskFlow(t *testing.T, factory Factory) {
 			plan, merge string
 		}{
 			{"plan approval", core.StageSpec, []string{nextaction.KindAgentQuestion, nextaction.KindContextProposal}, store.FlowWaiting, store.FlowUpcoming},
-			{"plan revision", core.StageSpec, []string{nextaction.KindAgentQuestion}, store.FlowWaiting, store.FlowUpcoming},
 			{"merge approval", core.StageMerge, []string{nextaction.KindAgentQuestion}, store.FlowDone, store.FlowWaiting},
 		} {
 			id := ids[tc.scenario]
@@ -644,7 +689,7 @@ func runTaskFlow(t *testing.T, factory Factory) {
 	// but read traversed once the recorded transitions place the task beyond
 	// them, and not before (req-operator-next-action AC-7.5).
 	t.Run("skipped nodes traversed once passed", func(t *testing.T) {
-		id := flowTask(t, st, ctx, x.Workspace, core.Task{SpecApproval: false, MergeApproval: false})
+		id := flowTask(t, st, ctx, x.Workspace, core.Task{PlanState: core.PlanNotRequired, MergeApproval: false})
 		events, err := st.ListEvents(ctx, id)
 		requireOK(t, err)
 		if len(events) == 0 {
@@ -806,6 +851,9 @@ func equalStages(a, b []core.Stage) bool {
 func sameFlowTime(a, b *time.Time) bool {
 	return (a == nil) == (b == nil) && (a == nil || a.Equal(*b))
 }
+
+// flowIntakePlan is a valid execution plan filed and approved at intake.
+const flowIntakePlan = "## Approach\nA.\n\n## Files touched\n- a.go\n\n## Ordering\n1. A.\n\n## Risks\n- None.\n\n## Done criteria\n- A holds."
 
 func flowTask(t *testing.T, st store.Store, ctx context.Context, workspace string, task core.Task) string {
 	t.Helper()

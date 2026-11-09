@@ -382,28 +382,21 @@ func TestSubmitPlanReviewSeatsRevision(t *testing.T) {
 		env.approve(t)
 		env.requireFloor(t, 3, nil, 2, store.ReviewSeatSourceMinimum)
 	})
-	t.Run("gate off", func(t *testing.T) {
+	// With the legacy plan-approval policy off, a submitted plan still waits
+	// for a person's approval: no submission approves a plan
+	// (component-work-orders invariant 56; DEC-122(6)).
+	t.Run("gate off still waits for approval", func(t *testing.T) {
 		env := newPlanSeatsEnv(t, "plan-seats-revision-automatic", false, frozenSeats(2), 1)
 		result, err := env.submit(env.claimPlan(t), planSeats(4))
 		if err != nil {
 			t.Fatal(err)
 		}
-		env.requireStored(t, result, 1, planSeats(4), true)
+		env.requireStored(t, result, 1, planSeats(4), false)
+		if _, ok, _ := env.st.GetApprovedSpecVersion(env.ctx, env.taskID); ok {
+			t.Fatal("a submitted plan was approved without a person's decision")
+		}
+		env.approve(t)
 		env.requireFloor(t, 1, planSeats(4), 4, store.ReviewSeatSourcePlanned)
-
-		result, err = env.submit(env.reenterPlan(t), planSeats(2))
-		if err != nil {
-			t.Fatal(err)
-		}
-		env.requireStored(t, result, 2, planSeats(2), true)
-		env.requireFloor(t, 2, planSeats(2), 2, store.ReviewSeatSourceMinimum)
-
-		result, err = env.submit(env.reenterPlan(t), planSeats(5))
-		if err != nil {
-			t.Fatal(err)
-		}
-		env.requireStored(t, result, 3, planSeats(5), true)
-		env.requireFloor(t, 3, planSeats(5), 5, store.ReviewSeatSourcePlanned)
 
 		order := env.reenterPlan(t)
 		before := env.snapshot(t, order.ID)
@@ -414,7 +407,8 @@ func TestSubmitPlanReviewSeatsRevision(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		env.requireStored(t, result, 4, nil, true)
-		env.requireFloor(t, 4, nil, 2, store.ReviewSeatSourceMinimum)
+		env.requireStored(t, result, 2, nil, false)
+		env.approve(t)
+		env.requireFloor(t, 2, nil, 2, store.ReviewSeatSourceMinimum)
 	})
 }

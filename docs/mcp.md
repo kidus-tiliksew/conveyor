@@ -584,11 +584,11 @@ their embedded snapshots.
 
 | Tool | What it does |
 |---|---|
-| `submit_plan` | Submit a Markdown execution plan for a claimed plan-stage order. Requires the Approach, Files touched, Ordering, Risks, and Done criteria headings; decomposition must be empty. Validation failures leave the order claimed for correction. |
+| `submit_plan` | Submit a Markdown execution plan for a claimed plan-stage order. Requires the Approach, Files touched, Ordering, Risks, and Done criteria headings; decomposition must be empty. Optional `base_commit` is the planner checkout's `HEAD`, 40 lowercase hexadecimal characters, and the plan version records it with origin `plan_order`. Validation failures, a malformed `base_commit` included, leave the order claimed for correction and record no plan version. No submission approves a plan: the plan state moves to plan awaiting approval and the task waits at the plan approval gate for a person's decision, so the result's `approved` is always false. |
 | `submit_for_review` | End of implementation: opens or reuses the pushed branch's PR and dispatches the independent review round. A successful call ends the implementation claim, and the session continues the `conveyor-work` delivery loop. |
 | `submit_review_verdict` | Submit `approve` or `changes_requested` with a reason code, summary, feedback, requirement citations, done-criteria coverage, and a governance assessment, all validated against the pinned snapshot. |
 | `await_review` | Long-poll for the round's verdict on a submitted implementation order. The implementation session calls it after submission; a verifier or reviewer it started does not. |
-| `request_plan_revision` | The repository-reality escape hatch: the approved plan cannot be executed as written. Requires `claim_work`, the caller's own live implement claim, and a rationale; the order returns to the queue behind an operator gate. |
+| `request_plan_revision` | The repository-reality escape hatch, on any implement claim. On a task whose planning is completed, it asks to revise the approved plan that cannot be executed as written. On a task with no plan required, it asks that the task be planned and contests no plan version. Requires `claim_work`, the caller's own live implement claim, and a rationale; the order returns to the queue behind an operator gate. An approved request sets planning needed and returns the task to the plan stage; a declined one returns it to implementation and keeps its plan state. |
 
 ## Proposing authority
 

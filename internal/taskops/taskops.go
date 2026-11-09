@@ -66,6 +66,18 @@ type Command struct {
 	FailureMessage string
 	Attempt        int
 	MaxAttempts    int
+	// PlanState, when set, moves the task's plan state in the same
+	// transaction as the lifecycle transition and appends
+	// task.plan_state_changed with its cause (component-plan-state
+	// invariant 3; req-task-plan-state REQ-3).
+	PlanState *PlanStateMove
+}
+
+// PlanStateMove is the plan-state move a lifecycle command commits with its
+// transition. A task already at To records no move.
+type PlanStateMove struct {
+	To    core.PlanState
+	Cause core.PlanStateCause
 }
 
 // WorkOrderMetadataCommand admits updates to progress/cost fields that do not
@@ -87,7 +99,7 @@ const SetAssigneeCommand = "task.assignee.set"
 // RequestChangesCommand is the serialized user-sourced changes-requested
 // bounce. It deliberately reuses the persisted redirect action and canonical
 // awaiting -> queued lifecycle edge, and re-queues the implement order like
-// any other order: it writes no hold (DEC-74(3); component-task-lifecycle).
+// any other order: it writes no hold (DEC-122(3); component-task-lifecycle).
 const RequestChangesCommand = "task.request_changes"
 
 type RequestChanges struct {

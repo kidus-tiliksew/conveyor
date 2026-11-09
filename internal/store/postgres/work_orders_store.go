@@ -130,13 +130,16 @@ func (s *Store) legacySpecGateVersion(ctx context.Context, taskID string, versio
 
 func (s *Store) ApproveSpecVersion(ctx context.Context, taskID string, version int) error {
 	ctx = dbmetrics.WithReadLabel(ctx, "ApproveSpecVersion")
-	return s.inTx(ctx, func(_ pgx.Tx, q *db.Queries) error {
+	return s.inTx(ctx, func(tx pgx.Tx, q *db.Queries) error {
 		if _, err := q.ApproveLatestSpecVersion(ctx, db.ApproveLatestSpecVersionParams{
 			TaskID: taskID, Version: int32(version), WorkspaceID: workspace(ctx),
 		}); err != nil {
 			return err
 		}
-		return insertEvent(ctx, q, core.Event{TaskID: taskID, Kind: "spec.version_approved", Payload: core.JSONPayload(map[string]int{"version": version})})
+		if err := insertEvent(ctx, q, core.Event{TaskID: taskID, Kind: "spec.version_approved", Payload: core.JSONPayload(map[string]int{"version": version})}); err != nil {
+			return err
+		}
+		return approvePlanStateTx(ctx, tx, q, taskID)
 	})
 }
 
@@ -2719,4 +2722,22 @@ func textFromPointer(value *string) pgtype.Text {
 		return pgtype.Text{}
 	}
 	return pgtype.Text{String: *value, Valid: true}
+}
+
+// approvePlanStateTx sets planning completed with cause plan_approved in the
+// transaction that records a plan approval (component-task-lifecycle
+// invariant 54; component-plan-state invariant 3; req-task-plan-state AC-1.3).
+func approvePlanStateTx(ctx context.Context, tx pgx.Tx, q *db.Queries, taskID string) error {
+	var current string
+	if err := tx.QueryRow(ctx, `SELECT plan_state FROM tasks WHERE workspace_id=$1 AND id=$2 FOR UPDATE`, workspace(ctx), taskID).Scan(&current); err != nil {
+		return notFound(err, "task %s", taskID)
+	}
+	move := store.PlanStateMoveEvent(taskID, core.PlanState(current), core.PlanCompleted, core.PlanCausePlanApproved)
+	if move == nil {
+		return nil
+	}
+	if err := setTaskPlanStateTx(ctx, tx, taskID, core.PlanCompleted); err != nil {
+		return err
+	}
+	return insertEvent(ctx, q, *move)
 }

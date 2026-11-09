@@ -905,7 +905,7 @@ func (s *Service) contextForOrder(ctx context.Context, order core.WorkOrder) (Co
 			spec.MaterializedChildren = append([]core.TaskRelation(nil), task.Children...)
 			result.PriorSpec = &spec
 		}
-	} else if spec, ok, getErr := store.ApprovedExecutionDocument(ctx, s.Store, task); getErr != nil {
+	} else if spec, ok, getErr := dispatch.DeliveredApprovedPlan(ctx, s.Store, task); getErr != nil {
 		return Context{}, getErr
 	} else if ok {
 		if spec.TaskID == task.ParentTaskID && task.ParentTaskID != "" {
@@ -919,11 +919,7 @@ func (s *Service) contextForOrder(ctx context.Context, order core.WorkOrder) (Co
 		}
 		result.ApprovedSpec = &spec
 	}
-	planContent := ""
-	if result.ApprovedSpec != nil {
-		planContent = result.ApprovedSpec.Content
-	}
-	result.RolePrompt += pack.DoneCriteriaReference(order.Stage, planContent, task.Body, task.Source, len(servedRequirements) > 0)
+	result.RolePrompt += pack.DoneCriteriaReference(order.Stage, result.ApprovedSpec, task.Body, task.Source, len(servedRequirements) > 0)
 	for _, event := range events {
 		if event.Kind == "pipeline.bounced" {
 			result.BounceHistory = append(result.BounceHistory, event.Payload)
@@ -1072,7 +1068,9 @@ func (s *Service) planRevisionContextForOrder(ctx context.Context, order core.Wo
 		requestAt = events[i].At
 		break
 	}
-	if request.WorkOrderID == "" || request.AttemptID == "" || request.PlanVersion < 1 || strings.TrimSpace(request.Rationale) == "" || order.CreatedAt.Before(requestAt) {
+	// A planning request from a no-plan-required task contests no version
+	// (component-work-orders invariant 57).
+	if request.WorkOrderID == "" || request.AttemptID == "" || request.PlanVersion < 0 || strings.TrimSpace(request.Rationale) == "" || order.CreatedAt.Before(requestAt) {
 		return nil, "", nil
 	}
 	interventions, err := s.Store.ListInterventions(ctx, order.TaskID)
@@ -1102,7 +1100,11 @@ func (s *Service) planRevisionContextForOrder(ctx context.Context, order core.Wo
 		PriorWorkOrderID:     request.WorkOrderID,
 		PriorAttemptID:       request.AttemptID,
 	}
-	contract := fmt.Sprintf("\n\n# Plan revision context\n\nThe implementing agent contested execution plan version %d with this rationale:\n\n> %s\n\nTreat this request as historical context. The newly submitted plan and currently served confirmed authority remain authoritative.\n", context.ContestedPlanVersion, strings.ReplaceAll(context.Rationale, "\n", "\n> "))
+	contested := fmt.Sprintf("contested execution plan version %d", context.ContestedPlanVersion)
+	if context.ContestedPlanVersion == 0 {
+		contested = "asked that this task, which required no plan, be planned"
+	}
+	contract := fmt.Sprintf("\n\n# Plan revision context\n\nThe implementing agent %s with this rationale:\n\n> %s\n\nTreat this request as historical context. The newly submitted plan and currently served confirmed authority remain authoritative.\n", contested, strings.ReplaceAll(context.Rationale, "\n", "\n> "))
 	if direction != "" {
 		contract += "\n# Operator direction\n\n" + direction + "\n"
 	}
@@ -1422,7 +1424,9 @@ func (s *Service) UploadTranscript(ctx context.Context, id, session, transcript 
 }
 
 // SubmitPlan completes a claimed plan-stage order through the unchanged spec
-// work-order lifecycle. Validation errors remain in-band and retain the claim.
+// work-order lifecycle. Validation errors, a malformed base_commit included,
+// remain in-band, retain the claim, and record no plan version
+// (component-work-orders invariant 56; component-mcp-protocol invariant 40).
 func (s *Service) SubmitPlan(ctx context.Context, id, session string, value pipeline.StructuredPlan) (map[string]any, error) {
 	return s.submitStageDocument(ctx, id, session, func(task core.Task, job core.Job, order core.WorkOrder) (core.SpecVersion, error) {
 		// A planned review seat count below the task's minimum is refused
@@ -1494,7 +1498,10 @@ func (s *Service) submitStageDocument(ctx context.Context, id, session string, a
 	if err != nil {
 		return nil, err
 	}
-	return map[string]any{"task_id": task.ID, "version": version.Version, "approved": current.State != core.TaskAwaiting, "next_stage": current.NextStage}, nil
+	// No submission approves a plan: the version waits at the plan_approval
+	// gate for a person's decision, so approved is always false
+	// (component-work-orders invariant 56; DEC-122(6)).
+	return map[string]any{"task_id": task.ID, "version": version.Version, "approved": false, "next_stage": current.NextStage}, nil
 }
 
 func (s *Service) AwaitReview(ctx context.Context, id, session string, wait time.Duration) (map[string]any, error) {
