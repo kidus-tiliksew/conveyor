@@ -154,7 +154,7 @@ func newSessionIntakeFixture(t *testing.T) *sessionIntakeFixture {
 
 	f := &sessionIntakeFixture{store: store.NewMemory(), members: members, cfg: &config.Config{
 		Workspace: "alpha",
-		Execution: config.ExecutionPolicy{SpecApproval: true, MergeApproval: true},
+		Execution: config.ExecutionPolicy{DefaultPlanState: "needed", MergeApproval: true},
 		Repos:     []config.Repo{{Name: "api", Base: "main"}, {Name: "ui", Base: "trunk"}},
 	}}
 	f.server = NewServer(f.store)
@@ -185,7 +185,10 @@ func (f *sessionIntakeFixture) setDefaults(spec, merge bool) {
 	f.cfgMu.Lock()
 	defer f.cfgMu.Unlock()
 	copied := *f.cfg
-	copied.Execution.SpecApproval, copied.Execution.MergeApproval = spec, merge
+	copied.Execution.DefaultPlanState, copied.Execution.MergeApproval = "not_required", merge
+	if spec {
+		copied.Execution.DefaultPlanState = "needed"
+	}
 	f.cfg = &copied
 }
 
@@ -339,7 +342,7 @@ func sessionCreatesTask(t *testing.T, role core.WorkspaceRole) {
 	}
 	task := result.task
 	if task.Workspace != "alpha" || task.Title != "Generated title" || task.Body != "Agent filed **work**\n\n- keep verbatim" || task.Source != "mcp:issue-7" ||
-		!task.SpecApproval || !task.MergeApproval || task.State != core.TaskQueued || task.NextStage != core.StageTriage || task.Branch != "conveyor/task-"+task.ID {
+		task.PlanState != core.PlanNeeded || !task.MergeApproval || task.State != core.TaskQueued || task.NextStage != core.StageTriage || task.Branch != "conveyor/task-"+task.ID {
 		t.Fatalf("task=%+v", task)
 	}
 	requirePersonCreator(t, f, task.ID, intakeOwner(role))
@@ -422,7 +425,11 @@ func TestMCPPersonCreateTaskGateValuesApply(t *testing.T) {
 				{"both-on", map[string]any{"spec_approval": true, "merge_approval": true}, true, true},
 			} {
 				result := f.callMCP(t, token, "create_task", intakeArgs(test.key, test.extra))
-				if result.errText != "" || !result.created || result.task.SpecApproval != test.wantSpec || result.task.MergeApproval != test.wantMerge {
+				wantPlanState := core.PlanNotRequired
+				if test.wantSpec {
+					wantPlanState = core.PlanNeeded
+				}
+				if result.errText != "" || !result.created || result.task.PlanState != wantPlanState || result.task.MergeApproval != test.wantMerge {
 					t.Fatalf("%s: err=%q task=%+v", test.key, result.errText, result.task)
 				}
 				persisted, err := f.store.GetTask(store.WithWorkspace(t.Context(), "alpha"), result.task.ID)
@@ -569,7 +576,11 @@ func TestMCPCreateTaskLegacyPolicyInputs(t *testing.T) {
 		extra := map[string]any{"level": test.level}
 		maps.Copy(extra, test.extra)
 		result := f.callMCP(t, token, "create_task", intakeArgs(key, extra))
-		if result.errText != "" || result.task.SpecApproval != test.wantSpec || result.task.MergeApproval != test.wantMerge {
+		wantPlanState := core.PlanNotRequired
+		if test.wantSpec {
+			wantPlanState = core.PlanNeeded
+		}
+		if result.errText != "" || result.task.PlanState != wantPlanState || result.task.MergeApproval != test.wantMerge {
 			t.Fatalf("%s: err=%q task=%+v", key, result.errText, result.task)
 		}
 	}
@@ -830,6 +841,7 @@ func TestCreateTaskRequestPolicyFieldsAreClassified(t *testing.T) {
 		"Level":                    "policy: type-checked",
 		"Hold":                     "retired (DEC-74(3)); shared intake refuses true after the idempotency lookup",
 		"SpecApproval":             "policy: type-checked",
+		"plan":                     "policy: plan_state, plan, plan_base_commit, and plan_approved, type-checked before the idempotency lookup",
 		"MergeApproval":            "policy: type-checked",
 		"Setup":                    "retired; refused by MCP and REST decoders",
 		"DependsOn":                "ordering",

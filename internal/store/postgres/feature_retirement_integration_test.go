@@ -215,6 +215,11 @@ func TestFeatureRetirementUpgradeFromPreviousHeadIntegration(t *testing.T) {
 	if _, err := st.BootstrapWorkspaceConfig(ctx, isolationConfig(workspace)); err != nil {
 		t.Fatal(err)
 	}
+	// CreateTask writes the plan state migration 161 adds, which replays over
+	// the column (component-plan-state invariant 8).
+	if _, err := st.pool.Exec(ctx, `ALTER TABLE tasks ADD COLUMN IF NOT EXISTS plan_state text NOT NULL DEFAULT 'needed'`); err != nil {
+		t.Fatal(err)
+	}
 	task := core.Task{ID: core.NewTaskID(), Workspace: workspace, Repo: "repo", Title: "Head", BaseBranch: "main", State: core.TaskQueued, NextStage: core.StageImplement, CreatedAt: time.Now()}
 	task.Branch = "conveyor/task-" + task.ID
 	if err := st.CreateTask(ctx, task); err != nil {

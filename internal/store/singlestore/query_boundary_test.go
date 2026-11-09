@@ -43,6 +43,8 @@ var startupOnlyFiles = map[string]bool{
 
 var startupOnlyFunctions = map[string]bool{
 	"verification_chunk_expiry.go:migrateVerificationChunkExpiryIndex": true,
+	"plan_state_upgrade.go:migrateTaskPlanState":                       true,
+	"plan_state_upgrade.go:fillTaskPlanStates":                         true,
 }
 
 // driverWrapperFiles implement the database/sql driver interfaces below every

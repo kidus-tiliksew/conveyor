@@ -363,6 +363,11 @@ func TestTaskContextTerminalCleanupMigrationIntegration(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
+	// CreateTask writes the plan state migration 161 adds, which replays over
+	// the column (component-plan-state invariant 8).
+	if _, err = pool.Exec(ctx, `ALTER TABLE tasks ADD COLUMN IF NOT EXISTS plan_state text NOT NULL DEFAULT 'needed'`); err != nil {
+		t.Fatal(err)
+	}
 	for _, label := range []string{"open", "merged", "closed"} {
 		taskID := label + "-migration-" + core.NewTaskID()
 		taskIDs[label] = taskID

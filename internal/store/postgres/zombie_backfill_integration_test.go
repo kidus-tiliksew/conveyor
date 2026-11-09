@@ -276,6 +276,11 @@ func TestWorkOrderZombieBackfillMigrationRetiresPassedStageAndIsRerunSafeIntegra
 		t.Fatal(err)
 	}
 	now := time.Now().UTC().Truncate(time.Microsecond)
+	// CreateTask writes the plan state migration 161 adds, which replays over
+	// the column (component-plan-state invariant 8).
+	if _, err := st.pool.Exec(ctx, `ALTER TABLE tasks ADD COLUMN IF NOT EXISTS plan_state text NOT NULL DEFAULT 'needed'`); err != nil {
+		t.Fatal(err)
+	}
 	task := core.Task{ID: "260815-4804be", Workspace: workspace, Repo: "conveyor", Branch: "conveyor/task-260815-4804be-" + core.NewTaskID(), BaseBranch: "main", State: core.TaskAwaiting, RecoveryStage: core.StageImplement, CreatedAt: now}
 	job := core.Job{ID: task.ID + "-spec-1", TaskID: task.ID, Stage: core.StageSpec, State: core.JobPending}
 	order := core.WorkOrder{ID: job.ID, TaskID: task.ID, JobID: job.ID, Stage: core.StageSpec, State: core.WorkOrderQueued, QueueEnteredAt: now, QueueDeadline: now.Add(time.Hour), CreatedAt: now}

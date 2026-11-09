@@ -125,7 +125,7 @@ func TestRuntimeWorkspaceConfigUsesDeploymentControlPlane(t *testing.T) {
 			t.Fatal(err)
 		}
 		assertDeploymentControlPlane(t, cfg)
-		if cfg.Workspace != "demo" || cfg.MaxBounces != 6 || cfg.WorkOrderQueueTimeoutText != "12h" || !cfg.Execution.SpecApproval {
+		if cfg.Workspace != "demo" || cfg.MaxBounces != 6 || cfg.WorkOrderQueueTimeoutText != "12h" || cfg.Execution.DefaultPlanState != "needed" {
 			t.Fatalf("workspace policy lost: workspace=%q bounces=%d queue=%q gates=%+v", cfg.Workspace, cfg.MaxBounces, cfg.WorkOrderQueueTimeoutText, cfg.Execution)
 		}
 		if len(cfg.Repos) != 1 || cfg.Repos[0].Name != "workspace-repo" || cfg.Repos[0].Base != "trunk" || !cfg.Monitor.Enabled || !slices.Equal(cfg.Monitor.Repositories, []string{"workspace-repo"}) {

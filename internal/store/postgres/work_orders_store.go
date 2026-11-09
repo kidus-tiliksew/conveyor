@@ -28,6 +28,9 @@ func (s *Store) CreateSpecVersion(ctx context.Context, spec core.SpecVersion) (c
 	if spec.CreatedAt.IsZero() {
 		spec.CreatedAt = time.Now().UTC()
 	}
+	if err := store.PrepareSpecVersionOrigin(&spec); err != nil {
+		return core.SpecVersion{}, err
+	}
 	err := s.inTx(ctx, func(tx pgx.Tx, q *db.Queries) error {
 		if _, err := q.GetTask(ctx, db.GetTaskParams{ID: spec.TaskID, WorkspaceID: workspace(ctx)}); err != nil {
 			return notFound(err, "task %s", spec.TaskID)
@@ -36,6 +39,7 @@ func (s *Store) CreateSpecVersion(ctx context.Context, spec core.SpecVersion) (c
 			TaskID: spec.TaskID, Content: spec.Content, AcceptanceCount: int32(spec.AcceptanceCount),
 			Acceptance: spec.Acceptance, Decomposition: spec.Decomposition, CreatedAt: timestamp(spec.CreatedAt), Agent: spec.Agent, Model: spec.Model,
 			ReviewSeats: int4FromSeatCount(spec.ReviewSeats),
+			Origin:      string(spec.Origin), BaseCommit: textFromPointer(spec.BaseCommit),
 		})
 		if err != nil {
 			return err
@@ -67,12 +71,13 @@ func (s *Store) GetSpecVersion(ctx context.Context, taskID string, version int) 
 	ctx = dbmetrics.WithReadLabel(ctx, "GetSpecVersion")
 	var row db.TaskSpec
 	err := s.boundary.QueryRow(ctx, `SELECT s.task_id,s.version,s.content,s.acceptance_count,
-	s.acceptance,s.decomposition,s.approved,s.created_at,s.approved_at,s.agent,s.model,s.review_seats
+	s.acceptance,s.decomposition,s.approved,s.created_at,s.approved_at,s.agent,s.model,s.review_seats,s.origin,s.base_commit
 FROM task_specs s
 JOIN tasks t ON t.id = s.task_id
 WHERE s.task_id = $1 AND s.version = $2 AND t.workspace_id = $3`, taskID, version, workspace(ctx)).Scan(
 		&row.TaskID, &row.Version, &row.Content, &row.AcceptanceCount, &row.Acceptance,
 		&row.Decomposition, &row.Approved, &row.CreatedAt, &row.ApprovedAt, &row.Agent, &row.Model, &row.ReviewSeats,
+		&row.Origin, &row.BaseCommit,
 	)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return core.SpecVersion{}, false, nil
@@ -95,14 +100,14 @@ func (s *Store) GetApprovedSpecVersion(ctx context.Context, taskID string) (core
 	ctx = dbmetrics.WithReadLabel(ctx, "GetApprovedSpecVersion")
 	var row db.TaskSpec
 	err := s.boundary.QueryRow(ctx, `SELECT s.task_id,s.version,s.content,s.acceptance_count,
-	s.acceptance,s.decomposition,s.approved,s.created_at,s.approved_at,s.agent,s.model,s.review_seats
+	s.acceptance,s.decomposition,s.approved,s.created_at,s.approved_at,s.agent,s.model,s.review_seats,s.origin,s.base_commit
 FROM task_specs s
 JOIN tasks t ON t.id = s.task_id
 WHERE s.task_id = $1 AND t.workspace_id = $2 AND s.approved
 ORDER BY s.version DESC
 LIMIT 1`, taskID, workspace(ctx)).Scan(&row.TaskID, &row.Version, &row.Content,
 		&row.AcceptanceCount, &row.Acceptance, &row.Decomposition, &row.Approved,
-		&row.CreatedAt, &row.ApprovedAt, &row.Agent, &row.Model, &row.ReviewSeats)
+		&row.CreatedAt, &row.ApprovedAt, &row.Agent, &row.Model, &row.ReviewSeats, &row.Origin, &row.BaseCommit)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return core.SpecVersion{}, false, nil
 	}
@@ -2660,8 +2665,18 @@ func specFromDB(spec db.TaskSpec) core.SpecVersion {
 		AcceptanceCount: int(spec.AcceptanceCount), Acceptance: append([]byte(nil), spec.Acceptance...),
 		Decomposition: append([]byte(nil), spec.Decomposition...), Approved: spec.Approved,
 		Agent: spec.Agent, Model: spec.Model, ReviewSeats: seatCountFromInt4(spec.ReviewSeats),
+		Origin: core.PlanOrigin(spec.Origin), BaseCommit: textPointer(spec.BaseCommit),
 		CreatedAt: spec.CreatedAt.Time, ApprovedAt: nullableTime(spec.ApprovedAt),
 	}
+}
+
+// textPointer maps a nullable text column to a nil or non-nil string.
+func textPointer(value pgtype.Text) *string {
+	if !value.Valid {
+		return nil
+	}
+	text := value.String
+	return &text
 }
 
 // int4FromSeatCount and seatCountFromInt4 map the nullable planned review
@@ -2696,4 +2711,12 @@ func firstOrderDirectionTx(ctx context.Context, tx pgx.Tx, order *core.WorkOrder
 	order.OperatorDirection = direction
 	_, err = tx.Exec(ctx, `UPDATE work_orders SET operator_direction=$3 WHERE workspace_id=$1 AND id=$2`, workspace(ctx), order.ID, direction)
 	return err
+}
+
+// textFromPointer maps a nil or non-nil string to a nullable text column.
+func textFromPointer(value *string) pgtype.Text {
+	if value == nil {
+		return pgtype.Text{}
+	}
+	return pgtype.Text{String: *value, Valid: true}
 }

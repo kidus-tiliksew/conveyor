@@ -271,7 +271,7 @@ func createWorkspaceAcceptsPolicyOnlyDocuments(t *testing.T) {
 				if candidate.Routing.Stages["implement"].TimeoutText != "3h" || candidate.Routing.Stages["verify"].TimeoutText != "2h" || candidate.Routing.Stages["spec"].TimeoutText != "30m" {
 					t.Fatalf("stage timeouts = %+v", candidate.Routing.Stages)
 				}
-				if candidate.Execution.SpecApproval || !candidate.Execution.MergeApproval || !candidate.Execution.VerifyStage || candidate.Execution.ImplementConcurrency != 2 {
+				if candidate.Execution.DefaultPlanState != "not_required" || !candidate.Execution.MergeApproval || !candidate.Execution.VerifyStage || candidate.Execution.ImplementConcurrency != 2 {
 					t.Fatalf("execution policy = %+v", candidate.Execution)
 				}
 				if len(candidate.Repos) != 1 || candidate.Repos[0].Name != "app" {

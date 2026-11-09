@@ -403,8 +403,14 @@ type ExecutionPolicy struct {
 	VerifyConcurrency int  `yaml:"verify_concurrency,omitempty" json:"verify_concurrency,omitempty"`
 	// DefaultMode is deprecated (DEC-74(2)): parsed from legacy documents
 	// and seeds for compatibility, never read for behavior, dropped on save.
-	DefaultMode          string `yaml:"default_mode,omitempty" json:"default_mode,omitempty"`
-	SpecApproval         bool   `yaml:"spec_approval" json:"spec_approval"`
+	DefaultMode string `yaml:"default_mode,omitempty" json:"default_mode,omitempty"`
+	// DefaultPlanState is the plan state intake gives a task filed with no
+	// plan state and no plan: not_required or needed, and needed when unset.
+	// SpecApproval is its legacy alias, read only when DefaultPlanState is
+	// absent and never stored or served (component-runtime invariant 39;
+	// req-task-plan-state AC-2.1).
+	DefaultPlanState     string `yaml:"default_plan_state,omitempty" json:"default_plan_state,omitempty"`
+	SpecApproval         *bool  `yaml:"spec_approval,omitempty" json:"spec_approval,omitempty"`
 	MergeApproval        bool   `yaml:"merge_approval" json:"merge_approval"`
 	ImplementConcurrency int    `yaml:"implement_concurrency" json:"implement_concurrency"`
 	ReviewConcurrency    int    `yaml:"review_concurrency" json:"review_concurrency"`
@@ -986,9 +992,12 @@ func ParseWorkspaceDocument(data []byte, deployment *Config, source string) (*Co
 	}
 	next.Execution = document.Execution
 	if legacyShape {
-		// A legacy document keeps the execution defaults its earlier full
-		// parse applied: an absent block means both gates on (DEC-74(1)).
+		// A legacy document keeps the merge-gate default its earlier full
+		// parse applied: an absent block means the merge gate on (DEC-122(1)).
 		defaultLegacyExecution(&next.Execution)
+	}
+	if err := NormalizeDefaultPlanState(&next.Execution); err != nil {
+		return nil, err
 	}
 	next.Repos = document.Repos
 	next.Monitor = document.Monitor
@@ -997,8 +1006,7 @@ func ParseWorkspaceDocument(data []byte, deployment *Config, source string) (*Co
 }
 
 func defaultLegacyExecution(execution *ExecutionPolicy) {
-	if *execution == (ExecutionPolicy{}) {
-		execution.SpecApproval = true
+	if execution.mergeDefaultApplies() {
 		execution.MergeApproval = true
 	}
 	execution.DefaultMode = ""
@@ -1213,8 +1221,15 @@ func ParseStoredWorkspaceDocument(data []byte, deployment *Config, source string
 // dropping the legacy budget, harness, setup, default-setup, and executor keys
 // an earlier release wrote. The input is never modified (component-runtime;
 // component-persistence).
+// The execution block's legacy spec_approval resolves into
+// default_plan_state, so a workspace read serves only default_plan_state
+// (component-runtime invariant 39).
 func DecodeStoredWorkspaceDocument(data []byte) (WorkspaceDocument, error) {
 	document, _, err := decodeStoredWorkspaceDocument(data)
+	if err != nil {
+		return document, err
+	}
+	err = NormalizeDefaultPlanState(&document.Execution)
 	return document, err
 }
 
@@ -1410,13 +1425,17 @@ func normalizeDeploymentScalars(c *Config, path string) error {
 	if (c.Database.Backend == "postgres" || c.Database.Backend == "singlestore") && c.Database.URL == "" {
 		return fmt.Errorf("database.url or CONVEYOR_DATABASE_URL is required for %s backend (postgres:// for PostgreSQL; singlestore://, mysql:// or a MySQL DSN for SingleStore)", c.Database.Backend)
 	}
-	// An absent execution block means the shipped default: both gates on
-	// (DEC-74(1); component-task-lifecycle). There is no mode axis (DEC-74(2)).
-	// A block that carried only the retired evidence key decodes empty and
-	// keeps these defaults (DEC-53).
-	if c.Execution == (ExecutionPolicy{}) {
-		c.Execution.SpecApproval = true
+	// An absent execution block means the shipped merge-gate default: on
+	// (DEC-122(1); component-task-lifecycle). There is no mode axis
+	// (DEC-122(2)). A block that carried only the retired evidence key decodes
+	// empty and keeps this default (DEC-53). The default plan state is needed
+	// whenever neither plan-state key is present (component-runtime
+	// invariant 39).
+	if c.Execution.mergeDefaultApplies() {
 		c.Execution.MergeApproval = true
+	}
+	if err := NormalizeDefaultPlanState(&c.Execution); err != nil {
+		return err
 	}
 	if c.Execution.DefaultMode != "" && c.Execution.DefaultMode != "auto" && c.Execution.DefaultMode != "manual" {
 		return fmt.Errorf("execution.default_mode is deprecated (DEC-74) and must be auto or manual when present")
@@ -1857,4 +1876,60 @@ func validRepoName(value string) bool {
 		return false
 	}
 	return true
+}
+
+// Default plan state values (component-runtime invariant 39).
+const (
+	DefaultPlanStateNeeded      = "needed"
+	DefaultPlanStateNotRequired = "not_required"
+)
+
+// mergeDefaultApplies keeps the merge gate's shipped default exactly as the
+// release before the plan state computed it: the gate turns on only for an
+// execution block whose decoded value is the zero value. That release decoded
+// spec_approval as a plain boolean, so spec_approval true counted as a set
+// field and spec_approval false did not. Each plan-state spelling counts as
+// the legacy value it means, so default_plan_state needed counts as
+// spec_approval true and default_plan_state not_required as spec_approval
+// false, and renaming the key never changes the merge gate (DEC-122(1);
+// component-task-lifecycle invariant 18; req-review-gates-evidence REQ-1).
+func (e ExecutionPolicy) mergeDefaultApplies() bool {
+	if e.SpecApproval != nil && *e.SpecApproval {
+		return false
+	}
+	if strings.TrimSpace(e.DefaultPlanState) == DefaultPlanStateNeeded {
+		return false
+	}
+	probe := e
+	probe.DefaultPlanState, probe.SpecApproval = "", nil
+	return probe == (ExecutionPolicy{})
+}
+
+// NormalizeDefaultPlanState resolves execution.default_plan_state: a stated
+// value must be not_required or needed, the legacy spec_approval is read only
+// when it is absent (true as needed, false as not_required), both keys with
+// different meanings are refused, and absent both it is needed. Afterwards
+// only default_plan_state remains, so a write stores and every read and
+// export serves only it (component-runtime invariant 39; req-task-plan-state
+// AC-2.1; DEC-122(6)).
+func NormalizeDefaultPlanState(execution *ExecutionPolicy) error {
+	state := strings.TrimSpace(execution.DefaultPlanState)
+	if state != "" && state != DefaultPlanStateNeeded && state != DefaultPlanStateNotRequired {
+		return fmt.Errorf("execution.default_plan_state must be %s or %s", DefaultPlanStateNotRequired, DefaultPlanStateNeeded)
+	}
+	if execution.SpecApproval != nil {
+		alias := DefaultPlanStateNotRequired
+		if *execution.SpecApproval {
+			alias = DefaultPlanStateNeeded
+		}
+		if state != "" && state != alias {
+			return fmt.Errorf("execution.default_plan_state %s disagrees with the legacy execution.spec_approval %t; send only execution.default_plan_state", state, *execution.SpecApproval)
+		}
+		state = alias
+	}
+	if state == "" {
+		state = DefaultPlanStateNeeded
+	}
+	execution.DefaultPlanState, execution.SpecApproval = state, nil
+	return nil
 }

@@ -708,7 +708,7 @@ func TestRetiredTaskHoldRouteAnswersGone(t *testing.T) {
 // live worker and refuses the retired hold input (DEC-74(3)).
 func TestTaskIntakeIsNotHealthGatedAndRefusesHold(t *testing.T) {
 	st := store.NewMemory()
-	cfg := &config.Config{Workspace: "demo", Execution: config.ExecutionPolicy{DefaultMode: "auto", SpecApproval: true, MergeApproval: true, ImplementConcurrency: 1, ReviewConcurrency: 1}, Routing: config.Routing{Stages: map[string]config.StageRoute{"implement": {Harness: "codex"}, "review": {Harness: "codex", Execution: config.ExecutionMCP}}}, Repos: []config.Repo{{Name: "api", Base: "main"}}}
+	cfg := &config.Config{Workspace: "demo", Execution: config.ExecutionPolicy{DefaultMode: "auto", DefaultPlanState: "needed", MergeApproval: true, ImplementConcurrency: 1, ReviewConcurrency: 1}, Routing: config.Routing{Stages: map[string]config.StageRoute{"implement": {Harness: "codex"}, "review": {Harness: "codex", Execution: config.ExecutionMCP}}}, Repos: []config.Repo{{Name: "api", Base: "main"}}}
 	provider := func(context.Context) (*config.Config, error) { return cfg, nil }
 	orders := &workorder.Service{Store: st, ConfigProvider: provider}
 	server := NewServer(st)
@@ -2131,7 +2131,7 @@ func TestReviewRedirectRecordsReasonAndRequeues(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(events) != 4 || events[1].Kind != "task.state_changed" || events[2].Kind != "pipeline.transition_decided" || events[3].Kind != "intervention.redirect" {
+	if len(events) != 5 || events[1].Kind != core.EventTaskPlanStateChanged || events[2].Kind != "task.state_changed" || events[3].Kind != "pipeline.transition_decided" || events[4].Kind != "intervention.redirect" {
 		t.Fatalf("events = %+v", events)
 	}
 }

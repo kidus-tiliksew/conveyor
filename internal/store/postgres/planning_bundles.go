@@ -285,11 +285,20 @@ func (s *Store) ApprovePlanningBundle(ctx context.Context, id string) (core.Plan
 		}
 		now := time.Now().UTC()
 		for _, member := range bundle.Tasks {
-			task := core.Task{ID: member.CreatedTaskID, Workspace: bundle.Workspace, Source: "planning_bundle:" + bundle.ID + ":" + member.MemberID, IntakeKey: "planning-bundle:" + bundle.ID + ":" + member.MemberID, Title: member.Title, Body: member.Body, Level: core.L2, SpecApproval: member.SpecApproval, MergeApproval: member.MergeApproval, PolicyVersion: 1, SetupContract: member.SetupContract, Repo: member.Repo, BaseBranch: member.BaseBranch, Branch: gitx.BranchName(member.CreatedTaskID), State: core.TaskQueued, NextStage: core.StageTriage, CreatedAt: now}
+			task := core.Task{ID: member.CreatedTaskID, Workspace: bundle.Workspace, Source: "planning_bundle:" + bundle.ID + ":" + member.MemberID, IntakeKey: "planning-bundle:" + bundle.ID + ":" + member.MemberID, Title: member.Title, Body: member.Body, Level: core.L2, PlanState: member.ResolvedPlanState(), MergeApproval: member.MergeApproval, PolicyVersion: 1, SetupContract: member.SetupContract, Repo: member.Repo, BaseBranch: member.BaseBranch, Branch: gitx.BranchName(member.CreatedTaskID), State: core.TaskQueued, NextStage: core.StageTriage, CreatedAt: now}
+			if err = store.PrepareTaskPlanState(&task); err != nil {
+				return err
+			}
 			if _, err = q.InsertTask(ctx, taskInsertParams(task)); err != nil {
 				return err
 			}
+			if err = writeTaskPlanState(ctx, tx, task); err != nil {
+				return err
+			}
 			if err = insertEvent(ctx, q, core.Event{TaskID: task.ID, Kind: "task.created", Payload: store.TaskCreatedPayload(ctx, task), At: now}); err != nil {
+				return err
+			}
+			if err = insertEvent(ctx, q, store.IntakePlanStateEvent(task)); err != nil {
 				return err
 			}
 		}

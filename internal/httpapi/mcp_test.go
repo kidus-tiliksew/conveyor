@@ -1892,7 +1892,7 @@ func TestMCPCreateTaskEnqueuesTriageIdempotently(t *testing.T) {
 		t.Fatalf("tasks=%+v err=%v", tasks, err)
 	}
 	events, err := st.ListEvents(store.WithActor(t.Context(), store.SystemActor()), first.ID)
-	if err != nil || len(events) != 1 || events[0].ActorID != "user:local-operator" || events[0].ActorRole != core.ActorUser {
+	if err != nil || len(events) != 2 || events[0].ActorID != "user:local-operator" || events[0].ActorRole != core.ActorUser || events[1].Kind != core.EventTaskPlanStateChanged {
 		t.Fatalf("events=%+v err=%v", events, err)
 	}
 }
@@ -2029,7 +2029,7 @@ func TestMCPCreateTaskRetryUsesPersistedPolicyBeforeLiveHealth(t *testing.T) {
 	now := time.Now().UTC()
 	cfg := &config.Config{
 		Workspace: "demo",
-		Execution: config.ExecutionPolicy{DefaultMode: "auto", SpecApproval: true, MergeApproval: true},
+		Execution: config.ExecutionPolicy{DefaultMode: "auto", DefaultPlanState: "needed", MergeApproval: true},
 
 		Routing: config.Routing{Stages: map[string]config.StageRoute{
 			"implement": {Harness: "codex"},
@@ -2056,7 +2056,7 @@ func TestMCPCreateTaskRetryUsesPersistedPolicyBeforeLiveHealth(t *testing.T) {
 	// Both live availability and omitted workspace gate defaults change after
 	// intake. An exact retry must still return the persisted resolution.
 	now = now.Add(time.Minute)
-	cfg.Execution.SpecApproval = false
+	cfg.Execution.DefaultPlanState = "not_required"
 	cfg.Execution.MergeApproval = false
 	secondResult, err := server.callMCPTool(request, "create_task", arguments)
 	if err != nil {

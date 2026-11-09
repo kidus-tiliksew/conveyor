@@ -2396,6 +2396,9 @@ func (m *memory) CreateSpecVersion(ctx context.Context, spec core.SpecVersion) (
 	if _, ok := m.tasks[spec.TaskID]; !ok {
 		return core.SpecVersion{}, fmt.Errorf("task %s: %w", spec.TaskID, ErrNotFound)
 	}
+	if err := PrepareSpecVersionOrigin(&spec); err != nil {
+		return core.SpecVersion{}, err
+	}
 	spec.Version = len(m.specs[spec.TaskID]) + 1
 	// Approval is a separate exact-version gate; callers cannot smuggle an
 	// approved artifact through creation. This matches the Postgres contract.
@@ -2404,9 +2407,8 @@ func (m *memory) CreateSpecVersion(ctx context.Context, spec core.SpecVersion) (
 	if spec.CreatedAt.IsZero() {
 		spec.CreatedAt = time.Now().UTC()
 	}
-	stored := spec
-	stored.ReviewSeats = copySeatCount(spec.ReviewSeats)
-	spec.ReviewSeats = copySeatCount(spec.ReviewSeats)
+	stored := copySpecVersion(spec)
+	spec = copySpecVersion(spec)
 	m.specs[spec.TaskID] = append(m.specs[spec.TaskID], stored)
 	m.appendEventLocked(ctx, core.Event{TaskID: spec.TaskID, Kind: "spec.version_created", Payload: core.JSONPayload(map[string]any{"version": spec.Version, "acceptance_count": spec.AcceptanceCount})})
 	return spec, nil
@@ -2455,9 +2457,14 @@ func (m *memory) GetApprovedSpecVersion(_ context.Context, taskID string) (core.
 	return core.SpecVersion{}, false, nil
 }
 
-// copySpecVersion keeps a caller from mutating a stored planned seat count.
+// copySpecVersion keeps a caller from mutating a stored planned seat count or
+// base commit.
 func copySpecVersion(spec core.SpecVersion) core.SpecVersion {
 	spec.ReviewSeats = copySeatCount(spec.ReviewSeats)
+	if spec.BaseCommit != nil {
+		commit := *spec.BaseCommit
+		spec.BaseCommit = &commit
+	}
 	return spec
 }
 

@@ -151,15 +151,20 @@ func (s *Store) GetLatestJob(ctx context.Context, id string) (core.Job, bool, er
 	return j, err == nil, err
 }
 
-const specColumns = `task_id,version,content,acceptance_count,acceptance,decomposition,approved,created_at,approved_at,agent,model,review_seats`
+const specColumns = `task_id,version,content,acceptance_count,acceptance,decomposition,approved,created_at,approved_at,agent,model,review_seats,origin,base_commit`
 
 func scanSpec(row interface{ Scan(...any) error }) (core.SpecVersion, error) {
 	var s core.SpecVersion
 	var at *time.Time
 	var reviewSeats sql.NullInt64
-	err := row.Scan(&s.TaskID, &s.Version, &s.Content, &s.AcceptanceCount, &s.Acceptance, &s.Decomposition, &s.Approved, &s.CreatedAt, &at, &s.Agent, &s.Model, &reviewSeats)
+	var baseCommit sql.NullString
+	err := row.Scan(&s.TaskID, &s.Version, &s.Content, &s.AcceptanceCount, &s.Acceptance, &s.Decomposition, &s.Approved, &s.CreatedAt, &at, &s.Agent, &s.Model, &reviewSeats, &s.Origin, &baseCommit)
 	if at != nil {
 		s.ApprovedAt = *at
+	}
+	if baseCommit.Valid {
+		commit := baseCommit.String
+		s.BaseCommit = &commit
 	}
 	s.ReviewSeats = seatCountFromNull(reviewSeats)
 	return s, err
@@ -168,6 +173,9 @@ func (s *Store) CreateSpecVersion(ctx context.Context, spec core.SpecVersion) (c
 	ctx = dbmetrics.WithReadLabel(ctx, "CreateSpecVersion")
 	if spec.CreatedAt.IsZero() {
 		spec.CreatedAt = time.Now().UTC()
+	}
+	if err := store.PrepareSpecVersionOrigin(&spec); err != nil {
+		return core.SpecVersion{}, err
 	}
 	err := s.taskTx(ctx, spec.TaskID, func(tx *sql.Tx) error {
 		if _, err := getTaskRow(ctx, tx, spec.TaskID); err != nil {
@@ -184,7 +192,7 @@ func (s *Store) CreateSpecVersion(ctx context.Context, spec core.SpecVersion) (c
 		}
 		spec.Approved = false
 		spec.ApprovedAt = time.Time{}
-		_, err := writeRow(ctx, tx, rowWrite{table: "task_specs", operation: "INSERT", values: map[string]any{"workspace_id": documentWorkspace(ctx), "task_id": spec.TaskID, "version": spec.Version, "content": spec.Content, "acceptance_count": spec.AcceptanceCount, "acceptance": []byte(spec.Acceptance), "decomposition": []byte(spec.Decomposition), "created_at": spec.CreatedAt, "agent": spec.Agent, "model": spec.Model, "review_seats": nullSeatCount(spec.ReviewSeats)}})
+		_, err := writeRow(ctx, tx, rowWrite{table: "task_specs", operation: "INSERT", values: specRowValues(ctx, spec)})
 		if err != nil {
 			return err
 		}
@@ -253,4 +261,21 @@ func (s *Store) ApproveSpecVersion(ctx context.Context, id string, version int) 
 		}
 		return taskEvent(ctx, tx, core.Event{TaskID: id, Kind: "spec.version_approved", Payload: core.JSONPayload(map[string]int{"version": version})})
 	})
+}
+
+// specRowValues is the task_specs insert of one plan version. SingleStore has
+// no CHECK constraint, so origin is validated by store.PrepareSpecVersionOrigin
+// before every write (component-plan-state, Columns).
+func specRowValues(ctx context.Context, spec core.SpecVersion) map[string]any {
+	if len(spec.Acceptance) == 0 {
+		spec.Acceptance = json.RawMessage(`[]`)
+	}
+	if len(spec.Decomposition) == 0 {
+		spec.Decomposition = json.RawMessage(`[]`)
+	}
+	var baseCommit any
+	if spec.BaseCommit != nil {
+		baseCommit = *spec.BaseCommit
+	}
+	return map[string]any{"workspace_id": documentWorkspace(ctx), "task_id": spec.TaskID, "version": spec.Version, "content": spec.Content, "acceptance_count": spec.AcceptanceCount, "acceptance": []byte(spec.Acceptance), "decomposition": []byte(spec.Decomposition), "created_at": spec.CreatedAt, "agent": spec.Agent, "model": spec.Model, "review_seats": nullSeatCount(spec.ReviewSeats), "origin": string(spec.Origin), "base_commit": baseCommit}
 }

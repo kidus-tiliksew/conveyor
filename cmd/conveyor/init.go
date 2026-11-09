@@ -457,7 +457,7 @@ func defaultInitConfig(databaseURL string, answers initAnswers) (config.Config, 
 		Database:                  config.Database{Backend: config.DatabaseForURL(databaseURL).Backend},
 		ExecutionSettings:         &settings,
 		Review:                    config.ReviewPanel{Seats: []config.ReviewSeat{{}}},
-		Execution:                 config.ExecutionPolicy{SpecApproval: true, MergeApproval: true, ImplementConcurrency: 1, ReviewConcurrency: 1},
+		Execution:                 config.ExecutionPolicy{DefaultPlanState: config.DefaultPlanStateNeeded, MergeApproval: true, ImplementConcurrency: 1, ReviewConcurrency: 1},
 		Repos:                     []config.Repo{{Name: answers.RepositoryName, URL: answers.RepositoryURL, GitHub: gitx.GitHubSlug(answers.RepositoryURL), Base: answers.BaseBranch, InstallConveyor: config.InstallSwitch(true)}},
 		Monitor:                   config.MonitorConfig{PollIntervalText: "1m", StartupWindowText: "24h"},
 	}, nil

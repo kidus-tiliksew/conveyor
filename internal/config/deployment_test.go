@@ -33,7 +33,7 @@ func legacyInitShapedDeployment(t *testing.T) []byte {
 		Database:                  DatabaseForURL("postgres://conveyor@db.invalid/conveyor"),
 		ExecutionSettings:         &settings,
 		Review:                    review,
-		Execution:                 ExecutionPolicy{SpecApproval: true, MergeApproval: false, ImplementConcurrency: 2, ReviewConcurrency: 1, FirstActivityTimeoutText: DefaultFirstActivityTimeoutText},
+		Execution:                 ExecutionPolicy{DefaultPlanState: "needed", MergeApproval: false, ImplementConcurrency: 2, ReviewConcurrency: 1, FirstActivityTimeoutText: DefaultFirstActivityTimeoutText},
 		Repos:                     []Repo{{Name: "conveyor", URL: "https://github.com/acme/conveyor.git", GitHub: "acme/conveyor", Base: "trunk", InstallConveyor: InstallSwitch(true)}},
 		Monitor:                   MonitorConfig{PollIntervalText: "1m", StartupWindowText: "24h"},
 	}, []map[string]any{legacySetupYAML(t, "default", settings, review, RefreshReviewDelta)}, "default")
@@ -164,7 +164,7 @@ func TestDeploymentLoadIgnoresLegacyExecutorKeys(t *testing.T) {
 		if cfg.Workspace != "default" || cfg.MaxBounces != 7 || cfg.Database.URL != "postgres://conveyor@db.invalid/conveyor" || cfg.Database.Backend != "postgres" {
 			t.Fatalf("deployment identity changed: workspace=%q bounces=%d database=%+v", cfg.Workspace, cfg.MaxBounces, cfg.Database)
 		}
-		if !cfg.Execution.SpecApproval || cfg.Execution.MergeApproval || cfg.Execution.ImplementConcurrency != 2 || cfg.Execution.ReviewConcurrency != 1 {
+		if cfg.Execution.DefaultPlanState != "needed" || cfg.Execution.MergeApproval || cfg.Execution.ImplementConcurrency != 2 || cfg.Execution.ReviewConcurrency != 1 {
 			t.Fatalf("legacy policy values changed: %+v", cfg.Execution)
 		}
 		if len(cfg.Review.Seats) != 1 {
@@ -420,7 +420,7 @@ func TestMarshalDeploymentRoundTripsPolicyOnly(t *testing.T) {
 	if reloaded.Routing.Stages["triage"].Model != "gpt-5.6-luna" || reloaded.ExecutionSettings.ControlPlane.Planning.Model != "gpt-5.6-luna" {
 		t.Fatalf("control-plane models were not rendered: %s", data)
 	}
-	if !reloaded.Execution.SpecApproval || reloaded.Execution.MergeApproval || len(reloaded.Review.Seats) != 1 || reloaded.MaxBounces != 7 {
+	if reloaded.Execution.DefaultPlanState != "needed" || reloaded.Execution.MergeApproval || len(reloaded.Review.Seats) != 1 || reloaded.MaxBounces != 7 {
 		t.Fatalf("policy changed through the round trip: %s", data)
 	}
 	if reloaded.Routing.Stages["implement"].TimeoutText != "4h" {
@@ -561,7 +561,7 @@ func legacySetupDeployment(t *testing.T, withProjection bool) []byte {
 	document := Config{
 		Workspace: "default", MaxBounces: 6,
 		Database:  DatabaseForURL("postgres://conveyor@db.invalid/conveyor"),
-		Execution: ExecutionPolicy{SpecApproval: false, MergeApproval: true, VerifyStage: true, ImplementConcurrency: 3, ReviewConcurrency: 2},
+		Execution: ExecutionPolicy{DefaultPlanState: "not_required", MergeApproval: true, VerifyStage: true, ImplementConcurrency: 3, ReviewConcurrency: 2},
 		Repos:     []Repo{{Name: "conveyor", URL: "https://github.com/acme/conveyor.git", Base: "main"}},
 	}
 	if withProjection {
@@ -651,7 +651,7 @@ func TestDeploymentLoadKeepsLegacyDefaultSetupPolicy(t *testing.T) {
 		if view.Triage.Model != "setup-triage-model" || view.Triage.Effort != "medium" || view.Triage.TimeoutText != "25m" || view.Planning.Model != "setup-planning-model" || view.Planning.ExplorationOutputTokens != 4000 {
 			t.Fatalf("default setup control-plane settings lost: triage=%+v planning=%+v", view.Triage, view.Planning)
 		}
-		if view.MaxBounces != 6 || view.Execution.SpecApproval || !view.Execution.MergeApproval || !view.Execution.VerifyStage || view.Execution.ImplementConcurrency != 3 || view.Execution.ReviewConcurrency != 2 {
+		if view.MaxBounces != 6 || view.Execution.DefaultPlanState != "not_required" || !view.Execution.MergeApproval || !view.Execution.VerifyStage || view.Execution.ImplementConcurrency != 3 || view.Execution.ReviewConcurrency != 2 {
 			t.Fatalf("top-level gates or bounce limit changed: %+v", view)
 		}
 	})

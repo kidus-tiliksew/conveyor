@@ -113,11 +113,20 @@ func TestDefaultInitConfigWritesPolicyOnly(t *testing.T) {
 		}
 	}
 	walk("", root)
+	// The file states the plan-state default and the merge gate, and never the
+	// retired spec_approval key (component-identity-membership invariant 14).
+	execution, _ := root.(map[string]any)["execution"].(map[string]any)
+	if execution["default_plan_state"] != "needed" || execution["merge_approval"] != true {
+		t.Fatalf("generated execution = %+v, want default_plan_state needed and merge_approval true:\n%s", execution, data)
+	}
+	if _, present := execution["spec_approval"]; present {
+		t.Fatalf("generated deployment config carries spec_approval:\n%s", data)
+	}
 	loaded, err := config.ParseDeployment(data, "generated.yaml", nil)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !loaded.Execution.SpecApproval || !loaded.Execution.MergeApproval {
+	if loaded.Execution.DefaultPlanState != "needed" || !loaded.Execution.MergeApproval {
 		t.Fatalf("generated gates = %+v, want both on", loaded.Execution)
 	}
 	triage := loaded.Routing.Stages["triage"]
@@ -159,7 +168,7 @@ func legacyExecutorInitConfig(t *testing.T, databaseURL string, answers initAnsw
 		Database:                  config.DatabaseForURL(databaseURL),
 		ExecutionSettings:         &settings,
 		Review:                    review,
-		Execution:                 config.ExecutionPolicy{SpecApproval: true, MergeApproval: true, ImplementConcurrency: 1, ReviewConcurrency: 1, FirstActivityTimeoutText: config.DefaultFirstActivityTimeoutText},
+		Execution:                 config.ExecutionPolicy{DefaultPlanState: "needed", MergeApproval: true, ImplementConcurrency: 1, ReviewConcurrency: 1, FirstActivityTimeoutText: config.DefaultFirstActivityTimeoutText},
 		Repos:                     []config.Repo{{Name: answers.RepositoryName, URL: answers.RepositoryURL, GitHub: initGitHubSlug(answers.RepositoryURL), Base: answers.BaseBranch, InstallConveyor: config.InstallSwitch(true)}},
 		Monitor:                   config.MonitorConfig{PollIntervalText: "1m", StartupWindowText: "24h"},
 	})

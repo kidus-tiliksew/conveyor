@@ -141,19 +141,27 @@ type Task struct {
 
 	RepositoryInstallAttempt int `json:"repository_install_attempt,omitempty"`
 
-	ID                 string                `json:"id"`
-	Workspace          string                `json:"workspace"`
-	Source             string                `json:"source"` // provenance: github:<slug>#<n>, cli, cron, monitor
-	IntakeKey          string                `json:"-"`      // workspace-scoped MCP retry key
-	Title              string                `json:"title"`
-	Body               string                `json:"body"`  // free-form description; becomes part of the prompt
-	Class              string                `json:"class"` // bug | feature | chore
-	Level              EscalationLevel       `json:"level"`
-	Mode               TaskMode              `json:"-"`                  // legacy persistence only; never emitted or read for behavior
-	Hold               bool                  `json:"-"`                  // historical stored value only; read by no decision (DEC-74(3))
-	Assignee           *TaskAssignee         `json:"assignee,omitempty"` // claim-eligibility identity; never an ordering field
-	SpecApproval       bool                  `json:"spec_approval"`
-	MergeApproval      bool                  `json:"merge_approval"`
+	ID        string          `json:"id"`
+	Workspace string          `json:"workspace"`
+	Source    string          `json:"source"` // provenance: github:<slug>#<n>, cli, cron, monitor
+	IntakeKey string          `json:"-"`      // workspace-scoped MCP retry key
+	Title     string          `json:"title"`
+	Body      string          `json:"body"`  // free-form description; becomes part of the prompt
+	Class     string          `json:"class"` // bug | feature | chore
+	Level     EscalationLevel `json:"level"`
+	Mode      TaskMode        `json:"-"`                  // legacy persistence only; never emitted or read for behavior
+	Hold      bool            `json:"-"`                  // historical stored value only; read by no decision (DEC-122(3))
+	Assignee  *TaskAssignee   `json:"assignee,omitempty"` // claim-eligibility identity; never an ordering field
+	// SpecApproval is the retained tasks.spec_approval column. No decision
+	// reads it as plan authority and no task read serves it; PlanState is the
+	// task's plan state (component-plan-state invariant 1; DEC-122(5)).
+	SpecApproval  bool      `json:"-"`
+	PlanState     PlanState `json:"plan_state"`
+	MergeApproval bool      `json:"merge_approval"`
+	// IntakePlan is the plan filed with the task, recorded as plan version 1
+	// in the creating transaction and never stored on the task row
+	// (component-plan-state invariant 2).
+	IntakePlan         *IntakePlan           `json:"-"`
 	PolicyVersion      int                   `json:"policy_version"`
 	SetupName          string                `json:"-"` // retired live selector; retained for legacy row decoding
 	SetupContract      config.PolicyContract `json:"policy_contract"`
@@ -1179,6 +1187,11 @@ type SpecVersion struct {
 	Model                string          `json:"model,omitempty"`
 	Approved             bool            `json:"approved"`
 	ReviewSeats          *int            `json:"review_seats,omitempty"`
+	// Origin names the act that recorded the version, and BaseCommit is the
+	// full commit ID the plan was read against, empty when none was recorded
+	// (component-plan-state; req-task-plan-state AC-2.5).
+	Origin     PlanOrigin `json:"origin"`
+	BaseCommit *string    `json:"base_commit"`
 	// LegacyGate is true only for an unapproved pre-Phase-8.3 version captured
 	// by migration 075. It grants approval-time compatibility, never creation.
 	LegacyGate bool      `json:"legacy_gate,omitempty"`

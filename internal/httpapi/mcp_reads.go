@@ -400,7 +400,7 @@ func (s *Server) authorizeDocumentReadClaim(ctx context.Context, name string, cr
 func readString(a map[string]any, k string) string { v, _ := a[k].(string); return v }
 func readBool(a map[string]any, k string) bool     { v, _ := a[k].(bool); return v }
 func taskRead(t core.Task, body bool) map[string]any {
-	p := map[string]any{"id": t.ID, "workspace": t.Workspace, "title": t.Title, "state": t.State, "terminal": core.TaskTerminal(t.State), "repository": t.Repo, "source": t.Source, "created_at": t.CreatedAt, "branch": t.Branch, "base_branch": t.BaseBranch, "next_stage": t.NextStage}
+	p := map[string]any{"id": t.ID, "workspace": t.Workspace, "title": t.Title, "state": t.State, "terminal": core.TaskTerminal(t.State), "repository": t.Repo, "source": t.Source, "created_at": t.CreatedAt, "branch": t.Branch, "base_branch": t.BaseBranch, "next_stage": t.NextStage, "plan_state": t.PlanState}
 	if body {
 		p["body"] = t.Body
 	}
@@ -621,7 +621,7 @@ func mcpReadEvents(events []core.Event, kind string) []any {
 		payload := map[string]json.RawMessage{}
 		// Arbitrary event payloads can carry credentials, setup or transcript data.
 		// Preserve only the context/document identifiers and states needed for investigation.
-		for _, k := range []string{"id", "version", "document_id", "requirement_id", "target_kind", "target_id", "source", "state", "from", "to", "superseded_by", "cleared_superseded_by", "created_by_event_id", "decision_event_id"} {
+		for _, k := range []string{"id", "version", "document_id", "requirement_id", "target_kind", "target_id", "source", "state", "from", "to", "superseded_by", "cleared_superseded_by", "created_by_event_id", "decision_event_id", "plan_state", "cause"} {
 			if value, ok := source[k]; ok {
 				var scalar any
 				if json.Unmarshal(value, &scalar) == nil {

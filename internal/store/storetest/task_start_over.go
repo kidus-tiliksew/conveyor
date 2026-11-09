@@ -119,6 +119,15 @@ func runTaskStartOver(t *testing.T, factory Factory) {
 			if got.Successor.Hold || successor.Hold {
 				t.Fatalf("successor inherited the retired task's stored hold: %+v", successor)
 			}
+			// The retired task required a plan, so the successor needs one; a
+			// retired approved plan is reference context, never a plan version
+			// (component-task-lifecycle invariant 36; AC-7.3).
+			if got.Successor.PlanState != core.PlanNeeded || successor.PlanState != core.PlanNeeded {
+				t.Fatalf("successor plan_state=%q stored %q, want needed", got.Successor.PlanState, successor.PlanState)
+			}
+			if _, found, err := st.GetLatestSpecVersion(ctx, successor.ID); err != nil || found {
+				t.Fatalf("successor carries a plan version: found=%t err=%v", found, err)
+			}
 			if len(successor.Dependencies) != 1 || successor.Dependencies[0].ID != open.ID {
 				t.Fatalf("dependencies=%+v", successor.Dependencies)
 			}
@@ -338,6 +347,46 @@ func runTaskStartOver(t *testing.T, factory Factory) {
 		}
 		if _, err = taskops.New(x.Backend).StartOver(x.Context, request); err != nil {
 			t.Fatalf("decided proposal blocked restart: %v", err)
+		}
+	})
+
+	t.Run("successor_plan_state", func(t *testing.T) {
+		x := factory.fresh(t, nil)
+		for _, test := range []struct {
+			retired core.PlanState
+			want    core.PlanState
+		}{
+			{core.PlanNotRequired, core.PlanNotRequired},
+			{core.PlanNeeded, core.PlanNeeded},
+			{core.PlanAwaitingApproval, core.PlanNeeded},
+			{core.PlanCompleted, core.PlanNeeded},
+		} {
+			old := core.Task{ID: core.NewTaskID(), Workspace: x.Workspace, Repo: "conveyor", BaseBranch: "main", Body: "Plan state", Title: "Plan state", State: core.TaskRunning, PlanState: test.retired, PolicyVersion: 1}
+			old.Branch = "conveyor/task-" + old.ID
+			if err := x.Backend.CreateTask(x.Context, old); err != nil {
+				t.Fatal(err)
+			}
+			got, err := taskops.New(x.Backend).StartOver(x.Context, core.TaskStartOverRequest{TaskID: old.ID, RequestID: "plan-state-" + old.ID, Reason: "retry"})
+			if err != nil {
+				t.Fatal(err)
+			}
+			successor, err := x.Backend.GetTask(x.Context, got.Successor.ID)
+			if err != nil || successor.PlanState != test.want || got.Successor.PlanState != test.want {
+				t.Fatalf("retired %s: successor plan_state=%q stored %q err=%v, want %s", test.retired, got.Successor.PlanState, successor.PlanState, err, test.want)
+			}
+			events, err := x.Backend.ListEvents(x.Context, successor.ID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			moves := 0
+			for _, event := range events {
+				if event.Kind == core.EventTaskPlanStateChanged {
+					moves++
+				}
+			}
+			if moves != 1 {
+				t.Fatalf("retired %s: successor recorded %d plan-state moves, want the intake move", test.retired, moves)
+			}
 		}
 	})
 

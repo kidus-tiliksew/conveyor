@@ -351,7 +351,7 @@ func (m *memory) approveSpecVersionAndMaterialize(ctx context.Context, taskID st
 			Title:  title,
 			Body:   fmt.Sprintf("%s\n\nDefined by blueprint task %s, spec version %d (%s).", strings.TrimSpace(item.Summary), parent.ID, version, item.ID),
 			Class:  parent.Class, Level: parent.Level,
-			SpecApproval: parent.SpecApproval, MergeApproval: parent.MergeApproval,
+			SpecApproval: parent.SpecApproval, PlanState: parent.PlanState, MergeApproval: parent.MergeApproval,
 			PolicyVersion: parent.PolicyVersion,
 			SetupContract: parent.SetupContract, Repo: strings.TrimSpace(item.Repo),
 			BaseBranch: baseBranches[item.ID], Branch: gitx.BranchName(id),
@@ -359,10 +359,16 @@ func (m *memory) approveSpecVersionAndMaterialize(ctx context.Context, taskID st
 			ParentTaskID: parent.ID, OriginSpecVersion: version, OriginSubID: item.ID,
 			CreatedAt: createdAt,
 		}
+		// A materialized legacy child copies its parent's plan state
+		// (component-task-lifecycle invariant 50).
+		if err := PrepareTaskPlanState(&child); err != nil {
+			return nil, err
+		}
 		m.tasks[id] = child
 		childrenBySub[item.ID] = child
 		createdSubs[item.ID] = struct{}{}
 		m.appendEventLocked(ctx, core.Event{TaskID: id, Kind: "task.created", Payload: TaskCreatedPayload(WithTaskTitleRedactions(ctx, titleStats), child), At: createdAt})
+		m.appendEventLocked(ctx, IntakePlanStateEvent(child))
 	}
 	for _, item := range decomposition {
 		if _, created := createdSubs[item.ID]; !created {
@@ -668,6 +674,15 @@ func (m *memory) createTaskWithContextLocked(ctx context.Context, t core.Task, d
 	if err != nil {
 		return err
 	}
+	if err := PrepareTaskPlanState(&t); err != nil {
+		return err
+	}
+	var approver Actor
+	if t.IntakePlan != nil && t.IntakePlan.Approved {
+		if approver, err = IntakePlanApprover(ActorFromContext(ctx)); err != nil {
+			return err
+		}
+	}
 	if _, exists := m.tasks[t.ID]; exists {
 		return Refusef("task %s already exists", t.ID)
 	}
@@ -735,6 +750,8 @@ func (m *memory) createTaskWithContextLocked(ctx context.Context, t core.Task, d
 	// A task carries no worker reservation: every insert stores hold false,
 	// like the durable column default (DEC-74(3); component-persistence).
 	t.Hold = false
+	intakePlan := t.IntakePlan
+	t.IntakePlan = nil
 	m.tasks[t.ID] = t
 	if len(seen) > 0 {
 		m.dependencies[t.ID] = map[string]struct{}{}
@@ -742,7 +759,9 @@ func (m *memory) createTaskWithContextLocked(ctx context.Context, t core.Task, d
 			m.dependencies[t.ID][dependencyID] = struct{}{}
 		}
 	}
+	t.IntakePlan = intakePlan
 	m.appendEventLocked(ctx, core.Event{TaskID: t.ID, Kind: "task.created", Payload: TaskCreatedPayload(ctx, t), At: t.CreatedAt})
+	m.recordIntakePlanStateLocked(ctx, t, approver)
 	for dependencyID := range seen {
 		m.appendEventLocked(ctx, core.Event{TaskID: t.ID, Kind: "task.dependency_added", At: t.CreatedAt,
 			Payload: core.JSONPayload(map[string]string{"task_id": t.ID, "depends_on_task_id": dependencyID})})
@@ -756,6 +775,35 @@ func (m *memory) createTaskWithContextLocked(ctx context.Context, t core.Task, d
 			Payload: core.JSONPayload(map[string]any{"id": id, "version": designVersions[id]})})
 	}
 	return nil
+}
+
+// recordIntakePlanStateLocked appends the intake plan-state move and, for a
+// task filed with a plan, plan version 1 and any filer approval, inside the
+// creating transaction (component-task-lifecycle invariant 20;
+// component-plan-state invariants 2 and 3).
+func (m *memory) recordIntakePlanStateLocked(ctx context.Context, t core.Task, approver Actor) {
+	m.appendEventLocked(ctx, IntakePlanStateEvent(t))
+	if t.IntakePlan == nil {
+		return
+	}
+	spec := IntakePlanSpecVersion(t)
+	if m.specs == nil {
+		m.specs = map[string][]core.SpecVersion{}
+	}
+	m.specs[t.ID] = append(m.specs[t.ID], spec)
+	m.appendEventLocked(ctx, IntakePlanVersionCreatedEvent(spec))
+	if !t.IntakePlan.Approved {
+		return
+	}
+	intervention := IntakePlanApproval(t, approver)
+	m.nextReviewID++
+	intervention.ID = m.nextReviewID
+	if m.interventions == nil {
+		m.interventions = map[string][]core.Intervention{}
+	}
+	m.interventions[t.ID] = append(m.interventions[t.ID], intervention)
+	m.appendEventLocked(ctx, InterventionEvent(intervention))
+	m.appendEventLocked(ctx, IntakePlanApprovedEvent(spec))
 }
 
 func (m *memory) validateTaskContextLocked(workspace string, input TaskContextInput) (TaskContextVersions, error) {

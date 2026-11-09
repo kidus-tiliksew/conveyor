@@ -16,6 +16,9 @@ type WorkspaceInfo struct {
 	Recovery   config.RecoveryPolicy `json:"recovery"`
 	Database   string                `json:"database"`
 	Repos      []config.Repo         `json:"repos"`
+	// DefaultPlanState is the effective execution.default_plan_state, needed
+	// when unset (component-runtime invariant 39).
+	DefaultPlanState string `json:"default_plan_state"`
 }
 
 func NewWorkspaceInfo(cfg *config.Config) *WorkspaceInfo {
@@ -23,7 +26,11 @@ func NewWorkspaceInfo(cfg *config.Config) *WorkspaceInfo {
 	if !policy.Present() {
 		policy = config.DefaultRecoveryPolicy()
 	}
-	return &WorkspaceInfo{Workspace: cfg.Workspace, MaxBounces: cfg.MaxBounces, Recovery: policy, Database: cfg.Database.Backend, Repos: append([]config.Repo(nil), cfg.Repos...)}
+	execution := cfg.Execution
+	if err := config.NormalizeDefaultPlanState(&execution); err != nil {
+		execution.DefaultPlanState = config.DefaultPlanStateNeeded
+	}
+	return &WorkspaceInfo{Workspace: cfg.Workspace, MaxBounces: cfg.MaxBounces, Recovery: policy, Database: cfg.Database.Backend, Repos: append([]config.Repo(nil), cfg.Repos...), DefaultPlanState: execution.DefaultPlanState}
 }
 
 func (s *Server) getWorkspace(w http.ResponseWriter, r *http.Request) {

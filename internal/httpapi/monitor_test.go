@@ -28,7 +28,7 @@ func TestMonitorObservationUsesNormalIntakeAndExposesDrift(t *testing.T) {
 				"spec": {TimeoutText: "30m"}, "implement": {TimeoutText: "4h"}, "review": {TimeoutText: "1h"},
 			}},
 			Review:    config.ReviewPanel{Seats: []config.ReviewSeat{{}}},
-			Execution: config.ExecutionPolicy{SpecApproval: true, MergeApproval: true},
+			Execution: config.ExecutionPolicy{DefaultPlanState: "needed", MergeApproval: true},
 		}, nil
 	}
 	server.GenerateTaskTitle = func(context.Context, core.Task) (string, error) { return "Reconcile outside change", nil }
@@ -134,7 +134,7 @@ func TestMonitorPostMergeAttemptsReuseOneTaskAndKeepDistinctObservations(t *test
 			Workspace: "demo", Repos: []config.Repo{{Name: "conveyor", Base: "main"}},
 			Routing:   config.Routing{Stages: map[string]config.StageRoute{"implement": {TimeoutText: "4h"}, "review": {TimeoutText: "1h"}}},
 			Review:    config.ReviewPanel{Seats: []config.ReviewSeat{{Model: "gpt-review"}}},
-			Execution: config.ExecutionPolicy{SpecApproval: true},
+			Execution: config.ExecutionPolicy{DefaultPlanState: "needed"},
 		}, nil
 	}
 	server.GenerateTaskTitle = func(context.Context, core.Task) (string, error) { return "Repair post-merge failure", nil }

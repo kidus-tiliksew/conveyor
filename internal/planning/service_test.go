@@ -2549,3 +2549,57 @@ func TestPromptKeepsOrder(t *testing.T) {
 	}
 	untrustedtest.RequireOrder(t, prompt, testPlanningPrompt, "Configured workspace repositories:", "You are exploring read-only snapshots:", "Strict exploration tool schemas:", "Durable conversation context (", planningContextBegin, `"session":`, `"messages":`, planningContextEnd)
 }
+
+// TestBundleMembersTakeTheWorkspaceDefaultPlanState proves every bundle member
+// takes the workspace default plan state, which overwrites any plan_state or
+// spec_approval a call supplies and is needed without configuration, and
+// that a member plan, plan_base_commit, or plan_approved is refused as
+// malformed arguments (component-planning invariants 15 and 32;
+// req-task-plan-state AC-2.1).
+func TestBundleMembersTakeTheWorkspaceDefaultPlanState(t *testing.T) {
+	ctx, st, session := goalPlanningFixture(t, "session-bundle-plan-state", core.PlanningGoalBundle)
+	requirement, first, err := st.CreateRequirement(ctx, core.Requirement{ID: "req-bundle-plan-state", Title: "Bundle"}, core.RequirementVersion{Content: "# Bundle", Origin: core.RequirementOriginOperator, Statements: []core.RequirementStatement{{ID: "REQ-1", Statement: "Deliver a bundle."}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	args := bundleArgs{Title: "Bundle delivery", Documents: []core.PlanningBundleDocument{{Kind: core.PlanningBundleRequirement, ID: requirement.ID, Version: first.Version}}, Tasks: []core.PlanningBundleTask{
+		{MemberID: "stated", Title: "Stated", Body: "Stated", Repo: "conveyor", PlanState: core.PlanNeeded},
+		{MemberID: "alias", Title: "Alias", Body: "Alias", Repo: "conveyor", SpecApproval: true},
+		{MemberID: "plain", Title: "Plain", Body: "Plain", Repo: "conveyor"},
+	}}
+	for _, test := range []struct {
+		name string
+		cfg  *config.Config
+		want core.PlanState
+	}{
+		{"workspace default not_required", &config.Config{Workspace: "demo", ExecutionSettings: &config.ContextualExecutionSettings{}, Execution: config.ExecutionPolicy{DefaultPlanState: "not_required", MergeApproval: true}, Repos: []config.Repo{{Name: "conveyor", Base: "main"}}}, core.PlanNotRequired},
+		{"workspace default needed", &config.Config{Workspace: "demo", ExecutionSettings: &config.ContextualExecutionSettings{}, Execution: config.ExecutionPolicy{DefaultPlanState: "needed"}, Repos: []config.Repo{{Name: "conveyor", Base: "main"}}}, core.PlanNeeded},
+		{"no configuration", nil, core.PlanNeeded},
+	} {
+		service := &Service{Store: st}
+		if test.cfg != nil {
+			cfg := test.cfg
+			service.ConfigProvider = func(context.Context) (*config.Config, error) { return cfg, nil }
+		}
+		session.ID = "session-bundle-plan-state-" + strings.ReplaceAll(test.name, " ", "-")
+		if _, err = st.CreatePlanningSession(ctx, core.PlanningSession{ID: session.ID, Title: "Planning", Goal: core.PlanningGoalBundle}); err != nil {
+			t.Fatal(err)
+		}
+		result, err := service.bundleTool(ctx, session, toolCall{ID: "bundle", Name: "finalize_bundle", ArgumentsJSON: jsonString(t, args)})
+		if err != nil {
+			t.Fatalf("%s: %v", test.name, err)
+		}
+		bundle := result.Output.(map[string]any)["bundle"].(core.PlanningBundle)
+		for _, member := range bundle.Tasks {
+			if member.PlanState != test.want || member.SpecApproval {
+				t.Fatalf("%s: member %s plan_state=%q spec_approval=%t, want %s", test.name, member.MemberID, member.PlanState, member.SpecApproval, test.want)
+			}
+		}
+	}
+	for _, field := range []string{`"plan":"## Approach\nx"`, `"plan_base_commit":"0123456789abcdef0123456789abcdef01234567"`, `"plan_approved":true`} {
+		raw := strings.Replace(jsonString(t, args), `"member_id":"plain"`, `"member_id":"plain",`+field, 1)
+		if _, err := (&Service{Store: st}).bundleTool(ctx, session, toolCall{ID: "bundle", Name: "finalize_bundle", ArgumentsJSON: raw}); err == nil || !strings.Contains(err.Error(), "unknown field") {
+			t.Fatalf("member %s: err=%v, want malformed arguments", field, err)
+		}
+	}
+}

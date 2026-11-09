@@ -129,7 +129,7 @@ func cliContextualWorkspaceDocument() config.WorkspaceDocument {
 			{Model: "gpt-review", Effort: "high"},
 			{Model: "claude-review", Harness: "claude", Effort: "high"},
 		}},
-		Execution: config.ExecutionPolicy{DefaultMode: "manual", SpecApproval: true, MergeApproval: true, ImplementConcurrency: 1, ReviewConcurrency: 2},
+		Execution: config.ExecutionPolicy{DefaultMode: "manual", DefaultPlanState: "needed", MergeApproval: true, ImplementConcurrency: 1, ReviewConcurrency: 2},
 		Repos:     []config.Repo{{Name: "conveyor", URL: "https://example.test/conveyor", Base: "main"}},
 	}
 }

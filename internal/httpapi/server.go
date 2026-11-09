@@ -1209,14 +1209,17 @@ type createTaskReq struct {
 	repositoryInstallAttempt int
 	attachments              []store.ArtifactUpload
 	multipartIntake          bool
+	// plan holds the intake plan fields plan_state, plan, plan_base_commit,
+	// and plan_approved (component-plan-state, Public surfaces).
+	plan intakePlanInput
 
 	Body            string               `json:"body"`
 	Repo            string               `json:"repo"`
 	BaseBranch      string               `json:"base_branch"`
 	Source          string               `json:"source"`
 	Level           core.EscalationLevel `json:"level"`
-	Hold            bool                 `json:"hold"` // deprecated input; intake refuses true after the idempotency lookup (DEC-74(3))
-	SpecApproval    *bool                `json:"spec_approval,omitempty"`
+	Hold            bool                 `json:"hold"`                    // deprecated input; intake refuses true after the idempotency lookup (DEC-122(3))
+	SpecApproval    *bool                `json:"spec_approval,omitempty"` // legacy alias of plan_state (component-plan-state invariant 1)
 	MergeApproval   *bool                `json:"merge_approval,omitempty"`
 	Setup           string               `json:"setup,omitempty"`
 	DependsOn       []string             `json:"depends_on,omitempty"`
@@ -1242,7 +1245,11 @@ func (req *createTaskReq) UnmarshalJSON(data []byte) error {
 		}
 	}
 	type request createTaskReq
-	return json.Unmarshal(data, (*request)(req))
+	if err := json.Unmarshal(data, (*request)(req)); err != nil {
+		return err
+	}
+	req.plan = decodeIntakePlanFields(fields)
+	return nil
 }
 
 func (s *Server) createTask(w http.ResponseWriter, r *http.Request) {
@@ -1590,6 +1597,7 @@ type activityTask struct {
 	Repo            string              `json:"repo"`
 	State           core.TaskState      `json:"state"`
 	NextStage       core.Stage          `json:"next_stage,omitempty"`
+	PlanState       core.PlanState      `json:"plan_state"` // component-plan-state invariant 1
 	Assignee        *core.TaskAssignee  `json:"assignee,omitempty"`
 	ReviewedHeadSHA string              `json:"reviewed_head_sha,omitempty"`
 	Dependencies    []core.TaskRelation `json:"dependencies,omitempty"`
@@ -1603,7 +1611,7 @@ func summarizeActivityTask(task core.Task) activityTask {
 	return activityTask{
 		Supersedes: task.Supersedes, SupersededBy: task.SupersededBy,
 		ID: task.ID, Title: task.Title, Repo: task.Repo, State: task.State,
-		NextStage: task.NextStage, Assignee: task.Assignee,
+		NextStage: task.NextStage, PlanState: task.PlanState, Assignee: task.Assignee,
 		ReviewedHeadSHA: task.ReviewedHeadSHA, Dependencies: task.Dependencies,
 		BlockingTaskIDs: task.BlockingTaskIDs, Children: task.Children,
 		Context: task.Context, CreatedAt: task.CreatedAt,

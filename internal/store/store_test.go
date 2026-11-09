@@ -30,8 +30,10 @@ func TestMemoryMutationsAppendAttributedEvents(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(events) != 3 {
-		t.Fatalf("events = %d, want 3", len(events))
+	// task.created, task.plan_state_changed, the dispatch transition, and the
+	// intervention (component-task-lifecycle invariant 20).
+	if len(events) != 4 {
+		t.Fatalf("events = %d, want 4", len(events))
 	}
 	for _, event := range events {
 		if event.ActorID != "operator-1" || event.ActorRole != core.ActorHuman {
