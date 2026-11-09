@@ -82,7 +82,9 @@ in `authority_divergence` with its pinned and live versions
 
 When a diverged document decides kit selection, re-pin before you seal. One
 example is a kit excluded with `pin_not_authoritative` on a requirement the
-task now serves.
+task now serves. A kit selected with a `pin_version_drift` warning pins an
+older version of a document the order holds: it is eligible and needs no
+re-pin, so report the warning in your result instead of releasing for it.
 
 1. Do not seal `feedback` or `operator_action_required` for it. Any sealed
    context, a checkpoint included, binds the order's current pins.
