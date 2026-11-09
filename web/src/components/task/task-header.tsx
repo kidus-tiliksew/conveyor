@@ -238,6 +238,20 @@ export function TaskFacts({
           className,
         )}
       >
+        {/* The task ID leads, copyable whole; a long ID truncates inside its
+            column instead of widening the page. */}
+        <Fact
+          label="Task ID"
+          valueClassName="flex items-center gap-1"
+          value={
+            <>
+              <span className="min-w-0 truncate font-mono text-xs" data-task-id-value>
+                {item.task.id}
+              </span>
+              <CopyButton value={item.task.id} label="Copy task ID" className="-my-1.5 size-7 shrink-0" />
+            </>
+          }
+        />
         <Fact label="Repository" value={item.task.repo} />
         <Fact
           label="Branch"
@@ -880,11 +894,23 @@ function AssigneeControl({ item, onClose }: { item: ActivityItem; onClose: () =>
 
 // One aligned row of the facts grid: dt and dd are sibling grid cells, so
 // every label shares a column and the values line up.
-function Fact({ label, value, startRow }: { label: React.ReactNode; value: React.ReactNode; startRow?: boolean }) {
+function Fact({
+  label,
+  value,
+  startRow,
+  valueClassName,
+}: {
+  label: React.ReactNode
+  value: React.ReactNode
+  startRow?: boolean
+  // Replaces the value's default truncation, for a value that lays out its
+  // own truncating text beside a control.
+  valueClassName?: string
+}) {
   return (
     <>
       <dt className={cn('text-muted', startRow && 'col-start-1')}>{label}</dt>
-      <dd className="min-w-0 truncate text-foreground">{value}</dd>
+      <dd className={cn('min-w-0 text-foreground', valueClassName ?? 'truncate')}>{value}</dd>
     </>
   )
 }
