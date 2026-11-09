@@ -267,7 +267,9 @@ func TestEventsColumnstoreExclusiveAccessIntegration(t *testing.T) {
 	for _, fault := range []string{"events_columnstore", "links"} {
 		linksBefore := queryRows(t, st, ctx, `SELECT * FROM links`)
 		eventsBefore, err := st.ListEvents(ctx, "parent")
-		if err != nil || len(eventsBefore) != 1 || eventsBefore[0].Kind != "task.created" {
+		// Creation records task.created and the intake plan-state move
+		// (component-task-lifecycle invariant 20).
+		if err != nil || len(eventsBefore) != 2 || eventsBefore[0].Kind != "task.created" || eventsBefore[1].Kind != core.EventTaskPlanStateChanged {
 			t.Fatalf("stable history read legacy event: %+v err=%v", eventsBefore, err)
 		}
 		restore := renameTable(t, ctx, st, fault, fault+"_event_fault")

@@ -574,7 +574,10 @@ func TestUniqueClaimsOutliveUnseenRowsIntegration(t *testing.T) {
 		}
 	})
 	t.Run("intake key planning bundle", func(t *testing.T) {
+		// A bundle task reaches its writer with its plan state set, as
+		// ApprovePlanningBundle sets it (component-planning invariant 32).
 		first := intakeTask("planning-winner", "planning-duplicate ", "planning-a")
+		first.PlanState = core.PlanNeeded
 		if err := st.withTx(intakeCtx, func(tx *sql.Tx) error {
 			_, err := insertPlanningBundleTask(intakeCtx, tx, first)
 			return err
@@ -583,6 +586,7 @@ func TestUniqueClaimsOutliveUnseenRowsIntegration(t *testing.T) {
 		}
 		hide(`DELETE FROM tasks WHERE workspace_id='intake-claims' AND id=?`, first.ID)
 		second := intakeTask("planning-late", "planning-duplicate ", "planning-b")
+		second.PlanState = core.PlanNeeded
 		if err := st.withTx(intakeCtx, func(tx *sql.Tx) error {
 			_, err := insertPlanningBundleTask(intakeCtx, tx, second)
 			return err
