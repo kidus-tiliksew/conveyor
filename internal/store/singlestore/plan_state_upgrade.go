@@ -26,17 +26,18 @@ func (s *Store) migrateTaskPlanState(ctx context.Context) error {
 // fillTaskPlanStates applies component-plan-state invariant 8's order:
 // awaiting_approval at the plan_approval gate, else completed with an
 // approved plan version, else needed for spec_approval true at policy version
-// 1 or L2 and L3 at policy version 0, else not_required.
+// 1 or L2 and L3 at policy version 0, else not_required. The approved-version
+// test is a correlated subquery on the shared workspace shard key, the form
+// migration 0019's fill uses.
 func fillTaskPlanStates(ctx context.Context, s *Store) error {
-	_, err := s.db.ExecContext(ctx, `UPDATE tasks t
-LEFT JOIN (SELECT workspace_id, task_id FROM task_specs WHERE approved GROUP BY workspace_id, task_id) approved
-	ON approved.workspace_id = t.workspace_id AND approved.task_id = t.id
-SET t.plan_state = CASE
-	WHEN t.gate_kind = 'plan_approval' THEN 'awaiting_approval'
-	WHEN approved.task_id IS NOT NULL THEN 'completed'
-	WHEN (t.policy_version > 0 AND t.spec_approval) OR (t.policy_version = 0 AND t.escalation_level IN ('L2','L3')) THEN 'needed'
+	_, err := s.db.ExecContext(ctx, `UPDATE tasks
+SET plan_state = CASE
+	WHEN gate_kind = 'plan_approval' THEN 'awaiting_approval'
+	WHEN (SELECT COUNT(*) FROM task_specs AS s
+		WHERE s.workspace_id = tasks.workspace_id AND s.task_id = tasks.id AND s.approved) > 0 THEN 'completed'
+	WHEN (policy_version > 0 AND spec_approval) OR (policy_version = 0 AND escalation_level IN ('L2','L3')) THEN 'needed'
 	ELSE 'not_required'
 END
-WHERE t.plan_state IS NULL`)
+WHERE plan_state IS NULL`)
 	return err
 }
