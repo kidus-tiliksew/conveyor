@@ -54,6 +54,9 @@ const (
 	planStateDir         = ".plan"
 	planStateFile        = "state.json"
 	planBaseSuffix       = ".base.md"
+	// planPlanSuffix names a task item's optional execution plan file,
+	// tasks/<name>.plan.md (component-cli-onboarding "Planning draft").
+	planPlanSuffix = ".plan.md"
 
 	// Rule labels for diagnostics that come from the draft layout and the
 	// factory content rules rather than one acceptance criterion.
@@ -94,16 +97,24 @@ type PlanDecisionFields struct {
 	Supersedes           *yaml.Node
 }
 
-// PlanTaskFields holds a task item's front matter. Gates stay pointers so an
-// omitted gate differs from an explicit false (AC-3.7).
+// PlanTaskFields holds a task item's front matter and its optional plan
+// file. Gates stay pointers so an omitted gate differs from an explicit false
+// (AC-3.7). PlanApproval is the legacy alias of PlanState
+// (component-cli-onboarding invariant 27).
 type PlanTaskFields struct {
 	Repo            string
 	BaseBranch      string
 	DependsOn       []string
 	RequirementIDs  []string
 	SystemDesignIDs []string
+	PlanState       *string
 	PlanApproval    *bool
+	PlanBaseCommit  *string
 	MergeApproval   *bool
+	// HasPlan reports that tasks/<name>.plan.md exists; Plan holds its text
+	// with CRLF normalized to LF.
+	HasPlan bool
+	Plan    string
 }
 
 // PlanItem is one draft item read from its LP-2 path.
@@ -133,11 +144,15 @@ type PlanItem struct {
 	Invalid error
 }
 
-// PlanDraft is a whole draft directory with its local state.
+// PlanDraft is a whole draft directory with its local state. OrphanPlans
+// lists, slash-separated and relative to the root, each plan file with no
+// task item file beside it; check fails each one (component-cli-onboarding
+// invariant 27).
 type PlanDraft struct {
-	Root  string
-	Items []PlanItem
-	State PlanState
+	Root        string
+	Items       []PlanItem
+	State       PlanState
+	OrphanPlans []string
 }
 
 // Item returns the items carrying id; more than one means the ID is ambiguous.
@@ -175,7 +190,9 @@ type planTaskFrontMatter struct {
 	DependsOn       []string `yaml:"depends_on"`
 	RequirementIDs  []string `yaml:"requirement_ids"`
 	SystemDesignIDs []string `yaml:"system_design_ids"`
+	PlanState       *string  `yaml:"plan_state"`
 	PlanApproval    *bool    `yaml:"plan_approval"`
+	PlanBaseCommit  *string  `yaml:"plan_base_commit"`
 	MergeApproval   *bool    `yaml:"merge_approval"`
 }
 
@@ -208,11 +225,12 @@ func ReadPlanDraft(ctx context.Context, dir string) (*PlanDraft, []PlanDiagnosti
 		if err := ctx.Err(); err != nil {
 			return nil, nil, err
 		}
-		items, layerDiagnostics, err := readPlanLayer(root, layer)
+		items, orphans, layerDiagnostics, err := readPlanLayer(root, layer)
 		if err != nil {
 			return nil, nil, err
 		}
 		draft.Items = append(draft.Items, items...)
+		draft.OrphanPlans = append(draft.OrphanPlans, orphans...)
 		diagnostics = append(diagnostics, layerDiagnostics...)
 	}
 	seen := map[string]int{}
@@ -236,29 +254,45 @@ func ReadPlanDraft(ctx context.Context, dir string) (*PlanDraft, []PlanDiagnosti
 	return draft, diagnostics, nil
 }
 
-func readPlanLayer(root, layer string) ([]PlanItem, []PlanDiagnostic, error) {
+// readPlanLayer reads one layer's item files. In the tasks layer a
+// `<name>.plan.md` file is part of the `<name>.md` item, never an item of its
+// own; orphans returns each plan file with no item file beside it.
+func readPlanLayer(root, layer string) (items []PlanItem, orphans []string, diagnostics []PlanDiagnostic, err error) {
 	entries, err := os.ReadDir(filepath.Join(root, layer))
 	if errors.Is(err, os.ErrNotExist) {
-		return nil, nil, nil
+		return nil, nil, nil, nil
 	}
 	if err != nil {
-		return nil, nil, fmt.Errorf("read draft layer %s: %w", layer, err)
+		return nil, nil, nil, fmt.Errorf("read draft layer %s: %w", layer, err)
 	}
 	extension := ".md"
 	if layer == PlanLayerDecisions {
 		extension = ".yaml"
 	}
-	var items []PlanItem
-	var diagnostics []PlanDiagnostic
+	// itemFiles holds the names the reader takes as task items, so a plan
+	// file beside a skipped `.base.md` or another plan file is an orphan.
+	itemFiles := map[string]bool{}
+	for _, entry := range entries {
+		name := entry.Name()
+		if !entry.IsDir() && strings.HasSuffix(name, extension) && !strings.HasSuffix(name, planBaseSuffix) && !strings.HasSuffix(name, planPlanSuffix) {
+			itemFiles[name] = true
+		}
+	}
 	for _, entry := range entries {
 		name := entry.Name()
 		if entry.IsDir() || !strings.HasSuffix(name, extension) || strings.HasSuffix(name, planBaseSuffix) {
 			continue
 		}
+		if layer == PlanLayerTasks && strings.HasSuffix(name, planPlanSuffix) {
+			if !itemFiles[strings.TrimSuffix(name, planPlanSuffix)+extension] {
+				orphans = append(orphans, layer+"/"+name)
+			}
+			continue
+		}
 		stem := strings.TrimSuffix(name, extension)
 		data, err := os.ReadFile(filepath.Join(root, layer, name))
 		if err != nil {
-			return nil, nil, fmt.Errorf("read draft item %s/%s: %w", layer, name, err)
+			return nil, nil, nil, fmt.Errorf("read draft item %s/%s: %w", layer, name, err)
 		}
 		item := PlanItem{Layer: layer, Path: layer + "/" + name, Name: stem}
 		switch layer {
@@ -273,7 +307,7 @@ func readPlanLayer(root, layer string) ([]PlanItem, []PlanDiagnostic, error) {
 			case err == nil:
 				item.HasBase, item.Base = true, base
 			case !errors.Is(err, os.ErrNotExist):
-				return nil, nil, fmt.Errorf("read draft base copy %s/%s%s: %w", layer, stem, planBaseSuffix, err)
+				return nil, nil, nil, fmt.Errorf("read draft base copy %s/%s%s: %w", layer, stem, planBaseSuffix, err)
 			}
 			if item.Invalid == nil && item.Mode == PlanModeCreate && item.HasBase {
 				item.Invalid = fmt.Errorf("a created document has no base copy; remove %s%s or set mode: revise", stem, planBaseSuffix)
@@ -284,6 +318,13 @@ func readPlanLayer(root, layer string) ([]PlanItem, []PlanDiagnostic, error) {
 		case PlanLayerTasks:
 			item.ID, item.Kind = planTaskIDPrefix+stem, PlanKindTask
 			item.Invalid = parsePlanTaskItem(&item, data)
+			plan, err := os.ReadFile(filepath.Join(root, layer, stem+planPlanSuffix))
+			switch {
+			case err == nil:
+				item.Task.HasPlan, item.Task.Plan = true, strings.ReplaceAll(string(plan), "\r\n", "\n")
+			case !errors.Is(err, os.ErrNotExist):
+				return nil, nil, nil, fmt.Errorf("read draft plan file %s/%s%s: %w", layer, stem, planPlanSuffix, err)
+			}
 		}
 		if (item.Kind == PlanKindDecision || item.Kind == PlanKindTask) && !planLocalNamePattern.MatchString(stem) {
 			item.Invalid = fmt.Errorf("draft-local name %q must match [a-z0-9][a-z0-9-]*", stem)
@@ -294,7 +335,8 @@ func readPlanLayer(root, layer string) ([]PlanItem, []PlanDiagnostic, error) {
 		items = append(items, item)
 	}
 	sort.SliceStable(items, func(i, j int) bool { return items[i].ID < items[j].ID })
-	return items, diagnostics, nil
+	sort.Strings(orphans)
+	return items, orphans, diagnostics, nil
 }
 
 // splitPlanFrontMatter separates a `---` delimited YAML front matter block
@@ -410,10 +452,20 @@ func parsePlanTaskItem(item *PlanItem, data []byte) error {
 		DependsOn:       trimPlanList(fields.DependsOn),
 		RequirementIDs:  trimPlanList(fields.RequirementIDs),
 		SystemDesignIDs: trimPlanList(fields.SystemDesignIDs),
+		PlanState:       trimPlanString(fields.PlanState),
 		PlanApproval:    fields.PlanApproval,
+		PlanBaseCommit:  trimPlanString(fields.PlanBaseCommit),
 		MergeApproval:   fields.MergeApproval,
 	}
 	return nil
+}
+
+func trimPlanString(value *string) *string {
+	if value == nil {
+		return nil
+	}
+	trimmed := strings.TrimSpace(*value)
+	return &trimmed
 }
 
 func trimPlanList(values []string) []string {
@@ -510,15 +562,43 @@ func BuildPlanItemRequest(item PlanItem) (PlanItemRequest, error) {
 		if item.Task.BaseBranch != "" {
 			body["base_branch"] = item.Task.BaseBranch
 		}
-		if item.Task.PlanApproval != nil {
-			body["spec_approval"] = *item.Task.PlanApproval
+		if state, stated := planTaskPlanState(item.Task); stated {
+			body["plan_state"] = state
 		}
 		if item.Task.MergeApproval != nil {
 			body["merge_approval"] = *item.Task.MergeApproval
 		}
+		// A plan file travels as approved under the operator's approval of
+		// this item at the digest that covers it (req-local-planning AC-4.7;
+		// req-task-plan-state AC-2.3; component-cli-onboarding invariant 30).
+		if item.Task.HasPlan {
+			body["plan"] = strings.TrimSpace(item.Task.Plan)
+			if item.Task.PlanBaseCommit != nil {
+				body["plan_base_commit"] = *item.Task.PlanBaseCommit
+			}
+			body["plan_approved"] = true
+		}
 		return PlanItemRequest{Method: "POST", Path: "/v1/tasks", Body: body, Multipart: true}, nil
 	}
 	return PlanItemRequest{}, fmt.Errorf("%s: unknown item kind %q", item.ID, item.Kind)
+}
+
+// planTaskPlanState returns the plan state a task item states: plan_state
+// as written, else the legacy plan_approval alias, true as needed and false
+// as not_required (component-cli-onboarding invariant 27). stated is false
+// when the item states neither, so the task takes the workspace default
+// (AC-3.7).
+func planTaskPlanState(task PlanTaskFields) (state string, stated bool) {
+	switch {
+	case task.PlanState != nil:
+		return *task.PlanState, true
+	case task.PlanApproval == nil:
+		return "", false
+	case *task.PlanApproval:
+		return string(core.PlanNeeded), true
+	default:
+		return string(core.PlanNotRequired), true
+	}
 }
 
 func planStringList(values []string) []any {

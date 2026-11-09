@@ -714,7 +714,7 @@ func TestPlanPushLayersInOrder(t *testing.T) {
 	if !strings.Contains(build["body"].(string), "following DEC-81.") {
 		t.Fatalf("build task body keeps draft-local IDs: %q", build["body"])
 	}
-	for _, gate := range []string{"spec_approval", "merge_approval"} {
+	for _, gate := range []string{"plan_state", "spec_approval", "merge_approval", "plan", "plan_base_commit", "plan_approved"} {
 		if _, ok := build[gate]; ok {
 			t.Fatalf("task states no %s but the request carries %v", gate, build[gate])
 		}
@@ -1216,7 +1216,7 @@ func TestPlanPushTaskRequests(t *testing.T) {
 	if want := planIntakeKey(draftID, "draft:task/gated", digests["draft:task/gated"]); gated.IntakeKey != want {
 		t.Fatalf("intake key = %q, want %q", gated.IntakeKey, want)
 	}
-	if gated.Body["spec_approval"] != false || gated.Body["merge_approval"] != true || gated.Body["base_branch"] != "release" {
+	if _, legacy := gated.Body["spec_approval"]; legacy || gated.Body["plan_state"] != "not_required" || gated.Body["merge_approval"] != true || gated.Body["base_branch"] != "release" {
 		t.Fatalf("gated task body = %v", gated.Body)
 	}
 	if record := planPushRecord(t, root, "draft:task/gated"); record.IntakeKey != gated.IntakeKey || record.Phase != PlanPushPosted {

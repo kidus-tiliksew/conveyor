@@ -88,7 +88,7 @@ func TestPlanItemRequestBodies(t *testing.T) {
 		{"draft:dec/use-cli", "/v1/decisions", false, map[string]any{"id": "draft:dec/use-cli", "statement": "Check drafts in the CLI, as req-demo REQ-1 requires.", "context": "req-demo AC-1.1 needs an offline check.", "alternatives_rejected": "A server-side check was rejected."}},
 		{"draft:dec/replace", "/v1/decisions", false, map[string]any{"id": "draft:dec/replace", "statement": "Check drafts in the CLI, as req-demo REQ-1 requires.", "context": "req-demo AC-1.1 needs an offline check.", "alternatives_rejected": "A server-side check was rejected.", "supersedes": "DEC-9"}},
 		{"draft:task/build", "/v1/tasks", true, map[string]any{"body": "Implement req-demo AC-1.1 as feature-demo describes, following draft:dec/use-cli.", "repo": "conveyor", "depends_on": []any{}, "requirement_ids": []any{"req-demo"}, "system_design_ids": []any{"feature-demo"}}},
-		{"draft:task/gated", "/v1/tasks", true, map[string]any{"body": "Ship it after draft:task/build.", "repo": "conveyor", "base_branch": "release", "spec_approval": false, "merge_approval": true, "depends_on": []any{"draft:task/build"}, "requirement_ids": []any{}, "system_design_ids": []any{}}},
+		{"draft:task/gated", "/v1/tasks", true, map[string]any{"body": "Ship it after draft:task/build.", "repo": "conveyor", "base_branch": "release", "plan_state": "not_required", "merge_approval": true, "depends_on": []any{"draft:task/build"}, "requirement_ids": []any{}, "system_design_ids": []any{}}},
 	} {
 		items := draft.Item(tc.id)
 		if len(items) != 1 {
@@ -109,7 +109,7 @@ func TestPlanItemRequestBodies(t *testing.T) {
 	}
 	// An omitted gate is absent from the body, not false (AC-3.7).
 	request, _ := BuildPlanItemRequest(draft.Item("draft:task/build")[0])
-	for _, gate := range []string{"spec_approval", "merge_approval", "base_branch"} {
+	for _, gate := range []string{"plan_state", "spec_approval", "merge_approval", "base_branch", "plan", "plan_base_commit", "plan_approved"} {
 		if _, ok := request.Body[gate]; ok {
 			t.Fatalf("omitted %s is present: %#v", gate, request.Body)
 		}

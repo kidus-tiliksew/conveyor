@@ -111,9 +111,19 @@ specifies the mechanism; this section directs the session.
    version, with `base_version` set to that version number. Never write the
    copy from the repository, an earlier draft, another session, or memory
    (AC-4.11).
-4. When a task item states `plan_approval` or `merge_approval`, the value
-   comes from the operator's direct instruction in this conversation (AC-4.7).
-   Without one, omit both fields so the workspace defaults apply.
+4. When a task item states `plan_state` (`not_required` or `needed`) or
+   `merge_approval`, the value comes from the operator's direct instruction
+   in this conversation (AC-4.7). Without one, omit the field so the
+   workspace default applies. `plan_approval` is the legacy alias of
+   `plan_state`; write `plan_state` in a new item.
+5. Add an execution plan file `tasks/<name>.plan.md` beside a task item only
+   for a plan the operator approves with that item. Set the item's
+   `plan_base_commit` to the full commit ID the plan was read against. An
+   item with a plan file states no `plan_state`. Present the plan file's full
+   text with its item when asking for approval. Push files the plan as
+   approved under the operator's approval of the item at the digest that
+   covers the plan, and a changed plan file needs a new approval (AC-4.7;
+   `req-task-plan-state` AC-2.3; DEC-122(6)).
 
 ### Present and approve
 
