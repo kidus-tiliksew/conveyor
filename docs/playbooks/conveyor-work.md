@@ -298,8 +298,8 @@ of departing from the plan. When the task's plan state is no plan required
 and the work turns out to need a plan, it calls `request_plan_revision` with
 the reason as the rationale. The order is released and waits for the
 operator: an approval sets the plan state to planning needed, and a dismissal
-returns the task to implementation (`req-task-plan-state` AC-3.3;
-DEC-122(6)).
+returns the task to implementation with the operator's direction
+(`req-task-plan-state` AC-3.3; DEC-122(6)).
 
 ### Release at an authority-conflict checkpoint
 

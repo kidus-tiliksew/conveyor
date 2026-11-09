@@ -119,7 +119,8 @@ specifies the mechanism; this section directs the session.
 5. Add an execution plan file `tasks/<name>.plan.md` beside a task item only
    for a plan the operator approves with that item. Set the item's
    `plan_base_commit` to the full commit ID the plan was read against. An
-   item with a plan file states no `plan_state`. Push files the plan as
+   item with a plan file states no `plan_state`. Present the plan file's full
+   text with its item when asking for approval. Push files the plan as
    approved under the operator's approval of the item at the digest that
    covers the plan, and a changed plan file needs a new approval (AC-4.7;
    `req-task-plan-state` AC-2.3; DEC-122(6)).

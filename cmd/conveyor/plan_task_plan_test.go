@@ -38,6 +38,21 @@ func TestPlanCheckTaskPlanRules(t *testing.T) {
 			fragments: []string{"tasks/lonely.plan.md has no tasks/lonely.md beside it"},
 		},
 		{
+			name:      "plan beside a skipped base copy",
+			task:      planFixtureBuildTask,
+			extra:     map[string]string{"tasks/foo.base.md": "# Base\n", "tasks/foo.base.plan.md": planFixturePlan},
+			prefix:    "draft:task/foo.base: LP-2: ",
+			fragments: []string{"tasks/foo.base.plan.md has no tasks/foo.base.md beside it"},
+		},
+		{
+			name:      "plan beside another plan file",
+			task:      planFixtureBuildTask,
+			plan:      planFixturePlan,
+			extra:     map[string]string{"tasks/build.plan.plan.md": planFixturePlan},
+			prefix:    "draft:task/build.plan: LP-2: ",
+			fragments: []string{"tasks/build.plan.plan.md has no tasks/build.plan.md beside it"},
+		},
+		{
 			name:      "plan missing a required heading",
 			task:      planFixtureBuildTask,
 			plan:      strings.Replace(planFixturePlan, "## Risks\n\nNone.\n\n", "", 1),

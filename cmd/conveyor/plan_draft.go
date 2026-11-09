@@ -269,9 +269,14 @@ func readPlanLayer(root, layer string) (items []PlanItem, orphans []string, diag
 	if layer == PlanLayerDecisions {
 		extension = ".yaml"
 	}
+	// itemFiles holds the names the reader takes as task items, so a plan
+	// file beside a skipped `.base.md` or another plan file is an orphan.
 	itemFiles := map[string]bool{}
 	for _, entry := range entries {
-		itemFiles[entry.Name()] = !entry.IsDir()
+		name := entry.Name()
+		if !entry.IsDir() && strings.HasSuffix(name, extension) && !strings.HasSuffix(name, planBaseSuffix) && !strings.HasSuffix(name, planPlanSuffix) {
+			itemFiles[name] = true
+		}
 	}
 	for _, entry := range entries {
 		name := entry.Name()
