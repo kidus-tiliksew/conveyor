@@ -113,6 +113,15 @@ func TestDefaultInitConfigWritesPolicyOnly(t *testing.T) {
 		}
 	}
 	walk("", root)
+	// The file states the plan-state default and the merge gate, and never the
+	// retired spec_approval key (component-identity-membership invariant 14).
+	execution, _ := root.(map[string]any)["execution"].(map[string]any)
+	if execution["default_plan_state"] != "needed" || execution["merge_approval"] != true {
+		t.Fatalf("generated execution = %+v, want default_plan_state needed and merge_approval true:\n%s", execution, data)
+	}
+	if _, present := execution["spec_approval"]; present {
+		t.Fatalf("generated deployment config carries spec_approval:\n%s", data)
+	}
 	loaded, err := config.ParseDeployment(data, "generated.yaml", nil)
 	if err != nil {
 		t.Fatal(err)
