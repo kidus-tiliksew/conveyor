@@ -56,7 +56,7 @@ request is idempotent, and an already-present dependency returns success
 without another audit event. A late dependency pauses queued implementation
 orders in place and affects future claims, but never interrupts claimed work.
 
-A task carries no hold or other reservation (DEC-74): dependencies and
+A task carries no hold or other reservation (DEC-122): dependencies and
 assignment are the only narrowing of who may claim its work. Intake refuses a
 new `hold: true` with `task_hold_retired`, and `PUT /v1/tasks/{id}/hold`
 answers 410. Hold values and `task.hold.*` events recorded before the

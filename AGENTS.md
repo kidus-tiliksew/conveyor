@@ -99,7 +99,7 @@ These rules extend the filing playbook's body house style for this repository:
 ## Scope bars
 
 - Memory-store scope is defined by DEC-9.
-- Task priority, phase, assignment, queue-order, and hold-retirement scope is defined by DEC-74.
+- Task priority, phase, assignment, queue-order, and hold-retirement scope is defined by DEC-122.
 
 This repository maintains the Conveyor skill sources and keeps its guidance
 in a regular `AGENTS.md` with no `CLAUDE.md`. Refresh its guidance directly in

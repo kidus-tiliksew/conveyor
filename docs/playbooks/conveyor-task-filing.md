@@ -99,10 +99,16 @@ cites:
 
 - File via MCP `create_task`: `body`, `repo`, `idempotency_key`
   (required — kebab slug + date, e.g. `phase8-3-plan-stage-20260807`),
-  optional `depends_on: [task-ids]`, `spec_approval`, `merge_approval`.
-  Defaults are correct for ordinary work (spec gate on, merge gate off).
-  A task carries no hold or other reservation (DEC-74); never send
-  `hold`.
+  optional `depends_on: [task-ids]`, `plan_state`, `plan`,
+  `plan_base_commit`, `merge_approval`. An omitted `plan_state` or
+  `merge_approval` takes the workspace default. A task carries no hold or
+  other reservation (DEC-122); never send `hold`.
+- A plan filed through MCP `create_task` becomes plan version 1 and waits
+  at plan awaiting approval for a person's approval. `create_task` never
+  approves a plan, and any `plan_approved` argument is refused
+  (`req-task-plan-state` AC-2.4; DEC-122(6)). Send no `plan_state` with a
+  `plan`, and set `plan_base_commit` to the full commit ID the plan was read
+  against.
 - The title is generated from the body; don't write one.
 - When tasks are filed out of order, use the human-only MCP
   `add_task_dependency` tool with `task_id`, `depends_on_task_id`, an audit
@@ -118,17 +124,21 @@ cites:
   — sibling task NNN owns it") and where migration numbering starts
   ("migrations start at NNN; the duplicate-version guard enforces this").
 
-## Record the frozen gate policy at intake
+## Record the plan state and merge policy at intake
 
 Before filing a task or a dependency-ordered queue, record the effective
-`spec_approval` and `merge_approval` values for every task. Display both values
+`plan_state` and `merge_approval` values for every task. Display both values
 and their consequences in the filing summary so the operator can correct the
-choice before intake freezes it. Preserve explicit per-task choices; workspace
-default changes apply only to later tasks and never rewrite an in-flight
-contract.
+choice before intake records it. Preserve explicit per-task choices;
+workspace default changes apply only to later tasks and never change an
+existing task's plan state or frozen merge policy.
 
-- `spec_approval: true` pauses after planning for operator approval;
-  `spec_approval: false` permits the next stage without that plan gate.
+- `plan_state: needed` opens a plan work order after triage, and the plan
+  waits for a person's approval before implementation starts.
+  `plan_state: not_required` sends the task to implementation without a
+  plan.
+- A task filed with a `plan` starts at plan awaiting approval and waits for
+  a person's approval at the plan gate.
 - `merge_approval: true` makes an approved review wait for an authenticated
   operator or user merge decision.
 - `merge_approval: false` sends an approved review directly to the runtime
@@ -139,16 +149,18 @@ contract.
   holds it for the factory. A head with no reported check merges. It lists no
   required checks and does not promise a later merge gate.
 
-Settle the gate values before filing, not after. Before the first
-`create_task` of a task or a set, read the workspace's effective defaults: the
-`execution.spec_approval` and `execution.merge_approval` values of the
+Settle these values before filing, not after. State a task's `plan_state` or
+`merge_approval` only on the operator's direct instruction; otherwise omit it
+so the workspace default applies. Before the first `create_task` of a task or
+a set, read the workspace's effective defaults: the
+`execution.default_plan_state` and `execution.merge_approval` values of the
 workspace configuration, which `conveyor config export` prints. When the
-filer cannot read them, ask the operator for them. An omitted gate takes the
-workspace default, and a boolean you supply applies, `false` included
+filer cannot read them, ask the operator for them. An omitted value takes the
+workspace default, and a value you supply applies, `false` included
 (DEC-116(5)). A null or non-boolean gate is refused with
 `invalid_agent_gate_override`. When the operator wants a value other than the
 default, ask the operator before filing and supply it; never file and then
-refile a task to change a gate.
+refile a task to change a plan state or gate.
 
 A queue that requires one decision per pull request must set
 `merge_approval: true` at intake. A repository's validation documentation may
