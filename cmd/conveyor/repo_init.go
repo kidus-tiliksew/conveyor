@@ -187,6 +187,9 @@ type repoGuidanceFile struct {
 	prior, content               []byte
 	mode                         os.FileMode
 	exists                       bool
+	// skip marks an absent file that this run leaves absent. It is neither
+	// written nor reported (req-agent-guidance-install AC-2.1, AC-2.4).
+	skip bool
 }
 
 func planRepoGuidance(root string, section []byte) (plan []repoGuidanceFile, err error) {
@@ -230,13 +233,19 @@ func planRepoGuidance(root string, section []byte) (plan []repoGuidanceFile, err
 			return nil, fmt.Errorf("refusing %s: guidance must be a regular file", item.target)
 		}
 	}
-	if !plan[1].exists {
-		plan[1].link = "AGENTS.md"
+	// req-agent-guidance-install AC-2.1 v2: AGENTS.md is the default form. A
+	// lone regular CLAUDE.md gains AGENTS.md -> CLAUDE.md; otherwise an absent
+	// CLAUDE.md stays absent. A symlinked peer was refused above when absent.
+	switch {
+	case !plan[0].exists && plan[1].exists:
+		plan[0].link = "CLAUDE.md"
+	case !plan[1].exists:
+		plan[1].skip = true
 	}
 	for i := range plan {
 		item := &plan[i]
 		target = item.target
-		if item.link != "" {
+		if item.link != "" || item.skip {
 			continue
 		}
 		if item.exists {
@@ -307,7 +316,7 @@ func preserveRepoInitContext(plan []repoGuidanceFile, verified bool) (bool, erro
 	}
 	for i := range plan {
 		item := &plan[i]
-		if item.link != "" {
+		if item.link != "" || item.skip {
 			continue
 		}
 		section := retainedSection
@@ -430,7 +439,7 @@ func prepareRepositoryWithOptions(root, version, name, base string, out io.Write
 	}()
 	for index := range guidance {
 		item := &guidance[index]
-		if item.link != "" || item.status == "unchanged" {
+		if item.link != "" || item.skip || item.status == "unchanged" {
 			continue
 		}
 		file, err := os.CreateTemp(root, ".conveyor-repo-init-*")
@@ -473,11 +482,13 @@ func prepareRepositoryWithOptions(root, version, name, base string, out io.Write
 		}
 	}
 	for _, item := range guidance {
-		if item.status == "unchanged" {
+		if item.skip || item.status == "unchanged" {
 			continue
 		}
 		// An existing supported link shares its regular target write. A planned
-		// link must reach os.Symlink below when CLAUDE.md is absent.
+		// link must reach os.Symlink below when AGENTS.md is absent beside a
+		// regular CLAUDE.md. Publication runs in plan order, so a later failed
+		// CLAUDE.md write rolls back the new link (AC-2.11).
 		if item.link != "" && item.exists {
 			continue
 		}
@@ -495,6 +506,9 @@ func prepareRepositoryWithOptions(root, version, name, base string, out io.Write
 	}
 	success = true
 	for _, item := range guidance {
+		if item.skip {
+			continue
+		}
 		fmt.Fprintf(out, "repo\t%s\t%s\n", item.status, item.target)
 	}
 	for _, item := range results {

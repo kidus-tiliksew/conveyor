@@ -16,6 +16,19 @@ const (
 	PinSystemDesign = "system_design"
 )
 
+// Selection reason codes (component-verification-kit-contract, Public surfaces).
+const (
+	// ReasonPinVersionMismatch excludes a kit whose pin names a newer version
+	// than the authoritative one.
+	ReasonPinVersionMismatch = "pin_version_mismatch"
+	// ReasonPinNotAuthoritative excludes a kit whose pin names a document the
+	// authoritative set lacks, or names it as another kind.
+	ReasonPinNotAuthoritative = "pin_not_authoritative"
+	// ReasonPinVersionDrift is a warning, not an exclusion: the kit pins an
+	// older version than the authoritative one (DEC-111(1)).
+	ReasonPinVersionDrift = "pin_version_drift"
+)
+
 type SelectionContext struct {
 	// Pins must come from the authoritative snapshot. Pending/unconfirmed pins
 	// are not members of this set; the evaluator never upgrades them to authority.
@@ -30,6 +43,12 @@ type SelectionReason struct {
 	Pin     *Pin   `json:"pin,omitempty"`
 	Message string `json:"message,omitempty"`
 }
+
+// Warning reports whether the reason is a warning that never excludes a kit.
+// Only pin_version_drift is one (component-verification-kit-contract
+// invariant 12; DEC-111(1)).
+func (r SelectionReason) Warning() bool { return r.Code == ReasonPinVersionDrift }
+
 type KitReceipt struct {
 	KitID       string            `json:"kit_id"`
 	Digest      string            `json:"digest"`
@@ -71,8 +90,12 @@ func kitPins(k Kit) []Pin {
 }
 
 // Evaluate is pure; it copies pins and explanations into a receipt for every
-// entry. Exact snapshot membership, not global currency, governs eligibility
-// (req-verification-kits AC-2.1 through AC-2.4; component-verification-kit-contract).
+// entry. The frozen authoritative snapshot, not global currency, governs
+// eligibility: a kit pin satisfies the snapshot pin of the same kind and
+// document at the same or an older version, and an older version adds a
+// pin_version_drift warning that names both versions. A newer version or an
+// absent document excludes the kit (req-verification-kits AC-2.1 through
+// AC-2.4; component-verification-kit-contract invariants 11 to 13; DEC-111(1)).
 func Evaluate(m *Manifest, context SelectionContext, trees map[string][]TreeEntry) SelectionReceipt {
 	r := SelectionReceipt{SchemaVersion: 1, ManifestRevision: context.ManifestRevision, SourceRevision: context.SourceRevision, ContextPins: append([]Pin{}, context.Pins...), Stage: context.Stage, Kits: []KitReceipt{}, Diagnostics: []Diagnostic{}}
 	if m == nil {
@@ -89,17 +112,15 @@ func Evaluate(m *Manifest, context SelectionContext, trees map[string][]TreeEntr
 	if strings.TrimSpace(context.Stage) == "" {
 		r.Diagnostics = append(r.Diagnostics, Diagnostic{"context.stage", "required"})
 	}
-	exact := map[Pin]bool{}
-	identities := map[string]bool{}
+	authoritative := map[string]int{}
 	for i, p := range context.Pins {
 		if (p.Kind != PinRequirement && p.Kind != PinSystemDesign) || p.DocumentID == "" || p.Version <= 0 {
 			r.Diagnostics = append(r.Diagnostics, Diagnostic{fmt.Sprintf("context.pins[%d]", i), "invalid authoritative pin"})
 		}
-		if identities[p.Kind+"\x00"+p.DocumentID] {
+		if _, duplicate := authoritative[p.Kind+"\x00"+p.DocumentID]; duplicate {
 			r.Diagnostics = append(r.Diagnostics, Diagnostic{fmt.Sprintf("context.pins[%d]", i), "duplicate authoritative document identity"})
 		}
-		exact[p] = true
-		identities[p.Kind+"\x00"+p.DocumentID] = true
+		authoritative[p.Kind+"\x00"+p.DocumentID] = p.Version
 	}
 	counts := map[string]int{}
 	for _, k := range m.Kits {
@@ -145,19 +166,25 @@ func Evaluate(m *Manifest, context SelectionContext, trees map[string][]TreeEntr
 				entry.Reasons = append(entry.Reasons, SelectionReason{Code: "no_governing_pins"})
 			}
 			for _, p := range entry.Pins {
-				if !exact[p] {
-					code := "pin_not_authoritative"
-					if identities[p.Kind+"\x00"+p.DocumentID] {
-						code = "pin_version_mismatch"
-					}
-					pin := p
-					entry.Reasons = append(entry.Reasons, SelectionReason{Code: code, Pin: &pin})
+				pin := p
+				version, held := authoritative[p.Kind+"\x00"+p.DocumentID]
+				switch {
+				case !held:
+					entry.Reasons = append(entry.Reasons, SelectionReason{Code: ReasonPinNotAuthoritative, Pin: &pin})
+				case p.Version > version:
+					entry.Reasons = append(entry.Reasons, SelectionReason{Code: ReasonPinVersionMismatch, Pin: &pin})
+				case p.Version < version:
+					entry.Reasons = append(entry.Reasons, SelectionReason{Code: ReasonPinVersionDrift, Pin: &pin, Message: fmt.Sprintf("%s %s: kit pins v%d, authoritative v%d", p.Kind, p.DocumentID, p.Version, version)})
 				}
 			}
 			if !entry.StageMatch {
 				entry.Reasons = append(entry.Reasons, SelectionReason{Code: "stage_excluded"})
 			}
-			if len(entry.Reasons) == 0 {
+			excluded := false
+			for _, reason := range entry.Reasons {
+				excluded = excluded || !reason.Warning()
+			}
+			if !excluded {
 				entry.Eligibility = "eligible"
 			}
 		}

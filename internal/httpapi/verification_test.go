@@ -1696,6 +1696,111 @@ func TestVerificationLateRequirementReachesRecoveredVerifyOrder(t *testing.T) {
 	}
 }
 
+// TestVerificationDriftedKitPinIsSelectedWithWarning: a kit that pins an
+// older version of a requirement the verify order holds is selected, and the
+// claim's get_verification_context read carries the pin_version_drift warning
+// with both versions, as a reviewer reads it (req-verification-kits AC-2.2;
+// component-verification-kit-contract invariant 12; component-review
+// invariant 23; DEC-111(1)).
+func TestVerificationDriftedKitPinIsSelectedWithWarning(t *testing.T) {
+	b := store.NewVolatileBackend()
+	t.Cleanup(b.Close)
+	ctx := store.WithWorkspace(store.WithActor(t.Context(), store.SystemActor()), "demo")
+	key, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		t.Fatal(err)
+	}
+	private := string(pem.EncodeToMemory(&pem.Block{Type: "RSA PRIVATE KEY", Bytes: x509.MarshalPKCS1PrivateKey(key)}))
+	head := fixtureSHA("drifted-pin-head")
+	forge := newKitForge(t, private, map[string]*kitForgeRepo{"org/repo": {head: head, manifests: map[string]string{head: kitManifest(2, [2]string{"k-drift", pinsYAML("{document_id: req-drift, version: 1}", "")})}, roots: map[string][]string{head: {".conveyor/kits/k-drift"}}}})
+	cfg := &config.Config{Workspace: "demo", Repos: []config.Repo{{Name: "repo", URL: "https://github.com/org/repo", GitHub: "org/repo", Base: "main"}}, Routing: config.Routing{Stages: map[string]config.StageRoute{"verify": {Execution: config.ExecutionMCP, TimeoutText: "1h", Timeout: time.Hour}}}}
+	if _, err = b.BootstrapWorkspaceConfig(ctx, cfg); err != nil {
+		t.Fatal(err)
+	}
+	b.ConfigureGitHubAppKeyEncryptionKey(bytes.Repeat([]byte{41}, 32))
+	if _, err = b.StoreWorkspaceGitHubApp(ctx, "demo", core.WorkspaceGitHubAppCredential{WorkspaceGitHubAppStatus: core.WorkspaceGitHubAppStatus{AppID: 41, AppSlug: "conveyor-demo", ClientID: "client"}, PrivateKey: private}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = b.RecordWorkspaceGitHubAppInstallation(ctx, "demo", 41, 12, "org"); err != nil {
+		t.Fatal(err)
+	}
+	requirement := func(statement string) core.RequirementVersion {
+		return core.RequirementVersion{RequirementID: "req-drift", Content: "# req-drift\n\n```conveyor:requirements\n- id: REQ-1\n  statement: " + statement + "\n```", Statements: []core.RequirementStatement{{ID: "REQ-1", Statement: statement}}, Origin: core.RequirementOriginOperator}
+	}
+	if _, _, err = b.CreateRequirement(ctx, core.Requirement{ID: "req-drift", Title: "Drift"}, requirement("Observe the integration.")); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err = b.ConfirmRequirementVersion(ctx, "req-drift", 1); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = b.ProposeRequirementVersion(ctx, requirement("Observe the integration end to end.")); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err = b.ConfirmRequirementVersion(ctx, "req-drift", 2); err != nil {
+		t.Fatal(err)
+	}
+	task := core.Task{ID: "drifted-pin", Workspace: "demo", Repo: "repo", Title: "drifted pin", Branch: "conveyor/drifted-pin", State: core.TaskRunning, NextStage: core.StageVerify, ReviewedHeadSHA: head, CreatedAt: time.Now().UTC()}
+	task.SetupContract.VerifyStage = true
+	task.SetupContract.MaxBounces = 10
+	if err = b.CreateTaskWithDependenciesAndContext(ctx, task, nil, store.TaskContextInput{RequirementIDs: []string{"req-drift"}}); err != nil {
+		t.Fatal(err)
+	}
+	job := core.Job{ID: task.ID + "-verify-1", TaskID: task.ID, Stage: core.StageVerify, State: core.JobPending}
+	if _, err = storetest.CreateStageWorkOrder(ctx, b, job, core.WorkOrder{ID: job.ID, JobID: job.ID, TaskID: task.ID, Stage: core.StageVerify, State: core.WorkOrderQueued, HeadSHA: head, CreatedAt: task.CreatedAt}); err != nil {
+		t.Fatal(err)
+	}
+	bundle, err := pack.Load("")
+	if err != nil {
+		t.Fatal(err)
+	}
+	service := &workorder.Service{Store: b, Pack: bundle, ConfigProvider: func(context.Context) (*config.Config, error) { return cfg, nil }, GitHubApps: github.NewAppClient(forge.server.Client(), forge.server.URL), WorkspaceGitHubApps: b}
+	s := NewServer(b)
+	s.Workspace = "demo"
+	s.WorkOrders = service
+	workerCtx := store.WithActor(ctx, store.Actor{ID: store.UserActorID("fixture"), Role: core.ActorUser})
+	order, err := service.Claim(workerCtx, job.ID, core.WorkOrderClaim{ClaimantID: core.TaskRunClaimantID("fixture"), SessionID: "drift", ClientToken: "drift-token", Lease: time.Hour})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(order.ServedRequirementSnapshot) != 1 || order.ServedRequirementSnapshot[0].ID != "req-drift" || order.ServedRequirementSnapshot[0].Version != 2 {
+		t.Fatalf("claim pinned %+v", order.ServedRequirementSnapshot)
+	}
+	claim := map[string]any{"workspace_id": "demo", "work_order_id": job.ID, "session_id": "drift", "client_token": "drift-token"}
+	prepare := map[string]any{"request_key": "drift"}
+	for k, v := range claim {
+		prepare[k] = v
+	}
+	w := verificationRESTCall(s, workerCtx, job.ID, "prepare_verification", prepare)
+	if w.Code != http.StatusOK {
+		t.Fatalf("prepare_verification: %d %s", w.Code, w.Body.String())
+	}
+	var prepared store.VerificationSnapshot
+	if err = json.Unmarshal(w.Body.Bytes(), &prepared); err != nil || len(prepared.Contexts) != 1 {
+		t.Fatalf("prepare_verification: %v %s", err, w.Body.String())
+	}
+	read := map[string]any{"context_id": prepared.Contexts[0].ID}
+	for k, v := range claim {
+		read[k] = v
+	}
+	out, err := s.callMCPTool(httptest.NewRequest(http.MethodPost, "/mcp", nil).WithContext(workerCtx), "get_verification_context", read)
+	if err != nil {
+		t.Fatal(err)
+	}
+	snapshot := out.(store.VerificationSnapshot)
+	if len(snapshot.Selections) != 1 || len(snapshot.Selections[0].Receipt.Kits) != 1 {
+		t.Fatalf("selections = %+v", snapshot.Selections)
+	}
+	kit := snapshot.Selections[0].Receipt.Kits[0]
+	pinned := verification.Pin{Kind: verification.PinRequirement, DocumentID: "req-drift", Version: 1}
+	want := []verification.SelectionReason{{Code: verification.ReasonPinVersionDrift, Pin: &pinned, Message: "requirement req-drift: kit pins v1, authoritative v2"}}
+	if kit.KitID != "k-drift" || kit.Eligibility != "eligible" || !reflect.DeepEqual(kit.Reasons, want) {
+		t.Fatalf("drifted kit = %+v", kit)
+	}
+	if len(snapshot.Selections[0].Subjects) != 1 || snapshot.Selections[0].Subjects[0].Subject.KitID != "k-drift" {
+		t.Fatalf("drifted kit was not selected for verify: %+v", snapshot.Selections[0].Subjects)
+	}
+}
+
 // TestVerificationEvidenceBindingRefusals: an authenticated claim holder's
 // evidence that differs from its context or attempt, names an unknown run, or
 // supplies another submitted_by gets the coded refusal over MCP and REST, with

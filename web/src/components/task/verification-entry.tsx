@@ -10,6 +10,7 @@ import type {
   WorkOrderVerificationCheckpoint,
 } from '../../lib/types'
 import { absoluteTime, cn, duration } from '../../lib/utils'
+import { pinDriftWarnings } from '../../lib/verification-drift'
 import { Badge } from '../ui/badge'
 import { useTaskVerification, useVerificationPages } from './use-task-detail'
 import {
@@ -195,6 +196,9 @@ function ContextBody({
   const passed = assertionList.filter((assertion) => assertion.metadata.outcome === 'pass').length
   const kits = items(selections)
   const eligible = kits.filter((kit) => kit.metadata.eligibility === 'eligible')
+  const drifted = kits.flatMap((kit) =>
+    pinDriftWarnings(kit.metadata.reasons).map((drift, index) => ({ key: `${kit.id}:${index}`, kit, drift })),
+  )
   const publicationList = items(publications)
   const publication =
     publicationList.find((entry) => entry.metadata.current === 'true') ??
@@ -230,6 +234,23 @@ function ContextBody({
                 </span>
               )}
             </span>
+          </Row>
+        )}
+        {drifted.length > 0 && (
+          <Row label="Pin drift">
+            <ul className="space-y-1" aria-label="Kit pin drift">
+              {drifted.map(({ key, kit, drift }) => (
+                <li key={key} className="flex min-w-0 flex-wrap items-center gap-1.5 text-sm">
+                  <Badge variant="mono" title={kit.metadata.digest}>
+                    {kit.metadata.kit_id}
+                  </Badge>
+                  <span className="min-w-0 break-words">{drift.text}</span>
+                </li>
+              ))}
+            </ul>
+            <p className="mt-1 text-xs text-muted">
+              A kit pinned to an older document version stays eligible. The drift is a warning and changes no grant.
+            </p>
           </Row>
         )}
         <CaptureGallery taskId={taskId} contextId={context.id} attemptByRun={attemptByRun} />
