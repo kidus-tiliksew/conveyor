@@ -204,6 +204,9 @@ details[open] > summary:not(.list-none)::before { transform: rotate(45deg); }
 .markdown { font-size: 0.875rem; line-height: 1.65; color: var(--color-markdown); }
 .markdown > :first-child { margin-top: 0; }
 .markdown > :last-child { margin-bottom: 0; }
+/* Markdown set inside an existing row, such as a decision clause or rejected
+   alternative, takes the row's type size, line height, and color. */
+.markdown.markdown-inherit { font-size: inherit; line-height: inherit; color: inherit; }
 /* Panel-only: long unbreakable tokens (branch names, PR URLs) wrap within the
    narrow side task panel instead of forcing phantom horizontal scroll, without
    changing the full-page task view's markdown (task 260720-710669, AC-2/AC-3). */
