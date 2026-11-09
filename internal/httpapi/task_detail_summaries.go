@@ -316,9 +316,9 @@ type taskPlanRevisionRequest struct {
 	// state is not_required: it contests no plan version (component-work-orders
 	// invariant 57; req-task-plan-state AC-3.3).
 	PlanVersion *jsNumber `json:"plan_version,omitempty"`
-	EventID     string   `json:"event_id"`
-	At          string   `json:"at"`
-	Truncated   bool     `json:"truncated,omitempty"`
+	EventID     string    `json:"event_id"`
+	At          string    `json:"at"`
+	Truncated   bool      `json:"truncated,omitempty"`
 }
 
 type taskTriageDiagnostic struct {

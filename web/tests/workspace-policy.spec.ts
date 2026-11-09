@@ -161,7 +161,7 @@ test('the default plan state select shows the served value and saves only defaul
   await select.selectOption('needed')
   await page.getByRole('button', { name: 'Save changes' }).click()
   await expect(page.getByText(/Recorded config.updated event 42/)).toBeVisible()
-  const execution = (submitted()?.document as { execution: Record<string, unknown> }).execution
+  const execution = (submitted()?.document as { execution: Record<string, unknown> } | undefined)?.execution ?? {}
   expect(execution.default_plan_state).toBe('needed')
   expect(execution).not.toHaveProperty('spec_approval')
   expect(JSON.stringify(submitted())).not.toContain('spec_approval')
@@ -176,7 +176,7 @@ test('a save after an unrelated edit keeps the served default plan state and sen
   await page.getByLabel('Review seats').fill('3')
   await page.getByRole('button', { name: 'Save changes' }).click()
   await expect(page.getByText(/Recorded config.updated event 42/)).toBeVisible()
-  const execution = (submitted()?.document as { execution: Record<string, unknown> }).execution
+  const execution = (submitted()?.document as { execution: Record<string, unknown> } | undefined)?.execution ?? {}
   expect(execution.default_plan_state).toBe('needed')
   expect(execution).not.toHaveProperty('spec_approval')
 })

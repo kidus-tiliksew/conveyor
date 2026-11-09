@@ -363,9 +363,7 @@ function planRevision(payload: Record<string, unknown>) {
   if (!rationale) return undefined
   if (payload.plan_version === undefined || payload.plan_version === null) return { rationale }
   const version =
-    typeof payload.plan_version === 'number'
-      ? payload.plan_version
-      : Number.parseInt(String(payload.plan_version), 10)
+    typeof payload.plan_version === 'number' ? payload.plan_version : Number.parseInt(String(payload.plan_version), 10)
   if (!Number.isInteger(version) || version <= 0) return undefined
   return { rationale, plan_version: version }
 }
