@@ -47,7 +47,7 @@ function task(overrides: Record<string, unknown>) {
     body: '',
     class: 'feature',
     level: 'L1',
-    spec_approval: true,
+    plan_state: 'needed',
     merge_approval: true,
     policy_version: 3,
     setup: 'default-2',
@@ -908,7 +908,7 @@ for (const theme of ['light', 'dark'] as const) {
 
     await page.goto('/')
     await page.getByText('Activities surfaces read as one story').first().waitFor()
-    // No Board card renders a hold badge: a task carries no hold (DEC-74(3)).
+    // No Board card renders a hold badge: a task carries no hold (DEC-122(3)).
     await expect(page.getByText('Held', { exact: true })).toHaveCount(0)
     await page.screenshot({ path: `${shots}/board-${theme}.png` })
 

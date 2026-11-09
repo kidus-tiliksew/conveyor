@@ -60,6 +60,7 @@ export const serverHumanTimelineEventKinds = [
   'task.state_changed',
   'work_order.child_failed',
   'work_order.stalled',
+  'task.plan_state_changed',
 ] as const
 
 const humanKinds = new Set<string>(serverHumanTimelineEventKinds)
@@ -355,13 +356,17 @@ function cut(text: string): { text: string; truncated?: true } {
 
 const outputInvalidKinds = new Set(['triage.output_invalid', 'spec.output_invalid', 'review.output_invalid'])
 
+// A planning request names no plan version and is still decidable
+// (internal/httpapi/task_detail_summaries.go planRevisionRequestFrom).
 function planRevision(payload: Record<string, unknown>) {
   const rationale = typeof payload.rationale === 'string' ? payload.rationale.trim() : ''
+  if (!rationale) return undefined
+  if (payload.plan_version === undefined || payload.plan_version === null) return { rationale }
   const version =
     typeof payload.plan_version === 'number'
       ? payload.plan_version
-      : Number.parseInt(String(payload.plan_version ?? ''), 10)
-  if (!rationale || !Number.isInteger(version) || version <= 0) return undefined
+      : Number.parseInt(String(payload.plan_version), 10)
+  if (!Number.isInteger(version) || version <= 0) return undefined
   return { rationale, plan_version: version }
 }
 
@@ -945,7 +950,7 @@ export function generateLedger(options: {
       body: 'A task whose ledger grew past twenty thousand events.',
       class: 'feature',
       level: '',
-      spec_approval: false,
+      plan_state: 'not_required',
       merge_approval: true,
       policy_version: 1,
       repo: 'widgets',

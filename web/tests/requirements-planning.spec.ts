@@ -154,7 +154,7 @@ const planningConfig = {
     stage_timeouts: { spec: '30m', implement: '4h', review: '1h' },
     review: { seats: [{}] },
     execution: {
-      spec_approval: true,
+      default_plan_state: 'needed',
       merge_approval: true,
       implement_concurrency: 1,
       review_concurrency: 1,
@@ -1172,7 +1172,7 @@ test('finalize immediately reveals a complete bundle preview, approval, and crea
                   branch: 'conveyor/task-created',
                   state: 'queued',
                   next_stage: 'triage',
-                  spec_approval: true,
+                  plan_state: 'needed',
                   merge_approval: false,
                   policy_version: 1,
                   setup: 'default',

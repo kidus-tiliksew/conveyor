@@ -1692,7 +1692,15 @@ export interface CreateTaskInput {
   body: string
   repo: string
   base_branch?: string
-  spec_approval?: boolean
+  // Omitted, the server applies the workspace default; never sent with
+  // `plan` (req-task-plan-state AC-2.1, AC-2.6).
+  plan_state?: 'needed' | 'not_required'
+  // A Markdown execution plan becomes plan version 1 (AC-2.2), read against
+  // the full commit ID in `plan_base_commit` (AC-2.5) and approved at intake
+  // only with `plan_approved: true` (AC-2.3).
+  plan?: string
+  plan_base_commit?: string
+  plan_approved?: boolean
   merge_approval?: boolean
   depends_on?: string[]
   requirement_ids?: string[]
@@ -1730,6 +1738,56 @@ export async function createTask(
     throw new TaskIntakeError(message, code)
   }
   return response.json() as Promise<Task>
+}
+
+/**
+ * A refused plan act. It keeps the HTTP status so the dialog refetches detail
+ * on a 409 and never retries a 400, 403, or 409; the message is the server's
+ * decoded text (component-web-task-surfaces invariant 64).
+ */
+export class PlanActError extends Error {
+  constructor(
+    message: string,
+    readonly status: number,
+  ) {
+    super(message)
+  }
+}
+
+async function postPlanAct(workspace: string, path: string, body: Record<string, unknown>) {
+  const response = await fetch(workspaceURL(path, workspace), {
+    method: 'POST',
+    headers: mutationHeaders(),
+    body: JSON.stringify(body),
+  })
+  if (!response.ok) throw new PlanActError(apiErrorMessage(await response.text(), response.statusText), response.status)
+  return response.json() as Promise<unknown>
+}
+
+export interface TaskPlanStateInput {
+  plan_state: 'needed' | 'not_required'
+  reason: string
+  request_id: string
+}
+
+// POST /v1/tasks/{id}/policy carrying plan_state alone, the operator's audited
+// plan-state change (req-task-plan-state AC-3.1; component-plan-state
+// invariant 4).
+export function changeTaskPlanState(workspace: string, taskId: string, input: TaskPlanStateInput) {
+  return postPlanAct(workspace, `/v1/tasks/${encodeURIComponent(taskId)}/policy`, { ...input })
+}
+
+export interface TaskPlanAttachInput {
+  plan: string
+  base_commit?: string
+  reason: string
+  request_id: string
+}
+
+// POST /v1/tasks/{id}/plan, the operator's attached plan (req-task-plan-state
+// AC-3.2; component-plan-state invariant 5). Approval stays on the gate.
+export function attachTaskPlan(workspace: string, taskId: string, input: TaskPlanAttachInput) {
+  return postPlanAct(workspace, `/v1/tasks/${encodeURIComponent(taskId)}/plan`, { ...input })
 }
 
 export async function removeTaskDependency(

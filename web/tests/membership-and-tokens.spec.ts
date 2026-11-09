@@ -17,7 +17,7 @@ const workspaceConfig = {
   setups: [],
   default_setup: '',
   execution: {
-    spec_approval: true,
+    default_plan_state: 'needed',
     merge_approval: true,
     implement_concurrency: 1,
     review_concurrency: 1,

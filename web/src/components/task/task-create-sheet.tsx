@@ -3,10 +3,12 @@ import { useNavigate } from '@tanstack/react-router'
 import { Paperclip, X } from 'lucide-react'
 import { useRef, useState } from 'react'
 import { createTask, fetchOpenTasks, fetchRequirements, fetchSystemDesigns, TaskIntakeError } from '../../lib/api'
+import { planStateLabels } from '../../lib/contracts'
+import type { PlanState } from '../../lib/types'
 import { formatBytes } from '../../lib/utils'
-import { useWorkspace, useWorkspaceSelection } from '../app-shell'
+import { useWorkspace, useWorkspaceCapability, useWorkspaceSelection } from '../app-shell'
 import { Button } from '../ui/button'
-import { Input, Select } from '../ui/input'
+import { Input, Select, Textarea } from '../ui/input'
 import { MarkdownEditor } from '../ui/markdown-editor'
 import { Sheet } from '../ui/sheet'
 import { EmptyRepositoryNotice } from '../workspace/empty-repository-notice'
@@ -15,6 +17,14 @@ import { type ContextGroup, TaskContextPicker } from './task-context-picker'
 const descriptionScaffold = 'Enter a description ...'
 
 const DEPENDENCY_RESULT_LIMIT = 20
+
+// The two plan states intake accepts by name (req-task-plan-state AC-2.1).
+type IntakePlanState = Extract<PlanState, 'needed' | 'not_required'>
+const intakePlanStates: readonly IntakePlanState[] = ['needed', 'not_required']
+
+// A plan's base commit is a full commit ID: 40 lowercase hexadecimal
+// characters (req-task-plan-state AC-2.5; component-plan-state invariant 2).
+const fullCommitID = /^[0-9a-f]{40}$/
 
 // Task intake: the dashboard is one source among github/cli/cron.
 // A sheet instead of a page so intake happens over the board, with room for
@@ -48,7 +58,14 @@ export function TaskCreateSheet() {
   const [body, setBody] = useState('')
   const [repo, setRepo] = useState('')
   const [baseBranch, setBaseBranch] = useState('')
-  const [specGate, setSpecGate] = useState<'default' | 'on' | 'off'>('default')
+  // Empty until the operator picks a plan state: an unchanged select sends
+  // none, so the server applies the workspace default (component-web-task-surfaces
+  // invariant 63).
+  const [chosenPlanState, setChosenPlanState] = useState<IntakePlanState | ''>('')
+  const [plan, setPlan] = useState('')
+  const [planBaseCommit, setPlanBaseCommit] = useState('')
+  const [approvePlan, setApprovePlan] = useState(false)
+  const canOperateGates = useWorkspaceCapability('operate_gates')
   const [mergeGate, setMergeGate] = useState<'default' | 'on' | 'off'>('default')
   const [dependsOn, setDependsOn] = useState<string[]>([])
   const [requirementIds, setRequirementIds] = useState<string[]>([])
@@ -58,6 +75,24 @@ export function TaskCreateSheet() {
   const fileInput = useRef<HTMLInputElement>(null)
   const intakeKey = useRef(crypto.randomUUID())
   const repoName = repo || repos[0]?.name || ''
+  const defaultPlanState = workspace?.default_plan_state
+  const shownPlanState = chosenPlanState || defaultPlanState || ''
+  // A plan sends no plan state (AC-2.6). The select sends one only when the
+  // operator moved it off the value it opened on.
+  const hasPlan = plan.trim() !== ''
+  const sentPlanState =
+    !hasPlan && chosenPlanState && chosenPlanState !== defaultPlanState ? chosenPlanState : undefined
+  const baseCommit = planBaseCommit.trim()
+  const baseCommitError =
+    hasPlan && baseCommit && !fullCommitID.test(baseCommit)
+      ? 'Base commit must be a full commit ID of 40 lowercase hexadecimal characters.'
+      : ''
+  const approving = hasPlan && canOperateGates && approvePlan
+  const resultingPlanState: PlanState | undefined = hasPlan
+    ? approving
+      ? 'completed'
+      : 'awaiting_approval'
+    : chosenPlanState || defaultPlanState
   // Intake is the Board's `create` parameter, so closing drops it and leaves
   // whichever view the Board was showing.
   const close = () =>
@@ -70,7 +105,10 @@ export function TaskCreateSheet() {
         {
           body: body.trim(),
           repo: repoName,
-          ...(specGate !== 'default' ? { spec_approval: specGate === 'on' } : {}),
+          ...(sentPlanState ? { plan_state: sentPlanState } : {}),
+          ...(hasPlan ? { plan } : {}),
+          ...(hasPlan && baseCommit ? { plan_base_commit: baseCommit } : {}),
+          ...(approving ? { plan_approved: true } : {}),
           ...(mergeGate !== 'default' ? { merge_approval: mergeGate === 'on' } : {}),
           ...(baseBranch.trim() ? { base_branch: baseBranch.trim() } : {}),
           ...(dependsOn.length ? { depends_on: dependsOn } : {}),
@@ -267,18 +305,71 @@ export function TaskCreateSheet() {
           </div>
         </details>
 
-        {/* A task carries no hold or execution reservation (DEC-74(3)), and a
+        {/* A task carries no hold or execution reservation (DEC-122(3)), and a
             filed task waits in the queue for an agent session with no
             availability warning (req-task-lifecycle-and-queue AC-9.4). */}
 
-        <div className="grid gap-4 md:grid-cols-2">
-          <Field label="Plan approval gate">
-            <Select value={specGate} onChange={(event) => setSpecGate(event.target.value as typeof specGate)}>
-              <option value="default">Workspace default</option>
-              <option value="on">Human approval on</option>
-              <option value="off">Auto-approve off</option>
-            </Select>
+        {/* Intake plan fields (component-web-task-surfaces invariant 63;
+            req-task-plan-state AC-2.1 to AC-2.6). The server validates the
+            plan, and a refusal shows its message with nothing recorded. */}
+        <section aria-label="Plan" className="space-y-3">
+          <Field
+            label="Plan (optional)"
+            hint="A Markdown execution plan filed with the task. It becomes plan version 1 and waits for approval."
+          >
+            <Textarea
+              aria-label="Plan"
+              value={plan}
+              onChange={(event) => setPlan(event.target.value)}
+              placeholder="## Approach …"
+              className="min-h-24 font-mono text-xs"
+            />
           </Field>
+          <div className="grid gap-4 md:grid-cols-2">
+            <Field
+              label="Plan state"
+              hint={hasPlan ? 'A filed plan sets the plan state.' : 'Optional — new tasks take the workspace default.'}
+            >
+              <Select
+                aria-label="Plan state"
+                value={shownPlanState}
+                disabled={hasPlan}
+                onChange={(event) => setChosenPlanState(event.target.value as IntakePlanState)}
+              >
+                {!shownPlanState && <option value="">Workspace default</option>}
+                {intakePlanStates.map((state) => (
+                  <option key={state} value={state}>
+                    {planStateLabels[state]}
+                  </option>
+                ))}
+              </Select>
+            </Field>
+            <Field label="Base commit" hint="Optional — the full commit ID the plan was read against.">
+              <Input
+                aria-label="Base commit"
+                value={planBaseCommit}
+                disabled={!hasPlan}
+                aria-invalid={baseCommitError ? true : undefined}
+                onChange={(event) => setPlanBaseCommit(event.target.value)}
+                placeholder="40-character commit ID"
+                className="font-mono"
+              />
+              {baseCommitError && (
+                <span role="alert" className="mt-1 block text-xs text-failure">
+                  {baseCommitError}
+                </span>
+              )}
+            </Field>
+          </div>
+          {hasPlan && canOperateGates && (
+            <label className="flex items-center gap-2 text-sm">
+              <input type="checkbox" checked={approvePlan} onChange={(event) => setApprovePlan(event.target.checked)} />
+              Approve this plan
+            </label>
+          )}
+        </section>
+
+        <div className="grid gap-4 md:grid-cols-2">
           <Field label="Merge approval gate">
             <Select value={mergeGate} onChange={(event) => setMergeGate(event.target.value as typeof mergeGate)}>
               <option value="default">Workspace default</option>
@@ -333,14 +424,23 @@ export function TaskCreateSheet() {
         {mutation.error != null && !dependencyError && <p className="text-sm text-failure">{String(mutation.error)}</p>}
       </div>
 
-      <footer className="flex shrink-0 items-center justify-between gap-3 border-t border-border px-5 py-3">
-        <p className="text-xs text-faint">Dispatches after every attachment is stored.</p>
-        <Button
-          disabled={!body.trim() || !repoName || repos.length === 0 || mutation.isPending}
-          onClick={() => mutation.mutate()}
-        >
-          {mutation.isPending ? 'Creating…' : 'Create task'}
-        </Button>
+      <footer className="shrink-0 space-y-2 border-t border-border px-5 py-3">
+        {/* The plan state the task will take, stated above Create
+            (component-web-task-surfaces invariant 63). */}
+        <p className="text-xs text-muted" data-resulting-plan-state={resultingPlanState ?? 'default'}>
+          {resultingPlanState
+            ? `This task will start at: ${planStateLabels[resultingPlanState]}.`
+            : 'This task will start at the workspace default plan state.'}
+        </p>
+        <div className="flex items-center justify-between gap-3">
+          <p className="text-xs text-faint">Dispatches after every attachment is stored.</p>
+          <Button
+            disabled={!body.trim() || !repoName || repos.length === 0 || mutation.isPending || baseCommitError !== ''}
+            onClick={() => mutation.mutate()}
+          >
+            {mutation.isPending ? 'Creating…' : 'Create task'}
+          </Button>
+        </div>
       </footer>
     </Sheet>
   )

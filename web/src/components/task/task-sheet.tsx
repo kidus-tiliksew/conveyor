@@ -18,11 +18,11 @@ import { Skeleton } from '../ui/skeleton'
 import { AttachmentsCard } from './attachments-card'
 import { NextActionCard } from './next-action-card'
 import { isReviewable } from './review-panel'
-import { SpecCard } from './spec-card'
 import { TaskActivityTabs, useTaskActivityView } from './task-activity-tabs'
 import { TaskContextCard } from './task-context-card'
 import { TaskAgentPrompt, TaskFacts, TaskIdentity } from './task-header'
 import { TaskControlsPlaceholder, TaskLoadError } from './task-load-error'
+import { TaskPlanSection } from './task-plan-section'
 import { taskHasVerifyStage, useTaskDetail, useTaskOrder, useTaskVerification } from './use-task-detail'
 
 // The task detail sheet: the costed event timeline — which
@@ -185,15 +185,7 @@ function SheetBody({
     <div className="space-y-4">
       <TaskIdentity item={item} variant="sheet" headingRef={headingRef} />
       <NextActionCard item={item} routeVariant="sheet" view={view} />
-      {item.spec && (
-        <SpecCard
-          key={`${item.spec.task_id}-${item.spec.version}`}
-          spec={item.spec}
-          overflowExpandable
-          routeVariant="sheet"
-          minimumSeatCount={item.summaries?.review_seat_policy?.minimum_seat_count}
-        />
-      )}
+      <TaskPlanSection item={item} variant="sheet" />
       <TaskFacts item={item} variant="sheet" columns="one" className="mt-0" />
       <TaskAgentPrompt item={item} />
       <TaskContextCard taskId={item.task.id} taskState={item.task.state} context={item.task.context} />

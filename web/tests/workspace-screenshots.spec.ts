@@ -9,7 +9,7 @@ const document = {
   stage_timeouts: { spec: '30m', implement: '2h', review: '30m' },
   review: { seats: [{}, {}] },
   execution: {
-    spec_approval: true,
+    default_plan_state: 'needed',
     merge_approval: true,
     implement_concurrency: 5,
     review_concurrency: 2,

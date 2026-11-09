@@ -25,7 +25,7 @@ const workspaceConfig = {
   max_bounces: 2,
   work_order_queue_timeout: '24h',
   review: { seats: [] },
-  execution: { spec_approval: true, merge_approval: true, implement_concurrency: 1, review_concurrency: 1 },
+  execution: { default_plan_state: 'needed', merge_approval: true, implement_concurrency: 1, review_concurrency: 1 },
   repos: [],
 }
 

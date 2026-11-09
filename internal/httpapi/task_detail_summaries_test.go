@@ -78,8 +78,13 @@ func TestHumanTimelineEventKindsMatchDashboard(t *testing.T) {
 			want = append(want, kind)
 		}
 	}
-	if len(humanTimelineEventKinds) != 35 || len(sorted(humanTimelineEventKinds)) != len(humanTimelineEventKinds) {
-		t.Fatalf("Go human kinds must be 35 distinct kinds: %v", humanTimelineEventKinds)
+	if len(humanTimelineEventKinds) != 36 || len(sorted(humanTimelineEventKinds)) != len(humanTimelineEventKinds) {
+		t.Fatalf("Go human kinds must be 36 distinct kinds: %v", humanTimelineEventKinds)
+	}
+	// A plan-state move is a human-timeline kind on both lists
+	// (component-web-task-surfaces invariant 65).
+	if !slices.Contains(humanTimelineEventKinds, "task.plan_state_changed") || !slices.Contains(want, "task.plan_state_changed") {
+		t.Fatal("task.plan_state_changed must be a human-timeline kind on both lists")
 	}
 	if !slices.Equal(sorted(want), sorted(humanTimelineEventKinds)) {
 		t.Fatalf("dashboard human kinds=%v Go=%v", sorted(want), sorted(humanTimelineEventKinds))
@@ -267,7 +272,12 @@ func TestTaskDetailSummariesMatchDashboardRules(t *testing.T) {
 			{`{"rationale":"r","plan_version":"0"}`, ``},
 			{`{"rationale":"r","plan_version":"-1"}`, ``},
 			{`{"rationale":"r","plan_version":true}`, ``},
-			{`{"rationale":"r"}`, ``},
+			// A planning request from a not_required task names no plan
+			// version and is still a decidable request (component-work-orders
+			// invariant 57; req-task-plan-state AC-3.3).
+			{`{"rationale":"r"}`, `{"rationale":"r"`},
+			{`{"rationale":" plan first ","plan_version":null}`, `{"rationale":"plan first"`},
+			{`{"plan_version":null}`, ``},
 			{`{"rationale":"\u00a0\ufeff\u2028 ","plan_version":1}`, ``},
 			{`{"rationale":7,"plan_version":1}`, ``},
 		} {
