@@ -1104,7 +1104,9 @@ func TestPlanReviewSeatsPersistenceAndApproval(t *testing.T) {
 	}{
 		{name: "gate on manual approval", gate: true, seats: seats(3), approve: true},
 		{name: "gate on pending", gate: true, seats: seats(2)},
-		{name: "gate off automatic approval", seats: seats(3)},
+		// No plan is approved without a person's decision, whatever the
+		// task's legacy policy (component-work-orders invariant 56).
+		{name: "gate off still waits for approval", seats: seats(3)},
 		{name: "omitted", gate: true, approve: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -1116,7 +1118,7 @@ func TestPlanReviewSeatsPersistenceAndApproval(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			requirePlanVersionSeats(t, ctx, st, task.ID, version.Version, tc.seats, !tc.gate)
+			requirePlanVersionSeats(t, ctx, st, task.ID, version.Version, tc.seats, false)
 			if tc.approve {
 				current, _ := st.GetTask(ctx, task.ID)
 				if err = d.HandleIntervention(ctx, current, job, core.Intervention{TaskID: task.ID, JobID: job.ID, Action: core.InterventionApprove, ReasonCode: "plan-approved"}); err != nil {
@@ -1138,7 +1140,7 @@ func TestPlanReviewSeatsPersistenceAndApproval(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		requirePlanVersionSeats(t, ctx, st, task.ID, version.Version, nil, true)
+		requirePlanVersionSeats(t, ctx, st, task.ID, version.Version, nil, false)
 	})
 	t.Run("in-process output", func(t *testing.T) {
 		encoded, err := json.Marshal(planReviewSeatsMarkdown)

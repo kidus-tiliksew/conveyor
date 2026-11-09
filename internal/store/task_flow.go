@@ -340,7 +340,15 @@ func FoldTaskFlow(events []core.Event, action nextaction.NextAction, recovery co
 		return ordered[i].At.Before(ordered[j].At)
 	})
 
-	specApproval, mergeApproval, verifyStage := true, true, true
+	// The plan row follows the folded plan state: task.created's plan_state,
+	// or a legacy payload's spec_approval (true as needed), then each
+	// task.plan_state_changed (component-next-action invariants 27, 28;
+	// req-operator-next-action AC-7.5; DEC-122(5)).
+	planState, mergeApproval, verifyStage := core.PlanNeeded, true, true
+	// planReopened records a move back to planning after intake, such as a
+	// redirect or an approved revision: the plan gate is then ahead again
+	// even where the recorded path had passed it.
+	planReopened := false
 	var (
 		state, nextStage, recoveryStage, assignee string
 		gateKind                                  core.GateKind
@@ -389,7 +397,11 @@ func FoldTaskFlow(events []core.Event, action nextaction.NextAction, recovery co
 			if json.Unmarshal(event.Payload, &task) != nil {
 				continue
 			}
-			specApproval, mergeApproval, verifyStage = task.SpecApproval, task.MergeApproval, task.PolicyContract.VerifyStage
+			mergeApproval, verifyStage = task.MergeApproval, task.PolicyContract.VerifyStage
+			planState = task.PlanState
+			if !planState.Valid() {
+				planState = PlanStateFromSpecApproval(task.SpecApproval)
+			}
 			if state == "" {
 				state = string(task.State)
 			}
@@ -398,6 +410,14 @@ func FoldTaskFlow(events []core.Event, action nextaction.NextAction, recovery co
 			}
 			if task.Assignee != nil {
 				assignee = task.Assignee.UserID
+			}
+		case event.Kind == core.EventTaskPlanStateChanged:
+			var change core.PlanStateChange
+			if json.Unmarshal(event.Payload, &change) == nil && change.To.Valid() {
+				planState = change.To
+				if change.Cause != core.PlanCauseIntake && (change.To == core.PlanNeeded || change.To == core.PlanAwaitingApproval) {
+					planReopened = true
+				}
 			}
 		case event.Kind == "task.setup.changed":
 			var payload struct {
@@ -655,7 +675,7 @@ func FoldTaskFlow(events []core.Event, action nextaction.NextAction, recovery co
 	for _, stage := range taskFlowStages {
 		row := FlowStage{ID: stage, Attempts: []FlowAttempt{}}
 		switch {
-		case stage == core.StageSpec && specApproval:
+		case stage == core.StageSpec && planState != core.PlanNotRequired:
 			row.Gate = flowGate(core.GateKindPlanApproval)
 		case stage == core.StageMerge && mergeApproval:
 			row.Gate = flowGate(core.GateKindMergeApproval)
@@ -686,8 +706,12 @@ func FoldTaskFlow(events []core.Event, action nextaction.NextAction, recovery co
 			}
 		}
 		switch {
-		case stage == core.StageSpec && !specApproval, stage == core.StageVerify && !verifyStage:
+		case stage == core.StageSpec && planState == core.PlanNotRequired, stage == core.StageVerify && !verifyStage:
 			row.Status = FlowOff
+		case stage == core.StageSpec && planState == core.PlanCompleted:
+			// Planning completed, also for a plan approved at intake that no
+			// plan order visited (component-next-action invariant 28).
+			row.Status = FlowDone
 		case stage == current && action.Actor == nextaction.ActorOperator:
 			row.Status = FlowNeedsOperator
 		case claimed || jobRunning || (stage == core.StageMerge && state == string(core.TaskApproved) && !mergeApproval):
@@ -720,7 +744,7 @@ func FoldTaskFlow(events []core.Event, action nextaction.NextAction, recovery co
 		}
 		flow.Stages = append(flow.Stages, row)
 	}
-	markFlowGates(flow.Stages, action, gateKind, state, specApproval, mergeApproval)
+	markFlowGates(flow.Stages, action, gateKind, state, planState, planReopened, mergeApproval)
 	markFlowTraversal(flow.Stages, state)
 	flow.CurrentStage = flowCurrentStage(action, current, state)
 
@@ -808,11 +832,15 @@ func flowElapsed(claimedAt *time.Time, now time.Time) int64 {
 }
 
 // markFlowGates sets each gate's own mark, independent of its row's aggregate
-// status: off by frozen policy; needs_operator only when the next action is
-// that gate's decision; waiting when the task entered the gate but another
-// stop leads; done once the path has passed it; upcoming otherwise
-// (req-operator-next-action AC-7.5, AC-7.7).
-func markFlowGates(stages []FlowStage, action nextaction.NextAction, gateKind core.GateKind, state string, specApproval, mergeApproval bool) {
+// status: the plan gate reads off while the folded plan state is
+// not_required and done while it is completed, and the merge gate off by
+// frozen policy; needs_operator only when the next action is that gate's
+// decision; waiting when the task entered the gate but another stop leads;
+// done once the path has passed it, which for the plan gate needs a path not
+// reopened by a move back to planning; upcoming otherwise
+// (component-next-action invariant 28; req-operator-next-action AC-7.5,
+// AC-7.7; DEC-122(5)).
+func markFlowGates(stages []FlowStage, action nextaction.NextAction, gateKind core.GateKind, state string, planState core.PlanState, planReopened, mergeApproval bool) {
 	reachedAfter := func(stage core.Stage) bool {
 		after := false
 		for _, row := range stages {
@@ -830,13 +858,17 @@ func markFlowGates(stages []FlowStage, action nextaction.NextAction, gateKind co
 		switch row.ID {
 		case core.StageSpec:
 			switch {
-			case !specApproval:
+			case planState == core.PlanNotRequired:
 				status = FlowOff
+			case planState == core.PlanCompleted:
+				status = FlowDone
 			case operator && (action.Kind == nextaction.KindPlanApproval || action.Kind == nextaction.KindPlanRevision):
 				status = FlowNeedsOperator
 			case gateKind == core.GateKindPlanApproval || gateKind == core.GateKindPlanRevision:
 				status = FlowWaiting
-			case reachedAfter(core.StageSpec):
+			case !planReopened && reachedAfter(core.StageSpec):
+				// A legacy history passed the gate before plan states were
+				// recorded as events.
 				status = FlowDone
 			default:
 				status = FlowUpcoming

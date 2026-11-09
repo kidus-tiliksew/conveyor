@@ -401,7 +401,7 @@ type ReviewPanel struct {
 type ExecutionPolicy struct {
 	VerifyStage       bool `yaml:"verify_stage" json:"verify_stage"`
 	VerifyConcurrency int  `yaml:"verify_concurrency,omitempty" json:"verify_concurrency,omitempty"`
-	// DefaultMode is deprecated (DEC-74(2)): parsed from legacy documents
+	// DefaultMode is deprecated (DEC-122(2)): parsed from legacy documents
 	// and seeds for compatibility, never read for behavior, dropped on save.
 	DefaultMode string `yaml:"default_mode,omitempty" json:"default_mode,omitempty"`
 	// DefaultPlanState is the plan state intake gives a task filed with no
@@ -1438,7 +1438,7 @@ func normalizeDeploymentScalars(c *Config, path string) error {
 		return err
 	}
 	if c.Execution.DefaultMode != "" && c.Execution.DefaultMode != "auto" && c.Execution.DefaultMode != "manual" {
-		return fmt.Errorf("execution.default_mode is deprecated (DEC-74) and must be auto or manual when present")
+		return fmt.Errorf("execution.default_mode is deprecated (DEC-122) and must be auto or manual when present")
 	}
 	// Legacy documents keep their stored value readable, but it is never
 	// re-emitted or consulted; normalization drops it.

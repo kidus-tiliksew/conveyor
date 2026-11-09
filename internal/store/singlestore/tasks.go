@@ -285,7 +285,7 @@ func insertTaskRow(ctx context.Context, tx *sql.Tx, t core.Task) error {
 		"class":                t.Class,
 		"escalation_level":     t.Level,
 		"mode":                 t.Mode,
-		"hold":                 false, // a task carries no worker reservation (DEC-74(3))
+		"hold":                 false, // a task carries no worker reservation (DEC-122(3))
 		"spec_approval":        t.SpecApproval,
 		"plan_state":           string(t.PlanState),
 		"merge_approval":       t.MergeApproval,
@@ -1187,11 +1187,19 @@ func (s *Store) applyTaskCommandTx(ctx context.Context, tx *sql.Tx, id string, c
 				command.RecoveryStage = core.StageVerify
 			}
 		}
+		planMove, err := store.TaskCommandPlanStateMove(id, before.PlanState, command.PlanState)
+		if err != nil {
+			return err
+		}
 		kind := core.GateKindFor(state, command.Kind)
 		values := map[string]any{"state": state, "gate_kind": string(kind)}
 		result = before
 		result.State = state
 		result.GateKind = kind
+		if planMove != nil {
+			values["plan_state"] = string(command.PlanState.To)
+			result.PlanState = command.PlanState.To
+		}
 		if command.ProjectStages {
 			values["next_stage"] = command.NextStage
 			values["recovery_stage"] = command.RecoveryStage
@@ -1212,6 +1220,11 @@ func (s *Store) applyTaskCommandTx(ctx context.Context, tx *sql.Tx, id string, c
 		}
 		if err := taskEvent(ctx, tx, core.Event{TaskID: id, Kind: "task.state_changed", Payload: core.JSONPayload(map[string]any{"from": before.State, "to": state, "command": command.Kind})}); err != nil {
 			return err
+		}
+		if planMove != nil {
+			if err := taskEvent(ctx, tx, *planMove); err != nil {
+				return err
+			}
 		}
 		if command.FailureMessage != "" {
 			if err := taskEvent(ctx, tx, core.Event{TaskID: id, Kind: "dispatch.failed", Payload: core.JSONPayload(map[string]any{

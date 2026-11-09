@@ -487,7 +487,7 @@ func (s *Server) refuseRedispatchAtPlanRevisionGate(w http.ResponseWriter, r *ht
 }
 
 // retiredTaskHold answers the retired per-task hold route. A task carries no
-// hold or other worker reservation (DEC-74(3)); the route keeps its
+// hold or other worker reservation (DEC-122(3)); the route keeps its
 // authentication and capability middleware, reads no body, looks up no task,
 // writes nothing, and appends no event (component-http-api).
 func (s *Server) retiredTaskHold(w http.ResponseWriter, _ *http.Request) {

@@ -660,7 +660,7 @@ func TestTerminalTaskHTTPRetainsReviewWithoutInterruptedRecovery(t *testing.T) {
 }
 
 // TestRetiredTaskHoldRouteAnswersGone proves the per-task hold route is a
-// non-mutating tombstone (DEC-74(3); component-http-api): every admitted body
+// non-mutating tombstone (DEC-122(3); component-http-api): every admitted body
 // answers 410 task_hold_retired with no task lookup, write, or event.
 func TestRetiredTaskHoldRouteAnswersGone(t *testing.T) {
 	st := store.NewMemory()
@@ -690,7 +690,7 @@ func TestRetiredTaskHoldRouteAnswersGone(t *testing.T) {
 	} {
 		response := request(call.taskID, call.body)
 		var body map[string]string
-		if err := json.Unmarshal(response.Body.Bytes(), &body); response.Code != http.StatusGone || err != nil || body["error"] != "task_hold_retired" || !strings.Contains(body["message"], "DEC-74") {
+		if err := json.Unmarshal(response.Body.Bytes(), &body); response.Code != http.StatusGone || err != nil || body["error"] != "task_hold_retired" || !strings.Contains(body["message"], "DEC-122") {
 			t.Fatalf("%s %s status=%d body=%s", call.taskID, call.body, response.Code, response.Body.String())
 		}
 	}
@@ -705,7 +705,7 @@ func TestRetiredTaskHoldRouteAnswersGone(t *testing.T) {
 }
 
 // TestTaskIntakeIsNotHealthGatedAndRefusesHold keeps intake open without a
-// live worker and refuses the retired hold input (DEC-74(3)).
+// live worker and refuses the retired hold input (DEC-122(3)).
 func TestTaskIntakeIsNotHealthGatedAndRefusesHold(t *testing.T) {
 	st := store.NewMemory()
 	cfg := &config.Config{Workspace: "demo", Execution: config.ExecutionPolicy{DefaultMode: "auto", DefaultPlanState: "needed", MergeApproval: true, ImplementConcurrency: 1, ReviewConcurrency: 1}, Routing: config.Routing{Stages: map[string]config.StageRoute{"implement": {Harness: "codex"}, "review": {Harness: "codex", Execution: config.ExecutionMCP}}}, Repos: []config.Repo{{Name: "api", Base: "main"}}}
@@ -745,7 +745,7 @@ func TestTaskIntakeIsNotHealthGatedAndRefusesHold(t *testing.T) {
 	before := countTasks()
 	response := request(`{"body":"held with gates off","repo":"api","hold":true,"spec_approval":false,"merge_approval":false}`)
 	var refusal map[string]string
-	if err := json.Unmarshal(response.Body.Bytes(), &refusal); response.Code != http.StatusBadRequest || err != nil || refusal["error"] != "task_hold_retired" || !strings.Contains(refusal["message"], "hold is retired (DEC-74)") {
+	if err := json.Unmarshal(response.Body.Bytes(), &refusal); response.Code != http.StatusBadRequest || err != nil || refusal["error"] != "task_hold_retired" || !strings.Contains(refusal["message"], "hold is retired (DEC-122)") {
 		t.Fatalf("hold status=%d body=%s", response.Code, response.Body.String())
 	}
 	if response := request(`{"body":"mistyped hold","repo":"api","hold":"yes"}`); response.Code != http.StatusBadRequest {

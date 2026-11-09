@@ -259,8 +259,29 @@ func (s *Store) ApproveSpecVersion(ctx context.Context, id string, version int) 
 		if err := approveSpecTx(ctx, tx, id, version); err != nil {
 			return err
 		}
-		return taskEvent(ctx, tx, core.Event{TaskID: id, Kind: "spec.version_approved", Payload: core.JSONPayload(map[string]int{"version": version})})
+		if err := taskEvent(ctx, tx, core.Event{TaskID: id, Kind: "spec.version_approved", Payload: core.JSONPayload(map[string]int{"version": version})}); err != nil {
+			return err
+		}
+		return approvePlanStateTx(ctx, tx, id)
 	})
+}
+
+// approvePlanStateTx sets planning completed with cause plan_approved in the
+// transaction that records a plan approval (component-task-lifecycle
+// invariant 54; component-plan-state invariant 3; req-task-plan-state AC-1.3).
+func approvePlanStateTx(ctx context.Context, tx *sql.Tx, id string) error {
+	task, err := getTaskRow(ctx, tx, id)
+	if err != nil {
+		return err
+	}
+	move := store.PlanStateMoveEvent(id, task.PlanState, core.PlanCompleted, core.PlanCausePlanApproved)
+	if move == nil {
+		return nil
+	}
+	if err := taskWrite(ctx, tx, id, map[string]any{"plan_state": string(core.PlanCompleted)}); err != nil {
+		return err
+	}
+	return taskEvent(ctx, tx, *move)
 }
 
 // specRowValues is the task_specs insert of one plan version. SingleStore has

@@ -16,7 +16,7 @@ func TestUserRequestChangesPendingClearsOnNextImplementClaim(t *testing.T) {
 		t.Fatal("review claims must not clear the bounced implement marker")
 	}
 	// Whoever claims the re-queued implement order clears the marker: a user
-	// bounce re-queues an ordinary eligible order (DEC-74(3)).
+	// bounce re-queues an ordinary eligible order (DEC-122(3)).
 	if UserRequestChangesPending([]core.Event{bounce, reviewClaim, workerClaim}) {
 		t.Fatal("the next worker implement claim must clear the marker")
 	}

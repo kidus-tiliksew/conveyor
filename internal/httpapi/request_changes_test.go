@@ -94,7 +94,7 @@ func TestRequestChangesBouncesThroughSharedContextAndAttention(t *testing.T) {
 		t.Fatalf("orders=%+v err=%v", orders, err)
 	}
 	// The bounce re-queues an ordinary eligible order and writes no hold
-	// (DEC-74(3)).
+	// (DEC-122(3)).
 	events, err := st.ListEvents(ctx, task.ID)
 	if err != nil {
 		t.Fatal(err)

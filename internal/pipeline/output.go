@@ -65,6 +65,10 @@ type Spec struct {
 	// ReviewSeats is a plan's planned review seat count, nil when the plan
 	// states none (feature-review-seat-minimum RS-3; DEC-78).
 	ReviewSeats *int
+	// BaseCommit is the full commit ID the plan was read against, empty when
+	// the planner stated none (component-work-orders invariant 56;
+	// req-task-plan-state REQ-4).
+	BaseCommit string
 }
 
 // StructuredSpec is the model-owned semantic spec result. Conveyor validates
@@ -85,6 +89,10 @@ type StructuredPlan struct {
 	// null both mean no count (req-review-gates-evidence AC-2.8;
 	// feature-review-seat-minimum RS-3).
 	ReviewSeats *int `json:"review_seats,omitempty"`
+	// BaseCommit is the planner checkout's HEAD, 40 lowercase hex
+	// characters, or empty when none is stated (component-mcp-protocol
+	// invariant 40; component-work-orders invariant 56).
+	BaseCommit string `json:"base_commit,omitempty"`
 }
 
 var (
@@ -258,7 +266,23 @@ func ParseStructuredPlan(value StructuredPlan) (Spec, error) {
 		seats := *value.ReviewSeats
 		result.ReviewSeats = &seats
 	}
+	if err = ValidatePlanBaseCommit(value.BaseCommit); err != nil {
+		return Spec{}, err
+	}
+	result.BaseCommit = value.BaseCommit
 	return result, nil
+}
+
+// ValidatePlanBaseCommit refuses a stated plan base commit that is not 40
+// lowercase hex characters. An empty value states none. The refusal is an
+// in-band plan validation error, so the plan order stays claimed and no
+// version is recorded (component-work-orders invariant 56;
+// component-mcp-protocol invariant 40).
+func ValidatePlanBaseCommit(commit string) error {
+	if commit == "" || core.ValidPlanBaseCommit(commit) {
+		return nil
+	}
+	return fmt.Errorf("plan base_commit must be the checkout's full HEAD commit: 40 lowercase hex characters")
 }
 
 func RenderStructuredPlan(output string) (Spec, error) {

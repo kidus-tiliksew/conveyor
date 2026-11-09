@@ -12,7 +12,7 @@ import (
 )
 
 // A user-run bounce re-queues an ordinary eligible implement order: it is
-// listed and claimable at once, with no hold written (DEC-74(3)).
+// listed and claimable at once, with no hold written (DEC-122(3)).
 func TestUserRequestChangesCreatesClaimableImplementOrderIntegration(t *testing.T) {
 	st, err := Open(store.WithActor(t.Context(), store.SystemActor()), integrationDatabaseURL(t))
 	if err != nil {

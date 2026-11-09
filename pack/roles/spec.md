@@ -64,9 +64,17 @@ Populate `submit_plan` like this, replacing every example value:
 ```json
 {
   "markdown": "## Approach\nUse the existing service boundary.\n\n## Files touched\n- internal/example/service.go\n\n## Ordering\n1. Add validation.\n2. Wire the handler.\n\n## Risks\n- Preserve lifecycle events.\n\n## Done criteria\n- Invalid input stays in-band.\n- Repository checks pass.",
-  "decomposition": []
+  "decomposition": [],
+  "base_commit": "0123456789abcdef0123456789abcdef01234567"
 }
 ```
+
+Pass your checkout's `HEAD` as `base_commit`: the full commit ID that
+`git rev-parse HEAD` prints, 40 lowercase hexadecimal characters. It records
+the commit your plan was read against, so the implementing agent can check the
+plan against the repository it implements in. A malformed value is refused in
+band and leaves the order claimed for correction. A submitted plan waits at the
+plan approval gate for a person's decision; no submission approves it.
 
 Plans must not contain any `conveyor:` machine fence or decomposition. Fan-out
 remains planning territory. If implementation scope looks oversized, state the

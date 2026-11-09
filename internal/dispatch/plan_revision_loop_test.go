@@ -2,6 +2,7 @@ package dispatch_test
 
 import (
 	"context"
+	"encoding/json"
 	"strings"
 	"testing"
 	"time"
@@ -31,6 +32,9 @@ func TestPlanRevisionApproveReentersPlanAndBindsFreshImplementationToV2(t *testi
 	if err := dispatcher.DispatchNow(ctx, task.ID); err != nil {
 		t.Fatal(err)
 	}
+	// The approved revision sets planning needed from completed
+	// (component-work-orders invariant 58; req-task-plan-state AC-3.4).
+	requireLoopPlanState(t, ctx, st, task.ID, core.PlanCompleted, core.PlanNeeded, core.PlanCausePlanRevisionApproved)
 
 	orders, err := st.ListTaskWorkOrders(ctx, task.ID)
 	if err != nil || len(orders) != 2 || orders[0].State != core.WorkOrderCancelled || orders[1].Stage != core.StageSpec {
@@ -109,6 +113,10 @@ func TestPlanRevisionDeclineRecoversImplementationWithDirection(t *testing.T) {
 	if err != nil || recovered.State != core.WorkOrderQueued || !recovered.Claimable || recovered.AutomaticRetryCount != 0 || recovered.OperatorDirection != direction {
 		t.Fatalf("recovered order=%+v err=%v", recovered, err)
 	}
+	// A decline keeps the plan state (component-work-orders invariant 58).
+	if declined, _ := st.GetTask(ctx, task.ID); declined.PlanState != core.PlanCompleted {
+		t.Fatalf("declined plan state=%s, want completed", declined.PlanState)
+	}
 	claimed, err := storetest.For(st).ClaimWorkOrder(ctx, recovered.ID, core.WorkOrderClaim{SessionID: "retry-session", ClientToken: "retry-token", Agent: "codex", Model: "implementer", Lease: time.Minute, ExecutionTimeout: time.Hour})
 	if err != nil {
 		t.Fatal(err)
@@ -128,18 +136,29 @@ func newPlanRevisionLoop(t *testing.T, suffix string) (context.Context, store.St
 
 func newPlanRevisionLoopWithStore(t *testing.T, ctx context.Context, st store.Store, workspace, suffix string) (context.Context, store.Store, *dispatch.Dispatcher, *workorder.Service, core.Task, core.WorkOrder) {
 	t.Helper()
+	return newPlanRevisionLoopIn(t, ctx, st, workspace, suffix, core.PlanAwaitingApproval)
+}
+
+// newPlanRevisionLoopIn claims an implement order and requests plan revision
+// on a task at planState: awaiting_approval approves plan v1 first, so the
+// request contests the completed plan, and not_required asks for planning.
+func newPlanRevisionLoopIn(t *testing.T, ctx context.Context, st store.Store, workspace, suffix string, planState core.PlanState) (context.Context, store.Store, *dispatch.Dispatcher, *workorder.Service, core.Task, core.WorkOrder) {
+	t.Helper()
 	now := time.Now().UTC()
-	task := core.Task{ID: "plan-revision-loop-" + suffix, Workspace: workspace, Repo: "conveyor", BaseBranch: "main", Branch: "conveyor/" + suffix, PolicyVersion: 1, SpecApproval: true, State: core.TaskRunning, NextStage: core.StageImplement, CreatedAt: now}
+	task := core.Task{ID: "plan-revision-loop-" + suffix, Workspace: workspace, Repo: "conveyor", BaseBranch: "main", Branch: "conveyor/" + suffix, PolicyVersion: 1, PlanState: planState, State: core.TaskRunning, NextStage: core.StageImplement, CreatedAt: now}
 	if err := st.CreateTask(ctx, task); err != nil {
 		t.Fatal(err)
 	}
-	plan, err := st.CreateSpecVersion(ctx, core.SpecVersion{TaskID: task.ID, Content: "## Approach\nUse v1.\n\n## Files touched\n- old.go\n\n## Ordering\n1. Implement.\n\n## Risks\n- Drift.\n\n## Done criteria\n- v1 works.", Acceptance: core.JSONPayload([]any{}), Decomposition: core.JSONPayload([]any{})})
-	if err != nil {
-		t.Fatal(err)
+	if planState == core.PlanAwaitingApproval {
+		plan, err := st.CreateSpecVersion(ctx, core.SpecVersion{TaskID: task.ID, Content: "## Approach\nUse v1.\n\n## Files touched\n- old.go\n\n## Ordering\n1. Implement.\n\n## Risks\n- Drift.\n\n## Done criteria\n- v1 works.", Acceptance: core.JSONPayload([]any{}), Decomposition: core.JSONPayload([]any{})})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err = st.ApproveSpecVersion(ctx, task.ID, plan.Version); err != nil {
+			t.Fatal(err)
+		}
 	}
-	if err = st.ApproveSpecVersion(ctx, task.ID, plan.Version); err != nil {
-		t.Fatal(err)
-	}
+	var err error
 	job := core.Job{ID: task.ID + "-implement-1", TaskID: task.ID, Stage: core.StageImplement, State: core.JobPending}
 	order := core.WorkOrder{ID: job.ID, TaskID: task.ID, JobID: job.ID, Stage: core.StageImplement, State: core.WorkOrderQueued, Claimable: true, QueueEnteredAt: now, QueueDeadline: now.Add(time.Hour)}
 	if _, err = storetest.For(st).CreateStageWorkOrder(ctx, job, order); err != nil {
@@ -171,4 +190,120 @@ func newPlanRevisionLoopWithStore(t *testing.T, ctx context.Context, st store.St
 	}
 	service := &workorder.Service{Store: st, Dispatcher: dispatcher, Pack: bundle, ConfigProvider: func(context.Context) (*config.Config, error) { return cfg, nil }}
 	return ctx, st, dispatcher, service, result.Task, result.WorkOrder
+}
+
+// requireLoopPlanState asserts the task's plan state and its latest recorded
+// move.
+func requireLoopPlanState(t *testing.T, ctx context.Context, st store.Store, taskID string, from, to core.PlanState, cause core.PlanStateCause) {
+	t.Helper()
+	task, err := st.GetTask(ctx, taskID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	events, err := st.ListEvents(ctx, taskID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var last *core.PlanStateChange
+	for _, event := range events {
+		if event.Kind != core.EventTaskPlanStateChanged {
+			continue
+		}
+		var change core.PlanStateChange
+		if err := json.Unmarshal(event.Payload, &change); err != nil {
+			t.Fatal(err)
+		}
+		last = &change
+	}
+	if task.PlanState != to || last == nil || last.From == nil || *last.From != from || last.To != to || last.Cause != cause {
+		t.Fatalf("plan state=%s latest move=%+v, want %s -> %s (%s)", task.PlanState, last, from, to, cause)
+	}
+}
+
+// TestPlanningRequestFromNoPlanRequiredTask covers a request_plan_revision on
+// a no-plan-required task's implement claim. Approval sets planning needed
+// with cause planning_requested_approved and returns the task to the plan
+// stage, whose order receives the request as plan-revision context; the plan
+// then waits for a person's approval, and the fresh implementation receives
+// it. A decline returns the task to implementation and keeps no plan
+// required (component-work-orders invariants 57, 58, and 61;
+// req-task-plan-state AC-3.3, AC-3.4).
+func TestPlanningRequestFromNoPlanRequiredTask(t *testing.T) {
+	t.Run("approved", func(t *testing.T) {
+		ctx := store.WithWorkspace(store.WithActor(t.Context(), store.SystemActor()), "demo")
+		ctx, st, dispatcher, service, task, contested := newPlanRevisionLoopIn(t, ctx, store.NewMemory(), "demo", "planning-approved", core.PlanNotRequired)
+		current, _ := st.GetTask(ctx, task.ID)
+		latest, _, _ := st.GetLatestJob(ctx, task.ID)
+		decision := core.Intervention{TaskID: task.ID, JobID: latest.ID, Action: core.InterventionRedirect, ReasonCode: dispatch.PlanRevisionApprovedReasonCode, Comment: "Plan the migration first."}
+		if err := dispatcher.HandleIntervention(ctx, current, latest, decision); err != nil {
+			t.Fatal(err)
+		}
+		if err := st.CreateIntervention(ctx, decision); err != nil {
+			t.Fatal(err)
+		}
+		requireLoopPlanState(t, ctx, st, task.ID, core.PlanNotRequired, core.PlanNeeded, core.PlanCausePlanningRequestedApproved)
+		if err := dispatcher.DispatchNow(ctx, task.ID); err != nil {
+			t.Fatal(err)
+		}
+		orders, err := st.ListTaskWorkOrders(ctx, task.ID)
+		if err != nil || len(orders) != 2 || orders[0].ID != contested.ID || orders[0].State != core.WorkOrderCancelled || orders[1].Stage != core.StageSpec {
+			t.Fatalf("plan entry orders=%+v err=%v", orders, err)
+		}
+		planOrder, err := storetest.For(st).ClaimWorkOrder(ctx, orders[1].ID, core.WorkOrderClaim{SessionID: "plan-session", ClientToken: "plan-token", Agent: "codex", Model: "planner", Lease: time.Minute, ExecutionTimeout: time.Hour})
+		if err != nil {
+			t.Fatal(err)
+		}
+		planContext, err := service.Get(ctx, planOrder.ID, planOrder.SessionID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if planContext.PlanRevision == nil || planContext.PlanRevision.ContestedPlanVersion != 0 || !strings.Contains(planContext.RolePrompt, "asked that this task, which required no plan, be planned") || !strings.Contains(planContext.RolePrompt, "the public API changed") {
+			t.Fatalf("planning request context=%+v prompt=%s", planContext.PlanRevision, planContext.RolePrompt)
+		}
+		plan := pipeline.StructuredPlan{Markdown: "## Approach\nPlan it.\n\n## Files touched\n- new.go\n\n## Ordering\n1. Plan.\n\n## Risks\n- Drift.\n\n## Done criteria\n- The migration is planned.", Decomposition: []pipeline.DecompositionItem{}}
+		result, err := service.SubmitPlan(ctx, planOrder.ID, planOrder.SessionID, plan)
+		if err != nil || result["version"] != 1 || result["approved"] != false {
+			t.Fatalf("submit plan result=%+v err=%v", result, err)
+		}
+		requireLoopPlanState(t, ctx, st, task.ID, core.PlanNeeded, core.PlanAwaitingApproval, core.PlanCausePlanSubmitted)
+		current, _ = st.GetTask(ctx, task.ID)
+		latest, _, _ = st.GetLatestJob(ctx, task.ID)
+		if err = dispatcher.HandleIntervention(ctx, current, latest, core.Intervention{TaskID: task.ID, JobID: latest.ID, Action: core.InterventionApprove, ReasonCode: "plan-approved"}); err != nil {
+			t.Fatal(err)
+		}
+		requireLoopPlanState(t, ctx, st, task.ID, core.PlanAwaitingApproval, core.PlanCompleted, core.PlanCausePlanApproved)
+		if err = dispatcher.DispatchNow(ctx, task.ID); err != nil {
+			t.Fatal(err)
+		}
+		orders, err = st.ListTaskWorkOrders(ctx, task.ID)
+		if err != nil || len(orders) != 3 || orders[2].Stage != core.StageImplement {
+			t.Fatalf("fresh implementation orders=%+v err=%v", orders, err)
+		}
+		implementation, err := storetest.For(st).ClaimWorkOrder(ctx, orders[2].ID, core.WorkOrderClaim{SessionID: "implement-again", ClientToken: "implement-again-token", Lease: time.Minute, ExecutionTimeout: time.Hour})
+		if err != nil {
+			t.Fatal(err)
+		}
+		implementContext, err := service.Get(ctx, implementation.ID, implementation.SessionID)
+		if err != nil || implementContext.ApprovedSpec == nil || implementContext.ApprovedSpec.Version != 1 {
+			t.Fatalf("implementation approved_spec=%+v err=%v", implementContext.ApprovedSpec, err)
+		}
+	})
+	t.Run("declined", func(t *testing.T) {
+		ctx := store.WithWorkspace(store.WithActor(t.Context(), store.SystemActor()), "demo")
+		ctx, st, dispatcher, _, task, contested := newPlanRevisionLoopIn(t, ctx, store.NewMemory(), "demo", "planning-declined", core.PlanNotRequired)
+		current, _ := st.GetTask(ctx, task.ID)
+		latest, _, _ := st.GetLatestJob(ctx, task.ID)
+		decision := core.Intervention{TaskID: task.ID, JobID: latest.ID, Action: core.InterventionRedirect, ReasonCode: dispatch.PlanRevisionDeclinedReasonCode, Comment: "Implement it as filed."}
+		if err := dispatcher.HandleIntervention(ctx, current, latest, decision); err != nil {
+			t.Fatal(err)
+		}
+		declined, err := st.GetTask(ctx, task.ID)
+		if err != nil || declined.PlanState != core.PlanNotRequired || declined.NextStage != core.StageImplement {
+			t.Fatalf("declined task=%+v err=%v", declined, err)
+		}
+		recovered, err := st.GetWorkOrder(ctx, contested.ID)
+		if err != nil || recovered.State != core.WorkOrderQueued || !recovered.Claimable {
+			t.Fatalf("recovered order=%+v err=%v", recovered, err)
+		}
+	})
 }

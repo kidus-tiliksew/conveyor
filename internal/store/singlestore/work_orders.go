@@ -1628,16 +1628,24 @@ func (s *Store) RequestPlanRevisionCommand(ctx context.Context, lease taskops.Ta
 		if err != nil {
 			return err
 		}
-		version := 0
-		err = tx.QueryRowContext(ctx, `SELECT version FROM task_specs WHERE workspace_id=? AND task_id=? AND approved=true ORDER BY version DESC LIMIT 1`, documentWorkspace(ctx), t.ID).Scan(&version)
-		if errors.Is(err, sql.ErrNoRows) && t.ParentTaskID != "" && t.OriginSpecVersion > 0 {
-			err = tx.QueryRowContext(ctx, `SELECT version FROM task_specs WHERE workspace_id=? AND task_id=? AND version=? AND approved=true`, documentWorkspace(ctx), t.ParentTaskID, t.OriginSpecVersion).Scan(&version)
-		}
-		if errors.Is(err, sql.ErrNoRows) {
-			return fmt.Errorf("request_plan_revision requires an approved execution plan")
-		}
-		if err != nil {
+		// Planning completed contests the approved plan; no plan required
+		// asks for planning and contests no version (component-work-orders
+		// invariant 57; req-task-plan-state AC-3.3).
+		if err = store.PlanRevisionRequestable(t.PlanState); err != nil {
 			return err
+		}
+		version := 0
+		if t.PlanState == core.PlanCompleted {
+			err = tx.QueryRowContext(ctx, `SELECT version FROM task_specs WHERE workspace_id=? AND task_id=? AND approved=true ORDER BY version DESC LIMIT 1`, documentWorkspace(ctx), t.ID).Scan(&version)
+			if errors.Is(err, sql.ErrNoRows) && t.ParentTaskID != "" && t.OriginSpecVersion > 0 {
+				err = tx.QueryRowContext(ctx, `SELECT version FROM task_specs WHERE workspace_id=? AND task_id=? AND version=? AND approved=true`, documentWorkspace(ctx), t.ParentTaskID, t.OriginSpecVersion).Scan(&version)
+			}
+			if errors.Is(err, sql.ErrNoRows) {
+				return store.ErrPlanRevisionNoApprovedPlan
+			}
+			if err != nil {
+				return err
+			}
 		}
 		nextOrder, err := core.TransitionWorkOrder(o.State, core.WorkOrderCmdRequestPlanRevision)
 		if err != nil {
@@ -1681,7 +1689,7 @@ func (s *Store) RequestPlanRevisionCommand(ctx context.Context, lease taskops.Ta
 			return err
 		}
 		eventCtx := ctx
-		for _, e := range []core.Event{{TaskID: t.ID, JobID: o.JobID, Kind: "work_order.plan_revision_requested", Payload: core.JSONPayload(map[string]any{"work_order_id": id, "attempt_id": attempt, "session_id": claim.SessionID, "rationale": rationale, "plan_version": version}), At: now}, {TaskID: t.ID, JobID: o.JobID, Kind: "work_order.released", Payload: core.JSONPayload(map[string]any{"attempt_id": attempt, "session_id": claim.SessionID, "reason": core.WorkOrderReleaseReasonPlanRevisionRequested, "release_cause": core.WorkOrderReleaseCauseOperatorAction, "outcome": core.WorkOrderOutcomeReleased, "automatic_retry_count": o.AutomaticRetryCount, "retry_suppressed": true}), At: now}, {TaskID: t.ID, Kind: "task.state_changed", Payload: core.JSONPayload(map[string]any{"from": t.State, "to": nextTask, "command": core.TaskGatePlanRevision}), At: now}} {
+		for _, e := range []core.Event{{TaskID: t.ID, JobID: o.JobID, Kind: "work_order.plan_revision_requested", Payload: store.PlanRevisionRequestedPayload(id, attempt, claim.SessionID, rationale, version), At: now}, {TaskID: t.ID, JobID: o.JobID, Kind: "work_order.released", Payload: core.JSONPayload(map[string]any{"attempt_id": attempt, "session_id": claim.SessionID, "reason": core.WorkOrderReleaseReasonPlanRevisionRequested, "release_cause": core.WorkOrderReleaseCauseOperatorAction, "outcome": core.WorkOrderOutcomeReleased, "automatic_retry_count": o.AutomaticRetryCount, "retry_suppressed": true}), At: now}, {TaskID: t.ID, Kind: "task.state_changed", Payload: core.JSONPayload(map[string]any{"from": t.State, "to": nextTask, "command": core.TaskGatePlanRevision}), At: now}} {
 			if err = taskEvent(eventCtx, tx, e); err != nil {
 				return err
 			}

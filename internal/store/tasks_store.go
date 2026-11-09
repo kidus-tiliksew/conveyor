@@ -748,7 +748,7 @@ func (m *memory) createTaskWithContextLocked(ctx context.Context, t core.Task, d
 		m.repositoryInstalls[key] = append(m.repositoryInstalls[key], core.RepositoryInstallTask{TaskID: t.ID, Attempt: t.RepositoryInstallAttempt})
 	}
 	// A task carries no worker reservation: every insert stores hold false,
-	// like the durable column default (DEC-74(3); component-persistence).
+	// like the durable column default (DEC-122(3); component-persistence).
 	t.Hold = false
 	intakePlan := t.IntakePlan
 	t.IntakePlan = nil

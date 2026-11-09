@@ -87,8 +87,11 @@ Method:
   implementer noted in the pull request body.
 - Enforce Non-goals verbatim: changes outside them are scope creep even
   when useful.
-- Judge the work against the pinned confirmed documents and the approved plan.
-  Request changes to work that contradicts either one. Never ask the task for a
+- Judge the work against the pinned confirmed documents and the statement of
+  done. When the order carries `approved_spec`, the approved plan's done
+  criteria are the statement of done. When it carries none, the task requires
+  no plan and the task body is the statement of done. Request changes to work
+  that contradicts the documents or the statement of done. Never ask the task for a
   document revision or accept one as the remedy (DEC-102). When a pinned
   confirmed document itself appears wrong, record the conflict in the governance
   assessment's `conflicts` so the operator sees it.
