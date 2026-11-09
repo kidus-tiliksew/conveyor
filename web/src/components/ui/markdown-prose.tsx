@@ -68,6 +68,23 @@ export function MarkdownProse({
   )
 }
 
+// Phrasing-only Markdown for a one-line preview inside a link, such as a
+// Decisions list row: code spans, emphasis, and strikethrough render, and
+// every other element, including paragraphs, lists, headings, and links,
+// unwraps to its text, so the preview adds no block and no nested link. It
+// uses the same GFM parser with raw HTML disabled; do not add rehype-raw here.
+const inlineElements = ['code', 'em', 'strong', 'del']
+
+export function InlineMarkdown({ children, className = '' }: { children: string; className?: string }) {
+  return (
+    <span className={`markdown markdown-inherit ${className}`.trim()}>
+      <Markdown remarkPlugins={[remarkGfm]} allowedElements={inlineElements} unwrapDisallowed>
+        {children}
+      </Markdown>
+    </span>
+  )
+}
+
 // A document page already shows its title in the header, so a body that opens
 // by repeating it starts at its first real content instead.
 export function withoutLeadingTitle(content: string, title?: string) {

@@ -2875,6 +2875,64 @@ test('a version proposal shows its changes in place and a decision proposal show
   expect(harness.posts).toHaveLength(0)
 })
 
+test('a decision proposal renders its statement, context, and alternatives as Markdown', async ({ page }) => {
+  const fixture = proposalFixture()
+  fixture.documents = {
+    '/v1/requirements/req-attention': versionView('requirement', 'req-attention', 2, 3),
+    '/v1/decisions/DEC-16': {
+      id: 'DEC-16',
+      statement: 'Each repository ships its own `kit.yaml` under *one* manifest.',
+      context: 'Kits diverge per repository.\n\nThe runner reads `verify_stage` first.',
+      alternatives_rejected:
+        'One shared kit: repositories diverge. It also needed `git grep -e "a: b. C"` to scan. A kit service: too much to run.',
+      status: 'proposed',
+    },
+  }
+  await serve(page, fixture)
+  await page.goto('/w/demo/inbox')
+  const decision = await select(page, 'All FunnelFlux repositories')
+  const text = decision.getByRole('region', { name: 'Proposed decision' })
+  const field = (label: string) =>
+    text
+      .locator('div')
+      .filter({ has: page.getByText(label, { exact: true }) })
+      .locator('dd')
+
+  await expect(field('Statement').locator('code')).toHaveText('kit.yaml')
+  await expect(field('Statement').locator('em')).toHaveText('one')
+  await expect(field('Context').locator('p')).toHaveCount(2)
+  await expect(field('Context').locator('code')).toHaveText('verify_stage')
+  // One row per alternative, split on the source like the decision page; the
+  // colon and sentence end inside the code span neither start a row nor cut it.
+  const rows = field('Alternatives rejected').locator('.markdown')
+  await expect(rows).toHaveText([
+    'One shared kit: repositories diverge. It also needed git grep -e "a: b. C" to scan.',
+    'A kit service: too much to run.',
+  ])
+  await expect(rows.nth(0).locator('code')).toHaveText('git grep -e "a: b. C"')
+  await expect(text).not.toContainText('`')
+})
+
+test('an empty decision proposal field keeps its dash', async ({ page }) => {
+  const fixture = proposalFixture()
+  fixture.documents = {
+    '/v1/requirements/req-attention': versionView('requirement', 'req-attention', 2, 3),
+    '/v1/decisions/DEC-16': {
+      id: 'DEC-16',
+      statement: longDecision,
+      context: '',
+      alternatives_rejected: '',
+      status: 'proposed',
+    },
+  }
+  await serve(page, fixture)
+  await page.goto('/w/demo/inbox')
+  const decision = await select(page, 'All FunnelFlux repositories')
+  const text = decision.getByRole('region', { name: 'Proposed decision' })
+  await expect(text.locator('dd')).toHaveText([longDecision, '—', '—'])
+  await expect(text.locator('dd').nth(1).locator('.markdown')).toHaveCount(0)
+})
+
 test('a late read from a left selection never shows under the new one', async ({ page }) => {
   const fixture = proposalFixture()
   fixture.documents = {
