@@ -679,7 +679,7 @@ func TestGovernanceContractIgnoresRetiredEvidenceOfOlderPins(t *testing.T) {
 // Role prompts are served to every workspace, so validation wording defers to
 // each repository's own validation documentation and names no Make target or
 // repository-specific command; this repository's Make-target and
-// docker compose rules live in its CLAUDE.md (DEC-53; DEC-72).
+// docker compose rules live in its AGENTS.md (DEC-53; DEC-72).
 func TestAgentRolesRequireSafeRepositoryValidation(t *testing.T) {
 	loader := Loader{Dir: filepath.Join("..", "..", "pack")}
 	for _, stage := range []core.Stage{core.StageImplement, core.StageReview, core.StageSpec} {

@@ -320,9 +320,9 @@ func TestSnapshotSkippedLinkCannotRedirectLaterEntries(t *testing.T) {
 	}
 }
 
-// This repository's own archive holds a global header and AGENTS.md -> CLAUDE.md.
-// git archive writes the format GitHub's tarball endpoint serves. The test skips
-// outside a Git checkout.
+// This repository's own archive holds a global header and a regular AGENTS.md
+// with no CLAUDE.md. git archive writes the format GitHub's tarball endpoint
+// serves. The test skips outside a Git checkout.
 func TestSnapshotOpensThisRepositoryArchive(t *testing.T) {
 	toplevel, err := exec.Command("git", "rev-parse", "--show-toplevel").Output()
 	if err != nil {
@@ -345,12 +345,15 @@ func TestSnapshotOpensThisRepositoryArchive(t *testing.T) {
 	}
 	m, ctx, _ := snapshotFixture(t, out.Bytes())
 	snapshot := openFixture(t, m, ctx)
-	if _, err = os.Lstat(filepath.Join(snapshot.Repository, "AGENTS.md")); !os.IsNotExist(err) {
-		t.Fatalf("AGENTS.md link materialized: %v", err)
+	if info, err := os.Lstat(filepath.Join(snapshot.Repository, "AGENTS.md")); err != nil || !info.Mode().IsRegular() {
+		t.Fatalf("AGENTS.md is not a regular file: %v, %v", info, err)
 	}
-	guidance, err := m.ReadSnapshotBlob(ctx, snapshot, "CLAUDE.md", 1<<20)
+	if _, err = os.Lstat(filepath.Join(snapshot.Repository, "CLAUDE.md")); !os.IsNotExist(err) {
+		t.Fatalf("CLAUDE.md present: %v", err)
+	}
+	guidance, err := m.ReadSnapshotBlob(ctx, snapshot, "AGENTS.md", 1<<20)
 	if err != nil || !strings.Contains(string(guidance), "Conveyor") {
-		t.Fatalf("CLAUDE.md len=%d err=%v", len(guidance), err)
+		t.Fatalf("AGENTS.md len=%d err=%v", len(guidance), err)
 	}
 	module, err := m.ReadSnapshotBlob(ctx, snapshot, "go.mod", 1<<20)
 	if err != nil || !strings.Contains(string(module), "module github.com/kidus-tiliksew/conveyor") {
