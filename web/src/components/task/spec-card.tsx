@@ -47,7 +47,9 @@ export function SpecCard({
   const viewportID = useId()
   const expanded = !collapsible || !collapsed
   const overflowExpanded = !overflowExpandable || contentExpanded
-  const collapse = useCollapsibleContent(176, overflowExpanded, overflowExpandable && expanded)
+  // The preview may run up to half its height further to end at a block
+  // boundary instead of fading through the space around a heading.
+  const collapse = useCollapsibleContent(176, overflowExpanded, overflowExpandable && expanded, 88)
   // Agent-authored prose sometimes runs a sentence straight into a heading with
   // a single newline; markdown needs a blank line for the `#` to render as one.
   const prose = useMemo(
@@ -67,8 +69,9 @@ export function SpecCard({
 
   return (
     <Card className="rounded-lg">
-      {/* At phone width the status group moves to its own line whole; neither
-          group breaks inside itself (component-web-dashboard). */}
+      {/* The title group stays whole on one line. The status line follows it
+          when both fit, and otherwise moves to its own line, where it wraps
+          between its parts (component-web-task-surfaces). */}
       <CardHeader className="flex-wrap items-center gap-y-2">
         {collapsible ? (
           <button
@@ -87,21 +90,28 @@ export function SpecCard({
             <SectionCount>v{spec.version}</SectionCount>
           </div>
         )}
-        <div className="flex shrink-0 items-center gap-2">
+        {/* One run of text in one style: the seat count, a separator, the
+            time, then the badge. It breaks only after the separator or before
+            the badge, so a wrapped line starts with the time or the badge and
+            nothing extends past the card's border. */}
+        <div className="min-w-0 text-xs leading-6 text-muted" data-plan-status>
           {plannedSeats !== undefined && (
-            <span className="whitespace-nowrap text-xs text-muted">
-              {`Review: ${plannedSeats} ${plannedSeats === 1 ? 'seat' : 'seats'}`}
-              {minimumSeatCount !== undefined ? ` (minimum ${minimumSeatCount})` : ''}
-            </span>
+            <>
+              <span className="whitespace-nowrap">
+                {`Review: ${plannedSeats} ${plannedSeats === 1 ? 'seat' : 'seats'}`}
+                {minimumSeatCount !== undefined ? ` (minimum ${minimumSeatCount})` : ''}
+              </span>
+              <span aria-hidden="true">{'\u00a0· '}</span>
+            </>
           )}
-          <span className="whitespace-nowrap text-xs text-faint">
+          <span className="whitespace-nowrap">
             {spec.approved && spec.approved_at
               ? `approved ${absoluteTime(spec.approved_at)}`
               : `drafted ${absoluteTime(spec.created_at)}`}
-          </span>
+          </span>{' '}
           {/* The plan version's own state, quiet: the task's state is named once,
               in the header chip and the next action. */}
-          <Badge variant={spec.approved ? 'positive' : 'outline'}>
+          <Badge variant={spec.approved ? 'positive' : 'outline'} className="ml-1 align-middle">
             {spec.approved ? 'Approved' : 'Awaiting approval'}
           </Badge>
         </div>
