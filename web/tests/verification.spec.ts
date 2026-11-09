@@ -92,7 +92,10 @@ const verifyOrder = (id: string, created_at: string, state: 'completed' | 'claim
   execution_started_at: created_at,
 })
 
-async function fixture(page: Page, options: { viewer?: boolean; active?: boolean; review?: boolean } = {}) {
+async function fixture(
+  page: Page,
+  options: { viewer?: boolean; active?: boolean; review?: boolean; drift?: boolean } = {},
+) {
   const counts = new Map<string, number>()
   const observations: Record<string, unknown>[] = []
   let release = () => {}
@@ -301,6 +304,41 @@ async function fixture(page: Page, options: { viewer?: boolean; active?: boolean
       if (path.includes('/verification/')) return route.fulfill({ json: { items: [] } })
       return route.fulfill({ json: [] })
     }
+    if (path.endsWith('/selections') && options.drift)
+      return route.fulfill({
+        json: {
+          items: [
+            metadata('kit', {
+              kit_id: 'fixture-kit',
+              digest: 'd'.repeat(64),
+              eligibility: 'eligible',
+              reasons: JSON.stringify([
+                {
+                  code: 'pin_version_drift',
+                  pin: { kind: 'requirement', document_id: 'req-integrations', version: 14 },
+                  message: 'requirement req-integrations: kit pins v14, authoritative v15',
+                },
+              ]),
+            }),
+            metadata('kit-ahead', {
+              kit_id: 'ahead-kit',
+              digest: 'e'.repeat(64),
+              eligibility: 'ineligible',
+              reasons: JSON.stringify([
+                {
+                  code: 'pin_version_drift',
+                  pin: { kind: 'system_design', document_id: 'component-review', version: 1 },
+                  message: 'system_design component-review: kit pins v1, authoritative v2',
+                },
+                {
+                  code: 'pin_version_mismatch',
+                  pin: { kind: 'requirement', document_id: 'req-integrations', version: 16 },
+                },
+              ]),
+            }),
+          ],
+        },
+      })
     if (path.endsWith('/selections'))
       return route.fulfill({
         json: {
@@ -460,6 +498,36 @@ for (const width of [1366, 390]) {
     expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true)
   })
 }
+
+// component-review invariant 23; DEC-111(1): each drifted kit pin shows next
+// to its kit with the document, the kit's pinned version, and the
+// authoritative version, and a drift-only kit still counts as eligible.
+test('kit selection shows each drifted pin with both versions', async ({ page }) => {
+  await fixture(page, { drift: true })
+  await page.goto('/w/demo/tasks/verification-fixture/full')
+  const entry = entries(page).filter({ hasText: 'Verification passed' })
+  await expect(entry).toBeVisible()
+  const drift = entry.getByRole('list', { name: 'Kit pin drift' })
+  await expect(drift.getByRole('listitem')).toHaveCount(2)
+  await expect(drift.getByRole('listitem').first()).toContainText('fixture-kit')
+  await expect(drift.getByRole('listitem').first()).toContainText(
+    'requirement req-integrations: kit pins v14, authoritative v15',
+  )
+  await expect(drift.getByRole('listitem').last()).toContainText('ahead-kit')
+  await expect(drift.getByRole('listitem').last()).toContainText(
+    'system_design component-review: kit pins v1, authoritative v2',
+  )
+  await expect(entry).toContainText('The drift is a warning and changes no grant.')
+  // The drift-only kit is eligible; the kit with a newer pin is not.
+  await expect(entry).toContainText('1 not eligible for this revision')
+  await entry.locator('summary', { hasText: /^Details$/ }).click()
+  await entry.locator('summary', { hasText: /^Kit selection$/ }).click()
+  const warnings = entry.getByRole('list', { name: 'Pin drift warnings' })
+  await expect(warnings).toHaveCount(2)
+  await expect(warnings.first()).toContainText(
+    'Pin drift · requirement req-integrations: kit pins v14, authoritative v15',
+  )
+})
 
 test('task sheet shows a running verification and viewer has no observation action', async ({ page }) => {
   await fixture(page, { viewer: true, active: true })

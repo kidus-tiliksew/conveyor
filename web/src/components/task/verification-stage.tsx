@@ -5,6 +5,7 @@ import type {
   VerificationCollection,
   VerificationMetadata,
 } from '../../lib/types'
+import { pinDriftWarnings } from '../../lib/verification-drift'
 import { useWorkspaceSelection } from '../app-shell'
 import { Button } from '../ui/button'
 import { useTaskAudit, useVerificationPages } from './use-task-detail'
@@ -100,6 +101,7 @@ function MetadataList({
               <span className="font-normal text-muted"> · required</span>
             )}
           </p>
+          {kind === 'selections' && <PinDriftList reasons={item.metadata.reasons} />}
           <dl className="mt-1 grid grid-cols-[auto_1fr] gap-x-3 gap-y-0.5">
             {Object.entries(item.metadata)
               .filter(([key, value]) => value && value !== '[]' && !hiddenFields.has(key))
@@ -126,6 +128,23 @@ function MetadataList({
           {kind === 'attempts' && ['running', 'pending'].includes(item.state) && (
             <VerificationObservationForm taskId={taskId} contextId={contextId} runId={item.id} />
           )}
+        </li>
+      ))}
+    </ul>
+  )
+}
+
+// Each drifted pin of one kit's selection receipt: document, the kit's pinned
+// version, and the authoritative version (component-review invariant 23).
+function PinDriftList({ reasons }: { reasons?: string }) {
+  const drifts = pinDriftWarnings(reasons)
+  if (drifts.length === 0) return null
+  return (
+    <ul className="mt-1 space-y-0.5" aria-label="Pin drift warnings">
+      {drifts.map((drift, index) => (
+        <li key={`${drift.kind}:${drift.documentId}:${index}`} className="break-words">
+          <span className="text-muted">Pin drift · </span>
+          {drift.text}
         </li>
       ))}
     </ul>
