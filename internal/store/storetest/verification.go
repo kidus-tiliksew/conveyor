@@ -47,6 +47,14 @@ func newVerificationFixtureIn(t *testing.T, x Fixture, scope []core.Verification
 // adjusts the task before it is created, such as its bounce limit.
 func newVerificationFixtureTask(t *testing.T, x Fixture, scope []core.VerificationRevision, setup func(*core.Task), empty ...bool) verificationFixture {
 	t.Helper()
+	return newVerificationFixtureServing(t, x, scope, setup, 1, empty...)
+}
+
+// newVerificationFixtureServing is newVerificationFixtureTask with the served
+// version of the fixture requirement, which becomes the context's only
+// authoritative pin.
+func newVerificationFixtureServing(t *testing.T, x Fixture, scope []core.VerificationRevision, setup func(*core.Task), served int, empty ...bool) verificationFixture {
+	t.Helper()
 	revisions := append([]core.VerificationRevision{}, scope...)
 	sort.SliceStable(revisions, func(i, j int) bool { return revisions[i].Repository < revisions[j].Repository })
 	id := core.NewTaskID()
@@ -61,10 +69,10 @@ func newVerificationFixtureTask(t *testing.T, x Fixture, scope []core.Verificati
 	_, err := CreateStageWorkOrder(x.Context, x.Backend, job, o)
 	requireOK(t, err)
 	claim := core.WorkOrderClaim{ClaimantID: core.TaskRunClaimantID("worker"), SessionID: "verification", ClientToken: "verification-fixture-token", Lease: time.Hour, ExecutionTimeout: time.Hour}
-	claim.Requirements = []core.ServedRequirementContext{{ID: "req-fixture", Version: 1, Statements: []core.RequirementStatement{{ID: "REQ-1", Statement: "Observe the state", AcceptanceCriteria: []core.AcceptanceCriterion{{ID: "AC-1.1", Statement: "Retain the observation"}}}}}}
+	claim.Requirements = []core.ServedRequirementContext{{ID: "req-fixture", Version: served, Statements: []core.RequirementStatement{{ID: "REQ-1", Statement: "Observe the state", AcceptanceCriteria: []core.AcceptanceCriterion{{ID: "AC-1.1", Statement: "Retain the observation"}}}}}}
 	o, err = ClaimWorkOrder(x.Context, x.Backend, o.ID, claim)
 	requireOK(t, err)
-	v := verificationFixture{x: x, ctx: store.WithActor(x.Context, store.Actor{ID: store.UserActorID("worker"), Role: core.ActorUser}), access: store.VerificationAccess{TaskID: o.TaskID, WorkOrderID: o.ID, WorkOrderAttemptID: o.AttemptID, ClientToken: claim.ClientToken, Claim: core.WorkOrderClaimIdentity{ClaimantID: claim.ClaimantID, SessionID: claim.SessionID}}, revisions: append([]core.VerificationRevision{}, revisions...), pins: []core.VerificationPin{{Kind: "requirement", DocumentID: "req-fixture", Version: 1}}}
+	v := verificationFixture{x: x, ctx: store.WithActor(x.Context, store.Actor{ID: store.UserActorID("worker"), Role: core.ActorUser}), access: store.VerificationAccess{TaskID: o.TaskID, WorkOrderID: o.ID, WorkOrderAttemptID: o.AttemptID, ClientToken: claim.ClientToken, Claim: core.WorkOrderClaimIdentity{ClaimantID: claim.ClaimantID, SessionID: claim.SessionID}}, revisions: append([]core.VerificationRevision{}, revisions...), pins: []core.VerificationPin{{Kind: "requirement", DocumentID: "req-fixture", Version: served}}}
 	discovery := []json.RawMessage{}
 	for _, r := range revisions {
 		discovery = append(discovery, core.JSONPayload(map[string]any{"repository": r.Repository, "revision": r.SHA, "state": "no_manifest"}))
@@ -77,7 +85,7 @@ func newVerificationFixtureTask(t *testing.T, x Fixture, scope []core.Verificati
 		t.Fatal("context replay changed identity")
 	}
 
-	selection := store.VerificationSelection{Receipt: verification.SelectionReceipt{SchemaVersion: 1, ManifestRevision: task.ReviewedHeadSHA, SourceRevision: task.ReviewedHeadSHA, ContextPins: []verification.Pin{{Kind: "requirement", DocumentID: "req-fixture", Version: 1}}, Stage: "verify", Kits: []verification.KitReceipt{}, Diagnostics: []verification.Diagnostic{}}, Subjects: []store.VerificationSubjectContract{}}
+	selection := store.VerificationSelection{Receipt: verification.SelectionReceipt{SchemaVersion: 1, ManifestRevision: task.ReviewedHeadSHA, SourceRevision: task.ReviewedHeadSHA, ContextPins: []verification.Pin{{Kind: "requirement", DocumentID: "req-fixture", Version: served}}, Stage: "verify", Kits: []verification.KitReceipt{}, Diagnostics: []verification.Diagnostic{}}, Subjects: []store.VerificationSubjectContract{}}
 	selected := v.apply(t, store.VerificationCommand{Kind: store.VerificationRecordSelection, Selection: &selection})
 	replayed := v.apply(t, store.VerificationCommand{Kind: store.VerificationRecordSelection, Selection: &selection})
 	if selected.ID != replayed.ID {

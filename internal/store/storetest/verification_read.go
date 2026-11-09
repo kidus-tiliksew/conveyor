@@ -310,4 +310,52 @@ func RunVerificationRead(t *testing.T, x Fixture) {
 			t.Fatalf("kit assertion required flag lost: %+v", metadata)
 		}
 	})
+	// component-verification-kit-contract invariant 12 and DEC-111(1): the
+	// selections read carries a kit's pin_version_drift warning, with both
+	// versions, under the reasons bound and truncated rule on every backend.
+	t.Run("KitSelectionDriftWarning", func(t *testing.T) {
+		// The work order serves req-fixture v2, the context's only
+		// authoritative pin.
+		v := newVerificationFixtureServing(t, x, []core.VerificationRevision{{Repository: "conveyor", RemoteIdentity: "https://example.test/conveyor", SHA: strings.Repeat("a", 40)}}, nil, 2, true)
+		v.contextID = v.apply(t, store.VerificationCommand{Kind: store.VerificationCreateContext, Key: "kit-drift", Context: &store.VerificationContext{Revisions: v.revisions, GoverningPins: v.pins, Discovery: []json.RawMessage{core.JSONPayload(map[string]any{"repository": "conveyor", "revision": v.revisions[0].SHA, "state": "manifest"})}}}).ID
+		older := verification.Pin{Kind: verification.PinRequirement, DocumentID: "req-fixture", Version: 1}
+		newer := verification.Pin{Kind: verification.PinRequirement, DocumentID: "req-fixture", Version: 3}
+		drift := verification.SelectionReason{Code: verification.ReasonPinVersionDrift, Pin: &older, Message: "requirement req-fixture: kit pins v1, authoritative v2"}
+		selection := store.VerificationSelection{Receipt: verification.SelectionReceipt{SchemaVersion: 1, Stage: "verify", ContextPins: []verification.Pin{{Kind: verification.PinRequirement, DocumentID: "req-fixture", Version: 2}}, Kits: []verification.KitReceipt{
+			{KitID: "kit-drifted", Digest: strings.Repeat("d", 64), Pins: []verification.Pin{older}, StageMatch: true, Eligibility: "eligible", Reasons: []verification.SelectionReason{drift}},
+			{KitID: "kit-ahead", Digest: strings.Repeat("e", 64), Pins: []verification.Pin{newer}, StageMatch: true, Eligibility: "ineligible", Reasons: []verification.SelectionReason{{Code: verification.ReasonPinVersionMismatch, Pin: &newer}}},
+			{KitID: "kit-long", Digest: strings.Repeat("f", 64), Pins: []verification.Pin{older}, StageMatch: true, Eligibility: "eligible", Reasons: []verification.SelectionReason{{Code: verification.ReasonPinVersionDrift, Pin: &older, Message: strings.Repeat("drift ", 512)}}},
+		}}}
+		v.apply(t, store.VerificationCommand{Kind: store.VerificationRecordSelection, Selection: &selection})
+		a := store.VerificationAccess{TaskID: v.access.TaskID, UserID: owner.ID}
+		page, err := r.ReadVerificationPage(ctx, a, store.VerificationPageRequest{Kind: "selections", ContextID: v.contextID})
+		requireOK(t, err)
+		if len(page.Items) != 3 {
+			t.Fatalf("drift selection page: %+v", page)
+		}
+		byKit := map[string]map[string]string{}
+		for _, item := range page.Items {
+			var metadata map[string]string
+			requireOK(t, json.Unmarshal(item.Metadata, &metadata))
+			byKit[metadata["kit_id"]] = metadata
+		}
+		for kit, want := range map[string]struct {
+			eligibility string
+			reasons     []verification.SelectionReason
+		}{
+			"kit-drifted": {"eligible", []verification.SelectionReason{drift}},
+			"kit-ahead":   {"ineligible", []verification.SelectionReason{{Code: verification.ReasonPinVersionMismatch, Pin: &newer}}},
+		} {
+			metadata := byKit[kit]
+			var reasons []verification.SelectionReason
+			requireOK(t, json.Unmarshal([]byte(metadata["reasons"]), &reasons))
+			if metadata["eligibility"] != want.eligibility || metadata["truncated"] != "false" || !reflect.DeepEqual(reasons, want.reasons) {
+				t.Fatalf("%s drift metadata: %+v", kit, metadata)
+			}
+		}
+		long := byKit["kit-long"]
+		if long["eligibility"] != "eligible" || long["truncated"] != "true" || len([]rune(long["reasons"])) > 2048 || !strings.Contains(long["reasons"], verification.ReasonPinVersionDrift) {
+			t.Fatalf("long drift metadata: %+v", long)
+		}
+	})
 }
