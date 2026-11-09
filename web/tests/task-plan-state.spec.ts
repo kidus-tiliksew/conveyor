@@ -527,7 +527,7 @@ test('a 409 shows the server message in place, refetches detail, and is never re
   await expect(planSection(page).locator('[data-plan-state-label]')).toHaveText('Planning needed')
   const readsBefore = server.detailReads('act-409')
   // The refetch serves the moved task, whose acts the server no longer admits.
-  server.setDetail(detail('act-409', 'needed', { acts: { set_needed: false, set_not_required: true, attach: false } }))
+  server.setDetail(detail('act-409', 'needed', { acts: noActs }))
   await page.getByRole('button', { name: 'Attach plan' }).click()
   const dialog = page.getByRole('dialog', { name: 'Attach plan' })
   await dialog.getByLabel('Plan (Markdown)').fill('## Approach\n\nA plan.')
@@ -535,8 +535,14 @@ test('a 409 shows the server message in place, refetches detail, and is never re
   await dialog.getByRole('button', { name: 'Attach plan' }).click()
   await expect(dialog.getByRole('alert')).toHaveText('an implementation order of task act-409 is claimed')
   await expect.poll(() => server.detailReads('act-409')).toBeGreaterThan(readsBefore)
-  // The page's own offer follows the refetched plan_acts.
+  // The page's own offer follows the refetched plan_acts, while the open
+  // dialog keeps the refusal in place.
   await expect(planSection(page).getByRole('button', { name: 'Attach plan' })).toHaveCount(0)
+  await expect(planSection(page).getByRole('button', { name: 'Change plan state' })).toHaveCount(0)
+  await expect(dialog.getByRole('alert')).toHaveText('an implementation order of task act-409 is claimed')
+  // The withdrawn act cannot be submitted again from the open dialog.
+  await expect(dialog.getByRole('button', { name: 'Attach plan' })).toBeDisabled()
+  await expect(dialog.getByText('The server no longer accepts an attached plan for this task.')).toBeVisible()
   await page.waitForTimeout(500)
   expect(server.posts()).toHaveLength(1)
 })
@@ -642,4 +648,24 @@ test('a planning request from a task that needs no plan shows its decision card'
   await expect(card.getByRole('button', { name: 'Approve planning' })).toBeVisible()
   const timeline = page.getByRole('region', { name: 'Execution event timeline' })
   await expect(timeline.getByText('The agent asked for a plan before implementing')).toBeVisible()
+})
+
+test('Escape in a plan dialog over the Board sheet closes only the dialog', async ({ page }) => {
+  await mockServer(page, {
+    cards: [card('sheet-escape', 'needed')],
+    details: [detail('sheet-escape', 'needed', { acts: { set_needed: false, set_not_required: true, attach: true } })],
+  })
+  await page.goto('/w/demo/tasks/sheet-escape')
+  const sheet = page.getByRole('dialog', { name: /Task/ }).first()
+  await expect(planSection(page).locator('[data-plan-state-label]')).toHaveText('Planning needed')
+  await planSection(page).getByRole('button', { name: 'Attach plan' }).click()
+  const dialog = page.getByRole('dialog', { name: 'Attach plan' })
+  await expect(dialog).toBeVisible()
+  await page.keyboard.press('Escape')
+  await expect(dialog).toHaveCount(0)
+  await expect(sheet).toBeVisible()
+  await expect(planSection(page)).toBeVisible()
+  // With no dialog open, Escape closes the sheet as before.
+  await page.keyboard.press('Escape')
+  await expect(planSection(page)).toHaveCount(0)
 })

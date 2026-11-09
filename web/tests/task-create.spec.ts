@@ -625,6 +625,21 @@ test('the plan state select reads Workspace default until the workspace read sta
   expect(submittedTask(submitted())).toMatchObject({ plan_state: 'not_required' })
 })
 
+test('Workspace default stays a choice while the default is unknown and sends no plan_state', async ({ page }) => {
+  const { submitted } = await mockTaskCreateAPIs(page, { defaultPlanState: null })
+  await page.goto('/w/demo/new')
+  const sheet = page.getByRole('dialog', { name: 'New task' })
+  const select = sheet.getByRole('combobox', { name: 'Plan state' })
+  await select.selectOption('needed')
+  await expect(select.locator('option')).toHaveText(['Workspace default', 'Planning needed', 'No plan required'])
+  await select.selectOption('')
+  await expect(select.locator('option:checked')).toHaveText('Workspace default')
+  await descriptionEditor(page).fill('Back to the default')
+  await sheet.getByRole('button', { name: 'Create task' }).click()
+  await expect.poll(submitted).toContain('Back to the default')
+  expect(submittedTask(submitted())).not.toHaveProperty('plan_state')
+})
+
 test('a plan disables the plan state select and is sent without plan_state', async ({ page }) => {
   const { submitted } = await mockTaskCreateAPIs(page, { defaultPlanState: 'needed' })
   await page.goto('/w/demo/new')

@@ -30,11 +30,15 @@ const fullCommitID = /^[0-9a-f]{40}$/
 export function TaskPlanActs({ item }: { item: ActivityItem }) {
   const canOperate = useWorkspaceCapability('operate_gates')
   const [open, setOpen] = useState<'state' | 'attach' | null>(null)
+  const close = () => setOpen(null)
   const acts = item.plan_acts
   if (!canOperate || !acts) return null
   const targets = planStateTargets.filter((entry) => acts[entry.flag] === true).map((entry) => entry.target)
   const canAttach = acts.attach === true
-  if (targets.length === 0 && !canAttach) return null
+  // An open dialog stays mounted when a refetch withdraws its act, so a 409's
+  // message stays in place (invariant 64). The dialog follows the current
+  // plan_acts and cannot submit an act or target the server withdrew.
+  if (targets.length === 0 && !canAttach && open === null) return null
   return (
     <div className="flex flex-wrap items-center gap-1.5" data-plan-acts>
       {targets.length > 0 && (
@@ -47,8 +51,8 @@ export function TaskPlanActs({ item }: { item: ActivityItem }) {
           Attach plan
         </Button>
       )}
-      {open === 'state' && <ChangePlanStateDialog item={item} targets={targets} onClose={() => setOpen(null)} />}
-      {open === 'attach' && <AttachPlanDialog item={item} onClose={() => setOpen(null)} />}
+      {open === 'state' && <ChangePlanStateDialog item={item} targets={targets} onClose={close} />}
+      {open === 'attach' && <AttachPlanDialog item={item} admitted={canAttach} onClose={close} />}
     </div>
   )
 }
@@ -86,15 +90,17 @@ function usePlanActMutation<T>(
   return useMutation({
     mutationFn: ({ workspace, input }: { workspace: string; input: T }) => act(workspace, input),
     retry: (count, error) => error instanceof TypeError && count < 1,
-    onSuccess: (_result, variables) => {
+    // The act stays pending until refreshed detail lands, so the section
+    // never offers the acts of the state the act just left.
+    onSuccess: async (_result, variables) => {
       for (const queryKey of [
-        taskDetailQueryKey(variables.workspace, taskId),
         ['activity', variables.workspace],
         nextActionQueryKey(variables.workspace, taskId),
         nextActionsQueryKey(variables.workspace),
       ]) {
         void queryClient.invalidateQueries({ queryKey })
       }
+      await queryClient.invalidateQueries({ queryKey: taskDetailQueryKey(variables.workspace, taskId) })
       onDone()
     },
     onError: (error, variables) => {
@@ -116,7 +122,10 @@ function ChangePlanStateDialog({
 }) {
   const id = useId()
   const { workspace } = useWorkspaceSelection()
-  const [target, setTarget] = useState<PlanStateTarget | ''>(targets.length === 1 ? targets[0] : '')
+  const [chosen, setChosen] = useState<PlanStateTarget | ''>(targets.length === 1 ? targets[0] : '')
+  // A target the server withdrew while the dialog was open is no longer a
+  // choice, and nothing replaces it without the operator's pick.
+  const target = chosen && targets.includes(chosen) ? chosen : ''
   const [reason, setReason] = useState('')
   const requestIdFor = useActRequestId()
   const mutation = usePlanActMutation(
@@ -155,12 +164,15 @@ function ChangePlanStateDialog({
                 name={`${id}-target`}
                 value={entry}
                 checked={target === entry}
-                onChange={() => setTarget(entry)}
+                onChange={() => setChosen(entry)}
               />
               {planStateLabels[entry]}
             </label>
           ))}
         </fieldset>
+        {targets.length === 0 && (
+          <p className="text-sm text-muted">The server no longer accepts a plan-state change for this task.</p>
+        )}
         <div>
           <label htmlFor={`${id}-reason`} className="text-sm font-medium">
             Reason (required)
@@ -191,7 +203,7 @@ function ChangePlanStateDialog({
   )
 }
 
-function AttachPlanDialog({ item, onClose }: { item: ActivityItem; onClose: () => void }) {
+function AttachPlanDialog({ item, admitted, onClose }: { item: ActivityItem; admitted: boolean; onClose: () => void }) {
   const id = useId()
   const { workspace } = useWorkspaceSelection()
   const [plan, setPlan] = useState('')
@@ -208,7 +220,7 @@ function AttachPlanDialog({ item, onClose }: { item: ActivityItem; onClose: () =
     commit && !fullCommitID.test(commit)
       ? 'Base commit must be a full commit ID of 40 lowercase hexadecimal characters.'
       : ''
-  const disabled = mutation.isPending || !plan.trim() || !reason.trim() || commitError !== ''
+  const disabled = mutation.isPending || !admitted || !plan.trim() || !reason.trim() || commitError !== ''
   return (
     <Dialog
       label="Attach plan"
@@ -272,6 +284,9 @@ function AttachPlanDialog({ item, onClose }: { item: ActivityItem; onClose: () =
             className="min-h-16 text-sm"
           />
         </div>
+        {!admitted && (
+          <p className="text-sm text-muted">The server no longer accepts an attached plan for this task.</p>
+        )}
         {mutation.isError && (
           <p role="alert" className="text-sm text-failure">
             {errorMessage(mutation.error)}

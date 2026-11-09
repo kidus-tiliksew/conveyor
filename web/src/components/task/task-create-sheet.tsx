@@ -334,9 +334,11 @@ export function TaskCreateSheet() {
                 aria-label="Plan state"
                 value={shownPlanState}
                 disabled={hasPlan}
-                onChange={(event) => setChosenPlanState(event.target.value as IntakePlanState)}
+                onChange={(event) => setChosenPlanState(event.target.value as IntakePlanState | '')}
               >
-                {!shownPlanState && <option value="">Workspace default</option>}
+                {/* Until the read states the default, choosing it again sends
+                    no plan_state. */}
+                {!defaultPlanState && <option value="">Workspace default</option>}
                 {intakePlanStates.map((state) => (
                   <option key={state} value={state}>
                     {planStateLabels[state]}
