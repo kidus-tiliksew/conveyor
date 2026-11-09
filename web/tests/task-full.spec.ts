@@ -9102,6 +9102,173 @@ test('planned review seats appear on the displayed plan version', async ({ page 
   await expect(page.getByText(/^Review: \d+ seat/)).toHaveCount(0)
 })
 
+// ---- Plan card header and Properties at phone width (task 261109-7b7c2b) ----
+
+// An approved plan with one planned seat and a seat minimum of one, with a
+// short Approach above a list whose first entry wraps at phone width.
+function phonePlanItem(taskId: string) {
+  const item = seatPanelItem(taskId, {
+    orders: [],
+    spec: { review_seats: 1, approved: true },
+    summaries: {
+      review_round_seats: { by_round: {}, by_order: {} },
+      review_seat_policy: { minimum_seat_count: 1, planned_seat_count: 1 },
+    },
+  })
+  item.spec = {
+    ...item.spec!,
+    approved_at: '2026-10-30T11:26:00Z',
+    content: [
+      '## Approach',
+      'Reuse the existing collapsible hook and keep the card composition.',
+      '',
+      '## Files touched',
+      '- `web/src/components/task/spec-card.tsx` — header status group',
+      '- `web/src/components/task/task-header.tsx` — Task ID fact',
+      '- `web/tests/task-full.spec.ts`',
+      '',
+      '## Ordering',
+      '1. Adjust the header.',
+      '2. Add the fact.',
+      '3. Extend the tests.',
+      '',
+      '## Risks',
+      '- The fade can cover the last visible line.',
+      '',
+      '## Done criteria',
+      '- The header stays inside the card at 375 px.',
+      '- Properties lists the Task ID first.',
+    ].join('\n'),
+  }
+  return item
+}
+
+const planCard = (page: Page) =>
+  page.getByRole('heading', { name: 'Execution plan' }).locator('xpath=ancestor::div[contains(@class,"rounded-lg")][1]')
+
+// The sheet slides in; boxes are read only once it rests.
+async function openTaskDetail(page: Page, path: string) {
+  await page.goto(path)
+  if (!path.endsWith('/full')) await waitForSheetSettled(page.getByRole('dialog', { name: 'Task detail' }))
+}
+
+async function expectNoHorizontalScroll(page: Page) {
+  expect(await page.evaluate(() => document.documentElement.scrollWidth - window.innerWidth)).toBeLessThanOrEqual(0)
+}
+
+function expectInside(inner: { x: number; y: number; width: number; height: number } | null, outer: typeof inner) {
+  expect(inner).not.toBeNull()
+  expect(outer).not.toBeNull()
+  expect(inner!.x).toBeGreaterThanOrEqual(outer!.x)
+  expect(inner!.x + inner!.width).toBeLessThanOrEqual(outer!.x + outer!.width)
+}
+
+test('plan card header stays inside the card at phone width on the sheet and the full route', async ({ page }) => {
+  const taskId = 'phone-plan'
+  await page.route(`**/v1/tasks/${taskId}/activity*`, (route) => route.fulfill({ json: phonePlanItem(taskId) }))
+  await page.setViewportSize({ width: 375, height: 812 })
+  for (const path of [`/w/demo/tasks/${taskId}`, `/w/demo/tasks/${taskId}/full`]) {
+    await openTaskDetail(page, path)
+    const card = planCard(page)
+    const status = card.locator('[data-plan-status]')
+    const seats = status.getByText('Review: 1 seat (minimum 1)', { exact: true })
+    const time = status.getByText(/^approved /)
+    const badge = status.getByText('Approved', { exact: true })
+    await expect(badge).toBeVisible()
+    // A visible separator divides the seat count from the time, and both read
+    // in one text style.
+    await expect(status).toContainText('Review: 1 seat (minimum 1) · approved')
+    expect(await seats.evaluate((element) => getComputedStyle(element).color)).toBe(
+      await time.evaluate((element) => getComputedStyle(element).color),
+    )
+    const cardBox = await card.boundingBox()
+    for (const part of [seats, time, badge]) expectInside(await part.boundingBox(), cardBox)
+    await expectNoHorizontalScroll(page)
+  }
+
+  // At desktop width the status line keeps to the title's line.
+  await page.setViewportSize({ width: 1440, height: 900 })
+  await page.goto(`/w/demo/tasks/${taskId}/full`)
+  const title = await planCard(page).getByRole('heading', { name: 'Execution plan' }).boundingBox()
+  const badge = await planCard(page).locator('[data-plan-status]').getByText('Approved', { exact: true }).boundingBox()
+  expect(Math.abs(title!.y + title!.height / 2 - (badge!.y + badge!.height / 2))).toBeLessThan(4)
+})
+
+test('collapsed plan ends at a block boundary at phone width', async ({ page }) => {
+  const taskId = 'phone-plan-preview'
+  await page.route(`**/v1/tasks/${taskId}/activity*`, (route) => route.fulfill({ json: phonePlanItem(taskId) }))
+  await page.setViewportSize({ width: 375, height: 812 })
+  for (const path of [`/w/demo/tasks/${taskId}`, `/w/demo/tasks/${taskId}/full`]) {
+    await openTaskDetail(page, path)
+    const toggle = planCard(page).getByRole('button', { name: 'Show full plan' })
+    await expect(toggle).toHaveAttribute('aria-expanded', 'false')
+    const viewport = page.locator(`#${await toggle.getAttribute('aria-controls')}`)
+    // The preview runs past the wrapped first list entry to its end instead of
+    // fading out in the space around the "Files touched" heading.
+    const entry = viewport.getByRole('listitem').filter({ hasText: 'header status group' })
+    await expect
+      .poll(async () => {
+        const [view, item] = await Promise.all([viewport.boundingBox(), entry.boundingBox()])
+        return item!.y + item!.height <= view!.y + view!.height
+      })
+      .toBe(true)
+    const next = await viewport.getByRole('listitem').filter({ hasText: 'Task ID fact' }).boundingBox()
+    const view = await viewport.boundingBox()
+    // The preview's height rounds up to a whole pixel.
+    expect(next!.y).toBeGreaterThanOrEqual(view!.y + view!.height - 1)
+    // A clean end fades only the trailing margin.
+    const shadow = planCard(page).locator('[data-spec-overflow-shadow]')
+    await expect(shadow).toBeVisible()
+    expect((await shadow.boundingBox())!.height).toBeLessThanOrEqual(8)
+
+    await toggle.click()
+    await expect(planCard(page).getByRole('button', { name: 'Show less' })).toHaveAttribute('aria-expanded', 'true')
+    await expect(shadow).toHaveCount(0)
+  }
+})
+
+test('Properties lists a copyable Task ID first on the sheet and the full route', async ({ page }) => {
+  await page.addInitScript(() => {
+    const copied: string[] = []
+    Object.assign(window, { copiedText: copied })
+    Object.defineProperty(navigator, 'clipboard', {
+      configurable: true,
+      value: { writeText: async (text: string) => void copied.push(text) },
+    })
+  })
+  const taskId = 'phone-plan-properties'
+  await page.route(`**/v1/tasks/${taskId}/activity*`, (route) => route.fulfill({ json: phonePlanItem(taskId) }))
+  for (const path of [`/w/demo/tasks/${taskId}`, `/w/demo/tasks/${taskId}/full`]) {
+    await openTaskDetail(page, path)
+    const facts = page.locator('dl').filter({ has: page.getByText('Repository', { exact: true }) })
+    await expect(facts.locator('dt').first()).toHaveText('Task ID')
+    await expect(facts.locator('dd').first()).toHaveText(taskId)
+    await expect(facts.locator('[data-task-id-value]')).toHaveCSS('font-family', /mono/i)
+    await facts.getByRole('button', { name: 'Copy task ID' }).click()
+    await expect(facts.getByRole('button', { name: 'Copied' })).toBeVisible()
+    expect(await page.evaluate(() => (window as unknown as { copiedText: string[] }).copiedText.at(-1))).toBe(taskId)
+  }
+
+  // A long ID truncates inside its column at phone width; the copy control
+  // stays on screen and still copies the whole ID.
+  const longId = `phone-plan-${'long-identifier-'.repeat(6)}end`
+  await page.route(`**/v1/tasks/${longId}/activity*`, (route) => route.fulfill({ json: phonePlanItem(longId) }))
+  await page.setViewportSize({ width: 375, height: 812 })
+  for (const path of [`/w/demo/tasks/${longId}`, `/w/demo/tasks/${longId}/full`]) {
+    await openTaskDetail(page, path)
+    const facts = page.locator('dl').filter({ has: page.getByText('Repository', { exact: true }) })
+    const value = facts.locator('[data-task-id-value]')
+    await expect(value).toHaveText(longId)
+    expect(await value.evaluate((element) => element.scrollWidth > element.clientWidth)).toBe(true)
+    const copy = facts.getByRole('button', { name: 'Copy task ID' })
+    const box = await copy.boundingBox()
+    expect(box!.x + box!.width).toBeLessThanOrEqual(375)
+    await expectNoHorizontalScroll(page)
+    await copy.click()
+    expect(await page.evaluate(() => (window as unknown as { copiedText: string[] }).copiedText.at(-1))).toBe(longId)
+  }
+})
+
 test('review seat addition is visible only for the current unsettled round and operate_gates', async ({ page }) => {
   const addButton = page.getByRole('button', { name: 'Add reviewer seat' })
   await page.route('**/v1/tasks/seat-open/activity*', (route) => route.fulfill({ json: openRoundItem('seat-open') }))
