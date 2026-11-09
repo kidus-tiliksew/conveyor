@@ -35,7 +35,7 @@ func (p TaskPolicyChange) Validate() error {
 		if *p.PlanState != core.PlanNeeded && *p.PlanState != core.PlanNotRequired {
 			return fmt.Errorf("plan_state must be %s or %s", core.PlanNeeded, core.PlanNotRequired)
 		}
-		if p.VerifyStage != nil || len(p.StageTimeouts) != 0 || p.ReviewDistinctModels != nil {
+		if p.VerifyStage != nil || p.StageTimeouts != nil || p.ReviewDistinctModels != nil {
 			return fmt.Errorf("plan_state must be the only policy field in its change")
 		}
 		return nil

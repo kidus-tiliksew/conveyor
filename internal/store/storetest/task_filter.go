@@ -522,6 +522,7 @@ func RunTaskFilterPlanStateConformance(t *testing.T, fixture TaskFilterFixture) 
 		{"one plan state", store.TaskFilter{Query: "quill", PlanStates: []core.PlanState{core.PlanNeeded}}, []string{"quill-needed-running", "quill-needed"}},
 		{"each plan state", store.TaskFilter{Query: "quill", PlanStates: []core.PlanState{core.PlanAwaitingApproval}}, []string{"quill-awaiting"}},
 		{"several plan states", store.TaskFilter{Query: "quill", PlanStates: []core.PlanState{core.PlanNotRequired, core.PlanCompleted}}, []string{"quill-completed", "quill-not-required"}},
+		{"plan state alone", store.TaskFilter{PlanStates: []core.PlanState{core.PlanAwaitingApproval}}, []string{"quill-awaiting"}},
 		{"plan state intersects state", store.TaskFilter{Query: "quill", PlanStates: []core.PlanState{core.PlanNeeded}, States: []core.TaskState{core.TaskRunning}}, []string{"quill-needed-running"}},
 	} {
 		t.Run(testCase.name, func(t *testing.T) {

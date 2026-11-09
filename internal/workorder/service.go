@@ -1451,6 +1451,25 @@ func (s *Service) submitStageDocument(ctx context.Context, id, session string, a
 	if err != nil {
 		return nil, err
 	}
+	// The claim check, the plan version, the gate, and the order's completion
+	// run under the task side-effect lock that the operator plan acts take,
+	// so an attach or plan_state change that cancels this order cannot
+	// interleave with a submission that already passed its claim check
+	// (component-plan-state invariants 4 and 5).
+	var result map[string]any
+	err = s.Store.WithTaskSideEffectLock(ctx, order.TaskID, func(locked context.Context) error {
+		var submitErr error
+		result, submitErr = s.submitStageDocumentLocked(locked, id, session, apply)
+		return submitErr
+	})
+	return result, err
+}
+
+func (s *Service) submitStageDocumentLocked(ctx context.Context, id, session string, apply func(core.Task, core.Job, core.WorkOrder) (core.SpecVersion, error)) (map[string]any, error) {
+	order, err := s.authorized(ctx, id, session)
+	if err != nil {
+		return nil, err
+	}
 	if order.Stage != core.StageSpec {
 		return nil, fmt.Errorf("work order %s is not spec", id)
 	}

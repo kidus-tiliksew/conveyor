@@ -87,6 +87,7 @@ func TestPolicyPlanStateBodyRules(t *testing.T) {
 		{"plan-policy", `{"plan_state":"not_required","review_distinct_models":true,"reason":"x","request_id":"ps-5"}`, http.StatusBadRequest},
 		{"plan-policy", `{"plan_state":"not_required","stage_timeouts":{"verify":"1h"},"reason":"x","request_id":"ps-6"}`, http.StatusBadRequest},
 		{"plan-policy", `{"plan_state":"not_required","reason":" ","request_id":"ps-7"}`, http.StatusBadRequest},
+		{"plan-policy", `{"plan_state":"not_required","stage_timeouts":{},"reason":"x","request_id":"ps-7b"}`, http.StatusBadRequest},
 		{"plan-policy", `{"plan_state":7,"reason":"x","request_id":"ps-8"}`, http.StatusBadRequest},
 		{"plan-policy", `{"plan_state":"needed","reason":"x","request_id":"ps-9"}`, http.StatusConflict},
 		{"plan-claimed", `{"plan_state":"needed","reason":"x","request_id":"ps-10"}`, http.StatusConflict},
@@ -266,5 +267,27 @@ func TestPlanStatusAfterPlanRerouteIsNotPending(t *testing.T) {
 	}
 	if status := taskPlanStatusFor(core.Task{State: core.TaskQueued, NextStage: core.StageImplement}, core.SpecVersion{Version: 1}, true, events); status.State != taskPlanRedirected {
 		t.Fatalf("rerouted plan status = %+v", status)
+	}
+}
+
+// TestPlanStatusFollowsThePlanState reads an unapproved latest version as
+// pending at the plan approval gate, and elsewhere only while the plan state
+// is awaiting_approval (component-plan-state invariants 4, 5, and 7).
+func TestPlanStatusFollowsThePlanState(t *testing.T) {
+	gateSpec := []core.Event{{Kind: "task.state_changed", Payload: core.JSONPayload(map[string]any{"command": core.TaskGateSpec})}}
+	for _, tc := range []struct {
+		name string
+		task core.Task
+		want string
+	}{
+		{"at the plan gate", core.Task{State: core.TaskAwaiting, GateKind: core.GateKindPlanApproval, PlanState: core.PlanAwaitingApproval}, taskPlanPendingGate},
+		{"attached before triage", core.Task{State: core.TaskRunning, NextStage: core.StageTriage, PlanState: core.PlanAwaitingApproval}, taskPlanPendingGate},
+		{"rerouted then job failure", core.Task{State: core.TaskAwaiting, GateKind: core.GateKindJobFailure, PlanState: core.PlanNotRequired}, taskPlanRedirected},
+		{"attached then not_required", core.Task{State: core.TaskQueued, NextStage: core.StageImplement, PlanState: core.PlanNotRequired}, taskPlanRedirected},
+		{"returned to planning", core.Task{State: core.TaskQueued, NextStage: core.StageSpec, PlanState: core.PlanNeeded}, taskPlanRedirected},
+	} {
+		if status := taskPlanStatusFor(tc.task, core.SpecVersion{Version: 1}, true, gateSpec); status.State != tc.want {
+			t.Fatalf("%s: status = %+v, want %s", tc.name, status, tc.want)
+		}
 	}
 }

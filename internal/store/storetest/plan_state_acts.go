@@ -307,11 +307,18 @@ func runPlanStateActs(t *testing.T, x Fixture) {
 		awaiting := gated(t)
 		for name, task := range map[string]core.Task{"claimed implement order": claimedImplement, "completed": completed, "review next": review, "awaiting approval": awaiting} {
 			before, beforeEvents, beforeOrders := snapshot(t, task.ID)
-			_, err := attach(task.ID, core.NewTaskID(), planStateActsPlan, "")
+			beforeVersion, beforeOK, err := st.GetLatestSpecVersion(ctx, task.ID)
+			requireOK(t, err)
+			_, err = attach(task.ID, core.NewTaskID(), planStateActsPlan, "")
 			if err == nil {
 				t.Fatalf("%s: attach accepted", name)
 			}
 			requireNothingRecorded(t, task.ID, err, before, beforeEvents, beforeOrders)
+			afterVersion, afterOK, err := st.GetLatestSpecVersion(ctx, task.ID)
+			requireOK(t, err)
+			if beforeOK != afterOK || beforeVersion.Version != afterVersion.Version || beforeVersion.Content != afterVersion.Content {
+				t.Fatalf("%s: refusal changed the latest plan version: %+v -> %+v", name, beforeVersion, afterVersion)
+			}
 		}
 	})
 
@@ -377,6 +384,13 @@ func runPlanStateActs(t *testing.T, x Fixture) {
 			}
 			proceeded, err := taskops.New(st).Perform(ctx, task.ID, taskops.Command{Kind: stale, NextStage: staleNext, RecoveryStage: staleRecovery, ProjectStages: true, TriageProceed: true})
 			requireOK(t, err)
+			wantCommand := core.TaskStageAdvance
+			if tc.gate == core.GateKindPlanApproval {
+				wantCommand = core.TaskGateSpec
+			}
+			if proceeded.Command != wantCommand {
+				t.Fatalf("%s: outcome command = %s, want the committed %s", tc.name, proceeded.Command, wantCommand)
+			}
 			stored, err := st.GetTask(ctx, task.ID)
 			requireOK(t, err)
 			for _, got := range []core.Task{proceeded.Task, stored} {
@@ -390,6 +404,27 @@ func runPlanStateActs(t *testing.T, x Fixture) {
 			if orders, listErr := st.ListTaskWorkOrders(ctx, task.ID); listErr != nil || len(orders) != 0 {
 				t.Fatalf("%s: proceed created orders %+v err=%v", tc.name, orders, listErr)
 			}
+		}
+	})
+
+	// plan.reroute leaves awaiting_human only at the plan_approval gate, on
+	// every backend's command path (component-task-lifecycle invariant 2).
+	t.Run("plan.reroute is refused at a gate other than plan approval", func(t *testing.T) {
+		task := newTask(t, core.TaskRunning, core.StageImplement, core.PlanNotRequired)
+		_, err := taskops.New(st).Perform(ctx, task.ID, taskops.Command{Kind: core.TaskJobFail})
+		requireOK(t, err)
+		before, beforeEvents, beforeOrders := snapshot(t, task.ID)
+		if before.GateKind != core.GateKindJobFailure {
+			t.Fatalf("fixture gate = %q", before.GateKind)
+		}
+		_, err = taskops.New(st).Perform(ctx, task.ID, taskops.Command{Kind: core.TaskPlanReroute, NextStage: core.StageSpec, ProjectStages: true})
+		var invalid *core.ErrInvalidTransition
+		if !errors.As(err, &invalid) {
+			t.Fatalf("plan.reroute at job_failure err = %v", err)
+		}
+		after, afterEvents, afterOrders := snapshot(t, task.ID)
+		if after.State != before.State || after.GateKind != before.GateKind || after.NextStage != before.NextStage || afterEvents != beforeEvents || len(afterOrders) != len(beforeOrders) {
+			t.Fatalf("refused plan.reroute changed the task: %+v -> %+v", before, after)
 		}
 	})
 }

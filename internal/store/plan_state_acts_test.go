@@ -167,6 +167,7 @@ func TestTaskPolicyChangePlanStateTravelsAlone(t *testing.T) {
 		"with verify_stage":    {PlanState: &needed, VerifyStage: &on},
 		"with distinct models": {PlanState: &needed, ReviewDistinctModels: &on},
 		"with verify timeout":  {PlanState: &needed, StageTimeouts: map[string]string{"verify": "1h"}},
+		"with empty timeouts":  {PlanState: &needed, StageTimeouts: map[string]string{}},
 	} {
 		if err := change.Validate(); err == nil {
 			t.Fatalf("%s accepted", name)
@@ -192,5 +193,33 @@ func TestResolveTriageProceedReplacesTheStaleStep(t *testing.T) {
 	other := taskops.Command{Kind: core.TaskStageAdvance, NextStage: core.StageReview}
 	if got, err = ResolveTriageProceed(other, core.PlanNeeded); err != nil || !reflect.DeepEqual(got, other) {
 		t.Fatalf("a non-proceed command changed: %+v err=%v", got, err)
+	}
+}
+
+// TestPlanActsCountAnUnpersistedClaimExpiry keeps plan_acts from offering an
+// act on a read projection whose implement claim expired before the order
+// clock persisted it: the acts still see the stored claim and refuse.
+func TestPlanActsCountAnUnpersistedClaimExpiry(t *testing.T) {
+	projected := planActOrder("impl-1", core.StageImplement, core.WorkOrderQueued)
+	projected.ClaimExpiryUnpersisted = true
+	task := core.Task{ID: "t", State: core.TaskRunning, NextStage: core.StageImplement, PlanState: core.PlanNotRequired}
+	if acts := PlanActsFor(task, []core.WorkOrder{projected}); acts.SetNeeded || acts.Attach {
+		t.Fatalf("plan_acts = %+v, want no act while the implement claim is unpersisted", acts)
+	}
+}
+
+// TestPrepareTaskCommandGuardsPlanReroute refuses plan.reroute from
+// awaiting_human at any gate other than plan_approval, inside every backend
+// (component-task-lifecycle invariant 2).
+func TestPrepareTaskCommandGuardsPlanReroute(t *testing.T) {
+	reroute := taskops.Command{Kind: core.TaskPlanReroute, NextStage: core.StageSpec, ProjectStages: true}
+	if _, err := PrepareTaskCommand(reroute, core.TaskAwaiting, core.GateKindJobFailure, core.PlanNeeded); err == nil {
+		t.Fatal("plan.reroute accepted at the job_failure gate")
+	}
+	if got, err := PrepareTaskCommand(reroute, core.TaskAwaiting, core.GateKindPlanApproval, core.PlanNeeded); err != nil || !reflect.DeepEqual(got, reroute) {
+		t.Fatalf("plan_approval gate: %+v err=%v", got, err)
+	}
+	if _, err := PrepareTaskCommand(reroute, core.TaskQueued, "", core.PlanNeeded); err != nil {
+		t.Fatalf("queued: %v", err)
 	}
 }

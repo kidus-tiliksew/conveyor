@@ -2439,6 +2439,18 @@ func taskPlanStatusFor(task core.Task, latest core.SpecVersion, hasPlan bool, ev
 		return status
 	}
 	status.State = taskPlanPendingGate
+	if task.State == core.TaskAwaiting && task.GateKind == core.GateKindPlanApproval {
+		return status
+	}
+	// Away from the plan approval gate, an unapproved latest version waits
+	// for approval only while the plan state is awaiting_approval. A version
+	// an operator moved off the gate, or past triage with a state-only
+	// change, does not read as pending at a later gate (component-plan-state
+	// invariants 4, 5, and 7).
+	if task.PlanState != "" && task.PlanState != core.PlanAwaitingApproval {
+		status.State = taskPlanRedirected
+		return status
+	}
 	if task.State == core.TaskAwaiting && task.GateKind != "" {
 		return status
 	}

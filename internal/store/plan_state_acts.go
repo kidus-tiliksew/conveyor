@@ -80,10 +80,13 @@ func atPlanApprovalGate(task core.Task) bool {
 	return task.State == core.TaskAwaiting && task.GateKind == core.GateKindPlanApproval
 }
 
-// claimedImplementOrder returns the ID of a claimed implement order.
+// claimedImplementOrder returns the ID of a claimed implement order. A read
+// projection of a claim whose expiry the order clock has not persisted still
+// holds the stage, so the plan_acts read counts it as the acts do
+// (component-plan-state invariant 6).
 func claimedImplementOrder(orders []core.WorkOrder) string {
 	for _, order := range orders {
-		if order.Stage == core.StageImplement && order.State == core.WorkOrderClaimed {
+		if order.Stage == core.StageImplement && (order.State == core.WorkOrderClaimed || order.ClaimExpiryUnpersisted) {
 			return order.ID
 		}
 	}
@@ -456,6 +459,25 @@ func (m *memory) AttachTaskPlanCommand(ctx context.Context, lease taskops.TaskLe
 // (component-plan-state invariant 5; component-triage invariant 29;
 // req-task-plan-state AC-1.1, AC-3.2). Any other command passes unchanged.
 func ResolveTriageProceed(command taskops.Command, current core.PlanState) (taskops.Command, error) {
+	return PrepareTaskCommand(command, "", "", current)
+}
+
+// PrepareTaskCommand applies the plan-state preconditions of a lifecycle
+// command to the task row the backend read under the task-operation lock:
+// a triage proceed takes the step the plan state selects, and plan.reroute
+// leaves awaiting_human only at the plan_approval gate
+// (component-task-lifecycle invariant 2; component-plan-state invariant 5).
+// An empty state skips the gate check.
+func PrepareTaskCommand(command taskops.Command, state core.TaskState, gate core.GateKind, current core.PlanState) (taskops.Command, error) {
+	if command.Kind == core.TaskPlanReroute && state != "" {
+		if _, err := core.TransitionPlanReroute(state, gate); err != nil {
+			return command, err
+		}
+	}
+	return resolveTriageProceed(command, current)
+}
+
+func resolveTriageProceed(command taskops.Command, current core.PlanState) (taskops.Command, error) {
 	if !command.TriageProceed {
 		return command, nil
 	}

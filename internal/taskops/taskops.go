@@ -287,7 +287,16 @@ func (p *Plane) Perform(ctx context.Context, taskID string, cmd Command) (Outcom
 		return Outcome{}, err
 	}
 	durable, _ := p.backend.(durableBackend)
-	return Outcome{Task: task, Command: cmd.Kind, Enqueued: task.State == core.TaskQueued && durable != nil && durable.IsDurable()}, nil
+	command := cmd.Kind
+	if cmd.TriageProceed {
+		// The backend chose the proceed step from the plan state it read; the
+		// resulting state names it (core.TriageProceedStep).
+		command = core.TaskStageAdvance
+		if task.State == core.TaskAwaiting {
+			command = core.TaskGateSpec
+		}
+	}
+	return Outcome{Task: task, Command: command, Enqueued: task.State == core.TaskQueued && durable != nil && durable.IsDurable()}, nil
 }
 
 // StartOver admits the compound operator command. The backend checks replay,

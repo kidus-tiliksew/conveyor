@@ -537,7 +537,7 @@ func (m *memory) applyTaskCommandLocked(ctx context.Context, id string, command 
 		return core.Task{}, fmt.Errorf("task %s: %w", id, ErrNotFound)
 	}
 	fromState, fromStage := task.State, task.NextStage
-	command, err := ResolveTriageProceed(command, task.PlanState)
+	command, err := PrepareTaskCommand(command, task.State, task.GateKind, task.PlanState)
 	if err != nil {
 		return core.Task{}, err
 	}
