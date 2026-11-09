@@ -97,6 +97,16 @@ func TestKitValidateOffline(t *testing.T) {
 	if err != nil || r.Kits[0].Reasons[0].Code != "pin_not_authoritative" {
 		t.Fatalf("%+v %v", r, err)
 	}
+	// A newer authoritative version keeps the kit eligible and prints the
+	// pin_version_drift warning with both versions (component-verification-kit-contract
+	// invariant 12; DEC-111(1)).
+	r, err = runKitCLI(t, root, "--pin", "requirement:req-sample:3")
+	if err != nil || r.Kits[0].Eligibility != "eligible" || len(r.Kits[0].Reasons) != 1 || r.Kits[0].Reasons[0].Code != "pin_version_drift" || r.Kits[0].Reasons[0].Pin.Version != 1 || r.Kits[0].Reasons[0].Message != "requirement req-sample: kit pins v1, authoritative v3" {
+		t.Fatalf("drift: %+v %v", r, err)
+	}
+	if r.Invalid() {
+		t.Fatal("drift warning made the receipt invalid")
+	}
 }
 func TestKitValidateInvalidReceipt(t *testing.T) {
 	root, manifest := kitCLIRepo(t)

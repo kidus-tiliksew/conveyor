@@ -126,6 +126,21 @@ func repository(t *testing.T, mode string) (string, string, string) {
 				// component-verification-service: a support outside the kit's declared pins.
 				m.Kits[0].Exercises[0].Supports[0].DocumentID = "req-undeclared"
 			}
+			if mode == "ineligible" {
+				// A kit pin newer than the authoritative version excludes the
+				// kit. An older pin only adds a pin_version_drift warning
+				// (component-verification-kit-contract invariant 12; DEC-111(1)).
+				for i := range m.Kits {
+					for j := range m.Kits[i].GoverningPins.Requirements {
+						m.Kits[i].GoverningPins.Requirements[j].Version++
+					}
+					for j := range m.Kits[i].Exercises {
+						for k := range m.Kits[i].Exercises[j].Supports {
+							m.Kits[i].Exercises[j].Supports[k].Version++
+						}
+					}
+				}
+			}
 			b, err = json.Marshal(m)
 			must(t, err)
 		}
@@ -167,12 +182,6 @@ func newFixture(t *testing.T, b store.Backend, mode string) *fixture {
 	must(t, err)
 	_, _, err = b.ConfirmRequirementVersion(f.ctx, "req-verification-kits", rv.Version)
 	must(t, err)
-	if mode == "ineligible" {
-		rv, err = b.ProposeRequirementVersion(f.ctx, core.RequirementVersion{RequirementID: "req-verification-kits", Content: rv.Content, Origin: core.RequirementOriginOperator, Statements: rv.Statements})
-		must(t, err)
-		_, _, err = b.ConfirmRequirementVersion(f.ctx, "req-verification-kits", rv.Version)
-		must(t, err)
-	}
 	content := "# Disposable VK-10 fixture\n\nVK-10: Observe the fixture.\n\n```conveyor:governs\n- repo: conveyor\n  paths:\n    - .conveyor/kits/**\n```"
 	_, dv, err := b.CreateSystemDesign(f.ctx, core.SystemDesign{ID: "feature-verification-kit-execution", Title: "Fixture kit execution", Category: "Feature"}, core.SystemDesignVersion{Content: content, Origin: core.SystemDesignOriginOperator})
 	must(t, err)
@@ -963,8 +972,8 @@ func Run(t *testing.T, factory func(*testing.T) store.Backend) {
 			}
 			if mode == "ineligible" {
 				for _, kit := range f.snapshot.Selections[0].Receipt.Kits {
-					if kit.Eligibility != "ineligible" || len(kit.Reasons) == 0 {
-						t.Fatal("missing exclusion explanation")
+					if kit.Eligibility != "ineligible" || len(kit.Reasons) == 0 || kit.Reasons[0].Code != verification.ReasonPinVersionMismatch {
+						t.Fatalf("missing exclusion explanation: %+v", kit)
 					}
 				}
 			}
