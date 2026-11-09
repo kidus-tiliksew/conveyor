@@ -325,10 +325,11 @@ func TestTaskHistoryBoundedViewAndTraversalOverReconciliationFixture(t *testing.
 	}
 
 	detail, bounded := h.bounded("incident-task")
-	// 87 cycled human events plus the early pull_request.opened; the other
-	// non-reconciled events are task.created (twice), job.created, and job.summary.
-	if detail.EventPage.Returned != 88 || detail.EventPage.HasOlder {
-		t.Fatalf("bounded page over 88 human events: %+v", detail.EventPage)
+	// 86 cycled human events plus the early pull_request.opened; the other
+	// non-reconciled events are task.created (twice), task.plan_state_changed,
+	// job.created, and job.summary.
+	if detail.EventPage.Returned != 87 || detail.EventPage.HasOlder {
+		t.Fatalf("bounded page over 87 human events: %+v", detail.EventPage)
 	}
 	omitted := 0
 	for _, event := range detail.Events {

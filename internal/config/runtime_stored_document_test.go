@@ -101,7 +101,7 @@ func TestStoredWorkspaceDocumentIgnoresLegacyExecutionKeys(t *testing.T) {
 				t.Fatalf("%s %s route = %+v, want only timeout %s", name, stage, got, timeout)
 			}
 		}
-		if len(cfg.Review.Seats) != 3 || cfg.MaxBounces != 5 || cfg.Execution.SpecApproval || !cfg.Execution.MergeApproval {
+		if len(cfg.Review.Seats) != 3 || cfg.MaxBounces != 5 || cfg.Execution.DefaultPlanState != "not_required" || !cfg.Execution.MergeApproval {
 			t.Fatalf("%s policy = seats %d bounces %d execution %+v", name, len(cfg.Review.Seats), cfg.MaxBounces, cfg.Execution)
 		}
 		frozen := cfg.FreezePolicy()
@@ -162,7 +162,7 @@ repos:
 			t.Fatalf("%s timeout = %q, want %q", stage, got, timeout)
 		}
 	}
-	if !stored.Execution.SpecApproval || !stored.Execution.MergeApproval {
+	if stored.Execution.DefaultPlanState != "needed" || !stored.Execution.MergeApproval {
 		t.Fatalf("legacy row without an execution block lost the gate defaults: %+v", stored.Execution)
 	}
 	if _, err := DecodeStoredWorkspaceDocument([]byte(strings.Replace(row, "workspace: demo", "workspace: demo\nunknown_key: true", 1))); err == nil {

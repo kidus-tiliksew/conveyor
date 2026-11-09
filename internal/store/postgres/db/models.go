@@ -295,6 +295,7 @@ type Task struct {
 	GateKind                pgtype.Text        `json:"gate_kind"`
 	CheckStatusDeadline     pgtype.Timestamptz `json:"check_status_deadline"`
 	CheckStatusDeadlineHead pgtype.Text        `json:"check_status_deadline_head"`
+	PlanState               string             `json:"plan_state"`
 }
 
 type TaskDependency struct {
@@ -350,6 +351,8 @@ type TaskSpec struct {
 	Agent           string             `json:"agent"`
 	Model           string             `json:"model"`
 	ReviewSeats     pgtype.Int4        `json:"review_seats"`
+	Origin          string             `json:"origin"`
+	BaseCommit      pgtype.Text        `json:"base_commit"`
 }
 
 type Transcript struct {

@@ -1,6 +1,7 @@
 package store
 
 import (
+	"context"
 	"encoding/json"
 	"reflect"
 	"strconv"
@@ -30,7 +31,7 @@ func (l *flowLedger) created(task core.Task) *flowLedger {
 	if task.State == "" {
 		task.State = core.TaskQueued
 	}
-	return l.add("task.created", core.ActorHuman, "", task)
+	return l.add("task.created", core.ActorHuman, "", TaskCreatedPayload(context.Background(), task))
 }
 
 func (l *flowLedger) state(to core.TaskState, command core.TaskCommand) *flowLedger {

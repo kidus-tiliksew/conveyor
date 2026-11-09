@@ -89,17 +89,30 @@ func (s *Server) createTaskRecordWithState(ctx context.Context, req createTaskRe
 	if len(intakeKey) > 200 {
 		return taskCreateResult{}, &taskCreateError{Status: http.StatusBadRequest, Message: "idempotency_key must be at most 200 characters"}
 	}
+	// The plan refusals and the filer-approval capability check precede the
+	// idempotency lookup, so a refused request has no side effect even when
+	// its key names a task (component-plan-state invariant 2;
+	// component-task-lifecycle invariant 16).
+	planRequest, intakePlan, planErr := validateIntakePlan(req)
+	if planErr != nil {
+		return taskCreateResult{}, planErr
+	}
+	if intakePlan != nil && intakePlan.Approved {
+		if err := s.authorizeIntakePlanApproval(ctx); err != nil {
+			return taskCreateResult{}, err
+		}
+	}
 	originalReq := req
 	if intakeKey != "" {
 		if existing, found, err := s.Store.GetTaskByIntakeKey(ctx, intakeKey); err != nil {
 			return taskCreateResult{}, err
 		} else if found {
-			active, intake, contextErr := s.taskContextsForRetry(ctx, existing.ID)
+			active, intake, record, contextErr := s.taskContextsForRetry(ctx, existing.ID)
 			if contextErr != nil {
 				return taskCreateResult{}, contextErr
 			}
 			existing.Context = active
-			if !sameIntakeRequest(existing, originalReq, intake) {
+			if !sameIntakeRequest(existing, originalReq, intake, record) {
 				return taskCreateResult{}, &taskCreateError{Status: http.StatusConflict, Message: "idempotency_key is already used by a different task"}
 			}
 			return taskCreateResult{Task: existing}, nil
@@ -132,7 +145,7 @@ func (s *Server) createTaskRecordWithState(ctx context.Context, req createTaskRe
 	// No mode axis, no reservation, and no intake-time health gating:
 	// serviceability is advisory and orders queue openly (DEC-74(2), DEC-74(3);
 	// component-task-lifecycle).
-	specApproval, mergeApproval := resolvedIntakePolicy(req, current)
+	planState, mergeApproval := resolvedIntakePolicy(req, planRequest, current)
 	if repos != nil && !contains(repos, req.Repo) {
 		return taskCreateResult{}, &taskCreateError{Status: http.StatusBadRequest, Message: "unknown repo " + req.Repo}
 	}
@@ -185,7 +198,9 @@ func (s *Server) createTaskRecordWithState(ctx context.Context, req createTaskRe
 		Title:         title,
 		Body:          req.Body,
 		Level:         req.Level,
-		SpecApproval:  specApproval,
+		PlanState:     planState,
+		SpecApproval:  store.SpecApprovalBridge(planState),
+		IntakePlan:    intakePlan,
 		MergeApproval: mergeApproval,
 		PolicyVersion: 1,
 		SetupContract: selectedSetup,
@@ -214,12 +229,12 @@ func (s *Server) createTaskRecordWithState(ctx context.Context, req createTaskRe
 			if existing, found, getErr := s.Store.GetTaskByIntakeKey(ctx, intakeKey); getErr != nil {
 				return taskCreateResult{}, getErr
 			} else if found {
-				active, intake, contextErr := s.taskContextsForRetry(ctx, existing.ID)
+				active, intake, record, contextErr := s.taskContextsForRetry(ctx, existing.ID)
 				if contextErr != nil {
 					return taskCreateResult{}, contextErr
 				}
 				existing.Context = active
-				if sameIntakeRequest(existing, originalReq, intake) {
+				if sameIntakeRequest(existing, originalReq, intake, record) {
 					return taskCreateResult{Task: existing}, nil
 				}
 				return taskCreateResult{}, &taskCreateError{Status: http.StatusConflict, Message: "idempotency_key is already used by a different task"}
@@ -268,31 +283,42 @@ const (
 )
 
 // resolvedIntakePolicy maps the request onto the two intake policy decisions:
-// spec approval and merge approval (DEC-74(1); component-task-lifecycle). A
-// legacy escalation level contributes through its gate mapping and implies no
-// reservation (DEC-74(3)); explicit gate overrides win last.
-func resolvedIntakePolicy(req createTaskReq, current *config.Config) (bool, bool) {
-	var specApproval, mergeApproval bool
+// the plan state and the merge gate (DEC-122(1); component-task-lifecycle).
+// The plan state follows component-plan-state invariant 1: a filed plan, then
+// the request's plan_state, then the legacy spec_approval, then the legacy
+// level, then execution.default_plan_state, which is needed when unset. The
+// merge gate follows component-task-lifecycle invariant 18: a legacy level
+// first, else the workspace default, and an explicit merge_approval last.
+func resolvedIntakePolicy(req createTaskReq, plan store.PlanStateRequest, current *config.Config) (core.PlanState, bool) {
+	var mergeApproval bool
+	var workspaceDefault core.PlanState
 	if req.Level != "" {
-		specApproval, mergeApproval = core.LegacyPolicy(req.Level)
+		_, mergeApproval = core.LegacyPolicy(req.Level)
 	} else if current != nil {
-		specApproval, mergeApproval = current.Execution.SpecApproval, current.Execution.MergeApproval
+		mergeApproval = current.Execution.MergeApproval
 	} else {
-		specApproval, mergeApproval = true, true
+		mergeApproval = true
 	}
-	if req.SpecApproval != nil {
-		specApproval = *req.SpecApproval
+	if current != nil {
+		workspaceDefault = core.PlanState(current.Execution.DefaultPlanState)
 	}
 	if req.MergeApproval != nil {
 		mergeApproval = *req.MergeApproval
 	}
-	return specApproval, mergeApproval
+	return store.ResolveIntakePlanState(plan, workspaceDefault), mergeApproval
+}
+
+// taskIntakeRecord holds the plan values a task was created with: the plan
+// state task.created recorded and plan version 1 when intake filed one.
+type taskIntakeRecord struct {
+	PlanState   core.PlanState
+	PlanVersion *core.SpecVersion
 }
 
 // sameIntakeRequest decides whether a keyed retry repeats the original
 // request. It never compares hold: a retry of a task stored with hold before
 // the retirement returns that original task (DEC-74(3); component-http-api).
-func sameIntakeRequest(task core.Task, req createTaskReq, intake store.TaskContextInput) bool {
+func sameIntakeRequest(task core.Task, req createTaskReq, intake store.TaskContextInput, record taskIntakeRecord) bool {
 	if task.Body != req.Body || task.Repo != req.Repo || task.Source != req.Source || (req.BaseBranch != "" && task.BaseBranch != req.BaseBranch) {
 		return false
 	}
@@ -310,17 +336,14 @@ func sameIntakeRequest(task core.Task, req createTaskReq, intake store.TaskConte
 	if !reflect.DeepEqual(intake.RequirementIDs, req.RequirementIDs) || !reflect.DeepEqual(intake.DesignIDs, req.SystemDesignIDs) {
 		return false
 	}
-	if req.SpecApproval != nil && task.SpecApproval != *req.SpecApproval {
+	if !sameIntakePlan(req, record) {
 		return false
 	}
 	if req.MergeApproval != nil && task.MergeApproval != *req.MergeApproval {
 		return false
 	}
 	if req.Level != "" {
-		specApproval, mergeApproval := core.LegacyPolicy(req.Level)
-		if req.SpecApproval == nil && task.SpecApproval != specApproval {
-			return false
-		}
+		_, mergeApproval := core.LegacyPolicy(req.Level)
 		if req.MergeApproval == nil && task.MergeApproval != mergeApproval {
 			return false
 		}
@@ -342,14 +365,14 @@ func intakeTaskContext(input store.TaskContextInput) core.TaskContext {
 	return result
 }
 
-func (s *Server) taskContextsForRetry(ctx context.Context, taskID string) (core.TaskContext, store.TaskContextInput, error) {
+func (s *Server) taskContextsForRetry(ctx context.Context, taskID string) (core.TaskContext, store.TaskContextInput, taskIntakeRecord, error) {
 	events, err := s.Store.ListCompactEvents(ctx, taskID)
 	if err != nil {
-		return core.TaskContext{}, store.TaskContextInput{}, err
+		return core.TaskContext{}, store.TaskContextInput{}, taskIntakeRecord{}, err
 	}
 	active, err := store.TaskContextFromEvents(ctx, s.Store, events)
 	if err != nil {
-		return core.TaskContext{}, store.TaskContextInput{}, err
+		return core.TaskContext{}, store.TaskContextInput{}, taskIntakeRecord{}, err
 	}
 	for _, event := range events {
 		if event.Kind != "task.created" {
@@ -357,7 +380,23 @@ func (s *Server) taskContextsForRetry(ctx context.Context, taskID string) (core.
 		}
 		var created store.TaskCreatedEvent
 		if err := json.Unmarshal(event.Payload, &created); err != nil {
-			return core.TaskContext{}, store.TaskContextInput{}, fmt.Errorf("decode task.created context: %w", err)
+			return core.TaskContext{}, store.TaskContextInput{}, taskIntakeRecord{}, fmt.Errorf("decode task.created context: %w", err)
+		}
+		// An older payload carries no plan state; its spec_approval is the
+		// intake decision the plan state replaces (component-task-lifecycle
+		// invariant 22).
+		record := taskIntakeRecord{PlanState: created.PlanState}
+		if record.PlanState == "" {
+			record.PlanState = store.PlanStateFromSpecApproval(created.SpecApproval)
+		}
+		if created.PlanVersion > 0 {
+			version, found, versionErr := s.Store.GetSpecVersion(ctx, taskID, created.PlanVersion)
+			if versionErr != nil {
+				return core.TaskContext{}, store.TaskContextInput{}, taskIntakeRecord{}, versionErr
+			}
+			if found {
+				record.PlanVersion = &version
+			}
 		}
 		intake := store.TaskContextInput{}
 		for _, requirement := range created.Context.Requirements {
@@ -367,9 +406,9 @@ func (s *Server) taskContextsForRetry(ctx context.Context, taskID string) (core.
 			intake.DesignIDs = append(intake.DesignIDs, design.ID)
 		}
 		intake, err = store.NormalizeTaskContextInput(intake)
-		return active, intake, err
+		return active, intake, record, err
 	}
-	return core.TaskContext{}, store.TaskContextInput{}, fmt.Errorf("task %s has no task.created event", taskID)
+	return core.TaskContext{}, store.TaskContextInput{}, taskIntakeRecord{}, fmt.Errorf("task %s has no task.created event", taskID)
 }
 
 func taskContextCreateError(err error) *taskCreateError {

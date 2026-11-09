@@ -53,14 +53,14 @@ func taskEvent(ctx context.Context, tx *sql.Tx, e core.Event) error {
 	return insertEvent(ctx, tx, e)
 }
 
-const taskColumns = `id,workspace_id,source,COALESCE(intake_key,''),title,body,class,escalation_level,mode,hold,spec_approval,merge_approval,policy_version,setup_name,setup_contract,reviewed_head_sha,approved_head_sha,approval_stale,refresh_baseline_sha,refresh_head_sha,refresh_review_scope,repo_name,base_branch,branch,state,next_stage,recovery_stage,COALESCE(parent_task_id,''),origin_spec_version,origin_sub_id,created_at,COALESCE(assignee_user_id,''),COALESCE(supersedes,''),COALESCE(superseded_by,''),intake_operator_direction,COALESCE(gate_kind,''),check_status_deadline,COALESCE(check_status_deadline_head,'')`
+const taskColumns = `id,workspace_id,source,COALESCE(intake_key,''),title,body,class,escalation_level,mode,hold,spec_approval,merge_approval,policy_version,setup_name,setup_contract,reviewed_head_sha,approved_head_sha,approval_stale,refresh_baseline_sha,refresh_head_sha,refresh_review_scope,repo_name,base_branch,branch,state,next_stage,recovery_stage,COALESCE(parent_task_id,''),origin_spec_version,origin_sub_id,created_at,COALESCE(assignee_user_id,''),COALESCE(supersedes,''),COALESCE(superseded_by,''),intake_operator_direction,COALESCE(gate_kind,''),check_status_deadline,COALESCE(check_status_deadline_head,''),plan_state`
 
 func scanTask(row interface{ Scan(...any) error }) (core.Task, error) {
 	var t core.Task
 	var setup []byte
 	var assignee string
 	var checkStatusDeadline sql.NullTime
-	err := row.Scan(&t.ID, &t.Workspace, &t.Source, &t.IntakeKey, &t.Title, &t.Body, &t.Class, &t.Level, &t.Mode, &t.Hold, &t.SpecApproval, &t.MergeApproval, &t.PolicyVersion, &t.SetupName, &setup, &t.ReviewedHeadSHA, &t.ApprovedHeadSHA, &t.ApprovalStale, &t.RefreshBaselineSHA, &t.RefreshHeadSHA, &t.RefreshReviewScope, &t.Repo, &t.BaseBranch, &t.Branch, &t.State, &t.NextStage, &t.RecoveryStage, &t.ParentTaskID, &t.OriginSpecVersion, &t.OriginSubID, &t.CreatedAt, &assignee, &t.Supersedes, &t.SupersededBy, &t.IntakeOperatorDirection, &t.GateKind, &checkStatusDeadline, &t.CheckStatusDeadlineHead)
+	err := row.Scan(&t.ID, &t.Workspace, &t.Source, &t.IntakeKey, &t.Title, &t.Body, &t.Class, &t.Level, &t.Mode, &t.Hold, &t.SpecApproval, &t.MergeApproval, &t.PolicyVersion, &t.SetupName, &setup, &t.ReviewedHeadSHA, &t.ApprovedHeadSHA, &t.ApprovalStale, &t.RefreshBaselineSHA, &t.RefreshHeadSHA, &t.RefreshReviewScope, &t.Repo, &t.BaseBranch, &t.Branch, &t.State, &t.NextStage, &t.RecoveryStage, &t.ParentTaskID, &t.OriginSpecVersion, &t.OriginSubID, &t.CreatedAt, &assignee, &t.Supersedes, &t.SupersededBy, &t.IntakeOperatorDirection, &t.GateKind, &checkStatusDeadline, &t.CheckStatusDeadlineHead, &t.PlanState)
 	if err != nil {
 		return core.Task{}, err
 	}
@@ -113,6 +113,16 @@ func (s *Store) CreateTaskWithDependenciesAndContext(ctx context.Context, t core
 }
 func (s *Store) createTaskTx(ctx context.Context, tx *sql.Tx, t core.Task, ids []string, attached store.TaskContextInput, pinned map[string]int) error {
 	ws := documentWorkspace(ctx)
+	if err := store.PrepareTaskPlanState(&t); err != nil {
+		return err
+	}
+	var approver store.Actor
+	if t.IntakePlan != nil && t.IntakePlan.Approved {
+		var err error
+		if approver, err = store.IntakePlanApprover(store.ActorFromContext(ctx)); err != nil {
+			return err
+		}
+	}
 	if err := workspaceRowExists(ctx, tx, ws); err != nil {
 		return err
 	}
@@ -170,6 +180,9 @@ func (s *Store) createTaskTx(ctx context.Context, tx *sql.Tx, t core.Task, ids [
 	if err = taskEvent(ctx, tx, core.Event{TaskID: t.ID, Kind: "task.created", Payload: store.TaskCreatedPayload(ctx, t), At: t.CreatedAt}); err != nil {
 		return err
 	}
+	if err = recordIntakePlanStateTx(ctx, tx, t, approver); err != nil {
+		return err
+	}
 	for _, id := range ids {
 		id = strings.TrimSpace(id)
 		if _, err = tx.ExecContext(ctx, `INSERT INTO task_dependencies(workspace_id,task_id,depends_on_task_id) VALUES (?,?,?)`, ws, t.ID, id); err != nil {
@@ -195,7 +208,47 @@ func (s *Store) createTaskTx(ctx context.Context, tx *sql.Tx, t core.Task, ids [
 	return err
 }
 
+// recordIntakePlanStateTx appends the intake plan-state move and, for a task
+// filed with a plan, plan version 1 and any filer approval, inside the
+// creating transaction (component-task-lifecycle invariant 20;
+// component-plan-state invariants 2 and 3).
+func recordIntakePlanStateTx(ctx context.Context, tx *sql.Tx, t core.Task, approver store.Actor) error {
+	if err := taskEvent(ctx, tx, store.IntakePlanStateEvent(t)); err != nil {
+		return err
+	}
+	if t.IntakePlan == nil {
+		return nil
+	}
+	spec := store.IntakePlanSpecVersion(t)
+	values := specRowValues(ctx, spec)
+	if spec.Approved {
+		values["approved"], values["approved_at"] = true, spec.ApprovedAt
+	}
+	if _, err := writeRow(ctx, tx, rowWrite{table: "task_specs", operation: "INSERT", values: values}); err != nil {
+		return err
+	}
+	if err := taskEvent(ctx, tx, store.IntakePlanVersionCreatedEvent(spec)); err != nil {
+		return err
+	}
+	if !spec.Approved {
+		return nil
+	}
+	intervention := store.IntakePlanApproval(t, approver)
+	if err := insertInterventionTx(ctx, tx, intervention); err != nil {
+		return err
+	}
+	if err := taskEvent(ctx, tx, store.InterventionEvent(intervention)); err != nil {
+		return err
+	}
+	return taskEvent(ctx, tx, store.IntakePlanApprovedEvent(spec))
+}
+
 func insertTaskRow(ctx context.Context, tx *sql.Tx, t core.Task) error {
+	// SingleStore has no CHECK constraint, so the writer enforces the plan
+	// state value set (component-plan-state invariant 1).
+	if !t.PlanState.Valid() {
+		return fmt.Errorf("invalid plan_state %q", t.PlanState)
+	}
 	lockKeys := []string{"task-id:" + t.ID, taskBranchClaimKey(t.Workspace, t.Repo, t.Branch)}
 	if t.IntakeKey != "" {
 		lockKeys = append(lockKeys, taskIntakeClaimKey(t.Workspace, t.IntakeKey))
@@ -229,6 +282,7 @@ func insertTaskRow(ctx context.Context, tx *sql.Tx, t core.Task) error {
 		"mode":                 t.Mode,
 		"hold":                 false, // a task carries no worker reservation (DEC-74(3))
 		"spec_approval":        t.SpecApproval,
+		"plan_state":           string(t.PlanState),
 		"merge_approval":       t.MergeApproval,
 		"policy_version":       t.PolicyVersion,
 		"setup_name":           t.SetupName,
@@ -1011,7 +1065,7 @@ func (s *Store) ApproveSpecVersionAndMaterialize(ctx context.Context, taskID str
 				Title:  title,
 				Body:   fmt.Sprintf("%s\n\nDefined by blueprint task %s, spec version %d (%s).", strings.TrimSpace(item.Summary), parent.ID, version, item.ID),
 				Class:  parent.Class, Level: parent.Level,
-				SpecApproval: parent.SpecApproval, MergeApproval: parent.MergeApproval,
+				SpecApproval: parent.SpecApproval, PlanState: parent.PlanState, MergeApproval: parent.MergeApproval,
 				PolicyVersion: parent.PolicyVersion,
 				SetupContract: parent.SetupContract, Repo: strings.TrimSpace(item.Repo),
 				BaseBranch: baseBranches[item.ID], Branch: gitx.BranchName(id),
@@ -1019,10 +1073,18 @@ func (s *Store) ApproveSpecVersionAndMaterialize(ctx context.Context, taskID str
 				ParentTaskID: parent.ID, OriginSpecVersion: version, OriginSubID: item.ID,
 				CreatedAt: createdAt,
 			}
+			// A materialized legacy child copies its parent's plan state
+			// (component-task-lifecycle invariant 50).
+			if err = store.PrepareTaskPlanState(&child); err != nil {
+				return err
+			}
 			if err = insertTaskRow(ctx, tx, child); err != nil {
 				return fmt.Errorf("materialize %s: %w", item.ID, err)
 			}
 			if err = taskEvent(ctx, tx, core.Event{TaskID: child.ID, Kind: "task.created", Payload: store.TaskCreatedPayload(store.WithTaskTitleRedactions(ctx, titleStats), child), At: createdAt}); err != nil {
+				return err
+			}
+			if err = taskEvent(ctx, tx, store.IntakePlanStateEvent(child)); err != nil {
 				return err
 			}
 			if _, err = s.enqueueTaskTx(ctx, tx, child.ID, child.Workspace); err != nil {

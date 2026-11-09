@@ -147,10 +147,10 @@ func TestWorkspaceInfoHTTPServesNoComposedControlPlane(t *testing.T) {
 		if err = json.Unmarshal(response.Body.Bytes(), &info); err != nil {
 			t.Fatal(err)
 		}
-		if len(info) != 5 {
+		if len(info) != 6 {
 			t.Fatalf("%s: workspace info fields = %s", mode, response.Body.String())
 		}
-		for _, key := range []string{"workspace", "max_bounces", "recovery", "database", "repos"} {
+		for _, key := range []string{"workspace", "max_bounces", "recovery", "database", "repos", "default_plan_state"} {
 			if _, ok := info[key]; !ok {
 				t.Fatalf("%s: workspace info omits %q: %s", mode, key, response.Body.String())
 			}

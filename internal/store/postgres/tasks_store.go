@@ -52,6 +52,16 @@ func (s *Store) CreateTaskWithDependenciesAndContext(ctx context.Context, task c
 }
 
 func (s *Store) createTaskTx(ctx context.Context, tx pgx.Tx, q *db.Queries, task core.Task, dependencyIDs []string, attached store.TaskContextInput, pinned map[string]int) error {
+	if err := store.PrepareTaskPlanState(&task); err != nil {
+		return err
+	}
+	var approver store.Actor
+	if task.IntakePlan != nil && task.IntakePlan.Approved {
+		var err error
+		if approver, err = store.IntakePlanApprover(store.ActorFromContext(ctx)); err != nil {
+			return err
+		}
+	}
 	if len(dependencyIDs) > 0 {
 		if err := lockDependencyEdgesTx(ctx, tx, task.Workspace); err != nil {
 			return err
@@ -120,6 +130,9 @@ func (s *Store) createTaskTx(ctx context.Context, tx pgx.Tx, q *db.Queries, task
 	if err != nil {
 		return err
 	}
+	if err = recordIntakePlanStateTx(ctx, tx, q, task, approver); err != nil {
+		return err
+	}
 	for dependencyID := range seen {
 		if _, err := tx.Exec(ctx, `INSERT INTO task_dependencies (workspace_id, task_id, depends_on_task_id)
 				VALUES ($1,$2,$3)`, task.Workspace, task.ID, dependencyID); err != nil {
@@ -147,6 +160,40 @@ func (s *Store) createTaskTx(ctx context.Context, tx pgx.Tx, q *db.Queries, task
 		return err
 	}
 	return nil
+}
+
+// recordIntakePlanStateTx appends the intake plan-state move and, for a task
+// filed with a plan, plan version 1 and any filer approval, inside the
+// creating transaction (component-task-lifecycle invariant 20;
+// component-plan-state invariants 2 and 3).
+func recordIntakePlanStateTx(ctx context.Context, tx pgx.Tx, q *db.Queries, task core.Task, approver store.Actor) error {
+	if err := insertEvent(ctx, q, store.IntakePlanStateEvent(task)); err != nil {
+		return err
+	}
+	if task.IntakePlan == nil {
+		return nil
+	}
+	spec := store.IntakePlanSpecVersion(task)
+	if _, err := tx.Exec(ctx, `INSERT INTO task_specs (task_id,version,content,acceptance_count,acceptance,decomposition,approved,created_at,approved_at,agent,model,review_seats,origin,base_commit)
+VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,'','',NULL,$10,$11)`,
+		spec.TaskID, spec.Version, spec.Content, spec.AcceptanceCount, spec.Acceptance, spec.Decomposition,
+		spec.Approved, timestamp(spec.CreatedAt), nullableTimestamp(spec.ApprovedAt), string(spec.Origin), spec.BaseCommit); err != nil {
+		return err
+	}
+	if err := insertEvent(ctx, q, store.IntakePlanVersionCreatedEvent(spec)); err != nil {
+		return err
+	}
+	if !spec.Approved {
+		return nil
+	}
+	intervention := store.IntakePlanApproval(task, approver)
+	if _, err := q.InsertIntervention(ctx, interventionInsertParams(intervention)); err != nil {
+		return err
+	}
+	if err := insertEvent(ctx, q, store.InterventionEvent(intervention)); err != nil {
+		return err
+	}
+	return insertEvent(ctx, q, store.IntakePlanApprovedEvent(spec))
 }
 
 func (s *Store) GetTask(ctx context.Context, id string) (core.Task, error) {
@@ -1066,7 +1113,7 @@ func (s *Store) ApproveSpecVersionAndMaterialize(ctx context.Context, taskID str
 				Title:  title,
 				Body:   fmt.Sprintf("%s\n\nDefined by blueprint task %s, spec version %d (%s).", strings.TrimSpace(item.Summary), parent.ID, version, item.ID),
 				Class:  parent.Class, Level: parent.Level,
-				SpecApproval: parent.SpecApproval, MergeApproval: parent.MergeApproval,
+				SpecApproval: parent.SpecApproval, PlanState: parent.PlanState, MergeApproval: parent.MergeApproval,
 				PolicyVersion: parent.PolicyVersion,
 				SetupContract: parent.SetupContract, Repo: strings.TrimSpace(item.Repo),
 				BaseBranch: baseBranches[item.ID], Branch: gitx.BranchName(id),
@@ -1074,10 +1121,18 @@ func (s *Store) ApproveSpecVersionAndMaterialize(ctx context.Context, taskID str
 				ParentTaskID: parent.ID, OriginSpecVersion: version, OriginSubID: item.ID,
 				CreatedAt: createdAt,
 			}
+			// A materialized legacy child copies its parent's plan state
+			// (component-task-lifecycle invariant 50).
+			if err = store.PrepareTaskPlanState(&child); err != nil {
+				return err
+			}
 			if _, err = q.InsertTask(ctx, taskInsertParams(child)); err != nil {
 				return fmt.Errorf("materialize %s: %w", item.ID, err)
 			}
 			if err = insertEvent(ctx, q, core.Event{TaskID: child.ID, Kind: "task.created", Payload: store.TaskCreatedPayload(store.WithTaskTitleRedactions(ctx, titleStats), child), At: createdAt}); err != nil {
+				return err
+			}
+			if err = insertEvent(ctx, q, store.IntakePlanStateEvent(child)); err != nil {
 				return err
 			}
 			if _, err = s.enqueueTaskTx(ctx, tx, child.ID, child.Workspace); err != nil {
@@ -1744,6 +1799,7 @@ func taskInsertParams(task core.Task) db.InsertTaskParams {
 		NextStage: string(task.NextStage), RecoveryStage: string(task.RecoveryStage),
 		ParentTaskID: nullableText(task.ParentTaskID), OriginSpecVersion: int32(task.OriginSpecVersion), OriginSubID: task.OriginSubID,
 		IntakeKey: nullableText(task.IntakeKey), CreatedAt: timestamp(task.CreatedAt),
+		PlanState: string(task.PlanState),
 	}
 }
 
@@ -1761,7 +1817,7 @@ func taskFromDB(task db.Task) core.Task {
 		Supersedes: task.Supersedes.String, SupersededBy: task.SupersededBy.String, IntakeOperatorDirection: task.IntakeOperatorDirection,
 		Title: task.Title, Body: task.Body, Class: task.Class,
 		Level: core.EscalationLevel(task.EscalationLevel), Repo: task.RepoName,
-		Mode: core.TaskMode(task.Mode), Hold: task.Hold, SpecApproval: task.SpecApproval, MergeApproval: task.MergeApproval,
+		Mode: core.TaskMode(task.Mode), Hold: task.Hold, SpecApproval: task.SpecApproval, PlanState: core.PlanState(task.PlanState), MergeApproval: task.MergeApproval,
 		PolicyVersion: int(task.PolicyVersion),
 		SetupName:     task.SetupName, SetupContract: setup,
 		ReviewedHeadSHA: task.ReviewedHeadSha, ApprovedHeadSHA: task.ApprovedHeadSha, ApprovalStale: task.ApprovalStale,

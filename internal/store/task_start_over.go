@@ -131,11 +131,22 @@ func StartOverSuccessor(old core.Task, r core.TaskStartOverRequest, secrets Task
 	}
 	return core.Task{ID: id, Workspace: old.Workspace, Source: old.Source, Title: title, Body: old.Body,
 		Repo: old.Repo, BaseBranch: old.BaseBranch, Branch: gitx.BranchName(id),
-		SpecApproval: old.SpecApproval, MergeApproval: old.MergeApproval, PolicyVersion: old.PolicyVersion,
+		PlanState: StartOverPlanState(old), SpecApproval: SpecApprovalBridge(StartOverPlanState(old)), MergeApproval: old.MergeApproval, PolicyVersion: old.PolicyVersion,
 		SetupContract: old.SetupContract, State: core.TaskQueued, NextStage: core.StageTriage,
 		Supersedes: old.ID, IntakeOperatorDirection: direction, CreatedAt: time.Now().UTC()}, stats, nil
 }
 
 func StartOverPlanContent(taskID string, version int, content string) []byte {
 	return []byte(fmt.Sprintf("# Previous approved execution plan (reference only)\n\nRetired task: %s\nPlan version: %d\n\nThis plan is reference context, not approval for the successor task.\n\n%s\n", taskID, version, content))
+}
+
+// StartOverPlanState is the successor's plan state: not_required when the
+// retired task's was, else needed. The retired plan is reference context only
+// (component-task-lifecycle invariant 36; req-task-lifecycle-and-queue
+// AC-7.3).
+func StartOverPlanState(old core.Task) core.PlanState {
+	if old.PlanState == core.PlanNotRequired {
+		return core.PlanNotRequired
+	}
+	return core.PlanNeeded
 }

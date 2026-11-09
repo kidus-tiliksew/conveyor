@@ -291,11 +291,17 @@ func (s *Store) ApprovePlanningBundle(ctx context.Context, id string) (core.Plan
 		}
 		now := time.Now().UTC()
 		for _, member := range bundle.Tasks {
-			task := core.Task{ID: member.CreatedTaskID, Workspace: bundle.Workspace, Source: "planning_bundle:" + bundle.ID + ":" + member.MemberID, IntakeKey: "planning-bundle:" + bundle.ID + ":" + member.MemberID, Title: member.Title, Body: member.Body, Level: core.L2, SpecApproval: member.SpecApproval, MergeApproval: member.MergeApproval, PolicyVersion: 1, SetupContract: member.SetupContract, Repo: member.Repo, BaseBranch: member.BaseBranch, Branch: gitx.BranchName(member.CreatedTaskID), State: core.TaskQueued, NextStage: core.StageTriage, CreatedAt: now}
+			task := core.Task{ID: member.CreatedTaskID, Workspace: bundle.Workspace, Source: "planning_bundle:" + bundle.ID + ":" + member.MemberID, IntakeKey: "planning-bundle:" + bundle.ID + ":" + member.MemberID, Title: member.Title, Body: member.Body, Level: core.L2, PlanState: member.ResolvedPlanState(), MergeApproval: member.MergeApproval, PolicyVersion: 1, SetupContract: member.SetupContract, Repo: member.Repo, BaseBranch: member.BaseBranch, Branch: gitx.BranchName(member.CreatedTaskID), State: core.TaskQueued, NextStage: core.StageTriage, CreatedAt: now}
+			if err = store.PrepareTaskPlanState(&task); err != nil {
+				return err
+			}
 			if _, err = insertPlanningBundleTask(ctx, tx, task); err != nil {
 				return err
 			}
 			if _, err = insertEventWithID(ctx, tx, core.Event{TaskID: task.ID, Kind: "task.created", Payload: store.TaskCreatedPayload(ctx, task), At: now}); err != nil {
+				return err
+			}
+			if _, err = insertEventWithID(ctx, tx, store.IntakePlanStateEvent(task)); err != nil {
 				return err
 			}
 		}
@@ -680,12 +686,15 @@ func lockDependencyEdgesTx(ctx context.Context, tx *sql.Tx, ws string) error {
 	return lockKey(ctx, tx, "dependency-edges:"+ws)
 }
 func insertPlanningBundleTask(ctx context.Context, tx *sql.Tx, t core.Task) (sql.Result, error) {
+	if !t.PlanState.Valid() {
+		return nil, fmt.Errorf("invalid plan_state %q", t.PlanState)
+	}
 	setup, err := json.Marshal(t.SetupContract)
 	if err != nil {
 		return nil, err
 	}
 	return writeRow(ctx, tx, rowWrite{table: "tasks", operation: "INSERT", values: map[string]any{
-		"workspace_id": t.Workspace, "id": t.ID, "source": t.Source, "mode": string(t.Mode), "intake_key": t.IntakeKey, "title": t.Title, "body": t.Body, "escalation_level": string(t.Level), "spec_approval": t.SpecApproval, "merge_approval": t.MergeApproval, "policy_version": t.PolicyVersion, "setup_contract": setup, "repo_name": t.Repo, "base_branch": t.BaseBranch, "branch": t.Branch, "state": string(t.State), "gate_kind": string(t.GateKind), "next_stage": string(t.NextStage), "created_at": t.CreatedAt,
+		"workspace_id": t.Workspace, "id": t.ID, "source": t.Source, "mode": string(t.Mode), "intake_key": t.IntakeKey, "title": t.Title, "body": t.Body, "escalation_level": string(t.Level), "spec_approval": t.SpecApproval, "plan_state": string(t.PlanState), "merge_approval": t.MergeApproval, "policy_version": t.PolicyVersion, "setup_contract": setup, "repo_name": t.Repo, "base_branch": t.BaseBranch, "branch": t.Branch, "state": string(t.State), "gate_kind": string(t.GateKind), "next_stage": string(t.NextStage), "created_at": t.CreatedAt,
 	}})
 }
 

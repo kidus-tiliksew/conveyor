@@ -241,7 +241,18 @@ func (s *Server) callMCPTool(r *http.Request, name string, args map[string]any) 
 			}
 			hold = typed
 		}
+		var plan intakePlanInput
+		if value, ok := args["plan_state"].(string); ok {
+			plan.PlanState = &value
+		}
+		if value, ok := args["plan"].(string); ok {
+			plan.Plan = &value
+		}
+		if value, ok := args["plan_base_commit"].(string); ok {
+			plan.PlanBaseCommit = &value
+		}
 		result, err := s.createTaskRecord(ctx, createTaskReq{
+			plan:            plan,
 			Body:            stringArg("body"),
 			Repo:            stringArg("repo"),
 			BaseBranch:      stringArg("base_branch"),
@@ -457,6 +468,21 @@ func (s *Server) callMCPTool(r *http.Request, name string, args map[string]any) 
 // a refused request has no side effect even when its key names a task
 // (component-task-lifecycle invariant 16; req-intake-and-triage AC-4.2).
 func createTaskPolicyArgError(args map[string]any) *taskCreateError {
+	// MCP never records a plan approval: any plan_approved argument, null
+	// included, is refused for every caller (component-mcp-protocol
+	// invariant 38; req-task-plan-state AC-2.4; DEC-122(6)).
+	if _, supplied := args["plan_approved"]; supplied {
+		return &taskCreateError{Status: http.StatusBadRequest, Code: invalidGateOverride, Message: "plan_approved is not accepted through MCP; a plan filed here waits at plan approval for a person's decision"}
+	}
+	// A mistyped plan argument, null included, is refused rather than read
+	// as absent (component-plan-state invariant 2).
+	for _, field := range []string{"plan_state", "plan", "plan_base_commit"} {
+		if value, supplied := args[field]; supplied {
+			if _, ok := value.(string); !ok {
+				return &taskCreateError{Status: http.StatusBadRequest, Code: invalidPlanIntake, Message: field + " must be a string"}
+			}
+		}
+	}
 	for _, field := range []string{"spec_approval", "merge_approval"} {
 		value, supplied := args[field]
 		if !supplied {
@@ -908,7 +934,7 @@ func mcpTools() []map[string]any {
 	}
 	identity := map[string]any{"workspace_id": str, "work_order_id": str, "session_id": str}
 	return append(append(mcpReadTools(), verificationMCPTools()...), []map[string]any{
-		{"name": "create_task", "description": "Create one durable task in an explicit workspace with optional desired-state context, generate its title from body, and enqueue triage. idempotency_key is required; reusing it returns the original task. The credential's owner needs create_tasks in the workspace; the task records MCP as its source and that person as its creator, enters triage like any other task, and grants the session no further capability (DEC-116(5)). An omitted spec_approval or merge_approval takes the workspace default and a supplied boolean applies. A null or non-boolean gate, a non-string level, or an unrecognized level fails with invalid_agent_gate_override and records nothing.", "inputSchema": object(map[string]any{"workspace_id": str, "body": map[string]any{"type": "string", "description": "Task description in GitHub-flavored Markdown. Structured descriptions using headings and lists are encouraged."}, "repo": str, "base_branch": str, "source": str, "depends_on": map[string]any{"type": "array", "items": str, "description": "Optional open task IDs in this workspace that must merge first."}, "requirement_ids": map[string]any{"type": "array", "items": str, "description": "Optional confirmed requirements this task serves."}, "system_design_ids": map[string]any{"type": "array", "items": str, "description": "Optional confirmed System Design documents governing this task."}, "spec_approval": map[string]string{"type": "boolean"}, "merge_approval": map[string]string{"type": "boolean"}, "idempotency_key": str}, "body", "repo", "idempotency_key")},
+		{"name": "create_task", "description": "Create one durable task in an explicit workspace with optional desired-state context, generate its title from body, and enqueue triage. idempotency_key is required; reusing it returns the original task. The credential's owner needs create_tasks in the workspace; the task records MCP as its source and that person as its creator, enters triage like any other task, and grants the session no further capability (DEC-116(5)). An omitted plan_state or merge_approval takes the workspace default; a supplied plan_state of needed or not_required applies, and a supplied boolean applies. A plan, a Markdown execution plan with Approach, Files touched, Ordering, Risks, and Done criteria headings, becomes plan version 1 and leaves the task at plan awaiting approval for a person's decision; plan_base_commit names the full commit ID it was read against. plan_state with plan, an invalid plan, or plan_base_commit without plan or not 40 lowercase hex characters fails with invalid_plan_intake and records nothing. spec_approval is the legacy alias of plan_state, true as needed and false as not_required. A null or non-boolean gate, a non-string level, an unrecognized level, or any plan_approved argument fails with invalid_agent_gate_override and records nothing.", "inputSchema": object(map[string]any{"workspace_id": str, "body": map[string]any{"type": "string", "description": "Task description in GitHub-flavored Markdown. Structured descriptions using headings and lists are encouraged."}, "repo": str, "base_branch": str, "source": str, "depends_on": map[string]any{"type": "array", "items": str, "description": "Optional open task IDs in this workspace that must merge first."}, "requirement_ids": map[string]any{"type": "array", "items": str, "description": "Optional confirmed requirements this task serves."}, "system_design_ids": map[string]any{"type": "array", "items": str, "description": "Optional confirmed System Design documents governing this task."}, "plan_state": map[string]any{"type": "string", "enum": []string{string(core.PlanNeeded), string(core.PlanNotRequired)}, "description": "Optional plan state; omit it to take the workspace default."}, "plan": map[string]any{"type": "string", "description": "Optional Markdown execution plan; it leaves the task at plan awaiting approval."}, "plan_base_commit": map[string]any{"type": "string", "description": "Optional full commit ID the plan was read against; requires plan."}, "spec_approval": map[string]string{"type": "boolean", "description": "Legacy alias of plan_state: true as needed, false as not_required."}, "merge_approval": map[string]string{"type": "boolean"}, "idempotency_key": str}, "body", "repo", "idempotency_key")},
 		{"name": "add_task_dependency", "description": "Make one existing open task depend on another as an audited operator act. Existing dependencies are idempotent and cycles are rejected.", "inputSchema": object(map[string]any{"workspace_id": str, "task_id": str, "depends_on_task_id": str, "reason": str, "request_id": str}, "task_id", "depends_on_task_id", "reason", "request_id")},
 		{"name": "set_assignee", "description": "Set or clear a task assignee as an audited operator act. Assignment constrains claim eligibility and never queue order.", "inputSchema": object(map[string]any{"workspace_id": str, "task_id": str, "assignee_user_id": str}, "task_id", "assignee_user_id")},
 		{"name": "attach_task_branch", "description": "Replace a non-terminal task's assigned git branch name as an audited operator act. Same-name is a no-op. Refused when a pull request is recorded, a work order is claimed, the name is illegal, not attachable, or already held by another open task.", "inputSchema": object(map[string]any{"workspace_id": str, "task_id": str, "branch": str}, "task_id", "branch", "workspace_id")},

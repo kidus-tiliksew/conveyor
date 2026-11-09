@@ -368,9 +368,13 @@ func (m *memory) ApprovePlanningBundle(ctx context.Context, id string) (core.Pla
 	}
 	now := time.Now().UTC()
 	for _, member := range bundle.Tasks {
-		task := core.Task{ID: member.CreatedTaskID, Workspace: bundle.Workspace, Source: "planning_bundle:" + bundle.ID + ":" + member.MemberID, IntakeKey: "planning-bundle:" + bundle.ID + ":" + member.MemberID, Title: member.Title, Body: member.Body, Level: core.L2, SpecApproval: member.SpecApproval, MergeApproval: member.MergeApproval, PolicyVersion: 1, SetupContract: member.SetupContract, Repo: member.Repo, BaseBranch: member.BaseBranch, Branch: gitx.BranchName(member.CreatedTaskID), State: core.TaskQueued, NextStage: core.StageTriage, CreatedAt: now}
+		task := core.Task{ID: member.CreatedTaskID, Workspace: bundle.Workspace, Source: "planning_bundle:" + bundle.ID + ":" + member.MemberID, IntakeKey: "planning-bundle:" + bundle.ID + ":" + member.MemberID, Title: member.Title, Body: member.Body, Level: core.L2, PlanState: member.ResolvedPlanState(), MergeApproval: member.MergeApproval, PolicyVersion: 1, SetupContract: member.SetupContract, Repo: member.Repo, BaseBranch: member.BaseBranch, Branch: gitx.BranchName(member.CreatedTaskID), State: core.TaskQueued, NextStage: core.StageTriage, CreatedAt: now}
+		if err := PrepareTaskPlanState(&task); err != nil {
+			return core.PlanningBundle{}, err
+		}
 		m.tasks[task.ID] = task
 		m.appendEventLocked(ctx, core.Event{TaskID: task.ID, Kind: "task.created", At: now, Payload: TaskCreatedPayload(ctx, task)})
+		m.appendEventLocked(ctx, IntakePlanStateEvent(task))
 		versions := contextVersions[member.MemberID]
 		for _, dep := range member.DependsOn {
 			dependencyID := byMember[dep].CreatedTaskID

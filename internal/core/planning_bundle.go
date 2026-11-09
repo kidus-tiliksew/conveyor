@@ -44,10 +44,14 @@ type PlanningBundleTask struct {
 	BaseBranch    string                    `json:"base_branch,omitempty"`
 	DependsOn     []string                  `json:"depends_on,omitempty"`
 	Context       PlanningBundleTaskContext `json:"context,omitempty"`
-	SpecApproval  bool                      `json:"spec_approval"`
-	MergeApproval bool                      `json:"merge_approval"`
-	SetupName     string                    `json:"setup,omitempty"`
-	SetupContract config.PolicyContract     `json:"setup_contract,omitempty"`
+	// PlanState is the workspace default plan state the service gives every
+	// member. SpecApproval is read only for a stored member without one
+	// (component-planning invariant 32).
+	PlanState     PlanState             `json:"plan_state,omitempty"`
+	SpecApproval  bool                  `json:"spec_approval,omitempty"`
+	MergeApproval bool                  `json:"merge_approval"`
+	SetupName     string                `json:"setup,omitempty"`
+	SetupContract config.PolicyContract `json:"setup_contract,omitempty"`
 }
 
 // PlanningBundle is one immutable operator preview. Approving it creates its
@@ -64,4 +68,17 @@ type PlanningBundle struct {
 	DecidedBy string                   `json:"decided_by,omitempty"`
 	CreatedAt time.Time                `json:"created_at"`
 	DecidedAt time.Time                `json:"decided_at,omitempty"`
+}
+
+// ResolvedPlanState is the plan state a member's task is created with: its
+// plan_state, else its legacy spec_approval, true as needed and false as
+// not_required (component-planning invariant 32).
+func (t PlanningBundleTask) ResolvedPlanState() PlanState {
+	if t.PlanState.Valid() {
+		return t.PlanState
+	}
+	if t.SpecApproval {
+		return PlanNeeded
+	}
+	return PlanNotRequired
 }

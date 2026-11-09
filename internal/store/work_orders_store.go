@@ -2396,6 +2396,9 @@ func (m *memory) CreateSpecVersion(ctx context.Context, spec core.SpecVersion) (
 	if _, ok := m.tasks[spec.TaskID]; !ok {
 		return core.SpecVersion{}, fmt.Errorf("task %s: %w", spec.TaskID, ErrNotFound)
 	}
+	if err := PrepareSpecVersionOrigin(&spec); err != nil {
+		return core.SpecVersion{}, err
+	}
 	spec.Version = len(m.specs[spec.TaskID]) + 1
 	// Approval is a separate exact-version gate; callers cannot smuggle an
 	// approved artifact through creation. This matches the Postgres contract.

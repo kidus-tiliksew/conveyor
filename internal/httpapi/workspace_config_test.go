@@ -26,7 +26,7 @@ func contextualWorkspaceDocument() config.WorkspaceDocument {
 		Workspace: "demo", MaxBounces: 2, WorkOrderQueueTimeoutText: "24h",
 		StageTimeouts: map[string]string{"spec": "30m", "implement": "2h", "review": "1h"},
 		Review:        config.ReviewPanel{Seats: []config.ReviewSeat{{}, {}}},
-		Execution:     config.ExecutionPolicy{DefaultMode: "manual", SpecApproval: true, MergeApproval: true, ImplementConcurrency: 1, ReviewConcurrency: 2},
+		Execution:     config.ExecutionPolicy{DefaultMode: "manual", DefaultPlanState: "needed", MergeApproval: true, ImplementConcurrency: 1, ReviewConcurrency: 2},
 		Repos:         []config.Repo{{Name: "conveyor", URL: "https://example.com/conveyor", Base: "main", InstallConveyor: config.InstallSwitch(false)}},
 	}
 }

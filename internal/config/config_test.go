@@ -677,7 +677,7 @@ func TestExecutionBlockStillRejectsUnrelatedUnknownKeys(t *testing.T) {
 			if err == nil || !strings.Contains(err.Error(), "field require_review_evidence not found") {
 				t.Fatalf("aliased unknown execution key error=%v", err)
 			}
-		} else if err != nil || !decoded.Execution.SpecApproval {
+		} else if err != nil || decoded.Execution.SpecApproval == nil || !*decoded.Execution.SpecApproval {
 			t.Fatalf("aliased retired key decode=%+v err=%v", decoded.Execution, err)
 		}
 	}
@@ -744,7 +744,10 @@ func executionBlockLoaders(t *testing.T, example []byte, deployment *Config, pol
 		},
 		"strict stored row": func(block string) (ExecutionPolicy, error) {
 			var document WorkspaceDocument
-			err := decodeKnown(withExecutionBlock(t, policy, block), &document)
+			if err := decodeKnown(withExecutionBlock(t, policy, block), &document); err != nil {
+				return document.Execution, err
+			}
+			err := NormalizeDefaultPlanState(&document.Execution)
 			return document.Execution, err
 		},
 	}
@@ -791,7 +794,7 @@ func TestExecutionBlockMergeKeysKeepYAMLSemantics(t *testing.T) {
 			if loadErr != nil {
 				t.Fatalf("%s %s: %v", loaderName, tc.name, loadErr)
 			}
-			if got.SpecApproval != tc.want.spec || got.MergeApproval != tc.want.merge || got.ImplementConcurrency != tc.want.implement || got.ReviewConcurrency != tc.want.view {
+			if (got.DefaultPlanState == "needed") != tc.want.spec || got.MergeApproval != tc.want.merge || got.ImplementConcurrency != tc.want.implement || got.ReviewConcurrency != tc.want.view {
 				t.Fatalf("%s %s execution=%+v, want %+v", loaderName, tc.name, got, tc.want)
 			}
 		}
@@ -885,7 +888,7 @@ func TestExecutionBlockRecursiveMergesFailCleanly(t *testing.T) {
 			if loadErr != nil {
 				t.Fatalf("%s %s: %v", loaderName, name, loadErr)
 			}
-			if !got.SpecApproval || !got.MergeApproval || got.ImplementConcurrency != 2 || got.ReviewConcurrency != 2 {
+			if got.DefaultPlanState != "needed" || !got.MergeApproval || got.ImplementConcurrency != 2 || got.ReviewConcurrency != 2 {
 				t.Fatalf("%s %s execution=%+v", loaderName, name, got)
 			}
 		}
@@ -911,7 +914,7 @@ func TestExecutionBlockAliasMergesLeaveAnchorsUnchanged(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !decoded.Execution.SpecApproval || !decoded.Execution.MergeApproval || decoded.Execution.ReviewConcurrency != 5 {
+	if decoded.Execution.SpecApproval == nil || !*decoded.Execution.SpecApproval || !decoded.Execution.MergeApproval || decoded.Execution.ReviewConcurrency != 5 {
 		t.Fatalf("alias merge execution=%+v", decoded.Execution)
 	}
 	if decoded.Shared[RetiredEvidenceToggleKey] != true || decoded.Base[RetiredEvidenceToggleKey] != true {
@@ -958,7 +961,7 @@ func TestRetiredKeyOnlyExecutionBlockKeepsShippedGateDefaults(t *testing.T) {
 		if parseErr != nil {
 			t.Fatalf("%s: %v", name, parseErr)
 		}
-		if !parsed.Execution.SpecApproval || !parsed.Execution.MergeApproval {
+		if parsed.Execution.DefaultPlanState != "needed" || !parsed.Execution.MergeApproval {
 			t.Fatalf("%s suppressed shipped gate defaults: %+v", name, parsed.Execution)
 		}
 	}

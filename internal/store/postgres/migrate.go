@@ -167,6 +167,11 @@ CREATE TABLE IF NOT EXISTS conveyor_schema_migrations (
 		if _, err := tx.Exec(ctx, string(sql)); err != nil {
 			return fmt.Errorf("apply migration %s: %w", name, err)
 		}
+		if version == planStateMigrationVersion {
+			if err := fillTaskPlanStates(ctx, tx); err != nil {
+				return fmt.Errorf("fill task plan states after migration %s: %w", name, err)
+			}
+		}
 		if version == 156 {
 			if err := backfillGovernanceSnapshots(ctx, tx); err != nil {
 				return fmt.Errorf("backfill governance snapshots after migration %s: %w", name, err)

@@ -2650,6 +2650,14 @@ func (s *Service) bundleTool(ctx context.Context, session core.PlanningSession, 
 		ID: "bundle-" + session.ID, SessionID: session.ID, Title: strings.TrimSpace(args.Title),
 		Documents: args.Documents, Tasks: args.Tasks, Workspace: session.Workspace,
 	}
+	// A member never states its own plan state: the service overwrites any
+	// plan_state or spec_approval a call supplies with the workspace default,
+	// which is needed without configuration. A member plan, plan_base_commit,
+	// or plan_approved is an unknown field that decodeArgs refuses as
+	// malformed arguments (component-planning invariants 15 and 32).
+	for i := range bundle.Tasks {
+		bundle.Tasks[i].PlanState, bundle.Tasks[i].SpecApproval = core.PlanNeeded, false
+	}
 	if s.ConfigProvider != nil {
 		cfg, err := s.ConfigProvider(ctx)
 		if err != nil {
@@ -2670,7 +2678,7 @@ func (s *Service) bundleTool(ctx context.Context, session core.PlanningSession, 
 				bundle.Tasks[i].BaseBranch = repo.Base
 			}
 			bundle.Tasks[i].SetupName, bundle.Tasks[i].SetupContract = "default", policy
-			bundle.Tasks[i].SpecApproval, bundle.Tasks[i].MergeApproval = cfg.Execution.SpecApproval, cfg.Execution.MergeApproval
+			bundle.Tasks[i].PlanState, bundle.Tasks[i].MergeApproval = workspaceDefaultPlanState(cfg), cfg.Execution.MergeApproval
 		}
 	}
 	created, err := s.Store.CreatePlanningBundle(ctx, bundle)
@@ -2846,4 +2854,14 @@ func (s *Service) CleanupSnapshots(ctx context.Context, cfg *config.Config) erro
 		}
 		return open[session], nil
 	})
+}
+
+// workspaceDefaultPlanState is the plan state a bundle member takes: the
+// workspace's execution.default_plan_state, which is needed when unset
+// (component-planning invariant 32; component-runtime invariant 39).
+func workspaceDefaultPlanState(cfg *config.Config) core.PlanState {
+	if state := core.PlanState(cfg.Execution.DefaultPlanState); state == core.PlanNotRequired {
+		return state
+	}
+	return core.PlanNeeded
 }

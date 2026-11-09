@@ -117,7 +117,7 @@ func TestDefaultInitConfigWritesPolicyOnly(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !loaded.Execution.SpecApproval || !loaded.Execution.MergeApproval {
+	if loaded.Execution.DefaultPlanState != "needed" || !loaded.Execution.MergeApproval {
 		t.Fatalf("generated gates = %+v, want both on", loaded.Execution)
 	}
 	triage := loaded.Routing.Stages["triage"]
@@ -159,7 +159,7 @@ func legacyExecutorInitConfig(t *testing.T, databaseURL string, answers initAnsw
 		Database:                  config.DatabaseForURL(databaseURL),
 		ExecutionSettings:         &settings,
 		Review:                    review,
-		Execution:                 config.ExecutionPolicy{SpecApproval: true, MergeApproval: true, ImplementConcurrency: 1, ReviewConcurrency: 1, FirstActivityTimeoutText: config.DefaultFirstActivityTimeoutText},
+		Execution:                 config.ExecutionPolicy{DefaultPlanState: "needed", MergeApproval: true, ImplementConcurrency: 1, ReviewConcurrency: 1, FirstActivityTimeoutText: config.DefaultFirstActivityTimeoutText},
 		Repos:                     []config.Repo{{Name: answers.RepositoryName, URL: answers.RepositoryURL, GitHub: initGitHubSlug(answers.RepositoryURL), Base: answers.BaseBranch, InstallConveyor: config.InstallSwitch(true)}},
 		Monitor:                   config.MonitorConfig{PollIntervalText: "1m", StartupWindowText: "24h"},
 	})

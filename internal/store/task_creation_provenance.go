@@ -20,11 +20,16 @@ type TaskTriggerProvenance struct {
 // historical; document bodies and live display fields belong to their tables.
 // Field names also decode existing full-task creation events.
 type TaskCreatedEvent struct {
-	ID             string         `json:"id"`
-	State          core.TaskState `json:"state"`
-	NextStage      core.Stage     `json:"next_stage,omitempty"`
-	SpecApproval   bool           `json:"spec_approval"`
-	MergeApproval  bool           `json:"merge_approval"`
+	ID            string         `json:"id"`
+	State         core.TaskState `json:"state"`
+	NextStage     core.Stage     `json:"next_stage,omitempty"`
+	SpecApproval  bool           `json:"spec_approval"`
+	MergeApproval bool           `json:"merge_approval"`
+	// PlanState is the plan state the task was created with, and PlanVersion
+	// the plan version an intake plan became; an older payload carries
+	// neither (component-task-lifecycle invariant 22).
+	PlanState      core.PlanState `json:"plan_state,omitempty"`
+	PlanVersion    int            `json:"plan_version,omitempty"`
 	PolicyContract struct {
 		VerifyStage bool `json:"verify_stage"`
 	} `json:"policy_contract"`
@@ -50,10 +55,13 @@ type taskCreatedReference struct {
 func TaskCreatedPayload(ctx context.Context, task core.Task) json.RawMessage {
 	payload := TaskCreatedEvent{
 		ID: task.ID, State: task.State, NextStage: task.NextStage,
-		SpecApproval: task.SpecApproval, MergeApproval: task.MergeApproval,
+		SpecApproval: task.SpecApproval, MergeApproval: task.MergeApproval, PlanState: task.PlanState,
 		ParentTaskID: task.ParentTaskID, OriginSpecVersion: task.OriginSpecVersion,
 	}
 	payload.PolicyContract.VerifyStage = task.SetupContract.VerifyStage
+	if task.IntakePlan != nil {
+		payload.PlanVersion = core.IntakePlanVersion
+	}
 	if task.Assignee != nil {
 		payload.Assignee = &core.TaskAssignee{UserID: task.Assignee.UserID}
 	}

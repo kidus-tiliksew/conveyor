@@ -56,7 +56,7 @@ func (m *memory) CreateTaskWithAttachments(ctx context.Context, t core.Task, ids
 	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	staged := memory{tasks: maps.Clone(m.tasks), dependencies: maps.Clone(m.dependencies), events: cloneStartOverSlices(m.events), lineage: m.lineage.clone(), artifacts: maps.Clone(m.artifacts), requirements: m.requirements, systemDesigns: m.systemDesigns, planningSessions: m.planningSessions, repositoryInstalls: cloneStartOverSlices(m.repositoryInstalls), nextEventID: m.nextEventID}
+	staged := memory{tasks: maps.Clone(m.tasks), dependencies: maps.Clone(m.dependencies), events: cloneStartOverSlices(m.events), lineage: m.lineage.clone(), artifacts: maps.Clone(m.artifacts), requirements: m.requirements, systemDesigns: m.systemDesigns, planningSessions: m.planningSessions, repositoryInstalls: cloneStartOverSlices(m.repositoryInstalls), specs: cloneStartOverSlices(m.specs), interventions: cloneStartOverSlices(m.interventions), nextEventID: m.nextEventID, nextReviewID: m.nextReviewID}
 	stageNotices(&staged)
 	for k, a := range staged.artifacts {
 		a.links = slices.Clone(a.links)
@@ -80,6 +80,7 @@ func (m *memory) CreateTaskWithAttachments(ctx context.Context, t core.Task, ids
 	staged.tasks[t.ID] = t
 	staged.appendEventLocked(ctx, IntakeFinalizedEvent(t))
 	m.tasks, m.dependencies, m.events, m.lineage, m.artifacts, m.repositoryInstalls, m.nextEventID = staged.tasks, staged.dependencies, staged.events, staged.lineage, staged.artifacts, staged.repositoryInstalls, staged.nextEventID
+	m.specs, m.interventions, m.nextReviewID = staged.specs, staged.interventions, staged.nextReviewID
 	m.publishStaged(&staged)
 	return nil
 }
