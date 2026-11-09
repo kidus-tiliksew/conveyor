@@ -484,3 +484,89 @@ func assertTaskIDs(t *testing.T, surface string, got, want []string) {
 		}
 	}
 }
+
+// RunTaskFilterPlanStateConformance asserts the plan_state member on every
+// backend: a repeated member is a disjunction, it intersects with every other
+// member, and it applies before paging and totals (component-http-api
+// invariant 20; DEC-122(5)).
+func RunTaskFilterPlanStateConformance(t *testing.T, fixture TaskFilterFixture) {
+	t.Helper()
+	for _, seed := range []struct {
+		name  string
+		state core.TaskState
+		plan  core.PlanState
+		day   int
+	}{
+		{"quill-not-required", core.TaskQueued, core.PlanNotRequired, 1},
+		{"quill-needed", core.TaskQueued, core.PlanNeeded, 2},
+		{"quill-awaiting", core.TaskRunning, core.PlanAwaitingApproval, 3},
+		{"quill-completed", core.TaskQueued, core.PlanCompleted, 4},
+		{"quill-needed-running", core.TaskRunning, core.PlanNeeded, 5},
+	} {
+		id := fixture.id(seed.name)
+		if err := fixture.Store.CreateTask(fixture.Context, core.Task{
+			ID: id, Workspace: fixture.Workspace, Title: "Quill " + seed.name, Source: "operator",
+			Repo: fixture.Repo, BaseBranch: "main", Branch: "conveyor/task-" + id, PolicyVersion: 1,
+			State: seed.state, NextStage: core.StageImplement, PlanState: seed.plan,
+			CreatedAt: time.Date(2023, time.January, seed.day, 12, 0, 0, 0, time.UTC),
+		}); err != nil {
+			t.Fatalf("seed %s: %v", id, err)
+		}
+	}
+	for _, testCase := range []struct {
+		name   string
+		filter store.TaskFilter
+		want   []string
+	}{
+		{"without plan_state", store.TaskFilter{Query: "quill"}, []string{"quill-needed-running", "quill-completed", "quill-awaiting", "quill-needed", "quill-not-required"}},
+		{"one plan state", store.TaskFilter{Query: "quill", PlanStates: []core.PlanState{core.PlanNeeded}}, []string{"quill-needed-running", "quill-needed"}},
+		{"each plan state", store.TaskFilter{Query: "quill", PlanStates: []core.PlanState{core.PlanAwaitingApproval}}, []string{"quill-awaiting"}},
+		{"several plan states", store.TaskFilter{Query: "quill", PlanStates: []core.PlanState{core.PlanNotRequired, core.PlanCompleted}}, []string{"quill-completed", "quill-not-required"}},
+		{"plan state alone", store.TaskFilter{PlanStates: []core.PlanState{core.PlanAwaitingApproval}}, []string{"quill-awaiting"}},
+		{"plan state intersects state", store.TaskFilter{Query: "quill", PlanStates: []core.PlanState{core.PlanNeeded}, States: []core.TaskState{core.TaskRunning}}, []string{"quill-needed-running"}},
+	} {
+		t.Run(testCase.name, func(t *testing.T) {
+			want := make([]string, len(testCase.want))
+			for i, name := range testCase.want {
+				want[i] = fixture.id(name)
+			}
+			tasks, err := fixture.Store.ListTasksFiltered(fixture.Context, testCase.filter)
+			if err != nil {
+				t.Fatalf("ListTasksFiltered: %v", err)
+			}
+			assertTaskIDs(t, "ListTasksFiltered", taskIDs(tasks), want)
+			page, err := fixture.Store.ListTaskOperations(fixture.Context, store.TaskOperationsQuery{TaskFilter: testCase.filter})
+			if err != nil {
+				t.Fatalf("ListTaskOperations: %v", err)
+			}
+			assertTaskIDs(t, "ListTaskOperations", taskIDs(page.Tasks), want)
+			if page.Total != len(want) {
+				t.Fatalf("ListTaskOperations total=%d want %d", page.Total, len(want))
+			}
+		})
+	}
+	t.Run("plan_state page and total share predicate", func(t *testing.T) {
+		filter := store.TaskFilter{Query: "quill", PlanStates: []core.PlanState{core.PlanNeeded}}
+		for offset, name := range []string{"quill-needed-running", "quill-needed"} {
+			for surface, read := range map[string]func(context.Context, store.TaskOperationsQuery) ([]core.Task, int, error){
+				"ListTaskPage": func(ctx context.Context, q store.TaskOperationsQuery) ([]core.Task, int, error) {
+					page, err := fixture.Store.ListTaskPage(ctx, q)
+					return page.Tasks, page.Total, err
+				},
+				"ListTaskOperations": func(ctx context.Context, q store.TaskOperationsQuery) ([]core.Task, int, error) {
+					page, err := fixture.Store.ListTaskOperations(ctx, q)
+					return page.Tasks, page.Total, err
+				},
+			} {
+				tasks, total, err := read(fixture.Context, store.TaskOperationsQuery{TaskFilter: filter, Limit: 1, Offset: offset})
+				if err != nil {
+					t.Fatalf("%s page %d: %v", surface, offset, err)
+				}
+				assertTaskIDs(t, surface, taskIDs(tasks), []string{fixture.id(name)})
+				if total != 2 {
+					t.Fatalf("%s page %d total=%d want 2", surface, offset, total)
+				}
+			}
+		}
+	})
+}

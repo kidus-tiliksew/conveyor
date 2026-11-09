@@ -38,6 +38,20 @@ func TestTaskLifecycleT1ThroughT22(t *testing.T) {
 		{"T19", TaskApproved, TaskRefreshReview, TaskQueued},
 		{"T20", TaskApproved, TaskConflictDispatch, TaskQueued},
 		{"T21", TaskParked, TaskRecover, TaskQueued},
+		{"T23 plan.reroute queued", TaskQueued, TaskPlanReroute, TaskQueued},
+		{"T23 plan.reroute running", TaskRunning, TaskPlanReroute, TaskQueued},
+		{"T23 plan.reroute awaiting", TaskAwaiting, TaskPlanReroute, TaskQueued},
+		{"T10 queued", TaskQueued, TaskGateSpec, TaskAwaiting},
+	}
+	for _, from := range []TaskState{TaskClaiming, TaskApproved, TaskParked, TaskMerged, TaskClosed} {
+		if _, err := TransitionTask(from, TaskPlanReroute); err == nil {
+			t.Fatalf("plan.reroute accepted from %q", from)
+		}
+	}
+	for _, from := range []TaskState{TaskClaiming, TaskAwaiting, TaskApproved, TaskParked, TaskMerged, TaskClosed} {
+		if _, err := TransitionTask(from, TaskGateSpec); err == nil {
+			t.Fatalf("gate.spec accepted from %q", from)
+		}
 	}
 	if _, err := TransitionTask(TaskQueued, TaskGatePlanRevision); err == nil {
 		t.Fatal("gate.plan_revision accepted outside running")
@@ -214,6 +228,11 @@ func TestLifecycleStateDiagramIsGeneratedFromCanonicalTables(t *testing.T) {
 		"task_running --> task_approved: review.accept",
 		"order_claimed --> order_queued: claim.expire",
 		"order_queued --> order_timed_out: order.timeout",
+		"task_queued --> task_queued: plan.reroute",
+		"task_running --> task_queued: plan.reroute",
+		"task_awaiting_human --> task_queued: plan.reroute",
+		"task_queued --> task_awaiting_human: gate.spec",
+		"task_running --> task_awaiting_human: gate.spec",
 	} {
 		if !strings.Contains(diagram, edge) {
 			t.Fatalf("diagram missing %q:\n%s", edge, diagram)
@@ -253,6 +272,39 @@ func TestGateKindForMatchesAwaitingEdges(t *testing.T) {
 	}
 	if got := GateKindFor(TaskRunning, TaskGateSpec); got != "" {
 		t.Fatalf("non-awaiting target kept gate_kind=%q", got)
+	}
+	// gate.spec records plan_approval from either source state, and
+	// plan.reroute clears the gate (component-next-action invariant 4).
+	for _, from := range []TaskState{TaskQueued, TaskRunning} {
+		to, err := TransitionTask(from, TaskGateSpec)
+		if err != nil || GateKindFor(to, TaskGateSpec) != GateKindPlanApproval {
+			t.Fatalf("gate.spec from %s: to=%s err=%v kind=%q", from, to, err, GateKindFor(to, TaskGateSpec))
+		}
+	}
+	if got := GateKindFor(TaskQueued, TaskPlanReroute); got != "" {
+		t.Fatalf("plan.reroute gate_kind=%q, want empty", got)
+	}
+}
+
+// TestPlanRerouteLeavesAwaitingOnlyAtThePlanApprovalGate covers
+// component-task-lifecycle invariant 2's precondition on plan.reroute.
+func TestPlanRerouteLeavesAwaitingOnlyAtThePlanApprovalGate(t *testing.T) {
+	if to, err := TransitionPlanReroute(TaskAwaiting, GateKindPlanApproval); err != nil || to != TaskQueued {
+		t.Fatalf("plan_approval gate: to=%s err=%v", to, err)
+	}
+	for _, kind := range []GateKind{"", GateKindPlanRevision, GateKindMergeApproval, GateKindReviewBounceLimit, GateKindJobFailure} {
+		var invalid *ErrInvalidTransition
+		if _, err := TransitionPlanReroute(TaskAwaiting, kind); !errors.As(err, &invalid) || invalid.Command != string(TaskPlanReroute) {
+			t.Fatalf("gate %q: err=%v", kind, err)
+		}
+	}
+	for _, from := range []TaskState{TaskQueued, TaskRunning} {
+		if to, err := TransitionPlanReroute(from, ""); err != nil || to != TaskQueued {
+			t.Fatalf("from %s: to=%s err=%v", from, to, err)
+		}
+	}
+	if _, err := TransitionPlanReroute(TaskParked, ""); err == nil {
+		t.Fatal("plan.reroute accepted from parked")
 	}
 }
 

@@ -1352,6 +1352,7 @@ WHERE t.workspace_id = $1
            SELECT 1 FROM tasks child
            WHERE child.workspace_id = t.workspace_id AND child.parent_task_id = t.id
        ))
+  AND (cardinality($14::text[]) = 0 OR t.plan_state = ANY($14::text[]))
 `
 
 type CountTaskOperationsTasksParams struct {
@@ -1368,6 +1369,7 @@ type CountTaskOperationsTasksParams struct {
 	UpdatedTo          pgtype.Timestamptz `json:"updated_to"`
 	OpenOnly           bool               `json:"open_only"`
 	ExcludeAnchors     bool               `json:"exclude_anchors"`
+	PlanStates         []string           `json:"plan_states"`
 }
 
 func (q *Queries) CountTaskOperationsTasks(ctx context.Context, arg CountTaskOperationsTasksParams) (int64, error) {
@@ -1385,6 +1387,7 @@ func (q *Queries) CountTaskOperationsTasks(ctx context.Context, arg CountTaskOpe
 		arg.UpdatedTo,
 		arg.OpenOnly,
 		arg.ExcludeAnchors,
+		arg.PlanStates,
 	)
 	var column_1 int64
 	err := row.Scan(&column_1)
@@ -1551,6 +1554,7 @@ WHERE t.workspace_id = $1
            SELECT 1 FROM tasks child
            WHERE child.workspace_id = t.workspace_id AND child.parent_task_id = t.id
        ))
+  AND (cardinality($16::text[]) = 0 OR t.plan_state = ANY($16::text[]))
 ORDER BY t.created_at DESC, t.id
 LIMIT NULLIF($13::int, 0)
 OFFSET $12::int
@@ -1572,6 +1576,7 @@ type ListTaskOperationsTasksParams struct {
 	PageLimit          int32              `json:"page_limit"`
 	OpenOnly           bool               `json:"open_only"`
 	ExcludeAnchors     bool               `json:"exclude_anchors"`
+	PlanStates         []string           `json:"plan_states"`
 }
 
 type ListTaskOperationsTasksRow struct {
@@ -1609,6 +1614,7 @@ func (q *Queries) listTaskOperationsTasksRows(ctx context.Context, query string,
 		arg.PageLimit,
 		arg.OpenOnly,
 		arg.ExcludeAnchors,
+		arg.PlanStates,
 	)
 	if err != nil {
 		return nil, err

@@ -1330,6 +1330,7 @@ func legacyTaskActivity(s *Server, w http.ResponseWriter, r *http.Request) {
 		MergeReadiness:            mergeReadiness,
 		Attachments:               attachments,
 		VerificationEvidence:      verificationEvidence,
+		PlanActs:                  planActsPointer(store.PlanActsFor(task, workOrders)),
 	}
 	if !bounded {
 		writeJSON(w, http.StatusOK, taskDetailProjection{item})

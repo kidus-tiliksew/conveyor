@@ -50,6 +50,9 @@ type SetupChangeRequest struct {
 	ResultingReviewRound  int
 	// ReviewRoundSeats is the resolved seat metadata of a handoff review round.
 	ReviewRoundSeats *ReviewRoundSeatResolution
+	// PlanStateEffects is the effects row of a plan_state change
+	// (component-plan-state invariant 4).
+	PlanStateEffects *PlanStateEffects
 }
 
 // SetupChangeResult is the persisted replay result of a frozen-policy change.
@@ -63,12 +66,20 @@ type SetupChangeResult struct {
 	CreatedWorkOrders    []string  `json:"created_work_orders"`
 	RetainedWorkOrders   []string  `json:"retained_work_orders"`
 	SupersededWorkOrders []string  `json:"superseded_work_orders"`
+	// CancelledWorkOrders are the plan or implement orders a plan_state
+	// change cancelled (component-plan-state invariant 4).
+	CancelledWorkOrders []string `json:"cancelled_work_orders,omitempty"`
 }
 
 type memorySetupChange struct {
 	Workspace string
 	Request   SetupChangeRequest
 	Result    SetupChangeResult
+	// Identity and Attach hold an attach-plan replay record, which shares
+	// the request-ID space with policy changes (component-plan-state
+	// invariant 5).
+	Identity json.RawMessage
+	Attach   *AttachPlanResult
 }
 
 func normalizeSetupChangeRequest(request SetupChangeRequest) SetupChangeRequest {
@@ -81,6 +92,10 @@ func normalizeSetupChangeRequest(request SetupChangeRequest) SetupChangeRequest 
 		if policy.ReviewDistinctModels != nil {
 			enabled := *policy.ReviewDistinctModels
 			policy.ReviewDistinctModels = &enabled
+		}
+		if policy.PlanState != nil {
+			state := core.PlanState(strings.TrimSpace(string(*policy.PlanState)))
+			policy.PlanState = &state
 		}
 		if policy.StageTimeouts != nil {
 			policy.StageTimeouts = map[string]string{}
@@ -162,7 +177,7 @@ func (m *memory) ChangeTaskPolicyCommand(ctx context.Context, lease taskops.Task
 	defer m.mu.Unlock()
 	workspace, _ := WorkspaceFromContext(ctx)
 	if prior, ok := m.setupChanges[request.RequestID]; ok {
-		if prior.Workspace != workspace || !SameSetupChange(prior.Request, request) {
+		if prior.Workspace != workspace || prior.Attach != nil || !SameSetupChange(prior.Request, request) {
 			return SetupChangeResult{}, fmt.Errorf("%w: request_id %s was already used for different inputs", ErrSetupChangeConflict, request.RequestID)
 		}
 		return prior.Result, nil
@@ -173,6 +188,9 @@ func (m *memory) ChangeTaskPolicyCommand(ctx context.Context, lease taskops.Task
 	}
 	if core.TaskTerminal(task.State) {
 		return SetupChangeResult{}, fmt.Errorf("%w: terminal task %s cannot change policy", ErrSetupChangeConflict, request.TaskID)
+	}
+	if request.Policy.PlanState != nil {
+		return m.changeTaskPlanStateLocked(ctx, workspace, task, request)
 	}
 	var orders []core.WorkOrder
 	for _, order := range m.workOrders {

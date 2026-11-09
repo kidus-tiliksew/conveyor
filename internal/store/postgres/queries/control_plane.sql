@@ -231,6 +231,7 @@ WHERE t.workspace_id = sqlc.arg(workspace_id)
            SELECT 1 FROM tasks child
            WHERE child.workspace_id = t.workspace_id AND child.parent_task_id = t.id
        ))
+  AND (cardinality(sqlc.arg(plan_states)::text[]) = 0 OR t.plan_state = ANY(sqlc.arg(plan_states)::text[]))
 ORDER BY t.created_at DESC, t.id
 LIMIT NULLIF(sqlc.arg(page_limit)::int, 0)
 OFFSET sqlc.arg(page_offset)::int;
@@ -297,6 +298,7 @@ WHERE t.workspace_id = sqlc.arg(workspace_id)
            SELECT 1 FROM tasks child
            WHERE child.workspace_id = t.workspace_id AND child.parent_task_id = t.id
        ))
+  AND (cardinality(sqlc.arg(plan_states)::text[]) = 0 OR t.plan_state = ANY(sqlc.arg(plan_states)::text[]))
 ORDER BY t.created_at DESC, t.id
 LIMIT NULLIF(sqlc.arg(page_limit)::int, 0)
 OFFSET sqlc.arg(page_offset)::int;
@@ -354,7 +356,8 @@ WHERE t.workspace_id = sqlc.arg(workspace_id)
   AND (NOT sqlc.arg(exclude_anchors)::boolean OR NOT EXISTS (
            SELECT 1 FROM tasks child
            WHERE child.workspace_id = t.workspace_id AND child.parent_task_id = t.id
-       ));
+       ))
+  AND (cardinality(sqlc.arg(plan_states)::text[]) = 0 OR t.plan_state = ANY(sqlc.arg(plan_states)::text[]));
 
 -- name: ListTaskOperationsEvents :many
 SELECT e.id, e.task_id, e.job_id, e.kind, e.actor_id, e.actor_role, e.payload_json, e.at, e.workspace_id

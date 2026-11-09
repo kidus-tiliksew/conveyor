@@ -81,6 +81,12 @@ const (
 	TaskCancel            TaskCommand = "task.cancel"
 	TaskStartOver         TaskCommand = "task.start_over"
 	TaskBlueprintClose    TaskCommand = "blueprint.close"
+	// TaskPlanReroute moves a task between the plan and implement stages when
+	// an operator act changes its plan state (component-plan-state invariants
+	// 4 and 5; component-task-lifecycle invariants 1 and 2). It leaves
+	// awaiting_human only at the plan_approval gate, which
+	// TransitionPlanReroute checks.
+	TaskPlanReroute TaskCommand = "plan.reroute"
 )
 
 // GateKind is the operator wait recorded on the task row when a transition
@@ -146,9 +152,9 @@ type lifecycleTable map[string]map[string]string
 
 var taskLifecycleTable = lifecycleTable{
 	string(TaskClaiming): {string(TaskIntakeFinalize): string(TaskQueued), string(TaskCancel): string(TaskClosed), string(TaskStartOver): string(TaskClosed)},
-	string(TaskQueued):   {string(TaskDispatchStart): string(TaskRunning), string(TaskOrderClaim): string(TaskRunning), string(TaskDispatchFailRetry): string(TaskQueued), string(TaskDispatchFailFinal): string(TaskParked), string(TaskRecoverRefresh): string(TaskQueued), string(TaskMergeRecover): string(TaskMerged), string(TaskCancel): string(TaskClosed), string(TaskStartOver): string(TaskClosed), string(TaskBlueprintClose): string(TaskClosed)},
-	string(TaskRunning):  {string(TaskStageAdvance): string(TaskQueued), string(TaskStageBounce): string(TaskQueued), string(TaskStageBounceLimit): string(TaskAwaiting), string(TaskJobFail): string(TaskAwaiting), string(TaskTriagePark): string(TaskParked), string(TaskDispatchFailFinal): string(TaskParked), string(TaskGateSpec): string(TaskAwaiting), string(TaskGatePlanRevision): string(TaskAwaiting), string(TaskGateMerge): string(TaskAwaiting), string(TaskReviewAccept): string(TaskApproved), string(TaskRecoverRefresh): string(TaskQueued), string(TaskMergeRecover): string(TaskMerged), string(TaskCancel): string(TaskClosed), string(TaskStartOver): string(TaskClosed)},
-	string(TaskAwaiting): {string(TaskStageBounceLimit): string(TaskAwaiting), string(TaskInterventionReject): string(TaskClosed), string(TaskInterventionApproveSpec): string(TaskQueued), string(TaskInterventionApproveReview): string(TaskApproved), string(TaskInterventionRedirect): string(TaskQueued), string(TaskMergeRecover): string(TaskMerged), string(TaskInterventionMerge): string(TaskMerged), string(TaskCancel): string(TaskClosed), string(TaskStartOver): string(TaskClosed)},
+	string(TaskQueued):   {string(TaskDispatchStart): string(TaskRunning), string(TaskOrderClaim): string(TaskRunning), string(TaskDispatchFailRetry): string(TaskQueued), string(TaskDispatchFailFinal): string(TaskParked), string(TaskRecoverRefresh): string(TaskQueued), string(TaskPlanReroute): string(TaskQueued), string(TaskGateSpec): string(TaskAwaiting), string(TaskMergeRecover): string(TaskMerged), string(TaskCancel): string(TaskClosed), string(TaskStartOver): string(TaskClosed), string(TaskBlueprintClose): string(TaskClosed)},
+	string(TaskRunning):  {string(TaskStageAdvance): string(TaskQueued), string(TaskStageBounce): string(TaskQueued), string(TaskStageBounceLimit): string(TaskAwaiting), string(TaskJobFail): string(TaskAwaiting), string(TaskTriagePark): string(TaskParked), string(TaskDispatchFailFinal): string(TaskParked), string(TaskGateSpec): string(TaskAwaiting), string(TaskGatePlanRevision): string(TaskAwaiting), string(TaskGateMerge): string(TaskAwaiting), string(TaskReviewAccept): string(TaskApproved), string(TaskRecoverRefresh): string(TaskQueued), string(TaskPlanReroute): string(TaskQueued), string(TaskMergeRecover): string(TaskMerged), string(TaskCancel): string(TaskClosed), string(TaskStartOver): string(TaskClosed)},
+	string(TaskAwaiting): {string(TaskStageBounceLimit): string(TaskAwaiting), string(TaskInterventionReject): string(TaskClosed), string(TaskInterventionApproveSpec): string(TaskQueued), string(TaskInterventionApproveReview): string(TaskApproved), string(TaskInterventionRedirect): string(TaskQueued), string(TaskPlanReroute): string(TaskQueued), string(TaskMergeRecover): string(TaskMerged), string(TaskInterventionMerge): string(TaskMerged), string(TaskCancel): string(TaskClosed), string(TaskStartOver): string(TaskClosed)},
 	string(TaskApproved): {string(TaskMergeConfirm): string(TaskMerged), string(TaskRefreshReview): string(TaskQueued), string(TaskConflictDispatch): string(TaskQueued), string(TaskCancel): string(TaskClosed), string(TaskStartOver): string(TaskClosed)},
 	string(TaskParked):   {string(TaskRecover): string(TaskQueued), string(TaskCancel): string(TaskClosed), string(TaskStartOver): string(TaskClosed)},
 }
@@ -183,6 +189,38 @@ func TransitionGateMerge(from TaskState, kind GateKind) (TaskState, error) {
 		return "", &ErrInvalidTransition{Space: TaskLifecycle, From: string(from) + "/" + string(kind), Command: string(TaskInterventionMerge)}
 	}
 	return to, nil
+}
+
+// TransitionPlanReroute applies plan.reroute. From awaiting_human it applies
+// only at the plan_approval gate; every other gate is the typed transition
+// error (component-task-lifecycle invariant 2; component-plan-state
+// invariant 4).
+func TransitionPlanReroute(from TaskState, kind GateKind) (TaskState, error) {
+	to, err := TransitionTask(from, TaskPlanReroute)
+	if err != nil {
+		return "", err
+	}
+	if from == TaskAwaiting && kind != GateKindPlanApproval {
+		return "", &ErrInvalidTransition{Space: TaskLifecycle, From: string(from) + "/" + string(kind), Command: string(TaskPlanReroute)}
+	}
+	return to, nil
+}
+
+// TriageProceedStep is component-triage invariant 29's table: the lifecycle
+// command and stages a proceed verdict applies for each plan state. Each
+// store applies it to the plan state it reads under the task-operation lock,
+// so a plan act committed while triage ran decides the step
+// (component-plan-state invariant 5; req-task-plan-state AC-1.1, AC-3.2).
+func TriageProceedStep(state PlanState) (TaskCommand, Stage, Stage, error) {
+	switch state {
+	case PlanNotRequired, PlanCompleted:
+		return TaskStageAdvance, StageImplement, "", nil
+	case PlanNeeded:
+		return TaskStageAdvance, StageSpec, "", nil
+	case PlanAwaitingApproval:
+		return TaskGateSpec, "", StageImplement, nil
+	}
+	return "", "", "", fmt.Errorf("task plan state %q selects no triage proceed step", state)
 }
 
 // ValidateGateMerge checks the one-act merge inputs every store enforces

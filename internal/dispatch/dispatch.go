@@ -1292,25 +1292,31 @@ func (d *Dispatcher) completeSpecVersion(ctx context.Context, task core.Task, re
 // plan state (component-triage invariant 29; component-task-lifecycle
 // invariant 4; req-task-plan-state AC-1.1; DEC-110(1); DEC-122(5)).
 func (d *Dispatcher) proceedFromTriage(ctx context.Context, task core.Task) error {
+	// The snapshot's plan state names a provisional step only. The store
+	// replaces it with the step the plan state read under the task-operation
+	// lock selects, so a plan act committed while the triage model call ran
+	// decides where the task goes (component-plan-state invariant 5;
+	// req-task-plan-state AC-1.1, AC-3.2).
 	command, next, recovery, err := TriageProceed(task.PlanState)
+	if err != nil {
+		command, next, recovery = core.TaskStageAdvance, "", ""
+	}
+	outcome, err := taskops.New(d.Store).Perform(ctx, task.ID, taskops.Command{
+		Kind: command, NextStage: next, RecoveryStage: recovery, ProjectStages: true, TriageProceed: true,
+	})
 	if err != nil {
 		return err
 	}
-	return d.transition(ctx, task.ID, command, next, recovery)
+	if outcome.Task.State == core.TaskQueued && !outcome.Enqueued {
+		d.Enqueue(ctx, task.ID)
+	}
+	return nil
 }
 
 // TriageProceed is component-triage invariant 29's table: the lifecycle
 // command and stages a proceed verdict applies for each plan state.
 func TriageProceed(state core.PlanState) (core.TaskCommand, core.Stage, core.Stage, error) {
-	switch state {
-	case core.PlanNotRequired, core.PlanCompleted:
-		return core.TaskStageAdvance, core.StageImplement, "", nil
-	case core.PlanNeeded:
-		return core.TaskStageAdvance, core.StageSpec, "", nil
-	case core.PlanAwaitingApproval:
-		return core.TaskGateSpec, "", core.StageImplement, nil
-	}
-	return "", "", "", fmt.Errorf("task plan state %q selects no triage proceed step", state)
+	return core.TriageProceedStep(state)
 }
 
 // PlanStateLabel is the plain-language name of a plan state

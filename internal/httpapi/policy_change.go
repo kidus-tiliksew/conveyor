@@ -9,11 +9,13 @@ import (
 	"strings"
 
 	"github.com/go-chi/chi/v5"
+	"github.com/kidus-tiliksew/conveyor/internal/core"
 	"github.com/kidus-tiliksew/conveyor/internal/store"
 )
 
 func (s *Server) changeTaskPolicy(w http.ResponseWriter, r *http.Request) {
 	var input struct {
+		PlanState            *string           `json:"plan_state"`
 		VerifyStage          *bool             `json:"verify_stage"`
 		StageTimeouts        map[string]string `json:"stage_timeouts"`
 		ReviewDistinctModels *bool             `json:"review_distinct_models"`
@@ -40,6 +42,14 @@ func (s *Server) changeTaskPolicy(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	policy := store.TaskPolicyChange{VerifyStage: input.VerifyStage, StageTimeouts: input.StageTimeouts, ReviewDistinctModels: input.ReviewDistinctModels}
+	// plan_state is needed or not_required and travels alone; Validate
+	// answers any other value or any other policy field with 400
+	// (component-plan-state invariant 4; component-task-lifecycle
+	// invariant 44).
+	if input.PlanState != nil {
+		state := core.PlanState(strings.TrimSpace(*input.PlanState))
+		policy.PlanState = &state
+	}
 	if err := policy.Validate(); err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
 		return

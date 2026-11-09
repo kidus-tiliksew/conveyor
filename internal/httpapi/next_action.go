@@ -30,7 +30,14 @@ func (s *Server) taskResponse(w http.ResponseWriter, r *http.Request, task core.
 		writeStoreFailure(w, r, err)
 		return nil, false
 	}
-	action, err := store.ReadNextAction(r.Context(), s.Store, task.ID, opts)
+	// One order read serves the next action and plan_acts, so plan_acts
+	// makes no store call of its own (component-plan-state invariant 6).
+	orders, err := s.Store.ListWorkOrdersForTasks(r.Context(), []string{task.ID})
+	if err != nil {
+		writeStoreFailure(w, r, err)
+		return nil, false
+	}
+	action, err := store.ReadNextActionForTask(r.Context(), s.Store, task, orders, opts)
 	if err != nil {
 		writeStoreFailure(w, r, err)
 		return nil, false
@@ -38,8 +45,11 @@ func (s *Server) taskResponse(w http.ResponseWriter, r *http.Request, task core.
 	return struct {
 		core.Task
 		NextAction nextaction.NextAction `json:"next_action"`
-	}{Task: task, NextAction: action}, true
+		PlanActs   store.PlanActs        `json:"plan_acts"`
+	}{Task: task, NextAction: action, PlanActs: store.PlanActsFor(task, orders)}, true
 }
+
+func planActsPointer(acts store.PlanActs) *store.PlanActs { return &acts }
 
 // writeTasks answers one task page with each row's compact next action. The
 // paging headers go out only with the rows, so a failed read states no page.

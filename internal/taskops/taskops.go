@@ -71,6 +71,12 @@ type Command struct {
 	// task.plan_state_changed with its cause (component-plan-state
 	// invariant 3; req-task-plan-state REQ-3).
 	PlanState *PlanStateMove
+	// TriageProceed makes the backend choose Kind, NextStage, and
+	// RecoveryStage from core.TriageProceedStep of the plan state it reads
+	// under the task-operation lock, replacing the caller's values. A plan
+	// act committed while triage ran therefore decides the proceed step
+	// (component-plan-state invariant 5; req-task-plan-state AC-1.1, AC-3.2).
+	TriageProceed bool
 }
 
 // PlanStateMove is the plan-state move a lifecycle command commits with its
@@ -281,7 +287,16 @@ func (p *Plane) Perform(ctx context.Context, taskID string, cmd Command) (Outcom
 		return Outcome{}, err
 	}
 	durable, _ := p.backend.(durableBackend)
-	return Outcome{Task: task, Command: cmd.Kind, Enqueued: task.State == core.TaskQueued && durable != nil && durable.IsDurable()}, nil
+	command := cmd.Kind
+	if cmd.TriageProceed {
+		// The backend chose the proceed step from the plan state it read; the
+		// resulting state names it (core.TriageProceedStep).
+		command = core.TaskStageAdvance
+		if task.State == core.TaskAwaiting {
+			command = core.TaskGateSpec
+		}
+	}
+	return Outcome{Task: task, Command: command, Enqueued: task.State == core.TaskQueued && durable != nil && durable.IsDurable()}, nil
 }
 
 // StartOver admits the compound operator command. The backend checks replay,

@@ -79,6 +79,9 @@ func (s *Store) ChangeTaskPolicyCommand(ctx context.Context, lease taskops.TaskL
 	if core.TaskTerminal(task.State) {
 		return store.SetupChangeResult{}, fmt.Errorf("%w: terminal task %s cannot change policy", store.ErrSetupChangeConflict, task.ID)
 	}
+	if request.Policy.PlanState != nil {
+		return s.changeTaskPlanStateTx(ctx, tx, q, task, request, identityJSON)
+	}
 	// Submitted spec/implement attempts are delivered, not executing; only
 	// claimed attempts and in-flight review verdicts block.
 	var claimedAttempt, inFlightVerdict bool
