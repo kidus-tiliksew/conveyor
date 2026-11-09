@@ -79,6 +79,7 @@ func CheckPlanDraft(ctx context.Context, draft *PlanDraft) ([]PlanDiagnostic, er
 		}
 	}
 	taskCitations := c.taskCriterionCitations()
+	c.checkOrphanPlans()
 	for _, item := range draft.Items {
 		if err := ctx.Err(); err != nil {
 			return nil, err
@@ -390,6 +391,57 @@ func (c *planChecker) checkTask(item PlanItem) {
 			c.fail(item.ID, planRuleLayout, "depends_on entry %q is not a draft-local task ID (draft:task/<name>)", dependency)
 		}
 	}
+	c.checkTaskPlan(item)
+}
+
+// Rule labels for a task item's plan state and plan file
+// (component-cli-onboarding invariant 27).
+const (
+	planRulePlanContent    = "req-task-plan-state AC-2.2"
+	planRulePlanBaseCommit = "req-task-plan-state AC-2.5"
+	planRulePlanState      = "req-task-plan-state AC-2.6"
+)
+
+// checkOrphanPlans fails each plan file with no tasks/<name>.md beside it: a
+// plan file is part of its task item, never an item of its own
+// (component-cli-onboarding invariant 27).
+func (c *planChecker) checkOrphanPlans() {
+	for _, orphan := range c.draft.OrphanPlans {
+		stem := strings.TrimSuffix(path.Base(orphan), planPlanSuffix)
+		c.fail(planTaskIDPrefix+stem, planRuleLayout, "%s has no %s/%s.md beside it; a plan file belongs to a task item", orphan, PlanLayerTasks, stem)
+	}
+}
+
+// checkTaskPlan applies the plan-state and plan-file rules offline, with the
+// validator submit_plan applies to a plan (component-cli-onboarding invariant
+// 27; req-task-plan-state AC-2.2, AC-2.5, AC-2.6).
+func (c *planChecker) checkTaskPlan(item PlanItem) {
+	task := item.Task
+	if task.PlanState != nil {
+		switch core.PlanState(*task.PlanState) {
+		case core.PlanNotRequired, core.PlanNeeded:
+		default:
+			c.fail(item.ID, planRulePlanState, "plan_state must be %s or %s, not %q", core.PlanNotRequired, core.PlanNeeded, *task.PlanState)
+		}
+		if task.PlanApproval != nil {
+			c.fail(item.ID, planRulePlanState, "plan_state and its legacy alias plan_approval are both stated; keep only plan_state")
+		}
+	}
+	if task.HasPlan {
+		if task.PlanState != nil || task.PlanApproval != nil {
+			c.fail(item.ID, planRulePlanState, "an item with a plan file states no plan_state or plan_approval; the approved plan sets the plan state")
+		}
+		if _, err := pipeline.ParsePlan(task.Plan, nil); err != nil {
+			c.fail(item.ID, planRulePlanContent, "%s%s: %v", item.Name, planPlanSuffix, err)
+		}
+	}
+	if task.PlanBaseCommit != nil {
+		if !task.HasPlan {
+			c.fail(item.ID, planRulePlanBaseCommit, "plan_base_commit applies only with a plan file %s/%s%s", PlanLayerTasks, item.Name, planPlanSuffix)
+		} else if !core.ValidPlanBaseCommit(*task.PlanBaseCommit) {
+			c.fail(item.ID, planRulePlanBaseCommit, "plan_base_commit must be a full commit ID of 40 lowercase hexadecimal characters, not %q", *task.PlanBaseCommit)
+		}
+	}
 }
 
 // planCitationText is every pushed field of an item that can cite another
@@ -399,7 +451,7 @@ func planCitationText(item PlanItem) string {
 	case PlanKindDecision:
 		return strings.Join([]string{item.Decision.Statement, item.Decision.Context, item.Decision.AlternativesRejected}, "\n")
 	case PlanKindTask:
-		parts := append([]string{item.Content}, item.Task.DependsOn...)
+		parts := append([]string{item.Content, item.Task.Plan}, item.Task.DependsOn...)
 		parts = append(parts, item.Task.RequirementIDs...)
 		parts = append(parts, item.Task.SystemDesignIDs...)
 		return strings.Join(parts, "\n")
