@@ -19,8 +19,28 @@ import (
 	"github.com/kidus-tiliksew/conveyor/internal/config"
 )
 
+// req-agent-guidance-install AC-2.1 v2, AC-2.4: each supported file form
+// yields its required files and links, per-file report lines, and an
+// unchanged rerun. An absent file that is not created has no report line.
 func TestRepoInitGuidanceStatesAndRepeatability(t *testing.T) {
-	for _, state := range []string{"neither", "agents only", "claude only", "claude symlink", "agents symlink", "two regular files"} {
+	type form struct {
+		state string
+		// disk maps each guidance name to "regular", "link:<target>", or
+		// "absent" after the first run.
+		disk map[string]string
+		// report maps each reported guidance name to its first-run status.
+		report map[string]string
+	}
+	forms := []form{
+		{"neither", map[string]string{"AGENTS.md": "regular", "CLAUDE.md": "absent"}, map[string]string{"AGENTS.md": "written"}},
+		{"agents only", map[string]string{"AGENTS.md": "regular", "CLAUDE.md": "absent"}, map[string]string{"AGENTS.md": "updated"}},
+		{"claude only", map[string]string{"AGENTS.md": "link:CLAUDE.md", "CLAUDE.md": "regular"}, map[string]string{"AGENTS.md": "written", "CLAUDE.md": "updated"}},
+		{"claude symlink", map[string]string{"AGENTS.md": "regular", "CLAUDE.md": "link:AGENTS.md"}, map[string]string{"AGENTS.md": "updated", "CLAUDE.md": "updated"}},
+		{"agents symlink", map[string]string{"AGENTS.md": "link:CLAUDE.md", "CLAUDE.md": "regular"}, map[string]string{"AGENTS.md": "updated", "CLAUDE.md": "updated"}},
+		{"two regular files", map[string]string{"AGENTS.md": "regular", "CLAUDE.md": "regular"}, map[string]string{"AGENTS.md": "updated", "CLAUDE.md": "updated"}},
+	}
+	for _, f := range forms {
+		state := f.state
 		t.Run(state, func(t *testing.T) {
 			root := t.TempDir()
 			old, err := renderRepoInit("v1.0.0", "old", "old-base")
@@ -51,21 +71,37 @@ func TestRepoInitGuidanceStatesAndRepeatability(t *testing.T) {
 			}
 			section, _ := renderRepoInit("v2.0.0", "example", "trunk")
 			for _, name := range []string{"AGENTS.md", "CLAUDE.md"} {
-				content, err := os.ReadFile(filepath.Join(root, name))
+				path := filepath.Join(root, name)
+				info, err := os.Lstat(path)
+				switch want := f.disk[name]; {
+				case want == "absent":
+					if !os.IsNotExist(err) {
+						t.Fatalf("%s exists: %v, %v", name, info, err)
+					}
+					continue
+				case want == "regular":
+					if err != nil || !info.Mode().IsRegular() {
+						t.Fatalf("%s is not a regular file: %v, %v", name, info, err)
+					}
+				default:
+					if target, err := os.Readlink(path); err != nil || "link:"+target != want {
+						t.Fatalf("%s link = %q, %v; want %s", name, target, err, want)
+					}
+				}
+				content, err := os.ReadFile(path)
 				if err != nil || !bytes.Contains(content, bytes.TrimSuffix(section, []byte("\n"))) {
 					t.Fatalf("%s does not carry section: %s, %v", name, content, err)
 				}
-				if state == "two regular files" || state == "agents symlink" || state == "claude symlink" || state == "agents only" || state == "claude only" && name == "CLAUDE.md" {
-					want := prefix + strings.TrimSuffix(string(section), "\n") + suffix
-					if string(content) != want {
-						t.Fatalf("operator text changed in %s: %q", name, content)
-					}
+				want := prefix + strings.TrimSuffix(string(section), "\n") + suffix
+				if state == "neither" {
+					want = string(section)
+				}
+				if string(content) != want {
+					t.Fatalf("operator text changed in %s: %q", name, content)
 				}
 			}
-			if state != "two regular files" && state != "claude only" && state != "agents symlink" {
-				if target, err := os.Readlink(filepath.Join(root, "CLAUDE.md")); err != nil || target != "AGENTS.md" {
-					t.Fatalf("CLAUDE.md link = %q, %v", target, err)
-				}
+			if got := repoInitGuidanceReport(t, root, output.String()); !reflect.DeepEqual(got, f.report) {
+				t.Fatalf("guidance report = %v, want %v\n%s", got, f.report, output.String())
 			}
 			before := repoFixtureSnapshot(t, root)
 			output.Reset()
@@ -76,7 +112,7 @@ func TestRepoInitGuidanceStatesAndRepeatability(t *testing.T) {
 				t.Fatal("repeat changed file bytes or symlinks")
 			}
 			lines := strings.Split(strings.TrimSpace(output.String()), "\n")
-			if len(lines) != 2+len(supportedSkillTools)*len(embeddedSkillManifest) {
+			if len(lines) != len(f.report)+len(supportedSkillTools)*len(embeddedSkillManifest) {
 				t.Fatalf("missing reports: %s", output.String())
 			}
 			for _, line := range lines {
@@ -84,6 +120,15 @@ func TestRepoInitGuidanceStatesAndRepeatability(t *testing.T) {
 				if len(fields) != 3 || fields[1] != "unchanged" || !filepath.IsAbs(fields[2]) {
 					t.Errorf("repeat report = %q", line)
 				}
+			}
+			rerun := repoInitGuidanceReport(t, root, output.String())
+			for name := range f.report {
+				if rerun[name] != "unchanged" {
+					t.Errorf("rerun %s report = %q", name, rerun[name])
+				}
+			}
+			if len(rerun) != len(f.report) {
+				t.Errorf("rerun guidance report = %v", rerun)
 			}
 			for _, destination := range skillDestinations(root, supportedSkillTools, true) {
 				for _, asset := range embeddedSkillManifest {
@@ -96,6 +141,29 @@ func TestRepoInitGuidanceStatesAndRepeatability(t *testing.T) {
 			}
 		})
 	}
+}
+
+// repoInitGuidanceReport maps each root guidance file named by a "repo" file
+// report line to its status, and fails on a file line naming another path.
+// The connection-context status line names no file and is skipped.
+func repoInitGuidanceReport(t *testing.T, root, output string) map[string]string {
+	t.Helper()
+	report := map[string]string{}
+	for _, line := range strings.Split(strings.TrimSpace(output), "\n") {
+		fields := strings.Split(line, "\t")
+		if len(fields) != 3 || fields[0] != "repo" || !filepath.IsAbs(fields[2]) {
+			continue
+		}
+		name, err := filepath.Rel(root, fields[2])
+		if err != nil || name != "AGENTS.md" && name != "CLAUDE.md" {
+			t.Fatalf("unexpected guidance report line %q", line)
+		}
+		if _, seen := report[name]; seen {
+			t.Fatalf("duplicate guidance report for %s:\n%s", name, output)
+		}
+		report[name] = fields[1]
+	}
+	return report
 }
 
 // `conveyor repo init` installs the coordination skill into every supported
@@ -336,12 +404,17 @@ func TestRepoInitCommandCheckoutBoundary(t *testing.T) {
 	if !strings.Contains(string(content), "<registered-repository>") || !strings.Contains(string(content), "<base-branch>") {
 		t.Fatalf("missing fallback guidance: %s", content)
 	}
-	claudePath := filepath.Join(root, "CLAUDE.md")
-	if target, err := os.Readlink(claudePath); err != nil || target != "AGENTS.md" {
-		t.Fatalf("fresh-checkout CLAUDE.md link = %q, %v", target, err)
+	// req-agent-guidance-install AC-2.1 v2: a fresh checkout gets regular
+	// AGENTS.md only, and the absent CLAUDE.md is not reported as written.
+	agentsPath, claudePath := filepath.Join(root, "AGENTS.md"), filepath.Join(root, "CLAUDE.md")
+	if info, err := os.Lstat(agentsPath); err != nil || !info.Mode().IsRegular() {
+		t.Fatalf("fresh-checkout AGENTS.md = %v, %v", info, err)
 	}
-	if !strings.Contains(output.String(), "repo\twritten\t"+claudePath+"\n") {
-		t.Fatalf("missing symlink creation report: %s", output.String())
+	if _, err := os.Lstat(claudePath); !os.IsNotExist(err) {
+		t.Fatalf("fresh checkout created CLAUDE.md: %v", err)
+	}
+	if !strings.Contains(output.String(), "repo\twritten\t"+agentsPath+"\n") || strings.Contains(output.String(), claudePath) {
+		t.Fatalf("fresh-checkout guidance report: %s", output.String())
 	}
 	prepared := repoFixtureSnapshot(t, root)
 	output.Reset()
@@ -359,7 +432,7 @@ func TestRepoInitCommandCheckoutBoundary(t *testing.T) {
 	}
 	assertRepoInitSnapshot(t, remoteBefore, repoFixtureSnapshot(t, remote))
 	lines := strings.Split(strings.TrimSpace(output.String()), "\n")
-	if len(lines) != 2+len(supportedSkillTools)*len(embeddedSkillManifest) {
+	if len(lines) != 1+len(supportedSkillTools)*len(embeddedSkillManifest) {
 		t.Fatalf("missing repeat command reports: %s", output.String())
 	}
 	for _, line := range lines {
@@ -548,13 +621,28 @@ func TestRepoInitPortableServer(t *testing.T) {
 func TestRepoInitVerifiedRefresh(t *testing.T) {
 	first := repoInitContext{Server: "https://conveyor.example.com", Workspace: "demo", Name: "example", Base: "main"}
 	second := repoInitContext{Server: "https://factory.example.org:8443/team", Workspace: "other", Name: "another", Base: "trunk"}
-	for _, form := range []string{"symlink", "regular", "reverse", "symlink guidance-only", "reverse guidance-only"} {
+	for _, form := range []string{"agents only", "symlink", "regular", "reverse", "agents only guidance-only", "symlink guidance-only", "reverse guidance-only"} {
 		t.Run(form, func(t *testing.T) {
 			root := t.TempDir()
 			old := "<!-- conveyor:repo-init owner=v1 version=v0 -->\nOld guidance without context.\n<!-- /conveyor:repo-init -->"
 			writeRepoFixture(t, root, "AGENTS.md", "Before\n"+old+"\nAfter")
 			if form == "regular" {
 				writeRepoFixture(t, root, "CLAUDE.md", "Claude before\n"+old+"\nClaude after")
+			}
+			if strings.HasPrefix(form, "symlink") {
+				if err := os.Symlink("AGENTS.md", filepath.Join(root, "CLAUDE.md")); err != nil {
+					t.Fatal(err)
+				}
+			}
+			files := []string{"AGENTS.md", "CLAUDE.md"}
+			if strings.HasPrefix(form, "agents only") {
+				// req-agent-guidance-install AC-2.1 v2: an AGENTS.md-only checkout stays that way.
+				files = files[:1]
+				defer func() {
+					if _, err := os.Lstat(filepath.Join(root, "CLAUDE.md")); !os.IsNotExist(err) {
+						t.Errorf("agents-only refresh created CLAUDE.md: %v", err)
+					}
+				}()
 			}
 			if strings.HasPrefix(form, "reverse") {
 				if err := os.Rename(filepath.Join(root, "AGENTS.md"), filepath.Join(root, "CLAUDE.md")); err != nil {
@@ -579,7 +667,7 @@ func TestRepoInitVerifiedRefresh(t *testing.T) {
 				t.Fatal("verified rerun changed files")
 			}
 			report := run("v2", unresolvedRepoInitContext())
-			for _, file := range []string{"AGENTS.md", "CLAUDE.md"} {
+			for _, file := range files {
 				if repoFixtureSnapshot(t, root)[file] != snapshot[file] {
 					t.Fatalf("unavailable refresh changed %s", file)
 				}
@@ -588,7 +676,7 @@ func TestRepoInitVerifiedRefresh(t *testing.T) {
 				t.Fatal("missing retained-context report")
 			}
 			run("v2", second)
-			for _, file := range []string{"AGENTS.md", "CLAUDE.md"} {
+			for _, file := range files {
 				data, err := os.ReadFile(filepath.Join(root, file))
 				if err != nil {
 					t.Fatal(err)
@@ -764,18 +852,25 @@ func TestRepoInitRetainedContextMissingPeer(t *testing.T) {
 			if err := prepareRepositoryWithInstaller(root, "v1", missing.Name, missing.Base, &out, installEmbeddedSkillsForDestinationsWithForce, missing); err != nil {
 				t.Fatal(err)
 			}
-			for _, name := range []string{"AGENTS.md", "CLAUDE.md"} {
+			// req-agent-guidance-install AC-2.1 v2: a lone AGENTS.md gains no
+			// CLAUDE.md; a lone CLAUDE.md gains AGENTS.md -> CLAUDE.md.
+			want := map[string]string{existing: "unchanged"}
+			if existing == "CLAUDE.md" {
+				want["AGENTS.md"] = "written"
+				if target, err := os.Readlink(filepath.Join(root, "AGENTS.md")); err != nil || target != "CLAUDE.md" {
+					t.Fatalf("AGENTS.md link = %q, %v", target, err)
+				}
+			} else if _, err := os.Lstat(filepath.Join(root, "CLAUDE.md")); !os.IsNotExist(err) {
+				t.Fatalf("created CLAUDE.md: %v", err)
+			}
+			for name := range want {
 				content, err := os.ReadFile(filepath.Join(root, name))
 				if err != nil || !bytes.Equal(content, section) {
 					t.Fatalf("retained %s: %v", name, err)
 				}
-				status := "written"
-				if name == existing {
-					status = "unchanged"
-				}
-				if !strings.Contains(out.String(), "repo\t"+status+"\t"+filepath.Join(root, name)) {
-					t.Fatalf("incorrect report: %s", out.String())
-				}
+			}
+			if got := repoInitGuidanceReport(t, root, out.String()); !reflect.DeepEqual(got, want) {
+				t.Fatalf("guidance report = %v, want %v\n%s", got, want, out.String())
 			}
 		})
 	}
@@ -894,18 +989,22 @@ func TestRepoInitUnsafeGuidancePairs(t *testing.T) {
 }
 
 func TestRepoInitGuidancePublicationFailure(t *testing.T) {
-	for _, form := range []string{"regular", "forward", "reverse"} {
+	for _, form := range []string{"regular", "forward", "reverse", "agents only", "claude only"} {
 		for _, only := range []bool{false, true} {
 			t.Run(fmt.Sprintf("%s/only=%v", form, only), func(t *testing.T) {
 				root := t.TempDir()
 				writeRepoFixture(t, root, "AGENTS.md", "Operator text")
-				if form == "regular" {
+				if form == "claude only" {
+					if err := os.Rename(filepath.Join(root, "AGENTS.md"), filepath.Join(root, "CLAUDE.md")); err != nil {
+						t.Fatal(err)
+					}
+				} else if form == "regular" {
 					writeRepoFixture(t, root, "CLAUDE.md", "Other text")
 				} else if form == "forward" {
 					if err := os.Symlink("AGENTS.md", filepath.Join(root, "CLAUDE.md")); err != nil {
 						t.Fatal(err)
 					}
-				} else {
+				} else if form == "reverse" {
 					if err := os.Rename(filepath.Join(root, "AGENTS.md"), filepath.Join(root, "CLAUDE.md")); err != nil {
 						t.Fatal(err)
 					}
@@ -929,6 +1028,49 @@ func TestRepoInitGuidancePublicationFailure(t *testing.T) {
 				assertRepoInitSnapshot(t, before, repoFixtureSnapshot(t, root))
 			})
 		}
+	}
+}
+
+// req-agent-guidance-install AC-2.1 v2, AC-2.11: when a lone regular CLAUDE.md
+// fails to publish after this run created AGENTS.md -> CLAUDE.md, rollback
+// removes the new link and leaves CLAUDE.md and its mode as they were.
+func TestRepoInitRollbackRemovesCreatedAgentsLink(t *testing.T) {
+	for _, only := range []bool{false, true} {
+		t.Run(fmt.Sprintf("only=%v", only), func(t *testing.T) {
+			root := t.TempDir()
+			writeRepoFixture(t, root, "CLAUDE.md", "Operator text")
+			if err := os.Chmod(filepath.Join(root, "CLAUDE.md"), 0o640); err != nil {
+				t.Fatal(err)
+			}
+			before := repoFixtureSnapshot(t, root)
+			linked := false
+			options := repoInitOptions{guidanceOnly: only, rename: func(from, to string) error {
+				if to != filepath.Join(root, "CLAUDE.md") {
+					t.Fatalf("published %s", to)
+				}
+				target, err := os.Readlink(filepath.Join(root, "AGENTS.md"))
+				linked = err == nil && target == "CLAUDE.md"
+				return errors.New("injected publication failure")
+			}}
+			var out bytes.Buffer
+			err := prepareRepositoryWithOptions(root, "v1", "example", "main", &out, options, installEmbeddedSkillsForDestinationsWithForce)
+			if err == nil || !strings.Contains(err.Error(), "injected") {
+				t.Fatalf("error = %v", err)
+			}
+			if !linked {
+				t.Fatal("AGENTS.md -> CLAUDE.md was not created before the failed CLAUDE.md write")
+			}
+			if _, err := os.Lstat(filepath.Join(root, "AGENTS.md")); !os.IsNotExist(err) {
+				t.Fatalf("rollback left AGENTS.md: %v", err)
+			}
+			assertRepoInitSnapshot(t, before, repoFixtureSnapshot(t, root))
+			if info, err := os.Stat(filepath.Join(root, "CLAUDE.md")); err != nil || info.Mode().Perm() != 0o640 {
+				t.Fatalf("CLAUDE.md mode = %v, %v", info, err)
+			}
+			if !strings.Contains(out.String(), "repo\trefused\t"+filepath.Join(root, "CLAUDE.md")) {
+				t.Fatalf("missing refusal report: %s", out.String())
+			}
+		})
 	}
 }
 

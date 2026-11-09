@@ -1700,7 +1700,7 @@ working factory's own confirmed corpus, as the delivered contract directs.
 // embeddedSkillManifest entry and every pack role whose stage is a work-order
 // stage, so a newly registered playbook, wrapper, or stage role cannot escape
 // the guard. Repository-only filing rules live in this repository's
-// CLAUDE.md, so no shipped text names them.
+// AGENTS.md, so no shipped text names them.
 func TestEmbeddedGuidanceCarriesCitationScopeStatement(t *testing.T) {
 	t.Parallel()
 	forbidden := []string{"internal/httpapi/dashboard", "funnelflux"}

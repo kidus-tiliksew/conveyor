@@ -1,4 +1,4 @@
-// Hand-maintained sqlc-style bindings; see component-persistence and CLAUDE.md.
+// Hand-maintained sqlc-style bindings; see component-persistence and AGENTS.md.
 // versions:
 //   sqlc v1.28.0
 // source: requirement_insight.sql

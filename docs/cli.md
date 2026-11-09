@@ -295,16 +295,28 @@ Prepare the current Git checkout for factory work. The command writes only
 files at the checkout root and below it; it creates no commit, branch, or push.
 Outside a checkout it refuses with `req-agent-guidance-install REQ-2/AC-2.6`.
 
-The command adds or refreshes an owned section in `AGENTS.md` and `CLAUDE.md`,
-leaving every byte outside the markers unchanged. The opening marker is
+The command adds or refreshes an owned section in the root guidance files
+`AGENTS.md` and `CLAUDE.md` that the repository uses, leaving every byte outside
+the markers unchanged. The opening marker is
 `<!-- conveyor:repo-init owner=v1 version=<release> -->`; the closing marker is
-`<!-- /conveyor:repo-init -->`. When `CLAUDE.md` is absent, the command creates
-it as a symlink to `AGENTS.md`. Two regular files receive the same section.
-Either direct root symlink direction (`CLAUDE.md -> AGENTS.md` or
-`AGENTS.md -> CLAUDE.md`) is supported when its target is regular. The command
-preserves the link and its target text and writes the regular target once.
-Dangling, cyclic, indirect, escaping, unrelated, or nonregular guidance paths
-and malformed or multiple marker spans refuse before any writes.
+`<!-- /conveyor:repo-init -->`. The file forms follow
+`req-agent-guidance-install` AC-2.1:
+
+- Only a regular `AGENTS.md`: the command writes the section into it and
+  creates no `CLAUDE.md`.
+- Only a regular `CLAUDE.md`: the command writes the section into it and
+  creates the relative symlink `AGENTS.md -> CLAUDE.md`.
+- Two regular files: each receives the same section.
+- Neither file: the command creates a regular `AGENTS.md` only.
+- Either direct root symlink direction (`CLAUDE.md -> AGENTS.md` or
+  `AGENTS.md -> CLAUDE.md`) beside a regular target: the command preserves the
+  link and its target text and writes the regular target once.
+
+The report names each file written, updated, unchanged, or refused. An absent
+`CLAUDE.md` that the command leaves absent has no report line. Dangling, cyclic,
+indirect, escaping, unrelated, or nonregular guidance paths and malformed or
+multiple marker spans refuse before any writes. A failed write restores changed
+files and removes files and links that the run created.
 
 To refresh guidance while preserving maintained project skill sources, select:
 
