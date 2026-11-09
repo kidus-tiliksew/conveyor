@@ -292,6 +292,9 @@ func (s *Store) ApprovePlanningBundle(ctx context.Context, id string) (core.Plan
 			if _, err = q.InsertTask(ctx, taskInsertParams(task)); err != nil {
 				return err
 			}
+			if err = writeTaskPlanState(ctx, tx, task); err != nil {
+				return err
+			}
 			if err = insertEvent(ctx, q, core.Event{TaskID: task.ID, Kind: "task.created", Payload: store.TaskCreatedPayload(ctx, task), At: now}); err != nil {
 				return err
 			}

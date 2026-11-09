@@ -108,6 +108,9 @@ func (s *Store) createTaskTx(ctx context.Context, tx pgx.Tx, q *db.Queries, task
 	}); err != nil {
 		return err
 	}
+	if err := writeTaskPlanState(ctx, tx, task); err != nil {
+		return err
+	}
 	if task.Supersedes != "" || task.SupersededBy != "" || task.IntakeOperatorDirection != "" {
 		if _, err := tx.Exec(ctx, `UPDATE tasks SET supersedes=NULLIF($3,''),superseded_by=NULLIF($4,''),intake_operator_direction=$5 WHERE workspace_id=$1 AND id=$2`, task.Workspace, task.ID, task.Supersedes, task.SupersededBy, task.IntakeOperatorDirection); err != nil {
 			return err
@@ -1129,6 +1132,9 @@ func (s *Store) ApproveSpecVersionAndMaterialize(ctx context.Context, taskID str
 			if _, err = q.InsertTask(ctx, taskInsertParams(child)); err != nil {
 				return fmt.Errorf("materialize %s: %w", item.ID, err)
 			}
+			if err = writeTaskPlanState(ctx, tx, child); err != nil {
+				return err
+			}
 			if err = insertEvent(ctx, q, core.Event{TaskID: child.ID, Kind: "task.created", Payload: store.TaskCreatedPayload(store.WithTaskTitleRedactions(ctx, titleStats), child), At: createdAt}); err != nil {
 				return err
 			}
@@ -1799,7 +1805,6 @@ func taskInsertParams(task core.Task) db.InsertTaskParams {
 		NextStage: string(task.NextStage), RecoveryStage: string(task.RecoveryStage),
 		ParentTaskID: nullableText(task.ParentTaskID), OriginSpecVersion: int32(task.OriginSpecVersion), OriginSubID: task.OriginSubID,
 		IntakeKey: nullableText(task.IntakeKey), CreatedAt: timestamp(task.CreatedAt),
-		PlanState: string(task.PlanState),
 	}
 }
 

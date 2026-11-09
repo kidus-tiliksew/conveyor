@@ -63,9 +63,9 @@ func TestReviewRoundSeatsMigrationIntegration(t *testing.T) {
 		VALUES ($1,1,'plan',0,'[]','[]',true,$2,$2,'','')`, taskID, now); err != nil {
 		t.Fatal(err)
 	}
-	// CreateJob reads today's task row. The columns migration 157 adds are
-	// nullable and unrelated to this migration, and it replays over them.
-	if _, err = pool.Exec(ctx, `ALTER TABLE tasks ADD COLUMN IF NOT EXISTS check_status_deadline timestamptz, ADD COLUMN IF NOT EXISTS check_status_deadline_head text`); err != nil {
+	// CreateJob reads today's task row. The columns migrations 157 and 161
+	// add are unrelated to this migration, and each replays over them.
+	if _, err = pool.Exec(ctx, `ALTER TABLE tasks ADD COLUMN IF NOT EXISTS check_status_deadline timestamptz, ADD COLUMN IF NOT EXISTS check_status_deadline_head text, ADD COLUMN IF NOT EXISTS plan_state text NOT NULL DEFAULT 'needed'`); err != nil {
 		t.Fatal(err)
 	}
 	legacy := newStore(pool)

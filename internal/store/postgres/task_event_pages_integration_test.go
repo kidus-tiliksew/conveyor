@@ -265,7 +265,7 @@ func TestTaskEventWindowFetchBoundsIntegration(t *testing.T) {
 	// lookahead row transfers only fixed-width metadata.
 	fingerprint := store.TaskEventWindowQuery{TaskID: payloadTask.ID, Descending: true, Limit: 1, MaxBytes: store.TaskEventWindowMaxBytes, PayloadLimit: 1}
 	window, got, err = read(fingerprint)
-	if err != nil || window.Boundary != (store.TaskEventBoundary{MaxID: payloadIDs[1], Count: 3}) || len(window.Events) != 1 || window.Events[0].ID != payloadIDs[1] || window.Events[0].Payload != nil || !window.More {
+	if err != nil || window.Boundary != (store.TaskEventBoundary{MaxID: payloadIDs[1], Count: 4}) || len(window.Events) != 1 || window.Events[0].ID != payloadIDs[1] || window.Events[0].Payload != nil || !window.More {
 		t.Fatalf("fingerprint=%+v err=%v", window, err)
 	}
 	if len(got) != 2 || got[payloadIDs[1]] != columnBytes || got[payloadIDs[0]] != 0 {

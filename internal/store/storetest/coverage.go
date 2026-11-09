@@ -58,6 +58,7 @@ var suiteMethods = map[string][]string{
 	"TaskBranchUniqueness":              strings.Fields(`AttachTaskBranch CancelTaskCommand CreateTask GetTask ListEvents`),
 	"TaskBranchConcurrentClaims":        strings.Fields(`AttachTaskBranch CreateTask GetTask ListEvents`),
 	"TaskBranchAttach":                  strings.Fields(`AttachTaskBranch CancelTaskCommand CreateTask GetTask ListEvents AppendEvent CreateJob CreateWorkOrderCommand ClaimWorkOrderCommand`),
+	"PlanStateIntake":                   strings.Fields(`ApprovePlanningBundle CreatePlanningBundle CreatePlanningSession CreateRequirement CreateSpecVersion CreateTask CreateTaskWithAttachments CreateTaskWithDependenciesAndContext GetApprovedSpecVersion GetLatestSpecVersion GetSpecVersion GetTask ListEvents ListInterventions ListTasks`),
 	"TaskCreationProvenance":            strings.Fields(`ConfirmSystemDesignVersion CreateSystemDesign CreateTaskWithDependenciesAndContext GetTask GetTaskByIntakeKey ListEvents Log IsDurable`),
 	"TaskEventAtomicity":                strings.Fields(`ApplyTaskCommand CancelTaskCommand CreateTask CreateWorkspace GetTask ListEvents ListInterventions WithTaskSideEffectLock`),
 	"ContextFreshness":                  strings.Fields(`RecordContextObservation RecordInProcessContextObservation ListEvents GetWorkOrder`),
