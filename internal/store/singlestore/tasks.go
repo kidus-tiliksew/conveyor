@@ -1176,6 +1176,11 @@ func (s *Store) applyTaskCommandTx(ctx context.Context, tx *sql.Tx, id string, c
 		if err != nil {
 			return notFound(err, "task %s", id)
 		}
+		// The caller holds the task-operation lock the plan acts take, so the
+		// plan state read here is the one the proceed step commits against.
+		if command, err = store.ResolveTriageProceed(command, before.PlanState); err != nil {
+			return err
+		}
 		state, err := core.TransitionTask(core.TaskState(before.State), command.Kind)
 		if err != nil {
 			return err

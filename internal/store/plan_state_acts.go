@@ -448,3 +448,21 @@ func (m *memory) AttachTaskPlanCommand(ctx context.Context, lease taskops.TaskLe
 	m.setupChanges[request.RequestID] = memorySetupChange{Workspace: workspace, Identity: identity, Attach: &result}
 	return result, nil
 }
+
+// ResolveTriageProceed replaces a triage proceed command's step with the one
+// the task's current plan state selects. Each backend calls it on the plan
+// state it read under the task-operation lock that the plan acts commit
+// under, so no act can commit between the read and the transition
+// (component-plan-state invariant 5; component-triage invariant 29;
+// req-task-plan-state AC-1.1, AC-3.2). Any other command passes unchanged.
+func ResolveTriageProceed(command taskops.Command, current core.PlanState) (taskops.Command, error) {
+	if !command.TriageProceed {
+		return command, nil
+	}
+	kind, next, recovery, err := core.TriageProceedStep(current)
+	if err != nil {
+		return command, err
+	}
+	command.Kind, command.NextStage, command.RecoveryStage, command.ProjectStages = kind, next, recovery, true
+	return command, nil
+}

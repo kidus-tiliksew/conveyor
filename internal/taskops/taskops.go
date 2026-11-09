@@ -71,6 +71,12 @@ type Command struct {
 	// task.plan_state_changed with its cause (component-plan-state
 	// invariant 3; req-task-plan-state REQ-3).
 	PlanState *PlanStateMove
+	// TriageProceed makes the backend choose Kind, NextStage, and
+	// RecoveryStage from core.TriageProceedStep of the plan state it reads
+	// under the task-operation lock, replacing the caller's values. A plan
+	// act committed while triage ran therefore decides the proceed step
+	// (component-plan-state invariant 5; req-task-plan-state AC-1.1, AC-3.2).
+	TriageProceed bool
 }
 
 // PlanStateMove is the plan-state move a lifecycle command commits with its

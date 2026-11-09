@@ -206,6 +206,23 @@ func TransitionPlanReroute(from TaskState, kind GateKind) (TaskState, error) {
 	return to, nil
 }
 
+// TriageProceedStep is component-triage invariant 29's table: the lifecycle
+// command and stages a proceed verdict applies for each plan state. Each
+// store applies it to the plan state it reads under the task-operation lock,
+// so a plan act committed while triage ran decides the step
+// (component-plan-state invariant 5; req-task-plan-state AC-1.1, AC-3.2).
+func TriageProceedStep(state PlanState) (TaskCommand, Stage, Stage, error) {
+	switch state {
+	case PlanNotRequired, PlanCompleted:
+		return TaskStageAdvance, StageImplement, "", nil
+	case PlanNeeded:
+		return TaskStageAdvance, StageSpec, "", nil
+	case PlanAwaitingApproval:
+		return TaskGateSpec, "", StageImplement, nil
+	}
+	return "", "", "", fmt.Errorf("task plan state %q selects no triage proceed step", state)
+}
+
 // ValidateGateMerge checks the one-act merge inputs every store enforces
 // before it opens its transaction (DEC-64(1,7)).
 func ValidateGateMerge(intervention Intervention, approvedHead string, confirmed Event) error {

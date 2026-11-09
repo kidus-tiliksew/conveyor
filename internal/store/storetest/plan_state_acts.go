@@ -339,4 +339,57 @@ func runPlanStateActs(t *testing.T, x Fixture) {
 			t.Fatalf("/policy reusing an attach request ID err = %v", err)
 		}
 	})
+
+	// A triage proceed command carries the step its stale snapshot chose; the
+	// backend replaces it with the step the plan state it reads under the
+	// task-operation lock selects, so a plan act committed while triage ran
+	// decides the route (component-plan-state invariant 5; component-triage
+	// invariant 29; req-task-plan-state AC-1.1, AC-3.2).
+	t.Run("triage proceed follows the plan state committed during triage", func(t *testing.T) {
+		for _, tc := range []struct {
+			name    string
+			initial core.PlanState
+			act     func(t *testing.T, taskID string)
+			state   core.TaskState
+			next    core.Stage
+			gate    core.GateKind
+		}{
+			{"attach on not_required", core.PlanNotRequired, func(t *testing.T, taskID string) {
+				_, err := attach(taskID, core.NewTaskID(), planStateActsPlan, "")
+				requireOK(t, err)
+			}, core.TaskAwaiting, "", core.GateKindPlanApproval},
+			{"policy to needed", core.PlanNotRequired, func(t *testing.T, taskID string) {
+				_, err := setPlanState(taskID, core.NewTaskID(), "needs design", core.PlanNeeded)
+				requireOK(t, err)
+			}, core.TaskQueued, core.StageSpec, ""},
+			{"policy to not_required", core.PlanNeeded, func(t *testing.T, taskID string) {
+				_, err := setPlanState(taskID, core.NewTaskID(), "small change", core.PlanNotRequired)
+				requireOK(t, err)
+			}, core.TaskQueued, core.StageImplement, ""},
+			{"no act on not_required", core.PlanNotRequired, nil, core.TaskQueued, core.StageImplement, ""},
+			{"no act on needed", core.PlanNeeded, nil, core.TaskQueued, core.StageSpec, ""},
+		} {
+			task := newTask(t, core.TaskRunning, core.StageTriage, tc.initial)
+			stale, staleNext, staleRecovery, err := core.TriageProceedStep(tc.initial)
+			requireOK(t, err)
+			if tc.act != nil {
+				tc.act(t, task.ID)
+			}
+			proceeded, err := taskops.New(st).Perform(ctx, task.ID, taskops.Command{Kind: stale, NextStage: staleNext, RecoveryStage: staleRecovery, ProjectStages: true, TriageProceed: true})
+			requireOK(t, err)
+			stored, err := st.GetTask(ctx, task.ID)
+			requireOK(t, err)
+			for _, got := range []core.Task{proceeded.Task, stored} {
+				if got.State != tc.state || got.GateKind != tc.gate || (tc.state == core.TaskQueued && got.NextStage != tc.next) {
+					t.Fatalf("%s: task state=%s next=%s gate=%s, want %s next=%s gate=%s", tc.name, got.State, got.NextStage, got.GateKind, tc.state, tc.next, tc.gate)
+				}
+			}
+			if tc.gate == core.GateKindPlanApproval && stored.RecoveryStage != core.StageImplement {
+				t.Fatalf("%s: plan gate recovery stage=%s", tc.name, stored.RecoveryStage)
+			}
+			if orders, listErr := st.ListTaskWorkOrders(ctx, task.ID); listErr != nil || len(orders) != 0 {
+				t.Fatalf("%s: proceed created orders %+v err=%v", tc.name, orders, listErr)
+			}
+		}
+	})
 }

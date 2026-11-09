@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"github.com/kidus-tiliksew/conveyor/internal/core"
+	"github.com/kidus-tiliksew/conveyor/internal/taskops"
 )
 
 func planActOrder(id string, stage core.Stage, state core.WorkOrderState) core.WorkOrder {
@@ -170,5 +171,26 @@ func TestTaskPolicyChangePlanStateTravelsAlone(t *testing.T) {
 		if err := change.Validate(); err == nil {
 			t.Fatalf("%s accepted", name)
 		}
+	}
+}
+
+// TestResolveTriageProceedReplacesTheStaleStep checks that a triage proceed
+// command takes the step of the plan state the backend read, and that every
+// other command passes unchanged (component-plan-state invariant 5).
+func TestResolveTriageProceedReplacesTheStaleStep(t *testing.T) {
+	stale := taskops.Command{Kind: core.TaskStageAdvance, NextStage: core.StageImplement, TriageProceed: true}
+	got, err := ResolveTriageProceed(stale, core.PlanAwaitingApproval)
+	if err != nil || got.Kind != core.TaskGateSpec || got.NextStage != "" || got.RecoveryStage != core.StageImplement || !got.ProjectStages {
+		t.Fatalf("awaiting_approval: %+v err=%v", got, err)
+	}
+	if got, err = ResolveTriageProceed(stale, core.PlanNeeded); err != nil || got.Kind != core.TaskStageAdvance || got.NextStage != core.StageSpec {
+		t.Fatalf("needed: %+v err=%v", got, err)
+	}
+	if _, err = ResolveTriageProceed(stale, ""); err == nil {
+		t.Fatal("an empty plan state selected a proceed step")
+	}
+	other := taskops.Command{Kind: core.TaskStageAdvance, NextStage: core.StageReview}
+	if got, err = ResolveTriageProceed(other, core.PlanNeeded); err != nil || !reflect.DeepEqual(got, other) {
+		t.Fatalf("a non-proceed command changed: %+v err=%v", got, err)
 	}
 }
