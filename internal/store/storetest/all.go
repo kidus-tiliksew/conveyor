@@ -154,6 +154,10 @@ type Factory struct {
 	// workorder: workorder tests import storetest. The claim-failure stall
 	// case requires it and never skips.
 	ClaimService ClaimServiceFunc
+	// SubmitPlanService is workorder.Service.SubmitPlan with a real
+	// dispatcher, for the same reason. The plan-submission serialization
+	// case requires it and never skips.
+	SubmitPlanService SubmitPlanServiceFunc
 }
 
 func (f Factory) fresh(t *testing.T, repos []config.Repo) Fixture {
@@ -228,6 +232,9 @@ func RunAll(t *testing.T, factory Factory) {
 		runInboxAttentionCountBodyFree(t, x)
 	})
 	run("HoldRetirement", func(t *testing.T) { runHoldRetirement(t, factory.fresh(t, nil), factory.ClaimService) })
+	run("PlanSubmitSerialization", func(t *testing.T) {
+		runPlanSubmitSerialization(t, factory.fresh(t, nil), factory.SubmitPlanService)
+	})
 	run("ReviewDistinctModelsNoClaimStall", func(t *testing.T) {
 		runDistinctModelsNoClaimFailure(t, factory.fresh(t, nil), factory.ClaimService)
 	})

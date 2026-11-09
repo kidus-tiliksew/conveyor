@@ -1,13 +1,16 @@
 package storetest
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"reflect"
 	"testing"
 	"time"
 
+	"github.com/kidus-tiliksew/conveyor/internal/config"
 	"github.com/kidus-tiliksew/conveyor/internal/core"
+	"github.com/kidus-tiliksew/conveyor/internal/pipeline"
 	"github.com/kidus-tiliksew/conveyor/internal/store"
 	"github.com/kidus-tiliksew/conveyor/internal/taskops"
 )
@@ -425,6 +428,118 @@ func runPlanStateActs(t *testing.T, x Fixture) {
 		after, afterEvents, afterOrders := snapshot(t, task.ID)
 		if after.State != before.State || after.GateKind != before.GateKind || after.NextStage != before.NextStage || afterEvents != beforeEvents || len(afterOrders) != len(beforeOrders) {
 			t.Fatalf("refused plan.reroute changed the task: %+v -> %+v", before, after)
+		}
+	})
+}
+
+// SubmitPlanServiceFunc returns workorder.Service.SubmitPlan over st with cfg
+// and a real dispatcher.
+type SubmitPlanServiceFunc func(st store.Store, cfg *config.Config) func(ctx context.Context, id, session string, plan pipeline.StructuredPlan) (map[string]any, error)
+
+// planSubmitPlan passes the content rules of a submitted plan.
+const planSubmitPlan = "## Approach\nSubmit a plan.\n\n## Files touched\n- internal/workorder/service.go\n\n## Ordering\n1. Submit.\n\n## Risks\n- None.\n\n## Done criteria\n- The plan waits for approval."
+
+// runPlanSubmitSerialization runs submit_plan through the work-order service
+// on every backend. A plain submission completes under the task side-effect
+// lock it takes: every write inside it runs on the session that holds the
+// lock, so it never waits on itself. A submission that starts while an
+// operator act holds the lock waits for it, then finds its order cancelled by
+// the attach and records nothing, so the attached plan stays the latest
+// version at the plan approval gate (component-plan-state invariants 4 and
+// 5; component-persistence invariant 6).
+func runPlanSubmitSerialization(t *testing.T, x Fixture, submitService SubmitPlanServiceFunc) {
+	if submitService == nil {
+		t.Fatal("conformance factory must provide SubmitPlanService for the plan-submission serialization cases")
+	}
+	st := x.Backend
+	submit := submitService(st, x.Config)
+	claimPlanOrder := func(t *testing.T, ctx context.Context) (core.Task, core.WorkOrder) {
+		t.Helper()
+		now := time.Now().UTC()
+		id := core.NewTaskID()
+		task := core.Task{ID: id, Workspace: x.Workspace, Repo: x.Config.Repos[0].Name, BaseBranch: "main", Branch: "conveyor/task-" + id, PolicyVersion: 1,
+			State: core.TaskRunning, NextStage: core.StageSpec, PlanState: core.PlanNeeded, CreatedAt: now}
+		requireOK(t, st.CreateTask(ctx, task))
+		job := core.Job{ID: id + "-spec-1", TaskID: id, Stage: core.StageSpec, State: core.JobPending}
+		order := core.WorkOrder{ID: job.ID, TaskID: id, JobID: job.ID, Stage: core.StageSpec, State: core.WorkOrderQueued, Claimable: true, QueueEnteredAt: now, QueueDeadline: now.Add(time.Hour), CreatedAt: now}
+		_, err := For(st).CreateStageWorkOrder(ctx, job, order)
+		requireOK(t, err)
+		claimed, err := For(st).ClaimWorkOrder(ctx, order.ID, core.WorkOrderClaim{SessionID: "plan-session-" + id, ClientToken: "plan-token-" + id, Agent: "codex", Model: "planner", Lease: time.Minute, ExecutionTimeout: time.Hour})
+		requireOK(t, err)
+		return task, claimed
+	}
+	plan := pipeline.StructuredPlan{Markdown: planSubmitPlan, Decomposition: []pipeline.DecompositionItem{}}
+
+	t.Run("a submission completes under the lock it takes", func(t *testing.T) {
+		ctx, cancel := context.WithTimeout(x.Context, 20*time.Second)
+		defer cancel()
+		task, order := claimPlanOrder(t, ctx)
+		result, err := submit(ctx, order.ID, order.SessionID, plan)
+		if err != nil || result["version"] != 1 {
+			t.Fatalf("submit_plan result=%v err=%v", result, err)
+		}
+		stored, err := st.GetTask(ctx, task.ID)
+		requireOK(t, err)
+		if stored.State != core.TaskAwaiting || stored.GateKind != core.GateKindPlanApproval || stored.PlanState != core.PlanAwaitingApproval {
+			t.Fatalf("task after submit_plan = %s/%s plan %s", stored.State, stored.GateKind, stored.PlanState)
+		}
+	})
+
+	t.Run("a submission waits for an attach that holds the lock", func(t *testing.T) {
+		ctx, cancel := context.WithTimeout(x.Context, 20*time.Second)
+		defer cancel()
+		task, order := claimPlanOrder(t, ctx)
+		held, release := make(chan struct{}), make(chan struct{})
+		lockDone := make(chan error, 1)
+		go func() {
+			lockDone <- st.WithTaskSideEffectLock(ctx, task.ID, func(locked context.Context) error {
+				close(held)
+				<-release
+				_, err := taskops.ExecuteSetupChange(locked, st, task.ID, func(lease taskops.TaskLease) (store.AttachPlanResult, error) {
+					return st.AttachTaskPlanCommand(locked, lease, store.AttachPlanRequest{TaskID: task.ID, RequestID: "attach-" + task.ID, Reason: "operator plan", Plan: planSubmitPlan})
+				})
+				return err
+			})
+		}()
+		select {
+		case <-held:
+		case <-ctx.Done():
+			t.Fatal("the test never acquired the task lock")
+		}
+		submitDone := make(chan error, 1)
+		go func() {
+			_, err := submit(ctx, order.ID, order.SessionID, plan)
+			submitDone <- err
+		}()
+		select {
+		case err := <-submitDone:
+			close(release)
+			t.Fatalf("submit_plan finished while the task lock was held: %v", err)
+		case <-time.After(300 * time.Millisecond):
+		}
+		if _, ok, err := st.GetLatestSpecVersion(ctx, task.ID); err != nil || ok {
+			close(release)
+			t.Fatalf("submit_plan recorded a version while the task lock was held: ok=%t err=%v", ok, err)
+		}
+		close(release)
+		requireOK(t, <-lockDone)
+		select {
+		case err := <-submitDone:
+			if err == nil {
+				t.Fatal("submit_plan succeeded on an order the attach cancelled")
+			}
+		case <-ctx.Done():
+			t.Fatal("submit_plan did not finish after the lock was released")
+		}
+		latest, ok, err := st.GetLatestSpecVersion(ctx, task.ID)
+		requireOK(t, err)
+		if !ok || latest.Version != 1 || latest.Origin != core.PlanOriginOperator {
+			t.Fatalf("latest plan version = %+v ok=%t, want the attached version 1", latest, ok)
+		}
+		stored, err := st.GetTask(ctx, task.ID)
+		requireOK(t, err)
+		if stored.State != core.TaskAwaiting || stored.GateKind != core.GateKindPlanApproval || stored.PlanState != core.PlanAwaitingApproval {
+			t.Fatalf("task = %s/%s plan %s, want awaiting_approval at the plan approval gate", stored.State, stored.GateKind, stored.PlanState)
 		}
 	})
 }

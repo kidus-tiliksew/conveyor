@@ -17,6 +17,7 @@ import (
 	"github.com/kidus-tiliksew/conveyor/internal/core"
 	"github.com/kidus-tiliksew/conveyor/internal/dispatch"
 	"github.com/kidus-tiliksew/conveyor/internal/httpapi"
+	"github.com/kidus-tiliksew/conveyor/internal/pipeline"
 	"github.com/kidus-tiliksew/conveyor/internal/store"
 	"github.com/kidus-tiliksew/conveyor/internal/store/storetest"
 	githubtrigger "github.com/kidus-tiliksew/conveyor/internal/trigger/github"
@@ -165,6 +166,12 @@ func TestSingleStoreConformanceIntegration(t *testing.T) {
 		ClaimService: func(st store.Store, cfg *config.Config) func(context.Context, string, core.WorkOrderClaim) (core.WorkOrder, error) {
 			service := &workorder.Service{Store: st, ConfigProvider: func(context.Context) (*config.Config, error) { return cfg, nil }}
 			return service.Claim
+		},
+		SubmitPlanService: func(st store.Store, cfg *config.Config) func(context.Context, string, string, pipeline.StructuredPlan) (map[string]any, error) {
+			dispatcher := dispatch.New(st, cfg, nil)
+			dispatcher.DisableMemoryQueueForTest()
+			service := &workorder.Service{Store: st, Dispatcher: dispatcher, ConfigProvider: func(context.Context) (*config.Config, error) { return cfg, nil }}
+			return service.SubmitPlan
 		},
 		ReviewSweep: func(ctx context.Context, st store.Store, cfg *config.Config, head string, now time.Time) (int, error) {
 			service := &workorder.Service{

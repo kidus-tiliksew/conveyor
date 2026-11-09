@@ -1428,7 +1428,7 @@ func (s *Service) UploadTranscript(ctx context.Context, id, session, transcript 
 // remain in-band, retain the claim, and record no plan version
 // (component-work-orders invariant 56; component-mcp-protocol invariant 40).
 func (s *Service) SubmitPlan(ctx context.Context, id, session string, value pipeline.StructuredPlan) (map[string]any, error) {
-	return s.submitStageDocument(ctx, id, session, func(task core.Task, job core.Job, order core.WorkOrder) (core.SpecVersion, error) {
+	return s.submitStageDocument(ctx, id, session, func(ctx context.Context, task core.Task, job core.Job, order core.WorkOrder) (core.SpecVersion, error) {
 		// A planned review seat count below the task's minimum is refused
 		// before any plan version or lifecycle change, so the order stays
 		// claimed for correction (req-review-gates-evidence AC-2.8;
@@ -1446,7 +1446,11 @@ func (s *Service) SubmitPlan(ctx context.Context, id, session string, value pipe
 	})
 }
 
-func (s *Service) submitStageDocument(ctx context.Context, id, session string, apply func(core.Task, core.Job, core.WorkOrder) (core.SpecVersion, error)) (map[string]any, error) {
+// submitStageDocument passes apply the locked context: on PostgreSQL every
+// store write inside it must run on the session that holds the task
+// side-effect lock, or it waits on that lock forever (component-persistence
+// invariant 6).
+func (s *Service) submitStageDocument(ctx context.Context, id, session string, apply func(context.Context, core.Task, core.Job, core.WorkOrder) (core.SpecVersion, error)) (map[string]any, error) {
 	order, err := s.authorized(ctx, id, session)
 	if err != nil {
 		return nil, err
@@ -1465,7 +1469,7 @@ func (s *Service) submitStageDocument(ctx context.Context, id, session string, a
 	return result, err
 }
 
-func (s *Service) submitStageDocumentLocked(ctx context.Context, id, session string, apply func(core.Task, core.Job, core.WorkOrder) (core.SpecVersion, error)) (map[string]any, error) {
+func (s *Service) submitStageDocumentLocked(ctx context.Context, id, session string, apply func(context.Context, core.Task, core.Job, core.WorkOrder) (core.SpecVersion, error)) (map[string]any, error) {
 	order, err := s.authorized(ctx, id, session)
 	if err != nil {
 		return nil, err
@@ -1495,7 +1499,7 @@ func (s *Service) submitStageDocumentLocked(ctx context.Context, id, session str
 	if !found {
 		return nil, fmt.Errorf("spec job unavailable")
 	}
-	version, err := apply(task, job, order)
+	version, err := apply(ctx, task, job, order)
 	if err != nil {
 		return nil, err
 	}
