@@ -6,10 +6,12 @@ export function CopyButton({
   value,
   label = 'Copy',
   showLabel = false,
+  className,
 }: {
   value: string
   label?: string
   showLabel?: boolean
+  className?: string
 }) {
   const [copied, setCopied] = useState(false)
   useEffect(() => {
@@ -21,6 +23,7 @@ export function CopyButton({
     <Button
       variant="ghost"
       size={showLabel ? 'sm' : 'icon'}
+      className={className}
       aria-label={copied ? 'Copied' : label}
       title={copied ? 'Copied' : label}
       onClick={() => {
