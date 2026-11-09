@@ -4,6 +4,12 @@ import { callerIdentity } from './helpers/caller-identity'
 
 const createdAt = '2026-07-18T00:00:00Z'
 
+// The description editor; the optional Plan field is the sheet's other
+// textarea (component-web-task-surfaces invariant 63).
+function descriptionEditor(page: Page) {
+  return page.getByRole('dialog', { name: 'New task' }).getByRole('textbox', { name: 'Task description' })
+}
+
 async function mockTaskCreateAPIs(
   page: Page,
   options: {
@@ -11,6 +17,11 @@ async function mockTaskCreateAPIs(
     createDependencyError?: boolean
     candidates?: Array<Record<string, unknown>>
     role?: 'viewer' | 'executor' | 'contributor' | 'maintainer' | 'operator'
+    // The workspace's served default plan state; null serves a read that
+    // states none yet.
+    defaultPlanState?: 'needed' | 'not_required' | null
+    createRefusal?: { status: number; message: string }
+    capabilities?: string[]
   } = {},
 ) {
   let submitted = ''
@@ -34,7 +45,9 @@ async function mockTaskCreateAPIs(
     }
     if (url.pathname === '/v1/me') {
       const role = options.role ?? 'operator'
-      await route.fulfill({ json: callerIdentity({ id: `usr_${role}`, role }, route.request()) })
+      await route.fulfill({
+        json: callerIdentity({ id: `usr_${role}`, role, capabilities: options.capabilities }, route.request()),
+      })
       return
     }
     if (url.pathname === '/v1/workspace') {
@@ -47,6 +60,7 @@ async function mockTaskCreateAPIs(
             { name: 'conveyor', base: 'main' },
             { name: 'api', base: 'develop' },
           ],
+          ...(options.defaultPlanState === null ? {} : { default_plan_state: options.defaultPlanState ?? 'needed' }),
         },
       })
       return
@@ -119,6 +133,10 @@ async function mockTaskCreateAPIs(
     }
     if (url.pathname === '/v1/tasks' && route.request().method() === 'POST') {
       submitted = route.request().postData() ?? ''
+      if (options.createRefusal) {
+        await route.fulfill({ status: options.createRefusal.status, json: { error: options.createRefusal.message } })
+        return
+      }
       if (options.createDependencyError) {
         await route.fulfill({
           status: 400,
@@ -256,7 +274,7 @@ test('new task removes title input and submits description for AI title generati
   await expect(page.getByText('AI generates the task title from this context')).toBeVisible()
   const create = page.getByRole('button', { name: 'Create task' })
   await expect(create).toBeDisabled()
-  await page.locator('textarea').fill('Generate this title from context')
+  await descriptionEditor(page).fill('Generate this title from context')
   await expect(page.getByLabel(/setup/i)).toHaveCount(0)
   await expect(create).toBeEnabled()
   await create.click()
@@ -265,7 +283,7 @@ test('new task removes title input and submits description for AI title generati
   expect(submitted()).not.toContain('setup')
   await expect(page).toHaveURL(/\/tasks\/generated$/)
   expect(submitted()).not.toContain('"title"')
-  // DEC-74(2), DEC-74(3): no execution-mode selector, and no hold is sent.
+  // DEC-122(2), DEC-122(3): no execution-mode selector, and no hold is sent.
   expect(submitted()).not.toContain('"mode"')
   expect(submitted()).not.toContain('"hold"')
 })
@@ -273,7 +291,7 @@ test('new task removes title input and submits description for AI title generati
 test('intake attaches confirmed product and design context with authenticated reads', async ({ page }) => {
   const { submitted } = await mockTaskCreateAPIs(page)
   await page.goto('/w/demo/new')
-  await page.locator('textarea').fill('Implement the attached desired state')
+  await descriptionEditor(page).fill('Implement the attached desired state')
 
   // One Context control now, not a checkbox list per document tier.
   const search = page.getByRole('combobox', { name: 'Search context' })
@@ -295,7 +313,7 @@ test('intake attaches confirmed product and design context with authenticated re
 test('context dropdown searches, keeps selections visible, and removes them', async ({ page }) => {
   const { submitted } = await mockTaskCreateAPIs(page)
   await page.goto('/w/demo/new')
-  await page.locator('textarea').fill('Attach several documents')
+  await descriptionEditor(page).fill('Attach several documents')
 
   const search = page.getByRole('combobox', { name: 'Search context' })
   await search.click()
@@ -353,13 +371,13 @@ test('intake offers no hold control and no worker availability warning', async (
   const { submitted, workerRequests } = await mockTaskCreateAPIs(page)
   await page.goto('/w/demo/new')
 
-  // A task carries no hold or execution reservation (DEC-74(3)), and a filed
+  // A task carries no hold or execution reservation (DEC-122(3)), and a filed
   // task waits for an agent session with no availability warning
   // (req-task-lifecycle-and-queue AC-9.4; DEC-97(1)).
   await expect(page.getByRole('radiogroup', { name: 'Execution mode' })).toHaveCount(0)
   await expect(page.getByRole('switch', { name: /hold/i })).toHaveCount(0)
   await expect(page.getByText(/Hold for hands-on work/)).toHaveCount(0)
-  await page.locator('textarea').fill('Queue this one openly')
+  await descriptionEditor(page).fill('Queue this one openly')
   await expect(page.getByText(/worker/i)).toHaveCount(0)
   await expect(page.getByText(/claim it manually/)).toHaveCount(0)
   await page.getByRole('button', { name: 'Create task' }).click()
@@ -375,7 +393,7 @@ test('dependency candidates load lazily and selected cross-repository chips surv
   const { submitted, taskListRequests, taskListQuery } = await mockTaskCreateAPIs(page)
   await page.goto('/w/demo/new')
   expect(taskListRequests()).toBe(0)
-  await page.locator('textarea').fill('Implement the dependent task')
+  await descriptionEditor(page).fill('Implement the dependent task')
   await page.getByText('Advanced options').click()
   await expect.poll(taskListRequests).toBe(1)
   // One bounded read of open tasks, never the workspace's whole history
@@ -449,7 +467,7 @@ test('dependency candidates distinguish loading, request failure, empty results,
 test('structured dependency validation opens Advanced options and renders the error once', async ({ page }) => {
   await mockTaskCreateAPIs(page, { createDependencyError: true })
   await page.goto('/w/demo/new')
-  await page.locator('textarea').fill('Create a cyclic dependency')
+  await descriptionEditor(page).fill('Create a cyclic dependency')
   await page.getByText('Advanced options').click()
   await page.getByText('Finish persistence first').click()
   await page.getByText('Advanced options').click()
@@ -463,7 +481,7 @@ test('intake markdown editor formats, toggles, previews, and restores selection'
   await mockTaskCreateAPIs(page)
   await page.goto('/w/demo/new')
 
-  const editor = page.locator('textarea')
+  const editor = descriptionEditor(page)
   const toolbar = page.getByRole('toolbar', { name: 'Markdown formatting' })
   for (const name of [
     'Heading',
@@ -550,4 +568,207 @@ test('intake markdown editor formats, toggles, previews, and restores selection'
   await editor.fill('')
   await page.getByRole('tab', { name: 'Preview' }).click()
   await expect(page.getByText('Nothing to preview')).toBeVisible()
+})
+
+// ---- Intake plan fields (component-web-task-surfaces invariant 63;
+// req-task-plan-state AC-2.1 to AC-2.6) ----
+
+// The task object the multipart intake request carries in its `task` part.
+function submittedTask(raw: string): Record<string, unknown> {
+  const match = /name="task"\r\n\r\n([\s\S]*?)\r\n--/.exec(raw)
+  if (!match) throw new Error(`no task part in ${raw}`)
+  return JSON.parse(match[1]) as Record<string, unknown>
+}
+
+const validCommit = '0123456789abcdef0123456789abcdef01234567'
+const intakePlan = '## Approach\nSplit the reader.\n\n## Done criteria\n- The reader is split.'
+
+test('an unchanged plan state select opens on the workspace default and sends no plan_state', async ({ page }) => {
+  const { submitted } = await mockTaskCreateAPIs(page, { defaultPlanState: 'not_required' })
+  await page.goto('/w/demo/new')
+  const sheet = page.getByRole('dialog', { name: 'New task' })
+
+  // No plan approval toggle remains (invariant 63).
+  await expect(sheet.getByText(/Plan approval gate/)).toHaveCount(0)
+  await expect(sheet.getByText(/Auto-approve/)).toHaveCount(0)
+  const select = sheet.getByRole('combobox', { name: 'Plan state' })
+  await expect(select).toHaveValue('not_required')
+  await expect(select.locator('option')).toHaveText(['Planning needed', 'No plan required'])
+  await expect(sheet.locator('[data-resulting-plan-state]')).toHaveText('This task will start at: No plan required.')
+  await descriptionEditor(page).fill('Leave the default alone')
+  await sheet.getByRole('button', { name: 'Create task' }).click()
+
+  await expect.poll(submitted).toContain('Leave the default alone')
+  const task = submittedTask(submitted())
+  expect(task).not.toHaveProperty('plan_state')
+  expect(task).not.toHaveProperty('plan')
+  expect(task).not.toHaveProperty('plan_approved')
+  expect(task).not.toHaveProperty('spec_approval')
+})
+
+test('the plan state select reads Workspace default until the workspace read states one', async ({ page }) => {
+  const { submitted } = await mockTaskCreateAPIs(page, { defaultPlanState: null })
+  await page.goto('/w/demo/new')
+  const sheet = page.getByRole('dialog', { name: 'New task' })
+  const select = sheet.getByRole('combobox', { name: 'Plan state' })
+  await expect(select.locator('option:checked')).toHaveText('Workspace default')
+  await expect(sheet.locator('[data-resulting-plan-state]')).toHaveText(
+    'This task will start at the workspace default plan state.',
+  )
+
+  // A changed select sends the chosen state.
+  await select.selectOption('not_required')
+  await expect(sheet.locator('[data-resulting-plan-state]')).toHaveText('This task will start at: No plan required.')
+  await descriptionEditor(page).fill('Skip planning for this one')
+  await sheet.getByRole('button', { name: 'Create task' }).click()
+  await expect.poll(submitted).toContain('Skip planning for this one')
+  expect(submittedTask(submitted())).toMatchObject({ plan_state: 'not_required' })
+})
+
+test('a plan state picked before the default arrives is sent even when the default matches it', async ({ page }) => {
+  const { submitted } = await mockTaskCreateAPIs(page, { defaultPlanState: 'needed' })
+  let releaseWorkspace = () => {}
+  const workspaceGate = new Promise<void>((resolve) => {
+    releaseWorkspace = resolve
+  })
+  // Registered last, so it answers first: the workspace read waits until the
+  // operator has chosen.
+  await page.route('**/v1/workspace?*', async (route) => {
+    await workspaceGate
+    await route.fallback()
+  })
+  await page.goto('/w/demo/new')
+  const sheet = page.getByRole('dialog', { name: 'New task' })
+  const select = sheet.getByRole('combobox', { name: 'Plan state' })
+  await expect(select.locator('option:checked')).toHaveText('Workspace default')
+  await select.selectOption('needed')
+  releaseWorkspace()
+  await expect(select.locator('option')).toHaveText(['Planning needed', 'No plan required'])
+  await expect(select).toHaveValue('needed')
+  await descriptionEditor(page).fill('Plan this one explicitly')
+  await sheet.getByRole('button', { name: 'Create task' }).click()
+  await expect.poll(submitted).toContain('Plan this one explicitly')
+  expect(submittedTask(submitted())).toMatchObject({ plan_state: 'needed' })
+})
+
+test('Workspace default stays a choice while the default is unknown and sends no plan_state', async ({ page }) => {
+  const { submitted } = await mockTaskCreateAPIs(page, { defaultPlanState: null })
+  await page.goto('/w/demo/new')
+  const sheet = page.getByRole('dialog', { name: 'New task' })
+  const select = sheet.getByRole('combobox', { name: 'Plan state' })
+  await select.selectOption('needed')
+  await expect(select.locator('option')).toHaveText(['Workspace default', 'Planning needed', 'No plan required'])
+  await select.selectOption('')
+  await expect(select.locator('option:checked')).toHaveText('Workspace default')
+  await descriptionEditor(page).fill('Back to the default')
+  await sheet.getByRole('button', { name: 'Create task' }).click()
+  await expect.poll(submitted).toContain('Back to the default')
+  expect(submittedTask(submitted())).not.toHaveProperty('plan_state')
+})
+
+test('a plan disables the plan state select and is sent without plan_state', async ({ page }) => {
+  const { submitted } = await mockTaskCreateAPIs(page, { defaultPlanState: 'needed' })
+  await page.goto('/w/demo/new')
+  const sheet = page.getByRole('dialog', { name: 'New task' })
+  const select = sheet.getByRole('combobox', { name: 'Plan state' })
+  await select.selectOption('not_required')
+  await expect(sheet.getByRole('textbox', { name: 'Base commit' })).toBeDisabled()
+
+  await sheet.getByRole('textbox', { name: 'Plan' }).fill(intakePlan)
+  await expect(select).toBeDisabled()
+  await expect(sheet.getByRole('textbox', { name: 'Base commit' })).toBeEnabled()
+  await expect(sheet.locator('[data-resulting-plan-state]')).toHaveText(
+    'This task will start at: Plan awaiting approval.',
+  )
+  await descriptionEditor(page).fill('File the plan with the task')
+  await sheet.getByRole('button', { name: 'Create task' }).click()
+
+  await expect.poll(submitted).toContain('File the plan with the task')
+  const task = submittedTask(submitted())
+  expect(task.plan).toBe(intakePlan)
+  expect(task).not.toHaveProperty('plan_state')
+  expect(task).not.toHaveProperty('plan_base_commit')
+  expect(task).not.toHaveProperty('plan_approved')
+})
+
+test('a base commit other than 40 lowercase hex characters disables Create and says why', async ({ page }) => {
+  const { submitted } = await mockTaskCreateAPIs(page)
+  await page.goto('/w/demo/new')
+  const sheet = page.getByRole('dialog', { name: 'New task' })
+  const create = sheet.getByRole('button', { name: 'Create task' })
+  await descriptionEditor(page).fill('Plan read against a commit')
+  await sheet.getByRole('textbox', { name: 'Plan' }).fill(intakePlan)
+  const commit = sheet.getByRole('textbox', { name: 'Base commit' })
+
+  for (const invalid of ['abc123', validCommit.toUpperCase(), `${validCommit}0`, `${validCommit.slice(0, 39)}g`]) {
+    await commit.fill(invalid)
+    await expect(create).toBeDisabled()
+    await expect(sheet.getByRole('alert')).toHaveText(
+      'Base commit must be a full commit ID of 40 lowercase hexadecimal characters.',
+    )
+  }
+  // Surrounding whitespace is trimmed before the check and the send.
+  await commit.fill(`  ${validCommit} `)
+  await expect(sheet.getByRole('alert')).toHaveCount(0)
+  await expect(create).toBeEnabled()
+  await create.click()
+  await expect.poll(submitted).toContain('Plan read against a commit')
+  expect(submittedTask(submitted())).toMatchObject({ plan: intakePlan, plan_base_commit: validCommit })
+})
+
+test('Approve this plan shows only with a plan for operate_gates and sends plan_approved', async ({ page }) => {
+  const { submitted } = await mockTaskCreateAPIs(page, { role: 'operator' })
+  await page.goto('/w/demo/new')
+  const sheet = page.getByRole('dialog', { name: 'New task' })
+  const approve = sheet.getByRole('checkbox', { name: 'Approve this plan' })
+  await expect(approve).toHaveCount(0)
+  await sheet.getByRole('textbox', { name: 'Plan' }).fill(intakePlan)
+  await expect(approve).toBeVisible()
+  await approve.check()
+  await expect(sheet.locator('[data-resulting-plan-state]')).toHaveText('This task will start at: Planning completed.')
+  // Clearing the plan hides the control and sends no approval.
+  await sheet.getByRole('textbox', { name: 'Plan' }).fill('')
+  await expect(approve).toHaveCount(0)
+  await sheet.getByRole('textbox', { name: 'Plan' }).fill(intakePlan)
+  await expect(approve).toBeChecked()
+  await descriptionEditor(page).fill('Filed and approved together')
+  await sheet.getByRole('button', { name: 'Create task' }).click()
+
+  await expect.poll(submitted).toContain('Filed and approved together')
+  expect(submittedTask(submitted())).toMatchObject({ plan: intakePlan, plan_approved: true })
+  expect(submittedTask(submitted())).not.toHaveProperty('plan_state')
+})
+
+test('Approve this plan is hidden without operate_gates', async ({ page }) => {
+  const { submitted } = await mockTaskCreateAPIs(page, {
+    role: 'maintainer',
+    capabilities: ['view_workspace', 'create_tasks'],
+  })
+  await page.goto('/w/demo/new')
+  const sheet = page.getByRole('dialog', { name: 'New task' })
+  await sheet.getByRole('textbox', { name: 'Plan' }).fill(intakePlan)
+  await expect(sheet.getByRole('textbox', { name: 'Base commit' })).toBeEnabled()
+  await expect(sheet.getByRole('checkbox', { name: 'Approve this plan' })).toHaveCount(0)
+  await expect(sheet.locator('[data-resulting-plan-state]')).toHaveText(
+    'This task will start at: Plan awaiting approval.',
+  )
+  await descriptionEditor(page).fill('Filed by a creator who cannot approve')
+  await sheet.getByRole('button', { name: 'Create task' }).click()
+  await expect.poll(submitted).toContain('Filed by a creator who cannot approve')
+  expect(submittedTask(submitted())).not.toHaveProperty('plan_approved')
+})
+
+test('a refused plan shows the server message', async ({ page }) => {
+  await mockTaskCreateAPIs(page, {
+    createRefusal: { status: 400, message: 'invalid plan: missing Done criteria heading' },
+  })
+  await page.goto('/w/demo/new')
+  const sheet = page.getByRole('dialog', { name: 'New task' })
+  await descriptionEditor(page).fill('A plan the server refuses')
+  await sheet.getByRole('textbox', { name: 'Plan' }).fill('## Approach\nOnly an approach.')
+  await sheet.getByRole('button', { name: 'Create task' }).click()
+  await expect(sheet.getByText('invalid plan: missing Done criteria heading')).toBeVisible()
+  // Nothing was created: the sheet stays open on the same input.
+  await expect(sheet).toBeVisible()
+  await expect(page).not.toHaveURL(/\/tasks\//)
 })

@@ -1,4 +1,4 @@
-import type { InterventionAction, PlanningSessionGoal } from './types'
+import type { InterventionAction, PlanningSessionGoal, PlanOrigin, PlanState } from './types'
 
 // The Board's columns: the pipeline stages in order, plus a collapsed archive
 // so merged and closed work stays reachable without cluttering the WIP view.
@@ -104,6 +104,27 @@ export const taskStateLabels: Record<string, string> = {
   merged: 'Merged',
   closed: 'Closed',
   parked: 'Parked',
+}
+
+// The one label of each plan state, beside the task state labels, so every
+// surface prints the served `plan_state` the same way (component-web-task-surfaces
+// invariant 57; req-task-plan-state AC-1.4).
+export const planStateLabels: Record<PlanState, string> = {
+  not_required: 'No plan required',
+  needed: 'Planning needed',
+  awaiting_approval: 'Plan awaiting approval',
+  completed: 'Planning completed',
+}
+
+// The plan states in their lifecycle order, for lists and filters.
+export const planStates: readonly PlanState[] = ['not_required', 'needed', 'awaiting_approval', 'completed']
+
+// How a plan version came to be, by its served `origin`
+// (component-web-task-surfaces invariant 60).
+export const planOriginLabels: Record<PlanOrigin, string> = {
+  plan_order: 'Written by the plan order',
+  intake: 'Filed with the task',
+  operator: 'Attached by an operator',
 }
 
 // A planning session's declared goal, rendered for operators as a readable

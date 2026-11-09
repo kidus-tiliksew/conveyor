@@ -9,7 +9,7 @@ const document = {
   stage_timeouts: { spec: '30m', implement: '4h', review: '1h' },
   review: { seats: [{}, {}] },
   execution: {
-    spec_approval: true,
+    default_plan_state: 'needed' as 'needed' | 'not_required',
     merge_approval: true,
     implement_concurrency: 1,
     review_concurrency: 1,
@@ -138,6 +138,47 @@ test('a persisted distinct seat models setting loads on and survives a seat chan
 
   await expect(page.getByText(/Recorded config.updated event 42/)).toBeVisible()
   expect(submitted()?.document).toMatchObject({ review: { seats: [{}, {}, {}], distinct_models: true } })
+})
+
+// component-web-dashboard invariant 33; req-task-plan-state AC-2.1, AC-3.5;
+// DEC-122(7): the Default plan state select shows the served value, save
+// writes execution.default_plan_state and never execution.spec_approval, and
+// no plan approval switch remains.
+test('the default plan state select shows the served value and saves only default_plan_state', async ({ page }) => {
+  const submitted = await mockAPIs(page, false, {
+    ...document,
+    execution: { ...document.execution, default_plan_state: 'not_required' },
+  })
+  await page.goto('/w/demo/workspace')
+
+  await expect(page.getByRole('switch', { name: 'Plan approval' })).toHaveCount(0)
+  await expect(page.getByText('Pause for plan approval')).toHaveCount(0)
+  const select = page.getByRole('combobox', { name: 'Default plan state' })
+  await expect(select).toHaveValue('not_required')
+  await expect(select.locator('option')).toHaveText(['Planning needed', 'No plan required'])
+  await expect(page.getByText('Unsaved changes', { exact: true })).toHaveCount(0)
+
+  await select.selectOption('needed')
+  await page.getByRole('button', { name: 'Save changes' }).click()
+  await expect(page.getByText(/Recorded config.updated event 42/)).toBeVisible()
+  const execution = (submitted()?.document as { execution: Record<string, unknown> } | undefined)?.execution ?? {}
+  expect(execution.default_plan_state).toBe('needed')
+  expect(execution).not.toHaveProperty('spec_approval')
+  expect(JSON.stringify(submitted())).not.toContain('spec_approval')
+})
+
+test('a save after an unrelated edit keeps the served default plan state and sends no spec_approval', async ({
+  page,
+}) => {
+  const submitted = await mockAPIs(page)
+  await page.goto('/w/demo/workspace')
+  await expect(page.getByRole('combobox', { name: 'Default plan state' })).toHaveValue('needed')
+  await page.getByLabel('Review seats').fill('3')
+  await page.getByRole('button', { name: 'Save changes' }).click()
+  await expect(page.getByText(/Recorded config.updated event 42/)).toBeVisible()
+  const execution = (submitted()?.document as { execution: Record<string, unknown> } | undefined)?.execution ?? {}
+  expect(execution.default_plan_state).toBe('needed')
+  expect(execution).not.toHaveProperty('spec_approval')
 })
 
 test('workspace surfaces named policy rejections verbatim', async ({ page }) => {

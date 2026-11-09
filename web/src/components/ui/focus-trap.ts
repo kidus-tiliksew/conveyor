@@ -1,6 +1,15 @@
 const FOCUSABLE =
   'a[href], button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), summary, [tabindex]:not([tabindex="-1"])'
 
+// Whether a panel is the topmost open sheet or dialog: the last modal in
+// document order, since each one portals onto the end of the body. Only the
+// topmost answers Escape, so a dialog opened over a sheet closes alone.
+export function isTopmostModal(panel: HTMLElement | null) {
+  if (!panel) return false
+  const modals = document.querySelectorAll('[aria-modal="true"]')
+  return modals[modals.length - 1] === panel
+}
+
 // Keeps Tab and Shift+Tab inside the topmost open sheet or dialog, so keyboard
 // focus can't land on controls hidden behind its overlay. A sheet can open over
 // another one, and only the last one open answers.

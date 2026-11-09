@@ -447,7 +447,7 @@ function TaskActions({ item, variant }: { item: ActivityItem; variant: 'sheet' |
       {/* The operations live behind the overflow menu so the header stays
           quieter than the title. Each confirms before acting; the
           confirmation returns focus to whichever control opened it. A task
-          carries no hold, so there is no hold action (DEC-74(3)). */}
+          carries no hold, so there is no hold action (DEC-122(3)). */}
       <DropdownMenu label="Task actions" trigger="overflow">
         <DropdownMenuItem onSelect={() => setAction('dependency')}>
           <Link2 /> Link dependency
@@ -797,7 +797,7 @@ function TaskBody({ body }: { body: string }) {
  * Set, reassign, or clear the task's assignee from the workspace's own member
  * list (req-task-lifecycle-and-queue AC-2.4, AC-2.5). Assigning constrains who
  * may claim the task's work orders; it never touches queue order
- * (req-task-lifecycle-and-queue AC-2.3, AC-2.7; DEC-74(4)).
+ * (req-task-lifecycle-and-queue AC-2.3, AC-2.7; DEC-122(4)).
  *
  * Assignment is an operator act, carried by the `set_assignee` capability. The
  * caller's role for this workspace comes from the server's own self-identity

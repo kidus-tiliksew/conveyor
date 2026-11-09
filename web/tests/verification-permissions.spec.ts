@@ -80,7 +80,7 @@ async function fixture(page: Page, options: Options = {}) {
     body: 'Issue an operator grant.',
     class: 'feature',
     level: '',
-    spec_approval: false,
+    plan_state: 'not_required',
     merge_approval: true,
     policy_version: 1,
     policy_contract: {

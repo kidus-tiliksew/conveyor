@@ -26,7 +26,7 @@ func TestRetiredExecutionModeVocabularyStaysOutOfPayloadsAndWebCopy(t *testing.T
 	// with that command (DEC-97(1)). They are intentionally explicit so
 	// additions require review.
 	allowlist := map[string][]string{
-		"web/src/components/task/task-create-sheet.tsx": {"Auto-approve", "Auto-merge"},
+		"web/src/components/task/task-create-sheet.tsx": {"Auto-merge"},
 	}
 
 	paths := []string{filepath.Join(root, "internal", "httpapi"), filepath.Join(root, "web", "src")}

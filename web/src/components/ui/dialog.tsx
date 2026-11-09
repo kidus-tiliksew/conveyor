@@ -1,7 +1,7 @@
 import { type ReactNode, useEffect, useRef } from 'react'
 import { createPortal } from 'react-dom'
 import { cn } from '../../lib/utils'
-import { containTab } from './focus-trap'
+import { containTab, isTopmostModal } from './focus-trap'
 
 // Centered modal dialog: same dependency-free behavior contract as Sheet
 // (portal, Escape/overlay close, body scroll lock, focus capture/restore).
@@ -25,7 +25,7 @@ export function Dialog({
     const previous = document.activeElement
     panelRef.current?.focus()
     const onKeyDown = (event: KeyboardEvent) => {
-      if (event.key === 'Escape') onCloseRef.current()
+      if (event.key === 'Escape' && isTopmostModal(panelRef.current)) onCloseRef.current()
       containTab(event, panelRef.current)
     }
     document.addEventListener('keydown', onKeyDown)

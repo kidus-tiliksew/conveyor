@@ -5,6 +5,7 @@ import {
   ChevronLeft,
   ChevronRight,
   CircleDot,
+  ClipboardList,
   Code2,
   GitBranch,
   Search,
@@ -14,7 +15,7 @@ import {
 } from 'lucide-react'
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { fetchRequirements, fetchSystemDesigns } from '../../lib/api'
-import { taskStateLabels } from '../../lib/contracts'
+import { planStateLabels, planStates, taskStateLabels } from '../../lib/contracts'
 import { useWorkspace, useWorkspaceMembers, useWorkspaceSelection } from '../app-shell'
 import { Button } from '../ui/button'
 import { Input } from '../ui/input'
@@ -28,6 +29,9 @@ export type UpdatedWindow = 'any' | '7d' | '30d' | '90d' | 'custom'
 export interface TaskFilterState {
   query: string
   states: string[]
+  // Plan state is a list of the four served values, matching any checked one
+  // (component-web-task-surfaces invariant 59).
+  planStates: string[]
   repositories: string[]
   // Updated is last activity: the task's newest event time, or its creation
   // time before any event, the server's `last_event_at` (AC-6.13).
@@ -40,7 +44,7 @@ export interface TaskFilterState {
   // assignee, so a union of two people is a question nobody asks. Empty means
   // anyone, UNASSIGNED_ASSIGNEE selects tasks nobody holds, and any other
   // value is a workspace member's user ID (req-task-lifecycle-and-queue
-  // AC-2.3; DEC-74(4)).
+  // AC-2.3; DEC-122(4)).
   assignee: string
 }
 
@@ -51,6 +55,7 @@ export const UNASSIGNED_ASSIGNEE = 'unassigned'
 export const emptyTaskFilter: TaskFilterState = {
   query: '',
   states: [],
+  planStates: [],
   repositories: [],
   updated: 'any',
   updatedFrom: '',
@@ -76,6 +81,7 @@ export interface TaskFilterParams {
   [key: string]: string | string[] | undefined
   q?: string
   state?: string[]
+  plan_state?: string[]
   repository?: string[]
   updated_from?: string
   updated_to?: string
@@ -104,6 +110,7 @@ export function taskFilterParams(filter: TaskFilterState): TaskFilterParams {
   const params: TaskFilterParams = {}
   if (filter.query.trim()) params.q = filter.query.trim()
   if (filter.states.length) params.state = filter.states
+  if (filter.planStates.length) params.plan_state = filter.planStates
   if (filter.repositories.length) params.repository = filter.repositories
   if (filter.requirements.length) params.serves_requirement = filter.requirements
   if (filter.designs.length) params.governing_design = filter.designs
@@ -155,6 +162,9 @@ function readStoredFilter(key: string, fallback: TaskFilterState): TaskFilterSta
     return {
       query: storedText(stored.query) ?? fallback.query,
       states: storedList(stored.states, stored.state) ?? fallback.states,
+      // A filter saved before the Plan state member has none, so the member
+      // reads inactive (component-web-task-surfaces invariant 59).
+      planStates: storedList(stored.planStates, undefined) ?? fallback.planStates,
       repositories: storedList(stored.repositories, stored.repository) ?? fallback.repositories,
       updated: savedWindow && savedWindow in updatedWindowLabels ? (savedWindow as UpdatedWindow) : fallback.updated,
       updatedFrom: storedText(stored.updatedFrom) ?? storedText(stored.createdFrom) ?? fallback.updatedFrom,
@@ -361,10 +371,11 @@ function CustomRangeEditor({ value, set }: { value: TaskFilterState; set: (patch
   )
 }
 
-type FilterCategory = 'state' | 'repository' | 'updated' | 'requirement' | 'design' | 'assignee'
+type FilterCategory = 'state' | 'planState' | 'repository' | 'updated' | 'requirement' | 'design' | 'assignee'
 
 const filterCategoryIcons = {
   state: CircleDot,
+  planState: ClipboardList,
   repository: GitBranch,
   updated: CalendarDays,
   requirement: Code2,
@@ -374,6 +385,7 @@ const filterCategoryIcons = {
 
 const listCategoryKeys = {
   state: 'states',
+  planState: 'planStates',
   repository: 'repositories',
   requirement: 'requirements',
   design: 'designs',
@@ -433,6 +445,7 @@ function FilterMenu({
   }, [open])
   const categories: { id: FilterCategory; label: string; active: boolean }[] = [
     { id: 'state', label: 'Status', active: value.states.length > 0 },
+    { id: 'planState', label: 'Plan state', active: value.planStates.length > 0 },
     { id: 'repository', label: 'Repository', active: value.repositories.length > 0 },
     { id: 'updated', label: 'Updated', active: value.updated !== fallback.updated },
     { id: 'requirement', label: 'Requirement', active: value.requirements.length > 0 },
@@ -455,18 +468,20 @@ function FilterMenu({
   const options: Option[] =
     category === 'state'
       ? states.map((id) => ({ id, title: taskStateLabels[id] ?? id }))
-      : category === 'repository'
-        ? repos.map((id) => ({ id, title: id }))
-        : category === 'requirement'
-          ? requirements
-          : category === 'design'
-            ? designs
-            : category === 'assignee'
-              ? assignees
-              : (Object.keys(updatedWindowLabels) as UpdatedWindow[]).map((id) => ({
-                  id,
-                  title: updatedWindowLabels[id],
-                }))
+      : category === 'planState'
+        ? planStates.map((id) => ({ id, title: planStateLabels[id] }))
+        : category === 'repository'
+          ? repos.map((id) => ({ id, title: id }))
+          : category === 'requirement'
+            ? requirements
+            : category === 'design'
+              ? designs
+              : category === 'assignee'
+                ? assignees
+                : (Object.keys(updatedWindowLabels) as UpdatedWindow[]).map((id) => ({
+                    id,
+                    title: updatedWindowLabels[id],
+                  }))
   const filtered = options.filter((option) => option.title.toLowerCase().includes(search.toLowerCase()))
   const ValueIcon = filterCategoryIcons[category]
   const toggleSelection = (id: string) => {
@@ -491,7 +506,10 @@ function FilterMenu({
   }
   // The panel hangs from its trigger, and the page body clips anything past its
   // edges, so a trigger near an edge would hide part of the panel. It stays
-  // inside the page body, with a 16px gutter, once it can be measured.
+  // inside the page body, with a 16px gutter, once it can be measured. A
+  // first or last change shows or hides the Reset control beside the trigger,
+  // which moves the trigger, so the panel is measured again then; otherwise a
+  // narrow page leaves it hanging past the edge.
   useLayoutEffect(() => {
     const panel = panelRef.current
     if (!open || !panel) return
@@ -503,7 +521,7 @@ function FilterMenu({
     const { left, right } = panel.getBoundingClientRect()
     const shift = left < min ? min - left : right > max ? max - right : 0
     if (shift !== 0) panel.style.transform = `translateX(${shift}px)`
-  }, [open, align])
+  }, [open, align, changed])
   return (
     <div className="relative" ref={ref}>
       <Button
@@ -544,7 +562,7 @@ function FilterMenu({
           data-filter-panel
           className={`absolute z-30 mt-2 flex w-[min(42rem,calc(100vw-2rem))] overflow-hidden rounded-xl border border-border bg-surface shadow-2xl ${align === 'left' ? 'left-0' : 'right-0'}`}
         >
-          <div className="w-44 shrink-0 border-r border-border p-2">
+          <div className="w-36 shrink-0 border-r border-border p-2 sm:w-44">
             <div className="relative mb-2">
               <Search className="pointer-events-none absolute left-2 top-1/2 size-3.5 -translate-y-1/2 text-faint" />
               <Input
@@ -642,7 +660,7 @@ function FilterMenu({
                     >
                       {checked && <Check className="size-3" aria-hidden="true" />}
                     </span>
-                    <ValueIcon className="size-4 shrink-0 text-muted" aria-hidden="true" />
+                    <ValueIcon className="hidden size-4 shrink-0 text-muted sm:block" aria-hidden="true" />
                     <span className="truncate">{option.title}</span>
                   </button>
                 )
@@ -717,6 +735,7 @@ export function TaskFilters({
   // One count per narrowed category, matching the dots on the category rail.
   const activeCount = [
     value.states.length > 0,
+    value.planStates.length > 0,
     value.repositories.length > 0,
     value.updated !== fallback.updated,
     value.requirements.length > 0,

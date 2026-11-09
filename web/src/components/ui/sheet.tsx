@@ -1,6 +1,6 @@
 import { type ReactNode, useEffect, useRef } from 'react'
 import { createPortal } from 'react-dom'
-import { containTab } from './focus-trap'
+import { containTab, isTopmostModal } from './focus-trap'
 
 // Open sheets, innermost last. A sheet can now open over another one — the
 // related-records panel opens from inside the task panel (AC-3.1) — and only
@@ -39,7 +39,8 @@ export function Sheet({
     const identity = Symbol('sheet')
     openSheets.push(identity)
     const onKeyDown = (event: KeyboardEvent) => {
-      if (event.key === 'Escape' && openSheets.at(-1) === identity) onCloseRef.current()
+      if (event.key === 'Escape' && openSheets.at(-1) === identity && isTopmostModal(panelRef.current))
+        onCloseRef.current()
       containTab(event, panelRef.current)
     }
     document.addEventListener('keydown', onKeyDown)

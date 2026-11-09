@@ -336,7 +336,7 @@ test('Older, Newer, and Newest replace the page and keep at most 50 rows', async
 })
 
 // Hold events recorded before the retirement stay readable exactly as stored,
-// while the task projection carries no hold (DEC-74(3); component-http-api).
+// while the task projection carries no hold (DEC-122(3); component-http-api).
 test('historical hold events stay readable in technical activity without a task hold', async ({ page }) => {
   const small = ledger('small')
   const events = small.item.events.map((event) => ({ ...event }))

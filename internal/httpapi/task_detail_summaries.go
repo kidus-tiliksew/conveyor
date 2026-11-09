@@ -60,6 +60,9 @@ var humanTimelineEventKinds = []string{
 	"task.state_changed",
 	"work_order.child_failed",
 	"work_order.stalled",
+	// A plan-state move is an audited act the timeline names
+	// (component-web-task-surfaces invariant 65).
+	"task.plan_state_changed",
 }
 
 const (
@@ -308,11 +311,14 @@ type taskReturnedForChanges struct {
 }
 
 type taskPlanRevisionRequest struct {
-	Rationale   string   `json:"rationale"`
-	PlanVersion jsNumber `json:"plan_version"`
-	EventID     string   `json:"event_id"`
-	At          string   `json:"at"`
-	Truncated   bool     `json:"truncated,omitempty"`
+	Rationale string `json:"rationale"`
+	// PlanVersion is absent for a planning request from a task whose plan
+	// state is not_required: it contests no plan version (component-work-orders
+	// invariant 57; req-task-plan-state AC-3.3).
+	PlanVersion *jsNumber `json:"plan_version,omitempty"`
+	EventID     string    `json:"event_id"`
+	At          string    `json:"at"`
+	Truncated   bool      `json:"truncated,omitempty"`
 }
 
 type taskTriageDiagnostic struct {
@@ -945,19 +951,26 @@ func deriveReviewRoundSummaries(ordered []core.Event) taskRoundSummaries {
 }
 
 // planRevisionRequestFrom accepts only a decidable request: a non-blank
-// rationale and a positive integer plan version (activity.ts
-// planRevisionRequestFrom).
+// rationale and either no plan version, a planning request, or a positive
+// integer plan version (activity.ts planRevisionRequestFrom).
 func planRevisionRequestFrom(event core.Event, payload summaryPayload) *taskPlanRevisionRequest {
 	rationale, _ := payload.str("rationale")
 	rationale = jsTrim(rationale)
-	version, ok := payload.num("plan_version")
-	if !ok {
-		version = jsParseInt(jsToString(payload["plan_version"]))
-	}
-	if rationale == "" || !jsIsInteger(version) || version <= 0 {
+	if rationale == "" {
 		return nil
 	}
-	request := &taskPlanRevisionRequest{PlanVersion: jsNumber(version), EventID: formatTaskEventID(event.ID), At: formatTaskEventTime(event.At)}
+	request := &taskPlanRevisionRequest{EventID: formatTaskEventID(event.ID), At: formatTaskEventTime(event.At)}
+	if raw, present := payload["plan_version"]; present && raw != nil {
+		version, ok := payload.num("plan_version")
+		if !ok {
+			version = jsParseInt(jsToString(raw))
+		}
+		if !jsIsInteger(version) || version <= 0 {
+			return nil
+		}
+		number := jsNumber(version)
+		request.PlanVersion = &number
+	}
 	request.Rationale, request.Truncated = truncateSummaryText(rationale)
 	return request
 }

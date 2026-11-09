@@ -11,7 +11,7 @@ import {
 import { Badge } from '../components/ui/badge'
 import { Button } from '../components/ui/button'
 import { Card, CardContent, CardHeader, CardTitle } from '../components/ui/card'
-import { Input } from '../components/ui/input'
+import { Input, Select } from '../components/ui/input'
 import { PageHeader } from '../components/ui/page-header'
 import { Switch } from '../components/ui/switch'
 import { Tabs, tabPanelProps } from '../components/ui/tabs'
@@ -20,8 +20,9 @@ import { MembersSection } from '../components/workspace/members-section'
 import { VerificationKits } from '../components/workspace/verification-kits'
 import { VerificationSettings } from '../components/workspace/verification-settings'
 import { ConfigValidationError, fetchWorkspaceConfig, updateWorkspaceConfig } from '../lib/api'
+import { planStateLabels } from '../lib/contracts'
 import { githubSlug } from '../lib/repository'
-import type { WorkspaceConfigDocument, WorkspaceConfigRepo } from '../lib/types'
+import type { ExecutionPolicy, WorkspaceConfigDocument, WorkspaceConfigRepo } from '../lib/types'
 import { cn } from '../lib/utils'
 
 // The selected tab is page state, never part of the address, so ordinary
@@ -89,7 +90,7 @@ export function WorkspacePage() {
     setDraftState(query.data ? structuredClone(query.data.document) : null)
   }, [query.data, workspace])
   const save = useMutation({
-    mutationFn: () => updateWorkspaceConfig(workspace, draft!, query.data!.version),
+    mutationFn: () => updateWorkspaceConfig(workspace, withoutLegacyPlanKey(draft!), query.data!.version),
     onSuccess: (receipt) => {
       queryClient.setQueryData(['workspace-config', workspace], receipt)
       void queryClient.invalidateQueries({ queryKey: ['workspace', workspace] })
@@ -511,6 +512,27 @@ function GeneralTab({
   )
 }
 
+// The Policy tab binds execution.default_plan_state and never the retired
+// execution.spec_approval key (component-web-dashboard invariant 33;
+// req-task-plan-state AC-2.1, AC-3.5; DEC-122(7)).
+const defaultPlanStates = ['needed', 'not_required'] as const
+
+// The value the configuration read serves. A document that states neither key
+// takes the server's own default, Planning needed (component-runtime
+// invariant 39); the legacy alias is read only when the key is absent.
+function servedDefaultPlanState(execution: ExecutionPolicy): ExecutionPolicy['default_plan_state'] {
+  if (execution.default_plan_state) return execution.default_plan_state
+  const legacy = (execution as { spec_approval?: unknown }).spec_approval
+  return legacy === false ? 'not_required' : 'needed'
+}
+
+// A save writes default_plan_state and never spec_approval, whatever the read
+// carried.
+function withoutLegacyPlanKey(document: WorkspaceConfigDocument): WorkspaceConfigDocument {
+  const { spec_approval: _legacy, ...execution } = document.execution as ExecutionPolicy & { spec_approval?: unknown }
+  return { ...document, execution: { ...execution, default_plan_state: servedDefaultPlanState(document.execution) } }
+}
+
 function PolicyTab({
   draft,
   setDraft,
@@ -531,16 +553,31 @@ function PolicyTab({
         </CardHeader>
         <CardContent className="grid gap-x-6 gap-y-5 md:grid-cols-2">
           <div className="space-y-3">
-            <div className="flex items-center gap-3">
-              <Switch
-                aria-label="Plan approval"
-                checked={draft.execution.spec_approval}
-                onChange={(checked) => update({ execution: { ...draft.execution, spec_approval: checked } })}
-              />
-              <div>
-                <p className="text-sm font-medium">Pause for plan approval</p>
-                <p className="text-xs text-faint">Require operator approval before implementation starts</p>
-              </div>
+            <div className="max-w-xs">
+              <Field
+                label="Default plan state"
+                hint="The plan state a new task takes when it is filed with neither a plan state nor a plan. Existing tasks keep theirs."
+              >
+                <Select
+                  aria-label="Default plan state"
+                  value={servedDefaultPlanState(draft.execution)}
+                  onChange={(event) =>
+                    update({
+                      execution: {
+                        ...draft.execution,
+                        default_plan_state: event.target.value as ExecutionPolicy['default_plan_state'],
+                      },
+                    })
+                  }
+                >
+                  {defaultPlanStates.map((state) => (
+                    <option key={state} value={state}>
+                      {planStateLabels[state]}
+                    </option>
+                  ))}
+                </Select>
+              </Field>
+              <p className="mt-1 text-xs text-faint">New tasks only. No existing task's plan state changes.</p>
             </div>
             <div className="flex items-center gap-3">
               <Switch

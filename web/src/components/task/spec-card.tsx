@@ -1,13 +1,14 @@
 import { Link } from '@tanstack/react-router'
 import { ChevronDown, ChevronRight, ChevronUp, FlaskConical, Globe, MousePointerClick, Square } from 'lucide-react'
 import { useId, useMemo, useState } from 'react'
-import { taskStateLabels } from '../../lib/contracts'
+import { planOriginLabels, taskStateLabels } from '../../lib/contracts'
 import { relatedTaskRoute, type TaskRouteVariant } from '../../lib/task-route'
-import type { AcceptanceCriterion, SpecVersion } from '../../lib/types'
+import type { AcceptanceCriterion, PlanState, SpecVersion } from '../../lib/types'
 import { absoluteTime, cn } from '../../lib/utils'
 import { useWorkspaceSelection } from '../app-shell'
 import { Badge } from '../ui/badge'
 import { Card, CardContent, CardHeader } from '../ui/card'
+import { CopyButton } from '../ui/copy-button'
 import { MarkdownProse } from '../ui/markdown-prose'
 import { SectionCount, SectionHeading } from './section-heading'
 import { useCollapsibleContent } from './use-collapsible-content'
@@ -32,6 +33,7 @@ export function SpecCard({
   overflowExpandable = false,
   routeVariant = 'sheet',
   minimumSeatCount,
+  planState,
 }: {
   spec: SpecVersion
   collapsible?: boolean
@@ -40,6 +42,10 @@ export function SpecCard({
   // The task's review seat minimum, stated beside this version's planned
   // count (feature-review-seat-minimum RS-3, RS-7).
   minimumSeatCount?: number
+  // The task's served plan state. Task detail passes it, and the card then
+  // states the version's origin, base commit, and approval from it
+  // (component-web-task-surfaces invariant 60; req-task-plan-state AC-1.4).
+  planState?: PlanState
 }) {
   const { workspace } = useWorkspaceSelection()
   const [collapsed, setCollapsed] = useState(false)
@@ -61,6 +67,14 @@ export function SpecCard({
   // substitutes for it.
   const plannedSeats = typeof spec.review_seats === 'number' ? spec.review_seats : undefined
   const relatedRoute = relatedTaskRoute(routeVariant)
+  // On task detail approval reads from the version and the served plan state,
+  // never from orders or events: "Awaiting approval" only while the task is
+  // at awaiting_approval (invariant 60).
+  const approval = spec.approved
+    ? 'Approved'
+    : planState === undefined || planState === 'awaiting_approval'
+      ? 'Awaiting approval'
+      : 'Not approved'
 
   const toggleCollapsed = () => {
     if (!collapsed) setContentExpanded(false)
@@ -112,9 +126,10 @@ export function SpecCard({
           {/* The plan version's own state, quiet: the task's state is named once,
               in the header chip and the next action. */}
           <Badge variant={spec.approved ? 'positive' : 'outline'} className="ml-1 align-middle">
-            {spec.approved ? 'Approved' : 'Awaiting approval'}
+            {approval}
           </Badge>
         </div>
+        {planState !== undefined && <PlanProvenance spec={spec} />}
       </CardHeader>
       {expanded && (
         <CardContent className="py-4">
@@ -203,6 +218,36 @@ export function SpecCard({
         </CardContent>
       )}
     </Card>
+  )
+}
+
+// The version's origin and the commit its plan was read against: 12
+// characters with the full ID copyable, or "None recorded"
+// (component-web-task-surfaces invariant 60; req-task-plan-state AC-2.5).
+function PlanProvenance({ spec }: { spec: SpecVersion }) {
+  const baseCommit = typeof spec.base_commit === 'string' ? spec.base_commit.trim() : ''
+  return (
+    <dl data-plan-provenance className="flex basis-full flex-wrap items-center gap-x-4 gap-y-1 text-xs text-muted">
+      {spec.origin && (
+        <div className="flex items-center gap-1.5">
+          <dt className="text-faint">Origin</dt>
+          <dd data-plan-origin={spec.origin}>{planOriginLabels[spec.origin] ?? spec.origin}</dd>
+        </div>
+      )}
+      <div className="flex items-center gap-1.5">
+        <dt className="text-faint">Base commit</dt>
+        {baseCommit ? (
+          <dd className="flex items-center gap-0.5" data-plan-base-commit={baseCommit}>
+            <code className="font-mono" title={baseCommit}>
+              {baseCommit.slice(0, 12)}
+            </code>
+            <CopyButton value={baseCommit} label="Copy base commit" className="size-6" />
+          </dd>
+        ) : (
+          <dd data-plan-base-commit="">None recorded</dd>
+        )}
+      </div>
+    </dl>
   )
 }
 

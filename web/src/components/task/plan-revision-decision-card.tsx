@@ -104,29 +104,37 @@ export function PlanRevisionDecisionCard({
     mutation.reset()
   }
   const selected = decision ? decisions[decision] : null
+  // A planning request from a task that needed no plan contests no version:
+  // approving it sends the task to planning (req-task-plan-state AC-3.3).
+  const planning = request.planVersion === null
 
   return (
     <section className="rounded-lg border border-primary/25 bg-background" aria-label="Human gate">
       <div className="flex flex-wrap items-center gap-3 rounded-t-lg bg-primary-soft px-4 py-3">
         <Undo2 className="size-5 shrink-0 text-primary" />
         <div className="min-w-48 flex-1">
-          <h3 className="text-sm font-semibold text-primary">Plan revision requested</h3>
+          <h3 className="text-sm font-semibold text-primary">
+            {planning ? 'Planning requested' : 'Plan revision requested'}
+          </h3>
           <p className="mt-0.5 text-xs leading-5 text-muted">
-            The implementing agent is contesting plan v{request.planVersion}. Choose whether to revise it, retry the
-            implementation with direction, or reject the task.
+            {planning
+              ? 'The implementing agent is asking for a plan before it implements. Choose whether to send the task to planning, retry the implementation with direction, or reject the task.'
+              : `The implementing agent is contesting plan v${request.planVersion}. Choose whether to revise it, retry the implementation with direction, or reject the task.`}
           </p>
         </div>
         <Button disabled={mutation.isPending} onClick={() => select('approve')}>
           <ThumbsUp />
-          {decisions.approve.label}
+          {planning ? 'Approve planning' : decisions.approve.label}
         </Button>
       </div>
       <div className="px-4 py-3">
         <dl className="grid gap-2 rounded-md bg-surface px-3 py-2.5 text-sm">
-          <div className="flex items-baseline gap-2">
-            <dt className="text-xs font-medium text-faint">Contested plan</dt>
-            <dd className="font-medium text-foreground">v{request.planVersion}</dd>
-          </div>
+          {!planning && (
+            <div className="flex items-baseline gap-2">
+              <dt className="text-xs font-medium text-faint">Contested plan</dt>
+              <dd className="font-medium text-foreground">v{request.planVersion}</dd>
+            </div>
+          )}
           <div>
             <dt className="text-xs font-medium text-faint">Agent rationale</dt>
             <dd className="mt-1 whitespace-pre-wrap leading-6 text-foreground/85">{request.rationale}</dd>

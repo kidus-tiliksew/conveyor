@@ -217,10 +217,12 @@ export interface Task {
   body: string
   class: string
   level: EscalationLevel | ''
-  // Legacy historical record; no task carries an execution reservation (DEC-74(3)).
+  // Legacy historical record; no task carries an execution reservation (DEC-122(3)).
   mode?: string
   assignee?: TaskAssignee
-  spec_approval: boolean
+  // The task's plan state, read as served and never inferred
+  // (component-plan-state invariant 1; component-web-task-surfaces invariant 57).
+  plan_state: PlanState
   merge_approval: boolean
   policy_version: number
   policy_contract?: TaskPolicyContract
@@ -245,6 +247,21 @@ export interface Task {
   context?: TaskContext
   github?: GitHubLifecycle
   created_at: string
+}
+
+// The four plan states a task carries (req-task-plan-state REQ-1).
+export type PlanState = 'not_required' | 'needed' | 'awaiting_approval' | 'completed'
+
+// The act that recorded a plan version (component-plan-state invariants 2, 5, 8).
+export type PlanOrigin = 'plan_order' | 'intake' | 'operator'
+
+// The plan acts the server would accept on the task now, setting aside the
+// request body and the caller's capability (component-plan-state invariant 6;
+// DEC-61). A surface offers exactly the acts marked true.
+export interface PlanActs {
+  set_needed: boolean
+  set_not_required: boolean
+  attach: boolean
 }
 
 export interface TaskAssignee {
@@ -479,7 +496,9 @@ export interface TaskSummaries {
   } & Partial<TaskReviewSeatMetadata>
   returned_for_changes?: { feedback: string; at: string }
   run_implementation?: boolean
-  plan_revision_request?: { rationale: string; plan_version: number; event_id: string; at: string }
+  // plan_version is absent for a planning request from a task whose plan
+  // state is not_required: it contests no plan version.
+  plan_revision_request?: { rationale: string; plan_version?: number; event_id: string; at: string }
   latest_review_completed_event_id?: string
   triage_failure?: {
     job_id: string
@@ -686,6 +705,11 @@ export interface SpecVersion {
   approved_at?: string
   // The plan's stated review seat count (feature-review-seat-minimum RS-3).
   review_seats?: number | null
+  // The act that recorded this version and the full commit ID the plan was
+  // read against, null when none was recorded (req-task-plan-state AC-1.4,
+  // AC-2.5).
+  origin?: PlanOrigin
+  base_commit?: string | null
 }
 
 export type ActivityTask = Pick<
@@ -697,6 +721,7 @@ export type ActivityTask = Pick<
   | 'repo'
   | 'state'
   | 'next_stage'
+  | 'plan_state'
   | 'assignee'
   | 'reviewed_head_sha'
   | 'dependencies'
@@ -952,6 +977,8 @@ export interface WorkspaceInfo {
   recovery?: { automatic_recoveries: number; window: string }
   database: string
   repos: WorkspaceRepo[] | null
+  // The effective default plan state for new tasks (component-runtime).
+  default_plan_state?: Extract<PlanState, 'needed' | 'not_required'>
 }
 
 export interface WorkspaceRecord {
@@ -1082,7 +1109,9 @@ export type WorkspaceConfigRepo = WorkspaceRepo
 export type WorkspaceReviewSeat = Record<string, never>
 
 export interface ExecutionPolicy {
-  spec_approval: boolean
+  // New tasks' plan state when intake names none (component-runtime
+  // invariant 39; req-task-plan-state AC-2.1).
+  default_plan_state: Extract<PlanState, 'needed' | 'not_required'>
   merge_approval: boolean
   // Absent on older documents; absent reads as off (DEC-43).
   verify_stage?: boolean
@@ -1212,6 +1241,8 @@ export interface ActivityItem {
   spec?: SpecVersion
   attachments?: Artifact[]
   verification_evidence?: Artifact[]
+  // Served on the task detail read only (component-plan-state invariant 6).
+  plan_acts?: PlanActs
   work_orders: WorkOrder[]
   review_diagnostics?: ReviewVerdictDiagnostic[]
   review_recovery?: ReviewRecoveryState

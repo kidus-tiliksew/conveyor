@@ -8,11 +8,11 @@ import { AttachmentsCard } from '../components/task/attachments-card'
 import { NextActionCard } from '../components/task/next-action-card'
 import { isReviewable } from '../components/task/review-panel'
 import { SectionHeading } from '../components/task/section-heading'
-import { SpecCard } from '../components/task/spec-card'
 import { TaskActivityTabs, useTaskActivityView } from '../components/task/task-activity-tabs'
 import { TaskContextCard } from '../components/task/task-context-card'
 import { TaskAgentPrompt, TaskFacts, TaskIdentity } from '../components/task/task-header'
 import { TaskControlsPlaceholder, TaskLoadError } from '../components/task/task-load-error'
+import { TaskPlanSection } from '../components/task/task-plan-section'
 import { useTaskDetail, useTaskOrder } from '../components/task/use-task-detail'
 import { Button } from '../components/ui/button'
 import { Skeleton } from '../components/ui/skeleton'
@@ -150,13 +150,6 @@ function FullNavButton({ targetId, label, icon }: { targetId?: string; label: st
 // The reading column keeps a measure of about 760 px however wide the page is.
 const readingMeasure = 'w-full min-w-0 lg:mx-auto lg:max-w-[47.5rem]'
 
-// A plan can still arrive only while no later stage has begun: a closed task, or
-// one already past planning, has nothing to wait for and says nothing about it.
-function planStillAhead(item: ActivityItem) {
-  if (['approved', 'merged', 'closed'].includes(item.task.state)) return false
-  return !(item.work_orders ?? []).some((order) => order.stage !== 'spec')
-}
-
 // One grid, each section mounted once. Below lg the DOM order is the reading
 // order: identity, next action, plan, properties, context and the other
 // inspector sections, then activity. From lg up the side column spans both
@@ -182,23 +175,7 @@ function FullBody({
         <div className={cn(readingMeasure, 'space-y-5 lg:col-start-1 lg:row-start-1')}>
           <TaskIdentity item={item} variant="full" headingRef={headingRef} />
           <NextActionCard item={item} routeVariant="full" view={view} />
-          {(item.spec || planStillAhead(item)) && (
-            <section aria-label="Execution plan">
-              {item.spec ? (
-                <SpecCard
-                  spec={item.spec}
-                  collapsible={false}
-                  overflowExpandable
-                  routeVariant="full"
-                  minimumSeatCount={item.summaries?.review_seat_policy?.minimum_seat_count}
-                />
-              ) : (
-                <p className="text-sm text-faint">
-                  No execution plan yet — the planning stage has not produced a version.
-                </p>
-              )}
-            </section>
-          )}
+          <TaskPlanSection item={item} variant="full" />
         </div>
         {/* The negative margins carry the column's scrollbar and focus outlines
             out to the rail's edges; its padding brings the content back. It

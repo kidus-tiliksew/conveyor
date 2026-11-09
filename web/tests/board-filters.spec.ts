@@ -647,7 +647,7 @@ test('board sends the shared filter family to the whole-workspace activity query
   await expect(page.getByRole('tab', { name: 'System design' })).toBeVisible()
 
   // Assignee travels the same way, as one single-valued member: a task has one
-  // holder, so there is no union to express. DEC-74(2) bars priority and phase and
+  // holder, so there is no union to express. DEC-122(2) bars priority and phase and
   // permits assignee as a claim-eligibility constraint, so it belongs here while
   // the barred fields still do not.
   await page.getByRole('tab', { name: 'Assignee' }).click()
@@ -859,7 +859,7 @@ test('board creation opens the new task in the board detail route', async ({ pag
   await openBoard(page, seen)
 
   await page.getByRole('button', { name: 'New task' }).click()
-  await page.locator('textarea').fill('Create this task without leaving the board')
+  await page.getByRole('textbox', { name: 'Task description' }).fill('Create this task without leaving the board')
   await page.getByRole('button', { name: 'Create task' }).click()
 
   await expect(page).toHaveURL(/\/tasks\/task-created-on-board$/)

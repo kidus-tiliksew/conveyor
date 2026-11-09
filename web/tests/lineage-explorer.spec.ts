@@ -179,7 +179,7 @@ function task(id: string, parentTaskId?: string) {
     body: '',
     class: 'feature',
     level: '',
-    spec_approval: true,
+    plan_state: 'needed',
     merge_approval: false,
     policy_version: 1,
     setup: 'default',
