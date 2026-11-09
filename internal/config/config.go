@@ -1884,20 +1884,24 @@ const (
 	DefaultPlanStateNotRequired = "not_required"
 )
 
-// mergeDefaultApplies keeps the merge gate's shipped default unchanged: it is
-// on only for an execution block that states nothing else. The plan-state
-// keys never counted toward that test, except a legacy spec_approval true,
-// which an earlier release decoded as a set field (DEC-122(1);
-// component-task-lifecycle invariant 18).
+// mergeDefaultApplies keeps the merge gate's shipped default exactly as the
+// release before the plan state computed it: the gate turns on only for an
+// execution block whose decoded value is the zero value. That release decoded
+// spec_approval as a plain boolean, so spec_approval true counted as a set
+// field and spec_approval false did not. Each plan-state spelling counts as
+// the legacy value it means, so default_plan_state needed counts as
+// spec_approval true and default_plan_state not_required as spec_approval
+// false, and renaming the key never changes the merge gate (DEC-122(1);
+// component-task-lifecycle invariant 18; req-review-gates-evidence REQ-1).
 func (e ExecutionPolicy) mergeDefaultApplies() bool {
-	probe := e
-	probe.DefaultPlanState = ""
-	if probe.SpecApproval != nil {
-		if *probe.SpecApproval {
-			return false
-		}
-		probe.SpecApproval = nil
+	if e.SpecApproval != nil && *e.SpecApproval {
+		return false
 	}
+	if strings.TrimSpace(e.DefaultPlanState) == DefaultPlanStateNeeded {
+		return false
+	}
+	probe := e
+	probe.DefaultPlanState, probe.SpecApproval = "", nil
 	return probe == (ExecutionPolicy{})
 }
 

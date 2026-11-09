@@ -191,3 +191,137 @@ func TestStoredRowsAndExportServeOnlyDefaultPlanState(t *testing.T) {
 		t.Fatalf("exported document=%s", exported)
 	}
 }
+
+// mergeDefaultCase is one execution block and the merge_approval each load
+// path yields for it. The legacy rows hold the values the release before the
+// plan state yields for the same block on the same path, measured from that
+// release's source; each canonical row holds the values of the legacy block it
+// means (default_plan_state needed as spec_approval true, not_required as
+// spec_approval false).
+type mergeDefaultCase struct {
+	block, legacyEquivalent               string
+	file, workspace, stored, storedLegacy bool
+}
+
+var mergeDefaultCases = []mergeDefaultCase{
+	{"<absent>", "", true, false, false, true},
+	{"{}", "", true, false, false, true},
+	{"{merge_approval: false}", "", true, false, false, true},
+	{"{merge_approval: true}", "", true, true, true, true},
+	{"{implement_concurrency: 2}", "", false, false, false, false},
+	{"{spec_approval: true}", "", false, false, false, false},
+	{"{spec_approval: false}", "", true, false, false, true},
+	{"{spec_approval: true, merge_approval: false}", "", false, false, false, false},
+	{"{spec_approval: true, merge_approval: true}", "", true, true, true, true},
+	{"{spec_approval: false, merge_approval: false}", "", true, false, false, true},
+	{"{spec_approval: false, merge_approval: true}", "", true, true, true, true},
+	{"{default_plan_state: needed}", "{spec_approval: true}", false, false, false, false},
+	{"{default_plan_state: not_required}", "{spec_approval: false}", true, false, false, true},
+	{"{default_plan_state: needed, merge_approval: false}", "{spec_approval: true, merge_approval: false}", false, false, false, false},
+	{"{default_plan_state: needed, merge_approval: true}", "{spec_approval: true, merge_approval: true}", true, true, true, true},
+	{"{default_plan_state: not_required, merge_approval: false}", "{spec_approval: false, merge_approval: false}", true, false, false, true},
+	{"{default_plan_state: not_required, merge_approval: true}", "{spec_approval: false, merge_approval: true}", true, true, true, true},
+	{"{default_plan_state: needed, spec_approval: true, merge_approval: false}", "{spec_approval: true, merge_approval: false}", false, false, false, false},
+}
+
+// TestMergeDefaultIsUnchangedByThePlanStateKey proves the merge gate's default
+// is the one the release before the plan state computed, on the deployment
+// file, its export and reload, a workspace document (the path of PUT, import,
+// and workspace creation), a stored row, and a stored row of the legacy shape,
+// and that each plan-state spelling yields what its legacy equivalent yields
+// (DEC-122(1); component-task-lifecycle invariant 18;
+// req-review-gates-evidence REQ-1).
+func TestMergeDefaultIsUnchangedByThePlanStateKey(t *testing.T) {
+	_ = captureRetiredExecutionKeyWarnings(t)
+	t.Setenv("HOME", t.TempDir())
+	example, err := os.ReadFile(filepath.Join("..", "..", "conveyor.example.yaml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	setBlock := func(data []byte, block string) []byte {
+		t.Helper()
+		var root yaml.Node
+		if err := yaml.Unmarshal(data, &root); err != nil {
+			t.Fatal(err)
+		}
+		removeDirectMappingKey(root.Content[0], "execution")
+		out, err := yaml.Marshal(&root)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if block == "<absent>" {
+			return out
+		}
+		return withExecutionBlock(t, out, block)
+	}
+	writeFile := func(data []byte) string {
+		t.Helper()
+		path := filepath.Join(t.TempDir(), "conveyor.yaml")
+		if err := os.WriteFile(path, data, 0o600); err != nil {
+			t.Fatal(err)
+		}
+		return path
+	}
+	base, err := loadDeploymentForTest(writeFile(example))
+	if err != nil {
+		t.Fatal(err)
+	}
+	policy, err := MarshalPolicyDocument(base)
+	if err != nil {
+		t.Fatal(err)
+	}
+	legacyShape := append([]byte("execution_settings: {implementation: {timeout: 4h}}\n"), policy...)
+	type outcome struct{ file, reload, workspace, stored, storedLegacy bool }
+	resolve := func(block string) outcome {
+		t.Helper()
+		var got outcome
+		cfg, err := loadDeploymentForTest(writeFile(setBlock(example, block)))
+		if err != nil {
+			t.Fatalf("%s: file load: %v", block, err)
+		}
+		got.file = cfg.Execution.MergeApproval
+		exported, err := MarshalDeployment(cfg)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if strings.Contains(string(exported), "spec_approval") {
+			t.Fatalf("%s: export carries spec_approval:\n%s", block, exported)
+		}
+		reloaded, err := loadDeploymentForTest(writeFile(exported))
+		if err != nil {
+			t.Fatalf("%s: reload: %v", block, err)
+		}
+		got.reload = reloaded.Execution.MergeApproval
+		if reloaded.Execution.DefaultPlanState != cfg.Execution.DefaultPlanState {
+			t.Fatalf("%s: reload default_plan_state=%q, want %q", block, reloaded.Execution.DefaultPlanState, cfg.Execution.DefaultPlanState)
+		}
+		workspace, err := ParseWorkspaceDocument(setBlock(policy, block), base, "merge default workspace")
+		if err != nil {
+			t.Fatalf("%s: workspace document: %v", block, err)
+		}
+		got.workspace = workspace.Execution.MergeApproval
+		stored, _, err := ParseStoredWorkspaceDocument(setBlock(policy, block), base, "merge default stored")
+		if err != nil {
+			t.Fatalf("%s: stored row: %v", block, err)
+		}
+		got.stored = stored.Execution.MergeApproval
+		storedLegacy, _, err := ParseStoredWorkspaceDocument(setBlock(legacyShape, block), base, "merge default legacy stored")
+		if err != nil {
+			t.Fatalf("%s: legacy stored row: %v", block, err)
+		}
+		got.storedLegacy = storedLegacy.Execution.MergeApproval
+		return got
+	}
+	for _, test := range mergeDefaultCases {
+		got := resolve(test.block)
+		want := outcome{test.file, test.file, test.workspace, test.stored, test.storedLegacy}
+		if got != want {
+			t.Fatalf("%s: merge_approval %+v, want %+v", test.block, got, want)
+		}
+		if test.legacyEquivalent != "" {
+			if legacy := resolve(test.legacyEquivalent); legacy != got {
+				t.Fatalf("%s resolves merge_approval %+v, but its legacy equivalent %s resolves %+v", test.block, got, test.legacyEquivalent, legacy)
+			}
+		}
+	}
+}
