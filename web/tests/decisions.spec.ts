@@ -470,6 +470,41 @@ test('a decision page renders its statement, context, and alternatives as Markdo
     await expect(page.getByRole('region', { name: region })).not.toContainText('`')
 })
 
+test('a fenced code block stays whole in its alternative row, and a code span never crosses a list item', async ({
+  page,
+}) => {
+  await serve(page, {
+    extra: [
+      {
+        ...markdownDecision,
+        id: 'DEC-62',
+        alternatives_rejected:
+          'Scanning with a script: too slow.\n```sh\ngit grep -e "a: b"\n\nmore: lines\n```\nA kit service: too much to run.',
+      },
+      {
+        ...markdownDecision,
+        id: 'DEC-63',
+        alternatives_rejected: '- Keep `one`: it stays.\n- Drop `two: it goes.\n- Hold three`: it waits.',
+      },
+    ],
+  })
+  await page.goto('/w/demo/decisions/DEC-62')
+  const rowsOf = () =>
+    page.getByRole('region', { name: 'Alternatives rejected' }).locator('ul').first().locator(':scope > li')
+  await expect(rowsOf()).toHaveCount(2)
+  await expect(rowsOf().nth(0).locator('p')).toHaveText('Scanning with a script: too slow.')
+  await expect(rowsOf().nth(0).locator('pre code')).toHaveText('git grep -e "a: b"\n\nmore: lines')
+  await expect(rowsOf().nth(1)).toHaveText('A kit service: too much to run.')
+
+  // Each list item is its own block, so the backticks in items two and three
+  // stay literal and every line keeps its own row.
+  await page.goto('/w/demo/decisions/DEC-63')
+  await expect(rowsOf()).toHaveCount(3)
+  await expect(rowsOf().nth(0).locator('code')).toHaveText('one')
+  await expect(rowsOf().nth(1)).toHaveText('Drop `two: it goes.')
+  await expect(rowsOf().nth(2)).toHaveText('Hold three`: it waits.')
+})
+
 test('a decision without context or alternatives keeps the plain-text fallbacks', async ({ page }) => {
   await serve(page, { extra: [{ ...markdownDecision, id: 'DEC-61', context: '', alternatives_rejected: '' }] })
   await page.goto('/w/demo/decisions/DEC-61')

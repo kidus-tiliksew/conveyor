@@ -49,14 +49,58 @@ export function openSweepEntries(decision: Decision): DecisionSupersessionSweepE
   return (decision.sweep?.entries ?? []).filter((entry) => entry.status === 'open')
 }
 
-// The [start, end) offsets of every inline code span in Markdown text, found
-// the way CommonMark finds them: a backtick run opens a span that the next run
-// of exactly the same length in its paragraph closes, an unclosed run stays
-// literal, and a backslash escapes a backtick only outside a span. Clause and row splitting
-// skip every offset inside a span, so a split never cuts a span in half
+const fenceOpening = /^ {0,3}(`{3,}|~{3,})/
+
+// The fence the first line of text opens, or null. A backtick fence's info
+// string holds no backtick, so a line such as ```` ```code``` ```` is an
+// inline span.
+function openingFence(text: string) {
+  const line = text.split('\n', 1)[0]
+  const match = fenceOpening.exec(line)
+  if (!match || (match[1][0] === '`' && line.slice(match[0].length).includes('`'))) return null
+  return match[1]
+}
+// A line that starts another Markdown block: a blank line, a list item, a
+// heading, a block quote, or a code fence. An inline code span never
+// continues past one.
+const blockStart = /^\n[ \t]*(?:\n|[-*+][ \t]|\d{1,9}[.)][ \t]|#{1,6}(?:[ \t]|\n|$)|>|`{3}|~{3})/
+
+// The [start, end) offsets of every fenced code block in Markdown text. A
+// block runs from its opening fence line to the end of its closing fence
+// line, or to the end of the text when it is never closed.
+function fencedBlockRanges(text: string): Array<[number, number]> {
+  const ranges: Array<[number, number]> = []
+  let open: { start: number; fence: string } | null = null
+  let offset = 0
+  for (const line of text.split('\n')) {
+    const lineEnd = offset + line.length
+    if (open) {
+      const close = new RegExp(`^ {0,3}${open.fence[0] === '`' ? '`' : '~'}{${open.fence.length},}[ \\t]*$`)
+      if (close.test(line)) {
+        ranges.push([open.start, lineEnd])
+        open = null
+      }
+    } else {
+      const fence = openingFence(line)
+      if (fence) open = { start: offset, fence }
+    }
+    offset = lineEnd + 1
+  }
+  if (open) ranges.push([open.start, text.length])
+  return ranges
+}
+
+// The [start, end) offsets of every code construct in Markdown text: each
+// fenced code block, and each inline code span found the way CommonMark finds
+// them. A backtick run opens a span that the next run of exactly the same
+// length in the same block closes, an unclosed run stays literal, and a
+// backslash escapes a backtick only outside a span. Clause and row splitting
+// skip every offset inside a range, so a split never cuts code in half
 // (component-web-document-surfaces invariant 29).
 export function codeSpanRanges(text: string): Array<[number, number]> {
-  const ranges: Array<[number, number]> = []
+  const fences = fencedBlockRanges(text)
+  const ranges: Array<[number, number]> = [...fences]
+  const fenceAt = (offset: number) => fences.find(([start]) => start === offset)
   const runLength = (from: number) => {
     let end = from
     while (text[end] === '`') end++
@@ -64,6 +108,11 @@ export function codeSpanRanges(text: string): Array<[number, number]> {
   }
   let index = 0
   while (index < text.length) {
+    const fence = fenceAt(index)
+    if (fence) {
+      index = fence[1]
+      continue
+    }
     if (text[index] === '\\' && text[index + 1] === '`') {
       index += 2
       continue
@@ -76,8 +125,7 @@ export function codeSpanRanges(text: string): Array<[number, number]> {
     let close = index + length
     let closed = -1
     while (close < text.length) {
-      // A blank line ends the paragraph, and a span never crosses one.
-      if (text[close] === '\n' && /^\n[ \t]*\n/.test(text.slice(close, close + 64))) break
+      if (text[close] === '\n' && blockStart.test(text.slice(close, close + 64))) break
       if (text[close] !== '`') {
         close++
         continue
@@ -96,7 +144,7 @@ export function codeSpanRanges(text: string): Array<[number, number]> {
     ranges.push([index, closed + length])
     index = closed + length
   }
-  return ranges
+  return ranges.sort(([left], [right]) => left - right)
 }
 
 function insideCodeSpan(ranges: ReadonlyArray<[number, number]>, offset: number) {
@@ -104,7 +152,7 @@ function insideCodeSpan(ranges: ReadonlyArray<[number, number]>, offset: number)
 }
 
 // Splits text at each match of a global pattern that starts outside every
-// code span. The matched separator is dropped.
+// code range. The matched separator is dropped.
 function splitOutsideCode(text: string, separator: RegExp): string[] {
   const ranges = codeSpanRanges(text)
   const pieces: string[] = []
@@ -119,7 +167,7 @@ function splitOutsideCode(text: string, separator: RegExp): string[] {
   return pieces
 }
 
-// Whether text holds a colon outside its code spans.
+// Whether text holds a colon outside its code.
 function hasProseColon(text: string) {
   const ranges = codeSpanRanges(text)
   for (let index = text.indexOf(':'); index >= 0; index = text.indexOf(':', index + 1)) {
@@ -152,15 +200,23 @@ export function statementClauses(statement: string): string[] | null {
 // alternative before a colon, so a row starts at each line and at each
 // sentence holding a colon; a sentence without one continues the row before
 // it. Prose without any colon keeps one row per line. Line breaks, sentence
-// ends, and colons inside a code span do not count, so a row never cuts a
-// code span in half.
+// ends, and colons inside code do not count, so a row never cuts code in
+// half, and a fenced code block stays whole in the row before it.
 export function alternativeRows(text: string): string[] {
   const lines = splitOutsideCode(text, /\n+/g)
     .map((line) => line.trim())
     .filter(Boolean)
-  if (!lines.some(hasProseColon)) return lines
+  const colons = lines.some(hasProseColon)
   const rows: string[] = []
   for (const line of lines) {
+    if (rows.length > 0 && openingFence(line)) {
+      rows[rows.length - 1] = `${rows[rows.length - 1]}\n${line}`
+      continue
+    }
+    if (!colons) {
+      rows.push(line)
+      continue
+    }
     splitOutsideCode(line, /(?<=\.)\s+(?=[A-Z`"'])/g).forEach((sentence, index) => {
       if (index === 0 || hasProseColon(sentence)) rows.push(sentence)
       else rows[rows.length - 1] = `${rows[rows.length - 1]} ${sentence}`

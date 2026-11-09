@@ -242,8 +242,8 @@ function DecisionRow({ decision, citingCount }: { decision: Decision; citingCoun
             {/* The preview renders inline Markdown only, so it keeps its
                 line clamp; search still reads the stored text (AC-7.3). */}
             <p className="line-clamp-3 text-sm text-foreground sm:line-clamp-2" data-decision-preview>
-              {clauses && '(1) '}
-              <InlineMarkdown>{clauses ? clauses[0] : decision.statement}</InlineMarkdown>
+              {clauses?.[0] && '(1) '}
+              <InlineMarkdown>{clauses?.[0] || decision.statement}</InlineMarkdown>
             </p>
             <p className="mt-1 flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-muted">
               {decision.status !== 'confirmed' && (
