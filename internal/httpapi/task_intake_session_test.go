@@ -425,7 +425,11 @@ func TestMCPPersonCreateTaskGateValuesApply(t *testing.T) {
 				{"both-on", map[string]any{"spec_approval": true, "merge_approval": true}, true, true},
 			} {
 				result := f.callMCP(t, token, "create_task", intakeArgs(test.key, test.extra))
-				if result.errText != "" || !result.created || (result.task.PlanState == core.PlanNeeded) != test.wantSpec || result.task.MergeApproval != test.wantMerge {
+				wantPlanState := core.PlanNotRequired
+				if test.wantSpec {
+					wantPlanState = core.PlanNeeded
+				}
+				if result.errText != "" || !result.created || result.task.PlanState != wantPlanState || result.task.MergeApproval != test.wantMerge {
 					t.Fatalf("%s: err=%q task=%+v", test.key, result.errText, result.task)
 				}
 				persisted, err := f.store.GetTask(store.WithWorkspace(t.Context(), "alpha"), result.task.ID)
@@ -572,7 +576,11 @@ func TestMCPCreateTaskLegacyPolicyInputs(t *testing.T) {
 		extra := map[string]any{"level": test.level}
 		maps.Copy(extra, test.extra)
 		result := f.callMCP(t, token, "create_task", intakeArgs(key, extra))
-		if result.errText != "" || (result.task.PlanState == core.PlanNeeded) != test.wantSpec || result.task.MergeApproval != test.wantMerge {
+		wantPlanState := core.PlanNotRequired
+		if test.wantSpec {
+			wantPlanState = core.PlanNeeded
+		}
+		if result.errText != "" || result.task.PlanState != wantPlanState || result.task.MergeApproval != test.wantMerge {
 			t.Fatalf("%s: err=%q task=%+v", key, result.errText, result.task)
 		}
 	}

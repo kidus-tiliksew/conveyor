@@ -312,5 +312,25 @@ func runPlanStateIntake(t *testing.T, x Fixture) {
 		for _, member := range approved.Tasks {
 			requireStored(t, member.CreatedTaskID, want[member.MemberID])
 		}
+
+		// A stored member with an invalid plan_state is refused before any
+		// task is created, rather than read through the legacy alias.
+		invalid, err := st.CreatePlanningBundle(personCtx, core.PlanningBundle{
+			ID: "plan-state-invalid-bundle-" + core.NewTaskID(), SessionID: session.ID, Title: "Invalid plan-state bundle",
+			Documents: []core.PlanningBundleDocument{{Kind: core.PlanningBundleRequirement, ID: req.ID, Version: revision.Version}},
+			Tasks: []core.PlanningBundleTask{
+				{MemberID: "valid", Title: "Valid", Body: "Valid member", Repo: repo, BaseBranch: "main", PlanState: core.PlanNeeded},
+				{MemberID: "invalid", Title: "Invalid", Body: "Invalid member", Repo: repo, BaseBranch: "main", PlanState: "planned"},
+			},
+		})
+		requireOK(t, err)
+		if _, err = st.ApprovePlanningBundle(personCtx, invalid.ID); err == nil {
+			t.Fatal("a bundle member with an invalid plan_state was approved")
+		}
+		for _, member := range invalid.Tasks {
+			if _, err := st.GetTask(base, member.CreatedTaskID); !errors.Is(err, store.ErrNotFound) {
+				t.Fatalf("refused bundle created member %s: %v", member.MemberID, err)
+			}
+		}
 	})
 }

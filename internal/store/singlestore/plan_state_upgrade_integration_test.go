@@ -9,28 +9,32 @@ import (
 	"github.com/kidus-tiliksew/conveyor/internal/store"
 )
 
-// TestPlanStateUpgradeFillsEachLegacyCaseIntegration proves migration 0035's
-// hook adds the plan-state columns behind information_schema checks, fills
-// each existing task's plan state once by component-plan-state invariant 8's
+// TestPlanStateUpgradeFillsEachLegacyCaseIntegration proves that migrating a
+// database whose ledger stops at version 34 runs migration 0035's hook, which
+// adds the plan-state columns behind information_schema checks, fills each
+// existing task's plan state once by component-plan-state invariant 8's
 // order, gives existing plan versions the plan_order origin and no base
-// commit, writes no event, and fills nothing twice when an interrupted
-// startup runs it again.
+// commit, and writes no event; that an interrupted startup filling again
+// changes nothing already filled; and that a row an older writer inserts
+// without a plan state reads as needed.
 func TestPlanStateUpgradeFillsEachLegacyCaseIntegration(t *testing.T) {
 	st := integrationStore(t)
 	ctx := store.WithActor(t.Context(), store.SystemActor())
-	// Model a database from before migration 0035: the columns are absent.
+	// Model a database from before migration 0035: the columns are absent and
+	// the ledger stops at version 34.
 	for _, statement := range []string{
 		`ALTER TABLE tasks DROP COLUMN plan_state`,
 		`ALTER TABLE task_specs DROP COLUMN origin`,
 		`ALTER TABLE task_specs DROP COLUMN base_commit`,
+		`DELETE FROM conveyor_singlestore_migrations WHERE version >= 35`,
 	} {
 		if _, err := st.db.ExecContext(ctx, statement); err != nil {
 			t.Fatal(err)
 		}
 	}
 	t.Cleanup(func() {
-		if err := st.migrateTaskPlanState(context.Background()); err != nil {
-			t.Errorf("restore plan-state columns: %v", err)
+		if err := st.migrate(context.Background()); err != nil {
+			t.Errorf("restore migration 0035: %v", err)
 		}
 	})
 	workspace := "plan-state-upgrade"
@@ -94,8 +98,12 @@ func TestPlanStateUpgradeFillsEachLegacyCaseIntegration(t *testing.T) {
 		return count
 	}
 	before := countEvents()
-	if err := st.migrateTaskPlanState(ctx); err != nil {
+	if err := st.migrate(ctx); err != nil {
 		t.Fatal(err)
+	}
+	var recorded int
+	if err := st.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM conveyor_singlestore_migrations WHERE version=?`, planStateMigrationVersion).Scan(&recorded); err != nil || recorded != 1 {
+		t.Fatalf("migration 0035 ledger rows=%d err=%v", recorded, err)
 	}
 	stateOf := func(id string) core.PlanState {
 		t.Helper()
@@ -129,7 +137,10 @@ func TestPlanStateUpgradeFillsEachLegacyCaseIntegration(t *testing.T) {
 	if _, err := st.db.ExecContext(ctx, `UPDATE tasks SET plan_state='completed' WHERE workspace_id=? AND id='spec-on'`, workspace); err != nil {
 		t.Fatal(err)
 	}
-	if err := st.migrateTaskPlanState(ctx); err != nil {
+	if _, err := st.db.ExecContext(ctx, `DELETE FROM conveyor_singlestore_migrations WHERE version=?`, planStateMigrationVersion); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.migrate(ctx); err != nil {
 		t.Fatal(err)
 	}
 	if got := stateOf("spec-on"); got != core.PlanCompleted {
@@ -137,6 +148,21 @@ func TestPlanStateUpgradeFillsEachLegacyCaseIntegration(t *testing.T) {
 	}
 	if after := countEvents(); after != before {
 		t.Fatalf("rerun wrote %d events", after-before)
+	}
+	// A writer from before migration 0035 inserts a task without a plan state
+	// after the fill; reads serve it as needed instead of failing.
+	if _, err := st.db.ExecContext(ctx, `INSERT INTO tasks
+		(id,workspace_id,source,title,body,class,escalation_level,repo_name,base_branch,branch,state,created_at,mode,spec_approval,merge_approval,policy_version)
+		VALUES('late-writer',?,'test','late','','','','conveyor','main','conveyor/task-late-writer','queued',?,'',false,true,1)`, workspace, at); err != nil {
+		t.Fatal(err)
+	}
+	late, err := st.GetTask(store.WithWorkspace(ctx, workspace), "late-writer")
+	if err != nil || late.PlanState != core.PlanNeeded {
+		t.Fatalf("late writer row read=%q err=%v", late.PlanState, err)
+	}
+	listed, err := st.ListTasks(store.WithWorkspace(ctx, workspace))
+	if err != nil || len(listed) != len(cases)+1 {
+		t.Fatalf("listed %d tasks err=%v", len(listed), err)
 	}
 	got, err := st.GetTask(store.WithWorkspace(ctx, workspace), "approved")
 	if err != nil || got.PlanState != core.PlanCompleted {

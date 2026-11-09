@@ -53,7 +53,12 @@ func taskEvent(ctx context.Context, tx *sql.Tx, e core.Event) error {
 	return insertEvent(ctx, tx, e)
 }
 
-const taskColumns = `id,workspace_id,source,COALESCE(intake_key,''),title,body,class,escalation_level,mode,hold,spec_approval,merge_approval,policy_version,setup_name,setup_contract,reviewed_head_sha,approved_head_sha,approval_stale,refresh_baseline_sha,refresh_head_sha,refresh_review_scope,repo_name,base_branch,branch,state,next_stage,recovery_stage,COALESCE(parent_task_id,''),origin_spec_version,origin_sub_id,created_at,COALESCE(assignee_user_id,''),COALESCE(supersedes,''),COALESCE(superseded_by,''),intake_operator_direction,COALESCE(gate_kind,''),check_status_deadline,COALESCE(check_status_deadline_head,''),plan_state`
+// taskColumns reads a NULL plan_state as needed, the value PostgreSQL's column
+// default gives a row a writer from before migration 161 inserts. A SingleStore
+// writer from before migration 0035 that still runs during an overlapping
+// deployment inserts such a row after the fill, and its reads must not fail
+// (component-plan-state invariant 8).
+const taskColumns = `id,workspace_id,source,COALESCE(intake_key,''),title,body,class,escalation_level,mode,hold,spec_approval,merge_approval,policy_version,setup_name,setup_contract,reviewed_head_sha,approved_head_sha,approval_stale,refresh_baseline_sha,refresh_head_sha,refresh_review_scope,repo_name,base_branch,branch,state,next_stage,recovery_stage,COALESCE(parent_task_id,''),origin_spec_version,origin_sub_id,created_at,COALESCE(assignee_user_id,''),COALESCE(supersedes,''),COALESCE(superseded_by,''),intake_operator_direction,COALESCE(gate_kind,''),check_status_deadline,COALESCE(check_status_deadline_head,''),COALESCE(plan_state,'needed')`
 
 func scanTask(row interface{ Scan(...any) error }) (core.Task, error) {
 	var t core.Task

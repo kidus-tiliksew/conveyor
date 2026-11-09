@@ -72,9 +72,11 @@ type PlanningBundle struct {
 
 // ResolvedPlanState is the plan state a member's task is created with: its
 // plan_state, else its legacy spec_approval, true as needed and false as
-// not_required (component-planning invariant 32).
+// not_required (component-planning invariant 32). A stated plan_state is
+// returned as stated, so approval refuses an invalid one before any write
+// rather than falling back to the alias.
 func (t PlanningBundleTask) ResolvedPlanState() PlanState {
-	if t.PlanState.Valid() {
+	if t.PlanState != "" {
 		return t.PlanState
 	}
 	if t.SpecApproval {

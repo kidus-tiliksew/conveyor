@@ -46,9 +46,21 @@ func (p intakePlanInput) supplied() bool {
 
 // decodeIntakePlanFields reads the plan fields from a task request object.
 // Field names match case-insensitively, as encoding/json matches the other
-// intake fields.
+// intake fields. A plan field supplied under two spellings, such as
+// plan_state and PLAN_STATE, is refused, so identical requests always
+// resolve the same way.
 func decodeIntakePlanFields(fields map[string]json.RawMessage) intakePlanInput {
 	var input intakePlanInput
+	spellings := map[string]int{}
+	for name := range fields {
+		spellings[strings.ToLower(name)]++
+	}
+	for _, field := range intakePlanFieldNames {
+		if spellings[field] > 1 {
+			input.recordTypeErr(field + " is supplied more than once")
+			return input
+		}
+	}
 	for name, raw := range fields {
 		field := strings.ToLower(name)
 		switch field {

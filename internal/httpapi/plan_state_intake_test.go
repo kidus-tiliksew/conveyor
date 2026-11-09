@@ -140,6 +140,8 @@ func TestRESTIntakePlanRefusalsPrecedeTheIdempotencyLookup(t *testing.T) {
 		{"plan_state awaiting_approval without plan", map[string]any{"plan_state": "awaiting_approval"}},
 		{"plan_state completed without plan", map[string]any{"plan_state": "completed"}},
 		{"plan not a string", map[string]any{"plan": true}},
+		{"plan_state under two spellings", map[string]any{"plan_state": "needed", "PLAN_STATE": "not_required"}},
+		{"plan under two spellings", map[string]any{"plan": intakeTestPlan, "Plan": intakeTestPlan}},
 	} {
 		for _, surface := range []string{"json", "multipart", "multipart retry"} {
 			tasks, titles, notified := f.taskCount(t), f.titles.Load(), f.notified.Load()

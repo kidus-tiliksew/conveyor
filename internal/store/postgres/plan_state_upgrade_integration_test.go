@@ -23,7 +23,9 @@ func TestPlanStateUpgradeFillsEachLegacyCaseIntegration(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer admin.Close()
+	// Cleanups run last-registered first, so the schema drop below runs
+	// before the pool closes.
+	t.Cleanup(admin.Close)
 	schema := "plan_state_upgrade_" + strings.ReplaceAll(core.NewTaskID(), "-", "_")
 	if _, err = admin.Exec(t.Context(), "CREATE SCHEMA "+pgx.Identifier{schema}.Sanitize()); err != nil {
 		t.Fatal(err)

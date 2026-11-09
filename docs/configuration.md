@@ -41,7 +41,8 @@ review:
 
 execution:
   default_plan_state: needed     # plan state of a task filed with none: needed or not_required
-                                 # (spec_approval is read only as its legacy alias when this is absent)
+                                 # spec_approval supplies the default only when this is absent;
+                                 # both keys with different meanings are rejected
   merge_approval: true           # workspace default for the merge gate
   verify_stage: false            # workspace default for the kit verify stage
   implement_concurrency: 1

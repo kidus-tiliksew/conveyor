@@ -18,8 +18,8 @@ func TestResolveIntakePlanState(t *testing.T) {
 		fallback core.PlanState
 		want     core.PlanState
 	}{
-		{"a plan awaits approval", PlanStateRequest{HasPlan: true, Level: core.L0, SpecApproval: &on}, notRequired, core.PlanAwaitingApproval},
-		{"an approved plan is completed", PlanStateRequest{HasPlan: true, PlanApproved: true}, needed, core.PlanCompleted},
+		{"a plan awaits approval", PlanStateRequest{HasPlan: true, PlanState: &notRequired, Level: core.L0, SpecApproval: &on}, notRequired, core.PlanAwaitingApproval},
+		{"an approved plan is completed", PlanStateRequest{HasPlan: true, PlanApproved: true, PlanState: &notRequired}, needed, core.PlanCompleted},
 		{"plan_state wins", PlanStateRequest{PlanState: &notRequired, SpecApproval: &on, Level: core.L3}, needed, core.PlanNotRequired},
 		{"alias true", PlanStateRequest{SpecApproval: &on, Level: core.L0}, notRequired, core.PlanNeeded},
 		{"alias false", PlanStateRequest{SpecApproval: &off, Level: core.L3}, needed, core.PlanNotRequired},
@@ -67,5 +67,32 @@ func TestPrepareTaskPlanState(t *testing.T) {
 	}
 	if causes := core.PlanStateCauses(); len(causes) != 8 {
 		t.Fatalf("plan-state causes=%v, want the eight of component-plan-state invariant 3", causes)
+	}
+}
+
+// TestMemoryPlanVersionBaseCommitIsCopied proves a caller cannot change a
+// recorded plan version's base commit through the pointer it passed or read.
+func TestMemoryPlanVersionBaseCommitIsCopied(t *testing.T) {
+	ctx := WithWorkspace(WithActor(t.Context(), SystemActor()), "demo")
+	st := NewMemory()
+	task := core.Task{ID: "task-base-commit", Workspace: "demo", Repo: "conveyor", Branch: "conveyor/task-base-commit", State: core.TaskQueued, PlanState: core.PlanNeeded, PolicyVersion: 1}
+	if err := st.CreateTask(ctx, task); err != nil {
+		t.Fatal(err)
+	}
+	commit := "0123456789abcdef0123456789abcdef01234567"
+	created, err := st.CreateSpecVersion(ctx, core.SpecVersion{TaskID: task.ID, Content: "plan", BaseCommit: &commit})
+	if err != nil {
+		t.Fatal(err)
+	}
+	commit = "not a commit"
+	*created.BaseCommit = "also not a commit"
+	read, found, err := st.GetSpecVersion(ctx, task.ID, created.Version)
+	if err != nil || !found || read.BaseCommit == nil || *read.BaseCommit != "0123456789abcdef0123456789abcdef01234567" {
+		t.Fatalf("stored base commit changed through a caller pointer: %+v err=%v", read, err)
+	}
+	*read.BaseCommit = "changed after read"
+	again, _, _ := st.GetLatestSpecVersion(ctx, task.ID)
+	if again.BaseCommit == nil || *again.BaseCommit != "0123456789abcdef0123456789abcdef01234567" {
+		t.Fatalf("stored base commit changed through a returned pointer: %+v", again)
 	}
 }
