@@ -697,3 +697,30 @@ test('Escape in a plan dialog over the Board sheet closes only the dialog', asyn
   await page.keyboard.press('Escape')
   await expect(planSection(page)).toHaveCount(0)
 })
+
+test('at phone width the filter panel stays on screen after a change and shows whole plan-state labels', async ({
+  page,
+}) => {
+  await page.setViewportSize({ width: 375, height: 812 })
+  await mockServer(page, { cards: [card('t-needed', 'needed')] })
+  await page.goto('/w/demo/')
+  await page.getByRole('button', { name: 'Filters' }).click()
+  await page.getByRole('tab', { name: 'Plan state' }).click()
+  const options = page.getByRole('listbox', { name: 'Plan state' }).getByRole('option')
+  // The first change shows Reset beside the trigger and moves it; the panel
+  // is measured again and stays inside the page.
+  await options.filter({ hasText: 'Planning needed' }).click()
+  await expect(page.getByRole('button', { name: 'Reset filters' })).toBeVisible()
+  const panel = await page.locator('[data-filter-panel]').boundingBox()
+  if (!panel) throw new Error('the filter panel is not rendered')
+  expect(panel.x).toBeGreaterThanOrEqual(0)
+  expect(panel.x + panel.width).toBeLessThanOrEqual(375)
+  for (const label of Object.values(labels)) {
+    const text = options.filter({ hasText: label }).locator('span.truncate')
+    expect(await text.evaluate((node) => node.scrollWidth <= node.clientWidth)).toBe(true)
+  }
+  for (const category of ['Requirement', 'System Design']) {
+    const text = page.getByRole('tab', { name: category }).locator('span.truncate')
+    expect(await text.evaluate((node) => node.scrollWidth <= node.clientWidth)).toBe(true)
+  }
+})

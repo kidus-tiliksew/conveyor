@@ -506,7 +506,10 @@ function FilterMenu({
   }
   // The panel hangs from its trigger, and the page body clips anything past its
   // edges, so a trigger near an edge would hide part of the panel. It stays
-  // inside the page body, with a 16px gutter, once it can be measured.
+  // inside the page body, with a 16px gutter, once it can be measured. A
+  // first or last change shows or hides the Reset control beside the trigger,
+  // which moves the trigger, so the panel is measured again then; otherwise a
+  // narrow page leaves it hanging past the edge.
   useLayoutEffect(() => {
     const panel = panelRef.current
     if (!open || !panel) return
@@ -518,7 +521,7 @@ function FilterMenu({
     const { left, right } = panel.getBoundingClientRect()
     const shift = left < min ? min - left : right > max ? max - right : 0
     if (shift !== 0) panel.style.transform = `translateX(${shift}px)`
-  }, [open, align])
+  }, [open, align, changed])
   return (
     <div className="relative" ref={ref}>
       <Button
@@ -559,7 +562,7 @@ function FilterMenu({
           data-filter-panel
           className={`absolute z-30 mt-2 flex w-[min(42rem,calc(100vw-2rem))] overflow-hidden rounded-xl border border-border bg-surface shadow-2xl ${align === 'left' ? 'left-0' : 'right-0'}`}
         >
-          <div className="w-44 shrink-0 border-r border-border p-2">
+          <div className="w-36 shrink-0 border-r border-border p-2 sm:w-44">
             <div className="relative mb-2">
               <Search className="pointer-events-none absolute left-2 top-1/2 size-3.5 -translate-y-1/2 text-faint" />
               <Input
@@ -657,7 +660,7 @@ function FilterMenu({
                     >
                       {checked && <Check className="size-3" aria-hidden="true" />}
                     </span>
-                    <ValueIcon className="size-4 shrink-0 text-muted" aria-hidden="true" />
+                    <ValueIcon className="hidden size-4 shrink-0 text-muted sm:block" aria-hidden="true" />
                     <span className="truncate">{option.title}</span>
                   </button>
                 )
