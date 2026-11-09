@@ -62,6 +62,11 @@ export function TaskCreateSheet() {
   // none, so the server applies the workspace default (component-web-task-surfaces
   // invariant 63).
   const [chosenPlanState, setChosenPlanState] = useState<IntakePlanState | ''>('')
+  // What the select showed when the operator first changed it: the served
+  // default, or '' while the workspace read had stated none. A choice is sent
+  // whenever it differs from that value, so a state picked before the default
+  // arrived is kept even if the default later matches it.
+  const [openedOn, setOpenedOn] = useState<IntakePlanState | '' | null>(null)
   const [plan, setPlan] = useState('')
   const [planBaseCommit, setPlanBaseCommit] = useState('')
   const [approvePlan, setApprovePlan] = useState(false)
@@ -81,7 +86,9 @@ export function TaskCreateSheet() {
   // operator moved it off the value it opened on.
   const hasPlan = plan.trim() !== ''
   const sentPlanState =
-    !hasPlan && chosenPlanState && chosenPlanState !== defaultPlanState ? chosenPlanState : undefined
+    !hasPlan && chosenPlanState && chosenPlanState !== (openedOn ?? defaultPlanState ?? '')
+      ? chosenPlanState
+      : undefined
   const baseCommit = planBaseCommit.trim()
   const baseCommitError =
     hasPlan && baseCommit && !fullCommitID.test(baseCommit)
@@ -334,7 +341,10 @@ export function TaskCreateSheet() {
                 aria-label="Plan state"
                 value={shownPlanState}
                 disabled={hasPlan}
-                onChange={(event) => setChosenPlanState(event.target.value as IntakePlanState | '')}
+                onChange={(event) => {
+                  if (openedOn === null) setOpenedOn(defaultPlanState ?? '')
+                  setChosenPlanState(event.target.value as IntakePlanState | '')
+                }}
               >
                 {/* Until the read states the default, choosing it again sends
                     no plan_state. */}

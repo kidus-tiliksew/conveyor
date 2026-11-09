@@ -625,6 +625,32 @@ test('the plan state select reads Workspace default until the workspace read sta
   expect(submittedTask(submitted())).toMatchObject({ plan_state: 'not_required' })
 })
 
+test('a plan state picked before the default arrives is sent even when the default matches it', async ({ page }) => {
+  const { submitted } = await mockTaskCreateAPIs(page, { defaultPlanState: 'needed' })
+  let releaseWorkspace = () => {}
+  const workspaceGate = new Promise<void>((resolve) => {
+    releaseWorkspace = resolve
+  })
+  // Registered last, so it answers first: the workspace read waits until the
+  // operator has chosen.
+  await page.route('**/v1/workspace?*', async (route) => {
+    await workspaceGate
+    await route.fallback()
+  })
+  await page.goto('/w/demo/new')
+  const sheet = page.getByRole('dialog', { name: 'New task' })
+  const select = sheet.getByRole('combobox', { name: 'Plan state' })
+  await expect(select.locator('option:checked')).toHaveText('Workspace default')
+  await select.selectOption('needed')
+  releaseWorkspace()
+  await expect(select.locator('option')).toHaveText(['Planning needed', 'No plan required'])
+  await expect(select).toHaveValue('needed')
+  await descriptionEditor(page).fill('Plan this one explicitly')
+  await sheet.getByRole('button', { name: 'Create task' }).click()
+  await expect.poll(submitted).toContain('Plan this one explicitly')
+  expect(submittedTask(submitted())).toMatchObject({ plan_state: 'needed' })
+})
+
 test('Workspace default stays a choice while the default is unknown and sends no plan_state', async ({ page }) => {
   const { submitted } = await mockTaskCreateAPIs(page, { defaultPlanState: null })
   await page.goto('/w/demo/new')
