@@ -25,6 +25,7 @@ import { Badge } from '../components/ui/badge'
 import { CopyButton } from '../components/ui/copy-button'
 import { ErrorState } from '../components/ui/error-state'
 import { Input } from '../components/ui/input'
+import { InlineMarkdown, MarkdownProse } from '../components/ui/markdown-prose'
 import { PageHeader } from '../components/ui/page-header'
 import { SegmentedControl } from '../components/ui/segmented-control'
 import { Skeleton } from '../components/ui/skeleton'
@@ -238,8 +239,11 @@ function DecisionRow({ decision, citingCount }: { decision: Decision; citingCoun
             {decision.id}
           </Badge>
           <div className="min-w-0 flex-1">
-            <p className="line-clamp-3 text-sm text-foreground sm:line-clamp-2">
-              {clauses ? `(1) ${clauses[0]}` : decision.statement}
+            {/* The preview renders inline Markdown only, so it keeps its
+                line clamp; search still reads the stored text (AC-7.3). */}
+            <p className="line-clamp-3 text-sm text-foreground sm:line-clamp-2" data-decision-preview>
+              {clauses && '(1) '}
+              <InlineMarkdown>{clauses ? clauses[0] : decision.statement}</InlineMarkdown>
             </p>
             <p className="mt-1 flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-muted">
               {decision.status !== 'confirmed' && (
@@ -469,12 +473,16 @@ function DecisionRecord({
             {clauses.map((clause, index) => (
               <li key={`${index}:${clause}`} className="flex gap-3 px-4 py-3 text-base leading-7">
                 <span className="shrink-0 font-mono text-sm font-semibold text-muted">({index + 1})</span>
-                <span>{clause}</span>
+                {/* Split first on the stored source, then render each
+                    clause as Markdown in the row's own type (AC-8.2). */}
+                <MarkdownProse className="markdown-inherit min-w-0 flex-1">{clause}</MarkdownProse>
               </li>
             ))}
           </ol>
         ) : (
-          <p className="text-base leading-7">{decision.statement}</p>
+          <div className="text-base leading-7">
+            <MarkdownProse className="markdown-inherit">{decision.statement}</MarkdownProse>
+          </div>
         )}
       </section>
       {chain.length > 1 && (
@@ -507,7 +515,13 @@ function DecisionRecord({
       )}
       <section aria-label="Why" className="mt-8">
         <h2 className="text-xs font-medium text-muted">Why</h2>
-        <p className="mt-2 whitespace-pre-wrap text-sm leading-6">{decision.context || 'No context was recorded.'}</p>
+        {decision.context ? (
+          <div className="mt-2 text-sm leading-6">
+            <MarkdownProse className="markdown-inherit">{decision.context}</MarkdownProse>
+          </div>
+        ) : (
+          <p className="mt-2 text-sm leading-6">No context was recorded.</p>
+        )}
       </section>
       <section aria-label="Alternatives rejected" className="mt-8">
         <h2 className="text-xs font-medium text-muted">Alternatives rejected</h2>
@@ -515,7 +529,7 @@ function DecisionRecord({
           <ul className="mt-2 divide-y divide-border rounded-lg border border-border">
             {alternatives.map((alternative, index) => (
               <li key={`${index}:${alternative}`} className="px-4 py-2.5 text-sm leading-6">
-                {alternative}
+                <MarkdownProse className="markdown-inherit">{alternative}</MarkdownProse>
               </li>
             ))}
           </ul>

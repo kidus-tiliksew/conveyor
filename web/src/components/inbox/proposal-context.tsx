@@ -3,8 +3,10 @@ import { fetchDecision, fetchRequirement, fetchSystemDesign } from '../../lib/ap
 import { errorMessage } from '../../lib/errors'
 import type { Decision, PendingProposal, RequirementView, SystemDesignView } from '../../lib/types'
 import { useWorkspaceSelection } from '../app-shell'
+import { alternativeRows } from '../decisions/decision-model'
 import { DocumentComparison } from '../documents/version-diff'
 import { Button } from '../ui/button'
+import { MarkdownProse } from '../ui/markdown-prose'
 import { Skeleton } from '../ui/skeleton'
 
 // What a pending document proposal changes, shown in the Inbox detail view
@@ -12,7 +14,8 @@ import { Skeleton } from '../ui/skeleton'
 // compared with the document's current confirmed version through the document
 // surfaces' own comparison; with no confirmed version the comparison starts
 // from an empty base, so the proposed content shows whole. A decision proposal
-// shows its statement, context and rejected alternatives in full.
+// shows its statement, context and rejected alternatives in full, rendered as
+// Markdown the way the decision page renders them, one alternative per row.
 //
 // Each read uses the document pages' workspace-scoped key with the query's
 // abort signal and reads again on every mount. Content shows only from a read
@@ -83,14 +86,22 @@ function DecisionText({ id }: { id: string }) {
         <dl className="space-y-3 text-sm">
           {(
             [
-              ['Statement', decision.statement],
-              ['Context', decision.context],
-              ['Alternatives rejected', decision.alternatives_rejected],
+              ['Statement', decision.statement ? [decision.statement] : []],
+              ['Context', decision.context ? [decision.context] : []],
+              ['Alternatives rejected', alternativeRows(decision.alternatives_rejected ?? '')],
             ] as const
-          ).map(([label, text]) => (
+          ).map(([label, blocks]) => (
             <div key={label}>
               <dt className="text-xs font-medium text-muted">{label}</dt>
-              <dd className="mt-1 whitespace-pre-wrap break-words leading-6">{text || '—'}</dd>
+              <dd className="mt-1 space-y-1 break-words leading-6">
+                {blocks.length > 0
+                  ? blocks.map((block, index) => (
+                      <MarkdownProse key={`${index}:${block}`} className="markdown-inherit">
+                        {block}
+                      </MarkdownProse>
+                    ))
+                  : '—'}
+              </dd>
             </div>
           ))}
           {decision.supersedes && (

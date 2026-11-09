@@ -49,12 +49,96 @@ export function openSweepEntries(decision: Decision): DecisionSupersessionSweepE
   return (decision.sweep?.entries ?? []).filter((entry) => entry.status === 'open')
 }
 
+// The [start, end) offsets of every inline code span in Markdown text, found
+// the way CommonMark finds them: a backtick run opens a span that the next run
+// of exactly the same length in its paragraph closes, an unclosed run stays
+// literal, and a backslash escapes a backtick only outside a span. Clause and row splitting
+// skip every offset inside a span, so a split never cuts a span in half
+// (component-web-document-surfaces invariant 29).
+export function codeSpanRanges(text: string): Array<[number, number]> {
+  const ranges: Array<[number, number]> = []
+  const runLength = (from: number) => {
+    let end = from
+    while (text[end] === '`') end++
+    return end - from
+  }
+  let index = 0
+  while (index < text.length) {
+    if (text[index] === '\\' && text[index + 1] === '`') {
+      index += 2
+      continue
+    }
+    if (text[index] !== '`') {
+      index++
+      continue
+    }
+    const length = runLength(index)
+    let close = index + length
+    let closed = -1
+    while (close < text.length) {
+      // A blank line ends the paragraph, and a span never crosses one.
+      if (text[close] === '\n' && /^\n[ \t]*\n/.test(text.slice(close, close + 64))) break
+      if (text[close] !== '`') {
+        close++
+        continue
+      }
+      const candidate = runLength(close)
+      if (candidate === length) {
+        closed = close
+        break
+      }
+      close += candidate
+    }
+    if (closed < 0) {
+      index += length
+      continue
+    }
+    ranges.push([index, closed + length])
+    index = closed + length
+  }
+  return ranges
+}
+
+function insideCodeSpan(ranges: ReadonlyArray<[number, number]>, offset: number) {
+  return ranges.some(([start, end]) => offset >= start && offset < end)
+}
+
+// Splits text at each match of a global pattern that starts outside every
+// code span. The matched separator is dropped.
+function splitOutsideCode(text: string, separator: RegExp): string[] {
+  const ranges = codeSpanRanges(text)
+  const pieces: string[] = []
+  let start = 0
+  for (const match of text.matchAll(separator)) {
+    const at = match.index ?? 0
+    if (insideCodeSpan(ranges, at)) continue
+    pieces.push(text.slice(start, at))
+    start = at + match[0].length
+  }
+  pieces.push(text.slice(start))
+  return pieces
+}
+
+// Whether text holds a colon outside its code spans.
+function hasProseColon(text: string) {
+  const ranges = codeSpanRanges(text)
+  for (let index = text.indexOf(':'); index >= 0; index = text.indexOf(':', index + 1)) {
+    if (!insideCodeSpan(ranges, index)) return true
+  }
+  return false
+}
+
 // A statement splits into clauses only when it begins with `(1) ` and every
 // clause marker after it continues the sequence `(2) `, `(3) `, … in order.
-// Anything else renders as one paragraph (AC-8.2).
+// Anything else renders as one paragraph (AC-8.2). Splitting reads the stored
+// Markdown source before rendering, and a marker inside a code span is code,
+// not a clause marker.
 export function statementClauses(statement: string): string[] | null {
   if (!statement.startsWith('(1) ')) return null
-  const markers = [...statement.matchAll(/(^|\s)\((\d+)\) /g)]
+  const ranges = codeSpanRanges(statement)
+  const markers = [...statement.matchAll(/(^|\s)\((\d+)\) /g)].filter(
+    (marker) => !insideCodeSpan(ranges, (marker.index ?? 0) + marker[1].length),
+  )
   if (markers.length < 2) return null
   if (markers.some((marker, index) => Number(marker[2]) !== index + 1)) return null
   return markers.map((marker, index) => {
@@ -67,17 +151,18 @@ export function statementClauses(statement: string): string[] | null {
 // One row per rejected alternative. The record holds prose that names each
 // alternative before a colon, so a row starts at each line and at each
 // sentence holding a colon; a sentence without one continues the row before
-// it. Prose without any colon keeps one row per line.
+// it. Prose without any colon keeps one row per line. Line breaks, sentence
+// ends, and colons inside a code span do not count, so a row never cuts a
+// code span in half.
 export function alternativeRows(text: string): string[] {
-  const lines = text
-    .split(/\n+/)
+  const lines = splitOutsideCode(text, /\n+/g)
     .map((line) => line.trim())
     .filter(Boolean)
-  if (!lines.some((line) => line.includes(':'))) return lines
+  if (!lines.some(hasProseColon)) return lines
   const rows: string[] = []
   for (const line of lines) {
-    line.split(/(?<=\.)\s+(?=[A-Z`"'])/).forEach((sentence, index) => {
-      if (index === 0 || sentence.includes(':')) rows.push(sentence)
+    splitOutsideCode(line, /(?<=\.)\s+(?=[A-Z`"'])/g).forEach((sentence, index) => {
+      if (index === 0 || hasProseColon(sentence)) rows.push(sentence)
       else rows[rows.length - 1] = `${rows[rows.length - 1]} ${sentence}`
     })
   }

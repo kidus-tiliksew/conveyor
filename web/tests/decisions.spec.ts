@@ -129,6 +129,26 @@ function demoDecisions(sweepStatus = { alpha: 'open', beta: 'open' }): DecisionF
   ]
 }
 
+// A decision whose stored text is Markdown: code spans, emphasis, a clause
+// marker inside a code span, two context paragraphs, and an alternative whose
+// code span holds a colon and a sentence end.
+const markdownDecision: DecisionFixture = {
+  id: 'DEC-60',
+  statement:
+    '(1) A kit pin stays eligible with a `pin_version_drift` warning. (2) The local `kit_permissions` requirement stays, and `retry (3) later` is code, not a clause. (3) Reopening it takes a *new* decision.',
+  context:
+    'The scan `git grep -i -E "standing.?grant|pin_version_drift"` had no hit.\n\nThe workspace leaves `verify_stage` off.',
+  alternatives_rejected:
+    'Building every grant: too much to operate. It also needed `git grep -e "a: b. C"` to scan. Dropping drift: every revision excludes kits.',
+  status: 'confirmed',
+  origin: 'operator',
+  confirmed_by: 'user:operator',
+  confirmed_at: '2026-11-05T09:00:00Z',
+  sweep: { clean: true, entries: [] },
+  workspace: 'demo',
+  created_at: '2026-11-05T08:00:00Z',
+}
+
 const demoCitations = {
   items: [
     { decision_id: 'DEC-7', tier: 'requirement', document_id: 'req-alpha', title: 'Alpha requirement', version: 3 },
@@ -160,7 +180,7 @@ interface Served {
 
 async function serve(
   page: Page,
-  options: { role?: string; holdOther?: boolean; dismissFailsFirst?: boolean } = {},
+  options: { role?: string; holdOther?: boolean; dismissFailsFirst?: boolean; extra?: DecisionFixture[] } = {},
 ): Promise<Served> {
   const served: Served = { requests: [], dismissals: 0 }
   let sweep = { alpha: 'open', beta: 'open' }
@@ -190,7 +210,7 @@ async function serve(
         await otherGate
         return route.fulfill({ json: otherDecisions })
       }
-      return route.fulfill({ json: demoDecisions(sweep) })
+      return route.fulfill({ json: [...demoDecisions(sweep), ...(options.extra ?? [])] })
     }
     if (url.pathname === '/v1/decision-citations')
       return route.fulfill({ json: workspace === 'other' ? { items: [] } : demoCitations })
@@ -402,6 +422,83 @@ test('a statement without ordered clause markers renders as one paragraph (AC-8.
     'Untracking the bundle.',
     'Building it only in CI.',
   ])
+})
+
+test('a decision page renders its statement, context, and alternatives as Markdown after splitting the source (AC-8.1, AC-8.2)', async ({
+  page,
+}) => {
+  await serve(page, { extra: [markdownDecision] })
+  await page.goto('/w/demo/decisions/DEC-60')
+  await expect(page.getByRole('heading', { name: 'DEC-60', level: 1 })).toBeVisible()
+
+  // Splitting reads the source first: the `(3) ` inside a code span is code,
+  // so the statement keeps three numbered clauses.
+  const statement = page.getByRole('region', { name: 'Statement' })
+  const clauses = statement.getByRole('listitem')
+  await expect(clauses).toHaveCount(3)
+  await expect(clauses).toHaveText([
+    '(1)A kit pin stays eligible with a pin_version_drift warning.',
+    '(2)The local kit_permissions requirement stays, and retry (3) later is code, not a clause.',
+    '(3)Reopening it takes a new decision.',
+  ])
+  await expect(clauses.nth(0).locator('code')).toHaveText('pin_version_drift')
+  await expect(clauses.nth(1).locator('code')).toHaveText(['kit_permissions', 'retry (3) later'])
+  await expect(clauses.nth(2).locator('em')).toHaveText('new')
+  // A clause adds no paragraph margin inside its numbered row.
+  for (const margin of await clauses
+    .locator('p')
+    .evaluateAll((items) =>
+      items.map((item) => getComputedStyle(item).marginTop + getComputedStyle(item).marginBottom),
+    ))
+    expect(margin).toBe('0px0px')
+
+  // Context is block Markdown: two paragraphs, each code span a <code>.
+  const why = page.getByRole('region', { name: 'Why' })
+  await expect(why.locator('p')).toHaveCount(2)
+  await expect(why.locator('code')).toHaveText(['git grep -i -E "standing.?grant|pin_version_drift"', 'verify_stage'])
+
+  // The colon and sentence end inside the code span neither start a row nor
+  // cut the span.
+  const alternatives = page.getByRole('region', { name: 'Alternatives rejected' }).getByRole('listitem')
+  await expect(alternatives).toHaveText([
+    'Building every grant: too much to operate. It also needed git grep -e "a: b. C" to scan.',
+    'Dropping drift: every revision excludes kits.',
+  ])
+  await expect(alternatives.nth(0).locator('code')).toHaveText('git grep -e "a: b. C"')
+
+  for (const region of ['Statement', 'Why', 'Alternatives rejected'])
+    await expect(page.getByRole('region', { name: region })).not.toContainText('`')
+})
+
+test('a decision without context or alternatives keeps the plain-text fallbacks', async ({ page }) => {
+  await serve(page, { extra: [{ ...markdownDecision, id: 'DEC-61', context: '', alternatives_rejected: '' }] })
+  await page.goto('/w/demo/decisions/DEC-61')
+  await expect(page.getByRole('region', { name: 'Why' })).toHaveText('WhyNo context was recorded.')
+  await expect(page.getByRole('region', { name: 'Why' }).locator('.markdown')).toHaveCount(0)
+  await expect(page.getByRole('region', { name: 'Alternatives rejected' })).toHaveText(
+    'Alternatives rejectedNo alternatives were recorded.',
+  )
+})
+
+test('a list row previews Markdown inline inside its clamp, and search reads the stored text (AC-7.1, AC-7.3)', async ({
+  page,
+}) => {
+  await serve(page, { extra: [markdownDecision] })
+  await page.goto('/w/demo/decisions')
+  await expect.poll(() => rowIds(page)).toEqual(['DEC-60', 'DEC-40', 'DEC-9', 'DEC-7'])
+  const preview = row(page, 'DEC-60').locator('[data-decision-preview]')
+  await expect(preview).toHaveText('(1) A kit pin stays eligible with a pin_version_drift warning.')
+  await expect(preview.locator('code')).toHaveText('pin_version_drift')
+  await expect(preview).toHaveClass(/line-clamp-3/)
+  await expect(preview.locator('p, div, ul, ol, li, pre, h1, h2, h3, h4, a')).toHaveCount(0)
+  await expect(row(page, 'DEC-60')).toContainText('3 clauses')
+
+  // Search matches the stored Markdown source, backticks included.
+  const search = page.getByRole('textbox', { name: 'Search decisions' })
+  await search.fill('`kit_permissions`')
+  await expect.poll(() => rowIds(page)).toEqual(['DEC-60'])
+  await search.fill('standing.?grant')
+  await expect.poll(() => rowIds(page)).toEqual(['DEC-60'])
 })
 
 test('a superseded decision says it no longer governs and links its successor and the newest decision (AC-8.4)', async ({
