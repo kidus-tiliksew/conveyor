@@ -319,22 +319,23 @@ func configCmd() *cobra.Command {
 func taskCmd() *cobra.Command {
 	cmd := &cobra.Command{Use: "task", Short: "Create and inspect tasks"}
 
-	var repo, base, body, specGate, mergeGate string
+	var repo, base, body, mergeGate, planState, planFile, planBase string
+	var approvePlan bool
 	var dependsOn []string
 	newCmd := &cobra.Command{
 		Use:   "new",
 		Short: "Create a task",
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			specApproval, err := optionalGate(specGate)
-			if err != nil {
-				return err
-			}
 			mergeApproval, err := optionalGate(mergeGate)
 			if err != nil {
 				return err
 			}
-			t, err := newClient().createTaskWithDependencies(body, repo, base, specApproval, mergeApproval, dependsOn)
+			plan, err := resolveTaskIntakePlan(cmd.Flags(), planState, planFile, planBase, approvePlan, cmd.InOrStdin())
+			if err != nil {
+				return err
+			}
+			t, err := newClient().createTaskWithDependencies(body, repo, base, plan, mergeApproval, dependsOn)
 			if err != nil {
 				return err
 			}
@@ -345,7 +346,10 @@ func taskCmd() *cobra.Command {
 	newCmd.Flags().StringVar(&repo, "repo", "", "repository the task targets")
 	newCmd.Flags().StringVar(&base, "base", "main", "base branch")
 	newCmd.Flags().StringVarP(&body, "message", "m", "", "task description (becomes part of the prompt)")
-	newCmd.Flags().StringVar(&specGate, "spec-approval", "default", "spec approval override: default, on, or off")
+	newCmd.Flags().StringVar(&planState, "plan-state", "", "plan state: needed or not-required (default: the workspace default)")
+	newCmd.Flags().StringVar(&planFile, "plan-file", "", "file holding an execution plan to file with the task, or - for standard input")
+	newCmd.Flags().StringVar(&planBase, "plan-base", "", "full commit ID the filed plan was read against (requires --plan-file)")
+	newCmd.Flags().BoolVar(&approvePlan, "approve-plan", false, "approve the filed plan as you file it (requires --plan-file and operate_gates)")
 	newCmd.Flags().StringVar(&mergeGate, "merge-approval", "default", "merge approval override: default, on, or off")
 	newCmd.Flags().StringSliceVar(&dependsOn, "depends-on", nil, "open task ID that must merge first (repeatable)")
 
@@ -379,6 +383,9 @@ func taskCmd() *cobra.Command {
 			}
 			out, _ := json.MarshalIndent(result, "", "  ")
 			fmt.Fprintln(cmd.OutOrStdout(), string(out))
+			// The task's plan state (component-runtime invariant 40;
+			// req-task-plan-state AC-1.4).
+			fmt.Fprintf(cmd.ErrOrStderr(), "Plan state: %s\n", t.PlanState)
 			if t.SupersededBy != "" {
 				fmt.Fprintf(cmd.ErrOrStderr(), "Started over as %s\n", t.SupersededBy)
 			}
@@ -404,6 +411,8 @@ func taskCmd() *cobra.Command {
 		taskReviewSummaryCmd(),
 		taskAddReviewSeatsCmd(),
 		taskSetDistinctModelsCmd(),
+		taskPlanStateCmd(),
+		taskAttachPlanCmd(),
 		mergeTaskCmd(),
 		reviewTaskCmd(core.InterventionApprove),
 		reviewTaskCmd(core.InterventionReject),

@@ -343,6 +343,7 @@ func RunAll(t *testing.T, factory Factory) {
 		{"TaskEventAtomicity", true, runTaskEventAtomicity},
 		{"TaskCreationProvenance", true, runTaskCreationProvenance},
 		{"PlanStateIntake", true, runPlanStateIntake},
+		{"PlanStateActs", true, runPlanStateActs},
 		{"ArtifactRepair", true, runArtifactRepair},
 		{"Verification", true, runVerification},
 		{"ArtifactIntake", true, runArtifactIntake},

@@ -353,6 +353,7 @@ func (s *Server) Handler() http.Handler {
 			r.With(s.requireMutationCapability(core.CapabilityOperateGates)).Post("/tasks/{id}/context/proposals/{kind}/{target_id}/dismiss", s.dismissTaskContextProposal)
 			r.With(s.requireMutationCapability(core.CapabilityOperateGates)).Post("/tasks/{id}/setup", s.changeTaskSetup)
 			r.With(s.requireMutationCapability(core.CapabilityOperateGates)).Post("/tasks/{id}/policy", s.changeTaskPolicy)
+			r.With(s.requireMutationCapability(core.CapabilityOperateGates)).Post("/tasks/{id}/plan", s.attachTaskPlan)
 			r.With(s.requireMutationCapability(core.CapabilityOperateGates)).Post("/tasks/{id}/dependencies", s.addTaskDependency)
 			r.With(s.requireMutationCapability(core.CapabilityOperateGates)).Delete("/tasks/{id}/dependencies/{dependency_id}", s.removeTaskDependency)
 			r.With(s.requireMutationCapability(core.CapabilityOperateGates)).Post("/tasks/{id}/review-round/retry", s.retryReviewRound)
@@ -1571,6 +1572,9 @@ type reviewItem struct {
 	MergeReadiness            *dispatch.MergeReadiness              `json:"merge_readiness,omitempty"`
 	Attachments               []core.Artifact                       `json:"attachments"`
 	VerificationEvidence      []core.Artifact                       `json:"verification_evidence"`
+	// PlanActs is set on the task detail read only (component-plan-state
+	// invariant 6).
+	PlanActs *store.PlanActs `json:"plan_acts,omitempty"`
 }
 
 type activityItem struct {
@@ -2297,6 +2301,15 @@ func parseTaskFilter(values url.Values) (store.TaskFilter, error) {
 		}
 		filter.States = append(filter.States, candidate)
 	}
+	// plan_state repeats like state and takes the four plan states; any
+	// other value answers 400 (component-http-api invariant 20; DEC-122(5)).
+	for _, state := range parseTaskFilterList(values["plan_state"]) {
+		candidate := core.PlanState(state)
+		if !candidate.Valid() {
+			return filter, fmt.Errorf("invalid plan_state %q", state)
+		}
+		filter.PlanStates = append(filter.PlanStates, candidate)
+	}
 	// Updated bounds select on last activity — the row's "Updated" instant —
 	// and Created bounds on the persisted creation instant (AC-2.4). They are
 	// separate predicates: neither is an alias for the other, each is validated
@@ -2430,7 +2443,9 @@ func taskPlanStatusFor(task core.Task, latest core.SpecVersion, hasPlan bool, ev
 		return status
 	}
 	// A plan version is created at its gate, so pending is the state it
-	// entered; a later redirect is the only audited command that moves it.
+	// entered; a later redirect, or an operator's plan.reroute off the gate
+	// (component-plan-state invariant 4), is the audited command that moves
+	// it without approving it.
 	status.State = taskPlanPendingGate
 	for i := len(events) - 1; i >= 0; i-- {
 		if events[i].Kind != "task.state_changed" {
@@ -2445,7 +2460,7 @@ func taskPlanStatusFor(task core.Task, latest core.SpecVersion, hasPlan bool, ev
 		switch transition.Command {
 		case core.TaskGateSpec:
 			return status
-		case core.TaskInterventionRedirect:
+		case core.TaskInterventionRedirect, core.TaskPlanReroute:
 			status.State = taskPlanRedirected
 			return status
 		}
@@ -2643,6 +2658,10 @@ func (s *Server) getTaskActivity(w http.ResponseWriter, r *http.Request) {
 		MergeReadiness:            mergeReadiness,
 		Attachments:               attachments,
 		VerificationEvidence:      verificationEvidence,
+		// The plan acts come from the task and orders this read already
+		// holds, with the predicates the two acts apply
+		// (component-plan-state invariant 6; DEC-61).
+		PlanActs: planActsPointer(store.PlanActsFor(task, workOrders)),
 	}
 	if !bounded {
 		if err := s.annotateEventActorOwners(r.Context(), item.Events); err != nil {

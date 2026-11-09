@@ -13,7 +13,12 @@ import (
 // admitted by DEC-47 and DEC-43 (component-task-lifecycle). An absent
 // ReviewDistinctModels leaves the stored replay identity of earlier changes
 // unchanged.
+//
+// PlanState is the plan_state change of component-plan-state invariant 4: it
+// holds needed or not_required and travels alone (component-task-lifecycle
+// invariant 44; DEC-122(7)).
 type TaskPolicyChange struct {
+	PlanState            *core.PlanState   `json:"plan_state,omitempty"`
 	VerifyStage          *bool             `json:"verify_stage,omitempty"`
 	StageTimeouts        map[string]string `json:"stage_timeouts,omitempty"`
 	ReviewDistinctModels *bool             `json:"review_distinct_models,omitempty"`
@@ -26,8 +31,17 @@ func (p TaskPolicyChange) OnlyDistinctModels() bool {
 }
 
 func (p TaskPolicyChange) Validate() error {
+	if p.PlanState != nil {
+		if *p.PlanState != core.PlanNeeded && *p.PlanState != core.PlanNotRequired {
+			return fmt.Errorf("plan_state must be %s or %s", core.PlanNeeded, core.PlanNotRequired)
+		}
+		if p.VerifyStage != nil || len(p.StageTimeouts) != 0 || p.ReviewDistinctModels != nil {
+			return fmt.Errorf("plan_state must be the only policy field in its change")
+		}
+		return nil
+	}
 	if p.VerifyStage == nil && len(p.StageTimeouts) == 0 && p.ReviewDistinctModels == nil {
-		return fmt.Errorf("verify_stage, stage_timeouts.verify, or review_distinct_models is required")
+		return fmt.Errorf("plan_state, verify_stage, stage_timeouts.verify, or review_distinct_models is required")
 	}
 	for stage, value := range p.StageTimeouts {
 		if stage != "verify" {
@@ -58,6 +72,9 @@ func PlanTaskPolicyChange(task core.Task, orders []core.WorkOrder, r SetupChange
 	}
 	if err := r.Policy.Validate(); err != nil {
 		return r, err
+	}
+	if r.Policy.PlanState != nil {
+		return planTaskPlanStateChange(task, orders, r)
 	}
 	if task.State == core.TaskApproved || (task.State == core.TaskAwaiting && task.NextStage == "") {
 		return r, fmt.Errorf("%w: policy changes require a queued or submitted handoff", ErrSetupChangeConflict)
@@ -228,4 +245,24 @@ func PolicyHandoffSupersessionAllowed(order core.WorkOrder, fromStage core.Stage
 	}
 	return fromStage == core.StageVerify && order.Stage == core.StageVerify &&
 		(order.State == core.WorkOrderStale || order.State == core.WorkOrderTimedOut)
+}
+
+// planTaskPlanStateChange derives a plan_state change: the frozen setup is
+// unchanged, and the effects row of component-plan-state invariant 4 or its
+// refusal comes from PlanPlanStateChange.
+func planTaskPlanStateChange(task core.Task, orders []core.WorkOrder, r SetupChangeRequest) (SetupChangeRequest, error) {
+	r.Setup = task.SetupContract
+	r.WorkOrderUpdates, r.NewJobs, r.NewWorkOrders, r.SupersedeWorkOrderIDs = nil, nil, nil, nil
+	r.PriorReviewRound, r.ResultingReviewRound, r.ReviewRoundSeats = 0, 0, nil
+	effects, err := PlanPlanStateChange(task, orders, *r.Policy.PlanState)
+	if err != nil {
+		return r, err
+	}
+	r.ReviewTransition = "plan_state"
+	r.NextStage = task.NextStage
+	if effects.Command != "" {
+		r.NextStage = effects.NextStage
+	}
+	r.PlanStateEffects = &effects
+	return r, nil
 }

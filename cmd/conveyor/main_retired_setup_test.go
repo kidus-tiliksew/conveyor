@@ -58,7 +58,7 @@ func TestTaskNewRejectsSetupFlag(t *testing.T) {
 	if strings.Contains(helpOutput.String(), "--setup") || strings.Contains(helpOutput.String(), "execution setup") {
 		t.Fatalf("task new help still advertises setup selection:\n%s", helpOutput.String())
 	}
-	if !strings.Contains(helpOutput.String(), "--spec-approval") || !strings.Contains(helpOutput.String(), "--depends-on") {
+	if !strings.Contains(helpOutput.String(), "--plan-state") || !strings.Contains(helpOutput.String(), "--depends-on") {
 		t.Fatalf("task new help lost policy flags:\n%s", helpOutput.String())
 	}
 }

@@ -43,7 +43,10 @@ import (
 // the listed states, repositories, requirements, or designs — while distinct
 // members still intersect. An empty list leaves that member inactive.
 type TaskFilter struct {
-	States       []core.TaskState
+	States []core.TaskState
+	// PlanStates selects tasks holding any listed plan state. It orders
+	// nothing (component-http-api invariant 20; DEC-122(5)).
+	PlanStates   []core.PlanState
 	Repositories []string
 	// Assignee is one single-valued selector. Empty leaves the member inactive,
 	// "unassigned" selects tasks without an assignee, and every other value is
@@ -75,7 +78,7 @@ type TaskFilter struct {
 // Active reports whether any predicate would narrow the workspace. Callers that
 // have a cheaper unfiltered read path use it to keep that path byte-identical.
 func (f TaskFilter) Active() bool {
-	return len(f.States) > 0 || len(f.Repositories) > 0 || f.Assignee != "" || f.Query != "" || !f.UpdatedFrom.IsZero() ||
+	return len(f.States) > 0 || len(f.PlanStates) > 0 || len(f.Repositories) > 0 || f.Assignee != "" || f.Query != "" || !f.UpdatedFrom.IsZero() ||
 		!f.UpdatedTo.IsZero() || !f.CreatedFrom.IsZero() || !f.CreatedTo.IsZero() || len(f.ServesRequirementIDs) > 0 ||
 		len(f.GoverningDesignIDs) > 0 || f.Open || f.ExcludeBlueprintAnchors
 }
@@ -1056,6 +1059,9 @@ func (m *memory) taskMatchesFilterLocked(task core.Task, filter TaskFilter) bool
 		return false
 	}
 	if len(filter.States) > 0 && !slices.Contains(filter.States, task.State) {
+		return false
+	}
+	if len(filter.PlanStates) > 0 && !slices.Contains(filter.PlanStates, task.PlanState) {
 		return false
 	}
 	if len(filter.Repositories) > 0 && !slices.Contains(filter.Repositories, task.Repo) {

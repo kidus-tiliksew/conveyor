@@ -191,12 +191,18 @@ type TaskStore interface {
 	SetTaskAssigneeCommand(ctx context.Context, lease taskops.TaskLease, id, assigneeUserID string) (core.Task, error)
 	RequestChangesCommand(ctx context.Context, lease taskops.TaskLease, request taskops.RequestChanges) (core.Task, error)
 	// ChangeTaskPolicyCommand commits only the operator's frozen-policy
-	// exception (verify_stage, stage_timeouts.verify, and
+	// exception (plan_state, verify_stage, stage_timeouts.verify, and
 	// review_distinct_models). The backend derives the new frozen policy and
 	// every order change inside its task transaction; it never selects or
 	// reassigns an execution setup
 	// (DEC-47, DEC-43, DEC-56; component-task-lifecycle).
 	ChangeTaskPolicyCommand(ctx context.Context, lease taskops.TaskLease, request SetupChangeRequest) (SetupChangeResult, error)
+	// AttachTaskPlanCommand records an operator-attached plan as the task's
+	// next plan version, cancels the orders the act retires, and moves the
+	// plan state to awaiting_approval in one task transaction, replaying a
+	// reused request ID through task_setup_changes (component-plan-state
+	// invariant 5; req-task-plan-state AC-3.2).
+	AttachTaskPlanCommand(ctx context.Context, lease taskops.TaskLease, request AttachPlanRequest) (AttachPlanResult, error)
 	BindTaskApproval(ctx context.Context, id, headSHA string) error
 	// RecordCheckStatusDeadline records a check-status deadline for head and
 	// appends event in one transaction, unless the task already holds a

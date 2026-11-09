@@ -61,11 +61,11 @@ func TestTaskCreatePayloadIsPolicyOnly(t *testing.T) {
 	}))
 	defer srv.Close()
 	c := &client{base: srv.URL, token: "secret-token", workspace: "engineering"}
-	specApproval, mergeApproval := false, true
-	if _, err := c.createTaskWithDependencies("fix it", "api", "trunk", &specApproval, &mergeApproval, []string{"task-0"}); err != nil {
+	mergeApproval := true
+	if _, err := c.createTaskWithDependencies("fix it", "api", "trunk", taskIntakePlan{PlanState: "not_required"}, &mergeApproval, []string{"task-0"}); err != nil {
 		t.Fatal(err)
 	}
-	want := map[string]any{"body": "fix it", "repo": "api", "base_branch": "trunk", "source": "cli", "spec_approval": false, "merge_approval": true, "depends_on": []any{"task-0"}}
+	want := map[string]any{"body": "fix it", "repo": "api", "base_branch": "trunk", "source": "cli", "plan_state": "not_required", "merge_approval": true, "depends_on": []any{"task-0"}}
 	if len(input) != len(want) {
 		t.Fatalf("payload = %#v, want exactly %#v", input, want)
 	}

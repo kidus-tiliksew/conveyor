@@ -336,8 +336,12 @@ func taskFilterParams(ctx context.Context, filter store.TaskFilter) db.CountTask
 	for i, state := range filter.States {
 		states[i] = string(state)
 	}
+	planStates := make([]string, len(filter.PlanStates))
+	for i, state := range filter.PlanStates {
+		planStates[i] = string(state)
+	}
 	return db.CountTaskOperationsTasksParams{
-		WorkspaceID: workspace(ctx), TaskStates: states,
+		WorkspaceID: workspace(ctx), TaskStates: states, PlanStates: planStates,
 		Repositories: emptyIfNil(filter.Repositories),
 		Search:       filter.Query, CreatedFrom: nullableTimestamp(filter.CreatedFrom),
 		CreatedTo: nullableTimestamp(filter.CreatedTo), ServesRequirements: emptyIfNil(filter.ServesRequirementIDs),
@@ -356,7 +360,7 @@ func taskOperationsListParams(ctx context.Context, filter store.TaskFilter, limi
 		Assignee:    bound.Assignee,
 		UpdatedFrom: bound.UpdatedFrom, UpdatedTo: bound.UpdatedTo,
 		PageLimit: int32(limit), PageOffset: int32(offset), OpenOnly: bound.OpenOnly,
-		ExcludeAnchors: bound.ExcludeAnchors,
+		ExcludeAnchors: bound.ExcludeAnchors, PlanStates: bound.PlanStates,
 	}
 }
 

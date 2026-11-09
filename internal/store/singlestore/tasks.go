@@ -800,6 +800,14 @@ func taskPredicate(ctx context.Context, f store.TaskFilter) (string, []any) {
 	}
 	addIn("state", states)
 	addIn("repo_name", f.Repositories)
+	// plan_state applies before paging and totals like every other member,
+	// reading a NULL left by a pre-migration writer as needed, as taskColumns
+	// does (component-http-api invariant 20; DEC-122(5)).
+	planStates := make([]string, len(f.PlanStates))
+	for i, v := range f.PlanStates {
+		planStates[i] = string(v)
+	}
+	addIn("COALESCE(plan_state,'needed')", planStates)
 	// Open selects the inbox's candidates: no merged or closed task and no
 	// blueprint anchor (component-http-api, Activity and attention reads).
 	if f.Open {
@@ -1703,6 +1711,10 @@ func (s *Store) ChangeTaskPolicyCommand(ctx context.Context, lease taskops.TaskL
 		}
 		if core.TaskTerminal(t.State) {
 			return fmt.Errorf("%w: terminal task cannot change policy", store.ErrSetupChangeConflict)
+		}
+		if r.Policy.PlanState != nil {
+			result, err = s.changeTaskPlanStateTx(ctx, tx, t, r, identity)
+			return err
 		}
 		orders, err := s.listOrders(ctx, tx, []string{t.ID})
 		if err != nil {
