@@ -120,6 +120,7 @@ async function mockServer(
   const detailReads = new Map<string, number>()
   const activityQueries: URLSearchParams[] = []
   const replies = [...(options.replies ?? [])]
+  let detailFails = false
   await page.addInitScript(() => localStorage.setItem('conveyor-workspace', 'demo'))
   await page.route('**/v1/**', async (route: Route) => {
     const request = route.request()
@@ -154,6 +155,7 @@ async function mockServer(
     if (detailPath) {
       const id = decodeURIComponent(detailPath[1])
       detailReads.set(id, (detailReads.get(id) ?? 0) + 1)
+      if (detailFails) return route.fulfill({ status: 503, json: { error: 'detail unavailable' } })
       const item = details.get(id)
       if (!item) return route.fulfill({ status: 404, json: { error: 'not_found' } })
       return route.fulfill({ json: item })
@@ -171,6 +173,9 @@ async function mockServer(
     detailReads: (id: string) => detailReads.get(id) ?? 0,
     activityQueries: () => activityQueries,
     setDetail: (item: Detail) => details.set(item.task.id, item),
+    failDetail: (fails: boolean) => {
+      detailFails = fails
+    },
   }
 }
 
@@ -544,6 +549,29 @@ test('a 409 shows the server message in place, refetches detail, and is never re
   await expect(dialog.getByRole('button', { name: 'Attach plan' })).toBeDisabled()
   await expect(dialog.getByText('The server no longer accepts an attached plan for this task.')).toBeVisible()
   await page.waitForTimeout(500)
+  expect(server.posts()).toHaveLength(1)
+})
+
+test('a recorded act whose detail refresh fails stays blocked and offers a read-only retry', async ({ page }) => {
+  const server = await mockServer(page, {
+    details: [detail('act-refresh', 'needed', { acts: { set_needed: false, set_not_required: true, attach: false } })],
+  })
+  await page.goto('/w/demo/tasks/act-refresh/full')
+  await page.getByRole('button', { name: 'Change plan state' }).click()
+  const dialog = page.getByRole('dialog', { name: 'Change plan state' })
+  await dialog.getByLabel('Reason (required)').fill('No plan needed')
+  server.failDetail(true)
+  await dialog.getByRole('button', { name: 'Change plan state' }).click()
+  await expect(dialog.getByRole('alert')).toContainText('The change was recorded, but the task could not refresh.')
+  await expect(dialog.getByRole('button', { name: 'Change plan state' })).toBeDisabled()
+  expect(server.posts()).toHaveLength(1)
+
+  // The retry reads detail again and sends no act.
+  server.setDetail(detail('act-refresh', 'not_required'))
+  server.failDetail(false)
+  await dialog.getByRole('button', { name: 'Retry refresh' }).click()
+  await expect(dialog).toHaveCount(0)
+  await expect(planSection(page).locator('[data-plan-state-label]')).toHaveText('No plan required')
   expect(server.posts()).toHaveLength(1)
 })
 

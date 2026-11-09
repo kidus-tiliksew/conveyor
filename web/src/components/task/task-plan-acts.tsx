@@ -85,13 +85,26 @@ function usePlanActMutation<T>(
 ) {
   const queryClient = useQueryClient()
   const taskId = item.task.id
+  // After a recorded act: refreshing detail, or a refresh that failed.
+  const [refresh, setRefresh] = useState<{ workspace: string; failed: boolean } | null>(null)
+  // The act closes only once refreshed detail lands, so the section never
+  // offers the acts of the state the act just left. A failed refresh keeps the
+  // dialog open, with submission blocked and a read-only retry.
+  const refreshDetail = async (workspace: string) => {
+    setRefresh({ workspace, failed: false })
+    try {
+      await queryClient.invalidateQueries({ queryKey: taskDetailQueryKey(workspace, taskId) }, { throwOnError: true })
+    } catch {
+      setRefresh({ workspace, failed: true })
+      return
+    }
+    onDone()
+  }
   // The act's workspace travels in its variables, captured when the act
   // starts, so a workspace switch mid-request cannot redirect its refresh.
-  return useMutation({
+  const mutation = useMutation({
     mutationFn: ({ workspace, input }: { workspace: string; input: T }) => act(workspace, input),
     retry: (count, error) => error instanceof TypeError && count < 1,
-    // The act stays pending until refreshed detail lands, so the section
-    // never offers the acts of the state the act just left.
     onSuccess: async (_result, variables) => {
       for (const queryKey of [
         ['activity', variables.workspace],
@@ -100,8 +113,7 @@ function usePlanActMutation<T>(
       ]) {
         void queryClient.invalidateQueries({ queryKey })
       }
-      await queryClient.invalidateQueries({ queryKey: taskDetailQueryKey(variables.workspace, taskId) })
-      onDone()
+      await refreshDetail(variables.workspace)
     },
     onError: (error, variables) => {
       if (error instanceof PlanActError && error.status === 409) {
@@ -109,6 +121,40 @@ function usePlanActMutation<T>(
       }
     },
   })
+  return {
+    mutation,
+    // A recorded act is never submitted again from its dialog.
+    recorded: mutation.isSuccess,
+    refreshing: refresh !== null && !refresh.failed,
+    refreshFailed: refresh?.failed === true,
+    retryRefresh: () => {
+      if (refresh) void refreshDetail(refresh.workspace)
+    },
+  }
+}
+
+// What a plan act's dialog says after its submission: the server's refusal,
+// or a recorded act whose detail refresh failed, with a read-only retry.
+function PlanActOutcome({
+  act,
+}: {
+  act: { mutation: { error: Error | null }; refreshFailed: boolean; retryRefresh: () => void }
+}) {
+  if (act.mutation.error)
+    return (
+      <p role="alert" className="text-sm text-failure">
+        {errorMessage(act.mutation.error)}
+      </p>
+    )
+  if (!act.refreshFailed) return null
+  return (
+    <div role="alert" className="flex flex-wrap items-center justify-between gap-2 text-sm text-failure">
+      <span>The change was recorded, but the task could not refresh.</span>
+      <Button type="button" variant="secondary" size="sm" onClick={act.retryRefresh}>
+        Retry refresh
+      </Button>
+    </div>
+  )
 }
 
 function ChangePlanStateDialog({
@@ -128,18 +174,20 @@ function ChangePlanStateDialog({
   const target = chosen && targets.includes(chosen) ? chosen : ''
   const [reason, setReason] = useState('')
   const requestIdFor = useActRequestId()
-  const mutation = usePlanActMutation(
+  const act = usePlanActMutation(
     item,
     (actWorkspace, input: Parameters<typeof changeTaskPlanState>[2]) =>
       changeTaskPlanState(actWorkspace, item.task.id, input),
     onClose,
   )
-  const disabled = mutation.isPending || !target || !reason.trim()
+  const { mutation } = act
+  const busy = mutation.isPending || act.refreshing
+  const disabled = busy || act.recorded || !target || !reason.trim()
   return (
     <Dialog
       label="Change plan state"
       onClose={() => {
-        if (!mutation.isPending) onClose()
+        if (!busy) onClose()
       }}
     >
       <form
@@ -185,17 +233,13 @@ function ChangePlanStateDialog({
             className="min-h-16 text-sm"
           />
         </div>
-        {mutation.isError && (
-          <p role="alert" className="text-sm text-failure">
-            {errorMessage(mutation.error)}
-          </p>
-        )}
+        <PlanActOutcome act={act} />
         <div className="flex justify-end gap-2">
-          <Button type="button" variant="outline" disabled={mutation.isPending} onClick={onClose}>
-            Cancel
+          <Button type="button" variant="outline" disabled={busy} onClick={onClose}>
+            {act.recorded ? 'Close' : 'Cancel'}
           </Button>
           <Button type="submit" disabled={disabled}>
-            {mutation.isPending ? 'Changing…' : 'Change plan state'}
+            {busy ? 'Changing…' : 'Change plan state'}
           </Button>
         </div>
       </form>
@@ -210,23 +254,25 @@ function AttachPlanDialog({ item, admitted, onClose }: { item: ActivityItem; adm
   const [baseCommit, setBaseCommit] = useState('')
   const [reason, setReason] = useState('')
   const requestIdFor = useActRequestId()
-  const mutation = usePlanActMutation(
+  const act = usePlanActMutation(
     item,
     (actWorkspace, input: Parameters<typeof attachTaskPlan>[2]) => attachTaskPlan(actWorkspace, item.task.id, input),
     onClose,
   )
+  const { mutation } = act
+  const busy = mutation.isPending || act.refreshing
   const commit = baseCommit.trim()
   const commitError =
     commit && !fullCommitID.test(commit)
       ? 'Base commit must be a full commit ID of 40 lowercase hexadecimal characters.'
       : ''
-  const disabled = mutation.isPending || !admitted || !plan.trim() || !reason.trim() || commitError !== ''
+  const disabled = busy || act.recorded || !admitted || !plan.trim() || !reason.trim() || commitError !== ''
   return (
     <Dialog
       label="Attach plan"
       className="max-w-2xl"
       onClose={() => {
-        if (!mutation.isPending) onClose()
+        if (!busy) onClose()
       }}
     >
       <form
@@ -287,17 +333,13 @@ function AttachPlanDialog({ item, admitted, onClose }: { item: ActivityItem; adm
         {!admitted && (
           <p className="text-sm text-muted">The server no longer accepts an attached plan for this task.</p>
         )}
-        {mutation.isError && (
-          <p role="alert" className="text-sm text-failure">
-            {errorMessage(mutation.error)}
-          </p>
-        )}
+        <PlanActOutcome act={act} />
         <div className="flex justify-end gap-2">
-          <Button type="button" variant="outline" disabled={mutation.isPending} onClick={onClose}>
-            Cancel
+          <Button type="button" variant="outline" disabled={busy} onClick={onClose}>
+            {act.recorded ? 'Close' : 'Cancel'}
           </Button>
           <Button type="submit" disabled={disabled}>
-            {mutation.isPending ? 'Attaching…' : 'Attach plan'}
+            {busy ? 'Attaching…' : 'Attach plan'}
           </Button>
         </div>
       </form>
