@@ -182,3 +182,28 @@ func TestOperatorMergeOfApprovedEnforcingTask(t *testing.T) {
 		t.Fatalf("operator merge at one required approval was held by risk: %v", err)
 	}
 }
+
+// A gate-off enforcing task held at the merge gate takes the gate-on
+// readiness pass, so a merge on GitHub at the reviewed head is reconciled as
+// the operator's merge there, and the sweep requests no merge itself.
+func TestMergeReadinessReconcilesGateOffTaskAtTheMergeGate(t *testing.T) {
+	ctx, st, task, d, forge := riskGateFixture(t, "risk-gate-sweep", riskMergeCase{riskpolicy.ModeEnforce, riskpolicy.TierMedium, 0})
+	if !mergeReadinessCanAct(task) {
+		t.Fatal("a gate-off task at the merge gate is not a readiness candidate")
+	}
+	if _, err := d.ReconcileMergeReadiness(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if current, _ := st.GetTask(ctx, task.ID); current.State != core.TaskAwaiting || forge.merges != 0 {
+		t.Fatalf("open pull request sweep: state=%s merges=%d", current.State, forge.merges)
+	}
+	forge.mu.Lock()
+	forge.pr.Merged, forge.pr.State, forge.pr.MergeCommitSHA, forge.pr.MergedBy = true, "closed", "landed", "octocat"
+	forge.mu.Unlock()
+	if _, err := d.ReconcileMergeReadiness(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if current, err := st.GetTask(ctx, task.ID); err != nil || current.State != core.TaskMerged || forge.merges != 0 {
+		t.Fatalf("merged pull request sweep: task=%+v err=%v merges=%d", current, err, forge.merges)
+	}
+}

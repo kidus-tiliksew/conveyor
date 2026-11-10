@@ -1278,7 +1278,11 @@ func (d *Dispatcher) reconcileMergeReadinessTask(ctx context.Context, task core.
 // task's state changed. A failure is returned for the caller to log or
 // retry.
 func (d *Dispatcher) gateOnMergeReadiness(ctx context.Context, task core.Task) (bool, error) {
-	if !task.MergeApproval || (task.State != core.TaskApproved && !(task.State == core.TaskAwaiting && task.GateKind == core.GateKindMergeApproval)) {
+	// A task waiting at the merge gate takes the gate-on read whatever its
+	// frozen gate: an enforcing gate-off task that needs a person waits there
+	// too (req-risk-based-review AC-8.2; feature-risk-based-review RR-6).
+	atGate := task.State == core.TaskAwaiting && task.GateKind == core.GateKindMergeApproval
+	if !atGate && (!task.MergeApproval || task.State != core.TaskApproved) {
 		return false, nil
 	}
 	before := task.State
