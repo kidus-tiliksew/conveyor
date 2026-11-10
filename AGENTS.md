@@ -60,6 +60,12 @@ and historical phase status lives in the "Roadmap" reference document.
   not pass a screenshot as a retained `--reference` to
   `scripts/validation_evidence.py cleanup`, so the cleanup at the end of the
   claim removes it with the rest of the `tmp` child. Never commit screenshots.
+- New and changed text in a skill wrapper, a playbook, the web dashboard
+  interface, or a `conveyor` or `conveyord` message follows the
+  `conveyor-plain-english` profile in
+  [docs/playbooks/conveyor-plain-english.md](docs/playbooks/conveyor-plain-english.md)
+  (DEC-126). A profile finding is advice. No gate, CI job, or validator fails
+  on a profile finding alone.
 
 ## Worktrees and branches
 

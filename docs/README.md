@@ -46,6 +46,7 @@ Codex, Cursor, and OpenCode by `conveyor repo init`, or user-globally by
 - [Authoring verification kits](playbooks/conveyor-kit.md): declare repository kits in `.conveyor/kits/manifest.yaml`
 - [Executing verification kits](playbooks/conveyor-kit-verify.md): run kits and ordinary checks under a verify claim and submit typed evidence
 - [Coordinating tasks](playbooks/conveyor-coordinate.md): keep several tasks moving with one thread per stage order, routine decisions within delegated scope, and plain-language timeline text
+- [Plain English](playbooks/conveyor-plain-english.md): the writing rules, exemptions, and glossary for agent and operator text
 
 Operator procedures:
 

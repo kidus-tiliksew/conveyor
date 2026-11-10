@@ -58,7 +58,7 @@ func TestEmbeddedSkillsMatchRepositorySources(t *testing.T) {
 		t.Fatal(err)
 	}
 	// component-cli-onboarding: these wrappers and their canonical playbooks must be released.
-	for _, name := range []string{"conveyor-kit", "conveyor-kit-verify", "conveyor-coordinate", "conveyor-install"} {
+	for _, name := range []string{"conveyor-kit", "conveyor-kit-verify", "conveyor-coordinate", "conveyor-install", "conveyor-plain-english"} {
 		for _, required := range []string{".claude/skills/" + name + "/SKILL.md", "docs/playbooks/" + name + ".md"} {
 			count := 0
 			for _, source := range manifestSources {
@@ -191,6 +191,91 @@ func TestConveyorCoordinateSkillInstallsForEveryTool(t *testing.T) {
 			// Each of the three thread role prompts carries the timeline rule (AC-3.3).
 			if got := bytes.Count(playbook, []byte("Timeline text: the first sentence of every progress message, decision reason,\nand review summary you write states in plain language what happened and what\nhappens next.")); got != 3 {
 				t.Errorf("%s %s coordination playbook carries the timeline rule in %d role prompts, want 3", scope.name, destination.tool.name, got)
+			}
+		}
+	}
+}
+
+// The plain-English profile skill lists and installs with the other embedded
+// skills for every supported tool, in user-global and project scope, through
+// the `conveyor skills install` command. Its wrapper links to the installed
+// sibling playbook (req-agent-guidance-install AC-1.1, AC-1.2, AC-1.5;
+// component-cli-onboarding clauses 12 and 41; DEC-126(1)).
+func TestConveyorPlainEnglishSkillListsAndInstallsForEveryTool(t *testing.T) {
+	lookPath := func(name string) (string, error) { return "/tools/" + name, nil }
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	project := t.TempDir()
+	t.Chdir(project)
+	files := map[string]string{
+		"conveyor-plain-english/SKILL.md":                  ".claude/skills/conveyor-plain-english/SKILL.md",
+		"conveyor-plain-english/conveyor-plain-english.md": "docs/playbooks/conveyor-plain-english.md",
+	}
+
+	list := skillsInstallCmdWithLookPath(lookPath)
+	list.SetArgs([]string{"--list"})
+	var listed bytes.Buffer
+	list.SetOut(&listed)
+	list.SetErr(&listed)
+	if err := list.Execute(); err != nil {
+		t.Fatalf("list: %v\n%s", err, listed.String())
+	}
+	for relative := range files {
+		if !strings.Contains(listed.String(), relative) {
+			t.Errorf("--list does not name %s:\n%s", relative, listed.String())
+		}
+	}
+	if entries, err := os.ReadDir(home); err != nil || len(entries) != 0 {
+		t.Fatalf("--list wrote under HOME: %v, %v", entries, err)
+	}
+
+	for _, scope := range []struct {
+		name string
+		args []string
+		base string
+	}{
+		{name: "global", base: home},
+		{name: "project", args: []string{"--project"}, base: project},
+	} {
+		command := skillsInstallCmdWithLookPath(lookPath)
+		command.SetArgs(scope.args)
+		var output bytes.Buffer
+		command.SetOut(&output)
+		command.SetErr(&output)
+		if err := command.Execute(); err != nil {
+			t.Fatalf("%s install: %v\n%s", scope.name, err, output.String())
+		}
+		base, err := filepath.EvalSymlinks(scope.base)
+		if err != nil {
+			t.Fatal(err)
+		}
+		destinations := skillDestinations(base, supportedSkillTools, scope.name == "project")
+		if len(destinations) != 4 {
+			t.Fatalf("%s destinations = %d, want 4", scope.name, len(destinations))
+		}
+		for _, destination := range destinations {
+			for relative, source := range files {
+				installed := filepath.Join(destination.root, filepath.FromSlash(relative))
+				if !strings.Contains(output.String(), destination.tool.name+"\tcreated\t"+installed) {
+					t.Errorf("%s %s install did not report %s:\n%s", scope.name, destination.tool.name, installed, output.String())
+				}
+				content, err := os.ReadFile(installed)
+				if err != nil {
+					t.Fatalf("%s %s: %v", scope.name, destination.tool.name, err)
+				}
+				if _, owned := managedSkillVersion(content, source); !owned {
+					t.Errorf("%s %s %s has no ownership marker", scope.name, destination.tool.name, relative)
+				}
+			}
+			wrapper, err := os.ReadFile(filepath.Join(destination.root, "conveyor-plain-english", "SKILL.md"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if bytes.Count(wrapper, []byte("](conveyor-plain-english.md)")) != 1 || bytes.Contains(wrapper, []byte("../../../docs/")) {
+				t.Errorf("%s %s plain-English wrapper does not link once to its sibling playbook", scope.name, destination.tool.name)
+			}
+			if !bytes.Contains(wrapper, []byte("\nname: conveyor-plain-english\n")) {
+				t.Errorf("%s %s plain-English wrapper lost its front matter name", scope.name, destination.tool.name)
 			}
 		}
 	}

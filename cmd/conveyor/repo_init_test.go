@@ -205,6 +205,64 @@ func TestRepoInitInstallsCoordinationSkillForEveryTool(t *testing.T) {
 	}
 }
 
+// `conveyor repo init` installs the plain-English profile skill into every
+// supported tool's project root, and a rerun leaves those files unchanged
+// (req-agent-guidance-install AC-2.3, AC-2.4; component-cli-onboarding
+// clause 41).
+func TestRepoInitInstallsPlainEnglishSkillForEveryTool(t *testing.T) {
+	root := t.TempDir()
+	var output bytes.Buffer
+	if err := prepareRepository(root, "v2.0.0", "example", "trunk", &output); err != nil {
+		t.Fatal(err)
+	}
+	destinations := skillDestinations(root, supportedSkillTools, true)
+	if len(destinations) != 4 {
+		t.Fatalf("destinations = %d, want 4", len(destinations))
+	}
+	var assets []embeddedSkillFile
+	for _, asset := range embeddedSkillManifest {
+		if strings.HasPrefix(asset.relative, "conveyor-plain-english/") {
+			assets = append(assets, asset)
+		}
+	}
+	if len(assets) != 2 {
+		t.Fatalf("plain-English manifest entries = %d, want 2", len(assets))
+	}
+	for _, destination := range destinations {
+		for _, asset := range assets {
+			installed := filepath.Join(destination.root, filepath.FromSlash(asset.relative))
+			if !strings.Contains(output.String(), destination.tool.name+"\twritten\t"+installed) {
+				t.Errorf("repo init did not report %s for %s:\n%s", installed, destination.tool.name, output.String())
+			}
+			want, err := renderEmbeddedSkill(asset, "v2.0.0")
+			if err != nil {
+				t.Fatal(err)
+			}
+			got, err := os.ReadFile(installed)
+			if err != nil || !bytes.Equal(want, got) {
+				t.Fatalf("%s %s differs from the embedded skill: %v", destination.tool.name, asset.relative, err)
+			}
+		}
+	}
+
+	before := repoFixtureSnapshot(t, root)
+	output.Reset()
+	if err := prepareRepository(root, "v2.0.0", "example", "trunk", &output); err != nil {
+		t.Fatal(err)
+	}
+	if after := repoFixtureSnapshot(t, root); !reflect.DeepEqual(before, after) {
+		t.Fatal("repeat changed file bytes or symlinks")
+	}
+	for _, destination := range destinations {
+		for _, asset := range assets {
+			installed := filepath.Join(destination.root, filepath.FromSlash(asset.relative))
+			if !strings.Contains(output.String(), destination.tool.name+"\tunchanged\t"+installed) {
+				t.Errorf("repo init rerun did not report %s unchanged for %s:\n%s", installed, destination.tool.name, output.String())
+			}
+		}
+	}
+}
+
 func TestRepoInitSectionContract(t *testing.T) {
 	section, err := renderRepoInit("v1.2.3", "example", "trunk")
 	if err != nil {

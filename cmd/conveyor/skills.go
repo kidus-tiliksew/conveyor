@@ -76,6 +76,22 @@ var embeddedSkillManifest = []embeddedSkillFile{
 		sourcePath: "docs/playbooks/conveyor-testing-doc.md",
 		relative:   "conveyor-testing-doc/conveyor-testing-doc.md",
 	},
+	// The plain-English profile ships as its own skill so every factory reads
+	// the same rules and glossary (component-cli-onboarding clause 41;
+	// DEC-126(1), (5)).
+	{
+		assetPath:   "skills_assets/conveyor-plain-english/SKILL.md",
+		sourcePath:  ".claude/skills/conveyor-plain-english/SKILL.md",
+		relative:    "conveyor-plain-english/SKILL.md",
+		rewriteFrom: "[docs/playbooks/conveyor-plain-english.md](../../../docs/playbooks/conveyor-plain-english.md)",
+		rewriteTo:   "[conveyor-plain-english.md](conveyor-plain-english.md)",
+		skill:       true,
+	},
+	{
+		assetPath:  "skills_assets/conveyor-plain-english/conveyor-plain-english.md",
+		sourcePath: "docs/playbooks/conveyor-plain-english.md",
+		relative:   "conveyor-plain-english/conveyor-plain-english.md",
+	},
 	{
 		assetPath:   "skills_assets/conveyor-coordinate/SKILL.md",
 		sourcePath:  ".claude/skills/conveyor-coordinate/SKILL.md",
