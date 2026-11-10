@@ -308,6 +308,7 @@ export function DocumentTreeToolbar({
 
 export function DocumentTreeItem({
   label,
+  documentId,
   meta,
   title,
   tooltip,
@@ -316,6 +317,11 @@ export function DocumentTreeItem({
   onClick,
 }: {
   label: string
+  /**
+   * The document ID, shown in quieter text with the title. It truncates
+   * within the tree's width (component-web-document-surfaces, "The tree").
+   */
+  documentId?: string
   /** Quiet document identity — the confirmed version, never a signal. */
   meta?: string
   title?: string
@@ -347,6 +353,15 @@ export function DocumentTreeItem({
       />
       <span className="min-w-0 flex-1">
         <span className="block truncate text-sm font-medium">{label}</span>
+        {documentId && (
+          <span
+            data-document-id
+            title={documentId}
+            className={`mt-0.5 block truncate font-mono text-[11px] ${selected ? 'text-muted' : 'text-faint'}`}
+          >
+            {documentId}
+          </span>
+        )}
         {meta && (
           <span className={`mt-0.5 block truncate text-xs ${selected ? 'text-muted' : 'text-faint'}`}>{meta}</span>
         )}

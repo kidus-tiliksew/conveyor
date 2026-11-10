@@ -32,6 +32,7 @@ import {
   reviewVersionLabel,
   selectedReviewVersion,
 } from '../components/documents/document-review'
+import { documentMatchesQuery } from '../components/documents/document-search'
 import { compareDocuments, type DocumentSort, type DocumentSortDirection } from '../components/documents/document-sort'
 import {
   DocumentTree,
@@ -104,9 +105,8 @@ export function visibleRequirements(
   sort: DocumentSort,
   direction: DocumentSortDirection,
 ) {
-  const needle = query.trim().toLocaleLowerCase()
   return requirements
-    .filter((item) => item.requirement.title.toLocaleLowerCase().includes(needle))
+    .filter((item) => documentMatchesQuery(item.requirement, query))
     .sort((left, right) => compareDocuments(left.requirement, right.requirement, sort, direction))
 }
 
@@ -293,6 +293,7 @@ export function RequirementsPage() {
               <DocumentTreeItem
                 key={item.requirement.id}
                 label={item.requirement.title}
+                documentId={item.requirement.id}
                 meta={!item.current_version ? 'not yet confirmed' : undefined}
                 attentionCount={requirementAttentionCount(item)}
                 selected={!openOverview && selectedId === item.requirement.id}
@@ -313,6 +314,7 @@ export function RequirementsPage() {
                 <DocumentTreeItem
                   key={item.requirement.id}
                   label={item.requirement.title}
+                  documentId={item.requirement.id}
                   meta={
                     dismissalArchiveDescription(item.requirement) ??
                     (item.requirement.superseded_by?.length
