@@ -495,8 +495,9 @@ type fingerprintAction struct {
 	Kind  string `json:"kind"`
 }
 
-// FingerprintDocument returns the canonical JSON document Fingerprint hashes,
-// the exact bytes RI-4 sends to the model as untrusted data. It holds the
+// FingerprintDocument returns the canonical JSON document that Fingerprint
+// hashes after HeadlineInstructions, the exact bytes RI-4 sends to the model
+// as untrusted data. It holds the
 // requirement ID and current confirmed version, then every serving task in
 // ID order with its id, title, state, next-action label, actor, and kind,
 // sorted depends_on, and serving_since in RFC 3339 UTC. Nothing else enters:
@@ -528,9 +529,14 @@ func FingerprintDocument(inputs Inputs, actions map[string]nextaction.Compact, n
 	return bytes.TrimSuffix(buffer.Bytes(), []byte("\n"))
 }
 
-// Fingerprint is the lowercase hex SHA-256 of FingerprintDocument (RI-3). It
-// changes exactly when the headline's input changes (AC-2.6).
+// Fingerprint is the lowercase hex SHA-256 of HeadlineInstructions followed
+// directly, with no separator, by FingerprintDocument's bytes
+// (component-requirement-insights invariant 12). It changes exactly when the
+// headline's input or the fixed instructions change, so a stored headline
+// whose fingerprint covered only the document reads as out of date (AC-2.6).
 func Fingerprint(inputs Inputs, actions map[string]nextaction.Compact, now time.Time) string {
-	sum := sha256.Sum256(FingerprintDocument(inputs, actions, now))
-	return hex.EncodeToString(sum[:])
+	hash := sha256.New()
+	hash.Write([]byte(HeadlineInstructions))
+	hash.Write(FingerprintDocument(inputs, actions, now))
+	return hex.EncodeToString(hash.Sum(nil))
 }
