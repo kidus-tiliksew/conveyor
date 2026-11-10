@@ -400,6 +400,7 @@ const (
 	planRulePlanContent    = "req-task-plan-state AC-2.2"
 	planRulePlanBaseCommit = "req-task-plan-state AC-2.5"
 	planRulePlanState      = "req-task-plan-state AC-2.6"
+	planRulePlanRiskTier   = "req-risk-based-review AC-4.2"
 )
 
 // checkOrphanPlans fails each plan file with no tasks/<name>.md beside it: a
@@ -413,8 +414,9 @@ func (c *planChecker) checkOrphanPlans() {
 }
 
 // checkTaskPlan applies the plan-state and plan-file rules offline, with the
-// validator submit_plan applies to a plan (component-cli-onboarding invariant
-// 27; req-task-plan-state AC-2.2, AC-2.5, AC-2.6).
+// validator submit_plan applies to a plan, which refuses a malformed risk
+// tier line (component-cli-onboarding invariant 27; req-task-plan-state
+// AC-2.2, AC-2.5, AC-2.6; req-risk-based-review REQ-4).
 func (c *planChecker) checkTaskPlan(item PlanItem) {
 	task := item.Task
 	if task.PlanState != nil {
@@ -431,8 +433,13 @@ func (c *planChecker) checkTaskPlan(item PlanItem) {
 		if task.PlanState != nil || task.PlanApproval != nil {
 			c.fail(item.ID, planRulePlanState, "an item with a plan file states no plan_state or plan_approval; the approved plan sets the plan state")
 		}
-		if _, err := pipeline.ParsePlan(task.Plan, nil); err != nil {
+		if plan, err := pipeline.ParsePlan(task.Plan, nil); err != nil {
 			c.fail(item.ID, planRulePlanContent, "%s%s: %v", item.Name, planPlanSuffix, err)
+		} else if plan.RiskTier == "" {
+			// The workspace's risk mode is read only at push, so a missing
+			// tier is a warning here; the server refuses it at push only
+			// when the mode is enforce (feature-risk-based-review RR-4).
+			c.warn(item.ID, planRulePlanRiskTier, "%s%s states no risk tier; add one line under its Risks heading as %s. The push is refused if the workspace's risk mode is enforce", item.Name, planPlanSuffix, pipeline.PlanRiskTierFormat)
 		}
 	}
 	if task.PlanBaseCommit != nil {

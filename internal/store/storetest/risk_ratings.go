@@ -326,6 +326,8 @@ func RunRiskRatingConformance(t *testing.T, x Fixture) {
 	// raises climb strictly, each naming the tier before it, with one event
 	// each and sequences 1..n (req-risk-based-review AC-6.1, AC-6.2;
 	// component-risk-review invariant 4).
+	t.Run("PlanRatings", func(t *testing.T) { runPlanRiskRatings(t, x) })
+
 	t.Run("ConcurrentRaisesSerialize", func(t *testing.T) {
 		const rounds, writers = 20, 8
 		for round := range rounds {

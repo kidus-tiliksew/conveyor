@@ -1,5 +1,5 @@
 import { expect, type Page, type Route } from '@playwright/test'
-import type { PlanActs, PlanOrigin, PlanState } from '../src/lib/types'
+import type { PlanActs, PlanOrigin, PlanState, RiskTier, TaskRisk } from '../src/lib/types'
 import { test } from './helpers/bounded-detail'
 import { callerIdentity } from './helpers/caller-identity'
 
@@ -34,7 +34,14 @@ const working = {
   deadline: null,
 }
 
-type SpecFixture = { origin?: PlanOrigin; base_commit?: string | null; approved?: boolean }
+type SpecFixture = {
+  origin?: PlanOrigin
+  base_commit?: string | null
+  approved?: boolean
+  risk_tier?: RiskTier
+  risk_reason?: string
+  content?: string
+}
 type EventFixture = Record<string, unknown>
 
 function taskRow(id: string, planState: PlanState | undefined, title = `Task ${id}`) {
@@ -66,6 +73,7 @@ function detail(
     acts?: PlanActs
     events?: EventFixture[]
     nextAction?: Record<string, unknown>
+    risk?: TaskRisk
   } = {},
 ) {
   const spec = options.spec
@@ -83,12 +91,13 @@ function detail(
     verification_evidence: [],
     plan_acts: options.acts ?? noActs,
     next_action: options.nextAction ?? working,
+    ...(options.risk ? { risk: options.risk } : {}),
     ...(spec
       ? {
           spec: {
             task_id: id,
             version: 2,
-            content: '## Approach\n\nSplit the reader.\n\n## Done criteria\n\n- The reader is split.',
+            content: spec.content ?? '## Approach\n\nSplit the reader.\n\n## Done criteria\n\n- The reader is split.',
             acceptance_count: 0,
             acceptance: null,
             decomposition: null,
@@ -97,6 +106,8 @@ function detail(
             ...(spec.approved ? { approved_at: approvedAt } : {}),
             origin: spec.origin ?? 'plan_order',
             base_commit: spec.base_commit ?? null,
+            ...(spec.risk_tier ? { risk_tier: spec.risk_tier } : {}),
+            ...(spec.risk_reason ? { risk_reason: spec.risk_reason } : {}),
           },
         }
       : {}),
@@ -346,6 +357,86 @@ test('the plan section shows each origin, the base commit or None recorded, and 
       await expect(base).toHaveText('None recorded')
     }
   }
+})
+
+// ---- Plan risk tier (req-risk-based-review AC-4.4) ----
+
+const planRiskReason = 'Approval-time ratings span three stores, so a wrong write could weaken the review floor.'
+const pathRisk: TaskRisk = {
+  mode: 'record',
+  tier: 'medium',
+  source: 'path_rule',
+  reason: 'matched path rules: GitHub Actions workflows (medium)',
+  required_agent_reviews: 1,
+  required_human_approvals: 0,
+  calculated_agent_reviews: 1,
+  calculated_human_approvals: 1,
+  recorded_approvals: 0,
+  author_approval_needed: false,
+  ratings: [],
+}
+const riskPlanContent = `## Approach\n\nRecord the plan tier.\n\n## Files touched\n\n- internal/store/risk.go\n\n## Ordering\n\n1. Parse.\n\n## Risks\n\n- Three stores.\n\nRisk tier: high — ${planRiskReason}\n\n## Done criteria\n\n- The plan is rated.`
+
+test('at plan approval the plan card shows the version tier and reason on both task-detail variants', async ({
+  page,
+}) => {
+  await mockServer(page, {
+    details: [
+      detail('risk-awaiting', 'awaiting_approval', {
+        spec: {
+          origin: 'plan_order',
+          base_commit: commit,
+          risk_tier: 'high',
+          risk_reason: planRiskReason,
+          content: riskPlanContent,
+        },
+        risk: pathRisk,
+      }),
+      detail('risk-legacy', 'awaiting_approval', { spec: { origin: 'plan_order' } }),
+    ],
+  })
+  for (const path of ['/w/demo/tasks/risk-awaiting', '/w/demo/tasks/risk-awaiting/full']) {
+    await page.goto(path)
+    const plan = planSection(page).locator('[data-plan-risk]')
+    await expect(plan).toHaveAttribute('data-plan-risk', 'high')
+    await expect(plan.getByText('Plan risk tier', { exact: true })).toBeVisible()
+    await expect(plan.locator('[data-risk-tier]')).toHaveText('High')
+    await expect(plan.locator('[data-plan-risk-reason]')).toHaveText(planRiskReason)
+    await expect(
+      planSection(page).locator('[data-plan-status]').getByText('Awaiting approval', { exact: true }),
+    ).toBeVisible()
+    // The task's own tier stays the server's aggregate, apart from the plan's.
+    await expect(page.locator('[data-task-risk]').first().locator('[data-risk-tier]')).toHaveText('Medium')
+  }
+  // A version that states no tier shows no invented one.
+  for (const path of ['/w/demo/tasks/risk-legacy', '/w/demo/tasks/risk-legacy/full']) {
+    await page.goto(path)
+    await expect(planSection(page).getByRole('heading', { name: 'Execution plan' })).toBeVisible()
+    await expect(planSection(page).locator('[data-plan-risk]')).toHaveCount(0)
+  }
+})
+
+test('the plan tier stays beside an approved plan and wraps at phone width', async ({ page }) => {
+  await page.setViewportSize({ width: 375, height: 800 })
+  await mockServer(page, {
+    details: [
+      detail('risk-completed', 'completed', {
+        spec: {
+          origin: 'plan_order',
+          approved: true,
+          risk_tier: 'low',
+          risk_reason: planRiskReason,
+          content: riskPlanContent,
+        },
+      }),
+    ],
+  })
+  await page.goto('/w/demo/tasks/risk-completed/full')
+  const plan = planSection(page).locator('[data-plan-risk]')
+  await expect(plan.locator('[data-risk-tier]')).toHaveText('Low')
+  await expect(plan.locator('[data-plan-risk-reason]')).toHaveText(planRiskReason)
+  const overflow = await page.evaluate(() => document.documentElement.scrollWidth - window.innerWidth)
+  expect(overflow).toBeLessThanOrEqual(0)
 })
 
 // ---- Operator acts (invariants 61, 62, 64; AC-3.1, AC-3.2) ----

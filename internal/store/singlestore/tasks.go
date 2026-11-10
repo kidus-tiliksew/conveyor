@@ -245,7 +245,10 @@ func recordIntakePlanStateTx(ctx context.Context, tx *sql.Tx, t core.Task, appro
 	if err := taskEvent(ctx, tx, store.InterventionEvent(intervention)); err != nil {
 		return err
 	}
-	return taskEvent(ctx, tx, store.IntakePlanApprovedEvent(spec))
+	if err := taskEvent(ctx, tx, store.IntakePlanApprovedEvent(spec)); err != nil {
+		return err
+	}
+	return recordIntakePlanRiskTx(ctx, tx, t)
 }
 
 func insertTaskRow(ctx context.Context, tx *sql.Tx, t core.Task) error {

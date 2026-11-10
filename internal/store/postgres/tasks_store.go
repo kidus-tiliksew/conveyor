@@ -196,7 +196,10 @@ VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,'','',NULL,$10,$11)`,
 	if err := insertEvent(ctx, q, store.InterventionEvent(intervention)); err != nil {
 		return err
 	}
-	return insertEvent(ctx, q, store.IntakePlanApprovedEvent(spec))
+	if err := insertEvent(ctx, q, store.IntakePlanApprovedEvent(spec)); err != nil {
+		return err
+	}
+	return recordIntakePlanRiskTx(ctx, tx, q, task)
 }
 
 func (s *Store) GetTask(ctx context.Context, id string) (core.Task, error) {

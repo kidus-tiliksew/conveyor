@@ -715,6 +715,11 @@ export interface SpecVersion {
   // AC-2.5).
   origin?: PlanOrigin
   base_commit?: string | null
+  // The risk tier and one-line reason this version's plan states, read from
+  // its content by the server; absent when the plan states none
+  // (req-risk-based-review AC-4.4).
+  risk_tier?: RiskTier
+  risk_reason?: string
 }
 
 export type ActivityTask = Pick<

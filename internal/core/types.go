@@ -14,6 +14,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/kidus-tiliksew/conveyor/internal/config"
+	"github.com/kidus-tiliksew/conveyor/internal/riskpolicy"
 )
 
 const MaxWorkOrderOperatorDirectionRunes = 4096
@@ -1212,6 +1213,13 @@ type SpecVersion struct {
 	LegacyGate bool      `json:"legacy_gate,omitempty"`
 	CreatedAt  time.Time `json:"created_at"`
 	ApprovedAt time.Time `json:"approved_at,omitempty"`
+	// RiskTier and RiskReason are the risk tier and reason the version's plan
+	// states, read from Content with the shared plan grammar when a read
+	// serves the version; no column stores them. Both are empty when the plan
+	// states none (req-risk-based-review AC-4.4; feature-risk-based-review
+	// RR-4).
+	RiskTier   riskpolicy.Tier `json:"risk_tier,omitempty"`
+	RiskReason string          `json:"risk_reason,omitempty"`
 }
 
 // JSONPayload is the single fallback contract for JSON stored inside events.
