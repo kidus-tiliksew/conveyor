@@ -750,6 +750,13 @@ func (m *memory) createTaskWithContextLocked(ctx context.Context, t core.Task, d
 		}
 		m.repositoryInstalls[key] = append(m.repositoryInstalls[key], core.RepositoryInstallTask{TaskID: t.ID, Attempt: t.RepositoryInstallAttempt})
 	}
+	// An approved intake plan's stated tier becomes a plan rating in the
+	// creating act; it is prepared before any write so a failure records
+	// nothing (req-risk-based-review AC-4.3; feature-risk-based-review RR-4).
+	intakeRating, err := IntakePlanRiskRating(t)
+	if err != nil {
+		return err
+	}
 	// A task carries no worker reservation: every insert stores hold false,
 	// like the durable column default (DEC-125(3); component-persistence).
 	t.Hold = false
@@ -764,7 +771,7 @@ func (m *memory) createTaskWithContextLocked(ctx context.Context, t core.Task, d
 	}
 	t.IntakePlan = intakePlan
 	m.appendEventLocked(ctx, core.Event{TaskID: t.ID, Kind: "task.created", Payload: TaskCreatedPayload(ctx, t), At: t.CreatedAt})
-	m.recordIntakePlanStateLocked(ctx, t, approver)
+	m.recordIntakePlanStateLocked(ctx, t, approver, intakeRating)
 	for dependencyID := range seen {
 		m.appendEventLocked(ctx, core.Event{TaskID: t.ID, Kind: "task.dependency_added", At: t.CreatedAt,
 			Payload: core.JSONPayload(map[string]string{"task_id": t.ID, "depends_on_task_id": dependencyID})})
@@ -784,7 +791,7 @@ func (m *memory) createTaskWithContextLocked(ctx context.Context, t core.Task, d
 // task filed with a plan, plan version 1 and any filer approval, inside the
 // creating transaction (component-task-lifecycle invariant 20;
 // component-plan-state invariants 2 and 3).
-func (m *memory) recordIntakePlanStateLocked(ctx context.Context, t core.Task, approver Actor) {
+func (m *memory) recordIntakePlanStateLocked(ctx context.Context, t core.Task, approver Actor, rating *core.RiskRating) {
 	m.appendEventLocked(ctx, IntakePlanStateEvent(t))
 	if t.IntakePlan == nil {
 		return
@@ -807,6 +814,10 @@ func (m *memory) recordIntakePlanStateLocked(ctx context.Context, t core.Task, a
 	m.interventions[t.ID] = append(m.interventions[t.ID], intervention)
 	m.appendEventLocked(ctx, InterventionEvent(intervention))
 	m.appendEventLocked(ctx, IntakePlanApprovedEvent(spec))
+	if rating != nil {
+		workspace, _ := WorkspaceFromContext(ctx)
+		m.insertRiskRatingLocked(ctx, memoryScopedKey{workspace: workspace, id: t.ID}, *rating)
+	}
 }
 
 func (m *memory) validateTaskContextLocked(workspace string, input TaskContextInput) (TaskContextVersions, error) {

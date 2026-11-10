@@ -131,15 +131,25 @@ func (s *Store) legacySpecGateVersion(ctx context.Context, taskID string, versio
 func (s *Store) ApproveSpecVersion(ctx context.Context, taskID string, version int) error {
 	ctx = dbmetrics.WithReadLabel(ctx, "ApproveSpecVersion")
 	return s.inTx(ctx, func(tx pgx.Tx, q *db.Queries) error {
-		if _, err := q.ApproveLatestSpecVersion(ctx, db.ApproveLatestSpecVersionParams{
+		// The task's operation lock comes first, as every rating write takes
+		// it, so the approval's plan rating serializes with the task's other
+		// ratings (feature-risk-based-review RR-4; component-persistence).
+		if err := lockWorkOrderTaskTx(ctx, tx, workspace(ctx), taskID); err != nil {
+			return err
+		}
+		approved, err := q.ApproveLatestSpecVersion(ctx, db.ApproveLatestSpecVersionParams{
 			TaskID: taskID, Version: int32(version), WorkspaceID: workspace(ctx),
-		}); err != nil {
+		})
+		if err != nil {
 			return err
 		}
 		if err := insertEvent(ctx, q, core.Event{TaskID: taskID, Kind: "spec.version_approved", Payload: core.JSONPayload(map[string]int{"version": version})}); err != nil {
 			return err
 		}
-		return approvePlanStateTx(ctx, tx, q, taskID)
+		if err := approvePlanStateTx(ctx, tx, q, taskID); err != nil {
+			return err
+		}
+		return recordPlanRiskTx(ctx, tx, q, taskID, version, approved.Content)
 	})
 }
 

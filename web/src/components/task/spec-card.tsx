@@ -3,13 +3,14 @@ import { ChevronDown, ChevronRight, ChevronUp, FlaskConical, Globe, MousePointer
 import { useId, useMemo, useState } from 'react'
 import { planOriginLabels, taskStateLabels } from '../../lib/contracts'
 import { relatedTaskRoute, type TaskRouteVariant } from '../../lib/task-route'
-import type { AcceptanceCriterion, PlanState, SpecVersion } from '../../lib/types'
+import type { AcceptanceCriterion, PlanState, RiskTier, SpecVersion } from '../../lib/types'
 import { absoluteTime, cn } from '../../lib/utils'
 import { useWorkspaceSelection } from '../app-shell'
 import { Badge } from '../ui/badge'
 import { Card, CardContent, CardHeader } from '../ui/card'
 import { CopyButton } from '../ui/copy-button'
 import { MarkdownProse } from '../ui/markdown-prose'
+import { RiskTierBadge } from './risk-tier'
 import { SectionCount, SectionHeading } from './section-heading'
 import { useCollapsibleContent } from './use-collapsible-content'
 
@@ -130,6 +131,7 @@ export function SpecCard({
           </Badge>
         </div>
         {planState !== undefined && <PlanProvenance spec={spec} />}
+        {spec.risk_tier && <PlanRiskTier tier={spec.risk_tier} reason={spec.risk_reason} />}
       </CardHeader>
       {expanded && (
         <CardContent className="py-4">
@@ -247,6 +249,26 @@ function PlanProvenance({ spec }: { spec: SpecVersion }) {
           <dd data-plan-base-commit="">None recorded</dd>
         )}
       </div>
+    </dl>
+  )
+}
+
+// The risk tier and reason this plan version states, beside the plan
+// (req-risk-based-review AC-4.4). It is the plan's own statement, labeled as
+// such, and not the task's tier, which the task facts show. A version that
+// states no tier shows nothing rather than an invented one.
+function PlanRiskTier({ tier, reason }: { tier: RiskTier; reason?: string }) {
+  return (
+    <dl data-plan-risk={tier} className="flex basis-full flex-wrap items-baseline gap-x-2 gap-y-1 text-xs text-muted">
+      <dt className="text-faint">Plan risk tier</dt>
+      <dd className="flex min-w-0 flex-wrap items-baseline gap-x-2 gap-y-1">
+        <RiskTierBadge tier={tier} />
+        {reason && (
+          <span className="whitespace-normal break-words text-foreground/85" data-plan-risk-reason>
+            {reason}
+          </span>
+        )}
+      </dd>
     </dl>
   )
 }

@@ -53,7 +53,7 @@ func ValidateReviewAcceptance(ctx context.Context, reader ExecutionDocumentReade
 	// Match pack.HasExecutionPlan: legacy blueprint documents remain no-plan
 	// cases, while approved markdown execution plans require coverage.
 	_, hasDone := pipeline.PlanDoneCriteria(approved.Content)
-	_, planErr := pipeline.ParsePlan(approved.Content, nil)
+	_, planErr := pipeline.ParseStoredPlan(approved.Content)
 	return ValidateDoneCriteriaCoverage(&decision.DoneCriteriaAssessment, decision.Verdict, exists && hasDone && planErr == nil)
 }
 

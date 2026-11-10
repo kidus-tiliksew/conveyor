@@ -142,3 +142,36 @@ func recordReviewerRiskTx(ctx context.Context, tx pgx.Tx, q *db.Queries, task co
 	}
 	return insertRiskRatingTx(ctx, tx, q, rating)
 }
+
+// recordPlanRiskTx records an approved plan version's rating inside the
+// PostgreSQL approval transaction, which already holds the task lock
+// (req-risk-based-review AC-4.3; feature-risk-based-review RR-4).
+func recordPlanRiskTx(ctx context.Context, tx pgx.Tx, q *db.Queries, taskID string, version int, content string) error {
+	row, err := q.GetTask(ctx, db.GetTaskParams{ID: taskID, WorkspaceID: workspace(ctx)})
+	if err != nil {
+		return notFound(err, "task %s", taskID)
+	}
+	task := taskFromDB(row)
+	if !task.SetupContract.Risk.Enabled() {
+		return nil
+	}
+	existing, err := listRiskRatings(ctx, tx, taskID)
+	if err != nil {
+		return err
+	}
+	rating, created, err := store.PlanApprovalRiskRating(task, existing, version, content, time.Now())
+	if err != nil || !created {
+		return err
+	}
+	return insertRiskRatingTx(ctx, tx, q, rating)
+}
+
+// recordIntakePlanRiskTx records an approved intake plan's rating inside the
+// creating transaction (req-risk-based-review AC-4.3).
+func recordIntakePlanRiskTx(ctx context.Context, tx pgx.Tx, q *db.Queries, task core.Task) error {
+	rating, err := store.IntakePlanRiskRating(task)
+	if err != nil || rating == nil {
+		return err
+	}
+	return insertRiskRatingTx(ctx, tx, q, *rating)
+}

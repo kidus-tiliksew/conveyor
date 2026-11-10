@@ -181,6 +181,22 @@ func IntakePlanApprovedEvent(spec core.SpecVersion) core.Event {
 		Payload: core.JSONPayload(map[string]int{"version": spec.Version})}
 }
 
+// IntakePlanRiskRating returns the plan rating that an intake plan approved
+// by its filer records in the creating transaction, and nil when the task
+// files no approved plan, its frozen risk mode is off, or the plan states no
+// tier (req-risk-based-review AC-4.3; feature-risk-based-review RR-4). A new
+// task has no recorded rating, so this is its first.
+func IntakePlanRiskRating(task core.Task) (*core.RiskRating, error) {
+	if task.IntakePlan == nil || !task.IntakePlan.Approved {
+		return nil, nil
+	}
+	rating, created, err := PlanApprovalRiskRating(task, nil, core.IntakePlanVersion, task.IntakePlan.Content, task.CreatedAt)
+	if err != nil || !created {
+		return nil, err
+	}
+	return &rating, nil
+}
+
 // IntakePlanApprover returns the person an intake approval records: the
 // creating credential's user actor. An approval without one is refused, so a
 // plan reaches completed at intake only under a person's credential

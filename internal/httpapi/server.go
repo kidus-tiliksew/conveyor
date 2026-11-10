@@ -1541,7 +1541,7 @@ func (s *Server) getLatestSpec(w http.ResponseWriter, r *http.Request) {
 	if task, taskErr := s.Store.GetTask(r.Context(), chi.URLParam(r, "id")); taskErr == nil {
 		spec.MaterializedChildren = materializedChildrenForSpec(task.Children, spec.Version)
 	}
-	writeJSON(w, http.StatusOK, spec)
+	writeJSON(w, http.StatusOK, withPlanRisk(spec))
 }
 
 func materializedChildrenForSpec(children []core.TaskRelation, version int) []core.TaskRelation {
@@ -2574,6 +2574,7 @@ func (s *Server) getTaskActivity(w http.ResponseWriter, r *http.Request) {
 	var specPointer *core.SpecVersion
 	if hasSpec {
 		spec.MaterializedChildren = materializedChildrenForSpec(task.Children, spec.Version)
+		spec = withPlanRisk(spec)
 		specPointer = &spec
 	}
 	workOrders, err := s.Store.ListTaskWorkOrders(store.WithWorkspace(r.Context(), task.Workspace), id)

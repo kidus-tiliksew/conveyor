@@ -10,6 +10,7 @@ import (
 	"strings"
 
 	"github.com/kidus-tiliksew/conveyor/internal/core"
+	"github.com/kidus-tiliksew/conveyor/internal/riskpolicy"
 	"gopkg.in/yaml.v3"
 )
 
@@ -76,6 +77,11 @@ type Spec struct {
 	// the planner stated none (component-work-orders invariant 56;
 	// req-task-plan-state REQ-4).
 	BaseCommit string
+	// RiskTier and RiskReason are the plan's stated risk tier and its
+	// one-line reason, both empty when the plan states none
+	// (req-risk-based-review REQ-4; feature-risk-based-review RR-4).
+	RiskTier   riskpolicy.Tier
+	RiskReason string
 }
 
 // StructuredSpec is the model-owned semantic spec result. Conveyor validates
@@ -191,9 +197,39 @@ var planHeadingPattern = regexp.MustCompile(`(?im)^#{1,6}[ \t]+([^\r\n#]+?)[ \t]
 
 // ParsePlan validates a Markdown execution plan without introducing a second
 // document lifecycle. Plans are stored as ordinary spec versions until the
-// later retirement slice renames the persistence model.
+// later retirement slice renames the persistence model. Every path that
+// records a plan calls it, so all of them share one risk tier grammar: an
+// optional `Risk tier: <low|medium|high> — <reason>` line under the Risks
+// heading, returned in RiskTier and RiskReason, and a malformed declaration
+// refused (req-risk-based-review REQ-4; feature-risk-based-review RR-4).
 func ParsePlan(markdown string, decomposition []DecompositionItem) (Spec, error) {
-	markdown = strings.TrimSpace(markdown)
+	result, err := parsePlanStructure(markdown, decomposition)
+	if err != nil {
+		return Spec{}, err
+	}
+	if result.RiskTier, result.RiskReason, err = parsePlanRiskTier(result.Markdown); err != nil {
+		return Spec{}, err
+	}
+	return result, nil
+}
+
+// ParseStoredPlan reads a recorded plan version. It applies ParsePlan's
+// structure rules and reads a well-formed risk tier, but a malformed tier
+// declaration in an earlier version only leaves the tier empty, so recorded
+// versions stay readable and keep their meaning as plans.
+func ParseStoredPlan(markdown string) (Spec, error) {
+	result, err := parsePlanStructure(markdown, nil)
+	if err != nil {
+		return Spec{}, err
+	}
+	result.RiskTier, result.RiskReason = PlanRiskOf(result.Markdown)
+	return result, nil
+}
+
+func parsePlanStructure(markdown string, decomposition []DecompositionItem) (Spec, error) {
+	// CRLF line endings read as LF, so a plan saved by any editor parses the
+	// same way (feature-risk-based-review RR-4).
+	markdown = strings.TrimSpace(strings.ReplaceAll(markdown, "\r\n", "\n"))
 	if markdown == "" {
 		return Spec{}, fmt.Errorf("plan markdown is required")
 	}
@@ -315,6 +351,7 @@ func RenderStructuredPlan(output string) (Spec, error) {
 // PlanDoneCriteria returns the done-criteria section, including its heading,
 // for review prompt rendering. The same heading rules as ParsePlan apply.
 func PlanDoneCriteria(markdown string) (string, bool) {
+	markdown = strings.ReplaceAll(markdown, "\r\n", "\n")
 	matches := planHeadingPattern.FindAllStringSubmatchIndex(markdown, -1)
 	for i, match := range matches {
 		name := strings.ToLower(strings.TrimSpace(markdown[match[2]:match[3]]))

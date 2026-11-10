@@ -1165,6 +1165,9 @@ func (d *Dispatcher) completeOutput(ctx context.Context, cfg *config.Config, tas
 		if err = CheckPlanReviewSeats(cfg, task, result.ReviewSeats); err != nil {
 			return invalid(err)
 		}
+		if err = pipeline.CheckPlanRiskTier(task.SetupContract.Risk, result); err != nil {
+			return invalid(err)
+		}
 		return d.completeSpec(ctx, task, result, reviewer, job.ModelTier)
 	case core.StageReview:
 		result, err := pipeline.ParseReview(output)
@@ -1223,12 +1226,18 @@ func (d *Dispatcher) ApplyExternalReviewPinned(ctx context.Context, task core.Ta
 }
 
 // ApplyExternalPlan validates an MCP-authored execution plan, including its
-// optional base commit, and records it at the plan_approval gate. Validation
-// refuses before any write, so the order stays claimed (component-work-orders
-// invariant 56).
+// optional base commit and risk tier line, and records it at the
+// plan_approval gate. Validation refuses before any write, so the order stays
+// claimed (component-work-orders invariant 56). A task whose frozen risk mode
+// is enforce refuses a plan that states no tier, as CheckPlanReviewSeats
+// refuses a bad seat count (req-risk-based-review AC-4.1;
+// feature-risk-based-review RR-4).
 func (d *Dispatcher) ApplyExternalPlan(ctx context.Context, task core.Task, job core.Job, value pipeline.StructuredPlan, agent, model string) (core.SpecVersion, error) {
 	result, err := pipeline.ParseStructuredPlan(value)
 	if err != nil {
+		return core.SpecVersion{}, err
+	}
+	if err = pipeline.CheckPlanRiskTier(task.SetupContract.Risk, result); err != nil {
 		return core.SpecVersion{}, err
 	}
 	return d.completeSpecVersion(ctx, task, result, agent, model)

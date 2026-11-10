@@ -335,7 +335,7 @@ func HasExecutionPlan(content string) bool {
 	if _, ok := pipeline.PlanDoneCriteria(content); !ok {
 		return false
 	}
-	_, err := pipeline.ParsePlan(content, nil)
+	_, err := pipeline.ParseStoredPlan(content)
 	return err == nil
 }
 

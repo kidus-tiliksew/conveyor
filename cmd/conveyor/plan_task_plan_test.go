@@ -9,7 +9,11 @@ import (
 
 // planFixturePlan is an execution plan that passes ParsePlan with an empty
 // decomposition, the rule submit_plan applies.
-const planFixturePlan = "# Plan\n\n## Approach\n\nAdd the check following draft:dec/use-cli.\n\n## Files touched\n\n- cmd/check.go\n\n## Ordering\n\n1. Check.\n\n## Risks\n\nNone.\n\n## Done criteria\n\n- The check prints failures.\n"
+const planFixturePlan = "# Plan\n\n## Approach\n\nAdd the check following draft:dec/use-cli.\n\n## Files touched\n\n- cmd/check.go\n\n## Ordering\n\n1. Check.\n\n## Risks\n\nNone.\n\n" + planFixtureRiskTier + "\n\n## Done criteria\n\n- The check prints failures.\n"
+
+// planFixtureRiskTier is the fixture plan's risk tier line
+// (req-risk-based-review REQ-4).
+const planFixtureRiskTier = "Risk tier: low — The check reads local files only."
 
 const planFixtureBaseCommit = "0123456789abcdef0123456789abcdef01234567"
 
@@ -51,6 +55,20 @@ func TestPlanCheckTaskPlanRules(t *testing.T) {
 			extra:     map[string]string{"tasks/build.plan.plan.md": planFixturePlan},
 			prefix:    "draft:task/build.plan: LP-2: ",
 			fragments: []string{"tasks/build.plan.plan.md has no tasks/build.plan.md beside it"},
+		},
+		{
+			name:      "plan with a malformed risk tier line",
+			task:      planFixtureBuildTask,
+			plan:      strings.Replace(planFixturePlan, planFixtureRiskTier, "Risk tier: severe — Not a tier.", 1),
+			prefix:    "draft:task/build: req-task-plan-state AC-2.2: ",
+			fragments: []string{"build.plan.md", "plan risk tier", "must be low, medium, or high"},
+		},
+		{
+			name:      "plan with a risk tier line outside Risks",
+			task:      planFixtureBuildTask,
+			plan:      strings.Replace(strings.Replace(planFixturePlan, planFixtureRiskTier, "", 1), "1. Check.", "1. Check.\n\n"+planFixtureRiskTier, 1),
+			prefix:    "draft:task/build: req-task-plan-state AC-2.2: ",
+			fragments: []string{"build.plan.md", "must be under the Risks heading"},
 		},
 		{
 			name:      "plan missing a required heading",
@@ -170,6 +188,22 @@ func TestPlanCheckTaskPlanPasses(t *testing.T) {
 				t.Fatalf("build items = %+v, orphans = %v", build, draft.OrphanPlans)
 			}
 		})
+	}
+}
+
+// feature-risk-based-review RR-4: a plan file that states no risk tier passes
+// with a warning, because the workspace's risk mode is read only at push.
+func TestPlanCheckWarnsOnMissingRiskTier(t *testing.T) {
+	root := newPlanFixture(t)
+	writePlanFile(t, root, "tasks/build.md", planFixtureBuildTask)
+	writePlanFile(t, root, "tasks/build.plan.md", strings.Replace(planFixturePlan, planFixtureRiskTier, "", 1))
+	out, err := runPlanCommand(t, "check", root)
+	if err != nil {
+		t.Fatalf("check failed on a plan with no tier: %v\n%s", err, out)
+	}
+	want := "warning: draft:task/build: req-risk-based-review AC-4.2: build.plan.md states no risk tier"
+	if !strings.Contains(out, want) || !strings.Contains(out, "plan check: 5 item(s) passed with 1 warning(s)") {
+		t.Fatalf("check output = %q, want the missing-tier warning", out)
 	}
 }
 

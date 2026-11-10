@@ -60,7 +60,8 @@ func (s *Server) attachTaskPlan(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "plan is required"})
 		return
 	}
-	if _, err := pipeline.ParsePlan(*input.Plan, nil); err != nil {
+	plan, err := pipeline.ParsePlan(*input.Plan, nil)
+	if err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid plan: " + err.Error()})
 		return
 	}
@@ -72,8 +73,13 @@ func (s *Server) attachTaskPlan(w http.ResponseWriter, r *http.Request) {
 		}
 		request.BaseCommit = *input.BaseCommit
 	}
-	result, err := s.attachPlan(r.Context(), request)
+	result, err := s.attachPlan(r.Context(), request, plan)
 	if err != nil {
+		var riskErr *attachPlanRiskError
+		if errors.As(err, &riskErr) {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid plan: " + riskErr.Error()})
+			return
+		}
 		if !isOperationRefusal(err) {
 			writeStoreFailure(w, r, err)
 			return
@@ -91,13 +97,34 @@ func (s *Server) attachTaskPlan(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, result)
 }
 
+// attachPlanRiskError refuses an attached plan that states no risk tier on a
+// task whose frozen risk mode is enforce. The route answers 400 and records
+// nothing (req-risk-based-review AC-4.2; feature-risk-based-review RR-4).
+type attachPlanRiskError struct{ err error }
+
+func (e *attachPlanRiskError) Error() string { return e.err.Error() }
+func (e *attachPlanRiskError) Unwrap() error { return e.err }
+
 // attachPlan runs the attach under the task side-effect lock and the
 // frozen-policy exception span the /policy route shares, so a claim, a
 // policy change, and the attach serialize on the task
-// (component-task-lifecycle invariant 44).
-func (s *Server) attachPlan(ctx context.Context, request store.AttachPlanRequest) (store.AttachPlanResult, error) {
+// (component-task-lifecycle invariant 44). Under the same lock, before the
+// command can record a version, cancel an order, or record a replay, it reads
+// the task's frozen risk policy and refuses a plan with no tier under enforce
+// (req-risk-based-review AC-4.2). A task the read does not find goes on to the
+// command, which answers it as before.
+func (s *Server) attachPlan(ctx context.Context, request store.AttachPlanRequest, plan pipeline.Spec) (store.AttachPlanResult, error) {
 	var result store.AttachPlanResult
 	err := s.Store.WithTaskSideEffectLock(ctx, request.TaskID, func(ctx context.Context) error {
+		task, getErr := s.Store.GetTask(ctx, request.TaskID)
+		if getErr != nil && !errors.Is(getErr, store.ErrNotFound) {
+			return getErr
+		}
+		if getErr == nil {
+			if riskErr := pipeline.CheckPlanRiskTier(task.SetupContract.Risk, plan); riskErr != nil {
+				return &attachPlanRiskError{err: riskErr}
+			}
+		}
 		var attachErr error
 		result, attachErr = taskops.ExecuteSetupChange(ctx, s.Store, request.TaskID, func(lease taskops.TaskLease) (store.AttachPlanResult, error) {
 			return s.Store.AttachTaskPlanCommand(ctx, lease, request)
@@ -105,4 +132,14 @@ func (s *Server) attachPlan(ctx context.Context, request store.AttachPlanRequest
 		return attachErr
 	})
 	return result, err
+}
+
+// withPlanRisk fills a served plan version's risk tier and reason from its
+// own content with the shared plan grammar, so the plan card shows the tier
+// the version states. A version that states none, or an earlier version
+// whose content does not parse, is served with no tier rather than an
+// invented one (req-risk-based-review AC-4.4; feature-risk-based-review RR-4).
+func withPlanRisk(spec core.SpecVersion) core.SpecVersion {
+	spec.RiskTier, spec.RiskReason = pipeline.PlanRiskOf(spec.Content)
+	return spec
 }
