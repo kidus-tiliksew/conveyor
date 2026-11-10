@@ -182,7 +182,7 @@ func TestNextActionRouteIsTheGroupBoundary(t *testing.T) {
 	if err := storetest.For(st).CreateWorkOrder(ctx, core.WorkOrder{ID: "working-order", TaskID: working.ID, JobID: "working-job", Stage: core.StageImplement, State: core.WorkOrderQueued, QueueDeadline: time.Now().UTC().Add(time.Hour)}); err != nil {
 		t.Fatal(err)
 	}
-	claimedOrder, err := storetest.For(st).ClaimWorkOrder(ctx, "working-order", core.WorkOrderClaim{ClaimantID: "agent", OwnerUserID: "owner", SessionID: "session", Agent: "omp", Model: "model", Lease: time.Hour, ExecutionTimeout: time.Hour})
+	claimedOrder, err := storetest.For(st).ClaimWorkOrder(ctx, "working-order", core.WorkOrderClaim{ClaimantID: core.TaskRunClaimantID("owner"), OwnerUserID: "owner", SessionID: "session", Agent: "omp", Model: "model", Lease: time.Hour, ExecutionTimeout: time.Hour})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -201,7 +201,9 @@ func TestNextActionRouteIsTheGroupBoundary(t *testing.T) {
 	for _, field := range []string{"user", "claimed_by", "attempt_id", "progress", "harness", "model", "session_id", "claimed_at", "last_check_in", "lease_expires_at", "elapsed_seconds"} {
 		requireRaw(t, attempt, field)
 	}
-	if string(attempt["user"]) != `"owner"` || string(attempt["claimed_by"]) != `"agent"` || string(attempt["progress"]) != `"indexing"` || string(attempt["attempt_id"]) == `""` {
+	// The attempt's user is the user of its run:<user id> claimant
+	// (req-operator-next-action AC-7.6).
+	if string(attempt["user"]) != `"owner"` || string(attempt["claimed_by"]) != `"run:owner"` || string(attempt["progress"]) != `"indexing"` || string(attempt["attempt_id"]) == `""` {
 		t.Fatalf("attempt identity %s", claimedBody)
 	}
 	requireRaw(t, details, "order_ids")
