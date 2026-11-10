@@ -582,8 +582,11 @@ trusted author's approval is required; a person who is not an author can waive
 it with `POST /v1/tasks/{id}/approvals/waive-author` and the body
 `{"head_sha": "<head>", "reason": "<one line>"}`, which changes no count. When
 any author is not trusted, the task never merges automatically, an approval
-from a person who is not an author is required, and an untrusted author's own
-approval does not count.
+from a person who is not an author is required, and no author's own approval
+counts, a trusted coauthor's included; a trusted author's required approval is
+then met only by a non-author's waiver. The approval that completes the count
+is recorded with the confirmed merge, and a merge GitHub refuses or does not
+confirm records none.
 `updated_paths` must equal the evidence, and approvals require empty
 `unresolved` and `conflicts` lists. Review completion activity includes the
 assessment only when supplied (REQ-9/AC-9.1–9.6; DEC-71).

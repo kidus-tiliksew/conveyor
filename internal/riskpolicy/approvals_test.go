@@ -66,16 +66,28 @@ func TestEvaluateApprovals(t *testing.T) {
 			want: ApprovalStatus{Required: 1, Recorded: 1, Remaining: 0, UntrustedAuthor: true, Satisfied: true},
 		},
 		{
-			name: "mixed authors need a trusted author and a non-author",
+			name: "a trusted coauthor's approval does not count beside an untrusted author",
 			in: ApprovalInput{Required: 1, Authors: []string{"alice", "bob"}, TrustedAuthors: []string{"bob"}, Gatekeepers: gates,
 				Approvals: []string{"bob"}},
-			want: ApprovalStatus{Required: 1, Recorded: 1, Remaining: 1, UntrustedAuthor: true, NonAuthorApprovalNeeded: true},
+			want: ApprovalStatus{Required: 1, Recorded: 0, Remaining: 1, UntrustedAuthor: true, NonAuthorApprovalNeeded: true, AuthorWaiverNeeded: true},
+		},
+		{
+			name: "mixed authors with a non-author's approval still need the waiver",
+			in: ApprovalInput{Required: 1, Authors: []string{"alice", "bob"}, TrustedAuthors: []string{"bob"}, Gatekeepers: gates,
+				Approvals: []string{"bob", "carol"}},
+			want: ApprovalStatus{Required: 1, Recorded: 1, Remaining: 0, UntrustedAuthor: true, AuthorWaiverNeeded: true},
 		},
 		{
 			name: "mixed authors with a waiver still need a non-author",
 			in: ApprovalInput{Required: 1, Authors: []string{"alice", "bob"}, TrustedAuthors: []string{"bob"}, Gatekeepers: gates,
 				Waived: true},
 			want: ApprovalStatus{Required: 1, Remaining: 1, UntrustedAuthor: true, NonAuthorApprovalNeeded: true},
+		},
+		{
+			name: "mixed authors with a waiver and a non-author's approval are satisfied",
+			in: ApprovalInput{Required: 1, Authors: []string{"alice", "bob"}, TrustedAuthors: []string{"bob"}, Gatekeepers: gates,
+				Approvals: []string{"bob"}, Waived: true, Prospective: "carol"},
+			want: ApprovalStatus{Required: 1, Recorded: 1, UntrustedAuthor: true, Satisfied: true},
 		},
 		{
 			name: "an unknown author is never trusted",
@@ -118,6 +130,7 @@ func TestEvaluateApprovalsProspectiveReason(t *testing.T) {
 		{ApprovalInput{Required: 1, Gatekeepers: gates, Prospective: "mallory"}, ApprovalReasonNoCapability},
 		{ApprovalInput{Required: 1, Authors: []string{"alice"}, TrustedAuthors: []string{"bob"}, Gatekeepers: gates, Prospective: "alice"}, ApprovalReasonUntrustedAuthor},
 		{ApprovalInput{Required: 2, Gatekeepers: gates, Approvals: []string{"bob"}, Prospective: "bob"}, ApprovalReasonAlreadyCounted},
+		{ApprovalInput{Required: 1, Authors: []string{"alice", "bob"}, TrustedAuthors: []string{"bob"}, Gatekeepers: gates, Prospective: "bob"}, ApprovalReasonAuthorOfUntrusted},
 		{ApprovalInput{Required: 1, Gatekeepers: gates, Prospective: "bob"}, ""},
 	} {
 		got := EvaluateApprovals(tc.in)

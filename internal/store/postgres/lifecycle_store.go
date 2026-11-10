@@ -98,6 +98,14 @@ func (s *Store) applyTaskCommandTx(ctx context.Context, tx pgx.Tx, q *db.Queries
 		if err != nil {
 			return err
 		}
+		var final *core.TaskApproval
+		if command.FinalApproval != nil {
+			prepared, prepareErr := store.PrepareFinalTaskApproval(taskFromDB(before), command.Kind, *command.FinalApproval, time.Now())
+			if prepareErr != nil {
+				return prepareErr
+			}
+			final = &prepared
+		}
 		if command.ProjectStages {
 			updated, updateErr := q.UpdateTaskTransition(ctx, db.UpdateTaskTransitionParams{
 				ID: id, WorkspaceID: workspace(ctx), ExpectedState: before.State, State: string(state), NextStage: string(command.NextStage), RecoveryStage: string(command.RecoveryStage),
@@ -132,6 +140,13 @@ func (s *Store) applyTaskCommandTx(ctx context.Context, tx pgx.Tx, q *db.Queries
 			}
 			result.PlanState = command.PlanState.To
 			if err := insertEvent(ctx, q, *planMove); err != nil {
+				return err
+			}
+		}
+		if final != nil {
+			// The approval that completes the count commits with the merge
+			// (req-risk-based-review AC-8.7).
+			if _, _, err := insertTaskApprovalTx(ctx, tx, q, *final); err != nil {
 				return err
 			}
 		}

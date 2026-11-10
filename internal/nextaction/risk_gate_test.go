@@ -70,6 +70,8 @@ func TestRiskApprovalSummary(t *testing.T) {
 		{RiskApprovals{Required: 2, Remaining: 2, TrustedAuthorNeeded: true}, "The reviewed head has 0 of 2 required human approvals. 2 more approvals are needed, including a trusted author's approval."},
 		{RiskApprovals{Required: 1, Remaining: 1, NonAuthorNeeded: true}, "The reviewed head has 0 of 1 required human approvals. 1 more approval is needed, including an approval from a person who is not an author."},
 		{RiskApprovals{Required: 1, Recorded: 1, Remaining: 2, TrustedAuthorNeeded: true, NonAuthorNeeded: true}, "The reviewed head has 1 of 1 required human approvals. 2 more approvals are needed, including a trusted author's approval and an approval from a person who is not an author."},
+		{RiskApprovals{Required: 1, Remaining: 1, NonAuthorNeeded: true, WaiverNeeded: true}, "The reviewed head has 0 of 1 required human approvals. 1 more approval is needed, including an approval from a person who is not an author. No author's approval counts while an author is not trusted, so a person who is not an author must also waive the trusted author's approval."},
+		{RiskApprovals{Required: 1, Recorded: 1, WaiverNeeded: true}, "The reviewed head has 1 of 1 required human approvals. No author's approval counts while an author is not trusted, so a person who is not an author must waive the trusted author's approval."},
 	} {
 		if got := RiskApprovalSummary(tc.in); got != tc.want {
 			t.Fatalf("RiskApprovalSummary(%+v) = %q, want %q", tc.in, got, tc.want)

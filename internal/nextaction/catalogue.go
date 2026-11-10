@@ -640,13 +640,24 @@ func RiskApprovalSummary(a RiskApprovals) string {
 		remaining = "1 more approval is needed"
 	}
 	text := fmt.Sprintf("The reviewed head has %d of %d required human approvals. %s", a.Recorded, a.Required, remaining)
+	// With an untrusted author no author's approval counts, so the trusted
+	// author's approval is met only by a non-author's waiver (REQ-9, AC-8.5).
+	waiver := ""
+	if a.WaiverNeeded {
+		waiver = " No author's approval counts while an author is not trusted, so a person who is not an author must also waive the trusted author's approval."
+	}
+	if a.Remaining == 0 && a.WaiverNeeded {
+		return fmt.Sprintf("The reviewed head has %d of %d required human approvals. No author's approval counts while an author is not trusted, so a person who is not an author must waive the trusted author's approval.", a.Recorded, a.Required)
+	}
 	switch {
 	case a.TrustedAuthorNeeded && a.NonAuthorNeeded:
-		return text + ", including a trusted author's approval and an approval from a person who is not an author."
+		return text + ", including a trusted author's approval and an approval from a person who is not an author." + waiver
 	case a.TrustedAuthorNeeded:
-		return text + ", including a trusted author's approval."
+		return text + ", including a trusted author's approval." + waiver
 	case a.NonAuthorNeeded:
-		return text + ", including an approval from a person who is not an author."
+		return text + ", including an approval from a person who is not an author." + waiver
+	case a.WaiverNeeded:
+		return text + "." + waiver
 	}
 	return text + ". A trusted author's approval is not among them."
 }

@@ -1197,6 +1197,7 @@ export interface TaskRisk {
   // (req-risk-based-review REQ-8, REQ-9, AC-11.2).
   remaining_approvals?: number
   non_author_approval_needed?: boolean
+  author_waiver_needed?: boolean
   untrusted_author?: boolean
   approval_head?: string
   approvals_satisfied?: boolean

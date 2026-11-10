@@ -37,33 +37,8 @@ func (s *Store) RecordTaskApproval(ctx context.Context, approval core.TaskApprov
 		if err != nil {
 			return err
 		}
-		res, err := documentExec(ctx, tx, `INSERT IGNORE INTO task_risk_approvals(workspace_id,task_id,head_sha,review_round,kind,user_id,payload_json,created_at) VALUES(?,?,?,?,?,?,?,?)`,
-			documentWorkspace(ctx), prepared.TaskID, prepared.HeadSHA, prepared.ReviewRound, string(prepared.Kind), prepared.UserID, core.JSONPayload(prepared), prepared.CreatedAt)
-		if err != nil {
-			return err
-		}
-		affected, err := res.RowsAffected()
-		if err != nil {
-			return err
-		}
-		if affected == 0 {
-			// The person's record exists; answer it and write nothing. A
-			// concurrent writer's row may not be readable yet, so the
-			// prepared record stands in for it.
-			result = prepared
-			rows, err := listTaskApprovals(ctx, tx, prepared.TaskID)
-			if err != nil {
-				return err
-			}
-			for _, recorded := range rows {
-				if store.TaskApprovalKeyOf(recorded) == store.TaskApprovalKeyOf(prepared) {
-					result = recorded
-				}
-			}
-			return nil
-		}
-		result, created = prepared, true
-		return taskEvent(ctx, tx, store.TaskApprovalRecordedEvent(prepared))
+		result, created, err = insertTaskApprovalTx(ctx, tx, prepared)
+		return err
 	})
 	if err != nil {
 		return core.TaskApproval{}, false, err
@@ -104,4 +79,38 @@ func listTaskApprovals(ctx context.Context, db interface {
 	}
 	slices.SortStableFunc(approvals, func(a, b core.TaskApproval) int { return a.CreatedAt.Compare(b.CreatedAt) })
 	return approvals, nil
+}
+
+// insertTaskApprovalTx inserts one prepared approval and its activity event
+// inside the caller's transaction, which holds the task operation lock.
+// INSERT IGNORE against the primary key inserts nothing for a key already
+// recorded, by a replay or a concurrent writer whose row is not yet visible
+// to this transaction, and then returns the recorded row and false.
+func insertTaskApprovalTx(ctx context.Context, tx *sql.Tx, prepared core.TaskApproval) (core.TaskApproval, bool, error) {
+	res, err := documentExec(ctx, tx, `INSERT IGNORE INTO task_risk_approvals(workspace_id,task_id,head_sha,review_round,kind,user_id,payload_json,created_at) VALUES(?,?,?,?,?,?,?,?)`,
+		documentWorkspace(ctx), prepared.TaskID, prepared.HeadSHA, prepared.ReviewRound, string(prepared.Kind), prepared.UserID, core.JSONPayload(prepared), prepared.CreatedAt)
+	if err != nil {
+		return core.TaskApproval{}, false, err
+	}
+	affected, err := res.RowsAffected()
+	if err != nil {
+		return core.TaskApproval{}, false, err
+	}
+	if affected == 0 {
+		// The person's record exists; answer it and write nothing. A
+		// concurrent writer's row may not be readable yet, so the prepared
+		// record stands in for it.
+		result := prepared
+		rows, err := listTaskApprovals(ctx, tx, prepared.TaskID)
+		if err != nil {
+			return core.TaskApproval{}, false, err
+		}
+		for _, recorded := range rows {
+			if store.TaskApprovalKeyOf(recorded) == store.TaskApprovalKeyOf(prepared) {
+				result = recorded
+			}
+		}
+		return result, false, nil
+	}
+	return prepared, true, taskEvent(ctx, tx, store.TaskApprovalRecordedEvent(prepared))
 }

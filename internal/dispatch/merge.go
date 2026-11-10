@@ -181,7 +181,16 @@ func (d *Dispatcher) reconcileForgeMergeLocked(ctx context.Context, task core.Ta
 			}
 		}
 		d.observeConfirmedMerge(ctx, task, githubRepo, pr, "merge.reconciled")
-		if err := d.confirmTaskMerged(ctx, task.ID); err != nil {
+		// An approved task's pending operator merge that the forge landed
+		// credits that person's final approval with the completion
+		// (req-risk-based-review AC-8.7).
+		var final *core.TaskApproval
+		if task.State == core.TaskApproved {
+			if final, err = d.pendingFinalApproval(ctx, task, pendingOperatorMergeRequest(events, pr.HeadSHA), pr.HeadSHA); err != nil {
+				return false, err
+			}
+		}
+		if err := d.confirmTaskMergedWithApproval(ctx, task.ID, final); err != nil {
 			return false, err
 		}
 		return true, nil
@@ -947,11 +956,12 @@ func (d *Dispatcher) mergeApprovedTaskLocked(ctx context.Context, task core.Task
 	// (req-risk-based-review AC-8.1, AC-8.2, AC-8.7, AC-9.2;
 	// feature-risk-based-review RR-6, RR-7). A pull request GitHub already
 	// merged is reconciled above, not merged.
+	var final *core.TaskApproval
 	if act.operator == nil {
 		if err := d.riskMergeRefusal(ctx, current, true); err != nil {
 			return err
 		}
-	} else if err := d.riskOperatorMergeLocked(ctx, current, *act.operator, pr); err != nil {
+	} else if final, err = d.riskOperatorMergeLocked(ctx, current, *act.operator, pr); err != nil {
 		return err
 	}
 	// A queued or claimed conflict-fix order defers conflict clearing,
@@ -1064,7 +1074,7 @@ func (d *Dispatcher) mergeApprovedTaskLocked(ctx context.Context, task core.Task
 		return err
 	}
 	d.observeConfirmedMerge(ctx, current, repo.GitHub, confirmed, "merge.confirmed")
-	return d.confirmTaskMerged(ctx, current.ID)
+	return d.confirmTaskMergedWithApproval(ctx, current.ID, final)
 }
 
 // ReconcileObservedPullRequest records a forge merge at the reviewed head.
@@ -1408,6 +1418,13 @@ func (d *Dispatcher) recordIneligibleMerge(ctx context.Context, task core.Task, 
 }
 
 func (d *Dispatcher) confirmTaskMerged(ctx context.Context, taskID string) error {
+	return d.confirmTaskMergedWithApproval(ctx, taskID, nil)
+}
+
+// confirmTaskMergedWithApproval completes a confirmed merge and, when final
+// is set, records the approval that completes an enforcing task's count in
+// the same transaction (req-risk-based-review AC-8.7).
+func (d *Dispatcher) confirmTaskMergedWithApproval(ctx context.Context, taskID string, final *core.TaskApproval) error {
 	// The task transition atomically resumes dependent queue clocks. Worker
 	// polling discovers the now-claimable order; the old durable-queue nudge
 	// was a no-op because the existing stage order already owns dispatch.
@@ -1419,7 +1436,16 @@ func (d *Dispatcher) confirmTaskMerged(ctx context.Context, taskID string) error
 	if current.State != core.TaskApproved {
 		command = core.TaskMergeRecover
 	}
-	return d.transition(ctx, taskID, command, "", "")
+	if final == nil {
+		return d.transition(ctx, taskID, command, "", "")
+	}
+	final.TaskID = taskID
+	if final.UserID != "" {
+		// The approval event names the approving person as its actor.
+		ctx = store.WithActor(ctx, core.Actor{ID: store.UserActorID(final.UserID), Role: core.ActorUser})
+	}
+	_, err = taskops.New(d.Store).Perform(ctx, taskID, taskops.Command{Kind: command, ProjectStages: true, FinalApproval: final})
+	return err
 }
 
 func (d *Dispatcher) recordMergeFailureWithAuthor(ctx context.Context, task core.Task, reason string, mergeErr error, author core.ForgeAuthoringIdentity) error {

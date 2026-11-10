@@ -47,6 +47,11 @@ type ApprovalStatus struct {
 	// TrustedAuthorApprovalNeeded is true while a trusted author's approval
 	// is still required and not waived (AC-8.4).
 	TrustedAuthorApprovalNeeded bool `json:"trusted_author_approval_needed"`
+	// AuthorWaiverNeeded is true when a trusted author's approval is required
+	// but no author's approval can count, because another author is not
+	// trusted: only a non-author's waiver meets the condition (AC-8.4, AC-8.5,
+	// REQ-9). No approval lowers it, so it adds nothing to Remaining.
+	AuthorWaiverNeeded bool `json:"author_waiver_needed"`
 	// NonAuthorApprovalNeeded is true while an untrusted author calls for an
 	// approval from a person who is not an author and none counts (AC-9.2).
 	NonAuthorApprovalNeeded bool `json:"non_author_approval_needed"`
@@ -65,10 +70,11 @@ type ApprovalStatus struct {
 
 // Reasons a person's approval does not count.
 const (
-	ApprovalReasonNoCapability     = "the person does not hold operate_gates"
-	ApprovalReasonUntrustedAuthor  = "the person is an author who is not trusted"
-	ApprovalReasonAlreadyCounted   = "the person's approval of this head is already recorded"
-	ApprovalReasonNoPersonIdentity = "no person is named"
+	ApprovalReasonNoCapability      = "the person does not hold operate_gates"
+	ApprovalReasonUntrustedAuthor   = "the person is an author who is not trusted"
+	ApprovalReasonAuthorOfUntrusted = "the person is an author, and no author's approval counts while any author is not trusted"
+	ApprovalReasonAlreadyCounted    = "the person's approval of this head is already recorded"
+	ApprovalReasonNoPersonIdentity  = "no person is named"
 )
 
 // Trusted reports whether a person is trusted under the repository's list:
@@ -92,12 +98,14 @@ func (in ApprovalInput) Trusted(userID string) bool {
 // EvaluateApprovals applies req-risk-based-review REQ-8 and REQ-9 to the
 // approvals of one head. An approval counts only from a person who holds
 // operate_gates now, and each person counts once (AC-8.3). An untrusted
-// author's own approval never counts, an untrusted author forbids automatic
-// merge and requires one approval from a person who is not an author (AC-9.2).
-// When any author is trusted, one trusted author's approval is required and
-// counts toward the number unless a non-author waived it (AC-8.4, AC-8.5); the
-// waiver changes no number. Agent verdicts are not inputs (component-risk-review
-// invariant 10). The function is pure.
+// author forbids automatic merge, requires one approval from a person who is
+// not an author, and makes every author's own approval uncounted, trusted
+// coauthors included (AC-9.2, REQ-9; DEC-124(5)). When any author is trusted,
+// one trusted author's approval is required and counts toward the number
+// unless a non-author waived it (AC-8.4, AC-8.5); with an untrusted coauthor
+// only the waiver meets that condition. The waiver changes no number. Agent
+// verdicts are not inputs (component-risk-review invariant 10). The function
+// is pure.
 func EvaluateApprovals(in ApprovalInput) ApprovalStatus {
 	authors := map[string]bool{}
 	var trustedAuthors []string
@@ -129,6 +137,11 @@ func EvaluateApprovals(in ApprovalInput) ApprovalStatus {
 			return false, ApprovalReasonNoCapability
 		case authors[userID] && !in.Trusted(userID):
 			return false, ApprovalReasonUntrustedAuthor
+		case authors[userID] && untrusted:
+			// Only a change whose authors are all trusted may be approved by
+			// its own author (REQ-9; DEC-124(5)), so a trusted coauthor does
+			// not count either.
+			return false, ApprovalReasonAuthorOfUntrusted
 		}
 		return true, ""
 	}
@@ -151,11 +164,17 @@ func EvaluateApprovals(in ApprovalInput) ApprovalStatus {
 	}
 	status.Recorded = len(counted)
 	if required >= 1 && len(trustedAuthors) > 0 && !in.Waived {
-		status.TrustedAuthorApprovalNeeded = true
-		for _, author := range trustedAuthors {
-			if counted[author] {
-				status.TrustedAuthorApprovalNeeded = false
-				break
+		if untrusted {
+			// No author's approval counts here, so the trusted author's
+			// approval can be met only by a non-author's waiver (AC-8.5).
+			status.AuthorWaiverNeeded = true
+		} else {
+			status.TrustedAuthorApprovalNeeded = true
+			for _, author := range trustedAuthors {
+				if counted[author] {
+					status.TrustedAuthorApprovalNeeded = false
+					break
+				}
 			}
 		}
 	}
@@ -176,6 +195,6 @@ func EvaluateApprovals(in ApprovalInput) ApprovalStatus {
 		conditions++
 	}
 	status.Remaining = max(required-status.Recorded, conditions)
-	status.Satisfied = status.Remaining == 0
+	status.Satisfied = status.Remaining == 0 && !status.AuthorWaiverNeeded
 	return status
 }

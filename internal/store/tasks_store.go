@@ -1525,7 +1525,7 @@ func (m *memory) CancelTaskCommand(ctx context.Context, lease taskops.TaskLease,
 // (DEC-64(1,7); component-task-lifecycle). Every refusal is checked before the
 // first write so the in-memory ledger stays all-or-nothing like the durable
 // stores' single transaction.
-func (m *memory) MergeTaskAtGateCommand(ctx context.Context, lease taskops.TaskLease, intervention core.Intervention, approvedHead string, confirmed core.Event) (core.Task, error) {
+func (m *memory) MergeTaskAtGateCommand(ctx context.Context, lease taskops.TaskLease, intervention core.Intervention, approvedHead string, confirmed core.Event, final *core.TaskApproval) (core.Task, error) {
 	if _, err := RequireActor(ctx); err != nil {
 		return core.Task{}, err
 	}
@@ -1559,6 +1559,15 @@ func (m *memory) MergeTaskAtGateCommand(ctx context.Context, lease taskops.TaskL
 			return core.Task{}, fmt.Errorf("job %s does not belong to task %s", intervention.JobID, intervention.TaskID)
 		}
 	}
+	if final != nil {
+		// The final approval is checked against the head this act binds,
+		// before the first write, so a refused one leaves the ledger as it was.
+		bound := task
+		bound.ReviewedHeadSHA, bound.ApprovedHeadSHA = approvedHead, approvedHead
+		if _, err := PrepareFinalTaskApproval(bound, core.TaskInterventionMerge, *final, time.Now()); err != nil {
+			return core.Task{}, err
+		}
+	}
 	if err := m.createInterventionLocked(ctx, intervention); err != nil {
 		return core.Task{}, err
 	}
@@ -1568,7 +1577,7 @@ func (m *memory) MergeTaskAtGateCommand(ctx context.Context, lease taskops.TaskL
 	m.tasks[task.ID] = task
 	m.appendEventLocked(ctx, core.Event{TaskID: task.ID, Kind: "approval.bound", Payload: core.JSONPayload(map[string]any{"workspace": task.Workspace, "task_id": task.ID, "approved_head": approvedHead})})
 	m.appendEventLocked(ctx, confirmed)
-	return m.applyTaskCommandLocked(ctx, task.ID, taskops.Command{Kind: core.TaskInterventionMerge})
+	return m.applyTaskCommandLocked(ctx, task.ID, taskops.Command{Kind: core.TaskInterventionMerge, FinalApproval: final})
 }
 
 func (m *memory) cancelTaskLocked(ctx context.Context, intervention core.Intervention) (core.Task, error) {

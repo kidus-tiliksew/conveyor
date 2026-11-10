@@ -249,7 +249,7 @@ type TaskStore interface {
 	// records the approve intervention, binds approvedHead, appends the
 	// merge.confirmed event, and applies intervention.merge. It refuses with
 	// the typed transition error unless the task waits at merge_approval.
-	MergeTaskAtGateCommand(ctx context.Context, lease taskops.TaskLease, intervention core.Intervention, approvedHead string, confirmed core.Event) (core.Task, error)
+	MergeTaskAtGateCommand(ctx context.Context, lease taskops.TaskLease, intervention core.Intervention, approvedHead string, confirmed core.Event, final *core.TaskApproval) (core.Task, error)
 	ListInterventions(ctx context.Context, taskID string) ([]core.Intervention, error)
 	UpsertTranscript(ctx context.Context, transcript core.Transcript) error
 	GetTranscript(ctx context.Context, jobID string) (core.Transcript, error)

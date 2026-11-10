@@ -58,6 +58,39 @@ func PrepareTaskApproval(task core.Task, approval core.TaskApproval, now time.Ti
 	return approval, nil
 }
 
+// PrepareFinalTaskApproval validates the approval a merge-completing command
+// records in its own transaction: the person's approval whose confirmed merge
+// completes an enforcing task's count (req-risk-based-review AC-8.7;
+// req-review-gates-evidence AC-1.3). task is read under the task lock before
+// the transition, with the merged head already bound. A refusal fails the
+// whole command, so no merge completes without the approval it carries.
+func PrepareFinalTaskApproval(task core.Task, command core.TaskCommand, approval core.TaskApproval, now time.Time) (core.TaskApproval, error) {
+	switch command {
+	case core.TaskInterventionMerge, core.TaskMergeConfirm, core.TaskMergeRecover:
+	default:
+		return core.TaskApproval{}, Refusef("command %s does not complete a merge and records no final approval", command)
+	}
+	approval.TaskID = task.ID
+	if approval.Kind != core.TaskApprovalPerson {
+		return core.TaskApproval{}, Refusef("a final approval must be a person's approval")
+	}
+	if err := approval.Validate(); err != nil {
+		return core.TaskApproval{}, Refuse(err)
+	}
+	if !task.SetupContract.Risk.Enforcing() {
+		return core.TaskApproval{}, Refusef("the task's frozen risk policy does not enforce approvals")
+	}
+	approved := strings.TrimSpace(task.ApprovedHeadSHA)
+	if approved == "" {
+		approved = strings.TrimSpace(task.ReviewedHeadSHA)
+	}
+	if approved == "" || approval.HeadSHA != approved {
+		return core.TaskApproval{}, Refuse(&ApprovalHeadError{Head: approval.HeadSHA, Current: approved})
+	}
+	approval.CreatedAt = now.UTC()
+	return approval, nil
+}
+
 // ApprovalHeadError refuses an approval of a head that is not the task's
 // reviewed head.
 type ApprovalHeadError struct{ Head, Current string }
@@ -98,9 +131,16 @@ func (m *memory) RecordTaskApproval(ctx context.Context, approval core.TaskAppro
 	if err != nil {
 		return core.TaskApproval{}, false, err
 	}
+	recorded, created := m.insertTaskApprovalLocked(ctx, key, prepared)
+	return recorded, created, nil
+}
+
+// insertTaskApprovalLocked inserts one approval and its event unless its key
+// is recorded, and returns the recorded row and whether it was new.
+func (m *memory) insertTaskApprovalLocked(ctx context.Context, key memoryScopedKey, prepared core.TaskApproval) (core.TaskApproval, bool) {
 	for _, recorded := range m.taskApprovals[key] {
 		if TaskApprovalKeyOf(recorded) == TaskApprovalKeyOf(prepared) {
-			return recorded, false, nil
+			return recorded, false
 		}
 	}
 	if m.taskApprovals == nil {
@@ -108,7 +148,7 @@ func (m *memory) RecordTaskApproval(ctx context.Context, approval core.TaskAppro
 	}
 	m.taskApprovals[key] = append(m.taskApprovals[key], prepared)
 	m.appendEventLocked(ctx, TaskApprovalRecordedEvent(prepared))
-	return prepared, true, nil
+	return prepared, true
 }
 
 func (m *memory) ListTaskApprovals(ctx context.Context, taskID string) ([]core.TaskApproval, error) {
@@ -301,6 +341,7 @@ func ProjectTaskApprovals(projection *core.TaskRisk, evaluation ApprovalEvaluati
 	projection.RemainingApprovals = status.Remaining
 	projection.AuthorApprovalNeeded = status.TrustedAuthorApprovalNeeded
 	projection.NonAuthorApprovalNeeded = status.NonAuthorApprovalNeeded
+	projection.AuthorWaiverNeeded = status.AuthorWaiverNeeded
 	projection.UntrustedAuthor = status.UntrustedAuthor
 	projection.ApprovalHead = evaluation.Head
 	projection.ApprovalsSatisfied = status.Satisfied

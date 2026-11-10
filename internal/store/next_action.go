@@ -529,7 +529,8 @@ func readAssemblerRiskApprovals(ctx context.Context, st Store, tasks []core.Task
 		out[task.ID] = nextaction.RiskApprovals{
 			Required: status.Required, Recorded: status.Recorded, Remaining: status.Remaining,
 			TrustedAuthorNeeded: status.TrustedAuthorApprovalNeeded, NonAuthorNeeded: status.NonAuthorApprovalNeeded,
-			Satisfied: status.Satisfied,
+			WaiverNeeded: status.AuthorWaiverNeeded,
+			Satisfied:    status.Satisfied,
 		}
 	}
 	return out, nil

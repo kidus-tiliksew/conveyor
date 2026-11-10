@@ -466,5 +466,8 @@ type RiskApprovals struct {
 	Remaining           int
 	TrustedAuthorNeeded bool
 	NonAuthorNeeded     bool
-	Satisfied           bool
+	// WaiverNeeded is true when only a non-author's waiver of the trusted
+	// author's approval can meet the author condition.
+	WaiverNeeded bool
+	Satisfied    bool
 }

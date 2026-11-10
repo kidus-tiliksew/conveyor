@@ -8,6 +8,7 @@ package dispatch
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"log"
 	"strings"
@@ -56,6 +57,9 @@ func ApprovalShortfallText(status riskpolicy.ApprovalStatus) string {
 		approvals = "approval"
 	}
 	text := fmt.Sprintf("The task has %d of %d required human approvals; %d more %s needed.", status.Recorded, status.Required, status.Remaining, pluralVerb(approvals, status.Remaining))
+	if status.Remaining == 0 {
+		text = fmt.Sprintf("The task has %d of %d required human approvals.", status.Recorded, status.Required)
+	}
 	switch {
 	case status.TrustedAuthorApprovalNeeded && status.NonAuthorApprovalNeeded:
 		text += " A trusted author's approval and an approval from a person who is not an author are among them."
@@ -63,6 +67,9 @@ func ApprovalShortfallText(status riskpolicy.ApprovalStatus) string {
 		text += " A trusted author's approval is among them."
 	case status.NonAuthorApprovalNeeded:
 		text += " An approval from a person who is not an author is among them."
+	}
+	if status.AuthorWaiverNeeded {
+		text += " No author's approval counts while an author is not trusted, so a person who is not an author must waive the trusted author's approval."
 	}
 	return text
 }
@@ -112,27 +119,94 @@ func actorUserID(ctx context.Context, actor core.Actor) string {
 }
 
 // riskOperatorMergeLocked decides a person's merge act on an enforcing task
-// under the task side-effect lock, after the act's readiness read. It returns
-// nil when the person's approval completes every requirement, so the caller
-// lands the head; the final approval is then recorded only with the
-// confirmed merge (req-review-gates-evidence AC-1.3). Short of that, it
-// records the person's approval when it counts and the head is ready, lands
-// nothing, and returns *RiskApprovalPending with what is still needed
-// (req-risk-based-review AC-8.7). An unready head records nothing.
-func (d *Dispatcher) riskOperatorMergeLocked(ctx context.Context, current core.Task, actor core.Actor, pr github.PullRequest) error {
+// under the task side-effect lock, after the act's readiness read. When the
+// person's approval completes every requirement it returns that approval as
+// final, and the caller lands the head and records final in the transaction
+// that completes the confirmed merge, so a merge that fails or is not
+// confirmed credits nothing (req-review-gates-evidence AC-1.3;
+// req-risk-based-review AC-8.7; DEC-124(7)). final is nil when the person's
+// approval is already recorded or does not count. Short of the requirements,
+// it records the person's approval when it counts and the head is ready, lands
+// nothing, and returns *RiskApprovalPending with what is still needed. An
+// unready head records nothing.
+func (d *Dispatcher) riskOperatorMergeLocked(ctx context.Context, current core.Task, actor core.Actor, pr github.PullRequest) (*core.TaskApproval, error) {
 	if !current.SetupContract.Risk.Enforcing() {
-		return nil
+		return nil, nil
 	}
 	userID := actorUserID(ctx, actor)
 	evaluation, err := d.EvaluateApprovals(ctx, current, userID)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	if evaluation.Status.Satisfied {
-		return nil
+		return finalApproval(evaluation, userID), nil
 	}
 	_, err = d.recordApprovalLocked(ctx, current, userID, pr, "merge", evaluation)
-	return err
+	return nil, err
+}
+
+// finalApproval is the approval record of userID that a confirmed merge
+// completes, or nil when that person's approval does not count or is already
+// recorded at the evaluated head and round.
+func finalApproval(evaluation store.ApprovalEvaluation, userID string) *core.TaskApproval {
+	if !evaluation.Enforced || !evaluation.Status.ProspectiveEligible || evaluation.Head == "" || evaluation.ReviewRound < 1 {
+		return nil
+	}
+	return &core.TaskApproval{
+		TaskID: "", Kind: core.TaskApprovalPerson, HeadSHA: evaluation.Head, ReviewRound: evaluation.ReviewRound,
+		UserID: userID, Source: "merge",
+	}
+}
+
+// pendingFinalApproval is the final approval a reconciled merge credits to
+// the person whose pending merge request landed head, or nil. The forge
+// already merged, so the requirements are not evaluated again; only the
+// person's eligibility and the head decide whether the approval is recorded
+// (req-risk-based-review AC-8.7; DEC-64(7)).
+func (d *Dispatcher) pendingFinalApproval(ctx context.Context, task core.Task, userID, head string) (*core.TaskApproval, error) {
+	if !task.SetupContract.Risk.Enforcing() || userID == "" {
+		return nil, nil
+	}
+	evaluation, err := d.EvaluateApprovals(ctx, task, userID)
+	if err != nil {
+		return nil, err
+	}
+	if evaluation.Head != head {
+		return nil, nil
+	}
+	return finalApproval(evaluation, userID), nil
+}
+
+// pendingOperatorMergeRequest returns the person of the latest operator
+// merge.requested of an approved task at head that no forge_merge_failed
+// answered, the approved-task twin of pendingGateMergeRequest. An unconfirmed
+// or unverified merge leaves it pending, so the later observed merge credits
+// that person's final approval.
+func pendingOperatorMergeRequest(events []core.Event, head string) string {
+	userID := ""
+	for _, event := range events {
+		switch event.Kind {
+		case "merge.requested":
+			var payload struct {
+				Operator bool   `json:"operator_act"`
+				Head     string `json:"head_sha"`
+				UserID   string `json:"forge_author_user_id"`
+			}
+			if json.Unmarshal(event.Payload, &payload) == nil && payload.Operator && payload.Head == head && payload.UserID != "" {
+				userID = payload.UserID
+			} else {
+				userID = ""
+			}
+		case "merge.failed":
+			var payload struct {
+				Reason string `json:"reason_code"`
+			}
+			if json.Unmarshal(event.Payload, &payload) == nil && payload.Reason == "forge_merge_failed" {
+				userID = ""
+			}
+		}
+	}
+	return userID
 }
 
 // recordApprovalLocked records userID's approval of the reviewed head after

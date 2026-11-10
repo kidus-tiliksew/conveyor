@@ -247,3 +247,87 @@ func TestApprovalRoutesRefuseNonEnforcingTasks(t *testing.T) {
 		}
 	}
 }
+
+// An unconfirmed final merge credits nothing; when the forge's merge is
+// observed later, the pending requester's approval is recorded with the
+// reconciled completion, on the gate and on an approved task (AC-8.7;
+// DEC-64(7)).
+func TestUnconfirmedFinalMergeCreditsOnReconciliation(t *testing.T) {
+	t.Run("Gate", func(t *testing.T) {
+		ctx, st, task, d, forge := riskGateFixture(t, "risk-pending-gate", riskMergeCase{riskpolicy.ModeEnforce, riskpolicy.TierHigh, 0})
+		if _, err := d.MergeAtGate(ctx, task, person("usr-first")); err == nil {
+			t.Fatal("first merge landed")
+		}
+		forge.answer = func(*githubtrigger.PullRequest) error { return errors.New("connection reset") }
+		if _, err := d.MergeAtGate(ctx, task, gateOperator); !errors.Is(err, ErrGateMergeUnconfirmed) {
+			t.Fatalf("unconfirmed merge err=%v", err)
+		}
+		if records, _ := st.ListTaskApprovals(ctx, task.ID); len(records) != 1 {
+			t.Fatalf("unconfirmed merge credited %+v", records)
+		}
+		forge.pr.Merged, forge.pr.State, forge.pr.MergeCommitSHA, forge.pr.MergedBy = true, "closed", "landed", "conveyor-app"
+		if matched, err := d.ReconcileObservedPullRequest(store.WithActor(ctx, store.SystemActor()), "app", "acme/app", task.ID, forge.pr); err != nil || !matched {
+			t.Fatalf("matched=%v err=%v", matched, err)
+		}
+		assertFinalApprovals(t, ctx, st, d, task.ID, 2, "usr-approver")
+	})
+	t.Run("ApprovedTask", func(t *testing.T) {
+		ctx, st, task, d, forge := riskApprovedTask(t, "risk-pending-approved", riskMergeCase{riskpolicy.ModeEnforce, riskpolicy.TierMedium, 0})
+		// GitHub accepts the request but does not report the pull request
+		// merged, so the merge is unconfirmed.
+		forge.answer = func(*githubtrigger.PullRequest) error { return nil }
+		if err := d.MergeApprovedTask(ctx, task, gateOperator); err == nil {
+			t.Fatal("unconfirmed merge succeeded")
+		}
+		if records, _ := st.ListTaskApprovals(ctx, task.ID); len(records) != 0 {
+			t.Fatalf("unconfirmed merge credited %+v", records)
+		}
+		forge.pr.Merged, forge.pr.State, forge.pr.MergeCommitSHA, forge.pr.MergedBy = true, "closed", "landed", "conveyor-app"
+		if matched, err := d.ReconcileObservedPullRequest(store.WithActor(ctx, store.SystemActor()), "app", "acme/app", task.ID, forge.pr); err != nil || !matched {
+			t.Fatalf("matched=%v err=%v", matched, err)
+		}
+		if current, _ := st.GetTask(ctx, task.ID); current.State != core.TaskMerged {
+			t.Fatalf("task state=%s", current.State)
+		}
+		assertFinalApprovals(t, ctx, st, d, task.ID, 1, "usr-approver")
+	})
+}
+
+// With an untrusted author no author's approval counts, a trusted coauthor's
+// included, and the trusted author's approval is met only by a non-author's
+// waiver (REQ-9, AC-8.4, AC-8.5; DEC-124(5)).
+func TestMixedAuthorsNeedTheWaiverAndANonAuthor(t *testing.T) {
+	ctx, st, task, d, forge := riskGateFixture(t, "risk-mixed", riskMergeCase{riskpolicy.ModeEnforce, riskpolicy.TierMedium, 0})
+	claimImplementation(t, st, ctx, task.ID, "usr-author")
+	claimImplementation(t, st, ctx, task.ID, "usr-coauthor")
+	setTrustedAuthors(d, "usr-coauthor")
+	_, err := d.MergeAtGate(ctx, task, person("usr-coauthor"))
+	var pending *RiskApprovalPending
+	if !errors.As(err, &pending) || pending.Recorded || pending.Reason != riskpolicy.ApprovalReasonAuthorOfUntrusted {
+		t.Fatalf("trusted coauthor merge err=%v pending=%+v", err, pending)
+	}
+	if records, _ := st.ListTaskApprovals(ctx, task.ID); len(records) != 0 {
+		t.Fatalf("a coauthor's approval was recorded: %+v", records)
+	}
+	// A non-author's approval meets the count, but only the waiver meets the
+	// trusted-author condition.
+	_, err = d.MergeAtGate(ctx, task, gateOperator)
+	if !errors.As(err, &pending) || !pending.Recorded || !pending.Evaluation.Status.AuthorWaiverNeeded || pending.Evaluation.Status.Satisfied {
+		t.Fatalf("non-author merge err=%v pending=%+v", err, pending)
+	}
+	if forge.merges != 0 {
+		t.Fatalf("merges=%d", forge.merges)
+	}
+	if _, _, err := d.WaiveAuthorApproval(ctx, task, person("usr-coauthor"), gateHead, "away"); !errors.Is(err, store.ErrRefusal) {
+		t.Fatalf("coauthor waiver err=%v, want a refusal", err)
+	}
+	evaluation, _, err := d.WaiveAuthorApproval(ctx, task, person("usr-lead"), gateHead, "the trusted author is away")
+	if err != nil || !evaluation.Status.Satisfied {
+		t.Fatalf("waiver evaluation=%+v err=%v", evaluation.Status, err)
+	}
+	out, err := d.MergeAtGate(ctx, task, gateOperator)
+	if err != nil || out.State != core.TaskMerged || forge.merges != 1 {
+		t.Fatalf("merge after the waiver out=%s err=%v merges=%d", out.State, err, forge.merges)
+	}
+	assertFinalApprovals(t, ctx, st, d, task.ID, 1, "usr-approver")
+}

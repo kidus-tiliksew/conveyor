@@ -2390,3 +2390,52 @@ for (const viewport of [
     await testInfo.attach(confirmName, { body: confirm, contentType: 'image/png' })
   })
 }
+
+// With an untrusted coauthor no author's approval counts, so the trusted
+// author's approval is met only by a non-author's waiver; the risk fact and
+// the merge control say so (req-risk-based-review REQ-9, AC-8.5, AC-11.2).
+function waiverActivity() {
+  const item = approvalActivity('Merge')
+  return {
+    ...item,
+    risk: {
+      ...item.risk,
+      required_human_approvals: 1,
+      recorded_approvals: 1,
+      remaining_approvals: 0,
+      author_approval_needed: false,
+      non_author_approval_needed: false,
+      untrusted_author: true,
+      author_waiver_needed: true,
+    },
+  }
+}
+
+for (const viewport of [
+  { name: 'mobile', width: 375, height: 1400 },
+  { name: 'desktop', width: 1280, height: 1000 },
+]) {
+  test(`capture the author waiver condition at ${viewport.width} px`, async ({ page }, testInfo) => {
+    await page.setViewportSize({ width: viewport.width, height: viewport.height })
+    await mockAPI(
+      page,
+      () => waiverActivity(),
+      () => ({
+        ...approvalAction('Merge'),
+        summary:
+          "The reviewed head has 1 of 1 required human approvals. No author's approval counts while an author is not trusted, so a person who is not an author must waive the trusted author's approval.",
+      }),
+    )
+    await page.goto(`/w/demo/tasks/${taskId}/full`)
+    const text =
+      "1 of 1 human approval recorded. A person who is not an author must waive the trusted author's approval."
+    await expect(page.locator('[data-task-risk-approvals]').first()).toHaveText(text)
+    const gate = page.getByRole('region', { name: 'Human gate' })
+    await expect(gate.locator('[data-approval-count]')).toHaveText(text)
+    await gate.scrollIntoViewIfNeeded()
+    const shots = process.env.CONVEYOR_SCREENSHOT_DIR
+    const name = `merge-gate-author-waiver-${viewport.name}.png`
+    const image = await page.screenshot({ path: shots ? `${shots}/${name}` : undefined, fullPage: true })
+    await testInfo.attach(name, { body: image, contentType: 'image/png' })
+  })
+}

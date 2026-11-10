@@ -560,6 +560,14 @@ func (m *memory) applyTaskCommandLocked(ctx context.Context, id string, command 
 	if err != nil {
 		return core.Task{}, err
 	}
+	var final *core.TaskApproval
+	if command.FinalApproval != nil {
+		prepared, prepareErr := PrepareFinalTaskApproval(task, command.Kind, *command.FinalApproval, time.Now())
+		if prepareErr != nil {
+			return core.Task{}, prepareErr
+		}
+		final = &prepared
+	}
 	task.State = state
 	task.GateKind = core.GateKindFor(state, command.Kind)
 	if command.ProjectStages {
@@ -578,6 +586,13 @@ func (m *memory) applyTaskCommandLocked(ctx context.Context, id string, command 
 	m.appendEventLocked(ctx, core.Event{TaskID: id, Kind: "task.state_changed", Payload: core.JSONPayload(map[string]any{"from": fromState, "to": state, "command": command.Kind})})
 	if planMove != nil {
 		m.appendEventLocked(ctx, *planMove)
+	}
+	if final != nil {
+		workspace := task.Workspace
+		if scoped, ok := WorkspaceFromContext(ctx); ok && scoped != "" {
+			workspace = scoped
+		}
+		m.insertTaskApprovalLocked(ctx, memoryScopedKey{workspace: workspace, id: id}, *final)
 	}
 	if command.FailureMessage != "" {
 		m.appendEventLocked(ctx, core.Event{TaskID: id, Kind: "dispatch.failed", Payload: core.JSONPayload(map[string]any{

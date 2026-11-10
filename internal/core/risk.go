@@ -249,10 +249,14 @@ type TaskRisk struct {
 	// AC-11.1, AC-11.2): the approvals still needed, whether an untrusted
 	// author calls for a non-author's approval, the head the count binds to,
 	// and whether the count and every author condition are met.
-	RemainingApprovals      int          `json:"remaining_approvals"`
-	NonAuthorApprovalNeeded bool         `json:"non_author_approval_needed"`
-	UntrustedAuthor         bool         `json:"untrusted_author"`
-	ApprovalHead            string       `json:"approval_head,omitempty"`
-	ApprovalsSatisfied      bool         `json:"approvals_satisfied"`
-	Ratings                 []RiskRating `json:"ratings"`
+	RemainingApprovals      int  `json:"remaining_approvals"`
+	NonAuthorApprovalNeeded bool `json:"non_author_approval_needed"`
+	// AuthorWaiverNeeded is true when a trusted author's approval is
+	// required but an untrusted coauthor keeps every author's approval from
+	// counting, so only a non-author's waiver meets the condition.
+	AuthorWaiverNeeded bool         `json:"author_waiver_needed"`
+	UntrustedAuthor    bool         `json:"untrusted_author"`
+	ApprovalHead       string       `json:"approval_head,omitempty"`
+	ApprovalsSatisfied bool         `json:"approvals_satisfied"`
+	Ratings            []RiskRating `json:"ratings"`
 }

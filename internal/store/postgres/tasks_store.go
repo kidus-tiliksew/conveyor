@@ -1572,7 +1572,7 @@ func (s *Store) CancelTaskCommand(ctx context.Context, lease taskops.TaskLease, 
 // merge_approval gate in one transaction under the task-operation lock
 // (DEC-64(1,7); component-task-lifecycle): approve intervention, approval
 // binding, merge.confirmed, then intervention.merge.
-func (s *Store) MergeTaskAtGateCommand(ctx context.Context, lease taskops.TaskLease, intervention core.Intervention, approvedHead string, confirmed core.Event) (core.Task, error) {
+func (s *Store) MergeTaskAtGateCommand(ctx context.Context, lease taskops.TaskLease, intervention core.Intervention, approvedHead string, confirmed core.Event, final *core.TaskApproval) (core.Task, error) {
 	ctx = dbmetrics.WithReadLabel(ctx, "MergeTaskAtGateCommand")
 	if !lease.ValidFor(intervention.TaskID) {
 		return core.Task{}, fmt.Errorf("gate merge requires a valid taskops lease")
@@ -1626,7 +1626,7 @@ func (s *Store) MergeTaskAtGateCommand(ctx context.Context, lease taskops.TaskLe
 		if err = insertEvent(ctx, q, confirmed); err != nil {
 			return err
 		}
-		_, err = s.applyTaskCommandTx(ctx, tx, q, intervention.TaskID, taskops.Command{Kind: core.TaskInterventionMerge})
+		_, err = s.applyTaskCommandTx(ctx, tx, q, intervention.TaskID, taskops.Command{Kind: core.TaskInterventionMerge, FinalApproval: final})
 		return err
 	})
 	if err != nil {

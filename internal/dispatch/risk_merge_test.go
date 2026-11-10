@@ -118,7 +118,65 @@ func TestMergeAtGateCountsApprovalsUntilTheLastLands(t *testing.T) {
 				t.Fatalf("last approval out=%s err=%v merges=%d", out.State, err, forge.merges)
 			}
 			assertGateMergedBy(t, st, ctx, task.ID, "usr-approver")
+			// The last approval is recorded with the confirmed merge, so the
+			// merged head holds every required approval (AC-8.7).
+			assertFinalApprovals(t, ctx, st, d, task.ID, tc.required, "usr-approver")
+			// A repeated act answers the merged task and records nothing more.
+			if again, err := d.MergeAtGate(ctx, task, gateOperator); err != nil || again.State != core.TaskMerged {
+				t.Fatalf("replay out=%s err=%v", again.State, err)
+			}
+			assertFinalApprovals(t, ctx, st, d, task.ID, tc.required, "usr-approver")
 		})
+	}
+}
+
+// assertFinalApprovals checks a merged enforcing task's approval rows, the
+// audit identity of the last one, and the shared evaluation's count.
+func assertFinalApprovals(t *testing.T, ctx context.Context, st store.Store, d *Dispatcher, taskID string, want int, last string) {
+	t.Helper()
+	records, err := st.ListTaskApprovals(ctx, taskID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	people := 0
+	final := core.TaskApproval{}
+	for _, record := range records {
+		if record.Kind == core.TaskApprovalPerson {
+			people++
+			if record.UserID == last {
+				final = record
+			}
+		}
+	}
+	if people != want || final.UserID != last || final.HeadSHA != gateHead {
+		t.Fatalf("approval rows=%+v, want %d with %s's at %s", records, want, last, gateHead)
+	}
+	events, err := st.ListEvents(ctx, taskID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	approvalEvents, lastActor := 0, ""
+	for _, event := range events {
+		if event.Kind == core.TaskApprovalEvent {
+			approvalEvents++
+			if strings.Contains(string(event.Payload), `"user_id":"`+last+`"`) {
+				lastActor = event.ActorID
+			}
+		}
+	}
+	if approvalEvents != want || lastActor != store.UserActorID(last) {
+		t.Fatalf("approval events=%d last actor=%q, want %d by %s", approvalEvents, lastActor, want, store.UserActorID(last))
+	}
+	task, err := st.GetTask(ctx, taskID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	evaluation, err := d.EvaluateApprovals(ctx, task, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if evaluation.Status.Recorded != want || !evaluation.Status.Satisfied {
+		t.Fatalf("merged task evaluation=%+v, want %d recorded and satisfied", evaluation.Status, want)
 	}
 }
 
@@ -136,6 +194,15 @@ func TestMergeAtGateKeepsTheSingleActBelowTwoApprovals(t *testing.T) {
 				t.Fatalf("out=%+v err=%v merges=%d", out, err, forge.merges)
 			}
 			assertGateMergedBy(t, st, ctx, task.ID, "usr-approver")
+			// One person's merge of an enforcing task records that person's
+			// approval with the merge; off and record tasks record none.
+			records, _ := st.ListTaskApprovals(ctx, task.ID)
+			if want := map[bool]int{true: 1, false: 0}[tc.mode == riskpolicy.ModeEnforce]; len(records) != want {
+				t.Fatalf("approval rows=%+v, want %d", records, want)
+			}
+			if tc.mode == riskpolicy.ModeEnforce {
+				assertFinalApprovals(t, ctx, st, d, task.ID, 1, "usr-approver")
+			}
 		})
 	}
 }
@@ -216,11 +283,13 @@ func TestOperatorMergeOfApprovedEnforcingTask(t *testing.T) {
 	if err := d.MergeApprovedTask(ctx, task, second); err != nil || forge.merges != 1 {
 		t.Fatalf("second merge err=%v merges=%d", err, forge.merges)
 	}
+	assertFinalApprovals(t, ctx, st, d, task.ID, 2, "usr-second")
 
-	ctx, _, task, d, forge = riskApprovedTask(t, "risk-operator-medium", riskMergeCase{riskpolicy.ModeEnforce, riskpolicy.TierMedium, 0})
+	ctx, st, task, d, forge = riskApprovedTask(t, "risk-operator-medium", riskMergeCase{riskpolicy.ModeEnforce, riskpolicy.TierMedium, 0})
 	if err := d.MergeApprovedTask(ctx, task, gateOperator); err != nil || forge.merges != 1 {
 		t.Fatalf("operator merge at one required approval err=%v merges=%d", err, forge.merges)
 	}
+	assertFinalApprovals(t, ctx, st, d, task.ID, 1, "usr-approver")
 }
 
 // A gate-off enforcing task held at the merge gate takes the gate-on

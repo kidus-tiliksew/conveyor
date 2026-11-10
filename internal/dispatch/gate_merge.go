@@ -183,7 +183,8 @@ func (d *Dispatcher) mergeAtGateLocked(ctx context.Context, taskID string, actor
 	// nothing, and only an approval that completes every requirement goes on
 	// to the forge (req-risk-based-review AC-8.7; req-review-gates-evidence
 	// AC-1.3; DEC-124).
-	if err = d.riskOperatorMergeLocked(ctx, current, actor, pr); err != nil {
+	final, err := d.riskOperatorMergeLocked(ctx, current, actor, pr)
+	if err != nil {
 		return core.Task{}, err
 	}
 	head := pr.HeadSHA
@@ -212,7 +213,7 @@ func (d *Dispatcher) mergeAtGateLocked(ctx context.Context, taskID string, actor
 	if confirmed.HeadSHA != head || confirmed.MergeCommitSHA == "" {
 		return core.Task{}, d.recordMergeFailureWithAuthor(ctx, current, "merge_verification_failed", fmt.Errorf("%w: pull request %s#%d merged at %q with merge commit %q, not reviewed head %s", ErrGateMergeUnconfirmed, repo.GitHub, pr.Number, confirmed.HeadSHA, confirmed.MergeCommitSHA, head), author)
 	}
-	return d.completeGateMergeLocked(ctx, current, repo.GitHub, confirmed, author)
+	return d.completeGateMergeLocked(ctx, current, repo.GitHub, confirmed, author, final)
 }
 
 // reconcileGateMergedLocked runs the shared observed-merge reconcile for a
@@ -265,7 +266,10 @@ func (d *Dispatcher) gateMergeAuthor(ctx context.Context, actor core.Actor) (cor
 // transaction: the operator's approve intervention bound to the merged
 // reviewed head, merge.confirmed, and intervention.merge (DEC-64(1,7)).
 // The intervention carries the operator as its actor.
-func (d *Dispatcher) completeGateMergeLocked(ctx context.Context, current core.Task, githubRepo string, pr github.PullRequest, author core.ForgeAuthoringIdentity) (core.Task, error) {
+//
+// final, when set, is the approval that completes an enforcing task's count;
+// it commits in the same transaction (req-risk-based-review AC-8.7).
+func (d *Dispatcher) completeGateMergeLocked(ctx context.Context, current core.Task, githubRepo string, pr github.PullRequest, author core.ForgeAuthoringIdentity, final *core.TaskApproval) (core.Task, error) {
 	payload := map[string]any{
 		"repository": githubRepo, "pull_request": pr.Number, "url": pr.URL,
 		"base_sha": pr.BaseSHA, "head_sha": pr.HeadSHA, "merged_by": pr.MergedBy,
@@ -274,7 +278,10 @@ func (d *Dispatcher) completeGateMergeLocked(ctx context.Context, current core.T
 	addForgeAuthor(payload, author)
 	operatorCtx := store.WithActor(ctx, core.Actor{ID: store.UserActorID(author.UserID), Role: core.ActorUser})
 	intervention := core.Intervention{TaskID: current.ID, Action: core.InterventionApprove, ReasonCode: "merge-at-gate"}
-	out, err := taskops.New(d.Store).MergeAtGate(operatorCtx, intervention, pr.HeadSHA, core.Event{TaskID: current.ID, Kind: "merge.confirmed", Payload: core.JSONPayload(payload)})
+	if final != nil {
+		final.TaskID = current.ID
+	}
+	out, err := taskops.New(d.Store).MergeAtGateWithApproval(operatorCtx, intervention, pr.HeadSHA, core.Event{TaskID: current.ID, Kind: "merge.confirmed", Payload: core.JSONPayload(payload)}, final)
 	if err != nil {
 		return core.Task{}, err
 	}
@@ -295,7 +302,13 @@ func (d *Dispatcher) creditPendingGateMergeLocked(ctx context.Context, task core
 		return false, nil
 	}
 	author := core.ForgeAuthoringIdentity{Class: core.ForgeAuthorApprovingOperator, UserID: request.OperatorUserID, DisplayName: request.DisplayName}
-	if _, err := d.completeGateMergeLocked(ctx, task, githubRepo, pr, author); err != nil {
+	// The requester's approval completes the count with the reconciled merge
+	// (req-risk-based-review AC-8.7).
+	final, err := d.pendingFinalApproval(ctx, task, request.OperatorUserID, pr.HeadSHA)
+	if err != nil {
+		return false, err
+	}
+	if _, err := d.completeGateMergeLocked(ctx, task, githubRepo, pr, author, final); err != nil {
 		return false, err
 	}
 	return true, nil

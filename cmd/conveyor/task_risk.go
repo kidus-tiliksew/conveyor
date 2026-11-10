@@ -30,6 +30,9 @@ func riskSummaryLine(risk *core.TaskRisk) string {
 			counts += ", including one from a person who is not an author"
 		}
 	}
+	if risk.Mode == riskpolicy.ModeEnforce && risk.AuthorWaiverNeeded {
+		counts += "; a non-author must waive the trusted author's approval"
+	}
 	if risk.Tier == "" {
 		return fmt.Sprintf("Risk tier: not rated yet (mode %s); %s", risk.Mode, counts)
 	}

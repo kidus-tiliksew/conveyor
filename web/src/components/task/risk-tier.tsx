@@ -43,7 +43,13 @@ export function riskApprovalText(risk: TaskRisk): string | null {
     risk.non_author_approval_needed ? 'one from a person who is not an author' : '',
   ].filter(Boolean)
   const including = conditions.length > 0 ? `, including ${conditions.join(' and ')}` : ''
-  return `${recorded} ${remaining} more needed${including}.`
+  // With an untrusted author no author's approval counts, so the trusted
+  // author's approval is met only by a non-author's waiver (AC-8.5, REQ-9).
+  const waiver = risk.author_waiver_needed
+    ? " A person who is not an author must waive the trusted author's approval."
+    : ''
+  if (remaining === 0) return `${recorded}${waiver}`
+  return `${recorded} ${remaining} more needed${including}.${waiver}`
 }
 
 export function RiskTierBadge({ tier }: { tier: RiskTier | undefined }) {
