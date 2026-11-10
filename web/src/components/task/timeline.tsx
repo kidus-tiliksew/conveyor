@@ -62,12 +62,24 @@ import {
 import { hasReviewRoundRetry, ReviewRoundRetryCard } from './review-round-retry-card'
 import { ReviewRoundSummary } from './review-round-summary'
 import { ReviewSeatAdd } from './review-seat-add'
+import { SeatRiskTier } from './risk-tier'
+import {
+  interventionUserId,
+  jobClaimantUserId,
+  type Person,
+  PersonAvatar,
+  personLabel,
+  RailPeople,
+  type RailPerson,
+  runClaimantUserId,
+  stageWork,
+  usePersonResolver,
+} from './run-by'
 import { useCollapsibleContent } from './use-collapsible-content'
 import { useTaskAudit } from './use-task-detail'
 import { isHistoryRestart, useTaskHistory } from './use-task-history'
 import { VerificationEntry } from './verification-entry'
 import { hasOrderRecovery, WorkOrderRecoveryCard } from './work-order-recovery-card'
-import { SeatRiskTier } from './risk-tier'
 
 // The gate dot pulses — the timeline's one "waiting on you" signal — in the
 // gate card's own tone.
@@ -692,6 +704,17 @@ function TimelineRow({
   item: ActivityItem
   usageReportedOrderIDs: Set<string>
 }) {
+  const resolve = usePersonResolver()
+  // An entry with a person shows that person's avatar on the rail; an entry
+  // with none keeps its dot.
+  const rail = (people: RailPerson[], dot: string) =>
+    people.length > 0 ? <RailPeople people={people} /> : <TimelineDot className={dot} />
+  const jobPeople = (job: Job, order: WorkOrder | undefined): RailPerson[] => {
+    const person = resolve(jobClaimantUserId(item, job, order))
+    if (!person) return []
+    const running = job.state === 'running'
+    return [{ person, label: personLabel(person, stageWork(job.stage, running)), live: running }]
+  }
   // The verify stage is a structured result, so like review it gets its own
   // entry: the sealed outcome, the assertions by exercise, and the pull
   // request publication, with the collection pages folded away.
@@ -701,7 +724,7 @@ function TimelineRow({
         item={item}
         job={entry.job}
         order={entry.order}
-        dotSlot={(className) => <TimelineDot className={className} />}
+        dotSlot={(className) => rail(jobPeople(entry.job, entry.order), className)}
         footer={
           <JobFooter
             job={entry.job}
@@ -718,7 +741,7 @@ function TimelineRow({
     return (
       <ImplementationEntry
         entry={entry}
-        dotSlot={(className) => <TimelineDot className={className} />}
+        dotSlot={(className) => rail(jobPeople(entry.job, entry.order), className)}
         meta={
           <JobMeta
             job={entry.job}
@@ -752,17 +775,29 @@ function TimelineRow({
         tone={entry.tone}
         order={entry.order}
         usageAvailable={entry.order ? usageReportedOrderIDs.has(entry.order.id) : undefined}
+        people={jobPeople(entry.job, entry.order)}
       />
     )
   if (entry.type === 'panel')
-    return <PanelEntry entry={entry} taskId={item.task.id} usageReportedOrderIDs={usageReportedOrderIDs} />
+    return <PanelEntry entry={entry} item={item} usageReportedOrderIDs={usageReportedOrderIDs} />
   // A work-order entry carries no usage; per-order usage stays in TaskUsage
   // inside technical activity (component-web-task-surfaces, Work-order
   // timeline entries).
   if (entry.type === 'order') {
+    const person = resolve(runClaimantUserId(entry.order.claimed_by))
+    const claimed = entry.order.state === 'claimed'
+    const people: RailPerson[] = person
+      ? [
+          {
+            person,
+            label: personLabel(person, stageWork(entry.order.stage, claimed)),
+            live: entry.tone === 'active',
+          },
+        ]
+      : []
     return (
       <li className="relative pl-7" data-order-entry={entry.order.state}>
-        <TimelineDot className={orderDots[entry.tone]} />
+        {rail(people, orderDots[entry.tone])}
         <div className="min-w-0 px-1 py-1.5">
           <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
             <span
@@ -793,12 +828,13 @@ function TimelineRow({
       interventionReasonLabels[intervention.reason_code] ??
       approvalReasonWords[intervention.reason_code]
     const returnedForChanges = intervention.reason_code === userRequestChangesReason
+    const person = resolve(interventionUserId(intervention))
     return (
       <li className="relative pl-7">
-        <TimelineDot className="bg-foreground" />
+        {rail(person ? [{ person, label: personLabel(person, 'decided') }] : [], 'bg-foreground')}
         <div className="rounded-lg border border-edge bg-raised/40 px-4 py-3">
           <div className="flex flex-wrap items-center gap-2 text-sm">
-            <UserRound className="size-3.5 text-muted" />
+            {!person && <UserRound className="size-3.5 text-muted" />}
             <strong className="font-semibold">
               {plainLabel ?? interventionLabels[intervention.action] ?? intervention.action.replaceAll('_', ' ')}
             </strong>
@@ -867,13 +903,15 @@ function TimelineRow({
 // attributed round. Vocabulary is the spec's own: panel, seats, verdicts.
 function PanelEntry({
   entry,
-  taskId,
+  item,
   usageReportedOrderIDs,
 }: {
   entry: Extract<TimelineEntry, { type: 'panel' }>
-  taskId: string
+  item: ActivityItem
   usageReportedOrderIDs: Set<string>
 }) {
+  const taskId = item.task.id
+  const resolve = usePersonResolver()
   const { seats, resolution, seatMetadata } = entry
   const verdictsIn = seats.filter((seat) => seat.review).length
   const changes = seats.filter((seat) => seat.review?.verdict === 'changes_requested').length
@@ -881,9 +919,27 @@ function PanelEntry({
   // Reviewer feedback surfaces as each verdict lands — not held until the
   // round settles — so nothing a reviewer wrote is ever invisible.
   const notes = seats.filter((seat) => seat.review && seat.review.feedback.trim())
+  // Each seat's person as for a job; the rail draws each distinct person once,
+  // live while one of their seats deliberates.
+  const seatPeople = seats.map((seat) => resolve(jobClaimantUserId(item, seat.job, seat.order)))
+  const people: RailPerson[] = []
+  seatPeople.forEach((person, index) => {
+    if (!person) return
+    const live = !resolution && seats[index].status === 'deliberating'
+    const known = people.find((entry) => entry.person.userId === person.userId)
+    if (known) {
+      if (live && !known.live) Object.assign(known, { live, label: personLabel(person, stageWork('review', true)) })
+      return
+    }
+    people.push({ person, label: personLabel(person, stageWork('review', live)), live })
+  })
   return (
     <li className="relative pl-7">
-      <TimelineDot className={panelDot(seats, resolution, deliberating)} />
+      {people.length > 0 ? (
+        <RailPeople people={people} />
+      ) : (
+        <TimelineDot className={panelDot(seats, resolution, deliberating)} />
+      )}
       <article className="rounded-lg bg-surface">
         <div className="flex flex-wrap items-center gap-2 border-b border-border px-4 py-2.5">
           <span className="text-sm font-semibold text-foreground">{stageLabels.review}</span>
@@ -941,6 +997,7 @@ function PanelEntry({
               key={seat.seat}
               seat={seat}
               index={index}
+              person={seatPeople[index]}
               usageAvailable={usageReportedOrderIDs.has(seat.order.id)}
             />
           ))}
@@ -1034,7 +1091,17 @@ function reviewSeatSourceTitle(metadata: TaskReviewSeatMetadata) {
   return planned ? `${source} · Plan: ${planned} ${planned === 1 ? 'seat' : 'seats'}` : source
 }
 
-function SeatRow({ seat, index, usageAvailable }: { seat: PanelSeat; index: number; usageAvailable: boolean }) {
+function SeatRow({
+  seat,
+  index,
+  person,
+  usageAvailable,
+}: {
+  seat: PanelSeat
+  index: number
+  person?: Person
+  usageAvailable: boolean
+}) {
   const progress = reviewSeatProgress(seat.order.progress)
   // Only the order's current model is a name the seat reports. A required model
   // is a historical pin, a worker-pinned order was launched on its model, and a
@@ -1043,8 +1110,24 @@ function SeatRow({ seat, index, usageAvailable }: { seat: PanelSeat; index: numb
   const reportedModel = seat.order.model_enforcement !== 'worker-pinned' && seat.order.model?.trim()
   return (
     <div className="flex flex-wrap items-center gap-x-3 gap-y-1.5 px-4 py-2.5">
-      <span className="w-11 shrink-0 text-xs text-faint">Seat {seat.seat}</span>
-      <span className="flex min-w-0 flex-wrap items-baseline gap-x-1.5 text-[11px] tabular-nums text-muted max-sm:basis-[calc(100%-3.5rem)] sm:flex-[1_1_7rem]">
+      {/* The seat's person is a 16 px avatar after the label, with no name
+          text; the label column widens by the avatar so the model keeps its
+          place on the first line. */}
+      <span
+        className={cn(
+          'inline-flex shrink-0 items-center gap-1 whitespace-nowrap text-xs text-faint',
+          person ? 'w-[3.75rem]' : 'w-11',
+        )}
+      >
+        Seat {seat.seat}
+        {person && <PersonAvatar person={person} label={personLabel(person, `seat ${seat.seat}`)} size="inline" />}
+      </span>
+      <span
+        className={cn(
+          'flex min-w-0 flex-wrap items-baseline gap-x-1.5 text-[11px] tabular-nums text-muted sm:flex-[1_1_7rem]',
+          person ? 'max-sm:basis-[calc(100%-4.5rem)]' : 'max-sm:basis-[calc(100%-3.5rem)]',
+        )}
+      >
         <ModelChip
           model={seat.model}
           agent={seat.order.agent}
@@ -1235,6 +1318,7 @@ function JobEntry({
   tone,
   order,
   usageAvailable,
+  people = [],
 }: {
   // The instant the timeline placed this entry: its end once finished.
   at: string
@@ -1246,23 +1330,23 @@ function JobEntry({
   tone: Extract<TimelineEntry, { type: 'job' }>['tone']
   order?: WorkOrder
   usageAvailable?: boolean
+  people?: RailPerson[]
 }) {
   if (!job.started_at) return null
   const running = job.state === 'running'
   const warning = tone === 'warning'
   const providerUsage = job.runner === 'in-process'
   const stage = stageLabels[job.stage] ?? job.stage
-  const dot = (
-    <TimelineDot
-      className={cn(
-        'bg-edge',
-        job.state === 'done' && !warning && 'bg-positive',
-        warning && 'bg-attention-dot',
-        job.state === 'failed' && 'bg-failure',
-        running && 'animate-pulse bg-primary',
-      )}
-    />
+  const dotClass = cn(
+    'bg-edge',
+    job.state === 'done' && !warning && 'bg-positive',
+    warning && 'bg-attention-dot',
+    job.state === 'failed' && 'bg-failure',
+    running && 'animate-pulse bg-primary',
   )
+  // The claimant's avatar replaces the dot; the badges and the compact row's
+  // "completed" text carry the status.
+  const dot = people.length > 0 ? <RailPeople people={people} /> : <TimelineDot className={dotClass} />
   if (job.state === 'done' && !warning && placeholderSummaries.has(summary)) {
     // The plan section and the approval intervention tell a finished plan
     // stage, so its placeholder row would only repeat them.
