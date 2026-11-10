@@ -60,7 +60,7 @@ func (c *client) createTaskWithLevel(body, repo, base string, level core.Escalat
 
 // createTaskWithDependencies sends pipeline-policy intake only: the plan
 // state fields, the merge gate, and dependencies, each only when given
-// (component-runtime invariant 40). A task carries no hold (DEC-122(3)), and
+// (component-runtime invariant 40). A task carries no hold (DEC-125(3)), and
 // setup selection is client-local (DEC-56(2)).
 func (c *client) createTaskWithDependencies(body, repo, base string, plan taskIntakePlan, mergeApproval *bool, dependsOn []string) (core.Task, error) {
 	if c.token == "" {

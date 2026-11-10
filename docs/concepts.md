@@ -106,7 +106,7 @@ merge approval are on, and the operator starts an agent session in their own
 harness, asks it to work the task with the `conveyor-work` skill, watches it
 work, and answers each gate in the conversation or on the dashboard. A task
 carries no reservation: to keep work on one person's machines, assign it to
-them (DEC-122).
+them (DEC-125).
 
 Running dark, the queue moves with little attention. Gates are off (per task
 or workspace default), a coordinating agent session following the

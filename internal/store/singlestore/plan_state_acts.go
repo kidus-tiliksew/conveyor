@@ -17,7 +17,7 @@ import (
 // ChangeTaskPolicyCommand. The caller holds the task and request locks and has
 // resolved replay. The effects row of component-plan-state invariant 4,
 // task.setup.changed, and the replay record commit in the caller's
-// transaction, or nothing does (req-task-plan-state AC-3.1; DEC-122(7)).
+// transaction, or nothing does (req-task-plan-state AC-3.1; DEC-125(7)).
 func (s *Store) changeTaskPlanStateTx(ctx context.Context, tx *sql.Tx, task core.Task, request store.SetupChangeRequest, identity []byte) (store.SetupChangeResult, error) {
 	ws := documentWorkspace(ctx)
 	orders, err := s.listOrders(ctx, tx, []string{task.ID})
@@ -52,7 +52,7 @@ func (s *Store) changeTaskPlanStateTx(ctx context.Context, tx *sql.Tx, task core
 
 // AttachTaskPlanCommand records an operator-attached plan in one task
 // transaction, matching the memory and PostgreSQL backends
-// (component-plan-state invariant 5; req-task-plan-state AC-3.2; DEC-122(6)).
+// (component-plan-state invariant 5; req-task-plan-state AC-3.2; DEC-125(6)).
 func (s *Store) AttachTaskPlanCommand(ctx context.Context, lease taskops.TaskLease, raw store.AttachPlanRequest) (store.AttachPlanResult, error) {
 	ctx = dbmetrics.WithReadLabel(ctx, "AttachTaskPlanCommand")
 	var result store.AttachPlanResult

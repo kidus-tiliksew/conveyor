@@ -119,7 +119,7 @@ func routingPlanStateMoves(t *testing.T, ctx context.Context, st store.Store, ta
 
 // TestTriageProceedTable is component-triage invariant 29's table: the plan
 // state alone selects the step a proceed verdict applies, and an unknown
-// state selects none (req-task-plan-state AC-1.1; DEC-110(1); DEC-122(5)).
+// state selects none (req-task-plan-state AC-1.1; DEC-110(1); DEC-125(5)).
 func TestTriageProceedTable(t *testing.T) {
 	t.Parallel()
 	for state, want := range map[core.PlanState]struct {
@@ -224,7 +224,7 @@ func TestTriageProceedRoutesByPlanState(t *testing.T) {
 // planning completed (cause plan_approved); a redirect sets planning needed
 // (cause plan_redirected) and returns the task to the plan stage
 // (component-work-orders invariant 56; component-task-lifecycle invariant 54;
-// req-task-plan-state AC-1.2, AC-1.3; DEC-122(6)).
+// req-task-plan-state AC-1.2, AC-1.3; DEC-125(6)).
 func TestNoPlanApprovedWithoutPersonDecision(t *testing.T) {
 	t.Parallel()
 	for _, tc := range []struct {

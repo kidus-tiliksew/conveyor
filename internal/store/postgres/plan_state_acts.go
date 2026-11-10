@@ -21,7 +21,7 @@ import (
 // claim locks and has resolved replay. The effects row of
 // component-plan-state invariant 4, task.setup.changed, and the replay record
 // commit in the caller's transaction, or nothing does (req-task-plan-state
-// AC-3.1; DEC-122(7)).
+// AC-3.1; DEC-125(7)).
 func (s *Store) changeTaskPlanStateTx(ctx context.Context, tx pgx.Tx, q *db.Queries, task core.Task, request store.SetupChangeRequest, identityJSON []byte) (store.SetupChangeResult, error) {
 	workspaceID := workspace(ctx)
 	orders, err := planActOrdersTx(ctx, tx, workspaceID, task.ID)
@@ -64,7 +64,7 @@ func (s *Store) changeTaskPlanStateTx(ctx context.Context, tx pgx.Tx, q *db.Quer
 // transaction: replay through task_setup_changes, the predicate of
 // component-plan-state invariant 5, order cancellation, the next plan version
 // with origin operator, and the move to awaiting_approval, through gate.spec
-// after triage (req-task-plan-state AC-3.2; DEC-122(6)).
+// after triage (req-task-plan-state AC-3.2; DEC-125(6)).
 func (s *Store) AttachTaskPlanCommand(ctx context.Context, lease taskops.TaskLease, raw store.AttachPlanRequest) (store.AttachPlanResult, error) {
 	ctx = dbmetrics.WithReadLabel(ctx, "AttachTaskPlanCommand")
 	if _, err := store.RequireActor(ctx); err != nil {

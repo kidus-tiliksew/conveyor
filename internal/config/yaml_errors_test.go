@@ -276,9 +276,10 @@ func TestConfigDecodeTargetTypesMatchRedactedShape(t *testing.T) {
 		t.Fatalf("walk reached %d types", len(seen))
 	}
 	// yaml.v3 hands a decode target's own error text straight to fail(), so these
-	// are the only custom routes from a scalar to a message. The two unmarshalers
-	// return only yaml.v3's errors, and redactYAMLError rewrites those and
-	// time.Time's.
+	// are the only custom routes from a scalar to a message. The unmarshalers
+	// return only yaml.v3's errors, or for riskpolicy.SettingsRow a
+	// *yaml.TypeError in yaml.v3's own entry forms, and redactYAMLError rewrites
+	// those and time.Time's.
 	textUnmarshaler := reflect.TypeFor[encoding.TextUnmarshaler]()
 	yamlUnmarshaler := reflect.TypeFor[yaml.Unmarshaler]()
 	var custom, text []string
@@ -295,7 +296,7 @@ func TestConfigDecodeTargetTypesMatchRedactedShape(t *testing.T) {
 		t.Errorf("TextUnmarshaler types = %v, want %v", text, want)
 	}
 	sort.Strings(custom)
-	if want := []string{"config.ExecutionPolicy", "config.RecoveryPolicy"}; !reflect.DeepEqual(custom, want) {
+	if want := []string{"*riskpolicy.SettingsRow", "config.ExecutionPolicy", "config.RecoveryPolicy", "riskpolicy.SettingsRow"}; !reflect.DeepEqual(custom, want) {
 		t.Errorf("custom yaml.Unmarshaler types = %v, want %v", custom, want)
 	}
 }

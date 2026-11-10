@@ -20,7 +20,7 @@ type BlueprintFixture struct {
 	Context   context.Context
 	Workspace string
 	// SeedStoredTaskHold seeds the parent's stored historical hold so the
-	// suite proves a child never inherits it (DEC-122(3)).
+	// suite proves a child never inherits it (DEC-125(3)).
 	SeedStoredTaskHold func(*testing.T, context.Context, string)
 }
 
@@ -243,7 +243,7 @@ func assertMaterializedChild(t *testing.T, child, parent core.Task, version int,
 }
 
 // assertStoredHold reads one task and checks its stored historical hold
-// value, which only the conformance seed can set (DEC-122(3)).
+// value, which only the conformance seed can set (DEC-125(3)).
 func assertStoredHold(t *testing.T, ctx context.Context, st store.Store, taskID string, want bool) {
 	t.Helper()
 	task, err := st.GetTask(ctx, taskID)

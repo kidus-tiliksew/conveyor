@@ -558,7 +558,7 @@ func TestRolePromptsEnforceOperatorAuthorityBoundary(t *testing.T) {
 	for _, obsolete := range []string{
 		"For gate approval, repository-drift resolution, requirement-clause revisions",
 		"repository-drift resolution, requirement-clause revisions, task cancel/hold",
-		// The per-task hold is retired (DEC-122(3)); no role names it as an
+		// The per-task hold is retired (DEC-125(3)); no role names it as an
 		// operator act.
 		"cancel/hold",
 	} {

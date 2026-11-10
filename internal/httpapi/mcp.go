@@ -229,7 +229,7 @@ func (s *Server) callMCPTool(r *http.Request, name string, args map[string]any) 
 		if strings.TrimSpace(stringArg("idempotency_key")) == "" {
 			return nil, fmt.Errorf("idempotency_key is required")
 		}
-		// hold is retired and absent from the schema (DEC-122(3)). An older
+		// hold is retired and absent from the schema (DEC-125(3)). An older
 		// client's omitted, null, or false value is ignored; a mistyped value is
 		// refused rather than read as false; true reaches the shared intake,
 		// which refuses it only after the idempotency lookup.
@@ -237,7 +237,7 @@ func (s *Server) callMCPTool(r *http.Request, name string, args map[string]any) 
 		if value, supplied := args["hold"]; supplied && value != nil {
 			typed, ok := value.(bool)
 			if !ok {
-				return nil, fmt.Errorf("%s: hold must be omitted or false; hold is retired (DEC-122)", taskHoldRetired)
+				return nil, fmt.Errorf("%s: hold must be omitted or false; hold is retired (DEC-125)", taskHoldRetired)
 			}
 			hold = typed
 		}
@@ -476,7 +476,7 @@ func (s *Server) callMCPTool(r *http.Request, name string, args map[string]any) 
 func createTaskPolicyArgError(args map[string]any) *taskCreateError {
 	// MCP never records a plan approval: any plan_approved argument, null
 	// included, is refused for every caller (component-mcp-protocol
-	// invariant 38; req-task-plan-state AC-2.4; DEC-122(6)).
+	// invariant 38; req-task-plan-state AC-2.4; DEC-125(6)).
 	if _, supplied := args["plan_approved"]; supplied {
 		return &taskCreateError{Status: http.StatusBadRequest, Code: invalidGateOverride, Message: "plan_approved is not accepted through MCP; a plan filed here waits at plan approval for a person's decision"}
 	}

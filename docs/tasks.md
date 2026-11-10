@@ -56,7 +56,7 @@ request is idempotent, and an already-present dependency returns success
 without another audit event. A late dependency pauses queued implementation
 orders in place and affects future claims, but never interrupts claimed work.
 
-A task carries no hold or other reservation (DEC-122): dependencies and
+A task carries no hold or other reservation (DEC-125): dependencies and
 assignment are the only narrowing of who may claim its work. Intake refuses a
 new `hold: true` with `task_hold_retired`, and `PUT /v1/tasks/{id}/hold`
 answers 410. Hold values and `task.hold.*` events recorded before the
@@ -443,6 +443,29 @@ slug) preserves existing submission behavior and records nothing.
 
 Exact-task/head admission evidence requires a reviewer
 `documentation_assessment`; without evidence the field must be omitted.
+
+## Repository risk declaration
+
+A repository may declare sensitive paths in `.conveyor/risk.yaml`
+(`req-risk-based-review` REQ-3). The file has `schema_version: 1` and a `rules`
+list. Each rule has a nonempty `paths` list in the System Design governed-path
+glob dialect, a `min_tier` of `low`, `medium`, or `high`, a nonblank
+`description`, and an optional `min_human_approvals` of zero or more. The
+schema is closed, the file holds exactly one YAML document, and its limit is
+1 MiB. Changes to `.github/workflows/**` and to `.conveyor/risk.yaml` always
+need at least `medium` and one human approval, and no rule lowers them.
+
+`conveyor risk validate [repository]` checks the worktree declaration against
+tracked files and reports each glob that matches no tracked file. It exits
+nonzero for a malformed declaration or an unmatched glob. With no declaration
+it exits zero and reports that only the built-in minimums apply.
+
+The workspace `risk_policy` setting holds a `mode` (`off`, `record`, or
+`enforce`) and a `tiers` table of `agent_reviews` and `human_approvals` for
+`low`, `medium`, and `high`. A policy saved with no table takes 1 and 0, 1 and
+1, and 2 and 2. Each new task freezes the policy at intake, and a later edit
+changes no filed task. A table that needs more human approvals than the
+workspace has people who hold `operate_gates` saves with a warning.
 `updated_paths` must equal the evidence, and approvals require empty
 `unresolved` and `conflicts` lists. Review completion activity includes the
 assessment only when supplied (REQ-9/AC-9.1–9.6; DEC-71).

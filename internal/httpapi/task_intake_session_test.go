@@ -545,7 +545,7 @@ func TestRESTCreateTaskMistypedGateRefuses(t *testing.T) {
 // TestMCPCreateTaskLegacyPolicyInputs proves a legacy level sets the plan
 // state and the merge approval gate, an explicit value wins last, and anything
 // else refuses before any lookup (component-task-lifecycle invariants 16 and
-// 18; DEC-122(1)).
+// 18; DEC-125(1)).
 func TestMCPCreateTaskLegacyPolicyInputs(t *testing.T) {
 	f := newSessionIntakeFixture(t)
 	f.setDefaults(false, false)
@@ -568,7 +568,7 @@ func TestMCPCreateTaskLegacyPolicyInputs(t *testing.T) {
 		{"L1", nil, false, true},
 		{"L2", nil, true, true},
 		// L3 maps both gates on exactly like L2 and implies no reservation
-		// (DEC-122(3)).
+		// (DEC-125(3)).
 		{"L3", nil, true, true},
 		{"L0", map[string]any{"spec_approval": true, "merge_approval": true}, true, true},
 		{"L2", map[string]any{"merge_approval": false}, true, false},
@@ -594,9 +594,9 @@ func TestMCPCreateTaskLegacyPolicyInputs(t *testing.T) {
 		// The refusal precedes the idempotency lookup.
 		refuse("level "+name+" on existing key", "level-existing", map[string]any{"level": value}, invalidGateOverride, "level")
 	}
-	// Hold is retired for every caller (DEC-122(3)): a new true is refused
+	// Hold is retired for every caller (DEC-125(3)): a new true is refused
 	// with no side effect, and false is accepted with the workspace defaults.
-	refuse("hold true", "hold-true", map[string]any{"hold": true}, taskHoldRetired, "hold is retired (DEC-122)")
+	refuse("hold true", "hold-true", map[string]any{"hold": true}, taskHoldRetired, "hold is retired (DEC-125)")
 	result := f.callMCP(t, token, "create_task", intakeArgs("hold-false", map[string]any{"hold": false}))
 	if result.errText != "" || result.task.SpecApproval || result.task.MergeApproval {
 		t.Fatalf("hold false: err=%q task=%+v", result.errText, result.task)
@@ -840,7 +840,7 @@ func TestCreateTaskRequestPolicyFieldsAreClassified(t *testing.T) {
 		"BaseBranch":               "branch",
 		"Source":                   "intake label, never provenance",
 		"Level":                    "policy: type-checked",
-		"Hold":                     "retired (DEC-122(3)); shared intake refuses true after the idempotency lookup",
+		"Hold":                     "retired (DEC-125(3)); shared intake refuses true after the idempotency lookup",
 		"SpecApproval":             "policy: type-checked",
 		"plan":                     "policy: plan_state, plan, plan_base_commit, and plan_approved, type-checked before the idempotency lookup",
 		"MergeApproval":            "policy: type-checked",
@@ -893,7 +893,7 @@ func TestCreateTaskRequestPolicyFieldsAreClassified(t *testing.T) {
 		}
 	}
 	// Hold passes the type check but cannot bypass the shared intake's
-	// retirement rule, which every caller meets (DEC-122(3)).
+	// retirement rule, which every caller meets (DEC-125(3)).
 	var typed *taskCreateError
 	server := NewServer(store.NewMemory())
 	server.Workspace, server.Repos = "demo", []string{"api"}

@@ -98,7 +98,7 @@ func SeedTaskFlowScenarios(t *testing.T, st store.Backend, ctx context.Context, 
 	})
 
 	// No plan required: the plan row and its gate read off while the merge
-	// gate stays on (component-next-action invariant 28; DEC-122(5)).
+	// gate stays on (component-next-action invariant 28; DEC-125(5)).
 	notRequiredID := flowTask(t, st, ctx, workspace, core.Task{PlanState: core.PlanNotRequired, MergeApproval: true})
 	add("no plan required", notRequiredID, func(t *testing.T, flow store.TaskFlow) {
 		spec := taskFlowStage(t, flow, core.StageSpec)

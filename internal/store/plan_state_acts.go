@@ -119,7 +119,7 @@ func openStageOrderIDs(orders []core.WorkOrder, stage core.Stage, claimed bool) 
 // nothing. The shared refusals of component-task-lifecycle invariant 45
 // apply, except that the change is accepted at the plan_approval gate and
 // while a plan order is claimed; a claimed implement order still refuses it
-// (req-task-plan-state AC-3.1; DEC-122(7)).
+// (req-task-plan-state AC-3.1; DEC-125(7)).
 func PlanPlanStateChange(task core.Task, orders []core.WorkOrder, to core.PlanState) (PlanStateEffects, error) {
 	effects := PlanStateEffects{From: task.PlanState, To: to, Cause: core.PlanCauseOperator, CancelWorkOrderIDs: []string{}}
 	if to != core.PlanNeeded && to != core.PlanNotRequired {
@@ -188,7 +188,7 @@ func PlanPlanStateChange(task core.Task, orders []core.WorkOrder, to core.PlanSt
 // terminal, and no implement order is claimed. After triage it enters the
 // plan_approval gate with gate.spec, so the task must stand where that
 // command applies; before triage finishes, triage's proceed enters the gate
-// (req-task-plan-state AC-3.2; DEC-122(6)).
+// (req-task-plan-state AC-3.2; DEC-125(6)).
 func PlanAttachPlan(task core.Task, orders []core.WorkOrder) (PlanStateEffects, error) {
 	effects := PlanStateEffects{From: task.PlanState, To: core.PlanAwaitingApproval, Cause: core.PlanCausePlanAttached, CancelWorkOrderIDs: []string{}}
 	if core.TaskTerminal(task.State) {

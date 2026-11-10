@@ -46,7 +46,7 @@ func TestClientSendsBearerTokenOnCreate(t *testing.T) {
 	}
 }
 
-// DEC-56(2), DEC-122(3): task creation sends gates and dependencies, and never
+// DEC-56(2), DEC-125(3): task creation sends gates and dependencies, and never
 // a hold, a setup selection, or execution detail.
 func TestTaskCreatePayloadIsPolicyOnly(t *testing.T) {
 	var input map[string]any

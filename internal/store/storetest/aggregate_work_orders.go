@@ -760,10 +760,10 @@ func deactivateUser(t *testing.T, x Fixture, ctx context.Context, userID string)
 // order of a held task, and the fresh implement order a merge-gate bounce
 // mints, are listed claimable and claimed through the real work-order claim
 // service as a run:<owner> session (component-work-orders, Claim lifecycle;
-// component-task-lifecycle; DEC-122(3), DEC-97(1)).
+// component-task-lifecycle; DEC-125(3), DEC-97(1)).
 func runHoldRetirement(t *testing.T, x Fixture, claimService ClaimServiceFunc) {
 	if claimService == nil {
-		t.Fatal("conformance factory must provide ClaimService for the hold-retirement cases (DEC-122(3))")
+		t.Fatal("conformance factory must provide ClaimService for the hold-retirement cases (DEC-125(3))")
 	}
 	claim := claimService(x.Backend, x.Config)
 	t.Run("StoredTaskHoldIsClaimable", func(t *testing.T) { runStoredTaskHoldIsClaimable(t, x, claim) })
@@ -810,7 +810,7 @@ func requireListedClaimable(t *testing.T, x Fixture, ctx context.Context, orderI
 }
 
 // requireNoHoldEvents proves no hold event was appended for the task: the
-// retired reservation has no writer (DEC-122(3)).
+// retired reservation has no writer (DEC-125(3)).
 func requireNoHoldEvents(t *testing.T, x Fixture, taskID string) {
 	t.Helper()
 	events, err := x.Backend.ListEvents(x.Context, taskID)
@@ -854,7 +854,7 @@ func runStoredTaskHoldIsClaimable(t *testing.T, x Fixture, claim holdRetirementC
 	requireNoHoldEvents(t, x, held.TaskID)
 
 	// Assignment to another user still refuses, so the retirement broadens
-	// no other eligibility (DEC-122(4)).
+	// no other eligibility (DEC-125(4)).
 	theirs := queuedHoldRetirementOrder(t, x, ctx, "theirs")
 	seed(t, ctx, theirs.TaskID)
 	operatorCtx, _ := bootstrapOwner(t, x)
@@ -877,7 +877,7 @@ func runStoredTaskHoldIsClaimable(t *testing.T, x Fixture, claim holdRetirementC
 // run:<owner> implement claim, requests changes, and proves the fresh
 // implement order is an ordinary eligible order: listed claimable, claimed
 // through the claim service, and clearing the returned-for-changes attention,
-// with no hold written (DEC-122(3)).
+// with no hold written (DEC-125(3)).
 func runRequestChangesRemainsClaimable(t *testing.T, x Fixture, claim holdRetirementClaim, seedHold bool) {
 	name := "bounce"
 	if seedHold {
@@ -943,7 +943,7 @@ func runRequestChangesRemainsClaimable(t *testing.T, x Fixture, claim holdRetire
 }
 
 // runHistoricalHoldEventsRemainReadable proves events recorded before the
-// retirement stay in the ledger exactly as stored (DEC-10, DEC-122(3)).
+// retirement stay in the ledger exactly as stored (DEC-10, DEC-125(3)).
 func runHistoricalHoldEventsRemainReadable(t *testing.T, x Fixture) {
 	st, ctx := x.Backend, x.Context
 	task := newAggregateTask(t, x)

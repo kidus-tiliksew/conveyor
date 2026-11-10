@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/kidus-tiliksew/conveyor/internal/governedpath"
 	"gopkg.in/yaml.v3"
 )
 
@@ -187,50 +188,17 @@ func NormalizeSystemDesignContent(content string) string {
 }
 
 // GovernedPathMatcher reuses a compiled repository-relative doublestar pattern.
-// ** spans separators; ordinary * and ? remain segment-local.
-type GovernedPathMatcher struct {
-	pattern *regexp.Regexp
-}
-
-func (m GovernedPathMatcher) Match(changedPath string) bool {
-	changedPath = strings.TrimPrefix(strings.ReplaceAll(changedPath, "\\", "/"), "./")
-	if changedPath == "" || strings.HasPrefix(changedPath, "/") || strings.Contains(changedPath, "../") {
-		return false
-	}
-	return m.pattern.MatchString(changedPath)
-}
+// ** spans separators; ordinary * and ? remain segment-local. The dialect
+// lives in internal/governedpath so internal/riskpolicy can share it without
+// importing core (component-risk-review).
+type GovernedPathMatcher = governedpath.Matcher
 
 func CompileGovernedPath(glob string) (GovernedPathMatcher, error) {
-	var b strings.Builder
-	b.WriteByte('^')
-	for i := 0; i < len(glob); i++ {
-		switch glob[i] {
-		case '*':
-			if i+1 < len(glob) && glob[i+1] == '*' {
-				i++
-				if i+1 < len(glob) && glob[i+1] == '/' {
-					i++
-					b.WriteString("(?:.*/)?")
-				} else {
-					b.WriteString(".*")
-				}
-			} else {
-				b.WriteString("[^/]*")
-			}
-		case '?':
-			b.WriteString("[^/]")
-		default:
-			b.WriteString(regexp.QuoteMeta(string(glob[i])))
-		}
-	}
-	b.WriteByte('$')
-	pattern, err := regexp.Compile(b.String())
-	return GovernedPathMatcher{pattern: pattern}, err
+	return governedpath.Compile(glob)
 }
 
 func MatchGovernedPath(glob, changedPath string) bool {
-	matcher, err := CompileGovernedPath(glob)
-	return err == nil && matcher.Match(changedPath)
+	return governedpath.Match(glob, changedPath)
 }
 
 // GovernsRepositoryPaths reports whether scopes give repository at least one

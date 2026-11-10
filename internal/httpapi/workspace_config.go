@@ -12,7 +12,9 @@ import (
 	"strings"
 
 	"github.com/kidus-tiliksew/conveyor/internal/config"
+	"github.com/kidus-tiliksew/conveyor/internal/core"
 	"github.com/kidus-tiliksew/conveyor/internal/gitx"
+	"github.com/kidus-tiliksew/conveyor/internal/riskpolicy"
 	"github.com/kidus-tiliksew/conveyor/internal/store"
 	"gopkg.in/yaml.v3"
 )
@@ -62,8 +64,75 @@ func (s *Server) getWorkspaceConfig(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "internal server error", http.StatusInternalServerError)
 		return
 	}
+	warnings, err := s.riskPolicyWarnings(r.Context(), record.Document.RiskPolicy)
+	if err != nil {
+		log.Printf("get workspace config risk policy warning: %v", err)
+		http.Error(w, "internal server error", http.StatusInternalServerError)
+		return
+	}
 	w.Header().Set("ETag", fmt.Sprintf("\"%d\"", record.Version))
-	writeJSON(w, http.StatusOK, record)
+	writeJSON(w, http.StatusOK, workspaceConfigReadResponse{VersionedDocument: record, Warnings: warnings})
+}
+
+// configWarning is advice returned beside a saved or read configuration. It
+// never refuses the save.
+type configWarning struct {
+	Code      string `json:"code"`
+	Field     string `json:"field"`
+	Message   string `json:"message"`
+	Required  int    `json:"required"`
+	Available int    `json:"available"`
+}
+
+type workspaceConfigReadResponse struct {
+	config.VersionedDocument
+	Warnings []configWarning `json:"warnings,omitempty"`
+}
+
+type workspaceConfigUpdateResponse struct {
+	config.UpdateReceipt
+	Warnings []configWarning `json:"warnings,omitempty"`
+}
+
+// riskPolicyWarnings returns the req-risk-based-review AC-1.4 warning when the
+// risk policy's table requires more human approvals than the workspace has
+// people who hold operate_gates. It counts each member once by user ID through
+// the role-to-capability table; credentials and sessions are not people
+// (component-identity-membership). A policy that is absent, off, or invalid
+// warns nothing; validation refuses an invalid one separately.
+func (s *Server) riskPolicyWarnings(ctx context.Context, settings *riskpolicy.Settings) ([]configWarning, error) {
+	if settings == nil {
+		return nil, nil
+	}
+	policy, err := settings.Resolve()
+	if err != nil || !policy.Enabled() {
+		return nil, nil
+	}
+	available := 0
+	if s.Memberships != nil {
+		credential, _ := store.CredentialFromContext(ctx)
+		workspaceID, _ := store.WorkspaceFromContext(ctx)
+		members, err := s.Memberships.ListWorkspaceMembers(ctx, credential.OwnerUserID, workspaceID)
+		if err != nil {
+			return nil, err
+		}
+		people := map[string]bool{}
+		for _, member := range members {
+			if member.UserID != "" && core.RoleAllows(member.Role, core.CapabilityOperateGates) {
+				people[member.UserID] = true
+			}
+		}
+		available = len(people)
+	}
+	warning := riskpolicy.CheckHumanApprovals(&policy, available)
+	if warning == nil {
+		return nil, nil
+	}
+	return []configWarning{{
+		Code: "risk_policy_human_approvals_unavailable", Field: "risk_policy",
+		Message:  fmt.Sprintf("The risk policy can require %d human approvals. People in this workspace who hold operate_gates: %d.", warning.Required, warning.Available),
+		Required: warning.Required, Available: warning.Available,
+	}}, nil
 }
 
 type workspaceConfigRequest struct {
@@ -114,7 +183,11 @@ func (s *Server) putWorkspaceConfigLocked(w http.ResponseWriter, r *http.Request
 	decoder := json.NewDecoder(strings.NewReader(string(body)))
 	decoder.DisallowUnknownFields()
 	if err := decoder.Decode(&request); err != nil {
-		writeValidationError(w, "document", err)
+		field := "document"
+		if strings.Contains(err.Error(), "risk_policy") {
+			field = "risk_policy"
+		}
+		writeValidationError(w, field, err)
 		return
 	}
 	if request.Document.Review.Seats != nil && len(request.Document.Review.Seats) == 0 {
@@ -149,6 +222,14 @@ func (s *Server) putWorkspaceConfigLocked(w http.ResponseWriter, r *http.Request
 		writeValidationError(w, validationField(err), err)
 		return
 	}
+	// The AC-1.4 count is read before the write, so a failed read saves
+	// nothing.
+	warnings, err := s.riskPolicyWarnings(r.Context(), next.RiskPolicy)
+	if err != nil {
+		log.Printf("update workspace config risk policy warning: %v", err)
+		http.Error(w, "internal server error", http.StatusInternalServerError)
+		return
+	}
 	receipt, err := s.ConfigStore.UpdateWorkspaceConfig(r.Context(), expected, next)
 	if errors.Is(err, config.ErrVersionConflict) {
 		writeJSON(w, http.StatusPreconditionFailed, map[string]any{
@@ -175,7 +256,7 @@ func (s *Server) putWorkspaceConfigLocked(w http.ResponseWriter, r *http.Request
 		return
 	}
 	w.Header().Set("ETag", fmt.Sprintf("\"%d\"", receipt.Version))
-	writeJSON(w, http.StatusOK, receipt)
+	writeJSON(w, http.StatusOK, workspaceConfigUpdateResponse{UpdateReceipt: receipt, Warnings: warnings})
 }
 
 func forbiddenExecutionField(value any) string {
@@ -231,7 +312,7 @@ func writeValidationError(w http.ResponseWriter, field string, err error) {
 
 func validationField(err error) string {
 	message := err.Error()
-	for _, field := range []string{"execution.default_plan_state", "recovery.automatic_recoveries", "recovery.window", "recovery", "execution_settings.control_plane.triage.effort", "execution_settings.spec.effort", "execution_settings.implementation.effort", "default_setup", "setups", "max_bounces", "work_order_queue_timeout", "execution_settings", "routing", "harnesses", "review", "repo", "workspace"} {
+	for _, field := range []string{"risk_policy", "execution.default_plan_state", "recovery.automatic_recoveries", "recovery.window", "recovery", "execution_settings.control_plane.triage.effort", "execution_settings.spec.effort", "execution_settings.implementation.effort", "default_setup", "setups", "max_bounces", "work_order_queue_timeout", "execution_settings", "routing", "harnesses", "review", "repo", "workspace"} {
 		if strings.Contains(message, field) {
 			if field == "repo" {
 				return "repos"

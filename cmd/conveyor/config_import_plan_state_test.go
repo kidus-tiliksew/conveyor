@@ -14,7 +14,7 @@ import (
 // TestConfigImportSendsMergeApprovalForEitherPlanKeySpelling proves config
 // import sends the merge_approval its YAML states, false or true, with either
 // plan-state key spelling, and the stated plan key, to PUT
-// /v1/workspace/config, which resolves both (DEC-122(1); component-runtime
+// /v1/workspace/config, which resolves both (DEC-125(1); component-runtime
 // invariant 39).
 func TestConfigImportSendsMergeApprovalForEitherPlanKeySpelling(t *testing.T) {
 	for _, planKey := range []string{"default_plan_state: needed", "default_plan_state: not_required", "spec_approval: true", "spec_approval: false"} {

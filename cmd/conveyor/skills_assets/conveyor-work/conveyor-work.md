@@ -299,7 +299,7 @@ and the work turns out to need a plan, it calls `request_plan_revision` with
 the reason as the rationale. The order is released and waits for the
 operator: an approval sets the plan state to planning needed, and a dismissal
 returns the task to implementation with the operator's direction
-(`req-task-plan-state` AC-3.3; DEC-122(6)).
+(`req-task-plan-state` AC-3.3; DEC-125(6)).
 
 ### Release at an authority-conflict checkpoint
 
@@ -401,11 +401,12 @@ submission declares the seat count for the review round it starts: pass
 `review_seats` on `submit_for_review`, or run
 `conveyor submit <task-id> --review-seats N`. Without the field or flag the
 submission declares nothing (req-review-gates-evidence AC-2.3; DEC-77(2);
-DEC-78(1)). When the session's MCP tool schema omits `review_seats`, reload
+DEC-123(1)). When the session's MCP tool schema omits `review_seats`, reload
 the registration instead of sending another field.
 
-- The task's seat floor is the larger of its frozen minimum seat count and its
-  latest approved plan's seat count (DEC-78(2)).
+- The task's seat floor is the largest of its frozen minimum seat count, its
+  latest approved plan's seat count, and the agent reviews its risk tier
+  requires (DEC-123(2)). A task with no risk policy has no tier count.
 - A declared count below the floor is refused with `review_seats_below_floor`.
   No round starts and the order stays claimed; correct or omit the count and
   submit again.
@@ -423,7 +424,7 @@ the registration instead of sending another field.
 ### Add review seats on direct instruction
 
 Adding seats to an open review round is a separate operator act, not a gate and
-not a gate reply (req-review-gates-evidence AC-2.5; DEC-77(2); DEC-78(1)). Run
+not a gate reply (req-review-gates-evidence AC-2.5; DEC-77(2); DEC-123(1)). Run
 it only as [Record on direct instruction](#human-gates) describes, never on
 inference or as an automatic escalation (DEC-84):
 
@@ -562,15 +563,16 @@ executing machine, or in a Conveyor-owned file (DEC-97(3)).
   `review_seats` on `submit_plan` and an implementer to declare a count at
   submission, as [Declare a review seat count](#declare-a-review-seat-count)
   describes, by task difficulty or any other rule the operator records
-  (DEC-78(3)). A delegated planner receives that direction as one added
+  (DEC-123(3)). A delegated planner receives that direction as one added
   sentence in its launch prompt. The rule stays in agent memory: Conveyor
-  stores seat counts and their sources, never a difficulty class, risk level,
-  or raise rule (DEC-97(3); DEC-78(3)). A planned count below the task's frozen
-  minimum is refused with `review_seats_below_minimum` and the plan order stays
-  claimed for correction. An accepted count is shown with the plan at plan
-  approval, and only the latest approved plan's count contributes to the seat
-  floor; a later approved plan without a count clears that contribution
-  (req-review-gates-evidence AC-2.8; DEC-78(2)).
+  stores seat counts and their sources, the closed risk scale, the workspace
+  risk policy, and each task's ratings, and never a difficulty class or any
+  other raise rule (DEC-97(3); DEC-123(3)). A planned count below the task's
+  frozen minimum is refused with `review_seats_below_minimum` and the plan
+  order stays claimed for correction. An accepted count is shown with the plan
+  at plan approval, and only the latest approved plan's count contributes to
+  the seat floor; a later approved plan without a count clears that contribution
+  (req-review-gates-evidence AC-2.8; DEC-123(2)).
 - **Reporting.** Call `report_progress` on the submitted implementation order
   with its session to name the harness and model used for each verifier and
   reviewer. Name the harness and model of a delegated planner in the first
@@ -918,5 +920,5 @@ preserves req-delegated-execution REQ-1 lease and deadline rules, REQ-2 review
 independence, and REQ-3 dedicated worktrees, with the post-merge fast-forward
 bounded by REQ-3 AC-3.8 and AC-3.9, and follows req-review-gates-evidence REQ-2
 (AC-2.3 through AC-2.6 and AC-2.8) for declared, planned, and operator-added
-review seats under DEC-77 and DEC-78. `component-work-orders` governs the
+review seats under DEC-77 and DEC-123. `component-work-orders` governs the
 work-order mechanism; this playbook changes no lifecycle semantics.

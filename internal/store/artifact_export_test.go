@@ -78,7 +78,7 @@ func SeedLineageLinkForTest(t *testing.T, st Backend, link core.LineageLink) {
 
 // SeedStoredTaskHoldForTest sets one task's stored historical hold to true,
 // as a row written before the hold retirement would read; no public writer
-// can (DEC-122(3); component-persistence).
+// can (DEC-125(3); component-persistence).
 func SeedStoredTaskHoldForTest(t *testing.T, st Backend, taskID string) {
 	t.Helper()
 	m := st.(*volatileMemory).memory

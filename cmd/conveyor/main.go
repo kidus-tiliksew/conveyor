@@ -85,6 +85,7 @@ func newRootCmd() *cobra.Command {
 		skillsCmd(),
 		repoCmd(),
 		docsCmd(),
+		riskCmd(),
 		taskCmd(),
 		planCmd(),
 		inboxCmd(),

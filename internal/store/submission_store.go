@@ -155,7 +155,7 @@ type ImplementationSubmission struct {
 }
 
 // SubmissionReviewSeats is a submission's admitted review seat declaration
-// (feature-review-seat-minimum RS-4; DEC-78). Declared is written to the
+// (feature-review-seat-minimum RS-4; DEC-123). Declared is written to the
 // implement order's declared_review_seats; Unused, for a submission that
 // completes an already dispatched refresh, is recorded only in the
 // submission's work_order.updated payload and never becomes a declaration.

@@ -564,7 +564,7 @@ func (d *Dispatcher) createReviewRound(ctx context.Context, cfg *config.Config, 
 // seatCount is the round's RS-2 resolved count and floor its seat floor; a
 // count below the floor is refused before any job or order is built, and
 // seats beyond the configured list are content-free like every persisted seat
-// (feature-review-seat-minimum RS-2; DEC-56(2), DEC-77, DEC-78).
+// (feature-review-seat-minimum RS-2; DEC-56(2), DEC-77, DEC-123).
 func BuildReviewRound(cfg *config.Config, task core.Task, route config.StageRoute, round, seatCount, floor int) ([]core.Job, []core.WorkOrder, error) {
 	if cfg == nil || round <= 0 {
 		return nil, nil, fmt.Errorf("review round configuration and positive round are required")
@@ -847,7 +847,7 @@ func (d *Dispatcher) buildStageInput(ctx context.Context, cfg *config.Config, st
 	// The title is generated from the body, so both carry the task's origin
 	// (req-security-boundaries REQ-4; component-triage).
 	// The header states the task's plan state and merge gate, never the
-	// retired plan-approval toggle (component-triage invariant 12; DEC-122(1)).
+	// retired plan-approval toggle (component-triage invariant 12; DEC-125(1)).
 	fmt.Fprintf(&prompt, "\n\n# Task %s\n\n%s\nPlan state: %s (%s) · Merge approval: %t · Repository: %s\n\n%s\nBranch: %s (base %s).\n", task.ID, lineagecontext.RenderUntrustedBlock("Task title", task.Source, task.Title), PlanStateLabel(task.PlanState), task.PlanState, task.MergeApproval, task.Repo, lineagecontext.RenderUntrustedBlock("Task body", task.Source, task.Body), task.Branch, task.BaseBranch)
 	if stage == core.StageTriage {
 		tools, marshalErr := json.Marshal(corpus.Tools())
@@ -1223,7 +1223,7 @@ func (d *Dispatcher) ApplyExternalPlan(ctx context.Context, task core.Task, job 
 }
 
 // PlanReviewSeatsBelowMinimumError refuses a planned review seat count below
-// the task's minimum (req-review-gates-evidence AC-2.8; DEC-78;
+// the task's minimum (req-review-gates-evidence AC-2.8; DEC-123;
 // feature-review-seat-minimum RS-3).
 type PlanReviewSeatsBelowMinimumError struct {
 	ReviewSeats      int
@@ -1267,7 +1267,7 @@ func (d *Dispatcher) completeSpec(ctx context.Context, task core.Task, result pi
 // plan_approval gate. No submission approves a plan, whatever the task's
 // policy version: only a person's recorded approval reaches planning
 // completed (component-work-orders invariant 56; req-task-plan-state AC-1.2;
-// req-task-centric-delivery AC-2.1, AC-2.3; DEC-122(6)).
+// req-task-centric-delivery AC-2.1, AC-2.3; DEC-125(6)).
 func (d *Dispatcher) completeSpecVersion(ctx context.Context, task core.Task, result pipeline.Spec, agent, model string) (core.SpecVersion, error) {
 	spec := core.SpecVersion{TaskID: task.ID, Content: result.Markdown, AcceptanceCount: len(result.Acceptance), Acceptance: core.JSONPayload(result.Acceptance), Decomposition: core.JSONPayload(result.Decomposition), Agent: agent, Model: model, ReviewSeats: result.ReviewSeats, Origin: core.PlanOriginPlanOrder}
 	if result.BaseCommit != "" {
@@ -1290,7 +1290,7 @@ func (d *Dispatcher) completeSpecVersion(ctx context.Context, task core.Task, re
 // a plan awaiting approval enters the plan_approval gate for the version
 // recorded before triage finished. Triage enters no other gate and moves no
 // plan state (component-triage invariant 29; component-task-lifecycle
-// invariant 4; req-task-plan-state AC-1.1; DEC-110(1); DEC-122(5)).
+// invariant 4; req-task-plan-state AC-1.1; DEC-110(1); DEC-125(5)).
 func (d *Dispatcher) proceedFromTriage(ctx context.Context, task core.Task) error {
 	// The snapshot's plan state names a provisional step only. The store
 	// replaces it with the step the plan state read under the task-operation
@@ -1741,7 +1741,7 @@ func (d *Dispatcher) HandleIntervention(ctx context.Context, task core.Task, lat
 				// An approved request sets planning needed: a revision of
 				// the approved plan, or planning for a task that required
 				// none (component-work-orders invariant 58;
-				// req-task-plan-state AC-3.3, AC-3.4; DEC-122(7)).
+				// req-task-plan-state AC-3.3, AC-3.4; DEC-125(7)).
 				cause := core.PlanCausePlanRevisionApproved
 				if task.PlanState == core.PlanNotRequired {
 					cause = core.PlanCausePlanningRequestedApproved
