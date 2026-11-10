@@ -25,6 +25,7 @@ import (
 	"github.com/kidus-tiliksew/conveyor/internal/pack"
 	"github.com/kidus-tiliksew/conveyor/internal/pipeline"
 	"github.com/kidus-tiliksew/conveyor/internal/redact"
+	"github.com/kidus-tiliksew/conveyor/internal/riskpolicy"
 	"github.com/kidus-tiliksew/conveyor/internal/store"
 	"github.com/kidus-tiliksew/conveyor/internal/taskops"
 	"github.com/kidus-tiliksew/conveyor/internal/trigger/github"
@@ -54,11 +55,14 @@ type Dispatcher struct {
 	ReadCommitChecks            func(context.Context, string, string) (github.CheckStatus, error)
 	SubmissionPR                func(context.Context, string, string) (github.SubmissionPullRequest, error)
 	DiscoverDocumentationPolicy func(context.Context, string, string) github.DocumentationPolicyDiscovery
-	RequestMerge                func(context.Context, string, int) error
-	RequestMergeWithCredential  func(context.Context, string, int, string) error
-	ListPullRequestFiles        func(context.Context, string, int) ([]string, error)
-	WorkspaceGitHubApps         store.WorkspaceGitHubAppStore
-	GitHubApps                  *github.AppClient
+	// DiscoverRiskDeclaration reads .conveyor/risk.yaml at a base commit
+	// (req-risk-based-review AC-3.2; feature-risk-based-review RR-2).
+	DiscoverRiskDeclaration    func(context.Context, string, string) riskpolicy.DeclarationInput
+	RequestMerge               func(context.Context, string, int) error
+	RequestMergeWithCredential func(context.Context, string, int, string) error
+	ListPullRequestFiles       func(context.Context, string, int) ([]string, error)
+	WorkspaceGitHubApps        store.WorkspaceGitHubAppStore
+	GitHubApps                 *github.AppClient
 	// RedactionSecrets resolves stored credentials for the redaction of a
 	// GitHub issue title before intake stores it (req-security-boundaries
 	// REQ-3). New sets it from a store that holds them.
@@ -100,6 +104,14 @@ func New(st store.Store, cfg *config.Config, agent inprocess.Agent) *Dispatcher 
 		}
 		workspace, _ := store.WorkspaceFromContext(ctx)
 		return client.DiscoverDocumentationPolicy(ctx, d.WorkspaceGitHubApps, workspace, repo, revision)
+	}
+	d.DiscoverRiskDeclaration = func(ctx context.Context, repo, revision string) riskpolicy.DeclarationInput {
+		client := d.GitHubApps
+		if client == nil {
+			client = github.DefaultAppClient
+		}
+		workspace, _ := store.WorkspaceFromContext(ctx)
+		return client.DiscoverRiskDeclaration(ctx, d.WorkspaceGitHubApps, workspace, repo, revision)
 	}
 	d.ReviewChangedPaths = func(ctx context.Context, cfg *config.Config, task core.Task) ([]string, error) {
 		repo, ok := cfg.Repo(task.Repo)
@@ -1470,6 +1482,12 @@ func (d *Dispatcher) applyReview(ctx context.Context, cfg *config.Config, task c
 		RequiredHarness: requiredHarness, RequiredEffort: requiredEffort, ModelEnforcement: enforcement,
 		InterventionActorID: "review:" + session, PublicationEligible: publicationEligible,
 		Level: task.Level, PolicyVersion: task.PolicyVersion, MergeApproval: task.MergeApproval, MaxBounces: cfg.MaxBounces,
+	}
+	// Only a task whose frozen risk mode is record or enforce records a
+	// seat's tier. The head, seat, and model come from the claimed order
+	// above, never from the verdict (req-risk-based-review AC-1.1, AC-5.3).
+	if task.SetupContract.Risk.Enabled() {
+		decision.RiskTier, decision.RiskReason = result.RiskTier, result.RiskReason
 	}
 	if task.SetupContract.VerifyStage {
 		reader, ok := d.Store.(store.VerificationReviewReader)

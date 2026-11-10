@@ -504,6 +504,15 @@ func (s *Server) mcpReadItems(ctx context.Context, name string, a map[string]any
 				return nil, e
 			}
 			read["next_action"] = nextaction.CompactFrom(action)
+			// The same risk field the REST task read serves
+			// (req-risk-based-review AC-11.2).
+			risk, e := s.taskRisk(ctx, task)
+			if e != nil {
+				return nil, e
+			}
+			if risk != nil {
+				read["risk"] = risk
+			}
 			return []any{read}, nil
 		}
 		task.Context, e = store.TaskContextForTask(ctx, s.Store, task.ID)

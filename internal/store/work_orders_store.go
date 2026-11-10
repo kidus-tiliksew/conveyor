@@ -774,6 +774,13 @@ func (m *memory) AcceptReviewDecisionCommand(ctx context.Context, lease taskops.
 		}
 		return nil
 	}
+	// A stated tier is checked before the first write, so a refused rating
+	// leaves the verdict, the seat, and the round unchanged
+	// (req-risk-based-review AC-5.2, AC-5.3).
+	workspace, _ := WorkspaceFromContext(ctx)
+	if _, _, err := ReviewerRiskRating(task, m.riskRatings[memoryScopedKey{workspace: workspace, id: task.ID}], decision, time.Now()); err != nil && !completed {
+		return err
+	}
 	if !completed {
 		if decision.ClaimSession != "" {
 			if order.State != core.WorkOrderClaimed || order.SessionID != decision.ClaimSession || !order.LeaseExpiresAt.After(time.Now()) {
@@ -791,6 +798,9 @@ func (m *memory) AcceptReviewDecisionCommand(ctx context.Context, lease taskops.
 		}
 		payload := reviewDecisionPayload(decision)
 		m.appendEventLocked(ctx, core.Event{TaskID: decision.TaskID, JobID: decision.JobID, Kind: "review.completed", Payload: payload})
+		if err := m.recordReviewerRiskLocked(ctx, task, decision); err != nil {
+			return err
+		}
 	}
 	if decision.PublicationEligible {
 		if _, exists := m.publications[decision.ReviewWorkOrderID]; !exists {
@@ -1038,6 +1048,9 @@ func reviewDecisionPayload(decision core.ReviewDecision) []byte {
 	}
 	if decision.DocumentationAssessment != nil {
 		payload["documentation_assessment"] = decision.DocumentationAssessment
+	}
+	if decision.RiskTier != "" {
+		payload["risk_tier"], payload["risk_reason"] = decision.RiskTier, decision.RiskReason
 	}
 	return core.JSONPayload(payload)
 }

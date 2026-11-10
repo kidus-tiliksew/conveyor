@@ -370,7 +370,7 @@ func taskCmd() *cobra.Command {
 		Use: "show <id>", Short: "Show a task and its jobs", Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			c := newClient()
-			t, err := c.getTask(args[0])
+			t, risk, err := c.getTaskWithRisk(args[0])
 			if err != nil {
 				return err
 			}
@@ -379,6 +379,9 @@ func taskCmd() *cobra.Command {
 				return err
 			}
 			result := map[string]any{"task": t, "jobs": jobs}
+			if risk != nil {
+				result["risk"] = risk
+			}
 			if spec, specErr := c.getLatestSpec(args[0]); specErr == nil {
 				result["spec"] = spec
 			}
@@ -387,6 +390,9 @@ func taskCmd() *cobra.Command {
 			// The task's plan state (component-runtime invariant 40;
 			// req-task-plan-state AC-1.4).
 			fmt.Fprintf(cmd.ErrOrStderr(), "Plan state: %s\n", t.PlanState)
+			if line := riskSummaryLine(risk); line != "" {
+				fmt.Fprintln(cmd.ErrOrStderr(), line)
+			}
 			if t.SupersededBy != "" {
 				fmt.Fprintf(cmd.ErrOrStderr(), "Started over as %s\n", t.SupersededBy)
 			}
