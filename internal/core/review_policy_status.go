@@ -89,11 +89,12 @@ func (s ReviewPolicyStatus) Validate() error {
 // reviewPolicyStatusTransitions is the row lifecycle. A queue that changes
 // the desired state moves any row to queued; an attempt moves a queued,
 // failed, or published row to retrying; a synchronous merge publication moves
-// a queued row straight to published.
+// a queued row straight to published, and its failed recheck of a published
+// row leaves the row failed for the next re-evaluation to reopen.
 var reviewPolicyStatusTransitions = map[ReviewPolicyStatusState][]ReviewPolicyStatusState{
 	ReviewPolicyStatusQueued:    {ReviewPolicyStatusQueued, ReviewPolicyStatusRetrying, ReviewPolicyStatusPublished, ReviewPolicyStatusFailed},
 	ReviewPolicyStatusRetrying:  {ReviewPolicyStatusQueued, ReviewPolicyStatusRetrying, ReviewPolicyStatusPublished, ReviewPolicyStatusFailed},
-	ReviewPolicyStatusPublished: {ReviewPolicyStatusQueued, ReviewPolicyStatusRetrying, ReviewPolicyStatusPublished},
+	ReviewPolicyStatusPublished: {ReviewPolicyStatusQueued, ReviewPolicyStatusRetrying, ReviewPolicyStatusPublished, ReviewPolicyStatusFailed},
 	ReviewPolicyStatusFailed:    {ReviewPolicyStatusQueued, ReviewPolicyStatusRetrying},
 }
 

@@ -157,12 +157,12 @@ func (s *Store) applyTaskCommandTx(ctx context.Context, tx pgx.Tx, q *db.Queries
 			if _, _, err := insertTaskApprovalTx(ctx, tx, q, *final); err != nil {
 				return err
 			}
-			if bypass != nil {
-				// The bypass commits with the completion it explains, once per
-				// task and head (component-submission-merge invariant 66).
-				if err := insertEvent(ctx, q, *bypass); err != nil {
-					return err
-				}
+		}
+		if bypass != nil {
+			// The bypass commits with the completion it explains, once per
+			// task and head (component-submission-merge invariant 66).
+			if err := insertEvent(ctx, q, *bypass); err != nil {
+				return err
 			}
 		}
 		if command.FailureMessage != "" {

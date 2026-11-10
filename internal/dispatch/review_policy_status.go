@@ -381,8 +381,19 @@ func (d *Dispatcher) publishPolicySuccessBeforeMergeLocked(ctx context.Context, 
 		return fail(err)
 	}
 	if row.State == core.ReviewPolicyStatusPublished && row.Published == core.PolicyStatusSuccess {
-		// GitHub accepted success on this head, and no later evaluation
-		// re-queued it.
+		// The row records success, but another writer of the context could
+		// have changed GitHub's latest status since. The read-then-post
+		// writes nothing when GitHub still holds success.
+		if _, publishErr := d.publishPolicyStatus(ctx, task, githubRepo, head, core.PolicyStatusSuccess); publishErr != nil {
+			// No job owns this row, so it is left failed for the
+			// re-evaluation after the act to reopen with one.
+			row.State, row.Attempts = core.ReviewPolicyStatusFailed, row.Attempts+1
+			row.ForgeErrorCategory, row.LastError = string(github.ErrorCategory(publishErr)), publishErr.Error()
+			if _, updateErr := d.Store.UpdateReviewPolicyStatus(ctx, row); updateErr != nil {
+				return fail(errors.Join(publishErr, fmt.Errorf("record policy status failure: %w", updateErr)))
+			}
+			return fail(publishErr)
+		}
 		return nil
 	}
 	row.State, row.Desired, row.Attempts = core.ReviewPolicyStatusRetrying, core.PolicyStatusSuccess, row.Attempts+1

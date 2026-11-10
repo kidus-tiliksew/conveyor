@@ -1546,7 +1546,9 @@ func (d *Dispatcher) applyReview(ctx context.Context, cfg *config.Config, task c
 		// an unanswered read of the check status or the pull request are recorded,
 		// and an unanswered read has its retry job; none of them is a failure of
 		// the verdict its caller could act on (AC-1.10; DEC-118(2)).
-		if err := d.MergeApprovedTaskAutomatically(ctx, current); err != nil && !checkStatusDeferred(err) && !errors.Is(err, store.ErrRiskApprovalsRequired) {
+		// An unpublished policy status leaves the task approved for a later
+		// readiness read (component-submission-merge invariant 65).
+		if err := d.MergeApprovedTaskAutomatically(ctx, current); err != nil && !checkStatusDeferred(err) && !errors.Is(err, store.ErrRiskApprovalsRequired) && !errors.Is(err, ErrPolicyStatusUnpublished) {
 			return err
 		} else if err != nil {
 			log.Printf("[task %s] automatic merge after approval: %v", task.ID, err)

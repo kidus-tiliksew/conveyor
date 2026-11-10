@@ -246,6 +246,9 @@ func SortReviewPolicyStatuses(rows []core.ReviewPolicyStatus) {
 // its log, as the relational backends do in their transaction, so a fixture
 // can run the real queue runtime without a database.
 func (m *volatileMemory) QueueReviewPolicyStatus(ctx context.Context, taskID, head, desired string) (core.ReviewPolicyStatus, bool, error) {
+	if _, err := RequireActor(ctx); err != nil {
+		return core.ReviewPolicyStatus{}, false, err
+	}
 	row, wrote, err := m.memory.QueueReviewPolicyStatus(ctx, taskID, head, desired)
 	if err != nil || !wrote {
 		return row, wrote, err
