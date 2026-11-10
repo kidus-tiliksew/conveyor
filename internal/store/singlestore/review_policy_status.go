@@ -231,3 +231,41 @@ func queryReviewPolicyStatuses(ctx context.Context, db reviewPolicyStatusReader,
 	store.SortReviewPolicyStatuses(out)
 	return out, nil
 }
+
+// reopenReviewPolicyStatusesTx reopens every published or failed row of an
+// enforcing task inside the caller's taskTx and enqueues each reopened head's
+// job. Each row is read through its claim row, so the latest write of every
+// listed head is visible before it is reopened.
+func (s *Store) reopenReviewPolicyStatusesTx(ctx context.Context, tx *sql.Tx, task core.Task) error {
+	if !task.SetupContract.Risk.Enforcing() {
+		return nil
+	}
+	listed, err := queryReviewPolicyStatuses(ctx, tx, `SELECT payload_json FROM review_policy_statuses WHERE workspace_id=? AND task_id=?`, documentWorkspace(ctx), task.ID)
+	if err != nil {
+		return err
+	}
+	for _, candidate := range listed {
+		row, found, err := lockReviewPolicyStatusTx(ctx, tx, task.ID, candidate.HeadSHA)
+		if err != nil {
+			return err
+		}
+		if !found {
+			continue
+		}
+		next, ok := store.PlanReviewPolicyStatusReopen(row, time.Now())
+		if !ok {
+			continue
+		}
+		if err := writeReviewPolicyStatusTx(ctx, tx, true, row.Revision, next); err != nil {
+			return err
+		}
+		if err := taskEvent(ctx, tx, store.ReviewPolicyStatusEvent(next)); err != nil {
+			return err
+		}
+		args := queue.ReviewPolicyStatusArgs{WorkspaceID: documentWorkspace(ctx), TaskID: next.TaskID, HeadSHA: next.HeadSHA}
+		if _, err := logqueue.Enqueue(logTx(ctx, tx), s.log, documentWorkspace(ctx), args.Kind(), args.UniqueKey(), args, reviewPolicyStatusMaxAttempts, time.Now().UTC()); err != nil {
+			return fmt.Errorf("enqueue policy status of task %s head %s: %w", next.TaskID, next.HeadSHA, err)
+		}
+	}
+	return nil
+}

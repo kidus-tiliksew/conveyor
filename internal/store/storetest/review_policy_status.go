@@ -228,6 +228,44 @@ func RunReviewPolicyStatusConformance(t *testing.T, x Fixture) {
 		}
 	})
 
+	// A raise can leave a head short of the success it published, so the
+	// raise's own transaction reopens every published or failed row with a
+	// job; a queued row keeps its job (component-git-delivery invariant 37).
+	t.Run("RaiseReopensPublishedRows", func(t *testing.T) {
+		task := fileTask(t, riskpolicy.ModeEnforce, false)
+		published, _, err := st.QueueReviewPolicyStatus(ctx, task.ID, "head-p", core.PolicyStatusSuccess)
+		requireOK(t, err)
+		published.State, published.Published = core.ReviewPolicyStatusPublished, core.PolicyStatusSuccess
+		published, err = st.UpdateReviewPolicyStatus(ctx, published)
+		requireOK(t, err)
+		queued, _, err := st.QueueReviewPolicyStatus(ctx, task.ID, "head-q", core.PolicyStatusPending)
+		requireOK(t, err)
+		before := countEvents(t, task.ID, core.ReviewPolicyStatusQueuedEvent)
+		if _, err := st.RaiseTaskRiskTier(ctx, core.RiskRating{TaskID: task.ID, Tier: riskpolicy.TierHigh, Reason: "touches billing", ActorID: "user:operator"}, store.RiskSeatSettings{}); err != nil {
+			t.Fatal(err)
+		}
+		reopened, ok, err := st.GetReviewPolicyStatus(ctx, task.ID, "head-p")
+		if err != nil || !ok || reopened.State != core.ReviewPolicyStatusQueued || reopened.Revision != published.Revision+1 || reopened.Published != core.PolicyStatusSuccess {
+			t.Fatalf("reopened=%+v ok=%t err=%v", reopened, ok, err)
+		}
+		if !activeJob(t, task.ID, "head-p") {
+			t.Fatal("the raise enqueued no job for the reopened head")
+		}
+		if kept, _, _ := st.GetReviewPolicyStatus(ctx, task.ID, "head-q"); kept.Revision != queued.Revision {
+			t.Fatalf("the raise rewrote a queued row: %+v", kept)
+		}
+		if n := countEvents(t, task.ID, core.ReviewPolicyStatusQueuedEvent); n != before+1 {
+			t.Fatalf("queued events=%d, want %d", n, before+1)
+		}
+		// A refused raise reopens nothing.
+		if _, err := st.RaiseTaskRiskTier(ctx, core.RiskRating{TaskID: task.ID, Tier: riskpolicy.TierMedium, Reason: "lower", ActorID: "user:operator"}, store.RiskSeatSettings{}); err == nil {
+			t.Fatal("a lower raise was accepted")
+		}
+		if n := countEvents(t, task.ID, core.ReviewPolicyStatusQueuedEvent); n != before+1 {
+			t.Fatalf("a refused raise appended queued events: %d", n)
+		}
+	})
+
 	bypass := core.MergeBypass{ForgeActor: "octo-merger", HeadSHA: "policy-head", MergeCommitSHA: "landed", RequiredHumanApprovals: 1, MissingHumanApprovals: 1, RequiredAgentReviews: 1, RecordedAgentReviews: 1}
 
 	t.Run("BypassCommitsWithTheCompletion", func(t *testing.T) {

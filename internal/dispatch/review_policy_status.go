@@ -345,7 +345,7 @@ var ErrPolicyStatusUnpublished = errors.New("policy_status_unpublished")
 type policyStatusUnpublishedError struct{ cause error }
 
 func (e *policyStatusUnpublishedError) Error() string {
-	return "Conveyor could not publish the conveyor/review-policy success status, so it sent no merge request; it tries again later: " + e.cause.Error()
+	return "Conveyor could not publish the conveyor/review-policy success status, so it sent no merge request and recorded no approval: " + e.cause.Error()
 }
 func (e *policyStatusUnpublishedError) Unwrap() error { return e.cause }
 func (e *policyStatusUnpublishedError) Is(target error) bool {

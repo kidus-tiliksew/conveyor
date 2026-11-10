@@ -83,6 +83,22 @@ func PlanReviewPolicyStatusQueue(task core.Task, existing *core.ReviewPolicyStat
 	return row, true, row.Validate()
 }
 
+// PlanReviewPolicyStatusReopen reopens a row for re-evaluation in the
+// transaction of an act that can leave its head short of what it published,
+// a tier raise. A queued or retrying row already has a job whose handler
+// re-reads the requirements, so it is left alone and false is returned.
+func PlanReviewPolicyStatusReopen(row core.ReviewPolicyStatus, now time.Time) (core.ReviewPolicyStatus, bool) {
+	switch row.State {
+	case core.ReviewPolicyStatusQueued, core.ReviewPolicyStatusRetrying:
+		return row, false
+	}
+	row.State = core.ReviewPolicyStatusQueued
+	row.ForgeErrorCategory, row.LastError = "", ""
+	row.Revision++
+	row.UpdatedAt = now.UTC()
+	return row, true
+}
+
 // PrepareReviewPolicyStatusUpdate validates an update against the stored row
 // and stamps its revision and time.
 func PrepareReviewPolicyStatusUpdate(current, next core.ReviewPolicyStatus, now time.Time) (core.ReviewPolicyStatus, error) {
@@ -259,4 +275,54 @@ func (m *volatileMemory) QueueReviewPolicyStatus(ctx context.Context, taskID, he
 		return core.ReviewPolicyStatus{}, false, err
 	}
 	return row, true, nil
+}
+
+// reopenReviewPolicyStatusesLocked reopens every published or failed row of
+// an enforcing task in the raise that m.mu guards, appending each row's
+// queued event. It returns the reopened rows.
+func (m *memory) reopenReviewPolicyStatusesLocked(ctx context.Context, key memoryScopedKey, task core.Task) []core.ReviewPolicyStatus {
+	if !task.SetupContract.Risk.Enforcing() {
+		return nil
+	}
+	var reopened []core.ReviewPolicyStatus
+	now := time.Now()
+	for head, row := range m.reviewPolicyStatuses[key] {
+		next, ok := PlanReviewPolicyStatusReopen(row, now)
+		if !ok {
+			continue
+		}
+		m.reviewPolicyStatuses[key][head] = next
+		m.appendEventLocked(ctx, ReviewPolicyStatusEvent(next))
+		reopened = append(reopened, next)
+	}
+	SortReviewPolicyStatuses(reopened)
+	return reopened
+}
+
+// RaiseTaskRiskTier on the test backend also enqueues the job of every policy
+// status row the raise reopened, as the relational backends do in their
+// transaction.
+func (m *volatileMemory) RaiseTaskRiskTier(ctx context.Context, raise core.RiskRating, seats RiskSeatSettings) (core.RiskRating, error) {
+	if _, err := RequireActor(ctx); err != nil {
+		return core.RiskRating{}, err
+	}
+	raised, err := m.memory.RaiseTaskRiskTier(ctx, raise, seats)
+	if err != nil {
+		return raised, err
+	}
+	rows, err := m.memory.ListReviewPolicyStatuses(ctx, raise.TaskID)
+	if err != nil {
+		return core.RiskRating{}, err
+	}
+	workspace, _ := WorkspaceFromContext(ctx)
+	for _, row := range rows {
+		if row.State != core.ReviewPolicyStatusQueued {
+			continue
+		}
+		args := queue.ReviewPolicyStatusArgs{WorkspaceID: workspace, TaskID: row.TaskID, HeadSHA: row.HeadSHA}
+		if _, err := logqueue.Enqueue(ctx, m.log, workspace, args.Kind(), args.UniqueKey(), args, 5, time.Now().UTC()); err != nil {
+			return core.RiskRating{}, err
+		}
+	}
+	return raised, nil
 }

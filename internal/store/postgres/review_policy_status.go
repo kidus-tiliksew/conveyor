@@ -195,3 +195,34 @@ WHERE workspace_id=$1 AND task_id=$2 AND head_sha=$3 AND revision=$9`,
 	}
 	return nil
 }
+
+// reopenReviewPolicyStatusesTx reopens every published or failed row of an
+// enforcing task inside the caller's transaction, which holds the task lock,
+// and enqueues each reopened head's job, so the handler re-reads the head's
+// requirements before GitHub keeps an obsolete success.
+func (s *Store) reopenReviewPolicyStatusesTx(ctx context.Context, tx pgx.Tx, q *db.Queries, task core.Task) error {
+	if !task.SetupContract.Risk.Enforcing() {
+		return nil
+	}
+	rows, err := queryReviewPolicyStatuses(ctx, tx, `SELECT payload_json FROM review_policy_statuses WHERE workspace_id=$1 AND task_id=$2 ORDER BY created_at, head_sha`, workspace(ctx), task.ID)
+	if err != nil {
+		return err
+	}
+	for _, row := range rows {
+		next, ok := store.PlanReviewPolicyStatusReopen(row, time.Now())
+		if !ok {
+			continue
+		}
+		if err := updateReviewPolicyStatusRow(ctx, tx, row.Revision, next); err != nil {
+			return err
+		}
+		if err := insertEvent(ctx, q, store.ReviewPolicyStatusEvent(next)); err != nil {
+			return err
+		}
+		args := queue.ReviewPolicyStatusArgs{WorkspaceID: workspace(ctx), TaskID: next.TaskID, HeadSHA: next.HeadSHA}
+		if _, err := logqueue.Enqueue(logTx(ctx, tx), s.log, workspace(ctx), args.Kind(), args.UniqueKey(), args, reviewPolicyStatusMaxAttempts, time.Now().UTC()); err != nil {
+			return fmt.Errorf("enqueue policy status of task %s head %s: %w", next.TaskID, next.HeadSHA, err)
+		}
+	}
+	return nil
+}

@@ -256,6 +256,10 @@ func (m *memory) RaiseTaskRiskTier(ctx context.Context, raise core.RiskRating, s
 			return core.RiskRating{}, err
 		}
 	}
+	// A raise can leave a head short of the success it published, so the
+	// raise reopens the task's policy statuses in its own write
+	// (req-risk-based-review AC-10.1; component-git-delivery invariant 37).
+	m.reopenReviewPolicyStatusesLocked(ctx, key, task)
 	return cloneRiskRating(prepared), nil
 }
 
