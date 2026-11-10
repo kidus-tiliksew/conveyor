@@ -17,8 +17,12 @@ type Vars struct {
 	Title       string
 	PR          int
 	Stage       string
-	OrderID     string
-	Attempts    int
+	// AgentStage is the stage of the order an agent holds or waits for. It
+	// is set only when an agent is the actor and the statement names an
+	// order, so factory work and an absent order keep the generic sentence.
+	AgentStage string
+	OrderID    string
+	Attempts   int
 	// RetryScheduled reports a retry time still ahead. The time itself is the
 	// statement's deadline, never part of a sentence (component-next-action
 	// invariants 14, 18).
@@ -200,6 +204,22 @@ func init() {
 		put(item.kind, "", "", "", entry)
 	}
 	decisionWording(text)
+	// The working and queued sentences name the stated order's stage, so the
+	// passive task-detail banner needs no separate stage line. An unknown
+	// stage keeps the generic sentence (req-operator-next-action AC-1.8;
+	// component-next-action invariants 17, 18).
+	stageSummary(KindWorking, "An agent is working on this task.", map[string]string{
+		string(core.StageSpec):      "An agent is planning this task.",
+		string(core.StageImplement): "An agent is implementing this task.",
+		string(core.StageReview):    "An agent is reviewing this task.",
+		string(core.StageVerify):    "An agent is verifying this task.",
+	})
+	stageSummary(KindQueued, "An order is waiting to be claimed.", map[string]string{
+		string(core.StageSpec):      "The plan order is waiting for an agent.",
+		string(core.StageImplement): "The implementation order is waiting for an agent.",
+		string(core.StageReview):    "The review order is waiting for an agent.",
+		string(core.StageVerify):    "The verification order is waiting for an agent.",
+	})
 	// The hold's sentence names each check; AC-1.5 requires it on every surface
 	// that shows the summary, the compact list shape included.
 	failedHold := catalogueTable[catalogueKey{KindCheckHold, "", "", "", ""}]
@@ -380,6 +400,20 @@ func ReleaseOutcomes() []string {
 
 func GateKinds() []core.GateKind {
 	return []core.GateKind{core.GateKindPlanApproval, core.GateKindPlanRevision, core.GateKindMergeApproval, core.GateKindReviewBounceLimit, core.GateKindJobFailure}
+}
+
+// stageSummary replaces kind's summary with one sentence per agent stage and
+// keeps fallback for any other stage, including none.
+func stageSummary(kind, fallback string, byStage map[string]string) {
+	key := catalogueKey{kind, "", "", "", ""}
+	entry := catalogueTable[key]
+	entry.Summary = func(v Vars) string {
+		if sentence, ok := byStage[v.AgentStage]; ok {
+			return sentence
+		}
+		return fallback
+	}
+	catalogueTable[key] = entry
 }
 
 func render(fn func(Vars) string, vars Vars) string {
