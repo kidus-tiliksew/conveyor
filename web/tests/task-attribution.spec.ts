@@ -138,12 +138,22 @@ const item = {
     order(seat1, {
       stage: 'review',
       state: 'submitted',
+      queue_entered_at: minutes(31),
+      created_at: minutes(31),
       review_round: 1,
       review_seat: 1,
       model: 'gpt-6',
       agent: 'codex',
     }),
-    order(seat2, { stage: 'review', state: 'queued', claimable: true, review_round: 1, review_seat: 2 }),
+    order(seat2, {
+      stage: 'review',
+      state: 'queued',
+      claimable: true,
+      queue_entered_at: minutes(31),
+      created_at: minutes(31),
+      review_round: 1,
+      review_seat: 2,
+    }),
     order(attempt3, {
       claimed_by: 'run:usr_ghost',
       attempt_id: 'attempt-3',
