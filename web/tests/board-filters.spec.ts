@@ -443,9 +443,28 @@ test('a failed first load says so in place of lanes that would read as empty', a
   await expect(page.getByText('{"error"', { exact: false })).toHaveCount(0)
   await expect(page.getByText('No tasks', { exact: true })).toHaveCount(0)
   await expect(page.locator('[data-lane]')).toHaveCount(0)
+  // The toolbar stays reachable: its filters and the view switch still work
+  // while the lanes area shows the failure (component-web-task-surfaces,
+  // State and failure).
+  const toolbar = page.getByTestId('board-toolbar')
+  await expect(toolbar.getByRole('searchbox', { name: 'Search tasks' })).toBeEditable()
+  await expect(toolbar.getByRole('button', { name: 'Filters', exact: true })).toBeEnabled()
+  await expect(toolbar.getByRole('group', { name: 'Board view' }).getByRole('button')).toHaveCount(2)
+  await toolbar.getByRole('button', { name: 'Filters', exact: true }).click()
+  await expect(page.locator('[data-filter-panel]')).toBeVisible()
+  await page.keyboard.press('Escape')
+  await expect(page.locator('[data-filter-panel]')).toBeHidden()
   failing = false
   await failure.getByRole('button', { name: 'Try again' }).click()
   await expect(page.locator('[data-lane]').first()).toBeVisible()
+  // The lanes that mount after the retry drive the edge fades too.
+  await expect(page.locator('[data-lane-fade="start"]')).toHaveCSS('opacity', '0')
+  await expect(page.locator('[data-lane-fade="end"]')).toHaveCSS('opacity', '1')
+  await page.getByRole('region', { name: 'Task board' }).evaluate((scroller) => {
+    scroller.scrollLeft = scroller.scrollWidth
+  })
+  await expect(page.locator('[data-lane-fade="start"]')).toHaveCSS('opacity', '1')
+  await expect(page.locator('[data-lane-fade="end"]')).toHaveCSS('opacity', '0')
 })
 
 test('an empty lane says no matching tasks only while a filter or search narrows the board', async ({ page }) => {
@@ -1095,3 +1114,116 @@ for (const width of [320, 390, 768, 1024, 1280]) {
     await expect(trigger).toBeFocused()
   })
 }
+
+// The lane columns carry each stage's task count and its operator badge, so the
+// Board has no separate lane jump strip at any width
+// (component-web-task-surfaces, Board). The edge fades alone say that more
+// lanes sit past the scroller's edge.
+const laneTasks: Array<{ id: string; kind: string; actor: string; state: string; latest: string; next?: string }> = [
+  {
+    id: 'lane-plan-a',
+    kind: 'plan_approval',
+    actor: 'operator',
+    state: 'awaiting_human',
+    latest: 'spec',
+    next: 'implement',
+  },
+  { id: 'lane-plan-b', kind: 'plan_revision', actor: 'operator', state: 'awaiting_human', latest: 'spec' },
+  { id: 'lane-implement', kind: 'working', actor: 'agent', state: 'running', latest: 'spec', next: 'implement' },
+  { id: 'lane-review', kind: 'review_recovery', actor: 'operator', state: 'awaiting_human', latest: 'review' },
+]
+
+async function openLaneBoard(page: Page) {
+  await controlWorkspaceChanges(page)
+  await page.addInitScript(() => localStorage.setItem('conveyor-workspace', 'demo'))
+  await routeBoard(page, [])
+  await page.route('**/v1/activity?**', (route) =>
+    route.fulfill({
+      headers: { 'X-Conveyor-Total': String(laneTasks.length), 'X-Conveyor-Limit': '100', 'X-Conveyor-Offset': '0' },
+      json: laneTasks.map((lane) => ({
+        ...activity[0],
+        task: {
+          ...activity[0].task,
+          id: lane.id,
+          title: `Lane case ${lane.id}`,
+          state: lane.state,
+          next_stage: lane.next ?? '',
+        },
+        latest_stage: lane.latest,
+        next_action: {
+          kind: lane.kind,
+          label: lane.kind,
+          actor: lane.actor,
+          judgment: lane.actor === 'operator',
+          summary: `Summary ${lane.id}`,
+          deadline: null,
+        },
+      })),
+    }),
+  )
+  await page.goto('/')
+  await expect(page.locator('[data-lane]')).toHaveCount(7)
+  await expect(cards(page).filter({ hasText: 'Lane case' })).toHaveCount(laneTasks.length)
+}
+
+// The fades are always mounted; their opacity is what shows them.
+async function expectLaneFades(page: Page, start: '0' | '1', end: '0' | '1') {
+  await expect(page.locator('[data-lane-fade="start"]')).toHaveCSS('opacity', start)
+  await expect(page.locator('[data-lane-fade="end"]')).toHaveCSS('opacity', end)
+}
+
+async function scrollLanes(page: Page, at: 'start' | 'middle' | 'end') {
+  await page.getByRole('region', { name: 'Task board' }).evaluate((scroller, position) => {
+    const range = scroller.scrollWidth - scroller.clientWidth
+    scroller.scrollLeft = position === 'start' ? 0 : position === 'middle' ? Math.round(range / 2) : range
+  }, at)
+}
+
+for (const width of [375, 768, 1408, 1440]) {
+  test(`the Board shows no lane jump strip at ${width}px and keeps lane headers and edge fades`, async ({ page }) => {
+    await page.setViewportSize({ width, height: 800 })
+    await openLaneBoard(page)
+
+    await expect(page.locator('[aria-label="Board lanes"]')).toHaveCount(0)
+    await expect(page.getByRole('navigation', { name: 'Board lanes' })).toHaveCount(0)
+    await expect(page.locator('[title^="Scroll to"]')).toHaveCount(0)
+    await expect(page.getByTestId('board-toolbar').getByRole('button', { name: /^Triage\b/ })).toHaveCount(0)
+
+    // Each lane header keeps its own task count and operator badge.
+    const plan = page.locator('[data-lane="spec"] header')
+    await expect(plan).toContainText('Plan2')
+    await expect(plan.locator('[data-operator-count]')).toHaveText('2')
+    const implement = page.locator('[data-lane="implement"] header')
+    await expect(implement).toContainText('Implement1')
+    await expect(implement.locator('[data-operator-count]')).toHaveCount(0)
+    await expect(page.locator('[data-lane="review"] header [data-operator-count]')).toHaveText('1')
+    await expect(page.locator('[data-lane="triage"] header')).toContainText('Triage0')
+
+    // Seven lanes overflow the scroller at this width, so the fades track
+    // which edges hide lanes as the operator scrolls.
+    const scroller = page.getByRole('region', { name: 'Task board' })
+    expect(await scroller.evaluate((element) => element.scrollWidth > element.clientWidth + 1)).toBe(true)
+    await expectLaneFades(page, '0', '1')
+    await scrollLanes(page, 'middle')
+    await expectLaneFades(page, '1', '1')
+    await scrollLanes(page, 'end')
+    await expectLaneFades(page, '1', '0')
+    await scrollLanes(page, 'start')
+    await expectLaneFades(page, '0', '1')
+  })
+}
+
+test('the lane edge fades follow a resize of the Board', async ({ page }) => {
+  await page.setViewportSize({ width: 1440, height: 800 })
+  await openLaneBoard(page)
+  await expectLaneFades(page, '0', '1')
+  // Every lane fits, so no edge hides a lane.
+  await page.setViewportSize({ width: 3200, height: 800 })
+  await expectLaneFades(page, '0', '0')
+  await page.setViewportSize({ width: 375, height: 800 })
+  await expectLaneFades(page, '0', '1')
+  await scrollLanes(page, 'end')
+  await expectLaneFades(page, '1', '0')
+  await page.setViewportSize({ width: 3200, height: 800 })
+  await expectLaneFades(page, '0', '0')
+})
