@@ -60,7 +60,6 @@ export const serverHumanTimelineEventKinds = [
   'task.state_changed',
   'work_order.child_failed',
   'work_order.stalled',
-  'task.plan_state_changed',
 ] as const
 
 const humanKinds = new Set<string>(serverHumanTimelineEventKinds)

@@ -78,13 +78,14 @@ func TestHumanTimelineEventKindsMatchDashboard(t *testing.T) {
 			want = append(want, kind)
 		}
 	}
-	if len(humanTimelineEventKinds) != 36 || len(sorted(humanTimelineEventKinds)) != len(humanTimelineEventKinds) {
-		t.Fatalf("Go human kinds must be 36 distinct kinds: %v", humanTimelineEventKinds)
+	if len(humanTimelineEventKinds) != 35 || len(sorted(humanTimelineEventKinds)) != len(humanTimelineEventKinds) {
+		t.Fatalf("Go human kinds must be 35 distinct kinds: %v", humanTimelineEventKinds)
 	}
-	// A plan-state move is a human-timeline kind on both lists
-	// (component-web-task-surfaces invariant 65).
-	if !slices.Contains(humanTimelineEventKinds, "task.plan_state_changed") || !slices.Contains(want, "task.plan_state_changed") {
-		t.Fatal("task.plan_state_changed must be a human-timeline kind on both lists")
+	// A plan-state move is a hidden kind on both lists: the dashboard hides
+	// it and neither human selection holds it (component-web-task-surfaces
+	// invariant 65).
+	if slices.Contains(humanTimelineEventKinds, "task.plan_state_changed") || slices.Contains(want, "task.plan_state_changed") || !slices.Contains(hiddenKinds, "task.plan_state_changed") {
+		t.Fatal("task.plan_state_changed must be hidden by the dashboard and on neither human-timeline list")
 	}
 	if !slices.Equal(sorted(want), sorted(humanTimelineEventKinds)) {
 		t.Fatalf("dashboard human kinds=%v Go=%v", sorted(want), sorted(humanTimelineEventKinds))

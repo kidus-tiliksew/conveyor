@@ -325,12 +325,12 @@ func TestTaskHistoryBoundedViewAndTraversalOverReconciliationFixture(t *testing.
 	}
 
 	detail, bounded := h.bounded("incident-task")
-	// 86 cycled human events plus the early pull_request.opened and the
-	// intake task.plan_state_changed, a human-timeline kind
-	// (component-web-task-surfaces invariant 65); the other non-reconciled
-	// events are task.created (twice), job.created, and job.summary.
-	if detail.EventPage.Returned != 88 || detail.EventPage.HasOlder {
-		t.Fatalf("bounded page over 88 human events: %+v", detail.EventPage)
+	// 86 cycled human events plus the early pull_request.opened; the other
+	// non-reconciled events are task.created (twice), job.created,
+	// job.summary, and the intake task.plan_state_changed, a hidden kind
+	// (component-web-task-surfaces invariant 65).
+	if detail.EventPage.Returned != 87 || detail.EventPage.HasOlder {
+		t.Fatalf("bounded page over 87 human events: %+v", detail.EventPage)
 	}
 	omitted := 0
 	for _, event := range detail.Events {
@@ -806,6 +806,10 @@ func TestTaskHistoryKeepsTimelineHiddenKindsTechnical(t *testing.T) {
 		ledgerEvent("hidden-task", 2, 2*time.Second, "merge.requested", `{"url":"https://example.test/pr/9"}`),
 		ledgerEvent("hidden-task", 3, 3*time.Second, "merge.confirmed", `{"url":"https://example.test/pr/9"}`),
 		ledgerEvent("hidden-task", 4, 4*time.Second, "merge.reconciled", `{"url":"https://example.test/pr/9"}`),
+		// A plan-state move is hidden from both human lists and stays in
+		// technical activity and the audit read (component-web-task-surfaces
+		// invariant 65).
+		ledgerEvent("hidden-task", 5, 5*time.Second, "task.plan_state_changed", `{"from":"needed","to":"not_required","cause":"operator"}`),
 	)
 	h := newHistoryHarness(t, st)
 	kinds := func(events []historyEventJSON) []string {
@@ -816,7 +820,7 @@ func TestTaskHistoryKeepsTimelineHiddenKindsTechnical(t *testing.T) {
 		return out
 	}
 	technical, response := h.history(historyTokenA, "hidden-task", "?selection=technical&limit=10")
-	if want := []string{"task.dependency_added", "merge.requested", "merge.confirmed", "merge.reconciled"}; response.Code != http.StatusOK || !slices.Equal(kinds(technical.Events), want) {
+	if want := []string{"task.dependency_added", "merge.requested", "merge.confirmed", "merge.reconciled", "task.plan_state_changed"}; response.Code != http.StatusOK || !slices.Equal(kinds(technical.Events), want) {
 		t.Fatalf("technical page kinds=%v want %v (%d)", kinds(technical.Events), want, response.Code)
 	}
 	human, response := h.history(historyTokenA, "hidden-task", "?selection=human&limit=10")
@@ -827,7 +831,7 @@ func TestTaskHistoryKeepsTimelineHiddenKindsTechnical(t *testing.T) {
 	if !slices.Equal(kinds(detail.Events), []string{"merge.reconciled"}) || detail.EventPage.Returned != 1 {
 		t.Fatalf("bounded view kinds=%v page=%+v", kinds(detail.Events), detail.EventPage)
 	}
-	for _, id := range []string{"1", "2", "3"} {
+	for _, id := range []string{"1", "2", "3", "5"} {
 		if audit := h.get(historyTokenA, "/v1/tasks/hidden-task/audit/event/"+id); audit.Code != http.StatusOK {
 			t.Fatalf("audit read of event %s: %d", id, audit.Code)
 		}

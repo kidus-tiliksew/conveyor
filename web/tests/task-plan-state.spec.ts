@@ -599,39 +599,61 @@ test('a 400 or 403 shows the server message and is never retried', async ({ page
 
 // ---- Timeline (invariant 65) and the planning request card ----
 
-test('a plan-state move names both labels, the cause, and the actor', async ({ page }) => {
-  await mockServer(page, {
-    details: [
-      detail('timeline-plan', 'not_required', {
-        events: [
-          {
-            id: 1,
-            task_id: 'timeline-plan',
-            kind: 'task.plan_state_changed',
-            actor_id: 'user:usr_person',
-            actor_role: 'human',
-            payload: { from: null, to: 'needed', cause: 'intake' },
-            at,
-          },
-          {
-            id: 2,
-            task_id: 'timeline-plan',
-            kind: 'task.plan_state_changed',
-            actor_id: 'user:usr_person',
-            actor_role: 'human',
-            payload: { from: 'needed', to: 'not_required', cause: 'operator' },
-            at: '2026-11-09T10:05:00Z',
-          },
-        ],
-      }),
-    ],
+// A plan-state move reads from the plan section and its label, so the timeline
+// renders no entry for an intake, plan-submission, or operator move, with or
+// without an omitted payload, while technical activity still lists each
+// recorded move (component-web-task-surfaces invariants 24 and 65;
+// component-plan-state invariant 3).
+test('plan-state moves render no timeline entry and stay in technical activity', async ({ page }) => {
+  const id = 'timeline-plan'
+  const move = (eventID: number, minute: number, payload: Record<string, unknown>) => ({
+    id: eventID,
+    task_id: id,
+    kind: 'task.plan_state_changed',
+    actor_id: 'user:usr_person',
+    actor_role: 'human',
+    payload,
+    at: `2026-11-09T10:0${minute}:00Z`,
   })
-  await page.goto('/w/demo/tasks/timeline-plan/full')
+  const events: EventFixture[] = [
+    move(1, 0, { from: null, to: 'needed', cause: 'intake' }),
+    move(2, 2, { from: 'needed', to: 'awaiting_approval', cause: 'plan_submitted' }),
+    move(3, 4, { from: 'awaiting_approval', to: 'not_required', cause: 'operator' }),
+    {
+      ...move(4, 6, {}),
+      payload: null,
+      payload_omitted: true,
+      payload_bytes: 9000,
+      payload_index: { from: 'not_required', to: 'needed', cause: 'operator' },
+      audit_available: true,
+    },
+  ]
+  await mockServer(page, { details: [detail(id, 'needed', { events })] })
+  await page.route(`**/v1/tasks/${id}/history*`, (route) =>
+    route.fulfill({
+      json: {
+        selection: 'technical',
+        limit: 50,
+        events: events.map((entry) => ({ ...entry, id: String(entry.id) })),
+        boundary: { max_id: '4', count: events.length },
+        has_older: false,
+        has_newer: false,
+      },
+    }),
+  )
+  await page.goto(`/w/demo/tasks/${id}/full`)
   const timeline = page.getByRole('region', { name: 'Execution event timeline' })
-  await expect(timeline.getByText('Plan state set to Planning needed')).toBeVisible()
-  await expect(timeline.getByText('Set when the task was filed · By User · usr_person')).toBeVisible()
-  await expect(timeline.getByText('Plan state changed from Planning needed to No plan required')).toBeVisible()
-  await expect(timeline.getByText('Changed by an operator · By User · usr_person')).toBeVisible()
+  await expect(timeline).toBeVisible()
+  await expect(timeline.getByText(/Plan state/)).toHaveCount(0)
+  for (const label of Object.values(labels)) await expect(timeline.getByText(label)).toHaveCount(0)
+  await expect(
+    timeline.getByText(/Set when the task was filed|A plan was submitted|Changed by an operator/),
+  ).toHaveCount(0)
+  await expect(timeline.getByText('Details omitted from this page')).toHaveCount(0)
+  await expect(planSection(page).locator('[data-plan-state-label]')).toHaveText('Planning needed')
+  await page.getByRole('button', { name: 'Show technical activity' }).click()
+  const technical = page.getByRole('list', { name: 'Technical activity events' })
+  await expect(technical.getByText('task.plan_state_changed', { exact: true })).toHaveCount(4)
 })
 
 test('a planning request from a task that needs no plan shows its decision card', async ({ page }) => {
