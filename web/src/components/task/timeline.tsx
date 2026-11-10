@@ -955,15 +955,24 @@ function PanelEntry({
                 <span className="text-[11px] text-faint">counts as one round, however many seats dissented</span>
               )}
             </div>
-            {notes.map((seat) => (
-              <div
-                key={seat.seat}
-                className="grid grid-cols-[2.75rem_1fr] gap-x-2.5 border-t border-dashed border-border/70 py-2 text-sm first:border-t-0 first:pt-0 last:pb-0"
-              >
-                <span className="pt-0.5 text-xs text-faint">Seat {seat.seat}</span>
-                <SeatNote seat={seat} taskId={taskId} />
-              </div>
-            ))}
+            {/* A one-seat panel needs no seat attribution, so its note takes the
+                full card width. The zero-minimum track keeps a long unbroken
+                token from widening the note past the card. */}
+            {notes.map((seat) =>
+              seats.length > 1 ? (
+                <div
+                  key={seat.seat}
+                  className="grid grid-cols-[2.75rem_minmax(0,1fr)] gap-x-2.5 border-t border-dashed border-border/70 py-2 text-sm first:border-t-0 first:pt-0 last:pb-0"
+                >
+                  <span className="pt-0.5 text-xs text-faint">Seat {seat.seat}</span>
+                  <SeatNote seat={seat} taskId={taskId} />
+                </div>
+              ) : (
+                <div key={seat.seat} className="text-sm">
+                  <SeatNote seat={seat} taskId={taskId} />
+                </div>
+              ),
+            )}
           </div>
         )}
         {entry.round > 0 && (
@@ -982,17 +991,12 @@ function PanelEntry({
               <Undo2 className="mt-0.5 size-4 shrink-0" />
             )}
             {/* The icon stays beside the text however narrow the column gets. */}
-            <span className="min-w-0 flex-1">
+            <span className="min-w-0 flex-1" data-review-banner>
               {resolution.verdict === 'approve'
                 ? seats.length > 1
                   ? `The panel is unanimous — ${seats.length} of ${seats.length} approved`
                   : 'Approved'
-                : `Changes requested — ${changes} of ${seats.length} ${seats.length > 1 ? 'seats' : 'seat'}`}{' '}
-              <span className="text-xs font-normal opacity-80">
-                {resolution.verdict === 'changes_requested'
-                  ? `feedback sent back as one round${resolution.bounce ? ` · ${resolution.bounce} used so far` : ''}`
-                  : ''}
-              </span>
+                : changesRequestedBanner(changes, seats.length, resolution.bounce)}
             </span>
           </div>
         ) : (
@@ -1011,6 +1015,16 @@ function PanelEntry({
       </article>
     </li>
   )
+}
+
+// The header badge already says "Changes requested", so the banner states what
+// happened next. A one-seat panel omits the seat count, and a recorded zero
+// bounce still shows (conveyor-plain-english, DEC-126).
+function changesRequestedBanner(changes: number, seatCount: number, bounce?: number) {
+  const parts = ['Sent back for changes']
+  if (seatCount > 1) parts.push(`${changes} of ${seatCount} seats asked for changes`)
+  if (typeof bounce === 'number') parts.push(`${bounce} ${bounce === 1 ? 'bounce' : 'bounces'} used`)
+  return parts.join(' · ')
 }
 
 // The panel header's tooltip names where the round's seat count came from in
@@ -1036,15 +1050,19 @@ function reviewSeatSourceTitle(metadata: TaskReviewSeatMetadata) {
 
 function SeatRow({ seat, index, usageAvailable }: { seat: PanelSeat; index: number; usageAvailable: boolean }) {
   const progress = reviewSeatProgress(seat.order.progress)
-  // Only the order's current model is a name the seat reports. A required model
-  // is a historical pin, a worker-pinned order was launched on its model, and a
-  // job keeps an earlier attempt's model after a release or an expiry clears
-  // the order's (AC-2.12; DEC-104(4)).
-  const reportedModel = seat.order.model_enforcement !== 'worker-pinned' && seat.order.model?.trim()
+  // A seat shows its current reported model with no self-reported label, and
+  // the implementer match only when the verdict recorded `true` (AC-2.12;
+  // component-review invariant 39).
+  //
+  // The grid keeps the seat label, the model, and the verdict on one line at
+  // any width: the model column alone shrinks, and the model chip truncates.
+  // The match, risk tier, and usage wrap below the model inside its column.
+  // A phone drops the fixed label column and the wider gaps to give the model
+  // more room.
   return (
-    <div className="flex flex-wrap items-center gap-x-3 gap-y-1.5 px-4 py-2.5">
-      <span className="w-11 shrink-0 text-xs text-faint">Seat {seat.seat}</span>
-      <span className="flex min-w-0 flex-wrap items-baseline gap-x-1.5 text-[11px] tabular-nums text-muted max-sm:basis-[calc(100%-3.5rem)] sm:flex-[1_1_7rem]">
+    <div className="grid grid-cols-[auto_minmax(0,1fr)_auto] items-baseline gap-x-2 gap-y-1.5 px-4 py-2.5 sm:grid-cols-[2.75rem_minmax(0,1fr)_auto] sm:gap-x-3">
+      <span className="text-xs text-faint">Seat {seat.seat}</span>
+      <span className="flex min-w-0 flex-wrap items-baseline gap-x-3 gap-y-1 text-[11px] tabular-nums text-muted">
         <ModelChip
           model={seat.model}
           agent={seat.order.agent}
@@ -1054,22 +1072,21 @@ function SeatRow({ seat, index, usageAvailable }: { seat: PanelSeat; index: numb
           usageAvailable={usageAvailable}
           showUnavailableUsage={false}
         />
-        {reportedModel && <span className="whitespace-nowrap font-sans text-faint">self-reported</span>}
+        {seat.review?.sameModelAsImplementer && (
+          <span className="font-sans text-attention">same model as implementer</span>
+        )}
+        <SeatRiskTier tier={seat.review?.riskTier} reason={seat.review?.riskReason} />
+        {usageAvailable && (
+          <span className="text-faint">
+            {compactTokens(seat.order.tokens_in)} in / {compactTokens(seat.order.tokens_out)} out
+          </span>
+        )}
       </span>
-      {seat.review?.sameModelAsImplementer && (
-        <span className="text-[11px] text-attention">same model as implementer</span>
-      )}
-      <SeatRiskTier tier={seat.review?.riskTier} reason={seat.review?.riskReason} />
-      {usageAvailable && (
-        <span className="text-[11px] tabular-nums text-faint">
-          {compactTokens(seat.order.tokens_in)} in / {compactTokens(seat.order.tokens_out)} out
-        </span>
-      )}
-      <span className="ml-auto">
+      <span className="justify-self-end">
         <SeatState seat={seat} index={index} />
       </span>
       {seat.status === 'deliberating' && progress && (
-        <p className="w-full line-clamp-2 text-xs leading-5 text-muted">{progress}</p>
+        <p className="col-span-full line-clamp-2 text-xs leading-5 text-muted">{progress}</p>
       )}
     </div>
   )
@@ -1094,10 +1111,13 @@ function SeatNote({ seat, taskId }: { seat: PanelSeat; taskId: string }) {
   const viewportID = useId()
 
   return (
-    <div>
-      <div className="relative">
-        <div id={viewportID} ref={collapse.viewportRef} style={collapse.viewportStyle}>
-          <MarkdownProse className="markdown-demoted text-sm">{seat.review!.feedback.trim()}</MarkdownProse>
+    <div className="min-w-0">
+      <div className="relative min-w-0">
+        <div id={viewportID} ref={collapse.viewportRef} style={collapse.viewportStyle} className="min-w-0">
+          {/* Long paths and identifiers break anywhere; fenced code keeps its own scroll box. */}
+          <MarkdownProse className="markdown-demoted text-sm [overflow-wrap:anywhere]">
+            {seat.review!.feedback.trim()}
+          </MarkdownProse>
         </div>
         {collapse.clamped && (
           <div
@@ -1435,7 +1455,7 @@ function ModelChip({
     .filter(Boolean)
     .join(' · ')
   return (
-    <span className="group/model relative inline-flex max-w-full cursor-default items-center gap-1.5">
+    <span className="group/model relative inline-flex min-w-0 max-w-full cursor-default items-center gap-1.5">
       {logo ? (
         <span
           aria-hidden
@@ -1445,8 +1465,12 @@ function ModelChip({
       ) : (
         <Cpu aria-hidden className="size-3.5 shrink-0 text-faint" />
       )}
+      {/* The inner span draws the ellipsis, which a flex button cannot, and
+          keeps the full name in its title. */}
       <Disclosure triggerClassName="truncate" title={model} content={model}>
-        {model}
+        <span className="truncate" title={model}>
+          {model}
+        </span>
       </Disclosure>
       {usage && (
         <span

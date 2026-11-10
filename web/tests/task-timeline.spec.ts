@@ -1315,8 +1315,9 @@ test('round summaries attach only to their matching review panels', () => {
   expect(legacy[0].roundSummary).toBeUndefined()
 })
 
-// req-review-gates-evidence AC-2.12: a reported name reads self-reported, a
-// recorded match reads as such, and the panel states the frozen policy.
+// req-review-gates-evidence AC-2.12 and component-review invariant 39: a seat
+// shows its current reported model with no self-reported label, a recorded
+// match reads as such, and the panel states the frozen policy.
 function seatLabelPanel(distinctModels: boolean) {
   const seat = (n: number, extra: Partial<WorkOrder>) =>
     order(`${taskId}-review-1-seat-${n}`, {
@@ -1367,9 +1368,10 @@ test('review seats label reported models and the recorded implementer match', as
 
   await expect(timeline.getByText('· task policy: distinct seat models')).toBeVisible()
   await expect(seat(1).getByText('claude-sonnet-5-5', { exact: true })).toBeVisible()
-  await expect(seat(1).getByText('self-reported', { exact: true })).toBeVisible()
+  await expect(seat(1).getByText('self-reported')).toHaveCount(0)
   await expect(seat(1).getByText('same model as implementer', { exact: true })).toBeVisible()
-  await expect(seat(2).getByText('self-reported', { exact: true })).toBeVisible()
+  await expect(seat(2).getByText('gpt-6', { exact: true })).toBeVisible()
+  await expect(seat(2).getByText('self-reported')).toHaveCount(0)
   await expect(seat(2).getByText('same model as implementer')).toHaveCount(0)
   await expect(seat(3).getByText('self-reported')).toHaveCount(0)
   await expect(seat(3).getByText('same model as implementer')).toHaveCount(0)
@@ -1427,7 +1429,9 @@ test('review panel shows its current round summary above unchanged seat feedback
   expect(above).toBe(true)
   await expect(summarized.locator('[data-review-verdict]')).toHaveText('Changes requested')
   await expect(summarized.getByText('Seat 1 feedback: add the missing regression test.')).toBeVisible()
-  await expect(summarized.getByText('Changes requested — 1 of 2 seats')).toBeVisible()
+  await expect(summarized.locator('[data-review-banner]')).toHaveText(
+    'Sent back for changes · 1 of 2 seats asked for changes · 1 bounce used',
+  )
   await expect(unsummarized.locator('[data-review-round-summary]')).toHaveCount(0)
   await expect(unsummarized.locator('[data-review-verdict]')).toHaveText('Approved')
   await expect(unsummarized.locator('div.divide-y > div')).toHaveCount(1)
@@ -1689,3 +1693,286 @@ test('a stalled queued task with a redispatch choice renders no timeline redispa
     page.getByRole('region', { name: 'Execution event timeline' }).getByRole('button', { name: 'Redispatch' }),
   ).toHaveCount(0)
 })
+
+// The review panel reads on a phone (task 261110-50771a;
+// component-web-task-surfaces; req-review-gates-evidence AC-2.7, AC-2.12):
+// each settled seat row keeps its label, model, verdict, and duration on one
+// line, notes wrap inside the card, a one-seat panel's note has no seat
+// gutter, and the settled banner states what happened next in short words.
+type PanelSeatFixture = {
+  model: string
+  verdict: 'approve' | 'changes_requested'
+  feedback?: string
+  same?: 'true' | 'false' | 'unknown'
+  risk?: 'low' | 'medium' | 'high'
+}
+
+// A 120-character unbroken token, such as a long code path or identifier.
+const longToken = 'internal/dispatch/merge.go:949-990#mergeApprovedTaskLocked'.repeat(3).slice(0, 120)
+const longNote = [
+  `The merge path in ${longToken} skips the check-status read.`,
+  'Read the approved head before the automatic merge, and hold the task on a failed check.',
+  '```go\nif err := mergeApprovedTaskLocked(ctx, task, head, policy, checks, audit, recorder, clock); err != nil { return err }\n```',
+  'Add a regression test that holds the merge on a pending check.',
+  'Add a second test that records the deadline only on the first pending read.',
+].join('\n\n')
+
+function reviewPanel(seats: PanelSeatFixture[], extra: { bounce?: number; verdict?: string } = {}) {
+  const id = (n: number) => `${taskId}-review-1-seat-${n}`
+  const roundVerdict =
+    extra.verdict ?? (seats.some((seat) => seat.verdict === 'changes_requested') ? 'changes_requested' : 'approve')
+  return activity({
+    task: { ...task, policy_contract: { review: { seats: seats.map(() => ({})) } } },
+    latest_stage: roundVerdict === 'approve' ? 'review' : 'implement',
+    work_orders: seats.map((seat, index) =>
+      order(id(index + 1), {
+        stage: 'review',
+        state: 'completed',
+        job_id: id(index + 1),
+        review_round: 1,
+        review_seat: index + 1,
+        model: seat.model,
+        agent: 'claude-code',
+        model_enforcement: 'self-reported',
+      }),
+    ),
+    jobs: seats.map((_, index) =>
+      job(id(index + 1), 'review', 'done', { started_at: minutes(6), ended_at: minutes(14 + index) }),
+    ),
+    summaries: {
+      review_results: {
+        by_order: Object.fromEntries(
+          seats.map((seat, index) => [
+            id(index + 1),
+            {
+              verdict: seat.verdict,
+              summary: seat.verdict === 'approve' ? 'Approved' : 'Changes needed',
+              feedback: seat.feedback ?? '',
+              at: minutes(14 + index),
+              event_id: String(100 + index),
+              ...(seat.same ? { same_model_as_implementer: seat.same } : {}),
+              ...(seat.risk ? { risk_tier: seat.risk, risk_reason: 'Touches the merge path.' } : {}),
+            },
+          ]),
+        ),
+      },
+      review_rounds: {
+        by_round: {
+          '1': {
+            event_id: '200',
+            verdict: roundVerdict,
+            summary: roundVerdict === 'approve' ? 'All review panel seats approved.' : 'Changes requested.',
+            at: minutes(20),
+          },
+        },
+        by_order: {},
+      },
+      ...(extra.bounce === undefined ? {} : { review_bounces: { '1': extra.bounce } }),
+      review_round_seats: {
+        by_round: {
+          '1': { review_round: 1, seat_count: seats.length, seat_count_source: 'minimum', minimum_seat_count: 1 },
+        },
+        by_order: {},
+      },
+    },
+  })
+}
+
+const oneSeatChanges = () =>
+  reviewPanel([{ model: 'claude-sonnet-5-5', verdict: 'changes_requested', feedback: longNote }], { bounce: 1 })
+const threeSeatMixed = () =>
+  reviewPanel(
+    [
+      { model: 'claude-opus-5-5', verdict: 'approve', same: 'true', risk: 'medium' },
+      {
+        model: 'gpt-6.1-sol-extended-reasoning-preview-2026-11-01',
+        verdict: 'changes_requested',
+        feedback: longNote,
+        same: 'false',
+      },
+      { model: 'gemini-3-pro', verdict: 'changes_requested', feedback: 'Rename `mergeApprovedTaskLocked`.' },
+    ],
+    { bounce: 2 },
+  )
+const threeSeatApproved = () =>
+  reviewPanel([
+    { model: 'claude-opus-5-5', verdict: 'approve', feedback: 'Looks right.' },
+    { model: 'gpt-6.1-sol', verdict: 'approve' },
+    { model: 'gemini-3-pro', verdict: 'approve' },
+  ])
+
+async function openPanel(page: Page, item: object, width: number) {
+  await page.setViewportSize({ width, height: 900 })
+  await mockAPI(page, item, nextAction(`${taskId}-implement-2`))
+  await page.goto(`/w/demo/tasks/${taskId}/full`)
+  const panel = page.getByRole('region', { name: 'Execution event timeline' }).locator('li article')
+  await expect(panel).toHaveCount(1)
+  await page.evaluate(() => document.fonts.ready)
+  return panel
+}
+
+type Box = { x: number; y: number; width: number; height: number }
+async function box(locator: Locator): Promise<Box> {
+  const bounds = await locator.boundingBox()
+  expect(bounds).not.toBeNull()
+  return bounds as Box
+}
+
+// The visible pill, not its larger disclosure touch target.
+const seatRow = (panel: Locator, n: number) => panel.getByText(`Seat ${n}`, { exact: true }).first().locator('..')
+const seatPill = (row: Locator) => row.locator('span.rounded-full').filter({ hasText: /^(Approved|Changes)$/ })
+
+async function expectOneLine(row: Locator, n: number, model: string) {
+  const label = await box(row.getByText(`Seat ${n}`, { exact: true }))
+  const pill = await box(seatPill(row))
+  const chip = await box(row.getByTitle(model, { exact: true }).first())
+  const took = await box(row.getByText(/^\d+m \d{2}s$/))
+  for (const other of [pill, chip, took]) expect(Math.abs(other.y - label.y)).toBeLessThanOrEqual(4)
+}
+
+async function expectInside(panel: Locator, inner: Locator) {
+  const outer = await box(panel)
+  const count = await inner.count()
+  expect(count).toBeGreaterThan(0)
+  for (let i = 0; i < count; i++) {
+    const bounds = await box(inner.nth(i))
+    expect(bounds.x).toBeGreaterThanOrEqual(outer.x - 0.5)
+    expect(bounds.x + bounds.width).toBeLessThanOrEqual(outer.x + outer.width + 0.5)
+  }
+}
+
+async function expectNoteContained(page: Page, panel: Locator) {
+  await expectInside(panel, panel.locator('.markdown'))
+  await expectInside(panel, panel.locator('.markdown pre'))
+  await expectInside(panel, panel.getByRole('button', { name: /seat \d+ notes/ }))
+  // Prose wraps inside its box; fenced code scrolls inside its own.
+  for (const prose of await panel.locator('.markdown').all()) {
+    expect(await prose.evaluate((element) => element.scrollWidth <= element.clientWidth)).toBe(true)
+  }
+  expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBe(375)
+}
+
+test('a one-seat changes-requested panel reads on a 375 px screen', async ({ page }) => {
+  expect(longToken).toHaveLength(120)
+  const panel = await openPanel(page, oneSeatChanges(), 375)
+  const row = seatRow(panel, 1)
+
+  // Seat 1, the model chip, the verdict pill, and the duration share one line.
+  await expectOneLine(row, 1, 'claude-sonnet-5-5')
+  await expect(row.getByText('self-reported')).toHaveCount(0)
+
+  // One seat needs no attribution beside its note: "Seat 1" appears once.
+  await expect(panel.getByText('Seat 1', { exact: true })).toHaveCount(1)
+  await expect(panel.getByText(longToken, { exact: false })).toBeVisible()
+  await expectNoteContained(page, panel)
+  const code = panel.locator('.markdown pre')
+  expect(await code.evaluate((element) => element.scrollWidth > element.clientWidth)).toBe(true)
+
+  // The expanded note stays inside the card too.
+  const more = panel.getByRole('button', { name: 'Expand seat 1 notes' })
+  await expect(more).toHaveText('More')
+  await more.click()
+  await expect(panel.getByRole('button', { name: 'Collapse seat 1 notes' })).toHaveText('Less')
+  await expectNoteContained(page, panel)
+
+  await expect(panel.locator('[data-review-verdict]')).toHaveText('Changes requested')
+  await expect(panel.locator('[data-review-banner]')).toHaveText('Sent back for changes · 1 bounce used')
+  await expect(panel.getByText('Panel of 1 · minimum 1', { exact: true })).toBeVisible()
+})
+
+test('a three-seat panel keeps each seat row on one line at 375 px and attributes each note', async ({ page }) => {
+  const panel = await openPanel(page, threeSeatMixed(), 375)
+  const longModel = 'gpt-6.1-sol-extended-reasoning-preview-2026-11-01'
+
+  await expectOneLine(seatRow(panel, 1), 1, 'claude-opus-5-5')
+  await expectOneLine(seatRow(panel, 3), 3, 'gemini-3-pro')
+  // A model name longer than the row truncates with an ellipsis, keeps its
+  // full name in the chip's title, and leaves the pill on the seat's line.
+  await expectOneLine(seatRow(panel, 2), 2, longModel)
+  const name = seatRow(panel, 2).getByText(longModel, { exact: true })
+  expect(await name.evaluate((element) => element.scrollWidth > element.clientWidth)).toBe(true)
+  expect(await name.evaluate((element) => getComputedStyle(element).textOverflow)).toBe('ellipsis')
+
+  // The recorded match and the risk tier stay readable; no seat says self-reported.
+  await expect(seatRow(panel, 1).getByText('same model as implementer', { exact: true })).toBeVisible()
+  await expect(seatRow(panel, 1).locator('[data-seat-risk-tier="medium"]')).toBeVisible()
+  await expect(seatRow(panel, 2).getByText('same model as implementer')).toHaveCount(0)
+  await expect(panel.getByText('self-reported')).toHaveCount(0)
+
+  // Each note in a multi-seat panel keeps its seat label.
+  const notes = panel.locator('div.grid').filter({ has: page.locator('.markdown') })
+  await expect(notes).toHaveCount(2)
+  await expect(notes.nth(0).getByText('Seat 2', { exact: true })).toBeVisible()
+  await expect(notes.nth(1).getByText('Seat 3', { exact: true })).toBeVisible()
+  await expectNoteContained(page, panel)
+
+  await expect(panel.locator('[data-review-banner]')).toHaveText(
+    'Sent back for changes · 2 of 3 seats asked for changes · 2 bounces used',
+  )
+})
+
+const bannerCases: { name: string; item: () => object; text: string }[] = [
+  {
+    name: 'one seat without a recorded bounce',
+    item: () => reviewPanel([{ model: 'm', verdict: 'changes_requested', feedback: 'Fix it.' }]),
+    text: 'Sent back for changes',
+  },
+  {
+    name: 'one seat with a recorded zero bounce',
+    item: () => reviewPanel([{ model: 'm', verdict: 'changes_requested', feedback: 'Fix it.' }], { bounce: 0 }),
+    text: 'Sent back for changes · 0 bounces used',
+  },
+  {
+    name: 'two seats with one bounce',
+    item: () =>
+      reviewPanel(
+        [
+          { model: 'a', verdict: 'changes_requested', feedback: 'Fix it.' },
+          { model: 'b', verdict: 'approve' },
+        ],
+        { bounce: 1 },
+      ),
+    text: 'Sent back for changes · 1 of 2 seats asked for changes · 1 bounce used',
+  },
+  {
+    name: 'two seats with three bounces',
+    item: () =>
+      reviewPanel(
+        [
+          { model: 'a', verdict: 'changes_requested', feedback: 'Fix it.' },
+          { model: 'b', verdict: 'changes_requested', feedback: 'Fix it too.' },
+        ],
+        { bounce: 3 },
+      ),
+    text: 'Sent back for changes · 2 of 2 seats asked for changes · 3 bounces used',
+  },
+  { name: 'one approving seat', item: () => reviewPanel([{ model: 'm', verdict: 'approve' }]), text: 'Approved' },
+  { name: 'three approving seats', item: threeSeatApproved, text: 'The panel is unanimous — 3 of 3 approved' },
+]
+
+for (const { name, item, text } of bannerCases) {
+  test(`the settled review banner for ${name} reads "${text}"`, async ({ page }) => {
+    const panel = await openPanel(page, item(), 1280)
+    await expect(panel.locator('[data-review-banner]')).toHaveText(text)
+  })
+}
+
+// Mocked screenshots for visual inspection (AGENTS.md UI changes). The HTML
+// report carries each attachment, so CI uploads them with the report.
+const screenshotCases = [
+  { name: 'one-seat-changes', item: oneSeatChanges },
+  { name: 'three-seat-mixed', item: threeSeatMixed },
+  { name: 'three-seat-approved', item: threeSeatApproved },
+]
+
+for (const { name, item } of screenshotCases) {
+  for (const width of [375, 1280]) {
+    test(`review panel screenshot: ${name} at ${width} px`, async ({ page }, testInfo) => {
+      const panel = await openPanel(page, item(), width)
+      const path = testInfo.outputPath(`review-panel-${name}-${width}.png`)
+      await panel.screenshot({ path })
+      await testInfo.attach(`review-panel-${name}-${width}`, { path, contentType: 'image/png' })
+      if (width === 375) expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBe(375)
+    })
+  }
+}

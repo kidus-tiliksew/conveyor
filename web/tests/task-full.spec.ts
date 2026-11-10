@@ -5205,9 +5205,10 @@ test('review panel hides generated metadata while preserving reported zero usage
   await expect(panel.getByText('0 in / 0 out', { exact: true }).last()).toBeVisible()
   await expect(panel.getByText('Checking requirement citations.', { exact: true })).toBeVisible()
   await expect(panel.getByText(/conveyor run mode/i)).toHaveCount(0)
-  // Each seat's model carries the short label (req-review-gates-evidence AC-2.12),
-  // and the generated enforcement sentence stays hidden.
-  await expect(panel.getByText('self-reported', { exact: true })).toHaveCount(2)
+  // No seat row labels its model self-reported (req-review-gates-evidence
+  // AC-2.12; component-review invariant 39), and the generated enforcement
+  // sentence stays hidden.
+  await expect(panel.getByText('self-reported')).toHaveCount(0)
   await expect(panel.getByText(/model self-reported by the agent/i)).toHaveCount(0)
   await expect(panel.getByText('Usage unavailable')).toHaveCount(0)
   await expect(panel.getByRole('tooltip').filter({ hasText: 'Usage unavailable' })).toHaveCount(0)
@@ -9094,7 +9095,9 @@ test('review seat metadata stays with its historical round', async ({ page }) =>
   await expect(roundPanel(page, 'r2-model').getByTitle(/carried/)).toHaveCount(0)
   // Existing seat rows, verdict pills, and counts are unchanged.
   await expect(roundPanel(page, 'r2-model')).toContainText('Changes requested')
-  await expect(roundPanel(page, 'r1-model')).toContainText('Changes requested — 2 of 2 seats')
+  await expect(roundPanel(page, 'r1-model').locator('[data-review-banner]')).toContainText(
+    'Sent back for changes · 2 of 2 seats asked for changes',
+  )
 
   // An older server without metadata prints the seat count alone.
   const legacyServer = seatPanelItem('seat-no-metadata', { orders: seatHistory.orders.slice(0, 2), summaries: {} })
