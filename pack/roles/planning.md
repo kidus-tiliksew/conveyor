@@ -161,6 +161,21 @@ Finalize a requirement only when the operator's stated intent is sufficiently
 specific. It creates an unconfirmed version. Use a delivery bundle—not a
 blueprint or decomposition—to propose task fan-out.
 
+Timeline text:
+
+- Open each `response_text` with a plain sentence. It states what you did and
+  what happens next.
+- That sentence names no work-order or session ID, file path, migration number,
+  commit SHA, or REQ-n, AC-n.m, or DEC-n ID. Put required IDs in later
+  sentences.
+- Write `response_text` in plain English: at most 20 words per instruction and
+  25 per description, active voice, only "can", "must", and "will" as helping
+  verbs, one instruction per sentence, no semicolons or contractions, and one
+  name per item. The `conveyor-plain-english` skill holds the full profile when
+  installed.
+- Do not apply this profile to the documents, decisions, task bodies, or
+  bundles you draft. The prose discipline above governs them.
+
 Every new session declares a goal artifact — `requirement`, `system_design`, `bundle`, or `open`
 — stated with the conversation context below. A `requirement` goal accepts only
 `finalize_requirement`; a `system_design` goal accepts only

@@ -188,12 +188,46 @@ func TestConveyorCoordinateSkillInstallsForEveryTool(t *testing.T) {
 					t.Errorf("%s %s coordination playbook does not cite req-agent-coordination %s", scope.name, destination.tool.name, criterion)
 				}
 			}
-			// Each of the three thread role prompts carries the timeline rule (AC-3.3).
-			if got := bytes.Count(playbook, []byte("Timeline text: the first sentence of every progress message, decision reason,\nand review summary you write states in plain language what happened and what\nhappens next.")); got != 3 {
+			// Each of the three thread role prompts carries the timeline rule
+			// byte for byte (AC-3.3), and the quoted copy in "Readable
+			// timeline text" matches them word for word (DEC-126(1)).
+			if got := bytes.Count(playbook, []byte(coordinationTimelineRule)); got != 3 {
 				t.Errorf("%s %s coordination playbook carries the timeline rule in %d role prompts, want 3", scope.name, destination.tool.name, got)
+			}
+			if got := strings.Count(wordsOutsideBlockquotes(string(playbook)), wordsOutsideBlockquotes(coordinationTimelineRule)); got != 4 {
+				t.Errorf("%s %s coordination playbook carries %d word-for-word copies of the timeline rule, want 4", scope.name, destination.tool.name, got)
+			}
+			if normalized := strings.Join(strings.Fields(string(playbook)), " "); !strings.Contains(normalized, "Write your timeline text, every decision reason, and every operator escalation or out-of-band question under that profile (DEC-126(2)).") {
+				t.Errorf("%s %s coordination playbook does not apply the plain-English profile to its own text", scope.name, destination.tool.name)
 			}
 		}
 	}
+}
+
+// coordinationTimelineRule is the thread-prompt timeline rule of the
+// coordination playbook. Every thread prompt carries it byte for byte, and the
+// "Readable timeline text" section quotes it (req-agent-coordination AC-3.1 to
+// AC-3.3; DEC-126(1)).
+const coordinationTimelineRule = `Timeline text: the first sentence of every progress message, decision reason,
+and review summary you write states in plain language what happened and what
+happens next. That sentence contains no work-order or session identifiers,
+file paths, migration numbers, commit SHAs, or REQ-n, AC-n.m, or DEC-n
+identifiers. Put those in later sentences. Write this text under the
+conveyor-plain-english profile.
+`
+
+// wordsOutsideBlockquotes joins the words of text with single spaces and drops
+// Markdown blockquote markers, so a quoted copy compares word for word with
+// its fenced original.
+func wordsOutsideBlockquotes(text string) string {
+	words := strings.Fields(text)
+	kept := words[:0]
+	for _, word := range words {
+		if word != ">" {
+			kept = append(kept, word)
+		}
+	}
+	return strings.Join(kept, " ")
 }
 
 // The plain-English profile skill lists and installs with the other embedded
@@ -1766,6 +1800,43 @@ func TestConveyorWorkSkillShipsEvidenceReviewBotBaseMergeAndSeatFailureRules(t *
 				if strings.Contains(normalized, fragment) {
 					t.Errorf("%s installed %s still contains %q", destination.tool.name, file, fragment)
 				}
+			}
+		}
+	}
+}
+
+// The execution-loop playbook states the first-sentence timeline rules and
+// writes timeline text, gate offers, and operator questions under the
+// plain-English profile. Claim entry and stage completion point to the rules
+// (req-readable-agent-text AC-1.2 to AC-1.4; component-cli-onboarding clause
+// 41; DEC-126(2)).
+func TestConveyorWorkSkillShipsReadableTimelineText(t *testing.T) {
+	t.Parallel()
+	base := t.TempDir()
+	destinations := skillDestinations(base, supportedSkillTools, false)
+	if _, _, err := installEmbeddedSkillsForDestinations(base, destinations, "v1", false); err != nil {
+		t.Fatal(err)
+	}
+	required := []string{
+		"## Readable timeline text",
+		"The task timeline shows progress messages, release and checkpoint reasons, review verdict summaries, and verification summaries.",
+		"Open each of these texts with one plain sentence. It states what happened and what happens next (AC-1.2).",
+		"It contains no work-order or session identifiers, file paths, migration numbers, commit SHAs, or REQ-n, AC-n.m, or DEC-n identifiers (AC-1.3).",
+		"Put the identifiers that other instructions require in later sentences.",
+		"Write timeline text, every gate offer, and every operator question under the `conveyor-plain-english` profile (DEC-126(2)).",
+		"It does not change what a gate offer lists, the replies it offers, or the wait that follows, as [Human gates](#human-gates) describes.",
+		"Keep each progress message under a few sentences. Write it as [Readable timeline text](#readable-timeline-text) describes.",
+		"`release_work_order` with a truthful reason. Write the reason and every summary as [Readable timeline text](#readable-timeline-text) describes.",
+	}
+	for _, destination := range destinations {
+		content, err := os.ReadFile(filepath.Join(destination.root, "conveyor-work", "conveyor-work.md"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		normalized := strings.Join(strings.Fields(string(content)), " ")
+		for _, fragment := range required {
+			if !strings.Contains(normalized, fragment) {
+				t.Errorf("%s installed conveyor-work.md missing %q", destination.tool.name, fragment)
 			}
 		}
 	}

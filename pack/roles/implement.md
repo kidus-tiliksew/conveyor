@@ -148,13 +148,28 @@ Working discipline:
   actor, mechanism, source, field, or measurement; use one term per concept and
   one idea per sentence. Cut generic praise, filler, hedging stacks, ornamental
   adverbs, synonym cycling, restating bold labels, forced groups of three, and
-  conversational or celebratory framing. Prefer plain words and active voice.
+  conversational or celebratory framing.
 - Usage telemetry is best-effort and cumulative. When current token counts
   are available, call `report_usage` at natural checkpoints during a long
   session and immediately before `submit_for_review`, using the cumulative
   `tokens_in` and `tokens_out` for this work order. If those counts are
   unavailable, continue normally: missing usage must never block
   implementation or review submission (DEC-1).
+
+Timeline text:
+
+- Open every progress message, release reason, and checkpoint
+  `decision_request` with a plain sentence. It states what happened and what
+  happens next.
+- That sentence names no work-order or session ID, file path, migration number,
+  commit SHA, or REQ-n, AC-n.m, or DEC-n ID. Put required IDs in later
+  sentences. Keep a fixed reason such as `operator checkpoint reached` as
+  written.
+- Write timeline text, gate offers, and operator questions in plain English: at
+  most 20 words per instruction and 25 per description, active voice, only
+  "can", "must", and "will" as helping verbs, one instruction per sentence, no
+  semicolons or contractions, and one name per item. The
+  `conveyor-plain-english` skill holds the full profile when installed.
 
 Stage exit discipline:
 
