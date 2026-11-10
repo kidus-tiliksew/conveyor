@@ -1825,7 +1825,7 @@ func planReviewSeatPointer(value int) *int { return &value }
 // "tools fetch failed" at connection time.
 // TestMCPCreateTaskToolDescribesItsRules keeps the published description in step
 // with DEC-116(5) and component-task-lifecycle invariant 16, and keeps the schema
-// title-less with the retired execution fields and the retired hold (DEC-122(3))
+// title-less with the retired execution fields and the retired hold (DEC-125(3))
 // absent.
 func TestMCPCreateTaskToolDescribesItsRules(t *testing.T) {
 	t.Parallel()
@@ -2057,7 +2057,7 @@ func TestMCPCreateTaskEnqueuesTriageIdempotently(t *testing.T) {
 }
 
 // TestMCPCreateTaskRefusesRetiredHold covers the compatibility input for the
-// retired hold (DEC-122(3); component-mcp-protocol): a new true and a mistyped
+// retired hold (DEC-125(3); component-mcp-protocol): a new true and a mistyped
 // value are refused in-band with no side effect, omitted, null, and false are
 // accepted, and a retry whose key names a task stored with hold before the
 // retirement returns that original task.
@@ -2088,7 +2088,7 @@ func TestMCPCreateTaskRefusesRetiredHold(t *testing.T) {
 		return len(tasks)
 	}
 	for name, value := range map[string]any{"true": true, "string": "yes", "number": 1} {
-		if _, err := server.callMCPTool(request, "create_task", arguments("refused-"+name, map[string]any{"hold": value})); err == nil || !strings.Contains(err.Error(), "task_hold_retired") || !strings.Contains(err.Error(), "DEC-122") {
+		if _, err := server.callMCPTool(request, "create_task", arguments("refused-"+name, map[string]any{"hold": value})); err == nil || !strings.Contains(err.Error(), "task_hold_retired") || !strings.Contains(err.Error(), "DEC-125") {
 			t.Fatalf("%s hold error=%v", name, err)
 		}
 	}

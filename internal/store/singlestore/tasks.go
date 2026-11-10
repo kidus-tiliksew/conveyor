@@ -285,7 +285,7 @@ func insertTaskRow(ctx context.Context, tx *sql.Tx, t core.Task) error {
 		"class":                t.Class,
 		"escalation_level":     t.Level,
 		"mode":                 t.Mode,
-		"hold":                 false, // a task carries no worker reservation (DEC-122(3))
+		"hold":                 false, // a task carries no worker reservation (DEC-125(3))
 		"spec_approval":        t.SpecApproval,
 		"plan_state":           string(t.PlanState),
 		"merge_approval":       t.MergeApproval,
@@ -802,7 +802,7 @@ func taskPredicate(ctx context.Context, f store.TaskFilter) (string, []any) {
 	addIn("repo_name", f.Repositories)
 	// plan_state applies before paging and totals like every other member,
 	// reading a NULL left by a pre-migration writer as needed, as taskColumns
-	// does (component-http-api invariant 20; DEC-122(5)).
+	// does (component-http-api invariant 20; DEC-125(5)).
 	planStates := make([]string, len(f.PlanStates))
 	for i, v := range f.PlanStates {
 		planStates[i] = string(v)

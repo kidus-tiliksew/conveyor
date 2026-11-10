@@ -312,7 +312,7 @@ export function TaskCreateSheet() {
           </div>
         </details>
 
-        {/* A task carries no hold or execution reservation (DEC-122(3)), and a
+        {/* A task carries no hold or execution reservation (DEC-125(3)), and a
             filed task waits in the queue for an agent session with no
             availability warning (req-task-lifecycle-and-queue AC-9.4). */}
 

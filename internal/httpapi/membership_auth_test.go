@@ -34,6 +34,9 @@ type membershipFixture struct {
 	instanceAdmins   map[string]bool
 	instanceAdminErr error
 	instanceCalls    int
+	// members and membersErr answer ListWorkspaceMembers.
+	members    []core.WorkspaceMembership
+	membersErr error
 }
 
 type identityProvisioningFixture struct {
@@ -121,7 +124,7 @@ func (f *membershipFixture) ListWorkspacesForUser(_ context.Context, userID stri
 	return result, nil
 }
 func (f *membershipFixture) ListWorkspaceMembers(context.Context, string, string) ([]core.WorkspaceMembership, error) {
-	return nil, nil
+	return f.members, f.membersErr
 }
 func (f *membershipFixture) ListWorkspaceInvitations(_ context.Context, workspaceID string) ([]core.WorkspaceInvitation, error) {
 	f.invitationList = append(f.invitationList, workspaceID)

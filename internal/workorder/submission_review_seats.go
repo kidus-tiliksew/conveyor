@@ -11,7 +11,7 @@ import (
 )
 
 // ReviewSeatsBelowFloorCode is the refusal code for a declared review seat
-// count below the task's seat floor (req-review-gates-evidence AC-2.3; DEC-78;
+// count below the task's seat floor (req-review-gates-evidence AC-2.3; DEC-123;
 // feature-review-seat-minimum RS-4).
 const ReviewSeatsBelowFloorCode = "review_seats_below_floor"
 

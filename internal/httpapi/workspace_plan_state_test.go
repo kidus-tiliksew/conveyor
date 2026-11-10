@@ -69,7 +69,7 @@ func TestCreateWorkspaceResolvesDefaultPlanState(t *testing.T) {
 // /v1/workspace/config (which config import sends) and workspace creation
 // store the merge_approval a document states, false or true, whichever
 // plan-state key spelling it carries, and that an absent merge_approval stays
-// false, as these routes resolved it before the plan state (DEC-122(1);
+// false, as these routes resolved it before the plan state (DEC-125(1);
 // component-task-lifecycle invariant 18).
 func TestWorkspaceWritesKeepMergeApprovalForEitherPlanKeySpelling(t *testing.T) {
 	for _, plan := range []map[string]any{

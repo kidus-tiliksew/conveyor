@@ -283,7 +283,7 @@ test('new task removes title input and submits description for AI title generati
   expect(submitted()).not.toContain('setup')
   await expect(page).toHaveURL(/\/tasks\/generated$/)
   expect(submitted()).not.toContain('"title"')
-  // DEC-122(2), DEC-122(3): no execution-mode selector, and no hold is sent.
+  // DEC-125(2), DEC-125(3): no execution-mode selector, and no hold is sent.
   expect(submitted()).not.toContain('"mode"')
   expect(submitted()).not.toContain('"hold"')
 })
@@ -371,7 +371,7 @@ test('intake offers no hold control and no worker availability warning', async (
   const { submitted, workerRequests } = await mockTaskCreateAPIs(page)
   await page.goto('/w/demo/new')
 
-  // A task carries no hold or execution reservation (DEC-122(3)), and a filed
+  // A task carries no hold or execution reservation (DEC-125(3)), and a filed
   // task waits for an agent session with no availability warning
   // (req-task-lifecycle-and-queue AC-9.4; DEC-97(1)).
   await expect(page.getByRole('radiogroup', { name: 'Execution mode' })).toHaveCount(0)

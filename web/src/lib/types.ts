@@ -217,7 +217,7 @@ export interface Task {
   body: string
   class: string
   level: EscalationLevel | ''
-  // Legacy historical record; no task carries an execution reservation (DEC-122(3)).
+  // Legacy historical record; no task carries an execution reservation (DEC-125(3)).
   mode?: string
   assignee?: TaskAssignee
   // The task's plan state, read as served and never inferred
@@ -1126,6 +1126,37 @@ export interface TaskPolicyContract {
   stage_timeouts: Record<'spec' | 'implement' | 'review', string>
   review: { seats?: WorkspaceReviewSeat[]; fail_fast?: boolean; distinct_models?: boolean }
   refresh_review: 'delta' | 'full' | 'none'
+  // Present only when the task froze a risk policy in mode record or enforce
+  // (req-risk-based-review REQ-1, AC-1.1).
+  risk?: RiskPolicy
+}
+
+export type RiskMode = 'off' | 'record' | 'enforce'
+export type RiskTier = 'low' | 'medium' | 'high'
+export interface RiskTierRequirement {
+  agent_reviews: number
+  human_approvals: number
+}
+export type RiskTierTable = Record<RiskTier, RiskTierRequirement>
+export interface RiskPolicy {
+  mode: RiskMode
+  tiers: RiskTierTable
+}
+// The workspace risk_policy key. A saved policy always states its table; a
+// policy sent without one takes the default table (AC-1.3).
+export interface RiskPolicySettings {
+  mode: RiskMode
+  tiers?: RiskTierTable
+}
+
+// Advice the configuration routes return beside a document. It never refuses
+// a save (req-risk-based-review AC-1.4).
+export interface ConfigWarning {
+  code: string
+  field: string
+  message: string
+  required: number
+  available: number
 }
 
 export interface WorkspaceConfigDocument {
@@ -1150,6 +1181,8 @@ export interface WorkspaceConfigDocument {
     enabled: boolean
     enabled_at?: string
   }
+  // Absent when the workspace has no risk policy; absent reads as off.
+  risk_policy?: RiskPolicySettings
 }
 
 export type MonitorSignalKind = 'post_merge_failure' | 'direct_push' | 'external_pr_merge' | 'lineaged_merge' | 'revert'
@@ -1212,6 +1245,7 @@ export interface RateLimitStatus {
 export interface VersionedWorkspaceConfig {
   document: WorkspaceConfigDocument
   version: number
+  warnings?: ConfigWarning[]
 }
 
 export interface WorkspaceConfigReceipt extends VersionedWorkspaceConfig {

@@ -224,7 +224,7 @@ func (m *volatileMemory) UpdateWorkspaceConfig(ctx context.Context, expectedVers
 }
 
 func configDiff(before, after config.WorkspaceDocument) []string {
-	sections := make([]string, 0, 9)
+	sections := make([]string, 0, 10)
 	if before.Workspace != after.Workspace || before.MaxBounces != after.MaxBounces ||
 		before.WorkOrderQueueTimeoutText != after.WorkOrderQueueTimeoutText {
 		sections = append(sections, "workspace")
@@ -252,6 +252,9 @@ func configDiff(before, after config.WorkspaceDocument) []string {
 	}
 	if !reflect.DeepEqual(before.Execution, after.Execution) {
 		sections = append(sections, "execution")
+	}
+	if !reflect.DeepEqual(before.RiskPolicy, after.RiskPolicy) {
+		sections = append(sections, "risk_policy")
 	}
 	return sections
 }

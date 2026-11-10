@@ -908,7 +908,7 @@ for (const theme of ['light', 'dark'] as const) {
 
     await page.goto('/')
     await page.getByText('Activities surfaces read as one story').first().waitFor()
-    // No Board card renders a hold badge: a task carries no hold (DEC-122(3)).
+    // No Board card renders a hold badge: a task carries no hold (DEC-125(3)).
     await expect(page.getByText('Held', { exact: true })).toHaveCount(0)
     await page.screenshot({ path: `${shots}/board-${theme}.png` })
 

@@ -118,7 +118,7 @@ func (s *Server) createTaskRecordWithState(ctx context.Context, req createTaskRe
 			return taskCreateResult{Task: existing}, nil
 		}
 	}
-	// Hold is retired: a task carries no worker reservation (DEC-122(3)). The
+	// Hold is retired: a task carries no worker reservation (DEC-125(3)). The
 	// refusal follows the idempotency lookup so a retry of a task stored with
 	// hold before the retirement still returns that original task
 	// (component-http-api, Task intake).
@@ -143,7 +143,7 @@ func (s *Server) createTaskRecordWithState(ctx context.Context, req createTaskRe
 		selectedSetup = current.FreezePolicy()
 	}
 	// No mode axis, no reservation, and no intake-time health gating:
-	// serviceability is advisory and orders queue openly (DEC-122(2), DEC-122(3);
+	// serviceability is advisory and orders queue openly (DEC-125(2), DEC-125(3);
 	// component-task-lifecycle).
 	planState, mergeApproval := resolvedIntakePolicy(req, planRequest, current)
 	if repos != nil && !contains(repos, req.Repo) {
@@ -272,10 +272,10 @@ func (s *Server) redactionSecrets() redact.SecretSource {
 
 const (
 	// taskHoldRetired refuses a new hold: true intake and answers the retired
-	// PUT /v1/tasks/{id}/hold route (DEC-122(3); component-http-api).
+	// PUT /v1/tasks/{id}/hold route (DEC-125(3); component-http-api).
 	taskHoldRetired              = "task_hold_retired"
-	taskHoldRetiredIntakeMessage = "hold is retired (DEC-122); a task carries no worker reservation, so omit hold or send false"
-	taskHoldRetiredRouteMessage  = "task hold is retired (DEC-122); a task carries no worker reservation"
+	taskHoldRetiredIntakeMessage = "hold is retired (DEC-125); a task carries no worker reservation, so omit hold or send false"
+	taskHoldRetiredRouteMessage  = "task hold is retired (DEC-125); a task carries no worker reservation"
 	// invalidGateOverride refuses a gate or level input that is not a value
 	// the caller's request can apply. The wire name is kept as
 	// component-task-lifecycle invariant 16 states it.
@@ -283,7 +283,7 @@ const (
 )
 
 // resolvedIntakePolicy maps the request onto the two intake policy decisions:
-// the plan state and the merge gate (DEC-122(1); component-task-lifecycle).
+// the plan state and the merge gate (DEC-125(1); component-task-lifecycle).
 // The plan state follows component-plan-state invariant 1: a filed plan, then
 // the request's plan_state, then the legacy spec_approval, then the legacy
 // level, then execution.default_plan_state, which is needed when unset. The
@@ -317,7 +317,7 @@ type taskIntakeRecord struct {
 
 // sameIntakeRequest decides whether a keyed retry repeats the original
 // request. It never compares hold: a retry of a task stored with hold before
-// the retirement returns that original task (DEC-122(3); component-http-api).
+// the retirement returns that original task (DEC-125(3); component-http-api).
 func sameIntakeRequest(task core.Task, req createTaskReq, intake store.TaskContextInput, record taskIntakeRecord) bool {
 	if task.Body != req.Body || task.Repo != req.Repo || task.Source != req.Source || (req.BaseBranch != "" && task.BaseBranch != req.BaseBranch) {
 		return false

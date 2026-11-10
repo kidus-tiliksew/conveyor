@@ -488,7 +488,7 @@ func assertTaskIDs(t *testing.T, surface string, got, want []string) {
 // RunTaskFilterPlanStateConformance asserts the plan_state member on every
 // backend: a repeated member is a disjunction, it intersects with every other
 // member, and it applies before paging and totals (component-http-api
-// invariant 20; DEC-122(5)).
+// invariant 20; DEC-125(5)).
 func RunTaskFilterPlanStateConformance(t *testing.T, fixture TaskFilterFixture) {
 	t.Helper()
 	for _, seed := range []struct {

@@ -22,7 +22,15 @@ import { VerificationSettings } from '../components/workspace/verification-setti
 import { ConfigValidationError, fetchWorkspaceConfig, updateWorkspaceConfig } from '../lib/api'
 import { planStateLabels } from '../lib/contracts'
 import { githubSlug } from '../lib/repository'
-import type { ExecutionPolicy, WorkspaceConfigDocument, WorkspaceConfigRepo } from '../lib/types'
+import type {
+  ConfigWarning,
+  ExecutionPolicy,
+  RiskMode,
+  RiskTier,
+  RiskTierTable,
+  WorkspaceConfigDocument,
+  WorkspaceConfigRepo,
+} from '../lib/types'
 import { cn } from '../lib/utils'
 
 // The selected tab is page state, never part of the address, so ordinary
@@ -57,7 +65,7 @@ const TAB_SLICES: Record<Exclude<TabId, 'members'>, (document: WorkspaceConfigDo
   ],
   policy: (document) => {
     const { verify_stage: _verify, ...execution } = document.execution
-    return [document.max_bounces, document.stage_timeouts, document.review, execution]
+    return [document.max_bounces, document.stage_timeouts, document.review, execution, document.risk_policy ?? null]
   },
   verification: (document) => [document.execution.verify_stage ?? false],
 }
@@ -186,7 +194,17 @@ export function WorkspacePage() {
                     errors={save.error instanceof ConfigValidationError ? save.error.fields : []}
                   />
                 )}
-                {tab === 'policy' && <PolicyTab draft={draft} setDraft={setDraft} />}
+                {tab === 'policy' && (
+                  <PolicyTab
+                    draft={draft}
+                    setDraft={setDraft}
+                    errors={save.error instanceof ConfigValidationError ? save.error.fields : []}
+                    warnings={query.data?.warnings ?? []}
+                    riskChanged={
+                      JSON.stringify(draft.risk_policy ?? null) !== JSON.stringify(serverDocument?.risk_policy ?? null)
+                    }
+                  />
+                )}
                 {tab === 'verification' && (
                   <div className="space-y-4">
                     <VerificationSettings draft={draft} setDraft={setDraft} />
@@ -514,7 +532,7 @@ function GeneralTab({
 
 // The Policy tab binds execution.default_plan_state and never the retired
 // execution.spec_approval key (component-web-dashboard invariant 33;
-// req-task-plan-state AC-2.1, AC-3.5; DEC-122(7)).
+// req-task-plan-state AC-2.1, AC-3.5; DEC-125(7)).
 const defaultPlanStates = ['needed', 'not_required'] as const
 
 // The value the configuration read serves. A document that states neither key
@@ -536,9 +554,15 @@ function withoutLegacyPlanKey(document: WorkspaceConfigDocument): WorkspaceConfi
 function PolicyTab({
   draft,
   setDraft,
+  errors,
+  warnings,
+  riskChanged,
 }: {
   draft: WorkspaceConfigDocument
   setDraft: (value: WorkspaceConfigDocument) => void
+  errors: Array<{ field: string; message: string }>
+  warnings: ConfigWarning[]
+  riskChanged: boolean
 }) {
   const update = (change: Partial<WorkspaceConfigDocument>) => setDraft({ ...draft, ...change })
   const updateStageTimeout = (stage: 'spec' | 'implement' | 'review', value: string) =>
@@ -679,7 +703,160 @@ function PolicyTab({
           </Field>
         </CardContent>
       </Card>
+
+      <RiskPolicyCard
+        draft={draft}
+        setDraft={setDraft}
+        errors={errors.filter((error) => error.field.startsWith('risk_policy'))}
+        // A warning describes the saved policy, so an unsaved edit hides it
+        // until the next save answers again.
+        warnings={riskChanged ? [] : warnings.filter((warning) => warning.field === 'risk_policy')}
+      />
     </div>
+  )
+}
+
+const riskModes: Array<{ value: RiskMode; label: string }> = [
+  { value: 'off', label: 'Off' },
+  { value: 'record', label: 'Record' },
+  { value: 'enforce', label: 'Enforce' },
+]
+
+const riskTiers: Array<{ value: RiskTier; label: string }> = [
+  { value: 'low', label: 'Low' },
+  { value: 'medium', label: 'Medium' },
+  { value: 'high', label: 'High' },
+]
+
+// The table a policy turned on without a stated table uses
+// (req-risk-based-review AC-1.3).
+const defaultRiskTiers: RiskTierTable = {
+  low: { agent_reviews: 1, human_approvals: 0 },
+  medium: { agent_reviews: 1, human_approvals: 1 },
+  high: { agent_reviews: 2, human_approvals: 2 },
+}
+
+const riskModeHints: Record<RiskMode, string> = {
+  off: 'No task gets a risk tier.',
+  record: 'Each new task gets a risk tier. Reviews, approvals, and merges do not change.',
+  enforce: 'Each new task gets a risk tier, and its tier sets the reviews and approvals it needs.',
+}
+
+// The workspace risk policy (req-risk-based-review REQ-1). A workspace with no
+// policy reads as Off, and the draft keeps the key absent until an operator
+// chooses a mode, so an unrelated save does not write it.
+function RiskPolicyCard({
+  draft,
+  setDraft,
+  errors,
+  warnings,
+}: {
+  draft: WorkspaceConfigDocument
+  setDraft: (value: WorkspaceConfigDocument) => void
+  errors: Array<{ field: string; message: string }>
+  warnings: ConfigWarning[]
+}) {
+  const policy = draft.risk_policy
+  const mode: RiskMode = policy?.mode ?? 'off'
+  const tiers = policy?.tiers ?? defaultRiskTiers
+  const setMode = (next: RiskMode) => {
+    if (!policy && next === 'off') return
+    setDraft({ ...draft, risk_policy: { mode: next, tiers: structuredClone(tiers) } })
+  }
+  const setCount = (tier: RiskTier, key: 'agent_reviews' | 'human_approvals', value: string) => {
+    setDraft({
+      ...draft,
+      risk_policy: { mode, tiers: { ...tiers, [tier]: { ...tiers[tier], [key]: Number(value) } } },
+    })
+  }
+  return (
+    <Card>
+      <CardHeader className="flex-wrap">
+        <CardTitle>Risk review</CardTitle>
+        <span className="text-xs text-faint">Frozen onto each task at intake. Existing tasks keep theirs.</span>
+      </CardHeader>
+      <CardContent className="space-y-4">
+        <div className="max-w-xs">
+          <Field label="Risk mode">
+            <Select aria-label="Risk mode" value={mode} onChange={(event) => setMode(event.target.value as RiskMode)}>
+              {riskModes.map((entry) => (
+                <option key={entry.value} value={entry.value}>
+                  {entry.label}
+                </option>
+              ))}
+            </Select>
+          </Field>
+          <p className="mt-1 text-xs text-faint">{riskModeHints[mode]}</p>
+        </div>
+        {mode !== 'off' && (
+          <div className="space-y-2">
+            <p className="text-xs text-faint">
+              Each tier needs at least one agent review. No number can be lower than the same number in the tier below.
+            </p>
+            <table className="w-full max-w-lg text-sm" aria-label="Risk tier requirements">
+              <thead>
+                <tr className="text-left text-xs text-muted">
+                  <th scope="col" className="py-1 pr-3 font-medium">
+                    Tier
+                  </th>
+                  <th scope="col" className="py-1 pr-3 font-medium">
+                    Agent reviews
+                  </th>
+                  <th scope="col" className="py-1 font-medium">
+                    Human approvals
+                  </th>
+                </tr>
+              </thead>
+              <tbody>
+                {riskTiers.map((tier) => (
+                  <tr key={tier.value} className="border-t border-border">
+                    <th scope="row" className="py-2 pr-3 text-left font-medium">
+                      {tier.label}
+                    </th>
+                    <td className="py-2 pr-3">
+                      <Input
+                        aria-label={`${tier.label} agent reviews`}
+                        type="number"
+                        min={1}
+                        step={1}
+                        className="max-w-24"
+                        value={tiers[tier.value].agent_reviews}
+                        onChange={(event) => setCount(tier.value, 'agent_reviews', event.target.value)}
+                      />
+                    </td>
+                    <td className="py-2">
+                      <Input
+                        aria-label={`${tier.label} human approvals`}
+                        type="number"
+                        min={0}
+                        step={1}
+                        className="max-w-24"
+                        value={tiers[tier.value].human_approvals}
+                        onChange={(event) => setCount(tier.value, 'human_approvals', event.target.value)}
+                      />
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+        {errors.map((error) => (
+          <p key={error.field + error.message} role="alert" className="text-xs text-failure">
+            {error.message}
+          </p>
+        ))}
+        {warnings.map((warning) => (
+          <p
+            key={warning.code}
+            role="status"
+            className="rounded-md border border-attention/30 bg-attention-soft p-2 text-xs text-attention"
+          >
+            {warning.message}
+          </p>
+        ))}
+      </CardContent>
+    </Card>
   )
 }
 function ReadOnly({
@@ -712,6 +889,11 @@ function ReadOnly({
               <span className="font-medium text-foreground">
                 {configuration.issue_publication?.enabled ? 'on' : 'off'}
               </span>
+            </p>
+          )}
+          {configuration && (
+            <p className="mt-2 text-sm text-muted">
+              Risk mode: <span className="font-medium text-foreground">{configuration.risk_policy?.mode ?? 'off'}</span>
             </p>
           )}
         </CardContent>

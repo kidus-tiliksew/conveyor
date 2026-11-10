@@ -270,7 +270,7 @@ func TestSingleStoreConformanceIntegration(t *testing.T) {
 				}
 			}, SeedStoredTaskHold: func(t *testing.T, ctx context.Context, taskID string) {
 				// A row written before the hold retirement; no public writer
-				// sets the column (DEC-122(3); component-persistence).
+				// sets the column (DEC-125(3); component-persistence).
 				result, err := st.db.ExecContext(ctx, `UPDATE tasks SET hold=true WHERE workspace_id=? AND id=?`, ws, taskID)
 				if err != nil {
 					t.Fatal(err)

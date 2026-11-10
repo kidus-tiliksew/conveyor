@@ -75,7 +75,7 @@ func InitialStage(level EscalationLevel) Stage {
 
 // TaskMode is the retired auto/manual execution mode. It
 // survives only to parse deprecated intake input and render historical
-// records; no task carries a worker reservation (DEC-122(3)).
+// records; no task carries a worker reservation (DEC-125(3)).
 type TaskMode string
 
 const (
@@ -88,7 +88,7 @@ func (m TaskMode) Valid() bool { return m == TaskModeAuto || m == TaskModeManual
 // LegacyPolicy preserves the accepted L0-L3 meaning for historical callers:
 // the retired spec-approval value, which the plan state replaced, and the
 // merge approval gate. No level implies a reservation; L3 maps both on
-// exactly like L2 (DEC-122(1), DEC-122(3);
+// exactly like L2 (DEC-125(1), DEC-125(3);
 // component-task-lifecycle).
 func LegacyPolicy(level EscalationLevel) (bool, bool) {
 	switch level {
@@ -151,11 +151,11 @@ type Task struct {
 	Class     string          `json:"class"` // bug | feature | chore
 	Level     EscalationLevel `json:"level"`
 	Mode      TaskMode        `json:"-"`                  // legacy persistence only; never emitted or read for behavior
-	Hold      bool            `json:"-"`                  // historical stored value only; read by no decision (DEC-122(3))
+	Hold      bool            `json:"-"`                  // historical stored value only; read by no decision (DEC-125(3))
 	Assignee  *TaskAssignee   `json:"assignee,omitempty"` // claim-eligibility identity; never an ordering field
 	// SpecApproval is the retained tasks.spec_approval column. No decision
 	// reads it as plan authority and no task read serves it; PlanState is the
-	// task's plan state (component-plan-state invariant 1; DEC-122(5)).
+	// task's plan state (component-plan-state invariant 1; DEC-125(5)).
 	SpecApproval  bool      `json:"-"`
 	PlanState     PlanState `json:"plan_state"`
 	MergeApproval bool      `json:"merge_approval"`

@@ -45,7 +45,7 @@ import (
 type TaskFilter struct {
 	States []core.TaskState
 	// PlanStates selects tasks holding any listed plan state. It orders
-	// nothing (component-http-api invariant 20; DEC-122(5)).
+	// nothing (component-http-api invariant 20; DEC-125(5)).
 	PlanStates   []core.PlanState
 	Repositories []string
 	// Assignee is one single-valued selector. Empty leaves the member inactive,
@@ -751,7 +751,7 @@ func (m *memory) createTaskWithContextLocked(ctx context.Context, t core.Task, d
 		m.repositoryInstalls[key] = append(m.repositoryInstalls[key], core.RepositoryInstallTask{TaskID: t.ID, Attempt: t.RepositoryInstallAttempt})
 	}
 	// A task carries no worker reservation: every insert stores hold false,
-	// like the durable column default (DEC-122(3); component-persistence).
+	// like the durable column default (DEC-125(3); component-persistence).
 	t.Hold = false
 	intakePlan := t.IntakePlan
 	t.IntakePlan = nil

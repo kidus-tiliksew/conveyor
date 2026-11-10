@@ -17,7 +17,7 @@ import (
 )
 
 // Review round seat sources (feature-review-seat-minimum RS-2; DEC-77,
-// DEC-78; req-review-gates-evidence AC-2.4, AC-2.7).
+// DEC-123; req-review-gates-evidence AC-2.4, AC-2.7).
 const (
 	ReviewSeatSourceDeclared = "declared"
 	ReviewSeatSourcePlanned  = "planned"
@@ -131,7 +131,9 @@ func ReviewSeatMinimum(setup config.PolicyContract, workspaceSeats int) int {
 	return count
 }
 
-// ReviewSeatFloor is the larger of the minimum and the planned count (DEC-78).
+// ReviewSeatFloor is the larger of the minimum and the planned count. DEC-123(2)
+// also counts the risk tier's agent reviews; that input is not wired yet
+// (feature-risk-based-review RR-5).
 func ReviewSeatFloor(minimum int, planned *int) int {
 	if minimum < 1 {
 		minimum = 1
@@ -372,7 +374,7 @@ type memoryReviewRoundSeats struct {
 }
 
 // Operator review-seat addition (feature-review-seat-minimum RS-5;
-// req-review-gates-evidence AC-2.5, AC-2.6; DEC-77, DEC-78).
+// req-review-gates-evidence AC-2.5, AC-2.6; DEC-77, DEC-123).
 
 var (
 	// ErrReviewRoundNotOpen refuses an addition to a task without an open

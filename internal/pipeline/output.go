@@ -63,7 +63,7 @@ type Spec struct {
 	Acceptance    []AcceptanceCriterion
 	Decomposition []DecompositionItem
 	// ReviewSeats is a plan's planned review seat count, nil when the plan
-	// states none (feature-review-seat-minimum RS-3; DEC-78).
+	// states none (feature-review-seat-minimum RS-3; DEC-123).
 	ReviewSeats *int
 	// BaseCommit is the full commit ID the plan was read against, empty when
 	// the planner stated none (component-work-orders invariant 56;

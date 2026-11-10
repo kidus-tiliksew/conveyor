@@ -25,7 +25,7 @@ import (
 // 409, and records the next plan version, cancels the orders the act
 // retires, and moves the plan state to awaiting_approval in one transaction.
 // Approval comes only through the plan_approval gate (req-task-plan-state
-// AC-3.2; DEC-122(6)).
+// AC-3.2; DEC-125(6)).
 func (s *Server) attachTaskPlan(w http.ResponseWriter, r *http.Request) {
 	var input struct {
 		Plan       *string `json:"plan"`

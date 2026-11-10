@@ -52,7 +52,7 @@ func runTaskStartOver(t *testing.T, factory Factory) {
 				t.Fatal(err)
 			}
 			// The retired task was stored with hold before the retirement; its
-			// successor carries none and the stored value stays (DEC-122(3)).
+			// successor carries none and the stored value stays (DEC-125(3)).
 			requireStoredTaskHoldSeed(t, x.SeedStoredTaskHold)(t, ctx, old.ID)
 			if _, err = taskops.New(st).Perform(ctx, merged.ID, taskops.Command{Kind: core.TaskMergeRecover}); err != nil {
 				t.Fatal(err)

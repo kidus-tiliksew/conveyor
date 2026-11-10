@@ -23,7 +23,7 @@ type PlanStateRequest struct {
 // it, and no level decides it. Without a plan the order is the request's
 // plan_state, then the legacy spec_approval, then the legacy level, then the
 // workspace default, which is needed when unset (req-task-plan-state AC-2.1,
-// AC-2.2, AC-2.3; DEC-122(5), (6)).
+// AC-2.2, AC-2.3; DEC-125(5), (6)).
 func ResolveIntakePlanState(request PlanStateRequest, workspaceDefault core.PlanState) core.PlanState {
 	if request.HasPlan {
 		if request.PlanApproved {

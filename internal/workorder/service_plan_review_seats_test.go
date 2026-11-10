@@ -23,7 +23,7 @@ import (
 // refused with the plan order left claimed and nothing written, an accepted
 // count is stored on the plan version through approval, and the latest
 // approved plan's count is the plan's contribution to the seat floor
-// (req-review-gates-evidence AC-2.8, AC-2.3, AC-2.4; DEC-78).
+// (req-review-gates-evidence AC-2.8, AC-2.3, AC-2.4; DEC-123).
 
 const planSeatsMarkdown = "## Approach\nPlan the panel.\n\n## Files touched\n- internal/workorder/service.go\n\n## Ordering\n1. Submit.\n\n## Risks\n- Drift.\n\n## Done criteria\n- The planned count persists."
 
@@ -384,7 +384,7 @@ func TestSubmitPlanReviewSeatsRevision(t *testing.T) {
 	})
 	// With the legacy plan-approval policy off, a submitted plan still waits
 	// for a person's approval: no submission approves a plan
-	// (component-work-orders invariant 56; DEC-122(6)).
+	// (component-work-orders invariant 56; DEC-125(6)).
 	t.Run("gate off still waits for approval", func(t *testing.T) {
 		env := newPlanSeatsEnv(t, "plan-seats-revision-automatic", false, frozenSeats(2), 1)
 		result, err := env.submit(env.claimPlan(t), planSeats(4))

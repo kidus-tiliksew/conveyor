@@ -19,7 +19,7 @@ import (
 // replay writes nothing, the planned floor reads the latest approved plan
 // version, a legacy round keeps its order-count checks and gets no record,
 // failures leave no partial data, and records are workspace-scoped
-// (DEC-77, DEC-78; req-review-gates-evidence AC-2.4, AC-2.6, AC-2.7).
+// (DEC-77, DEC-123; req-review-gates-evidence AC-2.4, AC-2.6, AC-2.7).
 func RunReviewRoundSeatsConformance(t *testing.T, x Fixture) {
 	t.Run("CreateAtomicRecordAndEvent", func(t *testing.T) { runSeatCreateAtomic(t, x) })
 	t.Run("CreateReplay", func(t *testing.T) { runSeatCreateReplay(t, x) })
