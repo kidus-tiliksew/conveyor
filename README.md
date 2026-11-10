@@ -70,40 +70,37 @@ Plan, verify, and the merge gate are per-task policy. The server computes each
 task's next action, so the dashboard, CLI, and MCP always agree on whether a
 task is waiting on an agent session or on you.
 
-### Staying aligned
-
-Conveyor checks each delivery against the requirements and designs that
-govern it. When they disagree, or when the repository drifts or a merge
-breaks something, Conveyor raises a signal. It never rewrites code or
-documents on its own: an operator acknowledges the signal or sends follow-up
-work back through the same gates.
-
 ## Tips
 
 Workflows that have worked well so far:
 
-- **Run your agents from [T3 Code](https://github.com/pingdotgg/t3code).**
-  Conveyor gives each stage its own agent, and T3 Code lets one session start
-  and follow agents from different providers side by side. You can see every
-  stage's thread in one place and step into any of them.
-- **Use a different model to review than to implement.** Conveyor already
-  keeps agents from reviewing their own work. A reviewer from another model
-  family also catches mistakes the implementer's model tends to miss.
-- **Coordinate from one session.** Ask a single agent to move a set of tasks
-  through the queue with the `conveyor-coordinate` skill. It starts a fresh
-  agent for each stage order and brings you only the decisions that need you.
+- **Write documents that an agent cannot misread.** A requirement tells what
+  users get, in criteria that a reviewer can examine. A design tells what must
+  stay true. Use a component design for a part that stays, and a feature
+  design for one large change. The [writing guide](docs/writing-documents.md)
+  shows good and bad examples.
 - **Plan in conversation, then file.** Talk a feature through with an agent
   using `conveyor-plan`, answer its open decisions and approve its drafts on a
   review page such as [Lavish](https://github.com/kunchenguid/lavish-axi), and
   confirm the documents before tasks enter the queue. Small, dependency-ordered
   tasks review faster than large ones. The
   [planning guide](docs/planning-guide.md) walks through it.
+- **Use a different model to review than to implement.** Conveyor already
+  keeps agents from reviewing their own work. A reviewer from another model
+  family also catches mistakes the implementer's model tends to miss.
+- **Coordinate from one session.** Ask a single agent to move a set of tasks
+  through the queue with the `conveyor-coordinate` skill. It starts a fresh
+  agent for each stage order and brings you only the decisions that need you.
+- **Ask for plain-language decisions.** Have agents explain each option in
+  plain words before citing requirement and decision IDs.
+- **Run your agents from [T3 Code](https://github.com/pingdotgg/t3code).**
+  Conveyor gives each stage its own agent, and T3 Code lets one session start
+  and follow agents from different providers side by side. You can see every
+  stage's thread in one place and step into any of them.
 - **Get gates on your phone with [AgentDesk](https://github.com/kidus-tiliksew/AgentDesk).**
   Plan approvals, merges, and document confirmations wait on you. AgentDesk
   sends each one to you as a question you can answer from anywhere, so the
   queue doesn't stall while you're away.
-- **Ask for plain-language decisions.** Have agents explain each option in
-  plain words before citing requirement and decision IDs.
 
 ## Documentation
 
