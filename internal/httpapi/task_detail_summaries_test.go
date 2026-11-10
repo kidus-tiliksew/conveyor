@@ -259,6 +259,65 @@ func TestTaskDetailSummariesMatchDashboardRules(t *testing.T) {
 			}
 		}
 	})
+	t.Run("job claimant is the latest run claimant of each job", func(t *testing.T) {
+		claim := func(id int64, seconds int, jobID, payload string) core.Event {
+			return summaryEvent(id, seconds, "work_order.claimed", jobID, payload)
+		}
+		claimant := func(summaries taskDetailSummaries, jobID string) string {
+			if result := summaries.JobResults[jobID]; result != nil {
+				return result.ClaimantUserID
+			}
+			return ""
+		}
+		// Two attempts of one order by different users, with a release
+		// between them: each claim names its own user, and the later wins.
+		attempts := derive(
+			claim(1, 0, "job-impl", `{"id":"impl-1","stage":"implement","state":"claimed","claimed_by":"run:usr_meron"}`),
+			summaryEvent(2, 1, "work_order.released", "job-impl", `{"id":"impl-1","state":"queued"}`),
+			claim(3, 2, "job-impl", `{"id":"impl-1","stage":"implement","state":"claimed","claimed_by":"run:usr_kidus"}`),
+		)
+		if got := claimant(attempts, "job-impl"); got != "usr_kidus" {
+			t.Fatalf("second attempt claimant = %q, want usr_kidus", got)
+		}
+		if got := claimant(derive(claim(1, 0, "job-impl", `{"stage":"implement","claimed_by":"run:usr_meron"}`)), "job-impl"); got != "usr_meron" {
+			t.Fatalf("first attempt claimant = %q, want usr_meron", got)
+		}
+		// Two review seats claimed by different users stay separate.
+		seats := derive(
+			claim(1, 0, "job-review-1", `{"stage":"review","review_seat":1,"claimed_by":"run:usr_a"}`),
+			claim(2, 1, "job-review-2", `{"stage":"review","review_seat":2,"claimed_by":"run:usr_b"}`),
+		)
+		if claimant(seats, "job-review-1") != "usr_a" || claimant(seats, "job-review-2") != "usr_b" {
+			t.Fatalf("seat claimants = %q, %q", claimant(seats, "job-review-1"), claimant(seats, "job-review-2"))
+		}
+		for _, payload := range []string{
+			`{"stage":"implement","claimed_by":"worker:w"}`,
+			`{"stage":"implement","claimed_by":"run:"}`,
+			`{"stage":"implement","claimed_by":"run: usr_x"}`,
+			`{"stage":"implement","claimed_by":7}`,
+			`{"stage":"implement"}`,
+		} {
+			if got := derive(claim(1, 0, "job-x", payload)).JobResults["job-x"]; got != nil {
+				t.Fatalf("payload %s: job result = %+v, want none", payload, got)
+			}
+		}
+		// A historical payload naming claimant_id still names its user.
+		if got := claimant(derive(claim(1, 0, "job-old", `{"stage":"implement","claimant_id":"run:usr_old"}`)), "job-old"); got != "usr_old" {
+			t.Fatalf("claimant_id fallback = %q", got)
+		}
+		// A later claim by a non-run claimant keeps the earlier user.
+		kept := derive(
+			claim(1, 0, "job-impl", `{"stage":"implement","claimed_by":"run:usr_a"}`),
+			claim(2, 1, "job-impl", `{"stage":"implement","claimed_by":"worker:w"}`),
+		)
+		if got := claimant(kept, "job-impl"); got != "usr_a" {
+			t.Fatalf("non-run later claim claimant = %q, want usr_a", got)
+		}
+		// A claim event without a job names no job.
+		if got := derive(claim(1, 0, "", `{"stage":"implement","claimed_by":"run:usr_a"}`)).JobResults; len(got) != 0 {
+			t.Fatalf("job results = %+v", got)
+		}
+	})
 	t.Run("plan revision request follows latestPlanRevisionRequest", func(t *testing.T) {
 		request := func(id int64, seconds int, payload string) core.Event {
 			return summaryEvent(id, seconds, "work_order.plan_revision_requested", "", payload)
@@ -766,5 +825,48 @@ func TestBoundedDetailParkReasonOutsideEventPage(t *testing.T) {
 	failure := body.Summaries.DispatchFailure
 	if failure == nil || failure.Error != "queue discarded the job" || failure.Attempt == nil || *failure.Attempt != 3 {
 		t.Fatalf("dispatch_failure = %+v", failure)
+	}
+}
+
+// TestBoundedDetailJobClaimantOutsideEventPage pins that a claim older than
+// the bounded view's event page still names its user in job_results, so the
+// dashboard never reads a claimant from events (component-web-task-surfaces
+// invariant 25).
+func TestBoundedDetailJobClaimantOutsideEventPage(t *testing.T) {
+	st := store.NewMemory()
+	h := newHistoryHarness(t, st)
+	ctx := store.WithWorkspace(store.WithActor(context.Background(), store.SystemActor()), historyWorkspace)
+	if err := st.CreateTask(ctx, core.Task{ID: "claimed-task", Workspace: historyWorkspace, State: core.TaskParked, Title: "Claimed", CreatedAt: historyEpoch}); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.CreateJob(ctx, core.Job{ID: "job-impl-1", TaskID: "claimed-task", Stage: core.StageImplement, State: core.JobFailed}); err != nil {
+		t.Fatal(err)
+	}
+	appendAt := func(ms int, jobID, kind, payload string) {
+		t.Helper()
+		if err := st.AppendEvent(ctx, core.Event{TaskID: "claimed-task", JobID: jobID, Kind: kind, At: historyEpoch.Add(time.Duration(ms) * time.Millisecond), Payload: json.RawMessage(payload)}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	appendAt(1, "job-impl-1", "work_order.claimed", `{"id":"impl-1","stage":"implement","state":"claimed","claimed_by":"run:usr_meron"}`)
+	for i := range 130 {
+		appendAt(10+i, "", "job.timeout", `{"stage":"implement"}`)
+	}
+	detail, response := h.bounded("claimed-task")
+	for _, event := range detail.Events {
+		if event.Kind == "work_order.claimed" {
+			t.Fatal("the claim is on the presentation page; the fixture must place it outside")
+		}
+	}
+	var body struct {
+		Summaries struct {
+			JobResults map[string]taskJobResult `json:"job_results"`
+		} `json:"summaries"`
+	}
+	if err := json.Unmarshal(response.Body.Bytes(), &body); err != nil {
+		t.Fatal(err)
+	}
+	if got := body.Summaries.JobResults["job-impl-1"].ClaimantUserID; got != "usr_meron" {
+		t.Fatalf("claimant_user_id = %q, want usr_meron", got)
 	}
 }
