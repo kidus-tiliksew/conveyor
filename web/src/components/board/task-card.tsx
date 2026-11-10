@@ -7,7 +7,6 @@ import type { ActivitySummary } from '../../lib/types'
 import { cn, relativeTime } from '../../lib/utils'
 import { useWorkspaceMembers, useWorkspaceSelection } from '../app-shell'
 import { AssigneeChip } from '../task/assignee-chip'
-import { TaskPlanMark } from '../task/task-plan-mark'
 import { Badge } from '../ui/badge'
 import { StageStripe } from './stage-stripe'
 
@@ -99,9 +98,6 @@ export function TaskCard({ item, selected }: { item: ActivitySummary; selected: 
         <p className={cn('line-clamp-2 min-w-0 flex-1 text-sm font-medium leading-snug', closed && 'text-muted')}>
           {item.task.title}
         </p>
-        {/* The plan state reads from this activity row alone and sits beside
-            the title, never in the next-action row (invariant 58). */}
-        <TaskPlanMark planState={item.task.plan_state} />
         {blockingIDs.length > 0 && <DependencyMark titles={blockingTitles} unsatisfiable={unsatisfiable} />}
       </div>
       {showStageProgress && <StageStripe taskId={item.task.id} />}
