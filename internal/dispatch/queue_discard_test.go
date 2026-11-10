@@ -236,7 +236,7 @@ func TestPublicationEarlyReturnOnLastAttemptMarksFailed(t *testing.T) {
 	})
 }
 
-// The daemon registers a discard handler for dispatch_task and both forge
+// The daemon registers a discard handler for dispatch_task and the forge
 // publication kinds, so rescue reaches their stop; other kinds keep none.
 func TestRegistrationsBindDiscardHandlers(t *testing.T) {
 	t.Parallel()
@@ -245,6 +245,9 @@ func TestRegistrationsBindDiscardHandlers(t *testing.T) {
 		queue.DispatchTaskArgs{}.Kind():           true,
 		queue.ReviewPublicationArgs{}.Kind():      true,
 		queue.GitHubIssuePublicationArgs{}.Kind(): true,
+		// A discarded policy status job leaves its row failed for the next
+		// re-evaluation (component-git-delivery invariant 37).
+		queue.ReviewPolicyStatusArgs{}.Kind(): true,
 	}
 	for _, registration := range d.Registrations(&ShutdownMarker{}) {
 		if got := registration.Discarded != nil; got != want[registration.Kind] {

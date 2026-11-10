@@ -67,6 +67,7 @@ func (c *StartupChecks) driftPasses() []startupPass {
 		{store.DriftPassQueuedTasks, st.ReconcileQueuedTasks},
 		{store.DriftPassBlueprintClosures, st.ReconcileBlueprintClosures},
 		{store.DriftPassReviewPublications, st.ReconcileReviewPublications},
+		{store.DriftPassReviewPolicyStatuses, c.Dispatcher.ReconcileReviewPolicyStatuses},
 		{store.DriftPassVerificationDeliveries, func(ctx context.Context) (int, error) {
 			deliveries, ok := st.(store.VerificationDeliveryStore)
 			if !ok {

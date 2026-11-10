@@ -568,6 +568,14 @@ func (m *memory) applyTaskCommandLocked(ctx context.Context, id string, command 
 		}
 		final = &prepared
 	}
+	var bypass *core.Event
+	if command.Bypass != nil {
+		event, bypassErr := PrepareMergeBypass(task, command.Kind, *command.Bypass, final)
+		if bypassErr != nil {
+			return core.Task{}, bypassErr
+		}
+		bypass = &event
+	}
 	task.State = state
 	task.GateKind = core.GateKindFor(state, command.Kind)
 	if command.ProjectStages {
@@ -593,6 +601,9 @@ func (m *memory) applyTaskCommandLocked(ctx context.Context, id string, command 
 			workspace = scoped
 		}
 		m.insertTaskApprovalLocked(ctx, memoryScopedKey{workspace: workspace, id: id}, *final)
+	}
+	if bypass != nil {
+		m.appendEventLocked(ctx, *bypass)
 	}
 	if command.FailureMessage != "" {
 		m.appendEventLocked(ctx, core.Event{TaskID: id, Kind: "dispatch.failed", Payload: core.JSONPayload(map[string]any{

@@ -587,6 +587,29 @@ counts, a trusted coauthor's included; a trusted author's required approval is
 then met only by a non-author's waiver. The approval that completes the count
 is recorded with the confirmed merge, and a merge GitHub refuses or does not
 confirm records none.
+
+Under `enforce`, Conveyor publishes the commit status `conveyor/review-policy`
+on each rated head of the task's pull request (`req-risk-based-review` REQ-10).
+The status is `pending` while the head lacks an agent review or a human approval
+that the task's risk policy requires. It is `success` when the head has all of
+them. Before Conveyor asks GitHub to merge an enforcing task, it publishes
+`success` on that head. If GitHub does not accept the status, Conveyor sends no
+merge request, records `merge.failed` with reason `policy_status_unpublished`,
+and records no new approval; the merge gate stays pending, or an approved task
+waits for the next readiness read. A failed status write retries on its own.
+The check-status read ignores `conveyor/review-policy`, so the status never
+holds an automatic merge.
+
+To block a merge on GitHub before the requirements are met, the repository
+owner must add branch protection on the base branch that requires the
+`conveyor/review-policy` status check. Conveyor does not change branch
+protection. Without that protection, Conveyor can only record the bypass. When
+GitHub reports a merge of an enforcing task whose head did not meet its
+requirements, Conveyor completes the task as merged and credits no approval. In
+the same write it records `merge.bypass_recorded`, which names the GitHub
+account that merged, the head, and the human approvals and agent reviews that
+were missing. The inbox acts log lists each bypass; it asks for no decision.
+Tasks with mode `off` or `record` publish no policy status and record no bypass.
 `updated_paths` must equal the evidence, and approvals require empty
 `unresolved` and `conflicts` lists. Review completion activity includes the
 assessment only when supplied (REQ-9/AC-9.1–9.6; DEC-71).

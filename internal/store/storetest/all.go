@@ -344,6 +344,9 @@ func RunAll(t *testing.T, factory Factory) {
 	run("TaskApprovals", func(t *testing.T) {
 		RunTaskApprovalConformance(t, factory.fresh(t, nil))
 	})
+	run("ReviewPolicyStatuses", func(t *testing.T) {
+		RunReviewPolicyStatusConformance(t, factory.fresh(t, nil))
+	})
 	run("ZeroSetupReviewSeats", func(t *testing.T) {
 		RunZeroSetupReviewSeatsConformance(t, factory.fresh(t, nil), factory.ReviewSweep)
 	})

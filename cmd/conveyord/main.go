@@ -312,6 +312,7 @@ func main() {
 	srv.OnMerge = d.MergeApprovedTask
 	srv.OnGateMerge = d.MergeAtGate
 	srv.OnRecordApproval = d.RecordApproval
+	srv.OnRiskTierRaised = d.SyncReviewPolicyStatusAfterAct
 	srv.OnWaiveAuthorApproval = d.WaiveAuthorApproval
 	srv.OnMergeReadiness = d.ReadMergeReadiness
 	srv.OnConflictFix = d.DispatchConflictFix

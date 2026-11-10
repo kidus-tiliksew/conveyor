@@ -106,6 +106,14 @@ func (s *Store) applyTaskCommandTx(ctx context.Context, tx pgx.Tx, q *db.Queries
 			}
 			final = &prepared
 		}
+		var bypass *core.Event
+		if command.Bypass != nil {
+			event, bypassErr := store.PrepareMergeBypass(taskFromDB(before), command.Kind, *command.Bypass, final)
+			if bypassErr != nil {
+				return bypassErr
+			}
+			bypass = &event
+		}
 		if command.ProjectStages {
 			updated, updateErr := q.UpdateTaskTransition(ctx, db.UpdateTaskTransitionParams{
 				ID: id, WorkspaceID: workspace(ctx), ExpectedState: before.State, State: string(state), NextStage: string(command.NextStage), RecoveryStage: string(command.RecoveryStage),
@@ -147,6 +155,13 @@ func (s *Store) applyTaskCommandTx(ctx context.Context, tx pgx.Tx, q *db.Queries
 			// The approval that completes the count commits with the merge
 			// (req-risk-based-review AC-8.7).
 			if _, _, err := insertTaskApprovalTx(ctx, tx, q, *final); err != nil {
+				return err
+			}
+		}
+		if bypass != nil {
+			// The bypass commits with the completion it explains, once per
+			// task and head (component-submission-merge invariant 66).
+			if err := insertEvent(ctx, q, *bypass); err != nil {
 				return err
 			}
 		}

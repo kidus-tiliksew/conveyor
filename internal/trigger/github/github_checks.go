@@ -137,8 +137,11 @@ func commitStatuses(ctx context.Context, repo, sha string, run ghRunner) ([]Chec
 			return nil, forgeResponseError("parse commit statuses of %s", sha)
 		}
 		for _, item := range *page.Statuses {
-			// Conveyor's own published review status is not a check.
-			if item.Context == ReviewStatusContext {
+			// Conveyor's own published review and risk policy statuses are
+			// not checks (component-submission-merge invariant 59;
+			// req-review-gates-evidence AC-1.4), so the policy status never
+			// holds an automatic merge.
+			if item.Context == ReviewStatusContext || item.Context == PolicyStatusContext {
 				continue
 			}
 			checks = append(checks, Check{Name: item.Context, State: commitStatusState(item.State), URL: checkURL(item.TargetURL)})

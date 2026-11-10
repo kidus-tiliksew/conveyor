@@ -53,6 +53,11 @@ func riskGateFixture(t *testing.T, id string, tc riskMergeCase) (context.Context
 	d := newForgeDispatcher(st)
 	forge := &gateForge{pr: githubtrigger.PullRequest{Number: 7, State: "open", Mergeable: "MERGEABLE", HeadSHA: gateHead, HeadRef: task.Branch, URL: "https://github.test/acme/app/pull/7"}}
 	d.ViewPullRequest, d.RequestMerge = forge.view, forge.merge
+	// The rated head's policy status is queued as a rating would queue it,
+	// so an act under test appends only its own events.
+	if err := d.SyncReviewPolicyStatus(ctx, id); err != nil {
+		t.Fatal(err)
+	}
 	return ctx, st, out.Task, d, forge
 }
 
@@ -65,6 +70,24 @@ func createReviewRound(t *testing.T, st store.Store, ctx context.Context, taskID
 		t.Fatal(err)
 	}
 	if err := storetest.For(st).CreateWorkOrder(ctx, core.WorkOrder{ID: id, TaskID: taskID, JobID: id, Stage: core.StageReview, ReviewRound: round, ReviewSeat: 1, HeadSHA: gateHead}); err != nil {
+		t.Fatal(err)
+	}
+	// The round approved gateHead with two seats, the most agent reviews any
+	// default tier requires, so the policy status turns on human approvals.
+	settleReviewRound(t, st, ctx, taskID, round, gateHead, 2)
+}
+
+// settleReviewRound records review.round_completed for round, approving head
+// with seats approving seats.
+func settleReviewRound(t *testing.T, st store.Store, ctx context.Context, taskID string, round int, head string, seats int) {
+	t.Helper()
+	reviews := make([]map[string]any, 0, seats)
+	for seat := 1; seat <= seats; seat++ {
+		reviews = append(reviews, map[string]any{"review_work_order_id": fmt.Sprintf("%s-review-%d-seat-%d", taskID, round, seat), "verdict": "approve", "review_round": round, "review_seat": seat, "reviewed_commit_sha": head})
+	}
+	if err := st.AppendEvent(ctx, core.Event{TaskID: taskID, Kind: "review.round_completed", Payload: core.JSONPayload(map[string]any{
+		"review_round": round, "verdict": "approve", "reason_code": "approved", "approved_head_sha": head, "reviews": reviews,
+	})}); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -227,6 +250,9 @@ func riskApprovedTask(t *testing.T, id string, tc riskMergeCase) (context.Contex
 	d := newForgeDispatcher(st)
 	forge := &gateForge{pr: githubtrigger.PullRequest{Number: 7, State: "open", Mergeable: "MERGEABLE", HeadSHA: gateHead, HeadRef: task.Branch, URL: "https://github.test/acme/app/pull/7"}}
 	d.ViewPullRequest, d.RequestMerge = forge.view, forge.merge
+	if err := d.SyncReviewPolicyStatus(ctx, id); err != nil {
+		t.Fatal(err)
+	}
 	return ctx, st, stored, d, forge
 }
 

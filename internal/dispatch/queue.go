@@ -222,6 +222,7 @@ func (d *Dispatcher) Registrations(shutdown *ShutdownMarker) []queue.Registratio
 	dispatchWorker := &dispatchTaskWorker{dispatcher: d, shutdown: shutdown}
 	reviewWorker := &reviewPublicationWorker{dispatcher: d}
 	issueWorker := &githubIssuePublicationWorker{dispatcher: d}
+	policyWorker := &reviewPolicyStatusWorker{dispatcher: d}
 	return []queue.Registration{
 		{Kind: queue.VerificationPublicationArgs{}.Kind(), Handle: publications.Work},
 		{Kind: "verification_publication", Handle: publications.Legacy},
@@ -235,6 +236,7 @@ func (d *Dispatcher) Registrations(shutdown *ShutdownMarker) []queue.Registratio
 		},
 		{Kind: queue.ReviewPublicationArgs{}.Kind(), Handle: reviewWorker.Work, Discarded: reviewWorker.Discarded},
 		{Kind: queue.GitHubIssuePublicationArgs{}.Kind(), Handle: issueWorker.Work, Discarded: issueWorker.Discarded},
+		{Kind: queue.ReviewPolicyStatusArgs{}.Kind(), Handle: policyWorker.Work, Discarded: policyWorker.Discarded},
 		{Kind: queue.PullRequestCloseArgs{}.Kind(), Handle: (&pullRequestCloseWorker{dispatcher: d}).Work, RetryDelay: queue.DispatchTaskRetryDelay},
 		{Kind: queue.OrderClockArgs{}.Kind(), Handle: (&orderClockWorker{dispatcher: d}).Work},
 	}

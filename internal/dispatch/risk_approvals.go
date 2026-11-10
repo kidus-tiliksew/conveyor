@@ -283,6 +283,9 @@ func (d *Dispatcher) RecordApproval(ctx context.Context, task core.Task, actor c
 			return err
 		}
 		out, err = d.recordApprovalLocked(lockedCtx, current, userID, pr, "approval", evaluation)
+		// A recorded approval can complete the head's requirements
+		// (req-risk-based-review AC-10.1).
+		d.syncReviewPolicyStatusAfter(lockedCtx, current, true)
 		return err
 	})
 	return out, err
@@ -347,6 +350,9 @@ func (d *Dispatcher) WaiveAuthorApproval(ctx context.Context, task core.Task, ac
 			return err
 		}
 		out, err = d.EvaluateApprovals(lockedCtx, current, "")
+		if err == nil {
+			d.syncReviewPolicyStatusAfter(lockedCtx, current, true)
+		}
 		return err
 	})
 	return out, created, err

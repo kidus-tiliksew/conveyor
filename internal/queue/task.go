@@ -64,6 +64,20 @@ func (GitHubIssuePublicationArgs) Kind() string { return "github_issue_publicati
 
 func (a GitHubIssuePublicationArgs) UniqueKey() string { return a.TaskID }
 
+// ReviewPolicyStatusArgs names one head's conveyor/review-policy
+// publication (component-git-delivery invariant 37). One active job per task
+// and head: a later intent for the same head joins the active job, whose
+// handler re-reads the head's requirements before its forge call.
+type ReviewPolicyStatusArgs struct {
+	WorkspaceID string `json:"workspace_id"`
+	TaskID      string `json:"task_id"`
+	HeadSHA     string `json:"head_sha"`
+}
+
+func (ReviewPolicyStatusArgs) Kind() string { return "review_policy_status" }
+
+func (a ReviewPolicyStatusArgs) UniqueKey() string { return a.TaskID + "@" + a.HeadSHA }
+
 type PullRequestCloseArgs struct {
 	WorkspaceID string `json:"workspace_id"`
 	TaskID      string `json:"task_id"`
@@ -85,6 +99,7 @@ func Identity(kind string, args []byte) (workspace, key string, ok bool) {
 		WorkspaceID       string `json:"workspace_id"`
 		TaskID            string `json:"task_id"`
 		ReviewWorkOrderID string `json:"review_work_order_id"`
+		HeadSHA           string `json:"head_sha"`
 	}
 	if err := json.Unmarshal(args, &decoded); err != nil {
 		return "", "", false
@@ -94,6 +109,9 @@ func Identity(kind string, args []byte) (workspace, key string, ok bool) {
 		return decoded.WorkspaceID, decoded.TaskID, decoded.TaskID != ""
 	case ReviewPublicationArgs{}.Kind():
 		return decoded.WorkspaceID, decoded.ReviewWorkOrderID, decoded.ReviewWorkOrderID != ""
+	case ReviewPolicyStatusArgs{}.Kind():
+		key := ReviewPolicyStatusArgs{TaskID: decoded.TaskID, HeadSHA: decoded.HeadSHA}.UniqueKey()
+		return decoded.WorkspaceID, key, decoded.TaskID != "" && decoded.HeadSHA != ""
 	}
 	return decoded.WorkspaceID, "", false
 }

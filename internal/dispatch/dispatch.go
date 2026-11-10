@@ -48,7 +48,10 @@ type Dispatcher struct {
 	ClosePullRequest        func(context.Context, string, int, string, string) error
 	PublishIssue            func(context.Context, github.IssuePublication) (github.IssuePublicationResult, error)
 	PublishReview           func(context.Context, github.ReviewPublication) (github.ReviewPublicationResult, error)
-	ViewPullRequest         func(context.Context, string, string) (github.PullRequest, error)
+	// PublishPolicyStatus upserts conveyor/review-policy on one head through
+	// the workspace App (component-git-delivery invariant 37).
+	PublishPolicyStatus func(context.Context, github.PolicyStatusPublication) (github.PolicyStatusResult, error)
+	ViewPullRequest     func(context.Context, string, string) (github.PullRequest, error)
 	// ReadCommitChecks reads every check of a commit for the automatic merge
 	// (req-review-gates-evidence AC-1.4). A fixture stubbing the forge gets
 	// NoChecksReportedForTest, so it never calls a real reader.
@@ -159,6 +162,13 @@ func New(st store.Store, cfg *config.Config, agent inprocess.Agent) *Dispatcher 
 			return github.ReviewPublicationResult{}, err
 		}
 		return github.PublishReview(forgeCtx, publication)
+	}
+	d.PublishPolicyStatus = func(ctx context.Context, publication github.PolicyStatusPublication) (github.PolicyStatusResult, error) {
+		forgeCtx, err := d.workspaceForgeContext(ctx, publication.Repo)
+		if err != nil {
+			return github.PolicyStatusResult{}, err
+		}
+		return github.PublishPolicyStatus(forgeCtx, publication)
 	}
 	d.ViewPullRequest = func(ctx context.Context, repo, branch string) (github.PullRequest, error) {
 		forgeCtx, err := d.workspaceForgeContext(ctx, repo)
@@ -1528,12 +1538,17 @@ func (d *Dispatcher) applyReview(ctx context.Context, cfg *config.Config, task c
 	if current.State == core.TaskQueued {
 		d.Enqueue(ctx, task.ID)
 	}
+	// A verdict can rate the head and settle its round, so an enforcing
+	// task's policy status is evaluated again (req-risk-based-review AC-10.1).
+	d.syncReviewPolicyStatusAfter(ctx, current, false)
 	if current.State == core.TaskApproved && current.PolicyVersion > 0 && !current.MergeApproval {
 		// The verdict stands whatever the check status says. A hold, a wait, and
 		// an unanswered read of the check status or the pull request are recorded,
 		// and an unanswered read has its retry job; none of them is a failure of
 		// the verdict its caller could act on (AC-1.10; DEC-118(2)).
-		if err := d.MergeApprovedTaskAutomatically(ctx, current); err != nil && !checkStatusDeferred(err) && !errors.Is(err, store.ErrRiskApprovalsRequired) {
+		// An unpublished policy status leaves the task approved for a later
+		// readiness read (component-submission-merge invariant 65).
+		if err := d.MergeApprovedTaskAutomatically(ctx, current); err != nil && !checkStatusDeferred(err) && !errors.Is(err, store.ErrRiskApprovalsRequired) && !errors.Is(err, ErrPolicyStatusUnpublished) {
 			return err
 		} else if err != nil {
 			log.Printf("[task %s] automatic merge after approval: %v", task.ID, err)

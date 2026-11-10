@@ -73,7 +73,13 @@ func mergedPull(task core.Task, number int, head, commit, mergedBy string) githu
 }
 
 func newForgeDispatcher(st store.Store) *Dispatcher {
-	return New(st, &config.Config{Workspace: "test", Repos: []config.Repo{{Name: "app", GitHub: "acme/app"}}}, nil)
+	d := New(st, &config.Config{Workspace: "test", Repos: []config.Repo{{Name: "app", GitHub: "acme/app"}}}, nil)
+	// GitHub accepts every conveyor/review-policy write unless a test
+	// replaces the publisher.
+	d.PublishPolicyStatus = func(context.Context, githubtrigger.PolicyStatusPublication) (githubtrigger.PolicyStatusResult, error) {
+		return githubtrigger.PolicyStatusResult{Written: true}, nil
+	}
+	return d
 }
 
 func enterMergeGate(t *testing.T, st store.Store, ctx context.Context, id, reviewed, approved string, mergeApproval bool) core.Task {

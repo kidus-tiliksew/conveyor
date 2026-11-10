@@ -22,6 +22,10 @@ var factoryActKinds = map[string]bool{
 	// A start-up check's repair (feature-operator-next-action NA-5;
 	// req-quiet-idle-runtime AC-4.2).
 	DriftRepairedEvent: true,
+	// A GitHub merge that bypassed an enforcing task's risk requirements,
+	// whoever's read observed it (req-risk-based-review AC-10.3;
+	// component-next-action invariant 21).
+	core.MergeBypassRecordedEvent: true,
 }
 
 // SelectFactoryActs keeps the factory's own acts. Callers pass candidates
@@ -38,7 +42,9 @@ func SelectFactoryActs(events []core.Event, since time.Time, limit int) []nextac
 		if !factoryActKinds[event.Kind] || event.At.Before(since) {
 			continue
 		}
-		if !factoryActor(event) {
+		// A bypass is listed whoever's act observed the merge: a webhook, a
+		// start-up read, or a person's merge, approve, or readiness read.
+		if event.Kind != core.MergeBypassRecordedEvent && !factoryActor(event) {
 			continue
 		}
 		switch event.Kind {
@@ -70,7 +76,9 @@ func SelectFactoryActs(events []core.Event, since time.Time, limit int) []nextac
 		if !kept[event.ID] {
 			continue
 		}
-		acts = append(acts, nextaction.Act{ID: event.ID, TaskID: event.TaskID, Kind: event.Kind, At: event.At, Automatic: true, Summary: factoryActSummary(event)})
+		// A bypass is someone's merge on GitHub, not the factory's own act.
+		automatic := event.Kind != core.MergeBypassRecordedEvent
+		acts = append(acts, nextaction.Act{ID: event.ID, TaskID: event.TaskID, Kind: event.Kind, At: event.At, Automatic: automatic, Summary: factoryActSummary(event)})
 		if len(acts) == limit {
 			break
 		}
@@ -78,9 +86,16 @@ func SelectFactoryActs(events []core.Event, since time.Time, limit int) []nextac
 	return acts
 }
 
-// factoryActSummary is "<mismatch>: <repair>" for a drift.repaired act and
-// empty for every other act.
+// factoryActSummary is "<mismatch>: <repair>" for a drift.repaired act, the
+// nextaction summary of a merge bypass, and empty for every other act.
 func factoryActSummary(event core.Event) string {
+	if event.Kind == core.MergeBypassRecordedEvent {
+		var bypass nextaction.MergeBypass
+		if json.Unmarshal(event.Payload, &bypass) != nil {
+			return ""
+		}
+		return bypass.Summary()
+	}
 	if event.Kind != DriftRepairedEvent {
 		return ""
 	}

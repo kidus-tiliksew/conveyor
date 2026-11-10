@@ -48,6 +48,11 @@ func (s *Service) SubmitForReviewWithReviewSeats(ctx context.Context, id, sessio
 		result, submitErr = s.submitForReviewLocked(ctx, id, session, headSHA, reviewSeats)
 		return submitErr
 	})
+	if err == nil && s.Dispatcher != nil {
+		// The submission rated its head, so an enforcing task publishes the
+		// head's policy status (req-risk-based-review AC-10.1).
+		s.Dispatcher.SyncReviewPolicyStatusAfterAct(ctx, order.TaskID)
+	}
 	return result, err
 }
 

@@ -84,6 +84,14 @@ type Command struct {
 	// when the confirmed merge completes and never on a failed one
 	// (req-risk-based-review AC-8.7; req-review-gates-evidence AC-1.3).
 	FinalApproval *core.TaskApproval
+	// Bypass, when set on merge.confirm or merge.recover, appends
+	// merge.bypass_recorded in the transaction that completes an enforcing
+	// task's observed merge whose risk requirements were unmet at the merged
+	// head. The task completes once, so the record is appended once per task
+	// and head. A command carrying it credits no approval
+	// (req-risk-based-review AC-10.3; component-submission-merge invariant
+	// 66).
+	Bypass *core.MergeBypass
 }
 
 // PlanStateMove is the plan-state move a lifecycle command commits with its

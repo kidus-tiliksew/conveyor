@@ -60,7 +60,14 @@ func (s *Store) RaiseTaskRiskTier(ctx context.Context, raise core.RiskRating, se
 			return err
 		}
 		// The raise and the seats it adds commit together (AC-7.2).
-		return addRiskSeatsTx(ctx, tx, q, workspace(ctx), task, append(existing, result), store.PersonRiskSeatTrigger(result), seats)
+		if err = addRiskSeatsTx(ctx, tx, q, workspace(ctx), task, append(existing, result), store.PersonRiskSeatTrigger(result), seats); err != nil {
+			return err
+		}
+		// A raise can leave a head short of the success it published, so
+		// it reopens the task's policy statuses in the same transaction
+		// (req-risk-based-review AC-10.1; component-git-delivery
+		// invariant 37).
+		return s.reopenReviewPolicyStatusesTx(ctx, tx, q, task)
 	})
 	if err != nil {
 		return core.RiskRating{}, err

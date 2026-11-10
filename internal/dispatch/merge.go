@@ -159,11 +159,22 @@ func (d *Dispatcher) reconcileForgeMergeLocked(ctx context.Context, task core.Ta
 		if err != nil {
 			return false, err
 		}
+		// An enforcing task's requirements are evaluated at the merged head
+		// before any credit. Unmet, the merge completes as a recovery that
+		// credits no approval and no intervention.merge, and the completing
+		// transaction records the bypass (req-risk-based-review AC-10.3;
+		// component-submission-merge invariant 66).
+		bypass, err := d.observedMergeBypass(ctx, task, githubRepo, pr, events)
+		if err != nil {
+			return false, err
+		}
 		// A pending one-act request at this head is the operator's merge, not a
 		// merge outside Conveyor: it completes through intervention.merge and
 		// writes no merge.reconciled or merge.recover (DEC-64(7)).
-		if credited, creditErr := d.creditPendingGateMergeLocked(ctx, task, githubRepo, pr, events); creditErr != nil || credited {
-			return credited, creditErr
+		if bypass == nil {
+			if credited, creditErr := d.creditPendingGateMergeLocked(ctx, task, githubRepo, pr, events); creditErr != nil || credited {
+				return credited, creditErr
+			}
 		}
 		if err := d.recoverCheckOverrideLocked(ctx, task, pr.HeadSHA, events); err != nil {
 			return false, err
@@ -185,12 +196,12 @@ func (d *Dispatcher) reconcileForgeMergeLocked(ctx context.Context, task core.Ta
 		// credits that person's final approval with the completion
 		// (req-risk-based-review AC-8.7).
 		var final *core.TaskApproval
-		if task.State == core.TaskApproved {
+		if task.State == core.TaskApproved && bypass == nil {
 			if final, err = d.pendingFinalApproval(ctx, task, pendingOperatorMergeRequest(events, pr.HeadSHA), pr.HeadSHA); err != nil {
 				return false, err
 			}
 		}
-		if err := d.confirmTaskMergedWithApproval(ctx, task.ID, final); err != nil {
+		if err := d.confirmTaskMergedWith(ctx, task.ID, final, bypass); err != nil {
 			return false, err
 		}
 		return true, nil
@@ -315,6 +326,10 @@ func (d *Dispatcher) refreshDocumentationEvidence(ctx context.Context, cfg *conf
 }
 
 func (d *Dispatcher) beginRefreshLocked(ctx context.Context, task core.Task, observed github.PullRequest, reason string, conflict bool) error {
+	// A refresh rates the new head and stales the old approval, so the
+	// policy status of both heads is evaluated again (req-risk-based-review
+	// AC-10.1).
+	defer d.syncReviewPolicyStatusAfter(ctx, task, true)
 	newHead := observed.HeadSHA
 	baseline := task.ApprovedHeadSHA
 	if baseline == "" {
@@ -398,6 +413,7 @@ func (d *Dispatcher) ReadMergeReadiness(ctx context.Context, task core.Task) (Me
 	err := d.Store.WithTaskSideEffectLock(ctx, task.ID, func(lockedCtx context.Context) error {
 		var lockedErr error
 		result, lockedErr = d.readMergeReadinessLocked(lockedCtx, task, false)
+		d.syncReviewPolicyStatusAfter(lockedCtx, task, true)
 		return lockedErr
 	})
 	return result, err
@@ -854,7 +870,9 @@ type mergeAct struct {
 // (component-work-orders).
 func (d *Dispatcher) MergeApprovedTask(ctx context.Context, task core.Task, actor core.Actor) error {
 	return d.Store.WithTaskSideEffectLock(ctx, task.ID, func(lockedCtx context.Context) error {
-		return d.mergeApprovedTaskLocked(lockedCtx, task, mergeAct{operator: &actor})
+		err := d.mergeApprovedTaskLocked(lockedCtx, task, mergeAct{operator: &actor})
+		d.syncReviewPolicyStatusAfter(lockedCtx, task, true)
+		return err
 	})
 }
 
@@ -877,7 +895,9 @@ func (d *Dispatcher) MergeApprovedTaskAutomatically(ctx context.Context, task co
 // readAndMergeAutomatically is one read and merge, which arranges no retry.
 func (d *Dispatcher) readAndMergeAutomatically(ctx context.Context, task core.Task) error {
 	return d.Store.WithTaskSideEffectLock(ctx, task.ID, func(lockedCtx context.Context) error {
-		return d.mergeApprovedTaskLocked(lockedCtx, task, mergeAct{})
+		err := d.mergeApprovedTaskLocked(lockedCtx, task, mergeAct{})
+		d.syncReviewPolicyStatusAfter(lockedCtx, task, true)
+		return err
 	})
 }
 
@@ -1044,6 +1064,20 @@ func (d *Dispatcher) mergeApprovedTaskLocked(ctx context.Context, task core.Task
 		}
 		requestPayload["check_status"] = status
 	}
+	// An enforcing task's merge request follows GitHub's acceptance of the
+	// conveyor/review-policy success on the head it lands. A person's merge
+	// counts that person's provisional final approval, which is recorded only
+	// with the confirmed merge. A failed publication sends no request and
+	// leaves the task approved for a later readiness read
+	// (req-risk-based-review AC-10.2; component-submission-merge invariant
+	// 65).
+	prospective := ""
+	if act.operator != nil {
+		prospective = actorUserID(ctx, *act.operator)
+	}
+	if err := d.publishPolicySuccessBeforeMergeLocked(ctx, current, repo.GitHub, approvedHead, prospective, author); err != nil {
+		return err
+	}
 	if err := d.Store.AppendEvent(ctx, core.Event{TaskID: current.ID, Kind: "merge.requested", Payload: core.JSONPayload(requestPayload)}); err != nil {
 		return err
 	}
@@ -1127,6 +1161,9 @@ func (d *Dispatcher) ReconcileObservedPullRequest(ctx context.Context, repositor
 			return matchErr
 		}
 		reconciled = matched
+		if matched {
+			d.syncReviewPolicyStatusAfter(lockedCtx, task, true)
+		}
 		return nil
 	})
 	return reconciled, err
@@ -1425,6 +1462,13 @@ func (d *Dispatcher) confirmTaskMerged(ctx context.Context, taskID string) error
 // is set, records the approval that completes an enforcing task's count in
 // the same transaction (req-risk-based-review AC-8.7).
 func (d *Dispatcher) confirmTaskMergedWithApproval(ctx context.Context, taskID string, final *core.TaskApproval) error {
+	return d.confirmTaskMergedWith(ctx, taskID, final, nil)
+}
+
+// confirmTaskMergedWith completes a confirmed or observed merge. bypass, when
+// set, is appended as merge.bypass_recorded in the completing transaction;
+// such a completion carries no final approval.
+func (d *Dispatcher) confirmTaskMergedWith(ctx context.Context, taskID string, final *core.TaskApproval, bypass *core.MergeBypass) error {
 	// The task transition atomically resumes dependent queue clocks. Worker
 	// polling discovers the now-claimable order; the old durable-queue nudge
 	// was a no-op because the existing stage order already owns dispatch.
@@ -1435,6 +1479,10 @@ func (d *Dispatcher) confirmTaskMergedWithApproval(ctx context.Context, taskID s
 	command := core.TaskMergeConfirm
 	if current.State != core.TaskApproved {
 		command = core.TaskMergeRecover
+	}
+	if bypass != nil {
+		_, err = taskops.New(d.Store).Perform(ctx, taskID, taskops.Command{Kind: command, ProjectStages: true, Bypass: bypass})
+		return err
 	}
 	if final == nil {
 		return d.transition(ctx, taskID, command, "", "")

@@ -102,7 +102,10 @@ type Server struct {
 	OnRecordApproval      func(ctx context.Context, task core.Task, actor core.Actor, head string) (store.ApprovalEvaluation, error)
 	OnWaiveAuthorApproval func(ctx context.Context, task core.Task, actor core.Actor, head, reason string) (store.ApprovalEvaluation, bool, error)
 	OnMergeReadiness      func(context.Context, core.Task) (dispatch.MergeReadiness, error)
-	OnConflictFix         func(context.Context, core.Task) (core.WorkOrder, error)
+	// OnRiskTierRaised evaluates an enforcing task's policy status again
+	// after a person raised its tier (req-risk-based-review AC-10.1).
+	OnRiskTierRaised func(ctx context.Context, taskID string)
+	OnConflictFix    func(context.Context, core.Task) (core.WorkOrder, error)
 	// Workspace stamps created tasks.
 	Workspace string
 	// BearerToken authenticates mutating requests (component-http-api). An empty
