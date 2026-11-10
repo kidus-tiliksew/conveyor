@@ -101,15 +101,17 @@ for the long tail of chores.
 
 Conveyor treats the light level as configuration.
 
-Running light, a person is in the loop at every step. Plan approval and
-merge approval are on, and the operator starts an agent session in their own
-harness, asks it to work the task with the `conveyor-work` skill, watches it
-work, and answers each gate in the conversation or on the dashboard. A task
-carries no reservation: to keep work on one person's machines, assign it to
-them (DEC-122).
+Running light, a person is in the loop at every step. Tasks start at
+planning needed, so an agent writes a plan and a person approves it at the
+plan approval gate, and merge approval is on. The operator starts an agent
+session in their own harness, asks it to work the task with the
+`conveyor-work` skill, watches it work, and answers each gate in the
+conversation or on the dashboard. A task carries no reservation: to keep work
+on one person's machines, assign it to them (DEC-125(3)).
 
-Running dark, the queue moves with little attention. Gates are off (per task
-or workspace default), a coordinating agent session following the
+Running dark, the queue moves with little attention. Tasks start at no plan
+required, or at planning completed with a plan the filer approved at intake,
+and merge approval is off. A coordinating agent session following the
 `conveyor-coordinate` skill starts a separate agent thread for each claimable
 order, review rounds are staffed by isolated reviewer agents, and approved
 work merges without a click. Every order is still claimed by an agent session
@@ -118,11 +120,14 @@ watches the repository and post-merge CI, and files reconciliation tasks for
 what it finds. The operator's job collapses to the attention queues:
 pending proposals, drift, staleness.
 
-Because the switches are per task, the practical answer is rarely one end.
-The workspace default can be dark while the tasks that touch governed
-architecture carry gates or an assignee. Bounce limits are the
-backstop for the dark end: review rounds that keep failing park the task at
-a human gate after `max_bounces` rounds rather than burning tokens forever.
+Because the plan state and merge approval are set per task, with workspace
+defaults, the practical answer is rarely one end. The workspace default can
+be dark while the tasks that touch governed architecture start at planning
+needed, keep merge approval on, or carry an assignee. See
+[Plan state](tasks.md#plan-state) for how a task's plan state is set and
+changed. Bounce limits are the backstop for the dark end: review rounds that
+keep failing park the task at a human gate after `max_bounces` rounds rather
+than burning tokens forever.
 
 Document confirmation is operator-only at every light level; a task implements confirmed documents and proposes none (DEC-102), and no proposal becomes authority on its own. Misalignment signals are
 likewise never auto-resolved. 

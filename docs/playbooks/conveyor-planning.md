@@ -123,7 +123,7 @@ specifies the mechanism; this section directs the session.
    text with its item when asking for approval. Push files the plan as
    approved under the operator's approval of the item at the digest that
    covers the plan, and a changed plan file needs a new approval (AC-4.7;
-   `req-task-plan-state` AC-2.3; DEC-122(6)).
+   `req-task-plan-state` AC-2.3; DEC-125(6)).
 
 ### Present and approve
 

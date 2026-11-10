@@ -102,11 +102,11 @@ cites:
   optional `depends_on: [task-ids]`, `plan_state`, `plan`,
   `plan_base_commit`, `merge_approval`. An omitted `plan_state` or
   `merge_approval` takes the workspace default. A task carries no hold or
-  other reservation (DEC-122); never send `hold`.
+  other reservation (DEC-125); never send `hold`.
 - A plan filed through MCP `create_task` becomes plan version 1 and waits
   at plan awaiting approval for a person's approval. `create_task` never
   approves a plan, and any `plan_approved` argument is refused
-  (`req-task-plan-state` AC-2.4; DEC-122(6)). Send no `plan_state` with a
+  (`req-task-plan-state` AC-2.4; DEC-125(6)). Send no `plan_state` with a
   `plan`, and set `plan_base_commit` to the full commit ID the plan was read
   against.
 - The title is generated from the body; don't write one.
