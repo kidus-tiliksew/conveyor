@@ -600,6 +600,204 @@ test('Show IDs and Copy order ID read the stated order', async ({ page, context 
   await menu.click()
   await page.getByRole('menuitem', { name: 'Copy order ID' }).click()
   await expect.poll(() => page.evaluate(() => navigator.clipboard.readText())).toBe('order-impl-running')
+  await expect(card.locator('[aria-live="polite"]')).toHaveText('Order ID copied')
+  await expect(card.getByRole('alert')).toHaveCount(0)
+})
+
+// Copy order ID treats a missing clipboard API, a write that throws, and a
+// refused write as a failed copy. The banner says so, keeps the order ID
+// behind Show IDs, and raises no uncaught error or unhandled rejection. The
+// confirmation appears only after a write resolves. Each test installs its
+// own clipboard before the page's scripts run, so no test depends on browser
+// permissions (req-operator-next-action AC-7.1; component-testing-strategy
+// invariant 21: these mocks prove presentation only).
+type ClipboardMode = 'missing' | 'resolve' | 'throw' | 'reject' | 'pending'
+
+type ClipboardProbe = {
+  clipboardMode: ClipboardMode
+  copiedText: string[]
+  pageFailures: string[]
+  resolveCopy?: () => void
+}
+
+const copyFailedText = 'Could not copy the order ID. Use Show IDs to view it.'
+
+async function stubClipboard(page: Page, mode: ClipboardMode) {
+  const errors: string[] = []
+  page.on('pageerror', (error) => errors.push(error.message))
+  await page.addInitScript((initial: ClipboardMode) => {
+    const probe = window as unknown as ClipboardProbe
+    probe.clipboardMode = initial
+    probe.copiedText = []
+    probe.pageFailures = []
+    window.addEventListener('unhandledrejection', (event) =>
+      probe.pageFailures.push(`unhandledrejection: ${String(event.reason)}`),
+    )
+    window.addEventListener('error', (event) => probe.pageFailures.push(`error: ${event.message}`))
+    if (initial === 'missing') {
+      // An insecure context has no clipboard API. Deleting the property alone
+      // would expose the prototype's API again on localhost.
+      Object.defineProperty(navigator, 'clipboard', { configurable: true, value: undefined })
+      return
+    }
+    const clipboard = {
+      writeText(text: string): Promise<void> {
+        switch (probe.clipboardMode) {
+          case 'throw':
+            throw new TypeError('clipboard write threw')
+          case 'reject':
+            return Promise.reject(new DOMException('Write permission denied.', 'NotAllowedError'))
+          case 'pending':
+            return new Promise<void>((resolve) => {
+              probe.resolveCopy = () => {
+                probe.copiedText.push(text)
+                resolve()
+              }
+            })
+          default:
+            probe.copiedText.push(text)
+            return Promise.resolve()
+        }
+      },
+    }
+    Object.defineProperty(navigator, 'clipboard', { configurable: true, value: clipboard })
+  }, mode)
+  return {
+    errors,
+    setMode: (next: ClipboardMode) =>
+      page.evaluate((value) => {
+        ;(window as unknown as ClipboardProbe).clipboardMode = value
+      }, next),
+    copied: () => page.evaluate(() => (window as unknown as ClipboardProbe).copiedText),
+    failures: () => page.evaluate(() => (window as unknown as ClipboardProbe).pageFailures),
+    resolve: () => page.evaluate(() => (window as unknown as ClipboardProbe).resolveCopy?.()),
+  }
+}
+
+async function copyOrderID(card: Locator) {
+  await card.getByRole('button', { name: 'More actions' }).click()
+  await card.page().getByRole('menuitem', { name: 'Copy order ID' }).click()
+}
+
+test('Copy order ID confirms only after the clipboard write resolves', async ({ page }) => {
+  const clipboard = await stubClipboard(page, 'pending')
+  await mockAPI(
+    page,
+    () => activity('running', workingAction, [runningOrder]),
+    () => workingAction,
+  )
+  await page.goto(`/w/demo/tasks/${taskId}/full`)
+  const card = page.getByRole('region', { name: 'Next action' })
+  const live = card.locator('[aria-live="polite"]')
+  await copyOrderID(card)
+  await expect
+    .poll(() => page.evaluate(() => typeof (window as unknown as ClipboardProbe).resolveCopy))
+    .toBe('function')
+  await expect(live).toHaveText('')
+  await expect(card.getByRole('alert')).toHaveCount(0)
+  await clipboard.resolve()
+  await expect(live).toHaveText('Order ID copied')
+  await expect(card.getByRole('alert')).toHaveCount(0)
+  expect(await clipboard.copied()).toEqual(['order-impl-running'])
+  expect(await clipboard.failures()).toEqual([])
+  expect(clipboard.errors).toEqual([])
+})
+
+for (const surface of surfaces) {
+  for (const { mode, name } of [
+    { mode: 'missing', name: 'a missing clipboard API' },
+    { mode: 'throw', name: 'a write that throws' },
+    { mode: 'reject', name: 'a refused write' },
+  ] as const) {
+    test(`Copy order ID on the ${surface.name} reports ${name} and keeps Show IDs`, async ({ page }) => {
+      const clipboard = await stubClipboard(page, mode)
+      await mockAPI(
+        page,
+        () => activity('running', workingAction, [runningOrder]),
+        () => workingAction,
+      )
+      await page.goto(surface.path)
+      const card = page.getByRole('region', { name: 'Next action' })
+      await copyOrderID(card)
+
+      const failed = card.getByRole('alert')
+      await expect(failed).toHaveText(copyFailedText)
+      await expect(failed).toBeVisible()
+      await expect(card.locator('[aria-live="polite"]')).toHaveText('')
+      // The message sits under the banner's row; the row keeps its summary.
+      const headingBox = await card.getByRole('heading').boundingBox()
+      const failedBox = await failed.boundingBox()
+      expect(headingBox && failedBox && failedBox.y >= headingBox.y + headingBox.height).toBe(true)
+      await expect(card.getByRole('heading', { name: 'An agent is implementing this task.' })).toBeVisible()
+
+      // The menu is unchanged, and Show IDs shows the stated order.
+      await card.getByRole('button', { name: 'More actions' }).click()
+      await expect(page.getByRole('menu', { name: 'More actions' }).getByRole('menuitem')).toHaveText([
+        'Copy order ID',
+        'Show IDs',
+        'Stop attempt…',
+      ])
+      await page.getByRole('menuitem', { name: 'Show IDs' }).click()
+      await expect(card.locator('[data-next-action-ids] [data-next-action-id="Order ID"] dd')).toHaveText(
+        'order-impl-running',
+      )
+      await expect(failed).toHaveText(copyFailedText)
+
+      expect(await clipboard.copied()).toEqual([])
+      expect(await clipboard.failures()).toEqual([])
+      expect(clipboard.errors).toEqual([])
+      expect(await noSidewaysScroll(card)).toEqual({ card: false, page: false })
+    })
+  }
+}
+
+test('a successful retry clears the copy failure', async ({ page }) => {
+  const clipboard = await stubClipboard(page, 'reject')
+  await mockAPI(
+    page,
+    () => activity('running', workingAction, [runningOrder]),
+    () => workingAction,
+  )
+  await page.goto(`/w/demo/tasks/${taskId}/full`)
+  const card = page.getByRole('region', { name: 'Next action' })
+  const live = card.locator('[aria-live="polite"]')
+  await copyOrderID(card)
+  await expect(card.getByRole('alert')).toHaveText(copyFailedText)
+
+  await clipboard.setMode('resolve')
+  await copyOrderID(card)
+  await expect(live).toHaveText('Order ID copied')
+  await expect(card.getByRole('alert')).toHaveCount(0)
+  expect(await clipboard.copied()).toEqual(['order-impl-running'])
+  expect(await clipboard.failures()).toEqual([])
+  expect(clipboard.errors).toEqual([])
+})
+
+test('a failed retry clears the copy confirmation', async ({ page }) => {
+  const clipboard = await stubClipboard(page, 'resolve')
+  await mockAPI(
+    page,
+    () => activity('running', workingAction, [runningOrder]),
+    () => workingAction,
+  )
+  // A paused clock keeps the confirmation on screen until the retry, so its
+  // absence afterwards comes from the retry and not from its timeout.
+  await page.clock.install({ time: oneHourIn })
+  await page.goto(`/w/demo/tasks/${taskId}/full`)
+  const card = page.getByRole('region', { name: 'Next action' })
+  const live = card.locator('[aria-live="polite"]')
+  await expect(card).toBeVisible()
+  await page.clock.pauseAt((await page.evaluate(() => Date.now())) + 1_000)
+  await copyOrderID(card)
+  await expect(live).toHaveText('Order ID copied')
+
+  await clipboard.setMode('reject')
+  await copyOrderID(card)
+  await expect(card.getByRole('alert')).toHaveText(copyFailedText)
+  await expect(live).toHaveText('')
+  expect(await clipboard.copied()).toEqual(['order-impl-running'])
+  expect(await clipboard.failures()).toEqual([])
+  expect(clipboard.errors).toEqual([])
 })
 
 test('Stop attempt… opens the confirmation under the banner and posts the same preempt request', async ({ page }) => {

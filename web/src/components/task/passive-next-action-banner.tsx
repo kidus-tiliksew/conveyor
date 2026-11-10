@@ -31,7 +31,8 @@ export function PassiveNextActionBanner({
   preemptOrder: WorkOrder | undefined
 }) {
   const [panel, setPanel] = useState<'ids' | 'stop' | null>(null)
-  const [copied, setCopied] = useState(false)
+  const [copy, setCopy] = useState<'idle' | 'copied' | 'failed'>('idle')
+  const copyAttempt = useRef(0)
   const section = useRef<HTMLElement>(null)
   const now = useNow()
   const orderID = action.current_order?.id
@@ -45,10 +46,29 @@ export function PassiveNextActionBanner({
   const attention = share !== undefined && share >= attentionShare
 
   useEffect(() => {
-    if (!copied) return
-    const timer = window.setTimeout(() => setCopied(false), 1500)
+    if (copy !== 'copied') return
+    const timer = window.setTimeout(() => setCopy('idle'), 1500)
     return () => window.clearTimeout(timer)
-  }, [copied])
+  }, [copy])
+
+  // `navigator.clipboard` is undefined outside a secure context, `writeText`
+  // can throw before it returns a promise, and the browser can refuse the
+  // write. Each is a failed copy: the banner says so and points to Show IDs,
+  // and no error escapes the menu's handler. Only the newest attempt sets the
+  // result, so a slow earlier attempt cannot overwrite a later one. The result
+  // is a local copy outcome, not a server statement (AC-1.7, AC-1.8).
+  const copyOrderID = async (id: string) => {
+    const attempt = ++copyAttempt.current
+    setCopy('idle')
+    let result: 'copied' | 'failed'
+    try {
+      await navigator.clipboard.writeText(id)
+      result = 'copied'
+    } catch {
+      result = 'failed'
+    }
+    if (attempt === copyAttempt.current) setCopy(result)
+  }
 
   const closeStop = () => {
     setPanel(null)
@@ -113,7 +133,7 @@ export function PassiveNextActionBanner({
           {orderID && (
             <DropdownMenuItem
               onSelect={() => {
-                void navigator.clipboard.writeText(orderID).then(() => setCopied(true))
+                void copyOrderID(orderID)
               }}
             >
               <Copy aria-hidden="true" />
@@ -136,8 +156,13 @@ export function PassiveNextActionBanner({
         </DropdownMenu>
       </div>
       <span className="sr-only" aria-live="polite">
-        {copied ? 'Order ID copied' : ''}
+        {copy === 'copied' ? 'Order ID copied' : ''}
       </span>
+      {copy === 'failed' && (
+        <p data-copy-failed role="alert" className="mt-2 text-xs text-failure">
+          Could not copy the order ID. Use Show IDs to view it.
+        </p>
+      )}
       {panel === 'ids' && (
         <div data-next-action-ids className="mt-2">
           <NextActionIDList value={{ details: action.details, current_order: action.current_order }} />
