@@ -13,6 +13,7 @@ import (
 	"github.com/kidus-tiliksew/conveyor/internal/core"
 	"github.com/kidus-tiliksew/conveyor/internal/monitor"
 	"github.com/kidus-tiliksew/conveyor/internal/nextaction"
+	"github.com/kidus-tiliksew/conveyor/internal/riskpolicy"
 )
 
 // NextActionOptions is the caller view the projection cannot read from the task.
@@ -43,6 +44,11 @@ type NextActionOptions struct {
 	// TrustedAuthors returns the live trusted_authors list of a task's
 	// repository (req-risk-based-review AC-9.3). Nil reads the empty list.
 	TrustedAuthors func(context.Context, core.Task) ([]string, error)
+	// CallerUserID is the person the next action is stated for. An enforcing
+	// task's merge choice is worded from that person's own approval: Merge
+	// only when it lands the head, Approve when it is recorded short of the
+	// requirements, and a refusal when it cannot count. Empty states no caller.
+	CallerUserID string
 }
 
 // ReadNextAction projects one task. Missing tasks return the store's not-found error.
@@ -518,20 +524,21 @@ func readAssemblerRiskApprovals(ctx context.Context, st Store, tasks []core.Task
 				return nil, err
 			}
 		}
-		evaluation, err := EvaluateTaskApprovals(scoped, st, task, trusted, "")
+		// The caller's own approval is evaluated too, so the merge choice is
+		// offered only when the caller's act can land the head
+		// (req-risk-based-review AC-8.7, AC-11.1).
+		evaluation, err := EvaluateTaskApprovals(scoped, st, task, trusted, opts.CallerUserID)
 		if err != nil {
 			return nil, err
 		}
-		status := evaluation.Status
-		if status.Required < 1 {
+		if evaluation.Base.Required < 1 {
 			continue
 		}
-		out[task.ID] = nextaction.RiskApprovals{
-			Required: status.Required, Recorded: status.Recorded, Remaining: status.Remaining,
-			TrustedAuthorNeeded: status.TrustedAuthorApprovalNeeded, NonAuthorNeeded: status.NonAuthorApprovalNeeded,
-			WaiverNeeded: status.AuthorWaiverNeeded,
-			Satisfied:    status.Satisfied,
+		var caller *riskpolicy.ApprovalStatus
+		if opts.CallerUserID != "" {
+			caller = &evaluation.Status
 		}
+		out[task.ID] = nextaction.RiskApprovalsFrom(evaluation.Base, caller)
 	}
 	return out, nil
 }

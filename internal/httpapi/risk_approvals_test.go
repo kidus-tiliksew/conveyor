@@ -276,3 +276,57 @@ func TestMergeRouteAnswersAShortMergeWithTheShortfall(t *testing.T) {
 		t.Fatalf("short merge status=%d body=%s", response.Code, response.Body)
 	}
 }
+
+// The next action is stated for the signed-in person: after one approval of
+// a high-tier task whose sole author is trusted, the person who approved is
+// told the approval is already recorded, a second non-author is offered an
+// approval that does not approve the merge, because the trusted author's
+// approval is still needed, and the trusted author is offered the approval
+// that completes the requirements (req-risk-based-review AC-8.7, AC-11.1).
+func TestNextActionStatesTheCallersOwnApproval(t *testing.T) {
+	f := approvalHTTPFixture(t)
+	if response := f.post("operator-token", "risk-approve", "/approvals", `{"head_sha":"`+approvalHead+`"}`); response.Code != http.StatusAccepted {
+		t.Fatalf("approval status=%d body=%s", response.Code, response.Body)
+	}
+	approveChoice := func(token string) (string, string) {
+		t.Helper()
+		response := riskRequest(f.handler, http.MethodGet, token, "/v1/tasks/risk-approve/next-action?workspace_id=alpha", "")
+		if response.Code != http.StatusOK {
+			t.Fatalf("next action status=%d body=%s", response.Code, response.Body)
+		}
+		var action struct {
+			Choices []struct {
+				ID     string `json:"id"`
+				Effect string `json:"effect"`
+			} `json:"choices"`
+			Details struct {
+				Refusals []struct {
+					Choice string `json:"choice"`
+					Text   string `json:"text"`
+				} `json:"refusals"`
+			} `json:"details"`
+		}
+		requireOKHTTP(t, json.Unmarshal(response.Body.Bytes(), &action))
+		for _, choice := range action.Choices {
+			if choice.ID == "approve" {
+				return choice.Effect, ""
+			}
+		}
+		for _, refusal := range action.Details.Refusals {
+			if refusal.Choice == "approve" {
+				return "", refusal.Text
+			}
+		}
+		t.Fatalf("no approve choice or refusal: %s", response.Body)
+		return "", ""
+	}
+	if effect, refusal := approveChoice("operator-token"); effect != "" || !strings.HasPrefix(refusal, "Your approval of this head is already recorded.") {
+		t.Fatalf("operator effect=%q refusal=%q", effect, refusal)
+	}
+	if effect, _ := approveChoice("second-token"); !strings.Contains(effect, "It does not approve the merge, because the merge still needs 1 more approval, including a trusted author's approval.") {
+		t.Fatalf("second effect=%q", effect)
+	}
+	if effect, _ := approveChoice("author-token"); !strings.Contains(effect, "Your approval completes the required approvals.") {
+		t.Fatalf("author effect=%q", effect)
+	}
+}

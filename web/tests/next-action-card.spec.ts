@@ -2276,7 +2276,7 @@ function approvalAction(label: 'Approve' | 'Merge'): NextAction {
             label,
             effect:
               label === 'Approve'
-                ? 'Records your approval of the reviewed head. It does not merge, because more approvals are needed.'
+                ? "Records your approval. It does not merge, because the merge still needs 2 more approvals, including a trusted author's approval."
                 : 'Records your approval and merges the reviewed head when your approval completes the required approvals.',
           }
         : choice,
@@ -2334,7 +2334,7 @@ test('an enforcing task short of its approvals offers Approve and states the cou
   const dialog = page.getByRole('dialog', { name: 'Confirm approval' })
   await expect(dialog.getByRole('heading')).toHaveText('Approve #77?')
   await expect(dialog.locator('[data-confirm-head]')).toContainText(
-    `This records your approval of #77 at the approved head ${approvedHead.slice(0, 7)} under your name. It does not merge, because more approvals are needed.`,
+    `This records your approval of #77 at the approved head ${approvedHead.slice(0, 7)} under your name. It does not merge, because the merge still needs 2 more approvals, including a trusted author's approval.`,
   )
   await expect(dialog.locator('[data-confirm-merge]')).toHaveText('Approve #77')
   expect(posts).toEqual([])
@@ -2391,51 +2391,217 @@ for (const viewport of [
   })
 }
 
-// With an untrusted coauthor no author's approval counts, so the trusted
-// author's approval is met only by a non-author's waiver; the risk fact and
-// the merge control say so (req-risk-based-review REQ-9, AC-8.5, AC-11.2).
-function waiverActivity() {
+// The merge control offers only an act the caller can take
+// (req-risk-based-review AC-8.7, AC-11.1, REQ-9). When the caller's approval
+// cannot count or cannot complete the merge, the server withholds the merge
+// choice with code approval_not_possible and the card states its reason in
+// place of the control, so no merge confirmation opens. When the caller's
+// approval counts but leaves the merge short, the control is Approve and its
+// confirmation states what is still needed.
+function approvalState(risk: Partial<NonNullable<ReturnType<typeof approvalActivity>['risk']>>) {
   const item = approvalActivity('Merge')
+  return { ...item, risk: { ...item.risk, ...risk } }
+}
+
+function withheldAction(summary: string, refusal: string): NextAction {
+  const action = heldMergeAction('merge_execution')
   return {
-    ...item,
-    risk: {
-      ...item.risk,
-      required_human_approvals: 1,
-      recorded_approvals: 1,
-      remaining_approvals: 0,
-      author_approval_needed: false,
-      non_author_approval_needed: false,
-      untrusted_author: true,
-      author_waiver_needed: true,
-    },
+    ...action,
+    summary,
+    choices: action.choices.filter((choice) => choice.id !== 'merge'),
+    details: { ...action.details, refusals: [{ choice: 'merge', text: refusal, code: 'approval_not_possible' }] },
   }
 }
 
+const waiverOnly = {
+  risk: {
+    required_human_approvals: 1,
+    recorded_approvals: 1,
+    remaining_approvals: 0,
+    author_approval_needed: false,
+    non_author_approval_needed: false,
+    untrusted_author: true,
+    author_waiver_needed: true,
+  },
+  count: "1 of 1 human approval recorded. A person who is not an author must waive the trusted author's approval.",
+  summary:
+    "The reviewed head has 1 of 1 required human approvals. No author's approval counts while an author is not trusted, so a person who is not an author must waive the trusted author's approval.",
+  refusal:
+    "No approval can complete the merge now. A person who is not an author must first waive the trusted author's approval.",
+}
+
+const oneShortTrustedAuthor = {
+  risk: {
+    required_human_approvals: 2,
+    recorded_approvals: 1,
+    remaining_approvals: 1,
+    author_approval_needed: true,
+    non_author_approval_needed: false,
+    author_waiver_needed: false,
+  },
+  count: "1 of 2 human approvals recorded. 1 more needed, including a trusted author's.",
+  summary:
+    "The reviewed head has 1 of 2 required human approvals. 1 more approval is needed, including a trusted author's approval.",
+}
+
+const states = [
+  {
+    name: 'waiver-only',
+    detail: () => approvalState(waiverOnly.risk),
+    action: () => withheldAction(waiverOnly.summary, waiverOnly.refusal),
+    count: waiverOnly.count,
+    refusal: waiverOnly.refusal,
+  },
+  {
+    name: 'already-counted',
+    detail: () => approvalState(oneShortTrustedAuthor.risk),
+    action: () =>
+      withheldAction(
+        oneShortTrustedAuthor.summary,
+        "Your approval of this head is already recorded. The merge still needs 1 more approval, including a trusted author's approval.",
+      ),
+    count: oneShortTrustedAuthor.count,
+    refusal:
+      "Your approval of this head is already recorded. The merge still needs 1 more approval, including a trusted author's approval.",
+  },
+  {
+    name: 'coauthor-beside-untrusted',
+    detail: () =>
+      approvalState({
+        ...oneShortTrustedAuthor.risk,
+        required_human_approvals: 1,
+        recorded_approvals: 0,
+        author_approval_needed: false,
+        non_author_approval_needed: true,
+        untrusted_author: true,
+        author_waiver_needed: true,
+      }),
+    action: () =>
+      withheldAction(
+        'The reviewed head has 0 of 1 required human approvals. 1 more approval is needed, including an approval from a person who is not an author.',
+        "Your approval does not count, because you are an author and another author is not trusted. The merge still needs 1 more approval, including an approval from a person who is not an author, and a waiver of the trusted author's approval by a person who is not an author.",
+      ),
+    count:
+      "0 of 1 human approval recorded. 1 more needed, including one from a person who is not an author. A person who is not an author must waive the trusted author's approval.",
+    refusal:
+      "Your approval does not count, because you are an author and another author is not trusted. The merge still needs 1 more approval, including an approval from a person who is not an author, and a waiver of the trusted author's approval by a person who is not an author.",
+  },
+]
+
+for (const state of states) {
+  test(`a withheld merge states why and opens no confirmation: ${state.name}`, async ({ page }) => {
+    const posts = await mockAPI(page, state.detail, state.action)
+    await page.goto(`/w/demo/tasks/${taskId}/full`)
+    const gate = page.getByRole('region', { name: 'Human gate' })
+    await expect(gate.locator('[data-approval-refusal]')).toHaveText(state.refusal)
+    await expect(gate.locator('[data-approval-count]')).toHaveText(state.count)
+    await expect(gate.locator('[data-merge-at-gate]')).toHaveCount(0)
+    await expect(gate.getByRole('button', { name: /^(Merge|Approve)$/ })).toHaveCount(0)
+    await expect(page.getByRole('dialog')).toHaveCount(0)
+    expect(posts).toEqual([])
+  })
+}
+
+// A non-author whose approval counts while the trusted author's approval is
+// still needed gets Approve, and the confirmation says it does not merge.
+function wrongAuthorAction(): NextAction {
+  const action = heldMergeAction('merge_execution')
+  return {
+    ...action,
+    summary: oneShortTrustedAuthor.summary,
+    choices: action.choices.map((choice) =>
+      choice.id === 'merge'
+        ? {
+            ...choice,
+            label: 'Approve',
+            effect:
+              "Records your approval. It does not merge, because the merge still needs 1 more approval, including a trusted author's approval.",
+          }
+        : choice,
+    ),
+  }
+}
+
+test('a non-author short of the trusted author gets Approve with the reason', async ({ page }) => {
+  await mockAPI(
+    page,
+    () => approvalState(oneShortTrustedAuthor.risk),
+    () => wrongAuthorAction(),
+  )
+  await page.goto(`/w/demo/tasks/${taskId}/full`)
+  const gate = page.getByRole('region', { name: 'Human gate' })
+  await expect(gate.locator('[data-merge-at-gate]')).toHaveText('Approve')
+  await gate.locator('[data-merge-at-gate]').click()
+  const dialog = page.getByRole('dialog', { name: 'Confirm approval' })
+  await expect(dialog.locator('[data-confirm-head]')).toContainText(
+    "under your name. It does not merge, because the merge still needs 1 more approval, including a trusted author's approval.",
+  )
+  await expect(dialog.locator('[data-confirm-merge]')).toHaveText('Approve #77')
+})
+
+// Screenshots of the changed states at 375 px and 1280 px, attached to the
+// Playwright report and written to CONVEYOR_SCREENSHOT_DIR when it is set.
 for (const viewport of [
   { name: 'mobile', width: 375, height: 1400 },
   { name: 'desktop', width: 1280, height: 1000 },
 ]) {
-  test(`capture the author waiver condition at ${viewport.width} px`, async ({ page }, testInfo) => {
+  test(`capture the withheld and approve-only merge states at ${viewport.width} px`, async ({ page }, testInfo) => {
     await page.setViewportSize({ width: viewport.width, height: viewport.height })
+    const shots = process.env.CONVEYOR_SCREENSHOT_DIR
+    const shoot = async (name: string, full = true) => {
+      const image = await page.screenshot({
+        path: shots ? `${shots}/${name}` : undefined,
+        fullPage: full,
+        animations: 'disabled',
+      })
+      await testInfo.attach(name, { body: image, contentType: 'image/png' })
+    }
+    for (const state of states.slice(0, 2)) {
+      await page.unrouteAll({ behavior: 'ignoreErrors' })
+      await mockAPI(page, state.detail, state.action)
+      await page.goto(`/w/demo/tasks/${taskId}/full`)
+      await expect(page.getByRole('region', { name: 'Human gate' }).locator('[data-approval-refusal]')).toBeVisible()
+      await shoot(`merge-gate-${state.name}-${viewport.name}.png`)
+    }
+    await page.unrouteAll({ behavior: 'ignoreErrors' })
     await mockAPI(
       page,
-      () => waiverActivity(),
-      () => ({
-        ...approvalAction('Merge'),
-        summary:
-          "The reviewed head has 1 of 1 required human approvals. No author's approval counts while an author is not trusted, so a person who is not an author must waive the trusted author's approval.",
-      }),
+      () => approvalState(oneShortTrustedAuthor.risk),
+      () => wrongAuthorAction(),
     )
     await page.goto(`/w/demo/tasks/${taskId}/full`)
-    const text =
-      "1 of 1 human approval recorded. A person who is not an author must waive the trusted author's approval."
-    await expect(page.locator('[data-task-risk-approvals]').first()).toHaveText(text)
     const gate = page.getByRole('region', { name: 'Human gate' })
-    await expect(gate.locator('[data-approval-count]')).toHaveText(text)
-    await gate.scrollIntoViewIfNeeded()
-    const shots = process.env.CONVEYOR_SCREENSHOT_DIR
-    const name = `merge-gate-author-waiver-${viewport.name}.png`
-    const image = await page.screenshot({ path: shots ? `${shots}/${name}` : undefined, fullPage: true })
-    await testInfo.attach(name, { body: image, contentType: 'image/png' })
+    await gate.locator('[data-merge-at-gate]').click()
+    await expect(page.getByRole('dialog', { name: 'Confirm approval' })).toBeVisible()
+    await shoot(`merge-gate-non-author-approve-${viewport.name}.png`, false)
   })
 }
+
+// At the merge_approval gate the same refusal replaces the one-act merge and
+// its readiness line, and neither Merge nor Approve only is offered.
+test('the merge_approval gate withholds the merge when only a waiver can complete it', async ({ page }) => {
+  const action = mergeApproval('MERGEABLE')
+  const withheld: NextAction = {
+    ...action,
+    summary: waiverOnly.summary,
+    choices: action.choices.filter((choice) => choice.id !== 'merge' && choice.id !== 'approve'),
+    details: {
+      ...action.details,
+      refusals: [
+        { choice: 'merge', text: waiverOnly.refusal, code: 'approval_not_possible' },
+        { choice: 'approve', text: waiverOnly.refusal, code: 'approval_not_possible' },
+      ],
+    },
+  }
+  await mockAPI(
+    page,
+    () => ({ ...mergeGateActivity('MERGEABLE'), risk: approvalState(waiverOnly.risk).risk }),
+    () => withheld,
+  )
+  await page.goto(`/w/demo/tasks/${taskId}/full`)
+  const gate = page.getByRole('region', { name: 'Human gate' })
+  await expect(gate.locator('[data-approval-refusal]')).toHaveText(waiverOnly.refusal)
+  await expect(gate.locator('[data-merge-at-gate]')).toHaveCount(0)
+  await expect(gate.locator('[data-merge-status]')).toHaveCount(0)
+  await expect(gate.locator('[data-choice="approve"]')).toHaveCount(0)
+})

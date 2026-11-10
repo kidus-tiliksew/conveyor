@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"github.com/kidus-tiliksew/conveyor/internal/core"
+	"github.com/kidus-tiliksew/conveyor/internal/riskpolicy"
 )
 
 // reviewChoices are the review-route choices of plan_approval,
@@ -392,7 +393,14 @@ func selectChoices(in Input, specs []ChoiceSpec, order *core.WorkOrder) ([]Choic
 		}
 		label, effect := spec.Label, spec.Effect
 		if spec.ID == "merge" || spec.ID == "approve" {
-			label, effect = riskApprovalChoiceText(in, spec.ID, label, effect)
+			if riskLabel, riskEffect, _, ok := riskApprovalChoice(in, spec.ID); ok {
+				if riskLabel != "" {
+					label = riskLabel
+				}
+				if riskEffect != "" {
+					effect = riskEffect
+				}
+			}
 		}
 		choices = append(choices, Choice{
 			ID: spec.ID, Label: label, Effect: effect, Method: spec.Method, Path: path,
@@ -415,8 +423,20 @@ func refuseChoice(in Input, spec ChoiceSpec, order *core.WorkOrder) (string, str
 			return text, core.ApproveWithoutReviewCode
 		}
 	}
+	if spec.ID == "merge" || spec.ID == "approve" {
+		// An enforcing task withholds the act when the caller's approval
+		// cannot count or cannot complete the merge (req-risk-based-review
+		// AC-8.7, REQ-9).
+		if _, _, refusal, ok := riskApprovalChoice(in, spec.ID); ok && refusal != "" {
+			return refusal, ApprovalNotPossibleCode
+		}
+	}
 	return refuseChoiceText(in, spec, order), ""
 }
+
+// ApprovalNotPossibleCode marks the refusal of an enforcing task's merge or
+// approve choice whose approval cannot count or cannot complete the merge.
+const ApprovalNotPossibleCode = "approval_not_possible"
 
 func refuseChoiceText(in Input, spec ChoiceSpec, order *core.WorkOrder) string {
 	switch id := spec.ID; id {
@@ -560,23 +580,99 @@ func mergeAtGateRefusal(in Input) string {
 	return "merge readiness " + state
 }
 
-// riskApprovalChoiceText words the merge and approve choices of an enforcing
-// task that is short of its required approvals. While more than one approval
-// remains, one person's act cannot land the head, so the merge choice is
-// labelled Approve and records the person's approval without merging; with
-// one approval left it merges when that approval completes every
-// requirement. The merge route decides with the same count
-// (req-risk-based-review AC-8.7, AC-11.1; feature-risk-based-review RR-7).
-func riskApprovalChoiceText(in Input, id, label, effect string) (string, string) {
-	approvals := in.RiskApprovals
-	if approvals == nil || approvals.Satisfied {
-		return label, effect
+// riskApprovalChoice decides the merge and approve choices of an enforcing
+// task from the caller's own approval (req-risk-based-review AC-8.3, AC-8.7,
+// AC-11.1, REQ-9; feature-risk-based-review RR-7). The merge choice keeps its
+// label, and opens the merge confirmation, only when the act lands the head:
+// the requirements are already met, or the caller's approval meets every one
+// of them. When the caller's approval counts but leaves the task short, the
+// merge choice is labelled Approve and both choices state what is still
+// needed. When the caller's approval cannot count, or only a waiver can meet
+// what is missing, both choices are withheld with the reason, so no surface
+// offers an act that the route refuses or that cannot merge. The routes and
+// the dispatcher decide with the same evaluation; nothing here waives a
+// condition. ok is false for every other task, which keeps its choices.
+func riskApprovalChoice(in Input, id string) (label, effect, refusal string, ok bool) {
+	a := in.RiskApprovals
+	if a == nil || a.Satisfied {
+		return "", "", "", false
 	}
+	verb := "merge"
 	if id == "approve" {
-		return label, "Records your approval of the reviewed head. It does not merge."
+		verb = "approve the merge"
 	}
-	if approvals.Remaining > 1 {
-		return "Approve", "Records your approval of the reviewed head. It does not merge, because more approvals are needed."
+	if a.Remaining == 0 && a.WaiverNeeded {
+		return "", "", "No approval can complete the merge now. A person who is not an author must first waive the trusted author's approval.", true
 	}
-	return label, "Records your approval and merges the reviewed head when your approval completes the required approvals."
+	c := a.Caller
+	if c == nil {
+		// No person is named, so the act is stated as an approval that
+		// merges only when the requirements are met.
+		if id == "approve" {
+			return "", "Records your approval. Conveyor approves the merge only when the required approvals are complete.", "", true
+		}
+		return "Approve", "Records your approval. Conveyor merges only when the required approvals are complete.", "", true
+	}
+	if !c.Eligible {
+		return "", "", callerReasonText(c.Reason) + " The merge still needs " + shortfallText(RiskShortfall{
+			Remaining: a.Remaining, TrustedAuthorNeeded: a.TrustedAuthorNeeded, NonAuthorNeeded: a.NonAuthorNeeded, WaiverNeeded: a.WaiverNeeded,
+		}) + ".", true
+	}
+	if c.Completes {
+		if id == "approve" {
+			return "", "Records your approval and approves the merge. Your approval completes the required approvals.", "", true
+		}
+		return "", "Records your approval and merges the reviewed head. Your approval completes the required approvals.", "", true
+	}
+	text := "Records your approval. It does not " + verb + ", because the merge still needs " + shortfallText(c.After) + "."
+	if id == "approve" {
+		return "", text, "", true
+	}
+	return "Approve", text, "", true
+}
+
+// callerReasonText states in plain words why the caller's approval does not
+// count.
+func callerReasonText(reason string) string {
+	switch reason {
+	case riskpolicy.ApprovalReasonAlreadyCounted:
+		return "Your approval of this head is already recorded."
+	case riskpolicy.ApprovalReasonUntrustedAuthor:
+		return "Your approval does not count, because you are an author who is not trusted."
+	case riskpolicy.ApprovalReasonAuthorOfUntrusted:
+		return "Your approval does not count, because you are an author and another author is not trusted."
+	case riskpolicy.ApprovalReasonNoCapability:
+		return "Your approval does not count, because you do not hold operate_gates."
+	}
+	return "Your approval does not count."
+}
+
+// shortfallText names what an approval count still needs, as the object of
+// "the merge still needs".
+func shortfallText(s RiskShortfall) string {
+	var parts []string
+	if s.Remaining > 0 {
+		approvals := fmt.Sprintf("%d more approvals", s.Remaining)
+		if s.Remaining == 1 {
+			approvals = "1 more approval"
+		}
+		var including []string
+		if s.TrustedAuthorNeeded {
+			including = append(including, "a trusted author's approval")
+		}
+		if s.NonAuthorNeeded {
+			including = append(including, "an approval from a person who is not an author")
+		}
+		if len(including) > 0 {
+			approvals += ", including " + strings.Join(including, " and ")
+		}
+		parts = append(parts, approvals)
+	}
+	if s.WaiverNeeded {
+		parts = append(parts, "a waiver of the trusted author's approval by a person who is not an author")
+	}
+	if len(parts) == 0 {
+		return "no more approvals"
+	}
+	return strings.Join(parts, ", and ")
 }

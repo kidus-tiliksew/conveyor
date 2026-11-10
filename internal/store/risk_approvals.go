@@ -224,7 +224,10 @@ type ApprovalEvaluation struct {
 	Tier         riskpolicy.Tier
 	Requirements riskpolicy.Requirements
 	Status       riskpolicy.ApprovalStatus
-	Authors      []string
+	// Base is the evaluation without the prospective person's approval; it
+	// equals Status when no prospective person is named.
+	Base    riskpolicy.ApprovalStatus
+	Authors []string
 	// Approvals are the counted and uncounted approval records of the head
 	// and round; Waivers are its author waivers.
 	Approvals []core.TaskApproval
@@ -314,10 +317,16 @@ func EvaluateTaskApprovals(ctx context.Context, st Store, task core.Task, truste
 			break
 		}
 	}
-	evaluation.Status = riskpolicy.EvaluateApprovals(riskpolicy.ApprovalInput{
+	input := riskpolicy.ApprovalInput{
 		Required: requirements.HumanApprovals, Authors: authors, UnknownAuthor: unknown, TrustedAuthors: trusted,
 		Gatekeepers: gatekeepers, Approvals: approvers, Waived: waived, Prospective: prospective,
-	})
+	}
+	evaluation.Status = riskpolicy.EvaluateApprovals(input)
+	evaluation.Base = evaluation.Status
+	if prospective != "" {
+		input.Prospective = ""
+		evaluation.Base = riskpolicy.EvaluateApprovals(input)
+	}
 	return evaluation, nil
 }
 

@@ -1,6 +1,7 @@
 package nextaction
 
 import (
+	"github.com/kidus-tiliksew/conveyor/internal/riskpolicy"
 	"time"
 
 	"github.com/kidus-tiliksew/conveyor/internal/core"
@@ -470,4 +471,52 @@ type RiskApprovals struct {
 	// author's approval can meet the author condition.
 	WaiverNeeded bool
 	Satisfied    bool
+	// Caller is the evaluation of the caller's own approval, or nil when the
+	// next action is stated for no person.
+	Caller *RiskCaller
+}
+
+// RiskCaller is what the caller's own approval of the reviewed head would do
+// (req-risk-based-review AC-8.3, AC-8.7, REQ-9).
+type RiskCaller struct {
+	// Eligible is true when the caller's approval counts and is not already
+	// recorded.
+	Eligible bool
+	// Reason names why the caller's approval does not count, from
+	// riskpolicy's approval reasons.
+	Reason string
+	// Completes is true when the caller's approval meets every requirement,
+	// so the caller's merge act lands the head.
+	Completes bool
+	// After is what is still needed after the caller's approval.
+	After RiskShortfall
+}
+
+// RiskShortfall is what an approval count still needs.
+type RiskShortfall struct {
+	Remaining           int
+	TrustedAuthorNeeded bool
+	NonAuthorNeeded     bool
+	WaiverNeeded        bool
+}
+
+// RiskApprovalsFrom maps the evaluation of the recorded approvals, and the
+// evaluation with the caller's approval when caller is not nil, to the
+// next-action input.
+func RiskApprovalsFrom(base riskpolicy.ApprovalStatus, caller *riskpolicy.ApprovalStatus) RiskApprovals {
+	out := RiskApprovals{
+		Required: base.Required, Recorded: base.Recorded, Remaining: base.Remaining,
+		TrustedAuthorNeeded: base.TrustedAuthorApprovalNeeded, NonAuthorNeeded: base.NonAuthorApprovalNeeded,
+		WaiverNeeded: base.AuthorWaiverNeeded, Satisfied: base.Satisfied,
+	}
+	if caller != nil {
+		out.Caller = &RiskCaller{
+			Eligible: caller.ProspectiveEligible, Reason: caller.ProspectiveReason, Completes: caller.Satisfied,
+			After: RiskShortfall{
+				Remaining: caller.Remaining, TrustedAuthorNeeded: caller.TrustedAuthorApprovalNeeded,
+				NonAuthorNeeded: caller.NonAuthorApprovalNeeded, WaiverNeeded: caller.AuthorWaiverNeeded,
+			},
+		}
+	}
+	return out
 }

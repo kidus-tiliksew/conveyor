@@ -1431,7 +1431,7 @@ export interface NextActionDetails {
   checkpoint?: string
   pending_proposals?: { tier: string; id: string; version: number }[]
   secondary?: { kind: string; reason_code?: string }[]
-  refusals?: { choice: string; text: string }[]
+  refusals?: { choice: string; text: string; code?: string }[]
   merge_readiness?: string
   // Each check a check_hold names, or what a merging task waits on, and why
   // (component-next-action, The statement). The URL is how an operator reruns it.
