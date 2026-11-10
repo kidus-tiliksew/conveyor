@@ -18,25 +18,111 @@ Every creation route funnels into one intake path, so a task made from the
 dashboard, the CLI, an agent's `create_task` call, the monitor, or a
 staleness follow-up all behaves identically:
 context is validated, the workspace pipeline policy is frozen onto the task,
-gates are resolved, the title is generated, and triage is enqueued.
+the plan state and merge gate are resolved, the title is generated, and triage
+is enqueued.
 
 The routes:
 
 - The dashboard's New task sheet: description, repository, base branch,
-  attached requirements and designs, dependencies, and the two gates.
+  attached requirements and designs, dependencies, a Plan state picker, an
+  optional execution plan with its base commit and an Approve this plan
+  checkbox for members with `operate_gates`, and the merge approval gate.
 - `conveyor task new` from the CLI.
 - The `create_task` MCP tool, which requires `body`, `repo`, and a
   caller-stable `idempotency_key`. Reusing the key with an identical request
   returns the original task; reusing it with a different request is a
-  conflict. A dispatched agent may file a task when its owning user's role
-  grants `create_tasks`; it may turn the plan and merge gates on but never
-  off, and the task records the agent and its owner (DEC-60).
+  conflict. An agent session files as the person whose credential it holds,
+  and only when that person's role grants `create_tasks`; the task records
+  MCP as its source and the person as its creator (DEC-116(5)). The session
+  may state either a `plan_state` or a plan, never both, and may state
+  `merge_approval`, including `false`. It never approves a plan: a filed plan
+  waits at the plan approval gate for a person (DEC-125(6)).
 - The monitor and staleness follow-ups, which file ordinary gated tasks; see
   [Misalignment](misalignment.md).
 
 A new task gets an ID like `260822-2bc3b1` (date plus random hex) and a
 branch assignment `conveyor/task-<id>`. The branch is an assignment, not a
 ref; nothing is created in Git until an agent checks out.
+
+## Plan state
+
+Every task carries exactly one plan state. It decides whether the task needs
+an execution plan before implementation, and implementation starts only from
+no plan required or planning completed (`req-task-plan-state` REQ-1;
+DEC-125(5)).
+
+| Plan state | Wire value | Meaning |
+|---|---|---|
+| No plan required | `not_required` | The task body is the statement of done, and triage sends the task to implementation. |
+| Planning needed | `needed` | A plan work order is open or will open; an agent writes the execution plan. |
+| Plan awaiting approval | `awaiting_approval` | A plan version waits at the plan approval gate for a person. |
+| Planning completed | `completed` | A person approved the current plan version; implementation works from it. |
+
+**At intake.** A request states a plan state of `needed` or `not_required`
+only; a task reaches plan awaiting approval or planning completed at intake
+only by filing a plan. When the request states no plan state and files no
+plan, the task takes the workspace's `execution.default_plan_state` (AC-2.1).
+The legacy `spec_approval` request field and workspace key are aliases: `true`
+reads as `needed` and `false` as `not_required`. The workspace key supplies
+the default only when `default_plan_state` is absent, and the default is
+`needed` when neither key is set. A request that sends both `plan_state` and
+a `spec_approval` with a different meaning is refused; send only
+`plan_state`. Either one wins over a legacy `level`, where L0 and L1 read as
+`not_required` and L2 and L3 as `needed`. The workspace default applies only
+when the request states none of these. See [Configuration](configuration.md)
+for the workspace default.
+
+A task can also be filed with an execution plan. The plan must pass the same
+content rules as a plan a plan work order submits, and an invalid plan is
+refused with nothing recorded. A valid plan becomes plan version 1 and the
+task starts at plan awaiting approval (AC-2.2). A request that files a plan
+states no plan state, because the plan sets it, and a `spec_approval` of
+`false` with a plan is refused (AC-2.6). The request may name
+the commit the plan was read against, which must be a full commit ID (AC-2.5).
+Only a REST request can approve the plan it files: when it states the plan
+approved, Conveyor records a plan approval under the filer's credential, which
+needs `operate_gates`, and the task starts at planning completed (AC-2.3). MCP
+`create_task` never approves a plan, so a plan an agent session files waits
+for a person (AC-2.4; DEC-125(6)).
+
+**After intake.** Only these acts move a task's plan state (REQ-3):
+
+- A plan work order submits a plan. It becomes the next plan version, and the
+  task moves to plan awaiting approval (AC-1.2).
+- A person approves the plan at the plan approval gate, which moves the task
+  to planning completed. A redirect at the gate moves the task back to
+  planning needed and delivers the direction to the next plan work order
+  (AC-1.3).
+- An approved plan revision request returns the task to planning needed
+  (AC-3.4). A request that planning start on a task with no plan required
+  does the same when an operator approves it (AC-3.3); see
+  [Checkpoints, plan revision, recovery](#checkpoints-plan-revision-recovery).
+- An operator sets the task to planning needed or no plan required, with a
+  required reason. Conveyor records the old and new state, opens or cancels
+  the task's plan work order to match, and keeps every earlier plan version
+  readable (AC-3.1).
+- An operator attaches an execution plan to a task at no plan required or
+  planning needed. It becomes the next plan version, the task moves to plan
+  awaiting approval, and any open plan work order is cancelled (AC-3.2).
+
+Both operator acts need `operate_gates` and are refused while an
+implementation work order of the task is claimed. A change to the workspace
+default never moves an existing task's plan state (AC-3.5; DEC-125(7)).
+
+**Plan versions.** Each plan version records its origin: `plan_order` for a
+plan a plan work order submitted, `intake` for a plan filed with the task, and
+`operator` for a plan an operator attached. A version also records the commit
+the plan was read against when its author supplied one. The implementation
+work order of a task at planning completed carries the approved plan version,
+its recorded commit or a statement that none was recorded, and the time of
+the approval (REQ-4, AC-4.1).
+
+The CLI commands are `conveyor task new` with `--plan-state`, `--plan-file`,
+`--plan-base`, and `--approve-plan`; `conveyor task plan-state`; and
+`conveyor task attach-plan`. Their flags are in the [CLI reference](cli.md#task).
+On the dashboard, the plan section of task detail offers the same two
+operator acts, Change plan state and Attach plan, to members with
+`operate_gates`.
 
 ## Ordering, blocking, and eligibility
 
@@ -56,7 +142,7 @@ request is idempotent, and an already-present dependency returns success
 without another audit event. A late dependency pauses queued implementation
 orders in place and affects future claims, but never interrupts claimed work.
 
-A task carries no hold or other reservation (DEC-125): dependencies and
+A task carries no hold or other reservation (DEC-125(3)): dependencies and
 assignment are the only narrowing of who may claim its work. Intake refuses a
 new `hold: true` with `task_hold_retired`, and `PUT /v1/tasks/{id}/hold`
 answers 410. Hold values and `task.hold.*` events recorded before the
@@ -79,7 +165,10 @@ over decides no document proposal: a pending version stays pending and stays
 decidable by an operator with `confirm_documents`. A retry reuses the request ID and input so it returns the same successor. The
 new task starts on a new branch with the same body and pins, carries the
 operator's reason and note, and links back to the retired task; both have a
-`restarted` marker. The retired task links forward and shows the recorded PR
+`restarted` marker. The successor has no plan version. Its plan state is no
+plan required when the retired task's was, and planning needed otherwise; a
+plan the retired task had approved comes along as reference context only,
+never as an approval. The retired task links forward and shows the recorded PR
 close outcome. Forge closure can retry or fail without undoing the restart.
 
 ## Triage
@@ -90,8 +179,11 @@ feature, chore), routes it `proceed` or `parked`, and writes an advisory
 brief: open questions, affected areas, risks. It may suggest requirement and
 design attachments, but only as proposals an operator confirms or dismisses;
 triage never attaches context itself, and it never picks the next stage. The
-gates frozen at intake decide that: `spec` if plan approval is on, otherwise
-straight to `implement`. If triage exhausts its budget, the task proceeds
+task's [plan state](#plan-state) decides that when triage proceeds
+(`req-task-plan-state` AC-1.1). A task at no plan required or planning
+completed goes to implementation. A task at planning needed gets a plan work
+order. A task at plan awaiting approval waits at the plan approval gate. If
+triage exhausts its budget, the task proceeds
 with a neutral verdict rather than parking, so a flaky model cannot wedge
 intake.
 
@@ -181,10 +273,13 @@ never by rewriting history. Every edit, test, commit, and push happens there;
 the primary checkout is never touched. Spec-stage orders are the exception:
 they run read-only and never check out.
 
-If the task has a plan gate, the spec stage comes first: the agent submits a
-Markdown plan with required headings (Approach, Files touched, Ordering,
-Risks, Done criteria). With the gate on, an operator approves or rejects the
-plan; approval also publishes a GitHub issue carrying the approved spec.
+If the task's plan state is planning needed, the plan stage comes first: the
+agent submits a Markdown plan with required headings (Approach, Files touched,
+Ordering, Risks, Done criteria). No submission approves a plan. The task moves
+to plan awaiting approval, and a person approves the plan or redirects it at
+the plan approval gate. When the workspace's `issue_publication.enabled`
+setting is on, approval also publishes a GitHub issue carrying the approved
+plan.
 
 A task implements confirmed documents and proposes none of its own. Requirement
 and design proposals a task authored before that rule wait for an operator on
@@ -241,7 +336,9 @@ providing `request_id`, a required `reason` of at most 200 characters, and an
 optional `note` of at most 2000 characters. The request cancels the task and its
 non-terminal work orders and creates one linked successor carrying its
 body, repository, base branch, open dependencies, attached context, frozen
-policy, and previous approved plan as reference context. The successor starts
+policy, and previous approved plan as reference context. The successor has
+no plan version and starts at no plan required when the retired task did,
+otherwise at planning needed. The successor starts
 at triage on a new assigned branch and receives the reason and note as operator
 direction on its first work order. The API requires `operate_gates`. Pending
 document proposals stay pending for an operator with `confirm_documents` to
