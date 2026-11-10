@@ -736,7 +736,12 @@ test('requirements search and deterministic sorting preserve the selected canvas
   // Most recently updated first is the default ordering.
   await expect
     .poll(rowOrder)
-    .toEqual(['Alphanot yet confirmed2', 'Gammanot yet confirmed', 'Betanot yet confirmed', 'alphanot yet confirmed'])
+    .toEqual([
+      'Alphareq-alpha-anot yet confirmed2',
+      'Gammareq-gammanot yet confirmed',
+      'Betareq-betanot yet confirmed',
+      'alphareq-alpha-bnot yet confirmed',
+    ])
   await expect(group.getByRole('button', { name: /Alpha/ }).getByLabel('2 attention items')).toBeVisible()
 
   // The sort control is one menu on the search field: choosing an option
@@ -750,25 +755,45 @@ test('requirements search and deterministic sorting preserve the selected canvas
   await chooseSort('Updated')
   await expect
     .poll(rowOrder)
-    .toEqual(['alphanot yet confirmed', 'Betanot yet confirmed', 'Gammanot yet confirmed', 'Alphanot yet confirmed2'])
+    .toEqual([
+      'alphareq-alpha-bnot yet confirmed',
+      'Betareq-betanot yet confirmed',
+      'Gammareq-gammanot yet confirmed',
+      'Alphareq-alpha-anot yet confirmed2',
+    ])
 
   await chooseSort('Name')
   await expect
     .poll(rowOrder)
-    .toEqual(['Alphanot yet confirmed2', 'alphanot yet confirmed', 'Betanot yet confirmed', 'Gammanot yet confirmed'])
+    .toEqual([
+      'Alphareq-alpha-anot yet confirmed2',
+      'alphareq-alpha-bnot yet confirmed',
+      'Betareq-betanot yet confirmed',
+      'Gammareq-gammanot yet confirmed',
+    ])
   await chooseSort('Name')
   await expect
     .poll(rowOrder)
-    .toEqual(['Gammanot yet confirmed', 'Betanot yet confirmed', 'Alphanot yet confirmed2', 'alphanot yet confirmed'])
+    .toEqual([
+      'Gammareq-gammanot yet confirmed',
+      'Betareq-betanot yet confirmed',
+      'Alphareq-alpha-anot yet confirmed2',
+      'alphareq-alpha-bnot yet confirmed',
+    ])
 
   await chooseSort('Created')
   await expect
     .poll(rowOrder)
-    .toEqual(['Betanot yet confirmed', 'Alphanot yet confirmed2', 'alphanot yet confirmed', 'Gammanot yet confirmed'])
+    .toEqual([
+      'Betareq-betanot yet confirmed',
+      'Alphareq-alpha-anot yet confirmed2',
+      'alphareq-alpha-bnot yet confirmed',
+      'Gammareq-gammanot yet confirmed',
+    ])
 
   const search = group.getByRole('searchbox', { name: 'Search requirements' })
   await search.fill('bEt')
-  await expect.poll(rowOrder).toEqual(['Betanot yet confirmed'])
+  await expect.poll(rowOrder).toEqual(['Betareq-betanot yet confirmed'])
   await search.fill('missing')
   await expect(group.getByText('No requirements match your search.')).toBeVisible()
   await expect(
@@ -2974,5 +2999,146 @@ for (const state of [
       expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(390)
       await page.screenshot({ path: testInfo.outputPath('lifecycle-narrow.png'), fullPage: true })
     }
+  })
+}
+
+// Tree search matches a requirement's title or ID, ignoring letter case, and
+// each requirement entry shows its ID in quieter text with its title
+// (component-web-document-surfaces, "The tree"). Product overviews keep their
+// own display and are not filtered by the requirement search.
+for (const viewport of [
+  { name: 'desktop', width: 1440, height: 900 },
+  { name: 'phone', width: 375, height: 812 },
+]) {
+  test(`requirements search by ID finds live and archived entries and shows each ID (${viewport.name})`, async ({
+    page,
+  }, testInfo) => {
+    await page.setViewportSize({ width: viewport.width, height: viewport.height })
+    await initShell(page)
+    const longId = 'req-260901-a-very-long-requirement-identifier-that-truncates-in-the-tree'
+    const quiet = { delivery_after_intent: false, partial_evaluation: false, active_drift: [] }
+    const items = [
+      {
+        ...requirement,
+        requirement: {
+          ...requirement.requirement,
+          id: 'req-260805-3f9a04',
+          slug: 'archive',
+          title: 'Document archive',
+        },
+        pending_versions: [{ ...requirement.pending_versions[0], requirement_id: 'req-260805-3f9a04' }],
+      },
+      {
+        ...requirement,
+        requirement: { ...requirement.requirement, id: longId, slug: 'long', title: 'Long identifier' },
+        pending_versions: [],
+        staleness: quiet,
+      },
+      {
+        ...requirement,
+        pending_versions: [],
+        staleness: quiet,
+      },
+      {
+        ...requirement,
+        requirement: {
+          ...requirement.requirement,
+          id: 'req-260805-0b11d2',
+          slug: 'retired-intake',
+          title: 'Retired intake rules',
+          archived: true,
+          archived_by: 'Operator One',
+          archived_at: '2026-09-02T18:00:00Z',
+          superseded_by: ['req-260805-3f9a04'],
+        },
+        pending_versions: [],
+        staleness: quiet,
+      },
+    ]
+    await page.route('**/v1/**', async (route) => {
+      const shell = shellResponse(route)
+      if (shell) return await shell
+      const path = new URL(route.request().url()).pathname
+      if (path === '/v1/requirements') return route.fulfill({ json: items.map(summarizeRequirement) })
+      if (path === '/v1/reference-documents')
+        return route.fulfill({
+          json: [
+            {
+              id: 'ref-overview',
+              workspace: 'demo',
+              name: 'Product overview',
+              current_version: 1,
+              created_at: '2026-07-01T10:00:00Z',
+              updated_at: '2026-07-01T10:00:00Z',
+            },
+          ],
+        })
+      const detail = items.find((item) => path === `/v1/requirements/${item.requirement.id}`)
+      if (detail) return route.fulfill({ json: detail })
+      return route.fulfill({ json: [] })
+    })
+
+    await page.goto('/w/demo/requirements?requirement=req-260805-3f9a04')
+    await expect(
+      page.getByRole('region', { name: 'Requirement document' }).getByRole('heading', { name: 'Document archive' }),
+    ).toBeVisible()
+    if (viewport.width < 1024) await page.getByRole('button', { name: 'Documents' }).click()
+    const tree = page.getByRole('navigation', { name: 'Document tree' })
+    const overviews = tree.getByRole('heading', { name: 'Product overviews' }).locator('..')
+    const live = tree.getByRole('heading', { name: 'Requirements' }).locator('..')
+    const archived = tree.locator('details')
+    const liveIds = live.locator('[data-document-id]')
+    const archivedIds = archived.locator('[data-document-id]')
+
+    // Every requirement entry shows its ID; the overview entry shows none.
+    await expect(liveIds).toHaveText(['req-260805-3f9a04', longId, 'req-retries'])
+    await expect(overviews.getByRole('button', { name: 'Product overview' })).toBeVisible()
+    await expect(overviews.locator('[data-document-id]')).toHaveCount(0)
+    await archived.locator('summary').click()
+    await expect(archivedIds).toHaveText(['req-260805-0b11d2'])
+    // The ID sits with the meta line and the attention count.
+    const archiveEntry = live.getByRole('button', { name: /Document archive/ })
+    await expect(archiveEntry).toContainText('req-260805-3f9a04')
+    await expect(archiveEntry).toContainText('not yet confirmed')
+    await expect(archiveEntry.getByLabel('2 attention items', { exact: true })).toBeVisible()
+    await expect(archived.getByRole('button', { name: /Retired intake rules/ })).toContainText(
+      'Superseded by req-260805-3f9a04',
+    )
+
+    const search = live.getByRole('searchbox', { name: 'Search requirements' })
+    await search.fill('REQ-260805')
+    await expect(liveIds).toHaveText(['req-260805-3f9a04'])
+    await expect(archivedIds).toHaveText(['req-260805-0b11d2'])
+    await expect(overviews.getByRole('button', { name: 'Product overview' })).toBeVisible()
+
+    await search.fill('  3F9a04 ')
+    await expect(liveIds).toHaveText(['req-260805-3f9a04'])
+    await expect(archived.getByText('No archived requirements match your search.')).toBeVisible()
+
+    await search.fill('retry')
+    await expect(liveIds).toHaveText(['req-retries'])
+
+    await search.fill('req-999')
+    await expect(live.getByText('No requirements match your search.')).toBeVisible()
+
+    // A long ID truncates inside the tree and never widens the page.
+    await search.fill('Req-260')
+    await expect(liveIds).toHaveText(['req-260805-3f9a04', longId])
+    await expect(archivedIds).toHaveText(['req-260805-0b11d2'])
+    const longLine = liveIds.filter({ hasText: longId })
+    const longBox = await longLine.boundingBox()
+    const treeBox = await tree.boundingBox()
+    if (!longBox || !treeBox) throw new Error('the tree or its long ID line is not rendered')
+    expect(longBox.x + longBox.width).toBeLessThanOrEqual(treeBox.x + treeBox.width)
+    expect(await longLine.evaluate((element) => element.scrollWidth > element.clientWidth)).toBe(true)
+    const overflow = await page.evaluate(() => ({
+      scrollWidth: document.documentElement.scrollWidth,
+      clientWidth: document.documentElement.clientWidth,
+    }))
+    expect(overflow.scrollWidth).toBeLessThanOrEqual(overflow.clientWidth)
+
+    const shot = testInfo.outputPath(`requirements-id-search-${viewport.name}.png`)
+    await page.screenshot({ path: shot, animations: 'disabled' })
+    await testInfo.attach(`requirements-id-search-${viewport.name}`, { path: shot, contentType: 'image/png' })
   })
 }

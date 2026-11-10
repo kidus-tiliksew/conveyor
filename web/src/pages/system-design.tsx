@@ -16,6 +16,7 @@ import {
   reviewVersionLabel,
   selectedReviewVersion,
 } from '../components/documents/document-review'
+import { documentMatchesQuery } from '../components/documents/document-search'
 import { compareDocuments, type DocumentSort, type DocumentSortDirection } from '../components/documents/document-sort'
 import {
   DocumentTree,
@@ -97,9 +98,8 @@ export function SystemDesignPage() {
   }, [designs.data, navigate, selected])
   const grouped = useMemo(() => {
     const groups = new Map<string, SystemDesignSummary[]>()
-    const needle = query.trim().toLocaleLowerCase()
     for (const item of (designs.data ?? []).filter(
-      (candidate) => !candidate.document.archived && candidate.document.title.toLocaleLowerCase().includes(needle),
+      (candidate) => !candidate.document.archived && documentMatchesQuery(candidate.document, query),
     )) {
       const list = groups.get(item.document.category) ?? []
       list.push(item)
@@ -114,9 +114,8 @@ export function SystemDesignPage() {
     )
   }, [designs.data, direction, query, sort])
   const archived = useMemo(() => {
-    const needle = query.trim().toLocaleLowerCase()
     return (designs.data ?? [])
-      .filter((item) => item.document.archived && item.document.title.toLocaleLowerCase().includes(needle))
+      .filter((item) => item.document.archived && documentMatchesQuery(item.document, query))
       .sort((left, right) => compareDocuments(left.document, right.document, sort, direction))
   }, [designs.data, direction, query, sort])
   const archivedCount = (designs.data ?? []).filter((item) => item.document.archived).length
@@ -152,6 +151,7 @@ export function SystemDesignPage() {
                 <DocumentTreeItem
                   key={item.document.id}
                   label={item.document.title}
+                  documentId={item.document.id}
                   meta={
                     !item.current_version
                       ? 'not yet confirmed'
@@ -184,6 +184,7 @@ export function SystemDesignPage() {
                 <DocumentTreeItem
                   key={item.document.id}
                   label={item.document.title}
+                  documentId={item.document.id}
                   meta={
                     dismissalArchiveDescription(item.document) ??
                     (item.document.superseded_by?.length
