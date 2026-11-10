@@ -343,7 +343,7 @@ func FoldTaskFlow(events []core.Event, action nextaction.NextAction, recovery co
 	// The plan row follows the folded plan state: task.created's plan_state,
 	// or a legacy payload's spec_approval (true as needed), then each
 	// task.plan_state_changed (component-next-action invariants 27, 28;
-	// req-operator-next-action AC-7.5; DEC-122(5)).
+	// req-operator-next-action AC-7.5; DEC-125(5)).
 	planState, mergeApproval, verifyStage := core.PlanNeeded, true, true
 	// planReopened records a move back to planning after intake, such as a
 	// redirect or an approved revision: the plan gate is then ahead again
@@ -839,7 +839,7 @@ func flowElapsed(claimedAt *time.Time, now time.Time) int64 {
 // done once the path has passed it, which for the plan gate needs a path not
 // reopened by a move back to planning; upcoming otherwise
 // (component-next-action invariant 28; req-operator-next-action AC-7.5,
-// AC-7.7; DEC-122(5)).
+// AC-7.7; DEC-125(5)).
 func markFlowGates(stages []FlowStage, action nextaction.NextAction, gateKind core.GateKind, state string, planState core.PlanState, planReopened, mergeApproval bool) {
 	reachedAfter := func(stage core.Stage) bool {
 		after := false

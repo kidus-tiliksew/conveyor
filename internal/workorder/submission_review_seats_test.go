@@ -240,7 +240,7 @@ func (f *reviewSeatsFixture) submissionPayload(t *testing.T, id string) map[stri
 // larger of the RS-2 minimum and the newest approved plan count, equality is
 // accepted, and a refusal is typed, carries both counts, and leaves every
 // submission surface unchanged with the order still claimed
-// (req-review-gates-evidence AC-2.3; DEC-78; feature-review-seat-minimum RS-4).
+// (req-review-gates-evidence AC-2.3; DEC-123; feature-review-seat-minimum RS-4).
 func TestSubmitForReviewReviewSeatsFloor(t *testing.T) {
 	frozen := func(seats int) config.PolicyContract {
 		return config.PolicyContract{Review: config.ReviewPanel{Seats: make([]config.ReviewSeat, seats)}}

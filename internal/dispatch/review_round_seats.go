@@ -9,7 +9,7 @@ import (
 )
 
 // ResolveReviewRoundSeats is the RS-2 resolution of one new review round's
-// seat count (feature-review-seat-minimum RS-2; DEC-77, DEC-78). It forwards
+// seat count (feature-review-seat-minimum RS-2; DEC-77, DEC-123). It forwards
 // to the shared pure store implementation, which the policy-change planner
 // also calls inside every backend transaction, because package store cannot
 // import dispatch. There is no second copy of the resolution table.

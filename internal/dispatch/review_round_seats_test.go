@@ -26,7 +26,7 @@ func implementOrder(id string, state core.WorkOrderState, at time.Time, declared
 }
 
 // TestResolveReviewRoundSeats reaches every RS-2 row through the shared input
-// builder (feature-review-seat-minimum RS-2; DEC-77, DEC-78;
+// builder (feature-review-seat-minimum RS-2; DEC-77, DEC-123;
 // req-review-gates-evidence AC-2.4).
 func TestResolveReviewRoundSeats(t *testing.T) {
 	base := time.Date(2026, 10, 20, 8, 0, 0, 0, time.UTC)

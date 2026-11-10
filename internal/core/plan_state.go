@@ -3,7 +3,7 @@ package core
 import "regexp"
 
 // PlanState is a task's plan state (component-plan-state invariant 1;
-// req-task-plan-state REQ-1; DEC-122(5)).
+// req-task-plan-state REQ-1; DEC-125(5)).
 type PlanState string
 
 const (

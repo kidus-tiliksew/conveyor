@@ -51,7 +51,7 @@ func TestNormalizeDefaultPlanState(t *testing.T) {
 // document (the path of PUT, import, and creation), and a stored row read the
 // alias, refuse a bad value or a disagreeing pair, default to needed with an
 // absent or empty block, and keep the merge gate's default unchanged
-// (component-runtime invariant 39; DEC-122(1)).
+// (component-runtime invariant 39; DEC-125(1)).
 func TestDefaultPlanStateOnEveryLoadPath(t *testing.T) {
 	_ = captureRetiredExecutionKeyWarnings(t)
 	t.Setenv("HOME", t.TempDir())
@@ -229,7 +229,7 @@ var mergeDefaultCases = []mergeDefaultCase{
 // file, its export and reload, a workspace document (the path of PUT, import,
 // and workspace creation), a stored row, and a stored row of the legacy shape,
 // and that each plan-state spelling yields what its legacy equivalent yields
-// (DEC-122(1); component-task-lifecycle invariant 18;
+// (DEC-125(1); component-task-lifecycle invariant 18;
 // req-review-gates-evidence REQ-1).
 func TestMergeDefaultIsUnchangedByThePlanStateKey(t *testing.T) {
 	_ = captureRetiredExecutionKeyWarnings(t)

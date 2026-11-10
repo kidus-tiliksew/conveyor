@@ -1523,7 +1523,7 @@ func (s *Service) submitStageDocumentLocked(ctx context.Context, id, session str
 	}
 	// No submission approves a plan: the version waits at the plan_approval
 	// gate for a person's decision, so approved is always false
-	// (component-work-orders invariant 56; DEC-122(6)).
+	// (component-work-orders invariant 56; DEC-125(6)).
 	return map[string]any{"task_id": task.ID, "version": version.Version, "approved": false, "next_stage": current.NextStage}, nil
 }
 

@@ -20,6 +20,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/kidus-tiliksew/conveyor/internal/riskpolicy"
 	"gopkg.in/yaml.v3"
 )
 
@@ -401,7 +402,7 @@ type ReviewPanel struct {
 type ExecutionPolicy struct {
 	VerifyStage       bool `yaml:"verify_stage" json:"verify_stage"`
 	VerifyConcurrency int  `yaml:"verify_concurrency,omitempty" json:"verify_concurrency,omitempty"`
-	// DefaultMode is deprecated (DEC-122(2)): parsed from legacy documents
+	// DefaultMode is deprecated (DEC-125(2)): parsed from legacy documents
 	// and seeds for compatibility, never read for behavior, dropped on save.
 	DefaultMode string `yaml:"default_mode,omitempty" json:"default_mode,omitempty"`
 	// DefaultPlanState is the plan state intake gives a task filed with no
@@ -729,6 +730,12 @@ type PolicyContract struct {
 	StageTimeouts PolicyStageTimeouts
 	Review        ReviewPanel
 	RefreshReview string
+	// Risk is the risk policy frozen by value at intake. It is nil when the
+	// workspace had no risk policy or its mode was off, so such a contract
+	// encodes exactly as it did before risk review existed
+	// (req-risk-based-review REQ-1, AC-1.1, AC-1.5; feature-risk-based-review
+	// RR-1).
+	Risk *riskpolicy.Policy
 	// legacyNamed records that an earlier full-setup encoding named its
 	// setup; such a stored row still counts as frozen policy.
 	legacyNamed bool
@@ -743,7 +750,8 @@ type policyContractJSON struct {
 		FailFast       bool        `json:"fail_fast,omitempty"`
 		DistinctModels bool        `json:"distinct_models,omitempty"`
 	} `json:"review"`
-	RefreshReview string `json:"refresh_review,omitempty"`
+	RefreshReview string             `json:"refresh_review,omitempty"`
+	Risk          *riskpolicy.Policy `json:"risk,omitempty"`
 }
 
 // MarshalJSON persists and serves the frozen policy in the policy_contract
@@ -765,6 +773,7 @@ func (s PolicyContract) MarshalJSON() ([]byte, error) {
 	}
 	encoded.Review.FailFast = s.Review.FailFast
 	encoded.Review.DistinctModels = s.Review.DistinctModels
+	encoded.Risk = frozenRisk(s.Risk)
 	return json.Marshal(encoded)
 }
 
@@ -840,9 +849,13 @@ func (s *PolicyContract) UnmarshalJSON(data []byte) error {
 			FailFast       bool       `json:"fail_fast"`
 			DistinctModels bool       `json:"distinct_models"`
 		} `json:"review"`
-		RefreshReview string `json:"refresh_review"`
+		RefreshReview string             `json:"refresh_review"`
+		Risk          *riskpolicy.Policy `json:"risk"`
 	}
 	if err := json.Unmarshal(data, &policy); err != nil {
+		return errPolicyContractShape
+	}
+	if policy.Risk != nil && policy.Risk.Validate() != nil {
 		return errPolicyContractShape
 	}
 	var seats []ReviewSeat
@@ -860,15 +873,27 @@ func (s *PolicyContract) UnmarshalJSON(data []byte) error {
 		},
 		Review:        ReviewPanel{Seats: seats, FailFast: policy.Review.FailFast, DistinctModels: policy.Review.DistinctModels},
 		RefreshReview: policy.RefreshReview,
+		Risk:          frozenRisk(policy.Risk),
 	}
 	return nil
+}
+
+// frozenRisk returns an independent copy of an enabled risk policy and nil
+// for an absent or off one, so mode off never reaches a stored contract
+// (req-risk-based-review AC-1.1).
+func frozenRisk(policy *riskpolicy.Policy) *riskpolicy.Policy {
+	if !policy.Enabled() {
+		return nil
+	}
+	frozen := *policy
+	return &frozen
 }
 
 // HasFrozenPolicy distinguishes a frozen contract from the zero value of a
 // task that predates policy freezing.
 func (s PolicyContract) HasFrozenPolicy() bool {
 	return s.VerifyStage || s.legacyNamed || s.MaxBounces > 0 || s.StageTimeouts != (PolicyStageTimeouts{}) ||
-		s.Review.Seats != nil || s.RefreshReview != ""
+		s.Review.Seats != nil || s.RefreshReview != "" || s.Risk.Enabled()
 }
 
 const (
@@ -894,6 +919,10 @@ type WorkspaceDocument struct {
 	// legacy fields above remain decode-only upgrade inputs and are stripped
 	// from the workspace API and canonical persisted document.
 	StageTimeouts map[string]string `yaml:"stage_timeouts,omitempty" json:"stage_timeouts,omitempty"`
+	// RiskPolicy is the workspace risk policy. An absent key rates nothing
+	// and leaves the stored document unchanged (req-risk-based-review REQ-1,
+	// AC-1.1; component-risk-review).
+	RiskPolicy *riskpolicy.Settings `yaml:"risk_policy,omitempty" json:"risk_policy,omitempty"`
 
 	// v1.3 compatibility input; never emitted after normalization.
 	LegacyImage string `yaml:"image,omitempty" json:"-"`
@@ -909,17 +938,18 @@ func (d WorkspaceDocument) MarshalJSON() ([]byte, error) {
 		return json.Marshal(legacy(d))
 	}
 	return json.Marshal(struct {
-		Workspace                 string            `json:"workspace"`
-		MaxBounces                int               `json:"max_bounces"`
-		Recovery                  RecoveryPolicy    `json:"recovery"`
-		WorkOrderQueueTimeoutText string            `json:"work_order_queue_timeout"`
-		StageTimeouts             map[string]string `json:"stage_timeouts"`
-		Review                    ReviewPanel       `json:"review"`
-		Execution                 ExecutionPolicy   `json:"execution"`
-		Repos                     []Repo            `json:"repos"`
-		Monitor                   MonitorConfig     `json:"monitor"`
-		IssuePublication          IssuePublication  `json:"issue_publication"`
-	}{d.Workspace, d.MaxBounces, d.Recovery, d.WorkOrderQueueTimeoutText, d.StageTimeouts, d.Review, d.Execution, d.Repos, d.Monitor, d.IssuePublication})
+		Workspace                 string               `json:"workspace"`
+		MaxBounces                int                  `json:"max_bounces"`
+		Recovery                  RecoveryPolicy       `json:"recovery"`
+		WorkOrderQueueTimeoutText string               `json:"work_order_queue_timeout"`
+		StageTimeouts             map[string]string    `json:"stage_timeouts"`
+		Review                    ReviewPanel          `json:"review"`
+		Execution                 ExecutionPolicy      `json:"execution"`
+		Repos                     []Repo               `json:"repos"`
+		Monitor                   MonitorConfig        `json:"monitor"`
+		IssuePublication          IssuePublication     `json:"issue_publication"`
+		RiskPolicy                *riskpolicy.Settings `json:"risk_policy,omitempty"`
+	}{d.Workspace, d.MaxBounces, d.Recovery, d.WorkOrderQueueTimeoutText, d.StageTimeouts, d.Review, d.Execution, d.Repos, d.Monitor, d.IssuePublication, d.RiskPolicy})
 }
 
 var ErrVersionConflict = errors.New("workspace config version conflict")
@@ -964,6 +994,9 @@ type Config struct {
 	Monitor           MonitorConfig                `yaml:"monitor"`
 	IssuePublication  IssuePublication             `yaml:"issue_publication,omitempty"`
 	PlanningModels    []string                     `yaml:"planning_models,omitempty"`
+	// RiskPolicy is the validated workspace risk policy, stated with its full
+	// table, or nil when the workspace has none (req-risk-based-review REQ-1).
+	RiskPolicy *riskpolicy.Settings `yaml:"risk_policy,omitempty"`
 }
 
 func ParseWorkspaceDocument(data []byte, deployment *Config, source string) (*Config, error) {
@@ -993,7 +1026,7 @@ func ParseWorkspaceDocument(data []byte, deployment *Config, source string) (*Co
 	next.Execution = document.Execution
 	if legacyShape {
 		// A legacy document keeps the merge-gate default its earlier full
-		// parse applied: an absent block means the merge gate on (DEC-122(1)).
+		// parse applied: an absent block means the merge gate on (DEC-125(1)).
 		defaultLegacyExecution(&next.Execution)
 	}
 	if err := NormalizeDefaultPlanState(&next.Execution); err != nil {
@@ -1002,7 +1035,39 @@ func ParseWorkspaceDocument(data []byte, deployment *Config, source string) (*Co
 	next.Repos = document.Repos
 	next.Monitor = document.Monitor
 	next.IssuePublication = document.IssuePublication
+	riskPolicy, err := normalizeRiskPolicy(document.RiskPolicy)
+	if err != nil {
+		return nil, err
+	}
+	next.RiskPolicy = riskPolicy
 	return normalizePolicy(&next, document)
+}
+
+// normalizeRiskPolicy validates a workspace risk policy under
+// req-risk-based-review AC-1.2 and states it with its full table, the
+// AC-1.3 defaults when none was stated. Nil stays nil.
+func normalizeRiskPolicy(settings *riskpolicy.Settings) (*riskpolicy.Settings, error) {
+	if settings == nil {
+		return nil, nil
+	}
+	policy, err := settings.Resolve()
+	if err != nil {
+		return nil, err
+	}
+	return riskpolicy.SettingsFor(policy), nil
+}
+
+// RiskPolicyValue returns the workspace's validated risk policy, or nil when it has
+// none. Mode off is returned as stated; FreezePolicy drops it.
+func (c *Config) RiskPolicyValue() (*riskpolicy.Policy, error) {
+	if c == nil || c.RiskPolicy == nil {
+		return nil, nil
+	}
+	policy, err := c.RiskPolicy.Resolve()
+	if err != nil {
+		return nil, err
+	}
+	return &policy, nil
 }
 
 func defaultLegacyExecution(execution *ExecutionPolicy) {
@@ -1078,6 +1143,7 @@ func cloneConfig(source *Config) Config {
 	}
 	next.Monitor.Repositories = cloneStrings(source.Monitor.Repositories)
 	next.PlanningModels = cloneStrings(source.PlanningModels)
+	next.RiskPolicy = source.RiskPolicy.Clone()
 	return next
 }
 
@@ -1426,8 +1492,8 @@ func normalizeDeploymentScalars(c *Config, path string) error {
 		return fmt.Errorf("database.url or CONVEYOR_DATABASE_URL is required for %s backend (postgres:// for PostgreSQL; singlestore://, mysql:// or a MySQL DSN for SingleStore)", c.Database.Backend)
 	}
 	// An absent execution block means the shipped merge-gate default: on
-	// (DEC-122(1); component-task-lifecycle). There is no mode axis
-	// (DEC-122(2)). A block that carried only the retired evidence key decodes
+	// (DEC-125(1); component-task-lifecycle). There is no mode axis
+	// (DEC-125(2)). A block that carried only the retired evidence key decodes
 	// empty and keeps this default (DEC-53). The default plan state is needed
 	// whenever neither plan-state key is present (component-runtime
 	// invariant 39).
@@ -1438,7 +1504,7 @@ func normalizeDeploymentScalars(c *Config, path string) error {
 		return err
 	}
 	if c.Execution.DefaultMode != "" && c.Execution.DefaultMode != "auto" && c.Execution.DefaultMode != "manual" {
-		return fmt.Errorf("execution.default_mode is deprecated (DEC-122) and must be auto or manual when present")
+		return fmt.Errorf("execution.default_mode is deprecated (DEC-125) and must be auto or manual when present")
 	}
 	// Legacy documents keep their stored value readable, but it is never
 	// re-emitted or consulted; normalization drops it.
@@ -1655,6 +1721,7 @@ func (c *Config) WorkspaceDocument() WorkspaceDocument {
 		Monitor:                   c.Monitor,
 		IssuePublication:          c.IssuePublication,
 		PlanningModels:            append([]string(nil), c.PlanningModels...),
+		RiskPolicy:                c.RiskPolicy.Clone(),
 	}
 	document.StageTimeouts = make(map[string]string, 3)
 	for _, stage := range []string{"spec", "implement", "review", "verify"} {
@@ -1719,7 +1786,21 @@ func (c *Config) FreezePolicy() PolicyContract {
 		// Fail-fast and distinct seat models are workspace review policy.
 		Review:        ReviewPanel{Seats: make([]ReviewSeat, len(policy.Review.Seats)), FailFast: c.Review.FailFast, DistinctModels: c.Review.DistinctModels},
 		RefreshReview: policy.RefreshReview,
+		Risk:          policy.Risk,
 	}
+}
+
+// frozenWorkspaceRisk returns the workspace risk policy a task freezes at
+// intake: an independent copy when its mode is record or enforce, and nil
+// otherwise. A configuration value that fails validation freezes nothing;
+// ParseWorkspaceDocument refuses such a value before any task reads it
+// (req-risk-based-review AC-1.1, AC-1.5).
+func (c *Config) frozenWorkspaceRisk() *riskpolicy.Policy {
+	policy, err := c.RiskPolicyValue()
+	if err != nil {
+		return nil
+	}
+	return frozenRisk(policy)
 }
 
 // DefaultPolicy derives the workspace default policy that a planning bundle
@@ -1732,7 +1813,7 @@ func (c *Config) DefaultPolicy() (PolicyContract, bool) {
 		settings = contextualExecutionSettings(c.Routing)
 	}
 	if settings == nil {
-		return PolicyContract{}, false
+		return PolicyContract{Risk: c.frozenWorkspaceRisk()}, false
 	}
 	return PolicyContract{
 		StageTimeouts: PolicyStageTimeouts{
@@ -1743,6 +1824,7 @@ func (c *Config) DefaultPolicy() (PolicyContract, bool) {
 		},
 		Review:        c.Review,
 		RefreshReview: RefreshReviewDelta,
+		Risk:          c.frozenWorkspaceRisk(),
 	}, true
 }
 
@@ -1785,6 +1867,13 @@ func (c *Config) WithPolicy(policy PolicyContract) *Config {
 	// The frozen values always win over the workspace's current settings.
 	next.Review.FailFast = policy.Review.FailFast
 	next.Review.DistinctModels = policy.Review.DistinctModels
+	// The frozen risk policy replaces the workspace's current one, so a later
+	// workspace edit never reaches a filed task (req-risk-based-review
+	// AC-1.5).
+	next.RiskPolicy = nil
+	if frozen := frozenRisk(policy.Risk); frozen != nil {
+		next.RiskPolicy = riskpolicy.SettingsFor(*frozen)
+	}
 	return &next
 }
 
@@ -1891,7 +1980,7 @@ const (
 // field and spec_approval false did not. Each plan-state spelling counts as
 // the legacy value it means, so default_plan_state needed counts as
 // spec_approval true and default_plan_state not_required as spec_approval
-// false, and renaming the key never changes the merge gate (DEC-122(1);
+// false, and renaming the key never changes the merge gate (DEC-125(1);
 // component-task-lifecycle invariant 18; req-review-gates-evidence REQ-1).
 func (e ExecutionPolicy) mergeDefaultApplies() bool {
 	if e.SpecApproval != nil && *e.SpecApproval {
@@ -1911,7 +2000,7 @@ func (e ExecutionPolicy) mergeDefaultApplies() bool {
 // different meanings are refused, and absent both it is needed. Afterwards
 // only default_plan_state remains, so a write stores and every read and
 // export serves only it (component-runtime invariant 39; req-task-plan-state
-// AC-2.1; DEC-122(6)).
+// AC-2.1; DEC-125(6)).
 func NormalizeDefaultPlanState(execution *ExecutionPolicy) error {
 	state := strings.TrimSpace(execution.DefaultPlanState)
 	if state != "" && state != DefaultPlanStateNeeded && state != DefaultPlanStateNotRequired {

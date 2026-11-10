@@ -16,7 +16,7 @@ import (
 //
 // PlanState is the plan_state change of component-plan-state invariant 4: it
 // holds needed or not_required and travels alone (component-task-lifecycle
-// invariant 44; DEC-122(7)).
+// invariant 44; DEC-125(7)).
 type TaskPolicyChange struct {
 	PlanState            *core.PlanState   `json:"plan_state,omitempty"`
 	VerifyStage          *bool             `json:"verify_stage,omitempty"`

@@ -488,7 +488,7 @@ func (s *Server) refuseRedispatchAtPlanRevisionGate(w http.ResponseWriter, r *ht
 }
 
 // retiredTaskHold answers the retired per-task hold route. A task carries no
-// hold or other worker reservation (DEC-122(3)); the route keeps its
+// hold or other worker reservation (DEC-125(3)); the route keeps its
 // authentication and capability middleware, reads no body, looks up no task,
 // writes nothing, and appends no event (component-http-api).
 func (s *Server) retiredTaskHold(w http.ResponseWriter, _ *http.Request) {
@@ -1219,7 +1219,7 @@ type createTaskReq struct {
 	BaseBranch      string               `json:"base_branch"`
 	Source          string               `json:"source"`
 	Level           core.EscalationLevel `json:"level"`
-	Hold            bool                 `json:"hold"`                    // deprecated input; intake refuses true after the idempotency lookup (DEC-122(3))
+	Hold            bool                 `json:"hold"`                    // deprecated input; intake refuses true after the idempotency lookup (DEC-125(3))
 	SpecApproval    *bool                `json:"spec_approval,omitempty"` // legacy alias of plan_state (component-plan-state invariant 1)
 	MergeApproval   *bool                `json:"merge_approval,omitempty"`
 	Setup           string               `json:"setup,omitempty"`
@@ -2302,7 +2302,7 @@ func parseTaskFilter(values url.Values) (store.TaskFilter, error) {
 		filter.States = append(filter.States, candidate)
 	}
 	// plan_state repeats like state and takes the four plan states; any
-	// other value answers 400 (component-http-api invariant 20; DEC-122(5)).
+	// other value answers 400 (component-http-api invariant 20; DEC-125(5)).
 	for _, state := range parseTaskFilterList(values["plan_state"]) {
 		candidate := core.PlanState(state)
 		if !candidate.Valid() {

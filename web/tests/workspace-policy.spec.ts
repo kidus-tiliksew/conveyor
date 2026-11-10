@@ -141,7 +141,7 @@ test('a persisted distinct seat models setting loads on and survives a seat chan
 })
 
 // component-web-dashboard invariant 33; req-task-plan-state AC-2.1, AC-3.5;
-// DEC-122(7): the Default plan state select shows the served value, save
+// DEC-125(7): the Default plan state select shows the served value, save
 // writes execution.default_plan_state and never execution.spec_approval, and
 // no plan approval switch remains.
 test('the default plan state select shows the served value and saves only default_plan_state', async ({ page }) => {

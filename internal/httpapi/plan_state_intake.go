@@ -103,7 +103,7 @@ func planIntakeError(format string, args ...any) *taskCreateError {
 // validateIntakePlan applies component-plan-state invariant 2's refusals, each
 // answering 400 with nothing recorded, and returns the plan-state request
 // that ResolveIntakePlanState resolves together with any intake plan
-// (req-task-plan-state AC-2.2, AC-2.5, AC-2.6; DEC-122(6)).
+// (req-task-plan-state AC-2.2, AC-2.5, AC-2.6; DEC-125(6)).
 func validateIntakePlan(req createTaskReq) (store.PlanStateRequest, *core.IntakePlan, *taskCreateError) {
 	input := req.plan
 	request := store.PlanStateRequest{SpecApproval: req.SpecApproval, Level: req.Level}

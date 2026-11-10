@@ -36,7 +36,7 @@ func TestWorkOrderPreemptionPersistenceIntegration(t *testing.T) {
 		t.Fatal(err)
 	}
 	// A row stored with hold before the retirement: preemption neither reads
-	// nor clears the historical column (DEC-122(3)).
+	// nor clears the historical column (DEC-125(3)).
 	if _, err = st.pool.Exec(ctx, `UPDATE tasks SET hold=true WHERE workspace_id=$1 AND id=$2`, workspace, task.ID); err != nil {
 		t.Fatal(err)
 	}

@@ -105,7 +105,7 @@ These rules extend the filing playbook's body house style for this repository:
 ## Scope bars
 
 - Memory-store scope is defined by DEC-9.
-- Task priority, phase, assignment, queue-order, and hold-retirement scope is defined by DEC-122.
+- Task priority, phase, assignment, queue-order, and hold-retirement scope is defined by DEC-125.
 
 This repository maintains the Conveyor skill sources and keeps its guidance
 in a regular `AGENTS.md` with no `CLAUDE.md`. Refresh its guidance directly in
@@ -113,7 +113,7 @@ the task worktree with
 `conveyor --server 'https://conveyor.kidus.sh' --workspace 'conveyor' repo init --guidance-only`.
 This preserves the source skill wrappers and creates no `CLAUDE.md`. Deliver
 the updated guidance through the task's review lifecycle.
-<!-- conveyor:repo-init owner=v1 version=v0.59.1-13-gb153effa -->
+<!-- conveyor:repo-init owner=v1 version=v0.60.0 -->
 ## Conveyor factory work
 
 Repository: `conveyor`. Base branch: `main`.

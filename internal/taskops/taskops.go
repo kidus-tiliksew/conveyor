@@ -105,7 +105,7 @@ const SetAssigneeCommand = "task.assignee.set"
 // RequestChangesCommand is the serialized user-sourced changes-requested
 // bounce. It deliberately reuses the persisted redirect action and canonical
 // awaiting -> queued lifecycle edge, and re-queues the implement order like
-// any other order: it writes no hold (DEC-122(3); component-task-lifecycle).
+// any other order: it writes no hold (DEC-125(3); component-task-lifecycle).
 const RequestChangesCommand = "task.request_changes"
 
 type RequestChanges struct {

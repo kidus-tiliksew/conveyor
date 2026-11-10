@@ -6530,7 +6530,7 @@ type TaskEventFixture = {
 // req-task-lifecycle-and-queue AC-2.4/AC-2.5: an operator routes the task by
 // picking a workspace co-member, and the audited outcome reads back in the
 // timeline like every other operator act. Assignment constrains who may claim
-// it and nothing else (AC-2.3, AC-2.7; DEC-122(4)).
+// it and nothing else (AC-2.3, AC-2.7; DEC-125(4)).
 test('an operator assigns a task from the member picker and the timeline records it', async ({ page }) => {
   await routeAssignment(page, { operator: true })
 
@@ -7049,7 +7049,7 @@ for (const variant of ['sheet', 'full']) {
     await expect(trigger).toHaveAttribute('aria-label', 'Task actions')
     await expect(trigger).toHaveText('')
     // A task carries no hold, so no Hold or Release action sits beside the
-    // menu or inside it (DEC-122(3)).
+    // menu or inside it (DEC-125(3)).
     await expect(page.getByRole('button', { name: /^(Hold|Release)$/ })).toHaveCount(0)
     await expect(menu).toHaveCount(0)
     await trigger.focus()
@@ -7086,7 +7086,7 @@ for (const variant of ['sheet', 'full']) {
 
   test(`no hold action, badge, or request renders in ${variant} even for a stale hold`, async ({ page }) => {
     // A response from before the retirement may still carry hold: true; the
-    // header ignores it and offers no reservation (DEC-122(3)).
+    // header ignores it and offers no reservation (DEC-125(3)).
     let holdRequests = 0
     await page.route('**/v1/tasks/full-header-id/activity*', (route) => {
       const item = activity('full-header-id', false)
