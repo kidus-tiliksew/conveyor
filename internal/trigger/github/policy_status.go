@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"net/url"
+	"strconv"
 	"strings"
 )
 
@@ -91,30 +93,47 @@ type commitStatus struct {
 	Context     string `json:"context"`
 	Description string `json:"description"`
 	TargetURL   string `json:"target_url"`
-	UpdatedAt   string `json:"updated_at"`
 }
 
-// latestCommitStatus reads the head's statuses and returns the latest status
-// of one context. GitHub lists a commit's statuses newest first; the highest
-// status ID decides when an answer holds several entries of the context, so
-// an older matching entry never stands in for a newer different one.
+// policyStatusMaxPages bounds the combined-status walk. The combined status
+// lists one entry per context, 100 to a page, so 20 pages hold 2,000
+// distinct contexts on one commit, far beyond what a repository's checks
+// publish. Reaching the bound fails the read, and so the publication, under
+// the forge response category; it never counts as an absent status.
+const policyStatusMaxPages = 20
+
+// latestCommitStatus reads the latest status of one context on a commit from
+// GitHub's combined status, which returns the most recent status of each
+// context, 100 contexts to a page. The runner follows every Link page up to
+// policyStatusMaxPages, so a context on a later page is found, and a failed
+// page read fails the whole read; absence is reported only after every page
+// was read. If an answer ever held several entries of the context, the
+// highest status ID decides, so an older matching entry never stands in for a
+// newer different one.
 func latestCommitStatus(ctx context.Context, repo, sha, statusContext string, run ghRunner) (commitStatus, bool, error) {
-	out, err := run(ctx, "api", fmt.Sprintf("repos/%s/commits/%s/statuses?per_page=100", repo, sha))
+	out, err := run(ctx, "api", fmt.Sprintf("repos/%s/commits/%s/status?per_page=100", repo, url.PathEscape(sha)), "--paginate", "--slurp", "--max-pages", strconv.Itoa(policyStatusMaxPages))
 	if err != nil {
 		return commitStatus{}, false, fmt.Errorf("read policy status: %w", forgeCallError(err))
 	}
-	var statuses []commitStatus
-	if err := json.Unmarshal(out, &statuses); err != nil || statuses == nil {
-		return commitStatus{}, false, forgeResponseError("parse policy status: %v", err)
+	var pages []struct {
+		Statuses *[]commitStatus `json:"statuses"`
+	}
+	if err := json.Unmarshal(out, &pages); err != nil || len(pages) == 0 {
+		return commitStatus{}, false, forgeResponseError("parse policy status of %s", sha)
 	}
 	var latest commitStatus
 	found := false
-	for index, status := range statuses {
-		if status.Context != statusContext {
-			continue
+	for _, page := range pages {
+		if page.Statuses == nil {
+			return commitStatus{}, false, forgeResponseError("parse policy status of %s: missing statuses", sha)
 		}
-		if !found || status.ID > latest.ID || (status.ID == latest.ID && index == 0) {
-			latest, found = status, true
+		for _, status := range *page.Statuses {
+			if status.Context != statusContext {
+				continue
+			}
+			if !found || status.ID > latest.ID {
+				latest, found = status, true
+			}
 		}
 	}
 	return latest, found, nil

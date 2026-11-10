@@ -181,8 +181,22 @@ func (c *restClient) api(ctx context.Context, args ...string) ([]byte, error) {
 	method, endpoint, accept := http.MethodGet, "", "application/vnd.github+json"
 	fields := map[string]any{}
 	paginate, slurp := false, false
+	// maxPages bounds a --paginate walk; 0 leaves it unbounded. A walk that
+	// reaches the bound while GitHub still names a next page fails instead of
+	// returning a truncated list, so a caller never reads absence from pages
+	// it did not read.
+	maxPages := 0
 	for i := 0; i < len(args); i++ {
 		switch args[i] {
+		case "--max-pages":
+			i++
+			if i < len(args) {
+				limit, err := strconv.Atoi(args[i])
+				if err != nil || limit < 1 {
+					return nil, &Error{Category: ForgeRequest, Err: fmt.Errorf("GitHub REST page bound %q is not a positive integer", args[i])}
+				}
+				maxPages = limit
+			}
 		case "--method":
 			i++
 			if i < len(args) {
@@ -234,6 +248,9 @@ func (c *restClient) api(ctx context.Context, args ...string) ([]byte, error) {
 		}
 		pages = append(pages, append(json.RawMessage(nil), raw...))
 		next = nextLink(headers.Get("Link"))
+		if next != "" && maxPages > 0 && len(pages) >= maxPages {
+			return nil, forgeResponseError("GitHub REST response has more than %d pages", maxPages)
+		}
 	}
 	if slurp {
 		return json.Marshal(pages)
