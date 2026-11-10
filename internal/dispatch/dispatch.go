@@ -812,7 +812,7 @@ func (d *Dispatcher) buildStageInput(ctx context.Context, cfg *config.Config, st
 		return inprocess.Input{}, err
 	}
 	if stage == core.StageReview {
-		role = pack.InProcessReviewRole(role)
+		role = pack.InProcessReviewRole(pack.WithRiskRating(role, task.SetupContract.Risk.Enabled()))
 	}
 	servedAuthority, err := store.ServedRequirementsForTask(ctx, d.Store, task.ID, config.ServedRequirementAuthorityNodes(cfg))
 	if err != nil {

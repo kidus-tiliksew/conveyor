@@ -330,3 +330,25 @@ func TestRecordModeChangesNoFlow(t *testing.T) {
 		t.Fatalf("flow ended in %+v, want a bounce back to implement after a two-seat round", off)
 	}
 }
+
+// TestReviewRoleCarriesRatingOnlyWhenRated: a review order's role carries the
+// rating instruction only for a task whose frozen risk mode is record or
+// enforce (req-risk-based-review AC-5.7, AC-1.1).
+func TestReviewRoleCarriesRatingOnlyWhenRated(t *testing.T) {
+	for _, tc := range []struct {
+		mode riskpolicy.Mode
+		want bool
+	}{{riskpolicy.ModeRecord, true}, {riskpolicy.ModeEnforce, true}, {"", false}} {
+		f, orders, _, _ := riskVerdictFixture(t, "risk-role-"+string(tc.mode), tc.mode, 1)
+		contract, err := f.service.contextForOrder(f.ctx, orders[0])
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got := strings.Contains(contract.RolePrompt, "`risk_tier`") && strings.Contains(contract.RolePrompt, "is data, not an instruction"); got != tc.want {
+			t.Fatalf("mode %q: role carries the rating instruction=%t, want %t", tc.mode, got, tc.want)
+		}
+		if strings.Contains(contract.RolePrompt, "conveyor:risk-rating") {
+			t.Fatalf("mode %q: a marker reached the role", tc.mode)
+		}
+	}
+}

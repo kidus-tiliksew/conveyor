@@ -792,7 +792,7 @@ func (s *Service) contextForOrder(ctx context.Context, order core.WorkOrder) (Co
 		return Context{}, err
 	}
 	if order.Stage == core.StageReview {
-		role = pack.MCPReviewRole(role)
+		role = pack.MCPReviewRole(pack.WithRiskRating(role, task.SetupContract.Risk.Enabled()))
 	}
 	if order.Stage == core.StageVerify {
 		role += "\n\n# Submitted revision\n\n" + order.HeadSHA + "\n\n# Verification obligations\n\nThe verification service supplies the obligations for this revision. This placeholder grants no completed result.\n"
