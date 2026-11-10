@@ -2255,3 +2255,138 @@ test('a stalled task offers redispatch only as the server choice', async ({ page
   await expect(page.getByRole('button', { name: /^(Recover|Redispatch|Resume task)$/ })).toHaveCount(1)
   await expect(page.locator('[data-park-reason]')).toHaveCount(0)
 })
+
+// An enforcing task short of its required human approvals (req-risk-based-review
+// AC-8.2, AC-8.7, AC-11.1, AC-11.2; feature-risk-based-review RR-7). The
+// server labels the merge choice Approve while more than one approval remains;
+// the card states the count beside it, and the confirm says the act records
+// the person's approval and merges nothing.
+function approvalAction(label: 'Approve' | 'Merge'): NextAction {
+  const action = heldMergeAction('merge_execution')
+  return {
+    ...action,
+    summary:
+      label === 'Approve'
+        ? "The reviewed head has 0 of 2 required human approvals. 2 more approvals are needed, including a trusted author's approval."
+        : "The reviewed head has 1 of 2 required human approvals. 1 more approval is needed. A trusted author's approval is not among them.",
+    choices: action.choices.map((choice) =>
+      choice.id === 'merge'
+        ? {
+            ...choice,
+            label,
+            effect:
+              label === 'Approve'
+                ? 'Records your approval of the reviewed head. It does not merge, because more approvals are needed.'
+                : 'Records your approval and merges the reviewed head when your approval completes the required approvals.',
+          }
+        : choice,
+    ),
+  }
+}
+
+function approvalActivity(label: 'Approve' | 'Merge') {
+  return {
+    ...heldMergeActivity('merge_execution'),
+    risk: {
+      mode: 'enforce' as const,
+      tier: 'high' as const,
+      source: 'reviewer' as const,
+      reason: 'The merge gate gains counted approvals on every store.',
+      head: approvedHead,
+      required_agent_reviews: 2,
+      required_human_approvals: 2,
+      calculated_agent_reviews: 2,
+      calculated_human_approvals: 2,
+      recorded_approvals: label === 'Approve' ? 0 : 1,
+      author_approval_needed: label === 'Approve',
+      remaining_approvals: label === 'Approve' ? 2 : 1,
+      non_author_approval_needed: false,
+      untrusted_author: false,
+      approval_head: approvedHead,
+      approvals_satisfied: false,
+      ratings: [],
+    },
+  }
+}
+
+test('an enforcing task short of its approvals offers Approve and states the count', async ({ page }) => {
+  await mockAPI(
+    page,
+    () => approvalActivity('Approve'),
+    () => approvalAction('Approve'),
+  )
+  const posts: string[] = []
+  await page.route(`**${heldMergePath}**`, (route) => {
+    posts.push(route.request().method())
+    return route.fulfill({ status: 202, json: { error: 'approvals_required', recorded: true, merged: false } })
+  })
+  await page.goto(`/w/demo/tasks/${taskId}/full`)
+  const gate = page.getByRole('region', { name: 'Human gate' })
+  await expect(gate.locator('[data-approval-count]')).toHaveText(
+    "0 of 2 human approvals recorded. 2 more needed, including a trusted author's.",
+  )
+  await expect(page.locator('[data-task-risk-approvals]').first()).toHaveText(
+    "0 of 2 human approvals recorded. 2 more needed, including a trusted author's.",
+  )
+  const approve = gate.locator('[data-merge-at-gate]')
+  await expect(approve).toHaveText('Approve')
+  await approve.click()
+  const dialog = page.getByRole('dialog', { name: 'Confirm approval' })
+  await expect(dialog.getByRole('heading')).toHaveText('Approve #77?')
+  await expect(dialog.locator('[data-confirm-head]')).toContainText(
+    `This records your approval of #77 at the approved head ${approvedHead.slice(0, 7)} under your name. It does not merge, because more approvals are needed.`,
+  )
+  await expect(dialog.locator('[data-confirm-merge]')).toHaveText('Approve #77')
+  expect(posts).toEqual([])
+  await dialog.locator('[data-confirm-merge]').click()
+  await expect(dialog).toHaveCount(0)
+  expect(posts).toEqual(['POST'])
+})
+
+test('the last approval keeps the merge label and its one-act confirm', async ({ page }) => {
+  await mockAPI(
+    page,
+    () => approvalActivity('Merge'),
+    () => approvalAction('Merge'),
+  )
+  await page.goto(`/w/demo/tasks/${taskId}/full`)
+  const gate = page.getByRole('region', { name: 'Human gate' })
+  await expect(gate.locator('[data-approval-count]')).toHaveText('1 of 2 human approvals recorded. 1 more needed.')
+  await expect(gate.locator('[data-merge-at-gate]')).toHaveText('Merge')
+  await gate.locator('[data-merge-at-gate]').click()
+  await expect(page.getByRole('dialog', { name: 'Confirm merge' }).getByRole('heading')).toHaveText('Merge #77?')
+})
+
+// Screenshots of the approval count and the Approve control, attached to the
+// Playwright report that CI uploads, and written to CONVEYOR_SCREENSHOT_DIR when
+// it is set.
+for (const viewport of [
+  { name: 'mobile', width: 375, height: 1400 },
+  { name: 'desktop', width: 1280, height: 1000 },
+]) {
+  test(`capture the approval count at ${viewport.width} px`, async ({ page }, testInfo) => {
+    await page.setViewportSize({ width: viewport.width, height: viewport.height })
+    await mockAPI(
+      page,
+      () => approvalActivity('Approve'),
+      () => approvalAction('Approve'),
+    )
+    await page.goto(`/w/demo/tasks/${taskId}/full`)
+    const gate = page.getByRole('region', { name: 'Human gate' })
+    await expect(gate.locator('[data-approval-count]')).toBeVisible()
+    await gate.scrollIntoViewIfNeeded()
+    const shots = process.env.CONVEYOR_SCREENSHOT_DIR
+    const name = `merge-gate-approvals-${viewport.name}.png`
+    const image = await page.screenshot({ path: shots ? `${shots}/${name}` : undefined, fullPage: true })
+    await testInfo.attach(name, { body: image, contentType: 'image/png' })
+    await gate.locator('[data-merge-at-gate]').click()
+    await expect(page.getByRole('dialog', { name: 'Confirm approval' })).toBeVisible()
+    const confirmName = `merge-gate-approve-confirm-${viewport.name}.png`
+    // The dialog animates in; a finished animation shows it as a person sees it.
+    const confirm = await page.screenshot({
+      path: shots ? `${shots}/${confirmName}` : undefined,
+      animations: 'disabled',
+    })
+    await testInfo.attach(confirmName, { body: confirm, contentType: 'image/png' })
+  })
+}

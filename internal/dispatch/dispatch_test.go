@@ -800,6 +800,13 @@ func (s mergeIdentityStore) GetCallerIdentity(context.Context, string, string) (
 	return core.CallerIdentity{ID: "usr-approver", DisplayName: "Approving Operator", Email: "approver@example.com"}, nil
 }
 
+// AuthorizeWorkspace grants operate_gates to every person whose user ID does
+// not start with "no-gates-", so approval tests can name a person without
+// the capability (req-risk-based-review AC-8.3).
+func (s mergeIdentityStore) AuthorizeWorkspace(_ context.Context, userID, _ string, capability core.Capability) (bool, error) {
+	return userID != "" && !strings.HasPrefix(userID, "no-gates-") && capability == core.CapabilityOperateGates, nil
+}
+
 func TestOrdinaryReviewWithoutOrderHeadFallsBackToPullRequestOpenedHead(t *testing.T) {
 	ctx := store.WithWorkspace(store.WithActor(t.Context(), store.SystemActor()), "test")
 	st := store.NewMemory()

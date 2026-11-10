@@ -14,6 +14,7 @@ import { nextActionQueryKey, nextActionsQueryKey } from '../inbox/use-next-actio
 import { Button } from '../ui/button'
 import { Dialog } from '../ui/dialog'
 import { CheckStatusList } from './next-action-checks'
+import { riskApprovalText } from './risk-tier'
 import { withQuerySignal } from './use-task-detail'
 
 type MergeReadiness = ActivityItem['merge_readiness']
@@ -74,6 +75,10 @@ export function GateChoices({
   })
   const primary = shortcutChoiceId(action)
   const statusId = `${ids}-merge-status`
+  // An enforcing task states its approvals beside the merge control, so the
+  // person sees how many approvals remain before acting (req-risk-based-review
+  // AC-8.2, AC-11.1).
+  const approvals = leadsWithMerge && detail?.risk ? riskApprovalText(detail.risk) : null
   // A merge the caller may not take keeps its reason in the reasons block; a
   // merge the server refuses is explained by the status line instead.
   const capabilityReason =
@@ -97,14 +102,23 @@ export function GateChoices({
       layout={footer ? 'footer' : atGate ? 'grid' : 'row'}
       leadingReason={capabilityReason}
       status={
-        atGate && (
-          <MergeStatusLine
-            id={statusId}
-            offered={Boolean(mergeChoice)}
-            refusal={mergeRefusal?.text}
-            readiness={detail?.merge_readiness}
-            loaded={detail !== undefined}
-          />
+        (atGate || approvals) && (
+          <>
+            {approvals && (
+              <p data-approval-count className="text-xs leading-5 text-foreground/85">
+                {approvals}
+              </p>
+            )}
+            {atGate && (
+              <MergeStatusLine
+                id={statusId}
+                offered={Boolean(mergeChoice)}
+                refusal={mergeRefusal?.text}
+                readiness={detail?.merge_readiness}
+                loaded={detail !== undefined}
+              />
+            )}
+          </>
         )
       }
       leading={
@@ -335,6 +349,10 @@ function MergeAtGateAction({
   // check_hold merge a head a review round already approved.
   const gateAct = kind === 'merge_approval'
   const headName = gateAct ? 'reviewed head' : 'approved head'
+  // While more than one approval remains the server labels the merge choice
+  // Approve: the act records the person's approval and merges nothing
+  // (req-risk-based-review AC-8.7; feature-risk-based-review RR-7).
+  const approveOnly = choice?.label === 'Approve'
 
   return (
     <span className={cn('flex min-w-0 flex-col gap-0.5', widthClass)}>
@@ -365,16 +383,26 @@ function MergeAtGateAction({
         <span className="text-xs text-failure">{errorMessage(mutation.error, 'Could not merge.')}</span>
       )}
       {confirming && choice && (
-        <Dialog label="Confirm merge" onClose={() => !mutation.isPending && setConfirming(false)}>
+        <Dialog
+          label={approveOnly ? 'Confirm approval' : 'Confirm merge'}
+          onClose={() => !mutation.isPending && setConfirming(false)}
+        >
           <div className="space-y-3 p-4">
-            <h2 className="text-sm font-semibold">Merge {pullRequest}?</h2>
+            <h2 className="text-sm font-semibold">
+              {approveOnly ? 'Approve' : 'Merge'} {pullRequest}?
+            </h2>
             {head ? (
               <p className="text-sm leading-6 text-muted" data-confirm-head={head}>
-                {gateAct ? 'This approves and merges' : 'This merges'} {pullRequest} at the {headName}{' '}
+                {approveOnly ? 'This records your approval of' : gateAct ? 'This approves and merges' : 'This merges'}{' '}
+                {pullRequest} at the {headName}{' '}
                 <code className="font-mono text-foreground" title={head}>
                   {head.slice(0, 7)}
                 </code>{' '}
-                {gateAct ? 'in one act, under your name.' : 'under your name.'}
+                {approveOnly
+                  ? 'under your name. It does not merge, because more approvals are needed.'
+                  : gateAct
+                    ? 'in one act, under your name.'
+                    : 'under your name.'}
                 {readiness?.url && (
                   <>
                     {' '}
@@ -417,7 +445,11 @@ function MergeAtGateAction({
                 disabled={mutation.isPending || !head}
                 onClick={() => merge(choice)}
               >
-                {mutation.isPending ? 'Merging…' : `Merge ${pullRequest}`}
+                {mutation.isPending
+                  ? approveOnly
+                    ? 'Approving…'
+                    : 'Merging…'
+                  : `${approveOnly ? 'Approve' : 'Merge'} ${pullRequest}`}
               </Button>
             </div>
           </div>

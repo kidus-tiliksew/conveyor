@@ -77,14 +77,15 @@ func RiskMergeHold(task core.Task, ratings []core.RiskRating) (required int, hol
 	return requirements.HumanApprovals, requirements.HumanApprovals >= 1
 }
 
-// ErrRiskApprovalsRequired refuses a merge that an enforcing task's required
-// human approvals do not allow: the automatic merge at any required count of
-// one or more, and the single operator merge at a required count of two or
-// more until counted approvals exist (req-risk-based-review AC-8.2, AC-8.7).
-// The refusal records no approval and lands nothing.
+// ErrRiskApprovalsRequired refuses the factory's automatic merge of an
+// enforcing task that requires one or more human approvals, an untrusted
+// author's included (req-risk-based-review AC-8.2, AC-9.2). The refusal
+// records no approval and lands nothing. A person's merge counts approvals
+// instead (AC-8.7).
 var ErrRiskApprovalsRequired = errors.New("risk_approvals_required")
 
-// RiskApprovalsRequiredError names the required count of a refused merge.
+// RiskApprovalsRequiredError names the required count of a refused automatic
+// merge.
 type RiskApprovalsRequiredError struct {
 	Required int
 	Tier     riskpolicy.Tier
@@ -97,36 +98,13 @@ func (e *RiskApprovalsRequiredError) Error() string {
 	if e.Required == 1 {
 		approvals = "human approval"
 	}
-	if e.Automatic {
-		return fmt.Sprintf("the risk policy requires %d %s for this %s-tier task, so it waits for a person at the merge gate and does not merge automatically", e.Required, approvals, e.Tier)
-	}
-	return fmt.Sprintf("the risk policy requires %d %s for this %s-tier task; one person's merge cannot land it until approvals are counted, so nothing was merged or recorded", e.Required, approvals, e.Tier)
+	return fmt.Sprintf("the risk policy requires %d %s for this %s-tier task, so it waits for a person at the merge gate and does not merge automatically", e.Required, approvals, e.Tier)
 }
 
 // Is matches ErrRiskApprovalsRequired and ErrRefusal, so every route answers
 // the refusal with its text instead of a store failure.
 func (e *RiskApprovalsRequiredError) Is(target error) bool {
 	return target == ErrRiskApprovalsRequired || target == ErrRefusal
-}
-
-// RiskMergeRefusal returns the refusal for a merge of task under its ratings,
-// or nil when the merge may go on. automatic is the factory's merge with the
-// merge gate off; any required count of one or more refuses it. An operator's
-// single merge is refused at a required count of two or more. A task whose
-// frozen mode is not enforce is never refused here.
-func RiskMergeRefusal(task core.Task, ratings []core.RiskRating, automatic bool) error {
-	requirements, tier, ok := EnforcedRiskRequirements(task, ratings)
-	if !ok {
-		return nil
-	}
-	limit := 2
-	if automatic {
-		limit = 1
-	}
-	if requirements.HumanApprovals < limit {
-		return nil
-	}
-	return &RiskApprovalsRequiredError{Required: requirements.HumanApprovals, Tier: tier, Automatic: automatic}
 }
 
 // RiskSeatTrigger names the act whose raised tier adds seats: a review seat's

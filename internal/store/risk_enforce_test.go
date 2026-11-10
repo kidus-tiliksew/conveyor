@@ -80,9 +80,10 @@ func TestCheckReviewRoundSeatsRisk(t *testing.T) {
 	}
 }
 
-// TestRiskRequirementsOnlyUnderEnforce covers the seat count, the merge hold,
-// and the merge refusal (req-risk-based-review REQ-2, AC-2.1, REQ-7, REQ-8,
-// AC-8.1, AC-8.2, AC-8.7).
+// TestRiskRequirementsOnlyUnderEnforce covers the seat count and the merge
+// hold (req-risk-based-review REQ-2, AC-2.1, REQ-7, REQ-8, AC-8.1, AC-8.2).
+// The automatic merge refusal reads authors and trust too, so the dispatcher
+// tests cover it.
 func TestRiskRequirementsOnlyUnderEnforce(t *testing.T) {
 	for _, tc := range []struct {
 		name      string
@@ -92,16 +93,15 @@ func TestRiskRequirementsOnlyUnderEnforce(t *testing.T) {
 		required  int
 		hold      bool
 		automatic bool
-		operator  bool
 	}{
-		{"OffNeverHolds", core.Task{ID: "off"}, nil, 0, 0, false, false, false},
-		{"RecordHighNeverHolds", riskTask(riskpolicy.ModeRecord, false), pathRated(riskpolicy.TierHigh, 3), 0, 0, false, false, false},
-		{"EnforceUnratedIsLow", riskTask(riskpolicy.ModeEnforce, false), nil, 1, 0, false, false, false},
-		{"EnforceLow", riskTask(riskpolicy.ModeEnforce, false), pathRated(riskpolicy.TierLow, 0), 1, 0, false, false, false},
-		{"EnforceLowGateOn", riskTask(riskpolicy.ModeEnforce, true), pathRated(riskpolicy.TierLow, 0), 1, 1, true, true, false},
-		{"EnforceMedium", riskTask(riskpolicy.ModeEnforce, false), pathRated(riskpolicy.TierMedium, 0), 1, 1, true, true, false},
-		{"EnforcePathMinimum", riskTask(riskpolicy.ModeEnforce, false), pathRated(riskpolicy.TierLow, 2), 1, 2, true, true, true},
-		{"EnforceHigh", riskTask(riskpolicy.ModeEnforce, false), pathRated(riskpolicy.TierHigh, 0), 2, 2, true, true, true},
+		{"OffNeverHolds", core.Task{ID: "off"}, nil, 0, 0, false, false},
+		{"RecordHighNeverHolds", riskTask(riskpolicy.ModeRecord, false), pathRated(riskpolicy.TierHigh, 3), 0, 0, false, false},
+		{"EnforceUnratedIsLow", riskTask(riskpolicy.ModeEnforce, false), nil, 1, 0, false, false},
+		{"EnforceLow", riskTask(riskpolicy.ModeEnforce, false), pathRated(riskpolicy.TierLow, 0), 1, 0, false, false},
+		{"EnforceLowGateOn", riskTask(riskpolicy.ModeEnforce, true), pathRated(riskpolicy.TierLow, 0), 1, 1, true, true},
+		{"EnforceMedium", riskTask(riskpolicy.ModeEnforce, false), pathRated(riskpolicy.TierMedium, 0), 1, 1, true, true},
+		{"EnforcePathMinimum", riskTask(riskpolicy.ModeEnforce, false), pathRated(riskpolicy.TierLow, 2), 1, 2, true, true},
+		{"EnforceHigh", riskTask(riskpolicy.ModeEnforce, false), pathRated(riskpolicy.TierHigh, 0), 2, 2, true, true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			if got := RiskSeatCount(tc.task, tc.ratings); got != tc.seats {
@@ -110,11 +110,8 @@ func TestRiskRequirementsOnlyUnderEnforce(t *testing.T) {
 			if required, hold := RiskMergeHold(tc.task, tc.ratings); required != tc.required || hold != tc.hold {
 				t.Fatalf("RiskMergeHold=%d,%t, want %d,%t", required, hold, tc.required, tc.hold)
 			}
-			if err := RiskMergeRefusal(tc.task, tc.ratings, true); (err != nil) != tc.automatic || (err != nil && !errors.Is(err, ErrRefusal)) {
-				t.Fatalf("automatic refusal=%v, want refused=%t", err, tc.automatic)
-			}
-			if err := RiskMergeRefusal(tc.task, tc.ratings, false); (err != nil) != tc.operator {
-				t.Fatalf("operator refusal=%v, want refused=%t", err, tc.operator)
+			if tc.hold != tc.automatic {
+				t.Fatalf("hold=%t, automatic refusal expected=%t", tc.hold, tc.automatic)
 			}
 		})
 	}
@@ -152,7 +149,7 @@ func TestPlanRiskSeatAddition(t *testing.T) {
 // TestRiskApprovalsRequiredErrorWording names the count with its noun.
 func TestRiskApprovalsRequiredErrorWording(t *testing.T) {
 	one := (&RiskApprovalsRequiredError{Required: 1, Tier: riskpolicy.TierMedium, Automatic: true}).Error()
-	two := (&RiskApprovalsRequiredError{Required: 2, Tier: riskpolicy.TierHigh}).Error()
+	two := (&RiskApprovalsRequiredError{Required: 2, Tier: riskpolicy.TierHigh, Automatic: true}).Error()
 	if !strings.Contains(one, "requires 1 human approval for this medium-tier task") || strings.Contains(one, "approvals for") {
 		t.Fatalf("one approval: %q", one)
 	}

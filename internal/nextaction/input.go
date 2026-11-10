@@ -114,11 +114,15 @@ type Input struct {
 	// puts the task behind the merge gate whatever its frozen merge_approval
 	// says (DEC-124(2); req-risk-based-review REQ-8, AC-8.2).
 	RiskHumanApprovals int
-	Recommendation     string
-	Assignee           *core.TaskAssignee
-	Capabilities       map[core.Capability]bool
-	LiveClaimants      *ClaimantView
-	Recovery           map[string]AutomaticRecovery
+	// RiskApprovals is the approval evaluation of an enforcing task that is
+	// approved or at the merge gate and requires one or more approvals, and
+	// nil for every other task (req-risk-based-review AC-11.1).
+	RiskApprovals  *RiskApprovals
+	Recommendation string
+	Assignee       *core.TaskAssignee
+	Capabilities   map[core.Capability]bool
+	LiveClaimants  *ClaimantView
+	Recovery       map[string]AutomaticRecovery
 	// ClaimFailures is the batch's claim-failure records, keyed by order ID.
 	// An absent entry means the order's last claim did not fail in the
 	// backend (component-work-orders, Claim admission).
@@ -450,4 +454,17 @@ type Act struct {
 	At        time.Time `json:"at"`
 	Automatic bool      `json:"automatic"`
 	Summary   string    `json:"summary,omitempty"`
+}
+
+// RiskApprovals is what an enforcing task's approvals of its reviewed head
+// still need: the required number, the approvals that count, the approvals
+// that remain, and each author condition (req-risk-based-review REQ-8, REQ-9,
+// AC-11.1).
+type RiskApprovals struct {
+	Required            int
+	Recorded            int
+	Remaining           int
+	TrustedAuthorNeeded bool
+	NonAuthorNeeded     bool
+	Satisfied           bool
 }

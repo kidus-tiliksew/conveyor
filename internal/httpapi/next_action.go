@@ -127,6 +127,7 @@ func (s *Server) nextActionOptionsFor(ctx context.Context) (store.NextActionOpti
 		}
 	}
 	opts.MergeReadiness = s.mergeReadiness.lastKnown
+	opts.TrustedAuthors = s.trustedAuthors
 	return opts, nil
 }
 

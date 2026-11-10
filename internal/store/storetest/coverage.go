@@ -8,6 +8,7 @@ import "strings"
 var suiteMethods = map[string][]string{
 	"ChangeNotices":                     strings.Fields(`Changes EnablePeers AppendEvent ListEvents CreateTask GetTask Log CreateWorkspace GetWorkspace WorkspaceConfig UpdateWorkspaceConfig NextDeadline CreateJob CreateWorkOrderCommand GetWorkOrder ClaimWorkOrderCommand UpdateWorkOrderCommand RecordCheckStatusDeadline ClearCheckStatusDeadline`),
 	"RiskRatings":                       strings.Fields(`RecordRiskRating RaiseTaskRiskTier ListTaskRiskRatings AcceptReviewDecisionCommand CreateReviewRoundCommand CreateTask GetTask ListEvents CreateSpecVersion ApproveSpecVersion CreateTaskWithDependenciesAndContext`),
+	"TaskApprovals":                     strings.Fields(`RecordTaskApproval ListTaskApprovals CreateTask GetTask ListEvents AppendEvent CreateJob ListTaskWorkOrders ListTaskRiskRatings`),
 	"RiskEnforcement":                   strings.Fields(`RecordRiskRating RaiseTaskRiskTier ListTaskRiskRatings AcceptReviewDecisionCommand CreateReviewRoundCommand CreateTask GetTask ListEvents ListReviewRoundSeats ListWorkOrdersForTasks ListCompactEvents GetApprovedSpecVersion`),
 	"DocumentationGate":                 strings.Fields(`RecordDocumentationGateEvidence GetDocumentationGateEvidence CreateTask GetTask ListEvents CreateReviewRoundCommand AcceptReviewDecisionCommand`),
 	"NextAction":                        strings.Fields(`ListFactoryActs CountOperatorAttention CreateTask AppendEvent GetTask ListTasks ListTaskContextProposals MonitorOriginsForTasks Observe LinkTask`),

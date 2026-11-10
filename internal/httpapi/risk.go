@@ -40,7 +40,15 @@ func (s *Server) taskRisk(ctx context.Context, task core.Task) (*core.TaskRisk, 
 			workspaceSeats = len(cfg.Review.Seats)
 		}
 	}
-	return store.ProjectTaskRisk(task, ratings, store.ReviewSeatMinimum(task.SetupContract, workspaceSeats)), nil
+	projection := store.ProjectTaskRisk(task, ratings, store.ReviewSeatMinimum(task.SetupContract, workspaceSeats))
+	// An enforcing task's approval count and author conditions come from the
+	// same evaluation the merge act uses (req-risk-based-review AC-11.2).
+	evaluation, err := s.taskApprovalEvaluation(scoped, task)
+	if err != nil {
+		return nil, fmt.Errorf("evaluate approvals: %w", err)
+	}
+	store.ProjectTaskApprovals(projection, evaluation)
+	return projection, nil
 }
 
 // riskTierRequest is the body of POST /v1/tasks/{id}/risk-tier.

@@ -22,4 +22,11 @@ func TestRiskSummaryLine(t *testing.T) {
 	if got, want := riskSummaryLine(unrated), "Risk tier: not rated yet (mode enforce); needs 2 agent reviews and 1 human approvals; 0 approvals recorded"; got != want {
 		t.Fatalf("line=%q\nwant %q", got, want)
 	}
+	// An enforcing task short of its approvals names how many remain and
+	// whether a trusted author's approval is among them (AC-11.1).
+	short := &core.TaskRisk{Mode: riskpolicy.ModeEnforce, Tier: riskpolicy.TierHigh, Source: core.RiskSourceReviewer, Reason: "merge gate",
+		RequiredAgentReviews: 2, RequiredHumanApprovals: 2, RecordedApprovals: 1, RemainingApprovals: 1, AuthorApprovalNeeded: true}
+	if got, want := riskSummaryLine(short), "Risk tier: high from reviewer (mode enforce): merge gate; needs 2 agent reviews and 2 human approvals; 1 approvals recorded; 1 more needed, including a trusted author's"; got != want {
+		t.Fatalf("line=%q\nwant %q", got, want)
+	}
 }

@@ -135,6 +135,7 @@ type TaskStore interface {
 	RecordDocumentationGateEvidence(context.Context, core.DocumentationGateEvidence) error
 	GetDocumentationGateEvidence(context.Context, string, string) (core.DocumentationGateEvidence, error)
 	RiskRatingStore
+	TaskApprovalStore
 	CreateTask(ctx context.Context, t core.Task) error
 	CreateTaskWithDependencies(ctx context.Context, t core.Task, dependencyIDs []string) error
 	CreateTaskWithDependenciesAndContext(ctx context.Context, t core.Task, dependencyIDs []string, attached TaskContextInput) error
@@ -698,6 +699,7 @@ type memory struct {
 	staged                      *[]changes.Notice
 	documentationEvidence       map[memoryScopedKey]map[string]core.DocumentationGateEvidence
 	riskRatings                 map[memoryScopedKey][]core.RiskRating
+	taskApprovals               map[memoryScopedKey][]core.TaskApproval
 	verificationDeliveries      map[string]core.VerificationDelivery
 	verificationRows            map[string]VerificationRow
 	repositoryInstalls          map[memoryScopedKey][]core.RepositoryInstallTask

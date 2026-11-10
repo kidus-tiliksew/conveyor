@@ -940,13 +940,18 @@ func (d *Dispatcher) mergeApprovedTaskLocked(ctx context.Context, task core.Task
 		return nil
 	}
 	// An enforcing task's required human approvals are read again under the
-	// task side-effect lock, so a tier raised after acceptance holds every
-	// automatic merge, retries and check-status deadlines included, and an
-	// operator's single merge cannot land a change that needs two or more
-	// approvals (req-risk-based-review AC-8.1, AC-8.2, AC-8.7;
-	// feature-risk-based-review RR-6). Nothing is recorded or merged.
-	// A pull request GitHub already merged is reconciled above, not merged.
-	if err := d.riskMergeRefusal(ctx, current, act.operator == nil); err != nil {
+	// task side-effect lock, so a tier raised after acceptance or an
+	// untrusted author holds every automatic merge, retries and check-status
+	// deadlines included, and a person's merge records that person's approval
+	// and lands only when the approvals meet every requirement
+	// (req-risk-based-review AC-8.1, AC-8.2, AC-8.7, AC-9.2;
+	// feature-risk-based-review RR-6, RR-7). A pull request GitHub already
+	// merged is reconciled above, not merged.
+	if act.operator == nil {
+		if err := d.riskMergeRefusal(ctx, current, true); err != nil {
+			return err
+		}
+	} else if err := d.riskOperatorMergeLocked(ctx, current, *act.operator, pr); err != nil {
 		return err
 	}
 	// A queued or claimed conflict-fix order defers conflict clearing,
@@ -1472,21 +1477,23 @@ func (d *Dispatcher) mergeAuthor(ctx context.Context, task core.Task) (core.Forg
 	return author, fmt.Sprintf("Approved-by: %s <%s>", identity.Name, identity.Email), nil
 }
 
-// riskMergeRefusal reads an enforcing task's ratings and returns the risk
-// refusal of a merge, or nil. A task whose frozen mode is not enforce reads
-// nothing (req-risk-based-review AC-1.1).
+// riskMergeRefusal reads an enforcing task's ratings, authors, and live
+// trust list and returns the refusal of the factory's automatic merge, or
+// nil. Any required human approval refuses it, and so does any untrusted
+// author at every tier (req-risk-based-review AC-8.2, AC-9.2). A task whose
+// frozen mode is not enforce reads nothing (AC-1.1). A person's merge is
+// decided by riskOperatorMergeLocked instead.
 func (d *Dispatcher) riskMergeRefusal(ctx context.Context, task core.Task, automatic bool) error {
-	if !task.SetupContract.Risk.Enforcing() {
+	if !task.SetupContract.Risk.Enforcing() || !automatic {
 		return nil
 	}
-	ratings, err := d.Store.ListTaskRiskRatings(ctx, task.ID)
+	evaluation, err := d.EvaluateApprovals(ctx, task, "")
 	if err != nil {
 		return err
 	}
-	refusal := store.RiskMergeRefusal(task, ratings, automatic)
-	if automatic {
-		// A hold is a definitive answer: no automatic retry merges past it.
-		return ineligibleMerge(refusal)
+	if evaluation.Status.Required < 1 {
+		return nil
 	}
-	return refusal
+	// A hold is a definitive answer: no automatic retry merges past it.
+	return ineligibleMerge(&store.RiskApprovalsRequiredError{Required: evaluation.Status.Required, Tier: evaluation.Tier, Automatic: true})
 }

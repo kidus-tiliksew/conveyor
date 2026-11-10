@@ -40,6 +40,9 @@ type NextActionOptions struct {
 	// per-order verification read is skipped; every compact field is
 	// projected from the same input (feature-operator-next-action NA-3).
 	CompactOnly bool
+	// TrustedAuthors returns the live trusted_authors list of a task's
+	// repository (req-risk-based-review AC-9.3). Nil reads the empty list.
+	TrustedAuthors func(context.Context, core.Task) ([]string, error)
 }
 
 // ReadNextAction projects one task. Missing tasks return the store's not-found error.
@@ -117,7 +120,7 @@ func ReadNextActions(ctx context.Context, st Store, tasks []core.Task, opts Next
 	if err != nil {
 		return nil, err
 	}
-	riskApprovals, err := readAssemblerRiskApprovals(ctx, st, tasks)
+	riskApprovals, err := readAssemblerRiskApprovals(ctx, st, tasks, opts)
 	if err != nil {
 		return nil, err
 	}
@@ -149,7 +152,10 @@ func ReadNextActions(ctx context.Context, st Store, tasks []core.Task, opts Next
 		input.Blocks = dependencies.blocks[task.ID]
 		input.ContextProposals = contexts[task.ID]
 		input.CheckStatus = checkStatuses[task.ID]
-		input.RiskHumanApprovals = riskApprovals[task.ID]
+		if approvals, ok := riskApprovals[task.ID]; ok {
+			input.RiskHumanApprovals = approvals.Required
+			input.RiskApprovals = &approvals
+		}
 		input.ClaimFailures = claimFailuresFor(ordersByTask[task.ID], claimFailures)
 		if origin, ok := origins[task.ID]; ok {
 			input.MonitorObservation = &nextaction.MonitorObservationRef{Kind: string(origin.Kind), SourceURL: origin.SourceURL, ObservedAt: origin.ObservedAt}
@@ -486,12 +492,16 @@ func readAssemblerCheckStatus(ctx context.Context, st Store, tasks []core.Task) 
 	return statuses, nil
 }
 
-// readAssemblerRiskApprovals reads the human approvals each enforcing task
-// that is approved or at the merge gate requires, from its recorded ratings.
-// Only a count of one or more is kept. A task whose frozen mode is not
-// enforce costs no read (req-risk-based-review AC-1.1, REQ-8; DEC-124(2)).
-func readAssemblerRiskApprovals(ctx context.Context, st Store, tasks []core.Task) (map[string]int, error) {
-	out := map[string]int{}
+// readAssemblerRiskApprovals evaluates the human approvals of each enforcing
+// task that is approved or at the merge gate: the required number, which
+// includes the one approval an untrusted author calls for, and the approvals
+// recorded at the reviewed head. Only a required number of one or more is
+// kept. A task whose frozen mode is not enforce costs no read
+// (req-risk-based-review AC-1.1, REQ-8, REQ-9, AC-11.1; DEC-124(2)). The
+// trust list is opts.TrustedAuthors' live answer; without it the empty list
+// applies, which trusts every person who holds operate_gates (AC-9.1).
+func readAssemblerRiskApprovals(ctx context.Context, st Store, tasks []core.Task, opts NextActionOptions) (map[string]nextaction.RiskApprovals, error) {
+	out := map[string]nextaction.RiskApprovals{}
 	for _, task := range tasks {
 		atGate := task.State == core.TaskAwaiting && task.GateKind == core.GateKindMergeApproval
 		if !task.SetupContract.Risk.Enforcing() || (task.State != core.TaskApproved && !atGate) {
@@ -501,12 +511,25 @@ func readAssemblerRiskApprovals(ctx context.Context, st Store, tasks []core.Task
 		if task.Workspace != "" {
 			scoped = WithWorkspace(ctx, task.Workspace)
 		}
-		ratings, err := st.ListTaskRiskRatings(scoped, task.ID)
+		var trusted []string
+		if opts.TrustedAuthors != nil {
+			var err error
+			if trusted, err = opts.TrustedAuthors(scoped, task); err != nil {
+				return nil, err
+			}
+		}
+		evaluation, err := EvaluateTaskApprovals(scoped, st, task, trusted, "")
 		if err != nil {
 			return nil, err
 		}
-		if required, hold := RiskMergeHold(task, ratings); hold {
-			out[task.ID] = required
+		status := evaluation.Status
+		if status.Required < 1 {
+			continue
+		}
+		out[task.ID] = nextaction.RiskApprovals{
+			Required: status.Required, Recorded: status.Recorded, Remaining: status.Remaining,
+			TrustedAuthorNeeded: status.TrustedAuthorApprovalNeeded, NonAuthorNeeded: status.NonAuthorApprovalNeeded,
+			Satisfied: status.Satisfied,
 		}
 	}
 	return out, nil

@@ -1193,6 +1193,13 @@ export interface TaskRisk {
   calculated_human_approvals: number
   recorded_approvals: number
   author_approval_needed: boolean
+  // The approval state of an enforcing task's reviewed head
+  // (req-risk-based-review REQ-8, REQ-9, AC-11.2).
+  remaining_approvals?: number
+  non_author_approval_needed?: boolean
+  untrusted_author?: boolean
+  approval_head?: string
+  approvals_satisfied?: boolean
   ratings: RiskRating[]
 }
 // The workspace risk_policy key. A saved policy always states its table; a

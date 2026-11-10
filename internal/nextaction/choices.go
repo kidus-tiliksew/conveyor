@@ -390,8 +390,12 @@ func selectChoices(in Input, specs []ChoiceSpec, order *core.WorkOrder) ([]Choic
 			refusals = append(refusals, Refusal{Choice: spec.ID, Text: refusal, Code: code})
 			continue
 		}
+		label, effect := spec.Label, spec.Effect
+		if spec.ID == "merge" || spec.ID == "approve" {
+			label, effect = riskApprovalChoiceText(in, spec.ID, label, effect)
+		}
 		choices = append(choices, Choice{
-			ID: spec.ID, Label: spec.Label, Effect: spec.Effect, Method: spec.Method, Path: path,
+			ID: spec.ID, Label: label, Effect: effect, Method: spec.Method, Path: path,
 			Capability: string(spec.Capability), Allowed: in.Capabilities[spec.Capability], Direction: spec.Direction,
 		})
 	}
@@ -443,9 +447,6 @@ func refuseChoiceText(in Input, spec ChoiceSpec, order *core.WorkOrder) string {
 		}
 		return core.NextActionSupersessionRefusal(in.GateSpecVersion, latestVersion(in))
 	case "merge":
-		if text := RiskMergeRefusal(in); text != "" {
-			return text
-		}
 		return mergeAtGateRefusal(in)
 	case "approve_revision", "decline":
 		return core.NextActionSupersessionRefusal(in.GateSpecVersion, latestVersion(in))
@@ -545,18 +546,6 @@ func choiceSummary(id string) string {
 // mergeAtGateRefusal refuses the merge_approval gate's one-act merge unless
 // the last-known readiness peek is MERGEABLE; an unread peek is UNKNOWN
 // (DEC-64(3); DEC-61). The approved-task merge choice is never refused here.
-// RiskMergeRefusal states why the merge route refuses one operator's merge
-// of an enforcing task that requires two or more human approvals, until
-// approvals are counted (req-risk-based-review AC-8.7). The route refuses with
-// the same count (store.RiskMergeRefusal), so the choice is withheld rather
-// than offered (component-next-action invariant 7).
-func RiskMergeRefusal(in Input) string {
-	if in.RiskHumanApprovals < 2 {
-		return ""
-	}
-	return fmt.Sprintf("The risk policy requires %d human approvals. One person's merge cannot land this task until approvals are counted.", in.RiskHumanApprovals)
-}
-
 func mergeAtGateRefusal(in Input) string {
 	if in.Task.State != core.TaskAwaiting || in.Task.GateKind != core.GateKindMergeApproval {
 		return ""
@@ -569,4 +558,25 @@ func mergeAtGateRefusal(in Input) string {
 		return ""
 	}
 	return "merge readiness " + state
+}
+
+// riskApprovalChoiceText words the merge and approve choices of an enforcing
+// task that is short of its required approvals. While more than one approval
+// remains, one person's act cannot land the head, so the merge choice is
+// labelled Approve and records the person's approval without merging; with
+// one approval left it merges when that approval completes every
+// requirement. The merge route decides with the same count
+// (req-risk-based-review AC-8.7, AC-11.1; feature-risk-based-review RR-7).
+func riskApprovalChoiceText(in Input, id, label, effect string) (string, string) {
+	approvals := in.RiskApprovals
+	if approvals == nil || approvals.Satisfied {
+		return label, effect
+	}
+	if id == "approve" {
+		return label, "Records your approval of the reviewed head. It does not merge."
+	}
+	if approvals.Remaining > 1 {
+		return "Approve", "Records your approval of the reviewed head. It does not merge, because more approvals are needed."
+	}
+	return label, "Records your approval and merges the reviewed head when your approval completes the required approvals."
 }

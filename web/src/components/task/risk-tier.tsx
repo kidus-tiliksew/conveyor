@@ -29,6 +29,23 @@ export function riskNeedsText(risk: TaskRisk): string {
   return `Needs ${count(risk.required_agent_reviews, 'agent review', 'agent reviews')} and ${count(risk.required_human_approvals, 'human approval', 'human approvals')}`
 }
 
+// "1 of 2 human approvals recorded. 1 more needed, including a trusted
+// author's." states an enforcing task's approvals of its reviewed head as the
+// server counts them (req-risk-based-review AC-8.2, AC-11.1, AC-11.2). It is
+// null for a task that needs no human approval or does not enforce.
+export function riskApprovalText(risk: TaskRisk): string | null {
+  if (risk.mode !== 'enforce' || risk.required_human_approvals < 1) return null
+  const recorded = `${risk.recorded_approvals} of ${risk.required_human_approvals} human ${risk.required_human_approvals === 1 ? 'approval' : 'approvals'} recorded.`
+  if (risk.approvals_satisfied) return `${recorded} The approvals are complete.`
+  const remaining = risk.remaining_approvals ?? Math.max(risk.required_human_approvals - risk.recorded_approvals, 0)
+  const conditions = [
+    risk.author_approval_needed ? "a trusted author's" : '',
+    risk.non_author_approval_needed ? 'one from a person who is not an author' : '',
+  ].filter(Boolean)
+  const including = conditions.length > 0 ? `, including ${conditions.join(' and ')}` : ''
+  return `${recorded} ${remaining} more needed${including}.`
+}
+
 export function RiskTierBadge({ tier }: { tier: RiskTier | undefined }) {
   return (
     <Badge variant={tier ? 'default' : 'outline'} data-risk-tier={tier ?? 'unrated'}>
@@ -56,6 +73,7 @@ export function RiskTierValue({ risk }: { risk: TaskRisk }) {
       <span className="whitespace-normal text-xs text-muted" data-task-risk-needs>
         {riskNeedsText(risk)}
       </span>
+      <RiskApprovals risk={risk} />
     </span>
   )
 }
@@ -68,6 +86,17 @@ export function SeatRiskTier({ tier, reason }: { tier?: RiskTier; reason?: strin
     <span className="inline-flex items-center gap-1 text-[11px] text-muted" title={reason} data-seat-risk-tier={tier}>
       Risk <RiskTierBadge tier={tier} />
       {reason && <span className="sr-only">: {reason}</span>}
+    </span>
+  )
+}
+
+// The approval count line of an enforcing task, wherever its tier shows.
+export function RiskApprovals({ risk }: { risk: TaskRisk | undefined }) {
+  const text = risk ? riskApprovalText(risk) : null
+  if (!text) return null
+  return (
+    <span className="whitespace-normal text-xs text-foreground/85" data-task-risk-approvals>
+      {text}
     </span>
   )
 }
