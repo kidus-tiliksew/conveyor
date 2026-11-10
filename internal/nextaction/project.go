@@ -477,9 +477,12 @@ func attemptView(in Input, order *core.WorkOrder) *AttemptView {
 	if order == nil || order.State != core.WorkOrderClaimed {
 		return nil
 	}
+	// The attempt's user is the person who claimed it: the user of a
+	// run:<user id> claimant, and empty for any other claimant
+	// (req-operator-next-action AC-7.6).
 	user := ""
-	if in.Assignee != nil {
-		user = in.Assignee.UserID
+	if core.IsTaskRunClaimantID(order.ClaimantID) {
+		user = strings.TrimPrefix(order.ClaimantID, core.TaskRunClaimantPrefix)
 	}
 	elapsed := int64(0)
 	if !order.ExecutionStartedAt.IsZero() {

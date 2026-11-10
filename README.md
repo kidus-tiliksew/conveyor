@@ -1,14 +1,7 @@
-<p align="center">
-  <picture>
-    <source media="(prefers-color-scheme: dark)" srcset="docs/assets/conveyor-mark-white-on-black.png">
-    <img src="docs/assets/conveyor-mark-black-on-white.png" width="112" alt="Conveyor">
-  </picture>
-</p>
-
 <h1 align="center">Conveyor</h1>
 
 <p align="center">
-  A software factory where coding agents build what your team agreed to build.
+  A software factory for production-grade software. 
 </p>
 
 <p align="center">
@@ -26,15 +19,11 @@
 
 ---
 
-Coding agents write changes faster than a team can review them. The harder
-question is whether those changes match what the team meant to build.
+When agents are writing code faster than you can review it, it’s easy to lose track of whether the work still matches the plan.
 
-Conveyor answers it with a process. People confirm the requirements, system
-designs, and decisions. Agents plan, implement, and review against them on
-your own machines, and every change traces back to the documents behind it.
-Conveyor is built this way too.
+Conveyor gives your team and agents a shared plan. People approve the requirements, system designs, and decisions. Agents use those documents to plan, build, and review changes on your own machines. You can trace each change back to why it was made.
 
-https://github.com/user-attachments/assets/f50c12bc-81ed-429c-ba10-90dd3cdb8c34
+https://github.com/user-attachments/assets/328917a5-1f6a-40ec-a497-9ee1dd40ef89
 
 ## Get started
 

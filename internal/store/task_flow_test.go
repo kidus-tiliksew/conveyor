@@ -391,9 +391,11 @@ func TestFoldTaskFlowCurrentAttemptFromLedger(t *testing.T) {
 		t.Fatal("claimed implement stage has no current_attempt")
 	}
 	claimEvent := ledger.events[len(ledger.events)-3]
-	if view.AttemptID != "a1" || view.SessionID != "session-a1" || view.ClaimedBy != "worker-1" || view.Harness != "omp" || view.Model != "opus" || view.User != "user-7" {
+	if view.AttemptID != "a1" || view.SessionID != "session-a1" || view.ClaimedBy != "worker-1" || view.Harness != "omp" || view.Model != "opus" || view.User != "" {
 		t.Fatalf("attempt identity = %+v", view)
 	}
+	// The assignee is not the attempt's user: a worker claimant names none
+	// (req-operator-next-action AC-7.6).
 	if view.ClaimedAt == nil || !view.ClaimedAt.Equal(claimEvent.At) {
 		t.Fatalf("claimed_at = %v, want %v", view.ClaimedAt, claimEvent.At)
 	}
@@ -932,5 +934,36 @@ func TestFoldTaskFlowDisplayCopy(t *testing.T) {
 	}
 	if got := ordered.fold(nextaction.NextAction{Actor: nextaction.ActorAgent}).CurrentStage; got == nil || *got != core.StageImplement {
 		t.Fatalf("current_stage = %v, want the recorded next stage implement", got)
+	}
+}
+
+// TestFoldTaskFlowCurrentAttemptUserIsTheRunClaimant pins that the current
+// attempt names the user of a run:<user id> claimant, not the task assignee
+// (req-operator-next-action AC-7.6).
+func TestFoldTaskFlowCurrentAttemptUserIsTheRunClaimant(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		assignee string
+	}{
+		{name: "unassigned"},
+		{name: "assigned to another user", assignee: "usr_kidus"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ledger := new(flowLedger).created(approvalTask())
+			if tc.assignee != "" {
+				ledger.add("task.assignee.set", core.ActorHuman, "", map[string]any{"assignee_user_id": tc.assignee})
+			}
+			ledger.transition(core.StageTriage, core.StageImplement).order("impl-1", core.StageImplement, core.ActorSystem)
+			at := flowT0.Add(time.Duration(len(ledger.events)+1) * time.Minute)
+			ledger.add("work_order.claimed", core.ActorHuman, "job-impl-1", core.WorkOrder{
+				ID: "impl-1", JobID: "job-impl-1", Stage: core.StageImplement, State: core.WorkOrderClaimed, AttemptID: "a1",
+				ClaimantID: core.TaskRunClaimantID("usr_selam"), SessionID: "session-a1", Agent: "claude-code", Model: "claude-opus-5-5",
+				ExecutionStartedAt: at, LastAgentActivityAt: at, LeaseExpiresAt: at.Add(time.Hour),
+			})
+			view := flowStage(t, ledger.fold(nextaction.NextAction{Actor: nextaction.ActorAgent}), core.StageImplement).CurrentAttempt
+			if view == nil || view.User != "usr_selam" || view.ClaimedBy != "run:usr_selam" {
+				t.Fatalf("current attempt = %+v, want user usr_selam", view)
+			}
+		})
 	}
 }

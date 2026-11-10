@@ -396,6 +396,12 @@ type taskJobResult struct {
 	StageSummary    *taskStageSummaryText `json:"stage_summary,omitempty"`
 	OutputRejection *taskOutputRejection  `json:"output_rejection,omitempty"`
 	FailureError    *taskSummaryText      `json:"failure_error,omitempty"`
+	// ClaimantUserID is the user of the job's latest work_order.claimed event
+	// whose claimant is run:<user id>. It names the person behind an attempt
+	// after the order's claimed_by clears on release or expiry, so the
+	// timeline never reads a claimant from events (component-web-task-surfaces
+	// invariant 25; req-operator-next-action REQ-7).
+	ClaimantUserID string `json:"claimant_user_id,omitempty"`
 }
 
 type taskReviewResult struct {
@@ -537,6 +543,22 @@ func jsSpace(r rune) bool {
 func jsTrim(text string) string { return strings.TrimFunc(text, jsSpace) }
 
 // jsLineTerminator is the set `.` does not match in a JavaScript RegExp.
+// claimUserID returns the user ID of a work_order.claimed payload whose
+// claimant is run:<user id>, and "" for any other claimant. The recorded
+// payload is the work order, which names its claimant under claimed_by;
+// claimant_id is read when claimed_by is absent.
+func claimUserID(payload summaryPayload) string {
+	claimant, ok := payload.str("claimed_by")
+	if !ok {
+		claimant, _ = payload.str("claimant_id")
+	}
+	userID, isRun := strings.CutPrefix(claimant, core.TaskRunClaimantPrefix)
+	if !isRun || strings.TrimSpace(userID) != userID || userID == "" {
+		return ""
+	}
+	return userID
+}
+
 func jsLineTerminator(r rune) bool {
 	return r == '\n' || r == '\r' || r == 0x2028 || r == 0x2029
 }
@@ -770,6 +792,12 @@ func deriveTaskDetailSummaries(events []core.Event, jobs []core.Job, orders []co
 			continue
 		}
 		switch event.Kind {
+		case "work_order.claimed":
+			// The last claim of a job wins; a claimant other than
+			// run:<user id> sets nothing.
+			if userID := claimUserID(payload); userID != "" {
+				jobResult(event.JobID).ClaimantUserID = userID
+			}
 		case "job.summary":
 			if text, ok := payload.str("summary"); ok {
 				cut, truncated := truncateSummaryText(text)

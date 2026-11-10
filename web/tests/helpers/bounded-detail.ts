@@ -569,6 +569,13 @@ export function taskSummaries(item: CompleteActivity): TaskSummaries {
       }
     }
     if (!event.job_id) continue
+    // The latest run:<user id> claim of a job names its person; any other
+    // claimant sets nothing (task_detail_summaries.go claimUserID).
+    if (event.kind === 'work_order.claimed') {
+      const claimant = typeof payload.claimed_by === 'string' ? payload.claimed_by : payload.claimant_id
+      const userID = typeof claimant === 'string' && claimant.startsWith('run:') ? claimant.slice(4) : ''
+      if (userID && userID.trim() === userID) result(event.job_id).claimant_user_id = userID
+    }
     if (event.kind === 'job.summary' && typeof payload.summary === 'string')
       result(event.job_id).summary = { ...cut(payload.summary), event_id: id }
     if (

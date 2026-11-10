@@ -411,6 +411,9 @@ export interface TaskJobResult {
   stage_summary?: TaskSummaryText & { review_feedback?: string }
   output_rejection?: { event_id: string; error: string }
   failure_error?: TaskSummaryText
+  // The user of the job's latest run:<user id> claim. It names the person
+  // behind an attempt after the order's claimed_by clears.
+  claimant_user_id?: string
 }
 
 export interface TaskReviewResult {
