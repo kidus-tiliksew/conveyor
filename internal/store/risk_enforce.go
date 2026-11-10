@@ -93,10 +93,14 @@ type RiskApprovalsRequiredError struct {
 }
 
 func (e *RiskApprovalsRequiredError) Error() string {
-	if e.Automatic {
-		return fmt.Sprintf("the risk policy requires %d human approvals for this %s-tier task, so it waits for a person at the merge gate and does not merge automatically", e.Required, e.Tier)
+	approvals := "human approvals"
+	if e.Required == 1 {
+		approvals = "human approval"
 	}
-	return fmt.Sprintf("the risk policy requires %d human approvals for this %s-tier task; one person's merge cannot land it until approvals are counted, so nothing was merged or recorded", e.Required, e.Tier)
+	if e.Automatic {
+		return fmt.Sprintf("the risk policy requires %d %s for this %s-tier task, so it waits for a person at the merge gate and does not merge automatically", e.Required, approvals, e.Tier)
+	}
+	return fmt.Sprintf("the risk policy requires %d %s for this %s-tier task; one person's merge cannot land it until approvals are counted, so nothing was merged or recorded", e.Required, approvals, e.Tier)
 }
 
 // Is matches ErrRiskApprovalsRequired and ErrRefusal, so every route answers

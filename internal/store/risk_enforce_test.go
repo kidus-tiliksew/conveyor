@@ -2,6 +2,7 @@ package store
 
 import (
 	"errors"
+	"strings"
 	"testing"
 	"time"
 
@@ -145,5 +146,17 @@ func TestPlanRiskSeatAddition(t *testing.T) {
 		if _, add, err := PlanRiskSeatAddition(in); err != nil || add {
 			t.Fatalf("%s: add=%t err=%v, want no addition", name, add, err)
 		}
+	}
+}
+
+// TestRiskApprovalsRequiredErrorWording names the count with its noun.
+func TestRiskApprovalsRequiredErrorWording(t *testing.T) {
+	one := (&RiskApprovalsRequiredError{Required: 1, Tier: riskpolicy.TierMedium, Automatic: true}).Error()
+	two := (&RiskApprovalsRequiredError{Required: 2, Tier: riskpolicy.TierHigh}).Error()
+	if !strings.Contains(one, "requires 1 human approval for this medium-tier task") || strings.Contains(one, "approvals for") {
+		t.Fatalf("one approval: %q", one)
+	}
+	if !strings.Contains(two, "requires 2 human approvals for this high-tier task") {
+		t.Fatalf("two approvals: %q", two)
 	}
 }
