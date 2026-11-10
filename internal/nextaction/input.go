@@ -447,7 +447,9 @@ type Compact struct {
 	Blocks    []BlockerRef `json:"blocks"`
 }
 
-// Act is one factory recovery the inbox log shows. Automatic is always true.
+// Act is one entry the inbox acts log shows: a factory recovery, with
+// Automatic true, or a recorded merge bypass, with Automatic false
+// (component-next-action invariant 21).
 type Act struct {
 	ID        int64     `json:"id"`
 	TaskID    string    `json:"task_id"`

@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"reflect"
+	"strings"
 	"testing"
 	"time"
 
@@ -43,6 +44,7 @@ func RunNextActionConformance(t *testing.T, st store.Store, ctx context.Context)
 	if err != nil || len(bounded) != 1 {
 		t.Fatalf("limit acts=%+v err=%v", bounded, err)
 	}
+	runMergeBypassAct(t, st, ctx, workspace)
 	isolated := workspace + "-attention-" + core.NewTaskID()
 	iso := store.WithWorkspace(ctx, isolated)
 	bootstrap, ok := st.(interface {
@@ -798,5 +800,48 @@ func runContextProposalMonitorOrigin(t *testing.T, st store.Store, ctx context.C
 	origin = actions[bare].Details.MonitorOrigin
 	if origin == nil || origin.Summary != "Filed by the monitor: post-merge failure" || origin.SourceURL != "" || origin.ObservedAt != nil {
 		t.Fatalf("unlinked monitor origin = %+v, want the sentence without a link", origin)
+	}
+}
+
+// runMergeBypassAct proves on every backend that a recorded merge bypass is
+// listed in the acts log whoever's act observed the merge, a person's read
+// included, names the forge actor, the head, and what was missing, is not
+// marked as the factory's own act, and adds nothing to attention
+// (req-risk-based-review AC-10.3; component-next-action invariant 21).
+func runMergeBypassAct(t *testing.T, st store.Store, ctx context.Context, workspace string) {
+	t.Helper()
+	now := time.Now().UTC().Truncate(time.Second)
+	isolated := workspace + "-bypass-" + core.NewTaskID()
+	iso := store.WithWorkspace(ctx, isolated)
+	bootstrap, ok := st.(interface {
+		BootstrapWorkspaceConfig(context.Context, *config.Config) (bool, error)
+	})
+	if !ok {
+		t.Fatal("store cannot bootstrap an isolated workspace")
+	}
+	if _, err := bootstrap.BootstrapWorkspaceConfig(iso, &config.Config{Workspace: isolated, Repos: []config.Repo{{Name: "conveyor", Base: "main"}}}); err != nil {
+		t.Fatal(err)
+	}
+	merged := core.Task{ID: "bypass-" + core.NewTaskID(), Workspace: isolated, Repo: "conveyor", Branch: "bypass-" + core.NewTaskID(), State: core.TaskMerged, CreatedAt: now}
+	requireOK(t, st.CreateTask(iso, merged))
+	before, err := st.CountOperatorAttention(iso)
+	requireOK(t, err)
+	bypass := core.MergeBypass{ForgeActor: "octo-merger", HeadSHA: "bypass-head-sha", RequiredHumanApprovals: 2, RecordedHumanApprovals: 1, MissingHumanApprovals: 1,
+		TrustedAuthorApprovalNeeded: true, RequiredAgentReviews: 2, RecordedAgentReviews: 1, MissingAgentReviews: 1}
+	person := store.WithActor(iso, store.Actor{ID: "user:usr-reader", Role: core.ActorUser})
+	requireOK(t, st.AppendEvent(person, core.Event{TaskID: merged.ID, Kind: core.MergeBypassRecordedEvent, ActorID: "user:usr-reader", ActorRole: core.ActorUser, At: now, Payload: core.JSONPayload(bypass)}))
+	acts, err := st.ListFactoryActs(iso, now.Add(-time.Hour), 100)
+	requireOK(t, err)
+	if len(acts) != 1 || acts[0].Kind != core.MergeBypassRecordedEvent || acts[0].TaskID != merged.ID || acts[0].Automatic {
+		t.Fatalf("bypass acts=%+v", acts)
+	}
+	for _, want := range []string{"octo-merger", "bypass-head", "1 of 2 human approvals", "a trusted author's approval", "1 of 2 agent reviews"} {
+		if !strings.Contains(acts[0].Summary, want) {
+			t.Fatalf("bypass summary %q lacks %q", acts[0].Summary, want)
+		}
+	}
+	after, err := st.CountOperatorAttention(iso)
+	if err != nil || after != before {
+		t.Fatalf("a bypass changed attention from %d to %d err=%v", before, after, err)
 	}
 }

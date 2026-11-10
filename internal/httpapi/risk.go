@@ -186,6 +186,11 @@ func (s *Server) raiseTaskRiskTier(w http.ResponseWriter, r *http.Request) {
 		writeStoreFailure(w, r, err)
 		return
 	}
+	if s.OnRiskTierRaised != nil {
+		// A raise changes what the head requires (req-risk-based-review
+		// AC-10.1).
+		s.OnRiskTierRaised(r.Context(), task.ID)
+	}
 	current, err := s.Store.GetTask(r.Context(), task.ID)
 	if err != nil {
 		writeStoreFailure(w, r, err)

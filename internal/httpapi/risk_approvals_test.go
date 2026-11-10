@@ -234,7 +234,12 @@ func TestWaiveAuthorRoute(t *testing.T) {
 	}
 	events, err := f.st.ListEvents(f.ctx, "risk-approve")
 	requireOKHTTP(t, err)
+	// The waiver is the act's last event before the policy status
+	// re-evaluation it triggers (req-risk-based-review AC-10.1).
 	last := events[len(events)-1]
+	for i := len(events) - 1; i >= 0 && strings.HasPrefix(events[i].Kind, "review_policy_status."); i-- {
+		last = events[max(i-1, 0)]
+	}
 	if last.Kind != core.TaskAuthorWaiverEvent || last.ActorID != store.UserActorID("operator") || !strings.Contains(string(last.Payload), "the author is on leave") {
 		t.Fatalf("last event=%+v", last)
 	}

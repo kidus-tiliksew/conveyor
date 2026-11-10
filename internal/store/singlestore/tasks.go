@@ -1215,6 +1215,14 @@ func (s *Store) applyTaskCommandTx(ctx context.Context, tx *sql.Tx, id string, c
 			}
 			final = &prepared
 		}
+		var bypass *core.Event
+		if command.Bypass != nil {
+			event, bypassErr := store.PrepareMergeBypass(before, command.Kind, *command.Bypass, final)
+			if bypassErr != nil {
+				return bypassErr
+			}
+			bypass = &event
+		}
 		kind := core.GateKindFor(state, command.Kind)
 		values := map[string]any{"state": state, "gate_kind": string(kind)}
 		result = before
@@ -1255,6 +1263,13 @@ func (s *Store) applyTaskCommandTx(ctx context.Context, tx *sql.Tx, id string, c
 			// (req-risk-based-review AC-8.7).
 			if _, _, err := insertTaskApprovalTx(ctx, tx, *final); err != nil {
 				return err
+			}
+			if bypass != nil {
+				// The bypass commits with the completion it explains, once per
+				// task and head (component-submission-merge invariant 66).
+				if err := taskEvent(ctx, tx, *bypass); err != nil {
+					return err
+				}
 			}
 		}
 		if command.FailureMessage != "" {

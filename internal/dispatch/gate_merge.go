@@ -134,6 +134,10 @@ func (d *Dispatcher) MergeAtGate(ctx context.Context, task core.Task, actor core
 	err := d.Store.WithTaskSideEffectLock(ctx, task.ID, func(lockedCtx context.Context) error {
 		var lockedErr error
 		out, lockedErr = d.mergeAtGateLocked(lockedCtx, task.ID, actor)
+		// The act may record an approval, a merge, or neither; the policy
+		// status follows what the head has now (req-risk-based-review
+		// AC-10.1).
+		d.syncReviewPolicyStatusAfter(lockedCtx, task, true)
 		return lockedErr
 	})
 	return out, err
@@ -188,6 +192,14 @@ func (d *Dispatcher) mergeAtGateLocked(ctx context.Context, taskID string, actor
 		return core.Task{}, err
 	}
 	head := pr.HeadSHA
+	// The policy status success precedes the merge request, evaluated with
+	// the acting person's provisional final approval. A failed publication
+	// sends no request, records no approval, and leaves the gate pending
+	// (req-risk-based-review AC-10.2, AC-8.7; component-submission-merge
+	// invariant 65).
+	if err = d.publishPolicySuccessBeforeMergeLocked(ctx, current, repo.GitHub, head, actorUserID(ctx, actor), author); err != nil {
+		return core.Task{}, err
+	}
 	requestPayload := map[string]any{"repository": repo.GitHub, "pull_request": pr.Number, "url": pr.URL, "head_sha": head, "gate_kind": core.GateKindMergeApproval}
 	addForgeAuthor(requestPayload, author)
 	if err = d.Store.AppendEvent(ctx, core.Event{TaskID: current.ID, Kind: "merge.requested", Payload: core.JSONPayload(requestPayload)}); err != nil {
@@ -324,7 +336,8 @@ func (d *Dispatcher) creditVisibleGateMergeLocked(ctx context.Context, task core
 	if err != nil {
 		return false, err
 	}
-	if _, pending := pendingGateMergeRequest(events); !pending {
+	request, pending := pendingGateMergeRequest(events)
+	if !pending {
 		return false, nil
 	}
 	cfg, err := d.currentConfig(ctx)
@@ -339,5 +352,16 @@ func (d *Dispatcher) creditVisibleGateMergeLocked(ctx context.Context, task core
 	if err != nil || !pr.Merged {
 		return false, nil
 	}
-	return d.creditPendingGateMergeLocked(ctx, task, repo.GitHub, pr, events)
+	if !task.SetupContract.Risk.Enforcing() {
+		return d.creditPendingGateMergeLocked(ctx, task, repo.GitHub, pr, events)
+	}
+	// An enforcing task completes through the shared observed-merge path,
+	// which evaluates the requirements at the merged head before any credit
+	// and records a bypass when they are unmet (component-submission-merge
+	// invariants 49 and 66).
+	head, eligible := d.observedMergeExpectedHead(ctx, task)
+	if !eligible || pr.MergeCommitSHA == "" || request.HeadSHA != pr.HeadSHA || head != pr.HeadSHA {
+		return false, nil
+	}
+	return d.reconcileForgeMergeLocked(ctx, task, repo.GitHub, pr, head, "merged_outside_conveyor")
 }
