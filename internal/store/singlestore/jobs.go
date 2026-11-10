@@ -262,7 +262,10 @@ func (s *Store) ApproveSpecVersion(ctx context.Context, id string, version int) 
 		if err := taskEvent(ctx, tx, core.Event{TaskID: id, Kind: "spec.version_approved", Payload: core.JSONPayload(map[string]int{"version": version})}); err != nil {
 			return err
 		}
-		return approvePlanStateTx(ctx, tx, id)
+		if err := approvePlanStateTx(ctx, tx, id); err != nil {
+			return err
+		}
+		return recordPlanRiskTx(ctx, tx, id, version)
 	})
 }
 

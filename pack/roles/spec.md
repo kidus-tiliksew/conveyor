@@ -56,14 +56,15 @@ Required plan shape:
 - `## Files touched` — concrete paths expected to change.
 - `## Ordering` — the safe implementation sequence and dependencies.
 - `## Risks` — correctness, compatibility, and validation risks, and every
-  contradiction between the task body and the checkout.
+  contradiction between the task body and the checkout. This section also
+  holds the plan's risk tier line.
 - `## Done criteria` — explicit, reviewable completion statements.
 
 Populate `submit_plan` like this, replacing every example value:
 
 ```json
 {
-  "markdown": "## Approach\nUse the existing service boundary.\n\n## Files touched\n- internal/example/service.go\n\n## Ordering\n1. Add validation.\n2. Wire the handler.\n\n## Risks\n- Preserve lifecycle events.\n\n## Done criteria\n- Invalid input stays in-band.\n- Repository checks pass.",
+  "markdown": "## Approach\nUse the existing service boundary.\n\n## Files touched\n- internal/example/service.go\n\n## Ordering\n1. Add validation.\n2. Wire the handler.\n\n## Risks\n- Preserve lifecycle events.\n\nRisk tier: medium — The change alters a public handler.\n\n## Done criteria\n- Invalid input stays in-band.\n- Repository checks pass.",
   "decomposition": [],
   "base_commit": "0123456789abcdef0123456789abcdef01234567"
 }
@@ -75,6 +76,17 @@ the commit your plan was read against, so the implementing agent can check the
 plan against the repository it implements in. A malformed value is refused in
 band and leaves the order claimed for correction. A submitted plan waits at the
 plan approval gate for a person's decision; no submission approves it.
+
+State the plan's risk tier as one line under `## Risks`:
+`Risk tier: <low|medium|high> — <reason>`. Write the tier in lowercase, use an
+em dash (—), and give a one-line reason. Do not put a list marker, a quote, or
+emphasis on the line, and state it once. A malformed line is refused in band,
+and the order stays claimed for correction. When the task's frozen risk mode is
+enforce, a plan without the line is refused in the same way. When the mode is
+record, the line is optional. When a person approves the plan, its tier
+becomes a minimum for the task's tier, and a later plan with a lower tier does
+not lower it. The tier never changes the task's plan state, stage, queue
+position, or claim (req-risk-based-review REQ-4).
 
 Plans must not contain any `conveyor:` machine fence or decomposition. Fan-out
 remains planning territory. If implementation scope looks oversized, state the

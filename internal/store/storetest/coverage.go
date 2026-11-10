@@ -7,7 +7,7 @@ import "strings"
 // require an explicit declaration and a behavioral case (DEC-38).
 var suiteMethods = map[string][]string{
 	"ChangeNotices":                     strings.Fields(`Changes EnablePeers AppendEvent ListEvents CreateTask GetTask Log CreateWorkspace GetWorkspace WorkspaceConfig UpdateWorkspaceConfig NextDeadline CreateJob CreateWorkOrderCommand GetWorkOrder ClaimWorkOrderCommand UpdateWorkOrderCommand RecordCheckStatusDeadline ClearCheckStatusDeadline`),
-	"RiskRatings":                       strings.Fields(`RecordRiskRating RaiseTaskRiskTier ListTaskRiskRatings AcceptReviewDecisionCommand CreateReviewRoundCommand CreateTask GetTask ListEvents`),
+	"RiskRatings":                       strings.Fields(`RecordRiskRating RaiseTaskRiskTier ListTaskRiskRatings AcceptReviewDecisionCommand CreateReviewRoundCommand CreateTask GetTask ListEvents CreateSpecVersion ApproveSpecVersion CreateTaskWithDependenciesAndContext`),
 	"DocumentationGate":                 strings.Fields(`RecordDocumentationGateEvidence GetDocumentationGateEvidence CreateTask GetTask ListEvents CreateReviewRoundCommand AcceptReviewDecisionCommand`),
 	"NextAction":                        strings.Fields(`ListFactoryActs CountOperatorAttention CreateTask AppendEvent GetTask ListTasks ListTaskContextProposals MonitorOriginsForTasks Observe LinkTask`),
 	"Verification":                      strings.Fields(`ApplyVerification Changes CreateReviewRoundCommand ExpireVerificationChunks ListJobs ListTaskWorkOrders MarkTaskApprovalStale NextDeadline ReadVerification ReadVerificationArtifact ReconcileVerificationClaims ReconcileVerificationDeliveries RecordVerificationPullRequest RunVerificationDelivery TranslateVerificationPublication`),

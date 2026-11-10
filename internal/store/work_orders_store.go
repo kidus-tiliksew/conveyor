@@ -2491,10 +2491,26 @@ func (m *memory) ApproveSpecVersion(ctx context.Context, taskID string, version 
 	if len(versions) == 0 || versions[len(versions)-1].Version != version {
 		return fmt.Errorf("spec version %d for task %s not found or superseded", version, taskID)
 	}
+	// The approved version's stated tier becomes a plan rating in the same
+	// act (req-risk-based-review AC-4.3; feature-risk-based-review RR-4).
+	var (
+		ratingKey   memoryScopedKey
+		planRating  core.RiskRating
+		ratePlanned bool
+	)
+	if task, ok := m.tasks[taskID]; ok {
+		var err error
+		if ratingKey, planRating, ratePlanned, err = m.planApprovalRiskLocked(ctx, task, version, versions[len(versions)-1].Content); err != nil {
+			return err
+		}
+	}
 	versions[len(versions)-1].Approved = true
 	versions[len(versions)-1].ApprovedAt = time.Now().UTC()
 	m.specs[taskID] = versions
 	m.appendEventLocked(ctx, core.Event{TaskID: taskID, Kind: "spec.version_approved", Payload: core.JSONPayload(map[string]int{"version": version})})
+	if ratePlanned {
+		m.insertRiskRatingLocked(ctx, ratingKey, planRating)
+	}
 	// A person's plan approval sets planning completed in the transaction
 	// that records it (component-task-lifecycle invariant 54;
 	// component-plan-state invariant 3; req-task-plan-state AC-1.3).

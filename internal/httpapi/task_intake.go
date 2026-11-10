@@ -97,6 +97,32 @@ func (s *Server) createTaskRecordWithState(ctx context.Context, req createTaskRe
 	if planErr != nil {
 		return taskCreateResult{}, planErr
 	}
+	// A plan filed at intake is checked against the risk policy that will
+	// freeze into the task, so the configuration is read once, here, before
+	// the idempotency lookup, and the same snapshot is frozen below
+	// (req-risk-based-review AC-4.2; feature-risk-based-review RR-4).
+	var current *config.Config
+	currentLoaded := false
+	loadCurrent := func() *taskCreateError {
+		if currentLoaded || s.ConfigProvider == nil {
+			return nil
+		}
+		loaded, err := s.ConfigProvider(ctx)
+		if err != nil {
+			log.Printf("httpapi: task intake configuration unavailable: request_id=%q error=%q", middleware.GetReqID(ctx), redactedErrorLogText(err))
+			return &taskCreateError{Status: http.StatusServiceUnavailable, Message: "workspace configuration is unavailable"}
+		}
+		current, currentLoaded = loaded, true
+		return nil
+	}
+	if intakePlan != nil {
+		if err := loadCurrent(); err != nil {
+			return taskCreateResult{}, err
+		}
+		if refusal := checkIntakePlanRisk(current, intakePlan.Content); refusal != nil {
+			return taskCreateResult{}, refusal
+		}
+	}
 	if intakePlan != nil && intakePlan.Approved {
 		if err := s.authorizeIntakePlanApproval(ctx); err != nil {
 			return taskCreateResult{}, err
@@ -127,14 +153,10 @@ func (s *Server) createTaskRecordWithState(ctx context.Context, req createTaskRe
 	}
 	repos := s.Repos
 	workspace, _ := store.WorkspaceFromContext(ctx)
-	var current *config.Config
-	if s.ConfigProvider != nil {
-		var err error
-		current, err = s.ConfigProvider(ctx)
-		if err != nil {
-			log.Printf("httpapi: task intake configuration unavailable: request_id=%q error=%q", middleware.GetReqID(ctx), redactedErrorLogText(err))
-			return taskCreateResult{}, &taskCreateError{Status: http.StatusServiceUnavailable, Message: "workspace configuration is unavailable"}
-		}
+	if err := loadCurrent(); err != nil {
+		return taskCreateResult{}, err
+	}
+	if current != nil {
 		repos = current.RepoNames()
 		workspace = current.Workspace
 	}
