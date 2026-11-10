@@ -99,24 +99,26 @@ func TestRiskApprovalChoiceGrid(t *testing.T) {
 		}
 		others := [][]string{{}, {"o1"}, {"o1", "o2"}, {"o1", "o2", "o3"}, {"t"}, {"o1", "t"}}
 		for _, set := range sets {
-			for required := 1; required <= 3; required++ {
-				for _, approvals := range others {
-					approvals := append([]string{}, approvals...)
-					if counted {
-						approvals = append(approvals, callerID[r])
+			for _, waived := range []bool{false, true} {
+				for required := 1; required <= 3; required++ {
+					for _, approvals := range others {
+						approvals := append([]string{}, approvals...)
+						if counted {
+							approvals = append(approvals, callerID[r])
+						}
+						in := riskpolicy.ApprovalInput{Required: required, Authors: set.authors, TrustedAuthors: set.trusted, Gatekeepers: gates, Approvals: approvals, Waived: waived}
+						base := riskpolicy.EvaluateApprovals(in)
+						bucket := min(base.Remaining, 2)
+						if bucket != remaining || base.AuthorWaiverNeeded != waiver {
+							continue
+						}
+						in.Prospective = callerID[r]
+						if (riskpolicy.EvaluateApprovals(in).ProspectiveReason == riskpolicy.ApprovalReasonAlreadyCounted) != counted {
+							continue
+						}
+						in.Prospective = ""
+						return in, true
 					}
-					in := riskpolicy.ApprovalInput{Required: required, Authors: set.authors, TrustedAuthors: set.trusted, Gatekeepers: gates, Approvals: approvals}
-					base := riskpolicy.EvaluateApprovals(in)
-					bucket := min(base.Remaining, 2)
-					if bucket != remaining || base.AuthorWaiverNeeded != waiver {
-						continue
-					}
-					in.Prospective = callerID[r]
-					if (riskpolicy.EvaluateApprovals(in).ProspectiveReason == riskpolicy.ApprovalReasonAlreadyCounted) != counted {
-						continue
-					}
-					in.Prospective = ""
-					return in, true
 				}
 			}
 		}
@@ -131,6 +133,12 @@ func TestRiskApprovalChoiceGrid(t *testing.T) {
 					t.Run(name, func(t *testing.T) {
 						in, ok := find(remaining, waiver, counted, r)
 						if !ok {
+							// Only an approval that can never count is unreachable
+							// as counted: an untrusted author's, or a trusted
+							// author's beside an untrusted author (REQ-9).
+							if !counted || (r != untrustedAuthor && !(r == trustedAuthor && waiver)) {
+								t.Fatalf("cell is unexpectedly unreachable")
+							}
 							t.Logf("unreachable")
 							return
 						}
