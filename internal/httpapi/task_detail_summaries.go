@@ -60,9 +60,6 @@ var humanTimelineEventKinds = []string{
 	"task.state_changed",
 	"work_order.child_failed",
 	"work_order.stalled",
-	// A plan-state move is an audited act the timeline names
-	// (component-web-task-surfaces invariant 65).
-	"task.plan_state_changed",
 }
 
 const (

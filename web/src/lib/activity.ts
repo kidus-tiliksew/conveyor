@@ -1,11 +1,10 @@
-import { type GroupKey, planStateLabels, stageLabels, taskStateLabels, workOrderStageLabels } from './contracts'
+import { type GroupKey, stageLabels, taskStateLabels, workOrderStageLabels } from './contracts'
 import type {
   ActivityItem,
   ActivitySummary,
   Intervention,
   Job,
   NextAction,
-  PlanState,
   Task,
   TaskAssignee,
   TaskEventView,
@@ -387,7 +386,9 @@ type NoteEventKind = (typeof noteEventKinds)[number]
 // 261028-5c2ae2). A merge request and its GitHub confirmation only repeat the
 // finished state, and a dependency wait reads from the Dependencies section,
 // the Board card's dependency mark, and the flowchart's waiting side state
-// (req-operator-next-action AC-6.11, AC-3.4, AC-7.5; task 261108-38aabb).
+// (req-operator-next-action AC-6.11, AC-3.4, AC-7.5; task 261108-38aabb). A
+// plan-state move reads from the plan section and the plan-state label
+// (component-web-task-surfaces invariant 65).
 const hiddenNoteKinds = new Set([
   'review.completed',
   'spec.version_approved',
@@ -401,6 +402,7 @@ const hiddenNoteKinds = new Set([
   'merge.requested',
   'merge.confirmed',
   'task.dependency_added',
+  'task.plan_state_changed',
 ])
 
 // Attempt kinds that read as an entry when the factory retries the run on its
@@ -1225,49 +1227,14 @@ function noteFor(
   if (isDeliveredPullRequestEvent(event, deliveries)) return undefined
   if (event.payload_omitted && !event.payload) {
     if (!humanTimelineKinds.has(event.kind)) return undefined
-    const title = noteContent(
-      event.kind,
-      event.payload_index ?? {},
-      panels,
-      assignee,
-      members,
-      eventActor(event, members),
-    )?.title
+    const title = noteContent(event.kind, event.payload_index ?? {}, panels, assignee, members)?.title
     return {
       title: title ?? humanizeKind(event.kind),
       detail: 'Details omitted from this page',
       omittedEventId: event.id,
     }
   }
-  return noteContent(event.kind, event.payload ?? {}, panels, assignee, members, eventActor(event, members))
-}
-
-// The person or principal an event records, named as the creator line names
-// one; an event without a readable actor names none.
-function eventActor(event: TaskEventView, members: WorkspaceMembership[]): string | undefined {
-  if (!event.actor_id || !event.actor_role) return undefined
-  const named = taskCreator(
-    { actor_id: event.actor_id, actor_role: event.actor_role, actor_owner_user_id: event.actor_owner_user_id },
-    members,
-  )
-  return named.label === 'Unknown' ? undefined : named.label
-}
-
-function planStateLabel(value: unknown): string | undefined {
-  return typeof value === 'string' && value in planStateLabels ? planStateLabels[value as PlanState] : undefined
-}
-
-// Each recorded cause of a plan-state move, in plain words
-// (component-plan-state invariant 3).
-const planStateCauseLabels: Record<string, string> = {
-  intake: 'Set when the task was filed',
-  plan_submitted: 'A plan was submitted',
-  plan_approved: 'The plan was approved',
-  plan_redirected: 'The plan was redirected',
-  plan_revision_approved: 'A plan revision was approved',
-  planning_requested_approved: 'A planning request was approved',
-  operator: 'Changed by an operator',
-  plan_attached: 'An operator attached a plan',
+  return noteContent(event.kind, event.payload ?? {}, panels, assignee, members)
 }
 
 function noteContent(
@@ -1276,7 +1243,6 @@ function noteContent(
   panels: PanelIndex,
   assignee?: TaskAssignee,
   members: WorkspaceMembership[] = [],
-  actor?: string,
 ): NoteContent | undefined {
   const noteKind = kind as NoteEventKind
   switch (noteKind) {
@@ -1419,18 +1385,11 @@ function noteContent(
         detail: request.rationale,
       }
     }
-    // A plan-state move names both states, its cause, and who made it
-    // (component-web-task-surfaces invariant 65; req-task-plan-state AC-3.1).
-    case 'task.plan_state_changed': {
-      const to = planStateLabel(payload.to)
-      if (!to) return { title: 'Plan state changed', detail: actor ? `By ${actor}` : undefined }
-      const from = planStateLabel(payload.from)
-      const cause = typeof payload.cause === 'string' ? (planStateCauseLabels[payload.cause] ?? payload.cause) : ''
-      return {
-        title: from ? `Plan state changed from ${from} to ${to}` : `Plan state set to ${to}`,
-        detail: [cause, actor ? `By ${actor}` : ''].filter(Boolean).join(' · ') || undefined,
-      }
-    }
+    // A plan-state move reads from the plan section and the plan-state label;
+    // technical activity and the audit read keep every move
+    // (component-web-task-surfaces invariant 65).
+    case 'task.plan_state_changed':
+      return undefined
     // The plan section shows each version and the approval intervention
     // renders the richer human "Approved" card. Retain the audit events in the
     // API without repeating them in the timeline.
