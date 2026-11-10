@@ -178,13 +178,15 @@ test('a member without manage_workspace sees the risk mode read-only', async ({ 
   expect(submitted).toHaveLength(0)
 })
 
-const shots = process.env.CONVEYOR_SCREENSHOT_DIR ?? 'test-results/shots'
+// The screenshots attach to the Playwright report, which CI uploads as an
+// artifact, and are also written to CONVEYOR_SCREENSHOT_DIR when it is set.
+const shots = process.env.CONVEYOR_SCREENSHOT_DIR
 
 for (const viewport of [
   { name: 'mobile', width: 375, height: 2200 },
   { name: 'desktop', width: 1280, height: 1100 },
 ]) {
-  test(`capture the risk policy settings at ${viewport.width} px`, async ({ page }) => {
+  test(`capture the risk policy settings at ${viewport.width} px`, async ({ page }, testInfo) => {
     await page.setViewportSize({ width: viewport.width, height: viewport.height })
     await mockAPIs(page, {
       served: {
@@ -200,6 +202,8 @@ for (const viewport of [
     const card = page.getByText('Risk review', { exact: true })
     await card.scrollIntoViewIfNeeded()
     await expect(page.getByRole('status').filter({ hasText: warning.message })).toBeVisible()
-    await page.screenshot({ path: `${shots}/risk-policy-${viewport.name}.png`, fullPage: true })
+    const name = `risk-policy-${viewport.name}.png`
+    const image = await page.screenshot({ path: shots ? `${shots}/${name}` : undefined, fullPage: true })
+    await testInfo.attach(name, { body: image, contentType: 'image/png' })
   })
 }
