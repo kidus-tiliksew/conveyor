@@ -549,7 +549,9 @@ list. Each rule has a nonempty `paths` list in the System Design governed-path
 glob dialect, a `min_tier` of `low`, `medium`, or `high`, a nonblank
 `description`, and an optional `min_human_approvals` of zero or more. The
 schema is closed, the file holds exactly one YAML document, and its limit is
-1 MiB. Changes to `.github/workflows/**` and to `.conveyor/risk.yaml` always
+1 MiB. `schema_version` and `min_human_approvals` must be plain decimal
+integers: a value such as `1.5`, `1e0`, `"1"`, or `0x1` makes the file
+malformed. Changes to `.github/workflows/**` and to `.conveyor/risk.yaml` always
 need at least `medium` and one human approval, and no rule lowers them.
 
 `conveyor risk validate [repository]` checks the worktree declaration against
@@ -559,9 +561,9 @@ it exits zero and reports that only the built-in minimums apply.
 
 The workspace `risk_policy` setting holds a `mode` (`off`, `record`, or
 `enforce`) and a `tiers` table of `agent_reviews` and `human_approvals` for
-`low`, `medium`, and `high`. A policy saved with no table takes 1 and 0, 1 and
-1, and 2 and 2. Each new task freezes the policy at intake, and a later edit
-changes no filed task. A table that needs more human approvals than the
+`low`, `medium`, and `high`, each a plain decimal integer. A policy saved
+with no table takes 1 and 0, 1 and 1, and 2 and 2. Each new task freezes the
+policy at intake, and a later edit changes no filed task. A table that needs more human approvals than the
 workspace has people who hold `operate_gates` saves with a warning.
 `updated_paths` must equal the evidence, and approvals require empty
 `unresolved` and `conflicts` lists. Review completion activity includes the

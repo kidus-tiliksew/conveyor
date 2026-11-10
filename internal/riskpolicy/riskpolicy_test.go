@@ -369,7 +369,7 @@ func TestPackagePerformsNoIO(t *testing.T) {
 		t.Fatal(err)
 	}
 	allowed := map[string]bool{
-		"bytes": true, "errors": true, "fmt": true, "io": true, "sort": true, "strings": true,
+		"bytes": true, "errors": true, "fmt": true, "io": true, "regexp": true, "sort": true, "strings": true,
 		"github.com/kidus-tiliksew/conveyor/internal/governedpath": true, "gopkg.in/yaml.v3": true,
 	}
 	for _, imported := range pkg.Imports {

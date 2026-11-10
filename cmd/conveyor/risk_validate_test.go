@@ -82,6 +82,13 @@ func TestRiskValidateCommand(t *testing.T) {
 		{"blank description", strings.Replace(valid, "Schema and API docs", "''", 1), []riskValidateDiagnostic{{declaration, "description"}}},
 		{"empty paths", strings.Replace(valid, "['internal/**/schema.sql', 'docs/*.md']", "[]", 1), []riskValidateDiagnostic{{declaration, "paths must not be empty"}}},
 		{"approvals", strings.Replace(valid, "min_human_approvals: 1", "min_human_approvals: -2", 1), []riskValidateDiagnostic{{declaration, "min_human_approvals"}}},
+		// yaml.v3 alone truncates 1.5 to 1; the review reproduced exit 0 here.
+		{"fractional schema version", "schema_version: 1.5\nrules: []\n", []riskValidateDiagnostic{{declaration, "cannot unmarshal !!float into int"}}},
+		{"exponent schema version", "schema_version: 1e0\nrules: []\n", []riskValidateDiagnostic{{declaration, "cannot unmarshal !!float into int"}}},
+		{"quoted schema version", "schema_version: \"1\"\nrules: []\n", []riskValidateDiagnostic{{declaration, "cannot unmarshal !!str into int"}}},
+		{"hex schema version", "schema_version: 0x1\nrules: []\n", []riskValidateDiagnostic{{declaration, "riskpolicy.DecimalInt"}}},
+		{"fractional approvals", strings.Replace(valid, "min_human_approvals: 1", "min_human_approvals: 1.5", 1), []riskValidateDiagnostic{{declaration, "cannot unmarshal !!float into int"}}},
+		{"hex approvals", strings.Replace(valid, "min_human_approvals: 1", "min_human_approvals: 0x1", 1), []riskValidateDiagnostic{{declaration, "riskpolicy.DecimalInt"}}},
 		{"oversize", valid + "# " + strings.Repeat("x", riskpolicy.MaxDeclarationBytes) + "\n", []riskValidateDiagnostic{{declaration, "exceeds"}}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {

@@ -147,6 +147,14 @@ func TestParseWorkspaceDocumentRiskPolicy(t *testing.T) {
 		"decreasing":      "risk_policy:\n  mode: record\n  tiers:\n    low: {agent_reviews: 2, human_approvals: 0}\n    medium: {agent_reviews: 1, human_approvals: 1}\n    high: {agent_reviews: 2, human_approvals: 2}\n",
 		"fraction":        "risk_policy:\n  mode: record\n  tiers:\n    low: {agent_reviews: 1.5, human_approvals: 0}\n    medium: {agent_reviews: 2, human_approvals: 1}\n    high: {agent_reviews: 2, human_approvals: 2}\n",
 		"unknown tier":    "risk_policy:\n  mode: record\n  tiers:\n    critical: {agent_reviews: 1, human_approvals: 0}\n",
+		"one point zero":  "risk_policy:\n  mode: record\n  tiers:\n    low: {agent_reviews: 1.0, human_approvals: 0}\n    medium: {agent_reviews: 2, human_approvals: 1}\n    high: {agent_reviews: 2, human_approvals: 2}\n",
+		"exponent":        "risk_policy:\n  mode: record\n  tiers:\n    low: {agent_reviews: 1e0, human_approvals: 0}\n    medium: {agent_reviews: 2, human_approvals: 1}\n    high: {agent_reviews: 2, human_approvals: 2}\n",
+		"quoted":          "risk_policy:\n  mode: record\n  tiers:\n    low: {agent_reviews: \"1\", human_approvals: 0}\n    medium: {agent_reviews: 2, human_approvals: 1}\n    high: {agent_reviews: 2, human_approvals: 2}\n",
+		"hex":             "risk_policy:\n  mode: record\n  tiers:\n    low: {agent_reviews: 0x1, human_approvals: 0}\n    medium: {agent_reviews: 2, human_approvals: 1}\n    high: {agent_reviews: 2, human_approvals: 2}\n",
+		"octal":           "risk_policy:\n  mode: record\n  tiers:\n    low: {agent_reviews: 0o1, human_approvals: 0}\n    medium: {agent_reviews: 2, human_approvals: 1}\n    high: {agent_reviews: 2, human_approvals: 2}\n",
+		"human fraction":  "risk_policy:\n  mode: record\n  tiers:\n    low: {agent_reviews: 1, human_approvals: 0}\n    medium: {agent_reviews: 2, human_approvals: 1.5}\n    high: {agent_reviews: 2, human_approvals: 2}\n",
+		"human quoted":    "risk_policy:\n  mode: record\n  tiers:\n    low: {agent_reviews: 1, human_approvals: 0}\n    medium: {agent_reviews: 2, human_approvals: '1'}\n    high: {agent_reviews: 2, human_approvals: 2}\n",
+		"human exponent":  "risk_policy:\n  mode: record\n  tiers:\n    low: {agent_reviews: 1, human_approvals: 0}\n    medium: {agent_reviews: 2, human_approvals: 1e0}\n    high: {agent_reviews: 2, human_approvals: 2}\n",
 		"unknown setting": "risk_policy:\n  mode: record\n  trusted: true\n",
 	} {
 		t.Run(name, func(t *testing.T) {
@@ -227,4 +235,28 @@ func intPtr(v int) *int { return &v }
 // withRisk appends a risk member to the pre-risk contract encoding.
 func withRisk(member string) string {
 	return strings.TrimSuffix(preRiskContractJSON, "}") + "," + member + "}"
+}
+
+// A refused risk_policy count names the YAML tag and the expected type and
+// never the value (req-security-boundaries REQ-2).
+func TestRiskPolicyCountRefusalHoldsNoValue(t *testing.T) {
+	cfg, err := normalizeDeployment(validConfig(), "test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	document, err := yaml.Marshal(cfg.PolicyDocument())
+	if err != nil {
+		t.Fatal(err)
+	}
+	for value, want := range map[string]string{
+		"0x7f3a": "cannot unmarshal !!int into riskpolicy.DecimalInt",
+		"7.25":   "cannot unmarshal !!float into int",
+		`"731"`:  "cannot unmarshal !!str into int",
+	} {
+		risk := "risk_policy:\n  mode: record\n  tiers:\n    low: {agent_reviews: " + value + ", human_approvals: 0}\n    medium: {agent_reviews: 2, human_approvals: 1}\n    high: {agent_reviews: 2, human_approvals: 2}\n"
+		_, err := ParseWorkspaceDocument(append(append([]byte{}, document...), []byte(risk)...), validConfig(), "risk")
+		if err == nil || !strings.Contains(err.Error(), want) || strings.Contains(err.Error(), strings.Trim(value, `"`)) {
+			t.Fatalf("%s: err=%v, want %q without the value", value, err, want)
+		}
+	}
 }

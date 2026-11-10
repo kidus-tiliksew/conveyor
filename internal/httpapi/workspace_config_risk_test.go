@@ -131,6 +131,8 @@ func TestWorkspaceConfigRiskPolicy(t *testing.T) {
 		"decreasing":      `{"mode":"record","tiers":{"low":{"agent_reviews":1,"human_approvals":0},"medium":{"agent_reviews":3,"human_approvals":1},"high":{"agent_reviews":2,"human_approvals":2}}}`,
 		"fraction":        `{"mode":"record","tiers":{"low":{"agent_reviews":1.5,"human_approvals":0},"medium":{"agent_reviews":2,"human_approvals":1},"high":{"agent_reviews":2,"human_approvals":2}}}`,
 		"text":            `{"mode":"record","tiers":{"low":{"agent_reviews":"1","human_approvals":0},"medium":{"agent_reviews":2,"human_approvals":1},"high":{"agent_reviews":2,"human_approvals":2}}}`,
+		"exponent":        `{"mode":"record","tiers":{"low":{"agent_reviews":1e0,"human_approvals":0},"medium":{"agent_reviews":2,"human_approvals":1},"high":{"agent_reviews":2,"human_approvals":2}}}`,
+		"one point zero":  `{"mode":"record","tiers":{"low":{"agent_reviews":1,"human_approvals":0},"medium":{"agent_reviews":2,"human_approvals":1.0},"high":{"agent_reviews":2,"human_approvals":2}}}`,
 	} {
 		t.Run(name, func(t *testing.T) {
 			write := f.call(t, "operator", http.MethodPut, f.riskBody(t, raw), "")
