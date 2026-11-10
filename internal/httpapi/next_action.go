@@ -42,11 +42,17 @@ func (s *Server) taskResponse(w http.ResponseWriter, r *http.Request, task core.
 		writeStoreFailure(w, r, err)
 		return nil, false
 	}
+	risk, err := s.taskRisk(r.Context(), task)
+	if err != nil {
+		writeStoreFailure(w, r, err)
+		return nil, false
+	}
 	return struct {
 		core.Task
 		NextAction nextaction.NextAction `json:"next_action"`
 		PlanActs   store.PlanActs        `json:"plan_acts"`
-	}{Task: task, NextAction: action, PlanActs: store.PlanActsFor(task, orders)}, true
+		Risk       *core.TaskRisk        `json:"risk,omitempty"`
+	}{Task: task, NextAction: action, PlanActs: store.PlanActsFor(task, orders), Risk: risk}, true
 }
 
 func planActsPointer(acts store.PlanActs) *store.PlanActs { return &acts }
@@ -77,10 +83,19 @@ func (s *Server) writeTasks(w http.ResponseWriter, r *http.Request, page store.T
 	rows := make([]struct {
 		core.Task
 		NextAction nextaction.Compact `json:"next_action"`
+		Risk       *core.TaskRisk     `json:"risk,omitempty"`
 	}, len(tasks))
 	for i, task := range tasks {
 		rows[i].Task = task
 		rows[i].NextAction = nextaction.CompactFrom(projected[task.ID])
+		// Only a task whose frozen risk mode is record or enforce reads its
+		// ratings (req-risk-based-review REQ-11).
+		risk, riskErr := s.taskRisk(r.Context(), task)
+		if riskErr != nil {
+			writeStoreFailure(w, r, riskErr)
+			return
+		}
+		rows[i].Risk = risk
 	}
 	w.Header().Set("X-Conveyor-Total", strconv.Itoa(page.Total))
 	w.Header().Set("X-Conveyor-Limit", strconv.Itoa(limit))

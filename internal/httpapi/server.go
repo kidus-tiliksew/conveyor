@@ -358,6 +358,9 @@ func (s *Server) Handler() http.Handler {
 			r.With(s.requireMutationCapability(core.CapabilityOperateGates)).Delete("/tasks/{id}/dependencies/{dependency_id}", s.removeTaskDependency)
 			r.With(s.requireMutationCapability(core.CapabilityOperateGates)).Post("/tasks/{id}/review-round/retry", s.retryReviewRound)
 			r.With(s.requireMutationCapability(core.CapabilityOperateGates)).Post("/tasks/{id}/review-round/seats", s.addReviewSeats)
+			// A person's raise of a task's risk tier (req-risk-based-review
+			// REQ-6; feature-risk-based-review RR-8).
+			r.With(s.requireMutationCapability(core.CapabilityOperateGates)).Post("/tasks/{id}/risk-tier", s.raiseTaskRiskTier)
 			r.With(s.requireMutationCapability(core.CapabilityRecoverWork)).Post("/tasks/{id}/review-round/recover", s.recoverInterruptedReviewRound)
 			r.With(s.requireMutationCapability(core.CapabilityClaimWork)).Post("/tasks/{id}/review-rounds/{round}/summaries", s.recordReviewSummary)
 			r.With(s.requireMutationCapability(core.CapabilityOperateGates)).Post("/tasks/{id}/review", s.reviewTask)
@@ -1575,6 +1578,9 @@ type reviewItem struct {
 	// PlanActs is set on the task detail read only (component-plan-state
 	// invariant 6).
 	PlanActs *store.PlanActs `json:"plan_acts,omitempty"`
+	// Risk is the task's risk tier and requirements; absent while the
+	// task's frozen risk mode is off (req-risk-based-review REQ-11, AC-11.2).
+	Risk *core.TaskRisk `json:"risk,omitempty"`
 }
 
 type activityItem struct {
@@ -2654,6 +2660,11 @@ func (s *Server) getTaskActivity(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	compact := nextaction.CompactFrom(action)
+	risk, err := s.taskRisk(r.Context(), task)
+	if err != nil {
+		writeStoreFailure(w, r, err)
+		return
+	}
 	item := reviewItem{
 		Task: task, Jobs: jobs, Events: events, Interventions: interventions,
 		CheckoutCommand: checkoutCommand, CheckoutAvailable: checkoutAvailable, CheckoutGuidance: checkoutGuidance,
@@ -2674,6 +2685,7 @@ func (s *Server) getTaskActivity(w http.ResponseWriter, r *http.Request) {
 		// holds, with the predicates the two acts apply
 		// (component-plan-state invariant 6; DEC-61).
 		PlanActs: planActsPointer(store.PlanActsFor(task, workOrders)),
+		Risk:     risk,
 	}
 	if !bounded {
 		if err := s.annotateEventActorOwners(r.Context(), item.Events); err != nil {

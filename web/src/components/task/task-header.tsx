@@ -44,6 +44,7 @@ import { AssigneeChip } from './assignee-chip'
 import { SectionHeading } from './section-heading'
 import { TaskRestartControl, TaskRestartNotice } from './task-restart-dialog'
 import { useCollapsibleContent } from './use-collapsible-content'
+import { RiskTierValue } from './risk-tier'
 
 // The task-header facts: state badges,
 // the facts a reviewer actually references — where the work lives, where it
@@ -280,6 +281,7 @@ export function TaskFacts({
             }
           />
         )}
+        {item.risk && <Fact label="Risk tier" valueClassName="min-w-0" value={<RiskTierValue risk={item.risk} />} />}
         {item.task.github && (
           <Fact
             label="Issue"

@@ -157,6 +157,18 @@ func (c *client) getTask(id string) (core.Task, error) {
 	return t, err
 }
 
+// getTaskWithRisk reads a task and the risk field the server states beside
+// it; risk is nil while the task's frozen risk mode is off
+// (req-risk-based-review REQ-11, AC-11.2).
+func (c *client) getTaskWithRisk(id string) (core.Task, *core.TaskRisk, error) {
+	var read struct {
+		core.Task
+		Risk *core.TaskRisk `json:"risk"`
+	}
+	err := c.do(http.MethodGet, "/v1/tasks/"+id, nil, &read)
+	return read.Task, read.Risk, err
+}
+
 type attachBranchError struct {
 	Code        string
 	Message     string

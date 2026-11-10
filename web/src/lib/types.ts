@@ -422,6 +422,9 @@ export interface TaskReviewResult {
   truncated?: boolean
   // The verdict's recorded value: 'true', 'false', or 'unknown'.
   same_model_as_implementer?: string
+  // The seat's stated risk tier and reason, absent when it stated none.
+  risk_tier?: RiskTier
+  risk_reason?: string
 }
 
 export interface TaskReviewRound {
@@ -1142,6 +1145,49 @@ export interface RiskPolicy {
   mode: RiskMode
   tiers: RiskTierTable
 }
+export type RiskSource = 'plan' | 'path_rule' | 'reviewer' | 'person'
+// One recorded rating of a task (req-risk-based-review AC-5.6).
+export interface RiskRating {
+  seq: number
+  key: string
+  source: RiskSource
+  tier: RiskTier
+  head_sha?: string
+  reason: string
+  matched_rules: {
+    source: string
+    description: string
+    min_tier: RiskTier
+    min_human_approvals: number
+    paths: string[]
+  }[]
+  human_approvals?: number
+  review_round?: number
+  review_seat?: number
+  reviewer_model?: string
+  actor_id?: string
+  previous_tier?: RiskTier
+  created_at: string
+}
+// The task read field risk, present only while the task's frozen risk mode is
+// record or enforce (req-risk-based-review REQ-11, AC-11.2). tier, source, and
+// reason are absent until the task has a rating. The required counts are the
+// requirements in effect; the calculated counts are what the tier alone
+// would require.
+export interface TaskRisk {
+  mode: RiskMode
+  tier?: RiskTier
+  source?: RiskSource
+  reason?: string
+  head?: string
+  required_agent_reviews: number
+  required_human_approvals: number
+  calculated_agent_reviews: number
+  calculated_human_approvals: number
+  recorded_approvals: number
+  author_approval_needed: boolean
+  ratings: RiskRating[]
+}
 // The workspace risk_policy key. A saved policy always states its table; a
 // policy sent without one takes the default table (AC-1.3).
 export interface RiskPolicySettings {
@@ -1289,6 +1335,8 @@ export interface ActivityItem {
     number?: number
   }
   next_action?: NextActionCompact
+  // The task's risk tier and requirements (req-risk-based-review REQ-11).
+  risk?: TaskRisk
 }
 
 export interface PendingProposal {

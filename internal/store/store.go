@@ -134,6 +134,7 @@ type TaskStore interface {
 	StartOverTaskCommand(context.Context, taskops.TaskLease, core.TaskStartOverRequest) (core.TaskStartOverResult, error)
 	RecordDocumentationGateEvidence(context.Context, core.DocumentationGateEvidence) error
 	GetDocumentationGateEvidence(context.Context, string, string) (core.DocumentationGateEvidence, error)
+	RiskRatingStore
 	CreateTask(ctx context.Context, t core.Task) error
 	CreateTaskWithDependencies(ctx context.Context, t core.Task, dependencyIDs []string) error
 	CreateTaskWithDependenciesAndContext(ctx context.Context, t core.Task, dependencyIDs []string, attached TaskContextInput) error
@@ -696,6 +697,7 @@ type memory struct {
 	changes                     *changes.Hub
 	staged                      *[]changes.Notice
 	documentationEvidence       map[memoryScopedKey]map[string]core.DocumentationGateEvidence
+	riskRatings                 map[memoryScopedKey][]core.RiskRating
 	verificationDeliveries      map[string]core.VerificationDelivery
 	verificationRows            map[string]VerificationRow
 	repositoryInstalls          map[memoryScopedKey][]core.RepositoryInstallTask

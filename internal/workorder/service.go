@@ -22,6 +22,7 @@ import (
 	"github.com/kidus-tiliksew/conveyor/internal/pack"
 	"github.com/kidus-tiliksew/conveyor/internal/pipeline"
 	"github.com/kidus-tiliksew/conveyor/internal/redact"
+	"github.com/kidus-tiliksew/conveyor/internal/riskpolicy"
 	"github.com/kidus-tiliksew/conveyor/internal/store"
 	"github.com/kidus-tiliksew/conveyor/internal/taskops"
 	"github.com/kidus-tiliksew/conveyor/internal/trigger/github"
@@ -43,10 +44,13 @@ type Service struct {
 	ReviewPRDescription         func(context.Context, string, string) (string, error)
 	SubmissionChangedPaths      func(context.Context, *config.Config, core.Task) ([]string, error)
 	DiscoverDocumentationPolicy func(context.Context, string, string) github.DocumentationPolicyDiscovery
-	Logf                        func(string, ...any)
-	RedactionSecrets            redact.SecretSource
-	WorkspaceGitHubApps         store.WorkspaceGitHubAppStore
-	GitHubApps                  *github.AppClient
+	// DiscoverRiskDeclaration reads .conveyor/risk.yaml at a base commit; nil
+	// uses the workspace GitHub App (feature-risk-based-review RR-2).
+	DiscoverRiskDeclaration func(context.Context, string, string) riskpolicy.DeclarationInput
+	Logf                    func(string, ...any)
+	RedactionSecrets        redact.SecretSource
+	WorkspaceGitHubApps     store.WorkspaceGitHubAppStore
+	GitHubApps              *github.AppClient
 	// PublicURL is the deployment's configured public dashboard origin
 	// (config.PublicURLEnv). Pull-request bodies link the task page under it
 	// (req-delivery-and-forge AC-2.5).
@@ -788,7 +792,7 @@ func (s *Service) contextForOrder(ctx context.Context, order core.WorkOrder) (Co
 		return Context{}, err
 	}
 	if order.Stage == core.StageReview {
-		role = pack.MCPReviewRole(role)
+		role = pack.MCPReviewRole(pack.WithRiskRating(role, task.SetupContract.Risk.Enabled()))
 	}
 	if order.Stage == core.StageVerify {
 		role += "\n\n# Submitted revision\n\n" + order.HeadSHA + "\n\n# Verification obligations\n\nThe verification service supplies the obligations for this revision. This placeholder grants no completed result.\n"
@@ -1748,6 +1752,18 @@ func (s *Service) SubmitVerdict(ctx context.Context, id, session string, review 
 	task, err := s.Store.GetTask(ctx, order.TaskID)
 	if err != nil {
 		return nil, err
+	}
+	// Under enforce a verdict states its tier and reason, and a verdict
+	// without them is refused before any write, so the seat stays claimed.
+	// Under record an omitted tier is accepted and no rating is recorded.
+	// Under off the verdict is accepted as it was before risk review and a
+	// stated tier is not recorded (req-risk-based-review AC-1.1, AC-5.2;
+	// feature-risk-based-review RR-3).
+	switch {
+	case task.SetupContract.Risk.Enforcing() && validated.RiskTier == "":
+		return nil, store.Refusef("review risk_tier and risk_reason are required: the task's risk mode is enforce; rate the head you reviewed as low, medium, or high with a one-line reason")
+	case !task.SetupContract.Risk.Enabled():
+		validated.RiskTier, validated.RiskReason = "", ""
 	}
 	documentation, documentationErr := s.Store.GetDocumentationGateEvidence(ctx, task.ID, task.ReviewedHeadSHA)
 	var documentationEvidence *core.DocumentationGateEvidence

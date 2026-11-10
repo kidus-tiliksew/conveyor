@@ -290,6 +290,9 @@ func reviewDecisionPayload(decision core.ReviewDecision) []byte {
 	if decision.DocumentationAssessment != nil {
 		payload["documentation_assessment"] = decision.DocumentationAssessment
 	}
+	if decision.RiskTier != "" {
+		payload["risk_tier"], payload["risk_reason"] = decision.RiskTier, decision.RiskReason
+	}
 	return core.JSONPayload(payload)
 }
 
@@ -394,6 +397,12 @@ ORDER BY version DESC LIMIT 1`, documentWorkspace(ctx), id, version, version, ve
 		}
 		if !completed {
 			if err := taskEvent(ctx, tx, core.Event{TaskID: decision.TaskID, JobID: decision.JobID, Kind: "review.completed", Payload: reviewDecisionPayload(decision)}); err != nil {
+				return err
+			}
+			// The seat's stated tier is recorded in the verdict's transaction,
+			// so a refused rating rolls the verdict back (req-risk-based-review
+			// AC-5.2, AC-5.3).
+			if err := recordReviewerRiskTx(ctx, tx, before, decision); err != nil {
 				return err
 			}
 		}

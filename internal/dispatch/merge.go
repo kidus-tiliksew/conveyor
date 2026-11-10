@@ -343,6 +343,12 @@ func (d *Dispatcher) beginRefreshLocked(ctx context.Context, task core.Task, obs
 			return err
 		}
 	}
+	// The refresh head's path minimums are recorded before its approval is
+	// marked stale and its refresh is dispatched or skipped
+	// (req-risk-based-review AC-5.1).
+	if err := d.recordRefreshPathRisk(ctx, cfg, task, observed); err != nil {
+		return err
+	}
 	created, err := d.Store.MarkTaskApprovalStale(ctx, task.ID, baseline, newHead, scope, reason)
 	if err != nil {
 		return err

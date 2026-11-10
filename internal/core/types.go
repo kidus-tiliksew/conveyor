@@ -1062,6 +1062,13 @@ type ReviewDecision struct {
 	PolicyVersion           int
 	MergeApproval           bool
 	MaxBounces              int
+	// RiskTier and RiskReason are the seat's stated rating of the head it
+	// judged. They are set only when the task's frozen risk mode is record or
+	// enforce and the seat stated a tier; acceptance then records one reviewer
+	// rating in the same transaction (req-risk-based-review AC-5.2, AC-5.3;
+	// feature-risk-based-review RR-3).
+	RiskTier   string
+	RiskReason string
 }
 
 type ArtifactRole string

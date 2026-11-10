@@ -11,6 +11,7 @@ import (
 	"github.com/kidus-tiliksew/conveyor/internal/config"
 	"github.com/kidus-tiliksew/conveyor/internal/core"
 	"github.com/kidus-tiliksew/conveyor/internal/dispatch"
+	"github.com/kidus-tiliksew/conveyor/internal/riskpolicy"
 	"github.com/kidus-tiliksew/conveyor/internal/store"
 	"github.com/kidus-tiliksew/conveyor/internal/taskops"
 	"github.com/kidus-tiliksew/conveyor/internal/trigger/github"
@@ -187,15 +188,18 @@ func (s *Service) submitForReviewLocked(ctx context.Context, id, session, headSH
 	if err != nil {
 		return nil, fmt.Errorf("resolve submission governance: %w", err)
 	}
+	changedPaths := s.SubmissionChangedPaths
+	if changedPaths == nil && s.Dispatcher != nil {
+		changedPaths = s.Dispatcher.ReviewChangedPaths
+	}
+	if changedPaths == nil {
+		changedPaths = dispatch.ReviewBranchChangedPaths
+	}
+	var paths []string
+	pathsRead := false
 	if len(governance) > 0 || repo.GitHub != "" {
-		changedPaths := s.SubmissionChangedPaths
-		if changedPaths == nil && s.Dispatcher != nil {
-			changedPaths = s.Dispatcher.ReviewChangedPaths
-		}
-		if changedPaths == nil {
-			changedPaths = dispatch.ReviewBranchChangedPaths
-		}
-		paths, pathErr := changedPaths(forgeCtx, cfg, comparisonTask)
+		var pathErr error
+		paths, pathErr = changedPaths(forgeCtx, cfg, comparisonTask)
 		if pathErr != nil {
 			return nil, store.Refuse(fmt.Errorf("resolve submission diff changed paths: %w", pathErr))
 		}
@@ -215,6 +219,20 @@ func (s *Service) submitForReviewLocked(ctx context.Context, id, session, headSH
 				return nil, err
 			}
 		}
+		pathsRead = true
+	}
+	// The head's path minimums are recorded before the first handoff write.
+	// A risk read that fails gives high and never refuses the submission
+	// (req-risk-based-review AC-5.1, AC-5.4; feature-risk-based-review RR-3).
+	if err = s.recordSubmissionPathRisk(ctx, task, repo.GitHub, target.Base.SHA, headSHA, func(context.Context) ([]string, error) {
+		if pathsRead {
+			return paths, nil
+		}
+		return changedPaths(forgeCtx, cfg, comparisonTask)
+	}); err != nil {
+		return nil, err
+	}
+	if pathsRead {
 		if _, err = s.Store.AttachSubmissionGovernance(ctx, task.ID, task.Repo, paths, store.SubmissionGovernanceAttribution{WorkOrderID: order.ID, SessionID: session}); err != nil {
 			return nil, fmt.Errorf("attach submission governance: %w", err)
 		}
@@ -310,6 +328,33 @@ func (s *Service) discoverDocumentationPolicy(ctx context.Context, slug, revisio
 	}
 	workspace, _ := store.WorkspaceFromContext(ctx)
 	return client.DiscoverDocumentationPolicy(ctx, s.WorkspaceGitHubApps, workspace, slug, revision)
+}
+
+func (s *Service) discoverRiskDeclaration(ctx context.Context, slug, revision string) riskpolicy.DeclarationInput {
+	if s.DiscoverRiskDeclaration != nil {
+		return s.DiscoverRiskDeclaration(ctx, slug, revision)
+	}
+	client := s.GitHubApps
+	if client == nil {
+		client = github.DefaultAppClient
+	}
+	workspace, _ := store.WorkspaceFromContext(ctx)
+	return client.DiscoverRiskDeclaration(ctx, s.WorkspaceGitHubApps, workspace, slug, revision)
+}
+
+// recordSubmissionPathRisk records a submitted head's path minimums through
+// the operation refresh also uses. A task whose frozen risk mode is off makes
+// no risk read, and a head already rated reads nothing again
+// (req-risk-based-review AC-1.1, AC-5.1, AC-5.4).
+func (s *Service) recordSubmissionPathRisk(ctx context.Context, task core.Task, slug, baseSHA, headSHA string, changedPaths func(context.Context) ([]string, error)) error {
+	if !task.SetupContract.Risk.Enabled() {
+		return nil
+	}
+	_, _, err := dispatch.RecordHeadPathRisk(ctx, s.Store, dispatch.HeadPathRiskInput{
+		Task: task, Repository: slug, BaseSHA: baseSHA, HeadSHA: headSHA,
+		Declaration: s.discoverRiskDeclaration, ChangedPaths: changedPaths,
+	})
+	return err
 }
 
 func documentationSubmissionEvidence(ctx context.Context, taskID, headSHA string, target github.SubmissionPullRequest, paths []string, declaration github.DocumentationPolicyDiscovery) (*core.DocumentationGateEvidence, error) {
@@ -584,6 +629,16 @@ func refreshScopeCovers(scope, minimum string) bool {
 // declaration (feature-review-seat-minimum RS-4).
 func (s *Service) completeDispatchedRefresh(ctx context.Context, cfg *config.Config, task core.Task, order core.WorkOrder, head string, refresh dispatchedRefresh, documentationChecked bool, documentation *core.DocumentationGateEvidence, reviewSeats *int) (map[string]any, error) {
 	if err := s.submissionJobReady(ctx, order); err != nil {
+		return nil, err
+	}
+	// The refresh that owns this head rated it when it began; a head without
+	// that rating is rated here before the order completes. Without the pull
+	// request's base commit the rating cannot be completed, so it is high
+	// (req-risk-based-review AC-5.1, AC-5.4; component-risk-review invariant 7).
+	repo, _ := cfg.Repo(task.Repo)
+	if err := s.recordSubmissionPathRisk(ctx, task, repo.GitHub, "", head, func(context.Context) ([]string, error) {
+		return nil, fmt.Errorf("the pull request base commit is unknown")
+	}); err != nil {
 		return nil, err
 	}
 	if err := s.completeImplementationSubmission(ctx, order, head, documentationChecked, documentation, store.SubmissionReviewSeats{Unused: reviewSeats}); err != nil {

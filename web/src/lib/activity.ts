@@ -5,6 +5,7 @@ import type {
   Intervention,
   Job,
   NextAction,
+  RiskTier,
   Task,
   TaskAssignee,
   TaskEventView,
@@ -911,6 +912,9 @@ export interface PanelSeatReview {
   truncatedEventId?: string
   // The recorded verdict states the seat reported the implementer's model.
   sameModelAsImplementer: boolean
+  // The seat's stated risk tier and reason (req-risk-based-review AC-5.3).
+  riskTier?: RiskTier
+  riskReason?: string
 }
 
 export interface PanelSeat {
@@ -994,6 +998,8 @@ function buildReviewPanels(item: ActivityItem): PanelIndex {
       at: result.at,
       truncatedEventId: result.truncated ? result.event_id : undefined,
       sameModelAsImplementer: result.same_model_as_implementer === 'true',
+      riskTier: result.risk_tier,
+      riskReason: result.risk_reason,
     }
   const roundResolution = (round: TaskReviewRound | undefined): PanelResolution | undefined =>
     round && {
