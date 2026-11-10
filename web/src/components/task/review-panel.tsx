@@ -19,6 +19,7 @@ import { GateChoices } from './merge-at-gate'
 import { CheckStatusList } from './next-action-checks'
 import { NextActionNotes } from './next-action-parts'
 import { PlanRevisionDecisionCard } from './plan-revision-decision-card'
+import { RiskTierValue } from './risk-tier'
 import { VerificationVerdictLine } from './verification-entry'
 import { VerificationReviewResult } from './verification-stage'
 
@@ -191,6 +192,14 @@ export function MergeGateReviewCard({ item }: { item: ActivityItem }) {
                 </span>
                 <ExternalLink className="size-3 shrink-0" aria-hidden="true" />
               </a>
+            </dd>
+          </div>
+        )}
+        {item.risk && (
+          <div className={factPair}>
+            <dt className="text-muted">Risk tier</dt>
+            <dd className="min-w-0">
+              <RiskTierValue risk={item.risk} />
             </dd>
           </div>
         )}

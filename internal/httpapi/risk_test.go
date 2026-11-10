@@ -384,3 +384,26 @@ func TestSubmitReviewVerdictRiskArgumentTypes(t *testing.T) {
 		})
 	}
 }
+
+// TestTaskDetailSummariesCarrySeatRisk: the bounded detail's review results
+// carry each seat's stated tier and reason for the review card, and a verdict
+// without one carries none (req-risk-based-review AC-5.3, REQ-11).
+func TestTaskDetailSummariesCarrySeatRisk(t *testing.T) {
+	at := time.Now().UTC()
+	events := []core.Event{
+		{ID: 1, TaskID: "risk-summary", JobID: "seat-1", Kind: "review.completed", At: at, Payload: core.JSONPayload(map[string]any{
+			"review_work_order_id": "seat-1", "verdict": "approve", "summary": "ok", "risk_tier": "medium", "risk_reason": "new store write"})},
+		{ID: 2, TaskID: "risk-summary", JobID: "seat-2", Kind: "review.completed", At: at, Payload: core.JSONPayload(map[string]any{
+			"review_work_order_id": "seat-2", "verdict": "approve", "summary": "ok"})},
+	}
+	summaries := deriveTaskDetailSummaries(events, nil, nil)
+	first, second := summaries.ReviewResults.ByOrder["seat-1"], summaries.ReviewResults.ByOrder["seat-2"]
+	if first.RiskTier != "medium" || first.RiskReason != "new store write" || second.RiskTier != "" || second.RiskReason != "" {
+		t.Fatalf("seat results=%+v %+v", first, second)
+	}
+	encoded, err := json.Marshal(second)
+	requireOKHTTP(t, err)
+	if strings.Contains(string(encoded), "risk_") {
+		t.Fatalf("a verdict without a tier serialized risk fields: %s", encoded)
+	}
+}

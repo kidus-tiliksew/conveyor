@@ -67,6 +67,7 @@ import { useTaskAudit } from './use-task-detail'
 import { isHistoryRestart, useTaskHistory } from './use-task-history'
 import { VerificationEntry } from './verification-entry'
 import { hasOrderRecovery, WorkOrderRecoveryCard } from './work-order-recovery-card'
+import { SeatRiskTier } from './risk-tier'
 
 // The gate dot pulses — the timeline's one "waiting on you" signal — in the
 // gate card's own tone.
@@ -1053,6 +1054,7 @@ function SeatRow({ seat, index, usageAvailable }: { seat: PanelSeat; index: numb
       {seat.review?.sameModelAsImplementer && (
         <span className="text-[11px] text-attention">same model as implementer</span>
       )}
+      <SeatRiskTier tier={seat.review?.riskTier} reason={seat.review?.riskReason} />
       {usageAvailable && (
         <span className="text-[11px] tabular-nums text-faint">
           {compactTokens(seat.order.tokens_in)} in / {compactTokens(seat.order.tokens_out)} out

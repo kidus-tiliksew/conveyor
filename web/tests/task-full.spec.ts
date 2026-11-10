@@ -9440,3 +9440,141 @@ test('review seat addition keeps refusals and retry identity in place', async ({
   await expect(panel.getByText('review round 2 of task seat-refusal is settled')).toBeVisible()
   await expect(page).toHaveURL(new RegExp(`/w/demo/tasks/${taskId}/full$`))
 })
+
+// A task whose frozen risk mode is record shows its tier, the tier's source
+// and reason, and its counts in the task facts, and each review seat shows the
+// tier it stated (req-risk-based-review REQ-11, AC-11.2, AC-5.3). An off task
+// shows none of them, and an unrated task says so.
+function riskPanelItem(taskId: string, risk?: ActivityItem['risk']) {
+  const item = seatPanelItem(taskId, {
+    orders: [
+      { round: 1, seat: 1, model: 'risk-seat-model', verdict: 'changes_requested' },
+      { round: 1, seat: 2, model: 'risk-seat-model', verdict: 'changes_requested' },
+    ],
+    summaries: {
+      review_round_seats: { by_round: { '1': seatMeta(1, 2, 'minimum') }, by_order: {} },
+      review_seat_policy: { minimum_seat_count: 2 },
+    },
+  })
+  const byOrder = item.summaries?.review_results?.by_order ?? {}
+  const [first, second] = item.work_orders.map((order) => order.id)
+  if (risk) {
+    byOrder[first] = { ...byOrder[first], risk_tier: 'low', risk_reason: 'One handler changes and its tests cover it.' }
+    byOrder[second] = {
+      ...byOrder[second],
+      risk_tier: 'medium',
+      risk_reason: 'The verdict transaction gains a write on every store.',
+    }
+  }
+  item.risk = risk
+  return item
+}
+
+const recordedRisk: NonNullable<ActivityItem['risk']> = {
+  mode: 'record',
+  tier: 'medium',
+  source: 'reviewer',
+  reason: 'The verdict transaction gains a write on every store.',
+  head: 'a'.repeat(40),
+  required_agent_reviews: 2,
+  required_human_approvals: 0,
+  calculated_agent_reviews: 2,
+  calculated_human_approvals: 1,
+  recorded_approvals: 0,
+  author_approval_needed: false,
+  ratings: [],
+}
+
+test('task facts and review seats show the recorded risk tier', async ({ page }) => {
+  const taskId = 'risk-recorded'
+  await page.route(`**/v1/tasks/${taskId}/activity*`, (route) =>
+    route.fulfill({ json: riskPanelItem(taskId, recordedRisk) }),
+  )
+  await page.goto(`/w/demo/tasks/${taskId}/full`)
+  const fact = page.locator('[data-task-risk]')
+  await expect(fact.locator('[data-risk-tier]')).toHaveText('Medium')
+  await expect(fact).toContainText('From a reviewer')
+  await expect(fact).toContainText('Recorded only')
+  await expect(fact.locator('[data-task-risk-reason]')).toHaveText(recordedRisk.reason ?? '')
+  await expect(fact.locator('[data-task-risk-needs]')).toHaveText('Needs 2 agent reviews and no human approval')
+  const panel = roundPanel(page, 'risk-seat-model')
+  await expect(panel.locator('[data-seat-risk-tier="low"]')).toContainText('Low')
+  await expect(panel.locator('[data-seat-risk-tier="medium"]')).toHaveAttribute(
+    'title',
+    'The verdict transaction gains a write on every store.',
+  )
+})
+
+test('an unrated task says so and an off task shows no risk tier', async ({ page }) => {
+  const unrated = 'risk-unrated'
+  await page.route(`**/v1/tasks/${unrated}/activity*`, (route) =>
+    route.fulfill({
+      json: riskPanelItem(unrated, {
+        ...recordedRisk,
+        mode: 'enforce',
+        tier: undefined,
+        source: undefined,
+        reason: undefined,
+      }),
+    }),
+  )
+  await page.goto(`/w/demo/tasks/${unrated}/full`)
+  const fact = page.locator('[data-task-risk]')
+  await expect(fact.locator('[data-risk-tier="unrated"]')).toHaveText('Not rated yet')
+  await expect(fact).not.toContainText('From ')
+  await expect(fact).not.toContainText('Recorded only')
+
+  const off = 'risk-off'
+  await page.route(`**/v1/tasks/${off}/activity*`, (route) => route.fulfill({ json: riskPanelItem(off) }))
+  await page.goto(`/w/demo/tasks/${off}/full`)
+  await expect(roundPanel(page, 'risk-seat-model')).toBeVisible()
+  await expect(page.locator('[data-task-risk]')).toHaveCount(0)
+  await expect(page.locator('[data-seat-risk-tier]')).toHaveCount(0)
+  await expect(page.getByText('Risk tier')).toHaveCount(0)
+})
+
+// The screenshots attach to the Playwright report, which CI uploads as an
+// artifact, and are also written to CONVEYOR_SCREENSHOT_DIR when it is set.
+for (const viewport of [
+  { name: 'mobile', width: 375, height: 1600 },
+  { name: 'desktop', width: 1280, height: 1100 },
+]) {
+  test(`capture the task risk tier at ${viewport.width} px`, async ({ page }, testInfo) => {
+    const taskId = 'risk-capture'
+    await page.setViewportSize({ width: viewport.width, height: viewport.height })
+    await page.route(`**/v1/tasks/${taskId}/activity*`, (route) =>
+      route.fulfill({ json: riskPanelItem(taskId, recordedRisk) }),
+    )
+    await page.goto(`/w/demo/tasks/${taskId}/full`)
+    await expect(page.locator('[data-task-risk]')).toBeVisible()
+    await expect(roundPanel(page, 'risk-seat-model').locator('[data-seat-risk-tier="medium"]')).toBeVisible()
+    const shots = process.env.CONVEYOR_SCREENSHOT_DIR
+    const name = `task-risk-tier-${viewport.name}.png`
+    const image = await page.screenshot({ path: shots ? `${shots}/${name}` : undefined, fullPage: true })
+    await testInfo.attach(name, { body: image, contentType: 'image/png' })
+  })
+}
+
+// The merge gate's "What you are approving" card states the recorded risk tier
+// beside the reviewed head (req-risk-based-review REQ-11).
+for (const viewport of [
+  { name: 'mobile', width: 375, height: 1800 },
+  { name: 'desktop', width: 1280, height: 1200 },
+]) {
+  test(`the merge gate states the risk tier at ${viewport.width} px`, async ({ page }, testInfo) => {
+    const taskId = 'merge-request-changes'
+    await page.setViewportSize({ width: viewport.width, height: viewport.height })
+    await page.route(`**/v1/tasks/${taskId}/activity*`, (route) =>
+      route.fulfill({ json: { ...activity(taskId, false), risk: recordedRisk } }),
+    )
+    await page.goto(`/w/demo/tasks/${taskId}/full`)
+    const card = page.getByRole('region', { name: 'What you are approving' })
+    await expect(card.locator('[data-risk-tier]')).toHaveText('Medium')
+    await expect(card.locator('[data-task-risk-needs]')).toHaveText('Needs 2 agent reviews and no human approval')
+    await card.scrollIntoViewIfNeeded()
+    const shots = process.env.CONVEYOR_SCREENSHOT_DIR
+    const name = `merge-gate-risk-tier-${viewport.name}.png`
+    const image = await page.screenshot({ path: shots ? `${shots}/${name}` : undefined, fullPage: true })
+    await testInfo.attach(name, { body: image, contentType: 'image/png' })
+  })
+}

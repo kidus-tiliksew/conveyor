@@ -409,6 +409,10 @@ type taskReviewResult struct {
 	// or "unknown", and is absent from an event that recorded none. The review
 	// card shows the match only (req-review-gates-evidence AC-2.12).
 	SameModelAsImplementer string `json:"same_model_as_implementer,omitempty"`
+	// RiskTier and RiskReason are the seat's stated rating, absent when the
+	// seat stated none (req-risk-based-review AC-5.3, REQ-11).
+	RiskTier   string `json:"risk_tier,omitempty"`
+	RiskReason string `json:"risk_reason,omitempty"`
 }
 
 type taskReviewResults struct {
@@ -753,6 +757,8 @@ func deriveTaskDetailSummaries(events []core.Event, jobs []core.Job, orders []co
 			review.Feedback, cutFeedback = truncateSummaryText(feedback)
 			review.Truncated = cutSummary || cutFeedback
 			review.SameModelAsImplementer, _ = payload.str("same_model_as_implementer")
+			review.RiskTier, _ = payload.str("risk_tier")
+			review.RiskReason, _ = payload.str("risk_reason")
 			if orderID, ok := payload.str("review_work_order_id"); ok {
 				summaries.ReviewResults.ByOrder[orderID] = review
 			}
