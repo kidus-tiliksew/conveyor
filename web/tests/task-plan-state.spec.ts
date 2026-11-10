@@ -192,39 +192,24 @@ function card(id: string, planState: PlanState | undefined) {
 const boardCard = (page: Page, planState: string) => page.getByRole('link', { name: new RegExp(`^Card ${planState}`) })
 const planSection = (page: Page) => page.getByRole('region', { name: 'Execution plan' })
 
-// ---- Board card mark (invariants 7, 58; AC-1.4) ----
+// ---- No Board mark (invariant 58; AC-1.4) ----
 
-test('a board card marks needed, awaiting, and completed plans beside the title and none without a plan', async ({
-  page,
-}) => {
+test('a board card carries no plan-state mark for any plan state', async ({ page }) => {
   await mockServer(page, {
     cards: [
+      card('t-none', 'not_required'),
       card('t-needed', 'needed'),
       card('t-awaiting', 'awaiting_approval'),
       card('t-completed', 'completed'),
-      card('t-none', 'not_required'),
     ],
   })
   await page.goto('/w/demo/')
-  for (const state of ['needed', 'awaiting_approval', 'completed'] as const) {
+  for (const state of ['not_required', 'needed', 'awaiting_approval', 'completed'] as const) {
     const item = boardCard(page, state)
-    const mark = item.locator('[data-plan-state-mark]')
-    await expect(mark).toHaveAttribute('data-plan-state-mark', state)
-    await expect(mark).toHaveAccessibleName(labels[state])
-    // The mark sits beside the title, and the next-action label keeps its own
-    // row and text.
+    await expect(item).toBeVisible()
+    await expect(item.locator('[data-plan-state-mark]')).toHaveCount(0)
     await expect(item.locator('[data-next-action-label]')).toHaveText('Working')
-    const markBox = await mark.boundingBox()
-    const titleBox = await item.getByText(`Card ${state}`, { exact: true }).boundingBox()
-    const labelBox = await item.locator('[data-next-action-label]').boundingBox()
-    if (!markBox || !titleBox || !labelBox) throw new Error('the card is not rendered')
-    expect(markBox.y).toBeLessThan(titleBox.y + titleBox.height)
-    expect(labelBox.y).toBeGreaterThanOrEqual(titleBox.y + titleBox.height)
   }
-  const none = boardCard(page, 'not_required')
-  await expect(none).toBeVisible()
-  await expect(none.locator('[data-plan-state-mark]')).toHaveCount(0)
-  await expect(none.locator('[data-next-action-label]')).toHaveText('Working')
 })
 
 // ---- Board filter (invariant 59) ----
