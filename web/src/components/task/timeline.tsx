@@ -884,8 +884,10 @@ function PanelEntry({
   return (
     <li className="relative pl-7">
       <TimelineDot className={panelDot(seats, resolution, deliberating)} />
-      <article className="rounded-lg bg-surface">
-        <div className="flex flex-wrap items-center gap-2 border-b border-border px-4 py-2.5">
+      {/* The card is a size container: on a narrow card the seat rows give
+          the model name the room the verdict word and wide gaps would take. */}
+      <article className="@container rounded-lg bg-surface">
+        <div className="flex flex-wrap items-center gap-2 border-b border-border px-3 py-2.5 @min-[26rem]:px-4">
           <span className="text-sm font-semibold text-foreground">{stageLabels.review}</span>
           {resolution && (
             <Badge variant={resolution.verdict === 'approve' ? 'positive' : 'attention'} data-review-verdict>
@@ -946,7 +948,7 @@ function PanelEntry({
           ))}
         </div>
         {notes.length > 0 && (
-          <div className="border-t border-border px-4 py-3">
+          <div className="border-t border-border px-3 py-3 @min-[26rem]:px-4">
             <div className="mb-1.5 flex flex-wrap items-baseline gap-x-3 gap-y-0.5">
               <span className="text-xs font-medium text-muted">
                 {entry.round > 0 ? `Round ${entry.round} — ` : ''}the panel’s notes
@@ -981,7 +983,7 @@ function PanelEntry({
         {resolution ? (
           <div
             className={cn(
-              'flex items-start gap-2 rounded-b-lg border-t border-border px-4 py-2.5 text-sm font-medium',
+              'flex items-start gap-2 rounded-b-lg border-t border-border px-3 py-2.5 text-sm font-medium @min-[26rem]:px-4',
               resolution.verdict === 'approve' ? 'bg-positive-soft text-positive' : 'bg-attention-soft text-attention',
             )}
           >
@@ -1000,7 +1002,7 @@ function PanelEntry({
             </span>
           </div>
         ) : (
-          <div className="flex flex-wrap items-center gap-x-3 gap-y-1 border-t border-border px-4 py-2 text-[11px] tabular-nums text-muted">
+          <div className="flex flex-wrap items-center gap-x-3 gap-y-1 border-t border-border px-3 py-2 text-[11px] tabular-nums text-muted @min-[26rem]:px-4">
             <span>
               {verdictsIn} of {seats.length} verdicts in
             </span>
@@ -1057,11 +1059,12 @@ function SeatRow({ seat, index, usageAvailable }: { seat: PanelSeat; index: numb
   // The grid keeps the seat label, the model, and the verdict on one line at
   // any width: the model column alone shrinks, and the model chip truncates.
   // The match, risk tier, and usage wrap below the model inside its column.
-  // A phone drops the fixed label column and the wider gaps to give the model
-  // more room.
+  // A card narrower than 26rem, such as on a 375 px phone, drops the fixed
+  // label column, the wide gaps and padding, and the verdict word, so that a
+  // 24-character model name shows in full (task 261110-50771a).
   return (
-    <div className="grid grid-cols-[auto_minmax(0,1fr)_auto] items-baseline gap-x-2 gap-y-1.5 px-4 py-2.5 sm:grid-cols-[2.75rem_minmax(0,1fr)_auto] sm:gap-x-3">
-      <span className="text-xs text-faint">Seat {seat.seat}</span>
+    <div className="grid grid-cols-[auto_minmax(0,1fr)_auto] items-baseline gap-x-1.5 gap-y-1.5 px-3 py-2.5 @min-[26rem]:grid-cols-[2.75rem_minmax(0,1fr)_auto] @min-[26rem]:gap-x-3 @min-[26rem]:px-4">
+      <span className="text-[11px] text-faint @min-[26rem]:text-xs">Seat {seat.seat}</span>
       <span className="flex min-w-0 flex-wrap items-baseline gap-x-3 gap-y-1 text-[11px] tabular-nums text-muted">
         <ModelChip
           model={seat.model}
@@ -1165,21 +1168,28 @@ function SeatState({ seat, index }: { seat: PanelSeat; index: number }) {
     const approved = review.verdict === 'approve'
     const took = job?.started_at ? duration(job.started_at, job.ended_at ?? review.at) : undefined
     return (
-      <span className="flex items-center justify-end gap-2">
+      <span className="flex items-center justify-end gap-1 @min-[26rem]:gap-2">
         <Disclosure
           title={review.summary.trim() || undefined}
           content={review.summary.trim() || undefined}
           triggerClassName="justify-center"
         >
-          {/* The button keeps its touch target; only this pill is visible. */}
+          {/* The button keeps its touch target; only this pill is visible.
+              On a narrow card the pill shows its colored icon and keeps the
+              verdict word for screen readers. */}
           <span
+            data-seat-verdict={review.verdict}
             className={cn(
-              'inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-xs font-medium',
+              'inline-flex items-center rounded-full px-1 py-0.5 text-xs font-medium @min-[26rem]:gap-1 @min-[26rem]:px-2',
               approved ? 'bg-positive-soft text-positive' : 'bg-attention-soft text-attention',
             )}
           >
-            {approved ? <Check className="size-3" /> : <Undo2 className="size-3" />}
-            {approved ? 'Approved' : 'Changes'}
+            {approved ? (
+              <Check aria-hidden="true" className="size-3" />
+            ) : (
+              <Undo2 aria-hidden="true" className="size-3" />
+            )}
+            <span className="sr-only @min-[26rem]:not-sr-only">{approved ? 'Approved' : 'Changes'}</span>
           </span>
         </Disclosure>
         {took && <span className="text-[11px] tabular-nums text-muted">{took}</span>}

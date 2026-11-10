@@ -1778,8 +1778,10 @@ function reviewPanel(seats: PanelSeatFixture[], extra: { bounce?: number; verdic
   })
 }
 
+// Realistic 24-character model names: the longest a seat row shows in full at 375 px.
+const name24 = ['claude-sonnet-5-5-review', 'gpt-6.1-sol-extended-pro', 'gemini-3-pro-max-preview']
 const oneSeatChanges = () =>
-  reviewPanel([{ model: 'claude-sonnet-5-5', verdict: 'changes_requested', feedback: longNote }], { bounce: 1 })
+  reviewPanel([{ model: name24[0], verdict: 'changes_requested', feedback: longNote }], { bounce: 1 })
 const threeSeatMixed = () =>
   reviewPanel(
     [
@@ -1790,7 +1792,7 @@ const threeSeatMixed = () =>
         feedback: longNote,
         same: 'false',
       },
-      { model: 'gemini-3-pro', verdict: 'changes_requested', feedback: 'Rename `mergeApprovedTaskLocked`.' },
+      { model: name24[2], verdict: 'changes_requested', feedback: 'Rename `mergeApprovedTaskLocked`.' },
     ],
     { bounce: 2 },
   )
@@ -1820,7 +1822,12 @@ async function box(locator: Locator): Promise<Box> {
 
 // The visible pill, not its larger disclosure touch target.
 const seatRow = (panel: Locator, n: number) => panel.getByText(`Seat ${n}`, { exact: true }).first().locator('..')
-const seatPill = (row: Locator) => row.locator('span.rounded-full').filter({ hasText: /^(Approved|Changes)$/ })
+const seatPill = (row: Locator) => row.locator('[data-seat-verdict]')
+
+async function expectFullName(row: Locator, model: string) {
+  const name = row.getByText(model, { exact: true })
+  expect(await name.evaluate((element) => element.scrollWidth <= element.clientWidth)).toBe(true)
+}
 
 async function expectOneLine(row: Locator, n: number, model: string) {
   const label = await box(row.getByText(`Seat ${n}`, { exact: true }))
@@ -1857,8 +1864,12 @@ test('a one-seat changes-requested panel reads on a 375 px screen', async ({ pag
   const panel = await openPanel(page, oneSeatChanges(), 375)
   const row = seatRow(panel, 1)
 
-  // Seat 1, the model chip, the verdict pill, and the duration share one line.
-  await expectOneLine(row, 1, 'claude-sonnet-5-5')
+  // Seat 1, a 24-character model name in full, the verdict pill, and the
+  // duration share one line. The narrow pill keeps its word for screen readers.
+  expect(name24.every((model) => model.length === 24)).toBe(true)
+  await expectOneLine(row, 1, name24[0])
+  await expectFullName(row, name24[0])
+  await expect(seatPill(row)).toHaveText('Changes')
   await expect(row.getByText('self-reported')).toHaveCount(0)
 
   // One seat needs no attribution beside its note: "Seat 1" appears once.
@@ -1885,7 +1896,10 @@ test('a three-seat panel keeps each seat row on one line at 375 px and attribute
   const longModel = 'gpt-6.1-sol-extended-reasoning-preview-2026-11-01'
 
   await expectOneLine(seatRow(panel, 1), 1, 'claude-opus-5-5')
-  await expectOneLine(seatRow(panel, 3), 3, 'gemini-3-pro')
+  await expectFullName(seatRow(panel, 1), 'claude-opus-5-5')
+  // A 24-character name beside a "10m 00s" duration still shows in full.
+  await expectOneLine(seatRow(panel, 3), 3, name24[2])
+  await expectFullName(seatRow(panel, 3), name24[2])
   // A model name longer than the row truncates with an ellipsis, keeps its
   // full name in the chip's title, and leaves the pill on the seat's line.
   await expectOneLine(seatRow(panel, 2), 2, longModel)
@@ -1954,6 +1968,9 @@ for (const { name, item, text } of bannerCases) {
   test(`the settled review banner for ${name} reads "${text}"`, async ({ page }) => {
     const panel = await openPanel(page, item(), 1280)
     await expect(panel.locator('[data-review-banner]')).toHaveText(text)
+    // A wide card shows each seat's verdict word in its pill.
+    const word = seatPill(seatRow(panel, 1)).getByText(/^(Approved|Changes)$/)
+    expect((await box(word)).width).toBeGreaterThan(20)
   })
 }
 
