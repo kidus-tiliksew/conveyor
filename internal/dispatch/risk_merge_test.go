@@ -3,6 +3,7 @@ package dispatch
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -12,6 +13,7 @@ import (
 	"github.com/kidus-tiliksew/conveyor/internal/nextaction"
 	"github.com/kidus-tiliksew/conveyor/internal/riskpolicy"
 	"github.com/kidus-tiliksew/conveyor/internal/store"
+	"github.com/kidus-tiliksew/conveyor/internal/store/storetest"
 	"github.com/kidus-tiliksew/conveyor/internal/taskops"
 	githubtrigger "github.com/kidus-tiliksew/conveyor/internal/trigger/github"
 )
@@ -47,10 +49,24 @@ func riskGateFixture(t *testing.T, id string, tc riskMergeCase) (context.Context
 		t.Fatalf("gate task=%+v err=%v", out.Task, err)
 	}
 	openPullRequest(t, st, ctx, id, 7, gateHead)
+	createReviewRound(t, st, ctx, id, 1)
 	d := newForgeDispatcher(st)
 	forge := &gateForge{pr: githubtrigger.PullRequest{Number: 7, State: "open", Mergeable: "MERGEABLE", HeadSHA: gateHead, HeadRef: task.Branch, URL: "https://github.test/acme/app/pull/7"}}
 	d.ViewPullRequest, d.RequestMerge = forge.view, forge.merge
 	return ctx, st, out.Task, d, forge
+}
+
+// createReviewRound records one review seat order of round, the round the
+// task's approvals bind to.
+func createReviewRound(t *testing.T, st store.Store, ctx context.Context, taskID string, round int) {
+	t.Helper()
+	id := fmt.Sprintf("%s-review-%d-seat-1", taskID, round)
+	if err := st.CreateJob(ctx, core.Job{ID: id, TaskID: taskID, Stage: core.StageReview, State: core.JobDone}); err != nil {
+		t.Fatal(err)
+	}
+	if err := storetest.For(st).CreateWorkOrder(ctx, core.WorkOrder{ID: id, TaskID: taskID, JobID: id, Stage: core.StageReview, ReviewRound: round, ReviewSeat: 1, HeadSHA: gateHead}); err != nil {
+		t.Fatal(err)
+	}
 }
 
 func recordPathRating(t *testing.T, st store.Store, ctx context.Context, id string, tc riskMergeCase) {
@@ -64,7 +80,11 @@ func recordPathRating(t *testing.T, st store.Store, ctx context.Context, id stri
 	}
 }
 
-func TestMergeAtGateRefusesASingleMergeWhenTwoApprovalsAreRequired(t *testing.T) {
+// A merge short of the required approvals records the person's approval,
+// lands nothing, and answers what is still needed; the same person counts
+// once; the approval that completes the count lands the head
+// (req-risk-based-review AC-8.3, AC-8.7; req-review-gates-evidence AC-1.3).
+func TestMergeAtGateCountsApprovalsUntilTheLastLands(t *testing.T) {
 	for _, tc := range []struct {
 		name string
 		riskMergeCase
@@ -75,24 +95,88 @@ func TestMergeAtGateRefusesASingleMergeWhenTwoApprovalsAreRequired(t *testing.T)
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			ctx, st, task, d, forge := riskGateFixture(t, "risk-gate-"+tc.name, tc.riskMergeCase)
-			before := len(eventKinds(t, st, ctx, task.ID))
-			for attempt := 0; attempt < 2; attempt++ {
-				_, err := d.MergeAtGate(ctx, task, gateOperator)
-				var refusal *store.RiskApprovalsRequiredError
-				if !errors.As(err, &refusal) || refusal.Required != tc.required || refusal.Automatic || !errors.Is(err, store.ErrRiskApprovalsRequired) {
-					t.Fatalf("attempt %d err=%v, want a refusal naming %d approvals", attempt, err, tc.required)
-				}
-				// The route answers the refusal with its text (409), never a
-				// store failure.
-				if !MergeRouteRefusal(err) {
-					t.Fatalf("MergeRouteRefusal(%v)=false", err)
+			for person := 1; person < tc.required; person++ {
+				actor := core.Actor{ID: store.UserActorID(fmt.Sprintf("usr-person-%d", person)), Role: core.ActorUser}
+				for attempt := 0; attempt < 2; attempt++ {
+					_, err := d.MergeAtGate(ctx, task, actor)
+					var pending *RiskApprovalPending
+					if !errors.As(err, &pending) || pending.Recorded != (attempt == 0) || pending.Evaluation.Status.Recorded != person || pending.Evaluation.Status.Required != tc.required {
+						t.Fatalf("person %d attempt %d err=%v pending=%+v", person, attempt, err, pending)
+					}
+					if !MergeRouteRefusal(err) || !strings.Contains(err.Error(), "Nothing was merged") {
+						t.Fatalf("pending answer %q is not a route refusal", err)
+					}
 				}
 			}
 			assertGatePending(t, st, ctx, task.ID)
-			if after := len(eventKinds(t, st, ctx, task.ID)); after != before || forge.merges != 0 {
-				t.Fatalf("refusals appended %d events and requested %d merges, want none", after-before, forge.merges)
+			kinds := eventKinds(t, st, ctx, task.ID)
+			if countKind(kinds, core.TaskApprovalEvent) != tc.required-1 || countKind(kinds, "merge.requested") != 0 || forge.merges != 0 {
+				t.Fatalf("approvals=%d merge requests=%d merges=%d", countKind(kinds, core.TaskApprovalEvent), countKind(kinds, "merge.requested"), forge.merges)
 			}
+			out, err := d.MergeAtGate(ctx, task, gateOperator)
+			if err != nil || out.State != core.TaskMerged || forge.merges != 1 {
+				t.Fatalf("last approval out=%s err=%v merges=%d", out.State, err, forge.merges)
+			}
+			assertGateMergedBy(t, st, ctx, task.ID, "usr-approver")
+			// The last approval is recorded with the confirmed merge, so the
+			// merged head holds every required approval (AC-8.7).
+			assertFinalApprovals(t, ctx, st, d, task.ID, tc.required, "usr-approver")
+			// A repeated act answers the merged task and records nothing more.
+			if again, err := d.MergeAtGate(ctx, task, gateOperator); err != nil || again.State != core.TaskMerged {
+				t.Fatalf("replay out=%s err=%v", again.State, err)
+			}
+			assertFinalApprovals(t, ctx, st, d, task.ID, tc.required, "usr-approver")
 		})
+	}
+}
+
+// assertFinalApprovals checks a merged enforcing task's approval rows, the
+// audit identity of the last one, and the shared evaluation's count.
+func assertFinalApprovals(t *testing.T, ctx context.Context, st store.Store, d *Dispatcher, taskID string, want int, last string) {
+	t.Helper()
+	records, err := st.ListTaskApprovals(ctx, taskID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	people := 0
+	final := core.TaskApproval{}
+	for _, record := range records {
+		if record.Kind == core.TaskApprovalPerson {
+			people++
+			if record.UserID == last {
+				final = record
+			}
+		}
+	}
+	if people != want || final.UserID != last || final.HeadSHA != gateHead {
+		t.Fatalf("approval rows=%+v, want %d with %s's at %s", records, want, last, gateHead)
+	}
+	events, err := st.ListEvents(ctx, taskID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	approvalEvents, lastActor := 0, ""
+	for _, event := range events {
+		if event.Kind == core.TaskApprovalEvent {
+			approvalEvents++
+			if strings.Contains(string(event.Payload), `"user_id":"`+last+`"`) {
+				lastActor = event.ActorID
+			}
+		}
+	}
+	if approvalEvents != want || lastActor != store.UserActorID(last) {
+		t.Fatalf("approval events=%d last actor=%q, want %d by %s", approvalEvents, lastActor, want, store.UserActorID(last))
+	}
+	task, err := st.GetTask(ctx, taskID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	evaluation, err := d.EvaluateApprovals(ctx, task, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if evaluation.Status.Recorded != want || !evaluation.Status.Satisfied {
+		t.Fatalf("merged task evaluation=%+v, want %d recorded and satisfied", evaluation.Status, want)
 	}
 }
 
@@ -110,6 +194,15 @@ func TestMergeAtGateKeepsTheSingleActBelowTwoApprovals(t *testing.T) {
 				t.Fatalf("out=%+v err=%v merges=%d", out, err, forge.merges)
 			}
 			assertGateMergedBy(t, st, ctx, task.ID, "usr-approver")
+			// One person's merge of an enforcing task records that person's
+			// approval with the merge; off and record tasks record none.
+			records, _ := st.ListTaskApprovals(ctx, task.ID)
+			if want := map[bool]int{true: 1, false: 0}[tc.mode == riskpolicy.ModeEnforce]; len(records) != want {
+				t.Fatalf("approval rows=%+v, want %d", records, want)
+			}
+			if tc.mode == riskpolicy.ModeEnforce {
+				assertFinalApprovals(t, ctx, st, d, task.ID, 1, "usr-approver")
+			}
 		})
 	}
 }
@@ -130,6 +223,7 @@ func riskApprovedTask(t *testing.T, id string, tc riskMergeCase) (context.Contex
 		t.Fatal(err)
 	}
 	openPullRequest(t, st, ctx, id, 7, gateHead)
+	createReviewRound(t, st, ctx, id, 1)
 	d := newForgeDispatcher(st)
 	forge := &gateForge{pr: githubtrigger.PullRequest{Number: 7, State: "open", Mergeable: "MERGEABLE", HeadSHA: gateHead, HeadRef: task.Branch, URL: "https://github.test/acme/app/pull/7"}}
 	d.ViewPullRequest, d.RequestMerge = forge.view, forge.merge
@@ -172,25 +266,30 @@ func TestAutomaticMergeHoldsAnEnforcingTaskThatNeedsAPerson(t *testing.T) {
 	}
 }
 
-// An operator's merge of an approved enforcing task is one person's act: it
-// is refused when two or more approvals are required, and not held by risk
-// at a count of one.
+// A person's merge of an approved enforcing task counts approvals too: short
+// of two it records the approval and lands nothing, and a second person lands
+// it. At one required approval the person's merge lands it at once.
 func TestOperatorMergeOfApprovedEnforcingTask(t *testing.T) {
 	ctx, st, task, d, forge := riskApprovedTask(t, "risk-operator-high", riskMergeCase{riskpolicy.ModeEnforce, riskpolicy.TierHigh, 0})
-	before := len(eventKinds(t, st, ctx, task.ID))
 	err := d.MergeApprovedTask(ctx, task, gateOperator)
-	var refusal *store.RiskApprovalsRequiredError
-	if !errors.As(err, &refusal) || refusal.Required != 2 || refusal.Automatic || !MergeRouteRefusal(err) {
-		t.Fatalf("operator merge err=%v, want a refusal naming 2 approvals", err)
+	var pending *RiskApprovalPending
+	if !errors.As(err, &pending) || !pending.Recorded || pending.Evaluation.Status.Remaining != 1 || !MergeRouteRefusal(err) {
+		t.Fatalf("operator merge err=%v, want a recorded approval with one remaining", err)
 	}
-	if after := len(eventKinds(t, st, ctx, task.ID)); after != before || forge.merges != 0 {
-		t.Fatalf("refusal appended %d events and requested %d merges", after-before, forge.merges)
+	if forge.merges != 0 || countKind(eventKinds(t, st, ctx, task.ID), "merge.requested") != 0 {
+		t.Fatalf("short merge requested %d merges", forge.merges)
 	}
+	second := core.Actor{ID: store.UserActorID("usr-second"), Role: core.ActorUser}
+	if err := d.MergeApprovedTask(ctx, task, second); err != nil || forge.merges != 1 {
+		t.Fatalf("second merge err=%v merges=%d", err, forge.merges)
+	}
+	assertFinalApprovals(t, ctx, st, d, task.ID, 2, "usr-second")
 
-	ctx, _, task, d, _ = riskApprovedTask(t, "risk-operator-medium", riskMergeCase{riskpolicy.ModeEnforce, riskpolicy.TierMedium, 0})
-	if err := d.MergeApprovedTask(ctx, task, gateOperator); errors.Is(err, store.ErrRiskApprovalsRequired) {
-		t.Fatalf("operator merge at one required approval was held by risk: %v", err)
+	ctx, st, task, d, forge = riskApprovedTask(t, "risk-operator-medium", riskMergeCase{riskpolicy.ModeEnforce, riskpolicy.TierMedium, 0})
+	if err := d.MergeApprovedTask(ctx, task, gateOperator); err != nil || forge.merges != 1 {
+		t.Fatalf("operator merge at one required approval err=%v merges=%d", err, forge.merges)
 	}
+	assertFinalApprovals(t, ctx, st, d, task.ID, 1, "usr-approver")
 }
 
 // A gate-off enforcing task held at the merge gate takes the gate-on
@@ -298,43 +397,46 @@ func TestRaiseAfterApprovalHandsTheMergeToAnOperator(t *testing.T) {
 	}
 }
 
-// At two or more required approvals the held task still names the operator,
-// and the merge choice is withheld with the route's reason rather than
-// offered and refused (component-next-action invariant 7).
-func TestHeldTaskNeedingTwoApprovalsWithholdsTheMerge(t *testing.T) {
+// At two or more required approvals the held task still names the operator.
+// The merge choice stays offered, labelled Approve, because a person's merge
+// records that person's approval and lands nothing while more than one
+// approval remains (req-risk-based-review AC-8.7, AC-11.1).
+func TestHeldTaskNeedingTwoApprovalsOffersApprove(t *testing.T) {
 	ctx, st, task, _, _ := riskApprovedTask(t, "risk-held-two", riskMergeCase{riskpolicy.ModeEnforce, riskpolicy.TierLow, 0})
 	raiseTier(t, ctx, st, task.ID, riskpolicy.TierHigh)
 	action := riskNextAction(t, ctx, st, task.ID)
 	if action.Actor != nextaction.ActorOperator || action.Kind != nextaction.KindMergeExecution {
 		t.Fatalf("next action %s/%s", action.Actor, action.Kind)
 	}
-	if _, ok := choiceOf(action, "merge"); ok {
-		t.Fatal("the merge choice is offered at two required approvals")
+	if merge, ok := choiceOf(action, "merge"); !ok || merge.Label != "Approve" {
+		t.Fatalf("merge choice=%+v ok=%t, want Approve", merge, ok)
 	}
-	refused := false
-	for _, refusal := range action.Details.Refusals {
-		refused = refused || (refusal.Choice == "merge" && strings.Contains(refusal.Text, "2 human approvals"))
-	}
-	if !refused {
-		t.Fatalf("refusals=%+v, want the merge refusal naming 2 approvals", action.Details.Refusals)
+	if !strings.Contains(action.Summary, "0 of 2 required human approvals") {
+		t.Fatalf("summary=%q", action.Summary)
 	}
 	if _, ok := choiceOf(action, "request_changes"); !ok {
 		t.Fatal("request changes is not offered")
 	}
 
-	// The merge gate of an enforcing task withholds the merge the same way.
+	// The merge gate of an enforcing task names the same shortfall; its merge
+	// choice waits only for the readiness peek, never for the count.
 	gctx, gst, gate, _, _ := riskGateFixture(t, "risk-gate-two", riskMergeCase{riskpolicy.ModeEnforce, riskpolicy.TierHigh, 0})
-	if gateAction := riskNextAction(t, gctx, gst, gate.ID); gateAction.Kind != nextaction.KindMergeApproval {
-		t.Fatalf("gate next action kind=%s", gateAction.Kind)
-	} else if _, ok := choiceOf(gateAction, "merge"); ok {
-		t.Fatal("the merge gate offers the merge at two required approvals")
+	gateAction := riskNextAction(t, gctx, gst, gate.ID)
+	if gateAction.Kind != nextaction.KindMergeApproval || !strings.Contains(gateAction.Summary, "0 of 2 required human approvals") {
+		t.Fatalf("gate next action kind=%s summary=%q", gateAction.Kind, gateAction.Summary)
+	}
+	for _, refusal := range gateAction.Details.Refusals {
+		if strings.Contains(refusal.Text, "approvals") {
+			t.Fatalf("the gate withholds a choice for the count: %+v", refusal)
+		}
 	}
 }
 
 // A raise and a merge act serialize on the task side-effect lock. A merge
 // that holds the lock first lands under the tier it read, and the raise
 // waits for it. A raise that holds the lock first is read by the merge,
-// which then refuses (feature-risk-based-review RR-6).
+// which then records the person's approval and lands nothing
+// (feature-risk-based-review RR-6; req-risk-based-review AC-8.7, AC-8.8).
 func TestRaiseAndMergeSerialize(t *testing.T) {
 	t.Run("MergeFirst", func(t *testing.T) {
 		ctx, st, task, d, forge := riskApprovedTask(t, "risk-serial-merge-first", riskMergeCase{riskpolicy.ModeEnforce, riskpolicy.TierMedium, 0})
@@ -387,9 +489,9 @@ func TestRaiseAndMergeSerialize(t *testing.T) {
 		if raiseErr := <-raised; raiseErr != nil {
 			t.Fatalf("raise err=%v", raiseErr)
 		}
-		var refusal *store.RiskApprovalsRequiredError
-		if !errors.As(err, &refusal) || refusal.Required != 2 || forge.merges != 0 {
-			t.Fatalf("merge after the raise err=%v merges=%d, want a refusal naming 2 approvals", err, forge.merges)
+		var pending *RiskApprovalPending
+		if !errors.As(err, &pending) || pending.Evaluation.Status.Required != 2 || !pending.Recorded || forge.merges != 0 {
+			t.Fatalf("merge after the raise err=%v merges=%d, want a recorded approval short of 2", err, forge.merges)
 		}
 		if current, _ := st.GetTask(ctx, task.ID); current.State != core.TaskApproved {
 			t.Fatalf("task state=%s, want approved", current.State)

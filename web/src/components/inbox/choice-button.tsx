@@ -131,7 +131,7 @@ export function NextActionChoices({
     mutation.mutate({ choice, text })
   }
 
-  if (choices.length === 0 && !leading) return null
+  if (choices.length === 0 && !leading && !status) return null
   const contract = composing ? choiceBody(composing.id) : undefined
   const reasons = choices.map((choice) => {
     const body = choiceBody(choice.id)

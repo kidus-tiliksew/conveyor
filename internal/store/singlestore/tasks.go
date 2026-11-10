@@ -1207,6 +1207,14 @@ func (s *Store) applyTaskCommandTx(ctx context.Context, tx *sql.Tx, id string, c
 		if err != nil {
 			return err
 		}
+		var final *core.TaskApproval
+		if command.FinalApproval != nil {
+			prepared, prepareErr := store.PrepareFinalTaskApproval(before, command.Kind, *command.FinalApproval, time.Now())
+			if prepareErr != nil {
+				return prepareErr
+			}
+			final = &prepared
+		}
 		kind := core.GateKindFor(state, command.Kind)
 		values := map[string]any{"state": state, "gate_kind": string(kind)}
 		result = before
@@ -1239,6 +1247,13 @@ func (s *Store) applyTaskCommandTx(ctx context.Context, tx *sql.Tx, id string, c
 		}
 		if planMove != nil {
 			if err := taskEvent(ctx, tx, *planMove); err != nil {
+				return err
+			}
+		}
+		if final != nil {
+			// The approval that completes the count commits with the merge
+			// (req-risk-based-review AC-8.7).
+			if _, _, err := insertTaskApprovalTx(ctx, tx, *final); err != nil {
 				return err
 			}
 		}
@@ -1415,7 +1430,7 @@ func (s *Store) CancelTaskCommand(ctx context.Context, lease taskops.TaskLease, 
 // merge_approval gate in one transaction under the task-operation lock
 // (DEC-64(1,7); component-task-lifecycle): approve intervention, approval
 // binding, merge.confirmed, then intervention.merge.
-func (s *Store) MergeTaskAtGateCommand(ctx context.Context, lease taskops.TaskLease, i core.Intervention, approvedHead string, confirmed core.Event) (core.Task, error) {
+func (s *Store) MergeTaskAtGateCommand(ctx context.Context, lease taskops.TaskLease, i core.Intervention, approvedHead string, confirmed core.Event, final *core.TaskApproval) (core.Task, error) {
 	ctx = dbmetrics.WithReadLabel(ctx, "MergeTaskAtGateCommand")
 	if !lease.ValidFor(i.TaskID) {
 		return core.Task{}, fmt.Errorf("gate merge requires a valid taskops lease")
@@ -1448,7 +1463,7 @@ func (s *Store) MergeTaskAtGateCommand(ctx context.Context, lease taskops.TaskLe
 		if err = taskEvent(ctx, tx, confirmed); err != nil {
 			return err
 		}
-		_, err = s.applyTaskCommandTx(ctx, tx, i.TaskID, taskops.Command{Kind: core.TaskInterventionMerge})
+		_, err = s.applyTaskCommandTx(ctx, tx, i.TaskID, taskops.Command{Kind: core.TaskInterventionMerge, FinalApproval: final})
 		return err
 	})
 	if err != nil {

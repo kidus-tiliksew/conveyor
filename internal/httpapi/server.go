@@ -94,9 +94,15 @@ type Server struct {
 	OnMerge func(context.Context, core.Task, core.Actor) error
 	// OnGateMerge is the one-act operator merge at the merge_approval gate,
 	// run as the acting operator (DEC-64(1); component-submission-merge).
-	OnGateMerge      func(context.Context, core.Task, core.Actor) (core.Task, error)
-	OnMergeReadiness func(context.Context, core.Task) (dispatch.MergeReadiness, error)
-	OnConflictFix    func(context.Context, core.Task) (core.WorkOrder, error)
+	OnGateMerge func(context.Context, core.Task, core.Actor) (core.Task, error)
+	// OnRecordApproval records the acting person's approval of an enforcing
+	// task's reviewed head, and OnWaiveAuthorApproval records a non-author's
+	// waiver of the trusted author's approval (req-risk-based-review AC-8.3,
+	// AC-8.5; feature-risk-based-review RR-7).
+	OnRecordApproval      func(ctx context.Context, task core.Task, actor core.Actor, head string) (store.ApprovalEvaluation, error)
+	OnWaiveAuthorApproval func(ctx context.Context, task core.Task, actor core.Actor, head, reason string) (store.ApprovalEvaluation, bool, error)
+	OnMergeReadiness      func(context.Context, core.Task) (dispatch.MergeReadiness, error)
+	OnConflictFix         func(context.Context, core.Task) (core.WorkOrder, error)
 	// Workspace stamps created tasks.
 	Workspace string
 	// BearerToken authenticates mutating requests (component-http-api). An empty
@@ -368,6 +374,8 @@ func (s *Server) Handler() http.Handler {
 			r.With(s.requireMutationCapability(core.CapabilityOperateGates)).Post("/tasks/{id}/restart", s.restartTask)
 			r.With(s.requireMutationCapability(core.CapabilityOperateGates)).Post("/tasks/{id}/branch", s.attachTaskBranch)
 			r.With(s.requireMutationCapability(core.CapabilityOperateGates)).Post("/tasks/{id}/merge", s.mergeTask)
+			r.With(s.requireMutationCapability(core.CapabilityOperateGates)).Post("/tasks/{id}/approvals", s.recordTaskApproval)
+			r.With(s.requireMutationCapability(core.CapabilityOperateGates)).Post("/tasks/{id}/approvals/waive-author", s.waiveTaskAuthorApproval)
 			r.With(s.requireMutationCapability(core.CapabilityRecoverWork)).Post("/tasks/{id}/merge-conflict-fix", s.fixMergeConflict)
 			r.Get("/artifacts", s.listArtifacts)
 			r.With(s.requireMutationCapability(core.CapabilityOperateGates)).Post("/artifacts", s.uploadArtifact)
@@ -1034,6 +1042,21 @@ func (s *Server) reviewTask(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
+	// The approve act at an enforcing task's merge gate is the person's
+	// counted approval: it records the approval at a ready reviewed head and
+	// approves the task only when every requirement is met, so Approve only
+	// never passes the count (req-risk-based-review AC-8.3, AC-8.7;
+	// feature-risk-based-review RR-7).
+	if request.Action == core.InterventionApprove && task.State == core.TaskAwaiting && task.GateKind == core.GateKindMergeApproval && task.SetupContract.Risk.Enforcing() {
+		if s.OnRecordApproval == nil {
+			http.Error(w, "approval recording is not configured", http.StatusNotImplemented)
+			return
+		}
+		if _, err := s.OnRecordApproval(r.Context(), task, store.ActorFromContext(r.Context()), task.ReviewedHeadSHA); err != nil {
+			s.writeApprovalOutcome(w, r, task.ID, err)
+			return
+		}
+	}
 	interventionRecorded := false
 	if planRevisionGate {
 		// A revision approval can make a plan order claimable immediately. Record
@@ -1127,6 +1150,14 @@ func (s *Server) mergeTask(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := s.OnMerge(r.Context(), task, actor); err != nil {
+		// A person's merge of an enforcing task short of its approvals
+		// records the approval and lands nothing (req-risk-based-review
+		// AC-8.7).
+		var pending *dispatch.RiskApprovalPending
+		if errors.As(err, &pending) {
+			s.writeRiskApprovalPending(w, r, id, pending)
+			return
+		}
 		writeMergeRouteError(w, r, err)
 		return
 	}
@@ -1158,7 +1189,14 @@ func (s *Server) mergeTaskAtGate(w http.ResponseWriter, r *http.Request, task co
 	}
 	updated, err := s.OnGateMerge(r.Context(), task, actor)
 	var notReady *dispatch.ErrGateMergeNotReady
+	var pending *dispatch.RiskApprovalPending
 	switch {
+	case errors.As(err, &pending):
+		// A merge short of an enforcing task's required approvals records
+		// the person's approval, lands nothing, and answers what is still
+		// needed (req-risk-based-review AC-8.7).
+		s.writeRiskApprovalPending(w, r, task.ID, pending)
+		return
 	case errors.As(err, &notReady):
 		writeJSON(w, http.StatusConflict, map[string]string{"error": notReady.Error(), "readiness": notReady.State})
 		return

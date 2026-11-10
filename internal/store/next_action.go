@@ -13,6 +13,7 @@ import (
 	"github.com/kidus-tiliksew/conveyor/internal/core"
 	"github.com/kidus-tiliksew/conveyor/internal/monitor"
 	"github.com/kidus-tiliksew/conveyor/internal/nextaction"
+	"github.com/kidus-tiliksew/conveyor/internal/riskpolicy"
 )
 
 // NextActionOptions is the caller view the projection cannot read from the task.
@@ -40,6 +41,14 @@ type NextActionOptions struct {
 	// per-order verification read is skipped; every compact field is
 	// projected from the same input (feature-operator-next-action NA-3).
 	CompactOnly bool
+	// TrustedAuthors returns the live trusted_authors list of a task's
+	// repository (req-risk-based-review AC-9.3). Nil reads the empty list.
+	TrustedAuthors func(context.Context, core.Task) ([]string, error)
+	// CallerUserID is the person the next action is stated for. An enforcing
+	// task's merge choice is worded from that person's own approval: Merge
+	// only when it lands the head, Approve when it is recorded short of the
+	// requirements, and a refusal when it cannot count. Empty states no caller.
+	CallerUserID string
 }
 
 // ReadNextAction projects one task. Missing tasks return the store's not-found error.
@@ -117,7 +126,7 @@ func ReadNextActions(ctx context.Context, st Store, tasks []core.Task, opts Next
 	if err != nil {
 		return nil, err
 	}
-	riskApprovals, err := readAssemblerRiskApprovals(ctx, st, tasks)
+	riskApprovals, err := readAssemblerRiskApprovals(ctx, st, tasks, opts)
 	if err != nil {
 		return nil, err
 	}
@@ -149,7 +158,10 @@ func ReadNextActions(ctx context.Context, st Store, tasks []core.Task, opts Next
 		input.Blocks = dependencies.blocks[task.ID]
 		input.ContextProposals = contexts[task.ID]
 		input.CheckStatus = checkStatuses[task.ID]
-		input.RiskHumanApprovals = riskApprovals[task.ID]
+		if approvals, ok := riskApprovals[task.ID]; ok {
+			input.RiskHumanApprovals = approvals.Required
+			input.RiskApprovals = &approvals
+		}
 		input.ClaimFailures = claimFailuresFor(ordersByTask[task.ID], claimFailures)
 		if origin, ok := origins[task.ID]; ok {
 			input.MonitorObservation = &nextaction.MonitorObservationRef{Kind: string(origin.Kind), SourceURL: origin.SourceURL, ObservedAt: origin.ObservedAt}
@@ -486,12 +498,16 @@ func readAssemblerCheckStatus(ctx context.Context, st Store, tasks []core.Task) 
 	return statuses, nil
 }
 
-// readAssemblerRiskApprovals reads the human approvals each enforcing task
-// that is approved or at the merge gate requires, from its recorded ratings.
-// Only a count of one or more is kept. A task whose frozen mode is not
-// enforce costs no read (req-risk-based-review AC-1.1, REQ-8; DEC-124(2)).
-func readAssemblerRiskApprovals(ctx context.Context, st Store, tasks []core.Task) (map[string]int, error) {
-	out := map[string]int{}
+// readAssemblerRiskApprovals evaluates the human approvals of each enforcing
+// task that is approved or at the merge gate: the required number, which
+// includes the one approval an untrusted author calls for, and the approvals
+// recorded at the reviewed head. Only a required number of one or more is
+// kept. A task whose frozen mode is not enforce costs no read
+// (req-risk-based-review AC-1.1, REQ-8, REQ-9, AC-11.1; DEC-124(2)). The
+// trust list is opts.TrustedAuthors' live answer; without it the empty list
+// applies, which trusts every person who holds operate_gates (AC-9.1).
+func readAssemblerRiskApprovals(ctx context.Context, st Store, tasks []core.Task, opts NextActionOptions) (map[string]nextaction.RiskApprovals, error) {
+	out := map[string]nextaction.RiskApprovals{}
 	for _, task := range tasks {
 		atGate := task.State == core.TaskAwaiting && task.GateKind == core.GateKindMergeApproval
 		if !task.SetupContract.Risk.Enforcing() || (task.State != core.TaskApproved && !atGate) {
@@ -501,13 +517,28 @@ func readAssemblerRiskApprovals(ctx context.Context, st Store, tasks []core.Task
 		if task.Workspace != "" {
 			scoped = WithWorkspace(ctx, task.Workspace)
 		}
-		ratings, err := st.ListTaskRiskRatings(scoped, task.ID)
+		var trusted []string
+		if opts.TrustedAuthors != nil {
+			var err error
+			if trusted, err = opts.TrustedAuthors(scoped, task); err != nil {
+				return nil, err
+			}
+		}
+		// The caller's own approval is evaluated too, so the merge choice is
+		// offered only when the caller's act can land the head
+		// (req-risk-based-review AC-8.7, AC-11.1).
+		evaluation, err := EvaluateTaskApprovals(scoped, st, task, trusted, opts.CallerUserID)
 		if err != nil {
 			return nil, err
 		}
-		if required, hold := RiskMergeHold(task, ratings); hold {
-			out[task.ID] = required
+		if evaluation.Base.Required < 1 {
+			continue
 		}
+		var caller *riskpolicy.ApprovalStatus
+		if opts.CallerUserID != "" {
+			caller = &evaluation.Status
+		}
+		out[task.ID] = nextaction.RiskApprovalsFrom(evaluation.Base, caller)
 	}
 	return out, nil
 }

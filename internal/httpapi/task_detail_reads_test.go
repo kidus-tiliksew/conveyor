@@ -864,9 +864,9 @@ func (c *taskDetailCountingStore) MarkTaskApprovalStale(a0 context.Context, a1 s
 	return c.Store.MarkTaskApprovalStale(a0, a1, a2, a3, a4, a5)
 }
 
-func (c *taskDetailCountingStore) MergeTaskAtGateCommand(a0 context.Context, a1 taskops.TaskLease, a2 core.Intervention, a3 string, a4 core.Event) (core.Task, error) {
+func (c *taskDetailCountingStore) MergeTaskAtGateCommand(a0 context.Context, a1 taskops.TaskLease, a2 core.Intervention, a3 string, a4 core.Event, a5 *core.TaskApproval) (core.Task, error) {
 	c.count("MergeTaskAtGateCommand")
-	return c.Store.MergeTaskAtGateCommand(a0, a1, a2, a3, a4)
+	return c.Store.MergeTaskAtGateCommand(a0, a1, a2, a3, a4, a5)
 }
 
 func (c *taskDetailCountingStore) MonitorOriginsForTasks(a0 context.Context, a1 []string) (map[string]monitor.ObservationRecord, error) {

@@ -1196,6 +1196,14 @@ export interface TaskRisk {
   calculated_human_approvals: number
   recorded_approvals: number
   author_approval_needed: boolean
+  // The approval state of an enforcing task's reviewed head
+  // (req-risk-based-review REQ-8, REQ-9, AC-11.2).
+  remaining_approvals?: number
+  non_author_approval_needed?: boolean
+  author_waiver_needed?: boolean
+  untrusted_author?: boolean
+  approval_head?: string
+  approvals_satisfied?: boolean
   ratings: RiskRating[]
 }
 // The workspace risk_policy key. A saved policy always states its table; a
@@ -1426,7 +1434,7 @@ export interface NextActionDetails {
   checkpoint?: string
   pending_proposals?: { tier: string; id: string; version: number }[]
   secondary?: { kind: string; reason_code?: string }[]
-  refusals?: { choice: string; text: string }[]
+  refusals?: { choice: string; text: string; code?: string }[]
   merge_readiness?: string
   // Each check a check_hold names, or what a merging task waits on, and why
   // (component-next-action, The statement). The URL is how an operator reruns it.

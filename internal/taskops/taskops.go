@@ -77,6 +77,13 @@ type Command struct {
 	// act committed while triage ran therefore decides the proceed step
 	// (component-plan-state invariant 5; req-task-plan-state AC-1.1, AC-3.2).
 	TriageProceed bool
+	// FinalApproval, when set on a command that completes a merge
+	// (intervention.merge, merge.confirm, merge.recover), records that
+	// person's approval of the merged head in the same transaction, so the
+	// approval that completes an enforcing task's count is written exactly
+	// when the confirmed merge completes and never on a failed one
+	// (req-risk-based-review AC-8.7; req-review-gates-evidence AC-1.3).
+	FinalApproval *core.TaskApproval
 }
 
 // PlanStateMove is the plan-state move a lifecycle command commits with its
@@ -176,7 +183,7 @@ type Outcome struct {
 type Backend interface {
 	ApplyTaskCommand(context.Context, TaskLease, string, Command) (core.Task, error)
 	CancelTaskCommand(context.Context, TaskLease, core.Intervention) (core.Task, error)
-	MergeTaskAtGateCommand(context.Context, TaskLease, core.Intervention, string, core.Event) (core.Task, error)
+	MergeTaskAtGateCommand(context.Context, TaskLease, core.Intervention, string, core.Event, *core.TaskApproval) (core.Task, error)
 	AcceptReviewDecisionCommand(context.Context, TaskLease, core.ReviewDecision) error
 	ClaimWorkOrderCommand(context.Context, TaskLease, string, core.WorkOrderClaim) (core.WorkOrder, error)
 	ListElapsedWorkOrderTaskIDs(context.Context, time.Time) ([]string, error)
@@ -208,13 +215,20 @@ func (p *Plane) Cancel(ctx context.Context, intervention core.Intervention) (cor
 // MergeAtGate completes a confirmed forge merge at the merge_approval gate in
 // one store transaction (DEC-64(1,7); component-task-lifecycle).
 func (p *Plane) MergeAtGate(ctx context.Context, intervention core.Intervention, approvedHead string, confirmed core.Event) (core.Task, error) {
+	return p.MergeAtGateWithApproval(ctx, intervention, approvedHead, confirmed, nil)
+}
+
+// MergeAtGateWithApproval is MergeAtGate that also records final, the
+// approval that completes an enforcing task's count, in the same transaction
+// (req-risk-based-review AC-8.7). A nil final records none.
+func (p *Plane) MergeAtGateWithApproval(ctx context.Context, intervention core.Intervention, approvedHead string, confirmed core.Event, final *core.TaskApproval) (core.Task, error) {
 	if p == nil || p.backend == nil {
 		return core.Task{}, fmt.Errorf("taskops plane requires a backend")
 	}
 	if intervention.TaskID == "" || confirmed.TaskID != intervention.TaskID {
 		return core.Task{}, fmt.Errorf("taskops gate merge requires one task id")
 	}
-	return p.backend.MergeTaskAtGateCommand(ctx, TaskLease{taskID: intervention.TaskID, command: string(core.TaskInterventionMerge), seal: &leaseSeal{}}, intervention, approvedHead, confirmed)
+	return p.backend.MergeTaskAtGateCommand(ctx, TaskLease{taskID: intervention.TaskID, command: string(core.TaskInterventionMerge), seal: &leaseSeal{}}, intervention, approvedHead, confirmed, final)
 }
 
 func (p *Plane) AcceptReviewDecision(ctx context.Context, decision core.ReviewDecision) error {

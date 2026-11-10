@@ -27,12 +27,15 @@ type Vars struct {
 	// statement's deadline, never part of a sentence (component-next-action
 	// invariants 14, 18).
 	RetryScheduled bool
-	Blockers       string
-	Branch         string
-	Base           string
-	Version        int
-	State          string
-	Next           string
+	// Approvals is an enforcing task's approval shortfall, or nil
+	// (req-risk-based-review AC-11.1).
+	Approvals *RiskApprovals
+	Blockers  string
+	Branch    string
+	Base      string
+	Version   int
+	State     string
+	Next      string
 	// Dependents is the titles of blocks joined as a list, empty when nothing
 	// waits on the task (feature-operator-next-action NA-4).
 	Dependents string
@@ -220,6 +223,21 @@ func init() {
 		string(core.StageReview):    "The review order is waiting for an agent.",
 		string(core.StageVerify):    "The verification order is waiting for an agent.",
 	})
+	// An enforcing task short of its required human approvals names how many
+	// remain and whether a trusted author's approval is among them, at the
+	// merge gate and after an approve-only act (req-risk-based-review
+	// AC-11.1).
+	for _, kind := range []string{KindMergeApproval, KindMergeExecution} {
+		entry := catalogueTable[catalogueKey{kind, "", "", "", ""}]
+		base := entry.Summary
+		entry.Summary = func(v Vars) string {
+			if v.Approvals == nil || v.Approvals.Satisfied {
+				return base(v)
+			}
+			return RiskApprovalSummary(*v.Approvals)
+		}
+		catalogueTable[catalogueKey{kind, "", "", "", ""}] = entry
+	}
 	// The hold's sentence names each check; AC-1.5 requires it on every surface
 	// that shows the summary, the compact list shape included.
 	failedHold := catalogueTable[catalogueKey{KindCheckHold, "", "", "", ""}]
@@ -610,4 +628,36 @@ func withReadFailure(summary string, v Vars) string {
 		return summary
 	}
 	return summary + " " + v.ReadFailure
+}
+
+// RiskApprovalSummary states an enforcing task's approval shortfall: the
+// approvals recorded and required, how many remain, and whether a trusted
+// author's approval or a non-author's approval is among them
+// (req-risk-based-review AC-11.1).
+func RiskApprovalSummary(a RiskApprovals) string {
+	remaining := fmt.Sprintf("%d more approvals are needed", a.Remaining)
+	if a.Remaining == 1 {
+		remaining = "1 more approval is needed"
+	}
+	text := fmt.Sprintf("The reviewed head has %d of %d required human approvals. %s", a.Recorded, a.Required, remaining)
+	// With an untrusted author no author's approval counts, so the trusted
+	// author's approval is met only by a non-author's waiver (REQ-9, AC-8.5).
+	waiver := ""
+	if a.WaiverNeeded {
+		waiver = " No author's approval counts while an author is not trusted, so a person who is not an author must also waive the trusted author's approval."
+	}
+	if a.Remaining == 0 && a.WaiverNeeded {
+		return fmt.Sprintf("The reviewed head has %d of %d required human approvals. No author's approval counts while an author is not trusted, so a person who is not an author must waive the trusted author's approval.", a.Recorded, a.Required)
+	}
+	switch {
+	case a.TrustedAuthorNeeded && a.NonAuthorNeeded:
+		return text + ", including a trusted author's approval and an approval from a person who is not an author." + waiver
+	case a.TrustedAuthorNeeded:
+		return text + ", including a trusted author's approval." + waiver
+	case a.NonAuthorNeeded:
+		return text + ", including an approval from a person who is not an author." + waiver
+	case a.WaiverNeeded:
+		return text + "." + waiver
+	}
+	return text + ". A trusted author's approval is not among them."
 }

@@ -565,6 +565,28 @@ The workspace `risk_policy` setting holds a `mode` (`off`, `record`, or
 with no table takes 1 and 0, 1 and 1, and 2 and 2. Each new task freezes the
 policy at intake, and a later edit changes no filed task. A table that needs more human approvals than the
 workspace has people who hold `operate_gates` saves with a warning.
+
+Under `enforce`, a task lands only after enough distinct people approve its
+reviewed head (`req-risk-based-review` REQ-8, REQ-9). Each person who holds
+`operate_gates` counts once, and agent verdicts never count. Record an approval
+with `POST /v1/tasks/{id}/approvals` and the body `{"head_sha": "<head>"}`, or
+with the merge gate's Approve or Merge act. A merge short of the count records
+your approval, merges nothing, and answers 202 with what is still needed. The
+approval that completes the count merges the head in the same act. Approvals
+bind to the reviewed head and its review round, so a new head starts with none.
+A repository entry may list `trusted_authors`, the user IDs trusted to author a
+change there; an empty list trusts every person who holds `operate_gates`. The
+list is read live, never frozen. The task's authors are the people whose
+sessions claimed its implementation orders. When an author is trusted, a
+trusted author's approval is required; a person who is not an author can waive
+it with `POST /v1/tasks/{id}/approvals/waive-author` and the body
+`{"head_sha": "<head>", "reason": "<one line>"}`, which changes no count. When
+any author is not trusted, the task never merges automatically, an approval
+from a person who is not an author is required, and no author's own approval
+counts, a trusted coauthor's included; a trusted author's required approval is
+then met only by a non-author's waiver. The approval that completes the count
+is recorded with the confirmed merge, and a merge GitHub refuses or does not
+confirm records none.
 `updated_paths` must equal the evidence, and approvals require empty
 `unresolved` and `conflicts` lists. Review completion activity includes the
 assessment only when supplied (REQ-9/AC-9.1–9.6; DEC-71).

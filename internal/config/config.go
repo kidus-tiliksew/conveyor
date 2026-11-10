@@ -38,6 +38,13 @@ type Repo struct {
 	GitHub          string       `yaml:"github,omitempty" json:"github"`
 	Base            string       `yaml:"base" json:"base"`
 	Checkout        string       `yaml:"checkout,omitempty" json:"checkout,omitempty"`
+	// TrustedAuthors lists the user IDs of the people trusted to author a
+	// change in this repository. It is read live, never frozen into a task:
+	// an edit applies the next time a task's approvals are evaluated. An
+	// empty list trusts every person who holds operate_gates
+	// (req-risk-based-review REQ-9, AC-9.1, AC-9.3; component-risk-review,
+	// Public surfaces; feature-risk-based-review RR-1).
+	TrustedAuthors []string `yaml:"trusted_authors,omitempty" json:"trusted_authors,omitempty"`
 
 	// Accepted only while canonicalizing pre-4.7 stored rows. These fields
 	// are cleared by normalize and never cross the workspace API boundary.
@@ -1138,6 +1145,7 @@ func cloneConfig(source *Config) Config {
 		for i, repo := range source.Repos {
 			repo.LegacySecretRefs = cloneStrings(repo.LegacySecretRefs)
 			repo.LegacyToolPolicy = cloneAnyMap(repo.LegacyToolPolicy)
+			repo.TrustedAuthors = cloneStrings(repo.TrustedAuthors)
 			next.Repos[i] = repo
 		}
 	}
@@ -1624,6 +1632,11 @@ func finishNormalization(c *Config, requestedPlanning PlanningSettings) (*Config
 			}
 			repo.Checkout = filepath.Clean(repo.Checkout)
 		}
+		trusted, err := normalizeTrustedAuthors(repo.TrustedAuthors)
+		if err != nil {
+			return nil, fmt.Errorf("repo %d: %w", i, err)
+		}
+		repo.TrustedAuthors = trusted
 		repo.LegacyImage = ""
 		repo.LegacySecretRefs = nil
 		repo.LegacyToolPolicy = nil
@@ -2021,4 +2034,32 @@ func NormalizeDefaultPlanState(execution *ExecutionPolicy) error {
 	}
 	execution.DefaultPlanState, execution.SpecApproval = state, nil
 	return nil
+}
+
+// maxTrustedAuthors bounds one repository's trusted_authors list.
+const maxTrustedAuthors = 1000
+
+// normalizeTrustedAuthors refuses a blank, multi-line, oversized, or
+// duplicate user ID in a repository's trusted_authors list and returns the
+// list unchanged otherwise (req-risk-based-review REQ-9).
+func normalizeTrustedAuthors(list []string) ([]string, error) {
+	if len(list) == 0 {
+		return nil, nil
+	}
+	if len(list) > maxTrustedAuthors {
+		return nil, fmt.Errorf("trusted_authors holds at most %d user IDs", maxTrustedAuthors)
+	}
+	seen := make(map[string]int, len(list))
+	out := make([]string, 0, len(list))
+	for i, userID := range list {
+		if strings.TrimSpace(userID) == "" || userID != strings.TrimSpace(userID) || strings.ContainsAny(userID, " \t\r\n") || len(userID) > 191 {
+			return nil, fmt.Errorf("trusted_authors[%d] must be one user ID without spaces", i)
+		}
+		if first, duplicate := seen[userID]; duplicate {
+			return nil, fmt.Errorf("trusted_authors[%d] duplicates trusted_authors[%d]", i, first)
+		}
+		seen[userID] = i
+		out = append(out, userID)
+	}
+	return out, nil
 }
