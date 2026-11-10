@@ -34,9 +34,9 @@ The routes:
   conflict. An agent session files as the person whose credential it holds,
   and only when that person's role grants `create_tasks`; the task records
   MCP as its source and the person as its creator (DEC-116(5)). The session
-  may state `plan_state`, a plan, and `merge_approval`, including `false`,
-  but it never approves a plan: a filed plan waits at the plan approval gate
-  for a person (DEC-125(6)).
+  may state either a `plan_state` or a plan, never both, and may state
+  `merge_approval`, including `false`. It never approves a plan: a filed plan
+  waits at the plan approval gate for a person (DEC-125(6)).
 - The monitor and staleness follow-ups, which file ordinary gated tasks; see
   [Misalignment](misalignment.md).
 
@@ -58,21 +58,26 @@ DEC-125(5)).
 | Plan awaiting approval | `awaiting_approval` | A plan version waits at the plan approval gate for a person. |
 | Planning completed | `completed` | A person approved the current plan version; implementation works from it. |
 
-**At intake.** A task takes the plan state its request states. When the
-request states none and files no plan, the task takes the workspace's
-`execution.default_plan_state`, which is `needed` when unset (AC-2.1). The
-legacy `spec_approval` request field and workspace key are aliases: `true`
-reads as `needed` and `false` as `not_required`. A request's `plan_state`
-wins over its `spec_approval`, and either wins over a legacy `level`, where
-L0 and L1 read as `not_required` and L2 and L3 as `needed`. The workspace
-default applies only when the request states none of these. See
-[Configuration](configuration.md) for the workspace default.
+**At intake.** A request states a plan state of `needed` or `not_required`
+only; a task reaches plan awaiting approval or planning completed at intake
+only by filing a plan. When the request states no plan state and files no
+plan, the task takes the workspace's `execution.default_plan_state` (AC-2.1).
+The legacy `spec_approval` request field and workspace key are aliases: `true`
+reads as `needed` and `false` as `not_required`. The workspace key supplies
+the default only when `default_plan_state` is absent, and the default is
+`needed` when neither key is set. A request that sends both `plan_state` and
+a `spec_approval` with a different meaning is refused; send only
+`plan_state`. Either one wins over a legacy `level`, where L0 and L1 read as
+`not_required` and L2 and L3 as `needed`. The workspace default applies only
+when the request states none of these. See [Configuration](configuration.md)
+for the workspace default.
 
 A task can also be filed with an execution plan. The plan must pass the same
 content rules as a plan a plan work order submits, and an invalid plan is
 refused with nothing recorded. A valid plan becomes plan version 1 and the
 task starts at plan awaiting approval (AC-2.2). A request that files a plan
-states no plan state, because the plan sets it (AC-2.6). The request may name
+states no plan state, because the plan sets it, and a `spec_approval` of
+`false` with a plan is refused (AC-2.6). The request may name
 the commit the plan was read against, which must be a full commit ID (AC-2.5).
 Only a REST request can approve the plan it files: when it states the plan
 approved, Conveyor records a plan approval under the filer's credential, which
