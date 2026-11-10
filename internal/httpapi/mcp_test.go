@@ -2918,3 +2918,52 @@ func TestClaimSessionCheckReadsNoWorkspaceOrders(t *testing.T) {
 		}
 	})
 }
+
+// Every MCP field that carries timeline text publishes the first-sentence
+// rules in one sentence under 40 words. The field stays a string with no new
+// validation, and each tool's required fields stay as they were
+// (req-readable-agent-text AC-1.2 to AC-1.4; DEC-126(4)).
+func TestMCPTimelineFieldsPublishFirstSentenceRules(t *testing.T) {
+	t.Parallel()
+	if words := len(strings.Fields(timelineTextFieldGuidance)); words >= 40 {
+		t.Fatalf("timeline field guidance has %d words, want under 40", words)
+	}
+	for _, fragment := range []string{"first sentence", "plain language", "what happened and what happens next", "work-order or session ID", "file path", "migration number", "commit SHA", "REQ-n, AC-n.m, or DEC-n ID", "later sentences"} {
+		if !strings.Contains(timelineTextFieldGuidance, fragment) {
+			t.Fatalf("timeline field guidance is missing %q", fragment)
+		}
+	}
+	type field struct {
+		name     string
+		required []string
+	}
+	fields := map[string]field{
+		"report_progress":       {"message", []string{"work_order_id", "session_id", "message"}},
+		"release_work_order":    {"reason", []string{"work_order_id", "session_id"}},
+		"submit_review_verdict": {"summary", []string{"work_order_id", "session_id", "verdict", "reason_code", "summary", "requirement_citations", "done_criteria_coverage", "governance_assessment"}},
+		"submit_verification":   {"feedback", nil},
+	}
+	seen := map[string]bool{}
+	for _, tool := range mcpTools() {
+		name, _ := tool["name"].(string)
+		want, ok := fields[name]
+		if !ok {
+			continue
+		}
+		schema := tool["inputSchema"].(map[string]any)
+		property, _ := schema["properties"].(map[string]any)[want.name].(map[string]any)
+		if len(property) != 2 || property["type"] != "string" || property["description"] != timelineTextFieldGuidance {
+			t.Errorf("%s %s schema = %+v", name, want.name, property)
+		}
+		if want.required != nil && !reflect.DeepEqual(schema["required"], want.required) {
+			t.Errorf("%s required = %v, want %v", name, schema["required"], want.required)
+		}
+		if required, _ := schema["required"].([]string); want.required == nil && slices.Contains(required, want.name) {
+			t.Errorf("%s now requires %s: %v", name, want.name, required)
+		}
+		seen[name] = true
+	}
+	if len(seen) != len(fields) {
+		t.Fatalf("timeline fields checked on %v, want %d tools", seen, len(fields))
+	}
+}

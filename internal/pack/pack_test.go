@@ -999,3 +999,88 @@ func TestStageRolesCarryCitationScopeStatement(t *testing.T) {
 }
 
 const validExecutionPlanForTest = "## Approach\nA.\n\n## Files touched\n- a.go\n\n## Ordering\n1. A.\n\n## Risks\n- None.\n\n## Done criteria\n1. CRITERION-SENTINEL holds.\n"
+
+// timelineTextSection returns the "Timeline text:" section of a role prompt:
+// the label and the bullet list that follows it.
+func timelineTextSection(role string) string {
+	start := strings.Index(role, "Timeline text:\n\n")
+	if start < 0 {
+		return ""
+	}
+	lines := strings.Split(role[start:], "\n")
+	section := []string{lines[0]}
+	for _, line := range lines[1:] {
+		if line != "" && !strings.HasPrefix(line, "- ") && !strings.HasPrefix(line, "  ") {
+			break
+		}
+		section = append(section, line)
+	}
+	return strings.Join(section, "\n")
+}
+
+// Every role prompt states the first-sentence timeline rules that apply to it
+// and the core plain-English profile rules inline, in a section under 120
+// words, because a stage agent can run where the profile skill is not
+// installed (req-readable-agent-text AC-1.1 to AC-1.4; DEC-126(1), (2)). The
+// planning role keeps the profile off the documents it drafts (DEC-126(3)).
+// The test checks the published guidance only. No test or gate checks agent
+// prose against the profile (DEC-126(4)).
+func TestRolePromptsStateReadableTimelineText(t *testing.T) {
+	bundle, err := Load("")
+	if err != nil {
+		t.Fatal(err)
+	}
+	roles := map[string]string{}
+	for _, stage := range pipelineStages {
+		role, err := bundle.Role(stage)
+		if err != nil {
+			t.Fatal(err)
+		}
+		roles[string(stage)] = role
+	}
+	planning, err := bundle.PlanningRole()
+	if err != nil {
+		t.Fatal(err)
+	}
+	roles["planning"] = planning
+	opener := map[string]string{
+		"triage":    "Open the `summary` with a plain sentence. It states what the task asks for and that it proceeds, or why it is parked.",
+		"planning":  "Open each `response_text` with a plain sentence. It states what you did and what happens next.",
+		"spec":      "Open every progress message, release reason, and checkpoint `decision_request` with a plain sentence. It states what happened and what happens next.",
+		"implement": "Open every progress message, release reason, and checkpoint `decision_request` with a plain sentence. It states what happened and what happens next.",
+		"verify":    "Open every progress message, release reason, and `submit_verification` `feedback` with a plain sentence. It states what happened and what happens next.",
+		"review":    "Open the verdict `summary`, progress messages, and release reasons with a plain sentence. It states what happened and what happens next.",
+	}
+	shared := []string{
+		"That sentence names no work-order or session ID, file path, migration number, commit SHA, or REQ-n, AC-n.m, or DEC-n ID.",
+		"Put required IDs in later sentences.",
+		`in plain English: at most 20 words per instruction and 25 per description, active voice, only "can", "must", and "will" as helping verbs, one instruction per sentence, no semicolons or contractions, and one name per item.`,
+		"The `conveyor-plain-english` skill holds the full profile when installed.",
+	}
+	if len(roles) != len(opener) {
+		t.Fatalf("checked roles = %d, want %d", len(roles), len(opener))
+	}
+	for name, role := range roles {
+		section := timelineTextSection(role)
+		if section == "" {
+			t.Errorf("%s role has no Timeline text section", name)
+			continue
+		}
+		if words := len(strings.Fields(section)); words >= 120 {
+			t.Errorf("%s Timeline text section has %d words, want under 120", name, words)
+		}
+		normalized := strings.Join(strings.Fields(section), " ")
+		for _, fragment := range append([]string{opener[name]}, shared...) {
+			if !strings.Contains(normalized, fragment) {
+				t.Errorf("%s Timeline text section is missing %q", name, fragment)
+			}
+		}
+		// The section replaces the retired plain-words line (DEC-126(1)).
+		if strings.Contains(strings.Join(strings.Fields(role), " "), "Prefer plain words and active voice.") {
+			t.Errorf("%s role still repeats the retired plain-words line", name)
+		}
+	}
+	if !strings.Contains(strings.Join(strings.Fields(timelineTextSection(planning)), " "), "Do not apply this profile to the documents, decisions, task bodies, or bundles you draft.") {
+		t.Error("planning role applies the profile to the documents it drafts")
+	}
+}

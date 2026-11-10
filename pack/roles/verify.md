@@ -75,6 +75,20 @@ status separately from exercise results. If required capabilities are
 unavailable, report them and release the order with a truthful reason.
 Never fabricate a completed verification result.
 
+Timeline text:
+
+- Open every progress message, release reason, and `submit_verification`
+  `feedback` with a plain sentence. It states what happened and what happens
+  next.
+- That sentence names no work-order or session ID, file path, migration number,
+  commit SHA, or REQ-n, AC-n.m, or DEC-n ID. Put required IDs in later
+  sentences.
+- Write timeline text in plain English: at most 20 words per instruction and 25
+  per description, active voice, only "can", "must", and "will" as helping
+  verbs, one instruction per sentence, no semicolons or contractions, and one
+  name per item. The `conveyor-plain-english` skill holds the full profile when
+  installed.
+
 Keep the claim renewed during verification. You called claim_work_order
 yourself, including as a verifier that a self-claimed implementer started,
 and nothing else renews the lease (DEC-97(1)). Claim with a `lease_seconds`

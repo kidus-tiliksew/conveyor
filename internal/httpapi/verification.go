@@ -57,6 +57,16 @@ func verificationMCPTools() []map[string]any {
 			description += " " + store.VerificationOutcomeMapping
 			props["outcome"] = map[string]any{"type": "string", "description": store.VerificationOutcomeMapping}
 			props["required_action"] = map[string]any{"type": "string", "description": "Required with operator_action_required: the exact operator act that unblocks verification."}
+			// req-readable-agent-text AC-1.2 to AC-1.4: feedback is the
+			// verification summary on the task timeline.
+			feedback := map[string]any{}
+			if existing, ok := props["feedback"].(map[string]any); ok {
+				for key, value := range existing {
+					feedback[key] = value
+				}
+			}
+			feedback["description"] = timelineTextFieldGuidance
+			props["feedback"] = feedback
 		}
 		result = append(result, map[string]any{"name": name, "description": description, "inputSchema": schema})
 	}
