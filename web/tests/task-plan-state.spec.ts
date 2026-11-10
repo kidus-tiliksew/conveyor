@@ -30,7 +30,7 @@ const working = {
   actor: 'agent',
   kind: 'working',
   judgment: false,
-  summary: 'An agent is working on this task.',
+  summary: 'An agent is implementing this task.',
   deadline: null,
 }
 

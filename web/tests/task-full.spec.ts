@@ -2658,18 +2658,18 @@ test('a claimed attempt exposes reasoned operator preemption with the renewal gr
     })
   })
   await page.goto('/w/demo/tasks/setup-claimed/full')
-  // At rest it is one quiet trigger in the next-action box — never an entry or
-  // tail card inside the Activity event list.
-  const trigger = page.getByRole('button', { name: 'Stop attempt' })
-  await expect(trigger).toBeVisible()
-  await expect(trigger).toHaveCount(1)
-  await expect(nextActionBox(page).getByRole('button', { name: 'Stop attempt' })).toBeVisible()
+  // At rest it is one item in the next-action banner's "More actions" menu —
+  // never an entry or tail card inside the Activity event list.
+  await expect(page.getByRole('button', { name: /Stop attempt/ })).toHaveCount(0)
   await expect(
     page.locator('section[aria-label="Execution event timeline"] > ol').getByRole('button', { name: /Stop/ }),
   ).toHaveCount(0)
   await expect(page.getByLabel('Reason for stopping this attempt')).toBeHidden()
 
-  await trigger.click()
+  await nextActionBox(page).getByRole('button', { name: 'More actions' }).click()
+  await expect(page.getByRole('menuitem', { name: 'Stop attempt…' })).toHaveCount(1)
+  await page.getByRole('menuitem', { name: 'Stop attempt…' }).click()
+  await expect(page.getByLabel('Reason for stopping this attempt')).toBeFocused()
   await expect(page.getByText(/stops within about a minute/)).toBeVisible()
   const action = page.getByRole('button', { name: 'Stop the attempt' })
   await expect(action).toBeDisabled()
@@ -4025,7 +4025,8 @@ test('a running attempt becoming paused is announced through the live region', a
   })
 
   await page.goto('/w/demo/tasks/live-pause/full')
-  await expect(nextActionBox(page).getByText('Implementation · Progressing')).toBeVisible()
+  // The running attempt's one-row banner names the stage in the server's sentence.
+  await expect(nextActionBox(page).getByRole('heading', { name: 'An agent is implementing this task.' })).toBeVisible()
   await expect(executionTitle(page)).toHaveCount(0)
   releaseStream()
   await expect(page.getByRole('status')).toContainText('Implementation paused — provider limit reached')
@@ -5156,11 +5157,12 @@ test('active review claim diagnostics stay in the review panel instead of standa
   await expect(timelineRows.nth(0)).toContainText(/Panel of 2\b.*unanimous to pass/)
   await expect(timelineRows.nth(1)).toContainText('Review claim expired without verdict submission')
   await expect(timelineRows.nth(2)).toContainText('Pull request opened')
-  // The claimed attempt's stop affordance lives once in the next-action box,
-  // never as a row in the event list.
+  // The claimed attempt's stop affordance lives once in the next-action
+  // banner's menu, never as a row in the event list.
   await expect(timelineRows.getByRole('button', { name: /Stop/ })).toHaveCount(0)
-  await expect(page.getByRole('button', { name: 'Stop attempt' })).toHaveCount(1)
-  await expect(nextActionBox(page).getByRole('button', { name: 'Stop attempt' })).toBeVisible()
+  await nextActionBox(page).getByRole('button', { name: 'More actions' }).click()
+  await expect(page.getByRole('menuitem', { name: 'Stop attempt…' })).toHaveCount(1)
+  await page.keyboard.press('Escape')
 
   // The task sheet uses the same historical rendering boundary.
   await page.goto('/w/demo/tasks/diagnostics')

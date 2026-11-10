@@ -1,6 +1,6 @@
 import { useState } from 'react'
 import type { NextAction } from '../../lib/types'
-import { fullTime, relativeTime } from '../../lib/utils'
+import { cn, fullTime, relativeTime } from '../../lib/utils'
 
 // The deadline a next action states, absolute and relative. A next action
 // without one says nothing rather than inventing a horizon.
@@ -22,8 +22,7 @@ export function NextActionDeadline({ deadline }: { deadline: string | null | und
 // detail that repeats the card's sentence is never read twice.
 export function NextActionIDs({ value }: { value: Record<string, unknown> }) {
   const [open, setOpen] = useState(false)
-  const rows = identifierRows(value)
-  if (rows.length === 0) return null
+  if (identifierRows(value).length === 0) return null
   return (
     <details
       className="text-xs text-muted"
@@ -31,17 +30,30 @@ export function NextActionIDs({ value }: { value: Record<string, unknown> }) {
       onToggle={(event) => setOpen(event.currentTarget.open)}
     >
       <summary className="cursor-pointer select-none">Show IDs</summary>
-      {open && (
-        <dl className="mt-1.5 grid max-w-full grid-cols-[max-content_minmax(0,1fr)] gap-x-3 gap-y-1 rounded-md bg-surface p-2">
-          {rows.map(([label, text], index) => (
-            <div key={`${index}:${label}`} className="contents" data-next-action-id={label}>
-              <dt className="text-faint">{label}</dt>
-              <dd className="min-w-0 break-words font-mono text-[11px] text-foreground/80">{text}</dd>
-            </div>
-          ))}
-        </dl>
-      )}
+      {open && <NextActionIDList value={value} className="mt-1.5" />}
     </details>
+  )
+}
+
+// The labelled identifier list itself, for a caller that owns its own
+// disclosure, such as the passive banner's "Show IDs" menu item.
+export function NextActionIDList({ value, className }: { value: Record<string, unknown>; className?: string }) {
+  const rows = identifierRows(value)
+  if (rows.length === 0) return <p className={cn('text-xs text-muted', className)}>No identifiers.</p>
+  return (
+    <dl
+      className={cn(
+        'grid max-w-full grid-cols-[max-content_minmax(0,1fr)] gap-x-3 gap-y-1 rounded-md bg-surface p-2 text-xs',
+        className,
+      )}
+    >
+      {rows.map(([label, text], index) => (
+        <div key={`${index}:${label}`} className="contents" data-next-action-id={label}>
+          <dt className="text-faint">{label}</dt>
+          <dd className="min-w-0 break-words font-mono text-[11px] text-foreground/80">{text}</dd>
+        </div>
+      ))}
+    </dl>
   )
 }
 

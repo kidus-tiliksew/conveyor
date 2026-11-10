@@ -150,3 +150,9 @@ export function DropdownMenuItem({
     </button>
   )
 }
+
+// A rule between groups of items, such as before a destructive item. Arrow
+// keys skip it, because it is not a menu item.
+export function DropdownMenuSeparator() {
+  return <hr className="my-1 border-border" />
+}

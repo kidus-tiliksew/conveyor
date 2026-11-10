@@ -1,4 +1,4 @@
-import { expect, type Page } from '@playwright/test'
+import { expect, type Locator, type Page } from '@playwright/test'
 import type { NextAction, WorkOrder } from '../src/lib/types'
 import { test } from './helpers/bounded-detail'
 import { callerIdentity } from './helpers/caller-identity'
@@ -95,7 +95,7 @@ const gateAction: NextAction = {
   details: { gate_kind: 'plan_approval', reason_code: 'gate.plan' },
 }
 
-async function mockAPI(page: Page, detail: () => object, action: () => NextAction) {
+async function mockAPI(page: Page, detail: () => object, action: () => NextAction, role = 'operator') {
   const posts: { method: string; path: string; body: unknown }[] = []
   await page.addInitScript(() => localStorage.setItem('conveyor-workspace', 'demo'))
   await page.route('**/v1/**', async (route) => {
@@ -105,7 +105,7 @@ async function mockAPI(page: Page, detail: () => object, action: () => NextActio
     if (path === '/v1/workspaces') return route.fulfill({ json: [{ id: 'demo', name: 'Demo' }] })
     if (path === '/v1/me')
       return route.fulfill({
-        json: callerIdentity({ id: 'operator', email: 'operator@example.test', role: 'operator' }, route.request()),
+        json: callerIdentity({ id: 'operator', email: 'operator@example.test', role }, route.request()),
       })
     if (path === '/v1/workspace') return route.fulfill({ json: { workspace: 'demo', repos: [] } })
     if (path === '/v1/pending-proposals')
@@ -215,10 +215,11 @@ test('Show IDs flattens nested next-action details into labelled text', async ({
   await expect(ids).not.toContainText('"')
 })
 
-// A running agent attempt reads as one box: the server's statement with the
-// current order's execution state folded in, its empty-state rows omitted, and
-// the stop and client-activity affordances printed once (DEC-61;
-// component-web-task-surfaces, Next-action card).
+// A running agent attempt reads as one row on the Timeline: the server's
+// label as a status chip, its summary as the one heading, the current order's
+// model and elapsed time, the time left, and one "More actions" menu for the
+// rare acts (DEC-61; req-operator-next-action AC-1.7, AC-1.8, AC-7.1;
+// component-next-action invariant 33; component-web-task-surfaces invariant 32).
 const runningOrder = {
   id: 'order-impl-running',
   task_id: taskId,
@@ -228,8 +229,12 @@ const runningOrder = {
   claimable: false,
   attempt_id: 'attempt-running',
   claimed_by: 'run:operator',
+  agent: 'claude-code',
+  model: 'claude-opus-5-5',
   created_at: timestamp,
-  queue_entered_at: timestamp,
+  queue_entered_at: '2026-10-12T09:30:00Z',
+  execution_started_at: timestamp,
+  execution_deadline: '2026-10-12T14:00:00Z',
   updated_at: timestamp,
   // The server records no activity snapshot (DEC-97(1)); a stale response
   // that still carries one renders nothing from it.
@@ -245,7 +250,7 @@ const workingAction: NextAction = {
   actor: 'agent',
   kind: 'working',
   judgment: false,
-  summary: 'An agent is working on this task.',
+  summary: 'An agent is implementing this task.',
   if_ignored: 'The attempt continues.',
   deadline: '2026-10-12T14:00:00Z',
   choices: [],
@@ -260,76 +265,393 @@ const workingAction: NextAction = {
   details: {},
 }
 
-for (const surface of [
+// A queued order that an earlier attempt claimed still carries that attempt's
+// model; the queued banner must not print it.
+const queuedOrder = {
+  ...runningOrder,
+  id: 'order-impl-queued',
+  state: 'queued',
+  claimable: true,
+  execution_started_at: undefined,
+  execution_deadline: undefined,
+  activity_snapshot: undefined,
+} as unknown as WorkOrder
+
+const queuedAction: NextAction = {
+  label: 'Queued',
+  actor: 'agent',
+  kind: 'queued',
+  judgment: false,
+  summary: 'The implementation order is waiting for an agent.',
+  if_ignored: 'It stays in the queue.',
+  deadline: '2026-10-13T09:30:00Z',
+  choices: [],
+  current_order: {
+    id: 'order-impl-queued',
+    stage: 'implement',
+    state: 'queued',
+    queue_deadline: '2026-10-13T09:30:00Z',
+    execution_deadline: null,
+    lease_expires_at: null,
+  },
+  details: {},
+}
+
+// One hour into the four-hour execution span.
+const oneHourIn = new Date('2026-10-12T11:00:00Z')
+
+const surfaces = [
   { name: 'Board sheet', path: `/w/demo/tasks/${taskId}`, detail: 'dialog', label: 'Task detail' },
   { name: 'full route', path: `/w/demo/tasks/${taskId}/full`, detail: 'region', label: 'Task content' },
-] as const) {
-  test(`a running attempt on the ${surface.name} shows one next-action box above Activity at 390 px`, async ({
+] as const
+
+async function verticalCenter(locator: Locator) {
+  const box = await locator.boundingBox()
+  if (!box) throw new Error('element has no box')
+  return box.y + box.height / 2
+}
+
+async function noSidewaysScroll(card: Locator) {
+  return card.evaluate((element) => ({
+    card: element.scrollWidth > element.clientWidth,
+    page: document.documentElement.scrollWidth > document.documentElement.clientWidth,
+  }))
+}
+
+for (const surface of surfaces) {
+  for (const width of [375, 1280]) {
+    test(`a running attempt on the ${surface.name} renders one banner row at ${width} px`, async ({ page }) => {
+      await page.clock.setFixedTime(oneHourIn)
+      await page.setViewportSize({ width, height: 900 })
+      await mockAPI(
+        page,
+        () => activity('running', workingAction, [runningOrder]),
+        () => workingAction,
+      )
+      await page.goto(surface.path)
+      const card = page.getByRole('region', { name: 'Next action' })
+      await expect(card).toHaveCount(1)
+
+      // The label is a chip carrying the actor; its accessible description is
+      // the if-ignored sentence, and the working dot pulses.
+      const chip = card.getByRole('button', { name: 'Working, agent' })
+      await expect(chip).toHaveAttribute('data-actor', 'agent')
+      await expect(chip).toHaveAccessibleDescription('If ignored: The attempt continues.')
+      await expect(chip.locator('[data-pulse]')).toHaveCount(1)
+
+      // The summary is the one heading, printed once on task detail.
+      const heading = card.getByRole('heading', { name: 'An agent is implementing this task.' })
+      await expect(heading).toBeVisible()
+      const detail = page.getByRole(surface.detail, { name: surface.label })
+      await expect(detail.getByText('An agent is implementing this task.', { exact: true })).toHaveCount(1)
+
+      // The current order's model and elapsed time, and the time left.
+      const meta = card.locator('[data-banner-meta]')
+      await expect(meta.locator('[data-banner-model]')).toHaveText('claude-opus-5-5·')
+      await expect(meta.locator('time')).toHaveText('started 1h ago')
+      // At 375 px the meta has its own row, so the model shows in full.
+      if (width < 640) await expect(meta.locator('[data-banner-model]')).toBeInViewport()
+      await expect(meta.locator('time')).toHaveAttribute('datetime', '2026-10-12T10:00:00.000Z')
+      const left = card.locator('[data-next-action-deadline]')
+      await expect(left).toContainText('3h left')
+      await expect(left.locator('time')).toHaveAttribute('datetime', '2026-10-12T14:00:00Z')
+      await expect(left).toHaveAttribute('data-tone', 'neutral')
+      await expect(card).toHaveAttribute('data-tone', 'neutral')
+
+      // The stage line, the visible if-ignored line, the inline stop button,
+      // and the IDs disclosure are gone from the row.
+      await expect(card.getByText('Implementation · Progressing', { exact: true })).toHaveCount(0)
+      await expect(card.locator('[data-execution-status]')).toHaveCount(0)
+      await expect(card.getByText(/^Deadline /)).toHaveCount(0)
+      await expect(page.getByRole('button', { name: /Stop attempt/ })).toHaveCount(0)
+      await expect(card.locator('details[data-next-action-ids]')).toHaveCount(0)
+      await expect(card.getByRole('button', { name: 'More actions' })).toHaveCount(1)
+      await expect(page.getByRole('region', { name: 'Client machine activity' })).toHaveCount(0)
+      await expect(page.getByText('running focused tests')).toHaveCount(0)
+
+      // The execution state adds nothing the summary already says.
+      await expect(page.getByText('Implementation is in progress')).toHaveCount(0)
+      await expect(page.locator('#current-execution-title')).toHaveCount(0)
+      for (const label of ['Current blocker', 'Retry', 'What to do next']) {
+        await expect(page.locator('dt').getByText(label, { exact: true })).toHaveCount(0)
+      }
+
+      // One row: the chip, sentence, time left, and menu share a line. At
+      // 375 px the meta wraps under the sentence.
+      const menu = card.getByRole('button', { name: 'More actions' })
+      const row = await verticalCenter(chip)
+      for (const part of [left, menu]) expect(Math.abs((await verticalCenter(part)) - row)).toBeLessThanOrEqual(4)
+      const headingBox = await heading.boundingBox()
+      const metaBox = await meta.boundingBox()
+      const chipBox = await chip.boundingBox()
+      if (!headingBox || !metaBox || !chipBox) throw new Error('banner part has no box')
+      expect(Math.abs(headingBox.y - chipBox.y)).toBeLessThanOrEqual(4)
+      if (width < 640) {
+        expect(metaBox.y).toBeGreaterThanOrEqual(headingBox.y + headingBox.height - 1)
+        expect(Math.abs(metaBox.x - headingBox.x)).toBeLessThanOrEqual(1)
+      } else {
+        expect(Math.abs((await verticalCenter(meta)) - row)).toBeLessThanOrEqual(4)
+        expect(metaBox.x).toBeGreaterThan(headingBox.x)
+        const cardBox = await card.boundingBox()
+        expect(cardBox && cardBox.height).toBeLessThanOrEqual(48)
+      }
+
+      // The banner sits directly above the Activity heading.
+      const activityHeading = page.getByRole('heading', { name: 'Activity', exact: true })
+      const cardBox = await card.boundingBox()
+      const activityBox = await activityHeading.boundingBox()
+      expect(cardBox && activityBox && cardBox.y + cardBox.height <= activityBox.y).toBe(true)
+
+      expect(await noSidewaysScroll(card)).toEqual({ card: false, page: false })
+    })
+  }
+}
+
+for (const width of [375, 1280]) {
+  test(`a queued order renders the same row with its queue age at ${width} px`, async ({ page }) => {
+    await page.clock.setFixedTime(oneHourIn)
+    await page.setViewportSize({ width, height: 900 })
+    await mockAPI(
+      page,
+      () => activity('queued', queuedAction, [queuedOrder]),
+      () => queuedAction,
+    )
+    await page.goto(`/w/demo/tasks/${taskId}/full`)
+    const card = page.getByRole('region', { name: 'Next action' })
+    const chip = card.getByRole('button', { name: 'Queued, agent' })
+    await expect(chip).toHaveAccessibleDescription('If ignored: It stays in the queue.')
+    await expect(chip.locator('[data-pulse]')).toHaveCount(0)
+    await expect(card.getByRole('heading', { name: 'The implementation order is waiting for an agent.' })).toBeVisible()
+    // The queue age only: the earlier attempt's model is not this order's.
+    await expect(card.locator('[data-banner-meta]')).toHaveText('queued 1h 30m ago')
+    await expect(card.getByText('claude-opus-5-5')).toHaveCount(0)
+    await expect(card.locator('[data-next-action-deadline]')).toContainText('22h 30m left')
+    await expect(card.locator('[data-deadline-progress]')).toHaveCount(0)
+    await expect(card).toHaveAttribute('data-tone', 'neutral')
+    expect(await noSidewaysScroll(card)).toEqual({ card: false, page: false })
+  })
+}
+
+test('a banner field the order lacks prints nothing', async ({ page }) => {
+  await page.clock.setFixedTime(oneHourIn)
+  const bare = { ...runningOrder, model: undefined, execution_started_at: undefined } as unknown as WorkOrder
+  const noDeadline: NextAction = { ...workingAction, deadline: null }
+  await mockAPI(
     page,
-  }) => {
-    await page.setViewportSize({ width: 390, height: 844 })
+    () => activity('running', noDeadline, [bare]),
+    () => noDeadline,
+  )
+  await page.goto(`/w/demo/tasks/${taskId}/full`)
+  const card = page.getByRole('region', { name: 'Next action' })
+  await expect(card.getByRole('heading', { name: 'An agent is implementing this task.' })).toBeVisible()
+  await expect(card.locator('[data-banner-meta]')).toHaveCount(0)
+  await expect(card.locator('[data-next-action-deadline]')).toHaveCount(0)
+  await expect(card.getByText(/ago|left|undefined|NaN/)).toHaveCount(0)
+})
+
+// The last tenth of the execution span takes the attention tone on the bar,
+// the time text, and the banner border; before it the banner stays neutral.
+for (const { at, tone, left } of [
+  { at: '2026-10-12T13:30:00Z', tone: 'neutral', left: '30m left' },
+  { at: '2026-10-12T13:36:00Z', tone: 'attention', left: '24m left' },
+  { at: '2026-10-12T14:10:00Z', tone: 'attention', left: 'Deadline passed' },
+]) {
+  test(`at ${at} the banner tone is ${tone}`, async ({ page }) => {
+    await page.clock.setFixedTime(new Date(at))
+    await page.setViewportSize({ width: 1280, height: 900 })
     await mockAPI(
       page,
       () => activity('running', workingAction, [runningOrder]),
       () => workingAction,
     )
-    await page.goto(surface.path)
+    await page.goto(`/w/demo/tasks/${taskId}/full`)
     const card = page.getByRole('region', { name: 'Next action' })
-    await expect(card).toHaveCount(1)
-
-    // The server's statement: label and actor, the summary once as the box's
-    // one headline, what happens if ignored, and the deadline.
-    await expect(card.getByText('Working', { exact: true })).toBeVisible()
-    await expect(card.locator('[data-actor]')).toHaveText('agent')
-    await expect(card.getByRole('heading', { name: 'An agent is working on this task.' })).toBeVisible()
-    // The Board behind the sheet keeps the summary in its card tooltip, so the
-    // count is taken over task detail.
-    const detail = page.getByRole(surface.detail, { name: surface.label })
-    await expect(detail.getByText('An agent is working on this task.', { exact: true })).toHaveCount(1)
-    await expect(card.getByText('If ignored: The attempt continues.')).toBeVisible()
-    await expect(card.locator('[data-next-action-deadline] time')).toHaveAttribute('datetime', '2026-10-12T14:00:00Z')
-    await expect(card.getByText('Implementation · Progressing', { exact: true })).toBeVisible()
-
-    // The execution state adds nothing the summary already says: no derived
-    // title, no empty-state rows, and no second current-state section.
-    await expect(page.getByText('Implementation is in progress')).toHaveCount(0)
-    await expect(page.locator('#current-execution-title')).toHaveCount(0)
-    await expect(page.locator('section[aria-labelledby="current-execution-title"]')).toHaveCount(0)
-    for (const label of ['Current blocker', 'Retry', 'What to do next']) {
-      await expect(page.locator('dt').getByText(label, { exact: true })).toHaveCount(0)
-    }
-    for (const empty of ['No current blocker.', 'No retry is needed.', 'No operator action is needed.']) {
-      await expect(page.getByText(empty)).toHaveCount(0)
-    }
-
-    // The stop affordance renders once, in the box, with no client machine activity.
-    await expect(page.getByRole('button', { name: 'Stop attempt' })).toHaveCount(1)
-    await expect(card.getByRole('button', { name: 'Stop attempt' })).toBeVisible()
-    await expect(page.getByRole('region', { name: 'Client machine activity' })).toHaveCount(0)
-    await expect(page.getByText('running focused tests')).toHaveCount(0)
-
-    // The box sits directly above the Activity heading.
-    const activityHeading = page.getByRole('heading', { name: 'Activity', exact: true })
-    const cardBox = await card.boundingBox()
-    const headingBox = await activityHeading.boundingBox()
-    expect(cardBox && headingBox && cardBox.y + cardBox.height <= headingBox.y).toBe(true)
-
-    // Nothing scrolls sideways at 390 px.
-    const overflow = await card.evaluate((element) => ({
-      card: element.scrollWidth > element.clientWidth,
-      page: document.documentElement.scrollWidth > document.documentElement.clientWidth,
-    }))
-    expect(overflow).toEqual({ card: false, page: false })
+    const timeLeft = card.locator('[data-next-action-deadline]')
+    await expect(timeLeft).toContainText(left)
+    await expect(timeLeft).toHaveAttribute('data-tone', tone)
+    await expect(card).toHaveAttribute('data-tone', tone)
+    const progress = Number(await card.locator('[data-deadline-progress]').getAttribute('data-deadline-progress'))
+    expect(progress).toBe(Math.min(100, Math.round(((Date.parse(at) - Date.parse(timestamp)) / (4 * 3600_000)) * 100)))
+    // Compare against probes carrying the attention classes the banner uses.
+    const colors = await card.evaluate((element) => {
+      const probe = (className: string, property: 'color' | 'borderTopColor' | 'backgroundColor') => {
+        const span = document.createElement('span')
+        span.className = className
+        element.append(span)
+        const value = getComputedStyle(span)[property]
+        span.remove()
+        return value
+      }
+      return {
+        border: getComputedStyle(element).borderTopColor,
+        attentionBorder: probe('border border-attention/60', 'borderTopColor'),
+        attentionText: probe('text-attention', 'color'),
+        attentionBar: probe('bg-attention-dot', 'backgroundColor'),
+        bar: getComputedStyle(element.querySelector('[data-deadline-progress] > span') as Element).backgroundColor,
+      }
+    })
+    const timeColor = await timeLeft.evaluate((element) => getComputedStyle(element).color)
+    expect(timeColor === colors.attentionText).toBe(tone === 'attention')
+    expect(colors.border === colors.attentionBorder).toBe(tone === 'attention')
+    expect(colors.bar === colors.attentionBar).toBe(tone === 'attention')
   })
 }
 
-// A claimed order the next action does not name as current, such as a claimed
-// refresh-review round, maps no execution state; its stop affordance still
-// renders once, in the box.
-test('a claimed order without a mapped execution state keeps one Stop attempt in the box', async ({ page }) => {
-  const reviewOrder = { ...runningOrder, id: 'order-review-refresh', stage: 'review', activity_snapshot: undefined }
-  const unnamed: NextAction = { ...workingAction, current_order: undefined }
+test('the deadline keeps its full time in a tooltip reachable by keyboard', async ({ page }) => {
+  await page.clock.setFixedTime(oneHourIn)
   await mockAPI(
+    page,
+    () => activity('running', workingAction, [runningOrder]),
+    () => workingAction,
+  )
+  await page.goto(`/w/demo/tasks/${taskId}/full`)
+  const card = page.getByRole('region', { name: 'Next action' })
+  const timeLeft = card.locator('[data-next-action-deadline]')
+  await timeLeft.focus()
+  await expect(card.getByRole('tooltip').filter({ hasText: /^Deadline Oct 12, 2026/ })).toBeVisible()
+  // The chip's tooltip names the actor and the if-ignored sentence on focus.
+  await card.getByRole('button', { name: 'Working, agent' }).focus()
+  const chipTip = card.getByRole('tooltip').filter({ hasText: 'If ignored: The attempt continues.' })
+  await expect(chipTip).toBeVisible()
+  await expect(chipTip).toContainText('agent')
+})
+
+// The rare acts sit behind one menu: Copy order ID when the statement names an
+// order, Show IDs, and Stop attempt… only for recover_work and a claimed order
+// (req-operator-next-action AC-1.8, AC-7.1).
+for (const { role, stop } of [
+  { role: 'operator', stop: true },
+  { role: 'contributor', stop: false },
+]) {
+  test(`the More actions menu for a ${role} ${stop ? 'offers' : 'withholds'} Stop attempt`, async ({ page }) => {
+    await mockAPI(
+      page,
+      () => activity('running', workingAction, [runningOrder]),
+      () => workingAction,
+      role,
+    )
+    await page.goto(`/w/demo/tasks/${taskId}/full`)
+    const card = page.getByRole('region', { name: 'Next action' })
+    await card.getByRole('button', { name: 'More actions' }).click()
+    const items = page.getByRole('menu', { name: 'More actions' }).getByRole('menuitem')
+    await expect(items).toHaveText(
+      stop ? ['Copy order ID', 'Show IDs', 'Stop attempt…'] : ['Copy order ID', 'Show IDs'],
+    )
+    await expect(page.getByRole('menu').getByRole('separator')).toHaveCount(stop ? 1 : 0)
+  })
+}
+
+test('the More actions menu works by keyboard and Escape returns focus', async ({ page }) => {
+  await mockAPI(
+    page,
+    () => activity('running', workingAction, [runningOrder]),
+    () => workingAction,
+  )
+  await page.goto(`/w/demo/tasks/${taskId}`)
+  const sheet = page.getByRole('dialog', { name: 'Task detail' })
+  const button = sheet.getByRole('button', { name: 'More actions' })
+  await button.focus()
+  await page.keyboard.press('Enter')
+  const items = page.getByRole('menu', { name: 'More actions' }).getByRole('menuitem')
+  await expect(items.nth(0)).toBeFocused()
+  await page.keyboard.press('ArrowDown')
+  await expect(items.nth(1)).toBeFocused()
+  await page.keyboard.press('ArrowDown')
+  await expect(items.nth(2)).toBeFocused()
+  await page.keyboard.press('ArrowDown')
+  await expect(items.nth(0)).toBeFocused()
+  await page.keyboard.press('ArrowUp')
+  await expect(items.nth(2)).toBeFocused()
+  // Escape closes the menu, not the Board sheet, and focus returns.
+  await page.keyboard.press('Escape')
+  await expect(page.getByRole('menu')).toHaveCount(0)
+  await expect(button).toBeFocused()
+  await expect(sheet).toBeVisible()
+  await page.keyboard.press(' ')
+  await expect(items.nth(0)).toBeFocused()
+  await page.keyboard.press('Escape')
+  await expect(button).toBeFocused()
+})
+
+test('Show IDs and Copy order ID read the stated order', async ({ page, context }) => {
+  await context.grantPermissions(['clipboard-read', 'clipboard-write'])
+  await mockAPI(
+    page,
+    () => activity('running', workingAction, [runningOrder]),
+    () => workingAction,
+  )
+  await page.goto(`/w/demo/tasks/${taskId}/full`)
+  const card = page.getByRole('region', { name: 'Next action' })
+  const menu = card.getByRole('button', { name: 'More actions' })
+  await menu.click()
+  await page.getByRole('menuitem', { name: 'Show IDs' }).click()
+  const ids = card.locator('[data-next-action-ids]')
+  await expect(ids.locator('[data-next-action-id="Order ID"] dd')).toHaveText('order-impl-running')
+  await expect(ids.locator('[data-next-action-id="Stage"] dd')).toHaveText('implement')
+  await expect(ids).not.toContainText('{')
+  // The list sits under the banner's row.
+  const headingBox = await card.getByRole('heading').boundingBox()
+  const idsBox = await ids.boundingBox()
+  expect(headingBox && idsBox && idsBox.y >= headingBox.y + headingBox.height).toBe(true)
+  await menu.click()
+  await page.getByRole('menuitem', { name: 'Hide IDs' }).click()
+  await expect(ids).toHaveCount(0)
+
+  await menu.click()
+  await page.getByRole('menuitem', { name: 'Copy order ID' }).click()
+  await expect.poll(() => page.evaluate(() => navigator.clipboard.readText())).toBe('order-impl-running')
+})
+
+test('Stop attempt… opens the confirmation under the banner and posts the same preempt request', async ({ page }) => {
+  const posts = await mockAPI(
+    page,
+    () => activity('running', workingAction, [runningOrder]),
+    () => workingAction,
+  )
+  await page.goto(`/w/demo/tasks/${taskId}/full`)
+  const card = page.getByRole('region', { name: 'Next action' })
+  const menu = card.getByRole('button', { name: 'More actions' })
+  await menu.click()
+  await page.getByRole('menuitem', { name: 'Stop attempt…' }).click()
+  const reason = card.getByLabel('Reason for stopping this attempt')
+  await expect(reason).toBeFocused()
+  await expect(card.getByText(/stops within about a minute/)).toBeVisible()
+  const confirmation = card.locator('[data-preempt-confirmation]')
+  const headingBox = await card.getByRole('heading').boundingBox()
+  const confirmationBox = await confirmation.boundingBox()
+  expect(headingBox && confirmationBox && confirmationBox.y >= headingBox.y + headingBox.height).toBe(true)
+
+  // Cancel closes it and returns focus to the menu button.
+  await card.getByRole('button', { name: 'Cancel' }).click()
+  await expect(confirmation).toHaveCount(0)
+  await expect(menu).toBeFocused()
+
+  await menu.click()
+  await page.getByRole('menuitem', { name: 'Stop attempt…' }).click()
+  const stop = card.getByRole('button', { name: 'Stop the attempt' })
+  await expect(stop).toBeDisabled()
+  await reason.fill('Switch to the repaired setup')
+  await stop.click()
+  await expect.poll(() => posts.length).toBe(1)
+  expect(posts[0].method).toBe('POST')
+  expect(posts[0].path).toBe('/v1/work-orders/order-impl-running/preempt')
+  const body = posts[0].body as { reason: string; request_id: string }
+  expect(body.reason).toBe('Switch to the repaired setup')
+  expect(body.request_id).toMatch(/^[0-9a-f-]{36}$/)
+  await expect(card.getByRole('button', { name: 'Stopped' })).toBeDisabled()
+})
+
+// A claimed order the next action does not name as current, such as a claimed
+// refresh-review round, still offers Stop attempt… once, against that claimed
+// order; with no stated order there is no meta and no Copy order ID.
+test('a claimed order the statement does not name keeps one Stop attempt in the menu', async ({ page }) => {
+  const reviewOrder = { ...runningOrder, id: 'order-review-refresh', stage: 'review', activity_snapshot: undefined }
+  const unnamed: NextAction = {
+    ...workingAction,
+    summary: 'An agent is working on this task.',
+    current_order: undefined,
+  }
+  const posts = await mockAPI(
     page,
     () => activity('running', unnamed, [reviewOrder as WorkOrder]),
     () => unnamed,
@@ -339,9 +661,39 @@ test('a claimed order without a mapped execution state keeps one Stop attempt in
     const card = page.getByRole('region', { name: 'Next action' })
     await expect(card.getByRole('heading', { name: 'An agent is working on this task.' })).toBeVisible()
     await expect(card.locator('[data-execution-status]')).toHaveCount(0)
-    await expect(page.getByRole('button', { name: 'Stop attempt' })).toHaveCount(1)
-    await expect(card.getByRole('button', { name: 'Stop attempt' })).toBeVisible()
+    await expect(card.locator('[data-banner-meta]')).toHaveCount(0)
+    await card.getByRole('button', { name: 'More actions' }).click()
+    await expect(page.getByRole('menuitem')).toHaveText(['Show IDs', 'Stop attempt…'])
+    await page.keyboard.press('Escape')
   }
+  await page.getByRole('region', { name: 'Next action' }).getByRole('button', { name: 'More actions' }).click()
+  await page.getByRole('menuitem', { name: 'Stop attempt…' }).click()
+  await page.getByLabel('Reason for stopping this attempt').fill('Stale round')
+  await page.getByRole('button', { name: 'Stop the attempt' }).click()
+  await expect.poll(() => posts.map((post) => post.path)).toEqual(['/v1/work-orders/order-review-refresh/preempt'])
+})
+
+// The Flow view keeps the full card: its execution line, the visible
+// if-ignored sentence and deadline, and the non-inline Stop attempt control.
+test('the Flow view keeps the full card for a running attempt', async ({ page }) => {
+  await page.addInitScript(() => localStorage.setItem('conveyor-task-activity-view', 'flow'))
+  await mockAPI(
+    page,
+    () => activity('running', workingAction, [runningOrder]),
+    () => workingAction,
+  )
+  await page.route(`**/v1/tasks/${taskId}/flow*`, (route) => route.fulfill({ status: 500, json: {} }))
+  await page.goto(`/w/demo/tasks/${taskId}/full`)
+  const card = page.getByRole('region', { name: 'Next action' })
+  await expect(card.getByRole('heading', { name: 'An agent is implementing this task.' })).toBeVisible()
+  await expect(card.locator('[data-passive-banner]')).toHaveCount(0)
+  await expect(card.getByText('Implementation · Progressing', { exact: true })).toBeVisible()
+  await expect(card.getByText('If ignored: The attempt continues.')).toBeVisible()
+  await expect(card.locator('[data-next-action-deadline] time')).toHaveAttribute('datetime', '2026-10-12T14:00:00Z')
+  await expect(card.getByRole('button', { name: 'More actions' })).toHaveCount(0)
+  await card.getByRole('button', { name: 'Stop attempt' }).click()
+  await expect(card.getByLabel('Reason for stopping this attempt')).toBeVisible()
+  await expect(card.getByRole('button', { name: 'Cancel' })).toHaveCount(0)
 })
 
 // On the Flow tab the timeline's gate card is not mounted, so the card itself
