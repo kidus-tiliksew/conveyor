@@ -24,7 +24,7 @@ func ResolveTaskReviewRoundSeats(ctx context.Context, reader store.ReviewRoundSe
 	if cfg != nil {
 		workspaceSeats = len(cfg.Review.Seats)
 	}
-	in, err := store.LoadReviewRoundSeatInputs(ctx, reader, task.ID, store.ReviewSeatMinimum(task.SetupContract, workspaceSeats), round)
+	in, err := store.LoadReviewRoundSeatInputs(ctx, reader, task, store.ReviewSeatMinimum(task.SetupContract, workspaceSeats), round)
 	if err != nil {
 		return store.ReviewRoundSeatResolution{}, err
 	}

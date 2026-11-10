@@ -70,7 +70,15 @@ func checkReviewRoundSeatsTx(ctx context.Context, q boundaryQuerier, workspaceID
 	if err != nil {
 		return err
 	}
-	return store.CheckReviewRoundSeats(seats, task.SetupContract, planned, records, orderCount)
+	risk := 0
+	if task.SetupContract.Risk.Enforcing() {
+		ratings, err := listRiskRatings(ctx, q, task.ID)
+		if err != nil {
+			return err
+		}
+		risk = store.RiskSeatCount(task, ratings)
+	}
+	return store.CheckReviewRoundSeats(seats, task.SetupContract, planned, risk, records, orderCount)
 }
 
 func insertReviewRoundSeatsTx(ctx context.Context, q boundaryQuerier, workspaceID string, record store.ReviewRoundSeats) error {
@@ -101,7 +109,11 @@ func policyHandoffSeatInputsTx(ctx context.Context, tx pgx.Tx, q *db.Queries, wo
 	if err != nil {
 		return store.PolicyHandoffSeatInputs{}, err
 	}
-	return store.PolicyHandoffSeatInputs{Events: events, Records: records, PlannedSeatCount: planned}, nil
+	ratings, err := listRiskRatings(ctx, tx, taskID)
+	if err != nil {
+		return store.PolicyHandoffSeatInputs{}, err
+	}
+	return store.PolicyHandoffSeatInputs{Events: events, Records: records, PlannedSeatCount: planned, RiskRatings: ratings}, nil
 }
 
 // errReviewSeatAdditionCollision marks a duplicate ledger key: a concurrent
@@ -168,33 +180,7 @@ func (s *Store) AddReviewSeatsCommand(ctx context.Context, lease taskops.TaskLea
 		if err != nil {
 			return err
 		}
-		if err = insertReviewSeatAdditionTx(ctx, tx, workspaceID, plan.Ledger); err != nil {
-			return err
-		}
-		for i, job := range plan.Jobs {
-			if _, err = q.InsertJob(ctx, jobInsertParams(job)); err != nil {
-				return err
-			}
-			if err = insertEvent(ctx, q, core.Event{TaskID: request.TaskID, JobID: job.ID, Kind: "job.created", Payload: core.JSONPayload(job), At: now}); err != nil {
-				return err
-			}
-			order := plan.Orders[i]
-			order.UpdatedAt = now
-			if err = insertReviewSeatAdditionOrderTx(ctx, tx, workspaceID, order); err != nil {
-				return err
-			}
-			if err = insertEvent(ctx, q, core.Event{TaskID: request.TaskID, JobID: job.ID, Kind: "work_order.created", Payload: store.WorkOrderEventPayload(order), At: now}); err != nil {
-				return err
-			}
-		}
-		if plan.RecordExists {
-			if _, err = tx.Exec(ctx, `UPDATE review_round_seats SET seat_count=$4 WHERE workspace_id=$1 AND task_id=$2 AND review_round=$3`, workspaceID, request.TaskID, plan.Record.ReviewRound, plan.Record.SeatCount); err != nil {
-				return err
-			}
-		} else if err = insertReviewRoundSeatsTx(ctx, tx, workspaceID, plan.Record); err != nil {
-			return err
-		}
-		if err = insertEvent(ctx, q, core.Event{TaskID: request.TaskID, Kind: "review.seats_added", Payload: core.JSONPayload(plan.Payload), At: now}); err != nil {
+		if err = applyReviewSeatAdditionTx(ctx, tx, q, workspaceID, plan); err != nil {
 			return err
 		}
 		result = plan.Result
@@ -287,4 +273,80 @@ func insertReviewSeatAdditionOrderTx(ctx context.Context, tx pgx.Tx, workspaceID
 		order.ReasonCode, order.ReviewKind, order.ReviewScope, order.BaselineSHA, order.HeadSHA,
 		order.QueueEnteredAt, order.QueueDeadline, order.CreatedAt, servedRequirementSnapshotJSON(order.ServedRequirementSnapshot), digest, order.VerificationContextID)
 	return err
+}
+
+// applyReviewSeatAdditionTx writes one planned addition in the caller's
+// transaction, which holds the task lock: the ledger row, the added jobs and
+// seat orders, the round record, and the review.seats_added event. The
+// operator addition and the seats a raised enforcing tier adds share it.
+func applyReviewSeatAdditionTx(ctx context.Context, tx pgx.Tx, q *db.Queries, workspaceID string, plan store.ReviewSeatAdditionPlan) error {
+	taskID, now := plan.Ledger.TaskID, plan.Ledger.CreatedAt
+	if err := insertReviewSeatAdditionTx(ctx, tx, workspaceID, plan.Ledger); err != nil {
+		return err
+	}
+	for i, job := range plan.Jobs {
+		if _, err := q.InsertJob(ctx, jobInsertParams(job)); err != nil {
+			return err
+		}
+		if err := insertEvent(ctx, q, core.Event{TaskID: taskID, JobID: job.ID, Kind: "job.created", Payload: core.JSONPayload(job), At: now}); err != nil {
+			return err
+		}
+		order := plan.Orders[i]
+		order.UpdatedAt = now
+		if err := insertReviewSeatAdditionOrderTx(ctx, tx, workspaceID, order); err != nil {
+			return err
+		}
+		if err := insertEvent(ctx, q, core.Event{TaskID: taskID, JobID: job.ID, Kind: "work_order.created", Payload: store.WorkOrderEventPayload(order), At: now}); err != nil {
+			return err
+		}
+	}
+	if plan.RecordExists {
+		if err := plan.Record.Validate(); err != nil {
+			return err
+		}
+		if _, err := tx.Exec(ctx, `UPDATE review_round_seats SET seat_count=$4,seat_count_source=$5 WHERE workspace_id=$1 AND task_id=$2 AND review_round=$3`, workspaceID, taskID, plan.Record.ReviewRound, plan.Record.SeatCount, plan.Record.SeatCountSource); err != nil {
+			return err
+		}
+	} else if err := insertReviewRoundSeatsTx(ctx, tx, workspaceID, plan.Record); err != nil {
+		return err
+	}
+	return insertEvent(ctx, q, core.Event{TaskID: taskID, Kind: "review.seats_added", Payload: core.JSONPayload(plan.Payload), At: now})
+}
+
+// addRiskSeatsTx adds the seats an enforcing task's raised tier requires to
+// its open review round, inside the transaction of the act that raised the
+// tier, which holds the task lock (req-risk-based-review AC-7.2;
+// feature-risk-based-review RR-5). ratings include the act's own rating. A
+// replayed act finds its ledger row and adds nothing.
+func addRiskSeatsTx(ctx context.Context, tx pgx.Tx, q *db.Queries, workspaceID string, task core.Task, ratings []core.RiskRating, trigger store.RiskSeatTrigger, seats store.RiskSeatSettings) error {
+	if !task.SetupContract.Risk.Enforcing() {
+		return nil
+	}
+	orders, err := taskReviewOrdersTx(ctx, tx, workspaceID, task.ID)
+	if err != nil {
+		return err
+	}
+	rows, err := q.ListEvents(ctx, db.ListEventsParams{TaskID: nullableText(task.ID), WorkspaceID: workspaceID})
+	if err != nil {
+		return err
+	}
+	events := make([]core.Event, len(rows))
+	for i := range rows {
+		events[i] = eventFromDB(rows[i])
+	}
+	records, err := reviewRoundSeatsTx(ctx, tx, workspaceID, task.ID)
+	if err != nil {
+		return err
+	}
+	plan, add, err := store.PlanRiskSeatAddition(store.RiskSeatAdditionInputs{
+		Workspace: workspaceID, Task: task, Orders: orders, Events: events, Records: records, Ratings: ratings, Trigger: trigger,
+		WorkspaceReviewSeats: seats.WorkspaceReviewSeats, QueueTimeout: seats.QueueTimeout, Now: time.Now().UTC(),
+	})
+	if err != nil || !add {
+		return err
+	}
+	if _, found, err := reviewSeatAdditionTx(ctx, tx, workspaceID, plan.Ledger.RequestID); err != nil || found {
+		return err
+	}
+	return applyReviewSeatAdditionTx(ctx, tx, q, workspaceID, plan)
 }

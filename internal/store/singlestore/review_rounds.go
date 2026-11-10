@@ -406,6 +406,19 @@ ORDER BY version DESC LIMIT 1`, documentWorkspace(ctx), id, version, version, ve
 				return err
 			}
 		}
+		// Seats a raised enforcing tier requires join the round before it
+		// aggregates, so it never settles short of them (req-risk-based-review
+		// AC-7.2; feature-risk-based-review RR-5).
+		var ratings []core.RiskRating
+		if before.SetupContract.Risk.Enforcing() {
+			if ratings, err = lockRiskRatingsTx(ctx, tx, decision.TaskID); err != nil {
+				return err
+			}
+			if err = s.addRiskSeatsTx(ctx, tx, before, ratings, store.VerdictRiskSeatTrigger(decision),
+				store.RiskSeatSettings{WorkspaceReviewSeats: decision.WorkspaceReviewSeats, QueueTimeout: decision.SeatQueueTimeout}); err != nil {
+				return err
+			}
+		}
 		if decision.PublicationEligible {
 			if err := s.queueReviewPublicationTx(ctx, tx, reviewPublicationFromDecision(decision)); err != nil {
 				return err
@@ -473,7 +486,7 @@ ORDER BY version DESC LIMIT 1`, documentWorkspace(ctx), id, version, version, ve
 				}
 			}
 			command, next, recovery = plan.Command, plan.NextStage, plan.Recovery
-		} else if store.ReviewAcceptAdmitted(decision, aggregate.Verdict) {
+		} else if _, hold := store.RiskMergeHold(before, ratings); store.ReviewAcceptAdmitted(decision, aggregate.Verdict, hold) {
 			// DEC-64(8): one running -> approved edge, no intervention.
 			command, recovery = core.TaskReviewAccept, ""
 		}

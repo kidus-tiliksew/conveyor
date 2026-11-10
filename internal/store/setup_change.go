@@ -209,6 +209,7 @@ func (m *memory) ChangeTaskPolicyCommand(ctx context.Context, lease taskops.Task
 	}
 	request, err = PlanTaskPolicyChange(task, orders, request, PolicyHandoffSeatInputs{
 		Events: m.events[task.ID], Records: m.reviewRoundSeatsLocked(task.Workspace, task.ID), PlannedSeatCount: m.approvedPlannedSeatsLocked(task.ID),
+		RiskRatings: m.riskRatingsLocked(ctx, task),
 	})
 	if err != nil {
 		return SetupChangeResult{}, err

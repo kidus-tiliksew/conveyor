@@ -103,9 +103,11 @@ func decodeRiskTierRequest(body []byte) (riskTierRequest, error) {
 // It records the authenticated person's raise only when the tier is above the
 // task's current tier; a tier at or below it is refused with the current tier
 // named and nothing recorded. No route lowers a tier, and the raise changes
-// no stage, plan state, queue position, claim eligibility, seat, gate, or
-// merge decision (req-risk-based-review REQ-6, AC-6.1, AC-6.2, AC-1.6, AC-2.2,
-// AC-2.3; feature-risk-based-review RR-8).
+// no stage, plan state, queue position, or claim eligibility
+// (req-risk-based-review REQ-6, AC-6.1, AC-6.2, AC-2.2, AC-2.3;
+// feature-risk-based-review RR-8). Under record it changes no seat, gate, or
+// merge decision (AC-1.6). Under enforce it adds the seats the raised tier
+// requires to an open review round in the same act (AC-7.2).
 func (s *Server) raiseTaskRiskTier(w http.ResponseWriter, r *http.Request) {
 	// The whole body is read through the shared bound before it is decoded,
 	// so an oversized body, even one that pads valid JSON with whitespace or
@@ -138,8 +140,28 @@ func (s *Server) raiseTaskRiskTier(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "task not found", http.StatusNotFound)
 		return
 	}
-	_, err = s.Store.RaiseTaskRiskTier(r.Context(), core.RiskRating{
-		TaskID: task.ID, Tier: riskpolicy.Tier(request.Tier), Reason: request.Reason, ActorID: actor.ID, HeadSHA: task.ReviewedHeadSHA,
+	// The workspace seat-list length and queue clock size any seats the raise
+	// adds to an enforcing task's open round; only the configuration provider
+	// knows them, never the request body (req-risk-based-review AC-7.2).
+	var seats store.RiskSeatSettings
+	if task.SetupContract.Risk.Enforcing() && s.ConfigProvider != nil {
+		cfg, cfgErr := s.ConfigProvider(store.WithWorkspace(r.Context(), task.Workspace))
+		if cfgErr != nil {
+			writeStoreFailure(w, r, fmt.Errorf("resolve review seat settings: %w", cfgErr))
+			return
+		}
+		if cfg != nil {
+			seats = store.RiskSeatSettings{WorkspaceReviewSeats: len(cfg.Review.Seats), QueueTimeout: cfg.WorkOrderQueueTimeout}
+		}
+	}
+	// The raise runs under the task side-effect lock that every merge act
+	// holds while it reads the required approvals, so a raise and a merge
+	// never interleave (feature-risk-based-review RR-6).
+	err = s.Store.WithTaskSideEffectLock(r.Context(), task.ID, func(locked context.Context) error {
+		_, raiseErr := s.Store.RaiseTaskRiskTier(locked, core.RiskRating{
+			TaskID: task.ID, Tier: riskpolicy.Tier(request.Tier), Reason: request.Reason, ActorID: actor.ID, HeadSHA: task.ReviewedHeadSHA,
+		}, seats)
+		return raiseErr
 	})
 	var notRaised *core.RiskTierNotRaisedError
 	switch {

@@ -70,7 +70,7 @@ func resolveSeats(t *testing.T, x Fixture, taskID string, round int) store.Revie
 	t.Helper()
 	task, err := x.Backend.GetTask(x.Context, taskID)
 	requireOK(t, err)
-	in, err := store.LoadReviewRoundSeatInputs(x.Context, x.Backend, taskID, store.ReviewSeatMinimum(task.SetupContract, 0), round)
+	in, err := store.LoadReviewRoundSeatInputs(x.Context, x.Backend, task, store.ReviewSeatMinimum(task.SetupContract, 0), round)
 	requireOK(t, err)
 	return store.ResolveReviewRoundSeats(in)
 }

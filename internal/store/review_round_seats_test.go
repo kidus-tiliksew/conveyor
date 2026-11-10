@@ -63,7 +63,7 @@ func TestReviewRoundSeatsCheck(t *testing.T) {
 		{"DeclaredWithoutImplementation", store.ReviewRoundSeatResolution{SeatCount: 4, Source: store.ReviewSeatSourceDeclared, MinimumSeatCount: 2}, frozenTwo, nil, 4, false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			err := store.CheckReviewRoundSeats(tc.seats, tc.setup, tc.planned, used, tc.orders)
+			err := store.CheckReviewRoundSeats(tc.seats, tc.setup, tc.planned, 0, used, tc.orders)
 			if tc.ok != (err == nil) || (err != nil && !errors.Is(err, store.ErrReviewRoundSeatsInvalid)) {
 				t.Fatalf("check error=%v, want ok=%t", err, tc.ok)
 			}

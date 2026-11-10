@@ -553,7 +553,9 @@ export interface TaskSummaries {
   review_seat_policy?: { minimum_seat_count: number; planned_seat_count?: number }
 }
 
-export type ReviewSeatCountSource = 'declared' | 'planned' | 'carried' | 'minimum'
+// risk names a round whose seat count an enforcing task's risk tier set
+// (req-risk-based-review AC-7.1).
+export type ReviewSeatCountSource = 'declared' | 'planned' | 'carried' | 'minimum' | 'risk'
 
 // One review round's seat count beside the task's minimum
 // (feature-review-seat-minimum RS-7).

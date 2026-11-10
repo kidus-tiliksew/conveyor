@@ -1489,6 +1489,12 @@ func (d *Dispatcher) applyReview(ctx context.Context, cfg *config.Config, task c
 	if task.SetupContract.Risk.Enabled() {
 		decision.RiskTier, decision.RiskReason = result.RiskTier, result.RiskReason
 	}
+	// Seats a raised enforcing tier adds take the workspace seat-list length
+	// and queue clock from configuration, never from the verdict
+	// (req-risk-based-review AC-7.2).
+	if task.SetupContract.Risk.Enforcing() {
+		decision.WorkspaceReviewSeats, decision.SeatQueueTimeout = len(cfg.Review.Seats), cfg.WorkOrderQueueTimeout
+	}
 	if task.SetupContract.VerifyStage {
 		reader, ok := d.Store.(store.VerificationReviewReader)
 		if !ok {
@@ -1518,7 +1524,7 @@ func (d *Dispatcher) applyReview(ctx context.Context, cfg *config.Config, task c
 		// an unanswered read of the check status or the pull request are recorded,
 		// and an unanswered read has its retry job; none of them is a failure of
 		// the verdict its caller could act on (AC-1.10; DEC-118(2)).
-		if err := d.MergeApprovedTaskAutomatically(ctx, current); err != nil && !checkStatusDeferred(err) {
+		if err := d.MergeApprovedTaskAutomatically(ctx, current); err != nil && !checkStatusDeferred(err) && !errors.Is(err, store.ErrRiskApprovalsRequired) {
 			return err
 		} else if err != nil {
 			log.Printf("[task %s] automatic merge after approval: %v", task.ID, err)

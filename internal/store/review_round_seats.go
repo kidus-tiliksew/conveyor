@@ -17,12 +17,15 @@ import (
 )
 
 // Review round seat sources (feature-review-seat-minimum RS-2; DEC-77,
-// DEC-123; req-review-gates-evidence AC-2.4, AC-2.7).
+// DEC-123; req-review-gates-evidence AC-2.4, AC-2.7). Risk names a round whose
+// seat count an enforcing task's tier set (req-risk-based-review AC-7.1;
+// feature-risk-based-review RR-5).
 const (
 	ReviewSeatSourceDeclared = "declared"
 	ReviewSeatSourcePlanned  = "planned"
 	ReviewSeatSourceCarried  = "carried"
 	ReviewSeatSourceMinimum  = "minimum"
+	ReviewSeatSourceRisk     = "risk"
 )
 
 // ErrReviewRoundSeatsInvalid reports round seat metadata that does not match
@@ -30,10 +33,11 @@ const (
 // command revalidates it inside its task transaction.
 var ErrReviewRoundSeatsInvalid = errors.New("review round seats invalid")
 
-// ValidReviewSeatSource reports whether source is one of the four RS-2 sources.
+// ValidReviewSeatSource reports whether source is one of the closed seat
+// sources: the four RS-2 sources and risk.
 func ValidReviewSeatSource(source string) bool {
 	switch source {
-	case ReviewSeatSourceDeclared, ReviewSeatSourcePlanned, ReviewSeatSourceCarried, ReviewSeatSourceMinimum:
+	case ReviewSeatSourceDeclared, ReviewSeatSourcePlanned, ReviewSeatSourceCarried, ReviewSeatSourceMinimum, ReviewSeatSourceRisk:
 		return true
 	}
 	return false
@@ -90,6 +94,9 @@ type ReviewRoundSeatInputs struct {
 	PreviousRound     int
 	PreviousSeatCount int
 	PreviousRecorded  bool
+	// RiskSeatCount is the agent reviews an enforcing task's tier requires,
+	// and 0 for any other task (RiskSeatCount; req-risk-based-review REQ-7).
+	RiskSeatCount int
 }
 
 // ReviewRoundSeatResolution is the resolved seat count of one new round and
@@ -131,17 +138,19 @@ func ReviewSeatMinimum(setup config.PolicyContract, workspaceSeats int) int {
 	return count
 }
 
-// ReviewSeatFloor is the larger of the minimum and the planned count. DEC-123(2)
-// also counts the risk tier's agent reviews; that input is not wired yet
-// (feature-risk-based-review RR-5).
-func ReviewSeatFloor(minimum int, planned *int) int {
+// ReviewSeatFloor is the largest of the minimum, the planned count, and the
+// agent reviews an enforcing task's tier requires (DEC-123(2);
+// req-review-gates-evidence AC-2.3; req-risk-based-review REQ-7;
+// feature-risk-based-review RR-5). risk is 0 for a task that does not enforce.
+func ReviewSeatFloor(minimum int, planned *int, risk int) int {
 	if minimum < 1 {
 		minimum = 1
 	}
-	if planned != nil && *planned > minimum {
-		return *planned
+	floor := minimum
+	if planned != nil && *planned > floor {
+		floor = *planned
 	}
-	return minimum
+	return max(floor, risk)
 }
 
 // ResolveReviewRoundSeats applies the first matching RS-2 row. It is pure: it
@@ -151,13 +160,20 @@ func ResolveReviewRoundSeats(in ReviewRoundSeatInputs) ReviewRoundSeatResolution
 	if minimum < 1 {
 		minimum = 1
 	}
-	floor := ReviewSeatFloor(minimum, in.PlannedSeatCount)
+	floor := ReviewSeatFloor(minimum, in.PlannedSeatCount, in.RiskSeatCount)
 	result := ReviewRoundSeatResolution{MinimumSeatCount: minimum, FloorSeatCount: floor, ImplementationWorkOrderID: in.ImplementationWorkOrderID}
 	switch {
+	// A declaration below the floor resolves as declared, and the
+	// round-building command refuses it (AC-2.3, AC-2.6).
 	case in.ImplementationWorkOrderID != "" && in.DeclaredSeatCount != nil && !in.DeclarationConsumed:
 		result.SeatCount, result.Source = *in.DeclaredSeatCount, ReviewSeatSourceDeclared
 	case in.PreviousRound > 0 && in.PreviousSeatCount >= floor:
 		result.SeatCount, result.Source = in.PreviousSeatCount, ReviewSeatSourceCarried
+	// The tier names the source only when it raises the floor above the
+	// minimum and the planned count; a tie keeps the planned or minimum
+	// source (req-risk-based-review AC-7.1).
+	case in.RiskSeatCount > ReviewSeatFloor(minimum, in.PlannedSeatCount, 0):
+		result.SeatCount, result.Source = in.RiskSeatCount, ReviewSeatSourceRisk
 	case in.PlannedSeatCount != nil && *in.PlannedSeatCount > minimum:
 		result.SeatCount, result.Source = *in.PlannedSeatCount, ReviewSeatSourcePlanned
 	default:
@@ -225,13 +241,17 @@ type ReviewRoundSeatReader interface {
 	ListCompactEvents(ctx context.Context, taskID string) ([]core.Event, error)
 	ListReviewRoundSeats(ctx context.Context, taskID string) ([]ReviewRoundSeats, error)
 	GetApprovedSpecVersion(ctx context.Context, taskID string) (core.SpecVersion, bool, error)
+	ListTaskRiskRatings(ctx context.Context, taskID string) ([]core.RiskRating, error)
 }
 
 // LoadReviewRoundSeatInputs reads the resolution inputs for round through the
 // public store surface. The builder reads no authority snapshot, so the order
 // read omits them (feature-review-seat-minimum; component-work-orders,
-// Snapshot-free fold reads).
-func LoadReviewRoundSeatInputs(ctx context.Context, reader ReviewRoundSeatReader, taskID string, minimum, round int) (ReviewRoundSeatInputs, error) {
+// Snapshot-free fold reads). An enforcing task's ratings give the tier's
+// agent reviews; the round-building command revalidates them in its
+// transaction (feature-risk-based-review RR-5).
+func LoadReviewRoundSeatInputs(ctx context.Context, reader ReviewRoundSeatReader, task core.Task, minimum, round int) (ReviewRoundSeatInputs, error) {
+	taskID := task.ID
 	orders, err := reader.ListWorkOrdersForTasks(ctx, []string{taskID})
 	if err != nil {
 		return ReviewRoundSeatInputs{}, err
@@ -252,13 +272,22 @@ func LoadReviewRoundSeatInputs(ctx context.Context, reader ReviewRoundSeatReader
 	if ok {
 		planned = plan.ReviewSeats
 	}
-	return ReviewRoundSeatInputsFor(minimum, round, orders, events, records, planned), nil
+	in := ReviewRoundSeatInputsFor(minimum, round, orders, events, records, planned)
+	if task.SetupContract.Risk.Enforcing() {
+		ratings, err := reader.ListTaskRiskRatings(ctx, taskID)
+		if err != nil {
+			return ReviewRoundSeatInputs{}, err
+		}
+		in.RiskSeatCount = RiskSeatCount(task, ratings)
+	}
+	return in, nil
 }
 
 // CheckReviewRoundSeats revalidates caller-resolved metadata inside the
 // round-building command's task transaction, against the stored setup, the
-// approved plan count, and the persisted records read in that transaction.
-func CheckReviewRoundSeats(want ReviewRoundSeatResolution, setup config.PolicyContract, planned *int, records []ReviewRoundSeats, orderCount int) error {
+// approved plan count, the tier's agent reviews (risk, 0 unless the task
+// enforces), and the persisted records read in that transaction.
+func CheckReviewRoundSeats(want ReviewRoundSeatResolution, setup config.PolicyContract, planned *int, risk int, records []ReviewRoundSeats, orderCount int) error {
 	invalid := func(format string, args ...any) error {
 		return fmt.Errorf("%w: "+format, append([]any{ErrReviewRoundSeatsInvalid}, args...)...)
 	}
@@ -275,11 +304,15 @@ func CheckReviewRoundSeats(want ReviewRoundSeatResolution, setup config.PolicyCo
 	if want.MinimumSeatCount != minimum {
 		return invalid("minimum seat count %d does not match the task minimum %d", want.MinimumSeatCount, minimum)
 	}
-	floor := ReviewSeatFloor(minimum, planned)
+	floor := ReviewSeatFloor(minimum, planned, risk)
 	if want.SeatCount < floor {
 		return invalid("seat count %d is below the seat floor %d", want.SeatCount, floor)
 	}
 	switch want.Source {
+	case ReviewSeatSourceRisk:
+		if risk <= ReviewSeatFloor(minimum, planned, 0) || want.SeatCount != risk {
+			return invalid("risk source with seat count %d does not match the tier's %d agent reviews", want.SeatCount, risk)
+		}
 	case ReviewSeatSourceMinimum:
 		if want.SeatCount != minimum {
 			return invalid("minimum source with seat count %d, minimum %d", want.SeatCount, minimum)
@@ -307,6 +340,8 @@ type PolicyHandoffSeatInputs struct {
 	Events           []core.Event
 	Records          []ReviewRoundSeats
 	PlannedSeatCount *int
+	// RiskRatings are the task's ratings, read only for an enforcing task.
+	RiskRatings []core.RiskRating
 }
 
 func copySeatCount(value *int) *int {
@@ -680,14 +715,27 @@ func (m *memory) AddReviewSeatsCommand(ctx context.Context, lease taskops.TaskLe
 	if err != nil {
 		return ReviewSeatAdditionResult{}, err
 	}
+	if err := m.applyReviewSeatAdditionLocked(ctx, task, plan); err != nil {
+		return ReviewSeatAdditionResult{}, err
+	}
+	return plan.Result, nil
+}
+
+// applyReviewSeatAdditionLocked writes one planned addition under m.mu: the
+// added jobs and seat orders, the round record, the ledger row, and the
+// review.seats_added event. The operator addition and the seats a raised
+// enforcing tier adds share it. It checks every conflict before it writes.
+func (m *memory) applyReviewSeatAdditionLocked(ctx context.Context, task core.Task, plan ReviewSeatAdditionPlan) error {
 	for i, job := range plan.Jobs {
 		if _, _, exists := m.findJobLocked(job.ID); exists {
-			return ReviewSeatAdditionResult{}, fmt.Errorf("%w: job %s already exists", ErrDispatchJobConflict, job.ID)
+			return fmt.Errorf("%w: job %s already exists", ErrDispatchJobConflict, job.ID)
 		}
 		if _, exists := m.workOrders[plan.Orders[i].ID]; exists {
-			return ReviewSeatAdditionResult{}, fmt.Errorf("%w: work order %s already exists", ErrDispatchJobConflict, plan.Orders[i].ID)
+			return fmt.Errorf("%w: work order %s already exists", ErrDispatchJobConflict, plan.Orders[i].ID)
 		}
 	}
+	workspace, _ := WorkspaceFromContext(ctx)
+	now := plan.Ledger.CreatedAt
 	for i, job := range plan.Jobs {
 		m.jobs[task.ID] = append(m.jobs[task.ID], job)
 		m.appendEventLocked(ctx, core.Event{TaskID: task.ID, JobID: job.ID, Kind: "job.created", Payload: core.JSONPayload(job), At: now})
@@ -697,7 +745,7 @@ func (m *memory) AddReviewSeatsCommand(ctx context.Context, lease taskops.TaskLe
 		m.appendEventLocked(ctx, core.Event{TaskID: task.ID, JobID: job.ID, Kind: "work_order.created", Payload: WorkOrderEventPayload(order), At: now})
 	}
 	m.putReviewRoundSeatsLocked(task.Workspace, plan.Record)
-	m.reviewSeatAdditions[key] = memoryReviewSeatAddition{workspace: workspace, ReviewSeatAddition: plan.Ledger}
+	m.reviewSeatAdditions[reviewSeatAdditionKey(workspace, plan.Ledger.RequestID)] = memoryReviewSeatAddition{workspace: workspace, ReviewSeatAddition: plan.Ledger}
 	m.appendEventLocked(ctx, core.Event{TaskID: task.ID, Kind: "review.seats_added", Payload: core.JSONPayload(plan.Payload), At: now})
-	return plan.Result, nil
+	return nil
 }

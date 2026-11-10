@@ -36,8 +36,14 @@ func TestReviewAcceptAdmitted(t *testing.T) {
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
 			decision := core.ReviewDecision{PolicyVersion: test.policy, MergeApproval: test.gate, Level: test.level, ReviewKind: test.kind}
-			if got := ReviewAcceptAdmitted(decision, test.verdict); got != test.want {
+			if got := ReviewAcceptAdmitted(decision, test.verdict, false); got != test.want {
 				t.Fatalf("ReviewAcceptAdmitted = %v, want %v", got, test.want)
+			}
+			// An enforcing task's risk hold is never admitted, refresh
+			// rounds included, so its approval takes gate.merge
+			// (req-risk-based-review AC-8.2, AC-8.6).
+			if ReviewAcceptAdmitted(decision, test.verdict, true) {
+				t.Fatalf("ReviewAcceptAdmitted with a risk hold = true, want false")
 			}
 		})
 	}

@@ -24,9 +24,16 @@ type ReviewSeatsBelowFloorError struct {
 	SeatFloor        int
 	MinimumSeatCount int
 	PlannedSeatCount int
+	// RiskSeatCount is the agent reviews an enforcing task's tier requires,
+	// and 0 for any other task.
+	RiskSeatCount int
 }
 
 func (e *ReviewSeatsBelowFloorError) Error() string {
+	if e.RiskSeatCount > 0 {
+		return fmt.Sprintf("%s: review_seats %d is below the task's review seat floor %d (minimum_seat_count=%d, planned_seat_count=%d, risk_seat_count=%d)",
+			ReviewSeatsBelowFloorCode, e.ReviewSeats, e.SeatFloor, e.MinimumSeatCount, e.PlannedSeatCount, e.RiskSeatCount)
+	}
 	return fmt.Sprintf("%s: review_seats %d is below the task's review seat floor %d (minimum_seat_count=%d, planned_seat_count=%d)",
 		ReviewSeatsBelowFloorCode, e.ReviewSeats, e.SeatFloor, e.MinimumSeatCount, e.PlannedSeatCount)
 }
@@ -57,11 +64,22 @@ func (s *Service) admitReviewSeats(ctx context.Context, cfg *config.Config, task
 		count := *plan.ReviewSeats
 		planned = &count
 	}
-	floor := store.ReviewSeatFloor(minimum, planned)
+	// An enforcing task's tier, including the path minimum this submission
+	// recorded before it reached this check, raises the floor
+	// (req-risk-based-review REQ-7; feature-risk-based-review RR-3, RR-5).
+	risk := 0
+	if task.SetupContract.Risk.Enforcing() {
+		ratings, err := s.Store.ListTaskRiskRatings(ctx, task.ID)
+		if err != nil {
+			return err
+		}
+		risk = store.RiskSeatCount(task, ratings)
+	}
+	floor := store.ReviewSeatFloor(minimum, planned, risk)
 	if *reviewSeats >= floor {
 		return nil
 	}
-	refusal := &ReviewSeatsBelowFloorError{ReviewSeats: *reviewSeats, SeatFloor: floor, MinimumSeatCount: minimum}
+	refusal := &ReviewSeatsBelowFloorError{ReviewSeats: *reviewSeats, SeatFloor: floor, MinimumSeatCount: minimum, RiskSeatCount: risk}
 	if planned != nil {
 		refusal.PlannedSeatCount = *planned
 	}

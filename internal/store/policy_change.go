@@ -168,7 +168,9 @@ func PlanTaskPolicyChange(task core.Task, orders []core.WorkOrder, r SetupChange
 	timeout := r.Setup.StageTimeouts.Verify
 	if target == core.StageReview {
 		minimum := ReviewSeatMinimum(r.Setup, r.WorkspaceReviewSeats)
-		resolved := ResolveReviewRoundSeats(ReviewRoundSeatInputsFor(minimum, reviewRound, orders, seats.Events, seats.Records, seats.PlannedSeatCount))
+		in := ReviewRoundSeatInputsFor(minimum, reviewRound, orders, seats.Events, seats.Records, seats.PlannedSeatCount)
+		in.RiskSeatCount = RiskSeatCount(task, seats.RiskRatings)
+		resolved := ResolveReviewRoundSeats(in)
 		if resolved.SeatCount < resolved.FloorSeatCount {
 			return r, fmt.Errorf("%w: review round %d seat count %d is below the seat floor %d", ErrSetupChangeConflict, reviewRound, resolved.SeatCount, resolved.FloorSeatCount)
 		}

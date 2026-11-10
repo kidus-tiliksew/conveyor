@@ -778,7 +778,21 @@ func (m *memory) AcceptReviewDecisionCommand(ctx context.Context, lease taskops.
 	// leaves the verdict, the seat, and the round unchanged
 	// (req-risk-based-review AC-5.2, AC-5.3).
 	workspace, _ := WorkspaceFromContext(ctx)
-	if _, _, err := ReviewerRiskRating(task, m.riskRatings[memoryScopedKey{workspace: workspace, id: task.ID}], decision, time.Now()); err != nil && !completed {
+	stated, statedNew, err := ReviewerRiskRating(task, m.riskRatings[memoryScopedKey{workspace: workspace, id: task.ID}], decision, time.Now())
+	if err != nil && !completed {
+		return err
+	}
+	// Seats a raised enforcing tier requires are planned before the first
+	// write and added before the round aggregates, so the round never settles
+	// short of them (req-risk-based-review AC-7.2; feature-risk-based-review
+	// RR-5).
+	ratings := m.riskRatingsLocked(ctx, task)
+	if err == nil && statedNew && !completed {
+		ratings = append(ratings, stated)
+	}
+	riskSeats, addRiskSeats, err := m.planRiskSeatsLocked(ctx, task, ratings, VerdictRiskSeatTrigger(decision),
+		RiskSeatSettings{WorkspaceReviewSeats: decision.WorkspaceReviewSeats, QueueTimeout: decision.SeatQueueTimeout})
+	if err != nil {
 		return err
 	}
 	if !completed {
@@ -818,6 +832,11 @@ func (m *memory) AcceptReviewDecisionCommand(ctx context.Context, lease taskops.
 		}
 	}
 
+	if addRiskSeats {
+		if err := m.applyReviewSeatAdditionLocked(ctx, task, riskSeats); err != nil {
+			return err
+		}
+	}
 	reviews, required := m.completedReviewRoundLocked(decision.TaskID, decision.ReviewRound, decision.ReviewWorkOrderID)
 	failFast := FailFastSettles(task, decision)
 	if len(reviews) < required && !failFast {
@@ -881,7 +900,7 @@ func (m *memory) AcceptReviewDecisionCommand(ctx context.Context, lease taskops.
 			m.appendEventLocked(ctx, event)
 		}
 		command, next, recovery = plan.Command, plan.NextStage, plan.Recovery
-	} else if ReviewAcceptAdmitted(decision, aggregate.Verdict) {
+	} else if _, hold := RiskMergeHold(task, m.riskRatingsLocked(ctx, task)); ReviewAcceptAdmitted(decision, aggregate.Verdict, hold) {
 		// DEC-64(8): one running -> approved edge, no intervention.
 		command, recovery = core.TaskReviewAccept, ""
 	}
@@ -1179,7 +1198,7 @@ func (m *memory) CreateReviewRoundCommand(ctx context.Context, lease taskops.Tas
 			return fmt.Errorf("%w: job %s already exists", ErrDispatchJobConflict, job.ID)
 		}
 	}
-	if err := CheckReviewRoundSeats(seats, task.SetupContract, m.approvedPlannedSeatsLocked(taskID), m.reviewRoundSeatsLocked(task.Workspace, taskID), len(orders)); err != nil {
+	if err := CheckReviewRoundSeats(seats, task.SetupContract, m.approvedPlannedSeatsLocked(taskID), RiskSeatCount(task, m.riskRatingsLocked(ctx, task)), m.reviewRoundSeatsLocked(task.Workspace, taskID), len(orders)); err != nil {
 		return err
 	}
 	now := time.Now().UTC()
@@ -1370,7 +1389,7 @@ func (m *memory) RetryReviewRoundCommand(ctx context.Context, lease taskops.Task
 	if m.reviewRoundSeatsExistLocked(task.Workspace, request.TaskID, newRound) {
 		return ReviewRoundRetryResult{}, fmt.Errorf("%w: review round %d is already recorded", ErrReviewRetryConflict, newRound)
 	}
-	if err := CheckReviewRoundSeats(seats, task.SetupContract, m.approvedPlannedSeatsLocked(request.TaskID), m.reviewRoundSeatsLocked(task.Workspace, request.TaskID), len(orders)); err != nil {
+	if err := CheckReviewRoundSeats(seats, task.SetupContract, m.approvedPlannedSeatsLocked(request.TaskID), RiskSeatCount(task, m.riskRatingsLocked(ctx, task)), m.reviewRoundSeatsLocked(task.Workspace, request.TaskID), len(orders)); err != nil {
 		return ReviewRoundRetryResult{}, fmt.Errorf("%w: %w", ErrReviewRetryConflict, err)
 	}
 	record := seats.Record(request.TaskID, newRound, now)
