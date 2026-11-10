@@ -898,6 +898,7 @@ function PanelEntry({
                 ? `Panel of ${seats.length} · minimum ${seatMetadata.minimum_seat_count}`
                 : `Panel of ${seats.length}`}
             </span>
+            {seatMetadata?.seat_count_source === 'risk' && ' · set by risk tier'}
             {seats.length > 1 && ' · unanimous to pass'}
             {entry.distinctModels && ' · task policy: distinct seat models'}
           </span>
@@ -1013,7 +1014,9 @@ function PanelEntry({
 }
 
 // The panel header's tooltip names where the round's seat count came from in
-// words, never the source code (feature-review-seat-minimum RS-7).
+// words, never the source code (feature-review-seat-minimum RS-7). A count the
+// risk tier set is also named in the header itself (req-risk-based-review
+// AC-7.1).
 function reviewSeatSourceTitle(metadata: TaskReviewSeatMetadata) {
   const source =
     metadata.seat_count_source === 'declared'
@@ -1024,7 +1027,9 @@ function reviewSeatSourceTitle(metadata: TaskReviewSeatMetadata) {
           ? metadata.carried_from_round
             ? `Seat count carried from round ${metadata.carried_from_round}`
             : 'Seat count carried from the previous round'
-          : 'Seat count is the workspace minimum'
+          : metadata.seat_count_source === 'risk'
+            ? "Seat count set by the task's risk tier"
+            : 'Seat count is the workspace minimum'
   const planned = metadata.planned_seat_count
   return planned ? `${source} · Plan: ${planned} ${planned === 1 ? 'seat' : 'seats'}` : source
 }

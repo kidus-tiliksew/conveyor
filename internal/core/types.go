@@ -1070,6 +1070,13 @@ type ReviewDecision struct {
 	// feature-risk-based-review RR-3).
 	RiskTier   string
 	RiskReason string
+	// WorkspaceReviewSeats and SeatQueueTimeout are trusted, service-derived
+	// inputs for seats an enforcing tier adds in the verdict's own act: the
+	// workspace seat-list length and the queue clock of an added seat
+	// (req-risk-based-review AC-7.2; feature-risk-based-review RR-5). No
+	// verdict body supplies them.
+	WorkspaceReviewSeats int           `json:"-"`
+	SeatQueueTimeout     time.Duration `json:"-"`
 }
 
 type ArtifactRole string

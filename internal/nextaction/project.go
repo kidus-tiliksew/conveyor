@@ -141,23 +141,33 @@ func gateBuild(in Input) built {
 	return built{actor: ActorOperator, kind: string(kind), judgment: judgment, gate: string(kind), reason: string(kind), variant: GateVariant(kind, in.GateSource, in.Task.RecoveryStage)}
 }
 
+// mergeGateOn reports whether the task is behind the merge gate: its frozen
+// merge_approval is on, or it enforces a risk policy that requires one or
+// more human approvals, which turns the gate on whatever merge_approval says
+// (DEC-124(2); req-risk-based-review AC-8.2). Rows 5 to 9 read the gate
+// through it, so an enforcing task whose tier rose after its review approved
+// waits for an operator's merge instead of a merge that never comes.
+func mergeGateOn(in Input) bool {
+	return in.Task.MergeApproval || in.RiskHumanApprovals >= 1
+}
+
 func conflictExhausted(in Input) bool {
-	return in.Task.State == core.TaskApproved && in.Task.MergeApproval && in.MergeConflict.Open && in.MergeConflict.Exhausted
+	return in.Task.State == core.TaskApproved && mergeGateOn(in) && in.MergeConflict.Open && in.MergeConflict.Exhausted
 }
 
 func conflictRetrying(in Input) bool {
-	if in.Task.State != core.TaskApproved || !in.Task.MergeApproval || !in.MergeConflict.Open || in.MergeConflict.Exhausted {
+	if in.Task.State != core.TaskApproved || !mergeGateOn(in) || !in.MergeConflict.Open || in.MergeConflict.Exhausted {
 		return false
 	}
 	return !liveConflictFix(in.Orders)
 }
 
 func gateOnApproved(in Input) bool {
-	return in.Task.State == core.TaskApproved && in.Task.MergeApproval
+	return in.Task.State == core.TaskApproved && mergeGateOn(in)
 }
 
 func gateOffApproved(in Input) bool {
-	return in.Task.State == core.TaskApproved && !in.Task.MergeApproval
+	return in.Task.State == core.TaskApproved && !mergeGateOn(in)
 }
 
 // mergingBuild keeps the factory as the actor. A task whose last check-status

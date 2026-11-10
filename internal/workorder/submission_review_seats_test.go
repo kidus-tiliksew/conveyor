@@ -15,6 +15,7 @@ import (
 	"github.com/kidus-tiliksew/conveyor/internal/dispatch"
 	"github.com/kidus-tiliksew/conveyor/internal/pack"
 	"github.com/kidus-tiliksew/conveyor/internal/pipeline"
+	"github.com/kidus-tiliksew/conveyor/internal/riskpolicy"
 	"github.com/kidus-tiliksew/conveyor/internal/store"
 	"github.com/kidus-tiliksew/conveyor/internal/store/storetest"
 )
@@ -522,7 +523,7 @@ func TestSubmitForReviewReviewSeatsRefreshUnused(t *testing.T) {
 		t.Fatalf("refresh seats %d -> %d records %+v -> %+v err=%v", refreshSeats, after, recordsBefore, recordsAfter, err)
 	}
 	// RS-2 resolution sees no declaration for this order.
-	inputs, err := store.LoadReviewRoundSeatInputs(f.ctx, f.st, f.task.ID, 1, 99)
+	inputs, err := store.LoadReviewRoundSeatInputs(f.ctx, f.st, f.task, 1, 99)
 	if err != nil || inputs.ImplementationWorkOrderID != f.order.ID || inputs.DeclaredSeatCount != nil {
 		t.Fatalf("resolver inputs=%+v err=%v", inputs, err)
 	}
@@ -562,5 +563,36 @@ func TestSubmitForReviewReviewSeatsReplay(t *testing.T) {
 	}
 	if after := f.state(t); !reflect.DeepEqual(before, after) {
 		t.Fatal("refused replays changed state")
+	}
+}
+
+// TestSubmitForReviewReviewSeatsRiskFloor proves an enforcing task's tier
+// raises the declared seat floor: a count below the tier's agent reviews is
+// refused before any submission effect with the order still claimed, and a
+// count at the floor opens that many seats (req-review-gates-evidence AC-2.3;
+// req-risk-based-review REQ-7; feature-risk-based-review RR-5).
+func TestSubmitForReviewReviewSeatsRiskFloor(t *testing.T) {
+	enforce := riskpolicy.Policy{Mode: riskpolicy.ModeEnforce, Tiers: riskpolicy.DefaultTable()}
+	setup := config.PolicyContract{Review: config.ReviewPanel{Seats: make([]config.ReviewSeat, 1)}, Risk: &enforce}
+	f := newReviewSeatsFixture(t, "risk-floor", setup, 1)
+	operator := store.WithActor(f.ctx, core.Actor{ID: "user:operator", Role: core.ActorUser})
+	if _, err := f.st.RaiseTaskRiskTier(operator, core.RiskRating{TaskID: f.task.ID, Tier: riskpolicy.TierHigh, Reason: "payments code", ActorID: "user:operator"}, store.RiskSeatSettings{}); err != nil {
+		t.Fatal(err)
+	}
+	before := f.state(t)
+	_, err := f.submit(intPtr(1))
+	var refusal *ReviewSeatsBelowFloorError
+	if !errors.As(err, &refusal) || refusal.SeatFloor != 2 || refusal.RiskSeatCount != 2 || refusal.MinimumSeatCount != 1 {
+		t.Fatalf("refusal=%+v err=%v", refusal, err)
+	}
+	if !strings.Contains(err.Error(), "risk_seat_count=2") {
+		t.Fatalf("refusal text=%q does not name the tier's count", err.Error())
+	}
+	if after := f.state(t); !reflect.DeepEqual(before, after) || after.Order.State != core.WorkOrderClaimed {
+		t.Fatalf("refusal changed state:\nbefore=%+v\nafter=%+v", before, after)
+	}
+	result, err := f.submit(intPtr(2))
+	if err != nil || result["review_seats"] != 2 || result["review_seats_applied"] != true {
+		t.Fatalf("floor submission=%+v err=%v", result, err)
 	}
 }

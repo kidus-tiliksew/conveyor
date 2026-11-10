@@ -107,12 +107,18 @@ type Input struct {
 	// CheckStatus is the recorded check status of the approved head of an
 	// approved task with the merge gate off, read only for such a task
 	// (component-submission-merge, Check status).
-	CheckStatus    CheckStatus
-	Recommendation string
-	Assignee       *core.TaskAssignee
-	Capabilities   map[core.Capability]bool
-	LiveClaimants  *ClaimantView
-	Recovery       map[string]AutomaticRecovery
+	CheckStatus CheckStatus
+	// RiskHumanApprovals is the number of human approvals an enforcing task
+	// requires, read from its recorded ratings for an approved task or a task
+	// at the merge gate, and 0 for every other task. A count of one or more
+	// puts the task behind the merge gate whatever its frozen merge_approval
+	// says (DEC-124(2); req-risk-based-review REQ-8, AC-8.2).
+	RiskHumanApprovals int
+	Recommendation     string
+	Assignee           *core.TaskAssignee
+	Capabilities       map[core.Capability]bool
+	LiveClaimants      *ClaimantView
+	Recovery           map[string]AutomaticRecovery
 	// ClaimFailures is the batch's claim-failure records, keyed by order ID.
 	// An absent entry means the order's last claim did not fail in the
 	// backend (component-work-orders, Claim admission).

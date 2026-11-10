@@ -237,7 +237,10 @@ func waitsOnGitHub(task core.Task, recordedPullRequest bool) bool {
 // approved or merge-gated task, or a gate-off task that is approved or has
 // a review head the accepted-review recovery reads.
 func mergeReadinessCanAct(task core.Task) bool {
-	if task.MergeApproval {
+	// A task at the merge gate is the gate-on pass's whatever its frozen
+	// gate, since an enforcing gate-off task can wait there too
+	// (feature-risk-based-review RR-6).
+	if task.MergeApproval || task.State == core.TaskAwaiting && task.GateKind == core.GateKindMergeApproval {
 		return task.State == core.TaskApproved || task.State == core.TaskAwaiting && task.GateKind == core.GateKindMergeApproval
 	}
 	if !slices.Contains(mergeReadinessTaskStates, task.State) || !gateOffMergeReadinessCandidate(task) {

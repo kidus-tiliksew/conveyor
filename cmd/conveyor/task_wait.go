@@ -555,10 +555,13 @@ func taskWaitNextOrder(orders []core.WorkOrder, taskID string) *taskWaitOrder {
 
 // taskWaitGate derives the pending gate of a task with no claimable order.
 // An approved task behind the merge gate has the merge act pending; an
-// awaiting_human task maps its next action.
+// awaiting_human task maps its next action. An enforcing task whose risk
+// policy requires a person is behind the merge gate with its frozen
+// merge_approval off (DEC-124(2)), which its stated merge_execution kind
+// shows.
 func (c *client) taskWaitGate(ctx context.Context, task core.Task, actionKind string) (*taskWaitGate, error) {
 	switch {
-	case task.State == core.TaskApproved && task.MergeApproval:
+	case task.State == core.TaskApproved && (task.MergeApproval || actionKind == nextaction.KindMergeExecution):
 		readiness, err := c.taskWaitMergeReadiness(ctx, task.ID)
 		if err != nil {
 			return nil, err

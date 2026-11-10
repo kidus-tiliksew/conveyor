@@ -117,6 +117,10 @@ func ReadNextActions(ctx context.Context, st Store, tasks []core.Task, opts Next
 	if err != nil {
 		return nil, err
 	}
+	riskApprovals, err := readAssemblerRiskApprovals(ctx, st, tasks)
+	if err != nil {
+		return nil, err
+	}
 	contexts, err := readContextProposals(ctx, st, tasks)
 	if err != nil {
 		return nil, err
@@ -145,6 +149,7 @@ func ReadNextActions(ctx context.Context, st Store, tasks []core.Task, opts Next
 		input.Blocks = dependencies.blocks[task.ID]
 		input.ContextProposals = contexts[task.ID]
 		input.CheckStatus = checkStatuses[task.ID]
+		input.RiskHumanApprovals = riskApprovals[task.ID]
 		input.ClaimFailures = claimFailuresFor(ordersByTask[task.ID], claimFailures)
 		if origin, ok := origins[task.ID]; ok {
 			input.MonitorObservation = &nextaction.MonitorObservationRef{Kind: string(origin.Kind), SourceURL: origin.SourceURL, ObservedAt: origin.ObservedAt}
@@ -479,6 +484,32 @@ func readAssemblerCheckStatus(ctx context.Context, st Store, tasks []core.Task) 
 		statuses[task.ID] = status
 	}
 	return statuses, nil
+}
+
+// readAssemblerRiskApprovals reads the human approvals each enforcing task
+// that is approved or at the merge gate requires, from its recorded ratings.
+// Only a count of one or more is kept. A task whose frozen mode is not
+// enforce costs no read (req-risk-based-review AC-1.1, REQ-8; DEC-124(2)).
+func readAssemblerRiskApprovals(ctx context.Context, st Store, tasks []core.Task) (map[string]int, error) {
+	out := map[string]int{}
+	for _, task := range tasks {
+		atGate := task.State == core.TaskAwaiting && task.GateKind == core.GateKindMergeApproval
+		if !task.SetupContract.Risk.Enforcing() || (task.State != core.TaskApproved && !atGate) {
+			continue
+		}
+		scoped := ctx
+		if task.Workspace != "" {
+			scoped = WithWorkspace(ctx, task.Workspace)
+		}
+		ratings, err := st.ListTaskRiskRatings(scoped, task.ID)
+		if err != nil {
+			return nil, err
+		}
+		if required, hold := RiskMergeHold(task, ratings); hold {
+			out[task.ID] = required
+		}
+	}
+	return out, nil
 }
 
 // withDependencyBlockers returns an implement or verify order carrying the

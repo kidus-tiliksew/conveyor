@@ -443,6 +443,9 @@ func refuseChoiceText(in Input, spec ChoiceSpec, order *core.WorkOrder) string {
 		}
 		return core.NextActionSupersessionRefusal(in.GateSpecVersion, latestVersion(in))
 	case "merge":
+		if text := RiskMergeRefusal(in); text != "" {
+			return text
+		}
 		return mergeAtGateRefusal(in)
 	case "approve_revision", "decline":
 		return core.NextActionSupersessionRefusal(in.GateSpecVersion, latestVersion(in))
@@ -542,6 +545,18 @@ func choiceSummary(id string) string {
 // mergeAtGateRefusal refuses the merge_approval gate's one-act merge unless
 // the last-known readiness peek is MERGEABLE; an unread peek is UNKNOWN
 // (DEC-64(3); DEC-61). The approved-task merge choice is never refused here.
+// RiskMergeRefusal states why the merge route refuses one operator's merge
+// of an enforcing task that requires two or more human approvals, until
+// approvals are counted (req-risk-based-review AC-8.7). The route refuses with
+// the same count (store.RiskMergeRefusal), so the choice is withheld rather
+// than offered (component-next-action invariant 7).
+func RiskMergeRefusal(in Input) string {
+	if in.RiskHumanApprovals < 2 {
+		return ""
+	}
+	return fmt.Sprintf("The risk policy requires %d human approvals. One person's merge cannot land this task until approvals are counted.", in.RiskHumanApprovals)
+}
+
 func mergeAtGateRefusal(in Input) string {
 	if in.Task.State != core.TaskAwaiting || in.Task.GateKind != core.GateKindMergeApproval {
 		return ""

@@ -40,7 +40,7 @@ func seedReviewSeats(t *testing.T, st *Store, prefix string, seats int, distinct
 	if err != nil {
 		t.Fatal(err)
 	}
-	inputs, err := store.LoadReviewRoundSeatInputs(ctx, st, id, store.ReviewSeatMinimum(stored.SetupContract, 0), 1)
+	inputs, err := store.LoadReviewRoundSeatInputs(ctx, st, stored, store.ReviewSeatMinimum(stored.SetupContract, 0), 1)
 	if err != nil {
 		t.Fatal(err)
 	}

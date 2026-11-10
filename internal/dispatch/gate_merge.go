@@ -151,6 +151,15 @@ func (d *Dispatcher) mergeAtGateLocked(ctx context.Context, taskID string, actor
 	if _, err = core.TransitionGateMerge(current.State, current.GateKind); err != nil {
 		return core.Task{}, err
 	}
+	// Until approvals are counted, one operator's merge cannot land an
+	// enforcing task that requires two or more human approvals: the act is
+	// refused under the lock before any forge read or event, so the gate
+	// stays pending with no approval or merge request recorded
+	// (req-risk-based-review AC-8.7; req-review-gates-evidence AC-1.3). A
+	// required count of one keeps the single-act merge.
+	if err = d.riskMergeRefusal(ctx, current, false); err != nil {
+		return core.Task{}, err
+	}
 	author, message, err := d.gateMergeAuthor(ctx, actor)
 	if err != nil {
 		return core.Task{}, err

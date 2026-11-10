@@ -2,6 +2,7 @@ package httpapi
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -459,4 +460,40 @@ func TestRaiseRiskTierHTTPBodyBound(t *testing.T) {
 			t.Fatalf("status=%d body=%.200s", response.Code, response.Body)
 		}
 	})
+}
+
+// TestRaiseRiskTierHTTPWaitsForTheTaskLock: the raise runs under the task
+// side-effect lock every merge act holds, so a merge holding it finishes
+// under the tier it read before the raise records anything
+// (feature-risk-based-review RR-6).
+func TestRaiseRiskTierHTTPWaitsForTheTaskLock(t *testing.T) {
+	handler, st := riskHTTPFixture(t)
+	ctx := store.WithWorkspace(store.WithActor(t.Context(), store.SystemActor()), "alpha")
+	locked, release, done := make(chan struct{}), make(chan struct{}), make(chan *httptest.ResponseRecorder, 1)
+	go func() {
+		_ = st.WithTaskSideEffectLock(ctx, "risk-http", func(context.Context) error {
+			close(locked)
+			<-release
+			return nil
+		})
+	}()
+	<-locked
+	go func() {
+		done <- postRiskTier(handler, "operator-token", "risk-http", `{"tier":"high","reason":"payments"}`)
+	}()
+	select {
+	case response := <-done:
+		t.Fatalf("the raise answered %d while a merge act held the task lock", response.Code)
+	case <-time.After(150 * time.Millisecond):
+	}
+	if count := riskRatingCount(t, st, "risk-http"); count != 0 {
+		t.Fatalf("the raise recorded %d ratings while the lock was held", count)
+	}
+	close(release)
+	if response := <-done; response.Code != http.StatusOK {
+		t.Fatalf("raise after the lock: status=%d body=%s", response.Code, response.Body)
+	}
+	if count := riskRatingCount(t, st, "risk-http"); count != 1 {
+		t.Fatalf("ratings=%d, want 1", count)
+	}
 }

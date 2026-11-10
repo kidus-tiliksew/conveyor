@@ -46,6 +46,10 @@ type taskWaitStep struct {
 	// nextAction, when set, is embedded as next_action in the task read, as
 	// GET /v1/tasks/{id} does.
 	nextAction *nextActionView
+	// frozenGateOff serves a merge_execution step with the frozen
+	// merge_approval off, as an enforcing task whose risk policy requires a
+	// person reads (DEC-124(2)).
+	frozenGateOff bool
 }
 
 // taskWaitTestGate is the gate a step serves. The fixture projects it onto
@@ -164,7 +168,7 @@ func (f *taskWaitFixture) serve(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		task := core.Task{ID: taskWaitTestTaskID, State: step.state, Title: step.title}
-		if step.gate != nil && step.gate.Kind == taskWaitGateMergeExecution && step.state == core.TaskApproved {
+		if step.gate != nil && step.gate.Kind == taskWaitGateMergeExecution && step.state == core.TaskApproved && !step.frozenGateOff {
 			task.MergeApproval = true
 		}
 		action := step.nextAction
@@ -1082,4 +1086,23 @@ func TestTaskWaitStopsAtCheckHold(t *testing.T) {
 			t.Fatalf("result = %+v", result)
 		}
 	})
+}
+
+// An enforcing task held for a person after approval has its frozen merge gate
+// off, and its stated merge_execution kind stops the wait at the pending merge
+// act as the gate-on task does (DEC-124(2); req-risk-based-review AC-8.2).
+func TestTaskWaitStopsAtARiskHeldMerge(t *testing.T) {
+	merging := untilAction("Merging", "factory", "merging", "")
+	steps := []taskWaitStep{
+		{state: core.TaskApproved, nextAction: merging},
+		{state: core.TaskApproved, gate: taskWaitMergeExecutionGate("MERGEABLE", "7"), frozenGateOff: true},
+	}
+	result, err := runTaskWaitJSON(t, newTaskWaitFixture(t, steps...), 5*time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := taskWaitGate{Kind: taskWaitGateMergeExecution, MergeReadiness: "MERGEABLE"}
+	if result.PendingGate == nil || *result.PendingGate != want || result.State != core.TaskApproved {
+		t.Fatalf("result = %+v gate %+v", result, result.PendingGate)
+	}
 }

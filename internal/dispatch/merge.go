@@ -939,6 +939,16 @@ func (d *Dispatcher) mergeApprovedTaskLocked(ctx context.Context, task core.Task
 		}
 		return nil
 	}
+	// An enforcing task's required human approvals are read again under the
+	// task side-effect lock, so a tier raised after acceptance holds every
+	// automatic merge, retries and check-status deadlines included, and an
+	// operator's single merge cannot land a change that needs two or more
+	// approvals (req-risk-based-review AC-8.1, AC-8.2, AC-8.7;
+	// feature-risk-based-review RR-6). Nothing is recorded or merged.
+	// A pull request GitHub already merged is reconciled above, not merged.
+	if err := d.riskMergeRefusal(ctx, current, act.operator == nil); err != nil {
+		return err
+	}
 	// A queued or claimed conflict-fix order defers conflict clearing,
 	// refresh, and merge requests; its own submission drives the refresh
 	// round (req-review-gates-evidence AC-4.1, AC-4.2).
@@ -1268,7 +1278,11 @@ func (d *Dispatcher) reconcileMergeReadinessTask(ctx context.Context, task core.
 // task's state changed. A failure is returned for the caller to log or
 // retry.
 func (d *Dispatcher) gateOnMergeReadiness(ctx context.Context, task core.Task) (bool, error) {
-	if !task.MergeApproval || (task.State != core.TaskApproved && !(task.State == core.TaskAwaiting && task.GateKind == core.GateKindMergeApproval)) {
+	// A task waiting at the merge gate takes the gate-on read whatever its
+	// frozen gate: an enforcing gate-off task that needs a person waits there
+	// too (req-risk-based-review AC-8.2; feature-risk-based-review RR-6).
+	atGate := task.State == core.TaskAwaiting && task.GateKind == core.GateKindMergeApproval
+	if !atGate && (!task.MergeApproval || task.State != core.TaskApproved) {
 		return false, nil
 	}
 	before := task.State
@@ -1310,7 +1324,7 @@ func (d *Dispatcher) gateOffMergeReadiness(ctx context.Context, task core.Task) 
 	}
 	before := task.State
 	if mergeErr := d.MergeApprovedTaskAutomatically(ctx, task); mergeErr != nil {
-		if errors.Is(mergeErr, ErrConflictFixPending) || errors.Is(mergeErr, ErrCheckStatusHeld) || errors.Is(mergeErr, ErrCheckStatusPending) {
+		if errors.Is(mergeErr, ErrConflictFixPending) || errors.Is(mergeErr, ErrCheckStatusHeld) || errors.Is(mergeErr, ErrCheckStatusPending) || errors.Is(mergeErr, store.ErrRiskApprovalsRequired) {
 			return false, nil
 		}
 		after, err := d.Store.GetTask(ctx, task.ID)
@@ -1456,4 +1470,23 @@ func (d *Dispatcher) mergeAuthor(ctx context.Context, task core.Task) (core.Forg
 	}
 	author.UserID, author.DisplayName = userID, identity.Name
 	return author, fmt.Sprintf("Approved-by: %s <%s>", identity.Name, identity.Email), nil
+}
+
+// riskMergeRefusal reads an enforcing task's ratings and returns the risk
+// refusal of a merge, or nil. A task whose frozen mode is not enforce reads
+// nothing (req-risk-based-review AC-1.1).
+func (d *Dispatcher) riskMergeRefusal(ctx context.Context, task core.Task, automatic bool) error {
+	if !task.SetupContract.Risk.Enforcing() {
+		return nil
+	}
+	ratings, err := d.Store.ListTaskRiskRatings(ctx, task.ID)
+	if err != nil {
+		return err
+	}
+	refusal := store.RiskMergeRefusal(task, ratings, automatic)
+	if automatic {
+		// A hold is a definitive answer: no automatic retry merges past it.
+		return ineligibleMerge(refusal)
+	}
+	return refusal
 }

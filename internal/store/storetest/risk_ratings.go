@@ -111,7 +111,7 @@ func RunRiskRatingConformance(t *testing.T, x Fixture) {
 		if _, _, err := st.RecordRiskRating(foreign, pathRating(task.ID, "head-foreign", riskpolicy.TierHigh, "foreign write")); !errors.Is(err, store.ErrNotFound) {
 			t.Fatalf("foreign workspace path rating err=%v, want not found", err)
 		}
-		if _, err := st.RaiseTaskRiskTier(foreign, core.RiskRating{TaskID: task.ID, Tier: riskpolicy.TierHigh, Reason: "foreign raise", ActorID: "user:foreign"}); !errors.Is(err, store.ErrNotFound) {
+		if _, err := st.RaiseTaskRiskTier(foreign, core.RiskRating{TaskID: task.ID, Tier: riskpolicy.TierHigh, Reason: "foreign raise", ActorID: "user:foreign"}, store.RiskSeatSettings{}); !errors.Is(err, store.ErrNotFound) {
 			t.Fatalf("foreign workspace raise err=%v, want not found", err)
 		}
 		if got := len(ratings(t, task.ID)); got != 1 {
@@ -124,7 +124,7 @@ func RunRiskRatingConformance(t *testing.T, x Fixture) {
 		if _, _, err := st.RecordRiskRating(ctx, pathRating(task.ID, "head-off", riskpolicy.TierHigh, "off")); !errors.Is(err, store.ErrRiskNotEnabled) {
 			t.Fatalf("off task path rating err=%v, want ErrRiskNotEnabled", err)
 		}
-		if _, err := st.RaiseTaskRiskTier(ctx, core.RiskRating{TaskID: task.ID, Tier: riskpolicy.TierHigh, Reason: "off", ActorID: "user:operator"}); !errors.Is(err, store.ErrRiskNotEnabled) {
+		if _, err := st.RaiseTaskRiskTier(ctx, core.RiskRating{TaskID: task.ID, Tier: riskpolicy.TierHigh, Reason: "off", ActorID: "user:operator"}, store.RiskSeatSettings{}); !errors.Is(err, store.ErrRiskNotEnabled) {
 			t.Fatalf("off task raise err=%v, want ErrRiskNotEnabled", err)
 		}
 		if len(ratings(t, task.ID)) != 0 || len(riskEvents(t, task.ID)) != 0 {
@@ -248,7 +248,7 @@ func RunRiskRatingConformance(t *testing.T, x Fixture) {
 		requireOK(t, err)
 		var notRaised *core.RiskTierNotRaisedError
 		// An unrated task's tier is low, so low is refused.
-		if _, err := st.RaiseTaskRiskTier(ctx, core.RiskRating{TaskID: task.ID, Tier: riskpolicy.TierLow, Reason: "no change", ActorID: "user:operator"}); !errors.As(err, &notRaised) || notRaised.Current != riskpolicy.TierLow {
+		if _, err := st.RaiseTaskRiskTier(ctx, core.RiskRating{TaskID: task.ID, Tier: riskpolicy.TierLow, Reason: "no change", ActorID: "user:operator"}, store.RiskSeatSettings{}); !errors.As(err, &notRaised) || notRaised.Current != riskpolicy.TierLow {
 			t.Fatalf("raise to low err=%v, want not raised naming low", err)
 		}
 		for _, invalid := range []core.RiskRating{
@@ -257,17 +257,17 @@ func RunRiskRatingConformance(t *testing.T, x Fixture) {
 			{TaskID: task.ID, Tier: riskpolicy.TierHigh, Reason: "two\nlines", ActorID: "user:operator"},
 			{TaskID: task.ID, Tier: riskpolicy.TierHigh, Reason: "no person"},
 		} {
-			if _, err := st.RaiseTaskRiskTier(ctx, invalid); err == nil {
+			if _, err := st.RaiseTaskRiskTier(ctx, invalid, store.RiskSeatSettings{}); err == nil {
 				t.Fatalf("raise %+v was accepted", invalid)
 			}
 		}
-		raised, err := st.RaiseTaskRiskTier(ctx, core.RiskRating{TaskID: task.ID, Tier: riskpolicy.TierMedium, Reason: "touches billing", ActorID: "user:operator", HeadSHA: "head-p"})
+		raised, err := st.RaiseTaskRiskTier(ctx, core.RiskRating{TaskID: task.ID, Tier: riskpolicy.TierMedium, Reason: "touches billing", ActorID: "user:operator", HeadSHA: "head-p"}, store.RiskSeatSettings{})
 		requireOK(t, err)
 		if raised.Source != core.RiskSourcePerson || raised.PreviousTier != riskpolicy.TierLow || raised.Tier != riskpolicy.TierMedium || raised.ActorID != "user:operator" {
 			t.Fatalf("raise=%+v", raised)
 		}
 		for _, tier := range []riskpolicy.Tier{riskpolicy.TierLow, riskpolicy.TierMedium} {
-			if _, err := st.RaiseTaskRiskTier(ctx, core.RiskRating{TaskID: task.ID, Tier: tier, Reason: "lower or equal", ActorID: "user:operator"}); !errors.As(err, &notRaised) || notRaised.Current != riskpolicy.TierMedium {
+			if _, err := st.RaiseTaskRiskTier(ctx, core.RiskRating{TaskID: task.ID, Tier: tier, Reason: "lower or equal", ActorID: "user:operator"}, store.RiskSeatSettings{}); !errors.As(err, &notRaised) || notRaised.Current != riskpolicy.TierMedium {
 				t.Fatalf("raise to %s err=%v, want not raised naming medium", tier, err)
 			}
 		}
@@ -287,7 +287,7 @@ func RunRiskRatingConformance(t *testing.T, x Fixture) {
 			wg.Add(1)
 			go func() {
 				defer wg.Done()
-				_, err := st.RaiseTaskRiskTier(ctx, core.RiskRating{TaskID: task.ID, Tier: riskpolicy.TierHigh, Reason: fmt.Sprintf("raise %d", i), ActorID: "user:operator"})
+				_, err := st.RaiseTaskRiskTier(ctx, core.RiskRating{TaskID: task.ID, Tier: riskpolicy.TierHigh, Reason: fmt.Sprintf("raise %d", i), ActorID: "user:operator"}, store.RiskSeatSettings{})
 				results <- err
 			}()
 		}
@@ -344,7 +344,7 @@ func RunRiskRatingConformance(t *testing.T, x Fixture) {
 				go func() {
 					defer wg.Done()
 					<-start
-					_, err := st.RaiseTaskRiskTier(ctx, core.RiskRating{TaskID: task.ID, Tier: tier, Reason: fmt.Sprintf("round %d writer %d", round, i), ActorID: "user:operator"})
+					_, err := st.RaiseTaskRiskTier(ctx, core.RiskRating{TaskID: task.ID, Tier: tier, Reason: fmt.Sprintf("round %d writer %d", round, i), ActorID: "user:operator"}, store.RiskSeatSettings{})
 					results <- err
 				}()
 			}

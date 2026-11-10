@@ -44,7 +44,7 @@ func (s *Store) RecordRiskRating(ctx context.Context, rating core.RiskRating) (c
 	return result, created, nil
 }
 
-func (s *Store) RaiseTaskRiskTier(ctx context.Context, raise core.RiskRating) (core.RiskRating, error) {
+func (s *Store) RaiseTaskRiskTier(ctx context.Context, raise core.RiskRating, seats store.RiskSeatSettings) (core.RiskRating, error) {
 	ctx = dbmetrics.WithReadLabel(ctx, "RaiseTaskRiskTier")
 	if _, err := store.RequireActor(ctx); err != nil {
 		return core.RiskRating{}, err
@@ -59,7 +59,11 @@ func (s *Store) RaiseTaskRiskTier(ctx context.Context, raise core.RiskRating) (c
 		if err != nil {
 			return err
 		}
-		return insertRiskRatingTx(ctx, tx, result)
+		if err = insertRiskRatingTx(ctx, tx, result); err != nil {
+			return err
+		}
+		// The raise and the seats it adds commit together (AC-7.2).
+		return s.addRiskSeatsTx(ctx, tx, task, append(existing, result), store.PersonRiskSeatTrigger(result), seats)
 	})
 	if err != nil {
 		return core.RiskRating{}, err

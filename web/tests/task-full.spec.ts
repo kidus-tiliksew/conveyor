@@ -9005,6 +9005,40 @@ test('review seat header shows each source and approved planned count', async ({
   await expect(page.getByText(/^(declared|planned|carried|minimum)$/)).toHaveCount(0)
 })
 
+test('review seat header names a seat count the risk tier set', async ({ page }) => {
+  const taskId = 'seat-risk'
+  const orders: SeatFixtureOrder[] = [
+    { round: 1, seat: 1, model: 'minimum-model', verdict: 'changes_requested' },
+    { round: 2, seat: 1, model: 'risk-model', verdict: 'approve' },
+    { round: 2, seat: 2, model: 'risk-model' },
+  ]
+  const item = seatPanelItem(taskId, {
+    orders,
+    summaries: {
+      review_round: seatMeta(2, 2, 'risk', { minimum_seat_count: 1 }),
+      review_round_seats: {
+        by_round: {
+          '1': seatMeta(1, 1, 'minimum', { minimum_seat_count: 1 }),
+          '2': seatMeta(2, 2, 'risk', { minimum_seat_count: 1 }),
+        },
+        by_order: {},
+      },
+      review_seat_policy: { minimum_seat_count: 1 },
+    },
+  })
+  await page.route(`**/v1/tasks/${taskId}/activity*`, (route) => route.fulfill({ json: item }))
+  await page.goto(`/w/demo/tasks/${taskId}/full`)
+  const risk = roundPanel(page, 'risk-model')
+  await expect(risk.getByTitle("Seat count set by the task's risk tier", { exact: true })).toHaveText(
+    'Panel of 2 · minimum 1',
+  )
+  await expect(risk.getByText('· set by risk tier')).toBeVisible()
+  // A round the tier did not size names no tier.
+  await expect(roundPanel(page, 'minimum-model').getByText('set by risk tier')).toHaveCount(0)
+  // The source code never reaches the page.
+  await expect(page.getByText(/^risk$/)).toHaveCount(0)
+})
+
 test('review seat metadata stays with its historical round', async ({ page }) => {
   const taskId = 'seat-history'
   const item = seatPanelItem(taskId, {

@@ -232,6 +232,16 @@ func (s *Service) submitForReviewLocked(ctx context.Context, id, session, headSH
 	}); err != nil {
 		return nil, err
 	}
+	// The head's path minimum can raise an enforcing task's seat floor, so
+	// the declared count is admitted again against it before any handoff
+	// write. A refusal leaves the order claimed; the path rating stays, since
+	// it is the head's recorded rating, not a submission effect
+	// (req-review-gates-evidence AC-2.3; req-risk-based-review REQ-7).
+	if task.SetupContract.Risk.Enforcing() {
+		if err = s.admitReviewSeats(ctx, cfg, task, reviewSeats); err != nil {
+			return nil, err
+		}
+	}
 	if pathsRead {
 		if _, err = s.Store.AttachSubmissionGovernance(ctx, task.ID, task.Repo, paths, store.SubmissionGovernanceAttribution{WorkOrderID: order.ID, SessionID: session}); err != nil {
 			return nil, fmt.Errorf("attach submission governance: %w", err)

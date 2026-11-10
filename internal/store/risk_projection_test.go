@@ -10,7 +10,7 @@ import (
 )
 
 // TestProjectTaskRisk covers the shared task read field risk
-// (req-risk-based-review AC-1.1, AC-1.6, AC-5.5, REQ-11;
+// (req-risk-based-review AC-1.1, AC-1.6, AC-5.5, REQ-7, REQ-8, REQ-11;
 // component-risk-review invariants 2 and 4).
 func TestProjectTaskRisk(t *testing.T) {
 	enforce := riskpolicy.Policy{Mode: riskpolicy.ModeEnforce, Tiers: riskpolicy.DefaultTable()}
@@ -24,8 +24,8 @@ func TestProjectTaskRisk(t *testing.T) {
 	if unrated == nil || unrated.Tier != "" || unrated.Source != "" || unrated.Reason != "" || unrated.Head != "reviewed" || len(unrated.Ratings) != 0 {
 		t.Fatalf("unrated projection=%+v, want no invented tier", unrated)
 	}
-	// Ratings change no requirement in effect yet: the frozen floors stand,
-	// a merge gate counts one approval (REQ-2, AC-2.1).
+	// An unrated enforcing task is low: the frozen floors stand, and a merge
+	// gate counts one approval (REQ-2, AC-2.1).
 	if unrated.RequiredAgentReviews != 1 || unrated.RequiredHumanApprovals != 1 || unrated.CalculatedAgentReviews != 1 || unrated.CalculatedHumanApprovals != 1 {
 		t.Fatalf("unrated requirements=%+v", unrated)
 	}
@@ -40,8 +40,17 @@ func TestProjectTaskRisk(t *testing.T) {
 	if projected.Tier != riskpolicy.TierHigh || projected.Source != core.RiskSourcePathRule || projected.Reason != "changed paths could not be read in full" || projected.Head != "head-2" {
 		t.Fatalf("projection=%+v", projected)
 	}
-	if projected.RequiredAgentReviews != 1 || projected.RequiredHumanApprovals != 1 || projected.CalculatedAgentReviews != 2 || projected.CalculatedHumanApprovals != 2 {
-		t.Fatalf("requirements=%+v, want the floors in effect and high's table row calculated", projected)
+	// Under enforce the tier's requirements are in effect (REQ-7, REQ-8).
+	if projected.RequiredAgentReviews != 2 || projected.RequiredHumanApprovals != 2 || projected.CalculatedAgentReviews != 2 || projected.CalculatedHumanApprovals != 2 {
+		t.Fatalf("requirements=%+v, want high's table row in effect", projected)
+	}
+	// Under record the frozen floors stay in effect and the tier's row is
+	// only calculated (AC-1.6).
+	record := riskpolicy.Policy{Mode: riskpolicy.ModeRecord, Tiers: riskpolicy.DefaultTable()}
+	recorded := task
+	recorded.SetupContract = config.PolicyContract{Risk: &record}
+	if got := ProjectTaskRisk(recorded, ratings, 1); got.RequiredAgentReviews != 1 || got.RequiredHumanApprovals != 1 || got.CalculatedAgentReviews != 2 || got.CalculatedHumanApprovals != 2 {
+		t.Fatalf("record requirements=%+v, want the floors in effect and high's table row calculated", got)
 	}
 	if len(projected.Ratings) != 3 || projected.Ratings[0].Seq != 1 || projected.Ratings[2].Seq != 3 {
 		t.Fatalf("ratings not in recorded order: %+v", projected.Ratings)

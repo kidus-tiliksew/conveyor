@@ -28,10 +28,21 @@ type RiskRatingStore interface {
 	// RaiseTaskRiskTier records a person's raise. Under the task lock it reads
 	// the task's current tier, refuses a tier at or below it with
 	// *core.RiskTierNotRaisedError naming it, and otherwise records the raise
-	// with the previous tier and its activity event.
-	RaiseTaskRiskTier(ctx context.Context, raise core.RiskRating) (core.RiskRating, error)
+	// with the previous tier and its activity event. On an enforcing task it
+	// adds, in the same transaction, the seats the raised tier requires to an
+	// open review round (req-risk-based-review AC-7.2;
+	// feature-risk-based-review RR-5, RR-8).
+	RaiseTaskRiskTier(ctx context.Context, raise core.RiskRating, seats RiskSeatSettings) (core.RiskRating, error)
 	// ListTaskRiskRatings returns a task's ratings in recorded order.
 	ListTaskRiskRatings(ctx context.Context, taskID string) ([]core.RiskRating, error)
+}
+
+// RiskSeatSettings are trusted, service-derived inputs of seats a raised tier
+// adds: the workspace seat-list length and the added seats' queue clock. No
+// request body supplies them.
+type RiskSeatSettings struct {
+	WorkspaceReviewSeats int
+	QueueTimeout         time.Duration
 }
 
 // ErrRiskNotEnabled refuses a rating for a task whose frozen risk mode is off
@@ -218,7 +229,7 @@ func (m *memory) RecordRiskRating(ctx context.Context, rating core.RiskRating) (
 	return cloneRiskRating(prepared), true, nil
 }
 
-func (m *memory) RaiseTaskRiskTier(ctx context.Context, raise core.RiskRating) (core.RiskRating, error) {
+func (m *memory) RaiseTaskRiskTier(ctx context.Context, raise core.RiskRating, seats RiskSeatSettings) (core.RiskRating, error) {
 	if _, err := RequireActor(ctx); err != nil {
 		return core.RiskRating{}, err
 	}
@@ -232,8 +243,58 @@ func (m *memory) RaiseTaskRiskTier(ctx context.Context, raise core.RiskRating) (
 	if err != nil {
 		return core.RiskRating{}, err
 	}
+	// The raise and any seats it adds commit together, so the open round
+	// cannot settle short of the new count (req-risk-based-review AC-7.2).
+	ratings := append(slices.Clone(m.riskRatings[key]), prepared)
+	plan, add, err := m.planRiskSeatsLocked(ctx, task, ratings, PersonRiskSeatTrigger(prepared), seats)
+	if err != nil {
+		return core.RiskRating{}, err
+	}
 	m.insertRiskRatingLocked(ctx, key, prepared)
+	if add {
+		if err := m.applyReviewSeatAdditionLocked(ctx, task, plan); err != nil {
+			return core.RiskRating{}, err
+		}
+	}
 	return cloneRiskRating(prepared), nil
+}
+
+// riskRatingsLocked returns a task's recorded ratings under m.mu.
+func (m *memory) riskRatingsLocked(ctx context.Context, task core.Task) []core.RiskRating {
+	workspace, _ := WorkspaceFromContext(ctx)
+	ratings, ok := m.riskRatings[memoryScopedKey{workspace: workspace, id: task.ID}]
+	if !ok && workspace != task.Workspace {
+		ratings = m.riskRatings[memoryScopedKey{workspace: task.Workspace, id: task.ID}]
+	}
+	return slices.Clone(ratings)
+}
+
+// planRiskSeatsLocked plans the seats an enforcing task's raised tier adds to
+// its open round, from the state m.mu guards.
+func (m *memory) planRiskSeatsLocked(ctx context.Context, task core.Task, ratings []core.RiskRating, trigger RiskSeatTrigger, seats RiskSeatSettings) (ReviewSeatAdditionPlan, bool, error) {
+	if !task.SetupContract.Risk.Enforcing() {
+		return ReviewSeatAdditionPlan{}, false, nil
+	}
+	var orders []core.WorkOrder
+	for _, order := range m.workOrders {
+		if order.TaskID == task.ID && order.Stage == core.StageReview {
+			orders = append(orders, order)
+		}
+	}
+	plan, add, err := PlanRiskSeatAddition(RiskSeatAdditionInputs{
+		Workspace: task.Workspace, Task: task, Orders: orders, Events: m.events[task.ID],
+		Records: m.reviewRoundSeatsLocked(task.Workspace, task.ID), Ratings: ratings, Trigger: trigger,
+		WorkspaceReviewSeats: seats.WorkspaceReviewSeats, QueueTimeout: seats.QueueTimeout, Now: time.Now().UTC(),
+	})
+	if err != nil || !add {
+		return ReviewSeatAdditionPlan{}, false, err
+	}
+	workspace, _ := WorkspaceFromContext(ctx)
+	if _, exists := m.reviewSeatAdditions[reviewSeatAdditionKey(workspace, plan.Ledger.RequestID)]; exists {
+		// The act already added its seats; a replay adds none.
+		return ReviewSeatAdditionPlan{}, false, nil
+	}
+	return plan, true, nil
 }
 
 func (m *memory) ListTaskRiskRatings(ctx context.Context, taskID string) ([]core.RiskRating, error) {
@@ -295,11 +356,10 @@ func ProjectTaskRisk(task core.Task, ratings []core.RiskRating, seatMinimum int)
 	}
 	SortRiskRatings(ratings)
 	projection := &core.TaskRisk{Mode: policy.Mode, Head: task.ReviewedHeadSHA, Ratings: make([]core.RiskRating, 0, len(ratings))}
-	pathApprovals := 0
 	for _, rating := range ratings {
 		projection.Ratings = append(projection.Ratings, cloneRiskRating(rating))
 		if rating.Source == core.RiskSourcePathRule {
-			projection.Head, pathApprovals = rating.HeadSHA, rating.HumanApprovals
+			projection.Head = rating.HeadSHA
 		}
 	}
 	tier := riskpolicy.Tier("")
@@ -311,15 +371,14 @@ func ProjectTaskRisk(task core.Task, ratings []core.RiskRating, seatMinimum int)
 	if inputTier == "" {
 		inputTier = riskpolicy.TierLow
 	}
-	floors := riskpolicy.Floors{SeatMinimum: seatMinimum, MergeGate: task.MergeApproval}
-	// Ratings change no seat, gate, or merge decision yet, under record and
-	// enforce alike, so the requirements in effect are the frozen floors
-	// (req-risk-based-review AC-1.6, REQ-2). The calculated counts show what
-	// the tier and matched path rules would require.
-	inEffect := riskpolicy.CalculateRequirements(riskpolicy.RequirementInput{Floors: floors}).Effective
-	calculated := riskpolicy.CalculateRequirements(riskpolicy.RequirementInput{
-		Policy: policy, Tier: inputTier, PathHumanApprovals: pathApprovals, Floors: floors,
-	}).Calculated
+	// The requirements in effect are the frozen floors under record and the
+	// tier's requirements under enforce, where they size review rounds and
+	// hold merges (req-risk-based-review AC-1.6, REQ-2, REQ-7, REQ-8). The
+	// calculated counts show what the tier and matched path rules require.
+	in, _ := riskRequirementInput(task, ratings, seatMinimum)
+	in.Tier = inputTier
+	result := riskpolicy.CalculateRequirements(in)
+	inEffect, calculated := result.Effective, result.Calculated
 	projection.RequiredAgentReviews, projection.RequiredHumanApprovals = inEffect.AgentReviews, inEffect.HumanApprovals
 	projection.CalculatedAgentReviews, projection.CalculatedHumanApprovals = calculated.AgentReviews, calculated.HumanApprovals
 	return projection
