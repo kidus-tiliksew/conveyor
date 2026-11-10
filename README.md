@@ -23,7 +23,7 @@ When agents are writing code faster than you can review it, it’s easy to lose 
 
 Conveyor gives your team and agents a shared plan. People approve the requirements, system designs, and decisions. Agents use those documents to plan, build, and review changes on your own machines. You can trace each change back to why it was made.
 
-https://github.com/user-attachments/assets/f50c12bc-81ed-429c-ba10-90dd3cdb8c34
+https://github.com/user-attachments/assets/328917a5-1f6a-40ec-a497-9ee1dd40ef89
 
 ## Get started
 
