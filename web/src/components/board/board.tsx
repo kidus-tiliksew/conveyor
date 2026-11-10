@@ -1,11 +1,10 @@
 import { Link, useNavigate, useParams, useSearch } from '@tanstack/react-router'
 import { ChevronLeft, ChevronRight, Plus } from 'lucide-react'
-import { lazy, type RefObject, Suspense, useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { lazy, Suspense, useCallback, useEffect, useMemo, useState } from 'react'
 import { boardColumnFor } from '../../lib/activity'
 import { isBlueprintAnchor } from '../../lib/blueprint'
 import { type GroupKey, stageGroups } from '../../lib/contracts'
 import type { ActivitySummary } from '../../lib/types'
-import { useMediaQuery } from '../../lib/use-media-query'
 import { cn } from '../../lib/utils'
 import { useActivity, useWorkspaceCapability } from '../app-shell'
 import { MCPSetup } from '../mcp/mcp-setup-dialog'
@@ -80,66 +79,36 @@ export function Board() {
   )
 }
 
-// The width from which the toolbar holds the lane strip on one line beside
-// search, filters, pager, and the view switch.
-const laneStripQuery = '(min-width: 88rem)'
-// A phone shows one lane at a time, so the strip gets its own scrolling row.
-const phoneQuery = '(max-width: 47.99rem)'
-
-// Brings a lane into view with the lane strip's button, moving only the lanes.
-function scrollToLane(scroller: HTMLElement | null, key: GroupKey) {
-  const lane = scroller?.querySelector<HTMLElement>(`[data-lane="${key}"]`)
-  if (!scroller || !lane) return
-  const reduced = window.matchMedia('(prefers-reduced-motion: reduce)').matches
-  const left = lane.getBoundingClientRect().left - scroller.getBoundingClientRect().left + scroller.scrollLeft
-  const gutter = Number.parseFloat(getComputedStyle(scroller).paddingLeft) || 0
-  scroller.scrollTo({ left: left - gutter, behavior: reduced ? 'auto' : 'smooth' })
-}
-
-// Which lanes the scroller shows, and which of its edges hide more.
-function useLaneScroll(scroller: RefObject<HTMLElement | null>) {
-  const [state, setState] = useState({ inView: new Set<string>(), fadeStart: false, fadeEnd: false })
+// Which edges of the lane scroller hide more lanes, so a quiet fade can say so.
+// The returned ref follows the mounted scroller, so lanes that mount again
+// after a failed first read and Retry drive the fades too.
+function useLaneFades() {
+  const [scroller, setScroller] = useState<HTMLElement | null>(null)
+  const [state, setState] = useState({ fadeStart: false, fadeEnd: false })
   const measure = useCallback(() => {
-    const element = scroller.current
-    if (!element) return
-    const box = element.getBoundingClientRect()
-    const inView = new Set<string>()
-    for (const lane of element.querySelectorAll<HTMLElement>('[data-lane]')) {
-      const rect = lane.getBoundingClientRect()
-      // Most of the lane shows, so a sliver at the edge does not count.
-      const seen = Math.min(rect.right, box.right) - Math.max(rect.left, box.left)
-      if (seen >= rect.width * 0.6 && lane.dataset.lane) inView.add(lane.dataset.lane)
-    }
-    const fadeStart = element.scrollLeft > 1
-    const fadeEnd = element.scrollLeft + element.clientWidth < element.scrollWidth - 1
-    setState((prev) =>
-      prev.fadeStart === fadeStart &&
-      prev.fadeEnd === fadeEnd &&
-      prev.inView.size === inView.size &&
-      [...inView].every((key) => prev.inView.has(key))
-        ? prev
-        : { inView, fadeStart, fadeEnd },
-    )
+    if (!scroller) return
+    const fadeStart = scroller.scrollLeft > 1
+    const fadeEnd = scroller.scrollLeft + scroller.clientWidth < scroller.scrollWidth - 1
+    setState((prev) => (prev.fadeStart === fadeStart && prev.fadeEnd === fadeEnd ? prev : { fadeStart, fadeEnd }))
   }, [scroller])
   useEffect(() => {
-    const element = scroller.current
-    if (!element) return
+    if (!scroller) return
     measure()
     let frame = 0
     const schedule = () => {
       cancelAnimationFrame(frame)
       frame = requestAnimationFrame(measure)
     }
-    element.addEventListener('scroll', schedule, { passive: true })
+    scroller.addEventListener('scroll', schedule, { passive: true })
     const observer = new ResizeObserver(schedule)
-    observer.observe(element)
+    observer.observe(scroller)
     return () => {
       cancelAnimationFrame(frame)
-      element.removeEventListener('scroll', schedule)
+      scroller.removeEventListener('scroll', schedule)
       observer.disconnect()
     }
   }, [measure, scroller])
-  return { ...state, measure }
+  return { ...state, measure, ref: setScroller }
 }
 
 // The kanban view: the distribution of work across stages is the factory's
@@ -212,51 +181,13 @@ function Kanban() {
   const lastPage = Boolean(data && shown >= data.total)
   const singlePage = lastPage && data?.offset === 0
 
-  const scroller = useRef<HTMLElement>(null)
-  const laneStrip = useMediaQuery(laneStripQuery)
-  const phone = useMediaQuery(phoneQuery)
-  const { inView, fadeStart, fadeEnd, measure } = useLaneScroll(scroller)
+  const { fadeStart, fadeEnd, measure, ref: scroller } = useLaneFades()
   // The lanes mount with the first read.
   useEffect(measure, [isLoading, measure])
-
-  const laneButtons = stageGroups.map(({ key, label }) => {
-    const items = grouped.get(key) ?? []
-    const operator = items.filter((item) => item.next_action?.actor === 'operator').length
-    return (
-      <button
-        key={key}
-        type="button"
-        title={`Scroll to ${label}`}
-        onClick={() => scrollToLane(scroller.current, key)}
-        className={cn(
-          'inline-flex h-7 shrink-0 items-center gap-1 whitespace-nowrap rounded-md px-1 text-xs transition-colors hover:bg-surface hover:text-foreground pointer-coarse:h-9 pointer-coarse:px-2',
-          inView.has(key) ? 'text-foreground' : 'text-muted',
-        )}
-      >
-        {label}
-        <span className="tabular-nums text-faint">{items.length}</span>
-        {operator > 0 && (
-          <span className="ml-0.5 inline-flex items-center gap-1 font-medium tabular-nums text-attention before:size-1 before:rounded-full before:bg-attention-dot">
-            {operator}
-            <span className="sr-only">waiting on an operator</span>
-          </span>
-        )}
-      </button>
-    )
-  })
 
   return (
     <>
       <BoardToolbar
-        lanes={
-          !isLoading &&
-          !loadFailed &&
-          laneStrip && (
-            <nav aria-label="Board lanes" className="flex items-center gap-0.5">
-              {laneButtons}
-            </nav>
-          )
-        }
         pager={
           data &&
           !isLoading &&
@@ -305,14 +236,6 @@ function Kanban() {
           iconOnly
         />
       </BoardToolbar>
-      {phone && !isLoading && !loadFailed && (
-        <nav
-          aria-label="Board lanes"
-          className="relative flex shrink-0 items-center gap-1 overflow-x-auto border-b border-border px-3 py-0.5 [scrollbar-width:none]"
-        >
-          {laneButtons}
-        </nav>
-      )}
       {error != null && !loadFailed && (
         <p className="mx-4 mt-4 rounded-lg lg:mx-6 bg-failure-soft p-3 text-sm text-failure">
           Activity feed unavailable: {readableError(error, 'Check your connection and try again.')}
