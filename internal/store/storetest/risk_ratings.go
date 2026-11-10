@@ -319,6 +319,63 @@ func RunRiskRatingConformance(t *testing.T, x Fixture) {
 			t.Fatalf("raise changed the task: before %+v after %+v", before, after)
 		}
 	})
+
+	// Concurrent raises serialize on every backend. Each round starts a fresh
+	// task and releases raises to medium and to high at once. Every raise is
+	// recorded or refused as not raised, never a backend error; the recorded
+	// raises climb strictly, each naming the tier before it, with one event
+	// each and sequences 1..n (req-risk-based-review AC-6.1, AC-6.2;
+	// component-risk-review invariant 4).
+	t.Run("ConcurrentRaisesSerialize", func(t *testing.T) {
+		const rounds, writers = 20, 8
+		for round := range rounds {
+			task := fileTask(t, &record)
+			start := make(chan struct{})
+			results := make(chan error, writers)
+			var wg sync.WaitGroup
+			for i := range writers {
+				tier := riskpolicy.TierMedium
+				if i%2 == 1 {
+					tier = riskpolicy.TierHigh
+				}
+				wg.Add(1)
+				go func() {
+					defer wg.Done()
+					<-start
+					_, err := st.RaiseTaskRiskTier(ctx, core.RiskRating{TaskID: task.ID, Tier: tier, Reason: fmt.Sprintf("round %d writer %d", round, i), ActorID: "user:operator"})
+					results <- err
+				}()
+			}
+			close(start)
+			wg.Wait()
+			close(results)
+			accepted := 0
+			for err := range results {
+				var notRaised *core.RiskTierNotRaisedError
+				switch {
+				case err == nil:
+					accepted++
+				case errors.As(err, &notRaised):
+				default:
+					t.Fatalf("round %d: concurrent raise err=%v", round, err)
+				}
+			}
+			listed := ratings(t, task.ID)
+			if accepted == 0 || len(listed) != accepted || listed[len(listed)-1].Tier != riskpolicy.TierHigh {
+				t.Fatalf("round %d: accepted %d, ratings %+v", round, accepted, listed)
+			}
+			previous := riskpolicy.TierLow
+			for i, rating := range listed {
+				if rating.Seq != i+1 || rating.PreviousTier != previous || rating.Tier.Rank() <= previous.Rank() {
+					t.Fatalf("round %d: rating %d=%+v after tier %s", round, i, rating, previous)
+				}
+				previous = rating.Tier
+			}
+			if events := riskEvents(t, task.ID); len(events) != len(listed) {
+				t.Fatalf("round %d: %d events for %d ratings", round, len(events), len(listed))
+			}
+		}
+	})
 }
 
 // riskReviewRound builds review round 1 with the given number of seats.
