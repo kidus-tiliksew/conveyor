@@ -7,7 +7,9 @@ package httpapi
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -37,7 +39,7 @@ const (
 	insightBodySentinel   = "INSIGHT-HANDLER-BODY-SENTINEL"
 	insightRequirementID  = "req-insight"
 	insightFixtureSecret  = "fixture-app-key-4f1c9a7e2b8d6035"
-	insightHeadlineOutput = "Two of five tasks are open; one waits on the operator and the critical path runs through two tasks."
+	insightHeadlineOutput = "This requirement makes the insight panel summarize how its work is going. One of the four serving tasks is delivered, and the other three are queued for agents, with nothing waiting on the operator."
 )
 
 // insightReply is one scripted model answer.
@@ -781,6 +783,96 @@ func TestRequirementInsightGenerateOnceAndCurrent(t *testing.T) {
 	replaced, _ := h.stored("demo")
 	if replaced.Headline != "One fewer task serves the requirement." || replaced.Model != "served-model-2027" || replaced.Fingerprint == row.Fingerprint || h.agent.callCount() != 2 {
 		t.Fatalf("replaced row=%+v calls=%d", replaced, h.agent.callCount())
+	}
+}
+
+// TestRequirementInsightLegacyDocumentOnlyHeadlineIsStale proves a headline
+// stored when the fingerprint hashed only the canonical document reads as out
+// of date once the fingerprint covers the fixed instructions, keeps its text
+// and generation metadata, and causes no model call on a read. Only a member
+// who may create tasks can replace it, through the existing POST, and the
+// replacement is current, so a repeated POST answers 409 without another
+// model call (component-requirement-insights invariants 9 and 12; AC-2.6).
+func TestRequirementInsightLegacyDocumentOnlyHeadlineIsStale(t *testing.T) {
+	h := newInsightHarness(t, nil)
+	path := insightPath(insightRequirementID, "summary")
+	before := h.lifecycleSnapshot(h.demo)
+
+	inputs, actions := h.expectedState("demo", "creator")
+	now := time.Now()
+	legacySum := sha256.Sum256(insight.FingerprintDocument(inputs, actions, now))
+	legacy := hex.EncodeToString(legacySum[:])
+	currentFingerprint := insight.Fingerprint(inputs, actions, now)
+	if legacy == currentFingerprint {
+		t.Fatal("the document-only digest equals the current fingerprint")
+	}
+	const legacyText = "Two of five tasks are open; one waits on the operator and the critical path runs through two tasks."
+	row, err := h.st.RecordRequirementInsightHeadline(store.WithWorkspace(t.Context(), "demo"), store.RequirementInsightHeadline{
+		RequirementID: insightRequirementID, Fingerprint: legacy, Headline: legacyText,
+		Model: "legacy-model", TokensIn: 7, TokensOut: 3, GeneratedBy: store.UserActorID("creator"),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	for _, reader := range []struct {
+		token       string
+		canGenerate bool
+	}{{"viewer", false}, {"creator", true}} {
+		response := h.call(http.MethodGet, reader.token, "demo", path)
+		if response.Code != http.StatusOK {
+			t.Fatalf("%s GET status=%d body=%s", reader.token, response.Code, response.Body.String())
+		}
+		view := decodeInsight[summaryWire](t, response)
+		if view.Headline == nil || view.Headline.Current || view.Headline.Text != legacyText || view.Headline.Model != "legacy-model" || !view.Headline.GeneratedAt.Equal(row.GeneratedAt) || view.Headline.GeneratedBy != row.GeneratedBy {
+			t.Fatalf("%s legacy headline=%+v row=%+v", reader.token, view.Headline, row)
+		}
+		if view.Fingerprint != currentFingerprint || view.CanGenerate != reader.canGenerate {
+			t.Fatalf("%s fingerprint=%s can_generate=%v, want %s and %v", reader.token, view.Fingerprint, view.CanGenerate, currentFingerprint, reader.canGenerate)
+		}
+	}
+	if calls := h.agent.callCount(); calls != 0 {
+		t.Fatalf("reads made %d model calls", calls)
+	}
+
+	// A member who may only view cannot regenerate the stale headline.
+	if refused := h.call(http.MethodPost, "viewer", "demo", path); refused.Code != http.StatusNotFound {
+		t.Fatalf("viewer POST status=%d body=%s", refused.Code, refused.Body.String())
+	}
+	if kept, _ := h.stored("demo"); kept != row || h.agent.callCount() != 0 {
+		t.Fatalf("viewer POST changed the row %+v or called the model %d times", kept, h.agent.callCount())
+	}
+
+	// A task creator regenerates it under the instruction-covering
+	// fingerprint instead of receiving 409.
+	regenerated := h.call(http.MethodPost, "creator", "demo", path)
+	if regenerated.Code != http.StatusOK {
+		t.Fatalf("regenerate status=%d body=%s", regenerated.Code, regenerated.Body.String())
+	}
+	view := decodeInsight[summaryWire](t, regenerated)
+	replaced, ok := h.stored("demo")
+	if !ok || replaced.Fingerprint != currentFingerprint || replaced.Fingerprint == legacy || replaced.Headline != insightHeadlineOutput || replaced.Model != "served-model-2026" || replaced.GeneratedBy != store.UserActorID("creator") {
+		t.Fatalf("replaced row=%+v ok=%v", replaced, ok)
+	}
+	if view.Headline == nil || !view.Headline.Current || view.Headline.Text != insightHeadlineOutput || view.Fingerprint != currentFingerprint {
+		t.Fatalf("regenerated view=%+v fingerprint=%s", view.Headline, view.Fingerprint)
+	}
+	if calls := h.agent.callCount(); calls != 1 || !strings.HasPrefix(h.agent.prompts[0], insight.HeadlineInstructions+"\n\n") {
+		t.Fatalf("model calls=%d or the prompt does not open with the shared instructions", calls)
+	}
+	if read := decodeInsight[summaryWire](t, h.call(http.MethodGet, "viewer", "demo", path)); read.Headline == nil || !read.Headline.Current {
+		t.Fatalf("headline after regeneration=%+v", read.Headline)
+	}
+
+	again := h.call(http.MethodPost, "creator", "demo", path)
+	if again.Code != http.StatusConflict || strings.TrimSpace(again.Body.String()) != `{"error":"insight_headline_current"}` {
+		t.Fatalf("repeated POST status=%d body=%s", again.Code, again.Body.String())
+	}
+	if calls := h.agent.callCount(); calls != 1 {
+		t.Fatalf("model calls=%d after the repeated POST", calls)
+	}
+	if after := h.lifecycleSnapshot(h.demo); after != before {
+		t.Fatalf("regeneration changed task lifecycle state:\nbefore %s\nafter  %s", before, after)
 	}
 }
 
