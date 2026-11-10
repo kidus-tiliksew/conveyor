@@ -70,14 +70,6 @@ Plan, verify, and the merge gate are per-task policy. The server computes each
 task's next action, so the dashboard, CLI, and MCP always agree on whether a
 task is waiting on an agent session or on you.
 
-### Staying aligned
-
-Conveyor checks each delivery against the requirements and designs that
-govern it. When they disagree, or when the repository drifts or a merge
-breaks something, Conveyor raises a signal. It never rewrites code or
-documents on its own: an operator acknowledges the signal or sends follow-up
-work back through the same gates.
-
 ## Tips
 
 Workflows that have worked well so far:
