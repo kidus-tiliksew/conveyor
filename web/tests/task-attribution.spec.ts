@@ -321,6 +321,22 @@ test('an avatar label opens on tap', async ({ browser }) => {
   await mockAPI(page)
   const timeline = await openTimeline(page)
   const second = timeline.getByRole('article', { name: 'Implementation attempt 2' })
+  // At 375 px a seat row with its 16 px avatar keeps the label, avatar,
+  // model, and state on one line.
+  const panel = timeline.locator('li').filter({ has: page.getByText('Panel of 2') })
+  const row = panel.getByText('Seat 1', { exact: true }).locator('..')
+  // Vertical centres: a touch target can be taller than what it draws.
+  const top = async (locator: Locator) => {
+    const box = await locator.boundingBox()
+    return box ? box.y + box.height / 2 : Number.NaN
+  }
+  const labelTop = await top(row.getByText('Seat 1', { exact: true }))
+  for (const part of [
+    row.getByRole('button', { name: 'Kidus Alemu' }),
+    row.getByTitle('gpt-6', { exact: true }).first(),
+    row.getByText('Deliberating'),
+  ])
+    expect(Math.abs((await top(part)) - labelTop)).toBeLessThanOrEqual(4)
   await railOf(second).getByRole('button', { name: 'selam@example.test' }).tap()
   await expect(
     page.getByRole('tooltip').filter({ hasText: 'selam@example.test · ran this implementation' }),
