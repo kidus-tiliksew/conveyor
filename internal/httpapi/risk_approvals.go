@@ -194,18 +194,24 @@ func isApprovalRefusal(err error) bool {
 // writeRiskApprovalPending answers an act that left an enforcing task short
 // of its required approvals: 202 with the shortfall, whether the act recorded
 // the person's approval, and the task's risk read. Nothing was merged
-// (req-risk-based-review AC-8.7).
+// (req-risk-based-review AC-8.7). An act whose approval does not count, such
+// as an untrusted author's (AC-9.2), recorded nothing and answers 409
+// approval_not_counted with the reason.
 func (s *Server) writeRiskApprovalPending(w http.ResponseWriter, r *http.Request, taskID string, pending *dispatch.RiskApprovalPending) {
 	body, err := s.approvalResponse(r.Context(), taskID)
 	if err != nil {
 		writeStoreFailure(w, r, err)
 		return
 	}
-	body["error"] = "approvals_required"
+	status, code := http.StatusAccepted, "approvals_required"
+	if pending.Reason != "" {
+		status, code = http.StatusConflict, "approval_not_counted"
+	}
+	body["error"] = code
 	body["message"] = pending.Error()
 	body["recorded"] = pending.Recorded
 	body["merged"] = false
-	writeJSON(w, http.StatusAccepted, body)
+	writeJSON(w, status, body)
 }
 
 func (s *Server) approvalResponse(ctx context.Context, taskID string) (map[string]any, error) {

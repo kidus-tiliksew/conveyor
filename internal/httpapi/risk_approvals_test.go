@@ -30,7 +30,11 @@ type approvalHTTP struct {
 	st      store.Store
 	ctx     context.Context
 	forge   *githubtrigger.PullRequest
+	cfg     *config.Config
 }
+
+// trust sets the repository's live trusted_authors list.
+func (f approvalHTTP) trust(userIDs ...string) { f.cfg.Repos[0].TrustedAuthors = userIDs }
 
 // approvalHTTPFixture serves workspace "alpha" with an enforcing high-tier
 // task "risk-approve" waiting at the merge gate at approvalHead in review
@@ -84,7 +88,7 @@ func approvalHTTPFixture(t *testing.T) approvalHTTP {
 		"author-token":      {ID: "pat_author", OwnerUserID: "author", Kind: core.CredentialUser, Scope: core.CredentialScopeUser},
 		"contributor-token": {ID: "pat_contributor", OwnerUserID: "contributor", Kind: core.CredentialUser, Scope: core.CredentialScopeUser},
 	}
-	return approvalHTTP{handler: server.Handler(), st: st, ctx: ctx, forge: pr}
+	return approvalHTTP{handler: server.Handler(), st: st, ctx: ctx, forge: pr, cfg: cfg}
 }
 
 func (f approvalHTTP) post(token, taskID, route, body string) *routeResult {
@@ -181,6 +185,16 @@ func TestApprovalsRouteRefusals(t *testing.T) {
 	}
 	if response := f.post("operator-token", "risk-record", "/approvals", `{"head_sha":"`+approvalHead+`"}`); response.Code != http.StatusConflict {
 		t.Fatalf("record-mode status=%d body=%s", response.Code, response.Body)
+	}
+	// An untrusted author's approval does not count: 409 with nothing
+	// recorded (AC-9.2).
+	untrusted := approvalHTTPFixture(t)
+	untrusted.trust("second")
+	if response := untrusted.post("author-token", "risk-approve", "/approvals", `{"head_sha":"`+approvalHead+`"}`); response.Code != http.StatusConflict || !strings.Contains(response.Body, "approval_not_counted") {
+		t.Fatalf("untrusted author status=%d body=%s", response.Code, response.Body)
+	}
+	if records := untrusted.records(t, "risk-approve"); len(records) != 0 {
+		t.Fatalf("untrusted author recorded %+v", records)
 	}
 	if response := f.post("contributor-token", "risk-approve", "/approvals", `{"head_sha":"`+approvalHead+`"}`); response.Code != http.StatusNotFound && response.Code != http.StatusForbidden {
 		t.Fatalf("contributor status=%d body=%s", response.Code, response.Body)
