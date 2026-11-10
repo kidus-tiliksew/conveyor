@@ -21,12 +21,13 @@ import { GateChoices } from './merge-at-gate'
 import { CheckStatusList } from './next-action-checks'
 import { NextActionParkReason } from './next-action-park-reason'
 import { NextActionDeadline, NextActionIDs } from './next-action-parts'
+import { PassiveNextActionBanner } from './passive-next-action-banner'
 import { gateAnchorId, isReviewable, useGateSurfaceMounted } from './review-panel'
 import type { TaskActivityView } from './task-activity-tabs'
 import { claimedWorkOrder, WorkOrderPreemptControl } from './work-order-preempt-card'
 
 // States where nothing is asked of anyone reading the page. On the Timeline
-// they take a quiet two-line banner, so the box that asks for nothing never
+// they take a quiet one-row banner, so the box that asks for nothing never
 // outweighs a decision and the timeline starts high on the page.
 const passiveKinds = new Set(['working', 'queued'])
 
@@ -95,30 +96,15 @@ export function NextActionCard({
       </section>
     )
   }
-  if (view === 'timeline' && passiveKinds.has(action.kind) && action.choices.length === 0) {
+  if (view === 'timeline' && passiveKinds.has(action.kind) && action.choices.length === 0 && !paused) {
+    // Keyed so a menu panel never carries over to another task, workspace, or order.
     return (
-      <section aria-label="Next action" className="min-w-0 rounded-lg border border-border/70 px-3 py-2">
-        <div className="flex min-w-0 flex-wrap items-center gap-x-2.5 gap-y-1">
-          {actionBadge}
-          <span className="text-xs capitalize text-faint" data-actor={action.actor}>
-            {action.actor}
-          </span>
-          <h2 className="min-w-0 text-sm font-medium max-sm:order-last max-sm:basis-full sm:flex-[1_1_12rem] sm:truncate">
-            {action.summary}
-          </h2>
-          <div className="shrink-0 max-sm:order-last max-sm:basis-full">
-            <NextActionDeadline deadline={action.deadline} />
-          </div>
-          {preemptOrder && <WorkOrderPreemptControl order={preemptOrder} inline />}
-        </div>
-        <div className="mt-1 flex min-w-0 flex-wrap items-center gap-x-4 gap-y-1">
-          {execution && <ExecutionStatusLine state={execution} />}
-          {action.if_ignored && <p className="text-xs text-muted">If ignored: {action.if_ignored}</p>}
-          <div className="ml-auto min-w-0 max-w-full has-[details[open]]:basis-full">
-            <NextActionIDs value={{ details: action.details, current_order: action.current_order }} />
-          </div>
-        </div>
-      </section>
+      <PassiveNextActionBanner
+        key={`${workspace}:${item.task.id}:${action.current_order?.id ?? ''}`}
+        item={item}
+        action={action}
+        preemptOrder={preemptOrder}
+      />
     )
   }
   return (

@@ -1,9 +1,8 @@
 import { useMutation, useQueryClient } from '@tanstack/react-query'
 import { OctagonX } from 'lucide-react'
-import { useId, useRef, useState } from 'react'
+import { useEffect, useId, useRef, useState } from 'react'
 import { preemptWorkOrder } from '../../lib/api'
 import type { ActivityItem, WorkOrder } from '../../lib/types'
-import { cn } from '../../lib/utils'
 import { useWorkspaceSelection } from '../app-shell'
 import { Button } from '../ui/button'
 import { readableError } from '../ui/error-state'
@@ -20,12 +19,24 @@ export function claimedWorkOrder(item: ActivityItem): WorkOrder | undefined {
 // destructive, and the copy is what the operator needs to decide; the protocol
 // mechanics (work-order revocation, renewal discovery, checkpoint before the
 // next claim) live in its tooltip.
-// `inline` puts the trigger straight into the caller's wrapping row, with the
-// confirmation on a line of its own under it.
-export function WorkOrderPreemptControl({ order, inline = false }: { order: WorkOrder; inline?: boolean }) {
+// With `onOpenChange` the caller owns the trigger, such as a "Stop attempt…"
+// menu item, and the control renders only the confirmation, with a Cancel
+// button. The mutation and its request ID live as long as the control stays
+// mounted, whichever form opens it.
+export function WorkOrderPreemptControl({
+  order,
+  open,
+  onOpenChange,
+}: {
+  order: WorkOrder
+  open?: boolean
+  onOpenChange?: (open: boolean) => void
+}) {
   const { workspace } = useWorkspaceSelection()
   const queryClient = useQueryClient()
-  const [expanded, setExpanded] = useState(false)
+  const [ownExpanded, setOwnExpanded] = useState(false)
+  const controlled = onOpenChange !== undefined
+  const expanded = controlled ? open === true : ownExpanded
   const [reason, setReason] = useState('')
   const panelID = useId()
   const requestId = useRef(crypto.randomUUID())
@@ -37,27 +48,32 @@ export function WorkOrderPreemptControl({ order, inline = false }: { order: Work
       void queryClient.invalidateQueries({ queryKey: ['work-orders'] })
     },
   })
+  // A confirmation opened from a menu takes focus, so the menu's closing
+  // never strands it on the trigger.
+  useEffect(() => {
+    if (controlled && expanded) document.getElementById(`${panelID}-reason`)?.focus()
+  }, [controlled, expanded, panelID])
   return (
-    <div className={inline ? 'contents' : 'space-y-2.5'}>
-      <div className={cn('flex justify-end', inline && 'ml-auto shrink-0')}>
-        <Button
-          variant="ghost"
-          size="sm"
-          aria-expanded={expanded}
-          aria-controls={expanded ? panelID : undefined}
-          onClick={() => setExpanded((open) => !open)}
-        >
-          <OctagonX />
-          Stop attempt
-        </Button>
-      </div>
+    <div className="space-y-2.5">
+      {!controlled && (
+        <div className="flex justify-end">
+          <Button
+            variant="ghost"
+            size="sm"
+            aria-expanded={expanded}
+            aria-controls={expanded ? panelID : undefined}
+            onClick={() => setOwnExpanded((value) => !value)}
+          >
+            <OctagonX />
+            Stop attempt
+          </Button>
+        </div>
+      )}
       {expanded && (
         <div
           id={panelID}
-          className={cn(
-            'space-y-2.5 rounded-lg border border-border bg-surface/50 px-3 py-3',
-            inline && 'order-last basis-full',
-          )}
+          data-preempt-confirmation
+          className="space-y-2.5 rounded-lg border border-border bg-surface/50 px-3 py-3"
         >
           <p
             className="text-xs leading-5 text-muted"
@@ -67,21 +83,29 @@ export function WorkOrderPreemptControl({ order, inline = false }: { order: Work
             cancelled — it can run again.
           </p>
           <Textarea
+            id={`${panelID}-reason`}
             aria-label="Reason for stopping this attempt"
             placeholder="Why should this attempt stop?"
             value={reason}
             onChange={(event) => setReason(event.target.value)}
             disabled={mutation.isPending || mutation.isSuccess}
           />
-          <Button
-            variant="destructive"
-            size="sm"
-            disabled={!reason.trim() || mutation.isPending || mutation.isSuccess}
-            onClick={() => mutation.mutate()}
-          >
-            <OctagonX />
-            {mutation.isPending ? 'Stopping…' : mutation.isSuccess ? 'Stopped' : 'Stop the attempt'}
-          </Button>
+          <div className="flex flex-wrap items-center gap-2">
+            <Button
+              variant="destructive"
+              size="sm"
+              disabled={!reason.trim() || mutation.isPending || mutation.isSuccess}
+              onClick={() => mutation.mutate()}
+            >
+              <OctagonX />
+              {mutation.isPending ? 'Stopping…' : mutation.isSuccess ? 'Stopped' : 'Stop the attempt'}
+            </Button>
+            {controlled && !mutation.isSuccess && (
+              <Button variant="ghost" size="sm" disabled={mutation.isPending} onClick={() => onOpenChange(false)}>
+                Cancel
+              </Button>
+            )}
+          </div>
           {mutation.error != null && (
             <p className="text-xs text-failure">{readableError(mutation.error, 'Something went wrong. Try again.')}</p>
           )}

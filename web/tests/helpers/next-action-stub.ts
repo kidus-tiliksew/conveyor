@@ -131,8 +131,16 @@ const catalogue: Record<string, { label: string; summary: string; question?: str
     question: 'Confirm or dismiss the proposed context?',
     choices: [],
   },
+  // The factory's own working row, and an agent's when its stage is unknown.
   working: { label: 'Working', summary: 'An agent is working on this task.', choices: [] },
   retrying: { label: 'Retrying', summary: 'Conveyor will retry this automatically.', choices: [] },
+}
+
+const workingByStage: Record<string, string> = {
+  spec: 'An agent is planning this task.',
+  implement: 'An agent is implementing this task.',
+  review: 'An agent is reviewing this task.',
+  verify: 'An agent is verifying this task.',
 }
 
 const operatorKinds: Record<string, true> = {
@@ -272,6 +280,9 @@ export function projectNextAction(item: ActivityItem): NextAction {
     order = undefined
   }
   const entry = catalogue[variant]
+  // An agent's working row names the claimed order's stage (catalogue.go).
+  const agentWorking = kind === 'working' && order?.state === 'claimed'
+  const summary = (agentWorking && order && workingByStage[order.stage]) || entry.summary
   const contextChoices: ChoiceSpec[] =
     kind === 'context_proposal'
       ? proposals.flatMap((proposal) =>
@@ -303,9 +314,11 @@ export function projectNextAction(item: ActivityItem): NextAction {
         ? 'none'
         : kind === 'blocked'
           ? 'dependency'
-          : 'factory',
+          : agentWorking
+            ? 'agent'
+            : 'factory',
     judgment: operatorKinds[kind] === true,
-    summary: entry.summary,
+    summary,
     question: entry.question,
     deadline: null,
     choices,

@@ -497,12 +497,13 @@ test('viewer sees the verification checkpoint but no recovery', async ({ page })
 test('a running verify order is labelled Verification', async ({ page }) => {
   await fixture(page, { claimed: true })
   await page.goto(`/w/demo/tasks/${taskId}/full`)
-  // The running state's title repeats the summary, so the stage reads on the
-  // next-action box's status line instead (component-web-task-surfaces,
-  // Next-action card).
+  // On the Timeline the server's sentence names the stage, so the one-row
+  // banner prints no separate status line (component-web-task-surfaces,
+  // Next-action card; req-operator-next-action AC-1.8).
   const box = page.getByRole('region', { name: 'Next action' })
-  await expect(box.getByText('Verification · Progressing', { exact: true })).toBeVisible()
-  await expect(box.getByText('Review · Progressing')).toHaveCount(0)
+  await expect(box.getByRole('heading', { name: 'An agent is verifying this task.' })).toBeVisible()
+  await expect(box.getByText(/· Progressing/)).toHaveCount(0)
+  await expect(box.getByText(/review/i)).toHaveCount(0)
   await expect(page.locator('#current-execution-title')).toHaveCount(0)
 })
 

@@ -356,6 +356,11 @@ func varsFor(in Input, row built) Vars {
 		vars.OrderID = row.order.ID
 		vars.Stage = string(row.order.Stage)
 		vars.Attempts = row.order.AutomaticRetryCount
+		// Only the stated order's own stage names an agent's work; the
+		// task's next stage never does, and factory rows keep it empty.
+		if row.actor == ActorAgent {
+			vars.AgentStage = string(row.order.Stage)
+		}
 	}
 	if in.MergeConflict.NextRetryAt.After(in.Now) {
 		vars.RetryScheduled = true
