@@ -365,7 +365,7 @@ test('System Design search and deterministic sorting preserve categories and the
       .filter({ hasText: /^(Alpha|alpha|Beta)/ })
       .allTextContents()
 
-  await expect.poll(rowOrder).toEqual(['Alpha2', 'Beta', 'alpha'])
+  await expect.poll(rowOrder).toEqual(['Alphadesign-alpha-a2', 'Betadesign-beta', 'alphadesign-alpha-b'])
   const sortTrigger = tree.getByRole('button', { name: 'Sort System Design by' })
   const chooseSort = async (label: string) => {
     await sortTrigger.click()
@@ -374,13 +374,13 @@ test('System Design search and deterministic sorting preserve categories and the
   }
 
   await chooseSort('Updated')
-  await expect.poll(rowOrder).toEqual(['alpha', 'Beta', 'Alpha2'])
+  await expect.poll(rowOrder).toEqual(['alphadesign-alpha-b', 'Betadesign-beta', 'Alphadesign-alpha-a2'])
   await chooseSort('Name')
-  await expect.poll(rowOrder).toEqual(['Alpha2', 'alpha', 'Beta'])
+  await expect.poll(rowOrder).toEqual(['Alphadesign-alpha-a2', 'alphadesign-alpha-b', 'Betadesign-beta'])
   await chooseSort('Name')
-  await expect.poll(rowOrder).toEqual(['Beta', 'Alpha2', 'alpha'])
+  await expect.poll(rowOrder).toEqual(['Betadesign-beta', 'Alphadesign-alpha-a2', 'alphadesign-alpha-b'])
   await chooseSort('Created')
-  await expect.poll(rowOrder).toEqual(['Beta', 'Alpha2', 'alpha'])
+  await expect.poll(rowOrder).toEqual(['Betadesign-beta', 'Alphadesign-alpha-a2', 'alphadesign-alpha-b'])
 
   const search = tree.getByRole('searchbox', { name: 'Search System Design' })
   await search.fill('gAm')
@@ -1218,5 +1218,106 @@ for (const state of [
       expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(390)
       await page.screenshot({ path: testInfo.outputPath('lifecycle-narrow.png'), fullPage: true })
     }
+  })
+}
+
+// Tree search matches a System Design document's title or ID, ignoring letter
+// case, and each entry shows its ID in quieter text with its title
+// (component-web-document-surfaces, "The tree").
+for (const viewport of [
+  { name: 'desktop', width: 1440, height: 900 },
+  { name: 'phone', width: 375, height: 812 },
+]) {
+  test(`System Design search by ID finds live and archived entries and shows each ID (${viewport.name})`, async ({
+    page,
+  }, testInfo) => {
+    await page.setViewportSize({ width: viewport.width, height: viewport.height })
+    await initialize(page)
+    const longId = 'component-web-document-surfaces-with-a-long-identifier-that-truncates'
+    const entry = (id: string, title: string, category: string, extra: Record<string, unknown> = {}) => ({
+      ...design,
+      document: { ...design.document, id, slug: id, title, category, ...extra },
+      pending_versions: [],
+      drift: [],
+    })
+    const items = [
+      { ...entry('component-artifacts', 'Artifacts: media validation', 'Component design'), drift: design.drift },
+      entry(longId, 'Web document surfaces', 'Component design'),
+      entry('feature-retries', 'Retry behavior', 'Feature design'),
+      entry('component-retired-intake', 'Retired intake', 'Component design', {
+        archived: true,
+        archived_by: 'Operator One',
+        archived_at: '2026-09-02T18:15:00Z',
+        superseded_by: ['component-artifacts'],
+      }),
+    ]
+    await page.route('**/v1/**', async (route) => {
+      const handled = shell(route)
+      if (handled) return await handled
+      const path = new URL(route.request().url()).pathname
+      if (path === '/v1/system-designs') return route.fulfill({ json: items.map(summarizeDesign) })
+      const detail = items.find((item) => path === `/v1/system-designs/${item.document.id}`)
+      if (detail) return route.fulfill({ json: detail })
+      return route.fulfill({ json: [] })
+    })
+
+    await page.goto('/w/demo/system-design?document=component-artifacts')
+    await expect(page.getByRole('heading', { name: 'Artifacts: media validation' }).first()).toBeVisible()
+    if (viewport.width < 1024) await page.getByRole('button', { name: 'Documents' }).click()
+    const tree = page.getByRole('navigation', { name: 'Document tree' })
+    const components = tree.getByRole('heading', { name: 'Component design' }).locator('..')
+    const features = tree.getByRole('heading', { name: 'Feature design' }).locator('..')
+    const archived = tree.locator('details')
+    const componentIds = components.locator('[data-document-id]')
+    const archivedIds = archived.locator('[data-document-id]')
+
+    // Every live and archived entry shows its ID beside its attention count.
+    await expect(componentIds).toHaveText(['component-artifacts', longId])
+    await expect(features.locator('[data-document-id]')).toHaveText(['feature-retries'])
+    await archived.locator('summary').click()
+    await expect(archivedIds).toHaveText(['component-retired-intake'])
+    await expect(
+      components.getByRole('button', { name: /Artifacts/ }).getByLabel('1 attention item', { exact: true }),
+    ).toBeVisible()
+    await expect(archived.getByRole('button', { name: /Retired intake/ })).toContainText(
+      'Superseded by component-artifacts',
+    )
+
+    const search = tree.getByRole('searchbox', { name: 'Search System Design' })
+    await search.fill('COMPONENT-ART')
+    await expect(componentIds).toHaveText(['component-artifacts'])
+    await expect(tree.getByRole('heading', { name: 'Feature design' })).toHaveCount(0)
+    await expect(archived.getByText('No archived documents match your search.')).toBeVisible()
+
+    await search.fill(' Retired-Intake ')
+    await expect(tree.getByRole('heading', { name: 'Component design' })).toHaveCount(0)
+    await expect(archivedIds).toHaveText(['component-retired-intake'])
+
+    await search.fill('retry')
+    await expect(features.locator('[data-document-id]')).toHaveText(['feature-retries'])
+
+    await search.fill('component-missing')
+    await expect(tree.getByText('No documents match your search.')).toBeVisible()
+
+    // A long ID truncates inside the tree and never widens the page.
+    await search.fill('Component')
+    await expect(componentIds).toHaveText(['component-artifacts', longId])
+    await expect(archivedIds).toHaveText(['component-retired-intake'])
+    await expect(tree.getByRole('heading', { name: 'Feature design' })).toHaveCount(0)
+    const longLine = componentIds.filter({ hasText: longId })
+    const longBox = await longLine.boundingBox()
+    const treeBox = await tree.boundingBox()
+    if (!longBox || !treeBox) throw new Error('the tree or its long ID line is not rendered')
+    expect(longBox.x + longBox.width).toBeLessThanOrEqual(treeBox.x + treeBox.width)
+    expect(await longLine.evaluate((element) => element.scrollWidth > element.clientWidth)).toBe(true)
+    const overflow = await page.evaluate(() => ({
+      scrollWidth: document.documentElement.scrollWidth,
+      clientWidth: document.documentElement.clientWidth,
+    }))
+    expect(overflow.scrollWidth).toBeLessThanOrEqual(overflow.clientWidth)
+
+    const shot = testInfo.outputPath(`system-design-id-search-${viewport.name}.png`)
+    await page.screenshot({ path: shot, animations: 'disabled' })
+    await testInfo.attach(`system-design-id-search-${viewport.name}`, { path: shot, contentType: 'image/png' })
   })
 }
