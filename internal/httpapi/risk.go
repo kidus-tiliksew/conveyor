@@ -1,6 +1,7 @@
 package httpapi
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -48,12 +49,20 @@ type riskTierRequest struct {
 	Reason string `json:"reason"`
 }
 
-// decodeRiskTierRequest strictly decodes exactly one {tier, reason} object.
-// Unknown fields, trailing JSON, a non-string value, and null are refused, and
-// the tier must be low, medium, or high with one non-blank line of reason.
-func decodeRiskTierRequest(body io.Reader) (riskTierRequest, error) {
+// riskTierBodyLimit bounds the whole body of POST /v1/tasks/{id}/risk-tier,
+// trailing bytes included. A reason holds at most core.MaxRiskReasonRunes
+// runes, so 64 KiB leaves room for any valid request; a larger body answers
+// 413 before any store read or write (component-http-api invariant 17;
+// DEC-105(3)).
+const riskTierBodyLimit = 64 << 10
+
+// decodeRiskTierRequest strictly decodes exactly one {tier, reason} object
+// from a body already read in full. Unknown fields, trailing JSON, a
+// non-string value, and null are refused, and the tier must be low, medium,
+// or high with one non-blank line of reason.
+func decodeRiskTierRequest(body []byte) (riskTierRequest, error) {
 	var raw map[string]json.RawMessage
-	decoder := json.NewDecoder(io.LimitReader(body, 64<<10))
+	decoder := json.NewDecoder(bytes.NewReader(body))
 	if err := decoder.Decode(&raw); err != nil || raw == nil {
 		return riskTierRequest{}, errors.New("body must be one {tier, reason} JSON object")
 	}
@@ -98,7 +107,19 @@ func decodeRiskTierRequest(body io.Reader) (riskTierRequest, error) {
 // merge decision (req-risk-based-review REQ-6, AC-6.1, AC-6.2, AC-1.6, AC-2.2,
 // AC-2.3; feature-risk-based-review RR-8).
 func (s *Server) raiseTaskRiskTier(w http.ResponseWriter, r *http.Request) {
-	request, err := decodeRiskTierRequest(r.Body)
+	// The whole body is read through the shared bound before it is decoded,
+	// so an oversized body, even one that pads valid JSON with whitespace or
+	// trails more JSON, answers 413 and nothing is read or written.
+	body, err := readBoundedBody(w, r, riskTierBodyLimit)
+	if errors.Is(err, errBodyTooLarge) {
+		writeJSON(w, http.StatusRequestEntityTooLarge, map[string]string{"error": "body_too_large", "message": fmt.Sprintf("the request body exceeds %d bytes", riskTierBodyLimit)})
+		return
+	}
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid_risk_tier", "message": err.Error()})
+		return
+	}
+	request, err := decodeRiskTierRequest(body)
 	if err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid_risk_tier", "message": err.Error()})
 		return

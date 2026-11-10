@@ -407,3 +407,56 @@ func TestTaskDetailSummariesCarrySeatRisk(t *testing.T) {
 		t.Fatalf("a verdict without a tier serialized risk fields: %s", encoded)
 	}
 }
+
+// TestRaiseRiskTierHTTPBodyBound: the route reads its whole body through the
+// 64 KiB bound before decoding. A body over the bound answers 413 whether it
+// pads a valid object with whitespace, trails more JSON after it, is cut
+// inside the object, or declares no length, and no rating or event is
+// written; a valid body of exactly the bound is accepted (component-http-api
+// invariant 17; DEC-105(3)).
+func TestRaiseRiskTierHTTPBodyBound(t *testing.T) {
+	valid := `{"tier":"high","reason":"raise"}`
+	pad := func(body string, size int) string { return body + strings.Repeat(" ", size-len(body)) }
+	for _, tc := range []struct {
+		name          string
+		body          string
+		unknownLength bool
+	}{
+		{"PaddedToLimitThenTrailingObject", pad(valid, riskTierBodyLimit) + "{}", false},
+		{"PaddedToLimitThenTrailingWhitespace", pad(valid, riskTierBodyLimit) + "   ", false},
+		{"PaddedPastLimitUnknownLength", pad(valid, riskTierBodyLimit) + "{}", true},
+		{"ObjectCutByLimit", `{"tier":"high","reason":"` + strings.Repeat("x", riskTierBodyLimit) + `"}`, false},
+		{"ObjectCutByLimitUnknownLength", `{"tier":"high","reason":"` + strings.Repeat("x", riskTierBodyLimit) + `"}`, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			handler, st := riskHTTPFixture(t)
+			request := httptest.NewRequest(http.MethodPost, "/v1/tasks/risk-http/risk-tier?workspace_id=alpha", strings.NewReader(tc.body))
+			request.Header.Set("Authorization", "Bearer operator-token")
+			if tc.unknownLength {
+				request.ContentLength = -1
+			}
+			response := httptest.NewRecorder()
+			handler.ServeHTTP(response, request)
+			if response.Code != http.StatusRequestEntityTooLarge || seatErrorCode(t, response) != "body_too_large" {
+				t.Fatalf("status=%d body=%.200s", response.Code, response.Body)
+			}
+			if count := riskRatingCount(t, st, "risk-http"); count != 0 {
+				t.Fatalf("an oversized body recorded %d ratings", count)
+			}
+			events, err := st.ListEvents(store.WithWorkspace(t.Context(), "alpha"), "risk-http")
+			requireOKHTTP(t, err)
+			for _, event := range events {
+				if event.Kind == core.RiskRatedEvent {
+					t.Fatalf("an oversized body appended %+v", event)
+				}
+			}
+		})
+	}
+	t.Run("ExactlyAtLimitIsAccepted", func(t *testing.T) {
+		handler, st := riskHTTPFixture(t)
+		response := postRiskTier(handler, "operator-token", "risk-http", pad(valid, riskTierBodyLimit))
+		if response.Code != http.StatusOK || riskRatingCount(t, st, "risk-http") != 1 {
+			t.Fatalf("status=%d body=%.200s", response.Code, response.Body)
+		}
+	})
+}
