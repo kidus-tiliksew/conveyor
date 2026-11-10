@@ -39,6 +39,19 @@ Frame downstream investigation with an advisory `brief`: questions a spec must
 answer, suspected affected areas, and risks or ambiguities. Context proposals
 are advisory until an operator confirms them; triage never attaches context.
 
+Timeline text:
+
+- Open the `summary` with a plain sentence. It states what the task asks for
+  and that it proceeds, or why it is parked.
+- That sentence names no work-order or session ID, file path, migration number,
+  commit SHA, or REQ-n, AC-n.m, or DEC-n ID. Put required IDs in later
+  sentences.
+- Write the `summary` in plain English: at most 20 words per instruction and 25
+  per description, active voice, only "can", "must", and "will" as helping
+  verbs, one instruction per sentence, no semicolons or contractions, and one
+  name per item. The `conveyor-plain-english` skill holds the full profile when
+  installed.
+
 Keep prose brief. End the final answer with exactly one machine-owned block and
 nothing after it:
 

@@ -110,7 +110,8 @@ Timeline text: the first sentence of every progress message, decision reason,
 and review summary you write states in plain language what happened and what
 happens next. That sentence contains no work-order or session identifiers,
 file paths, migration numbers, commit SHAs, or REQ-n, AC-n.m, or DEC-n
-identifiers. Put those in later sentences.
+identifiers. Put those in later sentences. Write this text under the
+conveyor-plain-english profile.
 ```
 
 **Implementer:**
@@ -128,7 +129,8 @@ Timeline text: the first sentence of every progress message, decision reason,
 and review summary you write states in plain language what happened and what
 happens next. That sentence contains no work-order or session identifiers,
 file paths, migration numbers, commit SHAs, or REQ-n, AC-n.m, or DEC-n
-identifiers. Put those in later sentences.
+identifiers. Put those in later sentences. Write this text under the
+conveyor-plain-english profile.
 ```
 
 **Verifier or reviewer:**
@@ -144,7 +146,8 @@ Timeline text: the first sentence of every progress message, decision reason,
 and review summary you write states in plain language what happened and what
 happens next. That sentence contains no work-order or session identifiers,
 file paths, migration numbers, commit SHAs, or REQ-n, AC-n.m, or DEC-n
-identifiers. Put those in later sentences.
+identifiers. Put those in later sentences. Write this text under the
+conveyor-plain-english profile.
 ```
 
 A verifier or reviewer prompt names only the task, workspace, and order
@@ -367,11 +370,20 @@ follow this rule:
 > reason, and review summary you write states in plain language what happened
 > and what happens next. That sentence contains no work-order or session
 > identifiers, file paths, migration numbers, commit SHAs, or REQ-n, AC-n.m,
-> or DEC-n identifiers. Put those in later sentences.
+> or DEC-n identifiers. Put those in later sentences. Write this text under
+> the conveyor-plain-english profile.
 
 The first sentence carries the meaning (req-agent-coordination AC-3.1).
 Identifiers may follow in later sentences (req-agent-coordination AC-3.2).
 Every thread prompt carries the rule (req-agent-coordination AC-3.3).
+
+"Plain language" means the `conveyor-plain-english` profile (DEC-126(1)).
+Write your timeline text, every decision reason, and every operator escalation
+or out-of-band question under that profile (DEC-126(2)). The profile changes
+how a question reads. It does not change what the question offers. The rules
+for recommendations, preselection, defaults, and withdrawal in
+[Decisions within delegated scope](#decisions-within-delegated-scope) and
+[Out-of-band answers](#out-of-band-answers) stay as they are.
 
 Before:
 

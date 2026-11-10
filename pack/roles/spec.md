@@ -109,7 +109,22 @@ Apply the corpus sentence rules (ref-260823-f4729f v2, informative) to plan
 prose. Name the actor, mechanism, source, field, or measurement; use one term
 per concept and one idea per sentence. Cut generic praise, filler, hedging
 stacks, ornamental adverbs, synonym cycling, restating bold labels, forced
-groups of three, and conversational framing. Prefer plain words and active voice.
+groups of three, and conversational framing.
+
+Timeline text:
+
+- Open every progress message, release reason, and checkpoint
+  `decision_request` with a plain sentence. It states what happened and what
+  happens next.
+- That sentence names no work-order or session ID, file path, migration number,
+  commit SHA, or REQ-n, AC-n.m, or DEC-n ID. Put required IDs in later
+  sentences.
+- Write timeline text, gate offers, and operator questions in plain English: at
+  most 20 words per instruction and 25 per description, active voice, only
+  "can", "must", and "will" as helping verbs, one instruction per sentence, no
+  semicolons or contractions, and one name per item. The
+  `conveyor-plain-english` skill holds the full profile when installed. Use
+  plain words and active voice in plan prose too.
 
 Submit the schema-conforming plan through `submit_plan`; prose alone is not
 completion. After the tool succeeds, follow the session rule above: a

@@ -99,7 +99,8 @@ For implementation orders, call `report_progress` at these milestones:
   completed item or step and the files changed.
 - Before `submit_for_review`, list the validation commands run.
 
-Keep each progress message under a few sentences.
+Keep each progress message under a few sentences. Write it as
+[Readable timeline text](#readable-timeline-text) describes.
 
 ### Claim identity
 
@@ -245,10 +246,43 @@ A submitted order holds no live claim. Waiting on `await_review` after an
 implementation submission needs no renewal and does not revive the submitted
 claim.
 
+## Readable timeline text
+
+The task timeline shows progress messages, release and checkpoint reasons,
+review verdict summaries, and verification summaries. A person reads them there
+without knowing the factory's identifiers (req-readable-agent-text REQ-1).
+
+- Open each of these texts with one plain sentence. It states what happened and
+  what happens next (AC-1.2).
+- Keep identifiers out of that first sentence. It contains no work-order or
+  session identifiers, file paths, migration numbers, commit SHAs, or REQ-n,
+  AC-n.m, or DEC-n identifiers (AC-1.3).
+- Put the identifiers that other instructions require in later sentences.
+- Keep a fixed reason, such as `operator checkpoint reached`, exactly as
+  written.
+
+Write timeline text, every gate offer, and every operator question under the
+`conveyor-plain-english` profile (DEC-126(2)). The profile changes how the text
+reads. It does not change what a gate offer lists, the replies it offers, or
+the wait that follows, as [Human gates](#human-gates) describes.
+
+Before:
+
+> Claimed 261019-12383b-implement-1. Contract: RS-2 of
+> feature-review-seat-minimum v2, migrations 149/0024 …
+
+After:
+
+> I claimed the task and read its plan. Next, I will set up the worktree and
+> add the reviewer seat check. The plan cites RS-2 of
+> feature-review-seat-minimum v2.
+
 ## Finish through the factory
 
 End every claimed stage with its registered lifecycle tool or, when genuinely
-abandoning the attempt, `release_work_order` with a truthful reason:
+abandoning the attempt, `release_work_order` with a truthful reason. Write the
+reason and every summary as [Readable timeline text](#readable-timeline-text)
+describes.
 
 - A plan-stage order ends with `submit_plan`. The current MCP registration
   intentionally rejects the retired `submit_spec` name and directs callers to
