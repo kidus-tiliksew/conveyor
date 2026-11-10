@@ -350,13 +350,13 @@ func FoldTaskFlow(events []core.Event, action nextaction.NextAction, recovery co
 	// even where the recorded path had passed it.
 	planReopened := false
 	var (
-		state, nextStage, recoveryStage, assignee string
-		gateKind                                  core.GateKind
-		lastClosedStage                           core.Stage
-		windowStart                               time.Time
-		bounces                                   []taskFlowBounce
-		dependencies                              []string
-		orderIDs                                  []string
+		state, nextStage, recoveryStage string
+		gateKind                        core.GateKind
+		lastClosedStage                 core.Stage
+		windowStart                     time.Time
+		bounces                         []taskFlowBounce
+		dependencies                    []string
+		orderIDs                        []string
 	)
 	visited := map[core.Stage]bool{}
 	orders := map[string]*taskFlowOrder{}
@@ -408,9 +408,6 @@ func FoldTaskFlow(events []core.Event, action nextaction.NextAction, recovery co
 			if nextStage == "" {
 				nextStage = string(task.NextStage)
 			}
-			if task.Assignee != nil {
-				assignee = task.Assignee.UserID
-			}
 		case event.Kind == core.EventTaskPlanStateChanged:
 			var change core.PlanStateChange
 			if json.Unmarshal(event.Payload, &change) == nil && change.To.Valid() {
@@ -427,13 +424,6 @@ func FoldTaskFlow(events []core.Event, action nextaction.NextAction, recovery co
 			}
 			if json.Unmarshal(event.Payload, &payload) == nil && payload.NewSetup != nil {
 				verifyStage = payload.NewSetup.VerifyStage
-			}
-		case event.Kind == "task.assignee.set" || event.Kind == "task.assignee.cleared":
-			var payload struct {
-				UserID string `json:"assignee_user_id"`
-			}
-			if json.Unmarshal(event.Payload, &payload) == nil {
-				assignee = payload.UserID
 			}
 		case event.Kind == "task.state_changed":
 			var payload struct {
@@ -695,7 +685,10 @@ func FoldTaskFlow(events []core.Event, action nextaction.NextAction, recovery co
 		claimed := latest != nil && latest.state == core.WorkOrderClaimed
 		if claimed && latest.claim != nil {
 			view := *latest.claim
-			view.User = assignee
+			// The attempt's user is the person who claimed it: the user of a
+			// run:<user id> claimant, and empty for any other claimant
+			// (req-operator-next-action AC-7.6).
+			view.User = runClaimantUserID(view.ClaimedBy)
 			view.ElapsedSeconds = flowElapsed(view.ClaimedAt, now)
 			row.CurrentAttempt = &view
 		}
@@ -995,4 +988,13 @@ func withoutString(values []string, value string) []string {
 		}
 	}
 	return out
+}
+
+// runClaimantUserID returns the user ID of a run:<user id> claimant and ""
+// for any other claimant (req-operator-next-action AC-7.6).
+func runClaimantUserID(claimantID string) string {
+	if !core.IsTaskRunClaimantID(claimantID) {
+		return ""
+	}
+	return strings.TrimPrefix(claimantID, core.TaskRunClaimantPrefix)
 }

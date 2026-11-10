@@ -633,3 +633,31 @@ func TestRetrySummaryCarriesNoTime(t *testing.T) {
 		t.Fatalf("a passed retry time summary=%q", got.Summary)
 	}
 }
+
+// TestAttemptUserIsTheRunClaimant pins that the current attempt names the
+// user of a run:<user id> claimant, never the task assignee, and no user for
+// any other claimant (req-operator-next-action AC-7.6).
+func TestAttemptUserIsTheRunClaimant(t *testing.T) {
+	now := time.Date(2026, 10, 12, 9, 0, 0, 0, time.UTC)
+	for _, tc := range []struct {
+		name, claimant string
+		assignee       *core.TaskAssignee
+		want           string
+	}{
+		{name: "unassigned run claimant", claimant: "run:usr_selam", want: "usr_selam"},
+		{name: "claimant differs from assignee", claimant: "run:usr_selam", assignee: &core.TaskAssignee{UserID: "usr_kidus"}, want: "usr_selam"},
+		{name: "non-run claimant", claimant: "worker-1", assignee: &core.TaskAssignee{UserID: "usr_kidus"}, want: ""},
+		{name: "empty run claimant", claimant: "run:", assignee: &core.TaskAssignee{UserID: "usr_kidus"}, want: ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			in := Input{Task: core.Task{State: core.TaskRunning}, Assignee: tc.assignee, Orders: []core.WorkOrder{{ID: "c", State: core.WorkOrderClaimed, ClaimantID: tc.claimant}}, Now: now}
+			got := Project(in)
+			if got.Kind != KindWorking || got.Attempt == nil {
+				t.Fatalf("kind=%s attempt=%+v", got.Kind, got.Attempt)
+			}
+			if got.Attempt.User != tc.want || got.Attempt.ClaimedBy != tc.claimant {
+				t.Fatalf("attempt user=%q claimed_by=%q, want user %q", got.Attempt.User, got.Attempt.ClaimedBy, tc.want)
+			}
+		})
+	}
+}

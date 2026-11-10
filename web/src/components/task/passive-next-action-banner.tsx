@@ -5,6 +5,7 @@ import { cn, fullTime } from '../../lib/utils'
 import { Disclosure } from '../ui/disclosure'
 import { DropdownMenu, DropdownMenuItem, DropdownMenuSeparator } from '../ui/dropdown-menu'
 import { NextActionIDList } from './next-action-parts'
+import { PersonAvatar, personLabel, runClaimantUserId, usePersonResolver } from './run-by'
 import { WorkOrderPreemptControl } from './work-order-preempt-card'
 
 // The share of the execution span after which the banner takes the attention
@@ -35,6 +36,7 @@ export function PassiveNextActionBanner({
   const copyAttempt = useRef(0)
   const section = useRef<HTMLElement>(null)
   const now = useNow()
+  const resolve = usePersonResolver()
   const orderID = action.current_order?.id
   const order = orderID ? item.work_orders?.find((candidate) => candidate.id === orderID) : undefined
   const working = action.kind === 'working'
@@ -74,6 +76,16 @@ export function PassiveNextActionBanner({
     setPanel(null)
     section.current?.querySelector<HTMLButtonElement>('button[aria-label="More actions"]')?.focus()
   }
+  // The person who holds the stated current order: a run:<user id> claimant
+  // of a claimed order. The banner still prints the server's summary as is
+  // (component-next-action invariant 17).
+  const claimedBy =
+    order?.state === 'claimed'
+      ? (order.claimed_by ?? action.attempt?.claimed_by)
+      : !order && action.current_order?.state === 'claimed'
+        ? action.attempt?.claimed_by
+        : undefined
+  const claimant = resolve(runClaimantUserId(claimedBy))
   const model = working ? order?.model?.trim() : undefined
   const since = started ?? queued
   // On a tight row the meta gives way before the sentence. It is one clipped
@@ -83,7 +95,11 @@ export function PassiveNextActionBanner({
   const meta = (model || since !== undefined) && (
     <p
       data-banner-meta
-      className="flex h-4 min-w-0 flex-row-reverse flex-wrap items-baseline justify-end overflow-hidden text-xs leading-4 whitespace-nowrap text-muted max-sm:col-start-2 max-sm:col-end-5 max-sm:row-start-2"
+      className={cn(
+        'flex h-4 min-w-0 flex-row-reverse flex-wrap items-baseline justify-end overflow-hidden text-xs leading-4 whitespace-nowrap text-muted max-sm:col-start-2 max-sm:col-end-5 max-sm:row-start-2',
+        // Under 640 px the meta starts under the sentence, past the avatar.
+        claimant && 'max-sm:ml-[22px]',
+      )}
     >
       {since !== undefined && (
         <time
@@ -120,9 +136,20 @@ export function PassiveNextActionBanner({
           Below 640 px the meta moves to a second row under the sentence. */}
       <div className="grid min-w-0 grid-cols-[auto_minmax(0,1fr)_auto_auto] items-start gap-x-2 gap-y-0.5 sm:grid-cols-[auto_minmax(0,max-content)_minmax(0,1fr)_auto_auto] sm:items-center">
         <StatusChip action={action} />
-        <h2 className="min-w-0 py-0.5 text-sm font-medium leading-5 sm:truncate" title={action.summary}>
-          {action.summary}
-        </h2>
+        <div className="flex min-w-0 items-start gap-1.5 sm:items-center">
+          {claimant && (
+            <PersonAvatar
+              person={claimant}
+              label={personLabel(claimant, 'working on this order')}
+              size="inline"
+              live
+              className="mt-[3px] sm:mt-0"
+            />
+          )}
+          <h2 className="min-w-0 py-0.5 text-sm font-medium leading-5 sm:truncate" title={action.summary}>
+            {action.summary}
+          </h2>
+        </div>
         {meta || <span aria-hidden="true" className="max-sm:hidden" />}
         <div className="flex min-h-6 items-center">
           {deadline !== undefined && action.deadline && (
