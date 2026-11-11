@@ -1068,8 +1068,9 @@ for (const scenario of implementationCases) {
 }
 
 // One order per work-order entry state, plus a claimed order without a
-// claimant, agent, or model. Every order reports usage or none, and no entry
-// prints it (component-web-task-surfaces, Work-order timeline entries).
+// claimant, agent, or model, and a queued order that adds no entry. Every
+// order reports usage or none, and no entry prints it
+// (component-web-task-surfaces, Work-order timeline entries).
 const orderStatesItem = activity({
   work_orders: [
     order(`${taskId}-implement-1`, {
@@ -1121,12 +1122,6 @@ const orderStateRows = [
     detail: 'run:usr_operator_with_a_long_claimant_identifier · claude-code · claude-opus-5-5',
   },
   { state: 'claimed', stage: 'Plan', badge: 'In progress', detail: undefined },
-  {
-    state: 'queued',
-    stage: 'Implementation',
-    badge: 'Waiting for an agent',
-    detail: 'Any agent connected over MCP can claim it. The server URL is in Settings.',
-  },
 ] as const
 
 test.describe('at 390 px', () => {
@@ -1141,6 +1136,7 @@ test.describe('at 390 px', () => {
       const timeline = page.getByRole('region', { name: 'Execution event timeline' })
       const entries = timeline.locator('li[data-order-entry]')
       await expect(entries).toHaveCount(orderStateRows.length)
+      await expect(timeline.locator('li[data-order-entry="queued"]')).toHaveCount(0)
       for (const [index, row] of orderStateRows.entries()) {
         const entry = entries.nth(index)
         await expect(entry).toHaveAttribute('data-order-entry', row.state)
@@ -1992,4 +1988,103 @@ for (const { name, item } of screenshotCases) {
       if (width === 375) expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBe(375)
     })
   }
+}
+
+// A queued order with no claimant adds no timeline entry for any stage. The
+// next-action card alone states that the task waits for an agent, so the
+// timeline repeats no current-state summary (component-web-task-surfaces,
+// Presenting the statement invariant 2; req-operator-next-action AC-1.7,
+// AC-7.1). A queued review seat keeps its waiting label inside its round's
+// panel, and the redispatch card keeps its sentence (task 261111-11da2c).
+function queuedCurrentOrder(id: string, stage: string): NextAction['current_order'] {
+  return { id, stage, state: 'queued', queue_deadline: null, execution_deadline: null, lease_expires_at: null }
+}
+
+const queuedOrdersAction: NextAction = {
+  ...nextAction(`${taskId}-implement-1`),
+  label: 'Waiting for an agent',
+  kind: 'queued',
+  summary: 'Waiting for an agent to claim this task.',
+  current_order: queuedCurrentOrder(`${taskId}-implement-1`, 'implement'),
+  attempt: undefined,
+}
+
+const queuedPlanAndImplementation = activity({
+  task: { ...task, state: 'queued' },
+  latest_stage: 'implement',
+  work_orders: [
+    order(`${taskId}-spec-1`, { stage: 'spec', state: 'queued', claimable: true, queue_entered_at: minutes(1) }),
+    order(`${taskId}-implement-1`, { state: 'queued', claimable: true, queue_entered_at: minutes(2) }),
+  ],
+})
+
+for (const surface of surfaces) {
+  test(`the ${surface.name} adds no timeline entry for queued Plan and Implementation orders`, async ({ page }) => {
+    await mockAPI(page, queuedPlanAndImplementation, queuedOrdersAction)
+    await page.goto(surface.url)
+    const timeline = page.getByRole('region', { name: 'Execution event timeline' })
+    // The redispatch card loads with the timeline, so the absence checks below
+    // never run against an unloaded timeline.
+    await expect(
+      timeline.getByText(
+        'Waiting for an agent to pick this task up. If none does, this button offers it to agents again.',
+      ),
+    ).toBeVisible()
+    await expect(timeline.getByRole('button', { name: 'Redispatch', exact: true })).toBeVisible()
+
+    await expect(timeline.locator('li[data-order-entry]')).toHaveCount(0)
+    await expect(timeline.getByText('Waiting for an agent', { exact: true })).toHaveCount(0)
+    await expect(timeline.getByText('Any agent connected over MCP can claim it.', { exact: false })).toHaveCount(0)
+
+    // The next-action card still states the wait in the server's words.
+    const card = page.getByRole('region', { name: 'Next action' })
+    await expect(card.getByText('Waiting for an agent', { exact: true })).toBeVisible()
+    await expect(card.getByText('Waiting for an agent to claim this task.', { exact: true })).toBeVisible()
+  })
+}
+
+const queuedVerifyAndReview = activity({
+  latest_stage: 'review',
+  work_orders: [
+    order(`${taskId}-verify-1`, { stage: 'verify', state: 'queued', claimable: true, queue_entered_at: minutes(1) }),
+    order(`${taskId}-review-1`, { stage: 'review', state: 'queued', claimable: true, queue_entered_at: minutes(2) }),
+    order(`${taskId}-review-2-seat-1`, {
+      stage: 'review',
+      state: 'queued',
+      claimable: true,
+      review_round: 2,
+      review_seat: 1,
+      queue_entered_at: minutes(3),
+    }),
+  ],
+})
+
+test('queued Verification and Review orders add no order entry while a queued review seat keeps its waiting status', () => {
+  const entries = timelineOf(queuedVerifyAndReview)
+  expect(entries.filter((entry) => entry.type === 'order')).toEqual([])
+  const panels = entries.filter((entry) => entry.type === 'panel')
+  expect(panels).toHaveLength(1)
+  expect(panels[0].seats.map((seat) => seat.status)).toEqual(['waiting'])
+})
+
+for (const surface of surfaces) {
+  test(`the ${surface.name} keeps the queued review seat label and adds no queued Verification or Review entry`, async ({
+    page,
+  }) => {
+    await mockAPI(page, queuedVerifyAndReview, {
+      ...queuedOrdersAction,
+      current_order: queuedCurrentOrder(`${taskId}-review-2-seat-1`, 'review'),
+    })
+    await page.goto(surface.url)
+    const timeline = page.getByRole('region', { name: 'Execution event timeline' })
+    const seatLabel = timeline.getByText('Waiting for an agent', { exact: true })
+    await expect(seatLabel).toHaveCount(1)
+    await expect(seatLabel).toBeVisible()
+    await expect(seatLabel).toHaveAttribute(
+      'title',
+      'Any agent connected over MCP can claim this seat. The server URL is in Settings.',
+    )
+    await expect(timeline.locator('li[data-order-entry]')).toHaveCount(0)
+    await expect(timeline.getByText('Any agent connected over MCP can claim it.', { exact: false })).toHaveCount(0)
+  })
 }

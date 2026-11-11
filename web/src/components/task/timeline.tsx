@@ -690,7 +690,6 @@ function panelDot(seats: PanelSeat[], resolution: { verdict: string } | undefine
 }
 
 const orderDots: Record<Extract<TimelineEntry, { type: 'order' }>['tone'], string> = {
-  waiting: 'bg-edge',
   active: 'animate-pulse bg-primary',
   alarm: 'bg-attention-dot',
 }

@@ -3816,8 +3816,9 @@ const observedSupersession: SupersessionOrder[] = [
 ]
 
 async function expectSupersededStaleHistory(scope: Page | Locator) {
-  await expect(orderEntry(scope, 'Plan', 'Waiting for an agent')).toBeVisible()
   await expect(orderEntry(scope, 'Plan', 'Stale')).toHaveCount(2)
+  // The queued successor adds no entry; the next-action card states the wait.
+  await expect(scope.locator('li[data-order-entry="queued"]')).toHaveCount(0)
   await expect(scope.getByRole('button', { name: 'Redispatch', exact: true })).toBeVisible()
   await expect(scope.getByRole('button', { name: 'Recover work order' })).toHaveCount(0)
   await expect(scope.getByText('Plan paused — recovery needed')).toHaveCount(0)
@@ -4194,9 +4195,11 @@ test('work-order cards use their actual stage and technical activity exposes cap
 }) => {
   await page.goto('/w/demo/tasks/stage-aware/full')
   const timeline = page.getByRole('region', { name: 'Execution event timeline' })
-  await expect(orderEntry(timeline, 'Plan', 'Waiting for an agent')).toBeVisible()
   await expect(orderEntry(timeline, 'Implementation', 'In progress')).toBeVisible()
   await expect(orderEntry(timeline, 'Review', 'Timed out')).toBeVisible()
+  // The queued Plan order adds no entry of its own.
+  await expect(timeline.locator('li[data-order-entry="queued"]')).toHaveCount(0)
+  await expect(orderEntry(timeline, 'Plan', 'Waiting for an agent')).toHaveCount(0)
   await expect(orderEntry(timeline, 'Review', 'Waiting for an agent')).toHaveCount(0)
   await expect(page.getByRole('region', { name: 'Execution attempts' })).toHaveCount(0)
   const technical = page.getByText('Show technical activity').locator('..')
@@ -4370,7 +4373,9 @@ test('task detail aggregates reported work-order usage and distinguishes reporte
   const timeline = page.getByRole('region', { name: 'Execution event timeline' })
   // Work-order entries print no usage; the Task usage list in technical
   // activity keeps it (component-web-task-surfaces, Work-order timeline entries).
-  await expect(timeline.locator('li[data-order-entry]')).toHaveCount(3)
+  // The queued Plan order adds no entry, so two order entries remain.
+  await expect(timeline.locator('li[data-order-entry]')).toHaveCount(2)
+  await expect(timeline.locator('li[data-order-entry="queued"]')).toHaveCount(0)
   await expect(timeline.getByText('1.2k in / 300 out · self-reported')).toHaveCount(0)
   await expect(timeline.getByText('0 in / 0 out', { exact: true })).toHaveCount(0)
   await expect(timeline.getByText('Usage unavailable')).toHaveCount(0)
@@ -5563,7 +5568,10 @@ test('queued work with no claimant waits with no worker alert, at the human gate
   await expect(page.getByText('This queued work has never started.')).toHaveCount(0)
 
   await page.goto('/w/demo/tasks/queued-worker/full')
-  await expect(orderEntry(page, 'Implementation', 'Waiting for an agent')).toBeVisible()
+  await expect(nextActionBox(page)).toBeVisible()
+  await expect(page.getByRole('region', { name: 'Execution event timeline' })).toBeVisible()
+  await expect(page.locator('li[data-order-entry="queued"]')).toHaveCount(0)
+  await expect(orderEntry(page, 'Implementation', 'Waiting for an agent')).toHaveCount(0)
   await expect(page.getByRole('region', { name: 'Enrolled worker unavailable' })).toHaveCount(0)
   await expect(page.getByText('This queued work has never started.')).toHaveCount(0)
 })
@@ -5571,7 +5579,10 @@ test('queued work with no claimant waits with no worker alert, at the human gate
 test('pull-only queued work waits for an agent without a worker alarm or route chip', async ({ page }) => {
   await page.goto('/w/demo/tasks/pull-only-worker/full')
 
-  await expect(orderEntry(page, 'Implementation', 'Waiting for an agent')).toBeVisible()
+  await expect(nextActionBox(page)).toBeVisible()
+  await expect(page.getByRole('region', { name: 'Execution event timeline' })).toBeVisible()
+  await expect(page.locator('li[data-order-entry="queued"]')).toHaveCount(0)
+  await expect(orderEntry(page, 'Implementation', 'Waiting for an agent')).toHaveCount(0)
   await expect(page.getByRole('region', { name: 'Enrolled worker unavailable' })).toHaveCount(0)
   await expect(page.getByText('Needs a route', { exact: true })).toHaveCount(0)
 })
@@ -6029,8 +6040,12 @@ test('a blocking task change clears waiting state without a reload and no timer 
     0,
   )
   await expect(page.getByRole('link', { name: 'Backend contract · Satisfied' })).toBeVisible()
-  await expect(orderEntry(page, 'Implementation', 'Waiting for an agent')).toBeVisible()
   await expect(page.getByRole('button', { name: 'Redispatch' })).toBeVisible()
+  // The unblocked queued order adds no entry; the redispatch card states the wait.
+  await expect(
+    page.getByText('Waiting for an agent to pick this task up. If none does, this button offers it to agents again.'),
+  ).toBeVisible()
+  await expect(page.locator('li[data-order-entry="queued"]')).toHaveCount(0)
 
   await page.goto('/w/demo/tasks/no-blockers/full')
   await expect.poll(() => detailRequestCounts.get('no-blockers') ?? 0).toBe(1)
@@ -6054,7 +6069,10 @@ test('dependency links follow the detail route variant and spec claiming stays a
   await expect(
     nextActionBox(page).getByRole('heading', { name: 'This task is waiting on another task.' }),
   ).toBeVisible()
-  await expect(orderEntry(timeline, 'Plan', 'Waiting for an agent')).toBeVisible()
+  // Neither the claimable queued Plan order nor the blocked implementation
+  // order adds a timeline entry.
+  await expect(timeline.locator('li[data-order-entry="queued"]')).toHaveCount(0)
+  await expect(orderEntry(timeline, 'Plan', 'Waiting for an agent')).toHaveCount(0)
   await expect(orderEntry(timeline, 'Implementation', 'Waiting for an agent')).toHaveCount(0)
 })
 
@@ -8359,7 +8377,8 @@ test('recovery completion after workspace switch does not refresh the new worksp
 })
 
 // Work-order timeline entries name their stage. A verify order reads
-// Verification in every state that becomes its own entry, never Review.
+// Verification in every state that becomes its own entry, never Review. A
+// queued order of any stage becomes no entry.
 test('verify order timeline labels follow stage', async ({ page }) => {
   const item = activity('stage-labels', false)
   const base = (item.work_orders ?? [])[0] ?? {}
@@ -8391,18 +8410,19 @@ test('verify order timeline labels follow stage', async ({ page }) => {
   await page.goto('/w/demo/tasks/stage-labels/full')
 
   for (const [stage, badge] of [
-    ['Verification', 'Waiting for an agent'],
     ['Verification', 'In progress'],
     ['Verification', 'Stale'],
     ['Verification', 'Timed out'],
     ['Plan', 'Stale'],
     ['Implementation', 'Timed out'],
-    ['Review', 'Waiting for an agent'],
   ]) {
     await expect(orderEntry(page, stage, badge).first()).toBeVisible()
   }
-  // Only the one review order reads Review.
-  await expect(page.locator('li[data-order-entry]:has(span:text-is("Review"))')).toHaveCount(1)
+  // The queued Verification and Review orders add no entry, so no order
+  // entry reads Review.
+  await expect(page.locator('li[data-order-entry="queued"]')).toHaveCount(0)
+  await expect(page.locator('li[data-order-entry]:has(span:text-is("Review"))')).toHaveCount(0)
+  await expect(page.locator('li[data-order-entry]')).toHaveCount(5)
 })
 
 // The full route arranges the shared sections into a reading column and a
