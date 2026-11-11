@@ -741,8 +741,9 @@ function TimelineRow({
       <ImplementationEntry
         entry={entry}
         dotSlot={(className) => rail(jobPeople(entry.job, entry.order), className)}
-        meta={
-          <JobMeta
+        footer={
+          <JobCardFooter
+            at={entry.at}
             job={entry.job}
             model={entry.model}
             order={entry.order}
@@ -942,41 +943,49 @@ function PanelEntry({
       {/* The card is a size container: on a narrow card the seat rows give
           the model name the room the verdict word and wide gaps would take. */}
       <article className="@container rounded-lg bg-surface">
-        <div className="flex flex-wrap items-center gap-2 border-b border-border px-3 py-2.5 @min-[26rem]:px-4">
+        {/* The header names the stage, the verdict, and the panel. The panel
+            text and seat dots take their own line on a card narrower than
+            28rem. The round's time sits at the right end of the bottom strip. */}
+        <div
+          className="flex flex-wrap items-center gap-x-2 gap-y-1 border-b border-border px-3 py-2.5 @min-[26rem]:px-4"
+          data-review-header
+        >
           <span className="text-sm font-semibold text-foreground">{stageLabels.review}</span>
           {resolution && (
             <Badge variant={resolution.verdict === 'approve' ? 'positive' : 'attention'} data-review-verdict>
               {resolution.verdict === 'approve' ? 'Approved' : 'Changes requested'}
             </Badge>
           )}
-          <span className="text-xs text-muted">
-            <span title={seatMetadata ? reviewSeatSourceTitle(seatMetadata) : undefined}>
-              {seatMetadata
-                ? `Panel of ${seats.length} · minimum ${seatMetadata.minimum_seat_count}`
-                : `Panel of ${seats.length}`}
+          <span
+            className="flex min-w-0 basis-full flex-wrap items-center gap-2 @min-[28rem]:basis-auto"
+            data-review-panel-facts
+          >
+            <span className="text-xs text-muted">
+              <span title={seatMetadata ? reviewSeatSourceTitle(seatMetadata) : undefined}>
+                {seatMetadata
+                  ? `Panel of ${seats.length} · minimum ${seatMetadata.minimum_seat_count}`
+                  : `Panel of ${seats.length}`}
+              </span>
+              {seatMetadata?.seat_count_source === 'risk' && ' · set by risk tier'}
+              {seats.length > 1 && ' · unanimous to pass'}
+              {entry.distinctModels && ' · task policy: distinct seat models'}
             </span>
-            {seatMetadata?.seat_count_source === 'risk' && ' · set by risk tier'}
-            {seats.length > 1 && ' · unanimous to pass'}
-            {entry.distinctModels && ' · task policy: distinct seat models'}
+            <span className="inline-flex items-center gap-[5px]" title={`${verdictsIn} of ${seats.length} verdicts in`}>
+              {seats.map((seat) => (
+                <span
+                  key={seat.seat}
+                  className={cn(
+                    'size-2 rounded-full',
+                    seat.review
+                      ? seat.review.verdict === 'approve'
+                        ? 'bg-positive'
+                        : 'bg-attention-dot'
+                      : 'border-[1.5px] border-edge',
+                  )}
+                />
+              ))}
+            </span>
           </span>
-          <span className="inline-flex items-center gap-[5px]" title={`${verdictsIn} of ${seats.length} verdicts in`}>
-            {seats.map((seat) => (
-              <span
-                key={seat.seat}
-                className={cn(
-                  'size-2 rounded-full',
-                  seat.review
-                    ? seat.review.verdict === 'approve'
-                      ? 'bg-positive'
-                      : 'bg-attention-dot'
-                    : 'border-[1.5px] border-edge',
-                )}
-              />
-            ))}
-          </span>
-          <time className="ml-auto text-[11px] text-faint">
-            {resolution ? `Settled ${absoluteTime(resolution.at)}` : `Convened ${absoluteTime(entry.at)}`}
-          </time>
         </div>
         {entry.roundSummary && (
           <ReviewRoundSummary
@@ -1057,6 +1066,13 @@ function PanelEntry({
                   : 'Approved'
                 : changesRequestedBanner(changes, seats.length, resolution.bounce)}
             </span>
+            <time
+              dateTime={resolution.at}
+              className="mt-0.5 shrink-0 text-[11px] font-normal tabular-nums text-muted"
+              data-review-time
+            >
+              {absoluteTime(resolution.at)}
+            </time>
           </div>
         ) : (
           <div className="flex flex-wrap items-center gap-x-3 gap-y-1 border-t border-border px-3 py-2 text-[11px] tabular-nums text-muted @min-[26rem]:px-4">
@@ -1069,6 +1085,9 @@ function PanelEntry({
                 <span>any “changes requested” sends the task back</span>
               </>
             )}
+            <time dateTime={entry.at} className="ml-auto shrink-0" data-review-time>
+              Convened {absoluteTime(entry.at)}
+            </time>
           </div>
         )}
       </article>
@@ -1334,10 +1353,9 @@ const placeholderSummaries = new Set([
   'Completed.',
 ])
 
-// The job footer keeps the operator-facing duration and model, while the model
-// chip retains usage and dispatch detail on hover. The claim's harness shows
-// only as the chip's logo fallback; auth mode, confinement, and actor plumbing
-// stay in the API.
+// A job card. The model chip retains usage and dispatch detail on hover. The
+// claim's harness shows only as the chip's logo fallback; auth mode,
+// confinement, and actor plumbing stay in the API.
 function JobEntry({
   at,
   job,
@@ -1401,19 +1419,18 @@ function JobEntry({
     <li className="relative pl-7">
       {dot}
       <article className={cn('rounded-lg bg-surface', warning && 'border border-attention/30 bg-attention-soft')}>
-        {/* One header line: the stage, then model and duration, then the time.
-            The entry has no separate footer (component-web-task-surfaces,
-            Work-order timeline entries). */}
+        {/* The header says what happened: the stage, its state badge, and a
+            review seat label. The footer says who and when: the model and the
+            entry time, with the start, finish, and duration behind the time
+            (component-web-task-surfaces; DEC-127(1)). */}
         <header className="flex flex-wrap items-center gap-x-2.5 gap-y-1 px-4 pt-3" data-job-header>
           <span className="text-sm font-semibold text-foreground">{stage}</span>
           {order?.review_seat ? <span className="text-xs text-muted">Seat {order.review_seat}</span> : null}
           {job.state === 'failed' && <Badge variant="failure">Failed</Badge>}
           {running && <Badge variant="accent">Running</Badge>}
-          <JobMeta job={job} model={model} order={order} usageAvailable={usageAvailable} />
-          <time className="ml-auto text-[11px] text-faint">{absoluteTime(at)}</time>
         </header>
         <MarkdownProse
-          className="px-4 pt-1.5 pb-3 text-sm leading-6 text-foreground/85"
+          className="px-4 pt-1.5 pb-3 text-sm leading-6 text-foreground/85 [overflow-wrap:anywhere]"
           components={{ p: ({ children }) => <p className="whitespace-pre-line">{children}</p> }}
         >
           {summary}
@@ -1429,8 +1446,80 @@ function JobEntry({
             />
           </div>
         )}
+        <JobCardFooter at={at} job={job} model={model} order={order} usageAvailable={usageAvailable} />
       </article>
     </li>
+  )
+}
+
+// The footer of a job card and an Implementation card: the model at the left,
+// with its full name, and the entry time at the right. The leading-4 line and
+// the triggers' negative margins keep the 40 px coarse-pointer targets from
+// growing the footer.
+function JobCardFooter({
+  at,
+  job,
+  model,
+  order,
+  usageAvailable,
+}: {
+  at: string
+  job: Job
+  model: string
+  order?: WorkOrder
+  usageAvailable?: boolean
+}) {
+  if (!job.started_at) return null
+  return (
+    <footer
+      className="flex items-center justify-between gap-x-3 border-t border-border px-4 py-2 text-[11px] leading-4 tabular-nums text-muted"
+      data-job-footer
+    >
+      <span className="flex min-w-0 items-center" data-job-model>
+        <JobModel job={job} model={model} order={order} usageAvailable={usageAvailable} fullName />
+      </span>
+      <JobTime at={at} job={job} />
+    </footer>
+  )
+}
+
+// The entry time, with the start, the finish, and the duration behind it. The
+// time is the instant the timeline placed the entry (jobTimelineAt). The
+// duration stays off the card face (DEC-127(1)).
+function JobTime({ at, job }: { at: string; job: Job }) {
+  if (!job.started_at) return null
+  const started = `Started ${absoluteTime(job.started_at)}`
+  const elapsed = duration(job.started_at, job.ended_at)
+  const finished = job.ended_at ? `Finished ${absoluteTime(job.ended_at)}, after ${elapsed}` : undefined
+  const runningFor = !job.ended_at && job.state === 'running' ? `Running for ${elapsed}` : undefined
+  const label = [absoluteTime(at), started, finished ?? runningFor].filter(Boolean).join('. ')
+  return (
+    <Disclosure
+      className="shrink-0"
+      contentClassName="left-auto right-0"
+      triggerClassName="justify-end whitespace-nowrap text-faint pointer-coarse:-my-3"
+      label={`${label}.`}
+      content={
+        <span className="flex flex-col gap-0.5 tabular-nums" data-job-time-details>
+          <span data-job-started>{started}</span>
+          {finished && (
+            <span data-job-finished>
+              Finished {absoluteTime(job.ended_at!)}, after <span data-job-duration>{elapsed}</span>
+            </span>
+          )}
+          {runningFor && (
+            <span data-job-running>
+              Running for <span data-job-duration>{elapsed}</span>
+            </span>
+          )}
+        </span>
+      }
+      renderTrigger={(props) => (
+        <button {...props} data-job-time>
+          <time dateTime={at}>{absoluteTime(at)}</time>
+        </button>
+      )}
+    />
   )
 }
 
@@ -1444,9 +1533,7 @@ function JobFooter(props: { job: Job; model: string; order?: WorkOrder; usageAva
   )
 }
 
-// The operator-facing model and duration, while the model chip retains usage
-// and dispatch detail on hover. The claim's harness shows only as the chip's
-// logo fallback; auth mode, confinement, and actor plumbing stay in the API.
+// The verification footer's model and duration.
 function JobMeta({
   job,
   model,
@@ -1459,6 +1546,34 @@ function JobMeta({
   usageAvailable?: boolean
 }) {
   if (!job.started_at) return null
+  return (
+    <span className="inline-flex min-w-0 items-center gap-x-2.5 text-[11px] tabular-nums text-muted">
+      <span className="min-w-0">
+        <JobModel job={job} model={model} order={order} usageAvailable={usageAvailable} />
+      </span>
+      <span className="shrink-0 text-faint" data-job-duration>
+        {duration(job.started_at, job.ended_at)}
+      </span>
+    </span>
+  )
+}
+
+// A job's model chip. The chip retains usage and dispatch detail on hover.
+// The claim's harness shows only as the chip's logo fallback; auth mode,
+// confinement, and actor plumbing stay in the API.
+function JobModel({
+  job,
+  model,
+  order,
+  usageAvailable,
+  fullName,
+}: {
+  job: Job
+  model: string
+  order?: WorkOrder
+  usageAvailable?: boolean
+  fullName?: boolean
+}) {
   const providerUsage = job.runner === 'in-process'
   const note = [
     order?.required_effort ? `effort ${order.required_effort}` : undefined,
@@ -1472,28 +1587,18 @@ function JobMeta({
     .filter(Boolean)
     .join(' · ')
   return (
-    <span className="inline-flex min-w-0 items-center gap-x-2.5 text-[11px] tabular-nums text-muted">
-      <span className="min-w-0">
-        <ModelChip
-          model={model}
-          agent={order?.agent}
-          tokensIn={job.tokens_in}
-          tokensOut={job.tokens_out}
-          note={note || undefined}
-          usageAvailable={
-            providerUsage
-              ? job.tokens_in + job.tokens_out > 0
-              : order
-                ? usageAvailable
-                : job.tokens_in + job.tokens_out > 0
-          }
-          usageProvenance={providerUsage ? 'provider-reported' : order ? usageProvenance(order) : 'provider-reported'}
-        />
-      </span>
-      <span className="shrink-0 text-faint" data-job-duration>
-        {duration(job.started_at, job.ended_at)}
-      </span>
-    </span>
+    <ModelChip
+      model={model}
+      agent={order?.agent}
+      tokensIn={job.tokens_in}
+      tokensOut={job.tokens_out}
+      note={note || undefined}
+      usageAvailable={
+        providerUsage ? job.tokens_in + job.tokens_out > 0 : order ? usageAvailable : job.tokens_in + job.tokens_out > 0
+      }
+      usageProvenance={providerUsage ? 'provider-reported' : order ? usageProvenance(order) : 'provider-reported'}
+      fullName={fullName}
+    />
   )
 }
 
@@ -1522,6 +1627,7 @@ function ModelChip({
   usageAvailable,
   usageProvenance,
   showUnavailableUsage = true,
+  fullName = false,
 }: {
   model: string
   agent?: string
@@ -1531,6 +1637,10 @@ function ModelChip({
   usageAvailable?: boolean
   usageProvenance?: string
   showUnavailableUsage?: boolean
+  // A job card footer gives the model its own side of the row, so the name
+  // shows in full and wraps rather than truncates. Review seat rows keep the
+  // truncating chip.
+  fullName?: boolean
 }) {
   const selected = selectModelLogo(model, agent)
   const logo = selected ? logoAssets[selected.logo] : undefined
@@ -1561,11 +1671,17 @@ function ModelChip({
       )}
       {/* The inner span draws the ellipsis, which a flex button cannot, and
           keeps the full name in its title. */}
-      <Disclosure triggerClassName="truncate" title={model} content={model}>
-        <span className="truncate" title={model}>
-          {model}
-        </span>
-      </Disclosure>
+      {fullName ? (
+        <Disclosure triggerClassName="[overflow-wrap:anywhere] pointer-coarse:-my-3" title={model} content={model}>
+          <span title={model}>{model}</span>
+        </Disclosure>
+      ) : (
+        <Disclosure triggerClassName="truncate" title={model} content={model}>
+          <span className="truncate" title={model}>
+            {model}
+          </span>
+        </Disclosure>
+      )}
       {usage && (
         <span
           role="tooltip"

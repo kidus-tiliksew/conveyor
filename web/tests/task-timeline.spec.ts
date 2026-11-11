@@ -1,4 +1,4 @@
-import { expect, type Locator, type Page, test } from '@playwright/test'
+import { expect, type Locator, type Page, type TestInfo, test } from '@playwright/test'
 import { buildTimeline, type TimelineEntry } from '../src/lib/activity'
 import type { ActivityItem, NextAction, WorkOrder } from '../src/lib/types'
 import { callerIdentity } from './helpers/caller-identity'
@@ -196,6 +196,36 @@ const detailSurfaces = [
 ] as const
 
 const elapsed = /^\d+(h \d{2}m|m \d{2}s|s)$/
+const shortTime = /^[A-Z][a-z]{2} \d{1,2}, \d{1,2}:\d{2}\s?[AP]M$/
+
+// The entry time opens a disclosure with the start and the running duration.
+async function expectRunningTime(footer: Locator) {
+  const time = footer.locator('[data-job-time]')
+  await expect(time).toHaveText(shortTime)
+  await time.focus()
+  const details = footer.locator('[data-job-time-details]')
+  await expect(details.locator('[data-job-started]')).toHaveText(/^Started /)
+  await expect(details.locator('[data-job-running]')).toHaveText(/^Running for /)
+  await expect(details.locator('[data-job-duration]')).toHaveText(elapsed)
+  await expect(details.locator('[data-job-finished]')).toHaveCount(0)
+  await expect(time).toHaveAccessibleName(/Started .*\. Running for /)
+  await time.blur()
+}
+
+// A finished job's time opens a disclosure with the start, the finish, and
+// the duration.
+async function expectFinishedTime(footer: Locator) {
+  const time = footer.locator('[data-job-time]')
+  await expect(time).toHaveText(shortTime)
+  await time.focus()
+  const details = footer.locator('[data-job-time-details]')
+  await expect(details.locator('[data-job-started]')).toHaveText(/^Started /)
+  await expect(details.locator('[data-job-finished]')).toHaveText(/^Finished .*, after /)
+  await expect(details.locator('[data-job-duration]')).toHaveText(elapsed)
+  await expect(details.locator('[data-job-running]')).toHaveCount(0)
+  await expect(time).toHaveAccessibleName(/Started .*\. Finished .*, after /)
+  await time.blur()
+}
 
 interface AbsenceCase {
   entryKind: string
@@ -225,11 +255,14 @@ const absenceCases: AbsenceCase[] = [
       const entry = timeline.locator('li article').filter({ hasText: 'Removing the facts panel from the stage card' })
       await expect(entry).toHaveCount(1)
       await expect(entry.getByText('Running', { exact: true })).toBeVisible()
-      // Model and duration print in the entry's header line, with no footer.
+      // The header holds the stage and state. The footer holds the model and
+      // the entry time, and the duration sits behind the time.
       const header = entry.locator('[data-job-header]')
-      await expect(entry.locator('footer')).toHaveCount(0)
-      await expect(header.getByText('claude-opus-5-5', { exact: true })).toBeVisible()
-      await expect(header.locator('[data-job-duration]')).toHaveText(elapsed)
+      await expect(header.getByText('claude-opus-5-5', { exact: true })).toHaveCount(0)
+      await expect(entry.locator('[data-job-duration]')).toHaveCount(0)
+      const footer = entry.locator('[data-job-footer]')
+      await expect(footer.locator('[data-job-model]').getByText('claude-opus-5-5', { exact: true })).toBeVisible()
+      await expectRunningTime(footer)
     },
   },
   {
@@ -931,12 +964,25 @@ for (const surface of surfaces) {
       await expect(card.getByText('Submitted', { exact: true })).toBeVisible()
       await expect(card.getByText(text)).toBeVisible()
       const header = card.locator('[data-job-header]')
-      await expect(header.getByText('claude-opus-5-5', { exact: true })).toBeVisible()
-      await expect(header.locator('[data-job-duration]')).toHaveText(elapsed)
-      const delivery = card.locator('[data-implementation-delivery]')
-      await expect(delivery.getByRole('link', { name: '#1431' })).toHaveAttribute('href', prURL)
-      await expect(delivery.getByText(head, { exact: true })).toBeVisible()
+      await expect(header.getByText('claude-opus-5-5', { exact: true })).toHaveCount(0)
+      await expect(card.getByText(/^Attempt \d/)).toHaveCount(0)
+      const footer = card.locator('[data-job-footer]')
+      await expect(footer.locator('[data-job-model]').getByText('claude-opus-5-5', { exact: true })).toBeVisible()
+      await expectFinishedTime(footer)
+      // The header carries the attempt's own pull request. The chip names the
+      // full head at every width and shows seven characters on a wide card.
+      const fullHead = head === '4a136fe' ? firstHead : secondHead
+      const delivery = header.locator('[data-implementation-delivery]')
+      await expect(delivery).toHaveAttribute('href', prURL)
+      await expect(delivery).toHaveAccessibleName(`Pull request #1431, head ${fullHead}`)
+      await expect(delivery).toHaveAttribute('title', `Pull request #1431, head ${fullHead}`)
+      await expect(delivery).toContainText('#1431')
+      const wide = (await card.evaluate((element) => element.getBoundingClientRect().width)) >= 448
+      const shortHead = delivery.locator('[data-implementation-head]')
+      if (wide) await expect(shortHead).toHaveText(` · ${head}`)
+      else await expect(shortHead).toBeHidden()
     }
+    await expect(second.locator('[data-implementation-title]')).toHaveText('Implementation 2')
     // Attempt 1 precedes attempt 2 whatever the response order.
     const follows = await first.evaluate(
       (element, other) => Boolean(other && element.compareDocumentPosition(other) & Node.DOCUMENT_POSITION_FOLLOWING),
@@ -2086,5 +2132,192 @@ for (const surface of surfaces) {
     )
     await expect(timeline.locator('li[data-order-entry]')).toHaveCount(0)
     await expect(timeline.getByText('Any agent connected over MCP can claim it.', { exact: false })).toHaveCount(0)
+  })
+}
+
+// ---- Narrow-screen layout (component-web-task-surfaces invariant 43; DEC-127) ----
+//
+// The job card header says what happened and its footer says who and when. The
+// Implementation header carries the pull request chip, and summaries wrap
+// inside the card. These cases measure the rendered page at 375 px and at a
+// desktop width.
+
+const longHashSummary = `Resubmitted at head ${secondHead} (PR #1431). CI: https://github.com/kidus-tiliksew/conveyor/actions/runs/19283746501/job/54839201938475?check_suite_focus=true`
+
+function deliveredLongSummary() {
+  const item = deliveredTask() as { work_orders: WorkOrder[] }
+  item.work_orders[1] = { ...item.work_orders[1], progress: longHashSummary }
+  return item
+}
+
+// Every child of the element sits on one line.
+async function expectOneLineHeader(header: Locator) {
+  const rows = await header.evaluate((element) =>
+    Array.from(element.children).map((child) => {
+      const bounds = child.getBoundingClientRect()
+      return { top: bounds.top, bottom: bounds.bottom }
+    }),
+  )
+  expect(rows.length).toBeGreaterThan(1)
+  const lowestTop = Math.max(...rows.map((row) => row.top))
+  const highestBottom = Math.min(...rows.map((row) => row.bottom))
+  expect(lowestTop).toBeLessThan(highestBottom)
+}
+
+async function expectNoSidewaysScroll(page: Page) {
+  expect(await page.evaluate(() => document.documentElement.scrollWidth - window.innerWidth)).toBeLessThanOrEqual(0)
+  const overflowing = await page
+    .getByRole('region', { name: 'Execution event timeline' })
+    .locator('li article')
+    .evaluateAll((cards) => cards.filter((card) => card.scrollWidth > card.clientWidth + 0.5).length)
+  expect(overflowing).toBe(0)
+}
+
+// The screenshots attach to the Playwright report, which CI uploads as an
+// artifact, and are also written to CONVEYOR_SCREENSHOT_DIR when it is set.
+async function capture(page: Page, testInfo: TestInfo, name: string) {
+  const shots = process.env.CONVEYOR_SCREENSHOT_DIR
+  const image = await page.screenshot({ path: shots ? `${shots}/${name}` : undefined, fullPage: true })
+  await testInfo.attach(name, { body: image, contentType: 'image/png' })
+}
+
+async function openFinishedTask(page: Page, width: number) {
+  await page.setViewportSize({ width, height: 1400 })
+  await mockAPI(page, deliveredLongSummary(), {
+    ...nextAction(implementID(2)),
+    label: 'Finished',
+    actor: 'none',
+    kind: 'terminal',
+    current_order: undefined,
+    attempt: undefined,
+  })
+  await page.goto(`/w/demo/tasks/${taskId}/full`)
+  const card = page
+    .getByRole('region', { name: 'Execution event timeline' })
+    .getByRole('article', { name: 'Implementation attempt 2' })
+  await expect(card).toBeVisible()
+  await page.evaluate(() => document.fonts.ready)
+  return card
+}
+
+test('at 375 px an attempt-2 Implementation header fits one line and no card scrolls sideways', async ({
+  page,
+}, testInfo) => {
+  const card = await openFinishedTask(page, 375)
+  const header = card.locator('[data-job-header]')
+  await expect(header.locator('[data-implementation-title]')).toHaveText('Implementation 2')
+  await expect(header.getByText('Submitted', { exact: true })).toBeVisible()
+  await expect(header.locator('[data-implementation-delivery]')).toBeVisible()
+  await expectOneLineHeader(header)
+  // A card narrower than 28rem shows the number and keeps the head in the
+  // chip's accessible name and title.
+  expect(await card.evaluate((element) => element.getBoundingClientRect().width)).toBeLessThan(448)
+  const delivery = header.locator('[data-implementation-delivery]')
+  await expect(delivery.locator('[data-implementation-head]')).toBeHidden()
+  await expect(delivery).toHaveAccessibleName(`Pull request #1431, head ${secondHead}`)
+  // The 40-character head and the long URL wrap inside the summary.
+  await expect(card.getByText(secondHead, { exact: false })).toBeVisible()
+  await expectNoSidewaysScroll(page)
+  // A time disclosure open at the card's right edge stays inside the page.
+  const time = card.locator('[data-job-footer] [data-job-time]')
+  await time.focus()
+  const details = card.locator('[data-job-time-details]')
+  await expect(details).toBeVisible()
+  const bounds = await details.boundingBox()
+  expect(bounds!.x).toBeGreaterThanOrEqual(0)
+  expect(bounds!.x + bounds!.width).toBeLessThanOrEqual(375)
+  await expectNoSidewaysScroll(page)
+  await card.scrollIntoViewIfNeeded()
+  await capture(page, testInfo, 'timeline-time-open-375.png')
+})
+
+test('at a desktop width the Implementation chip adds the seven-character head', async ({ page }, testInfo) => {
+  const card = await openFinishedTask(page, 1280)
+  const header = card.locator('[data-job-header]')
+  expect(await card.evaluate((element) => element.getBoundingClientRect().width)).toBeGreaterThanOrEqual(448)
+  await expect(header.locator('[data-implementation-head]')).toHaveText(` · ${secondHead.slice(0, 7)}`)
+  await expect(header.locator('[data-implementation-head]')).toHaveClass(/font-mono/)
+  await expectOneLineHeader(header)
+  await expectNoSidewaysScroll(page)
+  await capture(page, testInfo, 'timeline-1280.png')
+  await card.locator('[data-job-footer] [data-job-time]').hover()
+  await expect(card.locator('[data-job-time-details]')).toBeVisible()
+  await capture(page, testInfo, 'timeline-time-open-1280.png')
+})
+
+test.describe('on a coarse pointer at 375 px', () => {
+  test.use({ viewport: { width: 375, height: 1400 }, isMobile: true, hasTouch: true })
+
+  test('the footer model and time are 40 px targets and the footer keeps its height', async ({ page }) => {
+    await mockAPI(page, deliveredLongSummary(), {
+      ...nextAction(implementID(2)),
+      label: 'Finished',
+      actor: 'none',
+      kind: 'terminal',
+      current_order: undefined,
+      attempt: undefined,
+    })
+    await page.goto(`/w/demo/tasks/${taskId}/full`)
+    const card = page
+      .getByRole('region', { name: 'Execution event timeline' })
+      .getByRole('article', { name: 'Implementation attempt 2' })
+    const footer = card.locator('[data-job-footer]')
+    await expect(footer).toBeVisible()
+    expect(await page.evaluate(() => matchMedia('(pointer: coarse)').matches)).toBe(true)
+    for (const target of [footer.locator('[data-job-model] button'), footer.locator('[data-job-time]')]) {
+      const bounds = await target.boundingBox()
+      expect(bounds!.height).toBeGreaterThanOrEqual(40)
+      expect(bounds!.width).toBeGreaterThanOrEqual(40)
+    }
+    // One 16 px text line, 8 px padding above and below, and the top border:
+    // the 40 px targets do not grow the footer.
+    expect((await footer.boundingBox())!.height).toBeLessThanOrEqual(33.5)
+    await footer.locator('[data-job-time]').tap()
+    await expect(footer.locator('[data-job-finished]')).toContainText(', after ')
+    await expectNoSidewaysScroll(page)
+  })
+})
+
+function openRound() {
+  const item = reviewPanel([
+    { model: 'claude-opus-5-5', verdict: 'approve' },
+    { model: 'gpt-6.1-sol', verdict: 'approve' },
+  ]) as { summaries: Record<string, { by_order?: Record<string, unknown> }>; work_orders: WorkOrder[] }
+  delete item.summaries.review_rounds
+  const second = `${taskId}-review-1-seat-2`
+  delete item.summaries.review_results.by_order?.[second]
+  item.work_orders[1] = { ...item.work_orders[1], state: 'claimed' }
+  return item
+}
+
+for (const width of [375, 1280]) {
+  test(`the review panel keeps its time in the bottom strip at ${width} px`, async ({ page }, testInfo) => {
+    const settled = await openPanel(page, threeSeatApproved(), width)
+    const header = settled.locator('[data-review-header]')
+    await expect(header.locator('time')).toHaveCount(0)
+    await expect(header).not.toContainText('Settled')
+    const banner = settled.locator('[data-review-banner]')
+    const strip = banner.locator('xpath=..')
+    await expect(strip.locator('[data-review-time]')).toHaveText(shortTime)
+    await expect(strip.locator('[data-review-time]')).toHaveCSS('font-size', '11px')
+    const [bannerBox, timeBox] = [await box(banner), await box(strip.locator('[data-review-time]'))]
+    expect(timeBox.x).toBeGreaterThanOrEqual(bannerBox.x + bannerBox.width - 1)
+    // Below 28rem the panel text and seat dots take their own line.
+    const narrow = (await settled.evaluate((element) => element.getBoundingClientRect().width)) < 448
+    const stageBox = await box(header.getByText('Code review', { exact: true }))
+    const factsBox = await box(header.locator('[data-review-panel-facts]'))
+    if (narrow) expect(factsBox.y).toBeGreaterThanOrEqual(stageBox.y + stageBox.height - 1)
+    else expect(factsBox.y).toBeLessThan(stageBox.y + stageBox.height)
+    expect(narrow).toBe(width === 375)
+    await expectNoSidewaysScroll(page)
+    await capture(page, testInfo, `review-panel-settled-${width}.png`)
+
+    const open = await openPanel(page, openRound(), width)
+    await expect(open.locator('[data-review-header] time')).toHaveCount(0)
+    const convened = open.locator('[data-review-time]')
+    await expect(convened).toHaveText(/^Convened [A-Z][a-z]{2} \d{1,2}, /)
+    await expect(convened.locator('xpath=..')).toContainText('1 of 2 verdicts in')
+    await expectNoSidewaysScroll(page)
+    await capture(page, testInfo, `review-panel-open-${width}.png`)
   })
 }

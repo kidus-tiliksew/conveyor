@@ -594,11 +594,9 @@ test('Earlier history absorbs a pull request record its Implementation card show
   const card = scope.getByRole('article', { name: 'Implementation', exact: true })
   await expect(card).toContainText('Implemented the bounded history pager across every task surface.')
   const delivery = card.locator('[data-implementation-delivery]')
-  await expect(delivery.getByRole('link', { name: '#4242' })).toHaveAttribute(
-    'href',
-    'https://github.com/acme/widgets/pull/4242',
-  )
-  await expect(delivery.getByText('feedfac', { exact: true })).toBeVisible()
+  await expect(delivery).toHaveAttribute('href', 'https://github.com/acme/widgets/pull/4242')
+  await expect(delivery).toHaveAccessibleName('Pull request #4242, head feedfacecafebeef00112233445566778899aabb')
+  await expect(delivery.locator('[data-implementation-head]')).toHaveText(' · feedfac')
 
   await scope.getByRole('button', { name: 'Earlier history' }).click()
   const earlierPager = pager(scope, 'Earlier history pages')

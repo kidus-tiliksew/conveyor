@@ -1,7 +1,7 @@
 import { Link } from '@tanstack/react-router'
 import { ChevronDown, ChevronRight, ChevronUp, FlaskConical, Globe, MousePointerClick, Square } from 'lucide-react'
 import { useId, useMemo, useState } from 'react'
-import { planOriginLabels, taskStateLabels } from '../../lib/contracts'
+import { taskStateLabels } from '../../lib/contracts'
 import { relatedTaskRoute, type TaskRouteVariant } from '../../lib/task-route'
 import type { AcceptanceCriterion, PlanState, RiskTier, SpecVersion } from '../../lib/types'
 import { absoluteTime, cn } from '../../lib/utils'
@@ -9,8 +9,9 @@ import { useWorkspaceSelection } from '../app-shell'
 import { Badge } from '../ui/badge'
 import { Card, CardContent, CardHeader } from '../ui/card'
 import { CopyButton } from '../ui/copy-button'
+import { Disclosure } from '../ui/disclosure'
 import { MarkdownProse } from '../ui/markdown-prose'
-import { RiskTierBadge } from './risk-tier'
+import { RiskTierBadge, RiskTierDisclosure, riskTierLabel } from './risk-tier'
 import { SectionCount, SectionHeading } from './section-heading'
 import { useCollapsibleContent } from './use-collapsible-content'
 
@@ -44,8 +45,9 @@ export function SpecCard({
   // count (feature-review-seat-minimum RS-3, RS-7).
   minimumSeatCount?: number
   // The task's served plan state. Task detail passes it, and the card then
-  // states the version's origin, base commit, and approval from it
-  // (component-web-task-surfaces invariant 60; req-task-plan-state AC-1.4).
+  // states the version's base commit and approval from it, and no origin
+  // (component-web-task-surfaces invariant 60; req-task-plan-state AC-1.4;
+  // DEC-127(3)).
   planState?: PlanState
 }) {
   const { workspace } = useWorkspaceSelection()
@@ -76,6 +78,12 @@ export function SpecCard({
     : planState === undefined || planState === 'awaiting_approval'
       ? 'Awaiting approval'
       : 'Not approved'
+  // The approval or draft time sits behind the approval badge (DEC-127(1)).
+  const approvalTime =
+    spec.approved && spec.approved_at
+      ? `Approved ${absoluteTime(spec.approved_at)}`
+      : `Drafted ${absoluteTime(spec.created_at)}`
+  const provenance = planState !== undefined
 
   const toggleCollapsed = () => {
     if (!collapsed) setContentExpanded(false)
@@ -85,9 +93,10 @@ export function SpecCard({
   return (
     <Card className="rounded-lg">
       {/* The title group stays whole on one line. The status line follows it
-          when both fit, and otherwise moves to its own line, where it wraps
-          between its parts (component-web-task-surfaces). */}
-      <CardHeader className="flex-wrap items-center gap-y-2">
+          when both fit, and otherwise moves to its own line. The header is a
+          size container, so the plan facts below lay out by its width
+          (component-web-task-surfaces). */}
+      <CardHeader className="@container flex-wrap items-center gap-y-2">
         {collapsible ? (
           <button
             type="button"
@@ -105,33 +114,33 @@ export function SpecCard({
             <SectionCount>v{spec.version}</SectionCount>
           </div>
         )}
-        {/* One run of text in one style: the seat count, a separator, the
-            time, then the badge. It breaks only after the separator or before
-            the badge, so a wrapped line starts with the time or the badge and
-            nothing extends past the card's border. */}
-        <div className="min-w-0 text-xs leading-6 text-muted" data-plan-status>
+        {/* The seat count, then the approval badge. The approval or draft time
+            sits behind the badge, which hover, tap, keyboard focus, and its
+            accessible name reach (component-web-task-surfaces invariant 60;
+            DEC-127(1)). */}
+        <div
+          className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1 text-xs leading-6 text-muted"
+          data-plan-status
+        >
           {plannedSeats !== undefined && (
-            <>
-              <span className="whitespace-nowrap">
-                {`Review: ${plannedSeats} ${plannedSeats === 1 ? 'seat' : 'seats'}`}
-                {minimumSeatCount !== undefined ? ` (minimum ${minimumSeatCount})` : ''}
-              </span>
-              <span aria-hidden="true">{'\u00a0· '}</span>
-            </>
+            <span className="whitespace-nowrap">
+              {`Review: ${plannedSeats} ${plannedSeats === 1 ? 'seat' : 'seats'}`}
+              {minimumSeatCount !== undefined ? ` (minimum ${minimumSeatCount})` : ''}
+            </span>
           )}
-          <span className="whitespace-nowrap">
-            {spec.approved && spec.approved_at
-              ? `approved ${absoluteTime(spec.approved_at)}`
-              : `drafted ${absoluteTime(spec.created_at)}`}
-          </span>{' '}
           {/* The plan version's own state, quiet: the task's state is named once,
               in the header chip and the next action. */}
-          <Badge variant={spec.approved ? 'positive' : 'outline'} className="ml-1 align-middle">
-            {approval}
-          </Badge>
+          <Disclosure
+            label={`${approval}. ${approvalTime}.`}
+            content={<span data-plan-approval-time>{approvalTime}</span>}
+            triggerClassName="rounded-md pointer-coarse:-my-2"
+          >
+            <Badge variant={spec.approved ? 'positive' : 'outline'}>{approval}</Badge>
+          </Disclosure>
         </div>
-        {planState !== undefined && <PlanProvenance spec={spec} />}
-        {spec.risk_tier && <PlanRiskTier tier={spec.risk_tier} reason={spec.risk_reason} />}
+        {(provenance || spec.risk_tier) && (
+          <PlanFacts spec={spec} provenance={provenance} tier={spec.risk_tier} reason={spec.risk_reason} />
+        )}
       </CardHeader>
       {expanded && (
         <CardContent className="py-4">
@@ -223,53 +232,83 @@ export function SpecCard({
   )
 }
 
-// The version's origin and the commit its plan was read against: 12
-// characters with the full ID copyable, or "None recorded"
-// (component-web-task-surfaces invariant 60; req-task-plan-state AC-2.5).
-function PlanProvenance({ spec }: { spec: SpecVersion }) {
-  const baseCommit = typeof spec.base_commit === 'string' ? spec.base_commit.trim() : ''
+// The commit the plan was read against and the plan's risk tier. On a header
+// narrower than 40rem they form a two-column list with a fixed 6rem label
+// column. On a wider header they share one line. Each row is a `contents`
+// group on the narrow list, so its term and value sit in the list's columns.
+// No origin shows (component-web-task-surfaces invariant 60; DEC-127(3)).
+function PlanFacts({
+  spec,
+  provenance,
+  tier,
+  reason,
+}: {
+  spec: SpecVersion
+  provenance: boolean
+  tier?: RiskTier
+  reason?: string
+}) {
   return (
-    <dl data-plan-provenance className="flex basis-full flex-wrap items-center gap-x-4 gap-y-1 text-xs text-muted">
-      {spec.origin && (
-        <div className="flex items-center gap-1.5">
-          <dt className="text-faint">Origin</dt>
-          <dd data-plan-origin={spec.origin}>{planOriginLabels[spec.origin] ?? spec.origin}</dd>
-        </div>
-      )}
-      <div className="flex items-center gap-1.5">
-        <dt className="text-faint">Base commit</dt>
-        {baseCommit ? (
-          <dd className="flex items-center gap-0.5" data-plan-base-commit={baseCommit}>
-            <code className="font-mono" title={baseCommit}>
-              {baseCommit.slice(0, 12)}
-            </code>
-            <CopyButton value={baseCommit} label="Copy base commit" className="size-6" />
-          </dd>
-        ) : (
-          <dd data-plan-base-commit="">None recorded</dd>
-        )}
-      </div>
+    <dl
+      data-plan-facts
+      className="grid basis-full grid-cols-[6rem_minmax(0,1fr)] items-center gap-x-2 gap-y-1 text-xs text-muted @min-[40rem]:flex @min-[40rem]:flex-wrap @min-[40rem]:gap-x-4"
+    >
+      {provenance && <PlanProvenance spec={spec} />}
+      {tier && <PlanRiskTier tier={tier} reason={reason} />}
     </dl>
   )
 }
 
-// The risk tier and reason this plan version states, beside the plan
+const planFactRow = 'contents @min-[40rem]:flex @min-[40rem]:min-w-0 @min-[40rem]:items-center @min-[40rem]:gap-1.5'
+
+// The commit the plan was read against: 12 characters with the full ID
+// copyable, or "None recorded" (component-web-task-surfaces invariant 60;
+// req-task-plan-state AC-2.5).
+function PlanProvenance({ spec }: { spec: SpecVersion }) {
+  const baseCommit = typeof spec.base_commit === 'string' ? spec.base_commit.trim() : ''
+  return (
+    <div data-plan-provenance className={planFactRow}>
+      <dt className="text-faint">Base commit</dt>
+      {baseCommit ? (
+        <dd className="flex min-w-0 items-center gap-0.5" data-plan-base-commit={baseCommit}>
+          <code className="font-mono" title={baseCommit}>
+            {baseCommit.slice(0, 12)}
+          </code>
+          <CopyButton value={baseCommit} label="Copy base commit" className="size-6" />
+        </dd>
+      ) : (
+        <dd data-plan-base-commit="">None recorded</dd>
+      )}
+    </div>
+  )
+}
+
+// The risk tier this plan version states, beside the plan
 // (req-risk-based-review AC-4.4). It is the plan's own statement, labeled as
-// such, and not the task's tier, which the task facts show. A version that
-// states no tier shows nothing rather than an invented one.
+// such, and not the task's tier, which the task facts show. The chip shows
+// alone and its reason sits behind it (component-web-task-surfaces invariants
+// 60 and 66; DEC-127(1), (2)). A version that states no tier shows nothing
+// rather than an invented one.
 function PlanRiskTier({ tier, reason }: { tier: RiskTier; reason?: string }) {
   return (
-    <dl data-plan-risk={tier} className="flex basis-full flex-wrap items-baseline gap-x-2 gap-y-1 text-xs text-muted">
+    <div data-plan-risk={tier} className={planFactRow}>
       <dt className="text-faint">Plan risk tier</dt>
-      <dd className="flex min-w-0 flex-wrap items-baseline gap-x-2 gap-y-1">
-        <RiskTierBadge tier={tier} />
-        {reason && (
-          <span className="whitespace-normal break-words text-foreground/85" data-plan-risk-reason>
-            {reason}
-          </span>
+      <dd className="flex min-w-0 items-center">
+        {reason ? (
+          <RiskTierDisclosure
+            tier={tier}
+            label={`Plan risk tier ${riskTierLabel(tier)}. ${reason}`}
+            content={
+              <span className="whitespace-normal break-words text-foreground/85" data-plan-risk-reason>
+                {reason}
+              </span>
+            }
+          />
+        ) : (
+          <RiskTierBadge tier={tier} />
         )}
       </dd>
-    </dl>
+    </div>
   )
 }
 
