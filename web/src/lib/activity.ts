@@ -874,7 +874,7 @@ export type TimelineEntry =
       title: string
       badge: { label: string; variant: 'default' | 'accent' | 'attention' }
       detail?: string
-      tone: 'waiting' | 'active' | 'alarm'
+      tone: 'active' | 'alarm'
       order: WorkOrder
     }
   | { type: 'intervention'; at: string; intervention: Intervention }
@@ -1576,8 +1576,11 @@ const genericSummaries = new Set([
 
 // Work orders fold into the timeline instead of a separate
 // block: narration and attribution enrich the matching stage entry, and only
-// states a job entry cannot carry — waiting for an agent, stale, timed out —
-// become entries of their own.
+// states a job entry cannot carry — stale, timed out, or claimed without a
+// job — become entries of their own. A queued order adds no entry: the
+// next-action card alone states that the task waits for an agent, so the
+// timeline repeats no current-state summary (component-web-task-surfaces,
+// Presenting the statement invariant 2; req-operator-next-action AC-1.7).
 // A work-order entry's header reads the stage label, then a state badge; one
 // muted detail line follows (component-web-task-surfaces, Work-order timeline
 // entries).
@@ -1585,13 +1588,6 @@ function orderEntry(order: WorkOrder, hasJobEntry: boolean): Extract<TimelineEnt
   const stage = workOrderStageLabels[order.stage] ?? stageLabels[order.stage] ?? order.stage
   const base = { type: 'order' as const, at: order.queue_entered_at, key: `order-${order.id}`, order, title: stage }
   switch (order.state) {
-    case 'queued':
-      return {
-        ...base,
-        tone: 'waiting',
-        badge: { label: 'Waiting for an agent', variant: 'default' },
-        detail: 'Any agent connected over MCP can claim it. The server URL is in Settings.',
-      }
     case 'claimed':
       // A claimed order normally has a running job entry carrying the story.
       if (hasJobEntry) return undefined
@@ -1617,6 +1613,7 @@ function orderEntry(order: WorkOrder, hasJobEntry: boolean): Extract<TimelineEnt
         detail: 'The execution deadline elapsed before the agent finished; the retry policy applies.',
       }
     default:
+      // queued: the next-action card states the wait.
       // submitted/completed/cancelled: the job entry and review events tell it.
       return undefined
   }
@@ -1691,7 +1688,6 @@ function agentActivityNote(
 export function buildTimeline(item: ActivityItem, members: WorkspaceMembership[] = []): TimelineEntry[] {
   const entries: TimelineEntry[] = []
   const panels = buildReviewPanels(item)
-  const dependencyBlockedOrder = dependencyBlockedImplementationOrder(item)
   entries.push(...panels.panels)
   const orderByJob = new Map((item.work_orders ?? []).map((order) => [order.job_id, order]))
   const startedJobs = new Set(item.jobs.filter((job) => job.started_at).map((job) => job.id))
@@ -1731,7 +1727,7 @@ export function buildTimeline(item: ActivityItem, members: WorkspaceMembership[]
     const activity = agentActivityNote(order, orders, progressShown)
     if (activity) entries.push(activity)
     if (panels.orderIds.has(order.id)) continue
-    const entry = order.id === dependencyBlockedOrder?.id ? undefined : orderEntry(order, startedJobs.has(order.job_id))
+    const entry = orderEntry(order, startedJobs.has(order.job_id))
     if (entry) entries.push(entry)
   }
   for (const event of item.events) {
