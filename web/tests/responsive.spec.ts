@@ -356,18 +356,20 @@ async function expectIconOnlyExplorer(explorer: Locator) {
   expect(label?.width ?? 0).toBeLessThanOrEqual(1)
 }
 
-// "Execution plan" and its timestamp each render on a single line.
+// "Execution plan" and its approval badge each render on a single line. The
+// approval or draft time sits behind the badge (DEC-127(1)).
 async function expectPlanHeaderUnbroken(page: Page) {
   const title = page.getByRole('heading', { name: 'Execution plan', exact: true })
   const lineHeight = await title.evaluate((node) => Number.parseFloat(getComputedStyle(node).lineHeight))
   const titleBox = await title.boundingBox()
   if (!titleBox) throw new Error('the plan title is not rendered')
   expect(titleBox.height).toBeLessThan(lineHeight * 1.5)
-  const stamp = page.getByText(/^(approved|drafted) /)
-  const stampLine = await stamp.evaluate((node) => Number.parseFloat(getComputedStyle(node).lineHeight))
-  const stampBox = await stamp.boundingBox()
-  if (!stampBox) throw new Error('the plan timestamp is not rendered')
-  expect(stampBox.height).toBeLessThan(stampLine * 1.5)
+  const badge = page.locator('[data-plan-status]').getByRole('button', { name: /\. (Approved|Drafted) / })
+  const badgeText = badge.locator('span').first()
+  const badgeLine = await badgeText.evaluate((node) => Number.parseFloat(getComputedStyle(node).lineHeight))
+  const badgeBox = await badgeText.boundingBox()
+  if (!badgeBox) throw new Error('the plan approval badge is not rendered')
+  expect(badgeBox.height).toBeLessThan(badgeLine * 1.5)
 }
 
 // The task-detail activity tabs sit inside the surface at phone width, with

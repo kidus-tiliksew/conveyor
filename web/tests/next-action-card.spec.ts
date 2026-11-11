@@ -2325,9 +2325,13 @@ test('an enforcing task short of its approvals offers Approve and states the cou
   await expect(gate.locator('[data-approval-count]')).toHaveText(
     "0 of 2 human approvals recorded. 2 more needed, including a trusted author's.",
   )
+  // The task's tier chip holds the same count behind it.
+  const riskChip = page.locator('[data-task-risk]').first().getByRole('button')
+  await riskChip.focus()
   await expect(page.locator('[data-task-risk-approvals]').first()).toHaveText(
     "0 of 2 human approvals recorded. 2 more needed, including a trusted author's.",
   )
+  await riskChip.blur()
   const approve = gate.locator('[data-merge-at-gate]')
   await expect(approve).toHaveText('Approve')
   await approve.click()

@@ -4187,7 +4187,10 @@ test('timeout timeline and duration use the execution deadline', async ({ page }
   )
   const timeoutEntry = orderEntry(page, 'Review', 'Timed out')
   await expect(timeoutEntry.getByText(expectedDeadline)).toBeVisible()
-  await expect(page.locator('article').filter({ hasText: 'claude-review' }).getByText('30m 00s')).toBeVisible()
+  // The duration sits behind the entry time in the card's footer.
+  const footer = page.locator('article').filter({ hasText: 'claude-review' }).locator('[data-job-footer]')
+  await footer.locator('[data-job-time]').hover()
+  await expect(footer.locator('[data-job-duration]')).toHaveText('30m 00s')
 })
 
 test('work-order cards use their actual stage and technical activity exposes captured failure detail', async ({
@@ -4270,18 +4273,24 @@ for (const [modelName, iconFile] of [
     })
 
     await page.goto('/w/demo/tasks/implementation-card/full')
-    // Model and duration sit in the entry's header line; the entry has no
-    // footer (component-web-task-surfaces, Work-order timeline entries).
+    // The header says what happened. The footer holds the model, with its
+    // full name, at the left and the entry time at the right. The duration
+    // sits behind the time (component-web-task-surfaces; DEC-127(1)).
     const card = page.locator('article').filter({ hasText: 'Implementation completed without reported usage.' })
     const header = card.locator('[data-job-header]')
-    const duration = header.locator('[data-job-duration]')
-    const model = duration.locator('xpath=preceding-sibling::span[1]')
+    const footer = card.locator('[data-job-footer]')
+    const model = footer.locator('[data-job-model]')
+    const time = footer.locator('[data-job-time]')
 
-    await expect(card.locator('footer')).toHaveCount(0)
     await expect(header.getByText('Implementation', { exact: true })).toBeVisible()
-    await expect(duration).toHaveText('1m 00s')
+    await expect(header.getByText(modelName, { exact: true })).toHaveCount(0)
+    await expect(card.locator('[data-job-duration]')).toHaveCount(0)
     await expect(model.getByText(modelName, { exact: true })).toBeVisible()
     await expect(model.getByText(modelName, { exact: true })).toHaveAttribute('title', modelName)
+    await time.hover()
+    await expect(footer.locator('[data-job-finished]')).toContainText('after 1m 00s')
+    await expect(footer.locator('[data-job-duration]')).toHaveText('1m 00s')
+    await page.mouse.move(0, 0)
     if (iconFile) {
       const asset = readFileSync(
         new URL(`../node_modules/@lobehub/icons-static-svg/icons/${iconFile}.svg`, import.meta.url),
@@ -4300,21 +4309,20 @@ for (const [modelName, iconFile] of [
       await expect(model.locator('.lucide-cpu')).toHaveAttribute('aria-hidden', 'true')
       await expect(model.locator('span[aria-hidden="true"]')).toHaveCount(0)
     }
-    const unavailableUsage = header.getByText('Usage unavailable', { exact: true })
+    const unavailableUsage = footer.getByText('Usage unavailable', { exact: true })
     await expect(unavailableUsage).toHaveCount(1)
     await expect(unavailableUsage).toHaveAttribute('role', 'tooltip')
     await expect(unavailableUsage).toHaveCSS('opacity', '0')
 
-    // Model, then duration, inside the header line with nothing overflowing.
-    const layout = await header.evaluate((element) => {
-      const headerBox = element.getBoundingClientRect()
-      const durationBox = element.querySelector('[data-job-duration]')!.getBoundingClientRect()
-      const modelBox = (
-        element.querySelector('[data-job-duration]')!.previousElementSibling as HTMLElement
-      ).getBoundingClientRect()
+    // The model at the left, then the time at the right, inside the footer
+    // with nothing overflowing.
+    const layout = await footer.evaluate((element) => {
+      const footerBox = element.getBoundingClientRect()
+      const modelBox = element.querySelector('[data-job-model]')!.getBoundingClientRect()
+      const timeBox = element.querySelector('[data-job-time]')!.getBoundingClientRect()
       return {
-        ordered: modelBox.right <= durationBox.left + 1,
-        inside: modelBox.left >= headerBox.left - 0.5 && durationBox.right <= headerBox.right + 0.5,
+        ordered: modelBox.right <= timeBox.left + 1,
+        inside: modelBox.left >= footerBox.left - 0.5 && timeBox.right <= footerBox.right + 0.5,
         overflows: element.scrollWidth > element.clientWidth,
       }
     })
@@ -5287,8 +5295,7 @@ test('external Cursor Auto claims show the Cursor logo in the job header and rev
   const footerChip = page
     .locator('article')
     .filter({ hasText: 'Cursor implemented the change.' })
-    .locator('[data-job-duration]')
-    .locator('xpath=preceding-sibling::span[1]')
+    .locator('[data-job-footer] [data-job-model]')
   await expect(footerChip.getByText('auto', { exact: true })).toBeVisible()
   await expect(footerChip.getByText('auto', { exact: true })).toHaveAttribute('title', 'auto')
   expect(await logoPaths(footerChip)).toEqual(iconPaths('cursor'))
@@ -9231,18 +9238,20 @@ test('plan card header stays inside the card at phone width on the sheet and the
     const card = planCard(page)
     const status = card.locator('[data-plan-status]')
     const seats = status.getByText('Review: 1 seat (minimum 1)', { exact: true })
-    const time = status.getByText(/^approved /)
     const badge = status.getByText('Approved', { exact: true })
+    await expect(seats).toBeVisible()
     await expect(badge).toBeVisible()
-    // A visible separator divides the seat count from the time, and both read
-    // in one text style.
-    await expect(status).toContainText('Review: 1 seat (minimum 1) · approved')
-    expect(await seats.evaluate((element) => getComputedStyle(element).color)).toBe(
-      await time.evaluate((element) => getComputedStyle(element).color),
-    )
+    // The seat count stays on screen. The approval time sits behind the badge
+    // (component-web-task-surfaces invariant 60; DEC-127(1)).
+    await expect(status).toHaveText('Review: 1 seat (minimum 1)Approved')
     const cardBox = await card.boundingBox()
-    for (const part of [seats, time, badge]) expectInside(await part.boundingBox(), cardBox)
+    for (const part of [seats, badge]) expectInside(await part.boundingBox(), cardBox)
+    await status.getByRole('button', { name: /^Approved\. Approved / }).focus()
+    const time = status.locator('[data-plan-approval-time]')
+    await expect(time).toHaveText(/^Approved /)
+    expectInside(await time.boundingBox(), { x: 0, y: 0, width: 375, height: Number.MAX_SAFE_INTEGER })
     await expectNoHorizontalScroll(page)
+    await page.keyboard.press('Escape')
   }
 
   // At desktop width the status line keeps to the title's line.
@@ -9548,12 +9557,34 @@ test('task facts and review seats show the recorded risk tier', async ({ page })
     route.fulfill({ json: riskPanelItem(taskId, recordedRisk) }),
   )
   await page.goto(`/w/demo/tasks/${taskId}/full`)
+  // The fact shows the tier chip alone. Behind it, in order: the source,
+  // "Recorded only", the reason, and the needs (component-web-task-surfaces
+  // invariant 66; DEC-127(2)).
   const fact = page.locator('[data-task-risk]')
   await expect(fact.locator('[data-risk-tier]')).toHaveText('Medium')
-  await expect(fact).toContainText('From a reviewer')
-  await expect(fact).toContainText('Recorded only')
+  await expect(fact).toHaveText('Medium')
+  await expect(fact.locator('[data-task-risk-details]')).toHaveCount(0)
+  const chip = fact.getByRole('button')
+  await expect(chip).toHaveAccessibleName(
+    `Risk tier Medium. From a reviewer. Recorded only. ${recordedRisk.reason} Needs 2 agent reviews and no human approval.`,
+  )
+  await chip.hover()
+  const details = fact.locator('[data-task-risk-details]')
+  await expect(details).toBeVisible()
+  expect(await details.locator(':scope > span').allInnerTexts()).toEqual([
+    'From a reviewer\nRecorded only',
+    recordedRisk.reason ?? '',
+    'Needs 2 agent reviews and no human approval',
+  ])
+  await expect(details.locator('[data-task-risk-reason]')).toHaveText(recordedRisk.reason ?? '')
+  await expect(details.locator('[data-task-risk-needs]')).toHaveText('Needs 2 agent reviews and no human approval')
+  await expect(details.locator('[data-task-risk-approvals]')).toHaveCount(0)
+  await page.mouse.move(0, 0)
+  await expect(details).toHaveCount(0)
+  await chip.focus()
   await expect(fact.locator('[data-task-risk-reason]')).toHaveText(recordedRisk.reason ?? '')
-  await expect(fact.locator('[data-task-risk-needs]')).toHaveText('Needs 2 agent reviews and no human approval')
+  await page.keyboard.press('Escape')
+  await expect(fact.locator('[data-task-risk-details]')).toHaveCount(0)
   const panel = roundPanel(page, 'risk-seat-model')
   await expect(panel.locator('[data-seat-risk-tier="low"]')).toContainText('Low')
   await expect(panel.locator('[data-seat-risk-tier="medium"]')).toHaveAttribute(
@@ -9578,8 +9609,12 @@ test('an unrated task says so and an off task shows no risk tier', async ({ page
   await page.goto(`/w/demo/tasks/${unrated}/full`)
   const fact = page.locator('[data-task-risk]')
   await expect(fact.locator('[data-risk-tier="unrated"]')).toHaveText('Not rated yet')
+  await fact.getByRole('button').focus()
+  await expect(fact.locator('[data-task-risk-details]')).toBeVisible()
   await expect(fact).not.toContainText('From ')
   await expect(fact).not.toContainText('Recorded only')
+  await expect(fact.locator('[data-task-risk-reason]')).toHaveCount(0)
+  await expect(fact.locator('[data-task-risk-needs]')).toHaveText('Needs 2 agent reviews and no human approval')
 
   const off = 'risk-off'
   await page.route(`**/v1/tasks/${off}/activity*`, (route) => route.fulfill({ json: riskPanelItem(off) }))
@@ -9605,6 +9640,9 @@ for (const viewport of [
     await page.goto(`/w/demo/tasks/${taskId}/full`)
     await expect(page.locator('[data-task-risk]')).toBeVisible()
     await expect(roundPanel(page, 'risk-seat-model').locator('[data-seat-risk-tier="medium"]')).toBeVisible()
+    // The capture shows the properties' tier chip with its details open.
+    await page.locator('[data-task-risk]').getByRole('button').focus()
+    await expect(page.locator('[data-task-risk-details]')).toBeVisible()
     const shots = process.env.CONVEYOR_SCREENSHOT_DIR
     const name = `task-risk-tier-${viewport.name}.png`
     const image = await page.screenshot({ path: shots ? `${shots}/${name}` : undefined, fullPage: true })
@@ -9627,6 +9665,9 @@ for (const viewport of [
     await page.goto(`/w/demo/tasks/${taskId}/full`)
     const card = page.getByRole('region', { name: 'What you are approving' })
     await expect(card.locator('[data-risk-tier]')).toHaveText('Medium')
+    // The review panel's fact shows the chip alone, with the needs behind it.
+    await expect(card.locator('[data-task-risk-needs]')).toHaveCount(0)
+    await card.locator('[data-task-risk]').getByRole('button').focus()
     await expect(card.locator('[data-task-risk-needs]')).toHaveText('Needs 2 agent reviews and no human approval')
     await card.scrollIntoViewIfNeeded()
     const shots = process.env.CONVEYOR_SCREENSHOT_DIR

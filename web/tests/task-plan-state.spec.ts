@@ -1,4 +1,4 @@
-import { expect, type Page, type Route } from '@playwright/test'
+import { expect, type Page, type Route, type TestInfo } from '@playwright/test'
 import type { PlanActs, PlanOrigin, PlanState, RiskTier, TaskRisk } from '../src/lib/types'
 import { test } from './helpers/bounded-detail'
 import { callerIdentity } from './helpers/caller-identity'
@@ -298,7 +298,7 @@ test('the plan section renders for every plan state without a plan version, head
   await expect(planSection(page).locator('[data-plan-state-label]')).toHaveText('No plan required')
 })
 
-test('the plan section shows each origin, the base commit or None recorded, and the approval per state', async ({
+test('the plan section shows no origin, the base commit or None recorded, and the approval per state', async ({
   page,
 }) => {
   const cases: Array<{
@@ -344,10 +344,25 @@ test('the plan section shows each origin, the base commit or None recorded, and 
     const section = planSection(page)
     await expect(section.locator('[data-plan-state-label]')).toHaveText(labels[entry.state])
     await expect(section.getByRole('heading', { name: 'Execution plan' })).toBeVisible()
-    await expect(section.locator('[data-plan-origin]')).toHaveText(entry.origin)
+    // The read keeps spec.origin, and the section shows no origin (DEC-127(3)).
+    await expect(section.locator('[data-plan-origin]')).toHaveCount(0)
+    await expect(section.getByText(entry.origin)).toHaveCount(0)
+    await expect(section.getByText('Origin', { exact: true })).toHaveCount(0)
     const status = section.locator('[data-plan-status]')
     await expect(status.getByText(entry.approval, { exact: true })).toBeVisible()
-    if (entry.approval === 'Approved') await expect(status).toContainText('approved Nov 9')
+    // The approval or draft time sits behind the badge: hover and keyboard
+    // focus open it, and the badge's accessible name carries it.
+    await expect(status).not.toContainText('Nov 9')
+    const time = entry.approval === 'Approved' ? /^Approved Nov 9, / : /^Drafted Nov 9, /
+    const badge = status.getByRole('button', { name: new RegExp(`^${entry.approval}\\. `) })
+    await expect(badge).toHaveAccessibleName(new RegExp(`^${entry.approval}\\. ${time.source.slice(1)}`))
+    await badge.hover()
+    await expect(status.locator('[data-plan-approval-time]')).toHaveText(time)
+    await page.mouse.move(0, 0)
+    await expect(status.locator('[data-plan-approval-time]')).toHaveCount(0)
+    await badge.focus()
+    await expect(status.locator('[data-plan-approval-time]')).toHaveText(time)
+    await badge.blur()
     const base = section.locator('[data-plan-base-commit]')
     if (entry.spec.base_commit) {
       await expect(base.locator('code')).toHaveText(commit.slice(0, 12))
@@ -401,7 +416,14 @@ test('at plan approval the plan card shows the version tier and reason on both t
     await expect(plan).toHaveAttribute('data-plan-risk', 'high')
     await expect(plan.getByText('Plan risk tier', { exact: true })).toBeVisible()
     await expect(plan.locator('[data-risk-tier]')).toHaveText('High')
+    // The chip shows alone; its reason sits behind it.
+    await expect(plan.locator('[data-plan-risk-reason]')).toHaveCount(0)
+    await expect(plan.getByText(planRiskReason)).toHaveCount(0)
+    const chip = plan.getByRole('button', { name: `Plan risk tier High. ${planRiskReason}` })
+    await chip.focus()
     await expect(plan.locator('[data-plan-risk-reason]')).toHaveText(planRiskReason)
+    await chip.blur()
+    await expect(plan.locator('[data-plan-risk-reason]')).toHaveCount(0)
     await expect(
       planSection(page).locator('[data-plan-status]').getByText('Awaiting approval', { exact: true }),
     ).toBeVisible()
@@ -416,27 +438,91 @@ test('at plan approval the plan card shows the version tier and reason on both t
   }
 })
 
-test('the plan tier stays beside an approved plan and wraps at phone width', async ({ page }) => {
-  await page.setViewportSize({ width: 375, height: 800 })
-  await mockServer(page, {
-    details: [
-      detail('risk-completed', 'completed', {
-        spec: {
-          origin: 'plan_order',
-          approved: true,
-          risk_tier: 'low',
-          risk_reason: planRiskReason,
-          content: riskPlanContent,
-        },
-      }),
-    ],
+// The screenshots attach to the Playwright report, which CI uploads as an
+// artifact, and are also written to CONVEYOR_SCREENSHOT_DIR when it is set.
+async function capture(page: Page, testInfo: TestInfo, name: string) {
+  const shots = process.env.CONVEYOR_SCREENSHOT_DIR
+  const image = await page.screenshot({ path: shots ? `${shots}/${name}` : undefined, fullPage: true })
+  await testInfo.attach(name, { body: image, contentType: 'image/png' })
+}
+
+const riskCompleted = detail('risk-completed', 'completed', {
+  spec: {
+    origin: 'plan_order',
+    approved: true,
+    base_commit: commit,
+    risk_tier: 'low',
+    risk_reason: planRiskReason,
+    content: riskPlanContent,
+  },
+})
+
+// The plan facts' term column and value column, measured on the page.
+async function planFactLayout(page: Page) {
+  return planSection(page)
+    .locator('[data-plan-facts]')
+    .evaluate((list) => {
+      const box = (selector: string) => list.querySelector(selector)!.getBoundingClientRect()
+      const terms = Array.from(list.querySelectorAll('dt')).map((term) => term.getBoundingClientRect())
+      const values = Array.from(list.querySelectorAll('dd')).map((value) => value.getBoundingClientRect())
+      return {
+        header: list.parentElement!.getBoundingClientRect().width,
+        termLefts: terms.map((term) => Math.round(term.left)),
+        valueLefts: values.map((value) => Math.round(value.left)),
+        termWidths: terms.map((term) => Math.round(term.width)),
+        rows: terms.map((term) => Math.round(term.top)),
+        commitTop: Math.round(box('[data-plan-base-commit]').top),
+        riskTop: Math.round(box('[data-plan-risk] dd').top),
+      }
+    })
+}
+
+test.describe('at phone width on a touch screen', () => {
+  test.use({
+    viewport: { width: 375, height: 800 },
+    isMobile: true,
+    hasTouch: true,
+    locale: 'en-US',
+    timezoneId: 'UTC',
   })
+
+  test('the plan tier stays beside an approved plan and opens its reason by tap', async ({ page }, testInfo) => {
+    await mockServer(page, { details: [riskCompleted] })
+    await page.goto('/w/demo/tasks/risk-completed/full')
+    const plan = planSection(page).locator('[data-plan-risk]')
+    await expect(plan.locator('[data-risk-tier]')).toHaveText('Low')
+    await expect(plan.locator('[data-plan-risk-reason]')).toHaveCount(0)
+    const chip = plan.getByRole('button', { name: `Plan risk tier Low. ${planRiskReason}` })
+    await chip.tap()
+    await expect(plan.locator('[data-plan-risk-reason]')).toHaveText(planRiskReason)
+    await expect(planSection(page).locator('[data-plan-origin]')).toHaveCount(0)
+    // Below 40rem the facts form two columns with a 6rem term column.
+    const layout = await planFactLayout(page)
+    expect(layout.header).toBeLessThan(640)
+    expect(new Set(layout.termLefts).size).toBe(1)
+    expect(new Set(layout.valueLefts).size).toBe(1)
+    expect(layout.valueLefts[0] - layout.termLefts[0]).toBeGreaterThanOrEqual(96)
+    expect(layout.riskTop).toBeGreaterThan(layout.commitTop)
+    const overflow = await page.evaluate(() => document.documentElement.scrollWidth - window.innerWidth)
+    expect(overflow).toBeLessThanOrEqual(0)
+    await capture(page, testInfo, 'plan-risk-open-375.png')
+    // The approval time opens by tap.
+    const status = planSection(page).locator('[data-plan-status]')
+    await status.getByRole('button', { name: /^Approved\. Approved Nov 9, / }).tap()
+    await expect(status.locator('[data-plan-approval-time]')).toHaveText(/^Approved Nov 9, 11:30/)
+  })
+})
+
+test('the plan facts share one line on a header at least 40rem wide', async ({ page }, testInfo) => {
+  await page.setViewportSize({ width: 1440, height: 900 })
+  await mockServer(page, { details: [riskCompleted] })
   await page.goto('/w/demo/tasks/risk-completed/full')
-  const plan = planSection(page).locator('[data-plan-risk]')
-  await expect(plan.locator('[data-risk-tier]')).toHaveText('Low')
-  await expect(plan.locator('[data-plan-risk-reason]')).toHaveText(planRiskReason)
-  const overflow = await page.evaluate(() => document.documentElement.scrollWidth - window.innerWidth)
-  expect(overflow).toBeLessThanOrEqual(0)
+  await expect(planSection(page).locator('[data-plan-risk] [data-risk-tier]')).toHaveText('Low')
+  const layout = await planFactLayout(page)
+  expect(layout.header).toBeGreaterThanOrEqual(640)
+  expect(new Set(layout.rows).size).toBe(1)
+  expect(layout.termLefts[1]).toBeGreaterThan(layout.valueLefts[0])
+  await capture(page, testInfo, 'plan-1440.png')
 })
 
 // ---- Operator acts (invariants 61, 62, 64; AC-3.1, AC-3.2) ----
