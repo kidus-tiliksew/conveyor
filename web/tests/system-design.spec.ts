@@ -365,7 +365,7 @@ test('System Design search and deterministic sorting preserve categories and the
       .filter({ hasText: /^(Alpha|alpha|Beta)/ })
       .allTextContents()
 
-  await expect.poll(rowOrder).toEqual(['Alphadesign-alpha-a2', 'Betadesign-beta', 'alphadesign-alpha-b'])
+  await expect.poll(rowOrder).toEqual(['Alpha2', 'Beta', 'alpha'])
   const sortTrigger = tree.getByRole('button', { name: 'Sort System Design by' })
   const chooseSort = async (label: string) => {
     await sortTrigger.click()
@@ -374,13 +374,13 @@ test('System Design search and deterministic sorting preserve categories and the
   }
 
   await chooseSort('Updated')
-  await expect.poll(rowOrder).toEqual(['alphadesign-alpha-b', 'Betadesign-beta', 'Alphadesign-alpha-a2'])
+  await expect.poll(rowOrder).toEqual(['alpha', 'Beta', 'Alpha2'])
   await chooseSort('Name')
-  await expect.poll(rowOrder).toEqual(['Alphadesign-alpha-a2', 'alphadesign-alpha-b', 'Betadesign-beta'])
+  await expect.poll(rowOrder).toEqual(['Alpha2', 'alpha', 'Beta'])
   await chooseSort('Name')
-  await expect.poll(rowOrder).toEqual(['Betadesign-beta', 'Alphadesign-alpha-a2', 'alphadesign-alpha-b'])
+  await expect.poll(rowOrder).toEqual(['Beta', 'Alpha2', 'alpha'])
   await chooseSort('Created')
-  await expect.poll(rowOrder).toEqual(['Betadesign-beta', 'Alphadesign-alpha-a2', 'alphadesign-alpha-b'])
+  await expect.poll(rowOrder).toEqual(['Beta', 'Alpha2', 'alpha'])
 
   const search = tree.getByRole('searchbox', { name: 'Search System Design' })
   await search.fill('gAm')
@@ -1222,29 +1222,33 @@ for (const state of [
 }
 
 // Tree search matches a System Design document's title or ID, ignoring letter
-// case, and each entry shows its ID in quieter text with its title
+// case, and a document entry shows its title and no ID text
 // (component-web-document-surfaces, "The tree").
 for (const viewport of [
   { name: 'desktop', width: 1440, height: 900 },
   { name: 'phone', width: 375, height: 812 },
 ]) {
-  test(`System Design search by ID finds live and archived entries and shows each ID (${viewport.name})`, async ({
+  test(`System Design search by ID finds live and archived entries that show no ID (${viewport.name})`, async ({
     page,
   }, testInfo) => {
     await page.setViewportSize({ width: viewport.width, height: viewport.height })
     await initialize(page)
-    const longId = 'component-web-document-surfaces-with-a-long-identifier-that-truncates'
-    const entry = (id: string, title: string, category: string, extra: Record<string, unknown> = {}) => ({
+    const longId = 'component-web-document-surfaces-with-a-long-identifier-that-search-still-finds'
+    const item = (id: string, title: string, category: string, extra: Record<string, unknown> = {}) => ({
       ...design,
       document: { ...design.document, id, slug: id, title, category, ...extra },
       pending_versions: [],
       drift: [],
     })
     const items = [
-      { ...entry('component-artifacts', 'Artifacts: media validation', 'Component design'), drift: design.drift },
-      entry(longId, 'Web document surfaces', 'Component design'),
-      entry('feature-retries', 'Retry behavior', 'Feature design'),
-      entry('component-retired-intake', 'Retired intake', 'Component design', {
+      { ...item('component-artifacts', 'Artifacts: media validation', 'Component design'), drift: design.drift },
+      item(
+        longId,
+        'Web document surfaces with a title that is long enough to truncate inside the tree',
+        'Component design',
+      ),
+      item('feature-retries', 'Retry behavior', 'Feature design'),
+      item('component-retired-intake', 'Retired intake', 'Component design', {
         archived: true,
         archived_by: 'Operator One',
         archived_at: '2026-09-02T18:15:00Z',
@@ -1268,48 +1272,70 @@ for (const viewport of [
     const components = tree.getByRole('heading', { name: 'Component design' }).locator('..')
     const features = tree.getByRole('heading', { name: 'Feature design' }).locator('..')
     const archived = tree.locator('details')
-    const componentIds = components.locator('[data-document-id]')
-    const archivedIds = archived.locator('[data-document-id]')
+    const componentTitles = ['Artifacts: media validation', 'Web document surfaces']
+    const archivedTitles = ['Retired intake']
+    const entry = (group: typeof components, title: string) =>
+      group.getByRole('button', { name: new RegExp(`^${title}`) })
+    // Each group shows exactly the expected entries, located by title.
+    const expectEntries = async (group: typeof components, titles: string[], expected: string[]) => {
+      for (const title of titles) await expect(entry(group, title)).toHaveCount(expected.includes(title) ? 1 : 0)
+    }
 
-    // Every live and archived entry shows its ID beside its attention count.
-    await expect(componentIds).toHaveText(['component-artifacts', longId])
-    await expect(features.locator('[data-document-id]')).toHaveText(['feature-retries'])
+    // No live or archived entry renders an ID line or its own ID.
     await archived.locator('summary').click()
-    await expect(archivedIds).toHaveText(['component-retired-intake'])
+    await expectEntries(components, componentTitles, componentTitles)
+    await expect(entry(features, 'Retry behavior')).toHaveCount(1)
+    await expectEntries(archived, archivedTitles, archivedTitles)
+    await expect(tree.locator('[data-document-id]')).toHaveCount(0)
+    for (const [group, title, id] of [
+      [components, 'Artifacts: media validation', 'component-artifacts'],
+      [components, 'Web document surfaces', longId],
+      [features, 'Retry behavior', 'feature-retries'],
+      [archived, 'Retired intake', 'component-retired-intake'],
+    ] as const)
+      await expect(entry(group, title)).not.toContainText(id)
+    // The attention count stays with the title.
     await expect(
-      components.getByRole('button', { name: /Artifacts/ }).getByLabel('1 attention item', { exact: true }),
+      entry(components, 'Artifacts: media validation').getByLabel('1 attention item', { exact: true }),
     ).toBeVisible()
-    await expect(archived.getByRole('button', { name: /Retired intake/ })).toContainText(
-      'Superseded by component-artifacts',
-    )
+    // Archive successor metadata still names the successor's ID.
+    await expect(entry(archived, 'Retired intake')).toContainText('Superseded by component-artifacts')
 
     const search = tree.getByRole('searchbox', { name: 'Search System Design' })
     await search.fill('COMPONENT-ART')
-    await expect(componentIds).toHaveText(['component-artifacts'])
+    await expectEntries(components, componentTitles, ['Artifacts: media validation'])
     await expect(tree.getByRole('heading', { name: 'Feature design' })).toHaveCount(0)
     await expect(archived.getByText('No archived documents match your search.')).toBeVisible()
 
     await search.fill(' Retired-Intake ')
     await expect(tree.getByRole('heading', { name: 'Component design' })).toHaveCount(0)
-    await expect(archivedIds).toHaveText(['component-retired-intake'])
+    await expectEntries(archived, archivedTitles, archivedTitles)
+
+    // A full ID finds exactly its entry.
+    await search.fill(longId)
+    await expectEntries(components, componentTitles, ['Web document surfaces'])
+    await expect(tree.getByRole('heading', { name: 'Feature design' })).toHaveCount(0)
+    await expect(archived.getByText('No archived documents match your search.')).toBeVisible()
+    await search.fill('feature-retries')
+    await expect(tree.getByRole('heading', { name: 'Component design' })).toHaveCount(0)
+    await expect(entry(features, 'Retry behavior')).toHaveCount(1)
 
     await search.fill('retry')
-    await expect(features.locator('[data-document-id]')).toHaveText(['feature-retries'])
+    await expect(entry(features, 'Retry behavior')).toHaveCount(1)
 
     await search.fill('component-missing')
     await expect(tree.getByText('No documents match your search.')).toBeVisible()
 
-    // A long ID truncates inside the tree and never widens the page.
+    // A long title truncates inside the tree and never widens the page.
     await search.fill('Component')
-    await expect(componentIds).toHaveText(['component-artifacts', longId])
-    await expect(archivedIds).toHaveText(['component-retired-intake'])
+    await expectEntries(components, componentTitles, componentTitles)
+    await expectEntries(archived, archivedTitles, archivedTitles)
     await expect(tree.getByRole('heading', { name: 'Feature design' })).toHaveCount(0)
-    const longLine = componentIds.filter({ hasText: longId })
-    const longBox = await longLine.boundingBox()
+    const longEntry = entry(components, 'Web document surfaces')
+    const longBox = await longEntry.boundingBox()
     const treeBox = await tree.boundingBox()
-    if (!longBox || !treeBox) throw new Error('the tree or its long ID line is not rendered')
+    if (!longBox || !treeBox) throw new Error('the tree or its long entry is not rendered')
     expect(longBox.x + longBox.width).toBeLessThanOrEqual(treeBox.x + treeBox.width)
-    expect(await longLine.evaluate((element) => element.scrollWidth > element.clientWidth)).toBe(true)
     const overflow = await page.evaluate(() => ({
       scrollWidth: document.documentElement.scrollWidth,
       clientWidth: document.documentElement.clientWidth,
