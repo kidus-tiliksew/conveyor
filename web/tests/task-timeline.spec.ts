@@ -2,6 +2,7 @@ import { expect, type Locator, type Page, type TestInfo, test } from '@playwrigh
 import { buildTimeline, type TimelineEntry } from '../src/lib/activity'
 import type { ActivityItem, NextAction, WorkOrder } from '../src/lib/types'
 import { callerIdentity } from './helpers/caller-identity'
+import { activityFrame, controlTaskStreams } from './helpers/task-streams'
 
 // Task detail tells the task's story through its timeline
 // (req-operator-next-action REQ-7; feature-operator-next-action NA-6;
@@ -198,32 +199,41 @@ const detailSurfaces = [
 const elapsed = /^\d+(h \d{2}m|m \d{2}s|s)$/
 const shortTime = /^[A-Z][a-z]{2} \d{1,2}, \d{1,2}:\d{2}\s?[AP]M$/
 
-// The entry time opens a disclosure with the start and the running duration.
+// A running job's footer shows "Running for …" and no clock time. The start
+// sits behind the runtime, which focus opens (DEC-127(1)).
 async function expectRunningTime(footer: Locator) {
   const time = footer.locator('[data-job-time]')
-  await expect(time).toHaveText(shortTime)
+  await expect(time).toHaveText(/^Running for \d+(h \d{2}m|m \d{2}s|s)$/)
+  await expect(time.locator('[data-job-duration]')).toHaveText(elapsed)
+  await expect(time).toHaveAttribute('data-runtime-live', '')
+  await expect(time).toHaveAccessibleName(/^Running for \S+( \S+)?\. Started [A-Z][a-z]{2} \d{1,2}, .*[AP]M\.$/)
   await time.focus()
   const details = footer.locator('[data-job-time-details]')
-  await expect(details.locator('[data-job-started]')).toHaveText(/^Started /)
-  await expect(details.locator('[data-job-running]')).toHaveText(/^Running for /)
-  await expect(details.locator('[data-job-duration]')).toHaveText(elapsed)
+  await expect(details.locator('[data-job-started]')).toHaveText(
+    /^Started [A-Z][a-z]{2} \d{1,2}, \d{1,2}:\d{2}\s?[AP]M$/,
+  )
+  await expect(details.locator('[data-job-running]')).toHaveText('Still running')
   await expect(details.locator('[data-job-finished]')).toHaveCount(0)
-  await expect(time).toHaveAccessibleName(/Started .*\. Running for /)
   await time.blur()
 }
 
-// A finished job's time opens a disclosure with the start, the finish, and
-// the duration.
+// A finished job's footer shows its duration and no clock time. The start
+// and the finish sit behind it, which focus opens (DEC-127(1)).
 async function expectFinishedTime(footer: Locator) {
   const time = footer.locator('[data-job-time]')
-  await expect(time).toHaveText(shortTime)
+  await expect(time).toHaveText(elapsed)
+  await expect(time.locator('[data-job-duration]')).toHaveText(elapsed)
+  await expect(time).not.toHaveAttribute('data-runtime-live')
+  await expect(time).toHaveAccessibleName(/^Took \S+( \S+)?\. Started .*[AP]M\. Finished .*[AP]M\.$/)
   await time.focus()
   const details = footer.locator('[data-job-time-details]')
-  await expect(details.locator('[data-job-started]')).toHaveText(/^Started /)
-  await expect(details.locator('[data-job-finished]')).toHaveText(/^Finished .*, after /)
-  await expect(details.locator('[data-job-duration]')).toHaveText(elapsed)
+  await expect(details.locator('[data-job-started]')).toHaveText(
+    /^Started [A-Z][a-z]{2} \d{1,2}, \d{1,2}:\d{2}\s?[AP]M$/,
+  )
+  await expect(details.locator('[data-job-finished]')).toHaveText(
+    /^Finished [A-Z][a-z]{2} \d{1,2}, \d{1,2}:\d{2}\s?[AP]M$/,
+  )
   await expect(details.locator('[data-job-running]')).toHaveCount(0)
-  await expect(time).toHaveAccessibleName(/Started .*\. Finished .*, after /)
   await time.blur()
 }
 
@@ -256,10 +266,11 @@ const absenceCases: AbsenceCase[] = [
       await expect(entry).toHaveCount(1)
       await expect(entry.getByText('Running', { exact: true })).toBeVisible()
       // The header holds the stage and state. The footer holds the model and
-      // the entry time, and the duration sits behind the time.
+      // the runtime, and the start time sits behind the runtime.
       const header = entry.locator('[data-job-header]')
       await expect(header.getByText('claude-opus-5-5', { exact: true })).toHaveCount(0)
-      await expect(entry.locator('[data-job-duration]')).toHaveCount(0)
+      await expect(header.locator('[data-job-duration]')).toHaveCount(0)
+      await expect(entry.locator('[data-job-duration]')).toHaveCount(1)
       const footer = entry.locator('[data-job-footer]')
       await expect(footer.locator('[data-job-model]').getByText('claude-opus-5-5', { exact: true })).toBeVisible()
       await expectRunningTime(footer)
@@ -2278,7 +2289,8 @@ test.describe('on a coarse pointer at 375 px', () => {
     // the 40 px targets do not grow the footer.
     expect((await footer.boundingBox())!.height).toBeLessThanOrEqual(33.5)
     await footer.locator('[data-job-time]').tap()
-    await expect(footer.locator('[data-job-finished]')).toContainText(', after ')
+    await expect(footer.locator('[data-job-started]')).toHaveText(/^Started /)
+    await expect(footer.locator('[data-job-finished]')).toHaveText(/^Finished /)
     await expectNoSidewaysScroll(page)
   })
 })
@@ -2296,14 +2308,55 @@ function openRound(models = ['claude-opus-5-5', 'gpt-6.1-sol']) {
   return item
 }
 
-// The open-round footer holds only the verdict count and the convened time.
+// The open-round footer holds only the verdict count and the runtime. The
+// runtime's disclosure wraps its trigger, so the strip's second child is the
+// disclosure.
 async function expectOpenFooter(panel: Locator, count: string) {
-  const footer = panel.locator('[data-review-time]').locator('xpath=..')
+  const footer = panel.locator('[data-review-time]').locator('xpath=../..')
   await expect(footer.locator(':scope > *')).toHaveCount(2)
-  await expect(footer.locator(':scope > span')).toHaveText(count)
+  await expect(footer.locator(':scope > span').first()).toHaveText(count)
   await expect(footer).not.toContainText('·')
   await expect(footer).not.toContainText('changes requested')
   await expect(footer).not.toContainText('sends the task back')
+}
+
+// A settled panel's runtime opens the convened and settled times on focus,
+// and its accessible name states the runtime first.
+async function expectSettledPanelTime(time: Locator, runtime: string) {
+  await expect(time).toHaveText(runtime)
+  await expect(time).not.toHaveAttribute('data-runtime-live')
+  await expect(time).toHaveAccessibleName(
+    new RegExp(
+      `^Took ${runtime}\\. Convened [A-Z][a-z]{2} \\d{1,2}, .*[AP]M\\. Settled [A-Z][a-z]{2} \\d{1,2}, .*[AP]M\\.$`,
+    ),
+  )
+  await time.focus()
+  const details = time.locator('xpath=..').locator('[data-review-time-details]')
+  await expect(details.locator('[data-review-convened]')).toHaveText(
+    /^Convened [A-Z][a-z]{2} \d{1,2}, \d{1,2}:\d{2}\s?[AP]M$/,
+  )
+  await expect(details.locator('[data-review-settled]')).toHaveText(
+    /^Settled [A-Z][a-z]{2} \d{1,2}, \d{1,2}:\d{2}\s?[AP]M$/,
+  )
+  await time.blur()
+}
+
+// An open panel's runtime reads "Open for …" and advances. The convened time
+// sits behind it.
+async function expectOpenPanelTime(time: Locator) {
+  await expect(time).toHaveText(/^Open for \d+(h \d{2}m|m \d{2}s|s)$/)
+  await expect(time).toHaveAttribute('data-runtime-live', '')
+  await expect(time).toHaveAccessibleName(
+    /^Open for \S+( \S+)?\. Convened [A-Z][a-z]{2} \d{1,2}, .*[AP]M\. Not settled yet\.$/,
+  )
+  await time.focus()
+  const details = time.locator('xpath=..').locator('[data-review-time-details]')
+  await expect(details.locator('[data-review-convened]')).toHaveText(
+    /^Convened [A-Z][a-z]{2} \d{1,2}, \d{1,2}:\d{2}\s?[AP]M$/,
+  )
+  await expect(details.locator('[data-review-open]')).toHaveText('Not settled yet')
+  await expect(details.locator('[data-review-settled]')).toHaveCount(0)
+  await time.blur()
 }
 
 for (const width of [375, 1280]) {
@@ -2314,7 +2367,9 @@ for (const width of [375, 1280]) {
     await expect(header).not.toContainText('Settled')
     const banner = settled.locator('[data-review-banner]')
     const strip = banner.locator('xpath=..')
-    await expect(strip.locator('[data-review-time]')).toHaveText(shortTime)
+    // The settled panel shows its runtime from convened to settled, and no
+    // clock time on its face (DEC-127(1)).
+    await expectSettledPanelTime(strip.locator('[data-review-time]'), '15m 00s')
     await expect(strip.locator('[data-review-time]')).toHaveCSS('font-size', '11px')
     const [bannerBox, timeBox] = [await box(banner), await box(strip.locator('[data-review-time]'))]
     expect(timeBox.x).toBeGreaterThanOrEqual(bannerBox.x + bannerBox.width - 1)
@@ -2330,8 +2385,7 @@ for (const width of [375, 1280]) {
 
     const open = await openPanel(page, openRound(), width)
     await expect(open.locator('[data-review-header] time')).toHaveCount(0)
-    const convened = open.locator('[data-review-time]')
-    await expect(convened).toHaveText(/^Convened [A-Z][a-z]{2} \d{1,2}, /)
+    await expectOpenPanelTime(open.locator('[data-review-time]'))
     await expectOpenFooter(open, '1 of 2 verdicts in')
     await expectNoSidewaysScroll(page)
     await capture(page, testInfo, `review-panel-open-${width}.png`)
@@ -2341,7 +2395,7 @@ for (const width of [375, 1280]) {
 test('a one-seat open review round keeps its footer of count and time', async ({ page }) => {
   const open = await openPanel(page, openRound(['claude-opus-5-5']), 375)
   const convened = open.locator('[data-review-time]')
-  await expect(convened).toHaveText(/^Convened [A-Z][a-z]{2} \d{1,2}, /)
+  await expectOpenPanelTime(convened)
   await expectOpenFooter(open, '0 of 1 verdicts in')
   // The time keeps its place at the end of the strip.
   const count = await box(open.getByText('0 of 1 verdicts in', { exact: true }))
@@ -2349,3 +2403,252 @@ test('a one-seat open review round keeps its footer of count and time', async ({
   expect(time.x).toBeGreaterThanOrEqual(count.x + count.width)
   await expectNoSidewaysScroll(page)
 })
+
+// ---- Runtime on the card face (DEC-127(1); component-web-task-surfaces invariants 40 to 43) ----
+//
+// A card for work with a start and an end shows its runtime, and its clock
+// times sit behind the runtime. A running runtime advances once a second from
+// its own timer. The probe below counts the page's one-second timers that are
+// still active; it wraps the clock's fake timers, so it installs after them.
+
+async function installTimerProbe(page: Page) {
+  await page.addInitScript(() => {
+    const active = new Set<number>()
+    const set = window.setInterval.bind(window)
+    const clear = window.clearInterval.bind(window)
+    window.setInterval = ((handler: TimerHandler, timeout?: number, ...rest: unknown[]) => {
+      const id = set(handler, timeout, ...rest)
+      if (timeout === 1000) active.add(id)
+      return id
+    }) as typeof window.setInterval
+    window.clearInterval = ((id?: number) => {
+      if (id !== undefined) active.delete(id)
+      clear(id)
+    }) as typeof window.clearInterval
+    ;(window as unknown as { __secondTimers: () => number }).__secondTimers = () => active.size
+  })
+}
+
+const secondTimers = (page: Page) =>
+  page.evaluate(() => (window as unknown as { __secondTimers: () => number }).__secondTimers())
+
+// A running Implementation card, a finished narrated plan card, a compact
+// completed triage row, and an operator decision.
+function runtimeItem() {
+  return activity({
+    jobs: [
+      job(`${taskId}-triage-1`, 'triage', 'done', { started_at: minutes(0), ended_at: minutes(1) }),
+      job(`${taskId}-spec-1`, 'spec', 'done', { started_at: minutes(1), ended_at: minutes(3) }),
+      job(`${taskId}-implement-1`, 'implement', 'running', { started_at: minutes(6) }),
+    ],
+    work_orders: [
+      order(`${taskId}-implement-1`, {
+        attempt_id: 'attempt-current',
+        session_id: 'sess-current',
+        agent: 'claude-code',
+        model: 'claude-opus-5-5',
+        progress: 'Moving the clock times behind the runtime',
+      }),
+    ],
+    interventions: [
+      {
+        id: 7,
+        task_id: taskId,
+        actor_id: 'user:usr_operator',
+        actor_role: 'human',
+        action: 'pull_to_local',
+        reason_code: 'operator-pull',
+        comment: 'Pulled to check the footer on a phone.',
+        at: minutes(4),
+      },
+    ],
+    summaries: {
+      job_results: {
+        [`${taskId}-spec-1`]: {
+          stage_summary: { text: 'Plan v1 moves the times behind the runtime.', event_id: '11' },
+        },
+      },
+    },
+  }) as ReturnType<typeof activity> & { jobs: Record<string, unknown>[] }
+}
+
+async function openRuntimeTask(page: Page, item: object, width = 1280) {
+  await page.setViewportSize({ width, height: 1400 })
+  await page.clock.install({ time: new Date(minutes(9)) })
+  await installTimerProbe(page)
+  await mockAPI(page, item, nextAction(`${taskId}-implement-1`))
+  // Data reads only. The mocked notify streams answer 204, so their
+  // reconnects with backoff are not reads a tick could cause.
+  const reads: string[] = []
+  page.on('request', (request) => {
+    const path = new URL(request.url()).pathname
+    if (path.startsWith('/v1/') && !path.endsWith('/events/stream') && path !== '/v1/workspaces/demo/changes')
+      reads.push(path)
+  })
+  await page.goto(`/w/demo/tasks/${taskId}/full`)
+  const timeline = page.getByRole('region', { name: 'Execution event timeline' })
+  const running = timeline.locator('li article').filter({ hasText: 'Moving the clock times behind the runtime' })
+  await expect(running).toHaveCount(1)
+  await page.clock.pauseAt(new Date(minutes(10)))
+  return { timeline, running, reads }
+}
+
+test('a running Implementation card shows its runtime, which advances each second without a read', async ({ page }) => {
+  const { timeline, running, reads } = await openRuntimeTask(page, runtimeItem())
+  const face = running.locator('[data-job-footer] [data-job-time]')
+  await expect(face).toHaveText('Running for 4m 00s')
+  await expectRunningTime(running.locator('[data-job-footer]'))
+  // Hover opens the start time too.
+  await face.hover()
+  await expect(running.locator('[data-job-started]')).toBeVisible()
+  await page.mouse.move(0, 0)
+  await expect(running.locator('[data-job-time-details]')).toHaveCount(0)
+
+  const finished = timeline.locator('li article').filter({ hasText: 'Plan v1 moves the times behind the runtime.' })
+  const finishedFace = finished.locator('[data-job-footer] [data-job-time]')
+  await expect(finishedFace).toHaveText('2m 00s')
+  await expectFinishedTime(finished.locator('[data-job-footer]'))
+
+  // Only the running runtime holds a one-second timer. A tick sends no
+  // request and leaves the finished runtimes as they were.
+  expect(await secondTimers(page)).toBe(1)
+  await expect(timeline.locator('[data-runtime-live]')).toHaveCount(1)
+  const before = reads.length
+  await page.clock.runFor(3_000)
+  await expect(face).toHaveText('Running for 4m 03s')
+  await expect(finishedFace).toHaveText('2m 00s')
+  await page.clock.runFor(60_000)
+  await expect(face).toHaveText('Running for 5m 03s')
+  expect(reads.length).toBe(before)
+  expect(await secondTimers(page)).toBe(1)
+
+  // An operator decision is one instant, so it keeps its clock time.
+  const decision = timeline.locator('li').filter({ hasText: 'Pulled to check the footer on a phone.' })
+  await expect(decision.locator('time')).toHaveText(shortTime)
+
+  // Leaving the timeline unmounts the runtime and clears its timer.
+  await page.getByRole('tab', { name: 'Flow', exact: true }).click()
+  await expect(timeline).toHaveCount(0)
+  expect(await secondTimers(page)).toBe(0)
+})
+
+test('a page with only finished runtimes starts no timer', async ({ page }) => {
+  await page.clock.install({ time: new Date(minutes(90)) })
+  await installTimerProbe(page)
+  await mockAPI(page, deliveredTask(), {
+    ...nextAction(implementID(2)),
+    label: 'Finished',
+    actor: 'none',
+    kind: 'terminal',
+    current_order: undefined,
+    attempt: undefined,
+  })
+  await page.goto(`/w/demo/tasks/${taskId}/full`)
+  const card = page
+    .getByRole('region', { name: 'Execution event timeline' })
+    .getByRole('article', { name: 'Implementation attempt 2' })
+  const face = card.locator('[data-job-footer] [data-job-time]')
+  await expect(face).toHaveText('20m 00s')
+  await page.clock.runFor(5_000)
+  await expect(face).toHaveText('20m 00s')
+  await expect(page.locator('[data-runtime-live]')).toHaveCount(0)
+  expect(await secondTimers(page)).toBe(0)
+})
+
+test('a running runtime stops and shows its duration when the job finishes on a live refresh', async ({ page }) => {
+  const streams = await controlTaskStreams(page)
+  const item = runtimeItem()
+  const { running } = await openRuntimeTask(page, item)
+  const face = running.locator('[data-job-footer] [data-job-time]')
+  await expect(face).toHaveText('Running for 4m 00s')
+  expect(await secondTimers(page)).toBe(1)
+  await expect.poll(() => streams.countFor(taskId)).toBeGreaterThan(0)
+  await streams.open()
+  Object.assign(item.jobs[2], { state: 'done', ended_at: minutes(10) })
+  await streams.send(activityFrame)
+  await page.clock.runFor(250)
+  // Query results arrive through timers, so the clock runs again to render them.
+  await page.clock.resume()
+  await expect(face).toHaveText('4m 00s')
+  await expect(face).not.toHaveAttribute('data-runtime-live')
+  expect(await secondTimers(page)).toBe(0)
+})
+
+test('the compact completed row shows its duration and keeps its clock times behind it', async ({ page }) => {
+  const { timeline } = await openRuntimeTask(page, runtimeItem())
+  const row = timeline.locator('[data-job-completed]').filter({ hasText: 'Triage completed' })
+  await expect(row).toHaveCount(1)
+  const face = row.locator('[data-job-time]')
+  await expect(face).toHaveText('1m 00s')
+  // No clock time shows on the row's face.
+  await expect(row.locator(':scope > *')).toHaveCount(2)
+  await expect(row).not.toContainText(/[AP]M/)
+  await expect(face).toHaveAccessibleName(/^Took 1m 00s\. Started .*[AP]M\. Finished .*[AP]M\.$/)
+  await face.focus()
+  await expect(row.locator('[data-job-started]')).toHaveText(/^Started [A-Z][a-z]{2} \d{1,2}, /)
+  await expect(row.locator('[data-job-finished]')).toHaveText(/^Finished [A-Z][a-z]{2} \d{1,2}, /)
+  await face.blur()
+  await face.hover()
+  await expect(row.locator('[data-job-time-details]')).toBeVisible()
+})
+
+test('an open review panel shows its runtime from convened, which advances each second', async ({ page }) => {
+  await page.setViewportSize({ width: 1280, height: 900 })
+  await page.clock.install({ time: new Date(minutes(9)) })
+  await installTimerProbe(page)
+  await mockAPI(page, openRound(), nextAction(`${taskId}-review-1-seat-2`, 'review'))
+  await page.goto(`/w/demo/tasks/${taskId}/full`)
+  const panel = page.getByRole('region', { name: 'Execution event timeline' }).locator('li article')
+  await expect(panel).toHaveCount(1)
+  await page.clock.pauseAt(new Date(minutes(10)))
+  const time = panel.locator('[data-review-time]')
+  await expect(time).toHaveText('Open for 5m 00s')
+  await expectOpenPanelTime(time)
+  await page.clock.runFor(2_000)
+  await expect(time).toHaveText('Open for 5m 02s')
+  expect(await secondTimers(page)).toBe(1)
+  await time.hover()
+  await expect(panel.locator('[data-review-convened]')).toBeVisible()
+})
+
+test.describe('on a coarse pointer at 375 px, runtimes', () => {
+  test.use({ viewport: { width: 375, height: 1400 }, isMobile: true, hasTouch: true })
+
+  test('open their clock times on tap', async ({ page }) => {
+    const { timeline, running } = await openRuntimeTask(page, runtimeItem(), 375)
+    await running.locator('[data-job-footer] [data-job-time]').tap()
+    await expect(running.locator('[data-job-started]')).toBeVisible()
+    await expect(running.locator('[data-job-running]')).toHaveText('Still running')
+    const row = timeline.locator('[data-job-completed]').filter({ hasText: 'Triage completed' })
+    await row.locator('[data-job-time]').tap()
+    await expect(row.locator('[data-job-finished]')).toBeVisible()
+    await expectNoSidewaysScroll(page)
+  })
+
+  test('on a settled review panel open the convened and settled times on tap', async ({ page }) => {
+    const settled = await openPanel(page, threeSeatApproved(), 375)
+    const time = settled.locator('[data-review-time]')
+    await time.tap()
+    await expect(settled.locator('[data-review-convened]')).toBeVisible()
+    await expect(settled.locator('[data-review-settled]')).toBeVisible()
+    const bounds = await settled.locator('[data-review-time-details]').boundingBox()
+    expect(bounds!.x).toBeGreaterThanOrEqual(0)
+    expect(bounds!.x + bounds!.width).toBeLessThanOrEqual(375)
+  })
+})
+
+// Visual record for the pull request: a running Implementation card, a
+// finished job card, and the compact completed row, at 375 px and at a desktop
+// width. The clock is fixed so the runtimes read the same on every run.
+for (const width of [375, 1280]) {
+  test(`runtime screenshots at ${width} px`, async ({ page }, testInfo) => {
+    const { running } = await openRuntimeTask(page, runtimeItem(), width)
+    await expect(running.locator('[data-job-footer] [data-job-time]')).toHaveText('Running for 4m 00s')
+    await page.evaluate(() => document.fonts.ready)
+    await expectNoSidewaysScroll(page)
+    await capture(page, testInfo, `runtime-running-${width}.png`)
+    await running.locator('[data-job-footer] [data-job-time]').focus()
+    await expect(running.locator('[data-job-time-details]')).toBeVisible()
+    await capture(page, testInfo, `runtime-running-open-${width}.png`)
+  })
+}

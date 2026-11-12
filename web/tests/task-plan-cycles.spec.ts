@@ -258,6 +258,26 @@ function cycles(timeline: Locator) {
   return timeline.locator('li[data-plan-cycle]')
 }
 
+const shortTime = /[A-Z][a-z]{2} \d{1,2}, \d{1,2}:\d{2}\s?[AP]M$/
+
+// A closed cycle shows its span as a runtime and its step count, and no clock
+// time. Focus opens the first and last step times (invariant 70; DEC-127(1)).
+async function expectClosedSpan(cycle: Locator, runtime: string, steps: string) {
+  const span = cycle.locator('[data-plan-cycle-span]')
+  await expect(span).toHaveText(`${runtime}·${steps}`)
+  const trigger = span.locator('[data-plan-cycle-runtime]')
+  await expect(trigger).toHaveText(runtime)
+  await expect(trigger).not.toHaveAttribute('data-runtime-live')
+  await expect(trigger).toHaveAccessibleName(
+    new RegExp(`^Took ${runtime}\\. ${steps}\\. First step .*[AP]M\\. Last step .*[AP]M\\.$`),
+  )
+  await trigger.focus()
+  await expect(span.locator('[data-plan-cycle-first]')).toHaveText(new RegExp(`^First step ${shortTime.source}`))
+  await expect(span.locator('[data-plan-cycle-last]')).toHaveText(new RegExp(`^Last step ${shortTime.source}`))
+  await expect(span.locator('[data-plan-cycle-open]')).toHaveCount(0)
+  await trigger.blur()
+}
+
 test('settled plan history reads as one entry per cycle, folded except the newest', async ({ page }) => {
   const { item } = settledTask()
   await mockServer(page, [item])
@@ -272,7 +292,8 @@ test('settled plan history reads as one entry per cycle, folded except the newes
   await expect(newest.getByRole('article', { name: 'Plan revision v3 → v4' })).toBeVisible()
 
   // Older settled cycles fold to the header button, one preview line, and the
-  // span and step count; their steps are not mounted (invariant 70).
+  // span as a runtime with the step count; their steps are not mounted
+  // (invariant 70). The runtime sits beside the fold button, not inside it.
   const secondHeader = second.getByRole('button', { name: /Plan revision/ })
   await expect(secondHeader).toHaveAttribute('aria-expanded', 'false')
   const controls = await secondHeader.getAttribute('aria-controls')
@@ -280,9 +301,12 @@ test('settled plan history reads as one entry per cycle, folded except the newes
   await expect(second.locator('[data-plan-cycle-step]')).toHaveCount(0)
   const summary = second.locator('[data-plan-cycle-summary]')
   await expect(summary).toContainText('The approved plan reads the cases file')
-  await expect(summary).toContainText('· 6 steps')
-  await expect(first.locator('[data-plan-cycle-summary]')).toContainText('· 2 steps')
+  await expectClosedSpan(second, '23h 00m', '6 steps')
+  await expect(secondHeader.locator('[data-plan-cycle-runtime]')).toHaveCount(0)
+  await expectClosedSpan(first, '0s', '2 steps')
   await expect(first.locator('[data-plan-cycle-step]')).toHaveCount(0)
+  // The newest cycle is not folded and still shows its span.
+  await expectClosedSpan(newest, '1h 05m', '4 steps')
 
   // The newest cycle never folds and names the approved version.
   await expect(newest.getByRole('button', { name: /Plan revision/ })).toHaveCount(0)
@@ -399,6 +423,63 @@ test('a cycle waiting on a plan-revision decision stays open with the attention 
   const cycleBox = await waiting.boundingBox()
   const gateBox = await gate.boundingBox()
   expect(gateBox?.y ?? 0).toBeGreaterThan(cycleBox?.y ?? 0)
+})
+
+// A cycle waiting on a decision is still open, so its span reads "Open for …"
+// and advances once a second without a read. Its step keeps its own time
+// (invariant 70; DEC-127(1)).
+test('an open cycle shows its running span, which advances each second', async ({ page }) => {
+  const server = await mockServer(page, [waitingTask()])
+  await page.clock.install({ time: new Date(day2('10:03')) })
+  await page.goto('/w/demo/tasks/plan-cycles-waiting/full')
+  const waiting = cycles(timelineOf(page)).nth(1)
+  await expect(waiting.locator('[data-plan-cycle-step]')).toHaveCount(1)
+  await page.clock.pauseAt(new Date(day2('10:04')))
+  const span = waiting.locator('[data-plan-cycle-span]')
+  const trigger = span.locator('[data-plan-cycle-runtime]')
+  await expect(span).toHaveText('Open for 4m 00s·1 step')
+  await expect(trigger).toHaveAttribute('data-runtime-live', '')
+  await expect(trigger).toHaveAccessibleName(
+    /^Open for 4m 00s\. 1 step\. First step .*[AP]M\. Last step .*[AP]M\. Still open\.$/,
+  )
+  const reads = server.reads('plan-cycles-waiting')
+  await page.clock.runFor(2_000)
+  await expect(trigger).toHaveText('Open for 4m 02s')
+  expect(server.reads('plan-cycles-waiting')).toBe(reads)
+  // Focus and hover open the first and last step times.
+  await trigger.focus()
+  await expect(span.locator('[data-plan-cycle-first]')).toHaveText(new RegExp(`^First step ${shortTime.source}`))
+  await expect(span.locator('[data-plan-cycle-open]')).toHaveText('Still open')
+  await trigger.blur()
+  await trigger.hover()
+  await expect(span.locator('[data-plan-cycle-last]')).toBeVisible()
+  // The step row keeps its own clock time.
+  await expect(waiting.locator('[data-plan-cycle-time]')).toHaveText(shortTime)
+  // The settled intake cycle measures to its last step and starts no timer.
+  await expect(cycles(timelineOf(page)).nth(0).locator('[data-plan-cycle-runtime]')).toHaveText('0s')
+  await expect(page.locator('[data-runtime-live]')).toHaveCount(1)
+})
+
+test.describe('on a coarse pointer at 375 px', () => {
+  test.use({ viewport: { width: 375, height: 1400 }, isMobile: true, hasTouch: true })
+
+  test('a cycle span opens its first and last step times on tap, apart from the fold', async ({ page }) => {
+    const { item } = settledTask()
+    await mockServer(page, [item])
+    await page.goto('/w/demo/tasks/plan-cycles-settled/full')
+    const second = cycles(timelineOf(page)).nth(1)
+    const header = second.getByRole('button', { name: /Plan revision/ })
+    await expect(header).toHaveAttribute('aria-expanded', 'false')
+    const trigger = second.locator('[data-plan-cycle-runtime]')
+    const bounds = await trigger.boundingBox()
+    expect(bounds!.height).toBeGreaterThanOrEqual(40)
+    await trigger.tap()
+    await expect(second.locator('[data-plan-cycle-first]')).toBeVisible()
+    await expect(second.locator('[data-plan-cycle-last]')).toBeVisible()
+    // The tap opened the times and left the fold as it was.
+    await expect(header).toHaveAttribute('aria-expanded', 'false')
+    expect(await page.evaluate(() => document.documentElement.scrollWidth - window.innerWidth)).toBeLessThanOrEqual(0)
+  })
 })
 
 // A viewer who cannot act on the gate sees no decision panel, so the waiting

@@ -66,6 +66,7 @@ import {
   stageWork,
   usePersonResolver,
 } from './run-by'
+import { RuntimeDisclosure } from './runtime-disclosure'
 import { useCollapsibleContent } from './use-collapsible-content'
 import { useTaskAudit } from './use-task-detail'
 import { isHistoryRestart, useTaskHistory } from './use-task-history'
@@ -750,7 +751,6 @@ function TimelineRow({
         dotSlot={(className) => rail(jobPeople(entry.job, entry.order), className)}
         footer={
           <JobCardFooter
-            at={entry.at}
             job={entry.job}
             model={entry.model}
             order={entry.order}
@@ -773,7 +773,6 @@ function TimelineRow({
   if (entry.type === 'job')
     return (
       <JobEntry
-        at={entry.at}
         job={entry.job}
         taskId={item.task.id}
         summary={entry.summary}
@@ -954,6 +953,11 @@ function PanelEntry({
   const verdictsIn = seats.filter((seat) => seat.review).length
   const changes = seats.filter((seat) => seat.review?.verdict === 'changes_requested').length
   const deliberating = !resolution && seats.some((seat) => seat.status === 'deliberating')
+  // A round without a verdict runs while a seat deliberates or waits for an
+  // agent, until the task ends.
+  const terminal = item.task.state === 'merged' || item.task.state === 'closed'
+  const open =
+    !resolution && !terminal && seats.some((seat) => seat.status === 'deliberating' || seat.status === 'waiting')
   // Reviewer feedback surfaces as each verdict lands — not held until the
   // round settles — so nothing a reviewer wrote is ever invisible.
   const notes = seats.filter((seat) => seat.review && seat.review.feedback.trim())
@@ -1104,26 +1108,84 @@ function PanelEntry({
                   : 'Approved'
                 : changesRequestedBanner(changes, seats.length, resolution.bounce)}
             </span>
-            <time
-              dateTime={resolution.at}
-              className="mt-0.5 shrink-0 text-[11px] font-normal tabular-nums text-muted"
-              data-review-time
-            >
-              {absoluteTime(resolution.at)}
-            </time>
+            <PanelRuntime
+              convened={entry.at}
+              settled={resolution.at}
+              open={false}
+              className="mt-0.5 shrink-0 font-normal"
+            />
           </div>
         ) : (
           <div className="flex flex-wrap items-center gap-x-3 gap-y-1 border-t border-border px-3 py-2 text-[11px] tabular-nums text-muted @min-[26rem]:px-4">
             <span>
               {verdictsIn} of {seats.length} verdicts in
             </span>
-            <time dateTime={entry.at} className="ml-auto shrink-0" data-review-time>
-              Convened {absoluteTime(entry.at)}
-            </time>
+            <PanelRuntime convened={entry.at} open={open} className="ml-auto shrink-0" />
           </div>
         )}
       </article>
     </li>
+  )
+}
+
+// The panel's runtime, from the round's convening to its settling, with both
+// clock times behind it (DEC-127(1)). An open round shows "Open for …", which
+// advances once a second. A round that stopped without settling has no
+// runtime, so it keeps its convened time.
+function PanelRuntime({
+  convened,
+  settled,
+  open,
+  className,
+}: {
+  convened: string
+  settled?: string
+  open: boolean
+  className?: string
+}) {
+  const convenedText = `Convened ${absoluteTime(convened)}`
+  const settledText = settled ? `Settled ${absoluteTime(settled)}` : undefined
+  return (
+    <RuntimeDisclosure
+      start={convened}
+      end={settled}
+      open={open}
+      className={className}
+      contentClassName="left-auto right-0"
+      triggerClassName="justify-end whitespace-nowrap text-[11px] tabular-nums text-muted pointer-coarse:-my-3"
+      trigger={{ 'data-review-time': '' }}
+      render={(runtime) => ({
+        face: runtime ? (
+          <span>
+            {!settled && 'Open for '}
+            <span data-review-duration>{runtime}</span>
+          </span>
+        ) : (
+          <time dateTime={convened}>{convenedText}</time>
+        ),
+        label: `${[
+          runtime ? (settled ? `Took ${runtime}` : `Open for ${runtime}`) : undefined,
+          convenedText,
+          settledText ?? (runtime ? 'Not settled yet' : 'Not settled'),
+        ]
+          .filter(Boolean)
+          .join('. ')}.`,
+        details: (
+          <span className="flex flex-col gap-0.5 tabular-nums" data-review-time-details>
+            <time dateTime={convened} data-review-convened>
+              {convenedText}
+            </time>
+            {settled ? (
+              <time dateTime={settled} data-review-settled>
+                {settledText}
+              </time>
+            ) : (
+              <span data-review-open>{runtime ? 'Not settled yet' : 'Not settled'}</span>
+            )}
+          </span>
+        ),
+      })}
+    />
   )
 }
 
@@ -1386,7 +1448,6 @@ const placeholderSummaries = new Set([
 // claim's harness shows only as the chip's logo fallback; auth mode,
 // confinement, and actor plumbing stay in the API.
 function JobEntry({
-  at,
   job,
   taskId,
   summary,
@@ -1397,8 +1458,6 @@ function JobEntry({
   usageAvailable,
   people = [],
 }: {
-  // The instant the timeline placed this entry: its end once finished.
-  at: string
   job: Job
   taskId: string
   summary: string
@@ -1431,10 +1490,11 @@ function JobEntry({
     return (
       <li className="relative pl-7">
         {dot}
-        <div className="flex flex-wrap items-baseline gap-x-3 gap-y-1 px-1 py-1.5 text-sm">
+        <div className="flex flex-wrap items-baseline gap-x-3 gap-y-1 px-1 py-1.5 text-sm" data-job-completed>
           <span className="text-foreground/90">{stage} completed</span>
-          <span className="text-[11px] tabular-nums text-faint">{duration(job.started_at, job.ended_at)}</span>
-          <time className="ml-auto text-[11px] text-faint">{absoluteTime(at)}</time>
+          {/* The duration stays on the row, and its clock times sit behind it
+              (DEC-127(1)). */}
+          <JobTime job={job} className="ml-auto text-[11px]" />
           {order && !providerUsage && (
             <span className="basis-full text-[11px] tabular-nums text-faint">
               {usageText(order, usageAvailable === true)}
@@ -1449,8 +1509,8 @@ function JobEntry({
       {dot}
       <article className={cn('rounded-lg bg-surface', warning && 'border border-attention/30 bg-attention-soft')}>
         {/* The header says what happened: the stage, its state badge, and a
-            review seat label. The footer says who and when: the model and the
-            entry time, with the start, finish, and duration behind the time
+            review seat label. The footer says who and for how long: the model
+            and the runtime, with the start and finish times behind the runtime
             (component-web-task-surfaces; DEC-127(1)). */}
         <header className="flex flex-wrap items-center gap-x-2.5 gap-y-1 px-4 pt-3" data-job-header>
           <span className="text-sm font-semibold text-foreground">{stage}</span>
@@ -1475,24 +1535,22 @@ function JobEntry({
             />
           </div>
         )}
-        <JobCardFooter at={at} job={job} model={model} order={order} usageAvailable={usageAvailable} />
+        <JobCardFooter job={job} model={model} order={order} usageAvailable={usageAvailable} />
       </article>
     </li>
   )
 }
 
 // The footer of a job card and an Implementation card: the model at the left,
-// with its full name, and the entry time at the right. The leading-4 line and
+// with its full name, and the runtime at the right. The leading-4 line and
 // the triggers' negative margins keep the 40 px coarse-pointer targets from
 // growing the footer.
 function JobCardFooter({
-  at,
   job,
   model,
   order,
   usageAvailable,
 }: {
-  at: string
   job: Job
   model: string
   order?: WorkOrder
@@ -1507,47 +1565,65 @@ function JobCardFooter({
       <span className="flex min-w-0 items-center" data-job-model>
         <JobModel job={job} model={model} order={order} usageAvailable={usageAvailable} fullName />
       </span>
-      <JobTime at={at} job={job} />
+      <JobTime job={job} />
     </footer>
   )
 }
 
-// The entry time, with the start, the finish, and the duration behind it. The
-// time is the instant the timeline placed the entry (jobTimelineAt). The
-// duration stays off the card face (DEC-127(1)).
-function JobTime({ at, job }: { at: string; job: Job }) {
+// The job's runtime, with its clock times behind it (DEC-127(1)). A finished
+// job shows its duration, and a running job shows "Running for …", which
+// advances once a second. The entry time is the instant the timeline placed
+// the entry (jobTimelineAt): the finish once finished, else the start, so the
+// Started and Finished lines always carry it.
+function JobTime({ job, className }: { job: Job; className?: string }) {
   if (!job.started_at) return null
-  const started = `Started ${absoluteTime(job.started_at)}`
-  const elapsed = duration(job.started_at, job.ended_at)
-  const finished = job.ended_at ? `Finished ${absoluteTime(job.ended_at)}, after ${elapsed}` : undefined
-  const runningFor = !job.ended_at && job.state === 'running' ? `Running for ${elapsed}` : undefined
-  const label = [absoluteTime(at), started, finished ?? runningFor].filter(Boolean).join('. ')
+  const startedAt = job.started_at
+  const endedAt = job.ended_at
+  const running = !endedAt && job.state === 'running'
+  const started = `Started ${absoluteTime(startedAt)}`
+  const finished = endedAt ? `Finished ${absoluteTime(endedAt)}` : undefined
   return (
-    <Disclosure
-      className="shrink-0"
+    <RuntimeDisclosure
+      start={startedAt}
+      end={endedAt}
+      open={running}
+      className={cn('shrink-0', className)}
       contentClassName="left-auto right-0"
       triggerClassName="justify-end whitespace-nowrap text-faint pointer-coarse:-my-3"
-      label={`${label}.`}
-      content={
-        <span className="flex flex-col gap-0.5 tabular-nums" data-job-time-details>
-          <span data-job-started>{started}</span>
-          {finished && (
-            <span data-job-finished>
-              Finished {absoluteTime(job.ended_at!)}, after <span data-job-duration>{elapsed}</span>
-            </span>
-          )}
-          {runningFor && (
-            <span data-job-running>
-              Running for <span data-job-duration>{elapsed}</span>
-            </span>
-          )}
-        </span>
-      }
-      renderTrigger={(props) => (
-        <button {...props} data-job-time>
-          <time dateTime={at}>{absoluteTime(at)}</time>
-        </button>
-      )}
+      trigger={{ 'data-job-time': '' }}
+      render={(runtime) => ({
+        face: runtime ? (
+          <span>
+            {running && 'Running for '}
+            <span data-job-duration>{runtime}</span>
+          </span>
+        ) : (
+          <span aria-hidden>—</span>
+        ),
+        label: `${[
+          runtime ? (running ? `Running for ${runtime}` : `Took ${runtime}`) : 'No finish recorded',
+          started,
+          finished,
+        ]
+          .filter(Boolean)
+          .join('. ')}.`,
+        details: (
+          <span className="flex flex-col gap-0.5 tabular-nums" data-job-time-details>
+            <time dateTime={startedAt} data-job-started>
+              {started}
+            </time>
+            {endedAt ? (
+              <time dateTime={endedAt} data-job-finished>
+                {finished}
+              </time>
+            ) : running ? (
+              <span data-job-running>Still running</span>
+            ) : (
+              <span data-job-unfinished>No finish recorded</span>
+            )}
+          </span>
+        ),
+      })}
     />
   )
 }

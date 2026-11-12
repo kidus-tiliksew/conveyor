@@ -4285,8 +4285,9 @@ for (const [modelName, iconFile] of [
 
     await page.goto('/w/demo/tasks/implementation-card/full')
     // The header says what happened. The footer holds the model, with its
-    // full name, at the left and the entry time at the right. The duration
-    // sits behind the time (component-web-task-surfaces; DEC-127(1)).
+    // full name, at the left and the runtime at the right. The start and
+    // finish times sit behind the runtime (component-web-task-surfaces;
+    // DEC-127(1)).
     const card = page.locator('article').filter({ hasText: 'Implementation completed without reported usage.' })
     const header = card.locator('[data-job-header]')
     const footer = card.locator('[data-job-footer]')
@@ -4295,12 +4296,14 @@ for (const [modelName, iconFile] of [
 
     await expect(header.getByText('Implementation', { exact: true })).toBeVisible()
     await expect(header.getByText(modelName, { exact: true })).toHaveCount(0)
-    await expect(card.locator('[data-job-duration]')).toHaveCount(0)
+    await expect(header.locator('[data-job-duration]')).toHaveCount(0)
+    await expect(time).toHaveText('1m 00s')
+    await expect(time.locator('[data-job-duration]')).toHaveText('1m 00s')
     await expect(model.getByText(modelName, { exact: true })).toBeVisible()
     await expect(model.getByText(modelName, { exact: true })).toHaveAttribute('title', modelName)
     await time.hover()
-    await expect(footer.locator('[data-job-finished]')).toContainText('after 1m 00s')
-    await expect(footer.locator('[data-job-duration]')).toHaveText('1m 00s')
+    await expect(footer.locator('[data-job-started]')).toHaveText(/^Started /)
+    await expect(footer.locator('[data-job-finished]')).toHaveText(/^Finished /)
     await page.mouse.move(0, 0)
     if (iconFile) {
       const asset = readFileSync(
