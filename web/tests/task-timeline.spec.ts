@@ -2374,16 +2374,22 @@ test.describe('on a coarse pointer at 375 px', () => {
   })
 })
 
-// An unsettled round whose last seat has no verdict yet.
-function openRound(models = ['claude-opus-5-5', 'gpt-6.1-sol']) {
+// An unsettled round whose last seat has no verdict yet. That seat's job is
+// still running unless `lastJobEnded` gives it a recorded end.
+function openRound(models = ['claude-opus-5-5', 'gpt-6.1-sol'], lastJobEnded = false) {
   const item = reviewPanel(models.map((model) => ({ model, verdict: 'approve' }))) as {
     summaries: Record<string, { by_order?: Record<string, unknown> }>
     work_orders: WorkOrder[]
+    jobs: Record<string, unknown>[]
   }
   delete item.summaries.review_rounds
   const last = models.length - 1
   delete item.summaries.review_results.by_order?.[`${taskId}-review-1-seat-${models.length}`]
   item.work_orders[last] = { ...item.work_orders[last], state: 'claimed' }
+  if (!lastJobEnded) {
+    const { ended_at: _ended, ...running } = item.jobs[last]
+    item.jobs[last] = { ...running, state: 'running' }
+  }
   return item
 }
 
@@ -2694,6 +2700,27 @@ test('an open review panel shows its runtime from convened, which advances each 
   expect(await secondTimers(page)).toBe(2)
   await time.hover()
   await expect(panel.locator('[data-review-convened]')).toBeVisible()
+})
+
+// A seat whose job ended before its verdict landed still reads as
+// deliberating. Its elapsed time stops at the recorded end and holds no timer.
+test('a deliberating seat whose job has ended shows its measured duration', async ({ page }) => {
+  await page.setViewportSize({ width: 1280, height: 900 })
+  await page.clock.install({ time: new Date(minutes(19)) })
+  await installTimerProbe(page)
+  await mockAPI(page, openRound(undefined, true), nextAction(`${taskId}-review-1-seat-2`, 'review'))
+  await page.goto(`/w/demo/tasks/${taskId}/full`)
+  const panel = page.getByRole('region', { name: 'Execution event timeline' }).locator('li article')
+  await expect(panel).toHaveCount(1)
+  await page.clock.pauseAt(new Date(minutes(20)))
+  await expect(panel.getByText('Deliberating')).toBeVisible()
+  const seat = panel.locator('[data-seat-runtime]')
+  await expect(seat).toHaveText('9m 00s')
+  await page.clock.runFor(3_000)
+  await expect(seat).toHaveText('9m 00s')
+  await expect(panel.locator('[data-review-time]')).toHaveText('Open for 15m 03s')
+  // Only the round's runtime holds a timer.
+  expect(await secondTimers(page)).toBe(1)
 })
 
 test.describe('on a coarse pointer at 375 px, runtimes', () => {

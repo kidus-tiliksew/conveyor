@@ -1399,10 +1399,12 @@ function SeatState({ seat, index }: { seat: PanelSeat; index: number }) {
           />
           Deliberating
         </span>
-        {/* The seat's elapsed time advances with the round's runtime. */}
+        {/* A seat whose job is still open counts up with the round's runtime.
+            A job with a recorded end shows its measured duration and starts
+            no timer, even before its verdict lands. */}
         {job?.started_at && (
           <span className="text-[11px] tabular-nums text-muted" data-seat-runtime>
-            <LiveRuntime start={job.started_at} />
+            {job.ended_at ? duration(job.started_at, job.ended_at) : <LiveRuntime start={job.started_at} />}
           </span>
         )}
       </span>
