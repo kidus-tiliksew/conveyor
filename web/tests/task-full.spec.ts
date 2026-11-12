@@ -506,12 +506,13 @@ function activity(taskId: string, overflowing: boolean, liveEventCount = 18) {
                       events: Array.from({ length: liveEventCount }, (_, index) => ({
                         id: index + 1,
                         task_id: taskId,
-                        // Plan versions stay technical, so the filler rows are
-                        // dependency notes that the timeline still renders.
-                        kind: 'task.dependency_removed',
+                        // Plan versions and dependency changes stay technical,
+                        // so the filler rows are dispatch failure notes that the
+                        // timeline still renders.
+                        kind: 'dispatch.failed',
                         actor_id: 'system',
                         actor_role: 'system' as const,
-                        payload: { reason: `Live event ${index + 1}` },
+                        payload: { error: `Live event ${index + 1}` },
                         at: `2026-07-15T12:00:${String(index).padStart(2, '0')}Z`,
                       })),
                       work_orders: [],
@@ -6239,7 +6240,27 @@ test('unsatisfiable dependency is attention-worthy and can be unlinked with an a
   await expect.poll(() => unlinkBody?.reason).toBe('The retired plan is no longer required')
   expect(unlinkBody?.request_id).toBeTruthy()
   await expect(page.getByRole('region', { name: 'Dependency needs attention' })).toHaveCount(0)
-  await expect(page.getByText('Dependency removed')).toBeVisible()
+  // The removal reads from the Dependencies section, so the timeline renders
+  // no row for it, and technical activity keeps the recorded event
+  // (req-operator-next-action AC-6.11; task 261112-436fab).
+  const timeline = page.getByRole('region', { name: 'Execution event timeline' })
+  await expect(timeline.getByText('Dependency removed')).toHaveCount(0)
+  await expect(timeline.getByText('The retired plan is no longer required')).toHaveCount(0)
+  await page.route('**/v1/tasks/unsatisfiable/history*', (route) =>
+    route.fulfill({
+      json: {
+        selection: 'technical',
+        limit: 50,
+        events: currentItem().events.map((entry) => ({ ...entry, id: String(entry.id) })),
+        boundary: { max_id: '2', count: currentItem().events.length },
+        has_older: false,
+        has_newer: false,
+      },
+    }),
+  )
+  await page.getByRole('button', { name: 'Show technical activity' }).click()
+  const technical = page.getByRole('list', { name: 'Technical activity events' })
+  await expect(technical.getByText('task.dependency_removed', { exact: true })).toBeVisible()
 })
 
 test('task header links an open dependency with one stable audited request', async ({ page }) => {

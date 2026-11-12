@@ -448,7 +448,8 @@ test('task-context decisions render no timeline note', async ({ page }) => {
   await mockAPI(page, item, nextAction(`${taskId}-implement-1`))
   await page.goto(`/w/demo/tasks/${taskId}/full`)
   const timeline = page.getByRole('region', { name: 'Execution event timeline' })
-  await expect(timeline.getByText('Dependency removed')).toBeVisible()
+  await expect(timeline.getByText('Dependency removed')).toHaveCount(0)
+  await expect(timeline.getByText('operator removed the dependency')).toHaveCount(0)
   await expect(timeline.getByText('Waiting on another task')).toHaveCount(0)
   await expect(timeline.getByText('task-dependency')).toHaveCount(0)
   await expect(timeline).not.toContainText('Context confirmed')
@@ -456,6 +457,84 @@ test('task-context decisions render no timeline note', async ({ page }) => {
   await expect(timeline.getByText('Details omitted from this page')).toHaveCount(0)
   await expect(timeline).not.toContainText('undefined')
 })
+
+// A dependency removal, like a dependency addition, reads from the
+// Dependencies section, the Board card's dependency mark, and the flowchart's
+// waiting side state, so the timeline renders no row for any removal: neither
+// the removal half of a rewire nor a lone removal. A dependency that closed
+// without merging stays an alarm, and technical activity keeps every recorded
+// removal (req-operator-next-action AC-6.11, AC-3.4, AC-7.5;
+// component-web-task-surfaces, One human list; task 261112-436fab).
+const dependencyRemovals = () =>
+  activity({
+    events: [
+      event(1, 'task.dependency_removed', minutes(1), {
+        depends_on_task_id: 'task-first',
+        reason: 'the operator dropped the first dependency',
+      }),
+      event(2, 'task.dependency_added', minutes(2), { depends_on_task_id: 'task-second-successor' }),
+      event(3, 'task.dependency_removed', minutes(2), {
+        depends_on_task_id: 'task-second',
+        reason: 'replace dependency task-second with successor task-second-successor',
+      }),
+      event(4, 'task.dependency_added', minutes(2), { depends_on_task_id: 'task-third-successor' }),
+      event(5, 'task.dependency_removed', minutes(2), {
+        depends_on_task_id: 'task-third',
+        reason: 'replace dependency task-third with successor task-third-successor',
+      }),
+      event(6, 'task.dependency_removed', minutes(3), { depends_on_task_id: 'task-fourth' }),
+      event(7, 'task.dependency_unsatisfiable', minutes(4), { depends_on_task_id: 'task-closed' }),
+    ],
+  })
+
+async function openDependencyRemovals(page: Page) {
+  const item = dependencyRemovals()
+  await mockAPI(page, item, nextAction(`${taskId}-implement-1`))
+  await page.route(`**/v1/tasks/${taskId}/history*`, (route) =>
+    route.fulfill({
+      json: {
+        selection: 'technical',
+        limit: 50,
+        events: (item.events as { id: number }[]).map((entry) => ({ ...entry, id: String(entry.id) })),
+        boundary: { max_id: '7', count: item.events.length },
+        has_older: false,
+        has_newer: false,
+      },
+    }),
+  )
+  await page.goto(`/w/demo/tasks/${taskId}/full`)
+  const timeline = page.getByRole('region', { name: 'Execution event timeline' })
+  await expect(timeline.getByText('Dependency needs attention')).toBeVisible()
+  return timeline
+}
+
+test('dependency removals render no timeline row and stay in technical activity', async ({ page }) => {
+  const timeline = await openDependencyRemovals(page)
+  await expect(timeline.getByText('task-closed closed without merging')).toBeVisible()
+  await expect(timeline.getByText('Dependency removed')).toHaveCount(0)
+  await expect(timeline.getByText(/dependency task-(second|third) with successor/)).toHaveCount(0)
+  await expect(timeline.getByText('the operator dropped the first dependency')).toHaveCount(0)
+  await expect(timeline).not.toContainText('undefined')
+  await page.getByRole('button', { name: 'Show technical activity' }).click()
+  const technical = page.getByRole('list', { name: 'Technical activity events' })
+  await expect(technical.getByText('task.dependency_removed', { exact: true })).toHaveCount(4)
+  await expect(technical.getByText('task.dependency_unsatisfiable', { exact: true })).toBeVisible()
+})
+
+// Visual record for the pull request: the human timeline and technical
+// activity of a task with dependency removals, at 375 px and a desktop width.
+for (const width of [375, 1280]) {
+  test(`dependency removal screenshots at ${width} px`, async ({ page }, testInfo) => {
+    await page.setViewportSize({ width, height: 1400 })
+    await openDependencyRemovals(page)
+    await page.evaluate(() => document.fonts.ready)
+    await capture(page, testInfo, `dependency-removals-timeline-${width}.png`)
+    await page.getByRole('button', { name: 'Show technical activity' }).click()
+    const technical = page.getByRole('list', { name: 'Technical activity events' })
+    await expect(technical.getByText('task.dependency_removed', { exact: true })).toHaveCount(4)
+    await capture(page, testInfo, `dependency-removals-technical-${width}.png`)
+  })
+}
 
 // A merge request and its GitHub confirmation only repeat the task's finished
 // state, so the timeline renders no entry for either, with or without an
