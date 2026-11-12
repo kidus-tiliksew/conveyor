@@ -106,6 +106,23 @@ type planCycleFold struct {
 	setupChanges []int
 	setupUsed    []bool
 	ordered      []core.Event
+	// awaited are the gate decisions whose step a version approval, a
+	// plan-state move, or a task state change recorded before the decision's
+	// intervention event.
+	awaited []planCycleAwaitedDecision
+}
+
+// planCycleAwaitedDecision is a plan-gate decision step recorded before the
+// decision's intervention event. The dispatcher applies a plan-gate decision
+// before the API records its intervention, so on every backend the version
+// approval, the plan-state move, and the task state change precede the
+// intervention event (component-web-task-surfaces invariants 67 and 68). The
+// intervention event that follows enriches this step instead of adding one.
+type planCycleAwaitedDecision struct {
+	cycle, step int
+	action      core.InterventionAction
+	// reason is the reason code the decision must carry, or "" for any.
+	reason string
 }
 
 // derivePlanCycles folds summaries.plan_cycles from the complete ledger in
@@ -160,16 +177,20 @@ func sortedInterventions(interventions []core.Intervention) []core.Intervention 
 func (f *planCycleFold) apply(index int) {
 	event := f.ordered[index]
 	payload := decodeSummaryPayload(event.Payload)
+	f.expireAwaited(event, payload)
 	switch {
 	case event.Kind == planCycleEventPlanVersionCreated:
 		f.planVersion(event, payload)
 	case event.Kind == planCycleEventRevisionRequested:
 		f.request(event, payload)
 	case event.Kind == planCycleEventPlanVersionApproved:
-		// A plan approved without a recorded decision, such as a plan under
-		// a policy that approves it on submission. An intervention that
-		// approved the version has already settled the cycle.
+		// A version approval records the approval step: one under a policy
+		// that approves the plan on submission, and one an operator's
+		// approval writes before its intervention event, which then names
+		// itself on this step. An intervention recorded first has already
+		// settled the cycle.
 		if version, ok := positiveVersion(payload, "version"); ok && f.gate == planCycleGatePlan && f.open >= 0 && version == f.pendingVersion {
+			f.await(core.InterventionApprove, "")
 			f.settle(planCycleOutcomeApproved, f.step(planCycleStepPlanApproved, event, &version))
 		}
 	case event.Kind == core.EventTaskPlanStateChanged:
@@ -280,18 +301,65 @@ func (f *planCycleFold) request(event core.Event, payload summaryPayload) {
 	f.gate = planCycleGateRevision
 }
 
-// decision applies an operator decision to the open cycle. The intervention
-// event joins its intervention record by the fields both record: the action,
-// the time, the actor, the reason code, and the comment. A decision outside
-// the plan gates, such as a merge approval or a review-round redirect, stays
-// out of every cycle and keeps its own timeline entry.
-func (f *planCycleFold) decision(event core.Event, payload summaryPayload) {
-	if f.open < 0 {
+// await records that the step the open cycle adds next is a gate decision
+// whose intervention event has not been folded yet. Call it before the step is
+// added.
+func (f *planCycleFold) await(action core.InterventionAction, reason string) {
+	f.awaited = append(f.awaited, planCycleAwaitedDecision{
+		cycle: f.open, step: len(f.cycles[f.open].Steps), action: action, reason: reason,
+	})
+}
+
+// expireAwaited ends the wait for decisions that the ledger has moved past.
+// Every awaited decision is applied before the API records its intervention,
+// within the same request, so the wait ends at the next intervention event,
+// the next plan version or request, an operator's plan-state move, and any
+// task state change that does not leave the human gate. Only the gate
+// decision itself leaves that gate, so a later merge approval or review
+// redirect never reaches an earlier plan step.
+func (f *planCycleFold) expireAwaited(event core.Event, payload summaryPayload) {
+	if len(f.awaited) == 0 {
 		return
 	}
+	switch event.Kind {
+	case planCycleEventPlanVersionCreated, planCycleEventRevisionRequested:
+	case core.EventTaskPlanStateChanged:
+		if cause, _ := payload.str("cause"); core.PlanStateCause(cause) != core.PlanCauseOperator {
+			return
+		}
+	case planCycleEventTaskStateChanged:
+		if from, _ := payload.str("from"); core.TaskState(from) == core.TaskAwaiting {
+			return
+		}
+	default:
+		// decision consumes the wait of an intervention event.
+		return
+	}
+	f.awaited = f.awaited[:0]
+}
+
+// decision applies an operator decision to the open cycle. The intervention
+// event joins its intervention record by the fields both record: the action,
+// the time, the actor, the reason code, and the comment. A decision whose
+// step an earlier event already recorded names itself on that step. A
+// decision outside the plan gates, such as a merge approval or a review-round
+// redirect, stays out of every cycle and keeps its own timeline entry.
+func (f *planCycleFold) decision(event core.Event, payload summaryPayload) {
 	action := core.InterventionAction(strings.TrimPrefix(event.Kind, planCycleInterventionEventPrefix))
 	reason, _ := payload.str("reason_code")
 	comment, _ := payload.str("comment")
+	awaited := f.awaited
+	f.awaited = nil
+	for _, wait := range awaited {
+		if wait.action != action || (wait.reason != "" && wait.reason != reason) {
+			continue
+		}
+		f.join(&f.cycles[wait.cycle].Steps[wait.step], event, action, reason, comment)
+		return
+	}
+	if f.open < 0 {
+		return
+	}
 	var kind, outcome string
 	var version *int
 	switch f.gate {
@@ -324,18 +392,25 @@ func (f *planCycleFold) decision(event core.Event, payload summaryPayload) {
 		return
 	}
 	step := f.step(kind, event, version)
-	if intervention, ok := f.intervention(event, action, reason, comment); ok {
-		id := intervention.ID
-		step.InterventionID = &id
-		step.UserID, step.actorID = interventionPerson(intervention)
-	}
-	step.Text, step.Truncated = truncateSummaryText(jsTrim(comment))
+	f.join(&step, event, action, reason, comment)
 	if outcome != "" {
 		f.settle(outcome, step)
 		return
 	}
 	f.add(step)
 	f.gate, f.pendingVersion = planCycleGateNone, 0
+}
+
+// join names on step the decision that the intervention event records: the
+// intervention, its person, and its comment. An event whose intervention
+// record is missing leaves the step without a person; nothing is invented.
+func (f *planCycleFold) join(step *taskPlanCycleStep, event core.Event, action core.InterventionAction, reason, comment string) {
+	if intervention, ok := f.intervention(event, action, reason, comment); ok {
+		id := intervention.ID
+		step.InterventionID = &id
+		step.UserID, step.actorID = interventionPerson(intervention)
+	}
+	step.Text, step.Truncated = truncateSummaryText(jsTrim(comment))
 }
 
 // intervention returns the first unused intervention the event records.
@@ -377,7 +452,9 @@ func humanUserID(actorID string) string {
 // (component-plan-state invariant 3). An operator's move at the plan gate to
 // needed sends the plan back and keeps the cycle planning; a move to
 // not_required ends it. Every other cause repeats an act a version or a
-// decision already recorded, and adds a step only when no decision did.
+// decision already recorded, and adds a step only when neither did. That step
+// waits for the decision's intervention event, which the API records after
+// the move.
 func (f *planCycleFold) planStateMove(index int, event core.Event, payload summaryPayload) {
 	if f.open < 0 {
 		return
@@ -417,16 +494,19 @@ func (f *planCycleFold) planStateMove(index int, event core.Event, payload summa
 	case core.PlanCausePlanRedirected:
 		if f.gate == planCycleGatePlan {
 			version := f.pendingVersion
+			f.await(core.InterventionRedirect, "")
 			f.add(f.step(planCycleStepChangesRequested, event, &version))
 			f.gate, f.pendingVersion = planCycleGateNone, 0
 		}
 	case core.PlanCausePlanApproved:
 		if f.gate == planCycleGatePlan {
 			version := f.pendingVersion
+			f.await(core.InterventionApprove, "")
 			f.settle(planCycleOutcomeApproved, f.step(planCycleStepPlanApproved, event, &version))
 		}
 	case core.PlanCausePlanRevisionApproved, core.PlanCausePlanningRequestedApproved:
 		if f.gate == planCycleGateRevision {
+			f.await(core.InterventionRedirect, dispatch.PlanRevisionApprovedReasonCode)
 			f.add(f.step(planCycleStepRevisionApproved, event, f.cycles[f.open].ContestedVersion))
 			f.gate = planCycleGateNone
 		}
@@ -483,8 +563,15 @@ func (f *planCycleFold) taskStateChange(event core.Event, payload summaryPayload
 		f.settle(planCycleOutcomeMerged, f.step(planCycleStepTaskMerged, event, nil))
 	case core.TaskClosed:
 		kind := planCycleStepTaskClosed
-		if core.TaskCommand(command) == core.TaskStartOver {
+		switch core.TaskCommand(command) {
+		case core.TaskStartOver:
 			kind = planCycleStepTaskStartedOver
+		case core.TaskInterventionReject:
+			// A reject at a gate closes the task before the API records the
+			// reject intervention, which then names itself on this step.
+			if f.gate != planCycleGateNone {
+				f.await(core.InterventionReject, "")
+			}
 		}
 		f.settle(planCycleOutcomeClosed, f.step(kind, event, nil))
 	}
