@@ -1,4 +1,4 @@
-import { expect, type Locator, type Page } from '@playwright/test'
+import { expect, type Locator, type Page, type TestInfo } from '@playwright/test'
 import type { NextAction, WorkOrder } from '../src/lib/types'
 import { test } from './helpers/bounded-detail'
 import { callerIdentity } from './helpers/caller-identity'
@@ -566,6 +566,59 @@ test('a long summary wraps at 1280 px and the menu stays inside the banner', asy
   }
   expect(await noSidewaysScroll(card)).toEqual({ card: false, page: false })
 })
+
+// Screenshots of the banner's working, queued, and long-summary states at
+// 375 px on a touch screen and at 1280 px, attached to the Playwright report
+// for review (AGENTS.md visual check). No screenshot is committed.
+const longSummaryAction: NextAction = {
+  ...workingAction,
+  summary:
+    'An agent is implementing this task, which rebuilds the passive next-action banner so that a long summary wraps onto a second line and never pushes the elapsed time or the More actions menu outside the banner box.',
+}
+const bannerStates = [
+  { name: 'working', state: 'running', action: workingAction, order: runningOrder },
+  { name: 'queued', state: 'queued', action: queuedAction, order: queuedOrder },
+  { name: 'long-summary', state: 'running', action: longSummaryAction, order: runningOrder },
+] as const
+
+async function captureBanner(page: Page, testInfo: TestInfo, name: string) {
+  const card = page.getByRole('region', { name: 'Next action' })
+  await expect(card.getByRole('heading')).toBeVisible()
+  await card.scrollIntoViewIfNeeded()
+  const shots = process.env.CONVEYOR_SCREENSHOT_DIR
+  const image = await page.screenshot({ path: shots ? `${shots}/${name}` : undefined, animations: 'disabled' })
+  await testInfo.attach(name, { body: image, contentType: 'image/png' })
+}
+
+test.describe('capture the banner on a 375 px touch screen', () => {
+  test.use({ viewport: { width: 375, height: 812 }, hasTouch: true, isMobile: true })
+  for (const banner of bannerStates) {
+    test(`capture the ${banner.name} banner at 375 px`, async ({ page }, testInfo) => {
+      await page.clock.setFixedTime(oneHourIn)
+      await mockAPI(
+        page,
+        () => activity(banner.state, banner.action, [banner.order]),
+        () => banner.action,
+      )
+      await page.goto(`/w/demo/tasks/${taskId}/full`)
+      await captureBanner(page, testInfo, `banner-${banner.name}-375-touch.png`)
+    })
+  }
+})
+
+for (const banner of bannerStates) {
+  test(`capture the ${banner.name} banner at 1280 px`, async ({ page }, testInfo) => {
+    await page.clock.setFixedTime(oneHourIn)
+    await page.setViewportSize({ width: 1280, height: 900 })
+    await mockAPI(
+      page,
+      () => activity(banner.state, banner.action, [banner.order]),
+      () => banner.action,
+    )
+    await page.goto(`/w/demo/tasks/${taskId}/full`)
+    await captureBanner(page, testInfo, `banner-${banner.name}-1280.png`)
+  })
+}
 
 test('a banner field the order lacks prints nothing', async ({ page }) => {
   await page.clock.setFixedTime(oneHourIn)
