@@ -73,7 +73,7 @@ func preferencesCmd() *cobra.Command {
 				return err
 			}
 			entry := store.StagePreferenceEntry{Harness: harness, Model: model, Effort: effort}
-			result, err := changeStagePreferences(newClient(), func(stages *store.StagePreferenceStages) error {
+			result, err := changeStagePreferences(newClient(), args[0], target, func(stages *store.StagePreferenceStages) error {
 				return setStagePreferenceEntry(stages, args[0], target, entry)
 			})
 			if err != nil {
@@ -105,7 +105,7 @@ func preferencesCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			result, err := changeStagePreferences(newClient(), func(stages *store.StagePreferenceStages) error {
+			result, err := changeStagePreferences(newClient(), args[0], target, func(stages *store.StagePreferenceStages) error {
 				return clearStagePreferenceEntry(stages, args[0], target)
 			})
 			if err != nil {
@@ -214,12 +214,25 @@ func readStagePreferences(c *client) (store.StagePreferences, error) {
 
 // changeStagePreferences reads the current set, applies edit to a copy, and
 // writes it with If-Match. A 412 starts over from a fresh read, so the edit
-// is repeated on the newer set rather than replaying a stale whole set.
-func changeStagePreferences(c *client, edit func(*store.StagePreferenceStages) error) (store.StagePreferences, error) {
+// is repeated on the newer set rather than replaying a stale whole set. A seat
+// edit addresses a position, so a retry refuses when the entry at that
+// position changed: after a concurrent reorder or removal, the same position
+// holds another entry, which the command must not overwrite or remove
+// (component-stage-preferences invariant 4).
+func changeStagePreferences(c *client, stage string, target preferenceTarget, edit func(*store.StagePreferenceStages) error) (store.StagePreferences, error) {
+	var original *store.StagePreferenceEntry
 	for attempt := 1; attempt <= maxPreferenceAttempts; attempt++ {
 		current, err := readStagePreferences(c)
 		if err != nil {
 			return store.StagePreferences{}, err
+		}
+		if stage == stageprefs.StageReview && target.seat > 0 {
+			seat := reviewSeatAt(current.Stages, target.seat)
+			if attempt == 1 {
+				original = seat
+			} else if !sameSeatEntry(original, seat) {
+				return store.StagePreferences{}, fmt.Errorf("review seat %d changed in another place while this command ran. Nothing was saved. Run conveyor preferences show, then run the command again", target.seat)
+			}
 		}
 		next := store.CloneStagePreferenceStages(current.Stages)
 		if err := edit(&next); err != nil {
@@ -241,6 +254,23 @@ func changeStagePreferences(c *client, edit func(*store.StagePreferenceStages) e
 		return saved, nil
 	}
 	return store.StagePreferences{}, fmt.Errorf("your stage preferences changed %d times while this command ran; nothing was saved, so run the command again", maxPreferenceAttempts)
+}
+
+// reviewSeatAt returns a copy of review seat n (1-based), or nil when that
+// seat has no entry.
+func reviewSeatAt(stages store.StagePreferenceStages, n int) *store.StagePreferenceEntry {
+	if stages.Review == nil || n < 1 || n > len(stages.Review.Seats) {
+		return nil
+	}
+	entry := stages.Review.Seats[n-1]
+	return &entry
+}
+
+func sameSeatEntry(left, right *store.StagePreferenceEntry) bool {
+	if left == nil || right == nil {
+		return left == right
+	}
+	return *left == *right
 }
 
 // stagePreferenceRequestError turns a 422 body into "field: message" and

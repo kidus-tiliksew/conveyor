@@ -296,3 +296,50 @@ func TestPreferencesConflictRepeatsTheEditOnTheNewSet(t *testing.T) {
 		t.Fatalf("a refused CLI edit was saved: %+v", set.Stages.Plan)
 	}
 }
+
+// TestPreferencesConflictRefusesAMovedSeat proves a seat edit never lands on a
+// different entry: when a concurrent write reorders the seats between the
+// CLI's read and its PUT, the retry finds another entry at the target
+// position and refuses, saving nothing (component-stage-preferences
+// invariant 4).
+func TestPreferencesConflictRefusesAMovedSeat(t *testing.T) {
+	for _, command := range [][]string{
+		{"set", "review", "--seat", "1", "--harness", "claude-code", "--model", "new-seat-one"},
+		{"clear", "review", "--seat", "1"},
+	} {
+		t.Run(command[0], func(t *testing.T) {
+			h := newPreferencesCLIHarness(t)
+			h.mustRun("set", "review", "--seat", "1", "--harness", "a", "--model", "seat-a")
+			h.mustRun("set", "review", "--seat", "2", "--harness", "b", "--model", "seat-b")
+			reordered := 0
+			h.mu.Lock()
+			h.before = func(r *http.Request) {
+				if r.Method != http.MethodPut || reordered > 0 {
+					return
+				}
+				reordered++
+				_, err := h.st.UpdateStagePreferences(context.Background(), h.owner.ID, func(current store.StagePreferences) (store.StagePreferenceStages, error) {
+					next := store.CloneStagePreferenceStages(current.Stages)
+					seats := next.Review.Seats
+					seats[0], seats[1] = seats[1], seats[0]
+					return next, nil
+				})
+				if err != nil {
+					t.Error(err)
+				}
+			}
+			h.mu.Unlock()
+			_, err := h.run(command...)
+			if err == nil || !strings.Contains(err.Error(), "review seat 1 changed in another place") || !strings.Contains(err.Error(), "Nothing was saved") {
+				t.Fatalf("conveyor preferences %s after a reorder: error = %v", strings.Join(command, " "), err)
+			}
+			h.mu.Lock()
+			h.before = nil
+			h.mu.Unlock()
+			set := h.runJSON("show")
+			if reordered != 1 || set.Version != 3 || len(set.Stages.Review.Seats) != 2 || set.Stages.Review.Seats[0].Model != "seat-b" || set.Stages.Review.Seats[1].Model != "seat-a" {
+				t.Fatalf("the reordered seats changed after the refused retry: %+v", set)
+			}
+		})
+	}
+}

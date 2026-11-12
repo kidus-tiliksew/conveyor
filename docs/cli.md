@@ -80,8 +80,9 @@ text: harness and model must not be blank and hold at most 128 bytes, effort
 holds at most 32 bytes, and no value holds a control character. A change
 reads the current set and writes it back with `If-Match`. When another change
 lands first, the command reads the set again and repeats only its own edit, so
-it never overwrites the other change. After five such conflicts it stops and
-saves nothing.
+it never overwrites the other change. A seat change stops and saves nothing
+when the other change moved, removed, or edited that seat, so it never lands
+on a different entry. After five such conflicts it stops and saves nothing.
 
 ## init
 
