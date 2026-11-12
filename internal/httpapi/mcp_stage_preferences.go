@@ -5,8 +5,11 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log"
 	"sort"
 	"strings"
+
+	"github.com/go-chi/chi/v5/middleware"
 
 	"github.com/kidus-tiliksew/conveyor/internal/stageprefs"
 	"github.com/kidus-tiliksew/conveyor/internal/store"
@@ -98,7 +101,8 @@ func (s *Server) callStagePreferenceMCP(ctx context.Context, name string, args m
 		return nil, errWorkspaceNotVisible
 	}
 	if name == getStagePreferencesTool {
-		return mcpStagePreferenceResult(service.Get(ctx, credential.OwnerUserID))
+		set, err := service.Get(ctx, credential.OwnerUserID)
+		return mcpStagePreferenceResult(ctx, name, set, err)
 	}
 	stage, ok := args["stage"].(string)
 	if !ok {
@@ -112,7 +116,8 @@ func (s *Server) callStagePreferenceMCP(ctx context.Context, name string, args m
 	if err != nil {
 		return nil, mcpStagePreferenceError(&stageprefs.ValidationError{Field: "value", Message: "must be JSON"})
 	}
-	return mcpStagePreferenceResult(service.SetStage(ctx, credential.OwnerUserID, stage, value))
+	set, err := service.SetStage(ctx, credential.OwnerUserID, stage, value)
+	return mcpStagePreferenceResult(ctx, name, set, err)
 }
 
 // stagePreferenceArgs refuses an argument outside the tool's schema by name,
@@ -135,15 +140,38 @@ func stagePreferenceArgs(args map[string]any, allowed []string) error {
 	return mcpStagePreferenceError(&stageprefs.ValidationError{Field: unknown[0], Message: "is not a stage preference argument; only " + strings.Join(allowed, ", ") + " are allowed"})
 }
 
-func mcpStagePreferenceResult(set store.StagePreferences, err error) (any, error) {
+// errStagePreferenceStore is the generic answer to a stage preference store
+// failure. It wraps store.ErrBackendOperation, so the MCP response appends the
+// request ID and carries no driver, host, or SQL text (component-persistence
+// Errors invariants 11 to 13; component-mcp-protocol Transport invariant 2).
+var errStagePreferenceStore = fmt.Errorf("stage preferences: %w", store.ErrBackendOperation)
+
+// mcpStagePreferenceResult answers one tool call. Validation, the service's
+// own refusals, retryable conflicts, and cancellation keep their meaning. Any
+// other failure, including a driver or transport error a backend passed
+// through untranslated, is logged redacted and bounded with the request ID,
+// and the caller receives only the generic backend error.
+func mcpStagePreferenceResult(ctx context.Context, tool string, set store.StagePreferences, err error) (any, error) {
+	if err == nil {
+		return set, nil
+	}
 	var invalid *stageprefs.ValidationError
-	if errors.As(err, &invalid) {
+	switch {
+	case errors.As(err, &invalid):
 		return nil, mcpStagePreferenceError(invalid)
+	case errors.Is(err, context.Canceled):
+		return nil, context.Canceled
+	case errors.Is(err, context.DeadlineExceeded):
+		return nil, context.DeadlineExceeded
+	case errors.Is(err, stageprefs.ErrVersionConflict):
+		return nil, stageprefs.ErrVersionConflict
+	case errors.Is(err, stageprefs.ErrNoUser):
+		return nil, stageprefs.ErrNoUser
+	case errors.Is(err, store.ErrRetryable):
+		return nil, store.ErrRetryable
 	}
-	if err != nil {
-		return nil, err
-	}
-	return set, nil
+	log.Printf("mcp: stage preferences store failure: request_id=%q tool=%q error=%q", middleware.GetReqID(ctx), tool, redactedErrorLogText(err))
+	return nil, errStagePreferenceStore
 }
 
 // mcpStagePreferenceError names the code, the field, and a seat's position.

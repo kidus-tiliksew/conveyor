@@ -7,6 +7,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -373,5 +374,23 @@ func TestStagePreferencesRESTOversizedBody(t *testing.T) {
 	unchanged("a refused field")
 	if got := h.eventCount(); got != h.recordedEvents {
 		t.Fatalf("refused writes appended %d events", got-h.recordedEvents)
+	}
+}
+
+// TestStagePreferencesRESTTransportErrorIsGeneric shows the REST routes share
+// the MCP rule: a host-bearing dial error answers a generic 500 that carries
+// no host or driver text (DEC-105(1); component-persistence Errors
+// invariants 11 to 13).
+func TestStagePreferencesRESTTransportErrorIsGeneric(t *testing.T) {
+	h := newStagePreferenceHarness(t)
+	h.server.StagePreferences = erroringStagePreferences{err: &net.OpError{Op: "dial", Net: "tcp", Addr: &net.TCPAddr{IP: net.IPv4(10, 77, 3, 9), Port: 3306}, Err: errors.New("connect: connection refused")}}
+	for _, request := range []stagePreferenceRequest{
+		{method: http.MethodGet, path: stagePreferencePath, token: stagePreferenceOwnerToken},
+		{method: http.MethodPut, path: stagePreferencePath, token: stagePreferenceOwnerToken, body: `{"stages":{}}`, header: map[string]string{"If-Match": "0"}},
+	} {
+		response := h.call(request)
+		if response.Code != http.StatusInternalServerError || strings.Contains(response.Body.String(), "10.77.3.9") || strings.Contains(response.Body.String(), "dial") {
+			t.Fatalf("%s transport failure: status=%d body=%q", request.method, response.Code, response.Body.String())
+		}
 	}
 }

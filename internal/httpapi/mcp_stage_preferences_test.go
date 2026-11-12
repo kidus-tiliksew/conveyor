@@ -6,13 +6,18 @@ package httpapi
 // invariants 5 and 7).
 
 import (
+	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"sync"
 	"testing"
+
+	"github.com/go-chi/chi/v5/middleware"
 
 	"github.com/kidus-tiliksew/conveyor/internal/store"
 )
@@ -236,4 +241,101 @@ func TestStagePreferenceMCPConcurrentStagesKeepEveryChange(t *testing.T) {
 	if read.Version != 4 || read.Stages.Plan == nil || read.Stages.Implement == nil || read.Stages.Verify == nil || read.Stages.Review == nil {
 		t.Fatalf("concurrent stage writes lost a change: %+v", read)
 	}
+}
+
+// erroringStagePreferences returns err from every store call, modelling a
+// backend that passed a driver or transport error through untranslated.
+type erroringStagePreferences struct{ err error }
+
+func (e erroringStagePreferences) GetStagePreferences(context.Context, string) (store.StagePreferences, error) {
+	return store.StagePreferences{}, e.err
+}
+
+func (e erroringStagePreferences) UpdateStagePreferences(context.Context, string, store.StagePreferenceUpdate) (store.StagePreferences, error) {
+	return store.StagePreferences{}, e.err
+}
+
+// mcpWithRequestID calls a tool with a fixed X-Request-Id, so the response's
+// request ID can be asserted.
+func (h *stagePreferenceHarness) mcpWithRequestID(requestID, tool string, args map[string]any) stagePreferenceMCPResult {
+	h.t.Helper()
+	params, err := json.Marshal(map[string]any{"name": tool, "arguments": args})
+	if err != nil {
+		h.t.Fatal(err)
+	}
+	request := httptest.NewRequest(http.MethodPost, "/mcp", strings.NewReader(`{"jsonrpc":"2.0","id":1,"method":"tools/call","params":`+string(params)+`}`))
+	request.Header.Set("Authorization", "Bearer "+stagePreferenceOwnerToken)
+	request.Header.Set(middleware.RequestIDHeader, requestID)
+	response := httptest.NewRecorder()
+	h.server.Handler().ServeHTTP(response, request)
+	var envelope struct {
+		Result struct {
+			Content []struct {
+				Text string `json:"text"`
+			} `json:"content"`
+			IsError bool `json:"isError"`
+		} `json:"result"`
+	}
+	if err := json.Unmarshal(response.Body.Bytes(), &envelope); err != nil || len(envelope.Result.Content) != 1 {
+		h.t.Fatalf("MCP response %s: %v", response.Body.String(), err)
+	}
+	return stagePreferenceMCPResult{text: envelope.Result.Content[0].Text, isError: envelope.Result.IsError}
+}
+
+// TestStagePreferenceMCPStoreTransportErrorIsGeneric covers component-
+// persistence Errors invariants 11 to 13 and component-mcp-protocol Transport
+// invariant 2: a host-bearing dial error that a backend passes through, as the
+// SingleStore driver can during an outage, never reaches the MCP response.
+// Both tools answer the generic backend error with the request ID.
+func TestStagePreferenceMCPStoreTransportErrorIsGeneric(t *testing.T) {
+	dial := &net.OpError{Op: "dial", Net: "tcp", Addr: &net.TCPAddr{IP: net.IPv4(10, 77, 3, 9), Port: 3306}, Err: errors.New("connect: connection refused")}
+	for _, cause := range []error{dial, fmt.Errorf("[mysql] driver: bad connection to db-secret.internal: %w", dial)} {
+		h := newStagePreferenceHarness(t)
+		h.server.StagePreferences = erroringStagePreferences{err: cause}
+		for _, call := range []struct {
+			tool string
+			args map[string]any
+		}{
+			{getStagePreferencesTool, map[string]any{"workspace_id": "alpha"}},
+			{setStagePreferenceTool, map[string]any{"workspace_id": "alpha", "stage": "plan", "value": map[string]any{"harness": "codex", "model": "m"}}},
+		} {
+			requestID := "req-stage-preferences-" + call.tool
+			result := h.mcpWithRequestID(requestID, call.tool, call.args)
+			if !result.isError {
+				t.Fatalf("%s succeeded on a store failure: %s", call.tool, result.text)
+			}
+			for _, leaked := range []string{"10.77.3.9", "3306", "dial", "tcp", "connection refused", "mysql", "db-secret", "bad connection"} {
+				if strings.Contains(result.text, leaked) {
+					t.Fatalf("%s response %q carries driver or host text %q", call.tool, result.text, leaked)
+				}
+			}
+			if !strings.Contains(result.text, store.ErrBackendOperation.Error()) || !strings.Contains(result.text, "(request_id "+requestID+")") {
+				t.Fatalf("%s response %q lacks the generic backend error and its request ID", call.tool, result.text)
+			}
+		}
+	}
+}
+
+// TestStagePreferenceMCPKeepsDomainErrors proves the generic answer replaces
+// only unexpected store failures: cancellation and retryable conflicts keep
+// their meaning, and validation still names the field.
+func TestStagePreferenceMCPKeepsDomainErrors(t *testing.T) {
+	for _, tc := range []struct {
+		err  error
+		want string
+	}{
+		{context.Canceled, context.Canceled.Error()},
+		{fmt.Errorf("read: %w", context.DeadlineExceeded), context.DeadlineExceeded.Error()},
+		{fmt.Errorf("deadlock on 10.77.3.9: %w", store.ErrRetryable), store.ErrRetryable.Error()},
+	} {
+		h := newStagePreferenceHarness(t)
+		h.server.StagePreferences = erroringStagePreferences{err: tc.err}
+		result := h.mcpWithRequestID("req-domain", getStagePreferencesTool, map[string]any{"workspace_id": "alpha"})
+		if !result.isError || result.text != tc.want {
+			t.Fatalf("store error %v answered %q, want %q", tc.err, result.text, tc.want)
+		}
+	}
+	h := newStagePreferenceHarness(t)
+	h.server.StagePreferences = erroringStagePreferences{err: errors.New("never reached")}
+	h.mcpRefused(stagePreferenceOwnerToken, setStagePreferenceTool, map[string]any{"workspace_id": "alpha", "stage": "plan", "value": map[string]any{"harness": "", "model": "m"}}, "validation_failed", "value.harness")
 }
