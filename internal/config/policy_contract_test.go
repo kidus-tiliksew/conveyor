@@ -13,7 +13,7 @@ func TestFrozenPolicyJSONContainsNoExecutionDetail(t *testing.T) {
 	contract := PolicyContract{
 		MaxBounces:    7,
 		StageTimeouts: PolicyStageTimeouts{Spec: "30m", Implement: "4h", Review: "1h"},
-		Review:        ReviewPanel{Seats: []ReviewSeat{{Model: "review-model", Harness: "codex", Effort: "high"}}},
+		Review:        ReviewPanel{Seats: []ReviewSeat{{}}},
 		RefreshReview: RefreshReviewDelta,
 	}
 	data, err := json.Marshal(contract)
@@ -72,7 +72,7 @@ func TestFrozenSeatCountEncodings(t *testing.T) {
 
 // DEC-43: the intake projection is immutable policy, not local execution data.
 func TestVerifyPolicyFreezesAndRoundTrips(t *testing.T) {
-	cfg := &Config{Execution: ExecutionPolicy{VerifyStage: true}, Routing: Routing{Stages: map[string]StageRoute{"verify": {TimeoutText: "47m", Harness: "local", Model: "private-model", Effort: "high"}}}}
+	cfg := &Config{Execution: ExecutionPolicy{VerifyStage: true}, Routing: Routing{Stages: map[string]StageRoute{"verify": {TimeoutText: "47m"}}}}
 	frozen := cfg.FreezePolicy()
 	data, err := json.Marshal(frozen)
 	if err != nil {

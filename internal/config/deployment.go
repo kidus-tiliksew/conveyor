@@ -21,11 +21,21 @@ import (
 // implementation, and verify.
 var deploymentExecutorStageKeys = []string{"harness", "model", "model_policy", "effort"}
 
-// deploymentRetiredRouteKeys are removed from each routing.stages entry. The
-// in-process triage stage keeps its model, model tier, and effort.
+// deploymentRetiredRouteKeys are removed from each routing.stages entry. In
+// a deployment file the in-process triage stage's model, model tier, and
+// effort are not retired: triageRouteAliasKeys moves them to the
+// control-plane triage settings instead.
 var deploymentRetiredRouteKeys = map[string]bool{
 	"model": true, "model_policy": true, "harness": true, "effort": true,
 	"execution": true, "harnesses": true, "model_tier": true,
+}
+
+// triageRouteAliasKeys are the legacy spellings of the control-plane triage
+// settings on routing.stages.triage, each with the setting it supplies. The
+// model_tier alias supplies the model only when model is absent, as the
+// earlier loader read it.
+var triageRouteAliasKeys = []struct{ key, setting string }{
+	{"model", "model"}, {"model_tier", "model"}, {"effort", "effort"},
 }
 
 // policyStageTimeoutDefaults are the policy stage timeouts that apply when a
@@ -46,7 +56,7 @@ func LoadDeployment(path string, logf func(string, ...any)) (*Config, error) {
 // ParseDeployment is LoadDeployment over bytes already read. path resolves a
 // relative pack_dir and names the source in errors and the warning.
 func ParseDeployment(data []byte, path string, logf func(string, ...any)) (*Config, error) {
-	stripped, ignored, packDirSet, err := stripDeploymentExecutionDetail(data)
+	stripped, ignored, packDirSet, err := stripExecutionDetail(data, true)
 	if err != nil {
 		return nil, fmt.Errorf("parse %s: %w", path, locatedYAMLError[Config](data, err))
 	}
@@ -72,7 +82,7 @@ func MarshalDeployment(c *Config) ([]byte, error) {
 	if err != nil {
 		return nil, fmt.Errorf("marshal deployment config: %w", err)
 	}
-	stripped, _, _, err := stripDeploymentExecutionDetail(data)
+	stripped, _, _, err := stripExecutionDetail(data, true)
 	if err != nil {
 		return nil, fmt.Errorf("marshal deployment config: %w", err)
 	}
@@ -110,10 +120,14 @@ func DeploymentHoldsDatabaseURL(data []byte) (bool, error) {
 	return document.Database.URL != "", nil
 }
 
-// stripDeploymentExecutionDetail decodes the document with aliases and merge
-// keys resolved, so a removal never touches a shared anchor, and returns it
-// without execution detail plus the sorted removed field paths.
-func stripDeploymentExecutionDetail(data []byte) ([]byte, []string, bool, error) {
+// stripExecutionDetail decodes the document with aliases and merge keys
+// resolved, so a removal never touches a shared anchor, and returns it
+// without execution detail plus the sorted removed field paths. A deployment
+// file (deployment true) keeps its legacy triage route spellings by moving
+// them to the control-plane triage settings; a stored workspace row drops
+// them, because runtime composition takes triage from the deployment only
+// (component-runtime invariants 13 to 15).
+func stripExecutionDetail(data []byte, deployment bool) ([]byte, []string, bool, error) {
 	var root map[string]any
 	if err := unmarshalYAML(data, &root); err != nil {
 		return nil, nil, false, err
@@ -157,6 +171,7 @@ func stripDeploymentExecutionDetail(data []byte) ([]byte, []string, bool, error)
 			}
 		}
 	}
+	adapted := false
 	if routing, ok := root["routing"].(map[string]any); ok {
 		if stages, ok := routing["stages"].(map[string]any); ok {
 			for stage, value := range stages {
@@ -164,14 +179,13 @@ func stripDeploymentExecutionDetail(data []byte) ([]byte, []string, bool, error)
 				if !ok {
 					continue
 				}
+				if stage == "triage" && deployment {
+					adapted = adaptLegacyTriageRoute(root, mapping) || adapted
+				}
 				for key := range mapping {
-					if !deploymentRetiredRouteKeys[key] {
-						continue
+					if deploymentRetiredRouteKeys[key] {
+						drop(mapping, "routing.stages."+retiredRouteStageLabel(stage)+".", key)
 					}
-					if stage == "triage" && (key == "model" || key == "model_tier" || key == "effort") {
-						continue
-					}
-					drop(mapping, "routing.stages."+retiredRouteStageLabel(stage)+".", key)
 				}
 			}
 		}
@@ -181,7 +195,7 @@ func stripDeploymentExecutionDetail(data []byte) ([]byte, []string, bool, error)
 		ignored = append(ignored, name)
 	}
 	sort.Strings(ignored)
-	if len(ignored) == 0 {
+	if len(ignored) == 0 && !adapted {
 		return data, nil, packDirSet, nil
 	}
 	stripped, err := yaml.Marshal(root)
@@ -189,6 +203,70 @@ func stripDeploymentExecutionDetail(data []byte) ([]byte, []string, bool, error)
 		return nil, nil, false, err
 	}
 	return stripped, ignored, packDirSet, nil
+}
+
+// adaptLegacyTriageRoute is the compatibility adapter for a deployment
+// file's routing.stages.triage: it moves the route's model (else its
+// model_tier alias) and effort to execution_settings.control_plane.triage,
+// where the triage route is now read, unless that block already states the
+// setting, which keeps the earlier precedence. The keys are removed from the
+// route either way and reported as adapted, not ignored, because their values
+// still apply (DEC-132(3); component-runtime invariant 13). It reports
+// whether it changed the document.
+func adaptLegacyTriageRoute(root, route map[string]any) bool {
+	present := false
+	for _, alias := range triageRouteAliasKeys {
+		if _, ok := route[alias.key]; ok {
+			present = true
+		}
+	}
+	if !present {
+		return false
+	}
+	triage := controlPlaneTriage(root)
+	for _, alias := range triageRouteAliasKeys {
+		value, ok := route[alias.key]
+		if !ok {
+			continue
+		}
+		delete(route, alias.key)
+		if triage != nil && unsetSetting(triage[alias.setting]) && !unsetSetting(value) {
+			triage[alias.setting] = value
+		}
+	}
+	return true
+}
+
+// controlPlaneTriage returns execution_settings.control_plane.triage,
+// creating each absent level. It returns nil when a level holds something
+// other than a mapping, which strict decoding then refuses with its own
+// error.
+func controlPlaneTriage(root map[string]any) map[string]any {
+	mapping := root
+	for _, key := range []string{"execution_settings", "control_plane", "triage"} {
+		value, ok := mapping[key]
+		if !ok || value == nil {
+			next := map[string]any{}
+			mapping[key] = next
+			mapping = next
+			continue
+		}
+		next, ok := value.(map[string]any)
+		if !ok {
+			return nil
+		}
+		mapping = next
+	}
+	return mapping
+}
+
+// unsetSetting matches how the loader read an absent or blank triage setting.
+func unsetSetting(value any) bool {
+	if value == nil {
+		return true
+	}
+	text, ok := value.(string)
+	return ok && text == ""
 }
 
 // retiredRouteStageLabel names a stage in the removed-field log line. A stage is
@@ -280,17 +358,23 @@ func normalizeDeployment(c *Config, path string) (*Config, error) {
 		timeouts["verify"] = settings.Verify.TimeoutText
 		timeouts["review"] = settings.Review.TimeoutText
 	}
+	// A value built in code may already hold a triage route; it applies
+	// where the control-plane settings are silent, as the triage stage route
+	// did before it became a type of its own.
+	if triage.Model == "" {
+		triage.Model = c.Routing.Triage.Model
+	}
+	if triage.Effort == "" {
+		triage.Effort = c.Routing.Triage.Effort
+	}
+	if triage.TimeoutText == "" {
+		triage.TimeoutText = c.Routing.Triage.TimeoutText
+	}
 	for stage, route := range c.Routing.Stages {
 		if stage == "triage" {
-			if triage.Model == "" {
-				triage.Model = route.Model
-				if triage.Model == "" {
-					triage.Model = route.LegacyModelTier
-				}
-			}
-			if triage.Effort == "" {
-				triage.Effort = route.Effort
-			}
+			// The stripping boundary already moved this route's model and
+			// effort to the control-plane triage settings; its timeout
+			// still applies here.
 			if triage.TimeoutText == "" {
 				triage.TimeoutText = route.TimeoutText
 			}
@@ -322,10 +406,7 @@ func normalizeDeployment(c *Config, path string) (*Config, error) {
 	} else {
 		triageTimeout = parsed
 	}
-	routes := map[string]StageRoute{"triage": {
-		Model: triage.Model, Effort: triage.Effort, TimeoutText: triage.TimeoutText, Timeout: triageTimeout,
-		Execution: ExecutionInProcess, ModelPolicy: ModelPolicyExplicit,
-	}}
+	routes := make(map[string]StageRoute, 4)
 	for _, stage := range []string{"spec", "implement", "review", "verify"} {
 		timeout := strings.TrimSpace(timeouts[stage])
 		if timeout == "" {
@@ -340,7 +421,9 @@ func normalizeDeployment(c *Config, path string) (*Config, error) {
 		}
 		routes[stage] = StageRoute{Execution: ExecutionMCP, TimeoutText: timeout, Timeout: parsed}
 	}
-	c.Routing = Routing{Stages: routes}
+	c.Routing = Routing{Stages: routes, Triage: TriageRoute{
+		Model: triage.Model, Effort: triage.Effort, TimeoutText: triage.TimeoutText, Timeout: triageTimeout,
+	}}
 	if c.Review.Seats == nil {
 		c.Review.Seats = []ReviewSeat{{}}
 	}

@@ -28,7 +28,7 @@ func TestTaskEventWindowDelayedCommitIntegration(t *testing.T) {
 	workspace := "event-window-" + core.NewTaskID()
 	ctx := store.WithWorkspace(store.WithActor(context.Background(), store.SystemActor()), workspace)
 	if _, err = st.BootstrapWorkspaceConfig(ctx, &config.Config{Workspace: workspace, Repos: []config.Repo{{Name: "repo", URL: "https://example.test/repo", Base: "main"}}, Routing: config.Routing{Stages: map[string]config.StageRoute{
-		"implement": {Model: "operator", TimeoutText: "1h", Timeout: time.Hour, Execution: config.ExecutionMCP},
+		"implement": {TimeoutText: "1h", Timeout: time.Hour, Execution: config.ExecutionMCP},
 	}}}); err != nil {
 		t.Fatal(err)
 	}
@@ -145,7 +145,7 @@ func TestTaskEventWindowFetchBoundsIntegration(t *testing.T) {
 	workspace := "event-fetch-" + core.NewTaskID()
 	ctx := store.WithWorkspace(store.WithActor(context.Background(), store.SystemActor()), workspace)
 	if _, err = st.BootstrapWorkspaceConfig(ctx, &config.Config{Workspace: workspace, Repos: []config.Repo{{Name: "repo", URL: "https://example.test/repo", Base: "main"}}, Routing: config.Routing{Stages: map[string]config.StageRoute{
-		"implement": {Model: "operator", TimeoutText: "1h", Timeout: time.Hour, Execution: config.ExecutionMCP},
+		"implement": {TimeoutText: "1h", Timeout: time.Hour, Execution: config.ExecutionMCP},
 	}}}); err != nil {
 		t.Fatal(err)
 	}

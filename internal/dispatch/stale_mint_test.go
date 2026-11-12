@@ -24,13 +24,12 @@ func staleMintFixture(t *testing.T, id string) (context.Context, store.Store, *D
 
 func staleMintFixtureAt(t *testing.T, id string, stage core.Stage) (context.Context, store.Store, *Dispatcher, core.Task) {
 	t.Helper()
-	setup := config.PolicyContract{StageTimeouts: config.PolicyStageTimeouts{Spec: "30m", Implement: "2h", Review: "45m"}, Review: config.ReviewPanel{Seats: []config.ReviewSeat{{Model: "gpt-review", Harness: "codex"}}}}
+	setup := config.PolicyContract{StageTimeouts: config.PolicyStageTimeouts{Spec: "30m", Implement: "2h", Review: "45m"}, Review: config.ReviewPanel{Seats: []config.ReviewSeat{{}}}}
 	routes := map[string]config.StageRoute{
-		"triage":    {Model: "control", TimeoutText: "20m", Execution: config.ExecutionInProcess},
 		"implement": {Execution: config.ExecutionMCP},
 		"review":    {Execution: config.ExecutionMCP},
 	}
-	cfg := (&config.Config{Workspace: "demo", WorkOrderQueueTimeout: time.Hour, Routing: config.Routing{Stages: routes}, Review: setup.Review}).WithPolicy(setup)
+	cfg := (&config.Config{Workspace: "demo", WorkOrderQueueTimeout: time.Hour, Routing: config.Routing{Triage: config.TriageRoute{Model: "control", TimeoutText: "20m"}, Stages: routes}, Review: setup.Review}).WithPolicy(setup)
 	ctx := store.WithWorkspace(store.WithActor(t.Context(), store.SystemActor()), "demo")
 	st := store.NewMemory()
 	task := core.Task{ID: id, Workspace: "demo", Title: "Stale", SetupName: "backend", SetupContract: setup, State: core.TaskQueued, NextStage: stage, CreatedAt: time.Now()}

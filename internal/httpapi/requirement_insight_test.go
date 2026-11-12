@@ -342,9 +342,7 @@ func newInsightHarness(t *testing.T, wrap func(store.Store) store.Store) *insigh
 }
 
 func (h *insightHarness) installDispatcher(agent inprocess.Agent) {
-	cfg := &config.Config{Workspace: "demo", Routing: config.Routing{Stages: map[string]config.StageRoute{
-		"triage": {Model: "triage-model", Timeout: time.Minute, TimeoutText: "1m", Execution: config.ExecutionInProcess},
-	}}}
+	cfg := &config.Config{Workspace: "demo", Routing: config.Routing{Triage: config.TriageRoute{Model: "triage-model", Timeout: time.Minute, TimeoutText: "1m"}}}
 	h.server.WorkOrders = &workorder.Service{Store: h.st, Dispatcher: dispatch.New(h.st, cfg, agent)}
 }
 

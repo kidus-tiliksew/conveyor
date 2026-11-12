@@ -223,7 +223,7 @@ func TestTaskSideEffectLockAllowsNestedLifecycleTransitionIntegration(t *testing
 }
 
 func isolationConfig(workspace string) *config.Config {
-	return &config.Config{Workspace: workspace, MaxBounces: 2, Routing: config.Routing{Stages: map[string]config.StageRoute{"triage": {Model: "gpt", Timeout: time.Minute, TimeoutText: "1m", Execution: config.ExecutionInProcess}, "spec": {Model: "gpt", Timeout: time.Minute, TimeoutText: "1m", Execution: config.ExecutionInProcess}, "implement": {Model: "operator", Timeout: time.Hour, TimeoutText: "1h", Execution: config.ExecutionMCP}, "review": {Model: "operator", Timeout: time.Hour, TimeoutText: "1h", Execution: config.ExecutionMCP}}}, Repos: []config.Repo{{Name: "repo", URL: "https://example.test/repo.git", Base: "main"}}}
+	return &config.Config{Workspace: workspace, MaxBounces: 2, Routing: config.Routing{Triage: config.TriageRoute{Model: "gpt", Timeout: time.Minute, TimeoutText: "1m"}, Stages: map[string]config.StageRoute{"spec": {Timeout: time.Minute, TimeoutText: "1m", Execution: config.ExecutionInProcess}, "implement": {Timeout: time.Hour, TimeoutText: "1h", Execution: config.ExecutionMCP}, "review": {Timeout: time.Hour, TimeoutText: "1h", Execution: config.ExecutionMCP}}}, Repos: []config.Repo{{Name: "repo", URL: "https://example.test/repo.git", Base: "main"}}}
 }
 func isolationTask(workspace, id string) core.Task {
 	return core.Task{ID: id, Workspace: workspace, Source: "test", Title: "Isolation", Level: core.L2, Repo: "repo", BaseBranch: "main", Branch: "conveyor/" + id, State: core.TaskAwaiting, CreatedAt: time.Now()}

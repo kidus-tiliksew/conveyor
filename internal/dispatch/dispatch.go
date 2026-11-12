@@ -346,6 +346,11 @@ func (d *Dispatcher) dispatchSnapshot(ctx context.Context, task core.Task, check
 	if task.SetupContract.HasFrozenPolicy() {
 		cfg = cfg.WithPolicy(task.SetupContract)
 	}
+	if task.NextStage == core.StageTriage {
+		// Triage is the one stage that runs inside conveyord, on the
+		// deployment's own triage route (DEC-132(3)).
+		return d.runTriage(ctx, cfg, task)
+	}
 	route, ok := cfg.Routing.Stages[string(task.NextStage)]
 	if !ok {
 		return fmt.Errorf("no route for stage %s", task.NextStage)
@@ -361,16 +366,15 @@ func (d *Dispatcher) dispatchSnapshot(ctx context.Context, task core.Task, check
 			return fmt.Errorf("review requires completed verification for the submitted head")
 		}
 	}
-	if task.NextStage == core.StageReview && route.Execution == config.ExecutionMCP {
+	// Agent stages are always MCP work orders, even when a stale route
+	// snapshot still says in_process: no Conveyor component invokes a model
+	// for an agent stage (DEC-132(2); component-work-orders).
+	if task.NextStage == core.StageReview {
 		if routed, checkErr := d.preDispatchConflictCheck(ctx, cfg, task, checkBase); checkErr != nil || routed {
 			return checkErr
 		}
 		return d.createReviewRound(ctx, cfg, task, route)
 	}
-	// Newly dispatched specs are always MCP work orders, even when a stale
-	// route snapshot still says in_process. The remaining StageSpec handling in
-	// runInProcess is only for completion of calls that were already in flight
-	// when the execution contract changed (component-work-orders).
 	if task.NextStage == core.StageImplement || task.NextStage == core.StageSpec || task.NextStage == core.StageVerify {
 		if _, active, activeErr := d.activeWorkOrder(ctx, task.ID, task.NextStage, ""); activeErr != nil {
 			return activeErr
@@ -384,7 +388,7 @@ func (d *Dispatcher) dispatchSnapshot(ctx context.Context, task core.Task, check
 		}
 		return d.createWorkOrder(ctx, cfg, task, route, "")
 	}
-	return d.runInProcess(ctx, cfg, task, route)
+	return fmt.Errorf("stage %s has no dispatch route", task.NextStage)
 }
 
 // preDispatchConflictCheck reads the pull request's mergeability once per
@@ -715,7 +719,18 @@ func (d *Dispatcher) createWorkOrder(ctx context.Context, cfg *config.Config, ta
 	return d.Store.AppendEvent(ctx, core.Event{TaskID: task.ID, JobID: jobID, Kind: "pipeline.awaiting_work_order", Payload: core.JSONPayload(payload)})
 }
 
-func (d *Dispatcher) runInProcess(ctx context.Context, cfg *config.Config, task core.Task, route config.StageRoute) error {
+// runTriage runs the triage stage in process on the deployment's triage
+// route. It is the only stage dispatch invokes a model for: agent stages,
+// review included, are MCP work orders whatever their route says
+// (DEC-132(2), (3)).
+func (d *Dispatcher) runTriage(ctx context.Context, cfg *config.Config, task core.Task) error {
+	if task.NextStage != core.StageTriage {
+		return fmt.Errorf("stage %s does not run in process", task.NextStage)
+	}
+	route := cfg.Routing.Triage
+	if route == (config.TriageRoute{}) {
+		return fmt.Errorf("no route for stage %s", task.NextStage)
+	}
 	if d.Agent == nil {
 		return fmt.Errorf("in-process agent is not configured")
 	}
@@ -730,9 +745,6 @@ func (d *Dispatcher) runInProcess(ctx context.Context, cfg *config.Config, task 
 		}
 	}
 	jobID := fmt.Sprintf("%s-%s-%d", task.ID, task.NextStage, attempt)
-	if task.NextStage == core.StageReview && len(cfg.Review.Seats) == 1 {
-		route.Model = cfg.Review.Seats[0].Model
-	}
 	route.Model = config.ResolveControlPlaneModel(string(task.NextStage), route.Model)
 	now := time.Now().UTC()
 	job := core.Job{ID: jobID, TaskID: task.ID, Stage: task.NextStage, Harness: "openai-responses", ModelTier: route.Model, AuthMode: "deployment-key", Runner: "in-process", Confinement: "control-plane", State: core.JobRunning, StartedAt: now}
@@ -761,13 +773,7 @@ func (d *Dispatcher) runInProcess(ctx context.Context, cfg *config.Config, task 
 	input.ContextFreshness = d.observeInProcessInput(ctx, task, job, input)
 	stageCtx, cancel := context.WithTimeout(ctx, route.Timeout)
 	defer cancel()
-	var result inprocess.Result
-	var runErr error
-	if task.NextStage == core.StageTriage {
-		result, runErr = d.runTriageLoop(stageCtx, route.Model, input)
-	} else {
-		result, runErr = d.Agent.Run(stageCtx, route.Model, input)
-	}
+	result, runErr := d.runTriageLoop(stageCtx, route.Model, input)
 	job.EndedAt = time.Now().UTC()
 	job.TokensIn = result.TokensIn
 	job.TokensOut = result.TokensOut
@@ -788,9 +794,6 @@ func (d *Dispatcher) runInProcess(ctx context.Context, cfg *config.Config, task 
 		}
 		_ = d.Store.AppendEvent(ctx, core.Event{TaskID: task.ID, JobID: job.ID, Kind: "job.failed", Payload: core.JSONPayload(failure)})
 		return d.transition(ctx, task.ID, core.TaskJobFail, "", task.NextStage)
-	}
-	if task.NextStage == core.StageReview {
-		d.refreshInProcessVerdict(ctx, cfg, task, job, input)
 	}
 	job.State = core.JobDone
 	if err := d.Store.UpdateJob(ctx, job); err != nil {

@@ -137,8 +137,8 @@ func runPolicyOnlyPlanningUsesDeploymentControlPlane(t *testing.T, x Fixture) {
 	runtime, err := st.RuntimeConfig(ctx, deployment)
 	requireOK(t, err)
 	if runtime.ExecutionSettings == nil || runtime.ExecutionSettings.ControlPlane.Planning.Model != "deploy-planner" ||
-		runtime.Routing.Stages["triage"].Model != "deploy-triage" || runtime.Routing.Stages["triage"].Effort != "low" {
-		t.Fatalf("runtime configuration lacks deployment control plane: settings=%+v triage=%+v", runtime.ExecutionSettings, runtime.Routing.Stages["triage"])
+		runtime.Routing.Triage.Model != "deploy-triage" || runtime.Routing.Triage.Effort != "low" || runtime.Routing.Triage.TimeoutText != "7m" {
+		t.Fatalf("runtime configuration lacks deployment control plane: settings=%+v triage=%+v", runtime.ExecutionSettings, runtime.Routing.Triage)
 	}
 	harness := newRuntimePlanningHarness(x, deployment)
 	session, err := harness.service.CreateSession(ctx, planning.CreateSessionInput{})
@@ -302,18 +302,13 @@ func runLegacyWorkspaceRowLoads(t *testing.T, x Fixture) {
 	if len(stored.Document.Review.Seats) != 3 {
 		t.Fatalf("legacy row review seats = %+v, want the default setup's three", stored.Document.Review.Seats)
 	}
-	for i, seat := range stored.Document.Review.Seats {
-		if seat != (config.ReviewSeat{}) {
-			t.Fatalf("legacy row kept review seat %d contents: %+v", i, seat)
-		}
-	}
 	runtime, err := st.RuntimeConfig(ctx, x.Config)
 	if err != nil {
 		t.Fatalf("legacy row failed to compose: %v", err)
 	}
 	for stage, timeout := range map[string]string{"spec": "45m", "implement": "5h", "review": "2h", "verify": "90m"} {
 		route := runtime.Routing.Stages[stage]
-		if route.TimeoutText != timeout || route.Model != "" || route.Harness != "" || route.Effort != "" || route.ModelPolicy != "" {
+		if route.TimeoutText != timeout || route.Execution != config.ExecutionMCP {
 			t.Fatalf("legacy row %s route = %+v, want only the default setup's %s timeout", stage, route, timeout)
 		}
 	}
@@ -323,15 +318,117 @@ func runLegacyWorkspaceRowLoads(t *testing.T, x Fixture) {
 	if frozen := runtime.FreezePolicy(); frozen.StageTimeouts != (config.PolicyStageTimeouts{Spec: "45m", Implement: "5h", Review: "2h", Verify: "90m"}) || len(frozen.Review.Seats) != 3 {
 		t.Fatalf("legacy row froze %+v", frozen)
 	}
-	if settings := runtime.ExecutionSettings; settings != nil {
-		for _, stage := range []config.ImplementationSettings{settings.Spec, settings.Implementation, settings.Verify} {
-			if stage.Harness != "" || stage.Model != "" || stage.Effort != "" || stage.ModelPolicy != "" {
-				t.Fatalf("legacy row composed executor settings: %+v", settings)
-			}
-		}
-	}
 	if after := x.WorkspaceConfigYAML(t, ctx); after != legacy {
 		t.Fatalf("reads rewrote the legacy row:\n%s\nwant:\n%s", after, legacy)
+	}
+	again, err := st.WorkspaceConfig(ctx)
+	requireOK(t, err)
+	if again.Version != before.Version {
+		t.Fatalf("reads advanced the configuration version %d -> %d", before.Version, again.Version)
+	}
+}
+
+// legacyDirectRouteWorkspaceRowKeys are the members an earlier release wrote
+// without a default setup: direct routes, top-level execution settings, and
+// review seats that hold every agent-stage key this release removed from the
+// configuration types, including the triage route's model, model tier, and
+// effort, with values the earlier validation would refuse (DEC-132(2);
+// component-runtime invariants 13 to 15).
+const legacyDirectRouteWorkspaceRowKeys = `execution_settings:
+  control_plane:
+    triage: {model: row-triage, effort: low, timeout: 3m}
+    spec: {model: row-spec, effort: extreme, timeout: 31m}
+  spec: {harness: "bad harness!", model: row-spec, model_policy: bogus, effort: extreme, timeout: 32m}
+  implementation: {harness: codex, model: row-impl, model_policy: explicit, effort: high, timeout: 3h}
+  verify: {harness: codex, model: row-verify, model_policy: harness_default, effort: high, timeout: 75m}
+  review: {execution: sideways, timeout: 55m, fallback_model: row-fallback, fallback_harness: codex}
+routing:
+  stages:
+    triage: {model: row-triage, model_tier: row-tier, effort: low, timeout: 9m, execution: in_process}
+    implement: {model: row-route, model_policy: nonsense, harness: codex, effort: high, harnesses: [codex], model_tier: big, timeout: 7h, execution: in_process}
+    review: {model: row-review, harness: codex, effort: high, timeout: 65m, execution: in_process}
+review:
+  distinct_models: true
+  seats:
+    - {model: row-seat-a, harness: codex, effort: high}
+    - {model: row-seat-b}
+`
+
+// runLegacyDirectRouteWorkspaceRowLoads holds every backend to the stored-row
+// contract for a row without a default setup: it loads through
+// WorkspaceConfig and RuntimeConfig, keeps the stage timeouts, seat count,
+// distinct_models, and gate defaults its execution settings and routes
+// resolved to, takes triage and planning only from the deployment, and the
+// reads change neither the stored bytes nor the configuration version
+// (component-runtime invariants 13 to 15; component-persistence).
+func runLegacyDirectRouteWorkspaceRowLoads(t *testing.T, x Fixture) {
+	if x.SeedWorkspaceConfigYAML == nil || x.WorkspaceConfigYAML == nil {
+		t.Fatal("conformance fixture must provide SeedWorkspaceConfigYAML and WorkspaceConfigYAML for the legacy-row case (component-persistence)")
+	}
+	t.Setenv(config.ControlPlaneModelEnv, "")
+	t.Setenv(config.TriageModelEnv, "")
+	t.Setenv(config.PlanningModelEnv, "")
+	st, ctx := x.Backend, x.Context
+	before, err := st.WorkspaceConfig(ctx)
+	requireOK(t, err)
+	original := x.WorkspaceConfigYAML(t, ctx)
+	t.Cleanup(func() { x.SeedWorkspaceConfigYAML(t, ctx, original) })
+	var document map[string]any
+	if err := yaml.Unmarshal([]byte(original), &document); err != nil {
+		t.Fatal(err)
+	}
+	var legacyKeys map[string]any
+	if err := yaml.Unmarshal([]byte(legacyDirectRouteWorkspaceRowKeys), &legacyKeys); err != nil {
+		t.Fatal(err)
+	}
+	// Without stage_timeouts and an execution block, the row resolves its
+	// timeouts from its settings and routes and keeps the legacy gate
+	// defaults.
+	delete(document, "stage_timeouts")
+	delete(document, "execution")
+	for key, value := range legacyKeys {
+		document[key] = value
+	}
+	encoded, err := yaml.Marshal(document)
+	requireOK(t, err)
+	legacy := string(encoded)
+	x.SeedWorkspaceConfigYAML(t, ctx, legacy)
+
+	stored, err := st.WorkspaceConfig(ctx)
+	if err != nil {
+		t.Fatalf("legacy direct-route row failed to load: %v", err)
+	}
+	if stored.Version != before.Version || len(stored.Document.Review.Seats) != 2 || !stored.Document.Review.DistinctModels {
+		t.Fatalf("legacy direct-route row read = version %d seats %d distinct %t, want version %d, two seats, distinct models",
+			stored.Version, len(stored.Document.Review.Seats), stored.Document.Review.DistinctModels, before.Version)
+	}
+	deployment := runtimePlanningDeployment(t, x.Workspace)
+	runtime, err := st.RuntimeConfig(ctx, deployment)
+	if err != nil {
+		t.Fatalf("legacy direct-route row failed to compose: %v", err)
+	}
+	for stage, timeout := range map[string]string{"spec": "32m", "implement": "3h", "review": "55m", "verify": "75m"} {
+		if route := runtime.Routing.Stages[stage]; route.TimeoutText != timeout || route.Execution != config.ExecutionMCP {
+			t.Fatalf("legacy direct-route row %s route = %+v, want timeout %s over MCP", stage, route, timeout)
+		}
+	}
+	if _, ok := runtime.Routing.Stages["triage"]; ok {
+		t.Fatalf("legacy direct-route row composed a triage stage route: %+v", runtime.Routing.Stages)
+	}
+	if runtime.Routing.Triage.Model != "deploy-triage" || runtime.Routing.Triage.Effort != "low" || runtime.Routing.Triage.TimeoutText != "7m" ||
+		runtime.ExecutionSettings == nil || runtime.ExecutionSettings.ControlPlane.Triage.Model != "deploy-triage" ||
+		runtime.ExecutionSettings.ControlPlane.Planning.Model != "deploy-planner" {
+		t.Fatalf("legacy direct-route row replaced the deployment control plane: triage=%+v settings=%+v", runtime.Routing.Triage, runtime.ExecutionSettings)
+	}
+	if len(runtime.Review.Seats) != 2 || !runtime.Review.DistinctModels || runtime.Execution.DefaultPlanState != config.DefaultPlanStateNeeded || !runtime.Execution.MergeApproval {
+		t.Fatalf("legacy direct-route row runtime policy = seats %d distinct %t execution %+v", len(runtime.Review.Seats), runtime.Review.DistinctModels, runtime.Execution)
+	}
+	if frozen := runtime.FreezePolicy(); frozen.StageTimeouts != (config.PolicyStageTimeouts{Spec: "32m", Implement: "3h", Review: "55m", Verify: "75m"}) ||
+		len(frozen.Review.Seats) != 2 || !frozen.Review.DistinctModels {
+		t.Fatalf("legacy direct-route row froze %+v", frozen)
+	}
+	if after := x.WorkspaceConfigYAML(t, ctx); after != legacy {
+		t.Fatalf("reads rewrote the legacy direct-route row:\n%s\nwant:\n%s", after, legacy)
 	}
 	again, err := st.WorkspaceConfig(ctx)
 	requireOK(t, err)

@@ -1294,9 +1294,9 @@ func TestRetryReviewRoundVerifiesPRHeadAndSnapshotsCurrentPanel(t *testing.T) {
 	cfg := &config.Config{
 		Workspace: "demo", WorkOrderQueueTimeout: time.Hour,
 		Repos:   []config.Repo{{Name: "app", Base: "main", GitHub: "acme/app"}},
-		Routing: config.Routing{Stages: map[string]config.StageRoute{"review": {Execution: config.ExecutionMCP, Harness: "codex", TimeoutText: "45m"}}},
+		Routing: config.Routing{Stages: map[string]config.StageRoute{"review": {Execution: config.ExecutionMCP, TimeoutText: "45m"}}},
 
-		Review: config.ReviewPanel{Seats: []config.ReviewSeat{{Model: "gpt-current", Harness: "codex", Effort: "high"}, {Model: "claude-current", Harness: "claude"}}},
+		Review: config.ReviewPanel{Seats: []config.ReviewSeat{{}, {}}},
 	}
 	currentHead := "changed-head"
 	service := &Service{

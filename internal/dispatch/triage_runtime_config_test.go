@@ -80,8 +80,7 @@ repos: []
 	d.ConfigProvider = func(ctx context.Context) (*config.Config, error) { return backend.RuntimeConfig(ctx, deployment) }
 
 	// A frozen policy from a workspace with different stage timeouts.
-	frozen := (&config.Config{MaxBounces: 4, Routing: config.Routing{Stages: map[string]config.StageRoute{
-		"triage":    {Execution: config.ExecutionInProcess, Model: "frozen-triage", TimeoutText: "1m"},
+	frozen := (&config.Config{MaxBounces: 4, Routing: config.Routing{Triage: config.TriageRoute{Model: "frozen-triage", TimeoutText: "1m"}, Stages: map[string]config.StageRoute{
 		"spec":      {Execution: config.ExecutionMCP, TimeoutText: "10m"},
 		"implement": {Execution: config.ExecutionMCP, TimeoutText: "1h"},
 		"review":    {Execution: config.ExecutionMCP, TimeoutText: "20m"},

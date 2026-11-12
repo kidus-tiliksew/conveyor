@@ -48,9 +48,7 @@ func storedFailure(t *testing.T, id string, client *inprocess.OpenAI) (map[strin
 	if err != nil {
 		t.Fatal(err)
 	}
-	cfg := &config.Config{Workspace: "demo", MaxBounces: 2, Routing: config.Routing{Stages: map[string]config.StageRoute{
-		"triage": {Model: "model-a", Execution: config.ExecutionInProcess, Timeout: time.Minute},
-	}}}
+	cfg := &config.Config{Workspace: "demo", MaxBounces: 2, Routing: config.Routing{Triage: config.TriageRoute{Model: "model-a", Timeout: time.Minute}}}
 	dispatcher := New(st, cfg, client)
 	dispatcher.Pack = bundle
 	if err = dispatcher.DispatchNow(ctx, task.ID); err != nil {
@@ -248,9 +246,7 @@ func TestInProcessStagePromptKeepsTaskBodyExact(t *testing.T) {
 		t.Fatal(err)
 	}
 	agent := &capturingInputAgent{}
-	cfg := &config.Config{Workspace: "demo", MaxBounces: 2, Routing: config.Routing{Stages: map[string]config.StageRoute{
-		"triage": {Model: "model-a", Execution: config.ExecutionInProcess, Timeout: time.Minute},
-	}}}
+	cfg := &config.Config{Workspace: "demo", MaxBounces: 2, Routing: config.Routing{Triage: config.TriageRoute{Model: "model-a", Timeout: time.Minute}}}
 	dispatcher := New(st, cfg, agent)
 	dispatcher.Pack = bundle
 	if err = dispatcher.DispatchNow(ctx, task.ID); err != nil {

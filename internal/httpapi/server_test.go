@@ -529,9 +529,9 @@ func TestReviewRoundRetryHTTPIsAuthorizedActionableAndIdempotent(t *testing.T) {
 	cfg := &config.Config{
 		Workspace: "demo", WorkOrderQueueTimeout: time.Hour,
 		Repos:   []config.Repo{{Name: "api", GitHub: "acme/api", Base: "main"}},
-		Routing: config.Routing{Stages: map[string]config.StageRoute{"review": {Execution: config.ExecutionMCP, Harness: "codex", TimeoutText: "1h"}}},
+		Routing: config.Routing{Stages: map[string]config.StageRoute{"review": {Execution: config.ExecutionMCP, TimeoutText: "1h"}}},
 
-		Review: config.ReviewPanel{Seats: []config.ReviewSeat{{Model: "gpt-a", Harness: "codex"}, {Model: "gpt-b", Harness: "codex"}}},
+		Review: config.ReviewPanel{Seats: []config.ReviewSeat{{}, {}}},
 	}
 	provider := func(context.Context) (*config.Config, error) { return cfg, nil }
 	service := &workorder.Service{Store: st, ConfigProvider: provider, ReviewTarget: func(context.Context, string, string) (githubtrigger.ReviewTarget, error) {
@@ -708,7 +708,7 @@ func TestRetiredTaskHoldRouteAnswersGone(t *testing.T) {
 // live worker and refuses the retired hold input (DEC-125(3)).
 func TestTaskIntakeIsNotHealthGatedAndRefusesHold(t *testing.T) {
 	st := store.NewMemory()
-	cfg := &config.Config{Workspace: "demo", Execution: config.ExecutionPolicy{DefaultMode: "auto", DefaultPlanState: "needed", MergeApproval: true, ImplementConcurrency: 1, ReviewConcurrency: 1}, Routing: config.Routing{Stages: map[string]config.StageRoute{"implement": {Harness: "codex"}, "review": {Harness: "codex", Execution: config.ExecutionMCP}}}, Repos: []config.Repo{{Name: "api", Base: "main"}}}
+	cfg := &config.Config{Workspace: "demo", Execution: config.ExecutionPolicy{DefaultMode: "auto", DefaultPlanState: "needed", MergeApproval: true, ImplementConcurrency: 1, ReviewConcurrency: 1}, Routing: config.Routing{Stages: map[string]config.StageRoute{"implement": {}, "review": {Execution: config.ExecutionMCP}}}, Repos: []config.Repo{{Name: "api", Base: "main"}}}
 	provider := func(context.Context) (*config.Config, error) { return cfg, nil }
 	orders := &workorder.Service{Store: st, ConfigProvider: provider}
 	server := NewServer(st)
@@ -2270,7 +2270,7 @@ func TestCloseMapsInvalidTransitionToConflictAndHidesOtherFailures(t *testing.T)
 func TestPlanRevisionApprovalIsDurableBeforeImmediatePlanClaim(t *testing.T) {
 	_, st, server, taskID, _ := newPlanRevisionReviewServer(t)
 	cfg := &config.Config{Workspace: "demo", WorkOrderQueueTimeout: time.Hour, Routing: config.Routing{Stages: map[string]config.StageRoute{
-		"spec": {Model: "planner", Execution: config.ExecutionMCP, Timeout: time.Hour},
+		"spec": {Execution: config.ExecutionMCP, Timeout: time.Hour},
 	}}}
 	dispatcher := dispatch.New(st, cfg, nil)
 	dispatcher.DisableMemoryQueueForTest()

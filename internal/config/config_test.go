@@ -327,7 +327,7 @@ func TestControlPlaneModelOverridesDoNotMutateWorkspaceConfig(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	stored := normalized.Routing.Stages["triage"].Model
+	stored := normalized.Routing.Triage.Model
 	t.Setenv(ControlPlaneModelEnv, "deployment-model")
 	if got := ResolveControlPlaneModel("triage", stored); got != "deployment-model" {
 		t.Fatalf("resolved model=%q", got)
@@ -1093,6 +1093,9 @@ func TestRepositoryCheckoutMustBeAbsoluteAndRoundTrips(t *testing.T) {
 func TestRepositoryNameValidationIsSharedByLoadAndWorkspaceWrites(t *testing.T) {
 	cfg := validConfig()
 	cfg.Repos[0].Name = "../outside"
+	// The triage route is runtime-only, so a rendered file states its model
+	// in the control-plane settings.
+	cfg.ExecutionSettings = &ContextualExecutionSettings{ControlPlane: ControlPlaneSettings{Triage: ModelTimeoutSettings{Model: cfg.Routing.Triage.Model}}}
 	data, err := yaml.Marshal(cfg)
 	if err != nil {
 		t.Fatal(err)
@@ -1246,11 +1249,7 @@ func TestParsePolicyDocumentConcurrentlyAgainstSharedDeployment(t *testing.T) {
 func enrichMutableConfigForIsolationTest(config *Config) {
 	settings := *config.ExecutionSettings
 	config.ExecutionSettings = &settings
-	for stage, route := range config.Routing.Stages {
-		route.LegacyHarnesses = []string{"legacy-" + stage}
-		config.Routing.Stages[stage] = route
-	}
-	config.Review.Seats = []ReviewSeat{{Model: "reviewer", Harness: "codex", Effort: "high"}}
+	config.Review.Seats = []ReviewSeat{{}}
 	config.Repos[0].LegacySecretRefs = []string{"legacy-secret"}
 	config.Repos[0].LegacyToolPolicy = map[string]any{"nested": map[string]any{"allow": []any{"read", map[string]any{"path": "internal/config"}}}}
 	config.Monitor.Repositories = []string{"repo"}
@@ -1316,7 +1315,7 @@ func TestLoadRejectsRetiredConfigSurface(t *testing.T) {
 }
 
 func validConfig() *Config {
-	return &Config{Workspace: "demo", PackDir: ".", MaxBounces: 2, Database: Database{Backend: "memory"}, Routing: Routing{Stages: map[string]StageRoute{"triage": {Model: "gpt", TimeoutText: "20m", Execution: ExecutionInProcess}, "spec": {Model: "gpt", TimeoutText: "30m", Execution: ExecutionInProcess}, "implement": {Model: "operator", TimeoutText: "4h", Execution: ExecutionMCP}, "review": {Model: "operator", TimeoutText: "1h", Execution: ExecutionMCP}}}, Repos: []Repo{{Name: "repo", URL: "https://example.test/repo", Base: "main"}}}
+	return &Config{Workspace: "demo", PackDir: ".", MaxBounces: 2, Database: Database{Backend: "memory"}, Routing: Routing{Triage: TriageRoute{Model: "gpt", TimeoutText: "20m"}, Stages: map[string]StageRoute{"spec": {TimeoutText: "30m", Execution: ExecutionInProcess}, "implement": {TimeoutText: "4h", Execution: ExecutionMCP}, "review": {TimeoutText: "1h", Execution: ExecutionMCP}}}, Repos: []Repo{{Name: "repo", URL: "https://example.test/repo", Base: "main"}}}
 }
 
 func TestPlanningSnapshotSizeCap(t *testing.T) {

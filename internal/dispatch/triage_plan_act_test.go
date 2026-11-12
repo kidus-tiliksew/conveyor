@@ -98,10 +98,9 @@ func TestTriageProceedUsesThePlanStateCommittedDuringTriage(t *testing.T) {
 				Branch: "conveyor/task-" + taskID, PolicyVersion: 1, PlanState: tc.initial, State: core.TaskQueued, NextStage: core.StageTriage, CreatedAt: time.Now()}); err != nil {
 				t.Fatal(err)
 			}
-			cfg := &config.Config{Workspace: "demo", MaxBounces: 2, WorkOrderQueueTimeout: time.Hour, Routing: config.Routing{Stages: map[string]config.StageRoute{
-				"triage":    {Model: "triage", Execution: config.ExecutionInProcess, Timeout: time.Minute},
-				"spec":      {Model: "planner", Execution: config.ExecutionMCP, Timeout: time.Hour, TimeoutText: "1h"},
-				"implement": {Model: "implementer", Execution: config.ExecutionMCP, Timeout: time.Hour, TimeoutText: "1h"},
+			cfg := &config.Config{Workspace: "demo", MaxBounces: 2, WorkOrderQueueTimeout: time.Hour, Routing: config.Routing{Triage: config.TriageRoute{Model: "triage", Timeout: time.Minute}, Stages: map[string]config.StageRoute{
+				"spec":      {Execution: config.ExecutionMCP, Timeout: time.Hour, TimeoutText: "1h"},
+				"implement": {Execution: config.ExecutionMCP, Timeout: time.Hour, TimeoutText: "1h"},
 			}}}
 			agent := &blockedTriageAgent{started: make(chan struct{}), release: make(chan struct{})}
 			dispatcher := New(st, cfg, agent)

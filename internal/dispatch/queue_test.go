@@ -388,7 +388,7 @@ func TestDispatchJobCompletesWhileTaskWaitsForAClaim(t *testing.T) {
 	cfg := &config.Config{
 		Workspace: "test",
 		Routing: config.Routing{Stages: map[string]config.StageRoute{
-			"spec": {Model: "planner", Execution: config.ExecutionMCP, Timeout: time.Hour, TimeoutText: "1h"},
+			"spec": {Execution: config.ExecutionMCP, Timeout: time.Hour, TimeoutText: "1h"},
 		}},
 		Repos: []config.Repo{{Name: "app", URL: "https://example.test/app.git", Base: "main"}},
 	}
@@ -433,8 +433,8 @@ func runHistoricalClaimDispatch(t *testing.T, expired bool) {
 	cfg := &config.Config{
 		Workspace: "test",
 		Routing: config.Routing{Stages: map[string]config.StageRoute{
-			"implement": {Model: "implementer", Execution: config.ExecutionMCP, Timeout: time.Hour, TimeoutText: "1h"},
-			"review":    {Model: "reviewer", Execution: config.ExecutionMCP, Timeout: time.Hour, TimeoutText: "1h"},
+			"implement": {Execution: config.ExecutionMCP, Timeout: time.Hour, TimeoutText: "1h"},
+			"review":    {Execution: config.ExecutionMCP, Timeout: time.Hour, TimeoutText: "1h"},
 		}},
 		Repos: []config.Repo{{Name: "app", URL: "https://example.test/app.git", Base: "main"}},
 	}
@@ -506,20 +506,17 @@ func runHistoricalClaimDispatch(t *testing.T, expired bool) {
 func TestQueueRescueThresholdUsesLargestRouteAndFallback(t *testing.T) {
 	t.Parallel()
 	configs := map[string]*config.Config{
-		"a": {Routing: config.Routing{Stages: map[string]config.StageRoute{
-			"triage": {Timeout: 20 * time.Minute},
-			"spec":   {Timeout: 3 * time.Hour},
+		"a": {Routing: config.Routing{Triage: config.TriageRoute{Timeout: 20 * time.Minute}, Stages: map[string]config.StageRoute{
+			"spec": {Timeout: 3 * time.Hour},
 		}}},
-		"b": {Routing: config.Routing{Stages: map[string]config.StageRoute{
-			"triage": {Timeout: time.Hour},
-		}}},
+		"b": {Routing: config.Routing{Triage: config.TriageRoute{Timeout: time.Hour}}},
 	}
 	got, err := QueueRescueThreshold(configs)
 	if err != nil || got != 3*time.Hour+QueueRescueSafetyMargin {
 		t.Fatalf("rescue threshold=%s err=%v", got, err)
 	}
-	short := map[string]*config.Config{"short": {Routing: config.Routing{Stages: map[string]config.StageRoute{
-		"triage": {Timeout: 20 * time.Minute}, "spec": {Timeout: 30 * time.Minute},
+	short := map[string]*config.Config{"short": {Routing: config.Routing{Triage: config.TriageRoute{Timeout: 20 * time.Minute}, Stages: map[string]config.StageRoute{
+		"spec": {Timeout: 30 * time.Minute},
 	}}}}
 	got, err = QueueRescueThreshold(short)
 	if err != nil || got != 30*time.Minute+QueueRescueSafetyMargin {
@@ -571,7 +568,7 @@ func TestBackgroundEventActorsAreExplicit(t *testing.T) {
 	cfg := &config.Config{
 		Workspace: "test",
 		Routing: config.Routing{Stages: map[string]config.StageRoute{
-			"spec": {Model: "planner", Execution: config.ExecutionMCP, Timeout: time.Hour, TimeoutText: "1h"},
+			"spec": {Execution: config.ExecutionMCP, Timeout: time.Hour, TimeoutText: "1h"},
 		}},
 		Repos: []config.Repo{{Name: "app", URL: "https://example.test/app.git", Base: "main"}},
 	}

@@ -29,8 +29,8 @@ func TestPostgresPlanRevisionDecisionLoopIntegration(t *testing.T) {
 
 	workspace := "plan-revision-" + core.NewTaskID()
 	cfg := &config.Config{Workspace: workspace, WorkOrderQueueTimeout: time.Hour, Routing: config.Routing{Stages: map[string]config.StageRoute{
-		"spec":      {Model: "planner", Execution: config.ExecutionMCP, Timeout: time.Hour},
-		"implement": {Model: "implementer", Execution: config.ExecutionMCP, Timeout: time.Hour},
+		"spec":      {Execution: config.ExecutionMCP, Timeout: time.Hour},
+		"implement": {Execution: config.ExecutionMCP, Timeout: time.Hour},
 	}}, Repos: []config.Repo{{Name: "conveyor", URL: "https://example.test/conveyor.git", Base: "main"}}}
 	if _, err = st.CreateWorkspace(store.WithActor(ctx, store.Actor{ID: "test", Role: core.ActorHuman}), workspace, "Plan revision integration "+workspace, cfg); err != nil {
 		t.Fatal(err)
