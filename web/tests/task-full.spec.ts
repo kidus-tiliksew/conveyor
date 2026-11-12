@@ -1382,8 +1382,19 @@ function activity(taskId: string, overflowing: boolean, liveEventCount = 18) {
                                                   payload: { version: 2 },
                                                   at: '2026-07-15T11:58:00Z',
                                                 },
+                                                // Every backend records the approval's
+                                                // intervention event with the intervention.
                                                 {
                                                   id: 2,
+                                                  task_id: taskId,
+                                                  kind: 'intervention.approve',
+                                                  actor_id: 'operator',
+                                                  actor_role: 'human' as const,
+                                                  payload: { reason_code: 'approved', comment: '' },
+                                                  at: '2026-07-15T11:59:00Z',
+                                                },
+                                                {
+                                                  id: 3,
                                                   task_id: taskId,
                                                   kind: 'spec.version_approved',
                                                   actor_id: 'operator',
@@ -5101,15 +5112,17 @@ test('review card renders authorized verification evidence with accessible previ
   expect(authorizationHeaders.every((header) => header === '')).toBe(true)
 })
 
-// The plan section shows each version, so neither versioned plan event adds a
-// timeline row (component-web-task-surfaces, Task detail composition).
-test('spec approval keeps the human marker without versioned plan events', async ({ page }) => {
+// The plan version and its approval read as one plan-cycle entry that names
+// the approved version, with no separate approval row
+// (component-web-task-surfaces invariant 68; req-260809-a40c75 AC-4.2).
+test('spec approval reads as one plan cycle that names the approved version', async ({ page }) => {
   await page.goto('/w/demo/tasks/spec-approval/full')
 
   const timeline = page.getByRole('region', { name: 'Execution event timeline' })
-  const timelineRows = timeline.locator('ol > li')
+  const timelineRows = timeline.locator(':scope > ol > li')
   await expect(timelineRows).toHaveCount(1)
-  await expect(timelineRows.nth(0)).toContainText('Approved')
+  await expect(timelineRows.nth(0)).toContainText('Plan v2 ready')
+  await expect(timelineRows.nth(0)).toContainText('Approved plan v2')
   await expect(timeline.getByText('Plan v2 drafted')).toHaveCount(0)
   await expect(timeline.getByText(/Spec v\d+ approved/)).toHaveCount(0)
 })
@@ -5489,7 +5502,9 @@ function planRevisionGateActivity(taskId: string) {
   return item
 }
 
-test('the revision chain reads as request, decision, and the plan version it produced', async ({ page }) => {
+test('the revision chain reads as one plan cycle: request, decision, and the plan version it produced', async ({
+  page,
+}) => {
   const taskId = 'plan-revision-history'
   await page.route(`**/v1/tasks/${taskId}/activity*`, async (route) => {
     const item = planRevisionGateActivity(taskId)
@@ -5538,19 +5553,28 @@ test('the revision chain reads as request, decision, and the plan version it pro
 
   await page.goto(`/w/demo/tasks/${taskId}/full`)
   const timeline = page.getByRole('region', { name: 'Execution event timeline' })
-  const rows = timeline.locator('ol > li')
 
-  await expect(timeline.getByText('The agent asked to revise plan v7')).toBeVisible()
-  await expect(timeline.getByText('A dependency changed the public handler contract.')).toBeVisible()
-  await expect(timeline.getByText('Plan revision approved — returning to planning')).toBeVisible()
-  await expect(timeline.getByText('Re-plan around the new handler contract.')).toBeVisible()
-  // The new version shows in the plan section, not as a timeline row.
-  await expect(timeline.getByText('Plan v8 drafted')).toHaveCount(0)
+  // One plan-cycle entry holds the request, the decision, and the version it
+  // produced, each with its time (req-260809-a40c75 AC-4.1; DEC-130(1)).
+  const cycle = timeline.getByRole('article', { name: 'Plan revision v7 → v8' })
+  await expect(cycle).toBeVisible()
+  // This fixture renders no decision panel below the timeline, so the waiting
+  // cycle uses the neutral wording.
+  await expect(cycle.getByText('Waiting for a decision', { exact: true })).toBeVisible()
+  const steps = cycle.locator('[data-plan-cycle-step]')
+  await expect(steps).toHaveCount(3)
+  await expect(steps.nth(0)).toContainText('Agent asked to revise plan v7')
+  await expect(steps.nth(0)).toContainText('A dependency changed the public handler contract.')
+  await expect(steps.nth(1)).toContainText('Allowed a revision — back to planning')
+  await expect(steps.nth(1)).toContainText('Re-plan around the new handler contract.')
+  await expect(steps.nth(2)).toContainText('Plan v8 ready')
+  await expect(cycle.locator('time')).toHaveCount(3)
+  await expect(cycle.getByText('Waiting for an operator decision')).toBeVisible()
 
-  // Two distinct entries in the order they happened (AC-4.1) — and the
-  // release the request rode in on is not repeated as a third.
-  await expect(rows.nth(0)).toContainText('The agent asked to revise plan v7')
-  await expect(rows.nth(1)).toContainText('Plan revision approved')
+  // No separate request note or decision card, and the release the request
+  // rode in on is not repeated.
+  await expect(timeline.getByText('The agent asked to revise plan v7')).toHaveCount(0)
+  await expect(timeline.getByText('Plan revision approved — returning to planning')).toHaveCount(0)
   await expect(timeline.getByText('Work-order claim released')).toHaveCount(0)
   // The wire vocabulary stays on the wire.
   await expect(timeline.getByText('plan-revision-approved')).toHaveCount(0)

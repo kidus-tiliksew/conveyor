@@ -263,6 +263,9 @@ type taskDetailSummaries struct {
 	ReviewRounds                 taskReviewRounds          `json:"review_rounds"`
 	ReviewBounces                map[string]jsNumber       `json:"review_bounces"`
 	ReviewRoundSummaries         taskRoundSummaries        `json:"review_round_summaries"`
+	// PlanCycles is set by derivePlanCycles for the bounded view
+	// (component-web-task-surfaces invariant 67; DEC-130(2)).
+	PlanCycles []taskPlanCycle `json:"plan_cycles,omitempty"`
 	// ReviewRoundSeats and ReviewSeatPolicy are set by
 	// enrichReviewSeatSummaries for the bounded view (feature-review-seat-minimum RS-7).
 	ReviewRoundSeats *taskReviewRoundSeats `json:"review_round_seats,omitempty"`

@@ -2745,6 +2745,10 @@ func (s *Server) getTaskActivity(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	summaries := deriveTaskDetailSummaries(events, jobs, workOrders)
+	// Plan cycles fold the complete ledger and the interventions this read
+	// already holds, with no store call of their own
+	// (component-web-task-surfaces invariants 26 and 67).
+	summaries.PlanCycles = derivePlanCycles(events, interventions)
 	if err := s.enrichReviewSeatSummaries(r.Context(), task, workOrders, events, &summaries); err != nil {
 		writeStoreFailure(w, r, err)
 		return

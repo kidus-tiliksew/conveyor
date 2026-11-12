@@ -39,6 +39,7 @@ import { MarkdownProse } from '../ui/markdown-prose'
 import { ImplementationEntry } from './implementation-entry'
 import { hasInterruptedReviewRecovery, InterruptedReviewRecoveryCard } from './interrupted-review-recovery-card'
 import { logoAssets } from './model-logo-assets'
+import { PlanCycleEntry, planCycleDecider, planCycleFoldable, planCycleStepLabel } from './plan-cycle-entry'
 import { canRedispatch, FailedTriageCard, RedispatchCard } from './redispatch-card'
 import {
   changesComposerHint,
@@ -111,6 +112,9 @@ export function Timeline({
   const usageReportedOrderIDs = reportedUsageOrderIDs(item)
   const showGate = isReviewable(item)
   const recoveryGate = item.next_action?.kind === 'merge_conflict'
+  // The decision panel renders at the tail only for a viewer who can act on it.
+  const decisionVisible =
+    showGate && (canOperate || (item.at_merge_gate && canRequestChanges) || (canRecover && recoveryGate))
   const timelineRef = useRef<HTMLElement>(null)
   const gateRef = useRef<HTMLLIElement>(null)
   const [decisionScrollRequest, setDecisionScrollRequest] = useState(0)
@@ -207,7 +211,13 @@ export function Timeline({
         <h2 className="mb-4 mt-5 text-sm font-semibold tracking-tight">Activity</h2>
         <ol className="relative space-y-4 before:absolute before:bottom-4 before:left-[7px] before:top-4 before:w-px before:bg-border">
           {entries.map((entry) => (
-            <TimelineRow key={keyFor(entry)} entry={entry} item={item} usageReportedOrderIDs={usageReportedOrderIDs} />
+            <TimelineRow
+              key={keyFor(entry)}
+              entry={entry}
+              item={item}
+              usageReportedOrderIDs={usageReportedOrderIDs}
+              decisionVisible={decisionVisible}
+            />
           ))}
           {item.event_page?.has_older && item.event_page.older_cursor && (
             // Remounted closed for another task or workspace, which aborts its read.
@@ -227,7 +237,7 @@ export function Timeline({
               {card}
             </li>
           ))}
-          {showGate && (canOperate || (item.at_merge_gate && canRequestChanges) || (canRecover && recoveryGate)) && (
+          {decisionVisible && (
             <li ref={gateRef} id={gateAnchorId(item.task.id)} className="relative pl-7">
               <TimelineDot className={cn('animate-pulse', gateDots[gateTone(item.next_action?.kind)])} />
               <ReviewPanel
@@ -656,6 +666,10 @@ const interventionLabels: Record<InterventionAction, string> = {
 function keyFor(entry: TimelineEntry) {
   if (entry.type === 'job') return `job-${entry.job.id}`
   if (entry.type === 'intervention') return `intervention-${entry.intervention.id}`
+  // A plan cycle seeds its fold state on mount, so it remounts when it becomes
+  // foldable, for example when a newer cycle opens (invariant 70).
+  if (entry.type === 'plan_cycle')
+    return `${entry.key}:${planCycleFoldable(entry.cycle, entry.newest) ? 'foldable' : 'open'}`
   return entry.key
 }
 
@@ -688,10 +702,13 @@ function TimelineRow({
   entry,
   item,
   usageReportedOrderIDs,
+  decisionVisible = false,
 }: {
   entry: TimelineEntry
   item: ActivityItem
   usageReportedOrderIDs: Set<string>
+  // Whether the decision panel renders below the timeline for this viewer.
+  decisionVisible?: boolean
 }) {
   const resolve = usePersonResolver()
   // An entry with a person shows that person's avatar on the rail; an entry
@@ -770,6 +787,37 @@ function TimelineRow({
     )
   if (entry.type === 'panel')
     return <PanelEntry entry={entry} item={item} usageReportedOrderIDs={usageReportedOrderIDs} />
+  // A plan cycle's rail shows the attention marker while it waits on the
+  // operator, else its last deciding person (component-web-task-surfaces
+  // invariant 69).
+  if (entry.type === 'plan_cycle') {
+    const decider = planCycleDecider(entry.cycle)
+    const person = resolve(decider?.user_id)
+    const waiting = entry.cycle.outcome === 'awaiting_decision'
+    return (
+      <PlanCycleEntry
+        cycle={entry.cycle}
+        newest={entry.newest}
+        decisionVisible={decisionVisible}
+        rail={
+          waiting ? (
+            <span data-plan-cycle-attention>
+              <TimelineDot className="animate-pulse bg-attention-dot" />
+            </span>
+          ) : (
+            rail(
+              person && decider ? [{ person, label: personLabel(person, planCycleStepLabel(decider)) }] : [],
+              'bg-foreground',
+            )
+          )
+        }
+        audit={(eventId) => (
+          // The server cut this text at 16,384 bytes; its event holds the rest.
+          <AuditDisclosure taskId={item.task.id} kind="event" recordId={eventId} label="Full text (shortened here)" />
+        )}
+      />
+    )
+  }
   // A work-order entry carries no usage; per-order usage stays in TaskUsage
   // inside technical activity (component-web-task-surfaces, Work-order
   // timeline entries).

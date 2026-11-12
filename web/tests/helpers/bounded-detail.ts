@@ -7,6 +7,9 @@ import type {
   TaskHistoryPage,
   TaskHistorySelection,
   TaskJobResult,
+  TaskPlanCycle,
+  TaskPlanCycleStep,
+  TaskPlanCycleStepKind,
   TaskReviewResult,
   TaskReviewRound,
   TaskSummaries,
@@ -437,6 +440,207 @@ function parkReason(payload: Record<string, unknown>, id: string, at: string): T
 }
 
 // The summaries the server folds from the complete ledger in (at, id) order.
+// Plan cycles, as internal/httpapi/task_detail_plan_cycles.go folds them
+// (component-web-task-surfaces invariant 67): a plan version's kind follows
+// its origin, a plan-state step follows the move's cause, and a decision
+// joins its intervention by the action, time, actor, reason code, and comment.
+// A fixture may also set `summaries.plan_cycles` itself.
+function planCycles(item: CompleteActivity, ordered: Ordered[]): TaskPlanCycle[] {
+  const cycles: TaskPlanCycle[] = []
+  const interventions = [...(item.interventions ?? [])].sort(
+    (a, b) => Date.parse(a.at) - Date.parse(b.at) || a.id - b.id,
+  )
+  const used = new Set<number>()
+  const setupChanges = ordered.filter(
+    ({ event }) => event.kind === 'task.setup.changed' && typeof event.payload?.plan_state === 'object',
+  )
+  const setupUsed = new Set<number>()
+  let open: TaskPlanCycle | undefined
+  let gate: 'none' | 'plan' | 'revision' = 'none'
+  let pending = 0
+  const version = (value: unknown) =>
+    typeof value === 'number' && Number.isInteger(value) && value > 0 ? value : undefined
+  const step = (kind: TaskPlanCycleStepKind, event: CompleteEvent, planVersion?: number | null): TaskPlanCycleStep => ({
+    kind,
+    at: event.at,
+    event_id: String(event.id),
+    ...(planVersion ? { plan_version: planVersion } : {}),
+  })
+  const withText = (target: TaskPlanCycleStep, text: unknown) => {
+    const trimmed = typeof text === 'string' ? text.trim() : ''
+    if (!trimmed) return target
+    const shown = cut(trimmed)
+    return { ...target, text: shown.text, ...(shown.truncated ? { truncated: true } : {}) }
+  }
+  const humanUser = (actor: unknown) =>
+    typeof actor === 'string' && actor.startsWith('user:') ? actor.slice('user:'.length).trim() || undefined : undefined
+  const settle = (outcome: TaskPlanCycle['outcome'], last: TaskPlanCycleStep) => {
+    if (!open) return
+    open.steps.push(last)
+    open.outcome = outcome
+    open = undefined
+    gate = 'none'
+    pending = 0
+  }
+  const openCycle = (openedBy: TaskPlanCycle['opened_by'], contested: number | null) => {
+    open = {
+      opened_by: openedBy,
+      contested_version: contested,
+      first_version: null,
+      final_version: null,
+      outcome: 'planning',
+      steps: [],
+    }
+    cycles.push(open)
+    gate = 'none'
+    pending = 0
+  }
+  for (const [index, { event }] of ordered.entries()) {
+    const payload = event.payload ?? {}
+    if (event.kind === 'spec.version_created') {
+      const v = version(payload.version)
+      if (!v) continue
+      const kind: TaskPlanCycleStepKind =
+        payload.origin === 'intake' ? 'plan_filed' : payload.origin === 'operator' ? 'plan_attached' : 'plan_drafted'
+      if (!open) openCycle('plan', null)
+      let next = step(kind, event, v)
+      if (kind === 'plan_attached') {
+        const user = humanUser(event.actor_id)
+        next = withText(user ? { ...next, user_id: user } : next, payload.reason)
+      }
+      const cycle = open as unknown as TaskPlanCycle
+      cycle.steps.push(next)
+      cycle.first_version ??= v
+      cycle.final_version = v
+      gate = 'plan'
+      pending = v
+    } else if (event.kind === 'work_order.plan_revision_requested') {
+      const request = planRevision(payload)
+      if (!request) continue
+      if (open) open.outcome = gate === 'none' ? 'planning' : 'awaiting_decision'
+      const contested = request.plan_version ?? null
+      openCycle(contested ? 'revision_request' : 'planning_request', contested)
+      const cycle = open as unknown as TaskPlanCycle
+      cycle.steps.push(
+        withText(step(contested ? 'revision_requested' : 'planning_requested', event, contested), request.rationale),
+      )
+      gate = 'revision'
+    } else if (event.kind === 'spec.version_approved') {
+      const v = version(payload.version)
+      if (open && gate === 'plan' && v === pending) settle('approved', step('plan_approved', event, v))
+    } else if (event.kind === 'task.plan_state_changed') {
+      if (!open) continue
+      const cycle = open as TaskPlanCycle
+      if (payload.cause === 'operator') {
+        const kind: TaskPlanCycleStepKind | undefined =
+          payload.to === 'not_required'
+            ? 'plan_not_needed'
+            : payload.to === 'needed' && gate === 'plan'
+              ? 'plan_sent_back'
+              : undefined
+        if (!kind) continue
+        let next = step(kind, event, gate === 'plan' ? pending : undefined)
+        let best = -1
+        for (const [position, change] of setupChanges.entries()) {
+          const move = change.event.payload?.plan_state as Record<string, unknown>
+          if (setupUsed.has(position) || move.from !== payload.from || move.to !== payload.to) continue
+          const distance = Math.abs(ordered.indexOf(change) - index)
+          if (best < 0 || distance < Math.abs(ordered.indexOf(setupChanges[best]) - index)) best = position
+        }
+        if (best >= 0) {
+          setupUsed.add(best)
+          const change = setupChanges[best].event.payload ?? {}
+          const user = humanUser(change.actor)
+          next = withText(user ? { ...next, user_id: user } : next, change.reason)
+        }
+        if (kind === 'plan_not_needed') settle('not_needed', next)
+        else {
+          cycle.steps.push(next)
+          gate = 'none'
+          pending = 0
+        }
+      } else if (payload.cause === 'plan_redirected' && gate === 'plan') {
+        cycle.steps.push(step('changes_requested', event, pending))
+        gate = 'none'
+        pending = 0
+      } else if (payload.cause === 'plan_approved' && gate === 'plan') {
+        settle('approved', step('plan_approved', event, pending))
+      } else if (
+        (payload.cause === 'plan_revision_approved' || payload.cause === 'planning_requested_approved') &&
+        gate === 'revision'
+      ) {
+        cycle.steps.push(step('revision_approved', event, cycle.contested_version))
+        gate = 'none'
+      }
+    } else if (event.kind === 'task.state_changed') {
+      if (!open) continue
+      if (payload.to === 'merged') settle('merged', step('task_merged', event))
+      else if (payload.to === 'closed')
+        settle('closed', step(payload.command === 'task.start_over' ? 'task_started_over' : 'task_closed', event))
+    } else if (event.kind.startsWith('intervention.') && open) {
+      const cycle = open as TaskPlanCycle
+      const action = event.kind.slice('intervention.'.length)
+      const reason = typeof payload.reason_code === 'string' ? payload.reason_code : ''
+      const comment = typeof payload.comment === 'string' ? payload.comment : ''
+      let kind: TaskPlanCycleStepKind | undefined
+      let outcome: TaskPlanCycle['outcome'] | undefined
+      let planVersion: number | null | undefined
+      if (gate === 'revision') {
+        planVersion = cycle.contested_version
+        if (action === 'redirect' && reason === 'plan-revision-approved') kind = 'revision_approved'
+        else if (action === 'redirect' && reason === 'plan-revision-declined') {
+          kind = 'revision_declined'
+          outcome = 'declined'
+        } else if (action === 'reject') {
+          kind = 'revision_rejected'
+          outcome = 'closed'
+        }
+      } else if (gate === 'plan') {
+        planVersion = pending
+        if (action === 'approve') {
+          kind = 'plan_approved'
+          outcome = 'approved'
+        } else if (action === 'redirect') kind = 'changes_requested'
+        else if (action === 'reject') {
+          kind = 'task_closed'
+          outcome = 'closed'
+          planVersion = undefined
+        }
+      }
+      if (action === 'cancel') {
+        kind = 'task_closed'
+        outcome = 'closed'
+        planVersion = undefined
+      }
+      if (!kind) continue
+      let next = withText(step(kind, event, planVersion), comment)
+      const record = interventions.find(
+        (candidate) =>
+          !used.has(candidate.id) &&
+          candidate.action === action &&
+          atMicros(candidate.at) === atMicros(event.at) &&
+          candidate.reason_code === reason &&
+          candidate.comment === comment &&
+          candidate.actor_id === event.actor_id,
+      )
+      if (record) {
+        used.add(record.id)
+        const user =
+          record.actor_owner_user_id?.trim() || (record.actor_role === 'human' ? humanUser(record.actor_id) : undefined)
+        next = { ...next, intervention_id: record.id, ...(user ? { user_id: user } : {}) }
+      }
+      if (outcome) settle(outcome, next)
+      else {
+        cycle.steps.push(next)
+        gate = 'none'
+        pending = 0
+      }
+    }
+  }
+  if (open) (open as TaskPlanCycle).outcome = gate === 'none' ? 'planning' : 'awaiting_decision'
+  return cycles
+}
+
 export function taskSummaries(item: CompleteActivity): TaskSummaries {
   const ordered = orderedEvents(item.events ?? [])
   const summaries: TaskSummaries = { run_implementation: false }
@@ -601,6 +805,8 @@ export function taskSummaries(item: CompleteActivity): TaskSummaries {
   }
   const failure = triageFailure(item, ordered)
   if (failure) summaries.triage_failure = failure
+  const cycles = planCycles(item, ordered)
+  if (cycles.length > 0) summaries.plan_cycles = cycles
   if (Object.keys(jobResults).length > 0) summaries.job_results = jobResults
   if (Object.keys(byOrder).length + Object.keys(byJob).length > 0)
     summaries.review_results = { by_order: byOrder, by_job: byJob }

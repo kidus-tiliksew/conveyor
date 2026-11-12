@@ -10,6 +10,7 @@ import type {
   TaskAssignee,
   TaskEventView,
   TaskJobResult,
+  TaskPlanCycle,
   TaskRelation,
   TaskReviewResult,
   TaskReviewRound,
@@ -879,6 +880,16 @@ export type TimelineEntry =
     }
   | { type: 'intervention'; at: string; intervention: Intervention }
   | {
+      // One plan cycle from `summaries.plan_cycles`, at its first step's time
+      // (component-web-task-surfaces invariant 68; DEC-130(1)).
+      type: 'plan_cycle'
+      at: string
+      key: string
+      cycle: TaskPlanCycle
+      // The task's newest cycle never renders folded (invariant 70).
+      newest: boolean
+    }
+  | {
       type: 'panel'
       at: string
       key: string
@@ -1375,9 +1386,9 @@ function noteContent(
         alarm: true,
       }
     case 'work_order.plan_revision_requested': {
-      // The request opens the decision gate, so the rationale reads inline
-      // rather than behind a disclosure — it is the whole case the operator is
-      // being asked to judge (REQ-4 AC-4.1).
+      // A request reads inside the plan cycle it opened, which names this
+      // event, so this note shows only for a request no cycle names
+      // (component-web-task-surfaces invariant 68).
       const request = planRevisionRequestFrom({ payload })
       if (!request) return undefined
       return {
@@ -1393,9 +1404,9 @@ function noteContent(
     // (component-web-task-surfaces invariant 65).
     case 'task.plan_state_changed':
       return undefined
-    // The plan section shows each version and the approval intervention
-    // renders the richer human "Approved" card. Retain the audit events in the
-    // API without repeating them in the timeline.
+    // The plan section shows each version, and the plan cycle names each
+    // version and its approval. Retain the audit events in the API without
+    // repeating them in the timeline.
     case 'spec.version_created':
     case 'spec.version_approved':
       return undefined
@@ -1679,6 +1690,41 @@ function agentActivityNote(
   }
 }
 
+// The events and interventions the plan cycles' steps name. None renders as
+// an entry of its own, on the first page or an earlier history page, so a plan
+// approval, a plan redirect, and a plan-revision decision read only inside
+// their cycle (component-web-task-surfaces invariants 41 and 68;
+// req-260809-a40c75 AC-4.1, AC-4.2). The sets come from the summary alone and
+// never from event kinds or times (invariant 71).
+export interface PlanCycleAbsorption {
+  eventIds: Set<string>
+  interventionIds: Set<number>
+}
+
+export function planCycleAbsorption(summaries: TaskSummaries | undefined): PlanCycleAbsorption {
+  const eventIds = new Set<string>()
+  const interventionIds = new Set<number>()
+  for (const cycle of summaries?.plan_cycles ?? []) {
+    for (const step of cycle.steps) {
+      eventIds.add(step.event_id)
+      if (step.intervention_id !== undefined) interventionIds.add(step.intervention_id)
+    }
+  }
+  return { eventIds, interventionIds }
+}
+
+// One timeline entry per plan cycle, at its first step's time.
+function planCycleEntries(summaries: TaskSummaries | undefined): Extract<TimelineEntry, { type: 'plan_cycle' }>[] {
+  const cycles = (summaries?.plan_cycles ?? []).filter((cycle) => cycle.steps.length > 0)
+  return cycles.map((cycle, index) => ({
+    type: 'plan_cycle',
+    at: cycle.steps[0].at,
+    key: `plan-cycle-${cycle.steps[0].event_id}`,
+    cycle,
+    newest: index === cycles.length - 1,
+  }))
+}
+
 // The costed event timeline: one entry per stage execution,
 // interleaved with the notable pipeline events and every human/agent
 // decision, in wall-clock order. This is the audit log rendered as a story.
@@ -1686,6 +1732,8 @@ export function buildTimeline(item: ActivityItem, members: WorkspaceMembership[]
   const entries: TimelineEntry[] = []
   const panels = buildReviewPanels(item)
   entries.push(...panels.panels)
+  const absorbed = planCycleAbsorption(item.summaries)
+  entries.push(...planCycleEntries(item.summaries))
   const orderByJob = new Map((item.work_orders ?? []).map((order) => [order.job_id, order]))
   const startedJobs = new Set(item.jobs.filter((job) => job.started_at).map((job) => job.id))
   const attempts = implementationAttempts(item)
@@ -1728,6 +1776,7 @@ export function buildTimeline(item: ActivityItem, members: WorkspaceMembership[]
     if (entry) entries.push(entry)
   }
   for (const event of item.events) {
+    if (absorbed.eventIds.has(event.id)) continue
     const retry = automaticRetryEvent(event)
     if (attemptEventKinds.has(event.kind) && !retry) continue
     const note = noteFor(event, panels, deliveries, item.task.assignee, members)
@@ -1756,6 +1805,7 @@ export function buildTimeline(item: ActivityItem, members: WorkspaceMembership[]
     })
   }
   for (const intervention of item.interventions) {
+    if (absorbed.interventionIds.has(intervention.id)) continue
     // The synthetic redirect a panel bounce records (actor "review:round:N")
     // duplicates the panel card's merged notes — the audit row stays in the
     // API, the story is told once here.
@@ -1776,7 +1826,7 @@ export function buildTimeline(item: ActivityItem, members: WorkspaceMembership[]
 }
 
 // Earlier human history rows, rendered through the same `noteFor`, panel
-// absorption, and delivery absorption the timeline uses
+// absorption, plan-cycle absorption, and delivery absorption the timeline uses
 // (component-web-task-surfaces, History pages).
 export function historyNoteEntries(
   item: ActivityItem,
@@ -1785,8 +1835,10 @@ export function historyNoteEntries(
 ): Extract<TimelineEntry, { type: 'note' }>[] {
   const panels = buildReviewPanels(item)
   const deliveries = implementationDeliveries(item)
+  const absorbed = planCycleAbsorption(item.summaries)
   const entries: Extract<TimelineEntry, { type: 'note' }>[] = []
   for (const event of events) {
+    if (absorbed.eventIds.has(event.id)) continue
     const retry = automaticRetryEvent(event)
     if (attemptEventKinds.has(event.kind) && !retry) continue
     const note = noteFor(event, panels, deliveries, item.task.assignee, members)

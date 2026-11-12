@@ -1342,6 +1342,9 @@ func legacyTaskActivity(s *Server, w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	summaries := deriveTaskDetailSummaries(events, jobs, workOrders)
+	// The plan-cycle summary is a pure fold over the records this assembly
+	// already read (component-web-task-surfaces invariant 67).
+	summaries.PlanCycles = derivePlanCycles(events, interventions)
 	if err := s.enrichReviewSeatSummaries(r.Context(), task, workOrders, events, &summaries); err != nil {
 		fail(err)
 		return
@@ -1398,10 +1401,11 @@ type detailShapes struct {
 	artifacts int // task attachments and evidence artifacts each
 	history   int // progress events
 	reviews   int // review rounds of one seat
+	cycles    int // plan cycles: a request, its approval, a new version, and its approval
 }
 
 func uniformShapes(size int) detailShapes {
-	return detailShapes{orders: size, attempts: size, citations: size, context: size, artifacts: size, history: size, reviews: size}
+	return detailShapes{orders: size, attempts: size, citations: size, context: size, artifacts: size, history: size, reviews: size, cycles: size}
 }
 
 // detailFixture is one workspace whose task-detail branches each hold the
@@ -1568,6 +1572,28 @@ func (f *detailFixture) grow(t *testing.T, task core.Task, claimed, checkpointLa
 	}
 	for e := 0; e < sh.history; e++ {
 		if err := f.st.AppendEvent(f.ctx, core.Event{TaskID: task.ID, JobID: ids[e%len(ids)], Kind: "work_order.progress_reported", ActorRole: core.ActorAgent, At: f.now.Add(time.Duration(e) * time.Second), Payload: core.JSONPayload(map[string]any{"message": fmt.Sprintf("progress %d", e)})}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// Plan cycles fold from the ledger and the interventions the read
+	// already holds, so they add no store call (component-web-task-surfaces
+	// invariants 26 and 67).
+	for c := 0; c < sh.cycles; c++ {
+		at := f.now.Add(time.Duration(sh.history+c*4) * time.Second)
+		events := []core.Event{
+			{TaskID: task.ID, Kind: "work_order.plan_revision_requested", At: at, Payload: core.JSONPayload(map[string]any{"rationale": fmt.Sprintf("revise %d", c), "plan_version": c + 1})},
+			{TaskID: task.ID, Kind: "spec.version_created", At: at.Add(2 * time.Second), Payload: core.JSONPayload(map[string]any{"version": c + 2, "origin": "plan_order"})},
+		}
+		if err := f.st.AppendEvent(f.ctx, events[0]); err != nil {
+			t.Fatal(err)
+		}
+		if err := f.st.CreateIntervention(f.ctx, core.Intervention{TaskID: task.ID, Action: core.InterventionRedirect, ReasonCode: "plan-revision-approved", Comment: "go", At: at.Add(time.Second)}); err != nil {
+			t.Fatal(err)
+		}
+		if err := f.st.AppendEvent(f.ctx, events[1]); err != nil {
+			t.Fatal(err)
+		}
+		if err := f.st.CreateIntervention(f.ctx, core.Intervention{TaskID: task.ID, Action: core.InterventionApprove, At: at.Add(3 * time.Second)}); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -1751,6 +1777,7 @@ func TestTaskDetailStoreCallsStayFixedPerShape(t *testing.T) {
 		"artifacts": func(s *detailShapes) { s.artifacts = large },
 		"history":   func(s *detailShapes) { s.history = 40 * large },
 		"reviews":   func(s *detailShapes) { s.reviews = large },
+		"cycles":    func(s *detailShapes) { s.cycles = large },
 		"all":       func(s *detailShapes) { *s = uniformShapes(large); s.history = 40 * large },
 	}
 	for name, apply := range grow {

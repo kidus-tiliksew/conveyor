@@ -554,6 +554,60 @@ export interface TaskSummaries {
     by_order?: Record<string, TaskReviewSeatMetadata>
   }
   review_seat_policy?: { minimum_seat_count: number; planned_seat_count?: number }
+  // The task's plan cycles, folded from the complete ledger
+  // (component-web-task-surfaces invariant 67; DEC-130(2)).
+  plan_cycles?: TaskPlanCycle[]
+}
+
+export type TaskPlanCycleOpener = 'plan' | 'revision_request' | 'planning_request'
+
+export type TaskPlanCycleOutcome =
+  | 'approved'
+  | 'awaiting_decision'
+  | 'planning'
+  | 'declined'
+  | 'not_needed'
+  | 'closed'
+  | 'merged'
+
+export type TaskPlanCycleStepKind =
+  | 'revision_requested'
+  | 'planning_requested'
+  | 'revision_approved'
+  | 'revision_declined'
+  | 'revision_rejected'
+  | 'plan_drafted'
+  | 'plan_filed'
+  | 'plan_attached'
+  | 'changes_requested'
+  | 'plan_approved'
+  | 'plan_sent_back'
+  | 'plan_not_needed'
+  | 'task_started_over'
+  | 'task_closed'
+  | 'task_merged'
+
+// One step of a plan cycle. event_id names the event that records it and
+// intervention_id the intervention, when one does; the timeline renders
+// neither as an entry of its own (invariant 68).
+export interface TaskPlanCycleStep {
+  kind: TaskPlanCycleStepKind
+  at: string
+  event_id: string
+  plan_version?: number
+  user_id?: string
+  intervention_id?: number
+  text?: string
+  truncated?: boolean
+}
+
+export interface TaskPlanCycle {
+  opened_by: TaskPlanCycleOpener
+  contested_version: number | null
+  first_version: number | null
+  final_version: number | null
+  outcome: TaskPlanCycleOutcome
+  steps: TaskPlanCycleStep[]
 }
 
 // risk names a round whose seat count an enforcing task's risk tier set
