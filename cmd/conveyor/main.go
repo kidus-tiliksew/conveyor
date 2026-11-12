@@ -81,6 +81,7 @@ func newRootCmd() *cobra.Command {
 	root.AddCommand(
 		authCmd(),
 		userCmd(),
+		preferencesCmd(),
 		mcpCmd(),
 		skillsCmd(),
 		repoCmd(),
