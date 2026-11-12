@@ -794,11 +794,11 @@ func TestTaskHistoryExactLargeIDsPayloadOmissionAndAuditRecovery(t *testing.T) {
 	}
 }
 
-// A merge request, its GitHub confirmation, and a dependency wait leave the
-// human selection but stay recorded: technical history pages and the audit
-// read still return them, while the bounded view and human pages keep only
-// the reconciled merge (component-web-task-surfaces "One human list"; task
-// 261108-38aabb).
+// A merge request, its GitHub confirmation, and a dependency addition or
+// removal leave the human selection but stay recorded: technical history pages
+// and the audit read still return them, while the bounded view and human pages
+// keep only the reconciled merge (component-web-task-surfaces "One human
+// list"; tasks 261108-38aabb and 261112-436fab).
 func TestTaskHistoryKeepsTimelineHiddenKindsTechnical(t *testing.T) {
 	st := newLedgerStore(t, "hidden-task")
 	st.commit(
@@ -810,6 +810,7 @@ func TestTaskHistoryKeepsTimelineHiddenKindsTechnical(t *testing.T) {
 		// technical activity and the audit read (component-web-task-surfaces
 		// invariant 65).
 		ledgerEvent("hidden-task", 5, 5*time.Second, "task.plan_state_changed", `{"from":"needed","to":"not_required","cause":"operator"}`),
+		ledgerEvent("hidden-task", 6, 6*time.Second, "task.dependency_removed", `{"depends_on_task_id":"prereq-task","reason":"replaced by successor-task"}`),
 	)
 	h := newHistoryHarness(t, st)
 	kinds := func(events []historyEventJSON) []string {
@@ -820,7 +821,7 @@ func TestTaskHistoryKeepsTimelineHiddenKindsTechnical(t *testing.T) {
 		return out
 	}
 	technical, response := h.history(historyTokenA, "hidden-task", "?selection=technical&limit=10")
-	if want := []string{"task.dependency_added", "merge.requested", "merge.confirmed", "merge.reconciled", "task.plan_state_changed"}; response.Code != http.StatusOK || !slices.Equal(kinds(technical.Events), want) {
+	if want := []string{"task.dependency_added", "merge.requested", "merge.confirmed", "merge.reconciled", "task.plan_state_changed", "task.dependency_removed"}; response.Code != http.StatusOK || !slices.Equal(kinds(technical.Events), want) {
 		t.Fatalf("technical page kinds=%v want %v (%d)", kinds(technical.Events), want, response.Code)
 	}
 	human, response := h.history(historyTokenA, "hidden-task", "?selection=human&limit=10")
@@ -831,10 +832,23 @@ func TestTaskHistoryKeepsTimelineHiddenKindsTechnical(t *testing.T) {
 	if !slices.Equal(kinds(detail.Events), []string{"merge.reconciled"}) || detail.EventPage.Returned != 1 {
 		t.Fatalf("bounded view kinds=%v page=%+v", kinds(detail.Events), detail.EventPage)
 	}
-	for _, id := range []string{"1", "2", "3", "5"} {
+	for _, id := range []string{"1", "2", "3", "5", "6"} {
 		if audit := h.get(historyTokenA, "/v1/tasks/hidden-task/audit/event/"+id); audit.Code != http.StatusOK {
 			t.Fatalf("audit read of event %s: %d", id, audit.Code)
 		}
+	}
+	// The audit read returns the removal with its original reason.
+	audit := h.get(historyTokenA, "/v1/tasks/hidden-task/audit/event/6")
+	var removal struct {
+		Event struct {
+			Kind    string `json:"kind"`
+			Payload struct {
+				Reason string `json:"reason"`
+			} `json:"payload"`
+		} `json:"event"`
+	}
+	if err := json.Unmarshal(audit.Body.Bytes(), &removal); err != nil || removal.Event.Kind != "task.dependency_removed" || removal.Event.Payload.Reason != "replaced by successor-task" {
+		t.Fatalf("audit read of the removal: %s (%v)", audit.Body.String(), err)
 	}
 }
 
