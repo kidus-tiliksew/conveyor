@@ -117,17 +117,21 @@ const sizes = {
 // One person's avatar as a disclosure trigger. Its accessible name is the
 // person's name, and its label reads "<name> · <what>". A live avatar carries
 // a solid primary ring and a halo that pulses only when motion is allowed.
+// `halo={false}` keeps the ring and drops the halo, as the next-action banner
+// does so the halo cannot run into the status chip (DEC-129).
 export function PersonAvatar({
   person,
   label,
   size = 'rail',
   live = false,
+  halo = true,
   className,
 }: {
   person: Person
   label: string
   size?: keyof typeof sizes
   live?: boolean
+  halo?: boolean
   className?: string
 }) {
   return (
@@ -146,7 +150,7 @@ export function PersonAvatar({
             'focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary',
           )}
         >
-          {live && (
+          {live && halo && (
             <span
               aria-hidden
               className="absolute -inset-1 rounded-full bg-primary/25 motion-safe:animate-ping"
