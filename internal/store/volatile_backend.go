@@ -25,6 +25,7 @@ type volatileMemory struct {
 	sessions                map[string]dashboardSession
 	workspaceGitHubApps     map[string]workspaceAppRecord
 	gitHubWebhookDeliveries map[string]map[string]time.Time
+	stagePreferences        map[string]StagePreferences
 	orgName                 string
 	gitHubAppEncryptionKey  []byte
 	log                     eventlog.Store
@@ -45,8 +46,10 @@ func NewVolatileBackend() Backend {
 		credentials: map[string]identityCredential{},
 		signInLinks: map[string]signInLink{},
 		sessions:    map[string]dashboardSession{},
-		orgName:     "Conveyor",
-		log:         logqueue.Notify(memlog.New(), mem.changes),
+		// stagePreferences is keyed by user ID (component-stage-preferences).
+		stagePreferences: map[string]StagePreferences{},
+		orgName:          "Conveyor",
+		log:              logqueue.Notify(memlog.New(), mem.changes),
 	}
 	backend.readClockPolicy = func(workspace string) (config.RecoveryPolicy, time.Duration, error) {
 		record, ok := backend.workspaces[workspace]
