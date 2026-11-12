@@ -151,7 +151,6 @@ export function SystemDesignPage() {
                 <DocumentTreeItem
                   key={item.document.id}
                   label={item.document.title}
-                  documentId={item.document.id}
                   meta={
                     !item.current_version
                       ? 'not yet confirmed'
@@ -184,7 +183,6 @@ export function SystemDesignPage() {
                 <DocumentTreeItem
                   key={item.document.id}
                   label={item.document.title}
-                  documentId={item.document.id}
                   meta={
                     dismissalArchiveDescription(item.document) ??
                     (item.document.superseded_by?.length
