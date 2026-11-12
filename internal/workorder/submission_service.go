@@ -310,21 +310,10 @@ func (s *Service) submitForReviewLocked(ctx context.Context, id, session, headSH
 	if _, err = taskops.New(s.Store).Perform(ctx, task.ID, taskops.Command{Kind: core.TaskStageAdvance, NextStage: nextStage, ProjectStages: true}); err != nil {
 		return nil, err
 	}
+	// Review is always an MCP work-order round: no route, stale or not,
+	// makes Conveyor invoke a model for it, so the submission never waits
+	// for a verdict here (DEC-132(2)).
 	reviewExecution := cfg.Routing.Stages["review"].Execution
-	if nextStage == core.StageReview && reviewExecution == config.ExecutionInProcess {
-		if err = s.Dispatcher.DispatchNow(ctx, task.ID); err != nil {
-			return nil, err
-		}
-		result, resultErr := s.latestReviewResult(ctx, task.ID, order.UpdatedAt)
-		if resultErr != nil {
-			return nil, resultErr
-		}
-		result["context_freshness"] = freshness
-		result["pr_url"] = prURL
-		result["review_execution"] = reviewExecution
-		result["await_review"] = false
-		return withReviewSeatsResult(result, reviewSeats, true), nil
-	}
 	s.Dispatcher.Enqueue(ctx, task.ID)
 	result := map[string]any{"pr_url": prURL, "review_execution": reviewExecution, "await_review": true, "context_freshness": freshness}
 	if nextStage == core.StageVerify {

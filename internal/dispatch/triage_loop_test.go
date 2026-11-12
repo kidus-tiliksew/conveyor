@@ -51,7 +51,7 @@ func triageBudgetDispatcher(t *testing.T, agent inprocess.Agent) (*Dispatcher, s
 	if err := st.CreateTask(ctx, task); err != nil {
 		t.Fatal(err)
 	}
-	cfg := &config.Config{Workspace: "demo", MaxBounces: 2, Routing: config.Routing{Stages: map[string]config.StageRoute{"triage": {Model: "gpt", Timeout: time.Minute}}}}
+	cfg := &config.Config{Workspace: "demo", MaxBounces: 2, Routing: config.Routing{Triage: config.TriageRoute{Model: "gpt", Timeout: time.Minute}}}
 	d := New(st, cfg, agent)
 	var err error
 	d.Pack, err = pack.Load("../../pack")

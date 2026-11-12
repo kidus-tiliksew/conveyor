@@ -126,6 +126,10 @@ type Server struct {
 	IdentityProvisioner store.IdentityProvisioner
 	CallerIdentities    store.CallerIdentityStore
 	OwnProfiles         store.OwnProfileStore
+	// StagePreferences is the backend's stage preference store. Only the
+	// component's own handlers in stage_preferences*.go and
+	// mcp_stage_preferences*.go reach it (component-stage-preferences).
+	StagePreferences    store.StagePreferenceStore
 	PersonalTokens      store.PersonalAccessTokenStore
 	WorkspaceGitHubApps store.WorkspaceGitHubAppStore
 	GitHubApps          *github.AppClient
@@ -180,6 +184,9 @@ func NewServer(s store.Store) *Server {
 	if profiles, ok := s.(store.OwnProfileStore); ok {
 		server.OwnProfiles = profiles
 	}
+	if preferences, ok := s.(store.StagePreferenceStore); ok {
+		server.StagePreferences = preferences
+	}
 	if tokens, ok := s.(store.PersonalAccessTokenStore); ok {
 		server.PersonalTokens = tokens
 	}
@@ -220,6 +227,11 @@ func (s *Server) Handler() http.Handler {
 		r.With(s.requireWorkspaceAuth).Get("/workspaces", s.listWorkspaces)
 		r.With(s.requireSelfServiceCredential, s.resolveOptionalWorkspaceCapability(core.CapabilityViewWorkspace)).Get("/me", s.getCallerIdentity)
 		r.With(s.requireSelfServiceCredential).Put("/me", s.putOwnDisplayName)
+		// Stage preferences are the credential owner's own and apply in every
+		// workspace, so the routes resolve no workspace and accept a session or
+		// a personal access token (component-stage-preferences; DEC-116(2)).
+		r.With(s.requireSelfServiceCredential).Get("/me/stage-preferences", s.getStagePreferences)
+		r.With(s.requireSelfServiceCredential).Put("/me/stage-preferences", s.putStagePreferences)
 		// Instance administration (DEC-75(2), DEC-75(5)): only the deployment
 		// marker owner's own user credential reaches account provisioning;
 		// every other authenticated human, a workspace operator included, gets

@@ -497,7 +497,7 @@ func TestJobCostPersistenceKeepsMissingDistinctFromReportedZero(t *testing.T) {
 
 func TestConfigDiffIgnoresRuntimeParsedTimeout(t *testing.T) {
 	cfg := &config.Config{Workspace: "demo", MaxBounces: 2, Routing: config.Routing{Stages: map[string]config.StageRoute{
-		"implement": {Model: "operator", Execution: config.ExecutionMCP, TimeoutText: "2h", Timeout: 2 * time.Hour},
+		"implement": {Execution: config.ExecutionMCP, TimeoutText: "2h", Timeout: 2 * time.Hour},
 	}}}
 	document := cfg.WorkspaceDocument()
 	if sections := configDiff(document, document); len(sections) != 0 {
@@ -506,9 +506,9 @@ func TestConfigDiffIgnoresRuntimeParsedTimeout(t *testing.T) {
 }
 
 func TestConfigDiffReportsReviewPanelChanges(t *testing.T) {
-	before := config.WorkspaceDocument{Review: config.ReviewPanel{Seats: []config.ReviewSeat{{Model: "gpt"}}}}
+	before := config.WorkspaceDocument{Review: config.ReviewPanel{Seats: []config.ReviewSeat{{}}}}
 	after := before
-	after.Review.Seats = []config.ReviewSeat{{Model: "gpt"}, {Model: "claude", Harness: "claude"}}
+	after.Review.Seats = []config.ReviewSeat{{}, {}}
 	sections := configDiff(before, after)
 	if len(sections) != 1 || sections[0] != "review" {
 		t.Fatalf("review config diff=%v", sections)

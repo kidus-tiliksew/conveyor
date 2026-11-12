@@ -44,7 +44,7 @@ func TestRequestChangesBouncesThroughSharedContextAndAttention(t *testing.T) {
 	cfg := &config.Config{
 		Workspace: "demo", MaxBounces: 3, WorkOrderQueueTimeout: time.Hour,
 		Routing: config.Routing{Stages: map[string]config.StageRoute{
-			"implement": {Model: "implementer", Harness: "codex", Execution: config.ExecutionMCP, Timeout: time.Hour, TimeoutText: "1h"},
+			"implement": {Execution: config.ExecutionMCP, Timeout: time.Hour, TimeoutText: "1h"},
 		}},
 
 		Repos: []config.Repo{{Name: "conveyor", Base: "main"}},

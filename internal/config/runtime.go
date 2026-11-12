@@ -61,14 +61,7 @@ func composeDeploymentControlPlane(cfg, deployment *Config) {
 	settings.ControlPlane = ControlPlaneSettings{Triage: control.Triage, Planning: control.Planning}
 	cfg.ExecutionSettings = &settings
 	cfg.PlanningModels = cloneStrings(deployment.PlanningModels)
-	if route, ok := deployment.Routing.Stages["triage"]; ok && strings.TrimSpace(route.Model) != "" {
-		next := make(map[string]StageRoute, len(cfg.Routing.Stages)+1)
-		for stage, existing := range cfg.Routing.Stages {
-			existing.LegacyHarnesses = cloneStrings(existing.LegacyHarnesses)
-			next[stage] = existing
-		}
-		route.LegacyHarnesses = cloneStrings(route.LegacyHarnesses)
-		next["triage"] = route
-		cfg.Routing.Stages = next
+	if strings.TrimSpace(deployment.Routing.Triage.Model) != "" {
+		cfg.Routing.Triage = deployment.Routing.Triage
 	}
 }

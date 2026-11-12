@@ -26,7 +26,7 @@ func TestCanonicalStateConstraintsRejectUnsupportedValuesIntegration(t *testing.
 		Workspace: workspace,
 		Repos:     []config.Repo{{Name: "repo", URL: "https://example.test/repo", Base: "main"}},
 		Routing: config.Routing{Stages: map[string]config.StageRoute{
-			"implement": {Model: "operator", TimeoutText: "1h", Timeout: time.Hour, Execution: config.ExecutionMCP},
+			"implement": {TimeoutText: "1h", Timeout: time.Hour, Execution: config.ExecutionMCP},
 		}},
 	}
 	if _, err = st.BootstrapWorkspaceConfig(ctx, cfg); err != nil {

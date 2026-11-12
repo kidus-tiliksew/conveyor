@@ -115,19 +115,18 @@ func cliContextualWorkspaceDocument() config.WorkspaceDocument {
 				Triage: config.ModelTimeoutSettings{Model: "gpt", TimeoutText: "20m"},
 				Spec:   config.ModelTimeoutSettings{Model: "gpt", TimeoutText: "30m"},
 			},
-			Implementation: config.ImplementationSettings{Harness: "codex", Model: "gpt-implement", ModelPolicy: config.ModelPolicyExplicit, TimeoutText: "2h"},
-			Review:         config.ReviewExecutionSettings{Execution: config.ExecutionMCP, TimeoutText: "1h", FallbackModel: "fallback", FallbackHarness: "codex"},
+			Implementation: config.ImplementationSettings{TimeoutText: "2h"},
+			Review:         config.ReviewExecutionSettings{Execution: config.ExecutionMCP, TimeoutText: "1h"},
 		},
 		Routing: config.Routing{Stages: map[string]config.StageRoute{
-			"triage":    {Model: "gpt", TimeoutText: "20m", Execution: config.ExecutionInProcess},
-			"spec":      {Model: "gpt", TimeoutText: "30m", Execution: config.ExecutionInProcess},
-			"implement": {Model: "gpt-implement", ModelPolicy: config.ModelPolicyExplicit, Harness: "codex", TimeoutText: "2h", Execution: config.ExecutionMCP},
-			"review":    {Model: "fallback", Harness: "codex", TimeoutText: "1h", Execution: config.ExecutionMCP},
+			"spec":      {TimeoutText: "30m", Execution: config.ExecutionInProcess},
+			"implement": {TimeoutText: "2h", Execution: config.ExecutionMCP},
+			"review":    {TimeoutText: "1h", Execution: config.ExecutionMCP},
 		}},
 
 		Review: config.ReviewPanel{Seats: []config.ReviewSeat{
-			{Model: "gpt-review", Effort: "high"},
-			{Model: "claude-review", Harness: "claude", Effort: "high"},
+			{},
+			{},
 		}},
 		Execution: config.ExecutionPolicy{DefaultMode: "manual", DefaultPlanState: "needed", MergeApproval: true, ImplementConcurrency: 1, ReviewConcurrency: 2},
 		Repos:     []config.Repo{{Name: "conveyor", URL: "https://example.test/conveyor", Base: "main"}},
@@ -139,13 +138,13 @@ func assertContextualCLIConfig(t *testing.T, document config.WorkspaceDocument, 
 	if document.Recovery.AutomaticRecoveries != 2 || document.Recovery.WindowText != "24h" {
 		t.Fatalf("%s lost recovery: %+v", step, document.Recovery)
 	}
-	if document.ExecutionSettings == nil || document.ExecutionSettings.Implementation.Harness != "codex" || document.ExecutionSettings.Review.FallbackHarness != "codex" {
+	if document.ExecutionSettings == nil || document.ExecutionSettings.Implementation.TimeoutText != "2h" || document.ExecutionSettings.Review.Execution != config.ExecutionMCP {
 		t.Fatalf("%s lost execution_settings: %+v", step, document.ExecutionSettings)
 	}
-	if len(document.Review.Seats) != 2 || document.Review.Seats[1].Harness != "claude" || document.Review.Seats[1].Effort != "high" {
-		t.Fatalf("%s lost review seat effort: %+v", step, document.Review.Seats)
+	if len(document.Review.Seats) != 2 {
+		t.Fatalf("%s lost a review seat: %+v", step, document.Review.Seats)
 	}
-	if document.Routing.Stages["implement"].Harness != "codex" || document.Routing.Stages["review"].Model != "fallback" {
+	if document.Routing.Stages["implement"].TimeoutText != "2h" || document.Routing.Stages["review"].TimeoutText != "1h" {
 		t.Fatalf("%s lost compatibility routing: %+v", step, document.Routing.Stages)
 	}
 }

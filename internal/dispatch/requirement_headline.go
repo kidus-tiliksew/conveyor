@@ -90,8 +90,8 @@ func (d *Dispatcher) GenerateRequirementHeadline(ctx context.Context, input Requ
 	if err != nil {
 		return RequirementHeadline{}, err
 	}
-	route, ok := cfg.Routing.Stages[string(core.StageTriage)]
-	if !ok || strings.TrimSpace(route.Model) == "" {
+	route := cfg.Routing.Triage
+	if strings.TrimSpace(route.Model) == "" {
 		return RequirementHeadline{}, fmt.Errorf("%w: triage route with a model is not configured", ErrHeadlineUnconfigured)
 	}
 	prompt, err := RequirementHeadlinePrompt(input)
