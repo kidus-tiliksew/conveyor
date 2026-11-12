@@ -268,16 +268,60 @@ test('a stale save whose follow-up reads fail never resolves against the cached 
   await expect(page.getByLabel('Plan model', { exact: true })).toHaveValue('gpt-7')
   expect(state.puts).toHaveLength(1)
 
+  // The draft stays editable while the read is failed: an existing field
+  // and a review seat change, and a seat moves.
+  await page.getByLabel('Implement effort', { exact: true }).fill('low')
+  await page.getByLabel('Review seat 2 model', { exact: true }).fill('edited-while-failed')
+  await page.getByRole('button', { name: 'Move seat 2 up' }).click()
+  await expect(page.getByLabel('Implement effort', { exact: true })).toHaveValue('low')
+  await expect(page.getByLabel('Review seat 1 model', { exact: true })).toHaveValue('edited-while-failed')
+  await expect(page.getByLabel('Review seat 2 harness', { exact: true })).toHaveValue('codex')
+  await expect(conflict.getByRole('button', { name: 'Save my changes' })).toHaveCount(0)
+
   // An explicit retry reads the real new set, and only then can the person
-  // choose.
+  // choose. The edits made while the read failed survive.
   await conflict.getByRole('button', { name: 'Read saved preferences again' }).click()
   await expect(conflict.getByText('opencode, saved-elsewhere')).toBeVisible()
   await expect(conflict.getByText('Conveyor could not read the saved preferences.')).toHaveCount(0)
   await expect(page.getByLabel('Plan model', { exact: true })).toHaveValue('gpt-7')
+  await expect(page.getByLabel('Implement effort', { exact: true })).toHaveValue('low')
+  await expect(page.getByLabel('Review seat 1 model', { exact: true })).toHaveValue('edited-while-failed')
   await conflict.getByRole('button', { name: 'Save my changes' }).click()
   await expect(page.getByRole('status').filter({ hasText: 'Stage preferences saved.' })).toBeVisible()
   expect(state.puts.map((put) => put.ifMatch)).toEqual(['"3"', '"4"'])
   expect(state.puts[1].body.stages.plan?.model).toBe('gpt-7')
+  expect(state.puts[1].body.stages.implement?.effort).toBe('low')
+  expect(state.puts[1].body.stages.review?.seats).toEqual([
+    { harness: 'claude-code', model: 'edited-while-failed', effort: '' },
+    { harness: 'codex', model: 'gpt-6.1-sol', effort: 'medium' },
+  ])
+})
+
+test('a failed save over a freshly read set can be retried against that set', async ({ page }) => {
+  const state = await mockSettings(page, savedSet, 3)
+  await page.goto('/w/demo/settings')
+  await page.getByLabel('Plan model', { exact: true }).fill('gpt-7')
+  const elsewhere: StagePreferenceStages = {
+    ...savedSet,
+    verify: { harness: 'opencode', model: 'saved-elsewhere', effort: '' },
+  }
+  state.putAnswers.push({ status: 412, json: { error: 'version_conflict', message: 'changed' }, changeTo: elsewhere })
+  await page.getByRole('button', { name: 'Save stage preferences' }).click()
+  const conflict = page.getByRole('region', { name: 'Saved stage preferences' })
+  await expect(conflict.getByText('opencode, saved-elsewhere')).toBeVisible()
+  // Saving over the fresh set fails in the store.
+  state.putAnswers.push({ status: 500, json: { error: 'internal' } })
+  await conflict.getByRole('button', { name: 'Save my changes' }).click()
+  await expect(
+    page.getByRole('status').filter({ hasText: 'Conveyor could not save your stage preferences.' }),
+  ).toBeVisible()
+  await expect(page.getByLabel('Plan model', { exact: true })).toHaveValue('gpt-7')
+  // The retry sends the fresh version, not the stale one, and saves.
+  await page.getByRole('button', { name: 'Save stage preferences' }).click()
+  await expect(page.getByRole('status').filter({ hasText: 'Stage preferences saved.' })).toBeVisible()
+  expect(state.puts.map((put) => put.ifMatch)).toEqual(['"3"', '"4"', '"4"'])
+  expect(state.puts[2].body.stages.plan?.model).toBe('gpt-7')
+  expect(state.set.version).toBe(5)
 })
 
 test('discarding after a failed and then successful read shows the real new set', async ({ page }) => {
@@ -352,13 +396,36 @@ test('a failed refetch with a draft still saves the draft against its own versio
   await expect(
     page.getByRole('alert').filter({ hasText: 'Conveyor could not read your saved stage preferences.' }),
   ).toBeVisible()
+  // The draft stays editable while the read is failed: an existing field,
+  // a cleared stage, and review seat edits all apply.
+  await page.getByLabel('Implement model', { exact: true }).fill('edited-while-failed')
+  await page.getByRole('button', { name: 'Clear plan' }).click()
+  await page.getByLabel('Review seat 1 effort', { exact: true }).fill('low')
+  await page.getByRole('button', { name: 'Remove seat 2' }).click()
+  await page.getByRole('button', { name: 'Add seat' }).click()
+  await page.getByLabel('Review seat 2 harness', { exact: true }).fill('cursor')
+  await page.getByLabel('Review seat 2 model', { exact: true }).fill('auto')
+  await expect(page.getByLabel('Implement model', { exact: true })).toHaveValue('edited-while-failed')
+  await expect(stage(page, 'Plan').getByText('Not set')).toBeVisible()
+  await expect(page.getByLabel('Review seat 1 effort', { exact: true })).toHaveValue('low')
+  await expect(page.getByLabel('Review seat 2 harness', { exact: true })).toHaveValue('cursor')
+
   await page.getByRole('button', { name: 'Read saved preferences again' }).click()
   await expect(
     page.getByRole('alert').filter({ hasText: 'Conveyor could not read your saved stage preferences.' }),
   ).toHaveCount(0)
+  // The edits survive the successful read and are saved.
+  await expect(page.getByLabel('Implement model', { exact: true })).toHaveValue('edited-while-failed')
+  await expect(page.getByLabel('Review seat 2 harness', { exact: true })).toHaveValue('cursor')
   await page.getByRole('button', { name: 'Save stage preferences' }).click()
   await expect(page.getByRole('status').filter({ hasText: 'Stage preferences saved.' })).toBeVisible()
   expect(state.puts.map((put) => put.ifMatch)).toEqual(['"3"'])
+  expect(state.puts[0].body.stages.plan).toBeNull()
+  expect(state.puts[0].body.stages.implement?.model).toBe('edited-while-failed')
+  expect(state.puts[0].body.stages.review?.seats).toEqual([
+    { harness: 'codex', model: 'gpt-6.1-sol', effort: 'low' },
+    { harness: 'cursor', model: 'auto', effort: '' },
+  ])
 })
 
 test('read, validation, and store failures are reported and keep the draft', async ({ page }) => {

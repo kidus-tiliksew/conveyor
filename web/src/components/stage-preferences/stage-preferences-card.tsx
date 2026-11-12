@@ -97,9 +97,13 @@ export function StagePreferencesCard() {
   const busy = save.isPending
   const unchanged = !draft || (saved !== undefined && !conflict && sameStages(draft.stages, saved.stages))
 
+  // An existing draft carries its own stages and base version, so it stays
+  // editable while a read has failed. Only a new draft needs a successful
+  // read to start from.
   const edit = (change: (stages: StagePreferenceStages) => void) => {
-    if (!saved) return
-    const base: Draft = draft ?? { stages: copyStages(saved.stages), baseVersion: saved.version }
+    const base: Draft | null =
+      draft ?? (saved ? { stages: copyStages(saved.stages), baseVersion: saved.version } : null)
+    if (!base) return
     const next = copyStages(base.stages)
     change(next)
     setDraft({ ...base, stages: next })
@@ -114,7 +118,12 @@ export function StagePreferencesCard() {
       return
     }
     setStatus(null)
-    save.mutate(baseVersion === undefined ? draft : { ...draft, baseVersion })
+    // Choosing to save over a freshly read set moves the draft onto that
+    // set's version, so a later retry after a failed save sends it again
+    // instead of the stale version.
+    const sent = baseVersion === undefined ? draft : { ...draft, baseVersion }
+    if (sent !== draft) setDraft(sent)
+    save.mutate(sent)
   }
 
   const discard = () => {
