@@ -1,0 +1,239 @@
+package httpapi
+
+// MCP tools for stage preferences against the real router and a volatile
+// backend (req-stage-preferences AC-1.5, AC-1.6, AC-2.3, AC-2.4;
+// component-stage-preferences invariants 3, 4, and 6; component-mcp-protocol
+// invariants 5 and 7).
+
+import (
+	"encoding/json"
+	"fmt"
+	"net/http"
+	"net/http/httptest"
+	"strings"
+	"sync"
+	"testing"
+
+	"github.com/kidus-tiliksew/conveyor/internal/store"
+)
+
+type stagePreferenceMCPResult struct {
+	text    string
+	isError bool
+}
+
+func (h *stagePreferenceHarness) mcp(token, tool string, args map[string]any) stagePreferenceMCPResult {
+	h.t.Helper()
+	params, err := json.Marshal(map[string]any{"name": tool, "arguments": args})
+	if err != nil {
+		h.t.Fatal(err)
+	}
+	request := httptest.NewRequest(http.MethodPost, "/mcp", strings.NewReader(`{"jsonrpc":"2.0","id":1,"method":"tools/call","params":`+string(params)+`}`))
+	request.Header.Set("Authorization", "Bearer "+token)
+	response := httptest.NewRecorder()
+	h.server.Handler().ServeHTTP(response, request)
+	if response.Code != http.StatusOK {
+		h.t.Fatalf("MCP status=%d body=%s", response.Code, response.Body.String())
+	}
+	var envelope struct {
+		Result struct {
+			Content []struct {
+				Text string `json:"text"`
+			} `json:"content"`
+			IsError bool `json:"isError"`
+		} `json:"result"`
+		Error *struct {
+			Message string `json:"message"`
+		} `json:"error"`
+	}
+	if err := json.Unmarshal(response.Body.Bytes(), &envelope); err != nil {
+		h.t.Fatal(err)
+	}
+	if envelope.Error != nil {
+		h.t.Fatalf("MCP protocol error: %s", envelope.Error.Message)
+	}
+	if len(envelope.Result.Content) != 1 {
+		h.t.Fatalf("MCP content = %s", response.Body.String())
+	}
+	return stagePreferenceMCPResult{text: envelope.Result.Content[0].Text, isError: envelope.Result.IsError}
+}
+
+func (h *stagePreferenceHarness) mcpSet(token, tool string, args map[string]any) store.StagePreferences {
+	h.t.Helper()
+	result := h.mcp(token, tool, args)
+	if result.isError {
+		h.t.Fatalf("%s failed: %s", tool, result.text)
+	}
+	var set store.StagePreferences
+	if err := json.Unmarshal([]byte(result.text), &set); err != nil {
+		h.t.Fatalf("decode %s: %v", result.text, err)
+	}
+	return set
+}
+
+func (h *stagePreferenceHarness) mcpRefused(token, tool string, args map[string]any, want ...string) {
+	h.t.Helper()
+	result := h.mcp(token, tool, args)
+	if !result.isError {
+		h.t.Fatalf("%s %v succeeded: %s", tool, args, result.text)
+	}
+	for _, part := range want {
+		if !strings.Contains(result.text, part) {
+			h.t.Fatalf("%s refusal %q does not name %q", tool, result.text, part)
+		}
+	}
+}
+
+func TestStagePreferenceMCPToolSchemas(t *testing.T) {
+	tools := map[string]map[string]any{}
+	for _, tool := range mcpTools() {
+		if name, _ := tool["name"].(string); isStagePreferenceMCPTool(name) {
+			tools[name] = tool
+		}
+	}
+	if len(tools) != 2 {
+		t.Fatalf("stage preference tools = %v", tools)
+	}
+	for name, tool := range tools {
+		schema := tool["inputSchema"].(map[string]any)
+		required := schema["required"].([]string)
+		if required[0] != "workspace_id" || schema["additionalProperties"] != false {
+			t.Fatalf("%s schema = %v", name, schema)
+		}
+		if mcpCapability(name) == "" {
+			t.Fatalf("%s has no capability", name)
+		}
+	}
+	if hints := tools[getStagePreferencesTool]["annotations"].(map[string]any); hints["readOnlyHint"] != true || hints["destructiveHint"] != false {
+		t.Fatalf("get_stage_preferences hints = %v", hints)
+	}
+	if hints := tools[setStagePreferenceTool]["annotations"].(map[string]any); hints["readOnlyHint"] != false {
+		t.Fatalf("set_stage_preference hints = %v", hints)
+	}
+	set := tools[setStagePreferenceTool]["inputSchema"].(map[string]any)
+	if fmt.Sprint(set["required"]) != "[workspace_id stage value]" {
+		t.Fatalf("set_stage_preference required = %v", set["required"])
+	}
+	if _, versioned := set["properties"].(map[string]any)["version"]; versioned {
+		t.Fatal("set_stage_preference takes no expected version")
+	}
+}
+
+// TestStagePreferenceMCPRoundTrip saves through MCP and REST and reads the
+// same set and version back through the other surface and from both
+// workspaces (invariant 6; AC-2.3, AC-2.4).
+func TestStagePreferenceMCPRoundTrip(t *testing.T) {
+	h := newStagePreferenceHarness(t)
+	empty := h.mcpSet(stagePreferenceOwnerToken, getStagePreferencesTool, map[string]any{"workspace_id": "alpha"})
+	if empty.Version != 0 || empty.UpdatedAt != nil || empty.Stages != (store.StagePreferenceStages{}) {
+		t.Fatalf("never-saved MCP read = %+v", empty)
+	}
+
+	plan := h.mcpSet(stagePreferenceOwnerToken, setStagePreferenceTool, map[string]any{"workspace_id": "alpha", "stage": "plan", "value": map[string]any{"harness": " codex ", "model": "gpt-6.1-sol", "effort": "medium"}})
+	if plan.Version != 1 || plan.Stages.Plan == nil || plan.Stages.Plan.Harness != "codex" {
+		t.Fatalf("set plan = %+v", plan)
+	}
+	review := h.mcpSet(stagePreferenceOwnerToken, setStagePreferenceTool, map[string]any{"workspace_id": "beta", "stage": "review", "value": map[string]any{
+		"primary": map[string]any{"harness": "claude-code", "model": "claude-opus-5-5", "effort": nil},
+		"seats":   []any{map[string]any{"harness": "codex", "model": "gpt-6.1-sol"}, map[string]any{"harness": "claude-code", "model": "claude-sonnet-5-5"}},
+	}})
+	if review.Version != 2 || review.Stages.Plan == nil || review.Stages.Review == nil || len(review.Stages.Review.Seats) != 2 {
+		t.Fatalf("set review kept plan? %+v", review)
+	}
+
+	// REST, through the dashboard session, reads what MCP saved.
+	rest := decodeStagePreferences(t, h.call(stagePreferenceRequest{method: http.MethodGet, path: stagePreferencePath, session: h.ownerSession}))
+	if rest.Version != review.Version || rest.Stages.Review.Seats[1].Model != "claude-sonnet-5-5" || rest.Stages.Plan.Effort != "medium" {
+		t.Fatalf("REST read %+v, MCP saved %+v", rest, review)
+	}
+	// MCP reads what REST saved, from either workspace.
+	saved := decodeStagePreferences(t, h.call(stagePreferenceRequest{method: http.MethodPut, path: stagePreferencePath, token: stagePreferenceOwnerToken, body: `{"stages":{"verify":{"harness":"opencode","model":"local"},"review":{"seats":[{"harness":"codex","model":"gpt-6.1-sol"}]}}}`, header: map[string]string{"If-Match": "2"}}))
+	for _, workspace := range []string{"alpha", "beta"} {
+		read := h.mcpSet(stagePreferenceOwnerToken, getStagePreferencesTool, map[string]any{"workspace_id": workspace})
+		if read.Version != saved.Version || read.Stages.Plan != nil || read.Stages.Verify == nil || read.Stages.Review.Primary != nil || len(read.Stages.Review.Seats) != 1 {
+			t.Fatalf("%s MCP read %+v, REST saved %+v", workspace, read, saved)
+		}
+	}
+
+	// null clears one stage and keeps the others.
+	cleared := h.mcpSet(stagePreferenceOwnerToken, setStagePreferenceTool, map[string]any{"workspace_id": "alpha", "stage": "verify", "value": nil})
+	if cleared.Version != saved.Version+1 || cleared.Stages.Verify != nil || cleared.Stages.Review == nil {
+		t.Fatalf("clear verify = %+v", cleared)
+	}
+	cleared = h.mcpSet(stagePreferenceOwnerToken, setStagePreferenceTool, map[string]any{"workspace_id": "alpha", "stage": "review", "value": map[string]any{"primary": nil, "seats": []any{}}})
+	if cleared.Stages.Review != nil {
+		t.Fatalf("an empty review was not unset: %+v", cleared.Stages.Review)
+	}
+	if got := h.eventCount(); got != h.recordedEvents {
+		t.Fatalf("stage preference writes appended %d events", got-h.recordedEvents)
+	}
+}
+
+// TestStagePreferenceMCPRefusals covers the closed shape, the workspace
+// admission, and person isolation (AC-1.5, AC-1.6).
+func TestStagePreferenceMCPRefusals(t *testing.T) {
+	h := newStagePreferenceHarness(t)
+	entry := map[string]any{"harness": "codex", "model": "m"}
+	nine := make([]any, 9)
+	for i := range nine {
+		nine[i] = entry
+	}
+	h.mcpRefused(stagePreferenceOwnerToken, setStagePreferenceTool, map[string]any{"workspace_id": "alpha", "stage": "plan", "value": entry, "execution_host": "box"}, "validation_failed", "execution_host")
+	h.mcpRefused(stagePreferenceOwnerToken, setStagePreferenceTool, map[string]any{"workspace_id": "alpha", "stage": "plan", "value": entry, "user_id": h.other.ID}, "validation_failed", "user_id")
+	h.mcpRefused(stagePreferenceOwnerToken, getStagePreferencesTool, map[string]any{"workspace_id": "alpha", "user_id": h.other.ID}, "user_id")
+	h.mcpRefused(stagePreferenceOwnerToken, setStagePreferenceTool, map[string]any{"workspace_id": "alpha", "stage": "plan", "value": map[string]any{"harness": "codex", "model": "m", "sandbox": "none"}}, "value.sandbox")
+	h.mcpRefused(stagePreferenceOwnerToken, setStagePreferenceTool, map[string]any{"workspace_id": "alpha", "stage": "plan", "value": []any{entry}}, "value", "not a list")
+	h.mcpRefused(stagePreferenceOwnerToken, setStagePreferenceTool, map[string]any{"workspace_id": "alpha", "stage": "review", "value": map[string]any{"seats": nine}}, "value.seats[8]", "review seat 9")
+	h.mcpRefused(stagePreferenceOwnerToken, setStagePreferenceTool, map[string]any{"workspace_id": "alpha", "stage": "review", "value": map[string]any{"seats": []any{entry, map[string]any{"harness": "", "model": "m"}}}}, "value.seats[1].harness", "review seat 2")
+	h.mcpRefused(stagePreferenceOwnerToken, setStagePreferenceTool, map[string]any{"workspace_id": "alpha", "stage": "triage", "value": nil}, "stage")
+	h.mcpRefused(stagePreferenceOwnerToken, setStagePreferenceTool, map[string]any{"workspace_id": "alpha", "stage": "plan"}, "value", "null")
+	h.mcpRefused(stagePreferenceOwnerToken, setStagePreferenceTool, map[string]any{"workspace_id": "alpha", "value": nil}, "stage")
+	// Workspace admission: the ID is required and must be visible to the
+	// caller, though it never selects the set.
+	h.mcpRefused(stagePreferenceOwnerToken, getStagePreferencesTool, map[string]any{"workspace_id": "missing"})
+	h.mcpRefused(stagePreferenceOwnerToken, setStagePreferenceTool, map[string]any{"workspace_id": "missing", "stage": "plan", "value": entry})
+	h.mcpRefused(stagePreferenceOwnerToken, getStagePreferencesTool, map[string]any{})
+	h.mcpRefused(stagePreferenceOwnerToken, getStagePreferencesTool, map[string]any{"workspace_id": ""})
+	if read := h.mcpSet(stagePreferenceOwnerToken, getStagePreferencesTool, map[string]any{"workspace_id": "alpha"}); read.Version != 0 {
+		t.Fatalf("refused calls wrote a set: %+v", read)
+	}
+
+	// Each token reads and writes only its own person's set.
+	h.mcpSet(h.otherToken, setStagePreferenceTool, map[string]any{"workspace_id": "beta", "stage": "implement", "value": entry})
+	if read := h.mcpSet(stagePreferenceOwnerToken, getStagePreferencesTool, map[string]any{"workspace_id": "beta"}); read.Version != 0 || read.Stages.Implement != nil {
+		t.Fatalf("another person's write reached the owner: %+v", read)
+	}
+	if read := h.mcpSet(h.otherToken, getStagePreferencesTool, map[string]any{"workspace_id": "alpha"}); read.Version != 1 || read.Stages.Implement == nil {
+		t.Fatalf("other person's own read = %+v", read)
+	}
+}
+
+// TestStagePreferenceMCPConcurrentStagesKeepEveryChange proves the lost-update
+// guard at the tool boundary: concurrent one-stage writes from several agent
+// sessions of one person all land (invariant 4).
+func TestStagePreferenceMCPConcurrentStagesKeepEveryChange(t *testing.T) {
+	h := newStagePreferenceHarness(t)
+	var wg sync.WaitGroup
+	results := make([]stagePreferenceMCPResult, 4)
+	for i, stage := range []string{"plan", "implement", "verify", "review"} {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			value := map[string]any{"harness": "h-" + stage, "model": "m"}
+			if stage == "review" {
+				value = map[string]any{"primary": value}
+			}
+			results[i] = h.mcp(stagePreferenceOwnerToken, setStagePreferenceTool, map[string]any{"workspace_id": "alpha", "stage": stage, "value": value})
+		}()
+	}
+	wg.Wait()
+	for _, result := range results {
+		if result.isError {
+			t.Fatal(result.text)
+		}
+	}
+	read := h.mcpSet(stagePreferenceOwnerToken, getStagePreferencesTool, map[string]any{"workspace_id": "alpha"})
+	if read.Version != 4 || read.Stages.Plan == nil || read.Stages.Implement == nil || read.Stages.Verify == nil || read.Stages.Review == nil {
+		t.Fatalf("concurrent stage writes lost a change: %+v", read)
+	}
+}
