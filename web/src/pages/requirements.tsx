@@ -293,7 +293,6 @@ export function RequirementsPage() {
               <DocumentTreeItem
                 key={item.requirement.id}
                 label={item.requirement.title}
-                documentId={item.requirement.id}
                 meta={!item.current_version ? 'not yet confirmed' : undefined}
                 attentionCount={requirementAttentionCount(item)}
                 selected={!openOverview && selectedId === item.requirement.id}
@@ -314,7 +313,6 @@ export function RequirementsPage() {
                 <DocumentTreeItem
                   key={item.requirement.id}
                   label={item.requirement.title}
-                  documentId={item.requirement.id}
                   meta={
                     dismissalArchiveDescription(item.requirement) ??
                     (item.requirement.superseded_by?.length
