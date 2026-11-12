@@ -78,8 +78,8 @@ func TestHumanTimelineEventKindsMatchDashboard(t *testing.T) {
 			want = append(want, kind)
 		}
 	}
-	if len(humanTimelineEventKinds) != 35 || len(sorted(humanTimelineEventKinds)) != len(humanTimelineEventKinds) {
-		t.Fatalf("Go human kinds must be 35 distinct kinds: %v", humanTimelineEventKinds)
+	if len(humanTimelineEventKinds) != 34 || len(sorted(humanTimelineEventKinds)) != len(humanTimelineEventKinds) {
+		t.Fatalf("Go human kinds must be 34 distinct kinds: %v", humanTimelineEventKinds)
 	}
 	// A plan-state move is a hidden kind on both lists: the dashboard hides
 	// it and neither human selection holds it (component-web-task-surfaces
@@ -109,15 +109,16 @@ func TestHumanTimelineEventKindsMatchDashboard(t *testing.T) {
 			t.Fatalf("%s must stay in the human selection", kind)
 		}
 	}
-	// A merge request, its GitHub confirmation, and a dependency wait stay
-	// technical, while the other merge outcomes and dependency changes stay
-	// selected (req-operator-next-action AC-6.11, AC-7.3; task 261108-38aabb).
-	for _, kind := range []string{"merge.requested", "merge.confirmed", "task.dependency_added"} {
+	// A merge request, its GitHub confirmation, and a dependency addition or
+	// removal stay technical, while the other merge outcomes and an
+	// unsatisfiable dependency stay selected (req-operator-next-action AC-6.11,
+	// AC-7.3; tasks 261108-38aabb and 261112-436fab).
+	for _, kind := range []string{"merge.requested", "merge.confirmed", "task.dependency_added", "task.dependency_removed"} {
 		if slices.Contains(humanTimelineEventKinds, kind) || !slices.Contains(hiddenKinds, kind) {
 			t.Fatalf("%s must be hidden by the dashboard and outside the human selection", kind)
 		}
 	}
-	for _, kind := range []string{"merge.reconciled", "merge.failed", "merge.blocked", "task.dependency_removed", "task.dependency_unsatisfiable"} {
+	for _, kind := range []string{"merge.reconciled", "merge.failed", "merge.blocked", "task.dependency_unsatisfiable"} {
 		if !slices.Contains(humanTimelineEventKinds, kind) {
 			t.Fatalf("%s must stay in the human selection", kind)
 		}
