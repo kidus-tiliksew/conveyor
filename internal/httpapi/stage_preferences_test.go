@@ -335,3 +335,43 @@ func TestStagePreferencesRESTStoreFailure(t *testing.T) {
 		t.Fatalf("no stage preference store: status=%d", response.Code)
 	}
 }
+
+// TestStagePreferencesRESTOversizedBody covers component-http-api invariant
+// 17: a body over the 64 KiB bound answers 413 with a valid credential and a
+// current If-Match, and the stored set does not change. A body inside the
+// bound with a refused field still answers 422.
+func TestStagePreferencesRESTOversizedBody(t *testing.T) {
+	h := newStagePreferenceHarness(t)
+	saved := decodeStagePreferences(t, h.call(stagePreferenceRequest{method: http.MethodPut, path: stagePreferencePath, token: stagePreferenceOwnerToken,
+		body: `{"stages":{"plan":{"harness":"codex","model":"gpt-6.1-sol"}}}`, header: map[string]string{"If-Match": "0"}}))
+	oversized := `{"stages":{"verify":{"harness":"h","model":"` + strings.Repeat("m", maxStagePreferenceBody) + `"}}}`
+	unchanged := func(step string) {
+		t.Helper()
+		read := decodeStagePreferences(t, h.call(stagePreferenceRequest{method: http.MethodGet, path: stagePreferencePath, token: stagePreferenceOwnerToken}))
+		if read.Version != saved.Version || read.Stages.Verify != nil || read.Stages.Plan == nil || read.Stages.Plan.Model != "gpt-6.1-sol" {
+			t.Fatalf("%s changed the set: %+v", step, read)
+		}
+	}
+	// A declared Content-Length over the bound.
+	decodeStagePreferenceError(t, h.call(stagePreferenceRequest{method: http.MethodPut, path: stagePreferencePath, token: stagePreferenceOwnerToken,
+		body: oversized, header: map[string]string{"If-Match": "1"}}), http.StatusRequestEntityTooLarge, "body_too_large")
+	unchanged("an oversized body")
+
+	// A body of unknown length that passes the bound while it is read.
+	request := httptest.NewRequest(http.MethodPut, stagePreferencePath, strings.NewReader(oversized))
+	request.ContentLength = -1
+	request.Header.Set("Authorization", "Bearer "+stagePreferenceOwnerToken)
+	request.Header.Set("If-Match", "1")
+	response := httptest.NewRecorder()
+	h.server.Handler().ServeHTTP(response, request)
+	decodeStagePreferenceError(t, response, http.StatusRequestEntityTooLarge, "body_too_large")
+	unchanged("an oversized body of unknown length")
+
+	// Field validation inside the bound stays 422.
+	decodeStagePreferenceError(t, h.call(stagePreferenceRequest{method: http.MethodPut, path: stagePreferencePath, token: stagePreferenceOwnerToken,
+		body: `{"stages":{"verify":{"harness":"h","model":"` + strings.Repeat("m", 129) + `"}}}`, header: map[string]string{"If-Match": "1"}}), http.StatusUnprocessableEntity, "validation_failed")
+	unchanged("a refused field")
+	if got := h.eventCount(); got != h.recordedEvents {
+		t.Fatalf("refused writes appended %d events", got-h.recordedEvents)
+	}
+}

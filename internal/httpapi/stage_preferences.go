@@ -2,7 +2,6 @@ package httpapi
 
 import (
 	"errors"
-	"io"
 	"log"
 	"net/http"
 	"strconv"
@@ -63,9 +62,16 @@ func (s *Server) putStagePreferences(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusPreconditionRequired, map[string]any{"error": "if_match_required", "message": err.Error()})
 		return
 	}
-	body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, maxStagePreferenceBody))
+	// A body over the bound answers 413 before any store access, so nothing
+	// is written (component-http-api invariant 17; DEC-105(3)). Field
+	// validation stays 422.
+	body, err := readBoundedBody(w, r, maxStagePreferenceBody)
+	if errors.Is(err, errBodyTooLarge) {
+		writeJSON(w, http.StatusRequestEntityTooLarge, map[string]any{"error": "body_too_large", "message": "The stage preferences body must be at most 64 KiB."})
+		return
+	}
 	if err != nil {
-		writeStagePreferenceValidation(w, &stageprefs.ValidationError{Field: "body", Message: "must be one JSON object of at most 64 KiB"})
+		writeStagePreferenceValidation(w, &stageprefs.ValidationError{Field: "body", Message: "must be one readable JSON object"})
 		return
 	}
 	credential, _ := store.CredentialFromContext(r.Context())
