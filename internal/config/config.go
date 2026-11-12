@@ -368,29 +368,34 @@ func ResolveControlPlaneModel(stage, stored string) string {
 	return stored
 }
 
+// StageRoute is one stage's pipeline route: its timeout and execution mode.
+// It carries no harness, model, model policy, or effort; the person who
+// starts an agent session chooses those (DEC-132(2); component-runtime
+// invariant 14). Loaders drop the retired route keys by name before strict
+// decoding (component-runtime invariants 13 and 15).
 type StageRoute struct {
-	Model       string        `yaml:"model" json:"model"`
-	ModelPolicy string        `yaml:"model_policy,omitempty" json:"model_policy,omitempty"`
-	Harness     string        `yaml:"harness,omitempty" json:"harness,omitempty"`
-	Effort      string        `yaml:"effort,omitempty" json:"effort,omitempty"`
 	Timeout     time.Duration `yaml:"-" json:"-"`
 	TimeoutText string        `yaml:"timeout" json:"timeout"`
 	Execution   ExecutionMode `yaml:"execution" json:"execution"`
-
-	// v1.3 compatibility inputs. They are consumed during normalization and
-	// omitted from the canonical v1.4 document.
-	LegacyHarnesses []string `yaml:"harnesses,omitempty" json:"-"`
-	LegacyModelTier string   `yaml:"model_tier,omitempty" json:"-"`
 }
 
-// ReviewSeat is one immutable assignment in a submitted review round. The
-// model is always pinned; Harness optionally overrides the workspace review
-// route for worker dispatch (component-runtime).
-type ReviewSeat struct {
-	Model   string `yaml:"model,omitempty" json:"model,omitempty"`
-	Harness string `yaml:"harness,omitempty" json:"harness,omitempty"`
-	Effort  string `yaml:"effort,omitempty" json:"effort,omitempty"`
+// TriageRoute is the in-process triage invocation conveyord configures for
+// itself from its deployment file: the model, effort, and timeout that triage,
+// title generation, and requirement headlines use (DEC-132(3);
+// component-runtime invariants 12 and 14). It is composed at runtime, never
+// decoded from or written to a workspace document, and a
+// CONVEYOR_*_MODEL override replaces its model only for one invocation.
+type TriageRoute struct {
+	Model       string        `yaml:"-" json:"-"`
+	Effort      string        `yaml:"-" json:"-"`
+	TimeoutText string        `yaml:"-" json:"-"`
+	Timeout     time.Duration `yaml:"-" json:"-"`
 }
+
+// ReviewSeat is one seat of a review round. A seat holds no harness, model,
+// or effort: the review seat count is the number of seats, and each seat's
+// agent session reports its own model at claim (DEC-132(2), (4)).
+type ReviewSeat struct{}
 
 // ReviewPanel is the workspace review policy. FailFast opts a task into
 // settling each review round on its first accepted changes-requested
@@ -594,13 +599,13 @@ const (
 	DefaultWorkOrderQueueTimeoutText = "24h"
 )
 
+// Routing holds the pipeline stage routes and, apart from them, the
+// deployment's in-process triage route. Triage is runtime composition only
+// and never crosses a workspace document (DEC-132(3)).
 type Routing struct {
 	Stages map[string]StageRoute `yaml:"stages" json:"stages"`
+	Triage TriageRoute           `yaml:"-" json:"-"`
 }
-
-const (
-	ModelPolicyExplicit = "explicit"
-)
 
 type ModelTimeoutSettings struct {
 	Model       string `yaml:"model" json:"model"`
@@ -692,19 +697,17 @@ func (c ControlPlaneSettings) MarshalJSON() ([]byte, error) {
 	}{Triage: c.Triage, Planning: c.Planning})
 }
 
+// ImplementationSettings is a legacy agent stage's settings: only its
+// timeout, which supplies the stage timeout policy (DEC-132(1)).
 type ImplementationSettings struct {
-	Harness     string `yaml:"harness" json:"harness"`
-	Model       string `yaml:"model,omitempty" json:"model,omitempty"`
-	ModelPolicy string `yaml:"model_policy" json:"model_policy"`
-	Effort      string `yaml:"effort,omitempty" json:"effort,omitempty"`
 	TimeoutText string `yaml:"timeout" json:"timeout"`
 }
 
+// ReviewExecutionSettings is the legacy review stage's settings: its timeout
+// and execution mode.
 type ReviewExecutionSettings struct {
-	Execution       ExecutionMode `yaml:"execution" json:"execution"`
-	TimeoutText     string        `yaml:"timeout" json:"timeout"`
-	FallbackModel   string        `yaml:"fallback_model,omitempty" json:"fallback_model,omitempty"`
-	FallbackHarness string        `yaml:"fallback_harness,omitempty" json:"fallback_harness,omitempty"`
+	Execution   ExecutionMode `yaml:"execution" json:"execution"`
+	TimeoutText string        `yaml:"timeout" json:"timeout"`
 }
 
 // ContextualExecutionSettings is the v1.18 canonical surface. Routing remains
@@ -1135,7 +1138,6 @@ func cloneConfig(source *Config) Config {
 	if source.Routing.Stages != nil {
 		next.Routing.Stages = make(map[string]StageRoute, len(source.Routing.Stages))
 		for stage, route := range source.Routing.Stages {
-			route.LegacyHarnesses = cloneStrings(route.LegacyHarnesses)
 			next.Routing.Stages[stage] = route
 		}
 	}
@@ -1234,7 +1236,6 @@ func normalizePolicy(next *Config, document WorkspaceDocument) (*Config, error) 
 		}
 		route := next.Routing.Stages[stage]
 		route.Execution, route.TimeoutText, route.Timeout = ExecutionMCP, timeout, parsed
-		route.Model, route.ModelPolicy, route.Harness, route.Effort = "", "", "", ""
 		next.Routing.Stages[stage] = route
 	}
 	next.ExecutionSettings, next.PlanningModels = nil, nil
@@ -1269,18 +1270,15 @@ func normalizePolicy(next *Config, document WorkspaceDocument) (*Config, error) 
 // strict decoding, so such a row loads without validation and is never
 // rewritten only because it carries them (DEC-104(1); component-runtime).
 func ParseStoredWorkspaceDocument(data []byte, deployment *Config, source string) (*Config, bool, error) {
-	document, hadBudget, err := decodeStoredWorkspaceDocument(data)
+	document, hadRetired, err := decodeStoredWorkspaceDocument(data)
 	if err != nil {
 		return nil, false, fmt.Errorf("parse %s: %w", source, err)
 	}
-	legacy := hadBudget || document.LegacyImage != "" || document.WorkOrderQueueTimeoutText == "" ||
+	legacy := hadRetired || document.LegacyImage != "" || document.WorkOrderQueueTimeoutText == "" ||
 		document.Execution.FirstActivityTimeoutText == "" || document.Review.Seats == nil ||
 		document.ExecutionSettings == nil
 	for _, repo := range document.Repos {
 		legacy = legacy || repo.LegacyImage != "" || len(repo.LegacySecretRefs) != 0 || len(repo.LegacyToolPolicy) != 0
-	}
-	for _, route := range document.Routing.Stages {
-		legacy = legacy || len(route.LegacyHarnesses) != 0 || route.LegacyModelTier != ""
 	}
 	StoredRepositoryDefaults(document.Repos)
 	canonicalData, err := yaml.Marshal(document)
@@ -1307,21 +1305,56 @@ func DecodeStoredWorkspaceDocument(data []byte) (WorkspaceDocument, error) {
 	return document, err
 }
 
+// decodeStoredWorkspaceDocument reports whether the row held a retired key:
+// the legacy budget or any execution detail. It logs the removed execution
+// detail by name, never a value, and leaves the row itself untouched
+// (component-runtime invariants 13 and 15).
 func decodeStoredWorkspaceDocument(data []byte) (WorkspaceDocument, bool, error) {
 	canonicalData, hadBudget, err := stripLegacyBudgetFields(data)
 	if err != nil {
 		return WorkspaceDocument{}, false, locatedYAMLError[WorkspaceDocument](data, err)
 	}
-	stripped, _, _, err := stripDeploymentExecutionDetail(canonicalData)
+	stripped, ignored, _, err := stripExecutionDetail(canonicalData, false)
 	if err != nil {
 		return WorkspaceDocument{}, false, locatedYAMLError[WorkspaceDocument](canonicalData, err)
 	}
+	logStoredExecutionDetail(ignored)
 	canonicalData = stripped
 	var document WorkspaceDocument
 	if err := decodeKnown(canonicalData, &document); err != nil {
 		return WorkspaceDocument{}, false, err
 	}
-	return document, hadBudget, nil
+	return document, hadBudget || len(ignored) != 0, nil
+}
+
+// storedExecutionDetailLog is the stored-row logging seam. A stored row is
+// read on every runtime composition, so each distinct set of removed names
+// is logged once per process. Its mutex makes concurrent reads and a test's
+// replacement of logf safe.
+var storedExecutionDetailLog = struct {
+	sync.Mutex
+	logf   func(string, ...any)
+	logged map[string]bool
+}{logf: log.Printf, logged: map[string]bool{}}
+
+// logStoredExecutionDetail names the execution detail removed from a stored
+// workspace row. The names are field paths from a fixed vocabulary, so the
+// line never carries a stored value (component-runtime invariant 13;
+// req-security-boundaries REQ-2).
+func logStoredExecutionDetail(ignored []string) {
+	if len(ignored) == 0 {
+		return
+	}
+	names := strings.Join(ignored, ", ")
+	storedExecutionDetailLog.Lock()
+	defer storedExecutionDetailLog.Unlock()
+	if storedExecutionDetailLog.logged[names] {
+		return
+	}
+	storedExecutionDetailLog.logged[names] = true
+	if storedExecutionDetailLog.logf != nil {
+		storedExecutionDetailLog.logf("config: stored workspace configuration: ignoring retired execution detail (DEC-132): %s", names)
+	}
 }
 
 // stripLegacyBudgetFields lets an existing v1.5 Postgres workspace document
@@ -1382,24 +1415,14 @@ func decodeKnown(data []byte, target any) error {
 	return redactYAMLError(decoder.Decode(target), data, target)
 }
 
+// contextualExecutionSettings projects the routes into the execution
+// settings shape: the triage route's model, effort, and timeout as the
+// control-plane triage and planning defaults, and each agent stage's timeout.
+// A spec route without a timeout takes the implement timeout, as before.
 func contextualExecutionSettings(routing Routing) *ContextualExecutionSettings {
-	triage := routing.Stages["triage"]
+	triage := routing.Triage
 	spec := routing.Stages["spec"]
 	implement := routing.Stages["implement"]
-	specHadModel := spec.Model != ""
-	if spec.Harness == "" {
-		spec.Harness = implement.Harness
-	}
-	if spec.Model == "" {
-		spec.Model = implement.Model
-	}
-	if spec.ModelPolicy == "" {
-		if specHadModel {
-			spec.ModelPolicy = ModelPolicyExplicit
-		} else {
-			spec.ModelPolicy = implement.ModelPolicy
-		}
-	}
 	if spec.TimeoutText == "" {
 		spec.TimeoutText = implement.TimeoutText
 	}
@@ -1413,17 +1436,10 @@ func contextualExecutionSettings(routing Routing) *ContextualExecutionSettings {
 				ExplorationOutputTokens: DefaultPlanningExplorationOutputTokens,
 			},
 		},
-		Verify: ImplementationSettings{Harness: verify.Harness, Model: verify.Model, ModelPolicy: verify.ModelPolicy, Effort: verify.Effort, TimeoutText: verify.TimeoutText},
-		Spec:   ImplementationSettings{Harness: spec.Harness, Model: spec.Model, ModelPolicy: spec.ModelPolicy, Effort: spec.Effort, TimeoutText: spec.TimeoutText},
-		Implementation: ImplementationSettings{
-			Harness: implement.Harness, Model: implement.Model,
-			ModelPolicy: implement.ModelPolicy, Effort: implement.Effort,
-			TimeoutText: implement.TimeoutText,
-		},
-		Review: ReviewExecutionSettings{
-			Execution: review.Execution, TimeoutText: review.TimeoutText,
-			FallbackModel: review.Model, FallbackHarness: review.Harness,
-		},
+		Verify:         ImplementationSettings{TimeoutText: verify.TimeoutText},
+		Spec:           ImplementationSettings{TimeoutText: spec.TimeoutText},
+		Implementation: ImplementationSettings{TimeoutText: implement.TimeoutText},
+		Review:         ReviewExecutionSettings{Execution: review.Execution, TimeoutText: review.TimeoutText},
 	}
 }
 
@@ -1708,11 +1724,6 @@ func ServedRequirementAuthorityNodes(cfg *Config) int {
 
 func (c *Config) WorkspaceDocument() WorkspaceDocument {
 	reviewSeats := append(make([]ReviewSeat, 0, len(c.Review.Seats)), c.Review.Seats...)
-	if len(reviewSeats) == 0 {
-		if route, ok := c.Routing.Stages["review"]; ok && route.Model != "" {
-			reviewSeats = append(reviewSeats, ReviewSeat{Model: route.Model, Harness: route.Harness})
-		}
-	}
 	execution := c.Execution
 	if execution.FirstActivityTimeoutText == "" {
 		execution.FirstActivityTimeout = DefaultFirstActivityTimeout
@@ -1748,8 +1759,6 @@ func (c *Config) WorkspaceDocument() WorkspaceDocument {
 	document.Monitor.Repositories = append(make([]string, 0, len(c.Monitor.Repositories)), c.Monitor.Repositories...)
 	for stage, route := range c.Routing.Stages {
 		route.Timeout = 0
-		route.LegacyHarnesses = nil
-		route.LegacyModelTier = ""
 		document.Routing.Stages[stage] = route
 	}
 	return document
@@ -1766,9 +1775,6 @@ func (c *Config) PolicyDocument() WorkspaceDocument {
 	document.Execution.VerifyConcurrency = 0
 	document.Execution.FirstActivityTimeout = 0
 	document.Execution.FirstActivityTimeoutText = ""
-	for i := range document.Review.Seats {
-		document.Review.Seats[i] = ReviewSeat{}
-	}
 	return document
 }
 
@@ -1849,7 +1855,7 @@ func (c *Config) WithPolicy(policy PolicyContract) *Config {
 	if policy.MaxBounces > 0 {
 		next.MaxBounces = policy.MaxBounces
 	}
-	next.Routing = Routing{Stages: make(map[string]StageRoute, len(c.Routing.Stages))}
+	next.Routing = Routing{Stages: make(map[string]StageRoute, len(c.Routing.Stages)), Triage: c.Routing.Triage}
 	for stage, route := range c.Routing.Stages {
 		next.Routing.Stages[stage] = route
 	}

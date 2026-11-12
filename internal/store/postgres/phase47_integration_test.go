@@ -79,11 +79,10 @@ func TestPhase47PersistenceIntegration(t *testing.T) {
 	defer st.Close()
 	workspace := "phase47-" + core.NewTaskID()
 	ctx = store.WithWorkspace(ctx, workspace)
-	cfg := &config.Config{Workspace: workspace, MaxBounces: 2, Execution: config.ExecutionPolicy{FirstActivityTimeout: 30 * time.Second, FirstActivityTimeoutText: "30s"}, Routing: config.Routing{Stages: map[string]config.StageRoute{
-		"triage":    {Model: "gpt-5.4", Execution: config.ExecutionInProcess, TimeoutText: "1m", Timeout: time.Minute},
-		"spec":      {Model: "gpt-5.4", Execution: config.ExecutionInProcess, TimeoutText: "1m", Timeout: time.Minute},
-		"implement": {Model: "operator", Execution: config.ExecutionMCP, TimeoutText: "1h", Timeout: time.Hour},
-		"review":    {Model: "operator", Execution: config.ExecutionMCP, TimeoutText: "1h", Timeout: time.Hour},
+	cfg := &config.Config{Workspace: workspace, MaxBounces: 2, Execution: config.ExecutionPolicy{FirstActivityTimeout: 30 * time.Second, FirstActivityTimeoutText: "30s"}, Routing: config.Routing{Triage: config.TriageRoute{Model: "gpt-5.4", TimeoutText: "1m", Timeout: time.Minute}, Stages: map[string]config.StageRoute{
+		"spec":      {Execution: config.ExecutionInProcess, TimeoutText: "1m", Timeout: time.Minute},
+		"implement": {Execution: config.ExecutionMCP, TimeoutText: "1h", Timeout: time.Hour},
+		"review":    {Execution: config.ExecutionMCP, TimeoutText: "1h", Timeout: time.Hour},
 	}}, Repos: []config.Repo{{Name: "api", URL: "https://example.test/api.git", Base: "main"}}}
 	if _, err = st.BootstrapWorkspaceConfig(ctx, cfg); err != nil {
 		t.Fatal(err)
@@ -415,9 +414,7 @@ func TestArtifactRolePersistenceIntegration(t *testing.T) {
 	defer st.Close()
 	workspace := "artifact-role-" + core.NewTaskID()
 	ctx = store.WithWorkspace(ctx, workspace)
-	cfg := &config.Config{Workspace: workspace, Routing: config.Routing{Stages: map[string]config.StageRoute{
-		"triage": {Model: "gpt-5.6-terra", Execution: config.ExecutionInProcess, TimeoutText: "1m", Timeout: time.Minute},
-	}}, Repos: []config.Repo{{Name: "api", URL: "https://example.test/api.git", Base: "main"}}}
+	cfg := &config.Config{Workspace: workspace, Routing: config.Routing{Triage: config.TriageRoute{Model: "gpt-5.6-terra", TimeoutText: "1m", Timeout: time.Minute}}, Repos: []config.Repo{{Name: "api", URL: "https://example.test/api.git", Base: "main"}}}
 	if _, err = st.BootstrapWorkspaceConfig(ctx, cfg); err != nil {
 		t.Fatal(err)
 	}

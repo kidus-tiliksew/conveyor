@@ -49,7 +49,6 @@ func newHarness(t *testing.T, st store.Backend, name string, recovery config.Rec
 		ControlPlane: config.ControlPlaneSettings{Triage: config.ModelTimeoutSettings{Model: "control", TimeoutText: "20m"}},
 	}
 	routes := map[string]config.StageRoute{
-		"triage":    {Model: "control", TimeoutText: "20m", Timeout: 20 * time.Minute, Execution: config.ExecutionInProcess, ModelPolicy: config.ModelPolicyExplicit},
 		"spec":      {Execution: config.ExecutionMCP},
 		"implement": {Execution: config.ExecutionMCP},
 		"review":    {Execution: config.ExecutionMCP},
@@ -62,7 +61,7 @@ func newHarness(t *testing.T, st store.Backend, name string, recovery config.Rec
 	if task.SetupContract.VerifyStage {
 		setup.VerifyStage = true
 	}
-	cfg := (&config.Config{Workspace: workspace, Repos: []config.Repo{{Name: "conveyor", URL: "https://github.com/fixture/conveyor", GitHub: "fixture/conveyor", Base: "main"}}, WorkOrderQueueTimeout: time.Hour, WorkOrderQueueTimeoutText: "1h", MaxBounces: 3, Recovery: recovery, ExecutionSettings: &settings, Routing: config.Routing{Stages: routes}, Review: config.ReviewPanel{Seats: []config.ReviewSeat{{Model: "gpt-review"}}}}).WithPolicy(setup)
+	cfg := (&config.Config{Workspace: workspace, Repos: []config.Repo{{Name: "conveyor", URL: "https://github.com/fixture/conveyor", GitHub: "fixture/conveyor", Base: "main"}}, WorkOrderQueueTimeout: time.Hour, WorkOrderQueueTimeoutText: "1h", MaxBounces: 3, Recovery: recovery, ExecutionSettings: &settings, Routing: config.Routing{Triage: config.TriageRoute{Model: "control", TimeoutText: "20m", Timeout: 20 * time.Minute}, Stages: routes}, Review: config.ReviewPanel{Seats: []config.ReviewSeat{{}}}}).WithPolicy(setup)
 	human := store.WithActor(t.Context(), store.Actor{ID: "test", Role: core.ActorHuman})
 	if _, err := st.CreateWorkspace(human, workspace, "Stale mint "+workspace, cfg); err != nil {
 		t.Fatalf("create workspace: %v", err)

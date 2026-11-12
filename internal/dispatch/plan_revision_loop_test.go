@@ -179,8 +179,8 @@ func newPlanRevisionLoopIn(t *testing.T, ctx context.Context, st store.Store, wo
 		t.Fatal(err)
 	}
 	cfg := &config.Config{Workspace: workspace, WorkOrderQueueTimeout: time.Hour, Routing: config.Routing{Stages: map[string]config.StageRoute{
-		"spec":      {Model: "planner", Execution: config.ExecutionMCP, Timeout: time.Hour},
-		"implement": {Model: "implementer", Execution: config.ExecutionMCP, Timeout: time.Hour},
+		"spec":      {Execution: config.ExecutionMCP, Timeout: time.Hour},
+		"implement": {Execution: config.ExecutionMCP, Timeout: time.Hour},
 	}}, Repos: []config.Repo{{Name: "conveyor", URL: "https://example.test/conveyor.git", Base: "main"}}}
 	dispatcher := dispatch.New(st, cfg, nil)
 	dispatcher.DisableMemoryQueueForTest()

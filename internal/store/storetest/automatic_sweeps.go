@@ -25,8 +25,8 @@ func automaticReviewSweepConfig(workspace string, policy config.RecoveryPolicy) 
 	return &config.Config{
 		Workspace: workspace, WorkOrderQueueTimeout: time.Hour, Recovery: policy,
 		Repos:   []config.Repo{{Name: "conveyor", Base: "main", GitHub: "acme/conveyor"}},
-		Routing: config.Routing{Stages: map[string]config.StageRoute{"review": {Execution: config.ExecutionMCP, Harness: "codex", TimeoutText: "45m"}}},
-		Review:  config.ReviewPanel{Seats: []config.ReviewSeat{{Model: "gpt-current", Harness: "codex"}, {Model: "gpt-second", Harness: "codex"}}},
+		Routing: config.Routing{Stages: map[string]config.StageRoute{"review": {Execution: config.ExecutionMCP, TimeoutText: "45m"}}},
+		Review:  config.ReviewPanel{Seats: []config.ReviewSeat{{}, {}}},
 	}
 }
 

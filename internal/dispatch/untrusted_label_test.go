@@ -40,9 +40,8 @@ func newLabelFixture(t *testing.T, agent inprocess.Agent) *labelFixture {
 		st:   store.NewMemory(),
 		diff: "diff --git a/app.txt b/app.txt\n-v1\n+v2\n",
 	}
-	f.cfg = &config.Config{Workspace: "demo", MaxBounces: 2, Routing: config.Routing{Stages: map[string]config.StageRoute{
-		"triage": {Model: "gpt", Execution: config.ExecutionInProcess, Timeout: time.Minute},
-		"review": {Model: "gpt", Timeout: time.Minute},
+	f.cfg = &config.Config{Workspace: "demo", MaxBounces: 2, Routing: config.Routing{Triage: config.TriageRoute{Model: "gpt", Timeout: time.Minute}, Stages: map[string]config.StageRoute{
+		"review": {Timeout: time.Minute},
 	}}}
 	f.d = New(f.st, f.cfg, agent)
 	f.d.Pack = bundle
@@ -401,11 +400,15 @@ func TestReviewVerdictComesFromTheReplyNotTheLabelledBody(t *testing.T) {
 	agent := &sequenceAgent{outputs: []string{"This reply holds no verdict block."}}
 	f := newLabelFixture(t, agent)
 	task := f.task(t, "label-review-verdict", core.StageReview, "Title", forged, labelTestSource)
-	_ = f.d.DispatchNow(f.ctx, task.ID)
-	if len(agent.inputs) != 1 {
-		t.Fatalf("agent ran %d times, want 1", len(agent.inputs))
+	input, err := f.d.buildStageInput(f.ctx, f.cfg, core.StageReview, task)
+	if err != nil {
+		t.Fatal(err)
 	}
-	untrustedtest.RequireConfined(t, agent.inputs[0].Prompt, untrustedtest.Injection)
+	untrustedtest.RequireConfined(t, input.Prompt, untrustedtest.Injection)
+	completeStageOutputForTest(t, f.ctx, f.d, f.cfg, task, agent.outputs[0])
+	if len(agent.inputs) != 0 {
+		t.Fatalf("agent ran %d times, want no model call for a review stage", len(agent.inputs))
+	}
 	if count, err := f.st.CountEvents(f.ctx, task.ID, "review.output_invalid"); err != nil || count != 1 {
 		t.Fatalf("review.output_invalid count=%d err=%v, want 1", count, err)
 	}

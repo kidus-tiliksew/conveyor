@@ -54,7 +54,7 @@ func newUnsupportedArtifactFixture(t *testing.T) *unsupportedArtifactFixture {
 		t.Fatal(err)
 	}
 	agent := &capturingInputAgent{}
-	cfg := &config.Config{Workspace: "demo", MaxBounces: 2, Routing: config.Routing{Stages: map[string]config.StageRoute{"triage": {Model: "gpt", Timeout: time.Minute}}}}
+	cfg := &config.Config{Workspace: "demo", MaxBounces: 2, Routing: config.Routing{Triage: config.TriageRoute{Model: "gpt", Timeout: time.Minute}}}
 	d := New(st, cfg, agent)
 	var err error
 	d.Pack, err = pack.Load("../../pack")

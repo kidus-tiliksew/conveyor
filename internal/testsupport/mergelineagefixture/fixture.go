@@ -948,7 +948,7 @@ func RunCheckStatusRetry(t *testing.T, open func(*testing.T) store.Backend) {
 	t.Run("another task dispatches while the retry is in backoff", func(t *testing.T) {
 		r := newRetryScenario(t, st)
 		r.realDelays = true
-		r.d.Cfg.Routing = config.Routing{Stages: map[string]config.StageRoute{"implement": {Model: "operator", Execution: config.ExecutionMCP, Timeout: time.Hour}}}
+		r.d.Cfg.Routing = config.Routing{Stages: map[string]config.StageRoute{"implement": {Execution: config.ExecutionMCP, Timeout: time.Hour}}}
 		r.answer(transient)
 		r.automatic(t, dispatch.ErrCheckStatusUnread)
 		r.startRuntime(t)

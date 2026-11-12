@@ -64,9 +64,7 @@ func runtimeLegacyDocument(t *testing.T) []byte {
 	if err != nil {
 		t.Fatal(err)
 	}
-	route := seed.Routing.Stages["triage"]
-	route.Model, route.Effort, route.TimeoutText = "legacy-triage", "minimal", "30m"
-	seed.Routing.Stages["triage"] = route
+	seed.Routing.Triage = TriageRoute{Model: "legacy-triage", Effort: "minimal", TimeoutText: "30m", Timeout: 30 * time.Minute}
 	seed.ExecutionSettings.ControlPlane.Planning.Model = "legacy-planner"
 	seed.ExecutionSettings.ControlPlane.Planning.TimeoutText = "15m"
 	seed.PlanningModels = []string{"legacy-planner"}
@@ -103,8 +101,7 @@ func assertDeploymentControlPlane(t *testing.T, cfg *Config) {
 	if !slices.Equal(cfg.PlanningModels, []string{"deploy-planner", "deploy-alternate"}) {
 		t.Fatalf("planning allowlist = %v", cfg.PlanningModels)
 	}
-	route := cfg.Routing.Stages["triage"]
-	if route.Model != "deploy-triage" || route.Effort != "low" || route.TimeoutText != "7m" || route.Timeout != 7*time.Minute || route.Execution != ExecutionInProcess {
+	if route := cfg.Routing.Triage; route != (TriageRoute{Model: "deploy-triage", Effort: "low", TimeoutText: "7m", Timeout: 7 * time.Minute}) {
 		t.Fatalf("triage route = %+v", route)
 	}
 }
@@ -135,20 +132,11 @@ func TestRuntimeWorkspaceConfigUsesDeploymentControlPlane(t *testing.T) {
 			t.Fatalf("review seats = %d", len(cfg.Review.Seats))
 		}
 		for stage, timeout := range map[string]string{"spec": "25m", "implement": "5h", "review": "45m", "verify": "50m"} {
-			route := cfg.Routing.Stages[stage]
-			if route.TimeoutText != timeout || route.Model != "" || route.Harness != "" || route.Effort != "" || route.ModelPolicy != "" {
+			if route := cfg.Routing.Stages[stage]; route != (StageRoute{TimeoutText: timeout, Timeout: route.Timeout, Execution: ExecutionMCP}) || route.Timeout <= 0 {
 				t.Fatalf("%s route = %+v", stage, route)
 			}
 		}
 		settings := cfg.ExecutionSettings
-		for name, stage := range map[string]ImplementationSettings{"spec": settings.Spec, "implementation": settings.Implementation, "verify": settings.Verify} {
-			if stage.Harness != "" || stage.Model != "" || stage.ModelPolicy != "" || stage.Effort != "" {
-				t.Fatalf("%s executor detail restored: %+v", name, stage)
-			}
-		}
-		if settings.Review.FallbackHarness != "" || settings.Review.FallbackModel != "" {
-			t.Fatalf("review executor detail restored: %+v", settings.Review)
-		}
 		if settings.Spec.TimeoutText != "25m" || settings.Implementation.TimeoutText != "5h" || settings.Review.TimeoutText != "45m" || settings.Verify.TimeoutText != "50m" {
 			t.Fatalf("policy timeouts missing from composed settings: %+v", settings)
 		}
@@ -216,10 +204,6 @@ func TestRuntimeWorkspaceConfigUsesDeploymentControlPlane(t *testing.T) {
 
 func TestRuntimeWorkspaceConfigIsolatesConcurrentResults(t *testing.T) {
 	deployment := runtimeDeployment(t)
-	for stage, route := range deployment.Routing.Stages {
-		route.LegacyHarnesses = []string{"legacy-" + stage}
-		deployment.Routing.Stages[stage] = route
-	}
 	beforeValue := fmt.Sprintf("%#v %#v", deployment, *deployment.ExecutionSettings)
 	before, err := yaml.Marshal(deployment)
 	if err != nil {
@@ -238,17 +222,11 @@ func TestRuntimeWorkspaceConfigIsolatesConcurrentResults(t *testing.T) {
 	first.ExecutionSettings.ControlPlane.Triage.Model = "mutated"
 	first.PlanningModels[0] = "mutated"
 	first.PlanningModels = append(first.PlanningModels, "appended")
-	triage := first.Routing.Stages["triage"]
-	triage.Model = "mutated"
-	triage.LegacyHarnesses[0] = "mutated"
-	first.Routing.Stages["triage"] = triage
+	first.Routing.Triage.Model = "mutated"
 	first.Routing.Stages["spec"] = StageRoute{TimeoutText: "1m"}
 	assertDeploymentControlPlane(t, second)
 	if second.Routing.Stages["spec"].TimeoutText != "22m" || second.MaxBounces != 4 {
 		t.Fatalf("second result shares state with the first: %+v", second.Routing.Stages["spec"])
-	}
-	if got := second.Routing.Stages["triage"].LegacyHarnesses; !slices.Equal(got, []string{"legacy-triage"}) {
-		t.Fatalf("second triage route shares legacy harnesses: %v", got)
 	}
 	after, err := yaml.Marshal(deployment)
 	if err != nil {
@@ -279,16 +257,15 @@ func TestRuntimeWorkspaceConfigIsolatesConcurrentResults(t *testing.T) {
 				return
 			}
 			if cfg.MaxBounces != bounces || cfg.Routing.Stages["spec"].TimeoutText != spec ||
-				cfg.ExecutionSettings.ControlPlane.Planning.Model != "deploy-planner" || cfg.Routing.Stages["triage"].Model != "deploy-triage" ||
+				cfg.ExecutionSettings.ControlPlane.Planning.Model != "deploy-planner" || cfg.Routing.Triage.Model != "deploy-triage" ||
 				!slices.Equal(cfg.PlanningModels, []string{"deploy-planner", "deploy-alternate"}) {
 				errs <- fmt.Errorf("goroutine %d composed bounces=%d spec=%q planning=%q allowlist=%v", i, cfg.MaxBounces, cfg.Routing.Stages["spec"].TimeoutText, cfg.ExecutionSettings.ControlPlane.Planning.Model, cfg.PlanningModels)
 				return
 			}
 			cfg.ExecutionSettings.ControlPlane.Planning.Model = fmt.Sprintf("mutated-%d", i)
 			cfg.PlanningModels[0] = fmt.Sprintf("mutated-%d", i)
-			route := cfg.Routing.Stages["triage"]
-			route.LegacyHarnesses[0] = fmt.Sprintf("mutated-%d", i)
-			cfg.Routing.Stages["triage"] = route
+			cfg.Routing.Triage.Model = fmt.Sprintf("mutated-%d", i)
+			cfg.Routing.Stages["spec"] = StageRoute{TimeoutText: "1m"}
 		}()
 	}
 	close(start)

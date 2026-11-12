@@ -136,7 +136,7 @@ func TestRefreshRatesHeadBeforeStaleMark(t *testing.T) {
 				t.Fatal(err)
 			}
 			d := New(st, &config.Config{Workspace: "test", Repos: []config.Repo{{Name: "app", GitHub: "acme/app"}},
-				Routing: config.Routing{Stages: map[string]config.StageRoute{"review": {Model: "reviewer", Execution: config.ExecutionMCP, Timeout: time.Hour, TimeoutText: "1h"}}}}, nil)
+				Routing: config.Routing{Stages: map[string]config.StageRoute{"review": {Execution: config.ExecutionMCP, Timeout: time.Hour, TimeoutText: "1h"}}}}, nil)
 			base := strings.Repeat("c", 40)
 			d.ViewPullRequest = func(context.Context, string, string) (githubtrigger.PullRequest, error) {
 				return githubtrigger.PullRequest{Number: 12, State: "open", Mergeable: "MERGEABLE", BaseSHA: base, HeadSHA: "new-head"}, nil
