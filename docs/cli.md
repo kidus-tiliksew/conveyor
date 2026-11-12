@@ -59,6 +59,30 @@ same trust model as `gh` and kubeconfig).
 | `conveyor auth token` | Print the selected stored token for command substitution. `--format http-headers` emits a JSON Authorization header for native MCP helpers; `--credentials-file <absolute-path>` selects their saved-credential file. Both forms are explicit secret output. |
 | `conveyor auth logout [--revoke]` | Remove the local entry; `--revoke` also revokes the token on the server. |
 
+## preferences
+
+Your stage preferences are the harness, model, and effort that your agent
+sessions use for the plan, implement, verify, and review stages. Conveyor
+keeps one set for each person, and the set applies in every workspace. It is
+advice to your own sessions: no dispatch, claim, review, or merge decision
+reads it. The commands call `GET` and `PUT /v1/me/stage-preferences` with your
+own credential, and the dashboard Settings page and the MCP tools
+`get_stage_preferences` and `set_stage_preference` show the same set.
+
+| Command | What it does |
+|---|---|
+| `conveyor preferences show [--json]` | Print every stage, or `not set`, with the set's version. |
+| `conveyor preferences set <stage> --harness <h> --model <m> [--effort <e>] [--primary \| --seat <n>] [--json]` | Set the entry for `plan`, `implement`, or `verify`. For `review`, set the primary (the default, or `--primary`) or seat N (`--seat N`, 1 to 8). Seat N can be set when seats 1 to N-1 are set. A seat without its own entry uses the primary. |
+| `conveyor preferences clear <stage> [--primary \| --seat <n>] [--json]` | Clear `plan`, `implement`, `verify`, or the whole `review` stage. For `review`, `--primary` clears only the primary and `--seat N` removes seat N, and later seats move up one position. |
+
+Each change prints the resulting set. Harness, model, and effort are free
+text: harness and model must not be blank and hold at most 128 bytes, effort
+holds at most 32 bytes, and no value holds a control character. A change
+reads the current set and writes it back with `If-Match`. When another change
+lands first, the command reads the set again and repeats only its own edit, so
+it never overwrites the other change. After five such conflicts it stops and
+saves nothing.
+
 ## init
 
 `conveyor init` initializes an organization and first workspace interactively:

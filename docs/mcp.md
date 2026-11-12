@@ -613,6 +613,28 @@ in-product planning sessions, and the REST routes, which require
 | `report_usage` | Cumulative self-reported tokens and optional provider rate-limit status, stored with the usage record on the order. Observational only; missing usage never blocks lifecycle progress. `source` admits only `self_reported`; `worker_fallback` is refused. |
 | `upload_transcript` | Optional self-reported session transcript, capped at 4 MiB, passed through redaction, and stored as an audit artifact. |
 
+## Stage preferences
+
+Each person keeps one set of stage preferences: the harness, model, and effort
+that their agent sessions use for each stage. The set applies in every
+workspace, and it is advice only: no dispatch, claim, submission, review,
+verification, or merge decision reads it, and no work order, task policy,
+task event, or workspace configuration holds it
+(`component-stage-preferences`; `req-stage-preferences`).
+
+| Tool | What it does |
+|---|---|
+| `get_stage_preferences` | Read only. Requires `workspace_id`, which admits the call under `view_workspace` and never selects the set. Returns `version` (0 when never saved), `updated_at` (null when never saved), and `stages` with exactly `plan`, `implement`, `verify`, and `review`. `plan`, `implement`, and `verify` each hold one `{harness, model, effort}` entry or null. `review` holds `primary`, an entry or null, and `seats`, at most eight entries where position N is seat N, or `review` is null. Null means unset. |
+| `set_stage_preference` | Requires `workspace_id`, `stage`, and `value`. Replaces one stage with `value`, the stage's whole value in the shape above, or clears it when `value` is null, in one transaction that keeps every other stage. Takes no version. Returns the whole set. A field other than `harness`, `model`, and `effort`, a list for `plan`, `implement`, or `verify`, a ninth seat, a blank harness or model, a value over its byte limit (128 for harness and model, 32 for effort), or a control character is refused with `validation_failed`, naming the field and, for a seat, its position. |
+
+Both tools act only on the person who owns the credential. A session saves a
+stage only on its operator's direct answer or instruction
+(`component-cli-onboarding`). `GET` and `PUT /v1/me/stage-preferences` serve
+the same set to the dashboard and the `conveyor preferences` commands; `PUT`
+replaces the whole set and requires `If-Match` with the version it read,
+answering `428 if_match_required` without it and `412 version_conflict` when
+the version is stale.
+
 ## Filing and operating
 
 | Tool | What it does |

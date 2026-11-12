@@ -84,6 +84,7 @@ func newStagePreferenceHarness(t *testing.T) *stagePreferenceHarness {
 	}
 	server := NewServer(st)
 	server.Workspaces = st
+	server.ConfigStore = st
 	h := &stagePreferenceHarness{t: t, st: st, server: server, owner: owner, other: other, otherToken: otherToken.Value, ownerSession: session.Value, ownerTokenCtx: ownerCtx, workspaces: workspaces}
 	h.recordedEvents = h.eventCount()
 	return h
@@ -229,6 +230,29 @@ func TestStagePreferencesRESTConditionalReplacement(t *testing.T) {
 	}
 	if got := h.eventCount(); got != h.recordedEvents {
 		t.Fatalf("preference writes appended %d events", got-h.recordedEvents)
+	}
+}
+
+// TestStagePreferencesStayOutOfWorkspaceConfiguration covers AC-3.3: a saved
+// set appears in no workspace configuration read and appends no event.
+func TestStagePreferencesStayOutOfWorkspaceConfiguration(t *testing.T) {
+	h := newStagePreferenceHarness(t)
+	const marker = "advice-only-marker-harness"
+	decodeStagePreferences(t, h.call(stagePreferenceRequest{method: http.MethodPut, path: stagePreferencePath, token: stagePreferenceOwnerToken,
+		body: `{"stages":{"implement":{"harness":"` + marker + `","model":"` + marker + `"},"review":{"primary":{"harness":"` + marker + `","model":"m"}}}}`, header: map[string]string{"If-Match": "0"}}))
+	for _, workspace := range h.workspaces {
+		for _, path := range []string{"/v1/workspaces/" + workspace + "/config", "/v1/workspaces/" + workspace, "/v1/me?workspace_id=" + workspace} {
+			response := h.call(stagePreferenceRequest{method: http.MethodGet, path: path, token: stagePreferenceOwnerToken})
+			if response.Code != http.StatusOK {
+				t.Fatalf("GET %s: status=%d body=%s", path, response.Code, response.Body.String())
+			}
+			if strings.Contains(response.Body.String(), marker) || strings.Contains(response.Body.String(), "stage_preferences") {
+				t.Fatalf("GET %s carries the stage preferences: %s", path, response.Body.String())
+			}
+		}
+	}
+	if got := h.eventCount(); got != h.recordedEvents {
+		t.Fatalf("a preference write appended %d events", got-h.recordedEvents)
 	}
 }
 
