@@ -34,6 +34,7 @@ func (s *Store) GetStagePreferences(ctx context.Context, userID string) (store.S
 // version predicate on the UPDATE proves no write slipped in between
 // (component-stage-preferences invariant 4).
 func (s *Store) UpdateStagePreferences(ctx context.Context, userID string, apply store.StagePreferenceUpdate) (store.StagePreferences, error) {
+	ctx = dbmetrics.WithReadLabel(ctx, "UpdateStagePreferences")
 	var saved store.StagePreferences
 	err := s.withTx(ctx, func(tx *sql.Tx) error {
 		now := store.StagePreferenceTime(time.Now())
