@@ -32,6 +32,14 @@ export function spanRuntime(start: string, end: string | undefined, open: boolea
   return undefined
 }
 
+// An open span's runtime as plain text, for a place that already shows its
+// facts elsewhere, such as a deliberating review seat. It advances once a
+// second, like an open runtime in a disclosure.
+export function LiveRuntime({ start }: { start: string }) {
+  const now = useLiveNow(true)
+  return <>{spanRuntime(start, undefined, true, now)}</>
+}
+
 export type RuntimeView = {
   // What the closed card face shows.
   face: ReactNode

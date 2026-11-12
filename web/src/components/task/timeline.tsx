@@ -66,7 +66,7 @@ import {
   stageWork,
   usePersonResolver,
 } from './run-by'
-import { RuntimeDisclosure } from './runtime-disclosure'
+import { LiveRuntime, RuntimeDisclosure } from './runtime-disclosure'
 import { useCollapsibleContent } from './use-collapsible-content'
 import { useTaskAudit } from './use-task-detail'
 import { isHistoryRestart, useTaskHistory } from './use-task-history'
@@ -1399,7 +1399,12 @@ function SeatState({ seat, index }: { seat: PanelSeat; index: number }) {
           />
           Deliberating
         </span>
-        {job?.started_at && <span className="text-[11px] tabular-nums text-muted">{duration(job.started_at)}</span>}
+        {/* The seat's elapsed time advances with the round's runtime. */}
+        {job?.started_at && (
+          <span className="text-[11px] tabular-nums text-muted" data-seat-runtime>
+            <LiveRuntime start={job.started_at} />
+          </span>
+        )}
       </span>
     )
   }

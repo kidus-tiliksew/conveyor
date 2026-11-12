@@ -2604,9 +2604,15 @@ test('an open review panel shows its runtime from convened, which advances each 
   const time = panel.locator('[data-review-time]')
   await expect(time).toHaveText('Open for 5m 00s')
   await expectOpenPanelTime(time)
+  // The deliberating seat's elapsed time advances with the round.
+  const seat = panel.locator('[data-seat-runtime]')
+  await expect(seat).toHaveCount(1)
+  await expect(seat).toHaveText('4m 00s')
   await page.clock.runFor(2_000)
   await expect(time).toHaveText('Open for 5m 02s')
-  expect(await secondTimers(page)).toBe(1)
+  await expect(seat).toHaveText('4m 02s')
+  // One timer for the round and one for the deliberating seat.
+  expect(await secondTimers(page)).toBe(2)
   await time.hover()
   await expect(panel.locator('[data-review-convened]')).toBeVisible()
 })
