@@ -8,6 +8,7 @@ import { PasswordCard } from '../components/settings/password-card'
 import { PersonalTokensCard } from '../components/settings/personal-tokens-card'
 import { ProfileCard } from '../components/settings/profile-card'
 import { WorkspaceGitHubAppCard } from '../components/settings/workspace-github-app-card'
+import { StagePreferencesCard } from '../components/stage-preferences/stage-preferences-card'
 import { Card, CardContent, CardHeader, CardTitle } from '../components/ui/card'
 import { CopyButton } from '../components/ui/copy-button'
 import { PageHeader } from '../components/ui/page-header'
@@ -76,6 +77,7 @@ export function SettingsPage() {
           <ProfileCard />
           <PasswordCard />
           <PersonalTokensCard />
+          <StagePreferencesCard />
           <BoardPreferencesCard />
           {(!returnWorkspaceKnown || returnedWorkspace === workspace) && <WorkspaceGitHubAppCard key={workspace} />}
           <Card className="mt-4">

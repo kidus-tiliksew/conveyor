@@ -1,3 +1,4 @@
+import { describeStagePreferenceField, type StagePreferenceStages, type StagePreferences } from './stage-preferences'
 import type {
   ActivityItem,
   ActivityPage,
@@ -500,6 +501,85 @@ export async function updateOwnDisplayName(displayName: string) {
   })
   if (!response.ok) throw new Error(apiErrorMessage(await response.text(), response.statusText))
   return (await response.json()) as import('./types').CallerIdentity
+}
+
+/**
+ * A failed stage preference read or save. `status` is kept beside the
+ * message, so the card branches on 412 without reading message text
+ * (component-web-dashboard invariant 13).
+ */
+export class StagePreferencesError extends Error {
+  status: number
+
+  constructor(message: string, status: number) {
+    super(message)
+    this.status = status
+  }
+}
+
+export async function fetchStagePreferences(): Promise<StagePreferences> {
+  const response = await fetch('/v1/me/stage-preferences', { cache: 'no-store' })
+  if (!response.ok) {
+    throw new StagePreferencesError(
+      response.status >= 500
+        ? 'Conveyor could not read your stage preferences. Try again.'
+        : apiErrorMessage(await response.text(), response.statusText),
+      response.status,
+    )
+  }
+  return readStagePreferences(await response.json())
+}
+
+// A read or save answer must carry the set's shape; anything else is an error,
+// never an empty set shown as current.
+function readStagePreferences(body: unknown): StagePreferences {
+  const set = body as Partial<StagePreferences> | null
+  if (!set || typeof set !== 'object' || Array.isArray(set) || !set.stages || typeof set.stages !== 'object') {
+    throw new StagePreferencesError('Conveyor sent stage preferences that this page cannot read. Try again.', 0)
+  }
+  return set as StagePreferences
+}
+
+/**
+ * Replace the whole set. `version` is the version the draft started from; the
+ * server refuses a stale one with 412 and changes nothing
+ * (component-stage-preferences invariant 4).
+ */
+export async function saveStagePreferences(stages: StagePreferenceStages, version: number): Promise<StagePreferences> {
+  const response = await fetch('/v1/me/stage-preferences', {
+    method: 'PUT',
+    headers: { ...mutationHeaders(), 'If-Match': `"${version}"` },
+    body: JSON.stringify({ stages }),
+  })
+  if (!response.ok) {
+    const body = await response.text()
+    let message = apiErrorMessage(body, response.statusText)
+    if (response.status === 412) {
+      message = 'Your stage preferences changed in another place. Your changes are not saved yet.'
+    } else if (response.status === 422) {
+      const field = stagePreferenceRefusedField(body)
+      if (field) message = `${describeStagePreferenceField(field.field, field.position)}: ${field.message}`
+    } else if (response.status >= 500) {
+      message = 'Conveyor could not save your stage preferences. Your changes are still here. Try again.'
+    }
+    throw new StagePreferencesError(message, response.status)
+  }
+  return readStagePreferences(await response.json())
+}
+
+function stagePreferenceRefusedField(body: string) {
+  try {
+    const parsed = JSON.parse(body) as { fields?: Array<{ field?: unknown; message?: unknown; position?: unknown }> }
+    const first = parsed.fields?.[0]
+    if (typeof first?.field !== 'string' || typeof first.message !== 'string') return null
+    return {
+      field: first.field,
+      message: first.message,
+      position: typeof first.position === 'number' ? first.position : undefined,
+    }
+  } catch {
+    return null
+  }
 }
 
 export async function signOutDashboardSession() {

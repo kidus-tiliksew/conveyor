@@ -46,7 +46,7 @@ var governedPaths = []string{
 // name the table: the migrations that create it (component-persistence owns
 // numbered migrations).
 var schemaDeclarations = map[string]bool{
-	"internal/store/postgres/migrations/166_user_stage_preferences.sql":    true,
+	"internal/store/postgres/migrations/166_user_stage_preferences.sql":     true,
 	"internal/store/singlestore/migrations/0039_user_stage_preferences.sql": true,
 }
 
