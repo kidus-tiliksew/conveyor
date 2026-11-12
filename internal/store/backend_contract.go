@@ -31,6 +31,7 @@ type Backend interface {
 	PersonalAccessTokenStore
 	AgentActorOwnerStore
 	WorkspaceControlStore
+	StagePreferenceStore
 	Close()
 	ConfigureGitHubAppKeyEncryptionKey([]byte)
 	BootstrapIdentity(context.Context, config.FirstOperatorIdentity, string) (bool, error)
