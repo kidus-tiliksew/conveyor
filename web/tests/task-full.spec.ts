@@ -5489,7 +5489,9 @@ function planRevisionGateActivity(taskId: string) {
   return item
 }
 
-test('the revision chain reads as request, decision, and the plan version it produced', async ({ page }) => {
+test('the revision chain reads as one plan cycle: request, decision, and the plan version it produced', async ({
+  page,
+}) => {
   const taskId = 'plan-revision-history'
   await page.route(`**/v1/tasks/${taskId}/activity*`, async (route) => {
     const item = planRevisionGateActivity(taskId)
@@ -5538,19 +5540,26 @@ test('the revision chain reads as request, decision, and the plan version it pro
 
   await page.goto(`/w/demo/tasks/${taskId}/full`)
   const timeline = page.getByRole('region', { name: 'Execution event timeline' })
-  const rows = timeline.locator('ol > li')
 
-  await expect(timeline.getByText('The agent asked to revise plan v7')).toBeVisible()
-  await expect(timeline.getByText('A dependency changed the public handler contract.')).toBeVisible()
-  await expect(timeline.getByText('Plan revision approved — returning to planning')).toBeVisible()
-  await expect(timeline.getByText('Re-plan around the new handler contract.')).toBeVisible()
-  // The new version shows in the plan section, not as a timeline row.
-  await expect(timeline.getByText('Plan v8 drafted')).toHaveCount(0)
+  // One plan-cycle entry holds the request, the decision, and the version it
+  // produced, each with its time (req-260809-a40c75 AC-4.1; DEC-130(1)).
+  const cycle = timeline.getByRole('article', { name: 'Plan revision v7 → v8' })
+  await expect(cycle).toBeVisible()
+  await expect(cycle.getByText('Needs your decision')).toBeVisible()
+  const steps = cycle.locator('[data-plan-cycle-step]')
+  await expect(steps).toHaveCount(3)
+  await expect(steps.nth(0)).toContainText('Agent asked to revise plan v7')
+  await expect(steps.nth(0)).toContainText('A dependency changed the public handler contract.')
+  await expect(steps.nth(1)).toContainText('Allowed a revision — back to planning')
+  await expect(steps.nth(1)).toContainText('Re-plan around the new handler contract.')
+  await expect(steps.nth(2)).toContainText('Plan v8 ready')
+  await expect(cycle.locator('time')).toHaveCount(3)
+  await expect(cycle.getByText('Waiting for your decision below')).toBeVisible()
 
-  // Two distinct entries in the order they happened (AC-4.1) — and the
-  // release the request rode in on is not repeated as a third.
-  await expect(rows.nth(0)).toContainText('The agent asked to revise plan v7')
-  await expect(rows.nth(1)).toContainText('Plan revision approved')
+  // No separate request note or decision card, and the release the request
+  // rode in on is not repeated.
+  await expect(timeline.getByText('The agent asked to revise plan v7')).toHaveCount(0)
+  await expect(timeline.getByText('Plan revision approved — returning to planning')).toHaveCount(0)
   await expect(timeline.getByText('Work-order claim released')).toHaveCount(0)
   // The wire vocabulary stays on the wire.
   await expect(timeline.getByText('plan-revision-approved')).toHaveCount(0)

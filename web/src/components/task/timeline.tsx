@@ -49,6 +49,7 @@ import { Disclosure } from '../ui/disclosure'
 import { MarkdownProse } from '../ui/markdown-prose'
 import { ImplementationEntry } from './implementation-entry'
 import { hasInterruptedReviewRecovery, InterruptedReviewRecoveryCard } from './interrupted-review-recovery-card'
+import { PlanCycleEntry, planCycleDecider, planCycleStepLabel } from './plan-cycle-entry'
 import { canRedispatch, FailedTriageCard, RedispatchCard } from './redispatch-card'
 import {
   changesComposerHint,
@@ -780,6 +781,36 @@ function TimelineRow({
     )
   if (entry.type === 'panel')
     return <PanelEntry entry={entry} item={item} usageReportedOrderIDs={usageReportedOrderIDs} />
+  // A plan cycle's rail shows the attention marker while it waits on the
+  // operator, else its last deciding person (component-web-task-surfaces
+  // invariant 69).
+  if (entry.type === 'plan_cycle') {
+    const decider = planCycleDecider(entry.cycle)
+    const person = resolve(decider?.user_id)
+    const waiting = entry.cycle.outcome === 'awaiting_decision'
+    return (
+      <PlanCycleEntry
+        cycle={entry.cycle}
+        newest={entry.newest}
+        rail={
+          waiting ? (
+            <span data-plan-cycle-attention>
+              <TimelineDot className="animate-pulse bg-attention-dot" />
+            </span>
+          ) : (
+            rail(
+              person && decider ? [{ person, label: personLabel(person, planCycleStepLabel(decider)) }] : [],
+              'bg-foreground',
+            )
+          )
+        }
+        audit={(eventId) => (
+          // The server cut this text at 16,384 bytes; its event holds the rest.
+          <AuditDisclosure taskId={item.task.id} kind="event" recordId={eventId} label="Full text (shortened here)" />
+        )}
+      />
+    )
+  }
   // A work-order entry carries no usage; per-order usage stays in TaskUsage
   // inside technical activity (component-web-task-surfaces, Work-order
   // timeline entries).

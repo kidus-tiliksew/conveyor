@@ -859,7 +859,9 @@ test('a planning request from a task that needs no plan shows its decision card'
   await expect(card.getByText('Contested plan')).toHaveCount(0)
   await expect(card.getByRole('button', { name: 'Approve planning' })).toBeVisible()
   const timeline = page.getByRole('region', { name: 'Execution event timeline' })
-  await expect(timeline.getByText('The agent asked for a plan before implementing')).toBeVisible()
+  const cycle = timeline.getByRole('article', { name: 'Planning request' })
+  await expect(cycle.getByText('Agent asked for a plan before implementing')).toBeVisible()
+  await expect(cycle.getByText('Needs your decision')).toBeVisible()
 })
 
 test('Escape in a plan dialog over the Board sheet closes only the dialog', async ({ page }) => {
