@@ -34,7 +34,6 @@ var humanTimelineEventKinds = []string{
 	"blueprint.materialized",
 	"blueprint.closed",
 	"task.dependency_unsatisfiable",
-	"task.dependency_removed",
 	"github_issue.publication_retry",
 	"github_issue.publication_failed",
 	"review.publication_failed",
