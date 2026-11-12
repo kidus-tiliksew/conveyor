@@ -4,6 +4,7 @@ import type { TaskPlanCycle, TaskPlanCycleOutcome, TaskPlanCycleStep, TaskPlanCy
 import { absoluteTime, cn, fullTime } from '../../lib/utils'
 import { Badge } from '../ui/badge'
 import { PersonAvatar, personLabel, usePersonResolver } from './run-by'
+import { RuntimeDisclosure } from './runtime-disclosure'
 
 // One plan cycle as one timeline entry: the request, every operator decision
 // with its comment, every plan version, and the approval, read only from
@@ -84,7 +85,7 @@ export function planCycleHeading(cycle: TaskPlanCycle): { title: string; range?:
 // the task's newest cycle, which explains the plan the task runs now
 // (invariant 70; DEC-130(3)).
 export function planCycleFoldable(cycle: TaskPlanCycle, newest: boolean) {
-  return !newest && cycle.outcome !== 'awaiting_decision' && cycle.outcome !== 'planning'
+  return !newest && !planCycleOpen(cycle)
 }
 
 // The cycle's last deciding person, whom the rail shows.
@@ -201,12 +202,62 @@ function previewText(cycle: TaskPlanCycle) {
   return [...cycle.steps].reverse().find((step) => step.text && !requestKinds.has(step.kind))?.text
 }
 
-function spanText(cycle: TaskPlanCycle) {
-  const first = cycle.steps[0].at
-  const last = cycle.steps[cycle.steps.length - 1].at
-  const end = sameDay(first, last) ? clockTime(last) : absoluteTime(last)
+// A cycle that waits on a decision or a new plan version is still open, so
+// its runtime advances once a second (DEC-130(3)).
+export function planCycleOpen(cycle: TaskPlanCycle) {
+  return cycle.outcome === 'awaiting_decision' || cycle.outcome === 'planning'
+}
+
+// The cycle's span as a runtime with the step count. The first and last step
+// times sit behind the runtime (invariant 70; DEC-127(1)). Each step row keeps
+// its own time, because each step is one instant.
+function CycleSpan({ cycle }: { cycle: TaskPlanCycle }) {
+  const first = cycle.steps[0]?.at
+  const last = cycle.steps[cycle.steps.length - 1]?.at
+  if (!first || !last) return null
+  const open = planCycleOpen(cycle)
   const count = cycle.steps.length
-  return `${absoluteTime(first)} – ${end} · ${count} ${count === 1 ? 'step' : 'steps'}`
+  const steps = `${count} ${count === 1 ? 'step' : 'steps'}`
+  const firstText = `First step ${absoluteTime(first)}`
+  const lastText = `Last step ${absoluteTime(last)}`
+  return (
+    <span
+      className="ml-auto inline-flex shrink-0 items-center gap-1 text-xs text-muted tabular-nums"
+      data-plan-cycle-span
+    >
+      <RuntimeDisclosure
+        start={first}
+        // An open cycle measures to now. A closed cycle ends at its last step.
+        end={open ? undefined : last}
+        open={open}
+        contentClassName="left-auto right-0"
+        triggerClassName="justify-end whitespace-nowrap pointer-coarse:-my-3"
+        trigger={{ 'data-plan-cycle-runtime': '' }}
+        render={(runtime) => ({
+          face: (
+            <span>
+              {open && 'Open for '}
+              <span data-plan-cycle-duration>{runtime ?? '—'}</span>
+            </span>
+          ),
+          label: `${[open ? `Open for ${runtime}` : `Took ${runtime}`, steps, firstText, open ? `${lastText}. Still open` : lastText].join('. ')}.`,
+          details: (
+            <span className="flex flex-col gap-0.5 tabular-nums" data-plan-cycle-span-details>
+              <time dateTime={first} data-plan-cycle-first>
+                {firstText}
+              </time>
+              <time dateTime={last} data-plan-cycle-last>
+                {lastText}
+              </time>
+              {open && <span data-plan-cycle-open>Still open</span>}
+            </span>
+          ),
+        })}
+      />
+      <span aria-hidden>·</span>
+      <span>{steps}</span>
+    </span>
+  )
 }
 
 // A viewer who cannot see the decision panel below the timeline gets wording
@@ -249,24 +300,32 @@ export function PlanCycleEntry({
     <li className="relative pl-7" data-plan-cycle={cycle.outcome} data-plan-cycle-folded={open ? undefined : ''}>
       {rail}
       <article aria-label={range ? `${title} ${range}` : title} className="rounded-lg border border-edge bg-raised/40">
-        {foldable ? (
-          <button
-            type="button"
-            aria-expanded={open}
-            aria-controls={stepsId}
-            onClick={() => setOpen((value) => !value)}
-            className="flex min-h-8 w-full cursor-pointer flex-wrap items-center gap-x-2 gap-y-1 rounded-lg px-4 pt-3 text-left text-sm focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary"
-          >
-            {open ? (
-              <ChevronUp aria-hidden className="size-3.5 text-muted" />
-            ) : (
-              <ChevronDown aria-hidden className="size-3.5 text-muted" />
-            )}
-            {heading}
-          </button>
-        ) : (
-          <div className="flex flex-wrap items-center gap-x-2 gap-y-1 px-4 pt-3 text-sm">{heading}</div>
-        )}
+        {/* The runtime sits beside the fold button, never inside it, so each
+            control keeps its own activation. The heading does not shrink for
+            it: on a narrow card the runtime takes its own line. */}
+        <div className="flex flex-wrap items-center gap-x-2 gap-y-1 px-4 pt-3" data-plan-cycle-header>
+          {foldable ? (
+            <button
+              type="button"
+              aria-expanded={open}
+              aria-controls={stepsId}
+              onClick={() => setOpen((value) => !value)}
+              className="flex min-h-8 min-w-0 max-w-full flex-[1_0_auto] cursor-pointer flex-wrap items-center gap-x-2 gap-y-1 rounded-lg text-left text-sm focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary"
+            >
+              {open ? (
+                <ChevronUp aria-hidden className="size-3.5 text-muted" />
+              ) : (
+                <ChevronDown aria-hidden className="size-3.5 text-muted" />
+              )}
+              {heading}
+            </button>
+          ) : (
+            <div className="flex min-h-8 min-w-0 max-w-full flex-[1_0_auto] flex-wrap items-center gap-x-2 gap-y-1 text-sm">
+              {heading}
+            </div>
+          )}
+          <CycleSpan cycle={cycle} />
+        </div>
         <div id={stepsId} className="px-4 pb-3">
           {open ? (
             <ol className="mt-1 divide-y divide-border/60" aria-label="Plan cycle steps">
@@ -285,10 +344,11 @@ export function PlanCycleEntry({
               )}
             </ol>
           ) : (
-            <div className="mt-1 space-y-0.5" data-plan-cycle-summary>
-              {preview && <p className="truncate text-sm text-foreground/85">{preview}</p>}
-              <p className="text-xs text-muted">{spanText(cycle)}</p>
-            </div>
+            preview && (
+              <div className="mt-1" data-plan-cycle-summary>
+                <p className="truncate text-sm text-foreground/85">{preview}</p>
+              </div>
+            )
           )}
         </div>
       </article>
