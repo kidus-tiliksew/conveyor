@@ -534,7 +534,8 @@ test.describe('the banner on a 375 px touch screen', () => {
 })
 
 // At 1280 px a long summary wraps instead of truncating, and the meta and the
-// menu stay inside the banner (DEC-129(3)).
+// menu stay inside the banner (DEC-129(3)). An unbroken token, such as a URL,
+// wraps inside the summary's column too.
 test('a long summary wraps at 1280 px and the menu stays inside the banner', async ({ page }) => {
   await page.clock.setFixedTime(oneHourIn)
   await page.setViewportSize({ width: 1280, height: 900 })
@@ -564,6 +565,30 @@ test('a long summary wraps at 1280 px and the menu stays inside the banner', asy
     expect(box.y).toBeGreaterThanOrEqual(cardBox.y)
     expect(box.y + box.height).toBeLessThanOrEqual(cardBox.y + cardBox.height)
   }
+  expect(await noSidewaysScroll(card)).toEqual({ card: false, page: false })
+
+  // A summary with one long unbroken token stays left of the meta.
+  const token: NextAction = {
+    ...workingAction,
+    summary: `See https://example.test/${'a'.repeat(160)} for the order.`,
+  }
+  await page.unroute('**/v1/**')
+  await mockAPI(
+    page,
+    () => activity('running', token, [runningOrder]),
+    () => token,
+  )
+  await page.reload()
+  const tokenHeading = card.getByRole('heading', { name: token.summary })
+  await expect(tokenHeading).toBeVisible()
+  const tokenRight = await tokenHeading.evaluate((element) => {
+    const range = document.createRange()
+    range.selectNodeContents(element)
+    return Math.max(...Array.from(range.getClientRects(), (rect) => rect.right))
+  })
+  const tokenMetaBox = await card.locator('[data-banner-meta]').boundingBox()
+  if (!tokenMetaBox) throw new Error('meta has no box')
+  expect(tokenRight).toBeLessThanOrEqual(tokenMetaBox.x)
   expect(await noSidewaysScroll(card)).toEqual({ card: false, page: false })
 })
 

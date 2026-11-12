@@ -139,7 +139,7 @@ export function PassiveNextActionBanner({
               className="mt-1 max-sm:ml-1"
             />
           )}
-          <h2 className="min-w-0 py-0.5 text-sm font-medium leading-5">{action.summary}</h2>
+          <h2 className="min-w-0 py-0.5 text-sm font-medium leading-5 [overflow-wrap:anywhere]">{action.summary}</h2>
         </div>
         {meta || <span aria-hidden="true" className="max-sm:hidden" />}
         <DropdownMenu
