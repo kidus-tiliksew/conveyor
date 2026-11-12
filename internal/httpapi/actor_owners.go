@@ -78,8 +78,9 @@ func (s *Server) annotateInterventionActorOwners(ctx context.Context, interventi
 	return nil
 }
 
-// annotateSummaryActorOwners sets the owner on the two attributions the task
-// detail summaries present: the task's creator and each round summary's author.
+// annotateSummaryActorOwners sets the owner on the attributions the task
+// detail summaries present: the task's creator, each round summary's author,
+// and the person of each plan-cycle step that records an actor, in one batch.
 func (s *Server) annotateSummaryActorOwners(ctx context.Context, summaries *taskDetailSummaries) error {
 	var actorIDs []string
 	if summaries.Creator != nil {
@@ -88,10 +89,12 @@ func (s *Server) annotateSummaryActorOwners(ctx context.Context, summaries *task
 	for _, entry := range summaries.ReviewRoundSummaries {
 		actorIDs = append(actorIDs, entry.Author.ActorID)
 	}
+	actorIDs = append(actorIDs, planCycleActorIDs(summaries.PlanCycles)...)
 	owners, err := s.agentActorOwners(ctx, actorIDs)
 	if err != nil {
 		return err
 	}
+	resolvePlanCyclePeople(summaries.PlanCycles, owners)
 	if summaries.Creator != nil {
 		summaries.Creator.ActorOwnerUserID = owners[summaries.Creator.ActorID]
 	}
